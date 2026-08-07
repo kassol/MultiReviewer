@@ -4,7 +4,7 @@ Reviewer 需要一个能非交互驱动、可绑定任意厂商模型、且能�
 
 ## Consequences
 
-- 技术栈随之确定为 TypeScript / Node,以便直接嵌入 Pi 的 SDK。
+- Pi 以 SDK 方式嵌入编排服务,不外调 CLI。技术栈随之确定为 TypeScript / Node。所有 Reviewer 运行在编排进程内,进程级隔离由整个服务所在的容器提供。
 - 只读有两个层次,不可混为一谈:工具允许清单取 `["read","grep","find","ls"]`,使模型没有写入的调用路径;进程本身的文件、网络与凭据访问由容器约束,Pi 自身不提供权限系统。
 - Pi 没有结构化输出的 schema 机制。Finding 的结构通过 `customTools` 定义一个 `report_finding` 工具来强制,Reviewer 每提出一条 Finding 即调用一次,编排层收集这些工具调用。
 - 模型绑定通过每个 Reviewer 实例各自的 `--model` 或 SDK 的 `model` 参数完成,凭据可用 `modelRuntime.setRuntimeApiKey()` 在运行时注入。
