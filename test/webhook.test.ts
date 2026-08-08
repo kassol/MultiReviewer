@@ -59,7 +59,7 @@ function gatedReviewer(model: string): Reviewer & {
     review: async (_range: ReviewRange) => {
       entered.resolve();
       await gate.promise;
-      return { model, findings: [], anomalies: [], rejectedToolCalls: 0 };
+      return { model, findings: [], anomalies: [], rejectedToolCalls: 0, anchorRejections: 0 };
     },
   };
 }
@@ -380,7 +380,7 @@ test("来源平台还没有 Forge 实现时记录下来并返回 200", async () 
   assert.notEqual(h.settled[0]!.error, undefined);
 });
 
-test("每条通过签名的投递都记一行,说明这次做了什么", async () => {
+test("通过签名的投递都留痕,说明这次做了什么", async () => {
   const h = await startHarness();
 
   // 触发审查的那一条。
@@ -403,6 +403,58 @@ test("每条通过签名的投递都记一行,说明这次做了什么", async (
   assert.match(joined, /草稿,不审/);
   assert.match(joined, /labeled 动作不触发审查/);
   assert.match(joined, /收到 push 事件/);
+});
+
+/** 日志里含 `needle` 的行数。去重生效与否只看这个计数。 */
+function countLines(deliveries: readonly string[], needle: string): number {
+  return deliveries.filter((line) => line.includes(needle)).length;
+}
+
+test("无关的事件类型只在首次出现时记一行", async () => {
+  const h = await startHarness();
+  const body = JSON.stringify({});
+
+  // PR 下每条评论都投一次 pull_request_comment,逐条记会把真正要看的行淹掉。
+  for (let i = 0; i < 3; i += 1) {
+    const response = await h.post(body, {
+      "x-gitea-event": "pull_request_comment",
+      "x-hub-signature-256": sign(body),
+    });
+    assert.equal(response.status, 200);
+  }
+  assert.equal(countLines(h.deliveries, "pull_request_comment"), 1);
+
+  // 按事件类型分别记首次,不是记过一条之后就再也不记。
+  await h.post(body, { "x-gitea-event": "push", "x-hub-signature-256": sign(body) });
+  assert.equal(countLines(h.deliveries, "收到 push 事件"), 1);
+});
+
+test("不触发审查的 action 同样只在首次出现时记一行", async () => {
+  const h = await startHarness();
+
+  await h.deliver("github", "labeled", { headSha: "sha-1" });
+  await h.deliver("github", "labeled", { headSha: "sha-1" });
+  await h.deliver("github", "assigned", { headSha: "sha-1" });
+
+  assert.equal(countLines(h.deliveries, "labeled 动作不触发审查"), 1);
+  assert.equal(countLines(h.deliveries, "assigned 动作不触发审查"), 1);
+  assert.deepEqual(h.dispatched, []);
+});
+
+test("关心的判定结果逐条记,不去重", async () => {
+  const h = await startHarness();
+
+  await h.deliver("github", "opened", { headSha: h.repo.headSha, draft: true });
+  await h.deliver("github", "opened", { headSha: h.repo.headSha, draft: true });
+  await h.deliver("github", "opened", { headSha: h.repo.headSha });
+  await h.settledAtLeast(1);
+  await h.deliver("github", "synchronize", { headSha: h.repo.headSha });
+  await h.deliver("github", "synchronize", { headSha: h.repo.headSha });
+
+  // 这几档是本服务对 pull request 的判定结果,少记一条就看不出投递还在进来。
+  assert.equal(countLines(h.deliveries, "草稿,不审"), 2);
+  assert.equal(countLines(h.deliveries, "开始审查"), 1);
+  assert.equal(countLines(h.deliveries, "已经审过,跳过"), 2);
 });
 
 test("签名不过的投递不进日志——否则日志由外人写", async () => {

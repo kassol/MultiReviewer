@@ -26,6 +26,11 @@ const HEAD = BASE.replace("return a - b;", "return a - b - 1;");
 const UNRELATED_CHANGE = HEAD.replace("return a * b;", "return a * b * 2;");
 // 改的正是 Finding 指向的那一行,指纹必变。
 const SAME_LINE_CHANGE = HEAD.replace("return a - b - 1;", "return a - b - 2;");
+// 改 add。第 11 行既不会被卷进 diff,它的指纹窗口(8..14 行)也不变。
+const DISTANT_CHANGE = HEAD.replace("return a + b;", "return a + b + 0;");
+
+/** mul 的收尾行。-U3 的 hunk 只覆盖 3..9 行,它落在 diff 之外,退化进 review 正文。 */
+const OUT_OF_DIFF_LINE = 11;
 
 const EVENT = { owner: "acme", repo: "widgets", number: 7 };
 
@@ -38,6 +43,8 @@ const FINDING = {
 };
 
 const ANCHOR = /<!-- multireviewer:([0-9a-f]{64}) -->/;
+/** 正文里的锚点另带文件路径:正文没有行级评论那样一个由 API 给出的路径。 */
+const BODY_ANCHOR = /<!-- multireviewer:([0-9a-f]{64}):(\S+) -->/;
 
 const cleanups: (() => void)[] = [];
 after(() => {
@@ -118,6 +125,20 @@ test("代码未变且上一轮已处置:本轮不发行级评论,折叠段里标
   assert.doesNotMatch(second.body, /model-a/);
 
   assert.deepEqual(latestDispositions(db.path), ["unknown", "resolved"]);
+});
+
+test("折叠的 Finding 计入首行总数:口径是本轮结论,不是本轮新增", async () => {
+  const { repo, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+
+  await runReview(EVENT, deps);
+
+  const second = forge.createdReviews[1]!;
+  assert.deepEqual(second.comments, [], "这一轮该只有折叠段");
+  assert.equal(second.body.split("\n")[0], "MultiReviewer:1 条 Finding(P0 1)");
 });
 
 test("上一轮已处置但代码已改动:本轮按新 Finding 正常提出", async () => {
@@ -220,4 +241,105 @@ test("发布的行级评论正文带指纹锚点,锚点与落库的指纹一致"
   const anchor = ANCHOR.exec(forge.createdReviews[0]!.comments[0]!.body);
   assert.ok(anchor !== null, "行级评论正文里没有指纹锚点");
   assert.equal(anchor[1], query(db.path, "SELECT fingerprint FROM finding")[0]!["fingerprint"]);
+});
+
+test("退化进 review 正文的 Finding 带指纹锚点,锚点里另有文件路径", async () => {
+  const { db, forge, deps } = setup();
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [scriptedReviewer("model-a", [{ ...FINDING, line: OUT_OF_DIFF_LINE }])],
+  });
+
+  const review = forge.createdReviews[0]!;
+  assert.deepEqual(review.comments, [], "第 11 行本该落在 diff 之外");
+  const anchor = BODY_ANCHOR.exec(review.body);
+  assert.ok(anchor !== null, "正文里的 fallback 块没有指纹锚点");
+  assert.equal(anchor[2], "src/calc.js");
+  assert.equal(anchor[1], query(db.path, "SELECT fingerprint FROM finding")[0]!["fingerprint"]);
+});
+
+test("上一轮退化进正文的 Finding,本轮匹配成功后折叠,不再全文重发", async () => {
+  const { repo, db, forge, deps } = setup();
+  const reviewers = [
+    scriptedReviewer("model-a", [{ ...FINDING, line: OUT_OF_DIFF_LINE }]),
+  ];
+
+  await runReview(EVENT, { ...deps, reviewers });
+  // 把上一轮真的发布出去的正文,当成 Forge 上的既有 review 喂给下一轮。
+  forge.existingReviewBodies.push(forge.createdReviews[0]!.body);
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": DISTANT_CHANGE });
+
+  await runReview(EVENT, { ...deps, reviewers });
+
+  const second = forge.createdReviews[1]!;
+  assert.deepEqual(second.comments, []);
+  assert.doesNotMatch(second.body, /diff 之外/, "diff 外的同一条 Finding 又被全文重发");
+  // 正文里的锚点读不到 resolve 状态,匹配上一律按未处置折叠。
+  assert.match(second.body, /尚未处置/);
+  assert.match(second.body, /src\/calc\.js:11/);
+  assert.match(second.body, /sub 多减了 1/);
+
+  assert.deepEqual(latestDispositions(db.path), ["unknown", "unresolved"]);
+});
+
+test("折叠过一轮之后仍不重发:第三轮认的是第一轮正文里的锚点", async () => {
+  const { repo, forge, deps } = setup();
+  const reviewers = [
+    scriptedReviewer("model-a", [{ ...FINDING, line: OUT_OF_DIFF_LINE }]),
+  ];
+
+  // 折叠段本身不埋锚点(`findingLine` 只写一行摘要),第二轮的正文里因此没有锚点。
+  // 这条链靠的是 `listReviewBodies` 返回 PR 上全部历史 review 而非最新一条:第三轮
+  // 认的是第一轮那条正文。改成只读最新一条,这个 Finding 会从第三轮起每轮重发。
+  await runReview(EVENT, { ...deps, reviewers });
+  forge.existingReviewBodies.push(forge.createdReviews[0]!.body);
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": DISTANT_CHANGE });
+
+  await runReview(EVENT, { ...deps, reviewers });
+  forge.existingReviewBodies.push(forge.createdReviews[1]!.body);
+  forge.pullRequest.headSha = repo.pushToHead({
+    "src/calc.js": HEAD.replace("return a + b;", "return a + b + 1;"),
+  });
+
+  await runReview(EVENT, { ...deps, reviewers });
+
+  const third = forge.createdReviews[2]!;
+  assert.doesNotMatch(third.body, /diff 之外/, "折叠过一轮的 Finding 第三轮又被全文重发");
+  assert.match(third.body, /尚未处置/);
+});
+
+test("一条正文里的多个锚点全部参与匹配", async () => {
+  const { repo, forge, deps } = setup();
+  const reviewers = [
+    scriptedReviewer("model-a", [
+      { ...FINDING, line: 1, description: "add 没有参数校验" },
+      { ...FINDING, line: OUT_OF_DIFF_LINE },
+    ]),
+  ];
+
+  await runReview(EVENT, { ...deps, reviewers });
+  forge.existingReviewBodies.push(forge.createdReviews[0]!.body);
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
+
+  await runReview(EVENT, { ...deps, reviewers });
+
+  const second = forge.createdReviews[1]!;
+  assert.doesNotMatch(second.body, /diff 之外/, "一条正文里的两个锚点只认了第一个");
+  assert.match(second.body, /尚未处置的 Finding\(2 条\)/);
+});
+
+test("人写的 review 正文不带锚点,不参与匹配", async () => {
+  const { db, forge, deps } = setup();
+  forge.existingReviewBodies.push("这个 PR 我看过了,mul 那段没问题");
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [scriptedReviewer("model-a", [{ ...FINDING, line: OUT_OF_DIFF_LINE }])],
+  });
+
+  const review = forge.createdReviews[0]!;
+  assert.match(review.body, /diff 之外/, "人写的 review 正文把本轮 Finding 折叠掉了");
+  assert.doesNotMatch(review.body, /<details>/);
+  assert.deepEqual(latestDispositions(db.path), ["unknown"]);
 });

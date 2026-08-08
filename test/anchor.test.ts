@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { anchorFinding } from "../src/reviewer/anchor.ts";
+import { anchorFinding, anchorReport } from "../src/reviewer/anchor.ts";
 
 const LINES = [
   "import { x } from './x.js';",
@@ -63,4 +63,29 @@ test("行号超界且 snippet 不存在时打回,理由里带文件行数", () =
 test("空白 snippet 直接打回", () => {
   const result = anchorFinding(LINES, 2, "   ");
   assert.equal(result.ok, false);
+});
+
+const REPORTED = {
+  file: "src/evaluate.ts",
+  line: 4,
+  snippet: "return new Function(`return (${expr})`)();",
+};
+
+test("文件读不出来时打回,措辞点名那个路径", () => {
+  const result = anchorReport(undefined, REPORTED);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.match(result.message, /src\/evaluate\.ts/);
+});
+
+test("snippet 对不上时打回,措辞带上核对不过的理由", () => {
+  const result = anchorReport(LINES, { ...REPORTED, snippet: "return eval(expr);" });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.match(result.message, /return new Function/);
+});
+
+test("锚定得上时不打回,给出校正后的行号", () => {
+  const result = anchorReport(LINES, { ...REPORTED, line: 7 });
+  assert.deepEqual(result, { ok: true, line: 4 });
 });

@@ -225,6 +225,25 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
       return comments;
     },
 
+    async listReviewBodies(ref: PullRequestRef): Promise<string[]> {
+      // 与 `listReviewComments` 同一个端点,取的是 review 自己的正文:
+      // `modules/structs/pull_review.go` 的 `PullReview` 有 `Body string json:"body"`。
+      // 这里不能跟着 `comments_count` 跳过——Finding 全部落在 diff 之外的那一轮发出的
+      // 正是「有正文、零行级评论」的 review,而它的正文里就有要匹配的锚点。
+      const bodies: string[] = [];
+
+      for (let page = 1; ; page += 1) {
+        const reviews = await requestJson<{ body: string }[]>(
+          options,
+          "GET",
+          `${repoPath(ref)}/pulls/${ref.number}/reviews?page=${page}&limit=${PAGE_SIZE}`,
+        );
+        for (const review of reviews) bodies.push(review.body);
+        if (reviews.length < PAGE_SIZE) break;
+      }
+      return bodies;
+    },
+
     async resolveComment(ref: RepoRef, commentId: string): Promise<void> {
       // `POST /repos/{owner}/{repo}/pulls/comments/{id}/resolve`,路径里没有 PR 序号。
       // 返回 204 无正文,因此不解析响应体。

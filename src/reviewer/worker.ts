@@ -19,7 +19,7 @@ import {
 import { Type } from "typebox";
 
 import type { RawFinding } from "../review/finding.ts";
-import { anchorFinding } from "./anchor.ts";
+import { anchorReport } from "./anchor.ts";
 import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV } from "./env.ts";
 import { numberedRead } from "./numbered-read.ts";
 import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
@@ -112,6 +112,7 @@ function fileLines(worktreePath: string, file: string): string[] | undefined {
 
 async function run(request: ReviewerRequest): Promise<void> {
   let rejectedToolCalls = 0;
+  let anchorRejections = 0;
 
   const reportFinding = defineTool({
     name: REPORT_FINDING_TOOL,
@@ -119,28 +120,16 @@ async function run(request: ReviewerRequest): Promise<void> {
     description: "Report one problem found in the code under review.",
     parameters: findingSchema,
     execute: async (_id, params) => {
-      // 打回走正常返回而非工具错误:rejectedToolCalls 只统计 Pi 的 schema 校验
-      // 失败,即"契约失配"信号,锚定失败是另一回事,混进去信号就没了。
       const raw = params as RawFinding;
-      const lines = fileLines(request.worktreePath, raw.file);
-      if (lines === undefined) {
-        return {
-          content: [
-            { type: "text", text: `NOT recorded: cannot read ${raw.file}. Check the path and report again.` },
-          ],
-          details: {},
-        };
+      const result = anchorReport(fileLines(request.worktreePath, raw.file), raw);
+      if (!result.ok) {
+        // 打回走正常返回而非工具错误:rejectedToolCalls 只统计 Pi 的 schema 校验
+        // 失败,即"契约失配"信号,锚定失败是另一回事,混进去信号就没了。因此另记
+        // 一个数——模型不重报时这条 Finding 就静默消失了,没有它谁都不知道丢过。
+        anchorRejections += 1;
+        return { content: [{ type: "text", text: result.message }], details: {} };
       }
-      const anchored = anchorFinding(lines, raw.line, raw.snippet);
-      if (!anchored.ok) {
-        return {
-          content: [
-            { type: "text", text: `NOT recorded: ${anchored.reason} Re-read the file and report again with the line number copied from the read output.` },
-          ],
-          details: {},
-        };
-      }
-      send({ kind: "finding", raw: { ...raw, line: anchored.line } });
+      send({ kind: "finding", raw: { ...raw, line: result.line } });
       return { content: [{ type: "text", text: "recorded" }], details: {} };
     },
   });
@@ -177,7 +166,7 @@ async function run(request: ReviewerRequest): Promise<void> {
 
   const apiKey = process.env[MODEL_API_KEY_ENV];
   if (apiKey === undefined || apiKey === "") {
-    send({ kind: "done", rejectedToolCalls: 0, failure: "缺少模型凭据" });
+    send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0, failure: "缺少模型凭据" });
     return;
   }
 
@@ -194,6 +183,7 @@ async function run(request: ReviewerRequest): Promise<void> {
     send({
       kind: "done",
       rejectedToolCalls: 0,
+      anchorRejections: 0,
       failure: `模型不存在: ${request.provider}/${request.model}`,
     });
     return;
@@ -268,6 +258,7 @@ async function run(request: ReviewerRequest): Promise<void> {
   send({
     kind: "done",
     rejectedToolCalls,
+    anchorRejections,
     usage,
     ...(failure === undefined ? {} : { failure }),
   });
@@ -281,6 +272,7 @@ process.on("message", (request: ReviewerRequest) => {
     send({
       kind: "done",
       rejectedToolCalls: 0,
+      anchorRejections: 0,
       failure: String(error instanceof Error ? error.message : error),
     });
   });

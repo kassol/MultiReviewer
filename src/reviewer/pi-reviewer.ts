@@ -58,6 +58,7 @@ export function runInChild(
     const findings: Finding[] = [];
     const anomalies: { raw: RawFinding; reason: string }[] = [];
     let rejectedToolCalls = 0;
+    let anchorRejections = 0;
     let usage: ReviewerUsage | undefined;
     let done: { rejectedToolCalls: number; failure?: string } | undefined;
     let settled = false;
@@ -84,6 +85,7 @@ export function runInChild(
         findings: [],
         anomalies: [],
         rejectedToolCalls: 0,
+        anchorRejections: 0,
         failure: `子进程无法启动: ${error instanceof Error ? error.message : String(error)}`,
       });
       return;
@@ -101,6 +103,7 @@ export function runInChild(
         findings,
         anomalies,
         rejectedToolCalls,
+        anchorRejections,
         ...(failure === undefined ? {} : { failure }),
         ...(usage === undefined ? {} : { usage }),
       });
@@ -119,6 +122,7 @@ export function runInChild(
         return;
       }
       rejectedToolCalls = message.rejectedToolCalls;
+      anchorRejections = message.anchorRejections;
       usage = message.usage;
       done = message;
       // 结果已经拿到,不该再为一个赖着不退出的子进程等满超时。

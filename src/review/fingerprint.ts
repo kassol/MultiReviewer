@@ -44,14 +44,30 @@ export function contentFingerprint(
  * 不回传每条评论的 id,而该接口按 Gitea 的能力定义(ADR 0002),不为此扩张。
  *
  * 两个平台的 markdown 渲染都会剥掉 HTML 注释,人看不见;API 读回的是正文原文,锚点还在。
+ *
+ * `file` 只有 review 正文里的锚点才带:匹配的键是「文件 + 指纹」,而行级评论的路径由
+ * API 一并读回,review 正文没有这个来源,只能自己带上。
  */
-export function fingerprintAnchor(fingerprint: string): string {
-  return `<!-- multireviewer:${fingerprint} -->`;
+export function fingerprintAnchor(fingerprint: string, file?: string): string {
+  return file === undefined
+    ? `<!-- multireviewer:${fingerprint} -->`
+    : `<!-- multireviewer:${fingerprint}:${file} -->`;
 }
 
-/** 读回评论正文里的锚点。没有锚点即该评论不是本工具发的,不参与匹配。 */
-export function parseFingerprintAnchor(body: string): string | undefined {
-  return ANCHOR.exec(body)?.[1];
+/**
+ * 读回正文里的全部锚点。没有锚点即那段正文不是本工具发的,不参与匹配。
+ *
+ * 取全部而不是第一个:一次 review 的正文里可能有多个 fallback 块,各带一个锚点,
+ * 只认第一个会让其余的 Finding 每轮重发。
+ */
+export function parseFingerprintAnchors(
+  body: string,
+): { fingerprint: string; file: string | undefined }[] {
+  return [...body.matchAll(ANCHOR)].map((match) => ({
+    fingerprint: match[1]!,
+    file: match[2],
+  }));
 }
 
-const ANCHOR = /<!-- multireviewer:([0-9a-f]{64}) -->/;
+// 路径这一段可选:issue #11 之前发出去的锚点没有它,那些评论要照常匹配得上。
+const ANCHOR = /<!-- multireviewer:([0-9a-f]{64})(?::([^\n]*?))? -->/g;

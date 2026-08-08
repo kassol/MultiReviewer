@@ -72,6 +72,7 @@ export function mergeBatchOutcomes(results: readonly TimedOutcome[]): TimedOutco
     findings: succeeded.flatMap((r) => r.outcome.findings),
     anomalies: results.flatMap((r) => r.outcome.anomalies),
     rejectedToolCalls: results.reduce((n, r) => n + r.outcome.rejectedToolCalls, 0),
+    anchorRejections: results.reduce((n, r) => n + r.outcome.anchorRejections, 0),
     // 一批都没回报用量时保持"取不到",不伪造出一行零用量。
     ...(results.some((r) => r.outcome.usage !== undefined)
       ? { usage: sumUsage(results.map((r) => r.outcome)) }

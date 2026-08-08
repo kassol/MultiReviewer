@@ -72,6 +72,13 @@ export interface Forge {
   listChangedFiles(ref: PullRequestRef): Promise<ChangedFile[]>;
   createReview(ref: PullRequestRef, draft: ReviewDraft): Promise<void>;
   listReviewComments(ref: PullRequestRef): Promise<ExistingReviewComment[]>;
+  /**
+   * PR 上每条 review 的正文,人写的与本工具发的都在内。
+   *
+   * 行号落在 diff 之外的 Finding 没有行级评论承载,只活在 review 正文里,跨轮次匹配
+   * 要把它们读回来。正文没有 resolve 状态,两个平台都没有。
+   */
+  listReviewBodies(ref: PullRequestRef): Promise<string[]>;
   resolveComment(ref: RepoRef, commentId: string): Promise<void>;
   unresolveComment(ref: RepoRef, commentId: string): Promise<void>;
   cloneCredentials(ref: RepoRef): Promise<CloneCredentials>;

@@ -113,6 +113,96 @@ test("行号相差在阈值内视为同一处,超出阈值分开", async () => {
   assert.deepEqual(separate.models, ["model-b"]);
 });
 
+test("相距 3 行但内容明显不同的两条 Finding 不合并", async () => {
+  const { cache, db, forge, event } = setup();
+
+  // PR #3 的实况:`new Function` 的 RCE 与 `summary()` 越界相距 3 行,只看行距时被
+  // 合成一条,评论正文讲的是其中一个问题,来源里却装着两个。
+  const result = await runReview(event, {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [
+        {
+          ...AT_LINE_2,
+          title: "new Function 执行用户输入,存在 RCE 风险",
+          description: "表达式未经校验就交给 new Function 执行。",
+        },
+      ]),
+      scriptedReviewer("model-b", [
+        {
+          ...AT_LINE_2,
+          line: 5,
+          title: "summary() 在 count 为负数时切片越界",
+          description: "负数下标让切片退化成整表读取。",
+        },
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  assert.equal(result.findings.length, 2);
+  assert.deepEqual(
+    result.findings.map((f) => f.title).sort(),
+    [
+      "new Function 执行用户输入,存在 RCE 风险",
+      "summary() 在 count 为负数时切片越界",
+    ].sort(),
+  );
+});
+
+test("同一缺陷的不同表述相距 2 行仍合并为一条", async () => {
+  const { cache, db, forge, event } = setup();
+
+  const result = await runReview(event, {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [
+        {
+          ...AT_LINE_2,
+          title: "表达式求值使用 new Function,存在远程代码执行风险",
+          description: "用户可控的字符串直接进了 new Function。",
+        },
+      ]),
+      scriptedReviewer("model-b", [
+        {
+          ...AT_LINE_2,
+          line: 4,
+          title: "new Function 执行用户输入导致 RCE",
+          description: "攻击者能借表达式执行任意 JavaScript。",
+        },
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  assert.equal(result.findings.length, 1);
+  assert.deepEqual([...result.findings[0]!.models].sort(), ["model-a", "model-b"]);
+});
+
+test("标题为空时改用描述判断,描述讲的不是一回事就不合并", async () => {
+  const { cache, db, forge, event } = setup();
+
+  // 模型没给标题时归一化补空串。空标题不能让内容判据失效——那会让缺标题的模型
+  // 退回只看行距的老行为。
+  const result = await runReview(event, {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [
+        { ...AT_LINE_2, description: "表达式求值存在远程代码执行风险。" },
+      ]),
+      scriptedReviewer("model-b", [
+        { ...AT_LINE_2, line: 5, description: "历史记录切片越界。" },
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  assert.equal(result.findings.length, 2);
+});
+
 test("不同文件的同一行号不合并", async () => {
   const repo = makeRepo({
     base: { "src/m.js": BASE, "src/n.js": BASE },

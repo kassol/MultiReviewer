@@ -84,6 +84,12 @@ export type ReviewerOutcome = {
   anomalies: { raw: RawFinding; reason: string }[];
   /** 被 Pi 校验拒绝的工具调用次数。不为零而 findings 为零即契约失配。 */
   rejectedToolCalls: number;
+  /**
+   * snippet 锚不上而被打回的 `report_finding` 次数(文件读不出来与内容对不上合记一个数)。
+   * 打回后模型不重报,那条 Finding 就静默消失了;打回多而 findings 少,是该换模型或
+   * 改 prompt 的信号。与 `rejectedToolCalls` 分列:一个是契约失配,一个是位置报不准。
+   */
+  anchorRejections: number;
   /** 有值即该 Reviewer 失败,其 findings 不代表"代码没问题"。 */
   failure?: string;
   /** 子进程未回报结果即退出时取不到用量。 */

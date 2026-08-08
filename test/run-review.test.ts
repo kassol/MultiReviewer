@@ -144,6 +144,80 @@ test("影响与建议为空时整段消失,不留空标签", async () => {
   assert.doesNotMatch(body, /\*\*影响\*\*|\*\*建议\*\*/);
 });
 
+/** 行号相差 4 行,超出去重的行距容差,三条各自成一条。第 11 行落在 diff 之外。 */
+function at(line: number, severity: "P0" | "P1" | "P2", description: string) {
+  return { file: "src/calc.ts", line, severity, category: "bug" as const, description };
+}
+
+test("正文首行写明本轮 Finding 总数与分级计数", async () => {
+  const { cache, db, forge } = setup(6);
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    {
+      forge: forge.forge,
+      reviewers: [
+        scriptedReviewer("model-a", [
+          at(3, "P0", "add 没有参数校验"),
+          at(7, "P1", "sub 的返回值没有断言"),
+          at(11, "P2", "mul 缺少注释"),
+        ]),
+      ],
+      cacheDir: cache.dir,
+      dbPath: db.path,
+    },
+  );
+
+  const [heading] = forge.createdReviews[0]!.body.split("\n");
+  // 第 11 行退化进正文,同样计入:口径是本轮结论总数,不分呈现方式。
+  assert.equal(heading, "MultiReviewer:3 条 Finding(P0 1 / P1 1 / P2 1)");
+});
+
+test("某个等级本轮为零时,首行不列它", async () => {
+  const { cache, db, forge } = setup(6);
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    {
+      forge: forge.forge,
+      reviewers: [
+        scriptedReviewer("model-a", [
+          at(3, "P2", "add 缺少注释"),
+          at(7, "P2", "sub 缺少注释"),
+        ]),
+      ],
+      cacheDir: cache.dir,
+      dbPath: db.path,
+    },
+  );
+
+  const [heading] = forge.createdReviews[0]!.body.split("\n");
+  assert.equal(heading, "MultiReviewer:2 条 Finding(P2 2)");
+});
+
+test("零 Finding 但有模型缺席时,首行不写「0 条」", async () => {
+  const { cache, db, forge } = setup(6);
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    {
+      forge: forge.forge,
+      reviewers: [
+        scriptedReviewer("model-a", []),
+        scriptedReviewer("model-b", [], { failure: "402 dead credential" }),
+      ],
+      cacheDir: cache.dir,
+      dbPath: db.path,
+    },
+  );
+
+  const body = forge.createdReviews[0]!.body;
+  assert.equal(body.split("\n")[0], "MultiReviewer");
+  // 「0 条」会把「没审到」读成「没问题」。缺席那一段仍要照常写明。
+  assert.doesNotMatch(body, /0 条 Finding/);
+  assert.match(body, /model-b/);
+});
+
 test("Reviewer 拿到的 Review Range 以 merge-base 为基准,不是 base 分支尖端", async () => {
   const repo = makeRepo({
     base: { "src/calc.ts": BASE_CALC },

@@ -12,11 +12,11 @@ import {
   type TimedOutcome,
 } from "./batch.ts";
 import { dedupeFindings, type MergedFinding } from "./dedupe.ts";
-import type { Disposition, Reviewer, ReviewerOutcome } from "./finding.ts";
+import type { Disposition, Reviewer, ReviewerOutcome, Severity } from "./finding.ts";
 import {
   contentFingerprint,
   fingerprintAnchor,
-  parseFingerprintAnchor,
+  parseFingerprintAnchors,
 } from "./fingerprint.ts";
 import { changedLinesByFile, isInDiff, parseDiffRanges } from "./position.ts";
 import { openStore, type FindingRecord, type OutcomeRecord } from "./store.ts";
@@ -55,6 +55,13 @@ type CarriedFinding = {
   resolved: boolean;
 };
 
+/** 行号落在 diff 之外、退化进 review 正文的 Finding,连同它的指纹。 */
+type FallbackFinding = {
+  finding: MergedFinding;
+  /** 指纹算不出时正文里没有锚点可埋,这条下一轮匹配不上。 */
+  fingerprint: string | undefined;
+};
+
 /**
  * 评论是给开发者看的最终结果:等级、标题、问题、影响、建议,分段呈现。
  * 模型署名与各家的不同表述一概不进评论——读的人要的是结论,不是评审过程;
@@ -85,12 +92,20 @@ function findingBody(finding: MergedFinding, fingerprint: string | undefined): s
 }
 
 /** diff 外的 Finding 没有行级评论承载,正文里的这一块就是它的完整呈现。 */
-function fallbackBlock(finding: MergedFinding): string[] {
-  return [
+function fallbackBlock({ finding, fingerprint }: FallbackFinding): string[] {
+  const lines = [
     "",
     `\`${finding.file}:${finding.line}\` ${findingHeading(finding)}`,
     ...findingSections(finding),
   ];
+
+  // 这一块同样是本工具的产出,同样要能被下一轮认出来:没有锚点它每轮都会全文重发。
+  // 锚点里带上文件路径——正文不像行级评论那样有一个由 API 给出的路径。
+  if (fingerprint !== undefined) {
+    lines.push("", fingerprintAnchor(fingerprint, finding.file));
+  }
+
+  return lines;
 }
 
 /** 折叠段里的一条。误匹配时人展开就能看到完整内容,不是只给个条数。 */
@@ -125,13 +140,40 @@ async function tryReaction(action: () => Promise<void>): Promise<void> {
   }
 }
 
+/** 高的先列,与 `dedupe.ts` 的 SEVERITY_RANK 同序。 */
+const SEVERITY_ORDER: readonly Severity[] = ["P0", "P1", "P2"];
+
+/**
+ * 首行的概览:本轮 Finding 总数与分级计数,例如 `MultiReviewer:5 条 Finding(P0 3 / P2 2)`。
+ *
+ * 口径是「本轮结论总数」而非「本轮新增」——行级评论、diff 外的 fallback 与折叠的三类
+ * 全算。折叠的那些是本轮仍然成立的问题,读者要判断的是这个 PR 眼下的轻重。三类恰好
+ * 覆盖去重合并后的每一条,总数即 `findings.length`。
+ *
+ * 零 Finding 只在有模型缺席或覆盖不全时才走到这里,写「0 条」会把「没审到」读成「没
+ * 问题」,首行因此退回裸标题,缺席由下面那段自己说。
+ */
+function overviewLine(findings: readonly MergedFinding[]): string {
+  if (findings.length === 0) return "MultiReviewer";
+
+  // 为零的档位不列:读者要的是轻重,`P0 0` 只让人多数一个零。
+  const counts = SEVERITY_ORDER.map(
+    (severity) => [severity, findings.filter((f) => f.severity === severity).length] as const,
+  )
+    .filter(([, count]) => count > 0)
+    .map(([severity, count]) => `${severity} ${count}`);
+
+  return `MultiReviewer:${findings.length} 条 Finding(${counts.join(" / ")})`;
+}
+
 function reviewBody(
-  fallbacks: readonly MergedFinding[],
+  findings: readonly MergedFinding[],
+  fallbacks: readonly FallbackFinding[],
   absent: readonly ReviewerOutcome[],
   partial: readonly ReviewerOutcome[],
   carried: readonly CarriedFinding[],
 ): string {
-  const sections: string[] = ["MultiReviewer"];
+  const sections: string[] = [overviewLine(findings)];
 
   if (absent.length > 0) {
     sections.push(
@@ -191,28 +233,50 @@ function reviewBody(
 }
 
 /**
- * 上一轮由本工具发出的行级评论,按 `文件 + 指纹` 索引到它的 resolve 状态。
+ * 上一轮由本工具提出的 Finding,按 `文件 + 指纹` 索引到它的 resolve 状态。
  *
- * 只认带锚点的评论:带锚点的是 bot 发的,人写的评论不参与匹配。指纹与文件一起做键,
- * 单看指纹会让不同文件里同样的 7 行代码互相误匹配。
+ * 两个来源:行级评论,以及本工具历史 review 的正文——diff 外的 Finding 没有行级评论
+ * 承载,只活在正文里,不读它这类 Finding 每轮都全文重发。
+ *
+ * 只认带锚点的那些:带锚点的是本工具发的,人写的评论与 review 正文都不参与匹配。
+ * 指纹与文件一起做键,单看指纹会让不同文件里同样的 7 行代码互相误匹配。
  */
 function priorDispositions(
   comments: readonly ExistingReviewComment[],
+  bodies: readonly string[],
 ): Map<string, boolean> {
   const byKey = new Map<string, boolean>();
+  // 同一处若有多条历史记录,任一条被 resolve 即视为已处置。
+  const note = (file: string, fingerprint: string, resolved: boolean): void => {
+    const key = `${file}\n${fingerprint}`;
+    byKey.set(key, (byKey.get(key) ?? false) || resolved);
+  };
+
   for (const comment of comments) {
-    const fingerprint = parseFingerprintAnchor(comment.body);
-    if (fingerprint === undefined) continue;
-    const key = `${comment.path}\n${fingerprint}`;
-    // 同一处若有多条历史评论,任一条被 resolve 即视为已处置。
-    byKey.set(key, (byKey.get(key) ?? false) || comment.resolved);
+    for (const anchor of parseFingerprintAnchors(comment.body)) {
+      // 路径以 API 读回的为准:行级评论的锚点里没有它,有也不该盖过评论自己挂的位置。
+      note(comment.path, anchor.fingerprint, comment.resolved);
+    }
   }
+
+  for (const body of bodies) {
+    for (const anchor of parseFingerprintAnchors(body)) {
+      // 正文里的锚点自带路径,没带的定不出「文件 + 指纹」这个键,只能放过。
+      if (anchor.file === undefined) continue;
+      // 正文没有 resolve 状态可读,一律按未处置计。
+      note(anchor.file, anchor.fingerprint, false);
+    }
+  }
+
   return byKey;
 }
 
 /**
- * 与 `dedupe.ts` 的 LINE_TOLERANCE 同义:行号差在 3 行以内视为指向同一处。
- * 跨轮次沿用同一语义,单独命名以免误改其中一个。
+ * 行号差在 3 行以内视为指向同一处,容差取值与 `dedupe.ts` 的 LINE_TOLERANCE 相同。
+ *
+ * 相同的只是容差,判据并不同:这里的内容判据是指纹本身——偏移只移动指纹窗口,窗口内
+ * 那 7 行原文对不上就不算命中。`dedupe.ts` 那边没有这样的锚,才在行距容差内另加了一道
+ * 标题相似度。改其中一个之前先认清动的是哪一边的语义。
  */
 const MATCH_OFFSETS = [0, -1, 1, -2, 2, -3, 3];
 
@@ -256,10 +320,11 @@ export async function runReview(
   await tryReaction(() => forge.removeReaction(event, "+1"));
   await tryReaction(() => forge.addReaction(event, "eyes"));
 
-  const [changedFiles, credentials, priorComments] = await Promise.all([
+  const [changedFiles, credentials, priorComments, priorBodies] = await Promise.all([
     forge.listChangedFiles(event),
     forge.cloneCredentials(event),
     forge.listReviewComments(event),
+    forge.listReviewBodies(event),
   ]);
 
   const worktree = await prepareWorktree({
@@ -338,10 +403,10 @@ export async function runReview(
     );
 
     const diffRanges = parseDiffRanges(diff);
-    const prior = priorDispositions(priorComments);
+    const prior = priorDispositions(priorComments, priorBodies);
 
     const comments: ReviewCommentDraft[] = [];
-    const fallbacks: MergedFinding[] = [];
+    const fallbacks: FallbackFinding[] = [];
     const carried: CarriedFinding[] = [];
     // 按合并组下标记住处置结论,落库时组内每条来源都取它。
     const dispositions: Disposition[] = [];
@@ -365,7 +430,7 @@ export async function runReview(
           body: findingBody(finding, fingerprint),
         });
       } else {
-        fallbacks.push(finding);
+        fallbacks.push({ finding, fingerprint });
       }
     }
 
@@ -374,6 +439,7 @@ export async function runReview(
       findingCount: outcome.findings.length,
       anomalyCount: outcome.anomalies.length,
       rejectedToolCalls: outcome.rejectedToolCalls,
+      anchorRejections: outcome.anchorRejections,
       durationMs,
       ...(outcome.failure === undefined ? {} : { failure: outcome.failure }),
       ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
@@ -413,7 +479,7 @@ export async function runReview(
       findings.length > 0 || absent.length > 0 || partial.length > 0;
     if (!failed && hasSomethingToSay) {
       await forge.createReview(event, {
-        body: reviewBody(fallbacks, absent, partial, carried),
+        body: reviewBody(findings, fallbacks, absent, partial, carried),
         commitSha: pullRequest.headSha,
         comments,
       });

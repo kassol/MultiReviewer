@@ -40,7 +40,7 @@ test("正常回报的条目被归一化并附上模型标识", async () => {
   const path = worker(`
 process.on("message", () => {
   process.send({ kind: "finding", raw: ${JSON.stringify(RAW)} });
-  process.send({ kind: "done", rejectedToolCalls: 0 });
+  process.send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0 });
   process.exit(0);
 });
 `);
@@ -60,7 +60,7 @@ test("归一化不了的条目进入 anomalies,不静默丢弃", async () => {
   const path = worker(`
 process.on("message", () => {
   process.send({ kind: "finding", raw: ${JSON.stringify(bad)} });
-  process.send({ kind: "done", rejectedToolCalls: 0 });
+  process.send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0 });
   process.exit(0);
 });
 `);
@@ -76,7 +76,7 @@ process.on("message", () => {
 test("会话内可见的失败被回报为 failure", async () => {
   const path = worker(`
 process.on("message", () => {
-  process.send({ kind: "done", rejectedToolCalls: 0, failure: "402 dead credential" });
+  process.send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0, failure: "402 dead credential" });
   process.exit(0);
 });
 `);
@@ -132,7 +132,7 @@ process.on("message", () => {
 test("工具调用被拒而 Finding 为零,可由 outcome 判定为契约失配", async () => {
   const path = worker(`
 process.on("message", () => {
-  process.send({ kind: "done", rejectedToolCalls: 4 });
+  process.send({ kind: "done", rejectedToolCalls: 4, anchorRejections: 0 });
   process.exit(0);
 });
 `);
@@ -142,6 +142,21 @@ process.on("message", () => {
   assert.equal(outcome.rejectedToolCalls, 4);
   assert.deepEqual(outcome.findings, []);
   assert.equal(outcome.failure, undefined);
+});
+
+test("锚定打回次数经 IPC 回传,与被拒的工具调用各记各的", async () => {
+  const path = worker(`
+process.on("message", () => {
+  process.send({ kind: "done", rejectedToolCalls: 1, anchorRejections: 3 });
+  process.exit(0);
+});
+`);
+
+  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir());
+
+  // 两个数分列:契约失配与"位置报不准"是两种毛病,合成一个数就看不出该改哪头。
+  assert.equal(outcome.anchorRejections, 3);
+  assert.equal(outcome.rejectedToolCalls, 1);
 });
 
 test("子进程的环境里只有自家那一份模型凭据", async () => {
@@ -163,7 +178,7 @@ process.on("message", () => {
       }),
     },
   });
-  process.send({ kind: "done", rejectedToolCalls: 0 });
+  process.send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0 });
   process.exit(0);
 });
 `);
@@ -197,7 +212,7 @@ process.on("message", (request) => {
       description: JSON.stringify(request),
     },
   });
-  process.send({ kind: "done", rejectedToolCalls: 0 });
+  process.send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0 });
   process.exit(0);
 });
 `);
@@ -231,7 +246,7 @@ test("子进程回报结果后赖着不退出,不拖到整体超时", async () =
   // 不调用 process.exit,靠 IPC 通道把事件循环挂住——真实 worker 曾经就是这样。
   const path = worker(`
 process.on("message", () => {
-  process.send({ kind: "done", rejectedToolCalls: 1 });
+  process.send({ kind: "done", rejectedToolCalls: 1, anchorRejections: 0 });
 });
 `);
 

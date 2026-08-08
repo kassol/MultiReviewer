@@ -24,6 +24,8 @@ export type MemoryForge = {
   createdReviews: ReviewDraft[];
   /** PR 上既有的 review 评论,可直接追加,用于预置上一轮留下的评论。 */
   existingComments: ExistingReviewComment[];
+  /** PR 上既有的 review 正文,可直接追加,用于预置上一轮发出去的正文。 */
+  existingReviewBodies: string[];
   resolvedIds: string[];
   unresolvedIds: string[];
   /** PR 上此刻挂着的 reaction。 */
@@ -41,6 +43,7 @@ export function memoryForge(init: {
   const resolvedIds: string[] = [];
   const unresolvedIds: string[] = [];
   const existing = [...(init.existingComments ?? [])];
+  const existingReviewBodies: string[] = [];
   const reactions = new Set<Reaction>();
   const reactionLog: string[] = [];
   const state = { pullRequest: { ...init.pullRequest } };
@@ -52,6 +55,7 @@ export function memoryForge(init: {
       createdReviews.push(draft);
     },
     listReviewComments: async (_ref: PullRequestRef) => existing,
+    listReviewBodies: async (_ref: PullRequestRef) => existingReviewBodies,
     resolveComment: async (_ref: RepoRef, commentId: string) => {
       resolvedIds.push(commentId);
     },
@@ -78,6 +82,7 @@ export function memoryForge(init: {
     pullRequest: state.pullRequest,
     createdReviews,
     existingComments: existing,
+    existingReviewBodies,
     resolvedIds,
     unresolvedIds,
     reactions,
@@ -97,7 +102,10 @@ export function scriptedReviewer(
   model: string,
   findings: readonly ScriptedFinding[],
   extra?: Partial<
-    Pick<ReviewerOutcome, "failure" | "anomalies" | "rejectedToolCalls" | "usage">
+    Pick<
+      ReviewerOutcome,
+      "failure" | "anomalies" | "rejectedToolCalls" | "anchorRejections" | "usage"
+    >
   >,
 ): Reviewer & { calls: { range: ReviewRange; worktreePath: string }[] } {
   const calls: { range: ReviewRange; worktreePath: string }[] = [];
@@ -117,6 +125,7 @@ export function scriptedReviewer(
         })),
         anomalies: extra?.anomalies ?? [],
         rejectedToolCalls: extra?.rejectedToolCalls ?? 0,
+        anchorRejections: extra?.anchorRejections ?? 0,
         ...(extra?.failure === undefined ? {} : { failure: extra.failure }),
         ...(extra?.usage === undefined ? {} : { usage: extra.usage }),
       };

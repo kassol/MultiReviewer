@@ -238,6 +238,22 @@ export function createGitHubForge(options: GitHubForgeOptions): Forge {
       return comments;
     },
 
+    async listReviewBodies(ref: PullRequestRef): Promise<string[]> {
+      // 走 REST:`listReviewComments` 用的 GraphQL reviewThreads 里只有行级评论,
+      // review 自己的正文不在其中。
+      const token = await tokenFor(ref);
+      const bodies: string[] = [];
+      for (let page = 1; ; page += 1) {
+        const batch = await request<{ body: string }[]>(
+          `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/reviews?per_page=${PAGE_SIZE}&page=${page}`,
+          { token },
+        );
+        for (const review of batch) bodies.push(review.body);
+        if (batch.length < PAGE_SIZE) break;
+      }
+      return bodies;
+    },
+
     async resolveComment(ref: RepoRef, commentId: string): Promise<void> {
       await graphql(ref, RESOLVE_MUTATION, { threadId: commentId });
     },

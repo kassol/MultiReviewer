@@ -21,6 +21,8 @@ export type WorkerMessage =
       kind: "done";
       /** 被 Pi 校验拒绝的工具调用次数。不为零而 Finding 为零即契约失配。 */
       rejectedToolCalls: number;
+      /** snippet 锚不上而被打回的 report_finding 次数,与上一项各记各的。 */
+      anchorRejections: number;
       /** 会话内可见的失败原因,来自 errorMessage 或最后一条消息的 stopReason。 */
       failure?: string;
       /** Pi 会话统计出的用量与成本。会话没建起来时取不到。 */

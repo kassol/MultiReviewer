@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS reviewer_outcome (
   finding_count INTEGER NOT NULL,
   anomaly_count INTEGER NOT NULL,
   rejected_tool_calls INTEGER NOT NULL,
+  anchor_rejections INTEGER NOT NULL DEFAULT 0,
   duration_ms INTEGER NOT NULL,
   input_tokens INTEGER,
   output_tokens INTEGER,
@@ -74,6 +75,15 @@ CREATE TABLE IF NOT EXISTS webhook_delivery (
 `;
 
 /**
+ * 加在既有表上的列。`CREATE TABLE IF NOT EXISTS` 对已存在的表什么都不做,升级前建的
+ * 数据库因此拿不到新列,第一次落库就写不进去。SQLite 的 ADD COLUMN 没有 IF NOT EXISTS,
+ * 只能照跑一遍、把"列已存在"这一种错吞掉——每条都带默认值,旧行不需要回填。
+ */
+const ADD_COLUMNS = [
+  "ALTER TABLE reviewer_outcome ADD COLUMN anchor_rejections INTEGER NOT NULL DEFAULT 0",
+];
+
+/**
  * 等锁的上限。webhook 服务里 webhook 层与后台 Review Run 各持一个句柄写同一个文件,
  * 默认的 0 会让撞上写锁的那一方当场报错,而这里等几十毫秒就过去了。
  */
@@ -100,6 +110,8 @@ export type OutcomeRecord = {
   findingCount: number;
   anomalyCount: number;
   rejectedToolCalls: number;
+  /** snippet 锚不上而被打回的 `report_finding` 次数。与上一项分列,语义不同。 */
+  anchorRejections: number;
   durationMs: number;
   usage?: ReviewerUsage;
 };
@@ -191,6 +203,14 @@ export function sumUsage(
 export function openStore(dbPath: string): Store {
   const db = new DatabaseSync(dbPath, { timeout: BUSY_TIMEOUT_MS });
   db.exec(SCHEMA);
+  for (const statement of ADD_COLUMNS) {
+    try {
+      db.exec(statement);
+    } catch (error) {
+      // 只放过"列已存在",别的错(表缺失、语法错)照抛——那是真出了事。
+      if (!/duplicate column name/i.test(String(error))) throw error;
+    }
+  }
 
   return {
     startRun(meta) {
@@ -236,9 +256,10 @@ export function openStore(dbPath: string): Store {
         const insertOutcome = db.prepare(
           `INSERT INTO reviewer_outcome
              (run_id, model, failure, finding_count, anomaly_count,
-              rejected_tool_calls, duration_ms, input_tokens, output_tokens,
+              rejected_tool_calls, anchor_rejections, duration_ms,
+              input_tokens, output_tokens,
               cache_read_tokens, cache_write_tokens, total_tokens, cost_usd)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const outcome of result.outcomes) {
           insertOutcome.run(
@@ -248,6 +269,7 @@ export function openStore(dbPath: string): Store {
             outcome.findingCount,
             outcome.anomalyCount,
             outcome.rejectedToolCalls,
+            outcome.anchorRejections,
             outcome.durationMs,
             ...usageColumns(outcome.usage),
           );

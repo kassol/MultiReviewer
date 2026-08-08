@@ -41,3 +41,34 @@ export function anchorFinding(lines: string[], line: number, snippet: string): A
         : `第 ${line} 行的内容是 \`${actual.trim()}\`,与 snippet 对不上,文件里也没有这段内容。`,
   };
 }
+
+export type ReportResult =
+  | { ok: true; line: number }
+  | { ok: false; message: string };
+
+/**
+ * `report_finding` 一次调用的锚定判定,`message` 是打回时给模型的措辞。
+ *
+ * 两种成因归到同一个结果里:`lines` 为 undefined 是文件读不出来,锚定不上是 snippet
+ * 对不上。它们都是"模型报的位置不可信"这一个信号,调用方据此记一个计数——分成两个数
+ * 得不出新的动作,该换模型还是该改 prompt 看的都是这个总数。
+ */
+export function anchorReport(
+  lines: string[] | undefined,
+  raw: { file: string; line: number; snippet: string },
+): ReportResult {
+  if (lines === undefined) {
+    return {
+      ok: false,
+      message: `NOT recorded: cannot read ${raw.file}. Check the path and report again.`,
+    };
+  }
+  const anchored = anchorFinding(lines, raw.line, raw.snippet);
+  if (!anchored.ok) {
+    return {
+      ok: false,
+      message: `NOT recorded: ${anchored.reason} Re-read the file and report again with the line number copied from the read output.`,
+    };
+  }
+  return { ok: true, line: anchored.line };
+}

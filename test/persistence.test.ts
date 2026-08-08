@@ -179,6 +179,59 @@ test("每个 Reviewer 的执行结果与失败原因落库", async () => {
   assert.equal(rows[1]!["finding_count"], 0);
 });
 
+test("锚定打回次数落库,与被拒的工具调用分列两列", async () => {
+  const { cache, db, forge } = setup();
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [FINDING], { rejectedToolCalls: 2, anchorRejections: 5 }),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  const rows = query(db.path, "SELECT * FROM reviewer_outcome");
+  assert.equal(rows[0]!["rejected_tool_calls"], 2);
+  assert.equal(rows[0]!["anchor_rejections"], 5);
+});
+
+test("升级前建的数据库仍能打开,锚定打回列补在既有表上", async () => {
+  const { cache, db, forge } = setup();
+
+  // 升级前的 reviewer_outcome:没有 anchor_rejections 这一列。CREATE TABLE IF NOT
+  // EXISTS 对既有表不做任何事,少了补列这一步,升级后第一次落库就写不进去。
+  const old = new DatabaseSync(db.path);
+  old.exec(`CREATE TABLE reviewer_outcome (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES review_run(id),
+    model TEXT NOT NULL,
+    failure TEXT,
+    finding_count INTEGER NOT NULL,
+    anomaly_count INTEGER NOT NULL,
+    rejected_tool_calls INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    total_tokens INTEGER,
+    cost_usd REAL
+  )`);
+  old.close();
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [scriptedReviewer("model-a", [FINDING], { anchorRejections: 4 })],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  const rows = query(db.path, "SELECT * FROM reviewer_outcome");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!["anchor_rejections"], 4);
+});
+
 test("用量与耗时落库,Review Run 一级是各 Reviewer 之和", async () => {
   const { cache, db, forge } = setup();
 
@@ -199,6 +252,7 @@ test("用量与耗时落库,Review Run 一级是各 Reviewer 之和", async () =
         findings: [],
         anomalies: [],
         rejectedToolCalls: 0,
+        anchorRejections: 0,
         usage,
       };
     },

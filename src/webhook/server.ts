@@ -53,10 +53,12 @@ export type WebhookServerDeps = {
    */
   onRunSettled?: (event: NormalizedEvent, error?: unknown) => void;
   /**
-   * 每条通过签名校验的投递记一行,说明这次做了什么。不传则写 stdout。
+   * 通过签名校验的投递记一行,说明这次做了什么。不传则写 stdout。
    *
    * 没有这行记录时,这个服务在正常工作与完全收不到投递之间看起来一模一样:两种情况的
    * 日志都只有启动那一句。测试注入它来消掉噪音。
+   *
+   * 本服务对 pull request 的判定结果逐条记,与本服务无关的投递只记首次,见 `handle`。
    */
   onDelivery?: (message: string) => void;
 };
@@ -245,6 +247,7 @@ async function handle(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
+  loggedOnce: Set<string>,
 ): Promise<void> {
   const body = await readBody(req, res);
   if (body === undefined) return;
@@ -257,11 +260,28 @@ async function handle(
   // 签名过了才记日志:未认证的请求可以随便发,记它们等于把日志交给外人写。
   const log = deps.onDelivery ?? ((message: string) => console.log(`[webhook] ${message}`));
 
+  /**
+   * 与本服务无关的投递按 `key` 只记首次。webhook 订阅通常宽于本服务要的两个 action,
+   * PR 下每条评论、每次打标签都投一次,逐条记会把真正要看的判定结果淹掉。
+   *
+   * 仍记首次而不是完全不记:「投递到底有没有到」只有这行能证明,它同时是测试对
+   * 「收到了但不处理」的观测点。状态只在本进程内,重启后每类再记一次——重启值得重新
+   * 报一遍这个端点在收什么。键的取值范围是两个平台的事件类型与 action,是闭集。
+   */
+  const logOnce = (key: string, message: string): void => {
+    if (loggedOnce.has(key)) return;
+    loggedOnce.add(key);
+    log(message);
+  };
+
   // 不关心的事件类型不是错误,投递本身是成功的,只是没有活要干。
   const platform = pullRequestSource(req);
   if (platform === undefined) {
     const name = req.headers["x-gitea-event"] ?? req.headers["x-github-event"] ?? "(无)";
-    log(`收到 ${String(name)} 事件,只有 pull request 会触发审查`);
+    logOnce(
+      `event:${String(name)}`,
+      `收到 ${String(name)} 事件,只有 pull request 会触发审查`,
+    );
     return send(res, 200);
   }
 
@@ -275,7 +295,8 @@ async function handle(
 
   const event = normalizeEvent(platform, payload);
   if (event === "ignored") {
-    log(`${platform} 的 ${String((payload as RawPayload).action)} 动作不触发审查`);
+    const action = String((payload as RawPayload).action);
+    logOnce(`action:${platform}:${action}`, `${platform} 的 ${action} 动作不触发审查`);
     return send(res, 200);
   }
   if (event === "malformed") {
@@ -311,8 +332,10 @@ async function handle(
 }
 
 export function createWebhookServer(deps: WebhookServerDeps): Server {
+  // 已经记过首次的无关事件类型与 action,整个服务共用一份。
+  const loggedOnce = new Set<string>();
   return createServer((req, res) => {
-    void handle(req, res, deps).catch((error: unknown) => {
+    void handle(req, res, deps, loggedOnce).catch((error: unknown) => {
       console.error("webhook 处理失败:", error instanceof Error ? error.message : error);
       if (!res.headersSent) send(res, 500);
     });

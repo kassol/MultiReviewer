@@ -61,7 +61,11 @@ function query(dbPath: string, sql: string): Record<string, unknown>[] {
   }
 }
 
-type BatchScript = { findings?: readonly Omit<Finding, "model">[]; failure?: string };
+type BatchScript = {
+  findings?: readonly Omit<Finding, "model">[];
+  failure?: string;
+  anchorRejections?: number;
+};
 
 /** 按批次给出不同结果的 Reviewer 桩:第 n 次调用取 script[n]。 */
 function batchedReviewer(
@@ -80,6 +84,7 @@ function batchedReviewer(
         findings: (step.findings ?? []).map((f) => ({ ...f, model })),
         anomalies: [],
         rejectedToolCalls: 0,
+        anchorRejections: step.anchorRejections ?? 0,
         ...(step.failure === undefined ? {} : { failure: step.failure }),
       };
     },
@@ -301,6 +306,22 @@ test("某模型全部批次失败时按缺席处理,其 Finding 丢弃", async (
   assert.equal(rows.length, 1);
   assert.match(String(rows[0]!["failure"]), /timeout/);
   assert.equal(rows[0]!["finding_count"], 0);
+});
+
+test("锚定打回次数跨批次累加,不是只留最后一批的数", async () => {
+  const { cache, db, forge } = setup({ "src/a.ts": 60, "src/c.ts": 60 });
+
+  const result = await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [batchedReviewer("model-a", [{ anchorRejections: 2 }, { anchorRejections: 3 }])],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    maxChangedLinesPerBatch: 100,
+  });
+
+  assert.equal(result.outcomes[0]!.anchorRejections, 5);
+  const rows = query(db.path, "SELECT anchor_rejections FROM reviewer_outcome");
+  assert.equal(rows[0]!["anchor_rejections"], 5);
 });
 
 test("Review Run 开始时记录预估规模:变更文件数、改动行数与批数", async () => {

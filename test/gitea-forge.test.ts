@@ -115,6 +115,7 @@ test("每一次 Gitea API 调用都带上凭据,读取类调用也不例外", as
   await forge.getPullRequest(REF);
   await forge.listChangedFiles(REF);
   await forge.listReviewComments(REF);
+  await forge.listReviewBodies(REF);
   await forge.createReview(REF, { body: "正文", commitSha: HEAD_SHA, comments: [] });
   await forge.resolveComment(REF, "501");
   await forge.unresolveComment(REF, "501");
@@ -251,6 +252,26 @@ test("读回 review 评论:position 是文件行号,resolver 非空即已处置"
     !stub.calls.some((c) => c.url.includes("/reviews/12/comments")),
     "没有行级评论的 review 不该再发一次请求",
   );
+});
+
+test("读回 review 正文:没有行级评论的 review 也要读,正文照样带锚点", async (t) => {
+  const stub = stubFetch(
+    routes({
+      "GET /api/v1/repos/acme/widget/pulls/7/reviews?page=1&limit=100": {
+        body: [
+          { id: 11, comments_count: 1, body: "MultiReviewer" },
+          // 一次 Finding 全部落在 diff 之外的 Review Run 就是这个形状:正文里有
+          // fallback 块,行级评论一条都没有。跟着 comments_count 跳过会把它漏掉。
+          { id: 12, comments_count: 0, body: "diff 之外的 Finding" },
+        ],
+      },
+    }),
+  );
+  t.after(stub.restore);
+
+  const bodies = await createGiteaForge(OPTIONS).listReviewBodies(REF);
+
+  assert.deepEqual(bodies, ["MultiReviewer", "diff 之外的 Finding"]);
 });
 
 test("resolve 与 unresolve 打在评论 id 上,方法是 POST", async (t) => {
