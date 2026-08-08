@@ -32,6 +32,7 @@
 - Webhook 单一端点接两个平台,靠请求头区分来源。必须先认 `X-Gitea-Event`——Gitea 为兼容 GitHub 的接收端把 `X-GitHub-Event` 一起发了,先认 GitHub 会把 Gitea 的投递按 GitHub 的 action 拼写解析,结果一条都不触发。
 - 签名头两个平台共用 `X-Hub-Signature-256`(`sha256=` 加原始 body 的 HMAC-SHA256 十六进制)。Gitea 另发的 `X-Gitea-Signature` 内容相同、只是没有前缀,不必再认。比对用 `timingSafeEqual`,长度不等时先短路——它在长度不同时抛异常。
 - 「PR 新增 commit」的 action 两个平台拼写不同:GitHub 是 `synchronize`,Gitea 是 `synchronized`。规范化后统一为 `new-commit`。凡是照抄 GitHub 拼写的地方都会让 Gitea 收不到事件,依据写在 `webhook/server.ts` 的注释里。
+- 拼写之外还有一层:Gitea 的 webhook **订阅**里「同步」是独立事件 `pull_request_sync`,与 `pull_request` 分开(`modules/webhook/type.go`)。只订阅后者时 PR 新增 commit 根本不投递,本服务这边的 action 映射再对也没机会执行。实测确认过——这是部署侧的配置,代码挡不住,只能写进准备步骤。
 - 只有 PR 打开与 PR 新增 commit 触发 Review Run。草稿 PR 在触发层用规范化事件里的 `draft` 挡掉,不进 `runReview`。
 - Webhook 的状态码语义:签名不过 401,事件类型或 action 不关心 200(投递是成功的,只是没有活要干),body 解析不了或字段对不上 400(平台改字段名时要在投递记录里显形),来源平台还没有 Forge 实现 200(是本服务的配置缺口,不是投递的问题)。
 - 幂等键是「仓库 + head commit」,落在 `webhook_delivery` 表的 UNIQUE 约束上,靠插入冲突判重而不是先查后插:并发投递时先查后插会两个请求都查不到、都开跑。`review_run` 上不加同样的约束——人手动重审同一个 head commit 是合法的。

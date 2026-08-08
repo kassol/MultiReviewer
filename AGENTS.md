@@ -106,7 +106,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
    ```
 
    保留 `external` 使已有的其他 webhook 不受影响。**不要图省事写 `private`**——那会放开整个 RFC 1918,任何有仓库管理权的人都能把 webhook 指向内网任意服务。逐个列出目标地址。改完重启 Gitea。
-5. 在仓库或组织上配 webhook,指向本服务,secret 填 `MULTIREVIEWER_WEBHOOK_SECRET` 的值。事件勾 pull request。**验证连通时临时把「推送」也勾上**——详情页的「测试推送」按钮发的是 push 事件,webhook 没订阅 push 时它一个请求都不发出去,看起来像链路坏了。响应 200 之后再把「推送」去掉,留着会让每次 push 都投递一次。
+5. 在仓库或组织上配 webhook,指向本服务,secret 填 `MULTIREVIEWER_WEBHOOK_SECRET` 的值。事件要勾**「合并请求」与「合并请求同步」两项**——Gitea 把同步拆成了独立事件 `pull_request_sync`(`modules/webhook/type.go`),只勾前者时 PR 新增 commit 一条投递都不发,重新审查静默失效且看不出异常。GitHub 没有这回事,它的 `pull_request` 事件本身就含 `synchronize` 动作。**验证连通时临时把「推送」也勾上**——详情页的「测试推送」按钮发的是 push 事件,webhook 没订阅 push 时它一个请求都不发出去,看起来像链路坏了。响应 200 之后再把「推送」去掉,留着会让每次 push 都投递一次。
 
 > 换实例或升级 Gitea 后想重新确认 scope,跑一次 `MULTIREVIEWER_GITEA_LIVE_PR=...` 的验证即可,它覆盖本实现用到的全部端点。**这个验证要指向一个此前没被本工具评论过的 PR**:同一个 PR 重跑时,上一轮留下的带锚点评论会让本轮 Finding 匹配成功而被折叠,行级评论数因此为零,看起来像失败(跨轮次匹配见 issue #7)。
 
@@ -159,4 +159,5 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-08: 向导的公网自检补上一处盲点。那个 curl 是从服务器自己发的,地址填成只有本机可达的值(docker0 网桥 `172.17.x`、`127.x`、`localhost`)时它照样通过,而 Gitea 一条投递也发不出来。现在这类地址会提前警告并记进待办;`172.16/12` 的其余部分不报警,那是合法的企业内网段。同时把话说清:唯一能证明 Gitea 到得了本服务的检查是 Gitea 那侧的投递记录。
 - 2026-08-08: 服务补上投递日志。此前它只在失败时输出,正常收到投递、判定不处理、审查跑完都不打印任何东西,日志里只有启动那一句——服务在正常工作与完全收不到投递之间看起来一模一样。现在每条通过签名校验的投递记一行,写明这次做了什么。记录点选在签名校验之后:未认证的请求谁都能发。
 - 2026-08-08: 按使用反馈改审查结果的呈现。严重度从 high/medium/low 换成 P0/P1/P2——评论列表里一眼看得出轻重,形容词做不到;归一化层仍收形容词,模型不总照约定报。Finding 描述改中文。新增 PR 进度标记:开跑挂 👀,跑完未发现问题换 👍,这是零 Finding 时 PR 上唯一的痕迹。为此 bot 的 PAT 要补 `write:issue`——实测 reaction 端点挂在 `/issues` 下,只有 `write:repository` 时 403,这推翻了此前「一个 scope 就够」的结论。「PR 新增 commit 重新触发审查」早已实现(`webhook/server.ts` 的 `synchronized` → `new-commit`),本次未改。
+- 2026-08-08: 对真实实例验证「PR 新增 commit 重新触发审查」,过程中查出一处部署侧的静默失效:Gitea 的 webhook 订阅里「合并请求同步」是独立事件 `pull_request_sync`,与「合并请求」分开。只勾后者时新 commit 一条投递都不发,代码侧的 action 映射没有机会执行,而且毫无异常迹象。补勾之后实测触发成功(`new-commit @90ff21d — 开始审查`)。同一轮还验证了草稿拦截:PR 标题带 `WIP:` 前缀时 Gitea 判为草稿,投递照发但本服务按设计不审,日志记「草稿,不审」。
 - 2026-08-08: 实测确认自托管部署的一道必经关卡:Gitea 的 `webhook.ALLOWED_HOST_LIST` 默认 `external`,只放行公网单播地址,发往 RFC 1918 地址的投递被 Gitea 自己拒掉,报 `webhook can only call allowed HTTP servers`。服务侧完全无感——请求根本没发出来。写进 Gitea 准备步骤,向导的投递排查里也列了这条报错。取值语法取自官方 config cheat sheet:内置组 `loopback` / `private` / `external` / `*`,另可写 CIDR 与通配主机名。
