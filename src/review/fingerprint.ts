@@ -38,3 +38,20 @@ export function contentFingerprint(
 
   return createHash("sha256").update(window.join("\n")).digest("hex");
 }
+
+/**
+ * 评论正文里的指纹锚点。跨轮次匹配靠它,不靠 comment id——`Forge.createReview`
+ * 不回传每条评论的 id,而该接口按 Gitea 的能力定义(ADR 0002),不为此扩张。
+ *
+ * 两个平台的 markdown 渲染都会剥掉 HTML 注释,人看不见;API 读回的是正文原文,锚点还在。
+ */
+export function fingerprintAnchor(fingerprint: string): string {
+  return `<!-- multireviewer:${fingerprint} -->`;
+}
+
+/** 读回评论正文里的锚点。没有锚点即该评论不是本工具发的,不参与匹配。 */
+export function parseFingerprintAnchor(body: string): string | undefined {
+  return ANCHOR.exec(body)?.[1];
+}
+
+const ANCHOR = /<!-- multireviewer:([0-9a-f]{64}) -->/;

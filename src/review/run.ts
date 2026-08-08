@@ -1,8 +1,17 @@
-import type { Forge, PullRequestRef, ReviewCommentDraft } from "../forge/forge.ts";
+import type {
+  ExistingReviewComment,
+  Forge,
+  PullRequestRef,
+  ReviewCommentDraft,
+} from "../forge/forge.ts";
 import { prepareWorktree, readRangeDiff } from "../git/worktree.ts";
 import { dedupeFindings, type MergedFinding } from "./dedupe.ts";
-import type { Reviewer, ReviewerOutcome } from "./finding.ts";
-import { contentFingerprint } from "./fingerprint.ts";
+import type { Disposition, Reviewer, ReviewerOutcome } from "./finding.ts";
+import {
+  contentFingerprint,
+  fingerprintAnchor,
+  parseFingerprintAnchor,
+} from "./fingerprint.ts";
 import { isInDiff, parseDiffRanges } from "./position.ts";
 import { openStore, type FindingRecord, type OutcomeRecord } from "./store.ts";
 
@@ -34,7 +43,14 @@ export type ReviewRunResult = {
   fallbackCount: number;
 };
 
-function findingBody(finding: MergedFinding): string {
+/** 上一轮已提出、本轮匹配上的 Finding。它不再发行级评论,折进 review 正文。 */
+type CarriedFinding = {
+  finding: MergedFinding;
+  /** 上一轮那条评论是否已被 resolve。 */
+  resolved: boolean;
+};
+
+function findingBody(finding: MergedFinding, fingerprint: string | undefined): string {
   const lines = [
     `**[${finding.severity} · ${finding.category}]** ${finding.description}`,
     "",
@@ -54,12 +70,32 @@ function findingBody(finding: MergedFinding): string {
     );
   }
 
+  // 锚点是下一轮认出这条评论的唯一凭据,指纹算不出时就没有跨轮次匹配可言。
+  if (fingerprint !== undefined) lines.push("", fingerprintAnchor(fingerprint));
+
   return lines.join("\n");
+}
+
+/** 折叠段里的一条。误匹配时人展开就能看到完整内容,不是只给个条数。 */
+function findingLine(finding: MergedFinding): string {
+  return `- \`${finding.file}:${finding.line}\` **[${finding.severity} · ${finding.category}]** ${finding.description} — ${finding.models.join(", ")}`;
+}
+
+function collapsedSection(summary: string, findings: readonly MergedFinding[]): string[] {
+  return [
+    "",
+    `<details><summary>${summary}</summary>`,
+    "",
+    ...findings.map(findingLine),
+    "",
+    "</details>",
+  ];
 }
 
 function reviewBody(
   fallbacks: readonly MergedFinding[],
   absent: readonly ReviewerOutcome[],
+  carried: readonly CarriedFinding[],
 ): string {
   const sections: string[] = ["MultiReviewer"];
 
@@ -77,14 +113,52 @@ function reviewBody(
       "",
       "以下 Finding 的行号落在本次 Review Range 的 diff 之外,无法作为行级评论呈现:",
       "",
-      ...fallbacks.map(
-        (f) =>
-          `- \`${f.file}:${f.line}\` **[${f.severity} · ${f.category}]** ${f.description} — ${f.models.join(", ")}`,
+      ...fallbacks.map(findingLine),
+    );
+  }
+
+  // 旧评论还挂在 PR 上,再发一模一样的一条就是重复打扰,因此两种匹配成功的情形都折叠。
+  const resolved = carried.filter((c) => c.resolved).map((c) => c.finding);
+  if (resolved.length > 0) {
+    sections.push(
+      ...collapsedSection(
+        `曾被处置、代码未变的 Finding(${resolved.length} 条)`,
+        resolved,
+      ),
+    );
+  }
+
+  const unresolved = carried.filter((c) => !c.resolved).map((c) => c.finding);
+  if (unresolved.length > 0) {
+    sections.push(
+      ...collapsedSection(
+        `已在上一轮提出,尚未处置的 Finding(${unresolved.length} 条)`,
+        unresolved,
       ),
     );
   }
 
   return sections.join("\n");
+}
+
+/**
+ * 上一轮由本工具发出的行级评论,按 `文件 + 指纹` 索引到它的 resolve 状态。
+ *
+ * 只认带锚点的评论:带锚点的是 bot 发的,人写的评论不参与匹配。指纹与文件一起做键,
+ * 单看指纹会让不同文件里同样的 7 行代码互相误匹配。
+ */
+function priorDispositions(
+  comments: readonly ExistingReviewComment[],
+): Map<string, boolean> {
+  const byKey = new Map<string, boolean>();
+  for (const comment of comments) {
+    const fingerprint = parseFingerprintAnchor(comment.body);
+    if (fingerprint === undefined) continue;
+    const key = `${comment.path}\n${fingerprint}`;
+    // 同一处若有多条历史评论,任一条被 resolve 即视为已处置。
+    byKey.set(key, (byKey.get(key) ?? false) || comment.resolved);
+  }
+  return byKey;
 }
 
 /** Review Range 的规模,用增删行数衡量。文件头的 `+++`/`---` 不算改动行。 */
@@ -107,9 +181,10 @@ export async function runReview(
   const { forge } = deps;
   const startedAt = new Date();
   const pullRequest = await forge.getPullRequest(event);
-  const [changedFiles, credentials] = await Promise.all([
+  const [changedFiles, credentials, priorComments] = await Promise.all([
     forge.listChangedFiles(event),
     forge.cloneCredentials(event),
+    forge.listReviewComments(event),
   ]);
 
   const worktree = await prepareWorktree({
@@ -169,15 +244,34 @@ export async function runReview(
     );
 
     const diffRanges = parseDiffRanges(diff);
+    const prior = priorDispositions(priorComments);
 
     const comments: ReviewCommentDraft[] = [];
     const fallbacks: MergedFinding[] = [];
+    const carried: CarriedFinding[] = [];
+    // 按合并组下标记住处置结论,落库时组内每条来源都取它。
+    const dispositions: Disposition[] = [];
+
     for (const finding of findings) {
+      // 指纹在新 head commit 的工作副本下重算:代码没变则与上一轮的锚点相同。
+      const fingerprint = contentFingerprint(worktree.path, finding.file, finding.line);
+      const resolved =
+        fingerprint === undefined
+          ? undefined
+          : prior.get(`${finding.file}\n${fingerprint}`);
+
+      if (resolved !== undefined) {
+        carried.push({ finding, resolved });
+        dispositions.push(resolved ? "resolved" : "unresolved");
+        continue;
+      }
+
+      dispositions.push("unknown");
       if (isInDiff(diffRanges, finding.file, finding.line)) {
         comments.push({
           path: finding.file,
           line: finding.line,
-          body: findingBody(finding),
+          body: findingBody(finding, fingerprint),
         });
       } else {
         fallbacks.push(finding);
@@ -207,6 +301,7 @@ export async function runReview(
           category: source.category,
           description: source.description,
           groupIndex,
+          disposition: dispositions[groupIndex]!,
           ...(fingerprint === undefined ? {} : { fingerprint }),
         };
       }),
@@ -224,7 +319,7 @@ export async function runReview(
     // 有缺席模型时即便零 Finding 也要发:读者需要知道这次审查覆盖面打了折扣。
     if (!failed && (findings.length > 0 || absent.length > 0)) {
       await forge.createReview(event, {
-        body: reviewBody(fallbacks, absent),
+        body: reviewBody(fallbacks, absent, carried),
         commitSha: pullRequest.headSha,
         comments,
       });

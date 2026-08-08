@@ -6,7 +6,7 @@
  */
 import { DatabaseSync } from "node:sqlite";
 
-import type { Category, ReviewerUsage, Severity } from "./finding.ts";
+import type { Category, Disposition, ReviewerUsage, Severity } from "./finding.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS review_run (
@@ -99,6 +99,8 @@ export type FindingRecord = {
   description: string;
   fingerprint?: string;
   groupIndex: number;
+  /** 本轮读回的处置结论。同一合并组内各来源共用一条评论,取值相同。 */
+  disposition: Disposition;
 };
 
 export type RunResult = {
@@ -228,8 +230,8 @@ export function openStore(dbPath: string): Store {
         const insertFinding = db.prepare(
           `INSERT INTO finding
              (run_id, model, file, line, severity, category, description,
-              fingerprint, group_index)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              fingerprint, group_index, disposition)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const finding of result.findings) {
           insertFinding.run(
@@ -242,6 +244,7 @@ export function openStore(dbPath: string): Store {
             finding.description,
             finding.fingerprint ?? null,
             finding.groupIndex,
+            finding.disposition,
           );
         }
         db.exec("COMMIT");

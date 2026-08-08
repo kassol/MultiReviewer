@@ -3,6 +3,12 @@ export type Severity = "high" | "medium" | "low";
 export type Category = "security" | "bug" | "maintainability" | "design";
 
 /**
+ * 人对一条 Finding 的处置结论,取自 Forge 上对应 review 评论的 resolve 状态。
+ * 本轮没有匹配到既有评论时无从得知,记 `unknown`。
+ */
+export type Disposition = "resolved" | "unresolved" | "unknown";
+
+/**
  * 一条被提出的代码问题。归属于提出它的 Reviewer,并指向 Review Range 内的具体位置。
  *
  * `line` 是 head commit 中该文件的 1-indexed 行号。

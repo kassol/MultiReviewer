@@ -21,6 +21,8 @@ export type MemoryForge = {
   pullRequest: PullRequest;
   /** 按调用顺序记录发布的 review。 */
   createdReviews: ReviewDraft[];
+  /** PR 上既有的 review 评论,可直接追加,用于预置上一轮留下的评论。 */
+  existingComments: ExistingReviewComment[];
   resolvedIds: string[];
   unresolvedIds: string[];
 };
@@ -33,7 +35,7 @@ export function memoryForge(init: {
   const createdReviews: ReviewDraft[] = [];
   const resolvedIds: string[] = [];
   const unresolvedIds: string[] = [];
-  const existing = init.existingComments ?? [];
+  const existing = [...(init.existingComments ?? [])];
   const state = { pullRequest: { ...init.pullRequest } };
 
   const forge: Forge = {
@@ -55,7 +57,14 @@ export function memoryForge(init: {
     }),
   };
 
-  return { forge, pullRequest: state.pullRequest, createdReviews, resolvedIds, unresolvedIds };
+  return {
+    forge,
+    pullRequest: state.pullRequest,
+    createdReviews,
+    existingComments: existing,
+    resolvedIds,
+    unresolvedIds,
+  };
 }
 
 /** 返回预设 Finding 的 Reviewer 桩。 */
