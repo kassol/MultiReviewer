@@ -555,7 +555,9 @@ else
   step "POST Content Type 选 application/json。"
   step "密钥文本填(与服务侧同一个值):"
   printf '\n      %s%s%s\n\n' "$BOLD" "$MULTIREVIEWER_WEBHOOK_SECRET" "$RESET"
-  step "触发条件选「自定义事件」,只勾 Pull Request。"
+  step "触发条件选「自定义事件」,勾 Pull Request,再临时把「推送」也勾上。"
+  note "「推送」只为下一步的连通测试:详情页那个「测试推送」按钮发的是 push 事件,"
+  note "webhook 没订阅 push 时它一个请求都不会发出去,看起来像哪里坏了。"
   step "勾上「激活」,保存。"
   note "组织级 webhook 也可以,一次覆盖名下全部仓库。"
   warn "密钥刚打在屏幕上了,分享终端记录前先清屏。"
@@ -575,6 +577,9 @@ else
   printf '      %sALLOWED_HOST_LIST = external, %s%s\n\n' "$BOLD" "$PUBLIC_HOST" "$RESET"
   note "保留 external 使已有的其他 webhook 不受影响。别写 private——那会放开整个"
   note "RFC 1918,任何有仓库管理权的人都能把 webhook 指向内网任意服务。"
+  say ""
+  step "响应 200 之后回去把「推送」的勾去掉,只留 Pull Request。"
+  note "留着它会让每次 push 都投递一次,服务回 200 不审查,徒增日志。"
   pause
 fi
 

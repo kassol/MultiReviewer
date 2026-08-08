@@ -102,7 +102,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
    ```
 
    保留 `external` 使已有的其他 webhook 不受影响。**不要图省事写 `private`**——那会放开整个 RFC 1918,任何有仓库管理权的人都能把 webhook 指向内网任意服务。逐个列出目标地址。改完重启 Gitea。
-5. 在仓库或组织上配 webhook,指向本服务,事件勾 pull request,secret 填 `MULTIREVIEWER_WEBHOOK_SECRET` 的值。
+5. 在仓库或组织上配 webhook,指向本服务,secret 填 `MULTIREVIEWER_WEBHOOK_SECRET` 的值。事件勾 pull request。**验证连通时临时把「推送」也勾上**——详情页的「测试推送」按钮发的是 push 事件,webhook 没订阅 push 时它一个请求都不发出去,看起来像链路坏了。响应 200 之后再把「推送」去掉,留着会让每次 push 都投递一次。
 
 > 换实例或升级 Gitea 后想重新确认 scope,跑一次 `MULTIREVIEWER_GITEA_LIVE_PR=...` 的验证即可,它覆盖本实现用到的全部端点。**这个验证要指向一个此前没被本工具评论过的 PR**:同一个 PR 重跑时,上一轮留下的带锚点评论会让本轮 Finding 匹配成功而被折叠,行级评论数因此为零,看起来像失败(跨轮次匹配见 issue #7)。
 
