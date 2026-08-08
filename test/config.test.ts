@@ -62,6 +62,23 @@ test("配置文件缺失、非法或没有 Reviewer 时报错", () => {
   );
 });
 
+test("分批阈值可配置,不配置时留空由编排层取默认值", () => {
+  assert.equal(loadConfig(configFile(VALID)).maxChangedLinesPerBatch, undefined);
+  assert.equal(
+    loadConfig(configFile({ ...VALID, maxChangedLinesPerBatch: 800 }))
+      .maxChangedLinesPerBatch,
+    800,
+  );
+  assert.throws(
+    () => loadConfig(configFile({ ...VALID, maxChangedLinesPerBatch: 0 })),
+    /maxChangedLinesPerBatch/,
+  );
+  assert.throws(
+    () => loadConfig(configFile({ ...VALID, maxChangedLinesPerBatch: "800" })),
+    /maxChangedLinesPerBatch/,
+  );
+});
+
 test("同一个模型被配置两次时报错,否则 Finding 的模型标识无法区分来源", () => {
   assert.throws(
     () =>

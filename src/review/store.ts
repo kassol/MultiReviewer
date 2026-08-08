@@ -75,7 +75,7 @@ export type RunMeta = {
   changedFiles: number;
   /** 预估规模:本次 Review Range 的增删行数。 */
   changedLines: number;
-  /** 分批数。分批尚未实现,当前恒为 1。 */
+  /** 预估规模:本次 Review Range 被切成几批。规模在阈值内时为 1。 */
   batchCount: number;
 };
 
@@ -141,7 +141,10 @@ function usageColumns(usage: ReviewerUsage | undefined): (number | null)[] {
   ];
 }
 
-function sumUsage(outcomes: readonly OutcomeRecord[]): ReviewerUsage {
+/** 累加用量。取 `usage` 一个字段,`ReviewerOutcome` 与 `OutcomeRecord` 都能传。 */
+export function sumUsage(
+  outcomes: readonly { usage?: ReviewerUsage }[],
+): ReviewerUsage {
   const total: ReviewerUsage = {
     inputTokens: 0,
     outputTokens: 0,

@@ -15,6 +15,11 @@ export type ReviewerSpec = {
 
 export type Config = {
   reviewers: ReviewerSpec[];
+  /**
+   * 一批最多多少改动行。超过即按文件分批,同一文件的改动不跨批。
+   * 不配置时取 `DEFAULT_MAX_CHANGED_LINES_PER_BATCH`。
+   */
+  maxChangedLinesPerBatch?: number;
 };
 
 export const DEFAULT_CONFIG_PATH = "multireviewer.config.json";
@@ -57,7 +62,21 @@ export function loadConfig(path: string = DEFAULT_CONFIG_PATH): Config {
     seen.add(model);
   }
 
-  return { reviewers: reviewers as ReviewerSpec[] };
+  const maxChangedLinesPerBatch = (parsed as { maxChangedLinesPerBatch?: unknown })
+    .maxChangedLinesPerBatch;
+  if (
+    maxChangedLinesPerBatch !== undefined &&
+    (typeof maxChangedLinesPerBatch !== "number" ||
+      !Number.isInteger(maxChangedLinesPerBatch) ||
+      maxChangedLinesPerBatch <= 0)
+  ) {
+    throw new Error(`maxChangedLinesPerBatch 必须是正整数: ${path}`);
+  }
+
+  return {
+    reviewers: reviewers as ReviewerSpec[],
+    ...(maxChangedLinesPerBatch === undefined ? {} : { maxChangedLinesPerBatch }),
+  };
 }
 
 /**

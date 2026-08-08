@@ -67,6 +67,15 @@ export type ReviewerOutcome = {
   failure?: string;
   /** 子进程未回报结果即退出时取不到用量。 */
   usage?: ReviewerUsage;
+  /**
+   * 分批执行时部分批次失败,该模型本次覆盖不全,成功批次的 Finding 仍然有效。
+   * 全部批次都失败时改记 `failure`,按缺席处理。由编排层合并批次结果时填写。
+   */
+  incompleteCoverage?: {
+    batchCount: number;
+    /** `batchIndex` 从 1 起,直接呈现给读 review 的人。 */
+    failures: { batchIndex: number; failure: string }[];
+  };
 };
 
 /** 绑定了具体模型的审查执行体。 */

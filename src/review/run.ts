@@ -5,6 +5,12 @@ import type {
   ReviewCommentDraft,
 } from "../forge/forge.ts";
 import { prepareWorktree, readRangeDiff } from "../git/worktree.ts";
+import {
+  DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+  mergeBatchOutcomes,
+  splitIntoBatches,
+  type TimedOutcome,
+} from "./batch.ts";
 import { dedupeFindings, type MergedFinding } from "./dedupe.ts";
 import type { Disposition, Reviewer, ReviewerOutcome } from "./finding.ts";
 import {
@@ -12,7 +18,7 @@ import {
   fingerprintAnchor,
   parseFingerprintAnchor,
 } from "./fingerprint.ts";
-import { isInDiff, parseDiffRanges } from "./position.ts";
+import { changedLinesByFile, isInDiff, parseDiffRanges } from "./position.ts";
 import { openStore, type FindingRecord, type OutcomeRecord } from "./store.ts";
 
 export type PullRequestEvent = PullRequestRef;
@@ -24,10 +30,9 @@ export type ReviewRunDeps = {
   cacheDir: string;
   /** SQLite 数据库文件的位置。 */
   dbPath: string;
+  /** 一批最多多少改动行。不传取 `DEFAULT_MAX_CHANGED_LINES_PER_BATCH`。 */
+  maxChangedLinesPerBatch?: number;
 };
-
-/** 分批尚未实现,每次 Review Run 恒为一批。 */
-const BATCH_COUNT = 1;
 
 export type ReviewRunResult = {
   headSha: string;
@@ -95,6 +100,7 @@ function collapsedSection(summary: string, findings: readonly MergedFinding[]): 
 function reviewBody(
   fallbacks: readonly MergedFinding[],
   absent: readonly ReviewerOutcome[],
+  partial: readonly ReviewerOutcome[],
   carried: readonly CarriedFinding[],
 ): string {
   const sections: string[] = ["MultiReviewer"];
@@ -105,6 +111,22 @@ function reviewBody(
       "以下模型本次缺席,审查覆盖面因此打了折扣:",
       "",
       ...absent.map((o) => `- ${o.model}:${o.failure}`),
+    );
+  }
+
+  // 与缺席分开呈现:这些模型的 Finding 照常发布了,只是没审完全部文件。
+  if (partial.length > 0) {
+    sections.push(
+      "",
+      "以下模型本次覆盖不全,只有部分批次的文件被审查:",
+      "",
+      ...partial.map((o) => {
+        const coverage = o.incompleteCoverage!;
+        const failures = coverage.failures
+          .map((f) => `第 ${f.batchIndex} 批失败(${f.failure})`)
+          .join(";");
+        return `- ${o.model}:共 ${coverage.batchCount} 批,${failures}`;
+      }),
     );
   }
 
@@ -161,16 +183,6 @@ function priorDispositions(
   return byKey;
 }
 
-/** Review Range 的规模,用增删行数衡量。文件头的 `+++`/`---` 不算改动行。 */
-function countChangedLines(diff: string): number {
-  let count = 0;
-  for (const line of diff.split("\n")) {
-    if (line.startsWith("+++") || line.startsWith("---")) continue;
-    if (line.startsWith("+") || line.startsWith("-")) count += 1;
-  }
-  return count;
-}
-
 /**
  * 一次 Review Run:解析 Review Range、准备工作副本、运行 Reviewer、发布 review 评论。
  */
@@ -204,11 +216,17 @@ export async function runReview(
       .map((f) => f.path),
   };
 
-  // diff 在 Reviewer 之前读:Review Range 的规模要在开跑之前落库。
+  // diff 在 Reviewer 之前读:Review Range 的规模要在开跑之前落库,分批也按它切。
   const diff = await readRangeDiff(
     worktree.path,
     worktree.mergeBaseSha,
     pullRequest.headSha,
+  );
+  const changedLines = changedLinesByFile(diff);
+  const batches = splitIntoBatches(
+    range.files,
+    changedLines,
+    deps.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
   );
 
   // 句柄的存活期覆盖整段审查(最长二十分钟),中途出错必须归还:webhook 服务是长跑
@@ -221,21 +239,34 @@ export async function runReview(
     headSha: pullRequest.headSha,
     startedAt: startedAt.toISOString(),
     changedFiles: range.files.length,
-    changedLines: countChangedLines(diff),
-    batchCount: BATCH_COUNT,
+    changedLines: [...changedLines.values()].reduce((sum, n) => sum + n, 0),
+    batchCount: batches.length,
   });
 
   try {
-    const timed = await Promise.all(
-      deps.reviewers.map(async (reviewer) => {
-        const begin = Date.now();
-        const outcome = await reviewer.review(range, worktree.path);
-        return { outcome, durationMs: Date.now() - begin };
-      }),
+    // 批次串行,批内 Reviewer 并行:并行跑批会同时开「批数 × 模型数」个子进程。
+    const perBatch: TimedOutcome[][] = [];
+    for (const files of batches) {
+      perBatch.push(
+        await Promise.all(
+          deps.reviewers.map(async (reviewer) => {
+            const begin = Date.now();
+            // 工作副本每批都是同一份完整的 head commit:Reviewer 要能读到其他批次
+            // 改动后的代码,否则会报出"这个新函数没有调用者"这类因分批而来的误报。
+            const outcome = await reviewer.review({ ...range, files }, worktree.path);
+            return { outcome, durationMs: Date.now() - begin };
+          }),
+        ),
+      );
+    }
+    // 汇总在全部批次跑完之后做一次:一次 Review Run 只发一次 review。
+    const timed = deps.reviewers.map((_, index) =>
+      mergeBatchOutcomes(perBatch.map((batch) => batch[index]!)),
     );
     const outcomes = timed.map((t) => t.outcome);
 
     const absent = outcomes.filter((outcome) => outcome.failure !== undefined);
+    const partial = outcomes.filter((o) => o.incompleteCoverage !== undefined);
     // 全部失败时零 Finding 不代表代码没问题,发一条空 review 会把失败读成通过。
     const failed = outcomes.length > 0 && absent.length === outcomes.length;
 
@@ -316,10 +347,11 @@ export async function runReview(
       findings: findingRecords,
     });
 
-    // 有缺席模型时即便零 Finding 也要发:读者需要知道这次审查覆盖面打了折扣。
-    if (!failed && (findings.length > 0 || absent.length > 0)) {
+    // 有缺席或覆盖不全的模型时即便零 Finding 也要发:读者需要知道这次审查覆盖面
+    // 打了折扣。
+    if (!failed && (findings.length > 0 || absent.length > 0 || partial.length > 0)) {
       await forge.createReview(event, {
-        body: reviewBody(fallbacks, absent, carried),
+        body: reviewBody(fallbacks, absent, partial, carried),
         commitSha: pullRequest.headSha,
         comments,
       });
