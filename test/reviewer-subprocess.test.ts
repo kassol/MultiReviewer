@@ -30,6 +30,7 @@ function worker(body: string): string {
 const RAW = {
   file: "src/a.ts",
   line: 4,
+  snippet: "for (let i = 0; i <= items.length; i++) {",
   severity: "critical",
   category: "logic_error",
   description: "越界",

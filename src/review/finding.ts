@@ -45,6 +45,11 @@ export type ReviewRange = {
 export type RawFinding = {
   file: string;
   line: number;
+  /**
+   * 问题起始行的原文,模型从 read 输出照抄。行号靠它核对与校正(见 `anchor.ts`):
+   * 模型数行会数偏,抄下来的代码不会。
+   */
+  snippet: string;
   severity: string;
   category: string;
   description: string;

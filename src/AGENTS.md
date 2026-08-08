@@ -9,7 +9,7 @@
 - `forge/` — Forge 适配层。`forge.ts` 是接口与领域类型,每个平台一个实现文件。
 - `git/` — 工作副本的准备与 diff 读取,直接调用 git 命令。
 - `review/` — Review Run 的编排。`run.ts` 是唯一入口 `runReview`,其余是它的内部构件:`store.ts` 是 SQLite 持久化,`fingerprint.ts` 算 Finding 的内容指纹并读写评论正文里的指纹锚点,`position.ts` 解析 diff(可评论的行区间与每个文件的改动行数),`batch.ts` 切批并合并各批次的执行结果。
-- `reviewer/` — Reviewer 的真实实现。`pi-reviewer.ts` 在主进程侧管子进程,`worker.ts` 是子进程入口,两者只经 `protocol.ts` 定义的消息通信。
+- `reviewer/` — Reviewer 的真实实现。`pi-reviewer.ts` 在主进程侧管子进程,`worker.ts` 是子进程入口,两者只经 `protocol.ts` 定义的消息通信。`numbered-read.ts` 与 `anchor.ts` 是 worker 的行号构件(见下)。
 - `webhook/` — `server.ts` 是 webhook 端点:校验签名、把两个平台的投递规范化成同一形状、判幂等、异步触发 `runReview`。
 - `main.ts` — 进程入口。读配置与环境变量,建出 Forge 与 Reviewer,起 webhook 服务。
 
@@ -19,6 +19,7 @@
 - SQLite 用 Node 内置的 `node:sqlite`(`DatabaseSync`)。运行时第三方依赖只有 Pi 一个,不为持久化再引入驱动。它会打 `ExperimentalWarning`,这是已知且接受的代价。
 - 落库的是每一条来源 Finding 而非去重合并后的那一条:采纳率要按提出它的模型统计。合并关系记在 `finding.group_index` 上。
 - Disposition 的权威状态在 Forge 上,`finding.disposition` 只缓存最近一次读回的结果,默认 `unknown`。
+- Finding 的行号必须是抄来的,不能是模型数出来的(pr-agent、ai-pr-reviewer、claude-code-action 三家开源实现的共同经验;Pi 内建 `read` 返回裸内容,模型在 55 行的文件上实测数偏 4 行)。两层保障都在 worker 内:`numbered-read.ts` 以同名 customTool 覆盖 Pi 内建 `read`,每行加 `N: ` 前缀让模型抄号;`report_finding` 多一个必填 `snippet` 字段(问题起始行的原文),`anchor.ts` 用它核对行号——对得上放行,对不上但文件里找得到就校正到最近的匹配行,找不到打回让模型重报。打回走正常工具返回而非错误:`rejectedToolCalls` 只留给 Pi 的 schema 校验失败,即契约失配信号。
 - 跨轮次匹配的锚点是评论正文里的 `<!-- multireviewer:<64 位 sha256 指纹> -->`,不是 comment id——`Forge.createReview` 不回传每条评论的 id。带锚点的评论即本工具发的,人写的评论不参与匹配。
 - 匹配的键是 `文件 + 指纹` 而非单看指纹:不同文件里可能有同样的 7 行代码。指纹在新 head commit 的工作副本下重算,相同即代码未变。
 - 匹配成功的 Finding 一律不发行级评论,折进 review 正文的 `<details>` 段,已 resolve 与未 resolve 分成两段各自标注。折叠段逐条写全 `file:line`、severity、category、描述与来源模型,误匹配时人展开就能看到完整内容。

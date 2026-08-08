@@ -7,6 +7,7 @@ import { reviewerEnv } from "../src/reviewer/env.ts";
 const RAW = {
   file: "src/db.js",
   line: 12,
+  snippet: 'db.query("SELECT * FROM users WHERE id = " + id);',
   severity: "P0",
   category: "security",
   description: "SQL 拼接",
