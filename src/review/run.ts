@@ -55,25 +55,28 @@ type CarriedFinding = {
   resolved: boolean;
 };
 
-function findingBody(finding: MergedFinding, fingerprint: string | undefined): string {
-  const lines = [
-    `**[${finding.severity} · ${finding.category}]** ${finding.description}`,
-    "",
-    `— ${finding.models.join(", ")}`,
-  ];
+/**
+ * 评论是给开发者看的最终结果:等级、标题、问题、影响、建议,分段呈现。
+ * 模型署名与各家的不同表述一概不进评论——读的人要的是结论,不是评审过程;
+ * 哪个模型说的什么落在数据库里,采纳率统计从那里拿。
+ */
+/** `**[P0] 标题**`。标题空缺时只留等级,不留空尾巴。 */
+function findingHeading(finding: MergedFinding): string {
+  return finding.title === ""
+    ? `**[${finding.severity}]**`
+    : `**[${finding.severity}] ${finding.title}**`;
+}
 
-  // 多个模型对同一处的表述常常不同,只留一条会丢掉另一个模型看到的角度。
-  const others = finding.sources.filter((s) => s.description !== finding.description);
-  if (others.length > 0) {
-    lines.push(
-      "",
-      "<details><summary>其他模型的表述</summary>",
-      "",
-      ...others.map((s) => `- ${s.model}: ${s.description}`),
-      "",
-      "</details>",
-    );
-  }
+/** 问题 / 影响 / 建议三段,段间空行分隔。空段整段跳过,不留一个空标签。 */
+function findingSections(finding: MergedFinding): string[] {
+  const lines = ["", `**问题**:${finding.description}`];
+  if (finding.impact !== "") lines.push("", `**影响**:${finding.impact}`);
+  if (finding.suggestion !== "") lines.push("", `**建议**:${finding.suggestion}`);
+  return lines;
+}
+
+function findingBody(finding: MergedFinding, fingerprint: string | undefined): string {
+  const lines = [findingHeading(finding), ...findingSections(finding)];
 
   // 锚点是下一轮认出这条评论的唯一凭据,指纹算不出时就没有跨轮次匹配可言。
   if (fingerprint !== undefined) lines.push("", fingerprintAnchor(fingerprint));
@@ -81,9 +84,19 @@ function findingBody(finding: MergedFinding, fingerprint: string | undefined): s
   return lines.join("\n");
 }
 
+/** diff 外的 Finding 没有行级评论承载,正文里的这一块就是它的完整呈现。 */
+function fallbackBlock(finding: MergedFinding): string[] {
+  return [
+    "",
+    `\`${finding.file}:${finding.line}\` ${findingHeading(finding)}`,
+    ...findingSections(finding),
+  ];
+}
+
 /** 折叠段里的一条。误匹配时人展开就能看到完整内容,不是只给个条数。 */
 function findingLine(finding: MergedFinding): string {
-  return `- \`${finding.file}:${finding.line}\` **[${finding.severity} · ${finding.category}]** ${finding.description} — ${finding.models.join(", ")}`;
+  const title = finding.title === "" ? "" : ` ${finding.title}`;
+  return `- \`${finding.file}:${finding.line}\` **[${finding.severity}]${title}** ${finding.description}`;
 }
 
 function collapsedSection(summary: string, findings: readonly MergedFinding[]): string[] {
@@ -149,8 +162,7 @@ function reviewBody(
     sections.push(
       "",
       "以下 Finding 的行号落在本次 Review Range 的 diff 之外,无法作为行级评论呈现:",
-      "",
-      ...fallbacks.map(findingLine),
+      ...fallbacks.flatMap(fallbackBlock),
     );
   }
 
@@ -196,6 +208,36 @@ function priorDispositions(
     byKey.set(key, (byKey.get(key) ?? false) || comment.resolved);
   }
   return byKey;
+}
+
+/**
+ * 与 `dedupe.ts` 的 LINE_TOLERANCE 同义:行号差在 3 行以内视为指向同一处。
+ * 跨轮次沿用同一语义,单独命名以免误改其中一个。
+ */
+const MATCH_OFFSETS = [0, -1, 1, -2, 2, -3, 3];
+
+/**
+ * 在上一轮的锚点里找这条 Finding。
+ *
+ * 只按本行的指纹查会漏:模型两轮对同一个缺陷可能选不同的代表行(一轮指缺陷行,
+ * 一轮指函数头,PR #4 实测差 3 行),指纹窗口随行号平移,精确相等就匹配不上,同一个
+ * 问题每轮重发一条。因此按行号偏移 ±3 滑动重算指纹,任一命中即视为同一处——与跨
+ * 模型去重的行号容差同一语义。偏移由近及远,先信最贴近模型所指的位置。
+ */
+function priorMatch(
+  prior: ReadonlyMap<string, boolean>,
+  worktreePath: string,
+  finding: MergedFinding,
+): boolean | undefined {
+  for (const offset of MATCH_OFFSETS) {
+    const line = finding.line + offset;
+    if (line < 1) continue;
+    const fingerprint = contentFingerprint(worktreePath, finding.file, line);
+    if (fingerprint === undefined) continue;
+    const resolved = prior.get(`${finding.file}\n${fingerprint}`);
+    if (resolved !== undefined) return resolved;
+  }
+  return undefined;
 }
 
 /**
@@ -307,10 +349,7 @@ export async function runReview(
     for (const finding of findings) {
       // 指纹在新 head commit 的工作副本下重算:代码没变则与上一轮的锚点相同。
       const fingerprint = contentFingerprint(worktree.path, finding.file, finding.line);
-      const resolved =
-        fingerprint === undefined
-          ? undefined
-          : prior.get(`${finding.file}\n${fingerprint}`);
+      const resolved = priorMatch(prior, worktree.path, finding);
 
       if (resolved !== undefined) {
         carried.push({ finding, resolved });

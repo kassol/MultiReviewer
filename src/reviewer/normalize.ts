@@ -72,7 +72,11 @@ export function normalizeFinding(raw: RawFinding, model: string): NormalizeResul
       line: raw.line,
       severity,
       category,
+      // title / impact / suggestion 为空不算异常:呈现层跳过空段,不为排版丢 Finding。
+      title: typeof raw.title === "string" ? raw.title.trim() : "",
       description: raw.description.trim(),
+      impact: typeof raw.impact === "string" ? raw.impact.trim() : "",
+      suggestion: typeof raw.suggestion === "string" ? raw.suggestion.trim() : "",
       model,
     },
   };

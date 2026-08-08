@@ -10,7 +10,10 @@ const RAW = {
   snippet: 'db.query("SELECT * FROM users WHERE id = " + id);',
   severity: "P0",
   category: "security",
+  title: "SQL 注入",
   description: "SQL 拼接",
+  impact: "任意查询可被注入",
+  suggestion: "改用参数化查询",
 };
 
 test("模型自造的同义词被归一化到契约允许的值", () => {

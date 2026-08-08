@@ -21,8 +21,9 @@
 - Disposition 的权威状态在 Forge 上,`finding.disposition` 只缓存最近一次读回的结果,默认 `unknown`。
 - Finding 的行号必须是抄来的,不能是模型数出来的(pr-agent、ai-pr-reviewer、claude-code-action 三家开源实现的共同经验;Pi 内建 `read` 返回裸内容,模型在 55 行的文件上实测数偏 4 行)。两层保障都在 worker 内:`numbered-read.ts` 以同名 customTool 覆盖 Pi 内建 `read`,每行加 `N: ` 前缀让模型抄号;`report_finding` 多一个必填 `snippet` 字段(问题起始行的原文),`anchor.ts` 用它核对行号——对得上放行,对不上但文件里找得到就校正到最近的匹配行,找不到打回让模型重报。打回走正常工具返回而非错误:`rejectedToolCalls` 只留给 Pi 的 schema 校验失败,即契约失配信号。
 - 跨轮次匹配的锚点是评论正文里的 `<!-- multireviewer:<64 位 sha256 指纹> -->`,不是 comment id——`Forge.createReview` 不回传每条评论的 id。带锚点的评论即本工具发的,人写的评论不参与匹配。
-- 匹配的键是 `文件 + 指纹` 而非单看指纹:不同文件里可能有同样的 7 行代码。指纹在新 head commit 的工作副本下重算,相同即代码未变。
-- 匹配成功的 Finding 一律不发行级评论,折进 review 正文的 `<details>` 段,已 resolve 与未 resolve 分成两段各自标注。折叠段逐条写全 `file:line`、severity、category、描述与来源模型,误匹配时人展开就能看到完整内容。
+- 匹配的键是 `文件 + 指纹` 而非单看指纹:不同文件里可能有同样的 7 行代码。指纹在新 head commit 的工作副本下重算,且按行号偏移 ±3 滑动重算(`run.ts` 的 `MATCH_OFFSETS`),任一命中即同一处——模型两轮对同一个缺陷可能选不同的代表行(一轮指缺陷行,一轮指函数头,PR #4 实测差 3 行),精确相等会让同一个问题每轮重发。容差与跨模型去重的 `LINE_TOLERANCE` 同义。
+- 匹配成功的 Finding 一律不发行级评论,折进 review 正文的 `<details>` 段,已 resolve 与未 resolve 分成两段各自标注。折叠段逐条写 `file:line`、等级、标题与描述,误匹配时人展开就能看到完整内容。
+- 评论是给开发者看的最终结果,格式固定为 等级 / 标题 / 问题 / 影响 / 建议 五段,段间空行分隔。模型署名与各家的不同表述一概不进评论:哪个模型说的什么在 `finding` 表里,采纳率统计从那里拿。`title` / `impact` / `suggestion` 为空不算异常,呈现层整段跳过——不为排版丢 Finding。这三个字段不落库,`finding` 表结构不变。
 - 分批的规模按 diff 的增删行数衡量,不按文件数:50 个各改 2 行的文件不该被切碎,3 个各改 800 行的文件才该切。阈值经 `ReviewRunDeps.maxChangedLinesPerBatch` 传入,不传取 `DEFAULT_MAX_CHANGED_LINES_PER_BATCH`。
 - 分批只切 `ReviewRange.files`,`worktreePath` 每批都是同一份完整的 head commit 工作副本。不为分批动 worktree——Reviewer 读不到其他批次改动后的代码就会报出"这个新函数没有调用者"这类误报。
 - 同一文件的改动绝不跨批,跨批因此不会出现指向同一处的 Finding。单个文件本身就超阈值时它自成一批,不拒审也不截断:不设批数或预算上限。
@@ -74,3 +75,4 @@
 - 2026-08-08: 落地 issue #3。新增 `forge/gitea.ts`,导出 `createGiteaForge` 与 `assertSupportedVersion`。`Forge` 接口未调整,`forge/github.ts` 未动——Gitea 能做到接口要求的每一件事,没有需要收窄的地方。`main.ts` 填上 `forges.gitea` 那一格,凭据取自 `MULTIREVIEWER_GITEA_URL` 与 `MULTIREVIEWER_GITEA_TOKEN`,没配就不建这一格。测试打在 fetch 边界上(`test/gitea-forge.test.ts`),另有默认跳过的真实实例验证(`test/gitea-live.test.ts`)。
 - 2026-08-08: `webhook/server.ts` 补投递日志。此前服务只在失败时输出,收到投递、判定不处理、审查跑完都完全静默,「Gitea 发了但没反应」无从排查。新增可注入的 `onDelivery`,默认写 stdout。
 - 2026-08-08: 严重度改为 `P0` / `P1` / `P2`(全链路,含 `report_finding` 的 schema),Finding 描述改由模型用中文写。`Forge` 接口扩出 `addReaction` / `removeReaction`,审查进度以 PR 上的 👀 / 👍 呈现——两个平台都有 reaction,不违反 ADR 0002。GitHub 的 `request` 拆出 `send` 与 `requestVoid`:删 reaction 回 204,在空 body 上解析 JSON 会抛。
+- 2026-08-08: 行号锚定改为「抄不数」:`numbered-read.ts` 覆盖 Pi 内建 `read` 给每行加号,`report_finding` 加必填 `snippet`,`anchor.ts` 据此核对与校正行号。跨轮次匹配加 ±3 行滑动指纹(`MATCH_OFFSETS`),锚点格式不变,与既有评论向后兼容。评论格式改为 等级/标题/问题/影响/建议 五段(`report_finding` 扩出 `title` / `impact` / `suggestion`),模型署名退出评论,`finding` 表结构未动。

@@ -79,11 +79,14 @@ test("两个模型对同一处的 Finding 合并为一条,来源模型齐全", a
 
   const review = forge.createdReviews[0]!;
   assert.equal(review.comments.length, 1);
-  assert.match(review.comments[0]!.body, /model-a/);
-  assert.match(review.comments[0]!.body, /model-b/);
-  // 合并不丢内容:两个模型各自的表述都要能读到。
+  // 评论是给开发者的最终结果:只呈现合并后的一份内容,不出现模型署名。
   assert.match(review.comments[0]!.body, /sub 多减了 1/);
-  assert.match(review.comments[0]!.body, /减法结果偏移/);
+  assert.doesNotMatch(review.comments[0]!.body, /model-a|model-b|减法结果偏移/);
+  // 合并不丢内容:另一个模型的表述保留在来源里,落库供采纳率统计。
+  assert.deepEqual(
+    result.findings[0]!.sources.map((s) => s.description).sort(),
+    ["sub 多减了 1", "减法结果偏移"],
+  );
 });
 
 test("行号相差在阈值内视为同一处,超出阈值分开", async () => {

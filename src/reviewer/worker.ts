@@ -40,7 +40,7 @@ Report each problem by calling the report_finding tool exactly once per problem.
 
 The read tool prefixes every line with its line number, like \`12: code\`. These numbers are the only valid source for the line field of report_finding — copy the number, never count lines yourself. The prefix is not part of the file content. In the snippet field, copy the exact text of the line the problem starts on, without the line number prefix. Pick the most distinctive line of the problem, not a bare brace. A finding whose snippet does not match the file at the reported line is rejected back to you.
 
-Write the description field in Chinese. The reviewers of this repository read Chinese. Keep identifiers, file paths, and code fragments in their original form — do not translate them. The severity and category fields stay in the exact English values listed for them.`;
+Write the title, description, impact and suggestion fields in Chinese. The reviewers of this repository read Chinese. Keep identifiers, file paths, and code fragments in their original form — do not translate them. The severity and category fields stay in the exact English values listed for them.`;
 
 /**
  * 枚举字段必须在自身的 `description` 里写明允许值。prototype 实测:仅用字面量联合
@@ -64,8 +64,18 @@ const findingSchema = Type.Object({
   category: Type.String({
     description: "One of exactly: security, bug, maintainability, design",
   }),
+  title: Type.String({
+    description: "A short Chinese title naming the problem, about 20 characters",
+  }),
   description: Type.String({
-    description: "What is wrong and why it matters, written in Chinese",
+    description: "What is wrong and why, written in Chinese",
+  }),
+  impact: Type.String({
+    description:
+      "The blast radius, written in Chinese: in which situation it breaks and what the consequence is",
+  }),
+  suggestion: Type.String({
+    description: "How to fix it, written in Chinese",
   }),
 });
 

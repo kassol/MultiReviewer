@@ -88,7 +88,16 @@ function batchedReviewer(
 
 /** 追加行落在 diff 内,第 4 行是每个文件的首个新增行。 */
 function findingAt(file: string, description: string): Omit<Finding, "model"> {
-  return { file, line: 4, severity: "P0", category: "bug", description };
+  return {
+    file,
+    line: 4,
+    severity: "P0",
+    category: "bug",
+    title: "",
+    description,
+    impact: "",
+    suggestion: "",
+  };
 }
 
 test("规模在阈值内时不分批,Reviewer 只被调用一次", async () => {
@@ -208,9 +217,9 @@ test("跨批次的 Finding 汇总后统一去重,只发一次 review", async () 
       { path: "src/c.ts", line: 4 },
     ],
   );
-  const onA = review.comments.find((c) => c.path === "src/a.ts")!;
-  assert.match(onA.body, /model-a/);
-  assert.match(onA.body, /model-b/);
+  // 两个模型的来源都在合并结果里;评论正文不署名,合并证据看数据层。
+  const onA = result.findings.find((f) => f.file === "src/a.ts")!;
+  assert.deepEqual([...onA.models].sort(), ["model-a", "model-b"]);
 });
 
 test("某模型部分批次失败时成功批次的 Finding 照常发布,正文标注覆盖不全并写出第几批失败", async () => {

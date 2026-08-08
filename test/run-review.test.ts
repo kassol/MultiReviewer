@@ -94,6 +94,56 @@ test("行号落不到 diff 内的 Finding 退化为 PR 级评论且内容不丢"
   assert.match(review.body, /11/);
 });
 
+test("评论按 等级/标题/问题/影响/建议 分段呈现,不出现模型署名", async () => {
+  const { cache, db, forge } = setup(6);
+  // 两个模型报同一处:合并后也只呈现一份内容,另一个模型的表述不进评论。
+  const finding = {
+    file: "src/calc.ts",
+    line: 6,
+    severity: "P0" as const,
+    category: "bug" as const,
+    title: "sub 多减了 1",
+    description: "sub() 的返回值比正确结果小 1。",
+    impact: "所有调用方拿到的差值都错。",
+    suggestion: "去掉多余的 - 1。",
+  };
+  const other = { ...finding, description: "减法结果不对。" };
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    {
+      forge: forge.forge,
+      reviewers: [
+        scriptedReviewer("model-a", [finding]),
+        scriptedReviewer("model-b", [other]),
+      ],
+      cacheDir: cache.dir,
+      dbPath: db.path,
+    },
+  );
+
+  const body = forge.createdReviews[0]!.comments[0]!.body;
+  const [heading] = body.split("\n");
+  assert.equal(heading, "**[P0] sub 多减了 1**");
+  assert.match(body, /\n\n\*\*问题\*\*:sub\(\) 的返回值比正确结果小 1。/);
+  assert.match(body, /\n\n\*\*影响\*\*:所有调用方拿到的差值都错。/);
+  assert.match(body, /\n\n\*\*建议\*\*:去掉多余的 - 1。/);
+  assert.doesNotMatch(body, /model-a|model-b|其他模型/);
+});
+
+test("影响与建议为空时整段消失,不留空标签", async () => {
+  const { cache, db, forge, reviewer } = setup(6);
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+  );
+
+  const body = forge.createdReviews[0]!.comments[0]!.body;
+  assert.match(body, /\*\*问题\*\*:/);
+  assert.doesNotMatch(body, /\*\*影响\*\*|\*\*建议\*\*/);
+});
+
 test("Reviewer 拿到的 Review Range 以 merge-base 为基准,不是 base 分支尖端", async () => {
   const repo = makeRepo({
     base: { "src/calc.ts": BASE_CALC },

@@ -85,10 +85,17 @@ export function memoryForge(init: {
   };
 }
 
+/**
+ * 测试里书写 Finding 的省略形:title / impact / suggestion 与呈现有关,大多数用例
+ * 不关心,省略时补空串。关心呈现的用例显式写上。
+ */
+type ScriptedFinding = Omit<Finding, "model" | "title" | "impact" | "suggestion"> &
+  Partial<Pick<Finding, "title" | "impact" | "suggestion">>;
+
 /** 返回预设 Finding 的 Reviewer 桩。 */
 export function scriptedReviewer(
   model: string,
-  findings: readonly Omit<Finding, "model">[],
+  findings: readonly ScriptedFinding[],
   extra?: Partial<
     Pick<ReviewerOutcome, "failure" | "anomalies" | "rejectedToolCalls" | "usage">
   >,
@@ -101,7 +108,13 @@ export function scriptedReviewer(
       calls.push({ range, worktreePath });
       return {
         model,
-        findings: findings.map((f) => ({ ...f, model })),
+        findings: findings.map((f) => ({
+          title: "",
+          impact: "",
+          suggestion: "",
+          ...f,
+          model,
+        })),
         anomalies: extra?.anomalies ?? [],
         rejectedToolCalls: extra?.rejectedToolCalls ?? 0,
         ...(extra?.failure === undefined ? {} : { failure: extra.failure }),

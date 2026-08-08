@@ -111,11 +111,11 @@ test("代码未变且上一轮已处置:本轮不发行级评论,折叠段里标
   assert.deepEqual(second.comments, [], "已处置且代码未变的 Finding 又被发成了行级评论");
   assert.match(second.body, /<details>/);
   assert.match(second.body, /曾被处置/);
-  // 误匹配时人展开就能看到完整内容。
+  // 误匹配时人展开就能看到完整内容。评论是给开发者的最终结果,不带模型署名。
   assert.match(second.body, /src\/calc\.js:6/);
   assert.match(second.body, /sub 多减了 1/);
-  assert.match(second.body, /P0 · bug/);
-  assert.match(second.body, /model-a/);
+  assert.match(second.body, /\*\*\[P0\]\*\*/);
+  assert.doesNotMatch(second.body, /model-a/);
 
   assert.deepEqual(latestDispositions(db.path), ["unknown", "resolved"]);
 });
@@ -154,6 +154,43 @@ test("代码未变且上一轮未处置:折叠并标注尚未处置", async () =
   assert.match(second.body, /sub 多减了 1/);
 
   assert.deepEqual(latestDispositions(db.path), ["unknown", "unresolved"]);
+});
+
+test("模型换了代表行(相差 3 行以内)时仍匹配为同一处,不重发", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+
+  // 上一轮锚在第 6 行(缺陷行),这一轮模型把同一个问题指到第 3 行。
+  // PR #4 实测:两轮分别指函数头与缺陷行,相差 3 行,精确指纹匹配不上,每轮重发。
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [scriptedReviewer("model-a", [{ ...FINDING, line: 3 }])],
+  });
+
+  const second = forge.createdReviews[1]!;
+  assert.deepEqual(second.comments, [], "换了代表行的同一个 Finding 又被发成了行级评论");
+  assert.match(second.body, /尚未处置/);
+  assert.deepEqual(latestDispositions(db.path), ["unknown", "unresolved"]);
+});
+
+test("行号相差超过 3 行时不匹配,按新 Finding 提出", async () => {
+  const { repo, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+
+  // 相差 4 行:与跨模型去重同一条容差线,线外就是另一处问题。
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [scriptedReviewer("model-a", [{ ...FINDING, line: 10 }])],
+  });
+
+  const second = forge.createdReviews[1]!;
+  assert.doesNotMatch(second.body, /尚未处置|曾被处置/);
 });
 
 test("人写的评论不带锚点,不参与匹配", async () => {

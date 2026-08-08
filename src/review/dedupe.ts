@@ -11,8 +11,11 @@ export type MergedFinding = {
   line: number;
   severity: Severity;
   category: Category;
-  /** 严重度最高的那条来源的描述。 */
+  /** 以下四段取严重度最高的那条来源。 */
+  title: string;
   description: string;
+  impact: string;
+  suggestion: string;
   /** 提出它的全部模型,按首次出现顺序。 */
   models: string[];
   sources: Finding[];
@@ -78,7 +81,10 @@ function mergeGroup(file: string, group: readonly Finding[]): MergedFinding {
     line: Math.min(...group.map((f) => f.line)),
     severity: leading.severity,
     category: leading.category,
+    title: leading.title,
     description: leading.description,
+    impact: leading.impact,
+    suggestion: leading.suggestion,
     models,
     sources: [...group],
   };

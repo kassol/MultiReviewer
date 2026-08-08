@@ -24,7 +24,14 @@ export type Finding = {
   line: number;
   severity: Severity;
   category: Category;
+  /** 一句话标题,中文。评论列表里扫一眼用的。 */
+  title: string;
+  /** 问题是什么、为什么错,中文。 */
   description: string;
+  /** 影响面:什么场景下坏、坏成什么样,中文。 */
+  impact: string;
+  /** 建议的修改方式,中文。 */
+  suggestion: string;
   /** 提出它的 Reviewer 所绑定的模型标识。 */
   model: string;
 };
@@ -52,7 +59,10 @@ export type RawFinding = {
   snippet: string;
   severity: string;
   category: string;
+  title: string;
   description: string;
+  impact: string;
+  suggestion: string;
 };
 
 /** 一个 Reviewer 一次执行的用量与成本,由 harness 自己统计。 */
