@@ -567,6 +567,14 @@ else
   step "回到 Gitea 页面,展开最近一次投递,确认响应是 200。"
   note "401 是两侧密钥不一致,回上一步重填。"
   note "连接超时或拒绝,说明这个地址 Gitea 够不着,换一个它到得了的地址。"
+  say ""
+  say "看到 \"webhook can only call allowed HTTP servers\" 时,是 Gitea 自己拦的:"
+  note "app.ini 的 [webhook] 段 ALLOWED_HOST_LIST 默认 external,只放行公网地址,"
+  note "而本服务多半在私有网段。追加本服务的地址后重启 Gitea:"
+  printf '\n      %s[webhook]%s\n' "$BOLD" "$RESET"
+  printf '      %sALLOWED_HOST_LIST = external, %s%s\n\n' "$BOLD" "$PUBLIC_HOST" "$RESET"
+  note "保留 external 使已有的其他 webhook 不受影响。别写 private——那会放开整个"
+  note "RFC 1918,任何有仓库管理权的人都能把 webhook 指向内网任意服务。"
   pause
 fi
 

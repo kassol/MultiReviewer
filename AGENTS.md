@@ -94,7 +94,15 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 1. 建一个专用 bot 账号,审查评论以它的身份发出。
 2. 用该账号签发一枚 PAT,scope **只勾 `write:repository`**,别的一个都不要。这是实测确认的最小集合:对企业版 26.4.4 用一枚只含此 scope 的 PAT 跑通了全链路——读版本、读 PR 元数据与变更文件、clone、创建带行级评论的 review、读回评论、resolve 与 unresolve。本工具用到的端点全部落在 Gitea 的 `repository` 类别下(`routers/api/v1/api.go` 里 `/repos` 组声明的就是它),`write:issue` 不需要。
 3. 把 bot 账号以协作者身份加入每一个需要审查的仓库。Gitea 的 PAT scope 不限定到具体仓库,能访问哪些仓库取决于这一步(ADR 0005)。
-4. 在仓库或组织上配 webhook,指向本服务,事件勾 pull request,secret 填 `MULTIREVIEWER_WEBHOOK_SECRET` 的值。
+4. 本服务的地址在私有网段时(自托管几乎总是如此),放开 Gitea 的 webhook 目标白名单。`app.ini` 的 `[webhook]` 段 `ALLOWED_HOST_LIST` 默认是 `external`,只放行公网单播地址,发往 RFC 1918 地址的投递会被 Gitea 自己拒掉,投递记录里写作 `webhook can only call allowed HTTP servers`。追加本服务的地址即可,官方镜像也可用 `GITEA__webhook__ALLOWED_HOST_LIST` 这个环境变量:
+
+   ```ini
+   [webhook]
+   ALLOWED_HOST_LIST = external, 172.17.0.1
+   ```
+
+   保留 `external` 使已有的其他 webhook 不受影响。**不要图省事写 `private`**——那会放开整个 RFC 1918,任何有仓库管理权的人都能把 webhook 指向内网任意服务。逐个列出目标地址。改完重启 Gitea。
+5. 在仓库或组织上配 webhook,指向本服务,事件勾 pull request,secret 填 `MULTIREVIEWER_WEBHOOK_SECRET` 的值。
 
 > 换实例或升级 Gitea 后想重新确认 scope,跑一次 `MULTIREVIEWER_GITEA_LIVE_PR=...` 的验证即可,它覆盖本实现用到的全部端点。**这个验证要指向一个此前没被本工具评论过的 PR**:同一个 PR 重跑时,上一轮留下的带锚点评论会让本轮 Finding 匹配成功而被折叠,行级评论数因此为零,看起来像失败(跨轮次匹配见 issue #7)。
 
@@ -146,3 +154,4 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-08: 修部署向导的一处硬故障。compose 以「只读单文件」绑定 `multireviewer.config.json`,而数据目录那一步的容器探针早于配置写入——绑定时宿主机上该路径不存在,docker 建了一个属主为 root 的同名目录,写配置随即撞上 "Is a directory" 且没有 sudo 清不掉。向导现在在第一条 compose 命令之前就坐实该路径是文件,并对残留的目录给出清理命令。同时让向导可续跑:已写进 `.env` 的值会让对应阶段跳过,`FORCE=1` 强制重做。
 - 2026-08-08: 向导的公网自检补上一处盲点。那个 curl 是从服务器自己发的,地址填成只有本机可达的值(docker0 网桥 `172.17.x`、`127.x`、`localhost`)时它照样通过,而 Gitea 一条投递也发不出来。现在这类地址会提前警告并记进待办;`172.16/12` 的其余部分不报警,那是合法的企业内网段。同时把话说清:唯一能证明 Gitea 到得了本服务的检查是 Gitea 那侧的投递记录。
 - 2026-08-08: 服务补上投递日志。此前它只在失败时输出,正常收到投递、判定不处理、审查跑完都不打印任何东西,日志里只有启动那一句——服务在正常工作与完全收不到投递之间看起来一模一样。现在每条通过签名校验的投递记一行,写明这次做了什么。记录点选在签名校验之后:未认证的请求谁都能发。
+- 2026-08-08: 实测确认自托管部署的一道必经关卡:Gitea 的 `webhook.ALLOWED_HOST_LIST` 默认 `external`,只放行公网单播地址,发往 RFC 1918 地址的投递被 Gitea 自己拒掉,报 `webhook can only call allowed HTTP servers`。服务侧完全无感——请求根本没发出来。写进 Gitea 准备步骤,向导的投递排查里也列了这条报错。取值语法取自官方 config cheat sheet:内置组 `loopback` / `private` / `external` / `*`,另可写 CIDR 与通配主机名。
