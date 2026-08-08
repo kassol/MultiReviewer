@@ -5,6 +5,7 @@ import type {
   Forge,
   PullRequest,
   PullRequestRef,
+  Reaction,
   RepoRef,
   ReviewDraft,
 } from "../../src/forge/forge.ts";
@@ -25,6 +26,10 @@ export type MemoryForge = {
   existingComments: ExistingReviewComment[];
   resolvedIds: string[];
   unresolvedIds: string[];
+  /** PR 上此刻挂着的 reaction。 */
+  reactions: Set<Reaction>;
+  /** 全部 reaction 操作,按调用顺序,形如 `add:eyes` / `remove:+1`。 */
+  reactionLog: string[];
 };
 
 export function memoryForge(init: {
@@ -36,6 +41,8 @@ export function memoryForge(init: {
   const resolvedIds: string[] = [];
   const unresolvedIds: string[] = [];
   const existing = [...(init.existingComments ?? [])];
+  const reactions = new Set<Reaction>();
+  const reactionLog: string[] = [];
   const state = { pullRequest: { ...init.pullRequest } };
 
   const forge: Forge = {
@@ -55,6 +62,15 @@ export function memoryForge(init: {
       username: "bot",
       password: "unused-for-local-clone",
     }),
+    // 两个平台的真实端点都是幂等的:重复加不重复挂,删不存在的不报错。
+    addReaction: async (_ref: PullRequestRef, reaction: Reaction) => {
+      reactions.add(reaction);
+      reactionLog.push(`add:${reaction}`);
+    },
+    removeReaction: async (_ref: PullRequestRef, reaction: Reaction) => {
+      reactions.delete(reaction);
+      reactionLog.push(`remove:${reaction}`);
+    },
   };
 
   return {
@@ -64,6 +80,8 @@ export function memoryForge(init: {
     existingComments: existing,
     resolvedIds,
     unresolvedIds,
+    reactions,
+    reactionLog,
   };
 }
 

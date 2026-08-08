@@ -6,15 +6,24 @@ export type NormalizeResult =
   | { ok: true; finding: Finding }
   | { ok: false; reason: string; raw: RawFinding };
 
+/**
+ * 约定的取值是 P0 / P1 / P2,形容词一并收下:模型不总照约定报,而收窄枚举会让它
+ * 自造词汇、调用被拒、Finding 全部丢失(ADR 0004)。宽松接收加服务端归一化是配套的。
+ */
 const SEVERITY: Record<string, Severity> = {
-  critical: "high",
-  high: "high",
-  major: "high",
-  medium: "medium",
-  moderate: "medium",
-  minor: "low",
-  low: "low",
-  info: "low",
+  p0: "P0",
+  critical: "P0",
+  high: "P0",
+  major: "P0",
+  blocker: "P0",
+  p1: "P1",
+  medium: "P1",
+  moderate: "P1",
+  p2: "P2",
+  low: "P2",
+  minor: "P2",
+  info: "P2",
+  nit: "P2",
 };
 
 const CATEGORY: Record<string, Category> = {

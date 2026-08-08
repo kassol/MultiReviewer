@@ -38,6 +38,13 @@
 - Webhook handler 立即返回 200,Review Run 在后台跑。后台任务的 rejection 必须接住并记录,否则会变成 unhandledRejection 把这个长跑进程带崩。
 - 每条通过签名校验的投递记一行,写明这次做了什么(开始审查 / 草稿不审 / 已审过跳过 / action 不触发 / 非 pull request 事件)。没有这行时,服务正常工作与完全收不到投递在日志上一模一样,只有启动那一句。记录点在签名校验之后:未认证的请求谁都能发,记它们等于把日志交给外人写。日志出口是 `onDelivery`,与 `onRunSettled` 一样是可注入的,测试收进数组而不刷屏。
 - `Forge` 接口只包含 Gitea 与 GitHub 都具备的能力(ADR 0002)。实现 GitHub 适配时不得因其能力更强而扩张接口。
+- Finding 的优先级是 `P0` / `P1` / `P2`,P0 最高。归一化层同时收下 `critical` / `high` / `medium` / `low` 这类形容词并映射到 P 级——收窄枚举会让模型自造词汇、调用被拒、Finding 全部丢失(ADR 0004),宽松接收加服务端归一化是配套的两半。
+- Finding 的 `description` 由模型用中文写,`severity` 与 `category` 保持英文标识符。前者给人读,后者是枚举值。
+- 审查进度以 PR 上的 reaction 呈现:开跑挂 `eyes`,跑完未发现问题换 `+1`。零 Finding 且无模型缺席时本工具不发任何 review,没有这个标记时「审查通过」与「审查根本没跑」在 PR 上完全一样。
+- 新一轮开跑前先撤掉上一轮的 `+1`:PR 推了新 commit 会再审一次,新代码还没看就挂着旧的通过标记是错的。
+- `eyes` 的撤销放在 `finally` 里,成功、失败、中途抛异常都要走到——留着它 PR 上会永远挂着一只眼睛,看起来像审查卡死。
+- Reaction 的每一次调用都经 `tryReaction` 包一层,失败只记日志。进度标记是装饰,少一个 emoji 是小事,一次审查因此白跑不是。bot 令牌缺 `write:issue` 时走的就是这条路。
+- 两个平台的 reaction 端点都挂在 `/issues/{序号}` 下——PR 在两边内部都是 issue。Gitea 按 content 删,GitHub 要先列出再按 reaction id 删,`Forge` 把这个差异挡在实现里。
 - 行号一律指 head commit 中该文件的 1-indexed 行号。Gitea 的 `new_position` 与 GitHub 的 `line` 都是这个语义,接口不暴露 diff 内偏移。Gitea 读回时行号在 `position` 上,`original_position` 是旧文件一侧的行号,两者只有一个非零(`services/convert/pull_review.go` 的 `ToPullReviewComment` 按内部 `line` 的正负分流)。旧侧的评论对应不到 head commit 里的行,直接跳过。
 - Gitea 的变更文件状态与 GitHub 拼写不同:「修改」是 `changed`、「删除」是 `deleted`,另有 `copied` / `unchanged`。照抄 GitHub 的 `modified` / `removed` 会把全部修改过的文件误判成新增。
 - Gitea 没有「一次列出 PR 全部 review comment」的端点,只能先列 review 再逐个取它的评论。列 review 分页(`page` / `limit`),取评论不分页。`comments_count` 为 0 的 review 直接跳过,省掉一次请求。
@@ -64,3 +71,4 @@
 - 2026-08-08: 落地 issue #9。新增 `review/batch.ts`(切批与批次结果合并),`position.ts` 扩出 `changedLinesByFile`,`run.ts` 的规模统计改由它汇总。`ReviewerOutcome` 扩出 `incompleteCoverage` 表达部分批次失败。`store.ts` 的 `sumUsage` 改为只取 `usage` 一个字段并导出,`batch.ts` 复用它。注入边界未增加。
 - 2026-08-08: 落地 issue #3。新增 `forge/gitea.ts`,导出 `createGiteaForge` 与 `assertSupportedVersion`。`Forge` 接口未调整,`forge/github.ts` 未动——Gitea 能做到接口要求的每一件事,没有需要收窄的地方。`main.ts` 填上 `forges.gitea` 那一格,凭据取自 `MULTIREVIEWER_GITEA_URL` 与 `MULTIREVIEWER_GITEA_TOKEN`,没配就不建这一格。测试打在 fetch 边界上(`test/gitea-forge.test.ts`),另有默认跳过的真实实例验证(`test/gitea-live.test.ts`)。
 - 2026-08-08: `webhook/server.ts` 补投递日志。此前服务只在失败时输出,收到投递、判定不处理、审查跑完都完全静默,「Gitea 发了但没反应」无从排查。新增可注入的 `onDelivery`,默认写 stdout。
+- 2026-08-08: 严重度改为 `P0` / `P1` / `P2`(全链路,含 `report_finding` 的 schema),Finding 描述改由模型用中文写。`Forge` 接口扩出 `addReaction` / `removeReaction`,审查进度以 PR 上的 👀 / 👍 呈现——两个平台都有 reaction,不违反 ADR 0002。GitHub 的 `request` 拆出 `send` 与 `requestVoid`:删 reaction 回 204,在空 body 上解析 JSON 会抛。

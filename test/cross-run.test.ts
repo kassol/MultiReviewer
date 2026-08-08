@@ -32,7 +32,7 @@ const EVENT = { owner: "acme", repo: "widgets", number: 7 };
 const FINDING = {
   file: "src/calc.js",
   line: 6,
-  severity: "high" as const,
+  severity: "P0" as const,
   category: "bug" as const,
   description: "sub 多减了 1",
 };
@@ -114,7 +114,7 @@ test("代码未变且上一轮已处置:本轮不发行级评论,折叠段里标
   // 误匹配时人展开就能看到完整内容。
   assert.match(second.body, /src\/calc\.js:6/);
   assert.match(second.body, /sub 多减了 1/);
-  assert.match(second.body, /high · bug/);
+  assert.match(second.body, /P0 · bug/);
   assert.match(second.body, /model-a/);
 
   assert.deepEqual(latestDispositions(db.path), ["unknown", "resolved"]);

@@ -27,7 +27,7 @@ const skip =
 
 const FIXTURE = fileURLToPath(new URL("./fixture/reviewer-smoke", import.meta.url));
 
-const SEVERITIES = new Set(["high", "medium", "low"]);
+const SEVERITIES = new Set(["P0", "P1", "P2"]);
 const CATEGORIES = new Set(["security", "bug", "maintainability", "design"]);
 
 test("真实模型经 report_finding 产出结构完整的 Finding", { skip }, async () => {

@@ -56,7 +56,7 @@ function setup() {
 const AT_LINE_2 = {
   file: "src/m.js",
   line: 2,
-  severity: "high" as const,
+  severity: "P0" as const,
   category: "bug" as const,
   description: "sub 多减了 1",
 };

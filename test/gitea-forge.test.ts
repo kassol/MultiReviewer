@@ -69,6 +69,9 @@ function stubFetch(routes: Record<string, Route>): {
 function routes(overrides: Record<string, Route> = {}): Record<string, Route> {
   return {
     "GET /api/v1/version": { body: { version: "1.26.4" } },
+    // reaction 的两个端点都回 204 无正文,实现因此不解析响应体。
+    "POST /api/v1/repos/acme/widget/issues/7/reactions": { status: 204 },
+    "DELETE /api/v1/repos/acme/widget/issues/7/reactions": { status: 204 },
     "GET /api/v1/repos/acme/widget/pulls/7": {
       body: {
         number: 7,
@@ -265,6 +268,28 @@ test("resolve 与 unresolve 打在评论 id 上,方法是 POST", async (t) => {
       "POST /api/v1/repos/acme/widget/pulls/comments/501/resolve",
       "POST /api/v1/repos/acme/widget/pulls/comments/501/unresolve",
     ],
+  );
+});
+
+test("reaction 挂在 issues 端点上,加与删都按 content,不需要 reaction id", async (t) => {
+  const stub = stubFetch(routes());
+  t.after(stub.restore);
+  const forge = createGiteaForge(OPTIONS);
+
+  await forge.addReaction(REF, "eyes");
+  await forge.removeReaction(REF, "+1");
+
+  // PR 在 Gitea 内部就是 issue,序号同一个。删除按 content,不像 GitHub 要先取 id。
+  assert.deepEqual(
+    stub.calls.map((c) => `${c.method} ${new URL(c.url).pathname}`),
+    [
+      "POST /api/v1/repos/acme/widget/issues/7/reactions",
+      "DELETE /api/v1/repos/acme/widget/issues/7/reactions",
+    ],
+  );
+  assert.deepEqual(
+    stub.calls.map((c) => c.body),
+    [{ content: "eyes" }, { content: "+1" }],
   );
 });
 

@@ -4,7 +4,8 @@
  * 默认跳过。它会在指定的 PR 上真实发布评论并改动 resolve 状态,只应指向一个专用的
  * 验证 PR。跑通它同时也确认了 bot 账号那枚 PAT 的 scope 够用——它覆盖到本实现会用
  * 到的全部端点:版本、PR 元数据、变更文件、创建 review、读回评论、resolve 与
- * unresolve、以及 clone。实测确认 `write:repository` 一个 scope 就够。
+ * unresolve、clone、以及进度 reaction。实测确认的最小 scope 是 `write:repository`
+ * 加 `write:issue`,后者只为 reaction——它的端点挂在 `/issues` 下,缺了会 403。
  *
  * **每次要指向一个没被本工具评论过的 PR。**同一个 PR 重跑时,上一轮留下的带锚点评论
  * 会让本轮 Finding 匹配成功而被折叠,`inlineCount` 因此是 0,断言会失败——那是跨轮次
@@ -87,7 +88,7 @@ test("Gitea 实现对真实 pull request 完成整条发布与处置链路", { s
     {
       file,
       line,
-      severity: "low",
+      severity: "P2",
       category: "maintainability",
       description: MARKER,
     },

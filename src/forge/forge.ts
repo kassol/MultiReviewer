@@ -59,6 +59,14 @@ export type CloneCredentials = {
   password: string;
 };
 
+/**
+ * PR 上的 emoji reaction,用来表达审查进度。
+ *
+ * 只有这两个:`eyes` 是「正在审查」,`+1` 是「审查完毕,未发现问题」。取值用两个平台
+ * 共用的 reaction 名,不做成开放字符串——没有第三种状态要表达(ADR 0002)。
+ */
+export type Reaction = "eyes" | "+1";
+
 export interface Forge {
   getPullRequest(ref: PullRequestRef): Promise<PullRequest>;
   listChangedFiles(ref: PullRequestRef): Promise<ChangedFile[]>;
@@ -67,4 +75,8 @@ export interface Forge {
   resolveComment(ref: RepoRef, commentId: string): Promise<void>;
   unresolveComment(ref: RepoRef, commentId: string): Promise<void>;
   cloneCredentials(ref: RepoRef): Promise<CloneCredentials>;
+  /** 加一个 reaction。已经加过时不重复添加,也不报错。 */
+  addReaction(ref: PullRequestRef, reaction: Reaction): Promise<void>;
+  /** 撤掉一个 reaction。本来就没有时什么都不做,也不报错。 */
+  removeReaction(ref: PullRequestRef, reaction: Reaction): Promise<void>;
 }

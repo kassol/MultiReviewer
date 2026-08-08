@@ -1,4 +1,10 @@
-export type Severity = "high" | "medium" | "low";
+/**
+ * Finding 的优先级,P0 最高。
+ *
+ * 用 P 级而非 high / medium / low:审查结果是给人排活儿用的,P 级在评论列表里一眼
+ * 看得出轻重,形容词做不到。归一化层仍接受形容词——模型偶尔会不照约定报(ADR 0004)。
+ */
+export type Severity = "P0" | "P1" | "P2";
 
 export type Category = "security" | "bug" | "maintainability" | "design";
 

@@ -52,7 +52,7 @@ function setup(findingLine: number) {
     {
       file: "src/calc.ts",
       line: findingLine,
-      severity: "high",
+      severity: "P0",
       category: "bug",
       description: "sub() 多减了 1",
     },

@@ -7,7 +7,7 @@ import { reviewerEnv } from "../src/reviewer/env.ts";
 const RAW = {
   file: "src/db.js",
   line: 12,
-  severity: "high",
+  severity: "P0",
   category: "security",
   description: "SQL 拼接",
 };
@@ -15,13 +15,18 @@ const RAW = {
 test("模型自造的同义词被归一化到契约允许的值", () => {
   const cases: [string, string, string, string][] = [
     // 输入 severity, 输入 category, 期望 severity, 期望 category
-    ["critical", "reliability", "high", "bug"],
-    ["major", "logic_error", "high", "bug"],
-    ["moderate", "correctness", "medium", "bug"],
-    ["minor", "style", "low", "maintainability"],
-    ["info", "architecture", "low", "design"],
-    ["MEDIUM", "Performance", "medium", "bug"],
-    ["  low  ", "logic error", "low", "bug"],
+    // 约定的取值原样通过,大小写与空白照常收拾。
+    ["P0", "security", "P0", "security"],
+    ["p1", "bug", "P1", "bug"],
+    ["  P2  ", "design", "P2", "design"],
+    // 形容词是模型不照约定时的退路,一并映射到 P 级。
+    ["critical", "reliability", "P0", "bug"],
+    ["major", "logic_error", "P0", "bug"],
+    ["moderate", "correctness", "P1", "bug"],
+    ["minor", "style", "P2", "maintainability"],
+    ["info", "architecture", "P2", "design"],
+    ["MEDIUM", "Performance", "P1", "bug"],
+    ["  low  ", "logic error", "P2", "bug"],
   ];
 
   for (const [severity, category, expectedSeverity, expectedCategory] of cases) {

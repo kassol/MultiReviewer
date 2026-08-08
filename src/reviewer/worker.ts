@@ -30,7 +30,9 @@ const SYSTEM_PROMPT = `You are a code reviewer. Explore the repository with your
 
 Cover correctness, security, maintainability and design. You may open any file in the repository, not only the changed ones — check callers, other branches of a changed function, and the conventions already established in the same module.
 
-Report each problem by calling the report_finding tool exactly once per problem. Do not describe problems in prose — a problem that is not reported through the tool does not exist. When you have reported everything, stop.`;
+Report each problem by calling the report_finding tool exactly once per problem. Do not describe problems in prose — a problem that is not reported through the tool does not exist. When you have reported everything, stop.
+
+Write the description field in Chinese. The reviewers of this repository read Chinese. Keep identifiers, file paths, and code fragments in their original form — do not translate them. The severity and category fields stay in the exact English values listed for them.`;
 
 /**
  * 枚举字段必须在自身的 `description` 里写明允许值。prototype 实测:仅用字面量联合
@@ -40,11 +42,16 @@ Report each problem by calling the report_finding tool exactly once per problem.
 const findingSchema = Type.Object({
   file: Type.String({ description: "Repository-relative path of the file" }),
   line: Type.Integer({ description: "1-indexed line the problem starts on" }),
-  severity: Type.String({ description: "One of exactly: high, medium, low" }),
+  severity: Type.String({
+    description:
+      "One of exactly: P0, P1, P2. P0 breaks correctness or security and must be fixed before merge. P1 is a real defect with a smaller blast radius. P2 is maintainability or style.",
+  }),
   category: Type.String({
     description: "One of exactly: security, bug, maintainability, design",
   }),
-  description: Type.String({ description: "What is wrong and why it matters" }),
+  description: Type.String({
+    description: "What is wrong and why it matters, written in Chinese",
+  }),
 });
 
 function send(message: WorkerMessage): void {

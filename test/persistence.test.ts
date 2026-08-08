@@ -64,7 +64,7 @@ function query(dbPath: string, sql: string): Record<string, unknown>[] {
 const FINDING = {
   file: "src/calc.js",
   line: 6,
-  severity: "high" as const,
+  severity: "P0" as const,
   category: "bug" as const,
   description: "sub 多减了 1",
 };
@@ -120,7 +120,7 @@ test("每条 Finding 落库并带上来源模型、位置、severity、category 
   for (const row of rows) {
     assert.equal(row["file"], "src/calc.js");
     assert.equal(row["line"], 6);
-    assert.equal(row["severity"], "high");
+    assert.equal(row["severity"], "P0");
     assert.equal(row["category"], "bug");
     assert.match(row["fingerprint"] as string, /^[0-9a-f]{64}$/);
     // Disposition 的权威状态在 Forge,本地默认未知。

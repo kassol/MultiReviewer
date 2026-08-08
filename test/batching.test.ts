@@ -88,7 +88,7 @@ function batchedReviewer(
 
 /** 追加行落在 diff 内,第 4 行是每个文件的首个新增行。 */
 function findingAt(file: string, description: string): Omit<Finding, "model"> {
-  return { file, line: 4, severity: "high", category: "bug", description };
+  return { file, line: 4, severity: "P0", category: "bug", description };
 }
 
 test("规模在阈值内时不分批,Reviewer 只被调用一次", async () => {

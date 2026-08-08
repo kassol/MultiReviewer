@@ -8,6 +8,7 @@ import type {
   Forge,
   PullRequest,
   PullRequestRef,
+  Reaction,
   RepoRef,
   ReviewDraft,
 } from "./forge.ts";
@@ -61,10 +62,10 @@ type InstallationToken = { token: string; expiresAt: number };
 export function createGitHubForge(options: GitHubForgeOptions): Forge {
   const installationTokens = new Map<string, InstallationToken>();
 
-  async function request<T>(
+  async function send(
     path: string,
     init: RequestInit & { token: string },
-  ): Promise<T> {
+  ): Promise<Response> {
     const { token, ...rest } = init;
     const response = await fetch(`${API_ROOT}${path}`, {
       ...rest,
@@ -85,7 +86,22 @@ export function createGitHubForge(options: GitHubForgeOptions): Forge {
         `GitHub ${init.method ?? "GET"} ${path} failed: ${response.status} ${detail.slice(0, 500)}`,
       );
     }
-    return (await response.json()) as T;
+    return response;
+  }
+
+  async function request<T>(
+    path: string,
+    init: RequestInit & { token: string },
+  ): Promise<T> {
+    return (await send(path, init)).json() as Promise<T>;
+  }
+
+  /** 回 204 无正文的调用。这类响应上解析 JSON 会抛。 */
+  async function requestVoid(
+    path: string,
+    init: RequestInit & { token: string },
+  ): Promise<void> {
+    await send(path, init);
   }
 
   /** 仓库级令牌:App 模式按仓库换取 installation token 并缓存到过期前。 */
@@ -228,6 +244,36 @@ export function createGitHubForge(options: GitHubForgeOptions): Forge {
 
     async unresolveComment(ref: RepoRef, commentId: string): Promise<void> {
       await graphql(ref, UNRESOLVE_MUTATION, { threadId: commentId });
+    },
+
+    async addReaction(ref: PullRequestRef, reaction: Reaction): Promise<void> {
+      // PR 在 GitHub 内部也是 issue,reaction 端点挂在 `/issues/{number}` 下。
+      // 已经加过时返回 200 而非 201,不重复添加,因此不必先读回。
+      await request(`/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/reactions`, {
+        method: "POST",
+        token: await tokenFor(ref),
+        body: JSON.stringify({ content: reaction }),
+      });
+    },
+
+    async removeReaction(ref: PullRequestRef, reaction: Reaction): Promise<void> {
+      // GitHub 按 reaction id 删,不像 Gitea 那样按 content 删,因此要先列出来。
+      // 过滤参数只收窄到 content,列表里仍可能有别人加的同一个 emoji——GitHub 不允许
+      // 删别人的 reaction,那些 DELETE 会失败,当作「不是我的」跳过即可,不必先问
+      // 「我是谁」。
+      const token = await tokenFor(ref);
+      const base = `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/reactions`;
+      const existing = await request<{ id: number }[]>(
+        `${base}?content=${encodeURIComponent(reaction)}&per_page=100`,
+        { token },
+      );
+      for (const { id } of existing) {
+        try {
+          await requestVoid(`${base}/${id}`, { method: "DELETE", token });
+        } catch {
+          // 别人加的同一个 emoji。审查进度是装饰,删不掉不该掀翻整次审查。
+        }
+      }
     },
 
     async cloneCredentials(ref: RepoRef): Promise<CloneCredentials> {

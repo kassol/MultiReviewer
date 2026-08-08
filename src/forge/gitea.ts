@@ -6,6 +6,7 @@ import type {
   Forge,
   PullRequest,
   PullRequestRef,
+  Reaction,
   RepoRef,
   ReviewDraft,
 } from "./forge.ts";
@@ -236,6 +237,23 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
         "POST",
         `${repoPath(ref)}/pulls/comments/${commentId}/unresolve`,
       );
+    },
+
+    async addReaction(ref: PullRequestRef, reaction: Reaction): Promise<void> {
+      // PR 在 Gitea 内部就是 issue,reaction 端点因此挂在 `/issues/{index}` 下,
+      // 序号与 PR 序号同一个。实测:首次加返回 201,重复加返回 200 且不重复添加,
+      // 因此不必先读回再判断。
+      await request(options, "POST", `${repoPath(ref)}/issues/${ref.number}/reactions`, {
+        content: reaction,
+      });
+    },
+
+    async removeReaction(ref: PullRequestRef, reaction: Reaction): Promise<void> {
+      // 按 content 删,不需要 reaction id(GitHub 那侧才需要)。实测删一个本来就
+      // 不存在的 reaction 同样返回 204,因此这个调用是幂等的。
+      await request(options, "DELETE", `${repoPath(ref)}/issues/${ref.number}/reactions`, {
+        content: reaction,
+      });
     },
 
     async cloneCredentials(_ref: RepoRef): Promise<CloneCredentials> {

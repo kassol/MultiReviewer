@@ -24,7 +24,8 @@ export type MergedFinding = {
  */
 const LINE_TOLERANCE = 3;
 
-const SEVERITY_RANK: Record<Severity, number> = { high: 3, medium: 2, low: 1 };
+/** 数字大的先行。合并后的那条取组内最高优先级。 */
+const SEVERITY_RANK: Record<Severity, number> = { P0: 3, P1: 2, P2: 1 };
 
 /**
  * 跨模型去重:同一文件且行号相差在阈值内的 Finding 合并为一条。

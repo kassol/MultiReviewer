@@ -70,7 +70,7 @@ test("GitHub 实现对真实 pull request 完成整条发布与处置链路", { 
     {
       file,
       line,
-      severity: "low",
+      severity: "P2",
       category: "maintainability",
       description: MARKER,
     },

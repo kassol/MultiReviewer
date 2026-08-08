@@ -48,7 +48,7 @@ process.on("message", () => {
 
   assert.equal(outcome.failure, undefined);
   assert.equal(outcome.findings.length, 1);
-  assert.equal(outcome.findings[0]!.severity, "high");
+  assert.equal(outcome.findings[0]!.severity, "P0");
   assert.equal(outcome.findings[0]!.category, "bug");
   assert.equal(outcome.findings[0]!.model, "stub-model");
   assert.deepEqual(outcome.anomalies, []);

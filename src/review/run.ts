@@ -97,6 +97,21 @@ function collapsedSection(summary: string, findings: readonly MergedFinding[]): 
   ];
 }
 
+/**
+ * Reaction 表达的是审查进度,是装饰。发不出去时忍下来——PR 上少一个 emoji 是小事,
+ * 一次审查因此白跑不是。缺 `write:issue` 的 bot 令牌走的就是这条路。
+ */
+async function tryReaction(action: () => Promise<void>): Promise<void> {
+  try {
+    await action();
+  } catch (error) {
+    console.error(
+      "[review] reaction 更新失败,审查照常:",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
 function reviewBody(
   fallbacks: readonly MergedFinding[],
   absent: readonly ReviewerOutcome[],
@@ -193,6 +208,12 @@ export async function runReview(
   const { forge } = deps;
   const startedAt = new Date();
   const pullRequest = await forge.getPullRequest(event);
+
+  // 挂上「正在审查」。同一个 PR 推了新 commit 会再跑一次,上一轮的结论先作废——
+  // 否则新代码还没看,PR 上却还挂着上一版的通过标记。
+  await tryReaction(() => forge.removeReaction(event, "+1"));
+  await tryReaction(() => forge.addReaction(event, "eyes"));
+
   const [changedFiles, credentials, priorComments] = await Promise.all([
     forge.listChangedFiles(event),
     forge.cloneCredentials(event),
@@ -349,12 +370,20 @@ export async function runReview(
 
     // 有缺席或覆盖不全的模型时即便零 Finding 也要发:读者需要知道这次审查覆盖面
     // 打了折扣。
-    if (!failed && (findings.length > 0 || absent.length > 0 || partial.length > 0)) {
+    const hasSomethingToSay =
+      findings.length > 0 || absent.length > 0 || partial.length > 0;
+    if (!failed && hasSomethingToSay) {
       await forge.createReview(event, {
         body: reviewBody(fallbacks, absent, partial, carried),
         commitSha: pullRequest.headSha,
         comments,
       });
+    }
+
+    // 跑成功却什么都没发现时,这次审查在 PR 上本来一点痕迹都不会留,与「审查根本
+    // 没跑」无从区分。这个赞就是那条痕迹。
+    if (!failed && !hasSomethingToSay) {
+      await tryReaction(() => forge.addReaction(event, "+1"));
     }
 
     return {
@@ -367,5 +396,8 @@ export async function runReview(
     };
   } finally {
     store.close();
+    // 「正在审查」一定要撤掉:成功、失败、中途抛异常都要。留着它 PR 上会永远挂着
+    // 一只眼睛,看起来像审查卡死了。
+    await tryReaction(() => forge.removeReaction(event, "eyes"));
   }
 }
