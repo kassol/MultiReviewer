@@ -42,7 +42,7 @@
 - Gitea 没有「一次列出 PR 全部 review comment」的端点,只能先列 review 再逐个取它的评论。列 review 分页(`page` / `limit`),取评论不分页。`comments_count` 为 0 的 review 直接跳过,省掉一次请求。
 - Gitea 的 resolve / unresolve 作用于**评论 id**,端点是 `POST /repos/{owner}/{repo}/pulls/comments/{id}/resolve`,路径里没有 PR 序号,返回 204 无正文。GitHub 那边作用于 thread,`ExistingReviewComment.id` 因此在两个平台上装的是不同的东西,只当不透明句柄用。
 - 调用 Gitea API 一律带 `Authorization: token <PAT>`,读取类调用也不例外——目标实例要求登录后才能调用。这条有测试守着,不靠自觉。
-- Gitea 的版本检查在 `main.ts` 启动时做一次,不合格就报错退出:版本不够时 resolve / unresolve 会 404,要等到第一次有人处置 Finding 才显形。企业版从 `/api/v1/version` 返回哪套版本号没有公开依据,版本号解析不出来时放行——把合规实例挡在门外比漏检更糟。
+- Gitea 的版本检查在 `main.ts` 启动时做一次,不合格就报错退出:版本不够时 resolve / unresolve 会 404,要等到第一次有人处置 Finding 才显形。企业版从 `/api/v1/version` 返回的是自家版本号:对企业版 26.4.4 实测读到 `26.4.4`,不是对应的社区版 `1.26.4`。版本号解析不出来时放行——把合规实例挡在门外比漏检更糟。
 - 凭据不写进 remote URL,也不落盘。每次 git 调用以 `http.extraHeader` 传入。
 - 模型凭据只经 `MODEL_API_KEY_ENV` 一个环境变量进入 Reviewer 子进程,不进 IPC 消息——消息会被日志与崩溃转储带出去。
 - Pi 的 `authPath`、`modelsPath` 与 agent 目录一律指向子进程私有的临时目录。默认值在 `~/.pi/agent` 下,那里的 `auth.json` 存着宿主机上配置过的每一家厂商的凭据。

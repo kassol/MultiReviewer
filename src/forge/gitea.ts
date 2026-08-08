@@ -93,9 +93,10 @@ async function requestJson<T>(
  * `GET /api/v1/version` 返回 `{"version": setting.AppVer}`
  * (`routers/api/v1/misc/version.go`,`modules/structs/miscellaneous.go` 的 `ServerVersion`)。
  *
- * 版本号读不出来时放行:企业版从这个端点返回的是自家版本号还是对应的社区版号,
- * 没有公开依据可查(企业版闭源,`AppVer` 是构建期注入)。把一个合规实例挡在门外
- * 比漏检更糟,因此只挡确定不合格的。
+ * 企业版返回的是自家的版本号:对企业版 26.4.4 实测,这个端点读到 `26.4.4` 而非对应
+ * 的社区版 `1.26.4`。同一次实测里匿名调用它得到 403,读取类调用同样要带凭据。
+ *
+ * 版本号解析不出来时放行。把一个合规实例挡在门外比漏检更糟,只挡确定不合格的。
  */
 export async function assertSupportedVersion(options: GiteaForgeOptions): Promise<void> {
   const { version } = await requestJson<{ version: string }>(options, "GET", "/version");
