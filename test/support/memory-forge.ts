@@ -8,7 +8,12 @@ import type {
   RepoRef,
   ReviewDraft,
 } from "../../src/forge/forge.ts";
-import type { Finding, ReviewRange, Reviewer } from "../../src/review/finding.ts";
+import type {
+  Finding,
+  ReviewRange,
+  Reviewer,
+  ReviewerOutcome,
+} from "../../src/review/finding.ts";
 
 export type MemoryForge = {
   forge: Forge;
@@ -57,6 +62,7 @@ export function memoryForge(init: {
 export function scriptedReviewer(
   model: string,
   findings: readonly Omit<Finding, "model">[],
+  extra?: Partial<Pick<ReviewerOutcome, "failure" | "anomalies" | "rejectedToolCalls">>,
 ): Reviewer & { calls: { range: ReviewRange; worktreePath: string }[] } {
   const calls: { range: ReviewRange; worktreePath: string }[] = [];
   return {
@@ -64,7 +70,13 @@ export function scriptedReviewer(
     calls,
     review: async (range, worktreePath) => {
       calls.push({ range, worktreePath });
-      return findings.map((f) => ({ ...f, model }));
+      return {
+        model,
+        findings: findings.map((f) => ({ ...f, model })),
+        anomalies: extra?.anomalies ?? [],
+        rejectedToolCalls: extra?.rejectedToolCalls ?? 0,
+        ...(extra?.failure === undefined ? {} : { failure: extra.failure }),
+      };
     },
   };
 }

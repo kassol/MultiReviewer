@@ -24,8 +24,34 @@ export type ReviewRange = {
   files: string[];
 };
 
+/**
+ * Reviewer 经 `report_finding` 报出的、尚未归一化的条目。
+ *
+ * `severity` 与 `category` 是宽松字符串:用字面量联合强制时模型会自造词汇导致调用
+ * 被拒、Finding 全部丢失(prototype 实测,见 ADR 0004)。归一化在服务端做。
+ */
+export type RawFinding = {
+  file: string;
+  line: number;
+  severity: string;
+  category: string;
+  description: string;
+};
+
+/** 一个 Reviewer 跑完之后的全部产出,含失败与异常,而不只是 Finding。 */
+export type ReviewerOutcome = {
+  model: string;
+  findings: Finding[];
+  /** 归一化失败的条目。记录下来,不静默丢弃。 */
+  anomalies: { raw: RawFinding; reason: string }[];
+  /** 被 Pi 校验拒绝的工具调用次数。不为零而 findings 为零即契约失配。 */
+  rejectedToolCalls: number;
+  /** 有值即该 Reviewer 失败,其 findings 不代表"代码没问题"。 */
+  failure?: string;
+};
+
 /** 绑定了具体模型的审查执行体。 */
 export interface Reviewer {
   readonly model: string;
-  review(range: ReviewRange, worktreePath: string): Promise<Finding[]>;
+  review(range: ReviewRange, worktreePath: string): Promise<ReviewerOutcome>;
 }

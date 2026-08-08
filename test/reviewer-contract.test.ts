@@ -1,0 +1,96 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { normalizeFinding } from "../src/reviewer/normalize.ts";
+import { reviewerEnv } from "../src/reviewer/env.ts";
+
+const RAW = {
+  file: "src/db.js",
+  line: 12,
+  severity: "high",
+  category: "security",
+  description: "SQL 拼接",
+};
+
+test("模型自造的同义词被归一化到契约允许的值", () => {
+  const cases: [string, string, string, string][] = [
+    // 输入 severity, 输入 category, 期望 severity, 期望 category
+    ["critical", "reliability", "high", "bug"],
+    ["major", "logic_error", "high", "bug"],
+    ["moderate", "correctness", "medium", "bug"],
+    ["minor", "style", "low", "maintainability"],
+    ["info", "architecture", "low", "design"],
+    ["MEDIUM", "Performance", "medium", "bug"],
+    ["  low  ", "logic error", "low", "bug"],
+  ];
+
+  for (const [severity, category, expectedSeverity, expectedCategory] of cases) {
+    const result = normalizeFinding({ ...RAW, severity, category }, "m");
+    assert.equal(result.ok, true, `${severity}/${category} 应当能归一化`);
+    if (!result.ok) continue;
+    assert.equal(result.finding.severity, expectedSeverity);
+    assert.equal(result.finding.category, expectedCategory);
+  }
+});
+
+test("Finding 附带提出它的模型标识", () => {
+  const result = normalizeFinding(RAW, "claude-haiku-4-5");
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.finding.model, "claude-haiku-4-5");
+});
+
+test("映射不上的条目记录为异常,不静默丢弃", () => {
+  const unknownSeverity = normalizeFinding({ ...RAW, severity: "catastrophic" }, "m");
+  assert.equal(unknownSeverity.ok, false);
+  if (unknownSeverity.ok) return;
+  assert.match(unknownSeverity.reason, /severity/);
+  assert.equal(unknownSeverity.raw.severity, "catastrophic");
+
+  const unknownCategory = normalizeFinding({ ...RAW, category: "vibes" }, "m");
+  assert.equal(unknownCategory.ok, false);
+  if (unknownCategory.ok) return;
+  assert.match(unknownCategory.reason, /category/);
+});
+
+test("缺字段或行号非法的条目记录为异常", () => {
+  for (const bad of [
+    { ...RAW, file: "" },
+    { ...RAW, description: "" },
+    { ...RAW, line: 0 },
+    { ...RAW, line: -3 },
+    { ...RAW, line: 1.5 },
+  ]) {
+    const result = normalizeFinding(bad, "m");
+    assert.equal(result.ok, false, `${JSON.stringify(bad)} 应当被判为异常`);
+  }
+});
+
+test("子进程只拿到自家厂商的凭据,拿不到 forge 凭据与其他厂商凭据", () => {
+  const parent = {
+    PATH: "/usr/bin",
+    HOME: "/home/svc",
+    GITHUB_TOKEN: "forge-secret",
+    GITEA_TOKEN: "forge-secret-2",
+    ANTHROPIC_API_KEY: "anthropic-secret",
+    DEEPSEEK_API_KEY: "deepseek-secret",
+  };
+
+  const env = reviewerEnv(parent, { ANTHROPIC_API_KEY: "anthropic-secret" });
+
+  assert.equal(env["ANTHROPIC_API_KEY"], "anthropic-secret");
+  assert.equal(env["DEEPSEEK_API_KEY"], undefined);
+  assert.equal(env["GITHUB_TOKEN"], undefined);
+  assert.equal(env["GITEA_TOKEN"], undefined);
+  // 非凭据的进程环境仍要传下去,否则子进程连 git 与 node 都找不到。
+  assert.equal(env["PATH"], "/usr/bin");
+  assert.equal(env["HOME"], "/home/svc");
+});
+
+test("父进程环境里的同名变量不会覆盖显式给定的厂商凭据", () => {
+  const env = reviewerEnv(
+    { ANTHROPIC_API_KEY: "stale-from-parent" },
+    { ANTHROPIC_API_KEY: "the-one-for-this-reviewer" },
+  );
+  assert.equal(env["ANTHROPIC_API_KEY"], "the-one-for-this-reviewer");
+});

@@ -2,3 +2,4 @@
 .env
 .scratch/
 node_modules/
+multireviewer.config.json

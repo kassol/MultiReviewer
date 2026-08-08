@@ -1,0 +1,4 @@
+# Pi 的传递依赖,其 build script 与本项目无关,不执行。
+allowBuilds:
+  "@google/genai": false
+  protobufjs: false
