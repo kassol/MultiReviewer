@@ -500,13 +500,32 @@ else
   exit 1
 fi
 
+# 下面这个 curl 是从本机发的,它证明不了 Gitea 到得了这个地址。地址落在只有本机认得
+# 的网段时先说破:docker 网桥地址(172.17.x)尤其容易误选——本机 curl 一通就过,而
+# Gitea 在别的机器上时那个地址根本不存在,投递一条也发不出来。
+PUBLIC_HOST=${MULTIREVIEWER_PUBLIC_URL#*://}
+PUBLIC_HOST=${PUBLIC_HOST%%[:/]*}
+case "$PUBLIC_HOST" in
+  localhost | 127.* | 0.0.0.0 | ::1 | 172.17.*)
+    warn "$PUBLIC_HOST 只有这台机器和它上面的容器认得。"
+    say "  Gitea 跑在别的机器上时,它连不到这个地址,投递会全部失败——而下面这个"
+    say "  自检照样会通过,因为它是从本机发的。"
+    say "  换成 Gitea 那侧访问得到的地址:本机的局域网 IP、域名、或反向代理地址。"
+    say "  本机的局域网地址:$(hostname -I 2>/dev/null || echo '用 ip -4 addr 查')"
+    SKIPPED+=("公网地址是 $PUBLIC_HOST,只有本机可达。以 Gitea 的投递记录为准")
+    ;;
+esac
+
 say "再从公网地址打同样的请求——这验反代与防火墙。"
 PROBE=$(curl -sS -o /dev/null -w '%{http_code}' -m 15 \
   -X POST "$MULTIREVIEWER_PUBLIC_URL" \
   -H 'Content-Type: application/json' -H 'X-Gitea-Event: pull_request' \
   -H 'X-Hub-Signature-256: sha256=deadbeef' -d '{}' 2>/dev/null) || PROBE="connect-failed"
 case "$PROBE" in
-  401) printf '  %s✓%s 公网 401,外面到得了它\n' "$GREEN" "$RESET" ;;
+  401)
+    printf '  %s✓%s 本机到这个地址是通的\n' "$GREEN" "$RESET"
+    note "这只说明本机可达。Gitea 到不到得了,只有它的投递记录说了算(下一步)。"
+    ;;
   connect-failed)
     printf '  %s✗ 连不上 %s%s\n' "$RED" "$MULTIREVIEWER_PUBLIC_URL" "$RESET"
     say "容器是好的,问题在反代或防火墙。"
@@ -543,9 +562,11 @@ else
   pause "保存好了吗?"
 
   say "在 webhook 详情页底部点「测试推送」,Gitea 会发一条投递。"
+  warn "这是唯一能证明 Gitea 到得了本服务的检查。前面的自检都是从本机发的。"
   note "它发的是 push 事件,服务会回 200 但不跑审查——这一步只验连通,不验审查。"
   step "回到 Gitea 页面,展开最近一次投递,确认响应是 200。"
-  note "401 说明两侧密钥不一致,回上一步重填。"
+  note "401 是两侧密钥不一致,回上一步重填。"
+  note "连接超时或拒绝,说明这个地址 Gitea 够不着,换一个它到得了的地址。"
   pause
 fi
 
