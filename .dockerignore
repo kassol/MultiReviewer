@@ -1,0 +1,24 @@
+# 宿主机的 node_modules 里有 darwin 专属的原生产物,进了镜像会在 Linux 上炸。
+# 依赖一律在镜像内重装。
+node_modules
+
+# 凭据与运行数据不进镜像。
+.env
+*.db
+.cache
+data
+
+.git
+.gitignore
+.scratch
+docs
+test
+scripts
+multireviewer.config.json
+multireviewer.config.example.json
+AGENTS.md
+CONTEXT.md
+README.md
+tsconfig.json
+docker-compose.yml
+Dockerfile

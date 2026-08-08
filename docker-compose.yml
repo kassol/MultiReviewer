@@ -1,0 +1,29 @@
+# 服务器上只需要这个文件、`.env` 与 `multireviewer.config.json` 三样,不需要源码。
+# 三样都由 scripts/setup.sh 在服务器上生成或引导填写。
+#
+# 镜像在本地构建后推到 registry,更新走 `docker compose pull && docker compose up -d`。
+
+services:
+  multireviewer:
+    image: ${MULTIREVIEWER_IMAGE:?请在 .env 里设置 MULTIREVIEWER_IMAGE}
+    restart: unless-stopped
+
+    # 以启动这套部署的那个宿主机用户身份运行,`./data` 因此天然可写,不需要 chown。
+    # 部署目录放在 home 下时尤其重要:把目录改成别的属主会让你自己写不进自己的 home。
+    # 实测容器在没有 passwd 条目的 uid 下照常工作(HOME 落到 /,无人写它)。
+    user: "${MULTIREVIEWER_UID:-1000}:${MULTIREVIEWER_GID:-1000}"
+
+    # 凭据与配置全部经环境变量进入容器。这个文件不含任何凭据值。
+    env_file: .env
+
+    # 容器内固定监听 3000。对外端口另用一个变量,与应用读的 MULTIREVIEWER_PORT 分开
+    # ——同名会让应用改成监听宿主端口号,映射当场对不上。
+    ports:
+      - "${MULTIREVIEWER_HOST_PORT:-3000}:3000"
+
+    volumes:
+      # SQLite 与工作副本缓存。工作副本是每个仓库一份完整 clone,磁盘占用看仓库大小。
+      # 路径相对于本文件所在目录,部署目录放哪里都行。
+      - ./data:/data
+      # 改模型组合只需改这个文件加重启,不必重新构建镜像。
+      - ./multireviewer.config.json:/app/multireviewer.config.json:ro

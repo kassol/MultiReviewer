@@ -16,6 +16,10 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `src/` — 编排服务源码,结构约定见 `src/AGENTS.md`。进程入口是 `src/main.ts`。
 - `multireviewer.config.example.json` — 模型组合配置的样例。实际配置放 `multireviewer.config.json`,不进版本库;凭据只写环境变量名,不写值。
 - `test/` — 测试,全部打在 `runReview` 一个入口上。`test/support/` 是内存 Forge、脚本化 Reviewer 与 git fixture。
+- `Dockerfile` / `.dockerignore` — 运行镜像。`node:24-slim` 加 git,依赖在镜像内重装(宿主机的 `node_modules` 含平台专属产物,不进镜像)。
+- `docker-compose.yml` — 服务器上的编排定义。与 `.env`、`multireviewer.config.json` 三个文件即可运行,不需要源码。
+- `scripts/build-push.sh` — 在开发机构建镜像并推到 registry,默认目标架构 `linux/amd64`。
+- `scripts/setup.sh` — 部署向导。在服务器上执行,逐步问出凭据、写 `.env` 与 `multireviewer.config.json`、拉镜像起容器、自检链路、指导注册 webhook。
 - `docs/adr/` — 架构决策记录。
 - `docs/idea.md` — 初始产品与架构草案,部分设定已被 ADR 推翻。
 - `docs/agents/` — Agent skills 的仓库级配置:issue tracker、triage 标签、domain docs 消费规则。
@@ -32,22 +36,54 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 
 ## 部署
 
-`pnpm start` 起一个 webhook 服务。两个平台的 webhook 都指向同一个端点(路径任意),content type 选 JSON,secret 填 `MULTIREVIEWER_WEBHOOK_SECRET` 的值,事件只需勾 pull request。
+部署形态是 Docker。镜像在开发机构建后推到 registry,服务器只拉镜像。服务器上放三个文件在同一目录即可,不需要源码:`docker-compose.yml`、`setup.sh`、以及向导生成的 `.env` 与 `multireviewer.config.json`。
+
+```
+# 开发机:构建并推送。开发机 arm64、服务器 amd64 时必须交叉构建,脚本已默认 linux/amd64
+scripts/build-push.sh registry.example.com/team/multireviewer:latest
+
+# 服务器:首次部署跑向导,九步问出凭据、拉镜像、起容器、自检链路、指导注册 webhook
+bash setup.sh
+
+# 服务器:后续更新
+docker compose pull && docker compose up -d
+```
+
+两处容易踩的地方:
+
+- **`MULTIREVIEWER_PORT` 与 `MULTIREVIEWER_HOST_PORT` 是两个东西。**容器内固定监听 3000(`MULTIREVIEWER_PORT` 在镜像里就设死了),对外映射用 `MULTIREVIEWER_HOST_PORT`。把宿主端口写进 `MULTIREVIEWER_PORT` 会让应用改去监听那个号,端口映射当场对不上。
+- **容器以宿主机上那个部署用户的身份运行**,由 `.env` 里的 `MULTIREVIEWER_UID` / `MULTIREVIEWER_GID` 指定(向导取 `id -u` / `id -g` 自动写入)。`./data` 因此天然可写,不需要 chown。部署目录放在 home 下时尤其要保持这样:把目录改成别的属主会让本人写不进自己的 home。镜像默认用户是 uid 1000 的 `node`,compose 的 `user:` 覆盖它。
+
+不用容器直接跑时 `pnpm start` 起同一个服务,启动时用 `--env-file-if-exists=.env` 读取同目录的 `.env`。
+
+两个平台的 webhook 都指向同一个端点(路径任意),content type 选 JSON,secret 填 `MULTIREVIEWER_WEBHOOK_SECRET` 的值,事件只需勾 pull request。
 
 必需的环境变量:
 
 - `MULTIREVIEWER_WEBHOOK_SECRET` — 校验投递签名的密钥,两个平台共用一个
 - 每个 Reviewer 在配置文件里声明的 `apiKeyEnv`,例如 `DEEPSEEK_API_KEY`
-- GitHub 凭据二选一:`MULTIREVIEWER_GITHUB_APP_ID` 加 `MULTIREVIEWER_GITHUB_PRIVATE_KEY_PATH`(生产,ADR 0005),或 `GITHUB_TOKEN`(开发)
+
+Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起得来却一次审查都跑不了比起不来更难发现:
+
+- Gitea:`MULTIREVIEWER_GITEA_URL`(实例根地址,例如 `https://gitea.example.com`)加 `MULTIREVIEWER_GITEA_TOKEN`(bot 账号的 PAT)
+- GitHub:`MULTIREVIEWER_GITHUB_APP_ID` 加 `MULTIREVIEWER_GITHUB_PRIVATE_KEY_PATH`(生产,ADR 0005),或 `GITHUB_TOKEN`(开发)
+
+只配其中一组即可。没配那一格的平台投递进来只被记录、不跑审查,响应仍是 200。
 
 可选的环境变量:
 
-- `MULTIREVIEWER_GITEA_URL` — Gitea 实例根地址,例如 `https://gitea.example.com`。设了它才建 Gitea 的 Forge,不设则 Gitea 的投递只被记录、不跑审查
-- `MULTIREVIEWER_GITEA_TOKEN` — bot 账号的 PAT。设了 `MULTIREVIEWER_GITEA_URL` 时必需
-- `MULTIREVIEWER_PORT` — 监听端口,默认 3000
-- `MULTIREVIEWER_CONFIG` — 配置文件路径,默认 `multireviewer.config.json`
-- `MULTIREVIEWER_DB` — SQLite 文件位置,默认 `multireviewer.db`
-- `MULTIREVIEWER_CACHE_DIR` — 工作副本缓存根目录,默认 `.cache/worktrees`
+- `MULTIREVIEWER_PORT` — 监听端口,默认 3000。镜像里已设为 3000,走容器时不要再改
+- `MULTIREVIEWER_CONFIG` — 配置文件路径,默认 `multireviewer.config.json`。镜像里是 `/app/multireviewer.config.json`
+- `MULTIREVIEWER_DB` — SQLite 文件位置,默认 `multireviewer.db`。镜像里是 `/data/multireviewer.db`
+- `MULTIREVIEWER_CACHE_DIR` — 工作副本缓存根目录,默认 `.cache/worktrees`。镜像里是 `/data/worktrees`
+
+只有 `docker-compose.yml` 读、应用不读的:
+
+- `MULTIREVIEWER_IMAGE` — 镜像引用,必填
+- `MULTIREVIEWER_HOST_PORT` — 对外映射的宿主机端口,默认 3000
+- `MULTIREVIEWER_UID` / `MULTIREVIEWER_GID` — 容器以哪个 uid/gid 运行,默认 1000
+
+部署目录放哪里都行,向导与 compose 的路径全部相对自身位置解析。`~/share/workspace` 与 `/srv/multireviewer` 一样能用。
 
 ### Gitea 的准备步骤
 
@@ -102,3 +138,6 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-08: 落地 issue #9。超大 Review Range 按文件分批,规模按 diff 的增删行数衡量,阈值配置项为 `maxChangedLinesPerBatch`,默认 2000。批次串行、批内 Reviewer 并行,工作副本每批都是完整的 head commit。部分批次失败的模型保留成功批次的 Finding 并在正文标注覆盖不全,与缺席分开呈现。
 - 2026-08-08: 落地 issue #3。Gitea 的 Forge 实现落地,`Forge` 接口未调整,GitHub 实现未动。端点与字段名逐处标注 go-gitea/gitea `release/v1.26` 的源码依据。三处与 GitHub 拼写不同:变更文件的状态是 `changed` / `deleted` 而非 `modified` / `removed`;没有「一次列出 PR 全部 review comment」的端点,只能先列 review 再逐个取;resolve / unresolve 作用于评论 id 而非会话。行级评论的 `new_position` 是文件行号,与接口语义一致。版本检查在 `main.ts` 启动时做一次;企业版从 `/api/v1/version` 返回哪套版本号查不到公开依据,读不出版本号时放行。
 - 2026-08-08: issue #3 的 Gitea 实测完成。对企业版 26.4.4 确认:`/api/v1/version` 返回的是企业版自家版本号(`26.4.4`,不是社区版 `1.26.4`);匿名调用该端点得 403,读取类调用同样要带凭据;PAT 的确切最小 scope 是 `write:repository` 一项,`write:issue` 不需要;clone 的 basic auth 用 bot 的 PAT 作密码、用户名任意——这一条在干净 HOME、屏蔽全局与系统 git 配置、无 SSH agent 的环境下单独复验过,排除了本机 keychain 与 SSH 私钥的干扰。同一组对照还确认:`http.extraHeader` 里的凭据无效时 git 直接失败,不会静默回落到 credential helper 里的其他凭据,因此宿主机配了 helper 也不会让审查以别人的身份发出。实测另暴露一点:真实实例的验证要指向没被本工具评论过的 PR,否则跨轮次匹配会把本轮 Finding 折叠掉。
+- 2026-08-08: 写部署向导 `scripts/setup.sh`,并补上部署时暴露的两处缺口。`.env` 此前没有任何东西读它,`pnpm start` 改为带 `--env-file-if-exists=.env`。`main.ts` 此前无条件要求 GitHub 凭据,只审 Gitea 的部署因此起不来;GitHub 那一格改成与 Gitea 对称的可选,并加上「一个 Forge 都没配就启动失败」的拦截——起得来却一次审查都跑不了的哑服务比起不来更难发现。新增 `test/main-boot.test.ts`,spawn 真实进程覆盖这两档。
+- 2026-08-08: 部署形态定为 Docker。镜像在开发机构建后推 registry,服务器只放 `docker-compose.yml`、`setup.sh` 与向导生成的两个文件,不需要源码。基础镜像选 `node:24-slim` 而非 alpine:依赖树里有平台专属预编译产物,musl 下未验证。镜像内必须装 git——工作副本靠 git 命令准备。宿主机的 `node_modules` 含 darwin 原生二进制,`.dockerignore` 排掉,依赖一律在镜像内重装。数据绑宿主机 `./data`,属主须为 uid/gid 1000。容器内监听端口固定 3000,对外映射另用 `MULTIREVIEWER_HOST_PORT`——与应用读的 `MULTIREVIEWER_PORT` 同名会让映射失效。镜像已实测:git 2.39.5、非 root 运行、启动监听、坏签名回 401;向导里两条依赖容器的校验也已对真实镜像验过正反两向。
+- 2026-08-08: 容器改为以宿主机上的部署用户身份运行(`user:` 取 `.env` 的 `MULTIREVIEWER_UID` / `MULTIREVIEWER_GID`,向导写入 `id -u` / `id -g`),取代原先「data 目录 chown 到 1000」的做法。部署目录放进 home 时,把目录改成别的属主会让本人写不进自己的 home。实测容器在没有 passwd 条目的 uid 下照常工作:HOME 落到 `/`,而本服务与 git 都不写 HOME。部署目录位置无约束,向导与 compose 的路径均相对自身解析,已在 `~/share/workspace` 下以 uid 501 跑通全流程。
