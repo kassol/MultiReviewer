@@ -6,4 +6,5 @@
 
 - 接口只包含两边都有的能力:创建带行级评论的 review、读回 review 评论及其 resolve 状态、resolve 与 unresolve、拉取 PR diff 与文件内容、接收 PR 事件。
 - GitHub 独有的能力不进入接口,即便开发阶段用得上。
-- Gitea 的最低支持版本由 resolve 端点的引入版本决定,需在部署文档中写明。
+- Gitea 的最低支持版本是 **1.26.0**。`POST /repos/{owner}/{repo}/pulls/comments/{id}/resolve` 与 `/unresolve` 两个端点在 v1.25.5 与 v1.24.7 的源码中均不存在,自 v1.26.0 起提供。Disposition 建在这对端点上,因此 1.26 以下的实例无法使用本工具。这个门槛很高:大量既有 Gitea 部署仍在 1.22 至 1.25,部署文档必须把它写在最显眼处。
+- 首个目标实例运行 1.26.4,满足要求。

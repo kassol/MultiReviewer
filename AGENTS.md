@@ -26,6 +26,7 @@ TypeScript / Node。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-cod
 - 领域术语以 `CONTEXT.md` 定义为准,代码、注释、沟通全程统一
 - commit message 用英文,简洁描述变更意图
 - forge adapter 的接口只包含 Gitea 与 GitHub 都具备的能力,以 Gitea 为基准
+- Gitea 最低支持 1.26.0(review comment 的 resolve / unresolve 端点自该版本提供)
 
 ## Agent skills
 
