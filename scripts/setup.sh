@@ -203,6 +203,34 @@ DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DEPLOY_DIR"
 ENV_FILE="$DEPLOY_DIR/.env"
 
+# compose 以「只读单文件」的方式绑定 multireviewer.config.json。绑定发生时宿主机上这
+# 个路径不存在的话,docker 会替你建一个同名目录、属主是 root,此后写配置就撞上
+# "Is a directory",而且没有 sudo 清不掉。第一条 compose 命令跑起来之前先坐实它是
+# 文件——数据目录那一步的探针就已经会起容器,那时配置还没写。
+if [[ -d multireviewer.config.json ]]; then
+  printf '\n  %s✗ multireviewer.config.json 是个目录,不是文件%s\n\n' "$RED" "$RESET"
+  printf '  这是上一次运行留下的残骸。清掉再重跑:\n\n'
+  printf '      %ssudo rm -rf %s/multireviewer.config.json%s\n\n' \
+    "$BOLD" "$DEPLOY_DIR" "$RESET"
+  exit 1
+fi
+[[ -f multireviewer.config.json ]] || : > multireviewer.config.json
+
+# 某个阶段要产出的值已经全在 .env 里时跳过它,重跑向导因此只补没做完的部分。
+# FORCE=1 强制每个阶段都重做。
+have_all() {
+  if [[ -n "${FORCE:-}" ]]; then return 1; fi
+  local key
+  for key in "$@"; do
+    [[ -n "$(_existing "$key" || true)" ]] || return 1
+  done
+  return 0
+}
+
+skipped_stage() {
+  note "已配置,跳过。要重做就 FORCE=1 重跑本脚本。"
+}
+
 banner "MultiReviewer 部署"
 
 # ── 1. 前置检查与镜像 ─────────────────────────────────────────────────────
@@ -281,16 +309,22 @@ pause
 
 # ── 3. Gitea 实例与 bot 凭据 ──────────────────────────────────────────────
 stage "Gitea 实例与 bot 凭据"
-say "审查评论以一个专用 bot 账号的身份发出。它需要:"
-step "一枚该账号签发的 PAT,scope 只勾 write:repository(实测确认的最小集合)。"
-step "该账号以协作者身份加入每一个要审查的仓库——Gitea 的 PAT scope 不限定到具体"
-say "  仓库,能访问哪些仓库完全取决于这一步。"
-note "两件事都做完了再往下。签发页在 <实例地址>/user/settings/applications"
+if have_all MULTIREVIEWER_GITEA_URL MULTIREVIEWER_GITEA_TOKEN; then
+  MULTIREVIEWER_GITEA_URL=$(_existing MULTIREVIEWER_GITEA_URL)
+  MULTIREVIEWER_GITEA_TOKEN=$(_existing MULTIREVIEWER_GITEA_TOKEN)
+  note "凭据已配置,只做连通与版本核对。要重填就 FORCE=1 重跑。"
+else
+  say "审查评论以一个专用 bot 账号的身份发出。它需要:"
+  step "一枚该账号签发的 PAT,scope 只勾 write:repository(实测确认的最小集合)。"
+  step "该账号以协作者身份加入每一个要审查的仓库——Gitea 的 PAT scope 不限定到具体"
+  say "  仓库,能访问哪些仓库完全取决于这一步。"
+  note "两件事都做完了再往下。签发页在 <实例地址>/user/settings/applications"
 
-ask        MULTIREVIEWER_GITEA_URL   "Gitea 实例根地址(如 https://gitea.example.com):"
-ask_secret MULTIREVIEWER_GITEA_TOKEN "粘贴 bot 账号的 PAT:"
-write_env  MULTIREVIEWER_GITEA_URL   "$MULTIREVIEWER_GITEA_URL"
-write_env  MULTIREVIEWER_GITEA_TOKEN "$MULTIREVIEWER_GITEA_TOKEN"
+  ask        MULTIREVIEWER_GITEA_URL   "Gitea 实例根地址(如 https://gitea.example.com):"
+  ask_secret MULTIREVIEWER_GITEA_TOKEN "粘贴 bot 账号的 PAT:"
+  write_env  MULTIREVIEWER_GITEA_URL   "$MULTIREVIEWER_GITEA_URL"
+  write_env  MULTIREVIEWER_GITEA_TOKEN "$MULTIREVIEWER_GITEA_TOKEN"
+fi
 
 say "拿这枚凭据读一次实例版本,当场验证地址与令牌。"
 GITEA_VERSION=$(curl -sS -f \
@@ -311,26 +345,34 @@ pause
 
 # ── 4. DeepSeek 密钥 ──────────────────────────────────────────────────────
 stage "DeepSeek 密钥"
-say "第一个 Reviewer 走 DeepSeek 官方接口。"
-open_url "https://platform.deepseek.com/api_keys"
-step "登录后进 API keys 页,点「创建 API key」。"
-step "密钥只在创建那一刻完整显示一次,当场复制。"
-ask_secret DEEPSEEK_API_KEY "粘贴 DeepSeek API key:"
-write_env  DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"
-note "这枚凭据只会进到跑 DeepSeek 那一个 Reviewer 子进程,其余子进程的环境里没有它。"
-pause
+if have_all DEEPSEEK_API_KEY; then
+  skipped_stage
+else
+  say "第一个 Reviewer 走 DeepSeek 官方接口。"
+  open_url "https://platform.deepseek.com/api_keys"
+  step "登录后进 API keys 页,点「创建 API key」。"
+  step "密钥只在创建那一刻完整显示一次,当场复制。"
+  ask_secret DEEPSEEK_API_KEY "粘贴 DeepSeek API key:"
+  write_env  DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"
+  note "这枚凭据只会进到跑 DeepSeek 那一个 Reviewer 子进程,其余子进程的环境里没有它。"
+  pause
+fi
 
 # ── 5. OpenRouter 密钥 ────────────────────────────────────────────────────
 stage "OpenRouter 密钥"
-say "第二个 Reviewer 走 OpenRouter,用一个与 DeepSeek 不同家的模型——"
-say "跨模型去重要有效,两个 Reviewer 得真的会看出不同的东西。"
-open_url "https://openrouter.ai/keys"
-step "登录后点 Create Key,填个名字(如 multireviewer)。"
-step "密钥形如 sk-or-v1-...,创建后复制。"
-ask_secret OPENROUTER_API_KEY "粘贴 OpenRouter API key:"
-write_env  OPENROUTER_API_KEY "$OPENROUTER_API_KEY"
-note "OpenRouter 账户里要有余额,否则第一次审查会以模型调用失败告终。"
-pause
+if have_all OPENROUTER_API_KEY; then
+  skipped_stage
+else
+  say "第二个 Reviewer 走 OpenRouter,用一个与 DeepSeek 不同家的模型——"
+  say "跨模型去重要有效,两个 Reviewer 得真的会看出不同的东西。"
+  open_url "https://openrouter.ai/keys"
+  step "登录后点 Create Key,填个名字(如 multireviewer)。"
+  step "密钥形如 sk-or-v1-...,创建后复制。"
+  ask_secret OPENROUTER_API_KEY "粘贴 OpenRouter API key:"
+  write_env  OPENROUTER_API_KEY "$OPENROUTER_API_KEY"
+  note "OpenRouter 账户里要有余额,否则第一次审查会以模型调用失败告终。"
+  pause
+fi
 
 # ── 6. 模型组合 ───────────────────────────────────────────────────────────
 stage "模型组合"
@@ -478,28 +520,34 @@ pause
 
 # ── 8. 在 Gitea 注册 webhook ──────────────────────────────────────────────
 stage "在 Gitea 注册 webhook"
-ask MULTIREVIEWER_GITEA_REPO "要审查的仓库(owner/repo):"
-write_env MULTIREVIEWER_GITEA_REPO "$MULTIREVIEWER_GITEA_REPO"
+if have_all MULTIREVIEWER_GITEA_REPO; then
+  MULTIREVIEWER_GITEA_REPO=$(_existing MULTIREVIEWER_GITEA_REPO)
+  note "$MULTIREVIEWER_GITEA_REPO 的 webhook 上一轮已经登记过,跳过。"
+  note "要重新登记(换地址、换密钥)就 FORCE=1 重跑。"
+else
+  ask MULTIREVIEWER_GITEA_REPO "要审查的仓库(owner/repo):"
+  write_env MULTIREVIEWER_GITEA_REPO "$MULTIREVIEWER_GITEA_REPO"
 
-HOOKS_URL="${MULTIREVIEWER_GITEA_URL%/}/${MULTIREVIEWER_GITEA_REPO}/settings/hooks"
-open_url "$HOOKS_URL"
-note "$HOOKS_URL"
-step "点「添加 Webhook」,类型选 Gitea。"
-step "目标 URL 填:$MULTIREVIEWER_PUBLIC_URL"
-step "POST Content Type 选 application/json。"
-step "密钥文本填(与服务侧同一个值):"
-printf '\n      %s%s%s\n\n' "$BOLD" "$MULTIREVIEWER_WEBHOOK_SECRET" "$RESET"
-step "触发条件选「自定义事件」,只勾 Pull Request。"
-step "勾上「激活」,保存。"
-note "组织级 webhook 也可以,一次覆盖名下全部仓库。"
-warn "密钥刚打在屏幕上了,分享终端记录前先清屏。"
-pause "保存好了吗?"
+  HOOKS_URL="${MULTIREVIEWER_GITEA_URL%/}/${MULTIREVIEWER_GITEA_REPO}/settings/hooks"
+  open_url "$HOOKS_URL"
+  note "$HOOKS_URL"
+  step "点「添加 Webhook」,类型选 Gitea。"
+  step "目标 URL 填:$MULTIREVIEWER_PUBLIC_URL"
+  step "POST Content Type 选 application/json。"
+  step "密钥文本填(与服务侧同一个值):"
+  printf '\n      %s%s%s\n\n' "$BOLD" "$MULTIREVIEWER_WEBHOOK_SECRET" "$RESET"
+  step "触发条件选「自定义事件」,只勾 Pull Request。"
+  step "勾上「激活」,保存。"
+  note "组织级 webhook 也可以,一次覆盖名下全部仓库。"
+  warn "密钥刚打在屏幕上了,分享终端记录前先清屏。"
+  pause "保存好了吗?"
 
-say "在 webhook 详情页底部点「测试推送」,Gitea 会发一条投递。"
-note "它发的是 push 事件,服务会回 200 但不跑审查——这一步只验连通,不验审查。"
-step "回到 Gitea 页面,展开最近一次投递,确认响应是 200。"
-note "401 说明两侧密钥不一致,回上一步重填。"
-pause
+  say "在 webhook 详情页底部点「测试推送」,Gitea 会发一条投递。"
+  note "它发的是 push 事件,服务会回 200 但不跑审查——这一步只验连通,不验审查。"
+  step "回到 Gitea 页面,展开最近一次投递,确认响应是 200。"
+  note "401 说明两侧密钥不一致,回上一步重填。"
+  pause
+fi
 
 # ── 9. 第一次真实审查 ─────────────────────────────────────────────────────
 stage "第一次真实审查"

@@ -85,6 +85,8 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 
 部署目录放哪里都行,向导与 compose 的路径全部相对自身位置解析。`~/share/workspace` 与 `/srv/multireviewer` 一样能用。
 
+向导可以中断后重跑:已经写进 `.env` 的值会被认出来,对应阶段直接跳过,只补没做完的部分。`FORCE=1 bash setup.sh` 强制每个阶段都重做。
+
 ### Gitea 的准备步骤
 
 **实例版本必须是社区版 1.26.0 / 企业版 26.0.0 以上。**Disposition 建立在 review 评论的 resolve / unresolve 端点上,而这对端点自该版本才提供,更低的版本用不了本工具(ADR 0002)。服务启动时会读 `GET /api/v1/version` 检查一次,不合格就报错退出。
@@ -141,3 +143,4 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-08: 写部署向导 `scripts/setup.sh`,并补上部署时暴露的两处缺口。`.env` 此前没有任何东西读它,`pnpm start` 改为带 `--env-file-if-exists=.env`。`main.ts` 此前无条件要求 GitHub 凭据,只审 Gitea 的部署因此起不来;GitHub 那一格改成与 Gitea 对称的可选,并加上「一个 Forge 都没配就启动失败」的拦截——起得来却一次审查都跑不了的哑服务比起不来更难发现。新增 `test/main-boot.test.ts`,spawn 真实进程覆盖这两档。
 - 2026-08-08: 部署形态定为 Docker。镜像在开发机构建后推 registry,服务器只放 `docker-compose.yml`、`setup.sh` 与向导生成的两个文件,不需要源码。基础镜像选 `node:24-slim` 而非 alpine:依赖树里有平台专属预编译产物,musl 下未验证。镜像内必须装 git——工作副本靠 git 命令准备。宿主机的 `node_modules` 含 darwin 原生二进制,`.dockerignore` 排掉,依赖一律在镜像内重装。数据绑宿主机 `./data`,属主须为 uid/gid 1000。容器内监听端口固定 3000,对外映射另用 `MULTIREVIEWER_HOST_PORT`——与应用读的 `MULTIREVIEWER_PORT` 同名会让映射失效。镜像已实测:git 2.39.5、非 root 运行、启动监听、坏签名回 401;向导里两条依赖容器的校验也已对真实镜像验过正反两向。
 - 2026-08-08: 容器改为以宿主机上的部署用户身份运行(`user:` 取 `.env` 的 `MULTIREVIEWER_UID` / `MULTIREVIEWER_GID`,向导写入 `id -u` / `id -g`),取代原先「data 目录 chown 到 1000」的做法。部署目录放进 home 时,把目录改成别的属主会让本人写不进自己的 home。实测容器在没有 passwd 条目的 uid 下照常工作:HOME 落到 `/`,而本服务与 git 都不写 HOME。部署目录位置无约束,向导与 compose 的路径均相对自身解析,已在 `~/share/workspace` 下以 uid 501 跑通全流程。
+- 2026-08-08: 修部署向导的一处硬故障。compose 以「只读单文件」绑定 `multireviewer.config.json`,而数据目录那一步的容器探针早于配置写入——绑定时宿主机上该路径不存在,docker 建了一个属主为 root 的同名目录,写配置随即撞上 "Is a directory" 且没有 sudo 清不掉。向导现在在第一条 compose 命令之前就坐实该路径是文件,并对残留的目录给出清理命令。同时让向导可续跑:已写进 `.env` 的值会让对应阶段跳过,`FORCE=1` 强制重做。
