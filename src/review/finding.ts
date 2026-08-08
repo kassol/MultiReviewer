@@ -38,6 +38,17 @@ export type RawFinding = {
   description: string;
 };
 
+/** 一个 Reviewer 一次执行的用量与成本,由 harness 自己统计。 */
+export type ReviewerUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  /** harness 依自身的定价表折算出的美元成本。 */
+  costUsd: number;
+};
+
 /** 一个 Reviewer 跑完之后的全部产出,含失败与异常,而不只是 Finding。 */
 export type ReviewerOutcome = {
   model: string;
@@ -48,6 +59,8 @@ export type ReviewerOutcome = {
   rejectedToolCalls: number;
   /** 有值即该 Reviewer 失败,其 findings 不代表"代码没问题"。 */
   failure?: string;
+  /** 子进程未回报结果即退出时取不到用量。 */
+  usage?: ReviewerUsage;
 };
 
 /** 绑定了具体模型的审查执行体。 */

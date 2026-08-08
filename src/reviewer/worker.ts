@@ -157,10 +157,23 @@ async function run(request: ReviewerRequest): Promise<void> {
       : undefined;
   const failure = thrown ?? session.agent.state.errorMessage ?? stopReasonFailure;
 
+  // 用量必须在 dispose 之前读:会话销毁后统计随之消失。
+  // 成本由 Pi 自带的定价表折算,该表内置在包里,不受空的 modelsPath 影响。
+  const stats = session.getSessionStats();
+  const usage = {
+    inputTokens: stats.tokens.input,
+    outputTokens: stats.tokens.output,
+    cacheReadTokens: stats.tokens.cacheRead,
+    cacheWriteTokens: stats.tokens.cacheWrite,
+    totalTokens: stats.tokens.total,
+    costUsd: stats.cost,
+  };
+
   session.dispose();
   send({
     kind: "done",
     rejectedToolCalls,
+    usage,
     ...(failure === undefined ? {} : { failure }),
   });
   // 显式退出。`dispose()` 之后 Pi 仍可能留着未关闭的 handle,加上 IPC 通道本身

@@ -2,7 +2,9 @@ import type { Forge, PullRequestRef, ReviewCommentDraft } from "../forge/forge.t
 import { prepareWorktree, readRangeDiff } from "../git/worktree.ts";
 import { dedupeFindings, type MergedFinding } from "./dedupe.ts";
 import type { Reviewer, ReviewerOutcome } from "./finding.ts";
+import { contentFingerprint } from "./fingerprint.ts";
 import { isInDiff, parseDiffRanges } from "./position.ts";
+import { openStore, type FindingRecord, type OutcomeRecord } from "./store.ts";
 
 export type PullRequestEvent = PullRequestRef;
 
@@ -11,7 +13,12 @@ export type ReviewRunDeps = {
   reviewers: readonly Reviewer[];
   /** 工作副本的缓存根目录,按仓库分子目录。 */
   cacheDir: string;
+  /** SQLite 数据库文件的位置。 */
+  dbPath: string;
 };
+
+/** 分批尚未实现,每次 Review Run 恒为一批。 */
+const BATCH_COUNT = 1;
 
 export type ReviewRunResult = {
   headSha: string;
@@ -80,6 +87,16 @@ function reviewBody(
   return sections.join("\n");
 }
 
+/** Review Range 的规模,用增删行数衡量。文件头的 `+++`/`---` 不算改动行。 */
+function countChangedLines(diff: string): number {
+  let count = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+") || line.startsWith("-")) count += 1;
+  }
+  return count;
+}
+
 /**
  * 一次 Review Run:解析 Review Range、准备工作副本、运行 Reviewer、发布 review 评论。
  */
@@ -88,6 +105,7 @@ export async function runReview(
   deps: ReviewRunDeps,
 ): Promise<ReviewRunResult> {
   const { forge } = deps;
+  const startedAt = new Date();
   const pullRequest = await forge.getPullRequest(event);
   const [changedFiles, credentials] = await Promise.all([
     forge.listChangedFiles(event),
@@ -111,51 +129,116 @@ export async function runReview(
       .map((f) => f.path),
   };
 
-  const outcomes = await Promise.all(
-    deps.reviewers.map((reviewer) => reviewer.review(range, worktree.path)),
+  // diff 在 Reviewer 之前读:Review Range 的规模要在开跑之前落库。
+  const diff = await readRangeDiff(
+    worktree.path,
+    worktree.mergeBaseSha,
+    pullRequest.headSha,
   );
 
-  const absent = outcomes.filter((outcome) => outcome.failure !== undefined);
-  // 全部失败时零 Finding 不代表代码没问题,发一条空 review 会把失败读成通过。
-  const failed = outcomes.length > 0 && absent.length === outcomes.length;
-
-  const findings = dedupeFindings(
-    outcomes.filter((o) => o.failure === undefined).flatMap((o) => o.findings),
-  );
-
-  const diffRanges = parseDiffRanges(
-    await readRangeDiff(worktree.path, worktree.mergeBaseSha, pullRequest.headSha),
-  );
-
-  const comments: ReviewCommentDraft[] = [];
-  const fallbacks: MergedFinding[] = [];
-  for (const finding of findings) {
-    if (isInDiff(diffRanges, finding.file, finding.line)) {
-      comments.push({
-        path: finding.file,
-        line: finding.line,
-        body: findingBody(finding),
-      });
-    } else {
-      fallbacks.push(finding);
-    }
-  }
-
-  // 有缺席模型时即便零 Finding 也要发:读者需要知道这次审查覆盖面打了折扣。
-  if (!failed && (findings.length > 0 || absent.length > 0)) {
-    await forge.createReview(event, {
-      body: reviewBody(fallbacks, absent),
-      commitSha: pullRequest.headSha,
-      comments,
-    });
-  }
-
-  return {
+  // 句柄的存活期覆盖整段审查(最长二十分钟),中途出错必须归还:webhook 服务是长跑
+  // 进程,泄漏的连接会一次次攒下来。
+  const store = openStore(deps.dbPath);
+  const runId = store.startRun({
+    owner: event.owner,
+    repo: event.repo,
+    pullNumber: event.number,
     headSha: pullRequest.headSha,
-    findings,
-    outcomes,
-    failed,
-    inlineCount: comments.length,
-    fallbackCount: fallbacks.length,
-  };
+    startedAt: startedAt.toISOString(),
+    changedFiles: range.files.length,
+    changedLines: countChangedLines(diff),
+    batchCount: BATCH_COUNT,
+  });
+
+  try {
+    const timed = await Promise.all(
+      deps.reviewers.map(async (reviewer) => {
+        const begin = Date.now();
+        const outcome = await reviewer.review(range, worktree.path);
+        return { outcome, durationMs: Date.now() - begin };
+      }),
+    );
+    const outcomes = timed.map((t) => t.outcome);
+
+    const absent = outcomes.filter((outcome) => outcome.failure !== undefined);
+    // 全部失败时零 Finding 不代表代码没问题,发一条空 review 会把失败读成通过。
+    const failed = outcomes.length > 0 && absent.length === outcomes.length;
+
+    const findings = dedupeFindings(
+      outcomes.filter((o) => o.failure === undefined).flatMap((o) => o.findings),
+    );
+
+    const diffRanges = parseDiffRanges(diff);
+
+    const comments: ReviewCommentDraft[] = [];
+    const fallbacks: MergedFinding[] = [];
+    for (const finding of findings) {
+      if (isInDiff(diffRanges, finding.file, finding.line)) {
+        comments.push({
+          path: finding.file,
+          line: finding.line,
+          body: findingBody(finding),
+        });
+      } else {
+        fallbacks.push(finding);
+      }
+    }
+
+    const outcomeRecords: OutcomeRecord[] = timed.map(({ outcome, durationMs }) => ({
+      model: outcome.model,
+      findingCount: outcome.findings.length,
+      anomalyCount: outcome.anomalies.length,
+      rejectedToolCalls: outcome.rejectedToolCalls,
+      durationMs,
+      ...(outcome.failure === undefined ? {} : { failure: outcome.failure }),
+      ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+    }));
+
+    // 落库的是每一条来源 Finding 而非合并后的那一条:采纳率要按提出它的模型统计。
+    // `groupIndex` 记住它们被合并成了同一条评论。
+    const findingRecords: FindingRecord[] = findings.flatMap((merged, groupIndex) =>
+      merged.sources.map((source) => {
+        const fingerprint = contentFingerprint(worktree.path, source.file, source.line);
+        return {
+          model: source.model,
+          file: source.file,
+          line: source.line,
+          severity: source.severity,
+          category: source.category,
+          description: source.description,
+          groupIndex,
+          ...(fingerprint === undefined ? {} : { fingerprint }),
+        };
+      }),
+    );
+
+    // 先落库再发布:发布失败不该把这次 Review Run 的过程记录一并丢掉。
+    store.finishRun(runId, {
+      finishedAt: new Date().toISOString(),
+      durationMs: Date.now() - startedAt.getTime(),
+      failed,
+      outcomes: outcomeRecords,
+      findings: findingRecords,
+    });
+
+    // 有缺席模型时即便零 Finding 也要发:读者需要知道这次审查覆盖面打了折扣。
+    if (!failed && (findings.length > 0 || absent.length > 0)) {
+      await forge.createReview(event, {
+        body: reviewBody(fallbacks, absent),
+        commitSha: pullRequest.headSha,
+        comments,
+      });
+    }
+
+    return {
+      headSha: pullRequest.headSha,
+      findings,
+      outcomes,
+      failed,
+      inlineCount: comments.length,
+      fallbackCount: fallbacks.length,
+    };
+  } finally {
+    store.close();
+  }
 }

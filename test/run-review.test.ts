@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 import { runReview } from "../src/review/run.ts";
-import { makeCacheDir, makeRepo } from "./support/git-fixture.ts";
+import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
 
 const BASE_CALC = `export function add(a: number, b: number) {
@@ -34,7 +34,8 @@ function setup(findingLine: number) {
     head: { "src/calc.ts": HEAD_CALC },
   });
   const cache = makeCacheDir();
-  cleanups.push(repo.cleanup, cache.cleanup);
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const forge = memoryForge({
     pullRequest: {
@@ -57,15 +58,15 @@ function setup(findingLine: number) {
     },
   ]);
 
-  return { repo, cache, forge, reviewer };
+  return { repo, cache, db, forge, reviewer };
 }
 
 test("行号落在 diff 内的 Finding 发布为行级评论", async () => {
-  const { cache, forge, reviewer } = setup(6);
+  const { cache, db, forge, reviewer } = setup(6);
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
   );
 
   assert.equal(forge.createdReviews.length, 1);
@@ -78,11 +79,11 @@ test("行号落在 diff 内的 Finding 发布为行级评论", async () => {
 });
 
 test("行号落不到 diff 内的 Finding 退化为 PR 级评论且内容不丢", async () => {
-  const { cache, forge, reviewer } = setup(11);
+  const { cache, db, forge, reviewer } = setup(11);
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
   );
 
   assert.equal(forge.createdReviews.length, 1);
@@ -100,7 +101,8 @@ test("Reviewer 拿到的 Review Range 以 merge-base 为基准,不是 base 分�
     baseAdvance: { "docs/note.md": "base 分支在 PR 拉出之后又前进了\n" },
   });
   const cache = makeCacheDir();
-  cleanups.push(repo.cleanup, cache.cleanup);
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const forge = memoryForge({
     pullRequest: {
@@ -116,7 +118,7 @@ test("Reviewer 拿到的 Review Range 以 merge-base 为基准,不是 base 分�
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
   );
 
   assert.notEqual(repo.baseSha, repo.mergeBaseSha);
@@ -133,7 +135,8 @@ test("同一仓库的第二次 Review Run 复用缓存并增量 fetch 到新的 
     head: { "src/calc.ts": HEAD_CALC },
   });
   const cache = makeCacheDir();
-  cleanups.push(repo.cleanup, cache.cleanup);
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const forge = memoryForge({
     pullRequest: {
@@ -147,7 +150,12 @@ test("同一仓库的第二次 Review Run 复用缓存并增量 fetch 到新的 
   });
   const reviewer = scriptedReviewer("stub-model", []);
   const event = { owner: "acme", repo: "widgets", number: 7 };
-  const deps = { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir };
+  const deps = {
+    forge: forge.forge,
+    reviewers: [reviewer],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  };
 
   await runReview(event, deps);
   const worktree = reviewer.calls[0]!.worktreePath;
@@ -167,11 +175,11 @@ test("同一仓库的第二次 Review Run 复用缓存并增量 fetch 到新的 
 });
 
 test("工作副本 checkout 到 head commit,Reviewer 读到的是改动后的代码", async () => {
-  const { cache, forge, reviewer } = setup(6);
+  const { cache, db, forge, reviewer } = setup(6);
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
   );
 
   const worktree = reviewer.calls[0]!.worktreePath;

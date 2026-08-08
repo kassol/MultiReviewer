@@ -7,6 +7,7 @@ import type {
   ReviewRange,
   Reviewer,
   ReviewerOutcome,
+  ReviewerUsage,
 } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, reviewerEnv } from "./env.ts";
 import { normalizeFinding } from "./normalize.ts";
@@ -57,6 +58,7 @@ export function runInChild(
     const findings: Finding[] = [];
     const anomalies: { raw: RawFinding; reason: string }[] = [];
     let rejectedToolCalls = 0;
+    let usage: ReviewerUsage | undefined;
     let done: { rejectedToolCalls: number; failure?: string } | undefined;
     let settled = false;
     let graceTimer: NodeJS.Timeout | undefined;
@@ -100,6 +102,7 @@ export function runInChild(
         anomalies,
         rejectedToolCalls,
         ...(failure === undefined ? {} : { failure }),
+        ...(usage === undefined ? {} : { usage }),
       });
     };
 
@@ -116,6 +119,7 @@ export function runInChild(
         return;
       }
       rejectedToolCalls = message.rejectedToolCalls;
+      usage = message.usage;
       done = message;
       // 结果已经拿到,不该再为一个赖着不退出的子进程等满超时。
       clearTimeout(timer);

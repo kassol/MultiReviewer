@@ -1,4 +1,4 @@
-import type { ReviewRange } from "../review/finding.ts";
+import type { ReviewRange, ReviewerUsage } from "../review/finding.ts";
 import type { RawFinding } from "./normalize.ts";
 
 /** 主进程交给 Reviewer 子进程的任务。 */
@@ -23,4 +23,6 @@ export type WorkerMessage =
       rejectedToolCalls: number;
       /** 会话内可见的失败原因,来自 errorMessage 或最后一条消息的 stopReason。 */
       failure?: string;
+      /** Pi 会话统计出的用量与成本。会话没建起来时取不到。 */
+      usage?: ReviewerUsage;
     };

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import { runReview } from "../src/review/run.ts";
-import { makeCacheDir, makeRepo } from "./support/git-fixture.ts";
+import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
 
 const BASE = `export function sub(a, b) {
@@ -36,7 +36,8 @@ after(() => {
 function setup() {
   const repo = makeRepo({ base: { "src/m.js": BASE }, head: { "src/m.js": HEAD } });
   const cache = makeCacheDir();
-  cleanups.push(repo.cleanup, cache.cleanup);
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const forge = memoryForge({
     pullRequest: {
@@ -49,7 +50,7 @@ function setup() {
     changedFiles: [{ path: "src/m.js", status: "modified" }],
   });
 
-  return { cache, forge, event: { owner: "acme", repo: "widgets", number: 1 } };
+  return { cache, db, forge, event: { owner: "acme", repo: "widgets", number: 1 } };
 }
 
 const AT_LINE_2 = {
@@ -61,7 +62,7 @@ const AT_LINE_2 = {
 };
 
 test("两个模型对同一处的 Finding 合并为一条,来源模型齐全", async () => {
-  const { cache, forge, event } = setup();
+  const { cache, db, forge, event } = setup();
 
   const result = await runReview(event, {
     forge: forge.forge,
@@ -70,6 +71,7 @@ test("两个模型对同一处的 Finding 合并为一条,来源模型齐全", a
       scriptedReviewer("model-b", [{ ...AT_LINE_2, description: "减法结果偏移" }]),
     ],
     cacheDir: cache.dir,
+    dbPath: db.path,
   });
 
   assert.equal(result.findings.length, 1);
@@ -85,7 +87,7 @@ test("两个模型对同一处的 Finding 合并为一条,来源模型齐全", a
 });
 
 test("行号相差在阈值内视为同一处,超出阈值分开", async () => {
-  const { cache, forge, event } = setup();
+  const { cache, db, forge, event } = setup();
 
   const result = await runReview(event, {
     forge: forge.forge,
@@ -98,6 +100,7 @@ test("行号相差在阈值内视为同一处,超出阈值分开", async () => {
       ]),
     ],
     cacheDir: cache.dir,
+    dbPath: db.path,
   });
 
   assert.equal(result.findings.length, 2);
@@ -113,7 +116,8 @@ test("不同文件的同一行号不合并", async () => {
     head: { "src/m.js": HEAD, "src/n.js": HEAD },
   });
   const cache = makeCacheDir();
-  cleanups.push(repo.cleanup, cache.cleanup);
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const forge = memoryForge({
     pullRequest: {
@@ -137,6 +141,7 @@ test("不同文件的同一行号不合并", async () => {
         scriptedReviewer("model-a", [AT_LINE_2, { ...AT_LINE_2, file: "src/n.js" }]),
       ],
       cacheDir: cache.dir,
+      dbPath: db.path,
     },
   );
 
@@ -144,7 +149,7 @@ test("不同文件的同一行号不合并", async () => {
 });
 
 test("一个 Reviewer 失败时其余结果照常发布,正文列出缺席的模型", async () => {
-  const { cache, forge, event } = setup();
+  const { cache, db, forge, event } = setup();
 
   const result = await runReview(event, {
     forge: forge.forge,
@@ -153,6 +158,7 @@ test("一个 Reviewer 失败时其余结果照常发布,正文列出缺席的模
       scriptedReviewer("model-b", [], { failure: "402 dead credential" }),
     ],
     cacheDir: cache.dir,
+    dbPath: db.path,
   });
 
   assert.equal(result.failed, false);
@@ -164,7 +170,7 @@ test("一个 Reviewer 失败时其余结果照常发布,正文列出缺席的模
 });
 
 test("全部 Reviewer 失败时记录为失败,且不发布空的 review", async () => {
-  const { cache, forge, event } = setup();
+  const { cache, db, forge, event } = setup();
 
   const result = await runReview(event, {
     forge: forge.forge,
@@ -173,6 +179,7 @@ test("全部 Reviewer 失败时记录为失败,且不发布空的 review", async
       scriptedReviewer("model-b", [], { failure: "402" }),
     ],
     cacheDir: cache.dir,
+    dbPath: db.path,
   });
 
   assert.equal(result.failed, true);
@@ -180,12 +187,13 @@ test("全部 Reviewer 失败时记录为失败,且不发布空的 review", async
 });
 
 test("零 Finding 但 Reviewer 都成功时,不算失败", async () => {
-  const { cache, forge, event } = setup();
+  const { cache, db, forge, event } = setup();
 
   const result = await runReview(event, {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [])],
     cacheDir: cache.dir,
+    dbPath: db.path,
   });
 
   assert.equal(result.failed, false);

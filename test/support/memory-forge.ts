@@ -62,7 +62,9 @@ export function memoryForge(init: {
 export function scriptedReviewer(
   model: string,
   findings: readonly Omit<Finding, "model">[],
-  extra?: Partial<Pick<ReviewerOutcome, "failure" | "anomalies" | "rejectedToolCalls">>,
+  extra?: Partial<
+    Pick<ReviewerOutcome, "failure" | "anomalies" | "rejectedToolCalls" | "usage">
+  >,
 ): Reviewer & { calls: { range: ReviewRange; worktreePath: string }[] } {
   const calls: { range: ReviewRange; worktreePath: string }[] = [];
   return {
@@ -76,6 +78,7 @@ export function scriptedReviewer(
         anomalies: extra?.anomalies ?? [],
         rejectedToolCalls: extra?.rejectedToolCalls ?? 0,
         ...(extra?.failure === undefined ? {} : { failure: extra.failure }),
+        ...(extra?.usage === undefined ? {} : { usage: extra.usage }),
       };
     },
   };

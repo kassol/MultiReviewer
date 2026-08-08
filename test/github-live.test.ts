@@ -76,7 +76,12 @@ test("GitHub 实现对真实 pull request 完成整条发布与处置链路", { 
     },
   ]);
 
-  const result = await runReview(ref, { forge, reviewers: [reviewer], cacheDir });
+  const result = await runReview(ref, {
+    forge,
+    reviewers: [reviewer],
+    cacheDir,
+    dbPath: join(cacheDir, "multireviewer.db"),
+  });
   assert.equal(result.inlineCount, 1);
   assert.equal(result.fallbackCount, 0);
 

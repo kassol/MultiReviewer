@@ -93,3 +93,12 @@ export function makeCacheDir(): { dir: string; cleanup(): void } {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-cache-"));
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
+
+/** 在临时目录里指一个数据库文件的位置。文件由第一次打开时创建。 */
+export function makeDbPath(): { path: string; cleanup(): void } {
+  const dir = mkdtempSync(join(tmpdir(), "multireviewer-db-"));
+  return {
+    path: join(dir, "multireviewer.db"),
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
