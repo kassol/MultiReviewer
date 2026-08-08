@@ -39,8 +39,8 @@ export type WebhookServerDeps = {
   /** 校验投递签名的密钥,两个平台共用一个。 */
   secret: string;
   /**
-   * 按来源平台索引的 Forge。Gitea 的实现尚未落地(issue #3),那一格可以缺失;
-   * 缺失时记录下来并放行投递,#3 落地后填上这一格即可,本文件不必再动。
+   * 按来源平台索引的 Forge。某个平台没有配凭据时那一格可以缺失,缺失时记录下来
+   * 并放行投递——是本服务的配置缺口,不是投递的问题。
    */
   forges: Partial<Record<Platform, Forge>>;
   reviewers: readonly Reviewer[];

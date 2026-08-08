@@ -4,6 +4,11 @@
 import { readFileSync } from "node:fs";
 
 import { buildReviewers, DEFAULT_CONFIG_PATH, loadConfig } from "./config.ts";
+import {
+  assertSupportedVersion,
+  createGiteaForge,
+  type GiteaForgeOptions,
+} from "./forge/gitea.ts";
 import { createGitHubForge, type GitHubAuth } from "./forge/github.ts";
 import { createWebhookServer } from "./webhook/server.ts";
 
@@ -32,13 +37,27 @@ function githubAuth(): GitHubAuth {
   };
 }
 
+/** Gitea 用 bot 账号加 scoped PAT(ADR 0005)。没配就不建这一格。 */
+function giteaOptions(): GiteaForgeOptions | undefined {
+  const baseUrl = process.env["MULTIREVIEWER_GITEA_URL"];
+  if (baseUrl === undefined || baseUrl === "") return undefined;
+  return { baseUrl, token: required("MULTIREVIEWER_GITEA_TOKEN") };
+}
+
 const config = loadConfig(process.env["MULTIREVIEWER_CONFIG"] ?? DEFAULT_CONFIG_PATH);
 const port = Number(process.env["MULTIREVIEWER_PORT"] ?? DEFAULT_PORT);
 
+const gitea = giteaOptions();
+// 版本检查在启动时做一次。实例版本不够时 resolve / unresolve 会 404,Disposition 整
+// 条链路都是哑的,而这要等到第一次有人处置 Finding 才会显形——宁可起不来。
+if (gitea !== undefined) await assertSupportedVersion(gitea);
+
 const server = createWebhookServer({
   secret: required("MULTIREVIEWER_WEBHOOK_SECRET"),
-  // Gitea 的实现还没有(issue #3),落地后填上这一格即可。
-  forges: { github: createGitHubForge({ auth: githubAuth() }) },
+  forges: {
+    github: createGitHubForge({ auth: githubAuth() }),
+    ...(gitea === undefined ? {} : { gitea: createGiteaForge(gitea) }),
+  },
   reviewers: buildReviewers(config),
   cacheDir: process.env["MULTIREVIEWER_CACHE_DIR"] ?? ".cache/worktrees",
   dbPath: process.env["MULTIREVIEWER_DB"] ?? "multireviewer.db",

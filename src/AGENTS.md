@@ -37,7 +37,12 @@
 - 幂等键是「仓库 + head commit」,落在 `webhook_delivery` 表的 UNIQUE 约束上,靠插入冲突判重而不是先查后插:并发投递时先查后插会两个请求都查不到、都开跑。`review_run` 上不加同样的约束——人手动重审同一个 head commit 是合法的。
 - Webhook handler 立即返回 200,Review Run 在后台跑。后台任务的 rejection 必须接住并记录,否则会变成 unhandledRejection 把这个长跑进程带崩。
 - `Forge` 接口只包含 Gitea 与 GitHub 都具备的能力(ADR 0002)。实现 GitHub 适配时不得因其能力更强而扩张接口。
-- 行号一律指 head commit 中该文件的 1-indexed 行号。Gitea 的 `new_position` 与 GitHub 的 `line` 都是这个语义,接口不暴露 diff 内偏移。
+- 行号一律指 head commit 中该文件的 1-indexed 行号。Gitea 的 `new_position` 与 GitHub 的 `line` 都是这个语义,接口不暴露 diff 内偏移。Gitea 读回时行号在 `position` 上,`original_position` 是旧文件一侧的行号,两者只有一个非零(`services/convert/pull_review.go` 的 `ToPullReviewComment` 按内部 `line` 的正负分流)。旧侧的评论对应不到 head commit 里的行,直接跳过。
+- Gitea 的变更文件状态与 GitHub 拼写不同:「修改」是 `changed`、「删除」是 `deleted`,另有 `copied` / `unchanged`。照抄 GitHub 的 `modified` / `removed` 会把全部修改过的文件误判成新增。
+- Gitea 没有「一次列出 PR 全部 review comment」的端点,只能先列 review 再逐个取它的评论。列 review 分页(`page` / `limit`),取评论不分页。`comments_count` 为 0 的 review 直接跳过,省掉一次请求。
+- Gitea 的 resolve / unresolve 作用于**评论 id**,端点是 `POST /repos/{owner}/{repo}/pulls/comments/{id}/resolve`,路径里没有 PR 序号,返回 204 无正文。GitHub 那边作用于 thread,`ExistingReviewComment.id` 因此在两个平台上装的是不同的东西,只当不透明句柄用。
+- 调用 Gitea API 一律带 `Authorization: token <PAT>`,读取类调用也不例外——目标实例要求登录后才能调用。这条有测试守着,不靠自觉。
+- Gitea 的版本检查在 `main.ts` 启动时做一次,不合格就报错退出:版本不够时 resolve / unresolve 会 404,要等到第一次有人处置 Finding 才显形。企业版从 `/api/v1/version` 返回哪套版本号没有公开依据,版本号解析不出来时放行——把合规实例挡在门外比漏检更糟。
 - 凭据不写进 remote URL,也不落盘。每次 git 调用以 `http.extraHeader` 传入。
 - 模型凭据只经 `MODEL_API_KEY_ENV` 一个环境变量进入 Reviewer 子进程,不进 IPC 消息——消息会被日志与崩溃转储带出去。
 - Pi 的 `authPath`、`modelsPath` 与 agent 目录一律指向子进程私有的临时目录。默认值在 `~/.pi/agent` 下,那里的 `auth.json` 存着宿主机上配置过的每一家厂商的凭据。
@@ -56,3 +61,4 @@
 - 2026-08-08: 落地 issue #7。跨轮次匹配靠评论正文里的指纹锚点,`fingerprint.ts` 扩出锚点的读写。`runReview` 开始时读回既有评论,匹配成功的 Finding 折进 review 正文并把 resolve 状态落进 `finding.disposition`。`Forge` 接口未扩张。
 - 2026-08-08: 落地 issue #8。新增 `webhook/server.ts` 与进程入口 `main.ts`。HTTP 层用 Node 内置的 `node:http`,不引入框架。`store.ts` 新增 `webhook_delivery` 表与 `claimDelivery`,并把 SQLite 的 busy timeout 设为 5 秒——webhook 层与后台 Review Run 各持一个句柄写同一个文件,默认的 0 会让撞上写锁的那一方当场报错。注入边界未增加:webhook 层的测试走真实 `runReview` 加内存 Forge 与脚本化 Reviewer。
 - 2026-08-08: 落地 issue #9。新增 `review/batch.ts`(切批与批次结果合并),`position.ts` 扩出 `changedLinesByFile`,`run.ts` 的规模统计改由它汇总。`ReviewerOutcome` 扩出 `incompleteCoverage` 表达部分批次失败。`store.ts` 的 `sumUsage` 改为只取 `usage` 一个字段并导出,`batch.ts` 复用它。注入边界未增加。
+- 2026-08-08: 落地 issue #3。新增 `forge/gitea.ts`,导出 `createGiteaForge` 与 `assertSupportedVersion`。`Forge` 接口未调整,`forge/github.ts` 未动——Gitea 能做到接口要求的每一件事,没有需要收窄的地方。`main.ts` 填上 `forges.gitea` 那一格,凭据取自 `MULTIREVIEWER_GITEA_URL` 与 `MULTIREVIEWER_GITEA_TOKEN`,没配就不建这一格。测试打在 fetch 边界上(`test/gitea-forge.test.ts`),另有默认跳过的真实实例验证(`test/gitea-live.test.ts`)。
