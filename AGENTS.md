@@ -8,18 +8,23 @@ MultiReviewer:基于真实 Coding Agent 的多模型并行 PR 智能审查工具
 
 ## 技术栈
 
-TypeScript / Node。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004。持久化用 SQLite。
+TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内置的 `node:test`。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004。持久化用 SQLite。包管理用 pnpm。
 
 ## 目录索引
 
 - `CONTEXT.md` — 领域术语表,代码与沟通的统一语言以此为准。
+- `src/` — 编排服务源码,结构约定见 `src/AGENTS.md`。
+- `test/` — 测试,全部打在 `runReview` 一个入口上。`test/support/` 是内存 Forge、脚本化 Reviewer 与 git fixture。
 - `docs/adr/` — 架构决策记录。
 - `docs/idea.md` — 初始产品与架构草案,部分设定已被 ADR 推翻。
 - `docs/agents/` — Agent skills 的仓库级配置:issue tracker、triage 标签、domain docs 消费规则。
 
 ## 常用命令
 
-暂无。
+- `pnpm check` — 类型检查加全部测试,提交前跑它
+- `pnpm typecheck` — 仅类型检查
+- `pnpm test` — 仅测试
+- `MULTIREVIEWER_LIVE_PR=owner/repo#123 GITHUB_TOKEN=$(gh auth token) pnpm test` — 追加运行对真实 pull request 的验证,它会真实发布评论并改动 resolve 状态
 
 ## 全局规范
 
@@ -28,6 +33,8 @@ TypeScript / Node。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-cod
 - forge adapter 的接口只包含 Gitea 与 GitHub 都具备的能力,以 Gitea 为基准
 - Gitea 最低支持社区版 1.26.0 / 企业版 26.0.0(review comment 的 resolve / unresolve 端点自该版本提供)
 - 调用 Gitea API 一律携带凭据,目标实例要求登录后才能调用
+- 测试只验证外部可观察的行为,全部打在 `runReview` 上,经 `Forge` 与 `Reviewer` 两个注入边界控制输入;git 与 SQLite 用真实实现,落在临时目录
+- 需要真实凭据或真实平台的测试默认跳过,由环境变量显式开启
 
 ## Agent skills
 
@@ -52,3 +59,4 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-07: 跑通 `report_finding` 机制的 prototype,四家厂商模型验证通过,结论折入 ADR 0004。原型保存在 `prototype/report-finding` 分支,不进主干。
 - 2026-08-08: 证实目标实例为 Gitea 企业版 26.4.4(对应社区版 1.26.4),最低版本要求写入 ADR 0002。凭据选型定为 Gitea 用 bot 账号加 scoped PAT、GitHub 用 App,见 ADR 0005。
 - 2026-08-08: 隔离边界从整个服务下移到单个 Reviewer:每个 Reviewer 跑在独立子进程中并只持有自家厂商凭据,见 ADR 0004 的执行环境一节。评估并否决了以 agentOS 作为沙箱层。
+- 2026-08-08: 落地 issue #2。建立 `Forge` 接口与 GitHub 实现、工作副本的准备与缓存、`runReview` 骨架与位置校验。工具链定为 Node 24 原生运行 TypeScript 加 `node:test`,运行时零第三方依赖。
