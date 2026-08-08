@@ -62,7 +62,22 @@ CREATE TABLE IF NOT EXISTS finding (
 );
 
 CREATE INDEX IF NOT EXISTS finding_by_run ON finding(run_id);
+
+CREATE TABLE IF NOT EXISTS webhook_delivery (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  head_sha TEXT NOT NULL,
+  claimed_at TEXT NOT NULL,
+  UNIQUE (owner, repo, head_sha)
+);
 `;
+
+/**
+ * 等锁的上限。webhook 服务里 webhook 层与后台 Review Run 各持一个句柄写同一个文件,
+ * 默认的 0 会让撞上写锁的那一方当场报错,而这里等几十毫秒就过去了。
+ */
+const BUSY_TIMEOUT_MS = 5_000;
 
 /** Review Run 开始时即已知的元数据。 */
 export type RunMeta = {
@@ -126,6 +141,14 @@ export type Store = {
   finishRun(runId: number, result: RunResult): void;
   /** 按模型与 category 聚合 Finding 的处置结果。 */
   dispositionsByModelAndCategory(): DispositionRow[];
+  /**
+   * 领走一次 webhook 投递。同一个「仓库 + head commit」只有第一次返回 true。
+   *
+   * 判重靠 UNIQUE 约束上的插入冲突,不先查后插:并发投递时先查后插会两个请求都查不到、
+   * 都开跑。幂等键只挡自动触发的重复投递,`review_run` 上不加同样的约束——人手动
+   * 重审同一个 head commit 是合法的。
+   */
+  claimDelivery(owner: string, repo: string, headSha: string): boolean;
   close(): void;
 };
 
@@ -166,7 +189,7 @@ export function sumUsage(
 }
 
 export function openStore(dbPath: string): Store {
-  const db = new DatabaseSync(dbPath);
+  const db = new DatabaseSync(dbPath, { timeout: BUSY_TIMEOUT_MS });
   db.exec(SCHEMA);
 
   return {
@@ -281,6 +304,16 @@ export function openStore(dbPath: string): Store {
         unresolved: Number(row["unresolved"]),
         unknown: Number(row["unknown"]),
       }));
+    },
+
+    claimDelivery(owner, repo, headSha) {
+      const result = db
+        .prepare(
+          `INSERT OR IGNORE INTO webhook_delivery (owner, repo, head_sha, claimed_at)
+           VALUES (?, ?, ?, ?)`,
+        )
+        .run(owner, repo, headSha, new Date().toISOString());
+      return Number(result.changes) > 0;
     },
 
     close() {

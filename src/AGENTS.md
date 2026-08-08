@@ -10,6 +10,8 @@
 - `git/` — 工作副本的准备与 diff 读取,直接调用 git 命令。
 - `review/` — Review Run 的编排。`run.ts` 是唯一入口 `runReview`,其余是它的内部构件:`store.ts` 是 SQLite 持久化,`fingerprint.ts` 算 Finding 的内容指纹并读写评论正文里的指纹锚点,`position.ts` 解析 diff(可评论的行区间与每个文件的改动行数),`batch.ts` 切批并合并各批次的执行结果。
 - `reviewer/` — Reviewer 的真实实现。`pi-reviewer.ts` 在主进程侧管子进程,`worker.ts` 是子进程入口,两者只经 `protocol.ts` 定义的消息通信。
+- `webhook/` — `server.ts` 是 webhook 端点:校验签名、把两个平台的投递规范化成同一形状、判幂等、异步触发 `runReview`。
+- `main.ts` — 进程入口。读配置与环境变量,建出 Forge 与 Reviewer,起 webhook 服务。
 
 ## 模块规范
 
@@ -26,6 +28,14 @@
 - 批次串行,批内 Reviewer 并行。并行跑批会同时开「批数 × 模型数」个子进程,对宿主机不友好。
 - 一个模型的多批结果合并成一个 `ReviewerOutcome`,`rejectedToolCalls`、`anomalies`、`usage` 与耗时按批次累加。全部批次都失败才算缺席(记 `failure`,findings 丢弃);部分批次失败时保留成功批次的 Finding 并照常发布,记 `incompleteCoverage`,在 review 正文里与缺席分成两段呈现。
 - 汇总去重在全部批次跑完之后做一次,一次 Review Run 只发一次 review。
+- 审查不设置任何阻断合并的状态。本工具从不调用 status / check API,`Forge` 接口里也没有这类方法,`createReview` 一律用不阻断的 COMMENT 事件。这是有意的:审查是建议,人保留最终判断权。
+- Webhook 单一端点接两个平台,靠请求头区分来源。必须先认 `X-Gitea-Event`——Gitea 为兼容 GitHub 的接收端把 `X-GitHub-Event` 一起发了,先认 GitHub 会把 Gitea 的投递按 GitHub 的 action 拼写解析,结果一条都不触发。
+- 签名头两个平台共用 `X-Hub-Signature-256`(`sha256=` 加原始 body 的 HMAC-SHA256 十六进制)。Gitea 另发的 `X-Gitea-Signature` 内容相同、只是没有前缀,不必再认。比对用 `timingSafeEqual`,长度不等时先短路——它在长度不同时抛异常。
+- 「PR 新增 commit」的 action 两个平台拼写不同:GitHub 是 `synchronize`,Gitea 是 `synchronized`。规范化后统一为 `new-commit`。凡是照抄 GitHub 拼写的地方都会让 Gitea 收不到事件,依据写在 `webhook/server.ts` 的注释里。
+- 只有 PR 打开与 PR 新增 commit 触发 Review Run。草稿 PR 在触发层用规范化事件里的 `draft` 挡掉,不进 `runReview`。
+- Webhook 的状态码语义:签名不过 401,事件类型或 action 不关心 200(投递是成功的,只是没有活要干),body 解析不了或字段对不上 400(平台改字段名时要在投递记录里显形),来源平台还没有 Forge 实现 200(是本服务的配置缺口,不是投递的问题)。
+- 幂等键是「仓库 + head commit」,落在 `webhook_delivery` 表的 UNIQUE 约束上,靠插入冲突判重而不是先查后插:并发投递时先查后插会两个请求都查不到、都开跑。`review_run` 上不加同样的约束——人手动重审同一个 head commit 是合法的。
+- Webhook handler 立即返回 200,Review Run 在后台跑。后台任务的 rejection 必须接住并记录,否则会变成 unhandledRejection 把这个长跑进程带崩。
 - `Forge` 接口只包含 Gitea 与 GitHub 都具备的能力(ADR 0002)。实现 GitHub 适配时不得因其能力更强而扩张接口。
 - 行号一律指 head commit 中该文件的 1-indexed 行号。Gitea 的 `new_position` 与 GitHub 的 `line` 都是这个语义,接口不暴露 diff 内偏移。
 - 凭据不写进 remote URL,也不落盘。每次 git 调用以 `http.extraHeader` 传入。
@@ -35,7 +45,7 @@
 
 ## 依赖关系
 
-`review/` 依赖 `forge/` 与 `git/` 的类型与函数。`reviewer/` 依赖 `review/` 的领域类型,反向不依赖——`runReview` 只认 `Reviewer` 接口。`forge/` 与 `git/` 互不依赖。
+`review/` 依赖 `forge/` 与 `git/` 的类型与函数。`reviewer/` 依赖 `review/` 的领域类型,反向不依赖——`runReview` 只认 `Reviewer` 接口。`forge/` 与 `git/` 互不依赖。`webhook/` 依赖 `review/` 的 `runReview` 与 `openStore`、`forge/` 的接口类型,反向不依赖。`main.ts` 依赖以上全部,只有它读环境变量。
 
 第三方依赖只有 Pi(`@earendil-works/pi-coding-agent`)与它的 `typebox`,且只在 `reviewer/` 内使用。
 
@@ -44,4 +54,5 @@
 - 2026-08-08: 建立 `forge/`、`git/`、`review/` 三个目录。落地 `Forge` 接口与 GitHub 实现、工作副本准备、`runReview` 骨架(issue #2)。
 - 2026-08-08: 落地 issue #6。新增 `review/store.ts` 与 `review/fingerprint.ts`。`ReviewerOutcome` 扩出 `usage`,取自 Pi 的 `session.getSessionStats()`,经 `done` 消息回传。Review Range 的 diff 提前到 Reviewer 之前读,使规模能在开跑之前落库。
 - 2026-08-08: 落地 issue #7。跨轮次匹配靠评论正文里的指纹锚点,`fingerprint.ts` 扩出锚点的读写。`runReview` 开始时读回既有评论,匹配成功的 Finding 折进 review 正文并把 resolve 状态落进 `finding.disposition`。`Forge` 接口未扩张。
+- 2026-08-08: 落地 issue #8。新增 `webhook/server.ts` 与进程入口 `main.ts`。HTTP 层用 Node 内置的 `node:http`,不引入框架。`store.ts` 新增 `webhook_delivery` 表与 `claimDelivery`,并把 SQLite 的 busy timeout 设为 5 秒——webhook 层与后台 Review Run 各持一个句柄写同一个文件,默认的 0 会让撞上写锁的那一方当场报错。注入边界未增加:webhook 层的测试走真实 `runReview` 加内存 Forge 与脚本化 Reviewer。
 - 2026-08-08: 落地 issue #9。新增 `review/batch.ts`(切批与批次结果合并),`position.ts` 扩出 `changedLinesByFile`,`run.ts` 的规模统计改由它汇总。`ReviewerOutcome` 扩出 `incompleteCoverage` 表达部分批次失败。`store.ts` 的 `sumUsage` 改为只取 `usage` 一个字段并导出,`batch.ts` 复用它。注入边界未增加。

@@ -13,7 +13,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 ## 目录索引
 
 - `CONTEXT.md` — 领域术语表,代码与沟通的统一语言以此为准。
-- `src/` — 编排服务源码,结构约定见 `src/AGENTS.md`。
+- `src/` — 编排服务源码,结构约定见 `src/AGENTS.md`。进程入口是 `src/main.ts`。
 - `multireviewer.config.example.json` — 模型组合配置的样例。实际配置放 `multireviewer.config.json`,不进版本库;凭据只写环境变量名,不写值。
 - `test/` — 测试,全部打在 `runReview` 一个入口上。`test/support/` 是内存 Forge、脚本化 Reviewer 与 git fixture。
 - `docs/adr/` — 架构决策记录。
@@ -22,11 +22,29 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 
 ## 常用命令
 
+- `pnpm start` — 起 webhook 服务,环境变量见「部署」
 - `pnpm check` — 类型检查加全部测试,提交前跑它
 - `pnpm typecheck` — 仅类型检查
 - `pnpm test` — 仅测试
 - `MULTIREVIEWER_LIVE_PR=owner/repo#123 GITHUB_TOKEN=$(gh auth token) pnpm test` — 追加运行对真实 pull request 的验证,它会真实发布评论并改动 resolve 状态
 - `MULTIREVIEWER_SMOKE_PROVIDER=deepseek MULTIREVIEWER_SMOKE_MODEL=deepseek-v4-flash MULTIREVIEWER_SMOKE_ENV=DEEPSEEK_API_KEY pnpm test` — 追加运行 `report_finding` 与真实模型之间的契约验证,它会真实调用模型并产生费用
+
+## 部署
+
+`pnpm start` 起一个 webhook 服务。两个平台的 webhook 都指向同一个端点(路径任意),content type 选 JSON,secret 填 `MULTIREVIEWER_WEBHOOK_SECRET` 的值,事件只需勾 pull request。
+
+必需的环境变量:
+
+- `MULTIREVIEWER_WEBHOOK_SECRET` — 校验投递签名的密钥,两个平台共用一个
+- 每个 Reviewer 在配置文件里声明的 `apiKeyEnv`,例如 `DEEPSEEK_API_KEY`
+- GitHub 凭据二选一:`MULTIREVIEWER_GITHUB_APP_ID` 加 `MULTIREVIEWER_GITHUB_PRIVATE_KEY_PATH`(生产,ADR 0005),或 `GITHUB_TOKEN`(开发)
+
+可选的环境变量:
+
+- `MULTIREVIEWER_PORT` — 监听端口,默认 3000
+- `MULTIREVIEWER_CONFIG` — 配置文件路径,默认 `multireviewer.config.json`
+- `MULTIREVIEWER_DB` — SQLite 文件位置,默认 `multireviewer.db`
+- `MULTIREVIEWER_CACHE_DIR` — 工作副本缓存根目录,默认 `.cache/worktrees`
 
 ## 全局规范
 
@@ -66,4 +84,5 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-08: 落地 issue #5。跨模型去重按同文件加行号阈值合并,合并保留全部来源模型与各自表述。模型组合移入全局配置文件。缺席模型列进 review 正文,全部 Reviewer 失败时不发布空 review。
 - 2026-08-08: 落地 issue #6。Review Run、Reviewer 执行结果与每条来源 Finding 落 SQLite,驱动选 Node 内置的 `node:sqlite`,不引入第三方驱动。用量与成本取自 Pi 的 `session.getSessionStats()`,实测 deepseek-v4-flash 一次审查得到非零成本,定价表内置在 Pi 包里,不受空的 `modelsPath` 影响。Finding 的内容指纹取指向行前后各 3 行、归一化空白后的 sha256。
 - 2026-08-08: 落地 issue #7。跨轮次匹配的锚点是评论正文里的 HTML 注释 `<!-- multireviewer:<指纹> -->`,两个平台的 markdown 渲染都会把它剥掉。带锚点即本工具发的评论,人写的评论不参与匹配。匹配成功的 Finding 不再重发行级评论,折进 review 正文的 `<details>` 段,已 resolve 与未 resolve 分别标注,读回的状态落进 `finding.disposition`。
+- 2026-08-08: 落地 issue #8。PR 打开与新增 commit 经 webhook 触发审查,HTTP 层用 Node 内置的 `node:http`,不引入框架。两个平台共用 `X-Hub-Signature-256` 校验签名;来源靠 `X-Gitea-Event` 优先识别——Gitea 把 `X-GitHub-Event` 一起发了。「PR 新增 commit」的 action 两个平台拼写不同(GitHub `synchronize`、Gitea `synchronized`),依据取自 go-gitea/gitea `release/v1.26` 源码。幂等键是「仓库 + head commit」,靠 `webhook_delivery` 表的 UNIQUE 插入冲突判重。审查不设置任何阻断合并的状态。
 - 2026-08-08: 落地 issue #9。超大 Review Range 按文件分批,规模按 diff 的增删行数衡量,阈值配置项为 `maxChangedLinesPerBatch`,默认 2000。批次串行、批内 Reviewer 并行,工作副本每批都是完整的 head commit。部分批次失败的模型保留成功批次的 Finding 并在正文标注覆盖不全,与缺席分开呈现。
