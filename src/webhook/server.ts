@@ -49,9 +49,16 @@ export type WebhookServerDeps = {
   maxChangedLinesPerBatch?: number;
   /**
    * 后台 Review Run 结束时回调,`error` 有值即这次投递没跑成——平台缺 Forge 而被放掉
-   * 时也走这里。不传则把失败写进 stderr。
+   * 时也走这里。不传则把结果写进 stdout、把失败写进 stderr。
    */
   onRunSettled?: (event: NormalizedEvent, error?: unknown) => void;
+  /**
+   * 每条通过签名校验的投递记一行,说明这次做了什么。不传则写 stdout。
+   *
+   * 没有这行记录时,这个服务在正常工作与完全收不到投递之间看起来一模一样:两种情况的
+   * 日志都只有启动那一句。测试注入它来消掉噪音。
+   */
+  onDelivery?: (message: string) => void;
 };
 
 /** 两个平台标识 pull request 事件的头值相同。 */
@@ -188,10 +195,18 @@ async function readBody(
   return Buffer.concat(chunks);
 }
 
+/** 日志里指认一次投递。head commit 取前 7 位,与 git 的短 SHA 一致。 */
+function describe(event: NormalizedEvent): string {
+  return `${event.platform} ${event.owner}/${event.repo}#${event.number} ${event.action} @${event.headSha.slice(0, 7)}`;
+}
+
 function logFailure(event: NormalizedEvent, error?: unknown): void {
-  if (error === undefined) return;
+  if (error === undefined) {
+    console.log(`[webhook] ${describe(event)} — 审查结束`);
+    return;
+  }
   console.error(
-    `Review Run 失败 ${event.owner}/${event.repo}#${event.number}@${event.headSha}:`,
+    `[webhook] ${describe(event)} — 审查失败:`,
     error instanceof Error ? error.message : String(error),
   );
 }
@@ -239,23 +254,40 @@ async function handle(
     return send(res, 401);
   }
 
+  // 签名过了才记日志:未认证的请求可以随便发,记它们等于把日志交给外人写。
+  const log = deps.onDelivery ?? ((message: string) => console.log(`[webhook] ${message}`));
+
   // 不关心的事件类型不是错误,投递本身是成功的,只是没有活要干。
   const platform = pullRequestSource(req);
-  if (platform === undefined) return send(res, 200);
+  if (platform === undefined) {
+    const name = req.headers["x-gitea-event"] ?? req.headers["x-github-event"] ?? "(无)";
+    log(`收到 ${String(name)} 事件,只有 pull request 会触发审查`);
+    return send(res, 200);
+  }
 
   let payload: unknown;
   try {
     payload = JSON.parse(body.toString("utf8"));
   } catch {
+    log("body 不是合法 JSON,回 400");
     return send(res, 400);
   }
 
   const event = normalizeEvent(platform, payload);
-  if (event === "ignored") return send(res, 200);
-  if (event === "malformed") return send(res, 400);
+  if (event === "ignored") {
+    log(`${platform} 的 ${String((payload as RawPayload).action)} 动作不触发审查`);
+    return send(res, 200);
+  }
+  if (event === "malformed") {
+    log(`${platform} 的 payload 缺必需字段,回 400`);
+    return send(res, 400);
+  }
 
   // 草稿 PR 在触发层就挡掉,不进 runReview:作者还没打算让人看这份代码。
-  if (event.draft) return send(res, 200);
+  if (event.draft) {
+    log(`${describe(event)} — 草稿,不审`);
+    return send(res, 200);
+  }
 
   const forge = deps.forges[platform];
   if (forge === undefined) {
@@ -267,8 +299,12 @@ async function handle(
     return send(res, 200);
   }
 
-  if (!claim(deps.dbPath, event)) return send(res, 200);
+  if (!claim(deps.dbPath, event)) {
+    log(`${describe(event)} — 这个 head commit 已经审过,跳过`);
+    return send(res, 200);
+  }
 
+  log(`${describe(event)} — 开始审查`);
   // 先回 200 再开跑:一次审查可能要跑很久,平台等不到那时候就会判超时。
   send(res, 200);
   startRun(deps, forge, event);

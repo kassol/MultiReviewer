@@ -114,6 +114,8 @@ async function startHarness(options: HarnessOptions = {}) {
   };
 
   const settled: Settle[] = [];
+  // 收进数组而不是打到 stdout:测试里既要能断言,又不该刷屏。
+  const deliveries: string[] = [];
   let waiting: { count: number; resolve: () => void }[] = [];
 
   const server = createWebhookServer({
@@ -122,6 +124,7 @@ async function startHarness(options: HarnessOptions = {}) {
     reviewers: [options.reviewer ?? scriptedReviewer("stub-model", [])],
     cacheDir: cache.dir,
     dbPath: db.path,
+    onDelivery: (message) => deliveries.push(message),
     onRunSettled: (event, error) => {
       settled.push({ event, ...(error === undefined ? {} : { error }) });
       waiting = waiting.filter((w) => {
@@ -170,6 +173,7 @@ async function startHarness(options: HarnessOptions = {}) {
     forge: base,
     dispatched,
     settled,
+    deliveries,
     control,
     post,
     deliver,
@@ -374,4 +378,42 @@ test("来源平台还没有 Forge 实现时记录下来并返回 200", async () 
   assert.deepEqual(h.dispatched, []);
   assert.equal(h.settled.length, 1);
   assert.notEqual(h.settled[0]!.error, undefined);
+});
+
+test("每条通过签名的投递都记一行,说明这次做了什么", async () => {
+  const h = await startHarness();
+
+  // 触发审查的那一条。
+  await h.deliver("gitea", "opened", { headSha: h.repo.headSha });
+  await h.settledAtLeast(1);
+  assert.match(h.deliveries[0]!, /gitea .+#7 opened @/);
+  assert.match(h.deliveries[0]!, /开始审查/);
+
+  // 重复投递、草稿、不触发的 action、非 pull request 事件,四种「没动静」各自留痕。
+  await h.deliver("gitea", "opened", { headSha: h.repo.headSha });
+  await h.deliver("gitea", "opened", { headSha: h.repo.headSha, draft: true });
+  await h.deliver("gitea", "labeled", { headSha: h.repo.headSha });
+  await h.post(JSON.stringify({}), {
+    "x-gitea-event": "push",
+    "x-hub-signature-256": sign(JSON.stringify({})),
+  });
+
+  const joined = h.deliveries.join("\n");
+  assert.match(joined, /已经审过,跳过/);
+  assert.match(joined, /草稿,不审/);
+  assert.match(joined, /labeled 动作不触发审查/);
+  assert.match(joined, /收到 push 事件/);
+});
+
+test("签名不过的投递不进日志——否则日志由外人写", async () => {
+  const h = await startHarness();
+  const body = JSON.stringify(prPayload("opened", h.repo.headSha));
+
+  const response = await h.post(body, {
+    "x-gitea-event": "pull_request",
+    "x-hub-signature-256": "sha256=deadbeef",
+  });
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(h.deliveries, []);
 });

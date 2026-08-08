@@ -36,6 +36,7 @@
 - Webhook 的状态码语义:签名不过 401,事件类型或 action 不关心 200(投递是成功的,只是没有活要干),body 解析不了或字段对不上 400(平台改字段名时要在投递记录里显形),来源平台还没有 Forge 实现 200(是本服务的配置缺口,不是投递的问题)。
 - 幂等键是「仓库 + head commit」,落在 `webhook_delivery` 表的 UNIQUE 约束上,靠插入冲突判重而不是先查后插:并发投递时先查后插会两个请求都查不到、都开跑。`review_run` 上不加同样的约束——人手动重审同一个 head commit 是合法的。
 - Webhook handler 立即返回 200,Review Run 在后台跑。后台任务的 rejection 必须接住并记录,否则会变成 unhandledRejection 把这个长跑进程带崩。
+- 每条通过签名校验的投递记一行,写明这次做了什么(开始审查 / 草稿不审 / 已审过跳过 / action 不触发 / 非 pull request 事件)。没有这行时,服务正常工作与完全收不到投递在日志上一模一样,只有启动那一句。记录点在签名校验之后:未认证的请求谁都能发,记它们等于把日志交给外人写。日志出口是 `onDelivery`,与 `onRunSettled` 一样是可注入的,测试收进数组而不刷屏。
 - `Forge` 接口只包含 Gitea 与 GitHub 都具备的能力(ADR 0002)。实现 GitHub 适配时不得因其能力更强而扩张接口。
 - 行号一律指 head commit 中该文件的 1-indexed 行号。Gitea 的 `new_position` 与 GitHub 的 `line` 都是这个语义,接口不暴露 diff 内偏移。Gitea 读回时行号在 `position` 上,`original_position` 是旧文件一侧的行号,两者只有一个非零(`services/convert/pull_review.go` 的 `ToPullReviewComment` 按内部 `line` 的正负分流)。旧侧的评论对应不到 head commit 里的行,直接跳过。
 - Gitea 的变更文件状态与 GitHub 拼写不同:「修改」是 `changed`、「删除」是 `deleted`,另有 `copied` / `unchanged`。照抄 GitHub 的 `modified` / `removed` 会把全部修改过的文件误判成新增。
@@ -62,3 +63,4 @@
 - 2026-08-08: 落地 issue #8。新增 `webhook/server.ts` 与进程入口 `main.ts`。HTTP 层用 Node 内置的 `node:http`,不引入框架。`store.ts` 新增 `webhook_delivery` 表与 `claimDelivery`,并把 SQLite 的 busy timeout 设为 5 秒——webhook 层与后台 Review Run 各持一个句柄写同一个文件,默认的 0 会让撞上写锁的那一方当场报错。注入边界未增加:webhook 层的测试走真实 `runReview` 加内存 Forge 与脚本化 Reviewer。
 - 2026-08-08: 落地 issue #9。新增 `review/batch.ts`(切批与批次结果合并),`position.ts` 扩出 `changedLinesByFile`,`run.ts` 的规模统计改由它汇总。`ReviewerOutcome` 扩出 `incompleteCoverage` 表达部分批次失败。`store.ts` 的 `sumUsage` 改为只取 `usage` 一个字段并导出,`batch.ts` 复用它。注入边界未增加。
 - 2026-08-08: 落地 issue #3。新增 `forge/gitea.ts`,导出 `createGiteaForge` 与 `assertSupportedVersion`。`Forge` 接口未调整,`forge/github.ts` 未动——Gitea 能做到接口要求的每一件事,没有需要收窄的地方。`main.ts` 填上 `forges.gitea` 那一格,凭据取自 `MULTIREVIEWER_GITEA_URL` 与 `MULTIREVIEWER_GITEA_TOKEN`,没配就不建这一格。测试打在 fetch 边界上(`test/gitea-forge.test.ts`),另有默认跳过的真实实例验证(`test/gitea-live.test.ts`)。
+- 2026-08-08: `webhook/server.ts` 补投递日志。此前服务只在失败时输出,收到投递、判定不处理、审查跑完都完全静默,「Gitea 发了但没反应」无从排查。新增可注入的 `onDelivery`,默认写 stdout。
