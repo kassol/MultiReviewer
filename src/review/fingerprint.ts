@@ -63,6 +63,9 @@ export function fingerprintAnchor(fingerprint: string, file?: string): string {
 export function parseFingerprintAnchors(
   body: string,
 ): { fingerprint: string; file: string | undefined }[] {
+  // `listReviewBodies` 把平台读回的 `review.body` 直接喂进来,理论上可能是 null。这里是
+  // 所有调用方的唯一汇聚点,挡在这一处:一条正文异常不该在 `matchAll` 上把整轮 Run 带崩。
+  if (typeof body !== "string") return [];
   return [...body.matchAll(ANCHOR)].map((match) => ({
     fingerprint: match[1]!,
     file: match[2],

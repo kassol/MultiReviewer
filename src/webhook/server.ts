@@ -174,6 +174,26 @@ export function normalizeEvent(
   return { platform, owner, repo, number: raw.number, headSha, draft, action };
 }
 
+/**
+ * 投递所属的 `owner/repo`,用来把「只记首次」按仓库分桶。取不到(非 JSON、无 repository
+ * 字段,如 ping 事件)返回空串,退回按事件类型全局记一次——认不出仓库时也认不出该分给谁。
+ */
+function repoTag(payload: unknown): string {
+  const raw = payload as RawPayload | null;
+  const owner = raw?.repository?.owner?.login;
+  const repo = raw?.repository?.name;
+  return typeof owner === "string" && typeof repo === "string" ? `${owner}/${repo}` : "";
+}
+
+/** body 解析成 JSON,失败返回 null。无关事件的 payload 只为抽出仓库,不值得为它抛。 */
+function safeParse(body: Buffer): unknown {
+  try {
+    return JSON.parse(body.toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function send(res: ServerResponse, status: number): void {
   res.writeHead(status);
   res.end();
@@ -278,8 +298,10 @@ async function handle(
   const platform = pullRequestSource(req);
   if (platform === undefined) {
     const name = req.headers["x-gitea-event"] ?? req.headers["x-github-event"] ?? "(无)";
+    // 无关事件不解析 payload 去跑审查,但仍抽出它所属的仓库把「只记首次」按仓库分桶:
+    // 一份实例服务多个仓库,不分桶时一个仓库的 push 会把其余仓库的同类投递日志全吞掉。
     logOnce(
-      `event:${String(name)}`,
+      `event:${repoTag(safeParse(body))}:${String(name)}`,
       `收到 ${String(name)} 事件,只有 pull request 会触发审查`,
     );
     return send(res, 200);
@@ -296,7 +318,10 @@ async function handle(
   const event = normalizeEvent(platform, payload);
   if (event === "ignored") {
     const action = String((payload as RawPayload).action);
-    logOnce(`action:${platform}:${action}`, `${platform} 的 ${action} 动作不触发审查`);
+    logOnce(
+      `action:${platform}:${repoTag(payload)}:${action}`,
+      `${platform} 的 ${action} 动作不触发审查`,
+    );
     return send(res, 200);
   }
   if (event === "malformed") {

@@ -441,6 +441,40 @@ test("不触发审查的 action 同样只在首次出现时记一行", async () 
   assert.deepEqual(h.dispatched, []);
 });
 
+/** 带自定义 repository 的 payload,验证「只记首次」按仓库分桶而非全实例共用一格。 */
+function payloadForRepo(owner: string, repo: string, action: string): string {
+  return JSON.stringify({
+    action,
+    number: 1,
+    pull_request: { draft: false, head: { sha: "sha-x" } },
+    repository: { name: repo, owner: { login: owner } },
+  });
+}
+
+test("不触发审查的 action:不同仓库各记首次,不互相吞", async () => {
+  const h = await startHarness();
+  const a = payloadForRepo("acme", "widgets", "labeled");
+  const b = payloadForRepo("acme", "gadgets", "labeled");
+
+  await h.post(a, { "x-github-event": "pull_request", "x-hub-signature-256": sign(a) });
+  await h.post(b, { "x-github-event": "pull_request", "x-hub-signature-256": sign(b) });
+
+  // 一个仓库的 labeled 记过之后,另一个仓库的 labeled 仍要记:一份实例服务多个仓库,
+  // 全局去重会让除第一个之外的仓库都看不出 webhook 通没通。
+  assert.equal(countLines(h.deliveries, "labeled 动作不触发审查"), 2);
+});
+
+test("无关事件类型:不同仓库各记首次,不互相吞", async () => {
+  const h = await startHarness();
+  const a = JSON.stringify({ repository: { name: "widgets", owner: { login: "acme" } } });
+  const b = JSON.stringify({ repository: { name: "gadgets", owner: { login: "acme" } } });
+
+  await h.post(a, { "x-gitea-event": "push", "x-hub-signature-256": sign(a) });
+  await h.post(b, { "x-gitea-event": "push", "x-hub-signature-256": sign(b) });
+
+  assert.equal(countLines(h.deliveries, "收到 push 事件"), 2);
+});
+
 test("关心的判定结果逐条记,不去重", async () => {
   const h = await startHarness();
 
