@@ -24,6 +24,10 @@ _Avoid_: agent、模型、worker
 一条被提出的代码问题。归属于提出它的 Reviewer,并指向 Review Range 内的具体位置。
 _Avoid_: issue、问题、comment、告警
 
+**Finding Identity**:
+判断两条 Finding 是不是同一条的依据,中文叫「同一处 Finding」。同一个 pull request 里、同一个 Reviewer 指向同一处未改动代码的 Finding 是同一条,不论它在多少轮 Review Run 里被报出;代码改动后再次报出的是新的一条。
+_Avoid_: 去重、指纹、逻辑 Finding
+
 **Disposition**:
 人对一条 Finding 的处置结论。载体是 Forge 上该条 review 评论的 resolve 状态,已 resolve 即已处置。它是判断审查质量的唯一信号来源。
 _Avoid_: 反馈、评分、标注
