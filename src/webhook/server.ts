@@ -26,7 +26,7 @@ import {
 import type { GiteaForgeOptions } from "../forge/gitea.ts";
 import { createPanelAuth, SESSION_TTL_MS, type PanelAuth } from "../panel/auth.ts";
 import type { Reviewer } from "../review/finding.ts";
-import { runReview } from "../review/run.ts";
+import { backfillUpdates, priorDispositions, runReview } from "../review/run.ts";
 import { openStore, type RepoKey, type Store } from "../review/store.ts";
 
 export type Platform = "github" | "gitea";
@@ -42,8 +42,11 @@ export type NormalizedEvent = {
   number: number;
   headSha: string;
   draft: boolean;
-  /** 只有这两个动作触发 Review Run,其余在规范化时就被滤掉。 */
-  action: "opened" | "new-commit";
+  /**
+   * 前两个动作触发 Review Run;`closed` 触发对该 PR 的 disposition 全量回填
+   * (ADR 0006),`reopened` 清掉关闭标记,都不跑审查。其余动作在规范化时就被滤掉。
+   */
+  action: "opened" | "new-commit" | "closed" | "reopened";
 };
 
 export type WebhookServerDeps = {
@@ -112,8 +115,21 @@ const LOGGED_ONCE_MAX = 10_000;
  * pull_request 事件 action 列表。
  */
 const ACTIONS: Record<Platform, Record<string, NormalizedEvent["action"]>> = {
-  github: { opened: "opened", synchronize: "new-commit" },
-  gitea: { opened: "opened", synchronized: "new-commit" },
+  // `closed` 与 `reopened` 两个平台拼写相同(Gitea 见 `modules/structs/hook.go:361,363`
+  // 的 `HookIssueClosed = "closed"` 与 `HookIssueReOpened = "reopened"`),合并同样投
+  // `closed`。
+  github: {
+    opened: "opened",
+    synchronize: "new-commit",
+    closed: "closed",
+    reopened: "reopened",
+  },
+  gitea: {
+    opened: "opened",
+    synchronized: "new-commit",
+    closed: "closed",
+    reopened: "reopened",
+  },
 };
 
 /**
@@ -257,12 +273,13 @@ function describe(event: NormalizedEvent): string {
 }
 
 function logFailure(event: NormalizedEvent, error?: unknown): void {
+  const what = event.action === "closed" ? "回填" : "审查";
   if (error === undefined) {
-    console.log(`[webhook] ${describe(event)} — 审查结束`);
+    console.log(`[webhook] ${describe(event)} — ${what}结束`);
     return;
   }
   console.error(
-    `[webhook] ${describe(event)} — 审查失败:`,
+    `[webhook] ${describe(event)} — ${what}失败:`,
     error instanceof Error ? error.message : String(error),
   );
 }
@@ -358,6 +375,27 @@ function startRun(
   );
 }
 
+/**
+ * PR 关闭时的全量回填(ADR 0006):读回全部历史评论与 review 正文,把 resolve 状态
+ * 覆盖到该 PR 名下的 finding 上,并给它的 Review Run 记下 pr_state——已关闭 PR 上仍然
+ * unknown 的 finding 从此进统计分母。零新增 API 调用:两个读取端点与审查链路同款。
+ */
+async function runClosedBackfill(
+  deps: WebhookServerDeps,
+  forge: Forge,
+  event: NormalizedEvent,
+): Promise<void> {
+  const [comments, bodies] = await Promise.all([
+    forge.listReviewComments(event),
+    forge.listReviewBodies(event),
+  ]);
+  const updates = backfillUpdates(priorDispositions(comments, bodies));
+  withStore(deps.dbPath, (store) => {
+    store.backfillDispositions(event.owner, event.repo, event.number, updates);
+    store.markPullRequestState(event.owner, event.repo, event.number, "closed");
+  });
+}
+
 async function handle(
   req: IncomingMessage,
   res: ServerResponse,
@@ -440,6 +478,38 @@ async function handle(
   if (event === "malformed") {
     log(`${platform} 的 payload 缺必需字段,回 400`);
     return send(res, 400);
+  }
+
+  // PR 重开:关闭标记清掉,unknown 的 finding 回到「还在流程中」的档(ADR 0006 的
+  // 「unknown 按 PR 状态区分」隐含状态要跟随 PR)。
+  if (event.action === "reopened") {
+    log(`${describe(event)} — PR 重新打开,清掉关闭标记`);
+    withStore(deps.dbPath, (store) =>
+      store.markPullRequestState(event.owner, event.repo, event.number, null),
+    );
+    return send(res, 200);
+  }
+
+  // PR 关闭:不跑审查,对它做一次 disposition 全量回填并落 PR 状态(ADR 0006)。
+  // 放在草稿拦截之前——评审记录可能来自 PR 转草稿之前。也不走幂等 claim:closed 与
+  // 最后一次 push 的 head commit 相同,那个键早被审查占走,走 claim 会把回填整个跳掉。
+  if (event.action === "closed") {
+    const forge = deps.forges[platform];
+    if (forge === undefined) {
+      (deps.onRunSettled ?? logFailure)(
+        event,
+        new Error(`${platform} 没有配置 Forge,这次投递没有跑回填`),
+      );
+      return send(res, 200);
+    }
+    log(`${describe(event)} — PR 已关闭,回填处置状态`);
+    send(res, 200);
+    const settled = deps.onRunSettled ?? logFailure;
+    void runClosedBackfill(deps, forge, event).then(
+      () => settled(event),
+      (error: unknown) => settled(event, error),
+    );
+    return;
   }
 
   // 草稿 PR 在触发层就挡掉,不进 runReview:作者还没打算让人看这份代码。

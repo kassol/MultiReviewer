@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import type { AddressInfo } from "node:net";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
 import type { Forge, PullRequestRef } from "../src/forge/forge.ts";
@@ -210,6 +211,7 @@ async function startHarness(options: HarnessOptions = {}) {
 
   return {
     repo,
+    db,
     forge: base,
     dispatched,
     settled,
@@ -611,6 +613,70 @@ test("路由:带查询参数的 POST /webhook 照常受理", async () => {
 
   assert.equal(response.status, 200);
   assert.deepEqual(h.dispatched, [PR]);
+});
+
+test("closed 投递触发全量回填并落 PR 状态,不跑审查", async () => {
+  const reviewer = scriptedReviewer("model-x", [
+    { file: "src/answer.ts", line: 1, severity: "P0", category: "bug", description: "答案改错了" },
+  ]);
+  const h = await startHarness({ reviewer });
+
+  assert.equal((await h.deliver("gitea", "opened", { headSha: h.repo.headSha })).status, 200);
+  await h.settledAtLeast(1);
+  assert.equal(h.settled[0]!.error, undefined);
+
+  // 人 resolve 了那条行级评论,然后 PR 被关闭。
+  const review = h.forge.createdReviews[0]!;
+  h.forge.existingComments.push(
+    ...review.comments.map((comment, index) => ({
+      id: `closed-${index}`,
+      path: comment.path,
+      line: comment.line,
+      body: comment.body,
+      resolved: true,
+    })),
+  );
+  assert.equal((await h.deliver("gitea", "closed", { headSha: h.repo.headSha })).status, 200);
+  await h.settledAtLeast(2);
+  assert.equal(h.settled[1]!.error, undefined);
+
+  // 回填不是 Review Run:没有第二次 getPullRequest,也不占幂等键。
+  assert.equal(h.dispatched.length, 1);
+
+  const readState = (): unknown[] => {
+    const sqlite = new DatabaseSync(h.db.path);
+    try {
+      return (sqlite.prepare("SELECT pr_state FROM review_run").all() as {
+        pr_state: unknown;
+      }[]).map((row) => row.pr_state);
+    } finally {
+      sqlite.close();
+    }
+  };
+
+  const sqlite = new DatabaseSync(h.db.path);
+  try {
+    const dispositions = (
+      sqlite.prepare("SELECT disposition FROM finding").all() as { disposition: string }[]
+    ).map((row) => row.disposition);
+    assert.deepEqual(dispositions, ["resolved"]);
+  } finally {
+    sqlite.close();
+  }
+  assert.deepEqual(readState(), ["closed"]);
+
+  // 重开:关闭标记清掉,unknown 回到「还在流程中」的档。
+  assert.equal((await h.deliver("gitea", "reopened", { headSha: h.repo.headSha })).status, 200);
+  assert.deepEqual(readState(), [null]);
+
+  // 转草稿后再关闭:回填不受草稿拦截——评审记录来自 PR 转草稿之前。
+  assert.equal(
+    (await h.deliver("gitea", "closed", { headSha: h.repo.headSha, draft: true })).status,
+    200,
+  );
+  await h.settledAtLeast(3);
+  assert.equal(h.settled[2]!.error, undefined);
+  assert.deepEqual(readState(), ["closed"]);
 });
 
 test("未注册仓库的投递回 401,按仓库只记首次", async () => {

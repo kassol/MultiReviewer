@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS review_run (
   repo TEXT NOT NULL,
   pull_number INTEGER NOT NULL,
   head_sha TEXT NOT NULL,
+  -- pull request 的状态,closed 回填写上,NULL 即尚未见到关闭。unknown 的 finding
+  -- 只在已关闭的 PR 上进统计分母(ADR 0006)。
+  pr_state TEXT,
   started_at TEXT NOT NULL,
   finished_at TEXT,
   duration_ms INTEGER,
@@ -59,7 +62,10 @@ CREATE TABLE IF NOT EXISTS finding (
   description TEXT NOT NULL,
   fingerprint TEXT,
   group_index INTEGER NOT NULL,
-  disposition TEXT NOT NULL DEFAULT 'unknown'
+  disposition TEXT NOT NULL DEFAULT 'unknown',
+  -- 来源类型:进了行级评论(inline)还是 review 正文(body)。正文没有 resolve 状态
+  -- 可读,body 行排除在处置率统计外(ADR 0006)。
+  placement TEXT NOT NULL DEFAULT 'inline'
 );
 
 CREATE INDEX IF NOT EXISTS finding_by_run ON finding(run_id);
@@ -99,10 +105,15 @@ CREATE TABLE IF NOT EXISTS repo_key (
  * 加在既有表上的列。`CREATE TABLE IF NOT EXISTS` 对已存在的表什么都不做,升级前建的
  * 数据库因此拿不到新列,第一次落库就写不进去。SQLite 的 ADD COLUMN 没有 IF NOT EXISTS,
  * 只能照跑一遍、把"列已存在"这一种错吞掉——每条都带默认值,旧行不需要回填。
+ *
+ * placement 的默认值 'inline' 对升级前的历史 fallback 行是错标(它们本该是 body),
+ * 迁移时无从分辨;回填链路会在该 PR 下一次被读到时按正文锚点把它们纠正回来。
  */
 const ADD_COLUMNS = [
   "ALTER TABLE reviewer_outcome ADD COLUMN anchor_rejections INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE repo ADD COLUMN reviewers TEXT",
+  "ALTER TABLE review_run ADD COLUMN pr_state TEXT",
+  "ALTER TABLE finding ADD COLUMN placement TEXT NOT NULL DEFAULT 'inline'",
 ];
 
 /**
@@ -138,6 +149,9 @@ export type OutcomeRecord = {
   usage?: ReviewerUsage;
 };
 
+/** Finding 的来源类型:进了行级评论,还是只进了 review 正文(fallback 与正文匹配)。 */
+export type FindingPlacement = "inline" | "body";
+
 /** 一条来源 Finding。`groupIndex` 是它在本次 Review Run 中所属合并组的序号。 */
 export type FindingRecord = {
   model: string;
@@ -150,6 +164,20 @@ export type FindingRecord = {
   groupIndex: number;
   /** 本轮读回的处置结论。同一合并组内各来源共用一条评论,取值相同。 */
   disposition: Disposition;
+  /** 同一合并组共用一个来源类型,组内各来源取值相同。 */
+  placement: FindingPlacement;
+};
+
+/**
+ * 回填的一条更新:PR 里指纹与文件都对上的历史 finding 照它改写。行级评论承载的带
+ * disposition;正文锚点没有 resolve 状态可读,只带来源类型(顺手纠正升级前被默认值
+ * 标成 inline 的历史 fallback 行)。
+ */
+export type DispositionUpdate = {
+  file: string;
+  fingerprint: string;
+  disposition?: Disposition;
+  placement: FindingPlacement;
 };
 
 export type RunResult = {
@@ -238,6 +266,26 @@ export type Store = {
    * 重审同一个 head commit 是合法的。
    */
   claimDelivery(owner: string, repo: string, headSha: string): boolean;
+  /**
+   * 回填 disposition(ADR 0006):对这个 pull request 名下、文件与指纹都对上的全部
+   * 历史 finding,以 Forge 的最新状态覆盖已有值——人 resolve 后又 unresolve,库里跟着改。
+   */
+  backfillDispositions(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    updates: readonly DispositionUpdate[],
+  ): void;
+  /**
+   * 记下 pull request 的状态:closed 回填写 "closed",reopened 用 null 清掉。
+   * 作用于该 PR 的全部 Review Run 行。
+   */
+  markPullRequestState(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    state: string | null,
+  ): void;
   close(): void;
 };
 
@@ -461,8 +509,8 @@ export function openStore(dbPath: string): Store {
         const insertFinding = db.prepare(
           `INSERT INTO finding
              (run_id, model, file, line, severity, category, description,
-              fingerprint, group_index, disposition)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              fingerprint, group_index, disposition, placement)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const finding of result.findings) {
           insertFinding.run(
@@ -476,6 +524,7 @@ export function openStore(dbPath: string): Store {
             finding.fingerprint ?? null,
             finding.groupIndex,
             finding.disposition,
+            finding.placement,
           );
         }
         db.exec("COMMIT");
@@ -509,6 +558,49 @@ export function openStore(dbPath: string): Store {
         unresolved: Number(row["unresolved"]),
         unknown: Number(row["unknown"]),
       }));
+    },
+
+    backfillDispositions(owner, repo, pullNumber, updates) {
+      if (updates.length === 0) return;
+      const scope = `run_id IN (SELECT id FROM review_run
+                                 WHERE owner = ? AND repo = ? AND pull_number = ?)`;
+      const withDisposition = db.prepare(
+        `UPDATE finding SET disposition = ?, placement = ?
+          WHERE file = ? AND fingerprint = ? AND ${scope}`,
+      );
+      const placementOnly = db.prepare(
+        `UPDATE finding SET placement = ?
+          WHERE file = ? AND fingerprint = ? AND ${scope}`,
+      );
+      db.exec("BEGIN");
+      try {
+        for (const entry of updates) {
+          if (entry.disposition === undefined) {
+            placementOnly.run(entry.placement, entry.file, entry.fingerprint, owner, repo, pullNumber);
+          } else {
+            withDisposition.run(
+              entry.disposition,
+              entry.placement,
+              entry.file,
+              entry.fingerprint,
+              owner,
+              repo,
+              pullNumber,
+            );
+          }
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    markPullRequestState(owner, repo, pullNumber, state) {
+      db.prepare(
+        `UPDATE review_run SET pr_state = ?
+          WHERE owner = ? AND repo = ? AND pull_number = ?`,
+      ).run(state, owner, repo, pullNumber);
     },
 
     claimDelivery(owner, repo, headSha) {

@@ -19,7 +19,13 @@ import {
   parseFingerprintAnchors,
 } from "./fingerprint.ts";
 import { changedLinesByFile, isInDiff, parseDiffRanges } from "./position.ts";
-import { openStore, type FindingRecord, type OutcomeRecord } from "./store.ts";
+import {
+  openStore,
+  type DispositionUpdate,
+  type FindingPlacement,
+  type FindingRecord,
+  type OutcomeRecord,
+} from "./store.ts";
 
 export type PullRequestEvent = PullRequestRef;
 
@@ -232,6 +238,13 @@ function reviewBody(
   return sections.join("\n");
 }
 
+/** 上一轮某一处 Finding 的已知状态。`fromInline` 标记有没有行级评论作 resolve 的载体。 */
+export type PriorDisposition = {
+  resolved: boolean;
+  /** 至少有一条行级评论承载它。false 即只活在 review 正文里,没有 resolve 状态可读。 */
+  fromInline: boolean;
+};
+
 /**
  * 上一轮由本工具提出的 Finding,按 `文件 + 指纹` 索引到它的 resolve 状态。
  *
@@ -241,21 +254,30 @@ function reviewBody(
  * 只认带锚点的那些:带锚点的是本工具发的,人写的评论与 review 正文都不参与匹配。
  * 指纹与文件一起做键,单看指纹会让不同文件里同样的 7 行代码互相误匹配。
  */
-function priorDispositions(
+export function priorDispositions(
   comments: readonly ExistingReviewComment[],
   bodies: readonly string[],
-): Map<string, boolean> {
-  const byKey = new Map<string, boolean>();
+): Map<string, PriorDisposition> {
+  const byKey = new Map<string, PriorDisposition>();
   // 同一处若有多条历史记录,任一条被 resolve 即视为已处置。
-  const note = (file: string, fingerprint: string, resolved: boolean): void => {
+  const note = (
+    file: string,
+    fingerprint: string,
+    resolved: boolean,
+    fromInline: boolean,
+  ): void => {
     const key = `${file}\n${fingerprint}`;
-    byKey.set(key, (byKey.get(key) ?? false) || resolved);
+    const prior = byKey.get(key) ?? { resolved: false, fromInline: false };
+    byKey.set(key, {
+      resolved: prior.resolved || resolved,
+      fromInline: prior.fromInline || fromInline,
+    });
   };
 
   for (const comment of comments) {
     for (const anchor of parseFingerprintAnchors(comment.body)) {
       // 路径以 API 读回的为准:行级评论的锚点里没有它,有也不该盖过评论自己挂的位置。
-      note(comment.path, anchor.fingerprint, comment.resolved);
+      note(comment.path, anchor.fingerprint, comment.resolved, true);
     }
   }
 
@@ -264,11 +286,33 @@ function priorDispositions(
       // 正文里的锚点自带路径,没带的定不出「文件 + 指纹」这个键,只能放过。
       if (anchor.file === undefined) continue;
       // 正文没有 resolve 状态可读,一律按未处置计。
-      note(anchor.file, anchor.fingerprint, false);
+      note(anchor.file, anchor.fingerprint, false, false);
     }
   }
 
   return byKey;
+}
+
+/**
+ * 把上一轮读回的状态整理成回填更新(ADR 0006)。行级评论承载的条目带 resolve 状态;
+ * 正文锚点没有状态可读,不写 disposition——写了等于把「读不到」伪装成「未处置」。
+ * 来源类型两类都带:它顺手把升级前被默认值标成 inline 的历史 fallback 行纠正回
+ * body,让它们如 ADR 要求的那样被统计排除。
+ */
+export function backfillUpdates(
+  prior: ReadonlyMap<string, PriorDisposition>,
+): DispositionUpdate[] {
+  return [...prior].map(([key, entry]) => {
+    const [file, fingerprint] = key.split("\n") as [string, string];
+    return {
+      file,
+      fingerprint,
+      placement: entry.fromInline ? "inline" : "body",
+      ...(entry.fromInline
+        ? { disposition: entry.resolved ? ("resolved" as const) : ("unresolved" as const) }
+        : {}),
+    };
+  });
 }
 
 /**
@@ -289,17 +333,17 @@ const MATCH_OFFSETS = [0, -1, 1, -2, 2, -3, 3];
  * 模型去重的行号容差同一语义。偏移由近及远,先信最贴近模型所指的位置。
  */
 function priorMatch(
-  prior: ReadonlyMap<string, boolean>,
+  prior: ReadonlyMap<string, PriorDisposition>,
   worktreePath: string,
   finding: MergedFinding,
-): boolean | undefined {
+): PriorDisposition | undefined {
   for (const offset of MATCH_OFFSETS) {
     const line = finding.line + offset;
     if (line < 1) continue;
     const fingerprint = contentFingerprint(worktreePath, finding.file, line);
     if (fingerprint === undefined) continue;
-    const resolved = prior.get(`${finding.file}\n${fingerprint}`);
-    if (resolved !== undefined) return resolved;
+    const match = prior.get(`${finding.file}\n${fingerprint}`);
+    if (match !== undefined) return match;
   }
   return undefined;
 }
@@ -405,31 +449,43 @@ export async function runReview(
     const diffRanges = parseDiffRanges(diff);
     const prior = priorDispositions(priorComments, priorBodies);
 
+    // 顺手回写(ADR 0006):这批读回的 resolve 状态本来用完即弃,现在覆盖到这个 PR
+    // 名下全部历史 finding 上。以 Forge 最新状态为准——resolve 后又 unresolve,跟着改。
+    store.backfillDispositions(event.owner, event.repo, event.number, backfillUpdates(prior));
+
     const comments: ReviewCommentDraft[] = [];
     const fallbacks: FallbackFinding[] = [];
     const carried: CarriedFinding[] = [];
-    // 按合并组下标记住处置结论,落库时组内每条来源都取它。
+    // 按合并组下标记住处置结论、来源类型与组指纹,落库时组内每条来源都取它。
     const dispositions: Disposition[] = [];
+    const placements: FindingPlacement[] = [];
+    const groupFingerprints: (string | undefined)[] = [];
 
     for (const finding of findings) {
       // 指纹在新 head commit 的工作副本下重算:代码没变则与上一轮的锚点相同。
       const fingerprint = contentFingerprint(worktree.path, finding.file, finding.line);
-      const resolved = priorMatch(prior, worktree.path, finding);
+      groupFingerprints.push(fingerprint);
+      const match = priorMatch(prior, worktree.path, finding);
 
-      if (resolved !== undefined) {
-        carried.push({ finding, resolved });
-        dispositions.push(resolved ? "resolved" : "unresolved");
+      if (match !== undefined) {
+        carried.push({ finding, resolved: match.resolved });
+        dispositions.push(match.resolved ? "resolved" : "unresolved");
+        // 折叠的这条沿用它历史上的载体:有行级评论即有 resolve 载体,进统计;只活在
+        // 正文里的没有,排除(ADR 0006)。
+        placements.push(match.fromInline ? "inline" : "body");
         continue;
       }
 
       dispositions.push("unknown");
       if (isInDiff(diffRanges, finding.file, finding.line)) {
+        placements.push("inline");
         comments.push({
           path: finding.file,
           line: finding.line,
           body: findingBody(finding, fingerprint),
         });
       } else {
+        placements.push("body");
         fallbacks.push({ finding, fingerprint });
       }
     }
@@ -445,11 +501,13 @@ export async function runReview(
       ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
     }));
 
-    // 落库的是每一条来源 Finding 而非合并后的那一条:采纳率要按提出它的模型统计。
-    // `groupIndex` 记住它们被合并成了同一条评论。
+    // 落库的是每一条来源 Finding 而非合并后的那一条:处置率要按提出它的模型统计。
+    // `groupIndex` 记住它们被合并成了同一条评论。指纹取合并组代表行的那一个——评论
+    // 锚点埋的就是它,resolve 载体是整组共享的一条评论;按各来源自己的行算指纹,
+    // 代表行不同的模型的历史行会永远回填不到,处置率恰好惩罚锚行选偏的模型。
     const findingRecords: FindingRecord[] = findings.flatMap((merged, groupIndex) =>
       merged.sources.map((source) => {
-        const fingerprint = contentFingerprint(worktree.path, source.file, source.line);
+        const fingerprint = groupFingerprints[groupIndex];
         return {
           model: source.model,
           file: source.file,
@@ -459,6 +517,7 @@ export async function runReview(
           description: source.description,
           groupIndex,
           disposition: dispositions[groupIndex]!,
+          placement: placements[groupIndex]!,
           ...(fingerprint === undefined ? {} : { fingerprint }),
         };
       }),

@@ -124,7 +124,55 @@ test("代码未变且上一轮已处置:本轮不发行级评论,折叠段里标
   assert.match(second.body, /\*\*\[P0\]\*\*/);
   assert.doesNotMatch(second.body, /model-a/);
 
-  assert.deepEqual(latestDispositions(db.path), ["unknown", "resolved"]);
+  // 第一轮的历史行也被回填成 resolved(ADR 0006):读回的 resolve 状态不再用完即弃。
+  assert.deepEqual(latestDispositions(db.path), ["resolved", "resolved"]);
+});
+
+test("回填以 Forge 最新状态为准:resolve 后又 unresolve,覆盖回 unresolved", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, true));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+  await runReview(EVENT, deps);
+  assert.deepEqual(latestDispositions(db.path), ["resolved", "resolved"]);
+
+  // 人又 unresolve 了:下一轮把这个 PR 名下匹配的每一行都覆盖回 unresolved。
+  for (const comment of forge.existingComments) comment.resolved = false;
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": DISTANT_CHANGE });
+  await runReview(EVENT, deps);
+
+  assert.deepEqual(latestDispositions(db.path), ["unresolved", "unresolved", "unresolved"]);
+  // 折叠的行沿用它历史上的载体:有行级评论承载,来源类型是 inline,进统计。
+  const placements = query(db.path, "SELECT placement FROM finding ORDER BY id").map((row) =>
+    String(row["placement"]),
+  );
+  assert.deepEqual(placements, ["inline", "inline", "inline"]);
+});
+
+test("每条落库的 finding 都带来源类型:行级评论 inline,正文 fallback 是 body", async () => {
+  const { db, forge, deps } = setup();
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [
+      scriptedReviewer("model-a", [
+        FINDING,
+        // 行距超过跨模型去重容差,两条不会被合并;这条落在 diff 之外,退化进正文。
+        { ...FINDING, line: OUT_OF_DIFF_LINE, description: "mul 的收尾没有校验" },
+      ]),
+    ],
+  });
+
+  assert.equal(forge.createdReviews[0]!.comments.length, 1);
+  const rows = query(db.path, "SELECT line, placement FROM finding ORDER BY id");
+  assert.deepEqual(
+    rows.map((row) => ({ line: Number(row["line"]), placement: String(row["placement"]) })),
+    [
+      { line: FINDING.line, placement: "inline" },
+      { line: OUT_OF_DIFF_LINE, placement: "body" },
+    ],
+  );
 });
 
 test("折叠的 Finding 计入首行总数:口径是本轮结论,不是本轮新增", async () => {
@@ -156,7 +204,9 @@ test("上一轮已处置但代码已改动:本轮按新 Finding 正常提出", a
     [{ path: "src/calc.js", line: 6 }],
   );
   assert.doesNotMatch(second.body, /<details>/);
-  assert.deepEqual(latestDispositions(db.path), ["unknown", "unknown"]);
+  // 代码改了,指纹变了:本轮是新的一条(unknown,新的处置机会);第一轮的历史行凭
+  // 旧指纹仍与旧评论对得上,回填成 resolved(ADR 0006)。
+  assert.deepEqual(latestDispositions(db.path), ["resolved", "unknown"]);
 });
 
 test("代码未变且上一轮未处置:折叠并标注尚未处置", async () => {
@@ -174,7 +224,8 @@ test("代码未变且上一轮未处置:折叠并标注尚未处置", async () =
   assert.match(second.body, /尚未处置/);
   assert.match(second.body, /sub 多减了 1/);
 
-  assert.deepEqual(latestDispositions(db.path), ["unknown", "unresolved"]);
+  // 历史行同样被回填:未处置也是一个明确的读回状态,覆盖掉首轮的 unknown。
+  assert.deepEqual(latestDispositions(db.path), ["unresolved", "unresolved"]);
 });
 
 test("模型换了代表行(相差 3 行以内)时仍匹配为同一处,不重发", async () => {
@@ -194,7 +245,7 @@ test("模型换了代表行(相差 3 行以内)时仍匹配为同一处,不重�
   const second = forge.createdReviews[1]!;
   assert.deepEqual(second.comments, [], "换了代表行的同一个 Finding 又被发成了行级评论");
   assert.match(second.body, /尚未处置/);
-  assert.deepEqual(latestDispositions(db.path), ["unknown", "unresolved"]);
+  assert.deepEqual(latestDispositions(db.path), ["unresolved", "unresolved"]);
 });
 
 test("行号相差超过 3 行时不匹配,按新 Finding 提出", async () => {
