@@ -156,6 +156,7 @@ async function startHarness(options: HarnessOptions = {}) {
     adminToken: "webhook-test-admin-token",
     panelPrefix: "webhook-test-prefix",
     baseUrl: "https://reviewer.example.test",
+    panelDist: `${cache.dir}/no-dist`,
     ...(options.loggedOnceMax === undefined ? {} : { loggedOnceMax: options.loggedOnceMax }),
     onDelivery: (message) => deliveries.push(message),
     onRunSettled: (event, error) => {

@@ -91,6 +91,7 @@ export async function startPanelHarness(
     adminToken: PANEL_ADMIN_TOKEN,
     panelPrefix: PANEL_PREFIX,
     baseUrl: PANEL_BASE_URL,
+    panelDist: `${cache.dir}/no-dist`,
     gitea: { baseUrl: gitea.url, token: "bot-pat" },
     onDelivery: () => {},
     onRunSettled: (event, error) => {

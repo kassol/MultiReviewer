@@ -120,6 +120,7 @@ const server = createWebhookServer({
   adminToken,
   panelPrefix: prefix,
   baseUrl,
+  panelDist: process.env["MULTIREVIEWER_PANEL_DIST"] ?? "web/dist",
   ...(gitea === undefined ? {} : { gitea }),
   // 每仓库的模型覆盖按同一套构建逻辑起 Reviewer,凭据同样只经环境变量进入。
   buildReviewers: (specs) => buildReviewers({ reviewers: specs }),

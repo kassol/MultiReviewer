@@ -275,6 +275,7 @@ test("没配 Gitea 时注册与移除回 500,说明配置缺口", async () => {
     adminToken: ADMIN_TOKEN,
     panelPrefix: PREFIX,
     baseUrl: BASE_URL,
+    panelDist: `${cache.dir}/no-dist`,
     onDelivery: () => {},
   });
   await new Promise<void>((resolve) => {

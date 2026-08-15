@@ -6,12 +6,14 @@
  * `Forge` 接口里也没有这类方法:审查是建议,不是门禁,人保留最终判断权。
  */
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import {
   createServer,
   type IncomingMessage,
   type Server,
   type ServerResponse,
 } from "node:http";
+import { extname, join, resolve, sep } from "node:path";
 
 import { assertReviewerSpecs, type ReviewerSpec } from "../config.ts";
 import type { Forge } from "../forge/forge.ts";
@@ -78,6 +80,8 @@ export type WebhookServerDeps = {
   panelPrefix: string;
   /** 服务对外的基地址(实例根),注册仓库时用它拼 hook 的投递地址 `<基地址>/webhook?k=<代次>`。 */
   baseUrl: string;
+  /** 前端构建产物目录(Vite 的 dist)。目录不在时页面路由回 503,与 404 分开。 */
+  panelDist: string;
   /** Gitea 实例的地址与 bot 凭据。没配这一格时注册与移除仓库的端点不可用。 */
   gitea?: GiteaForgeOptions;
   /**
@@ -900,6 +904,68 @@ async function handleHookCheck(
   });
 }
 
+/** `/assets` 下会出现的几种产物。列表外的一律按二进制流给,浏览器自己认。 */
+const ASSET_TYPES: Record<string, string> = {
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".map": "application/json; charset=utf-8",
+  ".woff2": "font/woff2",
+  ".ico": "image/x-icon",
+};
+
+/** 静态产物。`/assets` 不带认证直接对外,路径解码后必须钉死在 dist 之内。 */
+async function serveAsset(
+  res: ServerResponse,
+  panelDist: string,
+  path: string,
+): Promise<void> {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(path);
+  } catch {
+    return send(res, 404);
+  }
+  // 包含检查钉在 assets 子目录上,不是 dist 根:钉根的话 `..` 还能爬回 dist 里
+  // 不该经 /assets 暴露的文件(index.html 之外的任何东西)。
+  const assetsRoot = resolve(panelDist, "assets");
+  const file = resolve(resolve(panelDist), `.${decoded}`);
+  if (!file.startsWith(`${assetsRoot}${sep}`)) return send(res, 404);
+  try {
+    const content = await readFile(file);
+    res.writeHead(200, {
+      "content-type": ASSET_TYPES[extname(file)] ?? "application/octet-stream",
+    });
+    res.end(content);
+  } catch {
+    send(res, 404);
+  }
+}
+
+/**
+ * 前缀下的页面:注入过前缀全局变量的 index.html。前缀是运行时随机值,构建产物与它
+ * 无关——Router basepath 与前端 API 基址都从这个注入的变量读。深层路由刷新也走这里,
+ * 客户端路由自己接管路径。
+ */
+async function servePage(res: ServerResponse, deps: WebhookServerDeps): Promise<void> {
+  let html: string;
+  try {
+    html = await readFile(join(deps.panelDist, "index.html"), "utf8");
+  } catch {
+    // 与 404 分开:404 是「前缀记错了」,这里是「前端没构建 / 路径配错」的部署问题。
+    res.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
+    res.end("面板前端产物缺失:镜像构建要包含 web/dist,或检查 MULTIREVIEWER_PANEL_DIST。");
+    return;
+  }
+  // 前缀经启动校验只含 URL 安全字符,JSON.stringify 后不可能拼出闭合脚本的序列。
+  const injected = html.replace(
+    "</head>",
+    `<script>window.__MULTIREVIEWER__ = ${JSON.stringify({ prefix: deps.panelPrefix })};</script></head>`,
+  );
+  res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+  res.end(injected);
+}
+
 export function createWebhookServer(deps: WebhookServerDeps): Server {
   // 已经记过首次的无关事件类型与 action,整个服务共用一份。
   const loggedOnce = new Set<string>();
@@ -908,10 +974,9 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
     deps.gitea === undefined ? undefined : createGiteaHookManager(deps.gitea);
   const apiPrefix = `/${deps.panelPrefix}/api`;
   return createServer((req, res) => {
-    // 路由表:`POST /webhook` → 投递;`<前缀>/api/*` → 面板 API;其余一律 404,
-    // 不重定向——`GET /webhook` 与 `/` 也是,重定向会把扫描器引向真实入口。
-    // `<前缀>/*` 回注入过的 index.html 与 `/assets/*` 静态产物是后续票,此前同属 404,
-    // 前缀猜错与前缀下路径不存在因此不可区分。
+    // 路由表(issue #26):`POST /webhook` → 投递;`<前缀>/api/*` → 面板 API;
+    // `<前缀>` 与 `<前缀>/*` → 注入过的 index.html;`/assets/*` → 构建产物;其余一律
+    // 404,不重定向——`GET /webhook` 与 `/` 也是,重定向会把扫描器引向真实入口。
     const path = pathname(req);
     if (req.method === "POST" && path === "/webhook") {
       void handle(req, res, deps, loggedOnce).catch((error: unknown) => {
@@ -924,6 +989,19 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
       void handlePanelApi(req, res, deps, auth, hookManager).catch((error: unknown) => {
         console.error("面板 API 处理失败:", error instanceof Error ? error.message : error);
         if (!res.headersSent) sendJson(res, 500, { error: "内部错误" });
+      });
+      return;
+    }
+    if (req.method === "GET" && path.startsWith("/assets/")) {
+      void serveAsset(res, deps.panelDist, path).catch(() => {
+        if (!res.headersSent) send(res, 500);
+      });
+      return;
+    }
+    const pagePrefix = `/${deps.panelPrefix}`;
+    if (req.method === "GET" && (path === pagePrefix || path.startsWith(`${pagePrefix}/`))) {
+      void servePage(res, deps).catch(() => {
+        if (!res.headersSent) send(res, 500);
       });
       return;
     }

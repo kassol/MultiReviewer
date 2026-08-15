@@ -2,6 +2,20 @@
 #
 # 选 slim(Debian/glibc)而非 alpine:依赖树里带平台专属的预编译产物,musl 下的解析
 # 没有验证过,而镜像大小在这里不值得拿正确性去换。
+
+# ── 前端构建阶段 ──────────────────────────────────────────────────────────
+# 产物是纯静态文件,Vite 与 React 全套只活在这一层,不进运行镜像。dist 不进版本库,
+# 每次构建镜像时在这里生成;产物与面板前缀无关,前缀由服务在运行时注入。
+FROM node:24-slim AS webbuild
+RUN npm install -g pnpm@11.21.0
+WORKDIR /app
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY web/package.json web/
+RUN pnpm install --frozen-lockfile --filter @multireviewer/web
+COPY web ./web
+RUN pnpm --filter @multireviewer/web build
+
+# ── 运行镜像 ─────────────────────────────────────────────────────────────
 FROM node:24-slim
 
 # 工作副本靠 git 命令准备(`src/git/worktree.ts` 直接 execFile "git"),基础镜像里没有
@@ -11,21 +25,25 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # 版本钉死到产出 pnpm-lock.yaml 的那一个,免得 lockfile 版本对不上。
-RUN npm install -g pnpm@11.12.0
+RUN npm install -g pnpm@11.21.0
 
 WORKDIR /app
 
-# 依赖层单独一层,只在依赖清单变化时才重装。
+# 依赖层单独一层,只在依赖清单变化时才重装。web 的 package.json 要在场让 workspace
+# 解析得开,--filter 限定只装服务端的运行时依赖——react 全家不进运行镜像。
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm install --prod --frozen-lockfile
+COPY web/package.json web/
+RUN pnpm install --prod --frozen-lockfile --filter multireviewer
 
-# 源码由 Node 直接运行,无构建步骤,拷进去就能跑。
+# 源码由 Node 直接运行,无构建步骤,拷进去就能跑。前端只要构建产物。
 COPY src ./src
+COPY --from=webbuild /app/web/dist ./web/dist
 
 # 数据落这两处,compose 把宿主机目录绑上来。配置文件同样由 compose 绑入。
 ENV MULTIREVIEWER_DB=/data/multireviewer.db \
     MULTIREVIEWER_CACHE_DIR=/data/worktrees \
     MULTIREVIEWER_CONFIG=/app/multireviewer.config.json \
+    MULTIREVIEWER_PANEL_DIST=/app/web/dist \
     MULTIREVIEWER_PORT=3000
 
 # 容器内固定监听 3000,对外映射哪个端口由 compose 决定。

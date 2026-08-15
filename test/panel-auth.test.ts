@@ -28,6 +28,7 @@ async function startPanel(options: { now?: () => number } = {}) {
     adminToken: ADMIN_TOKEN,
     panelPrefix: PREFIX,
     baseUrl: "https://reviewer.example.test",
+    panelDist: `${cache.dir}/no-dist`,
     ...(options.now === undefined ? {} : { now: options.now }),
     onDelivery: () => {},
   });
@@ -121,7 +122,7 @@ test("连续登录失败触发退避与 IP 锁定,窗口过了恢复", async () 
   assert.equal((await h.login(ADMIN_TOKEN)).status, 204);
 });
 
-test("API 未知端点回 JSON 404,页面 404 与前缀猜错不可区分", async () => {
+test("API 未知端点回 JSON 404,前缀猜错是裸 404", async () => {
   const h = await startPanel();
   const cookie = sessionCookie(await h.login(ADMIN_TOKEN));
 
@@ -130,13 +131,10 @@ test("API 未知端点回 JSON 404,页面 404 与前缀猜错不可区分", asyn
   assert.equal(api.status, 404);
   assert.match(api.headers.get("content-type") ?? "", /application\/json/);
 
-  // 前缀下的页面路径(本票内)与前缀猜错是同一个 404:同状态、同空 body、无内容类型。
-  const page = await h.get(`/${PREFIX}/some-page`, cookie);
+  // 前缀猜错一律裸 404;真前缀下的页面路由归 index.html(见 panel-pages.test.ts)。
   const wrongPrefix = await h.get(`/wrong-prefix/some-page`, cookie);
-  assert.equal(page.status, 404);
   assert.equal(wrongPrefix.status, 404);
-  assert.equal(await page.text(), await wrongPrefix.text());
-  assert.equal(page.headers.get("content-type"), wrongPrefix.headers.get("content-type"));
+  assert.equal(await wrongPrefix.text(), "");
 });
 
 test("未认证的 API 请求一律 401,不区分端点存不存在", async () => {

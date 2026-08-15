@@ -1,4 +1,9 @@
-# Pi 的传递依赖,其 build script 与本项目无关,不执行。
+packages:
+  - "web"
+
+# Pi 的传递依赖,其 build script 与本项目无关,不执行。esbuild 是 Vite 的构建后端,
+# 它的 install script 负责校验平台二进制,放行。
 allowBuilds:
   "@google/genai": false
+  esbuild: true
   protobufjs: false
