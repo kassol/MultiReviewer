@@ -6,7 +6,7 @@
 
 ## 目录结构
 
-- `forge/` — Forge 适配层。`forge.ts` 是接口与领域类型,每个平台一个实现文件。
+- `forge/` — Forge 适配层。`forge.ts` 是接口与领域类型,每个平台一个实现文件。`gitea-hooks.ts` 是 Gitea 专属的 hook 管理模块,不进 `Forge` 接口(ADR 0002 的能力交集不含 hook 管理,面板只服务 Gitea)。
 - `git/` — 工作副本的准备与 diff 读取,直接调用 git 命令。
 - `review/` — Review Run 的编排。`run.ts` 是唯一入口 `runReview`,其余是它的内部构件:`store.ts` 是 SQLite 持久化,`fingerprint.ts` 算 Finding 的内容指纹并读写评论正文里的指纹锚点,`position.ts` 解析 diff(可评论的行区间与每个文件的改动行数),`batch.ts` 切批并合并各批次的执行结果。
 - `reviewer/` — Reviewer 的真实实现。`pi-reviewer.ts` 在主进程侧管子进程,`worker.ts` 是子进程入口,两者只经 `protocol.ts` 定义的消息通信。`numbered-read.ts` 与 `anchor.ts` 是 worker 的行号构件(见下)。
@@ -48,7 +48,8 @@
 - Webhook handler 立即返回 200,Review Run 在后台跑。后台任务的 rejection 必须接住并记录,否则会变成 unhandledRejection 把这个长跑进程带崩。
 - 通过签名校验的投递记一行,写明这次做了什么(开始审查 / 草稿不审 / 已审过跳过 / action 不触发 / 非 pull request 事件)。没有这行时,服务正常工作与完全收不到投递在日志上一模一样,只有启动那一句。记录点在签名校验之后:未认证的请求谁都能发,记它们等于把日志交给外人写。仅有的例外是「未注册」与「代次不对」两类准入拒绝,见上面准入那条:按仓库只记首次、集合设上限、仓库名滤掉控制字符。日志出口是 `onDelivery`,与 `onRunSettled` 一样是可注入的,测试收进数组而不刷屏。
 - 前三档是本服务对 pull request 的判定结果,逐条记;后两档与本服务无关,按仓库 + 事件类型 / action 只记首次(`server.ts` 的 `logOnce`)。webhook 订阅通常宽于本服务要的两个 action,PR 下每条评论、每次打标签都投一次,逐条记会把判定结果淹掉。首次仍记而不是完全不记:「投递到底有没有到」只有这行能证明,它同时是测试对「收到了但不处理」的观测点。去重键带 `owner/repo`(`repoTag` 抽,非 PR 事件抽不到时退回全局键):一份实例服务多个仓库,不按仓库分桶时第一个仓库的 push 会把其余仓库的同类投递日志全吞掉,运维看不出后者的 webhook 通没通。去重状态在进程内,重启后每类每仓库再记一次。
-- `Forge` 接口只包含 Gitea 与 GitHub 都具备的能力(ADR 0002)。实现 GitHub 适配时不得因其能力更强而扩张接口。
+- `Forge` 接口只包含 Gitea 与 GitHub 都具备的能力(ADR 0002)。实现 GitHub 适配时不得因其能力更强而扩张接口。hook 管理不进这个接口,它是 `gitea-hooks.ts` 的 Gitea 专属能力。
+- hook 管理的契约细节以 `docs/research/gitea-webhook-api.md` 为准:同 URL 的 POST 会堆出重复 hook,幂等靠先列后建、按 `config.url` 匹配;订阅比对只能按集合(回显顺序来自 Go map 迭代);建 hook 用窄订阅哨兵 `pull_request_only` 加 `pull_request_sync`,`active` 必须显式置真;收敛核对看 events 集合、active 与 `config.content_type` 三样;PATCH 的 `events` 是全量覆盖、secret 改不了(换 Key 走删旧建新的轮转,ADR 0007);删 hook 的 404 视为成功;分页以空页收尾(实例会把 limit 钳到 `MAX_RESPONSE_ITEMS`);hook 端点要求仓库 admin 权限,write 不够。
 - `listReviewBodies` 读回 PR 上每条 review 的正文,不违反 ADR 0002:两个平台都能列出 PR 的 review 并拿到它的正文(Gitea 是 `GET /pulls/{index}/reviews` 返回的 `PullReview.Body`,GitHub 是同路径的 REST 端点),取的仍是两边能力的交集。GitHub 那侧不复用 `listReviewComments` 的 GraphQL reviewThreads——那里只有行级评论,没有 review 自己的正文。Gitea 那侧不像 `listReviewComments` 那样跟着 `comments_count` 为 0 跳过:Finding 全部落在 diff 之外的那一轮发出的正是「有正文、零行级评论」的 review,要匹配的锚点就在它的正文里。
 - Finding 的优先级是 `P0` / `P1` / `P2`,P0 最高。归一化层同时收下 `critical` / `high` / `medium` / `low` 这类形容词并映射到 P 级——收窄枚举会让模型自造词汇、调用被拒、Finding 全部丢失(ADR 0004),宽松接收加服务端归一化是配套的两半。
 - Finding 的 `description` 由模型用中文写,`severity` 与 `category` 保持英文标识符。前者给人读,后者是枚举值。
@@ -94,3 +95,4 @@
 - 2026-08-15: 落地 issue #27。服务从零引入路由:`POST /webhook` 照常处理投递,其余任何路径与方法一律 404、不重定向,`GET /webhook` 与 `/` 也是。分发点在 `createWebhookServer` 的 `createServer` 回调里,路径匹配不含查询串,面板与静态资源的分支后续加在这里。投递行为与状态码语义未动。
 - 2026-08-15: 落地 issue #28。`store.ts` 新增 `repo` 与 `repo_key` 两张表及 `registerRepo` / `addRepoKey` / `listRepoKeys`;`server.ts` 的准入改为「payload 取 repo id → 查注册表 → 按 `?k=` 代次选 Key → 验签」,`WebhookServerDeps.secret` 删除,`main.ts` 不再读 `MULTIREVIEWER_WEBHOOK_SECRET`。非法 JSON 从 400 挪到 401——解析不出 id 就无从选 Key,400 只剩「验签过了但字段对不上」。`logOnce` 移到验签之前并设 `LOGGED_ONCE_MAX` 上限:未注册 / 代次不对两类拒绝要记首次,而去重键含未认证方可自选的仓库 id。注入边界未增加,测试仍走 HTTP 缝加临时库种数据。
 - 2026-08-15: 落地 issue #29。新增 `panel/auth.ts`(token 摘要后 timingSafeEqual、内存 session、按 IP 退避锁定,时钟注入);`server.ts` 路由表挂上 `<前缀>/api` 分支,登录发 `Path` 限前缀的 Secure cookie。`main.ts` 新增三个必需项:`MULTIREVIEWER_ADMIN_TOKEN`(接替原全局 secret 的位置)、`MULTIREVIEWER_PANEL_PREFIX`(校验字符集并拒绝 `webhook` / `assets`)、`MULTIREVIEWER_BASE_URL`(明文 http 且非 localhost 拒绝启动)。测试在 HTTP 缝上新开 `test/panel-auth.test.ts`,退避窗口用注入时钟驱动,不等真实时间。
+- 2026-08-15: 落地 issue #30。新增 `forge/gitea-hooks.ts`:列 / 建 / 删仓库 hook 与 bot 权限查询,`Forge` 接口未动。`gitea.ts` 的 `request` / `requestJson` 导出供它复用,`request` 加了可放行状态码参数——「404 算成功」这类语义在调用点决定。测试打在 fetch 桩上(`test/gitea-hooks.test.ts`),打桩器从 `gitea-forge.test.ts` 提到 `test/support/stub-fetch.ts` 共用。

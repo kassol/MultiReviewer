@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { assertSupportedVersion, createGiteaForge } from "../src/forge/gitea.ts";
+import { stubFetch, type Route } from "./support/stub-fetch.ts";
 
 const BASE_URL = "https://gitea.example.test";
 /** 凭据绝不应出现在错误信息里,这个值就是用来在断言里反查它有没有漏出去。 */
@@ -16,55 +17,6 @@ const OPTIONS = { baseUrl: BASE_URL, token: TOKEN };
 const REF = { owner: "acme", repo: "widget", number: 7 };
 const HEAD_SHA = "h".repeat(40);
 const BASE_SHA = "b".repeat(40);
-
-type Route = { status?: number; body?: unknown };
-
-type StubCall = {
-  method: string;
-  url: string;
-  auth: string | undefined;
-  body: Record<string, unknown> | undefined;
-};
-
-function stubFetch(routes: Record<string, Route>): {
-  calls: StubCall[];
-  restore: () => void;
-} {
-  const calls: StubCall[] = [];
-  const original = globalThis.fetch;
-
-  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
-    const url = new URL(String(input));
-    const method = init?.method ?? "GET";
-    const auth = new Headers(init?.headers).get("authorization");
-    calls.push({
-      method,
-      url: url.toString(),
-      auth: auth === null ? undefined : auth,
-      body:
-        typeof init?.body === "string"
-          ? (JSON.parse(init.body) as Record<string, unknown>)
-          : undefined,
-    });
-
-    const key = `${method} ${url.pathname}${url.search}`;
-    const route = routes[key];
-    if (route === undefined) throw new Error(`打桩没有为 ${key} 准备响应`);
-    const status = route.status ?? 200;
-    if (status === 204) return new Response(null, { status });
-    return new Response(JSON.stringify(route.body ?? {}), {
-      status,
-      headers: { "content-type": "application/json" },
-    });
-  }) as typeof fetch;
-
-  return {
-    calls,
-    restore: () => {
-      globalThis.fetch = original;
-    },
-  };
-}
 
 function routes(overrides: Record<string, Route> = {}): Record<string, Route> {
   return {

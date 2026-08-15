@@ -46,17 +46,21 @@ function apiRoot(baseUrl: string): string {
 }
 
 /**
- * 发一次 Gitea API 请求。
+ * 发一次 Gitea API 请求。`gitea-hooks.ts` 的 hook 管理模块也用它,因此导出。
+ *
+ * `allow` 里的状态码不当失败抛出,原样返回给调用方判读——「删 hook 回 404 算成功」
+ * 这类语义在调用点决定,这里只负责把确定的失败变成异常。
  *
  * `Authorization: token <PAT>` 是 Gitea 认的两种前缀之一(另一种是 `Bearer`),见
  * `modules/auth/httpauth/httpauth.go` 的 `ParseAuthorizationHeader`:
  * `util.AsciiEqualFold(parts[0], "token") || util.AsciiEqualFold(parts[0], "bearer")`。
  */
-async function request(
+export async function request(
   options: GiteaForgeOptions,
   method: string,
   path: string,
   body?: unknown,
+  allow: readonly number[] = [],
 ): Promise<Response> {
   const response = await fetch(`${apiRoot(options.baseUrl)}${path}`, {
     method,
@@ -68,7 +72,7 @@ async function request(
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  if (!response.ok) {
+  if (!response.ok && !allow.includes(response.status)) {
     // 只带方法、路径与响应体。凭据在请求头里,不会出现在这三者中的任何一个。
     // 响应体截断:一次 review 的全部评论正文被回显会把日志淹掉。
     const detail = await response.text();
@@ -79,7 +83,7 @@ async function request(
   return response;
 }
 
-async function requestJson<T>(
+export async function requestJson<T>(
   options: GiteaForgeOptions,
   method: string,
   path: string,

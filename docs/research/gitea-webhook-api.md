@@ -265,6 +265,18 @@ slack 类型额外加 `channel` / `username` / `icon_url` / `color`（399-405 �
 
 ---
 
+## 8. bot 对仓库的权限查询（hook 管理模块补充）
+
+hook 端点全部挂在 `reqAdmin()` 后（第 1 节的路由注册，`api.go:1257`），注册前要先验 bot 是不是仓库 admin。查询走 `GET /api/v1/repos/{owner}/{repo}`，返回体里带当前认证用户的权限：
+
+- `modules/structs/repo.go:88` — `Permissions *Permission \`json:"permissions,omitempty"\``；
+- `modules/structs/repo.go:12-13` — `type Permission struct { Admin bool \`json:"admin"\` ... }`；
+- `services/convert/repository.go:41-42` — `Admin: permissionInRepo.AccessMode >= perm.AccessModeAdmin`，即「owner 或 admin 协作者」。
+
+bot 看不到仓库（不存在或非协作者）时该端点回 404，与「非 admin」是两种不同的缺失，拒绝话术要分开。
+
+另注：列表分页的 `limit` 会被实例的 `API.MAX_RESPONSE_ITEMS`（默认 50）钳住，「返回不满 limit」不能当作最后一页，翻页要以空页收尾。
+
 ## 未找到依据的项
 
-无。第 1-7 条均有 `release/v1.26` 源码依据，其中第 3、5、7 条另有目标实例的只读探测印证。
+无。第 1-8 条均有 `release/v1.26` 源码依据，其中第 3、5、7 条另有目标实例的只读探测印证。
