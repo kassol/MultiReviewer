@@ -39,11 +39,12 @@
 - 「PR 新增 commit」的 action 两个平台拼写不同:GitHub 是 `synchronize`,Gitea 是 `synchronized`。规范化后统一为 `new-commit`。凡是照抄 GitHub 拼写的地方都会让 Gitea 收不到事件,依据写在 `webhook/server.ts` 的注释里。
 - 拼写之外还有一层:Gitea 的 webhook **订阅**里「同步」是独立事件 `pull_request_sync`,与 `pull_request` 分开(`modules/webhook/type.go`)。只订阅后者时 PR 新增 commit 根本不投递,本服务这边的 action 映射再对也没机会执行。实测确认过——这是部署侧的配置,代码挡不住,只能写进准备步骤。
 - 只有 PR 打开与 PR 新增 commit 触发 Review Run。草稿 PR 在触发层用规范化事件里的 `draft` 挡掉,不进 `runReview`。
-- Webhook 的状态码语义:签名不过 401,事件类型或 action 不关心 200(投递是成功的,只是没有活要干),body 解析不了或字段对不上 400(平台改字段名时要在投递记录里显形),来源平台还没有 Forge 实现 200(是本服务的配置缺口,不是投递的问题)。
+- 准入先于验签,每仓库一把 Key,没有全局 secret:从 payload 取数值 repo id 查注册表,按 `?k=` 代次选 Key,再验签。id 与代次都来自未认证的请求,只当查询索引,验签仍决定一切(ADR 0007)。「未注册」与「代次不对」是仅有的两类验签前记录,按仓库只记首次——它们是管理员排查「接入了却没反应」的唯一线索;`logOnce` 的去重键因含未认证方可自选的仓库 id 而设上限(`LOGGED_ONCE_MAX`),满了只去重不再记新类。
+- Webhook 的状态码语义:解析不出仓库 id(含非法 JSON)、未注册、代次不对、签名不过都是 401(对未认证方不区分原因),事件类型或 action 不关心 200(投递是成功的,只是没有活要干),字段对不上 400(此时已通过验签,平台改字段名时要在投递记录里显形),来源平台还没有 Forge 实现 200(是本服务的配置缺口,不是投递的问题)。
 - 路由在一切之前:非 `POST /webhook` 的请求一律 404,不重定向(重定向会把扫描器引向真实入口),也不进投递日志。路径匹配不含查询串——hook URL 将携带 `?k=<代次>`(ADR 0007)。面板前缀、`<前缀>/api/*` 与 `/assets/*` 的分支后续加在同一处分发点(issue #26 的路由表)。
 - 幂等键是「仓库 + head commit」,落在 `webhook_delivery` 表的 UNIQUE 约束上,靠插入冲突判重而不是先查后插:并发投递时先查后插会两个请求都查不到、都开跑。`review_run` 上不加同样的约束——人手动重审同一个 head commit 是合法的。
 - Webhook handler 立即返回 200,Review Run 在后台跑。后台任务的 rejection 必须接住并记录,否则会变成 unhandledRejection 把这个长跑进程带崩。
-- 通过签名校验的投递记一行,写明这次做了什么(开始审查 / 草稿不审 / 已审过跳过 / action 不触发 / 非 pull request 事件)。没有这行时,服务正常工作与完全收不到投递在日志上一模一样,只有启动那一句。记录点在签名校验之后:未认证的请求谁都能发,记它们等于把日志交给外人写。日志出口是 `onDelivery`,与 `onRunSettled` 一样是可注入的,测试收进数组而不刷屏。
+- 通过签名校验的投递记一行,写明这次做了什么(开始审查 / 草稿不审 / 已审过跳过 / action 不触发 / 非 pull request 事件)。没有这行时,服务正常工作与完全收不到投递在日志上一模一样,只有启动那一句。记录点在签名校验之后:未认证的请求谁都能发,记它们等于把日志交给外人写。仅有的例外是「未注册」与「代次不对」两类准入拒绝,见上面准入那条:按仓库只记首次、集合设上限、仓库名滤掉控制字符。日志出口是 `onDelivery`,与 `onRunSettled` 一样是可注入的,测试收进数组而不刷屏。
 - 前三档是本服务对 pull request 的判定结果,逐条记;后两档与本服务无关,按仓库 + 事件类型 / action 只记首次(`server.ts` 的 `logOnce`)。webhook 订阅通常宽于本服务要的两个 action,PR 下每条评论、每次打标签都投一次,逐条记会把判定结果淹掉。首次仍记而不是完全不记:「投递到底有没有到」只有这行能证明,它同时是测试对「收到了但不处理」的观测点。去重键带 `owner/repo`(`repoTag` 抽,非 PR 事件抽不到时退回全局键):一份实例服务多个仓库,不按仓库分桶时第一个仓库的 push 会把其余仓库的同类投递日志全吞掉,运维看不出后者的 webhook 通没通。去重状态在进程内,重启后每类每仓库再记一次。
 - `Forge` 接口只包含 Gitea 与 GitHub 都具备的能力(ADR 0002)。实现 GitHub 适配时不得因其能力更强而扩张接口。
 - `listReviewBodies` 读回 PR 上每条 review 的正文,不违反 ADR 0002:两个平台都能列出 PR 的 review 并拿到它的正文(Gitea 是 `GET /pulls/{index}/reviews` 返回的 `PullReview.Body`,GitHub 是同路径的 REST 端点),取的仍是两边能力的交集。GitHub 那侧不复用 `listReviewComments` 的 GraphQL reviewThreads——那里只有行级评论,没有 review 自己的正文。Gitea 那侧不像 `listReviewComments` 那样跟着 `comments_count` 为 0 跳过:Finding 全部落在 diff 之外的那一轮发出的正是「有正文、零行级评论」的 review,要匹配的锚点就在它的正文里。
@@ -67,7 +68,7 @@
 
 ## 依赖关系
 
-`review/` 依赖 `forge/` 与 `git/` 的类型与函数。`reviewer/` 依赖 `review/` 的领域类型,反向不依赖——`runReview` 只认 `Reviewer` 接口。`forge/` 与 `git/` 互不依赖。`webhook/` 依赖 `review/` 的 `runReview` 与 `openStore`、`forge/` 的接口类型,反向不依赖。`main.ts` 依赖以上全部,只有它读环境变量。
+`review/` 依赖 `forge/` 与 `git/` 的类型与函数。`reviewer/` 依赖 `review/` 的领域类型,反向不依赖——`runReview` 只认 `Reviewer` 接口。`forge/` 与 `git/` 互不依赖。`webhook/` 依赖 `review/` 的 `runReview` 与 `store.ts` 的 `openStore` / `RepoKey`、`forge/` 的接口类型,反向不依赖。`main.ts` 依赖以上全部,只有它读环境变量。
 
 第三方依赖只有 Pi(`@earendil-works/pi-coding-agent`)与它的 `typebox`,且只在 `reviewer/` 内使用。
 
@@ -89,3 +90,4 @@
 - 2026-08-08: 落地 issue #13。review 正文首行从裸标题扩为本轮概览,写明 Finding 总数与 P0/P1/P2 分级计数(`run.ts` 的 `overviewLine`,`reviewBody` 为此多收一个 `findings` 参数)。计数口径是「本轮结论总数」:行级评论、diff 外 fallback 与折叠的三类全算,`runReview` 的分派循环让三类恰好覆盖去重后的每一条,不必另算。为零的等级不列,`P0 0` 只让人多数一个零。零 Finding 时首行退回裸的 `MultiReviewer`——那一档只有模型缺席或覆盖不全时才发得出 review,「0 条」会被读成「没问题」。其余呈现未动。
 - 2026-08-09: 两轴复核(Standards + Spec)加正确性轴的收口。#14 的「只记首次」去重键补上 `owner/repo`(`repoTag`,非 PR 事件抽不到时退回全局键):此前键是全实例共用,第一个仓库的 push / 忽略动作会把其余仓库的同类投递日志全吞掉。`parseFingerprintAnchors` 加 `typeof body !== "string"` 守卫:`listReviewBodies` 直接喂平台读回的 `review.body`,一条 null 正文不该在 `matchAll` 上把整轮 Run 带崩。#15 的 `SIMILARITY_THRESHOLD` 注释校正成本口径——ticket 把误合并排在漏合并之上,0.05 低阈值是弱信号下的最小伤害而非「拆错比合错轻」,两头的已知代价固定在 `test/similarity.test.ts`;启发式与阈值未动。
 - 2026-08-15: 落地 issue #27。服务从零引入路由:`POST /webhook` 照常处理投递,其余任何路径与方法一律 404、不重定向,`GET /webhook` 与 `/` 也是。分发点在 `createWebhookServer` 的 `createServer` 回调里,路径匹配不含查询串,面板与静态资源的分支后续加在这里。投递行为与状态码语义未动。
+- 2026-08-15: 落地 issue #28。`store.ts` 新增 `repo` 与 `repo_key` 两张表及 `registerRepo` / `addRepoKey` / `listRepoKeys`;`server.ts` 的准入改为「payload 取 repo id → 查注册表 → 按 `?k=` 代次选 Key → 验签」,`WebhookServerDeps.secret` 删除,`main.ts` 不再读 `MULTIREVIEWER_WEBHOOK_SECRET`。非法 JSON 从 400 挪到 401——解析不出 id 就无从选 Key,400 只剩「验签过了但字段对不上」。`logOnce` 移到验签之前并设 `LOGGED_ONCE_MAX` 上限:未注册 / 代次不对两类拒绝要记首次,而去重键含未认证方可自选的仓库 id。注入边界未增加,测试仍走 HTTP 缝加临时库种数据。

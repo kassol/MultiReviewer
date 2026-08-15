@@ -50,7 +50,6 @@ async function boot(overrides: Record<string, string>): Promise<Boot> {
   }
   Object.assign(env, {
     MULTIREVIEWER_CONFIG: configPath,
-    MULTIREVIEWER_WEBHOOK_SECRET: "boot-test-secret",
     MULTIREVIEWER_DB: join(dir, "multireviewer.db"),
     MULTIREVIEWER_CACHE_DIR: join(dir, "worktrees"),
     // 0 让内核挑一个空闲端口,并发跑测试时不会撞上。

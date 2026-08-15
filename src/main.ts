@@ -68,7 +68,6 @@ if (gitea === undefined && github === undefined) {
 if (gitea !== undefined) await assertSupportedVersion(gitea);
 
 const server = createWebhookServer({
-  secret: required("MULTIREVIEWER_WEBHOOK_SECRET"),
   forges: {
     ...(github === undefined ? {} : { github: createGitHubForge({ auth: github }) }),
     ...(gitea === undefined ? {} : { gitea: createGiteaForge(gitea) }),

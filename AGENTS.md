@@ -50,6 +50,8 @@ bash setup.sh
 docker compose pull && docker compose up -d
 ```
 
+> **过渡期(issue #38 收口前)**:向导的「生成 webhook secret」与「注册 webhook」两步仍是旧的全局 secret 流程,已随 issue #28 的硬切失效——准入现凭注册表里的 per-repo Key。管理面板落地前,仓库只能直接写库种入、hook 手工配。
+
 两处容易踩的地方:
 
 - **`MULTIREVIEWER_PORT` 与 `MULTIREVIEWER_HOST_PORT` 是两个东西。**容器内固定监听 3000(`MULTIREVIEWER_PORT` 在镜像里就设死了),对外映射用 `MULTIREVIEWER_HOST_PORT`。把宿主端口写进 `MULTIREVIEWER_PORT` 会让应用改去监听那个号,端口映射当场对不上。
@@ -57,11 +59,10 @@ docker compose pull && docker compose up -d
 
 不用容器直接跑时 `pnpm start` 起同一个服务,启动时用 `--env-file-if-exists=.env` 读取同目录的 `.env`。
 
-两个平台的 webhook 都指向 `POST /webhook` 这一个端点(路径固定,其余路径与方法一律 404),content type 选 JSON,secret 填 `MULTIREVIEWER_WEBHOOK_SECRET` 的值,事件只需勾 pull request。
+webhook 指向 `POST /webhook?k=<代次>` 这一个端点(路径固定,其余路径与方法一律 404),content type 选 JSON,secret 填该仓库的 Key。投递凭所属仓库的 Key 准入:仓库要先进注册表,未注册一律 401,没有全局 secret。hook 的建立与 Key 的管理最终由管理面板完成(issue #26 的后续票),面板落地前只能直接写库种入,GitHub 仓库没有注册途径。
 
 必需的环境变量:
 
-- `MULTIREVIEWER_WEBHOOK_SECRET` — 校验投递签名的密钥,两个平台共用一个
 - 每个 Reviewer 在配置文件里声明的 `apiKeyEnv`,例如 `DEEPSEEK_API_KEY`
 
 Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起得来却一次审查都跑不了比起不来更难发现:
@@ -107,7 +108,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
    ```
 
    保留 `external` 使已有的其他 webhook 不受影响。**不要图省事写 `private`**——那会放开整个 RFC 1918,任何有仓库管理权的人都能把 webhook 指向内网任意服务。逐个列出目标地址。改完重启 Gitea。
-5. 在仓库或组织上配 webhook,指向本服务,secret 填 `MULTIREVIEWER_WEBHOOK_SECRET` 的值。事件要勾**「合并请求」与「合并请求同步」两项**——Gitea 把同步拆成了独立事件 `pull_request_sync`(`modules/webhook/type.go`),只勾前者时 PR 新增 commit 一条投递都不发,重新审查静默失效且看不出异常。GitHub 没有这回事,它的 `pull_request` 事件本身就含 `synchronize` 动作。**验证连通时临时把「推送」也勾上**——详情页的「测试推送」按钮发的是 push 事件,webhook 没订阅 push 时它一个请求都不发出去,看起来像链路坏了。响应 200 之后再把「推送」去掉,留着会让每次 push 都投递一次。
+5. 在仓库上配 webhook(组织级 webhook 与每仓库一把 Key 互斥,不适用),指向 `.../webhook?k=<代次>`,secret 填该仓库的 Key。事件要勾**「合并请求」与「合并请求同步」两项**——Gitea 把同步拆成了独立事件 `pull_request_sync`(`modules/webhook/type.go`),只勾前者时 PR 新增 commit 一条投递都不发,重新审查静默失效且看不出异常。GitHub 没有这回事,它的 `pull_request` 事件本身就含 `synchronize` 动作。**验证连通时临时把「推送」也勾上**——详情页的「测试推送」按钮发的是 push 事件,webhook 没订阅 push 时它一个请求都不发出去,看起来像链路坏了。响应 200 之后再把「推送」去掉,留着会让每次 push 都投递一次。
 
 > 换实例或升级 Gitea 后想重新确认 scope,跑一次 `MULTIREVIEWER_GITEA_LIVE_PR=...` 的验证即可,它覆盖本实现用到的全部端点。**这个验证要指向一个此前没被本工具评论过的 PR**:同一个 PR 重跑时,上一轮留下的带锚点评论会让本轮 Finding 匹配成功而被折叠,行级评论数因此为零,看起来像失败(跨轮次匹配见 issue #7)。
 
@@ -167,3 +168,4 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-14: 定下 webhook 与面板的路径划分。查出服务现在根本不路由——`src/webhook/server.ts:362` 的 handler 从未读过 `req.url`,任何路径的请求都当投递处理,所以这是从零引入路由。路由表:`POST /webhook`(带 `?k=` 代次)、`<前缀>/api/*`、`<前缀>/*` 回注入过的 `index.html`、`/assets/*` 静态产物、其余 404。面板的随机前缀只盖面板,webhook 固定在 `/webhook`——盖住它等于每次轮换前缀都要重建全部 hook,而 webhook 的保护本来就是 HMAC 验签不是路径保密。静态资源不进前缀,Vite 保持默认绝对 base;前缀是运行时随机值,靠服务返回 `index.html` 时注入一个全局变量喂给 Router basepath 与 API 基址,构建产物与前缀无关。部署侧:反代只配一条规则整域全转并原样透传路径,前缀轮换不碰反代;不支持子路径部署,服务占域名根;基地址换新变量名 `MULTIREVIEWER_BASE_URL`,旧的 `MULTIREVIEWER_PUBLIC_URL` 值含 `/webhook` 后缀,同名不同义会静默出错;基地址是 `http://` 且非 localhost 时拒绝启动——Secure cookie 在明文 HTTP 下发不出去,服务起得来、面板打得开、就是登不进。
 - 2026-08-15: 定下前端本地联调方式,「仓库准入与管理面板」的地图(issue #17)至此走完。dev 与生产的分叉压缩到「谁往 `index.html` 注入前缀全局变量」一个点:生产是服务,dev 是用 `transformIndexHtml` 钩子的内联 Vite 插件。前缀来源是同一份 `.env` 的 `MULTIREVIEWER_PANEL_PREFIX`,后端运行时读、Vite 用 `loadEnv` 配置阶段读;dev 下走 Vite proxy 代理 `/<前缀>/api` 到本机后端,浏览器视角同源同路径,cookie 正常携带、无 CORS;前端只读注入的全局变量,不设 `import.meta.env` 回落,注入缺失当场报错。地图共 8 条决策(6 张 grilling、1 张 research、1 张 prototype),下一步交 `/to-spec` 收拢成可建造的 spec。
 - 2026-08-15: 落地 issue #27(仓库准入与管理面板的第一票)。服务从零引入路由:webhook 固定在 `POST /webhook`,其余任何路径与方法一律 404、不重定向。部署向导随之改:公网地址输入自动补齐 `/webhook` 后缀,本机自检指向 `/webhook`,「路径任意」的表述删除。
+- 2026-08-15: 落地 issue #28。仓库注册表与 per-repo Key 准入:投递从 payload 取数值 repo id 查注册表,按 `?k=` 代次选 Key 再验签,未注册与代次不对分成两类 401 记录、按仓库只记首次。全局 `MULTIREVIEWER_WEBHOOK_SECRET` 硬切删除,启动不再读它;GitHub 因无注册途径从准入层退场,适配层与其测试保留。CONTEXT.md 新增 仓库注册表 / Key / 代次 三个词条。过渡期注意:管理面板落地前注册表只能直接写库种入,部署向导的 hook 注册指导暂时失效(issue #38 收口)。

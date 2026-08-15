@@ -11,15 +11,23 @@ import {
   type NormalizedEvent,
   type Platform,
 } from "../src/webhook/server.ts";
+import { openStore } from "../src/review/store.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
-
-const SECRET = "webhook-secret";
 
 const BASE_FILE = "export const answer = 1;\n";
 const HEAD_FILE = "export const answer = 2;\n";
 
 const PR: PullRequestRef = { owner: "acme", repo: "widgets", number: 7 };
+
+/** 注册表种入的仓库:Forge 的数值 repo id 是主键,key 带代次(ADR 0007)。 */
+const REPO_ID = 101;
+const KEY = "widgets-key-gen1";
+const GENERATION = 1;
+
+/** 第二个已注册仓库,给「按仓库分桶」类测试用。 */
+const REPO_B_ID = 102;
+const KEY_B = "gadgets-key-gen1";
 
 /**
  * 两个平台的 pull_request payload 字段路径逐字相同(依据见 `src/webhook/server.ts`
@@ -30,12 +38,12 @@ function prPayload(action: string, headSha: string, draft = false): unknown {
     action,
     number: PR.number,
     pull_request: { draft, head: { sha: headSha } },
-    repository: { name: PR.repo, owner: { login: PR.owner } },
+    repository: { id: REPO_ID, name: PR.repo, owner: { login: PR.owner } },
   };
 }
 
-function sign(body: string): string {
-  return `sha256=${createHmac("sha256", SECRET).update(body).digest("hex")}`;
+function sign(body: string, key = KEY): string {
+  return `sha256=${createHmac("sha256", key).update(body).digest("hex")}`;
 }
 
 /** 规范化必须成功,否则这条断言本身没有意义。 */
@@ -75,6 +83,8 @@ type HarnessOptions = {
   reviewer?: Reviewer;
   /** 不给 Gitea 那一格配 Forge,模拟 issue #3 尚未落地的状态。 */
   omitGiteaForge?: boolean;
+  /** 压低「只记首次」集合的上限,触达封顶分支。 */
+  loggedOnceMax?: number;
 };
 
 async function startHarness(options: HarnessOptions = {}) {
@@ -85,6 +95,14 @@ async function startHarness(options: HarnessOptions = {}) {
   const cache = makeCacheDir();
   const db = makeDbPath();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
+
+  // 种入注册表:准入凭仓库的 key,不再有全局 secret。
+  const seed = openStore(db.path);
+  seed.registerRepo(REPO_ID, PR.owner, PR.repo);
+  seed.addRepoKey(REPO_ID, GENERATION, KEY);
+  seed.registerRepo(REPO_B_ID, "acme", "gadgets");
+  seed.addRepoKey(REPO_B_ID, GENERATION, KEY_B);
+  seed.close();
 
   const base = memoryForge({
     pullRequest: {
@@ -119,11 +137,11 @@ async function startHarness(options: HarnessOptions = {}) {
   let waiting: { count: number; resolve: () => void }[] = [];
 
   const server = createWebhookServer({
-    secret: SECRET,
     forges: options.omitGiteaForge ? { github: forge } : { github: forge, gitea: forge },
     reviewers: [options.reviewer ?? scriptedReviewer("stub-model", [])],
     cacheDir: cache.dir,
     dbPath: db.path,
+    ...(options.loggedOnceMax === undefined ? {} : { loggedOnceMax: options.loggedOnceMax }),
     onDelivery: (message) => deliveries.push(message),
     onRunSettled: (event, error) => {
       settled.push({ event, ...(error === undefined ? {} : { error }) });
@@ -149,7 +167,7 @@ async function startHarness(options: HarnessOptions = {}) {
   function post(
     body: string,
     headers: Record<string, string>,
-    path = "/webhook",
+    path = `/webhook?k=${GENERATION}`,
   ): Promise<Response> {
     return fetch(`${baseUrl}${path}`, {
       method: "POST",
@@ -296,9 +314,38 @@ test("不关心的事件类型与 action 返回 200 且不触发 Review Run", as
   assert.deepEqual(h.dispatched, []);
 });
 
-test("body 解析不了时返回 400", async () => {
+test("body 解析不出仓库 id 时返回 401——无从查 key,也无从归类", async () => {
   const h = await startHarness();
-  const body = "{ not json";
+
+  // 非法 JSON 与缺 repository.id 的 JSON 是同一档:准入查 key 靠 id,拿不到就验不了签。
+  for (const body of ["{ not json", JSON.stringify(prPayloadWithoutId())]) {
+    const response = await h.post(body, {
+      "x-github-event": "pull_request",
+      "x-hub-signature-256": sign(body),
+    });
+    assert.equal(response.status, 401);
+  }
+
+  assert.deepEqual(h.dispatched, []);
+});
+
+/** 形状完整但没有 repository.id 的 payload。 */
+function prPayloadWithoutId(): unknown {
+  return {
+    action: "opened",
+    number: PR.number,
+    pull_request: { draft: false, head: { sha: "sha-1" } },
+    repository: { name: PR.repo, owner: { login: PR.owner } },
+  };
+}
+
+test("准入过了但 payload 缺必需字段时返回 400", async () => {
+  const h = await startHarness();
+  // 有 id、签名对,但没有 pull_request 字段——平台改字段名时要在投递记录里显形。
+  const body = JSON.stringify({
+    action: "opened",
+    repository: { id: REPO_ID, name: PR.repo, owner: { login: PR.owner } },
+  });
 
   const response = await h.post(body, {
     "x-github-event": "pull_request",
@@ -400,10 +447,10 @@ test("通过签名的投递都留痕,说明这次做了什么", async () => {
   await h.deliver("gitea", "opened", { headSha: h.repo.headSha });
   await h.deliver("gitea", "opened", { headSha: h.repo.headSha, draft: true });
   await h.deliver("gitea", "labeled", { headSha: h.repo.headSha });
-  await h.post(JSON.stringify({}), {
-    "x-gitea-event": "push",
-    "x-hub-signature-256": sign(JSON.stringify({})),
+  const push = JSON.stringify({
+    repository: { id: REPO_ID, name: PR.repo, owner: { login: PR.owner } },
   });
+  await h.post(push, { "x-gitea-event": "push", "x-hub-signature-256": sign(push) });
 
   const joined = h.deliveries.join("\n");
   assert.match(joined, /已经审过,跳过/);
@@ -419,7 +466,9 @@ function countLines(deliveries: readonly string[], needle: string): number {
 
 test("无关的事件类型只在首次出现时记一行", async () => {
   const h = await startHarness();
-  const body = JSON.stringify({});
+  const body = JSON.stringify({
+    repository: { id: REPO_ID, name: PR.repo, owner: { login: PR.owner } },
+  });
 
   // PR 下每条评论都投一次 pull_request_comment,逐条记会把真正要看的行淹掉。
   for (let i = 0; i < 3; i += 1) {
@@ -449,22 +498,25 @@ test("不触发审查的 action 同样只在首次出现时记一行", async () 
 });
 
 /** 带自定义 repository 的 payload,验证「只记首次」按仓库分桶而非全实例共用一格。 */
-function payloadForRepo(owner: string, repo: string, action: string): string {
+function payloadForRepo(id: number, owner: string, repo: string, action: string): string {
   return JSON.stringify({
     action,
     number: 1,
     pull_request: { draft: false, head: { sha: "sha-x" } },
-    repository: { name: repo, owner: { login: owner } },
+    repository: { id, name: repo, owner: { login: owner } },
   });
 }
 
 test("不触发审查的 action:不同仓库各记首次,不互相吞", async () => {
   const h = await startHarness();
-  const a = payloadForRepo("acme", "widgets", "labeled");
-  const b = payloadForRepo("acme", "gadgets", "labeled");
+  const a = payloadForRepo(REPO_ID, "acme", "widgets", "labeled");
+  const b = payloadForRepo(REPO_B_ID, "acme", "gadgets", "labeled");
 
   await h.post(a, { "x-github-event": "pull_request", "x-hub-signature-256": sign(a) });
-  await h.post(b, { "x-github-event": "pull_request", "x-hub-signature-256": sign(b) });
+  await h.post(b, {
+    "x-github-event": "pull_request",
+    "x-hub-signature-256": sign(b, KEY_B),
+  });
 
   // 一个仓库的 labeled 记过之后,另一个仓库的 labeled 仍要记:一份实例服务多个仓库,
   // 全局去重会让除第一个之外的仓库都看不出 webhook 通没通。
@@ -473,11 +525,15 @@ test("不触发审查的 action:不同仓库各记首次,不互相吞", async ()
 
 test("无关事件类型:不同仓库各记首次,不互相吞", async () => {
   const h = await startHarness();
-  const a = JSON.stringify({ repository: { name: "widgets", owner: { login: "acme" } } });
-  const b = JSON.stringify({ repository: { name: "gadgets", owner: { login: "acme" } } });
+  const a = JSON.stringify({
+    repository: { id: REPO_ID, name: "widgets", owner: { login: "acme" } },
+  });
+  const b = JSON.stringify({
+    repository: { id: REPO_B_ID, name: "gadgets", owner: { login: "acme" } },
+  });
 
   await h.post(a, { "x-gitea-event": "push", "x-hub-signature-256": sign(a) });
-  await h.post(b, { "x-gitea-event": "push", "x-hub-signature-256": sign(b) });
+  await h.post(b, { "x-gitea-event": "push", "x-hub-signature-256": sign(b, KEY_B) });
 
   assert.equal(countLines(h.deliveries, "收到 push 事件"), 2);
 });
@@ -539,6 +595,95 @@ test("路由:带查询参数的 POST /webhook 照常受理", async () => {
 
   assert.equal(response.status, 200);
   assert.deepEqual(h.dispatched, [PR]);
+});
+
+test("未注册仓库的投递回 401,按仓库只记首次", async () => {
+  const h = await startHarness();
+  // GitHub 从准入层退场:没有注册途径,它的投递走的就是「未注册」这一档。
+  const alien = payloadForRepo(999, "zhangxu", "review", "opened");
+  const alienHeaders = {
+    "x-github-event": "pull_request",
+    "x-hub-signature-256": sign(alien, "some-unknown-key"),
+  };
+
+  assert.equal((await h.post(alien, alienHeaders)).status, 401);
+  assert.equal((await h.post(alien, alienHeaders)).status, 401);
+
+  const other = payloadForRepo(998, "zhangxu", "docs", "opened");
+  const otherHeaders = {
+    "x-github-event": "pull_request",
+    "x-hub-signature-256": sign(other, "some-unknown-key"),
+  };
+  assert.equal((await h.post(other, otherHeaders)).status, 401);
+
+  assert.deepEqual(h.dispatched, []);
+  // 同一仓库重复投递只记首次,不同仓库各记一条。
+  assert.equal(countLines(h.deliveries, "未注册"), 2);
+});
+
+test("准入拒绝的记录:仓库名滤掉控制字符,集合封顶后不再记新类", async () => {
+  const h = await startHarness({ loggedOnceMax: 1 });
+
+  // 仓库名带换行——这行日志在验签前输出,不滤等于让外人伪造日志行。
+  const forged = JSON.stringify({
+    repository: { id: 999, name: "x\ninjected: line", owner: { login: "evil" } },
+  });
+  assert.equal(
+    (
+      await h.post(forged, {
+        "x-github-event": "pull_request",
+        "x-hub-signature-256": sign(forged, "unknown"),
+      })
+    ).status,
+    401,
+  );
+  assert.equal(h.deliveries.length, 1);
+  assert.doesNotMatch(h.deliveries[0]!, /\n/);
+
+  // 上限(1)已满:新仓库的拒绝照样 401,只是不再记;已记过的仍去重。
+  const another = payloadForRepo(998, "evil", "other", "opened");
+  const headers = {
+    "x-github-event": "pull_request",
+    "x-hub-signature-256": sign(another, "unknown"),
+  };
+  assert.equal((await h.post(another, headers)).status, 401);
+  assert.equal((await h.post(another, headers)).status, 401);
+  assert.equal(h.deliveries.length, 1);
+});
+
+test("代次缺失或对不上时回 401,与未注册分成两类记录", async () => {
+  const h = await startHarness();
+  const body = JSON.stringify(prPayload("opened", "sha-1"));
+  const headers = { "x-gitea-event": "pull_request", "x-hub-signature-256": sign(body) };
+
+  // 代次是索引不是凭证,取错即 401(ADR 0007):缺失、不存在的代次、非十进制整数各一档。
+  // "0x1" 与 "1e0" 能被 Number() 解析成 1,但代次只认十进制数字。
+  for (const path of ["/webhook", "/webhook?k=99", "/webhook?k=abc", "/webhook?k=0x1", "/webhook?k=1e0"]) {
+    assert.equal((await h.post(body, headers, path)).status, 401, path);
+  }
+
+  assert.deepEqual(h.dispatched, []);
+  assert.equal(countLines(h.deliveries, "代次"), 1);
+  assert.equal(countLines(h.deliveries, "未注册"), 0);
+});
+
+test("仓库改名或转移 owner 后,凭 payload 里的 id 照常匹配", async () => {
+  const h = await startHarness();
+  // id 不变、owner 与名字全换:注册表主键是数值 repo id,改名不是运维事件。
+  const body = JSON.stringify({
+    action: "opened",
+    number: PR.number,
+    pull_request: { draft: false, head: { sha: "sha-1" } },
+    repository: { id: REPO_ID, name: "renamed", owner: { login: "moved" } },
+  });
+
+  const response = await h.post(body, {
+    "x-gitea-event": "pull_request",
+    "x-hub-signature-256": sign(body),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(h.dispatched, [{ owner: "moved", repo: "renamed", number: PR.number }]);
 });
 
 test("签名不过的投递不进日志——否则日志由外人写", async () => {

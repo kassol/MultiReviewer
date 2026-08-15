@@ -72,6 +72,24 @@ CREATE TABLE IF NOT EXISTS webhook_delivery (
   claimed_at TEXT NOT NULL,
   UNIQUE (owner, repo, head_sha)
 );
+
+-- 仓库注册表。主键是 Forge 的数值 repo id:改名与转移 owner 后凭 payload 里的 id
+-- 仍能匹配,owner/repo 只是注册时的名字,不参与准入。
+CREATE TABLE IF NOT EXISTS repo (
+  id INTEGER PRIMARY KEY,
+  owner TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  registered_at TEXT NOT NULL
+);
+
+-- 仓库的 key。明文存库:HMAC 验签需要原始值,这是密码学约束,不是疏忽。代次单调
+-- 递增并写进 hook URL 的 ?k=,轮转期间一个仓库最多两把并存(ADR 0007)。
+CREATE TABLE IF NOT EXISTS repo_key (
+  repo_id INTEGER NOT NULL REFERENCES repo(id),
+  generation INTEGER NOT NULL,
+  key TEXT NOT NULL,
+  PRIMARY KEY (repo_id, generation)
+);
 `;
 
 /**
@@ -148,7 +166,19 @@ export type DispositionRow = {
   unknown: number;
 };
 
+/** 仓库持有的一把 key。`generation` 是它的代次,写在 hook URL 的 `?k=` 上。 */
+export type RepoKey = {
+  generation: number;
+  key: string;
+};
+
 export type Store = {
+  /** 注册一个仓库。`repoId` 是 Forge 的数值 repo id,重复注册直接抛。 */
+  registerRepo(repoId: number, owner: string, repo: string): void;
+  /** 给仓库加一把 key。同仓库同代次重复添加直接抛。 */
+  addRepoKey(repoId: number, generation: number, key: string): void;
+  /** 仓库持有的全部 key。未注册的仓库得到空数组——这就是「未注册」的判据。 */
+  listRepoKeys(repoId: number): RepoKey[];
   startRun(meta: RunMeta): number;
   finishRun(runId: number, result: RunResult): void;
   /** 按模型与 category 聚合 Finding 的处置结果。 */
@@ -213,6 +243,30 @@ export function openStore(dbPath: string): Store {
   }
 
   return {
+    registerRepo(repoId, owner, repo) {
+      db.prepare(
+        "INSERT INTO repo (id, owner, repo, registered_at) VALUES (?, ?, ?, ?)",
+      ).run(repoId, owner, repo, new Date().toISOString());
+    },
+
+    addRepoKey(repoId, generation, key) {
+      db.prepare(
+        "INSERT INTO repo_key (repo_id, generation, key) VALUES (?, ?, ?)",
+      ).run(repoId, generation, key);
+    },
+
+    listRepoKeys(repoId) {
+      const rows = db
+        .prepare(
+          "SELECT generation, key FROM repo_key WHERE repo_id = ? ORDER BY generation",
+        )
+        .all(repoId);
+      return rows.map((row) => ({
+        generation: Number(row["generation"]),
+        key: String(row["key"]),
+      }));
+    },
+
     startRun(meta) {
       const result = db
         .prepare(

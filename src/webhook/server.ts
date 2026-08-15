@@ -1,6 +1,6 @@
 /**
- * Webhook 端点。接收 Gitea 与 GitHub 的 pull request 事件,规范化成同一形状,再异步跑
- * 一次 Review Run。
+ * Webhook 端点。投递凭所属仓库的 key 准入(每仓库一把,没有全局 secret),通过后把
+ * Gitea 与 GitHub 的 pull request 事件规范化成同一形状,再异步跑一次 Review Run。
  *
  * 审查结果只以 review 评论呈现,本工具从不调用 status / check 之类会阻断合并的接口,
  * `Forge` 接口里也没有这类方法:审查是建议,不是门禁,人保留最终判断权。
@@ -16,7 +16,7 @@ import {
 import type { Forge } from "../forge/forge.ts";
 import type { Reviewer } from "../review/finding.ts";
 import { runReview } from "../review/run.ts";
-import { openStore } from "../review/store.ts";
+import { openStore, type RepoKey } from "../review/store.ts";
 
 export type Platform = "github" | "gitea";
 
@@ -36,8 +36,6 @@ export type NormalizedEvent = {
 };
 
 export type WebhookServerDeps = {
-  /** 校验投递签名的密钥,两个平台共用一个。 */
-  secret: string;
   /**
    * 按来源平台索引的 Forge。某个平台没有配凭据时那一格可以缺失,缺失时记录下来
    * 并放行投递——是本服务的配置缺口,不是投递的问题。
@@ -59,8 +57,12 @@ export type WebhookServerDeps = {
    * 日志都只有启动那一句。测试注入它来消掉噪音。
    *
    * 本服务对 pull request 的判定结果逐条记,与本服务无关的投递只记首次,见 `handle`。
+   * 例外是「未注册仓库」与「代次不对」两类准入拒绝:它们发生在验签之前,是管理员排查
+   * 「接入了却没反应」的唯一线索,按仓库只记首次。
    */
   onDelivery?: (message: string) => void;
+  /** 「只记首次」集合的上限,默认 `LOGGED_ONCE_MAX`。只该测试注入,用来触达封顶分支。 */
+  loggedOnceMax?: number;
 };
 
 /** 两个平台标识 pull request 事件的头值相同。 */
@@ -68,6 +70,9 @@ const PULL_REQUEST_EVENT = "pull_request";
 
 /** 未认证的投递方能塞任意大的 body,先设上限再读进内存。 */
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+
+/** 「只记首次」集合的上限。准入拒绝的去重键含未认证方可自选的仓库 id,不设限会被写满内存。 */
+const LOGGED_ONCE_MAX = 10_000;
 
 /**
  * 「PR 新增 commit」两个平台拼写不同:GitHub 是 `synchronize`,Gitea 是 `synchronized`。
@@ -126,7 +131,7 @@ type RawPayload = {
   action?: unknown;
   number?: unknown;
   pull_request?: { draft?: unknown; head?: { sha?: unknown } };
-  repository?: { name?: unknown; owner?: { login?: unknown } };
+  repository?: { id?: unknown; name?: unknown; owner?: { login?: unknown } };
 };
 
 /**
@@ -243,6 +248,43 @@ function claim(dbPath: string, event: NormalizedEvent): boolean {
   }
 }
 
+/** payload 里的数值 repo id,准入查 key 的键。取不到即无从验签。 */
+function repoIdOf(payload: unknown): number | undefined {
+  const id = (payload as RawPayload | null)?.repository?.id;
+  return typeof id === "number" ? id : undefined;
+}
+
+/**
+ * hook URL `?k=` 上的代次(ADR 0007)。代次是索引不是凭证:它只决定拿哪把 key 验签,
+ * 解析不出就当没有,让选 key 落空成 401。
+ */
+function generationOf(req: IncomingMessage): number | undefined {
+  const query = (req.url ?? "").split("?")[1];
+  if (query === undefined) return undefined;
+  const value = new URLSearchParams(query).get("k");
+  // 只认十进制数字:Number() 会把 "0x10"、"1e2" 也解析成整数,宽于代次的语义。
+  if (value === null || !/^\d+$/.test(value)) return undefined;
+  return Number(value);
+}
+
+/**
+ * 准入拒绝的日志里指认仓库。名字来自未认证的 payload,只作提示,id 才是判据;
+ * 控制字符滤掉、长度设限——这行在验签前输出,不滤等于让外人往日志里塞伪造行。
+ */
+function describeRepo(payload: unknown, repoId: number): string {
+  const tag = repoTag(payload).replace(/\p{Cc}/gu, "").slice(0, 200);
+  return tag === "" ? `id=${repoId}` : `${tag}(id=${repoId})`;
+}
+
+function lookupRepoKeys(dbPath: string, repoId: number): RepoKey[] {
+  const store = openStore(dbPath);
+  try {
+    return store.listRepoKeys(repoId);
+  } finally {
+    store.close();
+  }
+}
+
 function startRun(deps: WebhookServerDeps, forge: Forge, event: NormalizedEvent): void {
   const settled = deps.onRunSettled ?? logFailure;
   // 这是长跑服务,后台任务的 rejection 不接住就会变成 unhandledRejection 把进程带崩。
@@ -272,47 +314,64 @@ async function handle(
   const body = await readBody(req, res);
   if (body === undefined) return;
 
-  // 签名先于一切:后面每一步都在用 body 里的内容做决定。
-  if (!verifySignature(deps.secret, body, req.headers["x-hub-signature-256"])) {
-    return send(res, 401);
-  }
-
-  // 签名过了才记日志:未认证的请求可以随便发,记它们等于把日志交给外人写。
   const log = deps.onDelivery ?? ((message: string) => console.log(`[webhook] ${message}`));
 
   /**
-   * 与本服务无关的投递按 `key` 只记首次。webhook 订阅通常宽于本服务要的两个 action,
-   * PR 下每条评论、每次打标签都投一次,逐条记会把真正要看的判定结果淹掉。
+   * 按 `key` 只记首次的行。两处在用:与本服务无关的投递(webhook 订阅通常宽于本服务
+   * 要的两个 action,PR 下每条评论都投一次,逐条记会把判定结果淹掉),以及验签之前的
+   * 两类准入拒绝(未注册 / 代次不对)。
    *
    * 仍记首次而不是完全不记:「投递到底有没有到」只有这行能证明,它同时是测试对
    * 「收到了但不处理」的观测点。状态只在本进程内,重启后每类再记一次——重启值得重新
-   * 报一遍这个端点在收什么。键的取值范围是两个平台的事件类型与 action,是闭集。
+   * 报一遍这个端点在收什么。准入拒绝的键含未认证方可自选的仓库 id,集合设上限,
+   * 否则伪造不重复的 id 能把内存写满;满了以后新类别不再记,已记过的仍去重。
    */
   const logOnce = (key: string, message: string): void => {
     if (loggedOnce.has(key)) return;
+    if (loggedOnce.size >= (deps.loggedOnceMax ?? LOGGED_ONCE_MAX)) return;
     loggedOnce.add(key);
     log(message);
   };
+
+  // 准入先于验签(每仓库一把 key,没有全局 secret):从 payload 取仓库 id 查 key,
+  // 按 `?k=` 代次选 key,再验签。此时 body 未经认证,id 只当查询索引用,验签仍决定
+  // 一切。解析不出 id(含非法 JSON)就无从选 key,同样 401,且不记日志——这类请求
+  // 谁都能发,归不进任何仓库的记录里。
+  const payload = safeParse(body);
+  const repoId = repoIdOf(payload);
+  if (repoId === undefined) return send(res, 401);
+
+  const keys = lookupRepoKeys(deps.dbPath, repoId);
+  if (keys.length === 0) {
+    logOnce(`unregistered:${repoId}`, `仓库 ${describeRepo(payload, repoId)} 未注册,回 401`);
+    return send(res, 401);
+  }
+
+  const generation = generationOf(req);
+  const key = keys.find((candidate) => candidate.generation === generation);
+  if (key === undefined) {
+    logOnce(
+      `generation:${repoId}`,
+      `仓库 ${describeRepo(payload, repoId)} 的投递代次不对(已废弃或缺失),回 401`,
+    );
+    return send(res, 401);
+  }
+
+  if (!verifySignature(key.key, body, req.headers["x-hub-signature-256"])) {
+    return send(res, 401);
+  }
 
   // 不关心的事件类型不是错误,投递本身是成功的,只是没有活要干。
   const platform = pullRequestSource(req);
   if (platform === undefined) {
     const name = req.headers["x-gitea-event"] ?? req.headers["x-github-event"] ?? "(无)";
-    // 无关事件不解析 payload 去跑审查,但仍抽出它所属的仓库把「只记首次」按仓库分桶:
-    // 一份实例服务多个仓库,不分桶时一个仓库的 push 会把其余仓库的同类投递日志全吞掉。
+    // 「只记首次」按仓库分桶:一份实例服务多个仓库,不分桶时一个仓库的 push 会把
+    // 其余仓库的同类投递日志全吞掉。
     logOnce(
-      `event:${repoTag(safeParse(body))}:${String(name)}`,
+      `event:${repoTag(payload)}:${String(name)}`,
       `收到 ${String(name)} 事件,只有 pull request 会触发审查`,
     );
     return send(res, 200);
-  }
-
-  let payload: unknown;
-  try {
-    payload = JSON.parse(body.toString("utf8"));
-  } catch {
-    log("body 不是合法 JSON,回 400");
-    return send(res, 400);
   }
 
   const event = normalizeEvent(platform, payload);

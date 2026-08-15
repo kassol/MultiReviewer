@@ -31,3 +31,15 @@ _Avoid_: 去重、指纹、逻辑 Finding
 **Disposition**:
 人对一条 Finding 的处置结论。载体是 Forge 上该条 review 评论的 resolve 状态,已 resolve 即已处置。它是判断审查质量的唯一信号来源。
 _Avoid_: 反馈、评分、标注
+
+**仓库注册表**:
+准入仓库的清单。主键是 Forge 的数值 repo id,改名与转移 owner 后凭 payload 里的 id 仍能匹配。只有注册表里的仓库的投递会被受理,未注册一律 401。
+_Avoid_: 白名单、仓库列表
+
+**Key**:
+一个仓库准入 webhook 投递的凭证,每仓库一把,作为 Gitea hook 的 secret 参与 HMAC 验签。明文存库——HMAC 验签需要原始值,这是密码学约束,不是疏忽。
+_Avoid_: secret、token、密码
+
+**代次**:
+一把 Key 的单调递增序号,写在 hook URL 的 `?k=` 参数上,一次列 hook 即可读出 Gitea 上装的是第几代(ADR 0007)。代次是索引不是凭证:它只决定用哪把 Key 验签,验签仍决定一切,取错即 401。代码标识符用 `generation`。
+_Avoid_: 版本、key id、generation number
