@@ -12,6 +12,8 @@
 - `src/api.ts` — 面板 API 的唯一入口,基址从注入的前缀来。
 - `src/main.tsx` — 路由与壳:`/login` 一屏登录,`shell` 下挂三页(`/repos` / `/runs` / `/stats`),Router `basepath` 取注入前缀。
 - `src/login.tsx` — 登录页,单 token 输入框。
+- `src/repos.tsx` — 仓库页,master-detail(原型变体 A):左列表右详情,注册 / 改组合走模态框,移除用应用内确认模态(不用 `window.confirm`——原生对话框阻塞渲染线程,浏览器自动化与 dogfooding 都会被卡死),核对差异卡片的「轮转推平」调轮转端点。对变体 A 的两处显式偏离:「最近的 Review Run」表连同「输 PR 号重跑」归 issue #37 的手动重跑一并落;key 面板的「建立于」换成「代次」——代次是 ADR 0007 之后 key 真正有信息量的属性。
+- `src/styles.css` — 设计令牌与组件样式,取自 prototype/panel-layout 的定稿,含暗色模式。
 
 ## 模块规范
 
@@ -34,3 +36,4 @@
 ## 变更日志
 
 - 2026-08-15: 落地 issue #33。脚手架从零起:Vite + React + TanStack Router/Query,登录一屏加三页顶部导航的空壳,Docker 多阶段构建。
+- 2026-08-15: 落地 issue #34。仓库页按原型变体 A 落地(`src/repos.tsx` + `src/styles.css`):左列表按最近活动排序,右详情含核对差异卡片(轮转推平)、准入 key 面板(不回显,只显代次)、模型组合面板(覆盖 JSON 与配置文件同形状)、累计量。注册 / 改组合 / 移除确认全走应用内模态。真实浏览器走通注册 → 轮转 → 差异推平 → 改组合 → 移除全流程。

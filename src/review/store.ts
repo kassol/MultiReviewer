@@ -189,6 +189,8 @@ export type RepoSummary = {
   repoId: number;
   owner: string;
   repo: string;
+  /** 模型覆盖的 JSON,null 即跟随全局。面板的仓库详情要显示与编辑它。 */
+  reviewersJson: string | null;
   /** 累计 Review Run 数。按注册时的 owner/repo 匹配评审记录。 */
   runCount: number;
   /** 累计来源 Finding 数(落库行数,非合并组数)。 */
@@ -218,6 +220,8 @@ export type Store = {
   /** 仓库持有的全部 key。未注册的仓库得到空数组——这就是「未注册」的判据。 */
   listRepoKeys(repoId: number): RepoKey[];
   getRepo(repoId: number): RepoRecord | undefined;
+  /** 改写模型覆盖。null 即清除覆盖、跟随全局。仓库不存在时静默无事发生,调用方先查。 */
+  setRepoReviewers(repoId: number, reviewersJson: string | null): void;
   /** 摘掉注册表行与它的 Key。评审记录一行不动:模型选型的历史不因下线而断。 */
   removeRepo(repoId: number): void;
   /** 全部已注册仓库,按最近活动排序,没跑过的按注册时间排在后面。 */
@@ -348,6 +352,10 @@ export function openStore(dbPath: string): Store {
       };
     },
 
+    setRepoReviewers(repoId, reviewersJson) {
+      db.prepare("UPDATE repo SET reviewers = ? WHERE id = ?").run(reviewersJson, repoId);
+    },
+
     removeRepo(repoId) {
       db.exec("BEGIN");
       try {
@@ -366,7 +374,7 @@ export function openStore(dbPath: string): Store {
       // started_at 是 ISO 字符串,MAX 按字典序即时间序。
       const rows = db
         .prepare(
-          `SELECT r.id, r.owner, r.repo,
+          `SELECT r.id, r.owner, r.repo, r.reviewers,
                   (SELECT COUNT(*) FROM review_run run
                     WHERE run.owner = r.owner AND run.repo = r.repo) AS run_count,
                   (SELECT COUNT(*) FROM finding f JOIN review_run run ON f.run_id = run.id
@@ -381,6 +389,7 @@ export function openStore(dbPath: string): Store {
         repoId: Number(row["id"]),
         owner: String(row["owner"]),
         repo: String(row["repo"]),
+        reviewersJson: row["reviewers"] === null ? null : String(row["reviewers"]),
         runCount: Number(row["run_count"]),
         findingCount: Number(row["finding_count"]),
         lastActivity: row["last_activity"] === null ? null : String(row["last_activity"]),

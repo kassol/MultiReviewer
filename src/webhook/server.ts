@@ -557,8 +557,26 @@ async function handlePanelApi(
     return send(res, 204);
   }
 
+  // 全局默认的模型组合,仓库详情用来展示「跟随全局」跟的是什么。只给模型标识,
+  // provider 与凭据环境变量不属于面板要关心的事。
+  if (sub === "/reviewers" && req.method === "GET") {
+    return sendJson(res, 200, {
+      models: deps.reviewers.map((reviewer) => reviewer.model),
+    });
+  }
+
   if (sub === "/repos" && req.method === "GET") {
-    return sendJson(res, 200, withStore(deps.dbPath, (store) => store.listRepos()));
+    const rows = withStore(deps.dbPath, (store) => store.listRepos());
+    return sendJson(
+      res,
+      200,
+      rows.map(({ reviewersJson, ...row }) => ({
+        ...row,
+        // 覆盖以解析后的形状交给前端,编辑时原样回传 PUT。坏 JSON(直接写库的遗留)
+        // 按 null 透出——一行坏数据不该把整个列表拖成 500,投递链对同一列也是这个态度。
+        reviewers: reviewersJson === null ? null : safeParseJson(reviewersJson),
+      })),
+    );
   }
   if (sub === "/repos" && req.method === "POST") {
     return handleRegister(req, res, deps, hookManager);
@@ -566,6 +584,10 @@ async function handlePanelApi(
   const repoRoute = /^\/repos\/(\d+)$/.exec(sub);
   if (repoRoute !== null && req.method === "DELETE") {
     return handleRemove(res, deps, hookManager, Number(repoRoute[1]));
+  }
+  const reviewersRoute = /^\/repos\/(\d+)\/reviewers$/.exec(sub);
+  if (reviewersRoute !== null && req.method === "PUT") {
+    return handleSetReviewers(req, res, deps, Number(reviewersRoute[1]));
   }
   const rotateRoute = /^\/repos\/(\d+)\/rotate$/.exec(sub);
   if (rotateRoute !== null && req.method === "POST") {
@@ -577,6 +599,32 @@ async function handlePanelApi(
   }
 
   return sendJson(res, 404, { error: "没有这个端点" });
+}
+
+function safeParseJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 解析并校验一段模型覆盖入参:形状校验加试构建(坏凭据引用要在响应里显形,不能等
+ * 投递),注册与 PUT 共用同一判据。返回序列化好的 JSON,校验不过返回错误信息。
+ */
+function parseReviewersOverride(
+  deps: WebhookServerDeps,
+  value: unknown,
+  context: string,
+): { ok: true; reviewersJson: string } | { ok: false; error: string } {
+  try {
+    const specs = assertReviewerSpecs(value, context);
+    deps.buildReviewers(specs);
+    return { ok: true, reviewersJson: JSON.stringify(specs) };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /** hook 投递地址里代次之前的部分:`<基地址>/webhook?k=`。 */
@@ -626,22 +674,15 @@ async function handleRegister(
   const ref = { owner: payload.owner, repo: payload.repo };
 
   // 模型覆盖跟随注册一起写入,语义是全量替换 reviewers 列表,省略即跟随全局。
-  // 校验之外还试构建一次:引用不存在的凭据环境变量这类错误要在注册响应里显形,
-  // 不能等到投递时才以日志的形式出现。
   let reviewersJson: string | undefined;
   if (payload.reviewers !== undefined) {
-    try {
-      const specs = assertReviewerSpecs(
-        payload.reviewers,
-        `${ref.owner}/${ref.repo} 的模型覆盖`,
-      );
-      deps.buildReviewers(specs);
-      reviewersJson = JSON.stringify(specs);
-    } catch (error) {
-      return sendJson(res, 400, {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    const parsed = parseReviewersOverride(
+      deps,
+      payload.reviewers,
+      `${ref.owner}/${ref.repo} 的模型覆盖`,
+    );
+    if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
+    reviewersJson = parsed.reviewersJson;
   }
 
   // 权限不足要明确拒绝并说明缺什么:不产生「注册成功却永远收不到投递」的哑仓库。
@@ -728,6 +769,43 @@ async function handleRemove(
 
   // 评审记录一行不动:模型选型的历史不因仓库下线而断(移除后的投递按未注册 401)。
   withStore(deps.dbPath, (store) => store.removeRepo(repoId));
+  return send(res, 204);
+}
+
+/**
+ * 改写模型覆盖(语义与注册一致:全量替换 reviewers 列表,null 即清除、跟随全局)。
+ * 非空时校验并试构建一次——坏凭据引用要在响应里显形,不能等投递。
+ */
+async function handleSetReviewers(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+): Promise<void> {
+  const record = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+  if (record === undefined) {
+    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+  }
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body) as { reviewers?: unknown } | null;
+  if (payload === null || !("reviewers" in payload)) {
+    return sendJson(res, 400, {
+      error: 'body 要是 {"reviewers": [...]} 或 {"reviewers": null} 形状的 JSON',
+    });
+  }
+
+  let reviewersJson: string | null = null;
+  if (payload.reviewers !== null) {
+    const parsed = parseReviewersOverride(
+      deps,
+      payload.reviewers,
+      `${record.owner}/${record.repo} 的模型覆盖`,
+    );
+    if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
+    reviewersJson = parsed.reviewersJson;
+  }
+  withStore(deps.dbPath, (store) => store.setRepoReviewers(repoId, reviewersJson));
   return send(res, 204);
 }
 

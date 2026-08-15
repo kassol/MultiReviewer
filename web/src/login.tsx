@@ -33,22 +33,25 @@ export function LoginPage() {
   }
 
   return (
-    <main style={{ maxWidth: "20rem", margin: "20vh auto", fontFamily: "system-ui" }}>
+    <main className="login-wrap">
       <h1>MultiReviewer</h1>
-      <form onSubmit={submit} style={{ display: "flex", gap: "0.5rem" }}>
+      <form onSubmit={submit} className="login-form">
         <input
           type="password"
           value={token}
           onChange={(event) => setToken(event.target.value)}
           placeholder="admin token"
           autoFocus
-          style={{ flex: 1 }}
         />
-        <button type="submit" disabled={busy || token === ""}>
+        <button type="submit" className="btn primary" disabled={busy || token === ""}>
           登录
         </button>
       </form>
-      {error === null ? null : <p role="alert">{error}</p>}
+      {error === null ? null : (
+        <p role="alert" className="error">
+          {error}
+        </p>
+      )}
     </main>
   );
 }

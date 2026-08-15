@@ -162,6 +162,65 @@ test("配置了模型覆盖的仓库,Review Run 用覆盖后的组合", async ()
   }
 });
 
+test("模型覆盖可编辑:PUT 全量替换、null 清除,坏覆盖 400", async () => {
+  const h = await startHarness();
+  assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
+  const override: ReviewerSpec[] = [
+    { provider: "test", model: "swapped-model", apiKeyEnv: "STUB_KEY" },
+  ];
+
+  assert.equal(
+    (await h.api("PUT", `/repos/${GITEA_REPO.id}/reviewers`, { reviewers: override })).status,
+    204,
+  );
+  const rows = (await (await h.api("GET", "/repos")).json()) as { reviewers: unknown }[];
+  assert.deepEqual(rows[0]!.reviewers, override);
+
+  // 注册后的下一次投递真实生效。
+  assert.equal((await h.deliverViaHook("sha-1")).status, 200);
+  await h.settledAtLeast(1);
+  const sqlite = new DatabaseSync(h.db.path);
+  try {
+    const models = (
+      sqlite.prepare("SELECT model FROM reviewer_outcome").all() as { model: string }[]
+    ).map((row) => row.model);
+    assert.deepEqual(models, ["swapped-model"]);
+  } finally {
+    sqlite.close();
+  }
+
+  // null 清除覆盖,回到跟随全局。
+  assert.equal(
+    (await h.api("PUT", `/repos/${GITEA_REPO.id}/reviewers`, { reviewers: null })).status,
+    204,
+  );
+  const cleared = (await (await h.api("GET", "/repos")).json()) as { reviewers: unknown }[];
+  assert.equal(cleared[0]!.reviewers, null);
+
+  // 形状坏的覆盖 400,且不落库——覆盖仍是清除后的 null;未注册仓库 404。
+  assert.equal(
+    (
+      await h.api("PUT", `/repos/${GITEA_REPO.id}/reviewers`, {
+        reviewers: [{ provider: "x" }],
+      })
+    ).status,
+    400,
+  );
+  const afterBad = (await (await h.api("GET", "/repos")).json()) as { reviewers: unknown }[];
+  assert.equal(afterBad[0]!.reviewers, null);
+  assert.equal(
+    (await h.api("PUT", "/repos/999/reviewers", { reviewers: null })).status,
+    404,
+  );
+});
+
+test("全局模型组合只回模型标识", async () => {
+  const h = await startHarness();
+  assert.deepEqual(await (await h.api("GET", "/reviewers")).json(), {
+    models: ["global-model"],
+  });
+});
+
 test("仓库列表带累计量,按最近活动排序,没跑过的排最后", async () => {
   const h = await startHarness();
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);

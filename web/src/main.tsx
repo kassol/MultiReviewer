@@ -14,6 +14,8 @@ import { createRoot } from "react-dom/client";
 import { api } from "./api.ts";
 import { injected } from "./injected.ts";
 import { LoginPage } from "./login.tsx";
+import { ReposPage } from "./repos.tsx";
+import "./styles.css";
 
 // 入口第一件事读注入:缺了就在这里报错,不进任何路由。
 const { prefix } = injected();
@@ -39,12 +41,23 @@ const shellRoute = createRoute({
 
 function Shell() {
   return (
-    <div style={{ fontFamily: "system-ui", margin: "0 auto", maxWidth: "64rem" }}>
-      <nav style={{ display: "flex", gap: "1rem", padding: "1rem 0" }}>
-        <Link to="/repos">仓库</Link>
-        <Link to="/runs">评审记录</Link>
-        <Link to="/stats">处置率</Link>
-      </nav>
+    <div>
+      <div className="top">
+        <div className="brand">
+          <b>MultiReviewer</b>
+        </div>
+        <nav className="nav">
+          <Link to="/repos" activeProps={{ className: "on" }}>
+            仓库
+          </Link>
+          <Link to="/runs" activeProps={{ className: "on" }}>
+            评审记录
+          </Link>
+          <Link to="/stats" activeProps={{ className: "on" }}>
+            处置率
+          </Link>
+        </nav>
+      </div>
       <Outlet />
     </div>
   );
@@ -60,17 +73,17 @@ const indexRoute = createRoute({
 const reposRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/repos",
-  component: () => <p>仓库页(issue #34)</p>,
+  component: ReposPage,
 });
 const runsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/runs",
-  component: () => <p>评审记录页(issue #37)</p>,
+  component: () => <p style={{ padding: 22 }}>评审记录页(issue #37)</p>,
 });
 const statsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/stats",
-  component: () => <p>处置率页(issue #36)</p>,
+  component: () => <p style={{ padding: 22 }}>处置率页(issue #36)</p>,
 });
 
 const routeTree = rootRoute.addChildren([
