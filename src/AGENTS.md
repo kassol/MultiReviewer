@@ -10,7 +10,8 @@
 - `git/` — 工作副本的准备与 diff 读取,直接调用 git 命令。
 - `review/` — Review Run 的编排。`run.ts` 是唯一入口 `runReview`,其余是它的内部构件:`store.ts` 是 SQLite 持久化,`fingerprint.ts` 算 Finding 的内容指纹并读写评论正文里的指纹锚点,`position.ts` 解析 diff(可评论的行区间与每个文件的改动行数),`batch.ts` 切批并合并各批次的执行结果。
 - `reviewer/` — Reviewer 的真实实现。`pi-reviewer.ts` 在主进程侧管子进程,`worker.ts` 是子进程入口,两者只经 `protocol.ts` 定义的消息通信。`numbered-read.ts` 与 `anchor.ts` 是 worker 的行号构件(见下)。
-- `webhook/` — `server.ts` 是 HTTP 入口:路由只认 `POST /webhook`(其余路径与方法一律 404),投递经 校验签名、规范化两个平台的形状、判幂等 后异步触发 `runReview`。
+- `webhook/` — `server.ts` 是 HTTP 入口:路由表分发 `POST /webhook`(投递:准入验签、规范化两个平台的形状、判幂等、异步触发 `runReview`)与 `<前缀>/api/*`(面板 API),其余路径与方法一律 404。
+- `panel/` — 管理面板的服务端构件。`auth.ts` 是认证判定(token 比对、session、按 IP 退避锁定),纯逻辑不碰 HTTP,时钟可注入。
 - `main.ts` — 进程入口。读配置与环境变量,建出 Forge 与 Reviewer,起 webhook 服务。
 
 ## 模块规范
@@ -41,7 +42,8 @@
 - 只有 PR 打开与 PR 新增 commit 触发 Review Run。草稿 PR 在触发层用规范化事件里的 `draft` 挡掉,不进 `runReview`。
 - 准入先于验签,每仓库一把 Key,没有全局 secret:从 payload 取数值 repo id 查注册表,按 `?k=` 代次选 Key,再验签。id 与代次都来自未认证的请求,只当查询索引,验签仍决定一切(ADR 0007)。「未注册」与「代次不对」是仅有的两类验签前记录,按仓库只记首次——它们是管理员排查「接入了却没反应」的唯一线索;`logOnce` 的去重键因含未认证方可自选的仓库 id 而设上限(`LOGGED_ONCE_MAX`),满了只去重不再记新类。
 - Webhook 的状态码语义:解析不出仓库 id(含非法 JSON)、未注册、代次不对、签名不过都是 401(对未认证方不区分原因),事件类型或 action 不关心 200(投递是成功的,只是没有活要干),字段对不上 400(此时已通过验签,平台改字段名时要在投递记录里显形),来源平台还没有 Forge 实现 200(是本服务的配置缺口,不是投递的问题)。
-- 路由在一切之前:非 `POST /webhook` 的请求一律 404,不重定向(重定向会把扫描器引向真实入口),也不进投递日志。路径匹配不含查询串——hook URL 将携带 `?k=<代次>`(ADR 0007)。面板前缀、`<前缀>/api/*` 与 `/assets/*` 的分支后续加在同一处分发点(issue #26 的路由表)。
+- 路由在一切之前:`POST /webhook` 与 `<前缀>/api/*` 之外的请求一律 404,不重定向(重定向会把扫描器引向真实入口),也不进投递日志。路径匹配不含查询串——hook URL 携带 `?k=<代次>`(ADR 0007)。`<前缀>/*` 回 index.html 与 `/assets/*` 静态产物是后续票,落地前同属 404,前缀猜错与前缀下路径不存在因此不可区分。
+- 面板认证:登录(`POST <前缀>/api/session`)是唯一免认证的端点,验 admin token 换 HttpOnly + Secure + SameSite=Strict、`Path` 限前缀的 session cookie——前缀轮换后旧 cookie 自然失效。其余 API 端点先验 session,未认证一律 401,不区分端点存不存在;认证后的未知端点回 JSON 404,与页面的裸 404 分开——API 的调用方是程序,要能把「端点不存在」从「前缀不对」里区分出来。登录失败按 IP 退避与锁定(头三次免罚,之后指数翻倍封顶 15 分钟),锁定期内对的 token 也不放行;IP 取直连地址、不认 `X-Forwarded-For`——未认证方伪造它就能绕过锁定,反代之后退化为全桶共锁,对单管理员面板锁过头好过锁不住。session 在内存里,重启全体重新登录。
 - 幂等键是「仓库 + head commit」,落在 `webhook_delivery` 表的 UNIQUE 约束上,靠插入冲突判重而不是先查后插:并发投递时先查后插会两个请求都查不到、都开跑。`review_run` 上不加同样的约束——人手动重审同一个 head commit 是合法的。
 - Webhook handler 立即返回 200,Review Run 在后台跑。后台任务的 rejection 必须接住并记录,否则会变成 unhandledRejection 把这个长跑进程带崩。
 - 通过签名校验的投递记一行,写明这次做了什么(开始审查 / 草稿不审 / 已审过跳过 / action 不触发 / 非 pull request 事件)。没有这行时,服务正常工作与完全收不到投递在日志上一模一样,只有启动那一句。记录点在签名校验之后:未认证的请求谁都能发,记它们等于把日志交给外人写。仅有的例外是「未注册」与「代次不对」两类准入拒绝,见上面准入那条:按仓库只记首次、集合设上限、仓库名滤掉控制字符。日志出口是 `onDelivery`,与 `onRunSettled` 一样是可注入的,测试收进数组而不刷屏。
@@ -68,7 +70,7 @@
 
 ## 依赖关系
 
-`review/` 依赖 `forge/` 与 `git/` 的类型与函数。`reviewer/` 依赖 `review/` 的领域类型,反向不依赖——`runReview` 只认 `Reviewer` 接口。`forge/` 与 `git/` 互不依赖。`webhook/` 依赖 `review/` 的 `runReview` 与 `store.ts` 的 `openStore` / `RepoKey`、`forge/` 的接口类型,反向不依赖。`main.ts` 依赖以上全部,只有它读环境变量。
+`review/` 依赖 `forge/` 与 `git/` 的类型与函数。`reviewer/` 依赖 `review/` 的领域类型,反向不依赖——`runReview` 只认 `Reviewer` 接口。`forge/` 与 `git/` 互不依赖。`webhook/` 依赖 `review/` 的 `runReview` 与 `store.ts` 的 `openStore` / `RepoKey`、`forge/` 的接口类型、`panel/` 的认证构件,反向不依赖。`panel/` 不依赖其他目录。`main.ts` 依赖以上全部,只有它读环境变量。
 
 第三方依赖只有 Pi(`@earendil-works/pi-coding-agent`)与它的 `typebox`,且只在 `reviewer/` 内使用。
 
@@ -91,3 +93,4 @@
 - 2026-08-09: 两轴复核(Standards + Spec)加正确性轴的收口。#14 的「只记首次」去重键补上 `owner/repo`(`repoTag`,非 PR 事件抽不到时退回全局键):此前键是全实例共用,第一个仓库的 push / 忽略动作会把其余仓库的同类投递日志全吞掉。`parseFingerprintAnchors` 加 `typeof body !== "string"` 守卫:`listReviewBodies` 直接喂平台读回的 `review.body`,一条 null 正文不该在 `matchAll` 上把整轮 Run 带崩。#15 的 `SIMILARITY_THRESHOLD` 注释校正成本口径——ticket 把误合并排在漏合并之上,0.05 低阈值是弱信号下的最小伤害而非「拆错比合错轻」,两头的已知代价固定在 `test/similarity.test.ts`;启发式与阈值未动。
 - 2026-08-15: 落地 issue #27。服务从零引入路由:`POST /webhook` 照常处理投递,其余任何路径与方法一律 404、不重定向,`GET /webhook` 与 `/` 也是。分发点在 `createWebhookServer` 的 `createServer` 回调里,路径匹配不含查询串,面板与静态资源的分支后续加在这里。投递行为与状态码语义未动。
 - 2026-08-15: 落地 issue #28。`store.ts` 新增 `repo` 与 `repo_key` 两张表及 `registerRepo` / `addRepoKey` / `listRepoKeys`;`server.ts` 的准入改为「payload 取 repo id → 查注册表 → 按 `?k=` 代次选 Key → 验签」,`WebhookServerDeps.secret` 删除,`main.ts` 不再读 `MULTIREVIEWER_WEBHOOK_SECRET`。非法 JSON 从 400 挪到 401——解析不出 id 就无从选 Key,400 只剩「验签过了但字段对不上」。`logOnce` 移到验签之前并设 `LOGGED_ONCE_MAX` 上限:未注册 / 代次不对两类拒绝要记首次,而去重键含未认证方可自选的仓库 id。注入边界未增加,测试仍走 HTTP 缝加临时库种数据。
+- 2026-08-15: 落地 issue #29。新增 `panel/auth.ts`(token 摘要后 timingSafeEqual、内存 session、按 IP 退避锁定,时钟注入);`server.ts` 路由表挂上 `<前缀>/api` 分支,登录发 `Path` 限前缀的 Secure cookie。`main.ts` 新增三个必需项:`MULTIREVIEWER_ADMIN_TOKEN`(接替原全局 secret 的位置)、`MULTIREVIEWER_PANEL_PREFIX`(校验字符集并拒绝 `webhook` / `assets`)、`MULTIREVIEWER_BASE_URL`(明文 http 且非 localhost 拒绝启动)。测试在 HTTP 缝上新开 `test/panel-auth.test.ts`,退避窗口用注入时钟驱动,不等真实时间。

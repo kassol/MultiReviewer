@@ -141,6 +141,8 @@ async function startHarness(options: HarnessOptions = {}) {
     reviewers: [options.reviewer ?? scriptedReviewer("stub-model", [])],
     cacheDir: cache.dir,
     dbPath: db.path,
+    adminToken: "webhook-test-admin-token",
+    panelPrefix: "webhook-test-prefix",
     ...(options.loggedOnceMax === undefined ? {} : { loggedOnceMax: options.loggedOnceMax }),
     onDelivery: (message) => deliveries.push(message),
     onRunSettled: (event, error) => {

@@ -52,6 +52,10 @@ async function boot(overrides: Record<string, string>): Promise<Boot> {
     MULTIREVIEWER_CONFIG: configPath,
     MULTIREVIEWER_DB: join(dir, "multireviewer.db"),
     MULTIREVIEWER_CACHE_DIR: join(dir, "worktrees"),
+    MULTIREVIEWER_ADMIN_TOKEN: "boot-test-admin-token",
+    MULTIREVIEWER_PANEL_PREFIX: "boot-test-prefix",
+    // 明文 http 但 localhost:基地址校验要放行本机调试。
+    MULTIREVIEWER_BASE_URL: "http://localhost:3000",
     // 0 让内核挑一个空闲端口,并发跑测试时不会撞上。
     MULTIREVIEWER_PORT: "0",
     STUB_KEY: "stub-credential",
@@ -88,4 +92,35 @@ test("一个 Forge 都没配时启动失败并说明要配什么", async () => {
   assert.equal(result.listening, false);
   assert.match(result.output, /至少要配置一个 Forge/);
   assert.match(result.output, /MULTIREVIEWER_GITEA_URL/);
+});
+
+test("基地址是明文 http 且非 localhost 时拒绝启动并说明后果", async () => {
+  const result = await boot({
+    GITHUB_TOKEN: "ghp-stub",
+    MULTIREVIEWER_BASE_URL: "http://reviewer.example.com",
+  });
+  assert.equal(result.listening, false);
+  // 说清「起得来却登不进」的因果,不是干巴巴的「不合法」。
+  assert.match(result.output, /Secure cookie/);
+});
+
+test("admin token 缺失时启动失败", async () => {
+  const result = await boot({ GITHUB_TOKEN: "ghp-stub", MULTIREVIEWER_ADMIN_TOKEN: "" });
+  assert.equal(result.listening, false);
+  assert.match(result.output, /MULTIREVIEWER_ADMIN_TOKEN/);
+});
+
+test("面板前缀撞上固定入口或带非法字符时启动失败", async () => {
+  const result = await boot({ GITHUB_TOKEN: "ghp-stub", MULTIREVIEWER_PANEL_PREFIX: "webhook" });
+  assert.equal(result.listening, false);
+  assert.match(result.output, /MULTIREVIEWER_PANEL_PREFIX/);
+});
+
+test("基地址不是 http(s) 时启动失败", async () => {
+  const result = await boot({
+    GITHUB_TOKEN: "ghp-stub",
+    MULTIREVIEWER_BASE_URL: "ftp://reviewer.example.com",
+  });
+  assert.equal(result.listening, false);
+  assert.match(result.output, /http/);
 });

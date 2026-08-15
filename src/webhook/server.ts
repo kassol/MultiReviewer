@@ -14,6 +14,7 @@ import {
 } from "node:http";
 
 import type { Forge } from "../forge/forge.ts";
+import { createPanelAuth, SESSION_TTL_MS, type PanelAuth } from "../panel/auth.ts";
 import type { Reviewer } from "../review/finding.ts";
 import { runReview } from "../review/run.ts";
 import { openStore, type RepoKey } from "../review/store.ts";
@@ -63,6 +64,12 @@ export type WebhookServerDeps = {
   onDelivery?: (message: string) => void;
   /** 「只记首次」集合的上限,默认 `LOGGED_ONCE_MAX`。只该测试注入,用来触达封顶分支。 */
   loggedOnceMax?: number;
+  /** 面板登录用的 admin token,登录换 session cookie。 */
+  adminToken: string;
+  /** 面板路径的随机首段(不含斜杠),API 挂在 `/<前缀>/api` 下。 */
+  panelPrefix: string;
+  /** 时钟,默认 `Date.now`。只该测试注入,用来驱动登录退避的时间窗。 */
+  now?: () => number;
 };
 
 /** 两个平台标识 pull request 事件的头值相同。 */
@@ -420,19 +427,99 @@ function pathname(req: IncomingMessage): string {
   return (req.url ?? "").split("?", 1)[0]!;
 }
 
+const SESSION_COOKIE = "multireviewer_session";
+
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(body));
+}
+
+/** Cookie 头里 `name` 的值。只认第一个匹配,面板只发这一个 cookie。 */
+function cookieValue(header: string | undefined, name: string): string | undefined {
+  if (header === undefined) return undefined;
+  for (const part of header.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return rest.join("=");
+  }
+  return undefined;
+}
+
+/**
+ * 面板 API。登录是唯一免认证的端点,其余一律先验 session——端点存在与否都回 401,
+ * 枚举 API 面也要先过认证。API 下的未知路径回 JSON 404,与页面的裸 404 分开:调用方
+ * 是程序,它要能把「端点不存在」从「前缀不对」里区分出来。
+ */
+async function handlePanelApi(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  auth: PanelAuth,
+): Promise<void> {
+  const sub = pathname(req).slice(`/${deps.panelPrefix}/api`.length) || "/";
+
+  if (sub === "/session" && req.method === "POST") {
+    const body = await readBody(req, res);
+    if (body === undefined) return;
+    const payload = safeParse(body) as { token?: unknown } | null;
+    // 形状不对不算猜 token,不计入退避——退避只该罚「猜」,不该罚「坏客户端」。
+    if (payload === null || typeof payload.token !== "string") {
+      return sendJson(res, 400, { error: 'body 要是 {"token": "..."} 形状的 JSON' });
+    }
+    // 锁定按直连地址分桶,不认 X-Forwarded-For:未认证方伪造它就能绕过锁定。代价是
+    // 反代之后所有客户端同桶,攻击者能把管理员一起锁住——对单管理员面板,锁过头
+    // 好过锁不住。
+    const outcome = auth.login(payload.token, req.socket.remoteAddress ?? "");
+    if (!outcome.ok) {
+      return sendJson(res, outcome.status, {
+        error: outcome.status === 429 ? "失败次数过多,稍后再试" : "token 不对",
+      });
+    }
+    res.writeHead(204, {
+      "set-cookie":
+        `${SESSION_COOKIE}=${outcome.sessionId}; HttpOnly; Secure; SameSite=Strict; ` +
+        `Path=/${deps.panelPrefix}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
+    });
+    res.end();
+    return;
+  }
+
+  if (!auth.authenticate(cookieValue(req.headers.cookie, SESSION_COOKIE))) {
+    return sendJson(res, 401, { error: "未登录" });
+  }
+
+  // 登录状态探测,SPA 启动时靠它决定进登录页还是进面板。
+  if (sub === "/session" && req.method === "GET") {
+    return send(res, 204);
+  }
+
+  return sendJson(res, 404, { error: "没有这个端点" });
+}
+
 export function createWebhookServer(deps: WebhookServerDeps): Server {
   // 已经记过首次的无关事件类型与 action,整个服务共用一份。
   const loggedOnce = new Set<string>();
+  const auth = createPanelAuth(deps.adminToken, deps.now);
+  const apiPrefix = `/${deps.panelPrefix}/api`;
   return createServer((req, res) => {
-    // 路由表:`POST /webhook` → 投递;其余一律 404,不重定向——`GET /webhook` 与 `/`
-    // 也是,重定向会把扫描器引向真实入口。面板前缀、`<前缀>/api/*` 与 `/assets/*`
-    // 的分支后续加在这里(issue #26 的路由表),本票内它们同属 404。
-    if (req.method !== "POST" || pathname(req) !== "/webhook") {
-      return send(res, 404);
+    // 路由表:`POST /webhook` → 投递;`<前缀>/api/*` → 面板 API;其余一律 404,
+    // 不重定向——`GET /webhook` 与 `/` 也是,重定向会把扫描器引向真实入口。
+    // `<前缀>/*` 回注入过的 index.html 与 `/assets/*` 静态产物是后续票,此前同属 404,
+    // 前缀猜错与前缀下路径不存在因此不可区分。
+    const path = pathname(req);
+    if (req.method === "POST" && path === "/webhook") {
+      void handle(req, res, deps, loggedOnce).catch((error: unknown) => {
+        console.error("webhook 处理失败:", error instanceof Error ? error.message : error);
+        if (!res.headersSent) send(res, 500);
+      });
+      return;
     }
-    void handle(req, res, deps, loggedOnce).catch((error: unknown) => {
-      console.error("webhook 处理失败:", error instanceof Error ? error.message : error);
-      if (!res.headersSent) send(res, 500);
-    });
+    if (path === apiPrefix || path.startsWith(`${apiPrefix}/`)) {
+      void handlePanelApi(req, res, deps, auth).catch((error: unknown) => {
+        console.error("面板 API 处理失败:", error instanceof Error ? error.message : error);
+        if (!res.headersSent) sendJson(res, 500, { error: "内部错误" });
+      });
+      return;
+    }
+    return send(res, 404);
   });
 }

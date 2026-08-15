@@ -40,6 +40,10 @@ _Avoid_: 白名单、仓库列表
 一个仓库准入 webhook 投递的凭证,每仓库一把,作为 Gitea hook 的 secret 参与 HMAC 验签。明文存库——HMAC 验签需要原始值,这是密码学约束,不是疏忽。
 _Avoid_: secret、token、密码
 
+**面板前缀**:
+管理面板路径的随机首段,运行时来自 `MULTIREVIEWER_PANEL_PREFIX`,只盖面板页面与它的 API,不盖 `/webhook` 与 `/assets`。作用是让面板不被扫描器枚举到,真正的门禁是 admin token;轮换前缀不影响任何已注册仓库的 hook。
+_Avoid_: base path、子路径、随机路径
+
 **代次**:
 一把 Key 的单调递增序号,写在 hook URL 的 `?k=` 参数上,一次列 hook 即可读出 Gitea 上装的是第几代(ADR 0007)。代次是索引不是凭证:它只决定用哪把 Key 验签,验签仍决定一切,取错即 401。代码标识符用 `generation`。
 _Avoid_: 版本、key id、generation number
