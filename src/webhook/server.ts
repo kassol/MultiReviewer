@@ -356,10 +356,21 @@ async function handle(
   startRun(deps, forge, event);
 }
 
+/** 请求路径,不含查询串。hook URL 会带 `?k=<代次>`(ADR 0007),匹配只看路径。 */
+function pathname(req: IncomingMessage): string {
+  return (req.url ?? "").split("?", 1)[0]!;
+}
+
 export function createWebhookServer(deps: WebhookServerDeps): Server {
   // 已经记过首次的无关事件类型与 action,整个服务共用一份。
   const loggedOnce = new Set<string>();
   return createServer((req, res) => {
+    // 路由表:`POST /webhook` → 投递;其余一律 404,不重定向——`GET /webhook` 与 `/`
+    // 也是,重定向会把扫描器引向真实入口。面板前缀、`<前缀>/api/*` 与 `/assets/*`
+    // 的分支后续加在这里(issue #26 的路由表),本票内它们同属 404。
+    if (req.method !== "POST" || pathname(req) !== "/webhook") {
+      return send(res, 404);
+    }
     void handle(req, res, deps, loggedOnce).catch((error: unknown) => {
       console.error("webhook 处理失败:", error instanceof Error ? error.message : error);
       if (!res.headersSent) send(res, 500);

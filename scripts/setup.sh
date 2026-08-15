@@ -462,8 +462,14 @@ write_env MULTIREVIEWER_HOST_PORT "$MULTIREVIEWER_HOST_PORT"
 
 say ""
 say "Gitea 要能访问到这台服务器。填服务对外的地址。"
-note "路径任意,服务不挑。"
+note "路径固定为 /webhook,服务只认这一个入口,其余路径一律 404。"
 ask MULTIREVIEWER_PUBLIC_URL "服务的公网地址(如 https://reviewer.example.com/webhook):"
+# 路由只认 /webhook,填漏后缀的地址每条投递都 404。在这里补齐,让这个错误没法发生。
+MULTIREVIEWER_PUBLIC_URL="${MULTIREVIEWER_PUBLIC_URL%/}"
+if [[ "$MULTIREVIEWER_PUBLIC_URL" != */webhook ]]; then
+  MULTIREVIEWER_PUBLIC_URL="${MULTIREVIEWER_PUBLIC_URL}/webhook"
+  note "已补上 /webhook 后缀:$MULTIREVIEWER_PUBLIC_URL"
+fi
 write_env MULTIREVIEWER_PUBLIC_URL "$MULTIREVIEWER_PUBLIC_URL"
 note "MULTIREVIEWER_PUBLIC_URL 只给这个脚本用,服务本身不读它。"
 
@@ -489,7 +495,7 @@ printf '  %s✓%s 服务已监听\n' "$GREEN" "$RESET"
 say ""
 say "先从本机打一个签名错误的请求,期望 401——这验容器本身。"
 LOCAL_PROBE=$(curl -sS -o /dev/null -w '%{http_code}' -m 10 \
-  -X POST "http://127.0.0.1:${MULTIREVIEWER_HOST_PORT}/" \
+  -X POST "http://127.0.0.1:${MULTIREVIEWER_HOST_PORT}/webhook" \
   -H 'Content-Type: application/json' -H 'X-Gitea-Event: pull_request' \
   -H 'X-Hub-Signature-256: sha256=deadbeef' -d '{}' 2>/dev/null) || LOCAL_PROBE="connect-failed"
 if [[ "$LOCAL_PROBE" == "401" ]]; then
@@ -532,7 +538,7 @@ case "$PROBE" in
     SKIPPED+=("公网自检没通过,Gitea 多半也到不了这个地址") ;;
   *)
     printf '  %s⚠ 公网回了 %s,预期 401%s\n' "$YELLOW" "$PROBE" "$RESET"
-    say "这个地址后面接的可能不是 MultiReviewer。确认反代指对了。"
+    say "这个地址后面接的可能不是 MultiReviewer。确认反代指对了,且没有吃掉 /webhook 路径。"
     SKIPPED+=("公网自检回了 $PROBE 而非 401") ;;
 esac
 pause

@@ -10,7 +10,7 @@
 - `git/` — 工作副本的准备与 diff 读取,直接调用 git 命令。
 - `review/` — Review Run 的编排。`run.ts` 是唯一入口 `runReview`,其余是它的内部构件:`store.ts` 是 SQLite 持久化,`fingerprint.ts` 算 Finding 的内容指纹并读写评论正文里的指纹锚点,`position.ts` 解析 diff(可评论的行区间与每个文件的改动行数),`batch.ts` 切批并合并各批次的执行结果。
 - `reviewer/` — Reviewer 的真实实现。`pi-reviewer.ts` 在主进程侧管子进程,`worker.ts` 是子进程入口,两者只经 `protocol.ts` 定义的消息通信。`numbered-read.ts` 与 `anchor.ts` 是 worker 的行号构件(见下)。
-- `webhook/` — `server.ts` 是 webhook 端点:校验签名、把两个平台的投递规范化成同一形状、判幂等、异步触发 `runReview`。
+- `webhook/` — `server.ts` 是 HTTP 入口:路由只认 `POST /webhook`(其余路径与方法一律 404),投递经 校验签名、规范化两个平台的形状、判幂等 后异步触发 `runReview`。
 - `main.ts` — 进程入口。读配置与环境变量,建出 Forge 与 Reviewer,起 webhook 服务。
 
 ## 模块规范
@@ -40,6 +40,7 @@
 - 拼写之外还有一层:Gitea 的 webhook **订阅**里「同步」是独立事件 `pull_request_sync`,与 `pull_request` 分开(`modules/webhook/type.go`)。只订阅后者时 PR 新增 commit 根本不投递,本服务这边的 action 映射再对也没机会执行。实测确认过——这是部署侧的配置,代码挡不住,只能写进准备步骤。
 - 只有 PR 打开与 PR 新增 commit 触发 Review Run。草稿 PR 在触发层用规范化事件里的 `draft` 挡掉,不进 `runReview`。
 - Webhook 的状态码语义:签名不过 401,事件类型或 action 不关心 200(投递是成功的,只是没有活要干),body 解析不了或字段对不上 400(平台改字段名时要在投递记录里显形),来源平台还没有 Forge 实现 200(是本服务的配置缺口,不是投递的问题)。
+- 路由在一切之前:非 `POST /webhook` 的请求一律 404,不重定向(重定向会把扫描器引向真实入口),也不进投递日志。路径匹配不含查询串——hook URL 将携带 `?k=<代次>`(ADR 0007)。面板前缀、`<前缀>/api/*` 与 `/assets/*` 的分支后续加在同一处分发点(issue #26 的路由表)。
 - 幂等键是「仓库 + head commit」,落在 `webhook_delivery` 表的 UNIQUE 约束上,靠插入冲突判重而不是先查后插:并发投递时先查后插会两个请求都查不到、都开跑。`review_run` 上不加同样的约束——人手动重审同一个 head commit 是合法的。
 - Webhook handler 立即返回 200,Review Run 在后台跑。后台任务的 rejection 必须接住并记录,否则会变成 unhandledRejection 把这个长跑进程带崩。
 - 通过签名校验的投递记一行,写明这次做了什么(开始审查 / 草稿不审 / 已审过跳过 / action 不触发 / 非 pull request 事件)。没有这行时,服务正常工作与完全收不到投递在日志上一模一样,只有启动那一句。记录点在签名校验之后:未认证的请求谁都能发,记它们等于把日志交给外人写。日志出口是 `onDelivery`,与 `onRunSettled` 一样是可注入的,测试收进数组而不刷屏。
@@ -87,3 +88,4 @@
 - 2026-08-08: 落地 issue #12。锚定打回有了计数:`ReviewerOutcome` 与 `done` 消息扩出必填的 `anchorRejections`,`batch.ts` 跨批次累加,`reviewer_outcome` 表加 `anchor_rejections` 列。两种打回成因合记一个数——文件读不出来与 snippet 对不上都是"位置不可信",分列得不出新的动作。字段做成必填而非可选:下游每处写 `?? 0` 迟早漏一处,而构造点只有子进程与批次合并两处。`store.ts` 没有迁移框架,`CREATE TABLE IF NOT EXISTS` 对既有表不生效,新增 `ADD_COLUMNS` 逐条跑 `ALTER TABLE ADD COLUMN` 并吞掉"列已存在",升级前建的数据库因此照常可用。打回的判定与措辞从 worker 里提到 `anchor.ts` 的 `anchorReport`,两条打回路径合成一处,计数只加一次。
 - 2026-08-08: 落地 issue #13。review 正文首行从裸标题扩为本轮概览,写明 Finding 总数与 P0/P1/P2 分级计数(`run.ts` 的 `overviewLine`,`reviewBody` 为此多收一个 `findings` 参数)。计数口径是「本轮结论总数」:行级评论、diff 外 fallback 与折叠的三类全算,`runReview` 的分派循环让三类恰好覆盖去重后的每一条,不必另算。为零的等级不列,`P0 0` 只让人多数一个零。零 Finding 时首行退回裸的 `MultiReviewer`——那一档只有模型缺席或覆盖不全时才发得出 review,「0 条」会被读成「没问题」。其余呈现未动。
 - 2026-08-09: 两轴复核(Standards + Spec)加正确性轴的收口。#14 的「只记首次」去重键补上 `owner/repo`(`repoTag`,非 PR 事件抽不到时退回全局键):此前键是全实例共用,第一个仓库的 push / 忽略动作会把其余仓库的同类投递日志全吞掉。`parseFingerprintAnchors` 加 `typeof body !== "string"` 守卫:`listReviewBodies` 直接喂平台读回的 `review.body`,一条 null 正文不该在 `matchAll` 上把整轮 Run 带崩。#15 的 `SIMILARITY_THRESHOLD` 注释校正成本口径——ticket 把误合并排在漏合并之上,0.05 低阈值是弱信号下的最小伤害而非「拆错比合错轻」,两头的已知代价固定在 `test/similarity.test.ts`;启发式与阈值未动。
+- 2026-08-15: 落地 issue #27。服务从零引入路由:`POST /webhook` 照常处理投递,其余任何路径与方法一律 404、不重定向,`GET /webhook` 与 `/` 也是。分发点在 `createWebhookServer` 的 `createServer` 回调里,路径匹配不含查询串,面板与静态资源的分支后续加在这里。投递行为与状态码语义未动。

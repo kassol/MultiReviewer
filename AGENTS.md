@@ -57,7 +57,7 @@ docker compose pull && docker compose up -d
 
 不用容器直接跑时 `pnpm start` 起同一个服务,启动时用 `--env-file-if-exists=.env` 读取同目录的 `.env`。
 
-两个平台的 webhook 都指向同一个端点(路径任意),content type 选 JSON,secret 填 `MULTIREVIEWER_WEBHOOK_SECRET` 的值,事件只需勾 pull request。
+两个平台的 webhook 都指向 `POST /webhook` 这一个端点(路径固定,其余路径与方法一律 404),content type 选 JSON,secret 填 `MULTIREVIEWER_WEBHOOK_SECRET` 的值,事件只需勾 pull request。
 
 必需的环境变量:
 
@@ -166,3 +166,4 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-14: 定下 key 轮转的形状,见 ADR 0007。Gitea 改不了 hook 的 secret 也从不回显它,轮转只能删旧建新,而「库里的 key 与 Gitea 上的 secret 是否一致」原本不可观测。做法是给每个仓库的 key 编一个单调递增的**代次**,写进 hook URL 的 `?k=` 参数——`config.url` 是唯一双向可见的字段,一次 `GET .../hooks` 就读出 Gitea 上装的是第几代。代次可读之后轮转不再需要状态机:库里的 key 列表与 Gitea 上的代次一比,唯一确定下一步,轮转成为可重入的单调推进。顺序取先建后删,并存期间的重复投递被 `claimDelivery` 的 `(owner, repo, head_sha)` 幂等键吃掉,无 hook 窗口因此不存在。删除仓库时 hook 删不掉就不放行删除,「有 hook 无记录」这个中间态被设计消除。
 - 2026-08-14: 定下 webhook 与面板的路径划分。查出服务现在根本不路由——`src/webhook/server.ts:362` 的 handler 从未读过 `req.url`,任何路径的请求都当投递处理,所以这是从零引入路由。路由表:`POST /webhook`(带 `?k=` 代次)、`<前缀>/api/*`、`<前缀>/*` 回注入过的 `index.html`、`/assets/*` 静态产物、其余 404。面板的随机前缀只盖面板,webhook 固定在 `/webhook`——盖住它等于每次轮换前缀都要重建全部 hook,而 webhook 的保护本来就是 HMAC 验签不是路径保密。静态资源不进前缀,Vite 保持默认绝对 base;前缀是运行时随机值,靠服务返回 `index.html` 时注入一个全局变量喂给 Router basepath 与 API 基址,构建产物与前缀无关。部署侧:反代只配一条规则整域全转并原样透传路径,前缀轮换不碰反代;不支持子路径部署,服务占域名根;基地址换新变量名 `MULTIREVIEWER_BASE_URL`,旧的 `MULTIREVIEWER_PUBLIC_URL` 值含 `/webhook` 后缀,同名不同义会静默出错;基地址是 `http://` 且非 localhost 时拒绝启动——Secure cookie 在明文 HTTP 下发不出去,服务起得来、面板打得开、就是登不进。
 - 2026-08-15: 定下前端本地联调方式,「仓库准入与管理面板」的地图(issue #17)至此走完。dev 与生产的分叉压缩到「谁往 `index.html` 注入前缀全局变量」一个点:生产是服务,dev 是用 `transformIndexHtml` 钩子的内联 Vite 插件。前缀来源是同一份 `.env` 的 `MULTIREVIEWER_PANEL_PREFIX`,后端运行时读、Vite 用 `loadEnv` 配置阶段读;dev 下走 Vite proxy 代理 `/<前缀>/api` 到本机后端,浏览器视角同源同路径,cookie 正常携带、无 CORS;前端只读注入的全局变量,不设 `import.meta.env` 回落,注入缺失当场报错。地图共 8 条决策(6 张 grilling、1 张 research、1 张 prototype),下一步交 `/to-spec` 收拢成可建造的 spec。
+- 2026-08-15: 落地 issue #27(仓库准入与管理面板的第一票)。服务从零引入路由:webhook 固定在 `POST /webhook`,其余任何路径与方法一律 404、不重定向。部署向导随之改:公网地址输入自动补齐 `/webhook` 后缀,本机自检指向 `/webhook`,「路径任意」的表述删除。

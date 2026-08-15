@@ -139,18 +139,24 @@ async function startHarness(options: HarnessOptions = {}) {
     server.listen(0, "127.0.0.1", resolve);
   });
   const { port } = server.address() as AddressInfo;
-  const url = `http://127.0.0.1:${port}/webhook`;
+  const baseUrl = `http://127.0.0.1:${port}`;
   // fetch 默认长连接,不主动断开则服务器关不掉,测试进程会挂在那里不退出。
   cleanups.push(() => {
     server.closeAllConnections();
     server.close();
   });
 
-  function post(body: string, headers: Record<string, string>): Promise<Response> {
-    return fetch(url, {
+  function post(
+    body: string,
+    headers: Record<string, string>,
+    path = "/webhook",
+  ): Promise<Response> {
+    return fetch(`${baseUrl}${path}`, {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
       body,
+      // 重定向要在断言里显形,不能被 fetch 静默跟掉。
+      redirect: "manual",
     });
   }
 
@@ -175,6 +181,7 @@ async function startHarness(options: HarnessOptions = {}) {
     settled,
     deliveries,
     control,
+    baseUrl,
     post,
     deliver,
     /** 等到后台跑完 `count` 次 Review Run。靠回调等待,不用固定 sleep。 */
@@ -489,6 +496,49 @@ test("关心的判定结果逐条记,不去重", async () => {
   assert.equal(countLines(h.deliveries, "草稿,不审"), 2);
   assert.equal(countLines(h.deliveries, "开始审查"), 1);
   assert.equal(countLines(h.deliveries, "已经审过,跳过"), 2);
+});
+
+test("路由:签名正确但路径不对的投递一律 404,不触发也不留痕", async () => {
+  const h = await startHarness();
+  const body = JSON.stringify(prPayload("opened", "sha-1"));
+  const headers = {
+    "x-github-event": "pull_request",
+    "x-hub-signature-256": sign(body),
+  };
+
+  // 签名再对,路径不对就到不了投递处理——路由在签名校验之前分发。
+  for (const path of ["/", "/admin", "/webhook/", "/webhook/extra"]) {
+    const response = await h.post(body, headers, path);
+    assert.equal(response.status, 404, path);
+  }
+
+  assert.deepEqual(h.dispatched, []);
+  assert.deepEqual(h.deliveries, []);
+});
+
+test("路由:非 POST 方法一律 404,不重定向", async () => {
+  const h = await startHarness();
+
+  // `GET /webhook` 与 `/` 也是 404,不重定向。
+  for (const path of ["/webhook", "/", "/assets/app.js"]) {
+    const response = await fetch(`${h.baseUrl}${path}`, { redirect: "manual" });
+    assert.equal(response.status, 404, path);
+  }
+});
+
+test("路由:带查询参数的 POST /webhook 照常受理", async () => {
+  const h = await startHarness();
+  const body = JSON.stringify(prPayload("opened", "sha-1"));
+
+  // hook URL 将携带 `?k=<代次>`(ADR 0007),查询参数不参与路径匹配。
+  const response = await h.post(
+    body,
+    { "x-github-event": "pull_request", "x-hub-signature-256": sign(body) },
+    "/webhook?k=1",
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(h.dispatched, [PR]);
 });
 
 test("签名不过的投递不进日志——否则日志由外人写", async () => {
