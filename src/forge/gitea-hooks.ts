@@ -91,6 +91,14 @@ function eventsMatch(events: readonly string[]): boolean {
   return true;
 }
 
+/**
+ * hook 的形状是否已收敛:激活、JSON 投递、订阅集正确。`ensureHook` 判「不必动」与
+ * 核对判「被人改过」用同一判据,两处不一致会造出「核对报差异、ensure 却说没事」。
+ */
+export function hookConverged(hook: GiteaHook): boolean {
+  return hook.active && hook.contentType === "json" && eventsMatch(hook.events);
+}
+
 export function createGiteaHookManager(options: GiteaForgeOptions): GiteaHookManager {
   const hooksPath = (ref: RepoRef): string => `/repos/${ref.owner}/${ref.repo}/hooks`;
 
@@ -164,9 +172,7 @@ export function createGiteaHookManager(options: GiteaForgeOptions): GiteaHookMan
         return;
       }
 
-      if (existing.active && existing.contentType === "json" && eventsMatch(existing.events)) {
-        return;
-      }
+      if (hookConverged(existing)) return;
 
       // 订阅、激活或 content_type 被人改过:PATCH 收敛。`events` 是全量覆盖——省略即被
       // 重置为 `["push"]`(`routers/api/v1/utils/hook.go:164-166, 375`);`active` 是指针

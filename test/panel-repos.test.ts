@@ -6,170 +6,30 @@
  * 写进 hook 的 Key 与准入认的 Key 必须是同一把,这条链路本身就是被测行为。
  */
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
 import type { ReviewerSpec } from "../src/config.ts";
-import type { Forge, PullRequestRef } from "../src/forge/forge.ts";
 import { openStore } from "../src/review/store.ts";
+import { createWebhookServer } from "../src/webhook/server.ts";
+import { makeCacheDir, makeDbPath } from "./support/git-fixture.ts";
 import {
-  createWebhookServer,
-  type NormalizedEvent,
-} from "../src/webhook/server.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
-import { startFakeGitea } from "./support/fake-gitea.ts";
-import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
-
-const ADMIN_TOKEN = "repos-admin-token";
-const PREFIX = "repos-prefix";
-const BASE_URL = "https://reviewer.example.test";
-
-const GITEA_REPO = { id: 4242, owner: "acme", repo: "widgets" };
-const PR: PullRequestRef = { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, number: 7 };
+  GITEA_REPO,
+  HARNESS_PR as PR,
+  PANEL_ADMIN_TOKEN as ADMIN_TOKEN,
+  PANEL_BASE_URL as BASE_URL,
+  PANEL_PREFIX as PREFIX,
+  startPanelHarness,
+} from "./support/panel-harness.ts";
 
 const cleanups: (() => void)[] = [];
 after(() => {
   for (const cleanup of cleanups) cleanup();
 });
 
-async function startHarness() {
-  const repo = makeRepo({
-    base: { "src/answer.ts": "export const answer = 1;\n" },
-    head: { "src/answer.ts": "export const answer = 2;\n" },
-  });
-  const cache = makeCacheDir();
-  const db = makeDbPath();
-  const gitea = await startFakeGitea(GITEA_REPO);
-  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup, gitea.close);
-
-  const base = memoryForge({
-    pullRequest: {
-      number: PR.number,
-      draft: false,
-      baseSha: repo.baseSha,
-      headSha: repo.headSha,
-      cloneUrl: repo.dir,
-    },
-    changedFiles: [{ path: "src/answer.ts", status: "modified" }],
-  });
-  const dispatched: PullRequestRef[] = [];
-  const forge: Forge = {
-    ...base.forge,
-    getPullRequest: async (ref: PullRequestRef) => {
-      dispatched.push(ref);
-      return base.forge.getPullRequest(ref);
-    },
-  };
-
-  const factoryCalls: ReviewerSpec[][] = [];
-  const settled: { event: NormalizedEvent; error?: unknown }[] = [];
-  let waiting: { count: number; resolve: () => void }[] = [];
-
-  const server = createWebhookServer({
-    forges: { gitea: forge },
-    reviewers: [scriptedReviewer("global-model", [])],
-    buildReviewers: (specs) => {
-      factoryCalls.push(specs);
-      return specs.map((spec) => scriptedReviewer(spec.model, []));
-    },
-    cacheDir: cache.dir,
-    dbPath: db.path,
-    adminToken: ADMIN_TOKEN,
-    panelPrefix: PREFIX,
-    baseUrl: BASE_URL,
-    gitea: { baseUrl: gitea.url, token: "bot-pat" },
-    onDelivery: () => {},
-    onRunSettled: (event, error) => {
-      settled.push({ event, ...(error === undefined ? {} : { error }) });
-      waiting = waiting.filter((w) => {
-        if (settled.length < w.count) return true;
-        w.resolve();
-        return false;
-      });
-    },
-  });
-  await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const { port } = server.address() as AddressInfo;
-  const serverUrl = `http://127.0.0.1:${port}`;
-  cleanups.push(() => {
-    server.closeAllConnections();
-    server.close();
-  });
-
-  const login = await fetch(`${serverUrl}/${PREFIX}/api/session`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token: ADMIN_TOKEN }),
-  });
-  assert.equal(login.status, 204);
-  const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
-
-  function api(method: string, path: string, body?: unknown): Promise<Response> {
-    return fetch(`${serverUrl}/${PREFIX}/api${path}`, {
-      method,
-      headers: {
-        cookie,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-  }
-
-  /**
-   * 用 hook 的 secret 与 ?k= 签一次投递,和真实 Gitea 的行为同构。默认取假 Gitea 上
-   * 第一条 hook;传入快照可在 hook 被删之后重放,验证「移除后同一份凭据失效」。
-   */
-  function deliverViaHook(
-    headSha: string,
-    snapshot?: { url: string; secret: string },
-  ): Promise<Response> {
-    const hook =
-      snapshot ??
-      (() => {
-        const live = gitea.hooks[0];
-        assert.notEqual(live, undefined, "假 Gitea 上没有 hook 可用");
-        return { url: live!.config.url!, secret: live!.config.secret! };
-      })();
-    const target = new URL(hook.url);
-    const body = JSON.stringify({
-      action: "opened",
-      number: PR.number,
-      pull_request: { draft: false, head: { sha: headSha } },
-      repository: { id: GITEA_REPO.id, name: PR.repo, owner: { login: PR.owner } },
-    });
-    return fetch(`${serverUrl}${target.pathname}${target.search}`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-gitea-event": "pull_request",
-        "x-hub-signature-256": `sha256=${createHmac("sha256", hook.secret)
-          .update(body)
-          .digest("hex")}`,
-      },
-      body,
-    });
-  }
-
-  return {
-    gitea,
-    db,
-    dispatched,
-    settled,
-    factoryCalls,
-    api,
-    deliverViaHook,
-    settledAtLeast(count: number): Promise<void> {
-      if (settled.length >= count) return Promise.resolve();
-      return new Promise<void>((resolve) => {
-        waiting.push({ count, resolve });
-      });
-    },
-  };
-}
+const startHarness = (): ReturnType<typeof startPanelHarness> =>
+  startPanelHarness(cleanups);
 
 test("注册建好 hook,种子 PR 的投递被受理并跑完审查", async () => {
   const h = await startHarness();
@@ -189,7 +49,11 @@ test("注册建好 hook,种子 PR 的投递被受理并跑完审查", async () =
   assert.equal(hook.config.url, `${BASE_URL}/webhook?k=1`);
   assert.match(hook.config.secret!, /^[0-9a-f]{64}$/);
   assert.equal(hook.active, true);
-  assert.deepEqual([...hook.events].sort(), ["pull_request_only", "pull_request_sync"]);
+  // 载荷里发的是窄订阅哨兵;读回形态(events)则是展开后的裸 pull_request。
+  assert.deepEqual([...hook.requestedEvents].sort(), [
+    "pull_request_only",
+    "pull_request_sync",
+  ]);
 
   // 用 hook 里的 secret 签投递——面板写的 Key 与准入认的 Key 是同一把。
   assert.equal((await h.deliverViaHook("sha-1")).status, 200);
@@ -371,6 +235,7 @@ test("Gitea 上残留本服务的旧 hook 时,代次取最大 +1,旧 hook 不动
     id: 99,
     config: { url: `${BASE_URL}/webhook?k=7`, content_type: "json", secret: "stale" },
     events: ["pull_request", "pull_request_sync"],
+    requestedEvents: [],
     active: true,
   });
 

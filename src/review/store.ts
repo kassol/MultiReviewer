@@ -213,6 +213,8 @@ export type Store = {
   }): void;
   /** 给仓库加一把 key,轮转(ADR 0007)开新代次用。同仓库同代次重复添加直接抛。 */
   addRepoKey(repoId: number, generation: number, key: string): void;
+  /** 摘掉一把 key,轮转收尾时删旧代次用。不存在时静默通过——目标状态已达成。 */
+  removeRepoKey(repoId: number, generation: number): void;
   /** 仓库持有的全部 key。未注册的仓库得到空数组——这就是「未注册」的判据。 */
   listRepoKeys(repoId: number): RepoKey[];
   getRepo(repoId: number): RepoRecord | undefined;
@@ -312,6 +314,13 @@ export function openStore(dbPath: string): Store {
       db.prepare(
         "INSERT INTO repo_key (repo_id, generation, key) VALUES (?, ?, ?)",
       ).run(repoId, generation, key);
+    },
+
+    removeRepoKey(repoId, generation) {
+      db.prepare("DELETE FROM repo_key WHERE repo_id = ? AND generation = ?").run(
+        repoId,
+        generation,
+      );
     },
 
     listRepoKeys(repoId) {

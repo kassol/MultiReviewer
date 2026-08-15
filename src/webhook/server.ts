@@ -17,6 +17,8 @@ import { assertReviewerSpecs, type ReviewerSpec } from "../config.ts";
 import type { Forge } from "../forge/forge.ts";
 import {
   createGiteaHookManager,
+  hookConverged,
+  type GiteaHook,
   type GiteaHookManager,
 } from "../forge/gitea-hooks.ts";
 import type { GiteaForgeOptions } from "../forge/gitea.ts";
@@ -561,6 +563,14 @@ async function handlePanelApi(
   if (repoRoute !== null && req.method === "DELETE") {
     return handleRemove(res, deps, hookManager, Number(repoRoute[1]));
   }
+  const rotateRoute = /^\/repos\/(\d+)\/rotate$/.exec(sub);
+  if (rotateRoute !== null && req.method === "POST") {
+    return handleRotate(res, deps, hookManager, Number(rotateRoute[1]));
+  }
+  const hooksRoute = /^\/repos\/(\d+)\/hooks$/.exec(sub);
+  if (hooksRoute !== null && req.method === "GET") {
+    return handleHookCheck(res, deps, hookManager, Number(hooksRoute[1]));
+  }
 
   return sendJson(res, 404, { error: "没有这个端点" });
 }
@@ -715,6 +725,179 @@ async function handleRemove(
   // 评审记录一行不动:模型选型的历史不因仓库下线而断(移除后的投递按未注册 401)。
   withStore(deps.dbPath, (store) => store.removeRepo(repoId));
   return send(res, 204);
+}
+
+/**
+ * 把仓库收敛到「只有目标代次」:先确保目标 hook 在,再删其余全部本服务 hook(含库
+ * 回滚场景残留的更高代次),最后摘掉其他代次的 Key。顺序即 ADR 0007 的先建后删,
+ * 收敛途中新旧两把 Key 并存,重复投递被幂等键吃掉,投递不中断。
+ */
+async function convergeToGeneration(
+  deps: WebhookServerDeps,
+  hookManager: GiteaHookManager,
+  ref: { owner: string; repo: string },
+  repoId: number,
+  target: RepoKey,
+): Promise<void> {
+  await hookManager.ensureHook(ref, {
+    url: hookUrl(deps.baseUrl, target.generation),
+    key: target.key,
+  });
+  // 只清「低于目标代次」的,不动更高的:单线程下不存在更高代次(target 就是两侧
+  // 最大 +1),更高代次只可能来自并发的另一次轮转——动它会把并发交错推向「库里
+  // 零 key、投递全 401、再点轮转在空列表上炸掉」的死局;留它则至多多一条 hook,
+  // 核对能报出,下一次轮转清掉。
+  for (const hook of await hookManager.listHooks(ref)) {
+    const generation = generationFromHookUrl(hook.url, deps.baseUrl);
+    if (generation !== undefined && generation < target.generation) {
+      await hookManager.deleteHook(ref, hook.id);
+    }
+  }
+  withStore(deps.dbPath, (store) => {
+    for (const key of store.listRepoKeys(repoId)) {
+      if (key.generation < target.generation) {
+        store.removeRepoKey(repoId, key.generation);
+      }
+    }
+  });
+}
+
+/**
+ * 轮转(ADR 0007):可重入的单调推进,不落轮转状态。每一步之后中断,再点一次都从
+ * 「库里的 key 列表 + Gitea 上的代次」推断断点继续。
+ */
+async function handleRotate(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  hookManager: GiteaHookManager | undefined,
+  repoId: number,
+): Promise<void> {
+  if (hookManager === undefined) {
+    return sendJson(res, 500, { error: "没有配置 Gitea,无法轮转" });
+  }
+  const record = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+  if (record === undefined) {
+    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+  }
+
+  try {
+    // 仓库在 Gitea 上已不存在时轮转永远续不完(建 hook 必 404),直接指向出路,
+    // 不让「再点一次」变成原地循环。
+    const resolved = await hookManager.resolveRepo(repoId);
+    if (resolved === undefined) {
+      return sendJson(res, 409, {
+        error: "仓库在 Gitea 上已不存在,轮转无从进行。移除仓库即可,评审记录会保留。",
+      });
+    }
+    const ref = resolved;
+
+    // 上一轮未收尾先推到底:两把 Key 时收敛到较新的那把,代次不堆积。
+    let keys = withStore(deps.dbPath, (store) => store.listRepoKeys(repoId));
+    if (keys.length > 1) {
+      await convergeToGeneration(deps, hookManager, ref, repoId, keys[keys.length - 1]!);
+      keys = withStore(deps.dbPath, (store) => store.listRepoKeys(repoId));
+    }
+    // 注册表行与第一把 Key 同事务生灭,注册过的仓库至少有一把。
+    const current = keys[keys.length - 1]!;
+
+    // 新代次取库与 Gitea 两侧最大代次 +1:库回滚到旧备份时 Gitea 侧更高,取上界让
+    // 一次轮转自愈,不必人工介入。
+    const giteaGenerations = (await hookManager.listHooks(ref))
+      .map((hook) => generationFromHookUrl(hook.url, deps.baseUrl))
+      .filter((generation): generation is number => generation !== undefined);
+    const next = Math.max(current.generation, ...giteaGenerations) + 1;
+    const key = randomBytes(32).toString("hex");
+    withStore(deps.dbPath, (store) => store.addRepoKey(repoId, next, key));
+    await convergeToGeneration(deps, hookManager, ref, repoId, { generation: next, key });
+    return sendJson(res, 200, { repoId, generation: next });
+  } catch (error) {
+    return sendJson(res, 502, {
+      error: `轮转没有完成,再点一次会从断点继续:${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    });
+  }
+}
+
+/**
+ * 核对(ADR 0007):拉一次 Gitea 的 hook 列表与库比对,只展示差异与下一步动作,
+ * 不自动修——读页面这个动作本身不产生副作用。
+ */
+async function handleHookCheck(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  hookManager: GiteaHookManager | undefined,
+  repoId: number,
+): Promise<void> {
+  if (hookManager === undefined) {
+    return sendJson(res, 500, { error: "没有配置 Gitea,无法核对" });
+  }
+  const record = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+  if (record === undefined) {
+    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+  }
+  const keys = withStore(deps.dbPath, (store) => store.listRepoKeys(repoId));
+  const expectedGenerations = keys.map((key) => key.generation);
+  const issues: { message: string; action: string }[] = [];
+
+  const resolved = await hookManager.resolveRepo(repoId);
+  if (resolved === undefined) {
+    issues.push({
+      message: "仓库在 Gitea 上已不存在(按 id 查不到)",
+      action: "移除仓库,评审记录会保留",
+    });
+    return sendJson(res, 200, { expectedGenerations, hooks: [], issues });
+  }
+  if (resolved.owner !== record.owner || resolved.repo !== record.repo) {
+    issues.push({
+      message: `仓库已改名或转移:注册时是 ${record.owner}/${record.repo},现在是 ${resolved.owner}/${resolved.repo}`,
+      action: "无需操作,准入按数值 id 不受影响",
+    });
+  }
+
+  const hooks: { hook: GiteaHook; generation: number }[] = [];
+  for (const hook of await hookManager.listHooks(resolved)) {
+    const generation = generationFromHookUrl(hook.url, deps.baseUrl);
+    if (generation !== undefined) hooks.push({ hook, generation });
+  }
+
+  if (keys.length > 1) {
+    issues.push({ message: "上一轮轮转未收尾", action: "点一次轮转收尾" });
+  }
+  for (const key of keys) {
+    const match = hooks.find((entry) => entry.generation === key.generation);
+    if (match === undefined) {
+      issues.push({
+        message: `代次 ${key.generation} 的 hook 不在 Gitea 上`,
+        action: "点一次轮转重建",
+      });
+    } else if (!hookConverged(match.hook)) {
+      issues.push({
+        message: `代次 ${key.generation} 的 hook 订阅、激活或 content type 被改过`,
+        action: "点一次轮转恢复",
+      });
+    }
+  }
+  for (const entry of hooks) {
+    if (!keys.some((key) => key.generation === entry.generation)) {
+      issues.push({
+        message: `Gitea 上有已废弃代次 ${entry.generation} 的 hook`,
+        action: "点一次轮转清理",
+      });
+    }
+  }
+
+  return sendJson(res, 200, {
+    expectedGenerations,
+    hooks: hooks.map((entry) => ({
+      id: entry.hook.id,
+      generation: entry.generation,
+      active: entry.hook.active,
+      contentType: entry.hook.contentType,
+      events: entry.hook.events,
+    })),
+    issues,
+  });
 }
 
 export function createWebhookServer(deps: WebhookServerDeps): Server {

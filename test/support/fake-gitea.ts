@@ -11,7 +11,10 @@ import type { AddressInfo } from "node:net";
 export type FakeHook = {
   id: number;
   config: { url?: string; content_type?: string; secret?: string };
+  /** 读回形态的事件集:哨兵 `pull_request_only` 已按真实 Gitea 的行为落回裸 `pull_request`。 */
   events: string[];
+  /** 建 hook 请求里的原始 events,供「载荷逐项正确」类断言用。真实 Gitea 不回显这一项。 */
+  requestedEvents: string[];
   active: boolean;
 };
 
@@ -26,6 +29,8 @@ export type FakeGitea = {
     failDelete: boolean;
     /** bot 对仓库是否 admin。 */
     admin: boolean;
+    /** 置 true 模拟仓库在 Gitea 上被删除:一切仓库相关路由 404,含按 id 解析。 */
+    deleted: boolean;
   };
   /** 仓库改名 / 转移 owner:id 不变,路径全换。旧路径从此 404,与真实 Gitea 一致。 */
   rename(owner: string, repo: string): void;
@@ -38,7 +43,7 @@ export async function startFakeGitea(repo: {
   repo: string;
 }): Promise<FakeGitea> {
   const hooks: FakeHook[] = [];
-  const control = { failCreate: false, failDelete: false, admin: true };
+  const control = { failCreate: false, failDelete: false, admin: true, deleted: false };
   const current = { owner: repo.owner, repo: repo.repo };
   let nextId = 1;
 
@@ -56,6 +61,7 @@ export async function startFakeGitea(repo: {
     if (req.headers.authorization === undefined) {
       return json(401, { message: "token is required" });
     }
+    if (control.deleted) return json(404, { message: "not found" });
 
     // 按数值 id 解析仓库,改名后拿到现名(routers/api/v1/api.go:1202 的 GetByID)。
     if (req.method === "GET" && path === `/api/v1/repositories/${repo.id}`) {
@@ -82,11 +88,17 @@ export async function startFakeGitea(repo: {
         body += chunk.toString("utf8");
       });
       req.on("end", () => {
-        const parsed = JSON.parse(body) as Partial<FakeHook>;
+        const parsed = JSON.parse(body) as { config?: FakeHook["config"]; events?: string[]; active?: boolean };
+        const requested = parsed.events ?? [];
         const hook: FakeHook = {
           id: nextId,
           config: parsed.config ?? {},
-          events: parsed.events ?? [],
+          // 模拟真实 Gitea 的回显:哨兵 pull_request_only 落回裸 pull_request
+          // (docs/research/gitea-webhook-api.md 第 3 节)。
+          events: requested.map((event) =>
+            event === "pull_request_only" ? "pull_request" : event,
+          ),
+          requestedEvents: requested,
           active: parsed.active ?? false,
         };
         nextId += 1;
