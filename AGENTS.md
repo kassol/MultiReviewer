@@ -50,7 +50,7 @@ bash setup.sh
 docker compose pull && docker compose up -d
 ```
 
-> **过渡期(issue #38 收口前)**:向导的「生成 webhook secret」与「注册 webhook」两步仍是旧的全局 secret 流程,已随 issue #28 的硬切失效——准入现凭注册表里的 per-repo Key。管理面板落地前,仓库只能直接写库种入、hook 手工配。
+> **过渡期(issue #38 收口前)**:向导的「生成 webhook secret」与「注册 webhook」两步仍是旧的全局 secret 流程,已随 issue #28 的硬切失效——准入现凭注册表里的 per-repo Key。仓库接入走面板 API(`POST /<前缀>/api/repos`,见下文「部署」一节),不要按向导的旧指引手工配 hook。
 
 两处容易踩的地方:
 
@@ -59,7 +59,7 @@ docker compose pull && docker compose up -d
 
 不用容器直接跑时 `pnpm start` 起同一个服务,启动时用 `--env-file-if-exists=.env` 读取同目录的 `.env`。
 
-webhook 指向 `POST /webhook?k=<代次>` 这一个端点(路径固定,其余路径与方法一律 404),content type 选 JSON,secret 填该仓库的 Key。投递凭所属仓库的 Key 准入:仓库要先进注册表,未注册一律 401,没有全局 secret。hook 的建立与 Key 的管理最终由管理面板完成(issue #26 的后续票),面板落地前只能直接写库种入,GitHub 仓库没有注册途径。
+webhook 指向 `POST /webhook?k=<代次>` 这一个端点(路径固定,其余路径与方法一律 404),content type 选 JSON,secret 填该仓库的 Key。投递凭所属仓库的 Key 准入:仓库要先进注册表,未注册一律 401,没有全局 secret。hook 的建立与 Key 的管理由面板完成:注册(`POST /<前缀>/api/repos`)自动在 Gitea 建 hook 并落 Key,移除自动删 hook。面板前端落地前这两个端点用 curl 也能调。GitHub 仓库没有注册途径。
 
 必需的环境变量:
 
@@ -174,3 +174,4 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-15: 落地 issue #28。仓库注册表与 per-repo Key 准入:投递从 payload 取数值 repo id 查注册表,按 `?k=` 代次选 Key 再验签,未注册与代次不对分成两类 401 记录、按仓库只记首次。全局 `MULTIREVIEWER_WEBHOOK_SECRET` 硬切删除,启动不再读它;GitHub 因无注册途径从准入层退场,适配层与其测试保留。CONTEXT.md 新增 仓库注册表 / Key / 代次 三个词条。过渡期注意:管理面板落地前注册表只能直接写库种入,部署向导的 hook 注册指导暂时失效(issue #38 收口)。
 - 2026-08-15: 落地 issue #29。面板认证 API 与启动校验:`POST <前缀>/api/session` 验 admin token 换 HttpOnly + Secure、`Path` 限前缀的 session cookie,登录失败按 IP 退避与锁定;其余 API 未认证一律 401,认证后未知端点回 JSON 404,页面 404 与前缀猜错不可区分。启动新增三个必需环境变量 `MULTIREVIEWER_ADMIN_TOKEN` / `MULTIREVIEWER_PANEL_PREFIX` / `MULTIREVIEWER_BASE_URL`,基地址是明文 http 且非 localhost 时拒绝启动。已有部署升级到本版须在 `.env` 补这三项,向导对它们的支持归 issue #38。
 - 2026-08-15: 落地 issue #30。Gitea 专属 hook 管理模块 `src/forge/gitea-hooks.ts`:列 / 建 / 删仓库 hook(窄订阅事件集、`active` 显式置真、删除遇 404 视为成功、按 `config.url` 幂等收敛)与 bot 权限查询(非 admin 拒绝并明说缺什么)。不进 `Forge` 接口,契约依据是 `docs/research/gitea-webhook-api.md`。
+- 2026-08-15: 落地 issue #31。仓库注册与移除全流程走面板 API:注册验 bot admin 权限、自动建 hook(URL 带 `?k=` 代次)、落注册表与 Key,可带模型覆盖(全量替换 reviewers,默认跟随全局,注册后下一次投递生效);移除先删 hook、删不掉不放行,评审记录保留。仓库列表带累计量、按最近活动排序。「直接写库种入」的过渡状态就此结束。

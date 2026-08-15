@@ -40,6 +40,10 @@ _Avoid_: 白名单、仓库列表
 一个仓库准入 webhook 投递的凭证,每仓库一把,作为 Gitea hook 的 secret 参与 HMAC 验签。明文存库——HMAC 验签需要原始值,这是密码学约束,不是疏忽。
 _Avoid_: secret、token、密码
 
+**模型覆盖**:
+一个仓库对全局模型组合的替换。语义是全量替换 reviewers 列表,配置文件管全局默认、库管每仓库覆盖,不存在「文件与库谁赢」;注册后的下一次投递生效。
+_Avoid_: 自定义模型、per-repo config
+
 **面板前缀**:
 管理面板路径的随机首段,运行时来自 `MULTIREVIEWER_PANEL_PREFIX`,只盖面板页面与它的 API,不盖 `/webhook` 与 `/assets`。作用是让面板不被扫描器枚举到,真正的门禁是 admin token;轮换前缀不影响任何已注册仓库的 hook。
 _Avoid_: base path、子路径、随机路径

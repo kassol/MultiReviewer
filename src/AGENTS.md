@@ -43,6 +43,8 @@
 - 准入先于验签,每仓库一把 Key,没有全局 secret:从 payload 取数值 repo id 查注册表,按 `?k=` 代次选 Key,再验签。id 与代次都来自未认证的请求,只当查询索引,验签仍决定一切(ADR 0007)。「未注册」与「代次不对」是仅有的两类验签前记录,按仓库只记首次——它们是管理员排查「接入了却没反应」的唯一线索;`logOnce` 的去重键因含未认证方可自选的仓库 id 而设上限(`LOGGED_ONCE_MAX`),满了只去重不再记新类。
 - Webhook 的状态码语义:解析不出仓库 id(含非法 JSON)、未注册、代次不对、签名不过都是 401(对未认证方不区分原因),事件类型或 action 不关心 200(投递是成功的,只是没有活要干),字段对不上 400(此时已通过验签,平台改字段名时要在投递记录里显形),来源平台还没有 Forge 实现 200(是本服务的配置缺口,不是投递的问题)。
 - 路由在一切之前:`POST /webhook` 与 `<前缀>/api/*` 之外的请求一律 404,不重定向(重定向会把扫描器引向真实入口),也不进投递日志。路径匹配不含查询串——hook URL 携带 `?k=<代次>`(ADR 0007)。`<前缀>/*` 回 index.html 与 `/assets/*` 静态产物是后续票,落地前同属 404,前缀猜错与前缀下路径不存在因此不可区分。
+- 仓库注册(`POST <前缀>/api/repos`)的顺序有讲究:验 bot 是仓库 admin(不足则 403 并明说缺什么)→ 查重(409)→ 代次取 Gitea 上可见的最大代次 +1(残留旧 hook 不撞 URL,ADR 0007)→ **先落库再建 hook**(hook 一旦在,投递就会来,库里必须已有 Key 能验它;建 hook 失败回滚注册,不留「已注册却无 hook」的哑仓库)。移除(`DELETE <前缀>/api/repos/<id>`)反过来:先按数值 id 解析仓库现名(`GET /repositories/{id}`——注册表里的名字是注册时的,按旧名寻址会把「改名」误判成「已删」而留下孤儿 hook),**再删 hook,删不掉(404 除外)不放行**,删成后摘注册表;评审记录一行不动。
+- 每仓库的模型覆盖存 `repo.reviewers`(ReviewerSpec 的 JSON),语义是全量替换 reviewers 列表;投递时解析,坏配置按「配置错误」记录并回 200,且放在幂等 claim 之前——坏配置不该吃掉幂等键,修好后同一 head commit 要能重新触发。构建经注入的 `buildReviewers`,`main.ts` 接到与全局配置同一套构建逻辑上。
 - 面板认证:登录(`POST <前缀>/api/session`)是唯一免认证的端点,验 admin token 换 HttpOnly + Secure + SameSite=Strict、`Path` 限前缀的 session cookie——前缀轮换后旧 cookie 自然失效。其余 API 端点先验 session,未认证一律 401,不区分端点存不存在;认证后的未知端点回 JSON 404,与页面的裸 404 分开——API 的调用方是程序,要能把「端点不存在」从「前缀不对」里区分出来。登录失败按 IP 退避与锁定(头三次免罚,之后指数翻倍封顶 15 分钟),锁定期内对的 token 也不放行;IP 取直连地址、不认 `X-Forwarded-For`——未认证方伪造它就能绕过锁定,反代之后退化为全桶共锁,对单管理员面板锁过头好过锁不住。session 在内存里,重启全体重新登录。
 - 幂等键是「仓库 + head commit」,落在 `webhook_delivery` 表的 UNIQUE 约束上,靠插入冲突判重而不是先查后插:并发投递时先查后插会两个请求都查不到、都开跑。`review_run` 上不加同样的约束——人手动重审同一个 head commit 是合法的。
 - Webhook handler 立即返回 200,Review Run 在后台跑。后台任务的 rejection 必须接住并记录,否则会变成 unhandledRejection 把这个长跑进程带崩。
@@ -71,7 +73,7 @@
 
 ## 依赖关系
 
-`review/` 依赖 `forge/` 与 `git/` 的类型与函数。`reviewer/` 依赖 `review/` 的领域类型,反向不依赖——`runReview` 只认 `Reviewer` 接口。`forge/` 与 `git/` 互不依赖。`webhook/` 依赖 `review/` 的 `runReview` 与 `store.ts` 的 `openStore` / `RepoKey`、`forge/` 的接口类型、`panel/` 的认证构件,反向不依赖。`panel/` 不依赖其他目录。`main.ts` 依赖以上全部,只有它读环境变量。
+`review/` 依赖 `forge/` 与 `git/` 的类型与函数。`reviewer/` 依赖 `review/` 的领域类型,反向不依赖——`runReview` 只认 `Reviewer` 接口。`forge/` 与 `git/` 互不依赖。`webhook/` 依赖 `review/` 的 `runReview` 与 `store.ts`、`forge/` 的接口类型与 `gitea-hooks.ts`、`panel/` 的认证构件、`config.ts` 的 ReviewerSpec 校验,反向不依赖。`panel/` 不依赖其他目录。`main.ts` 依赖以上全部,只有它读环境变量。
 
 第三方依赖只有 Pi(`@earendil-works/pi-coding-agent`)与它的 `typebox`,且只在 `reviewer/` 内使用。
 
@@ -96,3 +98,4 @@
 - 2026-08-15: 落地 issue #28。`store.ts` 新增 `repo` 与 `repo_key` 两张表及 `registerRepo` / `addRepoKey` / `listRepoKeys`;`server.ts` 的准入改为「payload 取 repo id → 查注册表 → 按 `?k=` 代次选 Key → 验签」,`WebhookServerDeps.secret` 删除,`main.ts` 不再读 `MULTIREVIEWER_WEBHOOK_SECRET`。非法 JSON 从 400 挪到 401——解析不出 id 就无从选 Key,400 只剩「验签过了但字段对不上」。`logOnce` 移到验签之前并设 `LOGGED_ONCE_MAX` 上限:未注册 / 代次不对两类拒绝要记首次,而去重键含未认证方可自选的仓库 id。注入边界未增加,测试仍走 HTTP 缝加临时库种数据。
 - 2026-08-15: 落地 issue #29。新增 `panel/auth.ts`(token 摘要后 timingSafeEqual、内存 session、按 IP 退避锁定,时钟注入);`server.ts` 路由表挂上 `<前缀>/api` 分支,登录发 `Path` 限前缀的 Secure cookie。`main.ts` 新增三个必需项:`MULTIREVIEWER_ADMIN_TOKEN`(接替原全局 secret 的位置)、`MULTIREVIEWER_PANEL_PREFIX`(校验字符集并拒绝 `webhook` / `assets`)、`MULTIREVIEWER_BASE_URL`(明文 http 且非 localhost 拒绝启动)。测试在 HTTP 缝上新开 `test/panel-auth.test.ts`,退避窗口用注入时钟驱动,不等真实时间。
 - 2026-08-15: 落地 issue #30。新增 `forge/gitea-hooks.ts`:列 / 建 / 删仓库 hook 与 bot 权限查询,`Forge` 接口未动。`gitea.ts` 的 `request` / `requestJson` 导出供它复用,`request` 加了可放行状态码参数——「404 算成功」这类语义在调用点决定。测试打在 fetch 桩上(`test/gitea-hooks.test.ts`),打桩器从 `gitea-forge.test.ts` 提到 `test/support/stub-fetch.ts` 共用。
+- 2026-08-15: 落地 issue #31。面板 API 扩出仓库端点:`GET /repos`(按最近活动排序,带累计 Review Run 与来源 Finding 数)、`POST /repos`(注册:验 admin → 查重 → 代次取 Gitea 侧最大 +1 → 先落库再建 hook,失败回滚)、`DELETE /repos/<id>`(先删 hook、删不掉不放行,评审记录保留)。`store.ts` 的 `registerRepo` 改为「注册表行 + 第一把 Key」同事务落库并支持 `reviewersJson`;新增 `getRepo` / `removeRepo` / `listRepos`,repo 表加 `reviewers` 列。投递链在 claim 之前解析模型覆盖,经注入的 `buildReviewers` 构建;`checkAdmin` 一并带回数值 repo id,`listHooks` 对整仓 404 回空(仓库在 Forge 侧已删除时移除流程要能走通)。测试新开 `test/panel-repos.test.ts`,hook 操作打在 `test/support/fake-gitea.ts` 的真实 HTTP 假实例上,投递用「从假 Gitea 读回的 hook secret 与 ?k=」来签——面板写的 Key 与准入认的 Key 必须是同一把。评审复核补三处:移除前先按 id 解析仓库现名(改名后按旧名寻址会把「改名」误判成「已删」,留下孤儿 hook,破坏 ADR 0007 的不变量);`buildReviewers` 从可选改必填,消掉生产不可达的分支;注册时对模型覆盖试构建一次,坏凭据引用在注册响应里显形而不是等投递。

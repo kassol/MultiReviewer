@@ -24,6 +24,33 @@ export type Config = {
 
 export const DEFAULT_CONFIG_PATH = "multireviewer.config.json";
 
+/**
+ * 校验一组 ReviewerSpec 并返回。配置文件与面板的每仓库模型覆盖共用这套判据,
+ * `context` 写进报错里指认来源(文件路径或仓库)。
+ */
+export function assertReviewerSpecs(value: unknown, context: string): ReviewerSpec[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`至少配置一个 Reviewer: ${context}`);
+  }
+
+  const seen = new Set<string>();
+  for (const [index, entry] of value.entries()) {
+    for (const field of ["provider", "model", "apiKeyEnv"] as const) {
+      const fieldValue = (entry as Record<string, unknown>)[field];
+      if (typeof fieldValue !== "string" || fieldValue === "") {
+        throw new Error(`reviewers[${index}] 缺少 ${field}: ${context}`);
+      }
+    }
+    const model = (entry as ReviewerSpec).model;
+    if (seen.has(model)) {
+      // Finding 以模型标识归属来源,标识重复就分不清是哪一个 Reviewer 提的。
+      throw new Error(`模型标识重复: ${model}`);
+    }
+    seen.add(model);
+  }
+  return value as ReviewerSpec[];
+}
+
 export function loadConfig(path: string = DEFAULT_CONFIG_PATH): Config {
   let content: string;
   try {
@@ -41,26 +68,7 @@ export function loadConfig(path: string = DEFAULT_CONFIG_PATH): Config {
     );
   }
 
-  const reviewers = (parsed as { reviewers?: unknown }).reviewers;
-  if (!Array.isArray(reviewers) || reviewers.length === 0) {
-    throw new Error(`配置文件至少配置一个 Reviewer: ${path}`);
-  }
-
-  const seen = new Set<string>();
-  for (const [index, entry] of reviewers.entries()) {
-    for (const field of ["provider", "model", "apiKeyEnv"] as const) {
-      const value = (entry as Record<string, unknown>)[field];
-      if (typeof value !== "string" || value === "") {
-        throw new Error(`reviewers[${index}] 缺少 ${field}`);
-      }
-    }
-    const model = (entry as ReviewerSpec).model;
-    if (seen.has(model)) {
-      // Finding 以模型标识归属来源,标识重复就分不清是哪一个 Reviewer 提的。
-      throw new Error(`模型标识重复: ${model}`);
-    }
-    seen.add(model);
-  }
+  const reviewers = assertReviewerSpecs((parsed as { reviewers?: unknown }).reviewers, path);
 
   const maxChangedLinesPerBatch = (parsed as { maxChangedLinesPerBatch?: unknown })
     .maxChangedLinesPerBatch;

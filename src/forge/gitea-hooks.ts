@@ -6,7 +6,7 @@
  * 语义、secret 不可改这些契约细节见 `docs/research/gitea-webhook-api.md`。
  */
 import type { RepoRef } from "./forge.ts";
-import { request, requestJson, type GiteaForgeOptions } from "./gitea.ts";
+import { request, type GiteaForgeOptions } from "./gitea.ts";
 
 const PAGE_SIZE = 100;
 
@@ -43,9 +43,19 @@ export type HookSpec = {
   key: string;
 };
 
-export type AdminCheck = { admin: true } | { admin: false; reason: string };
+export type AdminCheck =
+  /** `repoId` 是 Forge 的数值 repo id,注册表的主键,与权限同一次请求读回。 */
+  | { admin: true; repoId: number }
+  | { admin: false; reason: string };
 
 export type GiteaHookManager = {
+  /**
+   * 按数值 repo id 解析仓库现在的 owner/repo。仓库改名或转移后注册表里的名字是旧的,
+   * hook 操作要先解析现名寻址,否则会把「改名」误判成「已删」。id 已不存在返回
+   * undefined——仓库真没了。
+   */
+  resolveRepo(repoId: number): Promise<RepoRef | undefined>;
+  /** 仓库在 Gitea 上不存在(整仓 404)时返回空数组:仓库都没了,hook 自然一个没有。 */
   listHooks(ref: RepoRef): Promise<GiteaHook[]>;
   /**
    * 幂等地把 hook 收敛到目标状态。同 URL 的 hook 已存在时 Gitea 的 POST 不报错、
@@ -91,11 +101,17 @@ export function createGiteaHookManager(options: GiteaForgeOptions): GiteaHookMan
     // 实例的 `API.MAX_RESPONSE_ITEMS`(默认 50)会把 limit 钳下去,「不满 limit」不代表
     // 到底了——在这里漏读意味着 ensureHook 匹配不到既有 hook,POST 出重复的一条。
     for (let page = 1; ; page += 1) {
-      const batch = await requestJson<RawHook[]>(
+      const response = await request(
         options,
         "GET",
         `${hooksPath(ref)}?page=${page}&limit=${PAGE_SIZE}`,
+        undefined,
+        [404],
       );
+      // 整仓 404:仓库在 Gitea 上已不存在,hook 自然一个没有。移除已被 Forge 侧删掉
+      // 的仓库时靠这条走通——不然「仓库没了」反而把下线动作卡死。
+      if (response.status === 404) break;
+      const batch = (await response.json()) as RawHook[];
       if (batch.length === 0) break;
       for (const hook of batch) {
         hooks.push({
@@ -111,6 +127,24 @@ export function createGiteaHookManager(options: GiteaForgeOptions): GiteaHookMan
   }
 
   return {
+    async resolveRepo(repoId) {
+      // `GET /repositories/{id}`(`routers/api/v1/api.go:1202`,handler `repo.GetByID`
+      // 在 `routers/api/v1/repo/repo.go:540`),返回 Repository:`Owner *User json:"owner"`
+      // 与 `Name string json:"name"`(`modules/structs/repo.go:52-53`)。
+      const response = await request(options, "GET", `/repositories/${repoId}`, undefined, [
+        404,
+      ]);
+      if (response.status === 404) return undefined;
+      const repo = (await response.json()) as {
+        owner?: { login?: string };
+        name?: string;
+      };
+      if (typeof repo.owner?.login !== "string" || typeof repo.name !== "string") {
+        return undefined;
+      }
+      return { owner: repo.owner.login, repo: repo.name };
+    },
+
     listHooks,
 
     async ensureHook(ref, spec) {
@@ -173,8 +207,15 @@ export function createGiteaHookManager(options: GiteaForgeOptions): GiteaHookMan
             "先把 bot 以管理员权限加入这个仓库。",
         };
       }
-      const repo = (await response.json()) as { permissions?: { admin?: boolean } };
-      if (repo.permissions?.admin === true) return { admin: true };
+      // `ID int64 json:"id"`(`modules/structs/repo.go:51`)——注册表的主键,与权限
+      // 同一次请求读回,注册流程不必再发一次。
+      const repo = (await response.json()) as {
+        id?: number;
+        permissions?: { admin?: boolean };
+      };
+      if (repo.permissions?.admin === true && typeof repo.id === "number") {
+        return { admin: true, repoId: repo.id };
+      }
       return {
         admin: false,
         reason:

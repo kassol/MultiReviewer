@@ -74,11 +74,14 @@ CREATE TABLE IF NOT EXISTS webhook_delivery (
 );
 
 -- 仓库注册表。主键是 Forge 的数值 repo id:改名与转移 owner 后凭 payload 里的 id
--- 仍能匹配,owner/repo 只是注册时的名字,不参与准入。
+-- 仍能匹配,owner/repo 只是注册时的名字,不参与准入。reviewers 是模型覆盖
+-- (ReviewerSpec 的 JSON 数组),NULL 即跟随全局配置——文件管全局默认,库管每仓库
+-- 覆盖,不出现「文件与库谁赢」。
 CREATE TABLE IF NOT EXISTS repo (
   id INTEGER PRIMARY KEY,
   owner TEXT NOT NULL,
   repo TEXT NOT NULL,
+  reviewers TEXT,
   registered_at TEXT NOT NULL
 );
 
@@ -99,6 +102,7 @@ CREATE TABLE IF NOT EXISTS repo_key (
  */
 const ADD_COLUMNS = [
   "ALTER TABLE reviewer_outcome ADD COLUMN anchor_rejections INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE repo ADD COLUMN reviewers TEXT",
 ];
 
 /**
@@ -172,13 +176,50 @@ export type RepoKey = {
   key: string;
 };
 
+/** 注册表里的一个仓库。`reviewersJson` 是模型覆盖的 JSON,null 即跟随全局。 */
+export type RepoRecord = {
+  repoId: number;
+  owner: string;
+  repo: string;
+  reviewersJson: string | null;
+};
+
+/** 仓库列表行:注册信息加累计量。 */
+export type RepoSummary = {
+  repoId: number;
+  owner: string;
+  repo: string;
+  /** 累计 Review Run 数。按注册时的 owner/repo 匹配评审记录。 */
+  runCount: number;
+  /** 累计来源 Finding 数(落库行数,非合并组数)。 */
+  findingCount: number;
+  /** 最近一次 Review Run 的开始时间,没跑过为 null。 */
+  lastActivity: string | null;
+};
+
 export type Store = {
-  /** 注册一个仓库。`repoId` 是 Forge 的数值 repo id,重复注册直接抛。 */
-  registerRepo(repoId: number, owner: string, repo: string): void;
-  /** 给仓库加一把 key。同仓库同代次重复添加直接抛。 */
+  /**
+   * 注册一个仓库:注册表行与第一把 Key 在一个事务里落库——「有仓库无 Key」的投递
+   * 会被判成未注册,这个中间态从设计上消除。`repoId` 是 Forge 的数值 repo id,
+   * 重复注册直接抛(主键冲突)。
+   */
+  registerRepo(record: {
+    repoId: number;
+    owner: string;
+    repo: string;
+    generation: number;
+    key: string;
+    reviewersJson?: string;
+  }): void;
+  /** 给仓库加一把 key,轮转(ADR 0007)开新代次用。同仓库同代次重复添加直接抛。 */
   addRepoKey(repoId: number, generation: number, key: string): void;
   /** 仓库持有的全部 key。未注册的仓库得到空数组——这就是「未注册」的判据。 */
   listRepoKeys(repoId: number): RepoKey[];
+  getRepo(repoId: number): RepoRecord | undefined;
+  /** 摘掉注册表行与它的 Key。评审记录一行不动:模型选型的历史不因下线而断。 */
+  removeRepo(repoId: number): void;
+  /** 全部已注册仓库,按最近活动排序,没跑过的按注册时间排在后面。 */
+  listRepos(): RepoSummary[];
   startRun(meta: RunMeta): number;
   finishRun(runId: number, result: RunResult): void;
   /** 按模型与 category 聚合 Finding 的处置结果。 */
@@ -243,10 +284,28 @@ export function openStore(dbPath: string): Store {
   }
 
   return {
-    registerRepo(repoId, owner, repo) {
-      db.prepare(
-        "INSERT INTO repo (id, owner, repo, registered_at) VALUES (?, ?, ?, ?)",
-      ).run(repoId, owner, repo, new Date().toISOString());
+    registerRepo(record) {
+      db.exec("BEGIN");
+      try {
+        db.prepare(
+          "INSERT INTO repo (id, owner, repo, reviewers, registered_at) VALUES (?, ?, ?, ?, ?)",
+        ).run(
+          record.repoId,
+          record.owner,
+          record.repo,
+          record.reviewersJson ?? null,
+          new Date().toISOString(),
+        );
+        db.prepare("INSERT INTO repo_key (repo_id, generation, key) VALUES (?, ?, ?)").run(
+          record.repoId,
+          record.generation,
+          record.key,
+        );
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     },
 
     addRepoKey(repoId, generation, key) {
@@ -264,6 +323,58 @@ export function openStore(dbPath: string): Store {
       return rows.map((row) => ({
         generation: Number(row["generation"]),
         key: String(row["key"]),
+      }));
+    },
+
+    getRepo(repoId) {
+      const row = db
+        .prepare("SELECT id, owner, repo, reviewers FROM repo WHERE id = ?")
+        .get(repoId);
+      if (row === undefined) return undefined;
+      return {
+        repoId: Number(row["id"]),
+        owner: String(row["owner"]),
+        repo: String(row["repo"]),
+        reviewersJson: row["reviewers"] === null ? null : String(row["reviewers"]),
+      };
+    },
+
+    removeRepo(repoId) {
+      db.exec("BEGIN");
+      try {
+        db.prepare("DELETE FROM repo_key WHERE repo_id = ?").run(repoId);
+        db.prepare("DELETE FROM repo WHERE id = ?").run(repoId);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    listRepos() {
+      // 评审记录按注册时的 owner/repo 匹配。仓库在 Forge 上改名后新记录用新名字,
+      // 旧名字的记录不再计入——注册表的名字由后续的注册流程更新,这里不猜。
+      // started_at 是 ISO 字符串,MAX 按字典序即时间序。
+      const rows = db
+        .prepare(
+          `SELECT r.id, r.owner, r.repo,
+                  (SELECT COUNT(*) FROM review_run run
+                    WHERE run.owner = r.owner AND run.repo = r.repo) AS run_count,
+                  (SELECT COUNT(*) FROM finding f JOIN review_run run ON f.run_id = run.id
+                    WHERE run.owner = r.owner AND run.repo = r.repo) AS finding_count,
+                  (SELECT MAX(run.started_at) FROM review_run run
+                    WHERE run.owner = r.owner AND run.repo = r.repo) AS last_activity
+             FROM repo r
+            ORDER BY (last_activity IS NULL), COALESCE(last_activity, r.registered_at) DESC`,
+        )
+        .all();
+      return rows.map((row) => ({
+        repoId: Number(row["id"]),
+        owner: String(row["owner"]),
+        repo: String(row["repo"]),
+        runCount: Number(row["run_count"]),
+        findingCount: Number(row["finding_count"]),
+        lastActivity: row["last_activity"] === null ? null : String(row["last_activity"]),
       }));
     },
 

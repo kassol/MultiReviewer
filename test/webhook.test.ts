@@ -98,10 +98,20 @@ async function startHarness(options: HarnessOptions = {}) {
 
   // 种入注册表:准入凭仓库的 key,不再有全局 secret。
   const seed = openStore(db.path);
-  seed.registerRepo(REPO_ID, PR.owner, PR.repo);
-  seed.addRepoKey(REPO_ID, GENERATION, KEY);
-  seed.registerRepo(REPO_B_ID, "acme", "gadgets");
-  seed.addRepoKey(REPO_B_ID, GENERATION, KEY_B);
+  seed.registerRepo({
+    repoId: REPO_ID,
+    owner: PR.owner,
+    repo: PR.repo,
+    generation: GENERATION,
+    key: KEY,
+  });
+  seed.registerRepo({
+    repoId: REPO_B_ID,
+    owner: "acme",
+    repo: "gadgets",
+    generation: GENERATION,
+    key: KEY_B,
+  });
   seed.close();
 
   const base = memoryForge({
@@ -139,10 +149,13 @@ async function startHarness(options: HarnessOptions = {}) {
   const server = createWebhookServer({
     forges: options.omitGiteaForge ? { github: forge } : { github: forge, gitea: forge },
     reviewers: [options.reviewer ?? scriptedReviewer("stub-model", [])],
+    // 本文件的仓库都不带模型覆盖,这个构建器不该被调用。
+    buildReviewers: (specs) => specs.map((spec) => scriptedReviewer(spec.model, [])),
     cacheDir: cache.dir,
     dbPath: db.path,
     adminToken: "webhook-test-admin-token",
     panelPrefix: "webhook-test-prefix",
+    baseUrl: "https://reviewer.example.test",
     ...(options.loggedOnceMax === undefined ? {} : { loggedOnceMax: options.loggedOnceMax }),
     onDelivery: (message) => deliveries.push(message),
     onRunSettled: (event, error) => {

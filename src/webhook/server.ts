@@ -5,7 +5,7 @@
  * 审查结果只以 review 评论呈现,本工具从不调用 status / check 之类会阻断合并的接口,
  * `Forge` 接口里也没有这类方法:审查是建议,不是门禁,人保留最终判断权。
  */
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
@@ -13,11 +13,17 @@ import {
   type ServerResponse,
 } from "node:http";
 
+import { assertReviewerSpecs, type ReviewerSpec } from "../config.ts";
 import type { Forge } from "../forge/forge.ts";
+import {
+  createGiteaHookManager,
+  type GiteaHookManager,
+} from "../forge/gitea-hooks.ts";
+import type { GiteaForgeOptions } from "../forge/gitea.ts";
 import { createPanelAuth, SESSION_TTL_MS, type PanelAuth } from "../panel/auth.ts";
 import type { Reviewer } from "../review/finding.ts";
 import { runReview } from "../review/run.ts";
-import { openStore, type RepoKey } from "../review/store.ts";
+import { openStore, type RepoKey, type Store } from "../review/store.ts";
 
 export type Platform = "github" | "gitea";
 
@@ -68,6 +74,16 @@ export type WebhookServerDeps = {
   adminToken: string;
   /** 面板路径的随机首段(不含斜杠),API 挂在 `/<前缀>/api` 下。 */
   panelPrefix: string;
+  /** 服务对外的基地址(实例根),注册仓库时用它拼 hook 的投递地址 `<基地址>/webhook?k=<代次>`。 */
+  baseUrl: string;
+  /** Gitea 实例的地址与 bot 凭据。没配这一格时注册与移除仓库的端点不可用。 */
+  gitea?: GiteaForgeOptions;
+  /**
+   * 按模型覆盖构建 Reviewer。带覆盖的仓库触发 Review Run 时用它替换全局的
+   * `reviewers`;注册时也用它试构建一次,让「覆盖引用了不存在的凭据」这类错误在
+   * 注册响应里显形,而不是等到投递时。
+   */
+  buildReviewers: (specs: ReviewerSpec[]) => readonly Reviewer[];
   /** 时钟,默认 `Date.now`。只该测试注入,用来驱动登录退避的时间窗。 */
   now?: () => number;
 };
@@ -247,12 +263,9 @@ function logFailure(event: NormalizedEvent, error?: unknown): void {
 
 /** 幂等:同一个「仓库 + head commit」只有第一次领得走。 */
 function claim(dbPath: string, event: NormalizedEvent): boolean {
-  const store = openStore(dbPath);
-  try {
-    return store.claimDelivery(event.owner, event.repo, event.headSha);
-  } finally {
-    store.close();
-  }
+  return withStore(dbPath, (store) =>
+    store.claimDelivery(event.owner, event.repo, event.headSha),
+  );
 }
 
 /** payload 里的数值 repo id,准入查 key 的键。取不到即无从验签。 */
@@ -262,16 +275,24 @@ function repoIdOf(payload: unknown): number | undefined {
 }
 
 /**
+ * 把一段文本解析成代次。只认十进制数字(`Number()` 会把 "0x10"、"1e2" 也解析成整数,
+ * 宽于代次的语义),超出安全整数的也拒绝——那样的值转回字符串会变成指数记法,写进
+ * hook URL 就再也验不过了。
+ */
+function parseGeneration(value: string | null | undefined): number | undefined {
+  if (value === null || value === undefined || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+/**
  * hook URL `?k=` 上的代次(ADR 0007)。代次是索引不是凭证:它只决定拿哪把 key 验签,
  * 解析不出就当没有,让选 key 落空成 401。
  */
 function generationOf(req: IncomingMessage): number | undefined {
   const query = (req.url ?? "").split("?")[1];
   if (query === undefined) return undefined;
-  const value = new URLSearchParams(query).get("k");
-  // 只认十进制数字:Number() 会把 "0x10"、"1e2" 也解析成整数,宽于代次的语义。
-  if (value === null || !/^\d+$/.test(value)) return undefined;
-  return Number(value);
+  return parseGeneration(new URLSearchParams(query).get("k"));
 }
 
 /**
@@ -283,23 +304,42 @@ function describeRepo(payload: unknown, repoId: number): string {
   return tag === "" ? `id=${repoId}` : `${tag}(id=${repoId})`;
 }
 
-function lookupRepoKeys(dbPath: string, repoId: number): RepoKey[] {
+/** 开库执行一段读写,用完即关——webhook 层用库的既有约定,短开短关。 */
+function withStore<T>(dbPath: string, fn: (store: Store) => T): T {
   const store = openStore(dbPath);
   try {
-    return store.listRepoKeys(repoId);
+    return fn(store);
   } finally {
     store.close();
   }
 }
 
-function startRun(deps: WebhookServerDeps, forge: Forge, event: NormalizedEvent): void {
+type Admission = {
+  keys: RepoKey[];
+  /** 该仓库的模型覆盖(JSON),null 即跟随全局。与 key 同一次开库读出。 */
+  reviewersJson: string | null;
+};
+
+function lookupAdmission(dbPath: string, repoId: number): Admission {
+  return withStore(dbPath, (store) => ({
+    keys: store.listRepoKeys(repoId),
+    reviewersJson: store.getRepo(repoId)?.reviewersJson ?? null,
+  }));
+}
+
+function startRun(
+  deps: WebhookServerDeps,
+  forge: Forge,
+  event: NormalizedEvent,
+  reviewers: readonly Reviewer[],
+): void {
   const settled = deps.onRunSettled ?? logFailure;
   // 这是长跑服务,后台任务的 rejection 不接住就会变成 unhandledRejection 把进程带崩。
   void runReview(
     { owner: event.owner, repo: event.repo, number: event.number },
     {
       forge,
-      reviewers: deps.reviewers,
+      reviewers,
       cacheDir: deps.cacheDir,
       dbPath: deps.dbPath,
       ...(deps.maxChangedLinesPerBatch === undefined
@@ -348,7 +388,8 @@ async function handle(
   const repoId = repoIdOf(payload);
   if (repoId === undefined) return send(res, 401);
 
-  const keys = lookupRepoKeys(deps.dbPath, repoId);
+  const admission = lookupAdmission(deps.dbPath, repoId);
+  const keys = admission.keys;
   if (keys.length === 0) {
     logOnce(`unregistered:${repoId}`, `仓库 ${describeRepo(payload, repoId)} 未注册,回 401`);
     return send(res, 401);
@@ -411,6 +452,23 @@ async function handle(
     return send(res, 200);
   }
 
+  // 每仓库的模型覆盖:语义是全量替换 reviewers 列表,没有覆盖就用全局。覆盖坏了
+  // (解析不了、缺 buildReviewers)按配置错误记录并回 200,与缺 Forge 同一档;放在
+  // claim 之前——坏配置不该吃掉幂等键,修好后同一 head commit 要能重新触发。
+  let reviewers = deps.reviewers;
+  if (admission.reviewersJson !== null) {
+    try {
+      const specs = assertReviewerSpecs(
+        JSON.parse(admission.reviewersJson),
+        `仓库 ${repoId} 的模型覆盖`,
+      );
+      reviewers = deps.buildReviewers(specs);
+    } catch (error) {
+      (deps.onRunSettled ?? logFailure)(event, error);
+      return send(res, 200);
+    }
+  }
+
   if (!claim(deps.dbPath, event)) {
     log(`${describe(event)} — 这个 head commit 已经审过,跳过`);
     return send(res, 200);
@@ -419,7 +477,7 @@ async function handle(
   log(`${describe(event)} — 开始审查`);
   // 先回 200 再开跑:一次审查可能要跑很久,平台等不到那时候就会判超时。
   send(res, 200);
-  startRun(deps, forge, event);
+  startRun(deps, forge, event, reviewers);
 }
 
 /** 请求路径,不含查询串。hook URL 会带 `?k=<代次>`(ADR 0007),匹配只看路径。 */
@@ -454,6 +512,7 @@ async function handlePanelApi(
   res: ServerResponse,
   deps: WebhookServerDeps,
   auth: PanelAuth,
+  hookManager: GiteaHookManager | undefined,
 ): Promise<void> {
   const sub = pathname(req).slice(`/${deps.panelPrefix}/api`.length) || "/";
 
@@ -492,13 +551,178 @@ async function handlePanelApi(
     return send(res, 204);
   }
 
+  if (sub === "/repos" && req.method === "GET") {
+    return sendJson(res, 200, withStore(deps.dbPath, (store) => store.listRepos()));
+  }
+  if (sub === "/repos" && req.method === "POST") {
+    return handleRegister(req, res, deps, hookManager);
+  }
+  const repoRoute = /^\/repos\/(\d+)$/.exec(sub);
+  if (repoRoute !== null && req.method === "DELETE") {
+    return handleRemove(res, deps, hookManager, Number(repoRoute[1]));
+  }
+
   return sendJson(res, 404, { error: "没有这个端点" });
+}
+
+/** hook 投递地址里代次之前的部分:`<基地址>/webhook?k=`。 */
+function webhookUrlBase(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/webhook?k=`;
+}
+
+/** hook 的投递地址:`<基地址>/webhook?k=<代次>`。代次是 URL 里唯一双向可见的字段(ADR 0007)。 */
+function hookUrl(baseUrl: string, generation: number): string {
+  return `${webhookUrlBase(baseUrl)}${generation}`;
+}
+
+/** 从 hook URL 读回代次。不是指向本服务的 hook 返回 undefined。 */
+function generationFromHookUrl(url: string, baseUrl: string): number | undefined {
+  const prefix = webhookUrlBase(baseUrl);
+  if (!url.startsWith(prefix)) return undefined;
+  return parseGeneration(url.slice(prefix.length));
+}
+
+async function handleRegister(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  hookManager: GiteaHookManager | undefined,
+): Promise<void> {
+  if (hookManager === undefined) {
+    return sendJson(res, 500, { error: "没有配置 Gitea,无法注册仓库" });
+  }
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body) as {
+    owner?: unknown;
+    repo?: unknown;
+    reviewers?: unknown;
+  } | null;
+  if (
+    payload === null ||
+    typeof payload.owner !== "string" ||
+    payload.owner === "" ||
+    typeof payload.repo !== "string" ||
+    payload.repo === ""
+  ) {
+    return sendJson(res, 400, {
+      error: 'body 要是 {"owner": "...", "repo": "..."} 形状的 JSON',
+    });
+  }
+  const ref = { owner: payload.owner, repo: payload.repo };
+
+  // 模型覆盖跟随注册一起写入,语义是全量替换 reviewers 列表,省略即跟随全局。
+  // 校验之外还试构建一次:引用不存在的凭据环境变量这类错误要在注册响应里显形,
+  // 不能等到投递时才以日志的形式出现。
+  let reviewersJson: string | undefined;
+  if (payload.reviewers !== undefined) {
+    try {
+      const specs = assertReviewerSpecs(
+        payload.reviewers,
+        `${ref.owner}/${ref.repo} 的模型覆盖`,
+      );
+      deps.buildReviewers(specs);
+      reviewersJson = JSON.stringify(specs);
+    } catch (error) {
+      return sendJson(res, 400, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  // 权限不足要明确拒绝并说明缺什么:不产生「注册成功却永远收不到投递」的哑仓库。
+  const check = await hookManager.checkAdmin(ref);
+  if (!check.admin) {
+    return sendJson(res, 403, { error: check.reason });
+  }
+  const repoId = check.repoId;
+
+  if (withStore(deps.dbPath, (store) => store.getRepo(repoId)) !== undefined) {
+    return sendJson(res, 409, { error: `${ref.owner}/${ref.repo} 已注册(repo id ${repoId})` });
+  }
+
+  // 新代次取 Gitea 上可见的最大代次 +1(ADR 0007):上一次安装残留的本服务 hook 不与
+  // 它撞 URL,残留 hook 的投递按已废弃代次 401 显形,不会静默吞掉新 hook 的创建。
+  // 库那一侧此刻必为空——上面刚确认过未注册,而注册表行与 Key 在同一个事务里生灭。
+  const hooks = await hookManager.listHooks(ref);
+  const seenGenerations = hooks
+    .map((hook) => generationFromHookUrl(hook.url, deps.baseUrl))
+    .filter((generation): generation is number => generation !== undefined);
+  const generation = Math.max(0, ...seenGenerations) + 1;
+  const key = randomBytes(32).toString("hex");
+
+  // 先落库再建 hook:hook 一旦在,投递就会来,库里必须已经有 Key 能验它。建 hook
+  // 失败时回滚刚落的注册,不留「已注册却无 hook」的哑仓库。
+  withStore(deps.dbPath, (store) =>
+    store.registerRepo({
+      repoId,
+      owner: ref.owner,
+      repo: ref.repo,
+      generation,
+      key,
+      ...(reviewersJson === undefined ? {} : { reviewersJson }),
+    }),
+  );
+  try {
+    await hookManager.ensureHook(ref, { url: hookUrl(deps.baseUrl, generation), key });
+  } catch (error) {
+    withStore(deps.dbPath, (store) => store.removeRepo(repoId));
+    return sendJson(res, 502, {
+      error: `Gitea 建 hook 失败:${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
+  return sendJson(res, 201, { repoId, owner: ref.owner, repo: ref.repo, generation });
+}
+
+async function handleRemove(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  hookManager: GiteaHookManager | undefined,
+  repoId: number,
+): Promise<void> {
+  if (hookManager === undefined) {
+    return sendJson(res, 500, { error: "没有配置 Gitea,无法移除仓库" });
+  }
+  const record = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+  if (record === undefined) {
+    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+  }
+
+  // hook 操作按仓库的「现名」寻址:注册表里的名字是注册时的,仓库改名或转移后按旧名
+  // 找会把「改名」误判成「已删」,移除放行后真 hook 留在新名字下永远投 401——恰是
+  // 设计要消除的「有 hook 无记录」。id 在 Gitea 上已不存在才说明仓库真没了,hook
+  // 随仓库一起没了,直接摘表。
+  const ref = (await hookManager.resolveRepo(repoId)) ?? {
+    owner: record.owner,
+    repo: record.repo,
+  };
+
+  // 先删 hook,删不掉(404 除外)不放行移除:放行会留下一条永远拿 401 又不在任何
+  // 视图里的孤儿 hook。「Gitea 上有 hook 而库里无记录」这个中间态被设计消除。
+  const ours = (await hookManager.listHooks(ref)).filter(
+    (hook) => generationFromHookUrl(hook.url, deps.baseUrl) !== undefined,
+  );
+  try {
+    for (const hook of ours) {
+      await hookManager.deleteHook(ref, hook.id);
+    }
+  } catch (error) {
+    return sendJson(res, 502, {
+      error: `Gitea 删 hook 失败,移除不放行:${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
+
+  // 评审记录一行不动:模型选型的历史不因仓库下线而断(移除后的投递按未注册 401)。
+  withStore(deps.dbPath, (store) => store.removeRepo(repoId));
+  return send(res, 204);
 }
 
 export function createWebhookServer(deps: WebhookServerDeps): Server {
   // 已经记过首次的无关事件类型与 action,整个服务共用一份。
   const loggedOnce = new Set<string>();
   const auth = createPanelAuth(deps.adminToken, deps.now);
+  const hookManager =
+    deps.gitea === undefined ? undefined : createGiteaHookManager(deps.gitea);
   const apiPrefix = `/${deps.panelPrefix}/api`;
   return createServer((req, res) => {
     // 路由表:`POST /webhook` → 投递;`<前缀>/api/*` → 面板 API;其余一律 404,
@@ -514,7 +738,7 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
       return;
     }
     if (path === apiPrefix || path.startsWith(`${apiPrefix}/`)) {
-      void handlePanelApi(req, res, deps, auth).catch((error: unknown) => {
+      void handlePanelApi(req, res, deps, auth, hookManager).catch((error: unknown) => {
         console.error("面板 API 处理失败:", error instanceof Error ? error.message : error);
         if (!res.headersSent) sendJson(res, 500, { error: "内部错误" });
       });

@@ -22,10 +22,12 @@ async function startPanel(options: { now?: () => number } = {}) {
   const server = createWebhookServer({
     forges: {},
     reviewers: [],
+    buildReviewers: () => [],
     cacheDir: cache.dir,
     dbPath: db.path,
     adminToken: ADMIN_TOKEN,
     panelPrefix: PREFIX,
+    baseUrl: "https://reviewer.example.test",
     ...(options.now === undefined ? {} : { now: options.now }),
     onDelivery: () => {},
   });

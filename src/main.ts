@@ -91,7 +91,8 @@ const port = Number(process.env["MULTIREVIEWER_PORT"] ?? DEFAULT_PORT);
 
 const adminToken = required("MULTIREVIEWER_ADMIN_TOKEN");
 const prefix = panelPrefix();
-assertUsableBaseUrl(required("MULTIREVIEWER_BASE_URL"));
+const baseUrl = required("MULTIREVIEWER_BASE_URL");
+assertUsableBaseUrl(baseUrl);
 
 const gitea = giteaOptions();
 const github = githubAuth();
@@ -118,6 +119,10 @@ const server = createWebhookServer({
   dbPath: process.env["MULTIREVIEWER_DB"] ?? "multireviewer.db",
   adminToken,
   panelPrefix: prefix,
+  baseUrl,
+  ...(gitea === undefined ? {} : { gitea }),
+  // 每仓库的模型覆盖按同一套构建逻辑起 Reviewer,凭据同样只经环境变量进入。
+  buildReviewers: (specs) => buildReviewers({ reviewers: specs }),
   ...(config.maxChangedLinesPerBatch === undefined
     ? {}
     : { maxChangedLinesPerBatch: config.maxChangedLinesPerBatch }),

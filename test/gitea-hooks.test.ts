@@ -142,9 +142,11 @@ test("权限查询:admin 放行,非 admin 与不可见各带说明", async () =>
     }
   }
 
-  assert.deepEqual(await check({ body: { permissions: { admin: true, push: true, pull: true } } }), {
-    admin: true,
-  });
+  // admin 放行时一并带回数值 repo id——它是注册表的主键,同一次请求读回。
+  assert.deepEqual(
+    await check({ body: { id: 4242, permissions: { admin: true, push: true, pull: true } } }),
+    { admin: true, repoId: 4242 },
+  );
 
   const notAdmin = await check({
     body: { permissions: { admin: false, push: true, pull: true } },
@@ -156,6 +158,17 @@ test("权限查询:admin 放行,非 admin 与不可见各带说明", async () =>
   const invisible = await check({ status: 404, body: { message: "not found" } });
   assert.equal(invisible.admin, false);
   assert.match((invisible as { reason: string }).reason, /协作者/);
+});
+
+test("列 hook:仓库整个 404 时返回空数组——仓库都没了,hook 自然一个没有", async () => {
+  const stub = stubFetch({
+    [LIST_PATH]: { status: 404, body: { message: "not found" } },
+  });
+  try {
+    assert.deepEqual(await createGiteaHookManager(OPTIONS).listHooks(REPO), []);
+  } finally {
+    stub.restore();
+  }
 });
 
 test("列 hook 的读回形状:id、config.url、content_type、events 与 active", async () => {
