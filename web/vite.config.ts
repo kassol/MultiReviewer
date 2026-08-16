@@ -1,4 +1,6 @@
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
 import { defineConfig, loadEnv, type Plugin } from "vite";
 
 /**
@@ -30,7 +32,11 @@ export default defineConfig(({ mode }) => {
   };
 
   return {
-    plugins: [react(), injectPrefix],
+    plugins: [react(), tailwindcss(), injectPrefix],
+    // shadcn 组件用 `@/` 互相引用,与 tsconfig 的 paths 同一套。
+    resolve: {
+      alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+    },
     server: {
       // dev 走 proxy 把 `<前缀>/api` 转到本机后端:浏览器视角同源同路径,cookie
       // 正常携带、无 CORS。webhook 不进 proxy。后端没起时 502 即为答案,不做兜底。

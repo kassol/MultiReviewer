@@ -7,6 +7,11 @@
     "jsx": "react-jsx",
     "types": ["vite/client"],
 
+    // shadcn 生成的组件用 `@/` 别名互相引用。运行时的解析在 vite.config.ts 的
+    // resolve.alias,这里只管类型。
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/*"] },
+
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
