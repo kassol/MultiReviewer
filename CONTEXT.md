@@ -40,6 +40,10 @@ _Avoid_: 白名单、仓库列表
 一个仓库准入 webhook 投递的凭证,每仓库一把,作为 Gitea hook 的 secret 参与 HMAC 验签。明文存库——HMAC 验签需要原始值,这是密码学约束,不是疏忽。
 _Avoid_: secret、token、密码
 
+**模型标识**:
+一个 Reviewer 用的模型在本服务里的名字,形态是 `provider:model`,如 `openrouter:z-ai/glm-5.2`。Finding 与 Reviewer 的统计都按它归属来源,因此同一次审查里不得重复。带 provider 段是因为 Pi 目录里有 216 个模型 id 跨 provider 重复;分隔用冒号而非斜杠,是因为部分 model id 本身带斜杠。
+_Avoid_: 模型名、model id、model
+
 **模型凭据**:
 调用某一家模型厂商所需的凭据,每个 provider 一把,同一家下的多个 model 共用。由面板写入并加密存库,主密钥来自环境变量;只写不回显,解不开的密文视为未配置(ADR 0008)。它与 Key 是两类东西——Key 管仓库准入,模型凭据管厂商调用。
 _Avoid_: Key、API key、模型 token
