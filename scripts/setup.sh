@@ -193,7 +193,7 @@ finish() {
 # 你从笔记本 SSH 进来,浏览器留在笔记本上——脚本给出的网址在笔记本上打开,把值粘回来。
 # ──────────────────────────────────────────────────────────────────────────
 
-TOTAL_STAGES=9
+TOTAL_STAGES=6
 
 # 脚本自己所在的目录就是部署目录。在仓库里直接跑时它在 scripts/ 下,compose 文件在
 # 上一级,这里一并认掉。
@@ -211,10 +211,6 @@ have_all() {
     [[ -n "$(_existing "$key" || true)" ]] || return 1
   done
   return 0
-}
-
-skipped_stage() {
-  note "已配置,跳过。要重做就 FORCE=1 重跑本脚本。"
 }
 
 banner "MultiReviewer 部署"
@@ -334,93 +330,30 @@ note "下限:社区版 1.26.0 / 企业版 26.0.0。Disposition 依赖的 resolve
 note "服务启动时会再检查一次,不合格会直接退出。"
 pause
 
-# ── 4. DeepSeek 密钥 ──────────────────────────────────────────────────────
-stage "DeepSeek 密钥"
-if have_all DEEPSEEK_API_KEY; then
-  skipped_stage
-else
-  say "第一个 Reviewer 走 DeepSeek 官方接口。"
-  open_url "https://platform.deepseek.com/api_keys"
-  step "登录后进 API keys 页,点「创建 API key」。"
-  step "密钥只在创建那一刻完整显示一次,当场复制。"
-  ask_secret DEEPSEEK_API_KEY "粘贴 DeepSeek API key:"
-  write_env  DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"
-  note "这枚凭据只会进到跑 DeepSeek 那一个 Reviewer 子进程,其余子进程的环境里没有它。"
-  pause
-fi
-
-# ── 5. OpenRouter 密钥 ────────────────────────────────────────────────────
-stage "OpenRouter 密钥"
-if have_all OPENROUTER_API_KEY; then
-  skipped_stage
-else
-  say "第二个 Reviewer 走 OpenRouter,用一个与 DeepSeek 不同家的模型——"
-  say "跨模型去重要有效,两个 Reviewer 得真的会看出不同的东西。"
-  open_url "https://openrouter.ai/keys"
-  step "登录后点 Create Key,填个名字(如 multireviewer)。"
-  step "密钥形如 sk-or-v1-...,创建后复制。"
-  ask_secret OPENROUTER_API_KEY "粘贴 OpenRouter API key:"
-  write_env  OPENROUTER_API_KEY "$OPENROUTER_API_KEY"
-  note "OpenRouter 账户里要有余额,否则第一次审查会以模型调用失败告终。"
-  pause
-fi
-
-# ── 6. 模型组合 ───────────────────────────────────────────────────────────
-stage "模型组合"
-say "模型组合在库里,由面板的设置页管。这一步先把两个标识核准,记进 .env 备查。"
-say "模型标识同时用作 Finding 的来源标记,两个不能重名。"
-note "直接回车用默认值。"
-
-ask MULTIREVIEWER_DEEPSEEK_MODEL   "DeepSeek 模型标识 [deepseek-v4-flash]:"
-ask MULTIREVIEWER_OPENROUTER_MODEL "OpenRouter 模型标识 [z-ai/glm-4.6]:"
-: "${MULTIREVIEWER_DEEPSEEK_MODEL:=deepseek-v4-flash}"
-: "${MULTIREVIEWER_OPENROUTER_MODEL:=z-ai/glm-4.6}"
-write_env MULTIREVIEWER_DEEPSEEK_MODEL   "$MULTIREVIEWER_DEEPSEEK_MODEL"
-write_env MULTIREVIEWER_OPENROUTER_MODEL "$MULTIREVIEWER_OPENROUTER_MODEL"
-
-say "在容器里拿 Pi 内置的模型表核一遍这两个标识确实存在。"
-say "标识写错时服务照样起得来,要等第一次审查跑到一半才报「模型不存在」。"
-MODEL_CHECK='
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-const reviewers = [
-  { provider: "deepseek", model: process.env.CHECK_DEEPSEEK_MODEL },
-  { provider: "openrouter", model: process.env.CHECK_OPENROUTER_MODEL },
-];
-const dir = mkdtempSync(join(tmpdir(), "multireviewer-check-"));
-const runtime = await ModelRuntime.create({
-  authPath: join(dir, "auth.json"),
-  modelsPath: join(dir, "models.json"),
-});
-let ok = true;
-for (const reviewer of reviewers) {
-  const found = Boolean(runtime.getModel(reviewer.provider, reviewer.model));
-  console.log((found ? "OK   " : "MISS ") + reviewer.provider + "/" + reviewer.model);
-  if (!found) ok = false;
-}
-process.exit(ok ? 0 : 1);
-'
-MODEL_CHECK_STATUS=0
-docker compose run --rm -T --entrypoint node \
-  -e "CHECK_DEEPSEEK_MODEL=$MULTIREVIEWER_DEEPSEEK_MODEL" \
-  -e "CHECK_OPENROUTER_MODEL=$MULTIREVIEWER_OPENROUTER_MODEL" \
-  multireviewer --input-type=module -e "$MODEL_CHECK" 2>/dev/null || MODEL_CHECK_STATUS=$?
-if (( MODEL_CHECK_STATUS == 0 )); then
-  printf '  %s✓%s 两个模型标识都解析得到\n' "$GREEN" "$RESET"
-else
-  printf '  %s✗ 有标识解析不到%s\n' "$RED" "$RESET"
-  say "重跑本脚本换一个标识。Pi 内置模型表里没有的标识,服务跑起来也用不了。"
-  exit 1
-fi
-pause
-
-# ── 7. 面板凭据与基地址 ───────────────────────────────────────────────────
+# ── 4. 面板凭据与基地址 ───────────────────────────────────────────────────
 stage "面板凭据与基地址"
 
-# 旧的全局 secret 流程(issue #28 之前)留下的变量,检出即清:服务已经不读它们,
-# 留着只会误导下一个看 .env 的人以为它们还在生效。
+# 清理动作之前先留一份副本。要清的里面有两把厂商 key,厂商后台不会再给第二次明文,
+# 而人此刻还没机会在面板里重配。副本只是文件复制,不读值也不打印值。
+ENV_BACKUP_DONE=""
+backup_env() {
+  [[ -f "$ENV_FILE" ]] || return 0
+  [[ -z "$ENV_BACKUP_DONE" ]] || return 0
+  ENV_BACKUP_DONE="yes"
+  local dest; dest="${ENV_FILE}.bak-$(date +%Y%m%d)"
+  # 同一天重跑时不覆盖:那一份是清理之前的,覆盖会用已经清过的内容把旧值冲掉。
+  if [[ -e "$dest" ]]; then
+    note "当天的备份已在 $dest,不覆盖。"
+    return 0
+  fi
+  cp "$ENV_FILE" "$dest"
+  chmod 600 "$dest" 2>/dev/null || true
+  printf '  %s✓ 备份%s %s\n' "$GREEN" "$RESET" "$dest"
+  note "  清理之前的副本,旧值都在里面。面板配好之后自行删掉它。"
+}
+
+# 已经废除的变量,检出即清:服务已经不读它们,留着只会误导下一个看 .env 的人
+# 以为它们还在生效。
 remove_env() {
   local key="$1" reason="$2"
   [[ -f "$ENV_FILE" ]] || return 0
@@ -432,9 +365,14 @@ remove_env() {
   note "  $reason"
 }
 OLD_SECRET=$(_existing MULTIREVIEWER_WEBHOOK_SECRET || true)
+backup_env
 remove_env MULTIREVIEWER_WEBHOOK_SECRET "全局 webhook secret 已废除:准入改为每仓库一把 Key,由面板在注册时生成并写进 hook。"
 remove_env MULTIREVIEWER_PUBLIC_URL "公网地址改为基地址,存 MULTIREVIEWER_BASE_URL(下面会问)。"
 remove_env MULTIREVIEWER_GITEA_REPO "webhook 不再手工登记:仓库改在面板上注册。"
+remove_env DEEPSEEK_API_KEY "模型凭据改由面板的凭据页管,加密存库(ADR 0008)。服务只从库里取,环境变量这一路已经断开。"
+remove_env OPENROUTER_API_KEY "同上:模型凭据只在面板里配。"
+remove_env MULTIREVIEWER_DEEPSEEK_MODEL "模型组合改由面板的设置页管,存库。服务不再读这个变量。"
+remove_env MULTIREVIEWER_OPENROUTER_MODEL "同上:模型标识只在面板的设置页里改。"
 if [[ -n "$OLD_SECRET" ]]; then
   warn "Gitea 上手工建过的旧 webhook 用的是刚清掉的全局 secret,已经验不过签名。"
   say "  到各仓库的 设置 → Web 钩子 删掉指向本服务的旧 hook,改由面板注册时自动创建。"
@@ -450,6 +388,16 @@ else
   note "已生成新 token"
 fi
 write_env MULTIREVIEWER_ADMIN_TOKEN "$MULTIREVIEWER_ADMIN_TOKEN"
+
+say ""
+say "面板的凭据页用一枚主密钥加解密模型凭据(ADR 0008)。缺它时那一页整体不可用,"
+say "人就配不了模型凭据。这里随机生成一枚,值不上屏。"
+if [[ -n "$(_existing MULTIREVIEWER_CREDENTIAL_MASTER_KEY || true)" ]]; then
+  note "主密钥已在 $ENV_FILE 里,沿用。换掉它等于把已存的凭据作废。"
+else
+  write_env MULTIREVIEWER_CREDENTIAL_MASTER_KEY "$(openssl rand -hex 32)"
+  note "已生成主密钥。它只在这台服务器的 $ENV_FILE 里,没有第二份,备份时一并带上。"
+fi
 
 say ""
 say "面板挂在一段不可猜的路径前缀下(如 /panel-3f2a),webhook 与它互不相扰。"
@@ -502,7 +450,7 @@ esac
 write_env MULTIREVIEWER_BASE_URL "$MULTIREVIEWER_BASE_URL"
 pause
 
-# ── 8. 起服务并自检 ───────────────────────────────────────────────────────
+# ── 5. 起服务并自检 ───────────────────────────────────────────────────────
 stage "起服务并自检"
 say "起服务。"
 docker compose up -d
@@ -593,7 +541,7 @@ case "$PROBE" in
 esac
 pause
 
-# ── 9. 交付清单 ───────────────────────────────────────────────────────────
+# ── 6. 交付清单 ───────────────────────────────────────────────────────────
 stage "交付清单"
 say "部署边界到「面板能登录」为止。仓库接入、key 轮转、模型覆盖都在面板上做。"
 say ""
@@ -605,6 +553,10 @@ warn "token 刚打在屏幕上了,分享终端记录前先清屏。"
 say ""
 say "下一步,都在面板里:"
 step "浏览器开上面的地址,粘 token 登录。"
+step "设置页选模型组合。向导不再问模型标识,这里是唯一的入口。"
+step "凭据页粘两家的 API key(DeepSeek 与 OpenRouter 各一枚,厂商后台签发)。"
+say "  面板保存时真发一次最小请求验证,打错当场就知道。key 只写不回显。"
+note "  这两步没做完,投递进来会建一次失败的 Run 并在时间线上写明缺哪一家——不是故障。"
 step "仓库页点「注册」,填 owner/repo——面板会验 bot 权限、生成 Key、创建 webhook,"
 say "  一步到位。前置:bot 在该仓库是 admin(阶段 3 说过,每个仓库都要)。"
 step "注册完开一个 PR,第一轮审查自动触发;评审记录页能看到它。"
@@ -613,7 +565,7 @@ pause
 
 finish
 note "部署目录 $DEPLOY_DIR,里面有 .env 与 data/"
-note "换模型在面板的设置页改,改完即时生效,不必重启"
+note "换模型在面板的设置页改,轮转模型凭据在面板的凭据页改,都即时生效,不必重启"
 note "更新版本:开发机上跑 scripts/build-push.sh,这里 docker compose pull && docker compose up -d"
 printf '\n'
 say "服务器侧排障速查:"

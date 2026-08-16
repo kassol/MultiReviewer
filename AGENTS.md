@@ -19,7 +19,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `Dockerfile` / `.dockerignore` — 运行镜像。`node:24-slim` 加 git,依赖在镜像内重装(宿主机的 `node_modules` 含平台专属产物,不进镜像)。
 - `docker-compose.yml` — 服务器上的编排定义。与 `.env` 两个文件即可运行,不需要源码。
 - `scripts/build-push.sh` — 在开发机构建镜像并推到 registry,默认目标架构 `linux/amd64`。
-- `scripts/setup.sh` — 部署向导。在服务器上执行,逐步问出凭据、写 `.env`、拉镜像起容器、以「面板能登录」为验收自检;仓库接入与模型组合在面板上做,不在向导里。
+- `scripts/setup.sh` — 部署向导。在服务器上执行,逐步问出凭据、写 `.env`、拉镜像起容器、以「面板能登录」为验收自检;仓库接入、模型凭据与模型组合在面板上做,不在向导里。
 - `docs/adr/` — 架构决策记录。
 - `docs/idea.md` — 初始产品与架构草案,部分设定已被 ADR 推翻。
 - `docs/agents/` — Agent skills 的仓库级配置:issue tracker、triage 标签、domain docs 消费规则。
@@ -45,14 +45,14 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 # 开发机:构建并推送。开发机 arm64、服务器 amd64 时必须交叉构建,脚本已默认 linux/amd64
 scripts/build-push.sh registry.example.com/team/multireviewer:latest
 
-# 服务器:首次部署跑向导,九步问出凭据、拉镜像、起容器、真登录一次面板自检
+# 服务器:首次部署跑向导,六步问出凭据、拉镜像、起容器、真登录一次面板自检
 bash setup.sh
 
 # 服务器:后续更新
 docker compose pull && docker compose up -d
 ```
 
-向导的边界收在「面板能登录」:生成 admin token 与面板前缀、问基地址、起服务后打登录页并真登录一次(token 写坏时自检失败,不静默交付),收尾给交付清单。仓库接入、key 轮转、模型组合与覆盖都在面板上做,向导不再生成全局 webhook secret 也不指导手工配 hook;检出旧变量(`MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` / `MULTIREVIEWER_GITEA_REPO`)会清掉并说明原因。
+向导的边界收在「面板能登录」:生成 admin token、面板前缀与凭据主密钥、问基地址、起服务后打登录页并真登录一次(token 写坏时自检失败,不静默交付),收尾给交付清单。仓库接入、模型凭据、模型组合与覆盖都在面板上做,向导不问模型凭据也不问模型标识,不生成全局 webhook secret,也不指导手工配 hook;检出已废除的变量(`MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` / `MULTIREVIEWER_GITEA_REPO` / `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` / `MULTIREVIEWER_DEEPSEEK_MODEL` / `MULTIREVIEWER_OPENROUTER_MODEL`)会清掉并说明原因。清理之前先把 `.env` 复制成 `.env.bak-<YYYYMMDD>`,同一天重跑不覆盖已有副本——被清掉的两把厂商 key 只在这份副本里,厂商后台不会再给第二次明文。
 
 两处容易踩的地方:
 
@@ -82,7 +82,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 - `MULTIREVIEWER_PANEL_DIST` — 前端构建产物目录,默认 `web/dist`。镜像里是 `/app/web/dist`。产物不在时面板页面回 503(与 404 的「前缀记错」分开)
 - `MULTIREVIEWER_DB` — SQLite 文件位置,默认 `multireviewer.db`。镜像里是 `/data/multireviewer.db`
 - `MULTIREVIEWER_CACHE_DIR` — 工作副本缓存根目录,默认 `.cache/worktrees`。镜像里是 `/data/worktrees`
-- `MULTIREVIEWER_CREDENTIAL_MASTER_KEY` — 模型凭据的加密主密钥(ADR 0008),面板凭据页用它加解密。没设时服务照常启动,只有凭据页整体不可用并说明差什么——起不来就进不了面板。取一串随机材料即可,例如 `openssl rand -hex 32`;换掉它等于把已存的凭据作废,面板显示未配置,重新粘一次 key 即可
+- `MULTIREVIEWER_CREDENTIAL_MASTER_KEY` — 模型凭据的加密主密钥(ADR 0008),面板凭据页用它加解密。**向导会自动生成一枚并写进 `.env`**(已有值时沿用,`FORCE=1` 也不重新生成),手工部署时取一串随机材料即可,例如 `openssl rand -hex 32`。没设时服务照常启动,只有凭据页整体不可用并说明差什么——起不来就进不了面板。换掉它等于把已存的凭据作废,面板显示未配置,重新粘一次 key 即可
 
 只有 `docker-compose.yml` 读、应用不读的:
 
@@ -199,3 +199,4 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-16: 落地 issue #67。面板 API 加模型目录端点 `GET <前缀>/api/catalog`,回服务进程里那份 Pi 的全部 provider(实测 39 家)与它们的模型,每家带上凭据是否已配。目录是运行时事实,随 Pi 升级而变:从服务端读,不进前端构建期依赖,前端不重建也不会显示旧目录。目录与凭据状态一次请求拿齐——拆成两个端点要在前端合并两份数据,还多一次往返。每个模型只给 `id`、`name`、`contextWindow`、`cost`:`id` 是模型标识 `provider:model` 的后半段,选择器要靠它回填,其余三项是选型判据;reasoning / maxTokens / input / baseUrl 不给,面板不用它们做判断。没配凭据的 provider 照常在结果里,不过滤——先能看见一家,才知道该去配它的凭据。不做工具调用能力的拦截:Pi 的模型类型里没有这个字段,面板自建黑名单追不上上游,让它在 Review Run 里失败并写明原因。本票只有端点,模型组合的选择器是 issue #68。
 - 2026-08-16: 落地 issue #70。注册仓库改成搜索式下拉。面板新增 `GET <前缀>/api/repos/search`:走面板既有的 admin token 门禁,服务端用 bot PAT 调 Gitea 的 `/repos/search`(现有 scope 够用,契约见 `docs/research/gitea-repo-search-api.md`),浏览器不直连 Gitea——直连等于把 Gitea 的仓库可见范围挂在一个前端能拿到的 token 上,还要再造一条凭据轮换路径。能力挂在 Gitea 专属的 hook 管理模块上,不进通用 `Forge` 接口(ADR 0002)。响应逐条标两个状态:已注册(查注册表)、bot 不是 admin(读搜索结果自带的权限字段);两类不可选项照样返回、由前端置灰,过滤掉会让人明知仓库存在却搜不到。只取第一页,总数大于这一页即标截断,前端提示继续输入。前端手输 owner / repo 两个框删除,不留兜底。注册端点的入参与权限检查一字未改,repoId 仍由服务端从权限检查那一次请求读出。
 - 2026-08-16: 落地 issue #71。面板补上登出:`DELETE <前缀>/api/session` 落在门禁之后(未登录调它回 401),从内存会话表删掉该 session 并回一个 `Max-Age=0`、属性与登录时逐字一致的 Set-Cookie;壳的侧栏底部是入口。顺带把三条既有事实写进部署段的「面板门禁的运维」:轮换 admin token 要改环境变量加重启,重启即清空全部会话(会话表在内存不落库),怀疑 cookie 泄露时正解也是轮换 token;HTTPS 是门禁的前提,会话 cookie 带 Secure、基地址明文 http 且非 localhost 时服务拒绝启动,TLS 由外部反代终止;面板前缀不是安全边界,未认证请求端点存在与否都回 401。门禁本身一字未改。
+- 2026-08-16: 落地 issue #72。部署向导退出配置面。删掉三个阶段:DeepSeek 密钥、OpenRouter 密钥、模型组合(连同容器里那次 Pi 模型表核对),向导从九步降到六步,成功边界仍是「面板能登录」。清理动作之前先把 `.env` 复制成 `.env.bak-<YYYYMMDD>`(权限 600,同一天重跑不覆盖已有副本——覆盖会用已经清过的内容把旧值冲掉)。四个变量随后检出即清并说明原因:`DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY`(模型凭据改由面板凭据页加密存库,ADR 0008)与 `MULTIREVIEWER_DEEPSEEK_MODEL` / `MULTIREVIEWER_OPENROUTER_MODEL`(模型组合改由面板设置页存库)。备份是文件复制、清理只打变量名,key 的值一次都不上屏。凭据主密钥 `MULTIREVIEWER_CREDENTIAL_MASTER_KEY` 改由向导 `openssl rand -hex 32` 生成并写进 `.env`,值不回显;已有值时沿用,`FORCE=1` 也不重新生成——重新生成等于把已存的凭据作废。不生成的话新部署必须手工补一个随机密钥才打得开凭据页,而向导的收尾恰恰是让人去那一页配 key。交付清单的「下一步」补两条:设置页选模型组合、凭据页粘两家的 key,并说明这两步没做完时投递会建一次失败的 Run 而不是故障。
