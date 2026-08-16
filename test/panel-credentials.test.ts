@@ -46,9 +46,15 @@ test("写入成功:验证请求真发出去,再读只拿到尾 4 位", async () 
     apiKey: "sk-ant-secret-value-7788",
   });
   assert.equal(put.status, 200);
-  const saved = (await put.json()) as { provider: string; last4: string; configured: boolean };
+  const saved = (await put.json()) as {
+    provider: string;
+    last4: string;
+    configured: boolean;
+    verified: boolean;
+  };
   assert.equal(saved.provider, "anthropic");
   assert.equal(saved.configured, true);
+  assert.equal(saved.verified, true);
   assert.equal(saved.last4, "7788");
 
   // 验证请求确实打在了厂商端点上,带的是那一家认的认证头。
@@ -110,14 +116,39 @@ test("厂商回 5xx 也不落库,原因写明状态码", async () => {
   assert.match(((await put.json()) as { error: string }).error, /503/);
 });
 
-test("不认识的 provider:直接拒绝,一个请求都不发", async () => {
+test("认不出的 provider:照样保存,标成未验证,一个验证请求都不发", async () => {
   const h = await startPanelHarness(cleanups);
   const calls = stub({});
 
-  const put = await h.api("PUT", "/credentials/unknownvendor", { apiKey: "sk-x" });
-  assert.equal(put.status, 400);
-  assert.match(((await put.json()) as { error: string }).error, /不认识 provider/);
-  assert.deepEqual(calls.calls, []);
+  const put = await h.api("PUT", "/credentials/unknownvendor", { apiKey: "sk-x-9911" });
+  assert.equal(put.status, 200);
+  const saved = (await put.json()) as { configured: boolean; verified: boolean; last4: string };
+  assert.equal(saved.configured, true);
+  assert.equal(saved.verified, false);
+  assert.equal(saved.last4, "9911");
+  assert.deepEqual(calls.calls, [], "认不出的厂商不该有外发请求");
+
+  // 列表把这个状态透出去,面板据此标「未验证」。
+  const { credentials } = (await (await h.api("GET", "/credentials")).json()) as {
+    credentials: { provider: string; verified: boolean }[];
+  };
+  assert.equal(credentials.length, 1);
+  assert.equal(credentials[0]!.provider, "unknownvendor");
+  assert.equal(credentials[0]!.verified, false);
+});
+
+test("认得的 provider 验证不通过时仍然不落库", async () => {
+  const h = await startPanelHarness(cleanups);
+  stub({ [ANTHROPIC_CHECK]: { status: 401, body: {} } });
+
+  assert.equal(
+    (await h.api("PUT", "/credentials/anthropic", { apiKey: "sk-ant-wrong" })).status,
+    400,
+  );
+  const { credentials } = (await (await h.api("GET", "/credentials")).json()) as {
+    credentials: unknown[];
+  };
+  assert.deepEqual(credentials, []);
 });
 
 test("同 provider 二次写入是覆盖,不是新增", async () => {
@@ -144,7 +175,7 @@ test("解不开的密文按未配置透出,不抛", async () => {
   const h = await startPanelHarness(cleanups);
   // 主密钥换过之后库里留下的形态:密文还在,现在这把主密钥解不开。
   const store = openStore(h.db.path);
-  store.putModelCredential("openai", "v1.aaaa.bbbb.cccc", "2026-08-16T00:00:00.000Z");
+  store.putModelCredential("openai", "v1.aaaa.bbbb.cccc", "2026-08-16T00:00:00.000Z", true);
   store.close();
 
   const list = await h.api("GET", "/credentials");
@@ -156,6 +187,7 @@ test("解不开的密文按未配置透出,不抛", async () => {
     {
       provider: "openai",
       configured: false,
+      verified: true,
       updatedAt: "2026-08-16T00:00:00.000Z",
       last4: null,
     },
@@ -223,6 +255,7 @@ function seedCredential(h: PanelHarness, provider: string, apiKey: string): void
     provider,
     encryptCredential(PANEL_CREDENTIAL_MASTER_KEY, apiKey),
     "2026-08-16T00:00:00.000Z",
+    true,
   );
   store.close();
 }

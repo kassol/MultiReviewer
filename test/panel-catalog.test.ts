@@ -83,6 +83,7 @@ test("配了凭据的那一家标 configured,没配的照常在结果里", async
     "deepseek",
     encryptCredential(PANEL_CREDENTIAL_MASTER_KEY, "sk-catalog-test"),
     new Date(0).toISOString(),
+    true,
   );
   store.close();
 

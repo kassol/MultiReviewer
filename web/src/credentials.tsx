@@ -17,6 +17,8 @@ import { Label } from "@/components/ui/label";
 type Credential = {
   provider: string;
   configured: boolean;
+  /** 保存时有没有真发过厂商验证请求。假即这家没有验证端点,key 对不对现在不知道。 */
+  verified: boolean;
   updatedAt: string;
   last4: string | null;
 };
@@ -61,7 +63,13 @@ export function CredentialsPage() {
       return (await response.json()) as Credential;
     },
     onSuccess: (saved) => {
-      setFeedback({ text: `${saved.provider} 已保存,尾 4 位 ${saved.last4}。`, isError: false });
+      // 认不出的厂商跳过了验证,这一点要当场说清:key 打错了要等下一次 Review Run 失败
+      // 才会显形,而那时人早已离开这一页。
+      const text = saved.verified
+        ? `${saved.provider} 已保存,尾 4 位 ${saved.last4}。`
+        : `${saved.provider} 已保存(尾 4 位 ${saved.last4}),但没有验证:` +
+          "MultiReviewer 认不出这家厂商,key 写错了要等下一次 Review Run 失败才知道。";
+      setFeedback({ text, isError: false });
       setApiKey("");
       refresh();
     },
@@ -91,8 +99,9 @@ export function CredentialsPage() {
       <div className="flex flex-col gap-1">
         <h1 className="text-[19px] font-semibold tracking-tight">模型凭据</h1>
         <p className="text-muted-foreground">
-          每个 provider 一把 key,同一家下的多个模型共用。保存时服务真发一次最小请求验证,
-          不通过就不保存。key 加密进库,任何界面都不回显明文。
+          每个 provider 一把 key,同一家下的多个模型共用。anthropic、openai、deepseek、
+          openrouter 这四家保存时真发一次最小请求验证,不通过就不保存;其余厂商没有验证
+          端点,照样能保存,只是标成「未验证」。key 加密进库,任何界面都不回显明文。
         </p>
       </div>
 
@@ -166,9 +175,14 @@ export function CredentialsPage() {
                 >
                   <span className="font-mono font-medium">{credential.provider}</span>
                   {credential.configured ? (
-                    <span className="font-mono text-muted-foreground">
-                      尾 4 位 {credential.last4}
-                    </span>
+                    <>
+                      <span className="font-mono text-muted-foreground">
+                        尾 4 位 {credential.last4}
+                      </span>
+                      {credential.verified ? null : (
+                        <span className="text-warning">未验证</span>
+                      )}
+                    </>
                   ) : (
                     // 主密钥换过之后的形态:密文还在,这把主密钥解不开,重新粘一次即可。
                     <span className="text-warning">未配置(密文解不开,重新粘一次 key)</span>

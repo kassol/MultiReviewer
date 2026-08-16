@@ -794,8 +794,13 @@ function handleGetSettings(res: ServerResponse, deps: WebhookServerDeps): void {
 }
 
 /**
- * 改写全局设置,回 GET 的同一形状。模型组合的校验判据与每仓库覆盖是同一套,
- * 报错里的来源标注写「全局模型组合」。
+ * 改写全局设置,回 GET 的同一形状。模型组合的校验判据与每仓库覆盖同一套,报错里的
+ * 来源标注写「全局模型组合」,只有「空不空」这一条两层不同:
+ *
+ * 全局组合允许为空——空库刚部署时它本来就是空的,而这个状态有确定行为(投递照常受理,
+ * 留下一条写明「还没配模型组合」的失败 Run,issue #66)。拒收空组合会把「只想先调批次
+ * 上限」也一起连坐掉:这个端点是整表写入,两项在一次请求里。
+ * 每仓库覆盖仍必须至少一个(issue #69),判据见 `assertReviewerSpecs`。
  */
 async function handlePutSettings(
   req: IncomingMessage,
@@ -811,7 +816,9 @@ async function handlePutSettings(
   if (payload === null) {
     return sendJson(res, 400, { error: "body 要是 JSON" });
   }
-  const parsed = parseReviewerSpecs(payload.reviewers, GLOBAL_REVIEWERS_CONTEXT);
+  const parsed = parseReviewerSpecs(payload.reviewers, GLOBAL_REVIEWERS_CONTEXT, {
+    allowEmpty: true,
+  });
   if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
 
   // 缺省与显式清空都写成 null,读回来取默认值。
@@ -869,8 +876,8 @@ async function handleCatalog(res: ServerResponse, deps: WebhookServerDeps): Prom
 }
 
 /**
- * 凭据列表。只写不回显(ADR 0008):给 provider、是否已配、更新时间、尾 4 位。
- * 解不开的密文按未配置透出,不抛也不做重加密迁移。
+ * 凭据列表。只写不回显(ADR 0008):给 provider、是否已配、是否验证过、更新时间、
+ * 尾 4 位。解不开的密文按未配置透出,不抛也不做重加密迁移。
  */
 function handleListCredentials(res: ServerResponse, deps: WebhookServerDeps): void {
   const masterKey = deps.credentialMasterKey;
@@ -884,6 +891,8 @@ function handleListCredentials(res: ServerResponse, deps: WebhookServerDeps): vo
       return {
         provider: row.provider,
         configured: apiKey !== undefined,
+        // 假即保存时跳过了厂商验证:这一家没有验证端点,key 对不对要等 Review Run 才知道。
+        verified: row.verified,
         updatedAt: row.updatedAt,
         last4: apiKey === undefined ? null : credentialTail(apiKey),
       };
@@ -892,8 +901,11 @@ function handleListCredentials(res: ServerResponse, deps: WebhookServerDeps): vo
 }
 
 /**
- * 写一家厂商的凭据。先真发一次最小请求验证,失败不落库并回报原因——key 打错要在粘贴
- * 的那一刻显形,不能等下一个 PR 进来。同 provider 二次写入是覆盖。
+ * 写一家厂商的凭据。认得的那几家先真发一次最小请求验证,失败不落库并回报原因——key
+ * 打错要在粘贴的那一刻显形,不能等下一个 PR 进来。
+ *
+ * 认不出的 provider 照样保存,只是跳过验证并标 `verified: false`:模型目录列出 Pi
+ * 全部 39 家,拒收会让其余那些家的模型选得出、凭据配不上。同 provider 二次写入是覆盖。
  */
 async function handlePutCredential(
   req: IncomingMessage,
@@ -920,11 +932,17 @@ async function handlePutCredential(
 
   const updatedAt = new Date((deps.now ?? Date.now)()).toISOString();
   withStore(deps.dbPath, (store) =>
-    store.putModelCredential(provider, encryptCredential(masterKey, apiKey), updatedAt),
+    store.putModelCredential(
+      provider,
+      encryptCredential(masterKey, apiKey),
+      updatedAt,
+      check.verified,
+    ),
   );
   return sendJson(res, 200, {
     provider,
     configured: true,
+    verified: check.verified,
     updatedAt,
     last4: credentialTail(apiKey),
   });
@@ -957,13 +975,16 @@ function safeParseJson(value: string): unknown {
  *
  * 只校验形状:凭据缺不缺是 Review Run 开始时的事(issue #65),这里试构建也拦不住,
  * 反而会把「这一家还没配」误报成「覆盖写错了」。
+ *
+ * `allowEmpty` 只有全局设置那一处给,理由见 `handlePutSettings`。
  */
 function parseReviewerSpecs(
   value: unknown,
   context: string,
+  options: { allowEmpty?: boolean } = {},
 ): { ok: true; reviewersJson: string } | { ok: false; error: string } {
   try {
-    const specs = assertReviewerSpecs(value, context);
+    const specs = assertReviewerSpecs(value, context, options);
     return { ok: true, reviewersJson: JSON.stringify(specs) };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
