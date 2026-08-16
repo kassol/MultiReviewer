@@ -115,7 +115,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
    ```
 
    保留 `external` 使已有的其他 webhook 不受影响。**不要图省事写 `private`**——那会放开整个 RFC 1918,任何有仓库管理权的人都能把 webhook 指向内网任意服务。逐个列出目标地址。改完重启 Gitea。
-5. 在仓库上配 webhook(组织级 webhook 与每仓库一把 Key 互斥,不适用),指向 `.../webhook?k=<代次>`,secret 填该仓库的 Key。事件要勾**「合并请求」与「合并请求同步」两项**——Gitea 把同步拆成了独立事件 `pull_request_sync`(`modules/webhook/type.go`),只勾前者时 PR 新增 commit 一条投递都不发,重新审查静默失效且看不出异常。GitHub 没有这回事,它的 `pull_request` 事件本身就含 `synchronize` 动作。**验证连通时临时把「推送」也勾上**——详情页的「测试推送」按钮发的是 push 事件,webhook 没订阅 push 时它一个请求都不发出去,看起来像链路坏了。响应 200 之后再把「推送」去掉,留着会让每次 push 都投递一次。
+5. webhook 不手工配:面板注册仓库时自动创建,事件订阅、secret、`?k=` 代次都由服务写好(组织级 webhook 与每仓库一把 Key 互斥,不适用)。背景知识留一条:Gitea 把「同步」拆成独立事件 `pull_request_sync`(`modules/webhook/type.go`),服务订阅时两个都带上了;在 Gitea 界面上手改 hook 的事件勾选会破坏这一点,面板的核对功能会把这类漂移列出来,点「轮转推平」恢复。
 
 > 换实例或升级 Gitea 后想重新确认 scope,跑一次 `MULTIREVIEWER_GITEA_LIVE_PR=...` 的验证即可,它覆盖本实现用到的全部端点。**这个验证要指向一个此前没被本工具评论过的 PR**:同一个 PR 重跑时,上一轮留下的带锚点评论会让本轮 Finding 匹配成功而被折叠,行级评论数因此为零,看起来像失败(跨轮次匹配见 issue #7)。
 
