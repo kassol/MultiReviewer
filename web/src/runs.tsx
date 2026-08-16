@@ -1,6 +1,8 @@
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
+import { Badge } from "@/components/ui/badge";
+
 import { api, errorText, fetchJson } from "./api.ts";
 import { denominator, type Cell } from "./stats.tsx";
 
@@ -34,26 +36,34 @@ export async function rerunRequest(run: {
   return `已触发 ${run.owner}/${run.repo} #${run.pullNumber} 的新一轮 Review Run`;
 }
 
-/** 时间流卡片上的处置进度。与处置率同一口径:只算行级承载的合并组。 */
+/**
+ * 时间流卡片上的处置进度。与处置率同一口径:只算行级承载的合并组。
+ *
+ * 「状态到颜色」的映射留在这里:它同时被仓库页与评审记录页用,拆掉这层包装会把
+ * 这条规则散到两个调用点。失败与待处置分成两色——一个去重跑,一个去处置。
+ */
 export function RunPill({ run }: { run: RunItem }) {
   if (run.failed) {
     return (
-      <span className="pill warn">
-        <i className="dot" />
+      <Badge variant="destructive">
+        <span className="size-1.5 rounded-full bg-current" />
         失败
-      </span>
+      </Badge>
     );
   }
   // total 只计行级承载的合并组:纯正文 Finding 的 Run 也落在这一档——正文没有
   // resolve 载体,本来就无从处置。
   if (run.total === 0) {
-    return <span className="pill">无可处置项</span>;
+    return <Badge variant="secondary">无可处置项</Badge>;
   }
+  const done = run.resolved === run.total;
   return (
-    <span className={`pill ${run.resolved === run.total ? "ok" : "warn"}`}>
-      <i className="dot" />
+    <Badge
+      className={done ? "bg-success/12 text-success" : "bg-warning/12 text-warning"}
+    >
+      <span className="size-1.5 rounded-full bg-current" />
       {run.resolved}/{run.total} 已处置
-    </span>
+    </Badge>
   );
 }
 
