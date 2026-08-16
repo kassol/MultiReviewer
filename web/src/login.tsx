@@ -1,6 +1,9 @@
 import { useRouter } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+
 import { api } from "./api.ts";
 
 /** 登录一屏:只有一个 token 输入框。错误原样展示服务端的说法(token 不对 / 锁定中)。 */
@@ -33,22 +36,22 @@ export function LoginPage() {
   }
 
   return (
-    <main className="login-wrap">
-      <h1>MultiReviewer</h1>
-      <form onSubmit={submit} className="login-form">
-        <input
+    <main className="mx-auto mt-[22vh] flex w-[22rem] max-w-[calc(100vw-2rem)] flex-col gap-3.5">
+      <h1 className="text-[19px] font-semibold tracking-tight">MultiReviewer</h1>
+      <form onSubmit={submit} className="flex gap-2">
+        <Input
           type="password"
           value={token}
           onChange={(event) => setToken(event.target.value)}
           placeholder="admin token"
           autoFocus
         />
-        <button type="submit" className="btn primary" disabled={busy || token === ""}>
+        <Button type="submit" disabled={busy || token === ""}>
           登录
-        </button>
+        </Button>
       </form>
       {error === null ? null : (
-        <p role="alert" className="error">
+        <p role="alert" className="text-destructive">
           {error}
         </p>
       )}
