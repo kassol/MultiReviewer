@@ -4,7 +4,7 @@
  */
 import { readFileSync } from "node:fs";
 
-import { buildReviewers, parseGlobalReviewers } from "./config.ts";
+import { buildReviewers } from "./config.ts";
 import {
   assertSupportedVersion,
   createGiteaForge,
@@ -12,7 +12,6 @@ import {
 } from "./forge/gitea.ts";
 import { createGitHubForge, type GitHubAuth } from "./forge/github.ts";
 import { CREDENTIAL_MASTER_KEY_ENV } from "./panel/credential-crypto.ts";
-import { openStore } from "./review/store.ts";
 import { createWebhookServer } from "./webhook/server.ts";
 
 const DEFAULT_PORT = 3000;
@@ -111,14 +110,6 @@ if (gitea === undefined && github === undefined) {
 // 版本检查在启动时做一次。实例版本不够时 resolve / unresolve 会 404,Disposition 整
 // 条链路都是哑的,而这要等到第一次有人处置 Finding 才会显形——宁可起不来。
 if (gitea !== undefined) await assertSupportedVersion(gitea);
-
-// 启动时开一次库跑迁移,顺带把历史行的裸 model id 回填成模型标识(issue #73)。
-// 回填要认得 provider,模型组合也在这个库里,先读出来再回填。请求路径上的开库不带
-// 模型组合,回填只在这里发生一次。
-const bootstrap = openStore(dbPath);
-const globalReviewers = parseGlobalReviewers(bootstrap.getGlobalSettings().reviewersJson);
-bootstrap.close();
-openStore(dbPath, globalReviewers).close();
 
 const server = createWebhookServer({
   forges: {

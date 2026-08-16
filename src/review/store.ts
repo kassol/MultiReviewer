@@ -107,10 +107,13 @@ CREATE TABLE IF NOT EXISTS repo_key (
 -- 模型凭据。按 provider 一把,同一家下的多个 model 共用(ADR 0008)。密文由面板加密后
 -- 落库,主密钥在环境变量里,库里没有还原它的材料——与上面明文存的 repo_key 是两类
 -- 东西:那一条是 HMAC 验签逼出来的,这一条没有这个约束。
+-- verified 记的是「保存时有没有真发过厂商验证请求」:认得的那几家发过并通过,
+-- 其余的跳过验证照样落库,面板据此标出「未验证」。
 CREATE TABLE IF NOT EXISTS model_credential (
   provider TEXT PRIMARY KEY,
   api_key_encrypted TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  verified INTEGER NOT NULL DEFAULT 1
 );
 
 -- 全局设置,一项一行。reviewers 是全局模型组合,与 repo.reviewers 同构(ReviewerSpec
@@ -135,70 +138,24 @@ const ADD_COLUMNS = [
   "ALTER TABLE repo ADD COLUMN reviewers TEXT",
   "ALTER TABLE review_run ADD COLUMN pr_state TEXT",
   "ALTER TABLE finding ADD COLUMN placement TEXT NOT NULL DEFAULT 'inline'",
+  // 升级前只有通过了厂商验证的凭据才落得进来,旧行默认 1 是照实记。
+  "ALTER TABLE model_credential ADD COLUMN verified INTEGER NOT NULL DEFAULT 1",
 ];
+
+/*
+ * 历史的裸 model id 不回填(issue #73 的取舍)。升级前 `finding.model` 与
+ * `reviewer_outcome.model` 存的是裸 model id,新形态是 `provider:model`,而 provider
+ * 从库里恢复不出来——两张表都没记过它,当前的模型组合也不是历史的证据:同一个 model id
+ * 当初走 deepseek 直连、现在只配了 openrouter,按当前组合反查就会把历史 Finding 永久
+ * 标成 openrouter,而这一步改完再也回不去。
+ *
+ * 已知代价:同一个模型在迁移前后裂成两行,统计矩阵里旧行挂裸 id、新行挂模型标识。
+ * 错归厂商是不可逆的错数据,裂成两行只是看起来多一条,选后者。
+ */
 
 /** `global_setting` 的两个键。 */
 const GLOBAL_REVIEWERS_KEY = "reviewers";
 const GLOBAL_MAX_CHANGED_LINES_KEY = "max_changed_lines_per_batch";
-
-/** 回填要用的最小形状。`ReviewerSpec` 满足它,store 层不必依赖配置模块。 */
-export type ModelSpec = { provider: string; model: string };
-
-/**
- * 模型标识的回填(issue #73)。历史行的 model 列存的是裸 model id,新形态是
- * `provider:model`,而 provider 从库里恢复不出来——两张表都没记过它。
- *
- * 判据因此是「按裸 model id 在当前模型组合里反查得到唯一 provider」:反查得到就改写,
- * 查不到或同一个 id 在多家 provider 下都配着就不动。留下的旧形态行在统计里各成一条,
- * 不会被错误归并到别的模型名下。
- *
- * 幂等靠精确匹配:改写后的值带 provider 段,不再等于任何裸 id,重跑无害;已是新形态的
- * 值同理不被二次加工。不按「值里没有冒号」判断——OpenRouter 的 model id 本身带 `:free`
- * 这类后缀,那样会把它们误判成已迁移。
- */
-function backfillModelIdentities(db: DatabaseSync, specs: readonly ModelSpec[]): void {
-  const identities = new Map<string, string | undefined>();
-  for (const spec of [...specs, ...repoOverrideSpecs(db)]) {
-    // 同一个裸 id 落在两家 provider 下时记 undefined:无从判断历史行属于哪一家。
-    const identity = `${spec.provider}:${spec.model}`;
-    const ambiguous = identities.has(spec.model) && identities.get(spec.model) !== identity;
-    identities.set(spec.model, ambiguous ? undefined : identity);
-  }
-
-  const updates = [
-    db.prepare("UPDATE finding SET model = ? WHERE model = ?"),
-    db.prepare("UPDATE reviewer_outcome SET model = ? WHERE model = ?"),
-  ];
-  for (const [bare, identity] of identities) {
-    if (identity === undefined) continue;
-    for (const update of updates) update.run(identity, bare);
-  }
-}
-
-/**
- * 每仓库模型覆盖里出现过的模型。它们不一定在全局模型组合里,而它们提出的历史 Finding
- * 一样要回填。坏 JSON(直接写库的遗留)跳过——一行坏数据不该让迁移掀掉整个进程。
- */
-function repoOverrideSpecs(db: DatabaseSync): ModelSpec[] {
-  const specs: ModelSpec[] = [];
-  const rows = db.prepare("SELECT reviewers FROM repo WHERE reviewers IS NOT NULL").all();
-  for (const row of rows) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(String(row["reviewers"]));
-    } catch {
-      continue;
-    }
-    if (!Array.isArray(parsed)) continue;
-    for (const entry of parsed) {
-      const { provider, model } = (entry ?? {}) as Partial<ModelSpec>;
-      if (typeof provider === "string" && typeof model === "string") {
-        specs.push({ provider, model });
-      }
-    }
-  }
-  return specs;
-}
 
 /**
  * 等锁的上限。webhook 服务里 webhook 层与后台 Review Run 各持一个句柄写同一个文件,
@@ -301,6 +258,8 @@ export type ModelCredentialRecord = {
   provider: string;
   apiKeyEncrypted: string;
   updatedAt: string;
+  /** 保存时是否真发过厂商验证请求并通过。认不出的 provider 落库时为假。 */
+  verified: boolean;
 };
 
 /**
@@ -389,7 +348,12 @@ export type Store = {
   /** 改写全局设置,两项一起写。null 即清掉该项,读回来重新取默认。 */
   putGlobalSettings(settings: GlobalSettings): void;
   /** 写一家厂商的凭据密文。同 provider 二次写入是覆盖,不是新增(ADR 0008)。 */
-  putModelCredential(provider: string, apiKeyEncrypted: string, updatedAt: string): void;
+  putModelCredential(
+    provider: string,
+    apiKeyEncrypted: string,
+    updatedAt: string,
+    verified: boolean,
+  ): void;
   /** 全部厂商凭据,按 provider 排序。密文原样给出,解密由调用方做。 */
   listModelCredentials(): ModelCredentialRecord[];
   /** 摘掉一家厂商的凭据。不存在时静默通过——目标状态已达成。 */
@@ -476,11 +440,8 @@ export function sumUsage(
   return total;
 }
 
-/**
- * 开库并跑迁移。`modelSpecs` 给出时顺带回填模型标识——回填要认得 provider,而它只在
- * 模型组合里,库里没有。进程启动时给一次即可,请求路径上的短开短关不必带。
- */
-export function openStore(dbPath: string, modelSpecs?: readonly ModelSpec[]): Store {
+/** 开库并跑迁移。 */
+export function openStore(dbPath: string): Store {
   const db = new DatabaseSync(dbPath, { timeout: BUSY_TIMEOUT_MS });
   db.exec(SCHEMA);
   for (const statement of ADD_COLUMNS) {
@@ -491,7 +452,6 @@ export function openStore(dbPath: string, modelSpecs?: readonly ModelSpec[]): St
       if (!/duplicate column name/i.test(String(error))) throw error;
     }
   }
-  if (modelSpecs !== undefined) backfillModelIdentities(db, modelSpecs);
 
   return {
     registerRepo(record) {
@@ -630,27 +590,30 @@ export function openStore(dbPath: string, modelSpecs?: readonly ModelSpec[]): St
       );
     },
 
-    putModelCredential(provider, apiKeyEncrypted, updatedAt) {
+    putModelCredential(provider, apiKeyEncrypted, updatedAt, verified) {
       // 覆盖语义直接落在主键上:同一家写第二次替掉第一次,库里永远只有一把。
       db.prepare(
-        `INSERT INTO model_credential (provider, api_key_encrypted, updated_at)
-         VALUES (?, ?, ?)
+        `INSERT INTO model_credential (provider, api_key_encrypted, updated_at, verified)
+         VALUES (?, ?, ?, ?)
          ON CONFLICT(provider) DO UPDATE SET
            api_key_encrypted = excluded.api_key_encrypted,
-           updated_at = excluded.updated_at`,
-      ).run(provider, apiKeyEncrypted, updatedAt);
+           updated_at = excluded.updated_at,
+           verified = excluded.verified`,
+      ).run(provider, apiKeyEncrypted, updatedAt, verified ? 1 : 0);
     },
 
     listModelCredentials() {
       const rows = db
         .prepare(
-          "SELECT provider, api_key_encrypted, updated_at FROM model_credential ORDER BY provider",
+          `SELECT provider, api_key_encrypted, updated_at, verified
+           FROM model_credential ORDER BY provider`,
         )
         .all();
       return rows.map((row) => ({
         provider: String(row["provider"]),
         apiKeyEncrypted: String(row["api_key_encrypted"]),
         updatedAt: String(row["updated_at"]),
+        verified: Number(row["verified"]) === 1,
       }));
     },
 

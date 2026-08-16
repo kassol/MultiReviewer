@@ -229,10 +229,7 @@ for (const c of CASES) {
   });
 }
 
-/** 回填用的模型组合。`old-model` 是历史行里的裸 model id。 */
-const SPECS = [{ provider: "acme", model: "old-model" }];
-
-/** 读两张表里的 model 列,回填的断言全落在它上面。 */
+/** 读两张表里的 model 列。 */
 function models(store: Store): { finding: string[]; outcome: string[] } {
   const cells = store.dispositionStats(...WIDE);
   return {
@@ -271,65 +268,23 @@ function seedWithModel(store: Store, model: string, at: string): void {
   });
 }
 
-test("迁移:历史的裸 model id 回填成模型标识,两张表都改", () => {
+test("迁移不改写历史行:裸 model id 原样留着,与新标识各成一条", () => {
   const db = makeDbPath();
   try {
-    const seed = openStore(db.path);
-    seedWithModel(seed, "old-model", T1);
-    seed.close();
-
-    const migrated = openStore(db.path, SPECS);
-    assert.deepEqual(models(migrated), {
-      finding: ["acme:old-model"],
-      outcome: ["acme:old-model"],
-    });
-    migrated.close();
-
-    // 同一个库再跑一次迁移,值不变。
-    const again = openStore(db.path, SPECS);
-    assert.deepEqual(models(again), {
-      finding: ["acme:old-model"],
-      outcome: ["acme:old-model"],
-    });
-    again.close();
-  } finally {
-    db.cleanup();
-  }
-});
-
-test("迁移:已是新形态的值不被二次加工,配置里查不到的模型不动", () => {
-  const db = makeDbPath();
-  try {
-    const seed = openStore(db.path);
-    seedWithModel(seed, "acme:old-model", T1);
-    seedWithModel(seed, "no-such-model", T2);
-    seed.close();
-
-    const migrated = openStore(db.path, SPECS);
-    assert.deepEqual(models(migrated).finding.sort(), ["acme:old-model", "no-such-model"]);
-    migrated.close();
-  } finally {
-    db.cleanup();
-  }
-});
-
-test("迁移:回填后同一个模型在处置率统计里不裂成两条", () => {
-  const db = makeDbPath();
-  try {
-    // 一轮在升级前(裸 id),一轮在升级后(模型标识),指纹不同即两处 Finding。
+    // 升级前的一轮写裸 id,升级后的一轮写模型标识。provider 从库里恢复不出来,
+    // 按当前模型组合反查会把历史错归到别家去,所以一律不回填(issue #73 的取舍)。
     const seed = openStore(db.path);
     seedWithModel(seed, "old-model", T1);
     seedWithModel(seed, "acme:old-model", T2);
-    assert.equal(seed.dispositionStats(...WIDE).length, 2, "回填前是裂开的两条");
     seed.close();
 
-    const migrated = openStore(db.path, SPECS);
-    const cells = migrated.dispositionStats(...WIDE);
-    assert.deepEqual(
-      cells.map((cell) => [cell.model, cell.unknownOpen]),
-      [["acme:old-model", 2]],
-    );
-    migrated.close();
+    const reopened = openStore(db.path);
+    assert.deepEqual(models(reopened), {
+      finding: ["acme:old-model", "old-model"],
+      outcome: ["acme:old-model", "old-model"],
+    });
+    assert.equal(reopened.dispositionStats(...WIDE).length, 2, "两条各自独立");
+    reopened.close();
   } finally {
     db.cleanup();
   }
