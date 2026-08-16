@@ -10,6 +10,7 @@ import {
   type GiteaForgeOptions,
 } from "./forge/gitea.ts";
 import { createGitHubForge, type GitHubAuth } from "./forge/github.ts";
+import { CREDENTIAL_MASTER_KEY_ENV } from "./panel/credential-crypto.ts";
 import { openStore } from "./review/store.ts";
 import { createWebhookServer } from "./webhook/server.ts";
 
@@ -127,6 +128,11 @@ const server = createWebhookServer({
   panelPrefix: prefix,
   baseUrl,
   panelDist: process.env["MULTIREVIEWER_PANEL_DIST"] ?? "web/dist",
+  // 模型凭据的主密钥(ADR 0008)。没配不拦启动:凭据页会说明差什么,而服务起不来
+  // 的话人连面板都进不去。
+  ...(process.env[CREDENTIAL_MASTER_KEY_ENV] === undefined
+    ? {}
+    : { credentialMasterKey: process.env[CREDENTIAL_MASTER_KEY_ENV] }),
   ...(gitea === undefined ? {} : { gitea }),
   // 每仓库的模型覆盖按同一套构建逻辑起 Reviewer,凭据同样只经环境变量进入。
   buildReviewers: (specs) => buildReviewers({ reviewers: specs }),

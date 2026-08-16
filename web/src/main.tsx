@@ -12,6 +12,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { api, fetchJson } from "./api.ts";
+import { CredentialsPage } from "./credentials.tsx";
 import { injected } from "./injected.ts";
 import { LoginPage } from "./login.tsx";
 import { ReposPage } from "./repos.tsx";
@@ -45,10 +46,11 @@ const NAV = [
   { to: "/repos", label: "仓库" },
   { to: "/runs", label: "评审记录" },
   { to: "/stats", label: "处置率" },
+  { to: "/credentials", label: "模型凭据" },
 ] as const;
 
 /**
- * 壳:左侧栏管导航,顶部那条 38px 的信息条管汇总数字。四屏共用同一套骨架,页面之间
+ * 壳:左侧栏管导航,顶部那条 38px 的信息条管汇总数字。各屏共用同一套骨架,页面之间
  * 切换不必重新找东西在哪。
  */
 function Shell() {
@@ -153,9 +155,15 @@ const statsRoute = createRoute({
   component: StatsPage,
 });
 
+const credentialsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/credentials",
+  component: CredentialsPage,
+});
+
 const routeTree = rootRoute.addChildren([
   loginRoute,
-  shellRoute.addChildren([indexRoute, reposRoute, runsRoute, statsRoute]),
+  shellRoute.addChildren([indexRoute, reposRoute, runsRoute, statsRoute, credentialsRoute]),
 ]);
 
 // 前缀是运行时值,构建产物与它无关:basepath 在这里从注入读入。

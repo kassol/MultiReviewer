@@ -44,9 +44,22 @@ export type PanelHarness = {
   settledAtLeast(count: number): Promise<void>;
 };
 
+/** 凭据测试用的主密钥。缺主密钥那一档传 `credentialMasterKey: undefined` 起 harness。 */
+export const PANEL_CREDENTIAL_MASTER_KEY = "panel-harness-master-key";
+
+export type PanelHarnessOptions = {
+  /** 模型凭据的主密钥。省略取 `PANEL_CREDENTIAL_MASTER_KEY`,显式给 undefined 即不配。 */
+  credentialMasterKey?: string | undefined;
+};
+
 export async function startPanelHarness(
   cleanups: (() => void)[],
+  options: PanelHarnessOptions = {},
 ): Promise<PanelHarness> {
+  const credentialMasterKey =
+    "credentialMasterKey" in options
+      ? options.credentialMasterKey
+      : PANEL_CREDENTIAL_MASTER_KEY;
   const repo = makeRepo({
     base: { "src/answer.ts": "export const answer = 1;\n" },
     head: { "src/answer.ts": "export const answer = 2;\n" },
@@ -97,6 +110,7 @@ export async function startPanelHarness(
     baseUrl: PANEL_BASE_URL,
     panelDist: `${cache.dir}/no-dist`,
     gitea: { baseUrl: gitea.url, token: "bot-pat" },
+    ...(credentialMasterKey === undefined ? {} : { credentialMasterKey }),
     onDelivery: () => {},
     onRunSettled: (event, error) => {
       settled.push({ event, ...(error === undefined ? {} : { error }) });

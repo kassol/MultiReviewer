@@ -104,6 +104,15 @@ CREATE TABLE IF NOT EXISTS repo_key (
   key TEXT NOT NULL,
   PRIMARY KEY (repo_id, generation)
 );
+
+-- 模型凭据。按 provider 一把,同一家下的多个 model 共用(ADR 0008)。密文由面板加密后
+-- 落库,主密钥在环境变量里,库里没有还原它的材料——与上面明文存的 repo_key 是两类
+-- 东西:那一条是 HMAC 验签逼出来的,这一条没有这个约束。
+CREATE TABLE IF NOT EXISTS model_credential (
+  provider TEXT PRIMARY KEY,
+  api_key_encrypted TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;
 
 /**
@@ -276,6 +285,13 @@ export type RepoKey = {
   key: string;
 };
 
+/** 一家厂商的模型凭据。`apiKeyEncrypted` 是密文,还原要主密钥(ADR 0008)。 */
+export type ModelCredentialRecord = {
+  provider: string;
+  apiKeyEncrypted: string;
+  updatedAt: string;
+};
+
 /** 注册表里的一个仓库。`reviewersJson` 是模型覆盖的 JSON,null 即跟随全局。 */
 export type RepoRecord = {
   repoId: number;
@@ -347,6 +363,12 @@ export type Store = {
   removeRepo(repoId: number): void;
   /** 全部已注册仓库,按最近活动排序,没跑过的按注册时间排在后面。 */
   listRepos(): RepoSummary[];
+  /** 写一家厂商的凭据密文。同 provider 二次写入是覆盖,不是新增(ADR 0008)。 */
+  putModelCredential(provider: string, apiKeyEncrypted: string, updatedAt: string): void;
+  /** 全部厂商凭据,按 provider 排序。密文原样给出,解密由调用方做。 */
+  listModelCredentials(): ModelCredentialRecord[];
+  /** 摘掉一家厂商的凭据。不存在时静默通过——目标状态已达成。 */
+  removeModelCredential(provider: string): void;
   startRun(meta: RunMeta): number;
   finishRun(runId: number, result: RunResult): void;
   /**
@@ -551,6 +573,34 @@ export function openStore(dbPath: string, modelSpecs?: readonly ModelSpec[]): St
         findingCount: Number(row["finding_count"]),
         lastActivity: row["last_activity"] === null ? null : String(row["last_activity"]),
       }));
+    },
+
+    putModelCredential(provider, apiKeyEncrypted, updatedAt) {
+      // 覆盖语义直接落在主键上:同一家写第二次替掉第一次,库里永远只有一把。
+      db.prepare(
+        `INSERT INTO model_credential (provider, api_key_encrypted, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(provider) DO UPDATE SET
+           api_key_encrypted = excluded.api_key_encrypted,
+           updated_at = excluded.updated_at`,
+      ).run(provider, apiKeyEncrypted, updatedAt);
+    },
+
+    listModelCredentials() {
+      const rows = db
+        .prepare(
+          "SELECT provider, api_key_encrypted, updated_at FROM model_credential ORDER BY provider",
+        )
+        .all();
+      return rows.map((row) => ({
+        provider: String(row["provider"]),
+        apiKeyEncrypted: String(row["api_key_encrypted"]),
+        updatedAt: String(row["updated_at"]),
+      }));
+    },
+
+    removeModelCredential(provider) {
+      db.prepare("DELETE FROM model_credential WHERE provider = ?").run(provider);
     },
 
     startRun(meta) {

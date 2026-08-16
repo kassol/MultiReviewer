@@ -26,6 +26,13 @@ import {
 } from "../forge/gitea-hooks.ts";
 import type { GiteaForgeOptions } from "../forge/gitea.ts";
 import { createPanelAuth, SESSION_TTL_MS, type PanelAuth } from "../panel/auth.ts";
+import { checkCredential } from "../panel/credential-check.ts";
+import {
+  credentialTail,
+  CREDENTIAL_MASTER_KEY_ENV,
+  decryptCredential,
+  encryptCredential,
+} from "../panel/credential-crypto.ts";
 import type { Reviewer } from "../review/finding.ts";
 import { backfillUpdates, priorDispositions, runReview } from "../review/run.ts";
 import { openStore, type RepoKey, type Store } from "../review/store.ts";
@@ -95,6 +102,11 @@ export type WebhookServerDeps = {
    * 注册响应里显形,而不是等到投递时。
    */
   buildReviewers: (specs: ReviewerSpec[]) => readonly Reviewer[];
+  /**
+   * 模型凭据的加密主密钥(ADR 0008),取自环境变量。缺失时凭据端点读写都拒绝并说明
+   * 原因,服务其余部分照常——起不来就进不了面板,进不了面板就配不了凭据。
+   */
+  credentialMasterKey?: string;
   /** 时钟,默认 `Date.now`。只该测试注入,用来驱动登录退避的时间窗。 */
   now?: () => number;
 };
@@ -690,7 +702,101 @@ async function handlePanelApi(
     return handleHookCheck(res, deps, hookManager, Number(hooksRoute[1]));
   }
 
+  if (sub === "/credentials" && req.method === "GET") {
+    return handleListCredentials(res, deps);
+  }
+  const credentialRoute = /^\/credentials\/([A-Za-z0-9_-]+)$/.exec(sub);
+  if (credentialRoute !== null && req.method === "PUT") {
+    return handlePutCredential(req, res, deps, credentialRoute[1]!);
+  }
+  if (credentialRoute !== null && req.method === "DELETE") {
+    return handleRemoveCredential(res, deps, credentialRoute[1]!);
+  }
+
   return sendJson(res, 404, { error: "没有这个端点" });
+}
+
+/**
+ * 缺主密钥时凭据端点整体不可用:读写都 503 并说明差什么(ADR 0008)。服务本身照常
+ * 启动——起不来就进不了面板,进不了面板就配不了凭据。
+ */
+const MASTER_KEY_MISSING =
+  `没有设置环境变量 ${CREDENTIAL_MASTER_KEY_ENV},凭据加密不了也解不开。` +
+  "在 .env 里补上它并重启服务。";
+
+/**
+ * 凭据列表。只写不回显(ADR 0008):给 provider、是否已配、更新时间、尾 4 位。
+ * 解不开的密文按未配置透出,不抛也不做重加密迁移。
+ */
+function handleListCredentials(res: ServerResponse, deps: WebhookServerDeps): void {
+  const masterKey = deps.credentialMasterKey;
+  if (masterKey === undefined || masterKey === "") {
+    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
+  }
+  const rows = withStore(deps.dbPath, (store) => store.listModelCredentials());
+  return sendJson(res, 200, {
+    credentials: rows.map((row) => {
+      const apiKey = decryptCredential(masterKey, row.apiKeyEncrypted);
+      return {
+        provider: row.provider,
+        configured: apiKey !== undefined,
+        updatedAt: row.updatedAt,
+        last4: apiKey === undefined ? null : credentialTail(apiKey),
+      };
+    }),
+  });
+}
+
+/**
+ * 写一家厂商的凭据。先真发一次最小请求验证,失败不落库并回报原因——key 打错要在粘贴
+ * 的那一刻显形,不能等下一个 PR 进来。同 provider 二次写入是覆盖。
+ */
+async function handlePutCredential(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  provider: string,
+): Promise<void> {
+  const masterKey = deps.credentialMasterKey;
+  if (masterKey === undefined || masterKey === "") {
+    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
+  }
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body) as { apiKey?: unknown } | null;
+  if (payload === null || typeof payload.apiKey !== "string" || payload.apiKey === "") {
+    return sendJson(res, 400, { error: 'body 要是 {"apiKey": "..."} 形状的 JSON' });
+  }
+  const apiKey = payload.apiKey;
+
+  const check = await checkCredential(provider, apiKey);
+  if (!check.ok) {
+    return sendJson(res, 400, { error: `凭据没通过验证,没有保存:${check.reason}` });
+  }
+
+  const updatedAt = new Date((deps.now ?? Date.now)()).toISOString();
+  withStore(deps.dbPath, (store) =>
+    store.putModelCredential(provider, encryptCredential(masterKey, apiKey), updatedAt),
+  );
+  return sendJson(res, 200, {
+    provider,
+    configured: true,
+    updatedAt,
+    last4: credentialTail(apiKey),
+  });
+}
+
+/** 摘掉一家厂商的凭据。不存在也回 204——目标状态已达成。 */
+function handleRemoveCredential(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  provider: string,
+): void {
+  if (deps.credentialMasterKey === undefined || deps.credentialMasterKey === "") {
+    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
+  }
+  withStore(deps.dbPath, (store) => store.removeModelCredential(provider));
+  return send(res, 204);
 }
 
 function safeParseJson(value: string): unknown {

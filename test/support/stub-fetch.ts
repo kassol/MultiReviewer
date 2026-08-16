@@ -24,6 +24,13 @@ export function stubFetch(routes: Record<string, Route>): {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     const auth = new Headers(init?.headers).get("authorization");
+
+    // 指向本机的请求直通,也不计入 calls:测试自己起的真实服务(假 Gitea、面板
+    // harness 的 HTTP 缝)也走 fetch,打桩只该拦外部厂商。
+    if (url.hostname === "127.0.0.1" || url.hostname === "localhost") {
+      return original(input as Parameters<typeof original>[0], init);
+    }
+
     calls.push({
       method,
       url: url.toString(),

@@ -13,6 +13,8 @@
 - `src/main.tsx` — 路由与壳:`/login` 一屏登录,`shell` 下挂三页(`/repos` / `/runs` / `/stats`),Router `basepath` 取注入前缀。壳是左侧栏导航加一条 38px 的信息条,四屏共用;信息条里的总处置率与逐模型处置率与处置率页同源(同一个默认窗口的 `/stats`),前端只做求和。窄视口下侧栏改成顶部横排。
 - `src/login.tsx` — 登录页,单 token 输入框。
 - `src/repos.tsx` — 仓库页,左列表右详情。注册 / 改组合 / 移除确认三处都是 shadcn Dialog——焦点锁、Esc、`role="dialog"` 由组件给,不自己写。**不用 `window.confirm`**:原生对话框阻塞渲染线程,浏览器自动化与 dogfooding 都会被卡死。核对差异卡片的「轮转推平」调轮转端点。key 面板显示「代次」而非建立时间——代次是 ADR 0007 之后 key 真正有信息量的属性。
+- `src/credentials.tsx` — 凭据页(issue #64)。每个 provider 一把 key,粘进来即验证并保存;列表只显示 provider、是否已配、更新时间与尾 4 位,明文从不回到前端。主密钥没设时端点回 503,整页切成一张「差什么」的卡片而不是报错——那一档服务照常起,只有这一页做不了事。
+
 - `src/components/ui/` — shadcn 生成的组件(Dialog / Button / Input / Label / Table / Badge / Card),vendored 源码,改它就是改本项目的组件。已按视觉定稿把 Card 与 Dialog 的 ring 换成边框、圆角压到 `--radius`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
 - `src/lib/utils.ts` — shadcn 的 `cn()`,clsx 加 tailwind-merge。
 - `src/styles.css` — 只有设计令牌,没有组件类。
@@ -48,3 +50,4 @@
 - 2026-08-16: 落地 issue #37。评审记录页按原型变体 C 落地(`src/runs.tsx`):顶部统计带(近 30 天总处置率 + 逐模型,与 /stats 同源,前端只做求和)、按天分组的时间流、IntersectionObserver 滚动加载更早一页;卡片上「重跑」逐条可点。仓库页补「评审记录」区块(#34 递延的 runs 表):最近 8 轮加「输 PR 号重跑」表单,两个入口共用 `rerunRequest`。`stats.tsx` 导出 `Cell` 与 `denominator` 供统计带复用。评审复核收口:分天与时分按浏览器本地时区(UTC 日在东八区会把 16:00 后的 run 归前一天);`errorText` / `fetchJson` 收进 `api.ts` 消掉三份重复;卡片在无行级合并组时显示「无可处置项」而非「无 Finding」——纯正文 Finding 的 Run 有 Finding 但无处可 resolve;仓库过滤参数过 encodeURIComponent。
 - 2026-08-16: 落地 issue #55 的换底座那一趟(#57–#63)。前端换到 Tailwind v4 + shadcn(Radix 底座),按「控制台」形态重做视觉,只做亮色一套。`styles.css` 从 191 行组件样式缩成一份 `@theme` 令牌,四屏样式全部走 utility;壳换成左侧栏加 38px 信息条,评审记录页原来的统计带并进信息条;三处手写模态换 shadcn Dialog(焦点锁、Esc、`role="dialog"` 白送);`RunPill` 内部换 Badge、接口一字不改,失败与待处置分成两色。暗色媒体查询与那个从没有代码写入的 `data-theme` 守卫一并删掉,`dark:` 变体经 `@custom-variant` 关掉。行为一律不变:动手前先照现状写了一份四屏手动验收基线(41 条,贴在 issue #55),迁完逐条重跑。代价是前端产物体积从 gzip 105 kB 涨到约 130 kB,已知并接受。
 - 2026-08-16: 跟进 issue #73。仓库页的模型覆盖列表改显示模型标识 `provider:model`(`src/repos.tsx`),与「跟随全局」那一侧的取值形态一致——此前覆盖那一侧显示裸 model id,同一个仓库切换覆盖前后看起来像换了模型。
+- 2026-08-16: 落地 issue #64 的前端那一半。新增凭据页 `src/credentials.tsx` 并挂进壳的导航(第四项「模型凭据」)。表单只有 provider 与 key 两个框,key 用 `type="password"`;保存失败(厂商验证不过)按错误样式呈现,不混进普通提示。解不开密文的那一行显示「未配置(密文解不开,重新粘一次 key)」,与从未配过的区别只在这句话上——对人要做的动作是同一个。
