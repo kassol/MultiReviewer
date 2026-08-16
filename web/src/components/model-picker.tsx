@@ -96,11 +96,16 @@ export function ModelPicker({ providers, value, onChange, disabled }: ModelPicke
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
 
-  const groups = useMemo((): Group[] => {
+  const { groups, hiddenProviders } = useMemo((): {
+    groups: Group[];
+    hiddenProviders: number;
+  } => {
     const needles = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const perProvider = needles.length === 0 ? PREVIEW_PER_PROVIDER : MATCHES_PER_PROVIDER;
     const result: Group[] = [];
     let shown = 0;
+    // 总量到顶之后剩下的那些家一家都列不出来,数出来告诉人,别让它们无声消失。
+    let hiddenProviders = 0;
     for (const provider of providers) {
       const matched =
         needles.length === 0
@@ -108,12 +113,15 @@ export function ModelPicker({ providers, value, onChange, disabled }: ModelPicke
           : provider.models.filter((model) => hit(needles, provider, model));
       if (matched.length === 0) continue;
       const room = Math.max(0, Math.min(perProvider, MATCHES_TOTAL - shown));
-      if (room === 0) break;
+      if (room === 0) {
+        hiddenProviders += 1;
+        continue;
+      }
       const models = matched.slice(0, room);
       shown += models.length;
       result.push({ provider, models, hidden: matched.length - models.length });
     }
-    return result;
+    return { groups: result, hiddenProviders };
   }, [providers, query]);
 
   const toggle = (identity: string): void => {
@@ -197,6 +205,11 @@ export function ModelPicker({ providers, value, onChange, disabled }: ModelPicke
                   ) : null}
                 </CommandGroup>
               ))}
+              {hiddenProviders > 0 ? (
+                <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
+                  还有 {hiddenProviders} 家没列出,继续输入以缩小范围。
+                </p>
+              ) : null}
             </CommandList>
           </Command>
         </PopoverContent>
