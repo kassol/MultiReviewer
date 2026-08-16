@@ -129,15 +129,18 @@ export function ReposPage() {
         )}
       </main>
 
-      <RegisterModal
-        open={registering}
-        onClose={() => setRegistering(false)}
-        onDone={(repoId) => {
-          setRegistering(false);
-          setSelectedId(repoId);
-          void queryClient.invalidateQueries({ queryKey: ["repos"] });
-        }}
-      />
+      {/* 两个表单模态都按需挂载:常驻会把上一次的输入与错误留在 state 里,下次打开
+          回显的就不是当前值了。 */}
+      {registering ? (
+        <RegisterModal
+          onClose={() => setRegistering(false)}
+          onDone={(repoId) => {
+            setRegistering(false);
+            setSelectedId(repoId);
+            void queryClient.invalidateQueries({ queryKey: ["repos"] });
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -338,16 +341,17 @@ function RepoDetail({
         </DialogContent>
       </Dialog>
 
-      <ReviewersModal
-        repo={repo}
-        open={editing}
-        onClose={() => setEditing(false)}
-        onDone={() => {
-          setEditing(false);
-          setFeedback({ text: "模型组合已更新,下一次投递生效。", isError: false });
-          refresh();
-        }}
-      />
+      {editing ? (
+        <ReviewersModal
+          repo={repo}
+          onClose={() => setEditing(false)}
+          onDone={() => {
+            setEditing(false);
+            setFeedback({ text: "模型组合已更新,下一次投递生效。", isError: false });
+            refresh();
+          }}
+        />
+      ) : null}
     </>
   );
 }
@@ -357,11 +361,9 @@ const REVIEWERS_HINT =
   '与配置文件 reviewers 同形状的 JSON 数组,如 [{"provider":"deepseek","model":"deepseek-v4-flash","apiKeyEnv":"DEEPSEEK_API_KEY"}];留空即跟随全局。';
 
 function RegisterModal({
-  open,
   onClose,
   onDone,
 }: {
-  open: boolean;
   onClose: () => void;
   onDone: (repoId: number) => void;
 }) {
@@ -407,7 +409,7 @@ function RegisterModal({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => (next ? undefined : onClose())}>
+    <Dialog open onOpenChange={(next) => (next ? undefined : onClose())}>
       <DialogContent aria-describedby={undefined}>
         <form onSubmit={submit} className="flex flex-col gap-3">
           <DialogHeader>
@@ -457,12 +459,10 @@ function RegisterModal({
 
 function ReviewersModal({
   repo,
-  open,
   onClose,
   onDone,
 }: {
   repo: RepoRow;
-  open: boolean;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -503,7 +503,7 @@ function ReviewersModal({
   }
 
   return (
-    <Dialog open={open} onOpenChange={(next) => (next ? undefined : onClose())}>
+    <Dialog open onOpenChange={(next) => (next ? undefined : onClose())}>
       <DialogContent aria-describedby={undefined}>
         <form onSubmit={submit} className="flex flex-col gap-3">
           <DialogHeader>
