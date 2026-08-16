@@ -1,6 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+
 import { api, errorText, fetchJson } from "./api.ts";
 import { rerunRequest, RunPill, type RunItem } from "./runs.tsx";
 
@@ -22,6 +36,10 @@ type HookCheck = {
   issues: { message: string; action: string }[];
 };
 
+/** 自由 JSON 文本域。多选选择器是下一趟的事,这趟只换壳。 */
+const TEXTAREA =
+  "min-h-[130px] w-full rounded-sm border border-input bg-card px-2.5 py-1.5 font-mono text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
+
 function since(iso: string): string {
   const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60_000);
   if (minutes < 1) return "刚刚";
@@ -29,6 +47,16 @@ function since(iso: string): string {
   const hours = Math.round(minutes / 60);
   if (hours < 48) return `${hours} 小时前`;
   return `${Math.round(hours / 24)} 天前`;
+}
+
+/** 键值行:详情面板里成对出现的那一行。 */
+function Kv({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <span className="text-muted-foreground">{label}</span>
+      <span>{children}</span>
+    </div>
+  );
 }
 
 export function ReposPage() {
@@ -48,42 +76,46 @@ export function ReposPage() {
   const selected = rows.find((row) => row.repoId === selectedId) ?? rows[0];
 
   return (
-    <div className="a-body">
-      <aside className="a-list">
-        <header>
-          <span className="eyebrow">已注册 {rows.length} 个</span>
-          <button
-            className="btn primary"
-            style={{ padding: "3px 9px", fontSize: 12 }}
-            onClick={() => setRegistering(true)}
-          >
+    <div className="flex min-h-full flex-col sm:grid sm:grid-cols-[248px_1fr]">
+      <aside className="border-border bg-card max-sm:border-b sm:border-r">
+        <header className="flex items-center justify-between px-4 pt-3.5 pb-2.5">
+          <span className="text-[11px] font-semibold tracking-[0.07em] text-muted-foreground uppercase">
+            已注册 {rows.length} 个
+          </span>
+          <Button size="xs" onClick={() => setRegistering(true)}>
             注册
-          </button>
+          </Button>
         </header>
         {rows.map((row) => (
           <button
             key={row.repoId}
-            className={`a-repo ${row.repoId === selected?.repoId ? "on" : ""}`}
+            className={`block w-full border-l-[3px] px-4 py-2.5 text-left hover:bg-muted ${
+              row.repoId === selected?.repoId
+                ? "border-l-primary bg-accent"
+                : "border-l-transparent"
+            }`}
             onClick={() => setSelectedId(row.repoId)}
           >
-            <div className="name">
+            <div className="font-mono">
               {row.owner}/{row.repo}
             </div>
-            <div className="meta">
+            <div className="mt-0.5 text-[11px] text-muted-foreground">
               {row.runCount} 轮
               {row.lastActivity === null ? " · 还没跑过" : ` · 最近 ${since(row.lastActivity)}`}
             </div>
           </button>
         ))}
         {rows.length === 0 && !repos.isPending ? (
-          <p className="faint" style={{ padding: "10px 16px", fontSize: 13 }}>
+          <p className="px-4 py-2.5 text-muted-foreground">
             还没有注册仓库,点右上「注册」接入第一个。
           </p>
         ) : null}
       </aside>
 
-      <main className="a-main">
-        {repos.isError ? <p className="error">{(repos.error as Error).message}</p> : null}
+      <main className="flex min-w-0 max-w-[900px] flex-col gap-4 p-4">
+        {repos.isError ? (
+          <p className="text-destructive">{(repos.error as Error).message}</p>
+        ) : null}
         {selected === undefined ? null : (
           <RepoDetail
             key={selected.repoId}
@@ -97,16 +129,15 @@ export function ReposPage() {
         )}
       </main>
 
-      {registering ? (
-        <RegisterModal
-          onClose={() => setRegistering(false)}
-          onDone={(repoId) => {
-            setRegistering(false);
-            setSelectedId(repoId);
-            void queryClient.invalidateQueries({ queryKey: ["repos"] });
-          }}
-        />
-      ) : null}
+      <RegisterModal
+        open={registering}
+        onClose={() => setRegistering(false)}
+        onDone={(repoId) => {
+          setRegistering(false);
+          setSelectedId(repoId);
+          void queryClient.invalidateQueries({ queryKey: ["repos"] });
+        }}
+      />
     </div>
   );
 }
@@ -162,179 +193,161 @@ function RepoDetail({
 
   return (
     <>
-      <div className="a-head">
-        <h1 className="mono">
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="font-mono text-[19px] font-semibold tracking-tight">
           {repo.owner}/{repo.repo}
         </h1>
         {check.isPending ? (
-          <span className="pill">核对中…</span>
+          <Badge variant="secondary">核对中…</Badge>
         ) : check.isError ? (
-          <span className="pill warn">
-            <i className="dot" />
+          <Badge variant="destructive">
+            <span className="size-1.5 rounded-full bg-current" />
             核对失败
-          </span>
+          </Badge>
         ) : issues.length === 0 ? (
-          <span className="pill ok">
-            <i className="dot" />
+          <Badge className="bg-success/12 text-success">
+            <span className="size-1.5 rounded-full bg-current" />
             hook 一致
-          </span>
+          </Badge>
         ) : (
-          <span className="pill warn">
-            <i className="dot" />
+          <Badge className="bg-warning/12 text-warning">
+            <span className="size-1.5 rounded-full bg-current" />
             {issues.length} 处差异
-          </span>
+          </Badge>
         )}
-        <span className="faint" style={{ fontSize: 12 }}>
-          repo id {repo.repoId}
-        </span>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          <button
-            className="btn"
-            disabled={remove.isPending}
-            onClick={() => setConfirmingRemoval(true)}
-          >
-            移除仓库
-          </button>
-        </div>
+        <span className="text-xs text-muted-foreground">repo id {repo.repoId}</span>
+        <Button
+          variant="outline"
+          className="ml-auto"
+          disabled={remove.isPending}
+          onClick={() => setConfirmingRemoval(true)}
+        >
+          移除仓库
+        </Button>
       </div>
 
       {feedback === null ? null : (
-        <p className={feedback.isError ? "error" : "muted"} style={{ fontSize: 13 }}>
+        <p className={feedback.isError ? "text-destructive" : "text-muted-foreground"}>
           {feedback.text}
         </p>
       )}
-      {check.isError ? <p className="error">{(check.error as Error).message}</p> : null}
+      {check.isError ? (
+        <p className="text-destructive">{(check.error as Error).message}</p>
+      ) : null}
 
       {issues.length > 0 ? (
-        <section className="card panel">
-          <h2>与 Gitea 的差异</h2>
+        <Card className="gap-2.5 border-l-[3px] border-l-warning px-4">
+          <h2 className="font-semibold">与 Gitea 的差异</h2>
           {issues.map((issue) => (
-            <div className="kv" key={issue.message}>
-              <span className="k">{issue.message}</span>
-              <span className="faint">{issue.action}</span>
-            </div>
+            <Kv key={issue.message} label={issue.message}>
+              <span className="text-muted-foreground">{issue.action}</span>
+            </Kv>
           ))}
-          <button
-            className="btn primary"
-            style={{ alignSelf: "flex-start" }}
+          <Button
+            className="self-start"
             disabled={rotate.isPending}
             onClick={() => rotate.mutate()}
           >
             轮转推平
-          </button>
-        </section>
+          </Button>
+        </Card>
       ) : null}
 
-      <div className="a-grid">
-        <section className="card panel">
-          <h2>准入 key</h2>
-          <div className="kv">
-            <span className="k">状态</span>
-            <span>已填进 hook,不回显</span>
-          </div>
-          <div className="kv">
-            <span className="k">代次</span>
-            <span className="num">
+      <div className="grid gap-3 md:grid-cols-2">
+        <Card className="gap-2.5 px-4">
+          <h2 className="font-semibold">准入 key</h2>
+          <Kv label="状态">已填进 hook,不回显</Kv>
+          <Kv label="代次">
+            <span className="font-mono tabular-nums">
               {check.data === undefined ? "…" : check.data.expectedGenerations.join(" / ")}
             </span>
-          </div>
-          <p className="faint" style={{ fontSize: 12 }}>
+          </Kv>
+          <p className="text-xs text-muted-foreground">
             面板自己把 key 填进 hook 的 secret 字段,人全程不需要碰它。
           </p>
-          <button
-            className="btn"
-            style={{ alignSelf: "flex-start" }}
+          <Button
+            variant="outline"
+            className="self-start"
             disabled={rotate.isPending}
             onClick={() => rotate.mutate()}
           >
             {rotate.isPending ? "轮转中…" : "轮转 key"}
-          </button>
-        </section>
+          </Button>
+        </Card>
 
-        <section className="card panel">
-          <h2>模型组合</h2>
+        <Card className="gap-2.5 px-4">
+          <h2 className="font-semibold">模型组合</h2>
           {(() => {
             const models =
               repo.reviewers === null ? globalModels : repo.reviewers.map((s) => s.model);
             return (
               <>
-                <div className="kv">
-                  <span className="k">
-                    {repo.reviewers === null ? "跟随全局默认" : "本仓库覆盖"}
-                  </span>
-                  <span className="num">{models.length} 个</span>
-                </div>
+                <Kv label={repo.reviewers === null ? "跟随全局默认" : "本仓库覆盖"}>
+                  <span className="font-mono tabular-nums">{models.length} 个</span>
+                </Kv>
                 {models.map((model) => (
-                  <div key={model} className="mono" style={{ fontSize: 12 }}>
+                  <div key={model} className="font-mono text-xs">
                     {model}
                   </div>
                 ))}
               </>
             );
           })()}
-          <button
-            className="btn"
-            style={{ alignSelf: "flex-start" }}
-            onClick={() => setEditing(true)}
-          >
+          <Button variant="outline" className="self-start" onClick={() => setEditing(true)}>
             改组合
-          </button>
-        </section>
+          </Button>
+        </Card>
       </div>
 
-      <section className="card panel">
-        <h2>累计</h2>
-        <div className="kv">
-          <span className="k">Review Run</span>
-          <span className="num">{repo.runCount} 轮</span>
-        </div>
-        <div className="kv">
-          <span className="k">来源 Finding</span>
-          <span className="num">{repo.findingCount} 条</span>
-        </div>
-      </section>
+      <Card className="gap-2.5 px-4">
+        <h2 className="font-semibold">累计</h2>
+        <Kv label="Review Run">
+          <span className="font-mono tabular-nums">{repo.runCount} 轮</span>
+        </Kv>
+        <Kv label="来源 Finding">
+          <span className="font-mono tabular-nums">{repo.findingCount} 条</span>
+        </Kv>
+      </Card>
 
       <RepoRuns repo={repo} onFeedback={setFeedback} />
 
-      {confirmingRemoval ? (
-        <div className="modal-backdrop" onClick={() => setConfirmingRemoval(false)}>
-          <div className="card modal" onClick={(event) => event.stopPropagation()}>
-            <h2>
+      <Dialog open={confirmingRemoval} onOpenChange={setConfirmingRemoval}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
               移除 {repo.owner}/{repo.repo}?
-            </h2>
-            <p style={{ fontSize: 13 }}>
+            </DialogTitle>
+            <DialogDescription>
               会删掉 Gitea 上的 hook,投递从此按未注册拒绝;评审记录保留,模型选型的历史不断。
-            </p>
-            <div className="modal-actions">
-              <button className="btn" onClick={() => setConfirmingRemoval(false)}>
-                取消
-              </button>
-              <button
-                className="btn primary"
-                disabled={remove.isPending}
-                onClick={() => {
-                  setConfirmingRemoval(false);
-                  remove.mutate();
-                }}
-              >
-                移除
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmingRemoval(false)}>
+              取消
+            </Button>
+            <Button
+              disabled={remove.isPending}
+              onClick={() => {
+                setConfirmingRemoval(false);
+                remove.mutate();
+              }}
+            >
+              移除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {editing ? (
-        <ReviewersModal
-          repo={repo}
-          onClose={() => setEditing(false)}
-          onDone={() => {
-            setEditing(false);
-            setFeedback({ text: "模型组合已更新,下一次投递生效。", isError: false });
-            refresh();
-          }}
-        />
-      ) : null}
+      <ReviewersModal
+        repo={repo}
+        open={editing}
+        onClose={() => setEditing(false)}
+        onDone={() => {
+          setEditing(false);
+          setFeedback({ text: "模型组合已更新,下一次投递生效。", isError: false });
+          refresh();
+        }}
+      />
     </>
   );
 }
@@ -344,9 +357,11 @@ const REVIEWERS_HINT =
   '与配置文件 reviewers 同形状的 JSON 数组,如 [{"provider":"deepseek","model":"deepseek-v4-flash","apiKeyEnv":"DEEPSEEK_API_KEY"}];留空即跟随全局。';
 
 function RegisterModal({
+  open,
   onClose,
   onDone,
 }: {
+  open: boolean;
   onClose: () => void;
   onDone: (repoId: number) => void;
 }) {
@@ -392,53 +407,62 @@ function RegisterModal({
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <form
-        className="card modal"
-        onClick={(event) => event.stopPropagation()}
-        onSubmit={submit}
-      >
-        <h2>注册仓库</h2>
-        <label className="field">
-          owner
-          <input value={owner} onChange={(event) => setOwner(event.target.value)} autoFocus />
-        </label>
-        <label className="field">
-          repo
-          <input value={repo} onChange={(event) => setRepo(event.target.value)} />
-        </label>
-        <label className="field">
-          模型组合(可选)
-          <textarea
-            value={reviewersText}
-            onChange={(event) => setReviewersText(event.target.value)}
-            placeholder={REVIEWERS_HINT}
-          />
-        </label>
-        {error === null ? null : <p className="error">{error}</p>}
-        <div className="modal-actions">
-          <button type="button" className="btn" onClick={onClose}>
-            取消
-          </button>
-          <button
-            type="submit"
-            className="btn primary"
-            disabled={busy || owner === "" || repo === ""}
-          >
-            {busy ? "注册中…" : "注册"}
-          </button>
-        </div>
-      </form>
-    </div>
+    <Dialog open={open} onOpenChange={(next) => (next ? undefined : onClose())}>
+      <DialogContent aria-describedby={undefined}>
+        <form onSubmit={submit} className="flex flex-col gap-3">
+          <DialogHeader>
+            <DialogTitle>注册仓库</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="register-owner">owner</Label>
+            <Input
+              id="register-owner"
+              value={owner}
+              onChange={(event) => setOwner(event.target.value)}
+              autoFocus
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="register-repo">repo</Label>
+            <Input
+              id="register-repo"
+              value={repo}
+              onChange={(event) => setRepo(event.target.value)}
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="register-reviewers">模型组合(可选)</Label>
+            <textarea
+              id="register-reviewers"
+              className={TEXTAREA}
+              value={reviewersText}
+              onChange={(event) => setReviewersText(event.target.value)}
+              placeholder={REVIEWERS_HINT}
+            />
+          </div>
+          {error === null ? null : <p className="text-destructive">{error}</p>}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              取消
+            </Button>
+            <Button type="submit" disabled={busy || owner === "" || repo === ""}>
+              {busy ? "注册中…" : "注册"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 function ReviewersModal({
   repo,
+  open,
   onClose,
   onDone,
 }: {
   repo: RepoRow;
+  open: boolean;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -479,35 +503,39 @@ function ReviewersModal({
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <form
-        className="card modal"
-        onClick={(event) => event.stopPropagation()}
-        onSubmit={submit}
-      >
-        <h2>
-          改 {repo.owner}/{repo.repo} 的模型组合
-        </h2>
-        <label className="field">
-          覆盖(全量替换;留空即清除覆盖、跟随全局)
-          <textarea
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            placeholder={REVIEWERS_HINT}
-            autoFocus
-          />
-        </label>
-        {error === null ? null : <p className="error">{error}</p>}
-        <div className="modal-actions">
-          <button type="button" className="btn" onClick={onClose}>
-            取消
-          </button>
-          <button type="submit" className="btn primary" disabled={busy}>
-            {busy ? "保存中…" : "保存"}
-          </button>
-        </div>
-      </form>
-    </div>
+    <Dialog open={open} onOpenChange={(next) => (next ? undefined : onClose())}>
+      <DialogContent aria-describedby={undefined}>
+        <form onSubmit={submit} className="flex flex-col gap-3">
+          <DialogHeader>
+            <DialogTitle>
+              改 {repo.owner}/{repo.repo} 的模型组合
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="reviewers-json">
+              覆盖(全量替换;留空即清除覆盖、跟随全局)
+            </Label>
+            <textarea
+              id="reviewers-json"
+              className={TEXTAREA}
+              value={text}
+              onChange={(event) => setText(event.target.value)}
+              placeholder={REVIEWERS_HINT}
+              autoFocus
+            />
+          </div>
+          {error === null ? null : <p className="text-destructive">{error}</p>}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              取消
+            </Button>
+            <Button type="submit" disabled={busy}>
+              {busy ? "保存中…" : "保存"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -550,34 +578,38 @@ function RepoRuns({
 
   const rows = runs.data?.runs.slice(0, 8) ?? [];
   return (
-    <section className="card panel">
-      <h2>评审记录</h2>
-      <form onSubmit={submit} style={{ display: "flex", gap: 8 }}>
-        <input
+    <Card className="gap-2.5 px-4">
+      <h2 className="font-semibold">评审记录</h2>
+      <form onSubmit={submit} className="flex gap-2">
+        <Input
           placeholder="PR 号"
           inputMode="numeric"
+          className="w-[110px]"
           value={pullNumber}
           onChange={(event) => setPullNumber(event.target.value)}
-          style={{ width: 110 }}
         />
-        <button className="btn" type="submit" disabled={rerun.isPending}>
+        <Button variant="outline" type="submit" disabled={rerun.isPending}>
           {rerun.isPending ? "触发中…" : "重跑"}
-        </button>
+        </Button>
       </form>
-      {runs.isError ? <p className="error">{(runs.error as Error).message}</p> : null}
+      {runs.isError ? (
+        <p className="text-destructive">{(runs.error as Error).message}</p>
+      ) : null}
       {rows.map((run) => (
-        <div className="kv" key={run.id}>
-          <span className="k mono">
-            #{run.pullNumber} · {run.startedAt.slice(0, 16).replace("T", " ")}
-          </span>
+        <Kv
+          key={run.id}
+          label={
+            <span className="font-mono">
+              #{run.pullNumber} · {run.startedAt.slice(0, 16).replace("T", " ")}
+            </span>
+          }
+        >
           <RunPill run={run} />
-        </div>
+        </Kv>
       ))}
       {rows.length === 0 && !runs.isPending ? (
-        <p className="faint" style={{ fontSize: 12 }}>
-          这个仓库还没有 Review Run。
-        </p>
+        <p className="text-xs text-muted-foreground">这个仓库还没有 Review Run。</p>
       ) : null}
-    </section>
+    </Card>
   );
 }
