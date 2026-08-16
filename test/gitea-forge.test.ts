@@ -35,6 +35,9 @@ function routes(overrides: Record<string, Route> = {}): Record<string, Route> {
     "GET /api/v1/repos/acme/widget/pulls/7/files?page=1&limit=100": {
       body: [{ filename: "src/a.ts", status: "changed" }],
     },
+    // 翻页以「读到空页」为终止条件,非空首页后必然再翻一页。
+    "GET /api/v1/repos/acme/widget/pulls/7/files?page=2&limit=100": { body: [] },
+    "GET /api/v1/repos/acme/widget/pulls/7/reviews?page=2&limit=100": { body: [] },
     "POST /api/v1/repos/acme/widget/pulls/7/reviews": { body: { id: 99 } },
     "GET /api/v1/repos/acme/widget/pulls/7/reviews?page=1&limit=100": {
       body: [{ id: 11, comments_count: 1 }],
@@ -224,6 +227,46 @@ test("读回 review 正文:没有行级评论的 review 也要读,正文照样�
   const bodies = await createGiteaForge(OPTIONS).listReviewBodies(REF);
 
   assert.deepEqual(bodies, ["MultiReviewer", "diff 之外的 Finding"]);
+});
+
+test("实例把 limit 钳下去时翻页不提前退出:读到空页才停", async (t) => {
+  // Gitea 的 `API.MAX_RESPONSE_ITEMS`(默认 50)会把请求里的 limit=100 钳下去。
+  // 「不满一页就停」的判据在这种实例上会把恰好 50 条的第一页当成最后一页,
+  // 后续文件与 review 静默丢失。终止条件必须是「读到空页」。
+  const clamped = (prefix: string, count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      filename: `${prefix}${i}.ts`,
+      status: "changed",
+      id: 1000 + i,
+      comments_count: 0,
+      body: `${prefix}${i}`,
+    }));
+  const stub = stubFetch(
+    routes({
+      "GET /api/v1/repos/acme/widget/pulls/7/files?page=1&limit=100": {
+        body: clamped("a", 50),
+      },
+      "GET /api/v1/repos/acme/widget/pulls/7/files?page=2&limit=100": {
+        body: clamped("b", 10),
+      },
+      "GET /api/v1/repos/acme/widget/pulls/7/files?page=3&limit=100": { body: [] },
+      "GET /api/v1/repos/acme/widget/pulls/7/reviews?page=1&limit=100": {
+        body: clamped("r", 50),
+      },
+      "GET /api/v1/repos/acme/widget/pulls/7/reviews?page=2&limit=100": {
+        body: clamped("s", 10),
+      },
+      "GET /api/v1/repos/acme/widget/pulls/7/reviews?page=3&limit=100": { body: [] },
+    }),
+  );
+  t.after(stub.restore);
+  const forge = createGiteaForge(OPTIONS);
+
+  assert.equal((await forge.listChangedFiles(REF)).length, 60);
+  assert.equal((await forge.listReviewBodies(REF)).length, 60);
+  assert.equal((await forge.listReviewComments(REF)).length, 0);
+  const reviewPages = stub.calls.filter((c) => c.url.includes("/reviews?")).length;
+  assert.equal(reviewPages, 6, "两处 review 列表各翻满 3 页");
 });
 
 test("resolve 与 unresolve 打在评论 id 上,方法是 POST", async (t) => {

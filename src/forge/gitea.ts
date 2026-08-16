@@ -150,16 +150,19 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
       const files: ChangedFile[] = [];
       // `GET /repos/{owner}/{repo}/pulls/{index}/files`,分页参数 `page`(1 起)与
       // `limit`,见 `routers/api/v1/repo/pull.go` 的 `GetPullRequestFiles`。
+      // 终止条件是「读到空页」而不是「不满一页」:实例的 `API.MAX_RESPONSE_ITEMS`
+      // (默认 50)会把 limit 钳下去,恰好钳制值一页时「不满一页」会提前停,
+      // 后续文件静默丢失。下面两处 review 列表同理。
       for (let page = 1; ; page += 1) {
         const batch = await requestJson<{ filename: string; status: string }[]>(
           options,
           "GET",
           `${repoPath(ref)}/pulls/${ref.number}/files?page=${page}&limit=${PAGE_SIZE}`,
         );
+        if (batch.length === 0) break;
         for (const file of batch) {
           files.push({ path: file.filename, status: normalizeStatus(file.status) });
         }
-        if (batch.length < PAGE_SIZE) break;
       }
       return files;
     },
@@ -197,6 +200,7 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
           "GET",
           `${repoPath(ref)}/pulls/${ref.number}/reviews?page=${page}&limit=${PAGE_SIZE}`,
         );
+        if (reviews.length === 0) break;
 
         for (const review of reviews) {
           // 只有正文没有行级评论的 review(人点的 approve 就是)不必再发一次请求。
@@ -223,8 +227,6 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
             });
           }
         }
-
-        if (reviews.length < PAGE_SIZE) break;
       }
       return comments;
     },
@@ -242,8 +244,8 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
           "GET",
           `${repoPath(ref)}/pulls/${ref.number}/reviews?page=${page}&limit=${PAGE_SIZE}`,
         );
+        if (reviews.length === 0) break;
         for (const review of reviews) bodies.push(review.body);
-        if (reviews.length < PAGE_SIZE) break;
       }
       return bodies;
     },

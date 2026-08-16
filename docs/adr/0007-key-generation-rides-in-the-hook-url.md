@@ -1,6 +1,6 @@
 # key 代次写进 hook URL,轮转状态从 Gitea 推断
 
-Gitea 改不了已有 hook 的 secret(`PATCH` 静默忽略 `config.secret` 并回 200,见 `docs/research/gitea-webhook-api.md:170-200`),也从不回显它——`ToHook` 只往 `config` 里塞 `url` 与 `content_type`(同上,第 241-264 行)。于是 key 轮转必须删旧建新,而「库里的 key 与 Gitea 上的 secret 是否一致」在正常途径下不可观测。
+Gitea 改不了已有 hook 的 secret(`PATCH` 静默忽略 `config.secret` 并回 200,见 `docs/research/gitea-webhook-api.md:126-151`),也从不回显它——`ToHook` 只往 `config` 里塞 `url` 与 `content_type`(同上,第 241-264 行)。于是 key 轮转必须删旧建新,而「库里的 key 与 Gitea 上的 secret 是否一致」在正常途径下不可观测。
 
 `config.url` 是唯一双向可见的字段:面板写得进,列表读得回。因此每个仓库的 key 带一个**代次**——一个单调递增的整数,写进 hook URL 的 `?k=` 参数。一次 `GET .../hooks` 就读出 Gitea 上装的是第几代,不必等一次投递验签失败才发现不一致。
 
