@@ -493,7 +493,12 @@ function RegisterModal({
             <CommandInput
               placeholder="搜仓库:owner 或仓库名"
               value={query}
-              onValueChange={setQuery}
+              // 搜索词一变就丢掉选中项:留着的话改词到无结果再回车,提交的会是上一次
+              // 选中的那个仓库,而列表里已经看不见它了。
+              onValueChange={(next) => {
+                setQuery(next);
+                setPicked(null);
+              }}
               autoFocus
             />
             <CommandList className="max-h-[300px]">
