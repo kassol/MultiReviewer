@@ -822,15 +822,15 @@ const MASTER_KEY_MISSING =
  */
 async function handleCatalog(res: ServerResponse, deps: WebhookServerDeps): Promise<void> {
   const masterKey = deps.credentialMasterKey;
-  if (masterKey === undefined || masterKey === "") {
-    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
-  }
-  const rows = withStore(deps.dbPath, (store) => store.listModelCredentials());
-  // 判据与凭据列表同一套:解不开的密文按未配置算。
+  // 目录是 Pi 的内置事实,与凭据无关,缺主密钥照样给——选模型这件事本身不需要凭据,
+  // 而看不见目录的人也就无从知道该去配哪一家。缺主密钥时全部按未配置算。
   const configured = new Set(
-    rows
-      .filter((row) => decryptCredential(masterKey, row.apiKeyEncrypted) !== undefined)
-      .map((row) => row.provider),
+    masterKey === undefined || masterKey === ""
+      ? []
+      : withStore(deps.dbPath, (store) => store.listModelCredentials())
+          // 判据与凭据列表同一套:解不开的密文按未配置算。
+          .filter((row) => decryptCredential(masterKey, row.apiKeyEncrypted) !== undefined)
+          .map((row) => row.provider),
   );
   const providers = await modelCatalog();
   return sendJson(res, 200, {

@@ -97,8 +97,14 @@ test("配了凭据的那一家标 configured,没配的照常在结果里", async
   assert.ok((byId.get("openrouter")?.models.length ?? 0) > 0, "没配凭据的一家没有模型");
 });
 
-test("缺主密钥时目录端点不可用", async () => {
+test("缺主密钥时目录照常给出,全部按未配置算", async () => {
   const h = await startPanelHarness(cleanups, { credentialMasterKey: undefined });
   const res = await h.api("GET", "/catalog");
-  assert.equal(res.status, 503);
+  assert.equal(res.status, 200);
+  const providers = ((await res.json()) as CatalogBody).providers;
+  assert.ok(providers.length > 0, "缺主密钥时目录为空");
+  assert.ok(
+    providers.every((provider) => provider.configured === false),
+    "缺主密钥时有 provider 被标成已配",
+  );
 });
