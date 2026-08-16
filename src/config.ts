@@ -9,7 +9,10 @@ export type ReviewerSpec = {
   provider: string;
   /** Pi 的 model 标识。模型标识另取 `modelIdentity`。 */
   model: string;
-  /** 存放该厂商凭据的环境变量名。凭据本身不进配置文件。 */
+  /**
+   * 存放该厂商凭据的环境变量名。凭据搬进库之后(ADR 0008)组装 Reviewer 不再读它,
+   * 字段还留着只是为了不在这一票里动配置文件的形状,issue #66 删。
+   */
   apiKeyEnv: string;
 };
 
@@ -99,20 +102,46 @@ export function loadConfig(path: string = DEFAULT_CONFIG_PATH): Config {
 }
 
 /**
- * 按配置建出全部 Reviewer,每个只拿到自己那一家的凭据。
+ * 一次 Review Run 开始时取到的模型凭据:provider → 明文 key。快照在编排进程里解密
+ * 得到,整轮不重读(ADR 0008)——轮转对进行中的 Run 无影响,下一次投递自然用新的。
+ */
+export type CredentialSnapshot = ReadonlyMap<string, string>;
+
+/**
+ * 缺凭据的 provider 照样建出一个 Reviewer,它一跑就报失败并写明缺哪一家。
  *
- * 凭据在这里一次性取齐:缺失要在服务启动时暴露,而不是等一次 Review Run 跑到
- * 一半才发现某个模型没法用。
+ * 这里不抛:抛出去的话这次投递在时间线上一点痕迹都不留,人看到的是「投了没反应」。
+ * 报成 Reviewer 失败则这次 Review Run 留下一条失败记录,原因跟着落库。
+ */
+function missingCredentialReviewer(spec: ReviewerSpec): Reviewer {
+  const identity = modelIdentity(spec);
+  return {
+    model: identity,
+    review: () =>
+      Promise.resolve({
+        model: identity,
+        findings: [],
+        anomalies: [],
+        rejectedToolCalls: 0,
+        anchorRejections: 0,
+        failure: `没有配置 ${spec.provider} 的模型凭据,${identity} 这次没跑。去面板的凭据页配好再重跑。`,
+      }),
+  };
+}
+
+/**
+ * 按模型组合建出全部 Reviewer,每个只拿到自己那一家的凭据。
+ *
+ * 凭据来自 Review Run 开始时的快照,缺失不拦启动也不拦投递:服务照常起,那一家的
+ * Reviewer 报失败(issue #65)。
  */
 export function buildReviewers(
-  config: Config,
-  env: Readonly<Record<string, string | undefined>> = process.env,
+  specs: readonly ReviewerSpec[],
+  credentials: CredentialSnapshot,
 ): Reviewer[] {
-  return config.reviewers.map((spec) => {
-    const apiKey = env[spec.apiKeyEnv];
-    if (apiKey === undefined || apiKey === "") {
-      throw new Error(`环境变量 ${spec.apiKeyEnv} 未设置,${modelIdentity(spec)} 无法使用`);
-    }
+  return specs.map((spec) => {
+    const apiKey = credentials.get(spec.provider);
+    if (apiKey === undefined || apiKey === "") return missingCredentialReviewer(spec);
     return createPiReviewer({
       provider: spec.provider,
       model: spec.model,

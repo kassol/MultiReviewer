@@ -44,7 +44,7 @@ async function startPages(options: { withDist?: boolean } = {}) {
 
   const server = createWebhookServer({
     forges: {},
-    reviewers: [],
+    reviewerSpecs: [],
     buildReviewers: () => [],
     cacheDir: cache.dir,
     dbPath: db.path,

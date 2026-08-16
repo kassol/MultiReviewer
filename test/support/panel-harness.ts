@@ -9,11 +9,12 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import type { AddressInfo } from "node:net";
 
-import type { ReviewerSpec } from "../../src/config.ts";
+import type { CredentialSnapshot, ReviewerSpec } from "../../src/config.ts";
 import type { Forge, PullRequestRef } from "../../src/forge/forge.ts";
 import {
   createWebhookServer,
   type NormalizedEvent,
+  type WebhookServerDeps,
 } from "../../src/webhook/server.ts";
 import { startFakeGitea, type FakeGitea } from "./fake-gitea.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./git-fixture.ts";
@@ -35,7 +36,9 @@ export type PanelHarness = {
   db: { path: string };
   dispatched: PullRequestRef[];
   settled: { event: NormalizedEvent; error?: unknown }[];
-  factoryCalls: ReviewerSpec[][];
+  factoryCalls: (readonly ReviewerSpec[])[];
+  /** 每次组装 Reviewer 时拿到的凭据快照,一次 Review Run 一条。 */
+  snapshots: CredentialSnapshot[];
   api(method: string, path: string, body?: unknown): Promise<Response>;
   deliverViaHook(
     headSha: string,
@@ -47,9 +50,18 @@ export type PanelHarness = {
 /** 凭据测试用的主密钥。缺主密钥那一档传 `credentialMasterKey: undefined` 起 harness。 */
 export const PANEL_CREDENTIAL_MASTER_KEY = "panel-harness-master-key";
 
+/** harness 的全局模型组合。模型标识因此是 `test:global-model`。 */
+export const HARNESS_SPEC: ReviewerSpec = {
+  provider: "test",
+  model: "global-model",
+  apiKeyEnv: "STUB_KEY",
+};
+
 export type PanelHarnessOptions = {
   /** 模型凭据的主密钥。省略取 `PANEL_CREDENTIAL_MASTER_KEY`,显式给 undefined 即不配。 */
   credentialMasterKey?: string | undefined;
+  /** Reviewer 的组装。省略即按 spec 建脚本 Reviewer;真组装那一档传 `buildReviewers`。 */
+  buildReviewers?: WebhookServerDeps["buildReviewers"];
 };
 
 export async function startPanelHarness(
@@ -92,15 +104,18 @@ export async function startPanelHarness(
     },
   };
 
-  const factoryCalls: ReviewerSpec[][] = [];
+  const factoryCalls: (readonly ReviewerSpec[])[] = [];
+  const snapshots: CredentialSnapshot[] = [];
   const settled: { event: NormalizedEvent; error?: unknown }[] = [];
   let waiting: { count: number; resolve: () => void }[] = [];
 
   const server = createWebhookServer({
     forges: { gitea: forge },
-    reviewers: [scriptedReviewer("global-model", [])],
-    buildReviewers: (specs) => {
+    reviewerSpecs: [HARNESS_SPEC],
+    buildReviewers: (specs, credentials) => {
       factoryCalls.push(specs);
+      snapshots.push(credentials);
+      if (options.buildReviewers !== undefined) return options.buildReviewers(specs, credentials);
       return specs.map((spec) => scriptedReviewer(spec.model, []));
     },
     cacheDir: cache.dir,
@@ -195,6 +210,7 @@ export async function startPanelHarness(
     dispatched,
     settled,
     factoryCalls,
+    snapshots,
     api,
     deliverViaHook,
     settledAtLeast(count: number): Promise<void> {

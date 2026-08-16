@@ -121,7 +121,7 @@ const server = createWebhookServer({
     ...(github === undefined ? {} : { github: createGitHubForge({ auth: github }) }),
     ...(gitea === undefined ? {} : { gitea: createGiteaForge(gitea) }),
   },
-  reviewers: buildReviewers(config),
+  reviewerSpecs: config.reviewers,
   cacheDir: process.env["MULTIREVIEWER_CACHE_DIR"] ?? ".cache/worktrees",
   dbPath,
   adminToken,
@@ -134,8 +134,8 @@ const server = createWebhookServer({
     ? {}
     : { credentialMasterKey: process.env[CREDENTIAL_MASTER_KEY_ENV] }),
   ...(gitea === undefined ? {} : { gitea }),
-  // 每仓库的模型覆盖按同一套构建逻辑起 Reviewer,凭据同样只经环境变量进入。
-  buildReviewers: (specs) => buildReviewers({ reviewers: specs }),
+  // 全局组合与每仓库的模型覆盖走同一套组装逻辑,凭据取 Run 开始时的库内快照。
+  buildReviewers,
   ...(config.maxChangedLinesPerBatch === undefined
     ? {}
     : { maxChangedLinesPerBatch: config.maxChangedLinesPerBatch }),

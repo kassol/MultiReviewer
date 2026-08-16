@@ -5,10 +5,20 @@
  * Gitea 因此不受打桩影响,被拦下的只有外发到厂商的那一次。
  */
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
+import { buildReviewers } from "../src/config.ts";
+import { encryptCredential } from "../src/panel/credential-crypto.ts";
+import type { ReviewerOutcome } from "../src/review/finding.ts";
 import { openStore } from "../src/review/store.ts";
-import { GITEA_REPO, startPanelHarness } from "./support/panel-harness.ts";
+import {
+  GITEA_REPO,
+  HARNESS_PR,
+  PANEL_CREDENTIAL_MASTER_KEY,
+  startPanelHarness,
+  type PanelHarness,
+} from "./support/panel-harness.ts";
 import { stubFetch, type Route } from "./support/stub-fetch.ts";
 
 const cleanups: (() => void)[] = [];
@@ -199,4 +209,108 @@ test("缺主密钥:凭据端点读写都拒绝并说明原因,其余面板照常
   const repos = await h.api("GET", "/repos");
   assert.equal(repos.status, 200);
   assert.equal(((await repos.json()) as { repoId: number }[])[0]!.repoId, GITEA_REPO.id);
+});
+
+/**
+ * 凭据接进 Review Run(issue #65)。测在既有的组装缝上:harness 注入的
+ * `buildReviewers` 就是服务真用的那一个入口,凭据快照是它的第二个入参。
+ */
+
+/** 直接落一把凭据,绕开面板的厂商验证——这几条测的是组装,不是保存。 */
+function seedCredential(h: PanelHarness, provider: string, apiKey: string): void {
+  const store = openStore(h.db.path);
+  store.putModelCredential(
+    provider,
+    encryptCredential(PANEL_CREDENTIAL_MASTER_KEY, apiKey),
+    "2026-08-16T00:00:00.000Z",
+  );
+  store.close();
+}
+
+/** 等一个条件成立,超时即失败。轮询而非固定睡眠,慢机器上不会假失败。 */
+async function waitUntil(predicate: () => boolean, what: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(`等不到:${what}`);
+}
+
+test("缺凭据:投递照常受理,留下一条失败的 Review Run 并写明缺哪一家", async () => {
+  // 真组装:库里一把凭据都没有,createPiReviewer 不会被建出来,也不起子进程。
+  const h = await startPanelHarness(cleanups, { buildReviewers });
+  assert.equal(
+    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
+    201,
+  );
+
+  assert.equal((await h.deliverViaHook("sha-1")).status, 200);
+  await h.settledAtLeast(1);
+  assert.equal(h.settled[0]!.error, undefined);
+
+  const store = openStore(h.db.path);
+  const runs = store.listRuns({ limit: 30 });
+  store.close();
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]!.failed, true);
+
+  // 失败原因逐 Reviewer 落库,时间线上读得到缺的是哪一家。
+  const sqlite = new DatabaseSync(h.db.path);
+  try {
+    const rows = sqlite.prepare("SELECT model, failure FROM reviewer_outcome").all() as {
+      model: string;
+      failure: string | null;
+    }[];
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.model, "test:global-model");
+    assert.match(rows[0]!.failure ?? "", /没有配置 test 的模型凭据/);
+  } finally {
+    sqlite.close();
+  }
+});
+
+test("凭据在 Run 开始时快照一次,跑中改了不影响这一轮,下一次投递用新的", async () => {
+  let release = (): void => {};
+  let gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const h = await startPanelHarness(cleanups, {
+    buildReviewers: (specs) =>
+      specs.map((spec) => ({
+        model: spec.model,
+        review: async (): Promise<ReviewerOutcome> => {
+          await gate;
+          return {
+            model: spec.model,
+            findings: [],
+            anomalies: [],
+            rejectedToolCalls: 0,
+            anchorRejections: 0,
+          };
+        },
+      })),
+  });
+  seedCredential(h, "test", "key-one");
+  assert.equal(
+    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
+    201,
+  );
+
+  assert.equal((await h.deliverViaHook("sha-1")).status, 200);
+  await waitUntil(() => h.snapshots.length === 1, "第一轮取到凭据快照");
+
+  // 这一轮还没跑完就轮转凭据。
+  seedCredential(h, "test", "key-two");
+  release();
+  await h.settledAtLeast(1);
+
+  // 快照只取一次,拿到的还是轮转前那一把。
+  assert.equal(h.snapshots.length, 1);
+  assert.deepEqual([...h.snapshots[0]!], [["test", "key-one"]]);
+
+  gate = Promise.resolve();
+  assert.equal((await h.deliverViaHook("sha-2")).status, 200);
+  await h.settledAtLeast(2);
+  assert.equal(h.snapshots.length, 2);
+  assert.equal(h.snapshots[1]!.get("test"), "key-two");
 });

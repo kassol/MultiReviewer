@@ -149,9 +149,12 @@ async function startHarness(options: HarnessOptions = {}) {
 
   const server = createWebhookServer({
     forges: options.omitGiteaForge ? { github: forge } : { github: forge, gitea: forge },
-    reviewers: [options.reviewer ?? scriptedReviewer("stub-model", [])],
-    // 本文件的仓库都不带模型覆盖,这个构建器不该被调用。
-    buildReviewers: (specs) => specs.map((spec) => scriptedReviewer(spec.model, [])),
+    reviewerSpecs: [{ provider: "test", model: "stub-model", apiKeyEnv: "STUB_KEY" }],
+    // 组装桩:本文件测的是投递链路,不起真的 Pi 子进程,凭据快照也不看。
+    buildReviewers: (specs) =>
+      options.reviewer === undefined
+        ? specs.map((spec) => scriptedReviewer(spec.model, []))
+        : [options.reviewer],
     cacheDir: cache.dir,
     dbPath: db.path,
     adminToken: "webhook-test-admin-token",

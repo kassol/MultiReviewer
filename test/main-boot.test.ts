@@ -24,6 +24,7 @@ const CLEARED = [
   "MULTIREVIEWER_GITHUB_APP_ID",
   "MULTIREVIEWER_GITHUB_PRIVATE_KEY_PATH",
   "GITHUB_TOKEN",
+  "MULTIREVIEWER_CREDENTIAL_MASTER_KEY",
 ];
 
 const cleanups: (() => void)[] = [];
@@ -33,16 +34,14 @@ after(() => {
 
 type Boot = { listening: boolean; output: string };
 
-async function boot(overrides: Record<string, string>): Promise<Boot> {
+async function boot(
+  overrides: Record<string, string>,
+  reviewers: unknown[] = [{ provider: "test", model: "stub", apiKeyEnv: "STUB_KEY" }],
+): Promise<Boot> {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-boot-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const configPath = join(dir, "config.json");
-  writeFileSync(
-    configPath,
-    JSON.stringify({
-      reviewers: [{ provider: "test", model: "stub", apiKeyEnv: "STUB_KEY" }],
-    }),
-  );
+  writeFileSync(configPath, JSON.stringify({ reviewers }));
 
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) {
@@ -58,7 +57,6 @@ async function boot(overrides: Record<string, string>): Promise<Boot> {
     MULTIREVIEWER_BASE_URL: "http://localhost:3000",
     // 0 让内核挑一个空闲端口,并发跑测试时不会撞上。
     MULTIREVIEWER_PORT: "0",
-    STUB_KEY: "stub-credential",
     ...overrides,
   });
 
@@ -84,6 +82,18 @@ async function boot(overrides: Record<string, string>): Promise<Boot> {
 
 test("只配 GitHub 令牌时服务起得来", async () => {
   const result = await boot({ GITHUB_TOKEN: "ghp-stub" });
+  assert.equal(result.listening, true, result.output);
+});
+
+/**
+ * 空库、多家 provider 一把凭据都没有、连主密钥都没设的新部署:启动不校验凭据
+ * (issue #65),否则起不来就进不了面板,进不了面板就配不了凭据。
+ */
+test("空库、没有任何模型凭据时服务照常起", async () => {
+  const result = await boot({ GITHUB_TOKEN: "ghp-stub" }, [
+    { provider: "anthropic", model: "claude-haiku-4-5", apiKeyEnv: "ANTHROPIC_API_KEY" },
+    { provider: "deepseek", model: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY" },
+  ]);
   assert.equal(result.listening, true, result.output);
 });
 

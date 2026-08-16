@@ -16,7 +16,12 @@ import {
 } from "node:http";
 import { extname, join, resolve, sep } from "node:path";
 
-import { assertReviewerSpecs, type ReviewerSpec } from "../config.ts";
+import {
+  assertReviewerSpecs,
+  modelIdentity,
+  type CredentialSnapshot,
+  type ReviewerSpec,
+} from "../config.ts";
 import type { Forge } from "../forge/forge.ts";
 import {
   createGiteaHookManager,
@@ -64,7 +69,8 @@ export type WebhookServerDeps = {
    * 并放行投递——是本服务的配置缺口,不是投递的问题。
    */
   forges: Partial<Record<Platform, Forge>>;
-  reviewers: readonly Reviewer[];
+  /** 全局的模型组合。Reviewer 在每次 Review Run 开始时才按它组装。 */
+  reviewerSpecs: readonly ReviewerSpec[];
   cacheDir: string;
   dbPath: string;
   maxChangedLinesPerBatch?: number;
@@ -97,11 +103,13 @@ export type WebhookServerDeps = {
   /** Gitea 实例的地址与 bot 凭据。没配这一格时注册与移除仓库的端点不可用。 */
   gitea?: GiteaForgeOptions;
   /**
-   * 按模型覆盖构建 Reviewer。带覆盖的仓库触发 Review Run 时用它替换全局的
-   * `reviewers`;注册时也用它试构建一次,让「覆盖引用了不存在的凭据」这类错误在
-   * 注册响应里显形,而不是等到投递时。
+   * 按模型组合与凭据快照组装 Reviewer,每次 Review Run 开始时调一次。缺凭据的
+   * provider 由它建出一个报失败的 Reviewer,不抛(issue #65)。
    */
-  buildReviewers: (specs: ReviewerSpec[]) => readonly Reviewer[];
+  buildReviewers: (
+    specs: readonly ReviewerSpec[],
+    credentials: CredentialSnapshot,
+  ) => readonly Reviewer[];
   /**
    * 模型凭据的加密主密钥(ADR 0008),取自环境变量。缺失时凭据端点读写都拒绝并说明
    * 原因,服务其余部分照常——起不来就进不了面板,进不了面板就配不了凭据。
@@ -352,18 +360,33 @@ function withStore<T>(dbPath: string, fn: (store: Store) => T): T {
 }
 
 /**
- * 按仓库的模型覆盖构建 Reviewer:null 即跟随全局。坏覆盖(解析不了、缺凭据引用)
- * 抛出,投递链与手动重跑各自决定错误出口(静默记录 / 409 显形)。
+ * 这次 Review Run 用的模型组合:仓库有覆盖就用覆盖,null 即跟随全局。坏覆盖
+ * (解析不了)抛出,投递链与手动重跑各自决定错误出口(静默记录 / 409 显形)。
  */
-function overrideReviewers(
+function resolveSpecs(
   deps: WebhookServerDeps,
   reviewersJson: string | null,
   repoId: number,
-): readonly Reviewer[] {
-  if (reviewersJson === null) return deps.reviewers;
-  return deps.buildReviewers(
-    assertReviewerSpecs(JSON.parse(reviewersJson), `仓库 ${repoId} 的模型覆盖`),
-  );
+): readonly ReviewerSpec[] {
+  if (reviewersJson === null) return deps.reviewerSpecs;
+  return assertReviewerSpecs(JSON.parse(reviewersJson), `仓库 ${repoId} 的模型覆盖`);
+}
+
+/**
+ * Review Run 开始时的模型凭据快照:一次开库读全部密文,在编排进程里解密成明文
+ * (ADR 0004、0008)。解不开的按未配置处理,那一家的 Reviewer 会报失败。
+ *
+ * 快照只在这里取一次,整轮不重读——轮转不影响进行中的 Run。
+ */
+function credentialSnapshot(deps: WebhookServerDeps): CredentialSnapshot {
+  const masterKey = deps.credentialMasterKey;
+  if (masterKey === undefined || masterKey === "") return new Map();
+  const snapshot = new Map<string, string>();
+  for (const row of withStore(deps.dbPath, (store) => store.listModelCredentials())) {
+    const apiKey = decryptCredential(masterKey, row.apiKeyEncrypted);
+    if (apiKey !== undefined && apiKey !== "") snapshot.set(row.provider, apiKey);
+  }
+  return snapshot;
 }
 
 type Admission = {
@@ -383,9 +406,11 @@ function startRun(
   deps: WebhookServerDeps,
   forge: Forge,
   event: NormalizedEvent,
-  reviewers: readonly Reviewer[],
+  specs: readonly ReviewerSpec[],
 ): void {
   const settled = deps.onRunSettled ?? logFailure;
+  // 组装就在这里:凭据在 Run 开始时快照一次,缺哪一家由那一家的 Reviewer 报失败。
+  const reviewers = deps.buildReviewers(specs, credentialSnapshot(deps));
   // 这是长跑服务,后台任务的 rejection 不接住就会变成 unhandledRejection 把进程带崩。
   void runReview(
     { owner: event.owner, repo: event.repo, number: event.number },
@@ -558,11 +583,11 @@ async function handle(
   }
 
   // 每仓库的模型覆盖:语义是全量替换 reviewers 列表,没有覆盖就用全局。覆盖坏了
-  // (解析不了、缺 buildReviewers)按配置错误记录并回 200,与缺 Forge 同一档;放在
-  // claim 之前——坏配置不该吃掉幂等键,修好后同一 head commit 要能重新触发。
-  let reviewers = deps.reviewers;
+  // (解析不了)按配置错误记录并回 200,与缺 Forge 同一档;放在 claim 之前——坏配置
+  // 不该吃掉幂等键,修好后同一 head commit 要能重新触发。
+  let specs = deps.reviewerSpecs;
   try {
-    reviewers = overrideReviewers(deps, admission.reviewersJson, repoId);
+    specs = resolveSpecs(deps, admission.reviewersJson, repoId);
   } catch (error) {
     (deps.onRunSettled ?? logFailure)(event, error);
     return send(res, 200);
@@ -576,7 +601,7 @@ async function handle(
   log(`${describe(event)} — 开始审查`);
   // 先回 200 再开跑:一次审查可能要跑很久,平台等不到那时候就会判超时。
   send(res, 200);
-  startRun(deps, forge, event, reviewers);
+  startRun(deps, forge, event, specs);
 }
 
 /** 请求路径,不含查询串。hook URL 会带 `?k=<代次>`(ADR 0007),匹配只看路径。 */
@@ -654,7 +679,7 @@ async function handlePanelApi(
   // provider 与凭据环境变量不属于面板要关心的事。
   if (sub === "/reviewers" && req.method === "GET") {
     return sendJson(res, 200, {
-      models: deps.reviewers.map((reviewer) => reviewer.model),
+      models: deps.reviewerSpecs.map((spec) => modelIdentity(spec)),
     });
   }
 
@@ -808,17 +833,18 @@ function safeParseJson(value: string): unknown {
 }
 
 /**
- * 解析并校验一段模型覆盖入参:形状校验加试构建(坏凭据引用要在响应里显形,不能等
- * 投递),注册与 PUT 共用同一判据。返回序列化好的 JSON,校验不过返回错误信息。
+ * 解析并校验一段模型覆盖入参,注册与 PUT 共用同一判据。返回序列化好的 JSON,校验
+ * 不过返回错误信息。
+ *
+ * 只校验形状:凭据缺不缺是 Review Run 开始时的事(issue #65),这里试构建也拦不住,
+ * 反而会把「这一家还没配」误报成「覆盖写错了」。
  */
 function parseReviewersOverride(
-  deps: WebhookServerDeps,
   value: unknown,
   context: string,
 ): { ok: true; reviewersJson: string } | { ok: false; error: string } {
   try {
     const specs = assertReviewerSpecs(value, context);
-    deps.buildReviewers(specs);
     return { ok: true, reviewersJson: JSON.stringify(specs) };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -898,9 +924,9 @@ async function handleRerun(
   }
 
   // 坏覆盖在这里显形(409),不像投递那样静默记日志——重跑是人在等结果的动作。
-  let reviewers = deps.reviewers;
+  let specs = deps.reviewerSpecs;
   try {
-    reviewers = overrideReviewers(deps, registered.reviewersJson, registered.repoId);
+    specs = resolveSpecs(deps, registered.reviewersJson, registered.repoId);
   } catch (error) {
     return sendJson(res, 409, {
       error: `模型覆盖坏了,先改组合再重跑:${error instanceof Error ? error.message : String(error)}`,
@@ -919,7 +945,7 @@ async function handleRerun(
     deps,
     forge,
     { platform: "gitea", owner, repo, number: pullNumber, headSha, draft: false, action: "rerun" },
-    reviewers,
+    specs,
   );
 }
 
@@ -1009,7 +1035,6 @@ async function handleRegister(
   let reviewersJson: string | undefined;
   if (payload.reviewers !== undefined) {
     const parsed = parseReviewersOverride(
-      deps,
       payload.reviewers,
       `${ref.owner}/${ref.repo} 的模型覆盖`,
     );
@@ -1130,7 +1155,6 @@ async function handleSetReviewers(
   let reviewersJson: string | null = null;
   if (payload.reviewers !== null) {
     const parsed = parseReviewersOverride(
-      deps,
       payload.reviewers,
       `${record.owner}/${record.repo} 的模型覆盖`,
     );

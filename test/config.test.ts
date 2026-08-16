@@ -34,10 +34,13 @@ test("模型组合从全局配置文件读取", () => {
 });
 
 test("配置里的每个条目建成一个 Reviewer,各自绑定自己的模型与凭据", () => {
-  const reviewers = buildReviewers(loadConfig(configFile(VALID)), {
-    ANTHROPIC_API_KEY: "a-secret",
-    DEEPSEEK_API_KEY: "d-secret",
-  });
+  const reviewers = buildReviewers(
+    loadConfig(configFile(VALID)).reviewers,
+    new Map([
+      ["anthropic", "a-secret"],
+      ["deepseek", "d-secret"],
+    ]),
+  );
 
   assert.deepEqual(
     reviewers.map((r) => r.model),
@@ -45,11 +48,18 @@ test("配置里的每个条目建成一个 Reviewer,各自绑定自己的模型�
   );
 });
 
-test("凭据环境变量缺失时立即报错,不留到审查跑起来才失败", () => {
-  assert.throws(
-    () => buildReviewers(loadConfig(configFile(VALID)), { ANTHROPIC_API_KEY: "a" }),
-    /DEEPSEEK_API_KEY/,
+test("缺凭据的 provider 不抛,建出的 Reviewer 一跑就报失败并写明缺哪一家", async () => {
+  const reviewers = buildReviewers(
+    loadConfig(configFile(VALID)).reviewers,
+    new Map([["anthropic", "a-secret"]]),
   );
+
+  const outcome = await reviewers[1]!.review(
+    { baseSha: "base", headSha: "head", files: [] },
+    "/nonexistent-worktree",
+  );
+  assert.match(outcome.failure ?? "", /deepseek/);
+  assert.deepEqual(outcome.findings, []);
 });
 
 test("配置文件缺失、非法或没有 Reviewer 时报错", () => {
@@ -103,7 +113,13 @@ test("同一个 model id 在两家 provider 下是两个 Reviewer,可共存", ()
       ],
     }),
   );
-  const reviewers = buildReviewers(config, { K1: "k1", K2: "k2" });
+  const reviewers = buildReviewers(
+    config.reviewers,
+    new Map([
+      ["a", "k1"],
+      ["b", "k2"],
+    ]),
+  );
   assert.deepEqual(
     reviewers.map((r) => r.model),
     ["a:same", "b:same"],
@@ -118,8 +134,8 @@ test("带斜杠的 model id 拆包无歧义:首个冒号即边界", () => {
           { provider: "openrouter", model: "z-ai/glm-5.2:free", apiKeyEnv: "K1" },
         ],
       }),
-    ),
-    { K1: "k1" },
+    ).reviewers,
+    new Map([["openrouter", "k1"]]),
   );
   assert.equal(reviewer!.model, "openrouter:z-ai/glm-5.2:free");
   const [provider, ...rest] = reviewer!.model.split(":");

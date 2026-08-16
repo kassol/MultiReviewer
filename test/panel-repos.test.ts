@@ -145,9 +145,9 @@ test("配置了模型覆盖的仓库,Review Run 用覆盖后的组合", async ()
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
 
-  // 构建走的是覆盖组合:注册时试构建一次(坏覆盖在注册响应里显形)、投递时真构建一次。
-  // 落库的执行结果归属覆盖后的模型,不见全局模型。
-  assert.deepEqual(h.factoryCalls, [override, override]);
+  // 组装只在 Review Run 开始时发生一次,用的是覆盖组合。落库的执行结果归属覆盖后的
+  // 模型,不见全局模型。
+  assert.deepEqual(h.factoryCalls, [override]);
   const sqlite = new DatabaseSync(h.db.path);
   try {
     const rows = sqlite.prepare("SELECT model FROM reviewer_outcome").all() as {
@@ -217,7 +217,7 @@ test("模型覆盖可编辑:PUT 全量替换、null 清除,坏覆盖 400", async
 test("全局模型组合只回模型标识", async () => {
   const h = await startHarness();
   assert.deepEqual(await (await h.api("GET", "/reviewers")).json(), {
-    models: ["global-model"],
+    models: ["test:global-model"],
   });
 });
 
@@ -327,7 +327,7 @@ test("没配 Gitea 时注册与移除回 500,说明配置缺口", async () => {
   cleanups.push(cache.cleanup, db.cleanup);
   const server = createWebhookServer({
     forges: {},
-    reviewers: [],
+    reviewerSpecs: [],
     buildReviewers: () => [],
     cacheDir: cache.dir,
     dbPath: db.path,
