@@ -125,6 +125,25 @@ table { border-collapse: collapse; width: 100%; }
 .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
 .kv .k { color: var(--muted); }
 
+/* 评审记录页:跨仓库时间流(变体 C) */
+.c-top {
+  position: sticky; top: 0; z-index: 5;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+  padding: 11px 22px; display: flex; align-items: center; gap: 26px; flex-wrap: wrap;
+}
+.c-stat { display: flex; align-items: baseline; gap: 7px; }
+.c-stat .v { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 600; font-size: 15px; }
+.c-stat .l { font-size: 11px; color: var(--faint); }
+.c-feed { max-width: 780px; margin: 0 auto; padding: 20px 22px 90px; display: flex; flex-direction: column; gap: 10px; }
+.c-day { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--faint); padding: 12px 2px 2px; }
+.c-run { padding: 13px 15px; display: flex; flex-direction: column; gap: 9px; }
+.c-run .line1 { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.c-run .repo { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.c-run .line2 { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; font-size: 12px; }
+.c-models { display: flex; gap: 14px; }
+.c-models span { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.c-models b { color: var(--ink); font-weight: 600; }
+
 /* 处置率页(变体 B) */
 .b-wrap { padding: 24px 26px; display: flex; flex-direction: column; gap: 20px; max-width: 1060px; margin: 0 auto; }
 .b-head { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }

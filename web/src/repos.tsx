@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 
-import { api } from "./api.ts";
+import { api, errorText, fetchJson } from "./api.ts";
+import { rerunRequest, RunPill, type RunItem } from "./runs.tsx";
 
 type ReviewerSpec = { provider: string; model: string; apiKeyEnv: string };
 
@@ -20,17 +21,6 @@ type HookCheck = {
   hooks: { id: number; generation: number; active: boolean }[];
   issues: { message: string; action: string }[];
 };
-
-async function errorText(response: Response): Promise<string> {
-  const body = (await response.json().catch(() => null)) as { error?: string } | null;
-  return body?.error ?? `请求失败(${response.status})`;
-}
-
-async function fetchJson<T>(path: string): Promise<T> {
-  const response = await api(path);
-  if (!response.ok) throw new Error(await errorText(response));
-  return (await response.json()) as T;
-}
 
 function since(iso: string): string {
   const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60_000);
@@ -304,6 +294,8 @@ function RepoDetail({
         </div>
       </section>
 
+      <RepoRuns repo={repo} onFeedback={setFeedback} />
+
       {confirmingRemoval ? (
         <div className="modal-backdrop" onClick={() => setConfirmingRemoval(false)}>
           <div className="card modal" onClick={(event) => event.stopPropagation()}>
@@ -516,5 +508,76 @@ function ReviewersModal({
         </div>
       </form>
     </div>
+  );
+}
+
+/** 本仓库最近的 Review Run,加「输 PR 号重跑」入口(issue #37,从 #34 递延的 runs 表)。 */
+function RepoRuns({
+  repo,
+  onFeedback,
+}: {
+  repo: RepoRow;
+  onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
+}) {
+  const queryClient = useQueryClient();
+  const runs = useQuery({
+    queryKey: ["repo-runs", repo.owner, repo.repo],
+    queryFn: () =>
+      fetchJson<{ runs: RunItem[] }>(
+        `/runs?owner=${encodeURIComponent(repo.owner)}&repo=${encodeURIComponent(repo.repo)}`,
+      ),
+  });
+  const [pullNumber, setPullNumber] = useState("");
+  const rerun = useMutation({
+    mutationFn: rerunRequest,
+    onSuccess: (text) => {
+      onFeedback({ text, isError: false });
+      setPullNumber("");
+      void queryClient.invalidateQueries({ queryKey: ["repo-runs", repo.owner, repo.repo] });
+    },
+    onError: (error: Error) => onFeedback({ text: error.message, isError: true }),
+  });
+
+  const submit = (event: FormEvent): void => {
+    event.preventDefault();
+    const number = Number(pullNumber);
+    if (!Number.isSafeInteger(number) || number <= 0) {
+      onFeedback({ text: "PR 号要是正整数", isError: true });
+      return;
+    }
+    rerun.mutate({ owner: repo.owner, repo: repo.repo, pullNumber: number });
+  };
+
+  const rows = runs.data?.runs.slice(0, 8) ?? [];
+  return (
+    <section className="card panel">
+      <h2>评审记录</h2>
+      <form onSubmit={submit} style={{ display: "flex", gap: 8 }}>
+        <input
+          placeholder="PR 号"
+          inputMode="numeric"
+          value={pullNumber}
+          onChange={(event) => setPullNumber(event.target.value)}
+          style={{ width: 110 }}
+        />
+        <button className="btn" type="submit" disabled={rerun.isPending}>
+          {rerun.isPending ? "触发中…" : "重跑"}
+        </button>
+      </form>
+      {runs.isError ? <p className="error">{(runs.error as Error).message}</p> : null}
+      {rows.map((run) => (
+        <div className="kv" key={run.id}>
+          <span className="k mono">
+            #{run.pullNumber} · {run.startedAt.slice(0, 16).replace("T", " ")}
+          </span>
+          <RunPill run={run} />
+        </div>
+      ))}
+      {rows.length === 0 && !runs.isPending ? (
+        <p className="faint" style={{ fontSize: 12 }}>
+          这个仓库还没有 Review Run。
+        </p>
+      ) : null}
+    </section>
   );
 }

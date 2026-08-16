@@ -240,6 +240,27 @@ export type RepoSummary = {
   lastActivity: string | null;
 };
 
+/** 时间流里的一条 Review Run。`models` 是逐模型的来源 Finding 行数,按模型名排序。 */
+export type RunListItem = {
+  id: number;
+  owner: string;
+  repo: string;
+  pullNumber: number;
+  headSha: string;
+  startedAt: string;
+  finishedAt: string | null;
+  failed: boolean;
+  models: { model: string; findings: number }[];
+  /**
+   * 已处置的合并组数。已处置判定与处置率同源(任一行 resolved 即已处置,只认行级
+   * 承载),但计数单位是本轮合并组,不是处置率的逐模型 Finding Identity——多模型
+   * 报同一处这里算 1,处置率矩阵里逐模型各算一条。
+   */
+  resolved: number;
+  /** 行级承载的合并组总数。正文行没有 resolve 载体,不进这一对计数。 */
+  total: number;
+};
+
 export type Store = {
   /**
    * 注册一个仓库:注册表行与第一把 Key 在一个事务里落库——「有仓库无 Key」的投递
@@ -275,6 +296,11 @@ export type Store = {
    * ISO 字符串按字典序即时间序)。
    */
   dispositionStats(from: string, to: string): DispositionCell[];
+  /**
+   * 时间流的一页:按 id 倒序(id 即落库顺序,与开跑时间同序),`beforeId` 取更早的
+   * 一页。覆盖全部评审记录——已移除仓库的历史照常出现,这是留存决策的呈现面。
+   */
+  listRuns(opts: { beforeId?: number; limit: number; owner?: string; repo?: string }): RunListItem[];
   /** 每张表的行数,给面板展示库体量。不做清理,数字只会涨(ADR 0006 的留存决策)。 */
   tableCounts(): { name: string; rows: number }[];
   /**
@@ -610,6 +636,80 @@ export function openStore(dbPath: string): Store {
         unknownClosed: Number(row["unknown_closed"]),
         unknownOpen: Number(row["unknown_open"]),
       }));
+    },
+
+    listRuns(opts) {
+      const conditions: string[] = [];
+      const params: (number | string)[] = [];
+      if (opts.beforeId !== undefined) {
+        conditions.push("id < ?");
+        params.push(opts.beforeId);
+      }
+      if (opts.owner !== undefined && opts.repo !== undefined) {
+        conditions.push("owner = ? AND repo = ?");
+        params.push(opts.owner, opts.repo);
+      }
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+      const runs = db
+        .prepare(
+          `SELECT id, owner, repo, pull_number, head_sha, started_at, finished_at, failed
+             FROM review_run ${where}
+            ORDER BY id DESC LIMIT ?`,
+        )
+        .all(...params, opts.limit);
+      if (runs.length === 0) return [];
+
+      const ids = runs.map((run) => Number(run["id"]));
+      const marks = ids.map(() => "?").join(", ");
+      const byModel = db
+        .prepare(
+          `SELECT run_id, model, COUNT(*) AS findings FROM finding
+            WHERE run_id IN (${marks}) GROUP BY run_id, model ORDER BY model`,
+        )
+        .all(...ids);
+      // 已处置口径与处置率同源:合并组内任一行 resolved 即已处置,只认行级承载。
+      const byGroup = db
+        .prepare(
+          `SELECT run_id,
+                  COUNT(DISTINCT group_index) AS total,
+                  COUNT(DISTINCT CASE WHEN disposition = 'resolved' THEN group_index END)
+                    AS resolved
+             FROM finding
+            WHERE run_id IN (${marks}) AND placement = 'inline'
+            GROUP BY run_id`,
+        )
+        .all(...ids);
+
+      const models = new Map<number, { model: string; findings: number }[]>();
+      for (const row of byModel) {
+        const runId = Number(row["run_id"]);
+        const list = models.get(runId) ?? [];
+        list.push({ model: String(row["model"]), findings: Number(row["findings"]) });
+        models.set(runId, list);
+      }
+      const groups = new Map<number, { resolved: number; total: number }>();
+      for (const row of byGroup) {
+        groups.set(Number(row["run_id"]), {
+          resolved: Number(row["resolved"]),
+          total: Number(row["total"]),
+        });
+      }
+      return runs.map((run) => {
+        const id = Number(run["id"]);
+        return {
+          id,
+          owner: String(run["owner"]),
+          repo: String(run["repo"]),
+          pullNumber: Number(run["pull_number"]),
+          headSha: String(run["head_sha"]),
+          startedAt: String(run["started_at"]),
+          finishedAt: run["finished_at"] === null ? null : String(run["finished_at"]),
+          failed: Number(run["failed"]) === 1,
+          models: models.get(id) ?? [],
+          resolved: groups.get(id)?.resolved ?? 0,
+          total: groups.get(id)?.total ?? 0,
+        };
+      });
     },
 
     tableCounts() {

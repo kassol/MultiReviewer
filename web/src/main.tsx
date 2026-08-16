@@ -15,6 +15,7 @@ import { api } from "./api.ts";
 import { injected } from "./injected.ts";
 import { LoginPage } from "./login.tsx";
 import { ReposPage } from "./repos.tsx";
+import { RunsPage } from "./runs.tsx";
 import { StatsPage } from "./stats.tsx";
 import "./styles.css";
 
@@ -79,7 +80,7 @@ const reposRoute = createRoute({
 const runsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/runs",
-  component: () => <p style={{ padding: 22 }}>评审记录页(issue #37)</p>,
+  component: RunsPage,
 });
 const statsRoute = createRoute({
   getParentRoute: () => shellRoute,

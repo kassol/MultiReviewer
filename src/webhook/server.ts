@@ -46,8 +46,9 @@ export type NormalizedEvent = {
   /**
    * 前两个动作触发 Review Run;`closed` 触发对该 PR 的 disposition 全量回填
    * (ADR 0006),`reopened` 清掉关闭标记,都不跑审查。其余动作在规范化时就被滤掉。
+   * `rerun` 不来自投递,是面板手动重跑的标记——日志里要与真实投递分得开。
    */
-  action: "opened" | "new-commit" | "closed" | "reopened";
+  action: "opened" | "new-commit" | "closed" | "reopened" | "rerun";
 };
 
 export type WebhookServerDeps = {
@@ -338,6 +339,21 @@ function withStore<T>(dbPath: string, fn: (store: Store) => T): T {
   }
 }
 
+/**
+ * 按仓库的模型覆盖构建 Reviewer:null 即跟随全局。坏覆盖(解析不了、缺凭据引用)
+ * 抛出,投递链与手动重跑各自决定错误出口(静默记录 / 409 显形)。
+ */
+function overrideReviewers(
+  deps: WebhookServerDeps,
+  reviewersJson: string | null,
+  repoId: number,
+): readonly Reviewer[] {
+  if (reviewersJson === null) return deps.reviewers;
+  return deps.buildReviewers(
+    assertReviewerSpecs(JSON.parse(reviewersJson), `仓库 ${repoId} 的模型覆盖`),
+  );
+}
+
 type Admission = {
   keys: RepoKey[];
   /** 该仓库的模型覆盖(JSON),null 即跟随全局。与 key 同一次开库读出。 */
@@ -533,17 +549,11 @@ async function handle(
   // (解析不了、缺 buildReviewers)按配置错误记录并回 200,与缺 Forge 同一档;放在
   // claim 之前——坏配置不该吃掉幂等键,修好后同一 head commit 要能重新触发。
   let reviewers = deps.reviewers;
-  if (admission.reviewersJson !== null) {
-    try {
-      const specs = assertReviewerSpecs(
-        JSON.parse(admission.reviewersJson),
-        `仓库 ${repoId} 的模型覆盖`,
-      );
-      reviewers = deps.buildReviewers(specs);
-    } catch (error) {
-      (deps.onRunSettled ?? logFailure)(event, error);
-      return send(res, 200);
-    }
+  try {
+    reviewers = overrideReviewers(deps, admission.reviewersJson, repoId);
+  } catch (error) {
+    (deps.onRunSettled ?? logFailure)(event, error);
+    return send(res, 200);
   }
 
   if (!claim(deps.dbPath, event)) {
@@ -640,6 +650,13 @@ async function handlePanelApi(
     return handleStats(req, res, deps);
   }
 
+  if (sub === "/runs" && req.method === "GET") {
+    return handleRuns(req, res, deps);
+  }
+  if (sub === "/rerun" && req.method === "POST") {
+    return handleRerun(req, res, deps);
+  }
+
   if (sub === "/repos" && req.method === "GET") {
     const rows = withStore(deps.dbPath, (store) => store.listRepos());
     return sendJson(
@@ -700,6 +717,104 @@ function parseReviewersOverride(
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/** 时间流一页的条数。翻页用 id 游标,不用 offset——历史只增不删,游标不会漂。 */
+const RUNS_PAGE = 30;
+
+/** 跨仓库 Review Run 时间流的一页。覆盖已移除仓库的历史——评审记录只写不清。 */
+function handleRuns(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): void {
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+  const beforeRaw = query.get("before");
+  const beforeId = beforeRaw === null ? undefined : Number(beforeRaw);
+  if (beforeId !== undefined && !Number.isSafeInteger(beforeId)) {
+    return sendJson(res, 400, { error: "before 要是整数游标" });
+  }
+  const owner = query.get("owner");
+  const repo = query.get("repo");
+  if ((owner === null) !== (repo === null)) {
+    return sendJson(res, 400, { error: "owner 与 repo 要成对给,过滤不接受半个键" });
+  }
+  const runs = withStore(deps.dbPath, (store) =>
+    store.listRuns({
+      limit: RUNS_PAGE,
+      ...(beforeId === undefined ? {} : { beforeId }),
+      ...(owner !== null && repo !== null ? { owner, repo } : {}),
+    }),
+  );
+  const nextBefore = runs.length === RUNS_PAGE ? runs[runs.length - 1]!.id : null;
+  return sendJson(res, 200, { runs, nextBefore });
+}
+
+/**
+ * 手动重跑:对一个 PR 开新一轮 Review Run,走既有的跨轮次折叠。不走幂等 claim——
+ * 同一 head commit 重复审在这里是合法诉求(spec 原话),claim 只属于 webhook 投递。
+ * 入参用 owner/repo 字符串而非数值 id:时间流里的历史行(含已移除仓库)只有名字。
+ */
+async function handleRerun(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): Promise<void> {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body) as {
+    owner?: unknown;
+    repo?: unknown;
+    pullNumber?: unknown;
+  } | null;
+  if (
+    payload === null ||
+    typeof payload.owner !== "string" ||
+    typeof payload.repo !== "string" ||
+    typeof payload.pullNumber !== "number" ||
+    !Number.isSafeInteger(payload.pullNumber)
+  ) {
+    return sendJson(res, 400, {
+      error: 'body 要是 {"owner", "repo", "pullNumber"} 形状,pullNumber 是整数',
+    });
+  }
+  const { owner, repo, pullNumber } = payload;
+
+  const registered = withStore(deps.dbPath, (store) => store.listRepos()).find(
+    (row) => row.owner === owner && row.repo === repo,
+  );
+  if (registered === undefined) {
+    return sendJson(res, 409, { error: "仓库不在注册表里,先注册再重跑" });
+  }
+  const forge = deps.forges.gitea;
+  if (forge === undefined) {
+    return sendJson(res, 503, { error: "gitea 没有配置 Forge,重跑不了" });
+  }
+
+  // 坏覆盖在这里显形(409),不像投递那样静默记日志——重跑是人在等结果的动作。
+  let reviewers = deps.reviewers;
+  try {
+    reviewers = overrideReviewers(deps, registered.reviewersJson, registered.repoId);
+  } catch (error) {
+    return sendJson(res, 409, {
+      error: `模型覆盖坏了,先改组合再重跑:${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
+
+  const ref = { owner, repo, number: pullNumber };
+  let headSha: string;
+  try {
+    headSha = (await forge.getPullRequest(ref)).headSha;
+  } catch {
+    return sendJson(res, 404, { error: "PR 读不到:号不对,或 bot 无权限" });
+  }
+  sendJson(res, 202, { pullNumber, headSha });
+  startRun(
+    deps,
+    forge,
+    { platform: "gitea", owner, repo, number: pullNumber, headSha, draft: false, action: "rerun" },
+    reviewers,
+  );
 }
 
 /** 一天的毫秒数,处置率页的默认时间窗取最近 30 天。 */

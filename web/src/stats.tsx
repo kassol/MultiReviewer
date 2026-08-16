@@ -3,7 +3,7 @@ import { useState } from "react";
 
 import { api } from "./api.ts";
 
-type Cell = {
+export type Cell = {
   model: string;
   category: string;
   resolved: number;
@@ -20,7 +20,7 @@ type StatsResponse = {
 };
 
 /** 分母 = 已处置 + 看过未 resolve + 已关闭 PR 上无人处置(ADR 0006)。 */
-function denominator(cell: Cell): number {
+export function denominator(cell: Cell): number {
   return cell.resolved + cell.unresolved + cell.unknownClosed;
 }
 

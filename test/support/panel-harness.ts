@@ -71,6 +71,10 @@ export async function startPanelHarness(
     ...base.forge,
     getPullRequest: async (ref: PullRequestRef) => {
       dispatched.push(ref);
+      // 与真实 Forge 同构:不存在的 PR 号抛错,而不是回同一份 PR。
+      if (ref.number !== HARNESS_PR.number) {
+        throw new Error(`PR #${ref.number} 不存在`);
+      }
       return base.forge.getPullRequest(ref);
     },
   };
