@@ -94,6 +94,12 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 
 向导可以中断后重跑:已经写进 `.env` 的值会被认出来,对应阶段直接跳过,只补没做完的部分。`FORCE=1 bash setup.sh` 强制每个阶段都重做。
 
+### 面板门禁的运维
+
+- **轮换 admin token = 改 `.env` 的 `MULTIREVIEWER_ADMIN_TOKEN` + 重启容器。**会话表在内存里,不落库,所以重启即清空全部会话:轮换天然带踢会话,已登录的浏览器下一次请求就回 401。怀疑会话 cookie 泄露时正解也是轮换 token,没有单独作废某一个会话的手段(面板上的登出只作废自己那一个)。
+- **HTTPS 是门禁的前提,不是可选项。**会话 cookie 带 `Secure`,明文 HTTP 下浏览器根本不发它;`MULTIREVIEWER_BASE_URL` 是明文 http 且非 localhost 时服务直接拒绝启动(localhost 放行,浏览器把它当安全上下文)。本服务自己不终止 TLS,证书与 https 由外部反代负责,归部署方。
+- **面板前缀不是安全边界。**未认证的 API 请求一律 401,端点存在与否都一样,前缀只是路由匹配的第一段。它挡的是「面板地址被爬到」,挡不住知道地址的人;真正的门禁是 admin token 与会话 cookie。前缀轮换只会让旧的 `Path` 限定 cookie 失配,不构成额外保护。
+
 ### Gitea 的准备步骤
 
 **实例版本必须是社区版 1.26.0 / 企业版 26.0.0 以上。**Disposition 建立在 review 评论的 resolve / unresolve 端点上,而这对端点自该版本才提供,更低的版本用不了本工具(ADR 0002)。服务启动时会读 `GET /api/v1/version` 检查一次,不合格就报错退出。
@@ -192,3 +198,4 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-16: 落地 issue #66。全局设置进库,`multireviewer.config.json` 废除。模型组合与批次上限存 `global_setting` 表,面板的 `GET`/`PUT <前缀>/api/settings` 读写同一形状(`{reviewers: [{provider, model}], maxChangedLinesPerBatch}`);全局组合与每仓库覆盖同构,一套校验判据通吃,报错标注是全局还是哪个仓库;批次上限缺省时读回默认值 2000。`ReviewerSpec` 去掉 `apiKeyEnv`,凭据只从库里按 provider 取(ADR 0008)。空库、还没配组合时投递照常受理,留下一条失败的 Review Run 写明「还没有配置模型组合」——零 Reviewer 的 Run 不留痕,那才是真的看不出问题。删掉的东西:`multireviewer.config.example.json`、`loadConfig` 与默认配置路径、环境变量 `MULTIREVIEWER_CONFIG`(镜像里那一行也删)、compose 的只读单文件绑定与「只需要这三样」的注释、向导写配置的那一段(向导的模型标识核对改成直接核两个入参)。面板暂时只有端点没有设置页,组合的选择器是 issue #68 / #69。
 - 2026-08-16: 落地 issue #67。面板 API 加模型目录端点 `GET <前缀>/api/catalog`,回服务进程里那份 Pi 的全部 provider(实测 39 家)与它们的模型,每家带上凭据是否已配。目录是运行时事实,随 Pi 升级而变:从服务端读,不进前端构建期依赖,前端不重建也不会显示旧目录。目录与凭据状态一次请求拿齐——拆成两个端点要在前端合并两份数据,还多一次往返。每个模型只给 `id`、`name`、`contextWindow`、`cost`:`id` 是模型标识 `provider:model` 的后半段,选择器要靠它回填,其余三项是选型判据;reasoning / maxTokens / input / baseUrl 不给,面板不用它们做判断。没配凭据的 provider 照常在结果里,不过滤——先能看见一家,才知道该去配它的凭据。不做工具调用能力的拦截:Pi 的模型类型里没有这个字段,面板自建黑名单追不上上游,让它在 Review Run 里失败并写明原因。本票只有端点,模型组合的选择器是 issue #68。
 - 2026-08-16: 落地 issue #70。注册仓库改成搜索式下拉。面板新增 `GET <前缀>/api/repos/search`:走面板既有的 admin token 门禁,服务端用 bot PAT 调 Gitea 的 `/repos/search`(现有 scope 够用,契约见 `docs/research/gitea-repo-search-api.md`),浏览器不直连 Gitea——直连等于把 Gitea 的仓库可见范围挂在一个前端能拿到的 token 上,还要再造一条凭据轮换路径。能力挂在 Gitea 专属的 hook 管理模块上,不进通用 `Forge` 接口(ADR 0002)。响应逐条标两个状态:已注册(查注册表)、bot 不是 admin(读搜索结果自带的权限字段);两类不可选项照样返回、由前端置灰,过滤掉会让人明知仓库存在却搜不到。只取第一页,总数大于这一页即标截断,前端提示继续输入。前端手输 owner / repo 两个框删除,不留兜底。注册端点的入参与权限检查一字未改,repoId 仍由服务端从权限检查那一次请求读出。
+- 2026-08-16: 落地 issue #71。面板补上登出:`DELETE <前缀>/api/session` 落在门禁之后(未登录调它回 401),从内存会话表删掉该 session 并回一个 `Max-Age=0`、属性与登录时逐字一致的 Set-Cookie;壳的侧栏底部是入口。顺带把三条既有事实写进部署段的「面板门禁的运维」:轮换 admin token 要改环境变量加重启,重启即清空全部会话(会话表在内存不落库),怀疑 cookie 泄露时正解也是轮换 token;HTTPS 是门禁的前提,会话 cookie 带 Secure、基地址明文 http 且非 localhost 时服务拒绝启动,TLS 由外部反代终止;面板前缀不是安全边界,未认证请求端点存在与否都回 401。门禁本身一字未改。

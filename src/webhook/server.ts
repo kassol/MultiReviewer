@@ -639,6 +639,17 @@ function cookieValue(header: string | undefined, name: string): string | undefin
 }
 
 /**
+ * 会话 cookie 的 Set-Cookie 头。登录与登出共用一个拼装点:清除用的属性必须与写入时
+ * 逐字一致,Path 差一个字浏览器就不删,旧 cookie 会留在浏览器里。
+ */
+function sessionCookieHeader(prefix: string, value: string, maxAgeSeconds: number): string {
+  return (
+    `${SESSION_COOKIE}=${value}; HttpOnly; Secure; SameSite=Strict; ` +
+    `Path=/${prefix}; Max-Age=${maxAgeSeconds}`
+  );
+}
+
+/**
  * 面板 API。登录是唯一免认证的端点,其余一律先验 session——端点存在与否都回 401,
  * 枚举 API 面也要先过认证。API 下的未知路径回 JSON 404,与页面的裸 404 分开:调用方
  * 是程序,它要能把「端点不存在」从「前缀不对」里区分出来。
@@ -670,9 +681,11 @@ async function handlePanelApi(
       });
     }
     res.writeHead(204, {
-      "set-cookie":
-        `${SESSION_COOKIE}=${outcome.sessionId}; HttpOnly; Secure; SameSite=Strict; ` +
-        `Path=/${deps.panelPrefix}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
+      "set-cookie": sessionCookieHeader(
+        deps.panelPrefix,
+        outcome.sessionId,
+        Math.floor(SESSION_TTL_MS / 1000),
+      ),
     });
     res.end();
     return;
@@ -685,6 +698,14 @@ async function handlePanelApi(
   // 登录状态探测,SPA 启动时靠它决定进登录页还是进面板。
   if (sub === "/session" && req.method === "GET") {
     return send(res, 204);
+  }
+
+  // 登出落在门禁之后:未登录的调用者没有会话可作废,与其余端点同档回 401。
+  if (sub === "/session" && req.method === "DELETE") {
+    auth.logout(cookieValue(req.headers.cookie, SESSION_COOKIE));
+    res.writeHead(204, { "set-cookie": sessionCookieHeader(deps.panelPrefix, "", 0) });
+    res.end();
+    return;
   }
 
   if (sub === "/settings" && req.method === "GET") {

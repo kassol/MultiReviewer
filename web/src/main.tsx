@@ -7,6 +7,7 @@ import {
   Outlet,
   redirect,
   RouterProvider,
+  useRouter,
 } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -56,6 +57,15 @@ const NAV = [
  * 切换不必重新找东西在哪。
  */
 function Shell() {
+  const router = useRouter();
+
+  // 服务端作废 session 并清 cookie,再回登录页。端点回什么都往登录页走:会话已经
+  // 不该用了,留在面板上只会在下一次请求撞 401。
+  async function logout(): Promise<void> {
+    await api("/session", { method: "DELETE" }).catch(() => undefined);
+    await router.navigate({ to: "/login" });
+  }
+
   return (
     // 窄视口下侧栏会吃掉一半宽度,所以那一档改成上下堆叠、导航横排。
     <div className="flex h-screen flex-col sm:grid sm:grid-cols-[184px_1fr]">
@@ -78,6 +88,14 @@ function Shell() {
             </Link>
           ))}
         </nav>
+        {/* 侧栏底部(窄视口下是导航尾端):登出与导航同列,位置固定不随页面变。 */}
+        <button
+          type="button"
+          onClick={() => void logout()}
+          className="flex h-9 items-center px-4 whitespace-nowrap text-muted-foreground hover:bg-muted max-sm:ml-auto sm:mt-auto sm:mb-2"
+        >
+          登出
+        </button>
       </aside>
       <div className="flex min-w-0 flex-col">
         <SummaryBar />

@@ -29,6 +29,8 @@ export type PanelAuth = {
   login(token: string, ip: string): LoginOutcome;
   /** cookie 里带来的 session id 是否有效。 */
   authenticate(sessionId: string | undefined): boolean;
+  /** 作废一个 session。已经不在表里的 id 照样当成功——登出没有失败这一档。 */
+  logout(sessionId: string | undefined): void;
 };
 
 /** 定长摘要后比较:timingSafeEqual 要求等长,而输入长度本身也不该泄露。 */
@@ -89,6 +91,11 @@ export function createPanelAuth(
         return false;
       }
       return true;
+    },
+
+    logout(sessionId) {
+      if (sessionId === undefined) return;
+      sessions.delete(sessionId);
     },
   };
 }

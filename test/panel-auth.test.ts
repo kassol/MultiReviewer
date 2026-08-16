@@ -144,6 +144,36 @@ test("未认证的 API 请求一律 401,不区分端点存不存在", async () =
   assert.equal((await h.get(`/${PREFIX}/api/no-such-endpoint`)).status, 401);
 });
 
+test("登出作废 session,清除 cookie 的属性与登录时逐字一致", async () => {
+  const h = await startPanel();
+
+  function logout(cookie?: string): Promise<Response> {
+    return fetch(`${h.baseUrl}/${PREFIX}/api/session`, {
+      method: "DELETE",
+      redirect: "manual",
+      ...(cookie === undefined ? {} : { headers: { cookie } }),
+    });
+  }
+
+  // 登出在门禁之后:没有会话可作废的调用者与其余端点同档回 401。
+  assert.equal((await logout()).status, 401);
+
+  const login = await h.login(ADMIN_TOKEN);
+  const cookie = sessionCookie(login);
+  const done = await logout(cookie);
+  assert.equal(done.status, 204);
+
+  // Path 差一个字浏览器就不删,清除头因此除了值与 Max-Age 之外必须与登录头逐字相同。
+  const cleared = done.headers.getSetCookie()[0]!;
+  const attributes = (header: string): string =>
+    header.split(";").slice(1).join(";").replace(/ Max-Age=\d+/, " Max-Age");
+  assert.equal(attributes(cleared), attributes(login.headers.getSetCookie()[0]!));
+  assert.match(cleared, /(^|;\s*)Max-Age=0(;|$)/);
+
+  // 旧 cookie 就此失效:服务端的会话表里已经没有它。
+  assert.equal((await h.get(`/${PREFIX}/api/session`, cookie)).status, 401);
+});
+
 // 冲刷追踪表要一万个来源地址,走 HTTP 太慢,这条直接打认证判定模块(时钟注入是同一条缝)。
 test("锁定中的记录不被伪造源地址挤出追踪表", () => {
   let nowMs = 0;
