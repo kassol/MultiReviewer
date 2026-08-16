@@ -5,7 +5,6 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import type { Reviewer, ReviewerUsage } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
 
@@ -278,44 +277,6 @@ test("用量与耗时落库,Review Run 一级是各 Reviewer 之和", async () =
   assert.ok((run["duration_ms"] as number) >= 30);
 });
 
-test("Finding 的处置结果可按模型与 category 聚合", async () => {
-  const { cache, db, forge } = setup();
-
-  await runReview(EVENT, {
-    forge: forge.forge,
-    reviewers: [
-      scriptedReviewer("model-a", [
-        FINDING,
-        { ...FINDING, line: 10, category: "maintainability", description: "mul 缺少校验" },
-      ]),
-      scriptedReviewer("model-b", [FINDING]),
-    ],
-    cacheDir: cache.dir,
-    dbPath: db.path,
-  });
-
-  // Disposition 的读回是另一票的事,这里直接置一条已处置,验证聚合口径。
-  const write = new DatabaseSync(db.path);
-  write.exec("UPDATE finding SET disposition = 'resolved' WHERE model = 'model-b'");
-  write.close();
-
-  const store = openStore(db.path);
-  const rows = store.dispositionsByModelAndCategory();
-  store.close();
-
-  assert.deepEqual(rows, [
-    { model: "model-a", category: "bug", total: 1, resolved: 0, unresolved: 0, unknown: 1 },
-    {
-      model: "model-a",
-      category: "maintainability",
-      total: 1,
-      resolved: 0,
-      unresolved: 0,
-      unknown: 1,
-    },
-    { model: "model-b", category: "bug", total: 1, resolved: 1, unresolved: 0, unknown: 0 },
-  ]);
-});
 
 test("同一数据库上的第二次 Review Run 追加一行,不覆盖上一次", async () => {
   const { repo, cache, db, forge } = setup();

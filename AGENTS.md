@@ -183,3 +183,4 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-15: 落地 issue #33。管理面板前端从零起(`web/`,Vite + React + TanStack Router/Query):登录一屏加三页顶部导航的空壳。服务端补齐路由表的页面两格(前缀下返回注入前缀全局变量的 index.html、`/assets` 服务构建产物),Docker 改多阶段构建,dist 不进版本库也不含前缀。dev 双进程联调:Vite 插件注入同名变量、proxy 转 `<前缀>/api`,前缀读同一份 `.env`。生产镜像、dev 双进程与真实浏览器(登录、三页导航、深层路由刷新)均已实测。
 - 2026-08-15: 落地 issue #34。仓库页 master-detail(原型变体 A):注册模态、移除二次确认(删 hook、评审记录保留)、轮转按钮、打开仓库即核对并可一键推平差异、模型组合可编辑(新端点 `PUT /repos/<id>/reviewers`),key 任何界面不回显。真实浏览器走通注册 → 轮转 → 手删 hook 后推平 → 改组合 → 移除全流程。
 - 2026-08-15: 落地 issue #35。处置率的回填链路(ADR 0006)打通:每轮 Review Run 顺手把读回的 resolve 状态覆盖到历史 finding,PR closed 投递触发全量回填并落 PR 状态;`finding` 记来源类型(行级评论 / 正文),正文行排除在统计外。两个时机都不新增 API 调用。
+- 2026-08-16: 落地 issue #36。处置率统计与页面:`store.ts` 的 `dispositionStats` 按 Finding Identity 折叠出模型 × 分类矩阵,`GET <前缀>/api/stats` 打包矩阵与库体量(库文件字节数 + 全部表行数),前端处置率页按原型变体 B 落地(模型卡片 + 矩阵,每格永远带分子分母)。口径细则见 `src/AGENTS.md`,页面见 `web/AGENTS.md`。

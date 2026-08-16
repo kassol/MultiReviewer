@@ -125,6 +125,32 @@ table { border-collapse: collapse; width: 100%; }
 .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
 .kv .k { color: var(--muted); }
 
+/* 处置率页(变体 B) */
+.b-wrap { padding: 24px 26px; display: flex; flex-direction: column; gap: 20px; max-width: 1060px; margin: 0 auto; }
+.b-head { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+.b-window { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.b-window input {
+  font: inherit; font-family: var(--mono); font-size: 12px;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px;
+}
+.b-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.tile { padding: 15px 17px; display: flex; flex-direction: column; gap: 7px; }
+.tile .model { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.tile .big { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 30px; font-weight: 600; letter-spacing: -.02em; line-height: 1; }
+.matrix th, .matrix td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; }
+.matrix thead th { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; }
+.matrix tbody th { font-family: var(--mono); font-size: 12px; font-weight: 500; color: var(--ink); white-space: nowrap; }
+.matrix tr:last-child td, .matrix tr:last-child th { border-bottom: 0; }
+.matrix td { min-width: 104px; }
+.scroll-x { overflow-x: auto; }
+
+/* 比率单元:永远带原始分子分母 */
+.rate { display: flex; flex-direction: column; gap: 2px; }
+.rate b { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 600; font-size: 14px; }
+.bar { height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--accent); }
+
 /* 登录 */
 .login-wrap { max-width: 22rem; margin: 22vh auto 0; display: flex; flex-direction: column; gap: 14px; }
 .login-form { display: flex; gap: 8px; }

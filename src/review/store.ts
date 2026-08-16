@@ -70,6 +70,11 @@ CREATE TABLE IF NOT EXISTS finding (
 
 CREATE INDEX IF NOT EXISTS finding_by_run ON finding(run_id);
 
+-- 回填的索引:回填按「文件 + 指纹」改行、按 PR 定位 Review Run。统计矩阵是全表
+-- 聚合,时间窗过滤在聚合之后,建不出能用上的索引。
+CREATE INDEX IF NOT EXISTS finding_by_anchor ON finding(file, fingerprint);
+CREATE INDEX IF NOT EXISTS review_run_by_pr ON review_run(owner, repo, pull_number);
+
 CREATE TABLE IF NOT EXISTS webhook_delivery (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   owner TEXT NOT NULL,
@@ -188,14 +193,22 @@ export type RunResult = {
   findings: readonly FindingRecord[];
 };
 
-/** 按模型与 category 聚合的 Finding 处置结果。 */
-export type DispositionRow = {
+/**
+ * 处置率矩阵的一格:模型 × category。计数单位是**同一处 Finding**(Finding Identity,
+ * 见 CONTEXT.md),不是落库行。分母 = resolved + unresolved + unknownClosed;
+ * unknownOpen 不进分母也不上页面,API 带上它只为让口径可对账。
+ */
+export type DispositionCell = {
   model: string;
   category: string;
-  total: number;
+  /** 分子:已处置(折叠组内任一行 resolved 即已处置)。 */
   resolved: number;
+  /** 人看过但未 resolve。 */
   unresolved: number;
-  unknown: number;
+  /** 已关闭 PR 上仍无人处置——到了终态还没人处置,那就是未处置,进分母。 */
+  unknownClosed: number;
+  /** 开放 PR 上还没人看——它还在流程中,不进分母。 */
+  unknownOpen: number;
 };
 
 /** 仓库持有的一把 key。`generation` 是它的代次,写在 hook URL 的 `?k=` 上。 */
@@ -256,8 +269,14 @@ export type Store = {
   listRepos(): RepoSummary[];
   startRun(meta: RunMeta): number;
   finishRun(runId: number, result: RunResult): void;
-  /** 按模型与 category 聚合 Finding 的处置结果。 */
-  dispositionsByModelAndCategory(): DispositionRow[];
+  /**
+   * 处置率统计(ADR 0006):按 Finding Identity 折叠,fallback(body)排除,unknown
+   * 按 PR 状态分流,时间窗按同一处 Finding 首次报出那轮的开始时间归属(闭区间,
+   * ISO 字符串按字典序即时间序)。
+   */
+  dispositionStats(from: string, to: string): DispositionCell[];
+  /** 每张表的行数,给面板展示库体量。不做清理,数字只会涨(ADR 0006 的留存决策)。 */
+  tableCounts(): { name: string; rows: number }[];
   /**
    * 领走一次 webhook 投递。同一个「仓库 + head commit」只有第一次返回 true。
    *
@@ -467,7 +486,7 @@ export function openStore(dbPath: string): Store {
 
     finishRun(runId, result) {
       // 一次 Review Run 的收尾要么整体可见,要么整体不可见:半张表的 Finding
-      // 会让事后的采纳率统计算出偏低的分母。
+      // 会让事后的处置率统计算出偏低的分母。
       db.exec("BEGIN");
       try {
         db.prepare(
@@ -534,30 +553,80 @@ export function openStore(dbPath: string): Store {
       }
     },
 
-    dispositionsByModelAndCategory() {
+    dispositionStats(from, to) {
+      // 三层:src 摊平行,identity 按「PR + 模型 + 文件 + 指纹」折叠(指纹为 NULL 的
+      // 行用自己的 id 兜底成独立键——算不出指纹就各算一条),labeled 给每个 identity
+      // 取它首次报出那一行的 category(category 不进折叠键,跨轮漂移时以首次为准,
+      // 与时间窗归属同一轮)。
       const rows = db
         .prepare(
-          `SELECT model,
-                  category,
-                  COUNT(*) AS total,
-                  SUM(disposition = 'resolved') AS resolved,
-                  SUM(disposition = 'unresolved') AS unresolved,
-                  SUM(disposition = 'unknown') AS unknown
-             FROM finding
+          `WITH src AS (
+             SELECT f.id, f.model, f.category, f.file, f.disposition,
+                    COALESCE(f.fingerprint, 'row:' || f.id) AS fp,
+                    run.owner, run.repo, run.pull_number, run.started_at,
+                    CASE WHEN run.pr_state = 'closed' THEN 1 ELSE 0 END AS closed
+               FROM finding f
+               JOIN review_run run ON f.run_id = run.id
+              WHERE f.placement = 'inline'
+           ),
+           identity AS (
+             SELECT model, owner, repo, pull_number, file, fp,
+                    MIN(started_at) AS first_seen,
+                    MAX(CASE disposition
+                          WHEN 'resolved' THEN 2
+                          WHEN 'unresolved' THEN 1
+                          ELSE 0 END) AS disp,
+                    MAX(closed) AS closed
+               FROM src
+              GROUP BY model, owner, repo, pull_number, file, fp
+           ),
+           labeled AS (
+             SELECT identity.*,
+                    (SELECT s.category FROM src s
+                      WHERE s.model = identity.model AND s.owner = identity.owner
+                        AND s.repo = identity.repo AND s.pull_number = identity.pull_number
+                        AND s.file = identity.file AND s.fp = identity.fp
+                      ORDER BY s.started_at, s.id LIMIT 1) AS category
+               FROM identity
+           )
+           SELECT model, category,
+                  SUM(CASE WHEN disp = 2 THEN 1 ELSE 0 END) AS resolved,
+                  SUM(CASE WHEN disp = 1 THEN 1 ELSE 0 END) AS unresolved,
+                  SUM(CASE WHEN disp = 0 AND closed = 1 THEN 1 ELSE 0 END) AS unknown_closed,
+                  SUM(CASE WHEN disp = 0 AND closed = 0 THEN 1 ELSE 0 END) AS unknown_open
+             FROM labeled
+            WHERE first_seen >= ? AND first_seen <= ?
             GROUP BY model, category
             ORDER BY model, category`,
         )
-        .all();
+        .all(from, to);
       // 逐字段取出:node:sqlite 返回的是 null 原型对象,直接外传会让调用方拿到
       // 一个没有 Object 方法的怪东西。
       return rows.map((row) => ({
         model: String(row["model"]),
         category: String(row["category"]),
-        total: Number(row["total"]),
         resolved: Number(row["resolved"]),
         unresolved: Number(row["unresolved"]),
-        unknown: Number(row["unknown"]),
+        unknownClosed: Number(row["unknown_closed"]),
+        unknownOpen: Number(row["unknown_open"]),
       }));
+    },
+
+    tableCounts() {
+      const tables = db
+        .prepare(
+          `SELECT name FROM sqlite_master
+            WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+            ORDER BY name`,
+        )
+        .all();
+      return tables.map((table) => {
+        const name = String(table["name"]);
+        const count = db.prepare(`SELECT COUNT(*) AS c FROM "${name}"`).get() as {
+          c: number;
+        };
+        return { name, rows: Number(count.c) };
+      });
     },
 
     backfillDispositions(owner, repo, pullNumber, updates) {

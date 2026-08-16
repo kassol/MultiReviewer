@@ -6,6 +6,7 @@
  * `Forge` 接口里也没有这类方法:审查是建议,不是门禁,人保留最终判断权。
  */
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import {
   createServer,
@@ -635,6 +636,10 @@ async function handlePanelApi(
     });
   }
 
+  if (sub === "/stats" && req.method === "GET") {
+    return handleStats(req, res, deps);
+  }
+
   if (sub === "/repos" && req.method === "GET") {
     const rows = withStore(deps.dbPath, (store) => store.listRepos());
     return sendJson(
@@ -695,6 +700,42 @@ function parseReviewersOverride(
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/** 一天的毫秒数,处置率页的默认时间窗取最近 30 天。 */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * 处置率统计与库体量。时间窗缺省取最近 30 天;口径全在 `store.dispositionStats`
+ * (ADR 0006),这里只做参数与打包——页面矩阵与 API 的数字必须同源。
+ */
+function handleStats(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): void {
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+  const nowMs = (deps.now ?? Date.now)();
+  const fromMs = Date.parse(query.get("from") ?? new Date(nowMs - 30 * DAY_MS).toISOString());
+  const toMs = Date.parse(query.get("to") ?? new Date(nowMs).toISOString());
+  if (Number.isNaN(fromMs) || Number.isNaN(toMs)) {
+    return sendJson(res, 400, { error: "from 与 to 要是可解析的 ISO 时间" });
+  }
+  // 归一成 ISO 再进 SQL:库里比的是字典序,非 ISO 但可解析的写法会静默算错窗口。
+  const from = new Date(fromMs).toISOString();
+  const to = new Date(toMs).toISOString();
+
+  const { cells, tables } = withStore(deps.dbPath, (store) => ({
+    cells: store.dispositionStats(from, to),
+    tables: store.tableCounts(),
+  }));
+  let fileBytes = 0;
+  try {
+    fileBytes = statSync(deps.dbPath).size;
+  } catch {
+    // 库文件还没建出来:没有一次投递的全新部署,体量就是 0。
+  }
+  return sendJson(res, 200, { from, to, cells, database: { fileBytes, tables } });
 }
 
 /** hook 投递地址里代次之前的部分:`<基地址>/webhook?k=`。 */

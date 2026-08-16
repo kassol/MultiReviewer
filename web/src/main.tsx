@@ -15,6 +15,7 @@ import { api } from "./api.ts";
 import { injected } from "./injected.ts";
 import { LoginPage } from "./login.tsx";
 import { ReposPage } from "./repos.tsx";
+import { StatsPage } from "./stats.tsx";
 import "./styles.css";
 
 // 入口第一件事读注入:缺了就在这里报错,不进任何路由。
@@ -83,7 +84,7 @@ const runsRoute = createRoute({
 const statsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/stats",
-  component: () => <p style={{ padding: 22 }}>处置率页(issue #36)</p>,
+  component: StatsPage,
 });
 
 const routeTree = rootRoute.addChildren([

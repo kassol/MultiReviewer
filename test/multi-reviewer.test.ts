@@ -82,7 +82,7 @@ test("两个模型对同一处的 Finding 合并为一条,来源模型齐全", a
   // 评论是给开发者的最终结果:只呈现合并后的一份内容,不出现模型署名。
   assert.match(review.comments[0]!.body, /sub 多减了 1/);
   assert.doesNotMatch(review.comments[0]!.body, /model-a|model-b|减法结果偏移/);
-  // 合并不丢内容:另一个模型的表述保留在来源里,落库供采纳率统计。
+  // 合并不丢内容:另一个模型的表述保留在来源里,落库供处置率统计。
   assert.deepEqual(
     result.findings[0]!.sources.map((s) => s.description).sort(),
     ["sub 多减了 1", "减法结果偏移"],
