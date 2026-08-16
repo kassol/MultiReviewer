@@ -1,10 +1,11 @@
-import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 
 import { api, errorText, fetchJson } from "./api.ts";
-import { denominator, type Cell } from "./stats.tsx";
 
 export type RunItem = {
   id: number;
@@ -75,11 +76,6 @@ export function RunsPage() {
       fetchJson<RunsPage>(pageParam === null ? "/runs" : `/runs?before=${pageParam}`),
     getNextPageParam: (last) => last.nextBefore,
   });
-  // 统计带与处置率页同源:同一个 /stats 默认窗口,前端只做求和。
-  const stats = useQuery({
-    queryKey: ["stats", "band"],
-    queryFn: () => fetchJson<{ cells: Cell[] }>("/stats"),
-  });
   const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
   const rerun = useMutation({
     mutationFn: rerunRequest,
@@ -99,22 +95,6 @@ export function RunsPage() {
     return () => observer.disconnect();
   }, [runs.fetchNextPage, runs.hasNextPage]);
 
-  const cells = stats.data?.cells ?? [];
-  const all = cells.reduce(
-    (acc, cell) => ({
-      resolved: acc.resolved + cell.resolved,
-      total: acc.total + denominator(cell),
-    }),
-    { resolved: 0, total: 0 },
-  );
-  const models = [...new Set(cells.map((cell) => cell.model))].sort();
-  const modelPct = (model: string): number => {
-    const mine = cells.filter((cell) => cell.model === model);
-    const total = mine.reduce((sum, cell) => sum + denominator(cell), 0);
-    const resolved = mine.reduce((sum, cell) => sum + cell.resolved, 0);
-    return total === 0 ? 0 : Math.round((resolved / total) * 100);
-  };
-
   const flat = runs.data?.pages.flatMap((page) => page.runs) ?? [];
   let lastDay = "";
   // 按浏览器本地时区分天与显示时分:UTC 日在东八区会把 16:00 后的 run 归到前一天。
@@ -128,90 +108,81 @@ export function RunsPage() {
   };
 
   return (
-    <div>
-      <div className="c-top">
-        <div className="c-stat">
-          <span className="v">
-            {all.total === 0 ? 0 : Math.round((all.resolved / all.total) * 100)}%
-          </span>
-          <span className="l">
-            近 30 天处置率 {all.resolved}/{all.total}
-          </span>
-        </div>
-        {models.map((model) => (
-          <div className="c-stat" key={model}>
-            <span className="v">{modelPct(model)}%</span>
-            <span className="l mono">{model}</span>
-          </div>
-        ))}
-      </div>
+    <div className="mx-auto flex max-w-[780px] flex-col gap-2.5 p-4 pb-24">
+      {feedback === null ? null : (
+        <p className={feedback.isError ? "text-destructive" : "text-muted-foreground"}>
+          {feedback.text}
+        </p>
+      )}
+      {runs.isError ? (
+        <p className="text-destructive">{(runs.error as Error).message}</p>
+      ) : null}
 
-      <div className="c-feed">
-        {feedback === null ? null : (
-          <p className={feedback.isError ? "error" : "muted"} style={{ fontSize: 13 }}>
-            {feedback.text}
-          </p>
-        )}
-        {runs.isError ? <p className="error">{(runs.error as Error).message}</p> : null}
-
-        {flat.map((run) => {
-          const day = localDay(run.startedAt);
-          const header = day !== lastDay ? <div className="c-day">{(lastDay = day)}</div> : null;
-          return (
-            <div key={run.id}>
-              {header}
-              <article className="card c-run">
-                <div className="line1">
-                  <span className="repo">
+      {flat.map((run) => {
+        const day = localDay(run.startedAt);
+        const header =
+          day !== lastDay ? (
+            <div className="px-0.5 pt-3 pb-0.5 text-[11px] font-semibold tracking-[0.07em] text-muted-foreground uppercase">
+              {(lastDay = day)}
+            </div>
+          ) : null;
+        return (
+          <div key={run.id}>
+            {header}
+            <Card className="gap-2 px-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs text-muted-foreground">
                     {run.owner}/{run.repo}
                   </span>
-                  <span className="mono faint">#{run.pullNumber}</span>
-                  <span className="faint" style={{ marginLeft: "auto", fontSize: 12 }}>
+                  <span className="font-mono text-muted-foreground">#{run.pullNumber}</span>
+                  <span className="ml-auto text-xs text-muted-foreground">
                     {localTime(run.startedAt)}
                   </span>
                 </div>
-                <div className="line2">
-                  <div className="c-models">
+                <div className="flex flex-wrap items-center gap-4 text-xs">
+                  <div className="flex gap-3.5">
                     {run.models.length === 0 ? (
-                      <span className="faint">没有 Finding</span>
+                      <span className="text-muted-foreground">没有 Finding</span>
                     ) : (
                       run.models.map((entry) => (
-                        <span key={entry.model}>
-                          {entry.model} <b>{entry.findings}</b>
+                        <span key={entry.model} className="font-mono text-muted-foreground">
+                          {entry.model} <b className="font-semibold text-foreground">{entry.findings}</b>
                         </span>
                       ))
                     )}
                   </div>
                   <RunPill run={run} />
-                  <span className="mono faint">{run.headSha.slice(0, 7)}</span>
-                  <button
-                    className="btn"
-                    style={{ marginLeft: "auto", padding: "3px 9px", fontSize: 12 }}
+                  <span className="font-mono text-muted-foreground">
+                    {run.headSha.slice(0, 7)}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className="ml-auto"
                     disabled={rerun.isPending}
                     onClick={() => rerun.mutate(run)}
                   >
                     重跑
-                  </button>
+                  </Button>
                 </div>
-              </article>
-            </div>
-          );
-        })}
+            </Card>
+          </div>
+        );
+      })}
 
-        {flat.length === 0 && !runs.isPending ? (
-          <p className="faint">还没有 Review Run。</p>
-        ) : null}
-        <div ref={sentinel} />
-        <p className="faint" style={{ fontSize: 12, textAlign: "center", paddingTop: 8 }}>
-          {runs.isFetchingNextPage
-            ? "加载更早的 Review Run…"
-            : runs.hasNextPage
-              ? "往下滚加载更早的 Review Run"
-              : flat.length > 0
-                ? "到底了"
-                : ""}
-        </p>
-      </div>
+      {flat.length === 0 && !runs.isPending ? (
+        <p className="text-muted-foreground">还没有 Review Run。</p>
+      ) : null}
+      <div ref={sentinel} />
+      <p className="pt-2 text-center text-xs text-muted-foreground">
+        {runs.isFetchingNextPage
+          ? "加载更早的 Review Run…"
+          : runs.hasNextPage
+            ? "往下滚加载更早的 Review Run"
+            : flat.length > 0
+              ? "到底了"
+              : ""}
+      </p>
     </div>
   );
 }
