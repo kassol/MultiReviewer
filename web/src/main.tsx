@@ -17,6 +17,7 @@ import { injected } from "./injected.ts";
 import { LoginPage } from "./login.tsx";
 import { ReposPage } from "./repos.tsx";
 import { RunsPage } from "./runs.tsx";
+import { SettingsPage } from "./settings.tsx";
 import { denominator, StatsPage, type Cell } from "./stats.tsx";
 import "./styles.css";
 
@@ -47,6 +48,7 @@ const NAV = [
   { to: "/runs", label: "评审记录" },
   { to: "/stats", label: "处置率" },
   { to: "/credentials", label: "模型凭据" },
+  { to: "/settings", label: "全局设置" },
 ] as const;
 
 /**
@@ -161,9 +163,22 @@ const credentialsRoute = createRoute({
   component: CredentialsPage,
 });
 
+const settingsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/settings",
+  component: SettingsPage,
+});
+
 const routeTree = rootRoute.addChildren([
   loginRoute,
-  shellRoute.addChildren([indexRoute, reposRoute, runsRoute, statsRoute, credentialsRoute]),
+  shellRoute.addChildren([
+    indexRoute,
+    reposRoute,
+    runsRoute,
+    statsRoute,
+    credentialsRoute,
+    settingsRoute,
+  ]),
 ]);
 
 // 前缀是运行时值,构建产物与它无关:basepath 在这里从注入读入。

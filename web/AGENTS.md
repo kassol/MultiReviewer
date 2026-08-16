@@ -15,7 +15,9 @@
 - `src/repos.tsx` — 仓库页,左列表右详情。注册 / 改组合 / 移除确认三处都是 shadcn Dialog——焦点锁、Esc、`role="dialog"` 由组件给,不自己写。**不用 `window.confirm`**:原生对话框阻塞渲染线程,浏览器自动化与 dogfooding 都会被卡死。核对差异卡片的「轮转推平」调轮转端点。key 面板显示「代次」而非建立时间——代次是 ADR 0007 之后 key 真正有信息量的属性。
 - `src/credentials.tsx` — 凭据页(issue #64)。每个 provider 一把 key,粘进来即验证并保存;列表只显示 provider、是否已配、更新时间与尾 4 位,明文从不回到前端。主密钥没设时端点回 503,整页切成一张「差什么」的卡片而不是报错——那一档服务照常起,只有这一页做不了事。
 
-- `src/components/ui/` — shadcn 生成的组件(Dialog / Button / Input / Label / Table / Badge / Card),vendored 源码,改它就是改本项目的组件。已按视觉定稿把 Card 与 Dialog 的 ring 换成边框、圆角压到 `--radius`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
+- `src/settings.tsx` — 全局设置页(issue #68)。全局模型组合与批次上限,读写 `<前缀>/api/settings`。表单以读回来的设置为初值,所以数据到了才挂载(`key` 取设置本身)。
+- `src/components/model-picker.tsx` — 模型多选器。目录来自 `<前缀>/api/catalog`(`useModelCatalog()` 一并导出,仓库覆盖那一票复用同一份查询),选项键就是模型标识 `provider:model`——「同一次审查里标识不得重复」因此由组件天然满足,同 id 跨 provider 的两项是两个选项。接口是受控的 `{providers, value, onChange, disabled?}`,自己不发写请求。**列表永远按搜索词裁剪**:目录有 1153 个模型,全渲染会让每次输入都卡住,所以 cmdk 的自带过滤关掉(`shouldFilter={false}`),不搜时每家只列 4 个并标出还有多少,搜索时每家最多 12 个、全部加起来最多 120 个。没配凭据的 provider 照常显示,只是 `disabled`,那一行给去凭据页的链接。
+- `src/components/ui/` — shadcn 生成的组件(Dialog / Button / Input / Label / Table / Badge / Card / Command / Popover),vendored 源码,改它就是改本项目的组件。已按视觉定稿把 Card 与 Dialog 的 ring 换成边框、圆角压到 `--radius`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
 - `src/lib/utils.ts` — shadcn 的 `cn()`,clsx 加 tailwind-merge。
 - `src/styles.css` — 只有设计令牌,没有组件类。
 
@@ -34,7 +36,7 @@
 
 不依赖仓库里任何服务端代码;与服务端的契约只有两条:注入全局变量的形状、`<前缀>/api` 的 JSON 端点。
 
-构建期依赖:Tailwind v4 经 `@tailwindcss/vite` 接入;组件依赖 `radix-ui`(单包)、`class-variance-authority`、`clsx`、`tailwind-merge`、`tw-animate-css`、`lucide-react`。`@/` 别名在 `tsconfig.json` 的 `paths` 与 `vite.config.ts` 的 `resolve.alias` 各配一次,两处要一起改。
+构建期依赖:Tailwind v4 经 `@tailwindcss/vite` 接入;组件依赖 `radix-ui`(单包)、`cmdk`(Command 的底座)、`class-variance-authority`、`clsx`、`tailwind-merge`、`tw-animate-css`、`lucide-react`。`@/` 别名在 `tsconfig.json` 的 `paths` 与 `vite.config.ts` 的 `resolve.alias` 各配一次,两处要一起改。
 
 ## 常用命令
 
@@ -52,3 +54,4 @@
 - 2026-08-16: 跟进 issue #73。仓库页的模型覆盖列表改显示模型标识 `provider:model`(`src/repos.tsx`),与「跟随全局」那一侧的取值形态一致——此前覆盖那一侧显示裸 model id,同一个仓库切换覆盖前后看起来像换了模型。
 - 2026-08-16: 落地 issue #64 的前端那一半。新增凭据页 `src/credentials.tsx` 并挂进壳的导航(第四项「模型凭据」)。表单只有 provider 与 key 两个框,key 用 `type="password"`;保存失败(厂商验证不过)按错误样式呈现,不混进普通提示。解不开密文的那一行显示「未配置(密文解不开,重新粘一次 key)」,与从未配过的区别只在这句话上——对人要做的动作是同一个。
 - 2026-08-16: 落地 issue #66。仓库详情的「跟随全局」改读 `GET /settings`(旧的 `GET /reviewers` 已删),拿到的是 ReviewerSpec 数组,页面自己拼成模型标识 `provider:model`,与覆盖那一侧同一种展示。覆盖编辑框的说明去掉 `apiKeyEnv` 与配置文件的说法。本票只改到展示正确,组合的选择器是 issue #68 / #69。
+- 2026-08-16: 落地 issue #68。新增模型多选器 `src/components/model-picker.tsx` 与全局设置页 `src/settings.tsx`(挂进壳的导航,第五项「全局设置」),装 shadcn Command(带 `cmdk`)与 Popover。选择器按 provider 分组,每个选项显示显示名、模型标识、上下文窗口与每百万 token 单价;搜索词按空格分词,在标识、模型名与厂商名里匹配。选择器只认受控的 `value/onChange` 与目录数据,写请求归页面——仓库覆盖(issue #69)要复用同一个组件。Popover 的 ring 按 Card / Dialog 的既有决定换成边框、圆角压到 `--radius`。
