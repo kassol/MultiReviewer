@@ -20,7 +20,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `Dockerfile` / `.dockerignore` — 运行镜像。`node:24-slim` 加 git,依赖在镜像内重装(宿主机的 `node_modules` 含平台专属产物,不进镜像)。
 - `docker-compose.yml` — 服务器上的编排定义。与 `.env`、`multireviewer.config.json` 三个文件即可运行,不需要源码。
 - `scripts/build-push.sh` — 在开发机构建镜像并推到 registry,默认目标架构 `linux/amd64`。
-- `scripts/setup.sh` — 部署向导。在服务器上执行,逐步问出凭据、写 `.env` 与 `multireviewer.config.json`、拉镜像起容器、自检链路、指导注册 webhook。
+- `scripts/setup.sh` — 部署向导。在服务器上执行,逐步问出凭据、写 `.env` 与 `multireviewer.config.json`、拉镜像起容器、以「面板能登录」为验收自检;仓库接入在面板上做,不在向导里。
 - `docs/adr/` — 架构决策记录。
 - `docs/idea.md` — 初始产品与架构草案,部分设定已被 ADR 推翻。
 - `docs/agents/` — Agent skills 的仓库级配置:issue tracker、triage 标签、domain docs 消费规则。
@@ -46,14 +46,14 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 # 开发机:构建并推送。开发机 arm64、服务器 amd64 时必须交叉构建,脚本已默认 linux/amd64
 scripts/build-push.sh registry.example.com/team/multireviewer:latest
 
-# 服务器:首次部署跑向导,九步问出凭据、拉镜像、起容器、自检链路、指导注册 webhook
+# 服务器:首次部署跑向导,九步问出凭据、拉镜像、起容器、真登录一次面板自检
 bash setup.sh
 
 # 服务器:后续更新
 docker compose pull && docker compose up -d
 ```
 
-> **过渡期(issue #38 收口前)**:向导的「生成 webhook secret」与「注册 webhook」两步仍是旧的全局 secret 流程,已随 issue #28 的硬切失效——准入现凭注册表里的 per-repo Key。仓库接入走面板 API(`POST /<前缀>/api/repos`,见下文「部署」一节),不要按向导的旧指引手工配 hook。
+向导的边界收在「面板能登录」:生成 admin token 与面板前缀、问基地址、起服务后打登录页并真登录一次(token 写坏时自检失败,不静默交付),收尾给交付清单。仓库接入、key 轮转、模型覆盖都在面板上做,向导不再生成全局 webhook secret 也不指导手工配 hook;检出旧变量(`MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` / `MULTIREVIEWER_GITEA_REPO`)会清掉并说明原因。
 
 两处容易踩的地方:
 
@@ -62,7 +62,7 @@ docker compose pull && docker compose up -d
 
 不用容器直接跑时 `pnpm start` 起同一个服务,启动时用 `--env-file-if-exists=.env` 读取同目录的 `.env`。
 
-webhook 指向 `POST /webhook?k=<代次>` 这一个端点(路径固定,其余路径与方法一律 404),content type 选 JSON,secret 填该仓库的 Key。投递凭所属仓库的 Key 准入:仓库要先进注册表,未注册一律 401,没有全局 secret。hook 的建立与 Key 的管理由面板完成:注册(`POST /<前缀>/api/repos`)自动在 Gitea 建 hook 并落 Key,移除自动删 hook。面板前端落地前这两个端点用 curl 也能调。GitHub 仓库没有注册途径。
+webhook 指向 `POST /webhook?k=<代次>` 这一个端点(路径固定,其余路径与方法一律 404),content type 选 JSON,secret 填该仓库的 Key。投递凭所属仓库的 Key 准入:仓库要先进注册表,未注册一律 401,没有全局 secret。hook 的建立与 Key 的管理由面板完成:注册(`POST /<前缀>/api/repos`)自动在 Gitea 建 hook 并落 Key,移除自动删 hook。GitHub 仓库没有注册途径。
 
 必需的环境变量:
 
@@ -185,3 +185,4 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-15: 落地 issue #35。处置率的回填链路(ADR 0006)打通:每轮 Review Run 顺手把读回的 resolve 状态覆盖到历史 finding,PR closed 投递触发全量回填并落 PR 状态;`finding` 记来源类型(行级评论 / 正文),正文行排除在统计外。两个时机都不新增 API 调用。
 - 2026-08-16: 落地 issue #36。处置率统计与页面:`store.ts` 的 `dispositionStats` 按 Finding Identity 折叠出模型 × 分类矩阵,`GET <前缀>/api/stats` 打包矩阵与库体量(库文件字节数 + 全部表行数),前端处置率页按原型变体 B 落地(模型卡片 + 矩阵,每格永远带分子分母)。口径细则见 `src/AGENTS.md`,页面见 `web/AGENTS.md`。
 - 2026-08-16: 落地 issue #37。评审记录页与手动重跑:跨仓库 Review Run 时间流(按天分组、滚动加载更早、覆盖已移除仓库的历史、顶部统计带与处置率页同源),重跑两个入口(时间流逐条、仓库页输 PR 号)共用 `POST <前缀>/api/rerun`,开的是新一轮 Review Run、走既有跨轮次折叠。服务端见 `src/AGENTS.md`,页面见 `web/AGENTS.md`。
+- 2026-08-16: 落地 issue #38。部署向导边界收在「面板能登录」:阶段 7 生成 admin token 与随机面板前缀(重跑先确认再重新生成,FORCE 也绕不过确认)、问基地址存 `MULTIREVIEWER_BASE_URL`(先校验再落盘,明文 http 的放行判定与服务端逐 host 对齐);检出旧变量(`MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` / `MULTIREVIEWER_GITEA_REPO`)即清掉并说明、指导删旧 hook;自检改为打登录页期待 200 加用刚写的 token 真登录一次期待 204 + Set-Cookie(token 写坏当场失败,429 单独解释退避);旧的「注册 webhook」「第一次真实审查」两个阶段删除,收尾改交付清单(面板地址、token、下一步、服务器侧排障速查)。评审复核顺手修正 bot PAT scope 表述(write:repository 与 write:issue 两项)与 Gitea 版本解析的 sanity 校验。

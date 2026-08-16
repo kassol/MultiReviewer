@@ -315,10 +315,13 @@ if have_all MULTIREVIEWER_GITEA_URL MULTIREVIEWER_GITEA_TOKEN; then
   note "凭据已配置,只做连通与版本核对。要重填就 FORCE=1 重跑。"
 else
   say "审查评论以一个专用 bot 账号的身份发出。它需要:"
-  step "一枚该账号签发的 PAT,scope 只勾 write:repository(实测确认的最小集合)。"
-  step "该账号以协作者身份加入每一个要审查的仓库——Gitea 的 PAT scope 不限定到具体"
-  say "  仓库,能访问哪些仓库完全取决于这一步。"
-  note "两件事都做完了再往下。签发页在 <实例地址>/user/settings/applications"
+  step "一枚该账号签发的 PAT,scope 勾 write:repository 与 write:issue 两项,别的不要"
+  say "  (实测确认的最小集合;write:issue 只为 PR 上的 👀/👍 进度 reaction)。"
+  step "该账号以 **admin 权限** 加入要审查的仓库——面板注册仓库时要替你创建 webhook,"
+  say "  Gitea 的 hook 管理只对仓库 admin 开放,write 不够。"
+  note "这是每注册一个仓库的前置:现在至少给第一个仓库配好,之后每接入一个新仓库,"
+  note "都先把 bot 提到该仓库的 admin,再去面板点注册(权限不足时注册会 403 并明说)。"
+  note "签发页在 <实例地址>/user/settings/applications"
 
   ask        MULTIREVIEWER_GITEA_URL   "Gitea 实例根地址(如 https://gitea.example.com):"
   ask_secret MULTIREVIEWER_GITEA_TOKEN "粘贴 bot 账号的 PAT:"
@@ -332,6 +335,8 @@ GITEA_VERSION=$(curl -sS -f \
   "${MULTIREVIEWER_GITEA_URL%/}/api/v1/version" \
   | sed -E 's/.*"version" *: *"([^"]+)".*/\1/') || GITEA_VERSION=""
 
+# 响应里没有 version 字段时 sed 会原样吐回整个 body,别把它当版本号打 ✓。
+[[ "$GITEA_VERSION" =~ ^[vV]?[0-9]+(\.[0-9]+)+ ]] || GITEA_VERSION=""
 if [[ -z "$GITEA_VERSION" ]]; then
   printf '  %s✗ 读不到版本%s\n' "$RED" "$RESET"
   say "地址不对、令牌无效、或实例不允许这枚令牌调用 API。三者都查一遍再重跑。"
@@ -439,19 +444,52 @@ else
 fi
 pause
 
-# ── 7. 起服务并自检 ───────────────────────────────────────────────────────
-stage "起服务并自检"
-say "密钥用来校验投递签名,服务与 Gitea 两侧填同一个值。这里随机生成一枚。"
+# ── 7. 面板凭据与基地址 ───────────────────────────────────────────────────
+stage "面板凭据与基地址"
 
-EXISTING_SECRET=$(_existing MULTIREVIEWER_WEBHOOK_SECRET || true)
-if [[ -n "$EXISTING_SECRET" ]] && ! confirm "已经有一枚密钥了,重新生成?(重新生成要同步改 Gitea 那侧)"; then
-  MULTIREVIEWER_WEBHOOK_SECRET="$EXISTING_SECRET"
-  note "沿用现有密钥"
-else
-  MULTIREVIEWER_WEBHOOK_SECRET=$(openssl rand -hex 32)
-  note "已生成新密钥"
+# 旧的全局 secret 流程(issue #28 之前)留下的变量,检出即清:服务已经不读它们,
+# 留着只会误导下一个看 .env 的人以为它们还在生效。
+remove_env() {
+  local key="$1" reason="$2"
+  [[ -f "$ENV_FILE" ]] || return 0
+  grep -qE "^${key}=" "$ENV_FILE" || return 0
+  local tmp; tmp=$(mktemp)
+  grep -vE "^${key}=" "$ENV_FILE" > "$tmp" || true
+  mv "$tmp" "$ENV_FILE"
+  printf '  %s✓ 清掉旧变量%s %s\n' "$GREEN" "$RESET" "$key"
+  note "  $reason"
+}
+OLD_SECRET=$(_existing MULTIREVIEWER_WEBHOOK_SECRET || true)
+remove_env MULTIREVIEWER_WEBHOOK_SECRET "全局 webhook secret 已废除:准入改为每仓库一把 Key,由面板在注册时生成并写进 hook。"
+remove_env MULTIREVIEWER_PUBLIC_URL "公网地址改为基地址,存 MULTIREVIEWER_BASE_URL(下面会问)。"
+remove_env MULTIREVIEWER_GITEA_REPO "webhook 不再手工登记:仓库改在面板上注册。"
+if [[ -n "$OLD_SECRET" ]]; then
+  warn "Gitea 上手工建过的旧 webhook 用的是刚清掉的全局 secret,已经验不过签名。"
+  say "  到各仓库的 设置 → Web 钩子 删掉指向本服务的旧 hook,改由面板注册时自动创建。"
 fi
-write_env MULTIREVIEWER_WEBHOOK_SECRET "$MULTIREVIEWER_WEBHOOK_SECRET"
+
+say "面板登录用一枚 admin token。这里随机生成,登录页粘贴它。"
+EXISTING_TOKEN=$(_existing MULTIREVIEWER_ADMIN_TOKEN || true)
+if [[ -n "$EXISTING_TOKEN" ]] && ! confirm "已经有 admin token 了,重新生成?(重新生成后旧 token 立即失效)"; then
+  MULTIREVIEWER_ADMIN_TOKEN="$EXISTING_TOKEN"
+  note "沿用现有 token"
+else
+  MULTIREVIEWER_ADMIN_TOKEN=$(openssl rand -hex 32)
+  note "已生成新 token"
+fi
+write_env MULTIREVIEWER_ADMIN_TOKEN "$MULTIREVIEWER_ADMIN_TOKEN"
+
+say ""
+say "面板挂在一段不可猜的路径前缀下(如 /panel-3f2a),webhook 与它互不相扰。"
+EXISTING_PREFIX=$(_existing MULTIREVIEWER_PANEL_PREFIX || true)
+if [[ -n "$EXISTING_PREFIX" ]] && ! confirm "已经有前缀 /$EXISTING_PREFIX 了,重新生成?(重新生成后旧地址失效,书签要更新)"; then
+  MULTIREVIEWER_PANEL_PREFIX="$EXISTING_PREFIX"
+  note "沿用现有前缀"
+else
+  MULTIREVIEWER_PANEL_PREFIX="panel-$(openssl rand -hex 4)"
+  note "已生成前缀 /$MULTIREVIEWER_PANEL_PREFIX"
+fi
+write_env MULTIREVIEWER_PANEL_PREFIX "$MULTIREVIEWER_PANEL_PREFIX"
 
 say ""
 say "容器内固定监听 3000,对外映射哪个端口单独设。"
@@ -461,19 +499,39 @@ ask MULTIREVIEWER_HOST_PORT "宿主机端口 [3000]:"
 write_env MULTIREVIEWER_HOST_PORT "$MULTIREVIEWER_HOST_PORT"
 
 say ""
-say "Gitea 要能访问到这台服务器。填服务对外的地址。"
-note "路径固定为 /webhook,服务只认这一个入口,其余路径一律 404。"
-ask MULTIREVIEWER_PUBLIC_URL "服务的公网地址(如 https://reviewer.example.com/webhook):"
-# 路由只认 /webhook,填漏后缀的地址每条投递都 404。在这里补齐,让这个错误没法发生。
-MULTIREVIEWER_PUBLIC_URL="${MULTIREVIEWER_PUBLIC_URL%/}"
-if [[ "$MULTIREVIEWER_PUBLIC_URL" != */webhook ]]; then
-  MULTIREVIEWER_PUBLIC_URL="${MULTIREVIEWER_PUBLIC_URL}/webhook"
-  note "已补上 /webhook 后缀:$MULTIREVIEWER_PUBLIC_URL"
+say "服务对外的基地址:Gitea 的投递、浏览器里的面板都走它。不带路径,"
+say "hook 地址与面板地址都由服务自己在它后面拼。"
+ask MULTIREVIEWER_BASE_URL "基地址(如 https://reviewer.example.com):"
+MULTIREVIEWER_BASE_URL="${MULTIREVIEWER_BASE_URL%/}"
+# 旧流程的习惯是填 <地址>/webhook,现在只要基地址,顺手剥掉。
+if [[ "$MULTIREVIEWER_BASE_URL" == */webhook ]]; then
+  MULTIREVIEWER_BASE_URL="${MULTIREVIEWER_BASE_URL%/webhook}"
+  note "剥掉了 /webhook 后缀,基地址不带路径:$MULTIREVIEWER_BASE_URL"
 fi
-write_env MULTIREVIEWER_PUBLIC_URL "$MULTIREVIEWER_PUBLIC_URL"
-note "MULTIREVIEWER_PUBLIC_URL 只给这个脚本用,服务本身不读它。"
+# 先校验再落盘:坏值写进 .env 会在重跑时被 ask 当默认值回填。判定与服务端
+# (src/main.ts)对齐——host 精确等于 localhost / 127.0.0.1 / [::1] 才放行明文,
+# 前缀 glob 会放过 localhost.evil.com 这类域名。
+case "$MULTIREVIEWER_BASE_URL" in
+  https://*) ;;
+  http://*)
+    BASE_HOST=${MULTIREVIEWER_BASE_URL#http://}
+    BASE_HOST=${BASE_HOST%%/*}
+    case "$BASE_HOST" in
+      localhost | localhost:* | 127.0.0.1 | 127.0.0.1:* | "[::1]" | "[::1]:"*) ;;
+      *)
+        printf '  %s✗ 明文 http 且不是 localhost:%s%s\n' "$RED" "$MULTIREVIEWER_BASE_URL" "$RESET"
+        say "admin token 和 cookie 会在网络上裸奔,服务启动时会直接拒绝。换 https 再来。"
+        exit 1 ;;
+    esac ;;
+  *)
+    printf '  %s✗ 基地址要以 http:// 或 https:// 开头:%s%s\n' "$RED" "$MULTIREVIEWER_BASE_URL" "$RESET"
+    exit 1 ;;
+esac
+write_env MULTIREVIEWER_BASE_URL "$MULTIREVIEWER_BASE_URL"
+pause
 
-say ""
+# ── 8. 起服务并自检 ───────────────────────────────────────────────────────
+stage "起服务并自检"
 say "起服务。"
 docker compose up -d
 say "等它监听。"
@@ -492,133 +550,105 @@ if [[ -z "$BOOTED" ]]; then
 fi
 printf '  %s✓%s 服务已监听\n' "$GREEN" "$RESET"
 
+PANEL_PATH="/${MULTIREVIEWER_PANEL_PREFIX}/"
+LOCAL_PANEL="http://127.0.0.1:${MULTIREVIEWER_HOST_PORT}${PANEL_PATH}"
+
 say ""
-say "先从本机打一个签名错误的请求,期望 401——这验容器本身。"
-LOCAL_PROBE=$(curl -sS -o /dev/null -w '%{http_code}' -m 10 \
-  -X POST "http://127.0.0.1:${MULTIREVIEWER_HOST_PORT}/webhook" \
-  -H 'Content-Type: application/json' -H 'X-Gitea-Event: pull_request' \
-  -H 'X-Hub-Signature-256: sha256=deadbeef' -d '{}' 2>/dev/null) || LOCAL_PROBE="connect-failed"
-if [[ "$LOCAL_PROBE" == "401" ]]; then
-  printf '  %s✓%s 本机 401,容器与端口映射都正常\n' "$GREEN" "$RESET"
+say "自检收在「面板能登录」:先从本机打登录页,期望 200——这验容器、端口映射与前端产物。"
+LOCAL_PROBE=$(curl -sS -o /dev/null -w '%{http_code}' -m 10 "${LOCAL_PANEL}login" 2>/dev/null) \
+  || LOCAL_PROBE="connect-failed"
+if [[ "$LOCAL_PROBE" == "200" ]]; then
+  printf '  %s✓%s 本机登录页 200\n' "$GREEN" "$RESET"
 else
-  printf '  %s✗ 本机回了 %s,预期 401%s\n' "$RED" "$LOCAL_PROBE" "$RESET"
-  say "端口映射或容器有问题,先解决这个再谈公网。"
+  printf '  %s✗ 本机登录页回了 %s,预期 200%s\n' "$RED" "$LOCAL_PROBE" "$RESET"
+  say "503 是镜像里缺前端产物(dist),404 是前缀对不上,连不上是端口映射。"
+  say "都属于容器与镜像的问题,先解决这个再谈公网。"
   exit 1
 fi
 
-# 下面这个 curl 是从本机发的,它证明不了 Gitea 到得了这个地址。地址落在只有本机认得
-# 的网段时先说破:docker 网桥地址(172.17.x)尤其容易误选——本机 curl 一通就过,而
-# Gitea 在别的机器上时那个地址根本不存在,投递一条也发不出来。
-PUBLIC_HOST=${MULTIREVIEWER_PUBLIC_URL#*://}
+say "再用刚写进 .env 的 token 真登录一次,期望 204 加 Set-Cookie——这验 token 没写坏。"
+LOGIN_HEADERS=$(curl -sS -D - -o /dev/null -m 10 \
+  -X POST "${LOCAL_PANEL}api/session" \
+  -H 'Content-Type: application/json' \
+  -d "{\"token\":\"${MULTIREVIEWER_ADMIN_TOKEN}\"}" 2>/dev/null) || LOGIN_HEADERS=""
+if printf '%s' "$LOGIN_HEADERS" | head -1 | grep -q ' 204' \
+  && printf '%s' "$LOGIN_HEADERS" | grep -qi '^set-cookie:'; then
+  printf '  %s✓%s 登录成功,拿到会话 cookie\n' "$GREEN" "$RESET"
+else
+  printf '  %s✗ 登录失败%s\n' "$RED" "$RESET"
+  if printf '%s' "$LOGIN_HEADERS" | head -1 | grep -q ' 429'; then
+    say "429:此前失败太多次触发了按 IP 的退避锁定。等几分钟再重跑,别连续硬试。"
+  else
+    say "服务在跑但 token 对不上——.env 里的值与容器读到的值不一致(改了 .env 没重启,"
+    say "或值里混进了引号/空白)。修好前不算部署完成:"
+    printf '      %sdocker compose up -d && FORCE=1 重跑本脚本%s\n' "$BOLD" "$RESET"
+  fi
+  exit 1
+fi
+
+# 下面这个 curl 是从本机发的,它证明不了 Gitea 或你的浏览器到得了这个地址。地址落在
+# 只有本机认得的网段时先说破:docker 网桥地址(172.17.x)尤其容易误选——本机 curl 一
+# 通就过,而 Gitea 在别的机器上时那个地址根本不存在,投递一条也发不出来。
+PUBLIC_HOST=${MULTIREVIEWER_BASE_URL#*://}
 PUBLIC_HOST=${PUBLIC_HOST%%[:/]*}
 case "$PUBLIC_HOST" in
   localhost | 127.* | 0.0.0.0 | ::1 | 172.17.*)
     warn "$PUBLIC_HOST 只有这台机器和它上面的容器认得。"
-    say "  Gitea 跑在别的机器上时,它连不到这个地址,投递会全部失败——而下面这个"
-    say "  自检照样会通过,因为它是从本机发的。"
-    say "  换成 Gitea 那侧访问得到的地址:本机的局域网 IP、域名、或反向代理地址。"
+    say "  Gitea 与你的浏览器在别的机器上时,它们连不到这个地址——而下面这个自检"
+    say "  照样会通过,因为它是从本机发的。"
+    say "  换成两侧都访问得到的地址:本机的局域网 IP、域名、或反向代理地址。"
     say "  本机的局域网地址:$(hostname -I 2>/dev/null || echo '用 ip -4 addr 查')"
-    SKIPPED+=("公网地址是 $PUBLIC_HOST,只有本机可达。以 Gitea 的投递记录为准")
+    SKIPPED+=("基地址是 $PUBLIC_HOST,只有本机可达。以浏览器真开一次面板为准")
     ;;
 esac
 
-say "再从公网地址打同样的请求——这验反代与防火墙。"
+say "再从基地址打一次登录页——这验反代与防火墙。"
 PROBE=$(curl -sS -o /dev/null -w '%{http_code}' -m 15 \
-  -X POST "$MULTIREVIEWER_PUBLIC_URL" \
-  -H 'Content-Type: application/json' -H 'X-Gitea-Event: pull_request' \
-  -H 'X-Hub-Signature-256: sha256=deadbeef' -d '{}' 2>/dev/null) || PROBE="connect-failed"
+  "${MULTIREVIEWER_BASE_URL}${PANEL_PATH}login" 2>/dev/null) || PROBE="connect-failed"
 case "$PROBE" in
-  401)
-    printf '  %s✓%s 本机到这个地址是通的\n' "$GREEN" "$RESET"
-    note "这只说明本机可达。Gitea 到不到得了,只有它的投递记录说了算(下一步)。"
+  200)
+    printf '  %s✓%s 本机经基地址到面板是通的\n' "$GREEN" "$RESET"
+    note "这只说明本机可达。你的浏览器到不到得了,交付清单里让你真开一次。"
     ;;
   connect-failed)
-    printf '  %s✗ 连不上 %s%s\n' "$RED" "$MULTIREVIEWER_PUBLIC_URL" "$RESET"
+    printf '  %s✗ 连不上 %s%s\n' "$RED" "${MULTIREVIEWER_BASE_URL}${PANEL_PATH}" "$RESET"
     say "容器是好的,问题在反代或防火墙。"
-    SKIPPED+=("公网自检没通过,Gitea 多半也到不了这个地址") ;;
+    SKIPPED+=("公网自检没通过,浏览器与 Gitea 多半也到不了这个地址") ;;
   *)
-    printf '  %s⚠ 公网回了 %s,预期 401%s\n' "$YELLOW" "$PROBE" "$RESET"
-    say "这个地址后面接的可能不是 MultiReviewer。确认反代指对了,且没有吃掉 /webhook 路径。"
-    SKIPPED+=("公网自检回了 $PROBE 而非 401") ;;
+    printf '  %s⚠ 基地址回了 %s,预期 200%s\n' "$YELLOW" "$PROBE" "$RESET"
+    say "这个地址后面接的可能不是 MultiReviewer,或反代吃掉了 /${MULTIREVIEWER_PANEL_PREFIX} 路径。"
+    SKIPPED+=("公网自检回了 $PROBE 而非 200") ;;
 esac
 pause
 
-# ── 8. 在 Gitea 注册 webhook ──────────────────────────────────────────────
-stage "在 Gitea 注册 webhook"
-if have_all MULTIREVIEWER_GITEA_REPO; then
-  MULTIREVIEWER_GITEA_REPO=$(_existing MULTIREVIEWER_GITEA_REPO)
-  note "$MULTIREVIEWER_GITEA_REPO 的 webhook 上一轮已经登记过,跳过。"
-  note "要重新登记(换地址、换密钥)就 FORCE=1 重跑。"
-else
-  ask MULTIREVIEWER_GITEA_REPO "要审查的仓库(owner/repo):"
-  write_env MULTIREVIEWER_GITEA_REPO "$MULTIREVIEWER_GITEA_REPO"
-
-  HOOKS_URL="${MULTIREVIEWER_GITEA_URL%/}/${MULTIREVIEWER_GITEA_REPO}/settings/hooks"
-  open_url "$HOOKS_URL"
-  note "$HOOKS_URL"
-  step "点「添加 Webhook」,类型选 Gitea。"
-  step "目标 URL 填:$MULTIREVIEWER_PUBLIC_URL"
-  step "POST Content Type 选 application/json。"
-  step "密钥文本填(与服务侧同一个值):"
-  printf '\n      %s%s%s\n\n' "$BOLD" "$MULTIREVIEWER_WEBHOOK_SECRET" "$RESET"
-  step "触发条件选「自定义事件」,勾「合并请求」**与「合并请求同步」**。"
-  warn "两个都要勾。Gitea 把「同步」拆成了独立事件 pull_request_sync,只勾前者时"
-  say "  PR 新增 commit 一条投递都不发,重新审查因此静默失效,看不出任何异常。"
-  note "GitHub 那边没有这回事:它的 pull_request 事件本身就含 synchronize 动作。"
-  step "再临时把「推送」也勾上。"
-  note "「推送」只为下一步的连通测试:详情页那个「测试推送」按钮发的是 push 事件,"
-  note "webhook 没订阅 push 时它一个请求都不会发出去,看起来像哪里坏了。"
-  step "勾上「激活」,保存。"
-  note "组织级 webhook 也可以,一次覆盖名下全部仓库。"
-  warn "密钥刚打在屏幕上了,分享终端记录前先清屏。"
-  pause "保存好了吗?"
-
-  say "在 webhook 详情页底部点「测试推送」,Gitea 会发一条投递。"
-  warn "这是唯一能证明 Gitea 到得了本服务的检查。前面的自检都是从本机发的。"
-  note "它发的是 push 事件,服务会回 200 但不跑审查——这一步只验连通,不验审查。"
-  step "回到 Gitea 页面,展开最近一次投递,确认响应是 200。"
-  note "401 是两侧密钥不一致,回上一步重填。"
-  note "连接超时或拒绝,说明这个地址 Gitea 够不着,换一个它到得了的地址。"
-  say ""
-  say "看到 \"webhook can only call allowed HTTP servers\" 时,是 Gitea 自己拦的:"
-  note "app.ini 的 [webhook] 段 ALLOWED_HOST_LIST 默认 external,只放行公网地址,"
-  note "而本服务多半在私有网段。追加本服务的地址后重启 Gitea:"
-  printf '\n      %s[webhook]%s\n' "$BOLD" "$RESET"
-  printf '      %sALLOWED_HOST_LIST = external, %s%s\n\n' "$BOLD" "$PUBLIC_HOST" "$RESET"
-  note "保留 external 使已有的其他 webhook 不受影响。别写 private——那会放开整个"
-  note "RFC 1918,任何有仓库管理权的人都能把 webhook 指向内网任意服务。"
-  say ""
-  step "响应 200 之后回去把「推送」的勾去掉,只留 Pull Request。"
-  note "留着它会让每次 push 都投递一次,服务回 200 不审查,徒增日志。"
-  pause
-fi
-
-# ── 9. 第一次真实审查 ─────────────────────────────────────────────────────
-stage "第一次真实审查"
-say "现在开一个 PR,让两个模型真的审一次。"
-warn "要用一个此前没被本工具评论过的 PR。旧 PR 上留着带指纹锚点的评论,"
-say "  本轮 Finding 会匹配上而被折叠进正文,看起来像一条评论都没发。"
-
-step "在 $MULTIREVIEWER_GITEA_REPO 建一个新分支,改几十行代码,push 上去。"
-step "开 PR。webhook 的 opened 事件会立刻触发一次 Review Run。"
+# ── 9. 交付清单 ───────────────────────────────────────────────────────────
+stage "交付清单"
+say "部署边界到「面板能登录」为止。仓库接入、key 轮转、模型覆盖都在面板上做。"
 say ""
-say "盯日志:"
-printf '      %sdocker compose logs -f multireviewer%s\n' "$BOLD" "$RESET"
-note "一次审查按模型速度可能要几分钟。没有报错输出即在正常跑。"
-say "PR 页面上应该看到:"
-note "  bot 账号发的一条 review,正文是汇总,行级评论挂在具体行上。"
-say "跑完之后查库(库在宿主机的 ./data 下,直接读):"
-note "  sqlite3 data/multireviewer.db 'select model, cost_usd from review_run;'"
-note "  sqlite3 data/multireviewer.db 'select model, count(*) from finding group by model;'"
-
+say "面板地址(在你自己的浏览器上开):"
+printf '\n      %s%s%s%s\n\n' "$BOLD" "$MULTIREVIEWER_BASE_URL" "$PANEL_PATH" "$RESET"
+say "admin token(登录页粘贴;也存在 $ENV_FILE 的 MULTIREVIEWER_ADMIN_TOKEN):"
+printf '\n      %s%s%s\n\n' "$BOLD" "$MULTIREVIEWER_ADMIN_TOKEN" "$RESET"
+warn "token 刚打在屏幕上了,分享终端记录前先清屏。"
 say ""
-say "没有评论出现时按这个顺序查:"
-step "Gitea webhook 详情页 → 最近投递 → 响应码。401 是密钥两侧不一致。"
-step "docker compose logs multireviewer。「Review Run 失败」会带上原因。"
-step "模型凭据没余额、模型标识拼错,都会在日志里显形。"
+say "下一步,都在面板里:"
+step "浏览器开上面的地址,粘 token 登录。"
+step "仓库页点「注册」,填 owner/repo——面板会验 bot 权限、生成 Key、创建 webhook,"
+say "  一步到位。前置:bot 在该仓库是 admin(阶段 3 说过,每个仓库都要)。"
+step "注册完开一个 PR,第一轮审查自动触发;评审记录页能看到它。"
+note "要用一个此前没被本工具评论过的 PR:旧 PR 上留着指纹锚点,Finding 会被折叠进正文。"
 pause
 
 finish
 note "部署目录 $DEPLOY_DIR,里面有 .env、multireviewer.config.json 与 data/"
 note "换模型改 multireviewer.config.json,换凭据改 .env,改完 docker compose up -d"
 note "更新版本:开发机上跑 scripts/build-push.sh,这里 docker compose pull && docker compose up -d"
+printf '\n'
+say "服务器侧排障速查:"
+note "  面板打不开 → docker compose logs multireviewer;503 是镜像缺前端产物,404 查前缀。"
+note "  登录 401 → .env 的 token 与容器不一致,改完要 docker compose up -d 重启。"
+note "  注册 403 → bot 不是该仓库 admin。"
+note "  投递没反应 → Gitea 仓库 设置 → Web 钩子 → 最近投递的响应码;401 时:仓库没注册就先注册,注册过的到面板点「轮转推平」。"
+note "  Gitea 拦投递(allowed HTTP servers)→ app.ini [webhook] ALLOWED_HOST_LIST = external, ${PUBLIC_HOST}"
+note "  审查失败 → docker compose logs 里「Review Run 失败」带原因;模型没余额、标识拼错都在这。"
+note "  查库 → sqlite3 data/multireviewer.db 'select model, count(*) from finding group by model;'"
