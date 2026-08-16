@@ -18,10 +18,20 @@ export type FakeHook = {
   active: boolean;
 };
 
+/** 搜索端点上的一个仓库。`admin` 即结果里的 `permissions.admin`。 */
+export type FakeSearchRepo = {
+  id: number;
+  owner: string;
+  repo: string;
+  admin: boolean;
+};
+
 export type FakeGitea = {
   url: string;
   /** 当前存在的 hook,测试直接读。 */
   hooks: FakeHook[];
+  /** 搜索端点的仓库池,测试直接改。默认只有被注册的那一个。 */
+  search: FakeSearchRepo[];
   control: {
     /** 置 true 让 POST hook 回 500,验证「建 hook 失败注册回滚」。 */
     failCreate: boolean;
@@ -43,6 +53,9 @@ export async function startFakeGitea(repo: {
   repo: string;
 }): Promise<FakeGitea> {
   const hooks: FakeHook[] = [];
+  const search: FakeSearchRepo[] = [
+    { id: repo.id, owner: repo.owner, repo: repo.repo, admin: true },
+  ];
   const control = { failCreate: false, failDelete: false, admin: true, deleted: false };
   const current = { owner: repo.owner, repo: repo.repo };
   let nextId = 1;
@@ -70,6 +83,32 @@ export async function startFakeGitea(repo: {
         owner: { login: current.owner },
         name: current.repo,
       });
+    }
+    // 仓库搜索。回的是 `{ok, data}` 包装加 `X-Total-Count`,与其余端点的裸数组不同
+    // (docs/research/gitea-repo-search-api.md 第 3、4 节)。`limit` 按请求切片,
+    // 总数报全量——「这一页装不下」的截断态因此可测。
+    if (req.method === "GET" && path === "/api/v1/repos/search") {
+      const q = (url.searchParams.get("q") ?? "").toLowerCase();
+      const limit = Number(url.searchParams.get("limit") ?? "50");
+      const matched = search.filter((item) =>
+        `${item.owner}/${item.repo}`.toLowerCase().includes(q),
+      );
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "x-total-count": String(matched.length),
+      });
+      return res.end(
+        JSON.stringify({
+          ok: true,
+          data: matched.slice(0, limit).map((item) => ({
+            id: item.id,
+            name: item.repo,
+            full_name: `${item.owner}/${item.repo}`,
+            owner: { login: item.owner },
+            permissions: { admin: item.admin, push: true, pull: true },
+          })),
+        }),
+      );
     }
     if (req.method === "GET" && path === repoBase) {
       return json(200, {
@@ -130,6 +169,7 @@ export async function startFakeGitea(repo: {
   return {
     url: `http://127.0.0.1:${port}`,
     hooks,
+    search,
     control,
     rename: (owner, repoName) => {
       current.owner = owner;

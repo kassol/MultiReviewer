@@ -33,6 +33,8 @@ export const HARNESS_PR: PullRequestRef = {
 };
 
 export type PanelHarness = {
+  /** 服务的根地址。未登录调用要自己发请求,不能走带 cookie 的 `api()`。 */
+  serverUrl: string;
   gitea: FakeGitea;
   db: { path: string };
   dispatched: PullRequestRef[];
@@ -215,6 +217,7 @@ export async function startPanelHarness(
   }
 
   return {
+    serverUrl,
     gitea,
     db,
     dispatched,

@@ -27,6 +27,7 @@ import type { Forge } from "../forge/forge.ts";
 import {
   createGiteaHookManager,
   hookConverged,
+  missingAdminReason,
   type GiteaHook,
   type GiteaHookManager,
 } from "../forge/gitea-hooks.ts";
@@ -704,6 +705,9 @@ async function handlePanelApi(
     return handleRerun(req, res, deps);
   }
 
+  if (sub === "/repos/search" && req.method === "GET") {
+    return handleRepoSearch(req, res, deps, hookManager);
+  }
   if (sub === "/repos" && req.method === "GET") {
     const rows = withStore(deps.dbPath, (store) => store.listRepos());
     return sendJson(
@@ -1094,6 +1098,63 @@ function generationFromHookUrl(url: string, baseUrl: string): number | undefined
   const prefix = webhookUrlBase(baseUrl);
   if (!url.startsWith(prefix)) return undefined;
   return parseGeneration(url.slice(prefix.length));
+}
+
+/**
+ * 注册用的仓库搜索:服务端拿 bot PAT 去问 Gitea,浏览器不直连——直连等于把 Gitea 的
+ * 仓库可见范围挂在一个前端能拿到的 token 上,还要再造一条凭据轮换路径。
+ *
+ * 不可选的两类(已注册、bot 不是 admin)照样返回,由前端置灰。过滤掉会让人明知仓库
+ * 存在却搜不到,第一反应是搜索坏了。
+ *
+ * `state` 把「还没输关键字」与「输了但没搜到」分开:两者都是空列表,而人下一步该做的
+ * 事不同。`truncated` 为真时只是这一页装不下,继续输入以缩小范围。
+ */
+async function handleRepoSearch(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  hookManager: GiteaHookManager | undefined,
+): Promise<void> {
+  if (hookManager === undefined) {
+    return sendJson(res, 500, { error: "没有配置 Gitea,无法搜索仓库" });
+  }
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "").get("q") ?? "";
+  if (query.trim() === "") {
+    return sendJson(res, 200, {
+      state: "empty-query",
+      total: 0,
+      truncated: false,
+      results: [],
+    });
+  }
+
+  const page = await hookManager.searchRepos(query.trim());
+  const registered = new Set(
+    withStore(deps.dbPath, (store) => store.listRepos()).map((row) => row.repoId),
+  );
+  const results = page.hits.map((hit) => {
+    const isRegistered = registered.has(hit.repoId);
+    return {
+      repoId: hit.repoId,
+      owner: hit.owner,
+      repo: hit.repo,
+      registered: isRegistered,
+      admin: hit.admin,
+      // 不可选时说明缺什么。文案与注册流程的两条拒绝一字不差:同一件事只有一种说法。
+      ...(isRegistered
+        ? { reason: `${hit.owner}/${hit.repo} 已注册(repo id ${hit.repoId})` }
+        : hit.admin
+          ? {}
+          : { reason: missingAdminReason(hit) }),
+    };
+  });
+  return sendJson(res, 200, {
+    state: results.length === 0 ? "no-match" : "ok",
+    total: page.total,
+    truncated: page.total > page.hits.length,
+    results,
+  });
 }
 
 async function handleRegister(

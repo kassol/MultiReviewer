@@ -4,7 +4,8 @@
  * Gitea 适配层与 hook 管理模块的测试共用:只验证外部可观察的行为——发出去的请求
  * 打在哪个端点、带什么头与什么 body,读回来的响应被解释成什么。
  */
-export type Route = { status?: number; body?: unknown };
+/** `headers` 用于把响应头也做成被测输入,例如搜索端点的 `X-Total-Count`。 */
+export type Route = { status?: number; body?: unknown; headers?: Record<string, string> };
 
 export type StubCall = {
   method: string;
@@ -48,7 +49,7 @@ export function stubFetch(routes: Record<string, Route>): {
     if (status === 204) return new Response(null, { status });
     return new Response(JSON.stringify(route.body ?? {}), {
       status,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...route.headers },
     });
   }) as typeof fetch;
 

@@ -160,6 +160,50 @@ test("权限查询:admin 放行,非 admin 与不可见各带说明", async () =>
   assert.match((invisible as { reason: string }).reason, /协作者/);
 });
 
+test("搜仓库:解开 {ok, data} 包装,权限读结果自带的字段,总数读响应头", async () => {
+  const stub = stubFetch({
+    "GET /api/v1/repos/search?q=wid%2Fget&page=1&limit=50": {
+      headers: { "x-total-count": "27" },
+      body: {
+        ok: true,
+        data: [
+          {
+            id: 27,
+            name: "widget",
+            full_name: "acme/widget",
+            owner: { login: "acme" },
+            permissions: { admin: true, push: true, pull: true },
+          },
+          {
+            id: 28,
+            name: "gadget",
+            full_name: "acme/gadget",
+            owner: { login: "acme" },
+            permissions: { admin: false, push: true, pull: true },
+          },
+        ],
+      },
+    },
+  });
+  try {
+    // 关键字原样进 `q` 并经 URL 编码,只请求第一页。
+    assert.deepEqual(await createGiteaHookManager(OPTIONS).searchRepos("wid/get"), {
+      hits: [
+        { repoId: 27, owner: "acme", repo: "widget", admin: true },
+        { repoId: 28, owner: "acme", repo: "gadget", admin: false },
+      ],
+      // 总数大于这一页的条数,即结果被截断。
+      total: 27,
+    });
+  } finally {
+    stub.restore();
+  }
+  assert.deepEqual(
+    stub.calls.map((call) => call.method),
+    ["GET"],
+  );
+});
+
 test("列 hook:仓库整个 404 时返回空数组——仓库都没了,hook 自然一个没有", async () => {
   const stub = stubFetch({
     [LIST_PATH]: { status: 404, body: { message: "not found" } },

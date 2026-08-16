@@ -1,9 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import {
+  Command,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import {
   Dialog,
   DialogContent,
@@ -396,6 +403,34 @@ function RepoDetail({
   );
 }
 
+/** 搜索结果的一条。不可选的两类照样返回,`reason` 说明缺什么。 */
+type RepoSearchResult = {
+  repoId: number;
+  owner: string;
+  repo: string;
+  registered: boolean;
+  admin: boolean;
+  reason?: string;
+};
+
+type RepoSearch = {
+  state: "empty-query" | "no-match" | "ok";
+  total: number;
+  truncated: boolean;
+  results: RepoSearchResult[];
+};
+
+/** 输入停下这么久才发搜索请求。每个按键都发会让后端替浏览器打满 Gitea。 */
+const SEARCH_DEBOUNCE_MS = 250;
+
+/**
+ * 注册仓库(issue #70):输关键字搜 bot 可见的仓库直接选中,不必先去 Gitea 上把
+ * owner 与 repo 抄下来。手输两个框已删除——bot 看不见的仓库手输进去也过不了注册时的
+ * 权限检查,留个兜底只会把「搜不到」的问题推迟到注册那一刻才暴露。
+ *
+ * 搜索经本服务代理(`GET <前缀>/api/repos/search`),浏览器不直连 Gitea。已注册与
+ * 无 admin 权限两类照样列出、只是置灰:过滤掉会让人明知仓库存在却搜不到。
+ */
 function RegisterModal({
   onClose,
   onDone,
@@ -403,20 +438,34 @@ function RegisterModal({
   onClose: () => void;
   onDone: (repoId: number) => void;
 }) {
-  const [owner, setOwner] = useState("");
-  const [repo, setRepo] = useState("");
+  const [query, setQuery] = useState("");
+  const [debounced, setDebounced] = useState("");
+  const [picked, setPicked] = useState<RepoSearchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(query), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const search = useQuery({
+    queryKey: ["repo-search", debounced],
+    queryFn: () => fetchJson<RepoSearch>(`/repos/search?q=${encodeURIComponent(debounced)}`),
+    enabled: debounced.trim() !== "",
+  });
+
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
+    if (picked === null) return;
     setBusy(true);
     setError(null);
     try {
+      // 入参一字未改:仍是 owner 与 repo,repoId 由服务端在权限检查那一次请求里读出。
       // 新仓库一律跟随全局,要自定义在详情里切两态开关。
       const response = await api("/repos", {
         method: "POST",
-        body: JSON.stringify({ owner, repo }),
+        body: JSON.stringify({ owner: picked.owner, repo: picked.repo }),
       });
       if (!response.ok) {
         setError(await errorText(response));
@@ -431,6 +480,7 @@ function RegisterModal({
     }
   }
 
+  const data = search.data;
   return (
     <Dialog open onOpenChange={(next) => (next ? undefined : onClose())}>
       <DialogContent aria-describedby={undefined}>
@@ -438,24 +488,65 @@ function RegisterModal({
           <DialogHeader>
             <DialogTitle>注册仓库</DialogTitle>
           </DialogHeader>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="register-owner">owner</Label>
-            <Input
-              id="register-owner"
-              value={owner}
-              onChange={(event) => setOwner(event.target.value)}
+          {/* cmdk 自带的过滤按标签文本再筛一次,而结果已经是 Gitea 按关键字搜回来的。 */}
+          <Command shouldFilter={false} className="border-border rounded-md border">
+            <CommandInput
+              placeholder="搜仓库:owner 或仓库名"
+              value={query}
+              onValueChange={setQuery}
               autoFocus
             />
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="register-repo">repo</Label>
-            <Input
-              id="register-repo"
-              value={repo}
-              onChange={(event) => setRepo(event.target.value)}
-            />
-          </div>
-          <p className="text-xs text-muted-foreground">
+            <CommandList className="max-h-[300px]">
+              {search.isError ? (
+                <p className="text-destructive p-4">{(search.error as Error).message}</p>
+              ) : data === undefined || debounced.trim() === "" ? (
+                <p className="text-muted-foreground p-4">输关键字开始搜,搜的是 bot 能看见的仓库。</p>
+              ) : data.state === "no-match" ? (
+                <p className="text-muted-foreground p-4">
+                  没有匹配的仓库。搜不到通常是 bot 还不是它的协作者,先把 bot 加进那个仓库。
+                </p>
+              ) : (
+                <CommandGroup>
+                  {data.results.map((row) => {
+                    const identity = `${row.owner}/${row.repo}`;
+                    const selectable = !row.registered && row.admin;
+                    return (
+                      <CommandItem
+                        key={row.repoId}
+                        value={identity}
+                        disabled={!selectable}
+                        onSelect={() => setPicked(row)}
+                      >
+                        <span className="flex min-w-0 flex-1 flex-col">
+                          <span className="truncate font-mono">
+                            {identity}
+                            {picked?.repoId === row.repoId ? (
+                              <span className="text-primary ml-2 font-sans">已选</span>
+                            ) : null}
+                          </span>
+                          {row.reason === undefined ? null : (
+                            <span className="text-muted-foreground truncate text-[11px]">
+                              {row.reason}
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-muted-foreground shrink-0 text-[11px]">
+                          repo id {row.repoId}
+                        </span>
+                      </CommandItem>
+                    );
+                  })}
+                </CommandGroup>
+              )}
+            </CommandList>
+          </Command>
+          {/* 只取第一页:剩下的靠继续输入缩小范围,面板不翻页。 */}
+          {data?.truncated === true ? (
+            <p className="text-warning text-xs">
+              共 {data.total} 个匹配,这里只显示前 {data.results.length} 个。继续输入以缩小范围。
+            </p>
+          ) : null}
+          <p className="text-muted-foreground text-xs">
             模型组合先跟随全局设置,注册完在仓库详情里可以改成自定义。
           </p>
           {error === null ? null : <p className="text-destructive">{error}</p>}
@@ -463,8 +554,8 @@ function RegisterModal({
             <Button type="button" variant="outline" onClick={onClose}>
               取消
             </Button>
-            <Button type="submit" disabled={busy || owner === "" || repo === ""}>
-              {busy ? "注册中…" : "注册"}
+            <Button type="submit" disabled={busy || picked === null}>
+              {busy ? "注册中…" : picked === null ? "注册" : `注册 ${picked.owner}/${picked.repo}`}
             </Button>
           </DialogFooter>
         </form>

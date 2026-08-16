@@ -11,6 +11,12 @@ import { request, type GiteaForgeOptions } from "./gitea.ts";
 const PAGE_SIZE = 100;
 
 /**
+ * 搜索那一页取这么多。实例会把 `limit` 钳到 `API.MAX_RESPONSE_ITEMS`(默认 50,
+ * `services/convert/utils.go:15-22`),写 50 即拿到的就是请求的数,不必猜钳制值。
+ */
+const SEARCH_PAGE_SIZE = 50;
+
+/**
  * 建 hook 的订阅集,窄订阅:`pull_request_only` 是「只订裸 `pull_request`、不展开
  * 事件族」的哨兵(`routers/api/v1/utils/hook.go:188`——直接写 `pull_request` 会展开成
  * 8 个 PR 事件,PR 下每条评论、每次打标签都投一次);`pull_request_sync` 单列,Gitea
@@ -48,6 +54,31 @@ export type AdminCheck =
   | { admin: true; repoId: number }
   | { admin: false; reason: string };
 
+/**
+ * bot 对仓库不是 admin 时的说明文字。权限检查与搜索结果的置灰项共用同一句——两处
+ * 说的是同一件事,人要做的动作也是同一个。
+ */
+export function missingAdminReason(ref: RepoRef): string {
+  return (
+    `bot 对 ${ref.owner}/${ref.repo} 没有 admin 权限——hook 管理的端点要求仓库 admin,` +
+    "write 不够。把 bot 的协作者权限升到管理员。"
+  );
+}
+
+/** 搜索命中的一个仓库。权限来自搜索结果自带的 `permissions.admin`,不再逐个复查。 */
+export type RepoSearchHit = {
+  repoId: number;
+  owner: string;
+  repo: string;
+  admin: boolean;
+};
+
+export type RepoSearchPage = {
+  hits: RepoSearchHit[];
+  /** 匹配总数(`X-Total-Count`)。大于 `hits.length` 即这一页之外还有,结果被截断。 */
+  total: number;
+};
+
 export type GiteaHookManager = {
   /**
    * 按数值 repo id 解析仓库现在的 owner/repo。仓库改名或转移后注册表里的名字是旧的,
@@ -67,6 +98,11 @@ export type GiteaHookManager = {
   deleteHook(ref: RepoRef, hookId: number): Promise<void>;
   /** bot 对仓库的权限是否 admin。hook 端点全挂在 `reqAdmin()` 后面,write 不够。 */
   checkAdmin(ref: RepoRef): Promise<AdminCheck>;
+  /**
+   * 按关键字搜 bot 可见的仓库,只取第一页。下拉要的是「输几个字就能选中」,翻页在
+   * 这个场景里没有用户——条数不够就再输几个字,比翻页快。
+   */
+  searchRepos(query: string): Promise<RepoSearchPage>;
 };
 
 /**
@@ -222,12 +258,45 @@ export function createGiteaHookManager(options: GiteaForgeOptions): GiteaHookMan
       if (repo.permissions?.admin === true && typeof repo.id === "number") {
         return { admin: true, repoId: repo.id };
       }
-      return {
-        admin: false,
-        reason:
-          `bot 对 ${ref.owner}/${ref.repo} 没有 admin 权限——hook 管理的端点要求仓库 admin,` +
-          "write 不够。把 bot 的协作者权限升到管理员。",
+      return { admin: false, reason: missingAdminReason(ref) };
+    },
+
+    async searchRepos(query) {
+      // `GET /repos/search`(`routers/api/v1/api.go:1204-1206`)。结果集按调用者可见性
+      // 裁剪,不必额外传参;`permissions` 逐个仓库随结果给出(`repo.go:222-229`),
+      // 「有没有 admin」一次请求就够。契约见 `docs/research/gitea-repo-search-api.md`。
+      // 用 `request` 而不是 `requestJson`:总数在 `X-Total-Count` 响应头里。
+      const response = await request(
+        options,
+        "GET",
+        `/repos/search?q=${encodeURIComponent(query)}&page=1&limit=${SEARCH_PAGE_SIZE}`,
+      );
+      // 这个端点回 `api.SearchResults`(`repo.go:233-236`)的 `{ok, data}` 包装,与本
+      // 适配层其余列表端点的裸数组不同,解析不能共用。
+      const body = (await response.json()) as {
+        data?: {
+          id?: number;
+          name?: string;
+          owner?: { login?: string };
+          permissions?: { admin?: boolean };
+        }[];
       };
+      const hits: RepoSearchHit[] = [];
+      for (const item of body.data ?? []) {
+        if (typeof item.id !== "number" || typeof item.name !== "string") continue;
+        if (typeof item.owner?.login !== "string") continue;
+        hits.push({
+          repoId: item.id,
+          owner: item.owner.login,
+          repo: item.name,
+          admin: item.permissions?.admin === true,
+        });
+      }
+      // 头缺失或不是整数时按「就这些」算:宁可不提示截断,也不谎报一个总数。
+      const header = response.headers.get("x-total-count");
+      const parsed = header === null ? Number.NaN : Number(header);
+      const total = Number.isInteger(parsed) ? parsed : hits.length;
+      return { hits, total };
     },
   };
 }
