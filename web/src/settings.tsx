@@ -75,12 +75,12 @@ function SettingsForm({
   const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
 
   const save = useMutation({
-    mutationFn: async (): Promise<Settings> => {
+    mutationFn: async (maxChangedLinesPerBatch: number): Promise<Settings> => {
       const response = await api("/settings", {
         method: "PUT",
         body: JSON.stringify({
           reviewers: models.map(parseModelIdentity),
-          maxChangedLinesPerBatch: Number(limit),
+          maxChangedLinesPerBatch,
         }),
       });
       if (!response.ok) throw new Error(await errorText(response));
@@ -99,7 +99,14 @@ function SettingsForm({
       onSubmit={(event) => {
         event.preventDefault();
         setFeedback(null);
-        save.mutate();
+        // 字段是自由文本,`Number("abc")` 是 NaN,JSON 里它序列化成 null,而 null 在
+        // 服务端的语义是「清除这一项」:不拦的话人看到「已保存」,配置却被悄悄删了。
+        const parsed = Number(limit.trim());
+        if (limit.trim() === "" || !Number.isInteger(parsed) || parsed <= 0) {
+          setFeedback({ text: "批次上限要填正整数,这次没保存。", isError: true });
+          return;
+        }
+        save.mutate(parsed);
       }}
     >
       <Card className="gap-2.5 px-4">
