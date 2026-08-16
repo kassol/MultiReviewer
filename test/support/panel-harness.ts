@@ -16,6 +16,7 @@ import {
   type NormalizedEvent,
   type WebhookServerDeps,
 } from "../../src/webhook/server.ts";
+import { openStore } from "../../src/review/store.ts";
 import { startFakeGitea, type FakeGitea } from "./fake-gitea.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./memory-forge.ts";
@@ -54,7 +55,6 @@ export const PANEL_CREDENTIAL_MASTER_KEY = "panel-harness-master-key";
 export const HARNESS_SPEC: ReviewerSpec = {
   provider: "test",
   model: "global-model",
-  apiKeyEnv: "STUB_KEY",
 };
 
 export type PanelHarnessOptions = {
@@ -62,6 +62,8 @@ export type PanelHarnessOptions = {
   credentialMasterKey?: string | undefined;
   /** Reviewer 的组装。省略即按 spec 建脚本 Reviewer;真组装那一档传 `buildReviewers`。 */
   buildReviewers?: WebhookServerDeps["buildReviewers"];
+  /** 先写进库的全局模型组合。省略取 `[HARNESS_SPEC]`,给空数组即「还没配组合」。 */
+  reviewers?: readonly ReviewerSpec[];
 };
 
 export async function startPanelHarness(
@@ -80,6 +82,15 @@ export async function startPanelHarness(
   const db = makeDbPath();
   const gitea = await startFakeGitea(GITEA_REPO);
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup, gitea.close);
+
+  // 全局模型组合在库里(issue #66),服务起来之前先播种。
+  const reviewers = options.reviewers ?? [HARNESS_SPEC];
+  const seed = openStore(db.path);
+  seed.putGlobalSettings({
+    reviewersJson: reviewers.length === 0 ? null : JSON.stringify(reviewers),
+    maxChangedLinesPerBatch: null,
+  });
+  seed.close();
 
   const base = memoryForge({
     pullRequest: {
@@ -111,7 +122,6 @@ export async function startPanelHarness(
 
   const server = createWebhookServer({
     forges: { gitea: forge },
-    reviewerSpecs: [HARNESS_SPEC],
     buildReviewers: (specs, credentials) => {
       factoryCalls.push(specs);
       snapshots.push(credentials);

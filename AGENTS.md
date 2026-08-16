@@ -14,13 +14,12 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 
 - `CONTEXT.md` — 领域术语表,代码与沟通的统一语言以此为准。
 - `src/` — 编排服务源码,结构约定见 `src/AGENTS.md`。进程入口是 `src/main.ts`。
-- `multireviewer.config.example.json` — 模型组合配置的样例。实际配置放 `multireviewer.config.json`,不进版本库;模型凭据在面板的凭据页配,不在这里(`apiKeyEnv` 是待删的遗留字段,issue #66)。
 - `web/` — 管理面板前端(Vite + TanStack Router/Query),结构约定见 `web/AGENTS.md`。产物在 Docker 多阶段构建里生成,不进版本库。
 - `test/` — 测试,打在三条缝上(HTTP 端点 / 假 Gitea / SQLite 临时库)。`test/support/` 是内存 Forge、脚本化 Reviewer、git fixture、假 Gitea 与面板 harness。
 - `Dockerfile` / `.dockerignore` — 运行镜像。`node:24-slim` 加 git,依赖在镜像内重装(宿主机的 `node_modules` 含平台专属产物,不进镜像)。
-- `docker-compose.yml` — 服务器上的编排定义。与 `.env`、`multireviewer.config.json` 三个文件即可运行,不需要源码。
+- `docker-compose.yml` — 服务器上的编排定义。与 `.env` 两个文件即可运行,不需要源码。
 - `scripts/build-push.sh` — 在开发机构建镜像并推到 registry,默认目标架构 `linux/amd64`。
-- `scripts/setup.sh` — 部署向导。在服务器上执行,逐步问出凭据、写 `.env` 与 `multireviewer.config.json`、拉镜像起容器、以「面板能登录」为验收自检;仓库接入在面板上做,不在向导里。
+- `scripts/setup.sh` — 部署向导。在服务器上执行,逐步问出凭据、写 `.env`、拉镜像起容器、以「面板能登录」为验收自检;仓库接入与模型组合在面板上做,不在向导里。
 - `docs/adr/` — 架构决策记录。
 - `docs/idea.md` — 初始产品与架构草案,部分设定已被 ADR 推翻。
 - `docs/agents/` — Agent skills 的仓库级配置:issue tracker、triage 标签、domain docs 消费规则。
@@ -40,7 +39,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 
 ## 部署
 
-部署形态是 Docker。镜像在开发机构建后推到 registry,服务器只拉镜像。服务器上放三个文件在同一目录即可,不需要源码:`docker-compose.yml`、`setup.sh`、以及向导生成的 `.env` 与 `multireviewer.config.json`。
+部署形态是 Docker。镜像在开发机构建后推到 registry,服务器只拉镜像。服务器上放三个文件在同一目录即可,不需要源码:`docker-compose.yml`、`setup.sh`、以及向导生成的 `.env`。模型组合与批次上限在库里,由面板管,没有配置文件。
 
 ```
 # 开发机:构建并推送。开发机 arm64、服务器 amd64 时必须交叉构建,脚本已默认 linux/amd64
@@ -53,7 +52,7 @@ bash setup.sh
 docker compose pull && docker compose up -d
 ```
 
-向导的边界收在「面板能登录」:生成 admin token 与面板前缀、问基地址、起服务后打登录页并真登录一次(token 写坏时自检失败,不静默交付),收尾给交付清单。仓库接入、key 轮转、模型覆盖都在面板上做,向导不再生成全局 webhook secret 也不指导手工配 hook;检出旧变量(`MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` / `MULTIREVIEWER_GITEA_REPO`)会清掉并说明原因。
+向导的边界收在「面板能登录」:生成 admin token 与面板前缀、问基地址、起服务后打登录页并真登录一次(token 写坏时自检失败,不静默交付),收尾给交付清单。仓库接入、key 轮转、模型组合与覆盖都在面板上做,向导不再生成全局 webhook secret 也不指导手工配 hook;检出旧变量(`MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` / `MULTIREVIEWER_GITEA_REPO`)会清掉并说明原因。
 
 两处容易踩的地方:
 
@@ -81,7 +80,6 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 
 - `MULTIREVIEWER_PORT` — 监听端口,默认 3000。镜像里已设为 3000,走容器时不要再改
 - `MULTIREVIEWER_PANEL_DIST` — 前端构建产物目录,默认 `web/dist`。镜像里是 `/app/web/dist`。产物不在时面板页面回 503(与 404 的「前缀记错」分开)
-- `MULTIREVIEWER_CONFIG` — 配置文件路径,默认 `multireviewer.config.json`。镜像里是 `/app/multireviewer.config.json`
 - `MULTIREVIEWER_DB` — SQLite 文件位置,默认 `multireviewer.db`。镜像里是 `/data/multireviewer.db`
 - `MULTIREVIEWER_CACHE_DIR` — 工作副本缓存根目录,默认 `.cache/worktrees`。镜像里是 `/data/worktrees`
 - `MULTIREVIEWER_CREDENTIAL_MASTER_KEY` — 模型凭据的加密主密钥(ADR 0008),面板凭据页用它加解密。没设时服务照常启动,只有凭据页整体不可用并说明差什么——起不来就进不了面板。取一串随机材料即可,例如 `openssl rand -hex 32`;换掉它等于把已存的凭据作废,面板显示未配置,重新粘一次 key 即可
@@ -191,3 +189,4 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-16: 落地 issue #73。模型标识统一成 `provider:model`(`CONTEXT.md` 早已如此定义,词条未动):落库的 Finding 与 Reviewer 结果、面板展示、处置率统计归属全部用完整标识,模型组合的去重键随之改成完整标识——同一个 model id 在两家 provider 下是两个 Reviewer,可共存。历史行在服务启动时一次性回填,幂等;provider 在库里没有记录,判据取「按裸 model id 在当前模型组合与各仓库覆盖里反查得到唯一 provider」,反查不到就不动那一行(留下的旧形态行在统计里各成一条,不会被错误归并)。内容指纹与评论锚点都不含模型标识,历史评论的跨轮次匹配不受影响。
 - 2026-08-16: 落地 issue #64。模型凭据加密进库、由面板写入(ADR 0008):按 provider 一把,同一家下的多个模型共用;保存时真发一次最小请求验证厂商 key,不通过不落库并回报原因;只写不回显,列表只给 provider、是否已配、更新时间与尾 4 位;同 provider 二次写入是覆盖。主密钥是新的可选环境变量 `MULTIREVIEWER_CREDENTIAL_MASTER_KEY`,没设时凭据端点读写都 503 并说明差什么,服务其余部分照常启动。解不开的密文一律按未配置透出,不抛也不做重加密迁移。面板新增凭据页(`web/src/credentials.tsx`)。本票不动启动时的凭据校验(issue #65)与配置文件(issue #66),`buildReviewers` 仍读 `apiKeyEnv`,库里的凭据还没有接进 Review Run。部署向导也未改,新部署要手工往 `.env` 补主密钥(issue #72 收口)。
 - 2026-08-16: 落地 issue #65。凭据校验从启动挪到组装 Reviewer(ADR 0008)。启动不再读 `apiKeyEnv`:空库、一把模型凭据都没有、连主密钥都没设的新部署照常起,人进面板把它配起来。组装点是 Review Run 开始的那一刻(投递与手动重跑共用):按 provider 从库里取一次凭据快照,在编排进程里解密,整轮不重读——轮转对进行中的 Run 无影响,下一次投递自然用新的。缺凭据的 provider 不再抛错拦住投递,而是建出一个一跑就报失败的 Reviewer,那次 Review Run 因此在时间线上留下一条失败记录,失败原因写明缺哪一家。凭据来源收敛到库这一条:`apiKeyEnv` 字段还在配置文件里(issue #66 删),但组装不再读它,文件与库不构成双轨。子进程的注入路径未动(ADR 0004):仍是单变量 `MULTIREVIEWER_MODEL_API_KEY`、先剥光父进程环境,密文与主密钥都不进子进程。
+- 2026-08-16: 落地 issue #66。全局设置进库,`multireviewer.config.json` 废除。模型组合与批次上限存 `global_setting` 表,面板的 `GET`/`PUT <前缀>/api/settings` 读写同一形状(`{reviewers: [{provider, model}], maxChangedLinesPerBatch}`);全局组合与每仓库覆盖同构,一套校验判据通吃,报错标注是全局还是哪个仓库;批次上限缺省时读回默认值 2000。`ReviewerSpec` 去掉 `apiKeyEnv`,凭据只从库里按 provider 取(ADR 0008)。空库、还没配组合时投递照常受理,留下一条失败的 Review Run 写明「还没有配置模型组合」——零 Reviewer 的 Run 不留痕,那才是真的看不出问题。删掉的东西:`multireviewer.config.example.json`、`loadConfig` 与默认配置路径、环境变量 `MULTIREVIEWER_CONFIG`(镜像里那一行也删)、compose 的只读单文件绑定与「只需要这三样」的注释、向导写配置的那一段(向导的模型标识核对改成直接核两个入参)。面板暂时只有端点没有设置页,组合的选择器是 issue #68 / #69。

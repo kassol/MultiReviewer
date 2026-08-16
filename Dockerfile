@@ -39,10 +39,9 @@ RUN pnpm install --prod --frozen-lockfile --filter multireviewer
 COPY src ./src
 COPY --from=webbuild /app/web/dist ./web/dist
 
-# 数据落这两处,compose 把宿主机目录绑上来。配置文件同样由 compose 绑入。
+# 数据落这两处,compose 把宿主机目录绑上来。
 ENV MULTIREVIEWER_DB=/data/multireviewer.db \
     MULTIREVIEWER_CACHE_DIR=/data/worktrees \
-    MULTIREVIEWER_CONFIG=/app/multireviewer.config.json \
     MULTIREVIEWER_PANEL_DIST=/app/web/dist \
     MULTIREVIEWER_PORT=3000
 

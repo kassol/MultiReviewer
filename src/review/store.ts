@@ -86,8 +86,7 @@ CREATE TABLE IF NOT EXISTS webhook_delivery (
 
 -- 仓库注册表。主键是 Forge 的数值 repo id:改名与转移 owner 后凭 payload 里的 id
 -- 仍能匹配,owner/repo 只是注册时的名字,不参与准入。reviewers 是模型覆盖
--- (ReviewerSpec 的 JSON 数组),NULL 即跟随全局配置——文件管全局默认,库管每仓库
--- 覆盖,不出现「文件与库谁赢」。
+-- (ReviewerSpec 的 JSON 数组),NULL 即跟随 global_setting 里的全局模型组合。
 CREATE TABLE IF NOT EXISTS repo (
   id INTEGER PRIMARY KEY,
   owner TEXT NOT NULL,
@@ -113,6 +112,14 @@ CREATE TABLE IF NOT EXISTS model_credential (
   api_key_encrypted TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- 全局设置,一项一行。reviewers 是全局模型组合,与 repo.reviewers 同构(ReviewerSpec
+-- 的 JSON 数组);max_changed_lines_per_batch 是正整数的字符串形,缺行即取默认值。
+-- 库是唯一的配置面(issue #66),没有配置文件与它竞争。
+CREATE TABLE IF NOT EXISTS global_setting (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 /**
@@ -129,6 +136,10 @@ const ADD_COLUMNS = [
   "ALTER TABLE review_run ADD COLUMN pr_state TEXT",
   "ALTER TABLE finding ADD COLUMN placement TEXT NOT NULL DEFAULT 'inline'",
 ];
+
+/** `global_setting` 的两个键。 */
+const GLOBAL_REVIEWERS_KEY = "reviewers";
+const GLOBAL_MAX_CHANGED_LINES_KEY = "max_changed_lines_per_batch";
 
 /** 回填要用的最小形状。`ReviewerSpec` 满足它,store 层不必依赖配置模块。 */
 export type ModelSpec = { provider: string; model: string };
@@ -292,6 +303,16 @@ export type ModelCredentialRecord = {
   updatedAt: string;
 };
 
+/**
+ * 全局设置。两项都可能没配:空库刚起来时就是这个样子,面板的设置页把它们配起来。
+ */
+export type GlobalSettings = {
+  /** 全局模型组合的 JSON(ReviewerSpec 数组),null 即还没配。 */
+  reviewersJson: string | null;
+  /** 一批最多多少改动行,null 即取编排层的默认值。 */
+  maxChangedLinesPerBatch: number | null;
+};
+
 /** 注册表里的一个仓库。`reviewersJson` 是模型覆盖的 JSON,null 即跟随全局。 */
 export type RepoRecord = {
   repoId: number;
@@ -363,6 +384,10 @@ export type Store = {
   removeRepo(repoId: number): void;
   /** 全部已注册仓库,按最近活动排序,没跑过的按注册时间排在后面。 */
   listRepos(): RepoSummary[];
+  /** 全局设置。没写过的项回 null,调用方各自取默认。 */
+  getGlobalSettings(): GlobalSettings;
+  /** 改写全局设置,两项一起写。null 即清掉该项,读回来重新取默认。 */
+  putGlobalSettings(settings: GlobalSettings): void;
   /** 写一家厂商的凭据密文。同 provider 二次写入是覆盖,不是新增(ADR 0008)。 */
   putModelCredential(provider: string, apiKeyEncrypted: string, updatedAt: string): void;
   /** 全部厂商凭据,按 provider 排序。密文原样给出,解密由调用方做。 */
@@ -573,6 +598,36 @@ export function openStore(dbPath: string, modelSpecs?: readonly ModelSpec[]): St
         findingCount: Number(row["finding_count"]),
         lastActivity: row["last_activity"] === null ? null : String(row["last_activity"]),
       }));
+    },
+
+    getGlobalSettings() {
+      const rows = db.prepare("SELECT key, value FROM global_setting").all();
+      const values = new Map(rows.map((row) => [String(row["key"]), String(row["value"])]));
+      const limit = values.get(GLOBAL_MAX_CHANGED_LINES_KEY);
+      return {
+        reviewersJson: values.get(GLOBAL_REVIEWERS_KEY) ?? null,
+        maxChangedLinesPerBatch: limit === undefined ? null : Number(limit),
+      };
+    },
+
+    putGlobalSettings(settings) {
+      const write = (key: string, value: string | null): void => {
+        if (value === null) {
+          db.prepare("DELETE FROM global_setting WHERE key = ?").run(key);
+          return;
+        }
+        db.prepare(
+          `INSERT INTO global_setting (key, value) VALUES (?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        ).run(key, value);
+      };
+      write(GLOBAL_REVIEWERS_KEY, settings.reviewersJson);
+      write(
+        GLOBAL_MAX_CHANGED_LINES_KEY,
+        settings.maxChangedLinesPerBatch === null
+          ? null
+          : String(settings.maxChangedLinesPerBatch),
+      );
     },
 
     putModelCredential(provider, apiKeyEncrypted, updatedAt) {

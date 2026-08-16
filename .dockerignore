@@ -16,8 +16,6 @@ data
 docs
 test
 scripts
-multireviewer.config.json
-multireviewer.config.example.json
 AGENTS.md
 CONTEXT.md
 README.md

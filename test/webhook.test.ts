@@ -106,6 +106,11 @@ async function startHarness(options: HarnessOptions = {}) {
     generation: GENERATION,
     key: KEY,
   });
+  // 全局模型组合在库里(issue #66)。
+  seed.putGlobalSettings({
+    reviewersJson: JSON.stringify([{ provider: "test", model: "stub-model" }]),
+    maxChangedLinesPerBatch: null,
+  });
   seed.registerRepo({
     repoId: REPO_B_ID,
     owner: "acme",
@@ -149,7 +154,6 @@ async function startHarness(options: HarnessOptions = {}) {
 
   const server = createWebhookServer({
     forges: options.omitGiteaForge ? { github: forge } : { github: forge, gitea: forge },
-    reviewerSpecs: [{ provider: "test", model: "stub-model", apiKeyEnv: "STUB_KEY" }],
     // 组装桩:本文件测的是投递链路,不起真的 Pi 子进程,凭据快照也不看。
     buildReviewers: (specs) =>
       options.reviewer === undefined

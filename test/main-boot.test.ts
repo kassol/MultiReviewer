@@ -7,11 +7,14 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
+
+import type { ReviewerSpec } from "../src/config.ts";
+import { openStore } from "../src/review/store.ts";
 
 const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 const LISTENING = "MultiReviewer webhook 监听";
@@ -36,20 +39,25 @@ type Boot = { listening: boolean; output: string };
 
 async function boot(
   overrides: Record<string, string>,
-  reviewers: unknown[] = [{ provider: "test", model: "stub", apiKeyEnv: "STUB_KEY" }],
+  reviewers: readonly ReviewerSpec[] = [{ provider: "test", model: "stub" }],
 ): Promise<Boot> {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-boot-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-  const configPath = join(dir, "config.json");
-  writeFileSync(configPath, JSON.stringify({ reviewers }));
+  const dbPath = join(dir, "multireviewer.db");
+  // 模型组合在库里(issue #66):启动前先播种,空数组即「还没配组合」的空库。
+  const seed = openStore(dbPath);
+  seed.putGlobalSettings({
+    reviewersJson: reviewers.length === 0 ? null : JSON.stringify(reviewers),
+    maxChangedLinesPerBatch: null,
+  });
+  seed.close();
 
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) {
     if (value !== undefined && !CLEARED.includes(name)) env[name] = value;
   }
   Object.assign(env, {
-    MULTIREVIEWER_CONFIG: configPath,
-    MULTIREVIEWER_DB: join(dir, "multireviewer.db"),
+    MULTIREVIEWER_DB: dbPath,
     MULTIREVIEWER_CACHE_DIR: join(dir, "worktrees"),
     MULTIREVIEWER_ADMIN_TOKEN: "boot-test-admin-token",
     MULTIREVIEWER_PANEL_PREFIX: "boot-test-prefix",
@@ -91,8 +99,8 @@ test("只配 GitHub 令牌时服务起得来", async () => {
  */
 test("空库、没有任何模型凭据时服务照常起", async () => {
   const result = await boot({ GITHUB_TOKEN: "ghp-stub" }, [
-    { provider: "anthropic", model: "claude-haiku-4-5", apiKeyEnv: "ANTHROPIC_API_KEY" },
-    { provider: "deepseek", model: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY" },
+    { provider: "anthropic", model: "claude-haiku-4-5" },
+    { provider: "deepseek", model: "deepseek-v4-flash" },
   ]);
   assert.equal(result.listening, true, result.output);
 });

@@ -184,11 +184,10 @@ finish() {
 #
 # 在**跑服务的那台服务器**上执行。服务器上不需要源码,只要这些文件放在同一个目录:
 #
-#   docker-compose.yml         本仓库根目录那一份,拷过来
-#   setup.sh                   本脚本
-#   .env                       由本脚本生成
-#   multireviewer.config.json  由本脚本生成
-#   data/                      由本脚本创建,SQLite 与工作副本缓存落在这里
+#   docker-compose.yml  本仓库根目录那一份,拷过来
+#   setup.sh            本脚本
+#   .env                由本脚本生成
+#   data/               由本脚本创建,SQLite 与工作副本缓存落在这里
 #
 # 镜像在开发机上构建后推到 registry(`scripts/build-push.sh`),这里只负责拉取。
 # 你从笔记本 SSH 进来,浏览器留在笔记本上——脚本给出的网址在笔记本上打开,把值粘回来。
@@ -202,19 +201,6 @@ DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ -f "$DEPLOY_DIR/docker-compose.yml" ]] || DEPLOY_DIR="$(dirname "$DEPLOY_DIR")"
 cd "$DEPLOY_DIR"
 ENV_FILE="$DEPLOY_DIR/.env"
-
-# compose 以「只读单文件」的方式绑定 multireviewer.config.json。绑定发生时宿主机上这
-# 个路径不存在的话,docker 会替你建一个同名目录、属主是 root,此后写配置就撞上
-# "Is a directory",而且没有 sudo 清不掉。第一条 compose 命令跑起来之前先坐实它是
-# 文件——数据目录那一步的探针就已经会起容器,那时配置还没写。
-if [[ -d multireviewer.config.json ]]; then
-  printf '\n  %s✗ multireviewer.config.json 是个目录,不是文件%s\n\n' "$RED" "$RESET"
-  printf '  这是上一次运行留下的残骸。清掉再重跑:\n\n'
-  printf '      %ssudo rm -rf %s/multireviewer.config.json%s\n\n' \
-    "$BOLD" "$DEPLOY_DIR" "$RESET"
-  exit 1
-fi
-[[ -f multireviewer.config.json ]] || : > multireviewer.config.json
 
 # 某个阶段要产出的值已经全在 .env 里时跳过它,重跑向导因此只补没做完的部分。
 # FORCE=1 强制每个阶段都重做。
@@ -381,9 +367,9 @@ fi
 
 # ── 6. 模型组合 ───────────────────────────────────────────────────────────
 stage "模型组合"
-say "写 multireviewer.config.json,它以只读方式绑进容器。"
+say "模型组合在库里,由面板的设置页管。这一步先把两个标识核准,记进 .env 备查。"
 say "模型标识同时用作 Finding 的来源标记,两个不能重名。"
-note "直接回车用默认值。改模型只需改这个文件加重启,不必重新构建镜像。"
+note "直接回车用默认值。"
 
 ask MULTIREVIEWER_DEEPSEEK_MODEL   "DeepSeek 模型标识 [deepseek-v4-flash]:"
 ask MULTIREVIEWER_OPENROUTER_MODEL "OpenRouter 模型标识 [z-ai/glm-4.6]:"
@@ -392,40 +378,24 @@ ask MULTIREVIEWER_OPENROUTER_MODEL "OpenRouter 模型标识 [z-ai/glm-4.6]:"
 write_env MULTIREVIEWER_DEEPSEEK_MODEL   "$MULTIREVIEWER_DEEPSEEK_MODEL"
 write_env MULTIREVIEWER_OPENROUTER_MODEL "$MULTIREVIEWER_OPENROUTER_MODEL"
 
-cat > multireviewer.config.json <<CONFIG
-{
-  "maxChangedLinesPerBatch": 2000,
-  "reviewers": [
-    {
-      "provider": "deepseek",
-      "model": "${MULTIREVIEWER_DEEPSEEK_MODEL}",
-      "apiKeyEnv": "DEEPSEEK_API_KEY"
-    },
-    {
-      "provider": "openrouter",
-      "model": "${MULTIREVIEWER_OPENROUTER_MODEL}",
-      "apiKeyEnv": "OPENROUTER_API_KEY"
-    }
-  ]
-}
-CONFIG
-printf '  %s✓ 写了%s multireviewer.config.json\n' "$GREEN" "$RESET"
-
 say "在容器里拿 Pi 内置的模型表核一遍这两个标识确实存在。"
 say "标识写错时服务照样起得来,要等第一次审查跑到一半才报「模型不存在」。"
 MODEL_CHECK='
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-const config = JSON.parse(readFileSync("/app/multireviewer.config.json", "utf8"));
+const reviewers = [
+  { provider: "deepseek", model: process.env.CHECK_DEEPSEEK_MODEL },
+  { provider: "openrouter", model: process.env.CHECK_OPENROUTER_MODEL },
+];
 const dir = mkdtempSync(join(tmpdir(), "multireviewer-check-"));
 const runtime = await ModelRuntime.create({
   authPath: join(dir, "auth.json"),
   modelsPath: join(dir, "models.json"),
 });
 let ok = true;
-for (const reviewer of config.reviewers) {
+for (const reviewer of reviewers) {
   const found = Boolean(runtime.getModel(reviewer.provider, reviewer.model));
   console.log((found ? "OK   " : "MISS ") + reviewer.provider + "/" + reviewer.model);
   if (!found) ok = false;
@@ -433,8 +403,10 @@ for (const reviewer of config.reviewers) {
 process.exit(ok ? 0 : 1);
 '
 MODEL_CHECK_STATUS=0
-docker compose run --rm -T --entrypoint node multireviewer \
-  --input-type=module -e "$MODEL_CHECK" 2>/dev/null || MODEL_CHECK_STATUS=$?
+docker compose run --rm -T --entrypoint node \
+  -e "CHECK_DEEPSEEK_MODEL=$MULTIREVIEWER_DEEPSEEK_MODEL" \
+  -e "CHECK_OPENROUTER_MODEL=$MULTIREVIEWER_OPENROUTER_MODEL" \
+  multireviewer --input-type=module -e "$MODEL_CHECK" 2>/dev/null || MODEL_CHECK_STATUS=$?
 if (( MODEL_CHECK_STATUS == 0 )); then
   printf '  %s✓%s 两个模型标识都解析得到\n' "$GREEN" "$RESET"
 else
@@ -640,8 +612,8 @@ note "要用一个此前没被本工具评论过的 PR:旧 PR 上留着指纹锚
 pause
 
 finish
-note "部署目录 $DEPLOY_DIR,里面有 .env、multireviewer.config.json 与 data/"
-note "换模型改 multireviewer.config.json,换凭据改 .env,改完 docker compose up -d"
+note "部署目录 $DEPLOY_DIR,里面有 .env 与 data/"
+note "换模型在面板的设置页改,改完即时生效,不必重启"
 note "更新版本:开发机上跑 scripts/build-push.sh,这里 docker compose pull && docker compose up -d"
 printf '\n'
 say "服务器侧排障速查:"

@@ -1,9 +1,10 @@
 /**
- * 进程入口。读配置文件与环境变量,建出 Forge 与 Reviewer,起 webhook 服务。
+ * 进程入口。读环境变量建出 Forge,起 webhook 服务。模型组合与批次上限在库里,
+ * 由面板的设置页管(issue #66)。
  */
 import { readFileSync } from "node:fs";
 
-import { buildReviewers, DEFAULT_CONFIG_PATH, loadConfig } from "./config.ts";
+import { buildReviewers, parseGlobalReviewers } from "./config.ts";
 import {
   assertSupportedVersion,
   createGiteaForge,
@@ -88,7 +89,6 @@ function panelPrefix(): string {
   return value;
 }
 
-const config = loadConfig(process.env["MULTIREVIEWER_CONFIG"] ?? DEFAULT_CONFIG_PATH);
 const port = Number(process.env["MULTIREVIEWER_PORT"] ?? DEFAULT_PORT);
 const dbPath = process.env["MULTIREVIEWER_DB"] ?? "multireviewer.db";
 
@@ -113,15 +113,18 @@ if (gitea === undefined && github === undefined) {
 if (gitea !== undefined) await assertSupportedVersion(gitea);
 
 // 启动时开一次库跑迁移,顺带把历史行的裸 model id 回填成模型标识(issue #73)。
-// 请求路径上的开库不带模型组合,回填只在这里发生一次。
-openStore(dbPath, config.reviewers).close();
+// 回填要认得 provider,模型组合也在这个库里,先读出来再回填。请求路径上的开库不带
+// 模型组合,回填只在这里发生一次。
+const bootstrap = openStore(dbPath);
+const globalReviewers = parseGlobalReviewers(bootstrap.getGlobalSettings().reviewersJson);
+bootstrap.close();
+openStore(dbPath, globalReviewers).close();
 
 const server = createWebhookServer({
   forges: {
     ...(github === undefined ? {} : { github: createGitHubForge({ auth: github }) }),
     ...(gitea === undefined ? {} : { gitea: createGiteaForge(gitea) }),
   },
-  reviewerSpecs: config.reviewers,
   cacheDir: process.env["MULTIREVIEWER_CACHE_DIR"] ?? ".cache/worktrees",
   dbPath,
   adminToken,
@@ -136,9 +139,6 @@ const server = createWebhookServer({
   ...(gitea === undefined ? {} : { gitea }),
   // 全局组合与每仓库的模型覆盖走同一套组装逻辑,凭据取 Run 开始时的库内快照。
   buildReviewers,
-  ...(config.maxChangedLinesPerBatch === undefined
-    ? {}
-    : { maxChangedLinesPerBatch: config.maxChangedLinesPerBatch }),
 });
 
 server.listen(port, () => {

@@ -1,19 +1,12 @@
-import { readFileSync } from "node:fs";
-
 import type { Reviewer } from "./review/finding.ts";
 import { createPiReviewer } from "./reviewer/pi-reviewer.ts";
 
-/** 模型组合是全局的,所有仓库共用一组。 */
+/** 模型组合的一项。凭据按 provider 查库得到(ADR 0008),这里不带凭据。 */
 export type ReviewerSpec = {
   /** Pi 的 provider 标识。 */
   provider: string;
   /** Pi 的 model 标识。模型标识另取 `modelIdentity`。 */
   model: string;
-  /**
-   * 存放该厂商凭据的环境变量名。凭据搬进库之后(ADR 0008)组装 Reviewer 不再读它,
-   * 字段还留着只是为了不在这一票里动配置文件的形状,issue #66 删。
-   */
-  apiKeyEnv: string;
 };
 
 /**
@@ -26,20 +19,9 @@ export function modelIdentity(spec: { provider: string; model: string }): string
   return `${spec.provider}:${spec.model}`;
 }
 
-export type Config = {
-  reviewers: ReviewerSpec[];
-  /**
-   * 一批最多多少改动行。超过即按文件分批,同一文件的改动不跨批。
-   * 不配置时取 `DEFAULT_MAX_CHANGED_LINES_PER_BATCH`。
-   */
-  maxChangedLinesPerBatch?: number;
-};
-
-export const DEFAULT_CONFIG_PATH = "multireviewer.config.json";
-
 /**
- * 校验一组 ReviewerSpec 并返回。配置文件与面板的每仓库模型覆盖共用这套判据,
- * `context` 写进报错里指认来源(文件路径或仓库)。
+ * 校验一组 ReviewerSpec 并返回。全局模型组合与每仓库模型覆盖共用这套判据,
+ * `context` 写进报错里指认来源(全局还是哪个仓库)。
  */
 export function assertReviewerSpecs(value: unknown, context: string): ReviewerSpec[] {
   if (!Array.isArray(value) || value.length === 0) {
@@ -48,7 +30,7 @@ export function assertReviewerSpecs(value: unknown, context: string): ReviewerSp
 
   const seen = new Set<string>();
   for (const [index, entry] of value.entries()) {
-    for (const field of ["provider", "model", "apiKeyEnv"] as const) {
+    for (const field of ["provider", "model"] as const) {
       const fieldValue = (entry as Record<string, unknown>)[field];
       if (typeof fieldValue !== "string" || fieldValue === "") {
         throw new Error(`reviewers[${index}] 缺少 ${field}: ${context}`);
@@ -65,40 +47,13 @@ export function assertReviewerSpecs(value: unknown, context: string): ReviewerSp
   return value as ReviewerSpec[];
 }
 
-export function loadConfig(path: string = DEFAULT_CONFIG_PATH): Config {
-  let content: string;
-  try {
-    content = readFileSync(path, "utf8");
-  } catch {
-    throw new Error(`读不到配置文件: ${path}`);
-  }
+/** 全局模型组合在库里的存法与每仓库覆盖同构:ReviewerSpec 的 JSON 数组,null 即还没配。 */
+export const GLOBAL_REVIEWERS_CONTEXT = "全局模型组合";
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch (error) {
-    throw new Error(
-      `配置文件解析失败: ${path} — ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-
-  const reviewers = assertReviewerSpecs((parsed as { reviewers?: unknown }).reviewers, path);
-
-  const maxChangedLinesPerBatch = (parsed as { maxChangedLinesPerBatch?: unknown })
-    .maxChangedLinesPerBatch;
-  if (
-    maxChangedLinesPerBatch !== undefined &&
-    (typeof maxChangedLinesPerBatch !== "number" ||
-      !Number.isInteger(maxChangedLinesPerBatch) ||
-      maxChangedLinesPerBatch <= 0)
-  ) {
-    throw new Error(`maxChangedLinesPerBatch 必须是正整数: ${path}`);
-  }
-
-  return {
-    reviewers: reviewers as ReviewerSpec[],
-    ...(maxChangedLinesPerBatch === undefined ? {} : { maxChangedLinesPerBatch }),
-  };
+/** 读库里的全局模型组合。没配是空数组——空库刚起来时就是这样。 */
+export function parseGlobalReviewers(reviewersJson: string | null): ReviewerSpec[] {
+  if (reviewersJson === null) return [];
+  return assertReviewerSpecs(JSON.parse(reviewersJson), GLOBAL_REVIEWERS_CONTEXT);
 }
 
 /**
@@ -130,15 +85,36 @@ function missingCredentialReviewer(spec: ReviewerSpec): Reviewer {
 }
 
 /**
+ * 一个模型都没配时顶上的 Reviewer,理由同上:零 Reviewer 的 Review Run 既不失败也不
+ * 报错,人看到的是「投了没反应」。有它在,这次投递留下一条失败记录说明差什么。
+ */
+function emptyModelSetReviewer(): Reviewer {
+  const identity = "none";
+  return {
+    model: identity,
+    review: () =>
+      Promise.resolve({
+        model: identity,
+        findings: [],
+        anomalies: [],
+        rejectedToolCalls: 0,
+        anchorRejections: 0,
+        failure: "还没有配置模型组合,这次没跑。去面板的设置页配好再重跑。",
+      }),
+  };
+}
+
+/**
  * 按模型组合建出全部 Reviewer,每个只拿到自己那一家的凭据。
  *
  * 凭据来自 Review Run 开始时的快照,缺失不拦启动也不拦投递:服务照常起,那一家的
- * Reviewer 报失败(issue #65)。
+ * Reviewer 报失败(issue #65)。组合为空同理,由 `emptyModelSetReviewer` 报失败。
  */
 export function buildReviewers(
   specs: readonly ReviewerSpec[],
   credentials: CredentialSnapshot,
 ): Reviewer[] {
+  if (specs.length === 0) return [emptyModelSetReviewer()];
   return specs.map((spec) => {
     const apiKey = credentials.get(spec.provider);
     if (apiKey === undefined || apiKey === "") return missingCredentialReviewer(spec);

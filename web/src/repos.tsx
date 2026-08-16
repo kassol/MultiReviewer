@@ -18,7 +18,12 @@ import { Label } from "@/components/ui/label";
 import { api, errorText, fetchJson } from "./api.ts";
 import { rerunRequest, RunPill, type RunItem } from "./runs.tsx";
 
-type ReviewerSpec = { provider: string; model: string; apiKeyEnv: string };
+type ReviewerSpec = { provider: string; model: string };
+
+/** 模型标识:`provider:model`,与后端 `modelIdentity` 同一形状。 */
+function modelIdentity(spec: ReviewerSpec): string {
+  return `${spec.provider}:${spec.model}`;
+}
 
 type RepoRow = {
   repoId: number;
@@ -65,9 +70,10 @@ export function ReposPage() {
     queryKey: ["repos"],
     queryFn: () => fetchJson<RepoRow[]>("/repos"),
   });
-  const globalModels = useQuery({
-    queryKey: ["global-models"],
-    queryFn: () => fetchJson<{ models: string[] }>("/reviewers"),
+  // 全局设置在库里(issue #66),「跟随全局」跟的就是它的 reviewers。
+  const settings = useQuery({
+    queryKey: ["settings"],
+    queryFn: () => fetchJson<{ reviewers: ReviewerSpec[] }>("/settings"),
   });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [registering, setRegistering] = useState(false);
@@ -120,7 +126,7 @@ export function ReposPage() {
           <RepoDetail
             key={selected.repoId}
             repo={selected}
-            globalModels={globalModels.data?.models ?? []}
+            globalModels={(settings.data?.reviewers ?? []).map(modelIdentity)}
             onRemoved={() => {
               setSelectedId(null);
               void queryClient.invalidateQueries({ queryKey: ["repos"] });
@@ -285,7 +291,7 @@ function RepoDetail({
               repo.reviewers === null
                 ? globalModels
                 : // 覆盖存的是 spec,展示要和全局那侧一样是模型标识 `provider:model`。
-                  repo.reviewers.map((s) => `${s.provider}:${s.model}`);
+                  repo.reviewers.map(modelIdentity);
             return (
               <>
                 <Kv label={repo.reviewers === null ? "跟随全局默认" : "本仓库覆盖"}>
@@ -359,9 +365,9 @@ function RepoDetail({
   );
 }
 
-/** 覆盖编辑框的说明:与配置文件 reviewers 同形状。 */
+/** 覆盖编辑框的说明:与全局模型组合同形状。 */
 const REVIEWERS_HINT =
-  '与配置文件 reviewers 同形状的 JSON 数组,如 [{"provider":"deepseek","model":"deepseek-v4-flash","apiKeyEnv":"DEEPSEEK_API_KEY"}];留空即跟随全局。';
+  '与全局模型组合同形状的 JSON 数组,如 [{"provider":"deepseek","model":"deepseek-v4-flash"}];留空即跟随全局。';
 
 function RegisterModal({
   onClose,

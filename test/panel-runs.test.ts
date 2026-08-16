@@ -227,7 +227,7 @@ test("重跑:模型覆盖生效,经 buildReviewers 构建", async () => {
         owner: HARNESS_PR.owner,
         repo: HARNESS_PR.repo,
         reviewers: [
-          { provider: "openai", model: "override-model", apiKeyEnv: "KEY_ENV" },
+          { provider: "openai", model: "override-model" },
         ],
       })
     ).status,
@@ -242,5 +242,5 @@ test("重跑:模型覆盖生效,经 buildReviewers 构建", async () => {
   });
   assert.equal(rerun.status, 202);
   await h.settledAtLeast(1);
-  assert.deepEqual(h.factoryCalls.at(-1), [{ provider: "openai", model: "override-model", apiKeyEnv: "KEY_ENV" }]);
+  assert.deepEqual(h.factoryCalls.at(-1), [{ provider: "openai", model: "override-model" }]);
 });

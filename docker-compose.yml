@@ -1,5 +1,5 @@
-# 服务器上只需要这个文件、`.env` 与 `multireviewer.config.json` 三样,不需要源码。
-# 三样都由 scripts/setup.sh 在服务器上生成或引导填写。
+# 服务器上只需要这个文件与 `.env` 两样,不需要源码。两样都由 scripts/setup.sh 在服务器上
+# 生成或引导填写。模型组合与批次上限在库里,由面板的设置页管。
 #
 # 镜像在本地构建后推到 registry,更新走 `docker compose pull && docker compose up -d`。
 
@@ -25,5 +25,3 @@ services:
       # SQLite 与工作副本缓存。工作副本是每个仓库一份完整 clone,磁盘占用看仓库大小。
       # 路径相对于本文件所在目录,部署目录放哪里都行。
       - ./data:/data
-      # 改模型组合只需改这个文件加重启,不必重新构建镜像。
-      - ./multireviewer.config.json:/app/multireviewer.config.json:ro

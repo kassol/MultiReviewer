@@ -21,7 +21,6 @@ async function startPanel(options: { now?: () => number } = {}) {
 
   const server = createWebhookServer({
     forges: {},
-    reviewerSpecs: [],
     buildReviewers: () => [],
     cacheDir: cache.dir,
     dbPath: db.path,

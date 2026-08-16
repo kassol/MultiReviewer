@@ -133,7 +133,7 @@ test("hook 删除失败时移除被阻止,注册保持原样", async () => {
 test("配置了模型覆盖的仓库,Review Run 用覆盖后的组合", async () => {
   const h = await startHarness();
   const override: ReviewerSpec[] = [
-    { provider: "test", model: "override-model", apiKeyEnv: "STUB_KEY" },
+    { provider: "test", model: "override-model" },
   ];
 
   assert.equal(
@@ -166,7 +166,7 @@ test("模型覆盖可编辑:PUT 全量替换、null 清除,坏覆盖 400", async
   const h = await startHarness();
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   const override: ReviewerSpec[] = [
-    { provider: "test", model: "swapped-model", apiKeyEnv: "STUB_KEY" },
+    { provider: "test", model: "swapped-model" },
   ];
 
   assert.equal(
@@ -212,13 +212,6 @@ test("模型覆盖可编辑:PUT 全量替换、null 清除,坏覆盖 400", async
     (await h.api("PUT", "/repos/999/reviewers", { reviewers: null })).status,
     404,
   );
-});
-
-test("全局模型组合只回模型标识", async () => {
-  const h = await startHarness();
-  assert.deepEqual(await (await h.api("GET", "/reviewers")).json(), {
-    models: ["test:global-model"],
-  });
 });
 
 test("仓库列表带累计量,按最近活动排序,没跑过的排最后", async () => {
@@ -327,7 +320,6 @@ test("没配 Gitea 时注册与移除回 500,说明配置缺口", async () => {
   cleanups.push(cache.cleanup, db.cleanup);
   const server = createWebhookServer({
     forges: {},
-    reviewerSpecs: [],
     buildReviewers: () => [],
     cacheDir: cache.dir,
     dbPath: db.path,

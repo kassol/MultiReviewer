@@ -18,7 +18,8 @@ import { extname, join, resolve, sep } from "node:path";
 
 import {
   assertReviewerSpecs,
-  modelIdentity,
+  GLOBAL_REVIEWERS_CONTEXT,
+  parseGlobalReviewers,
   type CredentialSnapshot,
   type ReviewerSpec,
 } from "../config.ts";
@@ -38,6 +39,7 @@ import {
   decryptCredential,
   encryptCredential,
 } from "../panel/credential-crypto.ts";
+import { DEFAULT_MAX_CHANGED_LINES_PER_BATCH } from "../review/batch.ts";
 import type { Reviewer } from "../review/finding.ts";
 import { backfillUpdates, priorDispositions, runReview } from "../review/run.ts";
 import { openStore, type RepoKey, type Store } from "../review/store.ts";
@@ -69,11 +71,8 @@ export type WebhookServerDeps = {
    * 并放行投递——是本服务的配置缺口,不是投递的问题。
    */
   forges: Partial<Record<Platform, Forge>>;
-  /** 全局的模型组合。Reviewer 在每次 Review Run 开始时才按它组装。 */
-  reviewerSpecs: readonly ReviewerSpec[];
   cacheDir: string;
   dbPath: string;
-  maxChangedLinesPerBatch?: number;
   /**
    * 后台 Review Run 结束时回调,`error` 有值即这次投递没跑成——平台缺 Forge 而被放掉
    * 时也走这里。不传则把结果写进 stdout、把失败写进 stderr。
@@ -359,6 +358,18 @@ function withStore<T>(dbPath: string, fn: (store: Store) => T): T {
   }
 }
 
+/** 全局设置。模型组合与批次上限都在库里(issue #66),用时读一次。 */
+function globalSettings(deps: WebhookServerDeps): {
+  reviewers: ReviewerSpec[];
+  maxChangedLinesPerBatch: number | null;
+} {
+  const row = withStore(deps.dbPath, (store) => store.getGlobalSettings());
+  return {
+    reviewers: parseGlobalReviewers(row.reviewersJson),
+    maxChangedLinesPerBatch: row.maxChangedLinesPerBatch,
+  };
+}
+
 /**
  * 这次 Review Run 用的模型组合:仓库有覆盖就用覆盖,null 即跟随全局。坏覆盖
  * (解析不了)抛出,投递链与手动重跑各自决定错误出口(静默记录 / 409 显形)。
@@ -368,7 +379,7 @@ function resolveSpecs(
   reviewersJson: string | null,
   repoId: number,
 ): readonly ReviewerSpec[] {
-  if (reviewersJson === null) return deps.reviewerSpecs;
+  if (reviewersJson === null) return globalSettings(deps).reviewers;
   return assertReviewerSpecs(JSON.parse(reviewersJson), `仓库 ${repoId} 的模型覆盖`);
 }
 
@@ -411,6 +422,7 @@ function startRun(
   const settled = deps.onRunSettled ?? logFailure;
   // 组装就在这里:凭据在 Run 开始时快照一次,缺哪一家由那一家的 Reviewer 报失败。
   const reviewers = deps.buildReviewers(specs, credentialSnapshot(deps));
+  const maxChangedLinesPerBatch = globalSettings(deps).maxChangedLinesPerBatch;
   // 这是长跑服务,后台任务的 rejection 不接住就会变成 unhandledRejection 把进程带崩。
   void runReview(
     { owner: event.owner, repo: event.repo, number: event.number },
@@ -419,9 +431,7 @@ function startRun(
       reviewers,
       cacheDir: deps.cacheDir,
       dbPath: deps.dbPath,
-      ...(deps.maxChangedLinesPerBatch === undefined
-        ? {}
-        : { maxChangedLinesPerBatch: deps.maxChangedLinesPerBatch }),
+      ...(maxChangedLinesPerBatch === null ? {} : { maxChangedLinesPerBatch }),
     },
   ).then(
     () => settled(event),
@@ -585,7 +595,7 @@ async function handle(
   // 每仓库的模型覆盖:语义是全量替换 reviewers 列表,没有覆盖就用全局。覆盖坏了
   // (解析不了)按配置错误记录并回 200,与缺 Forge 同一档;放在 claim 之前——坏配置
   // 不该吃掉幂等键,修好后同一 head commit 要能重新触发。
-  let specs = deps.reviewerSpecs;
+  let specs: readonly ReviewerSpec[];
   try {
     specs = resolveSpecs(deps, admission.reviewersJson, repoId);
   } catch (error) {
@@ -675,12 +685,11 @@ async function handlePanelApi(
     return send(res, 204);
   }
 
-  // 全局默认的模型组合,仓库详情用来展示「跟随全局」跟的是什么。只给模型标识,
-  // provider 与凭据环境变量不属于面板要关心的事。
-  if (sub === "/reviewers" && req.method === "GET") {
-    return sendJson(res, 200, {
-      models: deps.reviewerSpecs.map((spec) => modelIdentity(spec)),
-    });
+  if (sub === "/settings" && req.method === "GET") {
+    return handleGetSettings(res, deps);
+  }
+  if (sub === "/settings" && req.method === "PUT") {
+    return handlePutSettings(req, res, deps);
   }
 
   if (sub === "/stats" && req.method === "GET") {
@@ -739,6 +748,57 @@ async function handlePanelApi(
   }
 
   return sendJson(res, 404, { error: "没有这个端点" });
+}
+
+/**
+ * 全局设置:模型组合与批次上限。仓库详情用它展示「跟随全局」跟的是什么。
+ * 批次上限没配时回默认值,读回来的就是这次审查真会用的那个数。
+ */
+function handleGetSettings(res: ServerResponse, deps: WebhookServerDeps): void {
+  const settings = globalSettings(deps);
+  return sendJson(res, 200, {
+    reviewers: settings.reviewers,
+    maxChangedLinesPerBatch:
+      settings.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+  });
+}
+
+/**
+ * 改写全局设置,回 GET 的同一形状。模型组合的校验判据与每仓库覆盖是同一套,
+ * 报错里的来源标注写「全局模型组合」。
+ */
+async function handlePutSettings(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): Promise<void> {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body) as {
+    reviewers?: unknown;
+    maxChangedLinesPerBatch?: unknown;
+  } | null;
+  if (payload === null) {
+    return sendJson(res, 400, { error: "body 要是 JSON" });
+  }
+  const parsed = parseReviewerSpecs(payload.reviewers, GLOBAL_REVIEWERS_CONTEXT);
+  if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
+
+  // 缺省与显式清空都写成 null,读回来取默认值。
+  const limit = payload.maxChangedLinesPerBatch ?? null;
+  if (limit !== null && (typeof limit !== "number" || !Number.isInteger(limit) || limit <= 0)) {
+    return sendJson(res, 400, {
+      error: "maxChangedLinesPerBatch 要是正整数,留空即取默认值",
+    });
+  }
+
+  withStore(deps.dbPath, (store) =>
+    store.putGlobalSettings({
+      reviewersJson: parsed.reviewersJson,
+      maxChangedLinesPerBatch: limit,
+    }),
+  );
+  return handleGetSettings(res, deps);
 }
 
 /**
@@ -833,13 +893,13 @@ function safeParseJson(value: string): unknown {
 }
 
 /**
- * 解析并校验一段模型覆盖入参,注册与 PUT 共用同一判据。返回序列化好的 JSON,校验
- * 不过返回错误信息。
+ * 解析并校验一段模型组合入参。全局设置、仓库注册与每仓库覆盖共用同一判据,`context`
+ * 指认是哪一层。返回序列化好的 JSON,校验不过返回错误信息。
  *
  * 只校验形状:凭据缺不缺是 Review Run 开始时的事(issue #65),这里试构建也拦不住,
  * 反而会把「这一家还没配」误报成「覆盖写错了」。
  */
-function parseReviewersOverride(
+function parseReviewerSpecs(
   value: unknown,
   context: string,
 ): { ok: true; reviewersJson: string } | { ok: false; error: string } {
@@ -924,7 +984,7 @@ async function handleRerun(
   }
 
   // 坏覆盖在这里显形(409),不像投递那样静默记日志——重跑是人在等结果的动作。
-  let specs = deps.reviewerSpecs;
+  let specs: readonly ReviewerSpec[];
   try {
     specs = resolveSpecs(deps, registered.reviewersJson, registered.repoId);
   } catch (error) {
@@ -1034,7 +1094,7 @@ async function handleRegister(
   // 模型覆盖跟随注册一起写入,语义是全量替换 reviewers 列表,省略即跟随全局。
   let reviewersJson: string | undefined;
   if (payload.reviewers !== undefined) {
-    const parsed = parseReviewersOverride(
+    const parsed = parseReviewerSpecs(
       payload.reviewers,
       `${ref.owner}/${ref.repo} 的模型覆盖`,
     );
@@ -1154,7 +1214,7 @@ async function handleSetReviewers(
 
   let reviewersJson: string | null = null;
   if (payload.reviewers !== null) {
-    const parsed = parseReviewersOverride(
+    const parsed = parseReviewerSpecs(
       payload.reviewers,
       `${record.owner}/${record.repo} 的模型覆盖`,
     );
