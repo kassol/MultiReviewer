@@ -14,16 +14,17 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  ModelPicker,
+  modelIdentity,
+  parseModelIdentity,
+  useModelCatalog,
+} from "@/components/model-picker";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { rerunRequest, RunPill, type RunItem } from "./runs.tsx";
 
 type ReviewerSpec = { provider: string; model: string };
-
-/** 模型标识:`provider:model`,与后端 `modelIdentity` 同一形状。 */
-function modelIdentity(spec: ReviewerSpec): string {
-  return `${spec.provider}:${spec.model}`;
-}
 
 type RepoRow = {
   repoId: number;
@@ -40,10 +41,6 @@ type HookCheck = {
   hooks: { id: number; generation: number; active: boolean }[];
   issues: { message: string; action: string }[];
 };
-
-/** 自由 JSON 文本域。多选选择器是下一趟的事,这趟只换壳。 */
-const TEXTAREA =
-  "min-h-[130px] w-full rounded-sm border border-input bg-card px-2.5 py-1.5 font-mono text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 
 function since(iso: string): string {
   const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60_000);
@@ -198,7 +195,27 @@ function RepoDetail({
     onError: (error: Error) => setFeedback({ text: error.message, isError: true }),
   });
 
+  // 「跟随全局」是一个动作:直接把覆盖清掉,不再进编辑框走一遍保存。
+  const followGlobal = useMutation({
+    mutationFn: async () => {
+      const response = await api(`/repos/${repo.repoId}/reviewers`, {
+        method: "PUT",
+        body: JSON.stringify({ reviewers: null }),
+      });
+      if (!response.ok) throw new Error(await errorText(response));
+    },
+    onSuccess: () => {
+      setFeedback({ text: "覆盖已清除,跟随全局,下一次投递生效。", isError: false });
+      refresh();
+    },
+    onError: (error: Error) => setFeedback({ text: error.message, isError: true }),
+  });
+
   const issues = check.data?.issues ?? [];
+  const following = repo.reviewers === null;
+  // 覆盖存的是 spec,展示要和全局那侧一样是模型标识 `provider:model`。
+  const shownModels =
+    repo.reviewers === null ? globalModels : repo.reviewers.map(modelIdentity);
 
   return (
     <>
@@ -286,28 +303,41 @@ function RepoDetail({
 
         <Card className="gap-2.5 px-4">
           <h2 className="font-semibold">模型组合</h2>
-          {(() => {
-            const models =
-              repo.reviewers === null
-                ? globalModels
-                : // 覆盖存的是 spec,展示要和全局那侧一样是模型标识 `provider:model`。
-                  repo.reviewers.map(modelIdentity);
-            return (
-              <>
-                <Kv label={repo.reviewers === null ? "跟随全局默认" : "本仓库覆盖"}>
-                  <span className="font-mono tabular-nums">{models.length} 个</span>
-                </Kv>
-                {models.map((model) => (
-                  <div key={model} className="font-mono text-xs">
-                    {model}
-                  </div>
-                ))}
-              </>
-            );
-          })()}
-          <Button variant="outline" className="self-start" onClick={() => setEditing(true)}>
-            改组合
-          </Button>
+          {/* 两态开关(issue #69):要么跟随全局,要么本仓库自定义。「一个都没选」
+              这种既不是跟随、也不是有效覆盖的状态在界面上不存在。 */}
+          <div className="flex gap-2">
+            <Button
+              size="xs"
+              variant={following ? "default" : "outline"}
+              disabled={followGlobal.isPending}
+              onClick={() => {
+                if (!following) followGlobal.mutate();
+              }}
+            >
+              跟随全局
+            </Button>
+            <Button
+              size="xs"
+              variant={following ? "outline" : "default"}
+              disabled={followGlobal.isPending}
+              onClick={() => setEditing(true)}
+            >
+              自定义
+            </Button>
+          </div>
+          <Kv label={following ? "跟随全局默认" : "本仓库覆盖"}>
+            <span className="font-mono tabular-nums">{shownModels.length} 个</span>
+          </Kv>
+          {shownModels.map((model) => (
+            <div key={model} className="font-mono text-xs">
+              {model}
+            </div>
+          ))}
+          <p className="text-xs text-muted-foreground">
+            {following
+              ? "改全局设置这里跟着变。点「自定义」从当前组合改起。"
+              : "只对这个仓库生效。点「跟随全局」即清除覆盖。"}
+          </p>
         </Card>
       </div>
 
@@ -353,6 +383,7 @@ function RepoDetail({
       {editing ? (
         <ReviewersModal
           repo={repo}
+          globalModels={globalModels}
           onClose={() => setEditing(false)}
           onDone={() => {
             setEditing(false);
@@ -365,10 +396,6 @@ function RepoDetail({
   );
 }
 
-/** 覆盖编辑框的说明:与全局模型组合同形状。 */
-const REVIEWERS_HINT =
-  '与全局模型组合同形状的 JSON 数组,如 [{"provider":"deepseek","model":"deepseek-v4-flash"}];留空即跟随全局。';
-
 function RegisterModal({
   onClose,
   onDone,
@@ -378,7 +405,6 @@ function RegisterModal({
 }) {
   const [owner, setOwner] = useState("");
   const [repo, setRepo] = useState("");
-  const [reviewersText, setReviewersText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -387,22 +413,10 @@ function RegisterModal({
     setBusy(true);
     setError(null);
     try {
-      let reviewers: unknown;
-      if (reviewersText.trim() !== "") {
-        try {
-          reviewers = JSON.parse(reviewersText);
-        } catch {
-          setError("模型组合不是合法 JSON。");
-          return;
-        }
-      }
+      // 新仓库一律跟随全局,要自定义在详情里切两态开关。
       const response = await api("/repos", {
         method: "POST",
-        body: JSON.stringify({
-          owner,
-          repo,
-          ...(reviewers === undefined ? {} : { reviewers }),
-        }),
+        body: JSON.stringify({ owner, repo }),
       });
       if (!response.ok) {
         setError(await errorText(response));
@@ -441,16 +455,9 @@ function RegisterModal({
               onChange={(event) => setRepo(event.target.value)}
             />
           </div>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="register-reviewers">模型组合(可选)</Label>
-            <textarea
-              id="register-reviewers"
-              className={TEXTAREA}
-              value={reviewersText}
-              onChange={(event) => setReviewersText(event.target.value)}
-              placeholder={REVIEWERS_HINT}
-            />
-          </div>
+          <p className="text-xs text-muted-foreground">
+            模型组合先跟随全局设置,注册完在仓库详情里可以改成自定义。
+          </p>
           {error === null ? null : <p className="text-destructive">{error}</p>}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>
@@ -466,17 +473,24 @@ function RegisterModal({
   );
 }
 
+/**
+ * 自定义态的编辑框(issue #69)。还在跟随全局时以当前全局组合为初值——人从一个已知
+ * 跑得起来的组合上改,而不是从空列表开始拼。选择器与全局设置页是同一个组件。
+ */
 function ReviewersModal({
   repo,
+  globalModels,
   onClose,
   onDone,
 }: {
   repo: RepoRow;
+  globalModels: string[];
   onClose: () => void;
   onDone: () => void;
 }) {
-  const [text, setText] = useState(
-    repo.reviewers === null ? "" : JSON.stringify(repo.reviewers, null, 2),
+  const catalog = useModelCatalog();
+  const [models, setModels] = useState(() =>
+    repo.reviewers === null ? globalModels : repo.reviewers.map(modelIdentity),
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -486,18 +500,9 @@ function ReviewersModal({
     setBusy(true);
     setError(null);
     try {
-      let reviewers: unknown = null;
-      if (text.trim() !== "") {
-        try {
-          reviewers = JSON.parse(text);
-        } catch {
-          setError("不是合法 JSON。");
-          return;
-        }
-      }
       const response = await api(`/repos/${repo.repoId}/reviewers`, {
         method: "PUT",
-        body: JSON.stringify({ reviewers }),
+        body: JSON.stringify({ reviewers: models.map(parseModelIdentity) }),
       });
       if (!response.ok) {
         setError(await errorText(response));
@@ -517,28 +522,28 @@ function ReviewersModal({
         <form onSubmit={submit} className="flex flex-col gap-3">
           <DialogHeader>
             <DialogTitle>
-              改 {repo.owner}/{repo.repo} 的模型组合
+              自定义 {repo.owner}/{repo.repo} 的模型组合
             </DialogTitle>
           </DialogHeader>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="reviewers-json">
-              覆盖(全量替换;留空即清除覆盖、跟随全局)
-            </Label>
-            <textarea
-              id="reviewers-json"
-              className={TEXTAREA}
-              value={text}
-              onChange={(event) => setText(event.target.value)}
-              placeholder={REVIEWERS_HINT}
-              autoFocus
+          <div className="flex flex-col gap-2">
+            <Label>本仓库覆盖(全量替换,至少选一个)</Label>
+            <ModelPicker
+              providers={catalog.data?.providers ?? []}
+              value={models}
+              onChange={setModels}
             />
           </div>
+          {catalog.isError ? (
+            <p className="text-destructive">
+              模型目录读不到:{(catalog.error as Error).message}
+            </p>
+          ) : null}
           {error === null ? null : <p className="text-destructive">{error}</p>}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>
               取消
             </Button>
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" disabled={busy || models.length === 0}>
               {busy ? "保存中…" : "保存"}
             </Button>
           </DialogFooter>
