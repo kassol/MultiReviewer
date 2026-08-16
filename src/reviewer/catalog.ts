@@ -4,7 +4,7 @@
  * 选出一个当前 Pi 里不存在的模型标识。
  *
  * 目录只读一次,缓存在进程里:同一个进程里的 Pi 就是同一份目录,每次请求重建
- * `ModelRuntime` 只是重复解析同样的内置表。
+ * `ModelRuntime` 只是重复解析同样的内置表。读失败不进缓存,下一次请求重来。
  */
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,12 +41,23 @@ export type CatalogProvider = {
 
 let cached: Promise<CatalogProvider[]> | undefined;
 
-export function modelCatalog(): Promise<CatalogProvider[]> {
-  cached ??= load();
+/**
+ * 进程内的那一份目录。失败的 promise 不留在缓存里:留住的话首次读失败后这个进程再也
+ * 拿不到目录,模型选择器永远空白,只能重启容器。
+ *
+ * `load` 带默认值是为了能在测试里喂一个必然失败的读取,生产路径不传。
+ */
+export function modelCatalog(
+  load: () => Promise<CatalogProvider[]> = loadFromPi,
+): Promise<CatalogProvider[]> {
+  cached ??= load().catch((error: unknown) => {
+    cached = undefined;
+    throw error;
+  });
   return cached;
 }
 
-async function load(): Promise<CatalogProvider[]> {
+async function loadFromPi(): Promise<CatalogProvider[]> {
   // 与 Reviewer 子进程同样的隔离:authPath 与 modelsPath 指进空的临时目录。默认值在
   // `~/.pi/agent` 下,那里的 auth.json 存着宿主机上配置过的每一家厂商的凭据。
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-catalog-"));
