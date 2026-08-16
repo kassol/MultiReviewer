@@ -13,7 +13,7 @@
 - `src/main.tsx` — 路由与壳:`/login` 一屏登录,`shell` 下挂三页(`/repos` / `/runs` / `/stats`),Router `basepath` 取注入前缀。
 - `src/login.tsx` — 登录页,单 token 输入框。
 - `src/repos.tsx` — 仓库页,master-detail(原型变体 A):左列表右详情,注册 / 改组合走模态框,移除用应用内确认模态(不用 `window.confirm`——原生对话框阻塞渲染线程,浏览器自动化与 dogfooding 都会被卡死),核对差异卡片的「轮转推平」调轮转端点。对变体 A 的两处显式偏离:「最近的 Review Run」表连同「输 PR 号重跑」归 issue #37 的手动重跑一并落;key 面板的「建立于」换成「代次」——代次是 ADR 0007 之后 key 真正有信息量的属性。
-- `src/styles.css` — 设计令牌与组件样式,取自 prototype/panel-layout 的定稿,含暗色模式。
+- `src/styles.css` — 设计令牌与组件样式,含暗色模式。
 
 ## 模块规范
 
