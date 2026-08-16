@@ -228,3 +228,109 @@ for (const c of CASES) {
     }
   });
 }
+
+/** 回填用的模型组合。`old-model` 是历史行里的裸 model id。 */
+const SPECS = [{ provider: "acme", model: "old-model" }];
+
+/** 读两张表里的 model 列,回填的断言全落在它上面。 */
+function models(store: Store): { finding: string[]; outcome: string[] } {
+  const cells = store.dispositionStats(...WIDE);
+  return {
+    finding: cells.map((cell) => cell.model),
+    outcome: store.listRuns({ limit: 50 }).flatMap((run) => run.models.map((m) => m.model)),
+  };
+}
+
+/** 种一轮带 outcome 的 Run,model 列直接写成传进来的值。 */
+function seedWithModel(store: Store, model: string, at: string): void {
+  const runId = store.startRun({
+    owner: "acme",
+    repo: "widgets",
+    pullNumber: 7,
+    headSha: `sha-${model}-${at}`,
+    startedAt: at,
+    changedFiles: 1,
+    changedLines: 1,
+    batchCount: 1,
+  });
+  store.finishRun(runId, {
+    finishedAt: at,
+    durationMs: 1,
+    failed: false,
+    outcomes: [
+      {
+        model,
+        findingCount: 1,
+        anomalyCount: 0,
+        rejectedToolCalls: 0,
+        anchorRejections: 0,
+        durationMs: 1,
+      },
+    ],
+    findings: [finding({ model, fingerprint: `fp-${model}` })],
+  });
+}
+
+test("迁移:历史的裸 model id 回填成模型标识,两张表都改", () => {
+  const db = makeDbPath();
+  try {
+    const seed = openStore(db.path);
+    seedWithModel(seed, "old-model", T1);
+    seed.close();
+
+    const migrated = openStore(db.path, SPECS);
+    assert.deepEqual(models(migrated), {
+      finding: ["acme:old-model"],
+      outcome: ["acme:old-model"],
+    });
+    migrated.close();
+
+    // 同一个库再跑一次迁移,值不变。
+    const again = openStore(db.path, SPECS);
+    assert.deepEqual(models(again), {
+      finding: ["acme:old-model"],
+      outcome: ["acme:old-model"],
+    });
+    again.close();
+  } finally {
+    db.cleanup();
+  }
+});
+
+test("迁移:已是新形态的值不被二次加工,配置里查不到的模型不动", () => {
+  const db = makeDbPath();
+  try {
+    const seed = openStore(db.path);
+    seedWithModel(seed, "acme:old-model", T1);
+    seedWithModel(seed, "no-such-model", T2);
+    seed.close();
+
+    const migrated = openStore(db.path, SPECS);
+    assert.deepEqual(models(migrated).finding.sort(), ["acme:old-model", "no-such-model"]);
+    migrated.close();
+  } finally {
+    db.cleanup();
+  }
+});
+
+test("迁移:回填后同一个模型在处置率统计里不裂成两条", () => {
+  const db = makeDbPath();
+  try {
+    // 一轮在升级前(裸 id),一轮在升级后(模型标识),指纹不同即两处 Finding。
+    const seed = openStore(db.path);
+    seedWithModel(seed, "old-model", T1);
+    seedWithModel(seed, "acme:old-model", T2);
+    assert.equal(seed.dispositionStats(...WIDE).length, 2, "回填前是裂开的两条");
+    seed.close();
+
+    const migrated = openStore(db.path, SPECS);
+    const cells = migrated.dispositionStats(...WIDE);
+    assert.deepEqual(
+      cells.map((cell) => [cell.model, cell.unknownOpen]),
+      [["acme:old-model", 2]],
+    );
+    migrated.close();
+  } finally {
+    db.cleanup();
+  }
+});

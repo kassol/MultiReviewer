@@ -10,6 +10,7 @@ import {
   type GiteaForgeOptions,
 } from "./forge/gitea.ts";
 import { createGitHubForge, type GitHubAuth } from "./forge/github.ts";
+import { openStore } from "./review/store.ts";
 import { createWebhookServer } from "./webhook/server.ts";
 
 const DEFAULT_PORT = 3000;
@@ -88,6 +89,7 @@ function panelPrefix(): string {
 
 const config = loadConfig(process.env["MULTIREVIEWER_CONFIG"] ?? DEFAULT_CONFIG_PATH);
 const port = Number(process.env["MULTIREVIEWER_PORT"] ?? DEFAULT_PORT);
+const dbPath = process.env["MULTIREVIEWER_DB"] ?? "multireviewer.db";
 
 const adminToken = required("MULTIREVIEWER_ADMIN_TOKEN");
 const prefix = panelPrefix();
@@ -109,6 +111,10 @@ if (gitea === undefined && github === undefined) {
 // 条链路都是哑的,而这要等到第一次有人处置 Finding 才会显形——宁可起不来。
 if (gitea !== undefined) await assertSupportedVersion(gitea);
 
+// 启动时开一次库跑迁移,顺带把历史行的裸 model id 回填成模型标识(issue #73)。
+// 请求路径上的开库不带模型组合,回填只在这里发生一次。
+openStore(dbPath, config.reviewers).close();
+
 const server = createWebhookServer({
   forges: {
     ...(github === undefined ? {} : { github: createGitHubForge({ auth: github }) }),
@@ -116,7 +122,7 @@ const server = createWebhookServer({
   },
   reviewers: buildReviewers(config),
   cacheDir: process.env["MULTIREVIEWER_CACHE_DIR"] ?? ".cache/worktrees",
-  dbPath: process.env["MULTIREVIEWER_DB"] ?? "multireviewer.db",
+  dbPath,
   adminToken,
   panelPrefix: prefix,
   baseUrl,

@@ -54,6 +54,6 @@ test("真实模型经 report_finding 产出结构完整的 Finding", { skip }, a
     assert.ok(SEVERITIES.has(finding.severity));
     assert.ok(CATEGORIES.has(finding.category));
     assert.ok(finding.description.length > 0);
-    assert.equal(finding.model, model);
+    assert.equal(finding.model, `${provider}:${model}`);
   }
 });

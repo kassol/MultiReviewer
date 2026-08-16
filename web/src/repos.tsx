@@ -282,7 +282,10 @@ function RepoDetail({
           <h2 className="font-semibold">模型组合</h2>
           {(() => {
             const models =
-              repo.reviewers === null ? globalModels : repo.reviewers.map((s) => s.model);
+              repo.reviewers === null
+                ? globalModels
+                : // 覆盖存的是 spec,展示要和全局那侧一样是模型标识 `provider:model`。
+                  repo.reviewers.map((s) => `${s.provider}:${s.model}`);
             return (
               <>
                 <Kv label={repo.reviewers === null ? "跟随全局默认" : "本仓库覆盖"}>

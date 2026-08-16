@@ -51,7 +51,7 @@ process.on("message", () => {
   assert.equal(outcome.findings.length, 1);
   assert.equal(outcome.findings[0]!.severity, "P0");
   assert.equal(outcome.findings[0]!.category, "bug");
-  assert.equal(outcome.findings[0]!.model, "stub-model");
+  assert.equal(outcome.findings[0]!.model, "test:stub-model");
   assert.deepEqual(outcome.anomalies, []);
 });
 

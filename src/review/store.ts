@@ -121,6 +121,65 @@ const ADD_COLUMNS = [
   "ALTER TABLE finding ADD COLUMN placement TEXT NOT NULL DEFAULT 'inline'",
 ];
 
+/** 回填要用的最小形状。`ReviewerSpec` 满足它,store 层不必依赖配置模块。 */
+export type ModelSpec = { provider: string; model: string };
+
+/**
+ * 模型标识的回填(issue #73)。历史行的 model 列存的是裸 model id,新形态是
+ * `provider:model`,而 provider 从库里恢复不出来——两张表都没记过它。
+ *
+ * 判据因此是「按裸 model id 在当前模型组合里反查得到唯一 provider」:反查得到就改写,
+ * 查不到或同一个 id 在多家 provider 下都配着就不动。留下的旧形态行在统计里各成一条,
+ * 不会被错误归并到别的模型名下。
+ *
+ * 幂等靠精确匹配:改写后的值带 provider 段,不再等于任何裸 id,重跑无害;已是新形态的
+ * 值同理不被二次加工。不按「值里没有冒号」判断——OpenRouter 的 model id 本身带 `:free`
+ * 这类后缀,那样会把它们误判成已迁移。
+ */
+function backfillModelIdentities(db: DatabaseSync, specs: readonly ModelSpec[]): void {
+  const identities = new Map<string, string | undefined>();
+  for (const spec of [...specs, ...repoOverrideSpecs(db)]) {
+    // 同一个裸 id 落在两家 provider 下时记 undefined:无从判断历史行属于哪一家。
+    const identity = `${spec.provider}:${spec.model}`;
+    const ambiguous = identities.has(spec.model) && identities.get(spec.model) !== identity;
+    identities.set(spec.model, ambiguous ? undefined : identity);
+  }
+
+  const updates = [
+    db.prepare("UPDATE finding SET model = ? WHERE model = ?"),
+    db.prepare("UPDATE reviewer_outcome SET model = ? WHERE model = ?"),
+  ];
+  for (const [bare, identity] of identities) {
+    if (identity === undefined) continue;
+    for (const update of updates) update.run(identity, bare);
+  }
+}
+
+/**
+ * 每仓库模型覆盖里出现过的模型。它们不一定在全局模型组合里,而它们提出的历史 Finding
+ * 一样要回填。坏 JSON(直接写库的遗留)跳过——一行坏数据不该让迁移掀掉整个进程。
+ */
+function repoOverrideSpecs(db: DatabaseSync): ModelSpec[] {
+  const specs: ModelSpec[] = [];
+  const rows = db.prepare("SELECT reviewers FROM repo WHERE reviewers IS NOT NULL").all();
+  for (const row of rows) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(String(row["reviewers"]));
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(parsed)) continue;
+    for (const entry of parsed) {
+      const { provider, model } = (entry ?? {}) as Partial<ModelSpec>;
+      if (typeof provider === "string" && typeof model === "string") {
+        specs.push({ provider, model });
+      }
+    }
+  }
+  return specs;
+}
+
 /**
  * 等锁的上限。webhook 服务里 webhook 层与后台 Review Run 各持一个句柄写同一个文件,
  * 默认的 0 会让撞上写锁的那一方当场报错,而这里等几十毫秒就过去了。
@@ -370,7 +429,11 @@ export function sumUsage(
   return total;
 }
 
-export function openStore(dbPath: string): Store {
+/**
+ * 开库并跑迁移。`modelSpecs` 给出时顺带回填模型标识——回填要认得 provider,而它只在
+ * 模型组合里,库里没有。进程启动时给一次即可,请求路径上的短开短关不必带。
+ */
+export function openStore(dbPath: string, modelSpecs?: readonly ModelSpec[]): Store {
   const db = new DatabaseSync(dbPath, { timeout: BUSY_TIMEOUT_MS });
   db.exec(SCHEMA);
   for (const statement of ADD_COLUMNS) {
@@ -381,6 +444,7 @@ export function openStore(dbPath: string): Store {
       if (!/duplicate column name/i.test(String(error))) throw error;
     }
   }
+  if (modelSpecs !== undefined) backfillModelIdentities(db, modelSpecs);
 
   return {
     registerRepo(record) {

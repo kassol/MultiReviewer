@@ -7,11 +7,21 @@ import { createPiReviewer } from "./reviewer/pi-reviewer.ts";
 export type ReviewerSpec = {
   /** Pi 的 provider 标识。 */
   provider: string;
-  /** Pi 的 model 标识,同时用作 Finding 的模型标识。 */
+  /** Pi 的 model 标识。模型标识另取 `modelIdentity`。 */
   model: string;
   /** 存放该厂商凭据的环境变量名。凭据本身不进配置文件。 */
   apiKeyEnv: string;
 };
+
+/**
+ * 模型标识:`provider:model`。Finding 与 Reviewer 的统计都按它归属来源。
+ *
+ * 带 provider 段是因为 Pi 目录里有 216 个 model id 跨 provider 重复;分隔用冒号而非
+ * 斜杠,是因为部分 model id 本身带斜杠,首次出现的冒号即边界。
+ */
+export function modelIdentity(spec: { provider: string; model: string }): string {
+  return `${spec.provider}:${spec.model}`;
+}
 
 export type Config = {
   reviewers: ReviewerSpec[];
@@ -41,12 +51,13 @@ export function assertReviewerSpecs(value: unknown, context: string): ReviewerSp
         throw new Error(`reviewers[${index}] 缺少 ${field}: ${context}`);
       }
     }
-    const model = (entry as ReviewerSpec).model;
-    if (seen.has(model)) {
+    const identity = modelIdentity(entry as ReviewerSpec);
+    if (seen.has(identity)) {
       // Finding 以模型标识归属来源,标识重复就分不清是哪一个 Reviewer 提的。
-      throw new Error(`模型标识重复: ${model}`);
+      // 键是完整标识:同一个 model id 在两家 provider 下是两个 Reviewer,可共存。
+      throw new Error(`模型标识重复: ${identity}`);
     }
-    seen.add(model);
+    seen.add(identity);
   }
   return value as ReviewerSpec[];
 }
@@ -100,7 +111,7 @@ export function buildReviewers(
   return config.reviewers.map((spec) => {
     const apiKey = env[spec.apiKeyEnv];
     if (apiKey === undefined || apiKey === "") {
-      throw new Error(`环境变量 ${spec.apiKeyEnv} 未设置,${spec.model} 无法使用`);
+      throw new Error(`环境变量 ${spec.apiKeyEnv} 未设置,${modelIdentity(spec)} 无法使用`);
     }
     return createPiReviewer({
       provider: spec.provider,

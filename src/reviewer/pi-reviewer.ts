@@ -9,6 +9,7 @@ import type {
   ReviewerOutcome,
   ReviewerUsage,
 } from "../review/finding.ts";
+import { modelIdentity } from "../config.ts";
 import { MODEL_API_KEY_ENV, reviewerEnv } from "./env.ts";
 import { normalizeFinding } from "./normalize.ts";
 import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
@@ -27,7 +28,7 @@ const EXIT_GRACE_MS = 5000;
 export type PiReviewerConfig = {
   /** Pi 的 provider 标识,如 `anthropic`、`openrouter`。 */
   provider: string;
-  /** Pi 的 model 标识,同时用作 Finding 的模型标识。 */
+  /** Pi 的 model 标识。喂给 Pi 的是它,对外的模型标识是 `provider:model`。 */
   model: string;
   /** 该 Reviewer 绑定厂商的模型凭据。子进程的环境里只会有这一份。 */
   apiKey: string;
@@ -38,7 +39,7 @@ export type PiReviewerConfig = {
  */
 export function createPiReviewer(config: PiReviewerConfig): Reviewer {
   return {
-    model: config.model,
+    model: modelIdentity(config),
     review: (range, worktreePath) =>
       runInChild(WORKER_PATH, config, range, worktreePath),
   };
@@ -55,6 +56,8 @@ export function runInChild(
   worktreePath: string,
 ): Promise<ReviewerOutcome> {
   return new Promise((resolve) => {
+    // 对外一律用模型标识;`config.model` 只喂给 Pi。
+    const identity = modelIdentity(config);
     const findings: Finding[] = [];
     const anomalies: { raw: RawFinding; reason: string }[] = [];
     let rejectedToolCalls = 0;
@@ -81,7 +84,7 @@ export function runInChild(
       // 工作副本目录不存在时 fork 同步抛。这是一次 Reviewer 失败,
       // 不该把整次 Review Run 一起掀掉。
       resolve({
-        model: config.model,
+        model: identity,
         findings: [],
         anomalies: [],
         rejectedToolCalls: 0,
@@ -99,7 +102,7 @@ export function runInChild(
       child.removeAllListeners();
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
       resolve({
-        model: config.model,
+        model: identity,
         findings,
         anomalies,
         rejectedToolCalls,
@@ -116,7 +119,7 @@ export function runInChild(
 
     child.on("message", (message: WorkerMessage) => {
       if (message.kind === "finding") {
-        const result = normalizeFinding(message.raw, config.model);
+        const result = normalizeFinding(message.raw, identity);
         if (result.ok) findings.push(result.finding);
         else anomalies.push({ raw: result.raw, reason: result.reason });
         return;

@@ -41,7 +41,7 @@ test("配置里的每个条目建成一个 Reviewer,各自绑定自己的模型�
 
   assert.deepEqual(
     reviewers.map((r) => r.model),
-    ["claude-haiku-4-5", "deepseek-v4-flash"],
+    ["anthropic:claude-haiku-4-5", "deepseek:deepseek-v4-flash"],
   );
 });
 
@@ -79,17 +79,50 @@ test("分批阈值可配置,不配置时留空由编排层取默认值", () => {
   );
 });
 
-test("同一个模型被配置两次时报错,否则 Finding 的模型标识无法区分来源", () => {
+test("同一个模型标识被配置两次时报错,否则 Finding 的模型标识无法区分来源", () => {
   assert.throws(
     () =>
       loadConfig(
         configFile({
           reviewers: [
             { provider: "a", model: "same", apiKeyEnv: "K1" },
-            { provider: "b", model: "same", apiKeyEnv: "K2" },
+            { provider: "a", model: "same", apiKeyEnv: "K2" },
           ],
         }),
       ),
-    /重复/,
+    /重复: a:same/,
   );
+});
+
+test("同一个 model id 在两家 provider 下是两个 Reviewer,可共存", () => {
+  const config = loadConfig(
+    configFile({
+      reviewers: [
+        { provider: "a", model: "same", apiKeyEnv: "K1" },
+        { provider: "b", model: "same", apiKeyEnv: "K2" },
+      ],
+    }),
+  );
+  const reviewers = buildReviewers(config, { K1: "k1", K2: "k2" });
+  assert.deepEqual(
+    reviewers.map((r) => r.model),
+    ["a:same", "b:same"],
+  );
+});
+
+test("带斜杠的 model id 拆包无歧义:首个冒号即边界", () => {
+  const [reviewer] = buildReviewers(
+    loadConfig(
+      configFile({
+        reviewers: [
+          { provider: "openrouter", model: "z-ai/glm-5.2:free", apiKeyEnv: "K1" },
+        ],
+      }),
+    ),
+    { K1: "k1" },
+  );
+  assert.equal(reviewer!.model, "openrouter:z-ai/glm-5.2:free");
+  const [provider, ...rest] = reviewer!.model.split(":");
+  assert.equal(provider, "openrouter");
+  assert.equal(rest.join(":"), "z-ai/glm-5.2:free");
 });
