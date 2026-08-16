@@ -43,6 +43,7 @@ import { DEFAULT_MAX_CHANGED_LINES_PER_BATCH } from "../review/batch.ts";
 import type { Reviewer } from "../review/finding.ts";
 import { backfillUpdates, priorDispositions, runReview } from "../review/run.ts";
 import { openStore, type RepoKey, type Store } from "../review/store.ts";
+import { modelCatalog } from "../reviewer/catalog.ts";
 
 export type Platform = "github" | "gitea";
 
@@ -736,6 +737,10 @@ async function handlePanelApi(
     return handleHookCheck(res, deps, hookManager, Number(hooksRoute[1]));
   }
 
+  if (sub === "/catalog" && req.method === "GET") {
+    return handleCatalog(res, deps);
+  }
+
   if (sub === "/credentials" && req.method === "GET") {
     return handleListCredentials(res, deps);
   }
@@ -808,6 +813,35 @@ async function handlePutSettings(
 const MASTER_KEY_MISSING =
   `没有设置环境变量 ${CREDENTIAL_MASTER_KEY_ENV},凭据加密不了也解不开。` +
   "在 .env 里补上它并重启服务。";
+
+/**
+ * 模型目录:服务进程里那份 Pi 的全部 provider 与它们的模型,每家带上凭据是否已配。
+ * 目录与凭据状态一次拿齐——分成两个端点要在前端合并两份数据,还多一次往返。
+ *
+ * 没配凭据的 provider 照常在结果里:面板要先能看见一家,才知道该去配它的凭据。
+ */
+async function handleCatalog(res: ServerResponse, deps: WebhookServerDeps): Promise<void> {
+  const masterKey = deps.credentialMasterKey;
+  if (masterKey === undefined || masterKey === "") {
+    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
+  }
+  const rows = withStore(deps.dbPath, (store) => store.listModelCredentials());
+  // 判据与凭据列表同一套:解不开的密文按未配置算。
+  const configured = new Set(
+    rows
+      .filter((row) => decryptCredential(masterKey, row.apiKeyEncrypted) !== undefined)
+      .map((row) => row.provider),
+  );
+  const providers = await modelCatalog();
+  return sendJson(res, 200, {
+    providers: providers.map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      configured: configured.has(provider.id),
+      models: provider.models,
+    })),
+  });
+}
 
 /**
  * 凭据列表。只写不回显(ADR 0008):给 provider、是否已配、更新时间、尾 4 位。
