@@ -51,10 +51,10 @@ test("一个模型都没配时建出的 Reviewer 一跑就报失败,而不是零
 });
 
 test("组合为空、条目缺字段时报错,报错指认来源层级", () => {
-  assert.throws(() => assertReviewerSpecs([], "全局模型组合"), /至少配置一个.*全局模型组合/);
+  assert.throws(() => assertReviewerSpecs([], "全局模型组合"), /全局模型组合至少要选一个模型/);
   assert.throws(
     () => assertReviewerSpecs([{ provider: "x" }], "仓库 7 的模型覆盖"),
-    /model.*仓库 7 的模型覆盖/,
+    /仓库 7 的模型覆盖.*model/,
   );
   assert.throws(() => assertReviewerSpecs([{ model: "y" }], "全局模型组合"), /provider/);
 });
@@ -69,7 +69,7 @@ test("同一个模型标识被配置两次时报错,否则 Finding 的模型标�
         ],
         "全局模型组合",
       ),
-    /重复: a:same/,
+    /a:same 选了两次/,
   );
 });
 
@@ -108,5 +108,6 @@ test("带斜杠的 model id 拆包无歧义:首个冒号即边界", () => {
 test("库里没写过全局组合时是空数组,写过的按同一套判据校验", () => {
   assert.deepEqual(parseGlobalReviewers(null), []);
   assert.deepEqual(parseGlobalReviewers(JSON.stringify(VALID)), VALID);
-  assert.throws(() => parseGlobalReviewers("[]"), /至少配置一个.*全局模型组合/);
+  // 全局这一层允许空组合:空库刚部署时它本来就是空的(issue #66)。
+  assert.deepEqual(parseGlobalReviewers("[]"), []);
 });

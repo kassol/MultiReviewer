@@ -22,10 +22,22 @@ export function modelIdentity(spec: { provider: string; model: string }): string
 /**
  * 校验一组 ReviewerSpec 并返回。全局模型组合与每仓库模型覆盖共用这套判据,
  * `context` 写进报错里指认来源(全局还是哪个仓库)。
+ *
+ * 空组合只在全局这一层受支持(`allowEmpty`):空库刚部署时它本来就是空的,而空的全局
+ * 组合有确定行为——投递照常受理,留下一条写明「还没配模型组合」的失败 Run(issue #66)。
+ * 每仓库覆盖不同:覆盖的语义是「这个仓库不跟全局,用这几个模型」,空覆盖表达不了任何
+ * 意图,要停掉就把覆盖清成 null 回到跟随全局(issue #69)。
  */
-export function assertReviewerSpecs(value: unknown, context: string): ReviewerSpec[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error(`至少配置一个 Reviewer: ${context}`);
+export function assertReviewerSpecs(
+  value: unknown,
+  context: string,
+  options: { allowEmpty?: boolean } = {},
+): ReviewerSpec[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${context}要是一个列表。`);
+  }
+  if (value.length === 0 && options.allowEmpty !== true) {
+    throw new Error(`${context}至少要选一个模型。`);
   }
 
   const seen = new Set<string>();
@@ -33,14 +45,14 @@ export function assertReviewerSpecs(value: unknown, context: string): ReviewerSp
     for (const field of ["provider", "model"] as const) {
       const fieldValue = (entry as Record<string, unknown>)[field];
       if (typeof fieldValue !== "string" || fieldValue === "") {
-        throw new Error(`reviewers[${index}] 缺少 ${field}: ${context}`);
+        throw new Error(`${context}的第 ${index + 1} 项没有 ${field}。`);
       }
     }
     const identity = modelIdentity(entry as ReviewerSpec);
     if (seen.has(identity)) {
       // Finding 以模型标识归属来源,标识重复就分不清是哪一个 Reviewer 提的。
       // 键是完整标识:同一个 model id 在两家 provider 下是两个 Reviewer,可共存。
-      throw new Error(`模型标识重复: ${identity}`);
+      throw new Error(`${context}里 ${identity} 选了两次,去掉一个。`);
     }
     seen.add(identity);
   }
@@ -50,10 +62,12 @@ export function assertReviewerSpecs(value: unknown, context: string): ReviewerSp
 /** 全局模型组合在库里的存法与每仓库覆盖同构:ReviewerSpec 的 JSON 数组,null 即还没配。 */
 export const GLOBAL_REVIEWERS_CONTEXT = "全局模型组合";
 
-/** 读库里的全局模型组合。没配是空数组——空库刚起来时就是这样。 */
+/** 读库里的全局模型组合。没配与显式配空都是空数组——空库刚起来时就是这样。 */
 export function parseGlobalReviewers(reviewersJson: string | null): ReviewerSpec[] {
   if (reviewersJson === null) return [];
-  return assertReviewerSpecs(JSON.parse(reviewersJson), GLOBAL_REVIEWERS_CONTEXT);
+  return assertReviewerSpecs(JSON.parse(reviewersJson), GLOBAL_REVIEWERS_CONTEXT, {
+    allowEmpty: true,
+  });
 }
 
 /**

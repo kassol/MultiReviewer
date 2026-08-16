@@ -58,11 +58,7 @@ test("非法的 reviewers 被既有校验拒绝,报错标注来源是全局这�
     reviewers: [{ provider: "deepseek" }],
   });
   assert.equal(missingField.status, 400);
-  assert.match(((await missingField.json()) as { error: string }).error, /model.*全局模型组合/);
-
-  const empty = await h.api("PUT", "/settings", { reviewers: [] });
-  assert.equal(empty.status, 400);
-  assert.match(((await empty.json()) as { error: string }).error, /至少配置一个.*全局模型组合/);
+  assert.match(((await missingField.json()) as { error: string }).error, /全局模型组合.*model/);
 
   const duplicate = await h.api("PUT", "/settings", {
     reviewers: [
@@ -71,7 +67,7 @@ test("非法的 reviewers 被既有校验拒绝,报错标注来源是全局这�
     ],
   });
   assert.equal(duplicate.status, 400);
-  assert.match(((await duplicate.json()) as { error: string }).error, /重复: a:same/);
+  assert.match(((await duplicate.json()) as { error: string }).error, /a:same 选了两次/);
 
   // 坏入参一条都不落库:组合还是 harness 播种的那一份。
   assert.deepEqual(await (await h.api("GET", "/settings")).json(), {
@@ -94,6 +90,33 @@ test("批次上限不是正整数时拒绝", async () => {
       /maxChangedLinesPerBatch/,
     );
   }
+});
+
+test("全局组合允许清空,每仓库覆盖仍必须至少一个", async () => {
+  // 空的全局组合是受支持的状态(issue #66):投递照常受理,留下一条写明「还没配模型
+  // 组合」的失败 Run。拒收它会把「只想先调批次上限」也一起连坐掉——这个端点整表写入。
+  const h = await startPanelHarness(cleanups);
+  const empty = await h.api("PUT", "/settings", {
+    reviewers: [],
+    maxChangedLinesPerBatch: 900,
+  });
+  assert.equal(empty.status, 200);
+  assert.deepEqual(await empty.json(), { reviewers: [], maxChangedLinesPerBatch: 900 });
+  assert.deepEqual(await (await h.api("GET", "/settings")).json(), {
+    reviewers: [],
+    maxChangedLinesPerBatch: 900,
+  });
+
+  // 每仓库覆盖是另一层判据(issue #69):空覆盖表达不了意图,要停掉就清成 null。
+  const register = await h.api("POST", "/repos", {
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+  });
+  assert.equal(register.status, 201);
+  const { repoId } = (await register.json()) as { repoId: number };
+  const override = await h.api("PUT", `/repos/${repoId}/reviewers`, { reviewers: [] });
+  assert.equal(override.status, 400);
+  assert.match(((await override.json()) as { error: string }).error, /至少要选一个模型/);
 });
 
 test("改过的全局组合下一次投递就生效", async () => {
