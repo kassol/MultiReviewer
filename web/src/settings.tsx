@@ -5,10 +5,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
+import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   ModelPicker,
   modelIdentity,
@@ -32,33 +34,34 @@ export function SettingsPage() {
   const catalog = useModelCatalog();
 
   return (
-    <div className="flex max-w-[1060px] flex-col gap-4 p-4">
-      <div className="flex flex-col gap-1">
-        <h1 className="text-[19px] font-semibold tracking-tight">全局设置</h1>
-        <p className="text-muted-foreground">
-          这里的模型组合是所有仓库的默认值,没设覆盖的仓库跟的就是它。批次上限决定一次
-          审查最多送多少改动行。
-        </p>
+    <>
+      <PageHeader
+        title="全局设置"
+        description="这里的模型组合是所有仓库的默认值,没设覆盖的仓库跟的就是它。批次上限决定一次审查最多送多少改动行。"
+      />
+      <div className="flex max-w-[1060px] flex-col gap-4 p-5">
+        {settings.isError ? (
+          <p className="text-destructive">{(settings.error as Error).message}</p>
+        ) : null}
+        {catalog.isError ? (
+          <p className="text-destructive">模型目录读不到:{(catalog.error as Error).message}</p>
+        ) : null}
+
+        {settings.data === undefined ? (
+          <>
+            <Skeleton className="h-[136px]" />
+            <Skeleton className="h-[142px]" />
+          </>
+        ) : (
+          // 表单以读回来的设置为初值,所以等数据到了再挂载。
+          <SettingsForm
+            key={JSON.stringify(settings.data)}
+            settings={settings.data}
+            providers={catalog.data?.providers ?? []}
+          />
+        )}
       </div>
-
-      {settings.isError ? (
-        <p className="text-destructive">{(settings.error as Error).message}</p>
-      ) : null}
-      {catalog.isError ? (
-        <p className="text-destructive">模型目录读不到:{(catalog.error as Error).message}</p>
-      ) : null}
-
-      {settings.data === undefined ? (
-        <p className="text-muted-foreground">读取中…</p>
-      ) : (
-        // 表单以读回来的设置为初值,所以等数据到了再挂载。
-        <SettingsForm
-          key={JSON.stringify(settings.data)}
-          settings={settings.data}
-          providers={catalog.data?.providers ?? []}
-        />
-      )}
-    </div>
+    </>
   );
 }
 
@@ -110,7 +113,7 @@ function SettingsForm({
       }}
     >
       <Card className="gap-2.5 px-4">
-        <h2 className="font-semibold">模型组合</h2>
+        <h2 className="text-base font-semibold">模型组合</h2>
         <p className="text-muted-foreground">
           一次审查按这几个模型各跑一遍。没配凭据的厂商在列表里看得见但选不了。
         </p>
@@ -118,7 +121,7 @@ function SettingsForm({
       </Card>
 
       <Card className="gap-2.5 px-4">
-        <h2 className="font-semibold">批次上限</h2>
+        <h2 className="text-base font-semibold">批次上限</h2>
         <div className="flex flex-col gap-1">
           <Label htmlFor="max-changed-lines">一批最多改动行数</Label>
           <Input

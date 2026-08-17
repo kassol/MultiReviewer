@@ -18,7 +18,9 @@ import {
 } from "@/components/ui/command";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/page-header";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useModelCatalog, type CatalogProvider } from "@/components/model-picker";
 
 import { api, errorText } from "./api.ts";
@@ -32,6 +34,13 @@ type Credential = {
   updatedAt: string;
   last4: string | null;
 };
+
+/** 本地时区的「年-月-日 时:分」。与评审记录页同一种写法,不用 toLocaleString 那套。 */
+function localMinute(iso: string): string {
+  const date = new Date(iso);
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 
 /** 主密钥缺失时服务端回 503,这一页据此整体切到「差什么」的状态。 */
 const MASTER_KEY_MISSING_STATUS = 503;
@@ -147,194 +156,199 @@ export function CredentialsPage() {
   const credentials = state?.kind === "ok" ? state.credentials : [];
 
   return (
-    <div className="flex max-w-[1060px] flex-col gap-4 p-4">
-      <div className="flex flex-col gap-1">
-        <h1 className="text-[19px] font-semibold tracking-tight">模型凭据</h1>
-        <p className="text-muted-foreground">
-          每个 provider 一把 key,同一家下的多个模型共用。有验证端点的那几家保存时真发一次
-          最小请求验证,不通过就不保存;其余厂商照样能保存,只是标成「未验证」——是哪一种
-          在 provider 下拉里逐家标出。key 加密进库,任何界面都不回显明文。
-        </p>
-      </div>
+    <>
+      <PageHeader
+        title="模型凭据"
+        description="每个 provider 一把 key,同一家下的多个模型共用。key 加密进库,任何界面都不回显明文。"
+      />
+      <div className="flex max-w-[1060px] flex-col gap-4 p-5">
+        {list.isError ? (
+          <p className="text-destructive">{(list.error as Error).message}</p>
+        ) : null}
+        {catalog.isError ? (
+          <p className="text-destructive">
+            模型目录读不到,provider 选不了:{(catalog.error as Error).message}
+          </p>
+        ) : null}
+        {feedback === null ? null : (
+          <p className={feedback.isError ? "text-destructive" : "text-muted-foreground"}>
+            {feedback.text}
+          </p>
+        )}
 
-      {list.isError ? (
-        <p className="text-destructive">{(list.error as Error).message}</p>
-      ) : null}
-      {catalog.isError ? (
-        <p className="text-destructive">
-          模型目录读不到,provider 选不了:{(catalog.error as Error).message}
-        </p>
-      ) : null}
-      {feedback === null ? null : (
-        <p className={feedback.isError ? "text-destructive" : "text-muted-foreground"}>
-          {feedback.text}
-        </p>
-      )}
-
-      {state?.kind === "unavailable" ? (
-        <Card className="gap-2.5 border-l-[3px] border-l-warning px-4">
-          <h2 className="font-semibold">这一页现在用不了</h2>
-          <p className="text-muted-foreground">{state.reason}</p>
-        </Card>
-      ) : (
-        <>
-          <Card className="gap-2.5 px-4">
-            <h2 className="font-semibold">粘一把 key</h2>
-            <form
-              className="flex flex-wrap items-end gap-3"
-              onSubmit={(event) => {
-                event.preventDefault();
-                setFeedback(null);
-                save.mutate({ provider, apiKey });
-              }}
-            >
-              <div className="flex flex-col gap-1">
-                <Label htmlFor="credential-provider">provider</Label>
-                <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
-                  <PopoverTrigger asChild>
-                    <Button
-                      id="credential-provider"
-                      type="button"
-                      variant="outline"
-                      className="w-56 justify-start font-mono"
-                      disabled={catalog.isPending || catalog.isError}
+        {state?.kind === "unavailable" ? (
+          <Card className="gap-2.5 border-l-[3px] border-l-warning px-4">
+            <h2 className="text-base font-semibold">这一页现在用不了</h2>
+            <p className="text-muted-foreground">{state.reason}</p>
+          </Card>
+        ) : (
+          <>
+            <Card className="gap-2.5 px-4">
+              <h2 className="text-base font-semibold">粘一把 key</h2>
+              <form
+                className="flex flex-wrap items-end gap-3"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  setFeedback(null);
+                  save.mutate({ provider, apiKey });
+                }}
+              >
+                <div className="flex flex-col gap-1">
+                  <Label htmlFor="credential-provider">provider</Label>
+                  <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        id="credential-provider"
+                        type="button"
+                        variant="outline"
+                        className="w-56 justify-start font-mono"
+                        disabled={catalog.isPending || catalog.isError}
+                      >
+                        {catalog.isPending
+                          ? "读取模型目录…"
+                          : catalog.isError
+                            ? "目录读不到"
+                            : picked === undefined
+                              ? "挑一家 provider"
+                              : picked.id}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      align="start"
+                      className="w-[min(420px,calc(100vw-2rem))] gap-0 p-0"
                     >
-                      {catalog.isPending
-                        ? "读取模型目录…"
-                        : catalog.isError
-                          ? "目录读不到"
-                          : picked === undefined
-                            ? "挑一家 provider"
-                            : picked.id}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent
-                    align="start"
-                    className="w-[min(420px,calc(100vw-2rem))] gap-0 p-0"
-                  >
-                    {/* cmdk 自带的过滤只看选项值,而这里要按标识与显示名两样都能搜。 */}
-                    <Command shouldFilter={false}>
-                      <CommandInput
-                        placeholder="搜 provider:标识或厂商名"
-                        value={query}
-                        onValueChange={setQuery}
-                      />
-                      <CommandList className="max-h-[300px]">
-                        {matched.length === 0 ? (
-                          <p className="py-6 text-center text-muted-foreground">
-                            没有匹配的 provider。
-                          </p>
-                        ) : (
-                          <CommandGroup>
-                            {matched.map((candidate) => (
-                              <CommandItem
-                                key={candidate.id}
-                                value={candidate.id}
-                                onSelect={() => {
-                                  setProvider(candidate.id);
-                                  setPickerOpen(false);
-                                }}
-                              >
-                                <span className="flex min-w-0 flex-1 flex-col">
-                                  <span className="truncate font-mono">
-                                    {candidate.id}
-                                    {candidate.id === provider ? (
-                                      <span className="ml-2 font-sans text-primary">已选</span>
-                                    ) : null}
+                      {/* cmdk 自带的过滤只看选项值,而这里要按标识与显示名两样都能搜。 */}
+                      <Command shouldFilter={false}>
+                        <CommandInput
+                          placeholder="搜 provider:标识或厂商名"
+                          value={query}
+                          onValueChange={setQuery}
+                        />
+                        <CommandList className="max-h-[300px]">
+                          {matched.length === 0 ? (
+                            <p className="py-6 text-center text-muted-foreground">
+                              没有匹配的 provider。
+                            </p>
+                          ) : (
+                            <CommandGroup>
+                              {matched.map((candidate) => (
+                                <CommandItem
+                                  key={candidate.id}
+                                  value={candidate.id}
+                                  onSelect={() => {
+                                    setProvider(candidate.id);
+                                    setPickerOpen(false);
+                                  }}
+                                >
+                                  <span className="flex min-w-0 flex-1 flex-col">
+                                    <span className="truncate font-mono">
+                                      {candidate.id}
+                                      {candidate.id === provider ? (
+                                        <span className="ml-2 font-sans text-primary">已选</span>
+                                      ) : null}
+                                    </span>
+                                    <span className="truncate text-xs text-muted-foreground">
+                                      {candidate.name}
+                                    </span>
                                   </span>
-                                  <span className="truncate text-[11px] text-muted-foreground">
-                                    {candidate.name}
+                                  <span className="shrink-0 text-xs">
+                                    {candidate.configured ? (
+                                      <span className="text-muted-foreground">已配,选它是覆盖</span>
+                                    ) : candidate.verifiable ? (
+                                      <span className="text-muted-foreground">保存时验证</span>
+                                    ) : (
+                                      <span className="text-warning">保存但不验证</span>
+                                    )}
                                   </span>
-                                </span>
-                                <span className="shrink-0 text-[11px]">
-                                  {candidate.configured ? (
-                                    <span className="text-muted-foreground">已配,选它是覆盖</span>
-                                  ) : candidate.verifiable ? (
-                                    <span className="text-muted-foreground">保存时验证</span>
-                                  ) : (
-                                    <span className="text-warning">保存但不验证</span>
-                                  )}
-                                </span>
-                              </CommandItem>
-                            ))}
-                          </CommandGroup>
-                        )}
-                      </CommandList>
-                    </Command>
-                  </PopoverContent>
-                </Popover>
-              </div>
-              <div className="flex min-w-56 flex-1 flex-col gap-1">
-                <Label htmlFor="credential-key">key</Label>
-                <Input
-                  id="credential-key"
-                  type="password"
-                  className="font-mono"
-                  placeholder="粘贴厂商 key"
-                  value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
-                />
-              </div>
-              <Button type="submit" disabled={save.isPending || provider === "" || apiKey === ""}>
-                {save.isPending ? "验证中…" : "验证并保存"}
-              </Button>
-            </form>
-            <p
-              className={
-                pickedHint.isWarning ? "text-xs text-warning" : "text-xs text-muted-foreground"
-              }
-            >
-              {pickedHint.text}
-            </p>
-          </Card>
-
-          <Card className="gap-2.5 px-4">
-            <h2 className="font-semibold">已配的厂商</h2>
-            {list.isPending ? (
-              <p className="text-muted-foreground">读取中…</p>
-            ) : credentials.length === 0 ? (
-              <p className="text-muted-foreground">还没有配任何厂商凭据。</p>
-            ) : (
-              credentials.map((credential) => (
-                <div
-                  key={credential.provider}
-                  className="flex flex-wrap items-center gap-3 border-t border-border pt-2.5 first:border-t-0 first:pt-0"
-                >
-                  <span className="font-mono font-medium">{credential.provider}</span>
-                  {credential.configured ? (
-                    <>
-                      <span className="font-mono text-muted-foreground">
-                        尾 4 位 {credential.last4}
-                      </span>
-                      {credential.verified ? null : (
-                        <span className="text-warning">未验证</span>
-                      )}
-                    </>
-                  ) : (
-                    // 主密钥换过之后的形态:密文还在,这把主密钥解不开,重新粘一次即可。
-                    <span className="text-warning">未配置(密文解不开,重新粘一次 key)</span>
-                  )}
-                  <span className="text-xs text-muted-foreground">
-                    更新于 {new Date(credential.updatedAt).toLocaleString()}
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    className="ml-auto"
-                    disabled={remove.isPending}
-                    onClick={() => {
-                      setFeedback(null);
-                      remove.mutate(credential.provider);
-                    }}
-                  >
-                    删除
-                  </Button>
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          )}
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
                 </div>
-              ))
-            )}
-          </Card>
-        </>
-      )}
-    </div>
+                <div className="flex min-w-56 flex-1 flex-col gap-1">
+                  <Label htmlFor="credential-key">key</Label>
+                  <Input
+                    id="credential-key"
+                    type="password"
+                    className="font-mono"
+                    placeholder="粘贴厂商 key"
+                    value={apiKey}
+                    onChange={(event) => setApiKey(event.target.value)}
+                  />
+                </div>
+                <Button type="submit" disabled={save.isPending || provider === "" || apiKey === ""}>
+                  {save.isPending ? "验证中…" : "验证并保存"}
+                </Button>
+              </form>
+              <p
+                className={
+                  pickedHint.isWarning ? "text-xs text-warning" : "text-xs text-muted-foreground"
+                }
+              >
+                {pickedHint.text}
+              </p>
+            </Card>
+
+            <Card className="gap-2.5 px-4">
+              <h2 className="text-base font-semibold">已配的厂商</h2>
+              {list.isPending ? (
+                <>
+                  <Skeleton className="h-5 w-2/3" />
+                  <Skeleton className="h-5 w-1/2" />
+                </>
+              ) : credentials.length === 0 ? (
+                <p className="text-muted-foreground">
+                  还没有配任何厂商凭据。上面粘一把 key 保存,这家下的模型立刻能在模型组合里选。
+                </p>
+              ) : (
+                credentials.map((credential) => (
+                  <div
+                    key={credential.provider}
+                    className="flex flex-wrap items-center gap-3 border-t border-border pt-2.5 first:border-t-0 first:pt-0"
+                  >
+                    <span className="font-mono font-medium">{credential.provider}</span>
+                    {credential.configured ? (
+                      <>
+                        <span className="text-muted-foreground">
+                          尾 4 位 <span className="font-mono">{credential.last4}</span>
+                        </span>
+                        {credential.verified ? null : (
+                          <span className="text-warning">未验证</span>
+                        )}
+                      </>
+                    ) : (
+                      // 主密钥换过之后的形态:密文还在,这把主密钥解不开,重新粘一次即可。
+                      <span className="text-warning">未配置(密文解不开,重新粘一次 key)</span>
+                    )}
+                    <span className="text-xs text-muted-foreground">
+                      更新于{" "}
+                      <span className="font-mono tabular-nums">
+                        {localMinute(credential.updatedAt)}
+                      </span>
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      className="ml-auto"
+                      disabled={remove.isPending}
+                      onClick={() => {
+                        setFeedback(null);
+                        remove.mutate(credential.provider);
+                      }}
+                    >
+                      删除
+                    </Button>
+                  </div>
+                ))
+              )}
+            </Card>
+          </>
+        )}
+      </div>
+    </>
   );
 }

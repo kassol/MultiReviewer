@@ -11,6 +11,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { X } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -190,25 +191,25 @@ export function ModelPicker({ providers, value, onChange, disabled }: ModelPicke
                             {model.name}
                             {picked ? <span className="ml-2 text-primary">已选</span> : null}
                           </span>
-                          <span className="truncate font-mono text-[11px] text-muted-foreground">
+                          <span className="truncate font-mono text-xs text-muted-foreground">
                             {identity}
                           </span>
                         </span>
-                        <span className="shrink-0 text-[11px] text-muted-foreground">
+                        <span className="shrink-0 text-xs text-muted-foreground">
                           {contextText(model.contextWindow)} · {priceText(model.cost)}
                         </span>
                       </CommandItem>
                     );
                   })}
                   {hidden > 0 ? (
-                    <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
+                    <p className="px-2 py-1.5 text-xs text-muted-foreground">
                       这家还有 {hidden} 个,继续输入以缩小范围。
                     </p>
                   ) : null}
                 </CommandGroup>
               ))}
               {hiddenProviders > 0 ? (
-                <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
+                <p className="px-2 py-1.5 text-xs text-muted-foreground">
                   还有 {hiddenProviders} 家没列出,继续输入以缩小范围。
                 </p>
               ) : null}
@@ -228,10 +229,11 @@ export function ModelPicker({ providers, value, onChange, disabled }: ModelPicke
                 type="button"
                 aria-label={`移除 ${identity}`}
                 disabled={disabled}
-                className="text-muted-foreground hover:text-foreground"
+                className="-mr-0.5 text-muted-foreground transition-colors hover:text-destructive"
                 onClick={() => toggle(identity)}
               >
-                ×
+                {/* 画出来的图标,不用 `×` 这个字符:字符的粗细与基线跟不上旁边的文字。 */}
+                <X className="size-3" />
               </button>
             </Badge>
           ))}

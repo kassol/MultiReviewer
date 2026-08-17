@@ -26,9 +26,16 @@
   --popover: #ffffff;
   --popover-foreground: #0f172a;
   --muted: #f1f5f9;
-  --muted-foreground: #64748b;
+  /* 6.1:1 对白底、5.6:1 对 --muted 底。原来的 #64748b 落在 --muted 上只有 4.4:1,
+     而次要文字大量压在 --muted 底色的行上。 */
+  --muted-foreground: #52627a;
   --border: #e2e8f0;
   --input: #e2e8f0;
+  /*
+   * 第三层底色:侧栏与页头这类外壳。内容区是 --background、卡片是 --card,外壳比两者
+   * 都深一档才会往后退。外壳原来用 --card,和卡片同色,于是三层看起来是一层。
+   */
+  --chrome: #f1f5f9;
   /* 强调色走 primary。shadcn 的 --accent 是悬停与选中的底色,与旧样式表里那个蓝色
      强调色语义相反,照名字直译会把选中态刷成实心蓝。 */
   --primary: #0e7490;
@@ -41,8 +48,9 @@
   --destructive: #be123c;
   --destructive-foreground: #ffffff;
   /* shadcn 只给 --destructive,而「正常 / 需注意 / 失败」三态在四屏里承重:hook 一致
-     还是有差异、Review Run 全部处置还是待处置还是失败。自建两个补成三态。 */
-  --success: #0d9488;
+     还是有差异、Review Run 全部处置还是待处置还是失败。自建两个补成三态。
+     三态都取 5:1 以上:它们全部以 `text-*` 的形式出现在浅底 badge 上。 */
+  --success: #0f766e;
   --success-foreground: #ffffff;
   --warning: #b45309;
   --warning-foreground: #ffffff;
@@ -72,6 +80,32 @@
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-chrome: var(--chrome);
+
+  /*
+   * 字号阶梯。控制台形态的密度靠小字撑,所以整套压在 11–19px,步进只有 1–2px:
+   * 档位之间靠字重与颜色分,不靠字号跳。五档各有唯一职责,写页面时不再出现
+   * `text-[13px]` 这类一次性值。
+   *
+   * xs 11  元信息:时间、id、单价、计数尾注
+   * sm 13  正文与控件文本(body 就是这一档,卡片内容也是)
+   * base 14  区块标题、需要压住一行的强调
+   * lg 16  很少用:对话框标题
+   * xl 19  页标题,一页一个
+   * 3xl 28  指标数字,只出现在处置率页的卡片上
+   */
+  --text-xs: 0.6875rem;
+  --text-xs--line-height: 1.45;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.55;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.5;
+  --text-lg: 1rem;
+  --text-lg--line-height: 1.4;
+  --text-xl: 1.1875rem;
+  --text-xl--line-height: 1.25;
+  --text-3xl: 1.75rem;
+  --text-3xl--line-height: 1;
 
   /* 层次靠边框和底色分,不靠圆角和阴影。四档都压到接近直角。 */
   --radius-sm: var(--radius);
@@ -88,5 +122,47 @@
   /* Tailwind preflight 把边框色置成 currentColor,shadcn 组件默认按 --border 画线。 */
   * {
     border-color: var(--border);
+  }
+
+  /*
+   * 浏览器自己画的那几处也按这套色板走:不接管的话选区是系统蓝、滚动条是系统灰,
+   * 它们和面板的青色主色对不上,一眼就能看出是拼装的。
+   */
+  ::selection {
+    /* 只染底不改字色:改字色会让选中的红字警告变得读不出来。 */
+    background: color-mix(in oklab, var(--primary) 20%, transparent);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--foreground) 22%, transparent) transparent;
+  }
+
+  input,
+  textarea {
+    caret-color: var(--primary);
+  }
+
+  /* 数字一律等宽:表格与卡片里的比率会随刷新变化,不等宽的话每次跳一下。 */
+  .tabular-nums,
+  th,
+  td {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/*
+ * 降低动效偏好:关掉纯装饰的骨架呼吸与浮层入场,保留颜色过渡——那是悬停与聚焦的
+ * 反馈,一起关掉会让控件看起来没响应。
+ */
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="skeleton"] {
+    animation: none;
+  }
+
+  [data-slot="dialog-content"],
+  [data-slot="dialog-overlay"],
+  [data-slot="popover-content"] {
+    animation-duration: 1ms;
   }
 }

@@ -1,11 +1,15 @@
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
+import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 
 import { api, errorText, fetchJson } from "./api.ts";
+import { SummaryRate } from "./stats.tsx";
 
 export type RunItem = {
   id: number;
@@ -69,6 +73,10 @@ export function RunPill({ run }: { run: RunItem }) {
         ].join("\n")}
       >
         <span className="size-1.5 rounded-full bg-destructive" />
+        {/* title 只对鼠标成立。这句话让屏幕阅读器与触屏也读得到这颗点的含义。 */}
+        <span className="sr-only">
+          {down.length}/{run.models.length} 个模型失败,这一轮的覆盖面不全
+        </span>
       </span>
       {badge}
     </span>
@@ -132,97 +140,118 @@ export function RunsPage() {
   };
 
   return (
-    <div className="mx-auto flex max-w-[780px] flex-col gap-2.5 p-4 pb-24">
-      {feedback === null ? null : (
-        <p className={feedback.isError ? "text-destructive" : "text-muted-foreground"}>
-          {feedback.text}
-        </p>
-      )}
-      {runs.isError ? (
-        <p className="text-destructive">{(runs.error as Error).message}</p>
-      ) : null}
+    <>
+      <PageHeader
+        title="评审记录"
+        description="每一轮 Review Run 按时间倒序。一行一个参与的模型,后面的数字是它这轮报出的 Finding 数。"
+        actions={<SummaryRate />}
+      />
+      <div className="flex max-w-[1060px] flex-col gap-2.5 p-5 pb-24">
+        {feedback === null ? null : (
+          <p className={feedback.isError ? "text-destructive" : "text-muted-foreground"}>
+            {feedback.text}
+          </p>
+        )}
+        {runs.isError ? (
+          <p className="text-destructive">{(runs.error as Error).message}</p>
+        ) : null}
+        {runs.isPending
+          ? [0, 1, 2, 3].map((slot) => <Skeleton key={slot} className="h-[86px]" />)
+          : null}
 
-      {flat.map((run) => {
-        const day = localDay(run.startedAt);
-        const header =
-          day !== lastDay ? (
-            <div className="px-0.5 pt-3 pb-0.5 text-[11px] font-semibold tracking-[0.07em] text-muted-foreground uppercase">
-              {(lastDay = day)}
-            </div>
-          ) : null;
-        return (
-          <div key={run.id}>
-            {header}
-            <Card className="gap-2 px-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono text-xs text-muted-foreground">
-                    {run.owner}/{run.repo}
-                  </span>
-                  <span className="font-mono text-muted-foreground">#{run.pullNumber}</span>
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    {localTime(run.startedAt)}
-                  </span>
-                </div>
-                <div className="flex flex-wrap items-center gap-4 text-xs">
-                  <div className="flex gap-3.5">
-                    {run.models.length === 0 ? (
-                      <span className="text-muted-foreground">没有模型记录</span>
-                    ) : (
-                      run.models.map((entry) =>
-                        entry.failure === null ? (
-                          <span key={entry.model} className="font-mono text-muted-foreground">
-                            {entry.model} <b className="font-semibold text-foreground">{entry.findings}</b>
-                          </span>
-                        ) : (
-                          <span key={entry.model} className="font-mono text-destructive">
-                            {entry.model} <b className="font-semibold">失败</b>
-                          </span>
-                        ),
-                      )
-                    )}
+        {flat.map((run) => {
+          const day = localDay(run.startedAt);
+          const header =
+            day !== lastDay ? (
+              <div className="px-0.5 pt-3 pb-1 font-mono text-xs font-semibold tracking-[0.07em] text-muted-foreground">
+                {(lastDay = day)}
+              </div>
+            ) : null;
+          return (
+            <div key={run.id}>
+              {header}
+              <Card className="gap-2.5 px-4">
+                  {/* 上一行是「哪个 PR、什么时候、哪个 commit」,下一行才是结论与动作。 */}
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                    <span className="font-mono text-muted-foreground">
+                      {run.owner}/{run.repo}
+                    </span>
+                    <span className="font-mono font-medium">#{run.pullNumber}</span>
+                    <span className="ml-auto flex items-baseline gap-2 font-mono text-xs text-muted-foreground">
+                      <span>{run.headSha.slice(0, 7)}</span>
+                      <span className="tabular-nums">{localTime(run.startedAt)}</span>
+                    </span>
                   </div>
-                  <RunPill run={run} />
-                  <span className="font-mono text-muted-foreground">
-                    {run.headSha.slice(0, 7)}
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    className="ml-auto"
-                    disabled={rerun.isPending}
-                    onClick={() => rerun.mutate(run)}
-                  >
-                    重跑
-                  </Button>
-                </div>
-                {run.models
-                  .filter((entry) => entry.failure !== null)
-                  .map((entry) => (
-                    // 失败原因就写在卡片上:要不要重跑取决于这句话(区域封禁重跑也没用,
-                    // 超时重跑就好),藏进 tooltip 等于让人先猜。
-                    <p key={entry.model} className="text-xs break-words text-destructive">
-                      {/* 分隔符不用冒号:模型标识本身就是 `provider:model`,再加一个冒号读不出边界。 */}
-                      <span className="font-mono">{entry.model}</span> · {entry.failure}
-                    </p>
-                  ))}
-            </Card>
-          </div>
-        );
-      })}
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                    <div className="flex flex-wrap gap-x-3.5 gap-y-1 text-xs">
+                      {run.models.length === 0 ? (
+                        <span className="text-muted-foreground">没有模型记录</span>
+                      ) : (
+                        run.models.map((entry) =>
+                          entry.failure === null ? (
+                            <span key={entry.model} className="font-mono text-muted-foreground">
+                              {entry.model}{" "}
+                              <b className="font-semibold tabular-nums text-foreground">
+                                {entry.findings}
+                              </b>
+                            </span>
+                          ) : (
+                            <span key={entry.model} className="font-mono text-destructive">
+                              {entry.model} <b className="font-semibold">失败</b>
+                            </span>
+                          ),
+                        )
+                      )}
+                    </div>
+                    <RunPill run={run} />
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      className="ml-auto"
+                      disabled={rerun.isPending}
+                      onClick={() => rerun.mutate(run)}
+                    >
+                      重跑
+                    </Button>
+                  </div>
+                  {run.models
+                    .filter((entry) => entry.failure !== null)
+                    .map((entry) => (
+                      // 失败原因就写在卡片上:要不要重跑取决于这句话(区域封禁重跑也没用,
+                      // 超时重跑就好),藏进 tooltip 等于让人先猜。
+                      <p key={entry.model} className="text-xs break-words text-destructive">
+                        {/* 分隔符不用冒号:模型标识本身就是 `provider:model`,再加一个冒号读不出边界。 */}
+                        <span className="font-mono">{entry.model}</span> · {entry.failure}
+                      </p>
+                    ))}
+              </Card>
+            </div>
+          );
+        })}
 
-      {flat.length === 0 && !runs.isPending ? (
-        <p className="text-muted-foreground">还没有 Review Run。</p>
-      ) : null}
-      <div ref={sentinel} />
-      <p className="pt-2 text-center text-xs text-muted-foreground">
-        {runs.isFetchingNextPage
-          ? "加载更早的 Review Run…"
-          : runs.hasNextPage
-            ? "往下滚加载更早的 Review Run"
-            : flat.length > 0
-              ? "到底了"
-              : ""}
-      </p>
-    </div>
+        {flat.length === 0 && !runs.isPending ? (
+          <Card className="items-start gap-1.5 px-4">
+            <h2 className="text-base font-semibold">还没有 Review Run</h2>
+            <p className="text-muted-foreground">
+              给已注册的仓库开一个 PR 就会自动跑一轮。要对已有的 PR 补一轮,去仓库页选中那个
+              仓库,在「评审记录」里输 PR 号点重跑。
+            </p>
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/repos">去仓库页</Link>
+            </Button>
+          </Card>
+        ) : null}
+        <div ref={sentinel} />
+        <p className="pt-2 text-center text-xs text-muted-foreground">
+          {runs.isFetchingNextPage
+            ? "加载更早的 Review Run…"
+            : runs.hasNextPage
+              ? "往下滚加载更早的 Review Run"
+              : flat.length > 0
+                ? "到底了"
+                : ""}
+        </p>
+      </div>
+    </>
   );
 }

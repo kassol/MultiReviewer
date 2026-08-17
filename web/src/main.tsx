@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   createRootRoute,
   createRoute,
@@ -12,14 +12,18 @@ import {
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
-import { api, fetchJson } from "./api.ts";
+import { LogOut } from "lucide-react";
+
+import { Mark } from "@/components/mark";
+
+import { api } from "./api.ts";
 import { CredentialsPage } from "./credentials.tsx";
 import { injected } from "./injected.ts";
 import { LoginPage } from "./login.tsx";
 import { ReposPage } from "./repos.tsx";
 import { RunsPage } from "./runs.tsx";
 import { SettingsPage } from "./settings.tsx";
-import { denominator, StatsPage, type Cell } from "./stats.tsx";
+import { StatsPage } from "./stats.tsx";
 import "./styles.css";
 
 // 入口第一件事读注入:缺了就在这里报错,不进任何路由。
@@ -53,8 +57,12 @@ const NAV = [
 ] as const;
 
 /**
- * 壳:左侧栏管导航,顶部那条 38px 的信息条管汇总数字。各屏共用同一套骨架,页面之间
- * 切换不必重新找东西在哪。
+ * 壳:只管导航。三层底色分开外壳、内容与卡片——侧栏是 --chrome(最深,往后退),
+ * 内容区是 --background,卡片是白。当前页的导航项直接刷成内容区的底色,读起来就是
+ * 「这一格连着右边那一屏」。
+ *
+ * 汇总数字不再常驻顶部:它搬进各页自己的页头(见 components/page-header.tsx),
+ * 哪一页需要哪个数字由那一页决定。
  */
 function Shell() {
   const router = useRouter();
@@ -68,20 +76,23 @@ function Shell() {
 
   return (
     // 窄视口下侧栏会吃掉一半宽度,所以那一档改成上下堆叠、导航横排。
-    <div className="flex h-screen flex-col sm:grid sm:grid-cols-[184px_1fr]">
-      <aside className="flex shrink-0 flex-col border-border bg-card max-sm:flex-row max-sm:items-center max-sm:border-b sm:border-r">
-        <div className="flex h-[38px] shrink-0 items-center border-border px-4 font-semibold sm:border-b">
-          MultiReviewer
+    <div className="flex h-dvh flex-col sm:grid sm:grid-cols-[184px_1fr]">
+      <aside className="flex shrink-0 flex-col border-border bg-chrome max-sm:flex-row max-sm:items-center max-sm:overflow-x-auto max-sm:border-b sm:border-r">
+        <div className="flex shrink-0 items-center gap-2 border-border px-4 py-3.5 max-sm:py-2.5 sm:border-b">
+          <Mark className="size-4" />
+          <span className="font-semibold tracking-tight">MultiReviewer</span>
         </div>
-        <nav className="flex sm:flex-col sm:py-2">
+        <nav aria-label="面板导航" className="flex shrink-0 sm:flex-col sm:py-2">
           {NAV.map((item) => (
             <Link
               key={item.to}
               to={item.to}
-              className="flex h-9 items-center border-transparent px-4 whitespace-nowrap text-muted-foreground hover:bg-muted max-sm:border-b-[3px] sm:border-l-[3px]"
+              className="flex h-10 items-center border-transparent px-4 whitespace-nowrap text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground max-sm:border-b-[3px] sm:h-9 sm:border-l-[3px]"
+              // 当前页对屏幕阅读器也要成立:仅靠底色与那条竖线的是视觉读者。
               activeProps={{
+                "aria-current": "page",
                 className:
-                  "bg-accent text-accent-foreground font-medium max-sm:border-b-primary sm:border-l-primary",
+                  "bg-background font-medium text-foreground max-sm:border-b-primary sm:border-l-primary",
               }}
             >
               {item.label}
@@ -92,62 +103,15 @@ function Shell() {
         <button
           type="button"
           onClick={() => void logout()}
-          className="flex h-9 items-center px-4 whitespace-nowrap text-muted-foreground hover:bg-muted max-sm:ml-auto sm:mt-auto sm:mb-2"
+          className="flex h-10 shrink-0 items-center gap-1.5 px-4 whitespace-nowrap text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground max-sm:ml-auto sm:mt-auto sm:mb-2 sm:h-9"
         >
+          <LogOut className="size-3.5" />
           登出
         </button>
       </aside>
-      <div className="flex min-w-0 flex-col">
-        <SummaryBar />
-        <main className="min-h-0 flex-1 overflow-auto">
-          <Outlet />
-        </main>
-      </div>
-    </div>
-  );
-}
-
-/**
- * 顶部信息条:总处置率与逐模型处置率,与处置率页同源(同一个默认窗口的 /stats),
- * 前端只做求和。进任何一页都看得到当前状态。
- */
-function SummaryBar() {
-  const stats = useQuery({
-    queryKey: ["stats", "band"],
-    queryFn: () => fetchJson<{ cells: Cell[] }>("/stats"),
-  });
-  const cells = stats.data?.cells ?? [];
-  const all = cells.reduce(
-    (acc, cell) => ({
-      resolved: acc.resolved + cell.resolved,
-      total: acc.total + denominator(cell),
-    }),
-    { resolved: 0, total: 0 },
-  );
-  const models = [...new Set(cells.map((cell) => cell.model))].sort();
-  const modelPct = (model: string): number => {
-    const mine = cells.filter((cell) => cell.model === model);
-    const total = mine.reduce((sum, cell) => sum + denominator(cell), 0);
-    const resolved = mine.reduce((sum, cell) => sum + cell.resolved, 0);
-    return total === 0 ? 0 : Math.round((resolved / total) * 100);
-  };
-
-  return (
-    <div className="flex h-[38px] shrink-0 items-center gap-6 overflow-x-auto border-b border-border bg-card px-4">
-      <span className="flex items-baseline gap-1.5 whitespace-nowrap">
-        <b className="font-mono tabular-nums">
-          {all.total === 0 ? 0 : Math.round((all.resolved / all.total) * 100)}%
-        </b>
-        <span className="text-[11px] text-muted-foreground">
-          近 30 天处置率 {all.resolved}/{all.total}
-        </span>
-      </span>
-      {models.map((model) => (
-        <span key={model} className="flex items-baseline gap-1.5 whitespace-nowrap">
-          <b className="font-mono tabular-nums">{modelPct(model)}%</b>
-          <span className="font-mono text-[11px] text-muted-foreground">{model}</span>
-        </span>
-      ))}
+      <main className="min-h-0 min-w-0 flex-1 overflow-auto">
+        <Outlet />
+      </main>
     </div>
   );
 }

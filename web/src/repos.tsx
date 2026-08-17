@@ -21,6 +21,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/page-header";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   ModelPicker,
   modelIdentity,
@@ -86,72 +88,95 @@ export function ReposPage() {
   const selected = rows.find((row) => row.repoId === selectedId) ?? rows[0];
 
   return (
-    <div className="flex min-h-full flex-col sm:grid sm:grid-cols-[248px_1fr]">
-      <aside className="border-border bg-card max-sm:border-b sm:border-r">
-        <header className="flex items-center justify-between px-4 pt-3.5 pb-2.5">
-          <span className="text-[11px] font-semibold tracking-[0.07em] text-muted-foreground uppercase">
+    <>
+      <PageHeader
+        title="仓库"
+        description="接入 MultiReviewer 的仓库。选一个看它的准入 key、模型组合与最近几轮 Review Run。"
+        actions={
+          <Button onClick={() => setRegistering(true)}>注册仓库</Button>
+        }
+      />
+      <div className="flex min-h-full flex-col sm:grid sm:grid-cols-[248px_1fr]">
+        <aside
+          aria-label="已注册仓库"
+          className="border-border bg-chrome max-sm:border-b sm:border-r"
+        >
+          <p className="px-4 pt-3.5 pb-2 font-mono text-xs font-semibold tracking-[0.07em] text-muted-foreground">
             已注册 {rows.length} 个
-          </span>
-          <Button size="xs" onClick={() => setRegistering(true)}>
-            注册
-          </Button>
-        </header>
-        {rows.map((row) => (
-          <button
-            key={row.repoId}
-            className={`block w-full border-l-[3px] px-4 py-2.5 text-left hover:bg-muted ${
-              row.repoId === selected?.repoId
-                ? "border-l-primary bg-accent"
-                : "border-l-transparent"
-            }`}
-            onClick={() => setSelectedId(row.repoId)}
-          >
-            <div className="font-mono">
-              {row.owner}/{row.repo}
-            </div>
-            <div className="mt-0.5 text-[11px] text-muted-foreground">
-              {row.runCount} 轮
-              {row.lastActivity === null ? " · 还没跑过" : ` · 最近 ${since(row.lastActivity)}`}
-            </div>
-          </button>
-        ))}
-        {rows.length === 0 && !repos.isPending ? (
-          <p className="px-4 py-2.5 text-muted-foreground">
-            还没有注册仓库,点右上「注册」接入第一个。
           </p>
-        ) : null}
-      </aside>
+          {repos.isPending ? (
+            <div className="flex flex-col gap-2 px-4 py-1">
+              <Skeleton className="h-9" />
+              <Skeleton className="h-9" />
+              <Skeleton className="h-9" />
+            </div>
+          ) : null}
+          {/* 一份列表就是一份列表:屏幕阅读器会念出「共 N 项、第 K 项」。 */}
+          <ul>
+            {rows.map((row) => (
+              <li key={row.repoId}>
+                <button
+                  type="button"
+                  // 选中项直接刷成右边内容区的底色,读起来是「这一格连着右边那一屏」。
+                  aria-current={row.repoId === selected?.repoId ? "true" : undefined}
+                  className={`block w-full border-l-[3px] px-4 py-2.5 text-left transition-colors ${
+                    row.repoId === selected?.repoId
+                      ? "border-l-primary bg-background"
+                      : "border-l-transparent hover:bg-background/70"
+                  }`}
+                  onClick={() => setSelectedId(row.repoId)}
+                >
+                  <span className="block truncate font-mono">
+                    {row.owner}/{row.repo}
+                  </span>
+                  <span className="mt-0.5 block text-xs text-muted-foreground">
+                    <span className="tabular-nums">{row.runCount}</span> 轮
+                    {row.lastActivity === null
+                      ? " · 还没跑过"
+                      : ` · 最近 ${since(row.lastActivity)}`}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {rows.length === 0 && !repos.isPending ? (
+            <p className="px-4 py-2.5 text-muted-foreground">
+              还没有注册仓库。点右上「注册仓库」搜一个接进来——搜的是 bot 能看见的仓库。
+            </p>
+          ) : null}
+        </aside>
 
-      <main className="flex min-w-0 max-w-[900px] flex-col gap-4 p-4">
-        {repos.isError ? (
-          <p className="text-destructive">{(repos.error as Error).message}</p>
-        ) : null}
-        {selected === undefined ? null : (
-          <RepoDetail
-            key={selected.repoId}
-            repo={selected}
-            globalModels={(settings.data?.reviewers ?? []).map(modelIdentity)}
-            onRemoved={() => {
-              setSelectedId(null);
+        <div className="flex min-w-0 max-w-[900px] flex-col gap-4 p-5">
+          {repos.isError ? (
+            <p className="text-destructive">{(repos.error as Error).message}</p>
+          ) : null}
+          {selected === undefined ? null : (
+            <RepoDetail
+              key={selected.repoId}
+              repo={selected}
+              globalModels={(settings.data?.reviewers ?? []).map(modelIdentity)}
+              onRemoved={() => {
+                setSelectedId(null);
+                void queryClient.invalidateQueries({ queryKey: ["repos"] });
+              }}
+            />
+          )}
+        </div>
+
+        {/* 两个表单模态都按需挂载:常驻会把上一次的输入与错误留在 state 里,下次打开
+            回显的就不是当前值了。 */}
+        {registering ? (
+          <RegisterModal
+            onClose={() => setRegistering(false)}
+            onDone={(repoId) => {
+              setRegistering(false);
+              setSelectedId(repoId);
               void queryClient.invalidateQueries({ queryKey: ["repos"] });
             }}
           />
-        )}
-      </main>
-
-      {/* 两个表单模态都按需挂载:常驻会把上一次的输入与错误留在 state 里,下次打开
-          回显的就不是当前值了。 */}
-      {registering ? (
-        <RegisterModal
-          onClose={() => setRegistering(false)}
-          onDone={(repoId) => {
-            setRegistering(false);
-            setSelectedId(repoId);
-            void queryClient.invalidateQueries({ queryKey: ["repos"] });
-          }}
-        />
-      ) : null}
-    </div>
+        ) : null}
+      </div>
+    </>
   );
 }
 
@@ -227,9 +252,10 @@ function RepoDetail({
   return (
     <>
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="font-mono text-[19px] font-semibold tracking-tight">
+        {/* 页标题是「仓库」,这里是选中的那一个:降一级,字号也降一档。 */}
+        <h2 className="font-mono text-lg font-semibold tracking-tight">
           {repo.owner}/{repo.repo}
-        </h1>
+        </h2>
         {check.isPending ? (
           <Badge variant="secondary">核对中…</Badge>
         ) : check.isError ? (
@@ -270,7 +296,7 @@ function RepoDetail({
 
       {issues.length > 0 ? (
         <Card className="gap-2.5 border-l-[3px] border-l-warning px-4">
-          <h2 className="font-semibold">与 Gitea 的差异</h2>
+          <h3 className="text-base font-semibold">与 Gitea 的差异</h3>
           {issues.map((issue) => (
             <Kv key={issue.message} label={issue.message}>
               <span className="text-muted-foreground">{issue.action}</span>
@@ -288,7 +314,7 @@ function RepoDetail({
 
       <div className="grid gap-3 md:grid-cols-2">
         <Card className="gap-2.5 px-4">
-          <h2 className="font-semibold">准入 key</h2>
+          <h3 className="text-base font-semibold">准入 key</h3>
           <Kv label="状态">已填进 hook,不回显</Kv>
           <Kv label="代次">
             <span className="font-mono tabular-nums">
@@ -309,7 +335,7 @@ function RepoDetail({
         </Card>
 
         <Card className="gap-2.5 px-4">
-          <h2 className="font-semibold">模型组合</h2>
+          <h3 className="text-base font-semibold">模型组合</h3>
           {/* 两态开关(issue #69):要么跟随全局,要么本仓库自定义。「一个都没选」
               这种既不是跟随、也不是有效覆盖的状态在界面上不存在。 */}
           <div className="flex gap-2">
@@ -333,7 +359,7 @@ function RepoDetail({
             </Button>
           </div>
           <Kv label={following ? "跟随全局默认" : "本仓库覆盖"}>
-            <span className="font-mono tabular-nums">{shownModels.length} 个</span>
+            <span><span className="font-mono tabular-nums">{shownModels.length}</span> 个</span>
           </Kv>
           {shownModels.map((model) => (
             <div key={model} className="font-mono text-xs">
@@ -349,12 +375,12 @@ function RepoDetail({
       </div>
 
       <Card className="gap-2.5 px-4">
-        <h2 className="font-semibold">累计</h2>
+        <h3 className="text-base font-semibold">累计</h3>
         <Kv label="Review Run">
-          <span className="font-mono tabular-nums">{repo.runCount} 轮</span>
+          <span><span className="font-mono tabular-nums">{repo.runCount}</span> 轮</span>
         </Kv>
         <Kv label="来源 Finding">
-          <span className="font-mono tabular-nums">{repo.findingCount} 条</span>
+          <span><span className="font-mono tabular-nums">{repo.findingCount}</span> 条</span>
         </Kv>
       </Card>
 
@@ -530,12 +556,12 @@ function RegisterModal({
                             ) : null}
                           </span>
                           {row.reason === undefined ? null : (
-                            <span className="text-muted-foreground truncate text-[11px]">
+                            <span className="text-muted-foreground truncate text-xs">
                               {row.reason}
                             </span>
                           )}
                         </span>
-                        <span className="text-muted-foreground shrink-0 text-[11px]">
+                        <span className="text-muted-foreground shrink-0 text-xs">
                           repo id {row.repoId}
                         </span>
                       </CommandItem>
@@ -689,7 +715,7 @@ function RepoRuns({
   const rows = runs.data?.runs.slice(0, 8) ?? [];
   return (
     <Card className="gap-2.5 px-4">
-      <h2 className="font-semibold">评审记录</h2>
+      <h3 className="text-base font-semibold">评审记录</h3>
       <form onSubmit={submit} className="flex gap-2">
         <Input
           placeholder="PR 号"
