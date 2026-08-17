@@ -32,7 +32,11 @@ fi
 
 echo "构建 $IMAGE ($PLATFORM)"
 # --push 而非 --load:buildx 构建非本机架构的镜像无法 load 进本地 daemon。
-docker buildx build --platform "$PLATFORM" --tag "$IMAGE" --push .
+#
+# --provenance=false:buildx 默认给镜像附一份 provenance attestation,它的配置 blob 是
+# application/vnd.oci.empty.v1+json。阿里云 ACR 不认这个 media type,推送在最后一步失败,
+# 报 "denied: unknown manifest class"——层都传完了才报,看起来像权限问题,其实不是。
+docker buildx build --platform "$PLATFORM" --provenance=false --tag "$IMAGE" --push .
 
 echo
 echo "推送完成。服务器上更新:"
