@@ -21,7 +21,7 @@ type RunRow = {
   headSha: string;
   startedAt: string;
   failed: boolean;
-  models: { model: string; findings: number }[];
+  models: { model: string; findings: number; failure: string | null }[];
   resolved: number;
   total: number;
 };
@@ -30,6 +30,7 @@ function seedRun(
   dbPath: string,
   meta: { owner: string; repo: string; pullNumber: number; startedAt: string },
   findings: { model: string; disposition?: string; placement?: string; group?: number }[],
+  outcomes: { model: string; failure?: string }[] = [],
 ): number {
   const store = openStore(dbPath);
   const runId = store.startRun({
@@ -43,7 +44,15 @@ function seedRun(
     finishedAt: meta.startedAt,
     durationMs: 1,
     failed: false,
-    outcomes: [],
+    outcomes: outcomes.map((o) => ({
+      model: o.model,
+      ...(o.failure === undefined ? {} : { failure: o.failure }),
+      findingCount: findings.filter((f) => f.model === o.model).length,
+      anomalyCount: 0,
+      rejectedToolCalls: 0,
+      anchorRejections: 0,
+      durationMs: 1,
+    })),
     findings: findings.map((f, i) => ({
       model: f.model,
       file: "src/a.ts",
@@ -96,14 +105,33 @@ test("时间流 API:倒序分页、逐条计数、已移除仓库的历史照常
 
   // 逐模型来源行计数;已处置口径按合并组算且只认行级承载:
   // 组 0 有一行 resolved 即已处置,组 1 未处置,组 2 是正文行不进分母。
+  // 没有 outcome 行的历史(这两条就是)按 finding 表兜底,失败原因自然是 null。
   assert.deepEqual(latest.models, [
-    { model: "model-a", findings: 1 },
-    { model: "model-b", findings: 3 },
+    { model: "model-a", findings: 1, failure: null },
+    { model: "model-b", findings: 3, failure: null },
   ]);
   assert.equal(latest.resolved, 1);
   assert.equal(latest.total, 2);
   assert.equal(oldest.total, 1);
   assert.equal(oldest.resolved, 0);
+});
+
+test("时间流 API:失败的模型照样出现在 JSON 里,带失败原因", async () => {
+  const h = await startPanelHarness(cleanups);
+  seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
+    [{ model: "model-a" }],
+    [{ model: "model-a" }, { model: "model-b", failure: "403 not available in your region" }],
+  );
+
+  const body = (await (await h.api("GET", "/runs")).json()) as { runs: RunRow[] };
+  // 零 Finding 的 model-b 只在 reviewer_outcome 里有行,按 finding 分组时它会消失。
+  assert.deepEqual(body.runs[0]!.models, [
+    { model: "model-a", findings: 1, failure: null },
+    { model: "model-b", findings: 0, failure: "403 not available in your region" },
+  ]);
+  assert.equal(body.runs[0]!.failed, false);
 });
 
 test("时间流 API:满页给 nextBefore 游标,翻页不重不漏;owner/repo 过滤", async () => {

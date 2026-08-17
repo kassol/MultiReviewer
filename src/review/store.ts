@@ -295,7 +295,11 @@ export type RepoSummary = {
   lastActivity: string | null;
 };
 
-/** 时间流里的一条 Review Run。`models` 是逐模型的来源 Finding 行数,按模型名排序。 */
+/**
+ * 时间流里的一条 Review Run。`models` 一行一个参与本轮的模型,按模型名排序:行的
+ * 来源是 `reviewer_outcome`(一轮一模型一行),不是 `finding`——被厂商拒掉的模型产出
+ * 零条 Finding,按 `finding` 分组会让它从面板上消失,失败读成没跑。
+ */
 export type RunListItem = {
   id: number;
   owner: string;
@@ -304,8 +308,10 @@ export type RunListItem = {
   headSha: string;
   startedAt: string;
   finishedAt: string | null;
+  /** 全部模型都失败。部分失败不在这里,由 `models` 里带 `failure` 的行推出。 */
   failed: boolean;
-  models: { model: string; findings: number }[];
+  /** `failure` 非 null 即这个模型这轮失败了,文本是节选(见 `failureExcerpt`)。 */
+  models: { model: string; findings: number; failure: string | null }[];
   /**
    * 已处置的合并组数。已处置判定与处置率同源(任一行 resolved 即已处置,只认行级
    * 承载),但计数单位是本轮合并组,不是处置率的逐模型 Finding Identity——多模型
@@ -315,6 +321,22 @@ export type RunListItem = {
   /** 行级承载的合并组总数。正文行没有 resolve 载体,不进这一对计数。 */
   total: number;
 };
+
+/**
+ * 失败原因在面板上只显示一句话的量。厂商拒绝的原文可能是一整段 JSON(区域封禁那条
+ * 403 就是),整段带到前端会把卡片撑开,而人要的是「哪个模型、为什么」——换行压成
+ * 空格、截到这个长度,原文仍在库里可查。
+ */
+const FAILURE_EXCERPT_CHARS = 200;
+
+function failureExcerpt(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+  const text = String(raw).replace(/\s+/g, " ").trim();
+  if (text.length === 0) return null;
+  return text.length > FAILURE_EXCERPT_CHARS
+    ? `${text.slice(0, FAILURE_EXCERPT_CHARS)}…`
+    : text;
+}
 
 export type Store = {
   /**
@@ -793,6 +815,15 @@ export function openStore(dbPath: string): Store {
 
       const ids = runs.map((run) => Number(run["id"]));
       const marks = ids.map(() => "?").join(", ");
+      // 逐模型的行来自 reviewer_outcome:它一轮一模型一行并带 failure,失败的模型
+      // 因此照样列出。Finding 数仍数 finding 表——outcome 上的 finding_count 是
+      // Reviewer 自报的合并前条数,与落库行数不是同一个口径。
+      const byOutcome = db
+        .prepare(
+          `SELECT run_id, model, failure FROM reviewer_outcome
+            WHERE run_id IN (${marks}) ORDER BY model`,
+        )
+        .all(...ids);
       const byModel = db
         .prepare(
           `SELECT run_id, model, COUNT(*) AS findings FROM finding
@@ -812,11 +843,34 @@ export function openStore(dbPath: string): Store {
         )
         .all(...ids);
 
-      const models = new Map<number, { model: string; findings: number }[]>();
+      const findingCounts = new Map<string, number>();
       for (const row of byModel) {
+        findingCounts.set(
+          `${Number(row["run_id"])}\n${String(row["model"])}`,
+          Number(row["findings"]),
+        );
+      }
+      const models = new Map<number, { model: string; findings: number; failure: string | null }[]>();
+      for (const row of byOutcome) {
         const runId = Number(row["run_id"]);
+        const model = String(row["model"]);
         const list = models.get(runId) ?? [];
-        list.push({ model: String(row["model"]), findings: Number(row["findings"]) });
+        list.push({
+          model,
+          findings: findingCounts.get(`${runId}\n${model}`) ?? 0,
+          failure: failureExcerpt(row["failure"]),
+        });
+        models.set(runId, list);
+      }
+      // 有 Finding 却没有 outcome 行的模型仍要出现:这一档是历史数据的兜底,漏掉它
+      // 就是把已经落库的 Finding 从面板上抹掉。
+      for (const [key, findings] of findingCounts) {
+        const [runIdText, model] = key.split("\n") as [string, string];
+        const runId = Number(runIdText);
+        const list = models.get(runId) ?? [];
+        if (list.some((entry) => entry.model === model)) continue;
+        list.push({ model, findings, failure: null });
+        list.sort((a, b) => a.model.localeCompare(b.model));
         models.set(runId, list);
       }
       const groups = new Map<number, { resolved: number; total: number }>();

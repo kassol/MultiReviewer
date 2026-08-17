@@ -16,7 +16,8 @@ export type RunItem = {
   startedAt: string;
   finishedAt: string | null;
   failed: boolean;
-  models: { model: string; findings: number }[];
+  /** 一行一个参与本轮的模型。`failure` 非 null 即这个模型这轮失败了(节选文本)。 */
+  models: { model: string; findings: number; failure: string | null }[];
   resolved: number;
   total: number;
 };
@@ -42,6 +43,9 @@ export async function rerunRequest(run: {
  *
  * 「状态到颜色」的映射留在这里:它同时被仓库页与评审记录页用,拆掉这层包装会把
  * 这条规则散到两个调用点。失败与待处置分成两色——一个去重跑,一个去处置。
+ *
+ * 部分失败自己一档:全挂(`failed`)是实心失败色,一部分模型挂掉是同一色的浅底——
+ * 两者的下一步动作都是重跑,但部分失败那轮的 Finding 是真的、可处置的。
  */
 export function RunPill({ run }: { run: RunItem }) {
   if (run.failed) {
@@ -49,6 +53,18 @@ export function RunPill({ run }: { run: RunItem }) {
       <Badge variant="destructive">
         <span className="size-1.5 rounded-full bg-current" />
         失败
+      </Badge>
+    );
+  }
+  const down = run.models.filter((entry) => entry.failure !== null);
+  if (down.length > 0) {
+    return (
+      <Badge
+        className="bg-destructive/12 text-destructive"
+        title={down.map((entry) => `${entry.model}: ${entry.failure}`).join("\n")}
+      >
+        <span className="size-1.5 rounded-full bg-current" />
+        {down.length}/{run.models.length} 模型失败
       </Badge>
     );
   }
@@ -142,13 +158,19 @@ export function RunsPage() {
                 <div className="flex flex-wrap items-center gap-4 text-xs">
                   <div className="flex gap-3.5">
                     {run.models.length === 0 ? (
-                      <span className="text-muted-foreground">没有 Finding</span>
+                      <span className="text-muted-foreground">没有模型记录</span>
                     ) : (
-                      run.models.map((entry) => (
-                        <span key={entry.model} className="font-mono text-muted-foreground">
-                          {entry.model} <b className="font-semibold text-foreground">{entry.findings}</b>
-                        </span>
-                      ))
+                      run.models.map((entry) =>
+                        entry.failure === null ? (
+                          <span key={entry.model} className="font-mono text-muted-foreground">
+                            {entry.model} <b className="font-semibold text-foreground">{entry.findings}</b>
+                          </span>
+                        ) : (
+                          <span key={entry.model} className="font-mono text-destructive">
+                            {entry.model} <b className="font-semibold">失败</b>
+                          </span>
+                        ),
+                      )
                     )}
                   </div>
                   <RunPill run={run} />
@@ -165,6 +187,16 @@ export function RunsPage() {
                     重跑
                   </Button>
                 </div>
+                {run.models
+                  .filter((entry) => entry.failure !== null)
+                  .map((entry) => (
+                    // 失败原因就写在卡片上:要不要重跑取决于这句话(区域封禁重跑也没用,
+                    // 超时重跑就好),藏进 tooltip 等于让人先猜。
+                    <p key={entry.model} className="text-xs break-words text-destructive">
+                      {/* 分隔符不用冒号:模型标识本身就是 `provider:model`,再加一个冒号读不出边界。 */}
+                      <span className="font-mono">{entry.model}</span> · {entry.failure}
+                    </p>
+                  ))}
             </Card>
           </div>
         );

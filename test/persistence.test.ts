@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import type { Reviewer, ReviewerUsage } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
+import { openStore } from "../src/review/store.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
 
@@ -176,6 +177,95 @@ test("每个 Reviewer 的执行结果与失败原因落库", async () => {
   assert.equal(rows[1]!["model"], "model-b");
   assert.equal(rows[1]!["failure"], "402 dead credential");
   assert.equal(rows[1]!["finding_count"], 0);
+});
+
+/** 时间流一页的逐模型行。测试只看外部可观察的那三个字段。 */
+function runModels(dbPath: string): { model: string; findings: number; failure: string | null }[] {
+  const store = openStore(dbPath);
+  try {
+    return store.listRuns({ limit: 30 })[0]!.models;
+  } finally {
+    store.close();
+  }
+}
+
+test("时间流:一个模型失败一个成功时两行都在,失败那行带原因", async () => {
+  const { cache, db, forge } = setup();
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [FINDING]),
+      scriptedReviewer("model-b", [], { failure: "403 This model is not available in your region." }),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  const store = openStore(db.path);
+  const run = store.listRuns({ limit: 30 })[0]!;
+  store.close();
+  // 部分失败不是这一轮失败:Finding 是真的,处置照做。
+  assert.equal(run.failed, false);
+  assert.deepEqual(run.models, [
+    { model: "model-a", findings: 1, failure: null },
+    { model: "model-b", findings: 0, failure: "403 This model is not available in your region." },
+  ]);
+});
+
+test("时间流:全部模型失败时每行都带原因,这一轮标失败", async () => {
+  const { cache, db, forge } = setup();
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [], { failure: "timeout" }),
+      scriptedReviewer("model-b", [], { failure: "402 dead credential" }),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  const store = openStore(db.path);
+  const run = store.listRuns({ limit: 30 })[0]!;
+  store.close();
+  assert.equal(run.failed, true);
+  assert.deepEqual(run.models, [
+    { model: "model-a", findings: 0, failure: "timeout" },
+    { model: "model-b", findings: 0, failure: "402 dead credential" },
+  ]);
+});
+
+test("时间流:一条 Finding 都没报的成功模型照样列出", async () => {
+  const { cache, db, forge } = setup();
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [scriptedReviewer("model-a", [])],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  assert.deepEqual(runModels(db.path), [{ model: "model-a", findings: 0, failure: null }]);
+});
+
+test("时间流:失败原因压成一行并截断,原文仍在库里", async () => {
+  const { cache, db, forge } = setup();
+  const long = `403 {\n  "error": {\n    "message": "${"x".repeat(400)}"\n  }\n}`;
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [scriptedReviewer("model-a", [FINDING]), scriptedReviewer("model-b", [], { failure: long })],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  const failure = runModels(db.path).find((entry) => entry.model === "model-b")!.failure!;
+  assert.equal(failure.length, 201, "节选是 200 字加一个省略号");
+  assert.ok(failure.endsWith("…"));
+  assert.ok(!failure.includes("\n"), "换行压成空格,卡片上只占一句话");
+  assert.match(failure, /^403 \{ "error": \{ "message": "x+…$/);
+  assert.equal(query(db.path, "SELECT failure FROM reviewer_outcome WHERE model = 'model-b'")[0]!["failure"], long);
 });
 
 test("锚定打回次数落库,与被拒的工具调用分列两列", async () => {
