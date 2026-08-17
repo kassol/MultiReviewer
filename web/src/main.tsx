@@ -33,7 +33,7 @@ const loginRoute = createRoute({
   component: LoginPage,
 });
 
-/** 壳:三页顶部导航。所有受保护页面挂在它下面,未登录一律送去登录页。 */
+/** 所有受保护页面挂在壳(见下方 Shell)下面,未登录一律送去登录页。 */
 const shellRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: "shell",
