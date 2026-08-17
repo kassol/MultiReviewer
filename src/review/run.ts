@@ -181,12 +181,15 @@ function reviewBody(
 ): string {
   const sections: string[] = [overviewLine(findings)];
 
+  // 只写模型名,不贴厂商返回的错误原文。原文对读 PR 的作者没有可行动信息,而它常带
+  // endpoint、request id、配额与账号提示——贴进 PR 就是把运维细节发给所有能看这个
+  // 仓库的人。完整原因落在库里,从管理面板的评审记录看。
   if (absent.length > 0) {
     sections.push(
       "",
-      "以下模型本次缺席,审查覆盖面因此打了折扣:",
+      "以下模型本次缺席,审查覆盖面因此打了折扣(失败原因见管理面板):",
       "",
-      ...absent.map((o) => `- ${o.model}:${o.failure}`),
+      ...absent.map((o) => `- ${o.model}`),
     );
   }
 
@@ -194,14 +197,14 @@ function reviewBody(
   if (partial.length > 0) {
     sections.push(
       "",
-      "以下模型本次覆盖不全,只有部分批次的文件被审查:",
+      "以下模型本次覆盖不全,只有部分批次的文件被审查(失败原因见管理面板):",
       "",
       ...partial.map((o) => {
         const coverage = o.incompleteCoverage!;
         const failures = coverage.failures
-          .map((f) => `第 ${f.batchIndex} 批失败(${f.failure})`)
-          .join(";");
-        return `- ${o.model}:共 ${coverage.batchCount} 批,${failures}`;
+          .map((f) => `第 ${f.batchIndex} 批`)
+          .join("、");
+        return `- ${o.model}:共 ${coverage.batchCount} 批,${failures}失败`;
       }),
     );
   }

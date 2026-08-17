@@ -256,7 +256,8 @@ test("某模型部分批次失败时成功批次的 Finding 照常发布,正文�
   assert.match(review.body, /model-a/);
   assert.match(review.body, /覆盖不全/);
   assert.match(review.body, /第 2 批/);
-  assert.match(review.body, /context length exceeded/);
+  // 厂商错误原文不外发到 PR:它是运维信息,只留在库里。
+  assert.doesNotMatch(review.body, /context length exceeded/);
   // 覆盖不全与缺席是两回事:model-a 没有整体失败。
   assert.doesNotMatch(review.body, /缺席/);
 

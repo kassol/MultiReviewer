@@ -216,6 +216,8 @@ test("零 Finding 但有模型缺席时,首行不写「0 条」", async () => {
   // 「0 条」会把「没审到」读成「没问题」。缺席那一段仍要照常写明。
   assert.doesNotMatch(body, /0 条 Finding/);
   assert.match(body, /model-b/);
+  // 厂商错误原文不外发到 PR:它常带 endpoint、request id、配额提示,只留在库里。
+  assert.doesNotMatch(body, /402 dead credential/);
 });
 
 test("Reviewer 拿到的 Review Range 以 merge-base 为基准,不是 base 分支尖端", async () => {

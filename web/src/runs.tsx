@@ -44,8 +44,8 @@ export async function rerunRequest(run: {
  * 「状态到颜色」的映射留在这里:它同时被仓库页与评审记录页用,拆掉这层包装会把
  * 这条规则散到两个调用点。失败与待处置分成两色——一个去重跑,一个去处置。
  *
- * 部分失败自己一档:全挂(`failed`)是实心失败色,一部分模型挂掉是同一色的浅底——
- * 两者的下一步动作都是重跑,但部分失败那轮的 Finding 是真的、可处置的。
+ * 部分模型失败不占这个位置:那一轮跑通的模型报出的 Finding 是真的、可处置的,
+ * 处置进度得留着。失败只加一颗红点提示「这一轮的结论不完整」,原因看卡片上的模型行。
  */
 export function RunPill({ run }: { run: RunItem }) {
   if (run.failed) {
@@ -56,18 +56,26 @@ export function RunPill({ run }: { run: RunItem }) {
       </Badge>
     );
   }
+  const badge = runBadge(run);
   const down = run.models.filter((entry) => entry.failure !== null);
-  if (down.length > 0) {
-    return (
-      <Badge
-        className="bg-destructive/12 text-destructive"
-        title={down.map((entry) => `${entry.model}: ${entry.failure}`).join("\n")}
+  if (down.length === 0) return badge;
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span
+        className="inline-flex size-4 shrink-0 items-center justify-center"
+        title={[
+          `${down.length}/${run.models.length} 个模型失败,这一轮的覆盖面不全`,
+          ...down.map((entry) => `${entry.model}: ${entry.failure}`),
+        ].join("\n")}
       >
-        <span className="size-1.5 rounded-full bg-current" />
-        {down.length}/{run.models.length} 模型失败
-      </Badge>
-    );
-  }
+        <span className="size-1.5 rounded-full bg-destructive" />
+      </span>
+      {badge}
+    </span>
+  );
+}
+
+function runBadge(run: RunItem) {
   // total 只计行级承载的合并组:纯正文 Finding 的 Run 也落在这一档——正文没有
   // resolve 载体,本来就无从处置。
   if (run.total === 0) {
