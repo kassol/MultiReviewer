@@ -6,11 +6,13 @@
  * 目录只读一次,缓存在进程里:同一个进程里的 Pi 就是同一份目录,每次请求重建
  * `ModelRuntime` 只是重复解析同样的内置表。读失败不进缓存,下一次请求重来。
  */
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+
+import { modelsStorePath } from "./model-runtime.ts";
 
 /**
  * 远程目录那一层的结果。`ok` 是内置目录加上了 pi.dev 的增量;`unavailable` 是远程
@@ -88,9 +90,9 @@ export type LoadOptions = {
 
 /**
  * 读一份目录。内置表先到位,再让 Pi 去 pi.dev 拉每家 provider 的增量(约多出 72 个
- * 模型)。远程只加在面板这一份上:Reviewer 子进程按标识取一个已知模型就够,给它加
- * 39 次 HTTP 是纯开销,而且子进程应当尽量少对外通信(ADR 0004),`worker.ts` 那处
- * 因此保持不联网。
+ * 模型)。联网只发生在这一份上:子进程应当尽量少对外通信(ADR 0004),`worker.ts` 那处
+ * 因此不联网,只读这里落盘的 overlay——面板选得出的模型子进程必须取得到,共用一份落盘
+ * 文件是它们之间唯一的通路(见 `model-runtime.ts`)。
  *
  * 不用 `ModelRuntime.create({ allowModelNetwork: true })`,而是先建再自己刷一次:
  * `create` 把刷新结果吞掉了,拿不到「哪几家没拉到」;自己刷才能把远程那一层的成败
@@ -150,18 +152,3 @@ function remoteEnabled(): boolean {
   return process.env["PI_OFFLINE"] === undefined;
 }
 
-/**
- * 远程目录的落盘位置。Pi 默认把 `models-store.json` 放在 modelsPath 旁边,而那是每次
- * 新建的临时目录:进程一重启就重新拉 39 次。放进缓存根目录(镜像里是持久卷),重启
- * 后 4 小时刷新窗口内直接命中。多进程同写安全:Pi 的 `FileModelsStore` 带文件锁。
- * 建不出目录就回退到临时目录,只是失去缓存,不影响读目录。
- */
-function modelsStorePath(): string | undefined {
-  const dir = join(process.env["MULTIREVIEWER_CACHE_DIR"] ?? ".cache/worktrees", "pi-models");
-  try {
-    mkdirSync(dir, { recursive: true });
-    return join(dir, "models-store.json");
-  } catch {
-    return undefined;
-  }
-}

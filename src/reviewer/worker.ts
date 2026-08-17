@@ -12,7 +12,6 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   defineTool,
-  ModelRuntime,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -21,6 +20,7 @@ import { Type } from "typebox";
 import type { RawFinding } from "../review/finding.ts";
 import { anchorReport } from "./anchor.ts";
 import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV } from "./env.ts";
+import { missingModelHint, modelsStorePath, reviewerModelRuntime } from "./model-runtime.ts";
 import { numberedRead } from "./numbered-read.ts";
 import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
 
@@ -170,15 +170,11 @@ async function run(request: ReviewerRequest): Promise<void> {
     return;
   }
 
-  // authPath 与 modelsPath 都指进这个空目录。默认值在 `~/.pi/agent` 下,那里的
-  // auth.json 存着宿主机上配置过的每一家厂商的凭据,读到就等于凭据分割白做。
-  //
-  // 这里不联网取远程目录(面板那份目录才开,见 `catalog.ts`):子进程只按标识取一个
-  // 已知模型,为它多发 39 次 HTTP 是纯开销,而且子进程应当尽量少对外通信(ADR 0004)。
-  const modelRuntime = await ModelRuntime.create({
-    authPath: join(agentDir, "auth.json"),
-    modelsPath: join(agentDir, "models.json"),
-  });
+  // 目录要与面板那一份一致:面板选得出的模型,这里必须取得到。共用的只是 pi.dev 的
+  // overlay 落盘文件,子进程自己一个对外目录请求都不发(ADR 0004),细节见
+  // `model-runtime.ts`。
+  const storePath = modelsStorePath();
+  const modelRuntime = await reviewerModelRuntime(agentDir, storePath);
   await modelRuntime.setRuntimeApiKey(request.provider, apiKey);
 
   const model = modelRuntime.getModel(request.provider, request.model);
@@ -187,7 +183,7 @@ async function run(request: ReviewerRequest): Promise<void> {
       kind: "done",
       rejectedToolCalls: 0,
       anchorRejections: 0,
-      failure: `模型不存在: ${request.provider}/${request.model}`,
+      failure: `模型不存在: ${request.provider}/${request.model}${missingModelHint(storePath)}`,
     });
     return;
   }
