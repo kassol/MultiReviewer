@@ -17,7 +17,7 @@
 
 - `src/settings.tsx` — 全局设置页(issue #68)。全局模型组合与批次上限,读写 `<前缀>/api/settings`。表单以读回来的设置为初值,所以数据到了才挂载(`key` 取设置本身)。
 - `src/components/model-picker.tsx` — 模型多选器。目录来自 `<前缀>/api/catalog`(`useModelCatalog()` 一并导出,仓库覆盖那一票复用同一份查询),选项键就是模型标识 `provider:model`——「同一次审查里标识不得重复」因此由组件天然满足,同 id 跨 provider 的两项是两个选项。接口是受控的 `{providers, value, onChange, disabled?}`,自己不发写请求。**列表永远按搜索词裁剪**:目录有 1153 个模型,全渲染会让每次输入都卡住,所以 cmdk 的自带过滤关掉(`shouldFilter={false}`),不搜时每家只列 4 个并标出还有多少,搜索时每家最多 12 个、全部加起来最多 120 个。没配凭据的 provider 照常显示,只是 `disabled`,那一行给去凭据页的链接。
-- `src/components/ui/` — shadcn 生成的组件(Dialog / Button / Input / Label / Table / Badge / Card / Command / Popover),vendored 源码,改它就是改本项目的组件。已按视觉定稿把 Card 与 Dialog 的 ring 换成边框、圆角压到 `--radius`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
+- `src/components/ui/` — shadcn 生成的组件(Dialog / Button / Input / Label / Table / Badge / Card / Command / Popover / Calendar),vendored 源码,改它就是改本项目的组件。Calendar 的底座是 `react-day-picker`;它的 `DayButton` 原样把 `locale` 透传下去,在 `exactOptionalPropertyTypes` 下过不了类型检查,改成 undefined 时不传这个属性。已按视觉定稿把 Card 与 Dialog 的 ring 换成边框、圆角压到 `--radius`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
 - `src/lib/utils.ts` — shadcn 的 `cn()`,clsx 加 tailwind-merge。
 - `src/styles.css` — 只有设计令牌,没有组件类。
 
@@ -36,7 +36,7 @@
 
 不依赖仓库里任何服务端代码;与服务端的契约只有两条:注入全局变量的形状、`<前缀>/api` 的 JSON 端点。
 
-构建期依赖:Tailwind v4 经 `@tailwindcss/vite` 接入;组件依赖 `radix-ui`(单包)、`cmdk`(Command 的底座)、`class-variance-authority`、`clsx`、`tailwind-merge`、`tw-animate-css`、`lucide-react`。`@/` 别名在 `tsconfig.json` 的 `paths` 与 `vite.config.ts` 的 `resolve.alias` 各配一次,两处要一起改。
+构建期依赖:Tailwind v4 经 `@tailwindcss/vite` 接入;组件依赖 `radix-ui`(单包)、`cmdk`(Command 的底座)、`react-day-picker`(Calendar 的底座)、`class-variance-authority`、`clsx`、`tailwind-merge`、`tw-animate-css`、`lucide-react`。`@/` 别名在 `tsconfig.json` 的 `paths` 与 `vite.config.ts` 的 `resolve.alias` 各配一次,两处要一起改。
 
 ## 常用命令
 
@@ -60,3 +60,4 @@
 - 2026-08-16: 落地 issue #71。壳的侧栏底部加「登出」(`src/main.tsx`):打 `DELETE /session` 再回登录页,端点回什么都走——会话已经不该用了,留在面板上只会在下一次请求撞 401。窄视口下侧栏是横排,按钮跟在导航尾端。
 - 2026-08-16: 收口 issue #56 的评审复核(前端三条)。`settings.tsx` 的批次上限提交前校验正整数:字段是自由文本,`Number("abc")` 是 NaN,JSON 里序列化成 null,而服务端把 null 当「清除这一项」——此前人看到「已保存」,配置却被悄悄删掉并回落默认值;非法时不发请求,直接给「批次上限要填正整数,这次没保存」。`repos.tsx` 的注册模态在搜索词变化时清掉选中项:选中 `foo/bar` 后改词到无结果再回车,表单会把看不见的那个仓库提交注册。`components/model-picker.tsx` 补总量截断的提示:不搜索时每家列 4 个、累计到 120 就停,约 39 家里最后几家此前无声消失,现在按「还有 N 家没列出,继续输入以缩小范围」透出,与每家那句「这家还有 N 个」同一形态。`credentials.tsx` 跟随服务端的凭据放行改动:列表按 `verified` 标出「未验证」,保存认不出的厂商时当场说清「key 写错了要等下一次 Review Run 失败才知道」,页头说明写清哪四家会真发验证请求。
 - 2026-08-17: 凭据页的 provider 从手输改成可搜索的单选下拉(`src/credentials.tsx`)。选项来自 `useModelCatalog()`(与模型选择器同一份查询),Popover + Command 复用已装的组件,`shouldFilter={false}`、按标识与厂商名两样过滤——39 家一次列全,不做截断。每一行标出这家的状态:已配的写「已配,选它是覆盖」,没配的按目录新给的 `verifiable` 分成「保存时验证」与「保存但不验证」。表单底下那句「同一个 provider 保存第二次是覆盖」换成针对所选那一家的具体提示(覆盖还是新增、保存时验不验证),页头因此不再点名 anthropic / openai / deepseek / openrouter 四家——名单由服务端给。保存与删除后连 `catalog` 一起失效,否则下拉里的「已配」是旧的。凭据页其余逻辑一字未动:只写不回显、验证失败不落库、列表的「未验证」标注照旧。
+- 2026-08-17: 处置率页的日期窗从两个浏览器原生日期控件换成 shadcn Calendar(`src/stats.tsx`,装 `react-day-picker`)。两个框合成一个区间选择器:窗口本来就是一对起止,分成两个控件时「起点晚于终点」这种非法窗口按得出来,区间选择器里选不出来。触发器是一颗按钮,显示 `起 → 止`,展开是 Popover 里的双月日历。日期在状态里仍是 `YYYY-MM-DD` 两个字符串,请求参数仍逐字是 `<日>T00:00:00.000Z` 与 `<日>T23:59:59.999Z`;`Date` 与字符串互转走本地年月日字段(`dayString` / `dayDate`),不经 `toISOString()`——按 UTC 转会把东八区选的日子挪前一天,与分天按浏览器本地时区那条一致。行为一律不变:默认窗仍是最近 30 天、空窗仍给文案不给空表、矩阵算法与库体量卡片一行没动。代价是前端产物体积从 gzip 157.6 kB(JS 150.0 + CSS 7.6)涨到 181.4 kB(JS 172.9 + CSS 8.5),已知并接受。

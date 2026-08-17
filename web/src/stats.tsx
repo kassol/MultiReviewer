@@ -1,8 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
+import { CalendarIcon } from "lucide-react";
 import { useState } from "react";
 
+import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Table,
   TableBody,
@@ -37,6 +40,22 @@ export function denominator(cell: Cell): number {
 
 function isoDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * 日历给的是 Date,窗口两头存的是 `YYYY-MM-DD`。两个方向都走本地字段,
+ * 不经 `toISOString()`——东八区选 8 月 1 日会被 UTC 挪成 7 月 31 日。
+ */
+function dayString(date: Date): string {
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+function dayDate(day: string): Date | undefined {
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  if (parts === null) return undefined;
+  return new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]));
 }
 
 function humanBytes(bytes: number): string {
@@ -90,6 +109,7 @@ export function StatsPage() {
     },
   });
 
+  const fromDate = dayDate(from);
   const cells = stats.data?.cells ?? [];
   const models = [...new Set(cells.map((cell) => cell.model))].sort();
   const categories = [...new Set(cells.map((cell) => cell.category))].sort();
@@ -114,21 +134,28 @@ export function StatsPage() {
             人看过并做了结论的 Finding 占比。同一处 Finding 只算一次,进不了行级评论的不计入。
           </p>
         </div>
-        <div className="ml-auto flex items-center gap-2">
-          <Input
-            type="date"
-            className="h-9 w-auto font-mono text-xs"
-            value={from}
-            onChange={(event) => setFrom(event.target.value)}
-          />
-          <span className="text-muted-foreground">→</span>
-          <Input
-            type="date"
-            className="h-9 w-auto font-mono text-xs"
-            value={to}
-            onChange={(event) => setTo(event.target.value)}
-          />
-        </div>
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button variant="outline" size="lg" className="ml-auto font-mono text-xs">
+              <CalendarIcon />
+              {from === "" ? "起始不限" : from}
+              <span className="text-muted-foreground">→</span>
+              {to === "" ? "至今" : to}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-auto p-0">
+            <Calendar
+              mode="range"
+              numberOfMonths={2}
+              {...(fromDate === undefined ? {} : { defaultMonth: fromDate })}
+              selected={{ from: fromDate, to: dayDate(to) }}
+              onSelect={(range) => {
+                setFrom(range?.from === undefined ? "" : dayString(range.from));
+                setTo(range?.to === undefined ? "" : dayString(range.to));
+              }}
+            />
+          </PopoverContent>
+        </Popover>
       </div>
 
       {stats.isError ? (
