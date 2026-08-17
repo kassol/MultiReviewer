@@ -33,7 +33,7 @@ import {
 } from "../forge/gitea-hooks.ts";
 import type { GiteaForgeOptions } from "../forge/gitea.ts";
 import { createPanelAuth, SESSION_TTL_MS, type PanelAuth } from "../panel/auth.ts";
-import { checkCredential } from "../panel/credential-check.ts";
+import { checkCredential, CHECKED_PROVIDERS } from "../panel/credential-check.ts";
 import {
   credentialTail,
   CREDENTIAL_MASTER_KEY_ENV,
@@ -847,8 +847,9 @@ const MASTER_KEY_MISSING =
   "在 .env 里补上它并重启服务。";
 
 /**
- * 模型目录:服务进程里那份 Pi 的全部 provider 与它们的模型,每家带上凭据是否已配。
- * 目录与凭据状态一次拿齐——分成两个端点要在前端合并两份数据,还多一次往返。
+ * 模型目录:服务进程里那份 Pi 的全部 provider 与它们的模型,每家带上凭据是否已配、
+ * 保存凭据时会不会真发验证请求。目录与凭据状态一次拿齐——分成两个端点要在前端合并两份
+ * 数据,还多一次往返。`verifiable` 由服务端给,前端硬编码那四家会与这里漂移。
  *
  * 没配凭据的 provider 照常在结果里:面板要先能看见一家,才知道该去配它的凭据。
  */
@@ -864,12 +865,15 @@ async function handleCatalog(res: ServerResponse, deps: WebhookServerDeps): Prom
           .filter((row) => decryptCredential(masterKey, row.apiKeyEncrypted) !== undefined)
           .map((row) => row.provider),
   );
+  const verifiable = new Set(CHECKED_PROVIDERS);
   const providers = await modelCatalog();
   return sendJson(res, 200, {
     providers: providers.map((provider) => ({
       id: provider.id,
       name: provider.name,
       configured: configured.has(provider.id),
+      // 真发验证请求的那几家,判据就是 `credential-check.ts` 认得的那张表。
+      verifiable: verifiable.has(provider.id),
       models: provider.models,
     })),
   });

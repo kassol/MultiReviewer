@@ -40,6 +40,8 @@ export type CatalogProvider = {
   id: string;
   name: string;
   configured: boolean;
+  /** 保存凭据时这家会不会真发一次验证请求。服务端给,前端不自己列名单。 */
+  verifiable: boolean;
   models: CatalogModel[];
 };
 

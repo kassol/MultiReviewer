@@ -12,6 +12,7 @@ import { after, test } from "node:test";
 
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
+import { CHECKED_PROVIDERS } from "../src/panel/credential-check.ts";
 import { encryptCredential } from "../src/panel/credential-crypto.ts";
 import { openStore } from "../src/review/store.ts";
 import { PANEL_CREDENTIAL_MASTER_KEY, startPanelHarness } from "./support/panel-harness.ts";
@@ -26,6 +27,7 @@ type CatalogBody = {
     id: string;
     name: string;
     configured: boolean;
+    verifiable: boolean;
     models: Record<string, unknown>[];
   }[];
 };
@@ -96,6 +98,18 @@ test("配了凭据的那一家标 configured,没配的照常在结果里", async
   assert.ok(byId.has("openrouter"), "没配凭据的 openrouter 不在结果里");
   assert.equal(byId.get("openrouter")?.configured, false);
   assert.ok((byId.get("openrouter")?.models.length ?? 0) > 0, "没配凭据的一家没有模型");
+});
+
+test("真发验证请求的那几家标 verifiable,判据取自 credential-check", async () => {
+  const h = await startPanelHarness(cleanups);
+  const body = (await (await h.api("GET", "/catalog")).json()) as CatalogBody;
+  const byId = new Map(body.providers.map((provider) => [provider.id, provider]));
+
+  for (const provider of CHECKED_PROVIDERS) {
+    assert.equal(byId.get(provider)?.verifiable, true, `${provider} 没标 verifiable`);
+  }
+  const unverifiable = body.providers.filter((provider) => !provider.verifiable);
+  assert.ok(unverifiable.length > 0, "所有 provider 都被标成会验证");
 });
 
 test("缺主密钥时目录照常给出,全部按未配置算", async () => {
