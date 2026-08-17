@@ -19,7 +19,7 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <header className="sticky top-0 z-20 flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-chrome px-5 py-3">
+    <header className="sticky top-0 z-20 flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-background px-5 py-3">
       <div className="flex min-w-0 flex-col gap-0.5">
         <h1 className="truncate text-xl font-semibold tracking-tight">{title}</h1>
         {description === undefined ? null : (

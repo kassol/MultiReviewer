@@ -2,6 +2,8 @@ import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
+import { CircleAlert, CircleCheck, CircleX } from "lucide-react";
+
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -83,6 +85,32 @@ export function RunPill({ run }: { run: RunItem }) {
   );
 }
 
+type RunFilter = "all" | "failed" | "pending" | "done";
+
+function runHasModelFailure(run: RunItem): boolean {
+  return run.models.some((entry) => entry.failure !== null);
+}
+
+function runBucket(run: RunItem): Exclude<RunFilter, "all"> {
+  if (run.failed || runHasModelFailure(run)) return "failed";
+  if (run.total > 0 && run.resolved < run.total) return "pending";
+  return "done";
+}
+
+function RunStatus({ run }: { run: RunItem }) {
+  if (run.failed) {
+    return (
+      <CircleX className="size-4 text-destructive" aria-label="失败" />
+    );
+  }
+  if (runHasModelFailure(run)) {
+    return (
+      <CircleAlert className="size-4 text-warning" aria-label="部分失败" />
+    );
+  }
+  return <CircleCheck className="size-4 text-success" aria-label="完成" />;
+}
+
 function runBadge(run: RunItem) {
   // total 只计行级承载的合并组:纯正文 Finding 的 Run 也落在这一档——正文没有
   // resolve 载体,本来就无从处置。
@@ -109,6 +137,7 @@ export function RunsPage() {
     getNextPageParam: (last) => last.nextBefore,
   });
   const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
+  const [filter, setFilter] = useState<RunFilter>("all");
   const rerun = useMutation({
     mutationFn: rerunRequest,
     onSuccess: (text) => setFeedback({ text, isError: false }),
@@ -128,6 +157,13 @@ export function RunsPage() {
   }, [runs.fetchNextPage, runs.hasNextPage]);
 
   const flat = runs.data?.pages.flatMap((page) => page.runs) ?? [];
+  const counts = {
+    all: flat.length,
+    failed: flat.filter((run) => runBucket(run) === "failed").length,
+    pending: flat.filter((run) => runBucket(run) === "pending").length,
+    done: flat.filter((run) => runBucket(run) === "done").length,
+  };
+  const visible = filter === "all" ? flat : flat.filter((run) => runBucket(run) === filter);
   let lastDay = "";
   // 按浏览器本地时区分天与显示时分:UTC 日在东八区会把 16:00 后的 run 归到前一天。
   const localDay = (iso: string): string => {
@@ -143,10 +179,14 @@ export function RunsPage() {
     <>
       <PageHeader
         title="评审记录"
-        description="每一轮 Review Run 按时间倒序。一行一个参与的模型,后面的数字是它这轮报出的 Finding 数。"
+        description={
+          runs.isPending
+            ? "每一轮 Review Run 按时间倒序。"
+            : `${counts.all} 轮 · ${counts.failed} 失败`
+        }
         actions={<SummaryRate />}
       />
-      <div className="flex max-w-[1060px] flex-col gap-2.5 p-5 pb-24">
+      <div className="flex max-w-[1100px] flex-col gap-3 p-5 pb-24">
         {feedback === null ? null : (
           <p className={feedback.isError ? "text-destructive" : "text-muted-foreground"}>
             {feedback.text}
@@ -155,79 +195,158 @@ export function RunsPage() {
         {runs.isError ? (
           <p className="text-destructive">{(runs.error as Error).message}</p>
         ) : null}
+
+        <div className="flex flex-wrap gap-1.5" role="group" aria-label="按结论过滤">
+          {(
+            [
+              ["all", "全部", counts.all],
+              ["failed", "失败", counts.failed],
+              ["pending", "待处置", counts.pending],
+              ["done", "已处置", counts.done],
+            ] as const
+          ).map(([id, label, count]) => (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={filter === id}
+              onClick={() => setFilter(id)}
+              className={
+                filter === id
+                  ? "rounded-full bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground"
+                  : "rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+              }
+            >
+              {label}
+              <span className="ml-1 tabular-nums">{count}</span>
+            </button>
+          ))}
+        </div>
+
         {runs.isPending
-          ? [0, 1, 2, 3].map((slot) => <Skeleton key={slot} className="h-[86px]" />)
+          ? [0, 1, 2, 3].map((slot) => <Skeleton key={slot} className="h-12" />)
           : null}
 
-        {flat.map((run) => {
-          const day = localDay(run.startedAt);
-          const header =
-            day !== lastDay ? (
-              <div className="px-0.5 pt-3 pb-1 font-mono text-xs font-semibold tracking-[0.07em] text-muted-foreground">
-                {(lastDay = day)}
-              </div>
-            ) : null;
-          return (
-            <div key={run.id}>
-              {header}
-              <Card className="gap-2.5 px-4">
-                  {/* 上一行是「哪个 PR、什么时候、哪个 commit」,下一行才是结论与动作。 */}
-                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                    <span className="font-mono text-muted-foreground">
-                      {run.owner}/{run.repo}
-                    </span>
-                    <span className="font-mono font-medium">#{run.pullNumber}</span>
-                    <span className="ml-auto flex items-baseline gap-2 font-mono text-xs text-muted-foreground">
-                      <span>{run.headSha.slice(0, 7)}</span>
-                      <span className="tabular-nums">{localTime(run.startedAt)}</span>
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                    <div className="flex flex-wrap gap-x-3.5 gap-y-1 text-xs">
-                      {run.models.length === 0 ? (
-                        <span className="text-muted-foreground">没有模型记录</span>
-                      ) : (
-                        run.models.map((entry) =>
-                          entry.failure === null ? (
-                            <span key={entry.model} className="font-mono text-muted-foreground">
-                              {entry.model}{" "}
-                              <b className="font-semibold tabular-nums text-foreground">
-                                {entry.findings}
-                              </b>
-                            </span>
-                          ) : (
-                            <span key={entry.model} className="font-mono text-destructive">
-                              {entry.model} <b className="font-semibold">失败</b>
-                            </span>
-                          ),
-                        )
-                      )}
-                    </div>
-                    <RunPill run={run} />
-                    <Button
-                      variant="outline"
-                      size="xs"
-                      className="ml-auto"
-                      disabled={rerun.isPending}
-                      onClick={() => rerun.mutate(run)}
+        {visible.length > 0 ? (
+          <div className="overflow-hidden rounded-md border border-border">
+            <table className="w-full text-left">
+              <caption className="sr-only">Review Run 检查列表</caption>
+              <thead className="bg-muted text-xs text-muted-foreground">
+                <tr>
+                  <th scope="col" className="w-10 px-3 py-2 font-medium">
+                    状态
+                  </th>
+                  <th scope="col" className="px-3 py-2 font-medium">
+                    仓库 / PR
+                  </th>
+                  <th scope="col" className="px-3 py-2 font-medium">
+                    模型
+                  </th>
+                  <th scope="col" className="px-3 py-2 font-medium">
+                    处置
+                  </th>
+                  <th scope="col" className="px-3 py-2 font-medium">
+                    时间
+                  </th>
+                  <th scope="col" className="px-3 py-2 font-medium">
+                    动作
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((run) => {
+                  const day = localDay(run.startedAt);
+                  const showDay = day !== lastDay;
+                  lastDay = day;
+                  const failedRow = runBucket(run) === "failed";
+                  return (
+                    <tr
+                      key={run.id}
+                      className={
+                        failedRow
+                          ? "border-t border-border bg-destructive/10"
+                          : "border-t border-border"
+                      }
                     >
-                      重跑
-                    </Button>
-                  </div>
-                  {run.models
-                    .filter((entry) => entry.failure !== null)
-                    .map((entry) => (
-                      // 失败原因就写在卡片上:要不要重跑取决于这句话(区域封禁重跑也没用,
-                      // 超时重跑就好),藏进 tooltip 等于让人先猜。
-                      <p key={entry.model} className="text-xs break-words text-destructive">
-                        {/* 分隔符不用冒号:模型标识本身就是 `provider:model`,再加一个冒号读不出边界。 */}
-                        <span className="font-mono">{entry.model}</span> · {entry.failure}
-                      </p>
-                    ))}
-              </Card>
-            </div>
-          );
-        })}
+                      <td className="px-3 py-2.5 align-top">
+                        <RunStatus run={run} />
+                      </td>
+                      <td className="px-3 py-2.5 align-top">
+                        {showDay ? (
+                          <div className="mb-1 font-mono text-xs text-muted-foreground">{day}</div>
+                        ) : null}
+                        <div>
+                          <span className="font-mono text-muted-foreground">
+                            {run.owner}/{run.repo}
+                          </span>{" "}
+                          <span className="font-mono font-medium">#{run.pullNumber}</span>
+                        </div>
+                        <div className="font-mono text-xs text-muted-foreground">
+                          {run.headSha.slice(0, 7)}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5 align-top">
+                        {run.models.length === 0 ? (
+                          <span className="text-muted-foreground">没有模型记录</span>
+                        ) : (
+                          <ul className="flex flex-col gap-0.5">
+                            {run.models.map((entry) => (
+                              <li
+                                key={entry.model}
+                                className={
+                                  entry.failure === null
+                                    ? "font-mono text-xs text-muted-foreground"
+                                    : "font-mono text-xs text-destructive"
+                                }
+                              >
+                                {entry.model}
+                                {entry.failure === null ? (
+                                  <>
+                                    {" "}
+                                    <b className="font-semibold tabular-nums text-foreground">
+                                      {entry.findings}
+                                    </b>
+                                  </>
+                                ) : (
+                                  <>
+                                    {" "}
+                                    <b className="font-semibold">失败</b>
+                                  </>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {run.models
+                          .filter((entry) => entry.failure !== null)
+                          .map((entry) => (
+                            <p key={`${entry.model}-why`} className="mt-1 text-xs text-destructive">
+                              <span className="font-mono">{entry.model}</span> · {entry.failure}
+                            </p>
+                          ))}
+                      </td>
+                      <td className="px-3 py-2.5 align-top">
+                        <RunPill run={run} />
+                      </td>
+                      <td className="px-3 py-2.5 align-top font-mono text-xs tabular-nums text-muted-foreground">
+                        {localTime(run.startedAt)}
+                      </td>
+                      <td className="px-3 py-2.5 align-top">
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          disabled={rerun.isPending}
+                          onClick={() => rerun.mutate(run)}
+                        >
+                          重跑
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
 
         {flat.length === 0 && !runs.isPending ? (
           <Card className="items-start gap-1.5 px-4">
@@ -240,6 +359,9 @@ export function RunsPage() {
               <Link to="/repos">去仓库页</Link>
             </Button>
           </Card>
+        ) : null}
+        {flat.length > 0 && visible.length === 0 ? (
+          <p className="text-muted-foreground">这一档里没有 Review Run。</p>
         ) : null}
         <div ref={sentinel} />
         <p className="pt-2 text-center text-xs text-muted-foreground">

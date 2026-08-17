@@ -10,49 +10,42 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
- * 「控制台」形态的设计令牌,只做亮色一套(issue #46:留着暗色等于承诺两套视觉都要
- * 维护,而前端没有程序化测试)。要加暗色那天,在这里补一段媒体块重定义变量即可,
- * 不预留任何东西。
+ * 品类标准件的设计令牌,手艺对标 GitHub / Linear / Vercel。只做亮色一套
+ * (issue #46)。要加暗色那天,在这里补一段媒体块重定义变量即可,不预留任何东西。
  *
  * 这里只有令牌,没有组件类:样式一律走 Tailwind utility,写样式只剩一条路。
  */
 :root {
-  --radius: 2px;
+  --radius: 6px;
 
-  --background: #f8fafc;
-  --foreground: #0f172a;
+  --background: #ffffff;
+  --foreground: #1f2328;
   --card: #ffffff;
-  --card-foreground: #0f172a;
+  --card-foreground: #1f2328;
   --popover: #ffffff;
-  --popover-foreground: #0f172a;
-  --muted: #f1f5f9;
-  /* 6.1:1 对白底、5.6:1 对 --muted 底。原来的 #64748b 落在 --muted 上只有 4.4:1,
-     而次要文字大量压在 --muted 底色的行上。 */
-  --muted-foreground: #52627a;
-  --border: #e2e8f0;
-  --input: #e2e8f0;
+  --popover-foreground: #1f2328;
+  --muted: #f6f8fa;
+  /* 5.7:1 对白底、5.4:1 对 --muted。GitHub 次要字在浅灰底上过 AA。 */
+  --muted-foreground: #59636e;
+  --border: #d0d7de;
+  --input: #d0d7de;
   /*
-   * 第三层底色:侧栏与页头这类外壳。内容区是 --background、卡片是 --card,外壳比两者
-   * 都深一档才会往后退。外壳原来用 --card,和卡片同色,于是三层看起来是一层。
+   * 外壳:侧栏。内容区是白,外壳是 GitHub 那种冷灰,比内容退一档。
    */
-  --chrome: #f1f5f9;
-  /* 强调色走 primary。shadcn 的 --accent 是悬停与选中的底色,与旧样式表里那个蓝色
-     强调色语义相反,照名字直译会把选中态刷成实心蓝。 */
-  --primary: #0e7490;
+  --chrome: #f6f8fa;
+  /* 主操作是近黑,不是蓝,也不是上一轮被否的青。 */
+  --primary: #1f2328;
   --primary-foreground: #ffffff;
-  --secondary: #f1f5f9;
-  --secondary-foreground: #0f172a;
-  --accent: #ecfeff;
-  --accent-foreground: #0e7490;
-  --ring: #0e7490;
-  --destructive: #be123c;
+  --secondary: #f6f8fa;
+  --secondary-foreground: #1f2328;
+  --accent: #f6f8fa;
+  --accent-foreground: #1f2328;
+  --ring: #1f2328;
+  --destructive: #cf222e;
   --destructive-foreground: #ffffff;
-  /* shadcn 只给 --destructive,而「正常 / 需注意 / 失败」三态在四屏里承重:hook 一致
-     还是有差异、Review Run 全部处置还是待处置还是失败。自建两个补成三态。
-     三态都取 5:1 以上:它们全部以 `text-*` 的形式出现在浅底 badge 上。 */
-  --success: #0f766e;
+  --success: #1a7f37;
   --success-foreground: #ffffff;
-  --warning: #b45309;
+  --warning: #9a6700;
   --warning-foreground: #ffffff;
 }
 
@@ -125,8 +118,7 @@
   }
 
   /*
-   * 浏览器自己画的那几处也按这套色板走:不接管的话选区是系统蓝、滚动条是系统灰,
-   * 它们和面板的青色主色对不上,一眼就能看出是拼装的。
+   * 浏览器自己画的那几处也按这套色板走:不接管的话选区是系统蓝、滚动条是系统灰。
    */
   ::selection {
     /* 只染底不改字色:改字色会让选中的红字警告变得读不出来。 */

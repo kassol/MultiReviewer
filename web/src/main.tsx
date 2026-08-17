@@ -57,12 +57,9 @@ const NAV = [
 ] as const;
 
 /**
- * 壳:只管导航。三层底色分开外壳、内容与卡片——侧栏是 --chrome(最深,往后退),
- * 内容区是 --background,卡片是白。当前页的导航项直接刷成内容区的底色,读起来就是
- * 「这一格连着右边那一屏」。
+ * 壳:只管导航。侧栏是 --chrome,内容是白。当前项是白底细线盒子,不是一根色条。
  *
- * 汇总数字不再常驻顶部:它搬进各页自己的页头(见 components/page-header.tsx),
- * 哪一页需要哪个数字由那一页决定。
+ * 汇总数字不常驻顶部:搬进各页自己的页头,哪一页要哪个数字由那一页决定。
  */
 function Shell() {
   const router = useRouter();
@@ -76,23 +73,23 @@ function Shell() {
 
   return (
     // 窄视口下侧栏会吃掉一半宽度,所以那一档改成上下堆叠、导航横排。
-    <div className="flex h-dvh flex-col sm:grid sm:grid-cols-[184px_1fr]">
+    <div className="flex h-dvh flex-col sm:grid sm:grid-cols-[200px_1fr]">
       <aside className="flex shrink-0 flex-col border-border bg-chrome max-sm:flex-row max-sm:items-center max-sm:overflow-x-auto max-sm:border-b sm:border-r">
-        <div className="flex shrink-0 items-center gap-2 border-border px-4 py-3.5 max-sm:py-2.5 sm:border-b">
+        <div className="flex shrink-0 items-center gap-2 border-border px-3 py-3.5 max-sm:py-2.5 sm:border-b">
           <Mark className="size-4" />
           <span className="font-semibold tracking-tight">MultiReviewer</span>
         </div>
-        <nav aria-label="面板导航" className="flex shrink-0 sm:flex-col sm:py-2">
+        <nav aria-label="面板导航" className="flex shrink-0 gap-0.5 p-2 sm:flex-col">
           {NAV.map((item) => (
             <Link
               key={item.to}
               to={item.to}
-              className="flex h-10 items-center border-transparent px-4 whitespace-nowrap text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground max-sm:border-b-[3px] sm:h-9 sm:border-l-[3px]"
-              // 当前页对屏幕阅读器也要成立:仅靠底色与那条竖线的是视觉读者。
+              className="flex h-10 items-center rounded-md px-3 whitespace-nowrap text-muted-foreground transition-colors hover:bg-background hover:text-foreground sm:h-8"
+              // 当前页对屏幕阅读器也要成立:仅靠底色的是视觉读者。
               activeProps={{
                 "aria-current": "page",
                 className:
-                  "bg-background font-medium text-foreground max-sm:border-b-primary sm:border-l-primary",
+                  "bg-background font-medium text-foreground shadow-[0_0_0_1px_var(--border)]",
               }}
             >
               {item.label}
@@ -120,7 +117,7 @@ const indexRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/",
   beforeLoad: () => {
-    throw redirect({ to: "/repos" });
+    throw redirect({ to: "/runs" });
   },
 });
 const reposRoute = createRoute({

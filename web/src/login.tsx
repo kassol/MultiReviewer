@@ -26,7 +26,7 @@ export function LoginPage() {
         body: JSON.stringify({ token }),
       });
       if (response.status === 204) {
-        await router.navigate({ to: "/repos" });
+        await router.navigate({ to: "/runs" });
         return;
       }
       const body = (await response.json().catch(() => null)) as { error?: string } | null;

@@ -10,7 +10,7 @@
 - `vite.config.ts` — 前缀与后端端口从仓库根的同一份 `.env` 读(`loadEnv`);dev proxy 把 `<前缀>/api` 转本机后端;注入插件 `apply: "serve"`,只在 dev 生效。
 - `src/injected.ts` — 读注入全局变量的唯一代码路径,缺失当场报错并在页面写明原因。
 - `src/api.ts` — 面板 API 的唯一入口,基址从注入的前缀来。
-- `src/main.tsx` — 路由与壳:`/login` 一屏登录,`shell` 下挂五页(`/repos` / `/runs` / `/stats` / `/credentials` / `/settings`),Router `basepath` 取注入前缀。壳只管导航:左侧栏走 `--chrome`(比内容区与卡片都深一档,往后退),当前页那一格刷成内容区底色并带 `aria-current="page"`。窄视口下侧栏改成顶部横排、可横向滚动。顶部原来那条常驻的 38px 汇总数字带已经撤掉——数字搬进各页自己的页头,哪一页要哪个数字由那一页决定。
+- `src/main.tsx` — 路由与壳:`/login` 一屏登录,`shell` 下挂五页(`/repos` / `/runs` / `/stats` / `/credentials` / `/settings`),`/` 与登录成功落到 `/runs`。Router `basepath` 取注入前缀。壳只管导航:左侧栏走 `--chrome`,当前项是白底细线盒子并带 `aria-current="page"`。窄视口下侧栏改成顶部横排、可横向滚动。
 - `src/login.tsx` — 登录页,单 token 输入框(有可见 `<Label>`,不靠 placeholder 当标签),整屏居中的一张卡片加产品标记。
 - `src/components/page-header.tsx` — 五页共用的页头。左边是页名与一句说明(压在 68ch 内),右边 `actions` 放这一页当下需要的那一个东西(注册按钮 / 时间窗 / 总处置率)。粘在滚动容器顶上。
 - `src/components/mark.tsx` — 产品标记(三条错位短线),与 `index.html` 里内联成 data URI 的 favicon 是同一份图形。用 `currentColor` 上色。
@@ -22,7 +22,7 @@
 - `src/components/model-picker.tsx` — 模型多选器。目录来自 `<前缀>/api/catalog`(`useModelCatalog()` 一并导出,仓库覆盖那一票复用同一份查询),选项键就是模型标识 `provider:model`——「同一次审查里标识不得重复」因此由组件天然满足,同 id 跨 provider 的两项是两个选项。接口是受控的 `{providers, value, onChange, disabled?}`,自己不发写请求。**列表永远按搜索词裁剪**:目录有 1153 个模型,全渲染会让每次输入都卡住,所以 cmdk 的自带过滤关掉(`shouldFilter={false}`),不搜时每家只列 4 个并标出还有多少,搜索时每家最多 12 个、全部加起来最多 120 个。没配凭据的 provider 照常显示,只是 `disabled`,那一行给去凭据页的链接。
 - `src/components/ui/` — shadcn 生成的组件(Dialog / Button / Input / Label / Table / Badge / Card / Command / Popover / Calendar),vendored 源码,改它就是改本项目的组件。Calendar 的底座是 `react-day-picker`;它的 `DayButton` 原样把 `locale` 透传下去,在 `exactOptionalPropertyTypes` 下过不了类型检查,改成 undefined 时不传这个属性。已按视觉定稿把 Card 与 Dialog 的 ring 换成边框、圆角压到 `--radius`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
 - `src/lib/utils.ts` — shadcn 的 `cn()`,clsx 加 tailwind-merge。
-- `src/styles.css` — 设计令牌与浏览器原生面的接管,没有组件类。令牌含三层底色(`--chrome` 外壳 / `--background` 内容 / `--card` 卡片)、六档字号阶梯(xs 11 / sm 13 / base 14 / lg 16 / xl 19 / 3xl 28,body 就是 sm),以及选区、光标、滚动条与表格数字的默认样式。
+- `src/styles.css` — 设计令牌与浏览器原生面的接管,没有组件类。令牌是品类标准件(近黑主色、白底、冷灰外壳),手艺对标 GitHub / Linear / Vercel。三层底色(`--chrome` 外壳 / `--background` 内容 / `--card` 卡片)、六档字号阶梯(xs 11 / sm 13 / base 14 / lg 16 / xl 19 / 3xl 28,body 就是 sm),以及选区、光标、滚动条与表格数字的默认样式。
 
 ## 模块规范
 
@@ -32,7 +32,7 @@
 - 未认证的判据是 `GET <前缀>/api/session` 非 204,壳的 `beforeLoad` 统一送去 `/login`,页面组件不各自判。
 - **写样式只有 Tailwind utility 一条路。** `styles.css` 只放令牌,不许长出组件类——「这个间距该改哪一个」这个问题正是换底座要消灭的。
 - **面板只做亮色一套**(issue #46)。不加主题上下文、本地存储、防闪脚本;`dark:` 变体被 `@custom-variant` 改挂到一个谁都不写的类上,等于关掉,shadcn 组件里那些 `dark:` 类因此不生效。要加暗色那天,在令牌层补一段媒体块重定义变量即可。
-- 状态色是三态:`--destructive` 失败、`--warning` 需注意、`--success` 正常。后两个是自建的,shadcn 只给 `--destructive`,升级组件时要自己盯着。三态都以 `text-*` 的形式压在浅底 badge 上,改色值前先算对比度:面板出现的四种底(`#fff` / `--background` / `--muted` / `--chrome`)上都要 ≥ 4.5:1。
+- 状态色是三态:`--destructive` 失败、`--warning` 需注意、`--success` 正常。后两个是自建的,shadcn 只给 `--destructive`,升级组件时要自己盯着。三态都以 `text-*` 的形式压在浅底 badge 上,改色值前先算对比度:面板出现的四种底(`#fff` / `--background` / `--muted` / `--chrome`)上都要 ≥ 4.5:1。主色是近黑,不是青,也不是蓝。
 - **字号只用令牌里那六档**,不写 `text-[13px]` 这类一次性值。档位各有唯一职责:xs 元信息、sm 正文与控件、base 区块标题、lg 对话框标题与选中仓库、xl 页标题(一页一个)、3xl 只给处置率页的指标数字。
 - **等宽字体只包数字,不包中文。** `font-mono` 会把汉字撑成等宽格,「3 轮」因此读成断开的两块;写法是 `<span className="font-mono tabular-nums">{n}</span> 轮`。
 - 时间一律「年-月-日 时:分」本地时区,不用 `toLocaleString()`——它给的是 `8/14/2026, 6:25:21 PM`,与全站的 ISO 风格对不上。
@@ -69,4 +69,4 @@
 - 2026-08-17: 凭据页的 provider 从手输改成可搜索的单选下拉(`src/credentials.tsx`)。选项来自 `useModelCatalog()`(与模型选择器同一份查询),Popover + Command 复用已装的组件,`shouldFilter={false}`、按标识与厂商名两样过滤——39 家一次列全,不做截断。每一行标出这家的状态:已配的写「已配,选它是覆盖」,没配的按目录新给的 `verifiable` 分成「保存时验证」与「保存但不验证」。表单底下那句「同一个 provider 保存第二次是覆盖」换成针对所选那一家的具体提示(覆盖还是新增、保存时验不验证),页头因此不再点名 anthropic / openai / deepseek / openrouter 四家——名单由服务端给。保存与删除后连 `catalog` 一起失效,否则下拉里的「已配」是旧的。凭据页其余逻辑一字未动:只写不回显、验证失败不落库、列表的「未验证」标注照旧。
 - 2026-08-17: 处置率页的日期窗从两个浏览器原生日期控件换成 shadcn Calendar(`src/stats.tsx`,装 `react-day-picker`)。两个框合成一个区间选择器:窗口本来就是一对起止,分成两个控件时「起点晚于终点」这种非法窗口按得出来,区间选择器里选不出来。触发器是一颗按钮,显示 `起 → 止`,展开是 Popover 里的双月日历。日期在状态里仍是 `YYYY-MM-DD` 两个字符串,请求参数仍逐字是 `<日>T00:00:00.000Z` 与 `<日>T23:59:59.999Z`;`Date` 与字符串互转走本地年月日字段(`dayString` / `dayDate`),不经 `toISOString()`——按 UTC 转会把东八区选的日子挪前一天,与分天按浏览器本地时区那条一致。行为一律不变:默认窗仍是最近 30 天、空窗仍给文案不给空表、矩阵算法与库体量卡片一行没动。代价是前端产物体积从 gzip 157.6 kB(JS 150.0 + CSS 7.6)涨到 181.4 kB(JS 172.9 + CSS 8.5),已知并接受。
 - 2026-08-17: 评审记录上的部分失败可见了。`RunPill` 扩出「部分失败」一档(`src/runs.tsx`):全挂仍是实心 `--destructive` 的「失败」,一部分模型挂掉是同色浅底的「N/M 模型失败」,`title` 带全部失败原因。三态色不变,原有三分支(failed / total===0 / resolved-total)语义一字未改,新档插在 failed 之后。评审记录页的模型行按 `failure` 分两种写法:成功的照旧「模型 条数」,失败的整行走 `--destructive` 并写「失败」,卡片底下再逐个模型写一行失败原因——要不要重跑取决于这句话(区域封禁重跑也没用,超时重跑就好),藏进 tooltip 等于让人先猜。分隔符用 `·` 不用冒号:模型标识本身是 `provider:model`。`models` 为空时的文案从「没有 Finding」改成「没有模型记录」——这一档现在是「一个模型记录都没有」,不是「跑了但没报」。两个调用点都在真实浏览器里过了:评审记录页三张卡片(部分失败 / 全部失败 / 零 Finding 成功)与仓库详情页的评审记录区块三行 pill 分别是「1/2 模型失败」「失败」「无可处置项」。
-- 2026-08-17: 全面板视觉收口(`/impeccable audit` + `polish`)。方向定为收紧现有的「密控制台」,信息结构、文案与行为一律不动。令牌层补齐三件此前只有意图没有落地的东西:六档字号阶梯(此前 `text-[19px]` / `[13px]` / `[11px]` / `[30px]` 各写各的,且 body 13px 比卡片 14px 还小)、第三层底色 `--chrome`(此前侧栏与卡片同为白,三层看起来是一层)、浏览器原生面(选区、光标、滚动条、表格数字等宽)。修两处 WCAG AA 不过:`--success` 从 `#0d9488` 换成 `#0f766e`(白底 3.74:1 → 5.47:1),`--muted-foreground` 从 `#64748b` 换成 `#52627a`(`--muted` 底 4.34:1 → 5.66:1)。结构上撤掉常驻汇总带、五页共用 `PageHeader`,总处置率作为一枚可点的数字落在评审记录页页头。其余:Badge 从全圆 pill 改成同族直角;新增产品标记与内联 favicon;读取中一律骨架块;空状态改成写清下一步做什么;补 `aria-current`、`<ul>` 列表语义、表格 `scope` 与 `<caption>`、登录页可见标签、红点的 `sr-only` 说明;窄视口导航可横向滚动、行高提到 40px。凭据页页头那句关于验证的说明删掉——它与表单底下那句、下拉里每一行重复。真实浏览器两轮批量核对:桌面五页 + 窄视口(390px)两页,`pnpm test` 270 / 267 pass / 3 skip / 0 fail,前端 typecheck 与 build 通过,产物 gzip JS 174.5 kB + CSS 8.8 kB。
+- 2026-08-17: 全面板换视觉世界。上一轮青色密控制台被否。方向是品类标准件,手艺对标 GitHub / Linear / Vercel:近黑主色、白底、冷灰外壳,圆角 6px。登录后落到评审记录。评审记录改成检查列表(状态字形 + 全部/失败/待处置/已处置过滤片 + 细线表),过滤只作用于已加载的行。
