@@ -3,7 +3,14 @@
  *
  * 期望值不取自被测的 `catalog.ts`,而是在测试里另建一个 `ModelRuntime` 直接问 Pi:
  * 拿被测模块自己的输出当判据,目录读错了也测不出来。
+ *
+ * 这一组只测端点的形状,因此按 `PI_OFFLINE` 关掉远程目录:测试不打 pi.dev,期望值
+ * 与被测服务读的也就是同一份内置表。远程那一层在 `catalog-remote.test.ts` 里测。
  */
+process.env["PI_OFFLINE"] = "1";
+// 目录缓存也指进临时目录:测试不在仓库里留下 `.cache`。
+process.env["MULTIREVIEWER_CACHE_DIR"] = mkdtempSync(join(tmpdir(), "multireviewer-catalog-cache-"));
+
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

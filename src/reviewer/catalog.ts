@@ -6,11 +6,34 @@
  * 目录只读一次,缓存在进程里:同一个进程里的 Pi 就是同一份目录,每次请求重建
  * `ModelRuntime` 只是重复解析同样的内置表。读失败不进缓存,下一次请求重来。
  */
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+
+/**
+ * 远程目录那一层的结果。`ok` 是内置目录加上了 pi.dev 的增量;`unavailable` 是远程
+ * 没拿到,给出的只有内置那一份;`off` 是按配置关掉了远程(`PI_OFFLINE`)。
+ * 端点把它原样透出:选择器里少了几十个模型时,运维要能分清是关掉了还是拉失败了。
+ */
+export type CatalogRemote = "ok" | "unavailable" | "off";
+
+/** 一次目录读取的结果:模型表,以及远程那一层的状态。 */
+export type Catalog = {
+  providers: CatalogProvider[];
+  remote: CatalogRemote;
+};
+
+/**
+ * 远程刷新的时间上限。Pi 对 39 家 provider 各发一次请求,单次失败还会立即重试两轮,
+ * 且不带自己的超时——网络黑洞时会一直挂到 TCP 超时,面板第一次开选择器就跟着挂住。
+ *
+ * 实测冷启动一轮 1-2 秒,首次连接(DNS 与 TLS 都是冷的)偶尔超过 5 秒。这段等待一个
+ * 进程只付一次(目录进程内缓存),因此给到 10 秒:宁可多等,也不要因为抖动就少掉 72
+ * 个模型。真的拉不到也只是降级到内置目录。
+ */
+const MODEL_REFRESH_TIMEOUT_MS = 10_000;
 
 /** 模型单价,原样透出 Pi 的 `ModelCost`(单位随 Pi,不做换算)。 */
 export type CatalogCost = {
@@ -39,7 +62,7 @@ export type CatalogProvider = {
   models: CatalogModel[];
 };
 
-let cached: Promise<CatalogProvider[]> | undefined;
+let cached: Promise<Catalog> | undefined;
 
 /**
  * 进程内的那一份目录。失败的 promise 不留在缓存里:留住的话首次读失败后这个进程再也
@@ -47,9 +70,7 @@ let cached: Promise<CatalogProvider[]> | undefined;
  *
  * `load` 带默认值是为了能在测试里喂一个必然失败的读取,生产路径不传。
  */
-export function modelCatalog(
-  load: () => Promise<CatalogProvider[]> = loadFromPi,
-): Promise<CatalogProvider[]> {
+export function modelCatalog(load: () => Promise<Catalog> = loadFromPi): Promise<Catalog> {
   cached ??= load().catch((error: unknown) => {
     cached = undefined;
     throw error;
@@ -57,22 +78,90 @@ export function modelCatalog(
   return cached;
 }
 
-async function loadFromPi(): Promise<CatalogProvider[]> {
+/** `loadFromPi` 的可注入项。生产路径一个都不传,全部按环境推导。 */
+export type LoadOptions = {
+  allowNetwork?: boolean;
+  timeoutMs?: number;
+  /** 远程目录的落盘位置。不传就按 `MULTIREVIEWER_CACHE_DIR` 推导。 */
+  storePath?: string;
+};
+
+/**
+ * 读一份目录。内置表先到位,再让 Pi 去 pi.dev 拉每家 provider 的增量(约多出 72 个
+ * 模型)。远程只加在面板这一份上:Reviewer 子进程按标识取一个已知模型就够,给它加
+ * 39 次 HTTP 是纯开销,而且子进程应当尽量少对外通信(ADR 0004),`worker.ts` 那处
+ * 因此保持不联网。
+ *
+ * 不用 `ModelRuntime.create({ allowModelNetwork: true })`,而是先建再自己刷一次:
+ * `create` 把刷新结果吞掉了,拿不到「哪几家没拉到」;自己刷才能把远程那一层的成败
+ * 透出去。Pi 把每家的失败收进 `errors` 而不抛,内置表在失败时原样留着。
+ */
+export async function loadFromPi(options: LoadOptions = {}): Promise<Catalog> {
   // 与 Reviewer 子进程同样的隔离:authPath 与 modelsPath 指进空的临时目录。默认值在
   // `~/.pi/agent` 下,那里的 auth.json 存着宿主机上配置过的每一家厂商的凭据。
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-catalog-"));
+  const storePath = options.storePath ?? modelsStorePath();
   const runtime = await ModelRuntime.create({
     authPath: join(dir, "auth.json"),
     modelsPath: join(dir, "models.json"),
+    ...(storePath === undefined ? {} : { modelsStorePath: storePath }),
   });
-  return runtime.getProviders().map((provider) => ({
-    id: provider.id,
-    name: provider.name,
-    models: provider.getModels().map((model) => ({
-      id: model.id,
-      name: model.name,
-      contextWindow: model.contextWindow,
-      cost: model.cost,
+
+  const allowNetwork = options.allowNetwork ?? remoteEnabled();
+  const remote = allowNetwork
+    ? await refreshRemote(runtime, options.timeoutMs ?? MODEL_REFRESH_TIMEOUT_MS)
+    : "off";
+
+  return {
+    remote,
+    providers: runtime.getProviders().map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      models: provider.getModels().map((model) => ({
+        id: model.id,
+        name: model.name,
+        contextWindow: model.contextWindow,
+        cost: model.cost,
+      })),
     })),
-  }));
+  };
+}
+
+/**
+ * 拉远程增量。超时与单家失败都只降级到内置目录:选择器空白比少几十个模型严重得多。
+ */
+async function refreshRemote(runtime: ModelRuntime, timeoutMs: number): Promise<CatalogRemote> {
+  try {
+    const result = await runtime.refresh({
+      allowNetwork: true,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return result.aborted || result.errors.size > 0 ? "unavailable" : "ok";
+  } catch {
+    return "unavailable";
+  }
+}
+
+/**
+ * 与 Pi 自己一致的开关:`PI_OFFLINE` 一旦出现(任何值)就不联网。离线部署与内网无
+ * 出口的场景复用它,不再加项目自己的变量。
+ */
+function remoteEnabled(): boolean {
+  return process.env["PI_OFFLINE"] === undefined;
+}
+
+/**
+ * 远程目录的落盘位置。Pi 默认把 `models-store.json` 放在 modelsPath 旁边,而那是每次
+ * 新建的临时目录:进程一重启就重新拉 39 次。放进缓存根目录(镜像里是持久卷),重启
+ * 后 4 小时刷新窗口内直接命中。多进程同写安全:Pi 的 `FileModelsStore` 带文件锁。
+ * 建不出目录就回退到临时目录,只是失去缓存,不影响读目录。
+ */
+function modelsStorePath(): string | undefined {
+  const dir = join(process.env["MULTIREVIEWER_CACHE_DIR"] ?? ".cache/worktrees", "pi-models");
+  try {
+    mkdirSync(dir, { recursive: true });
+    return join(dir, "models-store.json");
+  } catch {
+    return undefined;
+  }
 }

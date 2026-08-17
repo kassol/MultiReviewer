@@ -866,9 +866,12 @@ async function handleCatalog(res: ServerResponse, deps: WebhookServerDeps): Prom
           .map((row) => row.provider),
   );
   const verifiable = new Set(CHECKED_PROVIDERS);
-  const providers = await modelCatalog();
+  const catalog = await modelCatalog();
   return sendJson(res, 200, {
-    providers: providers.map((provider) => ({
+    // 远程那一层的状态照原样透出:`unavailable` 时给出的只有内置目录,选择器里会少
+    // 掉 pi.dev 上的那部分模型,不透出去就查不出少在哪。
+    remote: catalog.remote,
+    providers: catalog.providers.map((provider) => ({
       id: provider.id,
       name: provider.name,
       configured: configured.has(provider.id),

@@ -81,7 +81,8 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 - `MULTIREVIEWER_PORT` — 监听端口,默认 3000。镜像里已设为 3000,走容器时不要再改
 - `MULTIREVIEWER_PANEL_DIST` — 前端构建产物目录,默认 `web/dist`。镜像里是 `/app/web/dist`。产物不在时面板页面回 503(与 404 的「前缀记错」分开)
 - `MULTIREVIEWER_DB` — SQLite 文件位置,默认 `multireviewer.db`。镜像里是 `/data/multireviewer.db`
-- `MULTIREVIEWER_CACHE_DIR` — 工作副本缓存根目录,默认 `.cache/worktrees`。镜像里是 `/data/worktrees`
+- `MULTIREVIEWER_CACHE_DIR` — 工作副本缓存根目录,默认 `.cache/worktrees`。镜像里是 `/data/worktrees`。模型目录的远程增量也缓存在它下面的 `pi-models/`
+- `PI_OFFLINE` — Pi 自己的离线开关,设成任意值(例如 `1`)即关掉全部启动期网络动作,其中包括模型选择器的远程目录。开着时服务第一次读目录会向 `pi.dev` 拉一次每家 provider 的增量(实测模型数从 1153 涨到 1225),10 秒拿不到就降级到 Pi 内置的那一份,目录端点用 `remote` 字段说明这一层的状态(`ok` / `unavailable` / `off`)。内网无出口或离线部署设上它:请求一个都不发,选择器只列内置模型
 - `MULTIREVIEWER_CREDENTIAL_MASTER_KEY` — 模型凭据的加密主密钥(ADR 0008),面板凭据页用它加解密。**向导会自动生成一枚并写进 `.env`**(已有值时沿用,`FORCE=1` 也不重新生成),手工部署时取一串随机材料即可,例如 `openssl rand -hex 32`。没设时服务照常启动,只有凭据页整体不可用并说明差什么——起不来就进不了面板。换掉它等于把已存的凭据作废,面板显示未配置,重新粘一次 key 即可
 
 只有 `docker-compose.yml` 读、应用不读的:

@@ -5,9 +5,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { modelCatalog, type CatalogProvider } from "../src/reviewer/catalog.ts";
+import { modelCatalog, type Catalog } from "../src/reviewer/catalog.ts";
 
-const ONE: CatalogProvider[] = [{ id: "acme", name: "Acme", models: [] }];
+const ONE: Catalog = {
+  remote: "ok",
+  providers: [{ id: "acme", name: "Acme", models: [] }],
+};
 
 test("读失败不进缓存:下一次请求重来,读成功之后才只读一次", async () => {
   await assert.rejects(
@@ -17,7 +20,7 @@ test("读失败不进缓存:下一次请求重来,读成功之后才只读一次
 
   // 失败的 promise 留在缓存里的话,这个进程再也拿不到目录,选择器空白到重启为止。
   let calls = 0;
-  const load = (): Promise<CatalogProvider[]> => {
+  const load = (): Promise<Catalog> => {
     calls += 1;
     return Promise.resolve(ONE);
   };

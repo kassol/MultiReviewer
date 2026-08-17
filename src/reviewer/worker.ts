@@ -172,6 +172,9 @@ async function run(request: ReviewerRequest): Promise<void> {
 
   // authPath 与 modelsPath 都指进这个空目录。默认值在 `~/.pi/agent` 下,那里的
   // auth.json 存着宿主机上配置过的每一家厂商的凭据,读到就等于凭据分割白做。
+  //
+  // 这里不联网取远程目录(面板那份目录才开,见 `catalog.ts`):子进程只按标识取一个
+  // 已知模型,为它多发 39 次 HTTP 是纯开销,而且子进程应当尽量少对外通信(ADR 0004)。
   const modelRuntime = await ModelRuntime.create({
     authPath: join(agentDir, "auth.json"),
     modelsPath: join(agentDir, "models.json"),
