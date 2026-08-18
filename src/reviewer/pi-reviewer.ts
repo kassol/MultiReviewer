@@ -11,6 +11,7 @@ import type {
 } from "../review/finding.ts";
 import { modelIdentity } from "../config.ts";
 import { MODEL_API_KEY_ENV, reviewerEnv } from "./env.ts";
+import { CACHE_DIR_ENV, cacheRoot } from "./model-runtime.ts";
 import { normalizeFinding } from "./normalize.ts";
 import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
 
@@ -73,7 +74,13 @@ export function runInChild(
         // 进程级 cwd 也落在工作副本里。只设 Pi 的 cwd 不够:模型会拼出相对于
         // 编排进程目录的路径,报出来的 file 因此指不到仓库里的文件。
         cwd: worktreePath,
-        env: reviewerEnv(process.env, { [MODEL_API_KEY_ENV]: config.apiKey }),
+        env: reviewerEnv(process.env, {
+          [MODEL_API_KEY_ENV]: config.apiKey,
+          // 缓存根在父进程里定死成绝对路径再传下去。默认值是相对路径,而子进程的 cwd 是
+          // 工作副本:同一个相对值两侧解析出两个不同的目录,共用的模型目录当场落空
+          // (`model-runtime.ts` 的 `cacheRoot`)。
+          [CACHE_DIR_ENV]: cacheRoot(),
+        }),
         // 不继承父进程的 execArgv。worker 是普通脚本,继承会把父进程的运行模式带过来
         // ——在 `node --test` 下跑时,worker 会被当成测试文件启动并挂住不退出。
         execArgv: [],

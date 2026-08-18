@@ -20,7 +20,7 @@ import { Type } from "typebox";
 import type { RawFinding } from "../review/finding.ts";
 import { anchorReport } from "./anchor.ts";
 import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV } from "./env.ts";
-import { missingModelHint, modelsStorePath, reviewerModelRuntime } from "./model-runtime.ts";
+import { isolatedModelRuntime, missingModelHint, sharedModelPaths } from "./model-runtime.ts";
 import { numberedRead } from "./numbered-read.ts";
 import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
 
@@ -170,11 +170,11 @@ async function run(request: ReviewerRequest): Promise<void> {
     return;
   }
 
-  // 目录要与面板那一份一致:面板选得出的模型,这里必须取得到。共用的只是 pi.dev 的
-  // overlay 落盘文件,子进程自己一个对外目录请求都不发(ADR 0004),细节见
-  // `model-runtime.ts`。
-  const storePath = modelsStorePath();
-  const modelRuntime = await reviewerModelRuntime(agentDir, storePath);
+  // 目录要与面板那一份一致:面板选得出的模型,这里必须取得到。共用的是 pi.dev 的 overlay
+  // 与派生的用户模型配置两份落盘文件,子进程自己一个对外目录请求都不发(ADR 0004),细节
+  // 见 `model-runtime.ts`。
+  const paths = sharedModelPaths();
+  const modelRuntime = await isolatedModelRuntime(agentDir, paths);
   await modelRuntime.setRuntimeApiKey(request.provider, apiKey);
 
   const model = modelRuntime.getModel(request.provider, request.model);
@@ -183,7 +183,7 @@ async function run(request: ReviewerRequest): Promise<void> {
       kind: "done",
       rejectedToolCalls: 0,
       anchorRejections: 0,
-      failure: `模型不存在: ${request.provider}/${request.model}${missingModelHint(storePath)}`,
+      failure: `模型不存在: ${request.provider}/${request.model}${missingModelHint(paths?.store)}`,
     });
     return;
   }

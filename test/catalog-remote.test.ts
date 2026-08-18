@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 import { loadFromPi } from "../src/reviewer/catalog.ts";
+import type { SharedModelPaths } from "../src/reviewer/model-runtime.ts";
 import { startPanelHarness } from "./support/panel-harness.ts";
 
 const dirs: string[] = [];
@@ -19,11 +20,14 @@ after(() => {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
 });
 
-/** 每个用例一个空的落盘目录:上一条留下的 `models-store.json` 不得成为下一条的输入。 */
-function storePath(): string {
+/**
+ * 每个用例一份空的共用文件位置:上一条留下的 `models-store.json` 不得成为下一条的输入,
+ * 派生的 `models.json` 同理——两份都要与本机上真实的缓存目录隔开。
+ */
+function paths(): SharedModelPaths {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-catalog-store-"));
   dirs.push(dir);
-  return join(dir, "models-store.json");
+  return { store: join(dir, "models-store.json"), config: join(dir, "models.json") };
 }
 
 process.env["MULTIREVIEWER_CACHE_DIR"] = mkdtempSync(join(tmpdir(), "multireviewer-cache-"));
@@ -62,7 +66,7 @@ function modelCount(providers: { models: unknown[] }[]): number {
 }
 
 test("远程目录可用时,模型比内置那一份多", async () => {
-  const builtin = await loadFromPi({ allowNetwork: false, storePath: storePath() });
+  const builtin = await loadFromPi({ allowNetwork: false, paths: paths() });
   assert.equal(builtin.remote, "off");
 
   const stub = stubCatalog((providerId) => ({
@@ -76,7 +80,7 @@ test("远程目录可用时,模型比内置那一份多", async () => {
     ],
   }));
   try {
-    const remote = await loadFromPi({ allowNetwork: true, storePath: storePath() });
+    const remote = await loadFromPi({ allowNetwork: true, paths: paths() });
     assert.equal(remote.remote, "ok");
     assert.ok(
       modelCount(remote.providers) > modelCount(builtin.providers),
@@ -115,7 +119,7 @@ test("PI_OFFLINE 关掉远程目录,一个外部请求都不发", async () => {
   const stub = stubCatalog(() => ({ models: [] }));
   process.env["PI_OFFLINE"] = "1";
   try {
-    const catalog = await loadFromPi({ storePath: storePath() });
+    const catalog = await loadFromPi({ paths: paths() });
     assert.equal(catalog.remote, "off");
     assert.deepEqual(stub.calls, []);
     assert.ok(modelCount(catalog.providers) > 0, "关掉远程之后目录空了");

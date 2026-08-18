@@ -130,3 +130,34 @@ test("缺主密钥时目录照常给出,全部按未配置算", async () => {
     "缺主密钥时有 provider 被标成已配",
   );
 });
+
+/**
+ * 凭据改了之后目录端点立刻反映,同一个进程里连续两次请求不会拿到旧的 `configured`。
+ *
+ * 端点把目录与凭据状态拼在一起,而目录那一半是缓存住的——`configured` 一旦被顺手挪进那
+ * 一层缓存,这条就会挂:操作员配完 key 回到设置页,那一家仍是灰的,只能重启容器。
+ *
+ * 走一个 `CHECKED_PROVIDERS` 之外的 provider:那几家保存前会真发一次验证请求,而这一条
+ * 测的不是验证。
+ */
+test("凭据写入与删除之后,紧接着的目录请求立刻跟着变", async () => {
+  const h = await startPanelHarness(cleanups);
+  const provider = "groq";
+  assert.ok(!CHECKED_PROVIDERS.includes(provider), `${provider} 会触发厂商验证,换一家`);
+
+  const configuredNow = async (): Promise<boolean | undefined> => {
+    const body = (await (await h.api("GET", "/catalog")).json()) as CatalogBody;
+    return body.providers.find((entry) => entry.id === provider)?.configured;
+  };
+
+  assert.equal(await configuredNow(), false, `${provider} 一开始就该是未配置`);
+
+  assert.equal(
+    (await h.api("PUT", `/credentials/${provider}`, { apiKey: "sk-groq-catalog-4455" })).status,
+    200,
+  );
+  assert.equal(await configuredNow(), true, "配完凭据目录端点还说未配置");
+
+  assert.equal((await h.api("DELETE", `/credentials/${provider}`)).status, 204);
+  assert.equal(await configuredNow(), false, "删掉凭据目录端点还说已配置");
+});

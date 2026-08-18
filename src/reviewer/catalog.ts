@@ -3,16 +3,17 @@
  * 哪些模型」,而目录是运行时事实:随 Pi 升级而变,打进前端产物就会与服务用的那份错开,
  * 选出一个当前 Pi 里不存在的模型标识。
  *
- * 目录只读一次,缓存在进程里:同一个进程里的 Pi 就是同一份目录,每次请求重建
- * `ModelRuntime` 只是重复解析同样的内置表。读失败不进缓存,下一次请求重来。
+ * 目录读一次就缓存在进程里:同一个进程里的 Pi 就是同一份目录,每次请求重建
+ * `ModelRuntime` 只是重复解析同样的内置表。读失败不进缓存,下一次请求重来;模型行改动之后
+ * 由写入方显式失效(`invalidateModelCatalog`),否则写完在这个进程里看不见。
  */
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
-import { modelsStorePath } from "./model-runtime.ts";
+import { isolatedModelRuntime, type SharedModelPaths, sharedModelPaths } from "./model-runtime.ts";
 
 /**
  * 远程目录那一层的结果。`ok` 是内置目录加上了 pi.dev 的增量;`unavailable` 是远程
@@ -70,22 +71,42 @@ let cached: Promise<Catalog> | undefined;
  * 进程内的那一份目录。失败的 promise 不留在缓存里:留住的话首次读失败后这个进程再也
  * 拿不到目录,模型选择器永远空白,只能重启容器。
  *
+ * 清缓存前先认一认是不是自己那一份:一次读还在飞的时候有人失效了缓存,后来的请求会存进
+ * 一份新的,而先前那一份此刻才失败——无条件清就会把新的一起清掉,一次失效于是引出两轮
+ * 重新加载(各带一轮远程目录请求),而且先存进去的那一份成功了也留不住。
+ *
  * `load` 带默认值是为了能在测试里喂一个必然失败的读取,生产路径不传。
  */
 export function modelCatalog(load: () => Promise<Catalog> = loadFromPi): Promise<Catalog> {
-  cached ??= load().catch((error: unknown) => {
-    cached = undefined;
-    throw error;
-  });
+  if (cached === undefined) {
+    const pending: Promise<Catalog> = load().catch((error: unknown) => {
+      if (cached === pending) cached = undefined;
+      throw error;
+    });
+    cached = pending;
+  }
   return cached;
+}
+
+/**
+ * 丢掉缓存住的那一份,下一次读重新组装。
+ *
+ * 缓存住的是 Pi 那张模型表,而模型行落在派生的 `models.json` 上、由面板随时改写:不失效
+ * 的话写入在这个进程里永远看不见,操作员加完一个模型标识却选不到它。
+ *
+ * 幂等:没有待失效的东西时也调得动,而且只丢缓存不预热——下一次真有人读目录时才重新组装,
+ * 免得一次写入白搭上一轮 pi.dev 刷新。
+ */
+export function invalidateModelCatalog(): void {
+  cached = undefined;
 }
 
 /** `loadFromPi` 的可注入项。生产路径一个都不传,全部按环境推导。 */
 export type LoadOptions = {
   allowNetwork?: boolean;
   timeoutMs?: number;
-  /** 远程目录的落盘位置。不传就按 `MULTIREVIEWER_CACHE_DIR` 推导。 */
-  storePath?: string;
+  /** 两份共用文件的位置。不传就按 `MULTIREVIEWER_CACHE_DIR` 推导。 */
+  paths?: SharedModelPaths;
 };
 
 /**
@@ -99,15 +120,10 @@ export type LoadOptions = {
  * 透出去。Pi 把每家的失败收进 `errors` 而不抛,内置表在失败时原样留着。
  */
 export async function loadFromPi(options: LoadOptions = {}): Promise<Catalog> {
-  // 与 Reviewer 子进程同样的隔离:authPath 与 modelsPath 指进空的临时目录。默认值在
-  // `~/.pi/agent` 下,那里的 auth.json 存着宿主机上配置过的每一家厂商的凭据。
+  // 凭据那一份仍私有:authPath 指进空的临时目录,默认位置在 `~/.pi/agent` 下,那里的
+  // auth.json 存着宿主机上配置过的每一家厂商的凭据。目录那两份是共用的。
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-catalog-"));
-  const storePath = options.storePath ?? modelsStorePath();
-  const runtime = await ModelRuntime.create({
-    authPath: join(dir, "auth.json"),
-    modelsPath: join(dir, "models.json"),
-    ...(storePath === undefined ? {} : { modelsStorePath: storePath }),
-  });
+  const runtime = await isolatedModelRuntime(dir, options.paths ?? sharedModelPaths());
 
   const allowNetwork = options.allowNetwork ?? remoteEnabled();
   const remote = allowNetwork

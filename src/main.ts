@@ -12,6 +12,7 @@ import {
 } from "./forge/gitea.ts";
 import { createGitHubForge, type GitHubAuth } from "./forge/github.ts";
 import { CREDENTIAL_MASTER_KEY_ENV } from "./panel/credential-crypto.ts";
+import { sharedModelPaths, writeSharedModelsConfig } from "./reviewer/model-runtime.ts";
 import { createWebhookServer } from "./webhook/server.ts";
 
 const DEFAULT_PORT = 3000;
@@ -110,6 +111,23 @@ if (gitea === undefined && github === undefined) {
 // 版本检查在启动时做一次。实例版本不够时 resolve / unresolve 会 404,Disposition 整
 // 条链路都是哑的,而这要等到第一次有人处置 Finding 才会显形——宁可起不来。
 if (gitea !== undefined) await assertSupportedVersion(gitea);
+
+// 派生的用户模型配置在启动时写一次。真相源是库,这份文件是可从库重建的派生物,而 Reviewer
+// 子进程只读它:只在有人打开面板时才重建的话,谁都没点过面板的实例投递进来会直接报「模型
+// 不存在」。
+//
+// 写不出来不拦启动,也不改共用路径:子进程只读这两份文件,一个只读的共用目录照样能用。
+// 这时留在盘上的是上一次的内容(或者什么都没有),两侧读的仍是同一份,只是不再跟着库走。
+const modelPaths = sharedModelPaths();
+if (modelPaths !== undefined) {
+  try {
+    writeSharedModelsConfig(modelPaths.config);
+  } catch (error) {
+    console.warn(
+      `派生的模型配置写不出来,模型行的改动不会生效(读仍照常): ${String(error)}`,
+    );
+  }
+}
 
 const server = createWebhookServer({
   forges: {

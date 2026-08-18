@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,7 +35,7 @@ after(() => {
   for (const cleanup of cleanups) cleanup();
 });
 
-type Boot = { listening: boolean; output: string };
+type Boot = { listening: boolean; output: string; dir: string };
 
 async function boot(
   overrides: Record<string, string>,
@@ -74,7 +74,7 @@ async function boot(
     const settle = (listening: boolean): void => {
       clearTimeout(timer);
       child.kill("SIGKILL");
-      resolve({ listening, output });
+      resolve({ listening, output, dir });
     };
     const timer = setTimeout(() => settle(false), BOOT_TIMEOUT_MS);
 
@@ -103,6 +103,35 @@ test("空库、没有任何模型凭据时服务照常起", async () => {
     { provider: "deepseek", model: "deepseek-v4-flash" },
   ]);
   assert.equal(result.listening, true, result.output);
+});
+
+/**
+ * 派生的用户模型配置在启动时被重建(issue #85)。Reviewer 子进程只读这份文件,而它的真相
+ * 源是库:只在有人打开面板时才重建的话,谁都没点过面板的实例投递进来会直接报「模型不存在」。
+ *
+ * 断言打在真实启动上而不是那个写入函数上:函数自己对不对由 `reviewer-model-store` 那条缝
+ * 守着,而「启动时到底调没调它」只有起进程才看得出来。
+ */
+test("启动时重建派生的模型配置,库里没有的行被清掉", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "multireviewer-boot-config-"));
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  const cacheDir = join(dir, "worktrees");
+  const configPath = join(cacheDir, "pi-models", "models.json");
+
+  // 上一代留下的一行:重建之后不该还在。
+  mkdirSync(join(cacheDir, "pi-models"), { recursive: true });
+  writeFileSync(
+    configPath,
+    JSON.stringify({ providers: { openrouter: { models: [{ id: "stale-row" }] } } }),
+  );
+
+  const result = await boot({ GITHUB_TOKEN: "ghp-stub", MULTIREVIEWER_CACHE_DIR: cacheDir });
+  assert.equal(result.listening, true, result.output);
+
+  const rebuilt = JSON.parse(readFileSync(configPath, "utf8")) as {
+    providers: Record<string, unknown>;
+  };
+  assert.deepEqual(rebuilt.providers, {}, "启动没有按库里的当前状态重建这份文件");
 });
 
 test("一个 Forge 都没配时启动失败并说明要配什么", async () => {
