@@ -18,6 +18,7 @@ import {
   useModelCatalog,
   type CatalogProvider,
 } from "@/components/model-picker";
+import { PrototypeSettings, usePrototypeVariant } from "./prototype/index.tsx";
 
 import { api, errorText, fetchJson } from "./api.ts";
 
@@ -32,6 +33,14 @@ export function SettingsPage() {
     queryFn: () => fetchJson<Settings>("/settings"),
   });
   const catalog = useModelCatalog();
+
+  // 原型分支:三条入口的变体挂在同一条路由上,`?variant=` 切换。主干不要这一段。
+  const variant = usePrototypeVariant();
+  if (variant !== null) {
+    return (
+      <PrototypeSettings variant={variant} providers={catalog.data?.providers ?? []} />
+    );
+  }
 
   return (
     <>
