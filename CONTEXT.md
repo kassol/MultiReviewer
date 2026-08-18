@@ -67,3 +67,7 @@ _Avoid_: overlay、pi.dev 目录、远程增量
 **厂商目录**:
 某一家模型厂商自己公布的模型清单,用来补远程目录仍缺的模型。同一家下与远程目录或内置表撞上的模型标识,以已有那一行为准,厂商目录只补缺。当前只接 OpenRouter。
 _Avoid_: 官方目录、vendor catalog、模型列表 API
+
+**自定义 provider**:
+操作员在面板上加进模型目录的一家 OpenAI-compatible 端点。名字由操作员起,限小写字母、数字与连字符,与 Pi 内置的那些家共用同一命名空间,撞名拒收。一个名字对应一个 base URL 与一把模型凭据;同一个端点要接两个 base URL 就起两个名字。
+_Avoid_: 自建 provider、custom provider、私有厂商
