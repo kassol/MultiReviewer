@@ -59,3 +59,11 @@ _Avoid_: base path、子路径、随机路径
 **代次**:
 一把 Key 的单调递增序号,写在 hook URL 的 `?k=` 参数上,一次列 hook 即可读出 Gitea 上装的是第几代(ADR 0007)。代次是索引不是凭证:它只决定用哪把 Key 验签,验签仍决定一切,取错即 401。代码标识符用 `generation`。
 _Avoid_: 版本、key id、generation number
+
+**远程目录**:
+pi.dev 给 Pi 内置模型表做的增量。面板读目录时拉一次,结果落盘,Reviewer 子进程只读这份落盘、不联网。关了或没拉到时,选择器只剩内置那一份。
+_Avoid_: overlay、pi.dev 目录、远程增量
+
+**厂商目录**:
+某一家模型厂商自己公布的模型清单,用来补远程目录仍缺的模型。同一家下与远程目录或内置表撞上的模型标识,以已有那一行为准,厂商目录只补缺。当前只接 OpenRouter。
+_Avoid_: 官方目录、vendor catalog、模型列表 API

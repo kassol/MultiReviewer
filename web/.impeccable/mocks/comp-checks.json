@@ -1,0 +1,10 @@
+{
+  "id": "comp-checks",
+  "approved": true,
+  "seed": "75a0358b",
+  "kind": "canon",
+  "composition": "checks",
+  "buildPath": "code",
+  "craftBar": ["GitHub", "Linear", "Vercel"],
+  "note": "Critique reference at finish. Code-led: do not regenerate. Do not literalize invented filter counts, export buttons, or GitHub chrome."
+}

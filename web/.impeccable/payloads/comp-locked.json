@@ -1,0 +1,20 @@
+{
+  "title": "已锁定",
+  "question": "检查列表。代码开写，不再出图。",
+  "followup": false,
+  "options": [
+    {
+      "id": "comp-checks",
+      "label": "检查列表",
+      "thesis": "状态字形在最左。过滤是一排小片，表在细线盒子里。",
+      "palette": ["#ffffff", "#1f2328", "#cf222e", "#1a7f37"],
+      "materials": ["status glyphs", "filter chips", "bordered panel"],
+      "viewport": "登录落到评审记录。侧栏五项。页头计数加过滤片。失败行淡红底。",
+      "risk": "不要做成 GitHub 皮肤。",
+      "comp": ".impeccable/mocks/comp-checks.webp"
+    }
+  ],
+  "buildPath": { "value": "code", "toggle": false },
+  "canon": false,
+  "steer": false
+}

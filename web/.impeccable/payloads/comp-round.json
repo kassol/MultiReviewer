@@ -1,0 +1,40 @@
+{
+  "title": "同一世界，三种构图",
+  "question": "手艺对标 GitHub / Linear / Vercel。选一张当北星，或说哪几处要拼。",
+  "followup": true,
+  "options": [
+    {
+      "id": "comp-list",
+      "label": "列表即页面",
+      "thesis": "行就是表面。没有包表的卡片，没有指标带。",
+      "palette": ["#fafafa", "#0a0a0a", "#dc2626", "#16a34a"],
+      "materials": ["full-bleed rows", "hairline only", "black action"],
+      "viewport": "侧栏一项一根近黑条。内容区直接是行：仓库/PR、结论、模型、处置、时间、重跑。",
+      "risk": "密了会像上一轮被否的控制台，松了又不像每天要扫的表。",
+      "comp": ".impeccable/mocks/comp-list.webp"
+    },
+    {
+      "id": "comp-checks",
+      "label": "检查列表",
+      "thesis": "状态字形在最左。过滤是一排小片，表在细线盒子里。",
+      "palette": ["#ffffff", "#1f2328", "#cf222e", "#1a7f37"],
+      "materials": ["status glyphs", "filter chips", "bordered panel"],
+      "viewport": "页头「42 轮 · 3 失败」加 全部/失败/待处置/已处置。失败行淡红底。",
+      "risk": "一不小心变成 GitHub 皮肤，而不是我们的信息结构。",
+      "comp": ".impeccable/mocks/comp-checks.webp"
+    },
+    {
+      "id": "comp-command",
+      "label": "留白指挥台",
+      "thesis": "字号和空白做层级。一个 61% 是唯一数字，表几乎没框。",
+      "palette": ["#ffffff", "#0a0a0a", "#ee0000", "#ebebeb"],
+      "materials": ["large title", "one metric", "hairline rows"],
+      "viewport": "大标题「评审记录」，下面 61%，再下面干净的行。失败是小红签，不是整行染色。",
+      "risk": "空白多了，一天扫几十轮会觉得在翻杂志。",
+      "comp": ".impeccable/mocks/comp-command.webp"
+    }
+  ],
+  "buildPath": { "value": "comp", "toggle": true },
+  "canon": false,
+  "steer": true
+}

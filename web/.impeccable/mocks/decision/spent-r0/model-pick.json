@@ -1,0 +1,5 @@
+{
+  "id": "model-pick",
+  "seed": "75a0358b",
+  "prompt": "A designed desktop web admin UI screenshot, 16:9 landscape, of the MultiReviewer 评审记录 page. This is a UI comp, not a poster.\n\nSTRUCTURE:\n1. Left rail: MultiReviewer mark + 仓库 / 评审记录 (current) / 处置率 / 模型凭据 / 全局设置 + 登出.\n2. Main is a CI Checks-style job list, not cards stacked as marketing tiles. A quiet page title 「评审记录」. Each row is one check run.\n3. Row anatomy left to right: status glyph, repo/PR identity, model job names, duration or time, disposition count, 重跑 control on the far right.\n4. Real content: acme/billing #14 shows a red X and 「1/2 模型失败」 with deepseek:deepseek-v4-flash failed and openrouter:z-ai/glm-5.2 passed; acme/billing #13 full red failure; ops/gateway #7 green check and 9/9 已处置. Six more quieter passing checks below.\n\nWORLD: GitHub/Gitea Checks. Ground #f6f8fa. Ink #1f2328. Success glyph #1a7f37. Failure #cf222e. Hairline row dividers. System sans. Status glyphs (check / x / dot) are the hierarchy, not large type. Light only. Chinese UI. Familiar CI list, not a dashboard of KPI cards. No teal. No neon. No dark terminal."
+}

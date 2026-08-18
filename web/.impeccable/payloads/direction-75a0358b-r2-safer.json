@@ -1,0 +1,52 @@
+{
+  "title": "更稳的一巡",
+  "question": "骰子这轮停着。只留还没亮过的常规方向，外加一扇对着具体竞品的门。",
+  "options": [
+    {
+      "id": "grounded-timetable",
+      "label": "时刻表",
+      "lineage": "瑞士铁路时刻表",
+      "thesis": "评审记录是一张到发时刻表。扫栏，找晚点。",
+      "palette": ["#f5f2ea", "#111111", "#c8102e", "#6e6a62"],
+      "materials": ["column grid", "one grotesque", "delay red"],
+      "viewport": "通栏表头：车次是仓库/PR，到发是时间，正点/晚点是结论。失败是时刻表里那一格红。导航是站名条，不是侧栏卡片。",
+      "risk": "黑红白网格是「精致运营界面」最常被走的路，容易看起来像又一张 SBB 海报。",
+      "comp": ".impeccable/mocks/decision/grounded-timetable.webp"
+    },
+    {
+      "id": "grounded-diff",
+      "label": "清单",
+      "lineage": "统一 diff / 程序清单",
+      "thesis": "每一轮 Review Run 是一个 hunk。他们每天就在读这个。",
+      "palette": ["#f7f7f5", "#1b1b1b", "#1f6b3a", "#9b2335"],
+      "materials": ["gutter +/-", "hunk header", "monospaced path"],
+      "viewport": "评审记录是一份连续清单。每轮以 @@ 仓库/PR 开头，模型行带 +/−，失败行走删除色。重跑是 hunk 头上的一个命令。",
+      "risk": "太像编辑器就会丢掉「这是操作面」；太不像 diff 又只是一张表。",
+      "comp": ".impeccable/mocks/decision/grounded-diff.webp"
+    },
+    {
+      "id": "grounded-ledger",
+      "label": "对账单",
+      "lineage": "银行对账单 / 销账表",
+      "thesis": "Finding Identity 是必须销掉的一行。处置率是余额。",
+      "palette": ["#f3f1eb", "#1c1917", "#1e3a2f", "#8a1f12"],
+      "materials": ["debit/credit columns", "running balance", "statement head"],
+      "viewport": "页眉是账单头：户名 MultiReviewer、期间、总处置率。下面是分录：借是新 Finding，贷是已处置。失败是一笔未达账，用保留红。",
+      "risk": "账本语法会让「重跑」这种操作显得不像账，得翻译好。",
+      "comp": ".impeccable/mocks/decision/grounded-ledger.webp"
+    }
+  ],
+  "reroll": { "registers": ["safer", "bolder"] },
+  "buildPath": { "value": "comp", "toggle": true },
+  "canon": true,
+  "canonCard": {
+    "label": "品类标准件",
+    "thesis": "做到和 Gitea 仓库页、GitHub Checks、Linear 同一手艺。侧栏、页头、表、主按钮，不发明新语法。",
+    "palette": ["#ffffff", "#111827", "#2563eb", "#f8fafc"],
+    "materials": ["clean grid", "rounded cards", "system sans"],
+    "viewport": "登录落到评审记录。左栏五项导航。页头标题加一句说明。下面一张白底表：仓库/PR、结论、模型、处置、时间、重跑。失败用红、完成用绿，和 GitHub Checks 同一套信号。",
+    "risk": "和邻家后台无法分辨。这是你的门，不是推荐。",
+    "comp": ".impeccable/mocks/decision/canon.webp"
+  },
+  "steer": true
+}
