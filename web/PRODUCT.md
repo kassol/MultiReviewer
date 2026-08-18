@@ -52,10 +52,11 @@ MultiReviewer 对 pull request 做多模型并行代码审查。审查挂在 Git
 - 不用 `window.confirm`：原生对话框会卡住浏览器自动化。
 - Key 与模型凭据的明文从不回显到前端。
 
-未决（本轮不发明）：
+已落地（spec issue #84，2026-08-19）：
 
-- 自定义 OpenAI-compatible provider 尚未开 spec。
-- OpenRouter 模型目录不全，操作员选择自行换模型，本轮不扩目录。
+- 模型进模型组合有三条入口：厂商目录（读目录时把 OpenRouter 现货并进来，只补缺）、在已配模型凭据的厂商下手填 model id、加一家自定义 OpenAI-compatible provider。
+- 模型组合的编辑是两栏面板（左厂商列、右模型列加手填框），全局设置页与仓库覆盖共用同一份实现。代价是跨厂商搜索取消：先选厂商再搜。
+- 单价留空的模型在模型行与已选列表上标出费用记成零。
 
 ## Brand Commitments
 

@@ -193,8 +193,8 @@ async function loadCatalog(options: LoadOptions): Promise<Catalog> {
  * 收口放在这一层而不是去改那两行:内置与远程目录来的行一律不动(ADR 0009),而「负数不是一个
  * 费率」是这个数自己的性质,与它由谁给出无关。取 0 与 Pi 自己那条 `auto` 记的数一致。
  *
- * 这一层管不到 Review Run 的成本:那个数取自 Pi 的 `session.getSessionStats()`,用的是 Pi
- * 内部那张定价表,不经过这里。选中那两个模型时那一轮的成本仍会是负数,见 issue #95。
+ * Review Run 的成本不经过这一层:那个数取自 Pi 的 `session.getSessionStats()`,用的是 Pi
+ * 内部那张定价表。那一侧同样按零收,收口在库里(`review/store.ts` 的 `recordedCost`)。
  */
 function nonNegativeCost(cost: CatalogCost): CatalogCost {
   if (cost.input >= 0 && cost.output >= 0 && cost.cacheRead >= 0 && cost.cacheWrite >= 0) {

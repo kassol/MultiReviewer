@@ -549,6 +549,20 @@ export type Store = {
   close(): void;
 };
 
+/**
+ * 落库的成本。负数按零收:Pi 内置表给 `openrouter/auto` 这类路由模型的费率是 -1000000
+ * (OpenRouter 报的单价是 "-1",意思是随路由到的那个模型浮动,而那个 -1 被照着每百万 token
+ * 换算了一遍),折算出来的这一轮成本因此是负数,会把评审记录与处置率页上的累计花费往下拽。
+ *
+ * 收口放在库这一层:库是这个数变成面板上那句「花了多少」的地方,而负成本在任何口径下都不是
+ * 事实。取零与模型目录里那两行透出的单价一致(`reviewer/catalog.ts` 的 `nonNegativeCost`),
+ * 也与「没有单价」那一档记的数一致——两处都是「这一笔没记准」,面板上因此不多一种状态。
+ * 根治要等上游把那两行的数据修掉(issue #95)。
+ */
+function recordedCost(costUsd: number): number {
+  return costUsd > 0 ? costUsd : 0;
+}
+
 function usageColumns(usage: ReviewerUsage | undefined): (number | null)[] {
   if (usage === undefined) return [null, null, null, null, null, null];
   return [
@@ -557,11 +571,15 @@ function usageColumns(usage: ReviewerUsage | undefined): (number | null)[] {
     usage.cacheReadTokens,
     usage.cacheWriteTokens,
     usage.totalTokens,
-    usage.costUsd,
+    recordedCost(usage.costUsd),
   ];
 }
 
-/** 累加用量。取 `usage` 一个字段,`ReviewerOutcome` 与 `OutcomeRecord` 都能传。 */
+/**
+ * 累加用量。取 `usage` 一个字段,`ReviewerOutcome` 与 `OutcomeRecord` 都能传。
+ *
+ * 逐条截负再加,不是加完再截:先加会让负的那一份把同一轮里正常那几个模型的花费一起吃掉。
+ */
 export function sumUsage(
   outcomes: readonly { usage?: ReviewerUsage }[],
 ): ReviewerUsage {
@@ -580,7 +598,7 @@ export function sumUsage(
     total.cacheReadTokens += outcome.usage.cacheReadTokens;
     total.cacheWriteTokens += outcome.usage.cacheWriteTokens;
     total.totalTokens += outcome.usage.totalTokens;
-    total.costUsd += outcome.usage.costUsd;
+    total.costUsd += recordedCost(outcome.usage.costUsd);
   }
   return total;
 }

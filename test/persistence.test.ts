@@ -669,3 +669,43 @@ test("登记一家自定义 provider 是一个事务:撞名那一次三张表一
   assert.equal(query(db.path, "SELECT * FROM model_credential").length, 1);
   store.close();
 });
+
+// issue #95:Pi 内置表给 `openrouter/auto` 这类路由模型的费率是 -1000000(OpenRouter 报的
+// 单价是 "-1",意思是随路由到的那个模型浮动),折算出来的这一轮成本因此是负数。库是这个数变成
+// 面板上那句「花了多少」的地方,负成本在任何口径下都不是事实。
+test("负成本按零落库,同一轮里别的模型那份照实记", async () => {
+  const { cache, db, forge } = setup();
+
+  const negative: ReviewerUsage = {
+    inputTokens: 120,
+    outputTokens: 40,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 160,
+    costUsd: -0.9,
+  };
+  const priced: ReviewerUsage = { ...negative, costUsd: 0.25 };
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("openrouter:openrouter/auto", [FINDING], { usage: negative }),
+      scriptedReviewer("deepseek:deepseek-v4-flash", [FINDING], { usage: priced }),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  assert.deepEqual(
+    query(db.path, "SELECT model, cost_usd FROM reviewer_outcome ORDER BY model").map((row) => [
+      row["model"],
+      row["cost_usd"],
+    ]),
+    [
+      ["deepseek:deepseek-v4-flash", 0.25],
+      ["openrouter:openrouter/auto", 0],
+    ],
+  );
+  // 整轮的合计对负那一份也按零算:先加再截会把正的那一份一起吃掉。
+  assert.equal(query(db.path, "SELECT cost_usd FROM review_run")[0]!["cost_usd"], 0.25);
+});
