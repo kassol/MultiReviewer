@@ -388,3 +388,284 @@ test("同一数据库上的第二次 Review Run 追加一行,不覆盖上一次"
   assert.notEqual(runs[0]!["head_sha"], runs[1]!["head_sha"]);
   assert.equal(query(db.path, "SELECT * FROM finding").length, 2);
 });
+
+/**
+ * 手填的模型行(issue #87)。库是这些行唯一的真相源,派生的 `models.json` 从它整份重建,
+ * 因此这张表的读写与唯一约束是整条链路的地基。
+ */
+test("手填的模型行按 provider 与 model id 唯一,同键二次写入是覆盖", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+
+  store.putModelRow({
+    provider: "openrouter",
+    model: "z-ai/glm-5.2",
+    costInput: 1,
+    costOutput: 2,
+    contextWindow: 200_000,
+    createdAt: "2026-08-18T00:00:00.000Z",
+  });
+  // 同一个模型标识写第二次:改的是单价与上下文窗口,不是新增一行。
+  store.putModelRow({
+    provider: "openrouter",
+    model: "z-ai/glm-5.2",
+    costInput: 3,
+    costOutput: null,
+    contextWindow: null,
+    createdAt: "2026-08-19T00:00:00.000Z",
+  });
+  const rows = store.listModelRows();
+  store.close();
+
+  assert.deepEqual(rows, [
+    {
+      provider: "openrouter",
+      model: "z-ai/glm-5.2",
+      costInput: 3,
+      costOutput: null,
+      contextWindow: null,
+      // 创建时间记的是这一行什么时候被填出来,覆盖不动它。
+      createdAt: "2026-08-18T00:00:00.000Z",
+    },
+  ]);
+  // 唯一约束在表上,不是读取时去重出来的。
+  assert.equal(query(db.path, "SELECT * FROM model_row").length, 1);
+});
+
+/**
+ * 唯一约束的键是模型标识的两段而不是裸 model id:同一个 model id 在两家 provider 下是两个
+ * 模型标识(`CONTEXT.md` 的模型标识词条),可以共存,删一个不动另一个。
+ */
+test("同一个 model id 在两家 provider 下各占一行,删一行不动另一行", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+
+  const row = { costInput: null, costOutput: null, contextWindow: null, createdAt: "2026-08-18T00:00:00.000Z" };
+  store.putModelRow({ provider: "openrouter", model: "glm-5.2", ...row });
+  store.putModelRow({ provider: "deepseek", model: "glm-5.2", ...row });
+  store.putModelRow({ provider: "deepseek", model: "deepseek-v4", ...row });
+
+  // 按模型标识排序:面板一览与派生文件都按这个顺序,同一家的行挨在一起。
+  assert.deepEqual(
+    store.listModelRows().map((entry) => `${entry.provider}:${entry.model}`),
+    ["deepseek:deepseek-v4", "deepseek:glm-5.2", "openrouter:glm-5.2"],
+  );
+
+  store.removeModelRow("deepseek", "glm-5.2");
+  assert.deepEqual(
+    store.listModelRows().map((entry) => `${entry.provider}:${entry.model}`),
+    ["deepseek:deepseek-v4", "openrouter:glm-5.2"],
+  );
+  // 不存在的行删了也不抛——目标状态已达成。
+  store.removeModelRow("deepseek", "glm-5.2");
+  assert.equal(store.listModelRows().length, 2);
+  store.close();
+});
+
+/**
+ * 自定义 provider 的定义(issue #88)。名字是主键:它与 Pi 内置的那些家共用同一命名空间
+ * (`CONTEXT.md` 的自定义 provider 词条),一个名字对应一个 base URL 与一把模型凭据。
+ *
+ * 同名二次写入直接抛,不像模型行那样是覆盖:改一家已有的 base URL 与「加一家新的」是两件
+ * 事,而端点在撞名时就已经拒收了(库这一层照实反映那条约束)。
+ */
+test("自定义 provider 按名字唯一,同名二次写入抛", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+
+  store.putCustomProvider({
+    name: "corp-gateway",
+    baseUrl: "https://ai.corp.example/v1",
+    api: "openai-completions",
+    createdAt: "2026-08-18T00:00:00.000Z",
+  });
+  store.putCustomProvider({
+    name: "local-vllm",
+    baseUrl: "http://127.0.0.1:8000/v1",
+    api: "openai-responses",
+    createdAt: "2026-08-18T01:00:00.000Z",
+  });
+
+  // 按名字排序:面板一览与派生文件都按这个顺序。
+  assert.deepEqual(store.listCustomProviders(), [
+    {
+      name: "corp-gateway",
+      baseUrl: "https://ai.corp.example/v1",
+      api: "openai-completions",
+      createdAt: "2026-08-18T00:00:00.000Z",
+    },
+    {
+      name: "local-vllm",
+      baseUrl: "http://127.0.0.1:8000/v1",
+      api: "openai-responses",
+      createdAt: "2026-08-18T01:00:00.000Z",
+    },
+  ]);
+
+  assert.throws(() =>
+    store.putCustomProvider({
+      name: "corp-gateway",
+      baseUrl: "https://elsewhere.example/v1",
+      api: "openai-completions",
+      createdAt: "2026-08-19T00:00:00.000Z",
+    }),
+  );
+  // 抛掉的那一次一个字都没写进去。
+  assert.equal(store.listCustomProviders()[0]!.baseUrl, "https://ai.corp.example/v1");
+  assert.equal(query(db.path, "SELECT * FROM custom_provider").length, 2);
+  store.close();
+});
+
+/**
+ * 摘掉一家自定义 provider 就是摘掉这一家整个:它的模型行与它那把凭据都归这个名字,留着
+ * 会让派生文件里出现一家没有 `api` 也没有 `baseUrl` 的 provider(Pi 把这一家整个丢掉),
+ * 凭据页上则列着一家目录里根本没有的厂商。别家的行一个都不动。
+ */
+test("摘掉一家自定义 provider 连它的模型行与凭据一起摘掉,别家不动", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  const at = "2026-08-18T00:00:00.000Z";
+
+  store.putCustomProvider({
+    name: "corp-gateway",
+    baseUrl: "https://ai.corp.example/v1",
+    api: "openai-completions",
+    createdAt: at,
+  });
+  const blank = { costInput: null, costOutput: null, contextWindow: null, createdAt: at };
+  store.putModelRow({ provider: "corp-gateway", model: "qwen3-max", ...blank });
+  store.putModelRow({ provider: "corp-gateway", model: "glm-5.2", ...blank });
+  store.putModelRow({ provider: "openrouter", model: "glm-5.2", ...blank });
+  store.putModelCredential("corp-gateway", "cipher-corp", at, false);
+  store.putModelCredential("openrouter", "cipher-openrouter", at, true);
+
+  store.removeCustomProvider("corp-gateway");
+
+  assert.deepEqual(store.listCustomProviders(), []);
+  assert.deepEqual(
+    store.listModelRows().map((row) => `${row.provider}:${row.model}`),
+    ["openrouter:glm-5.2"],
+  );
+  assert.deepEqual(
+    store.listModelCredentials().map((row) => row.provider),
+    ["openrouter"],
+  );
+  // 不存在的那一家删了也不抛——目标状态已达成。
+  store.removeCustomProvider("corp-gateway");
+  store.close();
+});
+
+/**
+ * 级联删除以「`custom_provider` 里真有这一条登记」为前提。名字与 Pi 内置那三十九家共用同一
+ * 命名空间(`CONTEXT.md` 的自定义 provider 词条),而 `model_row` 与 `model_credential` 两张
+ * 表都以 provider 名为键:不先确认登记就按名字级联,删一个从来没登记过的名字(比如
+ * `DELETE <前缀>/api/custom-providers/openai`)会把内置同名那一家的模型凭据与它名下的手填
+ * 模型行一起永久删掉。凭据只写不回显,删了只能重新去厂商后台取一把。
+ *
+ * 没有这条登记时什么都不做,并且不抛——与 `removeModelCredential` / `removeRepoKey` 同一档:
+ * 目标状态已达成。
+ */
+test("删一个没登记过的名字:同名内置 provider 的凭据与模型行一条不少", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  const at = "2026-08-19T00:00:00.000Z";
+  const blank = { costInput: null, costOutput: null, contextWindow: null, createdAt: at };
+
+  // 内置的那一家:一把粘过的模型凭据,加一行手填的模型行。它从来没被登记成自定义 provider。
+  store.putModelCredential("openai", "cipher-openai", at, true);
+  store.putModelRow({ provider: "openai", model: "gpt-5-mini", ...blank });
+  assert.deepEqual(store.listCustomProviders(), []);
+
+  store.removeCustomProvider("openai");
+
+  assert.deepEqual(
+    store.listModelRows().map((row) => `${row.provider}:${row.model}`),
+    ["openai:gpt-5-mini"],
+    "内置那一家的手填模型行被级联删掉了",
+  );
+  assert.deepEqual(
+    store.listModelCredentials().map((row) => ({
+      provider: row.provider,
+      apiKeyEncrypted: row.apiKeyEncrypted,
+    })),
+    [{ provider: "openai", apiKeyEncrypted: "cipher-openai" }],
+    "内置那一家的模型凭据被级联删掉了",
+  );
+  store.close();
+});
+
+/**
+ * 登记一家自定义 provider 是一个事务:定义、它的第一个模型行、那把凭据要么一起在、要么一起
+ * 没有。分三句自动提交时,中途报错、进程退出或者盘满会留下一份半成品(定义在了、凭据没存上),
+ * 而客户端重试会撞上「名字已被占用」被拒,补不齐——与 `registerRepo` 消除「有仓库无 Key」是
+ * 同一个道理。
+ *
+ * 名字的唯一约束排在三句的最后一句,这里因此测得到:撞名那一刻前两张表已经写过了,回滚要把
+ * 它们一起撤掉,尤其是那把凭据不能被后来这一次的密文换掉。
+ */
+test("登记一家自定义 provider 是一个事务:撞名那一次三张表一行都没多", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  const first = {
+    name: "corp-gateway",
+    baseUrl: "https://ai.corp.example/v1",
+    api: "openai-completions",
+    model: "corp-qwen3-max",
+    apiKeyEncrypted: "cipher-first",
+    verified: false,
+    createdAt: "2026-08-19T00:00:00.000Z",
+  };
+  store.registerCustomProvider(first);
+
+  assert.deepEqual(store.listCustomProviders(), [
+    {
+      name: first.name,
+      baseUrl: first.baseUrl,
+      api: first.api,
+      createdAt: first.createdAt,
+    },
+  ]);
+  assert.deepEqual(
+    store.listModelRows().map((row) => `${row.provider}:${row.model}`),
+    ["corp-gateway:corp-qwen3-max"],
+  );
+  assert.deepEqual(
+    store.listModelCredentials().map((row) => row.apiKeyEncrypted),
+    ["cipher-first"],
+  );
+
+  assert.throws(() =>
+    store.registerCustomProvider({
+      ...first,
+      baseUrl: "https://elsewhere.example/v1",
+      model: "corp-glm-5",
+      apiKeyEncrypted: "cipher-second",
+      createdAt: "2026-08-19T01:00:00.000Z",
+    }),
+  );
+
+  // 抛掉的那一次三张表一个字都没留下。
+  assert.deepEqual(
+    store.listModelRows().map((row) => `${row.provider}:${row.model}`),
+    ["corp-gateway:corp-qwen3-max"],
+    "撞名那一次的模型行留在库里了",
+  );
+  assert.deepEqual(
+    store.listModelCredentials().map((row) => row.apiKeyEncrypted),
+    ["cipher-first"],
+    "撞名那一次把已有的那把凭据换掉了",
+  );
+  assert.deepEqual(
+    store.listCustomProviders().map((entry) => entry.baseUrl),
+    [first.baseUrl],
+  );
+  assert.equal(query(db.path, "SELECT * FROM model_row").length, 1);
+  assert.equal(query(db.path, "SELECT * FROM model_credential").length, 1);
+  store.close();
+});

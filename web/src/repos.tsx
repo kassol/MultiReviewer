@@ -20,17 +20,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  ModelPicker,
-  modelIdentity,
-  parseModelIdentity,
-  useModelCatalog,
-} from "@/components/model-picker";
+import { ModelComposer } from "@/components/model-composer";
 
 import { api, errorText, fetchJson } from "./api.ts";
+import { modelIdentity, parseModelIdentity } from "./model-catalog.ts";
 import { rerunRequest, RunPill, type RunItem } from "./runs.tsx";
 
 type ReviewerSpec = { provider: string; model: string };
@@ -312,7 +307,8 @@ function RepoDetail({
         </Card>
       ) : null}
 
-      <div className="grid gap-3 md:grid-cols-2">
+      {/* 编辑态并成一栏:两栏面板是 220px 的厂商列加一整栏模型列,半宽的格子装不下。 */}
+      <div className={editing ? "grid gap-3" : "grid gap-3 md:grid-cols-2"}>
         <Card className="gap-2.5 px-4">
           <h3 className="text-base font-semibold">准入 key</h3>
           <Kv label="状态">已填进 hook,不回显</Kv>
@@ -334,44 +330,57 @@ function RepoDetail({
           </Button>
         </Card>
 
-        <Card className="gap-2.5 px-4">
-          <h3 className="text-base font-semibold">模型组合</h3>
-          {/* 两态开关(issue #69):要么跟随全局,要么本仓库自定义。「一个都没选」
-              这种既不是跟随、也不是有效覆盖的状态在界面上不存在。 */}
-          <div className="flex gap-2">
-            <Button
-              size="xs"
-              variant={following ? "default" : "outline"}
-              disabled={followGlobal.isPending}
-              onClick={() => {
-                if (!following) followGlobal.mutate();
-              }}
-            >
-              跟随全局
-            </Button>
-            <Button
-              size="xs"
-              variant={following ? "outline" : "default"}
-              disabled={followGlobal.isPending}
-              onClick={() => setEditing(true)}
-            >
-              自定义
-            </Button>
-          </div>
-          <Kv label={following ? "跟随全局默认" : "本仓库覆盖"}>
-            <span><span className="font-mono tabular-nums">{shownModels.length}</span> 个</span>
-          </Kv>
-          {shownModels.map((model) => (
-            <div key={model} className="font-mono text-xs">
-              {model}
+        {editing ? (
+          <ReviewersEditor
+            repo={repo}
+            globalModels={globalModels}
+            onClose={() => setEditing(false)}
+            onDone={() => {
+              setEditing(false);
+              setFeedback({ text: "模型组合已更新,下一次投递生效。", isError: false });
+              refresh();
+            }}
+          />
+        ) : (
+          <Card className="gap-2.5 px-4">
+            <h3 className="text-base font-semibold">模型组合</h3>
+            {/* 两态开关(issue #69):要么跟随全局,要么本仓库自定义。「一个都没选」
+                这种既不是跟随、也不是有效覆盖的状态在界面上不存在。 */}
+            <div className="flex gap-2">
+              <Button
+                size="xs"
+                variant={following ? "default" : "outline"}
+                disabled={followGlobal.isPending}
+                onClick={() => {
+                  if (!following) followGlobal.mutate();
+                }}
+              >
+                跟随全局
+              </Button>
+              <Button
+                size="xs"
+                variant={following ? "outline" : "default"}
+                disabled={followGlobal.isPending}
+                onClick={() => setEditing(true)}
+              >
+                自定义
+              </Button>
             </div>
-          ))}
-          <p className="text-xs text-muted-foreground">
-            {following
-              ? "改全局设置这里跟着变。点「自定义」从当前组合改起。"
-              : "只对这个仓库生效。点「跟随全局」即清除覆盖。"}
-          </p>
-        </Card>
+            <Kv label={following ? "跟随全局默认" : "本仓库覆盖"}>
+              <span><span className="font-mono tabular-nums">{shownModels.length}</span> 个</span>
+            </Kv>
+            {shownModels.map((model) => (
+              <div key={model} className="font-mono text-xs">
+                {model}
+              </div>
+            ))}
+            <p className="text-xs text-muted-foreground">
+              {following
+                ? "改全局设置这里跟着变。点「自定义」从当前组合改起。"
+                : "只对这个仓库生效。点「跟随全局」即清除覆盖。"}
+            </p>
+          </Card>
+        )}
       </div>
 
       <Card className="gap-2.5 px-4">
@@ -412,19 +421,6 @@ function RepoDetail({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {editing ? (
-        <ReviewersModal
-          repo={repo}
-          globalModels={globalModels}
-          onClose={() => setEditing(false)}
-          onDone={() => {
-            setEditing(false);
-            setFeedback({ text: "模型组合已更新,下一次投递生效。", isError: false });
-            refresh();
-          }}
-        />
-      ) : null}
     </>
   );
 }
@@ -596,10 +592,19 @@ function RegisterModal({
 }
 
 /**
- * 自定义态的编辑框(issue #69)。还在跟随全局时以当前全局组合为初值——人从一个已知
- * 跑得起来的组合上改,而不是从空列表开始拼。选择器与全局设置页是同一个组件。
+ * 自定义态的编辑区(issue #69,面板换成两栏那一版是 issue #91)。还在跟随全局时以当前全局
+ * 组合为初值——人从一个已知跑得起来的组合上改,而不是从空列表开始拼。面板是与全局设置页
+ * 同一个 `ModelComposer`,两处操作方式一致,没有第二份实现。
+ *
+ * 它是详情页里的一段编辑态,不是对话框。两条判据:面板固定 460px 高,而 `ui/dialog.tsx` 的
+ * 对话框只给宽度档位、没有最大高度与滚动,矮屏上底部的手填框与保存按钮会落到视口外面点不
+ * 到;面板里「+ 加一家 provider」本身就是一个对话框,套进来就是对话框叠对话框。放在详情列
+ * 里两栏直接吃这一列既有的宽度,不必新造一个只此一处用的宽度档位。
+ *
+ * 面板外面不套 `<form>`:它自己带着手填模型行那张表单(全局设置页同一条),嵌套的 form 会
+ * 让填一个 model id 顺手把覆盖一起提交了。这里除了保存与取消再没有别的字段,不需要表单。
  */
-function ReviewersModal({
+function ReviewersEditor({
   repo,
   globalModels,
   onClose,
@@ -610,15 +615,13 @@ function ReviewersModal({
   onClose: () => void;
   onDone: () => void;
 }) {
-  const catalog = useModelCatalog();
   const [models, setModels] = useState(() =>
     repo.reviewers === null ? globalModels : repo.reviewers.map(modelIdentity),
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function submit(event: FormEvent): Promise<void> {
-    event.preventDefault();
+  async function save(): Promise<void> {
     setBusy(true);
     setError(null);
     try {
@@ -639,39 +642,32 @@ function ReviewersModal({
   }
 
   return (
-    <Dialog open onOpenChange={(next) => (next ? undefined : onClose())}>
-      <DialogContent aria-describedby={undefined}>
-        <form onSubmit={submit} className="flex flex-col gap-3">
-          <DialogHeader>
-            <DialogTitle>
-              自定义 {repo.owner}/{repo.repo} 的模型组合
-            </DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-2">
-            <Label>本仓库覆盖(全量替换,至少选一个)</Label>
-            <ModelPicker
-              providers={catalog.data?.providers ?? []}
-              value={models}
-              onChange={setModels}
-            />
-          </div>
-          {catalog.isError ? (
-            <p className="text-destructive">
-              模型目录读不到:{(catalog.error as Error).message}
-            </p>
-          ) : null}
-          {error === null ? null : <p className="text-destructive">{error}</p>}
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>
-              取消
-            </Button>
-            <Button type="submit" disabled={busy || models.length === 0}>
-              {busy ? "保存中…" : "保存"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1">
+        <h3 className="text-base font-semibold">
+          自定义 {repo.owner}/{repo.repo} 的模型组合
+        </h3>
+        <p className="text-muted-foreground">
+          本仓库覆盖:全量替换全局默认,至少选一个。保存后下一次投递按它跑,点「取消」回到
+          上一屏、什么都不改。
+        </p>
+      </div>
+      <ModelComposer value={models} onChange={setModels} />
+      {error === null ? null : <p className="text-destructive">{error}</p>}
+      <div className="flex items-center gap-3">
+        <Button disabled={busy || models.length === 0} onClick={() => void save()}>
+          {busy ? "保存中…" : "保存"}
+        </Button>
+        <Button variant="outline" onClick={onClose}>
+          取消
+        </Button>
+        {models.length === 0 ? (
+          <span className="text-muted-foreground">
+            一个都没选存不了。要回到跟随全局,点「取消」再点「跟随全局」。
+          </span>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

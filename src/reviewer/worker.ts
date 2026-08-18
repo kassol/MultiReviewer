@@ -170,7 +170,7 @@ async function run(request: ReviewerRequest): Promise<void> {
     return;
   }
 
-  // 目录要与面板那一份一致:面板选得出的模型,这里必须取得到。共用的是 pi.dev 的 overlay
+  // 目录要与面板那一份一致:面板选得出的模型,这里必须取得到。共用的是 pi.dev 的远程目录
   // 与派生的用户模型配置两份落盘文件,子进程自己一个对外目录请求都不发(ADR 0004),细节
   // 见 `model-runtime.ts`。
   const paths = sharedModelPaths();

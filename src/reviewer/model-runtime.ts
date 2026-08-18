@@ -20,6 +20,8 @@ import { join, resolve } from "node:path";
 
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
+import type { CustomProviderRecord, ModelRowRecord } from "../review/store.ts";
+
 /** 缓存根目录的环境变量与默认值。工作副本与模型目录都落在它下面。 */
 export const CACHE_DIR_ENV = "MULTIREVIEWER_CACHE_DIR";
 const DEFAULT_CACHE_DIR = ".cache/worktrees";
@@ -69,21 +71,106 @@ export function sharedModelPaths(): SharedModelPaths | undefined {
 }
 
 /**
- * 把模型行落成 Pi 的用户模型配置。
+ * 自定义 provider 的接口协议允许的取值(issue #88)。
+ *
+ * Pi 注册的接口实现共十个(`pi-ai` 的 `BUILTIN_APIS`:anthropic-messages、
+ * openai-completions、openai-responses、openai-codex-responses、azure-openai-responses、
+ * google-generative-ai、google-vertex、mistral-conversations、bedrock-converse-stream、
+ * pi-messages)。这条入口只面向 OpenAI 兼容的端点,取值集因此只有其中两个:走
+ * `/chat/completions` 的与走 `/responses` 的。
+ *
+ * 取值集是硬门禁而不是提示:Pi 的 `models.json` schema 把 `api` 收成任意非空字符串,填一个
+ * 没有实现的值要到真发请求那一刻才报「No API provider registered for api: ...」。
+ */
+export const CUSTOM_PROVIDER_APIS = ["openai-completions", "openai-responses"] as const;
+
+/** 落盘的一行:Pi `models.json` 里 model definition 的最小子集。 */
+type ConfigModel = {
+  id: string;
+  cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  contextWindow?: number;
+};
+
+/** 落盘的一家:自定义 provider 多 `api` 与 `baseUrl` 两项,内置那些家一项都不写。 */
+type ConfigProvider = {
+  api?: string;
+  baseUrl?: string;
+  models: ConfigModel[];
+};
+
+/**
+ * 把库里的模型行与自定义 provider 落成 Pi 的用户模型配置。
  *
  * 真相源是库,这份文件是可以从库重建的派生物:一律按当前状态整份重写,不与文件里已有的
  * 内容合并——合并会让手工改过的文件永远留着改动,而库里删掉的行再也清不掉。
+ *
+ * provider 一级只有自定义 provider 写 `api` 与 `baseUrl`,而且必须写:全新 provider 没有
+ * 继承来源,缺任一者 Pi 把这一家整个从目录里丢掉(错误收进 `compositionErrors`,没有内置的
+ * base 可退回时直接 `deleteProvider`)——表象是消失,不是报错。内置那些家反过来一项都不能
+ * 写:`applyModelsJson` 的第一步就是把该家已有的每个模型都改指 provider 一级那个 `baseUrl`,
+ * 写上去等于把整家人静悄悄换到别的端点。
+ *
+ * 一家自定义 provider 一个模型行都没有时仍写它自己那一条(`models` 是空数组):有 `baseUrl`
+ * 在 provider 一级 Pi 就把这一家合成出来,于是这个名字在目录里一直被占着——名字随着最后一个
+ * 模型行被删而从目录里消失的话,同一个名字会被重新登记成另一个端点。
+ *
+ * 每一个模型行只写 `id` 与填过的那几项。给内置 provider 加行时 `api` 与 `baseUrl` 由 Pi 从
+ * 该家的第一个模型继承(`provider-composer.ts` 的 `applyModelsJson`),写死等于把上游哪天改掉
+ * 的端点钉在库里。单价与上下文窗口留空就整个不写,由 Pi 取默认值(单价 0、上下文 128000、
+ * maxTokens 16384)。
+ *
+ * 单价一旦要写就得写满四个费率:`ModelCost` 的四项全是必填,少一项这一行连整份配置一起
+ * 校验不过,而 Pi 把这类错误吞进 provider 的合成里——表象是那一行凭空消失。缓存读写没有
+ * 存储面,按 0 写,与不填单价时的默认值是同一个数。
  *
  * 先写临时文件再原子改名:子进程随时可能在读它,而读到写了一半的 JSON 会让 Pi 把整份
  * 配置当作解析失败(它把错误收进 `ModelConfig.error` 而不抛,于是那一刻起的模型行全部
  * 消失),表象是没头没尾的「模型不存在」。改名在同一个目录里,因此是原子的。
  *
- * 这一票库里还没有模型行,写出来的是空的 provider 集合。空集合对目录不可见:Pi 只对
- * `providers` 里真有条目的那几家做叠加。
+ * 两样都没有时写出来的是空的 provider 集合。空集合对目录不可见:Pi 只对 `providers` 里
+ * 真有条目的那几家做叠加。
+ *
+ * 撞名的那几家(`conflictingProviders`,issue #94)整个不写,连它们的模型行一起:名字被内置
+ * 占用时,写进去的 `baseUrl` 会让内置那一家的每个模型都改指自定义那个端点,而模型标识一个字
+ * 都不变——落盘里干脆没有它,Pi 也就没有东西可以拿来覆盖。模型行一并跳过,否则 Pi 把它们当成
+ * 给内置这一家手填的行追加进来(`api` 与 `baseUrl` 从内置那一家继承),内置这一家凭空多出几个
+ * 在它自己的端点上根本不存在的模型。撞名那一家因此整个停用,出路是改名重建或者删掉它。
+ *
+ * 判据由调用方给,而且必填:漏传等于把这道防覆盖静默摘掉。给内置 provider 手填的模型行不受
+ * 影响——那个 provider 名字不在库里的自定义 provider 登记里,交集里就没有它。
  */
-export function writeSharedModelsConfig(configPath: string): void {
+export function writeSharedModelsConfig(
+  configPath: string,
+  rows: readonly ModelRowRecord[],
+  customProviders: readonly CustomProviderRecord[],
+  conflictingProviders: ReadonlySet<string>,
+): void {
+  const providers: Record<string, ConfigProvider> = {};
+  // 自定义 provider 先落位:它的 api 与 baseUrl 必须在 provider 一级,而下面那一轮只往
+  // models 里追加。
+  for (const custom of customProviders) {
+    if (conflictingProviders.has(custom.name)) continue;
+    providers[custom.name] = { api: custom.api, baseUrl: custom.baseUrl, models: [] };
+  }
+  for (const row of rows) {
+    if (conflictingProviders.has(row.provider)) continue;
+    (providers[row.provider] ??= { models: [] }).models.push({
+      id: row.model,
+      ...(row.costInput === null && row.costOutput === null
+        ? {}
+        : {
+            cost: {
+              input: row.costInput ?? 0,
+              output: row.costOutput ?? 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+            },
+          }),
+      ...(row.contextWindow === null ? {} : { contextWindow: row.contextWindow }),
+    });
+  }
   const pending = `${configPath}.pending`;
-  writeFileSync(pending, `${JSON.stringify({ providers: {} }, null, 2)}\n`);
+  writeFileSync(pending, `${JSON.stringify({ providers }, null, 2)}\n`);
   renameSync(pending, configPath);
 }
 

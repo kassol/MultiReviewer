@@ -13,6 +13,7 @@ import {
 
 const ONE: Catalog = {
   remote: "ok",
+  vendors: { openrouter: "ok" },
   providers: [{ id: "acme", name: "Acme", models: [] }],
 };
 
@@ -44,7 +45,7 @@ test("读失败不进缓存:下一次请求重来,读成功之后才只读一次
  * `--test-randomize` 把顺序打乱时,借来的前置状态会变成假失败。
  */
 test("显式失效之后下一次请求重新读一份,连续失效不出错", async () => {
-  const TWO: Catalog = { remote: "off", providers: [] };
+  const TWO: Catalog = { remote: "off", vendors: { openrouter: "off" }, providers: [] };
   let calls = 0;
   const load = (): Promise<Catalog> => {
     calls += 1;

@@ -123,6 +123,49 @@ CREATE TABLE IF NOT EXISTS global_setting (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- 手填的模型行(issue #87)。操作员在一个已配模型凭据的 provider 下填一个 model id,
+-- 这张表是它唯一的真相源:派生的用户模型配置 models.json 每次都按这张表整份重写,
+-- 清掉那份文件也能从这里重建(issue #82)。
+--
+-- 主键是 (provider, model),即模型标识 provider:model 的两段:同一个 model id 在两家
+-- provider 下是两个模型标识,各占一行。同键二次写入是覆盖而不是拒收——改单价或上下文
+-- 窗口本来就是同一行的第二次写入,拒收会逼人先删再加,而那两步之间这一行从模型目录里
+-- 消失,已经选进模型组合的它当场取不到。
+--
+-- 单价与上下文窗口都可空,空即走 Pi 的默认值(单价 0、上下文 128000)。单价只存 input
+-- 与 output 两项:落盘时 Pi 的 ModelCost 四个费率全是必填,缓存读写按 0 补齐——那与
+-- 「没填单价」时的默认值是同一个数。
+CREATE TABLE IF NOT EXISTS model_row (
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  cost_input REAL,
+  cost_output REAL,
+  context_window INTEGER,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (provider, model)
+);
+
+-- 自定义 provider 的定义(issue #88)。操作员自己加进模型目录的一家 OpenAI 兼容端点,
+-- 与 Pi 内置的那些家共用同一命名空间。
+--
+-- 主键是名字:一个名字对应一个 base URL 与一把模型凭据(model_credential 的主键也是
+-- provider),同一个端点要接两个 base URL 就起两个名字。同名二次写入直接抛而不是覆盖——
+-- 「改一家已有的 base URL」与「加一家新的」是两件事,而端点在撞名时就已经拒收了。
+--
+-- base_url 与 api 都 NOT NULL:全新 provider 没有继承来源(内置那些家的模型行从
+-- models[0] 继承这两项),缺任一者 Pi 把这一家整个从目录里丢掉——不是报错,是消失。
+-- api 是 Pi 的接口协议标识,本入口只面向 OpenAI 兼容的那两个取值,校验在端点上
+-- (model-runtime.ts 的 CUSTOM_PROVIDER_APIS)。
+--
+-- 这一家的第一个 model id 与后续手填的更多 model id 都进 model_row 表,与手填那条入口
+-- 复用同一张表与同一条派生链路。
+CREATE TABLE IF NOT EXISTS custom_provider (
+  name TEXT PRIMARY KEY,
+  base_url TEXT NOT NULL,
+  api TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 `;
 
 /**
@@ -263,6 +306,38 @@ export type ModelCredentialRecord = {
 };
 
 /**
+ * 一条手填的模型行(issue #87)。库是真相源,Pi 的用户模型配置由它整份派生。
+ *
+ * 三项可空的字段留空即走 Pi 的默认值(单价 0、上下文 128000):手填一行最少只要一个
+ * model id,接口协议与 base URL 由 Pi 从该 provider 的第一个模型继承。
+ */
+export type ModelRowRecord = {
+  provider: string;
+  model: string;
+  /** 每百万 token 的入价,null 即没填。 */
+  costInput: number | null;
+  /** 每百万 token 的出价,null 即没填。 */
+  costOutput: number | null;
+  contextWindow: number | null;
+  createdAt: string;
+};
+
+/**
+ * 一家自定义 provider(issue #88)。名字由操作员起,与 Pi 内置的那些家共用同一命名空间。
+ *
+ * 两项都必填:全新 provider 没有继承来源,缺任一者这一家整个从模型目录里消失。它的模型
+ * 存在 `model_row` 表里,与手填那条入口复用同一张表。
+ */
+export type CustomProviderRecord = {
+  /** 模型标识 `provider:model` 的前半段。只小写字母、数字与连字符。 */
+  name: string;
+  baseUrl: string;
+  /** 接口协议,落进派生配置的 provider 一级 `api`。 */
+  api: string;
+  createdAt: string;
+};
+
+/**
  * 全局设置。两项都可能没配:空库刚起来时就是这个样子,面板的设置页把它们配起来。
  */
 export type GlobalSettings = {
@@ -380,6 +455,54 @@ export type Store = {
   listModelCredentials(): ModelCredentialRecord[];
   /** 摘掉一家厂商的凭据。不存在时静默通过——目标状态已达成。 */
   removeModelCredential(provider: string): void;
+  /**
+   * 写一条手填的模型行。同一个模型标识二次写入是覆盖(理由见 model_row 的建表注释),
+   * 只改单价与上下文窗口,`createdAt` 保持第一次那个——它记的是这一行什么时候被填出来。
+   */
+  putModelRow(row: ModelRowRecord): void;
+  /** 全部手填的模型行,按模型标识排序。 */
+  listModelRows(): ModelRowRecord[];
+  /** 摘掉一条手填的模型行。不存在时静默通过——目标状态已达成。 */
+  removeModelRow(provider: string, model: string): void;
+  /**
+   * 登记一家自定义 provider。同名二次写入直接抛(主键冲突):端点在撞名时就已经拒收了,
+   * 库这一层照实反映那条约束。
+   */
+  putCustomProvider(record: CustomProviderRecord): void;
+  /** 全部自定义 provider,按名字排序。 */
+  listCustomProviders(): CustomProviderRecord[];
+  /**
+   * 登记一家自定义 provider,连它的第一个模型行与那把凭据一起(三张表一个事务)。三样要么
+   * 一起在、要么一起没有:分三句自动提交时,中途报错、进程退出或者盘满会留下一份半成品
+   * (定义在了、凭据没存上),而客户端重试会撞上「名字已被占用」被拒,补不齐——与
+   * `registerRepo` 消除「有仓库无 Key」是同一个道理。
+   *
+   * 三句的顺序把名字的唯一约束排在最后:撞名那一刻另两张表已经写过了,回滚要把它们一起
+   * 撤掉。同名二次登记照旧直抛(主键冲突),端点在撞名时就已经拒收了。
+   */
+  registerCustomProvider(record: {
+    name: string;
+    baseUrl: string;
+    api: string;
+    /** 这一家的第一个模型行,与手填那条入口同一张表。 */
+    model: string;
+    apiKeyEncrypted: string;
+    verified: boolean;
+    createdAt: string;
+  }): void;
+  /**
+   * 摘掉一家自定义 provider,连它的模型行与它那把凭据一起(三张表一个事务)。留着模型行
+   * 会让派生配置里出现一家没有 `api` 的 provider(Pi 把这一家整个丢掉),留着凭据会让
+   * 凭据页列出一家模型目录里根本没有的厂商。
+   *
+   * **级联以「`custom_provider` 里真有这一条登记」为前提。**这个名字与 Pi 内置的那些家共用
+   * 同一命名空间(`CONTEXT.md` 的自定义 provider 词条),而 `model_row` 与 `model_credential`
+   * 两张表都以 provider 名为键:不先确认登记就按名字级联,删一个从来没登记过的名字会把内置
+   * 同名那一家的模型凭据与它名下的手填模型行一起永久删掉,而凭据只写不回显,删了只能重新去
+   * 厂商后台取一把。没有这条登记时什么都不做,并且照旧静默通过——与 `removeModelCredential`
+   * / `removeRepoKey` 同一档:目标状态已达成。
+   */
+  removeCustomProvider(name: string): void;
   startRun(meta: RunMeta): number;
   finishRun(runId: number, result: RunResult): void;
   /**
@@ -475,7 +598,9 @@ export function openStore(dbPath: string): Store {
     }
   }
 
-  return {
+  // 具名而不是直接 return:事务型的写入(`registerCustomProvider`)要在一个事务里复用单写
+  // 的那几句,让两条路的语义只有一处。
+  const store: Store = {
     registerRepo(record) {
       db.exec("BEGIN");
       try {
@@ -641,6 +766,120 @@ export function openStore(dbPath: string): Store {
 
     removeModelCredential(provider) {
       db.prepare("DELETE FROM model_credential WHERE provider = ?").run(provider);
+    },
+
+    putModelRow(row) {
+      // 覆盖语义直接落在复合主键上,created_at 不在 DO UPDATE 里:同一行第二次写入改的
+      // 是单价与上下文窗口,不是它被填出来的时刻。
+      db.prepare(
+        `INSERT INTO model_row
+           (provider, model, cost_input, cost_output, context_window, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(provider, model) DO UPDATE SET
+           cost_input = excluded.cost_input,
+           cost_output = excluded.cost_output,
+           context_window = excluded.context_window`,
+      ).run(
+        row.provider,
+        row.model,
+        row.costInput,
+        row.costOutput,
+        row.contextWindow,
+        row.createdAt,
+      );
+    },
+
+    listModelRows() {
+      const rows = db
+        .prepare(
+          `SELECT provider, model, cost_input, cost_output, context_window, created_at
+           FROM model_row ORDER BY provider, model`,
+        )
+        .all();
+      return rows.map((row) => ({
+        provider: String(row["provider"]),
+        model: String(row["model"]),
+        costInput: row["cost_input"] === null ? null : Number(row["cost_input"]),
+        costOutput: row["cost_output"] === null ? null : Number(row["cost_output"]),
+        contextWindow: row["context_window"] === null ? null : Number(row["context_window"]),
+        createdAt: String(row["created_at"]),
+      }));
+    },
+
+    removeModelRow(provider, model) {
+      db.prepare("DELETE FROM model_row WHERE provider = ? AND model = ?").run(provider, model);
+    },
+
+    putCustomProvider(record) {
+      // 没有 ON CONFLICT:同名二次写入是主键冲突,照实抛出去。
+      db.prepare(
+        `INSERT INTO custom_provider (name, base_url, api, created_at) VALUES (?, ?, ?, ?)`,
+      ).run(record.name, record.baseUrl, record.api, record.createdAt);
+    },
+
+    listCustomProviders() {
+      const rows = db
+        .prepare("SELECT name, base_url, api, created_at FROM custom_provider ORDER BY name")
+        .all();
+      return rows.map((row) => ({
+        name: String(row["name"]),
+        baseUrl: String(row["base_url"]),
+        api: String(row["api"]),
+        createdAt: String(row["created_at"]),
+      }));
+    },
+
+    registerCustomProvider(record) {
+      // 三张表一个事务:半成品(定义在了、凭据没存上)补不齐——重试会撞上「名字已被占用」。
+      // 名字的唯一约束排在最后一句,撞名时前两句的写入由回滚一起撤掉。
+      db.exec("BEGIN");
+      try {
+        store.putModelRow({
+          provider: record.name,
+          model: record.model,
+          costInput: null,
+          costOutput: null,
+          contextWindow: null,
+          createdAt: record.createdAt,
+        });
+        store.putModelCredential(
+          record.name,
+          record.apiKeyEncrypted,
+          record.createdAt,
+          record.verified,
+        );
+        store.putCustomProvider({
+          name: record.name,
+          baseUrl: record.baseUrl,
+          api: record.api,
+          createdAt: record.createdAt,
+        });
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    removeCustomProvider(name) {
+      // 一家自定义 provider 的定义、它的模型行与它那把凭据要么一起在、要么一起没有:
+      // 只删掉定义会留下一份取不到的模型行与一把无主的凭据。
+      //
+      // 级联的前提是这条登记真在:名字与 Pi 内置那些家共用同一命名空间,而这两张表都以
+      // provider 名为键。没登记就按名字删的话,一个没登记过的内置名字会把内置那一家的模型
+      // 凭据与手填模型行一起永久删掉(凭据只写不回显)。受影行数为 0 即什么都不做。
+      db.exec("BEGIN");
+      try {
+        const removed = db.prepare("DELETE FROM custom_provider WHERE name = ?").run(name);
+        if (Number(removed.changes) > 0) {
+          db.prepare("DELETE FROM model_row WHERE provider = ?").run(name);
+          db.prepare("DELETE FROM model_credential WHERE provider = ?").run(name);
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     },
 
     startRun(meta) {
@@ -972,4 +1211,5 @@ export function openStore(dbPath: string): Store {
       db.close();
     },
   };
+  return store;
 }

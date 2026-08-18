@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
+import { buildReviewers } from "../src/config.ts";
 import { runReview } from "../src/review/run.ts";
+import { openStore } from "../src/review/store.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
 
@@ -290,4 +292,43 @@ test("零 Finding 但 Reviewer 都成功时,不算失败", async () => {
   });
 
   assert.equal(result.failed, false);
+});
+
+/**
+ * 撞名的自定义 provider 那一档(issue #94):它的模型仍在模型组合里时,这一轮留下一条写明
+ * 名字冲突的失败记录,同一轮里其余 Reviewer 照常跑完、review 照常发,整轮不算失败
+ * (`run.ts` 的 `failed` 是「全部都失败」)。
+ *
+ * 失败的那一个由真实的 `buildReviewers` 组装出来,不是脚本 Reviewer:这一条要守的正是
+ * 「组装时按失败处理」与「Review Run 留下这条记录」之间那一段真实链路。
+ */
+test("撞名的 provider 留下失败记录,其余 Reviewer 照常跑完,整轮不算失败", async () => {
+  const { cache, db, forge, event } = setup();
+  const collided = { provider: "corp-gateway", model: "corp-qwen3-max" };
+  const [conflicting] = buildReviewers(
+    [collided],
+    new Map([[collided.provider, "k-corp"]]),
+    new Set([collided.provider]),
+  );
+
+  const result = await runReview(event, {
+    forge: forge.forge,
+    reviewers: [scriptedReviewer("model-a", [AT_LINE_2]), conflicting!],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  assert.equal(result.failed, false, "一个模型撞名把整轮 Run 判成失败了");
+  assert.equal(forge.createdReviews.length, 1);
+  assert.equal(forge.createdReviews[0]!.comments.length, 1, "其余 Reviewer 的 Finding 没发出去");
+
+  const store = openStore(db.path);
+  try {
+    const models = store.listRuns({ limit: 1 })[0]!.models;
+    const failed = models.find((row) => row.model === "corp-gateway:corp-qwen3-max");
+    assert.match(failed?.failure ?? "", /名字/, "失败记录没写明是名字冲突");
+    assert.equal(models.find((row) => row.model === "model-a")?.failure, null);
+  } finally {
+    store.close();
+  }
 });

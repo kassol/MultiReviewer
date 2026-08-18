@@ -124,10 +124,12 @@ export async function startPanelHarness(
 
   const server = createWebhookServer({
     forges: { gitea: forge },
-    buildReviewers: (specs, credentials) => {
+    buildReviewers: (specs, credentials, conflicting) => {
       factoryCalls.push(specs);
       snapshots.push(credentials);
-      if (options.buildReviewers !== undefined) return options.buildReviewers(specs, credentials);
+      if (options.buildReviewers !== undefined) {
+        return options.buildReviewers(specs, credentials, conflicting);
+      }
       return specs.map((spec) => scriptedReviewer(spec.model, []));
     },
     cacheDir: cache.dir,

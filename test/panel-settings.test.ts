@@ -168,3 +168,50 @@ test("空库、没配模型组合时投递留下一条失败的 Review Run,原�
     sqlite.close();
   }
 });
+
+/**
+ * 撞名的自定义 provider 接进 Review Run(issue #94)。测在同一条组装缝上:harness 注入的
+ * `buildReviewers` 就是服务真用的那一个入口,而撞名的判据是服务在开跑前自己算出来喂给它的。
+ * 少了这一条,服务端不算撞名、一律传空集合也照样全绿——组装那一档的用例是直接调
+ * `buildReviewers` 的,碰不到这段接线。
+ *
+ * 同一个组合里放两家自定义 provider:一家的名字是 Pi 内置就有的(`openrouter`,撞名),另一家
+ * 是自己起的名字(不撞)。两句失败措辞必须不同——这既守住接线,也顺带证实判据不是「凡是自定义
+ * provider 都算撞名」。`openrouter` 哪天真从 Pi 内置目录里消失,这一条会当场红。
+ */
+test("组合里有撞名的自定义 provider 时,那一个模型的失败原因写明是名字冲突", async () => {
+  const collided = { provider: "openrouter", model: "corp-qwen3-max" };
+  const fine = { provider: "corp-gateway", model: "corp-glm-5" };
+  const h = await startPanelHarness(cleanups, {
+    reviewers: [collided, fine],
+    buildReviewers,
+  });
+  // 两家都登记在库里,只有名字撞上内置那一家的才该被停用。凭据一把都不配:撞名那一档必须
+  // 压过缺凭据那一档。
+  const seed = openStore(h.db.path);
+  for (const name of [collided.provider, fine.provider]) {
+    seed.putCustomProvider({
+      name,
+      baseUrl: "https://ai.corp.example/v1",
+      api: "openai-completions",
+      createdAt: new Date(0).toISOString(),
+    });
+  }
+  seed.close();
+  assert.equal(
+    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
+    201,
+  );
+
+  assert.equal((await h.deliverViaHook("sha-1")).status, 200);
+  await h.settledAtLeast(1);
+  assert.equal(h.settled[0]!.error, undefined);
+
+  const store = openStore(h.db.path);
+  const models = store.listRuns({ limit: 1 })[0]!.models;
+  store.close();
+  const failure = (model: string): string =>
+    models.find((row) => row.model === model)?.failure ?? "";
+  assert.match(failure("openrouter:corp-qwen3-max"), /名字/, "撞名那一个没写明是名字冲突");
+  assert.match(failure("corp-gateway:corp-glm-5"), /模型凭据/, "不撞名的那一个被误判成撞名");
+});

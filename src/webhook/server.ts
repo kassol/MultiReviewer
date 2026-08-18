@@ -43,8 +43,21 @@ import {
 import { DEFAULT_MAX_CHANGED_LINES_PER_BATCH } from "../review/batch.ts";
 import type { Reviewer } from "../review/finding.ts";
 import { backfillUpdates, priorDispositions, runReview } from "../review/run.ts";
-import { openStore, type RepoKey, type Store } from "../review/store.ts";
-import { modelCatalog } from "../reviewer/catalog.ts";
+import {
+  openStore,
+  type RepoKey,
+  type Store,
+} from "../review/store.ts";
+import {
+  conflictingProviderNames,
+  invalidateModelCatalog,
+  modelCatalog,
+} from "../reviewer/catalog.ts";
+import {
+  CUSTOM_PROVIDER_APIS,
+  sharedModelPaths,
+  writeSharedModelsConfig,
+} from "../reviewer/model-runtime.ts";
 
 export type Platform = "github" | "gitea";
 
@@ -105,11 +118,13 @@ export type WebhookServerDeps = {
   gitea?: GiteaForgeOptions;
   /**
    * 按模型组合与凭据快照组装 Reviewer,每次 Review Run 开始时调一次。缺凭据的
-   * provider 由它建出一个报失败的 Reviewer,不抛(issue #65)。
+   * provider 由它建出一个报失败的 Reviewer,不抛(issue #65);名字撞上内置那一家的自定义
+   * provider 同理(第三个入参,issue #94)。
    */
   buildReviewers: (
     specs: readonly ReviewerSpec[],
     credentials: CredentialSnapshot,
+    conflictingProviders: ReadonlySet<string>,
   ) => readonly Reviewer[];
   /**
    * 模型凭据的加密主密钥(ADR 0008),取自环境变量。缺失时凭据端点读写都拒绝并说明
@@ -415,30 +430,42 @@ function lookupAdmission(dbPath: string, repoId: number): Admission {
   }));
 }
 
-function startRun(
+/**
+ * 开一轮 Review Run。调用方一律 `void` 它:这是长跑服务,后台任务的 rejection 不接住就会
+ * 变成 unhandledRejection 把进程带崩,所以整段包在 try 里,失败一律经 `settled` 出去。
+ */
+async function startRun(
   deps: WebhookServerDeps,
   forge: Forge,
   event: NormalizedEvent,
   specs: readonly ReviewerSpec[],
-): void {
+): Promise<void> {
   const settled = deps.onRunSettled ?? logFailure;
-  // 组装就在这里:凭据在 Run 开始时快照一次,缺哪一家由那一家的 Reviewer 报失败。
-  const reviewers = deps.buildReviewers(specs, credentialSnapshot(deps));
-  const maxChangedLinesPerBatch = globalSettings(deps).maxChangedLinesPerBatch;
-  // 这是长跑服务,后台任务的 rejection 不接住就会变成 unhandledRejection 把进程带崩。
-  void runReview(
-    { owner: event.owner, repo: event.repo, number: event.number },
-    {
-      forge,
-      reviewers,
-      cacheDir: deps.cacheDir,
-      dbPath: deps.dbPath,
-      ...(maxChangedLinesPerBatch === null ? {} : { maxChangedLinesPerBatch }),
-    },
-  ).then(
-    () => settled(event),
-    (error: unknown) => settled(event, error),
-  );
+  try {
+    // 撞名的自定义 provider 现算(issue #94):判据是「库里的登记 ∩ Pi 内置目录」这个交集,
+    // 不落库,所以操作员改完名字下一次投递就自己恢复了。一家自定义 provider 都没登记时它连
+    // 运行时都不建。
+    const conflicting = await conflictingProviderNames(
+      withStore(deps.dbPath, (store) => store.listCustomProviders()),
+    );
+    // 组装就在这里:凭据在 Run 开始时快照一次,缺哪一家由那一家的 Reviewer 报失败。
+    const reviewers = deps.buildReviewers(specs, credentialSnapshot(deps), conflicting);
+    const maxChangedLinesPerBatch = globalSettings(deps).maxChangedLinesPerBatch;
+    await runReview(
+      { owner: event.owner, repo: event.repo, number: event.number },
+      {
+        forge,
+        reviewers,
+        cacheDir: deps.cacheDir,
+        dbPath: deps.dbPath,
+        ...(maxChangedLinesPerBatch === null ? {} : { maxChangedLinesPerBatch }),
+      },
+    );
+  } catch (error) {
+    settled(event, error);
+    return;
+  }
+  settled(event);
 }
 
 /**
@@ -613,7 +640,7 @@ async function handle(
   log(`${describe(event)} — 开始审查`);
   // 先回 200 再开跑:一次审查可能要跑很久,平台等不到那时候就会判超时。
   send(res, 200);
-  startRun(deps, forge, event, specs);
+  void startRun(deps, forge, event, specs);
 }
 
 /** 请求路径,不含查询串。hook URL 会带 `?k=<代次>`(ADR 0007),匹配只看路径。 */
@@ -777,6 +804,29 @@ async function handlePanelApi(
     return handleRemoveCredential(res, deps, credentialRoute[1]!);
   }
 
+  if (sub === "/model-rows" && req.method === "GET") {
+    return handleListModelRows(res, deps);
+  }
+  if (sub === "/model-rows" && req.method === "POST") {
+    return handleAddModelRow(req, res, deps);
+  }
+  if (sub === "/model-rows" && req.method === "DELETE") {
+    return handleRemoveModelRow(req, res, deps);
+  }
+
+  if (sub === "/custom-providers" && req.method === "GET") {
+    return handleListCustomProviders(res, deps);
+  }
+  if (sub === "/custom-providers" && req.method === "POST") {
+    return handleAddCustomProvider(req, res, deps);
+  }
+  // 名字的字符集与长度上限都与登记时的校验同一套(`CUSTOM_PROVIDER_NAME_PATTERN` 一处定):
+  // 别的形状的名字一家都登记不进来,匹配不上照实回 404。
+  const customProviderRoute = CUSTOM_PROVIDER_ROUTE.exec(sub);
+  if (customProviderRoute !== null && req.method === "DELETE") {
+    return handleRemoveCustomProvider(res, deps, customProviderRoute[1]!);
+  }
+
   return sendJson(res, 404, { error: "没有这个端点" });
 }
 
@@ -855,30 +905,69 @@ const MASTER_KEY_MISSING =
  */
 async function handleCatalog(res: ServerResponse, deps: WebhookServerDeps): Promise<void> {
   const masterKey = deps.credentialMasterKey;
+  const { credentials, modelRows, customProviders } = withStore(deps.dbPath, (store) => ({
+    credentials: store.listModelCredentials(),
+    modelRows: store.listModelRows(),
+    customProviders: store.listCustomProviders(),
+  }));
   // 目录是 Pi 的内置事实,与凭据无关,缺主密钥照样给——选模型这件事本身不需要凭据,
   // 而看不见目录的人也就无从知道该去配哪一家。缺主密钥时全部按未配置算。
   const configured = new Set(
     masterKey === undefined || masterKey === ""
       ? []
-      : withStore(deps.dbPath, (store) => store.listModelCredentials())
+      : credentials
           // 判据与凭据列表同一套:解不开的密文按未配置算。
           .filter((row) => decryptCredential(masterKey, row.apiKeyEncrypted) !== undefined)
           .map((row) => row.provider),
   );
+  // 单价留空的模型行,按 provider 归拢(issue #89)。判据只在库里:目录里的 `cost` 是 Pi
+  // 给的结果,而手填一行留空时 Pi 填的默认值恰好也是 0,内置表里本来就有一百多个模型的
+  // 单价是真的 0——拿 `cost` 判会把「免费」诬告成「没记账」。留空的判据与落盘那一处同一条
+  // (`writeSharedModelsConfig`):两项都是 null 才算留空,只填一头时另一头按 0 落进单价表,
+  // 那是操作员写下的 0。库里没有行的模型(内置、远程目录、厂商目录)一律不标。
+  const costUnset = new Map<string, Set<string>>();
+  for (const row of modelRows) {
+    if (row.costInput !== null || row.costOutput !== null) continue;
+    let models = costUnset.get(row.provider);
+    if (models === undefined) costUnset.set(row.provider, (models = new Set()));
+    models.add(row.model);
+  }
+  // 操作员自己加的那几家(issue #88)。判据在库里而不在目录里:目录里的一家看不出自己是
+  // 内置的还是登记进来的,而面板要把两者分开呈现(删得掉哪一家、改得动哪一家的端点)。
+  const customNames = new Set(customProviders.map((entry) => entry.name));
+  // 撞名的那几家(issue #94)。名字被 Pi 内置的同名 provider 占用时目录里那一条是内置那一家
+  // (撞名的不落进派生文件),`custom` 与它同时为真即这一档:登记还在库里、面板删得掉,可是
+  // 这一家已经停用。判据现算不落库,冲突消失后下一次读目录就恢复。
+  const conflicting = await conflictingProviderNames(customProviders);
   const verifiable = new Set(CHECKED_PROVIDERS);
   const catalog = await modelCatalog();
   return sendJson(res, 200, {
     // 远程那一层的状态照原样透出:`unavailable` 时给出的只有内置目录,选择器里会少
     // 掉 pi.dev 上的那部分模型,不透出去就查不出少在哪。
     remote: catalog.remote,
-    providers: catalog.providers.map((provider) => ({
-      id: provider.id,
-      name: provider.name,
-      configured: configured.has(provider.id),
-      // 真发验证请求的那几家,判据就是 `credential-check.ts` 认得的那张表。
-      verifiable: verifiable.has(provider.id),
-      models: provider.models,
-    })),
+    // 厂商目录那一层按 provider 分开报,与远程那一层不合并:两层都可能少掉一批模型,
+    // 合成一个字段就分不清是哪一层没生效。前端这轮不读它,运维读 API 或日志。
+    vendors: catalog.vendors,
+    providers: catalog.providers.map((provider) => {
+      const unset = costUnset.get(provider.id);
+      return {
+        id: provider.id,
+        name: provider.name,
+        configured: configured.has(provider.id),
+        // 真发验证请求的那几家,判据就是 `credential-check.ts` 认得的那张表。
+        verifiable: verifiable.has(provider.id),
+        // 真即这一家是操作员自己加的自定义 provider,不是 Pi 内置的那些家。
+        custom: customNames.has(provider.id),
+        // 真即这个名字与 Pi 内置的同名 provider 撞上了,这一家已停用(issue #94)。
+        conflict: conflicting.has(provider.id),
+        models: provider.models.map((model) => ({
+          ...model,
+          // 真即这个模型的 Review Run 成本会记成零:成本取自这张单价表,而留空的行走的是
+          // Pi 的默认值 0。面板据此在模型行与已选列表上标出来。
+          costUnset: unset !== undefined && unset.has(model.id),
+        })),
+      };
+    }),
   });
 }
 
@@ -966,6 +1055,439 @@ function handleRemoveCredential(
   }
   withStore(deps.dbPath, (store) => store.removeModelCredential(provider));
   return send(res, 204);
+}
+
+/**
+ * 手填的模型行(issue #87)。回的是库里的原样:派生的用户模型配置与目录端点里那一份都
+ * 从这些行重建,面板要能看见自己填过什么、删掉哪一条。
+ */
+function handleListModelRows(res: ServerResponse, deps: WebhookServerDeps): void {
+  return sendJson(res, 200, { rows: withStore(deps.dbPath, (store) => store.listModelRows()) });
+}
+
+/**
+ * 选填的一个数。缺省与 null 都按「没填」处理(落盘时整项不写,由 Pi 取默认值);填了就
+ * 必须能落盘——Pi 对 contextWindow ≤ 0 直接抛,而它把这类错误吞进 provider 的合成里,
+ * 那一行会连提示都没有地凭空消失,人只看到「保存成功却选不到」。
+ */
+function optionalNumber(
+  value: unknown,
+  options: { min: number; integer?: boolean },
+): { ok: true; value: number | null } | { ok: false } {
+  if (value === undefined || value === null) return { ok: true, value: null };
+  if (typeof value !== "number" || !Number.isFinite(value) || value < options.min) {
+    return { ok: false };
+  }
+  if (options.integer === true && !Number.isInteger(value)) return { ok: false };
+  return { ok: true, value };
+}
+
+/**
+ * 加一条手填的模型行。三道拒收:provider 要在模型目录里、要已配模型凭据、model id 非空。
+ *
+ * 凭据是硬门禁(issue #80):选择器今天就以凭据为准(未配凭据的那一家整组 disabled),
+ * 放开到全部 39 家会让同一个 provider 点不动却填得进,两套规则并存。填一个目录里没有的
+ * provider 落到的是自定义 provider 那条入口,不是这一条。
+ *
+ * model id 本身不校验:填错了由子进程报「模型不存在」,单个 Reviewer 失败不拦整轮,失败
+ * 原因落库并显示在评审记录上(issue #65 的既有链路)。
+ *
+ * 回的形状与 GET 相同——加完立刻要显示完整的一览,让前端再打一次列表是白付一次往返。
+ */
+async function handleAddModelRow(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): Promise<void> {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body) as {
+    provider?: unknown;
+    model?: unknown;
+    costInput?: unknown;
+    costOutput?: unknown;
+    contextWindow?: unknown;
+  } | null;
+  if (payload === null) {
+    return sendJson(res, 400, { error: "body 要是 JSON" });
+  }
+  if (typeof payload.provider !== "string" || payload.provider === "") {
+    return sendJson(res, 400, { error: "provider 要从模型目录里选一家。" });
+  }
+  const model = typeof payload.model === "string" ? payload.model.trim() : "";
+  if (model === "") {
+    return sendJson(res, 400, { error: "model id 不能是空的,填厂商文档里那个模型标识。" });
+  }
+  const costInput = optionalNumber(payload.costInput, { min: 0 });
+  const costOutput = optionalNumber(payload.costOutput, { min: 0 });
+  const contextWindow = optionalNumber(payload.contextWindow, { min: 1, integer: true });
+  if (!costInput.ok || !costOutput.ok || !contextWindow.ok) {
+    return sendJson(res, 400, {
+      error: "单价要是不小于 0 的数,上下文窗口要是正整数;两项都能留空,留空即取 Pi 的默认值。",
+    });
+  }
+
+  const masterKey = deps.credentialMasterKey;
+  // 没有主密钥就判不出哪一家配过凭据,而凭据是这个端点的门禁:与凭据页同一档回 503。
+  if (masterKey === undefined || masterKey === "") {
+    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
+  }
+
+  const wanted = payload.provider;
+  const provider = (await modelCatalog()).providers.find((entry) => entry.id === wanted);
+  if (provider === undefined) {
+    return sendJson(res, 400, {
+      error: `模型目录里没有 ${wanted} 这一家,手填的模型行只能加在目录里已有的厂商下。`,
+    });
+  }
+  // 接口协议与 base URL 是从该家的第一个模型继承来的,一个模型都没有就继承不到:Pi 会把
+  // 这一行整个丢掉(内置目录里 radius 就是这一档)。
+  if (provider.models.length === 0) {
+    return sendJson(res, 400, {
+      error: `${provider.id} 在模型目录里一个模型都没有,手填的行继承不到接口协议与 base URL,填了也取不到。`,
+    });
+  }
+  const { credentials, customProviders } = withStore(deps.dbPath, (store) => ({
+    credentials: store.listModelCredentials(),
+    customProviders: store.listCustomProviders(),
+  }));
+  // 撞名的那一家整个停用了(issue #94):派生文件里没有它,往它下面填的行会落库却永远进不了
+  // 模型目录,那就是「保存成功却选不到」。这一道必须自己判——上面两道都过得去:撞上的内置
+  // 那一家在目录里、也有模型,而凭据就是登记撞名那一家时落下的那一把。
+  if ((await conflictingProviderNames(customProviders)).has(provider.id)) {
+    return sendJson(res, 400, {
+      error:
+        `${provider.id} 这个名字与 Pi 内置的同名 provider 撞上了,你登记的那一家已停用,` +
+        "填在它下面的模型行进不了模型目录。先给那一家改个名字重建、或者把它删掉,再回来填。",
+    });
+  }
+  const configured = credentials.some(
+    (row) =>
+      row.provider === provider.id &&
+      // 判据与目录端点同一套:解不开的密文按未配置算。
+      decryptCredential(masterKey, row.apiKeyEncrypted) !== undefined,
+  );
+  if (!configured) {
+    return sendJson(res, 400, {
+      error: `${provider.id} 还没配模型凭据,先去凭据页粘一把 key,再在这一家下面填模型标识。`,
+    });
+  }
+
+  // 回响应体的那一份快照各读各的:它只是给面板显示用,派生文件那一份由重建自己现读。
+  const rows = withStore(deps.dbPath, (store) => {
+    store.putModelRow({
+      provider: provider.id,
+      model,
+      costInput: costInput.value,
+      costOutput: costOutput.value,
+      contextWindow: contextWindow.value,
+      createdAt: new Date((deps.now ?? Date.now)()).toISOString(),
+    });
+    return store.listModelRows();
+  });
+  const failure = await rebuildModelsConfig(deps.dbPath);
+  if (failure !== undefined) return sendJson(res, 500, { error: rebuildFailureMessage(failure) });
+  return sendJson(res, 200, { rows });
+}
+
+/**
+ * 摘掉一条手填的模型行。目标走 body 而不是路径:model id 里既有斜杠
+ * (`z-ai/glm-4.5-air`)又有冒号(`…:free`),塞进路径要靠 `%2F`,而外部反代常把它解回
+ * 真正的斜杠,路由当场对不上。不存在的行也照样重建派生文件并回 204——目标状态已达成。
+ */
+async function handleRemoveModelRow(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): Promise<void> {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body) as { provider?: unknown; model?: unknown } | null;
+  const provider = payload === null ? undefined : payload.provider;
+  const model = payload === null ? undefined : payload.model;
+  if (typeof provider !== "string" || typeof model !== "string") {
+    return sendJson(res, 400, {
+      error: 'body 要是 {"provider": "...", "model": "..."} 形状的 JSON',
+    });
+  }
+  withStore(deps.dbPath, (store) => store.removeModelRow(provider, model));
+  const failure = await rebuildModelsConfig(deps.dbPath);
+  if (failure !== undefined) return sendJson(res, 500, { error: rebuildFailureMessage(failure) });
+  return send(res, 204);
+}
+
+/**
+ * 自定义 provider 的名字长度上限。
+ *
+ * 判据在删除那一头:名字要整个放进 `DELETE <前缀>/api/custom-providers/<名字>` 的路径里,而
+ * 请求行过大是在路由之前被拒的——Node 默认的请求头上限 16 KiB、nginx 默认的请求行缓冲 8 KiB,
+ * 超长名字于是登得进去删不出来。64 个字符离两道上限都很远,而内置那 39 家的 id 最长也就二十来
+ * 个字符(名字与它们同形、共用同一命名空间),给操作员的余量够了。
+ */
+const CUSTOM_PROVIDER_NAME_MAX = 64;
+
+/**
+ * 自定义 provider 的名字。与内置 id 同形,顺带排除冒号(模型标识按第一个冒号切分)。字符集
+ * 与长度上限只在这一处定:登记时的校验(`handleAddCustomProvider`)与删除的路由
+ * (`CUSTOM_PROVIDER_ROUTE`)必须是同一个判据,松一头就有登得进去删不出来的名字。
+ */
+const CUSTOM_PROVIDER_NAME_PATTERN = `[a-z0-9-]{1,${CUSTOM_PROVIDER_NAME_MAX}}`;
+const CUSTOM_PROVIDER_NAME = new RegExp(`^${CUSTOM_PROVIDER_NAME_PATTERN}$`);
+const CUSTOM_PROVIDER_ROUTE = new RegExp(`^/custom-providers/(${CUSTOM_PROVIDER_NAME_PATTERN})$`);
+
+/**
+ * 已登记的自定义 provider(issue #88)。回的是库里的原样:面板要能看见自己加过哪几家、
+ * 各自指向哪个端点。那把 key 不在这里,凭据列表按 provider 给出它的状态。
+ */
+function handleListCustomProviders(res: ServerResponse, deps: WebhookServerDeps): void {
+  return sendJson(res, 200, {
+    providers: withStore(deps.dbPath, (store) => store.listCustomProviders()),
+  });
+}
+
+/**
+ * 加一家自定义 provider:一个 OpenAI 兼容的端点,和内置那些家并列进模型目录。
+ *
+ * 五道拒收,每一道都对着一个查证过的 Pi 行为:
+ *
+ * 一、**名字撞上目录里已有的 id 或已登记的自定义 provider 时拒收。**Pi 对同名 provider
+ *     不报错而是做覆盖:只给 base URL 不给模型列表时,内置那份模型列表原样保留、每一个都
+ *     改指新端点(`applyModelsJson` 的第一步就是这个映射)。叫 `openai` 会让已有的模型组合
+ *     悄声换掉接口地址,而面板上零痕迹——模型标识一个字都没变。判据取目录与库两处的并集:
+ *     目录是权威的那一份,而派生文件一时写不出来时目录里看不到已登记的那几家,只查目录会
+ *     让同一个名字被登记第二次(主键冲突直抛 500)。
+ * 二、**名字含非法字符或者超过长度上限时拒收。**只小写字母、数字与连字符:与内置 id 同形,
+ *     且顺带排除冒号——模型标识 `provider:model` 按第一个冒号切分,名字里带冒号会把标识切错
+ *     位置。长度上限见 `CUSTOM_PROVIDER_NAME_MAX`:超长的名字删除时进不了路由,登得进去删不
+ *     出来。
+ * 三、**base URL 缺失时拒收。**四、**接口协议缺失或不在取值集里时拒收。**全新 provider
+ *     没有继承来源(内置那些家的模型行从 `models[0]` 继承这两项),缺任一者 Pi 把这一家
+ *     整个从目录里丢掉——不是报错,是消失,人只看到「保存成功却选不到」。
+ * 五、**第一个 model id 缺失时拒收。**新加的一家要立刻有东西可选;那一行进 `model_row` 表,
+ *     与手填那条入口复用同一张表与同一条派生链路。
+ *
+ * key 走既有的模型凭据加密路径(ADR 0008),只写不回显。自定义端点必然落在厂商验证认不出的
+ * 那一类(认得的四家都是内置 id,而内置名字在第一道就被拒了),因此跳过验证并标成未验证:
+ * key 对不对要等 Review Run 才知道。
+ *
+ * base URL 填错不在拒收之列:只要 `api` 与 `baseUrl` 两项都在,这一家就在目录里,地址对不
+ * 对要到真请求那一刻才知道,那时留下的是一条带原因的 Reviewer 失败记录(issue #65)。
+ *
+ * 三张表(定义、第一个模型行、那把凭据)在一个事务里写齐(`registerCustomProvider`):分三句
+ * 自动提交时中途报错会留下一份补不齐的半成品——重试撞上「名字已被占用」。
+ */
+async function handleAddCustomProvider(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): Promise<void> {
+  const masterKey = deps.credentialMasterKey;
+  // 这一家的 key 与它一起落库,没有主密钥就加密不了:与凭据页同一档回 503。
+  if (masterKey === undefined || masterKey === "") {
+    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
+  }
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body) as {
+    name?: unknown;
+    baseUrl?: unknown;
+    api?: unknown;
+    model?: unknown;
+    apiKey?: unknown;
+  } | null;
+  if (payload === null) {
+    return sendJson(res, 400, { error: "body 要是 JSON" });
+  }
+
+  const name = typeof payload.name === "string" ? payload.name.trim() : "";
+  if (!CUSTOM_PROVIDER_NAME.test(name)) {
+    return sendJson(res, 400, {
+      error:
+        `provider 的名字只能用小写字母、数字与连字符,1 到 ${CUSTOM_PROVIDER_NAME_MAX} 个字符。` +
+        "与 Pi 内置那些家的 id 同形,而且不能带冒号——模型标识 provider:model 按第一个冒号切分;" +
+        "长度上限是因为删除时名字要整个放进 URL 路径,过长的请求行在路由之前就被拒了。",
+    });
+  }
+  const baseUrl = typeof payload.baseUrl === "string" ? payload.baseUrl.trim() : "";
+  if (baseUrl === "") {
+    return sendJson(res, 400, {
+      error:
+        "base URL 不能留空:全新的一家 provider 没有可继承的来源,缺了它 Pi 会把这一家整个" +
+        "从模型目录里丢掉,而不是报错。填厂商或网关文档里那个 OpenAI 兼容的基地址。",
+    });
+  }
+  const api = typeof payload.api === "string" ? payload.api.trim() : "";
+  if (!(CUSTOM_PROVIDER_APIS as readonly string[]).includes(api)) {
+    return sendJson(res, 400, {
+      error:
+        `接口协议要从 ${CUSTOM_PROVIDER_APIS.join(" / ")} 里选一个,留空或填别的值时 Pi 会把` +
+        "这一家整个从模型目录里丢掉。走 /chat/completions 的选 openai-completions,走 /responses 的选 openai-responses。",
+    });
+  }
+  const model = typeof payload.model === "string" ? payload.model.trim() : "";
+  if (model === "") {
+    return sendJson(res, 400, {
+      error: "第一个 model id 不能是空的:新加的一家要立刻有东西可选。填这个端点上那个模型标识。",
+    });
+  }
+  const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
+  if (apiKey === "") {
+    return sendJson(res, 400, {
+      error: "key 不能留空:一个名字对应一把模型凭据,没有它这一家的 Review Run 一开跑就失败。",
+    });
+  }
+
+  const existing = withStore(deps.dbPath, (store) => store.listCustomProviders());
+  const catalog = await modelCatalog();
+  if (
+    catalog.providers.some((provider) => provider.id === name) ||
+    existing.some((provider) => provider.name === name)
+  ) {
+    return sendJson(res, 409, {
+      error:
+        `${name} 这个名字已被占用,换一个。Pi 对同名 provider 不报错而是做覆盖:` +
+        "这一家已有的模型会原样留着、却全部改指你填的这个端点,已经选进模型组合的模型标识" +
+        "一个字都不变,面板上看不出任何痕迹。",
+    });
+  }
+
+  // 认不出的 provider 一个请求都不发,直接放行并标未验证。自定义端点必然走这一档,复用同
+  // 一条路径是为了让两个写入口的判据只有一处。
+  const check = await checkCredential(name, apiKey);
+  if (!check.ok) {
+    return sendJson(res, 400, { error: `凭据没通过验证,没有保存:${check.reason}` });
+  }
+
+  const createdAt = new Date((deps.now ?? Date.now)()).toISOString();
+  const providers = withStore(deps.dbPath, (store) => {
+    store.registerCustomProvider({
+      name,
+      baseUrl,
+      api,
+      model,
+      apiKeyEncrypted: encryptCredential(masterKey, apiKey),
+      verified: check.verified,
+      createdAt,
+    });
+    return store.listCustomProviders();
+  });
+  const failure = await rebuildModelsConfig(deps.dbPath);
+  if (failure !== undefined) return sendJson(res, 500, { error: rebuildFailureMessage(failure) });
+  return sendJson(res, 200, { providers });
+}
+
+/**
+ * 摘掉一家自定义 provider,连它的模型行与它那把凭据一起。
+ *
+ * 还被模型组合引用着就拒收并指名道姓说清是哪几处(全局组合与每仓库覆盖都查):删掉不问的话
+ * 那些组合留着一个取不到的模型标识,下一次审查里那个模型报「模型不存在」,而人根本不会把它
+ * 联想到这次删除。修法是先去那几处把它换掉,再回来删。
+ *
+ * 坏掉的覆盖 JSON(直接写库的遗留)按「引用不到」跳过,不让一行坏数据把删除卡死——它本来
+ * 就已经在投递链上按配置错误处理了。
+ */
+async function handleRemoveCustomProvider(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  name: string,
+): Promise<void> {
+  const referenced = withStore(deps.dbPath, (store) => {
+    const uses = (reviewersJson: string | null): boolean => {
+      if (reviewersJson === null) return false;
+      const specs = safeParseJson(reviewersJson);
+      return (
+        Array.isArray(specs) &&
+        specs.some(
+          (spec) =>
+            typeof spec === "object" && spec !== null && "provider" in spec && spec.provider === name,
+        )
+      );
+    };
+    const where: string[] = [];
+    if (uses(store.getGlobalSettings().reviewersJson)) where.push("全局组合");
+    for (const repo of store.listRepos()) {
+      if (uses(repo.reviewersJson)) where.push(`${repo.owner}/${repo.repo} 的覆盖`);
+    }
+    return where;
+  });
+  if (referenced.length > 0) {
+    return sendJson(res, 409, {
+      error:
+        `${name} 还在模型组合里被引用着(${referenced.join("、")}),没有删。` +
+        "先在那几处把它的模型换掉,再回来删这一家——留着引用的话下一次审查那个模型会报「模型不存在」。",
+    });
+  }
+
+  withStore(deps.dbPath, (store) => store.removeCustomProvider(name));
+  const failure = await rebuildModelsConfig(deps.dbPath);
+  if (failure !== undefined) return sendJson(res, 500, { error: rebuildFailureMessage(failure) });
+  return send(res, 204);
+}
+
+/**
+ * 三个写端点共用的 500 措辞。写不出来是「已入库、派生物没跟上」这一档:此刻子进程取不到它,
+ * 而启动时会按库重建(`main.ts`),措辞因此指向那条出路,不让人重填一遍。
+ */
+function rebuildFailureMessage(reason: string): string {
+  return (
+    `改动已入库,但派生的模型配置写不出来,现在还取不到(${reason})。` +
+    "修好共用模型目录的写权限之后重启服务,启动时会按库里的内容重建它。"
+  );
+}
+
+/** 派生文件重建的串行链,见 `rebuildModelsConfig`。 */
+let modelsConfigWrites: Promise<void> = Promise.resolve();
+
+/**
+ * 把库里的模型行与自定义 provider 重新落成派生的用户模型配置,并让模型目录的缓存失效。
+ * 写不出来时返回一句给人看的原因,不抛(措辞由调用方给:端点回 500,启动那一次只告警)。
+ *
+ * **重建串行,而且在轮到自己写的时候才读库。**入参只有库的位置:调用方提前截取的那一份集合
+ * 会过期——它与写文件之间隔着一次撞名探测(建一份运行时,毫秒级),两个写请求于是可以按 A、B
+ * 落库却按 B、A 写文件,A 手上那份旧快照把 B 的结果整份盖掉。两个请求都回了 2xx,而 B 那一行
+ * 在库里存着、子进程却取不到,直到下一次重建或者重启——这恰好打破整份 spec 最要紧的那条不变量
+ * (面板选得出的子进程必须取得到)。落盘的 `.pending` 中间名也是固定的,同时写还会互相覆盖。
+ * 串起来两件事一起消失,而库是真相源,轮到自己时现读一次就一定是最新的全量。
+ *
+ * 手法与模型目录的加载一致(`catalog.ts` 的 `loadFromPi`),前提也一样:**这两份派生文件只有
+ * 服务进程写**,Reviewer 子进程只读(`worker.ts`)。多进程部署不在这个前提里——那时进程内的
+ * 队列不够用,得换成跨进程的锁或者原子方案。
+ *
+ * 落盘是整份重写,两样一起读:少给一样等于把那一样从模型目录里抹掉——自定义 provider 那一样
+ * 漏了的话,那几家连带它们的模型全部消失(全新 provider 缺 `api` 与 `baseUrl` 就是消失,不是
+ * 报错)。
+ *
+ * 缓存必须跟着失效:这些行落在 `catalog.ts` 缓存住的那张模型表上(一个进程只读一次),
+ * 不失效的话操作员填完回到选择器里看不见自己刚填的那一行,只能重启容器。
+ */
+export function rebuildModelsConfig(dbPath: string): Promise<string | undefined> {
+  const queued = modelsConfigWrites.then(() => writeModelsConfig(dbPath));
+  // 链上留的那一份不带失败:一次写不出来不该把排在它后面的一起拖红。
+  modelsConfigWrites = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  return queued;
+}
+
+async function writeModelsConfig(dbPath: string): Promise<string | undefined> {
+  const paths = sharedModelPaths();
+  if (paths === undefined) return "共用模型目录建不出来";
+  // 两样一次开库读齐:两次开库读同一个文件是白付的 I/O。
+  const { rows, customProviders } = withStore(dbPath, (store) => ({
+    rows: store.listModelRows(),
+    customProviders: store.listCustomProviders(),
+  }));
+  // 撞名的那几家不写进去(issue #94):写了就等于拿自定义那个端点覆盖内置的同名那一家。判据
+  // 每次重建现算,所以冲突消失之后下一次写入就把这一家写回去了,不需要别的操作。
+  const conflicting = await conflictingProviderNames(customProviders);
+  try {
+    writeSharedModelsConfig(paths.config, rows, customProviders, conflicting);
+  } catch (error) {
+    return String(error);
+  }
+  invalidateModelCatalog();
+  return undefined;
 }
 
 function safeParseJson(value: string): unknown {
@@ -1088,7 +1610,7 @@ async function handleRerun(
     return sendJson(res, 404, { error: "PR 读不到:号不对,或 bot 无权限" });
   }
   sendJson(res, 202, { pullNumber, headSha });
-  startRun(
+  void startRun(
     deps,
     forge,
     { platform: "gitea", owner, repo, number: pullNumber, headSha, draft: false, action: "rerun" },

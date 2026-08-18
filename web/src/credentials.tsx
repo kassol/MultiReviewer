@@ -21,9 +21,9 @@ import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/page-header";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useModelCatalog, type CatalogProvider } from "@/components/model-picker";
 
 import { api, errorText } from "./api.ts";
+import { useModelCatalog, type CatalogProvider } from "./model-catalog.ts";
 
 /** 列表里的一家厂商。`configured` 为假即密文解不开,按未配置对待。 */
 type Credential = {

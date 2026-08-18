@@ -99,6 +99,36 @@ function missingCredentialReviewer(spec: ReviewerSpec): Reviewer {
 }
 
 /**
+ * 名字撞上 Pi 内置同名 provider 的那一家自定义 provider,同样建出一个一跑就报失败的
+ * Reviewer(issue #94)。
+ *
+ * 措辞与「缺凭据」、「模型不存在」都分得开:三者的下一步动作完全不同(改名重建 / 去凭据页粘
+ * key / 改模型标识),混成一句话人就不知道该去哪。撞名那一家登记时 key 是必填的,所以它几乎
+ * 总是配着凭据在,顺带落进缺凭据那一档是指望不上的——这一道排在凭据之前,自己判。
+ *
+ * 不静默换端点:撞名时 Pi 会拿自定义那个端点覆盖内置那一家,所以这一家整个停用(派生的模型
+ * 配置里也没有它,见 `writeSharedModelsConfig`),而不是让它照常跑到内置那个端点上去。
+ */
+function nameConflictReviewer(spec: ReviewerSpec): Reviewer {
+  const identity = modelIdentity(spec);
+  return {
+    model: identity,
+    review: () =>
+      Promise.resolve({
+        model: identity,
+        findings: [],
+        anomalies: [],
+        rejectedToolCalls: 0,
+        anchorRejections: 0,
+        failure:
+          `自定义 provider ${spec.provider} 的名字与 Pi 内置的同名 provider 撞上了,` +
+          `${identity} 这次没跑。两者共用同一个命名空间,撞名时 Pi 会拿自定义那个端点覆盖内置` +
+          "那一家,所以这一家整个停用了。去面板给它改个名字重建,或者删掉它。",
+      }),
+  };
+}
+
+/**
  * 一个模型都没配时顶上的 Reviewer,理由同上:零 Reviewer 的 Review Run 既不失败也不
  * 报错,人看到的是「投了没反应」。有它在,这次投递留下一条失败记录说明差什么。
  */
@@ -123,13 +153,20 @@ function emptyModelSetReviewer(): Reviewer {
  *
  * 凭据来自 Review Run 开始时的快照,缺失不拦启动也不拦投递:服务照常起,那一家的
  * Reviewer 报失败(issue #65)。组合为空同理,由 `emptyModelSetReviewer` 报失败。
+ * 撞名的自定义 provider(`conflictingProviders`,issue #94)也走同一条路,判据在调用方算好
+ * 传进来——它是「库里的登记 ∩ Pi 内置目录」这个交集,现算不落库。
+ *
+ * 三档失败各建一个 Reviewer 而不是把这一项从组合里滤掉:零 Reviewer 的 Review Run 既不失败
+ * 也不留痕,人看到的是「投了没反应」。
  */
 export function buildReviewers(
   specs: readonly ReviewerSpec[],
   credentials: CredentialSnapshot,
+  conflictingProviders: ReadonlySet<string>,
 ): Reviewer[] {
   if (specs.length === 0) return [emptyModelSetReviewer()];
   return specs.map((spec) => {
+    if (conflictingProviders.has(spec.provider)) return nameConflictReviewer(spec);
     const apiKey = credentials.get(spec.provider);
     if (apiKey === undefined || apiKey === "") return missingCredentialReviewer(spec);
     return createPiReviewer({
