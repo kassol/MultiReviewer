@@ -451,12 +451,9 @@ function ProviderPane({
        */}
       {provider.custom && provider.conflict ? (
         <p className="border-b border-border px-3 py-2 text-destructive">
-          <span className="font-mono">{provider.id}</span> 撞上 Pi
-          内置的同名 provider「{provider.name}」,你加的这一家已停用,下面列的是内置那一家的
-          模型,而且现在一个都选不了:它们与你这一家共用同一个模型标识,选进组合之后服务端只按
-          provider 名判撞名,一律当失败处理。先改个名字重建,或者把它删掉,这一家的模型才选得
-          了。已经在模型组合里的那些留着不动,下一次审查会为它们各留一条写明名字冲突的失败记
-          录,同一轮里其余模型照常跑完。
+          <span className="font-mono">{provider.id}</span>{" "}
+          {/* prettier-ignore */}
+          撞上 Pi 内置的同名 provider「{provider.name}」,你加的这一家已停用,下面列的是内置那一家的模型,而且现在一个都选不了:它们与你这一家共用同一个模型标识,选进组合之后服务端只按 provider 名判撞名,一律当失败处理。先改个名字重建,或者把它删掉,这一家的模型才选得了。已经在模型组合里的那些留着不动,下一次审查会为它们各留一条写明名字冲突的失败记录,同一轮里其余模型照常跑完。
         </p>
       ) : null}
 
@@ -565,8 +562,8 @@ function ProviderPane({
         </div>
         {provider.configured ? (
           <p className="text-xs text-warning">
-            目录里还没有的模型填这里,接口协议与 base URL 从这家已有的模型继承。这里填的行不带
-            单价,它的费用会记成零。
+            {/* prettier-ignore */}
+            目录里还没有的模型填这里,接口协议与 base URL 从这家已有的模型继承。这里填的行不带单价,它的费用会记成零。
           </p>
         ) : (
           <p className="text-xs text-warning">
@@ -647,9 +644,11 @@ function AddProviderDialog({
         >
           <DialogHeader>
             <DialogTitle>加一家 provider</DialogTitle>
+            {/* 中文换行处不能断在词中间:JSX 把相邻两行用一个空格拼起来,「连字符」会显示成
+                「连 字符」。整句写一行,由编辑器软换行。 */}
             <DialogDescription>
-              加完它排进左边那一列,和内置那些家并列。名字由你起,只能用小写字母、数字与连
-              字符、最长 64 个字符,与内置那些家共用同一命名空间——撞上已有的名字会被拒收。
+              {/* prettier-ignore */}
+              加完它排进左边那一列,和内置那些家并列。名字由你起,只能用小写字母、数字与连字符、最长 64 个字符,与内置那些家共用同一命名空间——撞上已有的名字会被拒收。
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-1">
@@ -713,8 +712,8 @@ function AddProviderDialog({
               onChange={(event) => setApiKey(event.target.value)}
             />
             <p className="text-xs text-muted-foreground">
-              只写不回显。自定义端点没有能验证的只读接口,这把 key 对不对要等下一次审查才
-              知道,凭据页上那一行因此写着「未验证」。
+              {/* prettier-ignore */}
+              只写不回显。自定义端点没有能验证的只读接口,这把 key 对不对要等下一次审查才知道,凭据页上那一行因此写着「未验证」。
             </p>
           </div>
           {error === null ? null : <p className="text-destructive">{error}</p>}

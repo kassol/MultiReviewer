@@ -601,3 +601,25 @@ test("升级前那份落盘里已有该 id 却没有记号时,补进来的行不
     stub.restore();
   }
 });
+
+// 实测发现于部署实例:OpenRouter 给路由类模型(`openrouter/auto` 那几个)的单价是字符串
+// "-1",意思是「随路由到的那个模型浮动」。按每百万 token 换算就成了 -1000000,面板上写作
+// `$-1000000/M`,而 Review Run 的成本会因此算成负数、把累计花费往下拽。
+test("单价是负数的现货按没有单价收,不落成负的费率", async () => {
+  const stub = stubCatalog(
+    remoteRow,
+    vendorOk([vendorRow(VENDOR_ONLY, { pricing: { prompt: "-1", completion: "-1" } })]),
+  );
+  try {
+    const catalog = await loadFromPi({ allowNetwork: true, paths: paths() });
+    const row = openrouterModels(catalog).find((model) => model.id === VENDOR_ONLY);
+    assert.ok(row !== undefined, "厂商目录那一行没进目录");
+    assert.deepEqual(
+      { input: row.cost.input, output: row.cost.output },
+      { input: 0, output: 0 },
+      "浮动单价被当成真实费率算了",
+    );
+  } finally {
+    stub.restore();
+  }
+});

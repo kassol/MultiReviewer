@@ -87,8 +87,14 @@ function isOpenRouterEntry(value: unknown): value is OpenRouterEntry {
 }
 
 function toVendorModel(entry: OpenRouterEntry): VendorModel {
-  const perMillion = (price: string | undefined): number =>
-    Number.isFinite(Number(price)) ? Number(price) * TOKENS_PER_PRICE_UNIT : 0;
+  // 负数按「没有单价」收。官网给路由类模型(`openrouter/auto` 那几个)的单价是 "-1",意思是
+  // 随路由到的那个模型浮动,不是一个费率。照乘 10^6 会落成 -1000000:面板上写作
+  // `$-1000000/M`,而 Review Run 的成本会算成负数、把累计花费往下拽。Pi 内置的那条 `auto`
+  // 记的也是 0,取值因此与它一致。
+  const perMillion = (price: string | undefined): number => {
+    const value = Number(price) * TOKENS_PER_PRICE_UNIT;
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  };
   const modalities = entry.architecture?.input_modalities ?? [];
   return {
     id: entry.id,

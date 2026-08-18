@@ -648,8 +648,8 @@ function ReviewersEditor({
           自定义 {repo.owner}/{repo.repo} 的模型组合
         </h3>
         <p className="text-muted-foreground">
-          本仓库覆盖:全量替换全局默认,至少选一个。保存后下一次投递按它跑,点「取消」回到
-          上一屏、什么都不改。
+          {/* prettier-ignore */}
+          本仓库覆盖:全量替换全局默认,至少选一个。保存后下一次投递按它跑,点「取消」回到上一屏、什么都不改。
         </p>
       </div>
       <ModelComposer value={models} onChange={setModels} />
