@@ -623,3 +623,20 @@ test("单价是负数的现货按没有单价收,不落成负的费率", async (
     stub.restore();
   }
 });
+
+// Pi 内置表自己就带负费率:实测 0.84.0 里 `openrouter/auto` 与 `openrouter/auto-beta` 两行
+// 的 input/output 都是 -1000000。内置与远程目录来的行一律不动(ADR 0009),因此收口放在
+// 目录投影这一层。
+test("内置表里的负费率也按 0 透出,内置行本身不动", async () => {
+  const catalog = await loadFromPi({ allowNetwork: false, paths: paths() });
+  const negative = catalog.providers.flatMap((provider) =>
+    provider.models
+      .filter((model) => model.cost.input < 0 || model.cost.output < 0)
+      .map((model) => `${provider.id}:${model.id}`),
+  );
+  assert.deepEqual(negative, [], "目录里还有负费率的模型");
+
+  const router = openrouterModels(catalog).find((model) => model.id === "openrouter/auto");
+  assert.ok(router !== undefined, "内置表里那条 openrouter/auto 不在了,判据要重定");
+  assert.equal(router.cost.input, 0);
+});

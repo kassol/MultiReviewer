@@ -179,9 +179,34 @@ async function loadCatalog(options: LoadOptions): Promise<Catalog> {
         id: model.id,
         name: model.name,
         contextWindow: model.contextWindow,
-        cost: model.cost,
+        cost: nonNegativeCost(model.cost),
       })),
     })),
+  };
+}
+
+/**
+ * 负单价按 0 透出。Pi 内置表里 `openrouter/auto` 与 `openrouter/auto-beta` 两行的费率是
+ * -1000000(实测 0.84.0):OpenRouter 对路由类模型报的单价是 "-1",意思是随路由到的那个模型
+ * 浮动,而那个 -1 被照着每百万 token 换算了一遍。原样透出去面板上就写着 `$-1000000/M`。
+ *
+ * 收口放在这一层而不是去改那两行:内置与远程目录来的行一律不动(ADR 0009),而「负数不是一个
+ * 费率」是这个数自己的性质,与它由谁给出无关。取 0 与 Pi 自己那条 `auto` 记的数一致。
+ *
+ * 这一层管不到 Review Run 的成本:那个数取自 Pi 的 `session.getSessionStats()`,用的是 Pi
+ * 内部那张定价表,不经过这里。选中那两个模型时那一轮的成本仍会是负数,见 issue #95。
+ */
+function nonNegativeCost(cost: CatalogCost): CatalogCost {
+  if (cost.input >= 0 && cost.output >= 0 && cost.cacheRead >= 0 && cost.cacheWrite >= 0) {
+    return cost;
+  }
+  const floor = (value: number): number => (value > 0 ? value : 0);
+  return {
+    ...cost,
+    input: floor(cost.input),
+    output: floor(cost.output),
+    cacheRead: floor(cost.cacheRead),
+    cacheWrite: floor(cost.cacheWrite),
   };
 }
 
