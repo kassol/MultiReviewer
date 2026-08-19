@@ -3,8 +3,8 @@
  * 由面板的设置页管(issue #66)。
  */
 import { readFileSync } from "node:fs";
-
 import { buildReviewers } from "./config.ts";
+
 import {
   assertSupportedVersion,
   createGiteaForge,
@@ -91,7 +91,6 @@ function panelPrefix(): string {
 const port = Number(process.env["MULTIREVIEWER_PORT"] ?? DEFAULT_PORT);
 const dbPath = process.env["MULTIREVIEWER_DB"] ?? "multireviewer.db";
 
-const adminToken = required("MULTIREVIEWER_ADMIN_TOKEN");
 const prefix = panelPrefix();
 const baseUrl = required("MULTIREVIEWER_BASE_URL");
 assertUsableBaseUrl(baseUrl);
@@ -129,7 +128,6 @@ const server = createWebhookServer({
   },
   cacheDir: process.env["MULTIREVIEWER_CACHE_DIR"] ?? ".cache/worktrees",
   dbPath,
-  adminToken,
   panelPrefix: prefix,
   baseUrl,
   panelDist: process.env["MULTIREVIEWER_PANEL_DIST"] ?? "web/dist",
@@ -138,6 +136,11 @@ const server = createWebhookServer({
   ...(process.env[CREDENTIAL_MASTER_KEY_ENV] === undefined
     ? {}
     : { credentialMasterKey: process.env[CREDENTIAL_MASTER_KEY_ENV] }),
+  onBootstrap: (secret) => {
+    console.log("库里还没有用户。用这枚一次性口令注册第一个管理员:");
+    console.log(`  bootstrap: ${secret}`);
+    console.log("(注册成功后它立即失效,重启会换一枚新的)");
+  },
   ...(gitea === undefined ? {} : { gitea }),
   // 全局组合与每仓库的模型覆盖走同一套组装逻辑,凭据取 Run 开始时的库内快照。
   buildReviewers,

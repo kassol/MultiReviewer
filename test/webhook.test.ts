@@ -161,7 +161,7 @@ async function startHarness(options: HarnessOptions = {}) {
         : [options.reviewer],
     cacheDir: cache.dir,
     dbPath: db.path,
-    adminToken: "webhook-test-admin-token",
+    bootstrapSecret: "webhook-bootstrap",
     panelPrefix: "webhook-test-prefix",
     baseUrl: "https://reviewer.example.test",
     panelDist: `${cache.dir}/no-dist`,

@@ -5,7 +5,7 @@
  * 审查结果只以 review 评论呈现,本工具从不调用 status / check 之类会阻断合并的接口,
  * `Forge` 接口里也没有这类方法:审查是建议,不是门禁,人保留最终判断权。
  */
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import {
@@ -32,7 +32,8 @@ import {
   type GiteaHookManager,
 } from "../forge/gitea-hooks.ts";
 import type { GiteaForgeOptions } from "../forge/gitea.ts";
-import { createPanelAuth, SESSION_TTL_MS, type PanelAuth } from "../panel/auth.ts";
+import { createPanelAuth, sessionHash, SESSION_TTL_MS, type PanelAuth } from "../panel/auth.ts";
+import { hashPassword } from "../panel/password.ts";
 import { checkCredential, CHECKED_PROVIDERS } from "../panel/credential-check.ts";
 import {
   credentialTail,
@@ -106,8 +107,10 @@ export type WebhookServerDeps = {
   onDelivery?: (message: string) => void;
   /** 「只记首次」集合的上限,默认 `LOGGED_ONCE_MAX`。只该测试注入,用来触达封顶分支。 */
   loggedOnceMax?: number;
-  /** 面板登录用的 admin token,登录换 session cookie。 */
-  adminToken: string;
+  /** 测试注入 bootstrap 口令;生产省略即在零用户时随机生成。 */
+  bootstrapSecret?: string;
+  /** 零用户启动时拿到 bootstrap 口令;生产打印,测试可观察或忽略。 */
+  onBootstrap?: (secret: string) => void;
   /** 面板路径的随机首段(不含斜杠),API 挂在 `/<前缀>/api` 下。 */
   panelPrefix: string;
   /** 服务对外的基地址(实例根),注册仓库时用它拼 hook 的投递地址 `<基地址>/webhook?k=<代次>`。 */
@@ -684,6 +687,8 @@ type PanelRouteContext = {
   deps: WebhookServerDeps;
   auth: PanelAuth;
   hookManager: GiteaHookManager | undefined;
+  bootstrapSecret: () => string | undefined;
+  clearBootstrap: () => void;
 };
 type PanelRouteHandler = (
   context: PanelRouteContext,
@@ -718,6 +723,13 @@ function listRepos(res: ServerResponse, deps: WebhookServerDeps): void {
     })),
   );
 }
+const PANEL_USERNAME = /^[a-z0-9._-]{1,32}$/;
+
+function secretMatches(expected: string, provided: string): boolean {
+  const a = createHash("sha256").update(expected).digest();
+  const b = createHash("sha256").update(provided).digest();
+  return timingSafeEqual(a, b);
+}
 
 async function handleLogin(
   req: IncomingMessage,
@@ -727,37 +739,118 @@ async function handleLogin(
 ): Promise<void> {
   const body = await readBody(req, res);
   if (body === undefined) return;
-  const payload = safeParse(body) as { token?: unknown } | null;
-  // 形状不对不算猜 token,不计入退避——退避只该罚「猜」,不该罚「坏客户端」。
-  if (payload === null || typeof payload.token !== "string") {
-    return sendJson(res, 400, { error: 'body 要是 {"token": "..."} 形状的 JSON' });
+  const payload = safeParse(body) as { username?: unknown; password?: unknown } | null;
+  if (
+    payload === null ||
+    typeof payload.username !== "string" ||
+    typeof payload.password !== "string"
+  ) {
+    return sendJson(res, 400, { error: 'body 要是 {"username":"...","password":"..."} 形状的 JSON' });
   }
-  // 锁定按直连地址分桶,不认 X-Forwarded-For:未认证方伪造它就能绕过锁定。代价是
-  // 反代之后所有客户端同桶,攻击者能把管理员一起锁住——对单管理员面板,锁过头
-  // 好过锁不住。
-  const outcome = auth.login(payload.token, req.socket.remoteAddress ?? "");
+  const username = payload.username;
+  const password = payload.password;
+  const user = withStore(deps.dbPath, (store) => store.getPanelUser(username));
+  const outcome = await auth.login(
+    user === undefined ? undefined : { username: user.username, passwordHash: user.passwordHash },
+    password,
+    req.socket.remoteAddress ?? "",
+  );
   if (!outcome.ok) {
     return sendJson(res, outcome.status, {
-      error: outcome.status === 429 ? "失败次数过多,稍后再试" : "token 不对",
+      error: outcome.status === 429 ? "失败次数过多,稍后再试" : "用户名或密码不对",
     });
   }
+  const raw = randomBytes(32).toString("hex");
+  const now = deps.now ?? Date.now;
+  const createdAt = new Date(now()).toISOString();
+  withStore(deps.dbPath, (store) =>
+    store.createPanelSession({
+      sessionHash: sessionHash(raw),
+      username,
+      createdAt,
+      expiresAt: new Date(now() + SESSION_TTL_MS).toISOString(),
+    }),
+  );
   res.writeHead(204, {
-    "set-cookie": sessionCookieHeader(
-      deps.panelPrefix,
-      outcome.sessionId,
-      Math.floor(SESSION_TTL_MS / 1000),
-    ),
+    "set-cookie": sessionCookieHeader(deps.panelPrefix, raw, Math.floor(SESSION_TTL_MS / 1000)),
   });
   res.end();
 }
 
-function handleLogout(
+async function handleBootstrapRegister(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
-  auth: PanelAuth,
-): void {
-  auth.logout(cookieValue(req.headers.cookie, SESSION_COOKIE));
+  bootstrapSecret: () => string | undefined,
+  clearBootstrap: () => void,
+): Promise<void> {
+  if (withStore(deps.dbPath, (store) => store.countPanelUsers()) !== 0) {
+    return sendJson(res, 409, { error: "实例已初始化,找管理员建号" });
+  }
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body) as {
+    bootstrap?: unknown;
+    username?: unknown;
+    password?: unknown;
+  } | null;
+  if (
+    payload === null ||
+    typeof payload.bootstrap !== "string" ||
+    typeof payload.username !== "string" ||
+    typeof payload.password !== "string" ||
+    !PANEL_USERNAME.test(payload.username)
+  ) {
+    return sendJson(res, 400, { error: "body 要带 bootstrap、合法 username 与 password" });
+  }
+  const username = payload.username;
+  const password = payload.password;
+  const expected = bootstrapSecret();
+  if (expected === undefined || !secretMatches(expected, payload.bootstrap)) {
+    return sendJson(res, 401, { error: "bootstrap 口令不对" });
+  }
+  const now = new Date((deps.now ?? Date.now)()).toISOString();
+  const passwordHash = await hashPassword(password);
+  const created = withStore(deps.dbPath, (store) =>
+    store.registerFirstPanelUser({
+      username,
+      displayName: null,
+      passwordHash,
+      mustChangePassword: false,
+      createdAt: now,
+      isSystemAdmin: true,
+    }),
+  );
+  if (!created) return sendJson(res, 409, { error: "实例已初始化,找管理员建号" });
+  clearBootstrap();
+  return sendJson(res, 201, { username, isSystemAdmin: true });
+}
+
+function panelSession(req: IncomingMessage, deps: WebhookServerDeps) {
+  const raw = cookieValue(req.headers.cookie, SESSION_COOKIE);
+  if (raw === undefined) return undefined;
+  const hash = sessionHash(raw);
+  return withStore(deps.dbPath, (store) => {
+    const session = store.getPanelSession(hash);
+    if (session === undefined) return undefined;
+    const now = (deps.now ?? Date.now)();
+    const expiry = Date.parse(session.expiresAt);
+    if (expiry <= now) {
+      store.removePanelSession(hash);
+      return undefined;
+    }
+    if (expiry - now < SESSION_TTL_MS / 2) {
+      store.renewPanelSession(hash, new Date(now + SESSION_TTL_MS).toISOString());
+    }
+    return { ...session, hash };
+  });
+}
+
+function handleLogout(req: IncomingMessage, res: ServerResponse, deps: WebhookServerDeps): void {
+  const raw = cookieValue(req.headers.cookie, SESSION_COOKIE);
+  if (raw !== undefined) {
+    withStore(deps.dbPath, (store) => store.removePanelSession(sessionHash(raw)));
+  }
   res.writeHead(204, { "set-cookie": sessionCookieHeader(deps.panelPrefix, "", 0) });
   res.end();
 }
@@ -770,16 +863,31 @@ const PANEL_ROUTES: readonly PanelRoute[] = [
     handler: ({ req, res, deps, auth }) => handleLogin(req, res, deps, auth),
   },
   {
+    method: "POST",
+    pattern: "/users/bootstrap",
+    access: "public",
+    handler: ({ req, res, deps, bootstrapSecret, clearBootstrap }) =>
+      handleBootstrapRegister(req, res, deps, bootstrapSecret, clearBootstrap),
+  },
+  {
     method: "GET",
     pattern: "/session",
     access: "authenticated-only",
-    handler: ({ res }) => send(res, 204),
+    handler: ({ req, res, deps }) => {
+      const session = panelSession(req, deps)!;
+      return sendJson(res, 200, {
+        username: session.username,
+        displayName: session.displayName,
+        isSystemAdmin: session.isSystemAdmin,
+        mustChangePassword: session.mustChangePassword,
+      });
+    },
   },
   {
     method: "DELETE",
     pattern: "/session",
     access: "authenticated-only",
-    handler: ({ req, res, deps, auth }) => handleLogout(req, res, deps, auth),
+    handler: ({ req, res, deps }) => handleLogout(req, res, deps),
   },
   {
     method: "GET",
@@ -957,18 +1065,23 @@ async function handlePanelApi(
   deps: WebhookServerDeps,
   auth: PanelAuth,
   hookManager: GiteaHookManager | undefined,
+  bootstrapSecret: () => string | undefined,
+  clearBootstrap: () => void,
 ): Promise<void> {
   const sub = pathname(req).slice(`/${deps.panelPrefix}/api`.length) || "/";
   const matched = findPanelRoute(req.method, sub);
-
+  const context = { req, res, deps, auth, hookManager, bootstrapSecret, clearBootstrap };
   if (matched?.route.access === "public") {
-    return matched.route.handler({ req, res, deps, auth, hookManager }, matched.match);
+    return matched.route.handler(context, matched.match);
   }
-  const authenticated = auth.authenticate(cookieValue(req.headers.cookie, SESSION_COOKIE));
+  const session = panelSession(req, deps);
   // 未匹配也先过门禁:不登录不能借 404 枚举 API 面。
-  if (!authenticated) return sendJson(res, 401, { error: "未登录" });
+  if (session === undefined) {
+    const bootstrap = withStore(deps.dbPath, (store) => store.countPanelUsers()) === 0;
+    return sendJson(res, 401, { error: "未登录", ...(bootstrap ? { bootstrap: true } : {}) });
+  }
   if (matched === undefined) return sendJson(res, 404, { error: "没有这个端点" });
-  return matched.route.handler({ req, res, deps, auth, hookManager }, matched.match);
+  return matched.route.handler(context, matched.match);
 }
 
 /**
@@ -2141,12 +2254,12 @@ async function handleHookCheck(
       action: "无需操作,准入按数值 id 不受影响",
     });
   }
-
-  const hooks: { hook: GiteaHook; generation: number }[] = [];
-  for (const hook of await hookManager.listHooks(resolved)) {
-    const generation = generationFromHookUrl(hook.url, deps.baseUrl);
-    if (generation !== undefined) hooks.push({ hook, generation });
-  }
+  const hooks = (await hookManager.listHooks(resolved))
+    .map((hook) => {
+      const generation = generationFromHookUrl(hook.url, deps.baseUrl);
+      return generation === undefined ? undefined : { hook, generation };
+    })
+    .filter((entry): entry is { hook: GiteaHook; generation: number } => entry !== undefined);
 
   if (keys.length > 1) {
     issues.push({ message: "上一轮轮转未收尾", action: "点一次轮转收尾" });
@@ -2252,7 +2365,16 @@ async function servePage(res: ServerResponse, deps: WebhookServerDeps): Promise<
 export function createWebhookServer(deps: WebhookServerDeps): Server {
   // 已经记过首次的无关事件类型与 action,整个服务共用一份。
   const loggedOnce = new Set<string>();
-  const auth = createPanelAuth(deps.adminToken, deps.now);
+  const auth = createPanelAuth(deps.now);
+  let bootstrap =
+    withStore(deps.dbPath, (store) => store.countPanelUsers()) === 0
+      ? (deps.bootstrapSecret ?? randomBytes(16).toString("hex"))
+      : undefined;
+  if (bootstrap !== undefined) deps.onBootstrap?.(bootstrap);
+  const bootstrapSecret = (): string | undefined => bootstrap;
+  const clearBootstrap = (): void => {
+    bootstrap = undefined;
+  };
   const hookManager =
     deps.gitea === undefined ? undefined : createGiteaHookManager(deps.gitea);
   const apiPrefix = `/${deps.panelPrefix}/api`;
@@ -2269,7 +2391,15 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
       return;
     }
     if (path === apiPrefix || path.startsWith(`${apiPrefix}/`)) {
-      void handlePanelApi(req, res, deps, auth, hookManager).catch((error: unknown) => {
+      void handlePanelApi(
+        req,
+        res,
+        deps,
+        auth,
+        hookManager,
+        bootstrapSecret,
+        clearBootstrap,
+      ).catch((error: unknown) => {
         console.error("面板 API 处理失败:", error instanceof Error ? error.message : error);
         if (!res.headersSent) sendJson(res, 500, { error: "内部错误" });
       });

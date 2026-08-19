@@ -47,7 +47,7 @@ async function startPages(options: { withDist?: boolean } = {}) {
     buildReviewers: () => [],
     cacheDir: cache.dir,
     dbPath: db.path,
-    adminToken: "pages-admin-token",
+    bootstrapSecret: "pages-bootstrap",
     panelPrefix: PREFIX,
     baseUrl: "https://reviewer.example.test",
     panelDist: options.withDist === false ? join(dist, "missing") : dist,

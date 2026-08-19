@@ -16,12 +16,15 @@ import {
   type NormalizedEvent,
   type WebhookServerDeps,
 } from "../../src/webhook/server.ts";
+import { hashPassword } from "../../src/panel/password.ts";
 import { openStore } from "../../src/review/store.ts";
 import { startFakeGitea, type FakeGitea } from "./fake-gitea.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./memory-forge.ts";
 
-export const PANEL_ADMIN_TOKEN = "panel-harness-admin-token";
+export const PANEL_ADMIN_USERNAME = "panel-admin";
+export const PANEL_ADMIN_PASSWORD = "panel-harness-password";
+const PANEL_ADMIN_PASSWORD_HASH = await hashPassword(PANEL_ADMIN_PASSWORD);
 export const PANEL_PREFIX = "panel-harness-prefix";
 export const PANEL_BASE_URL = "https://reviewer.example.test";
 
@@ -92,6 +95,14 @@ export async function startPanelHarness(
     reviewersJson: reviewers.length === 0 ? null : JSON.stringify(reviewers),
     maxChangedLinesPerBatch: null,
   });
+  seed.createPanelUser({
+    username: PANEL_ADMIN_USERNAME,
+    displayName: "Panel Admin",
+    passwordHash: PANEL_ADMIN_PASSWORD_HASH,
+    mustChangePassword: false,
+    createdAt: "2026-08-19T00:00:00.000Z",
+    isSystemAdmin: true,
+  });
   seed.close();
 
   const base = memoryForge({
@@ -134,7 +145,7 @@ export async function startPanelHarness(
     },
     cacheDir: cache.dir,
     dbPath: db.path,
-    adminToken: PANEL_ADMIN_TOKEN,
+    bootstrapSecret: "panel-harness-bootstrap",
     panelPrefix: PANEL_PREFIX,
     baseUrl: PANEL_BASE_URL,
     panelDist: `${cache.dir}/no-dist`,
@@ -163,7 +174,7 @@ export async function startPanelHarness(
   const login = await fetch(`${serverUrl}/${PANEL_PREFIX}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token: PANEL_ADMIN_TOKEN }),
+    body: JSON.stringify({ username: PANEL_ADMIN_USERNAME, password: PANEL_ADMIN_PASSWORD }),
   });
   assert.equal(login.status, 204);
   const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;

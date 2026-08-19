@@ -43,7 +43,7 @@ const shellRoute = createRoute({
   id: "shell",
   beforeLoad: async () => {
     const response = await api("/session");
-    if (response.status !== 204) throw redirect({ to: "/login" });
+    if (response.status !== 200) throw redirect({ to: "/login" });
   },
   component: Shell,
 });

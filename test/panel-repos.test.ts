@@ -17,7 +17,8 @@ import { makeCacheDir, makeDbPath } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   HARNESS_PR as PR,
-  PANEL_ADMIN_TOKEN as ADMIN_TOKEN,
+  PANEL_ADMIN_PASSWORD as ADMIN_PASSWORD,
+  PANEL_ADMIN_USERNAME as ADMIN_USERNAME,
   PANEL_BASE_URL as BASE_URL,
   PANEL_PREFIX as PREFIX,
   startPanelHarness,
@@ -323,7 +324,7 @@ test("没配 Gitea 时注册与移除回 500,说明配置缺口", async () => {
     buildReviewers: () => [],
     cacheDir: cache.dir,
     dbPath: db.path,
-    adminToken: ADMIN_TOKEN,
+    bootstrapSecret: "panel-repos-bootstrap",
     panelPrefix: PREFIX,
     baseUrl: BASE_URL,
     panelDist: `${cache.dir}/no-dist`,
@@ -337,9 +338,20 @@ test("没配 Gitea 时注册与移除回 500,说明配置缺口", async () => {
     server.closeAllConnections();
     server.close();
   });
+  const registered = await fetch(`http://127.0.0.1:${port}/${PREFIX}/api/users/bootstrap`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      bootstrap: "panel-repos-bootstrap",
+      username: ADMIN_USERNAME,
+      password: ADMIN_PASSWORD,
+    }),
+  });
+  assert.equal(registered.status, 201);
   const login = await fetch(`http://127.0.0.1:${port}/${PREFIX}/api/session`, {
     method: "POST",
-    body: JSON.stringify({ token: ADMIN_TOKEN }),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: ADMIN_USERNAME, password: ADMIN_PASSWORD }),
   });
   const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
 

@@ -166,6 +166,25 @@ CREATE TABLE IF NOT EXISTS custom_provider (
   api TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS panel_user (
+  username TEXT PRIMARY KEY,
+  display_name TEXT,
+  password_hash TEXT NOT NULL,
+  must_change_password INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  last_login_at TEXT,
+  is_system_admin INTEGER NOT NULL DEFAULT 0,
+  CHECK (is_system_admin IN (0, 1))
+);
+
+CREATE TABLE IF NOT EXISTS panel_session (
+  session_hash TEXT PRIMARY KEY,
+  username TEXT NOT NULL REFERENCES panel_user(username),
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS panel_session_by_user ON panel_session(username);
 `;
 
 /**
@@ -397,6 +416,24 @@ export type RunListItem = {
   total: number;
 };
 
+export type PanelUserRecord = {
+  username: string;
+  displayName: string | null;
+  passwordHash: string;
+  mustChangePassword: boolean;
+  createdAt: string;
+  lastLoginAt: string | null;
+  isSystemAdmin: boolean;
+};
+
+export type PanelSessionRecord = {
+  username: string;
+  displayName: string | null;
+  mustChangePassword: boolean;
+  isSystemAdmin: boolean;
+  expiresAt: string;
+};
+
 /**
  * 失败原因在面板上只显示一句话的量。厂商拒绝的原文可能是一整段 JSON(区域封禁那条
  * 403 就是),整段带到前端会把卡片撑开,而人要的是「哪个模型、为什么」——换行压成
@@ -414,6 +451,22 @@ function failureExcerpt(raw: unknown): string | null {
 }
 
 export type Store = {
+  countPanelUsers(): number;
+  getPanelUser(username: string): PanelUserRecord | undefined;
+  registerFirstPanelUser(record: Omit<PanelUserRecord, "lastLoginAt">): boolean;
+  createPanelUser(record: Omit<PanelUserRecord, "lastLoginAt">): void;
+  createPanelSession(record: {
+    sessionHash: string;
+    username: string;
+    expiresAt: string;
+    createdAt: string;
+  }): void;
+  getPanelSession(sessionHash: string): PanelSessionRecord | undefined;
+  renewPanelSession(sessionHash: string, expiresAt: string): void;
+  removePanelSession(sessionHash: string): void;
+  removePanelSessions(username: string, exceptHash?: string): void;
+  updatePanelPassword(username: string, passwordHash: string, mustChangePassword: boolean): void;
+  removePanelUser(username: string): void;
   /**
    * 注册一个仓库:注册表行与第一把 Key 在一个事务里落库——「有仓库无 Key」的投递
    * 会被判成未注册,这个中间态从设计上消除。`repoId` 是 Forge 的数值 repo id,
@@ -618,7 +671,137 @@ export function openStore(dbPath: string): Store {
 
   // 具名而不是直接 return:事务型的写入(`registerCustomProvider`)要在一个事务里复用单写
   // 的那几句,让两条路的语义只有一处。
+  const writePanelUser = (record: Omit<PanelUserRecord, "lastLoginAt">): void => {
+    db.prepare(
+      `INSERT INTO panel_user
+         (username, display_name, password_hash, must_change_password, created_at, is_system_admin)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      record.username,
+      record.displayName,
+      record.passwordHash,
+      record.mustChangePassword ? 1 : 0,
+      record.createdAt,
+      record.isSystemAdmin ? 1 : 0,
+    );
+  };
+
   const store: Store = {
+
+    countPanelUsers() {
+      const row = db.prepare("SELECT COUNT(*) AS c FROM panel_user").get();
+      return Number(row?.["c"] ?? 0);
+    },
+
+    getPanelUser(username) {
+      const row = db
+        .prepare(
+          `SELECT username, display_name, password_hash, must_change_password,
+                  created_at, last_login_at, is_system_admin
+             FROM panel_user WHERE username = ?`,
+        )
+        .get(username);
+      if (row === undefined) return undefined;
+      return {
+        username: String(row["username"]),
+        displayName: row["display_name"] === null ? null : String(row["display_name"]),
+        passwordHash: String(row["password_hash"]),
+        mustChangePassword: Number(row["must_change_password"]) === 1,
+        createdAt: String(row["created_at"]),
+        lastLoginAt: row["last_login_at"] === null ? null : String(row["last_login_at"]),
+        isSystemAdmin: Number(row["is_system_admin"]) === 1,
+      };
+    },
+
+    registerFirstPanelUser(record) {
+      // argon2 在调用方 await 完后才进这里;下面没有 await,Node 单线程不会在 COUNT 与
+      // INSERT 之间插进另一个请求。事务表达「查与插是一个决定」,不是额外的并发保证。
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const countRow = db.prepare("SELECT COUNT(*) AS c FROM panel_user").get();
+        const count = Number(countRow?.["c"] ?? 0);
+        if (count !== 0) {
+          db.exec("ROLLBACK");
+          return false;
+        }
+        writePanelUser(record);
+        db.exec("COMMIT");
+        return true;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    createPanelUser(record) {
+      writePanelUser(record);
+    },
+
+    createPanelSession(record) {
+      db.prepare(
+        "INSERT INTO panel_session (session_hash, username, expires_at, created_at) VALUES (?, ?, ?, ?)",
+      ).run(record.sessionHash, record.username, record.expiresAt, record.createdAt);
+      db.prepare("UPDATE panel_user SET last_login_at = ? WHERE username = ?").run(
+        record.createdAt,
+        record.username,
+      );
+    },
+
+    getPanelSession(hash) {
+      const row = db
+        .prepare(
+          `SELECT u.username, u.display_name, u.must_change_password, u.is_system_admin,
+                  s.expires_at
+             FROM panel_session s JOIN panel_user u ON u.username = s.username
+            WHERE s.session_hash = ?`,
+        )
+        .get(hash);
+      if (row === undefined) return undefined;
+      return {
+        username: String(row["username"]),
+        displayName: row["display_name"] === null ? null : String(row["display_name"]),
+        mustChangePassword: Number(row["must_change_password"]) === 1,
+        isSystemAdmin: Number(row["is_system_admin"]) === 1,
+        expiresAt: String(row["expires_at"]),
+      };
+    },
+
+    renewPanelSession(hash, expiresAt) {
+      db.prepare("UPDATE panel_session SET expires_at = ? WHERE session_hash = ?").run(expiresAt, hash);
+    },
+
+    removePanelSession(hash) {
+      db.prepare("DELETE FROM panel_session WHERE session_hash = ?").run(hash);
+    },
+
+    removePanelSessions(username, exceptHash) {
+      if (exceptHash === undefined) {
+        db.prepare("DELETE FROM panel_session WHERE username = ?").run(username);
+      } else {
+        db.prepare("DELETE FROM panel_session WHERE username = ? AND session_hash <> ?").run(
+          username,
+          exceptHash,
+        );
+      }
+    },
+
+    updatePanelPassword(username, passwordHash, mustChangePassword) {
+      db.prepare(
+        "UPDATE panel_user SET password_hash = ?, must_change_password = ? WHERE username = ?",
+      ).run(passwordHash, mustChangePassword ? 1 : 0, username);
+    },
+
+    removePanelUser(username) {
+      db.exec("BEGIN");
+      try {
+        db.prepare("DELETE FROM panel_session WHERE username = ?").run(username);
+        db.prepare("DELETE FROM panel_user WHERE username = ?").run(username);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
     registerRepo(record) {
       db.exec("BEGIN");
       try {
