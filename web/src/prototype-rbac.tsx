@@ -8,7 +8,7 @@
  * 数据全在内存里,写请求一个都不发。
  */
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { LogOut, Plus, ShieldCheck, Trash2, KeyRound, UserCog } from "lucide-react";
+import { KeyRound, LogOut, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 import { Mark } from "@/components/mark";
@@ -227,8 +227,8 @@ function UnclaimedBanner({ count }: { count: number }) {
   if (count === 0) return null;
   return (
     <div className="rounded-md border border-warning/40 bg-warning/8 px-3 py-2 text-warning">
-      有 <span className="font-mono tabular-nums">{count}</span> 格权限从未被任何角色勾过
-      (系统管理员不算,它权限全开)。除系统管理员外没人用得上它盖住的功能。
+      有 <span className="font-mono tabular-nums">{count}</span> 格权限从未被任何角色勾过。
+      除系统管理员外没人用得上它盖住的功能。
     </div>
   );
 }
@@ -292,12 +292,28 @@ function UsersTable({
                 </div>
               </td>
               <td className="px-3 py-2">
-                {user.systemAdmin && user.roleId === null ? (
+                {user.systemAdmin ? (
+                  // 系统管理员不带角色(CHECK 约束),这一格没有可选项。
                   <span className="text-muted-foreground">权限全开</span>
-                ) : user.roleId === null ? (
-                  <Pill tone="warning">还没授角色</Pill>
                 ) : (
-                  roleName(roles, user.roleId)
+                  // 改角色是这一页最高频的动作,而它不破坏:行内下拉,选完当场生效。
+                  <select
+                    aria-label={`${user.username} 的角色`}
+                    defaultValue={String(user.roleId ?? "")}
+                    className={
+                      "h-7 rounded-md border px-1.5 " +
+                      (user.roleId === null
+                        ? "border-warning/50 bg-warning/8 text-warning"
+                        : "border-border bg-background")
+                    }
+                  >
+                    <option value="">还没授角色</option>
+                    {roles.map((role) => (
+                      <option key={role.id} value={String(role.id)}>
+                        {role.name}
+                      </option>
+                    ))}
+                  </select>
                 )}
               </td>
               <td className="px-3 py-2 font-mono text-xs tabular-nums text-muted-foreground">
@@ -307,10 +323,8 @@ function UsersTable({
                 {user.lastLoginAt ?? "从未"}
               </td>
               <td className="px-3 py-2">
+                {/* 破坏性的那两个照仓库页的既定做法走二次确认对话框。 */}
                 <div className="flex items-center justify-end gap-1">
-                  <Button variant="ghost" size="xs">
-                    <UserCog /> 改角色
-                  </Button>
                   <Button variant="ghost" size="xs">
                     <KeyRound /> 重置密码
                   </Button>
@@ -737,99 +751,110 @@ function VariantC({ scenario }: { scenario: Scenario }) {
 
         <section className="flex flex-col gap-2">
           <h2 className="text-base font-semibold">权限</h2>
+          {/* 系统管理员不进矩阵:它不是角色,画成一列会让下面那句「从未被任何角色勾过」读成假的。 */}
+          <div className="flex items-start gap-2 rounded-md border border-border bg-muted/40 px-3 py-2">
+            <ShieldCheck className="mt-0.5 size-4 shrink-0 opacity-70" />
+            <p className="text-muted-foreground">
+              <span className="font-medium text-foreground">系统管理员</span>
+              不在这张表里:它权限全开、不可编辑,且可以有多个(
+              <span className="font-mono tabular-nums">2</span> 人)。下面这些格子只管自定义角色。
+            </p>
+          </div>
           <UnclaimedBanner count={missing.length} />
           {roles.length === 0 ? (
             <Card className="items-start gap-2 px-4 py-5">
-              <p className="font-medium">除了内置那一列,还没有任何角色</p>
+              <p className="font-medium">还没有任何角色,所以这张表还没有一列</p>
               <p className="text-muted-foreground">
-                一个角色都不预置。建一个角色,这里就多一列,勾几个框即可。
+                一个角色都不预置。建一个角色,这里就多一列,勾几个框即可。在那之前除系统管理员外没人能碰任何东西。
               </p>
               <Button className="mt-1">
                 <Plus /> 新建角色
               </Button>
             </Card>
-          ) : null}
-          <div className="overflow-x-auto rounded-md border border-border">
-            <table className="w-full border-collapse text-left">
-              <thead>
-                <tr className="bg-muted/60 text-xs text-muted-foreground">
-                  <th className="px-3 py-2 font-medium">权限格</th>
-                  <th className="border-l border-border px-3 py-2 text-center font-medium whitespace-nowrap">
-                    系统管理员
-                    <span className="block font-normal">内置 · 2 人</span>
-                  </th>
-                  {roles.map((role) => (
-                    <th
-                      key={role.id}
-                      className="border-l border-border px-3 py-2 text-center font-medium whitespace-nowrap"
-                    >
-                      {role.name}
-                      <span className="block font-normal">
-                        <span className="font-mono tabular-nums">
-                          {USERS.filter((u) => u.roleId === role.id).length}
-                        </span>{" "}
-                        人
-                      </span>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {RESOURCES.flatMap((resource) => [
-                  <tr key={`${resource}-head`} className="border-t border-border bg-muted/25">
-                    <td
-                      colSpan={roles.length + 2}
-                      className="px-3 py-1 text-xs font-medium text-muted-foreground"
-                    >
-                      {resource}
-                    </td>
-                  </tr>,
-                  ...PERMS.filter((perm) => perm.resource === resource).map((perm) => (
-                    <tr
-                      key={perm.id}
-                      className={
-                        "border-t border-border " + (missing.includes(perm.id) ? "bg-warning/8" : "")
-                      }
-                    >
-                      <td className="px-3 py-2">
-                        <div className="flex items-baseline gap-2">
-                          <span className="font-medium">{perm.action}</span>
-                          <span className="font-mono text-xs text-muted-foreground">{perm.id}</span>
-                          {missing.includes(perm.id) ? (
-                            <span className="text-xs text-warning">未启用</span>
-                          ) : null}
-                        </div>
-                        <p className="text-xs text-muted-foreground">{perm.hint}</p>
-                      </td>
-                      <td className="border-l border-border bg-muted/40 px-3 py-2 text-center text-muted-foreground">
-                        ✓
-                      </td>
+          ) : (
+            <>
+              {/* 角色横着排,多了就横向滚;权限格那一列 sticky,滚到右边仍看得见在改哪一格。 */}
+              <div className="overflow-x-auto rounded-md border border-border">
+                <table className="w-full border-collapse text-left">
+                  <thead>
+                    <tr className="bg-muted/60 text-xs text-muted-foreground">
+                      <th className="sticky left-0 z-10 min-w-[18rem] bg-muted/60 px-3 py-2 font-medium">
+                        权限格
+                      </th>
                       {roles.map((role) => (
-                        <td
+                        <th
                           key={role.id}
-                          className="border-l border-border px-3 py-2 text-center"
+                          className="border-l border-border px-3 py-2 text-center font-medium whitespace-nowrap"
                         >
-                          <input
-                            type="checkbox"
-                            aria-label={`${role.name} ${perm.id}`}
-                            checked={role.perms.includes(perm.id)}
-                            onChange={() => toggle(role.id, perm.id)}
-                            className="size-4 accent-[#1f2328]"
-                          />
-                        </td>
+                          {role.name}
+                          <span className="block font-normal">
+                            <span className="font-mono tabular-nums">
+                              {USERS.filter((u) => u.roleId === role.id).length}
+                            </span>{" "}
+                            人
+                          </span>
+                        </th>
                       ))}
                     </tr>
-                  )),
-                ])}
-              </tbody>
-            </table>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button>保存</Button>
-            <span className="text-muted-foreground">
-              改完立刻生效,不用重新登录。系统管理员那一列是内置的,勾不动也删不掉。
-            </span>
-          </div>
+                  </thead>
+                  <tbody>
+                    {RESOURCES.flatMap((resource) => [
+                      <tr key={`${resource}-head`} className="border-t border-border bg-muted/25">
+                        <td
+                          colSpan={roles.length + 1}
+                          className="sticky left-0 px-3 py-1 text-xs font-medium text-muted-foreground"
+                        >
+                          {resource}
+                        </td>
+                      </tr>,
+                      ...PERMS.filter((perm) => perm.resource === resource).map((perm) => (
+                        <tr
+                          key={perm.id}
+                          className={
+                            "border-t border-border " +
+                            (missing.includes(perm.id) ? "bg-warning/8" : "")
+                          }
+                        >
+                          <td
+                            className={
+                              "sticky left-0 z-10 px-3 py-2 " +
+                              (missing.includes(perm.id) ? "bg-warning/8" : "bg-background")
+                            }
+                          >
+                            <div className="flex items-baseline gap-2">
+                              <span className="font-medium">{perm.action}</span>
+                              <span className="font-mono text-xs text-muted-foreground">
+                                {perm.id}
+                              </span>
+                              {missing.includes(perm.id) ? (
+                                <span className="text-xs text-warning">未启用</span>
+                              ) : null}
+                            </div>
+                            <p className="text-xs text-muted-foreground">{perm.hint}</p>
+                          </td>
+                          {roles.map((role) => (
+                            <td key={role.id} className="border-l border-border px-3 py-2 text-center">
+                              <input
+                                type="checkbox"
+                                aria-label={`${role.name} ${perm.id}`}
+                                checked={role.perms.includes(perm.id)}
+                                onChange={() => toggle(role.id, perm.id)}
+                                className="size-4 accent-[#1f2328]"
+                              />
+                            </td>
+                          ))}
+                        </tr>
+                      )),
+                    ])}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button>保存</Button>
+                <span className="text-muted-foreground">改完立刻生效,不用重新登录。</span>
+              </div>
+            </>
+          )}
         </section>
       </div>
     </FakeShell>
