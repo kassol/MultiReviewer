@@ -38,6 +38,8 @@ export type ReviewRunDeps = {
   dbPath: string;
   /** 一批最多多少改动行。不传取 `DEFAULT_MAX_CHANGED_LINES_PER_BATCH`。 */
   maxChangedLinesPerBatch?: number;
+  /** 手动重跑的调用者用户名快照;自动投递不传。 */
+  triggeredBy?: string;
 };
 
 export type ReviewRunResult = {
@@ -413,6 +415,7 @@ export async function runReview(
     pullNumber: event.number,
     headSha: pullRequest.headSha,
     startedAt: startedAt.toISOString(),
+    triggeredBy: deps.triggeredBy ?? null,
     changedFiles: range.files.length,
     changedLines: [...changedLines.values()].reduce((sum, n) => sum + n, 0),
     batchCount: batches.length,

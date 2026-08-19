@@ -34,6 +34,7 @@ import {
 import type { GiteaForgeOptions } from "../forge/gitea.ts";
 import { createPanelAuth, sessionHash, SESSION_TTL_MS, type PanelAuth } from "../panel/auth.ts";
 import { hashPassword } from "../panel/password.ts";
+import { isPanelPermission, type PanelPermission } from "../panel/permissions.ts";
 import { checkCredential, CHECKED_PROVIDERS } from "../panel/credential-check.ts";
 import {
   credentialTail,
@@ -442,6 +443,7 @@ async function startRun(
   forge: Forge,
   event: NormalizedEvent,
   specs: readonly ReviewerSpec[],
+  triggeredBy?: string,
 ): Promise<void> {
   const settled = deps.onRunSettled ?? logFailure;
   try {
@@ -461,6 +463,7 @@ async function startRun(
         reviewers,
         cacheDir: deps.cacheDir,
         dbPath: deps.dbPath,
+        ...(triggeredBy === undefined ? {} : { triggeredBy }),
         ...(maxChangedLinesPerBatch === null ? {} : { maxChangedLinesPerBatch }),
       },
     );
@@ -680,7 +683,7 @@ function sessionCookieHeader(prefix: string, value: string, maxAgeSeconds: numbe
 }
 
 // `access` 在 `PanelRoute` 上必填:新增端点时必须同时声明门禁。
-type PanelAccess = "public" | "authenticated-only" | "system-admin-only";
+type PanelAccess = PanelPermission | "public" | "authenticated-only" | "system-admin-only";
 type PanelRouteContext = {
   req: IncomingMessage;
   res: ServerResponse;
@@ -689,6 +692,7 @@ type PanelRouteContext = {
   hookManager: GiteaHookManager | undefined;
   bootstrapSecret: () => string | undefined;
   clearBootstrap: () => void;
+  caller?: { username: string; isSystemAdmin: boolean; permissions: readonly PanelPermission[] };
 };
 type PanelRouteHandler = (
   context: PanelRouteContext,
@@ -756,8 +760,9 @@ async function handleLogin(
     req.socket.remoteAddress ?? "",
   );
   if (!outcome.ok) {
+    if (outcome.status === 429) res.setHeader("retry-after", String(outcome.retryAfter));
     return sendJson(res, outcome.status, {
-      error: outcome.status === 429 ? "失败次数过多,稍后再试" : "用户名或密码不对",
+      error: outcome.status === 429 ? `太快了,${outcome.retryAfter} 秒后再试` : "用户名或密码不对",
     });
   }
   const raw = randomBytes(32).toString("hex");
@@ -819,6 +824,7 @@ async function handleBootstrapRegister(
       mustChangePassword: false,
       createdAt: now,
       isSystemAdmin: true,
+      roleId: null,
     }),
   );
   if (!created) return sendJson(res, 409, { error: "实例已初始化,找管理员建号" });
@@ -842,8 +848,174 @@ function panelSession(req: IncomingMessage, deps: WebhookServerDeps) {
     if (expiry - now < SESSION_TTL_MS / 2) {
       store.renewPanelSession(hash, new Date(now + SESSION_TTL_MS).toISOString());
     }
-    return { ...session, hash };
+    const permissions =
+      session.roleId === null
+        ? []
+        : (store.listPanelRoles().find((role) => role.id === session.roleId)?.permissions ?? []);
+    return { ...session, permissions, hash };
   });
+}
+async function handlePanelUsers(req: IncomingMessage, res: ServerResponse, deps: WebhookServerDeps) {
+  if (req.method === "GET") {
+    return sendJson(res, 200, {
+      users: withStore(deps.dbPath, (store) =>
+        store.listPanelUsers().map(({ passwordHash: _passwordHash, ...user }) => user),
+      ),
+    });
+  }
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const value = safeParse(body) as { username?: unknown; password?: unknown; displayName?: unknown } | null;
+  if (
+    value === null ||
+    typeof value.username !== "string" ||
+    typeof value.password !== "string" ||
+    !PANEL_USERNAME.test(value.username) ||
+    (value.displayName !== undefined && typeof value.displayName !== "string")
+  ) return sendJson(res, 400, { error: "用户名或密码形状不对" });
+  const displayName = value.displayName === undefined ? null : value.displayName;
+  const password = value.password;
+  const username = value.username;
+  const existsInHistory = withStore(deps.dbPath, (store) => store.hasHistoricalRunTrigger(username));
+  if (existsInHistory) return sendJson(res, 409, { error: "这个用户名在评审记录里出现过,换一个" });
+  const passwordHash = await hashPassword(password);
+  try {
+    withStore(deps.dbPath, (store) =>
+      store.createPanelUser({
+        username,
+        displayName,
+        passwordHash,
+        mustChangePassword: true,
+        createdAt: new Date((deps.now ?? Date.now)()).toISOString(),
+        isSystemAdmin: false,
+        roleId: null,
+      }),
+    );
+  } catch {
+    return sendJson(res, 409, { error: "用户名已存在" });
+  }
+  return sendJson(res, 201, { username });
+}
+async function handlePanelUser(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  username: string,
+) {
+  if (req.method === "DELETE") {
+    const store = openStore(deps.dbPath);
+    try {
+      const prior = store.getPanelUser(username);
+      if (prior === undefined) return sendJson(res, 404, { error: "用户不存在" });
+      if (prior.isSystemAdmin && store.listPanelUsers().filter((user) => user.isSystemAdmin).length === 1) {
+        return sendJson(res, 409, { error: "不能删除最后一个系统管理员" });
+      }
+      store.removePanelUser(username);
+      return send(res, 204);
+    } finally {
+      store.close();
+    }
+  }
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const value = safeParse(body) as {
+    displayName?: unknown;
+    roleId?: unknown;
+    isSystemAdmin?: unknown;
+  } | null;
+  if (
+    value === null ||
+    (value.displayName !== null && typeof value.displayName !== "string") ||
+    (value.roleId !== null && typeof value.roleId !== "number") ||
+    typeof value.isSystemAdmin !== "boolean"
+  ) return sendJson(res, 400, { error: "用户更新形状不对" });
+  const displayName = value.displayName;
+  const roleId = value.roleId;
+  const isSystemAdmin = value.isSystemAdmin;
+  const result = withStore(deps.dbPath, (store) =>
+    store.updatePanelUser(username, { displayName, roleId, isSystemAdmin }),
+  );
+  if (result === "missing") return sendJson(res, 404, { error: "用户不存在" });
+  if (result === "last-system-admin") return sendJson(res, 409, { error: "不能降级最后一个系统管理员" });
+  return send(res, 204);
+}
+
+async function handleResetPanelPassword(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  username: string,
+) {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const value = safeParse(body) as { password?: unknown } | null;
+  if (value === null || typeof value.password !== "string") return sendJson(res, 400, { error: "密码形状不对" });
+  const passwordHash = await hashPassword(value.password);
+  const updated = withStore(deps.dbPath, (store) => store.resetPanelPassword(username, passwordHash));
+  return updated ? send(res, 204) : sendJson(res, 404, { error: "用户不存在" });
+}
+
+async function handleSelfPassword(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  caller: { username: string },
+) {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const value = safeParse(body) as { password?: unknown } | null;
+  if (value === null || typeof value.password !== "string") return sendJson(res, 400, { error: "密码形状不对" });
+  const passwordHash = await hashPassword(value.password);
+  const raw = cookieValue(req.headers.cookie, SESSION_COOKIE)!;
+  const current = sessionHash(raw);
+  withStore(deps.dbPath, (store) => {
+    store.updatePanelPassword(caller.username, passwordHash, false);
+    store.removePanelSessions(caller.username, current);
+  });
+  return send(res, 204);
+}
+async function handlePanelRoles(req: IncomingMessage, res: ServerResponse, deps: WebhookServerDeps) {
+  if (req.method === "GET") {
+    return sendJson(res, 200, { roles: withStore(deps.dbPath, (store) => store.listPanelRoles()) });
+  }
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const value = safeParse(body) as { name?: unknown; permissions?: unknown } | null;
+  if (value === null || typeof value.name !== "string" || !Array.isArray(value.permissions)) {
+    return sendJson(res, 400, { error: "角色形状不对" });
+  }
+  const permissions = value.permissions.filter(
+    (permission): permission is string => typeof permission === "string",
+  );
+  if (permissions.length !== value.permissions.length || !permissions.every(isPanelPermission)) {
+    return sendJson(res, 400, { error: "有认不出的权限格" });
+  }
+  const name = value.name;
+  try {
+    const role = withStore(deps.dbPath, (store) =>
+      store.createPanelRole({ name, permissions, createdAt: new Date((deps.now ?? Date.now)()).toISOString() }),
+    );
+    return sendJson(res, 201, role);
+  } catch {
+    return sendJson(res, 409, { error: "角色名已存在" });
+  }
+}
+
+async function handlePanelRole(req: IncomingMessage, res: ServerResponse, deps: WebhookServerDeps, id: number) {
+  if (req.method === "DELETE") {
+    const result = withStore(deps.dbPath, (store) => store.removePanelRole(id));
+    if (result.usernames.length > 0) return sendJson(res, 409, { error: "角色仍在使用", usernames: result.usernames });
+    return result.removed ? send(res, 204) : sendJson(res, 404, { error: "角色不存在" });
+  }
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const value = safeParse(body) as { name?: unknown; permissions?: unknown } | null;
+  if (value === null || typeof value.name !== "string" || !Array.isArray(value.permissions)) return sendJson(res, 400, { error: "角色形状不对" });
+  const permissions = value.permissions.filter((permission): permission is string => typeof permission === "string");
+  if (permissions.length !== value.permissions.length || !permissions.every(isPanelPermission)) return sendJson(res, 400, { error: "有认不出的权限格" });
+  const name = value.name;
+  const role = withStore(deps.dbPath, (store) => store.updatePanelRole(id, { name, permissions }));
+  return role === undefined ? sendJson(res, 404, { error: "角色不存在" }) : sendJson(res, 200, role);
 }
 
 function handleLogout(req: IncomingMessage, res: ServerResponse, deps: WebhookServerDeps): void {
@@ -873,159 +1045,174 @@ const PANEL_ROUTES: readonly PanelRoute[] = [
     method: "GET",
     pattern: "/session",
     access: "authenticated-only",
+    allowedWhilePasswordExpired: true,
     handler: ({ req, res, deps }) => {
       const session = panelSession(req, deps)!;
       return sendJson(res, 200, {
         username: session.username,
         displayName: session.displayName,
+        permissions: session.permissions,
         isSystemAdmin: session.isSystemAdmin,
         mustChangePassword: session.mustChangePassword,
       });
     },
   },
   {
-    method: "DELETE",
-    pattern: "/session",
-    access: "authenticated-only",
-    handler: ({ req, res, deps }) => handleLogout(req, res, deps),
+    method: "GET",
+    pattern: "/users",
+    access: "system-admin-only",
+    handler: ({ req, res, deps }) => handlePanelUsers(req, res, deps),
   },
   {
-    method: "GET",
-    pattern: "/settings",
-    access: "authenticated-only",
-    handler: ({ res, deps }) => handleGetSettings(res, deps),
+    method: "POST",
+    pattern: "/users",
+    access: "system-admin-only",
+    handler: ({ req, res, deps }) => handlePanelUsers(req, res, deps),
   },
   {
     method: "PUT",
-    pattern: "/settings",
-    access: "authenticated-only",
-    handler: ({ req, res, deps }) => handlePutSettings(req, res, deps),
+    pattern: /^\/users\/([a-z0-9._-]{1,32})$/,
+    access: "system-admin-only",
+    handler: ({ req, res, deps }, match) => handlePanelUser(req, res, deps, match![1]!),
   },
   {
-    method: "GET",
-    pattern: "/stats",
-    access: "authenticated-only",
-    handler: ({ req, res, deps }) => handleStats(req, res, deps),
-  },
-  {
-    method: "GET",
-    pattern: "/runs",
-    access: "authenticated-only",
-    handler: ({ req, res, deps }) => handleRuns(req, res, deps),
+    method: "DELETE",
+    pattern: /^\/users\/([a-z0-9._-]{1,32})$/,
+    access: "system-admin-only",
+    handler: ({ req, res, deps }, match) => handlePanelUser(req, res, deps, match![1]!),
   },
   {
     method: "POST",
-    pattern: "/rerun",
-    access: "authenticated-only",
-    handler: ({ req, res, deps }) => handleRerun(req, res, deps),
+    pattern: /^\/users\/([a-z0-9._-]{1,32})\/reset-password$/,
+    access: "system-admin-only",
+    handler: ({ req, res, deps }, match) =>
+      handleResetPanelPassword(req, res, deps, match![1]!),
   },
+  {
+    method: "PUT",
+    pattern: "/session/password",
+    access: "authenticated-only",
+    allowedWhilePasswordExpired: true,
+    handler: ({ req, res, deps, caller }) => handleSelfPassword(req, res, deps, caller!),
+  },
+  {
+    method: "GET",
+    pattern: "/roles",
+    access: "system-admin-only",
+    handler: ({ req, res, deps }) => handlePanelRoles(req, res, deps),
+  },
+  {
+    method: "POST",
+    pattern: "/roles",
+    access: "system-admin-only",
+    handler: ({ req, res, deps }) => handlePanelRoles(req, res, deps),
+  },
+  {
+    method: "PUT",
+    pattern: /^\/roles\/(\d+)$/,
+    access: "system-admin-only",
+    handler: ({ req, res, deps }, match) => handlePanelRole(req, res, deps, Number(match![1])),
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/roles\/(\d+)$/,
+    access: "system-admin-only",
+    handler: ({ req, res, deps }, match) => handlePanelRole(req, res, deps, Number(match![1])),
+  },
+  {
+    method: "DELETE",
+    pattern: "/session",
+    allowedWhilePasswordExpired: true,
+    access: "authenticated-only",
+    handler: ({ req, res, deps }) => handleLogout(req, res, deps),
+  },
+  { method: "GET", pattern: "/settings", access: "model:read", handler: ({ res, deps }) => handleGetSettings(res, deps) },
+  { method: "PUT", pattern: "/settings", access: "model:write", handler: ({ req, res, deps }) => handlePutSettings(req, res, deps) },
+  { method: "GET", pattern: "/stats", access: "review:read", handler: ({ req, res, deps }) => handleStats(req, res, deps) },
+  { method: "GET", pattern: "/runs", access: "review:read", handler: ({ req, res, deps }) => handleRuns(req, res, deps) },
+  { method: "POST", pattern: "/rerun", access: "review:rerun", handler: ({ req, res, deps, caller }) => handleRerun(req, res, deps, caller!.username) },
   {
     method: "GET",
     pattern: "/repos/search",
-    access: "authenticated-only",
+    access: "repo:write",
     handler: ({ req, res, deps, hookManager }) =>
       handleRepoSearch(req, res, deps, hookManager),
   },
-  {
-    method: "GET",
-    pattern: "/repos",
-    access: "authenticated-only",
-    handler: ({ res, deps }) => listRepos(res, deps),
-  },
+  { method: "GET", pattern: "/repos", access: "repo:read", handler: ({ res, deps }) => listRepos(res, deps) },
   {
     method: "POST",
     pattern: "/repos",
-    access: "authenticated-only",
+    access: "repo:write",
     handler: ({ req, res, deps, hookManager }) =>
       handleRegister(req, res, deps, hookManager),
   },
   {
     method: "DELETE",
     pattern: /^\/repos\/(\d+)$/,
-    access: "authenticated-only",
+    access: "repo:write",
     handler: ({ res, deps, hookManager }, match) =>
       handleRemove(res, deps, hookManager, Number(match![1])),
   },
   {
     method: "PUT",
     pattern: /^\/repos\/(\d+)\/reviewers$/,
-    access: "authenticated-only",
+    access: "repo:write",
     handler: ({ req, res, deps }, match) =>
       handleSetReviewers(req, res, deps, Number(match![1])),
   },
   {
     method: "POST",
     pattern: /^\/repos\/(\d+)\/rotate$/,
-    access: "authenticated-only",
+    access: "repo:write",
     handler: ({ res, deps, hookManager }, match) =>
       handleRotate(res, deps, hookManager, Number(match![1])),
   },
   {
     method: "GET",
     pattern: /^\/repos\/(\d+)\/hooks$/,
-    access: "authenticated-only",
+    access: "repo:read",
     handler: ({ res, deps, hookManager }, match) =>
       handleHookCheck(res, deps, hookManager, Number(match![1])),
   },
-  {
-    method: "GET",
-    pattern: "/catalog",
-    access: "authenticated-only",
-    handler: ({ res, deps }) => handleCatalog(res, deps),
-  },
-  {
-    method: "GET",
-    pattern: "/credentials",
-    access: "authenticated-only",
-    handler: ({ res, deps }) => handleListCredentials(res, deps),
-  },
+  { method: "GET", pattern: "/catalog", access: "model:read", handler: ({ res, deps }) => handleCatalog(res, deps) },
+  { method: "GET", pattern: "/credentials", access: "credential:read", handler: ({ res, deps }) => handleListCredentials(res, deps) },
   {
     method: "PUT",
     pattern: /^\/credentials\/([A-Za-z0-9_-]+)$/,
-    access: "authenticated-only",
+    access: "credential:write",
     handler: ({ req, res, deps }, match) =>
       handlePutCredential(req, res, deps, match![1]!),
   },
   {
     method: "DELETE",
     pattern: /^\/credentials\/([A-Za-z0-9_-]+)$/,
-    access: "authenticated-only",
+    access: "credential:write",
     handler: ({ res, deps }, match) => handleRemoveCredential(res, deps, match![1]!),
   },
-  {
-    method: "GET",
-    pattern: "/model-rows",
-    access: "authenticated-only",
-    handler: ({ res, deps }) => handleListModelRows(res, deps),
-  },
+  { method: "GET", pattern: "/model-rows", access: "model:read", handler: ({ res, deps }) => handleListModelRows(res, deps) },
   {
     method: "POST",
     pattern: "/model-rows",
-    access: "authenticated-only",
+    access: "model:write",
     handler: ({ req, res, deps }) => handleAddModelRow(req, res, deps),
   },
   {
     method: "DELETE",
     pattern: "/model-rows",
-    access: "authenticated-only",
+    access: "model:write",
     handler: ({ req, res, deps }) => handleRemoveModelRow(req, res, deps),
   },
-  {
-    method: "GET",
-    pattern: "/custom-providers",
-    access: "authenticated-only",
-    handler: ({ res, deps }) => handleListCustomProviders(res, deps),
-  },
+  { method: "GET", pattern: "/custom-providers", access: "model:read", handler: ({ res, deps }) => handleListCustomProviders(res, deps) },
   {
     method: "POST",
     pattern: "/custom-providers",
-    access: "authenticated-only",
+    access: "model:write",
     handler: ({ req, res, deps }) => handleAddCustomProvider(req, res, deps),
   },
   {
     method: "DELETE",
     pattern: CUSTOM_PROVIDER_ROUTE,
-    access: "authenticated-only",
+    access: "model:write",
     handler: ({ res, deps }, match) => handleRemoveCustomProvider(res, deps, match![1]!),
   },
 ];
@@ -1070,7 +1257,15 @@ async function handlePanelApi(
 ): Promise<void> {
   const sub = pathname(req).slice(`/${deps.panelPrefix}/api`.length) || "/";
   const matched = findPanelRoute(req.method, sub);
-  const context = { req, res, deps, auth, hookManager, bootstrapSecret, clearBootstrap };
+  const context: PanelRouteContext = {
+    req,
+    res,
+    deps,
+    auth,
+    hookManager,
+    bootstrapSecret,
+    clearBootstrap,
+  };
   if (matched?.route.access === "public") {
     return matched.route.handler(context, matched.match);
   }
@@ -1081,7 +1276,34 @@ async function handlePanelApi(
     return sendJson(res, 401, { error: "未登录", ...(bootstrap ? { bootstrap: true } : {}) });
   }
   if (matched === undefined) return sendJson(res, 404, { error: "没有这个端点" });
-  return matched.route.handler(context, matched.match);
+  if (session.mustChangePassword && matched.route.allowedWhilePasswordExpired !== true) {
+    return sendJson(res, 403, { error: "先改密码" });
+  }
+  if (
+    matched.route.access === "system-admin-only" &&
+    !session.isSystemAdmin
+  ) {
+    return sendJson(res, 403, { error: "只有系统管理员能做" });
+  }
+  if (
+    matched.route.access !== "authenticated-only" &&
+    matched.route.access !== "system-admin-only" &&
+    !session.isSystemAdmin &&
+    !session.permissions.includes(matched.route.access)
+  ) {
+    return sendJson(res, 403, { error: "没有这一格权限" });
+  }
+  return matched.route.handler(
+    {
+      ...context,
+      caller: {
+        username: session.username,
+        isSystemAdmin: session.isSystemAdmin,
+        permissions: session.permissions,
+      },
+    },
+    matched.match,
+  );
 }
 
 /**
@@ -1796,6 +2018,7 @@ async function handleRerun(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
+  triggeredBy: string,
 ): Promise<void> {
   const body = await readBody(req, res);
   if (body === undefined) return;
@@ -1851,6 +2074,7 @@ async function handleRerun(
     forge,
     { platform: "gitea", owner, repo, number: pullNumber, headSha, draft: false, action: "rerun" },
     specs,
+    triggeredBy,
   );
 }
 
@@ -2365,7 +2589,11 @@ async function servePage(res: ServerResponse, deps: WebhookServerDeps): Promise<
 export function createWebhookServer(deps: WebhookServerDeps): Server {
   // 已经记过首次的无关事件类型与 action,整个服务共用一份。
   const loggedOnce = new Set<string>();
-  const auth = createPanelAuth(deps.now);
+  const auth = createPanelAuth({
+    ...(deps.now === undefined ? {} : { now: deps.now }),
+    onGate: ({ account, ip, count }) =>
+      console.warn(`登录节流:账号 ${account},来源 ${ip},已失败 ${count} 次`),
+  });
   let bootstrap =
     withStore(deps.dbPath, (store) => store.countPanelUsers()) === 0
       ? (deps.bootstrapSecret ?? randomBytes(16).toString("hex"))

@@ -6,6 +6,7 @@
  */
 import { DatabaseSync } from "node:sqlite";
 
+import { isPanelPermission, type PanelPermission } from "../panel/permissions.ts";
 import type { Category, Disposition, ReviewerUsage, Severity } from "./finding.ts";
 
 const SCHEMA = `
@@ -18,6 +19,8 @@ CREATE TABLE IF NOT EXISTS review_run (
   -- pull request 的状态,closed 回填写上,NULL 即尚未见到关闭。unknown 的 finding
   -- 只在已关闭的 PR 上进统计分母(ADR 0006)。
   pr_state TEXT,
+  -- 手动重跑的调用者用户名快照,NULL 即投递。刻意不引用 panel_user:删号后历史保留。
+  triggered_by TEXT,
   started_at TEXT NOT NULL,
   finished_at TEXT,
   duration_ms INTEGER,
@@ -167,6 +170,18 @@ CREATE TABLE IF NOT EXISTS custom_provider (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS panel_role (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS panel_role_permission (
+  role_id INTEGER NOT NULL REFERENCES panel_role(id),
+  permission TEXT NOT NULL,
+  PRIMARY KEY (role_id, permission)
+);
+
 CREATE TABLE IF NOT EXISTS panel_user (
   username TEXT PRIMARY KEY,
   display_name TEXT,
@@ -175,7 +190,9 @@ CREATE TABLE IF NOT EXISTS panel_user (
   created_at TEXT NOT NULL,
   last_login_at TEXT,
   is_system_admin INTEGER NOT NULL DEFAULT 0,
-  CHECK (is_system_admin IN (0, 1))
+  role_id INTEGER REFERENCES panel_role(id),
+  CHECK (is_system_admin IN (0, 1)),
+  CHECK (is_system_admin = 0 OR role_id IS NULL)
 );
 
 CREATE TABLE IF NOT EXISTS panel_session (
@@ -190,7 +207,8 @@ CREATE INDEX IF NOT EXISTS panel_session_by_user ON panel_session(username);
 /**
  * 加在既有表上的列。`CREATE TABLE IF NOT EXISTS` 对已存在的表什么都不做,升级前建的
  * 数据库因此拿不到新列,第一次落库就写不进去。SQLite 的 ADD COLUMN 没有 IF NOT EXISTS,
- * 只能照跑一遍、把"列已存在"这一种错吞掉——每条都带默认值,旧行不需要回填。
+ * 只能照跑一遍、把"列已存在"这一种错吞掉。NOT NULL 列带默认值;可空列的旧行自然是
+ * NULL,不需要回填。
  *
  * placement 的默认值 'inline' 对升级前的历史 fallback 行是错标(它们本该是 body),
  * 迁移时无从分辨;回填链路会在该 PR 下一次被读到时按正文锚点把它们纠正回来。
@@ -199,6 +217,7 @@ const ADD_COLUMNS = [
   "ALTER TABLE reviewer_outcome ADD COLUMN anchor_rejections INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE repo ADD COLUMN reviewers TEXT",
   "ALTER TABLE review_run ADD COLUMN pr_state TEXT",
+  "ALTER TABLE review_run ADD COLUMN triggered_by TEXT",
   "ALTER TABLE finding ADD COLUMN placement TEXT NOT NULL DEFAULT 'inline'",
   // 升级前只有通过了厂商验证的凭据才落得进来,旧行默认 1 是照实记。
   "ALTER TABLE model_credential ADD COLUMN verified INTEGER NOT NULL DEFAULT 1",
@@ -231,6 +250,8 @@ export type RunMeta = {
   repo: string;
   pullNumber: number;
   headSha: string;
+  /** 手动重跑的调用者用户名快照;省略或 null 即投递触发。 */
+  triggeredBy?: string | null;
   startedAt: string;
   /** 预估规模:本次 Review Range 覆盖的文件数。 */
   changedFiles: number;
@@ -402,18 +423,19 @@ export type RunListItem = {
   headSha: string;
   startedAt: string;
   finishedAt: string | null;
-  /** 全部模型都失败。部分失败不在这里,由 `models` 里带 `failure` 的行推出。 */
+  /** 手动重跑的调用者用户名快照;null 即投递触发。 */
+  triggeredBy: string | null;
   failed: boolean;
-  /** `failure` 非 null 即这个模型这轮失败了,文本是节选(见 `failureExcerpt`)。 */
   models: { model: string; findings: number; failure: string | null }[];
-  /**
-   * 已处置的合并组数。已处置判定与处置率同源(任一行 resolved 即已处置,只认行级
-   * 承载),但计数单位是本轮合并组,不是处置率的逐模型 Finding Identity——多模型
-   * 报同一处这里算 1,处置率矩阵里逐模型各算一条。
-   */
   resolved: number;
-  /** 行级承载的合并组总数。正文行没有 resolve 载体,不进这一对计数。 */
   total: number;
+};
+
+export type PanelRoleRecord = {
+  id: number;
+  name: string;
+  permissions: PanelPermission[];
+  createdAt: string;
 };
 
 export type PanelUserRecord = {
@@ -424,6 +446,7 @@ export type PanelUserRecord = {
   createdAt: string;
   lastLoginAt: string | null;
   isSystemAdmin: boolean;
+  roleId: number | null;
 };
 
 export type PanelSessionRecord = {
@@ -431,6 +454,7 @@ export type PanelSessionRecord = {
   displayName: string | null;
   mustChangePassword: boolean;
   isSystemAdmin: boolean;
+  roleId: number | null;
   expiresAt: string;
 };
 
@@ -451,8 +475,27 @@ function failureExcerpt(raw: unknown): string | null {
 }
 
 export type Store = {
+  listPanelRoles(): PanelRoleRecord[];
+  createPanelRole(record: {
+    name: string;
+    permissions: readonly PanelPermission[];
+    createdAt: string;
+  }): PanelRoleRecord;
+  updatePanelRole(
+    id: number,
+    record: { name: string; permissions: readonly PanelPermission[] },
+  ): PanelRoleRecord | undefined;
+  removePanelRole(id: number): { removed: boolean; usernames: string[] };
+  listPanelUsers(): PanelUserRecord[];
+  updatePanelUser(
+    username: string,
+    record: { displayName: string | null; roleId: number | null; isSystemAdmin: boolean },
+  ): "updated" | "missing" | "last-system-admin";
+  resetPanelPassword(username: string, passwordHash: string): boolean;
   countPanelUsers(): number;
   getPanelUser(username: string): PanelUserRecord | undefined;
+  /** 这个用户名是否已作为手动重跑的调用者写进历史;建号时据此拒绝名字重用。 */
+  hasHistoricalRunTrigger(username: string): boolean;
   registerFirstPanelUser(record: Omit<PanelUserRecord, "lastLoginAt">): boolean;
   createPanelUser(record: Omit<PanelUserRecord, "lastLoginAt">): void;
   createPanelSession(record: {
@@ -674,8 +717,8 @@ export function openStore(dbPath: string): Store {
   const writePanelUser = (record: Omit<PanelUserRecord, "lastLoginAt">): void => {
     db.prepare(
       `INSERT INTO panel_user
-         (username, display_name, password_hash, must_change_password, created_at, is_system_admin)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+         (username, display_name, password_hash, must_change_password, created_at, is_system_admin, role_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       record.username,
       record.displayName,
@@ -683,10 +726,135 @@ export function openStore(dbPath: string): Store {
       record.mustChangePassword ? 1 : 0,
       record.createdAt,
       record.isSystemAdmin ? 1 : 0,
+      record.roleId,
     );
   };
 
   const store: Store = {
+    listPanelRoles() {
+      const rows = db
+        .prepare(
+          `SELECT r.id, r.name, r.created_at, p.permission
+             FROM panel_role r LEFT JOIN panel_role_permission p ON p.role_id = r.id
+            ORDER BY r.id, p.permission`,
+        )
+        .all();
+      const roles: PanelRoleRecord[] = [];
+      for (const row of rows) {
+        const id = Number(row["id"]);
+        let role = roles.find((item) => item.id === id);
+        if (role === undefined) {
+          role = { id, name: String(row["name"]), permissions: [], createdAt: String(row["created_at"]) };
+          roles.push(role);
+        }
+        if (row["permission"] !== null) {
+          const value = String(row["permission"]);
+          if (isPanelPermission(value)) role.permissions.push(value);
+        }
+      }
+      return roles;
+    },
+
+    createPanelRole(record) {
+      db.exec("BEGIN");
+      try {
+        const result = db.prepare("INSERT INTO panel_role (name, created_at) VALUES (?, ?)").run(
+          record.name,
+          record.createdAt,
+        );
+        const id = Number(result.lastInsertRowid);
+        for (const permission of record.permissions) {
+          db.prepare("INSERT INTO panel_role_permission (role_id, permission) VALUES (?, ?)").run(id, permission);
+        }
+        db.exec("COMMIT");
+        return { id, ...record, permissions: [...record.permissions] };
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    updatePanelRole(id, record) {
+      if (db.prepare("SELECT 1 FROM panel_role WHERE id = ?").get(id) === undefined) return undefined;
+      db.exec("BEGIN");
+      try {
+        db.prepare("UPDATE panel_role SET name = ? WHERE id = ?").run(record.name, id);
+        db.prepare("DELETE FROM panel_role_permission WHERE role_id = ?").run(id);
+        for (const permission of record.permissions) {
+          db.prepare("INSERT INTO panel_role_permission (role_id, permission) VALUES (?, ?)").run(id, permission);
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return store.listPanelRoles().find((role) => role.id === id);
+    },
+
+    removePanelRole(id) {
+      const usernames = db
+        .prepare("SELECT username FROM panel_user WHERE role_id = ? ORDER BY username")
+        .all(id)
+        .map((row) => String(row["username"]));
+      if (usernames.length > 0) return { removed: false, usernames };
+      const result = db.prepare("DELETE FROM panel_role WHERE id = ?").run(id);
+      return { removed: Number(result.changes) > 0, usernames: [] };
+    },
+
+    listPanelUsers() {
+      return db
+        .prepare(
+          `SELECT username, display_name, password_hash, must_change_password, created_at,
+                  last_login_at, is_system_admin, role_id FROM panel_user ORDER BY username`,
+        )
+        .all()
+        .map((row) => ({
+          username: String(row["username"]),
+          displayName: row["display_name"] === null ? null : String(row["display_name"]),
+          passwordHash: String(row["password_hash"]),
+          mustChangePassword: Number(row["must_change_password"]) === 1,
+          createdAt: String(row["created_at"]),
+          lastLoginAt: row["last_login_at"] === null ? null : String(row["last_login_at"]),
+          isSystemAdmin: Number(row["is_system_admin"]) === 1,
+          roleId: row["role_id"] === null ? null : Number(row["role_id"]),
+        }));
+    },
+
+    updatePanelUser(username, record) {
+      const prior = store.getPanelUser(username);
+      if (prior === undefined) return "missing";
+      db.exec("BEGIN");
+      try {
+        db.prepare(
+          "UPDATE panel_user SET display_name = ?, role_id = ?, is_system_admin = ? WHERE username = ?",
+        ).run(record.displayName, record.roleId, record.isSystemAdmin ? 1 : 0, username);
+        const admins = Number((db.prepare("SELECT COUNT(*) AS c FROM panel_user WHERE is_system_admin = 1").get()?.["c"] ?? 0));
+        if (admins === 0) {
+          db.exec("ROLLBACK");
+          return "last-system-admin";
+        }
+        db.exec("COMMIT");
+        return "updated";
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    resetPanelPassword(username, passwordHash) {
+      db.exec("BEGIN");
+      try {
+        const result = db.prepare(
+          "UPDATE panel_user SET password_hash = ?, must_change_password = 1 WHERE username = ?",
+        ).run(passwordHash, username);
+        db.prepare("DELETE FROM panel_session WHERE username = ?").run(username);
+        db.exec("COMMIT");
+        return Number(result.changes) > 0;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
 
     countPanelUsers() {
       const row = db.prepare("SELECT COUNT(*) AS c FROM panel_user").get();
@@ -697,11 +865,12 @@ export function openStore(dbPath: string): Store {
       const row = db
         .prepare(
           `SELECT username, display_name, password_hash, must_change_password,
-                  created_at, last_login_at, is_system_admin
+                  created_at, last_login_at, is_system_admin, role_id
              FROM panel_user WHERE username = ?`,
         )
         .get(username);
       if (row === undefined) return undefined;
+
       return {
         username: String(row["username"]),
         displayName: row["display_name"] === null ? null : String(row["display_name"]),
@@ -710,7 +879,14 @@ export function openStore(dbPath: string): Store {
         createdAt: String(row["created_at"]),
         lastLoginAt: row["last_login_at"] === null ? null : String(row["last_login_at"]),
         isSystemAdmin: Number(row["is_system_admin"]) === 1,
+        roleId: row["role_id"] === null ? null : Number(row["role_id"]),
       };
+    },
+    hasHistoricalRunTrigger(username) {
+      return (
+        db.prepare("SELECT 1 FROM review_run WHERE triggered_by = ? LIMIT 1").get(username) !==
+        undefined
+      );
     },
 
     registerFirstPanelUser(record) {
@@ -751,7 +927,7 @@ export function openStore(dbPath: string): Store {
       const row = db
         .prepare(
           `SELECT u.username, u.display_name, u.must_change_password, u.is_system_admin,
-                  s.expires_at
+                  u.role_id, s.expires_at
              FROM panel_session s JOIN panel_user u ON u.username = s.username
             WHERE s.session_hash = ?`,
         )
@@ -762,6 +938,7 @@ export function openStore(dbPath: string): Store {
         displayName: row["display_name"] === null ? null : String(row["display_name"]),
         mustChangePassword: Number(row["must_change_password"]) === 1,
         isSystemAdmin: Number(row["is_system_admin"]) === 1,
+        roleId: row["role_id"] === null ? null : Number(row["role_id"]),
         expiresAt: String(row["expires_at"]),
       };
     },
@@ -1087,15 +1264,16 @@ export function openStore(dbPath: string): Store {
       const result = db
         .prepare(
           `INSERT INTO review_run
-             (owner, repo, pull_number, head_sha, started_at,
+             (owner, repo, pull_number, head_sha, triggered_by, started_at,
               changed_files, changed_lines, batch_count)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           meta.owner,
           meta.repo,
           meta.pullNumber,
           meta.headSha,
+          meta.triggeredBy ?? null,
           meta.startedAt,
           meta.changedFiles,
           meta.changedLines,
@@ -1246,7 +1424,8 @@ export function openStore(dbPath: string): Store {
       const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
       const runs = db
         .prepare(
-          `SELECT id, owner, repo, pull_number, head_sha, started_at, finished_at, failed
+          `SELECT id, owner, repo, pull_number, head_sha, triggered_by,
+                  started_at, finished_at, failed
              FROM review_run ${where}
             ORDER BY id DESC LIMIT ?`,
         )
@@ -1328,6 +1507,8 @@ export function openStore(dbPath: string): Store {
           repo: String(run["repo"]),
           pullNumber: Number(run["pull_number"]),
           headSha: String(run["head_sha"]),
+          triggeredBy:
+            run["triggered_by"] === null ? null : String(run["triggered_by"]),
           startedAt: String(run["started_at"]),
           finishedAt: run["finished_at"] === null ? null : String(run["finished_at"]),
           failed: Number(run["failed"]) === 1,

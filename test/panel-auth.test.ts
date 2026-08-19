@@ -29,6 +29,7 @@ async function startPanel(options: { empty?: boolean; now?: () => number } = {})
       mustChangePassword: false,
       createdAt: "2026-08-19T00:00:00.000Z",
       isSystemAdmin: true,
+      roleId: null,
     });
     store.close();
   }
@@ -84,6 +85,7 @@ test("账号登录拿到持久 session cookie,探测回身份,登出后旧 cooki
     username: USERNAME,
     displayName: "Admin",
     isSystemAdmin: true,
+    permissions: [],
     mustChangePassword: false,
   });
   const done = await h.request("/session", { method: "DELETE", headers: { cookie: sessionCookie } });

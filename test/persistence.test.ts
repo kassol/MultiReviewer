@@ -96,6 +96,41 @@ test("Review Run 的元数据落库:仓库、PR、head commit、起止时间、�
   assert.equal(run["failed"], 0);
 });
 
+test("Review Run 的触发者快照可空且不引用用户表", async () => {
+  const { cache, db, forge } = setup();
+  const seed = openStore(db.path);
+  seed.createPanelUser({
+    username: "deleted-operator",
+    displayName: null,
+    passwordHash: "test-only-hash",
+    mustChangePassword: false,
+    createdAt: "2026-08-19T00:00:00.000Z",
+    isSystemAdmin: false,
+    roleId: null,
+  });
+  seed.close();
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [scriptedReviewer("model-a", [])],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    triggeredBy: "deleted-operator",
+  });
+
+  const store = openStore(db.path);
+  assert.equal(store.hasHistoricalRunTrigger("deleted-operator"), true);
+  assert.equal(store.hasHistoricalRunTrigger("never-used"), false);
+  store.close();
+  assert.equal(query(db.path, "SELECT triggered_by FROM review_run")[0]!["triggered_by"], "deleted-operator");
+
+  const sqlite = new DatabaseSync(db.path);
+  sqlite.exec("PRAGMA foreign_keys = ON");
+  sqlite.prepare("DELETE FROM panel_user WHERE username = ?").run("deleted-operator");
+  sqlite.close();
+  assert.equal(query(db.path, "SELECT triggered_by FROM review_run")[0]!["triggered_by"], "deleted-operator");
+});
+
 test("每条 Finding 落库并带上来源模型、位置、severity、category 与内容指纹", async () => {
   const { cache, db, forge } = setup();
 
@@ -319,6 +354,55 @@ test("升级前建的数据库仍能打开,锚定打回列补在既有表上", a
   const rows = query(db.path, "SELECT * FROM reviewer_outcome");
   assert.equal(rows.length, 1);
   assert.equal(rows[0]!["anchor_rejections"], 4);
+});
+
+test("升级前的 review_run 补 triggered_by,历史行按投递读", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const old = new DatabaseSync(db.path);
+  old.exec(`CREATE TABLE review_run (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    head_sha TEXT NOT NULL,
+    pr_state TEXT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    duration_ms INTEGER,
+    changed_files INTEGER NOT NULL,
+    changed_lines INTEGER NOT NULL,
+    batch_count INTEGER NOT NULL,
+    failed INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    total_tokens INTEGER,
+    cost_usd REAL
+  )`);
+  old.prepare(
+    `INSERT INTO review_run
+       (owner, repo, pull_number, head_sha, started_at, changed_files, changed_lines, batch_count)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run("acme", "widgets", 7, "old-sha", "2026-08-01T00:00:00.000Z", 1, 2, 1);
+  old.close();
+
+  const store = openStore(db.path);
+  assert.equal(store.listRuns({ limit: 10 })[0]!.triggeredBy, null);
+  store.startRun({
+    owner: "acme",
+    repo: "widgets",
+    pullNumber: 8,
+    headSha: "new-sha",
+    startedAt: "2026-08-19T00:00:00.000Z",
+    changedFiles: 1,
+    changedLines: 2,
+    batchCount: 1,
+    triggeredBy: "operator",
+  });
+  assert.equal(store.listRuns({ limit: 10 })[0]!.triggeredBy, "operator");
+  store.close();
 });
 
 test("用量与耗时落库,Review Run 一级是各 Reviewer 之和", async () => {

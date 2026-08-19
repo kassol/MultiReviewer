@@ -20,6 +20,8 @@ export type RunItem = {
   pullNumber: number;
   headSha: string;
   startedAt: string;
+  /** 手动重跑的调用者用户名快照;null 即投递触发。 */
+  triggeredBy: string | null;
   finishedAt: string | null;
   failed: boolean;
   /** 一行一个参与本轮的模型。`failure` 非 null 即这个模型这轮失败了(节选文本)。 */
@@ -327,8 +329,9 @@ export function RunsPage() {
                       <td className="px-3 py-2.5 align-top">
                         <RunPill run={run} />
                       </td>
-                      <td className="px-3 py-2.5 align-top font-mono text-xs tabular-nums text-muted-foreground">
-                        {localTime(run.startedAt)}
+                      <td className="px-3 py-2.5 align-top text-xs text-muted-foreground">
+                        <div className="font-mono tabular-nums">{localTime(run.startedAt)}</div>
+                        <div>{run.triggeredBy === null ? "投递" : `手动 · ${run.triggeredBy}`}</div>
                       </td>
                       <td className="px-3 py-2.5 align-top">
                         <Button

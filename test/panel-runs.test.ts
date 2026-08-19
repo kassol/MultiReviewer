@@ -6,7 +6,11 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import { openStore } from "../src/review/store.ts";
-import { HARNESS_PR, startPanelHarness } from "./support/panel-harness.ts";
+import {
+  HARNESS_PR,
+  PANEL_ADMIN_USERNAME,
+  startPanelHarness,
+} from "./support/panel-harness.ts";
 
 const cleanups: (() => void)[] = [];
 after(() => {
@@ -20,6 +24,7 @@ type RunRow = {
   pullNumber: number;
   headSha: string;
   startedAt: string;
+  triggeredBy: string | null;
   failed: boolean;
   models: { model: string; findings: number; failure: string | null }[];
   resolved: number;
@@ -28,7 +33,13 @@ type RunRow = {
 
 function seedRun(
   dbPath: string,
-  meta: { owner: string; repo: string; pullNumber: number; startedAt: string },
+  meta: {
+    owner: string;
+    repo: string;
+    pullNumber: number;
+    startedAt: string;
+    triggeredBy?: string;
+  },
   findings: { model: string; disposition?: string; placement?: string; group?: number }[],
   outcomes: { model: string; failure?: string }[] = [],
 ): number {
@@ -82,7 +93,13 @@ test("时间流 API:倒序分页、逐条计数、已移除仓库的历史照常
   );
   seedRun(
     h.db.path,
-    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
+    {
+      owner: "acme",
+      repo: "widgets",
+      pullNumber: 7,
+      startedAt: "2026-08-02T00:00:00.000Z",
+      triggeredBy: "former-operator",
+    },
     [
       { model: "model-a", disposition: "resolved", group: 0 },
       { model: "model-b", disposition: "unknown", group: 0 },
@@ -101,6 +118,8 @@ test("时间流 API:倒序分页、逐条计数、已移除仓库的历史照常
   const [latest, oldest] = [body.runs[0]!, body.runs[1]!];
   assert.equal(latest.owner, "acme");
   assert.equal(oldest.owner, "ghost");
+  assert.equal(latest.triggeredBy, "former-operator");
+  assert.equal(oldest.triggeredBy, null);
   assert.equal(oldest.repo, "gone");
 
   // 逐模型来源行计数;已处置口径按合并组算且只认行级承载:
@@ -206,6 +225,28 @@ test("重跑:注册仓库触发新 Review Run,同一 head commit 重复审合法
   store.close();
   assert.equal(runs.length, 2);
   assert.equal(runs[0]!.pullNumber, HARNESS_PR.number);
+  assert.deepEqual(
+    runs.map((run) => run.triggeredBy),
+    [PANEL_ADMIN_USERNAME, PANEL_ADMIN_USERNAME],
+  );
+});
+
+test("投递触发的 Review Run 不写调用者快照", async () => {
+  const h = await startPanelHarness(cleanups);
+  assert.equal(
+    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
+      .status,
+    201,
+  );
+
+  assert.equal((await h.deliverViaHook("delivery-head")).status, 200);
+  await h.settledAtLeast(1);
+
+  const store = openStore(h.db.path);
+  const runs = store.listRuns({ limit: 30 });
+  store.close();
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]!.triggeredBy, null);
 });
 
 test("重跑:未注册仓库 409,PR 号不是数字 400", async () => {

@@ -102,6 +102,7 @@ export async function startPanelHarness(
     mustChangePassword: false,
     createdAt: "2026-08-19T00:00:00.000Z",
     isSystemAdmin: true,
+    roleId: null,
   });
   seed.close();
 

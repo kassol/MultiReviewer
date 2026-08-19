@@ -731,8 +731,11 @@ function RepoRuns({
         <Kv
           key={run.id}
           label={
-            <span className="font-mono">
-              #{run.pullNumber} · {run.startedAt.slice(0, 16).replace("T", " ")}
+            <span>
+              <span className="font-mono">
+                #{run.pullNumber} · {run.startedAt.slice(0, 16).replace("T", " ")}
+              </span>
+              {` · ${run.triggeredBy === null ? "投递" : `手动 · ${run.triggeredBy}`}`}
             </span>
           }
         >
