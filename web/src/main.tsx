@@ -69,8 +69,10 @@ const NAV: readonly { to: "/repos" | "/runs" | "/stats" | "/credentials" | "/set
 ];
 
 function visibleNav(session: PanelSession) {
+  const hasBusinessAccess = session.isSystemAdmin || session.permissions.length > 0;
   return NAV.filter((item) =>
-    item.always === true || (item.admin === true ? session.isSystemAdmin : hasPermission(session, item.permission!)),
+    (item.always === true && hasBusinessAccess) ||
+    (item.admin === true ? session.isSystemAdmin : item.permission !== undefined && hasPermission(session, item.permission)),
   );
 }
 
@@ -177,6 +179,7 @@ function ZeroPermissionPage() {
         <h1 className="text-lg font-semibold">你的账号还没有任何权限</h1>
         <p className="text-muted-foreground">账号已经建好,但还没有角色。请联系系统管理员给你一个角色;刷新后,可用页面会出现在导航里。</p>
         <p className="text-muted-foreground">系统管理员:{session.systemAdmins.join("、")}</p>
+        <Link to="/password" className="text-sm underline underline-offset-4">修改密码</Link>
       </Card>
     </div>
   );
