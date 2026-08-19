@@ -330,8 +330,8 @@ note "下限:社区版 1.26.0 / 企业版 26.0.0。Disposition 依赖的 resolve
 note "服务启动时会再检查一次,不合格会直接退出。"
 pause
 
-# ── 4. 面板凭据与基地址 ───────────────────────────────────────────────────
-stage "面板凭据与基地址"
+# ── 4. 面板密钥与基地址 ───────────────────────────────────────────────────
+stage "面板密钥与基地址"
 
 # 清理动作之前先留一份副本。要清的里面有两把厂商 key,厂商后台不会再给第二次明文,
 # 而人此刻还没机会在面板里重配。副本只是文件复制,不读值也不打印值。
@@ -365,7 +365,15 @@ remove_env() {
   note "  $reason"
 }
 OLD_SECRET=$(_existing MULTIREVIEWER_WEBHOOK_SECRET || true)
-backup_env
+for OLD_ENV in MULTIREVIEWER_ADMIN_TOKEN MULTIREVIEWER_WEBHOOK_SECRET MULTIREVIEWER_PUBLIC_URL \
+  MULTIREVIEWER_GITEA_REPO DEEPSEEK_API_KEY OPENROUTER_API_KEY \
+  MULTIREVIEWER_DEEPSEEK_MODEL MULTIREVIEWER_OPENROUTER_MODEL; do
+  if grep -qE "^${OLD_ENV}=" "$ENV_FILE" 2>/dev/null; then
+    backup_env
+    break
+  fi
+done
+remove_env MULTIREVIEWER_ADMIN_TOKEN "面板门禁已改为本地用户账号与会话 cookie;服务不再读取 admin token。"
 remove_env MULTIREVIEWER_WEBHOOK_SECRET "全局 webhook secret 已废除:准入改为每仓库一把 Key,由面板在注册时生成并写进 hook。"
 remove_env MULTIREVIEWER_PUBLIC_URL "公网地址改为基地址,存 MULTIREVIEWER_BASE_URL(下面会问)。"
 remove_env MULTIREVIEWER_GITEA_REPO "webhook 不再手工登记:仓库改在面板上注册。"
@@ -377,17 +385,6 @@ if [[ -n "$OLD_SECRET" ]]; then
   warn "Gitea 上手工建过的旧 webhook 用的是刚清掉的全局 secret,已经验不过签名。"
   say "  到各仓库的 设置 → Web 钩子 删掉指向本服务的旧 hook,改由面板注册时自动创建。"
 fi
-
-say "面板登录用一枚 admin token。这里随机生成,登录页粘贴它。"
-EXISTING_TOKEN=$(_existing MULTIREVIEWER_ADMIN_TOKEN || true)
-if [[ -n "$EXISTING_TOKEN" ]] && ! confirm "已经有 admin token 了,重新生成?(重新生成后旧 token 立即失效)"; then
-  MULTIREVIEWER_ADMIN_TOKEN="$EXISTING_TOKEN"
-  note "沿用现有 token"
-else
-  MULTIREVIEWER_ADMIN_TOKEN=$(openssl rand -hex 32)
-  note "已生成新 token"
-fi
-write_env MULTIREVIEWER_ADMIN_TOKEN "$MULTIREVIEWER_ADMIN_TOKEN"
 
 say ""
 say "面板的凭据页用一枚主密钥加解密模型凭据(ADR 0008)。缺它时那一页整体不可用,"
@@ -440,7 +437,7 @@ case "$MULTIREVIEWER_BASE_URL" in
       localhost | localhost:* | 127.0.0.1 | 127.0.0.1:* | "[::1]" | "[::1]:"*) ;;
       *)
         printf '  %s✗ 明文 http 且不是 localhost:%s%s\n' "$RED" "$MULTIREVIEWER_BASE_URL" "$RESET"
-        say "admin token 和 cookie 会在网络上裸奔,服务启动时会直接拒绝。换 https 再来。"
+        say "用户名、密码与会话 cookie 会在网络上裸奔,服务启动时会直接拒绝。换 https 再来。"
         exit 1 ;;
     esac ;;
   *)
@@ -474,7 +471,7 @@ PANEL_PATH="/${MULTIREVIEWER_PANEL_PREFIX}/"
 LOCAL_PANEL="http://127.0.0.1:${MULTIREVIEWER_HOST_PORT}${PANEL_PATH}"
 
 say ""
-say "自检收在「面板能登录」:先从本机打登录页,期望 200——这验容器、端口映射与前端产物。"
+say "自检收在「面板能用」:先从本机打登录页,期望 200——这验容器、端口映射与前端产物。"
 LOCAL_PROBE=$(curl -sS -o /dev/null -w '%{http_code}' -m 10 "${LOCAL_PANEL}login" 2>/dev/null) \
   || LOCAL_PROBE="connect-failed"
 if [[ "$LOCAL_PROBE" == "200" ]]; then
@@ -486,24 +483,48 @@ else
   exit 1
 fi
 
-say "再用刚写进 .env 的 token 真登录一次,期望 204 加 Set-Cookie——这验 token 没写坏。"
-LOGIN_HEADERS=$(curl -sS -D - -o /dev/null -m 10 \
-  -X POST "${LOCAL_PANEL}api/session" \
-  -H 'Content-Type: application/json' \
-  -d "{\"token\":\"${MULTIREVIEWER_ADMIN_TOKEN}\"}" 2>/dev/null) || LOGIN_HEADERS=""
-if printf '%s' "$LOGIN_HEADERS" | head -1 | grep -q ' 204' \
-  && printf '%s' "$LOGIN_HEADERS" | grep -qi '^set-cookie:'; then
-  printf '  %s✓%s 登录成功,拿到会话 cookie\n' "$GREEN" "$RESET"
-else
-  printf '  %s✗ 登录失败%s\n' "$RED" "$RESET"
-  if printf '%s' "$LOGIN_HEADERS" | head -1 | grep -q ' 429'; then
-    say "429:此前失败太多次触发了按 IP 的退避锁定。等几分钟再重跑,别连续硬试。"
-  else
-    say "服务在跑但 token 对不上——.env 里的值与容器读到的值不一致(改了 .env 没重启,"
-    say "或值里混进了引号/空白)。修好前不算部署完成:"
-    printf '      %sdocker compose up -d && FORCE=1 重跑本脚本%s\n' "$BOLD" "$RESET"
+say "再问会话端点当前是不是零用户,期望 401——这同时验路由、SQLite 与初始化状态。"
+SESSION_BODY=$(mktemp)
+SESSION_STATUS=$(curl -sS -o "$SESSION_BODY" -w '%{http_code}' -m 10 \
+  "${LOCAL_PANEL}api/session" 2>/dev/null) || SESSION_STATUS="connect-failed"
+FRESH_INSTANCE=""
+if [[ "$SESSION_STATUS" == "401" ]] \
+  && grep -qE '"bootstrap"[[:space:]]*:[[:space:]]*true' "$SESSION_BODY"; then
+  FRESH_INSTANCE="yes"
+fi
+rm -f "$SESSION_BODY"
+
+case "$SESSION_STATUS:$FRESH_INSTANCE" in
+  401:yes)
+    printf '  %s✓%s 库里还没有用户,第一个管理员的注册入口已打开\n' "$GREEN" "$RESET"
+    ;;
+  401:)
+    printf '  %s✓%s 库里已有账号,用已有账号登录\n' "$GREEN" "$RESET"
+    ;;
+  *)
+    printf '  %s✗ 会话探测回了 %s,预期 401%s\n' "$RED" "$SESSION_STATUS" "$RESET"
+    say "这一步还会读 SQLite;路由、数据库或容器任一处报错都不能算部署完成。查看日志:"
+    printf '      %sdocker compose logs multireviewer%s\n' "$BOLD" "$RESET"
+    exit 1
+    ;;
+esac
+
+LOGGED_BOOTSTRAP=$(docker compose logs multireviewer 2>&1 \
+  | grep -Eo 'bootstrap: [[:xdigit:]]{32}' \
+  | tail -n 1 \
+  | sed 's/^bootstrap: //') || LOGGED_BOOTSTRAP=""
+BOOTSTRAP_SECRET=""
+if [[ "$FRESH_INSTANCE" == "yes" ]]; then
+  if [[ -z "$LOGGED_BOOTSTRAP" ]]; then
+    printf '  %s✗ 库里是零用户,却没从启动日志抽到 bootstrap 口令%s\n' "$RED" "$RESET"
+    say "注册入口已经打开却没有口令就无法成为第一个管理员。查看完整日志:"
+    printf '      %sdocker compose logs multireviewer%s\n' "$BOLD" "$RESET"
+    exit 1
   fi
-  exit 1
+  BOOTSTRAP_SECRET="$LOGGED_BOOTSTRAP"
+  printf '  %s✓%s 已从启动日志取到一次性 bootstrap 口令\n' "$GREEN" "$RESET"
+else
+  note "已有账号时不需要 bootstrap 口令,这是正常续跑。"
 fi
 
 # 下面这个 curl 是从本机发的,它证明不了 Gitea 或你的浏览器到得了这个地址。地址落在
@@ -543,16 +564,24 @@ pause
 
 # ── 6. 交付清单 ───────────────────────────────────────────────────────────
 stage "交付清单"
-say "部署边界到「面板能登录」为止。仓库接入、key 轮转、模型覆盖都在面板上做。"
+say "部署边界到「面板能用」为止。仓库接入、Key 轮转、模型覆盖都在面板上做。"
 say ""
 say "面板地址(在你自己的浏览器上开):"
 printf '\n      %s%s%s%s\n\n' "$BOLD" "$MULTIREVIEWER_BASE_URL" "$PANEL_PATH" "$RESET"
-say "admin token(登录页粘贴;也存在 $ENV_FILE 的 MULTIREVIEWER_ADMIN_TOKEN):"
-printf '\n      %s%s%s\n\n' "$BOLD" "$MULTIREVIEWER_ADMIN_TOKEN" "$RESET"
-warn "token 刚打在屏幕上了,分享终端记录前先清屏。"
+if [[ "$FRESH_INSTANCE" == "yes" ]]; then
+  say "一次性 bootstrap 口令(注册第一个管理员时粘贴):"
+  printf '\n      %s%s%s\n\n' "$BOLD" "$BOOTSTRAP_SECRET" "$RESET"
+  note "只在库里零用户时打印;注册成功即失效;服务重启换一枚;不会写进 $ENV_FILE。"
+else
+  say "库里已有账号,用已有用户名与密码登录;不需要 bootstrap 口令。"
+fi
 say ""
 say "下一步,都在面板里:"
-step "浏览器开上面的地址,粘 token 登录。"
+if [[ "$FRESH_INSTANCE" == "yes" ]]; then
+  step "浏览器开上面的地址,用这枚口令注册第一个管理员——第一个注册的人就是系统管理员,注册入口随后自动关闭。"
+else
+  step "浏览器开上面的地址,用已有账号登录。"
+fi
 step "设置页选模型组合。向导不再问模型标识,这里是唯一的入口。"
 step "凭据页粘要用的 provider 的 API key(厂商后台签发,凭据页列出模型目录里全部 provider,按需选)。"
 say "  只有 anthropic / openai / deepseek / openrouter 这几家保存时会真发一次最小请求验证,打错当场就知道;"
@@ -560,6 +589,7 @@ say "  其余 provider 照样能保存,只是跳过验证并标「未验证」�
 note "  凭据没配全,投递进来会建一次失败的 Run 并在时间线上写明缺哪一家——不是故障。"
 step "仓库页搜关键字选仓库——面板会验 bot 权限、生成 Key、创建 webhook,"
 say "  一步到位。前置:bot 在该仓库是 admin(阶段 3 说过,每个仓库都要)。"
+step "访问控制页先建角色、勾权限格,再给同事建号并授角色;系统不预置角色,新号没授角色就是零权限。"
 step "注册完开一个 PR,第一轮审查自动触发;评审记录页能看到它。"
 note "要用一个此前没被本工具评论过的 PR:旧 PR 上留着指纹锚点,Finding 会被折叠进正文。"
 pause
@@ -571,8 +601,8 @@ note "更新版本:开发机上跑 scripts/build-push.sh,这里 docker compose p
 printf '\n'
 say "服务器侧排障速查:"
 note "  面板打不开 → docker compose logs multireviewer;503 是镜像缺前端产物,404 查前缀。"
-note "  登录 401 → .env 的 token 与容器不一致,改完要 docker compose up -d 重启。"
-note "  注册 403 → bot 不是该仓库 admin。"
+note "  登录 401 → 核对用户名与密码;忘记密码或怀疑 cookie 泄露时,请系统管理员在访问控制页重置该账号密码。"
+note "  仓库注册 403 → bot 不是该仓库 admin。"
 note "  投递没反应 → Gitea 仓库 设置 → Web 钩子 → 最近投递的响应码;401 时:仓库没注册就先注册,注册过的到面板点「轮转推平」。"
 note "  Gitea 拦投递(allowed HTTP servers)→ app.ini [webhook] ALLOWED_HOST_LIST = external, ${PUBLIC_HOST}"
 note "  审查失败 → docker compose logs 里「Review Run 失败」带原因;模型没余额、标识拼错都在这。"

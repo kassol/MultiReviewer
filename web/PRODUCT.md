@@ -28,7 +28,7 @@ MultiReviewer 对 pull request 做多模型并行代码审查。审查挂在 Git
 ## Operating Context
 
 - 目标平台是公司内部 self-host 的 Gitea；开发阶段用 GitHub 作适配层测试，面板准入只有 Gitea。
-- 部署形态是 Docker。面板与 JSON API 同进程，路径挂在随机的面板前缀下；真正的门禁是 admin token 与会话 cookie。
+- 部署形态是 Docker。面板与 JSON API 同进程,路径挂在随机的面板前缀下；真正的门禁是本地用户账号、角色权限与会话 cookie。
 - 界面语言是中文。领域术语以仓库根 `CONTEXT.md` 为准，代码、文案、沟通用同一套词。
 - 日常场景是内网桌面浏览器；窄视口要可用，但不是主要工作面。
 
@@ -36,7 +36,7 @@ MultiReviewer 对 pull request 做多模型并行代码审查。审查挂在 Git
 
 已有功能（信息结构与行为本轮不改，只换视觉世界）：
 
-- 登录：admin token 换会话。
+- 登录：本地用户名与密码换落库会话；零用户时用启动日志里的 bootstrap 口令注册第一个系统管理员。
 - 仓库：搜索注册、移除、Key 代次与核对 / 轮转、每仓库模型覆盖、从仓库详情重跑指定 PR。
 - 评审记录：跨仓库 Review Run 时间流、部分失败可见、逐条重跑。
 - 处置率：模型 × 分类矩阵，口径是 Finding Identity，每格带分子分母。

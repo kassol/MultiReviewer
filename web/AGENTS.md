@@ -11,9 +11,11 @@
 - `src/injected.ts` — 读注入全局变量的唯一代码路径,缺失当场报错并在页面写明原因。
 - `src/api.ts` — 面板 API 的唯一入口,基址从注入的前缀来。
 - `src/model-catalog.ts` — 模型目录:`["catalog"]` 那一份查询、目录的三个类型(`CatalogProvider` / `CatalogModel` / `CatalogCost`)、模型标识的写法(`modelIdentity` / `parseModelIdentity`),以及单价留空那一档的说法(`COST_ZERO_NOTE`)。凭据页的 provider 下拉与两栏面板共用这一份:各拉一份查询会让「已配凭据」在两处不同步,各写一句措辞会让两边漂开。**单价与上下文窗口的写法不在这里**:两者各只有一个调用点(面板的模型行那一串「上下文 · 单价」),包成函数就是单表达式包装,已在那一处就地内联。它是 `components/model-picker.tsx` 改名来的(issue #91 删掉 `ModelPicker` 之后剩下的部分既不是组件也不带 JSX,所以落在 `src/` 里、与 `api.ts` 同级)。
-- `src/main.tsx` — 路由与壳:`/login` 一屏登录,`shell` 下挂五页(`/repos` / `/runs` / `/stats` / `/credentials` / `/settings`),`/` 与登录成功落到 `/runs`。Router `basepath` 取注入前缀。壳只管导航:左侧栏走 `--chrome`,当前项是白底细线盒子并带 `aria-current="page"`。窄视口下侧栏改成顶部横排、可横向滚动。
-- `src/login.tsx` — 登录页,单 token 输入框(有可见 `<Label>`,不靠 placeholder 当标签),整屏居中的一张卡片加产品标记。
-- `src/components/page-header.tsx` — 五页共用的页头。左边是页名与一句说明(压在 68ch 内),右边 `actions` 放这一页当下需要的那一个东西(注册按钮 / 时间窗 / 总处置率)。粘在滚动容器顶上。
+- `src/main.tsx` — 路由与壳:`/login` 同一屏按 session 探测结果在登录与 bootstrap 注册间切换;`/password` 是必须改密页;`shell` 下挂六页(`/repos` / `/runs` / `/stats` / `/credentials` / `/settings` / `/access`)。Router `basepath` 取注入前缀。壳按 `GET /session` 回来的权限集先过滤导航再渲染:系统管理员全开且独有访问控制页,普通用户只看得到有读权限的页;零权限时导航全藏,内容区给一张说明并列系统管理员。窄视口下侧栏改成顶部横排、可横向滚动。
+- `src/session.ts` — 当前身份与权限的唯一查询,缓存 `GET <前缀>/api/session`;未认证的 401 再由壳送去 `/login`,必须改密时统一送 `/password`,页面组件不各自探测。
+- `src/login.tsx` — 登录与首次注册共用的一屏。普通档是用户名加密码;零用户档多 bootstrap 口令与确认密码,注册成功后回账号登录。所有字段有可见 `<Label>`,不靠 placeholder 当标签。
+- `src/password.tsx` — 用户自改密码页,走 `PUT /session/password`;必须改密的人完成后回到自己有权访问的第一页。改密保留当前会话、作废其余会话。
+- `src/access-control.tsx` — 系统管理员独有的 `/access` 页,上半用户表、下半转置权限矩阵(行是权限格、列是角色)。角色多时横向滚,权限格列 sticky。用户与角色读写走 `GET/POST /users`、`PUT/DELETE /users/:username`、`POST /users/:username/reset-password` 与 `GET/POST /roles`、`PUT/DELETE /roles/:id`;改角色是行内下拉,重置密码、删用户与删角色都走 Dialog。系统管理员不进矩阵;角色从全空创建,没授角色的用户就是零权限。
 - `src/components/mark.tsx` — 产品标记(三条错位短线),与 `index.html` 里内联成 data URI 的 favicon 是同一份图形。用 `currentColor` 上色。
 - `src/components/ui/skeleton.tsx` — 读取中的占位块。带 `data-slot="skeleton"`,`styles.css` 的降低动效偏好那一段据此关掉呼吸动画。
 - `src/repos.tsx` — 仓库页,左列表右详情。模型组合是「跟随全局 / 自定义」两态开关(issue #69):点「跟随全局」直接清覆盖,一个动作;点「自定义」把详情里那一格换成编辑态(`ReviewersEditor`),面板就是全局设置页那一个 `ModelComposer`(issue #91,两处共用一份实现),选空时保存禁用,清覆盖仍是显式的 `{"reviewers": null}`。**编辑态不做对话框**:面板固定 460px 高,而 `ui/dialog.tsx` 的对话框只给宽度档位、没有最大高度与滚动,矮屏上底部的手填框与保存按钮会落到视口外面;面板里「+ 加一家 provider」本身就是一个对话框,套进来就是对话框叠对话框。编辑态里详情那一格并成单栏(两栏面板装不进 `md:grid-cols-2` 的半宽格子),**面板外面不套 `<form>`**——它自己带着手填模型行那张表单,嵌套的 form 会让填一个 model id 顺手把覆盖一起提交了。注册与移除确认两处是 shadcn Dialog——焦点锁、Esc、`role="dialog"` 由组件给,不自己写。**不用 `window.confirm`**:原生对话框阻塞渲染线程,浏览器自动化与 dogfooding 都会被卡死。核对差异卡片的「轮转推平」调轮转端点。key 面板显示「代次」而非建立时间——代次是 ADR 0007 之后 key 真正有信息量的属性。
@@ -31,7 +33,7 @@
 - 前端只读注入的 `window.__MULTIREVIEWER__`,不设 `import.meta.env` 回落——分叉点只留「谁注入」一个,「本地好好的、进镜像白屏」不该存在。注入形状必须与服务端(`src/webhook/server.ts` 的 `servePage`)逐字一致。
 - Vite 保持默认绝对 base(`/`):静态资源不进前缀,构建产物与前缀无关。**注入插件永远不参与 build**——前缀烤进产物即事故。
 - 构建产物是纯静态文件:服务端的运行时第三方依赖仍只有 Pi,react 全家只活在构建阶段。
-- 未认证的判据是 `GET <前缀>/api/session` 非 204,壳的 `beforeLoad` 统一送去 `/login`,页面组件不各自判。
+- 当前身份与权限只从 `GET <前缀>/api/session` 读取,由 `src/session.ts` 缓存一份;未认证的 401 由壳统一送去 `/login`,必须改密统一送 `/password`,页面组件不各自判。导航按权限隐藏而不是摆禁用项,但服务端 403 仍是最终授权边界。
 - **模型组合的编辑界面只有一份**(issue #91):全局设置页与仓库覆盖都挂 `components/model-composer.tsx`,接口是 `{value, onChange}`;「跟随全局」那一档与「选空时保存禁用」留在页面侧,面板不掺和。要给其中一处加东西就给面板加入参,不分叉出第二份——两份实现会让「加一家 provider」在两处长得不一样。
 - **撞名停用的自定义 provider,它名下的模型一个都不许选**(issue #94)。判据是 `custom && conflict`,与左栏那句红字、右栏那条红色横幅同一个。只看 `configured` 不够:目录在这一档给的是 Pi 内置同名那一家的模型,而登记的那一家自带模型凭据、`configured` 为真,于是这些模型选得进组合、也存得下去;服务端组装 Reviewer 时只按 provider 名判撞名,存进去的一律当失败处理。两者共用同一个模型标识,保存层分不出人要的是哪一个,门禁因此只能立在面板上。已经选进组合的留着不动——面板不替人删,它们按 issue #94 定下的行为在 Review Run 里失败。红色横幅要写出「先改名或删掉这一家,这些模型才选得了」这条出路。**手填框的判据不跟着改,仍只看 `configured`**:往撞名那一家下面填模型行由服务端拒收(沿用 issue #88 那条约定,校验不在前端复制一份)。
 - **删掉一家自定义 provider,同时把它的模型标识从本地的模型组合里摘掉。**服务端的引用检查只看已落库的组合,所以「先把这家的模型加进本地组合、在保存组合之前删掉这一家」这条路删得成;而模型组合端点不校验目录成员,保存也会被接受,悬空的标识要到下一次 Review Run 才报缺凭据或模型不存在。两条路里选「删除成功时就地摘掉」,不选「本地还引用着就不许删」:后者与服务端那道引用检查措辞重叠,而且人得先回去改组合才能删,对人更磨人。摘掉之后提示里写明记得保存——`onChange` 只动本地状态,组合怎么存归调用页。按 provider 名一律摘,撞名那一档也不例外:那些标识虽然删完就落到内置那一家身上、跑得起来,但人当初选的是自己那个端点,留着等于把它们悄声改指内置那一家,正是 issue #94 要拦的事。
@@ -58,6 +60,8 @@
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
 
 ## 变更日志
+
+- 2026-08-19: 落地 issue #109 / #116 的前端门禁。登录从共享 token 改为本地用户名与密码,零用户时同一屏用 bootstrap 口令注册第一个系统管理员;`GET /session` 的身份与权限由 `session.ts` 统一缓存。壳按权限隐藏六页导航,必须改密统一进 `/password`,零权限用户看到说明而不是一圈点不动的页面。新增系统管理员独有的 `/access`(`access-control.tsx`):用户表与转置的角色 × 权限格矩阵同页,支持建号、行内授角色、重置密码、删号及角色增改删;系统管理员不进角色矩阵。
 
 - 2026-08-15: 落地 issue #33。脚手架从零起:Vite + React + TanStack Router/Query,登录一屏加三页顶部导航的空壳,Docker 多阶段构建。
 - 2026-08-15: 落地 issue #34。仓库页按原型变体 A 落地(`src/repos.tsx` + `src/styles.css`):左列表按最近活动排序,右详情含核对差异卡片(轮转推平)、准入 key 面板(不回显,只显代次)、模型组合面板(覆盖 JSON 与配置文件同形状)、累计量。注册 / 改组合 / 移除确认全走应用内模态。真实浏览器走通注册 → 轮转 → 差异推平 → 改组合 → 移除全流程。

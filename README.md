@@ -16,7 +16,7 @@ A GitHub adapter exists for development and testing, but repository admission is
 - Each configured model reviews the change in its own read-only subprocess, holding only its own vendor credentials.
 - Findings from all models are merged, deduplicated, and published as one non-blocking review. The review never blocks the merge — the author keeps the final say.
 - Findings resolved on the platform stay hidden in later runs while the code they point at is unchanged. Disposition data accumulates per model and per category, so you can measure which models earn their keep.
-- Repositories are onboarded through a management panel, which also shows run history, manual re-runs, and disposition statistics. Webhooks and their secrets are created and rotated by the panel, never by hand.
+- Repositories are onboarded through a management panel protected by local user accounts and custom roles. The panel also shows run history, manual re-runs, and disposition statistics. Webhooks and their secrets are created and rotated by the panel, never by hand.
 
 ## Deployment
 
@@ -26,13 +26,15 @@ The deployment unit is a Docker image. The server needs three files in one direc
 # Dev machine: build the image and push it to your registry
 scripts/build-push.sh registry.example.com/team/multireviewer:latest
 
-# Server: first deployment — the wizard asks for credentials,
-# starts the container, and verifies a real panel login
+# Server: first deployment — the wizard collects server configuration,
+# starts the container, verifies the panel and database, and prints the one-time bootstrap secret
 bash setup.sh
 
 # Server: updates
 docker compose pull && docker compose up -d
 ```
+
+On a fresh database, use the bootstrap secret to register the first local user; that user becomes the system administrator and registration immediately closes. Create roles before adding colleagues: no roles are preinstalled, and a user without one has no panel permissions.
 
 The full deployment reference — environment variables, Gitea preparation steps, bot account scopes — is in [AGENTS.md](AGENTS.md) under “部署”.
 

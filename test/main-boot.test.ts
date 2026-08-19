@@ -151,10 +151,10 @@ test("基地址是明文 http 且非 localhost 时拒绝启动并说明后果", 
   assert.match(result.output, /Secure cookie/);
 });
 
-test("admin token 缺失时启动失败", async () => {
+test("admin token 缺失不拦启动,零用户时打印 bootstrap 口令", async () => {
   const result = await boot({ GITHUB_TOKEN: "ghp-stub", MULTIREVIEWER_ADMIN_TOKEN: "" });
-  assert.equal(result.listening, false);
-  assert.match(result.output, /MULTIREVIEWER_ADMIN_TOKEN/);
+  assert.equal(result.listening, true);
+  assert.match(result.output, /bootstrap:/);
 });
 
 test("面板前缀撞上固定入口或带非法字符时启动失败", async () => {

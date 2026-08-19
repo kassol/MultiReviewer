@@ -8,7 +8,7 @@ import { defineConfig, loadEnv, type Plugin } from "vite";
  * base 保持 Vite 默认的绝对 `/`:静态资源不进前缀,构建产物与前缀无关。
  */
 export default defineConfig(({ mode }) => {
-  // loadEnv 会把 .env 里全部 MULTIREVIEWER_* 读进来(含 admin token 等机密)。它们只
+  // loadEnv 会把 .env 里全部 MULTIREVIEWER_* 读进来(含模型凭据主密钥等机密)。它们只
   // 停留在配置作用域;绝不要把 envPrefix 设成 "MULTIREVIEWER_"——那会把机密打进客户端包。
   const env = loadEnv(mode, "..", "MULTIREVIEWER_");
   const prefix = env["MULTIREVIEWER_PANEL_PREFIX"] ?? "";

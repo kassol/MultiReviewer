@@ -19,7 +19,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `Dockerfile` / `.dockerignore` — 运行镜像。`node:24-slim` 加 git,依赖在镜像内重装(宿主机的 `node_modules` 含平台专属产物,不进镜像)。
 - `docker-compose.yml` — 服务器上的编排定义。与 `.env` 两个文件即可运行,不需要源码。
 - `scripts/build-push.sh` — 在开发机构建镜像并推到 registry,默认目标架构 `linux/amd64`。
-- `scripts/setup.sh` — 部署向导。在服务器上执行,逐步问出凭据、写 `.env`、拉镜像起容器、以「面板能登录」为验收自检;仓库接入、模型凭据与模型组合在面板上做,不在向导里。
+- `scripts/setup.sh` — 部署向导。在服务器上执行,逐步问出 Forge 凭据与面板配置、写 `.env`、拉镜像起容器、以「面板能用」为验收自检;新实例从日志抽出一次性 bootstrap 口令交给第一个系统管理员,仓库接入、用户与角色、模型凭据及模型组合在面板上做。
 - `docs/adr/` — 架构决策记录。
 - `docs/idea.md` — 初始产品与架构草案,部分设定已被 ADR 推翻。
 - `docs/agents/` — Agent skills 的仓库级配置:issue tracker、triage 标签、domain docs 消费规则。
@@ -45,14 +45,14 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 # 开发机:构建并推送。开发机 arm64、服务器 amd64 时必须交叉构建,脚本已默认 linux/amd64
 scripts/build-push.sh registry.example.com/team/multireviewer:latest
 
-# 服务器:首次部署跑向导,六步问出凭据、拉镜像、起容器、真登录一次面板自检
+# 服务器:首次部署跑向导,六步问出配置、拉镜像、起容器,自检面板与 SQLite 并交付 bootstrap 口令
 bash setup.sh
 
 # 服务器:后续更新
 docker compose pull && docker compose up -d
 ```
 
-向导的边界收在「面板能登录」:生成 admin token、面板前缀与凭据主密钥、问基地址、起服务后打登录页并真登录一次(token 写坏时自检失败,不静默交付),收尾给交付清单。仓库接入、模型凭据、模型组合与覆盖都在面板上做,向导不问模型凭据也不问模型标识,不生成全局 webhook secret,也不指导手工配 hook;检出已废除的变量(`MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` / `MULTIREVIEWER_GITEA_REPO` / `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` / `MULTIREVIEWER_DEEPSEEK_MODEL` / `MULTIREVIEWER_OPENROUTER_MODEL`)会清掉并说明原因。清理之前先把 `.env` 复制成 `.env.bak-<YYYYMMDD>`,同一天重跑不覆盖已有副本——被清掉的两把厂商 key 只在这份副本里,厂商后台不会再给第二次明文。
+向导的边界收在「面板能用」:生成随机面板前缀与凭据主密钥、问基地址,起服务后打登录页并探测 `GET <前缀>/api/session`。零用户时该端点回 401 加 `bootstrap: true`,向导再从容器日志抽出一次性 bootstrap 口令;已有账号时 401 不带这一位,正常提示用已有账号登录。bootstrap 只在库里零用户时打印,注册第一个用户成功即失效,服务重启换一枚,不进 `.env` 也不落库;第一个注册的人就是系统管理员,注册入口随后关闭。仓库接入、用户与角色、模型凭据、模型组合与覆盖都在面板上做;系统不预置角色,所以给同事建号前先建角色并勾权限格,新号不授角色就是零权限。向导不问模型凭据也不问模型标识,不生成全局 webhook secret,也不指导手工配 hook;检出已废除的变量(`MULTIREVIEWER_ADMIN_TOKEN` / `MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` / `MULTIREVIEWER_GITEA_REPO` / `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` / `MULTIREVIEWER_DEEPSEEK_MODEL` / `MULTIREVIEWER_OPENROUTER_MODEL`)会清掉并说明原因。清理之前先把 `.env` 复制成 `.env.bak-<YYYYMMDD>`,同一天重跑不覆盖已有副本——被清掉的旧值只在这份副本里,面板配好后自行删除。
 
 两处容易踩的地方:
 
@@ -65,7 +65,6 @@ webhook 指向 `POST /webhook?k=<代次>` 这一个端点(路径固定,其余路
 
 必需的环境变量:
 
-- `MULTIREVIEWER_ADMIN_TOKEN` — 面板登录的 admin token
 - `MULTIREVIEWER_PANEL_PREFIX` — 面板路径的随机首段,只能由字母、数字、`-` 与 `_` 组成,且不能是 `webhook` 或 `assets`
 - `MULTIREVIEWER_BASE_URL` — 服务对外的基地址(实例根,不含路径)。明文 http 且非 localhost 时拒绝启动:Secure cookie 发不出去,面板会打得开却登不进。它取代向导旧变量 `MULTIREVIEWER_PUBLIC_URL`——旧值含 `/webhook` 后缀,同名不同义会静默出错,故换名弃用
 
@@ -97,9 +96,11 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 
 ### 面板门禁的运维
 
-- **轮换 admin token = 改 `.env` 的 `MULTIREVIEWER_ADMIN_TOKEN` + 重启容器。**会话表在内存里,不落库,所以重启即清空全部会话:轮换天然带踢会话,已登录的浏览器下一次请求就回 401。怀疑会话 cookie 泄露时正解也是轮换 token,没有单独作废某一个会话的手段(面板上的登出只作废自己那一个)。
+- **怀疑某个人的会话 cookie 泄露时,由系统管理员在访问控制页重置那个人的密码。**重置会只作废该用户的全部会话,并要求他用临时密码登录后立即改密,不牵连其他人。会话已经落 SQLite,所以**重启容器不再清空会话**;登出只作废当前会话,用户自己改密码会保留当前会话并踢掉其余会话。
 - **HTTPS 是门禁的前提,不是可选项。**会话 cookie 带 `Secure`,明文 HTTP 下浏览器根本不发它;`MULTIREVIEWER_BASE_URL` 是明文 http 且非 localhost 时服务直接拒绝启动(localhost 放行,浏览器把它当安全上下文)。本服务自己不终止 TLS,证书与 https 由外部反代负责,归部署方。
-- **面板前缀不是安全边界。**未认证的 API 请求一律 401,端点存在与否都一样,前缀只是路由匹配的第一段。它挡的是「面板地址被爬到」,挡不住知道地址的人;真正的门禁是 admin token 与会话 cookie。前缀轮换只会让旧的 `Path` 限定 cookie 失配,不构成额外保护。
+- **面板前缀不是安全边界。**未认证的 API 请求一律 401,端点存在与否都一样,前缀只是路由匹配的第一段。它挡的是「面板地址被爬到」,挡不住知道地址的人;真正的门禁是用户账号与会话 cookie。前缀轮换只会让旧的 `Path` 限定 cookie 失配,不构成额外保护。
+
+账号是本服务自己管理的本地账号,不复用 Gitea、GitHub 或其他身份源。系统管理员在访问控制页建用户、重置密码、删用户,并创建自定义角色;每个普通用户挂一个角色,角色由 8 个权限格组成(`repo:read` / `repo:write` / `review:read` / `review:rerun` / `model:read` / `model:write` / `credential:read` / `credential:write`)。系统管理员不是角色且始终全权限。口令强度在注册、自改密码与管理员重置三条路径上都**不设下限**;服务唯一兜底是失败后的登录闸门最多退避 30 秒,并在撞上闸门时留一行含账号、源 IP 与失败次数的日志。部署方若有强度要求,必须在组织流程或外围身份治理中另行约束;服务不会替部署方判定弱口令。
 
 ### Gitea 的准备步骤
 
@@ -133,7 +134,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 - 调用 Gitea API 一律携带凭据,目标实例要求登录后才能调用
 - 测试只验证外部可观察的行为,打在三条缝上(issue #26 的测试决策):HTTP 端点(起真服务打 HTTP,注入假 Forge、临时库路径与时钟)、`runReview` 入口(经 `Forge` 与 `Reviewer` 两个注入边界)、SQLite 临时库;git 与 SQLite 用真实实现,落在临时目录
 - 需要真实凭据或真实平台的测试默认跳过,由环境变量显式开启
-- **交付前的验证一律在部署实例上做,不在开发机起服务。**自动化测试照旧在本机跑(那是缝上的断言,与实例无关),但「改完之后人去确认它真的能用」这一步走部署实例:面板操作、webhook 投递、真实 Review Run 都在那里验。本机 dev 双进程验不出这类东西——它没有真 Gitea、没有已注册的仓库、没有模型凭据,补齐这些的成本比推一次镜像高,而验完的结论还不能代表实例。开发机因此不留 `.env` 里的面板变量(admin token / 面板前缀 / 基地址 / 凭据主密钥);要在本机起面板时临时补,验完删掉
+- **交付前的验证一律在部署实例上做,不在开发机起服务。**自动化测试照旧在本机跑(那是缝上的断言,与实例无关),但「改完之后人去确认它真的能用」这一步走部署实例:面板操作、webhook 投递、真实 Review Run 都在那里验。本机 dev 双进程验不出这类东西——它没有真 Gitea、没有已注册的仓库、没有模型凭据,补齐这些的成本比推一次镜像高,而验完的结论还不能代表实例。开发机因此不常驻 `.env` 里的面板变量(面板前缀 / 基地址 / 凭据主密钥);要在本机起面板时临时补,验完删掉
 
 ## Agent skills
 
@@ -182,7 +183,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-15: 定下前端本地联调方式,「仓库准入与管理面板」的地图(issue #17)至此走完。dev 与生产的分叉压缩到「谁往 `index.html` 注入前缀全局变量」一个点:生产是服务,dev 是用 `transformIndexHtml` 钩子的内联 Vite 插件。前缀来源是同一份 `.env` 的 `MULTIREVIEWER_PANEL_PREFIX`,后端运行时读、Vite 用 `loadEnv` 配置阶段读;dev 下走 Vite proxy 代理 `/<前缀>/api` 到本机后端,浏览器视角同源同路径,cookie 正常携带、无 CORS;前端只读注入的全局变量,不设 `import.meta.env` 回落,注入缺失当场报错。地图共 8 条决策(6 张 grilling、1 张 research、1 张 prototype),下一步交 `/to-spec` 收拢成可建造的 spec。
 - 2026-08-15: 落地 issue #27(仓库准入与管理面板的第一票)。服务从零引入路由:webhook 固定在 `POST /webhook`,其余任何路径与方法一律 404、不重定向。部署向导随之改:公网地址输入自动补齐 `/webhook` 后缀,本机自检指向 `/webhook`,「路径任意」的表述删除。
 - 2026-08-15: 落地 issue #28。仓库注册表与 per-repo Key 准入:投递从 payload 取数值 repo id 查注册表,按 `?k=` 代次选 Key 再验签,未注册与代次不对分成两类 401 记录、按仓库只记首次。全局 `MULTIREVIEWER_WEBHOOK_SECRET` 硬切删除,启动不再读它;GitHub 因无注册途径从准入层退场,适配层与其测试保留。CONTEXT.md 新增 仓库注册表 / Key / 代次 三个词条。过渡期注意:管理面板落地前注册表只能直接写库种入,部署向导的 hook 注册指导暂时失效(issue #38 收口)。
-- 2026-08-15: 落地 issue #29。面板认证 API 与启动校验:`POST <前缀>/api/session` 验 admin token 换 HttpOnly + Secure、`Path` 限前缀的 session cookie,登录失败按 IP 退避与锁定;其余 API 未认证一律 401,认证后未知端点回 JSON 404,页面 404 与前缀猜错不可区分。启动新增三个必需环境变量 `MULTIREVIEWER_ADMIN_TOKEN` / `MULTIREVIEWER_PANEL_PREFIX` / `MULTIREVIEWER_BASE_URL`,基地址是明文 http 且非 localhost 时拒绝启动。已有部署升级到本版须在 `.env` 补这三项,向导对它们的支持归 issue #38。
+- 2026-08-15: 落地 issue #29。面板最初的认证 API 与启动校验:`POST <前缀>/api/session` 验 admin token 换 HttpOnly + Secure、`Path` 限前缀的 session cookie,登录失败按 IP 退避与锁定;其余 API 未认证一律 401,认证后未知端点回 JSON 404,页面 404 与前缀猜错不可区分。当时启动新增三个必需环境变量 `MULTIREVIEWER_ADMIN_TOKEN` / `MULTIREVIEWER_PANEL_PREFIX` / `MULTIREVIEWER_BASE_URL`;这套 token 门禁后来由 issue #109 取代。
 - 2026-08-15: 落地 issue #30。Gitea 专属 hook 管理模块 `src/forge/gitea-hooks.ts`:列 / 建 / 删仓库 hook(窄订阅事件集、`active` 显式置真、删除遇 404 视为成功、按 `config.url` 幂等收敛)与 bot 权限查询(非 admin 拒绝并明说缺什么)。不进 `Forge` 接口,契约依据是 `docs/research/gitea-webhook-api.md`。
 - 2026-08-15: 落地 issue #31。仓库注册与移除全流程走面板 API:注册验 bot admin 权限、自动建 hook(URL 带 `?k=` 代次)、落注册表与 Key,可带模型覆盖(全量替换 reviewers,默认跟随全局,注册后下一次投递生效);移除先删 hook、删不掉不放行,评审记录保留。仓库列表带累计量、按最近活动排序。「直接写库种入」的过渡状态就此结束。
 - 2026-08-15: 落地 issue #32。Key 轮转与核对(ADR 0007):轮转是可重入的单调推进,先建后删、轮转中投递不中断、失败再点一次从断点继续、库回滚后一次轮转自愈;核对拉 Gitea 的 hook 列表与库比对,只展示差异与下一步动作,不自动修。
@@ -191,7 +192,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-15: 落地 issue #35。处置率的回填链路(ADR 0006)打通:每轮 Review Run 顺手把读回的 resolve 状态覆盖到历史 finding,PR closed 投递触发全量回填并落 PR 状态;`finding` 记来源类型(行级评论 / 正文),正文行排除在统计外。两个时机都不新增 API 调用。
 - 2026-08-16: 落地 issue #36。处置率统计与页面:`store.ts` 的 `dispositionStats` 按 Finding Identity 折叠出模型 × 分类矩阵,`GET <前缀>/api/stats` 打包矩阵与库体量(库文件字节数 + 全部表行数),前端处置率页按原型变体 B 落地(模型卡片 + 矩阵,每格永远带分子分母)。口径细则见 `src/AGENTS.md`,页面见 `web/AGENTS.md`。
 - 2026-08-16: 落地 issue #37。评审记录页与手动重跑:跨仓库 Review Run 时间流(按天分组、滚动加载更早、覆盖已移除仓库的历史、顶部统计带与处置率页同源),重跑两个入口(时间流逐条、仓库页输 PR 号)共用 `POST <前缀>/api/rerun`,开的是新一轮 Review Run、走既有跨轮次折叠。服务端见 `src/AGENTS.md`,页面见 `web/AGENTS.md`。
-- 2026-08-16: 落地 issue #38。部署向导边界收在「面板能登录」:阶段 7 生成 admin token 与随机面板前缀(重跑先确认再重新生成,FORCE 也绕不过确认)、问基地址存 `MULTIREVIEWER_BASE_URL`(先校验再落盘,明文 http 的放行判定与服务端逐 host 对齐);检出旧变量(`MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` / `MULTIREVIEWER_GITEA_REPO`)即清掉并说明、指导删旧 hook;自检改为打登录页期待 200 加用刚写的 token 真登录一次期待 204 + Set-Cookie(token 写坏当场失败,429 单独解释退避);旧的「注册 webhook」「第一次真实审查」两个阶段删除,收尾改交付清单(面板地址、token、下一步、服务器侧排障速查)。评审复核顺手修正 bot PAT scope 表述(write:repository 与 write:issue 两项)与 Gitea 版本解析的 sanity 校验。
+- 2026-08-16: 落地 issue #38。当时部署向导边界收在「面板能登录」:阶段 7 生成 admin token 与随机面板前缀、问基地址,再拿 token 真登录自检。这套流程后来由 issue #117 改成账号 bootstrap 与 SQLite 状态探测;本条只记录历史。
 - 2026-08-16: 修 issue #39。Gitea 适配层三处 PR 列表翻页的终止条件从「不满一页」改为「读到空页」,实例把 limit 钳到 `API.MAX_RESPONSE_ITEMS` 时不再提前停、Review Range 不再静默缺文件。细节见 `src/AGENTS.md`。
 - 2026-08-16: 落地 issue #40。重写 README:移除「Early design phase」与 Out of Scope 的交叉验证宣传,最低版本要求(社区版 1.26.0 / 企业版 26.0.0)置于 Requirements 首句,GitHub 表述改为「适配层存在、准入仅 Gitea」,部署与文档细节指向 AGENTS.md 与 CONTEXT.md。
 - 2026-08-16: 落地 issue #73。模型标识统一成 `provider:model`(`CONTEXT.md` 早已如此定义,词条未动):落库的 Finding 与 Reviewer 结果、面板展示、处置率统计归属全部用完整标识,模型组合的去重键随之改成完整标识——同一个 model id 在两家 provider 下是两个 Reviewer,可共存。历史行在服务启动时一次性回填,幂等;provider 在库里没有记录,判据取「按裸 model id 在当前模型组合与各仓库覆盖里反查得到唯一 provider」,反查不到就不动那一行(留下的旧形态行在统计里各成一条,不会被错误归并)。内容指纹与评论锚点都不含模型标识,历史评论的跨轮次匹配不受影响。
@@ -199,8 +200,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-16: 落地 issue #65。凭据校验从启动挪到组装 Reviewer(ADR 0008)。启动不再读 `apiKeyEnv`:空库、一把模型凭据都没有、连主密钥都没设的新部署照常起,人进面板把它配起来。组装点是 Review Run 开始的那一刻(投递与手动重跑共用):按 provider 从库里取一次凭据快照,在编排进程里解密,整轮不重读——轮转对进行中的 Run 无影响,下一次投递自然用新的。缺凭据的 provider 不再抛错拦住投递,而是建出一个一跑就报失败的 Reviewer,那次 Review Run 因此在时间线上留下一条失败记录,失败原因写明缺哪一家。凭据来源收敛到库这一条:`apiKeyEnv` 字段还在配置文件里(issue #66 删),但组装不再读它,文件与库不构成双轨。子进程的注入路径未动(ADR 0004):仍是单变量 `MULTIREVIEWER_MODEL_API_KEY`、先剥光父进程环境,密文与主密钥都不进子进程。
 - 2026-08-16: 落地 issue #66。全局设置进库,`multireviewer.config.json` 废除。模型组合与批次上限存 `global_setting` 表,面板的 `GET`/`PUT <前缀>/api/settings` 读写同一形状(`{reviewers: [{provider, model}], maxChangedLinesPerBatch}`);全局组合与每仓库覆盖同构,一套校验判据通吃,报错标注是全局还是哪个仓库;批次上限缺省时读回默认值 2000。`ReviewerSpec` 去掉 `apiKeyEnv`,凭据只从库里按 provider 取(ADR 0008)。空库、还没配组合时投递照常受理,留下一条失败的 Review Run 写明「还没有配置模型组合」——零 Reviewer 的 Run 不留痕,那才是真的看不出问题。删掉的东西:`multireviewer.config.example.json`、`loadConfig` 与默认配置路径、环境变量 `MULTIREVIEWER_CONFIG`(镜像里那一行也删)、compose 的只读单文件绑定与「只需要这三样」的注释、向导写配置的那一段(向导的模型标识核对改成直接核两个入参)。面板暂时只有端点没有设置页,组合的选择器是 issue #68 / #69。
 - 2026-08-16: 落地 issue #67。面板 API 加模型目录端点 `GET <前缀>/api/catalog`,回服务进程里那份 Pi 的全部 provider(实测 39 家)与它们的模型,每家带上凭据是否已配。目录是运行时事实,随 Pi 升级而变:从服务端读,不进前端构建期依赖,前端不重建也不会显示旧目录。目录与凭据状态一次请求拿齐——拆成两个端点要在前端合并两份数据,还多一次往返。每个模型只给 `id`、`name`、`contextWindow`、`cost`:`id` 是模型标识 `provider:model` 的后半段,选择器要靠它回填,其余三项是选型判据;reasoning / maxTokens / input / baseUrl 不给,面板不用它们做判断。没配凭据的 provider 照常在结果里,不过滤——先能看见一家,才知道该去配它的凭据。不做工具调用能力的拦截:Pi 的模型类型里没有这个字段,面板自建黑名单追不上上游,让它在 Review Run 里失败并写明原因。本票只有端点,模型组合的选择器是 issue #68。
-- 2026-08-16: 落地 issue #70。注册仓库改成搜索式下拉。面板新增 `GET <前缀>/api/repos/search`:走面板既有的 admin token 门禁,服务端用 bot PAT 调 Gitea 的 `/repos/search`(现有 scope 够用,契约见 `docs/research/gitea-repo-search-api.md`),浏览器不直连 Gitea——直连等于把 Gitea 的仓库可见范围挂在一个前端能拿到的 token 上,还要再造一条凭据轮换路径。能力挂在 Gitea 专属的 hook 管理模块上,不进通用 `Forge` 接口(ADR 0002)。响应逐条标两个状态:已注册(查注册表)、bot 不是 admin(读搜索结果自带的权限字段);两类不可选项照样返回、由前端置灰,过滤掉会让人明知仓库存在却搜不到。只取第一页,总数大于这一页即标截断,前端提示继续输入。前端手输 owner / repo 两个框删除,不留兜底。注册端点的入参与权限检查一字未改,repoId 仍由服务端从权限检查那一次请求读出。
-- 2026-08-16: 落地 issue #71。面板补上登出:`DELETE <前缀>/api/session` 落在门禁之后(未登录调它回 401),从内存会话表删掉该 session 并回一个 `Max-Age=0`、属性与登录时逐字一致的 Set-Cookie;壳的侧栏底部是入口。顺带把三条既有事实写进部署段的「面板门禁的运维」:轮换 admin token 要改环境变量加重启,重启即清空全部会话(会话表在内存不落库),怀疑 cookie 泄露时正解也是轮换 token;HTTPS 是门禁的前提,会话 cookie 带 Secure、基地址明文 http 且非 localhost 时服务拒绝启动,TLS 由外部反代终止;面板前缀不是安全边界,未认证请求端点存在与否都回 401。门禁本身一字未改。
+- 2026-08-16: 落地 issue #70。注册仓库改成搜索式下拉。面板新增 `GET <前缀>/api/repos/search`:当时仍走统一 token 门禁,服务端用 bot PAT 调 Gitea 的 `/repos/search`,浏览器不直连 Gitea;能力挂在 Gitea 专属的 hook 管理模块上,不进通用 `Forge` 接口。
+- 2026-08-16: 落地 issue #71。面板补上登出:`DELETE <前缀>/api/session` 回一个 `Max-Age=0`、属性与登录时逐字一致的 Set-Cookie。当时会话在内存、重启即清空;issue #109 后会话改为落库,重启语义反转,现行运维办法见上文「面板门禁的运维」。
 - 2026-08-16: 落地 issue #72。部署向导退出配置面。删掉三个阶段:DeepSeek 密钥、OpenRouter 密钥、模型组合(连同容器里那次 Pi 模型表核对),向导从九步降到六步,成功边界仍是「面板能登录」。清理动作之前先把 `.env` 复制成 `.env.bak-<YYYYMMDD>`(权限 600,同一天重跑不覆盖已有副本——覆盖会用已经清过的内容把旧值冲掉)。四个变量随后检出即清并说明原因:`DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY`(模型凭据改由面板凭据页加密存库,ADR 0008)与 `MULTIREVIEWER_DEEPSEEK_MODEL` / `MULTIREVIEWER_OPENROUTER_MODEL`(模型组合改由面板设置页存库)。备份是文件复制、清理只打变量名,key 的值一次都不上屏。凭据主密钥 `MULTIREVIEWER_CREDENTIAL_MASTER_KEY` 改由向导 `openssl rand -hex 32` 生成并写进 `.env`,值不回显;已有值时沿用,`FORCE=1` 也不重新生成——重新生成等于把已存的凭据作废。不生成的话新部署必须手工补一个随机密钥才打得开凭据页,而向导的收尾恰恰是让人去那一页配 key。交付清单的「下一步」补两条:设置页选模型组合、凭据页粘两家的 key,并说明这两步没做完时投递会建一次失败的 Run 而不是故障。
 - 2026-08-16: 收口 issue #56 十票落地后的评审复核,七条。两条是行为决策:一、模型标识的历史回填整体取消——provider 从库里恢复不出来,按当前模型组合反查会把历史 Finding 永久错归厂商,代价是同一个模型在迁移前后裂成两行(旧行裸 model id、新行 `provider:model`),统计矩阵里各成一条;二、模型凭据允许保存认不出的 provider——模型目录列出 Pi 全部 39 家,而厂商验证只认得 4 家,拒收会让其余 35 家的模型选得出、凭据配不上;这些凭据跳过验证落库并标成未验证,面板逐行透出这个状态。其余五条是缺陷修复:模型目录的进程内缓存不再存住失败的 promise;全局模型组合允许为空(每仓库覆盖仍必须至少一个);批次上限的 NaN 不再静默清空设置;注册模态改搜索词后不再提交过期的选中项;模型选择器的总量截断有了提示。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 - 2026-08-17: 面板换视觉世界。上一轮青色密控制台被否。方向定为品类标准件,手艺对标 GitHub / Linear / Vercel:近黑主色、白底、冷灰外壳。登录后落到评审记录;该页改成检查列表。产品事实见 `web/PRODUCT.md`,视觉系统见 `web/DESIGN.md`。
@@ -212,7 +213,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-18: 走完地图 issue #76 的 [手填与自定义的模型行怎么活过重启与远程刷新](https://github.com/kassol/MultiReviewer/issues/82)。票的前提要修正:模型行不走 `models-store.json` 走 `models.json`。`withRemoteCatalog` 只包在内置 provider 列表上,自定义 provider 没有 `refreshModels`,store 里的条目根本不会被恢复,两条入口不可能共用 store。而 `models.json` 是独立且盖在 store 上面的一层——`getModels()` 每次读都重跑一遍 `applyModelsJson(providerId, base.getModels(), config)`,`base.getModels()` 才是「内置 + store overlay」的合并,远程刷新换掉的只是内部那个 `dynamicModels`,models.json 那层在它之后原样再叠。「怎么不被抹掉」在选对层之后自己消失。附带三条:`applyModelsJson` 是 upsert(内置行保留、同 id 覆盖、新 id 追加);给已有 provider 加行时 `defaults` 回落到该家 `models[0]`,`api` 与 `baseUrl` 自动继承,手填一行最少只要一个 id;全新 provider 无此回落,缺 `api` 或 `baseUrl` 该家整个从目录消失。真相源定在库里(与模型组合、模型凭据同处),`models.json` 是可从库重建的派生物,写在缓存目录里两侧共用(同 `models-store.json` 的绝对路径理由),写库时同步重写、启动时再写一次兜底——只在读目录时重建会让没人打开过面板的实例投递进来直接报模型不存在,那正是当初 store 踩过的坑。`authPath` 保持各自私有不共用(ADR 0004)。单价与上下文选填,留空走 Pi 默认(单价 0、上下文 128000、maxTokens 16384),该模型的 Run 成本因此记零,面板需标出这一状态。
 - 2026-08-18: 走完地图 issue #76 的 [三条入口在面板上怎么同时出现](https://github.com/kassol/MultiReviewer/issues/83),地图至此结清。三条入口取原型变体 C 的两栏布局:左栏是厂商列(内置 39 家与自定义的排在同一列,底部「+ 加一家 provider」),右栏是选中那家的模型列,右栏底部固定一行手填 model id。判据是它把「填进哪一家」这个问题设计掉了——手填框长在已选中那家下面,provider 不是一个要填对的字段而是当前所处的位置,而变体 A 与 B 都得靠下拉或按钮组强制同一条约束;左栏把自定义 provider 与内置的排成一列,也顺带说清了「共用同一命名空间」。明确接受的代价是跨厂商搜索没了(现在敲 glm 能横扫 39 家):模型组合是低频设置,三条入口的边界清楚每次都要用,这笔交易划算。原型另发现一档:本机一把凭据都没配时变体 A 的落空提示下面没有任何出路,C 不存在这一档。三个变体留在 `prototype/model-entry-panel` 分支,不进主干。下一步交 `/to-spec`:新开一份总 spec 并把 issue #75 包进去,它是三条入口之一的完整实现细节、已可开工,重写一遍只会让两份描述漂移。
 - 2026-08-18: 地图 issue #76 收拢成 spec [模型进组合的三条入口：厂商目录、手填标识、自定义 provider](https://github.com/kassol/MultiReviewer/issues/84)(`ready-for-agent`),地图随之关闭。六张决策票的结论逐条折进去,[厂商目录：把 OpenRouter 现货并进模型目录](https://github.com/kassol/MultiReviewer/issues/75) 原样包进总 spec、不单独实现(它是三条入口之一的完整实现细节、已可开工,重写会让两份描述漂移),该票已注明折入。测试缝四条全部沿用既有的、一条新的都不加:面板 API 真实 HTTP(先例 `panel-settings` / `panel-credentials`)测两类写入的读写与拒收;模型目录端点(先例 `panel-catalog`,期望值另建 Pi 运行时问它、不拿被测模块自己的输出当判据)测目录里的集合变化;Reviewer 运行时(先例 `reviewer-model-store`,真建运行时并打桩 fetch 断言零外发)守「面板选得出的子进程必须取得到」这条最要紧的不变量;`runReview` 入口测失败路径留下带原因的记录。厂商目录那部分沿用 issue #75 已定的三条缝。
-- 2026-08-18: 定下验证的场所:交付前的人工确认走部署实例,不在开发机起服务(全局规范新增一条,`web/AGENTS.md` 的模块规范呼应一条)。自动化测试不受影响,仍在本机跑——那是缝上的断言,与实例无关。判据是本机 dev 双进程没有真 Gitea、没有已注册的仓库、没有模型凭据,面板上大半的屏在那里是空的,补齐这些的成本比推一次镜像高,而验完的结论还不能代表实例。开发机的 `.env` 因此只留 Gitea 那几个变量,面板变量(admin token / 面板前缀 / 基地址 / 凭据主密钥)不常驻;临时要在本机起面板时补上、验完删掉。
+- 2026-08-18: 定下验证的场所:交付前的人工确认走部署实例,不在开发机起服务(全局规范新增一条,`web/AGENTS.md` 的模块规范呼应一条)。自动化测试不受影响,仍在本机跑——那是缝上的断言,与实例无关。判据是本机 dev 双进程没有真 Gitea、没有已注册的仓库、没有模型凭据,面板上大半的屏在那里是空的,补齐这些的成本比推一次镜像高,而验完的结论还不能代表实例。开发机的 `.env` 因此只留 Gitea 那几个变量,面板前缀 / 基地址 / 凭据主密钥不常驻;临时要在本机起面板时补上、验完删掉。
 - 2026-08-18: 落地 issue #85 与 #86,spec [模型进组合的三条入口](https://github.com/kassol/MultiReviewer/issues/84) 的两张预重构,对操作员不可见。面板与 Reviewer 子进程共用的落盘文件从一份变两份:`MULTIREVIEWER_CACHE_DIR/pi-models/` 下除了远程目录的落盘 `models-store.json`,还多一份由库里的模型行派生的 `models.json`。后者此前两侧各指自己的临时目录、谁也读不到谁,而它是手填模型行与自定义 provider 唯一的落地层(issue #82),这一票只把路径打通,不引入任何新的模型来源。启动时写一次(内容此刻是空的 provider 集合);写不出来只告警不拦启动,读照常。两份文件都是可从库与 pi.dev 重建的派生物,清空它只影响下一次读目录。凭据那一份仍各自私有不共用(ADR 0004),共用的只有目录。另给模型目录的进程内缓存补了显式失效入口,供下一票的模型行写入调用。
 
   评审顺带查出一个**自 2026-08-17 起就存在的部署缺陷**:`MULTIREVIEWER_CACHE_DIR` 留空或填相对路径时,共用完全不生效——Reviewer 子进程的工作目录是工作副本,同一个相对值在服务与子进程两侧解析出两个不同目录,面板选得出的远程模型子进程一个都取不到。Docker 部署里这个变量是绝对路径 `/data/worktrees`,所以镜像跑法不受影响;直接 `pnpm start` 且没设这个变量的部署一直是断的。现在服务在父进程里把它解析成绝对路径再传给子进程,填相对值也能用了。**票 #86 的前提查证后有一处是错的**:凭据写入后目录端点的 `configured` 本来就是每次请求现读库算出来的,不受缓存影响,已用测试证伪并因此没有把失效接到凭据写入上。
@@ -251,3 +252,4 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
   几条要知道的:**那两颗按钮一个字没变**——点「自定义」从当前生效的那一组改起(还在跟随全局时就是全局那一组),点「跟随全局」仍是一个动作、直接清掉这个仓库的覆盖。**一个模型都不选存不了**(保存按钮是灰的),要回到跟随全局就点「取消」再点「跟随全局」。**改的只是这一个仓库**,保存之后它的下一次投递按这一组跑,别的仓库不受影响。**编辑态是页内的一段、不是弹层**:面板比原来那个小窗高得多,做成弹层会在矮屏上把底下的手填框与保存按钮顶到看不见的地方。顺带修掉一处:原来那个小窗整个是一张表单,**在里面敲回车会当场把覆盖提交掉**,现在编辑态里没有这张表单,填 model id 只是填 model id。
 - 2026-08-19: 上面七票在部署实例上走了一遍三条入口(厂商目录实测 openrouter 从 348 涨到 418、总数 1295;手填一行、加一家自定义 provider、撞名拒收、重启后两者都还在),查出并修掉两处只有真实数据才会露头的缺陷。一、**OpenRouter 给路由类模型的单价是字符串 `-1`**(`openrouter/auto` 等四行),意思是随路由到的那个模型浮动,不是一个费率;照每百万 token 换算就成了 `-1000000`,面板上写作 `$-1000000/M`,而这几个模型的 Review Run 成本会算成负数、把累计花费往下拽。负单价现在按「没有单价」收 0,与 Pi 内置那条 `auto` 记的数一致。二、**中文提示里夹进了多余空格**(「连 字符」「才 知道」「不带 单价」等六处):JSX 把相邻两行的文本用一个空格拼起来,英文正好需要那个空格、中文不需要,这类句子因此改成一行、不在词中间断行。另有一条只提不改——`web/src/runs.tsx` 第 355 行同样的空格是这批改动之前就有的。
 - 2026-08-19: 修 [openrouter/auto 这类路由模型的 Review Run 成本会是负数](https://github.com/kassol/MultiReviewer/issues/95),上一条留下的那一半收口。面板上那个负单价已经不显示了,而 Review Run 的成本走的是另一条路——它取自 Pi 的 `session.getSessionStats()`、用的是 Pi 内部那张定价表,不经过模型目录,因此选中那两个模型跑一轮时落库的成本仍是负数,会把评审记录页与处置率页上的累计花费往下拽。现在负成本一律按零落库,而且是**逐条截负再加**:先加会让负的那一份把同一轮里正常那几个模型的花费一起吃掉。取零与「单价留空」那一档记的数一致,面板上因此不多一种状态——两处都是「这一笔没记准」。Pi 那两行数据本身仍是错的,真要根治得等上游改。
+- 2026-08-19: 落地 [面板门禁换成用户账号与自定义角色 RBAC](https://github.com/kassol/MultiReviewer/issues/109),部署收口见 issue #117。共享的 `MULTIREVIEWER_ADMIN_TOKEN` 退场,面板改为本地用户账号、落库会话与自定义角色:8 个权限格管功能面,用户与角色只由系统管理员管理,手动重跑记调用者。零用户启动时日志打印一枚内存中的 bootstrap 口令,第一个注册的人成为系统管理员后口令与注册入口一起失效;重启只会换还没用掉的 bootstrap,**不会清掉已落库会话**。六阶段部署向导的第四阶段改成「面板密钥与基地址」,自检改问 `GET /session` 的零用户状态并抽取口令;已有账号是正常续跑,旧 admin token 检出即在备份后清掉。交付清单要求先注册首位管理员,再创建角色、给同事建号并授角色。

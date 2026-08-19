@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 import { api } from "./api.ts";
+import { clearPanelSession, loadPanelSession, panelNeedsBootstrap } from "./session.ts";
 
 /** 同一条 /login:探测响应决定是账号登录还是零用户注册。 */
 export function LoginPage() {
@@ -21,10 +22,9 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    void api("/session").then(async (response) => {
-      if (response.status === 200) return router.navigate({ to: "/runs" });
-      const body = (await response.json().catch(() => null)) as { bootstrap?: boolean } | null;
-      setBootstrapMode(body?.bootstrap === true);
+    void loadPanelSession().then((session) => {
+      if (session !== null) return router.navigate({ to: "/" });
+      setBootstrapMode(panelNeedsBootstrap());
     });
   }, [router]);
 
@@ -53,7 +53,8 @@ export function LoginPage() {
         body: JSON.stringify({ username, password }),
       });
       if (response.status === 204) {
-        await router.navigate({ to: "/runs" });
+        clearPanelSession();
+        await router.navigate({ to: "/" });
         return;
       }
       const body = (await response.json().catch(() => null)) as { error?: string } | null;
