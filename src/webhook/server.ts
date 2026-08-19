@@ -676,6 +676,276 @@ function sessionCookieHeader(prefix: string, value: string, maxAgeSeconds: numbe
   );
 }
 
+// `access` 在 `PanelRoute` 上必填:新增端点时必须同时声明门禁。
+type PanelAccess = "public" | "authenticated-only" | "system-admin-only";
+type PanelRouteContext = {
+  req: IncomingMessage;
+  res: ServerResponse;
+  deps: WebhookServerDeps;
+  auth: PanelAuth;
+  hookManager: GiteaHookManager | undefined;
+};
+type PanelRouteHandler = (
+  context: PanelRouteContext,
+  match: RegExpMatchArray | undefined,
+) => void | Promise<void>;
+type PanelRoute = {
+  method: "GET" | "POST" | "PUT" | "DELETE";
+  pattern: string | RegExp;
+  access: PanelAccess;
+  allowedWhilePasswordExpired?: true;
+  handler: PanelRouteHandler;
+};
+/**
+ * 自定义 provider 的名字与删除路径共用一个判据:名字要整个放进 URL,所以既限制为
+ * 内置 provider id 同形的字符集,也限制在 64 字符内;登记得进就必须删得掉。
+ */
+const CUSTOM_PROVIDER_NAME_MAX = 64;
+const CUSTOM_PROVIDER_NAME_PATTERN = `[a-z0-9-]{1,${CUSTOM_PROVIDER_NAME_MAX}}`;
+const CUSTOM_PROVIDER_NAME = new RegExp(`^${CUSTOM_PROVIDER_NAME_PATTERN}$`);
+const CUSTOM_PROVIDER_ROUTE = new RegExp(`^/custom-providers/(${CUSTOM_PROVIDER_NAME_PATTERN})$`);
+
+function listRepos(res: ServerResponse, deps: WebhookServerDeps): void {
+  const rows = withStore(deps.dbPath, (store) => store.listRepos());
+  return sendJson(
+    res,
+    200,
+    rows.map(({ reviewersJson, ...row }) => ({
+      ...row,
+      // 覆盖以解析后的形状交给前端,编辑时原样回传 PUT。坏 JSON(直接写库的遗留)
+      // 按 null 透出——一行坏数据不该把整个列表拖成 500,投递链对同一列也是这个态度。
+      reviewers: reviewersJson === null ? null : safeParseJson(reviewersJson),
+    })),
+  );
+}
+
+async function handleLogin(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  auth: PanelAuth,
+): Promise<void> {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body) as { token?: unknown } | null;
+  // 形状不对不算猜 token,不计入退避——退避只该罚「猜」,不该罚「坏客户端」。
+  if (payload === null || typeof payload.token !== "string") {
+    return sendJson(res, 400, { error: 'body 要是 {"token": "..."} 形状的 JSON' });
+  }
+  // 锁定按直连地址分桶,不认 X-Forwarded-For:未认证方伪造它就能绕过锁定。代价是
+  // 反代之后所有客户端同桶,攻击者能把管理员一起锁住——对单管理员面板,锁过头
+  // 好过锁不住。
+  const outcome = auth.login(payload.token, req.socket.remoteAddress ?? "");
+  if (!outcome.ok) {
+    return sendJson(res, outcome.status, {
+      error: outcome.status === 429 ? "失败次数过多,稍后再试" : "token 不对",
+    });
+  }
+  res.writeHead(204, {
+    "set-cookie": sessionCookieHeader(
+      deps.panelPrefix,
+      outcome.sessionId,
+      Math.floor(SESSION_TTL_MS / 1000),
+    ),
+  });
+  res.end();
+}
+
+function handleLogout(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  auth: PanelAuth,
+): void {
+  auth.logout(cookieValue(req.headers.cookie, SESSION_COOKIE));
+  res.writeHead(204, { "set-cookie": sessionCookieHeader(deps.panelPrefix, "", 0) });
+  res.end();
+}
+
+const PANEL_ROUTES: readonly PanelRoute[] = [
+  {
+    method: "POST",
+    pattern: "/session",
+    access: "public",
+    handler: ({ req, res, deps, auth }) => handleLogin(req, res, deps, auth),
+  },
+  {
+    method: "GET",
+    pattern: "/session",
+    access: "authenticated-only",
+    handler: ({ res }) => send(res, 204),
+  },
+  {
+    method: "DELETE",
+    pattern: "/session",
+    access: "authenticated-only",
+    handler: ({ req, res, deps, auth }) => handleLogout(req, res, deps, auth),
+  },
+  {
+    method: "GET",
+    pattern: "/settings",
+    access: "authenticated-only",
+    handler: ({ res, deps }) => handleGetSettings(res, deps),
+  },
+  {
+    method: "PUT",
+    pattern: "/settings",
+    access: "authenticated-only",
+    handler: ({ req, res, deps }) => handlePutSettings(req, res, deps),
+  },
+  {
+    method: "GET",
+    pattern: "/stats",
+    access: "authenticated-only",
+    handler: ({ req, res, deps }) => handleStats(req, res, deps),
+  },
+  {
+    method: "GET",
+    pattern: "/runs",
+    access: "authenticated-only",
+    handler: ({ req, res, deps }) => handleRuns(req, res, deps),
+  },
+  {
+    method: "POST",
+    pattern: "/rerun",
+    access: "authenticated-only",
+    handler: ({ req, res, deps }) => handleRerun(req, res, deps),
+  },
+  {
+    method: "GET",
+    pattern: "/repos/search",
+    access: "authenticated-only",
+    handler: ({ req, res, deps, hookManager }) =>
+      handleRepoSearch(req, res, deps, hookManager),
+  },
+  {
+    method: "GET",
+    pattern: "/repos",
+    access: "authenticated-only",
+    handler: ({ res, deps }) => listRepos(res, deps),
+  },
+  {
+    method: "POST",
+    pattern: "/repos",
+    access: "authenticated-only",
+    handler: ({ req, res, deps, hookManager }) =>
+      handleRegister(req, res, deps, hookManager),
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/repos\/(\d+)$/,
+    access: "authenticated-only",
+    handler: ({ res, deps, hookManager }, match) =>
+      handleRemove(res, deps, hookManager, Number(match![1])),
+  },
+  {
+    method: "PUT",
+    pattern: /^\/repos\/(\d+)\/reviewers$/,
+    access: "authenticated-only",
+    handler: ({ req, res, deps }, match) =>
+      handleSetReviewers(req, res, deps, Number(match![1])),
+  },
+  {
+    method: "POST",
+    pattern: /^\/repos\/(\d+)\/rotate$/,
+    access: "authenticated-only",
+    handler: ({ res, deps, hookManager }, match) =>
+      handleRotate(res, deps, hookManager, Number(match![1])),
+  },
+  {
+    method: "GET",
+    pattern: /^\/repos\/(\d+)\/hooks$/,
+    access: "authenticated-only",
+    handler: ({ res, deps, hookManager }, match) =>
+      handleHookCheck(res, deps, hookManager, Number(match![1])),
+  },
+  {
+    method: "GET",
+    pattern: "/catalog",
+    access: "authenticated-only",
+    handler: ({ res, deps }) => handleCatalog(res, deps),
+  },
+  {
+    method: "GET",
+    pattern: "/credentials",
+    access: "authenticated-only",
+    handler: ({ res, deps }) => handleListCredentials(res, deps),
+  },
+  {
+    method: "PUT",
+    pattern: /^\/credentials\/([A-Za-z0-9_-]+)$/,
+    access: "authenticated-only",
+    handler: ({ req, res, deps }, match) =>
+      handlePutCredential(req, res, deps, match![1]!),
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/credentials\/([A-Za-z0-9_-]+)$/,
+    access: "authenticated-only",
+    handler: ({ res, deps }, match) => handleRemoveCredential(res, deps, match![1]!),
+  },
+  {
+    method: "GET",
+    pattern: "/model-rows",
+    access: "authenticated-only",
+    handler: ({ res, deps }) => handleListModelRows(res, deps),
+  },
+  {
+    method: "POST",
+    pattern: "/model-rows",
+    access: "authenticated-only",
+    handler: ({ req, res, deps }) => handleAddModelRow(req, res, deps),
+  },
+  {
+    method: "DELETE",
+    pattern: "/model-rows",
+    access: "authenticated-only",
+    handler: ({ req, res, deps }) => handleRemoveModelRow(req, res, deps),
+  },
+  {
+    method: "GET",
+    pattern: "/custom-providers",
+    access: "authenticated-only",
+    handler: ({ res, deps }) => handleListCustomProviders(res, deps),
+  },
+  {
+    method: "POST",
+    pattern: "/custom-providers",
+    access: "authenticated-only",
+    handler: ({ req, res, deps }) => handleAddCustomProvider(req, res, deps),
+  },
+  {
+    method: "DELETE",
+    pattern: CUSTOM_PROVIDER_ROUTE,
+    access: "authenticated-only",
+    handler: ({ res, deps }, match) => handleRemoveCustomProvider(res, deps, match![1]!),
+  },
+];
+
+function matchPanelRoute(
+  route: PanelRoute,
+  method: string | undefined,
+  sub: string,
+): { route: PanelRoute; match: RegExpMatchArray | undefined } | undefined {
+  if (route.method !== method) return undefined;
+  if (typeof route.pattern === "string") {
+    return route.pattern === sub ? { route, match: undefined } : undefined;
+  }
+  const match = route.pattern.exec(sub);
+  return match === null ? undefined : { route, match };
+}
+
+function findPanelRoute(
+  method: string | undefined,
+  sub: string,
+): { route: PanelRoute; match: RegExpMatchArray | undefined } | undefined {
+  for (const route of PANEL_ROUTES) {
+    const matched = matchPanelRoute(route, method, sub);
+    if (matched !== undefined) return matched;
+  }
+  return undefined;
+}
+
 /**
  * 面板 API。登录是唯一免认证的端点,其余一律先验 session——端点存在与否都回 401,
  * 枚举 API 面也要先过认证。API 下的未知路径回 JSON 404,与页面的裸 404 分开:调用方
@@ -689,145 +959,16 @@ async function handlePanelApi(
   hookManager: GiteaHookManager | undefined,
 ): Promise<void> {
   const sub = pathname(req).slice(`/${deps.panelPrefix}/api`.length) || "/";
+  const matched = findPanelRoute(req.method, sub);
 
-  if (sub === "/session" && req.method === "POST") {
-    const body = await readBody(req, res);
-    if (body === undefined) return;
-    const payload = safeParse(body) as { token?: unknown } | null;
-    // 形状不对不算猜 token,不计入退避——退避只该罚「猜」,不该罚「坏客户端」。
-    if (payload === null || typeof payload.token !== "string") {
-      return sendJson(res, 400, { error: 'body 要是 {"token": "..."} 形状的 JSON' });
-    }
-    // 锁定按直连地址分桶,不认 X-Forwarded-For:未认证方伪造它就能绕过锁定。代价是
-    // 反代之后所有客户端同桶,攻击者能把管理员一起锁住——对单管理员面板,锁过头
-    // 好过锁不住。
-    const outcome = auth.login(payload.token, req.socket.remoteAddress ?? "");
-    if (!outcome.ok) {
-      return sendJson(res, outcome.status, {
-        error: outcome.status === 429 ? "失败次数过多,稍后再试" : "token 不对",
-      });
-    }
-    res.writeHead(204, {
-      "set-cookie": sessionCookieHeader(
-        deps.panelPrefix,
-        outcome.sessionId,
-        Math.floor(SESSION_TTL_MS / 1000),
-      ),
-    });
-    res.end();
-    return;
+  if (matched?.route.access === "public") {
+    return matched.route.handler({ req, res, deps, auth, hookManager }, matched.match);
   }
-
-  if (!auth.authenticate(cookieValue(req.headers.cookie, SESSION_COOKIE))) {
-    return sendJson(res, 401, { error: "未登录" });
-  }
-
-  // 登录状态探测,SPA 启动时靠它决定进登录页还是进面板。
-  if (sub === "/session" && req.method === "GET") {
-    return send(res, 204);
-  }
-
-  // 登出落在门禁之后:未登录的调用者没有会话可作废,与其余端点同档回 401。
-  if (sub === "/session" && req.method === "DELETE") {
-    auth.logout(cookieValue(req.headers.cookie, SESSION_COOKIE));
-    res.writeHead(204, { "set-cookie": sessionCookieHeader(deps.panelPrefix, "", 0) });
-    res.end();
-    return;
-  }
-
-  if (sub === "/settings" && req.method === "GET") {
-    return handleGetSettings(res, deps);
-  }
-  if (sub === "/settings" && req.method === "PUT") {
-    return handlePutSettings(req, res, deps);
-  }
-
-  if (sub === "/stats" && req.method === "GET") {
-    return handleStats(req, res, deps);
-  }
-
-  if (sub === "/runs" && req.method === "GET") {
-    return handleRuns(req, res, deps);
-  }
-  if (sub === "/rerun" && req.method === "POST") {
-    return handleRerun(req, res, deps);
-  }
-
-  if (sub === "/repos/search" && req.method === "GET") {
-    return handleRepoSearch(req, res, deps, hookManager);
-  }
-  if (sub === "/repos" && req.method === "GET") {
-    const rows = withStore(deps.dbPath, (store) => store.listRepos());
-    return sendJson(
-      res,
-      200,
-      rows.map(({ reviewersJson, ...row }) => ({
-        ...row,
-        // 覆盖以解析后的形状交给前端,编辑时原样回传 PUT。坏 JSON(直接写库的遗留)
-        // 按 null 透出——一行坏数据不该把整个列表拖成 500,投递链对同一列也是这个态度。
-        reviewers: reviewersJson === null ? null : safeParseJson(reviewersJson),
-      })),
-    );
-  }
-  if (sub === "/repos" && req.method === "POST") {
-    return handleRegister(req, res, deps, hookManager);
-  }
-  const repoRoute = /^\/repos\/(\d+)$/.exec(sub);
-  if (repoRoute !== null && req.method === "DELETE") {
-    return handleRemove(res, deps, hookManager, Number(repoRoute[1]));
-  }
-  const reviewersRoute = /^\/repos\/(\d+)\/reviewers$/.exec(sub);
-  if (reviewersRoute !== null && req.method === "PUT") {
-    return handleSetReviewers(req, res, deps, Number(reviewersRoute[1]));
-  }
-  const rotateRoute = /^\/repos\/(\d+)\/rotate$/.exec(sub);
-  if (rotateRoute !== null && req.method === "POST") {
-    return handleRotate(res, deps, hookManager, Number(rotateRoute[1]));
-  }
-  const hooksRoute = /^\/repos\/(\d+)\/hooks$/.exec(sub);
-  if (hooksRoute !== null && req.method === "GET") {
-    return handleHookCheck(res, deps, hookManager, Number(hooksRoute[1]));
-  }
-
-  if (sub === "/catalog" && req.method === "GET") {
-    return handleCatalog(res, deps);
-  }
-
-  if (sub === "/credentials" && req.method === "GET") {
-    return handleListCredentials(res, deps);
-  }
-  const credentialRoute = /^\/credentials\/([A-Za-z0-9_-]+)$/.exec(sub);
-  if (credentialRoute !== null && req.method === "PUT") {
-    return handlePutCredential(req, res, deps, credentialRoute[1]!);
-  }
-  if (credentialRoute !== null && req.method === "DELETE") {
-    return handleRemoveCredential(res, deps, credentialRoute[1]!);
-  }
-
-  if (sub === "/model-rows" && req.method === "GET") {
-    return handleListModelRows(res, deps);
-  }
-  if (sub === "/model-rows" && req.method === "POST") {
-    return handleAddModelRow(req, res, deps);
-  }
-  if (sub === "/model-rows" && req.method === "DELETE") {
-    return handleRemoveModelRow(req, res, deps);
-  }
-
-  if (sub === "/custom-providers" && req.method === "GET") {
-    return handleListCustomProviders(res, deps);
-  }
-  if (sub === "/custom-providers" && req.method === "POST") {
-    return handleAddCustomProvider(req, res, deps);
-  }
-  // 名字的字符集与长度上限都与登记时的校验同一套(`CUSTOM_PROVIDER_NAME_PATTERN` 一处定):
-  // 别的形状的名字一家都登记不进来,匹配不上照实回 404。
-  const customProviderRoute = CUSTOM_PROVIDER_ROUTE.exec(sub);
-  if (customProviderRoute !== null && req.method === "DELETE") {
-    return handleRemoveCustomProvider(res, deps, customProviderRoute[1]!);
-  }
-
-  return sendJson(res, 404, { error: "没有这个端点" });
+  const authenticated = auth.authenticate(cookieValue(req.headers.cookie, SESSION_COOKIE));
+  // 未匹配也先过门禁:不登录不能借 404 枚举 API 面。
+  if (!authenticated) return sendJson(res, 401, { error: "未登录" });
+  if (matched === undefined) return sendJson(res, 404, { error: "没有这个端点" });
+  return matched.route.handler({ req, res, deps, auth, hookManager }, matched.match);
 }
 
 /**
@@ -1216,24 +1357,6 @@ async function handleRemoveModelRow(
   return send(res, 204);
 }
 
-/**
- * 自定义 provider 的名字长度上限。
- *
- * 判据在删除那一头:名字要整个放进 `DELETE <前缀>/api/custom-providers/<名字>` 的路径里,而
- * 请求行过大是在路由之前被拒的——Node 默认的请求头上限 16 KiB、nginx 默认的请求行缓冲 8 KiB,
- * 超长名字于是登得进去删不出来。64 个字符离两道上限都很远,而内置那 39 家的 id 最长也就二十来
- * 个字符(名字与它们同形、共用同一命名空间),给操作员的余量够了。
- */
-const CUSTOM_PROVIDER_NAME_MAX = 64;
-
-/**
- * 自定义 provider 的名字。与内置 id 同形,顺带排除冒号(模型标识按第一个冒号切分)。字符集
- * 与长度上限只在这一处定:登记时的校验(`handleAddCustomProvider`)与删除的路由
- * (`CUSTOM_PROVIDER_ROUTE`)必须是同一个判据,松一头就有登得进去删不出来的名字。
- */
-const CUSTOM_PROVIDER_NAME_PATTERN = `[a-z0-9-]{1,${CUSTOM_PROVIDER_NAME_MAX}}`;
-const CUSTOM_PROVIDER_NAME = new RegExp(`^${CUSTOM_PROVIDER_NAME_PATTERN}$`);
-const CUSTOM_PROVIDER_ROUTE = new RegExp(`^/custom-providers/(${CUSTOM_PROVIDER_NAME_PATTERN})$`);
 
 /**
  * 已登记的自定义 provider(issue #88)。回的是库里的原样:面板要能看见自己加过哪几家、

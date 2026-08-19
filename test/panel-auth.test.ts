@@ -144,6 +144,53 @@ test("未认证的 API 请求一律 401,不区分端点存不存在", async () =
   assert.equal((await h.get(`/${PREFIX}/api/no-such-endpoint`)).status, 401);
 });
 
+test("面板路由表覆盖全部 method + path,且只有登录公开", async () => {
+  const h = await startPanel();
+  const cookie = sessionCookie(await h.login(ADMIN_TOKEN));
+  const routes = [
+    ["GET", "/session"],
+    ["DELETE", "/session"],
+    ["GET", "/settings"],
+    ["PUT", "/settings"],
+    ["GET", "/stats"],
+    ["GET", "/runs"],
+    ["POST", "/rerun"],
+    ["GET", "/repos/search"],
+    ["GET", "/repos"],
+    ["POST", "/repos"],
+    ["DELETE", "/repos/1"],
+    ["PUT", "/repos/1/reviewers"],
+    ["POST", "/repos/1/rotate"],
+    ["GET", "/repos/1/hooks"],
+    ["GET", "/catalog"],
+    ["GET", "/credentials"],
+    ["PUT", "/credentials/test_provider-1"],
+    ["DELETE", "/credentials/test_provider-1"],
+    ["GET", "/model-rows"],
+    ["POST", "/model-rows"],
+    ["DELETE", "/model-rows"],
+    ["GET", "/custom-providers"],
+    ["POST", "/custom-providers"],
+    ["DELETE", "/custom-providers/test-provider"],
+  ] as const;
+
+  for (const [method, path] of routes) {
+    const unauthenticated = await fetch(`${h.baseUrl}/${PREFIX}/api${path}`, { method });
+    assert.equal(unauthenticated.status, 401, `${method} ${path} 没有在 session 门禁后`);
+
+    const authenticated = await fetch(`${h.baseUrl}/${PREFIX}/api${path}`, {
+      method,
+      headers: { cookie },
+    });
+    assert.notEqual(authenticated.status, 404, `${method} ${path} 没有匹配到路由`);
+  }
+
+  // 登录是唯一公开路由;同一路径的其他 method 仍不可枚举。
+  assert.equal((await h.login("wrong-token")).status, 401);
+  const wrongMethod = await fetch(`${h.baseUrl}/${PREFIX}/api/session`, { method: "PUT" });
+  assert.equal(wrongMethod.status, 401);
+});
+
 test("登出作废 session,清除 cookie 的属性与登录时逐字一致", async () => {
   const h = await startPanel();
 
