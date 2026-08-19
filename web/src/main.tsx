@@ -20,6 +20,11 @@ import { api } from "./api.ts";
 import { CredentialsPage } from "./credentials.tsx";
 import { injected } from "./injected.ts";
 import { LoginPage } from "./login.tsx";
+import {
+  PROTOTYPE_PATH,
+  PrototypeRbacPage,
+  validatePrototypeSearch,
+} from "./prototype-rbac.tsx";
 import { ReposPage } from "./repos.tsx";
 import { RunsPage } from "./runs.tsx";
 import { SettingsPage } from "./settings.tsx";
@@ -148,8 +153,18 @@ const settingsRoute = createRoute({
   component: SettingsPage,
 });
 
+// 原型(issue #104),不进主干。刻意挂在壳外面:壳的 beforeLoad 要真会话,而这一屏
+// 一个请求都不发,mock 数据全在内存里。
+const prototypeRbacRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: PROTOTYPE_PATH,
+  validateSearch: validatePrototypeSearch,
+  component: PrototypeRbacPage,
+});
+
 const routeTree = rootRoute.addChildren([
   loginRoute,
+  prototypeRbacRoute,
   shellRoute.addChildren([
     indexRoute,
     reposRoute,
