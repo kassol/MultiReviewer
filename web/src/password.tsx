@@ -53,8 +53,12 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
         </div>
         <Card className="gap-3 px-4">
           <div>
-            <h2 className="text-base font-semibold">先改密码</h2>
-            <p className="text-muted-foreground">管理员重置了 {session.username} 的密码。设一枚只有你知道的新密码，才能继续使用面板。</p>
+            <h2 className="text-base font-semibold">{session.mustChangePassword ? "先改密码" : "修改密码"}</h2>
+            <p className="text-muted-foreground">
+              {session.mustChangePassword
+                ? `管理员重置了 ${session.username} 的密码。设一枚只有你知道的新密码,才能继续使用面板。`
+                : "保存后其余设备上的会话会失效,当前会话继续使用。"}
+            </p>
           </div>
           <form onSubmit={submit} className="flex flex-col gap-2">
             <Label htmlFor="new-password">新密码</Label>

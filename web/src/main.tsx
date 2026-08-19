@@ -58,17 +58,20 @@ const shellRoute = createRoute({
   component: Shell,
 });
 
-const NAV: readonly { to: "/repos" | "/runs" | "/stats" | "/credentials" | "/settings" | "/access"; label: string; permission?: PanelPermission; admin?: true }[] = [
+const NAV: readonly { to: "/repos" | "/runs" | "/stats" | "/credentials" | "/settings" | "/access" | "/password"; label: string; permission?: PanelPermission; admin?: true; always?: true }[] = [
   { to: "/repos", label: "仓库", permission: "repo:read" },
   { to: "/runs", label: "评审记录", permission: "review:read" },
   { to: "/stats", label: "处置率", permission: "review:read" },
   { to: "/credentials", label: "模型凭据", permission: "credential:read" },
   { to: "/settings", label: "全局设置", permission: "model:read" },
   { to: "/access", label: "访问控制", admin: true },
+  { to: "/password", label: "修改密码", always: true },
 ];
 
 function visibleNav(session: PanelSession) {
-  return NAV.filter((item) => item.admin === true ? session.isSystemAdmin : hasPermission(session, item.permission!));
+  return NAV.filter((item) =>
+    item.always === true || (item.admin === true ? session.isSystemAdmin : hasPermission(session, item.permission!)),
+  );
 }
 
 function homeFor(session: PanelSession): string {
@@ -160,22 +163,20 @@ const accessRoute = createRoute({
 const passwordRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/password",
-  beforeLoad: ({ context }) => {
-    if (!context.session.mustChangePassword) throw redirect({ to: homeFor(context.session) });
-  },
+  beforeLoad: () => {},
   component: () => {
     const { session } = shellRoute.useRouteContext();
     return <PasswordPage session={session} next={homeFor({ ...session, mustChangePassword: false })} />;
   },
 });
-
 function ZeroPermissionPage() {
+  const { session } = shellRoute.useRouteContext();
   return (
     <div className="flex min-h-full items-center justify-center p-6">
       <Card className="w-[30rem] max-w-full items-start gap-2 px-5 py-5">
         <h1 className="text-lg font-semibold">你的账号还没有任何权限</h1>
-        <p className="text-muted-foreground">账号已经建好，但还没有角色。请联系系统管理员给你一个角色；刷新后，可用页面会出现在导航里。</p>
-        <p className="text-muted-foreground">出于访问控制，普通账号不能读取用户列表。请联系部署或管理 MultiReviewer 的系统管理员。</p>
+        <p className="text-muted-foreground">账号已经建好,但还没有角色。请联系系统管理员给你一个角色;刷新后,可用页面会出现在导航里。</p>
+        <p className="text-muted-foreground">系统管理员:{session.systemAdmins.join("、")}</p>
       </Card>
     </div>
   );

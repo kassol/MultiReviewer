@@ -728,6 +728,7 @@ function listRepos(res: ServerResponse, deps: WebhookServerDeps): void {
   );
 }
 const PANEL_USERNAME = /^[a-z0-9._-]{1,32}$/;
+const bootstrapFailures = new Map<string, { count: number; nextAttemptAt: number }>();
 
 function secretMatches(expected: string, provided: string): boolean {
   const a = createHash("sha256").update(expected).digest();
@@ -755,7 +756,7 @@ async function handleLogin(
   const password = payload.password;
   const user = withStore(deps.dbPath, (store) => store.getPanelUser(username));
   const outcome = await auth.login(
-    user === undefined ? undefined : { username: user.username, passwordHash: user.passwordHash },
+    user === undefined ? { username } : { username: user.username, passwordHash: user.passwordHash },
     password,
     req.socket.remoteAddress ?? "",
   );
@@ -792,6 +793,14 @@ async function handleBootstrapRegister(
   if (withStore(deps.dbPath, (store) => store.countPanelUsers()) !== 0) {
     return sendJson(res, 409, { error: "实例已初始化,找管理员建号" });
   }
+  const ip = req.socket.remoteAddress ?? "";
+  const nowMs = (deps.now ?? Date.now)();
+  const failure = bootstrapFailures.get(ip);
+  if (failure !== undefined && failure.nextAttemptAt > nowMs) {
+    const retryAfter = Math.max(1, Math.ceil((failure.nextAttemptAt - nowMs) / 1_000));
+    res.setHeader("retry-after", String(retryAfter));
+    return sendJson(res, 429, { error: `太快了,${retryAfter} 秒后再试` });
+  }
   const body = await readBody(req, res);
   if (body === undefined) return;
   const payload = safeParse(body) as {
@@ -812,8 +821,14 @@ async function handleBootstrapRegister(
   const password = payload.password;
   const expected = bootstrapSecret();
   if (expected === undefined || !secretMatches(expected, payload.bootstrap)) {
+    const count = (failure?.count ?? 0) + 1;
+    const nextAttemptAt =
+      count <= 3 ? 0 : nowMs + Math.min(1_000 * 2 ** (count - 4), 30_000);
+    bootstrapFailures.set(ip, { count, nextAttemptAt });
+    if (nextAttemptAt > 0) console.warn(`登录节流:账号 bootstrap,来源 ${ip},已失败 ${count} 次`);
     return sendJson(res, 401, { error: "bootstrap 口令不对" });
   }
+  bootstrapFailures.delete(ip);
   const now = new Date((deps.now ?? Date.now)()).toISOString();
   const passwordHash = await hashPassword(password);
   const created = withStore(deps.dbPath, (store) =>
@@ -845,14 +860,20 @@ function panelSession(req: IncomingMessage, deps: WebhookServerDeps) {
       store.removePanelSession(hash);
       return undefined;
     }
+    let renewed = false;
     if (expiry - now < SESSION_TTL_MS / 2) {
       store.renewPanelSession(hash, new Date(now + SESSION_TTL_MS).toISOString());
+      renewed = true;
     }
     const permissions =
       session.roleId === null
         ? []
         : (store.listPanelRoles().find((role) => role.id === session.roleId)?.permissions ?? []);
-    return { ...session, permissions, hash };
+    const systemAdmins = store
+      .listPanelUsers()
+      .filter((user) => user.isSystemAdmin)
+      .map((user) => user.displayName ?? user.username);
+    return { ...session, permissions, systemAdmins, hash, raw, renewed };
   });
 }
 async function handlePanelUsers(req: IncomingMessage, res: ServerResponse, deps: WebhookServerDeps) {
@@ -1053,6 +1074,7 @@ const PANEL_ROUTES: readonly PanelRoute[] = [
         displayName: session.displayName,
         permissions: session.permissions,
         isSystemAdmin: session.isSystemAdmin,
+        systemAdmins: session.systemAdmins,
         mustChangePassword: session.mustChangePassword,
       });
     },
@@ -1274,6 +1296,12 @@ async function handlePanelApi(
   if (session === undefined) {
     const bootstrap = withStore(deps.dbPath, (store) => store.countPanelUsers()) === 0;
     return sendJson(res, 401, { error: "未登录", ...(bootstrap ? { bootstrap: true } : {}) });
+  }
+  if (session.renewed) {
+    res.setHeader(
+      "set-cookie",
+      sessionCookieHeader(deps.panelPrefix, session.raw, Math.floor(SESSION_TTL_MS / 1000)),
+    );
   }
   if (matched === undefined) return sendJson(res, 404, { error: "没有这个端点" });
   if (session.mustChangePassword && matched.route.allowedWhilePasswordExpired !== true) {

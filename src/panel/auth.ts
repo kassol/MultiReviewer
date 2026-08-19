@@ -27,7 +27,7 @@ export type PanelAuthOptions = {
 
 export type PanelAuth = {
   login(
-    candidate: { username: string; passwordHash: string } | undefined,
+    candidate: { username: string; passwordHash?: string },
     password: string,
     ip: string,
   ): Promise<LoginOutcome>;
@@ -102,13 +102,13 @@ export function createPanelAuth(options: PanelAuthOptions | (() => number) = {})
 
   return {
     login(candidate, password, ip) {
-      const account = candidate?.username ?? "missing";
+      const account = candidate.username;
       // 用户名字符集不含冒号,所以 account 与 bootstrap 两类键不可能相撞。
       return check(
         `account:${account}`,
-        candidate?.passwordHash ?? DUMMY_PASSWORD_HASH,
+        candidate.passwordHash ?? DUMMY_PASSWORD_HASH,
         password,
-        () => candidate !== undefined,
+        () => candidate.passwordHash !== undefined,
         { account, ip, count: 0 },
       );
     },

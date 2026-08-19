@@ -114,17 +114,17 @@ export function AccessControlPage() {
   });
 
   const updateUser = useMutation({
-    mutationFn: async (input: { user: User; roleId: number | null }) =>
-      responseJson<User>(
-        await api(`/users/${encodeURIComponent(input.user.username)}`, {
-          method: "PUT",
-          body: JSON.stringify({
-            displayName: input.user.displayName,
-            roleId: input.roleId,
-            isSystemAdmin: false,
-          }),
+    mutationFn: async (input: { user: User; roleId: number | null }) => {
+      const response = await api(`/users/${encodeURIComponent(input.user.username)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          displayName: input.user.displayName,
+          roleId: input.roleId,
+          isSystemAdmin: false,
         }),
-      ),
+      });
+      if (!response.ok) throw new Error(await errorText(response));
+    },
     onSuccess: () => {
       setFeedback({ text: "角色已生效，不用重新登录。", error: false });
       refresh();
@@ -221,7 +221,7 @@ export function AccessControlPage() {
                         <td className="px-3 py-2 text-muted-foreground">{user.displayName ?? "—"}</td>
                         <td className="px-3 py-2">{user.isSystemAdmin ? <span className="text-muted-foreground">权限全开</span> : <select aria-label={`${user.username} 的角色`} value={user.roleId ?? ""} disabled={updateUser.isPending} onChange={(event) => updateUser.mutate({ user, roleId: event.target.value === "" ? null : Number(event.target.value) })} className={`h-7 rounded-md border px-1.5 outline-none focus-visible:ring-2 focus-visible:ring-ring ${user.roleId === null ? "border-warning/50 bg-warning/10 text-warning" : "border-border bg-background"}`}><option value="">还没授角色</option>{roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select>}</td>
                         <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{localMinute(user.createdAt)}</td>
-                        <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{user.lastLoginAt === null ? "从未" : localMinute(user.lastLoginAt)}</td>
+                        <td className="px-3 py-2 text-xs text-muted-foreground">{user.lastLoginAt === null ? "从未" : <span className="font-mono">{localMinute(user.lastLoginAt)}</span>}</td>
                         <td className="px-3 py-2"><div className="flex justify-end gap-1"><Button variant="ghost" size="xs" onClick={() => setConfirm({ kind: "reset", id: user.username, label: user.username })}><KeyRound />重置密码</Button><Button variant="ghost" size="xs" className="text-destructive" onClick={() => setConfirm({ kind: "delete-user", id: user.username, label: user.username })}><Trash2 />删号</Button></div></td>
                       </tr>
                     ))}

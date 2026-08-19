@@ -19,6 +19,7 @@ export type PanelSession = {
   permissions: PanelPermission[];
   isSystemAdmin: boolean;
   mustChangePassword: boolean;
+  systemAdmins: string[];
 };
 
 let cached: PanelSession | null | undefined;
