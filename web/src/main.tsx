@@ -15,10 +15,11 @@ import { createRoot } from "react-dom/client";
 
 import { Mark } from "@/components/mark";
 import { Card } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 import { AccessControlPage } from "./access-control.tsx";
 import { api } from "./api.ts";
-import { CredentialsPage } from "./credentials.tsx";
+import { CredentialsPage } from "./credentials.prototype.tsx";
 import { injected } from "./injected.ts";
 import { LoginPage } from "./login.tsx";
 import { PasswordPage } from "./password.tsx";
@@ -62,7 +63,7 @@ const NAV: readonly { to: "/repos" | "/runs" | "/stats" | "/credentials" | "/set
   { to: "/repos", label: "仓库", permission: "repo:read" },
   { to: "/runs", label: "评审记录", permission: "review:read" },
   { to: "/stats", label: "处置率", permission: "review:read" },
-  { to: "/credentials", label: "模型凭据", permission: "credential:read" },
+  { to: "/credentials", label: "模型服务", permission: "credential:read" },
   { to: "/settings", label: "全局设置", permission: "model:read" },
   { to: "/access", label: "访问控制", admin: true },
   { to: "/password", label: "修改密码", always: true },
@@ -122,6 +123,34 @@ function Shell() {
     </div>
   );
 }
+
+function ModelServicesPrototypeShell() {
+  const items = ["仓库", "评审记录", "处置率", "模型服务", "全局设置", "访问控制", "修改密码"];
+  return (
+    <div className="flex h-dvh flex-col sm:grid sm:grid-cols-[200px_1fr]">
+      <aside className="flex shrink-0 flex-col border-border bg-chrome max-sm:flex-row max-sm:items-center max-sm:overflow-x-auto max-sm:border-b sm:border-r">
+        <div className="flex shrink-0 items-center gap-2 border-border px-3 py-3.5 max-sm:py-2.5 sm:border-b">
+          <Mark className="size-4" />
+          <span className="font-semibold tracking-tight">MultiReviewer</span>
+        </div>
+        <nav aria-label="原型面板导航" className="flex shrink-0 gap-0.5 p-2 sm:flex-col">
+          {items.map((item) => (
+            <span key={item} aria-current={item === "模型服务" ? "page" : undefined} className={cn("flex h-10 items-center rounded-md px-3 whitespace-nowrap text-muted-foreground sm:h-8", item === "模型服务" && "bg-background font-medium text-foreground shadow-[0_0_0_1px_var(--border)]")}>
+              {item}
+            </span>
+          ))}
+        </nav>
+      </aside>
+      <main className="min-h-0 min-w-0 flex-1 overflow-auto"><CredentialsPage /></main>
+    </div>
+  );
+}
+
+const modelServicesPrototypeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/prototype/model-services",
+  component: ModelServicesPrototypeShell,
+});
 
 const indexRoute = createRoute({
   getParentRoute: () => shellRoute,
@@ -187,6 +216,7 @@ function ZeroPermissionPage() {
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
+  modelServicesPrototypeRoute,
   shellRoute.addChildren([
     indexRoute,
     reposRoute,
