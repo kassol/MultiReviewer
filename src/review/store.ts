@@ -797,8 +797,16 @@ export function openStore(dbPath: string): Store {
         .all(id)
         .map((row) => String(row["username"]));
       if (usernames.length > 0) return { removed: false, usernames };
-      const result = db.prepare("DELETE FROM panel_role WHERE id = ?").run(id);
-      return { removed: Number(result.changes) > 0, usernames: [] };
+      db.exec("BEGIN");
+      try {
+        db.prepare("DELETE FROM panel_role_permission WHERE role_id = ?").run(id);
+        const result = db.prepare("DELETE FROM panel_role WHERE id = ?").run(id);
+        db.exec("COMMIT");
+        return { removed: Number(result.changes) > 0, usernames: [] };
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     },
 
     listPanelUsers() {

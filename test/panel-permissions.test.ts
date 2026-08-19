@@ -69,3 +69,16 @@ test("普通用户不能调用系统管理员端点", async () => {
   assert.equal(response.status, 403);
   assert.deepEqual(await response.json(), { error: "只有系统管理员能做" });
 });
+
+test("无人引用的角色连权限关系一起删除", async () => {
+  const h = await startPanelHarness(cleanups);
+  const created = await h.api("POST", "/roles", {
+    name: "待删除角色",
+    permissions: ["review:read"],
+  });
+  assert.equal(created.status, 201);
+  const role = (await created.json()) as { id: number };
+  assert.equal((await h.api("DELETE", `/roles/${role.id}`)).status, 204);
+  const roles = (await (await h.api("GET", "/roles")).json()) as { roles: { id: number }[] };
+  assert.ok(!roles.roles.some((item) => item.id === role.id));
+});
