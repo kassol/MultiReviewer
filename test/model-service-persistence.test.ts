@@ -754,6 +754,23 @@ test("真实旧库先留唯一备份，再按证据与来源优先级一次迁�
   );
 });
 
+test("旧库缺少后期模型字段时仍迁移，并只统计实际存在的旧事实", async () => {
+  const fixture = createLegacyFixture();
+  cleanups.push(fixture.cleanup);
+  const sqlite = new DatabaseSync(fixture.path);
+  sqlite.exec("ALTER TABLE model_row DROP COLUMN max_output_tokens");
+  sqlite.close();
+
+  const migrated = await migrateModelServiceDatabase({
+    dbPath: fixture.path,
+    credentialMasterKey: "migration-master-key",
+    builtinProviderNames: new Set(["openai", "openrouter", "broken"]),
+  });
+  assert.equal(migrated.status, "migrated");
+  if (migrated.status !== "migrated") return;
+  assert.equal(migrated.summary.discardedLegacyModelFactRows, 2);
+});
+
 test("仓库覆盖 JSON 非法时整个迁移回滚，旧库与组合原样可读", async () => {
   const fixture = createLegacyFixture();
   cleanups.push(fixture.cleanup);

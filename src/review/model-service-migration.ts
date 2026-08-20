@@ -298,9 +298,15 @@ export async function migrateModelServiceDatabase(options: ModelServiceMigration
 
       const manualSupplements = [...supplements.values()].filter((entry) => entry.source === "manual").length;
       const migrationRetentions = supplements.size - manualSupplements;
-      const discardedLegacyModelFactRows = Number(db.prepare(`SELECT COUNT(*) AS c FROM model_row
-        WHERE cost_input IS NOT NULL OR cost_output IS NOT NULL OR context_window IS NOT NULL
-          OR max_output_tokens IS NOT NULL`).get()?.["c"] ?? 0);
+      const legacyFactColumns = new Set(
+        db.prepare("PRAGMA table_info(model_row)").all().map((row) => String(row["name"])),
+      );
+      const discardedPredicates = ["cost_input", "cost_output", "context_window", "max_output_tokens"]
+        .filter((column) => legacyFactColumns.has(column))
+        .map((column) => `"${column}" IS NOT NULL`);
+      const discardedLegacyModelFactRows = discardedPredicates.length === 0 ? 0 : Number(
+        db.prepare(`SELECT COUNT(*) AS c FROM model_row WHERE ${discardedPredicates.join(" OR ")}`).get()?.["c"] ?? 0,
+      );
       const summary: ModelServiceMigrationSummary = {
         schemaVersion: MODEL_SERVICE_SCHEMA_VERSION, backupPath, modelServices: providers.size,
         verifiedCredentials, pendingCredentials, unconfiguredCredentials, manualSupplements, migrationRetentions,
