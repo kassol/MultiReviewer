@@ -156,11 +156,18 @@ async function responseJsonWithReferences<T>(response: Response): Promise<T> {
       body !== null && typeof body === "object" && "error" in body && typeof body.error === "string"
         ? body.error
         : `请求失败(${response.status})`;
+    const requestId =
+      body !== null && typeof body === "object" && "requestId" in body && typeof body.requestId === "string"
+        ? body.requestId
+        : undefined;
     const references =
       body !== null && typeof body === "object" && "references" in body
         ? parseModelReferences(body.references)
         : [];
-    throw Object.assign(new Error(message), { references });
+    throw Object.assign(
+      new Error(requestId === undefined ? message : `${message}（request id：${requestId}）`),
+      { references },
+    );
   }
   return body as T;
 }
