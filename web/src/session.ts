@@ -13,6 +13,26 @@ export const PANEL_PERMISSIONS = [
 
 export type PanelPermission = (typeof PANEL_PERMISSIONS)[number];
 
+const IMPLIED_BY: Partial<Record<PanelPermission, PanelPermission>> = {
+  "repo:read": "repo:write",
+  "model:read": "model:write",
+  "credential:read": "credential:write",
+};
+
+export function permissionImpliedBy(
+  permission: PanelPermission,
+): PanelPermission | undefined {
+  return IMPLIED_BY[permission];
+}
+
+export function roleHasPermission(
+  permissions: readonly PanelPermission[],
+  permission: PanelPermission,
+): boolean {
+  const impliedBy = permissionImpliedBy(permission);
+  return permissions.includes(permission) || (impliedBy !== undefined && permissions.includes(impliedBy));
+}
+
 export type PanelSession = {
   username: string;
   displayName: string | null;

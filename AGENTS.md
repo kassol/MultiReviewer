@@ -100,7 +100,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 - **HTTPS 是门禁的前提,不是可选项。**会话 cookie 带 `Secure`,明文 HTTP 下浏览器根本不发它;`MULTIREVIEWER_BASE_URL` 是明文 http 且非 localhost 时服务直接拒绝启动(localhost 放行,浏览器把它当安全上下文)。本服务自己不终止 TLS,证书与 https 由外部反代负责,归部署方。
 - **面板前缀不是安全边界。**未认证的 API 请求一律 401,端点存在与否都一样,前缀只是路由匹配的第一段。它挡的是「面板地址被爬到」,挡不住知道地址的人;真正的门禁是用户账号与会话 cookie。前缀轮换只会让旧的 `Path` 限定 cookie 失配,不构成额外保护。
 
-账号是本服务自己管理的本地账号,不复用 Gitea、GitHub 或其他身份源。系统管理员在访问控制页建用户、重置密码、删用户,并创建自定义角色;每个普通用户挂一个角色,角色由 8 个权限格组成(`repo:read` / `repo:write` / `review:read` / `review:rerun` / `model:read` / `model:write` / `credential:read` / `credential:write`)。系统管理员不是角色且始终全权限。口令强度在注册、自改密码与管理员重置三条路径上都**不设下限**;服务唯一兜底是失败后的登录闸门最多退避 30 秒,并在撞上闸门时留一行含账号、源 IP 与失败次数的日志。部署方若有强度要求,必须在组织流程或外围身份治理中另行约束;服务不会替部署方判定弱口令。
+账号是本服务自己管理的本地账号,不复用 Gitea、GitHub 或其他身份源。系统管理员在访问控制页建用户、重置密码、删用户,并创建自定义角色;每个普通用户挂一个角色,角色由 8 个权限格组成(`repo:read` / `repo:write` / `review:read` / `review:rerun` / `model:read` / `model:write` / `credential:read` / `credential:write`)。三类写权限各自包含同资源的读权限,`review:rerun` 不包含 `review:read`;角色矩阵会把被包含的读权限显示为随写生效。系统管理员不是角色且始终全权限。口令强度在注册、自改密码与管理员重置三条路径上都**不设下限**;服务唯一兜底是失败后的登录闸门最多退避 30 秒,并在撞上闸门时留一行含账号、源 IP 与失败次数的日志。部署方若有强度要求,必须在组织流程或外围身份治理中另行约束;服务不会替部署方判定弱口令。
 
 ### Gitea 的准备步骤
 
@@ -258,3 +258,4 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-19: wayfinder 地图[重新设计模型服务与模型组合的完整链路](https://github.com/kassol/MultiReviewer/issues/119)定下[现有 provider、模型补录与组合怎样迁移](https://github.com/kassol/MultiReviewer/issues/122)。迁移前用 SQLite backup API 留一份不覆盖的备份,再以单事务迁新表、校验组合、切 schema 并删旧表;旧 API 与两份目录派生文件同版切除。自定义 provider 原样形成版本 1;旧凭据按既有验证与自定义服务成功 Run 的证据分成已验证、迁移待重新验证、未配置。旧 `model_row` 只有在自定义 provider 目标可证明时迁成手动补录,内置／未知 provider 行与组合缺失来源统一迁成「迁移保留」,每个模型标识只留一份来源;旧价格和上下文窗口丢弃。组合与仓库覆盖原样迁移,坏 JSON 阻止整次迁移。
 - 2026-08-20: 落地 issue #141 的模型服务 clean cutover。启动在创建 HTTP 服务前识别 schema-v0,先留唯一 SQLite 备份,再以单事务迁入模型服务表、保留组合与历史 Review Run、删除旧模型表;迁移提交后删除旧 `models.json` / `models-store.json`,成功监听才输出并确认一次性摘要,失败启动保留待重试标记。旧 `/catalog`、`/credentials`、`/model-rows`、`/custom-providers` API、Store 方法与共享当前模型配置全部删除;面板与 Review Run 只读模型服务版本和目录快照。
 - 2026-08-20: 完成模型服务与审查策略统一改造的 grilling，见 ADR 0010。模型服务配置与模型选择继续分页面并串成首次配置路径；全局模型组合首次配置后改为非空，审查配置就绪后才允许注册仓库；模型组合与分批上限采用独立版本；模型服务详情改为概览 / 维护 / 模型三页签。`CONTEXT.md` 新增模型发现、全局模型组合、审查策略、审查配置就绪与实例启用，并收紧权限格和自定义 provider 的语义。当前实现仍按 `src/AGENTS.md` 与 `web/AGENTS.md` 描述运行，待 spec 与实现票落地后同步模块规范。
+- 2026-08-20: 落地 issue #144。服务端与 session 统一使用有效权限:三类 write 包含对应 read,`review:rerun` 独立。角色矩阵明确显示包含关系;只有 read 的用户进入仓库、评审记录、模型服务与全局设置时只看到静态内容,页面不渲染写控件。

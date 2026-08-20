@@ -37,7 +37,11 @@ import {
 import type { GiteaForgeOptions } from "../forge/gitea.ts";
 import { createPanelAuth, sessionHash, SESSION_TTL_MS, type PanelAuth } from "../panel/auth.ts";
 import { hashPassword } from "../panel/password.ts";
-import { isPanelPermission, type PanelPermission } from "../panel/permissions.ts";
+import {
+  effectivePanelPermissions,
+  isPanelPermission,
+  type PanelPermission,
+} from "../panel/permissions.ts";
 import {
   credentialTail,
   CREDENTIAL_MASTER_KEY_ENV,
@@ -861,8 +865,8 @@ function sessionCookieHeader(prefix: string, value: string, maxAgeSeconds: numbe
   );
 }
 
-// `access` 在 `PanelRoute` 上必填:新增端点时必须同时声明门禁。复合要求写明 anyOf/allOf，
-// 不把「写权限暗含读权限」之类的继承规则藏进鉴权器。
+// `access` 在 `PanelRoute` 上必填:新增端点时必须同时声明门禁。复合要求写明 anyOf/allOf。
+// 角色存储的权限先统一展开为有效权限，路由声明只表达端点自身要求。
 export type PanelAccess =
   | PanelPermission
   | "public"
@@ -1058,10 +1062,11 @@ function panelSession(req: IncomingMessage, deps: WebhookServerDeps) {
       store.renewPanelSession(hash, new Date(now + SESSION_TTL_MS).toISOString());
       renewed = true;
     }
-    const permissions =
+    const storedPermissions =
       session.roleId === null
         ? []
         : (store.listPanelRoles().find((role) => role.id === session.roleId)?.permissions ?? []);
+    const permissions = effectivePanelPermissions(storedPermissions);
     const systemAdmins = store
       .listPanelUsers()
       .filter((user) => user.isSystemAdmin)

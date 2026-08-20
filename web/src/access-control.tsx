@@ -20,7 +20,12 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { api, errorText, fetchJson } from "./api.ts";
-import { PANEL_PERMISSIONS, type PanelPermission } from "./session.ts";
+import {
+  PANEL_PERMISSIONS,
+  permissionImpliedBy,
+  roleHasPermission,
+  type PanelPermission,
+} from "./session.ts";
 
 type Role = {
   id: number;
@@ -47,13 +52,13 @@ type PermissionInfo = {
 };
 
 const PERMISSION_INFO: readonly PermissionInfo[] = [
-  { id: "repo:read", resource: "仓库", action: "读", hint: "仓库列表、hook 核对" },
+  { id: "repo:read", resource: "仓库", action: "读", hint: "仓库列表、hook 核对；写权限包含此项" },
   { id: "repo:write", resource: "仓库", action: "写", hint: "搜索、注册、移除、改组合、轮转 Key" },
   { id: "review:read", resource: "评审", action: "读", hint: "评审记录、处置率" },
   { id: "review:rerun", resource: "评审", action: "重跑", hint: "开一轮 Review Run：会产生费用并在 PR 上发评论" },
-  { id: "model:read", resource: "模型", action: "读", hint: "全局设置、模型目录、模型行、自定义 provider" },
+  { id: "model:read", resource: "模型", action: "读", hint: "全局设置、模型目录、模型行、自定义 provider；写权限包含此项" },
   { id: "model:write", resource: "模型", action: "写", hint: "改组合、手填模型行、加删自定义 provider" },
-  { id: "credential:read", resource: "凭据", action: "读", hint: "凭据列表，含 key 尾 4 位" },
+  { id: "credential:read", resource: "凭据", action: "读", hint: "凭据列表，含 key 尾 4 位；写权限包含此项" },
   { id: "credential:write", resource: "凭据", action: "写", hint: "写入与删除模型凭据" },
 ];
 
@@ -184,8 +189,11 @@ export function AccessControlPage() {
   const roles = rolesQuery.data ?? [];
   const adminCount = users.filter((user) => user.isSystemAdmin).length;
   const unclaimed = useMemo(() => {
-    const claimed = new Set(roles.flatMap((role) => role.permissions));
-    return new Set(PANEL_PERMISSIONS.filter((permission) => !claimed.has(permission)));
+    return new Set(
+      PANEL_PERMISSIONS.filter(
+        (permission) => !roles.some((role) => roleHasPermission(role.permissions, permission)),
+      ),
+    );
   }, [roles]);
   const pending = usersQuery.isPending || rolesQuery.isPending;
   const loadError = usersQuery.error ?? rolesQuery.error;
@@ -332,20 +340,26 @@ export function AccessControlPage() {
                                 </div>
                                 <p className="text-xs text-muted-foreground">{permission.hint}</p>
                               </td>
-                              {roles.map((role) => (
-                                <td key={role.id} className="border-l border-border px-3 py-1.5 text-center">
-                                  <label className="inline-flex size-8 cursor-pointer items-center justify-center rounded-md hover:bg-muted focus-within:ring-3 focus-within:ring-ring/50 has-disabled:cursor-not-allowed has-disabled:opacity-50">
-                                    <input
-                                      type="checkbox"
-                                      aria-label={`${role.name} ${permission.id}`}
-                                      checked={role.permissions.includes(permission.id)}
-                                      disabled={updateRole.isPending}
-                                      onChange={() => updateRole.mutate({ role, permission: permission.id })}
-                                      className="size-4 accent-primary outline-none"
-                                    />
-                                  </label>
-                                </td>
-                              ))}
+                              {roles.map((role) => {
+                                const impliedBy = permissionImpliedBy(permission.id);
+                                const implied =
+                                  impliedBy !== undefined && role.permissions.includes(impliedBy);
+                                return (
+                                  <td key={role.id} className="border-l border-border px-3 py-1.5 text-center">
+                                    <label className="inline-flex min-h-8 cursor-pointer flex-col items-center justify-center rounded-md px-1 hover:bg-muted focus-within:ring-3 focus-within:ring-ring/50 has-disabled:cursor-not-allowed has-disabled:opacity-70">
+                                      <input
+                                        type="checkbox"
+                                        aria-label={`${role.name} ${permission.id}${implied ? `，由 ${impliedBy} 包含` : ""}`}
+                                        checked={roleHasPermission(role.permissions, permission.id)}
+                                        disabled={updateRole.isPending || implied}
+                                        onChange={() => updateRole.mutate({ role, permission: permission.id })}
+                                        className="size-4 accent-primary outline-none"
+                                      />
+                                      {implied ? <span className="text-[10px] text-muted-foreground">随写生效</span> : null}
+                                    </label>
+                                  </td>
+                                );
+                              })}
                             </tr>
                           );
                         }),

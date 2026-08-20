@@ -55,7 +55,7 @@
 - 全局模型组合与批次上限存 `global_setting` 表,一项一行(issue #66):`reviewers` 与 `repo.reviewers` 同构,一套 `assertReviewerSpecs` 通吃,报错的 `context` 指认是全局还是哪个仓库。两层只有「空不空」这一条判据不同:全局组合允许为空(空库刚部署时它本来就是空的,这个状态有确定行为——投递照常受理并留下一条写明「还没配模型组合」的失败 Run),由 `allowEmpty` 开启,只有全局那一处给;每仓库覆盖仍必须至少一个,要停掉就把覆盖清成 null 回到跟随全局(issue #69)。`max_changed_lines_per_batch` 缺行即取 `DEFAULT_MAX_CHANGED_LINES_PER_BATCH`。面板读写用时现读;Review Run 启动则由 `getReviewRunSnapshot` 在同一 SQLite 读事务固定生效组合、批次上限与全部引用模型服务,第一批开始后不再读取当前配置。库是唯一配置面,没有配置文件与它构成双轨。
 - 模型组合为空时 `buildReviewers` 建出一个一跑就报失败的 Reviewer,不返回空数组:零 Reviewer 的 Review Run 既不失败也不留痕,人看到的是「投了没反应」。缺凭据那一档同理。
 - 模型标识是 `provider:model`(`config.ts` 的 `modelIdentity` 一处拼),落库的 `finding.model` 与 `reviewer_outcome.model`、面板展示、统计归属全用它;`ReviewerSpec.model` 与喂给 Pi 的仍是裸 model id。模型组合的去重键因此是完整标识:同一个 model id 在两家 provider 下是两个 Reviewer,可共存。历史行不回填:provider 从库里恢复不出来,而当前的模型组合不是历史的证据(同一个 model id 当初走 deepseek 直连、现在只配 openrouter,按当前组合反查会把历史 Finding 永久错标成 openrouter)。已知代价是同一个模型在迁移前后裂成两行——旧行挂裸 id、新行挂模型标识,统计矩阵里各成一条。取舍写在 `store.ts` 的 `ADD_COLUMNS` 下方。
-- 面板认证改为本地用户账号:密码是 Node 内置 argon2id 的 PHC 字串,会话只把 id 的 sha256 摘要落 `panel_session`,重启不清会话。零用户时启动日志打印内存 bootstrap 口令,第一个注册的人是系统管理员。面板 API 由一张 `access` 必填的路由表分发;未认证一律 401、越权 403、认证后的未知端点 JSON 404。权限每请求从库里现读,改角色不用重登。登录连续失败走按账号的闸门式延迟(3 次免罚,之后 1/2/4 秒翻倍封顶 30 秒),闸门未到回 429 + Retry-After;同时最多 4 次 argon2 验证。系统管理员不进角色表,角色为空即零权限。
+- 面板认证改为本地用户账号:密码是 Node 内置 argon2id 的 PHC 字串,会话只把 id 的 sha256 摘要落 `panel_session`,重启不清会话。零用户时启动日志打印内存 bootstrap 口令,第一个注册的人是系统管理员。面板 API 由一张 `access` 必填的路由表分发;未认证一律 401、越权 403、认证后的未知端点 JSON 404。权限每请求从库里现读并展开有效权限:`repo:write` / `model:write` / `credential:write` 各自包含同资源的读权限,`review:rerun` 保持独立;鉴权与 `GET /session` 共用展开后的结果,改角色不用重登。登录连续失败走按账号的闸门式延迟(3 次免罚,之后 1/2/4 秒翻倍封顶 30 秒),闸门未到回 429 + Retry-After;同时最多 4 次 argon2 验证。系统管理员不进角色表,角色为空即零权限。
 - 幂等键是「仓库 + head commit」,落在 `webhook_delivery` 表的 UNIQUE 约束上,靠插入冲突判重而不是先查后插:并发投递时先查后插会两个请求都查不到、都开跑。`review_run` 上不加同样的约束——人手动重审同一个 head commit 是合法的。
 - Webhook handler 立即返回 200,Review Run 在后台跑。后台任务的 rejection 必须接住并记录,否则会变成 unhandledRejection 把这个长跑进程带崩。
 - 通过签名校验的投递记一行,写明这次做了什么(开始审查 / 草稿不审 / 已审过跳过 / action 不触发 / 非 pull request 事件)。没有这行时,服务正常工作与完全收不到投递在日志上一模一样,只有启动那一句。记录点在签名校验之后:未认证的请求谁都能发,记它们等于把日志交给外人写。仅有的例外是「未注册」与「代次不对」两类准入拒绝,见上面准入那条:按仓库只记首次、集合设上限、仓库名滤掉控制字符。日志出口是 `onDelivery`,与 `onRunSettled` 一样是可注入的,测试收进数组而不刷屏。
@@ -99,6 +99,8 @@
 第三方依赖只有 Pi(`@earendil-works/pi-coding-agent`)与它的 `typebox`,且只在 `reviewer/` 内使用。
 
 ## 变更日志
+
+- 2026-08-20: 落地 issue #144。`panel/permissions.ts` 统一展开角色的有效权限,路由鉴权、模型服务字段投影与 `GET /session` 使用同一结果;三类写权限包含对应读权限,`review:rerun` 不包含 `review:read`。真实 HTTP 测试覆盖会话投影、对应读取与独立重跑的 403 边界。
 
 - 2026-08-08: 建立 `forge/`、`git/`、`review/` 三个目录。落地 `Forge` 接口与 GitHub 实现、工作副本准备、`runReview` 骨架(issue #2)。
 - 2026-08-08: 落地 issue #6。新增 `review/store.ts` 与 `review/fingerprint.ts`。`ReviewerOutcome` 扩出 `usage`,取自 Pi 的 `session.getSessionStats()`,经 `done` 消息回传。Review Range 的 diff 提前到 Reviewer 之前读,使规模能在开跑之前落库。

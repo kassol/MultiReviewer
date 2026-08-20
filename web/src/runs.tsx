@@ -143,7 +143,7 @@ function runBadge(run: RunItem) {
   );
 }
 
-export function RunsPage() {
+export function RunsPage({ canRerun }: { canRerun: boolean }) {
   const runs = useInfiniteQuery({
     queryKey: ["runs"],
     initialPageParam: null as number | null,
@@ -283,9 +283,11 @@ export function RunsPage() {
                   <th scope="col" className="min-w-36 px-3 py-2 font-medium">
                     时间
                   </th>
-                  <th scope="col" className="w-20 px-3 py-2 font-medium">
-                    动作
-                  </th>
+                  {canRerun ? (
+                    <th scope="col" className="w-20 px-3 py-2 font-medium">
+                      动作
+                    </th>
+                  ) : null}
                 </tr>
               </thead>
               <tbody>
@@ -300,7 +302,7 @@ export function RunsPage() {
                       {showDay ? (
                         <tr className="border-t border-border bg-muted/60">
                           <th
-                            colSpan={7}
+                            colSpan={canRerun ? 7 : 6}
                             className="px-3 py-1.5 font-mono text-xs font-semibold text-muted-foreground"
                           >
                             {day}
@@ -392,16 +394,18 @@ export function RunsPage() {
                             {run.triggeredBy === null ? "投递" : `手动 · ${run.triggeredBy}`}
                           </div>
                         </td>
-                        <td className="px-3 py-2.5 align-top">
-                          <Button
-                            variant="outline"
-                            size="xs"
-                            disabled={rerun.isPending}
-                            onClick={() => rerun.mutate(run)}
-                          >
-                            {rerun.isPending ? "重跑中…" : "重跑"}
-                          </Button>
-                        </td>
+                        {canRerun ? (
+                          <td className="px-3 py-2.5 align-top">
+                            <Button
+                              variant="outline"
+                              size="xs"
+                              disabled={rerun.isPending}
+                              onClick={() => rerun.mutate(run)}
+                            >
+                              {rerun.isPending ? "重跑中…" : "重跑"}
+                            </Button>
+                          </td>
+                        ) : null}
                       </tr>
                     </Fragment>
                   );
@@ -415,12 +419,14 @@ export function RunsPage() {
           <Card className="items-start gap-1.5 px-4">
             <h2 className="text-base font-semibold">还没有 Review Run</h2>
             <p className="text-muted-foreground">
-              给已注册的仓库开一个 PR 就会自动跑一轮。要对已有的 PR 补一轮,去仓库页选中那个
-              仓库,在「评审记录」里输 PR 号点重跑。
+              给已注册的仓库开一个 PR 就会自动跑一轮。
+              {canRerun ? "要对已有的 PR 补一轮,去仓库页选中仓库后输入 PR 号。" : null}
             </p>
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/repos">去仓库页</Link>
-            </Button>
+            {canRerun ? (
+              <Button variant="outline" size="sm" asChild>
+                <Link to="/repos">去仓库页</Link>
+              </Button>
+            ) : null}
           </Card>
         ) : null}
         {flat.length > 0 && visible.length === 0 ? (

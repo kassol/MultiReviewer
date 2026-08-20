@@ -69,7 +69,17 @@ function Kv({ label, children }: { label: React.ReactNode; children: React.React
   );
 }
 
-export function ReposPage() {
+export function ReposPage({
+  canWrite,
+  canReadModels,
+  canReadReviews,
+  canRerun,
+}: {
+  canWrite: boolean;
+  canReadModels: boolean;
+  canReadReviews: boolean;
+  canRerun: boolean;
+}) {
   const queryClient = useQueryClient();
   const repos = useQuery({
     queryKey: ["repos"],
@@ -79,6 +89,7 @@ export function ReposPage() {
   const settings = useQuery({
     queryKey: ["settings"],
     queryFn: () => fetchJson<{ reviewers: ReviewerSpec[] }>("/settings"),
+    enabled: canReadModels,
   });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [registering, setRegistering] = useState(false);
@@ -91,9 +102,9 @@ export function ReposPage() {
       <PageHeader
         title="仓库"
         description="接入 MultiReviewer 的仓库。选一个看它的准入 key、模型组合与最近几轮 Review Run。"
-        actions={
+        actions={canWrite ? (
           <Button onClick={() => setRegistering(true)}>注册仓库</Button>
-        }
+        ) : undefined}
       />
       <div className="flex min-h-full flex-col lg:grid lg:grid-cols-[248px_minmax(0,1fr)]">
         <aside
@@ -173,7 +184,7 @@ export function ReposPage() {
             <Card className="items-start gap-1.5 px-4">
               <h2 className="text-base font-semibold">还没有注册仓库</h2>
               <p className="text-muted-foreground">
-                点右上「注册仓库」搜一个接进来——搜的是 bot 能看见的仓库。
+                {canWrite ? "点右上「注册仓库」搜一个接进来——搜的是 bot 能看见的仓库。" : "当前没有已注册仓库。"}
               </p>
             </Card>
           ) : null}
@@ -181,7 +192,10 @@ export function ReposPage() {
             <RepoDetail
               key={selected.repoId}
               repo={selected}
-              globalModels={(settings.data?.reviewers ?? []).map(modelIdentity)}
+              globalModels={settings.data?.reviewers.map(modelIdentity)}
+              canWrite={canWrite}
+              canReadReviews={canReadReviews}
+              canRerun={canRerun}
               onRemoved={() => {
                 setSelectedId(null);
                 void queryClient.invalidateQueries({ queryKey: ["repos"] });
@@ -192,7 +206,7 @@ export function ReposPage() {
 
         {/* 两个表单模态都按需挂载:常驻会把上一次的输入与错误留在 state 里,下次打开
             回显的就不是当前值了。 */}
-        {registering ? (
+        {canWrite && registering ? (
           <RegisterModal
             onClose={() => setRegistering(false)}
             onDone={(repoId) => {
@@ -210,10 +224,16 @@ export function ReposPage() {
 function RepoDetail({
   repo,
   globalModels,
+  canWrite,
+  canReadReviews,
+  canRerun,
   onRemoved,
 }: {
   repo: RepoRow;
-  globalModels: string[];
+  globalModels: string[] | undefined;
+  canWrite: boolean;
+  canReadReviews: boolean;
+  canRerun: boolean;
   onRemoved: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -273,8 +293,7 @@ function RepoDetail({
   const issues = check.data?.issues ?? [];
   const following = repo.reviewers === null;
   // 覆盖存的是 spec,展示要和全局那侧一样是模型标识 `provider:model`。
-  const shownModels =
-    repo.reviewers === null ? globalModels : repo.reviewers.map(modelIdentity);
+  const shownModels = repo.reviewers === null ? globalModels : repo.reviewers.map(modelIdentity);
 
   return (
     <>
@@ -305,14 +324,16 @@ function RepoDetail({
           </Badge>
         )}
         <span className="text-xs text-muted-foreground">repo id {repo.repoId}</span>
-        <Button
-          variant="outline"
-          className="ml-auto max-sm:w-full"
-          disabled={remove.isPending}
-          onClick={() => setConfirmingRemoval(true)}
-        >
-          移除仓库
-        </Button>
+        {canWrite ? (
+          <Button
+            variant="outline"
+            className="ml-auto max-sm:w-full"
+            disabled={remove.isPending}
+            onClick={() => setConfirmingRemoval(true)}
+          >
+            移除仓库
+          </Button>
+        ) : null}
       </div>
 
       {feedback === null ? null : (
@@ -353,13 +374,15 @@ function RepoDetail({
               <span className="text-muted-foreground">{issue.action}</span>
             </Kv>
           ))}
-          <Button
-            className="self-start"
-            disabled={rotate.isPending}
-            onClick={() => rotate.mutate()}
-          >
-            {rotate.isPending ? "推平中…" : "轮转推平"}
-          </Button>
+          {canWrite ? (
+            <Button
+              className="self-start"
+              disabled={rotate.isPending}
+              onClick={() => rotate.mutate()}
+            >
+              {rotate.isPending ? "推平中…" : "轮转推平"}
+            </Button>
+          ) : null}
         </Card>
       ) : null}
 
@@ -376,20 +399,22 @@ function RepoDetail({
           <p className="text-xs text-muted-foreground">
             面板自己把 key 填进 hook 的 secret 字段,人全程不需要碰它。
           </p>
-          <Button
-            variant="outline"
-            className="self-start"
-            disabled={rotate.isPending}
-            onClick={() => rotate.mutate()}
-          >
-            {rotate.isPending ? "轮转中…" : "轮转 key"}
-          </Button>
+          {canWrite ? (
+            <Button
+              variant="outline"
+              className="self-start"
+              disabled={rotate.isPending}
+              onClick={() => rotate.mutate()}
+            >
+              {rotate.isPending ? "轮转中…" : "轮转 key"}
+            </Button>
+          ) : null}
         </Card>
 
-        {editing ? (
+        {canWrite && editing ? (
           <ReviewersEditor
             repo={repo}
-            globalModels={globalModels}
+            globalModels={globalModels ?? []}
             onClose={() => setEditing(false)}
             onDone={() => {
               setEditing(false);
@@ -402,7 +427,7 @@ function RepoDetail({
             <h3 className="text-base font-semibold">模型组合</h3>
             {/* 两态开关(issue #69):要么跟随全局,要么本仓库自定义。「一个都没选」
                 这种既不是跟随、也不是有效覆盖的状态在界面上不存在。 */}
-            <div className="flex gap-2">
+            {canWrite ? <div className="flex gap-2">
               <Button
                 size="xs"
                 variant={following ? "default" : "outline"}
@@ -421,19 +446,27 @@ function RepoDetail({
               >
                 自定义
               </Button>
-            </div>
+            </div> : null}
             <Kv label={following ? "跟随全局默认" : "本仓库覆盖"}>
-              <span><span className="font-mono tabular-nums">{shownModels.length}</span> 个</span>
+              {shownModels === undefined ? (
+                <span className="text-muted-foreground">跟随中</span>
+              ) : (
+                <span><span className="font-mono tabular-nums">{shownModels.length}</span> 个</span>
+              )}
             </Kv>
-            {shownModels.map((model) => (
+            {(shownModels ?? []).map((model) => (
               <div key={model} className="break-all font-mono text-xs">
                 {model}
               </div>
             ))}
             <p className="text-xs text-muted-foreground">
-              {following
+              {following && canWrite
                 ? "改全局设置这里跟着变。点「自定义」从当前组合改起。"
-                : "只对这个仓库生效。点「跟随全局」即清除覆盖。"}
+                : following
+                  ? "这个仓库使用全局模型组合。"
+                  : canWrite
+                    ? "只对这个仓库生效。点「跟随全局」即清除覆盖。"
+                    : "这组模型只对这个仓库生效。"}
             </p>
           </Card>
         )}
@@ -454,9 +487,16 @@ function RepoDetail({
         </span>
       </section>
 
-      <RepoRuns repo={repo} onFeedback={setFeedback} />
+      {canReadReviews || canRerun ? (
+        <RepoRuns
+          repo={repo}
+          canRead={canReadReviews}
+          canRerun={canRerun}
+          onFeedback={setFeedback}
+        />
+      ) : null}
 
-      <Dialog open={confirmingRemoval} onOpenChange={setConfirmingRemoval}>
+      {canWrite ? <Dialog open={confirmingRemoval} onOpenChange={setConfirmingRemoval}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
@@ -481,7 +521,7 @@ function RepoDetail({
             </Button>
           </DialogFooter>
         </DialogContent>
-      </Dialog>
+      </Dialog> : null}
     </>
   );
 }
@@ -766,9 +806,13 @@ function ReviewersEditor({
 /** 本仓库最近的 Review Run,加「输 PR 号重跑」入口(issue #37,从 #34 递延的 runs 表)。 */
 function RepoRuns({
   repo,
+  canRead,
+  canRerun,
   onFeedback,
 }: {
   repo: RepoRow;
+  canRead: boolean;
+  canRerun: boolean;
   onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
 }) {
   const queryClient = useQueryClient();
@@ -778,6 +822,7 @@ function RepoRuns({
       fetchJson<{ runs: RunItem[] }>(
         `/runs?owner=${encodeURIComponent(repo.owner)}&repo=${encodeURIComponent(repo.repo)}`,
       ),
+    enabled: canRead,
   });
   const [pullNumber, setPullNumber] = useState("");
   const rerun = useMutation({
@@ -804,8 +849,8 @@ function RepoRuns({
   return (
     <Card className="gap-3 px-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="text-base font-semibold">评审记录</h3>
-        <form onSubmit={submit} className="flex flex-wrap gap-2">
+        <h3 className="text-base font-semibold">{canRead ? "评审记录" : "手动重跑"}</h3>
+        {canRerun ? <form onSubmit={submit} className="flex flex-wrap gap-2">
           <label htmlFor={`rerun-pr-${repo.repoId}`} className="sr-only">
             PR 号
           </label>
@@ -820,22 +865,22 @@ function RepoRuns({
           <Button variant="outline" type="submit" disabled={rerun.isPending}>
             {rerun.isPending ? "触发中…" : "重跑"}
           </Button>
-        </form>
+        </form> : null}
       </div>
-      {runs.isError ? (
+      {canRead && runs.isError ? (
         <p role="alert" className="flex items-start gap-2 text-destructive">
           <CircleX className="mt-0.5 size-4 shrink-0" aria-hidden />
           <span>{(runs.error as Error).message}</span>
         </p>
       ) : null}
-      {runs.isPending ? (
+      {canRead && runs.isPending ? (
         <div className="flex flex-col gap-2">
           <Skeleton className="h-8" />
           <Skeleton className="h-8" />
           <Skeleton className="h-8" />
         </div>
       ) : null}
-      {rows.length > 0 ? (
+      {canRead && rows.length > 0 ? (
         <div className="divide-y divide-border border-y border-border">
           {rows.map((run) => (
             <div key={run.id} className="py-2.5">
@@ -855,7 +900,7 @@ function RepoRuns({
           ))}
         </div>
       ) : null}
-      {rows.length === 0 && !runs.isPending && !runs.isError ? (
+      {canRead && rows.length === 0 && !runs.isPending && !runs.isError ? (
         <p className="text-xs text-muted-foreground">这个仓库还没有 Review Run。</p>
       ) : null}
     </Card>

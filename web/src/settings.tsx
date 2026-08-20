@@ -24,7 +24,7 @@ type Settings = {
   maxChangedLinesPerBatch: number;
 };
 
-export function SettingsPage() {
+export function SettingsPage({ canWrite }: { canWrite: boolean }) {
   const settings = useQuery({
     queryKey: ["settings"],
     queryFn: () => fetchJson<Settings>("/settings"),
@@ -59,10 +59,39 @@ export function SettingsPage() {
           </>
         ) : (
           // 表单以读回来的设置为初值，所以等数据到了再挂载。
-          <SettingsForm settings={settings.data} />
+          canWrite ? <SettingsForm settings={settings.data} /> : <ReadOnlySettings settings={settings.data} />
         )}
       </div>
     </>
+  );
+}
+
+function ReadOnlySettings({ settings }: { settings: Settings }) {
+  return (
+    <div className="grid gap-5 md:grid-cols-2">
+      <Card className="gap-3 px-4">
+        <div>
+          <h2 className="text-base font-semibold">模型组合</h2>
+          <p className="mt-0.5 text-muted-foreground">所有未设置覆盖的仓库使用这组模型。</p>
+        </div>
+        <div className="space-y-1.5">
+          {settings.reviewers.map((reviewer) => (
+            <div key={modelIdentity(reviewer)} className="break-all font-mono text-xs">
+              {modelIdentity(reviewer)}
+            </div>
+          ))}
+        </div>
+      </Card>
+      <Card className="gap-3 px-4">
+        <div>
+          <h2 className="text-base font-semibold">批次上限</h2>
+          <p className="mt-0.5 text-muted-foreground">一次审查最多送入的改动行数。</p>
+        </div>
+        <p className="font-mono text-lg font-semibold tabular-nums">
+          {settings.maxChangedLinesPerBatch}
+        </p>
+      </Card>
+    </div>
   );
 }
 

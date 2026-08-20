@@ -202,8 +202,21 @@ function protectedPage(
   });
 }
 
-const reposRoute = protectedPage("/repos", "repo:read", ReposPage);
-const runsRoute = protectedPage("/runs", "review:read", RunsPage);
+const reposRoute = protectedPage("/repos", "repo:read", () => {
+  const { session } = shellRoute.useRouteContext();
+  return (
+    <ReposPage
+      canWrite={hasPermission(session, "repo:write")}
+      canReadModels={hasPermission(session, "model:read")}
+      canReadReviews={hasPermission(session, "review:read")}
+      canRerun={hasPermission(session, "review:rerun")}
+    />
+  );
+});
+const runsRoute = protectedPage("/runs", "review:read", () => {
+  const { session } = shellRoute.useRouteContext();
+  return <RunsPage canRerun={hasPermission(session, "review:rerun")} />;
+});
 const statsRoute = protectedPage("/stats", "review:read", StatsPage);
 const credentialsRoute = protectedPage(
   "/credentials",
@@ -212,15 +225,18 @@ const credentialsRoute = protectedPage(
     const { session } = shellRoute.useRouteContext();
     return (
       <ModelServicesPage
-        canReadModels={hasPermission(session, "model:read") || hasPermission(session, "model:write")}
+        canReadModels={hasPermission(session, "model:read")}
         canWriteModels={hasPermission(session, "model:write")}
-        canReadCredential={hasPermission(session, "credential:read") || hasPermission(session, "credential:write")}
+        canReadCredential={hasPermission(session, "credential:read")}
         canWriteCredential={hasPermission(session, "credential:write")}
       />
     );
   },
 );
-const settingsRoute = protectedPage("/settings", "model:read", SettingsPage);
+const settingsRoute = protectedPage("/settings", "model:read", () => {
+  const { session } = shellRoute.useRouteContext();
+  return <SettingsPage canWrite={hasPermission(session, "model:write")} />;
+});
 
 const accessRoute = createRoute({
   getParentRoute: () => shellRoute,

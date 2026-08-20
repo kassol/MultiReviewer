@@ -135,6 +135,63 @@ test("角色权限每请求现读:改角色后不用重登立即生效", async (
   assert.equal((await request()).status, 200);
 });
 
+test("写权限在会话与端点统一包含对应读权限，review:rerun 保持独立", async () => {
+  const h = await startPanelHarness(cleanups);
+  addPermissionUser(h, "repo-writer", ["repo:write"]);
+  addPermissionUser(h, "effective-model-writer", ["model:write"]);
+  addPermissionUser(h, "effective-credential-writer", ["credential:write"]);
+  addPermissionUser(h, "rerunner", ["review:rerun"]);
+
+  const cases = [
+    ["repo-writer", ["repo:read", "repo:write"], "/repos"],
+    ["effective-model-writer", ["model:read", "model:write"], "/settings"],
+    [
+      "effective-credential-writer",
+      ["credential:read", "credential:write"],
+      "/model-services",
+    ],
+  ] as const;
+  for (const [username, permissions, readPath] of cases) {
+    const cookie = await userCookie(h.serverUrl, username);
+    const session = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+      headers: { cookie },
+    });
+    assert.equal(session.status, 200);
+    const body = (await session.json()) as { permissions: PanelPermission[] };
+    assert.deepEqual(body.permissions, permissions);
+    assert.equal(
+      (await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api${readPath}`, { headers: { cookie } }))
+        .status,
+      200,
+    );
+  }
+
+  const rerunCookie = await userCookie(h.serverUrl, "rerunner");
+  const rerunSession = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+    headers: { cookie: rerunCookie },
+  });
+  const rerunBody = (await rerunSession.json()) as { permissions: PanelPermission[] };
+  assert.deepEqual(rerunBody.permissions, ["review:rerun"]);
+  assert.equal(
+    (
+      await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/runs`, {
+        headers: { cookie: rerunCookie },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/rerun`, {
+        method: "POST",
+        headers: { cookie: rerunCookie, "content-type": "application/json" },
+        body: "{}",
+      })
+    ).status,
+    400,
+  );
+});
+
 test("普通用户不能调用系统管理员端点", async () => {
   const h = await startPanelHarness(cleanups);
   const store = openStore(h.db.path);
@@ -261,7 +318,7 @@ test("目录刷新与补录变更只要求模型写权限", async () => {
   }
 });
 
-test("模型写或凭据写权限不授予模型服务读取字段", async () => {
+test("模型写或凭据写权限可读取各自包含的模型服务字段", async () => {
   const h = await startPanelHarness(cleanups);
   addPermissionUser(h, "model-service-model-writer", ["model:write"]);
   addPermissionUser(h, "model-service-credential-writer", ["credential:write"]);
@@ -270,6 +327,9 @@ test("模型写或凭据写权限不授予模型服务读取字段", async () =>
     const response = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/model-services`, {
       headers: { cookie },
     });
-    assert.equal(response.status, 403, username);
+    assert.equal(response.status, 200, username);
+    const body = (await response.json()) as { services: unknown[]; candidates?: unknown[] };
+    assert.ok(Array.isArray(body.services));
+    assert.equal("candidates" in body, username === "model-service-model-writer");
   }
 });
