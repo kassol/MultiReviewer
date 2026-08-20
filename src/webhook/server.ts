@@ -1352,6 +1352,12 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     access: "authenticated-only",
     handler: ({ req, res, deps }) => handleLogout(req, res, deps),
   },
+  {
+    method: "GET",
+    pattern: "/setup-status",
+    access: "authenticated-only",
+    handler: async ({ res, deps }) => sendJson(res, 200, await setupStatus(deps)),
+  },
   { method: "GET", pattern: "/settings", access: "model:read", handler: ({ res, deps }) => handleGetSettings(res, deps) },
   { method: "PUT", pattern: "/settings", access: "model:write", handler: ({ req, res, deps }) => handlePutSettings(req, res, deps) },
   { method: "GET", pattern: "/stats", access: "review:read", handler: ({ req, res, deps }) => handleStats(req, res, deps) },
@@ -2112,6 +2118,34 @@ async function ensureModelCombinationAvailable(
     unavailable,
   });
   return false;
+}
+
+async function setupStatus(deps: WebhookServerDeps): Promise<{
+  hasRunnableModelService: boolean;
+  reviewConfigurationReady: boolean;
+  hasRepository: boolean;
+  instanceEnabled: boolean;
+}> {
+  const settings = globalSettings(deps);
+  const projection = await projectCurrentModelServices(deps, settings.reviewers);
+  const availableByIdentity = new Map(
+    projection.candidates.map((candidate) => [candidate.identity, candidate.available]),
+  );
+  const hasRunnableModelService = projection.services.some(
+    (service) => service.runCapability.runnable,
+  );
+  const reviewConfigurationReady =
+    settings.reviewers.length > 0 &&
+    settings.reviewers.every(
+      (reviewer) => availableByIdentity.get(modelIdentity(reviewer)) === true,
+    );
+  const hasRepository = withStore(deps.dbPath, (store) => store.listRepos().length > 0);
+  return {
+    hasRunnableModelService,
+    reviewConfigurationReady,
+    hasRepository,
+    instanceEnabled: reviewConfigurationReady && hasRepository,
+  };
 }
 
 async function handleListModelServices(
@@ -3825,6 +3859,12 @@ async function handleRegister(
   deps: WebhookServerDeps,
   hookManager: GiteaHookManager | undefined,
 ): Promise<void> {
+  if (!(await setupStatus(deps)).reviewConfigurationReady) {
+    return sendJson(res, 409, {
+      error: "审查配置尚未就绪，请先到审查策略保存至少一个当前可用模型",
+      action: "/settings",
+    });
+  }
   if (hookManager === undefined) {
     return sendJson(res, 500, { error: "没有配置 Gitea,无法注册仓库" });
   }

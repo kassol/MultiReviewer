@@ -13,6 +13,7 @@ import {
   HARNESS_PR as PR,
   PANEL_PREFIX as PREFIX,
   startPanelHarness,
+  startReadyPanelHarness,
 } from "./support/panel-harness.ts";
 
 const cleanups: (() => void)[] = [];
@@ -20,8 +21,8 @@ after(() => {
   for (const cleanup of cleanups) cleanup();
 });
 
-const startHarness = (): ReturnType<typeof startPanelHarness> =>
-  startPanelHarness(cleanups);
+const startHarness = (): ReturnType<typeof startReadyPanelHarness> =>
+  startReadyPanelHarness(cleanups);
 
 type SearchResult = {
   repoId: number;

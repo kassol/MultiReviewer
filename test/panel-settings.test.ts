@@ -15,6 +15,7 @@ import { openStore } from "../src/review/store.ts";
 import {
   HARNESS_PR,
   seedAvailableModelService,
+  seedHistoricalRepo,
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -337,6 +338,7 @@ test("批次上限不是正整数时拒绝", async () => {
 
 test("全局组合与每仓库覆盖都拒绝新的空组合", async () => {
   const h = await startPanelHarness(cleanups);
+  seedAvailableModelService(h, "test", ["global-model"]);
   const empty = await putReviewers(h, []);
   assert.equal(empty.status, 400);
   assert.match(await empty.text(), /至少要选一个模型/);
@@ -375,12 +377,9 @@ test("改过的全局组合下一次投递就生效", async () => {
 test("空库、没配模型组合时投递留下一条失败的 Review Run,原因可读", async () => {
   // 真组装:组合为空,零 Reviewer 的 Run 既不失败也不报错,人看到的会是「投了没反应」。
   const h = await startPanelHarness(cleanups, { reviewers: [], buildReviewers });
-  assert.equal(
-    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
-    201,
-  );
+  const historicalHook = seedHistoricalRepo(h);
 
-  assert.equal((await h.deliverViaHook("sha-1")).status, 200);
+  assert.equal((await h.deliverViaHook("sha-1", historicalHook)).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
 
@@ -449,12 +448,9 @@ test("组合里有撞名的自定义 provider 时,那一个模型的失败原因
     supplements: [],
   }), 1);
   seed.close();
-  assert.equal(
-    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
-    201,
-  );
+  const historicalHook = seedHistoricalRepo(h);
 
-  assert.equal((await h.deliverViaHook("sha-1")).status, 200);
+  assert.equal((await h.deliverViaHook("sha-1", historicalHook)).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
 

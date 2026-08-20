@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   createRootRoute,
   createRoute,
@@ -39,6 +39,7 @@ import {
   type PanelSession,
 } from "./session.ts";
 import { SettingsPage } from "./settings.tsx";
+import { SETUP_STATUS_QUERY_KEY, SetupChecklist } from "./setup-checklist.tsx";
 import { StatsPage } from "./stats.tsx";
 import "./styles.css";
 
@@ -205,8 +206,18 @@ function protectedPage(
       if (context.session.mustChangePassword) throw redirect({ to: "/password" });
       if (!hasPagePermission(context.session, permission)) throw redirect({ to: "/" });
     },
-    component,
+    component: () => <BusinessPage Page={component} />,
   });
+}
+
+function BusinessPage({ Page }: { Page: () => React.JSX.Element }) {
+  const { session } = shellRoute.useRouteContext();
+  return (
+    <>
+      <SetupChecklist session={session} />
+      <Page />
+    </>
+  );
 }
 
 const reposRoute = protectedPage("/repos", "repo:read", () => {
@@ -259,7 +270,7 @@ const modelServiceRoute = createRoute({
       throw redirect({ to: "/" });
     }
   },
-  component: () => <ModelServicesRoutePage provider={modelServiceRoute.useParams().provider} tab="overview" />,
+  component: () => <BusinessPage Page={() => <ModelServicesRoutePage provider={modelServiceRoute.useParams().provider} tab="overview" />} />,
 });
 const modelServiceMaintenanceRoute = createRoute({
   getParentRoute: () => shellRoute,
@@ -270,9 +281,9 @@ const modelServiceMaintenanceRoute = createRoute({
       throw redirect({ to: "/" });
     }
   },
-  component: () => (
+  component: () => <BusinessPage Page={() => (
     <ModelServicesRoutePage provider={modelServiceMaintenanceRoute.useParams().provider} tab="maintenance" />
-  ),
+  )} />,
 });
 const modelServiceModelsRoute = createRoute({
   getParentRoute: () => shellRoute,
@@ -283,7 +294,7 @@ const modelServiceModelsRoute = createRoute({
       throw redirect({ to: "/" });
     }
   },
-  component: () => <ModelServicesRoutePage provider={modelServiceModelsRoute.useParams().provider} tab="models" />,
+  component: () => <BusinessPage Page={() => <ModelServicesRoutePage provider={modelServiceModelsRoute.useParams().provider} tab="models" />} />,
 });
 const modelServiceSetupRoute = createRoute({
   getParentRoute: () => shellRoute,
@@ -386,7 +397,13 @@ declare module "@tanstack/react-router" {
   interface Register { router: typeof router }
 }
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  mutationCache: new MutationCache({
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: SETUP_STATUS_QUERY_KEY });
+    },
+  }),
+});
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode><QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider></StrictMode>,

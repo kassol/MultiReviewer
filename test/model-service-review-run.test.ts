@@ -10,6 +10,7 @@ import type { TrustedModelFields } from "../src/reviewer/model-service-runtime.t
 import {
   HARNESS_PR,
   PANEL_CREDENTIAL_MASTER_KEY,
+  seedHistoricalRepo,
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -83,10 +84,7 @@ function commitRunService(
 
 test("凭据未配置时只失败该 Reviewer 并留下固定服务版本审计", async () => {
   const h = await startPanelHarness(cleanups, { buildReviewers });
-  assert.equal(
-    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
-    201,
-  );
+  const historicalHook = seedHistoricalRepo(h);
   assert.equal(
     commitRunService(h, null, {
       model: "global-model",
@@ -97,7 +95,7 @@ test("凭据未配置时只失败该 Reviewer 并留下固定服务版本审计"
     1,
   );
 
-  assert.equal((await h.deliverViaHook("sha-missing-credential")).status, 200);
+  assert.equal((await h.deliverViaHook("sha-missing-credential", historicalHook)).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
   const store = openStore(h.db.path);
@@ -115,10 +113,7 @@ test("Pi 内置目标漂移时不解密凭据，也不生成可执行 Reviewer �
     reviewers: [spec],
     buildReviewers: (plans) => plans.map((plan) => scriptedReviewer(plan.spec.model, [])),
   });
-  assert.equal(
-    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
-    201,
-  );
+  const historicalHook = seedHistoricalRepo(h);
   const at = "2026-08-20T12:30:00.000Z";
   const store = openStore(h.db.path);
   assert.equal(store.commitModelServiceVersion(null, {
@@ -155,7 +150,7 @@ test("Pi 内置目标漂移时不解密凭据，也不生成可执行 Reviewer �
   }), 1);
   store.close();
 
-  assert.equal((await h.deliverViaHook("sha-builtin-target-drift")).status, 200);
+  assert.equal((await h.deliverViaHook("sha-builtin-target-drift", historicalHook)).status, 200);
   await h.settledAtLeast(1);
   const plan = h.runtimePlans[0]![0]!;
   assert.equal(plan.credential, null);
@@ -169,10 +164,7 @@ test("迁移遗留的冲突标记不阻止当前已无撞名的自定义服务�
     reviewers: [spec],
     buildReviewers: (plans) => plans.map((plan) => scriptedReviewer(plan.spec.model, [])),
   });
-  assert.equal(
-    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
-    201,
-  );
+  const historicalHook = seedHistoricalRepo(h);
   assert.equal(commitRunService(h, null, {
     provider: spec.provider,
     model: spec.model,
@@ -182,7 +174,7 @@ test("迁移遗留的冲突标记不阻止当前已无撞名的自定义服务�
     disabledReason: "name-conflict",
   }), 1);
 
-  assert.equal((await h.deliverViaHook("sha-recovered-custom")).status, 200);
+  assert.equal((await h.deliverViaHook("sha-recovered-custom", historicalHook)).status, 200);
   await h.settledAtLeast(1);
   const plan = h.runtimePlans[0]![0]!;
   assert.equal(plan.failure, null);
@@ -210,10 +202,7 @@ test("模型来源消失只失败该 Reviewer,同轮可用同伴照常完成", a
         };
       }),
   });
-  assert.equal(
-    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
-    201,
-  );
+  const historicalHook = seedHistoricalRepo(h);
   commitRunService(h, null, {
     model: available.model,
     baseUrl: "https://partly-available.example.test/v1",
@@ -221,7 +210,7 @@ test("模型来源消失只失败该 Reviewer,同轮可用同伴照常完成", a
     credential: "peer-key",
   });
 
-  assert.equal((await h.deliverViaHook("sha-one-model-missing")).status, 200);
+  assert.equal((await h.deliverViaHook("sha-one-model-missing", historicalHook)).status, 200);
   await h.settledAtLeast(1);
   const store = openStore(h.db.path);
   const run = store.listRuns({ limit: 1 })[0]!;
@@ -281,10 +270,7 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
       }));
     },
   });
-  assert.equal(
-    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
-    201,
-  );
+  const historicalHook = seedHistoricalRepo(h);
   assert.equal(
     commitRunService(h, null, {
       model: "global-model",
@@ -312,7 +298,7 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
   });
   settings.close();
 
-  assert.equal((await h.deliverViaHook("sha-v1")).status, 200);
+  assert.equal((await h.deliverViaHook("sha-v1", historicalHook)).status, 200);
   await entered.promise;
 
   assert.equal(

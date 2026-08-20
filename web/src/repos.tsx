@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
 import { CircleAlert, CircleCheck, CircleDashed, CircleX } from "lucide-react";
 
@@ -31,6 +32,7 @@ import {
 import { api, errorText, fetchJson } from "./api.ts";
 import { modelIdentity, parseModelIdentity } from "./model-services.ts";
 import { rerunRequest, RunPill, type RunItem } from "./runs.tsx";
+import { useSetupStatus } from "./setup-checklist.tsx";
 
 type ReviewerSpec = { provider: string; model: string };
 
@@ -81,6 +83,7 @@ export function ReposPage({
   canRerun: boolean;
 }) {
   const queryClient = useQueryClient();
+  const setup = useSetupStatus();
   const repos = useQuery({
     queryKey: ["repos"],
     queryFn: () => fetchJson<RepoRow[]>("/repos"),
@@ -96,6 +99,7 @@ export function ReposPage({
 
   const rows = repos.data ?? [];
   const selected = rows.find((row) => row.repoId === selectedId) ?? rows[0];
+  const registrationReady = setup.data?.reviewConfigurationReady === true;
 
   return (
     <>
@@ -103,7 +107,7 @@ export function ReposPage({
         title="仓库"
         description="接入 MultiReviewer 的仓库。选一个看它的准入 key、模型组合与最近几轮 Review Run。"
         actions={canWrite ? (
-          <Button onClick={() => setRegistering(true)}>注册仓库</Button>
+          <Button disabled={!registrationReady} onClick={() => setRegistering(true)}>注册仓库</Button>
         ) : undefined}
       />
       <div className="flex min-h-full flex-col lg:grid lg:grid-cols-[248px_minmax(0,1fr)]">
@@ -155,6 +159,14 @@ export function ReposPage({
         </aside>
 
         <div className="flex min-w-0 max-w-[900px] flex-col gap-4 p-4 sm:p-5">
+          {canWrite && setup.data !== undefined && !setup.data.reviewConfigurationReady ? (
+            <Card className="items-start gap-2 border-warning/40 bg-warning/5 px-4">
+              <p>审查配置就绪后才能注册仓库。先在审查策略中保存至少一个当前可用模型。</p>
+              <Button variant="outline" size="sm" asChild>
+                <Link to="/settings">前往审查策略</Link>
+              </Button>
+            </Card>
+          ) : null}
           {repos.isError ? (
             <p
               role="alert"
@@ -206,7 +218,7 @@ export function ReposPage({
 
         {/* 两个表单模态都按需挂载:常驻会把上一次的输入与错误留在 state 里,下次打开
             回显的就不是当前值了。 */}
-        {canWrite && registering ? (
+        {canWrite && registrationReady && registering ? (
           <RegisterModal
             onClose={() => setRegistering(false)}
             onDone={(repoId) => {

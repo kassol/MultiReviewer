@@ -28,6 +28,8 @@ export type FakeSearchRepo = {
 
 export type FakeGitea = {
   url: string;
+  /** 收到的 API 请求，供副作用顺序测试断言。 */
+  requests: string[];
   /** 当前存在的 hook,测试直接读。 */
   hooks: FakeHook[];
   /** 搜索端点的仓库池,测试直接改。默认只有被注册的那一个。 */
@@ -53,6 +55,7 @@ export async function startFakeGitea(repo: {
   repo: string;
 }): Promise<FakeGitea> {
   const hooks: FakeHook[] = [];
+  const requests: string[] = [];
   const search: FakeSearchRepo[] = [
     { id: repo.id, owner: repo.owner, repo: repo.repo, admin: true },
   ];
@@ -63,6 +66,7 @@ export async function startFakeGitea(repo: {
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://fake");
     const path = url.pathname;
+    requests.push(`${req.method ?? "GET"} ${path}`);
     const repoBase = `/api/v1/repos/${current.owner}/${current.repo}`;
 
     const json = (status: number, body: unknown): void => {
@@ -168,6 +172,7 @@ export async function startFakeGitea(repo: {
 
   return {
     url: `http://127.0.0.1:${port}`,
+    requests,
     hooks,
     search,
     control,

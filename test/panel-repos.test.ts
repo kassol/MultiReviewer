@@ -20,9 +20,11 @@ import {
   PANEL_ADMIN_PASSWORD as ADMIN_PASSWORD,
   PANEL_ADMIN_USERNAME as ADMIN_USERNAME,
   PANEL_BASE_URL as BASE_URL,
+  PANEL_CREDENTIAL_MASTER_KEY,
   PANEL_PREFIX as PREFIX,
   seedAvailableModelService,
   startPanelHarness,
+  startReadyPanelHarness,
 } from "./support/panel-harness.ts";
 
 const cleanups: (() => void)[] = [];
@@ -30,8 +32,8 @@ after(() => {
   for (const cleanup of cleanups) cleanup();
 });
 
-const startHarness = (): ReturnType<typeof startPanelHarness> =>
-  startPanelHarness(cleanups);
+const startHarness = (): ReturnType<typeof startReadyPanelHarness> =>
+  startReadyPanelHarness(cleanups);
 
 test("注册建好 hook,种子 PR 的投递被受理并跑完审查", async () => {
   const h = await startHarness();
@@ -133,7 +135,7 @@ test("hook 删除失败时移除被阻止,注册保持原样", async () => {
 });
 
 test("配置了模型覆盖的仓库,Review Run 用覆盖后的组合", async () => {
-  const h = await startHarness();
+  const h = await startPanelHarness(cleanups);
   seedAvailableModelService(h, "test", ["global-model", "override-model"]);
   const override: ReviewerSpec[] = [
     { provider: "test", model: "override-model" },
@@ -166,7 +168,7 @@ test("配置了模型覆盖的仓库,Review Run 用覆盖后的组合", async ()
 });
 
 test("模型覆盖可编辑:PUT 全量替换、null 清除,坏覆盖 400", async () => {
-  const h = await startHarness();
+  const h = await startPanelHarness(cleanups);
   seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   const override: ReviewerSpec[] = [
@@ -406,6 +408,13 @@ test("没配 Gitea 时注册与移除回 500,说明配置缺口", async () => {
   const cache = makeCacheDir();
   const db = makeDbPath();
   cleanups.push(cache.cleanup, db.cleanup);
+  seedAvailableModelService({ db }, "test", ["global-model"]);
+  const seed = openStore(db.path);
+  assert.equal(seed.putGlobalSettings({
+    reviewersJson: JSON.stringify([{ provider: "test", model: "global-model" }]),
+    maxChangedLinesPerBatch: null,
+  }), true);
+  seed.close();
   const server = createWebhookServer({
     forges: {},
     buildReviewers: () => [],
@@ -414,6 +423,7 @@ test("没配 Gitea 时注册与移除回 500,说明配置缺口", async () => {
     bootstrapSecret: "panel-repos-bootstrap",
     panelPrefix: PREFIX,
     baseUrl: BASE_URL,
+    credentialMasterKey: PANEL_CREDENTIAL_MASTER_KEY,
     panelDist: `${cache.dir}/no-dist`,
     onDelivery: () => {},
   });

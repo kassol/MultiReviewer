@@ -327,3 +327,33 @@ export async function startPanelHarness(
     },
   };
 }
+
+/** 需要走仓库注册 API 的既有测试使用：让默认全局组合先达到审查配置就绪。 */
+export async function startReadyPanelHarness(
+  cleanups: (() => void)[],
+  options: PanelHarnessOptions = {},
+): Promise<PanelHarness> {
+  const harness = await startPanelHarness(cleanups, options);
+  seedAvailableModelService(harness, HARNESS_SPEC.provider, [HARNESS_SPEC.model]);
+  return harness;
+}
+
+/** 播种升级前已经存在的仓库，用于验证注册门禁不能改变历史投递。 */
+export function seedHistoricalRepo(
+  harness: Pick<PanelHarness, "db">,
+  key = "historical-repo-key",
+): { url: string; secret: string } {
+  const store = openStore(harness.db.path);
+  try {
+    assert.equal(store.registerRepo({
+      repoId: GITEA_REPO.id,
+      owner: GITEA_REPO.owner,
+      repo: GITEA_REPO.repo,
+      generation: 1,
+      key,
+    }), true);
+  } finally {
+    store.close();
+  }
+  return { url: `${PANEL_BASE_URL}/webhook?k=1`, secret: key };
+}

@@ -12,6 +12,7 @@ import {
   PANEL_ADMIN_USERNAME,
   seedAvailableModelService,
   startPanelHarness,
+  startReadyPanelHarness,
 } from "./support/panel-harness.ts";
 
 const cleanups: (() => void)[] = [];
@@ -277,7 +278,7 @@ test("时间流 API:满页给 nextBefore 游标,翻页不重不漏;owner/repo �
 });
 
 test("重跑:注册仓库触发新 Review Run,同一 head commit 重复审合法", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startReadyPanelHarness(cleanups);
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
       .status,
@@ -315,7 +316,7 @@ test("重跑:注册仓库触发新 Review Run,同一 head commit 重复审合法
 });
 
 test("投递触发的 Review Run 不写调用者快照", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startReadyPanelHarness(cleanups);
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
       .status,
@@ -354,7 +355,7 @@ test("重跑:未注册仓库 409,PR 号不是数字 400", async () => {
 });
 
 test("重跑:PR 号读不到 404,不开跑", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startReadyPanelHarness(cleanups);
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
       .status,
@@ -372,7 +373,7 @@ test("重跑:PR 号读不到 404,不开跑", async () => {
 });
 
 test("重跑:模型覆盖生效,经 buildReviewers 构建", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startReadyPanelHarness(cleanups);
   seedAvailableModelService(h, "rerun-provider", ["override-model"]);
   assert.equal(
     (

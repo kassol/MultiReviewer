@@ -11,14 +11,15 @@
 - `src/injected.ts` — 读注入全局变量的唯一代码路径,缺失当场报错并在页面写明原因。
 - `src/api.ts` — 面板 API 的唯一入口,基址从注入的前缀来。
 - `src/model-services.ts` — `GET /model-services` 的共享查询与前端契约。模型服务页、全局模型组合和仓库覆盖只消费这一份按权限裁剪的投影;候选按完整 `provider:model` 标识合并来源并携带服务端可用性结论。服务详情另读服务级运行能力与组合引用位置,前端不从目录状态重复推断。
-- `src/main.tsx` — 路由与壳:`/login` 同一屏按 session 探测结果在登录与 bootstrap 注册间切换;`/password` 是必须改密页;`shell` 下挂六页(`/repos` / `/runs` / `/stats` / `/credentials` / `/settings` / `/access`)。`/credentials` 是模型服务总入口;`/credentials/:provider`、`/credentials/:provider/maintenance`、`/credentials/:provider/models` 分别是服务概览、维护与模型的稳定地址;`/credentials/add`、`/credentials/add/builtin/:provider/discover`、`/credentials/add/builtin/:provider/verify` 是添加与内置服务配置的三条稳定地址。Router `basepath` 取注入前缀。壳按 `GET /session` 回来的有效权限先过滤导航再渲染:系统管理员全开且独有访问控制页,普通用户只看得到有读权限的页;页面按写权限决定是否渲染保存、刷新、凭据、删除与重跑控件;零权限时导航全藏,内容区给一张说明并列系统管理员。窄视口下侧栏改成顶部横排、可横向滚动。
+- `src/main.tsx` — 路由与壳:`/login` 同一屏按 session 探测结果在登录与 bootstrap 注册间切换;`/password` 是必须改密页;`shell` 下挂六页(`/repos` / `/runs` / `/stats` / `/credentials` / `/settings` / `/access`)。`/credentials` 是模型服务总入口;`/credentials/:provider`、`/credentials/:provider/maintenance`、`/credentials/:provider/models` 分别是服务概览、维护与模型的稳定地址;`/credentials/add`、`/credentials/add/builtin/:provider/discover`、`/credentials/add/builtin/:provider/verify` 是添加与内置服务配置的三条稳定地址。Router `basepath` 取注入前缀。壳按 `GET /session` 回来的有效权限先过滤导航再渲染:系统管理员全开且独有访问控制页,普通用户只看得到有读权限的页;页面按写权限决定是否渲染保存、刷新、凭据、删除与重跑控件;零权限时导航全藏,内容区给一张说明并列系统管理员。所有业务页在实例启用前显示同一首次配置检查单;任一成功写请求会立即让状态查询失效并刷新。窄视口下侧栏改成顶部横排、可横向滚动。
 - `src/session.ts` — 当前身份与权限的唯一查询,缓存 `GET <前缀>/api/session`;未认证的 401 再由壳送去 `/login`,必须改密时统一送 `/password`,页面组件不各自探测。
+- `src/setup-checklist.tsx` — 首次配置状态与检查单的唯一实现。它读取认证的 `GET /setup-status`,始终显示三步完成状态,只把当前未完成步骤做成入口;入口再按当前会话的有效写权限裁剪。实例启用后整块隐藏。
 - `src/login.tsx` — 登录与首次注册共用的一屏。普通档是用户名加密码;零用户档多 bootstrap 口令与确认密码,注册成功后回账号登录。所有字段有可见 `<Label>`,不靠 placeholder 当标签。
 - `src/password.tsx` — 用户自改密码页,走 `PUT /session/password`;必须改密的人完成后回到自己有权访问的第一页。改密保留当前会话、作废其余会话。
 - `src/access-control.tsx` — 系统管理员独有的 `/access` 页,上半用户表、下半转置权限矩阵(行是权限格、列是角色)。角色多时横向滚,权限格列 sticky。用户与角色读写走 `GET/POST /users`、`PUT/DELETE /users/:username`、`POST /users/:username/reset-password` 与 `GET/POST /roles`、`PUT/DELETE /roles/:id`;改角色是行内下拉,重置密码、删用户与删角色都走 Dialog。三类 write 生效时对应 read 显示为已包含且不可单独移除,`review:rerun` 仍是独立格。系统管理员不进矩阵;角色从全空创建,没授角色的用户就是零权限。
 - `src/components/mark.tsx` — 产品标记(三条错位短线),与 `index.html` 里内联成 data URI 的 favicon 是同一份图形。用 `currentColor` 上色。
 - `src/components/ui/skeleton.tsx` — 读取中的占位块。带 `data-slot="skeleton"`,`styles.css` 的降低动效偏好那一段据此关掉呼吸动画。
-- `src/repos.tsx` — 仓库页,左列表右详情。模型覆盖是「跟随全局 / 自定义」两态:点「跟随全局」直接清覆盖;点「自定义」在详情内挂与全局设置共用的 `ModelComposer`,以当前生效组合为初值。不可用的既有选择可移除但不得随覆盖再次保存;服务端仍作最终校验。编辑态并成单栏容纳 460px 高的两栏选择器,不套对话框或外层表单。注册与移除确认用 shadcn Dialog,不用阻塞渲染线程的 `window.confirm`。
+- `src/repos.tsx` — 仓库页,左列表右详情。模型覆盖是「跟随全局 / 自定义」两态:点「跟随全局」直接清覆盖;点「自定义」在详情内挂与审查策略共用的 `ModelComposer`,以当前生效组合为初值。不可用的既有选择可移除但不得随覆盖再次保存;服务端仍作最终校验。编辑态并成单栏容纳 460px 高的两栏选择器,不套对话框或外层表单。审查配置就绪前注册按钮禁用并指向审查策略,状态失效时已开的注册框随即卸载。注册与移除确认用 shadcn Dialog,不用阻塞渲染线程的 `window.confirm`。
 - `src/credentials.tsx` — 模型服务主从页。左侧只列已配置或异常保留的服务;右侧按概览、维护、模型分层。概览以服务端运行能力为主状态,目录失败作次级提醒,组合引用可展开到全局、跟随全局仓库数与具体仓库覆盖;维护收凭据轮换、地址／协议调整、目录刷新与删除,`name-conflict` 自定义服务在这里原子迁移到新名称并跳到新的稳定地址,普通服务不显示改名入口;模型页收自动目录事实与模型补录。唯一添加入口同时承载 Pi 内置 provider 搜索与自定义 provider;内置服务按来源、模型发现、真实推理三步走稳定地址。凭据与候选只留流程页内存,刷新不会恢复;未保存离开走应用确认并注册浏览器关闭警告,长操作显示阶段并锁住导航。最终提交重新发现并做最小真实推理;新建成功进入审查策略并定位 provider,修改成功回服务概览,两者都不写模型组合。读字段和动作按 `model:*` / `credential:*` 独立权限裁剪,前端从不接收明文或密文。
 
 - `src/settings.tsx` — `/settings` 上的审查策略页。全局模型组合与批次上限各持独立版本、分别保存;409 只恢复冲突项,保留另一项草稿。批次上限收在默认折叠的高级参数里并显示系统默认/自定义来源。
@@ -61,6 +62,7 @@
 ## 变更日志
 
 - 2026-08-20: 落地 issue #149。冲突自定义服务的维护页将旧“用新名称重建”替换为原子迁移对话框;成功后刷新统一模型服务投影并导航到新 provider 的维护地址,缺失引用按现有位置组件完整展开。普通服务仍只有候选修改与删除。
+- 2026-08-20: 落地 issue #150。所有业务页共用三步首次配置检查单,实例启用后隐藏;当前步骤入口按有效写权限显示。成功写请求统一刷新状态,审查配置未就绪时仓库页禁用注册并给出处理入口。
 - 2026-08-20: 落地 issue #144 的有效权限与只读配置面。角色矩阵显示三类 write 包含对应 read;仓库、评审记录、模型服务与全局设置按写权限移除写控件,保留静态值。`review:read` 不再自行显示重跑控件,仓库页把记录读取与手动重跑分别门禁。
 
 - 2026-08-19: 落地 issue #109 / #116 的前端门禁。登录从共享 token 改为本地用户名与密码,零用户时同一屏用 bootstrap 口令注册第一个系统管理员;`GET /session` 的身份与权限由 `session.ts` 统一缓存。壳按权限隐藏六页导航,必须改密统一进 `/password`,零权限用户看到说明而不是一圈点不动的页面。新增系统管理员独有的 `/access`(`access-control.tsx`):用户表与转置的角色 × 权限格矩阵同页,支持建号、行内授角色、重置密码、删号及角色增改删;系统管理员不进角色矩阵。

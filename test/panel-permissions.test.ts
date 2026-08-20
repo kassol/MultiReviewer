@@ -29,6 +29,7 @@ const ROUTE_EXPECTATIONS = [
   ["PUT", "/^\\/roles\\/(\\d+)$/", "system-admin-only"],
   ["DELETE", "/^\\/roles\\/(\\d+)$/", "system-admin-only"],
   ["DELETE", "/session", "authenticated-only"],
+  ["GET", "/setup-status", "authenticated-only"],
   ["GET", "/settings", "model:read"],
   ["PUT", "/settings", "model:write"],
   ["GET", "/stats", "review:read"],
@@ -214,6 +215,18 @@ test("普通用户不能调用系统管理员端点", async () => {
   const response = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/roles`, { headers: { cookie } });
   assert.equal(response.status, 403);
   assert.deepEqual(await response.json(), { error: "只有系统管理员能做" });
+  assert.equal(
+    (
+      await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/setup-status`, {
+        headers: { cookie },
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/setup-status`)).status,
+    401,
+  );
 });
 
 test("无人引用的角色连权限关系一起删除", async () => {
