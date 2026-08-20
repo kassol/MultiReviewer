@@ -455,6 +455,49 @@ test("内置候选预览只凭凭据写权限发现并脱敏，且不创建服�
   }
 });
 
+test("内置预览失败只返回安全摘要与 request id，日志用同一 id 保留原始原因且数据库零写入", async () => {
+  const provider = "deepseek";
+  const credential = "preview-failure-secret";
+  const upstreamDetail = "upstream-body-marker /private/runtime/models.json";
+  const h = await startPanelHarness(cleanups, {
+    reviewers: [],
+    discoverModelServiceModels: async () => ({
+      ok: false,
+      failure: {
+        code: "request-error",
+        message: `${upstreamDetail}; credential=${credential}`,
+      },
+    }),
+  });
+  const cookie = await cookieFor(h, "builtin-preview-failure", ["credential:write"]);
+  const logs: string[] = [];
+  const priorError = console.error;
+  console.error = (...values: unknown[]) => { logs.push(values.map(String).join(" ")); };
+  try {
+    const response = await mutation(h, cookie, "POST", "/model-services/builtin/preview", {
+      provider,
+      credential,
+      expectedVersion: null,
+    });
+    const text = await response.text();
+    assert.equal(response.status, 422);
+    const body = JSON.parse(text) as { error: string; requestId: string; failure?: unknown };
+    assert.match(body.requestId, /^[a-f0-9]{16}$/);
+    assert.equal(body.error, "模型发现失败，请按 request id 查看服务日志");
+    assert.equal("failure" in body, false);
+    for (const hidden of [credential, upstreamDetail, "/private/runtime/models.json"]) {
+      assert.equal(text.includes(hidden), false);
+    }
+    assert.equal(logs.some((line) => line.includes(body.requestId) && line.includes(upstreamDetail)), true);
+    assert.equal(logs.some((line) => line.includes(credential)), false);
+    const store = openStore(h.db.path);
+    assert.equal(store.getModelService(provider), undefined);
+    store.close();
+  } finally {
+    console.error = priorError;
+  }
+});
+
 test("最终提交重新发现并真实推理后原子写入加密凭据、目录与版本", async () => {
   const h = await startPanelHarness(cleanups, { reviewers: [] });
   const cookie = await cookieFor(h, "builtin-committer", ["credential:write"]);
@@ -467,6 +510,7 @@ test("最终提交重新发现并真实推理后原子写入加密凭据、目�
       : successfulInference(String(call.body?.["model"])),
   );
   try {
+    const settingsBefore = await (await h.api("GET", "/settings")).json();
     const previewResponse = await mutation(h, cookie, "POST", "/model-services/builtin/preview", {
       provider: "deepseek",
       credential,
@@ -526,6 +570,8 @@ test("最终提交重新发现并真实推理后原子写入加密凭据、目�
     assert.deepEqual(record.automaticModels.map((model) => model.id), preview.models.map((model) => model.id));
     assert.equal(responseText.includes(record.credential.apiKeyEncrypted!), false);
     assert.equal(readFileSync(h.db.path).includes(Buffer.from(credential)), false);
+    const settingsAfter = await (await h.api("GET", "/settings")).json();
+    assert.deepEqual(settingsAfter, settingsBefore, "创建模型服务不得自动修改全局模型组合");
   } finally {
     stub.restore();
     if (priorOffline === undefined) delete process.env["PI_OFFLINE"];
@@ -704,6 +750,11 @@ test("真实推理失败不创建新服务，凭据轮换失败也完整保留�
     const newText = await newResponse.text();
     assert.equal(newResponse.status, 422);
     assert.equal(newText.includes(newSecret), false);
+    const newFailure = JSON.parse(newText) as { error: string; requestId: string; failure?: unknown };
+    assert.equal(newFailure.error, "模型验证失败，请按 request id 查看服务日志");
+    assert.match(newFailure.requestId, /^[a-f0-9]{16}$/);
+    assert.equal("failure" in newFailure, false);
+    assert.equal(logs.some((line) => line.includes(newFailure.requestId)), true);
     const newAfter = openStore(newHarness.db.path);
     assert.equal(newAfter.getModelService("deepseek"), undefined);
     newAfter.close();

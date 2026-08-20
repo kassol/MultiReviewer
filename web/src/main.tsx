@@ -18,7 +18,14 @@ import { Card } from "@/components/ui/card";
 
 import { AccessControlPage } from "./access-control.tsx";
 import { api } from "./api.ts";
-import { ModelServicesPage, type ModelServiceTab } from "./credentials.tsx";
+import {
+  BuiltinServiceDiscoverPage,
+  BuiltinServiceVerifyPage,
+  ModelServiceSetupLayout,
+  ModelServiceSourcePage,
+  ModelServicesPage,
+  type ModelServiceTab,
+} from "./credentials.tsx";
 import { injected } from "./injected.ts";
 import { LoginPage } from "./login.tsx";
 import { PasswordPage } from "./password.tsx";
@@ -278,6 +285,41 @@ const modelServiceModelsRoute = createRoute({
   },
   component: () => <ModelServicesRoutePage provider={modelServiceModelsRoute.useParams().provider} tab="models" />,
 });
+const modelServiceSetupRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/credentials/add",
+  beforeLoad: ({ context }) => {
+    if (context.session.mustChangePassword) throw redirect({ to: "/password" });
+    if (!hasPermission(context.session, "credential:write")) throw redirect({ to: "/credentials" });
+  },
+  component: ModelServiceSetupLayout,
+});
+const modelServiceSetupSourceRoute = createRoute({
+  getParentRoute: () => modelServiceSetupRoute,
+  path: "/",
+  component: () => {
+    const { session } = shellRoute.useRouteContext();
+    return (
+      <ModelServiceSourcePage
+        canWriteCustom={hasPermission(session, "model:write") && hasPermission(session, "credential:write")}
+      />
+    );
+  },
+});
+const builtinServiceDiscoverRoute = createRoute({
+  getParentRoute: () => modelServiceSetupRoute,
+  path: "/builtin/$provider/discover",
+  component: () => (
+    <BuiltinServiceDiscoverPage provider={builtinServiceDiscoverRoute.useParams().provider} />
+  ),
+});
+const builtinServiceVerifyRoute = createRoute({
+  getParentRoute: () => modelServiceSetupRoute,
+  path: "/builtin/$provider/verify",
+  component: () => (
+    <BuiltinServiceVerifyPage provider={builtinServiceVerifyRoute.useParams().provider} />
+  ),
+});
 const settingsRoute = protectedPage("/settings", "model:read", () => {
   const { session } = shellRoute.useRouteContext();
   return <SettingsPage canWrite={hasPermission(session, "model:write")} />;
@@ -327,6 +369,11 @@ const routeTree = rootRoute.addChildren([
     modelServiceRoute,
     modelServiceMaintenanceRoute,
     modelServiceModelsRoute,
+    modelServiceSetupRoute.addChildren([
+      modelServiceSetupSourceRoute,
+      builtinServiceDiscoverRoute,
+      builtinServiceVerifyRoute,
+    ]),
     settingsRoute,
     accessRoute,
     passwordRoute,

@@ -10,7 +10,7 @@
 - `git/` — 工作副本的准备与 diff 读取,直接调用 git 命令。
 - `review/` — Review Run 的编排。`run.ts` 是唯一入口 `runReview`,其余是它的内部构件:`store.ts` 是 SQLite 持久化,`fingerprint.ts` 算 Finding 的内容指纹并读写评论正文里的指纹锚点,`position.ts` 解析 diff(可评论的行区间与每个文件的改动行数),`batch.ts` 切批并合并各批次的执行结果。
 - `reviewer/` — Reviewer 的真实实现。`pi-reviewer.ts` 在主进程侧管子进程,`worker.ts` 是子进程入口,两者只经 `protocol.ts` 定义的消息通信。`numbered-read.ts` 与 `anchor.ts` 是 worker 的行号构件(见下)。`catalog.ts` 与 `vendor-catalog.ts` 只为显式模型服务发现读取 Pi 内置、pi.dev 增量与 OpenRouter 厂商目录;`model-service-runtime.ts` 负责发现、可信字段合成与最小真实推理;`model-runtime.ts` 只构造凭据和当前模型配置均隔离的 Pi 运行时。
-- `webhook/` — `server.ts` 是 HTTP 入口:路由表分发 `POST /webhook`(投递:准入验签、规范化两个平台的形状、判幂等、异步触发 `runReview`)与 `<前缀>/api/*`(面板 API),其余路径与方法一律 404。模型服务读取、候选验证、原子提交与 Review Run 固定计划都在这里接入 Store。
+- `webhook/` — `server.ts` 是 HTTP 入口:路由表分发 `POST /webhook`(投递:准入验签、规范化两个平台的形状、判幂等、异步触发 `runReview`)与 `<前缀>/api/*`(面板 API),其余路径与方法一律 404。模型服务读取、候选验证、原子提交与 Review Run 固定计划都在这里接入 Store。候选发现与真实推理失败只向面板返回安全摘要和 request id,同一 id 的服务日志保留经已知秘密脱敏后的诊断原因。
 - `panel/` — 管理面板的服务端构件。`auth.ts` 是认证判定(token 比对、session、按 IP 退避锁定),纯逻辑不碰 HTTP,时钟可注入。`credential-crypto.ts` 是模型凭据的加解密(AES-256-GCM,纯函数,主密钥由调用方传入,解不开返回 undefined 而非抛),主密钥的环境变量名也定在这里。
 - `main.ts` — 进程入口。先识别并迁移 schema-v0 模型数据,清理旧运行投影,再读环境变量建 Forge 与 HTTP 服务。模型组合、模型服务与批次上限都在库里,不经配置文件。
 
@@ -209,3 +209,4 @@
 - 2026-08-20: 落地 issue #141 clean cutover。schema-v0 启动迁移先备份、单事务迁模型服务并删旧表,提交后清旧 Pi 文件,成功监听才确认一次性摘要;当前 Store、面板 API、模型组合与 Review Run 全部只走模型服务表和固定运行计划。删除旧凭据校验器、旧 API、旧 Store 方法、共享 `models.json` 当前配置及其调用方。
 - 2026-08-20: 落地 issue #145。审查策略两项改为独立版本与独立 CAS 写入;历史值从版本 1 无损接入,新全局组合拒绝空项、重复项与当前不可用模型,历史空组合保留只读语义。批次上限读回有效值及默认/自定义来源,显式恢复默认删除自定义值。HTTP 与临时 SQLite 测试覆盖迁移、冲突和独立写入。
 - 2026-08-20: 落地 issue #146 的服务端投影。模型服务读取新增运行能力与完整引用位置;可运行服务的目录失败只作次级维护事实。空且未引用的内置 provider 从当前服务列表隐藏,搜索入口仍可重新配置。
+- 2026-08-20: 落地 issue #147 的候选失败契约。内置与自定义模型服务在模型发现或真实推理失败时返回固定安全摘要和 request id,服务日志用同一 id 记录已知秘密脱敏后的诊断原因;失败继续保持数据库零写入,最终提交仍按 expected version 原子切换。

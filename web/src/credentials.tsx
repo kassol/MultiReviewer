@@ -3,15 +3,14 @@
  * `/model-services`；内置候选只留在组件内存，模型字段与凭据审计字段继续按独立权限展示。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
-import { AlertTriangle, Check, CircleX, RefreshCw, Search, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, Outlet, useBlocker, useNavigate } from "@tanstack/react-router";
+import { AlertTriangle, Check, CircleX, RefreshCw, Trash2 } from "lucide-react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Command, CommandInput, CommandList } from "@/components/ui/command";
 import {
   Dialog,
   DialogContent,
@@ -22,7 +21,6 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
@@ -217,343 +215,368 @@ function ServiceStatus({ service }: { service: ModelService }) {
   );
 }
 
-function BuiltinCandidateDialog({
-  provider,
-  onClose,
-}: {
-  provider: BuiltinProvider;
-  onClose: () => void;
-}) {
-  const queryClient = useQueryClient();
-  const [credential, setCredential] = useState("");
-  const credentialRef = useRef("");
-  const [preview, setPreview] = useState<BuiltinPreview | null>(null);
-  const [validationModel, setValidationModel] = useState("");
+type BuiltinSetupCandidate = {
+  provider: string;
+  name: string;
+  version: number | null;
+  credential: string;
+  preview: BuiltinPreview | null;
+  validationModel: string;
+};
 
-  const previewCandidate = useMutation({
-    mutationFn: async (submittedCredential: string) =>
-      responseJson<BuiltinPreview>(
-        await api("/model-services/builtin/preview", {
-          method: "POST",
-          body: JSON.stringify({
-            provider: provider.id,
-            credential: submittedCredential,
-            expectedVersion: provider.version,
-          }),
-        }),
+type SetupPhase = "discovering" | "committing" | null;
+type ModelServiceSetupContextValue = {
+  candidate: BuiltinSetupCandidate | null;
+  setCandidate: React.Dispatch<React.SetStateAction<BuiltinSetupCandidate | null>>;
+  phase: SetupPhase;
+  setPhase: React.Dispatch<React.SetStateAction<SetupPhase>>;
+  finish: () => void;
+};
+
+const ModelServiceSetupContext = createContext<ModelServiceSetupContextValue | null>(null);
+
+function useModelServiceSetup(): ModelServiceSetupContextValue {
+  const value = useContext(ModelServiceSetupContext);
+  if (value === null) throw new Error("模型服务配置页缺少流程上下文");
+  return value;
+}
+
+export function ModelServiceSetupLayout() {
+  const [candidate, setCandidate] = useState<BuiltinSetupCandidate | null>(null);
+  const [phase, setPhase] = useState<SetupPhase>(null);
+  const allowExit = useRef(false);
+  const dirty = candidate !== null && (
+    candidate.credential !== "" || candidate.preview !== null || candidate.validationModel !== ""
+  );
+  const blocker = useBlocker({
+    shouldBlockFn: ({ next }) =>
+      !allowExit.current && (
+        phase !== null || (dirty && !next.pathname.includes("/credentials/add"))
       ),
-    onSuccess: (result, submittedCredential) => {
-      if (credentialRef.current !== submittedCredential) return;
-      setPreview(result);
-      setValidationModel(result.models[0]?.id ?? "");
-    },
-    onError: () => {
-      setPreview(null);
-      setValidationModel("");
-    },
+    enableBeforeUnload: () => phase !== null || dirty,
+    withResolver: true,
   });
-
-  const commitCandidate = useMutation({
-    mutationFn: async () =>
-      responseJson<CredentialMutationResult>(
-        await api("/model-services/builtin/commit", {
-          method: "POST",
-          body: JSON.stringify({
-            provider: provider.id,
-            credential,
-            validationModel,
-            expectedVersion: provider.version,
-          }),
-        }),
-      ),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["model-services"] });
-      onClose();
-    },
-  });
-
-  const busy = previewCandidate.isPending || commitCandidate.isPending;
-  const error = commitCandidate.error ?? previewCandidate.error;
-
-  const requestPreview = (): void => {
-    setPreview(null);
-    setValidationModel("");
-    commitCandidate.reset();
-    previewCandidate.mutate(credential);
+  const finish = (): void => {
+    allowExit.current = true;
+    setCandidate(null);
+    setPhase(null);
   };
 
   return (
-    <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
-      <DialogContent className="sm:max-w-md">
-        <form
-          className="flex flex-col gap-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (preview === null) requestPreview();
-            else {
-              commitCandidate.reset();
-              commitCandidate.mutate();
-            }
-          }}
-        >
+    <ModelServiceSetupContext.Provider value={{ candidate, setCandidate, phase, setPhase, finish }}>
+      <PageHeader
+        title="添加模型服务"
+        description="选择来源、发现模型、真实验证三步完成；候选配置只留在当前页面内存。"
+      />
+      <div className="max-w-[900px] p-5 pb-20">
+        <nav className="mb-5 grid grid-cols-3 overflow-hidden rounded-md border text-center text-xs" aria-label="添加模型服务步骤">
+          <span className="border-r px-3 py-2">1. 选择来源</span>
+          <span className="border-r px-3 py-2">2. 模型发现</span>
+          <span className="px-3 py-2">3. 真实验证</span>
+        </nav>
+        <Outlet />
+      </div>
+      <Dialog open={blocker.status === "blocked"} onOpenChange={(open) => { if (!open) blocker.reset?.(); }}>
+        <DialogContent>
           <DialogHeader>
-            <DialogTitle>{provider.configured ? "更换内置 provider 凭据" : "配置内置 provider"}</DialogTitle>
+            <DialogTitle>{phase === null ? "丢弃未保存的候选？" : "模型服务操作仍在进行"}</DialogTitle>
             <DialogDescription>
-              候选只留在当前页面内存。先用凭据预览模型目录，再选一个 model id；最终提交会重新发现目录并执行一次真实推理。
+              {phase === null
+                ? "离开会丢弃当前页面内存里的凭据、发现结果和验证模型。"
+                : "请求结束前会锁定离开与丢弃动作，请等待当前阶段完成。"}
             </DialogDescription>
           </DialogHeader>
-
-          <div className="rounded-md border bg-muted px-3 py-2">
-            <p className="font-mono font-medium">{provider.id}</p>
-            <p className="text-xs text-muted-foreground">{provider.name}</p>
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="builtin-provider-credential">模型凭据</Label>
-            <Input
-              id="builtin-provider-credential"
-              type="password"
-              autoComplete="off"
-              placeholder="这家 provider 使用的 key"
-              value={credential}
-              required
-              disabled={busy}
-              onChange={(event) => {
-                const next = event.target.value;
-                credentialRef.current = next;
-                setCredential(next);
-                setPreview(null);
-                setValidationModel("");
-                previewCandidate.reset();
-                commitCandidate.reset();
-              }}
-            />
-            <p className="text-xs text-muted-foreground">只写不回显；预览不会创建服务端草稿。</p>
-          </div>
-
-          {preview === null ? null : (
-            <section className="overflow-hidden rounded-md border" aria-labelledby="builtin-preview-heading">
-              <div className="flex flex-wrap items-start justify-between gap-2 border-b bg-muted px-3 py-2">
-                <div>
-                  <h3 id="builtin-preview-heading" className="font-medium">发现预览</h3>
-                  <p className="text-xs text-muted-foreground">
-                    <span className="font-mono tabular-nums">{preview.models.length}</span> 个模型
-                    {preview.ignoredModelCount === 0 ? null : (
-                      <> · 忽略 <span className="font-mono tabular-nums">{preview.ignoredModelCount}</span> 个无效项</>
-                    )}
-                  </p>
-                </div>
-                <Badge variant="outline">未保存</Badge>
-              </div>
-              <dl className="grid gap-2 border-b px-3 py-2 text-xs sm:grid-cols-2">
-                <div className="min-w-0">
-                  <dt className="font-medium text-muted-foreground">地址</dt>
-                  <dd className="break-all font-mono">{preview.target.baseUrl}</dd>
-                </div>
-                <div>
-                  <dt className="font-medium text-muted-foreground">接口协议</dt>
-                  <dd className="font-mono">{preview.target.api}</dd>
-                </div>
-              </dl>
-              <div className="flex flex-col gap-1 px-3 py-3">
-                <Label htmlFor="builtin-validation-model">验证模型</Label>
-                <select
-                  id="builtin-validation-model"
-                  className="h-8 w-full min-w-0 rounded-lg border border-input bg-background px-2.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50"
-                  value={validationModel}
-                  required
-                  disabled={busy || preview.models.length === 0}
-                  onChange={(event) => {
-                    setValidationModel(event.target.value);
-                    commitCandidate.reset();
-                  }}
-                >
-                  {preview.models.map((model) => (
-                    <option key={model.identity} value={model.id}>
-                      {model.fields.name === undefined || model.fields.name === model.id
-                        ? model.id
-                        : `${model.id} — ${model.fields.name}`}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-xs text-muted-foreground">最终提交会以这里选中的 model id 做最小真实推理。</p>
-              </div>
-            </section>
-          )}
-
-          {error === null ? null : <p role="alert" className="text-destructive">{error.message}</p>}
-
-          <DialogFooter>
-            <Button type="button" variant="outline" disabled={busy} onClick={onClose}>取消</Button>
-            <Button
-              type={preview === null ? "submit" : "button"}
-              variant={preview === null ? "default" : "outline"}
-              disabled={busy || credential === ""}
-              onClick={preview === null ? undefined : requestPreview}
-            >
-              {previewCandidate.isPending ? "正在发现…" : preview === null ? "预览模型" : "重新预览"}
-            </Button>
-            {preview === null ? null : (
+          {phase === null ? (
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => blocker.reset?.()}>继续配置</Button>
               <Button
-                type="submit"
-                disabled={busy || validationModel === ""}
+                type="button"
+                variant="destructive"
+                onClick={() => {
+                  allowExit.current = true;
+                  setCandidate(null);
+                  blocker.proceed?.();
+                }}
               >
-                {commitCandidate.isPending ? "正在重新发现并验证…" : "验证并提交"}
+                丢弃并离开
               </Button>
-            )}
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+            </DialogFooter>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+    </ModelServiceSetupContext.Provider>
   );
 }
 
-function ProviderSearch({ canWriteCredential }: { canWriteCredential: boolean }) {
-  const [open, setOpen] = useState(false);
-  const [input, setInput] = useState("");
+export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boolean }) {
+  const navigate = useNavigate();
+  const { setCandidate } = useModelServiceSetup();
   const [query, setQuery] = useState("");
-  const [candidate, setCandidate] = useState<BuiltinProvider | null>(null);
-  const [maintenance, setMaintenance] = useState<CredentialTarget | null>(null);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setQuery(input.trim()), 180);
-    return () => window.clearTimeout(timer);
-  }, [input]);
-
+  const [customOpen, setCustomOpen] = useState(false);
   const providers = useQuery({
-    queryKey: ["model-services", "providers", query],
-    queryFn: () =>
-      fetchJson<{ providers: BuiltinProvider[] }>(
-        `/model-services/providers?query=${encodeURIComponent(query)}`,
-      ),
-    enabled: open,
+    queryKey: ["model-services", "providers", query.trim()],
+    queryFn: () => fetchJson<{ providers: BuiltinProvider[] }>(
+      `/model-services/providers?query=${encodeURIComponent(query.trim())}`,
+    ),
   });
 
   return (
-    <>
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button variant="outline">
-            <Search />搜索内置 provider
+    <Card className="gap-4 px-4 py-4">
+      <div>
+        <h2 className="text-base font-semibold">选择模型服务来源</h2>
+        <p className="mt-1 text-muted-foreground">搜索 Pi 内置 provider，或从同一入口添加自定义 provider。</p>
+      </div>
+      <Input
+        aria-label="搜索 Pi 内置 provider"
+        placeholder="输入 provider 标识或名称"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+      />
+      {providers.isPending ? (
+        <Skeleton className="h-28" />
+      ) : providers.isError ? (
+        <p role="alert" className="text-destructive">内置 provider 读不到：{(providers.error as Error).message}</p>
+      ) : providers.data.providers.length === 0 ? (
+        <p className="text-muted-foreground">没有匹配的 Pi 内置 provider。</p>
+      ) : (
+        <div className="max-h-80 divide-y overflow-y-auto rounded-md border" role="list">
+          {providers.data.providers.map((provider) => (
+            <button
+              key={provider.id}
+              type="button"
+              className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-muted/60"
+              disabled={provider.conflict}
+              onClick={() => {
+                setCandidate({
+                  provider: provider.id,
+                  name: provider.name,
+                  version: provider.version,
+                  credential: "",
+                  preview: null,
+                  validationModel: "",
+                });
+                void navigate({
+                  to: "/credentials/add/builtin/$provider/discover",
+                  params: { provider: provider.id },
+                });
+              }}
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-mono text-xs font-medium">{provider.id}</span>
+                <span className="block truncate text-xs text-muted-foreground">{provider.name}</span>
+              </span>
+              {provider.conflict ? <Badge variant="destructive">名字冲突</Badge> : null}
+              {provider.configured ? <Badge variant="secondary">已配置</Badge> : <Badge variant="outline">未配置</Badge>}
+            </button>
+          ))}
+        </div>
+      )}
+      {canWriteCustom ? (
+        <div className="border-t pt-4">
+          <Button type="button" variant="outline" onClick={() => setCustomOpen(true)}>添加自定义 provider</Button>
+        </div>
+      ) : null}
+      {!customOpen ? null : (
+        <CustomCandidateDialog
+          target={{ mode: "create" }}
+          onClose={() => setCustomOpen(false)}
+          onCommitted={(provider) => {
+            setCustomOpen(false);
+            void navigate({ to: "/settings", search: { provider } });
+          }}
+        />
+      )}
+    </Card>
+  );
+}
+
+function useBuiltinProvider(provider: string) {
+  return useQuery({
+    queryKey: ["model-services", "providers", provider],
+    queryFn: async () => {
+      const result = await fetchJson<{ providers: BuiltinProvider[] }>(
+        `/model-services/providers?query=${encodeURIComponent(provider)}`,
+      );
+      return result.providers.find((entry) => entry.id === provider);
+    },
+  });
+}
+
+export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
+  const navigate = useNavigate();
+  const metadata = useBuiltinProvider(provider);
+  const { candidate, setCandidate, phase, setPhase } = useModelServiceSetup();
+  const credential = candidate?.provider === provider ? candidate.credential : "";
+  const preview = useMutation({
+    mutationFn: async () => {
+      const current = metadata.data;
+      if (current === undefined) throw new Error(`Pi 没有内置 provider ${provider}`);
+      return responseJson<BuiltinPreview>(await api("/model-services/builtin/preview", {
+        method: "POST",
+        body: JSON.stringify({ provider, credential, expectedVersion: current.version }),
+      }));
+    },
+    onMutate: () => setPhase("discovering"),
+    onSettled: () => setPhase(null),
+    onSuccess: (result) => {
+      const current = metadata.data!;
+      setCandidate({
+        provider,
+        name: current.name,
+        version: current.version,
+        credential,
+        preview: result,
+        validationModel: result.models[0]?.id ?? "",
+      });
+      void navigate({ to: "/credentials/add/builtin/$provider/verify", params: { provider } });
+    },
+  });
+
+  return (
+    <Card className="gap-4 px-4 py-4">
+      <div>
+        <h2 className="text-base font-semibold">填写凭据并发现模型</h2>
+        <p className="mt-1 font-mono text-xs text-muted-foreground">{provider}</p>
+      </div>
+      <form
+        className="space-y-4"
+        onSubmit={(event) => { event.preventDefault(); preview.mutate(); }}
+      >
+        <div className="space-y-1.5">
+          <Label htmlFor="setup-builtin-credential">模型凭据</Label>
+          <Input
+            id="setup-builtin-credential"
+            type="password"
+            autoComplete="off"
+            value={credential}
+            required
+            disabled={phase !== null}
+            onChange={(event) => {
+              const current = metadata.data;
+              setCandidate({
+                provider,
+                name: current?.name ?? provider,
+                version: current?.version ?? null,
+                credential: event.target.value,
+                preview: null,
+                validationModel: "",
+              });
+              preview.reset();
+            }}
+          />
+          <p className="text-xs text-muted-foreground">只留在当前页面内存；不会写入 URL、浏览器存储或服务端草稿。</p>
+        </div>
+        {preview.error === null ? null : <p role="alert" className="text-destructive">{preview.error.message}</p>}
+        <div className="flex items-center gap-3 border-t pt-3">
+          <Button asChild variant="outline">
+            <Link to="/credentials/add">返回选择来源</Link>
           </Button>
-        </PopoverTrigger>
-        <PopoverContent align="end" className="w-[min(440px,calc(100vw-2rem))] gap-0 p-0">
-          <Command shouldFilter={false}>
-            <CommandInput
-              aria-label="搜索 Pi 内置 provider"
-              placeholder="输入 provider 标识"
-              value={input}
-              onValueChange={setInput}
-            />
-            <CommandList>
-              {providers.isPending ? (
-                <div className="space-y-2 p-3">
-                  <Skeleton className="h-8 w-full" />
-                  <Skeleton className="h-8 w-full" />
-                  <Skeleton className="h-8 w-full" />
-                </div>
-              ) : providers.isError ? (
-                <div className="flex flex-col items-center gap-2 px-3 py-6 text-center">
-                  <p role="alert" className="text-destructive">
-                    内置 provider 读不到：{(providers.error as Error).message}
-                  </p>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="xs"
-                    disabled={providers.isFetching}
-                    onClick={() => void providers.refetch()}
-                  >
-                    {providers.isFetching ? "正在重试…" : "重试"}
-                  </Button>
-                </div>
-              ) : providers.data?.providers.length === 0 ? (
-                <p className="px-3 py-6 text-center text-muted-foreground">没有匹配的内置 provider。</p>
-              ) : (
-                <div className="divide-y p-1" role="list">
-                  {providers.data?.providers.map((provider) => (
-                    <div
-                      key={provider.id}
-                      className="flex min-w-0 items-center gap-2 rounded-sm px-2 py-2"
-                      role="listitem"
-                    >
-                      <span className="flex min-w-0 flex-1 flex-col">
-                        <span className="truncate font-mono text-xs font-medium">{provider.id}</span>
-                        <span className="truncate text-xs text-muted-foreground">{provider.name}</span>
-                      </span>
-                      {provider.conflict ? (
-                        <Badge variant="destructive">名字冲突</Badge>
-                      ) : provider.configured ? (
-                        <Badge variant="secondary">已配置</Badge>
-                      ) : (
-                        <Badge variant="outline">未配置</Badge>
-                      )}
-                      {canWriteCredential && !provider.conflict ? (
-                        <div className="flex shrink-0 gap-1">
-                          {provider.configured && provider.version !== null ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="xs"
-                              onClick={() => {
-                                const version = provider.version;
-                                if (version === null) return;
-                                setOpen(false);
-                                setCandidate(null);
-                                setMaintenance({
-                                  provider: provider.id,
-                                  version,
-                                  validationModel: undefined,
-                                  models: undefined,
-                                });
-                              }}
-                            >
-                              维护
-                            </Button>
-                          ) : null}
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="xs"
-                            onClick={() => {
-                              setOpen(false);
-                              setMaintenance(null);
-                              setCandidate(provider);
-                            }}
-                          >
-                            {provider.configured ? "换凭据" : "配置"}
-                          </Button>
-                        </div>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </CommandList>
-            {!canWriteCredential ? (
-              <p className="border-t px-3 py-2 text-xs text-muted-foreground">
-                缺少模型凭据写权限，只能查看按权限返回的状态。
-              </p>
-            ) : null}
-          </Command>
-        </PopoverContent>
-      </Popover>
-      {candidate === null ? null : (
-        <BuiltinCandidateDialog
-          key={`${candidate.id}:${candidate.version ?? "new"}`}
-          provider={candidate}
-          onClose={() => setCandidate(null)}
+          <Button type="submit" disabled={phase !== null || credential === "" || metadata.data === undefined}>
+            {phase === "discovering" ? "正在发现模型…" : "发现模型"}
+          </Button>
+          {phase === "discovering" ? <span className="text-xs text-muted-foreground">阶段 2/3：正在请求模型目录</span> : null}
+        </div>
+      </form>
+      {metadata.isError ? (
+        <p role="alert" className="text-destructive">provider 状态读不到：{(metadata.error as Error).message}</p>
+      ) : metadata.isSuccess && metadata.data === undefined ? (
+        <p role="alert" className="text-destructive">Pi 没有内置 provider {provider}。</p>
+      ) : null}
+    </Card>
+  );
+}
+
+export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { candidate, setCandidate, phase, setPhase, finish } = useModelServiceSetup();
+  const ready = candidate?.provider === provider && candidate.preview !== null && candidate.credential !== "";
+  const commit = useMutation({
+    mutationFn: async () => {
+      if (!ready) throw new Error("发现结果已不在当前页面内存，请重新发现模型");
+      return responseJson<CredentialMutationResult>(await api("/model-services/builtin/commit", {
+        method: "POST",
+        body: JSON.stringify({
+          provider,
+          credential: candidate.credential,
+          validationModel: candidate.validationModel,
+          expectedVersion: candidate.version,
+        }),
+      }));
+    },
+    onMutate: () => setPhase("committing"),
+    onSettled: () => setPhase(null),
+    onSuccess: () => {
+      const created = candidate?.version === null;
+      void queryClient.invalidateQueries({ queryKey: ["model-services"] });
+      finish();
+      if (created) {
+        void navigate({ to: "/settings", search: { provider } });
+      } else {
+        void navigate({ to: "/credentials/$provider", params: { provider } });
+      }
+    },
+  });
+
+  if (!ready) {
+    return (
+      <Card className="gap-3 px-4 py-5">
+        <h2 className="text-base font-semibold">发现结果不在当前页面内存</h2>
+        <p className="text-muted-foreground">刷新和直接打开此地址不会恢复凭据或候选，请回到模型发现重新开始。</p>
+        <Link
+          to="/credentials/add/builtin/$provider/discover"
+          params={{ provider }}
+          className="w-fit underline underline-offset-4"
+        >
+          返回模型发现
+        </Link>
+      </Card>
+    );
+  }
+  const activeCandidate = candidate!;
+  const activePreview = activeCandidate.preview!;
+
+  return (
+    <Card className="gap-4 px-4 py-4">
+      <div>
+        <h2 className="text-base font-semibold">选择验证模型并提交</h2>
+        <p className="mt-1 text-muted-foreground">
+          预览发现 <span className="font-mono tabular-nums">{activePreview.models.length}</span> 个模型；最终提交会重新发现并执行最小真实推理。
+        </p>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="setup-validation-model">验证模型</Label>
+        <Input
+          id="setup-validation-model"
+          list="setup-validation-models"
+          value={activeCandidate.validationModel}
+          disabled={phase !== null}
+          onChange={(event) => setCandidate({ ...activeCandidate, validationModel: event.target.value })}
         />
-      )}
-      {maintenance === null ? null : (
-        <CredentialControls
-          key={`${maintenance.provider}:${maintenance.version}`}
-          target={maintenance}
-          dialog
-          onClose={() => setMaintenance(null)}
-        />
-      )}
-    </>
+        <datalist id="setup-validation-models">
+          {activePreview.models.map((model) => <option key={model.identity} value={model.id} />)}
+        </datalist>
+        <p className="text-xs text-muted-foreground">目录里没有目标模型时可手填 model id；真实推理成功后会形成模型补录。</p>
+      </div>
+      {commit.error === null ? null : <p role="alert" className="text-destructive">{commit.error.message}</p>}
+      <div className="flex items-center gap-3 border-t pt-3">
+        <Button asChild variant="outline">
+          <Link to="/credentials/add/builtin/$provider/discover" params={{ provider }}>返回模型发现</Link>
+        </Button>
+        <Button
+          type="button"
+          disabled={phase !== null || activeCandidate.validationModel.trim() === ""}
+          onClick={() => commit.mutate()}
+        >
+          {phase === "committing"
+            ? "正在重新发现并验证…"
+            : activeCandidate.version === null
+              ? "验证并创建模型服务"
+              : "验证并更新模型服务"}
+        </Button>
+        {phase === "committing" ? <span className="text-xs text-muted-foreground">阶段 3/3：重新发现目录并执行真实推理</span> : null}
+      </div>
+    </Card>
   );
 }
 
@@ -928,6 +951,8 @@ function CustomCandidateDialog({
   const [reconfirmedSupplements, setReconfirmedSupplements] = useState<string[]>([]);
   const [preview, setPreview] = useState<CustomPreview | null>(null);
   const [previewAttempted, setPreviewAttempted] = useState(false);
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  const allowExit = useRef(false);
   const targetChanged =
     editing &&
     (baseUrl.trim() !== (service.target?.baseUrl ?? "") || protocol !== service.target?.api);
@@ -945,6 +970,13 @@ function CustomCandidateDialog({
     expectedVersion: editing ? service.version : null,
     reconfirmedSupplements,
   };
+  const dirty =
+    provider !== (editing ? service.provider : "") ||
+    baseUrl !== (service?.target?.baseUrl ?? "") ||
+    protocol !== (initialApi === "openai-responses" ? "openai-responses" : "openai-completions") ||
+    credential !== "" ||
+    validationModel !== initialValidationModel ||
+    reconfirmedSupplements.length > 0;
   const previewCandidate = useMutation({
     mutationFn: async () => responseJson<CustomPreview>(
       await api("/model-services/custom/preview", {
@@ -969,11 +1001,17 @@ function CustomCandidateDialog({
       }),
     ),
     onSuccess: (result) => {
+      allowExit.current = true;
       void queryClient.invalidateQueries({ queryKey: ["model-services"] });
       onCommitted(result.provider);
     },
   });
   const busy = previewCandidate.isPending || commitCandidate.isPending;
+  const blocker = useBlocker({
+    shouldBlockFn: () => !allowExit.current && (dirty || busy),
+    enableBeforeUnload: () => dirty || busy,
+    withResolver: true,
+  });
   const commitError = commitCandidate.error as ModelServiceMutationError | null;
   const invalidatePreview = (): void => {
     setPreview(null);
@@ -986,10 +1024,16 @@ function CustomCandidateDialog({
     : target.mode === "recovery"
       ? `用新名称重建 ${service?.provider ?? "自定义服务"}`
       : "创建自定义模型服务";
+  const requestClose = (): void => {
+    if (busy) return;
+    if (dirty) setConfirmingDiscard(true);
+    else onClose();
+  };
 
   return (
-    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+    <>
+      <Dialog open onOpenChange={(open) => { if (!open) requestClose(); }}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
         <form
           className="flex flex-col gap-3"
           onSubmit={(event) => {
@@ -1133,7 +1177,7 @@ function CustomCandidateDialog({
             </div>
           )}
           <DialogFooter>
-            <Button type="button" variant="outline" disabled={busy} onClick={onClose}>取消</Button>
+            <Button type="button" variant="outline" disabled={busy} onClick={requestClose}>取消</Button>
             <Button
               type="button"
               variant={previewAttempted ? "outline" : "default"}
@@ -1154,8 +1198,52 @@ function CustomCandidateDialog({
             )}
           </DialogFooter>
         </form>
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={confirmingDiscard || blocker.status === "blocked"}
+        onOpenChange={(open) => {
+          if (open) return;
+          setConfirmingDiscard(false);
+          blocker.reset?.();
+        }}
+      >
+        <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{busy ? "模型服务操作仍在进行" : "丢弃未保存的候选？"}</DialogTitle>
+          <DialogDescription>
+            {busy ? "请求结束前不能离开或丢弃候选。" : "离开会丢弃当前候选配置与模型凭据。"}
+          </DialogDescription>
+        </DialogHeader>
+        {busy ? null : (
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setConfirmingDiscard(false);
+                blocker.reset?.();
+              }}
+            >
+              继续配置
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => {
+                allowExit.current = true;
+                setConfirmingDiscard(false);
+                if (blocker.status === "blocked") blocker.proceed();
+                else onClose();
+              }}
+            >
+              丢弃并离开
+            </Button>
+          </DialogFooter>
+        )}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -1701,7 +1789,6 @@ function ServiceDetail({
   onEditCustom: () => void;
   onRecoverCustom: () => void;
 }) {
-  const [editingBuiltinCredential, setEditingBuiltinCredential] = useState(false);
   return (
     <div className="min-w-0 space-y-5">
       <section className="flex flex-wrap items-start justify-between gap-3 border-b pb-4">
@@ -1776,21 +1863,14 @@ function ServiceDetail({
             <h3 className="font-medium">模型凭据轮换</h3>
             <p className="text-xs text-muted-foreground">新凭据发现目录并完成真实推理后，才会推进当前版本。</p>
           </div>
-          <Button type="button" variant="outline" onClick={() => setEditingBuiltinCredential(true)}>
-            {service.credential.state === "unconfigured" ? "配置凭据" : "换凭据"}
+          <Button asChild variant="outline">
+            <Link
+              to="/credentials/add/builtin/$provider/discover"
+              params={{ provider: service.provider }}
+            >
+              {service.credential.state === "unconfigured" ? "配置凭据" : "换凭据"}
+            </Link>
           </Button>
-          {editingBuiltinCredential ? (
-            <BuiltinCandidateDialog
-              provider={{
-                id: service.provider,
-                name: service.name,
-                configured: true,
-                conflict: service.providerState === "name-conflict",
-                version: service.version,
-              }}
-              onClose={() => setEditingBuiltinCredential(false)}
-            />
-          ) : null}
         </section>
       ) : null}
 
@@ -1884,10 +1964,9 @@ export function ModelServicesPage({
         description="模型服务、模型凭据与模型目录三条状态彼此独立；删除被组合引用的项目时会列出阻塞位置与下一步。"
         actions={(
           <div className="flex flex-wrap items-center gap-2">
-            <ProviderSearch canWriteCredential={canWriteCredential} />
-            {canWriteCustom ? (
-              <Button type="button" onClick={() => setCustomTarget({ mode: "create" })}>
-                新建自定义服务
+            {canWriteCredential ? (
+              <Button asChild>
+                <Link to="/credentials/add">添加模型服务</Link>
               </Button>
             ) : null}
           </div>
@@ -1940,8 +2019,8 @@ export function ModelServicesPage({
           <Card className="gap-2 px-4 py-8">
             <h2 className="text-base font-semibold">还没有模型服务</h2>
             <p className="text-muted-foreground">
-              这里只列已配置或保留异常状态的服务。下一步从页头搜索 Pi 内置 provider
-              {canWriteCredential ? "并配置凭据" : "查看可见状态"}；有完整写权限时也可新建自定义服务。
+              这里只列已配置或保留异常状态的服务。
+              {canWriteCredential ? "从页头的添加模型服务进入统一配置流程。" : "当前权限只能查看可见状态。"}
             </p>
           </Card>
         </div>

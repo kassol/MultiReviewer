@@ -14,10 +14,14 @@ export function api(path: string, init?: RequestInit): Promise<Response> {
   });
 }
 
-/** 失败响应的展示文案:优先取服务端的 error 字段。 */
+/** 失败响应的展示文案:优先取服务端的 error 字段，并保留可供查日志的 request id。 */
 export async function errorText(response: Response): Promise<string> {
-  const body = (await response.json().catch(() => null)) as { error?: string } | null;
-  return body?.error ?? `请求失败(${response.status})`;
+  const body = (await response.json().catch(() => null)) as {
+    error?: string;
+    requestId?: string;
+  } | null;
+  const message = body?.error ?? `请求失败(${response.status})`;
+  return body?.requestId === undefined ? message : `${message}（request id：${body.requestId}）`;
 }
 
 export async function fetchJson<T>(path: string): Promise<T> {

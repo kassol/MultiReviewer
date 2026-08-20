@@ -2236,7 +2236,7 @@ async function handlePreviewBuiltinModelService(
     { allowNetwork: true, ...(catalogStorePath === undefined ? {} : { catalogStorePath }) },
   );
   if (!discovered.ok) {
-    return sendJson(res, 422, { error: discovered.failure.message, failure: discovered.failure });
+    return sendCandidateFailure(res, discovered.failure, [payload.credential], "discovery");
   }
   return sendJson(res, 200, {
     provider,
@@ -2296,7 +2296,7 @@ async function commitVerifiedBuiltinModelService(
     validationDiscovery ?? input.validationModel,
   );
   if (!validation.ok) {
-    return sendJson(res, 422, { error: validation.failure.message, failure: validation.failure });
+    return sendCandidateFailure(res, validation.failure, [input.credential, masterKey], "validation");
   }
 
   const committedAt = new Date((deps.now ?? Date.now)()).toISOString();
@@ -3179,9 +3179,15 @@ function sendCandidateFailure(
   res: ServerResponse,
   failure: ModelOperationFailure,
   secrets: readonly string[],
+  stage: "discovery" | "validation" = "validation",
 ): void {
   const redacted = redactCandidateFailure(failure, secrets);
-  sendJson(res, 422, { error: redacted.message, failure: redacted });
+  const requestId = randomBytes(8).toString("hex");
+  console.error(
+    `[model-service] request ${requestId} ${stage} failed (${redacted.code}): ${redacted.message}`,
+  );
+  const operation = stage === "discovery" ? "模型发现" : "模型验证";
+  sendJson(res, 422, { error: `${operation}失败，请按 request id 查看服务日志`, requestId });
 }
 
 async function handlePreviewCustomModelService(
@@ -3223,7 +3229,7 @@ async function handlePreviewCustomModelService(
     ...(catalogStorePath === undefined ? {} : { catalogStorePath }),
   });
   if (!discovered.ok) {
-    return sendCandidateFailure(res, discovered.failure, [input.credential]);
+    return sendCandidateFailure(res, discovered.failure, [input.credential], "discovery");
   }
   return sendJson(res, 200, {
     provider: input.provider,
