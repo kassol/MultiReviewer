@@ -65,16 +65,23 @@ export type RawFinding = {
   suggestion: string;
 };
 
-/** 一个 Reviewer 一次执行的用量与成本,由 harness 自己统计。 */
+export type ReviewerCostSource = "trusted" | "unknown";
+
+/** 一个 Reviewer 一次执行的用量与产品费用。 */
 export type ReviewerUsage = {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
   totalTokens: number;
-  /** harness 依自身的定价表折算出的美元成本。 */
-  costUsd: number;
+  /** 费用完整时的美元总额；固定模型价格未知时保持 null，不把 Pi 的 0 当成免费。 */
+  costUsd: number | null;
+  /** 已知金额小计。费用未知时仍保留同一次聚合里其他已知金额。 */
+  knownCostUsd: number;
+  /** 本轮固定的模型价格能否支持可信金额。 */
+  costSource: ReviewerCostSource;
 };
+
 
 /** 一个 Reviewer 跑完之后的全部产出,含失败与异常,而不只是 Finding。 */
 export type ReviewerOutcome = {

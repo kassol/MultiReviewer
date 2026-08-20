@@ -19,8 +19,11 @@ import { extname, join, resolve, sep } from "node:path";
 import {
   assertReviewerSpecs,
   GLOBAL_REVIEWERS_CONTEXT,
+  modelIdentity,
   parseGlobalReviewers,
-  type CredentialSnapshot,
+  reviewerPin,
+  type ModelServiceTarget,
+  type ReviewerRuntimePlan,
   type ReviewerSpec,
 } from "../config.ts";
 import type { Forge } from "../forge/forge.ts";
@@ -35,7 +38,6 @@ import type { GiteaForgeOptions } from "../forge/gitea.ts";
 import { createPanelAuth, sessionHash, SESSION_TTL_MS, type PanelAuth } from "../panel/auth.ts";
 import { hashPassword } from "../panel/password.ts";
 import { isPanelPermission, type PanelPermission } from "../panel/permissions.ts";
-import { checkCredential, CHECKED_PROVIDERS } from "../panel/credential-check.ts";
 import {
   credentialTail,
   CREDENTIAL_MASTER_KEY_ENV,
@@ -44,21 +46,44 @@ import {
 } from "../panel/credential-crypto.ts";
 import { DEFAULT_MAX_CHANGED_LINES_PER_BATCH } from "../review/batch.ts";
 import type { Reviewer } from "../review/finding.ts";
-import { backfillUpdates, priorDispositions, runReview } from "../review/run.ts";
+import {
+  backfillUpdates,
+  createReviewRunPlan,
+  priorDispositions,
+  runReview,
+  type ReviewRunPlan,
+} from "../review/run.ts";
 import {
   openStore,
+  type ModelServiceRecord,
+  type ModelServiceVersionCommit,
+  type ModelSupplementSource,
   type RepoKey,
   type Store,
 } from "../review/store.ts";
+import { modelServiceTargetFingerprint } from "../review/model-service-migration.ts";
 import {
-  conflictingProviderNames,
-  invalidateModelCatalog,
-  modelCatalog,
+  conflictingBuiltinProviderNames,
+  listPiBuiltinProviders,
+  resolvePiBuiltinProviderTarget,
+  type PiBuiltinProviderTarget,
 } from "../reviewer/catalog.ts";
 import {
+  discoverModels,
+  validateMinimalInference,
+  MODEL_RUNTIME_BASELINE,
+  normalizeModelServiceBaseUrl,
+  synthesizeRuntimeModel,
+  type DiscoveredModel,
+  type ModelOperationFailure,
+  type ModelCost,
+  type RuntimeModel,
+  type RuntimeSynthesisResult,
+  type ModelServiceCandidate,
+} from "../reviewer/model-service-runtime.ts";
+import {
   CUSTOM_PROVIDER_APIS,
-  sharedModelPaths,
-  writeSharedModelsConfig,
+  modelCatalogStorePath,
 } from "../reviewer/model-runtime.ts";
 
 export type Platform = "github" | "gitea";
@@ -121,15 +146,10 @@ export type WebhookServerDeps = {
   /** Gitea 实例的地址与 bot 凭据。没配这一格时注册与移除仓库的端点不可用。 */
   gitea?: GiteaForgeOptions;
   /**
-   * 按模型组合与凭据快照组装 Reviewer,每次 Review Run 开始时调一次。缺凭据的
-   * provider 由它建出一个报失败的 Reviewer,不抛(issue #65);名字撞上内置那一家的自定义
-   * provider 同理(第三个入参,issue #94)。
+   * 从已完整物化的不可变 Reviewer 计划组装执行体。每项只含自己的凭据；失败项也建出
+   * Reviewer 留痕，不从组合里过滤。
    */
-  buildReviewers: (
-    specs: readonly ReviewerSpec[],
-    credentials: CredentialSnapshot,
-    conflictingProviders: ReadonlySet<string>,
-  ) => readonly Reviewer[];
+  buildReviewers: (plans: readonly ReviewerRuntimePlan[]) => readonly Reviewer[];
   /**
    * 模型凭据的加密主密钥(ADR 0008),取自环境变量。缺失时凭据端点读写都拒绝并说明
    * 原因,服务其余部分照常——起不来就进不了面板,进不了面板就配不了凭据。
@@ -137,6 +157,8 @@ export type WebhookServerDeps = {
   credentialMasterKey?: string;
   /** 时钟,默认 `Date.now`。只该测试注入,用来驱动登录退避的时间窗。 */
   now?: () => number;
+  /** 目录失败的真 HTTP 测试缝；生产默认走真实 Pi 目录加载。 */
+  discoverModelServiceModels?: typeof discoverModels;
 };
 
 /** 两个平台标识 pull request 事件的头值相同。 */
@@ -391,47 +413,215 @@ function globalSettings(deps: WebhookServerDeps): {
   };
 }
 
-/**
- * 这次 Review Run 用的模型组合:仓库有覆盖就用覆盖,null 即跟随全局。坏覆盖
- * (解析不了)抛出,投递链与手动重跑各自决定错误出口(静默记录 / 409 显形)。
- */
-function resolveSpecs(
-  deps: WebhookServerDeps,
-  reviewersJson: string | null,
-  repoId: number,
-): readonly ReviewerSpec[] {
-  if (reviewersJson === null) return globalSettings(deps).reviewers;
-  return assertReviewerSpecs(JSON.parse(reviewersJson), `仓库 ${repoId} 的模型覆盖`);
+function frozenRuntimeModel(runtime: RuntimeModel): RuntimeModel {
+  return Object.freeze({
+    ...runtime,
+    input: Object.freeze([...runtime.input]),
+    cost:
+      runtime.cost === undefined
+        ? undefined
+        : Object.freeze({
+            ...runtime.cost,
+            ...(runtime.cost.tiers === undefined
+              ? {}
+              : {
+                  tiers: Object.freeze(
+                    runtime.cost.tiers.map((tier) => Object.freeze({ ...tier })),
+                  ),
+                }),
+          }),
+    sources: Object.freeze({ ...runtime.sources }),
+  });
 }
 
-/**
- * Review Run 开始时的模型凭据快照:一次开库读全部密文,在编排进程里解密成明文
- * (ADR 0004、0008)。解不开的按未配置处理,那一家的 Reviewer 会报失败。
- *
- * 快照只在这里取一次,整轮不重读——轮转不影响进行中的 Run。
- */
-function credentialSnapshot(deps: WebhookServerDeps): CredentialSnapshot {
-  const masterKey = deps.credentialMasterKey;
-  if (masterKey === undefined || masterKey === "") return new Map();
-  const snapshot = new Map<string, string>();
-  for (const row of withStore(deps.dbPath, (store) => store.listModelCredentials())) {
-    const apiKey = decryptCredential(masterKey, row.apiKeyEncrypted);
-    if (apiKey !== undefined && apiKey !== "") snapshot.set(row.provider, apiKey);
+function synthesisForRun(
+  service: ModelServiceRecord,
+  discovery: DiscoveredModel,
+  target: ModelServiceTarget | undefined,
+): RuntimeSynthesisResult {
+  if (target === undefined) {
+    return {
+      ok: false,
+      failure: {
+        code: "model-unconstructable",
+        message: `模型服务 ${service.provider} 缺少可用的地址或接口协议`,
+      },
+    };
   }
-  return snapshot;
+  if (service.type === "builtin") {
+    return synthesizeRuntimeModel(
+      { kind: "builtin", provider: service.provider, credential: "" },
+      discovery,
+      target as PiBuiltinProviderTarget,
+    );
+  }
+  if (!CUSTOM_PROVIDER_APIS.includes(target.api as (typeof CUSTOM_PROVIDER_APIS)[number])) {
+    return {
+      ok: false,
+      failure: {
+        code: "model-unconstructable",
+        message: `模型服务 ${service.provider} 缺少可用的地址或接口协议`,
+      },
+    };
+  }
+  return synthesizeRuntimeModel(
+    {
+      kind: "openai-compatible",
+      provider: service.provider,
+      baseUrl: target.baseUrl,
+      api: target.api as (typeof CUSTOM_PROVIDER_APIS)[number],
+      credential: "",
+    },
+    discovery,
+  );
 }
 
-type Admission = {
-  keys: RepoKey[];
-  /** 该仓库的模型覆盖(JSON),null 即跟随全局。与 key 同一次开库读出。 */
-  reviewersJson: string | null;
-};
+function materializedReviewerPlan(
+  spec: ReviewerSpec,
+  service: ModelServiceRecord | undefined,
+  target: ModelServiceTarget | undefined,
+  conflictingProviders: ReadonlySet<string>,
+  credential: string | undefined,
+): ReviewerRuntimePlan {
+  const identity = modelIdentity(spec);
+  if (service === undefined) {
+    return Object.freeze({
+      spec: Object.freeze({ ...spec }),
+      modelServiceVersion: null,
+      target: null,
+      runtimeModel: null,
+      credential: null,
+      failure: `模型服务 ${spec.provider} 不存在,${identity} 这次没跑。去模型服务页配置后重跑。`,
+    });
+  }
+
+  const automatic = service.automaticModels.find((model) => model.id === spec.model);
+  const supplement = service.supplements.find((entry) => entry.model === spec.model);
+  const targetFingerprint =
+    target === undefined ? undefined : modelServiceTargetFingerprint(target.baseUrl, target.api);
+  const targetMatchesCommittedVersion =
+    targetFingerprint !== undefined && service.targetFingerprint === targetFingerprint;
+  const hasCurrentSource =
+    targetMatchesCommittedVersion &&
+    (automatic !== undefined ||
+      supplement?.source === "migration-retention" ||
+      (supplement?.source === "manual" && supplement.targetFingerprint === targetFingerprint));
+  const discovery: DiscoveredModel = automatic ?? {
+    identity,
+    provider: spec.provider,
+    id: spec.model,
+    fields: {},
+  };
+  const synthesis = synthesisForRun(service, discovery, target);
+  const runtimeModel = synthesis.ok ? frozenRuntimeModel(synthesis.value.runtime) : null;
+
+  let failure: string | null = null;
+  if (conflictingProviders.has(spec.provider)) {
+    failure =
+      `自定义 provider ${spec.provider} 的名字与 Pi 内置的同名 provider 撞上了,` +
+      `${identity} 这次没跑。去模型服务页改名重建或删除它。`;
+  } else if (!targetMatchesCommittedVersion) {
+    failure = service.type === "builtin"
+      ? `Pi 内置目标已经变化，${identity} 这次没跑。请粘贴凭据重新配置模型服务。`
+      : `${service.provider} 的目标绑定不一致，${identity} 这次没跑。请重新配置模型服务。`;
+  } else if (service.credential.state === "unconfigured") {
+    failure =
+      `没有配置 ${spec.provider} 的模型凭据,${identity} 这次没跑。` +
+      "去面板的凭据页配好再重跑。";
+  } else if (service.credential.state === "pending-reverification") {
+    failure = `${spec.provider} 的模型凭据待重新验证,${identity} 这次没跑。`;
+  } else if (credential === undefined || credential === "") {
+    failure = `${spec.provider} 的模型凭据不可用,${identity} 这次没跑。`;
+  } else if (!hasCurrentSource) {
+    failure = `模型来源不存在: ${identity},这次没跑。去模型服务页恢复来源后重跑。`;
+  } else if (!synthesis.ok) {
+    failure = `${synthesis.failure.message},${identity} 这次没跑。`;
+  }
+
+  return Object.freeze({
+    spec: Object.freeze({ ...spec }),
+    modelServiceVersion: service.version,
+    target: target === undefined ? null : Object.freeze({ ...target }),
+    runtimeModel,
+    credential: failure === null ? credential ?? null : null,
+    failure,
+  });
+}
+
+/**
+ * 自动投递与手动重跑共用的唯一启动入口。一次 SQLite 读事务固定生效组合、批次上限、引用
+ * 服务版本及其密文；事务外只解析这份快照并各解密一次，第一批开始后不再读当前配置。
+ */
+async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<ReviewRunPlan> {
+  const snapshot = withStore(deps.dbPath, (store) => store.getReviewRunSnapshot(repoId));
+  const customProviders = snapshot.modelServices
+    .filter((service) => service.type === "custom")
+    .map((service) => service.provider);
+  const [conflictingProviders, builtinTargets] = await Promise.all([
+    conflictingBuiltinProviderNames(customProviders),
+    Promise.all(
+      snapshot.modelServices
+        .filter((service) => service.type === "builtin")
+        .map(async (service) =>
+          [service.provider, await resolvePiBuiltinProviderTarget(service.provider)] as const,
+        ),
+    ),
+  ]);
+
+  const services = new Map(snapshot.modelServices.map((service) => [service.provider, service]));
+  const targets = new Map<string, ModelServiceTarget>();
+  for (const service of snapshot.modelServices) {
+    if (service.type === "custom" && service.baseUrl !== null && service.api !== null) {
+      targets.set(service.provider, { baseUrl: service.baseUrl, api: service.api });
+    }
+  }
+  for (const [provider, target] of builtinTargets) {
+    if (target !== undefined) targets.set(provider, target);
+  }
+
+  const credentials = new Map<string, string>();
+  const masterKey = deps.credentialMasterKey;
+  if (masterKey !== undefined && masterKey !== "") {
+    for (const service of snapshot.modelServices) {
+      const target = targets.get(service.provider);
+      const targetFingerprint =
+        target === undefined ? undefined : modelServiceTargetFingerprint(target.baseUrl, target.api);
+      if (
+        targetFingerprint === undefined ||
+        service.targetFingerprint !== targetFingerprint ||
+        conflictingProviders.has(service.provider)
+      ) continue;
+      const ciphertext = service.credential.apiKeyEncrypted;
+      if (service.credential.state !== "verified" || ciphertext === null) continue;
+      const credential = decryptCredential(masterKey, ciphertext);
+      if (credential !== undefined && credential !== "") {
+        credentials.set(service.provider, credential);
+      }
+    }
+  }
+
+  const plans = Object.freeze(
+    snapshot.reviewers.map((spec) =>
+      materializedReviewerPlan(
+        spec,
+        services.get(spec.provider),
+        targets.get(spec.provider),
+        conflictingProviders,
+        credentials.get(spec.provider),
+      ),
+    ),
+  );
+  return createReviewRunPlan(
+    deps.buildReviewers(plans),
+    snapshot.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+    plans.map(reviewerPin),
+  );
+}
+
+type Admission = { keys: RepoKey[] };
 
 function lookupAdmission(dbPath: string, repoId: number): Admission {
-  return withStore(dbPath, (store) => ({
-    keys: store.listRepoKeys(repoId),
-    reviewersJson: store.getRepo(repoId)?.reviewersJson ?? null,
-  }));
+  return withStore(dbPath, (store) => ({ keys: store.listRepoKeys(repoId) }));
 }
 
 /**
@@ -442,29 +632,19 @@ async function startRun(
   deps: WebhookServerDeps,
   forge: Forge,
   event: NormalizedEvent,
-  specs: readonly ReviewerSpec[],
+  plan: ReviewRunPlan,
   triggeredBy?: string,
 ): Promise<void> {
   const settled = deps.onRunSettled ?? logFailure;
   try {
-    // 撞名的自定义 provider 现算(issue #94):判据是「库里的登记 ∩ Pi 内置目录」这个交集,
-    // 不落库,所以操作员改完名字下一次投递就自己恢复了。一家自定义 provider 都没登记时它连
-    // 运行时都不建。
-    const conflicting = await conflictingProviderNames(
-      withStore(deps.dbPath, (store) => store.listCustomProviders()),
-    );
-    // 组装就在这里:凭据在 Run 开始时快照一次,缺哪一家由那一家的 Reviewer 报失败。
-    const reviewers = deps.buildReviewers(specs, credentialSnapshot(deps), conflicting);
-    const maxChangedLinesPerBatch = globalSettings(deps).maxChangedLinesPerBatch;
     await runReview(
       { owner: event.owner, repo: event.repo, number: event.number },
       {
         forge,
-        reviewers,
+        ...plan,
         cacheDir: deps.cacheDir,
         dbPath: deps.dbPath,
         ...(triggeredBy === undefined ? {} : { triggeredBy }),
-        ...(maxChangedLinesPerBatch === null ? {} : { maxChangedLinesPerBatch }),
       },
     );
   } catch (error) {
@@ -627,12 +807,11 @@ async function handle(
     return send(res, 200);
   }
 
-  // 每仓库的模型覆盖:语义是全量替换 reviewers 列表,没有覆盖就用全局。覆盖坏了
-  // (解析不了)按配置错误记录并回 200,与缺 Forge 同一档;放在 claim 之前——坏配置
-  // 不该吃掉幂等键,修好后同一 head commit 要能重新触发。
-  let specs: readonly ReviewerSpec[];
+  // 在 claim 之前完成唯一一次启动快照：坏覆盖或无法组装计划不该吃掉幂等键，修好后同一
+  // head commit 仍能重试。返回后当前设置、服务与凭据切版只影响下一轮。
+  let plan: ReviewRunPlan;
   try {
-    specs = resolveSpecs(deps, admission.reviewersJson, repoId);
+    plan = await buildRunPlan(deps, repoId);
   } catch (error) {
     (deps.onRunSettled ?? logFailure)(event, error);
     return send(res, 200);
@@ -646,7 +825,7 @@ async function handle(
   log(`${describe(event)} — 开始审查`);
   // 先回 200 再开跑:一次审查可能要跑很久,平台等不到那时候就会判超时。
   send(res, 200);
-  void startRun(deps, forge, event, specs);
+  void startRun(deps, forge, event, plan);
 }
 
 /** 请求路径,不含查询串。hook URL 会带 `?k=<代次>`(ADR 0007),匹配只看路径。 */
@@ -682,8 +861,15 @@ function sessionCookieHeader(prefix: string, value: string, maxAgeSeconds: numbe
   );
 }
 
-// `access` 在 `PanelRoute` 上必填:新增端点时必须同时声明门禁。
-type PanelAccess = PanelPermission | "public" | "authenticated-only" | "system-admin-only";
+// `access` 在 `PanelRoute` 上必填:新增端点时必须同时声明门禁。复合要求写明 anyOf/allOf，
+// 不把「写权限暗含读权限」之类的继承规则藏进鉴权器。
+export type PanelAccess =
+  | PanelPermission
+  | "public"
+  | "authenticated-only"
+  | "system-admin-only"
+  | { anyOf: readonly PanelPermission[] }
+  | { allOf: readonly PanelPermission[] };
 type PanelRouteContext = {
   req: IncomingMessage;
   res: ServerResponse;
@@ -705,14 +891,21 @@ type PanelRoute = {
   allowedWhilePasswordExpired?: true;
   handler: PanelRouteHandler;
 };
-/**
- * 自定义 provider 的名字与删除路径共用一个判据:名字要整个放进 URL,所以既限制为
- * 内置 provider id 同形的字符集,也限制在 64 字符内;登记得进就必须删得掉。
- */
-const CUSTOM_PROVIDER_NAME_MAX = 64;
-const CUSTOM_PROVIDER_NAME_PATTERN = `[a-z0-9-]{1,${CUSTOM_PROVIDER_NAME_MAX}}`;
-const CUSTOM_PROVIDER_NAME = new RegExp(`^${CUSTOM_PROVIDER_NAME_PATTERN}$`);
-const CUSTOM_PROVIDER_ROUTE = new RegExp(`^/custom-providers/(${CUSTOM_PROVIDER_NAME_PATTERN})$`);
+
+function panelPermissionGranted(
+  access: PanelAccess,
+  permissions: readonly PanelPermission[],
+): boolean {
+  if (typeof access === "string") {
+    return isPanelPermission(access) && permissions.includes(access);
+  }
+  if ("anyOf" in access) {
+    return access.anyOf.some((permission) => permissions.includes(permission));
+  }
+  return access.allOf.every((permission) => permissions.includes(permission));
+}
+/** 自定义模型服务名与删除路由共用的字符和长度边界。 */
+const CUSTOM_PROVIDER_NAME = /^[a-z0-9-]{1,64}$/;
 
 function listRepos(res: ServerResponse, deps: WebhookServerDeps): void {
   const rows = withStore(deps.dbPath, (store) => store.listRepos());
@@ -1048,7 +1241,7 @@ function handleLogout(req: IncomingMessage, res: ServerResponse, deps: WebhookSe
   res.end();
 }
 
-const PANEL_ROUTES: readonly PanelRoute[] = [
+export const PANEL_ROUTES: readonly PanelRoute[] = [
   {
     method: "POST",
     pattern: "/session",
@@ -1196,46 +1389,85 @@ const PANEL_ROUTES: readonly PanelRoute[] = [
     handler: ({ res, deps, hookManager }, match) =>
       handleHookCheck(res, deps, hookManager, Number(match![1])),
   },
-  { method: "GET", pattern: "/catalog", access: "model:read", handler: ({ res, deps }) => handleCatalog(res, deps) },
-  { method: "GET", pattern: "/credentials", access: "credential:read", handler: ({ res, deps }) => handleListCredentials(res, deps) },
   {
-    method: "PUT",
-    pattern: /^\/credentials\/([A-Za-z0-9_-]+)$/,
+    method: "GET",
+    pattern: "/model-services",
+    access: { anyOf: ["model:read", "credential:read"] },
+    handler: ({ res, deps, caller }) => handleListModelServices(res, deps, caller!),
+  },
+  {
+    method: "GET",
+    pattern: "/model-services/providers",
+    access: {
+      anyOf: ["model:read", "model:write", "credential:read", "credential:write"],
+    },
+    handler: ({ req, res, deps }) => handleBuiltinProviderSearch(req, res, deps),
+  },
+  {
+    method: "POST",
+    pattern: /^\/model-services\/builtin\/preview$/,
+    access: "credential:write",
+    handler: ({ req, res, deps }) => handlePreviewBuiltinModelService(req, res, deps),
+  },
+  {
+    method: "POST",
+    pattern: /^\/model-services\/builtin\/commit$/,
+    access: "credential:write",
+    handler: ({ req, res, deps }) => handleCommitBuiltinModelService(req, res, deps),
+  },
+  {
+    method: "POST",
+    pattern: /^\/model-services\/custom\/preview$/,
+    access: { allOf: ["model:write", "credential:write"] },
+    handler: ({ req, res, deps }) => handlePreviewCustomModelService(req, res, deps),
+  },
+  {
+    method: "POST",
+    pattern: /^\/model-services\/custom\/commit$/,
+    access: { allOf: ["model:write", "credential:write"] },
+    handler: ({ req, res, deps }) => handleCommitCustomModelService(req, res, deps),
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/model-services\/custom\/([a-z0-9-]{1,64})$/,
+    access: { allOf: ["model:write", "credential:write"] },
+    handler: ({ req, res, deps }, match) =>
+      handleDeleteCustomModelService(req, res, deps, match![1]!),
+  },
+  {
+    method: "POST",
+    pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/reverify$/,
     access: "credential:write",
     handler: ({ req, res, deps }, match) =>
-      handlePutCredential(req, res, deps, match![1]!),
+      handleReverifyModelService(req, res, deps, match![1]!),
   },
   {
     method: "DELETE",
-    pattern: /^\/credentials\/([A-Za-z0-9_-]+)$/,
+    pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/credential$/,
     access: "credential:write",
-    handler: ({ res, deps }, match) => handleRemoveCredential(res, deps, match![1]!),
+    handler: ({ req, res, deps }, match) =>
+      handleDeleteModelServiceCredential(req, res, deps, match![1]!),
   },
-  { method: "GET", pattern: "/model-rows", access: "model:read", handler: ({ res, deps }) => handleListModelRows(res, deps) },
   {
     method: "POST",
-    pattern: "/model-rows",
+    pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/refresh$/,
     access: "model:write",
-    handler: ({ req, res, deps }) => handleAddModelRow(req, res, deps),
+    handler: ({ req, res, deps }, match) =>
+      handleRefreshModelService(req, res, deps, match![1]!),
+  },
+  {
+    method: "POST",
+    pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/supplements$/,
+    access: "model:write",
+    handler: ({ req, res, deps }, match) =>
+      handleAddModelSupplement(req, res, deps, match![1]!),
   },
   {
     method: "DELETE",
-    pattern: "/model-rows",
+    pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/supplements$/,
     access: "model:write",
-    handler: ({ req, res, deps }) => handleRemoveModelRow(req, res, deps),
-  },
-  { method: "GET", pattern: "/custom-providers", access: "model:read", handler: ({ res, deps }) => handleListCustomProviders(res, deps) },
-  {
-    method: "POST",
-    pattern: "/custom-providers",
-    access: "model:write",
-    handler: ({ req, res, deps }) => handleAddCustomProvider(req, res, deps),
-  },
-  {
-    method: "DELETE",
-    pattern: CUSTOM_PROVIDER_ROUTE,
-    access: "model:write",
-    handler: ({ res, deps }, match) => handleRemoveCustomProvider(res, deps, match![1]!),
+    handler: ({ req, res, deps }, match) =>
+      handleDeleteModelSupplement(req, res, deps, match![1]!),
   },
 ];
 
@@ -1317,7 +1549,7 @@ async function handlePanelApi(
     matched.route.access !== "authenticated-only" &&
     matched.route.access !== "system-admin-only" &&
     !session.isSystemAdmin &&
-    !session.permissions.includes(matched.route.access)
+    !panelPermissionGranted(matched.route.access, session.permissions)
   ) {
     return sendJson(res, 403, { error: "没有这一格权限" });
   }
@@ -1348,13 +1580,8 @@ function handleGetSettings(res: ServerResponse, deps: WebhookServerDeps): void {
 }
 
 /**
- * 改写全局设置,回 GET 的同一形状。模型组合的校验判据与每仓库覆盖同一套,报错里的
- * 来源标注写「全局模型组合」,只有「空不空」这一条两层不同:
- *
- * 全局组合允许为空——空库刚部署时它本来就是空的,而这个状态有确定行为(投递照常受理,
- * 留下一条写明「还没配模型组合」的失败 Run,issue #66)。拒收空组合会把「只想先调批次
- * 上限」也一起连坐掉:这个端点是整表写入,两项在一次请求里。
- * 每仓库覆盖仍必须至少一个(issue #69),判据见 `assertReviewerSpecs`。
+ * 全局模型组合与批次上限各自可单独写。模型失效只阻止带 `reviewers` 的请求；只改批次
+ * 上限时保留原组合，不读取或重写它的形状。两项都给时仍在同一次 SQLite 写入里生效。
  */
 async function handlePutSettings(
   req: IncomingMessage,
@@ -1363,32 +1590,61 @@ async function handlePutSettings(
 ): Promise<void> {
   const body = await readBody(req, res);
   if (body === undefined) return;
-  const payload = safeParse(body) as {
+  const decoded = safeParse(body);
+  if (decoded === null || typeof decoded !== "object" || Array.isArray(decoded)) {
+    return sendJson(res, 400, { error: "body 要是 JSON 对象" });
+  }
+  const payload = decoded as {
     reviewers?: unknown;
     maxChangedLinesPerBatch?: unknown;
-  } | null;
-  if (payload === null) {
-    return sendJson(res, 400, { error: "body 要是 JSON" });
-  }
-  const parsed = parseReviewerSpecs(payload.reviewers, GLOBAL_REVIEWERS_CONTEXT, {
-    allowEmpty: true,
-  });
-  if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
-
-  // 缺省与显式清空都写成 null,读回来取默认值。
-  const limit = payload.maxChangedLinesPerBatch ?? null;
-  if (limit !== null && (typeof limit !== "number" || !Number.isInteger(limit) || limit <= 0)) {
+  };
+  const hasReviewers = Object.hasOwn(payload, "reviewers");
+  const hasLimit = Object.hasOwn(payload, "maxChangedLinesPerBatch");
+  if (!hasReviewers && !hasLimit) {
     return sendJson(res, 400, {
-      error: "maxChangedLinesPerBatch 要是正整数,留空即取默认值",
+      error: "body 至少要给 reviewers 或 maxChangedLinesPerBatch 一项",
     });
   }
 
-  withStore(deps.dbPath, (store) =>
-    store.putGlobalSettings({
-      reviewersJson: parsed.reviewersJson,
-      maxChangedLinesPerBatch: limit,
-    }),
-  );
+  let reviewersJson: string | undefined;
+  let reviewers: ReviewerSpec[] | undefined;
+  if (hasReviewers) {
+    const parsed = parseReviewerSpecs(payload.reviewers, GLOBAL_REVIEWERS_CONTEXT, {
+      allowEmpty: true,
+    });
+    if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
+    reviewersJson = parsed.reviewersJson;
+    reviewers = parsed.reviewers;
+    if (!await ensureModelCombinationAvailable(res, deps, reviewers, GLOBAL_REVIEWERS_CONTEXT)) {
+      return;
+    }
+  }
+
+  let limit: number | null | undefined;
+  if (hasLimit) {
+    const candidate = payload.maxChangedLinesPerBatch;
+    if (
+      candidate !== null &&
+      (typeof candidate !== "number" || !Number.isInteger(candidate) || candidate <= 0)
+    ) {
+      return sendJson(res, 400, {
+        error: "maxChangedLinesPerBatch 要是正整数，null 即取默认值",
+      });
+    }
+    limit = candidate;
+  }
+
+  const saved = withStore(deps.dbPath, (store) => {
+    const current = store.getGlobalSettings();
+    return store.putGlobalSettings({
+      reviewersJson: reviewersJson === undefined ? current.reviewersJson : reviewersJson,
+      maxChangedLinesPerBatch:
+        limit === undefined ? current.maxChangedLinesPerBatch : limit,
+    });
+  });
+  if (!saved) {
+    return sendJson(res, 409, { error: "模型服务状态已经变化，请重新选择模型组合" });
+  }
   return handleGetSettings(res, deps);
 }
 
@@ -1400,205 +1656,479 @@ const MASTER_KEY_MISSING =
   `没有设置环境变量 ${CREDENTIAL_MASTER_KEY_ENV},凭据加密不了也解不开。` +
   "在 .env 里补上它并重启服务。";
 
-/**
- * 模型目录:服务进程里那份 Pi 的全部 provider 与它们的模型,每家带上凭据是否已配、
- * 保存凭据时会不会真发验证请求。目录与凭据状态一次拿齐——分成两个端点要在前端合并两份
- * 数据,还多一次往返。`verifiable` 由服务端给,前端硬编码那四家会与这里漂移。
- *
- * 没配凭据的 provider 照常在结果里:面板要先能看见一家,才知道该去配它的凭据。
- */
-async function handleCatalog(res: ServerResponse, deps: WebhookServerDeps): Promise<void> {
-  const masterKey = deps.credentialMasterKey;
-  const { credentials, modelRows, customProviders } = withStore(deps.dbPath, (store) => ({
-    credentials: store.listModelCredentials(),
-    modelRows: store.listModelRows(),
-    customProviders: store.listCustomProviders(),
+type PanelCaller = NonNullable<PanelRouteContext["caller"]>;
+type ModelReadSource = "automatic" | ModelSupplementSource;
+
+type ModelUnavailableReason =
+  | "provider-name-conflict"
+  | "credential-unavailable"
+  | "model-source-missing";
+
+const MODEL_UNAVAILABLE_REASON_TEXT: Record<ModelUnavailableReason, string> = {
+  "provider-name-conflict": "provider 名字冲突，已停用",
+  "credential-unavailable": "模型凭据不可用",
+  "model-source-missing": "模型来源消失",
+};
+
+const BASELINE_RUNTIME_PROJECTION = {
+  input: MODEL_RUNTIME_BASELINE.input,
+  reasoning: MODEL_RUNTIME_BASELINE.reasoning,
+  contextWindow: MODEL_RUNTIME_BASELINE.contextWindow,
+  maxOutput: MODEL_RUNTIME_BASELINE.maxTokens,
+  cost: null,
+  sources: {
+    input: "runtime-baseline",
+    reasoning: "runtime-baseline",
+    contextWindow: "runtime-baseline",
+    maxOutput: "runtime-baseline",
+    cost: "unknown",
+  },
+} as const;
+
+type ProjectedServiceModel = {
+  provider: string;
+  id: string;
+  identity: string;
+  sources: readonly ModelReadSource[];
+  available: boolean;
+  unavailableReason: ModelUnavailableReason | null;
+  unavailableReasonText: string | null;
+  unavailableAction: "/credentials" | null;
+  discovery: {
+    name: string | null;
+    api: string | null;
+    baseUrl: string | null;
+    input: readonly ("text" | "image")[] | null;
+    reasoning: boolean | null;
+    contextWindow: number | null;
+    maxOutput: number | null;
+    cost: ModelCost | null;
+  };
+  runtime: {
+    input: readonly ("text" | "image")[];
+    reasoning: boolean;
+    contextWindow: number;
+    maxOutput: number;
+    cost: ModelCost | null;
+    sources: {
+      input: "trusted" | "runtime-baseline";
+      reasoning: "trusted" | "runtime-baseline";
+      contextWindow: "trusted" | "runtime-baseline";
+      maxOutput: "trusted" | "runtime-baseline";
+      cost: "trusted" | "unknown";
+    };
+  };
+};
+
+function modelRuntimeProjection(result: RuntimeSynthesisResult | undefined) {
+  if (result === undefined || !result.ok) return BASELINE_RUNTIME_PROJECTION;
+  const runtime = result.value.runtime;
+  return {
+    input: runtime.input,
+    reasoning: runtime.reasoning,
+    contextWindow: runtime.contextWindow,
+    maxOutput: runtime.maxTokens,
+    cost: runtime.cost ?? null,
+    sources: {
+      input: runtime.sources.input,
+      reasoning: runtime.sources.reasoning,
+      contextWindow: runtime.sources.contextWindow,
+      maxOutput: runtime.sources.maxTokens,
+      cost: runtime.sources.cost,
+    },
+  };
+}
+
+function modelAvailabilityProjection(
+  unavailableReason: ModelUnavailableReason | null,
+): Pick<
+  ProjectedServiceModel,
+  "available" | "unavailableReason" | "unavailableReasonText" | "unavailableAction"
+> {
+  return {
+    available: unavailableReason === null,
+    unavailableReason,
+    unavailableReasonText:
+      unavailableReason === null ? null : MODEL_UNAVAILABLE_REASON_TEXT[unavailableReason],
+    unavailableAction: unavailableReason === null ? null : "/credentials" as const,
+  };
+}
+
+function projectServiceModel(
+  service: ModelServiceRecord,
+  id: string,
+  sources: readonly ModelReadSource[],
+  automatic: ModelServiceRecord["automaticModels"][number] | undefined,
+  supplement: ModelServiceRecord["supplements"][number] | undefined,
+  serviceTarget: PiBuiltinProviderTarget | undefined,
+  credentialState: ModelServiceRecord["credential"]["state"],
+): ProjectedServiceModel {
+  const discovery = automatic?.fields ?? {};
+  let synthesis: RuntimeSynthesisResult | undefined;
+  if (service.type === "builtin" && serviceTarget !== undefined) {
+    synthesis = synthesizeRuntimeModel(
+      { kind: "builtin", provider: service.provider, credential: "" },
+      {
+        identity: modelIdentity({ provider: service.provider, model: id }),
+        provider: service.provider,
+        id,
+        fields: discovery,
+      },
+      serviceTarget,
+    );
+  } else if (
+    service.type === "custom" &&
+    serviceTarget !== undefined &&
+    CUSTOM_PROVIDER_APIS.includes(serviceTarget.api as (typeof CUSTOM_PROVIDER_APIS)[number])
+  ) {
+    synthesis = synthesizeRuntimeModel(
+      {
+        kind: "openai-compatible",
+        provider: service.provider,
+        baseUrl: serviceTarget.baseUrl,
+        api: serviceTarget.api as (typeof CUSTOM_PROVIDER_APIS)[number],
+        credential: "",
+      },
+      {
+        identity: modelIdentity({ provider: service.provider, model: id }),
+        provider: service.provider,
+        id,
+        fields: discovery,
+      },
+    );
+  }
+
+  const currentTargetFingerprint =
+    serviceTarget === undefined
+      ? undefined
+      : modelServiceTargetFingerprint(serviceTarget.baseUrl, serviceTarget.api);
+  const targetMatchesCommittedVersion =
+    currentTargetFingerprint !== undefined &&
+    service.targetFingerprint === currentTargetFingerprint;
+  const hasCurrentSource =
+    targetMatchesCommittedVersion &&
+    (automatic !== undefined ||
+      supplement?.source === "migration-retention" ||
+      (supplement?.source === "manual" &&
+        supplement.targetFingerprint === currentTargetFingerprint));
+  const unavailableReason: ModelUnavailableReason | null =
+    service.disabledReason === "name-conflict"
+      ? "provider-name-conflict"
+      : credentialState !== "verified"
+        ? "credential-unavailable"
+        : !hasCurrentSource || synthesis?.ok !== true
+          ? "model-source-missing"
+          : null;
+  return {
+    provider: service.provider,
+    id,
+    identity: modelIdentity({ provider: service.provider, model: id }),
+    sources,
+    ...modelAvailabilityProjection(unavailableReason),
+    discovery: {
+      name: discovery.name ?? null,
+      api: discovery.api ?? null,
+      baseUrl: discovery.baseUrl ?? null,
+      input: discovery.input ?? null,
+      reasoning: discovery.reasoning ?? null,
+      contextWindow: discovery.contextWindow ?? null,
+      maxOutput: discovery.maxTokens ?? null,
+      cost: discovery.cost ?? null,
+    },
+    runtime: modelRuntimeProjection(synthesis),
+  };
+}
+
+
+function projectMissingServiceModel(spec: ReviewerSpec): ProjectedServiceModel {
+  return {
+    provider: spec.provider,
+    id: spec.model,
+    identity: modelIdentity(spec),
+    sources: [],
+    ...modelAvailabilityProjection("model-source-missing"),
+    discovery: {
+      name: null,
+      api: null,
+      baseUrl: null,
+      input: null,
+      reasoning: null,
+      contextWindow: null,
+      maxOutput: null,
+      cost: null,
+    },
+    runtime: BASELINE_RUNTIME_PROJECTION,
+  };
+}
+
+async function projectCurrentModelServices(
+  deps: WebhookServerDeps,
+  retainedSpecs: readonly ReviewerSpec[] = [],
+  includeModels = true,
+) {
+  const { services, supplements, references } = withStore(deps.dbPath, (store) => ({
+    services: store.listModelServices(),
+    supplements: store.listModelSupplements(),
+    references: includeModels ? store.listModelReferences() : [],
   }));
-  // 目录是 Pi 的内置事实,与凭据无关,缺主密钥照样给——选模型这件事本身不需要凭据,
-  // 而看不见目录的人也就无从知道该去配哪一家。缺主密钥时全部按未配置算。
-  const configured = new Set(
-    masterKey === undefined || masterKey === ""
-      ? []
-      : credentials
-          // 判据与凭据列表同一套:解不开的密文按未配置算。
-          .filter((row) => decryptCredential(masterKey, row.apiKeyEncrypted) !== undefined)
-          .map((row) => row.provider),
+  const retainedByIdentity = new Map<string, ReviewerSpec>();
+  const retainedByProvider = new Map<string, ReviewerSpec[]>();
+  const retain = (spec: ReviewerSpec): void => {
+    const identity = modelIdentity(spec);
+    if (retainedByIdentity.has(identity)) return;
+    retainedByIdentity.set(identity, spec);
+    const providerSpecs = retainedByProvider.get(spec.provider) ?? [];
+    providerSpecs.push(spec);
+    retainedByProvider.set(spec.provider, providerSpecs);
+  };
+  for (const reference of references) retain(reference);
+  for (const spec of retainedSpecs) retain(spec);
+
+  const conflicting = await conflictingBuiltinProviderNames(
+    services.filter((service) => service.type === "custom").map((service) => service.provider),
   );
-  // 单价留空的模型行,按 provider 归拢(issue #89)。判据只在库里:目录里的 `cost` 是 Pi
-  // 给的结果,而手填一行留空时 Pi 填的默认值恰好也是 0,内置表里本来就有一百多个模型的
-  // 单价是真的 0——拿 `cost` 判会把「免费」诬告成「没记账」。留空的判据与落盘那一处同一条
-  // (`writeSharedModelsConfig`):两项都是 null 才算留空,只填一头时另一头按 0 落进单价表,
-  // 那是操作员写下的 0。库里没有行的模型(内置、远程目录、厂商目录)一律不标。
-  const costUnset = new Map<string, Set<string>>();
-  for (const row of modelRows) {
-    if (row.costInput !== null || row.costOutput !== null) continue;
-    let models = costUnset.get(row.provider);
-    if (models === undefined) costUnset.set(row.provider, (models = new Set()));
-    models.add(row.model);
+  const supplementByProvider = new Map<string, ModelServiceRecord["supplements"]>();
+  for (const supplement of supplements) {
+    const current = supplementByProvider.get(supplement.provider) ?? [];
+    current.push(supplement);
+    supplementByProvider.set(supplement.provider, current);
   }
-  // 操作员自己加的那几家(issue #88)。判据在库里而不在目录里:目录里的一家看不出自己是
-  // 内置的还是登记进来的,而面板要把两者分开呈现(删得掉哪一家、改得动哪一家的端点)。
-  const customNames = new Set(customProviders.map((entry) => entry.name));
-  // 撞名的那几家(issue #94)。名字被 Pi 内置的同名 provider 占用时目录里那一条是内置那一家
-  // (撞名的不落进派生文件),`custom` 与它同时为真即这一档:登记还在库里、面板删得掉,可是
-  // 这一家已经停用。判据现算不落库,冲突消失后下一次读目录就恢复。
-  const conflicting = await conflictingProviderNames(customProviders);
-  const verifiable = new Set(CHECKED_PROVIDERS);
-  const catalog = await modelCatalog();
-  return sendJson(res, 200, {
-    // 远程那一层的状态照原样透出:`unavailable` 时给出的只有内置目录,选择器里会少
-    // 掉 pi.dev 上的那部分模型,不透出去就查不出少在哪。
-    remote: catalog.remote,
-    // 厂商目录那一层按 provider 分开报,与远程那一层不合并:两层都可能少掉一批模型,
-    // 合成一个字段就分不清是哪一层没生效。前端这轮不读它,运维读 API 或日志。
-    vendors: catalog.vendors,
-    providers: catalog.providers.map((provider) => {
-      const unset = costUnset.get(provider.id);
-      return {
-        id: provider.id,
-        name: provider.name,
-        configured: configured.has(provider.id),
-        // 真发验证请求的那几家,判据就是 `credential-check.ts` 认得的那张表。
-        verifiable: verifiable.has(provider.id),
-        // 真即这一家是操作员自己加的自定义 provider,不是 Pi 内置的那些家。
-        custom: customNames.has(provider.id),
-        // 真即这个名字与 Pi 内置的同名 provider 撞上了,这一家已停用(issue #94)。
-        conflict: conflicting.has(provider.id),
-        models: provider.models.map((model) => ({
-          ...model,
-          // 真即这个模型的 Review Run 成本会记成零:成本取自这张单价表,而留空的行走的是
-          // Pi 的默认值 0。面板据此在模型行与已选列表上标出来。
-          costUnset: unset !== undefined && unset.has(model.id),
-        })),
-      };
-    }),
-  });
+
+  const projected = await Promise.all(services.map(async (stored) => {
+    const service = {
+      ...stored,
+      disabledReason:
+        stored.type === "custom"
+          ? conflicting.has(stored.provider) ? "name-conflict" as const : null
+          : stored.disabledReason,
+      supplements: supplementByProvider.get(stored.provider) ?? [],
+    };
+    const serviceTarget: PiBuiltinProviderTarget | undefined =
+      service.type === "builtin"
+        ? await resolvePiBuiltinProviderTarget(service.provider)
+        : service.baseUrl !== null &&
+            service.api !== null &&
+            CUSTOM_PROVIDER_APIS.includes(service.api as (typeof CUSTOM_PROVIDER_APIS)[number])
+          ? { baseUrl: service.baseUrl, api: service.api }
+          : undefined;
+    const currentTargetFingerprint = serviceTarget === undefined
+      ? undefined
+      : modelServiceTargetFingerprint(serviceTarget.baseUrl, serviceTarget.api);
+    const targetMatchesCommittedVersion =
+      currentTargetFingerprint !== undefined &&
+      service.targetFingerprint === currentTargetFingerprint;
+    const masterKey = deps.credentialMasterKey;
+    const plaintext =
+      !targetMatchesCommittedVersion ||
+      masterKey === undefined ||
+      masterKey === "" ||
+      service.credential.apiKeyEncrypted === null
+        ? undefined
+        : decryptCredential(masterKey, service.credential.apiKeyEncrypted);
+    const credentialState = service.credential.state === "unconfigured"
+      ? "unconfigured" as const
+      : !targetMatchesCommittedVersion
+        ? "pending-reverification" as const
+        : service.credential.state === "verified" && plaintext === undefined
+          ? "unconfigured" as const
+          : service.credential.state;
+    const health =
+      service.disabledReason === "name-conflict"
+        ? "disabled" as const
+        : credentialState !== "verified" || service.directory.state !== "available"
+          ? "attention" as const
+          : "healthy" as const;
+
+    let target: { baseUrl: string | null; api: string | null } | undefined;
+    let models: ProjectedServiceModel[] | undefined;
+    if (includeModels) {
+      const automaticById = new Map(service.automaticModels.map((model) => [model.id, model]));
+      const supplementById = new Map(service.supplements.map((entry) => [entry.model, entry]));
+      const sourceById = new Map<string, ModelReadSource[]>();
+      for (const model of service.automaticModels) sourceById.set(model.id, ["automatic"]);
+      for (const supplement of service.supplements) {
+        const sources = sourceById.get(supplement.model) ?? [];
+        if (!sources.includes(supplement.source)) sources.push(supplement.source);
+        sourceById.set(supplement.model, sources);
+      }
+      for (const retained of retainedByProvider.get(service.provider) ?? []) {
+        if (!sourceById.has(retained.model)) sourceById.set(retained.model, []);
+      }
+      models = [...sourceById.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([id, sources]) =>
+          projectServiceModel(
+            service,
+            id,
+            sources,
+            automaticById.get(id),
+            supplementById.get(id),
+            serviceTarget,
+            credentialState,
+          ),
+        );
+      target = service.type === "custom"
+        ? { baseUrl: service.baseUrl, api: service.api }
+        : { baseUrl: serviceTarget?.baseUrl ?? null, api: serviceTarget?.api ?? null };
+    }
+    return {
+      provider: service.provider,
+      name: service.provider,
+      type: service.type,
+      version: service.version,
+      health,
+      providerState: service.disabledReason === "name-conflict" ? "name-conflict" as const : "normal" as const,
+      target,
+      credential: {
+        state: credentialState,
+        last4: plaintext === undefined ? null : credentialTail(plaintext),
+        updatedAt: service.credential.updatedAt,
+        verifiedAt: service.credential.verifiedAt,
+        validationModel: service.credential.validationModel,
+        verificationSource: service.credential.verificationSource,
+      },
+      directory: service.directory,
+      models,
+    };
+  }));
+
+  const candidateByIdentity = new Map<string, ProjectedServiceModel>();
+  if (includeModels) {
+    for (const service of projected) {
+      for (const model of service.models ?? []) {
+        if (model.available || retainedByIdentity.has(model.identity)) {
+          candidateByIdentity.set(model.identity, model);
+        }
+      }
+    }
+    for (const spec of retainedByIdentity.values()) {
+      const identity = modelIdentity(spec);
+      if (!candidateByIdentity.has(identity)) {
+        candidateByIdentity.set(identity, projectMissingServiceModel(spec));
+      }
+    }
+  }
+  return {
+    services: projected,
+    candidates: [...candidateByIdentity.values()].sort((left, right) =>
+      left.identity.localeCompare(right.identity),
+    ),
+  };
 }
 
-/**
- * 凭据列表。只写不回显(ADR 0008):给 provider、是否已配、是否验证过、更新时间、
- * 尾 4 位。解不开的密文按未配置透出,不抛也不做重加密迁移。
- */
-function handleListCredentials(res: ServerResponse, deps: WebhookServerDeps): void {
-  const masterKey = deps.credentialMasterKey;
-  if (masterKey === undefined || masterKey === "") {
-    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
+async function ensureModelCombinationAvailable(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  specs: readonly ReviewerSpec[],
+  context: string,
+): Promise<boolean> {
+  const projection = await projectCurrentModelServices(deps, specs);
+  const candidateByIdentity = new Map(
+    projection.candidates.map((candidate) => [candidate.identity, candidate]),
+  );
+  const unavailable: {
+    identity: string;
+    reason: ModelUnavailableReason;
+    reasonText: string;
+    action: "/credentials";
+  }[] = [];
+  for (const spec of specs) {
+    const identity = modelIdentity(spec);
+    const candidate = candidateByIdentity.get(identity);
+    if (candidate?.available === true) continue;
+    const reason = candidate?.unavailableReason ?? "model-source-missing";
+    unavailable.push({
+      identity,
+      reason,
+      reasonText: candidate?.unavailableReasonText ?? MODEL_UNAVAILABLE_REASON_TEXT[reason],
+      action: candidate?.unavailableAction ?? "/credentials",
+    });
   }
-  const rows = withStore(deps.dbPath, (store) => store.listModelCredentials());
-  return sendJson(res, 200, {
-    credentials: rows.map((row) => {
-      const apiKey = decryptCredential(masterKey, row.apiKeyEncrypted);
-      return {
-        provider: row.provider,
-        configured: apiKey !== undefined,
-        // 假即保存时跳过了厂商验证:这一家没有验证端点,key 对不对要等 Review Run 才知道。
-        verified: row.verified,
-        updatedAt: row.updatedAt,
-        last4: apiKey === undefined ? null : credentialTail(apiKey),
-      };
-    }),
+  if (unavailable.length === 0) return true;
+  sendJson(res, 400, {
+    error: `${context}包含不可用模型：${unavailable
+      .map((entry) => `${entry.identity}（${entry.reasonText}）`)
+      .join("；")}。请先到模型服务恢复，或从组合中移除。`,
+    unavailable,
   });
+  return false;
 }
 
-/**
- * 写一家厂商的凭据。认得的那几家先真发一次最小请求验证,失败不落库并回报原因——key
- * 打错要在粘贴的那一刻显形,不能等下一个 PR 进来。
- *
- * 认不出的 provider 照样保存,只是跳过验证并标 `verified: false`:模型目录列出 Pi
- * 全部 39 家,拒收会让其余那些家的模型选得出、凭据配不上。同 provider 二次写入是覆盖。
- */
-async function handlePutCredential(
+async function handleListModelServices(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  caller: PanelCaller,
+): Promise<void> {
+  const canReadModels =
+    caller.isSystemAdmin || caller.permissions.includes("model:read");
+  const canReadCredential =
+    caller.isSystemAdmin || caller.permissions.includes("credential:read");
+  const projection = await projectCurrentModelServices(deps, [], canReadModels);
+  const services = projection.services.map((service) => {
+    const common = {
+      provider: service.provider,
+      name: service.name,
+      type: service.type,
+      version: service.version,
+      health: service.health,
+    };
+    const credential = canReadCredential
+      ? service.credential
+      : { state: service.credential.state };
+    if (!canReadModels) return { ...common, credential };
+    return {
+      ...common,
+      providerState: service.providerState,
+      target: service.target ?? { baseUrl: null, api: null },
+      credential,
+      directory: service.directory,
+      models: service.models ?? [],
+    };
+  });
+  return sendJson(
+    res,
+    200,
+    canReadModels ? { services, candidates: projection.candidates } : { services },
+  );
+}
+
+async function handleBuiltinProviderSearch(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
-  provider: string,
 ): Promise<void> {
-  const masterKey = deps.credentialMasterKey;
-  if (masterKey === undefined || masterKey === "") {
-    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
-  }
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body) as { apiKey?: unknown } | null;
-  if (payload === null || typeof payload.apiKey !== "string" || payload.apiKey === "") {
-    return sendJson(res, 400, { error: 'body 要是 {"apiKey": "..."} 形状的 JSON' });
-  }
-  const apiKey = payload.apiKey;
-
-  const check = await checkCredential(provider, apiKey);
-  if (!check.ok) {
-    return sendJson(res, 400, { error: `凭据没通过验证,没有保存:${check.reason}` });
-  }
-
-  const updatedAt = new Date((deps.now ?? Date.now)()).toISOString();
-  withStore(deps.dbPath, (store) =>
-    store.putModelCredential(
-      provider,
-      encryptCredential(masterKey, apiKey),
-      updatedAt,
-      check.verified,
-    ),
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "")
+    .get("query")
+    ?.trim()
+    .toLowerCase() ?? "";
+  const configured = new Map(
+    withStore(deps.dbPath, (store) => store.listModelServices()).map((service) => [
+      service.provider,
+      service,
+    ]),
   );
-  return sendJson(res, 200, {
-    provider,
-    configured: true,
-    verified: check.verified,
-    updatedAt,
-    last4: credentialTail(apiKey),
-  });
+  const providers = (await listPiBuiltinProviders())
+    .filter(
+      (provider) =>
+        query === "" ||
+        provider.id.toLowerCase().includes(query) ||
+        provider.name.toLowerCase().includes(query),
+    )
+    .map((provider) => {
+      const service = configured.get(provider.id);
+      return {
+        id: provider.id,
+        name: provider.name,
+        configured: service !== undefined,
+        version: service?.version ?? null,
+        conflict:
+          service?.type === "custom" || service?.disabledReason === "name-conflict",
+      };
+    });
+  return sendJson(res, 200, { providers });
 }
 
-/** 摘掉一家厂商的凭据。不存在也回 204——目标状态已达成。 */
-function handleRemoveCredential(
-  res: ServerResponse,
-  deps: WebhookServerDeps,
-  provider: string,
-): void {
-  if (deps.credentialMasterKey === undefined || deps.credentialMasterKey === "") {
-    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
-  }
-  withStore(deps.dbPath, (store) => store.removeModelCredential(provider));
-  return send(res, 204);
-}
-
-/**
- * 手填的模型行(issue #87)。回的是库里的原样:派生的用户模型配置与目录端点里那一份都
- * 从这些行重建,面板要能看见自己填过什么、删掉哪一条。
- */
-function handleListModelRows(res: ServerResponse, deps: WebhookServerDeps): void {
-  return sendJson(res, 200, { rows: withStore(deps.dbPath, (store) => store.listModelRows()) });
-}
-
-/**
- * 选填的一个数。缺省与 null 都按「没填」处理(落盘时整项不写,由 Pi 取默认值);填了就
- * 必须能落盘——Pi 对 contextWindow ≤ 0 直接抛,而它把这类错误吞进 provider 的合成里,
- * 那一行会连提示都没有地凭空消失,人只看到「保存成功却选不到」。
- */
-function optionalNumber(
-  value: unknown,
-  options: { min: number; integer?: boolean },
-): { ok: true; value: number | null } | { ok: false } {
-  if (value === undefined || value === null) return { ok: true, value: null };
-  if (typeof value !== "number" || !Number.isFinite(value) || value < options.min) {
-    return { ok: false };
-  }
-  if (options.integer === true && !Number.isInteger(value)) return { ok: false };
-  return { ok: true, value };
-}
-
-/**
- * 加一条手填的模型行。三道拒收:provider 要在模型目录里、要已配模型凭据、model id 非空。
- *
- * 凭据是硬门禁(issue #80):选择器今天就以凭据为准(未配凭据的那一家整组 disabled),
- * 放开到全部 39 家会让同一个 provider 点不动却填得进,两套规则并存。填一个目录里没有的
- * provider 落到的是自定义 provider 那条入口,不是这一条。
- *
- * model id 本身不校验:填错了由子进程报「模型不存在」,单个 Reviewer 失败不拦整轮,失败
- * 原因落库并显示在评审记录上(issue #65 的既有链路)。
- *
- * 回的形状与 GET 相同——加完立刻要显示完整的一览,让前端再打一次列表是白付一次往返。
- */
-async function handleAddModelRow(
+async function handlePreviewBuiltinModelService(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
@@ -1607,374 +2137,1295 @@ async function handleAddModelRow(
   if (body === undefined) return;
   const payload = safeParse(body) as {
     provider?: unknown;
-    model?: unknown;
-    costInput?: unknown;
-    costOutput?: unknown;
-    contextWindow?: unknown;
+    credential?: unknown;
+    expectedVersion?: unknown;
   } | null;
-  if (payload === null) {
-    return sendJson(res, 400, { error: "body 要是 JSON" });
+  if (
+    payload === null ||
+    typeof payload.provider !== "string" ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(payload.provider) ||
+    typeof payload.credential !== "string" ||
+    payload.credential.length === 0 ||
+    !(payload.expectedVersion === null ||
+      (Number.isInteger(payload.expectedVersion) && Number(payload.expectedVersion) > 0))
+  ) {
+    return sendJson(res, 400, { error: "内置模型服务候选形状不对" });
   }
-  if (typeof payload.provider !== "string" || payload.provider === "") {
-    return sendJson(res, 400, { error: "provider 要从模型目录里选一家。" });
+  const provider = payload.provider;
+  const expectedVersion = payload.expectedVersion as number | null;
+  const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
+  if (current !== undefined && current.type !== "builtin") {
+    return sendJson(res, 409, { error: `${provider} 已被同名自定义模型服务占用` });
   }
-  const model = typeof payload.model === "string" ? payload.model.trim() : "";
-  if (model === "") {
-    return sendJson(res, 400, { error: "model id 不能是空的,填厂商文档里那个模型标识。" });
-  }
-  const costInput = optionalNumber(payload.costInput, { min: 0 });
-  const costOutput = optionalNumber(payload.costOutput, { min: 0 });
-  const contextWindow = optionalNumber(payload.contextWindow, { min: 1, integer: true });
-  if (!costInput.ok || !costOutput.ok || !contextWindow.ok) {
-    return sendJson(res, 400, {
-      error: "单价要是不小于 0 的数,上下文窗口要是正整数;两项都能留空,留空即取 Pi 的默认值。",
+  const actualVersion = current?.version ?? null;
+  if (actualVersion !== expectedVersion) {
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新打开配置",
+      expectedVersion,
+      actualVersion,
     });
   }
+  const target = await resolvePiBuiltinProviderTarget(provider);
+  if (target === undefined) {
+    return sendJson(res, 400, { error: `Pi 没有内置 provider ${provider}` });
+  }
+  const catalogStorePath = modelCatalogStorePath(deps.cacheDir);
+  const discovered = await (deps.discoverModelServiceModels ?? discoverModels)(
+    { kind: "builtin", provider, credential: payload.credential },
+    { allowNetwork: true, ...(catalogStorePath === undefined ? {} : { catalogStorePath }) },
+  );
+  if (!discovered.ok) {
+    return sendJson(res, 422, { error: discovered.failure.message, failure: discovered.failure });
+  }
+  return sendJson(res, 200, {
+    provider,
+    expectedVersion,
+    target,
+    models: discovered.models,
+    ignoredModelCount: discovered.ignoredCount,
+  });
+}
 
+async function commitVerifiedBuiltinModelService(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  input: {
+    provider: string;
+    credential: string;
+    credentialUpdatedAt?: string;
+    validationModel: string;
+    expectedVersion: number | null;
+  },
+): Promise<void> {
   const masterKey = deps.credentialMasterKey;
-  // 没有主密钥就判不出哪一家配过凭据,而凭据是这个端点的门禁:与凭据页同一档回 503。
   if (masterKey === undefined || masterKey === "") {
     return sendJson(res, 503, { error: MASTER_KEY_MISSING });
   }
-
-  const wanted = payload.provider;
-  const provider = (await modelCatalog()).providers.find((entry) => entry.id === wanted);
-  if (provider === undefined) {
-    return sendJson(res, 400, {
-      error: `模型目录里没有 ${wanted} 这一家,手填的模型行只能加在目录里已有的厂商下。`,
+  const current = withStore(deps.dbPath, (store) => store.getModelService(input.provider));
+  if (current !== undefined && current.type !== "builtin") {
+    return sendJson(res, 409, { error: `${input.provider} 已被同名自定义模型服务占用` });
+  }
+  const actualVersion = current?.version ?? null;
+  if (actualVersion !== input.expectedVersion) {
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新打开配置",
+      expectedVersion: input.expectedVersion,
+      actualVersion,
     });
   }
-  // 接口协议与 base URL 是从该家的第一个模型继承来的,一个模型都没有就继承不到:Pi 会把
-  // 这一行整个丢掉(内置目录里 radius 就是这一档)。
-  if (provider.models.length === 0) {
-    return sendJson(res, 400, {
-      error: `${provider.id} 在模型目录里一个模型都没有,手填的行继承不到接口协议与 base URL,填了也取不到。`,
-    });
+  const target = await resolvePiBuiltinProviderTarget(input.provider);
+  if (target === undefined) {
+    return sendJson(res, 400, { error: `Pi 没有内置 provider ${input.provider}` });
   }
-  const { credentials, customProviders } = withStore(deps.dbPath, (store) => ({
-    credentials: store.listModelCredentials(),
-    customProviders: store.listCustomProviders(),
-  }));
-  // 撞名的那一家整个停用了(issue #94):派生文件里没有它,往它下面填的行会落库却永远进不了
-  // 模型目录,那就是「保存成功却选不到」。这一道必须自己判——上面两道都过得去:撞上的内置
-  // 那一家在目录里、也有模型,而凭据就是登记撞名那一家时落下的那一把。
-  if ((await conflictingProviderNames(customProviders)).has(provider.id)) {
-    return sendJson(res, 400, {
-      error:
-        `${provider.id} 这个名字与 Pi 内置的同名 provider 撞上了,你登记的那一家已停用,` +
-        "填在它下面的模型行进不了模型目录。先给那一家改个名字重建、或者把它删掉,再回来填。",
-    });
-  }
-  const configured = credentials.some(
-    (row) =>
-      row.provider === provider.id &&
-      // 判据与目录端点同一套:解不开的密文按未配置算。
-      decryptCredential(masterKey, row.apiKeyEncrypted) !== undefined,
-  );
-  if (!configured) {
-    return sendJson(res, 400, {
-      error: `${provider.id} 还没配模型凭据,先去凭据页粘一把 key,再在这一家下面填模型标识。`,
-    });
-  }
-
-  // 回响应体的那一份快照各读各的:它只是给面板显示用,派生文件那一份由重建自己现读。
-  const rows = withStore(deps.dbPath, (store) => {
-    store.putModelRow({
-      provider: provider.id,
-      model,
-      costInput: costInput.value,
-      costOutput: costOutput.value,
-      contextWindow: contextWindow.value,
-      createdAt: new Date((deps.now ?? Date.now)()).toISOString(),
-    });
-    return store.listModelRows();
+  const candidate = {
+    kind: "builtin" as const,
+    provider: input.provider,
+    credential: input.credential,
+  };
+  const catalogStorePath = modelCatalogStorePath(deps.cacheDir);
+  const discovered = await (deps.discoverModelServiceModels ?? discoverModels)(candidate, {
+    allowNetwork: true,
+    ...(catalogStorePath === undefined ? {} : { catalogStorePath }),
   });
-  const failure = await rebuildModelsConfig(deps.dbPath);
-  if (failure !== undefined) return sendJson(res, 500, { error: rebuildFailureMessage(failure) });
-  return sendJson(res, 200, { rows });
+  const validationDiscovery = discovered.ok
+    ? discovered.models.find((model) => model.id === input.validationModel)
+    : undefined;
+  const validation = await validateMinimalInference(
+    candidate,
+    validationDiscovery ?? input.validationModel,
+  );
+  if (!validation.ok) {
+    return sendJson(res, 422, { error: validation.failure.message, failure: validation.failure });
+  }
+
+  const committedAt = new Date((deps.now ?? Date.now)()).toISOString();
+  const targetFingerprint = modelServiceTargetFingerprint(target.baseUrl, target.api);
+  const needsValidationSupplement = !discovered.ok || validationDiscovery === undefined;
+  const supplements = (current?.supplements ?? []).map((entry) => ({
+    model: entry.model,
+    source: entry.source,
+    targetFingerprint: entry.targetFingerprint,
+    createdAt: entry.createdAt,
+  }));
+  if (needsValidationSupplement) {
+    const supplement = {
+      model: input.validationModel,
+      source: "manual" as const,
+      targetFingerprint,
+      createdAt:
+        supplements.find((entry) => entry.model === input.validationModel)?.createdAt ?? committedAt,
+    };
+    const index = supplements.findIndex((entry) => entry.model === input.validationModel);
+    if (index === -1) supplements.push(supplement);
+    else supplements[index] = supplement;
+  }
+
+  let directory: ModelServiceVersionCommit["directory"];
+  if (!discovered.ok) {
+    const lastSuccessAt = current?.directory.lastSuccessAt ?? null;
+    directory = {
+      state: lastSuccessAt === null ? "discovery-failed" : "refresh-failed",
+      lastAttemptAt: committedAt,
+      lastSuccessAt,
+      failure: discovered.failure.message,
+      ignoredModelCount: 0,
+    };
+  } else if (validationDiscovery === undefined) {
+    directory = {
+      state: "discovery-failed",
+      lastAttemptAt: committedAt,
+      lastSuccessAt: null,
+      failure: `最终目录里已没有验证模型 ${input.validationModel}；真实推理成功后已补录该模型`,
+      ignoredModelCount: discovered.ignoredCount,
+    };
+  } else {
+    directory = {
+      state: "available",
+      lastAttemptAt: committedAt,
+      lastSuccessAt: committedAt,
+      failure: null,
+      ignoredModelCount: discovered.ignoredCount,
+    };
+  }
+  const record: ModelServiceVersionCommit = {
+    provider: input.provider,
+    type: "builtin",
+    baseUrl: null,
+    api: null,
+    targetFingerprint,
+    disabledReason: null,
+    createdAt: current?.createdAt ?? committedAt,
+    updatedAt: committedAt,
+    credential: {
+      state: "verified",
+      apiKeyEncrypted: encryptCredential(masterKey, input.credential),
+      updatedAt: input.credentialUpdatedAt ?? committedAt,
+      verifiedAt: committedAt,
+      validationModel: modelIdentity({ provider: input.provider, model: input.validationModel }),
+      verificationSource: "inference",
+    },
+    directory,
+    automaticModels: discovered.ok ? discovered.models : (current?.automaticModels ?? []),
+    supplements,
+  };
+  const version = withStore(deps.dbPath, (store) =>
+    store.commitModelServiceVersion(input.expectedVersion, record),
+  );
+  if (version === undefined) {
+    const latestVersion = withStore(deps.dbPath, (store) =>
+      store.getModelService(input.provider)?.version ?? null,
+    );
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新打开配置",
+      expectedVersion: input.expectedVersion,
+      actualVersion: latestVersion,
+    });
+  }
+  return sendJson(res, 200, {
+    provider: input.provider,
+    version,
+    credential: { state: "verified" },
+    directory: { state: directory.state },
+  });
 }
 
-/**
- * 摘掉一条手填的模型行。目标走 body 而不是路径:model id 里既有斜杠
- * (`z-ai/glm-4.5-air`)又有冒号(`…:free`),塞进路径要靠 `%2F`,而外部反代常把它解回
- * 真正的斜杠,路由当场对不上。不存在的行也照样重建派生文件并回 204——目标状态已达成。
- */
-async function handleRemoveModelRow(
+async function handleCommitBuiltinModelService(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
 ): Promise<void> {
   const body = await readBody(req, res);
   if (body === undefined) return;
-  const payload = safeParse(body) as { provider?: unknown; model?: unknown } | null;
-  const provider = payload === null ? undefined : payload.provider;
-  const model = payload === null ? undefined : payload.model;
-  if (typeof provider !== "string" || typeof model !== "string") {
-    return sendJson(res, 400, {
-      error: 'body 要是 {"provider": "...", "model": "..."} 形状的 JSON',
-    });
+  const payload = safeParse(body) as {
+    provider?: unknown;
+    credential?: unknown;
+    validationModel?: unknown;
+    expectedVersion?: unknown;
+  } | null;
+  if (
+    payload === null ||
+    typeof payload.provider !== "string" ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(payload.provider) ||
+    typeof payload.credential !== "string" ||
+    payload.credential.length === 0 ||
+    typeof payload.validationModel !== "string" ||
+    payload.validationModel.length === 0 ||
+    payload.validationModel !== payload.validationModel.trim() ||
+    !(payload.expectedVersion === null ||
+      (Number.isInteger(payload.expectedVersion) && Number(payload.expectedVersion) > 0))
+  ) {
+    return sendJson(res, 400, { error: "内置模型服务最终候选形状不对" });
   }
-  withStore(deps.dbPath, (store) => store.removeModelRow(provider, model));
-  const failure = await rebuildModelsConfig(deps.dbPath);
-  if (failure !== undefined) return sendJson(res, 500, { error: rebuildFailureMessage(failure) });
-  return send(res, 204);
-}
-
-
-/**
- * 已登记的自定义 provider(issue #88)。回的是库里的原样:面板要能看见自己加过哪几家、
- * 各自指向哪个端点。那把 key 不在这里,凭据列表按 provider 给出它的状态。
- */
-function handleListCustomProviders(res: ServerResponse, deps: WebhookServerDeps): void {
-  return sendJson(res, 200, {
-    providers: withStore(deps.dbPath, (store) => store.listCustomProviders()),
+  return commitVerifiedBuiltinModelService(res, deps, {
+    provider: payload.provider,
+    credential: payload.credential,
+    validationModel: payload.validationModel,
+    expectedVersion: payload.expectedVersion as number | null,
   });
 }
 
-/**
- * 加一家自定义 provider:一个 OpenAI 兼容的端点,和内置那些家并列进模型目录。
- *
- * 五道拒收,每一道都对着一个查证过的 Pi 行为:
- *
- * 一、**名字撞上目录里已有的 id 或已登记的自定义 provider 时拒收。**Pi 对同名 provider
- *     不报错而是做覆盖:只给 base URL 不给模型列表时,内置那份模型列表原样保留、每一个都
- *     改指新端点(`applyModelsJson` 的第一步就是这个映射)。叫 `openai` 会让已有的模型组合
- *     悄声换掉接口地址,而面板上零痕迹——模型标识一个字都没变。判据取目录与库两处的并集:
- *     目录是权威的那一份,而派生文件一时写不出来时目录里看不到已登记的那几家,只查目录会
- *     让同一个名字被登记第二次(主键冲突直抛 500)。
- * 二、**名字含非法字符或者超过长度上限时拒收。**只小写字母、数字与连字符:与内置 id 同形,
- *     且顺带排除冒号——模型标识 `provider:model` 按第一个冒号切分,名字里带冒号会把标识切错
- *     位置。长度上限见 `CUSTOM_PROVIDER_NAME_MAX`:超长的名字删除时进不了路由,登得进去删不
- *     出来。
- * 三、**base URL 缺失时拒收。**四、**接口协议缺失或不在取值集里时拒收。**全新 provider
- *     没有继承来源(内置那些家的模型行从 `models[0]` 继承这两项),缺任一者 Pi 把这一家
- *     整个从目录里丢掉——不是报错,是消失,人只看到「保存成功却选不到」。
- * 五、**第一个 model id 缺失时拒收。**新加的一家要立刻有东西可选;那一行进 `model_row` 表,
- *     与手填那条入口复用同一张表与同一条派生链路。
- *
- * key 走既有的模型凭据加密路径(ADR 0008),只写不回显。自定义端点必然落在厂商验证认不出的
- * 那一类(认得的四家都是内置 id,而内置名字在第一道就被拒了),因此跳过验证并标成未验证:
- * key 对不对要等 Review Run 才知道。
- *
- * base URL 填错不在拒收之列:只要 `api` 与 `baseUrl` 两项都在,这一家就在目录里,地址对不
- * 对要到真请求那一刻才知道,那时留下的是一条带原因的 Reviewer 失败记录(issue #65)。
- *
- * 三张表(定义、第一个模型行、那把凭据)在一个事务里写齐(`registerCustomProvider`):分三句
- * 自动提交时中途报错会留下一份补不齐的半成品——重试撞上「名字已被占用」。
- */
-async function handleAddCustomProvider(
+async function handleReverifyModelService(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
+  provider: string,
 ): Promise<void> {
   const masterKey = deps.credentialMasterKey;
-  // 这一家的 key 与它一起落库,没有主密钥就加密不了:与凭据页同一档回 503。
   if (masterKey === undefined || masterKey === "") {
     return sendJson(res, 503, { error: MASTER_KEY_MISSING });
   }
   const body = await readBody(req, res);
   if (body === undefined) return;
   const payload = safeParse(body) as {
-    name?: unknown;
-    baseUrl?: unknown;
-    api?: unknown;
-    model?: unknown;
-    apiKey?: unknown;
+    validationModel?: unknown;
+    expectedVersion?: unknown;
   } | null;
-  if (payload === null) {
-    return sendJson(res, 400, { error: "body 要是 JSON" });
-  }
-
-  const name = typeof payload.name === "string" ? payload.name.trim() : "";
-  if (!CUSTOM_PROVIDER_NAME.test(name)) {
-    return sendJson(res, 400, {
-      error:
-        `provider 的名字只能用小写字母、数字与连字符,1 到 ${CUSTOM_PROVIDER_NAME_MAX} 个字符。` +
-        "与 Pi 内置那些家的 id 同形,而且不能带冒号——模型标识 provider:model 按第一个冒号切分;" +
-        "长度上限是因为删除时名字要整个放进 URL 路径,过长的请求行在路由之前就被拒了。",
-    });
-  }
-  const baseUrl = typeof payload.baseUrl === "string" ? payload.baseUrl.trim() : "";
-  if (baseUrl === "") {
-    return sendJson(res, 400, {
-      error:
-        "base URL 不能留空:全新的一家 provider 没有可继承的来源,缺了它 Pi 会把这一家整个" +
-        "从模型目录里丢掉,而不是报错。填厂商或网关文档里那个 OpenAI 兼容的基地址。",
-    });
-  }
-  const api = typeof payload.api === "string" ? payload.api.trim() : "";
-  if (!(CUSTOM_PROVIDER_APIS as readonly string[]).includes(api)) {
-    return sendJson(res, 400, {
-      error:
-        `接口协议要从 ${CUSTOM_PROVIDER_APIS.join(" / ")} 里选一个,留空或填别的值时 Pi 会把` +
-        "这一家整个从模型目录里丢掉。走 /chat/completions 的选 openai-completions,走 /responses 的选 openai-responses。",
-    });
-  }
-  const model = typeof payload.model === "string" ? payload.model.trim() : "";
-  if (model === "") {
-    return sendJson(res, 400, {
-      error: "第一个 model id 不能是空的:新加的一家要立刻有东西可选。填这个端点上那个模型标识。",
-    });
-  }
-  const apiKey = typeof payload.apiKey === "string" ? payload.apiKey : "";
-  if (apiKey === "") {
-    return sendJson(res, 400, {
-      error: "key 不能留空:一个名字对应一把模型凭据,没有它这一家的 Review Run 一开跑就失败。",
-    });
-  }
-
-  const existing = withStore(deps.dbPath, (store) => store.listCustomProviders());
-  const catalog = await modelCatalog();
   if (
-    catalog.providers.some((provider) => provider.id === name) ||
-    existing.some((provider) => provider.name === name)
+    payload === null ||
+    typeof payload.validationModel !== "string" ||
+    payload.validationModel.length === 0 ||
+    payload.validationModel !== payload.validationModel.trim() ||
+    !Number.isInteger(payload.expectedVersion) ||
+    Number(payload.expectedVersion) <= 0
   ) {
+    return sendJson(res, 400, { error: "模型服务重验参数形状不对" });
+  }
+  const validationModel = payload.validationModel;
+  const expectedVersion = Number(payload.expectedVersion);
+  const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
+  if (current === undefined) {
+    return sendJson(res, 404, { error: `没有模型服务 ${provider}` });
+  }
+  if (current.version !== expectedVersion) {
     return sendJson(res, 409, {
-      error:
-        `${name} 这个名字已被占用,换一个。Pi 对同名 provider 不报错而是做覆盖:` +
-        "这一家已有的模型会原样留着、却全部改指你填的这个端点,已经选进模型组合的模型标识" +
-        "一个字都不变,面板上看不出任何痕迹。",
+      error: "模型服务版本已变化，请重新打开配置",
+      expectedVersion,
+      actualVersion: current.version,
     });
   }
 
-  // 认不出的 provider 一个请求都不发,直接放行并标未验证。自定义端点必然走这一档,复用同
-  // 一条路径是为了让两个写入口的判据只有一处。
-  const check = await checkCredential(name, apiKey);
-  if (!check.ok) {
-    return sendJson(res, 400, { error: `凭据没通过验证,没有保存:${check.reason}` });
+  let candidate: ModelServiceCandidate;
+  let targetFingerprint: string;
+  if (current.type === "builtin") {
+    const target = await resolvePiBuiltinProviderTarget(provider);
+    if (target === undefined) {
+      return sendJson(res, 409, { error: `Pi 已没有内置 provider ${provider}` });
+    }
+    targetFingerprint = modelServiceTargetFingerprint(target.baseUrl, target.api);
+    if (current.targetFingerprint !== targetFingerprint) {
+      return sendJson(res, 409, { error: "Pi 内置目标已经变化，请粘贴凭据重新配置" });
+    }
+  } else {
+    if ((await conflictingBuiltinProviderNames([provider])).has(provider)) {
+      return sendJson(res, 409, { error: `${provider} 与当前 Pi 内置 provider 名字冲突，不能重新验证` });
+    }
+    if (
+      current.baseUrl === null ||
+      current.api === null ||
+      !CUSTOM_PROVIDER_APIS.includes(current.api as (typeof CUSTOM_PROVIDER_APIS)[number])
+    ) {
+      return sendJson(res, 409, { error: `${provider} 缺少可用的地址或接口协议` });
+    }
+    targetFingerprint = modelServiceTargetFingerprint(current.baseUrl, current.api);
+    if (current.targetFingerprint !== targetFingerprint) {
+      return sendJson(res, 409, { error: `${provider} 的目标绑定不一致，请重新配置` });
+    }
+  }
+  if (
+    current.credential.state === "unconfigured" ||
+    current.credential.apiKeyEncrypted === null ||
+    current.credential.updatedAt === null
+  ) {
+    return sendJson(res, 409, { error: `${provider} 没有可重验的已存模型凭据` });
+  }
+  const credential = decryptCredential(masterKey, current.credential.apiKeyEncrypted);
+  if (credential === undefined) {
+    return sendJson(res, 409, { error: `${provider} 的已存模型凭据无法解密，请重新粘贴` });
+  }
+  if (current.type === "builtin") {
+    return commitVerifiedBuiltinModelService(res, deps, {
+      provider,
+      credential,
+      credentialUpdatedAt: current.credential.updatedAt,
+      validationModel,
+      expectedVersion,
+    });
   }
 
-  const createdAt = new Date((deps.now ?? Date.now)()).toISOString();
-  const providers = withStore(deps.dbPath, (store) => {
-    store.registerCustomProvider({
-      name,
-      baseUrl,
-      api,
-      model,
-      apiKeyEncrypted: encryptCredential(masterKey, apiKey),
-      verified: check.verified,
-      createdAt,
-    });
-    return store.listCustomProviders();
+  candidate = {
+    kind: "openai-compatible",
+    provider,
+    baseUrl: current.baseUrl!,
+    api: current.api as (typeof CUSTOM_PROVIDER_APIS)[number],
+    credential,
+  };
+  const catalogStorePath = modelCatalogStorePath(deps.cacheDir);
+  const discovered = await (deps.discoverModelServiceModels ?? discoverModels)(candidate, {
+    allowNetwork: true,
+    ...(catalogStorePath === undefined ? {} : { catalogStorePath }),
   });
-  const failure = await rebuildModelsConfig(deps.dbPath);
-  if (failure !== undefined) return sendJson(res, 500, { error: rebuildFailureMessage(failure) });
-  return sendJson(res, 200, { providers });
+  const validationDiscovery = discovered.ok
+    ? discovered.models.find((model) => model.id === validationModel)
+    : undefined;
+  const validation = await validateMinimalInference(
+    candidate,
+    validationDiscovery ?? validationModel,
+  );
+  const secrets = [credential, current.credential.apiKeyEncrypted, masterKey];
+  if (!validation.ok) return sendCandidateFailure(res, validation.failure, secrets);
+
+  const committedAt = new Date((deps.now ?? Date.now)()).toISOString();
+  const supplements = current.supplements.map((entry) => ({
+    model: entry.model,
+    source: entry.source,
+    targetFingerprint: entry.targetFingerprint,
+    createdAt: entry.createdAt,
+  }));
+  if (!discovered.ok || validationDiscovery === undefined) {
+    const supplement = {
+      model: validationModel,
+      source: "manual" as const,
+      targetFingerprint,
+      createdAt:
+        current.supplements.find((entry) => entry.model === validationModel)?.createdAt ??
+        committedAt,
+    };
+    const existing = supplements.findIndex((entry) => entry.model === validationModel);
+    if (existing === -1) supplements.push(supplement);
+    else supplements[existing] = supplement;
+  }
+  const directory: ModelServiceVersionCommit["directory"] = !discovered.ok
+    ? {
+        state: current.directory.lastSuccessAt === null ? "discovery-failed" : "refresh-failed",
+        lastAttemptAt: committedAt,
+        lastSuccessAt: current.directory.lastSuccessAt,
+        failure: redactCandidateFailure(discovered.failure, secrets).message,
+        ignoredModelCount: 0,
+      }
+    : validationDiscovery === undefined
+      ? {
+          state: "discovery-failed",
+          lastAttemptAt: committedAt,
+          lastSuccessAt: null,
+          failure: `最终目录里已没有验证模型 ${validationModel}；真实推理成功后已补录该模型`,
+          ignoredModelCount: discovered.ignoredCount,
+        }
+      : {
+          state: "available",
+          lastAttemptAt: committedAt,
+          lastSuccessAt: committedAt,
+          failure: null,
+          ignoredModelCount: discovered.ignoredCount,
+        };
+  const record: ModelServiceVersionCommit = {
+    provider,
+    type: "custom",
+    baseUrl: current.baseUrl,
+    api: current.api,
+    targetFingerprint,
+    disabledReason: null,
+    createdAt: current.createdAt,
+    updatedAt: committedAt,
+    credential: {
+      state: "verified",
+      apiKeyEncrypted: current.credential.apiKeyEncrypted,
+      updatedAt: current.credential.updatedAt,
+      verifiedAt: committedAt,
+      validationModel: modelIdentity({ provider, model: validationModel }),
+      verificationSource: "inference",
+    },
+    directory,
+    automaticModels: discovered.ok ? discovered.models : current.automaticModels,
+    supplements,
+  };
+  const version = withStore(deps.dbPath, (store) =>
+    store.commitModelServiceVersion(expectedVersion, record),
+  );
+  if (version === undefined) {
+    const actualVersion = withStore(deps.dbPath, (store) =>
+      store.getModelService(provider)?.version ?? null,
+    );
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新打开配置",
+      expectedVersion,
+      actualVersion,
+    });
+  }
+  return sendJson(res, 200, {
+    provider,
+    version,
+    credential: { state: "verified" },
+    directory: { state: directory.state },
+  });
 }
 
-/**
- * 摘掉一家自定义 provider,连它的模型行与它那把凭据一起。
- *
- * 还被模型组合引用着就拒收并指名道姓说清是哪几处(全局组合与每仓库覆盖都查):删掉不问的话
- * 那些组合留着一个取不到的模型标识,下一次审查里那个模型报「模型不存在」,而人根本不会把它
- * 联想到这次删除。修法是先去那几处把它换掉,再回来删。
- *
- * 坏掉的覆盖 JSON(直接写库的遗留)按「引用不到」跳过,不让一行坏数据把删除卡死——它本来
- * 就已经在投递链上按配置错误处理了。
- */
-async function handleRemoveCustomProvider(
+async function handleDeleteModelServiceCredential(
+  req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
-  name: string,
+  provider: string,
 ): Promise<void> {
-  const referenced = withStore(deps.dbPath, (store) => {
-    const uses = (reviewersJson: string | null): boolean => {
-      if (reviewersJson === null) return false;
-      const specs = safeParseJson(reviewersJson);
-      return (
-        Array.isArray(specs) &&
-        specs.some(
-          (spec) =>
-            typeof spec === "object" && spec !== null && "provider" in spec && spec.provider === name,
-        )
-      );
-    };
-    const where: string[] = [];
-    if (uses(store.getGlobalSettings().reviewersJson)) where.push("全局组合");
-    for (const repo of store.listRepos()) {
-      if (uses(repo.reviewersJson)) where.push(`${repo.owner}/${repo.repo} 的覆盖`);
-    }
-    return where;
-  });
-  if (referenced.length > 0) {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body) as { expectedVersion?: unknown } | null;
+  if (
+    payload === null ||
+    !Number.isInteger(payload.expectedVersion) ||
+    Number(payload.expectedVersion) <= 0
+  ) {
+    return sendJson(res, 400, { error: "删除模型凭据参数形状不对" });
+  }
+  const expectedVersion = Number(payload.expectedVersion);
+  const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
+  if (current === undefined) {
+    return sendJson(res, 404, { error: `没有模型服务 ${provider}` });
+  }
+  if (current.version !== expectedVersion) {
     return sendJson(res, 409, {
-      error:
-        `${name} 还在模型组合里被引用着(${referenced.join("、")}),没有删。` +
-        "先在那几处把它的模型换掉,再回来删这一家——留着引用的话下一次审查那个模型会报「模型不存在」。",
+      error: "模型服务版本已变化，请重新打开配置",
+      expectedVersion,
+      actualVersion: current.version,
+    });
+  }
+  const references = withStore(deps.dbPath, (store) =>
+    store.listModelReferences().filter((reference) => reference.provider === provider),
+  );
+  if (references.length > 0) {
+    return sendJson(res, 409, {
+      error: `${provider} 仍被模型组合引用，不能删除模型凭据`,
+      references,
+    });
+  }
+  const record: ModelServiceVersionCommit = {
+    provider,
+    type: current.type,
+    baseUrl: current.baseUrl,
+    api: current.api,
+    targetFingerprint: current.targetFingerprint,
+    disabledReason: current.disabledReason,
+    createdAt: current.createdAt,
+    updatedAt: new Date((deps.now ?? Date.now)()).toISOString(),
+    credential: {
+      state: "unconfigured",
+      apiKeyEncrypted: null,
+      updatedAt: null,
+      verifiedAt: null,
+      validationModel: null,
+      verificationSource: null,
+    },
+    directory: current.directory,
+    automaticModels: current.automaticModels,
+    supplements: current.supplements.map((entry) => ({
+      model: entry.model,
+      source: entry.source,
+      targetFingerprint: entry.targetFingerprint,
+      createdAt: entry.createdAt,
+    })),
+  };
+  const version = withStore(deps.dbPath, (store) =>
+    store.commitModelServiceVersion(expectedVersion, record),
+  );
+  if (version === undefined) {
+    const actualVersion = withStore(deps.dbPath, (store) =>
+      store.getModelService(provider)?.version ?? null,
+    );
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化或仍被模型组合引用，请重新打开配置",
+      expectedVersion,
+      actualVersion,
+    });
+  }
+  return sendJson(res, 200, {
+    provider,
+    version,
+    credential: { state: "unconfigured" },
+  });
+}
+
+type StoredModelServiceRuntime =
+  | {
+      ok: true;
+      candidate: ModelServiceCandidate;
+      targetFingerprint: string;
+      secrets: readonly string[];
+    }
+  | { ok: false; error: string };
+
+async function hasCurrentCustomProviderNameConflict(
+  service: ModelServiceRecord,
+): Promise<boolean> {
+  return service.type === "custom" &&
+    (await conflictingBuiltinProviderNames([service.provider])).has(service.provider);
+}
+
+async function storedModelServiceRuntime(
+  current: ModelServiceRecord,
+  masterKey: string,
+): Promise<StoredModelServiceRuntime> {
+  const provider = current.provider;
+  if (
+    current.credential.state !== "verified" ||
+    current.credential.apiKeyEncrypted === null
+  ) {
+    return { ok: false, error: `${provider} 没有已验证的模型凭据` };
+  }
+
+  let targetFingerprint: string;
+  let target:
+    | { kind: "builtin" }
+    | {
+        kind: "openai-compatible";
+        baseUrl: string;
+        api: (typeof CUSTOM_PROVIDER_APIS)[number];
+      };
+  if (current.type === "builtin") {
+    const builtinTarget = await resolvePiBuiltinProviderTarget(provider);
+    if (builtinTarget === undefined) {
+      return { ok: false, error: `Pi 已没有内置 provider ${provider}` };
+    }
+    targetFingerprint = modelServiceTargetFingerprint(builtinTarget.baseUrl, builtinTarget.api);
+    if (current.targetFingerprint !== targetFingerprint) {
+      return { ok: false, error: "Pi 内置目标已经变化，请粘贴凭据重新配置" };
+    }
+    target = { kind: "builtin" };
+  } else {
+    if (
+      current.baseUrl === null ||
+      current.api === null ||
+      !CUSTOM_PROVIDER_APIS.includes(current.api as (typeof CUSTOM_PROVIDER_APIS)[number])
+    ) {
+      return { ok: false, error: `${provider} 缺少可用的地址或接口协议` };
+    }
+    targetFingerprint = modelServiceTargetFingerprint(current.baseUrl, current.api);
+    if (current.targetFingerprint !== targetFingerprint) {
+      return { ok: false, error: `${provider} 的目标绑定不一致，请重新配置` };
+    }
+    target = {
+      kind: "openai-compatible",
+      baseUrl: current.baseUrl,
+      api: current.api as (typeof CUSTOM_PROVIDER_APIS)[number],
+    };
+  }
+  const credential = decryptCredential(masterKey, current.credential.apiKeyEncrypted);
+  if (credential === undefined) {
+    return { ok: false, error: `${provider} 的已存模型凭据无法解密，请重新粘贴` };
+  }
+  return {
+    ok: true,
+    candidate: target.kind === "builtin"
+      ? { kind: "builtin", provider, credential }
+      : {
+          kind: "openai-compatible",
+          provider,
+          baseUrl: target.baseUrl,
+          api: target.api,
+          credential,
+        },
+    targetFingerprint,
+    secrets: [credential, current.credential.apiKeyEncrypted, masterKey],
+  };
+}
+
+function parseModelSupplementMutation(
+  value: unknown,
+): { model: string; expectedVersion: number } | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const payload = value as Record<string, unknown>;
+  if (
+    Object.keys(payload).some((key) => key !== "model" && key !== "expectedVersion") ||
+    typeof payload["model"] !== "string" ||
+    payload["model"].trim() === "" ||
+    payload["model"] !== payload["model"].trim() ||
+    !Number.isInteger(payload["expectedVersion"]) ||
+    Number(payload["expectedVersion"]) <= 0
+  ) {
+    return undefined;
+  }
+  return {
+    model: payload["model"],
+    expectedVersion: Number(payload["expectedVersion"]),
+  };
+}
+
+async function handleRefreshModelService(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  provider: string,
+): Promise<void> {
+  const masterKey = deps.credentialMasterKey;
+  if (masterKey === undefined || masterKey === "") {
+    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
+  }
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body) as { expectedVersion?: unknown } | null;
+  if (
+    payload === null ||
+    !Number.isInteger(payload.expectedVersion) ||
+    Number(payload.expectedVersion) <= 0
+  ) {
+    return sendJson(res, 400, { error: "刷新模型目录必须带正整数 expectedVersion" });
+  }
+  const expectedVersion = Number(payload.expectedVersion);
+  const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
+  if (current === undefined) {
+    return sendJson(res, 404, { error: `没有模型服务 ${provider}` });
+  }
+  if (current.version !== expectedVersion) {
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新载入后再刷新",
+      expectedVersion,
+      actualVersion: current.version,
+    });
+  }
+  if (await hasCurrentCustomProviderNameConflict(current)) {
+    return sendJson(res, 409, {
+      error: `${provider} 与当前 Pi 内置 provider 名字冲突，不能刷新目录`,
+    });
+  }
+  const runtime = await storedModelServiceRuntime(current, masterKey);
+  if (!runtime.ok) return sendJson(res, 409, { error: `${runtime.error}，不能刷新目录` });
+  const { candidate, targetFingerprint } = runtime;
+
+  const catalogStorePath = modelCatalogStorePath(deps.cacheDir);
+  const discovered = await (deps.discoverModelServiceModels ?? discoverModels)(candidate, {
+    allowNetwork: true,
+    ...(catalogStorePath === undefined ? {} : { catalogStorePath }),
+  });
+  const attemptedAt = new Date((deps.now ?? Date.now)()).toISOString();
+  const failure = discovered.ok
+    ? null
+    : redactCandidateFailure(discovered.failure, runtime.secrets).message;
+  const directory: ModelServiceVersionCommit["directory"] = discovered.ok
+    ? {
+        state: "available",
+        lastAttemptAt: attemptedAt,
+        lastSuccessAt: attemptedAt,
+        failure: null,
+        ignoredModelCount: discovered.ignoredCount,
+      }
+    : {
+        state: current.directory.lastSuccessAt === null ? "discovery-failed" : "refresh-failed",
+        lastAttemptAt: attemptedAt,
+        lastSuccessAt: current.directory.lastSuccessAt,
+        failure,
+        ignoredModelCount: 0,
+      };
+  const record: ModelServiceVersionCommit = {
+    provider,
+    type: current.type,
+    baseUrl: current.baseUrl,
+    api: current.api,
+    targetFingerprint,
+    disabledReason: current.type === "custom" ? null : current.disabledReason,
+    createdAt: current.createdAt,
+    updatedAt: attemptedAt,
+    credential: current.credential,
+    directory,
+    automaticModels: discovered.ok ? discovered.models : current.automaticModels,
+    supplements: current.supplements.map((entry) => ({
+      model: entry.model,
+      source: entry.source,
+      targetFingerprint: entry.targetFingerprint,
+      createdAt: entry.createdAt,
+    })),
+  };
+  const version = withStore(deps.dbPath, (store) =>
+    store.commitModelServiceVersion(expectedVersion, record),
+  );
+  if (version === undefined) {
+    const actualVersion = withStore(deps.dbPath, (store) =>
+      store.getModelService(provider)?.version ?? null,
+    );
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新载入后再刷新",
+      expectedVersion,
+      actualVersion,
+    });
+  }
+  return sendJson(res, 200, {
+    provider,
+    version,
+    directory: {
+      state: directory.state,
+      ignoredModelCount: directory.ignoredModelCount,
+      failure: directory.failure,
+    },
+  });
+}
+
+async function handleAddModelSupplement(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  provider: string,
+): Promise<void> {
+  const masterKey = deps.credentialMasterKey;
+  if (masterKey === undefined || masterKey === "") {
+    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
+  }
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const input = parseModelSupplementMutation(safeParse(body));
+  if (input === undefined) {
+    return sendJson(res, 400, {
+      error: "模型补录只接受 model 与正整数 expectedVersion",
+    });
+  }
+  const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
+  if (current === undefined) {
+    return sendJson(res, 404, { error: `没有模型服务 ${provider}` });
+  }
+  if (current.version !== input.expectedVersion) {
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新载入后再补录",
+      expectedVersion: input.expectedVersion,
+      actualVersion: current.version,
+    });
+  }
+  if (await hasCurrentCustomProviderNameConflict(current)) {
+    return sendJson(res, 409, {
+      error: `${provider} 与当前 Pi 内置 provider 名字冲突，不能补录模型`,
+    });
+  }
+  const runtime = await storedModelServiceRuntime(current, masterKey);
+  if (!runtime.ok) return sendJson(res, 409, { error: `${runtime.error}，不能补录模型` });
+
+  const validation = await validateMinimalInference(runtime.candidate, input.model);
+  if (!validation.ok) {
+    return sendCandidateFailure(res, validation.failure, runtime.secrets);
+  }
+  const committedAt = new Date((deps.now ?? Date.now)()).toISOString();
+  const supplements = current.supplements.map((entry) => ({
+    model: entry.model,
+    source: entry.source,
+    targetFingerprint: entry.targetFingerprint,
+    createdAt: entry.createdAt,
+  }));
+  const supplement = {
+    model: input.model,
+    source: "manual" as const,
+    targetFingerprint: runtime.targetFingerprint,
+    createdAt:
+      current.supplements.find((entry) => entry.model === input.model)?.createdAt ?? committedAt,
+  };
+  const existing = supplements.findIndex((entry) => entry.model === input.model);
+  if (existing === -1) supplements.push(supplement);
+  else supplements[existing] = supplement;
+  const record: ModelServiceVersionCommit = {
+    provider,
+    type: current.type,
+    baseUrl: current.baseUrl,
+    api: current.api,
+    targetFingerprint: runtime.targetFingerprint,
+    disabledReason: current.type === "custom" ? null : current.disabledReason,
+    createdAt: current.createdAt,
+    updatedAt: committedAt,
+    credential: current.credential,
+    directory: current.directory,
+    automaticModels: current.automaticModels,
+    supplements,
+  };
+  const version = withStore(deps.dbPath, (store) =>
+    store.commitModelServiceVersion(input.expectedVersion, record),
+  );
+  if (version === undefined) {
+    const actualVersion = withStore(deps.dbPath, (store) =>
+      store.getModelService(provider)?.version ?? null,
+    );
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新载入后再补录",
+      expectedVersion: input.expectedVersion,
+      actualVersion,
+    });
+  }
+  return sendJson(res, 200, {
+    provider,
+    model: input.model,
+    identity: modelIdentity({ provider, model: input.model }),
+    source: "manual",
+    version,
+  });
+}
+
+async function handleDeleteModelSupplement(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  provider: string,
+): Promise<void> {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const input = parseModelSupplementMutation(safeParse(body));
+  if (input === undefined) {
+    return sendJson(res, 400, {
+      error: "删除模型补录只接受 model 与正整数 expectedVersion",
+    });
+  }
+  const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
+  if (current === undefined) {
+    return sendJson(res, 404, { error: `没有模型服务 ${provider}` });
+  }
+  if (current.version !== input.expectedVersion) {
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新载入后再删除补录",
+      expectedVersion: input.expectedVersion,
+      actualVersion: current.version,
+    });
+  }
+  const supplement = current.supplements.find((entry) => entry.model === input.model);
+  if (supplement === undefined) {
+    return sendJson(res, 404, {
+      error: `${modelIdentity({ provider, model: input.model })} 没有补录来源`,
+    });
+  }
+  const hasAutomaticSource = current.automaticModels.some((entry) => entry.id === input.model);
+  const identity = modelIdentity({ provider, model: input.model });
+  if (!hasAutomaticSource) {
+    const reference = withStore(deps.dbPath, (store) =>
+      store.listModelReferences().find((entry) => entry.identity === identity),
+    );
+    if (reference !== undefined) {
+      return sendJson(res, 409, {
+        error: `${identity} 的补录是当前唯一来源，仍被模型组合引用`,
+        references: [reference],
+      });
+    }
+  }
+
+  const committedAt = new Date((deps.now ?? Date.now)()).toISOString();
+  const record: ModelServiceVersionCommit = {
+    provider,
+    type: current.type,
+    baseUrl: current.baseUrl,
+    api: current.api,
+    targetFingerprint: current.targetFingerprint,
+    disabledReason: current.disabledReason,
+    createdAt: current.createdAt,
+    updatedAt: committedAt,
+    credential: current.credential,
+    directory: current.directory,
+    automaticModels: current.automaticModels,
+    supplements: current.supplements
+      .filter((entry) => entry.model !== input.model)
+      .map((entry) => ({
+        model: entry.model,
+        source: entry.source,
+        targetFingerprint: entry.targetFingerprint,
+        createdAt: entry.createdAt,
+      })),
+  };
+  const version = withStore(deps.dbPath, (store) =>
+    store.commitModelServiceVersion(input.expectedVersion, record),
+  );
+  if (version === undefined) {
+    const actualVersion = withStore(deps.dbPath, (store) =>
+      store.getModelService(provider)?.version ?? null,
+    );
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新载入后再删除补录",
+      expectedVersion: input.expectedVersion,
+      actualVersion,
+    });
+  }
+  return sendJson(res, 200, {
+    provider,
+    model: input.model,
+    identity,
+    removedSource: supplement.source,
+    remainingSources: hasAutomaticSource ? ["automatic"] : [],
+    version,
+  });
+}
+
+type CustomModelServiceCandidateInput = {
+  provider: string;
+  baseUrl: string;
+  api: (typeof CUSTOM_PROVIDER_APIS)[number];
+  credential: string;
+  validationModel: string;
+  expectedVersion: number | null;
+  reconfirmedSupplements: string[];
+};
+
+function parseCustomModelServiceCandidate(value: unknown): CustomModelServiceCandidateInput | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const payload = value as Record<string, unknown>;
+  const provider = payload["provider"];
+  const api = payload["api"];
+  const credential = payload["credential"];
+  const validationModel = payload["validationModel"];
+  const baseUrl =
+    typeof payload["baseUrl"] === "string"
+      ? normalizeModelServiceBaseUrl(payload["baseUrl"])
+      : undefined;
+  const expectedVersion = payload["expectedVersion"];
+  const reconfirmed = payload["reconfirmedSupplements"];
+  if (
+    typeof provider !== "string" ||
+    !CUSTOM_PROVIDER_NAME.test(provider) ||
+    baseUrl === undefined ||
+    typeof api !== "string" ||
+    !CUSTOM_PROVIDER_APIS.includes(api as (typeof CUSTOM_PROVIDER_APIS)[number]) ||
+    typeof credential !== "string" ||
+    credential.length === 0 ||
+    typeof validationModel !== "string" ||
+    validationModel.trim() === "" ||
+    validationModel !== validationModel.trim() ||
+    !(expectedVersion === null || (Number.isInteger(expectedVersion) && Number(expectedVersion) > 0)) ||
+    !Array.isArray(reconfirmed) ||
+    reconfirmed.some(
+      (identity) =>
+        typeof identity !== "string" ||
+        !identity.startsWith(`${provider}:`) ||
+        identity.slice(provider.length + 1).trim() === "" ||
+        identity !== identity.trim(),
+    ) ||
+    new Set(reconfirmed).size !== reconfirmed.length
+  ) {
+    return undefined;
+  }
+  return {
+    provider,
+    baseUrl,
+    api: api as (typeof CUSTOM_PROVIDER_APIS)[number],
+    credential,
+    validationModel,
+    expectedVersion: expectedVersion as number | null,
+    reconfirmedSupplements: reconfirmed as string[],
+  };
+}
+
+function redactCandidateFailure(
+  failure: ModelOperationFailure,
+  secrets: readonly string[],
+): ModelOperationFailure {
+  let message = failure.message;
+  for (const secret of secrets) {
+    if (secret !== "") message = message.replaceAll(secret, "[REDACTED]");
+  }
+  message = message
+    .replace(/\bBearer\s+[^\s"',;}]+/giu, "Bearer [REDACTED]")
+    .replace(
+      /\b(authorization|api[-_ ]?key|credential|ciphertext|master[-_ ]?key)\b\s*[:=]\s*[^,;}\n]+/giu,
+      "$1: [REDACTED]",
+    );
+  return { ...failure, message };
+}
+
+function sendCandidateFailure(
+  res: ServerResponse,
+  failure: ModelOperationFailure,
+  secrets: readonly string[],
+): void {
+  const redacted = redactCandidateFailure(failure, secrets);
+  sendJson(res, 422, { error: redacted.message, failure: redacted });
+}
+
+async function handlePreviewCustomModelService(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): Promise<void> {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const input = parseCustomModelServiceCandidate(safeParse(body));
+  if (input === undefined) {
+    return sendJson(res, 400, { error: "自定义模型服务候选形状不对" });
+  }
+  const current = withStore(deps.dbPath, (store) => store.getModelService(input.provider));
+  if (current !== undefined && current.type !== "custom") {
+    return sendJson(res, 409, { error: `${input.provider} 已被同名内置模型服务占用` });
+  }
+  const actualVersion = current?.version ?? null;
+  if (actualVersion !== input.expectedVersion) {
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新打开配置",
+      expectedVersion: input.expectedVersion,
+      actualVersion,
+    });
+  }
+  if ((await listPiBuiltinProviders()).some(({ id }) => id === input.provider)) {
+    return sendJson(res, 409, { error: `${input.provider} 与当前 Pi 内置 provider 名字冲突` });
+  }
+  const candidate = {
+    kind: "openai-compatible" as const,
+    provider: input.provider,
+    baseUrl: input.baseUrl,
+    api: input.api,
+    credential: input.credential,
+  };
+  const catalogStorePath = modelCatalogStorePath(deps.cacheDir);
+  const discovered = await (deps.discoverModelServiceModels ?? discoverModels)(candidate, {
+    allowNetwork: true,
+    ...(catalogStorePath === undefined ? {} : { catalogStorePath }),
+  });
+  if (!discovered.ok) {
+    return sendCandidateFailure(res, discovered.failure, [input.credential]);
+  }
+  return sendJson(res, 200, {
+    provider: input.provider,
+    expectedVersion: input.expectedVersion,
+    target: { baseUrl: input.baseUrl, api: input.api },
+    validationModel: input.validationModel,
+    models: discovered.models,
+    ignoredModelCount: discovered.ignoredCount,
+  });
+}
+
+async function handleCommitCustomModelService(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): Promise<void> {
+  const masterKey = deps.credentialMasterKey;
+  if (masterKey === undefined || masterKey === "") {
+    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
+  }
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const input = parseCustomModelServiceCandidate(safeParse(body));
+  if (input === undefined) {
+    return sendJson(res, 400, { error: "自定义模型服务最终候选形状不对" });
+  }
+  const { current, knownSupplements } = withStore(deps.dbPath, (store) => ({
+    current: store.getModelService(input.provider),
+    knownSupplements: store.listModelSupplements(input.provider),
+  }));
+  if (current !== undefined && current.type !== "custom") {
+    return sendJson(res, 409, { error: `${input.provider} 已被同名内置模型服务占用` });
+  }
+  const actualVersion = current?.version ?? null;
+  if (actualVersion !== input.expectedVersion) {
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新打开配置",
+      expectedVersion: input.expectedVersion,
+      actualVersion,
+    });
+  }
+  if ((await listPiBuiltinProviders()).some(({ id }) => id === input.provider)) {
+    return sendJson(res, 409, { error: `${input.provider} 与当前 Pi 内置 provider 名字冲突` });
+  }
+  const supplementByIdentity = new Map(
+    knownSupplements.map((entry) => [modelIdentity(entry), entry]),
+  );
+  const unknownReconfirmed = input.reconfirmedSupplements.filter(
+    (identity) => !supplementByIdentity.has(identity),
+  );
+  if (unknownReconfirmed.length > 0) {
+    return sendJson(res, 400, {
+      error: "只能重新确认当前模型服务已有的模型补录",
+      identities: unknownReconfirmed,
     });
   }
 
-  withStore(deps.dbPath, (store) => store.removeCustomProvider(name));
-  const failure = await rebuildModelsConfig(deps.dbPath);
-  if (failure !== undefined) return sendJson(res, 500, { error: rebuildFailureMessage(failure) });
-  return send(res, 204);
-}
 
-/**
- * 三个写端点共用的 500 措辞。写不出来是「已入库、派生物没跟上」这一档:此刻子进程取不到它,
- * 而启动时会按库重建(`main.ts`),措辞因此指向那条出路,不让人重填一遍。
- */
-function rebuildFailureMessage(reason: string): string {
-  return (
-    `改动已入库,但派生的模型配置写不出来,现在还取不到(${reason})。` +
-    "修好共用模型目录的写权限之后重启服务,启动时会按库里的内容重建它。"
+  const candidate = {
+    kind: "openai-compatible" as const,
+    provider: input.provider,
+    baseUrl: input.baseUrl,
+    api: input.api,
+    credential: input.credential,
+  };
+  const catalogStorePath = modelCatalogStorePath(deps.cacheDir);
+  const discovered = await (deps.discoverModelServiceModels ?? discoverModels)(candidate, {
+    allowNetwork: true,
+    ...(catalogStorePath === undefined ? {} : { catalogStorePath }),
+  });
+  const validationDiscovery = discovered.ok
+    ? discovered.models.find((model) => model.id === input.validationModel)
+    : undefined;
+  const validation = await validateMinimalInference(
+    candidate,
+    validationDiscovery ?? input.validationModel,
   );
-}
-
-/** 派生文件重建的串行链,见 `rebuildModelsConfig`。 */
-let modelsConfigWrites: Promise<void> = Promise.resolve();
-
-/**
- * 把库里的模型行与自定义 provider 重新落成派生的用户模型配置,并让模型目录的缓存失效。
- * 写不出来时返回一句给人看的原因,不抛(措辞由调用方给:端点回 500,启动那一次只告警)。
- *
- * **重建串行,而且在轮到自己写的时候才读库。**入参只有库的位置:调用方提前截取的那一份集合
- * 会过期——它与写文件之间隔着一次撞名探测(建一份运行时,毫秒级),两个写请求于是可以按 A、B
- * 落库却按 B、A 写文件,A 手上那份旧快照把 B 的结果整份盖掉。两个请求都回了 2xx,而 B 那一行
- * 在库里存着、子进程却取不到,直到下一次重建或者重启——这恰好打破整份 spec 最要紧的那条不变量
- * (面板选得出的子进程必须取得到)。落盘的 `.pending` 中间名也是固定的,同时写还会互相覆盖。
- * 串起来两件事一起消失,而库是真相源,轮到自己时现读一次就一定是最新的全量。
- *
- * 手法与模型目录的加载一致(`catalog.ts` 的 `loadFromPi`),前提也一样:**这两份派生文件只有
- * 服务进程写**,Reviewer 子进程只读(`worker.ts`)。多进程部署不在这个前提里——那时进程内的
- * 队列不够用,得换成跨进程的锁或者原子方案。
- *
- * 落盘是整份重写,两样一起读:少给一样等于把那一样从模型目录里抹掉——自定义 provider 那一样
- * 漏了的话,那几家连带它们的模型全部消失(全新 provider 缺 `api` 与 `baseUrl` 就是消失,不是
- * 报错)。
- *
- * 缓存必须跟着失效:这些行落在 `catalog.ts` 缓存住的那张模型表上(一个进程只读一次),
- * 不失效的话操作员填完回到选择器里看不见自己刚填的那一行,只能重启容器。
- */
-export function rebuildModelsConfig(dbPath: string): Promise<string | undefined> {
-  const queued = modelsConfigWrites.then(() => writeModelsConfig(dbPath));
-  // 链上留的那一份不带失败:一次写不出来不该把排在它后面的一起拖红。
-  modelsConfigWrites = queued.then(
-    () => undefined,
-    () => undefined,
-  );
-  return queued;
-}
-
-async function writeModelsConfig(dbPath: string): Promise<string | undefined> {
-  const paths = sharedModelPaths();
-  if (paths === undefined) return "共用模型目录建不出来";
-  // 两样一次开库读齐:两次开库读同一个文件是白付的 I/O。
-  const { rows, customProviders } = withStore(dbPath, (store) => ({
-    rows: store.listModelRows(),
-    customProviders: store.listCustomProviders(),
-  }));
-  // 撞名的那几家不写进去(issue #94):写了就等于拿自定义那个端点覆盖内置的同名那一家。判据
-  // 每次重建现算,所以冲突消失之后下一次写入就把这一家写回去了,不需要别的操作。
-  const conflicting = await conflictingProviderNames(customProviders);
-  try {
-    writeSharedModelsConfig(paths.config, rows, customProviders, conflicting);
-  } catch (error) {
-    return String(error);
+  if (!validation.ok) {
+    return sendCandidateFailure(res, validation.failure, [input.credential]);
   }
-  invalidateModelCatalog();
-  return undefined;
+
+  const committedAt = new Date((deps.now ?? Date.now)()).toISOString();
+  const targetFingerprint = modelServiceTargetFingerprint(input.baseUrl, input.api);
+  const sameTarget = current?.targetFingerprint === targetFingerprint;
+  const supplements = sameTarget
+    ? knownSupplements.map((entry) => ({
+        model: entry.model,
+        source: entry.source,
+        targetFingerprint: entry.targetFingerprint,
+        createdAt: entry.createdAt,
+      }))
+    : input.reconfirmedSupplements.map((identity) => {
+        const entry = supplementByIdentity.get(identity)!;
+        return {
+          model: entry.model,
+          source: "manual" as const,
+          targetFingerprint,
+          createdAt: entry.createdAt,
+        };
+      });
+  if (!discovered.ok || validationDiscovery === undefined) {
+    const supplement = {
+      model: input.validationModel,
+      source: "manual" as const,
+      targetFingerprint,
+      createdAt:
+        current?.supplements.find((entry) => entry.model === input.validationModel)?.createdAt ??
+        committedAt,
+    };
+    const index = supplements.findIndex((entry) => entry.model === input.validationModel);
+    if (index === -1) supplements.push(supplement);
+    else supplements[index] = supplement;
+  }
+  if (!sameTarget) {
+    const nextModels = new Set(discovered.ok ? discovered.models.map(({ id }) => id) : []);
+    for (const supplement of supplements) nextModels.add(supplement.model);
+    const unresolved = withStore(deps.dbPath, (store) =>
+      store
+        .listModelReferences()
+        .filter(
+          (reference) =>
+            reference.provider === input.provider && !nextModels.has(reference.model),
+        ),
+    );
+    if (unresolved.length > 0) {
+      return sendJson(res, 409, {
+        error: "目标切换会移除仍被模型组合引用的模型来源",
+        references: unresolved,
+      });
+    }
+  }
+  let directory: ModelServiceVersionCommit["directory"];
+  if (!discovered.ok) {
+    const lastSuccessAt = sameTarget ? current?.directory.lastSuccessAt ?? null : null;
+    directory = {
+      state: lastSuccessAt === null ? "discovery-failed" : "refresh-failed",
+      lastAttemptAt: committedAt,
+      lastSuccessAt,
+      failure: redactCandidateFailure(discovered.failure, [input.credential]).message,
+      ignoredModelCount: 0,
+    };
+  } else if (validationDiscovery === undefined) {
+    directory = {
+      state: "discovery-failed",
+      lastAttemptAt: committedAt,
+      lastSuccessAt: null,
+      failure: `最终目录里已没有验证模型 ${input.validationModel}；真实推理成功后已补录该模型`,
+      ignoredModelCount: discovered.ignoredCount,
+    };
+  } else {
+    directory = {
+      state: "available",
+      lastAttemptAt: committedAt,
+      lastSuccessAt: committedAt,
+      failure: null,
+      ignoredModelCount: discovered.ignoredCount,
+    };
+  }
+  const record: ModelServiceVersionCommit = {
+    provider: input.provider,
+    type: "custom",
+    baseUrl: input.baseUrl,
+    api: input.api,
+    targetFingerprint,
+    disabledReason: null,
+    createdAt: current?.createdAt ?? committedAt,
+    updatedAt: committedAt,
+    credential: {
+      state: "verified",
+      apiKeyEncrypted: encryptCredential(masterKey, input.credential),
+      updatedAt: committedAt,
+      verifiedAt: committedAt,
+      validationModel: modelIdentity({ provider: input.provider, model: input.validationModel }),
+      verificationSource: "inference",
+    },
+    directory,
+    automaticModels: discovered.ok
+      ? discovered.models
+      : sameTarget
+        ? current?.automaticModels ?? []
+        : [],
+    supplements,
+  };
+  const version = withStore(deps.dbPath, (store) =>
+    store.commitModelServiceVersion(input.expectedVersion, record),
+  );
+  if (version === undefined) {
+    const latestVersion = withStore(deps.dbPath, (store) =>
+      store.getModelService(input.provider)?.version ?? null,
+    );
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新打开配置",
+      expectedVersion: input.expectedVersion,
+      actualVersion: latestVersion,
+    });
+  }
+  return sendJson(res, 200, {
+    provider: input.provider,
+    version,
+    credential: { state: "verified" },
+    directory: { state: directory.state },
+  });
 }
+
+async function handleDeleteCustomModelService(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  provider: string,
+): Promise<void> {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body);
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    !("expectedVersion" in payload) ||
+    typeof payload.expectedVersion !== "number" ||
+    !Number.isInteger(payload.expectedVersion) ||
+    payload.expectedVersion <= 0
+  ) {
+    return sendJson(res, 400, { error: "删除模型服务必须带正整数 expectedVersion" });
+  }
+  const expectedVersion = Number(payload.expectedVersion);
+  const { current, references } = withStore(deps.dbPath, (store) => ({
+    current: store.getModelService(provider),
+    references: store.listModelReferences().filter((reference) => reference.provider === provider),
+  }));
+  if (current === undefined) {
+    return sendJson(res, 404, { error: `没有自定义模型服务 ${provider}` });
+  }
+  if (current.type !== "custom") {
+    return sendJson(res, 400, { error: `${provider} 不是自定义模型服务` });
+  }
+  if (current.version !== expectedVersion) {
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新打开配置",
+      expectedVersion,
+      actualVersion: current.version,
+    });
+  }
+  if (references.length > 0) {
+    return sendJson(res, 409, {
+      error: "模型服务仍被模型组合引用，不能删除",
+      references,
+    });
+  }
+  const removed = withStore(deps.dbPath, (store) =>
+    store.removeCustomModelService(provider, expectedVersion),
+  );
+  if (!removed) {
+    const actualVersion = withStore(deps.dbPath, (store) =>
+      store.getModelService(provider)?.version ?? null,
+    );
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新打开配置",
+      expectedVersion,
+      actualVersion,
+    });
+  }
+  return sendJson(res, 200, { provider, deleted: true });
+}
+
 
 function safeParseJson(value: string): unknown {
   try {
@@ -1985,22 +3436,19 @@ function safeParseJson(value: string): unknown {
 }
 
 /**
- * 解析并校验一段模型组合入参。全局设置、仓库注册与每仓库覆盖共用同一判据,`context`
- * 指认是哪一层。返回序列化好的 JSON,校验不过返回错误信息。
- *
- * 只校验形状:凭据缺不缺是 Review Run 开始时的事(issue #65),这里试构建也拦不住,
- * 反而会把「这一家还没配」误报成「覆盖写错了」。
- *
- * `allowEmpty` 只有全局设置那一处给,理由见 `handlePutSettings`。
+ * 解析并校验一段模型组合入参。全局设置、仓库注册与每仓库覆盖共用同一形状判据；
+ * 当前模型服务可用性随后由 `ensureModelCombinationAvailable` 在落库前重新投影。
  */
 function parseReviewerSpecs(
   value: unknown,
   context: string,
   options: { allowEmpty?: boolean } = {},
-): { ok: true; reviewersJson: string } | { ok: false; error: string } {
+):
+  | { ok: true; reviewers: ReviewerSpec[]; reviewersJson: string }
+  | { ok: false; error: string } {
   try {
     const specs = assertReviewerSpecs(value, context, options);
-    return { ok: true, reviewersJson: JSON.stringify(specs) };
+    return { ok: true, reviewers: specs, reviewersJson: JSON.stringify(specs) };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -2079,15 +3527,6 @@ async function handleRerun(
     return sendJson(res, 503, { error: "gitea 没有配置 Forge,重跑不了" });
   }
 
-  // 坏覆盖在这里显形(409),不像投递那样静默记日志——重跑是人在等结果的动作。
-  let specs: readonly ReviewerSpec[];
-  try {
-    specs = resolveSpecs(deps, registered.reviewersJson, registered.repoId);
-  } catch (error) {
-    return sendJson(res, 409, {
-      error: `模型覆盖坏了,先改组合再重跑:${error instanceof Error ? error.message : String(error)}`,
-    });
-  }
 
   const ref = { owner, repo, number: pullNumber };
   let headSha: string;
@@ -2096,12 +3535,21 @@ async function handleRerun(
   } catch {
     return sendJson(res, 404, { error: "PR 读不到:号不对,或 bot 无权限" });
   }
+  // 与自动投递调用同一个启动器；快照在 202 响应和后台首批之前已经完整物化。
+  let plan: ReviewRunPlan;
+  try {
+    plan = await buildRunPlan(deps, registered.repoId);
+  } catch (error) {
+    return sendJson(res, 409, {
+      error: `模型覆盖坏了,先改组合再重跑:${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
   sendJson(res, 202, { pullNumber, headSha });
   void startRun(
     deps,
     forge,
     { platform: "gitea", owner, repo, number: pullNumber, headSha, draft: false, action: "rerun" },
-    specs,
+    plan,
     triggeredBy,
   );
 }
@@ -2129,8 +3577,9 @@ function handleStats(
   const from = new Date(fromMs).toISOString();
   const to = new Date(toMs).toISOString();
 
-  const { cells, tables } = withStore(deps.dbPath, (store) => ({
+  const { cells, usage, tables } = withStore(deps.dbPath, (store) => ({
     cells: store.dispositionStats(from, to),
+    usage: store.usageStats(from, to) ?? null,
     tables: store.tableCounts(),
   }));
   let fileBytes = 0;
@@ -2139,7 +3588,7 @@ function handleStats(
   } catch {
     // 库文件还没建出来:没有一次投递的全新部署,体量就是 0。
   }
-  return sendJson(res, 200, { from, to, cells, database: { fileBytes, tables } });
+  return sendJson(res, 200, { from, to, cells, usage, database: { fileBytes, tables } });
 }
 
 /** hook 投递地址里代次之前的部分:`<基地址>/webhook?k=`。 */
@@ -2245,14 +3694,13 @@ async function handleRegister(
   }
   const ref = { owner: payload.owner, repo: payload.repo };
 
-  // 模型覆盖跟随注册一起写入,语义是全量替换 reviewers 列表,省略即跟随全局。
+  // 模型覆盖跟随注册一起写入，省略即跟随全局；非空覆盖在任何 Gitea 副作用前重查。
   let reviewersJson: string | undefined;
   if (payload.reviewers !== undefined) {
-    const parsed = parseReviewerSpecs(
-      payload.reviewers,
-      `${ref.owner}/${ref.repo} 的模型覆盖`,
-    );
+    const context = `${ref.owner}/${ref.repo} 的模型覆盖`;
+    const parsed = parseReviewerSpecs(payload.reviewers, context);
     if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
+    if (!await ensureModelCombinationAvailable(res, deps, parsed.reviewers, context)) return;
     reviewersJson = parsed.reviewersJson;
   }
 
@@ -2279,7 +3727,7 @@ async function handleRegister(
 
   // 先落库再建 hook:hook 一旦在,投递就会来,库里必须已经有 Key 能验它。建 hook
   // 失败时回滚刚落的注册,不留「已注册却无 hook」的哑仓库。
-  withStore(deps.dbPath, (store) =>
+  const registered = withStore(deps.dbPath, (store) =>
     store.registerRepo({
       repoId,
       owner: ref.owner,
@@ -2289,6 +3737,9 @@ async function handleRegister(
       ...(reviewersJson === undefined ? {} : { reviewersJson }),
     }),
   );
+  if (!registered) {
+    return sendJson(res, 409, { error: "模型服务状态已经变化，请重新选择仓库模型覆盖" });
+  }
   try {
     await hookManager.ensureHook(ref, { url: hookUrl(deps.baseUrl, generation), key });
   } catch (error) {
@@ -2344,8 +3795,8 @@ async function handleRemove(
 }
 
 /**
- * 改写模型覆盖(语义与注册一致:全量替换 reviewers 列表,null 即清除、跟随全局)。
- * 非空时校验并试构建一次——坏凭据引用要在响应里显形,不能等投递。
+ * 改写模型覆盖：全量替换 reviewers 列表，null 即清除并跟随全局。清除永远可做；非空组合
+ * 在落库前按当前模型服务投影重新校验，不能只信浏览器里的候选状态。
  */
 async function handleSetReviewers(
   req: IncomingMessage,
@@ -2368,14 +3819,16 @@ async function handleSetReviewers(
 
   let reviewersJson: string | null = null;
   if (payload.reviewers !== null) {
-    const parsed = parseReviewerSpecs(
-      payload.reviewers,
-      `${record.owner}/${record.repo} 的模型覆盖`,
-    );
+    const context = `${record.owner}/${record.repo} 的模型覆盖`;
+    const parsed = parseReviewerSpecs(payload.reviewers, context);
     if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
+    if (!await ensureModelCombinationAvailable(res, deps, parsed.reviewers, context)) return;
     reviewersJson = parsed.reviewersJson;
   }
-  withStore(deps.dbPath, (store) => store.setRepoReviewers(repoId, reviewersJson));
+  const saved = withStore(deps.dbPath, (store) => store.setRepoReviewers(repoId, reviewersJson));
+  if (!saved) {
+    return sendJson(res, 409, { error: "模型服务状态已经变化，请重新选择仓库模型覆盖" });
+  }
   return send(res, 204);
 }
 

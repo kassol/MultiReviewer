@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
-import type { Finding, ReviewRange, Reviewer } from "../src/review/finding.ts";
+import type { Finding, ReviewerUsage, ReviewRange, Reviewer } from "../src/review/finding.ts";
+import { mergeBatchOutcomes } from "../src/review/batch.ts";
 import { runReview } from "../src/review/run.ts";
 import type { FileTree } from "./support/git-fixture.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
@@ -323,6 +324,58 @@ test("锚定打回次数跨批次累加,不是只留最后一批的数", async (
   assert.equal(result.outcomes[0]!.anchorRejections, 5);
   const rows = query(db.path, "SELECT anchor_rejections FROM reviewer_outcome");
   assert.equal(rows[0]!["anchor_rejections"], 5);
+});
+
+test("跨批次费用按未知占优，已知小计与全部 token 仍累加", () => {
+  const usage = (
+    totalTokens: number,
+    costUsd: number | null,
+    knownCostUsd: number,
+    costSource: ReviewerUsage["costSource"],
+  ): ReviewerUsage => ({
+    inputTokens: totalTokens - 3,
+    outputTokens: 1,
+    cacheReadTokens: 1,
+    cacheWriteTokens: 1,
+    totalTokens,
+    costUsd,
+    knownCostUsd,
+    costSource,
+  });
+  const timed = (entry: ReviewerUsage) => ({
+    durationMs: 1,
+    outcome: {
+      model: "model-a",
+      findings: [],
+      anomalies: [],
+      rejectedToolCalls: 0,
+      anchorRejections: 0,
+      usage: entry,
+    },
+  });
+
+  const mixed = mergeBatchOutcomes([
+    timed(usage(10, 0.4, 0.4, "trusted")),
+    timed(usage(20, null, 0, "unknown")),
+  ]);
+  assert.deepEqual(mixed.outcome.usage, {
+    inputTokens: 24,
+    outputTokens: 2,
+    cacheReadTokens: 2,
+    cacheWriteTokens: 2,
+    totalTokens: 30,
+    costUsd: null,
+    knownCostUsd: 0.4,
+    costSource: "unknown",
+  });
+
+  const known = mergeBatchOutcomes([
+    timed(usage(10, 0, 0, "trusted")),
+    timed(usage(20, 0.4, 0.4, "trusted")),
+  ]);
+  assert.equal(known.outcome.usage?.costUsd, 0.4);
+  assert.equal(known.outcome.usage?.knownCostUsd, 0.4);
+  assert.equal(known.outcome.usage?.costSource, "trusted");
 });
 
 test("Review Run 开始时记录预估规模:变更文件数、改动行数与批数", async () => {

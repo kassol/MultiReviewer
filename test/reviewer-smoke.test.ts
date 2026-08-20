@@ -13,7 +13,13 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
+import { resolvePiBuiltinProviderTarget } from "../src/reviewer/catalog.ts";
 import { createPiReviewer } from "../src/reviewer/pi-reviewer.ts";
+import {
+  discoverModels,
+  validateMinimalInference,
+  type BuiltinModelServiceCandidate,
+} from "../src/reviewer/model-service-runtime.ts";
 
 const provider = process.env["MULTIREVIEWER_SMOKE_PROVIDER"];
 const model = process.env["MULTIREVIEWER_SMOKE_MODEL"];
@@ -30,10 +36,48 @@ const FIXTURE = fileURLToPath(new URL("./fixture/reviewer-smoke", import.meta.ur
 const SEVERITIES = new Set(["P0", "P1", "P2"]);
 const CATEGORIES = new Set(["security", "bug", "maintainability", "design"]);
 
-test("真实模型经 report_finding 产出结构完整的 Finding", { skip }, async () => {
-  const reviewer = createPiReviewer({
+test("真实 provider 完成一次模型发现与一次最小推理", { skip }, async () => {
+  const candidate: BuiltinModelServiceCandidate = {
+    kind: "builtin",
     provider: provider!,
-    model: model!,
+    credential: secret!,
+  };
+  const discovery = await discoverModels(candidate, { allowNetwork: true });
+  assert.equal(discovery.ok, true, discovery.ok ? undefined : discovery.failure.message);
+  if (!discovery.ok) return;
+  const validationModel = discovery.models.find(({ id }) => id === model!);
+  assert.ok(validationModel, `真实目录没有返回验证模型 ${provider}:${model}`);
+
+  const inference = await validateMinimalInference(candidate, validationModel);
+  assert.equal(inference.ok, true, inference.ok ? undefined : inference.failure.message);
+});
+
+test("真实模型经 report_finding 产出结构完整的 Finding", { skip }, async () => {
+  const target = await resolvePiBuiltinProviderTarget(provider!);
+  assert.ok(target, `Pi 内置 provider 不存在或没有运行目标: ${provider}`);
+  const reviewer = createPiReviewer({
+    runtimeModel: {
+      provider: provider!,
+      id: model!,
+      name: model!,
+      api: target.api,
+      baseUrl: target.baseUrl,
+      input: ["text"],
+      reasoning: false,
+      cost: undefined,
+      contextWindow: 128_000,
+      maxTokens: 16_000,
+      sources: {
+        name: "model-id",
+        api: "service-target",
+        baseUrl: "service-target",
+        input: "runtime-baseline",
+        reasoning: "runtime-baseline",
+        cost: "unknown",
+        contextWindow: "runtime-baseline",
+        maxTokens: "runtime-baseline",
+      },
+    },
     apiKey: secret!,
   });
 

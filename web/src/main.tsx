@@ -18,7 +18,7 @@ import { Card } from "@/components/ui/card";
 
 import { AccessControlPage } from "./access-control.tsx";
 import { api } from "./api.ts";
-import { CredentialsPage } from "./credentials.tsx";
+import { ModelServicesPage } from "./credentials.tsx";
 import { injected } from "./injected.ts";
 import { LoginPage } from "./login.tsx";
 import { PasswordPage } from "./password.tsx";
@@ -58,21 +58,38 @@ const shellRoute = createRoute({
   component: Shell,
 });
 
-const NAV: readonly { to: "/repos" | "/runs" | "/stats" | "/credentials" | "/settings" | "/access" | "/password"; label: string; permission?: PanelPermission; admin?: true; always?: true }[] = [
+type PagePermission = PanelPermission | readonly PanelPermission[];
+type NavigationItem = {
+  to: "/repos" | "/runs" | "/stats" | "/credentials" | "/settings" | "/access" | "/password";
+  label: string;
+  permission?: PagePermission;
+  admin?: true;
+  always?: true;
+};
+
+const NAV: readonly NavigationItem[] = [
   { to: "/repos", label: "仓库", permission: "repo:read" },
   { to: "/runs", label: "评审记录", permission: "review:read" },
   { to: "/stats", label: "处置率", permission: "review:read" },
-  { to: "/credentials", label: "模型凭据", permission: "credential:read" },
+  { to: "/credentials", label: "模型服务", permission: ["model:read", "model:write", "credential:read", "credential:write"] },
   { to: "/settings", label: "全局设置", permission: "model:read" },
   { to: "/access", label: "访问控制", admin: true },
   { to: "/password", label: "修改密码", always: true },
 ];
 
+function hasPagePermission(session: PanelSession, permission: PagePermission): boolean {
+  return typeof permission === "string"
+    ? hasPermission(session, permission)
+    : permission.some((candidate) => hasPermission(session, candidate));
+}
+
 function visibleNav(session: PanelSession) {
   const hasBusinessAccess = session.isSystemAdmin || session.permissions.length > 0;
   return NAV.filter((item) =>
     (item.always === true && hasBusinessAccess) ||
-    (item.admin === true ? session.isSystemAdmin : item.permission !== undefined && hasPermission(session, item.permission)),
+    (item.admin === true
+      ? session.isSystemAdmin
+      : item.permission !== undefined && hasPagePermission(session, item.permission)),
   );
 }
 
@@ -134,13 +151,17 @@ const indexRoute = createRoute({
   component: ZeroPermissionPage,
 });
 
-function protectedPage(path: "/repos" | "/runs" | "/stats" | "/credentials" | "/settings", permission: PanelPermission, component: () => React.JSX.Element) {
+function protectedPage(
+  path: "/repos" | "/runs" | "/stats" | "/credentials" | "/settings",
+  permission: PagePermission,
+  component: () => React.JSX.Element,
+) {
   return createRoute({
     getParentRoute: () => shellRoute,
     path,
     beforeLoad: ({ context }) => {
       if (context.session.mustChangePassword) throw redirect({ to: "/password" });
-      if (!hasPermission(context.session, permission)) throw redirect({ to: "/" });
+      if (!hasPagePermission(context.session, permission)) throw redirect({ to: "/" });
     },
     component,
   });
@@ -149,7 +170,21 @@ function protectedPage(path: "/repos" | "/runs" | "/stats" | "/credentials" | "/
 const reposRoute = protectedPage("/repos", "repo:read", ReposPage);
 const runsRoute = protectedPage("/runs", "review:read", RunsPage);
 const statsRoute = protectedPage("/stats", "review:read", StatsPage);
-const credentialsRoute = protectedPage("/credentials", "credential:read", CredentialsPage);
+const credentialsRoute = protectedPage(
+  "/credentials",
+  ["model:read", "model:write", "credential:read", "credential:write"],
+  () => {
+    const { session } = shellRoute.useRouteContext();
+    return (
+      <ModelServicesPage
+        canReadModels={hasPermission(session, "model:read") || hasPermission(session, "model:write")}
+        canWriteModels={hasPermission(session, "model:write")}
+        canReadCredential={hasPermission(session, "credential:read") || hasPermission(session, "credential:write")}
+        canWriteCredential={hasPermission(session, "credential:write")}
+      />
+    );
+  },
+);
 const settingsRoute = protectedPage("/settings", "model:read", SettingsPage);
 
 const accessRoute = createRoute({

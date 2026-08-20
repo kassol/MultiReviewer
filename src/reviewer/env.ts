@@ -19,6 +19,11 @@ export const MODEL_API_KEY_ENV = "MULTIREVIEWER_MODEL_API_KEY";
  */
 export const PI_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 
+/** 子进程失败文本会经 IPC 回主进程；若下游异常回显请求凭据，先在边界处抹掉。 */
+export function redactModelCredential(text: string, credential: string | undefined): string {
+  return credential === undefined || credential === "" ? text : text.replaceAll(credential, "[REDACTED]");
+}
+
 export function reviewerEnv(
   parentEnv: Readonly<Record<string, string | undefined>>,
   vendorEnv: Readonly<Record<string, string>>,

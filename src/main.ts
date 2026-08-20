@@ -2,7 +2,8 @@
  * 进程入口。读环境变量建出 Forge,起 webhook 服务。模型组合与批次上限在库里,
  * 由面板的设置页管(issue #66)。
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { buildReviewers } from "./config.ts";
 
 import {
@@ -12,7 +13,13 @@ import {
 } from "./forge/gitea.ts";
 import { createGitHubForge, type GitHubAuth } from "./forge/github.ts";
 import { CREDENTIAL_MASTER_KEY_ENV } from "./panel/credential-crypto.ts";
-import { createWebhookServer, rebuildModelsConfig } from "./webhook/server.ts";
+import {
+  acknowledgeModelServiceMigration,
+  migrateModelServiceDatabase,
+  type ModelServiceMigrationSummary,
+} from "./review/model-service-migration.ts";
+import { listPiBuiltinProviders } from "./reviewer/catalog.ts";
+import { createWebhookServer } from "./webhook/server.ts";
 
 const DEFAULT_PORT = 3000;
 
@@ -90,6 +97,7 @@ function panelPrefix(): string {
 
 const port = Number(process.env["MULTIREVIEWER_PORT"] ?? DEFAULT_PORT);
 const dbPath = process.env["MULTIREVIEWER_DB"] ?? "multireviewer.db";
+const cacheDir = process.env["MULTIREVIEWER_CACHE_DIR"] ?? ".cache/worktrees";
 
 const prefix = panelPrefix();
 const baseUrl = required("MULTIREVIEWER_BASE_URL");
@@ -110,15 +118,21 @@ if (gitea === undefined && github === undefined) {
 // 条链路都是哑的,而这要等到第一次有人处置 Finding 才会显形——宁可起不来。
 if (gitea !== undefined) await assertSupportedVersion(gitea);
 
-// 派生的用户模型配置在启动时写一次。真相源是库,这份文件是可从库重建的派生物,而 Reviewer
-// 子进程只读它:只在有人打开面板时才重建的话,谁都没点过面板的实例投递进来会直接报「模型
-// 不存在」。走的是面板写入口那同一条串行链(`rebuildModelsConfig`),它自己现读库。
-//
-// 写不出来不拦启动,也不改共用路径:子进程只读这两份文件,一个只读的共用目录照样能用。
-// 这时留在盘上的是上一次的内容(或者什么都没有),两侧读的仍是同一份,只是不再跟着库走。
-const rebuildFailure = await rebuildModelsConfig(dbPath);
-if (rebuildFailure !== undefined) {
-  console.warn(`派生的模型配置写不出来,模型行的改动不会生效(读仍照常): ${rebuildFailure}`);
+let pendingMigrationSummary: ModelServiceMigrationSummary | undefined;
+const migration = await migrateModelServiceDatabase({
+  dbPath,
+  ...(process.env[CREDENTIAL_MASTER_KEY_ENV] === undefined
+    ? {}
+    : { credentialMasterKey: process.env[CREDENTIAL_MASTER_KEY_ENV] }),
+  builtinProviderNames: new Set(
+    (await listPiBuiltinProviders()).map((provider) => provider.id),
+  ),
+});
+if (migration.status === "migrated" || migration.status === "projection-pending") {
+  const projectionDir = join(resolve(cacheDir), "pi-models");
+  rmSync(join(projectionDir, "models.json"), { force: true });
+  rmSync(join(projectionDir, "models-store.json"), { force: true });
+  pendingMigrationSummary = migration.summary;
 }
 
 const server = createWebhookServer({
@@ -126,7 +140,7 @@ const server = createWebhookServer({
     ...(github === undefined ? {} : { github: createGitHubForge({ auth: github }) }),
     ...(gitea === undefined ? {} : { gitea: createGiteaForge(gitea) }),
   },
-  cacheDir: process.env["MULTIREVIEWER_CACHE_DIR"] ?? ".cache/worktrees",
+  cacheDir,
   dbPath,
   panelPrefix: prefix,
   baseUrl,
@@ -147,5 +161,9 @@ const server = createWebhookServer({
 });
 
 server.listen(port, () => {
+  if (pendingMigrationSummary !== undefined) {
+    console.log(JSON.stringify({ event: "model-service-migration", summary: pendingMigrationSummary }));
+    acknowledgeModelServiceMigration(dbPath);
+  }
   console.log(`MultiReviewer webhook 监听 ${port}`);
 });

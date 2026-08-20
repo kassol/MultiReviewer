@@ -305,11 +305,16 @@ test("零 Finding 但 Reviewer 都成功时,不算失败", async () => {
 test("撞名的 provider 留下失败记录,其余 Reviewer 照常跑完,整轮不算失败", async () => {
   const { cache, db, forge, event } = setup();
   const collided = { provider: "corp-gateway", model: "corp-qwen3-max" };
-  const [conflicting] = buildReviewers(
-    [collided],
-    new Map([[collided.provider, "k-corp"]]),
-    new Set([collided.provider]),
-  );
+  const [conflicting] = buildReviewers([
+    {
+      spec: collided,
+      modelServiceVersion: 4,
+      target: null,
+      runtimeModel: null,
+      credential: null,
+      failure: `自定义 provider ${collided.provider} 的名字冲突,这次没跑。`,
+    },
+  ]);
 
   const result = await runReview(event, {
     forge: forge.forge,

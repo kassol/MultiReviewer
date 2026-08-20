@@ -1,16 +1,14 @@
 /**
- * 全局设置页(issue #68)。全局模型组合与批次上限在这里改,存 `PUT <前缀>/api/settings`。
- *
- * 模型组合的编辑是两栏面板(issue #90,`components/model-composer.tsx`):模型进组合的三条
- * 入口——从目录里选、给已配凭据的 provider 手填一个标识、加一家自定义 provider——收在同
- * 一屏上。此前挂在这一页底下的「手填模型标识」与「自定义 provider」两张卡片因此从页上消
- * 失:它们各自搬进了面板里那条入口该在的位置(手填在选中那家的模型列下面,加一家在厂商
- * 列的底部),不是另写一份。
+ * 全局设置页。模型组合与批次上限读取同一设置快照，但各自保存：失效模型只门禁组合写入，
+ * 不连坐批次上限。组合候选与仓库覆盖共用 `ModelComposer` 的模型服务投影。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { ModelComposer } from "@/components/model-composer";
+import {
+  ModelComposer,
+  type ModelComposerValidity,
+} from "@/components/model-composer";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -19,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { api, errorText, fetchJson } from "./api.ts";
-import { modelIdentity, parseModelIdentity } from "./model-catalog.ts";
+import { modelIdentity, parseModelIdentity } from "./model-services.ts";
 
 type Settings = {
   reviewers: { provider: string; model: string }[];
@@ -50,8 +48,8 @@ export function SettingsPage() {
             <Skeleton className="h-[142px]" />
           </>
         ) : (
-          // 表单以读回来的设置为初值,所以等数据到了再挂载。
-          <SettingsForm key={JSON.stringify(settings.data)} settings={settings.data} />
+          // 表单以读回来的设置为初值，所以等数据到了再挂载。
+          <SettingsForm settings={settings.data} />
         )}
       </div>
     </>
@@ -62,45 +60,94 @@ function SettingsForm({ settings }: { settings: Settings }) {
   const queryClient = useQueryClient();
   const [models, setModels] = useState(() => settings.reviewers.map(modelIdentity));
   const [limit, setLimit] = useState(String(settings.maxChangedLinesPerBatch));
-  const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
+  const [modelValidity, setModelValidity] = useState<ModelComposerValidity>({
+    ready: false,
+    unavailable: [],
+  });
+  const [modelFeedback, setModelFeedback] = useState<{
+    text: string;
+    isError: boolean;
+  } | null>(null);
+  const [limitFeedback, setLimitFeedback] = useState<{
+    text: string;
+    isError: boolean;
+  } | null>(null);
 
-  const save = useMutation({
-    mutationFn: async (maxChangedLinesPerBatch: number): Promise<Settings> => {
+  const saveModels = useMutation({
+    mutationFn: async (): Promise<Settings> => {
       const response = await api("/settings", {
         method: "PUT",
-        body: JSON.stringify({
-          reviewers: models.map(parseModelIdentity),
-          maxChangedLinesPerBatch,
-        }),
+        body: JSON.stringify({ reviewers: models.map(parseModelIdentity) }),
       });
       if (!response.ok) throw new Error(await errorText(response));
       return (await response.json()) as Settings;
     },
-    onSuccess: () => {
-      setFeedback({ text: "已保存,下一次投递按新组合跑。", isError: false });
-      void queryClient.invalidateQueries({ queryKey: ["settings"] });
+    onSuccess: (saved) => {
+      setModelFeedback({ text: "模型组合已保存，下一次投递按新组合跑。", isError: false });
+      queryClient.setQueryData(["settings"], saved);
     },
-    onError: (error: Error) => setFeedback({ text: error.message, isError: true }),
+    onError: (error: Error) => setModelFeedback({ text: error.message, isError: true }),
+  });
+  const saveLimit = useMutation({
+    mutationFn: async (maxChangedLinesPerBatch: number): Promise<Settings> => {
+      const response = await api("/settings", {
+        method: "PUT",
+        body: JSON.stringify({ maxChangedLinesPerBatch }),
+      });
+      if (!response.ok) throw new Error(await errorText(response));
+      return (await response.json()) as Settings;
+    },
+    onSuccess: (saved) => {
+      setLimitFeedback({ text: "批次上限已保存。", isError: false });
+      queryClient.setQueryData(["settings"], saved);
+    },
+    onError: (error: Error) => setLimitFeedback({ text: error.message, isError: true }),
   });
 
+  const modelSaveBlocked = !modelValidity.ready || modelValidity.unavailable.length > 0;
   return (
-    // 面板不在这张 `<form>` 里:它自己带着手填模型行那张表单,套进同一个 `<form>` 既是
-    // 非法嵌套,也会让填一个 model id 顺手把模型组合与批次上限一起保存了。
     <div className="flex flex-col gap-4">
-      <ModelComposer value={models} onChange={setModels} />
+      <ModelComposer
+        value={models}
+        onChange={(next) => {
+          setModels(next);
+          setModelFeedback(null);
+        }}
+        onValidityChange={setModelValidity}
+      />
+      <div className="flex flex-wrap items-center gap-3">
+        <Button
+          type="button"
+          disabled={saveModels.isPending || modelSaveBlocked}
+          onClick={() => {
+            setModelFeedback(null);
+            saveModels.mutate();
+          }}
+        >
+          {saveModels.isPending ? "保存中…" : "保存模型组合"}
+        </Button>
+        {modelValidity.unavailable.length > 0 ? (
+          <span className="text-destructive">先恢复或移除不可用模型，再保存组合。</span>
+        ) : !modelValidity.ready ? (
+          <span className="text-muted-foreground">候选状态确认后可以保存组合。</span>
+        ) : modelFeedback === null ? null : (
+          <span className={modelFeedback.isError ? "text-destructive" : "text-muted-foreground"}>
+            {modelFeedback.text}
+          </span>
+        )}
+      </div>
+
       <form
         className="flex flex-col gap-4"
         onSubmit={(event) => {
           event.preventDefault();
-          setFeedback(null);
-          // 字段是自由文本,`Number("abc")` 是 NaN,JSON 里它序列化成 null,而 null 在
-          // 服务端的语义是「清除这一项」:不拦的话人看到「已保存」,配置却被悄悄删了。
+          setLimitFeedback(null);
           const parsed = Number(limit.trim());
           if (limit.trim() === "" || !Number.isInteger(parsed) || parsed <= 0) {
-            setFeedback({ text: "批次上限要填正整数,这次没保存。", isError: true });
+            setLimitFeedback({ text: "批次上限要填正整数，这次没保存。", isError: true });
             return;
           }
-          save.mutate(parsed);
+          saveLimit.mutate(parsed);
         }}
       >
         <Card className="gap-2.5 px-4">
@@ -116,17 +163,16 @@ function SettingsForm({ settings }: { settings: Settings }) {
             />
           </div>
           <p className="text-xs text-muted-foreground">
-            超过这个行数的改动会拆成多批送审。留空不行,要正整数。
+            超过这个行数的改动会拆成多批送审。它单独保存，不受模型组合状态影响。
           </p>
         </Card>
-
-        <div className="flex items-center gap-3">
-          <Button type="submit" disabled={save.isPending}>
-            {save.isPending ? "保存中…" : "保存"}
+        <div className="flex flex-wrap items-center gap-3">
+          <Button type="submit" disabled={saveLimit.isPending}>
+            {saveLimit.isPending ? "保存中…" : "保存批次上限"}
           </Button>
-          {feedback === null ? null : (
-            <span className={feedback.isError ? "text-destructive" : "text-muted-foreground"}>
-              {feedback.text}
+          {limitFeedback === null ? null : (
+            <span className={limitFeedback.isError ? "text-destructive" : "text-muted-foreground"}>
+              {limitFeedback.text}
             </span>
           )}
         </div>

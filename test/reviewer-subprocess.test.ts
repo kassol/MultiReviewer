@@ -15,7 +15,31 @@ after(() => {
   for (const cleanup of cleanups) cleanup();
 });
 
-const CONFIG = { provider: "test", model: "stub-model", apiKey: "vendor-secret" };
+const CONFIG = {
+  runtimeModel: {
+    provider: "test",
+    id: "stub-model",
+    name: "Pinned Stub",
+    api: "openai-completions" as const,
+    baseUrl: "https://pinned.example.test/v1",
+    input: ["text"] as const,
+    reasoning: false,
+    cost: undefined,
+    contextWindow: 128_000,
+    maxTokens: 16_000,
+    sources: {
+      name: "model-id" as const,
+      api: "service-target" as const,
+      baseUrl: "service-target" as const,
+      input: "runtime-baseline" as const,
+      reasoning: "runtime-baseline" as const,
+      cost: "unknown" as const,
+      contextWindow: "runtime-baseline" as const,
+      maxTokens: "runtime-baseline" as const,
+    },
+  },
+  apiKey: "vendor-secret",
+};
 const RANGE = { baseSha: "aaa", headSha: "bbb", files: ["src/a.ts"] };
 
 /** 把一段 worker 脚本写进临时目录并返回路径。 */
@@ -159,6 +183,82 @@ process.on("message", () => {
   assert.equal(outcome.rejectedToolCalls, 1);
 });
 
+test("固定价格来源决定 Pi 数字能不能成为产品费用", async () => {
+  const path = worker(`
+process.on("message", () => {
+  process.send({
+    kind: "done",
+    rejectedToolCalls: 0,
+    anchorRejections: 0,
+    usage: {
+      inputTokens: 120,
+      outputTokens: 40,
+      cacheReadTokens: 20,
+      cacheWriteTokens: 5,
+      totalTokens: 185,
+      costUsd: 0.25,
+    },
+  });
+  process.exit(0);
+});
+`);
+
+  const unknown = await runInChild(path, CONFIG, RANGE, tmpdir());
+  assert.deepEqual(unknown.usage, {
+    inputTokens: 120,
+    outputTokens: 40,
+    cacheReadTokens: 20,
+    cacheWriteTokens: 5,
+    totalTokens: 185,
+    costUsd: null,
+    knownCostUsd: 0,
+    costSource: "unknown",
+  });
+
+  const trustedConfig = {
+    ...CONFIG,
+    runtimeModel: {
+      ...CONFIG.runtimeModel,
+      cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+      sources: { ...CONFIG.runtimeModel.sources, cost: "trusted" as const },
+    },
+  };
+  const knownPaid = await runInChild(path, trustedConfig, RANGE, tmpdir());
+  assert.equal(knownPaid.usage?.costUsd, 0.25);
+  assert.equal(knownPaid.usage?.knownCostUsd, 0.25);
+  assert.equal(knownPaid.usage?.costSource, "trusted");
+
+  const freePath = worker(`
+process.on("message", () => {
+  process.send({
+    kind: "done",
+    rejectedToolCalls: 0,
+    anchorRejections: 0,
+    usage: {
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 2,
+      costUsd: 0,
+    },
+  });
+  process.exit(0);
+});
+`);
+  const freeConfig = {
+    ...trustedConfig,
+    runtimeModel: {
+      ...trustedConfig.runtimeModel,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+  };
+  const knownFree = await runInChild(freePath, freeConfig, RANGE, tmpdir());
+  assert.equal(knownFree.usage?.costUsd, 0);
+  assert.equal(knownFree.usage?.knownCostUsd, 0);
+  assert.equal(knownFree.usage?.costSource, "trusted");
+});
+
 test("子进程的环境里只有自家那一份模型凭据", async () => {
   const path = worker(`
 process.on("message", () => {
@@ -183,10 +283,12 @@ process.on("message", () => {
 });
 `);
 
-  // 父进程带着一把 forge 凭据与别家厂商凭据,子进程一个都不该看到。
+  // 父进程带着 Forge 凭据、别家模型凭据、主密钥与密文,子进程一个都不该看到。
   const saved = { ...process.env };
   process.env["GITHUB_TOKEN"] = "forge-secret";
   process.env["DEEPSEEK_API_KEY"] = "other-vendor-secret";
+  process.env["MULTIREVIEWER_CREDENTIAL_MASTER_KEY"] = "master-secret";
+  process.env["MODEL_CREDENTIAL_CIPHERTEXT"] = "v1.ciphertext-secret";
   let outcome;
   try {
     outcome = await runInChild(path, CONFIG, RANGE, tmpdir());
@@ -197,9 +299,11 @@ process.on("message", () => {
   const echoed = JSON.parse(outcome.findings[0]!.description);
   assert.deepEqual(echoed.credentialish, ["MULTIREVIEWER_MODEL_API_KEY"]);
   assert.equal(echoed.apiKey, "vendor-secret");
+  assert.equal(echoed.credentialish.includes("MULTIREVIEWER_CREDENTIAL_MASTER_KEY"), false);
+  assert.equal(echoed.credentialish.includes("MODEL_CREDENTIAL_CIPHERTEXT"), false);
 });
 
-test("worker 收到的任务含 Review Range 与工作副本路径", async () => {
+test("worker 收到本轮固定运行模型、Review Range 与工作副本路径", async () => {
   const path = worker(`
 process.on("message", (request) => {
   process.send({
@@ -225,8 +329,11 @@ process.on("message", (request) => {
   const echoed = JSON.parse(outcome.findings[0]!.description);
   assert.deepEqual(echoed.range, RANGE);
   assert.equal(echoed.worktreePath, workdir);
-  assert.equal(echoed.provider, "test");
-  assert.equal(echoed.model, "stub-model");
+  assert.deepEqual(echoed.runtimeModel, JSON.parse(JSON.stringify(CONFIG.runtimeModel)));
+  assert.equal(echoed.runtimeModel.baseUrl, "https://pinned.example.test/v1");
+  // 模型凭据只走专用环境变量。IPC 里连字段和值都不能出现:消息可能进入日志或崩溃转储。
+  assert.equal(Object.hasOwn(echoed, "apiKey"), false);
+  assert.equal(JSON.stringify(echoed).includes(CONFIG.apiKey), false);
 });
 
 test("工作副本目录不存在时,失败落在这一个 Reviewer 上而不是抛给调用方", async () => {

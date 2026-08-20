@@ -1,5 +1,6 @@
 import type { Reviewer } from "./review/finding.ts";
 import { createPiReviewer } from "./reviewer/pi-reviewer.ts";
+import type { RuntimeModel } from "./reviewer/model-service-runtime.ts";
 
 /** 模型组合的一项。凭据按 provider 查库得到(ADR 0008),这里不带凭据。 */
 export type ReviewerSpec = {
@@ -70,19 +71,51 @@ export function parseGlobalReviewers(reviewersJson: string | null): ReviewerSpec
   });
 }
 
-/**
- * 一次 Review Run 开始时取到的模型凭据:provider → 明文 key。快照在编排进程里解密
- * 得到,整轮不重读(ADR 0008)——轮转对进行中的 Run 无影响,下一次投递自然用新的。
- */
-export type CredentialSnapshot = ReadonlyMap<string, string>;
+/** Review Run 启动时固定下来的模型服务调用目标。 */
+export type ModelServiceTarget = Readonly<{ baseUrl: string; api: string }>;
 
 /**
- * 缺凭据的 provider 照样建出一个 Reviewer,它一跑就报失败并写明缺哪一家。
- *
- * 这里不抛:抛出去的话这次投递在时间线上一点痕迹都不留,人看到的是「投了没反应」。
- * 报成 Reviewer 失败则这次 Review Run 留下一条失败记录,原因跟着落库。
+ * 一个 Reviewer 在本轮实际使用的完整运行计划。凭据只活在内存里；持久化必须经
+ * `reviewerPin` 显式投影，不能直接展开这个对象。
  */
-function missingCredentialReviewer(spec: ReviewerSpec): Reviewer {
+export type ReviewerRuntimePlan = Readonly<{
+  spec: ReviewerSpec;
+  modelServiceVersion: number | null;
+  target: ModelServiceTarget | null;
+  runtimeModel: RuntimeModel | null;
+  credential: string | null;
+  failure: string | null;
+}>;
+
+/** Review Run 的非秘密审计快照。 */
+export type ReviewRunReviewerPin = Readonly<{
+  identity: string;
+  provider: string;
+  model: string;
+  modelServiceVersion: number | null;
+  target: ModelServiceTarget | null;
+  runtimeModel: RuntimeModel | null;
+  failure: string | null;
+}>;
+
+/**
+ * 安全边界：逐字段复制可持久化字段，凭据既不在返回类型里，也不会因以后给运行计划加字段而
+ * 被对象展开顺带落库。
+ */
+export function reviewerPin(plan: ReviewerRuntimePlan): ReviewRunReviewerPin {
+  return {
+    identity: modelIdentity(plan.spec),
+    provider: plan.spec.provider,
+    model: plan.spec.model,
+    modelServiceVersion: plan.modelServiceVersion,
+    target: plan.target,
+    runtimeModel: plan.runtimeModel,
+    failure: plan.failure,
+  };
+}
+
+/** 运行计划无法执行时仍建出 Reviewer，让这一项留下明确失败记录而不是从 Run 消失。 */
+function failedReviewer(spec: ReviewerSpec, failure: string): Reviewer {
   const identity = modelIdentity(spec);
   return {
     model: identity,
@@ -93,41 +126,10 @@ function missingCredentialReviewer(spec: ReviewerSpec): Reviewer {
         anomalies: [],
         rejectedToolCalls: 0,
         anchorRejections: 0,
-        failure: `没有配置 ${spec.provider} 的模型凭据,${identity} 这次没跑。去面板的凭据页配好再重跑。`,
+        failure,
       }),
   };
 }
-
-/**
- * 名字撞上 Pi 内置同名 provider 的那一家自定义 provider,同样建出一个一跑就报失败的
- * Reviewer(issue #94)。
- *
- * 措辞与「缺凭据」、「模型不存在」都分得开:三者的下一步动作完全不同(改名重建 / 去凭据页粘
- * key / 改模型标识),混成一句话人就不知道该去哪。撞名那一家登记时 key 是必填的,所以它几乎
- * 总是配着凭据在,顺带落进缺凭据那一档是指望不上的——这一道排在凭据之前,自己判。
- *
- * 不静默换端点:撞名时 Pi 会拿自定义那个端点覆盖内置那一家,所以这一家整个停用(派生的模型
- * 配置里也没有它,见 `writeSharedModelsConfig`),而不是让它照常跑到内置那个端点上去。
- */
-function nameConflictReviewer(spec: ReviewerSpec): Reviewer {
-  const identity = modelIdentity(spec);
-  return {
-    model: identity,
-    review: () =>
-      Promise.resolve({
-        model: identity,
-        findings: [],
-        anomalies: [],
-        rejectedToolCalls: 0,
-        anchorRejections: 0,
-        failure:
-          `自定义 provider ${spec.provider} 的名字与 Pi 内置的同名 provider 撞上了,` +
-          `${identity} 这次没跑。两者共用同一个命名空间,撞名时 Pi 会拿自定义那个端点覆盖内置` +
-          "那一家,所以这一家整个停用了。去面板给它改个名字重建,或者删掉它。",
-      }),
-  };
-}
-
 /**
  * 一个模型都没配时顶上的 Reviewer,理由同上:零 Reviewer 的 Review Run 既不失败也不
  * 报错,人看到的是「投了没反应」。有它在,这次投递留下一条失败记录说明差什么。
@@ -149,30 +151,22 @@ function emptyModelSetReviewer(): Reviewer {
 }
 
 /**
- * 按模型组合建出全部 Reviewer,每个只拿到自己那一家的凭据。
- *
- * 凭据来自 Review Run 开始时的快照,缺失不拦启动也不拦投递:服务照常起,那一家的
- * Reviewer 报失败(issue #65)。组合为空同理,由 `emptyModelSetReviewer` 报失败。
- * 撞名的自定义 provider(`conflictingProviders`,issue #94)也走同一条路,判据在调用方算好
- * 传进来——它是「库里的登记 ∩ Pi 内置目录」这个交集,现算不落库。
- *
- * 三档失败各建一个 Reviewer 而不是把这一项从组合里滤掉:零 Reviewer 的 Review Run 既不失败
- * 也不留痕,人看到的是「投了没反应」。
+ * 从本轮已经物化好的不可变计划建 Reviewer。这里不再读当前模型配置，也不再按 provider
+ * 另查凭据；每个 Reviewer 只收到自己计划里的那一份。
  */
-export function buildReviewers(
-  specs: readonly ReviewerSpec[],
-  credentials: CredentialSnapshot,
-  conflictingProviders: ReadonlySet<string>,
-): Reviewer[] {
-  if (specs.length === 0) return [emptyModelSetReviewer()];
-  return specs.map((spec) => {
-    if (conflictingProviders.has(spec.provider)) return nameConflictReviewer(spec);
-    const apiKey = credentials.get(spec.provider);
-    if (apiKey === undefined || apiKey === "") return missingCredentialReviewer(spec);
+export function buildReviewers(plans: readonly ReviewerRuntimePlan[]): Reviewer[] {
+  if (plans.length === 0) return [emptyModelSetReviewer()];
+  return plans.map((plan) => {
+    if (plan.failure !== null) return failedReviewer(plan.spec, plan.failure);
+    if (plan.credential === null || plan.runtimeModel === null) {
+      return failedReviewer(
+        plan.spec,
+        `${modelIdentity(plan.spec)} 的不可变运行计划不完整,这次没跑。`,
+      );
+    }
     return createPiReviewer({
-      provider: spec.provider,
-      model: spec.model,
-      apiKey,
+      runtimeModel: plan.runtimeModel,
+      apiKey: plan.credential,
     });
   });
 }

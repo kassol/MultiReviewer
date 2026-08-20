@@ -8,8 +8,9 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import type { AddressInfo } from "node:net";
+import { DatabaseSync } from "node:sqlite";
 
-import type { CredentialSnapshot, ReviewerSpec } from "../../src/config.ts";
+import type { ReviewerRuntimePlan, ReviewerSpec } from "../../src/config.ts";
 import type { Forge, PullRequestRef } from "../../src/forge/forge.ts";
 import {
   createWebhookServer,
@@ -17,6 +18,8 @@ import {
   type WebhookServerDeps,
 } from "../../src/webhook/server.ts";
 import { hashPassword } from "../../src/panel/password.ts";
+import { encryptCredential } from "../../src/panel/credential-crypto.ts";
+import { modelServiceTargetFingerprint } from "../../src/review/model-service-migration.ts";
 import { openStore } from "../../src/review/store.ts";
 import { startFakeGitea, type FakeGitea } from "./fake-gitea.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./git-fixture.ts";
@@ -43,8 +46,10 @@ export type PanelHarness = {
   dispatched: PullRequestRef[];
   settled: { event: NormalizedEvent; error?: unknown }[];
   factoryCalls: (readonly ReviewerSpec[])[];
-  /** 每次组装 Reviewer 时拿到的凭据快照,一次 Review Run 一条。 */
-  snapshots: CredentialSnapshot[];
+  /** 每次组装 Reviewer 时拿到的完整本轮运行计划。 */
+  runtimePlans: (readonly ReviewerRuntimePlan[])[];
+  /** 兼容既有凭据边界断言的明文快照，仅由本轮计划投影。 */
+  snapshots: ReadonlyMap<string, string>[];
   api(method: string, path: string, body?: unknown): Promise<Response>;
   deliverViaHook(
     headSha: string,
@@ -62,6 +67,55 @@ export const HARNESS_SPEC: ReviewerSpec = {
   model: "global-model",
 };
 
+/** 为组合写入测试建一条真实可用的自定义模型服务；不碰旧目录与旧凭据表。 */
+export function seedAvailableModelService(
+  harness: Pick<PanelHarness, "db">,
+  provider: string,
+  models: readonly string[],
+): void {
+  assert.ok(models.length > 0, "测试模型服务至少要有一个模型");
+  const baseUrl = `https://${provider}.models.example.test/v1`;
+  const api = "openai-completions";
+  const at = "2026-08-20T00:00:00.000Z";
+  const store = openStore(harness.db.path);
+  try {
+    assert.equal(store.commitModelServiceVersion(null, {
+      provider,
+      type: "custom",
+      baseUrl,
+      api,
+      targetFingerprint: modelServiceTargetFingerprint(baseUrl, api),
+      disabledReason: null,
+      createdAt: at,
+      updatedAt: at,
+      credential: {
+        state: "verified",
+        apiKeyEncrypted: encryptCredential(PANEL_CREDENTIAL_MASTER_KEY, `secret-${provider}`),
+        updatedAt: at,
+        verifiedAt: at,
+        validationModel: `${provider}:${models[0]!}`,
+        verificationSource: "inference",
+      },
+      directory: {
+        state: "available",
+        lastAttemptAt: at,
+        lastSuccessAt: at,
+        failure: null,
+        ignoredModelCount: 0,
+      },
+      automaticModels: models.map((model) => ({
+        identity: `${provider}:${model}`,
+        provider,
+        id: model,
+        fields: {},
+      })),
+      supplements: [],
+    }), 1);
+  } finally {
+    store.close();
+  }
+}
+
 export type PanelHarnessOptions = {
   /** 模型凭据的主密钥。省略取 `PANEL_CREDENTIAL_MASTER_KEY`,显式给 undefined 即不配。 */
   credentialMasterKey?: string | undefined;
@@ -69,6 +123,7 @@ export type PanelHarnessOptions = {
   buildReviewers?: WebhookServerDeps["buildReviewers"];
   /** 先写进库的全局模型组合。省略取 `[HARNESS_SPEC]`,给空数组即「还没配组合」。 */
   reviewers?: readonly ReviewerSpec[];
+  discoverModelServiceModels?: WebhookServerDeps["discoverModelServiceModels"];
 };
 
 export async function startPanelHarness(
@@ -80,8 +135,14 @@ export async function startPanelHarness(
       ? options.credentialMasterKey
       : PANEL_CREDENTIAL_MASTER_KEY;
   const repo = makeRepo({
-    base: { "src/answer.ts": "export const answer = 1;\n" },
-    head: { "src/answer.ts": "export const answer = 2;\n" },
+    base: {
+      "src/answer.ts": "export const answer = 1;\n",
+      "src/other.ts": "export const other = 1;\n",
+    },
+    head: {
+      "src/answer.ts": "export const answer = 2;\n",
+      "src/other.ts": "export const other = 2;\n",
+    },
   });
   const cache = makeCacheDir();
   const db = makeDbPath();
@@ -91,10 +152,6 @@ export async function startPanelHarness(
   // 全局模型组合在库里(issue #66),服务起来之前先播种。
   const reviewers = options.reviewers ?? [HARNESS_SPEC];
   const seed = openStore(db.path);
-  seed.putGlobalSettings({
-    reviewersJson: reviewers.length === 0 ? null : JSON.stringify(reviewers),
-    maxChangedLinesPerBatch: null,
-  });
   seed.createPanelUser({
     username: PANEL_ADMIN_USERNAME,
     displayName: "Panel Admin",
@@ -105,6 +162,15 @@ export async function startPanelHarness(
     roleId: null,
   });
   seed.close();
+  // Harness 初始组合代表升级前已存在的状态；运行期组合写必须走 Store 的原子可用性门禁。
+  if (reviewers.length > 0) {
+    const fixtureDb = new DatabaseSync(db.path);
+    fixtureDb.prepare("INSERT INTO global_setting (key, value) VALUES (?, ?)").run(
+      "reviewers",
+      JSON.stringify(reviewers),
+    );
+    fixtureDb.close();
+  }
 
   const base = memoryForge({
     pullRequest: {
@@ -114,7 +180,10 @@ export async function startPanelHarness(
       headSha: repo.headSha,
       cloneUrl: repo.dir,
     },
-    changedFiles: [{ path: "src/answer.ts", status: "modified" }],
+    changedFiles: [
+      { path: "src/answer.ts", status: "modified" },
+      { path: "src/other.ts", status: "modified" },
+    ],
   });
   const dispatched: PullRequestRef[] = [];
   const forge: Forge = {
@@ -130,19 +199,25 @@ export async function startPanelHarness(
   };
 
   const factoryCalls: (readonly ReviewerSpec[])[] = [];
-  const snapshots: CredentialSnapshot[] = [];
+  const runtimePlans: (readonly ReviewerRuntimePlan[])[] = [];
+  const snapshots: ReadonlyMap<string, string>[] = [];
   const settled: { event: NormalizedEvent; error?: unknown }[] = [];
   let waiting: { count: number; resolve: () => void }[] = [];
 
   const server = createWebhookServer({
     forges: { gitea: forge },
-    buildReviewers: (specs, credentials, conflicting) => {
-      factoryCalls.push(specs);
-      snapshots.push(credentials);
-      if (options.buildReviewers !== undefined) {
-        return options.buildReviewers(specs, credentials, conflicting);
-      }
-      return specs.map((spec) => scriptedReviewer(spec.model, []));
+    buildReviewers: (plans) => {
+      runtimePlans.push(plans);
+      factoryCalls.push(plans.map((plan) => plan.spec));
+      snapshots.push(
+        new Map(
+          plans.flatMap((plan) =>
+            plan.credential === null ? [] : [[plan.spec.provider, plan.credential] as const],
+          ),
+        ),
+      );
+      if (options.buildReviewers !== undefined) return options.buildReviewers(plans);
+      return plans.map((plan) => scriptedReviewer(plan.spec.model, []));
     },
     cacheDir: cache.dir,
     dbPath: db.path,
@@ -153,6 +228,9 @@ export async function startPanelHarness(
     gitea: { baseUrl: gitea.url, token: "bot-pat" },
     ...(credentialMasterKey === undefined ? {} : { credentialMasterKey }),
     onDelivery: () => {},
+    ...(options.discoverModelServiceModels === undefined
+      ? {}
+      : { discoverModelServiceModels: options.discoverModelServiceModels }),
     onRunSettled: (event, error) => {
       settled.push({ event, ...(error === undefined ? {} : { error }) });
       waiting = waiting.filter((w) => {
@@ -238,6 +316,7 @@ export async function startPanelHarness(
     settled,
     factoryCalls,
     snapshots,
+    runtimePlans,
     api,
     deliverViaHook,
     settledAtLeast(count: number): Promise<void> {

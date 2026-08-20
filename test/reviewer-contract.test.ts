@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { normalizeFinding } from "../src/reviewer/normalize.ts";
-import { reviewerEnv } from "../src/reviewer/env.ts";
+import { redactModelCredential, reviewerEnv } from "../src/reviewer/env.ts";
 
 const RAW = {
   file: "src/db.js",
@@ -102,4 +102,14 @@ test("父进程环境里的同名变量不会覆盖显式给定的厂商凭据",
     { ANTHROPIC_API_KEY: "the-one-for-this-reviewer" },
   );
   assert.equal(env["ANTHROPIC_API_KEY"], "the-one-for-this-reviewer");
+});
+
+test("子进程失败文本回传前抹掉本轮模型凭据", () => {
+  const credential = "secret-run-credential";
+  const failure = redactModelCredential(
+    `request with Bearer ${credential} failed; credential=${credential}`,
+    credential,
+  );
+  assert.equal(failure.includes(credential), false);
+  assert.equal(failure, "request with Bearer [REDACTED] failed; credential=[REDACTED]");
 });

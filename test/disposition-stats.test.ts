@@ -55,6 +55,7 @@ function seedRun(
     changedFiles: 1,
     changedLines: 1,
     batchCount: 1,
+    reviewerPins: [],
   });
   store.finishRun(runId, {
     finishedAt: opts.startedAt,
@@ -249,6 +250,7 @@ function seedWithModel(store: Store, model: string, at: string): void {
     changedFiles: 1,
     changedLines: 1,
     batchCount: 1,
+    reviewerPins: [],
   });
   store.finishRun(runId, {
     finishedAt: at,

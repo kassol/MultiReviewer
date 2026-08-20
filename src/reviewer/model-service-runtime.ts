@@ -1,0 +1,507 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { modelIdentity } from "../config.ts";
+import {
+  loadPiProviderCatalog,
+  resolvePiBuiltinProviderTarget,
+  type LoadOptions,
+  type PiBuiltinProviderTarget,
+} from "./catalog.ts";
+import { CUSTOM_PROVIDER_APIS, isolatedModelRuntime, type RuntimeApi } from "./model-runtime.ts";
+
+export type OpenAICompatibleModelServiceCandidate = {
+  kind: "openai-compatible";
+  provider: string;
+  baseUrl: string;
+  api: (typeof CUSTOM_PROVIDER_APIS)[number];
+  credential: string;
+};
+
+export type BuiltinModelServiceCandidate = {
+  kind: "builtin";
+  provider: string;
+  credential: string;
+};
+
+export type ModelServiceCandidate =
+  | BuiltinModelServiceCandidate
+  | OpenAICompatibleModelServiceCandidate;
+
+export type ModelCost = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  tiers?: readonly (ModelCost & { inputTokensAbove: number })[];
+};
+
+export type TrustedModelFields = {
+  name?: string;
+  api?: string;
+  baseUrl?: string;
+  input?: readonly ("text" | "image")[];
+  reasoning?: boolean;
+  cost?: ModelCost;
+  contextWindow?: number;
+  maxTokens?: number;
+};
+
+export type DiscoveredModel = {
+  identity: string;
+  provider: string;
+  id: string;
+  fields: TrustedModelFields;
+};
+
+export type ModelOperationFailure = {
+  code:
+    | "invalid-base-url"
+    | "http-error"
+    | "invalid-response"
+    | "empty-catalog"
+    | "timeout"
+    | "request-error"
+    | "provider-not-found"
+    | "model-unconstructable"
+    | "inference-failed";
+  message: string;
+  status?: number;
+};
+
+export type ModelDiscoveryResult =
+  | { ok: true; models: DiscoveredModel[]; ignoredCount: number }
+  | { ok: false; failure: ModelOperationFailure };
+
+export type DiscoverModelsOptions = LoadOptions & {
+  signal?: AbortSignal;
+};
+
+export const MODEL_RUNTIME_BASELINE = {
+  input: ["text"] as const,
+  reasoning: false,
+  contextWindow: 128_000,
+  maxTokens: 16_000,
+} as const;
+
+export type RuntimeModel = {
+  provider: string;
+  id: string;
+  name: string;
+  api: RuntimeApi;
+  baseUrl: string;
+  input: readonly ("text" | "image")[];
+  reasoning: boolean;
+  cost: ModelCost | undefined;
+  contextWindow: number;
+  maxTokens: number;
+  sources: {
+    name: "trusted" | "model-id";
+    api: "service-target";
+    baseUrl: "service-target";
+    input: "trusted" | "runtime-baseline";
+    reasoning: "trusted" | "runtime-baseline";
+    cost: "trusted" | "unknown";
+    contextWindow: "trusted" | "runtime-baseline";
+    maxTokens: "trusted" | "runtime-baseline";
+  };
+};
+
+export type SynthesizedRuntimeModel = {
+  discovery: DiscoveredModel;
+  runtime: RuntimeModel;
+};
+
+export type RuntimeSynthesisResult =
+  | { ok: true; value: SynthesizedRuntimeModel }
+  | { ok: false; failure: ModelOperationFailure };
+
+export type InferenceValidationResult =
+  | { ok: true }
+  | { ok: false; failure: ModelOperationFailure };
+
+export type InferenceValidationOptions = {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+};
+
+const DEFAULT_DISCOVERY_TIMEOUT_MS = 10_000;
+
+export function normalizeModelServiceBaseUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) {
+      return undefined;
+    }
+    url.search = "";
+    url.hash = "";
+    url.pathname = url.pathname.replace(/\/+$/u, "");
+    return url.toString().replace(/\/$/u, "");
+  } catch {
+    return undefined;
+  }
+}
+
+const FAILURE_EXCERPT_LENGTH = 512;
+
+function redactFailureText(value: unknown, secrets: readonly string[]): string {
+  let text = String(value instanceof Error ? value.message : value);
+  for (const secret of secrets) {
+    if (secret !== "") text = text.replaceAll(secret, "[REDACTED]");
+  }
+  text = text
+    .replace(/\bBearer\s+[^\s"',;}]+/giu, "Bearer [REDACTED]")
+    .replace(
+      /\b(authorization|api[-_ ]?key|credential|ciphertext|master[-_ ]?key)\b\s*[:=]\s*[^,;}\n]+/giu,
+      "$1: [REDACTED]",
+    );
+  return text.slice(0, FAILURE_EXCERPT_LENGTH);
+}
+
+function failure(code: ModelOperationFailure["code"], message: string): ModelDiscoveryResult {
+  return { ok: false, failure: { code, message } };
+}
+
+function discoveredModel(candidate: ModelServiceCandidate, value: DiscoveredModel | string): DiscoveredModel {
+  if (typeof value !== "string") return value;
+  return {
+    identity: modelIdentity({ provider: candidate.provider, model: value }),
+    provider: candidate.provider,
+    id: value,
+    fields: {},
+  };
+}
+
+function positiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function trustedInput(value: unknown): value is readonly ("text" | "image")[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((entry) => entry === "text" || entry === "image")
+  );
+}
+
+function trustedCost(value: ModelCost | undefined): value is ModelCost {
+  if (value === undefined) return false;
+  const rates = [value.input, value.output, value.cacheRead, value.cacheWrite];
+  if (!rates.every((rate) => Number.isFinite(rate) && rate >= 0)) return false;
+  return (
+    value.tiers === undefined ||
+    value.tiers.every(
+      (tier) =>
+        positiveInteger(tier.inputTokensAbove) &&
+        [tier.input, tier.output, tier.cacheRead, tier.cacheWrite].every(
+          (rate) => Number.isFinite(rate) && rate >= 0,
+        ),
+    )
+  );
+}
+
+export function synthesizeRuntimeModel(
+  candidate: ModelServiceCandidate,
+  modelOrId: DiscoveredModel | string,
+  builtinTarget?: PiBuiltinProviderTarget,
+): RuntimeSynthesisResult {
+  const discovery = discoveredModel(candidate, modelOrId);
+  if (discovery.provider !== candidate.provider || discovery.id.trim() === "") {
+    return {
+      ok: false,
+      failure: {
+        code: "model-unconstructable",
+        message: `模型服务 ${candidate.provider} 无法构造 ${discovery.id || "<empty>"}`,
+      },
+    };
+  }
+
+  const fields = discovery.fields;
+  const target = candidate.kind === "builtin" ? builtinTarget : candidate;
+  const targetApi = target?.api;
+  const targetBaseUrl = target?.baseUrl;
+  const baseUrl = typeof targetBaseUrl === "string" ? normalizeModelServiceBaseUrl(targetBaseUrl) : undefined;
+  const usableApi =
+    typeof targetApi === "string" &&
+    targetApi !== "" &&
+    (candidate.kind === "builtin" || CUSTOM_PROVIDER_APIS.includes(candidate.api));
+  if (baseUrl === undefined || !usableApi) {
+    return {
+      ok: false,
+      failure: {
+        code: "model-unconstructable",
+        message: `模型服务 ${candidate.provider} 缺少可用的地址或接口协议`,
+      },
+    };
+  }
+
+  const name = typeof fields.name === "string" && fields.name.trim() !== "" ? fields.name : discovery.id;
+  const input = trustedInput(fields.input) ? fields.input : MODEL_RUNTIME_BASELINE.input;
+  const reasoning = typeof fields.reasoning === "boolean" ? fields.reasoning : MODEL_RUNTIME_BASELINE.reasoning;
+  const contextWindow = positiveInteger(fields.contextWindow)
+    ? fields.contextWindow
+    : MODEL_RUNTIME_BASELINE.contextWindow;
+  const maxTokens = positiveInteger(fields.maxTokens) ? fields.maxTokens : MODEL_RUNTIME_BASELINE.maxTokens;
+  const cost = trustedCost(fields.cost) ? fields.cost : undefined;
+
+  return {
+    ok: true,
+    value: {
+      discovery,
+      runtime: {
+        provider: candidate.provider,
+        id: discovery.id,
+        name,
+        api: targetApi,
+        baseUrl,
+        input,
+        reasoning,
+        contextWindow,
+        maxTokens,
+        cost,
+        sources: {
+          name: name === fields.name ? "trusted" : "model-id",
+          api: "service-target",
+          baseUrl: "service-target",
+          input: input === fields.input ? "trusted" : "runtime-baseline",
+          reasoning: typeof fields.reasoning === "boolean" ? "trusted" : "runtime-baseline",
+          contextWindow: contextWindow === fields.contextWindow ? "trusted" : "runtime-baseline",
+          maxTokens: maxTokens === fields.maxTokens ? "trusted" : "runtime-baseline",
+          cost: cost === undefined ? "unknown" : "trusted",
+        },
+      },
+    },
+  };
+}
+
+async function discoverBuiltinModels(
+  candidate: BuiltinModelServiceCandidate,
+  options: DiscoverModelsOptions,
+): Promise<ModelDiscoveryResult> {
+  try {
+    const catalog = await loadPiProviderCatalog(candidate.provider, options);
+    if (catalog === undefined) {
+      return failure("provider-not-found", `Pi 模型目录里没有 ${candidate.provider} 这一家`);
+    }
+
+    const models: DiscoveredModel[] = [];
+    const seen = new Set<string>();
+    let ignoredCount = 0;
+    for (const model of catalog.models) {
+      const id = model.id.trim();
+      if (id === "") {
+        ignoredCount += 1;
+        continue;
+      }
+      const identity = modelIdentity({ provider: candidate.provider, model: id });
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      const fields: TrustedModelFields = {
+        ...(model.name.trim() === "" ? {} : { name: model.name }),
+        ...(model.api === "" ? {} : { api: model.api }),
+        ...(normalizeModelServiceBaseUrl(model.baseUrl) === undefined ? {} : { baseUrl: model.baseUrl }),
+        ...(trustedInput(model.input) ? { input: model.input } : {}),
+        reasoning: model.reasoning,
+        ...(trustedCost(model.cost) ? { cost: model.cost } : {}),
+        ...(positiveInteger(model.contextWindow) ? { contextWindow: model.contextWindow } : {}),
+        ...(positiveInteger(model.maxTokens) ? { maxTokens: model.maxTokens } : {}),
+      };
+      models.push({ identity, provider: candidate.provider, id, fields });
+    }
+    if (models.length === 0) {
+      return failure("empty-catalog", `Pi 模型目录里的 ${candidate.provider} 没有可用 model id`);
+    }
+    return { ok: true, models, ignoredCount };
+  } catch (error) {
+    const detail = redactFailureText(error, [candidate.credential]);
+    return failure(
+      "request-error",
+      `Pi 模型目录读取 ${candidate.provider} 失败` + (detail === "" ? "" : ` — ${detail}`),
+    );
+  }
+}
+
+export async function discoverModels(
+  candidate: ModelServiceCandidate,
+  options: DiscoverModelsOptions = {},
+): Promise<ModelDiscoveryResult> {
+  if (candidate.kind === "builtin") return discoverBuiltinModels(candidate, options);
+  const baseUrl = normalizeModelServiceBaseUrl(candidate.baseUrl);
+  if (baseUrl === undefined) {
+    return failure("invalid-base-url", `模型服务 ${candidate.provider} 的 base URL 无效`);
+  }
+
+  const timeout = AbortSignal.timeout(options.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS);
+  const signal = options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout]);
+  try {
+    const response = await fetch(`${baseUrl}/models`, {
+      headers: { accept: "application/json", authorization: `Bearer ${candidate.credential}` },
+      signal,
+    });
+    const responseText = await response.text();
+    if (!response.ok) {
+      const excerpt = redactFailureText(responseText, [candidate.credential]);
+      return {
+        ok: false,
+        failure: {
+          code: "http-error",
+          status: response.status,
+          message:
+            `模型服务 ${candidate.provider} 发现失败: HTTP ${response.status}` +
+            (excerpt === "" ? "" : ` — ${excerpt}`),
+        },
+      };
+    }
+
+    let body: { data?: unknown } | null;
+    try {
+      body = JSON.parse(responseText) as { data?: unknown } | null;
+    } catch {
+      return failure("invalid-response", `模型服务 ${candidate.provider} 的 /models 响应不是 JSON`);
+    }
+    if (!Array.isArray(body?.data)) {
+      return failure("invalid-response", `模型服务 ${candidate.provider} 的 /models 响应不兼容`);
+    }
+
+    const models: DiscoveredModel[] = [];
+    const seen = new Set<string>();
+    let ignoredCount = 0;
+    for (const row of body.data) {
+      const id =
+        typeof row === "object" && row !== null && typeof (row as { id?: unknown }).id === "string"
+          ? (row as { id: string }).id.trim()
+          : "";
+      if (id === "") {
+        ignoredCount += 1;
+        continue;
+      }
+      const identity = modelIdentity({ provider: candidate.provider, model: id });
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      models.push({ identity, provider: candidate.provider, id, fields: {} });
+    }
+    if (models.length === 0) {
+      return failure("empty-catalog", `模型服务 ${candidate.provider} 没有返回可用的 model id`);
+    }
+    return { ok: true, models, ignoredCount };
+  } catch (error) {
+    const timedOut = timeout.aborted;
+    const detail = timedOut ? "" : redactFailureText(error, [candidate.credential]);
+    return failure(
+      timedOut ? "timeout" : "request-error",
+      `模型服务 ${candidate.provider} 发现${timedOut ? "超时" : "请求失败"}` +
+        (detail === "" ? "" : ` — ${detail}`),
+    );
+  }
+}
+
+export async function validateMinimalInference(
+  candidate: ModelServiceCandidate,
+  modelOrId: DiscoveredModel | string,
+  options: InferenceValidationOptions = {},
+): Promise<InferenceValidationResult> {
+  const dir = mkdtempSync(join(tmpdir(), "multireviewer-inference-"));
+  try {
+    const builtinTarget =
+      candidate.kind === "builtin"
+        ? await resolvePiBuiltinProviderTarget(candidate.provider)
+        : undefined;
+    const synthesized = synthesizeRuntimeModel(candidate, modelOrId, builtinTarget);
+    if (!synthesized.ok) return synthesized;
+    const modelRuntime = await isolatedModelRuntime(dir, undefined);
+    if (candidate.credential === "") {
+      return {
+        ok: false,
+        failure: { code: "inference-failed", message: `模型服务 ${candidate.provider} 没有模型凭据` },
+      };
+    }
+
+    const target = synthesized.value.runtime;
+    const cost =
+      target.cost === undefined
+        ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+        : {
+            input: target.cost.input,
+            output: target.cost.output,
+            cacheRead: target.cost.cacheRead,
+            cacheWrite: target.cost.cacheWrite,
+            ...(target.cost.tiers === undefined
+              ? {}
+              : {
+                  tiers: target.cost.tiers.map((tier) => ({
+                    inputTokensAbove: tier.inputTokensAbove,
+                    input: tier.input,
+                    output: tier.output,
+                    cacheRead: tier.cacheRead,
+                    cacheWrite: tier.cacheWrite,
+                  })),
+                }),
+          };
+    const model = {
+      provider: target.provider,
+      id: target.id,
+      name: target.name,
+      api: target.api,
+      baseUrl: target.baseUrl,
+      reasoning: target.reasoning,
+      input: [...target.input],
+      cost,
+      contextWindow: target.contextWindow,
+      maxTokens: target.maxTokens,
+    };
+    if (candidate.kind === "openai-compatible") {
+      modelRuntime.registerProvider(candidate.provider, {
+        name: candidate.provider,
+        api: candidate.api,
+        baseUrl: target.baseUrl,
+        models: [model],
+      });
+    }
+
+    const timeoutMs = options.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS;
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const signal = options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout]);
+    await modelRuntime.setRuntimeApiKey(candidate.provider, candidate.credential, { signal });
+    const response = await modelRuntime.completeSimple(
+      model,
+      {
+        messages: [{ role: "user", content: "Reply exactly OK", timestamp: Date.now() }],
+      },
+      {
+        apiKey: candidate.credential,
+        cacheRetention: "none",
+        fetch: globalThis.fetch,
+        maxRetries: 0,
+        maxTokens: 16,
+        signal,
+        temperature: 0,
+        timeoutMs,
+      },
+    );
+    if (response.stopReason !== "stop" && response.stopReason !== "length") {
+      const detail = redactFailureText(response.errorMessage ?? response.stopReason, [candidate.credential]);
+      return {
+        ok: false,
+        failure: {
+          code: timeout.aborted ? "timeout" : "inference-failed",
+          message:
+            `模型服务 ${candidate.provider} 真实推理${timeout.aborted ? "超时" : "失败"}` +
+            (detail === "" ? "" : ` — ${detail}`),
+        },
+      };
+    }
+    return { ok: true };
+  } catch (error) {
+    const detail = redactFailureText(error, [candidate.credential]);
+    return {
+      ok: false,
+      failure: {
+        code: "inference-failed",
+        message:
+          `模型服务 ${candidate.provider} 真实推理失败` + (detail === "" ? "" : ` — ${detail}`),
+      },
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}

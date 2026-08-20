@@ -1,10 +1,16 @@
 import type { ReviewRange, ReviewerUsage } from "../review/finding.ts";
 import type { RawFinding } from "./normalize.ts";
+import type { RuntimeModel } from "./model-service-runtime.ts";
+
+/** Pi 会话回传的原始数字；主进程按固定模型的价格来源转换成产品费用。 */
+export type WorkerUsage = Omit<ReviewerUsage, "costUsd" | "knownCostUsd" | "costSource"> & {
+  costUsd: number;
+};
 
 /** 主进程交给 Reviewer 子进程的任务。 */
 export type ReviewerRequest = {
-  provider: string;
-  model: string;
+  /** 本轮固定的完整运行模型；不含凭据。 */
+  runtimeModel: RuntimeModel;
   range: ReviewRange;
   worktreePath: string;
 };
@@ -26,5 +32,5 @@ export type WorkerMessage =
       /** 会话内可见的失败原因,来自 errorMessage 或最后一条消息的 stopReason。 */
       failure?: string;
       /** Pi 会话统计出的用量与成本。会话没建起来时取不到。 */
-      usage?: ReviewerUsage;
+      usage?: WorkerUsage;
     };

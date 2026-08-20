@@ -6,10 +6,18 @@
  */
 import { DatabaseSync } from "node:sqlite";
 
+import {
+  assertReviewerSpecs,
+  GLOBAL_REVIEWERS_CONTEXT,
+  modelIdentity,
+  type ReviewerSpec,
+  type ReviewRunReviewerPin,
+} from "../config.ts";
 import { isPanelPermission, type PanelPermission } from "../panel/permissions.ts";
+import type { DiscoveredModel, ModelCost, TrustedModelFields } from "../reviewer/model-service-runtime.ts";
 import type { Category, Disposition, ReviewerUsage, Severity } from "./finding.ts";
 
-const SCHEMA = `
+export const STORE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS review_run (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   owner TEXT NOT NULL,
@@ -33,7 +41,25 @@ CREATE TABLE IF NOT EXISTS review_run (
   cache_read_tokens INTEGER,
   cache_write_tokens INTEGER,
   total_tokens INTEGER,
-  cost_usd REAL
+  cost_usd REAL,
+  known_cost_usd REAL,
+  cost_source TEXT,
+  unknown_cost_reviewer_count INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS review_run_reviewer_pin (
+  run_id INTEGER NOT NULL REFERENCES review_run(id),
+  position INTEGER NOT NULL,
+  identity TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  model_service_version INTEGER,
+  base_url TEXT,
+  api TEXT,
+  runtime_model_json TEXT,
+  materialization_failure TEXT,
+  PRIMARY KEY (run_id, position),
+  UNIQUE (run_id, identity)
 );
 
 CREATE TABLE IF NOT EXISTS reviewer_outcome (
@@ -51,7 +77,9 @@ CREATE TABLE IF NOT EXISTS reviewer_outcome (
   cache_read_tokens INTEGER,
   cache_write_tokens INTEGER,
   total_tokens INTEGER,
-  cost_usd REAL
+  cost_usd REAL,
+  known_cost_usd REAL,
+  cost_source TEXT
 );
 
 CREATE TABLE IF NOT EXISTS finding (
@@ -107,17 +135,6 @@ CREATE TABLE IF NOT EXISTS repo_key (
   PRIMARY KEY (repo_id, generation)
 );
 
--- 模型凭据。按 provider 一把,同一家下的多个 model 共用(ADR 0008)。密文由面板加密后
--- 落库,主密钥在环境变量里,库里没有还原它的材料——与上面明文存的 repo_key 是两类
--- 东西:那一条是 HMAC 验签逼出来的,这一条没有这个约束。
--- verified 记的是「保存时有没有真发过厂商验证请求」:认得的那几家发过并通过,
--- 其余的跳过验证照样落库,面板据此标出「未验证」。
-CREATE TABLE IF NOT EXISTS model_credential (
-  provider TEXT PRIMARY KEY,
-  api_key_encrypted TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  verified INTEGER NOT NULL DEFAULT 1
-);
 
 -- 全局设置,一项一行。reviewers 是全局模型组合,与 repo.reviewers 同构(ReviewerSpec
 -- 的 JSON 数组);max_changed_lines_per_batch 是正整数的字符串形,缺行即取默认值。
@@ -127,48 +144,6 @@ CREATE TABLE IF NOT EXISTS global_setting (
   value TEXT NOT NULL
 );
 
--- 手填的模型行(issue #87)。操作员在一个已配模型凭据的 provider 下填一个 model id,
--- 这张表是它唯一的真相源:派生的用户模型配置 models.json 每次都按这张表整份重写,
--- 清掉那份文件也能从这里重建(issue #82)。
---
--- 主键是 (provider, model),即模型标识 provider:model 的两段:同一个 model id 在两家
--- provider 下是两个模型标识,各占一行。同键二次写入是覆盖而不是拒收——改单价或上下文
--- 窗口本来就是同一行的第二次写入,拒收会逼人先删再加,而那两步之间这一行从模型目录里
--- 消失,已经选进模型组合的它当场取不到。
---
--- 单价与上下文窗口都可空,空即走 Pi 的默认值(单价 0、上下文 128000)。单价只存 input
--- 与 output 两项:落盘时 Pi 的 ModelCost 四个费率全是必填,缓存读写按 0 补齐——那与
--- 「没填单价」时的默认值是同一个数。
-CREATE TABLE IF NOT EXISTS model_row (
-  provider TEXT NOT NULL,
-  model TEXT NOT NULL,
-  cost_input REAL,
-  cost_output REAL,
-  context_window INTEGER,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (provider, model)
-);
-
--- 自定义 provider 的定义(issue #88)。操作员自己加进模型目录的一家 OpenAI 兼容端点,
--- 与 Pi 内置的那些家共用同一命名空间。
---
--- 主键是名字:一个名字对应一个 base URL 与一把模型凭据(model_credential 的主键也是
--- provider),同一个端点要接两个 base URL 就起两个名字。同名二次写入直接抛而不是覆盖——
--- 「改一家已有的 base URL」与「加一家新的」是两件事,而端点在撞名时就已经拒收了。
---
--- base_url 与 api 都 NOT NULL:全新 provider 没有继承来源(内置那些家的模型行从
--- models[0] 继承这两项),缺任一者 Pi 把这一家整个从目录里丢掉——不是报错,是消失。
--- api 是 Pi 的接口协议标识,本入口只面向 OpenAI 兼容的那两个取值,校验在端点上
--- (model-runtime.ts 的 CUSTOM_PROVIDER_APIS)。
---
--- 这一家的第一个 model id 与后续手填的更多 model id 都进 model_row 表,与手填那条入口
--- 复用同一张表与同一条派生链路。
-CREATE TABLE IF NOT EXISTS custom_provider (
-  name TEXT PRIMARY KEY,
-  base_url TEXT NOT NULL,
-  api TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
 
 CREATE TABLE IF NOT EXISTS panel_role (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -204,6 +179,103 @@ CREATE TABLE IF NOT EXISTS panel_session (
 CREATE INDEX IF NOT EXISTS panel_session_by_user ON panel_session(username);
 `;
 
+
+/**
+ * 模型服务的当前态。只保留当前版本；运行中的 Review Run 在内存里持有旧版本，不为它建
+ * 历史表。迁移模块也复用这段建表语句，确保新库与迁入库只有一份 schema 定义。
+ */
+export const MODEL_SERVICE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS model_service (
+  provider TEXT PRIMARY KEY,
+  service_type TEXT NOT NULL CHECK (service_type IN ('builtin', 'custom')),
+  version INTEGER NOT NULL CHECK (version > 0),
+  base_url TEXT,
+  api TEXT,
+  target_fingerprint TEXT,
+  disabled_reason TEXT CHECK (disabled_reason IS NULL OR disabled_reason = 'name-conflict'),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (
+    (service_type = 'custom' AND base_url IS NOT NULL AND api IS NOT NULL
+      AND target_fingerprint IS NOT NULL)
+    OR (service_type = 'builtin' AND base_url IS NULL AND api IS NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS model_service_credential (
+  provider TEXT PRIMARY KEY,
+  state TEXT NOT NULL CHECK (state IN ('unconfigured', 'pending-reverification', 'verified')),
+  api_key_encrypted TEXT,
+  updated_at TEXT,
+  verified_at TEXT,
+  validation_model TEXT,
+  verification_source TEXT CHECK (
+    verification_source IS NULL OR verification_source IN (
+      'legacy-provider-check', 'legacy-review-run', 'inference'
+    )
+  ),
+  CHECK (
+    (state = 'unconfigured' AND api_key_encrypted IS NULL AND updated_at IS NULL
+      AND verified_at IS NULL AND validation_model IS NULL AND verification_source IS NULL)
+    OR (state = 'pending-reverification' AND api_key_encrypted IS NOT NULL
+      AND updated_at IS NOT NULL AND verified_at IS NULL AND validation_model IS NULL
+      AND verification_source IS NULL)
+    OR (state = 'verified' AND api_key_encrypted IS NOT NULL AND updated_at IS NOT NULL
+      AND verified_at IS NOT NULL AND verification_source IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS model_directory (
+  provider TEXT PRIMARY KEY,
+  service_version INTEGER NOT NULL CHECK (service_version > 0),
+  state TEXT NOT NULL CHECK (
+    state IN ('undiscovered', 'available', 'refresh-failed', 'discovery-failed')
+  ),
+  last_attempt_at TEXT,
+  last_success_at TEXT,
+  failure TEXT,
+  ignored_model_count INTEGER NOT NULL DEFAULT 0 CHECK (ignored_model_count >= 0),
+  CHECK (
+    (state = 'undiscovered' AND last_attempt_at IS NULL AND last_success_at IS NULL
+      AND failure IS NULL AND ignored_model_count = 0)
+    OR (state = 'available' AND last_attempt_at IS NOT NULL AND last_success_at IS NOT NULL
+      AND failure IS NULL)
+    OR (state = 'refresh-failed' AND last_attempt_at IS NOT NULL
+      AND last_success_at IS NOT NULL AND failure IS NOT NULL)
+    OR (state = 'discovery-failed' AND last_attempt_at IS NOT NULL
+      AND last_success_at IS NULL AND failure IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS model_directory_model (
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL CHECK (model <> ''),
+  service_version INTEGER NOT NULL CHECK (service_version > 0),
+  name TEXT,
+  api TEXT,
+  base_url TEXT,
+  input_json TEXT,
+  reasoning INTEGER CHECK (reasoning IS NULL OR reasoning IN (0, 1)),
+  cost_json TEXT,
+  context_window INTEGER,
+  max_tokens INTEGER,
+  PRIMARY KEY (provider, model)
+);
+
+CREATE TABLE IF NOT EXISTS model_supplement (
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL CHECK (model <> ''),
+  source TEXT NOT NULL CHECK (source IN ('manual', 'migration-retention')),
+  target_fingerprint TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (provider, model),
+  CHECK (
+    (source = 'manual' AND target_fingerprint IS NOT NULL)
+    OR (source = 'migration-retention' AND target_fingerprint IS NULL)
+  )
+);
+`;
+
 /**
  * 加在既有表上的列。`CREATE TABLE IF NOT EXISTS` 对已存在的表什么都不做,升级前建的
  * 数据库因此拿不到新列,第一次落库就写不进去。SQLite 的 ADD COLUMN 没有 IF NOT EXISTS,
@@ -219,9 +291,13 @@ const ADD_COLUMNS = [
   "ALTER TABLE review_run ADD COLUMN pr_state TEXT",
   "ALTER TABLE review_run ADD COLUMN triggered_by TEXT",
   "ALTER TABLE finding ADD COLUMN placement TEXT NOT NULL DEFAULT 'inline'",
-  // 升级前只有通过了厂商验证的凭据才落得进来,旧行默认 1 是照实记。
-  "ALTER TABLE model_credential ADD COLUMN verified INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE review_run ADD COLUMN known_cost_usd REAL",
+  "ALTER TABLE review_run ADD COLUMN cost_source TEXT",
+  "ALTER TABLE review_run ADD COLUMN unknown_cost_reviewer_count INTEGER",
+  "ALTER TABLE reviewer_outcome ADD COLUMN known_cost_usd REAL",
+  "ALTER TABLE reviewer_outcome ADD COLUMN cost_source TEXT",
 ];
+
 
 /*
  * 历史的裸 model id 不回填(issue #73 的取舍)。升级前 `finding.model` 与
@@ -259,6 +335,8 @@ export type RunMeta = {
   changedLines: number;
   /** 预估规模:本次 Review Range 被切成几批。规模在阈值内时为 1。 */
   batchCount: number;
+  /** 本轮固定的非秘密模型服务审计快照；没有 Reviewer 时显式传空数组。 */
+  reviewerPins: readonly ReviewRunReviewerPin[];
 };
 
 export type OutcomeRecord = {
@@ -336,46 +414,122 @@ export type RepoKey = {
   key: string;
 };
 
-/** 一家厂商的模型凭据。`apiKeyEncrypted` 是密文,还原要主密钥(ADR 0008)。 */
-export type ModelCredentialRecord = {
-  provider: string;
-  apiKeyEncrypted: string;
-  updatedAt: string;
-  /** 保存时是否真发过厂商验证请求并通过。认不出的 provider 落库时为假。 */
-  verified: boolean;
+
+export type ModelCredentialState = "unconfigured" | "pending-reverification" | "verified";
+export type ModelVerificationSource =
+  | "legacy-provider-check"
+  | "legacy-review-run"
+  | "inference";
+export type ModelDirectoryState =
+  | "undiscovered"
+  | "available"
+  | "refresh-failed"
+  | "discovery-failed";
+export type ModelSupplementSource = "manual" | "migration-retention";
+
+export type ModelServiceCredential = {
+  state: ModelCredentialState;
+  apiKeyEncrypted: string | null;
+  updatedAt: string | null;
+  verifiedAt: string | null;
+  /** 完整模型标识；旧版 provider 专用检查没有验证模型，因而可空。 */
+  validationModel: string | null;
+  verificationSource: ModelVerificationSource | null;
 };
 
-/**
- * 一条手填的模型行(issue #87)。库是真相源,Pi 的用户模型配置由它整份派生。
- *
- * 三项可空的字段留空即走 Pi 的默认值(单价 0、上下文 128000):手填一行最少只要一个
- * model id,接口协议与 base URL 由 Pi 从该 provider 的第一个模型继承。
- */
-export type ModelRowRecord = {
+export type ModelDirectory = {
+  state: ModelDirectoryState;
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  failure: string | null;
+  ignoredModelCount: number;
+};
+
+export type ModelSupplementRecord = {
   provider: string;
   model: string;
-  /** 每百万 token 的入价,null 即没填。 */
-  costInput: number | null;
-  /** 每百万 token 的出价,null 即没填。 */
-  costOutput: number | null;
-  contextWindow: number | null;
+  source: ModelSupplementSource;
+  /** 手动补录绑定服务目标；迁移保留无法证明旧目标，因而为空。 */
+  targetFingerprint: string | null;
   createdAt: string;
 };
 
-/**
- * 一家自定义 provider(issue #88)。名字由操作员起,与 Pi 内置的那些家共用同一命名空间。
- *
- * 两项都必填:全新 provider 没有继承来源,缺任一者这一家整个从模型目录里消失。它的模型
- * 存在 `model_row` 表里,与手填那条入口复用同一张表。
- */
-export type CustomProviderRecord = {
-  /** 模型标识 `provider:model` 的前半段。只小写字母、数字与连字符。 */
-  name: string;
-  baseUrl: string;
-  /** 接口协议,落进派生配置的 provider 一级 `api`。 */
-  api: string;
+export type ModelServiceRecord = {
+  provider: string;
+  type: "builtin" | "custom";
+  version: number;
+  /** 内置 provider 的目标来自 Pi，不复制进库。 */
+  baseUrl: string | null;
+  api: string | null;
+  /** 自定义服务必有；内置服务可由 Pi 当前定义在使用时合成。 */
+  targetFingerprint: string | null;
+  disabledReason: "name-conflict" | null;
   createdAt: string;
+  updatedAt: string;
+  credential: ModelServiceCredential;
+  directory: ModelDirectory;
+  automaticModels: DiscoveredModel[];
+  supplements: ModelSupplementRecord[];
 };
+
+/**
+ * 一次 SQLite 读事务取得的全部可变启动输入。`modelServices` 只含本轮模型组合实际引用的
+ * provider，因而未引用凭据的密文也不会越过这条边界。
+ */
+export type ReviewRunStoreSnapshot = Readonly<{
+  reviewers: readonly ReviewerSpec[];
+  maxChangedLinesPerBatch: number | null;
+  modelServices: readonly ModelServiceRecord[];
+}>;
+
+export type ModelReferenceLocation =
+  | { kind: "global" }
+  | { kind: "following-global"; repositoryCount: number }
+  | { kind: "repository-override"; repoId: number; owner: string; repo: string };
+
+export type ModelReference = {
+  identity: string;
+  provider: string;
+  model: string;
+  locations: ModelReferenceLocation[];
+};
+
+/**
+ * 一次完整当前版本写入。版本号由库按 expectedVersion 生成，避免调用方拿旧候选覆盖新版本。
+ * automaticModels 是本次成功发现的完整可信快照；supplements 是这家服务的新完整集合。
+ */
+export type ModelServiceVersionCommit = Omit<ModelServiceRecord, "version" | "automaticModels" | "supplements"> & {
+  automaticModels: readonly DiscoveredModel[];
+  supplements: readonly Omit<ModelSupplementRecord, "provider">[];
+};
+
+function serializedTrustedCost(cost: ModelCost | undefined): string | null {
+  if (cost === undefined || typeof cost !== "object" || cost === null) return null;
+  if (![cost.input, cost.output, cost.cacheRead, cost.cacheWrite].every((rate) => Number.isFinite(rate) && rate >= 0)) {
+    return null;
+  }
+  if (
+    cost.tiers !== undefined &&
+    (!Array.isArray(cost.tiers) ||
+      cost.tiers.some(
+        (tier) =>
+          typeof tier !== "object" ||
+          tier === null ||
+          !Number.isSafeInteger(tier.inputTokensAbove) ||
+          tier.inputTokensAbove <= 0 ||
+          ![tier.input, tier.output, tier.cacheRead, tier.cacheWrite].every(
+            (rate) => Number.isFinite(rate) && rate >= 0,
+          ),
+      ))
+  ) {
+    return null;
+  }
+  try {
+    return JSON.stringify(cost) ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 全局设置。两项都可能没配:空库刚起来时就是这个样子,面板的设置页把它们配起来。
@@ -410,6 +564,22 @@ export type RepoSummary = {
   lastActivity: string | null;
 };
 
+export type RecordedCostSource = "trusted" | "unknown" | "legacy" | "mixed";
+
+/** 面板读取的持久化用量；历史数字保留为 legacy，未知金额另带已知小计。 */
+export type RecordedUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  costUsd: number | null;
+  knownCostUsd: number;
+  costSource: RecordedCostSource;
+  costIncomplete: boolean;
+  unknownCostReviewers: number;
+};
+
 /**
  * 时间流里的一条 Review Run。`models` 一行一个参与本轮的模型,按模型名排序:行的
  * 来源是 `reviewer_outcome`(一轮一模型一行),不是 `finding`——被厂商拒掉的模型产出
@@ -426,7 +596,16 @@ export type RunListItem = {
   /** 手动重跑的调用者用户名快照;null 即投递触发。 */
   triggeredBy: string | null;
   failed: boolean;
-  models: { model: string; findings: number; failure: string | null }[];
+  models: {
+    model: string;
+    findings: number;
+    failure: string | null;
+    usage?: RecordedUsage;
+  }[];
+  /** 本轮没有任何会话统计时省略，与失败/未运行的既有缺失语义一致。 */
+  usage?: RecordedUsage;
+  /** 本轮固定的模型服务版本与运行模型，不含凭据。 */
+  reviewerPins: ReviewRunReviewerPin[];
   resolved: number;
   total: number;
 };
@@ -511,9 +690,8 @@ export type Store = {
   updatePanelPassword(username: string, passwordHash: string, mustChangePassword: boolean): void;
   removePanelUser(username: string): void;
   /**
-   * 注册一个仓库:注册表行与第一把 Key 在一个事务里落库——「有仓库无 Key」的投递
-   * 会被判成未注册,这个中间态从设计上消除。`repoId` 是 Forge 的数值 repo id,
-   * 重复注册直接抛(主键冲突)。
+   * 注册表行、第一把 Key 与可选仓库模型覆盖在一个写事务里落库。覆盖只有在同一事务
+   * 看到的当前模型服务仍可运行全部模型时才写；状态已经变化则返回 false。
    */
   registerRepo(record: {
     repoId: number;
@@ -522,7 +700,7 @@ export type Store = {
     generation: number;
     key: string;
     reviewersJson?: string;
-  }): void;
+  }): boolean;
   /** 给仓库加一把 key,轮转(ADR 0007)开新代次用。同仓库同代次重复添加直接抛。 */
   addRepoKey(repoId: number, generation: number, key: string): void;
   /** 摘掉一把 key,轮转收尾时删旧代次用。不存在时静默通过——目标状态已达成。 */
@@ -530,75 +708,43 @@ export type Store = {
   /** 仓库持有的全部 key。未注册的仓库得到空数组——这就是「未注册」的判据。 */
   listRepoKeys(repoId: number): RepoKey[];
   getRepo(repoId: number): RepoRecord | undefined;
-  /** 改写模型覆盖。null 即清除覆盖、跟随全局。仓库不存在时静默无事发生,调用方先查。 */
-  setRepoReviewers(repoId: number, reviewersJson: string | null): void;
+  /** 改写模型覆盖；与当前模型服务原子校验，状态变化返回 false。null 即跟随全局。 */
+  setRepoReviewers(repoId: number, reviewersJson: string | null): boolean;
   /** 摘掉注册表行与它的 Key。评审记录一行不动:模型选型的历史不因下线而断。 */
   removeRepo(repoId: number): void;
   /** 全部已注册仓库,按最近活动排序,没跑过的按注册时间排在后面。 */
   listRepos(): RepoSummary[];
-  /** 全局设置。没写过的项回 null,调用方各自取默认。 */
+  /** 全局设置。没写过的项回 null，调用方各自取默认。 */
   getGlobalSettings(): GlobalSettings;
-  /** 改写全局设置,两项一起写。null 即清掉该项,读回来重新取默认。 */
-  putGlobalSettings(settings: GlobalSettings): void;
-  /** 写一家厂商的凭据密文。同 provider 二次写入是覆盖,不是新增(ADR 0008)。 */
-  putModelCredential(
-    provider: string,
-    apiKeyEncrypted: string,
-    updatedAt: string,
-    verified: boolean,
-  ): void;
-  /** 全部厂商凭据,按 provider 排序。密文原样给出,解密由调用方做。 */
-  listModelCredentials(): ModelCredentialRecord[];
-  /** 摘掉一家厂商的凭据。不存在时静默通过——目标状态已达成。 */
-  removeModelCredential(provider: string): void;
+  /** 改写全局设置；组合发生变化时与当前模型服务原子校验，状态变化返回 false。 */
+  putGlobalSettings(settings: GlobalSettings): boolean;
   /**
-   * 写一条手填的模型行。同一个模型标识二次写入是覆盖(理由见 model_row 的建表注释),
-   * 只改单价与上下文窗口,`createdAt` 保持第一次那个——它记的是这一行什么时候被填出来。
+   * 在一个 SQLite 读事务里取得仓库生效组合、批次上限及其引用的当前模型服务版本。
+   * 仓库不存在时抛错；坏配置沿用设置入口的校验错误。
    */
-  putModelRow(row: ModelRowRecord): void;
-  /** 全部手填的模型行,按模型标识排序。 */
-  listModelRows(): ModelRowRecord[];
-  /** 摘掉一条手填的模型行。不存在时静默通过——目标状态已达成。 */
-  removeModelRow(provider: string, model: string): void;
+  getReviewRunSnapshot(repoId: number): ReviewRunStoreSnapshot;
   /**
-   * 登记一家自定义 provider。同名二次写入直接抛(主键冲突):端点在撞名时就已经拒收了,
-   * 库这一层照实反映那条约束。
+   * 原子提交一个完整当前版本。expectedVersion 为 null 表示只在名称仍不存在时新建；否则
+   * 只在当前版本相等时推进一版。版本不匹配返回 undefined，任何字段都不写。
    */
-  putCustomProvider(record: CustomProviderRecord): void;
-  /** 全部自定义 provider,按名字排序。 */
-  listCustomProviders(): CustomProviderRecord[];
+  commitModelServiceVersion(
+    expectedVersion: number | null,
+    record: ModelServiceVersionCommit,
+  ): number | undefined;
   /**
-   * 登记一家自定义 provider,连它的第一个模型行与那把凭据一起(三张表一个事务)。三样要么
-   * 一起在、要么一起没有:分三句自动提交时,中途报错、进程退出或者盘满会留下一份半成品
-   * (定义在了、凭据没存上),而客户端重试会撞上「名字已被占用」被拒,补不齐——与
-   * `registerRepo` 消除「有仓库无 Key」是同一个道理。
-   *
-   * 三句的顺序把名字的唯一约束排在最后:撞名那一刻另两张表已经写过了,回滚要把它们一起
-   * 撤掉。同名二次登记照旧直抛(主键冲突),端点在撞名时就已经拒收了。
+   * 仅在自定义服务版本仍等于 expectedVersion 时原子删除当前服务、凭据、目录和补录。
+   * 版本不匹配、服务不存在或不是自定义服务时返回 false，任何字段都不删。
    */
-  registerCustomProvider(record: {
-    name: string;
-    baseUrl: string;
-    api: string;
-    /** 这一家的第一个模型行,与手填那条入口同一张表。 */
-    model: string;
-    apiKeyEncrypted: string;
-    verified: boolean;
-    createdAt: string;
-  }): void;
+  removeCustomModelService(provider: string, expectedVersion: number): boolean;
+  getModelService(provider: string): ModelServiceRecord | undefined;
+  listModelServices(): ModelServiceRecord[];
   /**
-   * 摘掉一家自定义 provider,连它的模型行与它那把凭据一起(三张表一个事务)。留着模型行
-   * 会让派生配置里出现一家没有 `api` 的 provider(Pi 把这一家整个丢掉),留着凭据会让
-   * 凭据页列出一家模型目录里根本没有的厂商。
-   *
-   * **级联以「`custom_provider` 里真有这一条登记」为前提。**这个名字与 Pi 内置的那些家共用
-   * 同一命名空间(`CONTEXT.md` 的自定义 provider 词条),而 `model_row` 与 `model_credential`
-   * 两张表都以 provider 名为键:不先确认登记就按名字级联,删一个从来没登记过的名字会把内置
-   * 同名那一家的模型凭据与它名下的手填模型行一起永久删掉,而凭据只写不回显,删了只能重新去
-   * 厂商后台取一把。没有这条登记时什么都不做,并且照旧静默通过——与 `removeModelCredential`
-   * / `removeRepoKey` 同一档:目标状态已达成。
+   * 当前模型组合里的全部完整模型标识及位置。跟随全局的仓库按人数汇总；已移除仓库不在
+   * `repo` 表里，自然不参与。凭据、模型补录与服务删除共用这一份引用判据。
    */
-  removeCustomProvider(name: string): void;
+  listModelReferences(): ModelReference[];
+  /** provider 省略时也包含没有当前服务承载的迁移保留。 */
+  listModelSupplements(provider?: string): ModelSupplementRecord[];
   startRun(meta: RunMeta): number;
   finishRun(runId: number, result: RunResult): void;
   /**
@@ -607,6 +753,8 @@ export type Store = {
    * ISO 字符串按字典序即时间序)。
    */
   dispositionStats(from: string, to: string): DispositionCell[];
+  /** 时间窗内 Review Run 的 token、已知费用小计与未知费用 Reviewer 数。 */
+  usageStats(from: string, to: string): RecordedUsage | undefined;
   /**
    * 时间流的一页:按 id 倒序(id 即落库顺序,与开跑时间同序),`beforeId` 取更早的
    * 一页。覆盖全部评审记录——已移除仓库的历史照常出现,这是留存决策的呈现面。
@@ -645,40 +793,97 @@ export type Store = {
   close(): void;
 };
 
-/**
- * 落库的成本。负数按零收:Pi 内置表给 `openrouter/auto` 这类路由模型的费率是 -1000000
- * (OpenRouter 报的单价是 "-1",意思是随路由到的那个模型浮动,而那个 -1 被照着每百万 token
- * 换算了一遍),折算出来的这一轮成本因此是负数,会把评审记录与处置率页上的累计花费往下拽。
- *
- * 收口放在库这一层:库是这个数变成面板上那句「花了多少」的地方,而负成本在任何口径下都不是
- * 事实。取零与模型目录里那两行透出的单价一致(`reviewer/catalog.ts` 的 `nonNegativeCost`),
- * 也与「没有单价」那一档记的数一致——两处都是「这一笔没记准」,面板上因此不多一种状态。
- * 根治要等上游把那两行的数据修掉(issue #95)。
- */
-function recordedCost(costUsd: number): number {
-  return costUsd > 0 ? costUsd : 0;
+function nonNegativeFinite(value: unknown): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : undefined;
 }
 
-function usageColumns(usage: ReviewerUsage | undefined): (number | null)[] {
-  if (usage === undefined) return [null, null, null, null, null, null];
+/** 坏的或来源不可信的金额在持久化边界统一降为未知，绝不夹成零。 */
+function normalizedUsage(usage: ReviewerUsage): ReviewerUsage {
+  const costUsd = nonNegativeFinite(usage.costUsd);
+  if (usage.costSource === "trusted" && costUsd !== undefined) {
+    return { ...usage, costUsd, knownCostUsd: costUsd, costSource: "trusted" };
+  }
+  return {
+    ...usage,
+    costUsd: null,
+    knownCostUsd: nonNegativeFinite(usage.knownCostUsd) ?? 0,
+    costSource: "unknown",
+  };
+}
+
+function usageColumns(usage: ReviewerUsage | undefined): (number | string | null)[] {
+  if (usage === undefined) return Array.from({ length: 8 }, () => null);
+  const recorded = normalizedUsage(usage);
   return [
-    usage.inputTokens,
-    usage.outputTokens,
-    usage.cacheReadTokens,
-    usage.cacheWriteTokens,
-    usage.totalTokens,
-    recordedCost(usage.costUsd),
+    recorded.inputTokens,
+    recorded.outputTokens,
+    recorded.cacheReadTokens,
+    recorded.cacheWriteTokens,
+    recorded.totalTokens,
+    recorded.costUsd,
+    recorded.knownCostUsd,
+    recorded.costSource,
   ];
 }
 
+function unknownCostReviewerCount(outcomes: readonly { usage?: ReviewerUsage }[]): number {
+  return outcomes.reduce(
+    (count, outcome) =>
+      count +
+      (outcome.usage !== undefined && normalizedUsage(outcome.usage).costSource === "unknown"
+        ? 1
+        : 0),
+    0,
+  );
+}
+
+function recordedUsage(
+  row: Record<string, unknown>,
+  unknownCountColumn = "unknown_cost_reviewer_count",
+): RecordedUsage | undefined {
+  if (row["total_tokens"] === null || row["total_tokens"] === undefined) return undefined;
+
+  const rawSource = row["cost_source"];
+  let costSource: RecordedCostSource =
+    rawSource === "trusted" || rawSource === "unknown" || rawSource === "legacy"
+      ? rawSource
+      : row["cost_usd"] === null || row["cost_usd"] === undefined
+        ? "unknown"
+        : "legacy";
+  const numericCost = nonNegativeFinite(row["cost_usd"]);
+  if (costSource !== "unknown" && numericCost === undefined) costSource = "unknown";
+  const costUsd = costSource === "unknown" ? null : numericCost!;
+  const unknownCostReviewers =
+    nonNegativeFinite(row[unknownCountColumn]) ?? (costSource === "unknown" ? 1 : 0);
+
+  return {
+    inputTokens: Number(row["input_tokens"] ?? 0),
+    outputTokens: Number(row["output_tokens"] ?? 0),
+    cacheReadTokens: Number(row["cache_read_tokens"] ?? 0),
+    cacheWriteTokens: Number(row["cache_write_tokens"] ?? 0),
+    totalTokens: Number(row["total_tokens"]),
+    costUsd,
+    knownCostUsd: nonNegativeFinite(row["known_cost_usd"]) ?? costUsd ?? 0,
+    costSource,
+    costIncomplete: costSource === "unknown" || unknownCostReviewers > 0,
+    unknownCostReviewers,
+  };
+}
+
 /**
- * 累加用量。取 `usage` 一个字段,`ReviewerOutcome` 与 `OutcomeRecord` 都能传。
- *
- * 逐条截负再加,不是加完再截:先加会让负的那一份把同一轮里正常那几个模型的花费一起吃掉。
+ * 累加 Reviewer 用量。没有任何会话统计时保持缺失；任一项价格未知时总费用未知，但 token 与
+ * 已知金额小计照常累加。未知占优使跨批次和整轮聚合使用同一条语义。
  */
 export function sumUsage(
   outcomes: readonly { usage?: ReviewerUsage }[],
-): ReviewerUsage {
+): ReviewerUsage | undefined {
+  const usages = outcomes.flatMap((outcome) =>
+    outcome.usage === undefined ? [] : [outcome.usage],
+  );
+  if (usages.length === 0) return undefined;
+
   const total: ReviewerUsage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -686,34 +891,93 @@ export function sumUsage(
     cacheWriteTokens: 0,
     totalTokens: 0,
     costUsd: 0,
+    knownCostUsd: 0,
+    costSource: "trusted",
   };
-  for (const outcome of outcomes) {
-    if (outcome.usage === undefined) continue;
-    total.inputTokens += outcome.usage.inputTokens;
-    total.outputTokens += outcome.usage.outputTokens;
-    total.cacheReadTokens += outcome.usage.cacheReadTokens;
-    total.cacheWriteTokens += outcome.usage.cacheWriteTokens;
-    total.totalTokens += outcome.usage.totalTokens;
-    total.costUsd += recordedCost(outcome.usage.costUsd);
+  for (const rawUsage of usages) {
+    const usage = normalizedUsage(rawUsage);
+    total.inputTokens += usage.inputTokens;
+    total.outputTokens += usage.outputTokens;
+    total.cacheReadTokens += usage.cacheReadTokens;
+    total.cacheWriteTokens += usage.cacheWriteTokens;
+    total.totalTokens += usage.totalTokens;
+    total.knownCostUsd += usage.knownCostUsd;
+    if (usage.costSource === "unknown" || usage.costUsd === null) {
+      total.costSource = "unknown";
+      total.costUsd = null;
+    } else if (total.costUsd !== null) {
+      total.costUsd += usage.costUsd;
+    }
   }
   return total;
 }
 
-/** 开库并跑迁移。 */
+
+/** 打开当前 schema；schema-v0 数据库必须先经过模型服务迁移器。 */
 export function openStore(dbPath: string): Store {
   const db = new DatabaseSync(dbPath, { timeout: BUSY_TIMEOUT_MS });
-  db.exec(SCHEMA);
+  let modelServiceSchemaVersion = Number(
+    db.prepare("PRAGMA user_version").get()?.["user_version"] ?? 0,
+  );
+  if (modelServiceSchemaVersion === 0) {
+    const existingTables = Number(
+      db.prepare(
+        "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+      ).get()?.["count"] ?? 0,
+    );
+    if (existingTables !== 0) {
+      db.close();
+      throw new Error("schema-v0 数据库必须先完成模型服务迁移");
+    }
+    db.exec(STORE_SCHEMA);
+    db.exec(MODEL_SERVICE_SCHEMA);
+    db.exec("PRAGMA user_version = 1");
+    modelServiceSchemaVersion = 1;
+  }
+  if (modelServiceSchemaVersion !== 1) {
+    db.close();
+    throw new Error(`不支持数据库 schema 版本 ${modelServiceSchemaVersion}`);
+  }
+  db.exec(STORE_SCHEMA);
+  db.exec(MODEL_SERVICE_SCHEMA);
   for (const statement of ADD_COLUMNS) {
     try {
       db.exec(statement);
     } catch (error) {
-      // 只放过"列已存在",别的错(表缺失、语法错)照抛——那是真出了事。
       if (!/duplicate column name/i.test(String(error))) throw error;
     }
   }
+  const reviewRunColumns = new Set(
+    db.prepare("PRAGMA table_info(review_run)").all().map((row) => String(row["name"])),
+  );
+  const reviewerOutcomeColumns = new Set(
+    db.prepare("PRAGMA table_info(reviewer_outcome)").all().map((row) => String(row["name"])),
+  );
+  if (
+    reviewRunColumns.has("total_tokens") &&
+    reviewRunColumns.has("cost_usd") &&
+    reviewerOutcomeColumns.has("total_tokens") &&
+    reviewerOutcomeColumns.has("cost_usd")
+  ) {
+    db.exec(`
+      UPDATE reviewer_outcome
+         SET known_cost_usd = CASE WHEN cost_usd >= 0 THEN cost_usd ELSE 0 END,
+             cost_source = CASE WHEN cost_usd >= 0 THEN 'legacy' ELSE 'unknown' END
+       WHERE total_tokens IS NOT NULL AND cost_source IS NULL;
+      UPDATE review_run
+         SET known_cost_usd = CASE WHEN cost_usd >= 0 THEN cost_usd ELSE 0 END,
+             cost_source = CASE WHEN cost_usd >= 0 THEN 'legacy' ELSE 'unknown' END,
+             unknown_cost_reviewer_count = CASE
+               WHEN cost_usd >= 0 THEN 0
+               ELSE MAX(1, (SELECT COUNT(*) FROM reviewer_outcome outcome
+                             WHERE outcome.run_id = review_run.id
+                               AND outcome.cost_source = 'unknown'))
+             END
+       WHERE total_tokens IS NOT NULL AND cost_source IS NULL;
+    `);
+  }
 
-  // 具名而不是直接 return:事务型的写入(`registerCustomProvider`)要在一个事务里复用单写
-  // 的那几句,让两条路的语义只有一处。
+  // 系统管理员 bootstrap 与普通创建共用同一条用户写入语义。
   const writePanelUser = (record: Omit<PanelUserRecord, "lastLoginAt">): void => {
     db.prepare(
       `INSERT INTO panel_user
@@ -728,6 +992,85 @@ export function openStore(dbPath: string): Store {
       record.isSystemAdmin ? 1 : 0,
       record.roleId,
     );
+  };
+
+  const parseStoredReviewers = (reviewersJson: string, context: string): ReviewerSpec[] =>
+    assertReviewerSpecs(JSON.parse(reviewersJson), context, { allowEmpty: true });
+
+  const availableModel = db.prepare(`
+    SELECT 1
+      FROM model_service service
+      JOIN model_service_credential credential ON credential.provider = service.provider
+     WHERE service.provider = ?
+       AND service.target_fingerprint IS NOT NULL
+       AND credential.state = 'verified'
+       AND credential.api_key_encrypted IS NOT NULL
+       AND (
+         EXISTS (
+           SELECT 1 FROM model_directory_model automatic
+            WHERE automatic.provider = service.provider
+              AND automatic.model = ?
+              AND automatic.service_version = service.version
+         )
+         OR EXISTS (
+           SELECT 1 FROM model_supplement supplement
+            WHERE supplement.provider = service.provider
+              AND supplement.model = ?
+              AND (
+                supplement.source = 'migration-retention'
+                OR (supplement.source = 'manual'
+                    AND supplement.target_fingerprint = service.target_fingerprint)
+              )
+         )
+       )
+  `);
+  const modelCombinationAvailable = (reviewersJson: string, context: string): boolean => {
+    const reviewers = parseStoredReviewers(reviewersJson, context);
+    return reviewers.every((reviewer) =>
+      availableModel.get(reviewer.provider, reviewer.model, reviewer.model) !== undefined
+    );
+  };
+  const referencedModels = (provider: string): Set<string> => {
+    const models = new Set<string>();
+    const globalJson = db
+      .prepare("SELECT value FROM global_setting WHERE key = ?")
+      .get(GLOBAL_REVIEWERS_KEY)?.["value"];
+    if (globalJson !== undefined) {
+      for (const reviewer of parseStoredReviewers(String(globalJson), GLOBAL_REVIEWERS_CONTEXT)) {
+        if (reviewer.provider === provider) models.add(reviewer.model);
+      }
+    }
+    const overrides = db.prepare("SELECT id, reviewers FROM repo WHERE reviewers IS NOT NULL").all();
+    for (const row of overrides) {
+      for (const reviewer of parseStoredReviewers(
+        String(row["reviewers"]),
+        `仓库 ${Number(row["id"])} 的模型覆盖`,
+      )) {
+        if (reviewer.provider === provider) models.add(reviewer.model);
+      }
+    }
+    return models;
+  };
+  const recordSupportsCurrentReferences = (record: ModelServiceVersionCommit): boolean => {
+    const references = new Set(
+      [...referencedModels(record.provider)].filter((model) =>
+        availableModel.get(record.provider, model, model) !== undefined
+      ),
+    );
+    if (references.size === 0) return true;
+    if (
+      record.targetFingerprint === null ||
+      record.credential.state !== "verified" ||
+      record.credential.apiKeyEncrypted === null
+    ) return false;
+    const models = new Set(record.automaticModels.map((model) => model.id));
+    for (const supplement of record.supplements) {
+      if (
+        supplement.source === "migration-retention" ||
+        supplement.targetFingerprint === record.targetFingerprint
+      ) models.add(supplement.model);
+    }
+    return [...references].every((model) => models.has(model));
   };
 
   const store: Store = {
@@ -988,8 +1331,15 @@ export function openStore(dbPath: string): Store {
       }
     },
     registerRepo(record) {
-      db.exec("BEGIN");
+      db.exec("BEGIN IMMEDIATE");
       try {
+        if (
+          record.reviewersJson !== undefined &&
+          !modelCombinationAvailable(record.reviewersJson, `仓库 ${record.repoId} 的模型覆盖`)
+        ) {
+          db.exec("ROLLBACK");
+          return false;
+        }
         db.prepare(
           "INSERT INTO repo (id, owner, repo, reviewers, registered_at) VALUES (?, ?, ?, ?, ?)",
         ).run(
@@ -1005,6 +1355,7 @@ export function openStore(dbPath: string): Store {
           record.key,
         );
         db.exec("COMMIT");
+        return true;
       } catch (error) {
         db.exec("ROLLBACK");
         throw error;
@@ -1050,7 +1401,29 @@ export function openStore(dbPath: string): Store {
     },
 
     setRepoReviewers(repoId, reviewersJson) {
-      db.prepare("UPDATE repo SET reviewers = ? WHERE id = ?").run(reviewersJson, repoId);
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const row = db.prepare("SELECT reviewers FROM repo WHERE id = ?").get(repoId);
+        if (row === undefined) {
+          db.exec("COMMIT");
+          return true;
+        }
+        const current = row["reviewers"] === null ? null : String(row["reviewers"]);
+        if (
+          reviewersJson !== current &&
+          reviewersJson !== null &&
+          !modelCombinationAvailable(reviewersJson, `仓库 ${repoId} 的模型覆盖`)
+        ) {
+          db.exec("ROLLBACK");
+          return false;
+        }
+        db.prepare("UPDATE repo SET reviewers = ? WHERE id = ?").run(reviewersJson, repoId);
+        db.exec("COMMIT");
+        return true;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     },
 
     removeRepo(repoId) {
@@ -1103,6 +1476,36 @@ export function openStore(dbPath: string): Store {
       };
     },
 
+    getReviewRunSnapshot(repoId) {
+      db.exec("BEGIN");
+      try {
+        const repo = store.getRepo(repoId);
+        if (repo === undefined) throw new Error(`仓库 ${repoId} 不在注册表里`);
+        const settings = store.getGlobalSettings();
+        const reviewers = repo.reviewersJson === null
+          ? settings.reviewersJson === null
+            ? []
+            : assertReviewerSpecs(JSON.parse(settings.reviewersJson), GLOBAL_REVIEWERS_CONTEXT, {
+                allowEmpty: true,
+              })
+          : assertReviewerSpecs(JSON.parse(repo.reviewersJson), `仓库 ${repoId} 的模型覆盖`);
+        const providers = [...new Set(reviewers.map((reviewer) => reviewer.provider))];
+        const modelServices = providers.flatMap((provider) => {
+          const service = store.getModelService(provider);
+          return service === undefined ? [] : [service];
+        });
+        db.exec("COMMIT");
+        return {
+          reviewers: Object.freeze([...reviewers]),
+          maxChangedLinesPerBatch: settings.maxChangedLinesPerBatch,
+          modelServices: Object.freeze(modelServices),
+        };
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
     putGlobalSettings(settings) {
       const write = (key: string, value: string | null): void => {
         if (value === null) {
@@ -1114,180 +1517,481 @@ export function openStore(dbPath: string): Store {
            ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
         ).run(key, value);
       };
-      write(GLOBAL_REVIEWERS_KEY, settings.reviewersJson);
-      write(
-        GLOBAL_MAX_CHANGED_LINES_KEY,
-        settings.maxChangedLinesPerBatch === null
-          ? null
-          : String(settings.maxChangedLinesPerBatch),
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const storedReviewers = db
+          .prepare("SELECT value FROM global_setting WHERE key = ?")
+          .get(GLOBAL_REVIEWERS_KEY)?.["value"];
+        const currentReviewers = storedReviewers === undefined ? null : String(storedReviewers);
+        if (
+          settings.reviewersJson !== currentReviewers &&
+          settings.reviewersJson !== null &&
+          !modelCombinationAvailable(settings.reviewersJson, GLOBAL_REVIEWERS_CONTEXT)
+        ) {
+          db.exec("ROLLBACK");
+          return false;
+        }
+        write(GLOBAL_REVIEWERS_KEY, settings.reviewersJson);
+        write(
+          GLOBAL_MAX_CHANGED_LINES_KEY,
+          settings.maxChangedLinesPerBatch === null
+            ? null
+            : String(settings.maxChangedLinesPerBatch),
+        );
+        db.exec("COMMIT");
+        return true;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    commitModelServiceVersion(expectedVersion, record) {
+      if (record.provider === "") throw new Error("模型服务 provider 不能为空");
+      const automaticModels = new Map<string, DiscoveredModel>();
+      for (const model of record.automaticModels) {
+        const identity = modelIdentity({ provider: model.provider, model: model.id });
+        if (
+          model.provider !== record.provider ||
+          model.id.trim() === "" ||
+          model.identity !== identity ||
+          automaticModels.has(identity)
+        ) {
+          throw new Error(`${record.provider} 的自动目录含空、重复或身份不一致的模型`);
+        }
+        automaticModels.set(identity, model);
+      }
+      const supplementModels = new Set(record.supplements.map((entry) => entry.model));
+      if (supplementModels.size !== record.supplements.length || supplementModels.has("")) {
+        throw new Error(`${record.provider} 的模型补录含空或重复 model id`);
+      }
+      for (const supplement of record.supplements) {
+        if (
+          (supplement.source === "manual" && supplement.targetFingerprint === null) ||
+          (supplement.source === "migration-retention" && supplement.targetFingerprint !== null)
+        ) {
+          throw new Error(`${record.provider}:${supplement.model} 的来源与目标指纹不一致`);
+        }
+      }
+
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        if (!recordSupportsCurrentReferences(record)) {
+          db.exec("ROLLBACK");
+          return undefined;
+        }
+        let version: number;
+        if (expectedVersion === null) {
+          if (
+            db.prepare("SELECT 1 FROM model_service WHERE provider = ?").get(record.provider) !==
+            undefined
+          ) {
+            db.exec("ROLLBACK");
+            return undefined;
+          }
+          version = 1;
+          db.prepare(
+            `INSERT INTO model_service
+               (provider, service_type, version, base_url, api, target_fingerprint,
+                disabled_reason, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).run(
+            record.provider,
+            record.type,
+            version,
+            record.baseUrl,
+            record.api,
+            record.targetFingerprint,
+            record.disabledReason,
+            record.createdAt,
+            record.updatedAt,
+          );
+        } else {
+          const changed = db.prepare(
+            `UPDATE model_service
+                SET service_type = ?, version = version + 1, base_url = ?, api = ?,
+                    target_fingerprint = ?, disabled_reason = ?, updated_at = ?
+              WHERE provider = ? AND version = ?`,
+          ).run(
+            record.type,
+            record.baseUrl,
+            record.api,
+            record.targetFingerprint,
+            record.disabledReason,
+            record.updatedAt,
+            record.provider,
+            expectedVersion,
+          );
+          if (Number(changed.changes) === 0) {
+            db.exec("ROLLBACK");
+            return undefined;
+          }
+          version = expectedVersion + 1;
+        }
+
+        db.prepare("DELETE FROM model_service_credential WHERE provider = ?").run(record.provider);
+        db.prepare(
+          `INSERT INTO model_service_credential
+             (provider, state, api_key_encrypted, updated_at, verified_at,
+              validation_model, verification_source)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          record.provider,
+          record.credential.state,
+          record.credential.apiKeyEncrypted,
+          record.credential.updatedAt,
+          record.credential.verifiedAt,
+          record.credential.validationModel,
+          record.credential.verificationSource,
+        );
+
+        db.prepare("DELETE FROM model_directory_model WHERE provider = ?").run(record.provider);
+        db.prepare("DELETE FROM model_directory WHERE provider = ?").run(record.provider);
+        db.prepare(
+          `INSERT INTO model_directory
+             (provider, service_version, state, last_attempt_at, last_success_at,
+              failure, ignored_model_count)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          record.provider,
+          version,
+          record.directory.state,
+          record.directory.lastAttemptAt,
+          record.directory.lastSuccessAt,
+          record.directory.failure,
+          record.directory.ignoredModelCount,
+        );
+        const insertAutomatic = db.prepare(
+          `INSERT INTO model_directory_model
+             (provider, model, service_version, name, api, base_url, input_json, reasoning,
+              cost_json, context_window, max_tokens)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        );
+        for (const model of automaticModels.values()) {
+          insertAutomatic.run(
+            record.provider,
+            model.id,
+            version,
+            model.fields.name ?? null,
+            model.fields.api ?? null,
+            model.fields.baseUrl ?? null,
+            model.fields.input === undefined ? null : JSON.stringify(model.fields.input),
+            model.fields.reasoning === undefined ? null : Number(model.fields.reasoning),
+            serializedTrustedCost(model.fields.cost),
+            model.fields.contextWindow ?? null,
+            model.fields.maxTokens ?? null,
+          );
+        }
+
+        db.prepare("DELETE FROM model_supplement WHERE provider = ?").run(record.provider);
+        const insertSupplement = db.prepare(
+          `INSERT INTO model_supplement
+             (provider, model, source, target_fingerprint, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        );
+        for (const supplement of record.supplements) {
+          insertSupplement.run(
+            record.provider,
+            supplement.model,
+            supplement.source,
+            supplement.targetFingerprint,
+            supplement.createdAt,
+          );
+        }
+        db.exec("COMMIT");
+        return version;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    removeCustomModelService(provider, expectedVersion) {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const current = db
+          .prepare(
+            `SELECT 1 FROM model_service
+              WHERE provider = ? AND service_type = 'custom' AND version = ?`,
+          )
+          .get(provider, expectedVersion);
+        if (current === undefined) {
+          db.exec("ROLLBACK");
+          return false;
+        }
+        if (referencedModels(provider).size > 0) {
+          db.exec("ROLLBACK");
+          return false;
+        }
+        db.prepare("DELETE FROM model_directory_model WHERE provider = ?").run(provider);
+        db.prepare("DELETE FROM model_directory WHERE provider = ?").run(provider);
+        db.prepare("DELETE FROM model_supplement WHERE provider = ?").run(provider);
+        db.prepare("DELETE FROM model_service_credential WHERE provider = ?").run(provider);
+        const removed = db
+          .prepare(
+            `DELETE FROM model_service
+              WHERE provider = ? AND service_type = 'custom' AND version = ?`,
+          )
+          .run(provider, expectedVersion);
+        if (Number(removed.changes) !== 1) {
+          db.exec("ROLLBACK");
+          return false;
+        }
+        db.exec("COMMIT");
+        return true;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    getModelService(provider) {
+      const service = db
+        .prepare(
+          `SELECT provider, service_type, version, base_url, api, target_fingerprint,
+                  disabled_reason, created_at, updated_at
+             FROM model_service WHERE provider = ?`,
+        )
+        .get(provider);
+      if (service === undefined) return undefined;
+      const credential = db
+        .prepare(
+          `SELECT state, api_key_encrypted, updated_at, verified_at,
+                  validation_model, verification_source
+             FROM model_service_credential WHERE provider = ?`,
+        )
+        .get(provider);
+      const directory = db
+        .prepare(
+          `SELECT service_version, state, last_attempt_at, last_success_at,
+                  failure, ignored_model_count
+             FROM model_directory WHERE provider = ?`,
+        )
+        .get(provider);
+      if (credential === undefined || directory === undefined) {
+        throw new Error(`${provider} 的模型服务当前版本不完整`);
+      }
+      const version = Number(service["version"]);
+      if (Number(directory["service_version"]) !== version) {
+        throw new Error(`${provider} 的模型目录不属于当前服务版本`);
+      }
+      const automaticModels = db
+        .prepare(
+          `SELECT model, name, api, base_url, input_json, reasoning, cost_json,
+                  context_window, max_tokens
+             FROM model_directory_model
+            WHERE provider = ? AND service_version = ? ORDER BY model`,
+        )
+        .all(provider, version)
+        .map((row): DiscoveredModel => {
+          const id = String(row["model"]);
+          const fields: TrustedModelFields = {
+            ...(row["name"] === null ? {} : { name: String(row["name"]) }),
+            ...(row["api"] === null ? {} : { api: String(row["api"]) }),
+            ...(row["base_url"] === null ? {} : { baseUrl: String(row["base_url"]) }),
+            ...(row["input_json"] === null
+              ? {}
+              : { input: JSON.parse(String(row["input_json"])) as readonly ("text" | "image")[] }),
+            ...(row["reasoning"] === null ? {} : { reasoning: Number(row["reasoning"]) === 1 }),
+            ...(row["cost_json"] === null
+              ? {}
+              : { cost: JSON.parse(String(row["cost_json"])) as ModelCost }),
+            ...(row["context_window"] === null
+              ? {}
+              : { contextWindow: Number(row["context_window"]) }),
+            ...(row["max_tokens"] === null ? {} : { maxTokens: Number(row["max_tokens"]) }),
+          };
+          return {
+            identity: modelIdentity({ provider, model: id }),
+            provider,
+            id,
+            fields,
+          };
+        });
+      return {
+        provider: String(service["provider"]),
+        type: String(service["service_type"]) as "builtin" | "custom",
+        version,
+        baseUrl: service["base_url"] === null ? null : String(service["base_url"]),
+        api: service["api"] === null ? null : String(service["api"]),
+        targetFingerprint:
+          service["target_fingerprint"] === null
+            ? null
+            : String(service["target_fingerprint"]),
+        disabledReason:
+          service["disabled_reason"] === null ? null : "name-conflict" as const,
+        createdAt: String(service["created_at"]),
+        updatedAt: String(service["updated_at"]),
+        credential: {
+          state: String(credential["state"]) as ModelCredentialState,
+          apiKeyEncrypted:
+            credential["api_key_encrypted"] === null
+              ? null
+              : String(credential["api_key_encrypted"]),
+          updatedAt:
+            credential["updated_at"] === null ? null : String(credential["updated_at"]),
+          verifiedAt:
+            credential["verified_at"] === null ? null : String(credential["verified_at"]),
+          validationModel:
+            credential["validation_model"] === null
+              ? null
+              : String(credential["validation_model"]),
+          verificationSource:
+            credential["verification_source"] === null
+              ? null
+              : String(credential["verification_source"]) as ModelVerificationSource,
+        },
+        directory: {
+          state: String(directory["state"]) as ModelDirectoryState,
+          lastAttemptAt:
+            directory["last_attempt_at"] === null
+              ? null
+              : String(directory["last_attempt_at"]),
+          lastSuccessAt:
+            directory["last_success_at"] === null
+              ? null
+              : String(directory["last_success_at"]),
+          failure: directory["failure"] === null ? null : String(directory["failure"]),
+          ignoredModelCount: Number(directory["ignored_model_count"]),
+        },
+        automaticModels,
+        supplements: store.listModelSupplements(provider),
+      };
+    },
+
+    listModelServices() {
+      return db
+        .prepare("SELECT provider FROM model_service ORDER BY provider")
+        .all()
+        .map((row) => store.getModelService(String(row["provider"]))!);
+    },
+
+    listModelReferences() {
+      const references = new Map<string, ModelReference>();
+      const referenceFor = (spec: ReviewerSpec): ModelReference => {
+        const identity = modelIdentity(spec);
+        const existing = references.get(identity);
+        if (existing !== undefined) return existing;
+        const created: ModelReference = {
+          identity,
+          provider: spec.provider,
+          model: spec.model,
+          locations: [],
+        };
+        references.set(identity, created);
+        return created;
+      };
+      const parse = (reviewersJson: string, context: string, allowEmpty: boolean): ReviewerSpec[] =>
+        assertReviewerSpecs(JSON.parse(reviewersJson), context, { allowEmpty });
+      const globalJson = db
+        .prepare("SELECT value FROM global_setting WHERE key = ?")
+        .get(GLOBAL_REVIEWERS_KEY)?.["value"];
+      const global = globalJson === undefined
+        ? []
+        : parse(String(globalJson), GLOBAL_REVIEWERS_CONTEXT, true);
+      const followingGlobal = Number(
+        db.prepare("SELECT COUNT(*) AS count FROM repo WHERE reviewers IS NULL").get()!["count"],
+      );
+      for (const spec of global) {
+        const reference = referenceFor(spec);
+        reference.locations.push({ kind: "global" });
+        if (followingGlobal > 0) {
+          reference.locations.push({ kind: "following-global", repositoryCount: followingGlobal });
+        }
+      }
+      for (const row of db
+        .prepare("SELECT id, owner, repo, reviewers FROM repo WHERE reviewers IS NOT NULL ORDER BY id")
+        .all()) {
+        const repoId = Number(row["id"]);
+        const owner = String(row["owner"]);
+        const repo = String(row["repo"]);
+        for (const spec of parse(
+          String(row["reviewers"]),
+          `仓库 ${owner}/${repo}（id ${repoId}）的模型覆盖`,
+          false,
+        )) {
+          referenceFor(spec).locations.push({
+            kind: "repository-override",
+            repoId,
+            owner,
+            repo,
+          });
+        }
+      }
+      return [...references.values()].sort((left, right) =>
+        left.identity.localeCompare(right.identity),
       );
     },
 
-    putModelCredential(provider, apiKeyEncrypted, updatedAt, verified) {
-      // 覆盖语义直接落在主键上:同一家写第二次替掉第一次,库里永远只有一把。
-      db.prepare(
-        `INSERT INTO model_credential (provider, api_key_encrypted, updated_at, verified)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(provider) DO UPDATE SET
-           api_key_encrypted = excluded.api_key_encrypted,
-           updated_at = excluded.updated_at,
-           verified = excluded.verified`,
-      ).run(provider, apiKeyEncrypted, updatedAt, verified ? 1 : 0);
-    },
-
-    listModelCredentials() {
-      const rows = db
-        .prepare(
-          `SELECT provider, api_key_encrypted, updated_at, verified
-           FROM model_credential ORDER BY provider`,
-        )
-        .all();
-      return rows.map((row) => ({
-        provider: String(row["provider"]),
-        apiKeyEncrypted: String(row["api_key_encrypted"]),
-        updatedAt: String(row["updated_at"]),
-        verified: Number(row["verified"]) === 1,
-      }));
-    },
-
-    removeModelCredential(provider) {
-      db.prepare("DELETE FROM model_credential WHERE provider = ?").run(provider);
-    },
-
-    putModelRow(row) {
-      // 覆盖语义直接落在复合主键上,created_at 不在 DO UPDATE 里:同一行第二次写入改的
-      // 是单价与上下文窗口,不是它被填出来的时刻。
-      db.prepare(
-        `INSERT INTO model_row
-           (provider, model, cost_input, cost_output, context_window, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(provider, model) DO UPDATE SET
-           cost_input = excluded.cost_input,
-           cost_output = excluded.cost_output,
-           context_window = excluded.context_window`,
-      ).run(
-        row.provider,
-        row.model,
-        row.costInput,
-        row.costOutput,
-        row.contextWindow,
-        row.createdAt,
-      );
-    },
-
-    listModelRows() {
-      const rows = db
-        .prepare(
-          `SELECT provider, model, cost_input, cost_output, context_window, created_at
-           FROM model_row ORDER BY provider, model`,
-        )
-        .all();
+    listModelSupplements(provider) {
+      const rows = provider === undefined
+        ? db.prepare(
+            `SELECT provider, model, source, target_fingerprint, created_at
+               FROM model_supplement ORDER BY provider, model`,
+          ).all()
+        : db.prepare(
+            `SELECT provider, model, source, target_fingerprint, created_at
+               FROM model_supplement WHERE provider = ? ORDER BY model`,
+          ).all(provider);
       return rows.map((row) => ({
         provider: String(row["provider"]),
         model: String(row["model"]),
-        costInput: row["cost_input"] === null ? null : Number(row["cost_input"]),
-        costOutput: row["cost_output"] === null ? null : Number(row["cost_output"]),
-        contextWindow: row["context_window"] === null ? null : Number(row["context_window"]),
+        source: String(row["source"]) as ModelSupplementSource,
+        targetFingerprint:
+          row["target_fingerprint"] === null ? null : String(row["target_fingerprint"]),
         createdAt: String(row["created_at"]),
       }));
     },
 
-    removeModelRow(provider, model) {
-      db.prepare("DELETE FROM model_row WHERE provider = ? AND model = ?").run(provider, model);
-    },
-
-    putCustomProvider(record) {
-      // 没有 ON CONFLICT:同名二次写入是主键冲突,照实抛出去。
-      db.prepare(
-        `INSERT INTO custom_provider (name, base_url, api, created_at) VALUES (?, ?, ?, ?)`,
-      ).run(record.name, record.baseUrl, record.api, record.createdAt);
-    },
-
-    listCustomProviders() {
-      const rows = db
-        .prepare("SELECT name, base_url, api, created_at FROM custom_provider ORDER BY name")
-        .all();
-      return rows.map((row) => ({
-        name: String(row["name"]),
-        baseUrl: String(row["base_url"]),
-        api: String(row["api"]),
-        createdAt: String(row["created_at"]),
-      }));
-    },
-
-    registerCustomProvider(record) {
-      // 三张表一个事务:半成品(定义在了、凭据没存上)补不齐——重试会撞上「名字已被占用」。
-      // 名字的唯一约束排在最后一句,撞名时前两句的写入由回滚一起撤掉。
-      db.exec("BEGIN");
-      try {
-        store.putModelRow({
-          provider: record.name,
-          model: record.model,
-          costInput: null,
-          costOutput: null,
-          contextWindow: null,
-          createdAt: record.createdAt,
-        });
-        store.putModelCredential(
-          record.name,
-          record.apiKeyEncrypted,
-          record.createdAt,
-          record.verified,
-        );
-        store.putCustomProvider({
-          name: record.name,
-          baseUrl: record.baseUrl,
-          api: record.api,
-          createdAt: record.createdAt,
-        });
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-    },
-
-    removeCustomProvider(name) {
-      // 一家自定义 provider 的定义、它的模型行与它那把凭据要么一起在、要么一起没有:
-      // 只删掉定义会留下一份取不到的模型行与一把无主的凭据。
-      //
-      // 级联的前提是这条登记真在:名字与 Pi 内置那些家共用同一命名空间,而这两张表都以
-      // provider 名为键。没登记就按名字删的话,一个没登记过的内置名字会把内置那一家的模型
-      // 凭据与手填模型行一起永久删掉(凭据只写不回显)。受影行数为 0 即什么都不做。
-      db.exec("BEGIN");
-      try {
-        const removed = db.prepare("DELETE FROM custom_provider WHERE name = ?").run(name);
-        if (Number(removed.changes) > 0) {
-          db.prepare("DELETE FROM model_row WHERE provider = ?").run(name);
-          db.prepare("DELETE FROM model_credential WHERE provider = ?").run(name);
-        }
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-    },
 
     startRun(meta) {
-      const result = db
-        .prepare(
-          `INSERT INTO review_run
-             (owner, repo, pull_number, head_sha, triggered_by, started_at,
-              changed_files, changed_lines, batch_count)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          meta.owner,
-          meta.repo,
-          meta.pullNumber,
-          meta.headSha,
-          meta.triggeredBy ?? null,
-          meta.startedAt,
-          meta.changedFiles,
-          meta.changedLines,
-          meta.batchCount,
+      db.exec("BEGIN");
+      try {
+        const result = db
+          .prepare(
+            `INSERT INTO review_run
+               (owner, repo, pull_number, head_sha, triggered_by, started_at,
+                changed_files, changed_lines, batch_count)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            meta.owner,
+            meta.repo,
+            meta.pullNumber,
+            meta.headSha,
+            meta.triggeredBy ?? null,
+            meta.startedAt,
+            meta.changedFiles,
+            meta.changedLines,
+            meta.batchCount,
+          );
+        const runId = Number(result.lastInsertRowid);
+        const insertPin = db.prepare(
+          `INSERT INTO review_run_reviewer_pin
+             (run_id, position, identity, provider, model, model_service_version,
+              base_url, api, runtime_model_json, materialization_failure)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
-      return Number(result.lastInsertRowid);
+        for (const [position, pin] of meta.reviewerPins.entries()) {
+          insertPin.run(
+            runId,
+            position,
+            pin.identity,
+            pin.provider,
+            pin.model,
+            pin.modelServiceVersion,
+            pin.target?.baseUrl ?? null,
+            pin.target?.api ?? null,
+            pin.runtimeModel === null ? null : JSON.stringify(pin.runtimeModel),
+            pin.failure,
+          );
+        }
+        db.exec("COMMIT");
+        return runId;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     },
 
     finishRun(runId, result) {
@@ -1295,17 +1999,20 @@ export function openStore(dbPath: string): Store {
       // 会让事后的处置率统计算出偏低的分母。
       db.exec("BEGIN");
       try {
+        const runUsage = sumUsage(result.outcomes);
         db.prepare(
           `UPDATE review_run
               SET finished_at = ?, duration_ms = ?, failed = ?,
                   input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
-                  cache_write_tokens = ?, total_tokens = ?, cost_usd = ?
+                  cache_write_tokens = ?, total_tokens = ?, cost_usd = ?,
+                  known_cost_usd = ?, cost_source = ?, unknown_cost_reviewer_count = ?
             WHERE id = ?`,
         ).run(
           result.finishedAt,
           result.durationMs,
           result.failed ? 1 : 0,
-          ...usageColumns(sumUsage(result.outcomes)),
+          ...usageColumns(runUsage),
+          runUsage === undefined ? null : unknownCostReviewerCount(result.outcomes),
           runId,
         );
 
@@ -1313,9 +2020,9 @@ export function openStore(dbPath: string): Store {
           `INSERT INTO reviewer_outcome
              (run_id, model, failure, finding_count, anomaly_count,
               rejected_tool_calls, anchor_rejections, duration_ms,
-              input_tokens, output_tokens,
-              cache_read_tokens, cache_write_tokens, total_tokens, cost_usd)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+              total_tokens, cost_usd, known_cost_usd, cost_source)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const outcome of result.outcomes) {
           insertOutcome.run(
@@ -1418,6 +2125,51 @@ export function openStore(dbPath: string): Store {
       }));
     },
 
+    usageStats(from, to) {
+      const row = db
+        .prepare(
+          `SELECT COUNT(*) AS usage_rows,
+                  SUM(input_tokens) AS input_tokens,
+                  SUM(output_tokens) AS output_tokens,
+                  SUM(cache_read_tokens) AS cache_read_tokens,
+                  SUM(cache_write_tokens) AS cache_write_tokens,
+                  SUM(total_tokens) AS total_tokens,
+                  SUM(known_cost_usd) AS known_cost_usd,
+                  SUM(COALESCE(unknown_cost_reviewer_count, 0)) AS unknown_cost_reviewer_count,
+                  SUM(CASE WHEN cost_source = 'trusted' THEN 1 ELSE 0 END) AS trusted_rows,
+                  SUM(CASE WHEN cost_source = 'legacy' THEN 1 ELSE 0 END) AS legacy_rows
+             FROM review_run
+            WHERE total_tokens IS NOT NULL AND started_at >= ? AND started_at <= ?`,
+        )
+        .get(from, to)!;
+      if (Number(row["usage_rows"]) === 0) return undefined;
+
+      const unknownCostReviewers = Number(row["unknown_cost_reviewer_count"] ?? 0);
+      const trustedRows = Number(row["trusted_rows"] ?? 0);
+      const legacyRows = Number(row["legacy_rows"] ?? 0);
+      const costSource: RecordedCostSource =
+        unknownCostReviewers > 0
+          ? "unknown"
+          : trustedRows > 0 && legacyRows > 0
+            ? "mixed"
+            : legacyRows > 0
+              ? "legacy"
+              : "trusted";
+      const knownCostUsd = Number(row["known_cost_usd"] ?? 0);
+      return {
+        inputTokens: Number(row["input_tokens"] ?? 0),
+        outputTokens: Number(row["output_tokens"] ?? 0),
+        cacheReadTokens: Number(row["cache_read_tokens"] ?? 0),
+        cacheWriteTokens: Number(row["cache_write_tokens"] ?? 0),
+        totalTokens: Number(row["total_tokens"] ?? 0),
+        costUsd: unknownCostReviewers > 0 ? null : knownCostUsd,
+        knownCostUsd,
+        costSource,
+        costIncomplete: unknownCostReviewers > 0,
+        unknownCostReviewers,
+      };
+    },
+
     listRuns(opts) {
       const conditions: string[] = [];
       const params: (number | string)[] = [];
@@ -1433,7 +2185,9 @@ export function openStore(dbPath: string): Store {
       const runs = db
         .prepare(
           `SELECT id, owner, repo, pull_number, head_sha, triggered_by,
-                  started_at, finished_at, failed
+                  started_at, finished_at, failed, input_tokens, output_tokens,
+                  cache_read_tokens, cache_write_tokens, total_tokens, cost_usd,
+                  known_cost_usd, cost_source, unknown_cost_reviewer_count
              FROM review_run ${where}
             ORDER BY id DESC LIMIT ?`,
         )
@@ -1447,7 +2201,10 @@ export function openStore(dbPath: string): Store {
       // Reviewer 自报的合并前条数,与落库行数不是同一个口径。
       const byOutcome = db
         .prepare(
-          `SELECT run_id, model, failure FROM reviewer_outcome
+          `SELECT run_id, model, failure, input_tokens, output_tokens,
+                  cache_read_tokens, cache_write_tokens, total_tokens, cost_usd,
+                  known_cost_usd, cost_source
+             FROM reviewer_outcome
             WHERE run_id IN (${marks}) ORDER BY model`,
         )
         .all(...ids);
@@ -1470,6 +2227,14 @@ export function openStore(dbPath: string): Store {
         )
         .all(...ids);
 
+      const byPin = db
+        .prepare(
+          `SELECT run_id, identity, provider, model, model_service_version,
+                  base_url, api, runtime_model_json, materialization_failure
+             FROM review_run_reviewer_pin
+            WHERE run_id IN (${marks}) ORDER BY run_id, position`,
+        )
+        .all(...ids);
       const findingCounts = new Map<string, number>();
       for (const row of byModel) {
         findingCounts.set(
@@ -1477,15 +2242,17 @@ export function openStore(dbPath: string): Store {
           Number(row["findings"]),
         );
       }
-      const models = new Map<number, { model: string; findings: number; failure: string | null }[]>();
+      const models = new Map<number, RunListItem["models"]>();
       for (const row of byOutcome) {
         const runId = Number(row["run_id"]);
         const model = String(row["model"]);
         const list = models.get(runId) ?? [];
+        const usage = recordedUsage(row);
         list.push({
           model,
           findings: findingCounts.get(`${runId}\n${model}`) ?? 0,
           failure: failureExcerpt(row["failure"]),
+          ...(usage === undefined ? {} : { usage }),
         });
         models.set(runId, list);
       }
@@ -1507,8 +2274,38 @@ export function openStore(dbPath: string): Store {
           total: Number(row["total"]),
         });
       }
+      const reviewerPins = new Map<number, ReviewRunReviewerPin[]>();
+      for (const row of byPin) {
+        const runId = Number(row["run_id"]);
+        const list = reviewerPins.get(runId) ?? [];
+        list.push({
+          identity: String(row["identity"]),
+          provider: String(row["provider"]),
+          model: String(row["model"]),
+          modelServiceVersion:
+            row["model_service_version"] === null
+              ? null
+              : Number(row["model_service_version"]),
+          target:
+            row["base_url"] === null || row["api"] === null
+              ? null
+              : { baseUrl: String(row["base_url"]), api: String(row["api"]) },
+          runtimeModel:
+            row["runtime_model_json"] === null
+              ? null
+              : JSON.parse(String(row["runtime_model_json"])) as NonNullable<
+                  ReviewRunReviewerPin["runtimeModel"]
+                >,
+          failure:
+            row["materialization_failure"] === null
+              ? null
+              : String(row["materialization_failure"]),
+        });
+        reviewerPins.set(runId, list);
+      }
       return runs.map((run) => {
         const id = Number(run["id"]);
+        const usage = recordedUsage(run);
         return {
           id,
           owner: String(run["owner"]),
@@ -1521,6 +2318,8 @@ export function openStore(dbPath: string): Store {
           finishedAt: run["finished_at"] === null ? null : String(run["finished_at"]),
           failed: Number(run["failed"]) === 1,
           models: models.get(id) ?? [],
+          ...(usage === undefined ? {} : { usage }),
+          reviewerPins: reviewerPins.get(id) ?? [],
           resolved: groups.get(id)?.resolved ?? 0,
           total: groups.get(id)?.total ?? 0,
         };

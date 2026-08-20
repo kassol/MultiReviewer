@@ -3,9 +3,10 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-import { runReview } from "../src/review/run.ts";
+import { createReviewRunPlan, runReview } from "../src/review/run.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
+import type { Reviewer } from "../src/review/finding.ts";
 
 const BASE_CALC = `export function add(a: number, b: number) {
   return a + b;
@@ -310,4 +311,80 @@ test("工作副本 checkout 到 head commit,Reviewer 读到的是改动后的代
 
   const worktree = reviewer.calls[0]!.worktreePath;
   assert.equal(readFileSync(join(worktree, "src/calc.ts"), "utf8"), HEAD_CALC);
+});
+
+test("Review Run 在首批前固定一份运行计划,后续批次不跟随模型组合改动", async () => {
+  const repo = makeRepo({
+    base: {
+      "src/a.ts": "export const a = 1;\n",
+      "src/b.ts": "export const b = 1;\n",
+    },
+    head: {
+      "src/a.ts": "export const a = 2;\n",
+      "src/b.ts": "export const b = 2;\n",
+    },
+  });
+  const cache = makeCacheDir();
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
+
+  const forge = memoryForge({
+    pullRequest: {
+      number: 7,
+      draft: false,
+      baseSha: repo.baseSha,
+      headSha: repo.headSha,
+      cloneUrl: repo.dir,
+    },
+    changedFiles: [
+      { path: "src/a.ts", status: "modified" },
+      { path: "src/b.ts", status: "modified" },
+    ],
+  });
+
+  let enteredFirstBatch = (): void => {};
+  const firstBatchEntered = new Promise<void>((resolve) => {
+    enteredFirstBatch = resolve;
+  });
+  let releaseFirstBatch = (): void => {};
+  const firstBatchGate = new Promise<void>((resolve) => {
+    releaseFirstBatch = resolve;
+  });
+  const calls: string[][] = [];
+  const planned: Reviewer = {
+    model: "planned-model",
+    review: async (range) => {
+      calls.push([...range.files]);
+      if (calls.length === 1) {
+        enteredFirstBatch();
+        await firstBatchGate;
+      }
+      return {
+        model: "planned-model",
+        findings: [],
+        anomalies: [],
+        rejectedToolCalls: 0,
+        anchorRejections: 0,
+      };
+    },
+  };
+  const replacement = scriptedReviewer("replacement-model", []);
+  const configuredReviewers: Reviewer[] = [planned];
+  const plan = createReviewRunPlan(configuredReviewers, 1, []);
+
+  const running = runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    { forge: forge.forge, ...plan, cacheDir: cache.dir, dbPath: db.path },
+  );
+  await firstBatchEntered;
+
+  // 模拟首批运行期间模型组合切换。进行中的 Run 必须继续用计划里的 Reviewer;
+  // 新组合只属于下一轮,不能从第二批开始混进这一轮。
+  configuredReviewers.splice(0, 1, replacement);
+  releaseFirstBatch();
+  const result = await running;
+
+  assert.deepEqual(calls, [["src/a.ts"], ["src/b.ts"]]);
+  assert.equal(replacement.calls.length, 0);
+  assert.deepEqual(result.outcomes.map((outcome) => outcome.model), ["planned-model"]);
 });

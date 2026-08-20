@@ -342,6 +342,7 @@ test("升级前建的数据库仍能打开,锚定打回列补在既有表上", a
     total_tokens INTEGER,
     cost_usd REAL
   )`);
+  old.exec("PRAGMA user_version = 1");
   old.close();
 
   await runReview(EVENT, {
@@ -380,16 +381,65 @@ test("升级前的 review_run 补 triggered_by,历史行按投递读", () => {
     cache_write_tokens INTEGER,
     total_tokens INTEGER,
     cost_usd REAL
+  );
+  CREATE TABLE reviewer_outcome (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES review_run(id),
+    model TEXT NOT NULL,
+    failure TEXT,
+    finding_count INTEGER NOT NULL,
+    anomaly_count INTEGER NOT NULL,
+    rejected_tool_calls INTEGER NOT NULL,
+    anchor_rejections INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    total_tokens INTEGER,
+    cost_usd REAL
   )`);
-  old.prepare(
+  const oldRun = old.prepare(
     `INSERT INTO review_run
-       (owner, repo, pull_number, head_sha, started_at, changed_files, changed_lines, batch_count)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run("acme", "widgets", 7, "old-sha", "2026-08-01T00:00:00.000Z", 1, 2, 1);
+       (owner, repo, pull_number, head_sha, started_at, changed_files, changed_lines, batch_count,
+        total_tokens, cost_usd)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run("acme", "widgets", 7, "old-sha", "2026-08-01T00:00:00.000Z", 1, 2, 1, 10, 0);
+  old.prepare(
+    `INSERT INTO reviewer_outcome
+       (run_id, model, finding_count, anomaly_count, rejected_tool_calls, duration_ms,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, cost_usd)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(Number(oldRun.lastInsertRowid), "legacy-free", 0, 0, 0, 1, 8, 2, 0, 0, 10, 0);
+  old.exec("PRAGMA user_version = 1");
   old.close();
 
   const store = openStore(db.path);
   assert.equal(store.listRuns({ limit: 10 })[0]!.triggeredBy, null);
+  assert.deepEqual(store.listRuns({ limit: 10 })[0]!.usage, {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 10,
+    costUsd: 0,
+    knownCostUsd: 0,
+    costSource: "legacy",
+    costIncomplete: false,
+    unknownCostReviewers: 0,
+  });
+  assert.deepEqual(store.listRuns({ limit: 10 })[0]!.models[0]!.usage, {
+    inputTokens: 8,
+    outputTokens: 2,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 10,
+    costUsd: 0,
+    knownCostUsd: 0,
+    costSource: "legacy",
+    costIncomplete: false,
+    unknownCostReviewers: 0,
+  });
   store.startRun({
     owner: "acme",
     repo: "widgets",
@@ -400,6 +450,7 @@ test("升级前的 review_run 补 triggered_by,历史行按投递读", () => {
     changedLines: 2,
     batchCount: 1,
     triggeredBy: "operator",
+    reviewerPins: [],
   });
   assert.equal(store.listRuns({ limit: 10 })[0]!.triggeredBy, "operator");
   store.close();
@@ -415,7 +466,10 @@ test("用量与耗时落库,Review Run 一级是各 Reviewer 之和", async () =
     cacheWriteTokens: 100,
     totalTokens: 2500,
     costUsd: 0.0042,
+    knownCostUsd: 0.0042,
+    costSource: "trusted",
   };
+  const freeUsage: ReviewerUsage = { ...usage, costUsd: 0, knownCostUsd: 0 };
   const slow: Reviewer = {
     model: "slow-model",
     review: async () => {
@@ -433,21 +487,25 @@ test("用量与耗时落库,Review Run 一级是各 Reviewer 之和", async () =
 
   await runReview(EVENT, {
     forge: forge.forge,
-    reviewers: [scriptedReviewer("model-a", [FINDING], { usage }), slow],
+    reviewers: [scriptedReviewer("model-a", [FINDING], { usage: freeUsage }), slow],
     cacheDir: cache.dir,
     dbPath: db.path,
   });
 
   const outcomes = query(db.path, "SELECT * FROM reviewer_outcome ORDER BY model");
   assert.equal(outcomes[0]!["total_tokens"], 2500);
-  assert.equal(outcomes[0]!["cost_usd"], 0.0042);
+  assert.equal(outcomes[0]!["cost_usd"], 0);
+  assert.equal(outcomes[0]!["cost_source"], "trusted");
   const slowRow = outcomes.find((r) => r["model"] === "slow-model")!;
   assert.ok((slowRow["duration_ms"] as number) >= 30, "Reviewer 的耗时没有被记录");
 
   const run = query(db.path, "SELECT * FROM review_run")[0]!;
   assert.equal(run["input_tokens"], 2400);
   assert.equal(run["total_tokens"], 5000);
-  assert.equal(run["cost_usd"], 0.0084);
+  assert.equal(run["cost_usd"], 0.0042);
+  assert.equal(run["known_cost_usd"], 0.0042);
+  assert.equal(run["cost_source"], "trusted");
+  assert.equal(run["unknown_cost_reviewer_count"], 0);
   assert.ok((run["duration_ms"] as number) >= 30);
 });
 
@@ -472,292 +530,9 @@ test("同一数据库上的第二次 Review Run 追加一行,不覆盖上一次"
   assert.notEqual(runs[0]!["head_sha"], runs[1]!["head_sha"]);
   assert.equal(query(db.path, "SELECT * FROM finding").length, 2);
 });
-
-/**
- * 手填的模型行(issue #87)。库是这些行唯一的真相源,派生的 `models.json` 从它整份重建,
- * 因此这张表的读写与唯一约束是整条链路的地基。
- */
-test("手填的模型行按 provider 与 model id 唯一,同键二次写入是覆盖", () => {
-  const db = makeDbPath();
-  cleanups.push(db.cleanup);
-  const store = openStore(db.path);
-
-  store.putModelRow({
-    provider: "openrouter",
-    model: "z-ai/glm-5.2",
-    costInput: 1,
-    costOutput: 2,
-    contextWindow: 200_000,
-    createdAt: "2026-08-18T00:00:00.000Z",
-  });
-  // 同一个模型标识写第二次:改的是单价与上下文窗口,不是新增一行。
-  store.putModelRow({
-    provider: "openrouter",
-    model: "z-ai/glm-5.2",
-    costInput: 3,
-    costOutput: null,
-    contextWindow: null,
-    createdAt: "2026-08-19T00:00:00.000Z",
-  });
-  const rows = store.listModelRows();
-  store.close();
-
-  assert.deepEqual(rows, [
-    {
-      provider: "openrouter",
-      model: "z-ai/glm-5.2",
-      costInput: 3,
-      costOutput: null,
-      contextWindow: null,
-      // 创建时间记的是这一行什么时候被填出来,覆盖不动它。
-      createdAt: "2026-08-18T00:00:00.000Z",
-    },
-  ]);
-  // 唯一约束在表上,不是读取时去重出来的。
-  assert.equal(query(db.path, "SELECT * FROM model_row").length, 1);
-});
-
-/**
- * 唯一约束的键是模型标识的两段而不是裸 model id:同一个 model id 在两家 provider 下是两个
- * 模型标识(`CONTEXT.md` 的模型标识词条),可以共存,删一个不动另一个。
- */
-test("同一个 model id 在两家 provider 下各占一行,删一行不动另一行", () => {
-  const db = makeDbPath();
-  cleanups.push(db.cleanup);
-  const store = openStore(db.path);
-
-  const row = { costInput: null, costOutput: null, contextWindow: null, createdAt: "2026-08-18T00:00:00.000Z" };
-  store.putModelRow({ provider: "openrouter", model: "glm-5.2", ...row });
-  store.putModelRow({ provider: "deepseek", model: "glm-5.2", ...row });
-  store.putModelRow({ provider: "deepseek", model: "deepseek-v4", ...row });
-
-  // 按模型标识排序:面板一览与派生文件都按这个顺序,同一家的行挨在一起。
-  assert.deepEqual(
-    store.listModelRows().map((entry) => `${entry.provider}:${entry.model}`),
-    ["deepseek:deepseek-v4", "deepseek:glm-5.2", "openrouter:glm-5.2"],
-  );
-
-  store.removeModelRow("deepseek", "glm-5.2");
-  assert.deepEqual(
-    store.listModelRows().map((entry) => `${entry.provider}:${entry.model}`),
-    ["deepseek:deepseek-v4", "openrouter:glm-5.2"],
-  );
-  // 不存在的行删了也不抛——目标状态已达成。
-  store.removeModelRow("deepseek", "glm-5.2");
-  assert.equal(store.listModelRows().length, 2);
-  store.close();
-});
-
-/**
- * 自定义 provider 的定义(issue #88)。名字是主键:它与 Pi 内置的那些家共用同一命名空间
- * (`CONTEXT.md` 的自定义 provider 词条),一个名字对应一个 base URL 与一把模型凭据。
- *
- * 同名二次写入直接抛,不像模型行那样是覆盖:改一家已有的 base URL 与「加一家新的」是两件
- * 事,而端点在撞名时就已经拒收了(库这一层照实反映那条约束)。
- */
-test("自定义 provider 按名字唯一,同名二次写入抛", () => {
-  const db = makeDbPath();
-  cleanups.push(db.cleanup);
-  const store = openStore(db.path);
-
-  store.putCustomProvider({
-    name: "corp-gateway",
-    baseUrl: "https://ai.corp.example/v1",
-    api: "openai-completions",
-    createdAt: "2026-08-18T00:00:00.000Z",
-  });
-  store.putCustomProvider({
-    name: "local-vllm",
-    baseUrl: "http://127.0.0.1:8000/v1",
-    api: "openai-responses",
-    createdAt: "2026-08-18T01:00:00.000Z",
-  });
-
-  // 按名字排序:面板一览与派生文件都按这个顺序。
-  assert.deepEqual(store.listCustomProviders(), [
-    {
-      name: "corp-gateway",
-      baseUrl: "https://ai.corp.example/v1",
-      api: "openai-completions",
-      createdAt: "2026-08-18T00:00:00.000Z",
-    },
-    {
-      name: "local-vllm",
-      baseUrl: "http://127.0.0.1:8000/v1",
-      api: "openai-responses",
-      createdAt: "2026-08-18T01:00:00.000Z",
-    },
-  ]);
-
-  assert.throws(() =>
-    store.putCustomProvider({
-      name: "corp-gateway",
-      baseUrl: "https://elsewhere.example/v1",
-      api: "openai-completions",
-      createdAt: "2026-08-19T00:00:00.000Z",
-    }),
-  );
-  // 抛掉的那一次一个字都没写进去。
-  assert.equal(store.listCustomProviders()[0]!.baseUrl, "https://ai.corp.example/v1");
-  assert.equal(query(db.path, "SELECT * FROM custom_provider").length, 2);
-  store.close();
-});
-
-/**
- * 摘掉一家自定义 provider 就是摘掉这一家整个:它的模型行与它那把凭据都归这个名字,留着
- * 会让派生文件里出现一家没有 `api` 也没有 `baseUrl` 的 provider(Pi 把这一家整个丢掉),
- * 凭据页上则列着一家目录里根本没有的厂商。别家的行一个都不动。
- */
-test("摘掉一家自定义 provider 连它的模型行与凭据一起摘掉,别家不动", () => {
-  const db = makeDbPath();
-  cleanups.push(db.cleanup);
-  const store = openStore(db.path);
-  const at = "2026-08-18T00:00:00.000Z";
-
-  store.putCustomProvider({
-    name: "corp-gateway",
-    baseUrl: "https://ai.corp.example/v1",
-    api: "openai-completions",
-    createdAt: at,
-  });
-  const blank = { costInput: null, costOutput: null, contextWindow: null, createdAt: at };
-  store.putModelRow({ provider: "corp-gateway", model: "qwen3-max", ...blank });
-  store.putModelRow({ provider: "corp-gateway", model: "glm-5.2", ...blank });
-  store.putModelRow({ provider: "openrouter", model: "glm-5.2", ...blank });
-  store.putModelCredential("corp-gateway", "cipher-corp", at, false);
-  store.putModelCredential("openrouter", "cipher-openrouter", at, true);
-
-  store.removeCustomProvider("corp-gateway");
-
-  assert.deepEqual(store.listCustomProviders(), []);
-  assert.deepEqual(
-    store.listModelRows().map((row) => `${row.provider}:${row.model}`),
-    ["openrouter:glm-5.2"],
-  );
-  assert.deepEqual(
-    store.listModelCredentials().map((row) => row.provider),
-    ["openrouter"],
-  );
-  // 不存在的那一家删了也不抛——目标状态已达成。
-  store.removeCustomProvider("corp-gateway");
-  store.close();
-});
-
-/**
- * 级联删除以「`custom_provider` 里真有这一条登记」为前提。名字与 Pi 内置那三十九家共用同一
- * 命名空间(`CONTEXT.md` 的自定义 provider 词条),而 `model_row` 与 `model_credential` 两张
- * 表都以 provider 名为键:不先确认登记就按名字级联,删一个从来没登记过的名字(比如
- * `DELETE <前缀>/api/custom-providers/openai`)会把内置同名那一家的模型凭据与它名下的手填
- * 模型行一起永久删掉。凭据只写不回显,删了只能重新去厂商后台取一把。
- *
- * 没有这条登记时什么都不做,并且不抛——与 `removeModelCredential` / `removeRepoKey` 同一档:
- * 目标状态已达成。
- */
-test("删一个没登记过的名字:同名内置 provider 的凭据与模型行一条不少", () => {
-  const db = makeDbPath();
-  cleanups.push(db.cleanup);
-  const store = openStore(db.path);
-  const at = "2026-08-19T00:00:00.000Z";
-  const blank = { costInput: null, costOutput: null, contextWindow: null, createdAt: at };
-
-  // 内置的那一家:一把粘过的模型凭据,加一行手填的模型行。它从来没被登记成自定义 provider。
-  store.putModelCredential("openai", "cipher-openai", at, true);
-  store.putModelRow({ provider: "openai", model: "gpt-5-mini", ...blank });
-  assert.deepEqual(store.listCustomProviders(), []);
-
-  store.removeCustomProvider("openai");
-
-  assert.deepEqual(
-    store.listModelRows().map((row) => `${row.provider}:${row.model}`),
-    ["openai:gpt-5-mini"],
-    "内置那一家的手填模型行被级联删掉了",
-  );
-  assert.deepEqual(
-    store.listModelCredentials().map((row) => ({
-      provider: row.provider,
-      apiKeyEncrypted: row.apiKeyEncrypted,
-    })),
-    [{ provider: "openai", apiKeyEncrypted: "cipher-openai" }],
-    "内置那一家的模型凭据被级联删掉了",
-  );
-  store.close();
-});
-
-/**
- * 登记一家自定义 provider 是一个事务:定义、它的第一个模型行、那把凭据要么一起在、要么一起
- * 没有。分三句自动提交时,中途报错、进程退出或者盘满会留下一份半成品(定义在了、凭据没存上),
- * 而客户端重试会撞上「名字已被占用」被拒,补不齐——与 `registerRepo` 消除「有仓库无 Key」是
- * 同一个道理。
- *
- * 名字的唯一约束排在三句的最后一句,这里因此测得到:撞名那一刻前两张表已经写过了,回滚要把
- * 它们一起撤掉,尤其是那把凭据不能被后来这一次的密文换掉。
- */
-test("登记一家自定义 provider 是一个事务:撞名那一次三张表一行都没多", () => {
-  const db = makeDbPath();
-  cleanups.push(db.cleanup);
-  const store = openStore(db.path);
-  const first = {
-    name: "corp-gateway",
-    baseUrl: "https://ai.corp.example/v1",
-    api: "openai-completions",
-    model: "corp-qwen3-max",
-    apiKeyEncrypted: "cipher-first",
-    verified: false,
-    createdAt: "2026-08-19T00:00:00.000Z",
-  };
-  store.registerCustomProvider(first);
-
-  assert.deepEqual(store.listCustomProviders(), [
-    {
-      name: first.name,
-      baseUrl: first.baseUrl,
-      api: first.api,
-      createdAt: first.createdAt,
-    },
-  ]);
-  assert.deepEqual(
-    store.listModelRows().map((row) => `${row.provider}:${row.model}`),
-    ["corp-gateway:corp-qwen3-max"],
-  );
-  assert.deepEqual(
-    store.listModelCredentials().map((row) => row.apiKeyEncrypted),
-    ["cipher-first"],
-  );
-
-  assert.throws(() =>
-    store.registerCustomProvider({
-      ...first,
-      baseUrl: "https://elsewhere.example/v1",
-      model: "corp-glm-5",
-      apiKeyEncrypted: "cipher-second",
-      createdAt: "2026-08-19T01:00:00.000Z",
-    }),
-  );
-
-  // 抛掉的那一次三张表一个字都没留下。
-  assert.deepEqual(
-    store.listModelRows().map((row) => `${row.provider}:${row.model}`),
-    ["corp-gateway:corp-qwen3-max"],
-    "撞名那一次的模型行留在库里了",
-  );
-  assert.deepEqual(
-    store.listModelCredentials().map((row) => row.apiKeyEncrypted),
-    ["cipher-first"],
-    "撞名那一次把已有的那把凭据换掉了",
-  );
-  assert.deepEqual(
-    store.listCustomProviders().map((entry) => entry.baseUrl),
-    [first.baseUrl],
-  );
-  assert.equal(query(db.path, "SELECT * FROM model_row").length, 1);
-  assert.equal(query(db.path, "SELECT * FROM model_credential").length, 1);
-  store.close();
-});
-
-// issue #95:Pi 内置表给 `openrouter/auto` 这类路由模型的费率是 -1000000(OpenRouter 报的
-// 单价是 "-1",意思是随路由到的那个模型浮动),折算出来的这一轮成本因此是负数。库是这个数变成
-// 面板上那句「花了多少」的地方,负成本在任何口径下都不是事实。
-test("负成本按零落库,同一轮里别的模型那份照实记", async () => {
+// Pi 可能因路由价格或不可信目录回报负数；产品不能把它记成 0。未知价格同理，二者都应
+// 保存为未知，同时保留其他 Reviewer 的已知金额小计。
+test("未知价格与负成本保持未知,同一轮的已知金额只作小计", async () => {
   const { cache, db, forge } = setup();
 
   const negative: ReviewerUsage = {
@@ -767,29 +542,55 @@ test("负成本按零落库,同一轮里别的模型那份照实记", async () =
     cacheWriteTokens: 0,
     totalTokens: 160,
     costUsd: -0.9,
+    knownCostUsd: -0.9,
+    costSource: "trusted",
   };
-  const priced: ReviewerUsage = { ...negative, costUsd: 0.25 };
+  const priced: ReviewerUsage = {
+    ...negative,
+    costUsd: 0.25,
+    knownCostUsd: 0.25,
+  };
+  const unknown: ReviewerUsage = {
+    ...negative,
+    costUsd: null,
+    knownCostUsd: 0,
+    costSource: "unknown",
+  };
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [
       scriptedReviewer("openrouter:openrouter/auto", [FINDING], { usage: negative }),
       scriptedReviewer("deepseek:deepseek-v4-flash", [FINDING], { usage: priced }),
+      scriptedReviewer("unknown-price", [FINDING], { usage: unknown }),
     ],
     cacheDir: cache.dir,
     dbPath: db.path,
   });
 
   assert.deepEqual(
-    query(db.path, "SELECT model, cost_usd FROM reviewer_outcome ORDER BY model").map((row) => [
-      row["model"],
-      row["cost_usd"],
-    ]),
+    query(db.path, "SELECT model, cost_usd, cost_source FROM reviewer_outcome ORDER BY model").map(
+      (row) => [row["model"], row["cost_usd"], row["cost_source"]],
+    ),
     [
-      ["deepseek:deepseek-v4-flash", 0.25],
-      ["openrouter:openrouter/auto", 0],
+      ["deepseek:deepseek-v4-flash", 0.25, "trusted"],
+      ["openrouter:openrouter/auto", null, "unknown"],
+      ["unknown-price", null, "unknown"],
     ],
   );
-  // 整轮的合计对负那一份也按零算:先加再截会把正的那一份一起吃掉。
-  assert.equal(query(db.path, "SELECT cost_usd FROM review_run")[0]!["cost_usd"], 0.25);
+  // 负数不是费用，不能再写成可信 0；整轮保留已知小计并由未知占优。
+  const run = query(db.path, "SELECT * FROM review_run")[0]!;
+  assert.equal(run["cost_usd"], null);
+  assert.equal(run["known_cost_usd"], 0.25);
+  assert.equal(run["cost_source"], "unknown");
+  assert.equal(run["unknown_cost_reviewer_count"], 2);
+
+  // 后续开库只读持久化事实，不会拿新的目录价格回算这一轮。
+  const reopened = openStore(db.path);
+  const persisted = reopened.listRuns({ limit: 1 })[0]!.usage!;
+  assert.equal(persisted.costUsd, null);
+  assert.equal(persisted.knownCostUsd, 0.25);
+  assert.equal(persisted.costSource, "unknown");
+  assert.equal(persisted.unknownCostReviewers, 2);
+  reopened.close();
 });

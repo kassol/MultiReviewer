@@ -22,10 +22,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ModelComposer } from "@/components/model-composer";
+import {
+  ModelComposer,
+  type ModelComposerValidity,
+} from "@/components/model-composer";
 
 import { api, errorText, fetchJson } from "./api.ts";
-import { modelIdentity, parseModelIdentity } from "./model-catalog.ts";
+import { modelIdentity, parseModelIdentity } from "./model-services.ts";
 import { rerunRequest, RunPill, type RunItem } from "./runs.tsx";
 
 type ReviewerSpec = { provider: string; model: string };
@@ -592,17 +595,8 @@ function RegisterModal({
 }
 
 /**
- * 自定义态的编辑区(issue #69,面板换成两栏那一版是 issue #91)。还在跟随全局时以当前全局
- * 组合为初值——人从一个已知跑得起来的组合上改,而不是从空列表开始拼。面板是与全局设置页
- * 同一个 `ModelComposer`,两处操作方式一致,没有第二份实现。
- *
- * 它是详情页里的一段编辑态,不是对话框。两条判据:面板固定 460px 高,而 `ui/dialog.tsx` 的
- * 对话框只给宽度档位、没有最大高度与滚动,矮屏上底部的手填框与保存按钮会落到视口外面点不
- * 到;面板里「+ 加一家 provider」本身就是一个对话框,套进来就是对话框叠对话框。放在详情列
- * 里两栏直接吃这一列既有的宽度,不必新造一个只此一处用的宽度档位。
- *
- * 面板外面不套 `<form>`:它自己带着手填模型行那张表单(全局设置页同一条),嵌套的 form 会
- * 让填一个 model id 顺手把覆盖一起提交了。这里除了保存与取消再没有别的字段,不需要表单。
+ * 自定义态从当前生效组合起步，并复用全局设置的同一个 `ModelComposer`。已落库但失效的
+ * 标识原样留在编辑态里，移除不受阻；只有再次保存仍含不可用项时才门禁。
  */
 function ReviewersEditor({
   repo,
@@ -620,6 +614,10 @@ function ReviewersEditor({
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [validity, setValidity] = useState<ModelComposerValidity>({
+    ready: false,
+    unavailable: [],
+  });
 
   async function save(): Promise<void> {
     setBusy(true);
@@ -652,10 +650,25 @@ function ReviewersEditor({
           本仓库覆盖:全量替换全局默认,至少选一个。保存后下一次投递按它跑,点「取消」回到上一屏、什么都不改。
         </p>
       </div>
-      <ModelComposer value={models} onChange={setModels} />
+      <ModelComposer
+        value={models}
+        onChange={(next) => {
+          setModels(next);
+          setError(null);
+        }}
+        onValidityChange={setValidity}
+      />
       {error === null ? null : <p className="text-destructive">{error}</p>}
-      <div className="flex items-center gap-3">
-        <Button disabled={busy || models.length === 0} onClick={() => void save()}>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button
+          disabled={
+            busy ||
+            models.length === 0 ||
+            !validity.ready ||
+            validity.unavailable.length > 0
+          }
+          onClick={() => void save()}
+        >
           {busy ? "保存中…" : "保存"}
         </Button>
         <Button variant="outline" onClick={onClose}>
@@ -663,8 +676,12 @@ function ReviewersEditor({
         </Button>
         {models.length === 0 ? (
           <span className="text-muted-foreground">
-            一个都没选存不了。要回到跟随全局,点「取消」再点「跟随全局」。
+            一个都没选存不了。要回到跟随全局，点「取消」再点「跟随全局」。
           </span>
+        ) : validity.unavailable.length > 0 ? (
+          <span className="text-destructive">先恢复或移除不可用模型，再保存覆盖。</span>
+        ) : !validity.ready ? (
+          <span className="text-muted-foreground">候选状态确认后可以保存覆盖。</span>
         ) : null}
       </div>
     </div>

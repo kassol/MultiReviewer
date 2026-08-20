@@ -12,7 +12,11 @@ import { after, test } from "node:test";
 import { buildReviewers } from "../src/config.ts";
 import { DEFAULT_MAX_CHANGED_LINES_PER_BATCH } from "../src/review/batch.ts";
 import { openStore } from "../src/review/store.ts";
-import { HARNESS_PR, startPanelHarness } from "./support/panel-harness.ts";
+import {
+  HARNESS_PR,
+  seedAvailableModelService,
+  startPanelHarness,
+} from "./support/panel-harness.ts";
 
 const cleanups: (() => void)[] = [];
 after(() => {
@@ -21,10 +25,12 @@ after(() => {
 
 test("PUT 后 GET 拿回同一形状", async () => {
   const h = await startPanelHarness(cleanups);
+  seedAvailableModelService(h, "corp-deepseek", ["deepseek-v4-flash"]);
+  seedAvailableModelService(h, "corp-router", ["z-ai/glm-4.6"]);
   const body = {
     reviewers: [
-      { provider: "deepseek", model: "deepseek-v4-flash" },
-      { provider: "openrouter", model: "z-ai/glm-4.6" },
+      { provider: "corp-deepseek", model: "deepseek-v4-flash" },
+      { provider: "corp-router", model: "z-ai/glm-4.6" },
     ],
     maxChangedLinesPerBatch: 800,
   };
@@ -35,8 +41,138 @@ test("PUT 后 GET 拿回同一形状", async () => {
   assert.deepEqual(await (await h.api("GET", "/settings")).json(), body);
 });
 
-test("批次上限缺省时回默认值,显式清空回到默认值", async () => {
+test("全局组合按模型服务候选校验，失效项可移除且批次上限独立保存", async () => {
+  const selected = [
+    { provider: "healthy-service", model: "keep" },
+    { provider: "recovering-service", model: "saved" },
+    { provider: "vanished-service", model: "missing" },
+  ];
+  const h = await startPanelHarness(cleanups, { reviewers: selected });
+  seedAvailableModelService(h, "healthy-service", ["keep"]);
+  seedAvailableModelService(h, "recovering-service", ["saved"]);
+
+  const setRecoveringCredential = (state: "verified" | "pending-reverification"): void => {
+    const sqlite = new DatabaseSync(h.db.path);
+    try {
+      if (state === "pending-reverification") {
+        sqlite.prepare(
+          `UPDATE model_service_credential
+              SET state = 'pending-reverification', verified_at = NULL,
+                  validation_model = NULL, verification_source = NULL
+            WHERE provider = ?`,
+        ).run("recovering-service");
+      } else {
+        sqlite.prepare(
+          `UPDATE model_service_credential
+              SET state = 'verified', verified_at = ?, validation_model = ?,
+                  verification_source = 'inference'
+            WHERE provider = ?`,
+        ).run(
+          "2026-08-20T00:01:00.000Z",
+          "recovering-service:saved",
+          "recovering-service",
+        );
+      }
+    } finally {
+      sqlite.close();
+    }
+  };
+  const serviceState = () => {
+    const store = openStore(h.db.path);
+    try {
+      return {
+        services: store.listModelServices(),
+        supplements: store.listModelSupplements(),
+      };
+    } finally {
+      store.close();
+    }
+  };
+
+  setRecoveringCredential("pending-reverification");
+  const projectionResponse = await h.api("GET", "/model-services");
+  assert.equal(projectionResponse.status, 200);
+  const projection = (await projectionResponse.json()) as {
+    candidates: {
+      identity: string;
+      available: boolean;
+      unavailableReasonText: string | null;
+    }[];
+  };
+  assert.deepEqual(
+    projection.candidates
+      .filter((model) => selected.some((spec) => `${spec.provider}:${spec.model}` === model.identity))
+      .map((model) => ({
+        identity: model.identity,
+        available: model.available,
+        unavailableReasonText: model.unavailableReasonText,
+      })),
+    [
+      { identity: "healthy-service:keep", available: true, unavailableReasonText: null },
+      {
+        identity: "recovering-service:saved",
+        available: false,
+        unavailableReasonText: "模型凭据不可用",
+      },
+      {
+        identity: "vanished-service:missing",
+        available: false,
+        unavailableReasonText: "模型来源消失",
+      },
+    ],
+  );
+
+  const beforeBlockedWrites = serviceState();
+  const blocked = await h.api("PUT", "/settings", { reviewers: selected });
+  assert.equal(blocked.status, 400);
+  assert.match((await blocked.text()), /模型凭据不可用.*模型来源消失/);
+
+  const limitOnly = await h.api("PUT", "/settings", { maxChangedLinesPerBatch: 733 });
+  assert.equal(limitOnly.status, 200);
+  assert.deepEqual(await limitOnly.json(), {
+    reviewers: selected,
+    maxChangedLinesPerBatch: 733,
+  });
+  assert.deepEqual(serviceState(), beforeBlockedWrites, "组合与批次写入不应改服务或模型来源");
+
+  setRecoveringCredential("verified");
+  const recoveredResponse = await h.api("GET", "/model-services");
+  const recoveredBody = (await recoveredResponse.json()) as {
+    candidates: { identity: string; available: boolean }[];
+  };
+  assert.equal(
+    recoveredBody.candidates.find((model) => model.identity === "recovering-service:saved")?.available,
+    true,
+  );
+  const recoveredSettings = (await (await h.api("GET", "/settings")).json()) as {
+    reviewers: unknown;
+  };
+  assert.deepEqual(recoveredSettings.reviewers, selected);
+
+  const beforeMissingRemoval = serviceState();
+  const withoutMissing = selected.slice(0, 2);
+  const removedMissing = await h.api("PUT", "/settings", { reviewers: withoutMissing });
+  assert.equal(removedMissing.status, 200);
+  assert.deepEqual(await removedMissing.json(), {
+    reviewers: withoutMissing,
+    maxChangedLinesPerBatch: 733,
+  });
+  assert.deepEqual(serviceState(), beforeMissingRemoval);
+
+  setRecoveringCredential("pending-reverification");
+  const beforeUnavailableRemoval = serviceState();
+  const removedUnavailable = await h.api("PUT", "/settings", { reviewers: [selected[0]!] });
+  assert.equal(removedUnavailable.status, 200);
+  assert.deepEqual(await removedUnavailable.json(), {
+    reviewers: [selected[0]],
+    maxChangedLinesPerBatch: 733,
+  });
+  assert.deepEqual(serviceState(), beforeUnavailableRemoval);
+});
+
+test("批次上限省略时保留原值，显式 null 才回默认值", async () => {
   const h = await startPanelHarness(cleanups, { reviewers: [] });
+  seedAvailableModelService(h, "test", ["global-model"]);
   assert.deepEqual(await (await h.api("GET", "/settings")).json(), {
     reviewers: [],
     maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
@@ -44,7 +180,12 @@ test("批次上限缺省时回默认值,显式清空回到默认值", async () =
 
   const reviewers = [{ provider: "test", model: "global-model" }];
   await h.api("PUT", "/settings", { reviewers, maxChangedLinesPerBatch: 800 });
-  const cleared = await h.api("PUT", "/settings", { reviewers });
+  const combinationOnly = await h.api("PUT", "/settings", { reviewers });
+  assert.deepEqual(await combinationOnly.json(), {
+    reviewers,
+    maxChangedLinesPerBatch: 800,
+  });
+  const cleared = await h.api("PUT", "/settings", { maxChangedLinesPerBatch: null });
   assert.deepEqual(await cleared.json(), {
     reviewers,
     maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
@@ -78,10 +219,8 @@ test("非法的 reviewers 被既有校验拒绝,报错标注来源是全局这�
 
 test("批次上限不是正整数时拒绝", async () => {
   const h = await startPanelHarness(cleanups);
-  const reviewers = [{ provider: "test", model: "global-model" }];
   for (const limit of [0, -1, 1.5, "800"]) {
     const response = await h.api("PUT", "/settings", {
-      reviewers,
       maxChangedLinesPerBatch: limit,
     });
     assert.equal(response.status, 400, `${String(limit)} 应被拒绝`);
@@ -93,8 +232,7 @@ test("批次上限不是正整数时拒绝", async () => {
 });
 
 test("全局组合允许清空,每仓库覆盖仍必须至少一个", async () => {
-  // 空的全局组合是受支持的状态(issue #66):投递照常受理,留下一条写明「还没配模型
-  // 组合」的失败 Run。拒收它会把「只想先调批次上限」也一起连坐掉——这个端点整表写入。
+  // 空的全局组合是受支持的状态(issue #66)；模型组合与批次上限也可以独立写入。
   const h = await startPanelHarness(cleanups);
   const empty = await h.api("PUT", "/settings", {
     reviewers: [],
@@ -121,6 +259,7 @@ test("全局组合允许清空,每仓库覆盖仍必须至少一个", async () =
 
 test("改过的全局组合下一次投递就生效", async () => {
   const h = await startPanelHarness(cleanups);
+  seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
@@ -186,17 +325,35 @@ test("组合里有撞名的自定义 provider 时,那一个模型的失败原因
     reviewers: [collided, fine],
     buildReviewers,
   });
-  // 两家都登记在库里,只有名字撞上内置那一家的才该被停用。凭据一把都不配:撞名那一档必须
-  // 压过缺凭据那一档。
+  // 只为撞名那一家提交模型服务；另一家完全缺服务，作为独立失败原因的对照。
   const seed = openStore(h.db.path);
-  for (const name of [collided.provider, fine.provider]) {
-    seed.putCustomProvider({
-      name,
-      baseUrl: "https://ai.corp.example/v1",
-      api: "openai-completions",
-      createdAt: new Date(0).toISOString(),
-    });
-  }
+  assert.equal(seed.commitModelServiceVersion(null, {
+    provider: collided.provider,
+    type: "custom",
+    baseUrl: "https://collided.example/v1",
+    api: "openai-completions",
+    targetFingerprint: "versioned-collision-target",
+    disabledReason: null,
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+    credential: {
+      state: "unconfigured",
+      apiKeyEncrypted: null,
+      updatedAt: null,
+      verifiedAt: null,
+      validationModel: null,
+      verificationSource: null,
+    },
+    directory: {
+      state: "undiscovered",
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      failure: null,
+      ignoredModelCount: 0,
+    },
+    automaticModels: [],
+    supplements: [],
+  }), 1);
   seed.close();
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
@@ -213,5 +370,9 @@ test("组合里有撞名的自定义 provider 时,那一个模型的失败原因
   const failure = (model: string): string =>
     models.find((row) => row.model === model)?.failure ?? "";
   assert.match(failure("openrouter:corp-qwen3-max"), /名字/, "撞名那一个没写明是名字冲突");
-  assert.match(failure("corp-gateway:corp-glm-5"), /模型凭据/, "不撞名的那一个被误判成撞名");
+  assert.match(
+    failure("corp-gateway:corp-glm-5"),
+    /模型服务.*不存在/,
+    "不撞名但缺当前模型服务的那一个没有留下独立原因",
+  );
 });

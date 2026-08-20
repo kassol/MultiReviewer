@@ -155,9 +155,9 @@ async function startHarness(options: HarnessOptions = {}) {
   const server = createWebhookServer({
     forges: options.omitGiteaForge ? { github: forge } : { github: forge, gitea: forge },
     // 组装桩:本文件测的是投递链路,不起真的 Pi 子进程,凭据快照也不看。
-    buildReviewers: (specs) =>
+    buildReviewers: (plans) =>
       options.reviewer === undefined
-        ? specs.map((spec) => scriptedReviewer(spec.model, []))
+        ? plans.map((plan) => scriptedReviewer(plan.spec.model, []))
         : [options.reviewer],
     cacheDir: cache.dir,
     dbPath: db.path,

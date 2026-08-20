@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/table";
 
 import { api, fetchJson } from "./api.ts";
+import { costPresentation, type UsageSummary } from "./usage-cost.ts";
 
 export type Cell = {
   model: string;
@@ -34,6 +35,7 @@ type StatsResponse = {
   from: string;
   to: string;
   cells: Cell[];
+  usage: UsageSummary | null;
   database: { fileBytes: number; tables: { name: string; rows: number }[] };
 };
 
@@ -164,6 +166,7 @@ export function StatsPage() {
   const byKey = new Map(cells.map((cell) => [`${cell.model}\n${cell.category}`, cell]));
   const modelTotal = (model: string): { resolved: number; total: number } =>
     sum(cells.filter((cell) => cell.model === model));
+  const usageCost = costPresentation(stats.data?.usage);
 
   return (
     <>
@@ -200,6 +203,27 @@ export function StatsPage() {
         {stats.isError ? (
           <p className="text-destructive">{(stats.error as Error).message}</p>
         ) : null}
+        {stats.data === undefined ? null : (
+          <Card className="flex-row items-center justify-between gap-4 px-4">
+            <div className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">时间窗费用</span>
+              <b className="font-mono text-xl font-semibold tabular-nums">
+                {usageCost.amount}
+              </b>
+              {usageCost.note === null ? null : (
+                <span className="text-xs text-warning">{usageCost.note}</span>
+              )}
+            </div>
+            <div className="text-right">
+              <div className="font-mono text-lg font-semibold tabular-nums">
+                {stats.data.usage === null
+                  ? "—"
+                  : stats.data.usage.totalTokens.toLocaleString("zh-CN")}
+              </div>
+              <span className="text-xs text-muted-foreground">tokens</span>
+            </div>
+          </Card>
+        )}
 
         <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3">
           {stats.isPending

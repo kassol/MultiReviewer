@@ -11,9 +11,9 @@ import type {
 } from "../review/finding.ts";
 import { modelIdentity } from "../config.ts";
 import { MODEL_API_KEY_ENV, reviewerEnv } from "./env.ts";
-import { CACHE_DIR_ENV, cacheRoot } from "./model-runtime.ts";
 import { normalizeFinding } from "./normalize.ts";
-import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
+import type { ReviewerRequest, WorkerMessage, WorkerUsage } from "./protocol.ts";
+import type { RuntimeModel } from "./model-service-runtime.ts";
 
 const WORKER_PATH = fileURLToPath(new URL("./worker.ts", import.meta.url));
 
@@ -27,10 +27,8 @@ const TIMEOUT_MS = 20 * 60 * 1000;
 const EXIT_GRACE_MS = 5000;
 
 export type PiReviewerConfig = {
-  /** Pi 的 provider 标识,如 `anthropic`、`openrouter`。 */
-  provider: string;
-  /** Pi 的 model 标识。喂给 Pi 的是它,对外的模型标识是 `provider:model`。 */
-  model: string;
+  /** 本轮固定的完整运行模型，不再从共享的当前目录解析。 */
+  runtimeModel: RuntimeModel;
   /** 该 Reviewer 绑定厂商的模型凭据。子进程的环境里只会有这一份。 */
   apiKey: string;
 };
@@ -40,9 +38,32 @@ export type PiReviewerConfig = {
  */
 export function createPiReviewer(config: PiReviewerConfig): Reviewer {
   return {
-    model: modelIdentity(config),
+    model: modelIdentity({ provider: config.runtimeModel.provider, model: config.runtimeModel.id }),
     review: (range, worktreePath) =>
       runInChild(WORKER_PATH, config, range, worktreePath),
+  };
+}
+
+/**
+ * Pi 必须拿到数字单价并始终回一个数字成本；只有本轮固定价格可信且结果可用时，那个数字
+ * 才能越过适配边界成为产品费用。可信免费因此仍是 0，未知价格不会被伪装成免费。
+ */
+function reviewerUsage(
+  raw: WorkerUsage,
+  pinnedCostSource: RuntimeModel["sources"]["cost"],
+): ReviewerUsage {
+  const trusted =
+    pinnedCostSource === "trusted" && Number.isFinite(raw.costUsd) && raw.costUsd >= 0;
+  const costUsd = trusted ? raw.costUsd : null;
+  return {
+    inputTokens: raw.inputTokens,
+    outputTokens: raw.outputTokens,
+    cacheReadTokens: raw.cacheReadTokens,
+    cacheWriteTokens: raw.cacheWriteTokens,
+    totalTokens: raw.totalTokens,
+    costUsd,
+    knownCostUsd: costUsd ?? 0,
+    costSource: trusted ? "trusted" : "unknown",
   };
 }
 
@@ -57,8 +78,11 @@ export function runInChild(
   worktreePath: string,
 ): Promise<ReviewerOutcome> {
   return new Promise((resolve) => {
-    // 对外一律用模型标识;`config.model` 只喂给 Pi。
-    const identity = modelIdentity(config);
+    // 对外一律用完整模型标识；运行字段来自这轮固定的模型服务版本。
+    const identity = modelIdentity({
+      provider: config.runtimeModel.provider,
+      model: config.runtimeModel.id,
+    });
     const findings: Finding[] = [];
     const anomalies: { raw: RawFinding; reason: string }[] = [];
     let rejectedToolCalls = 0;
@@ -76,10 +100,6 @@ export function runInChild(
         cwd: worktreePath,
         env: reviewerEnv(process.env, {
           [MODEL_API_KEY_ENV]: config.apiKey,
-          // 缓存根在父进程里定死成绝对路径再传下去。默认值是相对路径,而子进程的 cwd 是
-          // 工作副本:同一个相对值两侧解析出两个不同的目录,共用的模型目录当场落空
-          // (`model-runtime.ts` 的 `cacheRoot`)。
-          [CACHE_DIR_ENV]: cacheRoot(),
         }),
         // 不继承父进程的 execArgv。worker 是普通脚本,继承会把父进程的运行模式带过来
         // ——在 `node --test` 下跑时,worker 会被当成测试文件启动并挂住不退出。
@@ -133,7 +153,9 @@ export function runInChild(
       }
       rejectedToolCalls = message.rejectedToolCalls;
       anchorRejections = message.anchorRejections;
-      usage = message.usage;
+      usage = message.usage === undefined
+        ? undefined
+        : reviewerUsage(message.usage, config.runtimeModel.sources.cost);
       done = message;
       // 结果已经拿到,不该再为一个赖着不退出的子进程等满超时。
       clearTimeout(timer);
@@ -161,8 +183,7 @@ export function runInChild(
     });
 
     const request: ReviewerRequest = {
-      provider: config.provider,
-      model: config.model,
+      runtimeModel: config.runtimeModel,
       range,
       worktreePath,
     };

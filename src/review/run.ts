@@ -1,3 +1,4 @@
+import type { ReviewRunReviewerPin } from "../config.ts";
 import type {
   ExistingReviewComment,
   Forge,
@@ -29,6 +30,29 @@ import {
 
 export type PullRequestEvent = PullRequestRef;
 
+/**
+ * 一轮 Review Run 在首批开始前固定的运行计划。Reviewer 已各自绑定模型运行参数与自家
+ * provider 的凭据;批次只复用这份列表与同一个分批上限,不再接触可变配置。
+ */
+export type ReviewRunPlan = Readonly<{
+  reviewers: readonly Reviewer[];
+  maxChangedLinesPerBatch: number;
+  reviewerPins: readonly ReviewRunReviewerPin[];
+}>;
+
+/** 从启动时的配置快照生成一次运行计划。复制 Reviewer 列表,使组合的后续改动只影响下一轮。 */
+export function createReviewRunPlan(
+  reviewers: readonly Reviewer[],
+  maxChangedLinesPerBatch: number,
+  reviewerPins: readonly ReviewRunReviewerPin[],
+): ReviewRunPlan {
+  return Object.freeze({
+    reviewers: Object.freeze([...reviewers]),
+    maxChangedLinesPerBatch,
+    reviewerPins: Object.freeze([...reviewerPins]),
+  });
+}
+
 export type ReviewRunDeps = {
   forge: Forge;
   reviewers: readonly Reviewer[];
@@ -38,6 +62,8 @@ export type ReviewRunDeps = {
   dbPath: string;
   /** 一批最多多少改动行。不传取 `DEFAULT_MAX_CHANGED_LINES_PER_BATCH`。 */
   maxChangedLinesPerBatch?: number;
+  /** 本轮固定的非秘密模型服务审计快照。 */
+  reviewerPins?: readonly ReviewRunReviewerPin[];
   /** 手动重跑的调用者用户名快照;自动投递不传。 */
   triggeredBy?: string;
 };
@@ -419,6 +445,7 @@ export async function runReview(
     changedFiles: range.files.length,
     changedLines: [...changedLines.values()].reduce((sum, n) => sum + n, 0),
     batchCount: batches.length,
+    reviewerPins: deps.reviewerPins ?? [],
   });
 
   try {

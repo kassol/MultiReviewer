@@ -12,6 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { SummaryRate } from "./stats.tsx";
+import { costPresentation, type UsageSummary } from "./usage-cost.ts";
 
 export type RunItem = {
   id: number;
@@ -25,7 +26,14 @@ export type RunItem = {
   finishedAt: string | null;
   failed: boolean;
   /** 一行一个参与本轮的模型。`failure` 非 null 即这个模型这轮失败了(节选文本)。 */
-  models: { model: string; findings: number; failure: string | null }[];
+  models: {
+    model: string;
+    findings: number;
+    failure: string | null;
+    usage?: UsageSummary;
+  }[];
+  /** 会话没有产生统计时省略。 */
+  usage?: UsageSummary;
   resolved: number;
   total: number;
 };
@@ -247,6 +255,9 @@ export function RunsPage() {
                     处置
                   </th>
                   <th scope="col" className="px-3 py-2 font-medium">
+                    用量 / 费用
+                  </th>
+                  <th scope="col" className="px-3 py-2 font-medium">
                     时间
                   </th>
                   <th scope="col" className="px-3 py-2 font-medium">
@@ -260,6 +271,7 @@ export function RunsPage() {
                   const showDay = day !== lastDay;
                   lastDay = day;
                   const failedRow = runBucket(run) === "failed";
+                  const cost = costPresentation(run.usage);
                   return (
                     <tr
                       key={run.id}
@@ -328,6 +340,17 @@ export function RunsPage() {
                       </td>
                       <td className="px-3 py-2.5 align-top">
                         <RunPill run={run} />
+                      </td>
+                      <td className="px-3 py-2.5 align-top text-xs">
+                        {run.usage === undefined ? null : (
+                          <div className="font-mono tabular-nums text-muted-foreground">
+                            {run.usage.totalTokens.toLocaleString("zh-CN")} tokens
+                          </div>
+                        )}
+                        <div className="font-mono tabular-nums">{cost.amount}</div>
+                        {cost.note === null ? null : (
+                          <div className="text-warning">{cost.note}</div>
+                        )}
                       </td>
                       <td className="px-3 py-2.5 align-top text-xs text-muted-foreground">
                         <div className="font-mono tabular-nums">{localTime(run.startedAt)}</div>

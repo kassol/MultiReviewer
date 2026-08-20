@@ -5,10 +5,12 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
-import { openStore } from "../src/review/store.ts";
+import { openStore, type RecordedUsage } from "../src/review/store.ts";
+import type { ReviewerUsage } from "../src/review/finding.ts";
 import {
   HARNESS_PR,
   PANEL_ADMIN_USERNAME,
+  seedAvailableModelService,
   startPanelHarness,
 } from "./support/panel-harness.ts";
 
@@ -26,7 +28,13 @@ type RunRow = {
   startedAt: string;
   triggeredBy: string | null;
   failed: boolean;
-  models: { model: string; findings: number; failure: string | null }[];
+  models: {
+    model: string;
+    findings: number;
+    failure: string | null;
+    usage?: RecordedUsage;
+  }[];
+  usage?: RecordedUsage;
   resolved: number;
   total: number;
 };
@@ -41,7 +49,7 @@ function seedRun(
     triggeredBy?: string;
   },
   findings: { model: string; disposition?: string; placement?: string; group?: number }[],
-  outcomes: { model: string; failure?: string }[] = [],
+  outcomes: { model: string; failure?: string; usage?: ReviewerUsage }[] = [],
 ): number {
   const store = openStore(dbPath);
   const runId = store.startRun({
@@ -50,6 +58,7 @@ function seedRun(
     changedFiles: 1,
     changedLines: 1,
     batchCount: 1,
+    reviewerPins: [],
   });
   store.finishRun(runId, {
     finishedAt: meta.startedAt,
@@ -63,6 +72,7 @@ function seedRun(
       rejectedToolCalls: 0,
       anchorRejections: 0,
       durationMs: 1,
+      ...(o.usage === undefined ? {} : { usage: o.usage }),
     })),
     findings: findings.map((f, i) => ({
       model: f.model,
@@ -151,6 +161,79 @@ test("时间流 API:失败的模型照样出现在 JSON 里,带失败原因", as
     { model: "model-b", findings: 0, failure: "403 not available in your region" },
   ]);
   assert.equal(body.runs[0]!.failed, false);
+  assert.equal(Object.hasOwn(body.runs[0]!, "usage"), false);
+  assert.equal(Object.hasOwn(body.runs[0]!.models[0]!, "usage"), false);
+});
+
+test("时间流 API:混合费用返回已知小计、未知状态与未知 Reviewer 数", async () => {
+  const h = await startPanelHarness(cleanups);
+  const known: ReviewerUsage = {
+    inputTokens: 8,
+    outputTokens: 2,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 10,
+    costUsd: 0.1,
+    knownCostUsd: 0.1,
+    costSource: "trusted",
+  };
+  const unknown: ReviewerUsage = {
+    inputTokens: 15,
+    outputTokens: 3,
+    cacheReadTokens: 1,
+    cacheWriteTokens: 1,
+    totalTokens: 20,
+    costUsd: null,
+    knownCostUsd: 0,
+    costSource: "unknown",
+  };
+  seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
+    [],
+    [
+      { model: "model-a", usage: known },
+      { model: "model-b", usage: unknown },
+    ],
+  );
+
+  const body = (await (await h.api("GET", "/runs")).json()) as { runs: RunRow[] };
+  assert.deepEqual(body.runs[0]!.usage, {
+    inputTokens: 23,
+    outputTokens: 5,
+    cacheReadTokens: 1,
+    cacheWriteTokens: 1,
+    totalTokens: 30,
+    costUsd: null,
+    knownCostUsd: 0.1,
+    costSource: "unknown",
+    costIncomplete: true,
+    unknownCostReviewers: 1,
+  });
+  assert.deepEqual(body.runs[0]!.models[0]!.usage, {
+    inputTokens: 8,
+    outputTokens: 2,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 10,
+    costUsd: 0.1,
+    knownCostUsd: 0.1,
+    costSource: "trusted",
+    costIncomplete: false,
+    unknownCostReviewers: 0,
+  });
+  assert.deepEqual(body.runs[0]!.models[1]!.usage, {
+    inputTokens: 15,
+    outputTokens: 3,
+    cacheReadTokens: 1,
+    cacheWriteTokens: 1,
+    totalTokens: 20,
+    costUsd: null,
+    knownCostUsd: 0,
+    costSource: "unknown",
+    costIncomplete: true,
+    unknownCostReviewers: 1,
+  });
 });
 
 test("时间流 API:满页给 nextBefore 游标,翻页不重不漏;owner/repo 过滤", async () => {
@@ -290,13 +373,14 @@ test("重跑:PR 号读不到 404,不开跑", async () => {
 
 test("重跑:模型覆盖生效,经 buildReviewers 构建", async () => {
   const h = await startPanelHarness(cleanups);
+  seedAvailableModelService(h, "rerun-provider", ["override-model"]);
   assert.equal(
     (
       await h.api("POST", "/repos", {
         owner: HARNESS_PR.owner,
         repo: HARNESS_PR.repo,
         reviewers: [
-          { provider: "openai", model: "override-model" },
+          { provider: "rerun-provider", model: "override-model" },
         ],
       })
     ).status,
@@ -311,5 +395,7 @@ test("重跑:模型覆盖生效,经 buildReviewers 构建", async () => {
   });
   assert.equal(rerun.status, 202);
   await h.settledAtLeast(1);
-  assert.deepEqual(h.factoryCalls.at(-1), [{ provider: "openai", model: "override-model" }]);
+  assert.deepEqual(h.factoryCalls.at(-1), [
+    { provider: "rerun-provider", model: "override-model" },
+  ]);
 });

@@ -1,20 +1,15 @@
-/**
- * Pi 内置的模型目录。面板的模型选择器要在运行时知道「这一版 Pi 里有哪些 provider、
- * 哪些模型」,而目录是运行时事实:随 Pi 升级而变,打进前端产物就会与服务用的那份错开,
- * 选出一个当前 Pi 里不存在的模型标识。
- *
- * 目录读一次就缓存在进程里:同一个进程里的 Pi 就是同一份目录,每次请求重建
- * `ModelRuntime` 只是重复解析同样的内置表。读失败不进缓存,下一次请求重来;模型行改动之后
- * 由写入方显式失效(`invalidateModelCatalog`),否则写完在这个进程里看不见。
- */
+/** Pi 内置、远程与厂商目录只在模型服务显式发现时读取并合成。 */
 import { mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
-import type { CustomProviderRecord } from "../review/store.ts";
-import { isolatedModelRuntime, type SharedModelPaths, sharedModelPaths } from "./model-runtime.ts";
+import {
+  isolatedModelRuntime,
+  modelCatalogStorePath,
+  type RuntimeApi,
+} from "./model-runtime.ts";
 import { openRouterCatalog, type VendorCatalog, type VendorModel } from "./vendor-catalog.ts";
 
 /**
@@ -31,12 +26,6 @@ export type CatalogRemote = "ok" | "unavailable" | "off";
  */
 export type CatalogVendor = "ok" | "unavailable" | "off";
 
-/** 一次目录读取的结果:模型表,以及两层增量各自的状态。 */
-export type Catalog = {
-  providers: CatalogProvider[];
-  remote: CatalogRemote;
-  vendors: Record<string, CatalogVendor>;
-};
 
 /**
  * 远程刷新的时间上限。Pi 对 39 家 provider 各发一次请求,单次失败还会立即重试两轮,
@@ -57,96 +46,42 @@ export type CatalogCost = {
   tiers?: readonly (CatalogCost & { inputTokensAbove: number })[];
 };
 
-/**
- * 一个模型。只给选择器要展示与要回填的那几项:`id` 是模型标识的后半段
- * (`provider:model`),其余三项是选型判据。reasoning / maxTokens / input / baseUrl
- * 不给——面板不用它们做判断,透出去只会被误当成筛选条件。
- */
-export type CatalogModel = {
-  id: string;
-  name: string;
-  contextWindow: number;
-  cost: CatalogCost;
-};
 
-export type CatalogProvider = {
-  id: string;
-  name: string;
-  models: CatalogModel[];
-};
-
-let cached: Promise<Catalog> | undefined;
-
-/**
- * 进程内的那一份目录。失败的 promise 不留在缓存里:留住的话首次读失败后这个进程再也
- * 拿不到目录,模型选择器永远空白,只能重启容器。
- *
- * 清缓存前先认一认是不是自己那一份:一次读还在飞的时候有人失效了缓存,后来的请求会存进
- * 一份新的,而先前那一份此刻才失败——无条件清就会把新的一起清掉,一次失效于是引出两轮
- * 重新加载(各带一轮远程目录请求),而且先存进去的那一份成功了也留不住。
- *
- * `load` 带默认值是为了能在测试里喂一个必然失败的读取,生产路径不传。
- */
-export function modelCatalog(load: () => Promise<Catalog> = loadFromPi): Promise<Catalog> {
-  if (cached === undefined) {
-    const pending: Promise<Catalog> = load().catch((error: unknown) => {
-      if (cached === pending) cached = undefined;
-      throw error;
-    });
-    cached = pending;
-  }
-  return cached;
-}
-
-/**
- * 丢掉缓存住的那一份,下一次读重新组装。
- *
- * 缓存住的是 Pi 那张模型表,而模型行落在派生的 `models.json` 上、由面板随时改写:不失效
- * 的话写入在这个进程里永远看不见,操作员加完一个模型标识却选不到它。
- *
- * 幂等:没有待失效的东西时也调得动,而且只丢缓存不预热——下一次真有人读目录时才重新组装,
- * 免得一次写入白搭上一轮 pi.dev 刷新。
- */
-export function invalidateModelCatalog(): void {
-  cached = undefined;
-}
-
-/** `loadFromPi` 的可注入项。生产路径一个都不传,全部按环境推导。 */
+/** 模型服务发现的可注入项。 */
 export type LoadOptions = {
   allowNetwork?: boolean;
   timeoutMs?: number;
-  /** 两份共用文件的位置。不传就按 `MULTIREVIEWER_CACHE_DIR` 推导。 */
-  paths?: SharedModelPaths;
+  /** Pi 远程目录缓存；不传就按 `MULTIREVIEWER_CACHE_DIR` 推导。 */
+  catalogStorePath?: string;
 };
 
-/** 目录加载的串行链,见 `loadFromPi`。 */
+/** 完整的可信 Pi 模型字段，供模型服务发现使用。 */
+export type PiCatalogModel = {
+  id: string;
+  name: string;
+  api: string;
+  baseUrl: string;
+  input: readonly ("text" | "image")[];
+  reasoning: boolean;
+  cost: CatalogCost;
+  contextWindow: number;
+  maxTokens: number;
+};
+
+export type PiProviderCatalog = {
+  id: string;
+  name: string;
+  models: PiCatalogModel[];
+  remote: CatalogRemote;
+  vendors: Record<string, CatalogVendor>;
+};
+
+/** 显式目录发现串行，避免两次刷新并发覆盖同一份 Pi store。 */
 let catalogLoads: Promise<void> = Promise.resolve();
 
-/**
- * 读一份目录。内置表先到位,再让 Pi 去 pi.dev 拉每家 provider 的远程目录(约多出 72 个
- * 模型),最后问一遍厂商目录、把那一家自己公布、这两层都还没有的模型补上。联网只发生在
- * 这一份上:子进程应当尽量少对外通信(ADR 0004),`worker.ts` 那处因此不联网,只读这里
- * 落盘的远程目录——面板选得出的模型子进程必须取得到,共用一份落盘文件是它们之间唯一的
- * 通路(见 `model-runtime.ts`)。
- *
- * 不用 `ModelRuntime.create({ allowModelNetwork: true })`,而是先建再自己刷一次:
- * `create` 把刷新结果吞掉了,拿不到「哪几家没拉到」;自己刷才能把远程那一层的成败
- * 透出去。Pi 把每家的失败收进 `errors` 而不抛,内置表在失败时原样留着。
- *
- * 两层的成败各记各的:远程拉不到不妨碍问厂商目录,反过来也一样。超时用同一个上限,
- * 进程内缓存也还是同一份(`modelCatalog`)。
- *
- * **加载串行,同一时刻最多一份在跑。**厂商目录那一步要把行写进共用落盘,而那是「整份读
- * 进来、改一家、整份写回去」:两份同时在飞时后写的那一份会把先写的整批账抹掉。真实的重叠
- * 窗口只有这一个——目录有进程内缓存,只有「一次读还在飞的时候有人失效了缓存」
- * (`invalidateModelCatalog`)才造得出第二份;同一次加载内部 `refreshRemote`(Pi 写,带它
- * 自己的文件锁)与 `writeVendorModels`(我们写)本来就是先后两步,不构成竞争。跨进程同样
- * 不必管:**这份落盘只有服务进程写**,Reviewer 子进程只读(`worker.ts`)。把这一个窗口串
- * 起来等于把整个边界设计掉,不必再加第二把锁——Pi 那把受锁存储只在
- * `dist/core/models-store.js` 里导出,而包的 `exports` 映射只开了三个入口,深导入进不去。
- */
-export function loadFromPi(options: LoadOptions = {}): Promise<Catalog> {
-  const queued = catalogLoads.then(() => loadCatalog(options));
+/** 两次显式发现不得并发改写同一个 Pi store；失败不污染后续队列。 */
+function queueCatalogLoad<T>(load: () => Promise<T>): Promise<T> {
+  const queued = catalogLoads.then(load);
   // 链上留的那一份不带失败:一次加载失败不该把排在它后面的一起拖红。
   catalogLoads = queued.then(
     () => undefined,
@@ -155,60 +90,54 @@ export function loadFromPi(options: LoadOptions = {}): Promise<Catalog> {
   return queued;
 }
 
-async function loadCatalog(options: LoadOptions): Promise<Catalog> {
-  // 凭据那一份仍私有:authPath 指进空的临时目录,默认位置在 `~/.pi/agent` 下,那里的
-  // auth.json 存着宿主机上配置过的每一家厂商的凭据。目录那两份是共用的。
+
+/** 模型服务的内置发现输入；私有 `models.json` 保证模型补录不会伪装成自动来源。 */
+export function loadPiProviderCatalog(
+  providerId: string,
+  options: LoadOptions = {},
+): Promise<PiProviderCatalog | undefined> {
+  return queueCatalogLoad(async () => {
+    const loaded = await loadPiRuntime(options);
+    const provider = loaded.runtime.getProvider(providerId);
+    if (provider === undefined) return undefined;
+    return {
+      id: provider.id,
+      name: provider.name,
+      remote: loaded.remote,
+      vendors: loaded.vendors,
+      models: provider.getModels().map((model) => ({
+        id: model.id,
+        name: model.name,
+        api: model.api,
+        baseUrl: model.baseUrl,
+        input: model.input,
+        reasoning: model.reasoning,
+        cost: model.cost,
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+      })),
+    };
+  });
+}
+
+async function loadPiRuntime(options: LoadOptions): Promise<{
+  runtime: ModelRuntime;
+  remote: CatalogRemote;
+  vendors: Record<string, CatalogVendor>;
+}> {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-catalog-"));
-  const paths = options.paths ?? sharedModelPaths();
-  const runtime = await isolatedModelRuntime(dir, paths);
+  const catalogStore = options.catalogStorePath ?? modelCatalogStorePath();
+  const runtime = await isolatedModelRuntime(dir, catalogStore);
 
   const allowNetwork = options.allowNetwork ?? remoteEnabled();
   const timeoutMs = options.timeoutMs ?? MODEL_REFRESH_TIMEOUT_MS;
   const remote = allowNetwork ? await refreshRemote(runtime, timeoutMs) : "off";
   const vendor = allowNetwork
-    ? await mergeVendorCatalog(runtime, openRouterCatalog, paths?.store, timeoutMs)
+    ? await mergeVendorCatalog(runtime, openRouterCatalog, catalogStore, timeoutMs)
     : "off";
-
-  return {
-    remote,
-    vendors: { [openRouterCatalog.provider]: vendor },
-    providers: runtime.getProviders().map((provider) => ({
-      id: provider.id,
-      name: provider.name,
-      models: provider.getModels().map((model) => ({
-        id: model.id,
-        name: model.name,
-        contextWindow: model.contextWindow,
-        cost: nonNegativeCost(model.cost),
-      })),
-    })),
-  };
+  return { runtime, remote, vendors: { [openRouterCatalog.provider]: vendor } };
 }
 
-/**
- * 负单价按 0 透出。Pi 内置表里 `openrouter/auto` 与 `openrouter/auto-beta` 两行的费率是
- * -1000000(实测 0.84.0):OpenRouter 对路由类模型报的单价是 "-1",意思是随路由到的那个模型
- * 浮动,而那个 -1 被照着每百万 token 换算了一遍。原样透出去面板上就写着 `$-1000000/M`。
- *
- * 收口放在这一层而不是去改那两行:内置与远程目录来的行一律不动(ADR 0009),而「负数不是一个
- * 费率」是这个数自己的性质,与它由谁给出无关。取 0 与 Pi 自己那条 `auto` 记的数一致。
- *
- * Review Run 的成本不经过这一层:那个数取自 Pi 的 `session.getSessionStats()`,用的是 Pi
- * 内部那张定价表。那一侧同样按零收,收口在库里(`review/store.ts` 的 `recordedCost`)。
- */
-function nonNegativeCost(cost: CatalogCost): CatalogCost {
-  if (cost.input >= 0 && cost.output >= 0 && cost.cacheRead >= 0 && cost.cacheWrite >= 0) {
-    return cost;
-  }
-  const floor = (value: number): number => (value > 0 ? value : 0);
-  return {
-    ...cost,
-    input: floor(cost.input),
-    output: floor(cost.output),
-    cacheRead: floor(cost.cacheRead),
-    cacheWrite: floor(cost.cacheWrite),
-  };
-}
 
 /**
  * 问一家厂商要它的现货清单,把内置表与远程目录都还没有的那些补进目录。
@@ -292,8 +221,8 @@ type Store = Record<string, StoreEntry | undefined>;
  * 清单没变时也照写:这些行的单价与上下文窗口以厂商那份清单为准,跳过写入等于把第一次拉到
  * 的那份价格冻在落盘里。一次目录加载只付一次,而目录在进程里是缓存住的。
  *
- * 先写临时文件再原子改名,理由与派生的 `models.json` 相同(`model-runtime.ts`):子进程随时
- * 可能在读,读到写了一半的 JSON 会让 Pi 把整份落盘当作解析失败。不加锁的判据见 `loadFromPi`。
+ * 先写临时文件再原子改名:显式预览或刷新可能同时读取这份可丢弃缓存,不能让 Pi 看到只写了
+ * 一半的 JSON。
  */
 function writeVendorModels(
   storePath: string,
@@ -346,50 +275,50 @@ function remoteEnabled(): boolean {
  */
 let builtinProbeDir: string | undefined;
 
-/**
- * Pi 内置目录里的那些 provider 名字,不叠我们派生的用户模型配置那一层(`models.json`)。
- *
- * 撞名的判据要的正是这一份:名字一旦撞上,Pi 把两家合成一家(内置那份模型列表原样保留、
- * 全部改指自定义那个端点),从服务读到的目录里再也分不出「这家是内置的」还是「这家是登记
- * 进来的」。因此这里另建一份运行时,`modelsPath` 指进那个私有的空目录。
- *
- * 共用的那份落盘(`models-store.json`)也不给:远程目录与厂商目录加得进模型、加不进
- * provider——`withRemoteCatalog` 只包在内置 provider 列表上,恢复时还按
- * `model.provider === provider.id` 过一遍(issue #82 查证过同一件事)。不给它,这一份结果就
- * 与缓存目录无关。
- *
- * 每次现算,不缓存结果:实测建一份这样的运行时 3 毫秒上下,而且不联网(`ModelRuntime.create`
- * 只在显式传 `allowModelNetwork` 时才发请求)。缓存住的话这个判据会跟着「谁先问」漂——而它
- * 恰恰是那种一漂就把撞名读成不撞名的东西。
- */
-async function builtinProviderNames(): Promise<ReadonlySet<string>> {
+export type PiBuiltinProvider = { id: string; name: string };
+export type PiBuiltinProviderTarget = Readonly<{ api: RuntimeApi; baseUrl: string }>;
+
+async function piBuiltinRuntime() {
   builtinProbeDir ??= mkdtempSync(join(tmpdir(), "multireviewer-builtin-"));
-  const runtime = await isolatedModelRuntime(builtinProbeDir, undefined);
-  return new Set(runtime.getProviders().map((provider) => provider.id));
+  return isolatedModelRuntime(builtinProbeDir, undefined);
 }
 
-/** 一家撞名的都没有。零个自定义 provider 是常态,那一档连运行时都不必建。 */
-const NO_CONFLICT: ReadonlySet<string> = new Set();
+/**
+ * Pi 内置 provider 的只读索引。不给共用目录与用户配置，因此只含这一版 Pi 自带的
+ * provider；模型服务搜索用它，不能从混入自定义服务的旧目录端点反推。
+ */
+export async function listPiBuiltinProviders(): Promise<PiBuiltinProvider[]> {
+  const runtime = await piBuiltinRuntime();
+  return runtime.getProviders().map((provider) => ({ id: provider.id, name: provider.name }));
+}
 
 /**
- * 撞名的那几家自定义 provider(issue #94):名字在库里有一条登记,而 Pi 的内置目录里也有
- * 同名的一家。
- *
- * 登记时的拒收(`server.ts` 的 `handleAddCustomProvider`)挡得住「今天就撞」,挡不住「今天
- * 不撞、明天才撞」——内置目录是运行时事实,随 Pi 升级而变。这一档必须有确定行为:Pi 对同名
- * provider 不报错而是覆盖,升级一次就可能让某个内置厂商的全部模型悄声换掉接口地址,而模型
- * 标识一个字都不变、面板上零痕迹。
- *
- * 不落库:它是「库里的登记 ∩ Pi 内置目录」这个交集,每次现算。操作员改了名、或者 Pi 又把那个
- * 内置 id 撤了,行为自己就恢复了,不需要额外操作,也不会留下一条对不上现实的状态。
+ * Pi 当前内置 provider 的调用目标。只返回合成模型所需的 api/baseUrl，不把当前 Pi 的
+ * name、能力、上下文或价格混进数据库已提交的自动目录事实。Pi 给内置模型补录合成新行时
+ * 继承该 provider 第一行模型的目标；这里沿用同一目标，确保面板判定与真实运行一致。
  */
-export async function conflictingProviderNames(
-  customProviders: readonly CustomProviderRecord[],
+export async function resolvePiBuiltinProviderTarget(
+  providerId: string,
+): Promise<PiBuiltinProviderTarget | undefined> {
+  const model = (await piBuiltinRuntime()).getProvider(providerId)?.getModels()[0];
+  if (
+    model === undefined ||
+    typeof model.api !== "string" ||
+    model.api.trim() === "" ||
+    typeof model.baseUrl !== "string" ||
+    model.baseUrl.trim() === ""
+  ) {
+    return undefined;
+  }
+  return { api: model.api, baseUrl: model.baseUrl };
+}
+
+/** 自定义模型服务与当前 Pi 内置 provider 的动态名字冲突。 */
+export async function conflictingBuiltinProviderNames(
+  providers: readonly string[],
 ): Promise<ReadonlySet<string>> {
-  if (customProviders.length === 0) return NO_CONFLICT;
-  const builtin = await builtinProviderNames();
-  return new Set(
-    customProviders.filter((entry) => builtin.has(entry.name)).map((entry) => entry.name),
-  );
+  if (providers.length === 0) return new Set();
+  const builtin = new Set((await listPiBuiltinProviders()).map((provider) => provider.id));
+  return new Set(providers.filter((provider) => builtin.has(provider)));
 }
 

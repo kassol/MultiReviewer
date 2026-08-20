@@ -19,8 +19,8 @@ import { Type } from "typebox";
 
 import type { RawFinding } from "../review/finding.ts";
 import { anchorReport } from "./anchor.ts";
-import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV } from "./env.ts";
-import { isolatedModelRuntime, missingModelHint, sharedModelPaths } from "./model-runtime.ts";
+import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, redactModelCredential } from "./env.ts";
+import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
 import { numberedRead } from "./numbered-read.ts";
 import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
 
@@ -170,20 +170,19 @@ async function run(request: ReviewerRequest): Promise<void> {
     return;
   }
 
-  // 目录要与面板那一份一致:面板选得出的模型,这里必须取得到。共用的是 pi.dev 的远程目录
-  // 与派生的用户模型配置两份落盘文件,子进程自己一个对外目录请求都不发(ADR 0004),细节
-  // 见 `model-runtime.ts`。
-  const paths = sharedModelPaths();
-  const modelRuntime = await isolatedModelRuntime(agentDir, paths);
-  await modelRuntime.setRuntimeApiKey(request.provider, apiKey);
+  // 只从 IPC 里的本轮快照注册这一项运行模型。子进程不读共享的当前模型投影，因此模型服务
+  // 在 Review Run 中途切版也不会改掉后续批次的地址、协议或模型字段。
+  const runtime = request.runtimeModel;
+  const modelRuntime = await isolatedPinnedModelRuntime(agentDir, runtime);
+  await modelRuntime.setRuntimeApiKey(runtime.provider, apiKey);
 
-  const model = modelRuntime.getModel(request.provider, request.model);
+  const model = modelRuntime.getModel(runtime.provider, runtime.id);
   if (!model) {
     send({
       kind: "done",
       rejectedToolCalls: 0,
       anchorRejections: 0,
-      failure: `模型不存在: ${request.provider}/${request.model}${missingModelHint(paths?.store)}`,
+      failure: `固定运行模型无法加载: ${runtime.provider}/${runtime.id}`,
     });
     return;
   }
@@ -239,7 +238,9 @@ async function run(request: ReviewerRequest): Promise<void> {
     lastAssistant?.stopReason === "error"
       ? (lastAssistant.errorMessage ?? "stopReason=error")
       : undefined;
-  const failure = thrown ?? session.agent.state.errorMessage ?? stopReasonFailure;
+  const rawFailure = thrown ?? session.agent.state.errorMessage ?? stopReasonFailure;
+  const failure =
+    rawFailure === undefined ? undefined : redactModelCredential(rawFailure, apiKey);
 
   // 用量必须在 dispose 之前读:会话销毁后统计随之消失。
   // 成本由 Pi 自带的定价表折算,该表内置在包里,不受空的 modelsPath 影响。
@@ -272,7 +273,10 @@ process.on("message", (request: ReviewerRequest) => {
       kind: "done",
       rejectedToolCalls: 0,
       anchorRejections: 0,
-      failure: String(error instanceof Error ? error.message : error),
+      failure: redactModelCredential(
+        String(error instanceof Error ? error.message : error),
+        process.env[MODEL_API_KEY_ENV],
+      ),
     });
   });
 });

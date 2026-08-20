@@ -21,6 +21,7 @@ import {
   PANEL_ADMIN_USERNAME as ADMIN_USERNAME,
   PANEL_BASE_URL as BASE_URL,
   PANEL_PREFIX as PREFIX,
+  seedAvailableModelService,
   startPanelHarness,
 } from "./support/panel-harness.ts";
 
@@ -133,6 +134,7 @@ test("hook 删除失败时移除被阻止,注册保持原样", async () => {
 
 test("配置了模型覆盖的仓库,Review Run 用覆盖后的组合", async () => {
   const h = await startHarness();
+  seedAvailableModelService(h, "test", ["global-model", "override-model"]);
   const override: ReviewerSpec[] = [
     { provider: "test", model: "override-model" },
   ];
@@ -165,6 +167,7 @@ test("配置了模型覆盖的仓库,Review Run 用覆盖后的组合", async ()
 
 test("模型覆盖可编辑:PUT 全量替换、null 清除,坏覆盖 400", async () => {
   const h = await startHarness();
+  seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   const override: ReviewerSpec[] = [
     { provider: "test", model: "swapped-model" },
@@ -215,6 +218,89 @@ test("模型覆盖可编辑:PUT 全量替换、null 清除,坏覆盖 400", async
   );
 });
 
+test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为跟随全局", async () => {
+  const h = await startHarness();
+  seedAvailableModelService(h, "repo-healthy", ["keep"]);
+  seedAvailableModelService(h, "repo-broken", ["saved"]);
+
+  const sqlite = new DatabaseSync(h.db.path);
+  try {
+    sqlite.prepare(
+      `UPDATE model_service_credential
+          SET state = 'pending-reverification', verified_at = NULL,
+              validation_model = NULL, verification_source = NULL
+        WHERE provider = ?`,
+    ).run("repo-broken");
+  } finally {
+    sqlite.close();
+  }
+
+  const invalidRegister = await h.api("POST", "/repos", {
+    owner: PR.owner,
+    repo: PR.repo,
+    reviewers: [{ provider: "vanished-repo-service", model: "missing" }],
+  });
+  assert.equal(invalidRegister.status, 400);
+  assert.match(await invalidRegister.text(), /模型来源消失/);
+  assert.deepEqual(h.gitea.hooks, [], "候选校验应先于注册与 hook 副作用");
+
+  assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
+  const selected = [
+    { provider: "repo-healthy", model: "keep" },
+    { provider: "repo-broken", model: "saved" },
+    { provider: "vanished-repo-service", model: "missing" },
+  ];
+  const seed = openStore(h.db.path);
+  seed.setRepoReviewers(GITEA_REPO.id, JSON.stringify(selected));
+  seed.close();
+
+  const serviceState = () => {
+    const store = openStore(h.db.path);
+    try {
+      return {
+        services: store.listModelServices(),
+        supplements: store.listModelSupplements(),
+      };
+    } finally {
+      store.close();
+    }
+  };
+  const before = serviceState();
+
+  const blocked = await h.api("PUT", `/repos/${GITEA_REPO.id}/reviewers`, {
+    reviewers: selected,
+  });
+  assert.equal(blocked.status, 400);
+  assert.match(await blocked.text(), /模型凭据不可用.*模型来源消失/);
+
+  const saved = await h.api("PUT", `/repos/${GITEA_REPO.id}/reviewers`, {
+    reviewers: [selected[0]],
+  });
+  assert.equal(saved.status, 204);
+  const rowsAfterSave = (await (await h.api("GET", "/repos")).json()) as {
+    repoId: number;
+    reviewers: unknown;
+  }[];
+  assert.deepEqual(rowsAfterSave.find((repo) => repo.repoId === GITEA_REPO.id)?.reviewers, [
+    { provider: "repo-healthy", model: "keep" },
+  ]);
+  assert.deepEqual(serviceState(), before, "覆盖写入不得创建、删除或改写模型服务与来源");
+
+  const reset = openStore(h.db.path);
+  reset.setRepoReviewers(GITEA_REPO.id, JSON.stringify(selected));
+  reset.close();
+  assert.equal(
+    (await h.api("PUT", `/repos/${GITEA_REPO.id}/reviewers`, { reviewers: null })).status,
+    204,
+  );
+  const rowsAfterClear = (await (await h.api("GET", "/repos")).json()) as {
+    repoId: number;
+    reviewers: unknown;
+  }[];
+  assert.equal(rowsAfterClear.find((repo) => repo.repoId === GITEA_REPO.id)?.reviewers, null);
+  assert.deepEqual(serviceState(), before);
+});
+
 test("仓库列表带累计量,按最近活动排序,没跑过的排最后", async () => {
   const h = await startHarness();
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
@@ -234,6 +320,7 @@ test("仓库列表带累计量,按最近活动排序,没跑过的排最后", asy
     changedFiles: 1,
     changedLines: 1,
     batchCount: 1,
+    reviewerPins: [],
   });
   seed.registerRepo({ repoId: 556, owner: "acme", repo: "sprockets", generation: 1, key: "kc" });
   seed.close();
