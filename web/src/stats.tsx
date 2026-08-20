@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { CalendarIcon, CircleAlert } from "lucide-react";
+import { CalendarIcon, ChevronDown, CircleAlert } from "lucide-react";
 import { useState } from "react";
 
+import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -210,7 +211,7 @@ export function StatsPage() {
         }
       />
 
-      <div className="flex max-w-[1060px] flex-col gap-4 p-4 sm:p-5">
+      <PageBody width="wide" className="gap-4 pb-5 sm:pb-5">
         {stats.isError ? (
           <p
             role="alert"
@@ -306,7 +307,44 @@ export function StatsPage() {
               </h2>
               <p className="text-xs text-muted-foreground">每格为已处置/分母(百分比)</p>
             </div>
-            <Card className="overflow-hidden py-0">
+            <div className="flex flex-col gap-2 lg:hidden">
+              {models.map((model) => {
+                const total = modelTotal(model);
+                return (
+                  <details key={model} className="group overflow-hidden rounded-sm border border-border bg-card">
+                    <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 px-3 py-2.5 outline-none [&::-webkit-details-marker]:hidden focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset">
+                      <div className="min-w-0 flex-1">
+                        <p className="break-all font-mono text-xs font-medium">{model}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">展开查看全部分类</p>
+                      </div>
+                      <div className="w-32 shrink-0">
+                        <span className="mb-1 block text-xs text-muted-foreground">合计</span>
+                        <Rate resolved={total.resolved} total={total.total} />
+                      </div>
+                      <ChevronDown aria-hidden className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+                    </summary>
+                    <dl className="divide-y divide-border border-t border-border">
+                      {categories.map((category) => {
+                        const cell = byKey.get(`${model}\n${category}`);
+                        return (
+                          <div key={category} className="grid grid-cols-[minmax(0,1fr)_8rem] items-start gap-3 px-3 py-2.5">
+                            <dt className="break-words text-muted-foreground">{category}</dt>
+                            <dd>
+                              {cell === undefined ? (
+                                <span className="font-mono text-xs tabular-nums text-muted-foreground">—</span>
+                              ) : (
+                                <Rate resolved={cell.resolved} total={denominator(cell)} />
+                              )}
+                            </dd>
+                          </div>
+                        );
+                      })}
+                    </dl>
+                  </details>
+                );
+              })}
+            </div>
+            <Card className="hidden min-w-0 max-w-full overflow-hidden py-0 lg:block">
               <Table>
                 <TableCaption className="sr-only">
                   逐模型、逐类别的处置率,单元格内容为「已处置/分母(百分比)」。
@@ -386,7 +424,7 @@ export function StatsPage() {
             </p>
           </section>
         )}
-      </div>
+      </PageBody>
     </>
   );
 }

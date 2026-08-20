@@ -120,13 +120,13 @@ function Shell() {
   }
 
   return (
-    <div className="flex h-dvh flex-col bg-chrome sm:grid sm:grid-cols-[200px_minmax(0,1fr)]">
-      <aside className="flex shrink-0 flex-col border-border bg-chrome max-sm:border-b sm:border-r">
+    <div className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-x-hidden bg-chrome sm:grid sm:grid-cols-[200px_minmax(0,1fr)]">
+      <aside className="flex min-w-0 max-w-full shrink-0 flex-col overflow-hidden border-border bg-chrome max-sm:border-b sm:overflow-visible sm:border-r">
         <div className="flex min-h-14 shrink-0 items-center gap-2 border-b border-border px-3">
           <Mark className="size-5 shrink-0 text-primary" />
-          <span className="truncate font-semibold tracking-tight">MultiReviewer</span>
+          <span className="truncate font-semibold tracking-tight" title="MultiReviewer">MultiReviewer</span>
           <div className="ml-auto flex min-w-0 items-center gap-1 sm:hidden">
-            <span className="max-w-28 truncate text-xs text-muted-foreground">
+            <span className="max-w-28 truncate text-xs text-muted-foreground" title={session.displayName ?? session.username}>
               {session.displayName ?? session.username}
             </span>
             <button
@@ -134,21 +134,22 @@ function Shell() {
               aria-label={`登出 ${session.username}`}
               title="登出"
               onClick={() => void logout()}
-              className="flex size-10 shrink-0 touch-manipulation items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
+              className="flex size-11 shrink-0 touch-manipulation items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
             >
               <LogOut className="size-4" />
             </button>
           </div>
         </div>
-        <nav
-          aria-label="面板导航"
-          className="flex shrink-0 gap-1 overflow-x-auto px-2 py-2 sm:flex-col sm:overflow-visible"
-        >
+        <p className="flex items-center justify-between px-3 pt-2 text-xs text-muted-foreground sm:hidden">
+          <span>页面</span>
+          <span>横向滑动查看更多</span>
+        </p>
+        <nav aria-label="面板导航" className="flex min-w-0 max-w-full shrink-0 gap-1 overflow-x-auto px-2 py-2 sm:flex-col sm:overflow-visible">
           {items.map((item) => (
             <Link
               key={item.to}
               to={item.to}
-              className="flex h-10 shrink-0 touch-manipulation items-center rounded-sm border border-transparent px-3 whitespace-nowrap text-muted-foreground outline-none transition-colors hover:bg-background/70 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome sm:h-8 sm:shrink"
+              className="flex h-11 shrink-0 touch-manipulation items-center rounded-sm border border-transparent px-3 whitespace-nowrap text-muted-foreground outline-none transition-colors hover:bg-background/70 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome sm:h-8 sm:shrink"
               activeProps={{
                 "aria-current": "page",
                 className: "border-border bg-background font-medium text-foreground",
@@ -161,9 +162,9 @@ function Shell() {
         <div className="mt-auto hidden border-t border-border p-2 sm:block">
           <div className="flex min-w-0 items-center gap-2 px-2 py-1.5">
             <div className="min-w-0 flex-1">
-              <p className="truncate font-medium">{session.displayName ?? session.username}</p>
+              <p className="truncate font-medium" title={session.displayName ?? session.username}>{session.displayName ?? session.username}</p>
               {session.displayName === null ? null : (
-                <p className="truncate text-xs text-muted-foreground">{session.username}</p>
+                <p className="truncate text-xs text-muted-foreground" title={session.username}>{session.username}</p>
               )}
             </div>
             <button

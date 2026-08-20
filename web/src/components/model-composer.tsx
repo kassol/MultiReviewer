@@ -177,7 +177,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                   <button
                     type="button"
                     aria-label={`移除 ${identity}`}
-                    className="-mr-1 flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="-mr-1 flex size-6 shrink-0 touch-manipulation items-center justify-center rounded-sm text-muted-foreground transition-colors max-sm:size-11 hover:bg-muted hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={() => toggle(identity)}
                   >
                     <X className="size-3.5" />
@@ -227,7 +227,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                       )}
                       onClick={() => setPickedProvider(group.provider)}
                     >
-                      <span className="w-full truncate font-mono font-medium">{group.provider}</span>
+                      <span className="w-full break-all font-mono font-medium">{group.provider}</span>
                       <span className="text-xs text-muted-foreground">
                         <span className="font-mono tabular-nums">{available}</span> 个可选
                         {unavailable === 0 ? null : (
@@ -321,9 +321,9 @@ function ProviderPane({
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-3 py-2">
-        <span className="min-w-0 truncate font-mono font-medium">{group.provider}</span>
+        <span className="min-w-0 break-all font-mono font-medium">{group.provider}</span>
         {group.name === group.provider ? null : (
-          <span className="min-w-0 truncate text-xs text-muted-foreground">{group.name}</span>
+          <span className="min-w-0 break-words text-xs text-muted-foreground">{group.name}</span>
         )}
         <span className={cn(
           "text-xs font-medium",
@@ -403,11 +403,11 @@ function ProviderPane({
                 onClick={() => onToggle(model.identity)}
               >
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="truncate font-medium">
+                  <span className="break-words font-medium">
                     {model.discovery.name ?? model.id}
                     {picked ? <span className="ml-2 text-xs text-muted-foreground">已选</span> : null}
                   </span>
-                  <span className="truncate font-mono text-xs text-muted-foreground">{model.id}</span>
+                  <span className="break-all font-mono text-xs text-muted-foreground">{model.id}</span>
                   <span className="flex flex-wrap gap-1">
                     {model.sources.map((source) => (
                       <Badge key={source} variant="outline">{SOURCE_LABEL[source]}</Badge>

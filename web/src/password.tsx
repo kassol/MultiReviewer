@@ -51,7 +51,7 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
           <Mark className="size-6 text-primary" />
           <h1 className="text-xl font-semibold tracking-tight">MultiReviewer</h1>
         </div>
-        <Card className="gap-5 px-5 py-5">
+        <Card className="gap-5 px-5 py-6">
           <div className="border-b border-border pb-4">
             <h2 className="text-base font-semibold">{session.mustChangePassword ? "先改密码" : "修改密码"}</h2>
             <p className="mt-1 break-words text-muted-foreground">

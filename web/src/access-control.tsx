@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
 
+import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -210,7 +211,7 @@ export function AccessControlPage() {
           </>
         }
       />
-      <div className="flex max-w-[1100px] flex-col gap-5 p-4 sm:p-5">
+      <PageBody width="wide" className="pb-5 sm:pb-5">
         {feedback === null ? null : (
           <p
             role={feedback.error ? "alert" : "status"}
@@ -233,11 +234,11 @@ export function AccessControlPage() {
           </div>
         ) : (
           <>
-            <section className="flex flex-col gap-3" aria-labelledby="users-heading">
+            <section className="flex min-w-0 flex-col gap-3" aria-labelledby="users-heading">
               <h2 id="users-heading" className="flex items-baseline gap-2 text-base font-semibold">
                 用户 <span className="font-mono text-xs font-normal text-muted-foreground">{users.length}</span>
               </h2>
-              <div className="overflow-x-auto overscroll-x-contain rounded-md border border-border">
+              <div className="contain-inline-size min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-md border border-border">
                 <table className="w-full min-w-max border-collapse text-left">
                   <thead className="bg-muted text-xs text-muted-foreground">
                     <tr>
@@ -269,7 +270,7 @@ export function AccessControlPage() {
                               value={user.roleId ?? ""}
                               disabled={updateUser.isPending}
                               onChange={(event) => updateUser.mutate({ user, roleId: event.target.value === "" ? null : Number(event.target.value) })}
-                              className={`h-7 max-w-44 rounded-md border px-1.5 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 ${user.roleId === null ? "border-warning/50 bg-warning/10 text-warning" : "border-border bg-background"}`}
+                              className={`h-8 max-w-44 rounded-sm border px-2 outline-none max-sm:min-h-11 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/25 focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 ${user.roleId === null ? "border-warning/50 bg-warning/10 text-warning" : "border-border bg-background"}`}
                             >
                               <option value="">还没授角色</option>
                               {roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
@@ -291,7 +292,7 @@ export function AccessControlPage() {
               </div>
             </section>
 
-            <section className="flex flex-col gap-3" aria-labelledby="permissions-heading">
+            <section className="flex min-w-0 flex-col gap-3" aria-labelledby="permissions-heading">
               <h2 id="permissions-heading" className="text-base font-semibold">权限</h2>
               <div className="flex items-start gap-2 rounded-md bg-muted px-3 py-2">
                 <ShieldCheck className="mt-0.5 size-4 shrink-0" />
@@ -309,7 +310,7 @@ export function AccessControlPage() {
                   <Button className="mt-1" onClick={() => setCreateKind("role")}><Plus />新建角色</Button>
                 </Card>
               ) : (
-                <div className="overflow-x-auto overscroll-x-contain rounded-md border border-border">
+                <div className="contain-inline-size min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-md border border-border">
                   <table className="w-full min-w-max border-collapse text-left">
                     <thead>
                       <tr className="bg-muted text-xs text-muted-foreground">
@@ -346,7 +347,7 @@ export function AccessControlPage() {
                                   impliedBy !== undefined && role.permissions.includes(impliedBy);
                                 return (
                                   <td key={role.id} className="border-l border-border px-3 py-1.5 text-center">
-                                    <label className="inline-flex min-h-8 cursor-pointer flex-col items-center justify-center rounded-md px-1 hover:bg-muted focus-within:ring-3 focus-within:ring-ring/50 has-disabled:cursor-not-allowed has-disabled:opacity-70">
+                                    <label className="inline-flex min-h-8 cursor-pointer flex-col items-center justify-center rounded-sm px-1 max-sm:min-h-11 max-sm:min-w-11 hover:bg-muted focus-within:ring-2 focus-within:ring-ring/25 focus-within:ring-offset-1 focus-within:ring-offset-background has-disabled:cursor-not-allowed has-disabled:opacity-70">
                                       <input
                                         type="checkbox"
                                         aria-label={`${role.name} ${permission.id}${implied ? `，由 ${impliedBy} 包含` : ""}`}
@@ -355,7 +356,7 @@ export function AccessControlPage() {
                                         onChange={() => updateRole.mutate({ role, permission: permission.id })}
                                         className="size-4 accent-primary outline-none"
                                       />
-                                      {implied ? <span className="text-[10px] text-muted-foreground">随写生效</span> : null}
+                                      {implied ? <span className="text-xs text-muted-foreground">随写生效</span> : null}
                                     </label>
                                   </td>
                                 );
@@ -371,7 +372,7 @@ export function AccessControlPage() {
             </section>
           </>
         )}
-      </div>
+      </PageBody>
       <CreateDialog kind={createKind} busy={createUser.isPending || createRole.isPending} onClose={() => setCreateKind(null)} onUser={(input) => { setFeedback(null); createUser.mutate(input); }} onRole={(name) => { setFeedback(null); createRole.mutate(name); }} />
       <Dialog open={confirm !== null} onOpenChange={(open) => { if (!open) { setConfirm(null); setResetPassword(""); } }}>
         <DialogContent>

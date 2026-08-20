@@ -9,6 +9,7 @@ import {
   ModelComposer,
   type ModelComposerValidity,
 } from "@/components/model-composer";
+import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -48,7 +49,7 @@ export function SettingsPage({ canWrite }: { canWrite: boolean }) {
         title="审查策略"
         description="模型组合是所有仓库的默认值；高级参数控制一次审查怎样分批。"
       />
-      <div className="flex max-w-[1060px] flex-col gap-5 p-5 pb-20">
+      <PageBody width="form">
         {settings.isError ? (
           <div className="rounded-sm bg-destructive/5 px-3 py-3 text-destructive">
             <p role="alert">{(settings.error as Error).message}</p>
@@ -73,7 +74,7 @@ export function SettingsPage({ canWrite }: { canWrite: boolean }) {
           // 表单以读回来的设置为初值，所以等数据到了再挂载。
           canWrite ? <SettingsForm settings={settings.data} /> : <ReadOnlySettings settings={settings.data} />
         )}
-      </div>
+      </PageBody>
     </>
   );
 }

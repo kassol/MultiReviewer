@@ -301,11 +301,11 @@ export function ModelServiceSetupLayout() {
         title="配置模型服务"
         description="选择来源、发现模型、真实验证三步完成；候选配置只留在当前页面内存。"
       />
-      <div className="max-w-[900px] p-5 pb-20">
+      <div className="max-w-[900px] p-4 pb-20 sm:p-5 sm:pb-20">
         <nav className="mb-5 grid grid-cols-3 overflow-hidden rounded-md border text-center text-xs" aria-label="添加模型服务步骤">
-          <span className="border-r px-3 py-2">1. 选择来源</span>
-          <span className="border-r px-3 py-2">2. 模型发现</span>
-          <span className="px-3 py-2">3. 真实验证</span>
+          <span className="flex min-h-11 items-center justify-center border-r px-2 py-2 sm:min-h-0 sm:px-3">1. 选择来源</span>
+          <span className="flex min-h-11 items-center justify-center border-r px-2 py-2 sm:min-h-0 sm:px-3">2. 模型发现</span>
+          <span className="flex min-h-11 items-center justify-center px-2 py-2 sm:min-h-0 sm:px-3">3. 真实验证</span>
         </nav>
         <Outlet />
       </div>
@@ -376,7 +376,7 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
             <button
               key={provider.id}
               type="button"
-              className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-muted/60"
+              className="flex min-h-11 w-full items-start gap-3 px-3 py-2 text-left hover:bg-muted/60 sm:min-h-0"
               disabled={provider.conflict}
               onClick={() => {
                 setCandidate({
@@ -395,8 +395,8 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
               }}
             >
               <span className="min-w-0 flex-1">
-                <span className="block truncate font-mono text-xs font-medium">{provider.id}</span>
-                <span className="block truncate text-xs text-muted-foreground">{provider.name}</span>
+                <span className="block break-all font-mono text-xs font-medium">{provider.id}</span>
+                <span className="block break-words text-xs text-muted-foreground">{provider.name}</span>
               </span>
               {provider.conflict ? <Badge variant="destructive">名字冲突</Badge> : null}
               {provider.configured ? <Badge variant="secondary">已配置</Badge> : <Badge variant="outline">未配置</Badge>}
@@ -406,7 +406,7 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
       )}
       {canWriteCustom ? (
         <div className="border-t pt-4">
-          <Button asChild variant="outline">
+          <Button asChild variant="outline" className="max-sm:min-h-11">
             <Link to="/credentials/add/custom/discover">添加自定义 provider</Link>
           </Button>
         </div>
@@ -1646,8 +1646,33 @@ function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
           <span className="font-mono tabular-nums">{models.length}</span> 个合并后的模型标识
         </p>
       </div>
-      <div className="overflow-x-auto">
-        <table className="min-w-[940px] w-full text-left text-sm">
+      <div className="divide-y xl:hidden">
+        {models.map((model) => (
+          <article key={model.identity} className={cn("px-3 py-4", !model.available && "bg-destructive/5")}>
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <p className="min-w-0 break-all font-mono text-xs font-medium">{model.identity}</p>
+              <ModelAvailability model={model} />
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {model.sources.map((source) => (
+                <Badge key={source} variant="outline">{SOURCE_LABEL[source]}</Badge>
+              ))}
+            </div>
+            <div className="mt-3 grid gap-4 border-t pt-3 sm:grid-cols-2">
+              <section>
+                <h4 className="mb-1.5 text-xs font-medium text-muted-foreground">发现事实</h4>
+                <ModelDiscoveryFacts model={model} />
+              </section>
+              <section>
+                <h4 className="mb-1.5 text-xs font-medium text-muted-foreground">实际运行</h4>
+                <ModelRuntimeFacts model={model} />
+              </section>
+            </div>
+          </article>
+        ))}
+      </div>
+      <div className="hidden overflow-x-auto xl:block">
+        <table className="w-full min-w-[940px] text-left text-sm">
           <thead className="border-b text-xs text-muted-foreground">
             <tr>
               <th className="px-3 py-2 font-medium">模型标识</th>
@@ -1671,64 +1696,13 @@ function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
                   </div>
                 </td>
                 <td className="px-3 py-3 align-top">
-                  <div className="space-y-1 text-xs">
-                    {model.discovery.name === null ? null : <p>{model.discovery.name}</p>}
-                    <p>
-                      上下文：{model.discovery.contextWindow === null ? (
-                        <span className="text-warning">未提供</span>
-                      ) : (
-                        <span className="font-mono tabular-nums">{quantity(model.discovery.contextWindow)}</span>
-                      )}
-                    </p>
-                    <p>
-                      最大输出：{model.discovery.maxOutput === null ? (
-                        <span className="text-warning">未提供</span>
-                      ) : (
-                        <span className="font-mono tabular-nums">{quantity(model.discovery.maxOutput)}</span>
-                      )}
-                    </p>
-                    <p><CostValue cost={model.discovery.cost} /></p>
-                  </div>
+                  <ModelDiscoveryFacts model={model} />
                 </td>
                 <td className="px-3 py-3 align-top">
-                  <div className="space-y-1 text-xs">
-                    <p>
-                      输入：{model.runtime.input.join(" / ")}{" "}
-                      <RuntimeSource source={model.runtime.sources.input} />
-                    </p>
-                    <p>
-                      推理：{model.runtime.reasoning ? "声明推理" : "不声明推理"}{" "}
-                      <RuntimeSource source={model.runtime.sources.reasoning} />
-                    </p>
-                    <p>
-                      上下文：<span className="font-mono tabular-nums">{quantity(model.runtime.contextWindow)}</span>{" "}
-                      <RuntimeSource source={model.runtime.sources.contextWindow} />
-                    </p>
-                    <p>
-                      最大输出：<span className="font-mono tabular-nums">{quantity(model.runtime.maxOutput)}</span>{" "}
-                      <RuntimeSource source={model.runtime.sources.maxOutput} />
-                    </p>
-                    <p>
-                      <CostValue cost={model.runtime.cost} />{" "}
-                      <RuntimeSource source={model.runtime.sources.cost} />
-                    </p>
-                  </div>
+                  <ModelRuntimeFacts model={model} />
                 </td>
                 <td className="px-3 py-3 align-top">
-                  {model.available ? (
-                    <Badge variant="secondary" className="border-0 bg-success/10 text-success">
-                      <Check data-icon="inline-start" />可用
-                    </Badge>
-                  ) : (
-                    <div className="space-y-1">
-                      <Badge variant="destructive">
-                        <CircleX data-icon="inline-start" />不可用
-                      </Badge>
-                      <p className="text-xs text-destructive">
-                        {model.unavailableReasonText ?? "模型来源消失"}
-                      </p>
-                    </div>
-                  )}
+                  <ModelAvailability model={model} />
                 </td>
               </tr>
             ))}
@@ -1736,6 +1710,73 @@ function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
         </table>
       </div>
     </section>
+  );
+}
+
+function ModelDiscoveryFacts({ model }: { model: ModelServiceModel }) {
+  return (
+    <div className="space-y-1 text-xs">
+      {model.discovery.name === null ? null : <p className="break-words">{model.discovery.name}</p>}
+      <p>
+        上下文：{model.discovery.contextWindow === null ? (
+          <span className="text-warning">未提供</span>
+        ) : (
+          <span className="font-mono tabular-nums">{quantity(model.discovery.contextWindow)}</span>
+        )}
+      </p>
+      <p>
+        最大输出：{model.discovery.maxOutput === null ? (
+          <span className="text-warning">未提供</span>
+        ) : (
+          <span className="font-mono tabular-nums">{quantity(model.discovery.maxOutput)}</span>
+        )}
+      </p>
+      <p><CostValue cost={model.discovery.cost} /></p>
+    </div>
+  );
+}
+
+function ModelRuntimeFacts({ model }: { model: ModelServiceModel }) {
+  return (
+    <div className="space-y-1 text-xs">
+      <p className="break-words">
+        输入：{model.runtime.input.join(" / ")}{" "}
+        <RuntimeSource source={model.runtime.sources.input} />
+      </p>
+      <p>
+        推理：{model.runtime.reasoning ? "声明推理" : "不声明推理"}{" "}
+        <RuntimeSource source={model.runtime.sources.reasoning} />
+      </p>
+      <p>
+        上下文：<span className="font-mono tabular-nums">{quantity(model.runtime.contextWindow)}</span>{" "}
+        <RuntimeSource source={model.runtime.sources.contextWindow} />
+      </p>
+      <p>
+        最大输出：<span className="font-mono tabular-nums">{quantity(model.runtime.maxOutput)}</span>{" "}
+        <RuntimeSource source={model.runtime.sources.maxOutput} />
+      </p>
+      <p>
+        <CostValue cost={model.runtime.cost} />{" "}
+        <RuntimeSource source={model.runtime.sources.cost} />
+      </p>
+    </div>
+  );
+}
+
+function ModelAvailability({ model }: { model: ModelServiceModel }) {
+  return model.available ? (
+    <Badge variant="secondary" className="shrink-0 border-0 bg-success/10 text-success">
+      <Check data-icon="inline-start" />可用
+    </Badge>
+  ) : (
+    <div className="space-y-1">
+      <Badge variant="destructive">
+        <CircleX data-icon="inline-start" />不可用
+      </Badge>
+      <p className="max-w-64 break-words text-xs text-destructive">
+        {model.unavailableReasonText ?? "模型来源消失"}
+      </p>
+    </div>
   );
 }
 
@@ -1867,7 +1908,7 @@ function ServiceDetail({
   canWriteCustom: boolean;
 }) {
   return (
-    <div className="min-w-0 space-y-5">
+    <div className="min-w-0 space-y-5 max-sm:[&_button]:min-h-11">
       <section className="flex flex-wrap items-start justify-between gap-3 border-b pb-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -1896,7 +1937,7 @@ function ServiceDetail({
               params={{ provider: service.provider }}
               aria-current={tab === candidate ? "page" : undefined}
               className={cn(
-                "border-b-2 border-transparent px-3 py-2 font-medium text-muted-foreground",
+                "flex min-h-11 items-center border-b-2 border-transparent px-3 py-2 font-medium text-muted-foreground sm:min-h-0",
                 tab === candidate && "border-foreground text-foreground",
               )}
             >
@@ -1986,7 +2027,7 @@ function ServiceDetail({
 
 function LoadingLayout() {
   return (
-    <div className="grid max-w-[1180px] gap-5 p-5 pb-20 lg:grid-cols-[280px_minmax(0,1fr)]">
+    <div className="grid max-w-[1180px] gap-5 p-4 pb-20 sm:p-5 sm:pb-20 xl:grid-cols-[340px_minmax(0,1fr)]">
       <Card className="self-start gap-3 p-3">
         <Skeleton className="h-10 w-full" />
         <Skeleton className="h-16 w-full" />
@@ -2036,7 +2077,7 @@ export function ModelServicesPage({
         actions={(
           <div className="flex flex-wrap items-center gap-2">
             {canWriteCredential ? (
-              <Button asChild>
+              <Button asChild className="max-sm:min-h-11">
                 <Link to="/credentials/add">添加模型服务</Link>
               </Button>
             ) : null}
@@ -2044,7 +2085,7 @@ export function ModelServicesPage({
         )}
       />
       {!canReadServices ? (
-        <div className="max-w-[760px] p-5">
+        <div className="max-w-[760px] p-4 sm:p-5">
           <Card className="gap-2 px-4 py-5">
             <h2 className="text-base font-semibold">模型服务字段按权限隐藏</h2>
             <p className="text-muted-foreground">
@@ -2057,7 +2098,7 @@ export function ModelServicesPage({
       ) : query.isPending ? (
         <LoadingLayout />
       ) : query.isError ? (
-        <div className="max-w-[760px] p-5">
+        <div className="max-w-[760px] p-4 sm:p-5">
           <Card className="gap-3 px-4 py-5">
             <div>
               <h2 className="text-base font-semibold text-destructive">模型服务读不到</h2>
@@ -2075,7 +2116,7 @@ export function ModelServicesPage({
           </Card>
         </div>
       ) : services.length === 0 ? (
-        <div className="max-w-[760px] p-5">
+        <div className="max-w-[760px] p-4 sm:p-5">
           <Card className="gap-2 px-4 py-8">
             <h2 className="text-base font-semibold">还没有模型服务</h2>
             <p className="text-muted-foreground">
@@ -2085,7 +2126,7 @@ export function ModelServicesPage({
           </Card>
         </div>
       ) : selected === undefined ? (
-        <div className="max-w-[760px] p-5">
+        <div className="max-w-[760px] p-4 sm:p-5">
           <Card className="gap-2 px-4 py-5">
             <h2 className="text-base font-semibold">模型服务不存在</h2>
             <p className="text-muted-foreground">这个稳定地址对应的 provider 已删除或当前不可见。</p>
@@ -2093,7 +2134,7 @@ export function ModelServicesPage({
           </Card>
         </div>
       ) : (
-        <div className="grid max-w-[1180px] gap-5 p-5 pb-20 lg:grid-cols-[280px_minmax(0,1fr)]">
+        <div className="grid max-w-[1180px] gap-5 p-4 pb-20 sm:p-5 sm:pb-20 xl:grid-cols-[340px_minmax(0,1fr)]">
           <Card className="self-start gap-0 overflow-hidden bg-chrome p-0">
             <div className="border-b bg-muted px-3 py-2.5">
               <h2 className="font-medium">已配置服务</h2>
@@ -2101,7 +2142,7 @@ export function ModelServicesPage({
                 <span className="font-mono tabular-nums">{services.length}</span> 项 · 含保留的异常状态
               </p>
             </div>
-            <div className="max-h-80 divide-y overflow-y-auto lg:max-h-none">
+            <div className="max-h-80 divide-y overflow-y-auto xl:max-h-none">
               {services.map((service) => (
                 <Link
                   key={service.provider}
@@ -2109,23 +2150,28 @@ export function ModelServicesPage({
                   params={{ provider: service.provider }}
                   aria-current={service.provider === selected.provider ? "page" : undefined}
                   className={cn(
-                    "w-full px-3 py-3 text-left transition-colors hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                    "block w-full px-3 py-3 text-left transition-colors hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                     service.provider === selected.provider && "bg-background",
                   )}
                 >
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate font-medium">{service.name}</span>
+                  <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+                    <span className={cn("min-w-0 flex-1 break-words font-medium", service.name === service.provider && "font-mono")}>{service.name}</span>
                     <ServiceStatus service={service} />
                   </div>
-                  <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground">{service.provider}</p>
+                  {service.name === service.provider ? null : (
+                    <p className="mt-0.5 break-all font-mono text-xs text-muted-foreground">{service.provider}</p>
+                  )}
                   {service.models === undefined || service.directory === undefined ? (
                     <p className="mt-1 text-xs text-muted-foreground">模型数量与发现时间按权限隐藏</p>
                   ) : (
-                    <div className="mt-1 flex flex-wrap justify-between gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-                      <span><span className="font-mono tabular-nums">{service.models.length}</span> 个模型</span>
+                    <div className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-end gap-3 text-xs text-muted-foreground">
                       <span>
-                        最近成功{" "}
-                        <span className={service.directory.lastSuccessAt === null ? undefined : "font-mono tabular-nums"}>{localMinute(service.directory.lastSuccessAt)}</span>
+                        <span className="block text-muted-foreground">模型</span>
+                        <span className="font-mono tabular-nums text-foreground">{service.models.length}</span> 个
+                      </span>
+                      <span className="min-w-0 text-right">
+                        <span className="block">最近成功</span>
+                        <span className={cn("break-words text-foreground", service.directory.lastSuccessAt === null ? undefined : "font-mono tabular-nums")}>{localMinute(service.directory.lastSuccessAt)}</span>
                       </span>
                     </div>
                   )}

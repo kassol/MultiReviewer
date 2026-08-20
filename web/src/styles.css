@@ -112,6 +112,14 @@
 }
 
 @layer base {
+  html,
+  body,
+  #root {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
   /* Tailwind preflight 把边框色置成 currentColor,shadcn 组件默认按 --border 画线。 */
   * {
     border-color: var(--border);

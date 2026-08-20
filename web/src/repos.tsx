@@ -22,6 +22,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -140,7 +141,7 @@ export function ReposPage({
                   }`}
                   onClick={() => setSelectedId(row.repoId)}
                 >
-                  <span className="block truncate font-mono">
+                  <span className="block break-all font-mono">
                     {row.owner}/{row.repo}
                   </span>
                   <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
@@ -158,7 +159,7 @@ export function ReposPage({
           ) : null}
         </aside>
 
-        <div className="flex min-w-0 max-w-[900px] flex-col gap-4 p-4 sm:p-5">
+        <PageBody width="form" className="gap-4">
           {canWrite && setup.data !== undefined && !setup.data.reviewConfigurationReady ? (
             <Card className="items-start gap-2 border-warning/40 bg-warning/5 px-4">
               <p>审查配置就绪后才能注册仓库。先在审查策略中保存至少一个当前可用模型。</p>
@@ -214,7 +215,7 @@ export function ReposPage({
               }}
             />
           )}
-        </div>
+        </PageBody>
 
         {/* 两个表单模态都按需挂载:常驻会把上一次的输入与错误留在 state 里,下次打开
             回显的就不是当前值了。 */}
@@ -667,14 +668,14 @@ function RegisterModal({
                         onSelect={() => setPicked(row)}
                       >
                         <span className="flex min-w-0 flex-1 flex-col">
-                          <span className="truncate font-mono">
+                          <span className="break-all font-mono" title={identity}>
                             {identity}
                             {picked?.repoId === row.repoId ? (
                               <span className="text-primary ml-2 font-sans">已选</span>
                             ) : null}
                           </span>
                           {row.reason === undefined ? null : (
-                            <span className="text-muted-foreground truncate text-xs">
+                            <span className="break-words text-xs text-muted-foreground">
                               {row.reason}
                             </span>
                           )}

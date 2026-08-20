@@ -4,6 +4,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 
 import { CircleAlert, CircleCheck, CircleX } from "lucide-react";
 
+import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -143,6 +144,78 @@ function runBadge(run: RunItem) {
   );
 }
 
+function RunModels({ run }: { run: RunItem }) {
+  const failures = run.models.filter((entry) => entry.failure !== null);
+
+  return (
+    <div className="min-w-0">
+      {run.models.length === 0 ? (
+        <span className="text-muted-foreground">没有模型记录</span>
+      ) : (
+        <ul className="flex min-w-0 flex-col gap-0.5">
+          {run.models.map((entry) => (
+            <li
+              key={entry.model}
+              className={`min-w-0 break-all font-mono text-xs ${
+                entry.failure === null ? "text-muted-foreground" : "text-destructive"
+              }`}
+            >
+              {entry.model}{" "}
+              {entry.failure === null ? (
+                <b className="font-semibold tabular-nums text-foreground">{entry.findings}</b>
+              ) : (
+                <b className="font-semibold">失败</b>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {failures.length > 0 ? (
+        <details className="mt-2 rounded-sm border border-destructive/25 bg-background/70 text-xs text-destructive">
+          <summary className="flex min-h-11 cursor-pointer items-center px-2 py-1.5 font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/50 xl:min-h-8">
+            查看 {failures.length} 条失败原因
+          </summary>
+          <ul className="space-y-2 border-t border-destructive/20 px-2 py-2">
+            {failures.map((entry) => (
+              <li key={`${entry.model}-why`} className="break-words leading-relaxed">
+                <span className="break-all font-mono font-medium">{entry.model}</span>
+                <span aria-hidden> · </span>
+                {entry.failure}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function RunUsage({ run }: { run: RunItem }) {
+  const cost = costPresentation(run.usage);
+  return (
+    <div className="text-xs">
+      {run.usage === undefined ? null : (
+        <div className="font-mono tabular-nums text-muted-foreground">
+          {run.usage.totalTokens.toLocaleString("zh-CN")} tokens
+        </div>
+      )}
+      <div className="font-mono tabular-nums">{cost.amount}</div>
+      {cost.note === null ? null : <div className="break-words text-warning">{cost.note}</div>}
+    </div>
+  );
+}
+
+function RunTime({ run }: { run: RunItem }) {
+  const date = new Date(run.startedAt);
+  const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  return (
+    <div className="text-xs text-muted-foreground">
+      <div className="font-mono tabular-nums">{time}</div>
+      <div className="break-words">{run.triggeredBy === null ? "投递" : `手动 · ${run.triggeredBy}`}</div>
+    </div>
+  );
+}
+
 export function RunsPage({ canRerun }: { canRerun: boolean }) {
   const runs = useInfiniteQuery({
     queryKey: ["runs"],
@@ -179,16 +252,18 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
     done: flat.filter((run) => runBucket(run) === "done").length,
   };
   const visible = filter === "all" ? flat : flat.filter((run) => runBucket(run) === filter);
-  let lastDay = "";
   // 按浏览器本地时区分天与显示时分:UTC 日在东八区会把 16:00 后的 run 归到前一天。
   const localDay = (iso: string): string => {
     const date = new Date(iso);
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
   };
-  const localTime = (iso: string): string => {
-    const date = new Date(iso);
-    return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-  };
+  const visibleGroups = visible.reduce<{ day: string; runs: RunItem[] }[]>((groups, run) => {
+    const day = localDay(run.startedAt);
+    const current = groups.at(-1);
+    if (current?.day === day) current.runs.push(run);
+    else groups.push({ day, runs: [run] });
+    return groups;
+  }, []);
 
   return (
     <>
@@ -201,7 +276,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
         }
         actions={<SummaryRate />}
       />
-      <div className="flex max-w-[1100px] flex-col gap-3 p-4 pb-24 sm:p-5 sm:pb-24">
+      <PageBody width="wide" className="gap-3 pb-24 sm:pb-24">
         {feedback === null ? null : (
           <div
             role={feedback.isError ? "alert" : "status"}
@@ -243,7 +318,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
               type="button"
               aria-pressed={filter === id}
               onClick={() => setFilter(id)}
-              className={`min-h-7 rounded-full px-2.5 py-1 text-xs font-medium transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${
+              className={`min-h-11 rounded-full px-3 py-1 text-xs font-medium transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50 xl:min-h-7 xl:px-2.5 ${
                 filter === id
                   ? "bg-primary text-primary-foreground"
                   : "bg-muted text-muted-foreground hover:text-foreground"
@@ -260,68 +335,64 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
           : null}
 
         {visible.length > 0 ? (
-          <div className="overflow-x-auto rounded-md border border-border">
-            <table className="w-full min-w-[1000px] text-left">
+          <div className="hidden overflow-hidden rounded-md border border-border xl:block">
+            <table className="w-full table-fixed text-left">
               <caption className="sr-only">Review Run 检查列表</caption>
               <thead className="bg-muted text-xs text-muted-foreground">
                 <tr>
-                  <th scope="col" className="w-14 px-3 py-2 font-medium">
+                  <th scope="col" className="w-11 px-2 py-2 font-medium">
                     状态
                   </th>
-                  <th scope="col" className="min-w-44 px-3 py-2 font-medium">
+                  <th scope="col" className="w-[17%] px-2 py-2 font-medium">
                     仓库 / PR
                   </th>
-                  <th scope="col" className="min-w-72 px-3 py-2 font-medium">
+                  <th scope="col" className="w-[31%] px-2 py-2 font-medium">
                     模型
                   </th>
-                  <th scope="col" className="min-w-28 px-3 py-2 font-medium">
+                  <th scope="col" className="w-[13%] px-2 py-2 font-medium">
                     处置
                   </th>
-                  <th scope="col" className="min-w-36 px-3 py-2 font-medium">
+                  <th scope="col" className="w-[15%] px-2 py-2 font-medium">
                     用量 / 费用
                   </th>
-                  <th scope="col" className="min-w-36 px-3 py-2 font-medium">
+                  <th scope="col" className="w-[12%] px-2 py-2 font-medium">
                     时间
                   </th>
                   {canRerun ? (
-                    <th scope="col" className="w-20 px-3 py-2 font-medium">
+                    <th scope="col" className="w-16 px-2 py-2 font-medium">
                       动作
                     </th>
                   ) : null}
                 </tr>
               </thead>
               <tbody>
-                {visible.map((run) => {
-                  const day = localDay(run.startedAt);
-                  const showDay = day !== lastDay;
-                  lastDay = day;
-                  const failedRow = runBucket(run) === "failed";
-                  const cost = costPresentation(run.usage);
-                  return (
-                    <Fragment key={run.id}>
-                      {showDay ? (
+                {visibleGroups.map((group) => (
+                  <Fragment key={group.day}>
                         <tr className="border-t border-border bg-muted/60">
                           <th
                             colSpan={canRerun ? 7 : 6}
                             className="px-3 py-1.5 font-mono text-xs font-semibold text-muted-foreground"
                           >
-                            {day}
+                            {group.day}
                           </th>
                         </tr>
-                      ) : null}
+                    {group.runs.map((run) => {
+                      const failedRow = runBucket(run) === "failed";
+                      return (
                       <tr
+                        key={run.id}
                         className={
                           failedRow
                             ? "border-t border-border bg-destructive/10"
                             : "border-t border-border transition-colors hover:bg-muted/40"
                         }
                       >
-                        <td className="px-3 py-2.5 align-top">
+                        <td className="px-2 py-2.5 align-top">
                           <RunStatus run={run} />
                         </td>
-                        <td className="px-3 py-2.5 align-top">
-                          <div>
-                            <span className="font-mono text-muted-foreground">
+                        <td className="min-w-0 px-2 py-2.5 align-top">
+                          <div className="break-all">
+                            <span className="font-mono text-xs text-muted-foreground">
                               {run.owner}/{run.repo}
                             </span>{" "}
                             <span className="font-mono font-medium">#{run.pullNumber}</span>
@@ -330,72 +401,20 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
                             {run.headSha.slice(0, 7)}
                           </div>
                         </td>
-                        <td className="px-3 py-2.5 align-top">
-                          {run.models.length === 0 ? (
-                            <span className="text-muted-foreground">没有模型记录</span>
-                          ) : (
-                            <ul className="flex flex-col gap-0.5">
-                              {run.models.map((entry) => (
-                                <li
-                                  key={entry.model}
-                                  className={
-                                    entry.failure === null
-                                      ? "font-mono text-xs text-muted-foreground"
-                                      : "font-mono text-xs text-destructive"
-                                  }
-                                >
-                                  {entry.model}
-                                  {entry.failure === null ? (
-                                    <>
-                                      {" "}
-                                      <b className="font-semibold tabular-nums text-foreground">
-                                        {entry.findings}
-                                      </b>
-                                    </>
-                                  ) : (
-                                    <>
-                                      {" "}
-                                      <b className="font-semibold">失败</b>
-                                    </>
-                                  )}
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                          {run.models
-                            .filter((entry) => entry.failure !== null)
-                            .map((entry) => (
-                              <p
-                                key={`${entry.model}-why`}
-                                title={entry.failure ?? undefined}
-                                className="mt-1 line-clamp-2 max-w-96 break-words text-xs leading-relaxed text-destructive"
-                              >
-                                <span className="font-mono">{entry.model}</span> · {entry.failure}
-                              </p>
-                            ))}
+                        <td className="min-w-0 px-2 py-2.5 align-top">
+                          <RunModels run={run} />
                         </td>
-                        <td className="px-3 py-2.5 align-top">
+                        <td className="px-2 py-2.5 align-top">
                           <RunPill run={run} />
                         </td>
-                        <td className="px-3 py-2.5 align-top text-xs">
-                          {run.usage === undefined ? null : (
-                            <div className="font-mono tabular-nums text-muted-foreground">
-                              {run.usage.totalTokens.toLocaleString("zh-CN")} tokens
-                            </div>
-                          )}
-                          <div className="font-mono tabular-nums">{cost.amount}</div>
-                          {cost.note === null ? null : (
-                            <div className="text-warning">{cost.note}</div>
-                          )}
+                        <td className="px-2 py-2.5 align-top">
+                          <RunUsage run={run} />
                         </td>
-                        <td className="px-3 py-2.5 align-top text-xs whitespace-nowrap text-muted-foreground">
-                          <div className="font-mono tabular-nums">{localTime(run.startedAt)}</div>
-                          <div>
-                            {run.triggeredBy === null ? "投递" : `手动 · ${run.triggeredBy}`}
-                          </div>
+                        <td className="px-2 py-2.5 align-top">
+                          <RunTime run={run} />
                         </td>
                         {canRerun ? (
-                          <td className="px-3 py-2.5 align-top">
+                          <td className="px-2 py-2.5 align-top">
                             <Button
                               variant="outline"
                               size="xs"
@@ -407,11 +426,65 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
                           </td>
                         ) : null}
                       </tr>
-                    </Fragment>
-                  );
-                })}
+                      );
+                    })}
+                  </Fragment>
+                ))}
               </tbody>
             </table>
+          </div>
+        ) : null}
+
+        {visible.length > 0 ? (
+          <div className="space-y-4 xl:hidden" aria-label="Review Run 检查列表">
+            {visibleGroups.map((group) => (
+              <section key={group.day} aria-labelledby={`run-day-${group.day}`} className="space-y-2">
+                <h2 id={`run-day-${group.day}`} className="font-mono text-xs font-semibold text-muted-foreground">
+                  {group.day}
+                </h2>
+                <div className="divide-y divide-border overflow-hidden rounded-md border border-border">
+                  {group.runs.map((run) => {
+                    const failedRow = runBucket(run) === "failed";
+                    return (
+                      <article key={run.id} className={`min-w-0 p-3 ${failedRow ? "bg-destructive/10" : "bg-background"}`}>
+                        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+                          <div className="flex min-w-0 items-start gap-2">
+                            <span className="mt-0.5 shrink-0"><RunStatus run={run} /></span>
+                            <div className="min-w-0">
+                              <h3 className="break-all font-mono font-medium">
+                                {run.owner}/{run.repo} #{run.pullNumber}
+                              </h3>
+                              <p className="font-mono text-xs text-muted-foreground">{run.headSha.slice(0, 7)}</p>
+                            </div>
+                          </div>
+                          <RunTime run={run} />
+                        </div>
+                        <div className="mt-3 border-t border-border/80 pt-3">
+                          <RunModels run={run} />
+                        </div>
+                        <div className="mt-3 flex flex-wrap items-end justify-between gap-3 border-t border-border/80 pt-3">
+                          <div className="flex min-w-0 flex-wrap items-start gap-x-5 gap-y-2">
+                            <RunPill run={run} />
+                            <RunUsage run={run} />
+                          </div>
+                          {canRerun ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="min-h-11"
+                              disabled={rerun.isPending}
+                              onClick={() => rerun.mutate(run)}
+                            >
+                              {rerun.isPending ? "重跑中…" : "重跑"}
+                            </Button>
+                          ) : null}
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
           </div>
         ) : null}
 
@@ -444,7 +517,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
                 ? "到底了"
                 : ""}
         </p>
-      </div>
+      </PageBody>
     </>
   );
 }
