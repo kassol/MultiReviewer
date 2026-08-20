@@ -1886,6 +1886,39 @@ test("自定义模型发现失败无需验证模型，返回 request id 且候�
   }
 });
 
+test("未捕获的模型服务异常只返回安全摘要与 request id", async () => {
+  const rawFailure = "upstream exploded at /private/provider.json";
+  const h = await startPanelHarness(cleanups, {
+    reviewers: [],
+    discoverModelServiceModels: async () => {
+      throw new Error(rawFailure);
+    },
+  });
+  const cookie = await cookieFor(h, "custom-preview-throw", ["model:write", "credential:write"]);
+  const logs: string[] = [];
+  const priorError = console.error;
+  console.error = (...values: unknown[]) => { logs.push(values.map(String).join(" ")); };
+  try {
+    const response = await mutation(h, cookie, "POST", "/model-services/custom/preview", {
+      provider: "corp-preview-throw",
+      baseUrl: "https://preview-throw.example/v1",
+      api: "openai-responses",
+      credential: "throw-secret",
+      expectedVersion: null,
+      reconfirmedSupplements: [],
+    });
+    const text = await response.text();
+    assert.equal(response.status, 500, text);
+    const body = JSON.parse(text) as { error: string; requestId: string };
+    assert.equal(body.error, "内部错误，请按 request id 查看服务日志");
+    assert.match(body.requestId, /^[a-f0-9]{16}$/);
+    assert.equal(text.includes(rawFailure), false);
+    assert.equal(logs.some((line) => line.includes(body.requestId) && line.includes(rawFailure)), true);
+  } finally {
+    console.error = priorError;
+  }
+});
+
 test("自定义最终发现失败可由真实推理提交，推理失败不留空壳且所有错误脱敏", async () => {
   const discoveryCredential = "custom-directory-fallback-secret";
   const rejectedCredential = "custom-inference-rejected-secret";

@@ -529,7 +529,7 @@ function materializedReviewerPlan(
   if (conflictingProviders.has(spec.provider)) {
     failure =
       `自定义 provider ${spec.provider} 的名字与 Pi 内置的同名 provider 撞上了,` +
-      `${identity} 这次没跑。去模型服务页改名重建或删除它。`;
+      `${identity} 这次没跑。去模型服务页原子改名或删除它。`;
   } else if (!targetMatchesCommittedVersion) {
     failure = service.type === "builtin"
       ? `Pi 内置目标已经变化，${identity} 这次没跑。请粘贴凭据重新配置模型服务。`
@@ -537,7 +537,7 @@ function materializedReviewerPlan(
   } else if (service.credential.state === "unconfigured") {
     failure =
       `没有配置 ${spec.provider} 的模型凭据,${identity} 这次没跑。` +
-      "去面板的凭据页配好再重跑。";
+      "去模型服务页配好再重跑。";
   } else if (service.credential.state === "pending-reverification") {
     failure = `${spec.provider} 的模型凭据待重新验证,${identity} 这次没跑。`;
   } else if (credential === undefined || credential === "") {
@@ -4310,8 +4310,14 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
         bootstrapSecret,
         clearBootstrap,
       ).catch((error: unknown) => {
-        console.error("面板 API 处理失败:", error instanceof Error ? error.message : error);
-        if (!res.headersSent) sendJson(res, 500, { error: "内部错误" });
+        const requestId = randomBytes(8).toString("hex");
+        console.error(`[panel] request ${requestId} failed:`, error);
+        if (!res.headersSent) {
+          sendJson(res, 500, {
+            error: "内部错误，请按 request id 查看服务日志",
+            requestId,
+          });
+        }
       });
       return;
     }

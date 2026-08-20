@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 
 import { fetchJson } from "./api.ts";
 import { hasPermission, type PanelSession } from "./session.ts";
@@ -24,7 +25,32 @@ export function useSetupStatus() {
 
 export function SetupChecklist({ session }: { session: PanelSession }) {
   const status = useSetupStatus();
-  if (status.data === undefined || status.data.instanceEnabled) return null;
+  if (status.isError) {
+    return (
+      <Card className="mx-4 mt-4 gap-2 px-4 py-3 sm:mx-5" aria-label="首次配置状态读取失败">
+        <h2 className="font-semibold">首次配置状态暂时不可用</h2>
+        <p role="alert" className="text-sm text-destructive">{status.error.message}</p>
+        <Button
+          className="w-fit"
+          type="button"
+          variant="outline"
+          size="xs"
+          disabled={status.isFetching}
+          onClick={() => void status.refetch()}
+        >
+          {status.isFetching ? "正在重试…" : "重试"}
+        </Button>
+      </Card>
+    );
+  }
+  if (status.data === undefined) {
+    return (
+      <Card className="mx-4 mt-4 gap-2 px-4 py-3 sm:mx-5" aria-label="正在读取首次配置状态">
+        <h2 className="font-semibold">正在读取首次配置状态…</h2>
+      </Card>
+    );
+  }
+  if (status.data.instanceEnabled) return null;
 
   const current = !status.data.hasRunnableModelService
     ? "service"

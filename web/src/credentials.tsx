@@ -245,6 +245,7 @@ type ModelServiceSetupContextValue = {
   setCandidate: React.Dispatch<React.SetStateAction<ModelServiceSetupCandidate | null>>;
   phase: SetupPhase;
   setPhase: React.Dispatch<React.SetStateAction<SetupPhase>>;
+  transition: (navigate: () => Promise<unknown>) => void;
   finish: () => void;
 };
 
@@ -279,9 +280,16 @@ export function ModelServiceSetupLayout() {
     setCandidate(null);
     setPhase(null);
   };
+  const transition = (navigate: () => Promise<unknown>): void => {
+    allowExit.current = true;
+    setPhase(null);
+    void navigate().finally(() => {
+      allowExit.current = false;
+    });
+  };
 
   return (
-    <ModelServiceSetupContext.Provider value={{ candidate, setCandidate, phase, setPhase, finish }}>
+    <ModelServiceSetupContext.Provider value={{ candidate, setCandidate, phase, setPhase, transition, finish }}>
       <PageHeader
         title="配置模型服务"
         description="选择来源、发现模型、真实验证三步完成；候选配置只留在当前页面内存。"
@@ -415,7 +423,7 @@ function useBuiltinProvider(provider: string) {
 export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
   const navigate = useNavigate();
   const metadata = useBuiltinProvider(provider);
-  const { candidate, setCandidate, phase, setPhase } = useModelServiceSetup();
+  const { candidate, setCandidate, phase, setPhase, transition } = useModelServiceSetup();
   const credential = candidate?.kind === "builtin" && candidate.provider === provider ? candidate.credential : "";
   const preview = useMutation({
     mutationFn: async () => {
@@ -439,7 +447,7 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
         preview: result,
         validationModel: result.models[0]?.id ?? "",
       });
-      void navigate({ to: "/credentials/add/builtin/$provider/verify", params: { provider } });
+      transition(() => navigate({ to: "/credentials/add/builtin/$provider/verify", params: { provider } }));
     },
   });
 
@@ -624,7 +632,7 @@ function useCustomSetupService(provider: string | undefined) {
 export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
   const navigate = useNavigate();
   const serviceQuery = useCustomSetupService(provider);
-  const { candidate, setCandidate, phase, setPhase } = useModelServiceSetup();
+  const { candidate, setCandidate, phase, setPhase, transition } = useModelServiceSetup();
   const service = serviceQuery.service;
   const active = candidate?.kind === "custom" && (
     provider === undefined ? candidate.version === null : candidate.provider === provider
@@ -662,12 +670,12 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
       const next = { ...active, preview: result, discoveryError: failure };
       setCandidate(next);
       if (editing) {
-        void navigate({
+        transition(() => navigate({
           to: "/credentials/add/custom/$provider/verify",
           params: { provider: active.provider },
-        });
+        }));
       } else {
-        void navigate({ to: "/credentials/add/custom/verify" });
+        transition(() => navigate({ to: "/credentials/add/custom/verify" }));
       }
     },
   });
