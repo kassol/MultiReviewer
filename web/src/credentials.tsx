@@ -75,6 +75,10 @@ type CredentialTarget = {
 };
 
 type CustomProtocol = "openai-completions" | "openai-responses";
+const CUSTOM_PROTOCOL_LABEL: Record<CustomProtocol, string> = {
+  "openai-completions": "Chat Completions (/chat/completions)",
+  "openai-responses": "Responses (/responses)",
+};
 type CustomPreview = {
   provider: string;
   expectedVersion: number | null;
@@ -86,11 +90,6 @@ type CustomPreview = {
     target: { baseUrl: string | null; api: string | null };
     targetChanged: boolean;
   };
-};
-
-type CustomDialogTarget = {
-  mode: "create" | "update";
-  service?: ModelService;
 };
 
 type ModelServiceMutationError = Error & { references: ModelReference[] };
@@ -216,6 +215,7 @@ function ServiceStatus({ service }: { service: ModelService }) {
 }
 
 type BuiltinSetupCandidate = {
+  kind: "builtin";
   provider: string;
   name: string;
   version: number | null;
@@ -224,10 +224,25 @@ type BuiltinSetupCandidate = {
   validationModel: string;
 };
 
+type CustomSetupCandidate = {
+  kind: "custom";
+  provider: string;
+  baseUrl: string;
+  api: CustomProtocol;
+  version: number | null;
+  credential: string;
+  preview: CustomPreview | null;
+  discoveryError: string | null;
+  validationModel: string;
+  reconfirmedSupplements: string[];
+};
+
+type ModelServiceSetupCandidate = BuiltinSetupCandidate | CustomSetupCandidate;
+
 type SetupPhase = "discovering" | "committing" | null;
 type ModelServiceSetupContextValue = {
-  candidate: BuiltinSetupCandidate | null;
-  setCandidate: React.Dispatch<React.SetStateAction<BuiltinSetupCandidate | null>>;
+  candidate: ModelServiceSetupCandidate | null;
+  setCandidate: React.Dispatch<React.SetStateAction<ModelServiceSetupCandidate | null>>;
   phase: SetupPhase;
   setPhase: React.Dispatch<React.SetStateAction<SetupPhase>>;
   finish: () => void;
@@ -242,11 +257,14 @@ function useModelServiceSetup(): ModelServiceSetupContextValue {
 }
 
 export function ModelServiceSetupLayout() {
-  const [candidate, setCandidate] = useState<BuiltinSetupCandidate | null>(null);
+  const [candidate, setCandidate] = useState<ModelServiceSetupCandidate | null>(null);
   const [phase, setPhase] = useState<SetupPhase>(null);
   const allowExit = useRef(false);
   const dirty = candidate !== null && (
-    candidate.credential !== "" || candidate.preview !== null || candidate.validationModel !== ""
+    candidate.credential !== "" ||
+    candidate.preview !== null ||
+    candidate.validationModel !== "" ||
+    (candidate.kind === "custom" && (candidate.provider !== "" || candidate.baseUrl !== ""))
   );
   const blocker = useBlocker({
     shouldBlockFn: ({ next }) =>
@@ -265,7 +283,7 @@ export function ModelServiceSetupLayout() {
   return (
     <ModelServiceSetupContext.Provider value={{ candidate, setCandidate, phase, setPhase, finish }}>
       <PageHeader
-        title="添加模型服务"
+        title="配置模型服务"
         description="选择来源、发现模型、真实验证三步完成；候选配置只留在当前页面内存。"
       />
       <div className="max-w-[900px] p-5 pb-20">
@@ -312,7 +330,6 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
   const navigate = useNavigate();
   const { setCandidate } = useModelServiceSetup();
   const [query, setQuery] = useState("");
-  const [customOpen, setCustomOpen] = useState(false);
   const providers = useQuery({
     queryKey: ["model-services", "providers", query.trim()],
     queryFn: () => fetchJson<{ providers: BuiltinProvider[] }>(
@@ -348,6 +365,7 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
               disabled={provider.conflict}
               onClick={() => {
                 setCandidate({
+                  kind: "builtin",
                   provider: provider.id,
                   name: provider.name,
                   version: provider.version,
@@ -373,19 +391,11 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
       )}
       {canWriteCustom ? (
         <div className="border-t pt-4">
-          <Button type="button" variant="outline" onClick={() => setCustomOpen(true)}>添加自定义 provider</Button>
+          <Button asChild variant="outline">
+            <Link to="/credentials/add/custom/discover">添加自定义 provider</Link>
+          </Button>
         </div>
       ) : null}
-      {!customOpen ? null : (
-        <CustomCandidateDialog
-          target={{ mode: "create" }}
-          onClose={() => setCustomOpen(false)}
-          onCommitted={(provider) => {
-            setCustomOpen(false);
-            void navigate({ to: "/settings", search: { provider } });
-          }}
-        />
-      )}
     </Card>
   );
 }
@@ -406,7 +416,7 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
   const navigate = useNavigate();
   const metadata = useBuiltinProvider(provider);
   const { candidate, setCandidate, phase, setPhase } = useModelServiceSetup();
-  const credential = candidate?.provider === provider ? candidate.credential : "";
+  const credential = candidate?.kind === "builtin" && candidate.provider === provider ? candidate.credential : "";
   const preview = useMutation({
     mutationFn: async () => {
       const current = metadata.data;
@@ -421,6 +431,7 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
     onSuccess: (result) => {
       const current = metadata.data!;
       setCandidate({
+        kind: "builtin",
         provider,
         name: current.name,
         version: current.version,
@@ -454,6 +465,7 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
             onChange={(event) => {
               const current = metadata.data;
               setCandidate({
+                kind: "builtin",
                 provider,
                 name: current?.name ?? provider,
                 version: current?.version ?? null,
@@ -490,7 +502,7 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { candidate, setCandidate, phase, setPhase, finish } = useModelServiceSetup();
-  const ready = candidate?.provider === provider && candidate.preview !== null && candidate.credential !== "";
+  const ready = candidate?.kind === "builtin" && candidate.provider === provider && candidate.preview !== null && candidate.credential !== "";
   const commit = useMutation({
     mutationFn: async () => {
       if (!ready) throw new Error("发现结果已不在当前页面内存，请重新发现模型");
@@ -580,6 +592,303 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
   );
 }
 
+function customSetupInitial(service: ModelService | undefined): CustomSetupCandidate {
+  const validationPrefix = service === undefined ? "" : `${service.provider}:`;
+  return {
+    kind: "custom",
+    provider: service?.provider ?? "",
+    baseUrl: service?.target?.baseUrl ?? "",
+    api: service?.target?.api === "openai-responses" ? "openai-responses" : "openai-completions",
+    version: service?.version ?? null,
+    credential: "",
+    preview: null,
+    discoveryError: null,
+    validationModel:
+      service?.credential.validationModel?.startsWith(validationPrefix) === true
+        ? service.credential.validationModel.slice(validationPrefix.length)
+        : "",
+    reconfirmedSupplements: [],
+  };
+}
+
+function useCustomSetupService(provider: string | undefined) {
+  const services = useModelServices(provider !== undefined);
+  return {
+    ...services,
+    service: provider === undefined
+      ? undefined
+      : services.data?.services.find((service) => service.provider === provider && service.type === "custom"),
+  };
+}
+
+export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
+  const navigate = useNavigate();
+  const serviceQuery = useCustomSetupService(provider);
+  const { candidate, setCandidate, phase, setPhase } = useModelServiceSetup();
+  const service = serviceQuery.service;
+  const active = candidate?.kind === "custom" && (
+    provider === undefined ? candidate.version === null : candidate.provider === provider
+  ) ? candidate : customSetupInitial(service);
+  const editing = provider !== undefined;
+  const targetChanged = editing && service !== undefined && (
+    active.baseUrl.trim() !== (service.target?.baseUrl ?? "") || active.api !== service.target?.api
+  );
+  const supplementModels = service?.models?.filter((model) =>
+    model.sources.includes("manual") || model.sources.includes("migration-retention"),
+  ) ?? [];
+  const preview = useMutation({
+    mutationFn: async () => {
+      const response = await api("/model-services/custom/preview", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: active.provider.trim(),
+          baseUrl: active.baseUrl.trim(),
+          api: active.api,
+          credential: active.credential,
+          expectedVersion: active.version,
+          reconfirmedSupplements: active.reconfirmedSupplements,
+        }),
+      });
+      if (response.ok) {
+        return { result: (await response.json()) as CustomPreview, failure: null };
+      }
+      const failure = await errorText(response);
+      if (response.status === 422) return { result: null, failure };
+      throw new Error(failure);
+    },
+    onMutate: () => setPhase("discovering"),
+    onSettled: () => setPhase(null),
+    onSuccess: ({ result, failure }) => {
+      const next = { ...active, preview: result, discoveryError: failure };
+      setCandidate(next);
+      if (editing) {
+        void navigate({
+          to: "/credentials/add/custom/$provider/verify",
+          params: { provider: active.provider },
+        });
+      } else {
+        void navigate({ to: "/credentials/add/custom/verify" });
+      }
+    },
+  });
+  const update = (change: Partial<CustomSetupCandidate>): void => {
+    setCandidate({ ...active, ...change, preview: null, discoveryError: null });
+    preview.reset();
+  };
+
+  if (editing && serviceQuery.isPending) return <Skeleton className="h-64" />;
+  if (editing && service === undefined) {
+    return (
+      <Card className="gap-3 px-4 py-5">
+        <h2 className="text-base font-semibold">自定义模型服务不存在</h2>
+        <p className="text-muted-foreground">此稳定地址对应的 provider 已删除或当前不可见。</p>
+        <Link to="/credentials" className="w-fit underline underline-offset-4">返回模型服务</Link>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="gap-4 px-4 py-4">
+      <div>
+        <h2 className="text-base font-semibold">配置调用目标并发现模型</h2>
+        <p className="mt-1 text-muted-foreground">发现阶段不需要验证模型；目录失败后仍可手填 model id 进入真实验证。</p>
+      </div>
+      <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); preview.mutate(); }}>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label htmlFor="setup-custom-provider">provider</Label>
+            <Input
+              id="setup-custom-provider"
+              className="font-mono"
+              value={active.provider}
+              required
+              disabled={phase !== null || editing}
+              maxLength={64}
+              onChange={(event) => update({ provider: event.target.value })}
+            />
+          </div>
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label htmlFor="setup-custom-base-url">调用目标</Label>
+            <Input
+              id="setup-custom-base-url"
+              className="font-mono"
+              type="url"
+              value={active.baseUrl}
+              required
+              disabled={phase !== null}
+              placeholder="https://gateway.example/v1"
+              onChange={(event) => update({ baseUrl: event.target.value })}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="setup-custom-protocol">接口协议</Label>
+            <select
+              id="setup-custom-protocol"
+              className="h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50"
+              value={active.api}
+              disabled={phase !== null}
+              onChange={(event) => update({ api: event.target.value as CustomProtocol })}
+            >
+              <option value="openai-completions">{CUSTOM_PROTOCOL_LABEL["openai-completions"]}</option>
+              <option value="openai-responses">{CUSTOM_PROTOCOL_LABEL["openai-responses"]}</option>
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="setup-custom-credential">模型凭据</Label>
+            <Input
+              id="setup-custom-credential"
+              type="password"
+              autoComplete="off"
+              value={active.credential}
+              required
+              disabled={phase !== null}
+              onChange={(event) => update({ credential: event.target.value })}
+            />
+          </div>
+        </div>
+        {!targetChanged || supplementModels.length === 0 ? null : (
+          <fieldset className="rounded-md border px-3 py-2">
+            <legend className="px-1 text-sm font-medium">重新确认带入新目标的模型补录</legend>
+            <p className="mb-2 text-xs text-muted-foreground">地址或协议变化后，仅带入这里明确确认的旧来源。</p>
+            <div className="space-y-1.5">
+              {supplementModels.map((model) => (
+                <label key={model.identity} className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 size-4"
+                    checked={active.reconfirmedSupplements.includes(model.identity)}
+                    disabled={phase !== null}
+                    onChange={(event) => update({
+                      reconfirmedSupplements: event.target.checked
+                        ? [...active.reconfirmedSupplements, model.identity]
+                        : active.reconfirmedSupplements.filter((identity) => identity !== model.identity),
+                    })}
+                  />
+                  <span className="break-all font-mono text-xs">{model.identity}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        )}
+        {preview.error === null ? null : <p role="alert" className="text-destructive">{preview.error.message}</p>}
+        <div className="flex items-center gap-3 border-t pt-3">
+          <Button asChild variant="outline"><Link to={editing ? "/credentials/$provider/maintenance" : "/credentials"} params={editing ? { provider } : {}}>返回</Link></Button>
+          <Button
+            type="submit"
+            disabled={phase !== null || active.provider.trim() === "" || active.baseUrl.trim() === "" || active.credential === ""}
+          >
+            {phase === "discovering" ? "正在发现模型…" : "发现模型"}
+          </Button>
+          {phase === "discovering" ? <span className="text-xs text-muted-foreground">阶段 2/3：正在请求模型目录</span> : null}
+        </div>
+      </form>
+    </Card>
+  );
+}
+
+export function CustomServiceVerifyPage({ provider }: { provider?: string }) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { candidate, setCandidate, phase, setPhase, finish } = useModelServiceSetup();
+  const ready = candidate?.kind === "custom" && (
+    provider === undefined ? candidate.version === null : candidate.provider === provider
+  ) && candidate.credential !== "" && (candidate.preview !== null || candidate.discoveryError !== null);
+  const active = ready ? candidate : null;
+  const commit = useMutation({
+    mutationFn: async () => {
+      if (active === null) throw new Error("候选已不在当前页面内存，请重新执行模型发现");
+      return responseJsonWithReferences<CredentialMutationResult>(await api("/model-services/custom/commit", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: active.provider,
+          baseUrl: active.baseUrl,
+          api: active.api,
+          credential: active.credential,
+          validationModel: active.validationModel.trim(),
+          expectedVersion: active.version,
+          reconfirmedSupplements: active.reconfirmedSupplements,
+        }),
+      }));
+    },
+    onMutate: () => setPhase("committing"),
+    onSettled: () => setPhase(null),
+    onSuccess: () => {
+      const created = active?.version === null;
+      const committedProvider = active!.provider;
+      void queryClient.invalidateQueries({ queryKey: ["model-services"] });
+      finish();
+      if (created) void navigate({ to: "/settings", search: { provider: committedProvider } });
+      else void navigate({ to: "/credentials/$provider", params: { provider: committedProvider } });
+    },
+  });
+
+  if (active === null) {
+    const backTo = provider === undefined
+      ? "/credentials/add/custom/discover" as const
+      : "/credentials/add/custom/$provider/discover" as const;
+    return (
+      <Card className="gap-3 px-4 py-5">
+        <h2 className="text-base font-semibold">发现结果不在当前页面内存</h2>
+        <p className="text-muted-foreground">刷新和直接打开此地址不会恢复凭据或候选，请重新执行模型发现。</p>
+        <Link to={backTo} params={provider === undefined ? {} : { provider }} className="w-fit underline underline-offset-4">返回模型发现</Link>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="gap-4 px-4 py-4">
+      <div>
+        <h2 className="text-base font-semibold">选择或手填验证模型</h2>
+        <p className="mt-1 text-muted-foreground">
+          {active.preview === null
+            ? `模型发现未完成：${active.discoveryError}`
+            : `模型发现得到 ${active.preview.models.length} 个模型。`}
+          最终提交会重新发现并执行最小真实推理。
+        </p>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="setup-custom-validation-model">验证模型</Label>
+        <Input
+          id="setup-custom-validation-model"
+          className="font-mono"
+          list={active.preview === null ? undefined : "setup-custom-validation-models"}
+          value={active.validationModel}
+          disabled={phase !== null}
+          placeholder="只填 model id"
+          onChange={(event) => setCandidate({ ...active, validationModel: event.target.value })}
+        />
+        {active.preview === null ? null : (
+          <datalist id="setup-custom-validation-models">
+            {active.preview.models.map((model) => <option key={model.identity} value={model.id} />)}
+          </datalist>
+        )}
+        <p className="text-xs text-muted-foreground">目录缺少目标模型时可手填；真实推理成功后会形成模型补录。</p>
+      </div>
+      {commit.error === null ? null : (
+        <div className="space-y-2">
+          <p role="alert" className="text-destructive">{commit.error.message}</p>
+          <ReferenceBlockers references={(commit.error as ModelServiceMutationError).references} />
+        </div>
+      )}
+      <div className="flex items-center gap-3 border-t pt-3">
+        <Button asChild variant="outline">
+          {provider === undefined
+            ? <Link to="/credentials/add/custom/discover">返回模型发现</Link>
+            : <Link to="/credentials/add/custom/$provider/discover" params={{ provider }}>返回模型发现</Link>}
+        </Button>
+        <Button
+          type="button"
+          disabled={phase !== null || active.validationModel.trim() === ""}
+          onClick={() => commit.mutate()}
+        >
+          {phase === "committing" ? "正在重新发现并验证…" : active.version === null ? "验证并创建" : "验证并更新"}
+        </Button>
+        {phase === "committing" ? <span className="text-xs text-muted-foreground">阶段 3/3：重新发现目录并执行真实推理</span> : null}
+      </div>
+    </Card>
+  );
+}
+
 function StateRows({ service, canReadCredential }: { service: ModelService; canReadCredential: boolean }) {
   const providerLabel =
     service.providerState === "name-conflict"
@@ -613,7 +922,11 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
               地址：<span className={service.target.baseUrl === null ? undefined : "font-mono"}>{service.target.baseUrl ?? "未提供"}</span>
             </p>
             <p>
-              接口协议：<span className={service.target.api === null ? undefined : "font-mono"}>{service.target.api ?? "未提供"}</span>
+              接口协议：{service.type === "custom" && (
+                service.target.api === "openai-completions" || service.target.api === "openai-responses"
+              ) ? CUSTOM_PROTOCOL_LABEL[service.target.api] : (
+                <span className={service.target.api === null ? undefined : "font-mono"}>{service.target.api ?? "未提供"}</span>
+              )}
             </p>
           </div>
         )}
@@ -923,335 +1236,7 @@ function ReferenceBlockers({ references }: { references: ModelReference[] }) {
   );
 }
 
-function CustomCandidateDialog({
-  target,
-  onClose,
-  onCommitted,
-}: {
-  target: CustomDialogTarget;
-  onClose: () => void;
-  onCommitted: (provider: string) => void;
-}) {
-  const queryClient = useQueryClient();
-  const service = target.service;
-  const editing = target.mode === "update" && service !== undefined;
-  const validationPrefix = service === undefined ? "" : `${service.provider}:`;
-  const initialValidationModel =
-    service?.credential.validationModel?.startsWith(validationPrefix) === true
-      ? service.credential.validationModel.slice(validationPrefix.length)
-      : "";
-  const initialApi = service?.target?.api;
-  const [provider, setProvider] = useState(editing ? service.provider : "");
-  const [baseUrl, setBaseUrl] = useState(service?.target?.baseUrl ?? "");
-  const [protocol, setProtocol] = useState<CustomProtocol>(
-    initialApi === "openai-responses" ? "openai-responses" : "openai-completions",
-  );
-  const [credential, setCredential] = useState("");
-  const [validationModel, setValidationModel] = useState(initialValidationModel);
-  const [reconfirmedSupplements, setReconfirmedSupplements] = useState<string[]>([]);
-  const [preview, setPreview] = useState<CustomPreview | null>(null);
-  const [previewAttempted, setPreviewAttempted] = useState(false);
-  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
-  const allowExit = useRef(false);
-  const targetChanged =
-    editing &&
-    (baseUrl.trim() !== (service.target?.baseUrl ?? "") || protocol !== service.target?.api);
-  const supplementModels = editing
-    ? (service.models ?? []).filter((model) =>
-        model.sources.includes("manual") || model.sources.includes("migration-retention"),
-      )
-    : [];
-  const candidate = {
-    provider: provider.trim(),
-    baseUrl: baseUrl.trim(),
-    api: protocol,
-    credential,
-    validationModel: validationModel.trim(),
-    expectedVersion: editing ? service.version : null,
-    reconfirmedSupplements,
-  };
-  const dirty =
-    provider !== (editing ? service.provider : "") ||
-    baseUrl !== (service?.target?.baseUrl ?? "") ||
-    protocol !== (initialApi === "openai-responses" ? "openai-responses" : "openai-completions") ||
-    credential !== "" ||
-    validationModel !== initialValidationModel ||
-    reconfirmedSupplements.length > 0;
-  const previewCandidate = useMutation({
-    mutationFn: async () => responseJson<CustomPreview>(
-      await api("/model-services/custom/preview", {
-        method: "POST",
-        body: JSON.stringify(candidate),
-      }),
-    ),
-    onSuccess: (result) => {
-      setPreview(result);
-      setPreviewAttempted(true);
-    },
-    onError: () => {
-      setPreview(null);
-      setPreviewAttempted(true);
-    },
-  });
-  const commitCandidate = useMutation({
-    mutationFn: async () => responseJsonWithReferences<CredentialMutationResult>(
-      await api("/model-services/custom/commit", {
-        method: "POST",
-        body: JSON.stringify(candidate),
-      }),
-    ),
-    onSuccess: (result) => {
-      allowExit.current = true;
-      void queryClient.invalidateQueries({ queryKey: ["model-services"] });
-      onCommitted(result.provider);
-    },
-  });
-  const busy = previewCandidate.isPending || commitCandidate.isPending;
-  const blocker = useBlocker({
-    shouldBlockFn: () => !allowExit.current && (dirty || busy),
-    enableBeforeUnload: () => dirty || busy,
-    withResolver: true,
-  });
-  const commitError = commitCandidate.error as ModelServiceMutationError | null;
-  const invalidatePreview = (): void => {
-    setPreview(null);
-    setPreviewAttempted(false);
-    previewCandidate.reset();
-    commitCandidate.reset();
-  };
-  const title = editing
-    ? `修改 ${service.provider}`
-    : "创建自定义模型服务";
-  const requestClose = (): void => {
-    if (busy) return;
-    if (dirty) setConfirmingDiscard(true);
-    else onClose();
-  };
-
-  return (
-    <>
-      <Dialog open onOpenChange={(open) => { if (!open) requestClose(); }}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
-        <form
-          className="flex flex-col gap-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            commitCandidate.reset();
-            commitCandidate.mutate();
-          }}
-        >
-          <DialogHeader>
-            <DialogTitle>{title}</DialogTitle>
-            <DialogDescription>
-              候选只留在当前页面内存。预览只发现目录；最终提交会重新发现并执行一次真实推理，全部成功后才原子切换。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="flex flex-col gap-1 sm:col-span-2">
-              <Label htmlFor="custom-provider">provider</Label>
-              <Input
-                id="custom-provider"
-                className="font-mono"
-                value={provider}
-                required
-                disabled={busy || editing}
-                pattern="[a-z0-9-]{1,64}"
-                placeholder="例如 corp-gateway"
-                onChange={(event) => { setProvider(event.target.value); invalidatePreview(); }}
-              />
-              <p className="text-xs text-muted-foreground">小写字母、数字与连字符；不能占用当前 Pi 内置名称。</p>
-            </div>
-            <div className="flex flex-col gap-1 sm:col-span-2">
-              <Label htmlFor="custom-base-url">Base URL</Label>
-              <Input
-                id="custom-base-url"
-                className="font-mono"
-                type="url"
-                value={baseUrl}
-                required
-                disabled={busy}
-                placeholder="https://gateway.example/v1"
-                onChange={(event) => { setBaseUrl(event.target.value); invalidatePreview(); }}
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="custom-protocol">接口协议</Label>
-              <select
-                id="custom-protocol"
-                className="h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50"
-                value={protocol}
-                disabled={busy}
-                onChange={(event) => {
-                  setProtocol(event.target.value as CustomProtocol);
-                  invalidatePreview();
-                }}
-              >
-                <option value="openai-completions">openai-completions</option>
-                <option value="openai-responses">openai-responses</option>
-              </select>
-            </div>
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="custom-validation-model">验证模型</Label>
-              <Input
-                id="custom-validation-model"
-                className="font-mono"
-                list={preview === null ? undefined : "custom-preview-models"}
-                value={validationModel}
-                required
-                disabled={busy}
-                placeholder="只填 model id"
-                onChange={(event) => { setValidationModel(event.target.value); invalidatePreview(); }}
-              />
-              {preview === null ? null : (
-                <datalist id="custom-preview-models">
-                  {preview.models.map((model) => <option key={model.identity} value={model.id} />)}
-                </datalist>
-              )}
-            </div>
-            <div className="flex flex-col gap-1 sm:col-span-2">
-              <Label htmlFor="custom-credential">新模型凭据</Label>
-              <Input
-                id="custom-credential"
-                type="password"
-                autoComplete="off"
-                value={credential}
-                required
-                disabled={busy}
-                placeholder={editing ? "轮换或切换目标都必须重新输入" : "模型服务使用的 key"}
-                onChange={(event) => { setCredential(event.target.value); invalidatePreview(); }}
-              />
-              <p className="text-xs text-muted-foreground">只写不回显；切换地址或协议时绝不会把旧凭据发给新目标。</p>
-            </div>
-          </div>
-
-          {!targetChanged || supplementModels.length === 0 ? null : (
-            <fieldset className="rounded-md border px-3 py-2">
-              <legend className="px-1 text-sm font-medium">重新确认带入新目标的模型补录</legend>
-              <p className="mb-2 text-xs text-muted-foreground">未勾选的旧目标来源会丢弃；仍被组合引用时服务端会阻止提交并列出位置。</p>
-              <div className="space-y-1.5">
-                {supplementModels.map((model) => (
-                  <label key={model.identity} className="flex items-start gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="mt-0.5 size-4"
-                      checked={reconfirmedSupplements.includes(model.identity)}
-                      disabled={busy}
-                      onChange={(event) => {
-                        setReconfirmedSupplements((current) => event.target.checked
-                          ? [...current, model.identity]
-                          : current.filter((identity) => identity !== model.identity));
-                        invalidatePreview();
-                      }}
-                    />
-                    <span className="break-all font-mono text-xs">{model.identity}</span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-          )}
-
-          {preview === null ? null : (
-            <div className="rounded-md border bg-muted px-3 py-2">
-              <div className="flex items-center justify-between gap-2">
-                <p className="font-medium">发现预览</p>
-                <Badge variant="outline">未保存</Badge>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                <span className="font-mono tabular-nums">{preview.models.length}</span> 个模型 · 地址已规范化为{" "}
-                <span className="break-all font-mono">{preview.target.baseUrl}</span>
-              </p>
-            </div>
-          )}
-          {previewCandidate.error === null ? null : (
-            <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
-              <p role="alert" className="text-warning">{previewCandidate.error.message}</p>
-              <p className="mt-1 text-xs text-muted-foreground">仍可提交；最终真实推理成功时会以验证模型建立服务。</p>
-            </div>
-          )}
-          {commitError === null ? null : (
-            <div className="space-y-2">
-              <p role="alert" className="text-destructive">{commitError.message}</p>
-              <ReferenceBlockers references={commitError.references} />
-            </div>
-          )}
-          <DialogFooter>
-            <Button type="button" variant="outline" disabled={busy} onClick={requestClose}>取消</Button>
-            <Button
-              type="button"
-              variant={previewAttempted ? "outline" : "default"}
-              disabled={busy || provider.trim() === "" || baseUrl.trim() === "" || credential === "" || validationModel.trim() === ""}
-              onClick={() => {
-                setPreview(null);
-                setPreviewAttempted(false);
-                commitCandidate.reset();
-                previewCandidate.mutate();
-              }}
-            >
-              {previewCandidate.isPending ? "正在发现…" : previewAttempted ? "重新预览" : "预览模型"}
-            </Button>
-            {!previewAttempted ? null : (
-              <Button type="submit" disabled={busy || validationModel.trim() === ""}>
-                {commitCandidate.isPending ? "正在重新发现并验证…" : editing ? "验证并切换" : "验证并创建"}
-              </Button>
-            )}
-          </DialogFooter>
-        </form>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={confirmingDiscard || blocker.status === "blocked"}
-        onOpenChange={(open) => {
-          if (open) return;
-          setConfirmingDiscard(false);
-          blocker.reset?.();
-        }}
-      >
-        <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{busy ? "模型服务操作仍在进行" : "丢弃未保存的候选？"}</DialogTitle>
-          <DialogDescription>
-            {busy ? "请求结束前不能离开或丢弃候选。" : "离开会丢弃当前候选配置与模型凭据。"}
-          </DialogDescription>
-        </DialogHeader>
-        {busy ? null : (
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                setConfirmingDiscard(false);
-                blocker.reset?.();
-              }}
-            >
-              继续配置
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              onClick={() => {
-                allowExit.current = true;
-                setConfirmingDiscard(false);
-                if (blocker.status === "blocked") blocker.proceed();
-                else onClose();
-              }}
-            >
-              丢弃并离开
-            </Button>
-          </DialogFooter>
-        )}
-        </DialogContent>
-      </Dialog>
-    </>
-  );
-}
-
-function CustomServiceControls({
-  service,
-  onEdit,
-}: {
-  service: ModelService;
-  onEdit: () => void;
-}) {
+function CustomServiceControls({ service }: { service: ModelService }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -1306,7 +1291,14 @@ function CustomServiceControls({
             <Button type="button" variant="outline" onClick={() => setRenaming(true)}>迁移到新名称</Button>
           )}
           {service.providerState === "name-conflict" ? null : (
-            <Button type="button" variant="outline" onClick={onEdit}>修改候选</Button>
+            <Button asChild variant="outline">
+              <Link
+                to="/credentials/add/custom/$provider/discover"
+                params={{ provider: service.provider }}
+              >
+                修改候选
+              </Link>
+            </Button>
           )}
           <Button type="button" variant="destructive" onClick={() => setConfirmingDelete(true)}>
             <Trash2 />删除服务
@@ -1850,7 +1842,6 @@ function ServiceDetail({
   canReadCredential,
   canWriteCredential,
   canWriteCustom,
-  onEditCustom,
 }: {
   service: ModelService;
   tab: ModelServiceTab;
@@ -1859,7 +1850,6 @@ function ServiceDetail({
   canReadCredential: boolean;
   canWriteCredential: boolean;
   canWriteCustom: boolean;
-  onEditCustom: () => void;
 }) {
   return (
     <div className="min-w-0 space-y-5">
@@ -1947,10 +1937,7 @@ function ServiceDetail({
       ) : null}
 
       {tab !== "maintenance" || !canWriteCustom || service.type !== "custom" ? null : (
-        <CustomServiceControls
-          service={service}
-          onEdit={onEditCustom}
-        />
+        <CustomServiceControls service={service} />
       )}
 
       {tab === "maintenance" && canWriteModels ? (
@@ -2015,8 +2002,6 @@ export function ModelServicesPage({
   canReadCredential: boolean;
   canWriteCredential: boolean;
 }) {
-  const navigate = useNavigate();
-  const [customTarget, setCustomTarget] = useState<CustomDialogTarget | null>(null);
   const canWriteCustom = canWriteModels && canWriteCredential;
   const canReadServices = canReadModels || canReadCredential;
   const query = useModelServices(canReadServices);
@@ -2043,17 +2028,6 @@ export function ModelServicesPage({
           </div>
         )}
       />
-      {customTarget === null ? null : (
-        <CustomCandidateDialog
-          key={`${customTarget.mode}:${customTarget.service?.provider ?? "new"}:${customTarget.service?.version ?? 0}`}
-          target={customTarget}
-          onClose={() => setCustomTarget(null)}
-          onCommitted={(provider) => {
-            setCustomTarget(null);
-            void navigate({ to: "/credentials/$provider", params: { provider } });
-          }}
-        />
-      )}
       {!canReadServices ? (
         <div className="max-w-[760px] p-5">
           <Card className="gap-2 px-4 py-5">
@@ -2152,7 +2126,6 @@ export function ModelServicesPage({
             canReadCredential={canReadCredential}
             canWriteCredential={canWriteCredential}
             canWriteCustom={canWriteCustom && canReadModels}
-            onEditCustom={() => setCustomTarget({ mode: "update", service: selected })}
           />
         </div>
       )}

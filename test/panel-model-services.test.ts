@@ -1754,7 +1754,6 @@ test("自定义候选预览无草稿，最终重新发现与真实推理后原�
     baseUrl: "https://gateway.example/v1///?ignored=1#fragment",
     api: "openai-completions",
     credential,
-    validationModel: "reasoner-a",
     expectedVersion: null,
     reconfirmedSupplements: [],
   };
@@ -1790,7 +1789,6 @@ test("自定义候选预览无草稿，最终重新发现与真实推理后原�
       provider: "corp-create",
       expectedVersion: null,
       target: { baseUrl: "https://gateway.example/v1", api: "openai-completions" },
-      validationModel: "reasoner-a",
       models: [
         { identity: "corp-create:reasoner-a", provider: "corp-create", id: "reasoner-a", fields: {} },
         { identity: "corp-create:reasoner-b", provider: "corp-create", id: "reasoner-b", fields: {} },
@@ -1806,7 +1804,7 @@ test("自定义候选预览无草稿，最终重新发现与真实推理后原�
       combined,
       "POST",
       "/model-services/custom/commit",
-      candidate,
+      { ...candidate, validationModel: "reasoner-a" },
     );
     const commitText = await commitResponse.text();
     assert.equal(commitResponse.status, 200, commitText);
@@ -1841,6 +1839,50 @@ test("自定义候选预览无草稿，最终重新发现与真实推理后原�
     assert.equal(candidateCalls[2]!.body?.["model"], "reasoner-a");
   } finally {
     stub.restore();
+  }
+});
+
+test("自定义模型发现失败无需验证模型，返回 request id 且候选保持数据库零写入", async () => {
+  const credential = "custom-preview-failure-secret";
+  const h = await startPanelHarness(cleanups, {
+    reviewers: [],
+    discoverModelServiceModels: async () => ({
+      ok: false,
+      failure: {
+        code: "request-error",
+        message: `upstream body at /private/models.json; credential=${credential}`,
+      },
+    }),
+  });
+  const cookie = await cookieFor(h, "custom-preview-failure", ["model:write", "credential:write"]);
+  const logs: string[] = [];
+  const priorError = console.error;
+  console.error = (...values: unknown[]) => { logs.push(values.map(String).join(" ")); };
+  try {
+    const response = await mutation(h, cookie, "POST", "/model-services/custom/preview", {
+      provider: "corp-preview-failure",
+      baseUrl: "https://preview-failure.example/v1",
+      api: "openai-responses",
+      credential,
+      expectedVersion: null,
+      reconfirmedSupplements: [],
+    });
+    const text = await response.text();
+    assert.equal(response.status, 422, text);
+    const body = JSON.parse(text) as { error: string; requestId: string; failure?: unknown };
+    assert.equal(body.error, "模型发现失败，请按 request id 查看服务日志");
+    assert.match(body.requestId, /^[a-f0-9]{16}$/);
+    assert.equal("failure" in body, false);
+    for (const hidden of [credential, "/private/models.json", "upstream body"]) {
+      assert.equal(text.includes(hidden), false);
+    }
+    assert.equal(logs.some((line) => line.includes(body.requestId) && line.includes("upstream body")), true);
+    assert.equal(logs.some((line) => line.includes(credential)), false);
+    const store = openStore(h.db.path);
+    assert.equal(store.getModelService("corp-preview-failure"), undefined);
+    store.close();
+  } finally {
+    console.error = priorError;
   }
 });
 
@@ -1948,6 +1990,9 @@ test("自定义最终发现失败可由真实推理提交，推理失败不留�
     );
     const rejectedText = await rejectedResponse.text();
     assert.equal(rejectedResponse.status, 422, rejectedText);
+    const rejectedBody = JSON.parse(rejectedText) as { requestId: string; failure?: unknown };
+    assert.match(rejectedBody.requestId, /^[a-f0-9]{16}$/);
+    assert.equal("failure" in rejectedBody, false);
     for (const material of [rejectedCredential, PANEL_CREDENTIAL_MASTER_KEY]) {
       assert.equal(rejectedText.includes(material), false, `错误响应泄露了 ${material}`);
       assert.equal(logs.some((line) => line.includes(material)), false, `日志泄露了 ${material}`);

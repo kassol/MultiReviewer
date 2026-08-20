@@ -21,6 +21,8 @@ import { api } from "./api.ts";
 import {
   BuiltinServiceDiscoverPage,
   BuiltinServiceVerifyPage,
+  CustomServiceDiscoverPage,
+  CustomServiceVerifyPage,
   ModelServiceSetupLayout,
   ModelServiceSourcePage,
   ModelServicesPage,
@@ -331,6 +333,42 @@ const builtinServiceVerifyRoute = createRoute({
     <BuiltinServiceVerifyPage provider={builtinServiceVerifyRoute.useParams().provider} />
   ),
 });
+const customServiceCreateDiscoverRoute = createRoute({
+  getParentRoute: () => modelServiceSetupRoute,
+  path: "/custom/discover",
+  beforeLoad: ({ context }) => {
+    if (!hasPermission(context.session, "model:write")) throw redirect({ to: "/credentials" });
+  },
+  component: () => <CustomServiceDiscoverPage />,
+});
+const customServiceCreateVerifyRoute = createRoute({
+  getParentRoute: () => modelServiceSetupRoute,
+  path: "/custom/verify",
+  beforeLoad: ({ context }) => {
+    if (!hasPermission(context.session, "model:write")) throw redirect({ to: "/credentials" });
+  },
+  component: () => <CustomServiceVerifyPage />,
+});
+const customServiceUpdateDiscoverRoute = createRoute({
+  getParentRoute: () => modelServiceSetupRoute,
+  path: "/custom/$provider/discover",
+  beforeLoad: ({ context }) => {
+    if (!hasPermission(context.session, "model:write")) throw redirect({ to: "/credentials" });
+  },
+  component: () => (
+    <CustomServiceDiscoverPage provider={customServiceUpdateDiscoverRoute.useParams().provider} />
+  ),
+});
+const customServiceUpdateVerifyRoute = createRoute({
+  getParentRoute: () => modelServiceSetupRoute,
+  path: "/custom/$provider/verify",
+  beforeLoad: ({ context }) => {
+    if (!hasPermission(context.session, "model:write")) throw redirect({ to: "/credentials" });
+  },
+  component: () => (
+    <CustomServiceVerifyPage provider={customServiceUpdateVerifyRoute.useParams().provider} />
+  ),
+});
 const settingsRoute = protectedPage("/settings", "model:read", () => {
   const { session } = shellRoute.useRouteContext();
   return <SettingsPage canWrite={hasPermission(session, "model:write")} />;
@@ -384,6 +422,10 @@ const routeTree = rootRoute.addChildren([
       modelServiceSetupSourceRoute,
       builtinServiceDiscoverRoute,
       builtinServiceVerifyRoute,
+      customServiceCreateDiscoverRoute,
+      customServiceCreateVerifyRoute,
+      customServiceUpdateDiscoverRoute,
+      customServiceUpdateVerifyRoute,
     ]),
     settingsRoute,
     accessRoute,

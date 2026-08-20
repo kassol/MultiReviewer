@@ -3152,7 +3152,10 @@ type CustomModelServiceCandidateInput = {
   reconfirmedSupplements: string[];
 };
 
-function parseCustomModelServiceCandidate(value: unknown): CustomModelServiceCandidateInput | undefined {
+function parseCustomModelServiceCandidate(
+  value: unknown,
+  validationRequired = true,
+): CustomModelServiceCandidateInput | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const payload = value as Record<string, unknown>;
   const provider = payload["provider"];
@@ -3173,9 +3176,14 @@ function parseCustomModelServiceCandidate(value: unknown): CustomModelServiceCan
     !CUSTOM_PROVIDER_APIS.includes(api as (typeof CUSTOM_PROVIDER_APIS)[number]) ||
     typeof credential !== "string" ||
     credential.length === 0 ||
-    typeof validationModel !== "string" ||
-    validationModel.trim() === "" ||
-    validationModel !== validationModel.trim() ||
+    (validationRequired && (
+      typeof validationModel !== "string" ||
+      validationModel.trim() === "" ||
+      validationModel !== validationModel.trim()
+    )) ||
+    (!validationRequired && validationModel !== undefined && (
+      typeof validationModel !== "string" || validationModel !== validationModel.trim()
+    )) ||
     !(expectedVersion === null || (Number.isInteger(expectedVersion) && Number(expectedVersion) > 0)) ||
     !Array.isArray(reconfirmed) ||
     reconfirmed.some(
@@ -3194,7 +3202,7 @@ function parseCustomModelServiceCandidate(value: unknown): CustomModelServiceCan
     baseUrl,
     api: api as (typeof CUSTOM_PROVIDER_APIS)[number],
     credential,
-    validationModel,
+    validationModel: typeof validationModel === "string" ? validationModel : "",
     expectedVersion: expectedVersion as number | null,
     reconfirmedSupplements: reconfirmed as string[],
   };
@@ -3239,7 +3247,7 @@ async function handlePreviewCustomModelService(
 ): Promise<void> {
   const body = await readBody(req, res);
   if (body === undefined) return;
-  const input = parseCustomModelServiceCandidate(safeParse(body));
+  const input = parseCustomModelServiceCandidate(safeParse(body), false);
   if (input === undefined) {
     return sendJson(res, 400, { error: "自定义模型服务候选形状不对" });
   }
@@ -3277,7 +3285,6 @@ async function handlePreviewCustomModelService(
     provider: input.provider,
     expectedVersion: input.expectedVersion,
     target: { baseUrl: input.baseUrl, api: input.api },
-    validationModel: input.validationModel,
     models: discovered.models,
     ignoredModelCount: discovered.ignoredCount,
   });
