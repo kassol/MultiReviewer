@@ -36,12 +36,22 @@ export function SettingsPage() {
         title="全局设置"
         description="这里的模型组合是所有仓库的默认值,没设覆盖的仓库跟的就是它。批次上限决定一次审查最多送多少改动行。"
       />
-      <div className="flex max-w-[1060px] flex-col gap-4 p-5">
+      <div className="flex max-w-[1060px] flex-col gap-5 p-5 pb-20">
         {settings.isError ? (
-          <p className="text-destructive">{(settings.error as Error).message}</p>
-        ) : null}
-
-        {settings.data === undefined ? (
+          <div className="rounded-sm bg-destructive/5 px-3 py-3 text-destructive">
+            <p role="alert">{(settings.error as Error).message}</p>
+            <Button
+              className="mt-2"
+              type="button"
+              variant="outline"
+              size="xs"
+              disabled={settings.isFetching}
+              onClick={() => void settings.refetch()}
+            >
+              {settings.isFetching ? "正在重试…" : "重试"}
+            </Button>
+          </div>
+        ) : settings.data === undefined ? (
           <>
             <Skeleton className="h-[136px]" />
             <Skeleton className="h-[460px]" />
@@ -106,39 +116,46 @@ function SettingsForm({ settings }: { settings: Settings }) {
 
   const modelSaveBlocked = !modelValidity.ready || modelValidity.unavailable.length > 0;
   return (
-    <div className="flex flex-col gap-4">
-      <ModelComposer
-        value={models}
-        onChange={(next) => {
-          setModels(next);
-          setModelFeedback(null);
-        }}
-        onValidityChange={setModelValidity}
-      />
-      <div className="flex flex-wrap items-center gap-3">
-        <Button
-          type="button"
-          disabled={saveModels.isPending || modelSaveBlocked}
-          onClick={() => {
+    <div className="flex flex-col gap-6">
+      <section className="space-y-3" aria-label="模型组合保存区">
+        <ModelComposer
+          value={models}
+          onChange={(next) => {
+            setModels(next);
             setModelFeedback(null);
-            saveModels.mutate();
           }}
-        >
-          {saveModels.isPending ? "保存中…" : "保存模型组合"}
-        </Button>
-        {modelValidity.unavailable.length > 0 ? (
-          <span className="text-destructive">先恢复或移除不可用模型，再保存组合。</span>
-        ) : !modelValidity.ready ? (
-          <span className="text-muted-foreground">候选状态确认后可以保存组合。</span>
-        ) : modelFeedback === null ? null : (
-          <span className={modelFeedback.isError ? "text-destructive" : "text-muted-foreground"}>
-            {modelFeedback.text}
-          </span>
-        )}
-      </div>
+          onValidityChange={setModelValidity}
+        />
+        <div className="flex flex-wrap items-center gap-3 rounded-sm border bg-muted/50 px-3 py-3">
+          <Button
+            type="button"
+            disabled={saveModels.isPending || modelSaveBlocked}
+            onClick={() => {
+              setModelFeedback(null);
+              saveModels.mutate();
+            }}
+          >
+            {saveModels.isPending ? "保存中…" : "保存模型组合"}
+          </Button>
+          {modelValidity.unavailable.length > 0 ? (
+            <span className="text-destructive">先恢复或移除不可用模型，再保存组合。</span>
+          ) : !modelValidity.ready ? (
+            <span className="text-muted-foreground">候选状态确认后可以保存组合。</span>
+          ) : modelFeedback === null ? (
+            <span className="text-xs text-muted-foreground">仅保存模型组合，不会改动批次上限。</span>
+          ) : (
+            <span
+              role={modelFeedback.isError ? "alert" : "status"}
+              className={modelFeedback.isError ? "text-destructive" : "text-success"}
+            >
+              {modelFeedback.text}
+            </span>
+          )}
+        </div>
+      </section>
 
       <form
-        className="flex flex-col gap-4"
+        className="border-t pt-5"
         onSubmit={(event) => {
           event.preventDefault();
           setLimitFeedback(null);
@@ -150,32 +167,45 @@ function SettingsForm({ settings }: { settings: Settings }) {
           saveLimit.mutate(parsed);
         }}
       >
-        <Card className="gap-2.5 px-4">
-          <h2 className="text-base font-semibold">批次上限</h2>
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="max-changed-lines">一批最多改动行数</Label>
-            <Input
-              id="max-changed-lines"
-              className="w-40 font-mono"
-              inputMode="numeric"
-              value={limit}
-              onChange={(event) => setLimit(event.target.value)}
-            />
+        <Card className="gap-0 overflow-hidden p-0">
+          <div className="space-y-3 px-4 py-4">
+            <div>
+              <h2 className="text-base font-semibold">批次上限</h2>
+              <p className="mt-0.5 text-muted-foreground">
+                超过上限的改动会拆成多批送审；这个值不改变模型组合。
+              </p>
+            </div>
+            <div className="flex max-w-sm flex-col gap-1.5">
+              <Label htmlFor="max-changed-lines">一批最多改动行数</Label>
+              <Input
+                id="max-changed-lines"
+                className="w-40 font-mono"
+                inputMode="numeric"
+                value={limit}
+                aria-invalid={limitFeedback?.isError || undefined}
+                onChange={(event) => {
+                  setLimit(event.target.value);
+                  setLimitFeedback(null);
+                }}
+              />
+            </div>
           </div>
-          <p className="text-xs text-muted-foreground">
-            超过这个行数的改动会拆成多批送审。它单独保存，不受模型组合状态影响。
-          </p>
+          <div className="flex flex-wrap items-center gap-3 border-t bg-muted/50 px-4 py-3">
+            <Button type="submit" disabled={saveLimit.isPending}>
+              {saveLimit.isPending ? "保存中…" : "保存批次上限"}
+            </Button>
+            {limitFeedback === null ? (
+              <span className="text-xs text-muted-foreground">单独保存，不受模型组合可用性影响。</span>
+            ) : (
+              <span
+                role={limitFeedback.isError ? "alert" : "status"}
+                className={limitFeedback.isError ? "text-destructive" : "text-success"}
+              >
+                {limitFeedback.text}
+              </span>
+            )}
+          </div>
         </Card>
-        <div className="flex flex-wrap items-center gap-3">
-          <Button type="submit" disabled={saveLimit.isPending}>
-            {saveLimit.isPending ? "保存中…" : "保存批次上限"}
-          </Button>
-          {limitFeedback === null ? null : (
-            <span className={limitFeedback.isError ? "text-destructive" : "text-muted-foreground"}>
-              {limitFeedback.text}
-            </span>
-          )}
-        </div>
       </form>
     </div>
   );

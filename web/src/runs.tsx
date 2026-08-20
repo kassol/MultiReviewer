@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 
 import { CircleAlert, CircleCheck, CircleX } from "lucide-react";
 
@@ -67,7 +67,7 @@ export function RunPill({ run }: { run: RunItem }) {
   if (run.failed) {
     return (
       <Badge variant="destructive">
-        <span className="size-1.5 rounded-full bg-current" />
+        <CircleX aria-hidden />
         失败
       </Badge>
     );
@@ -78,14 +78,14 @@ export function RunPill({ run }: { run: RunItem }) {
   return (
     <span className="inline-flex items-center gap-1">
       <span
-        className="inline-flex size-4 shrink-0 items-center justify-center"
+        className="inline-flex shrink-0 items-center text-warning"
         title={[
           `${down.length}/${run.models.length} 个模型失败,这一轮的覆盖面不全`,
           ...down.map((entry) => `${entry.model}: ${entry.failure}`),
         ].join("\n")}
       >
-        <span className="size-1.5 rounded-full bg-destructive" />
-        {/* title 只对鼠标成立。这句话让屏幕阅读器与触屏也读得到这颗点的含义。 */}
+        <CircleAlert className="size-4" aria-hidden />
+        {/* title 只对鼠标成立。这句话让屏幕阅读器与触屏也读得到图标的含义。 */}
         <span className="sr-only">
           {down.length}/{run.models.length} 个模型失败,这一轮的覆盖面不全
         </span>
@@ -125,14 +125,19 @@ function runBadge(run: RunItem) {
   // total 只计行级承载的合并组:纯正文 Finding 的 Run 也落在这一档——正文没有
   // resolve 载体,本来就无从处置。
   if (run.total === 0) {
-    return <Badge variant="secondary">无可处置项</Badge>;
+    return (
+      <Badge variant="secondary">
+        <CircleCheck aria-hidden />
+        无可处置项
+      </Badge>
+    );
   }
   const done = run.resolved === run.total;
   return (
     <Badge
       className={done ? "bg-success/12 text-success" : "bg-warning/12 text-warning"}
     >
-      <span className="size-1.5 rounded-full bg-current" />
+      {done ? <CircleCheck aria-hidden /> : <CircleAlert aria-hidden />}
       {run.resolved}/{run.total} 已处置
     </Badge>
   );
@@ -196,14 +201,32 @@ export function RunsPage() {
         }
         actions={<SummaryRate />}
       />
-      <div className="flex max-w-[1100px] flex-col gap-3 p-5 pb-24">
+      <div className="flex max-w-[1100px] flex-col gap-3 p-4 pb-24 sm:p-5 sm:pb-24">
         {feedback === null ? null : (
-          <p className={feedback.isError ? "text-destructive" : "text-muted-foreground"}>
-            {feedback.text}
-          </p>
+          <div
+            role={feedback.isError ? "alert" : "status"}
+            className={`flex items-start gap-2 rounded-sm border px-3 py-2 ${
+              feedback.isError
+                ? "border-destructive/30 bg-destructive/5 text-destructive"
+                : "bg-muted text-foreground"
+            }`}
+          >
+            {feedback.isError ? (
+              <CircleX className="mt-0.5 size-4 shrink-0" aria-hidden />
+            ) : (
+              <CircleCheck className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
+            )}
+            <span>{feedback.text}</span>
+          </div>
         )}
         {runs.isError ? (
-          <p className="text-destructive">{(runs.error as Error).message}</p>
+          <p
+            role="alert"
+            className="flex items-start gap-2 rounded-sm border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive"
+          >
+            <CircleX className="mt-0.5 size-4 shrink-0" aria-hidden />
+            <span>{(runs.error as Error).message}</span>
+          </p>
         ) : null}
 
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="按结论过滤">
@@ -220,11 +243,11 @@ export function RunsPage() {
               type="button"
               aria-pressed={filter === id}
               onClick={() => setFilter(id)}
-              className={
+              className={`min-h-7 rounded-full px-2.5 py-1 text-xs font-medium transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${
                 filter === id
-                  ? "rounded-full bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground"
-                  : "rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-              }
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted text-muted-foreground hover:text-foreground"
+              }`}
             >
               {label}
               <span className="ml-1 tabular-nums">{count}</span>
@@ -233,34 +256,34 @@ export function RunsPage() {
         </div>
 
         {runs.isPending
-          ? [0, 1, 2, 3].map((slot) => <Skeleton key={slot} className="h-12" />)
+          ? [0, 1, 2, 3].map((slot) => <Skeleton key={slot} className="h-14" />)
           : null}
 
         {visible.length > 0 ? (
-          <div className="overflow-hidden rounded-md border border-border">
-            <table className="w-full text-left">
+          <div className="overflow-x-auto rounded-md border border-border">
+            <table className="w-full min-w-[1000px] text-left">
               <caption className="sr-only">Review Run 检查列表</caption>
               <thead className="bg-muted text-xs text-muted-foreground">
                 <tr>
-                  <th scope="col" className="w-10 px-3 py-2 font-medium">
+                  <th scope="col" className="w-14 px-3 py-2 font-medium">
                     状态
                   </th>
-                  <th scope="col" className="px-3 py-2 font-medium">
+                  <th scope="col" className="min-w-44 px-3 py-2 font-medium">
                     仓库 / PR
                   </th>
-                  <th scope="col" className="px-3 py-2 font-medium">
+                  <th scope="col" className="min-w-72 px-3 py-2 font-medium">
                     模型
                   </th>
-                  <th scope="col" className="px-3 py-2 font-medium">
+                  <th scope="col" className="min-w-28 px-3 py-2 font-medium">
                     处置
                   </th>
-                  <th scope="col" className="px-3 py-2 font-medium">
+                  <th scope="col" className="min-w-36 px-3 py-2 font-medium">
                     用量 / 费用
                   </th>
-                  <th scope="col" className="px-3 py-2 font-medium">
+                  <th scope="col" className="min-w-36 px-3 py-2 font-medium">
                     时间
                   </th>
-                  <th scope="col" className="px-3 py-2 font-medium">
+                  <th scope="col" className="w-20 px-3 py-2 font-medium">
                     动作
                   </th>
                 </tr>
@@ -273,100 +296,114 @@ export function RunsPage() {
                   const failedRow = runBucket(run) === "failed";
                   const cost = costPresentation(run.usage);
                   return (
-                    <tr
-                      key={run.id}
-                      className={
-                        failedRow
-                          ? "border-t border-border bg-destructive/10"
-                          : "border-t border-border"
-                      }
-                    >
-                      <td className="px-3 py-2.5 align-top">
-                        <RunStatus run={run} />
-                      </td>
-                      <td className="px-3 py-2.5 align-top">
-                        {showDay ? (
-                          <div className="mb-1 font-mono text-xs text-muted-foreground">{day}</div>
-                        ) : null}
-                        <div>
-                          <span className="font-mono text-muted-foreground">
-                            {run.owner}/{run.repo}
-                          </span>{" "}
-                          <span className="font-mono font-medium">#{run.pullNumber}</span>
-                        </div>
-                        <div className="font-mono text-xs text-muted-foreground">
-                          {run.headSha.slice(0, 7)}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2.5 align-top">
-                        {run.models.length === 0 ? (
-                          <span className="text-muted-foreground">没有模型记录</span>
-                        ) : (
-                          <ul className="flex flex-col gap-0.5">
-                            {run.models.map((entry) => (
-                              <li
-                                key={entry.model}
-                                className={
-                                  entry.failure === null
-                                    ? "font-mono text-xs text-muted-foreground"
-                                    : "font-mono text-xs text-destructive"
-                                }
-                              >
-                                {entry.model}
-                                {entry.failure === null ? (
-                                  <>
-                                    {" "}
-                                    <b className="font-semibold tabular-nums text-foreground">
-                                      {entry.findings}
-                                    </b>
-                                  </>
-                                ) : (
-                                  <>
-                                    {" "}
-                                    <b className="font-semibold">失败</b>
-                                  </>
-                                )}
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                        {run.models
-                          .filter((entry) => entry.failure !== null)
-                          .map((entry) => (
-                            <p key={`${entry.model}-why`} className="mt-1 text-xs text-destructive">
-                              <span className="font-mono">{entry.model}</span> · {entry.failure}
-                            </p>
-                          ))}
-                      </td>
-                      <td className="px-3 py-2.5 align-top">
-                        <RunPill run={run} />
-                      </td>
-                      <td className="px-3 py-2.5 align-top text-xs">
-                        {run.usage === undefined ? null : (
-                          <div className="font-mono tabular-nums text-muted-foreground">
-                            {run.usage.totalTokens.toLocaleString("zh-CN")} tokens
+                    <Fragment key={run.id}>
+                      {showDay ? (
+                        <tr className="border-t border-border bg-muted/60">
+                          <th
+                            colSpan={7}
+                            className="px-3 py-1.5 font-mono text-xs font-semibold text-muted-foreground"
+                          >
+                            {day}
+                          </th>
+                        </tr>
+                      ) : null}
+                      <tr
+                        className={
+                          failedRow
+                            ? "border-t border-border bg-destructive/10"
+                            : "border-t border-border transition-colors hover:bg-muted/40"
+                        }
+                      >
+                        <td className="px-3 py-2.5 align-top">
+                          <RunStatus run={run} />
+                        </td>
+                        <td className="px-3 py-2.5 align-top">
+                          <div>
+                            <span className="font-mono text-muted-foreground">
+                              {run.owner}/{run.repo}
+                            </span>{" "}
+                            <span className="font-mono font-medium">#{run.pullNumber}</span>
                           </div>
-                        )}
-                        <div className="font-mono tabular-nums">{cost.amount}</div>
-                        {cost.note === null ? null : (
-                          <div className="text-warning">{cost.note}</div>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5 align-top text-xs text-muted-foreground">
-                        <div className="font-mono tabular-nums">{localTime(run.startedAt)}</div>
-                        <div>{run.triggeredBy === null ? "投递" : `手动 · ${run.triggeredBy}`}</div>
-                      </td>
-                      <td className="px-3 py-2.5 align-top">
-                        <Button
-                          variant="outline"
-                          size="xs"
-                          disabled={rerun.isPending}
-                          onClick={() => rerun.mutate(run)}
-                        >
-                          重跑
-                        </Button>
-                      </td>
-                    </tr>
+                          <div className="font-mono text-xs text-muted-foreground">
+                            {run.headSha.slice(0, 7)}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2.5 align-top">
+                          {run.models.length === 0 ? (
+                            <span className="text-muted-foreground">没有模型记录</span>
+                          ) : (
+                            <ul className="flex flex-col gap-0.5">
+                              {run.models.map((entry) => (
+                                <li
+                                  key={entry.model}
+                                  className={
+                                    entry.failure === null
+                                      ? "font-mono text-xs text-muted-foreground"
+                                      : "font-mono text-xs text-destructive"
+                                  }
+                                >
+                                  {entry.model}
+                                  {entry.failure === null ? (
+                                    <>
+                                      {" "}
+                                      <b className="font-semibold tabular-nums text-foreground">
+                                        {entry.findings}
+                                      </b>
+                                    </>
+                                  ) : (
+                                    <>
+                                      {" "}
+                                      <b className="font-semibold">失败</b>
+                                    </>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          {run.models
+                            .filter((entry) => entry.failure !== null)
+                            .map((entry) => (
+                              <p
+                                key={`${entry.model}-why`}
+                                title={entry.failure ?? undefined}
+                                className="mt-1 line-clamp-2 max-w-96 break-words text-xs leading-relaxed text-destructive"
+                              >
+                                <span className="font-mono">{entry.model}</span> · {entry.failure}
+                              </p>
+                            ))}
+                        </td>
+                        <td className="px-3 py-2.5 align-top">
+                          <RunPill run={run} />
+                        </td>
+                        <td className="px-3 py-2.5 align-top text-xs">
+                          {run.usage === undefined ? null : (
+                            <div className="font-mono tabular-nums text-muted-foreground">
+                              {run.usage.totalTokens.toLocaleString("zh-CN")} tokens
+                            </div>
+                          )}
+                          <div className="font-mono tabular-nums">{cost.amount}</div>
+                          {cost.note === null ? null : (
+                            <div className="text-warning">{cost.note}</div>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 align-top text-xs whitespace-nowrap text-muted-foreground">
+                          <div className="font-mono tabular-nums">{localTime(run.startedAt)}</div>
+                          <div>
+                            {run.triggeredBy === null ? "投递" : `手动 · ${run.triggeredBy}`}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2.5 align-top">
+                          <Button
+                            variant="outline"
+                            size="xs"
+                            disabled={rerun.isPending}
+                            onClick={() => rerun.mutate(run)}
+                          >
+                            {rerun.isPending ? "重跑中…" : "重跑"}
+                          </Button>
+                        </td>
+                      </tr>
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -374,7 +411,7 @@ export function RunsPage() {
           </div>
         ) : null}
 
-        {flat.length === 0 && !runs.isPending ? (
+        {flat.length === 0 && !runs.isPending && !runs.isError ? (
           <Card className="items-start gap-1.5 px-4">
             <h2 className="text-base font-semibold">还没有 Review Run</h2>
             <p className="text-muted-foreground">
@@ -387,7 +424,9 @@ export function RunsPage() {
           </Card>
         ) : null}
         {flat.length > 0 && visible.length === 0 ? (
-          <p className="text-muted-foreground">这一档里没有 Review Run。</p>
+          <p className="rounded-sm border border-dashed border-border px-4 py-6 text-center text-muted-foreground">
+            这一档里没有 Review Run。
+          </p>
         ) : null}
         <div ref={sentinel} />
         <p className="pt-2 text-center text-xs text-muted-foreground">

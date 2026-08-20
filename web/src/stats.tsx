@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { CalendarIcon } from "lucide-react";
+import { CalendarIcon, CircleAlert } from "lucide-react";
 import { useState } from "react";
 
 import { PageHeader } from "@/components/page-header";
@@ -124,12 +124,23 @@ export function SummaryRate() {
     queryKey: ["stats", "band"],
     queryFn: () => fetchJson<{ cells: Cell[] }>("/stats"),
   });
+  if (stats.isError) {
+    return (
+      <Link
+        to="/stats"
+        className="flex items-center gap-1.5 rounded-sm border border-destructive/30 bg-destructive/5 px-2.5 py-1.5 text-destructive outline-none transition-colors hover:bg-destructive/10 focus-visible:ring-3 focus-visible:ring-ring/50"
+      >
+        <CircleAlert className="size-4" aria-hidden />
+        <span className="text-xs font-medium">处置率读取失败</span>
+      </Link>
+    );
+  }
   if (stats.data === undefined) return <Skeleton className="h-8 w-44" />;
   const all = sum(stats.data.cells);
   return (
     <Link
       to="/stats"
-      className="flex items-baseline gap-1.5 rounded-sm border border-border bg-card px-2.5 py-1.5 transition-colors hover:border-primary/50 hover:text-primary"
+      className="flex items-baseline gap-1.5 rounded-sm border border-border bg-card px-2.5 py-1.5 outline-none transition-colors hover:border-primary/50 hover:text-primary focus-visible:ring-3 focus-visible:ring-ring/50"
     >
       <b className="font-mono text-base font-semibold tabular-nums">{percent(all)}%</b>
       <span className="text-xs text-muted-foreground">
@@ -176,11 +187,11 @@ export function StatsPage() {
         actions={
           <Popover>
             <PopoverTrigger asChild>
-              <Button variant="outline" size="lg" className="font-mono text-xs">
+              <Button variant="outline" size="lg" className="max-w-full text-xs">
                 <CalendarIcon />
-                {from === "" ? "起始不限" : from}
+                <span className={from === "" ? undefined : "font-mono"}>{from === "" ? "起始不限" : from}</span>
                 <span className="text-muted-foreground">→</span>
-                {to === "" ? "至今" : to}
+                <span className={to === "" ? undefined : "font-mono"}>{to === "" ? "至今" : to}</span>
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-auto p-0">
@@ -199,22 +210,38 @@ export function StatsPage() {
         }
       />
 
-      <div className="flex max-w-[1060px] flex-col gap-4 p-5">
+      <div className="flex max-w-[1060px] flex-col gap-4 p-4 sm:p-5">
         {stats.isError ? (
-          <p className="text-destructive">{(stats.error as Error).message}</p>
+          <p
+            role="alert"
+            className="flex items-start gap-2 rounded-sm border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive"
+          >
+            <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+            <span>{(stats.error as Error).message}</span>
+          </p>
         ) : null}
+
+        {stats.isPending ? (
+          <>
+            <Skeleton className="h-20" />
+            <Skeleton className="h-40" />
+            <Skeleton className="h-64" />
+          </>
+        ) : null}
+
         {stats.data === undefined ? null : (
-          <Card className="flex-row items-center justify-between gap-4 px-4">
+          <section
+            aria-label="时间窗用量"
+            className="flex flex-col gap-3 border-y border-border bg-muted/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+          >
             <div className="flex flex-col gap-1">
               <span className="text-xs text-muted-foreground">时间窗费用</span>
-              <b className="font-mono text-xl font-semibold tabular-nums">
-                {usageCost.amount}
-              </b>
+              <b className="font-mono text-xl font-semibold tabular-nums">{usageCost.amount}</b>
               {usageCost.note === null ? null : (
                 <span className="text-xs text-warning">{usageCost.note}</span>
               )}
             </div>
-            <div className="text-right">
+            <div className="sm:text-right">
               <div className="font-mono text-lg font-semibold tabular-nums">
                 {stats.data.usage === null
                   ? "—"
@@ -222,34 +249,46 @@ export function StatsPage() {
               </div>
               <span className="text-xs text-muted-foreground">tokens</span>
             </div>
-          </Card>
+          </section>
         )}
 
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3">
-          {stats.isPending
-            ? // 骨架按真实卡片的高度占位:数据到了这一屏不跳。
-              [0, 1, 2].map((slot) => <Skeleton key={slot} className="h-[124px]" />)
-            : models.map((model) => {
+        {models.length > 0 ? (
+          <section aria-labelledby="model-rate-heading" className="overflow-hidden rounded-sm border border-border">
+            <div className="bg-muted px-3 py-2">
+              <h2 id="model-rate-heading" className="text-base font-semibold">
+                模型处置概览
+              </h2>
+            </div>
+            <div className="divide-y divide-border">
+              {models.map((model) => {
                 const total = modelTotal(model);
                 const pct = percent(total);
                 return (
-                  <Card key={model} className="gap-2 px-4">
-                    <span className="font-mono text-xs text-muted-foreground">{model}</span>
+                  <div
+                    key={model}
+                    className="grid gap-2 px-3 py-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(10rem,1fr)] sm:items-center sm:gap-4"
+                  >
+                    <span className="break-all font-mono text-xs text-muted-foreground">{model}</span>
                     <span className="font-mono text-3xl font-semibold tracking-tight tabular-nums">
                       {pct}%
                     </span>
-                    <span className="text-xs text-muted-foreground">
-                      <span className="font-mono tabular-nums">
-                        {total.resolved}/{total.total}
-                      </span>{" "}
-                      条已处置
-                    </span>
-                    <Bar pct={pct} />
-                  </Card>
+                    <div className="flex min-w-0 flex-col gap-1.5">
+                      <span className="text-xs text-muted-foreground">
+                        <span className="font-mono tabular-nums">
+                          {total.resolved}/{total.total}
+                        </span>{" "}
+                        条已处置
+                      </span>
+                      <Bar pct={pct} />
+                    </div>
+                  </div>
                 );
               })}
-        </div>
-        {models.length === 0 && !stats.isPending ? (
+            </div>
+          </section>
+        ) : null}
+
+        {models.length === 0 && !stats.isPending && !stats.isError ? (
           <Card className="items-start gap-1.5 px-4">
             <h2 className="text-base font-semibold">这个时间窗里没有可统计的 Finding</h2>
             <p className="text-muted-foreground">
@@ -259,77 +298,94 @@ export function StatsPage() {
           </Card>
         ) : null}
 
-      {models.length > 0 ? (
-        <Card className="overflow-x-auto py-0">
-          <Table>
-            <TableCaption className="sr-only">
-              逐模型、逐类别的处置率,单元格内容为「已处置/分母(百分比)」。
-            </TableCaption>
-            <TableHeader>
-              <TableRow>
-                <TableHead scope="col">模型</TableHead>
-                {categories.map((category) => (
-                  <TableHead scope="col" key={category}>
-                    {category}
-                  </TableHead>
-                ))}
-                <TableHead scope="col">合计</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {models.map((model) => {
-                const total = modelTotal(model);
-                return (
-                  <TableRow key={model}>
-                    {/* 行首是这一行的表头:屏幕阅读器念单元格时会带上模型名。 */}
-                    <TableHead scope="row" className="font-mono whitespace-nowrap">
-                      {model}
-                    </TableHead>
-                    {categories.map((category) => {
-                      const cell = byKey.get(`${model}\n${category}`);
-                      return (
-                        <TableCell key={category} className="min-w-[104px]">
-                          {cell === undefined ? (
-                            <span className="font-mono text-xs tabular-nums text-muted-foreground">
-                              —
-                            </span>
-                          ) : (
-                            <Rate resolved={cell.resolved} total={denominator(cell)} />
-                          )}
-                        </TableCell>
-                      );
-                    })}
-                    <TableCell>
-                      <Rate resolved={total.resolved} total={total.total} />
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </Card>
-      ) : null}
-
-      {stats.data === undefined ? null : (
-        <Card className="gap-2 px-4">
-          <h2 className="text-base font-semibold">库体量</h2>
-          <div className="flex justify-between gap-3">
-            <span className="text-muted-foreground">库文件</span>
-            <span className="font-mono tabular-nums">
-              {humanBytes(stats.data.database.fileBytes)}
-            </span>
-          </div>
-          {stats.data.database.tables.map((table) => (
-            <div className="flex justify-between gap-3" key={table.name}>
-              <span className="font-mono text-muted-foreground">{table.name}</span>
-              <span><span className="font-mono tabular-nums">{table.rows}</span> 行</span>
+        {models.length > 0 ? (
+          <section aria-labelledby="rate-matrix-heading" className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 id="rate-matrix-heading" className="text-base font-semibold">
+                模型 × 分类
+              </h2>
+              <p className="text-xs text-muted-foreground">每格为已处置/分母(百分比)</p>
             </div>
-          ))}
-          <p className="text-xs text-muted-foreground">
-            评审记录只写不清:处置率算在历史行上,删行即删样本。
-          </p>
-        </Card>
-      )}
+            <Card className="overflow-hidden py-0">
+              <Table>
+                <TableCaption className="sr-only">
+                  逐模型、逐类别的处置率,单元格内容为「已处置/分母(百分比)」。
+                </TableCaption>
+                <TableHeader className="bg-muted text-xs text-muted-foreground">
+                  <TableRow>
+                    <TableHead scope="col" className="sticky left-0 z-20 bg-muted">
+                      模型
+                    </TableHead>
+                    {categories.map((category) => (
+                      <TableHead scope="col" key={category}>
+                        {category}
+                      </TableHead>
+                    ))}
+                    <TableHead scope="col" className="bg-muted/80">
+                      合计
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {models.map((model) => {
+                    const total = modelTotal(model);
+                    return (
+                      <TableRow key={model} className="group">
+                        {/* 行首是这一行的表头:屏幕阅读器念单元格时会带上模型名。 */}
+                        <TableHead
+                          scope="row"
+                          className="sticky left-0 z-10 bg-card font-mono whitespace-nowrap group-hover:bg-muted"
+                        >
+                          {model}
+                        </TableHead>
+                        {categories.map((category) => {
+                          const cell = byKey.get(`${model}\n${category}`);
+                          return (
+                            <TableCell key={category} className="min-w-32">
+                              {cell === undefined ? (
+                                <span className="font-mono text-xs tabular-nums text-muted-foreground">
+                                  —
+                                </span>
+                              ) : (
+                                <Rate resolved={cell.resolved} total={denominator(cell)} />
+                              )}
+                            </TableCell>
+                          );
+                        })}
+                        <TableCell className="min-w-32 bg-muted/30">
+                          <Rate resolved={total.resolved} total={total.total} />
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </Card>
+          </section>
+        ) : null}
+
+        {stats.data === undefined ? null : (
+          <section className="border-t border-border pt-4">
+            <h2 className="text-base font-semibold">库体量</h2>
+            <dl className="mt-2 divide-y divide-border border-y border-border">
+              <div className="flex justify-between gap-3 py-2">
+                <dt className="text-muted-foreground">库文件</dt>
+                <dd className="font-mono tabular-nums">{humanBytes(stats.data.database.fileBytes)}</dd>
+              </div>
+              {stats.data.database.tables.map((table) => (
+                <div className="flex justify-between gap-3 py-2" key={table.name}>
+                  <dt className="break-all font-mono text-muted-foreground">{table.name}</dt>
+                  <dd className="shrink-0">
+                    <span className="font-mono tabular-nums">{table.rows}</span> 行
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <p className="mt-2 text-xs text-muted-foreground">
+              评审记录只写不清:处置率算在历史行上,删行即删样本。
+            </p>
+          </section>
+        )}
       </div>
     </>
   );

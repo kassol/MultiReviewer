@@ -19,16 +19,18 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <header className="sticky top-0 z-20 flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-background px-5 py-3">
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <h1 className="truncate text-xl font-semibold tracking-tight">{title}</h1>
+    <header className="sticky top-0 z-20 flex min-h-16 flex-wrap items-center gap-x-5 gap-y-2 border-b border-border bg-background px-4 py-3 sm:px-5">
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <h1 className="text-xl font-semibold tracking-tight text-balance">{title}</h1>
         {description === undefined ? null : (
           // 说明文字压在 68ch 以内:再宽读者的眼睛要横跨整屏才回到行首。
-          <p className="max-w-[68ch] text-muted-foreground">{description}</p>
+          <p className="max-w-[68ch] text-muted-foreground text-pretty">{description}</p>
         )}
       </div>
       {actions === undefined ? null : (
-        <div className="ml-auto flex shrink-0 items-center gap-2">{actions}</div>
+        <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2 max-sm:w-full">
+          {actions}
+        </div>
       )}
     </header>
   );

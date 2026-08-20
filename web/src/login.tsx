@@ -67,41 +67,45 @@ export function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-dvh items-center justify-center p-4">
-      <div className="flex w-[22rem] max-w-full flex-col gap-3">
-        <div className="flex items-center gap-2">
-          <Mark className="size-5 text-primary" />
-          <h1 className="text-lg font-semibold tracking-tight">MultiReviewer</h1>
+    <main className="flex min-h-dvh items-center justify-center bg-chrome px-4 py-8">
+      <div className="flex w-[23rem] max-w-full flex-col gap-4">
+        <div className="flex items-center gap-2.5 px-1">
+          <Mark className="size-6 text-primary" />
+          <h1 className="text-xl font-semibold tracking-tight">MultiReviewer</h1>
         </div>
-        <Card className="gap-3 px-4">
+        <Card className="gap-5 px-5 py-5">
           {bootstrapMode ? (
-            <div>
+            <div className="border-b border-border pb-4">
               <h2 className="text-base font-semibold">建第一个管理员</h2>
-              <p className="text-muted-foreground">第一个注册的人就是系统管理员,注册入口随后关闭。</p>
+              <p className="mt-1 text-muted-foreground">第一个注册的人就是系统管理员,注册入口随后关闭。</p>
             </div>
           ) : null}
-          <form onSubmit={submit} className="flex flex-col gap-2">
+          <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
             {bootstrapMode ? (
-              <>
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="bootstrap">bootstrap 口令</Label>
                 <Input id="bootstrap" type="password" value={bootstrap} onChange={(event) => setBootstrap(event.target.value)} />
-              </>
+              </div>
             ) : null}
-            <Label htmlFor="username">用户名</Label>
-            <Input id="username" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" autoFocus />
-            <Label htmlFor="password">密码</Label>
-            <Input id="password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={bootstrapMode ? "new-password" : "current-password"} />
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="username">用户名</Label>
+              <Input id="username" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" autoFocus />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="password">密码</Label>
+              <Input id="password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={bootstrapMode ? "new-password" : "current-password"} />
+            </div>
             {bootstrapMode ? (
-              <>
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="confirm">确认密码</Label>
                 <Input id="confirm" type="password" value={confirm} onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" />
-              </>
+              </div>
             ) : null}
-            <Button type="submit" className="mt-1 w-full" disabled={busy || username === "" || password === ""}>
+            {error === null ? null : <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive">{error}</p>}
+            <Button type="submit" className="w-full" disabled={busy || username === "" || password === ""}>
               {busy ? "处理中…" : bootstrapMode ? "注册并登录" : "登录"}
             </Button>
           </form>
-          {error === null ? null : <p role="alert" className="text-destructive">{error}</p>}
         </Card>
       </div>
     </main>

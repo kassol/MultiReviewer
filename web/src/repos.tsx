@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type FormEvent } from "react";
+import { CircleAlert, CircleCheck, CircleDashed, CircleX } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -61,9 +62,9 @@ function since(iso: string): string {
 /** 键值行:详情面板里成对出现的那一行。 */
 function Kv({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="flex justify-between gap-3">
+    <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
       <span className="text-muted-foreground">{label}</span>
-      <span>{children}</span>
+      <span className="ml-auto text-right">{children}</span>
     </div>
   );
 }
@@ -94,12 +95,12 @@ export function ReposPage() {
           <Button onClick={() => setRegistering(true)}>注册仓库</Button>
         }
       />
-      <div className="flex min-h-full flex-col sm:grid sm:grid-cols-[248px_1fr]">
+      <div className="flex min-h-full flex-col lg:grid lg:grid-cols-[248px_minmax(0,1fr)]">
         <aside
           aria-label="已注册仓库"
-          className="border-border bg-chrome max-sm:border-b sm:border-r"
+          className="max-h-56 overflow-y-auto border-b border-border bg-chrome lg:max-h-none lg:border-r lg:border-b-0"
         >
-          <p className="px-4 pt-3.5 pb-2 font-mono text-xs font-semibold tracking-[0.07em] text-muted-foreground">
+          <p className="sticky top-0 z-10 bg-chrome px-4 pt-3.5 pb-2 font-mono text-xs font-semibold tracking-[0.07em] text-muted-foreground">
             已注册 {rows.length} 个
           </p>
           {repos.isPending ? (
@@ -112,22 +113,22 @@ export function ReposPage() {
           {/* 一份列表就是一份列表:屏幕阅读器会念出「共 N 项、第 K 项」。 */}
           <ul>
             {rows.map((row) => (
-              <li key={row.repoId}>
+              <li key={row.repoId} className="px-2">
                 <button
                   type="button"
                   // 选中项直接刷成右边内容区的底色,读起来是「这一格连着右边那一屏」。
                   aria-current={row.repoId === selected?.repoId ? "true" : undefined}
-                  className={`block w-full border-l-[3px] px-4 py-2.5 text-left transition-colors ${
+                  className={`block w-full rounded-sm border px-3 py-2.5 text-left transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${
                     row.repoId === selected?.repoId
-                      ? "border-l-primary bg-background"
-                      : "border-l-transparent hover:bg-background/70"
+                      ? "border-border bg-background font-medium"
+                      : "border-transparent hover:bg-background/70"
                   }`}
                   onClick={() => setSelectedId(row.repoId)}
                 >
                   <span className="block truncate font-mono">
                     {row.owner}/{row.repo}
                   </span>
-                  <span className="mt-0.5 block text-xs text-muted-foreground">
+                  <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
                     <span className="tabular-nums">{row.runCount}</span> 轮
                     {row.lastActivity === null
                       ? " · 还没跑过"
@@ -137,16 +138,44 @@ export function ReposPage() {
               </li>
             ))}
           </ul>
-          {rows.length === 0 && !repos.isPending ? (
-            <p className="px-4 py-2.5 text-muted-foreground">
-              还没有注册仓库。点右上「注册仓库」搜一个接进来——搜的是 bot 能看见的仓库。
-            </p>
+          {rows.length === 0 && !repos.isPending && !repos.isError ? (
+            <p className="px-4 py-2.5 text-muted-foreground">还没有注册仓库。</p>
           ) : null}
         </aside>
 
-        <div className="flex min-w-0 max-w-[900px] flex-col gap-4 p-5">
+        <div className="flex min-w-0 max-w-[900px] flex-col gap-4 p-4 sm:p-5">
           {repos.isError ? (
-            <p className="text-destructive">{(repos.error as Error).message}</p>
+            <p
+              role="alert"
+              className="flex items-start gap-2 rounded-sm border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive"
+            >
+              <CircleX className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <span>{(repos.error as Error).message}</span>
+            </p>
+          ) : null}
+          {selected !== undefined && settings.isError ? (
+            <p
+              role="alert"
+              className="flex items-start gap-2 rounded-sm border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive"
+            >
+              <CircleX className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <span>{(settings.error as Error).message}</span>
+            </p>
+          ) : null}
+          {repos.isPending ? (
+            <>
+              <Skeleton className="h-10" />
+              <Skeleton className="h-44" />
+              <Skeleton className="h-56" />
+            </>
+          ) : null}
+          {selected === undefined && !repos.isPending && !repos.isError ? (
+            <Card className="items-start gap-1.5 px-4">
+              <h2 className="text-base font-semibold">还没有注册仓库</h2>
+              <p className="text-muted-foreground">
+                点右上「注册仓库」搜一个接进来——搜的是 bot 能看见的仓库。
+              </p>
+            </Card>
           ) : null}
           {selected === undefined ? null : (
             <RepoDetail
@@ -249,33 +278,36 @@ function RepoDetail({
 
   return (
     <>
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 border-b border-border pb-4">
         {/* 页标题是「仓库」,这里是选中的那一个:降一级,字号也降一档。 */}
-        <h2 className="font-mono text-lg font-semibold tracking-tight">
+        <h2 className="min-w-0 break-all font-mono text-lg font-semibold tracking-tight">
           {repo.owner}/{repo.repo}
         </h2>
         {check.isPending ? (
-          <Badge variant="secondary">核对中…</Badge>
+          <Badge variant="secondary">
+            <CircleDashed aria-hidden />
+            核对中…
+          </Badge>
         ) : check.isError ? (
           <Badge variant="destructive">
-            <span className="size-1.5 rounded-full bg-current" />
+            <CircleX aria-hidden />
             核对失败
           </Badge>
         ) : issues.length === 0 ? (
           <Badge className="bg-success/12 text-success">
-            <span className="size-1.5 rounded-full bg-current" />
+            <CircleCheck aria-hidden />
             hook 一致
           </Badge>
         ) : (
           <Badge className="bg-warning/12 text-warning">
-            <span className="size-1.5 rounded-full bg-current" />
+            <CircleAlert aria-hidden />
             {issues.length} 处差异
           </Badge>
         )}
         <span className="text-xs text-muted-foreground">repo id {repo.repoId}</span>
         <Button
           variant="outline"
-          className="ml-auto"
+          className="ml-auto max-sm:w-full"
           disabled={remove.isPending}
           onClick={() => setConfirmingRemoval(true)}
         >
@@ -284,17 +316,38 @@ function RepoDetail({
       </div>
 
       {feedback === null ? null : (
-        <p className={feedback.isError ? "text-destructive" : "text-muted-foreground"}>
-          {feedback.text}
-        </p>
+        <div
+          role={feedback.isError ? "alert" : "status"}
+          className={`flex items-start gap-2 rounded-sm border px-3 py-2 ${
+            feedback.isError
+              ? "border-destructive/30 bg-destructive/5 text-destructive"
+              : "bg-muted text-foreground"
+          }`}
+        >
+          {feedback.isError ? (
+            <CircleX className="mt-0.5 size-4 shrink-0" aria-hidden />
+          ) : (
+            <CircleCheck className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
+          )}
+          <span>{feedback.text}</span>
+        </div>
       )}
       {check.isError ? (
-        <p className="text-destructive">{(check.error as Error).message}</p>
+        <p
+          role="alert"
+          className="flex items-start gap-2 rounded-sm border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive"
+        >
+          <CircleX className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>{(check.error as Error).message}</span>
+        </p>
       ) : null}
 
       {issues.length > 0 ? (
-        <Card className="gap-2.5 border-l-[3px] border-l-warning px-4">
-          <h3 className="text-base font-semibold">与 Gitea 的差异</h3>
+        <Card className="gap-3 bg-warning/5 px-4">
+          <h3 className="flex items-center gap-2 text-base font-semibold">
+            <CircleAlert className="size-4 text-warning" aria-hidden />
+            与 Gitea 的差异
+          </h3>
           {issues.map((issue) => (
             <Kv key={issue.message} label={issue.message}>
               <span className="text-muted-foreground">{issue.action}</span>
@@ -305,7 +358,7 @@ function RepoDetail({
             disabled={rotate.isPending}
             onClick={() => rotate.mutate()}
           >
-            轮转推平
+            {rotate.isPending ? "推平中…" : "轮转推平"}
           </Button>
         </Card>
       ) : null}
@@ -373,7 +426,7 @@ function RepoDetail({
               <span><span className="font-mono tabular-nums">{shownModels.length}</span> 个</span>
             </Kv>
             {shownModels.map((model) => (
-              <div key={model} className="font-mono text-xs">
+              <div key={model} className="break-all font-mono text-xs">
                 {model}
               </div>
             ))}
@@ -386,15 +439,20 @@ function RepoDetail({
         )}
       </div>
 
-      <Card className="gap-2.5 px-4">
+      <section className="flex flex-wrap items-center gap-x-6 gap-y-2 border-y border-border py-3">
         <h3 className="text-base font-semibold">累计</h3>
-        <Kv label="Review Run">
-          <span><span className="font-mono tabular-nums">{repo.runCount}</span> 轮</span>
-        </Kv>
-        <Kv label="来源 Finding">
-          <span><span className="font-mono tabular-nums">{repo.findingCount}</span> 条</span>
-        </Kv>
-      </Card>
+        <span className="text-muted-foreground">
+          Review Run {" "}
+          <b className="font-mono font-semibold tabular-nums text-foreground">{repo.runCount}</b> 轮
+        </span>
+        <span className="text-muted-foreground">
+          来源 Finding {" "}
+          <b className="font-mono font-semibold tabular-nums text-foreground">
+            {repo.findingCount}
+          </b>{" "}
+          条
+        </span>
+      </section>
 
       <RepoRuns repo={repo} onFeedback={setFeedback} />
 
@@ -528,11 +586,20 @@ function RegisterModal({
             />
             <CommandList className="max-h-[300px]">
               {search.isError ? (
-                <p className="text-destructive p-4">{(search.error as Error).message}</p>
+                <p role="alert" className="p-4 text-destructive">
+                  {(search.error as Error).message}
+                </p>
+              ) : search.isPending && debounced.trim() !== "" ? (
+                <div className="flex flex-col gap-2 p-4" role="status">
+                  <span className="sr-only">正在搜索仓库</span>
+                  <Skeleton aria-hidden className="h-9" />
+                  <Skeleton aria-hidden className="h-9" />
+                  <Skeleton aria-hidden className="h-9" />
+                </div>
               ) : data === undefined || debounced.trim() === "" ? (
-                <p className="text-muted-foreground p-4">输关键字开始搜,搜的是 bot 能看见的仓库。</p>
+                <p className="p-4 text-muted-foreground">输关键字开始搜,搜的是 bot 能看见的仓库。</p>
               ) : data.state === "no-match" ? (
-                <p className="text-muted-foreground p-4">
+                <p className="p-4 text-muted-foreground">
                   没有匹配的仓库。搜不到通常是 bot 还不是它的协作者,先把 bot 加进那个仓库。
                 </p>
               ) : (
@@ -579,7 +646,11 @@ function RegisterModal({
           <p className="text-muted-foreground text-xs">
             模型组合先跟随全局设置,注册完在仓库详情里可以改成自定义。
           </p>
-          {error === null ? null : <p className="text-destructive">{error}</p>}
+          {error === null ? null : (
+            <p role="alert" className="text-destructive">
+              {error}
+            </p>
+          )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>
               取消
@@ -658,7 +729,11 @@ function ReviewersEditor({
         }}
         onValidityChange={setValidity}
       />
-      {error === null ? null : <p className="text-destructive">{error}</p>}
+      {error === null ? null : (
+        <p role="alert" className="text-destructive">
+          {error}
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-3">
         <Button
           disabled={
@@ -727,39 +802,60 @@ function RepoRuns({
 
   const rows = runs.data?.runs.slice(0, 8) ?? [];
   return (
-    <Card className="gap-2.5 px-4">
-      <h3 className="text-base font-semibold">评审记录</h3>
-      <form onSubmit={submit} className="flex gap-2">
-        <Input
-          placeholder="PR 号"
-          inputMode="numeric"
-          className="w-[110px]"
-          value={pullNumber}
-          onChange={(event) => setPullNumber(event.target.value)}
-        />
-        <Button variant="outline" type="submit" disabled={rerun.isPending}>
-          {rerun.isPending ? "触发中…" : "重跑"}
-        </Button>
-      </form>
+    <Card className="gap-3 px-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className="text-base font-semibold">评审记录</h3>
+        <form onSubmit={submit} className="flex flex-wrap gap-2">
+          <label htmlFor={`rerun-pr-${repo.repoId}`} className="sr-only">
+            PR 号
+          </label>
+          <Input
+            id={`rerun-pr-${repo.repoId}`}
+            placeholder="PR 号"
+            inputMode="numeric"
+            className="w-28"
+            value={pullNumber}
+            onChange={(event) => setPullNumber(event.target.value)}
+          />
+          <Button variant="outline" type="submit" disabled={rerun.isPending}>
+            {rerun.isPending ? "触发中…" : "重跑"}
+          </Button>
+        </form>
+      </div>
       {runs.isError ? (
-        <p className="text-destructive">{(runs.error as Error).message}</p>
+        <p role="alert" className="flex items-start gap-2 text-destructive">
+          <CircleX className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>{(runs.error as Error).message}</span>
+        </p>
       ) : null}
-      {rows.map((run) => (
-        <Kv
-          key={run.id}
-          label={
-            <span>
-              <span className="font-mono">
-                #{run.pullNumber} · {run.startedAt.slice(0, 16).replace("T", " ")}
-              </span>
-              {` · ${run.triggeredBy === null ? "投递" : `手动 · ${run.triggeredBy}`}`}
-            </span>
-          }
-        >
-          <RunPill run={run} />
-        </Kv>
-      ))}
-      {rows.length === 0 && !runs.isPending ? (
+      {runs.isPending ? (
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-8" />
+          <Skeleton className="h-8" />
+          <Skeleton className="h-8" />
+        </div>
+      ) : null}
+      {rows.length > 0 ? (
+        <div className="divide-y divide-border border-y border-border">
+          {rows.map((run) => (
+            <div key={run.id} className="py-2.5">
+              <Kv
+                label={
+                  <span>
+                    <span className="font-mono">
+                      #{run.pullNumber} · {run.startedAt.slice(0, 16).replace("T", " ")}
+                    </span>
+                    {` · ${run.triggeredBy === null ? "投递" : `手动 · ${run.triggeredBy}`}`}
+                  </span>
+                }
+              >
+                <RunPill run={run} />
+              </Kv>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {rows.length === 0 && !runs.isPending && !runs.isError ? (
         <p className="text-xs text-muted-foreground">这个仓库还没有 Review Run。</p>
       ) : null}
     </Card>

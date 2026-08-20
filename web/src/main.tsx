@@ -110,32 +110,67 @@ function Shell() {
   }
 
   return (
-    <div className="flex h-dvh flex-col sm:grid sm:grid-cols-[200px_1fr]">
-      <aside className="flex shrink-0 flex-col border-border bg-chrome max-sm:flex-row max-sm:items-center max-sm:overflow-x-auto max-sm:border-b sm:border-r">
-        <div className="flex shrink-0 items-center gap-2 border-border px-3 py-3.5 max-sm:py-2.5 sm:border-b">
-          <Mark className="size-4" />
-          <span className="font-semibold tracking-tight">MultiReviewer</span>
+    <div className="flex h-dvh flex-col bg-chrome sm:grid sm:grid-cols-[200px_minmax(0,1fr)]">
+      <aside className="flex shrink-0 flex-col border-border bg-chrome max-sm:border-b sm:border-r">
+        <div className="flex min-h-14 shrink-0 items-center gap-2 border-b border-border px-3">
+          <Mark className="size-5 shrink-0 text-primary" />
+          <span className="truncate font-semibold tracking-tight">MultiReviewer</span>
+          <div className="ml-auto flex min-w-0 items-center gap-1 sm:hidden">
+            <span className="max-w-28 truncate text-xs text-muted-foreground">
+              {session.displayName ?? session.username}
+            </span>
+            <button
+              type="button"
+              aria-label={`登出 ${session.username}`}
+              title="登出"
+              onClick={() => void logout()}
+              className="flex size-10 shrink-0 touch-manipulation items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
+            >
+              <LogOut className="size-4" />
+            </button>
+          </div>
         </div>
-        <nav aria-label="面板导航" className="flex shrink-0 gap-0.5 p-2 sm:flex-col">
+        <nav
+          aria-label="面板导航"
+          className="flex shrink-0 gap-1 overflow-x-auto px-2 py-2 sm:flex-col sm:overflow-visible"
+        >
           {items.map((item) => (
             <Link
               key={item.to}
               to={item.to}
-              className="flex h-10 items-center rounded-md px-3 whitespace-nowrap text-muted-foreground transition-colors hover:bg-background hover:text-foreground sm:h-8"
+              className="flex h-10 shrink-0 touch-manipulation items-center rounded-sm border border-transparent px-3 whitespace-nowrap text-muted-foreground outline-none transition-colors hover:bg-background/70 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome sm:h-8 sm:shrink"
               activeProps={{
                 "aria-current": "page",
-                className: "bg-background font-medium text-foreground shadow-[0_0_0_1px_var(--border)]",
+                className: "border-border bg-background font-medium text-foreground",
               }}
             >
               {item.label}
             </Link>
           ))}
         </nav>
-        <button type="button" onClick={() => void logout()} className="flex h-10 shrink-0 items-center gap-1.5 px-4 whitespace-nowrap text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground max-sm:ml-auto sm:mt-auto sm:mb-2 sm:h-9">
-          <LogOut className="size-3.5" />登出
-        </button>
+        <div className="mt-auto hidden border-t border-border p-2 sm:block">
+          <div className="flex min-w-0 items-center gap-2 px-2 py-1.5">
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-medium">{session.displayName ?? session.username}</p>
+              {session.displayName === null ? null : (
+                <p className="truncate text-xs text-muted-foreground">{session.username}</p>
+              )}
+            </div>
+            <button
+              type="button"
+              aria-label={`登出 ${session.username}`}
+              title="登出"
+              onClick={() => void logout()}
+              className="flex size-8 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
+            >
+              <LogOut className="size-4" />
+            </button>
+          </div>
+        </div>
       </aside>
-      <main className="min-h-0 min-w-0 flex-1 overflow-auto"><Outlet /></main>
+      <main className="min-h-0 min-w-0 flex-1 overflow-auto bg-background">
+        <div className="min-h-full w-full max-w-7xl"><Outlet /></div>
+      </main>
     </div>
   );
 }

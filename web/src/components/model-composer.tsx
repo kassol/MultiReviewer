@@ -125,15 +125,24 @@ export function ModelComposer({ value, onChange, onValidityChange }: ModelCompos
 
   return (
     <div className="flex flex-col gap-4">
-      <Card className="gap-2.5 px-4">
-        <h2 className="text-base font-semibold">模型组合</h2>
-        <p className="text-muted-foreground">
-          一次审查按这几个模型各跑一遍。这里只选择模型；配置服务、凭据与模型来源请到模型服务页。
-        </p>
+      <Card className="gap-3 px-4">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold">模型组合</h2>
+            <p className="mt-0.5 max-w-[68ch] text-muted-foreground">
+              一次审查按这几个模型各跑一遍。这里只选择模型；服务、凭据与模型来源统一到模型服务页处理。
+            </p>
+          </div>
+          <Link to="/credentials" className="shrink-0 text-xs underline underline-offset-4">
+            管理模型服务
+          </Link>
+        </div>
         {value.length === 0 ? (
-          <p className="text-muted-foreground">还没选模型。</p>
+          <div className="rounded-sm bg-muted px-3 py-3 text-muted-foreground">
+            还没选模型。先从下方选择服务，再加入可用模型。
+          </div>
         ) : (
-          <div className="flex flex-wrap gap-2">
+          <div className="grid gap-2 sm:grid-cols-2" aria-label="已选模型" role="list">
             {value.map((identity) => {
               const candidate = candidateByIdentity.get(identity);
               const reason =
@@ -143,58 +152,61 @@ export function ModelComposer({ value, onChange, onValidityChange }: ModelCompos
                     ? "模型来源消失"
                     : null;
               return (
-                <Badge
+                <div
+                  role="listitem"
                   key={identity}
-                  variant="outline"
                   className={cn(
-                    "gap-1.5 font-mono",
+                    "flex min-w-0 items-start gap-2 rounded-sm border bg-background px-3 py-2",
                     reason === null ? null : "border-destructive/40 bg-destructive/5",
                   )}
                 >
-                  <span className="max-w-full break-all">{identity}</span>
-                  {candidate?.sources.map((source) => (
-                    <span
-                      key={source}
-                      className="rounded-sm bg-muted px-1 font-sans text-xs text-muted-foreground"
-                    >
-                      {SOURCE_LABEL[source]}
-                    </span>
-                  ))}
-                  {reason === null ? null : (
-                    <span className="font-sans text-destructive">{reason}</span>
-                  )}
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <p className="break-all font-mono text-xs font-medium">{identity}</p>
+                    <div className="flex flex-wrap items-center gap-1">
+                      {candidate?.sources.map((source) => (
+                        <Badge key={source} variant="outline">{SOURCE_LABEL[source]}</Badge>
+                      ))}
+                      {reason === null ? null : (
+                        <span className="text-xs text-destructive">{reason}</span>
+                      )}
+                    </div>
+                  </div>
                   <button
                     type="button"
                     aria-label={`移除 ${identity}`}
-                    className="-mr-0.5 shrink-0 text-muted-foreground transition-colors hover:text-destructive"
+                    className="-mr-1 flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={() => toggle(identity)}
                   >
-                    <X className="size-3" />
+                    <X className="size-3.5" />
                   </button>
-                </Badge>
+                </div>
               );
             })}
           </div>
         )}
         {validity.unavailable.length === 0 ? null : (
-          <p className="text-xs text-destructive">
+          <div className="rounded-sm bg-destructive/5 px-3 py-2 text-xs text-destructive">
             不可用模型可以移除，但不能随组合再次保存。恢复服务后会按原标识自动变回可用。{" "}
-            <Link to="/credentials" className="underline underline-offset-4">
+            <Link to="/credentials" className="font-medium underline underline-offset-4">
               去模型服务处理
             </Link>
-          </p>
+          </div>
         )}
       </Card>
 
       <Card className="gap-0 overflow-hidden p-0">
-        <div className="grid h-[460px] grid-cols-[180px_minmax(0,1fr)] sm:grid-cols-[220px_minmax(0,1fr)]">
-          <div className="flex min-h-0 flex-col border-r border-border bg-chrome">
-            <p className="border-b border-border px-3 py-2 text-xs text-muted-foreground">
+        <div className="flex h-[460px] min-w-0 flex-col sm:grid sm:grid-cols-[220px_minmax(0,1fr)]">
+          <div className="flex h-40 min-h-0 shrink-0 flex-col border-b border-border bg-chrome sm:h-auto sm:border-r sm:border-b-0">
+            <p className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
               模型服务 <span className="font-mono tabular-nums">{groups.length}</span> 项
             </p>
             <div className="min-h-0 flex-1 overflow-y-auto">
               {query.isPending ? (
-                <div className="p-3"><Skeleton className="h-56" /></div>
+                <div className="p-3"><Skeleton className="h-20" /></div>
+              ) : query.isError ? (
+                <p className="px-3 py-4 text-xs text-destructive">候选暂不可用。</p>
+              ) : groups.length === 0 ? (
+                <p className="px-3 py-4 text-xs text-muted-foreground">没有可选择的服务。</p>
               ) : (
                 groups.map((group) => {
                   const available = group.models.filter((model) => model.available).length;
@@ -205,14 +217,14 @@ export function ModelComposer({ value, onChange, onValidityChange }: ModelCompos
                       type="button"
                       aria-pressed={group.provider === selected?.provider}
                       className={cn(
-                        "flex w-full flex-col items-start gap-0.5 border-b border-border px-3 py-2 text-left",
+                        "flex w-full flex-col items-start gap-0.5 border-b border-border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                         group.provider === selected?.provider
                           ? "bg-background"
                           : "hover:bg-background/60",
                       )}
                       onClick={() => setPickedProvider(group.provider)}
                     >
-                      <span className="w-full truncate font-mono">{group.provider}</span>
+                      <span className="w-full truncate font-mono font-medium">{group.provider}</span>
                       <span className="text-xs text-muted-foreground">
                         <span className="font-mono tabular-nums">{available}</span> 个可选
                         {unavailable === 0 ? null : (
@@ -228,20 +240,26 @@ export function ModelComposer({ value, onChange, onValidityChange }: ModelCompos
             </div>
             <Link
               to="/credentials"
-              className="border-t border-border px-3 py-2.5 hover:bg-background/60"
+              className="border-t border-border px-3 py-2 text-xs font-medium hover:bg-background/60"
             >
-              管理模型服务
+              配置或修复服务
             </Link>
           </div>
 
           {selected === undefined ? (
-            <div className="flex min-w-0 flex-col gap-2 p-3">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 p-4">
               {query.isPending ? (
-                <Skeleton className="h-56" />
+                <Skeleton className="h-40" />
+              ) : query.isError ? (
+                <>
+                  <p className="font-medium text-destructive">模型候选暂不可用</p>
+                  <p className="text-muted-foreground">修复下方读取错误并重试后，才能继续选择或保存。</p>
+                </>
               ) : (
                 <>
-                  <p className="text-muted-foreground">还没有模型服务候选。</p>
-                  <Link to="/credentials" className="text-primary underline underline-offset-4">
+                  <p className="font-medium">还没有模型服务候选</p>
+                  <p className="text-muted-foreground">先配置模型服务、凭据与模型来源，再回到这里选择。</p>
+                  <Link to="/credentials" className="w-fit underline underline-offset-4">
                     去配置模型服务
                   </Link>
                 </>
@@ -259,10 +277,16 @@ export function ModelComposer({ value, onChange, onValidityChange }: ModelCompos
       </Card>
 
       {query.isError ? (
-        <div className="flex flex-wrap items-center gap-3 text-destructive">
-          <p>模型服务候选读不到：{(query.error as Error).message}</p>
-          <Button type="button" variant="outline" size="xs" onClick={() => void query.refetch()}>
-            重试
+        <div className="flex flex-wrap items-center gap-3 rounded-sm bg-destructive/5 px-3 py-2 text-destructive">
+          <p role="alert">模型服务候选读不到：{(query.error as Error).message}</p>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            disabled={query.isFetching}
+            onClick={() => void query.refetch()}
+          >
+            {query.isFetching ? "正在重试…" : "重试"}
           </Button>
         </div>
       ) : null}
@@ -292,14 +316,14 @@ function ProviderPane({
   const hidden = matched.length - models.length;
 
   return (
-    <div className="flex min-w-0 min-h-0 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-3 py-2">
-        <span className="min-w-0 truncate font-mono">{group.provider}</span>
+        <span className="min-w-0 truncate font-mono font-medium">{group.provider}</span>
         {group.name === group.provider ? null : (
           <span className="min-w-0 truncate text-xs text-muted-foreground">{group.name}</span>
         )}
         <span className={cn(
-          "text-xs",
+          "text-xs font-medium",
           group.service?.health === "healthy" ? "text-success" : "text-warning",
           group.service?.health === "disabled" ? "text-destructive" : null,
         )}>
@@ -315,27 +339,41 @@ function ProviderPane({
         </span>
         <Link
           to="/credentials"
-          className="ml-auto shrink-0 text-xs text-primary underline underline-offset-4"
+          className="ml-auto shrink-0 text-xs font-medium underline underline-offset-4"
         >
           管理服务
         </Link>
       </div>
 
-      <div className="border-b border-border px-3 py-2">
+      <div className="border-b border-border bg-muted/50 px-3 py-2">
         <Input
           aria-label={`在 ${group.provider} 里搜模型`}
           placeholder={`在 ${group.provider} 里搜模型`}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
+        <p className="mt-1.5 text-xs text-muted-foreground" aria-live="polite">
+          {query.trim() === "" ? "当前服务" : "搜索结果"}共{" "}
+          <span className="font-mono tabular-nums">{matched.length}</span> 个
+          {hidden > 0 ? (
+            <>，只列前 <span className="font-mono tabular-nums">{MODELS_SHOWN}</span> 个，请继续缩小范围</>
+          ) : null}
+        </p>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {models.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 px-3 py-6 text-center text-muted-foreground">
-            <p>{group.models.length === 0 ? "这项服务还没有模型来源。" : "这项服务没有匹配的模型。"}</p>
+          <div className="flex flex-col items-start gap-1.5 px-4 py-6 text-muted-foreground">
+            <p className="font-medium text-foreground">
+              {group.models.length === 0 ? "这项服务还没有模型来源" : "没有匹配的模型"}
+            </p>
+            <p>
+              {group.models.length === 0
+                ? "先去模型服务发现目录或补录模型。"
+                : "换一个模型名称或 model id 继续搜索。"}
+            </p>
             {group.models.length === 0 ? (
-              <Link to="/credentials" className="text-primary underline underline-offset-4">
+              <Link to="/credentials" className="font-medium text-primary underline underline-offset-4">
                 去发现或补录模型
               </Link>
             ) : null}
@@ -348,21 +386,23 @@ function ProviderPane({
             <div
               key={model.identity}
               className={cn(
-                "flex min-w-0 items-center gap-2 border-b border-border px-3 py-2",
-                model.available ? "hover:bg-muted" : "bg-destructive/5",
+                "flex min-w-0 items-start gap-2 border-b border-border px-3 py-2 transition-colors",
+                model.available && picked ? "bg-muted" : null,
+                model.available && !picked ? "hover:bg-muted/60" : null,
+                !model.available ? "bg-destructive/5" : null,
               )}
             >
               <button
                 type="button"
                 aria-pressed={picked}
                 disabled={!model.available}
-                className="flex min-w-0 flex-1 items-center gap-3 text-left disabled:cursor-not-allowed"
+                className="flex min-w-0 flex-1 flex-col gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-70 sm:flex-row sm:items-center"
                 onClick={() => onToggle(model.identity)}
               >
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="truncate">
+                  <span className="truncate font-medium">
                     {model.discovery.name ?? model.id}
-                    {picked ? <span className="ml-2 text-primary">已选</span> : null}
+                    {picked ? <span className="ml-2 text-xs text-muted-foreground">已选</span> : null}
                   </span>
                   <span className="truncate font-mono text-xs text-muted-foreground">{model.id}</span>
                   <span className="flex flex-wrap gap-1">
@@ -376,20 +416,23 @@ function ProviderPane({
                     </span>
                   )}
                 </span>
-                <span className="shrink-0 text-right text-xs text-muted-foreground">
-                  <span>{NUMBER_FORMAT.format(model.runtime.contextWindow)} 上下文</span>
+                <span className="shrink-0 text-left text-xs text-muted-foreground sm:text-right">
+                  <span><span className="font-mono tabular-nums">{NUMBER_FORMAT.format(model.runtime.contextWindow)}</span> 上下文</span>
                   <br />
                   {cost === null ? (
                     <span className="text-warning">{COST_UNKNOWN_NOTE}</span>
                   ) : (
-                    `$${cost.input}/M 入 · $${cost.output}/M 出`
+                    <span>
+                      <span className="font-mono tabular-nums">${cost.input}/M</span> 入 ·{" "}
+                      <span className="font-mono tabular-nums">${cost.output}/M</span> 出
+                    </span>
                   )}
                 </span>
               </button>
               {model.available ? null : (
                 <Link
                   to={model.unavailableAction ?? "/credentials"}
-                  className="shrink-0 text-xs text-primary underline underline-offset-4"
+                  className="shrink-0 text-xs font-medium underline underline-offset-4"
                 >
                   处理
                 </Link>
@@ -397,11 +440,6 @@ function ProviderPane({
             </div>
           );
         })}
-        {hidden > 0 ? (
-          <p className="px-3 py-2 text-xs text-muted-foreground">
-            这项服务还有 <span className="font-mono tabular-nums">{hidden}</span> 个没列出，在上面的搜索框里缩小范围。
-          </p>
-        ) : null}
       </div>
     </div>
   );
