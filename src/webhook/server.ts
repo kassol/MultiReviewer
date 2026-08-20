@@ -59,6 +59,7 @@ import {
 } from "../review/run.ts";
 import {
   openStore,
+  type ModelReference,
   type ModelServiceRecord,
   type ModelServiceVersionCommit,
   type ModelSupplementSource,
@@ -1735,6 +1736,22 @@ type ProjectedServiceModel = {
   };
 };
 
+type ModelServiceNextAction =
+  | "recover-service"
+  | "configure-credential"
+  | "add-model-source";
+
+function isHiddenEmptyBuiltinService(
+  service: ModelServiceRecord,
+  references: readonly ModelReference[],
+): boolean {
+  return service.type === "builtin" &&
+    service.credential.state === "unconfigured" &&
+    service.automaticModels.length === 0 &&
+    service.supplements.length === 0 &&
+    !references.some((reference) => reference.provider === service.provider);
+}
+
 function modelRuntimeProjection(result: RuntimeSynthesisResult | undefined) {
   if (result === undefined || !result.ok) return BASELINE_RUNTIME_PROJECTION;
   const runtime = result.value.runtime;
@@ -1884,7 +1901,7 @@ async function projectCurrentModelServices(
   const { services, supplements, references } = withStore(deps.dbPath, (store) => ({
     services: store.listModelServices(),
     supplements: store.listModelSupplements(),
-    references: includeModels ? store.listModelReferences() : [],
+    references: store.listModelReferences(),
   }));
   const retainedByIdentity = new Map<string, ReviewerSpec>();
   const retainedByProvider = new Map<string, ReviewerSpec[]>();
@@ -1954,45 +1971,65 @@ async function projectCurrentModelServices(
           ? "attention" as const
           : "healthy" as const;
 
-    let target: { baseUrl: string | null; api: string | null } | undefined;
-    let models: ProjectedServiceModel[] | undefined;
-    if (includeModels) {
-      const automaticById = new Map(service.automaticModels.map((model) => [model.id, model]));
-      const supplementById = new Map(service.supplements.map((entry) => [entry.model, entry]));
-      const sourceById = new Map<string, ModelReadSource[]>();
-      for (const model of service.automaticModels) sourceById.set(model.id, ["automatic"]);
-      for (const supplement of service.supplements) {
-        const sources = sourceById.get(supplement.model) ?? [];
-        if (!sources.includes(supplement.source)) sources.push(supplement.source);
-        sourceById.set(supplement.model, sources);
-      }
-      for (const retained of retainedByProvider.get(service.provider) ?? []) {
-        if (!sourceById.has(retained.model)) sourceById.set(retained.model, []);
-      }
-      models = [...sourceById.entries()]
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([id, sources]) =>
-          projectServiceModel(
-            service,
-            id,
-            sources,
-            automaticById.get(id),
-            supplementById.get(id),
-            serviceTarget,
-            credentialState,
-          ),
-        );
-      target = service.type === "custom"
-        ? { baseUrl: service.baseUrl, api: service.api }
-        : { baseUrl: serviceTarget?.baseUrl ?? null, api: serviceTarget?.api ?? null };
+    const automaticById = new Map(service.automaticModels.map((model) => [model.id, model]));
+    const supplementById = new Map(service.supplements.map((entry) => [entry.model, entry]));
+    const sourceById = new Map<string, ModelReadSource[]>();
+    for (const model of service.automaticModels) sourceById.set(model.id, ["automatic"]);
+    for (const supplement of service.supplements) {
+      const sources = sourceById.get(supplement.model) ?? [];
+      if (!sources.includes(supplement.source)) sources.push(supplement.source);
+      sourceById.set(supplement.model, sources);
     }
+    for (const retained of retainedByProvider.get(service.provider) ?? []) {
+      if (!sourceById.has(retained.model)) sourceById.set(retained.model, []);
+    }
+    const models = [...sourceById.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([id, sources]) =>
+        projectServiceModel(
+          service,
+          id,
+          sources,
+          automaticById.get(id),
+          supplementById.get(id),
+          serviceTarget,
+          credentialState,
+        ),
+      );
+    const target = service.type === "custom"
+      ? { baseUrl: service.baseUrl, api: service.api }
+      : { baseUrl: serviceTarget?.baseUrl ?? null, api: serviceTarget?.api ?? null };
+    const runnable = models.some((model) => model.available);
+    const reason: ModelUnavailableReason | null = runnable
+      ? null
+      : service.disabledReason === "name-conflict"
+        ? "provider-name-conflict"
+        : credentialState !== "verified"
+          ? "credential-unavailable"
+          : "model-source-missing";
+    const nextAction: ModelServiceNextAction | null =
+      reason === "provider-name-conflict"
+        ? "recover-service"
+        : reason === "credential-unavailable"
+          ? "configure-credential"
+          : reason === "model-source-missing"
+            ? "add-model-source"
+            : null;
     return {
       provider: service.provider,
       name: service.provider,
       type: service.type,
       version: service.version,
       health,
+      hidden: isHiddenEmptyBuiltinService(service, references),
       providerState: service.disabledReason === "name-conflict" ? "name-conflict" as const : "normal" as const,
+      runCapability: {
+        runnable,
+        reason,
+        reasonText: reason === null ? null : MODEL_UNAVAILABLE_REASON_TEXT[reason],
+        nextAction,
+      },
+      references: references.filter((reference) => reference.provider === service.provider),
       target,
       credential: {
         state: credentialState,
@@ -2005,7 +2042,7 @@ async function projectCurrentModelServices(
       directory: service.directory,
       models,
     };
-  }));
+  })).then((entries) => entries.filter((service) => !service.hidden));
 
   const candidateByIdentity = new Map<string, ProjectedServiceModel>();
   if (includeModels) {
@@ -2086,6 +2123,7 @@ async function handleListModelServices(
       type: service.type,
       version: service.version,
       health: service.health,
+      runCapability: service.runCapability,
     };
     const credential = canReadCredential
       ? service.credential
@@ -2097,6 +2135,7 @@ async function handleListModelServices(
       target: service.target ?? { baseUrl: null, api: null },
       credential,
       directory: service.directory,
+      references: service.references,
       models: service.models ?? [],
     };
   });
@@ -2117,10 +2156,16 @@ async function handleBuiltinProviderSearch(
     ?.trim()
     .toLowerCase() ?? "";
   const configured = new Map(
-    withStore(deps.dbPath, (store) => store.listModelServices()).map((service) => [
-      service.provider,
-      service,
-    ]),
+    withStore(deps.dbPath, (store) => {
+      const references = store.listModelReferences();
+      return store.listModelServices().map((service) => [
+        service.provider,
+        {
+          service,
+          visible: !isHiddenEmptyBuiltinService(service, references),
+        },
+      ] as const);
+    }),
   );
   const providers = (await listPiBuiltinProviders())
     .filter(
@@ -2130,11 +2175,12 @@ async function handleBuiltinProviderSearch(
         provider.name.toLowerCase().includes(query),
     )
     .map((provider) => {
-      const service = configured.get(provider.id);
+      const entry = configured.get(provider.id);
+      const service = entry?.service;
       return {
         id: provider.id,
         name: provider.name,
-        configured: service !== undefined,
+        configured: entry?.visible === true,
         version: service?.version ?? null,
         conflict:
           service?.type === "custom" || service?.disabledReason === "name-conflict",

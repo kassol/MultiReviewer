@@ -18,6 +18,20 @@ export type ModelUnavailableReason =
   | "provider-name-conflict"
   | "credential-unavailable"
   | "model-source-missing";
+export type ModelServiceNextAction =
+  | "recover-service"
+  | "configure-credential"
+  | "add-model-source";
+export type ModelReferenceLocation =
+  | { kind: "global" }
+  | { kind: "following-global"; repositoryCount: number }
+  | { kind: "repository-override"; repoId: number; owner: string; repo: string };
+export type ModelReference = {
+  identity: string;
+  provider: string;
+  model: string;
+  locations: ModelReferenceLocation[];
+};
 
 export type ModelCost = {
   input: number;
@@ -70,6 +84,12 @@ export type ModelService = {
   name: string;
   type: "builtin" | "custom";
   health: ModelServiceHealth;
+  runCapability: {
+    runnable: boolean;
+    reason: ModelUnavailableReason | null;
+    reasonText: string | null;
+    nextAction: ModelServiceNextAction | null;
+  };
   providerState?: "normal" | "name-conflict";
   target?: { baseUrl: string | null; api: string | null };
   credential: {
@@ -87,6 +107,7 @@ export type ModelService = {
     failure: string | null;
     ignoredModelCount: number;
   };
+  references?: readonly ModelReference[];
   models?: readonly ModelServiceModel[];
 };
 

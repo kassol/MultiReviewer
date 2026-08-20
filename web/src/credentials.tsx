@@ -3,7 +3,7 @@
  * `/model-services`；内置候选只留在组件内存，模型字段与凭据审计字段继续按独立权限展示。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, Check, CircleX, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -33,6 +33,8 @@ import {
   type ModelCost,
   type ModelCredentialState,
   type ModelDirectoryState,
+  type ModelReference,
+  type ModelReferenceLocation,
   type ModelService,
   type ModelServiceHealth,
   type ModelServiceModel,
@@ -93,16 +95,6 @@ type CustomDialogTarget = {
   service?: ModelService;
 };
 
-type ModelReferenceLocation =
-  | { kind: "global" }
-  | { kind: "following-global"; repositoryCount: number }
-  | { kind: "repository-override"; repoId: number; owner: string; repo: string };
-
-type ModelReference = {
-  identity: string;
-  locations: ModelReferenceLocation[];
-};
-
 type ModelServiceMutationError = Error & { references: ModelReference[] };
 type DeleteCredentialError = ModelServiceMutationError;
 
@@ -120,6 +112,10 @@ function parseModelReferences(value: unknown): ModelReference[] {
       typeof entry !== "object" ||
       !("identity" in entry) ||
       typeof entry.identity !== "string" ||
+      !("provider" in entry) ||
+      typeof entry.provider !== "string" ||
+      !("model" in entry) ||
+      typeof entry.model !== "string" ||
       !("locations" in entry) ||
       !Array.isArray(entry.locations)
     ) continue;
@@ -146,7 +142,12 @@ function parseModelReferences(value: unknown): ModelReference[] {
         });
       }
     }
-    references.push({ identity: entry.identity, locations });
+    references.push({
+      identity: entry.identity,
+      provider: entry.provider,
+      model: entry.model,
+      locations,
+    });
   }
   return references;
 }
@@ -202,19 +203,11 @@ function quantity(value: number): string {
 
 function ServiceStatus({ service }: { service: ModelService }) {
   const detail =
-    service.providerState === "name-conflict"
+    service.runCapability.runnable
+      ? { label: "可以运行", icon: Check, className: "bg-success/10 text-success" }
+      : service.providerState === "name-conflict"
       ? { label: "已停用", icon: CircleX, className: "bg-destructive/10 text-destructive" }
-      : service.credential.state !== "verified"
-        ? { label: CREDENTIAL_LABEL[service.credential.state], icon: AlertTriangle, className: "bg-warning/10 text-warning" }
-        : service.directory?.state === "refresh-failed"
-          ? { label: "刷新失败", icon: AlertTriangle, className: "bg-warning/10 text-warning" }
-          : service.directory?.state === "discovery-failed" || service.directory?.state === "undiscovered"
-            ? { label: "目录不可用", icon: CircleX, className: "bg-destructive/10 text-destructive" }
-            : service.health === "healthy"
-              ? { label: "正常", icon: Check, className: "bg-success/10 text-success" }
-              : service.health === "disabled"
-                ? { label: "已停用", icon: CircleX, className: "bg-destructive/10 text-destructive" }
-                : { label: "需注意", icon: AlertTriangle, className: "bg-warning/10 text-warning" };
+      : { label: "暂时不能运行", icon: CircleX, className: "bg-destructive/10 text-destructive" };
   const Icon = detail.icon;
   return (
     <Badge variant="secondary" className={cn("border-0", detail.className)}>
@@ -1245,7 +1238,13 @@ function CustomServiceControls({
   );
 }
 
-function CatalogControls({ service }: { service: ModelService }) {
+function CatalogControls({
+  service,
+  section,
+}: {
+  service: ModelService;
+  section: "maintenance" | "models";
+}) {
   const queryClient = useQueryClient();
   const [model, setModel] = useState("");
   const [deleting, setDeleting] = useState<ModelServiceModel | null>(null);
@@ -1299,11 +1298,11 @@ function CatalogControls({ service }: { service: ModelService }) {
 
   return (
     <section className="rounded-md border px-3 py-3" aria-labelledby={`catalog-actions-${service.provider}`}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      {section === "maintenance" ? <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 id={`catalog-actions-${service.provider}`} className="font-medium">目录与模型补录</h3>
+          <h3 id={`catalog-actions-${service.provider}`} className="font-medium">自动目录维护</h3>
           <p className="text-xs text-muted-foreground">
-            刷新只替换自动目录；补录仅记录 model id，并先执行一次真实推理。
+            刷新只替换自动目录；失败时保留最近成功的目录快照。
           </p>
         </div>
         <Button
@@ -1318,10 +1317,13 @@ function CatalogControls({ service }: { service: ModelService }) {
           <RefreshCw className={cn(refresh.isPending && "animate-spin")} />
           {refresh.isPending ? "正在刷新…" : "刷新自动目录"}
         </Button>
-      </div>
+        {refresh.error === null ? null : (
+          <p role="alert" className="basis-full text-sm text-destructive">{refresh.error.message}</p>
+        )}
+      </div> : null}
 
-      <form
-        className="mt-3 border-t pt-3"
+      {section === "models" ? <><form
+        className="space-y-1"
         onSubmit={(event) => {
           event.preventDefault();
           const submittedModel = model.trim();
@@ -1438,7 +1440,7 @@ function CatalogControls({ service }: { service: ModelService }) {
             </Button>
           </DialogFooter>
         </DialogContent>
-      </Dialog>
+      </Dialog></> : null}
     </section>
   );
 }
@@ -1568,8 +1570,119 @@ function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
   );
 }
 
+export type ModelServiceTab = "overview" | "maintenance" | "models";
+
+function RunCapabilityCard({
+  service,
+  canWriteModels,
+  canWriteCredential,
+  canWriteCustom,
+}: {
+  service: ModelService;
+  canWriteModels: boolean;
+  canWriteCredential: boolean;
+  canWriteCustom: boolean;
+}) {
+  const capability = service.runCapability;
+  const canAct =
+    (capability.nextAction === "configure-credential" && canWriteCredential) ||
+    (capability.nextAction === "add-model-source" && canWriteModels) ||
+    (capability.nextAction === "recover-service" && canWriteCustom);
+  const nextStep =
+    capability.nextAction === "configure-credential"
+      ? service.credential.state === "unconfigured"
+        ? "到维护页配置模型凭据。"
+        : "到维护页重新验证或轮换模型凭据。"
+      : capability.nextAction === "add-model-source"
+        ? "到维护页刷新自动目录，或到模型页补录可验证的 model id。"
+        : capability.nextAction === "recover-service"
+          ? "到维护页用新名称重建，或删除这项服务。"
+          : null;
+  return (
+    <section
+      className={cn(
+        "rounded-md border px-4 py-4",
+        capability.runnable ? "border-success/30 bg-success/5" : "border-destructive/30 bg-destructive/5",
+      )}
+      aria-labelledby={`run-capability-${service.provider}`}
+    >
+      <div className="flex items-start gap-2">
+        {capability.runnable
+          ? <Check className="mt-0.5 size-4 shrink-0 text-success" />
+          : <CircleX className="mt-0.5 size-4 shrink-0 text-destructive" />}
+        <div>
+          <h3 id={`run-capability-${service.provider}`} className="font-medium">
+            {capability.runnable ? "模型服务可以运行" : "模型服务暂时不能运行"}
+          </h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {capability.runnable
+              ? "至少一个当前模型具备已验证凭据与可运行来源。"
+              : capability.reasonText ?? "当前没有可运行模型。"}
+          </p>
+          {!canAct || nextStep === null ? null : (
+            <p className="mt-2 text-xs font-medium">下一步：{nextStep}</p>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ReferenceOverview({ references }: { references: readonly ModelReference[] | undefined }) {
+  if (references === undefined) {
+    return (
+      <section className="rounded-md border bg-muted/50 px-4 py-4">
+        <h3 className="font-medium">组合引用按模型读权限隐藏</h3>
+        <p className="mt-1 text-xs text-muted-foreground">当前会话只能查看静态服务与凭据状态。</p>
+      </section>
+    );
+  }
+  const locationCount = references.reduce(
+    (count, reference) => count + reference.locations.reduce(
+      (subtotal, location) => subtotal + (location.kind === "following-global" ? location.repositoryCount : 1),
+      0,
+    ),
+    0,
+  );
+  return (
+    <section className="rounded-md border px-4 py-4" aria-labelledby="service-references">
+      <h3 id="service-references" className="font-medium">组合引用</h3>
+      <p className="mt-1 text-xs text-muted-foreground">
+        <span className="font-mono tabular-nums">{references.length}</span> 个模型标识 ·{" "}
+        <span className="font-mono tabular-nums">{locationCount}</span> 个引用位置
+      </p>
+      {references.length === 0 ? (
+        <p className="mt-3 text-sm text-muted-foreground">全局模型组合与仓库覆盖都没有引用这家服务。</p>
+      ) : (
+        <details className="mt-3 rounded-sm border bg-background px-3 py-2">
+          <summary className="cursor-pointer font-medium">展开具体位置</summary>
+          <ul className="mt-3 divide-y rounded-sm border">
+            {references.map((reference) => (
+              <li key={reference.identity} className="px-3 py-2">
+                <p className="break-all font-mono text-xs font-medium">{reference.identity}</p>
+                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
+                  {reference.locations.map((location, index) => (
+                    <li key={`${reference.identity}:${index}`}>
+                      {location.kind === "global"
+                        ? "全局模型组合"
+                        : location.kind === "following-global"
+                          ? `${location.repositoryCount} 个跟随全局的仓库`
+                          : `仓库覆盖 ${location.owner}/${location.repo}`}
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </section>
+  );
+}
+
 function ServiceDetail({
   service,
+  tab,
   canReadModels,
   canWriteModels,
   canReadCredential,
@@ -1579,6 +1692,7 @@ function ServiceDetail({
   onRecoverCustom,
 }: {
   service: ModelService;
+  tab: ModelServiceTab;
   canReadModels: boolean;
   canWriteModels: boolean;
   canReadCredential: boolean;
@@ -1587,6 +1701,7 @@ function ServiceDetail({
   onEditCustom: () => void;
   onRecoverCustom: () => void;
 }) {
+  const [editingBuiltinCredential, setEditingBuiltinCredential] = useState(false);
   return (
     <div className="min-w-0 space-y-5">
       <section className="flex flex-wrap items-start justify-between gap-3 border-b pb-4">
@@ -1601,38 +1716,51 @@ function ServiceDetail({
         </div>
       </section>
 
-      {service.providerState === "name-conflict" ? (
-        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive">
-          <p className="font-medium">与 Pi 内置 provider 同名，模型服务已停用。</p>
-          <p className="mt-0.5 text-xs">配置仍被保留；下一步用新名称重建，或删除这项服务。</p>
-        </div>
-      ) : service.directory?.failure === null || service.directory?.failure === undefined ? null : (
-        <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-warning">
-          <p className="font-medium">{service.directory.failure}</p>
-          <p className="mt-0.5 text-xs">
-            {service.directory.state === "refresh-failed"
-              ? "最近成功目录仍在使用；检查服务后可刷新自动目录。"
-              : "当前没有成功的自动目录；先恢复凭据或服务，再刷新目录。"}
-          </p>
-        </div>
-      )}
+      <nav className="flex gap-1 border-b" aria-label="模型服务详情">
+        {(["overview", "maintenance", "models"] as const).map((candidate) => {
+          if (candidate === "models" && !canReadModels && !canWriteModels) return null;
+          const label = candidate === "overview" ? "概览" : candidate === "maintenance" ? "维护" : "模型";
+          const to = candidate === "overview"
+            ? "/credentials/$provider"
+            : candidate === "maintenance"
+              ? "/credentials/$provider/maintenance"
+              : "/credentials/$provider/models";
+          return (
+            <Link
+              key={candidate}
+              to={to}
+              params={{ provider: service.provider }}
+              aria-current={tab === candidate ? "page" : undefined}
+              className={cn(
+                "border-b-2 border-transparent px-3 py-2 font-medium text-muted-foreground",
+                tab === candidate && "border-foreground text-foreground",
+              )}
+            >
+              {label}
+            </Link>
+          );
+        })}
+      </nav>
 
-      <section aria-labelledby={`service-state-${service.provider}`}>
-        <div className="mb-2">
-          <h3 id={`service-state-${service.provider}`} className="text-base font-semibold">配置路径</h3>
-          <p className="mt-0.5 text-xs text-muted-foreground">按模型服务 → 模型凭据 → 模型目录依次检查；三项状态彼此独立。</p>
-        </div>
+      {tab === "overview" ? <>
+        <RunCapabilityCard
+          service={service}
+          canWriteModels={canWriteModels}
+          canWriteCredential={canWriteCredential}
+          canWriteCustom={canWriteCustom}
+        />
+        {service.directory?.failure === null || service.directory?.failure === undefined ? null : (
+          <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-warning">
+            <p className="font-medium">目录维护提醒</p>
+            <p className="mt-0.5 text-xs">{service.directory.failure}</p>
+          </div>
+        )}
         <StateRows service={service} canReadCredential={canReadCredential} />
-        {canWriteCredential && service.credential.state === "unconfigured" ? (
-          <p className="mt-2 rounded-sm bg-warning/10 px-3 py-2 text-xs text-warning">
-            下一步：从页头搜索 <span className="font-mono">{service.provider}</span> 并配置模型凭据。
-          </p>
-        ) : null}
-      </section>
+        <ReferenceOverview references={service.references} />
+      </> : null}
 
-      {canWriteCredential && service.credential.state !== "unconfigured" ? (
+      {tab === "maintenance" && canWriteCredential && service.credential.state !== "unconfigured" ? (
         <CredentialControls
-          key={`${service.provider}:${service.version}`}
           target={{
             provider: service.provider,
             version: service.version,
@@ -1642,18 +1770,54 @@ function ServiceDetail({
         />
       ) : null}
 
-      {!canWriteCustom || service.type !== "custom" ? null : (
+      {tab === "maintenance" && canWriteCredential && service.type === "builtin" ? (
+        <section className="flex flex-wrap items-center justify-between gap-3 rounded-md border px-3 py-3">
+          <div>
+            <h3 className="font-medium">模型凭据轮换</h3>
+            <p className="text-xs text-muted-foreground">新凭据发现目录并完成真实推理后，才会推进当前版本。</p>
+          </div>
+          <Button type="button" variant="outline" onClick={() => setEditingBuiltinCredential(true)}>
+            {service.credential.state === "unconfigured" ? "配置凭据" : "换凭据"}
+          </Button>
+          {editingBuiltinCredential ? (
+            <BuiltinCandidateDialog
+              provider={{
+                id: service.provider,
+                name: service.name,
+                configured: true,
+                conflict: service.providerState === "name-conflict",
+                version: service.version,
+              }}
+              onClose={() => setEditingBuiltinCredential(false)}
+            />
+          ) : null}
+        </section>
+      ) : null}
+
+      {tab !== "maintenance" || !canWriteCustom || service.type !== "custom" ? null : (
         <CustomServiceControls
-          key={`${service.provider}:${service.version}`}
           service={service}
           onEdit={onEditCustom}
           onRecover={onRecoverCustom}
         />
       )}
 
-      {canWriteModels ? <CatalogControls key={`${service.provider}:${service.version}`} service={service} /> : null}
+      {tab === "maintenance" && canWriteModels ? (
+        <CatalogControls service={service} section="maintenance" />
+      ) : null}
 
-      {canReadModels && service.models !== undefined ? (
+      {tab === "maintenance" && !canWriteCredential && !canWriteModels && !canWriteCustom ? (
+        <section className="rounded-md border bg-muted/50 px-4 py-5">
+          <h3 className="font-medium">维护操作按写权限隐藏</h3>
+          <p className="mt-1 text-muted-foreground">当前会话可以查看静态状态与导航，不能修改模型服务。</p>
+        </section>
+      ) : null}
+
+      {tab === "models" && canWriteModels ? (
+        <CatalogControls service={service} section="models" />
+      ) : null}
+
+      {tab !== "models" ? null : canReadModels && service.models !== undefined ? (
         <ModelsTable models={service.models} />
       ) : (
         <section className="rounded-md border bg-muted/50 px-4 py-5">
@@ -1686,25 +1850,31 @@ function LoadingLayout() {
 }
 
 export function ModelServicesPage({
+  provider,
+  tab = "overview",
   canReadModels,
   canWriteModels,
   canReadCredential,
   canWriteCredential,
 }: {
+  provider?: string | undefined;
+  tab?: ModelServiceTab | undefined;
   canReadModels: boolean;
   canWriteModels: boolean;
   canReadCredential: boolean;
   canWriteCredential: boolean;
 }) {
-  const [selectedProvider, setSelectedProvider] = useState("");
+  const navigate = useNavigate();
   const [customTarget, setCustomTarget] = useState<CustomDialogTarget | null>(null);
   const canWriteCustom = canWriteModels && canWriteCredential;
   const canReadServices = canReadModels || canReadCredential;
   const query = useModelServices(canReadServices);
   const services = query.data?.services ?? [];
   const selected = useMemo(
-    () => services.find((service) => service.provider === selectedProvider) ?? services[0],
-    [selectedProvider, services],
+    () => provider === undefined
+      ? services[0]
+      : services.find((service) => service.provider === provider),
+    [provider, services],
   );
 
   return (
@@ -1729,8 +1899,8 @@ export function ModelServicesPage({
           target={customTarget}
           onClose={() => setCustomTarget(null)}
           onCommitted={(provider) => {
-            setSelectedProvider(provider);
             setCustomTarget(null);
+            void navigate({ to: "/credentials/$provider", params: { provider } });
           }}
         />
       )}
@@ -1775,7 +1945,15 @@ export function ModelServicesPage({
             </p>
           </Card>
         </div>
-      ) : selected === undefined ? null : (
+      ) : selected === undefined ? (
+        <div className="max-w-[760px] p-5">
+          <Card className="gap-2 px-4 py-5">
+            <h2 className="text-base font-semibold">模型服务不存在</h2>
+            <p className="text-muted-foreground">这个稳定地址对应的 provider 已删除或当前不可见。</p>
+            <Link to="/credentials" className="w-fit text-sm underline underline-offset-4">返回模型服务</Link>
+          </Card>
+        </div>
+      ) : (
         <div className="grid max-w-[1180px] gap-5 p-5 pb-20 lg:grid-cols-[280px_minmax(0,1fr)]">
           <Card className="self-start gap-0 overflow-hidden bg-chrome p-0">
             <div className="border-b bg-muted px-3 py-2.5">
@@ -1786,16 +1964,15 @@ export function ModelServicesPage({
             </div>
             <div className="max-h-80 divide-y overflow-y-auto lg:max-h-none">
               {services.map((service) => (
-                <button
+                <Link
                   key={service.provider}
-                  type="button"
-                  aria-pressed={service.provider === selected.provider}
-                  aria-current={service.provider === selected.provider ? "true" : undefined}
+                  to="/credentials/$provider"
+                  params={{ provider: service.provider }}
+                  aria-current={service.provider === selected.provider ? "page" : undefined}
                   className={cn(
                     "w-full px-3 py-3 text-left transition-colors hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                     service.provider === selected.provider && "bg-background",
                   )}
-                  onClick={() => setSelectedProvider(service.provider)}
                 >
                   <div className="flex min-w-0 items-center gap-2">
                     <span className="min-w-0 flex-1 truncate font-medium">{service.name}</span>
@@ -1813,12 +1990,13 @@ export function ModelServicesPage({
                       </span>
                     </div>
                   )}
-                </button>
+                </Link>
               ))}
             </div>
           </Card>
           <ServiceDetail
             service={selected}
+            tab={tab}
             canReadModels={canReadModels}
             canWriteModels={canWriteModels}
             canReadCredential={canReadCredential}

@@ -1132,6 +1132,8 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
     "name",
     "provider",
     "providerState",
+    "references",
+    "runCapability",
     "target",
     "type",
     "version",
@@ -1399,6 +1401,7 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
     "health",
     "name",
     "provider",
+    "runCapability",
     "type",
     "version",
   ]);
@@ -1434,6 +1437,158 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
   )!;
   assert.deepEqual(adminCorp["credential"], credentialCorp["credential"]);
   assert.deepEqual(adminCorp["models"], corp["models"]);
+});
+
+test("模型服务投影给出运行能力与引用位置，并隐藏没有管理事实的内置 provider", async () => {
+  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const store = openStore(h.db.path);
+  const baseUrl = "https://runtime-gateway.example/v1";
+  const targetFingerprint = modelServiceTargetFingerprint(baseUrl, "openai-completions");
+  assert.equal(store.commitModelServiceVersion(null, service("runtime-gateway", {
+    type: "custom",
+    baseUrl,
+    api: "openai-completions",
+    targetFingerprint,
+    directory: {
+      state: "discovery-failed",
+      lastAttemptAt: "2026-08-20T02:00:00.000Z",
+      lastSuccessAt: null,
+      failure: "目录发现失败；继续使用已验证补录",
+      ignoredModelCount: 0,
+    },
+    automaticModels: [],
+    supplements: [{
+      model: "manual-model",
+      source: "manual",
+      targetFingerprint,
+      createdAt: "2026-08-20T01:10:00.000Z",
+    }],
+  })), 1);
+  assert.equal(store.commitModelServiceVersion(null, service("openrouter", {
+    credential: {
+      state: "unconfigured",
+      apiKeyEncrypted: null,
+      updatedAt: null,
+      verifiedAt: null,
+      validationModel: null,
+      verificationSource: null,
+    },
+    directory: {
+      state: "undiscovered",
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      failure: null,
+      ignoredModelCount: 0,
+    },
+    automaticModels: [],
+    supplements: [],
+  })), 1);
+  store.putGlobalSettings({
+    reviewersJson: JSON.stringify([{ provider: "runtime-gateway", model: "manual-model" }]),
+    maxChangedLinesPerBatch: null,
+  });
+  store.registerRepo({
+    repoId: 81,
+    owner: "acme",
+    repo: "follows-global",
+    generation: 1,
+    key: "follow-key",
+  });
+  store.registerRepo({
+    repoId: 82,
+    owner: "acme",
+    repo: "explicit",
+    generation: 1,
+    key: "explicit-key",
+    reviewersJson: JSON.stringify([{ provider: "runtime-gateway", model: "manual-model" }]),
+  });
+  store.close();
+
+  const cookie = await cookieFor(h, "runtime-reader", ["model:read"]);
+  const first = await request(h, cookie, "/model-services");
+  assert.equal(first.status, 200);
+  const firstBody = (await first.json()) as ModelServicesBody;
+  assert.equal(firstBody.services.some((entry) => entry["provider"] === "openrouter"), false);
+  const runnable = firstBody.services.find((entry) => entry["provider"] === "runtime-gateway")!;
+  assert.deepEqual(runnable["runCapability"], {
+    runnable: true,
+    reason: null,
+    reasonText: null,
+    nextAction: null,
+  });
+  assert.deepEqual(runnable["references"], [{
+    identity: "runtime-gateway:manual-model",
+    provider: "runtime-gateway",
+    model: "manual-model",
+    locations: [
+      { kind: "global" },
+      { kind: "following-global", repositoryCount: 1 },
+      { kind: "repository-override", repoId: 82, owner: "acme", repo: "explicit" },
+    ],
+  }]);
+
+  const search = await request(h, cookie, "/model-services/providers?query=openrouter");
+  assert.equal(search.status, 200);
+  assert.deepEqual((await search.json()) as unknown, {
+    providers: [{
+      id: "openrouter",
+      name: "OpenRouter",
+      configured: false,
+      version: 1,
+      conflict: false,
+    }],
+  });
+
+  const referencedHarness = await startPanelHarness(cleanups, {
+    reviewers: [{ provider: "openrouter", model: "missing" }],
+  });
+  const referencedStore = openStore(referencedHarness.db.path);
+  assert.equal(referencedStore.commitModelServiceVersion(null, service("openrouter", {
+    credential: {
+      state: "unconfigured",
+      apiKeyEncrypted: null,
+      updatedAt: null,
+      verifiedAt: null,
+      validationModel: null,
+      verificationSource: null,
+    },
+    directory: {
+      state: "undiscovered",
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      failure: null,
+      ignoredModelCount: 0,
+    },
+    automaticModels: [],
+    supplements: [],
+  })), 1);
+  referencedStore.registerRepo({
+    repoId: 91,
+    owner: "acme",
+    repo: "references-empty-provider",
+    generation: 1,
+    key: "reference-key",
+  });
+  referencedStore.close();
+  const referencedCookie = await cookieFor(referencedHarness, "reference-reader", ["model:read"]);
+  const second = await request(referencedHarness, referencedCookie, "/model-services");
+  const secondBody = (await second.json()) as ModelServicesBody;
+  const referenced = secondBody.services.find((entry) => entry["provider"] === "openrouter")!;
+  assert.deepEqual(referenced["runCapability"], {
+    runnable: false,
+    reason: "credential-unavailable",
+    reasonText: "模型凭据不可用",
+    nextAction: "configure-credential",
+  });
+  assert.deepEqual(referenced["references"], [{
+    identity: "openrouter:missing",
+    provider: "openrouter",
+    model: "missing",
+    locations: [
+      { kind: "global" },
+      { kind: "following-global", repositoryCount: 1 },
+    ],
+  }]);
 });
 
 test("组合候选只含可用模型与已选失效模型，内置目标漂移不解密凭据", async () => {

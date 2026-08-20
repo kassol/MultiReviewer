@@ -10,8 +10,8 @@
 - `vite.config.ts` — 前缀与后端端口从仓库根的同一份 `.env` 读(`loadEnv`);dev proxy 把 `<前缀>/api` 转本机后端;注入插件 `apply: "serve"`,只在 dev 生效。
 - `src/injected.ts` — 读注入全局变量的唯一代码路径,缺失当场报错并在页面写明原因。
 - `src/api.ts` — 面板 API 的唯一入口,基址从注入的前缀来。
-- `src/model-services.ts` — `GET /model-services` 的共享查询与前端契约。模型服务页、全局模型组合和仓库覆盖只消费这一份按权限裁剪的投影;候选按完整 `provider:model` 标识合并来源并携带服务端可用性结论。
-- `src/main.tsx` — 路由与壳:`/login` 同一屏按 session 探测结果在登录与 bootstrap 注册间切换;`/password` 是必须改密页;`shell` 下挂六页(`/repos` / `/runs` / `/stats` / `/credentials` / `/settings` / `/access`)。`/credentials` 按 issue #130 的决定保留书签路径,导航与页面名均为「模型服务」,不是旧凭据产品入口。Router `basepath` 取注入前缀。壳按 `GET /session` 回来的有效权限先过滤导航再渲染:系统管理员全开且独有访问控制页,普通用户只看得到有读权限的页;页面按写权限决定是否渲染保存、刷新、凭据、删除与重跑控件;零权限时导航全藏,内容区给一张说明并列系统管理员。窄视口下侧栏改成顶部横排、可横向滚动。
+- `src/model-services.ts` — `GET /model-services` 的共享查询与前端契约。模型服务页、全局模型组合和仓库覆盖只消费这一份按权限裁剪的投影;候选按完整 `provider:model` 标识合并来源并携带服务端可用性结论。服务详情另读服务级运行能力与组合引用位置,前端不从目录状态重复推断。
+- `src/main.tsx` — 路由与壳:`/login` 同一屏按 session 探测结果在登录与 bootstrap 注册间切换;`/password` 是必须改密页;`shell` 下挂六页(`/repos` / `/runs` / `/stats` / `/credentials` / `/settings` / `/access`)。`/credentials` 是模型服务总入口;`/credentials/:provider`、`/credentials/:provider/maintenance`、`/credentials/:provider/models` 分别是服务概览、维护与模型的稳定地址。Router `basepath` 取注入前缀。壳按 `GET /session` 回来的有效权限先过滤导航再渲染:系统管理员全开且独有访问控制页,普通用户只看得到有读权限的页;页面按写权限决定是否渲染保存、刷新、凭据、删除与重跑控件;零权限时导航全藏,内容区给一张说明并列系统管理员。窄视口下侧栏改成顶部横排、可横向滚动。
 - `src/session.ts` — 当前身份与权限的唯一查询,缓存 `GET <前缀>/api/session`;未认证的 401 再由壳送去 `/login`,必须改密时统一送 `/password`,页面组件不各自探测。
 - `src/login.tsx` — 登录与首次注册共用的一屏。普通档是用户名加密码;零用户档多 bootstrap 口令与确认密码,注册成功后回账号登录。所有字段有可见 `<Label>`,不靠 placeholder 当标签。
 - `src/password.tsx` — 用户自改密码页,走 `PUT /session/password`;必须改密的人完成后回到自己有权访问的第一页。改密保留当前会话、作废其余会话。
@@ -19,7 +19,7 @@
 - `src/components/mark.tsx` — 产品标记(三条错位短线),与 `index.html` 里内联成 data URI 的 favicon 是同一份图形。用 `currentColor` 上色。
 - `src/components/ui/skeleton.tsx` — 读取中的占位块。带 `data-slot="skeleton"`,`styles.css` 的降低动效偏好那一段据此关掉呼吸动画。
 - `src/repos.tsx` — 仓库页,左列表右详情。模型覆盖是「跟随全局 / 自定义」两态:点「跟随全局」直接清覆盖;点「自定义」在详情内挂与全局设置共用的 `ModelComposer`,以当前生效组合为初值。不可用的既有选择可移除但不得随覆盖再次保存;服务端仍作最终校验。编辑态并成单栏容纳 460px 高的两栏选择器,不套对话框或外层表单。注册与移除确认用 shadcn Dialog,不用阻塞渲染线程的 `window.confirm`。
-- `src/credentials.tsx` — `/credentials` 书签路径上的模型服务页。左侧只列已配置或异常保留的服务,右侧展示 provider、凭据与目录三条状态、模型来源和引用阻塞;Pi 内置 provider 从可搜索入口创建。候选只留页面内存,预览后最终提交重新发现并做最小真实推理;自定义服务地址/协议/凭据整组切换。刷新、补录、删凭据与删服务都走 `/model-services/*`,读字段和动作按 `model:*` / `credential:*` 独立权限裁剪,前端从不接收明文或密文。
+- `src/credentials.tsx` — 模型服务主从页。左侧只列已配置或异常保留的服务;右侧按概览、维护、模型分层。概览以服务端运行能力为主状态,目录失败作次级提醒,组合引用可展开到全局、跟随全局仓库数与具体仓库覆盖;维护收凭据轮换、地址／协议调整、目录刷新与删除;模型页收自动目录事实与模型补录。Pi 内置 provider 从可搜索入口创建,空且未引用的条目只留在这里。候选只留页面内存,预览后最终提交重新发现并做最小真实推理;读字段和动作按 `model:*` / `credential:*` 独立权限裁剪,前端从不接收明文或密文。
 
 - `src/settings.tsx` — `/settings` 上的审查策略页。全局模型组合与批次上限各持独立版本、分别保存;409 只恢复冲突项,保留另一项草稿。批次上限收在默认折叠的高级参数里并显示系统默认/自定义来源。
 - `src/components/model-composer.tsx` — 全局组合与仓库覆盖共用的唯一模型选择器。接口是 `{value, onChange, provider?, onValidityChange}`;外部 provider 优先定位,没有传入时优先显示已选模型所属 provider。它只读 `GET /model-services` 的统一候选,不创建 provider、不处理凭据、不刷新目录、不补录模型。左栏按服务分组,右栏筛当前服务模型;已选但失效的模型保留稳定原因与「去模型服务处理」入口,允许移除但通知调用页禁止原样保存。一次最多渲染当前服务的 120 行。
@@ -91,3 +91,4 @@
 - 2026-08-20: 落地 issue #141 clean cutover。删除旧 catalog / credential / model-row / custom-provider 客户端与写入口;`/credentials` 仅按已批准书签路径承载模型服务页。模型服务页与唯一 `ModelComposer` 共用 `/model-services` 投影,组合编辑器退回纯选择职责并保留失效选择的原因与处理入口。
 - 2026-08-20: 全面精修管理面板现有页面。应用壳补齐桌面账号区与窄屏横向导航;登录、改密、仓库、评审记录、处置率、模型服务、全局设置和访问控制统一了页头、留白、表格、表单、状态反馈与空态。评审记录按日期分隔并压缩失败原因,长表格只在自身容器横向滚动;仓库主从区、模型服务详情与 `ModelComposer` 在窄屏改为纵向结构。业务 API、权限、状态判据、统计口径和提交语义保持不变。部署实例已按桌面与窄屏两档走查全部页面。
 - 2026-08-20: 落地 issue #145。导航与页头统一为「审查策略」并保留 `/settings`;模型组合和批次上限按各自版本独立保存,409 只恢复冲突项。高级参数默认折叠,批次上限显示默认/自定义来源并提供恢复默认。模型服务引用阻塞可携 provider 定位到 `ModelComposer`;未传 provider 时优先显示已选模型所属服务。
+- 2026-08-20: 落地 issue #146。模型服务详情拆成概览、维护、模型三条稳定路由;概览展示服务端运行能力、次级目录提醒和可展开引用位置。维护与模型写入口分区,只读会话只见静态信息和导航;空且未引用的内置 provider 只留搜索入口。对话框开关不再复用详情维护组件的身份,维护区保持单份。

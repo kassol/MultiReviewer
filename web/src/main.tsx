@@ -18,7 +18,7 @@ import { Card } from "@/components/ui/card";
 
 import { AccessControlPage } from "./access-control.tsx";
 import { api } from "./api.ts";
-import { ModelServicesPage } from "./credentials.tsx";
+import { ModelServicesPage, type ModelServiceTab } from "./credentials.tsx";
 import { injected } from "./injected.ts";
 import { LoginPage } from "./login.tsx";
 import { PasswordPage } from "./password.tsx";
@@ -218,21 +218,66 @@ const runsRoute = protectedPage("/runs", "review:read", () => {
   return <RunsPage canRerun={hasPermission(session, "review:rerun")} />;
 });
 const statsRoute = protectedPage("/stats", "review:read", StatsPage);
+function ModelServicesRoutePage({
+  provider,
+  tab,
+}: {
+  provider?: string | undefined;
+  tab?: ModelServiceTab | undefined;
+}) {
+  const { session } = shellRoute.useRouteContext();
+  return (
+    <ModelServicesPage
+      provider={provider}
+      tab={tab}
+      canReadModels={hasPermission(session, "model:read")}
+      canWriteModels={hasPermission(session, "model:write")}
+      canReadCredential={hasPermission(session, "credential:read")}
+      canWriteCredential={hasPermission(session, "credential:write")}
+    />
+  );
+}
+
 const credentialsRoute = protectedPage(
   "/credentials",
   ["model:read", "model:write", "credential:read", "credential:write"],
-  () => {
-    const { session } = shellRoute.useRouteContext();
-    return (
-      <ModelServicesPage
-        canReadModels={hasPermission(session, "model:read")}
-        canWriteModels={hasPermission(session, "model:write")}
-        canReadCredential={hasPermission(session, "credential:read")}
-        canWriteCredential={hasPermission(session, "credential:write")}
-      />
-    );
-  },
+  () => <ModelServicesRoutePage />,
 );
+const modelServiceRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/credentials/$provider",
+  beforeLoad: ({ context }) => {
+    if (context.session.mustChangePassword) throw redirect({ to: "/password" });
+    if (!hasPagePermission(context.session, ["model:read", "model:write", "credential:read", "credential:write"])) {
+      throw redirect({ to: "/" });
+    }
+  },
+  component: () => <ModelServicesRoutePage provider={modelServiceRoute.useParams().provider} tab="overview" />,
+});
+const modelServiceMaintenanceRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/credentials/$provider/maintenance",
+  beforeLoad: ({ context }) => {
+    if (context.session.mustChangePassword) throw redirect({ to: "/password" });
+    if (!hasPagePermission(context.session, ["model:read", "model:write", "credential:read", "credential:write"])) {
+      throw redirect({ to: "/" });
+    }
+  },
+  component: () => (
+    <ModelServicesRoutePage provider={modelServiceMaintenanceRoute.useParams().provider} tab="maintenance" />
+  ),
+});
+const modelServiceModelsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/credentials/$provider/models",
+  beforeLoad: ({ context }) => {
+    if (context.session.mustChangePassword) throw redirect({ to: "/password" });
+    if (!hasPagePermission(context.session, ["model:read", "model:write", "credential:read", "credential:write"])) {
+      throw redirect({ to: "/" });
+    }
+  },
+  component: () => <ModelServicesRoutePage provider={modelServiceModelsRoute.useParams().provider} tab="models" />,
+});
 const settingsRoute = protectedPage("/settings", "model:read", () => {
   const { session } = shellRoute.useRouteContext();
   return <SettingsPage canWrite={hasPermission(session, "model:write")} />;
@@ -279,6 +324,9 @@ const routeTree = rootRoute.addChildren([
     runsRoute,
     statsRoute,
     credentialsRoute,
+    modelServiceRoute,
+    modelServiceMaintenanceRoute,
+    modelServiceModelsRoute,
     settingsRoute,
     accessRoute,
     passwordRoute,
