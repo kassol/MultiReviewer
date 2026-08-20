@@ -85,7 +85,7 @@ export function ReposPage({
     queryKey: ["repos"],
     queryFn: () => fetchJson<RepoRow[]>("/repos"),
   });
-  // 全局设置在库里(issue #66),「跟随全局」跟的就是它的 reviewers。
+  // 审查策略在库里,「跟随全局」跟的就是它的 reviewers。
   const settings = useQuery({
     queryKey: ["settings"],
     queryFn: () => fetchJson<{ reviewers: ReviewerSpec[] }>("/settings"),
@@ -461,7 +461,7 @@ function RepoDetail({
             ))}
             <p className="text-xs text-muted-foreground">
               {following && canWrite
-                ? "改全局设置这里跟着变。点「自定义」从当前组合改起。"
+                ? "改审查策略这里跟着变。点「自定义」从当前组合改起。"
                 : following
                   ? "这个仓库使用全局模型组合。"
                   : canWrite
@@ -684,7 +684,7 @@ function RegisterModal({
             </p>
           ) : null}
           <p className="text-muted-foreground text-xs">
-            模型组合先跟随全局设置,注册完在仓库详情里可以改成自定义。
+            模型组合先跟随审查策略,注册完在仓库详情里可以改成自定义。
           </p>
           {error === null ? null : (
             <p role="alert" className="text-destructive">
@@ -706,7 +706,7 @@ function RegisterModal({
 }
 
 /**
- * 自定义态从当前生效组合起步，并复用全局设置的同一个 `ModelComposer`。已落库但失效的
+ * 自定义态从当前生效组合起步，并复用审查策略的同一个 `ModelComposer`。已落库但失效的
  * 标识原样留在编辑态里，移除不受阻；只有再次保存仍含不可用项时才门禁。
  */
 function ReviewersEditor({

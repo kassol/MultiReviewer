@@ -61,6 +61,41 @@ function query(dbPath: string, sql: string): Record<string, unknown>[] {
   }
 }
 
+test("历史审查策略进入独立初始版本，写一项只推进该项版本", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  openStore(db.path).close();
+  const seed = new DatabaseSync(db.path);
+  seed.prepare("INSERT INTO global_setting (key, value) VALUES (?, ?)").run(
+    "reviewers",
+    JSON.stringify([{ provider: "test", model: "legacy" }]),
+  );
+  seed.prepare("INSERT INTO global_setting (key, value) VALUES (?, ?)").run(
+    "max_changed_lines_per_batch",
+    "777",
+  );
+  seed.close();
+
+  const store = openStore(db.path);
+  assert.deepEqual(store.getGlobalSettings(), {
+    reviewersJson: JSON.stringify([{ provider: "test", model: "legacy" }]),
+    reviewersVersion: 1,
+    maxChangedLinesPerBatch: 777,
+    maxChangedLinesPerBatchVersion: 1,
+  });
+  assert.equal(store.putGlobalReviewers(1, JSON.stringify([])), false, "新组合不能写成空值");
+  assert.equal(store.putGlobalBatchLimit(1, null), true);
+  assert.deepEqual(store.getGlobalSettings(), {
+    reviewersJson: JSON.stringify([{ provider: "test", model: "legacy" }]),
+    reviewersVersion: 1,
+    maxChangedLinesPerBatch: null,
+    maxChangedLinesPerBatchVersion: 2,
+  });
+  assert.equal(store.putGlobalBatchLimit(1, 900), false, "陈旧版本不得覆盖新值");
+  assert.equal(store.getGlobalSettings().maxChangedLinesPerBatch, null);
+  store.close();
+});
+
 const FINDING = {
   file: "src/calc.js",
   line: 6,

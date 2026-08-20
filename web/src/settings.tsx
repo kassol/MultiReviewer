@@ -1,5 +1,5 @@
 /**
- * 全局设置页。模型组合与批次上限读取同一设置快照，但各自保存：失效模型只门禁组合写入，
+ * 审查策略页。模型组合与批次上限读取同一设置快照，但各自保存：失效模型只门禁组合写入，
  * 不连坐批次上限。组合候选与仓库覆盖共用 `ModelComposer` 的模型服务投影。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -21,8 +21,20 @@ import { modelIdentity, parseModelIdentity } from "./model-services.ts";
 
 type Settings = {
   reviewers: { provider: string; model: string }[];
+  reviewersVersion: number;
   maxChangedLinesPerBatch: number;
+  maxChangedLinesPerBatchSource: "default" | "custom";
+  maxChangedLinesPerBatchVersion: number;
 };
+
+class SettingsConflict extends Error {
+  readonly latest: Settings;
+
+  constructor(latest: Settings) {
+    super("这项审查策略已被其他人修改，已重新加载该项。请确认后再保存。");
+    this.latest = latest;
+  }
+}
 
 export function SettingsPage({ canWrite }: { canWrite: boolean }) {
   const settings = useQuery({
@@ -33,8 +45,8 @@ export function SettingsPage({ canWrite }: { canWrite: boolean }) {
   return (
     <>
       <PageHeader
-        title="全局设置"
-        description="这里的模型组合是所有仓库的默认值,没设覆盖的仓库跟的就是它。批次上限决定一次审查最多送多少改动行。"
+        title="审查策略"
+        description="模型组合是所有仓库的默认值；高级参数控制一次审查怎样分批。"
       />
       <div className="flex max-w-[1060px] flex-col gap-5 p-5 pb-20">
         {settings.isError ? (
@@ -97,8 +109,12 @@ function ReadOnlySettings({ settings }: { settings: Settings }) {
 
 function SettingsForm({ settings }: { settings: Settings }) {
   const queryClient = useQueryClient();
+  const requestedProvider = new URLSearchParams(window.location.search).get("provider") ?? undefined;
   const [models, setModels] = useState(() => settings.reviewers.map(modelIdentity));
+  const [reviewersVersion, setReviewersVersion] = useState(settings.reviewersVersion);
   const [limit, setLimit] = useState(String(settings.maxChangedLinesPerBatch));
+  const [limitSource, setLimitSource] = useState(settings.maxChangedLinesPerBatchSource);
+  const [limitVersion, setLimitVersion] = useState(settings.maxChangedLinesPerBatchVersion);
   const [modelValidity, setModelValidity] = useState<ModelComposerValidity>({
     ready: false,
     unavailable: [],
@@ -116,39 +132,64 @@ function SettingsForm({ settings }: { settings: Settings }) {
     mutationFn: async (): Promise<Settings> => {
       const response = await api("/settings", {
         method: "PUT",
-        body: JSON.stringify({ reviewers: models.map(parseModelIdentity) }),
+        body: JSON.stringify({
+          reviewers: models.map(parseModelIdentity),
+          expectedVersion: reviewersVersion,
+        }),
       });
+      if (response.status === 409) throw new SettingsConflict(await fetchJson<Settings>("/settings"));
       if (!response.ok) throw new Error(await errorText(response));
       return (await response.json()) as Settings;
     },
     onSuccess: (saved) => {
+      setReviewersVersion(saved.reviewersVersion);
       setModelFeedback({ text: "模型组合已保存，下一次投递按新组合跑。", isError: false });
       queryClient.setQueryData(["settings"], saved);
     },
-    onError: (error: Error) => setModelFeedback({ text: error.message, isError: true }),
+    onError: (error: Error) => {
+      if (error instanceof SettingsConflict) {
+        setModels(error.latest.reviewers.map(modelIdentity));
+        setReviewersVersion(error.latest.reviewersVersion);
+        queryClient.setQueryData(["settings"], error.latest);
+      }
+      setModelFeedback({ text: error.message, isError: true });
+    },
   });
   const saveLimit = useMutation({
-    mutationFn: async (maxChangedLinesPerBatch: number): Promise<Settings> => {
+    mutationFn: async (maxChangedLinesPerBatch: number | null): Promise<Settings> => {
       const response = await api("/settings", {
         method: "PUT",
-        body: JSON.stringify({ maxChangedLinesPerBatch }),
+        body: JSON.stringify({ maxChangedLinesPerBatch, expectedVersion: limitVersion }),
       });
+      if (response.status === 409) throw new SettingsConflict(await fetchJson<Settings>("/settings"));
       if (!response.ok) throw new Error(await errorText(response));
       return (await response.json()) as Settings;
     },
     onSuccess: (saved) => {
+      setLimit(String(saved.maxChangedLinesPerBatch));
+      setLimitSource(saved.maxChangedLinesPerBatchSource);
+      setLimitVersion(saved.maxChangedLinesPerBatchVersion);
       setLimitFeedback({ text: "批次上限已保存。", isError: false });
       queryClient.setQueryData(["settings"], saved);
     },
-    onError: (error: Error) => setLimitFeedback({ text: error.message, isError: true }),
+    onError: (error: Error) => {
+      if (error instanceof SettingsConflict) {
+        setLimit(String(error.latest.maxChangedLinesPerBatch));
+        setLimitSource(error.latest.maxChangedLinesPerBatchSource);
+        setLimitVersion(error.latest.maxChangedLinesPerBatchVersion);
+        queryClient.setQueryData(["settings"], error.latest);
+      }
+      setLimitFeedback({ text: error.message, isError: true });
+    },
   });
 
-  const modelSaveBlocked = !modelValidity.ready || modelValidity.unavailable.length > 0;
+  const modelSaveBlocked = models.length === 0 || !modelValidity.ready || modelValidity.unavailable.length > 0;
   return (
     <div className="flex flex-col gap-6">
       <section className="space-y-3" aria-label="模型组合保存区">
         <ModelComposer
           value={models}
+          provider={requestedProvider}
           onChange={(next) => {
             setModels(next);
             setModelFeedback(null);
@@ -168,6 +209,8 @@ function SettingsForm({ settings }: { settings: Settings }) {
           </Button>
           {modelValidity.unavailable.length > 0 ? (
             <span className="text-destructive">先恢复或移除不可用模型，再保存组合。</span>
+          ) : models.length === 0 ? (
+            <span className="text-destructive">至少选择一个可用模型，审查配置才能就绪。</span>
           ) : !modelValidity.ready ? (
             <span className="text-muted-foreground">候选状态确认后可以保存组合。</span>
           ) : modelFeedback === null ? (
@@ -183,59 +226,78 @@ function SettingsForm({ settings }: { settings: Settings }) {
         </div>
       </section>
 
-      <form
-        className="border-t pt-5"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setLimitFeedback(null);
-          const parsed = Number(limit.trim());
-          if (limit.trim() === "" || !Number.isInteger(parsed) || parsed <= 0) {
-            setLimitFeedback({ text: "批次上限要填正整数，这次没保存。", isError: true });
-            return;
-          }
-          saveLimit.mutate(parsed);
-        }}
-      >
-        <Card className="gap-0 overflow-hidden p-0">
-          <div className="space-y-3 px-4 py-4">
-            <div>
-              <h2 className="text-base font-semibold">批次上限</h2>
-              <p className="mt-0.5 text-muted-foreground">
-                超过上限的改动会拆成多批送审；这个值不改变模型组合。
-              </p>
+      <details className="border-t pt-5">
+        <summary className="cursor-pointer font-medium">高级参数</summary>
+        <form
+          className="mt-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setLimitFeedback(null);
+            const parsed = Number(limit.trim());
+            if (limit.trim() === "" || !Number.isInteger(parsed) || parsed <= 0) {
+              setLimitFeedback({ text: "批次上限要填正整数，这次没保存。", isError: true });
+              return;
+            }
+            saveLimit.mutate(parsed);
+          }}
+        >
+          <Card className="gap-0 overflow-hidden p-0">
+            <div className="space-y-3 px-4 py-4">
+              <div>
+                <h2 className="text-base font-semibold">批次上限</h2>
+                <p className="mt-0.5 text-muted-foreground">
+                  超过上限的改动会拆成多批送审；这个值不改变模型组合。
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  当前来源：{limitSource === "default" ? "系统默认" : "自定义"}
+                </p>
+              </div>
+              <div className="flex max-w-sm flex-col gap-1.5">
+                <Label htmlFor="max-changed-lines">一批最多改动行数</Label>
+                <Input
+                  id="max-changed-lines"
+                  className="w-40 font-mono"
+                  inputMode="numeric"
+                  value={limit}
+                  aria-invalid={limitFeedback?.isError || undefined}
+                  onChange={(event) => {
+                    setLimit(event.target.value);
+                    setLimitFeedback(null);
+                  }}
+                />
+              </div>
             </div>
-            <div className="flex max-w-sm flex-col gap-1.5">
-              <Label htmlFor="max-changed-lines">一批最多改动行数</Label>
-              <Input
-                id="max-changed-lines"
-                className="w-40 font-mono"
-                inputMode="numeric"
-                value={limit}
-                aria-invalid={limitFeedback?.isError || undefined}
-                onChange={(event) => {
-                  setLimit(event.target.value);
-                  setLimitFeedback(null);
-                }}
-              />
+            <div className="flex flex-wrap items-center gap-3 border-t bg-muted/50 px-4 py-3">
+              <Button type="submit" disabled={saveLimit.isPending}>
+                {saveLimit.isPending ? "保存中…" : "保存批次上限"}
+              </Button>
+              {limitSource === "custom" ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={saveLimit.isPending}
+                  onClick={() => {
+                    setLimitFeedback(null);
+                    saveLimit.mutate(null);
+                  }}
+                >
+                  恢复系统默认
+                </Button>
+              ) : null}
+              {limitFeedback === null ? (
+                <span className="text-xs text-muted-foreground">单独保存，不受模型组合可用性影响。</span>
+              ) : (
+                <span
+                  role={limitFeedback.isError ? "alert" : "status"}
+                  className={limitFeedback.isError ? "text-destructive" : "text-success"}
+                >
+                  {limitFeedback.text}
+                </span>
+              )}
             </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-3 border-t bg-muted/50 px-4 py-3">
-            <Button type="submit" disabled={saveLimit.isPending}>
-              {saveLimit.isPending ? "保存中…" : "保存批次上限"}
-            </Button>
-            {limitFeedback === null ? (
-              <span className="text-xs text-muted-foreground">单独保存，不受模型组合可用性影响。</span>
-            ) : (
-              <span
-                role={limitFeedback.isError ? "alert" : "status"}
-                className={limitFeedback.isError ? "text-destructive" : "text-success"}
-              >
-                {limitFeedback.text}
-              </span>
-            )}
-          </div>
-        </Card>
-      </form>
+          </Card>
+        </form>
+      </details>
     </div>
   );
 }

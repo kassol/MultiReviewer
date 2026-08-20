@@ -72,7 +72,7 @@ const NAV: readonly NavigationItem[] = [
   { to: "/runs", label: "评审记录", permission: "review:read" },
   { to: "/stats", label: "处置率", permission: "review:read" },
   { to: "/credentials", label: "模型服务", permission: ["model:read", "model:write", "credential:read", "credential:write"] },
-  { to: "/settings", label: "全局设置", permission: "model:read" },
+  { to: "/settings", label: "审查策略", permission: "model:read" },
   { to: "/access", label: "访问控制", admin: true },
   { to: "/password", label: "修改密码", always: true },
 ];

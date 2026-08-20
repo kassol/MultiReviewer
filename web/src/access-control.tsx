@@ -56,7 +56,7 @@ const PERMISSION_INFO: readonly PermissionInfo[] = [
   { id: "repo:write", resource: "仓库", action: "写", hint: "搜索、注册、移除、改组合、轮转 Key" },
   { id: "review:read", resource: "评审", action: "读", hint: "评审记录、处置率" },
   { id: "review:rerun", resource: "评审", action: "重跑", hint: "开一轮 Review Run：会产生费用并在 PR 上发评论" },
-  { id: "model:read", resource: "模型", action: "读", hint: "全局设置、模型目录、模型行、自定义 provider；写权限包含此项" },
+  { id: "model:read", resource: "模型", action: "读", hint: "审查策略与模型服务；写权限包含此项" },
   { id: "model:write", resource: "模型", action: "写", hint: "改组合、手填模型行、加删自定义 provider" },
   { id: "credential:read", resource: "凭据", action: "读", hint: "凭据列表，含 key 尾 4 位；写权限包含此项" },
   { id: "credential:write", resource: "凭据", action: "写", hint: "写入与删除模型凭据" },

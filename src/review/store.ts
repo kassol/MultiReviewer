@@ -136,8 +136,9 @@ CREATE TABLE IF NOT EXISTS repo_key (
 );
 
 
--- 全局设置,一项一行。reviewers 是全局模型组合,与 repo.reviewers 同构(ReviewerSpec
--- 的 JSON 数组);max_changed_lines_per_batch 是正整数的字符串形,缺行即取默认值。
+-- 审查策略,一项一行。reviewers 是全局模型组合,与 repo.reviewers 同构(ReviewerSpec
+-- 的 JSON 数组);max_changed_lines_per_batch 是正整数的字符串形,缺行即取默认值。两项各有
+-- 一个独立的 *_version 键;历史库没有版本键时按版本 1 读,首次写入再落版本键。
 -- 库是唯一的配置面(issue #66),没有配置文件与它竞争。
 CREATE TABLE IF NOT EXISTS global_setting (
   key TEXT PRIMARY KEY,
@@ -310,9 +311,11 @@ const ADD_COLUMNS = [
  * 错归厂商是不可逆的错数据,裂成两行只是看起来多一条,选后者。
  */
 
-/** `global_setting` 的两个键。 */
+/** `global_setting` 的设置值与独立版本键。 */
 const GLOBAL_REVIEWERS_KEY = "reviewers";
 const GLOBAL_MAX_CHANGED_LINES_KEY = "max_changed_lines_per_batch";
+const GLOBAL_REVIEWERS_VERSION_KEY = "reviewers_version";
+const GLOBAL_MAX_CHANGED_LINES_VERSION_KEY = "max_changed_lines_per_batch_version";
 
 /**
  * 等锁的上限。webhook 服务里 webhook 层与后台 Review Run 各持一个句柄写同一个文件,
@@ -532,13 +535,15 @@ function serializedTrustedCost(cost: ModelCost | undefined): string | null {
 }
 
 /**
- * 全局设置。两项都可能没配:空库刚起来时就是这个样子,面板的设置页把它们配起来。
+ * 审查策略。两项都可能没配:空库刚起来时就是这个样子,面板把它们配起来。
  */
 export type GlobalSettings = {
   /** 全局模型组合的 JSON(ReviewerSpec 数组),null 即还没配。 */
   reviewersJson: string | null;
+  reviewersVersion: number;
   /** 一批最多多少改动行,null 即取编排层的默认值。 */
   maxChangedLinesPerBatch: number | null;
+  maxChangedLinesPerBatchVersion: number;
 };
 
 /** 注册表里的一个仓库。`reviewersJson` 是模型覆盖的 JSON,null 即跟随全局。 */
@@ -714,10 +719,14 @@ export type Store = {
   removeRepo(repoId: number): void;
   /** 全部已注册仓库,按最近活动排序,没跑过的按注册时间排在后面。 */
   listRepos(): RepoSummary[];
-  /** 全局设置。没写过的项回 null，调用方各自取默认。 */
+  /** 审查策略。历史值和未写过的项都从版本 1 开始。 */
   getGlobalSettings(): GlobalSettings;
-  /** 改写全局设置；组合发生变化时与当前模型服务原子校验，状态变化返回 false。 */
-  putGlobalSettings(settings: GlobalSettings): boolean;
+  /** 按独立版本改写全局模型组合；陈旧版本或模型服务状态变化返回 false。 */
+  putGlobalReviewers(expectedVersion: number, reviewersJson: string): boolean;
+  /** 按独立版本设置批次上限；null 移除自定义值，陈旧版本返回 false。 */
+  putGlobalBatchLimit(expectedVersion: number, limit: number | null): boolean;
+  /** 测试夹具和启动播种的兼容入口；面板写链不得使用。 */
+  putGlobalSettings(settings: Pick<GlobalSettings, "reviewersJson" | "maxChangedLinesPerBatch">): boolean;
   /**
    * 在一个 SQLite 读事务里取得仓库生效组合、批次上限及其引用的当前模型服务版本。
    * 仓库不存在时抛错；坏配置沿用设置入口的校验错误。
@@ -1026,7 +1035,7 @@ export function openStore(dbPath: string): Store {
   `);
   const modelCombinationAvailable = (reviewersJson: string, context: string): boolean => {
     const reviewers = parseStoredReviewers(reviewersJson, context);
-    return reviewers.every((reviewer) =>
+    return reviewers.length > 0 && reviewers.every((reviewer) =>
       availableModel.get(reviewer.provider, reviewer.model, reviewer.model) !== undefined
     );
   };
@@ -1472,7 +1481,11 @@ export function openStore(dbPath: string): Store {
       const limit = values.get(GLOBAL_MAX_CHANGED_LINES_KEY);
       return {
         reviewersJson: values.get(GLOBAL_REVIEWERS_KEY) ?? null,
+        reviewersVersion: Number(values.get(GLOBAL_REVIEWERS_VERSION_KEY) ?? 1),
         maxChangedLinesPerBatch: limit === undefined ? null : Number(limit),
+        maxChangedLinesPerBatchVersion: Number(
+          values.get(GLOBAL_MAX_CHANGED_LINES_VERSION_KEY) ?? 1,
+        ),
       };
     },
 
@@ -1506,12 +1519,8 @@ export function openStore(dbPath: string): Store {
       }
     },
 
-    putGlobalSettings(settings) {
-      const write = (key: string, value: string | null): void => {
-        if (value === null) {
-          db.prepare("DELETE FROM global_setting WHERE key = ?").run(key);
-          return;
-        }
+    putGlobalReviewers(expectedVersion, reviewersJson) {
+      const write = (key: string, value: string): void => {
         db.prepare(
           `INSERT INTO global_setting (key, value) VALUES (?, ?)
            ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -1519,31 +1528,76 @@ export function openStore(dbPath: string): Store {
       };
       db.exec("BEGIN IMMEDIATE");
       try {
-        const storedReviewers = db
-          .prepare("SELECT value FROM global_setting WHERE key = ?")
-          .get(GLOBAL_REVIEWERS_KEY)?.["value"];
-        const currentReviewers = storedReviewers === undefined ? null : String(storedReviewers);
+        const versionRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
+          .get(GLOBAL_REVIEWERS_VERSION_KEY)?.["value"];
+        const version = versionRow === undefined ? 1 : Number(versionRow);
         if (
-          settings.reviewersJson !== currentReviewers &&
-          settings.reviewersJson !== null &&
-          !modelCombinationAvailable(settings.reviewersJson, GLOBAL_REVIEWERS_CONTEXT)
+          version !== expectedVersion ||
+          !modelCombinationAvailable(reviewersJson, GLOBAL_REVIEWERS_CONTEXT)
         ) {
           db.exec("ROLLBACK");
           return false;
         }
-        write(GLOBAL_REVIEWERS_KEY, settings.reviewersJson);
-        write(
-          GLOBAL_MAX_CHANGED_LINES_KEY,
-          settings.maxChangedLinesPerBatch === null
-            ? null
-            : String(settings.maxChangedLinesPerBatch),
-        );
+        write(GLOBAL_REVIEWERS_KEY, reviewersJson);
+        write(GLOBAL_REVIEWERS_VERSION_KEY, String(version + 1));
         db.exec("COMMIT");
         return true;
       } catch (error) {
         db.exec("ROLLBACK");
         throw error;
       }
+    },
+
+    putGlobalBatchLimit(expectedVersion, limit) {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const versionRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
+          .get(GLOBAL_MAX_CHANGED_LINES_VERSION_KEY)?.["value"];
+        const version = versionRow === undefined ? 1 : Number(versionRow);
+        if (version !== expectedVersion) {
+          db.exec("ROLLBACK");
+          return false;
+        }
+        if (limit === null) {
+          db.prepare("DELETE FROM global_setting WHERE key = ?")
+            .run(GLOBAL_MAX_CHANGED_LINES_KEY);
+        } else {
+          db.prepare(
+            `INSERT INTO global_setting (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+          ).run(GLOBAL_MAX_CHANGED_LINES_KEY, String(limit));
+        }
+        db.prepare(
+          `INSERT INTO global_setting (key, value) VALUES (?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        ).run(GLOBAL_MAX_CHANGED_LINES_VERSION_KEY, String(version + 1));
+        db.exec("COMMIT");
+        return true;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    putGlobalSettings(settings) {
+      const current = store.getGlobalSettings();
+      if (
+        settings.reviewersJson !== null &&
+        parseStoredReviewers(settings.reviewersJson, GLOBAL_REVIEWERS_CONTEXT).length > 0 &&
+        !store.putGlobalReviewers(current.reviewersVersion, settings.reviewersJson)
+      ) return false;
+      if (settings.reviewersJson === null) {
+        db.prepare("DELETE FROM global_setting WHERE key = ?").run(GLOBAL_REVIEWERS_KEY);
+      } else if (parseStoredReviewers(settings.reviewersJson, GLOBAL_REVIEWERS_CONTEXT).length === 0) {
+        db.prepare(
+          `INSERT INTO global_setting (key, value) VALUES (?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        ).run(GLOBAL_REVIEWERS_KEY, settings.reviewersJson);
+      }
+      return store.putGlobalBatchLimit(
+        store.getGlobalSettings().maxChangedLinesPerBatchVersion,
+        settings.maxChangedLinesPerBatch,
+      );
     },
 
     commitModelServiceVersion(expectedVersion, record) {

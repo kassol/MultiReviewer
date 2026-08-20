@@ -405,15 +405,19 @@ function withStore<T>(dbPath: string, fn: (store: Store) => T): T {
   }
 }
 
-/** 全局设置。模型组合与批次上限都在库里(issue #66),用时读一次。 */
+/** 审查策略。模型组合与批次上限都在库里,用时读一次。 */
 function globalSettings(deps: WebhookServerDeps): {
   reviewers: ReviewerSpec[];
+  reviewersVersion: number;
   maxChangedLinesPerBatch: number | null;
+  maxChangedLinesPerBatchVersion: number;
 } {
   const row = withStore(deps.dbPath, (store) => store.getGlobalSettings());
   return {
     reviewers: parseGlobalReviewers(row.reviewersJson),
+    reviewersVersion: row.reviewersVersion,
     maxChangedLinesPerBatch: row.maxChangedLinesPerBatch,
+    maxChangedLinesPerBatchVersion: row.maxChangedLinesPerBatchVersion,
   };
 }
 
@@ -1572,21 +1576,24 @@ async function handlePanelApi(
 }
 
 /**
- * 全局设置:模型组合与批次上限。仓库详情用它展示「跟随全局」跟的是什么。
+ * 审查策略:模型组合与批次上限。仓库详情用它展示「跟随全局」跟的是什么。
  * 批次上限没配时回默认值,读回来的就是这次审查真会用的那个数。
  */
 function handleGetSettings(res: ServerResponse, deps: WebhookServerDeps): void {
   const settings = globalSettings(deps);
   return sendJson(res, 200, {
     reviewers: settings.reviewers,
+    reviewersVersion: settings.reviewersVersion,
     maxChangedLinesPerBatch:
       settings.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+    maxChangedLinesPerBatchSource:
+      settings.maxChangedLinesPerBatch === null ? "default" : "custom",
+    maxChangedLinesPerBatchVersion: settings.maxChangedLinesPerBatchVersion,
   });
 }
 
 /**
- * 全局模型组合与批次上限各自可单独写。模型失效只阻止带 `reviewers` 的请求；只改批次
- * 上限时保留原组合，不读取或重写它的形状。两项都给时仍在同一次 SQLite 写入里生效。
+ * 全局模型组合与批次上限各自独立写入并带自己的 expected version。
  */
 async function handlePutSettings(
   req: IncomingMessage,
@@ -1602,21 +1609,27 @@ async function handlePutSettings(
   const payload = decoded as {
     reviewers?: unknown;
     maxChangedLinesPerBatch?: unknown;
+    expectedVersion?: unknown;
   };
   const hasReviewers = Object.hasOwn(payload, "reviewers");
   const hasLimit = Object.hasOwn(payload, "maxChangedLinesPerBatch");
-  if (!hasReviewers && !hasLimit) {
+  if (hasReviewers === hasLimit) {
     return sendJson(res, 400, {
-      error: "body 至少要给 reviewers 或 maxChangedLinesPerBatch 一项",
+      error: "body 必须且只能修改 reviewers 或 maxChangedLinesPerBatch 一项",
     });
+  }
+  if (
+    typeof payload.expectedVersion !== "number" ||
+    !Number.isInteger(payload.expectedVersion) ||
+    payload.expectedVersion < 1
+  ) {
+    return sendJson(res, 400, { error: "expectedVersion 要是正整数" });
   }
 
   let reviewersJson: string | undefined;
   let reviewers: ReviewerSpec[] | undefined;
   if (hasReviewers) {
-    const parsed = parseReviewerSpecs(payload.reviewers, GLOBAL_REVIEWERS_CONTEXT, {
-      allowEmpty: true,
-    });
+    const parsed = parseReviewerSpecs(payload.reviewers, GLOBAL_REVIEWERS_CONTEXT);
     if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
     reviewersJson = parsed.reviewersJson;
     reviewers = parsed.reviewers;
@@ -1639,16 +1652,13 @@ async function handlePutSettings(
     limit = candidate;
   }
 
-  const saved = withStore(deps.dbPath, (store) => {
-    const current = store.getGlobalSettings();
-    return store.putGlobalSettings({
-      reviewersJson: reviewersJson === undefined ? current.reviewersJson : reviewersJson,
-      maxChangedLinesPerBatch:
-        limit === undefined ? current.maxChangedLinesPerBatch : limit,
-    });
-  });
+  const saved = withStore(deps.dbPath, (store) =>
+    reviewersJson !== undefined
+      ? store.putGlobalReviewers(payload.expectedVersion as number, reviewersJson)
+      : store.putGlobalBatchLimit(payload.expectedVersion as number, limit ?? null)
+  );
   if (!saved) {
-    return sendJson(res, 409, { error: "模型服务状态已经变化，请重新选择模型组合" });
+    return sendJson(res, 409, { error: "这项审查策略已经被其他人修改，请重新加载后再保存" });
   }
   return handleGetSettings(res, deps);
 }
@@ -3441,7 +3451,7 @@ function safeParseJson(value: string): unknown {
 }
 
 /**
- * 解析并校验一段模型组合入参。全局设置、仓库注册与每仓库覆盖共用同一形状判据；
+ * 解析并校验一段模型组合入参。审查策略、仓库注册与每仓库覆盖共用同一形状判据；
  * 当前模型服务可用性随后由 `ensureModelCombinationAvailable` 在落库前重新投影。
  */
 function parseReviewerSpecs(

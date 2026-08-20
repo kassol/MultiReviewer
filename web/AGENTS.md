@@ -21,8 +21,8 @@
 - `src/repos.tsx` — 仓库页,左列表右详情。模型覆盖是「跟随全局 / 自定义」两态:点「跟随全局」直接清覆盖;点「自定义」在详情内挂与全局设置共用的 `ModelComposer`,以当前生效组合为初值。不可用的既有选择可移除但不得随覆盖再次保存;服务端仍作最终校验。编辑态并成单栏容纳 460px 高的两栏选择器,不套对话框或外层表单。注册与移除确认用 shadcn Dialog,不用阻塞渲染线程的 `window.confirm`。
 - `src/credentials.tsx` — `/credentials` 书签路径上的模型服务页。左侧只列已配置或异常保留的服务,右侧展示 provider、凭据与目录三条状态、模型来源和引用阻塞;Pi 内置 provider 从可搜索入口创建。候选只留页面内存,预览后最终提交重新发现并做最小真实推理;自定义服务地址/协议/凭据整组切换。刷新、补录、删凭据与删服务都走 `/model-services/*`,读字段和动作按 `model:*` / `credential:*` 独立权限裁剪,前端从不接收明文或密文。
 
-- `src/settings.tsx` — 全局设置页。全局模型组合与批次上限读取同一设置快照但分别保存:失效模型只门禁组合写入,不连坐批次上限。组合候选与仓库覆盖共用 `ModelComposer` 的模型服务投影。
-- `src/components/model-composer.tsx` — 全局组合与仓库覆盖共用的唯一模型选择器。接口是 `{value, onChange, onValidityChange}`;它只读 `GET /model-services` 的统一候选,不创建 provider、不处理凭据、不刷新目录、不补录模型。左栏按服务分组,右栏筛当前服务模型;已选但失效的模型保留稳定原因与「去模型服务处理」入口,允许移除但通知调用页禁止原样保存。一次最多渲染当前服务的 120 行。
+- `src/settings.tsx` — `/settings` 上的审查策略页。全局模型组合与批次上限各持独立版本、分别保存;409 只恢复冲突项,保留另一项草稿。批次上限收在默认折叠的高级参数里并显示系统默认/自定义来源。
+- `src/components/model-composer.tsx` — 全局组合与仓库覆盖共用的唯一模型选择器。接口是 `{value, onChange, provider?, onValidityChange}`;外部 provider 优先定位,没有传入时优先显示已选模型所属 provider。它只读 `GET /model-services` 的统一候选,不创建 provider、不处理凭据、不刷新目录、不补录模型。左栏按服务分组,右栏筛当前服务模型;已选但失效的模型保留稳定原因与「去模型服务处理」入口,允许移除但通知调用页禁止原样保存。一次最多渲染当前服务的 120 行。
 - `src/components/ui/` — shadcn 生成的组件(Dialog / Button / Input / Label / Table / Badge / Card / Command / Popover / Calendar),vendored 源码,改它就是改本项目的组件。Calendar 的底座是 `react-day-picker`;它的 `DayButton` 原样把 `locale` 透传下去,在 `exactOptionalPropertyTypes` 下过不了类型检查,改成 undefined 时不传这个属性。已按视觉定稿把 Card 与 Dialog 的 ring 换成边框、圆角压到 `--radius`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
 - `src/lib/utils.ts` — shadcn 的 `cn()`,clsx 加 tailwind-merge。
 - `src/styles.css` — 设计令牌与浏览器原生面的接管,没有组件类。令牌是品类标准件(近黑主色、白底、冷灰外壳),手艺对标 GitHub / Linear / Vercel。三层底色(`--chrome` 外壳 / `--background` 内容 / `--card` 卡片)、六档字号阶梯(xs 11 / sm 13 / base 14 / lg 16 / xl 19 / 3xl 28,body 就是 sm),以及选区、光标、滚动条与表格数字的默认样式。
@@ -33,7 +33,7 @@
 - Vite 保持默认绝对 base(`/`):静态资源不进前缀,构建产物与前缀无关。**注入插件永远不参与 build**——前缀烤进产物即事故。
 - 构建产物是纯静态文件:服务端的运行时第三方依赖仍只有 Pi,react 全家只活在构建阶段。
 - 当前身份与权限只从 `GET <前缀>/api/session` 读取,由 `src/session.ts` 缓存一份;未认证的 401 由壳统一送去 `/login`,必须改密统一送 `/password`,页面组件不各自判。导航按权限隐藏而不是摆禁用项,但服务端 403 仍是最终授权边界。
-- **模型组合编辑器只有一份且只负责选择。**全局设置与仓库覆盖都挂 `components/model-composer.tsx`;配置模型服务、凭据、发现、刷新与补录一律回模型服务页,组合编辑器不得再长出第二条写链。
+- **模型组合编辑器只有一份且只负责选择。**审查策略与仓库覆盖都挂 `components/model-composer.tsx`;配置模型服务、凭据、发现、刷新与补录一律回模型服务页,组合编辑器不得再长出第二条写链。
 - **失效的已选模型不静默消失。**`GET /model-services` 给稳定原因与处理入口,编辑器原样显示并允许移除;调用页只门禁这一次组合保存。批次上限等无关设置仍可独立提交,最终门禁以服务端同一模型服务投影为准。
 - **模型服务字段与动作按权限裁剪。**`model:read` 才看目标、目录、模型、来源和可用性,`credential:read` 才看凭据审计字段;候选与错误响应不得含明文、密文或主密钥材料。前端只依据返回字段展示,不复制服务端 provider、引用或版本竞争判据。
 - **写样式只有 Tailwind utility 一条路。** `styles.css` 只放令牌,不许长出组件类——「这个间距该改哪一个」这个问题正是换底座要消灭的。
@@ -90,3 +90,4 @@
 - 2026-08-18: 落地 issue #91。仓库详情页的模型覆盖换用同一块两栏面板(`src/repos.tsx`):`ReviewersModal` 换成 `ReviewersEditor`,里面挂的就是全局设置页那个 `ModelComposer`,两处从此没有第二份实现。**编辑态从对话框改成详情列里的一段**,判据两条:面板固定 460px 高,而 `ui/dialog.tsx` 的对话框只给宽度档位(`sm:max-w-sm` 与「加一家 provider」那张的 `sm:max-w-md`)、没有最大高度与滚动,矮屏上底部的手填框与保存按钮会落到视口外面点不到;面板里「+ 加一家 provider」本身就是一个对话框,套进覆盖对话框就是对话框叠对话框。放宽对话框等于为这一处新造一个宽度档位,而详情列本来就有 900px 可用,编辑态里把那一格并成单栏就够了。**面板外面不套 `<form>`**:原来整个编辑框包在 `<form onSubmit>` 里,直接塞面板会造成 form 嵌套,而且在右栏填一个 model id 会顺手提交覆盖(#90 交接点的那条真缺陷);编辑态里除了保存与取消再没有别的字段,所以整张表单去掉,保存改成按钮的 `onClick`。两态开关的语义一字未改:切自定义以当前生效组合为初值(跟随态即全局组合),切跟随全局仍是一个动作直接 `PUT {"reviewers": null}`,自定义态下选空时保存仍禁用并写清「点取消再点跟随全局」这条出路。覆盖的读写端点入参一字未改,仍是 `PUT /repos/<id>/reviewers` 加模型组合数组。`ModelPicker` 至此零调用方,组件删掉;`components/model-picker.tsx` 剩下的目录查询、目录类型与模型标识那两个函数改名成 `src/model-catalog.ts`(不再是 picker,也不再带 JSX,与 `api.ts` 同级),四个 import 跟着改。在仓库页加自定义 provider、手填模型行与全局设置页同一套端点、同一批查询失效(`catalog` / `model-rows` / `custom-providers` / `credentials`),因为它们本来就都在面板里。后端一行没改,`test/panel-*.test.ts` 一个字没动。视觉与交互确认走部署实例。
 - 2026-08-20: 落地 issue #141 clean cutover。删除旧 catalog / credential / model-row / custom-provider 客户端与写入口;`/credentials` 仅按已批准书签路径承载模型服务页。模型服务页与唯一 `ModelComposer` 共用 `/model-services` 投影,组合编辑器退回纯选择职责并保留失效选择的原因与处理入口。
 - 2026-08-20: 全面精修管理面板现有页面。应用壳补齐桌面账号区与窄屏横向导航;登录、改密、仓库、评审记录、处置率、模型服务、全局设置和访问控制统一了页头、留白、表格、表单、状态反馈与空态。评审记录按日期分隔并压缩失败原因,长表格只在自身容器横向滚动;仓库主从区、模型服务详情与 `ModelComposer` 在窄屏改为纵向结构。业务 API、权限、状态判据、统计口径和提交语义保持不变。部署实例已按桌面与窄屏两档走查全部页面。
+- 2026-08-20: 落地 issue #145。导航与页头统一为「审查策略」并保留 `/settings`;模型组合和批次上限按各自版本独立保存,409 只恢复冲突项。高级参数默认折叠,批次上限显示默认/自定义来源并提供恢复默认。模型服务引用阻塞可携 provider 定位到 `ModelComposer`;未传 provider 时优先显示已选模型所属服务。

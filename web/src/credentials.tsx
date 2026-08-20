@@ -3,6 +3,7 @@
  * `/model-services`；内置候选只留在组件内存，模型字段与凭据审计字段继续按独立权限展示。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { AlertTriangle, Check, CircleX, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -874,7 +875,7 @@ function ReferenceBlockers({ references }: { references: ModelReference[] }) {
         <p className="font-medium">引用阻塞：先移除下面这些模型引用</p>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
-        到全局设置或对应仓库覆盖里移除引用，再回来重试当前操作。
+        到审查策略或对应仓库覆盖里移除引用，再回来重试当前操作。
       </p>
       <ul className="mt-3 divide-y rounded-sm border bg-background">
         {references.map((reference) => (
@@ -884,7 +885,13 @@ function ReferenceBlockers({ references }: { references: ModelReference[] }) {
               {reference.locations.map((location, index) => (
                 <li key={`${reference.identity}:${index}`}>
                   {location.kind === "global" ? (
-                    "全局模型组合"
+                    <Link
+                      to="/settings"
+                      search={{ provider: reference.identity.split(":", 1)[0] }}
+                      className="underline underline-offset-4"
+                    >
+                      去审查策略定位 provider
+                    </Link>
                   ) : location.kind === "following-global" ? (
                     <><span className="font-mono tabular-nums">{location.repositoryCount}</span> 个跟随全局的仓库</>
                   ) : (

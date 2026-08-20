@@ -39,6 +39,8 @@ export type ModelComposerProps = {
   /** 当前模型组合，元素是完整模型标识 `provider:model`。 */
   value: string[];
   onChange: (next: string[]) => void;
+  /** 外部希望优先定位的 provider；省略时优先显示已选模型所属 provider。 */
+  provider?: string | undefined;
   /** 调用页只用它门禁本层保存；批次上限等无关写入不得被连坐。 */
   onValidityChange?: (validity: ModelComposerValidity) => void;
 };
@@ -50,7 +52,7 @@ type ProviderGroup = {
   models: ModelServiceModel[];
 };
 
-export function ModelComposer({ value, onChange, onValidityChange }: ModelComposerProps) {
+export function ModelComposer({ value, onChange, provider, onValidityChange }: ModelComposerProps) {
   const query = useModelServices();
   const [pickedProvider, setPickedProvider] = useState<string | null>(null);
   const services = query.data?.services ?? [];
@@ -96,7 +98,8 @@ export function ModelComposer({ value, onChange, onValidityChange }: ModelCompos
       left.provider.localeCompare(right.provider),
     );
   }, [services, visibleCandidates]);
-  const selected = groups.find((group) => group.provider === pickedProvider) ?? groups[0];
+  const selectedProvider = pickedProvider ?? provider ?? value[0]?.split(":", 1)[0];
+  const selected = groups.find((group) => group.provider === selectedProvider) ?? groups[0];
 
   const validity = useMemo<ModelComposerValidity>(() => {
     const ready = query.isSuccess && query.data.candidates !== undefined;

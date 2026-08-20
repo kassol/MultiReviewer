@@ -1,5 +1,5 @@
 /**
- * 全局设置端点(issue #66)。模型组合与批次上限都在库里,面板是唯一的配置面,
+ * 审查策略端点(issue #145)。模型组合与批次上限都在库里,面板是唯一的配置面,
  * 没有配置文件与之竞争。走 panel harness 的真实 HTTP 缝。
  *
  * 「空库没配组合」那一条测在既有的 runReview 集成缝上:harness 注入的
@@ -16,6 +16,7 @@ import {
   HARNESS_PR,
   seedAvailableModelService,
   startPanelHarness,
+  type PanelHarness,
 } from "./support/panel-harness.ts";
 
 const cleanups: (() => void)[] = [];
@@ -23,22 +24,110 @@ after(() => {
   for (const cleanup of cleanups) cleanup();
 });
 
-test("PUT 后 GET 拿回同一形状", async () => {
+type SettingsBody = {
+  reviewers: { provider: string; model: string }[];
+  reviewersVersion: number;
+  maxChangedLinesPerBatch: number;
+  maxChangedLinesPerBatchSource: "default" | "custom";
+  maxChangedLinesPerBatchVersion: number;
+};
+
+async function readSettings(h: PanelHarness): Promise<SettingsBody> {
+  return await (await h.api("GET", "/settings")).json() as SettingsBody;
+}
+
+async function putReviewers(h: PanelHarness, reviewers: unknown): Promise<Response> {
+  return h.api("PUT", "/settings", {
+    reviewers,
+    expectedVersion: (await readSettings(h)).reviewersVersion,
+  });
+}
+
+async function putLimit(h: PanelHarness, maxChangedLinesPerBatch: unknown): Promise<Response> {
+  return h.api("PUT", "/settings", {
+    maxChangedLinesPerBatch,
+    expectedVersion: (await readSettings(h)).maxChangedLinesPerBatchVersion,
+  });
+}
+
+test("审查策略两项独立保存，陈旧写入只冲突目标项", async () => {
   const h = await startPanelHarness(cleanups);
   seedAvailableModelService(h, "corp-deepseek", ["deepseek-v4-flash"]);
-  seedAvailableModelService(h, "corp-router", ["z-ai/glm-4.6"]);
-  const body = {
-    reviewers: [
-      { provider: "corp-deepseek", model: "deepseek-v4-flash" },
-      { provider: "corp-router", model: "z-ai/glm-4.6" },
-    ],
-    maxChangedLinesPerBatch: 800,
+  const initial = await (await h.api("GET", "/settings")).json() as {
+    reviewersVersion: number;
+    maxChangedLinesPerBatchVersion: number;
   };
+  const reviewers = [{ provider: "corp-deepseek", model: "deepseek-v4-flash" }];
 
-  const put = await h.api("PUT", "/settings", body);
-  assert.equal(put.status, 200);
-  assert.deepEqual(await put.json(), body);
-  assert.deepEqual(await (await h.api("GET", "/settings")).json(), body);
+  const coupledWrite = await h.api("PUT", "/settings", {
+    reviewers,
+    maxChangedLinesPerBatch: 800,
+    expectedVersion: initial.reviewersVersion,
+  });
+  assert.equal(coupledWrite.status, 400, "一个请求不得同时改两项");
+
+  const modelWrite = await h.api("PUT", "/settings", {
+    reviewers,
+    expectedVersion: initial.reviewersVersion,
+  });
+  assert.equal(modelWrite.status, 200);
+  const limitWrite = await h.api("PUT", "/settings", {
+    maxChangedLinesPerBatch: 800,
+    expectedVersion: initial.maxChangedLinesPerBatchVersion,
+  });
+  assert.equal(limitWrite.status, 200);
+  assert.deepEqual(await limitWrite.json(), {
+    reviewers,
+    reviewersVersion: initial.reviewersVersion + 1,
+    maxChangedLinesPerBatch: 800,
+    maxChangedLinesPerBatchSource: "custom",
+    maxChangedLinesPerBatchVersion: initial.maxChangedLinesPerBatchVersion + 1,
+  });
+
+  const stale = await h.api("PUT", "/settings", {
+    maxChangedLinesPerBatch: 900,
+    expectedVersion: initial.maxChangedLinesPerBatchVersion,
+  });
+  assert.equal(stale.status, 409);
+  assert.deepEqual(await (await h.api("GET", "/settings")).json(), {
+    reviewers,
+    reviewersVersion: initial.reviewersVersion + 1,
+    maxChangedLinesPerBatch: 800,
+    maxChangedLinesPerBatchSource: "custom",
+    maxChangedLinesPerBatchVersion: initial.maxChangedLinesPerBatchVersion + 1,
+  });
+});
+
+test("历史空组合可读但不能再次保存，批次上限可恢复系统默认", async () => {
+  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const initial = await (await h.api("GET", "/settings")).json() as {
+    reviewersVersion: number;
+    maxChangedLinesPerBatchVersion: number;
+  };
+  const empty = await h.api("PUT", "/settings", {
+    reviewers: [],
+    expectedVersion: initial.reviewersVersion,
+  });
+  assert.equal(empty.status, 400);
+  assert.match(await empty.text(), /至少要选一个模型/);
+
+  const custom = await h.api("PUT", "/settings", {
+    maxChangedLinesPerBatch: 800,
+    expectedVersion: initial.maxChangedLinesPerBatchVersion,
+  });
+  const customBody = await custom.json() as { maxChangedLinesPerBatchVersion: number };
+  const reset = await h.api("PUT", "/settings", {
+    maxChangedLinesPerBatch: null,
+    expectedVersion: customBody.maxChangedLinesPerBatchVersion,
+  });
+  assert.equal(reset.status, 200);
+  assert.deepEqual(await reset.json(), {
+    reviewers: [],
+    reviewersVersion: initial.reviewersVersion,
+    maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+    maxChangedLinesPerBatchSource: "default",
+    maxChangedLinesPerBatchVersion: customBody.maxChangedLinesPerBatchVersion + 1,
+  });
 });
 
 test("全局组合按模型服务候选校验，失效项可移除且批次上限独立保存", async () => {
@@ -123,15 +212,18 @@ test("全局组合按模型服务候选校验，失效项可移除且批次上�
   );
 
   const beforeBlockedWrites = serviceState();
-  const blocked = await h.api("PUT", "/settings", { reviewers: selected });
+  const blocked = await putReviewers(h, selected);
   assert.equal(blocked.status, 400);
   assert.match((await blocked.text()), /模型凭据不可用.*模型来源消失/);
 
-  const limitOnly = await h.api("PUT", "/settings", { maxChangedLinesPerBatch: 733 });
+  const limitOnly = await putLimit(h, 733);
   assert.equal(limitOnly.status, 200);
   assert.deepEqual(await limitOnly.json(), {
     reviewers: selected,
+    reviewersVersion: 1,
     maxChangedLinesPerBatch: 733,
+    maxChangedLinesPerBatchSource: "custom",
+    maxChangedLinesPerBatchVersion: 2,
   });
   assert.deepEqual(serviceState(), beforeBlockedWrites, "组合与批次写入不应改服务或模型来源");
 
@@ -151,78 +243,90 @@ test("全局组合按模型服务候选校验，失效项可移除且批次上�
 
   const beforeMissingRemoval = serviceState();
   const withoutMissing = selected.slice(0, 2);
-  const removedMissing = await h.api("PUT", "/settings", { reviewers: withoutMissing });
+  const removedMissing = await putReviewers(h, withoutMissing);
   assert.equal(removedMissing.status, 200);
   assert.deepEqual(await removedMissing.json(), {
     reviewers: withoutMissing,
+    reviewersVersion: 2,
     maxChangedLinesPerBatch: 733,
+    maxChangedLinesPerBatchSource: "custom",
+    maxChangedLinesPerBatchVersion: 2,
   });
   assert.deepEqual(serviceState(), beforeMissingRemoval);
 
   setRecoveringCredential("pending-reverification");
   const beforeUnavailableRemoval = serviceState();
-  const removedUnavailable = await h.api("PUT", "/settings", { reviewers: [selected[0]!] });
+  const removedUnavailable = await putReviewers(h, [selected[0]!]);
   assert.equal(removedUnavailable.status, 200);
   assert.deepEqual(await removedUnavailable.json(), {
     reviewers: [selected[0]],
+    reviewersVersion: 3,
     maxChangedLinesPerBatch: 733,
+    maxChangedLinesPerBatchSource: "custom",
+    maxChangedLinesPerBatchVersion: 2,
   });
   assert.deepEqual(serviceState(), beforeUnavailableRemoval);
 });
 
-test("批次上限省略时保留原值，显式 null 才回默认值", async () => {
+test("批次上限自定义与恢复默认都不改模型组合", async () => {
   const h = await startPanelHarness(cleanups, { reviewers: [] });
   seedAvailableModelService(h, "test", ["global-model"]);
   assert.deepEqual(await (await h.api("GET", "/settings")).json(), {
     reviewers: [],
+    reviewersVersion: 1,
     maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+    maxChangedLinesPerBatchSource: "default",
+    maxChangedLinesPerBatchVersion: 1,
   });
 
   const reviewers = [{ provider: "test", model: "global-model" }];
-  await h.api("PUT", "/settings", { reviewers, maxChangedLinesPerBatch: 800 });
-  const combinationOnly = await h.api("PUT", "/settings", { reviewers });
-  assert.deepEqual(await combinationOnly.json(), {
+  await putReviewers(h, reviewers);
+  const custom = await putLimit(h, 800);
+  assert.deepEqual(await custom.json(), {
     reviewers,
+    reviewersVersion: 2,
     maxChangedLinesPerBatch: 800,
+    maxChangedLinesPerBatchSource: "custom",
+    maxChangedLinesPerBatchVersion: 2,
   });
-  const cleared = await h.api("PUT", "/settings", { maxChangedLinesPerBatch: null });
+  const cleared = await putLimit(h, null);
   assert.deepEqual(await cleared.json(), {
     reviewers,
+    reviewersVersion: 2,
     maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+    maxChangedLinesPerBatchSource: "default",
+    maxChangedLinesPerBatchVersion: 3,
   });
 });
 
 test("非法的 reviewers 被既有校验拒绝,报错标注来源是全局这一层", async () => {
   const h = await startPanelHarness(cleanups);
 
-  const missingField = await h.api("PUT", "/settings", {
-    reviewers: [{ provider: "deepseek" }],
-  });
+  const missingField = await putReviewers(h, [{ provider: "deepseek" }]);
   assert.equal(missingField.status, 400);
   assert.match(((await missingField.json()) as { error: string }).error, /全局模型组合.*model/);
 
-  const duplicate = await h.api("PUT", "/settings", {
-    reviewers: [
+  const duplicate = await putReviewers(h, [
       { provider: "a", model: "same" },
       { provider: "a", model: "same" },
-    ],
-  });
+    ]);
   assert.equal(duplicate.status, 400);
   assert.match(((await duplicate.json()) as { error: string }).error, /a:same 选了两次/);
 
   // 坏入参一条都不落库:组合还是 harness 播种的那一份。
   assert.deepEqual(await (await h.api("GET", "/settings")).json(), {
     reviewers: [{ provider: "test", model: "global-model" }],
+    reviewersVersion: 1,
     maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+    maxChangedLinesPerBatchSource: "default",
+    maxChangedLinesPerBatchVersion: 1,
   });
 });
 
 test("批次上限不是正整数时拒绝", async () => {
   const h = await startPanelHarness(cleanups);
   for (const limit of [0, -1, 1.5, "800"]) {
-    const response = await h.api("PUT", "/settings", {
-      maxChangedLinesPerBatch: limit,
-    });
+    const response = await putLimit(h, limit);
     assert.equal(response.status, 400, `${String(limit)} 应被拒绝`);
     assert.match(
       ((await response.json()) as { error: string }).error,
@@ -231,19 +335,11 @@ test("批次上限不是正整数时拒绝", async () => {
   }
 });
 
-test("全局组合允许清空,每仓库覆盖仍必须至少一个", async () => {
-  // 空的全局组合是受支持的状态(issue #66)；模型组合与批次上限也可以独立写入。
+test("全局组合与每仓库覆盖都拒绝新的空组合", async () => {
   const h = await startPanelHarness(cleanups);
-  const empty = await h.api("PUT", "/settings", {
-    reviewers: [],
-    maxChangedLinesPerBatch: 900,
-  });
-  assert.equal(empty.status, 200);
-  assert.deepEqual(await empty.json(), { reviewers: [], maxChangedLinesPerBatch: 900 });
-  assert.deepEqual(await (await h.api("GET", "/settings")).json(), {
-    reviewers: [],
-    maxChangedLinesPerBatch: 900,
-  });
+  const empty = await putReviewers(h, []);
+  assert.equal(empty.status, 400);
+  assert.match(await empty.text(), /至少要选一个模型/);
 
   // 每仓库覆盖是另一层判据(issue #69):空覆盖表达不了意图,要停掉就清成 null。
   const register = await h.api("POST", "/repos", {
@@ -266,9 +362,7 @@ test("改过的全局组合下一次投递就生效", async () => {
   );
   assert.equal(
     (
-      await h.api("PUT", "/settings", {
-        reviewers: [{ provider: "test", model: "swapped-model" }],
-      })
+      await putReviewers(h, [{ provider: "test", model: "swapped-model" }])
     ).status,
     200,
   );
