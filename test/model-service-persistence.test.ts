@@ -911,6 +911,145 @@ test("模型引用按完整身份列出全局、显式覆盖与跟随全局位�
   store.close();
 });
 
+test("冲突自定义 provider 改名原子迁移服务、全局组合与全部仓库覆盖，历史记录不动", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  const conflicted = {
+    ...availableService("openai", ["global-model", "repo-model"]),
+    disabledReason: "name-conflict" as const,
+  };
+  assert.equal(store.commitModelServiceVersion(null, conflicted), 1);
+  assert.equal(store.putGlobalSettings({
+    reviewersJson: JSON.stringify([{ provider: "openai", model: "global-model" }]),
+    maxChangedLinesPerBatch: 17,
+  }), true);
+  assert.equal(store.registerRepo({
+    repoId: 41,
+    owner: "acme",
+    repo: "first",
+    generation: 1,
+    key: "first-key",
+    reviewersJson: JSON.stringify([{ provider: "openai", model: "repo-model" }]),
+  }), true);
+  assert.equal(store.registerRepo({
+    repoId: 42,
+    owner: "acme",
+    repo: "second",
+    generation: 1,
+    key: "second-key",
+    reviewersJson: JSON.stringify([{ provider: "openai", model: "global-model" }]),
+  }), true);
+  store.close();
+
+  const sqlite = new DatabaseSync(db.path);
+  const run = sqlite.prepare(
+    `INSERT INTO review_run
+       (owner, repo, pull_number, head_sha, started_at, changed_files, changed_lines, batch_count, failed)
+     VALUES (?, ?, ?, ?, ?, 1, 2, 1, 0)`,
+  ).run("acme", "first", 7, "head", "2026-08-20T11:00:00.000Z");
+  sqlite.prepare(
+    `INSERT INTO reviewer_outcome
+       (run_id, model, failure, finding_count, anomaly_count, rejected_tool_calls, duration_ms)
+     VALUES (?, ?, NULL, 1, 0, 0, 23)`,
+  ).run(run.lastInsertRowid, "openai:global-model");
+  sqlite.prepare(
+    `INSERT INTO finding
+       (run_id, model, file, line, severity, category, description, fingerprint, group_index)
+     VALUES (?, ?, 'src/a.ts', 3, 'P1', 'correctness', 'history', 'stable-fingerprint', 0)`,
+  ).run(run.lastInsertRowid, "openai:global-model");
+  const historyBefore = {
+    runs: sqlite.prepare("SELECT * FROM review_run").all(),
+    outcomes: sqlite.prepare("SELECT * FROM reviewer_outcome").all(),
+    findings: sqlite.prepare("SELECT * FROM finding").all(),
+  };
+  sqlite.close();
+
+  const reopened = openStore(db.path);
+  const result = reopened.renameConflictingCustomModelService(
+    "openai",
+    "corp-openai",
+    1,
+    "2026-08-20T12:00:00.000Z",
+  );
+  assert.deepEqual(result, { status: "renamed", version: 2 });
+  assert.equal(reopened.getModelService("openai"), undefined);
+  const renamed = reopened.getModelService("corp-openai")!;
+  assert.equal(renamed.version, 2);
+  assert.equal(renamed.disabledReason, null);
+  assert.equal(renamed.credential.validationModel, "corp-openai:global-model");
+  assert.deepEqual(renamed.automaticModels.map(({ identity }) => identity), [
+    "corp-openai:global-model",
+    "corp-openai:repo-model",
+  ]);
+  assert.deepEqual(JSON.parse(reopened.getGlobalSettings().reviewersJson!), [
+    { provider: "corp-openai", model: "global-model" },
+  ]);
+  assert.equal(reopened.getGlobalSettings().reviewersVersion, 3);
+  assert.deepEqual(JSON.parse(reopened.getRepo(41)!.reviewersJson!), [
+    { provider: "corp-openai", model: "repo-model" },
+  ]);
+  assert.deepEqual(JSON.parse(reopened.getRepo(42)!.reviewersJson!), [
+    { provider: "corp-openai", model: "global-model" },
+  ]);
+  reopened.close();
+
+  const history = new DatabaseSync(db.path, { readOnly: true });
+  assert.deepEqual({
+    runs: history.prepare("SELECT * FROM review_run").all(),
+    outcomes: history.prepare("SELECT * FROM reviewer_outcome").all(),
+    findings: history.prepare("SELECT * FROM finding").all(),
+  }, historyBefore);
+  history.close();
+});
+
+test("冲突 provider 改名遇到缺失引用或旧版本时完整回滚", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  assert.equal(store.commitModelServiceVersion(null, {
+    ...availableService("openai", ["kept"]),
+    disabledReason: "name-conflict",
+  }), 1);
+  const sqlite = new DatabaseSync(db.path);
+  sqlite.prepare(
+    "INSERT INTO global_setting (key, value) VALUES ('reviewers', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+  ).run(JSON.stringify([{ provider: "openai", model: "missing" }]));
+  sqlite.close();
+
+  const before = JSON.stringify({
+    service: store.getModelService("openai"),
+    settings: store.getGlobalSettings(),
+  });
+  assert.deepEqual(
+    store.renameConflictingCustomModelService("openai", "corp-openai", 1, "2026-08-20T12:00:00.000Z"),
+    {
+      status: "missing-models",
+      references: [{
+        identity: "openai:missing",
+        provider: "openai",
+        model: "missing",
+        locations: [{ kind: "global" }],
+      }],
+    },
+  );
+  assert.equal(JSON.stringify({
+    service: store.getModelService("openai"),
+    settings: store.getGlobalSettings(),
+  }), before);
+  assert.equal(store.getModelService("corp-openai"), undefined);
+  assert.deepEqual(
+    store.renameConflictingCustomModelService("openai", "corp-openai", 2, "2026-08-20T12:00:00.000Z"),
+    { status: "version-conflict" },
+  );
+  assert.deepEqual(
+    store.renameConflictingCustomModelService("openai", "INVALID", 1, "2026-08-20T12:00:00.000Z"),
+    { status: "invalid-provider" },
+  );
+  assert.equal(store.getModelService("corp-openai"), undefined);
+  store.close();
+});
+
 test("Review Run 启动快照只读生效组合引用的服务密文,后续读取才看见新版本", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);

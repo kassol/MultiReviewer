@@ -58,6 +58,7 @@ import {
   type ReviewRunPlan,
 } from "../review/run.ts";
 import {
+  CUSTOM_PROVIDER_NAME_PATTERN,
   openStore,
   type ModelReference,
   type ModelServiceRecord,
@@ -914,7 +915,7 @@ function panelPermissionGranted(
   return access.allOf.every((permission) => permissions.includes(permission));
 }
 /** 自定义模型服务名与删除路由共用的字符和长度边界。 */
-const CUSTOM_PROVIDER_NAME = /^[a-z0-9-]{1,64}$/;
+const CUSTOM_PROVIDER_NAME = CUSTOM_PROVIDER_NAME_PATTERN;
 
 function listRepos(res: ServerResponse, deps: WebhookServerDeps): void {
   const rows = withStore(deps.dbPath, (store) => store.listRepos());
@@ -1443,6 +1444,13 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     access: { allOf: ["model:write", "credential:write"] },
     handler: ({ req, res, deps }, match) =>
       handleDeleteCustomModelService(req, res, deps, match![1]!),
+  },
+  {
+    method: "POST",
+    pattern: /^\/model-services\/custom\/([a-z0-9-]{1,64})\/rename$/,
+    access: { allOf: ["model:write", "credential:write"] },
+    handler: ({ req, res, deps }, match) =>
+      handleRenameConflictingCustomModelService(req, res, deps, match![1]!),
   },
   {
     method: "POST",
@@ -3491,6 +3499,85 @@ async function handleDeleteCustomModelService(
     });
   }
   return sendJson(res, 200, { provider, deleted: true });
+}
+
+async function handleRenameConflictingCustomModelService(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  currentProvider: string,
+): Promise<void> {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body);
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    !("provider" in payload) ||
+    typeof payload.provider !== "string" ||
+    !CUSTOM_PROVIDER_NAME.test(payload.provider) ||
+    !("expectedVersion" in payload) ||
+    typeof payload.expectedVersion !== "number" ||
+    !Number.isInteger(payload.expectedVersion) ||
+    payload.expectedVersion <= 0
+  ) {
+    return sendJson(res, 400, {
+      error: "冲突服务改名必须带合法 provider 与正整数 expectedVersion",
+    });
+  }
+  const provider = payload.provider;
+  const expectedVersion = payload.expectedVersion;
+  const current = withStore(deps.dbPath, (store) => store.getModelService(currentProvider));
+  if (current === undefined) {
+    return sendJson(res, 404, { error: `没有自定义模型服务 ${currentProvider}` });
+  }
+  if (current.version !== expectedVersion) {
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新打开配置",
+      expectedVersion,
+      actualVersion: current.version,
+    });
+  }
+  if (current.type !== "custom" || current.disabledReason !== "name-conflict") {
+    return sendJson(res, 409, { error: "只有因 provider 名称冲突而停用的自定义服务可以改名" });
+  }
+  if ((await listPiBuiltinProviders()).some(({ id }) => id === provider)) {
+    return sendJson(res, 409, { error: `${provider} 与当前 Pi 内置 provider 名字冲突` });
+  }
+  const result = withStore(deps.dbPath, (store) =>
+    store.renameConflictingCustomModelService(
+      currentProvider,
+      provider,
+      expectedVersion,
+      new Date((deps.now ?? Date.now)()).toISOString(),
+    ),
+  );
+  if (result.status === "renamed") {
+    return sendJson(res, 200, { provider, version: result.version });
+  }
+  if (result.status === "missing-models") {
+    return sendJson(res, 409, {
+      error: "当前模型服务缺少仍被模型组合引用的模型，改名未执行",
+      references: result.references,
+    });
+  }
+  if (result.status === "provider-conflict") {
+    return sendJson(res, 409, { error: `${provider} 已被现有模型服务占用` });
+  }
+  if (result.status === "invalid-provider") {
+    return sendJson(res, 400, { error: "新 provider 名称不符合规则" });
+  }
+  if (result.status === "not-conflicting") {
+    return sendJson(res, 409, { error: "只有因 provider 名称冲突而停用的自定义服务可以改名" });
+  }
+  const actualVersion = withStore(deps.dbPath, (store) =>
+    store.getModelService(currentProvider)?.version ?? null,
+  );
+  return sendJson(res, 409, {
+    error: "模型服务版本已变化，请重新打开配置",
+    expectedVersion,
+    actualVersion,
+  });
 }
 
 

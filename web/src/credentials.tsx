@@ -89,7 +89,7 @@ type CustomPreview = {
 };
 
 type CustomDialogTarget = {
-  mode: "create" | "update" | "recovery";
+  mode: "create" | "update";
   service?: ModelService;
 };
 
@@ -1021,9 +1021,7 @@ function CustomCandidateDialog({
   };
   const title = editing
     ? `修改 ${service.provider}`
-    : target.mode === "recovery"
-      ? `用新名称重建 ${service?.provider ?? "自定义服务"}`
-      : "创建自定义模型服务";
+    : "创建自定义模型服务";
   const requestClose = (): void => {
     if (busy) return;
     if (dirty) setConfirmingDiscard(true);
@@ -1250,14 +1248,15 @@ function CustomCandidateDialog({
 function CustomServiceControls({
   service,
   onEdit,
-  onRecover,
 }: {
   service: ModelService;
   onEdit: () => void;
-  onRecover: () => void;
 }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [newProvider, setNewProvider] = useState("");
   const removeService = useMutation<
     { provider: string; deleted: true },
     ModelServiceMutationError
@@ -1273,6 +1272,28 @@ function CustomServiceControls({
       void queryClient.invalidateQueries({ queryKey: ["model-services"] });
     },
   });
+  const renameService = useMutation<
+    { provider: string; version: number },
+    ModelServiceMutationError
+  >({
+    mutationFn: async () => responseJsonWithReferences(
+      await api(`/model-services/custom/${encodeURIComponent(service.provider)}/rename`, {
+        method: "POST",
+        body: JSON.stringify({
+          provider: newProvider.trim(),
+          expectedVersion: service.version,
+        }),
+      }),
+    ),
+    onSuccess: async (result) => {
+      setRenaming(false);
+      await queryClient.invalidateQueries({ queryKey: ["model-services"] });
+      await navigate({
+        to: "/credentials/$provider/maintenance",
+        params: { provider: result.provider },
+      });
+    },
+  });
   return (
     <section className="rounded-md border px-3 py-3" aria-labelledby={`custom-actions-${service.provider}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1282,7 +1303,7 @@ function CustomServiceControls({
         </div>
         <div className="flex flex-wrap gap-2">
           {service.providerState !== "name-conflict" ? null : (
-            <Button type="button" variant="outline" onClick={onRecover}>用新名称重建</Button>
+            <Button type="button" variant="outline" onClick={() => setRenaming(true)}>迁移到新名称</Button>
           )}
           {service.providerState === "name-conflict" ? null : (
             <Button type="button" variant="outline" onClick={onEdit}>修改候选</Button>
@@ -1292,6 +1313,59 @@ function CustomServiceControls({
           </Button>
         </div>
       </div>
+      <Dialog
+        open={renaming}
+        onOpenChange={(open) => {
+          setRenaming(open);
+          if (!open) renameService.reset();
+        }}
+      >
+        <DialogContent>
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              renameService.mutate();
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>迁移 {service.provider} 到新名称</DialogTitle>
+              <DialogDescription>
+                服务、全局模型组合与全部仓库覆盖会在一个事务中改名。model id 与历史审查记录保持不变。
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-1.5">
+              <Label htmlFor={`rename-provider-${service.provider}`}>新 provider</Label>
+              <Input
+                id={`rename-provider-${service.provider}`}
+                className="font-mono"
+                value={newProvider}
+                required
+                disabled={renameService.isPending}
+                onChange={(event) => {
+                  setNewProvider(event.target.value);
+                  renameService.reset();
+                }}
+              />
+              <p className="text-xs text-muted-foreground">使用 1–64 位小写字母、数字或连字符。</p>
+            </div>
+            {renameService.error === null ? null : (
+              <div className="space-y-2">
+                <p role="alert" className="text-destructive">{renameService.error.message}</p>
+                <ReferenceBlockers references={renameService.error.references} />
+              </div>
+            )}
+            <DialogFooter>
+              <Button type="button" variant="outline" disabled={renameService.isPending} onClick={() => setRenaming(false)}>
+                取消
+              </Button>
+              <Button type="submit" disabled={renameService.isPending || newProvider.trim() === ""}>
+                {renameService.isPending ? "正在迁移…" : "确认迁移"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
       <Dialog
         open={confirmingDelete}
         onOpenChange={(open) => {
@@ -1777,7 +1851,6 @@ function ServiceDetail({
   canWriteCredential,
   canWriteCustom,
   onEditCustom,
-  onRecoverCustom,
 }: {
   service: ModelService;
   tab: ModelServiceTab;
@@ -1787,7 +1860,6 @@ function ServiceDetail({
   canWriteCredential: boolean;
   canWriteCustom: boolean;
   onEditCustom: () => void;
-  onRecoverCustom: () => void;
 }) {
   return (
     <div className="min-w-0 space-y-5">
@@ -1878,7 +1950,6 @@ function ServiceDetail({
         <CustomServiceControls
           service={service}
           onEdit={onEditCustom}
-          onRecover={onRecoverCustom}
         />
       )}
 
@@ -2082,7 +2153,6 @@ export function ModelServicesPage({
             canWriteCredential={canWriteCredential}
             canWriteCustom={canWriteCustom && canReadModels}
             onEditCustom={() => setCustomTarget({ mode: "update", service: selected })}
-            onRecoverCustom={() => setCustomTarget({ mode: "recovery", service: selected })}
           />
         </div>
       )}

@@ -497,6 +497,19 @@ export type ModelReference = {
   locations: ModelReferenceLocation[];
 };
 
+export const CUSTOM_PROVIDER_NAME_PATTERN = /^[a-z0-9-]{1,64}$/;
+
+export type RenameConflictingCustomModelServiceResult =
+  | { status: "renamed"; version: number }
+  | {
+      status:
+        | "version-conflict"
+        | "not-conflicting"
+        | "invalid-provider"
+        | "provider-conflict";
+    }
+  | { status: "missing-models"; references: ModelReference[] };
+
 /**
  * 一次完整当前版本写入。版本号由库按 expectedVersion 生成，避免调用方拿旧候选覆盖新版本。
  * automaticModels 是本次成功发现的完整可信快照；supplements 是这家服务的新完整集合。
@@ -740,6 +753,13 @@ export type Store = {
     expectedVersion: number | null,
     record: ModelServiceVersionCommit,
   ): number | undefined;
+  /** 只恢复因内置名称冲突而停用的自定义服务；当前引用与服务事实同事务改名。 */
+  renameConflictingCustomModelService(
+    provider: string,
+    newProvider: string,
+    expectedVersion: number,
+    updatedAt: string,
+  ): RenameConflictingCustomModelServiceResult;
   /**
    * 仅在自定义服务版本仍等于 expectedVersion 时原子删除当前服务、凭据、目录和补录。
    * 版本不匹配、服务不存在或不是自定义服务时返回 false，任何字段都不删。
@@ -1754,6 +1774,120 @@ export function openStore(dbPath: string): Store {
         }
         db.exec("COMMIT");
         return version;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    renameConflictingCustomModelService(provider, newProvider, expectedVersion, updatedAt) {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        if (!CUSTOM_PROVIDER_NAME_PATTERN.test(newProvider)) {
+          db.exec("ROLLBACK");
+          return { status: "invalid-provider" };
+        }
+        const current = db.prepare(
+          `SELECT version, service_type, disabled_reason
+             FROM model_service WHERE provider = ?`,
+        ).get(provider);
+        if (current === undefined || Number(current["version"]) !== expectedVersion) {
+          db.exec("ROLLBACK");
+          return { status: "version-conflict" };
+        }
+        if (
+          current["service_type"] !== "custom" ||
+          current["disabled_reason"] !== "name-conflict"
+        ) {
+          db.exec("ROLLBACK");
+          return { status: "not-conflicting" };
+        }
+        if (db.prepare("SELECT 1 FROM model_service WHERE provider = ?").get(newProvider) !== undefined) {
+          db.exec("ROLLBACK");
+          return { status: "provider-conflict" };
+        }
+
+        const references = store.listModelReferences().filter(
+          (reference) => reference.provider === provider,
+        );
+        const missing = references.filter(
+          (reference) =>
+            availableModel.get(provider, reference.model, reference.model) === undefined,
+        );
+        if (missing.length > 0) {
+          db.exec("ROLLBACK");
+          return { status: "missing-models", references: missing };
+        }
+
+        const rewrite = (
+          reviewersJson: string,
+          context: string,
+          allowEmpty: boolean,
+        ): string | undefined => {
+          const reviewers = assertReviewerSpecs(JSON.parse(reviewersJson), context, { allowEmpty });
+          if (!reviewers.some((reviewer) => reviewer.provider === provider)) return undefined;
+          return JSON.stringify(reviewers.map((reviewer) =>
+            reviewer.provider === provider ? { ...reviewer, provider: newProvider } : reviewer
+          ));
+        };
+        const globalRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
+          .get(GLOBAL_REVIEWERS_KEY);
+        if (globalRow !== undefined) {
+          const oldJson = String(globalRow["value"]);
+          const nextJson = rewrite(oldJson, GLOBAL_REVIEWERS_CONTEXT, true);
+          if (nextJson !== undefined) {
+            db.prepare("UPDATE global_setting SET value = ? WHERE key = ?")
+              .run(nextJson, GLOBAL_REVIEWERS_KEY);
+            const versionRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
+              .get(GLOBAL_REVIEWERS_VERSION_KEY);
+            const version = versionRow === undefined ? 1 : Number(versionRow["value"]);
+            db.prepare(
+              `INSERT INTO global_setting (key, value) VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+            ).run(GLOBAL_REVIEWERS_VERSION_KEY, String(version + 1));
+          }
+        }
+        for (const row of db.prepare(
+          "SELECT id, owner, repo, reviewers FROM repo WHERE reviewers IS NOT NULL",
+        ).all()) {
+          const repoId = Number(row["id"]);
+          const oldJson = String(row["reviewers"]);
+          const nextJson = rewrite(
+            oldJson,
+            `仓库 ${String(row["owner"])}/${String(row["repo"])}（id ${repoId}）的模型覆盖`,
+            false,
+          );
+          if (nextJson !== undefined) {
+            db.prepare("UPDATE repo SET reviewers = ? WHERE id = ?").run(nextJson, repoId);
+          }
+        }
+
+        const nextVersion = expectedVersion + 1;
+        db.prepare("UPDATE model_directory_model SET provider = ?, service_version = ? WHERE provider = ?")
+          .run(newProvider, nextVersion, provider);
+        db.prepare("UPDATE model_directory SET provider = ?, service_version = ? WHERE provider = ?")
+          .run(newProvider, nextVersion, provider);
+        db.prepare("UPDATE model_supplement SET provider = ? WHERE provider = ?")
+          .run(newProvider, provider);
+        const validationModel = db.prepare(
+          "SELECT validation_model FROM model_service_credential WHERE provider = ?",
+        ).get(provider)?.["validation_model"];
+        db.prepare(
+          "UPDATE model_service_credential SET provider = ?, validation_model = ? WHERE provider = ?",
+        ).run(
+          newProvider,
+          validationModel === null || validationModel === undefined
+            ? null
+            : `${newProvider}:${String(validationModel).slice(provider.length + 1)}`,
+          provider,
+        );
+        db.prepare(
+          `UPDATE model_service
+              SET provider = ?, version = ?, disabled_reason = NULL, updated_at = ?
+            WHERE provider = ? AND version = ?`,
+        ).run(newProvider, nextVersion, updatedAt, provider, expectedVersion);
+        db.exec("COMMIT");
+        return { status: "renamed", version: nextVersion };
       } catch (error) {
         db.exec("ROLLBACK");
         throw error;

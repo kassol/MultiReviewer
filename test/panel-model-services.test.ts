@@ -2393,6 +2393,152 @@ test("Pi 内置名称后来冲突时自定义服务自动停用，冲突消失�
   persistedStore.close();
 });
 
+test("冲突自定义 provider 通过维护端点改名并立即刷新模型服务投影", async () => {
+  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const cookie = await cookieFor(h, "conflict-rename-writer", [
+    "model:read",
+    "model:write",
+    "credential:write",
+  ]);
+  const seed = openStore(h.db.path);
+  assert.equal(seed.commitModelServiceVersion(null, service("openai", {
+    type: "custom",
+    baseUrl: "https://rename.example/v1",
+    api: "openai-completions",
+    targetFingerprint: modelServiceTargetFingerprint(
+      "https://rename.example/v1",
+      "openai-completions",
+    ),
+    disabledReason: "name-conflict",
+  })), 1);
+  seed.close();
+
+  const stale = await mutation(
+    h,
+    cookie,
+    "POST",
+    "/model-services/custom/openai/rename",
+    { provider: "corp-openai", expectedVersion: 2 },
+  );
+  assert.equal(stale.status, 409, await stale.text());
+
+  const collision = await mutation(
+    h,
+    cookie,
+    "POST",
+    "/model-services/custom/openai/rename",
+    { provider: "openrouter", expectedVersion: 1 },
+  );
+  assert.equal(collision.status, 409, await collision.text());
+
+  const renamed = await mutation(
+    h,
+    cookie,
+    "POST",
+    "/model-services/custom/openai/rename",
+    { provider: "corp-openai", expectedVersion: 1 },
+  );
+  const renamedText = await renamed.text();
+  assert.equal(renamed.status, 200, renamedText);
+  assert.deepEqual(JSON.parse(renamedText), { provider: "corp-openai", version: 2 });
+
+  const projection = await request(h, cookie, "/model-services");
+  const projectionText = await projection.text();
+  assert.equal(projection.status, 200, projectionText);
+  const body = JSON.parse(projectionText) as { services: { provider: string; version: number }[] };
+  assert.equal(body.services.some(({ provider }) => provider === "openai"), false);
+  assert.equal(body.services.find(({ provider }) => provider === "corp-openai")?.version, 2);
+
+  const ordinary = openStore(h.db.path);
+  assert.equal(ordinary.commitModelServiceVersion(null, service("ordinary", {
+    type: "custom",
+    baseUrl: "https://ordinary.example/v1",
+    api: "openai-completions",
+    disabledReason: null,
+  })), 1);
+  ordinary.close();
+  const rejectedOrdinary = await mutation(
+    h,
+    cookie,
+    "POST",
+    "/model-services/custom/ordinary/rename",
+    { provider: "ordinary-renamed", expectedVersion: 1 },
+  );
+  assert.equal(rejectedOrdinary.status, 409, await rejectedOrdinary.text());
+});
+
+test("冲突 provider 改名返回完整缺失引用并保持 HTTP 前后的数据库不变", async () => {
+  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const cookie = await cookieFor(h, "conflict-rename-blocked", [
+    "model:write",
+    "credential:write",
+  ]);
+  const seed = openStore(h.db.path);
+  assert.equal(seed.commitModelServiceVersion(null, service("openai", {
+    type: "custom",
+    baseUrl: "https://rename-blocked.example/v1",
+    api: "openai-completions",
+    targetFingerprint: modelServiceTargetFingerprint(
+      "https://rename-blocked.example/v1",
+      "openai-completions",
+    ),
+    disabledReason: "name-conflict",
+  })), 1);
+  seed.close();
+  const sqlite = new DatabaseSync(h.db.path);
+  sqlite.prepare(
+    "INSERT INTO global_setting (key, value) VALUES ('reviewers', ?)",
+  ).run(JSON.stringify([{ provider: "openai", model: "missing-global" }]));
+  sqlite.prepare(
+    `INSERT INTO repo (id, owner, repo, reviewers, registered_at)
+     VALUES (71, 'acme', 'blocked', ?, '2026-08-20T12:00:00.000Z')`,
+  ).run(JSON.stringify([{ provider: "openai", model: "missing-repo" }]));
+  const before = {
+    services: sqlite.prepare("SELECT * FROM model_service ORDER BY provider").all(),
+    settings: sqlite.prepare("SELECT * FROM global_setting ORDER BY key").all(),
+    repos: sqlite.prepare("SELECT * FROM repo ORDER BY id").all(),
+  };
+  sqlite.close();
+
+  const response = await mutation(
+    h,
+    cookie,
+    "POST",
+    "/model-services/custom/openai/rename",
+    { provider: "corp-openai", expectedVersion: 1 },
+  );
+  const text = await response.text();
+  assert.equal(response.status, 409, text);
+  const body = JSON.parse(text) as { references: ModelReference[] };
+  assert.deepEqual(body.references, [
+    {
+      identity: "openai:missing-global",
+      provider: "openai",
+      model: "missing-global",
+      locations: [{ kind: "global" }],
+    },
+    {
+      identity: "openai:missing-repo",
+      provider: "openai",
+      model: "missing-repo",
+      locations: [{
+        kind: "repository-override",
+        repoId: 71,
+        owner: "acme",
+        repo: "blocked",
+      }],
+    },
+  ]);
+
+  const after = new DatabaseSync(h.db.path, { readOnly: true });
+  assert.deepEqual({
+    services: after.prepare("SELECT * FROM model_service ORDER BY provider").all(),
+    settings: after.prepare("SELECT * FROM global_setting ORDER BY key").all(),
+    repos: after.prepare("SELECT * FROM repo ORDER BY id").all(),
+  }, before);
+  after.close();
+});
+
 test("自定义服务删除返回完整引用阻断，失败整笔回滚，成功后历史 Review Run 保留", async () => {
   const h = await startPanelHarness(cleanups, { reviewers: [] });
   const cookie = await cookieFor(h, "custom-delete-writer", ["model:write", "credential:write"]);

@@ -48,6 +48,11 @@ const ROUTE_EXPECTATIONS = [
   ["POST", "/^\\/model-services\\/custom\\/preview$/", "allOf:model:write|credential:write"],
   ["POST", "/^\\/model-services\\/custom\\/commit$/", "allOf:model:write|credential:write"],
   [
+    "POST",
+    "/^\\/model-services\\/custom\\/([a-z0-9-]{1,64})\\/rename$/",
+    "allOf:model:write|credential:write",
+  ],
+  [
     "DELETE",
     "/^\\/model-services\\/custom\\/([a-z0-9-]{1,64})$/",
     "allOf:model:write|credential:write",
@@ -243,6 +248,7 @@ test("allOf 路由必须同时持有模型写与凭据写，系统管理员仍�
   const mutations = [
     ["POST", "/model-services/custom/preview"],
     ["POST", "/model-services/custom/commit"],
+    ["POST", "/model-services/custom/missing-service/rename"],
     ["DELETE", "/model-services/custom/missing-service"],
   ] as const;
   const invoke = (cookie: string, method: string, path: string): Promise<Response> =>
