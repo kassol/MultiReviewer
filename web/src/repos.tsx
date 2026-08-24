@@ -526,7 +526,6 @@ function RepoDetail({
             }
           />
           <div className="flex flex-col gap-2.5 border-t border-line px-4 py-3.5 sm:px-5">
-            <Kv label="状态">已配置到 Hook（不会显示明文）</Kv>
             <Kv label="代次">
               <span className="font-mono tabular-nums">
                 {check.data === undefined ? "…" : check.data.expectedGenerations.join(" / ")}

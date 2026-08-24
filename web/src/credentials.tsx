@@ -2773,34 +2773,24 @@ function ReferenceOverview({ references }: { references: readonly ModelReference
         {references.length === 0 ? (
           <EmptyState title="全局模型组合与仓库覆盖都没有引用这家服务" className="py-0" />
         ) : (
-          <Collapsible.Root className="group/references">
-            <Collapsible.Trigger asChild>
-              <Button type="button" variant="outline" color="gray" size={{ initial: "3", sm: "1" }}>
-                <ChevronDownIcon className="transition-transform group-data-[state=open]/references:rotate-180" aria-hidden />
-                展开具体位置
-              </Button>
-            </Collapsible.Trigger>
-            <Collapsible.Content>
-              <ul className="mt-3 flex flex-col overflow-hidden rounded-md border border-card-line">
-                {references.map((reference) => (
-                  <li key={reference.identity} className="border-t border-line px-3 py-2 first:border-t-0">
-                    <p className="break-all font-mono text-base font-medium">{reference.identity}</p>
-                    <ul className="mt-1 list-disc space-y-0.5 pl-5 text-base text-text-muted">
-                      {reference.locations.map((location, index) => (
-                        <li key={`${reference.identity}:${index}`}>
-                          {location.kind === "global"
-                            ? "全局模型组合"
-                            : location.kind === "following-global"
-                              ? `${location.repositoryCount} 个跟随全局的仓库`
-                              : `仓库覆盖 ${location.owner}/${location.repo}`}
-                        </li>
-                      ))}
-                    </ul>
-                  </li>
-                ))}
-              </ul>
-            </Collapsible.Content>
-          </Collapsible.Root>
+          <ul className="flex flex-col overflow-hidden rounded-md border border-card-line">
+            {references.map((reference) => (
+              <li key={reference.identity} className="border-t border-line px-3 py-2 first:border-t-0">
+                <p className="break-all font-mono text-base font-medium">{reference.identity}</p>
+                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-base text-text-muted">
+                  {reference.locations.map((location, index) => (
+                    <li key={`${reference.identity}:${index}`}>
+                      {location.kind === "global"
+                        ? "全局模型组合"
+                        : location.kind === "following-global"
+                          ? `${location.repositoryCount} 个跟随全局的仓库`
+                          : `仓库覆盖 ${location.owner}/${location.repo}`}
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
         )}
       </CardSection>
     </CardShell>

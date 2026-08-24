@@ -374,7 +374,7 @@ export function AccessControlPage() {
               <div className="flex flex-col gap-3 border-t border-line px-4 py-3 sm:px-5">
                 <div className="flex items-start gap-2 rounded-lg bg-sunken px-3 py-2">
                   <LockClosedIcon className="mt-0.5 size-4 shrink-0" />
-                  <p className="min-w-0 flex-1 text-text-muted"><span className="font-medium text-text">系统管理员</span>不参与矩阵，始终拥有全部权限（当前 <span className="font-mono">{adminCount}</span> 位）。下方仅管理自定义角色。</p>
+                  <p className="min-w-0 flex-1 text-text-muted"><span className="font-medium text-text">系统管理员</span>（<span className="font-mono">{adminCount}</span> 位）始终拥有全部权限，不在矩阵内。</p>
                 </div>
                 {unclaimed.size === 0 || roles.length === 0 ? null : (
                   <Callout.Root color="amber" size="1">
@@ -387,10 +387,7 @@ export function AccessControlPage() {
               </div>
               {roles.length === 0 ? (
                 <div className="border-t border-line px-4 pb-4 sm:px-5">
-                  <EmptyState
-                    title="还没有角色"
-                    action={<Button variant="solid" size={{ initial: "4", sm: "2" }} onClick={() => openCreateDialog("role")}><PlusIcon />新建角色</Button>}
-                  />
+                  <EmptyState title="还没有自定义角色" />
                 </div>
               ) : (
                 <div className="contain-inline-size min-w-0 max-w-full overflow-x-auto overscroll-x-contain border-t border-line">

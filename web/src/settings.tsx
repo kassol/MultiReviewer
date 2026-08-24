@@ -3,9 +3,8 @@
  * 不连坐批次上限。组合候选与仓库覆盖共用 `ModelComposer` 的模型服务投影。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircledIcon, ChevronDownIcon, CrossCircledIcon } from "@radix-ui/react-icons";
+import { CheckCircledIcon, CrossCircledIcon } from "@radix-ui/react-icons";
 import { Callout, Card, Skeleton, Text, TextField } from "@radix-ui/themes";
-import { Collapsible } from "radix-ui";
 import { useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -234,120 +233,101 @@ function SettingsForm({ settings }: { settings: Settings }) {
         )}
       </section>
 
-      {/* 折叠行(§8.4「批次上限」/§7.8 折叠标题):整块就是一张卡,折叠态右侧预览已有取值,不必展开才看得到。 */}
-      <Collapsible.Root className="group/batch-limit overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
-        <div className="flex items-center justify-between gap-3 px-5 py-3.5">
-          <div className="flex items-center gap-1.5">
-            <h2>
-              <Collapsible.Trigger asChild>
-                <Button variant="ghost" color="gray" size={{ initial: "3", sm: "1" }}>
-                  批次上限
-                  <ChevronDownIcon
-                    className="transition-transform group-data-[state=open]/batch-limit:rotate-180"
-                    aria-hidden
-                  />
-                </Button>
-              </Collapsible.Trigger>
-            </h2>
-            <HelpTooltip label="批次上限说明" content="批次上限只影响每轮审查如何拆分改动，不会改变模型组合。" />
-          </div>
-          <span className="text-xs text-muted-foreground">
-            {limitSource === "default" ? "系统默认" : "自定义"} ·{" "}
-            <span className="font-mono tabular-nums">{limit}</span>
-          </span>
+      <section className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
+        <div className="flex items-center gap-1.5 px-5 py-3.5">
+          <h2 className="text-2xl font-bold tracking-[-0.015em]">批次上限</h2>
+          <HelpTooltip label="批次上限说明" content="批次上限只影响每轮审查如何拆分改动，不会改变模型组合。" />
         </div>
-        <Collapsible.Content>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              setLimitFeedback(null);
-              const parsed = Number(limit.trim());
-              if (limit.trim() === "" || !Number.isInteger(parsed) || parsed <= 0) {
-                setLimitFeedback({
-                  text: "批次上限要填正整数，这次没保存。",
-                  isError: true,
-                  isField: true,
-                });
-                return;
-              }
-              saveLimit.mutate(parsed);
-            }}
-          >
-            <div className="space-y-3 border-t border-card-line px-5 py-4">
-              <p className="text-xs text-muted-foreground">
-                取值来源：{limitSource === "default" ? "系统默认" : "自定义"}
-              </p>
-              <div className="flex max-w-sm flex-col gap-1.5">
-                <Text as="label" htmlFor="max-changed-lines" size="2" weight="medium">每批最多改动行数</Text>
-                <TextField.Root
-                  id="max-changed-lines"
-                  size={{ initial: "3", sm: "2" }}
-                  color={limitFeedback?.isField ? "red" : "gray"}
-                  className="min-w-0 w-40 font-mono max-sm:min-h-11"
-                  inputMode="numeric"
-                  value={limit}
-                  aria-invalid={limitFeedback?.isField || undefined}
-                  aria-describedby={limitFeedback?.isField ? "max-changed-lines-error" : undefined}
-                  onChange={(event) => {
-                    setLimit(event.target.value);
-                    setLimitFeedback(null);
-                  }}
-                />
-              </div>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            setLimitFeedback(null);
+            const parsed = Number(limit.trim());
+            if (limit.trim() === "" || !Number.isInteger(parsed) || parsed <= 0) {
+              setLimitFeedback({
+                text: "批次上限要填正整数，这次没保存。",
+                isError: true,
+                isField: true,
+              });
+              return;
+            }
+            saveLimit.mutate(parsed);
+          }}
+        >
+          <div className="space-y-3 border-t border-card-line px-5 py-4">
+            <p className="text-xs text-muted-foreground">
+              取值来源：{limitSource === "default" ? "系统默认" : "自定义"}
+            </p>
+            <div className="flex max-w-sm flex-col gap-1.5">
+              <Text as="label" htmlFor="max-changed-lines" size="2" weight="medium">每批最多改动行数</Text>
+              <TextField.Root
+                id="max-changed-lines"
+                size={{ initial: "3", sm: "2" }}
+                color={limitFeedback?.isField ? "red" : "gray"}
+                className="min-w-0 w-40 font-mono max-sm:min-h-11"
+                inputMode="numeric"
+                value={limit}
+                aria-invalid={limitFeedback?.isField || undefined}
+                aria-describedby={limitFeedback?.isField ? "max-changed-lines-error" : undefined}
+                onChange={(event) => {
+                  setLimit(event.target.value);
+                  setLimitFeedback(null);
+                }}
+              />
             </div>
-            <div className="flex flex-wrap items-center gap-3 border-t border-card-line bg-sunken px-5 py-3">
+          </div>
+          <div className="flex flex-wrap items-center gap-3 border-t border-card-line bg-sunken px-5 py-3">
+            <Button
+              type="submit"
+              variant="solid"
+              size={{ initial: "4", sm: "2" }}
+              className="shadow-accent"
+              disabled={saveLimit.isPending}
+            >
+              {saveLimit.isPending ? "保存中…" : "保存批次上限"}
+            </Button>
+            {limitSource === "custom" ? (
               <Button
-                type="submit"
-                variant="solid"
+                type="button"
+                variant="outline"
+                color="gray"
                 size={{ initial: "4", sm: "2" }}
-                className="shadow-accent"
                 disabled={saveLimit.isPending}
+                onClick={() => {
+                  setLimitFeedback(null);
+                  saveLimit.mutate(null);
+                }}
               >
-                {saveLimit.isPending ? "保存中…" : "保存批次上限"}
+                恢复系统默认
               </Button>
-              {limitSource === "custom" ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  color="gray"
-                  size={{ initial: "4", sm: "2" }}
-                  disabled={saveLimit.isPending}
-                  onClick={() => {
-                    setLimitFeedback(null);
-                    saveLimit.mutate(null);
-                  }}
-                >
-                  恢复系统默认
-                </Button>
-              ) : null}
-              {limitFeedback === null ? (
-                <span className="text-xs text-muted-foreground">单独保存，不受模型组合可用性影响。</span>
-              ) : limitFeedback.isField ? (
-                <span
-                  id="max-changed-lines-error"
-                  role="alert"
-                  className="text-danger"
-                >
-                  {limitFeedback.text}
-                </span>
-              ) : null}
-            </div>
-            {limitFeedback === null || limitFeedback.isField ? null : (
-              <Callout.Root
-                role={limitFeedback.isError ? "alert" : "status"}
-                color={limitFeedback.isError ? "red" : "green"}
-                size="1"
-                className="m-4 mt-0"
+            ) : null}
+            {limitFeedback === null ? (
+              <span className="text-xs text-muted-foreground">单独保存，不受模型组合可用性影响。</span>
+            ) : limitFeedback.isField ? (
+              <span
+                id="max-changed-lines-error"
+                role="alert"
+                className="text-danger"
               >
-                <Callout.Icon>
-                  {limitFeedback.isError ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
-                </Callout.Icon>
-                <Callout.Text>{limitFeedback.text}</Callout.Text>
-              </Callout.Root>
-            )}
-          </form>
-        </Collapsible.Content>
-      </Collapsible.Root>
+                {limitFeedback.text}
+              </span>
+            ) : null}
+          </div>
+          {limitFeedback === null || limitFeedback.isField ? null : (
+            <Callout.Root
+              role={limitFeedback.isError ? "alert" : "status"}
+              color={limitFeedback.isError ? "red" : "green"}
+              size="1"
+              className="m-4 mt-0"
+            >
+              <Callout.Icon>
+                {limitFeedback.isError ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
+              </Callout.Icon>
+              <Callout.Text>{limitFeedback.text}</Callout.Text>
+            </Callout.Root>
+          )}
+        </form>
+      </section>
     </div>
   );
 }

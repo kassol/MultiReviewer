@@ -78,30 +78,27 @@ export function RunPill({ run }: { run: RunItem }) {
   if (down.length === 0) return badge;
   const failureSummary = `${down.length}/${run.models.length} 个模型失败，本轮审查结果不完整`;
   return (
-    <span className="inline-flex items-center gap-1">
-      <Tooltip
-        maxWidth="32rem"
-        content={(
-          <span className="block space-y-1">
-            <span className="block font-medium">{failureSummary}</span>
-            {down.map((entry) => (
-              <span key={entry.model} className="block break-words">
-                <span className="break-all font-mono">{entry.model}</span>：{entry.failure}
-              </span>
-            ))}
-          </span>
-        )}
-      >
-        <span
-          tabIndex={0}
-          className="inline-flex shrink-0 items-center rounded-sm text-warning outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-        >
-          <ExclamationTriangleIcon className="size-4" aria-hidden />
-          <span className="sr-only">{failureSummary}</span>
+    <Tooltip
+      maxWidth="32rem"
+      content={(
+        <span className="block space-y-1">
+          <span className="block font-medium">{failureSummary}</span>
+          {down.map((entry) => (
+            <span key={entry.model} className="block break-words">
+              <span className="break-all font-mono">{entry.model}</span>：{entry.failure}
+            </span>
+          ))}
         </span>
-      </Tooltip>
-      {badge}
-    </span>
+      )}
+    >
+      <span
+        tabIndex={0}
+        className="inline-flex shrink-0 items-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+      >
+        {badge}
+        <span className="sr-only">{failureSummary}</span>
+      </span>
+    </Tooltip>
   );
 }
 

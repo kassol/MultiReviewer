@@ -27,8 +27,9 @@ import { createRoot } from "react-dom/client";
 import { CommandPalette, useCommandPalette } from "@/components/command-palette";
 import { Mark } from "@/components/mark";
 import { EmptyState } from "@/components/empty-state";
+import { PageBody } from "@/components/page-body";
 import { PanelTheme } from "@/components/panel-theme";
-import { Card, DropdownMenu, Skeleton } from "@radix-ui/themes";
+import { DropdownMenu, Skeleton } from "@radix-ui/themes";
 
 import { api, fetchJson } from "./api.ts";
 import type { ModelServiceTab } from "./credentials.tsx";
@@ -64,15 +65,14 @@ const { prefix } = injected();
 
 const rootRoute = createRootRoute({ component: () => <Outlet /> });
 
+/** 骨架按正文的列宽和边距摆:换页时它和随后渲染出来的页面占同一块位置,不跳。 */
 function PageLoading() {
   return (
-    <div className="w-full max-w-[760px] p-4 sm:p-5" role="status" aria-label="正在加载页面" aria-busy="true">
-      <Card size="2" className="flex flex-col gap-3">
-        <Skeleton aria-hidden className="h-6 w-40" />
-        <Skeleton aria-hidden className="h-4 w-64 max-w-full" />
-        <Skeleton aria-hidden className="h-40 w-full" />
-      </Card>
-    </div>
+    <PageBody role="status" aria-label="正在加载页面" aria-busy="true">
+      <Skeleton aria-hidden className="h-11 w-56 max-w-full" />
+      <Skeleton aria-hidden className="h-5 w-96 max-w-full" />
+      <Skeleton aria-hidden className="h-56 w-full" />
+    </PageBody>
   );
 }
 
