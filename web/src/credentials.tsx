@@ -1960,14 +1960,23 @@ function ModelsTable({
                       />
                     ) : null}
                     <div className="min-w-0 flex-1">
-                      <p className="break-words font-medium">{model.discovery.name ?? "未提供显示名"}</p>
-                      <p className="mt-0.5 break-all font-mono text-xs text-muted-foreground">{model.identity}</p>
+                      <p className="break-words font-medium" title={model.discovery.name ?? undefined}>
+                        {model.discovery.name ?? "未提供显示名"}
+                      </p>
+                      <p
+                        className="mt-0.5 max-w-full overflow-x-auto whitespace-nowrap font-mono text-xs text-muted-foreground"
+                        title={model.identity}
+                      >
+                        {model.identity}
+                      </p>
                     </div>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+                    <p className="truncate text-xs text-muted-foreground" title={model.sources.map((source) => SOURCE_LABEL[source]).join(" / ")}>
+                      来源：{model.sources.map((source) => SOURCE_LABEL[source]).join(" / ")}
+                    </p>
                     <ModelAvailability model={model} />
                   </div>
-                  <p className="mt-1 truncate text-xs text-muted-foreground" title={model.sources.map((source) => SOURCE_LABEL[source]).join(" / ")}>
-                    来源：{model.sources.map((source) => SOURCE_LABEL[source]).join(" / ")}
-                  </p>
                 </div>
                 <div className="min-w-0 border-t pt-2 xl:border-l xl:border-t-0 xl:pl-3 xl:pt-0">
                   <ModelRuntimeFacts model={model} />
