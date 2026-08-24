@@ -272,21 +272,31 @@ function RunDetailPanel({
          * 点别处仍然照常关闭。
          */
         onPointerDownOutside={(event) => {
-          const target = event.target as HTMLElement | null;
-          const row = target?.closest?.("[data-run-id]");
-          const id = Number((row as HTMLElement | null)?.dataset.runId);
-          if (Number.isSafeInteger(id) && id > 0) {
-            event.preventDefault();
-            onOpenOther(id);
-            return;
-          }
-          // 遮罩盖着筛选控件,不接住这一下的话:面板关掉、筛选没切,人得再点一次。
-          const chip = target?.closest?.("[data-filter-value]") as HTMLElement | null;
-          const next = chip?.dataset.filterValue;
-          if (next === "all" || next === "failed" || next === "pending" || next === "done") {
-            event.preventDefault();
-            onSwitchFilter(next);
-            onClose();
+          /*
+           * 按坐标反查,不看 event.target:面板是模态的,遮罩铺在最上层,target 永远是
+           * 遮罩自己,`closest` 一个都匹配不到。elementsFromPoint 返回这一点上的整叠
+           * 元素,遮罩之下那一层才是人真正想点的东西。
+           *
+           * 不接住的话,点下一轮、点筛选都得点两次:第一下被当成「关掉面板」吃掉。
+           */
+          const origin = event.detail.originalEvent;
+          const stack = document.elementsFromPoint(origin.clientX, origin.clientY);
+          for (const element of stack) {
+            const row = element.closest?.("[data-run-id]");
+            const id = Number((row as HTMLElement | null)?.dataset.runId);
+            if (Number.isSafeInteger(id) && id > 0) {
+              event.preventDefault();
+              onOpenOther(id);
+              return;
+            }
+            const chip = element.closest?.("[data-filter-value]") as HTMLElement | null;
+            const next = chip?.dataset.filterValue;
+            if (next === "all" || next === "failed" || next === "pending" || next === "done") {
+              event.preventDefault();
+              onSwitchFilter(next);
+              onClose();
+              return;
+            }
           }
         }}
         // 四边定位只写 top/right/bottom/left 四个长写法,不混 inset-*:同一属性上「基础值 +
