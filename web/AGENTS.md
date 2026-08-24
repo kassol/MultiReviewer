@@ -27,11 +27,11 @@
 - `src/repos.tsx` — 仓库页,左列表右详情。模型覆盖是「跟随全局 / 自定义」两态:点「跟随全局」直接清覆盖;点「自定义」在详情内挂与审查策略共用的 `ModelComposer`,以当前生效组合为初值。不可用的既有选择可移除但不得随覆盖再次保存;服务端仍作最终校验。编辑态并成单栏容纳 460px 高的两栏选择器,不套对话框或外层表单。审查配置就绪前注册按钮禁用并指向审查策略,状态失效时已开的注册框随即卸载。注册使用 Themes Dialog,移除确认使用 Themes AlertDialog,不用阻塞渲染线程的 `window.confirm`。
 - `src/runs.tsx` — 评审记录页。结论筛选使用 Themes `SegmentedControl`,只过滤已经加载的 Review Run；桌面使用固定列宽的 Themes `Table` 并把横向滚动限制在表格内，窄视口保持按日期分组的单列记录；模型失败原因使用 Collapsible，保留键盘展开、完整原因和逐条重新运行。
 - `src/stats.tsx` — 处置率页。日期范围使用受控 Themes `Popover` 承载保留 `react-day-picker` 行为的双月 Calendar；桌面模型 × 分类矩阵使用 Themes `Table` 与粘性模型列，窄屏逐模型详情使用 Collapsible，保持 Finding Identity 统计口径、范围选择与移动端可访问性。
-- `src/credentials.tsx` — 模型服务主从页。左侧只列已配置或异常保留的服务;右侧按概览、维护、模型分层。概览以服务端运行能力为主状态,目录失败作次级提醒,组合引用可展开到全局、跟随全局仓库数与具体仓库覆盖;维护收凭据轮换、地址／协议调整、目录刷新与删除,`name-conflict` 自定义服务在这里原子迁移到新名称并跳到新的稳定地址,普通服务不显示改名入口;重新验证的 model id 用可编辑组合框列出自动发现模型，手填路径始终保留。模型页用模型、运行规格、状态三列展示；调用目标不在每行重复，发现值只在与运行规格不同时展开。唯一添加入口同时承载 Pi 内置 provider 搜索与自定义 provider;内置、自定义创建和两类既有服务修改共用来源、模型发现、真实推理三步页。自定义发现先收 provider、调用目标、协议与凭据,协议显示产品名称但提交现有运行时枚举;发现失败或目录缺项仍可在验证页手填 model id。凭据与候选只留流程页内存,刷新不会恢复;未保存离开走应用确认并注册浏览器关闭警告,长操作显示阶段并锁住导航。最终提交重新发现并做最小真实推理;新建成功进入审查策略并定位 provider,修改成功回服务概览,两者都不写模型组合。读字段和动作按 `model:*` / `credential:*` 独立权限裁剪,前端从不接收明文或密文。
+- `src/credentials.tsx` — 模型服务主从页。左侧只列已配置或异常保留的服务;右侧按概览、维护、模型三个稳定地址分层,详情导航直接使用 Themes `TabNav`。概览以服务端运行能力为主状态,目录失败作次级提醒,组合引用使用 Collapsible 展开到全局、跟随全局仓库数与具体仓库覆盖;维护收凭据轮换、地址／协议调整、目录刷新与删除,`name-conflict` 自定义服务在这里原子迁移到新名称并跳到新的稳定地址,普通服务不显示改名入口;重新验证的 model id 用 Themes `Popover` 承载保留 cmdk 行为的可编辑组合框,可选自动发现模型且手填路径始终保留。模型页用模型、运行规格、状态三列展示；调用目标不在每行重复，发现值只在与运行规格不同时用 Collapsible 展开。唯一添加入口同时承载 Pi 内置 provider 搜索与自定义 provider;内置、自定义创建和两类既有服务修改共用来源、模型发现、真实推理三步页。自定义发现先收 provider、调用目标、协议与凭据,协议显示产品名称但提交现有运行时枚举;发现失败或目录缺项仍可在验证页手填 model id。凭据与候选只留流程页内存,刷新不会恢复;未保存离开走应用确认并注册浏览器关闭警告,长操作显示阶段并锁住导航。最终提交重新发现并做最小真实推理;新建成功进入审查策略并定位 provider,修改成功回服务概览,两者都不写模型组合。读字段和动作按 `model:*` / `credential:*` 独立权限裁剪,前端从不接收明文或密文。
 
 - `src/settings.tsx` — `/settings` 上的审查策略页。全局模型组合与批次上限各持独立版本、分别保存;409 只恢复冲突项,保留另一项草稿。批次上限使用默认折叠的 Radix Collapsible，并显示系统默认/自定义来源。
 - `src/components/model-composer.tsx` — 全局组合与仓库覆盖共用的唯一模型选择器。接口是 `{value, onChange, provider?, onValidityChange}`;外部 provider 优先定位,没有传入时优先显示已选模型所属 provider。它只读 `GET /model-services` 的统一候选,不创建 provider、不处理凭据、不刷新目录、不补录模型。左栏按服务分组,右栏筛当前服务模型;已选但失效的模型保留稳定原因与「去模型服务处理」入口,允许移除但通知调用页禁止原样保存。一次最多渲染当前服务的 120 行。
-- `src/components/ui/` — 迁移期 vendored 组件(Command / Popover / Calendar)。Button、Input、Label、Badge、Card、Skeleton、Table 与 Dialog wrapper 已删除。普通弹窗直接使用 Themes `Dialog`,删除、丢弃与离开确认直接使用 Themes `AlertDialog`。读取中的占位块直接使用 Themes `Skeleton`，并在降低动效偏好时关闭其呼吸动画。卡片一律直接使用 Radix Themes `Card`；局部滚动表格直接使用 Themes `Table.Root`，保留语义 caption 和 sticky 首列。Calendar 只保留 `react-day-picker` 的日期行为,月份导航使用 Themes `IconButton`,日期使用 Themes `Button`,外观读取 Theme token;`locale` 为 undefined 时不显式传给 `DayButton`,以兼容 `exactOptionalPropertyTypes`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
+- `src/components/ui/` — 允许保留的专用行为组件(Command / Calendar)。Command 只封装 cmdk 的搜索与键盘行为,外观直接读取 Radix Theme token；浮层由调用方使用 Themes `Popover` 或 `Dialog`。Calendar 只保留 `react-day-picker` 的日期行为,月份导航使用 Themes `IconButton`,日期使用 Themes `Button`,外观读取 Theme token;`locale` 为 undefined 时不显式传给 `DayButton`,以兼容 `exactOptionalPropertyTypes`。Button、Input、Label、Badge、Card、Skeleton、Table、Dialog 与 Popover wrapper 已删除。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
 - `src/lib/utils.ts` — shadcn 的 `cn()`,clsx 加 tailwind-merge。
 - `src/styles.css` — Radix Theme token 到产品语义 token 与迁移期 Tailwind token 的映射,以及浏览器原生面的接管,没有组件类。三层底色(`--app-chrome` 外壳 / `--app-bg` 内容 / `--app-panel` 面板)、六档字号阶梯(xs 11 / sm 13 / base 14 / lg 16 / xl 19 / 3xl 28,body 就是 sm),以及选区、光标、滚动条与表格数字的默认样式。
 
@@ -70,6 +70,8 @@
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
 
 ## 变更日志
+
+- 2026-08-24: 模型服务页完成浮层与导航迁移。重新验证组合框保留 cmdk 搜索和手填,浮层改用 Themes `Popover`;详情稳定地址改用 Themes `TabNav`,发现差异与组合引用改用 Collapsible；旧 Popover wrapper 删除,关闭浮层与弹窗不改当前 provider 和 Tab。
 
 - 2026-08-24: 处置率页完成 Radix 页面级迁移。日期范围改用受控 Themes `Popover`,双月区间仍由 Calendar 处理；移动端模型矩阵改用 Collapsible,桌面 Themes `Table`、统计口径与窄屏布局保持不变。
 

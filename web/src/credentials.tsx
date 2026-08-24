@@ -5,7 +5,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useBlocker, useLocation, useNavigate } from "@tanstack/react-router";
 import { CheckIcon, ChevronDownIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, MagnifyingGlassIcon, MinusCircledIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
-import { AlertDialog, Badge, Card, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
+import { AlertDialog, Badge, Card, Checkbox, Dialog, Flex, IconButton, Popover, Select, Skeleton, TabNav, Text, TextField } from "@radix-ui/themes";
+import { Collapsible } from "radix-ui";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -17,7 +18,6 @@ import {
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
 import { api, errorText, fetchJson } from "./api.ts";
@@ -1216,8 +1216,8 @@ function CredentialControls({
               reverify.reset();
             }}
           />
-          <Popover open={modelPickerOpen} onOpenChange={setModelPickerOpen}>
-            <PopoverTrigger asChild>
+          <Popover.Root open={modelPickerOpen} onOpenChange={setModelPickerOpen}>
+            <Popover.Trigger>
               <IconButton
                 type="button"
                 variant="outline"
@@ -1229,10 +1229,14 @@ function CredentialControls({
               >
                 <ChevronDownIcon />
               </IconButton>
-            </PopoverTrigger>
-            <PopoverContent
+            </Popover.Trigger>
+            <Popover.Content
               align="start"
-              className="w-[min(32rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] gap-0 p-0"
+              size="1"
+              width="min(32rem, calc(100vw - var(--space-4)))"
+              maxWidth="calc(100vw - var(--space-4))"
+              maxHeight="calc(100vh - var(--space-4))"
+              className="overflow-hidden"
             >
               <Command>
                 <CommandInput placeholder="搜索自动发现的模型" />
@@ -1266,8 +1270,8 @@ function CredentialControls({
                   ))}
                 </CommandList>
               </Command>
-            </PopoverContent>
-          </Popover>
+            </Popover.Content>
+          </Popover.Root>
         </div>
         <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={reverify.isPending || validationModel.trim() === ""}>
           {reverify.isPending ? "正在验证…" : "重新验证"}
@@ -2111,22 +2115,27 @@ function ModelsTable({
 function ModelDiscoveryDifference({ model }: { model: ModelServiceModel }) {
   if (!discoveryDiffersFromRuntime(model)) return null;
   return (
-    <details className="mt-2 text-xs">
-      <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
-        发现值与运行规格不同
-      </summary>
-      <div className="mt-2 space-y-1 border-l pl-3 text-muted-foreground">
-        <p className="break-words">
-          输入：{model.discovery.input === null ? <span className="text-warning">未提供</span> : model.discovery.input.join(" / ")}
-          {" · "}推理：{model.discovery.reasoning === null ? <span className="text-warning">未提供</span> : model.discovery.reasoning ? "声明推理" : "不声明推理"}
-        </p>
-        <p>
-          上下文：{model.discovery.contextWindow === null ? <span className="text-warning">未提供</span> : <span className="font-mono tabular-nums">{quantity(model.discovery.contextWindow)}</span>}
-          {" · "}最大输出：{model.discovery.maxOutput === null ? <span className="text-warning">未提供</span> : <span className="font-mono tabular-nums">{quantity(model.discovery.maxOutput)}</span>}
-        </p>
-        <p><CostValue cost={model.discovery.cost} /></p>
-      </div>
-    </details>
+    <Collapsible.Root className="group/discovery mt-2 text-xs">
+      <Collapsible.Trigger asChild>
+        <Button type="button" variant="ghost" color="gray" size={{ initial: "3", sm: "1" }}>
+          <ChevronDownIcon className="transition-transform group-data-[state=open]/discovery:rotate-180" aria-hidden />
+          发现值与运行规格不同
+        </Button>
+      </Collapsible.Trigger>
+      <Collapsible.Content>
+        <div className="mt-2 space-y-1 border-l pl-3 text-muted-foreground">
+          <p className="break-words">
+            输入：{model.discovery.input === null ? <span className="text-warning">未提供</span> : model.discovery.input.join(" / ")}
+            {" · "}推理：{model.discovery.reasoning === null ? <span className="text-warning">未提供</span> : model.discovery.reasoning ? "声明推理" : "不声明推理"}
+          </p>
+          <p>
+            上下文：{model.discovery.contextWindow === null ? <span className="text-warning">未提供</span> : <span className="font-mono tabular-nums">{quantity(model.discovery.contextWindow)}</span>}
+            {" · "}最大输出：{model.discovery.maxOutput === null ? <span className="text-warning">未提供</span> : <span className="font-mono tabular-nums">{quantity(model.discovery.maxOutput)}</span>}
+          </p>
+          <p><CostValue cost={model.discovery.cost} /></p>
+        </div>
+      </Collapsible.Content>
+    </Collapsible.Root>
   );
 }
 
@@ -2250,27 +2259,34 @@ function ReferenceOverview({ references }: { references: readonly ModelReference
       {references.length === 0 ? (
         <p className="mt-3 text-sm text-muted-foreground">全局模型组合与仓库覆盖都没有引用这家服务。</p>
       ) : (
-        <details className="mt-3 rounded-sm border bg-background px-3 py-2">
-          <summary className="cursor-pointer font-medium">展开具体位置</summary>
-          <ul className="mt-3 divide-y rounded-sm border">
-            {references.map((reference) => (
-              <li key={reference.identity} className="px-3 py-2">
-                <p className="break-all font-mono text-xs font-medium">{reference.identity}</p>
-                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
-                  {reference.locations.map((location, index) => (
-                    <li key={`${reference.identity}:${index}`}>
-                      {location.kind === "global"
-                        ? "全局模型组合"
-                        : location.kind === "following-global"
-                          ? `${location.repositoryCount} 个跟随全局的仓库`
-                          : `仓库覆盖 ${location.owner}/${location.repo}`}
-                    </li>
-                  ))}
-                </ul>
-              </li>
-            ))}
-          </ul>
-        </details>
+        <Collapsible.Root className="group/references mt-3">
+          <Collapsible.Trigger asChild>
+            <Button type="button" variant="outline" color="gray" size={{ initial: "3", sm: "1" }}>
+              <ChevronDownIcon className="transition-transform group-data-[state=open]/references:rotate-180" aria-hidden />
+              展开具体位置
+            </Button>
+          </Collapsible.Trigger>
+          <Collapsible.Content>
+            <ul className="mt-3 divide-y rounded-sm border">
+              {references.map((reference) => (
+                <li key={reference.identity} className="px-3 py-2">
+                  <p className="break-all font-mono text-xs font-medium">{reference.identity}</p>
+                  <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
+                    {reference.locations.map((location, index) => (
+                      <li key={`${reference.identity}:${index}`}>
+                        {location.kind === "global"
+                          ? "全局模型组合"
+                          : location.kind === "following-global"
+                            ? `${location.repositoryCount} 个跟随全局的仓库`
+                            : `仓库覆盖 ${location.owner}/${location.repo}`}
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ul>
+          </Collapsible.Content>
+        </Collapsible.Root>
       )}
     </section>
   );
@@ -2306,7 +2322,7 @@ function ServiceDetail({
         </div>
       </section>
 
-      <nav className="flex gap-1 border-b" aria-label="模型服务详情">
+      <TabNav.Root size="2" aria-label="模型服务详情">
         {(["overview", "maintenance", "models"] as const).map((candidate) => {
           if (candidate === "models" && !canReadModels && !canWriteModels) return null;
           const label = candidate === "overview" ? "概览" : candidate === "maintenance" ? "维护" : "模型";
@@ -2316,22 +2332,20 @@ function ServiceDetail({
               ? "/credentials/$provider/maintenance"
               : "/credentials/$provider/models";
           return (
-            <Link
-              key={candidate}
-              to={to}
-              params={{ provider: service.provider }}
-              activeOptions={{ exact: true }}
-              aria-current={tab === candidate ? "page" : undefined}
-              className={cn(
-                "flex min-h-11 items-center border-b-2 border-transparent px-3 py-2 font-medium text-muted-foreground sm:min-h-0",
-                tab === candidate && "border-foreground text-foreground",
-              )}
-            >
-              {label}
-            </Link>
+            <TabNav.Link key={candidate} asChild active={tab === candidate}>
+              <Link
+                to={to}
+                params={{ provider: service.provider }}
+                activeOptions={{ exact: true }}
+                aria-current={tab === candidate ? "page" : undefined}
+                className="min-h-11 sm:min-h-0"
+              >
+                {label}
+              </Link>
+            </TabNav.Link>
           );
         })}
-      </nav>
+      </TabNav.Root>
 
       {tab === "overview" ? <>
         <RunCapabilityCard
