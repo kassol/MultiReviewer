@@ -71,6 +71,8 @@
 
 ## 变更日志
 
+- 2026-08-24: 清理 Radix 迁移后的零引用依赖：移除 `class-variance-authority` 与 `tw-animate-css`，删除已无调用方的动画导入和暗色变体守卫；保留 `cmdk`、`react-day-picker` 与 `radix-ui` 的专用行为层。
+
 - 2026-08-24: 模型服务页完成浮层与导航迁移。重新验证组合框保留 cmdk 搜索和手填,浮层改用 Themes `Popover`;详情稳定地址改用 Themes `TabNav`,发现差异与组合引用改用 Collapsible；旧 Popover wrapper 删除,关闭浮层与弹窗不改当前 provider 和 Tab。
 
 - 2026-08-24: 处置率页完成 Radix 页面级迁移。日期范围改用受控 Themes `Popover`,双月区间仍由 Calendar 处理；移动端模型矩阵改用 Collapsible,桌面 Themes `Table`、统计口径与窄屏布局保持不变。

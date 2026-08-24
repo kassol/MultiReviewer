@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-24: 管理面板清理 Radix 迁移后的零引用依赖。移除 `class-variance-authority` 与 `tw-animate-css`，同时删除已无调用方的动画导入和暗色变体守卫；`cmdk`、`react-day-picker` 与 `radix-ui` 继续承担搜索组合框、日期区间和 Primitive 行为。
+
 - 2026-08-24: 管理面板完成模型服务页浮层与导航迁移。重新验证组合框使用 Themes `Popover` 承载 cmdk 搜索和手填；服务详情使用 Themes `TabNav`,发现差异与组合引用使用 Collapsible；稳定路由、当前 provider、当前 Tab 与业务状态保持不变。
 
 - 2026-08-24: 管理面板完成访问控制表格迁移。用户列表与权限矩阵直接使用 Radix Themes `Table`,保留行内角色选择、权限复选、管理动作、表头关联、粘性首列和容器内横向滚动。

@@ -1,13 +1,4 @@
 @import "tailwindcss";
-/* shadcn 组件的进出场动画 utility(data-[state=open]:animate-in 等)。 */
-@import "tw-animate-css";
-
-/*
- * 面板只做亮色一套,但 shadcn 生成的组件自带 `dark:` 类,而 Tailwind v4 的 `dark:`
- * 默认跟随系统配色——不接管的话,系统切暗色会让面板花掉。这里把 `dark:` 改挂到一个
- * 谁都不会写的祖先类上,等于关掉它,同时不必去改 vendored 的组件源码。
- */
-@custom-variant dark (&:is(.dark *));
 
 /*
  * 品类标准件的设计令牌,手艺对标 GitHub / Linear / Vercel。只做亮色一套
