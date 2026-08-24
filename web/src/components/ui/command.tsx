@@ -28,7 +28,7 @@ function CommandInput({
   return (
     <div
       data-slot="command-input-wrapper"
-      className="flex h-9 items-center gap-2 border-b border-[var(--gray-6)] px-3"
+      className="flex h-9 items-center gap-2 border-b border-[var(--gray-6)] px-3 transition-colors focus-within:border-primary"
     >
       <MagnifyingGlassIcon className="size-4 shrink-0 text-[var(--gray-10)]" aria-hidden />
       <CommandPrimitive.Input

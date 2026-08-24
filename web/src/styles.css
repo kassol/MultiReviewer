@@ -438,6 +438,15 @@
   outline-offset: 0;
 }
 
+/*
+ * 输入框的左右留白。Radix 给的是 5px(`--space-1` × 1.5 减去边框),文字几乎贴着
+ * 边框线,光标压在描边上;设计稿的输入框是 12px。带 Slot 的输入框(左侧放搜索图标
+ * 那种)自己会把这一侧的缩进让给图标,不受影响。
+ */
+.radix-themes :where(.rt-TextFieldRoot, .rt-TextAreaRoot) {
+  --text-field-padding: 11px;
+}
+
 @layer base {
   html,
   body,
