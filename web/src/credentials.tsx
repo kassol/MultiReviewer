@@ -212,7 +212,7 @@ function quantity(value: number): string {
 function ServiceStatus({ service }: { service: ModelService }) {
   const detail =
     service.runCapability.runnable
-      ? { label: "可以运行", icon: Check, className: "bg-success/10 text-success" }
+      ? { label: "正常", icon: Check, className: "bg-success/10 text-success" }
       : service.providerState === "name-conflict"
       ? { label: "已停用", icon: CircleX, className: "bg-destructive/10 text-destructive" }
       : { label: "暂时不能运行", icon: CircleX, className: "bg-destructive/10 text-destructive" };
@@ -275,6 +275,11 @@ export function ModelServiceSetupLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const allowExit = useRef(false);
+  const returnProvider =
+    typeof location.search === "object" && location.search !== null &&
+    "returnProvider" in location.search && typeof location.search.returnProvider === "string"
+      ? location.search.returnProvider
+      : undefined;
   const dirty = candidate !== null && (
     candidate.credential !== "" ||
     candidate.preview !== null ||
@@ -309,7 +314,9 @@ export function ModelServiceSetupLayout() {
       return;
     }
     allowExit.current = true;
-    void navigate({ to: "/credentials" }).finally(() => {
+    void (returnProvider === undefined
+      ? navigate({ to: "/credentials" })
+      : navigate({ to: "/credentials/$provider", params: { provider: returnProvider } })).finally(() => {
       allowExit.current = false;
     });
   };
@@ -317,7 +324,9 @@ export function ModelServiceSetupLayout() {
     allowExit.current = true;
     setCandidate(null);
     setCloseRequested(false);
-    void navigate({ to: "/credentials" }).finally(() => {
+    void (returnProvider === undefined
+      ? navigate({ to: "/credentials" })
+      : navigate({ to: "/credentials/$provider", params: { provider: returnProvider } })).finally(() => {
       allowExit.current = false;
     });
   };
@@ -1428,6 +1437,7 @@ function CustomServiceControls({ service }: { service: ModelService }) {
               <Link
                 to="/credentials/add/custom/$provider/discover"
                 params={{ provider: service.provider }}
+                search={{ returnProvider: service.provider }}
               >
                 修改配置
               </Link>
@@ -2032,11 +2042,7 @@ function ModelRuntimeFacts({ model }: { model: ModelServiceModel }) {
 }
 
 function ModelAvailability({ model }: { model: ModelServiceModel }) {
-  return model.available ? (
-    <Badge variant="secondary" className="shrink-0 whitespace-nowrap border-0 bg-success/10 text-success">
-      <Check data-icon="inline-start" />可用
-    </Badge>
-  ) : model.unavailableReason === "model-disabled" ? (
+  return model.available ? null : model.unavailableReason === "model-disabled" ? (
     <div className="space-y-1">
       <Badge variant="outline" className="shrink-0 whitespace-nowrap text-muted-foreground">已停用</Badge>
       <p className="max-w-64 break-words text-xs text-muted-foreground">不会出现在审查策略的模型选择中</p>
@@ -2067,6 +2073,7 @@ function RunCapabilityCard({
   canWriteCustom: boolean;
 }) {
   const capability = service.runCapability;
+  if (capability.runnable) return null;
   const canAct =
     (capability.nextAction === "configure-credential" && canWriteCredential) ||
     (capability.nextAction === "add-model-source" && canWriteModels) ||
@@ -2098,12 +2105,10 @@ function RunCapabilityCard({
           : <CircleX className="mt-0.5 size-4 shrink-0 text-destructive" />}
         <div>
           <h3 id={`run-capability-${service.provider}`} className="font-medium">
-            {capability.runnable ? "模型服务可以运行" : "模型服务暂时不能运行"}
+            {service.providerState === "name-conflict" ? "服务已停用" : "服务需要处理"}
           </h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            {capability.runnable
-              ? "至少一个当前模型具备已验证凭据并可以运行。"
-              : capability.reasonText ?? "当前没有可运行模型。"}
+            {capability.reasonText ?? "当前没有可运行模型。"}
           </p>
           {!canAct || nextStep === null ? null : (
             <p className="mt-2 text-xs font-medium">下一步：{nextStep}</p>
@@ -2263,6 +2268,7 @@ function ServiceDetail({
             <Link
               to="/credentials/add/builtin/$provider/discover"
               params={{ provider: service.provider }}
+              search={{ returnProvider: service.provider }}
             >
               {service.credential.state === "unconfigured" ? "配置凭据" : "换凭据"}
             </Link>

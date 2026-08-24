@@ -223,7 +223,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                       className={cn(
                         "flex w-full flex-col items-start gap-0.5 border-b border-border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                         group.provider === selected?.provider
-                          ? "bg-background"
+                          ? "bg-primary/10 text-foreground ring-1 ring-inset ring-primary/30"
                           : "hover:bg-background/60",
                       )}
                       onClick={() => setPickedProvider(group.provider)}
@@ -391,7 +391,7 @@ function ProviderPane({
               key={model.identity}
               className={cn(
                 "flex min-w-0 items-start gap-2 border-b border-border px-3 py-2 transition-colors",
-                model.available && picked ? "bg-muted" : null,
+                model.available && picked ? "bg-primary/10 ring-1 ring-inset ring-primary/30" : null,
                 model.available && !picked ? "hover:bg-muted/60" : null,
                 !model.available ? "bg-destructive/5" : null,
               )}
@@ -406,7 +406,7 @@ function ProviderPane({
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="break-words font-medium">
                     {model.discovery.name ?? model.id}
-                    {picked ? <span className="ml-2 text-xs text-muted-foreground">已选</span> : null}
+                    {picked ? <span className="ml-2 inline-flex rounded-sm bg-primary/15 px-1.5 py-0.5 text-xs font-medium text-primary">已选</span> : null}
                   </span>
                   <span className="break-all font-mono text-xs text-muted-foreground">{model.id}</span>
                   <span className="flex flex-wrap gap-1">
