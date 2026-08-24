@@ -172,7 +172,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
         {value.length === 0 ? (
           <EmptyState
             title="还没选模型"
-            description="先从下方选择服务，再加入可用模型。"
+            description="先选择服务，再加入可用模型。"
             className="rounded-sm bg-muted px-3 py-3"
           />
         ) : (
@@ -287,7 +287,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
               ) : query.isError ? (
                 <>
                   <p className="font-medium text-danger">可选模型暂不可用</p>
-                  <p className="text-muted-foreground">修复下方读取错误并重试后，才能继续选择或保存。</p>
+                  <p className="text-muted-foreground">重试后才能继续选择或保存。</p>
                 </>
               ) : (
                 <EmptyState

@@ -755,7 +755,7 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
       <SetupBody aria-busy={providers.isPending}>
         <div className="flex flex-col gap-0.5">
           <h2 className="text-2xl font-bold tracking-[-0.015em]">选择模型服务来源</h2>
-          <p className="text-text-secondary">搜索预置的 provider；要用自己的调用地址就选下方的自定义。</p>
+          <p className="text-text-secondary">搜索预置的 provider，或使用自定义调用地址。</p>
         </div>
         <TextField.Root
           size={{ initial: "3", sm: "2" }}
@@ -2930,9 +2930,7 @@ function ServiceDetail({
       ) : null}
 
       {tab === "maintenance" && !canWriteCredential && !canWriteModels && !canWriteCustom ? (
-        <NoticeBar tone="neutral" icon={InfoCircledIcon} title="暂无修改权限">
-          当前账号没有修改模型服务的权限。
-        </NoticeBar>
+        <NoticeBar tone="neutral" icon={InfoCircledIcon} title="暂无修改权限" />
       ) : null}
 
       {tab === "models" && canWriteModels ? (
@@ -3027,7 +3025,7 @@ export function ModelServicesPage({
           <h2 className="text-2xl font-bold tracking-[-0.015em]">模型服务信息不可见</h2>
           <p className="text-text-secondary">
             {canWriteCredential
-              ? "当前会话可写模型凭据，但不能读取现有服务、目录和凭据审计字段。可从页头添加模型服务继续配置。"
+              ? "当前会话可写模型凭据，但不能读取现有服务、目录和凭据审计字段。"
               : "当前会话没有模型或凭据读取权限。页头搜索只显示按权限裁剪后的内置 provider 信息。"}
           </p>
         </CardShell>
@@ -3058,12 +3056,11 @@ export function ModelServicesPage({
             title="还没有模型服务"
             titleAs="h2"
             className="py-0"
-            description={(
-              <>
-              这里只列已配置或保留异常状态的服务。
-              {canWriteCredential ? "从页头的添加模型服务进入统一配置流程。" : "当前权限只能查看可见状态。"}
-              </>
-            )}
+            description={
+              canWriteCredential
+                ? "这里只列已配置或保留异常状态的服务。"
+                : "这里只列已配置或保留异常状态的服务。当前权限只能查看可见状态。"
+            }
           />
         </CardShell>
       ) : (

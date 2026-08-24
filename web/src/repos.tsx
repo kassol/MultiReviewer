@@ -290,7 +290,7 @@ export function ReposPage({
             <EmptyState
               title="暂无已注册仓库"
               titleAs="h2"
-              description={canWrite ? "选择左侧“注册仓库”，搜索并选择要接入的代码仓库。" : "当前没有已注册仓库。"}
+              description={canWrite ? "注册一个仓库后，向它推 pull request 就会开始审查。" : "当前没有已注册仓库。"}
               className="rounded-lg border border-card-line bg-surface px-5 py-4 shadow-card"
             />
           ) : null}
@@ -606,15 +606,14 @@ function RepoDetail({
                   ))}
                 </div>
               )}
-              <p className="text-base text-text-muted">
-                {following && canWrite
-                  ? "审查策略更新后，这个仓库会同步使用新组合。"
-                  : following
-                    ? "这个仓库使用全局模型组合。"
-                    : canWrite
-                      ? "这组模型仅对这个仓库生效，不随审查策略变化。"
-                      : "这组模型仅对这个仓库生效。"}
-              </p>
+              {/* 只读态不写这行:上面的 Kv 标签已经说了跟随全局还是本仓库覆盖。 */}
+              {canWrite ? (
+                <p className="text-base text-text-muted">
+                  {following
+                    ? "审查策略更新后，这个仓库会同步使用新组合。"
+                    : "这组模型仅对这个仓库生效，不随审查策略变化。"}
+                </p>
+              ) : null}
             </div>
           </CardShell>
         )}
