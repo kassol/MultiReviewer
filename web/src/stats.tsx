@@ -8,17 +8,8 @@ import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/theme-button";
 import { Calendar } from "@/components/ui/calendar";
-import { Card, Skeleton } from "@radix-ui/themes";
+import { Card, Skeleton, Table } from "@radix-ui/themes";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import {
-  Table,
-  TableBody,
-  TableCaption,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 
 import { api, fetchJson } from "./api.ts";
 import { costPresentation, type UsageSummary } from "./usage-cost.ts";
@@ -354,59 +345,58 @@ export function StatsPage() {
             </div>
             <Card size="1" className="hidden min-w-0 max-w-full overflow-hidden lg:block">
               <div className="-m-3">
-                <Table>
-                  <TableCaption className="sr-only">
+                <Table.Root size="2">
+                  <caption className="sr-only">
                     逐模型、逐类别的处置率,单元格内容为「已处置/分母(百分比)」。
-                  </TableCaption>
-                  <TableHeader className="bg-muted text-xs text-muted-foreground">
-                    <TableRow>
-                      <TableHead scope="col" className="sticky left-0 z-20 bg-muted">
+                  </caption>
+                  <Table.Header className="bg-muted text-xs text-muted-foreground">
+                    <Table.Row>
+                      <Table.ColumnHeaderCell className="sticky left-0 z-20 bg-muted">
                         模型
-                      </TableHead>
+                      </Table.ColumnHeaderCell>
                       {categories.map((category) => (
-                        <TableHead scope="col" key={category}>
+                        <Table.ColumnHeaderCell key={category}>
                           {category}
-                        </TableHead>
+                        </Table.ColumnHeaderCell>
                       ))}
-                      <TableHead scope="col" className="bg-muted/80">
+                      <Table.ColumnHeaderCell className="bg-muted/80">
                         合计
-                      </TableHead>
-                    </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {models.map((model) => {
-                    const total = modelTotal(model);
-                    return (
-                      <TableRow key={model} className="group">
-                        {/* 行首是这一行的表头:屏幕阅读器念单元格时会带上模型名。 */}
-                        <TableHead
-                          scope="row"
-                          className="sticky left-0 z-10 bg-card font-mono whitespace-nowrap group-hover:bg-muted"
-                        >
-                          {model}
-                        </TableHead>
-                        {categories.map((category) => {
-                          const cell = byKey.get(`${model}\n${category}`);
-                          return (
-                            <TableCell key={category} className="min-w-32">
-                              {cell === undefined ? (
-                                <span className="font-mono text-xs tabular-nums text-muted-foreground">
-                                  —
-                                </span>
-                              ) : (
-                                <Rate resolved={cell.resolved} total={denominator(cell)} />
-                              )}
-                            </TableCell>
-                          );
-                        })}
-                        <TableCell className="min-w-32 bg-muted/30">
-                          <Rate resolved={total.resolved} total={total.total} />
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-                </Table>
+                      </Table.ColumnHeaderCell>
+                    </Table.Row>
+                  </Table.Header>
+                  <Table.Body>
+                    {models.map((model) => {
+                      const total = modelTotal(model);
+                      return (
+                        <Table.Row key={model} className="group">
+                          {/* 行首是这一行的表头:屏幕阅读器念单元格时会带上模型名。 */}
+                          <Table.RowHeaderCell
+                            className="sticky left-0 z-10 bg-card font-mono whitespace-nowrap group-hover:bg-muted"
+                          >
+                            {model}
+                          </Table.RowHeaderCell>
+                          {categories.map((category) => {
+                            const cell = byKey.get(`${model}\n${category}`);
+                            return (
+                              <Table.Cell key={category} className="min-w-32">
+                                {cell === undefined ? (
+                                  <span className="font-mono text-xs tabular-nums text-muted-foreground">
+                                    —
+                                  </span>
+                                ) : (
+                                  <Rate resolved={cell.resolved} total={denominator(cell)} />
+                                )}
+                              </Table.Cell>
+                            );
+                          })}
+                          <Table.Cell className="min-w-32 bg-muted/30">
+                            <Rate resolved={total.resolved} total={total.total} />
+                          </Table.Cell>
+                        </Table.Row>
+                      );
+                    })}
+                  </Table.Body>
+                </Table.Root>
               </div>
             </Card>
           </section>
