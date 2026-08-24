@@ -26,6 +26,7 @@ import { Input } from "@/components/ui/input";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 import {
   ModelComposer,
   type ModelComposerValidity,
@@ -137,7 +138,7 @@ export function ReposPage({
                   aria-current={row.repoId === selected?.repoId ? "true" : undefined}
                   className={`block w-full rounded-sm border px-3 py-2.5 text-left transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${
                     row.repoId === selected?.repoId
-                      ? "border-border bg-background font-medium"
+                      ? "border-primary bg-primary font-medium text-primary-foreground"
                       : "border-transparent hover:bg-background/70"
                   }`}
                   onClick={() => setSelectedId(row.repoId)}
@@ -145,7 +146,12 @@ export function ReposPage({
                   <span className="block break-all font-mono">
                     {row.owner}/{row.repo}
                   </span>
-                  <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                  <span className={cn(
+                    "mt-0.5 block text-xs font-normal",
+                    row.repoId === selected?.repoId
+                      ? "text-primary-foreground/75"
+                      : "text-muted-foreground",
+                  )}>
                     <span className="tabular-nums">{row.runCount}</span> 轮
                     {row.lastActivity === null
                       ? " · 还没跑过"

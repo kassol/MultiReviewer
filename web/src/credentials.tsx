@@ -209,7 +209,7 @@ function quantity(value: number): string {
   return new Intl.NumberFormat("zh-CN").format(value);
 }
 
-function ServiceStatus({ service }: { service: ModelService }) {
+function ServiceStatus({ service, selected = false }: { service: ModelService; selected?: boolean }) {
   const detail =
     service.runCapability.runnable
       ? { label: "正常", icon: Check, className: "bg-success/10 text-success" }
@@ -218,7 +218,10 @@ function ServiceStatus({ service }: { service: ModelService }) {
       : { label: "需处理", icon: CircleX, className: "bg-destructive/10 text-destructive" };
   const Icon = detail.icon;
   return (
-    <Badge variant="secondary" className={cn("border-0", detail.className)}>
+    <Badge
+      variant="secondary"
+      className={cn("border-0", selected ? "bg-primary-foreground/15 text-primary-foreground" : detail.className)}
+    >
       <Icon data-icon="inline-start" />
       {detail.label}
     </Badge>
@@ -280,6 +283,22 @@ export function ModelServiceSetupLayout() {
     "returnProvider" in location.search && typeof location.search.returnProvider === "string"
       ? location.search.returnProvider
       : undefined;
+  const returnTab =
+    typeof location.search === "object" && location.search !== null &&
+    "returnTab" in location.search &&
+    (location.search.returnTab === "maintenance" || location.search.returnTab === "models")
+      ? location.search.returnTab
+      : "overview";
+  const navigateBack = (): Promise<unknown> => {
+    if (returnProvider === undefined) return navigate({ to: "/credentials" });
+    if (returnTab === "maintenance") {
+      return navigate({ to: "/credentials/$provider/maintenance", params: { provider: returnProvider } });
+    }
+    if (returnTab === "models") {
+      return navigate({ to: "/credentials/$provider/models", params: { provider: returnProvider } });
+    }
+    return navigate({ to: "/credentials/$provider", params: { provider: returnProvider } });
+  };
   const dirty = candidate !== null && (
     candidate.credential !== "" ||
     candidate.preview !== null ||
@@ -314,9 +333,7 @@ export function ModelServiceSetupLayout() {
       return;
     }
     allowExit.current = true;
-    void (returnProvider === undefined
-      ? navigate({ to: "/credentials" })
-      : navigate({ to: "/credentials/$provider", params: { provider: returnProvider } })).finally(() => {
+    void navigateBack().finally(() => {
       allowExit.current = false;
     });
   };
@@ -324,9 +341,7 @@ export function ModelServiceSetupLayout() {
     allowExit.current = true;
     setCandidate(null);
     setCloseRequested(false);
-    void (returnProvider === undefined
-      ? navigate({ to: "/credentials" })
-      : navigate({ to: "/credentials/$provider", params: { provider: returnProvider } })).finally(() => {
+    void navigateBack().finally(() => {
       allowExit.current = false;
     });
   };
@@ -1437,7 +1452,7 @@ function CustomServiceControls({ service }: { service: ModelService }) {
               <Link
                 to="/credentials/add/custom/$provider/discover"
                 params={{ provider: service.provider }}
-                search={{ returnProvider: service.provider }}
+                search={{ returnProvider: service.provider, returnTab: "maintenance" }}
               >
                 修改配置
               </Link>
@@ -2267,7 +2282,7 @@ function ServiceDetail({
             <Link
               to="/credentials/add/builtin/$provider/discover"
               params={{ provider: service.provider }}
-              search={{ returnProvider: service.provider }}
+              search={{ returnProvider: service.provider, returnTab: "maintenance" }}
             >
               {service.credential.state === "unconfigured" ? "配置凭据" : "换凭据"}
             </Link>
@@ -2431,15 +2446,16 @@ export function ModelServicesPage({
               </p>
             </div>
             <div className="max-h-80 divide-y overflow-y-auto xl:max-h-none">
-              {services.map((service) => (
-                <Link
+              {services.map((service) => {
+                const isSelected = service.provider === selected.provider;
+                return <Link
                   key={service.provider}
                   to="/credentials/$provider"
                   params={{ provider: service.provider }}
-                  aria-current={service.provider === selected.provider ? "page" : undefined}
+                  aria-current={isSelected ? "page" : undefined}
                   className={cn(
                     "block w-full px-3 py-3 text-left transition-colors hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-                    service.provider === selected.provider && "bg-background",
+                    isSelected && "bg-primary text-primary-foreground ring-1 ring-inset ring-primary",
                   )}
                 >
                   <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
@@ -2449,27 +2465,40 @@ export function ModelServicesPage({
                     >
                       {service.name}
                     </span>
-                    <ServiceStatus service={service} />
+                    <ServiceStatus service={service} selected={isSelected} />
                   </div>
                   {service.name === service.provider ? null : (
-                    <p className="mt-0.5 break-all font-mono text-xs text-muted-foreground">{service.provider}</p>
+                    <p className={cn(
+                      "mt-0.5 break-all font-mono text-xs",
+                      isSelected ? "text-primary-foreground/75" : "text-muted-foreground",
+                    )}>{service.provider}</p>
                   )}
                   {service.models === undefined || service.directory === undefined ? (
-                    <p className="mt-1 text-xs text-muted-foreground">模型数量与发现时间按权限隐藏</p>
+                    <p className={cn(
+                      "mt-1 text-xs",
+                      isSelected ? "text-primary-foreground/75" : "text-muted-foreground",
+                    )}>模型数量与发现时间按权限隐藏</p>
                   ) : (
-                    <div className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-end gap-3 text-xs text-muted-foreground">
+                    <div className={cn(
+                      "mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-end gap-3 text-xs",
+                      isSelected ? "text-primary-foreground/75" : "text-muted-foreground",
+                    )}>
                       <span>
-                        <span className="block text-muted-foreground">模型</span>
-                        <span className="font-mono tabular-nums text-foreground">{service.models.length}</span> 个
+                        <span className={cn("block", isSelected ? "text-primary-foreground/75" : "text-muted-foreground")}>模型</span>
+                        <span className={cn("font-mono tabular-nums", isSelected ? "text-primary-foreground" : "text-foreground")}>{service.models.length}</span> 个
                       </span>
                       <span className="min-w-0 text-right">
                         <span className="block">最近成功</span>
-                        <span className={cn("break-words text-foreground", service.directory.lastSuccessAt === null ? undefined : "font-mono tabular-nums")}>{localMinute(service.directory.lastSuccessAt)}</span>
+                        <span className={cn(
+                          "break-words",
+                          isSelected ? "text-primary-foreground" : "text-foreground",
+                          service.directory.lastSuccessAt === null ? undefined : "font-mono tabular-nums",
+                        )}>{localMinute(service.directory.lastSuccessAt)}</span>
                       </span>
                     </div>
                   )}
-                </Link>
-              ))}
+                </Link>;
+              })}
             </div>
           </Card>
           <ServiceDetail
