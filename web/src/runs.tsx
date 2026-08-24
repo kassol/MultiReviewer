@@ -240,6 +240,7 @@ function RunDetailPanel({
   rerunning,
   pullUrl,
   onRerun,
+  onOpenOther,
   onClose,
 }: {
   run: RunItem;
@@ -248,6 +249,8 @@ function RunDetailPanel({
   /** pull request 地址;没有配 Forge 基址时是 null,那一格不渲染。 */
   pullUrl: string | null;
   onRerun: () => void;
+  /** 点到列表里另一轮时换成它,而不是先关面板。 */
+  onOpenOther: (id: number) => void;
   onClose: () => void;
 }) {
   const cost = costPresentation(run.usage);
@@ -256,6 +259,18 @@ function RunDetailPanel({
     <Dialog.Root open onOpenChange={(next) => { if (!next) onClose(); }}>
       <Dialog.Content
         aria-describedby={undefined}
+        /*
+         * 这是主从列表的详情面板。看完一轮接着看下一轮是这一页最常做的事,而模态
+         * 对话框把「点下一行」变成「先关掉、再点一次」。点到列表行时改成换那一轮,
+         * 点别处仍然照常关闭。
+         */
+        onPointerDownOutside={(event) => {
+          const row = (event.target as HTMLElement | null)?.closest?.("[data-run-id]");
+          const id = Number((row as HTMLElement | null)?.dataset.runId);
+          if (!Number.isSafeInteger(id) || id <= 0) return;
+          event.preventDefault();
+          onOpenOther(id);
+        }}
         // 四边定位只写 top/right/bottom/left 四个长写法,不混 inset-*:同一属性上「基础值 +
         // 断点值」的覆盖顺序才是确定的,混了简写会让断点值排在基础值前面而失效。
         className="!fixed !top-auto !right-0 !bottom-0 !left-0 !m-0 !flex !h-[86dvh] !w-full !max-w-none !flex-col !overflow-hidden !rounded-3xl !rounded-b-none !border-0 !bg-[color:var(--v8-drawer-bg)] !p-0 !shadow-overlay backdrop-blur-[40px] md:!top-3.5 md:!right-3.5 md:!bottom-3.5 md:!left-auto md:!h-auto md:!w-[464px] md:!max-w-[calc(100vw-28px)] md:!rounded-b-3xl"
@@ -571,6 +586,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
                       selected={run.id === openedRunId}
                       onClick={() => setOpenedRunId(run.id)}
                       aria-haspopup="dialog"
+                      data-run-id={run.id}
                       className="group flex items-center gap-3 border-t border-line px-5 py-3"
                     >
                       <RunStatus run={run} />
@@ -655,6 +671,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
           canRerun={canRerun}
           rerunning={rerun.isPending}
           pullUrl={session.data === undefined || session.data === null ? null : pullRequestUrl(session.data, openedRun)}
+          onOpenOther={setOpenedRunId}
           onRerun={() => {
             rerun.mutate(openedRun);
             // 结果落在页面顶部的 Callout 上,面板压着它人就看不见,所以触发即收面板。
