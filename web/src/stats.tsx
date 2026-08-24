@@ -350,7 +350,7 @@ export function StatsPage() {
               <div className="-m-3">
                 <Table.Root size="2">
                   <caption className="sr-only">
-                    逐模型、逐类别的处置率,单元格内容为「已处置/分母(百分比)」,末尾一行是全部模型的合计。
+                    逐模型、逐类别的处置率。单元格内容为「已处置 / 可处置（处置率）」，末尾一行是全部模型的合计。
                   </caption>
                   <Table.Header className="bg-sunken text-sm font-bold text-text-muted">
                     <Table.Row>
