@@ -69,6 +69,9 @@ const HEALTH: Record<ModelServiceHealth, { label: string; dot: string }> = {
 
 /** 与评审记录页 `runBucket` 同一判据:整轮失败 → 模型失败 → 待处置 → 完成。 */
 function runStatus(run: RunItem): { tone: StatusTone; label: string } {
+  // 还没结束的一轮没有结论可言:不写在最前面的话,它会因为「一条可处置项都还没有」
+  // 而被判成「无可处置项」,看上去像跑完了。
+  if (run.finishedAt === null && !run.failed) return { tone: "running", label: "运行中" };
   if (run.failed) return { tone: "error", label: "运行失败" };
   if (run.models.some((entry) => entry.failure !== null)) return { tone: "warning", label: "部分失败" };
   if (run.total === 0) return { tone: "neutral", label: "无可处置项" };
@@ -226,6 +229,16 @@ export function OverviewPage() {
     queryFn: ({ pageParam }) =>
       fetchJson<RunsPageResponse>(pageParam === null ? "/runs" : `/runs?before=${pageParam}`),
     getNextPageParam: (last) => last.nextBefore,
+    /*
+     * 审查是异步的:推一个 pull request 之后要跑上几分钟。有轮次还没跑完时自动续查,
+     * 跑完就停——否则人只能盯着页面反复点刷新,而这恰恰是最想看结果的那几分钟。
+     */
+    refetchInterval: (query) =>
+      (query.state.data?.pages ?? []).some((page) =>
+        page.runs.some((item) => item.finishedAt === null),
+      )
+        ? 10_000
+        : false,
   });
   const current = useDispositionWindow(windows.current);
   const previous = useDispositionWindow(windows.previous);

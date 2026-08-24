@@ -3,11 +3,12 @@ import {
   CrossCircledIcon,
   ExclamationTriangleIcon,
   InfoCircledIcon,
+  StopwatchIcon,
 } from "@radix-ui/react-icons";
 import { Badge, type BadgeProps } from "@radix-ui/themes";
 import type { ComponentType, ReactNode } from "react";
 
-export type StatusTone = "neutral" | "success" | "warning" | "error";
+export type StatusTone = "neutral" | "running" | "success" | "warning" | "error";
 
 type StatusBadgeProps = Omit<BadgeProps, "className" | "color" | "highContrast" | "variant" | "radius"> & {
   tone: StatusTone;
@@ -17,6 +18,8 @@ type StatusBadgeProps = Omit<BadgeProps, "className" | "color" | "highContrast" 
 
 const STATUS_COLOR = {
   neutral: "gray",
+  // 进行中走主色:它不是好也不是坏,是「还没有结论」,与三档语义色分开。
+  running: "blue",
   success: "green",
   warning: "amber",
   error: "red",
@@ -24,6 +27,7 @@ const STATUS_COLOR = {
 
 const STATUS_ICON = {
   neutral: InfoCircledIcon,
+  running: StopwatchIcon,
   success: CheckCircledIcon,
   warning: ExclamationTriangleIcon,
   error: CrossCircledIcon,

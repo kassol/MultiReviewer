@@ -73,6 +73,10 @@ export async function rerunRequest(run: {
  * 处置进度得留着。失败只加一颗红点提示「这一轮的结论不完整」,原因看卡片上的模型行。
  */
 export function RunPill({ run }: { run: RunItem }) {
+  // 同 overview 的 runStatus:未结束的一轮先于其它判断,否则会显示成「无可处置项」。
+  if (run.finishedAt === null && !run.failed) {
+    return <StatusBadge tone="running">运行中</StatusBadge>;
+  }
   if (run.failed) {
     return (
       <StatusBadge tone="error">
@@ -416,6 +420,16 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
     queryFn: ({ pageParam }) =>
       fetchJson<RunsPage>(pageParam === null ? "/runs" : `/runs?before=${pageParam}`),
     getNextPageParam: (last) => last.nextBefore,
+    /*
+     * 审查是异步的:推一个 pull request 之后要跑上几分钟。有轮次还没跑完时自动续查,
+     * 跑完就停——否则人只能盯着页面反复点刷新,而这恰恰是最想看结果的那几分钟。
+     */
+    refetchInterval: (query) =>
+      (query.state.data?.pages ?? []).some((page) =>
+        page.runs.some((item) => item.finishedAt === null),
+      )
+        ? 10_000
+        : false,
   });
   const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
   // 筛选同样记在地址里:总览上的「待处置发现」要能直接落到筛过的列表,而不是把人
