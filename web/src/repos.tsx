@@ -157,10 +157,7 @@ export function ReposPage({
   return (
     <Dialog.Root open={registering} onOpenChange={setRegistering}>
       <PageBody width="wide">
-        <PageHeader
-          title="仓库"
-          description="已接入 MultiReviewer 的代码仓库。选择仓库查看准入 Key、模型组合与最近的审查记录。"
-        />
+        <PageHeader title="仓库" />
         {/*
           主从两列。窄屏收成一列,并且是「列表 → 详情」两级:详情有四张卡,把它顺
           排在整张仓库列表下面,选完仓库还要往下滚过整份列表才看得到自己选了什么。
@@ -1060,7 +1057,7 @@ function RepoRuns({
         : null}
       {canRead && rows.length === 0 && !runs.isPending && !runs.isError ? (
         <div className="border-t border-line px-4 sm:px-5">
-          <EmptyState title="暂无审查记录" description="这个仓库还没有审查记录。" />
+          <EmptyState title="暂无审查记录" />
         </div>
       ) : null}
     </CardShell>

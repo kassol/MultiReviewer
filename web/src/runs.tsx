@@ -430,11 +430,8 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
       <PageBody width="wide" className="min-h-0 flex-1 pb-4 sm:pb-4">
         <PageHeader
           title="评审记录"
-          description={
-            runs.isPending
-              ? "每一轮审查按时间倒序。"
-              : `${counts.all} 轮 · ${counts.failed} 失败`
-          }
+          // 读取中不占位说明:计数一到就替换掉,那一行字只会闪一下。
+          {...(runs.isPending ? {} : { description: `${counts.all} 轮 · ${counts.failed} 失败` })}
           actions={<SummaryRate />}
         />
 

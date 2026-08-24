@@ -30,7 +30,7 @@ function Calendar({
     <DayPicker
       showOutsideDays={showOutsideDays}
       className={cn(
-        "group/calendar bg-background p-2 [--cell-radius:var(--radius-md)] [--cell-size:--spacing(11)] sm:[--cell-size:--spacing(7)] in-data-[slot=card-content]:bg-transparent in-data-[slot=popover-content]:bg-transparent",
+        "group/calendar bg-background p-2 [--cell-radius:var(--radius-sm)] [--cell-size:--spacing(11)] sm:[--cell-size:--spacing(7)] in-data-[slot=card-content]:bg-transparent in-data-[slot=popover-content]:bg-transparent",
         String.raw`rtl:**:[.rdp-button\_next>svg]:rotate-180`,
         String.raw`rtl:**:[.rdp-button\_previous>svg]:rotate-180`,
         className
@@ -48,7 +48,13 @@ function Calendar({
           "relative flex flex-col gap-4 md:flex-row",
           defaultClassNames.months
         ),
-        month: cn("flex w-full flex-col gap-4", defaultClassNames.month),
+        // 根是 w-fit,月份再写 w-full 就成了「父宽取决于子宽、子宽取决于父宽」,浏览器
+        // 只能塌到最小内容宽度——日期格被压到装不下两位数,range 高亮跟着挤成横杠。
+        // 给每个月一个由格子尺寸推出的下限,宽度就有了确定来源。
+        month: cn(
+          "flex w-full min-w-[calc(var(--cell-size)*7)] flex-col gap-4",
+          defaultClassNames.month,
+        ),
         nav: cn(
           "absolute inset-x-0 top-0 flex w-full items-center justify-between gap-1",
           defaultClassNames.nav
@@ -79,7 +85,7 @@ function Calendar({
         month_grid: cn("w-full border-collapse", defaultClassNames.month_grid),
         weekdays: cn("flex", defaultClassNames.weekdays),
         weekday: cn(
-          "flex-1 rounded-(--cell-radius) text-[0.8rem] font-normal text-muted-foreground select-none",
+          "flex-1 rounded-(--cell-radius) text-base font-normal text-text-muted select-none",
           defaultClassNames.weekday
         ),
         week: cn("mt-2 flex w-full", defaultClassNames.week),
@@ -88,7 +94,7 @@ function Calendar({
           defaultClassNames.week_number_header
         ),
         week_number: cn(
-          "text-[0.8rem] text-muted-foreground select-none",
+          "text-base text-text-muted select-none",
           defaultClassNames.week_number
         ),
         day: cn(
@@ -99,16 +105,16 @@ function Calendar({
           defaultClassNames.day
         ),
         range_start: cn(
-          "relative isolate z-0 rounded-l-(--cell-radius) bg-muted after:absolute after:inset-y-0 after:right-0 after:w-4 after:bg-muted",
+          "relative isolate z-0 rounded-l-(--cell-radius) bg-accent-tint after:absolute after:inset-y-0 after:right-0 after:w-4 after:bg-accent-tint",
           defaultClassNames.range_start
         ),
         range_middle: cn("rounded-none", defaultClassNames.range_middle),
         range_end: cn(
-          "relative isolate z-0 rounded-r-(--cell-radius) bg-muted after:absolute after:inset-y-0 after:left-0 after:w-4 after:bg-muted",
+          "relative isolate z-0 rounded-r-(--cell-radius) bg-accent-tint after:absolute after:inset-y-0 after:left-0 after:w-4 after:bg-accent-tint",
           defaultClassNames.range_end
         ),
         today: cn(
-          "rounded-(--cell-radius) bg-muted text-foreground data-[selected=true]:rounded-none",
+          "rounded-(--cell-radius) font-semibold text-primary ring-1 ring-inset ring-accent-track data-[selected=true]:rounded-none data-[selected=true]:ring-0",
           defaultClassNames.today
         ),
         outside: cn(
@@ -228,7 +234,7 @@ function CalendarDayButton({
       data-range-end={modifiers.range_end}
       data-range-middle={modifiers.range_middle}
       className={cn(
-        "relative isolate z-10 flex aspect-square size-auto w-full min-w-(--cell-size) flex-col gap-1 border-0 p-0 leading-none font-normal group-data-[focused=true]/day:relative group-data-[focused=true]/day:z-10 data-[range-end=true]:rounded-(--cell-radius) data-[range-end=true]:rounded-r-(--cell-radius) data-[range-end=true]:bg-[var(--gray-12)] data-[range-end=true]:text-[var(--gray-1)] data-[range-middle=true]:rounded-none data-[range-middle=true]:bg-[var(--gray-a3)] data-[range-middle=true]:text-[var(--gray-12)] data-[range-start=true]:rounded-(--cell-radius) data-[range-start=true]:rounded-l-(--cell-radius) data-[range-start=true]:bg-[var(--gray-12)] data-[range-start=true]:text-[var(--gray-1)] data-[selected-single=true]:bg-[var(--gray-12)] data-[selected-single=true]:text-[var(--gray-1)] [&>span]:text-xs [&>span]:opacity-70",
+        "relative isolate z-10 flex aspect-square size-auto w-full min-w-(--cell-size) flex-col gap-1 border-0 p-0 leading-none font-normal group-data-[focused=true]/day:relative group-data-[focused=true]/day:z-10 data-[range-end=true]:rounded-(--cell-radius) data-[range-end=true]:rounded-r-(--cell-radius) data-[range-end=true]:bg-primary data-[range-end=true]:text-white data-[range-middle=true]:rounded-none data-[range-middle=true]:bg-accent-tint data-[range-middle=true]:text-text data-[range-start=true]:rounded-(--cell-radius) data-[range-start=true]:rounded-l-(--cell-radius) data-[range-start=true]:bg-primary data-[range-start=true]:text-white data-[selected-single=true]:bg-primary data-[selected-single=true]:text-white [&>span]:text-xs [&>span]:opacity-70",
         defaultClassNames.day,
         className
       )}

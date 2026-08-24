@@ -46,10 +46,7 @@ export function SettingsPage({ canWrite }: { canWrite: boolean }) {
   return (
     <>
       <PageBody width="form">
-        <PageHeader
-          title="审查策略"
-          description="模型组合是所有仓库的默认值；批次上限控制每轮审查如何分批。"
-        />
+        <PageHeader title="审查策略" />
         {settings.isError ? (
           <Callout.Root role="alert" color="red" size="1">
             <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>

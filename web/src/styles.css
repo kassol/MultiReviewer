@@ -418,6 +418,20 @@
   --font-mono: var(--v8-font-mono);
 }
 
+/*
+ * 输入类控件的焦点态。Radix 默认画 `outline: 2px solid` 加 `outline-offset: -1px`,
+ * 那是一圈实色蓝线压在控件内侧,紧贴着输入的文字,看起来像报错高亮而不是"这里有焦点"。
+ * 换成设计稿的做法:控件外侧一圈 3px 的低透明度蓝环,边框本身不动。
+ *
+ * 这条写在设计系统层而不是页面里:焦点样式要全站一致,逐页覆盖必然漏。
+ */
+.radix-themes :where(.rt-TextFieldRoot):has(.rt-TextFieldInput:focus),
+.radix-themes :where(.rt-TextAreaRoot):has(.rt-TextAreaInput:focus),
+.radix-themes :where(.rt-SelectTrigger):focus-visible {
+  outline: 3px solid var(--v8-accent-focus);
+  outline-offset: 0;
+}
+
 @layer base {
   html,
   body,

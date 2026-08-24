@@ -3008,10 +3008,9 @@ export function ModelServicesPage({
     // 位置也只剩 panel-main-scroll 一个,`restoreScroll` 的回落分支正是为此留的。
     <PageBody width="wide" className="gap-4 sm:gap-[18px]">
       <PageHeader
-        title="模型服务"
-        description={(
-          <span className="inline-flex items-center gap-1.5">
-            管理模型服务、凭据和模型目录。
+        title={(
+          <span className="inline-flex items-center gap-2">
+            模型服务
             <HelpTooltip label="模型服务说明" content="删除仍被模型组合引用的服务时，系统会列出引用位置并阻止删除。" />
           </span>
         )}

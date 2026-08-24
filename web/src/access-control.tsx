@@ -221,7 +221,6 @@ export function AccessControlPage() {
       <PageBody width="form" className="gap-4 pb-5 sm:pb-5">
         <PageHeader
           title="访问控制"
-          description="管理用户、角色和权限。此页仅系统管理员可见。"
         />
         {feedback === null ? null : (
           <Callout.Root role={feedback.error ? "alert" : "status"} color={feedback.error ? "red" : "green"} size="1">

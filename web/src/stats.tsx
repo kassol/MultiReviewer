@@ -187,10 +187,9 @@ export function StatsPage() {
     <>
       <PageBody width="form" className="gap-4 pb-5 sm:pb-5">
         <PageHeader
-          title="处置率"
-          description={
-            <span className="inline-flex items-center gap-1.5">
-              查看不同模型和问题分类的 Finding 处置率。
+          title={
+            <span className="inline-flex items-center gap-2">
+              处置率
               <HelpTooltip
                 label="处置率计算方式"
                 content="处置率 = 已处置 Finding ÷ 可处置 Finding。同一处 Finding 只统计一次；无法关联到行级评论的 Finding 不计入。"

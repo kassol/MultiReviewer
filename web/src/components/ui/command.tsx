@@ -35,7 +35,10 @@ function CommandInput({
         data-slot="command-input"
         aria-label={ariaLabel}
         className={cn(
-          "flex h-9 w-full bg-transparent outline-2 outline-offset-[-2px] outline-transparent placeholder:text-[var(--gray-10)] focus-visible:outline-[var(--focus-8)] disabled:cursor-not-allowed disabled:opacity-50",
+          // 不画焦点框:这个输入框所在的弹层一打开焦点就落在它身上,它也是层里唯一能
+          // 输入的地方。再套一圈 2px 实线,那圈线会贴着文字边缘,把搜索框framed成一个
+          // 报错似的高亮块。
+          "flex h-9 w-full bg-transparent outline-none placeholder:text-text-disabled disabled:cursor-not-allowed disabled:opacity-50",
           className
         )}
         {...props}
@@ -96,7 +99,7 @@ function CommandItem({
     <CommandPrimitive.Item
       data-slot="command-item"
       className={cn(
-        "relative flex cursor-default items-center gap-2 rounded-[var(--radius-2)] px-2 py-1.5 outline-2 outline-offset-[-2px] outline-transparent select-none max-sm:min-h-11 data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50 data-[selected=true]:bg-[var(--gray-a3)] data-[selected=true]:text-[var(--gray-12)] data-[selected=true]:outline-[var(--focus-8)] [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "relative flex cursor-default items-center gap-2 rounded-[var(--radius-2)] px-2 py-1.5 outline-none select-none max-sm:min-h-11 data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50 data-[selected=true]:bg-fill data-[selected=true]:text-text [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className
       )}
       {...props}
