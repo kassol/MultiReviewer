@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Cross2Icon, LockClosedIcon, PlusIcon, ResetIcon, TrashIcon } from "@radix-ui/react-icons";
-import { AlertDialog, Badge, Card, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
+import { AlertDialog, Badge, Card, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, Table, Text, TextField } from "@radix-ui/themes";
 import { useMemo, useState, type FormEvent } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -227,29 +227,30 @@ export function AccessControlPage() {
                 用户 <span className="font-mono text-xs font-normal text-muted-foreground">{users.length}</span>
               </h2>
               <div className="contain-inline-size min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-md border border-border">
-                <table className="w-full min-w-max border-collapse text-left">
-                  <thead className="bg-muted text-xs text-muted-foreground">
-                    <tr>
-                      <th scope="col" className="px-3 py-2 font-medium">用户名</th>
-                      <th scope="col" className="px-3 py-2 font-medium">显示名</th>
-                      <th scope="col" className="px-3 py-2 font-medium">角色</th>
-                      <th scope="col" className="px-3 py-2 font-medium">创建</th>
-                      <th scope="col" className="px-3 py-2 font-medium">最后登录</th>
-                      <th scope="col" className="px-3 py-2"><span className="sr-only">操作</span></th>
-                    </tr>
-                  </thead>
-                  <tbody>
+                <Table.Root size="2" className="w-full min-w-max">
+                  <caption className="sr-only">用户、角色和账号状态</caption>
+                  <Table.Header className="bg-muted text-xs text-muted-foreground">
+                    <Table.Row>
+                      <Table.ColumnHeaderCell className="sticky left-0 z-20 bg-muted">用户名</Table.ColumnHeaderCell>
+                      <Table.ColumnHeaderCell>显示名</Table.ColumnHeaderCell>
+                      <Table.ColumnHeaderCell>角色</Table.ColumnHeaderCell>
+                      <Table.ColumnHeaderCell>创建</Table.ColumnHeaderCell>
+                      <Table.ColumnHeaderCell>最后登录</Table.ColumnHeaderCell>
+                      <Table.ColumnHeaderCell><span className="sr-only">操作</span></Table.ColumnHeaderCell>
+                    </Table.Row>
+                  </Table.Header>
+                  <Table.Body>
                     {users.map((user) => (
-                      <tr key={user.username} className="border-t border-border align-top hover:bg-muted/30">
-                        <td className="px-3 py-2.5 font-medium">
+                      <Table.Row key={user.username} align="start" className="group hover:bg-muted/30">
+                        <Table.RowHeaderCell className="sticky left-0 z-10 bg-card font-medium group-hover:bg-muted">
                           <div className="flex max-w-64 flex-wrap items-center gap-1.5">
                             <span className="max-w-56 truncate" title={user.username}>{user.username}</span>
                             {user.isSystemAdmin ? <Badge color="gray" variant="soft">系统管理员</Badge> : null}
                             {user.mustChangePassword ? <StatusBadge tone="warning">待改密</StatusBadge> : null}
                           </div>
-                        </td>
-                        <td className="max-w-48 truncate px-3 py-2.5 text-muted-foreground" title={user.displayName ?? undefined}>{user.displayName ?? "—"}</td>
-                        <td className="px-3 py-2.5">
+                        </Table.RowHeaderCell>
+                        <Table.Cell className="max-w-48 truncate text-muted-foreground" title={user.displayName ?? undefined}>{user.displayName ?? "—"}</Table.Cell>
+                        <Table.Cell>
                           {user.isSystemAdmin ? (
                             <span className="text-muted-foreground">全部权限</span>
                           ) : (
@@ -275,19 +276,19 @@ export function AccessControlPage() {
                               </Select.Content>
                             </Select.Root>
                           )}
-                        </td>
-                        <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap text-muted-foreground">{localMinute(user.createdAt)}</td>
-                        <td className="px-3 py-2.5 text-xs whitespace-nowrap text-muted-foreground">{user.lastLoginAt === null ? "从未" : <span className="font-mono">{localMinute(user.lastLoginAt)}</span>}</td>
-                        <td className="px-3 py-2.5">
+                        </Table.Cell>
+                        <Table.Cell className="font-mono text-xs whitespace-nowrap text-muted-foreground">{localMinute(user.createdAt)}</Table.Cell>
+                        <Table.Cell className="text-xs whitespace-nowrap text-muted-foreground">{user.lastLoginAt === null ? "从未" : <span className="font-mono">{localMinute(user.lastLoginAt)}</span>}</Table.Cell>
+                        <Table.Cell>
                           <div className="flex justify-end gap-1 whitespace-nowrap">
                             <Button variant="ghost" color="gray" size={{ initial: "4", sm: "1" }} onClick={() => setConfirm({ kind: "reset", id: user.username, label: user.username })}><ResetIcon />重置密码</Button>
                             <Button variant="ghost" color="red" size={{ initial: "4", sm: "1" }} onClick={() => setConfirm({ kind: "delete-user", id: user.username, label: user.username })}><TrashIcon />删除用户</Button>
                           </div>
-                        </td>
-                      </tr>
+                        </Table.Cell>
+                      </Table.Row>
                     ))}
-                  </tbody>
-                </table>
+                  </Table.Body>
+                </Table.Root>
               </div>
             </section>
 
@@ -311,41 +312,42 @@ export function AccessControlPage() {
                 </Card>
               ) : (
                 <div className="contain-inline-size min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-md border border-border">
-                  <table className="w-full min-w-max border-collapse text-left">
-                    <thead>
-                      <tr className="bg-muted text-xs text-muted-foreground">
-                        <th scope="col" className="sticky left-0 z-10 min-w-56 bg-muted px-3 py-2 font-medium sm:min-w-72">权限</th>
+                  <Table.Root size="1" className="w-full min-w-max">
+                    <caption className="sr-only">自定义角色权限矩阵</caption>
+                    <Table.Header>
+                      <Table.Row className="bg-muted text-xs text-muted-foreground">
+                        <Table.ColumnHeaderCell className="sticky left-0 z-20 min-w-56 bg-muted sm:min-w-72">权限</Table.ColumnHeaderCell>
                         {roles.map((role) => (
-                          <th key={role.id} scope="col" className="w-36 min-w-36 max-w-36 border-l border-border px-3 py-2 text-center font-medium">
+                          <Table.ColumnHeaderCell key={role.id} className="w-36 min-w-36 max-w-36 border-l border-border text-center">
                             <span className="block break-words text-foreground" title={role.name}>{role.name}</span>
                             <span className="block font-normal"><span className="font-mono">{users.filter((user) => user.roleId === role.id).length}</span> 人</span>
                             <Button variant="ghost" color="red" size={{ initial: "4", sm: "1" }} className="mt-1" onClick={() => setConfirm({ kind: "delete-role", id: String(role.id), label: role.name })}><TrashIcon />删除</Button>
-                          </th>
+                          </Table.ColumnHeaderCell>
                         ))}
-                      </tr>
-                    </thead>
-                    <tbody>
+                      </Table.Row>
+                    </Table.Header>
+                    <Table.Body>
                       {RESOURCES.flatMap((resource) => [
-                        <tr key={`${resource}-heading`} className="border-t border-border bg-muted/40">
-                          <td colSpan={roles.length + 1} className="sticky left-0 px-3 py-1 text-xs font-medium text-muted-foreground">{resource}</td>
-                        </tr>,
+                        <Table.Row key={`${resource}-heading`} className="bg-muted/40">
+                          <Table.Cell colSpan={roles.length + 1} className="sticky left-0 text-xs font-medium text-muted-foreground">{resource}</Table.Cell>
+                        </Table.Row>,
                         ...PERMISSION_INFO.filter((permission) => permission.resource === resource).map((permission) => {
                           const missing = unclaimed.has(permission.id);
                           return (
-                            <tr key={permission.id} className={`border-t border-border ${missing ? "bg-warning/10" : ""}`}>
-                              <td className={`sticky left-0 z-10 min-w-56 px-3 py-2 sm:min-w-72 ${missing ? "bg-[color-mix(in_oklab,var(--warning)_10%,var(--background))]" : "bg-background"}`}>
+                            <Table.Row key={permission.id} className={missing ? "bg-warning/10" : undefined}>
+                              <Table.RowHeaderCell className={`sticky left-0 z-10 min-w-56 sm:min-w-72 ${missing ? "bg-[color-mix(in_oklab,var(--warning)_10%,var(--background))]" : "bg-card"}`}>
                                 <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                                   <span className="font-medium">{permission.action}</span>
                                   <HelpTooltip label={`${permission.resource}${permission.action}权限说明`} content={permission.hint} />
                                   {missing ? <span className="text-xs text-warning">尚未授予</span> : null}
                                 </div>
-                              </td>
+                              </Table.RowHeaderCell>
                               {roles.map((role) => {
                                 const impliedBy = permissionImpliedBy(permission.id);
                                 const implied =
                                   impliedBy !== undefined && role.permissions.includes(impliedBy);
                                 return (
-                                  <td key={role.id} className="border-l border-border px-3 py-1.5 text-center">
+                                  <Table.Cell key={role.id} className="border-l border-border text-center">
                                     <Text as="label" size="2" className="inline-flex min-h-8 cursor-pointer flex-col items-center justify-center rounded-sm px-1 max-sm:min-h-11 max-sm:min-w-11 hover:bg-muted focus-within:ring-2 focus-within:ring-ring/25 focus-within:ring-offset-1 focus-within:ring-offset-background has-disabled:cursor-not-allowed has-disabled:opacity-70">
                                       <Checkbox
                                         size="2"
@@ -356,15 +358,15 @@ export function AccessControlPage() {
                                       />
                                       {implied ? <span className="text-xs text-muted-foreground">随管理权限生效</span> : null}
                                     </Text>
-                                  </td>
+                                  </Table.Cell>
                                 );
                               })}
-                            </tr>
+                            </Table.Row>
                           );
                         }),
                       ])}
-                    </tbody>
-                  </table>
+                    </Table.Body>
+                  </Table.Root>
                 </div>
               )}
             </section>

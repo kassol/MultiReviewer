@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-24: 管理面板完成访问控制表格迁移。用户列表与权限矩阵直接使用 Radix Themes `Table`,保留行内角色选择、权限复选、管理动作、表头关联、粘性首列和容器内横向滚动。
+
 - 2026-08-24: 管理面板完成处置率页 Radix 迁移。日期范围使用受控 Themes `Popover` 承载双月 Calendar,窄屏模型矩阵使用 Collapsible；桌面 Themes `Table`、Finding Identity 口径、范围选择和响应式布局保持不变。
 
 - 2026-08-24: 管理面板的审查策略页将批次上限的原生折叠区迁移到 Radix Collapsible，默认折叠、帮助提示、键盘操作、单独保存与版本冲突恢复保持不变。
