@@ -5,12 +5,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useBlocker, useLocation, useNavigate } from "@tanstack/react-router";
 import { CheckIcon, ChevronDownIcon, CrossCircledIcon, ExclamationTriangleIcon, MagnifyingGlassIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
+import { IconButton } from "@radix-ui/themes";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { PageHeader } from "@/components/page-header";
+import { Button } from "@/components/theme-button";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import {
@@ -385,8 +386,8 @@ export function ModelServiceSetupLayout() {
             <DialogDescription>关闭会丢弃当前页面中的凭据、目录结果和验证模型。</DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setCloseRequested(false)}>继续配置</Button>
-            <Button type="button" variant="destructive" onClick={discardAndClose}>丢弃并关闭</Button>
+            <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={() => setCloseRequested(false)}>继续配置</Button>
+            <Button type="button" variant="solid" color="red" size={{ initial: "4", sm: "2" }} onClick={discardAndClose}>丢弃并关闭</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -402,10 +403,12 @@ export function ModelServiceSetupLayout() {
           </DialogHeader>
           {phase === null ? (
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => blocker.reset?.()}>继续配置</Button>
+              <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={() => blocker.reset?.()}>继续配置</Button>
               <Button
                 type="button"
-                variant="destructive"
+                variant="solid"
+                color="red"
+                size={{ initial: "4", sm: "2" }}
                 onClick={() => {
                   allowExit.current = true;
                   setCandidate(null);
@@ -487,7 +490,7 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
       )}
       {canWriteCustom ? (
         <div className="border-t pt-4">
-          <Button asChild variant="outline" className="max-sm:min-h-11">
+          <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
             <Link to="/credentials/add/custom/discover">添加自定义 provider</Link>
           </Button>
         </div>
@@ -576,10 +579,10 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
         </div>
         {preview.error === null ? null : <p role="alert" className="text-destructive">{preview.error.message}</p>}
         <div className="flex items-center gap-3 border-t pt-3">
-          <Button asChild variant="outline">
+          <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
             <Link to="/credentials/add">返回选择来源</Link>
           </Button>
-          <Button type="submit" disabled={phase !== null || credential === "" || metadata.data === undefined}>
+          <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={phase !== null || credential === "" || metadata.data === undefined}>
             {phase === "discovering" ? "正在发现模型…" : "发现模型"}
           </Button>
           {phase === "discovering" ? <span className="text-xs text-muted-foreground">阶段 2/3：正在请求模型目录</span> : null}
@@ -668,11 +671,14 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
       </div>
       {commit.error === null ? null : <p role="alert" className="text-destructive">{commit.error.message}</p>}
       <div className="flex items-center gap-3 border-t pt-3">
-        <Button asChild variant="outline">
+        <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
           <Link to="/credentials/add/builtin/$provider/discover" params={{ provider }}>返回模型发现</Link>
         </Button>
         <Button
           type="button"
+          variant="solid"
+          highContrast
+          size={{ initial: "4", sm: "2" }}
           disabled={phase !== null || activeCandidate.validationModel.trim() === ""}
           onClick={() => commit.mutate()}
         >
@@ -868,9 +874,12 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
         )}
         {preview.error === null ? null : <p role="alert" className="text-destructive">{preview.error.message}</p>}
         <div className="flex items-center gap-3 border-t pt-3">
-          <Button asChild variant="outline"><Link to={editing ? "/credentials/$provider/maintenance" : "/credentials"} params={editing ? { provider } : {}}>返回</Link></Button>
+          <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}><Link to={editing ? "/credentials/$provider/maintenance" : "/credentials"} params={editing ? { provider } : {}}>返回</Link></Button>
           <Button
             type="submit"
+            variant="solid"
+            highContrast
+            size={{ initial: "4", sm: "2" }}
             disabled={phase !== null || active.provider.trim() === "" || active.baseUrl.trim() === "" || active.credential === ""}
           >
             {phase === "discovering" ? "正在发现模型…" : "发现模型"}
@@ -967,13 +976,16 @@ export function CustomServiceVerifyPage({ provider }: { provider?: string }) {
         </div>
       )}
       <div className="flex items-center gap-3 border-t pt-3">
-        <Button asChild variant="outline">
+        <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
           {provider === undefined
             ? <Link to="/credentials/add/custom/discover">返回模型发现</Link>
             : <Link to="/credentials/add/custom/$provider/discover" params={{ provider }}>返回模型发现</Link>}
         </Button>
         <Button
           type="button"
+          variant="solid"
+          highContrast
+          size={{ initial: "4", sm: "2" }}
           disabled={phase !== null || active.validationModel.trim() === ""}
           onClick={() => commit.mutate()}
         >
@@ -1197,15 +1209,17 @@ function CredentialControls({
           />
           <Popover open={modelPickerOpen} onOpenChange={setModelPickerOpen}>
             <PopoverTrigger asChild>
-              <Button
+              <IconButton
                 type="button"
                 variant="outline"
+                color="gray"
+                size="2"
                 className="-ml-px rounded-l-none px-2.5"
                 disabled={reverify.isPending}
                 aria-label="从自动发现的模型中选择"
               >
                 <ChevronDownIcon />
-              </Button>
+              </IconButton>
             </PopoverTrigger>
             <PopoverContent
               align="start"
@@ -1246,12 +1260,14 @@ function CredentialControls({
             </PopoverContent>
           </Popover>
         </div>
-        <Button type="submit" disabled={reverify.isPending || validationModel.trim() === ""}>
+        <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={reverify.isPending || validationModel.trim() === ""}>
           {reverify.isPending ? "正在验证…" : "重新验证"}
         </Button>
         <Button
           type="button"
-          variant="destructive"
+          variant="solid"
+          color="red"
+          size={{ initial: "4", sm: "2" }}
           disabled={reverify.isPending}
           onClick={() => {
             setFeedback(null);
@@ -1290,6 +1306,8 @@ function CredentialControls({
         <Button
           type="button"
           variant="outline"
+          color="gray"
+          size={{ initial: "4", sm: "2" }}
           disabled={removeCredential.isPending}
           onClick={() => {
             setConfirmingDelete(false);
@@ -1300,7 +1318,9 @@ function CredentialControls({
         </Button>
         <Button
           type="button"
-          variant="destructive"
+          variant="solid"
+          color="red"
+          size={{ initial: "4", sm: "2" }}
           disabled={removeCredential.isPending}
           onClick={() => removeCredential.mutate()}
         >
@@ -1445,10 +1465,10 @@ function CustomServiceControls({ service }: { service: ModelService }) {
         </div>
         <div className="flex flex-wrap gap-2">
           {service.providerState !== "name-conflict" ? null : (
-            <Button type="button" variant="outline" onClick={() => setRenaming(true)}>迁移到新名称</Button>
+            <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={() => setRenaming(true)}>迁移到新名称</Button>
           )}
           {service.providerState === "name-conflict" ? null : (
-            <Button asChild variant="outline">
+            <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
               <Link
                 to="/credentials/add/custom/$provider/discover"
                 params={{ provider: service.provider }}
@@ -1458,7 +1478,7 @@ function CustomServiceControls({ service }: { service: ModelService }) {
               </Link>
             </Button>
           )}
-          <Button type="button" variant="destructive" onClick={() => setConfirmingDelete(true)}>
+          <Button type="button" variant="solid" color="red" size={{ initial: "4", sm: "2" }} onClick={() => setConfirmingDelete(true)}>
             <TrashIcon />删除服务
           </Button>
         </div>
@@ -1506,10 +1526,10 @@ function CustomServiceControls({ service }: { service: ModelService }) {
               </div>
             )}
             <DialogFooter>
-              <Button type="button" variant="outline" disabled={renameService.isPending} onClick={() => setRenaming(false)}>
+              <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} disabled={renameService.isPending} onClick={() => setRenaming(false)}>
                 取消
               </Button>
-              <Button type="submit" disabled={renameService.isPending || newProvider.trim() === ""}>
+              <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={renameService.isPending || newProvider.trim() === ""}>
                 {renameService.isPending ? "正在迁移…" : "确认迁移"}
               </Button>
             </DialogFooter>
@@ -1537,10 +1557,10 @@ function CustomServiceControls({ service }: { service: ModelService }) {
             </div>
           )}
           <DialogFooter>
-            <Button type="button" variant="outline" disabled={removeService.isPending} onClick={() => setConfirmingDelete(false)}>
+            <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} disabled={removeService.isPending} onClick={() => setConfirmingDelete(false)}>
               取消
             </Button>
-            <Button type="button" variant="destructive" disabled={removeService.isPending} onClick={() => removeService.mutate()}>
+            <Button type="button" variant="solid" color="red" size={{ initial: "4", sm: "2" }} disabled={removeService.isPending} onClick={() => removeService.mutate()}>
               {removeService.isPending ? "正在删除…" : "确认删除服务"}
             </Button>
           </DialogFooter>
@@ -1620,6 +1640,8 @@ function CatalogControls({
         <Button
           type="button"
           variant="outline"
+          color="gray"
+          size={{ initial: "4", sm: "2" }}
           disabled={busy || !canValidate}
           onClick={() => {
             addSupplement.reset();
@@ -1657,7 +1679,7 @@ function CatalogControls({
             autoComplete="off"
             onChange={(event) => setModel(event.target.value)}
           />
-          <Button type="submit" disabled={busy || !canValidate || model.trim() === ""}>
+          <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={busy || !canValidate || model.trim() === ""}>
             {addSupplement.isPending ? "正在验证…" : "验证并添加"}
           </Button>
         </div>
@@ -1695,7 +1717,8 @@ function CatalogControls({
                   <Button
                     type="button"
                     variant="outline"
-                    size="sm"
+                    color="gray"
+                    size={{ initial: "4", sm: "1" }}
                     disabled={busy}
                     onClick={() => {
                       removeSupplement.reset();
@@ -1738,6 +1761,8 @@ function CatalogControls({
             <Button
               type="button"
               variant="outline"
+              color="gray"
+              size={{ initial: "4", sm: "2" }}
               disabled={removeSupplement.isPending}
               onClick={() => setDeleting(null)}
             >
@@ -1745,7 +1770,9 @@ function CatalogControls({
             </Button>
             <Button
               type="button"
-              variant="destructive"
+              variant="solid"
+              color="red"
+              size={{ initial: "4", sm: "2" }}
               disabled={removeSupplement.isPending || deleting === null}
               onClick={() => {
                 if (deleting !== null) removeSupplement.mutate(deleting.id);
@@ -1932,7 +1959,8 @@ function ModelsTable({
             <Button
               type="button"
               variant="outline"
-              size="sm"
+              color="gray"
+              size={{ initial: "4", sm: "1" }}
               disabled={selectedIds.size === 0 || updateState.isPending}
               onClick={() => updateState.mutate(true)}
             >
@@ -1941,7 +1969,8 @@ function ModelsTable({
             <Button
               type="button"
               variant="outline"
-              size="sm"
+              color="gray"
+              size={{ initial: "4", sm: "1" }}
               disabled={selectedIds.size === 0 || updateState.isPending}
               onClick={() => updateState.mutate(false)}
             >
@@ -2279,7 +2308,7 @@ function ServiceDetail({
               <HelpTooltip label="模型凭据说明" content="新凭据完成目录发现和真实推理后，才会替换当前版本。" />
             </div>
           </div>
-          <Button asChild variant="outline">
+          <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
             <Link
               to="/credentials/add/builtin/$provider/discover"
               params={{ provider: service.provider }}
@@ -2381,7 +2410,7 @@ export function ModelServicesPage({
         actions={(
           <div className="flex flex-wrap items-center gap-2">
             {canWriteCredential ? (
-              <Button asChild className="max-sm:min-h-11">
+              <Button asChild variant="solid" highContrast size={{ initial: "4", sm: "2" }}>
                 <Link to="/credentials/add">添加模型服务</Link>
               </Button>
             ) : null}
@@ -2412,6 +2441,8 @@ export function ModelServicesPage({
               className="w-fit"
               type="button"
               variant="outline"
+              color="gray"
+              size={{ initial: "4", sm: "2" }}
               disabled={query.isFetching}
               onClick={() => void query.refetch()}
             >

@@ -5,8 +5,8 @@ import { useMemo, useState, type FormEvent } from "react";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
+import { Button } from "@/components/theme-button";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
   Dialog,
@@ -207,8 +207,8 @@ export function AccessControlPage() {
         description="管理用户、角色和权限。此页仅系统管理员可见。"
         actions={
           <>
-            <Button variant="outline" onClick={() => setCreateKind("role")}><PlusIcon />新建角色</Button>
-            <Button onClick={() => setCreateKind("user")}><PlusIcon />新建用户</Button>
+            <Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={() => setCreateKind("role")}><PlusIcon />新建角色</Button>
+            <Button variant="solid" highContrast size={{ initial: "4", sm: "2" }} onClick={() => setCreateKind("user")}><PlusIcon />新建用户</Button>
           </>
         }
       />
@@ -282,8 +282,8 @@ export function AccessControlPage() {
                         <td className="px-3 py-2.5 text-xs whitespace-nowrap text-muted-foreground">{user.lastLoginAt === null ? "从未" : <span className="font-mono">{localMinute(user.lastLoginAt)}</span>}</td>
                         <td className="px-3 py-2.5">
                           <div className="flex justify-end gap-1 whitespace-nowrap">
-                            <Button variant="ghost" size="xs" onClick={() => setConfirm({ kind: "reset", id: user.username, label: user.username })}><ResetIcon />重置密码</Button>
-                            <Button variant="ghost" size="xs" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => setConfirm({ kind: "delete-user", id: user.username, label: user.username })}><TrashIcon />删除用户</Button>
+                            <Button variant="ghost" color="gray" size={{ initial: "4", sm: "1" }} onClick={() => setConfirm({ kind: "reset", id: user.username, label: user.username })}><ResetIcon />重置密码</Button>
+                            <Button variant="ghost" color="red" size={{ initial: "4", sm: "1" }} onClick={() => setConfirm({ kind: "delete-user", id: user.username, label: user.username })}><TrashIcon />删除用户</Button>
                           </div>
                         </td>
                       </tr>
@@ -309,7 +309,7 @@ export function AccessControlPage() {
                 <Card className="items-start gap-2 px-4 py-5">
                   <p className="font-medium">还没有角色</p>
                   <p className="text-muted-foreground">角色不会预置。创建角色后，可在权限矩阵中授予权限。</p>
-                  <Button className="mt-1" onClick={() => setCreateKind("role")}><PlusIcon />新建角色</Button>
+                  <Button variant="solid" highContrast size={{ initial: "4", sm: "2" }} className="mt-1" onClick={() => setCreateKind("role")}><PlusIcon />新建角色</Button>
                 </Card>
               ) : (
                 <div className="contain-inline-size min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-md border border-border">
@@ -321,7 +321,7 @@ export function AccessControlPage() {
                           <th key={role.id} scope="col" className="w-36 min-w-36 max-w-36 border-l border-border px-3 py-2 text-center font-medium">
                             <span className="block break-words text-foreground" title={role.name}>{role.name}</span>
                             <span className="block font-normal"><span className="font-mono">{users.filter((user) => user.roleId === role.id).length}</span> 人</span>
-                            <Button variant="ghost" size="xs" className="mt-1 text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => setConfirm({ kind: "delete-role", id: String(role.id), label: role.name })}><TrashIcon />删除</Button>
+                            <Button variant="ghost" color="red" size={{ initial: "4", sm: "1" }} className="mt-1" onClick={() => setConfirm({ kind: "delete-role", id: String(role.id), label: role.name })}><TrashIcon />删除</Button>
                           </th>
                         ))}
                       </tr>
@@ -394,9 +394,12 @@ export function AccessControlPage() {
             </div>
           ) : null}
           <DialogFooter>
-            <DialogClose asChild><Button variant="outline">取消</Button></DialogClose>
+            <DialogClose asChild><Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>取消</Button></DialogClose>
             <Button
-              variant={confirm?.kind === "reset" ? "default" : "destructive"}
+              variant="solid"
+              color={confirm?.kind === "reset" ? "gray" : "red"}
+              highContrast={confirm?.kind === "reset"}
+              size={{ initial: "4", sm: "2" }}
               disabled={destructive.isPending || (confirm?.kind === "reset" && resetPassword === "")}
               onClick={() => { if (confirm !== null) destructive.mutate({ target: confirm, password: resetPassword }); }}
             >
@@ -446,8 +449,8 @@ function CreateDialog({ kind, busy, onClose, onUser, onRole }: { kind: "user" | 
             </div>
           )}
           <DialogFooter>
-            <DialogClose asChild><Button type="button" variant="outline">取消</Button></DialogClose>
-            <Button type="submit" disabled={busy || (kind === "user" ? username === "" || password === "" : name === "")}>{busy ? "创建中…" : "创建"}</Button>
+            <DialogClose asChild><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>取消</Button></DialogClose>
+            <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={busy || (kind === "user" ? username === "" || password === "" : name === "")}>{busy ? "创建中…" : "创建"}</Button>
           </DialogFooter>
         </form>
       </DialogContent>

@@ -2,7 +2,7 @@ import { useRouter } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { Mark } from "@/components/mark";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/theme-button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -102,7 +102,7 @@ export function LoginPage() {
               </div>
             ) : null}
             {error === null ? null : <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive">{error}</p>}
-            <Button type="submit" className="w-full" disabled={busy || username === "" || password === ""}>
+            <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} className="w-full" disabled={busy || username === "" || password === ""}>
               {busy ? "处理中…" : bootstrapMode ? "注册并登录" : "登录"}
             </Button>
           </form>

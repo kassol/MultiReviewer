@@ -2,7 +2,7 @@ import { useRouter } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 
 import { Mark } from "@/components/mark";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/theme-button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -70,7 +70,7 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
               <Input id="confirm-password" type="password" autoComplete="new-password" value={confirm} onChange={(event) => setConfirm(event.target.value)} />
             </div>
             {error === null ? null : <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive">{error}</p>}
-            <Button type="submit" className="w-full" disabled={busy || password === "" || confirm === ""}>{busy ? "保存中…" : "保存新密码"}</Button>
+            <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} className="w-full" disabled={busy || password === "" || confirm === ""}>{busy ? "保存中…" : "保存新密码"}</Button>
           </form>
         </Card>
       </div>

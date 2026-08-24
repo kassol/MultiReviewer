@@ -4,8 +4,8 @@ import { useEffect, useState, type FormEvent } from "react";
 import { CheckCircledIcon, CrossCircledIcon, ExclamationTriangleIcon, UpdateIcon } from "@radix-ui/react-icons";
 
 import { HelpTooltip } from "@/components/help-tooltip";
+import { Button } from "@/components/theme-button";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
   Command,
@@ -110,7 +110,7 @@ export function ReposPage({
         title="仓库"
         description="已接入 MultiReviewer 的代码仓库。选择仓库查看准入 Key、模型组合与最近的审查记录。"
         actions={canWrite ? (
-          <Button disabled={!registrationReady} onClick={() => setRegistering(true)}>注册仓库</Button>
+          <Button variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={!registrationReady} onClick={() => setRegistering(true)}>注册仓库</Button>
         ) : undefined}
       />
       <div className="flex min-h-full flex-col lg:grid lg:grid-cols-[248px_minmax(0,1fr)]">
@@ -170,7 +170,7 @@ export function ReposPage({
           {canWrite && setup.data !== undefined && !setup.data.reviewConfigurationReady ? (
             <Card className="items-start gap-2 border-warning/40 bg-warning/5 px-4">
               <p>审查配置就绪后才能注册仓库。先在审查策略中保存至少一个当前可用模型。</p>
-              <Button variant="outline" size="sm" asChild>
+              <Button variant="outline" color="gray" size={{ initial: "4", sm: "1" }} asChild>
                 <Link to="/settings">前往审查策略</Link>
               </Button>
             </Card>
@@ -347,6 +347,8 @@ function RepoDetail({
         {canWrite ? (
           <Button
             variant="outline"
+            color="red"
+            size={{ initial: "4", sm: "2" }}
             className="ml-auto max-sm:w-full"
             disabled={remove.isPending}
             onClick={() => setConfirmingRemoval(true)}
@@ -396,6 +398,9 @@ function RepoDetail({
           ))}
           {canWrite ? (
             <Button
+              variant="solid"
+              highContrast
+              size={{ initial: "4", sm: "2" }}
               className="self-start"
               disabled={rotate.isPending}
               onClick={() => rotate.mutate()}
@@ -422,6 +427,8 @@ function RepoDetail({
           {canWrite ? (
             <Button
               variant="outline"
+              color="gray"
+              size={{ initial: "4", sm: "2" }}
               className="self-start"
               disabled={rotate.isPending}
               onClick={() => rotate.mutate()}
@@ -449,8 +456,10 @@ function RepoDetail({
                 这种既不是跟随、也不是有效覆盖的状态在界面上不存在。 */}
             {canWrite ? <div className="flex gap-2">
               <Button
-                size="xs"
-                variant={following ? "default" : "outline"}
+                size={{ initial: "4", sm: "1" }}
+                variant={following ? "solid" : "outline"}
+                color="gray"
+                highContrast={following}
                 disabled={followGlobal.isPending}
                 onClick={() => {
                   if (!following) followGlobal.mutate();
@@ -459,8 +468,10 @@ function RepoDetail({
                 跟随全局
               </Button>
               <Button
-                size="xs"
-                variant={following ? "outline" : "default"}
+                size={{ initial: "4", sm: "1" }}
+                variant={following ? "outline" : "solid"}
+                color="gray"
+                highContrast={!following}
                 disabled={followGlobal.isPending}
                 onClick={() => setEditing(true)}
               >
@@ -526,10 +537,13 @@ function RepoDetail({
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmingRemoval(false)}>
+            <Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={() => setConfirmingRemoval(false)}>
               取消
             </Button>
             <Button
+              variant="solid"
+              color="red"
+              size={{ initial: "4", sm: "2" }}
               disabled={remove.isPending}
               onClick={() => {
                 setConfirmingRemoval(false);
@@ -711,10 +725,10 @@ function RegisterModal({
             </p>
           )}
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={onClose}>
               取消
             </Button>
-            <Button type="submit" disabled={busy || picked === null}>
+            <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={busy || picked === null}>
               {busy ? "注册中…" : picked === null ? "注册" : `注册 ${picked.owner}/${picked.repo}`}
             </Button>
           </DialogFooter>
@@ -794,6 +808,9 @@ function ReviewersEditor({
       )}
       <div className="flex flex-wrap items-center gap-3">
         <Button
+          variant="solid"
+          highContrast
+          size={{ initial: "4", sm: "2" }}
           disabled={
             busy ||
             models.length === 0 ||
@@ -804,7 +821,7 @@ function ReviewersEditor({
         >
           {busy ? "保存中…" : "保存"}
         </Button>
-        <Button variant="outline" onClick={onClose}>
+        <Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={onClose}>
           取消
         </Button>
         {models.length === 0 ? (
@@ -880,7 +897,7 @@ function RepoRuns({
             value={pullNumber}
             onChange={(event) => setPullNumber(event.target.value)}
           />
-          <Button variant="outline" type="submit" disabled={rerun.isPending}>
+          <Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }} type="submit" disabled={rerun.isPending}>
             {rerun.isPending ? "触发中…" : "重新运行"}
           </Button>
         </form> : null}

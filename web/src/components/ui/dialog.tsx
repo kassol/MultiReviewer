@@ -1,9 +1,10 @@
 import * as React from "react"
 import { Dialog as DialogPrimitive } from "radix-ui"
+import { IconButton } from "@radix-ui/themes"
 
 import { PanelTheme } from "@/components/panel-theme"
+import { Button } from "@/components/theme-button"
 import { cn } from "@/lib/utils"
-import { Button } from "@/components/ui/button"
 import { Cross2Icon } from "@radix-ui/react-icons"
 
 function Dialog({
@@ -73,15 +74,15 @@ function DialogContent({
         {children}
         {showCloseButton && (
           <DialogPrimitive.Close data-slot="dialog-close" asChild>
-            <Button
+            <IconButton
               variant="ghost"
+              color="gray"
               className="absolute top-2 right-2"
-              size="icon-sm"
+              size={{ initial: "4", sm: "1" }}
+              aria-label="关闭"
             >
-              <Cross2Icon
-              />
-              <span className="sr-only">关闭</span>
-            </Button>
+              <Cross2Icon />
+            </IconButton>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Content>
@@ -119,7 +120,7 @@ function DialogFooter({
       {children}
       {showCloseButton && (
         <DialogPrimitive.Close asChild>
-          <Button variant="outline">Close</Button>
+          <Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>关闭</Button>
         </DialogPrimitive.Close>
       )}
     </div>

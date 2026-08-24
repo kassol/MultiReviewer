@@ -2,8 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 
 import { HelpTooltip } from "@/components/help-tooltip";
+import { Button } from "@/components/theme-button";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 
 import { fetchJson } from "./api.ts";
 import { hasPermission, type PanelSession } from "./session.ts";
@@ -35,7 +35,8 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
           className="w-fit"
           type="button"
           variant="outline"
-          size="xs"
+          color="gray"
+          size={{ initial: "4", sm: "1" }}
           disabled={status.isFetching}
           onClick={() => void status.refetch()}
         >

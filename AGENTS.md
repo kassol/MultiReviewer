@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-24: 管理面板完成 Button/IconButton 整族迁移。业务动作直接使用 Radix Themes 官方组件与视觉属性，纯图标动作保留可访问名称；Calendar 保留日期行为并改用 Themes Button/IconButton 与 Theme token，旧 shadcn Button wrapper 及 `buttonVariants` 删除。
+
 - 2026-08-24: 管理面板完成 Lucide 到 Radix Icons 的整族迁移。状态、搜索、关闭、展开、刷新和动作图标统一使用 `@radix-ui/react-icons`，保留状态文字、可访问名称、加载旋转与品牌 SVG；`lucide-react` 已从前端依赖和锁文件删除。
 
 - 2026-08-24: 管理面板接入 Radix Themes 与 Radix Icons 基础层。应用根和迁移期 Primitive Portal 共用同一亮色 Theme 配置；Radix token 映射到迁移期 Tailwind 语义名,业务页面按组件族继续迁移。

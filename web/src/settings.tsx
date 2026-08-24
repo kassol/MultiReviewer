@@ -12,7 +12,7 @@ import {
 } from "@/components/model-composer";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/theme-button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -58,7 +58,8 @@ export function SettingsPage({ canWrite }: { canWrite: boolean }) {
               className="mt-2"
               type="button"
               variant="outline"
-              size="xs"
+              color="gray"
+              size={{ initial: "4", sm: "1" }}
               disabled={settings.isFetching}
               onClick={() => void settings.refetch()}
             >
@@ -201,6 +202,9 @@ function SettingsForm({ settings }: { settings: Settings }) {
         <div className="flex flex-wrap items-center gap-3 rounded-sm border bg-muted/50 px-3 py-3">
           <Button
             type="button"
+            variant="solid"
+            highContrast
+            size={{ initial: "4", sm: "2" }}
             disabled={saveModels.isPending || modelSaveBlocked}
             onClick={() => {
               setModelFeedback(null);
@@ -267,13 +271,15 @@ function SettingsForm({ settings }: { settings: Settings }) {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-3 border-t bg-muted/50 px-4 py-3">
-              <Button type="submit" disabled={saveLimit.isPending}>
+              <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={saveLimit.isPending}>
                 {saveLimit.isPending ? "保存中…" : "保存批次上限"}
               </Button>
               {limitSource === "custom" ? (
                 <Button
                   type="button"
                   variant="outline"
+                  color="gray"
+                  size={{ initial: "4", sm: "2" }}
                   disabled={saveLimit.isPending}
                   onClick={() => {
                     setLimitFeedback(null);

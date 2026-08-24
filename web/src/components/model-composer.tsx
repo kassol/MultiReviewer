@@ -7,8 +7,8 @@ import { Cross2Icon } from "@radix-ui/react-icons";
 import { useEffect, useMemo, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
+import { Button } from "@/components/theme-button";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -286,7 +286,8 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
           <Button
             type="button"
             variant="outline"
-            size="xs"
+            color="gray"
+            size={{ initial: "4", sm: "1" }}
             disabled={query.isFetching}
             onClick={() => void query.refetch()}
           >

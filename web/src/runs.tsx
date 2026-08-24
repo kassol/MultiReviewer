@@ -6,8 +6,8 @@ import { CheckCircledIcon, CrossCircledIcon, ExclamationTriangleIcon } from "@ra
 
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
+import { Button } from "@/components/theme-button";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -417,7 +417,8 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
                           <td className="px-2 py-2.5 align-top">
                             <Button
                               variant="outline"
-                              size="xs"
+                              color="gray"
+                              size={{ initial: "4", sm: "1" }}
                               disabled={rerun.isPending}
                               onClick={() => rerun.mutate(run)}
                             >
@@ -470,8 +471,8 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
                           {canRerun ? (
                             <Button
                               variant="outline"
-                              size="sm"
-                              className="min-h-11"
+                              color="gray"
+                              size={{ initial: "4", sm: "1" }}
                               disabled={rerun.isPending}
                               onClick={() => rerun.mutate(run)}
                             >
@@ -496,7 +497,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
               {canRerun ? "如需对已有 pull request 重新运行审查，请到仓库页选择仓库并输入 PR 编号。" : null}
             </p>
             {canRerun ? (
-              <Button variant="outline" size="sm" asChild>
+              <Button variant="outline" color="gray" size={{ initial: "4", sm: "1" }} asChild>
                 <Link to="/repos">去仓库页</Link>
               </Button>
             ) : null}

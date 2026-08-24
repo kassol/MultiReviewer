@@ -6,7 +6,7 @@ import { useState } from "react";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/theme-button";
 import { Calendar } from "@/components/ui/calendar";
 import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -197,7 +197,7 @@ export function StatsPage() {
         actions={
           <Popover>
             <PopoverTrigger asChild>
-              <Button variant="outline" size="lg" className="max-w-full text-xs">
+              <Button variant="outline" color="gray" size="3" className="max-w-full text-xs">
                 <CalendarIcon />
                 <span className={from === "" ? undefined : "font-mono"}>{from === "" ? "起始不限" : from}</span>
                 <span className="text-muted-foreground">→</span>
