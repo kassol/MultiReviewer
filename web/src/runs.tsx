@@ -626,7 +626,14 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
           ) : null}
           {flat.length > 0 && visible.length === 0 ? (
             <p className="rounded-lg border border-dashed border-card-line px-4 py-6 text-center text-text-muted">
-              当前筛选条件下没有审查记录。
+              {/*
+                筛选只作用于已经加载的那几页。还有更早的记录没取回来时,说「没有记录」
+                会和总览上的待处置计数对不上——那个数也是按已加载的轮次算的,但人不会
+                这么读。
+              */}
+              {runs.hasNextPage
+                ? "已加载的记录里没有符合条件的，继续下滑会取回更早的记录。"
+                : "没有符合条件的审查记录。"}
             </p>
           ) : null}
           <div ref={sentinel} />
