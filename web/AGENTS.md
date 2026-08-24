@@ -78,7 +78,7 @@
 
 - 2026-08-24: 修复 Radix Themes 未分层样式覆盖 Tailwind 响应式显隐。样式入口声明 `theme < base < radix < components < utilities` 并把 Radix 样式导入 `radix` layer；Card、Button、Table 上的 `hidden` 与断点 display utility 恢复预期。模型服务返回列表链接补精确路由匹配，详情地址不再误标当前。
 
-- 2026-08-24: 完成 Radix 迁移后的产品组件与页面结构收口。主从列表统一为 `MasterListItem`;日期范围、可编辑 model id 与空态分别收进 `DateRangePicker`、`EditableModelCombobox`、`EmptyState`;受控浮层通过 `useDialogReturnFocus` 恢复真实触发点。页面按路由分块，仓库与模型服务在 `lg` 起使用双栏和两侧局部滚动，640–1023px 保持列表／详情单层切换。源码结构已核对，部署实例的端到端验收仍待执行。
+- 2026-08-24: 完成 Radix 迁移后的产品组件与页面结构收口。主从列表统一为 `MasterListItem`;日期范围、可编辑 model id 与空态分别收进 `DateRangePicker`、`EditableModelCombobox`、`EmptyState`;受控浮层通过 `useDialogReturnFocus` 恢复真实触发点。页面按路由分块，仓库与模型服务在 `lg` 起使用双栏和两侧局部滚动，640–1023px 保持列表／详情单层切换。部署实例已用 ego-browser 完成 2056px、768px 与 390px 端到端验收。
 
 - 2026-08-24: 修复 Themes `IconButton` 自身定位规则覆盖 utility 定位造成的弹窗关闭按钮错位。五处弹窗统一由外层容器定位右上角，IconButton 只负责按钮外观与触控尺寸。
 

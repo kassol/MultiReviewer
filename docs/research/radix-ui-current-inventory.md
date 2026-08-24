@@ -155,17 +155,16 @@ rg -n '<(button|input|select|textarea|details|dialog|progress)\\b' web/src --glo
 | 专用行为单一产品入口 | [`DateRangePicker`](../../web/src/components/date-range-picker.tsx#L31)、[`EditableModelCombobox`](../../web/src/components/editable-model-combobox.tsx#L22) | 源码完成 |
 | 空态与焦点返回 | [`EmptyState`](../../web/src/components/empty-state.tsx#L15)、[`useDialogReturnFocus`](../../web/src/components/use-dialog-return-focus.ts#L15) | 源码完成 |
 | 图标统一 | 21 个业务图标全部来自 Radix Icons；品牌 SVG 单列 | 源码完成 |
-| `lg` 主从布局与局部滚动 | 仓库、模型服务均使用 `h-full/min-h-0`、单层返回入口与两侧局部滚动 | 源码完成，需运行时确认 |
-| 按路由加载 | 页面使用 `React.lazy + Suspense`，模型服务子路由共用动态模块 | 源码完成，需浏览器网络面板确认产物加载 |
+| `lg` 主从布局与局部滚动 | 仓库、模型服务均使用 `h-full/min-h-0`、单层返回入口与两侧局部滚动 | 部署实例验证通过 |
+| 按路由加载 | 页面使用 `React.lazy + Suspense`，模型服务子路由共用动态模块 | 部署实例验证通过 |
 
-仍需按 [`DESIGN.md` 部署交付验收清单](../../web/DESIGN.md#L354-L370) 在部署实例验证：
+2026-08-24 已按 [`DESIGN.md` 部署交付验收清单](../../web/DESIGN.md#L354-L372) 使用 ego-browser 验证：
 
-1. MasterListItem 的默认、hover、focus、Badge 组合对比度，以及主导航与 Tab 当前态。
-2. 95% scaling、small radius、桌面密度和 390px 下的 44px 触控目标。
-3. 仓库、模型服务、评审记录与模型组合的确定高度、局部滚动、粘性表头和批量操作栏。
-4. 640–1023px 单层列表／详情和 1024px 以上双栏切换；前进、后退、刷新与返回入口。
-5. 多步 Dialog 的焦点进入/返回、取消后底层 provider/Tab/滚动恢复、触发元素卸载后的后备焦点、矮屏内部滚动。
-6. DateRangePicker、EditableModelCombobox 与 EmptyState 的鼠标、键盘、长内容和窄屏行为。
-7. 路由分块的实际网络加载，以及加载、错误、禁用和动态反馈在真实数据下的可读性。
+1. 2056×1203：页面无横向或整页纵向溢出；模型服务双栏与两侧局部滚动生效；openrouter 模型初始渲染 40 行，真实点击后增至 80 行；模型服务和审查策略的选中项在默认与 hover 下保持同一深色背景和白字；主导航、provider 与 Tab 各层只有一个当前项。
+2. 768×900：模型服务根地址只显示列表，详情地址只显示详情与返回入口；仓库列表、详情和返回可往返；所有检查页面均无横向溢出。
+3. 390×844：应用壳切为顶部横向导航；评审记录显示移动卡片并隐藏桌面表格；处置率显示移动折叠项并隐藏桌面卡片；模型服务保持单层列表／详情。
+4. DateRangePicker 在 390px 下把两个月纵向排列，77 个可见日期按钮的最小尺寸为 44×44px；关闭后焦点返回日期触发按钮。EditableModelCombobox 可打开自动发现候选，关闭后焦点返回候选触发按钮。
+5. 新建角色 Dialog 在桌面和 390px 下均把初始焦点放进表单；取消后底层当前导航不变，焦点返回实际“新建角色”按钮。
+6. 生产资源记录显示页面分块按访问加载；模型服务、设置、仓库、评审记录、处置率与访问控制均加载各自 chunk，深层路由刷新正常。
 
-本清单只证明源码结构和静态映射；运行时继续按项目规范使用部署实例与 ego-browser 验收。
+本清单同时记录源码结构、静态映射与本次部署运行证据；后续视觉改动仍按项目规范在部署实例使用 ego-browser 复验。
