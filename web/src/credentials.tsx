@@ -4,7 +4,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useBlocker, useNavigate } from "@tanstack/react-router";
-import { AlertTriangle, Check, ChevronDown, CircleX, RefreshCw, Trash2 } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, CircleX, RefreshCw, Search, Trash2 } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -1724,6 +1724,17 @@ function discoveryDiffersFromRuntime(model: ModelServiceModel): boolean {
 }
 
 function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
+  const [search, setSearch] = useState("");
+  const normalizedSearch = search.trim().toLowerCase();
+  const filteredModels = useMemo(() => {
+    if (normalizedSearch === "") return models;
+    const terms = normalizedSearch.split(/\s+/);
+    return models.filter((model) => {
+      const haystack = [model.discovery.name ?? "", model.identity].join(" ").toLowerCase();
+      return terms.every((term) => haystack.includes(term));
+    });
+  }, [models, normalizedSearch]);
+
   if (models.length === 0) {
     return (
       <section className="rounded-md border px-4 py-8 text-center">
@@ -1734,75 +1745,56 @@ function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
   }
   return (
     <section aria-label="模型列表" className="overflow-hidden rounded-md border">
-      <div className="border-b bg-muted px-3 py-2">
-        <p className="font-medium">
-          <span className="font-mono tabular-nums">{models.length}</span> 个合并后的模型标识
+      <div className="flex flex-wrap items-center gap-3 border-b bg-muted px-3 py-2.5">
+        <p className="min-w-0 flex-1 font-medium" aria-live="polite">
+          {normalizedSearch === "" ? (
+            <><span className="font-mono tabular-nums">{models.length}</span> 个模型</>
+          ) : (
+            <><span className="font-mono tabular-nums">{filteredModels.length}</span> / <span className="font-mono tabular-nums">{models.length}</span> 个模型</>
+          )}
         </p>
+        <div className="relative w-full sm:w-64">
+          <Search aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Label htmlFor="model-list-search" className="sr-only">筛选模型</Label>
+          <Input
+            id="model-list-search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="按名称或 model id 筛选"
+            className="pl-8"
+          />
+        </div>
       </div>
-      <div className="divide-y xl:hidden">
-        {models.map((model) => (
-          <article key={model.identity} className={cn("px-3 py-4", !model.available && "bg-destructive/5")}>
-            <div className="flex flex-wrap items-start justify-between gap-2">
-              <div className="min-w-0 flex-1">
-                <p className="break-words font-medium">{model.discovery.name ?? "未提供显示名"}</p>
-                <p className="mt-0.5 break-all font-mono text-xs text-muted-foreground">{model.identity}</p>
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {model.sources.map((source) => (
-                    <Badge key={source} variant="outline" className="whitespace-nowrap">
-                      {SOURCE_LABEL[source]}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-              <ModelAvailability model={model} />
-            </div>
-            <div className="mt-3 border-t pt-3">
-              <ModelRuntimeFacts model={model} />
-              <ModelDiscoveryDifference model={model} />
-            </div>
-          </article>
-        ))}
-      </div>
-      <div className="hidden overflow-x-auto xl:block">
-        <table className="w-full min-w-[700px] table-fixed text-left text-sm">
-          <colgroup>
-            <col className="w-[34%]" />
-            <col className="w-[51%]" />
-            <col className="w-[15%]" />
-          </colgroup>
-          <thead className="border-b text-xs text-muted-foreground">
-            <tr>
-              <th className="px-3 py-2 font-medium">模型</th>
-              <th className="px-3 py-2 font-medium">运行规格</th>
-              <th className="px-3 py-2 font-medium">状态</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y">
-            {models.map((model) => (
-              <tr key={model.identity} className={cn(!model.available && "bg-destructive/5")}>
-                <td className="px-3 py-3 align-top">
-                  <p className="break-words font-medium">{model.discovery.name ?? "未提供显示名"}</p>
-                  <p className="mt-0.5 break-all font-mono text-xs text-muted-foreground">{model.identity}</p>
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {model.sources.map((source) => (
-                      <Badge key={source} variant="outline" className="whitespace-nowrap">
-                        {SOURCE_LABEL[source]}
-                      </Badge>
-                    ))}
+      {filteredModels.length === 0 ? (
+        <div className="px-4 py-8 text-center text-muted-foreground">
+          没有匹配的模型。可以换一个名称或 model id。
+        </div>
+      ) : (
+        <div className="max-h-[min(58vh,640px)] divide-y overflow-y-auto">
+          {filteredModels.map((model) => (
+            <article key={model.identity} className={cn("px-3 py-3", !model.available && "bg-destructive/5")}>
+              <div className="grid gap-3 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.35fr)]">
+                <div className="min-w-0">
+                  <div className="flex items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="break-words font-medium">{model.discovery.name ?? "未提供显示名"}</p>
+                      <p className="mt-0.5 break-all font-mono text-xs text-muted-foreground">{model.identity}</p>
+                    </div>
+                    <ModelAvailability model={model} />
                   </div>
-                </td>
-                <td className="px-3 py-3 align-top">
+                  <p className="mt-1 truncate text-xs text-muted-foreground" title={model.sources.map((source) => SOURCE_LABEL[source]).join(" / ")}>
+                    来源：{model.sources.map((source) => SOURCE_LABEL[source]).join(" / ")}
+                  </p>
+                </div>
+                <div className="min-w-0 border-t pt-2 xl:border-l xl:border-t-0 xl:pl-3 xl:pt-0">
                   <ModelRuntimeFacts model={model} />
                   <ModelDiscoveryDifference model={model} />
-                </td>
-                <td className="px-3 py-3 align-top">
-                  <ModelAvailability model={model} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -1833,16 +1825,14 @@ function ModelRuntimeFacts({ model }: { model: ModelServiceModel }) {
   const sources = [...new Set(Object.values(model.runtime.sources).map(fieldSourceLabel))];
   return (
     <div className="space-y-1 text-xs">
-      <p className="break-words">
-        输入：{model.runtime.input.join(" / ")}{" · "}
-        推理：{model.runtime.reasoning ? "声明推理" : "不声明推理"}
+      <p className="flex flex-wrap gap-x-3 gap-y-0.5">
+        <span>输入：{model.runtime.input.join(" / ")}</span>
+        <span>推理：{model.runtime.reasoning ? "声明推理" : "不声明推理"}</span>
+        <span>上下文：<span className="font-mono tabular-nums">{quantity(model.runtime.contextWindow)}</span></span>
+        <span>最大输出：<span className="font-mono tabular-nums">{quantity(model.runtime.maxOutput)}</span></span>
       </p>
-      <p>
-        上下文：<span className="font-mono tabular-nums">{quantity(model.runtime.contextWindow)}</span>{" · "}
-        最大输出：<span className="font-mono tabular-nums">{quantity(model.runtime.maxOutput)}</span>
-      </p>
-      <p className="break-words">
-        <CostValue cost={model.runtime.cost} />{" · "}
+      <p className="flex flex-wrap gap-x-3 gap-y-0.5">
+        <CostValue cost={model.runtime.cost} />
         <span className="text-muted-foreground">规格来源：{sources.join(" / ")}</span>
       </p>
     </div>
