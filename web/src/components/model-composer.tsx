@@ -160,15 +160,23 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                   role="listitem"
                   key={identity}
                   className={cn(
-                    "flex min-w-0 items-start gap-2 rounded-sm border bg-background px-3 py-2",
-                    reason === null ? null : "border-destructive/40 bg-destructive/5",
+                    "flex min-w-0 items-start gap-2 rounded-sm border px-3 py-2",
+                    reason === null
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-destructive/40 bg-destructive/5",
                   )}
                 >
                   <div className="min-w-0 flex-1 space-y-1.5">
                     <p className="break-all font-mono text-xs font-medium">{identity}</p>
                     <div className="flex flex-wrap items-center gap-1">
                       {candidate?.sources.map((source) => (
-                        <Badge key={source} variant="outline">{SOURCE_LABEL[source]}</Badge>
+                        <Badge
+                          key={source}
+                          variant="outline"
+                          className={reason === null ? "border-primary-foreground/35 text-primary-foreground/85" : undefined}
+                        >
+                          {SOURCE_LABEL[source]}
+                        </Badge>
                       ))}
                       {reason === null ? null : (
                         <span className="text-xs text-destructive">{reason}</span>
@@ -178,7 +186,12 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                   <button
                     type="button"
                     aria-label={`移除 ${identity}`}
-                    className="-mr-1 flex size-6 shrink-0 touch-manipulation items-center justify-center rounded-sm text-muted-foreground transition-colors max-sm:size-11 hover:bg-muted hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className={cn(
+                      "-mr-1 flex size-6 shrink-0 touch-manipulation items-center justify-center rounded-sm transition-colors max-sm:size-11 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      reason === null
+                        ? "text-primary-foreground/75 hover:bg-primary-foreground/15 hover:text-primary-foreground"
+                        : "text-muted-foreground hover:bg-muted hover:text-destructive",
+                    )}
                     onClick={() => toggle(identity)}
                   >
                     <X className="size-3.5" />
@@ -223,13 +236,18 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                       className={cn(
                         "flex w-full flex-col items-start gap-0.5 border-b border-border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                         group.provider === selected?.provider
-                          ? "bg-primary/10 text-foreground ring-1 ring-inset ring-primary/30"
+                          ? "bg-primary text-primary-foreground ring-1 ring-inset ring-primary"
                           : "hover:bg-background/60",
                       )}
                       onClick={() => setPickedProvider(group.provider)}
                     >
                       <span className="w-full break-all font-mono font-medium">{group.provider}</span>
-                      <span className="text-xs text-muted-foreground">
+                      <span className={cn(
+                        "text-xs",
+                        group.provider === selected?.provider
+                          ? "text-primary-foreground/75"
+                          : "text-muted-foreground",
+                      )}>
                         <span className="font-mono tabular-nums">{available}</span> 个可选
                         {unavailable === 0 ? null : (
                           <span className="text-destructive">
@@ -391,7 +409,7 @@ function ProviderPane({
               key={model.identity}
               className={cn(
                 "flex min-w-0 items-start gap-2 border-b border-border px-3 py-2 transition-colors",
-                model.available && picked ? "bg-primary/10 ring-1 ring-inset ring-primary/30" : null,
+                model.available && picked ? "bg-primary text-primary-foreground ring-1 ring-inset ring-primary" : null,
                 model.available && !picked ? "hover:bg-muted/60" : null,
                 !model.available ? "bg-destructive/5" : null,
               )}
@@ -406,12 +424,21 @@ function ProviderPane({
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="break-words font-medium">
                     {model.discovery.name ?? model.id}
-                    {picked ? <span className="ml-2 inline-flex rounded-sm bg-primary/15 px-1.5 py-0.5 text-xs font-medium text-primary">已选</span> : null}
+                    {picked ? <span className="ml-2 inline-flex rounded-sm bg-primary-foreground/15 px-1.5 py-0.5 text-xs font-medium text-primary-foreground">已选</span> : null}
                   </span>
-                  <span className="break-all font-mono text-xs text-muted-foreground">{model.id}</span>
+                  <span className={cn(
+                    "break-all font-mono text-xs",
+                    picked ? "text-primary-foreground/75" : "text-muted-foreground",
+                  )}>{model.id}</span>
                   <span className="flex flex-wrap gap-1">
                     {model.sources.map((source) => (
-                      <Badge key={source} variant="outline">{SOURCE_LABEL[source]}</Badge>
+                      <Badge
+                        key={source}
+                        variant="outline"
+                        className={picked ? "border-primary-foreground/35 text-primary-foreground/85" : undefined}
+                      >
+                        {SOURCE_LABEL[source]}
+                      </Badge>
                     ))}
                   </span>
                   {model.available ? null : (
@@ -420,11 +447,14 @@ function ProviderPane({
                     </span>
                   )}
                 </span>
-                <span className="shrink-0 text-left text-xs text-muted-foreground sm:text-right">
+                <span className={cn(
+                  "shrink-0 text-left text-xs sm:text-right",
+                  picked ? "text-primary-foreground/75" : "text-muted-foreground",
+                )}>
                   <span><span className="font-mono tabular-nums">{NUMBER_FORMAT.format(model.runtime.contextWindow)}</span> 上下文</span>
                   <br />
                   {cost === null ? (
-                    <span className="text-warning">{COST_UNKNOWN_NOTE}</span>
+                    <span className={picked ? "text-primary-foreground/75" : "text-warning"}>{COST_UNKNOWN_NOTE}</span>
                   ) : (
                     <span>
                       <span className="font-mono tabular-nums">${cost.input}/M</span> 入 ·{" "}
