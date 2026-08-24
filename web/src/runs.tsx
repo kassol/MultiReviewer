@@ -8,7 +8,7 @@ import {
   CrossCircledIcon,
   ExclamationTriangleIcon,
 } from "@radix-ui/react-icons";
-import { Card, SegmentedControl, Skeleton, Table } from "@radix-ui/themes";
+import { Callout, Card, SegmentedControl, Skeleton, Table, Tooltip } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
 
 import { PageBody } from "@/components/page-body";
@@ -80,21 +80,30 @@ export function RunPill({ run }: { run: RunItem }) {
   const badge = runBadge(run);
   const down = run.models.filter((entry) => entry.failure !== null);
   if (down.length === 0) return badge;
+  const failureSummary = `${down.length}/${run.models.length} 个模型失败，本轮审查结果不完整`;
   return (
     <span className="inline-flex items-center gap-1">
-      <span
-        className="inline-flex shrink-0 items-center text-warning"
-        title={[
-          `${down.length}/${run.models.length} 个模型失败，本轮审查结果不完整`,
-          ...down.map((entry) => `${entry.model}: ${entry.failure}`),
-        ].join("\n")}
+      <Tooltip
+        maxWidth="32rem"
+        content={(
+          <span className="block space-y-1">
+            <span className="block font-medium">{failureSummary}</span>
+            {down.map((entry) => (
+              <span key={entry.model} className="block break-words">
+                <span className="break-all font-mono">{entry.model}</span>：{entry.failure}
+              </span>
+            ))}
+          </span>
+        )}
       >
-        <ExclamationTriangleIcon className="size-4" aria-hidden />
-        {/* title 只对鼠标成立。这句话让屏幕阅读器与触屏也读得到图标的含义。 */}
-        <span className="sr-only">
-          {down.length}/{run.models.length} 个模型失败，本轮审查结果不完整
+        <span
+          tabIndex={0}
+          className="inline-flex shrink-0 items-center rounded-sm text-warning outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+        >
+          <ExclamationTriangleIcon className="size-4" aria-hidden />
+          <span className="sr-only">{failureSummary}</span>
         </span>
-      </span>
+      </Tooltip>
       {badge}
     </span>
   );
@@ -242,15 +251,22 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
 
   // 滚到底部附近自动加载更早的一页。
   const sentinel = useRef<HTMLDivElement>(null);
+  const listViewport = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const target = sentinel.current;
     if (target === null) return;
     const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) void runs.fetchNextPage();
-    });
+      if (
+        runs.hasNextPage &&
+        !runs.isFetchingNextPage &&
+        entries.some((entry) => entry.isIntersecting)
+      ) {
+        void runs.fetchNextPage();
+      }
+    }, { root: listViewport.current, rootMargin: "0px 0px 160px 0px" });
     observer.observe(target);
     return () => observer.disconnect();
-  }, [runs.fetchNextPage, runs.hasNextPage]);
+  }, [runs.fetchNextPage, runs.hasNextPage, runs.isFetchingNextPage]);
 
   const flat = runs.data?.pages.flatMap((page) => page.runs) ?? [];
   const counts = {
@@ -274,7 +290,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
   }, []);
 
   return (
-    <>
+    <div className="flex h-full min-h-0 flex-col">
       <PageHeader
         title="评审记录"
         description={
@@ -284,32 +300,24 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
         }
         actions={<SummaryRate />}
       />
-      <PageBody width="wide" className="gap-3 pb-24 sm:pb-24">
+      <PageBody width="wide" className="min-h-0 flex-1 gap-3 pb-4 sm:pb-4">
         {feedback === null ? null : (
-          <div
+          <Callout.Root
             role={feedback.isError ? "alert" : "status"}
-            className={`flex items-start gap-2 rounded-sm border px-3 py-2 ${
-              feedback.isError
-                ? "border-destructive/30 bg-destructive/5 text-destructive"
-                : "bg-muted text-foreground"
-            }`}
+            color={feedback.isError ? "red" : "green"}
+            size="1"
           >
-            {feedback.isError ? (
-              <CrossCircledIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-            ) : (
-              <CheckCircledIcon className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
-            )}
-            <span>{feedback.text}</span>
-          </div>
+            <Callout.Icon>
+              {feedback.isError ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
+            </Callout.Icon>
+            <Callout.Text>{feedback.text}</Callout.Text>
+          </Callout.Root>
         )}
         {runs.isError ? (
-          <p
-            role="alert"
-            className="flex items-start gap-2 rounded-sm border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive"
-          >
-            <CrossCircledIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-            <span>{(runs.error as Error).message}</span>
-          </p>
+          <Callout.Root role="alert" color="red" size="1">
+            <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+            <Callout.Text>{(runs.error as Error).message}</Callout.Text>
+          </Callout.Root>
         ) : null}
 
         <SegmentedControl.Root
@@ -342,11 +350,20 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
           ))}
         </SegmentedControl.Root>
 
-        {runs.isPending
-          ? [0, 1, 2, 3].map((slot) => <Skeleton key={slot} className="h-14" />)
-          : null}
+        <div
+          ref={listViewport}
+          className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain pr-1"
+          aria-busy={runs.isPending || runs.isFetchingNextPage}
+          aria-label="评审记录列表"
+        >
+          {runs.isPending ? (
+            <div className="space-y-2" role="status" aria-live="polite">
+              <span className="sr-only">正在加载评审记录</span>
+              {[0, 1, 2, 3].map((slot) => <Skeleton key={slot} className="h-14" />)}
+            </div>
+          ) : null}
 
-        {visible.length > 0 ? (
+          {visible.length > 0 ? (
           <Table.Root
             size="1"
             variant="surface"
@@ -354,7 +371,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
             className="hidden min-w-0 max-w-full xl:block"
           >
             <caption className="sr-only">审查记录列表</caption>
-            <Table.Header className="bg-muted text-xs text-muted-foreground">
+            <Table.Header className="sticky top-0 z-10 bg-muted text-xs text-muted-foreground">
               <Table.Row>
                 <Table.ColumnHeaderCell width="3rem">状态</Table.ColumnHeaderCell>
                 <Table.ColumnHeaderCell width="17%">仓库 / PR</Table.ColumnHeaderCell>
@@ -436,10 +453,10 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
               ))}
             </Table.Body>
           </Table.Root>
-        ) : null}
+          ) : null}
 
-        {visible.length > 0 ? (
-          <div className="space-y-4 xl:hidden" aria-label="审查记录列表">
+          {visible.length > 0 ? (
+          <div className="space-y-4 xl:hidden">
             {visibleGroups.map((group) => (
               <section key={group.day} aria-labelledby={`run-day-${group.day}`} className="space-y-2">
                 <h2 id={`run-day-${group.day}`} className="font-mono text-xs font-semibold text-muted-foreground">
@@ -489,9 +506,9 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
               </section>
             ))}
           </div>
-        ) : null}
+          ) : null}
 
-        {flat.length === 0 && !runs.isPending && !runs.isError ? (
+          {flat.length === 0 && !runs.isPending && !runs.isError ? (
           <Card size="2" className="flex flex-col items-start gap-1.5">
             <h2 className="text-base font-semibold">暂无审查记录</h2>
             <p className="text-muted-foreground">
@@ -504,14 +521,14 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
               </Button>
             ) : null}
           </Card>
-        ) : null}
-        {flat.length > 0 && visible.length === 0 ? (
+          ) : null}
+          {flat.length > 0 && visible.length === 0 ? (
           <p className="rounded-sm border border-dashed border-border px-4 py-6 text-center text-muted-foreground">
             当前筛选条件下没有审查记录。
           </p>
-        ) : null}
-        <div ref={sentinel} />
-        <p className="pt-2 text-center text-xs text-muted-foreground">
+          ) : null}
+          <div ref={sentinel} />
+          <p className="pt-2 text-center text-xs text-muted-foreground" aria-live="polite">
           {runs.isFetchingNextPage
             ? "加载更早的审查记录…"
             : runs.hasNextPage
@@ -519,8 +536,9 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
               : flat.length > 0
                 ? "已加载全部记录"
                 : ""}
-        </p>
+          </p>
+        </div>
       </PageBody>
-    </>
+    </div>
   );
 }

@@ -3,8 +3,8 @@
  * 不连坐批次上限。组合候选与仓库覆盖共用 `ModelComposer` 的模型服务投影。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDownIcon } from "@radix-ui/react-icons";
-import { Skeleton, Text, TextField } from "@radix-ui/themes";
+import { CheckCircledIcon, ChevronDownIcon, CrossCircledIcon } from "@radix-ui/react-icons";
+import { Callout, Card, Skeleton, Text, TextField } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
 import { useState } from "react";
 
@@ -16,7 +16,6 @@ import {
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/theme-button";
-import { Card } from "@radix-ui/themes";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { modelIdentity, parseModelIdentity } from "./model-services.ts";
@@ -52,10 +51,11 @@ export function SettingsPage({ canWrite }: { canWrite: boolean }) {
       />
       <PageBody width="form">
         {settings.isError ? (
-          <div className="rounded-sm bg-destructive/5 px-3 py-3 text-destructive">
-            <p role="alert">{(settings.error as Error).message}</p>
+          <Callout.Root role="alert" color="red" size="1">
+            <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+            <Callout.Text>{(settings.error as Error).message}</Callout.Text>
             <Button
-              className="mt-2"
+              className="w-fit"
               type="button"
               variant="outline"
               color="gray"
@@ -65,13 +65,13 @@ export function SettingsPage({ canWrite }: { canWrite: boolean }) {
             >
               {settings.isFetching ? "正在重试…" : "重试"}
             </Button>
-          </div>
+          </Callout.Root>
         ) : settings.data === undefined ? (
-          <>
-            <Skeleton className="h-[136px]" />
-            <Skeleton className="h-[460px]" />
-            <Skeleton className="h-[142px]" />
-          </>
+          <div className="flex flex-col gap-5" role="status" aria-label="正在读取审查策略" aria-busy="true">
+            <Skeleton aria-hidden className="h-[136px]" />
+            <Skeleton aria-hidden className="h-[460px]" />
+            <Skeleton aria-hidden className="h-[142px]" />
+          </div>
         ) : (
           // 表单以读回来的设置为初值，所以等数据到了再挂载。
           canWrite ? <SettingsForm settings={settings.data} /> : <ReadOnlySettings settings={settings.data} />
@@ -129,6 +129,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
   const [limitFeedback, setLimitFeedback] = useState<{
     text: string;
     isError: boolean;
+    isField: boolean;
   } | null>(null);
 
   const saveModels = useMutation({
@@ -172,7 +173,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
       setLimit(String(saved.maxChangedLinesPerBatch));
       setLimitSource(saved.maxChangedLinesPerBatchSource);
       setLimitVersion(saved.maxChangedLinesPerBatchVersion);
-      setLimitFeedback({ text: "批次上限已保存。", isError: false });
+      setLimitFeedback({ text: "批次上限已保存。", isError: false, isField: false });
       queryClient.setQueryData(["settings"], saved);
     },
     onError: (error: Error) => {
@@ -182,7 +183,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
         setLimitVersion(error.latest.maxChangedLinesPerBatchVersion);
         queryClient.setQueryData(["settings"], error.latest);
       }
-      setLimitFeedback({ text: error.message, isError: true });
+      setLimitFeedback({ text: error.message, isError: true, isField: false });
     },
   });
 
@@ -221,15 +222,20 @@ function SettingsForm({ settings }: { settings: Settings }) {
             <span className="text-muted-foreground">模型状态确认后即可保存组合。</span>
           ) : modelFeedback === null ? (
             <span className="text-xs text-muted-foreground">仅保存模型组合，不会改动批次上限。</span>
-          ) : (
-            <span
-              role={modelFeedback.isError ? "alert" : "status"}
-              className={modelFeedback.isError ? "text-destructive" : "text-success"}
-            >
-              {modelFeedback.text}
-            </span>
-          )}
+          ) : null}
         </div>
+        {modelFeedback === null ? null : (
+          <Callout.Root
+            role={modelFeedback.isError ? "alert" : "status"}
+            color={modelFeedback.isError ? "red" : "green"}
+            size="1"
+          >
+            <Callout.Icon>
+              {modelFeedback.isError ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
+            </Callout.Icon>
+            <Callout.Text>{modelFeedback.text}</Callout.Text>
+          </Callout.Root>
+        )}
       </section>
 
       <Collapsible.Root className="group/batch-limit border-t pt-5">
@@ -255,7 +261,11 @@ function SettingsForm({ settings }: { settings: Settings }) {
             setLimitFeedback(null);
             const parsed = Number(limit.trim());
             if (limit.trim() === "" || !Number.isInteger(parsed) || parsed <= 0) {
-              setLimitFeedback({ text: "批次上限要填正整数，这次没保存。", isError: true });
+              setLimitFeedback({
+                text: "批次上限要填正整数，这次没保存。",
+                isError: true,
+                isField: true,
+              });
               return;
             }
             saveLimit.mutate(parsed);
@@ -272,11 +282,12 @@ function SettingsForm({ settings }: { settings: Settings }) {
                     <TextField.Root
                       id="max-changed-lines"
                       size={{ initial: "3", sm: "2" }}
-                      color={limitFeedback?.isError ? "red" : "gray"}
+                      color={limitFeedback?.isField ? "red" : "gray"}
                       className="min-w-0 w-40 font-mono max-sm:min-h-11"
                       inputMode="numeric"
                       value={limit}
-                      aria-invalid={limitFeedback?.isError || undefined}
+                      aria-invalid={limitFeedback?.isField || undefined}
+                      aria-describedby={limitFeedback?.isField ? "max-changed-lines-error" : undefined}
                       onChange={(event) => {
                         setLimit(event.target.value);
                         setLimitFeedback(null);
@@ -305,17 +316,31 @@ function SettingsForm({ settings }: { settings: Settings }) {
                   ) : null}
                   {limitFeedback === null ? (
                     <span className="text-xs text-muted-foreground">单独保存，不受模型组合可用性影响。</span>
-                  ) : (
+                  ) : limitFeedback.isField ? (
                     <span
-                      role={limitFeedback.isError ? "alert" : "status"}
-                      className={limitFeedback.isError ? "text-destructive" : "text-success"}
+                      id="max-changed-lines-error"
+                      role="alert"
+                      className="text-destructive"
                     >
                       {limitFeedback.text}
                     </span>
-                  )}
+                  ) : null}
                 </div>
               </div>
             </Card>
+            {limitFeedback === null || limitFeedback.isField ? null : (
+              <Callout.Root
+                role={limitFeedback.isError ? "alert" : "status"}
+                color={limitFeedback.isError ? "red" : "green"}
+                size="1"
+                className="mt-3"
+              >
+                <Callout.Icon>
+                  {limitFeedback.isError ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
+                </Callout.Icon>
+                <Callout.Text>{limitFeedback.text}</Callout.Text>
+              </Callout.Root>
+            )}
           </form>
         </Collapsible.Content>
       </Collapsible.Root>

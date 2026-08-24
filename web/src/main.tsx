@@ -10,30 +10,17 @@ import {
   useRouter,
 } from "@tanstack/react-router";
 import { ExitIcon } from "@radix-ui/react-icons";
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 
 import { Mark } from "@/components/mark";
+import { EmptyState } from "@/components/empty-state";
 import { PanelTheme } from "@/components/panel-theme";
-import { Card, IconButton } from "@radix-ui/themes";
+import { Card, IconButton, Skeleton, Tooltip } from "@radix-ui/themes";
 
-import { AccessControlPage } from "./access-control.tsx";
 import { api } from "./api.ts";
-import {
-  BuiltinServiceDiscoverPage,
-  BuiltinServiceVerifyPage,
-  CustomServiceDiscoverPage,
-  CustomServiceVerifyPage,
-  ModelServiceSetupLayout,
-  ModelServiceSourcePage,
-  ModelServicesPage,
-  type ModelServiceTab,
-} from "./credentials.tsx";
+import type { ModelServiceTab } from "./credentials.tsx";
 import { injected } from "./injected.ts";
-import { LoginPage } from "./login.tsx";
-import { PasswordPage } from "./password.tsx";
-import { ReposPage } from "./repos.tsx";
-import { RunsPage } from "./runs.tsx";
 import {
   clearPanelSession,
   hasPermission,
@@ -41,20 +28,46 @@ import {
   type PanelPermission,
   type PanelSession,
 } from "./session.ts";
-import { SettingsPage } from "./settings.tsx";
 import { SETUP_STATUS_QUERY_KEY, SetupChecklist } from "./setup-checklist.tsx";
-import { StatsPage } from "./stats.tsx";
 import "@radix-ui/themes/styles.css";
 import "./styles.css";
+
+const AccessControlPage = lazy(async () => ({ default: (await import("./access-control.tsx")).AccessControlPage }));
+const LoginPage = lazy(async () => ({ default: (await import("./login.tsx")).LoginPage }));
+const PasswordPage = lazy(async () => ({ default: (await import("./password.tsx")).PasswordPage }));
+const ReposPage = lazy(async () => ({ default: (await import("./repos.tsx")).ReposPage }));
+const RunsPage = lazy(async () => ({ default: (await import("./runs.tsx")).RunsPage }));
+const SettingsPage = lazy(async () => ({ default: (await import("./settings.tsx")).SettingsPage }));
+const StatsPage = lazy(async () => ({ default: (await import("./stats.tsx")).StatsPage }));
+const credentialsModule = () => import("./credentials.tsx");
+const BuiltinServiceDiscoverPage = lazy(async () => ({ default: (await credentialsModule()).BuiltinServiceDiscoverPage }));
+const BuiltinServiceVerifyPage = lazy(async () => ({ default: (await credentialsModule()).BuiltinServiceVerifyPage }));
+const CustomServiceDiscoverPage = lazy(async () => ({ default: (await credentialsModule()).CustomServiceDiscoverPage }));
+const CustomServiceVerifyPage = lazy(async () => ({ default: (await credentialsModule()).CustomServiceVerifyPage }));
+const ModelServiceSetupLayout = lazy(async () => ({ default: (await credentialsModule()).ModelServiceSetupLayout }));
+const ModelServiceSourcePage = lazy(async () => ({ default: (await credentialsModule()).ModelServiceSourcePage }));
+const ModelServicesPage = lazy(async () => ({ default: (await credentialsModule()).ModelServicesPage }));
 
 const { prefix } = injected();
 
 const rootRoute = createRootRoute({ component: () => <Outlet /> });
 
+function PageLoading() {
+  return (
+    <div className="w-full max-w-[760px] p-4 sm:p-5" role="status" aria-label="正在加载页面" aria-busy="true">
+      <Card size="2" className="flex flex-col gap-3">
+        <Skeleton aria-hidden className="h-6 w-40" />
+        <Skeleton aria-hidden className="h-4 w-64 max-w-full" />
+        <Skeleton aria-hidden className="h-40 w-full" />
+      </Card>
+    </div>
+  );
+}
+
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
-  component: LoginPage,
+  component: () => <Suspense fallback={<PageLoading />}><LoginPage /></Suspense>,
 });
 
 type ShellContext = { session: PanelSession };
@@ -126,23 +139,29 @@ function Shell() {
       <aside className="flex min-w-0 max-w-full shrink-0 flex-col overflow-hidden border-border bg-chrome max-sm:border-b sm:overflow-visible sm:border-r">
         <div className="flex min-h-14 shrink-0 items-center gap-2 border-b border-border px-3">
           <Mark className="size-5 shrink-0 text-primary" />
-          <span className="truncate font-semibold tracking-tight" title="MultiReviewer">MultiReviewer</span>
+          <span className="truncate font-semibold tracking-tight">MultiReviewer</span>
           <div className="ml-auto flex min-w-0 items-center gap-1 sm:hidden">
-            <span className="max-w-28 truncate text-xs text-muted-foreground" title={session.displayName ?? session.username}>
-              {session.displayName ?? session.username}
-            </span>
-            <IconButton
-              type="button"
-              variant="ghost"
-              color="gray"
-              size="3"
-              aria-label={`退出登录 ${session.username}`}
-              title="退出登录"
-              onClick={() => void logout()}
-              className="shrink-0 touch-manipulation max-sm:min-h-11 max-sm:min-w-11"
-            >
-              <ExitIcon className="size-4" />
-            </IconButton>
+            <Tooltip content={session.displayName ?? session.username}>
+              <span
+                tabIndex={0}
+                className="max-w-28 truncate rounded-sm text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
+              >
+                {session.displayName ?? session.username}
+              </span>
+            </Tooltip>
+            <Tooltip content="退出登录">
+              <IconButton
+                type="button"
+                variant="ghost"
+                color="gray"
+                size="3"
+                aria-label={`退出登录 ${session.username}`}
+                onClick={() => void logout()}
+                className="shrink-0 touch-manipulation max-sm:min-h-11 max-sm:min-w-11"
+              >
+                <ExitIcon className="size-4" aria-hidden />
+              </IconButton>
+            </Tooltip>
           </div>
         </div>
         <p className="flex items-center justify-between px-3 pt-2 text-xs text-muted-foreground sm:hidden">
@@ -170,28 +189,45 @@ function Shell() {
         <div className="mt-auto hidden border-t border-border p-2 sm:block">
           <div className="flex min-w-0 items-center gap-2 px-2 py-1.5">
             <div className="min-w-0 flex-1">
-              <p className="truncate font-medium" title={session.displayName ?? session.username}>{session.displayName ?? session.username}</p>
+              <Tooltip content={session.displayName ?? session.username}>
+                <p
+                  tabIndex={0}
+                  className="truncate rounded-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
+                >
+                  {session.displayName ?? session.username}
+                </p>
+              </Tooltip>
               {session.displayName === null ? null : (
-                <p className="truncate text-xs text-muted-foreground" title={session.username}>{session.username}</p>
+                <Tooltip content={session.username}>
+                  <p
+                    tabIndex={0}
+                    className="truncate rounded-sm text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
+                  >
+                    {session.username}
+                  </p>
+                </Tooltip>
               )}
             </div>
-            <IconButton
-              type="button"
-              variant="ghost"
-              color="gray"
-              size="2"
-              aria-label={`退出登录 ${session.username}`}
-              title="退出登录"
-              onClick={() => void logout()}
-              className="shrink-0"
-            >
-              <ExitIcon className="size-4" />
-            </IconButton>
+            <Tooltip content="退出登录">
+              <IconButton
+                type="button"
+                variant="ghost"
+                color="gray"
+                size="2"
+                aria-label={`退出登录 ${session.username}`}
+                onClick={() => void logout()}
+                className="shrink-0"
+              >
+                <ExitIcon className="size-4" aria-hidden />
+              </IconButton>
+            </Tooltip>
           </div>
         </div>
       </aside>
       <main id="panel-main-scroll" className="min-h-0 min-w-0 flex-1 overflow-auto bg-background">
-        <div className="min-h-full w-full max-w-7xl"><Outlet /></div>
+        <div className="h-full min-h-0 w-full max-w-7xl">
+          <Suspense fallback={<PageLoading />}><Outlet /></Suspense>
+        </div>
       </main>
     </div>
   );
@@ -248,7 +284,7 @@ const runsRoute = protectedPage("/runs", "review:read", () => {
   const { session } = shellRoute.useRouteContext();
   return <RunsPage canRerun={hasPermission(session, "review:rerun")} />;
 });
-const statsRoute = protectedPage("/stats", "review:read", StatsPage);
+const statsRoute = protectedPage("/stats", "review:read", () => <StatsPage />);
 function ModelServicesRoutePage({
   provider,
   tab,
@@ -408,12 +444,18 @@ function ZeroPermissionPage() {
   const { session } = shellRoute.useRouteContext();
   return (
     <div className="flex min-h-full items-center justify-center p-6">
-      <Card size="2" className="flex flex-col w-[30rem] max-w-full items-start gap-2">
-        <h1 className="text-lg font-semibold">当前账号暂无访问权限</h1>
-        <p className="text-muted-foreground">当前账号尚未分配角色。请联系系统管理员完成角色分配，然后刷新页面。</p>
-        <p className="text-muted-foreground">系统管理员：{session.systemAdmins.join("、")}</p>
-        <Link to="/password" className="text-sm underline underline-offset-4">修改密码</Link>
-      </Card>
+      <EmptyState
+        title="当前账号暂无访问权限"
+        titleAs="h1"
+        description={(
+          <>
+            <span className="block">当前账号尚未分配角色。请联系系统管理员完成角色分配，然后刷新页面。</span>
+            <span className="mt-1 block">系统管理员：{session.systemAdmins.join("、")}</span>
+          </>
+        )}
+        action={<Link to="/password" className="text-sm underline underline-offset-4">修改密码</Link>}
+        className="w-[30rem] max-w-full rounded-md border border-border bg-card p-4"
+      />
     </div>
   );
 }

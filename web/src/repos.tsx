@@ -1,12 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
-import { CheckCircledIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, UpdateIcon } from "@radix-ui/react-icons";
-import { AlertDialog, Callout, Card, Dialog, Flex, IconButton, Skeleton, Text, TextField } from "@radix-ui/themes";
+import { ArrowLeftIcon, CheckCircledIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, UpdateIcon } from "@radix-ui/react-icons";
+import { AlertDialog, Callout, Card, Dialog, Flex, IconButton, Skeleton, Text, TextField, Tooltip } from "@radix-ui/themes";
 
 import { HelpTooltip } from "@/components/help-tooltip";
+import { EmptyState } from "@/components/empty-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
+import { useDialogReturnFocus } from "@/components/use-dialog-return-focus";
+import {
+  MasterListItem,
+  MasterListItemText,
+} from "@/components/master-list-item";
 import {
   Command,
   CommandGroup,
@@ -95,24 +101,32 @@ export function ReposPage({
   const registrationReady = setup.data?.reviewConfigurationReady === true;
 
   return (
-    <>
-      <PageHeader
-        title="仓库"
-        description="已接入 MultiReviewer 的代码仓库。选择仓库查看准入 Key、模型组合与最近的审查记录。"
-        actions={canWrite ? (
-          <Button variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={!registrationReady} onClick={() => setRegistering(true)}>注册仓库</Button>
-        ) : undefined}
-      />
-      <div className="flex min-h-full flex-col lg:grid lg:grid-cols-[248px_minmax(0,1fr)]">
-        <aside
-          aria-label="已注册仓库"
-          className="max-h-56 overflow-y-auto border-b border-border bg-chrome lg:max-h-none lg:border-r lg:border-b-0"
-        >
+    <Dialog.Root open={registering} onOpenChange={setRegistering}>
+      <div className="flex h-full min-h-0 flex-col overflow-hidden">
+        <PageHeader
+          title="仓库"
+          description="已接入 MultiReviewer 的代码仓库。选择仓库查看准入 Key、模型组合与最近的审查记录。"
+          actions={canWrite ? (
+            <Dialog.Trigger>
+              <Button id="register-repo-trigger" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={!registrationReady}>注册仓库</Button>
+            </Dialog.Trigger>
+          ) : undefined}
+        />
+        <div className="grid min-h-0 flex-1 overflow-hidden lg:grid-cols-[248px_minmax(0,1fr)]">
+          <aside
+            aria-label="已注册仓库"
+            aria-busy={repos.isPending}
+            className={cn(
+              "h-full min-h-0 overflow-y-auto border-border bg-chrome lg:border-r",
+              selectedId === null ? "block" : "hidden lg:block",
+            )}
+          >
           <p className="sticky top-0 z-10 bg-chrome px-4 pt-3.5 pb-2 font-mono text-xs font-semibold tracking-[0.07em] text-muted-foreground">
             已注册 {rows.length} 个
           </p>
           {repos.isPending ? (
-            <div className="flex flex-col gap-2 px-4 py-1">
+            <div className="flex flex-col gap-2 px-4 py-1" role="status" aria-live="polite">
+              <span className="sr-only">正在读取已注册仓库</span>
               <Skeleton className="h-9" />
               <Skeleton className="h-9" />
               <Skeleton className="h-9" />
@@ -122,41 +136,51 @@ export function ReposPage({
           <ul>
             {rows.map((row) => (
               <li key={row.repoId} className="px-2">
-                <button
-                  type="button"
-                  // 选中项直接刷成右边内容区的底色,读起来是「这一格连着右边那一屏」。
-                  aria-current={row.repoId === selected?.repoId ? "true" : undefined}
-                  className={`block w-full rounded-sm border px-3 py-2.5 text-left transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${
-                    row.repoId === selected?.repoId
-                      ? "border-primary bg-primary font-medium text-primary-foreground hover:bg-primary/90"
-                      : "border-transparent hover:bg-background/70"
-                  }`}
+                <MasterListItem
+                  data-repo-list-item
+                  selected={row.repoId === selected?.repoId}
+                  className="block rounded-sm border border-transparent px-3 py-2.5 data-[selected=true]:font-medium"
                   onClick={() => setSelectedId(row.repoId)}
                 >
                   <span className="block break-all font-mono">
                     {row.owner}/{row.repo}
                   </span>
-                  <span className={cn(
-                    "mt-0.5 block text-xs font-normal",
-                    row.repoId === selected?.repoId
-                      ? "text-primary-foreground/75"
-                      : "text-muted-foreground",
-                  )}>
+                  <MasterListItemText className="mt-0.5 block text-xs font-normal">
                     <span className="tabular-nums">{row.runCount}</span> 轮
                     {row.lastActivity === null
                       ? " · 还没跑过"
                       : ` · 最近 ${since(row.lastActivity)}`}
-                  </span>
-                </button>
+                  </MasterListItemText>
+                </MasterListItem>
               </li>
             ))}
           </ul>
           {rows.length === 0 && !repos.isPending && !repos.isError ? (
-            <p className="px-4 py-2.5 text-muted-foreground">暂无已注册仓库。</p>
+            <EmptyState title="暂无已注册仓库" className="px-4 py-2.5" />
           ) : null}
-        </aside>
+          </aside>
 
-        <PageBody width="form" className="gap-4">
+          <PageBody
+            width="form"
+            className={cn(
+              "h-full min-h-0 gap-4 overflow-y-auto",
+              selectedId === null ? "hidden lg:flex" : "flex",
+            )}
+            aria-busy={repos.isPending}
+          >
+          {selectedId === null ? null : (
+            <Button
+              type="button"
+              variant="ghost"
+              color="gray"
+              size="3"
+              className="w-fit lg:hidden"
+              onClick={() => setSelectedId(null)}
+            >
+              <ArrowLeftIcon aria-hidden />
+              返回仓库列表
+            </Button>
+          )}
           {canWrite && setup.data !== undefined && !setup.data.reviewConfigurationReady ? (
             <Callout.Root color="amber" size="2">
               <Callout.Icon>
@@ -169,22 +193,16 @@ export function ReposPage({
             </Callout.Root>
           ) : null}
           {repos.isError ? (
-            <p
-              role="alert"
-              className="flex items-start gap-2 rounded-sm border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive"
-            >
-              <CrossCircledIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-              <span>{(repos.error as Error).message}</span>
-            </p>
+            <Callout.Root role="alert" color="red" size="1">
+              <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+              <Callout.Text>{(repos.error as Error).message}</Callout.Text>
+            </Callout.Root>
           ) : null}
           {selected !== undefined && settings.isError ? (
-            <p
-              role="alert"
-              className="flex items-start gap-2 rounded-sm border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive"
-            >
-              <CrossCircledIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-              <span>{(settings.error as Error).message}</span>
-            </p>
+            <Callout.Root role="alert" color="red" size="1">
+              <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+              <Callout.Text>{(settings.error as Error).message}</Callout.Text>
+            </Callout.Root>
           ) : null}
           {repos.isPending ? (
             <>
@@ -194,12 +212,12 @@ export function ReposPage({
             </>
           ) : null}
           {selected === undefined && !repos.isPending && !repos.isError ? (
-            <Card size="2" className="flex flex-col items-start gap-1.5">
-              <h2 className="text-base font-semibold">暂无已注册仓库</h2>
-              <p className="text-muted-foreground">
-                {canWrite ? "选择右上角“注册仓库”，搜索并选择要接入的代码仓库。" : "当前没有已注册仓库。"}
-              </p>
-            </Card>
+            <EmptyState
+              title="暂无已注册仓库"
+              titleAs="h2"
+              description={canWrite ? "选择右上角“注册仓库”，搜索并选择要接入的代码仓库。" : "当前没有已注册仓库。"}
+              className="rounded-md border border-border bg-card p-4"
+            />
           ) : null}
           {selected === undefined ? null : (
             <RepoDetail
@@ -215,22 +233,23 @@ export function ReposPage({
               }}
             />
           )}
-        </PageBody>
+          </PageBody>
+        </div>
 
         {/* 两个表单模态都按需挂载:常驻会把上一次的输入与错误留在 state 里,下次打开
             回显的就不是当前值了。 */}
         {canWrite && registrationReady && registering ? (
-          <RegisterModal
-            onClose={() => setRegistering(false)}
+          <RegisterDialogContent
             onDone={(repoId) => {
               setRegistering(false);
-              setSelectedId(repoId);
-              void queryClient.invalidateQueries({ queryKey: ["repos"] });
+              void queryClient.invalidateQueries({ queryKey: ["repos"] }).then(() => {
+                setSelectedId(repoId);
+              });
             }}
           />
         ) : null}
       </div>
-    </>
+    </Dialog.Root>
   );
 }
 
@@ -258,6 +277,10 @@ function RepoDetail({
   const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
   const [editing, setEditing] = useState(false);
   const [confirmingRemoval, setConfirmingRemoval] = useState(false);
+  const removalFocus = useDialogReturnFocus(() =>
+    document.querySelector<HTMLElement>("[data-repo-list-item]")
+      ?? document.getElementById("register-repo-trigger"),
+  );
 
   const refresh = (): void => {
     void queryClient.invalidateQueries({ queryKey: ["repos"] });
@@ -282,7 +305,10 @@ function RepoDetail({
       const response = await api(`/repos/${repo.repoId}`, { method: "DELETE" });
       if (!response.ok) throw new Error(await errorText(response));
     },
-    onSuccess: onRemoved,
+    onSuccess: () => {
+      onRemoved();
+      removalFocus.restoreFocus();
+    },
     // 「移除被阻止」是本页最重要的一类失败,必须以错误的样子出现,不能混进普通提示。
     onError: (error: Error) => setFeedback({ text: error.message, isError: true }),
   });
@@ -340,7 +366,10 @@ function RepoDetail({
             size={{ initial: "4", sm: "2" }}
             className="ml-auto max-sm:w-full"
             disabled={remove.isPending}
-            onClick={() => setConfirmingRemoval(true)}
+            onClick={(event) => {
+              removalFocus.captureTrigger(event);
+              setConfirmingRemoval(true);
+            }}
           >
             移除仓库
           </Button>
@@ -348,30 +377,22 @@ function RepoDetail({
       </div>
 
       {feedback === null ? null : (
-        <div
+        <Callout.Root
           role={feedback.isError ? "alert" : "status"}
-          className={`flex items-start gap-2 rounded-sm border px-3 py-2 ${
-            feedback.isError
-              ? "border-destructive/30 bg-destructive/5 text-destructive"
-              : "bg-muted text-foreground"
-          }`}
+          color={feedback.isError ? "red" : "green"}
+          size="1"
         >
-          {feedback.isError ? (
-            <CrossCircledIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-          ) : (
-            <CheckCircledIcon className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
-          )}
-          <span>{feedback.text}</span>
-        </div>
+          <Callout.Icon>
+            {feedback.isError ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
+          </Callout.Icon>
+          <Callout.Text>{feedback.text}</Callout.Text>
+        </Callout.Root>
       )}
       {check.isError ? (
-        <p
-          role="alert"
-          className="flex items-start gap-2 rounded-sm border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive"
-        >
-          <CrossCircledIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-          <span>{(check.error as Error).message}</span>
-        </p>
+        <Callout.Root role="alert" color="red" size="1">
+          <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+          <Callout.Text>{(check.error as Error).message}</Callout.Text>
+        </Callout.Root>
       ) : null}
 
       {issues.length > 0 ? (
@@ -445,8 +466,10 @@ function RepoDetail({
             <h3 className="text-base font-semibold">模型组合</h3>
             {/* 两态开关(issue #69):要么跟随全局,要么本仓库自定义。「一个都没选」
                 这种既不是跟随、也不是有效覆盖的状态在界面上不存在。 */}
-            {canWrite ? <div className="flex gap-2">
+            {canWrite ? <div className="flex gap-2" role="group" aria-label="模型组合来源">
               <Button
+                type="button"
+                aria-pressed={following}
                 size={{ initial: "4", sm: "1" }}
                 variant={following ? "solid" : "outline"}
                 color="gray"
@@ -459,6 +482,8 @@ function RepoDetail({
                 跟随全局
               </Button>
               <Button
+                type="button"
+                aria-pressed={!following}
                 size={{ initial: "4", sm: "1" }}
                 variant={following ? "outline" : "solid"}
                 color="gray"
@@ -518,7 +543,12 @@ function RepoDetail({
       ) : null}
 
       {canWrite ? <AlertDialog.Root open={confirmingRemoval} onOpenChange={setConfirmingRemoval}>
-        <AlertDialog.Content maxWidth="440px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
+        <AlertDialog.Content
+          maxWidth="440px"
+          maxHeight="calc(100dvh - 2rem)"
+          size={{ initial: "2", sm: "3" }}
+          onCloseAutoFocus={removalFocus.onCloseAutoFocus}
+        >
           <AlertDialog.Title size="4" mb="2">
             移除 {repo.owner}/{repo.repo}?
           </AlertDialog.Title>
@@ -576,11 +606,9 @@ const SEARCH_DEBOUNCE_MS = 250;
  * 搜索经本服务代理(`GET <前缀>/api/repos/search`),浏览器不直连 Gitea。已注册与
  * 无 admin 权限两类照样列出、只是置灰:过滤掉会让人明知仓库存在却搜不到。
  */
-function RegisterModal({
-  onClose,
+function RegisterDialogContent({
   onDone,
 }: {
-  onClose: () => void;
   onDone: (repoId: number) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -627,13 +655,17 @@ function RegisterModal({
 
   const data = search.data;
   return (
-    <Dialog.Root open onOpenChange={(next) => (next ? undefined : onClose())}>
-      <Dialog.Content aria-describedby={undefined} maxWidth="640px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
-        <form onSubmit={submit} className="flex min-h-0 flex-col gap-3">
+    <Dialog.Content aria-describedby={undefined} maxWidth="640px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
+        <form onSubmit={submit} className="flex min-h-0 flex-col gap-3" aria-busy={busy}>
           <Dialog.Title size="4" mb="1" className="pr-9">注册仓库</Dialog.Title>
           {/* cmdk 自带的过滤按标签文本再筛一次,而结果已经是 Gitea 按关键字搜回来的。 */}
-          <Command shouldFilter={false} className="border-border rounded-md border">
+          <Command
+            shouldFilter={false}
+            aria-busy={search.isPending && debounced.trim() !== ""}
+            className="border-border rounded-md border"
+          >
             <CommandInput
+              aria-label="搜索可访问的仓库"
               placeholder="搜索仓库（owner 或仓库名）"
               value={query}
               // 搜索词一变就丢掉选中项:留着的话改词到无结果再回车,提交的会是上一次
@@ -650,7 +682,7 @@ function RegisterModal({
                   {(search.error as Error).message}
                 </p>
               ) : search.isPending && debounced.trim() !== "" ? (
-                <div className="flex flex-col gap-2 p-4" role="status">
+                <div className="flex flex-col gap-2 p-4" role="status" aria-live="polite" aria-busy="true">
                   <span className="sr-only">正在搜索仓库</span>
                   <Skeleton aria-hidden className="h-9" />
                   <Skeleton aria-hidden className="h-9" />
@@ -659,9 +691,11 @@ function RegisterModal({
               ) : data === undefined || debounced.trim() === "" ? (
                 <p className="p-4 text-muted-foreground">输入关键词开始搜索可访问的仓库。</p>
               ) : data.state === "no-match" ? (
-                <p className="p-4 text-muted-foreground">
-                  没有匹配的仓库。请确认 Gitea 中的 bot 账号已获得该仓库的访问权限。
-                </p>
+                <EmptyState
+                  title="没有匹配的仓库"
+                  description="请确认 Gitea 中的 bot 账号已获得该仓库的访问权限。"
+                  className="p-4"
+                />
               ) : (
                 <CommandGroup>
                   {data.results.map((row) => {
@@ -675,7 +709,7 @@ function RegisterModal({
                         onSelect={() => setPicked(row)}
                       >
                         <span className="flex min-w-0 flex-1 flex-col">
-                          <span className="break-all font-mono" title={identity}>
+                          <span className="break-all font-mono">
                             {identity}
                             {picked?.repoId === row.repoId ? (
                               <span className="text-primary ml-2 font-sans">已选</span>
@@ -721,20 +755,21 @@ function RegisterModal({
           </Flex>
         </form>
         <div className="absolute top-3 right-3">
-          <Dialog.Close>
-            <IconButton
-              variant="ghost"
-              color="gray"
-              size={{ initial: "3", sm: "1" }}
-              className="max-sm:min-h-11 max-sm:min-w-11"
-              aria-label="关闭注册仓库"
-            >
-              <Cross2Icon />
-            </IconButton>
-          </Dialog.Close>
+          <Tooltip content="关闭注册仓库">
+            <Dialog.Close>
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size={{ initial: "3", sm: "1" }}
+                className="max-sm:min-h-11 max-sm:min-w-11"
+                aria-label="关闭注册仓库"
+              >
+                <Cross2Icon aria-hidden />
+              </IconButton>
+            </Dialog.Close>
+          </Tooltip>
         </div>
       </Dialog.Content>
-    </Dialog.Root>
   );
 }
 
@@ -784,7 +819,7 @@ function ReviewersEditor({
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4" aria-busy={busy}>
       <div className="flex flex-col gap-1">
         <h3 className="text-base font-semibold">
           自定义 {repo.owner}/{repo.repo} 的模型组合
@@ -882,10 +917,10 @@ function RepoRuns({
 
   const rows = runs.data?.runs.slice(0, 8) ?? [];
   return (
-    <Card size="2" className="flex flex-col gap-3">
+    <Card size="2" className="flex flex-col gap-3" aria-busy={canRead && runs.isPending}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-base font-semibold">{canRead ? "评审记录" : "重新运行审查"}</h3>
-        {canRerun ? <form onSubmit={submit} className="flex flex-wrap gap-2">
+        {canRerun ? <form onSubmit={submit} className="flex flex-wrap gap-2" aria-busy={rerun.isPending}>
           <Text as="label" htmlFor={`rerun-pr-${repo.repoId}`} className="sr-only">
             PR 编号
           </Text>
@@ -904,13 +939,14 @@ function RepoRuns({
         </form> : null}
       </div>
       {canRead && runs.isError ? (
-        <p role="alert" className="flex items-start gap-2 text-destructive">
-          <CrossCircledIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-          <span>{(runs.error as Error).message}</span>
-        </p>
+        <Callout.Root role="alert" color="red" size="1">
+          <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+          <Callout.Text>{(runs.error as Error).message}</Callout.Text>
+        </Callout.Root>
       ) : null}
       {canRead && runs.isPending ? (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2" role="status" aria-live="polite">
+          <span className="sr-only">正在读取仓库评审记录</span>
           <Skeleton className="h-8" />
           <Skeleton className="h-8" />
           <Skeleton className="h-8" />
@@ -937,7 +973,7 @@ function RepoRuns({
         </div>
       ) : null}
       {canRead && rows.length === 0 && !runs.isPending && !runs.isError ? (
-        <p className="text-xs text-muted-foreground">这个仓库暂无审查记录。</p>
+        <EmptyState title="暂无审查记录" description="这个仓库还没有审查记录。" className="py-1" />
       ) : null}
     </Card>
   );

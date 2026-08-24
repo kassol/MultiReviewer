@@ -1,15 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { CalendarIcon, ChevronDownIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
-import { Callout, Card, Popover, Progress, Skeleton, Table } from "@radix-ui/themes";
+import { ChevronDownIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
+import { Callout, Card, Progress, Skeleton, Table } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
 import { useState } from "react";
 
+import { DateRangePicker } from "@/components/date-range-picker";
+import { EmptyState } from "@/components/empty-state";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
-import { Button } from "@/components/theme-button";
-import { Calendar } from "@/components/ui/calendar";
 
 import { api, fetchJson } from "./api.ts";
 import { costPresentation, type UsageSummary } from "./usage-cost.ts";
@@ -38,22 +38,6 @@ export function denominator(cell: Cell): number {
 
 function isoDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
-}
-
-/**
- * 日历给的是 Date,窗口两头存的是 `YYYY-MM-DD`。两个方向都走本地字段,
- * 不经 `toISOString()`——东八区选 8 月 1 日会被 UTC 挪成 7 月 31 日。
- */
-function dayString(date: Date): string {
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  return `${date.getFullYear()}-${month}-${day}`;
-}
-
-function dayDate(day: string): Date | undefined {
-  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
-  if (parts === null) return undefined;
-  return new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]));
 }
 
 function humanBytes(bytes: number): string {
@@ -119,7 +103,11 @@ export function SummaryRate() {
       </Link>
     );
   }
-  if (stats.data === undefined) return <Skeleton className="h-8 w-44" />;
+  if (stats.data === undefined) return (
+    <span role="status" aria-label="正在读取处置率摘要" aria-busy="true">
+      <Skeleton aria-hidden className="h-8 w-44" />
+    </span>
+  );
   const all = sum(stats.data.cells);
   return (
     <Link
@@ -137,7 +125,6 @@ export function SummaryRate() {
 export function StatsPage() {
   const [from, setFrom] = useState(() => isoDay(Date.now() - 30 * 24 * 60 * 60 * 1000));
   const [to, setTo] = useState(() => isoDay(Date.now()));
-  const [datePickerOpen, setDatePickerOpen] = useState(false);
 
   const stats = useQuery({
     queryKey: ["stats", from, to],
@@ -155,7 +142,6 @@ export function StatsPage() {
     },
   });
 
-  const fromDate = dayDate(from);
   const cells = stats.data?.cells ?? [];
   const models = [...new Set(cells.map((cell) => cell.model))].sort();
   const categories = [...new Set(cells.map((cell) => cell.category))].sort();
@@ -178,34 +164,13 @@ export function StatsPage() {
           </span>
         }
         actions={
-          <Popover.Root open={datePickerOpen} onOpenChange={setDatePickerOpen}>
-            <Popover.Trigger>
-              <Button variant="outline" color="gray" size="3" className="max-w-full text-xs">
-                <CalendarIcon aria-hidden />
-                <span className={from === "" ? undefined : "font-mono"}>{from === "" ? "起始不限" : from}</span>
-                <span className="text-muted-foreground">至</span>
-                <span className={to === "" ? undefined : "font-mono"}>{to === "" ? "至今" : to}</span>
-              </Button>
-            </Popover.Trigger>
-            <Popover.Content
-              align="end"
-              size="1"
-              maxWidth="calc(100vw - var(--space-4))"
-              maxHeight="calc(100vh - var(--space-4))"
-              className="overflow-auto"
-            >
-              <Calendar
-                mode="range"
-                numberOfMonths={2}
-                {...(fromDate === undefined ? {} : { defaultMonth: fromDate })}
-                selected={{ from: fromDate, to: dayDate(to) }}
-                onSelect={(range) => {
-                  setFrom(range?.from === undefined ? "" : dayString(range.from));
-                  setTo(range?.to === undefined ? "" : dayString(range.to));
-                }}
-              />
-            </Popover.Content>
-          </Popover.Root>
+          <DateRangePicker
+            value={{ from, to }}
+            onChange={(value) => {
+              setFrom(value.from);
+              setTo(value.to);
+            }}
+          />
         }
       />
 
@@ -218,11 +183,11 @@ export function StatsPage() {
         ) : null}
 
         {stats.isPending ? (
-          <>
-            <Skeleton className="h-20" />
-            <Skeleton className="h-40" />
-            <Skeleton className="h-64" />
-          </>
+          <div className="space-y-5" role="status" aria-label="正在读取处置率统计" aria-busy="true">
+            <Skeleton aria-hidden className="h-20" />
+            <Skeleton aria-hidden className="h-40" />
+            <Skeleton aria-hidden className="h-64" />
+          </div>
         ) : null}
 
         {stats.data === undefined ? null : (
@@ -285,13 +250,12 @@ export function StatsPage() {
         ) : null}
 
         {models.length === 0 && !stats.isPending && !stats.isError ? (
-          <Card size="2" className="flex flex-col items-start gap-1.5">
-            <h2 className="text-base font-semibold">当前时间范围暂无可统计的 Finding</h2>
-            <p className="text-muted-foreground">
-              统计只包含带行级评论的 Finding。当前时间范围可能没有审查记录，或 Finding 无法关联到变更行。
-              请扩大时间范围后重试。
-            </p>
-          </Card>
+          <EmptyState
+            title="当前时间范围暂无可统计的 Finding"
+            titleAs="h2"
+            description="统计只包含带行级评论的 Finding。当前时间范围可能没有审查记录，或 Finding 无法关联到变更行。请扩大时间范围后重试。"
+            className="rounded-md border border-border bg-card p-4"
+          />
         ) : null}
 
         {models.length > 0 ? (

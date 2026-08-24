@@ -22,6 +22,7 @@ function Command({
 
 function CommandInput({
   className,
+  "aria-label": ariaLabel = "搜索选项",
   ...props
 }: React.ComponentProps<typeof CommandPrimitive.Input>) {
   return (
@@ -32,6 +33,7 @@ function CommandInput({
       <MagnifyingGlassIcon className="size-4 shrink-0 text-[var(--gray-10)]" aria-hidden />
       <CommandPrimitive.Input
         data-slot="command-input"
+        aria-label={ariaLabel}
         className={cn(
           "flex h-9 w-full bg-transparent outline-2 outline-offset-[-2px] outline-transparent placeholder:text-[var(--gray-10)] focus-visible:outline-[var(--focus-8)] disabled:cursor-not-allowed disabled:opacity-50",
           className
@@ -86,19 +88,6 @@ function CommandGroup({
   )
 }
 
-function CommandSeparator({
-  className,
-  ...props
-}: React.ComponentProps<typeof CommandPrimitive.Separator>) {
-  return (
-    <CommandPrimitive.Separator
-      data-slot="command-separator"
-      className={cn("-mx-1 h-px bg-[var(--gray-6)]", className)}
-      {...props}
-    />
-  )
-}
-
 function CommandItem({
   className,
   ...props
@@ -122,5 +111,4 @@ export {
   CommandEmpty,
   CommandGroup,
   CommandItem,
-  CommandSeparator,
 }

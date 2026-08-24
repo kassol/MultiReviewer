@@ -1,13 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Cross2Icon, LockClosedIcon, PlusIcon, ResetIcon, TrashIcon } from "@radix-ui/react-icons";
-import { AlertDialog, Badge, Callout, Card, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, Table, Text, TextField } from "@radix-ui/themes";
-import { useMemo, useState, type FormEvent } from "react";
+import { CheckCircledIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, LockClosedIcon, PlusIcon, ResetIcon, TrashIcon } from "@radix-ui/react-icons";
+import { AlertDialog, Badge, Callout, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, Table, Text, TextField, Tooltip } from "@radix-ui/themes";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 
+import { EmptyState } from "@/components/empty-state";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
+import { useDialogReturnFocus } from "@/components/use-dialog-return-focus";
 import { api, errorText, fetchJson } from "./api.ts";
 import {
   PANEL_PERMISSIONS,
@@ -70,6 +72,12 @@ export function AccessControlPage() {
   const [createKind, setCreateKind] = useState<"user" | "role" | null>(null);
   const [confirm, setConfirm] = useState<{ kind: "reset" | "delete-user" | "delete-role"; id: string; label: string } | null>(null);
   const [resetPassword, setResetPassword] = useState("");
+  const confirmFallbackId = useRef<"create-user-trigger" | "create-role-trigger">("create-user-trigger");
+  const confirmFocus = useDialogReturnFocus(() =>
+    document.getElementById(confirmFallbackId.current)
+      ?? document.getElementById("create-user-trigger")
+      ?? document.getElementById("create-role-trigger"),
+  );
 
   const usersQuery = useQuery({
     queryKey: ["users"],
@@ -183,7 +191,14 @@ export function AccessControlPage() {
         text: target.kind === "reset" ? `${target.label} 的密码已重置，现有会话已作废。` : `${target.label} 已删除。`,
         error: false,
       });
-      refresh();
+      if (target.kind === "reset") {
+        refresh();
+      } else {
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["users"] }),
+          queryClient.invalidateQueries({ queryKey: ["roles"] }),
+        ]).then(() => confirmFocus.restoreFocus());
+      }
     },
     onError: (error: Error) => setFeedback({ text: error.message, error: true }),
   });
@@ -208,26 +223,48 @@ export function AccessControlPage() {
         description="管理用户、角色和权限。此页仅系统管理员可见。"
         actions={
           <>
-            <Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={() => openCreateDialog("role")}><PlusIcon />新建角色</Button>
-            <Button variant="solid" highContrast size={{ initial: "4", sm: "2" }} onClick={() => openCreateDialog("user")}><PlusIcon />新建用户</Button>
+            <CreateDialog
+              kind="role"
+              open={createKind === "role"}
+              busy={createRole.isPending}
+              trigger={<Button id="create-role-trigger" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}><PlusIcon />新建角色</Button>}
+              onOpen={() => openCreateDialog("role")}
+              onClose={closeCreateDialog}
+              onUser={(input) => { setFeedback(null); createUser.mutate(input); }}
+              onRole={(name) => { setFeedback(null); createRole.mutate(name); }}
+            />
+            <CreateDialog
+              kind="user"
+              open={createKind === "user"}
+              busy={createUser.isPending}
+              trigger={<Button id="create-user-trigger" variant="solid" highContrast size={{ initial: "4", sm: "2" }}><PlusIcon />新建用户</Button>}
+              onOpen={() => openCreateDialog("user")}
+              onClose={closeCreateDialog}
+              onUser={(input) => { setFeedback(null); createUser.mutate(input); }}
+              onRole={(name) => { setFeedback(null); createRole.mutate(name); }}
+            />
           </>
         }
       />
       <PageBody width="wide" className="pb-5 sm:pb-5">
         {feedback === null ? null : (
           <Callout.Root role={feedback.error ? "alert" : "status"} color={feedback.error ? "red" : "green"} size="1">
+            <Callout.Icon>
+              {feedback.error ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
+            </Callout.Icon>
             <Callout.Text>{feedback.text}</Callout.Text>
           </Callout.Root>
         )}
         {loadError === null ? null : (
           <Callout.Root role="alert" color="red" size="1">
+            <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
             <Callout.Text>{(loadError as Error).message}</Callout.Text>
           </Callout.Root>
         )}
         {pending ? (
-          <div className="flex flex-col gap-5" role="status" aria-label="正在加载访问控制">
-            <Skeleton className="h-56" />
-            <Skeleton className="h-80" />
+          <div className="flex flex-col gap-5" role="status" aria-label="正在加载访问控制" aria-busy="true">
+            <Skeleton aria-hidden className="h-56" />
+            <Skeleton aria-hidden className="h-80" />
           </div>
         ) : (
           <>
@@ -253,12 +290,30 @@ export function AccessControlPage() {
                       <Table.Row key={user.username} align="start" className="group hover:bg-muted/30">
                         <Table.RowHeaderCell className="sticky left-0 z-10 bg-card font-medium group-hover:bg-muted">
                           <div className="flex max-w-64 flex-wrap items-center gap-1.5">
-                            <span className="max-w-56 truncate" title={user.username}>{user.username}</span>
+                            <Tooltip content={user.username}>
+                              <span
+                                tabIndex={0}
+                                className="max-w-56 truncate rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                              >
+                                {user.username}
+                              </span>
+                            </Tooltip>
                             {user.isSystemAdmin ? <Badge color="gray" variant="soft">系统管理员</Badge> : null}
                             {user.mustChangePassword ? <StatusBadge tone="warning">待改密</StatusBadge> : null}
                           </div>
                         </Table.RowHeaderCell>
-                        <Table.Cell className="max-w-48 truncate text-muted-foreground" title={user.displayName ?? undefined}>{user.displayName ?? "—"}</Table.Cell>
+                        <Table.Cell className="max-w-48 text-muted-foreground">
+                          {user.displayName === null ? "—" : (
+                            <Tooltip content={user.displayName}>
+                              <span
+                                tabIndex={0}
+                                className="block max-w-48 truncate rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+                              >
+                                {user.displayName}
+                              </span>
+                            </Tooltip>
+                          )}
+                        </Table.Cell>
                         <Table.Cell>
                           {user.isSystemAdmin ? (
                             <span className="text-muted-foreground">全部权限</span>
@@ -290,8 +345,8 @@ export function AccessControlPage() {
                         <Table.Cell className="text-xs whitespace-nowrap text-muted-foreground">{user.lastLoginAt === null ? "从未" : <span className="font-mono">{localMinute(user.lastLoginAt)}</span>}</Table.Cell>
                         <Table.Cell>
                           <div className="flex justify-end gap-1 whitespace-nowrap">
-                            <Button variant="ghost" color="gray" size={{ initial: "4", sm: "1" }} onClick={() => setConfirm({ kind: "reset", id: user.username, label: user.username })}><ResetIcon />重置密码</Button>
-                            <Button variant="ghost" color="red" size={{ initial: "4", sm: "1" }} onClick={() => setConfirm({ kind: "delete-user", id: user.username, label: user.username })}><TrashIcon />删除用户</Button>
+                            <Button variant="ghost" color="gray" size={{ initial: "4", sm: "1" }} onClick={(event) => { confirmFallbackId.current = "create-user-trigger"; confirmFocus.captureTrigger(event); setConfirm({ kind: "reset", id: user.username, label: user.username }); }}><ResetIcon />重置密码</Button>
+                            <Button variant="ghost" color="red" size={{ initial: "4", sm: "1" }} onClick={(event) => { confirmFallbackId.current = "create-user-trigger"; confirmFocus.captureTrigger(event); setConfirm({ kind: "delete-user", id: user.username, label: user.username }); }}><TrashIcon />删除用户</Button>
                           </div>
                         </Table.Cell>
                       </Table.Row>
@@ -309,16 +364,20 @@ export function AccessControlPage() {
                 <HelpTooltip label="系统管理员权限说明" content="系统管理员无需分配自定义角色，始终可以管理用户、角色、仓库、模型服务和审查策略。" />
               </div>
               {unclaimed.size === 0 || roles.length === 0 ? null : (
-                <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-warning">
-                  有 <span className="font-mono">{unclaimed.size}</span> 项权限尚未授予任何角色。除系统管理员外，相关功能当前无人可用。
-                </div>
+                <Callout.Root color="amber" size="1">
+                  <Callout.Icon><ExclamationTriangleIcon aria-hidden /></Callout.Icon>
+                  <Callout.Text>
+                    有 <span className="font-mono">{unclaimed.size}</span> 项权限尚未授予任何角色。除系统管理员外，相关功能当前无人可用。
+                  </Callout.Text>
+                </Callout.Root>
               )}
               {roles.length === 0 ? (
-                <Card size="2" className="flex flex-col items-start gap-2">
-                  <p className="font-medium">还没有角色</p>
-                  <p className="text-muted-foreground">角色不会预置。创建角色后，可在权限矩阵中授予权限。</p>
-                  <Button variant="solid" highContrast size={{ initial: "4", sm: "2" }} className="mt-1" onClick={() => openCreateDialog("role")}><PlusIcon />新建角色</Button>
-                </Card>
+                <EmptyState
+                  title="还没有角色"
+                  description="角色不会预置。创建角色后，可在权限矩阵中授予权限。"
+                  action={<Button variant="solid" highContrast size={{ initial: "4", sm: "2" }} onClick={() => openCreateDialog("role")}><PlusIcon />新建角色</Button>}
+                  className="rounded-md border border-border bg-card p-4"
+                />
               ) : (
                 <div className="contain-inline-size min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-md border border-border">
                   <Table.Root size="1" className="w-full min-w-max">
@@ -328,9 +387,9 @@ export function AccessControlPage() {
                         <Table.ColumnHeaderCell className="sticky left-0 z-20 min-w-56 bg-muted sm:min-w-72">权限</Table.ColumnHeaderCell>
                         {roles.map((role) => (
                           <Table.ColumnHeaderCell key={role.id} className="w-36 min-w-36 max-w-36 border-l border-border text-center">
-                            <span className="block break-words text-foreground" title={role.name}>{role.name}</span>
+                            <span className="block break-words text-foreground">{role.name}</span>
                             <span className="block font-normal"><span className="font-mono">{users.filter((user) => user.roleId === role.id).length}</span> 人</span>
-                            <Button variant="ghost" color="red" size={{ initial: "4", sm: "1" }} className="mt-1" onClick={() => setConfirm({ kind: "delete-role", id: String(role.id), label: role.name })}><TrashIcon />删除</Button>
+                            <Button variant="ghost" color="red" size={{ initial: "4", sm: "1" }} className="mt-1" onClick={(event) => { confirmFallbackId.current = "create-role-trigger"; confirmFocus.captureTrigger(event); setConfirm({ kind: "delete-role", id: String(role.id), label: role.name }); }}><TrashIcon />删除</Button>
                           </Table.ColumnHeaderCell>
                         ))}
                       </Table.Row>
@@ -382,17 +441,8 @@ export function AccessControlPage() {
           </>
         )}
       </PageBody>
-      {createKind === null ? null : (
-        <CreateDialog
-          kind={createKind}
-          busy={createUser.isPending || createRole.isPending}
-          onClose={closeCreateDialog}
-          onUser={(input) => { setFeedback(null); createUser.mutate(input); }}
-          onRole={(name) => { setFeedback(null); createRole.mutate(name); }}
-        />
-      )}
       <AlertDialog.Root open={confirm !== null} onOpenChange={(open) => { if (!open) { setConfirm(null); setResetPassword(""); } }}>
-        <AlertDialog.Content maxWidth="440px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
+        <AlertDialog.Content onCloseAutoFocus={confirmFocus.onCloseAutoFocus} maxWidth="440px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
           <AlertDialog.Title size="4" mb="2">{confirm?.kind === "reset" ? "重置密码" : "确认删除"}</AlertDialog.Title>
           <AlertDialog.Description size="2" color="gray" className="break-words">
             {confirm?.kind === "reset"
@@ -426,15 +476,23 @@ export function AccessControlPage() {
   );
 }
 
-function CreateDialog({ kind, busy, onClose, onUser, onRole }: { kind: "user" | "role"; busy: boolean; onClose: () => void; onUser: (input: { username: string; displayName: string; password: string }) => void; onRole: (name: string) => void }) {
+function CreateDialog({ kind, open, busy, trigger, onOpen, onClose, onUser, onRole }: { kind: "user" | "role"; open: boolean; busy: boolean; trigger: ReactNode; onOpen: () => void; onClose: () => void; onUser: (input: { username: string; displayName: string; password: string }) => void; onRole: (name: string) => void }) {
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const submit = (event: FormEvent): void => { event.preventDefault(); if (kind === "user") onUser({ username, displayName, password }); else if (kind === "role") onRole(name); };
+  useEffect(() => {
+    if (open) return;
+    setUsername("");
+    setDisplayName("");
+    setPassword("");
+    setName("");
+  }, [open]);
 
   return (
-    <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
+    <Dialog.Root open={open} onOpenChange={(nextOpen) => { if (nextOpen) onOpen(); else onClose(); }}>
+      <Dialog.Trigger>{trigger}</Dialog.Trigger>
       <Dialog.Content maxWidth="440px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
         <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
           <div className="pr-9">
@@ -468,17 +526,19 @@ function CreateDialog({ kind, busy, onClose, onUser, onRole }: { kind: "user" | 
           </Flex>
         </form>
         <div className="absolute top-3 right-3">
-          <Dialog.Close>
-            <IconButton
-              variant="ghost"
-              color="gray"
-              size={{ initial: "3", sm: "1" }}
-              className="max-sm:min-h-11 max-sm:min-w-11"
-              aria-label="关闭新建窗口"
-            >
-              <Cross2Icon />
-            </IconButton>
-          </Dialog.Close>
+          <Tooltip content="关闭新建窗口">
+            <Dialog.Close>
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size={{ initial: "3", sm: "1" }}
+                className="max-sm:min-h-11 max-sm:min-w-11"
+                aria-label="关闭新建窗口"
+              >
+                <Cross2Icon aria-hidden />
+              </IconButton>
+            </Dialog.Close>
+          </Tooltip>
         </div>
       </Dialog.Content>
     </Dialog.Root>

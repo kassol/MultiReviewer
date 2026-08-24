@@ -5,7 +5,7 @@ import {
   type DayButton,
   type Locale,
 } from "react-day-picker"
-import { IconButton } from "@radix-ui/themes"
+import { IconButton, Tooltip } from "@radix-ui/themes"
 
 import { Button } from "@/components/theme-button"
 import { cn } from "@/lib/utils"
@@ -30,7 +30,7 @@ function Calendar({
     <DayPicker
       showOutsideDays={showOutsideDays}
       className={cn(
-        "group/calendar bg-background p-2 [--cell-radius:var(--radius-md)] [--cell-size:--spacing(7)] in-data-[slot=card-content]:bg-transparent in-data-[slot=popover-content]:bg-transparent",
+        "group/calendar bg-background p-2 [--cell-radius:var(--radius-md)] [--cell-size:--spacing(11)] sm:[--cell-size:--spacing(7)] in-data-[slot=card-content]:bg-transparent in-data-[slot=popover-content]:bg-transparent",
         String.raw`rtl:**:[.rdp-button\_next>svg]:rotate-180`,
         String.raw`rtl:**:[.rdp-button\_previous>svg]:rotate-180`,
         className
@@ -155,26 +155,30 @@ function Calendar({
           <CalendarDayButton {...(locale === undefined ? {} : { locale })} {...props} />
         ),
         PreviousMonthButton: ({ className, children, ...buttonProps }) => (
-          <IconButton
-            {...buttonProps}
-            variant={buttonVariant}
-            color="gray"
-            size="1"
-            className={cn("size-(--cell-size) select-none aria-disabled:opacity-50", className)}
-          >
-            {children}
-          </IconButton>
+          <Tooltip content="上个月">
+            <IconButton
+              {...buttonProps}
+              variant={buttonVariant}
+              color="gray"
+              size="1"
+              className={cn("size-(--cell-size) select-none aria-disabled:opacity-50", className)}
+            >
+              {children}
+            </IconButton>
+          </Tooltip>
         ),
         NextMonthButton: ({ className, children, ...buttonProps }) => (
-          <IconButton
-            {...buttonProps}
-            variant={buttonVariant}
-            color="gray"
-            size="1"
-            className={cn("size-(--cell-size) select-none aria-disabled:opacity-50", className)}
-          >
-            {children}
-          </IconButton>
+          <Tooltip content="下个月">
+            <IconButton
+              {...buttonProps}
+              variant={buttonVariant}
+              color="gray"
+              size="1"
+              className={cn("size-(--cell-size) select-none aria-disabled:opacity-50", className)}
+            >
+              {children}
+            </IconButton>
+          </Tooltip>
         ),
         WeekNumber: ({ children, ...props }) => {
           return (
@@ -232,4 +236,4 @@ function CalendarDayButton({
   )
 }
 
-export { Calendar, CalendarDayButton }
+export { Calendar }

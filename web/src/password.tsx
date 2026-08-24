@@ -1,4 +1,5 @@
 import { useRouter } from "@tanstack/react-router";
+import { CrossCircledIcon } from "@radix-ui/react-icons";
 import { Callout, Card, Text, TextField } from "@radix-ui/themes";
 import { useState, type FormEvent } from "react";
 
@@ -14,6 +15,7 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const passwordsMismatch = error !== null && password !== confirm;
 
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -43,7 +45,7 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
   }
 
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-chrome px-4 py-8">
+    <div className="flex min-h-full items-center justify-center bg-chrome px-4 py-8">
       <div className="flex w-[23rem] max-w-full flex-col gap-4">
         <div className="flex items-center gap-2.5 px-1">
           <Mark className="size-6 text-primary" />
@@ -61,14 +63,25 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
           <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
             <div className="flex flex-col gap-1.5">
               <Text as="label" htmlFor="new-password" size="2" weight="medium">新密码</Text>
-              <TextField.Root id="new-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" autoFocus value={password} onChange={(event) => setPassword(event.target.value)} />
+              <TextField.Root id="new-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" autoFocus value={password} onChange={(event) => { setPassword(event.target.value); setError(null); }} />
             </div>
             <div className="flex flex-col gap-1.5">
               <Text as="label" htmlFor="confirm-password" size="2" weight="medium">确认密码</Text>
-              <TextField.Root id="confirm-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" value={confirm} onChange={(event) => setConfirm(event.target.value)} />
+              <TextField.Root
+                id="confirm-password"
+                type="password"
+                size={{ initial: "3", sm: "2" }}
+                className="min-w-0 w-full max-sm:min-h-11"
+                autoComplete="new-password"
+                value={confirm}
+                aria-invalid={passwordsMismatch || undefined}
+                aria-describedby={passwordsMismatch ? "password-error" : undefined}
+                onChange={(event) => { setConfirm(event.target.value); setError(null); }}
+              />
             </div>
             {error === null ? null : (
-              <Callout.Root role="alert" color="red" size="1">
+              <Callout.Root id="password-error" role="alert" color="red" size="1">
+                <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
                 <Callout.Text>{error}</Callout.Text>
               </Callout.Root>
             )}
@@ -76,6 +89,6 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
           </form>
         </Card>
       </div>
-    </main>
+    </div>
   );
 }

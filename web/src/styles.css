@@ -4,7 +4,8 @@
  * 品类标准件的设计令牌,手艺对标 GitHub / Linear / Vercel。只做亮色一套
  * (issue #46)。要加暗色那天,在这里补一段媒体块重定义变量即可,不预留任何东西。
  *
- * 这里只有令牌,没有组件类:样式一律走 Tailwind utility,写样式只剩一条路。
+ * Radix Themes 负责常规组件外观；这里仅定义应用语义令牌和浏览器表面。
+ * Tailwind 只处理页面布局、响应式结构与产品专有组件边界。
  */
 :root {
   --radius: 6px;
@@ -183,21 +184,5 @@
   th,
   td {
     font-variant-numeric: tabular-nums;
-  }
-}
-
-/*
- * 降低动效偏好:关掉纯装饰的骨架呼吸与浮层入场,保留颜色过渡——那是悬停与聚焦的
- * 反馈,一起关掉会让控件看起来没响应。
- */
-@media (prefers-reduced-motion: reduce) {
-  .rt-Skeleton {
-    animation: none !important;
-  }
-
-  [data-slot="dialog-content"],
-  [data-slot="dialog-overlay"],
-  [data-slot="popover-content"] {
-    animation-duration: 1ms;
   }
 }

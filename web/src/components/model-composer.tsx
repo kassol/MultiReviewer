@@ -4,14 +4,15 @@
  */
 import { Link } from "@tanstack/react-router";
 import { Cross2Icon } from "@radix-ui/react-icons";
-import { Badge, Card, Checkbox, Skeleton, TextField } from "@radix-ui/themes";
+import { Badge, Card, Checkbox, IconButton, Skeleton, TextField, Tooltip } from "@radix-ui/themes";
 import { useEffect, useMemo, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
+import { EmptyState } from "@/components/empty-state";
 import {
-  ProviderSelectorItem,
-  ProviderSelectorItemText,
-} from "@/components/provider-selector-item";
+  MasterListItem,
+  MasterListItemText,
+} from "@/components/master-list-item";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { cn } from "@/lib/utils";
@@ -152,7 +153,10 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
   };
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4" aria-busy={query.isPending}>
+      {query.isPending ? (
+        <span className="sr-only" role="status" aria-live="polite">正在读取可选模型</span>
+      ) : null}
       <Card size="2" className="flex flex-col gap-3">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="min-w-0">
@@ -166,9 +170,11 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
           </Link>
         </div>
         {value.length === 0 ? (
-          <div className="rounded-sm bg-muted px-3 py-3 text-muted-foreground">
-            还没选模型。先从下方选择服务，再加入可用模型。
-          </div>
+          <EmptyState
+            title="还没选模型"
+            description="先从下方选择服务，再加入可用模型。"
+            className="rounded-sm bg-muted px-3 py-3"
+          />
         ) : (
           <div className="grid gap-2 sm:grid-cols-2" aria-label="已选模型" role="list">
             {value.map((identity) => {
@@ -199,14 +205,19 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                       )}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    aria-label={`移除 ${identity}`}
-                    className="-mr-1 flex size-6 shrink-0 touch-manipulation items-center justify-center rounded-sm text-muted-foreground transition-colors max-sm:size-11 hover:bg-muted hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    onClick={() => toggle(identity)}
-                  >
-                    <Cross2Icon className="size-3.5" />
-                  </button>
+                  <Tooltip content={`移除 ${identity}`}>
+                    <IconButton
+                      type="button"
+                      aria-label={`移除 ${identity}`}
+                      variant="ghost"
+                      color="red"
+                      size="1"
+                      className="-mr-1 shrink-0 touch-manipulation max-sm:min-h-11 max-sm:min-w-11"
+                      onClick={() => toggle(identity)}
+                    >
+                      <Cross2Icon aria-hidden />
+                    </IconButton>
+                  </Tooltip>
                 </div>
               );
             })}
@@ -234,28 +245,28 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
               ) : query.isError ? (
                 <p className="px-3 py-4 text-xs text-destructive">可选模型暂不可用。</p>
               ) : groups.length === 0 ? (
-                <p className="px-3 py-4 text-xs text-muted-foreground">没有可选择的服务。</p>
+                <EmptyState title="没有可选择的服务" className="px-3 py-4" />
               ) : (
                 groups.map((group) => {
                   const available = group.models.filter((model) => model.available).length;
                   const unavailable = group.models.length - available;
                   return (
-                    <ProviderSelectorItem
+                    <MasterListItem
                       key={group.provider}
                       selected={group.provider === selected?.provider}
                       className="flex flex-col items-start gap-0.5 border-b border-border px-3 py-2 last:border-b-0"
                       onClick={() => setPickedProvider(group.provider)}
                     >
                       <span className="w-full break-all font-mono font-medium">{group.provider}</span>
-                      <ProviderSelectorItemText className="text-xs">
+                      <MasterListItemText className="text-xs">
                         <span className="font-mono tabular-nums">{available}</span> 个可选
                         {unavailable === 0 ? null : (
-                          <ProviderSelectorItemText tone="danger">
+                          <MasterListItemText tone="danger">
                             {" "}· <span className="font-mono tabular-nums">{unavailable}</span> 个不可用
-                          </ProviderSelectorItemText>
+                          </MasterListItemText>
                         )}
-                      </ProviderSelectorItemText>
-                    </ProviderSelectorItem>
+                      </MasterListItemText>
+                    </MasterListItem>
                   );
                 })
               )}
@@ -278,13 +289,12 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                   <p className="text-muted-foreground">修复下方读取错误并重试后，才能继续选择或保存。</p>
                 </>
               ) : (
-                <>
-                  <p className="font-medium">暂无可选模型</p>
-                  <p className="text-muted-foreground">先配置模型服务、凭据并完成模型发现，再回到这里选择。</p>
-                  <Link to="/credentials" className="w-fit underline underline-offset-4">
-                    去配置模型服务
-                  </Link>
-                </>
+                <EmptyState
+                  title="暂无可选模型"
+                  description="先配置模型服务、凭据并完成模型发现，再回到这里选择。"
+                  action={<Link to="/credentials" className="underline underline-offset-4">去配置模型服务</Link>}
+                  className="p-0"
+                />
               )}
             </div>
           ) : (
@@ -374,21 +384,18 @@ function ProviderPane({
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {models.length === 0 ? (
-          <div className="flex flex-col items-start gap-1.5 px-4 py-6 text-muted-foreground">
-            <p className="font-medium text-foreground">
-              {group.models.length === 0 ? "这项服务还没有可用模型" : "没有匹配的模型"}
-            </p>
-            <p>
-              {group.models.length === 0
-                ? "先去模型服务发现目录或手动添加模型。"
-                : "换一个模型名称或 model id 继续搜索。"}
-            </p>
-            {group.models.length === 0 ? (
+          <EmptyState
+            title={group.models.length === 0 ? "这项服务还没有可用模型" : "没有匹配的模型"}
+            description={group.models.length === 0
+              ? "先去模型服务发现目录或手动添加模型。"
+              : "换一个模型名称或 model id 继续搜索。"}
+            action={group.models.length === 0 ? (
               <Link to="/credentials" className="font-medium text-primary underline underline-offset-4">
                 去发现或手动添加模型
               </Link>
-            ) : null}
-          </div>
+            ) : undefined}
+            className="px-4 py-6"
+          />
         ) : null}
         {models.map((model) => {
           const picked = value.includes(model.identity);

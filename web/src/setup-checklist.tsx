@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { CrossCircledIcon } from "@radix-ui/react-icons";
+import { Callout, Card } from "@radix-ui/themes";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { Button } from "@/components/theme-button";
-import { Card } from "@radix-ui/themes";
 
 import { fetchJson } from "./api.ts";
 import { hasPermission, type PanelSession } from "./session.ts";
@@ -28,9 +29,18 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
   const status = useSetupStatus();
   if (status.isError) {
     return (
-      <Card size="2" className="flex flex-col mx-4 mt-4 gap-2 sm:mx-5" aria-label="首次配置状态读取失败">
-        <h2 className="font-semibold">首次配置暂时不可用</h2>
-        <p role="alert" className="text-sm text-destructive">{status.error.message}</p>
+      <Callout.Root
+        role="alert"
+        color="red"
+        size="2"
+        className="mx-4 mt-4 sm:mx-5"
+        aria-label="首次配置状态读取失败"
+      >
+        <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+        <Callout.Text>
+          <strong className="font-semibold">首次配置暂时不可用</strong>
+          <span className="mt-1 block">{status.error.message}</span>
+        </Callout.Text>
         <Button
           className="w-fit"
           type="button"
@@ -42,7 +52,7 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
         >
           {status.isFetching ? "正在重试…" : "重试"}
         </Button>
-      </Card>
+      </Callout.Root>
     );
   }
   if (status.data === undefined) {
