@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LockClosedIcon, PlusIcon, ResetIcon, TrashIcon } from "@radix-ui/react-icons";
+import { Text, TextField } from "@radix-ui/themes";
 import { useMemo, useState, type FormEvent } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -17,8 +18,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { api, errorText, fetchJson } from "./api.ts";
@@ -348,7 +347,7 @@ export function AccessControlPage() {
                                   impliedBy !== undefined && role.permissions.includes(impliedBy);
                                 return (
                                   <td key={role.id} className="border-l border-border px-3 py-1.5 text-center">
-                                    <label className="inline-flex min-h-8 cursor-pointer flex-col items-center justify-center rounded-sm px-1 max-sm:min-h-11 max-sm:min-w-11 hover:bg-muted focus-within:ring-2 focus-within:ring-ring/25 focus-within:ring-offset-1 focus-within:ring-offset-background has-disabled:cursor-not-allowed has-disabled:opacity-70">
+                                    <Text as="label" size="2" className="inline-flex min-h-8 cursor-pointer flex-col items-center justify-center rounded-sm px-1 max-sm:min-h-11 max-sm:min-w-11 hover:bg-muted focus-within:ring-2 focus-within:ring-ring/25 focus-within:ring-offset-1 focus-within:ring-offset-background has-disabled:cursor-not-allowed has-disabled:opacity-70">
                                       <input
                                         type="checkbox"
                                         aria-label={`${role.name}的${permission.resource}${permission.action}权限${implied ? "，已随管理权限授予" : ""}`}
@@ -358,7 +357,7 @@ export function AccessControlPage() {
                                         className="size-4 accent-primary outline-none"
                                       />
                                       {implied ? <span className="text-xs text-muted-foreground">随管理权限生效</span> : null}
-                                    </label>
+                                    </Text>
                                   </td>
                                 );
                               })}
@@ -389,8 +388,8 @@ export function AccessControlPage() {
           </DialogHeader>
           {confirm?.kind === "reset" ? (
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="reset-password">临时密码</Label>
-              <Input id="reset-password" type="password" autoComplete="new-password" autoFocus value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} />
+              <Text as="label" htmlFor="reset-password" size="2" weight="medium">临时密码</Text>
+              <TextField.Root id="reset-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" autoFocus value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} />
             </div>
           ) : null}
           <DialogFooter>
@@ -430,22 +429,22 @@ function CreateDialog({ kind, busy, onClose, onUser, onRole }: { kind: "user" | 
           {kind === "user" ? (
             <div className="flex flex-col gap-4">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="new-username">用户名</Label>
-                <Input id="new-username" autoFocus value={username} onChange={(event) => setUsername(event.target.value)} />
+                <Text as="label" htmlFor="new-username" size="2" weight="medium">用户名</Text>
+                <TextField.Root id="new-username" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoFocus value={username} onChange={(event) => setUsername(event.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="new-display-name">显示名</Label>
-                <Input id="new-display-name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="可留空" />
+                <Text as="label" htmlFor="new-display-name" size="2" weight="medium">显示名</Text>
+                <TextField.Root id="new-display-name" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="可留空" />
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="new-password">临时密码</Label>
-                <Input id="new-password" type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
+                <Text as="label" htmlFor="new-password" size="2" weight="medium">临时密码</Text>
+                <TextField.Root id="new-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
               </div>
             </div>
           ) : (
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="new-role-name">角色名</Label>
-              <Input id="new-role-name" autoFocus value={name} onChange={(event) => setName(event.target.value)} />
+              <Text as="label" htmlFor="new-role-name" size="2" weight="medium">角色名</Text>
+              <TextField.Root id="new-role-name" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoFocus value={name} onChange={(event) => setName(event.target.value)} />
             </div>
           )}
           <DialogFooter>

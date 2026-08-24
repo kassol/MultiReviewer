@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
 import { CheckCircledIcon, CrossCircledIcon, ExclamationTriangleIcon, UpdateIcon } from "@radix-ui/react-icons";
+import { Text, TextField } from "@radix-ui/themes";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { Button } from "@/components/theme-button";
@@ -22,7 +23,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -886,14 +886,15 @@ function RepoRuns({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-base font-semibold">{canRead ? "评审记录" : "重新运行审查"}</h3>
         {canRerun ? <form onSubmit={submit} className="flex flex-wrap gap-2">
-          <label htmlFor={`rerun-pr-${repo.repoId}`} className="sr-only">
+          <Text as="label" htmlFor={`rerun-pr-${repo.repoId}`} className="sr-only">
             PR 编号
-          </label>
-          <Input
+          </Text>
+          <TextField.Root
             id={`rerun-pr-${repo.repoId}`}
+            size={{ initial: "3", sm: "2" }}
             placeholder="PR 编号"
             inputMode="numeric"
-            className="w-28"
+            className="min-w-0 w-28 max-sm:min-h-11"
             value={pullNumber}
             onChange={(event) => setPullNumber(event.target.value)}
           />

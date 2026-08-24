@@ -3,6 +3,7 @@
  * 不连坐批次上限。组合候选与仓库覆盖共用 `ModelComposer` 的模型服务投影。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Text, TextField } from "@radix-ui/themes";
 import { useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -14,8 +15,6 @@ import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/theme-button";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { api, errorText, fetchJson } from "./api.ts";
@@ -256,10 +255,12 @@ function SettingsForm({ settings }: { settings: Settings }) {
                 取值来源：{limitSource === "default" ? "系统默认" : "自定义"}
               </p>
               <div className="flex max-w-sm flex-col gap-1.5">
-                <Label htmlFor="max-changed-lines">每批最多改动行数</Label>
-                <Input
+                <Text as="label" htmlFor="max-changed-lines" size="2" weight="medium">每批最多改动行数</Text>
+                <TextField.Root
                   id="max-changed-lines"
-                  className="w-40 font-mono"
+                  size={{ initial: "3", sm: "2" }}
+                  color={limitFeedback?.isError ? "red" : "gray"}
+                  className="min-w-0 w-40 font-mono max-sm:min-h-11"
                   inputMode="numeric"
                   value={limit}
                   aria-invalid={limitFeedback?.isError || undefined}

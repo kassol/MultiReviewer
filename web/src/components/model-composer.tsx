@@ -4,13 +4,13 @@
  */
 import { Link } from "@tanstack/react-router";
 import { Cross2Icon } from "@radix-ui/react-icons";
+import { TextField } from "@radix-ui/themes";
 import { useEffect, useMemo, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { Button } from "@/components/theme-button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
@@ -351,7 +351,9 @@ function ProviderPane({
       </div>
 
       <div className="border-b border-border bg-muted/50 px-3 py-2">
-        <Input
+        <TextField.Root
+          size={{ initial: "3", sm: "2" }}
+          className="min-w-0 w-full max-sm:min-h-11"
           aria-label={`在 ${group.provider} 里搜模型`}
           placeholder={`在 ${group.provider} 里搜模型`}
           value={query}

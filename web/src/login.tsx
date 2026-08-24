@@ -1,11 +1,10 @@
 import { useRouter } from "@tanstack/react-router";
+import { Text, TextField } from "@radix-ui/themes";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { Mark } from "@/components/mark";
 import { Button } from "@/components/theme-button";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 
 import { api } from "./api.ts";
 import { clearPanelSession, loadPanelSession, panelNeedsBootstrap } from "./session.ts";
@@ -83,22 +82,22 @@ export function LoginPage() {
           <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
             {bootstrapMode ? (
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="bootstrap">一次性启动口令</Label>
-                <Input id="bootstrap" type="password" value={bootstrap} onChange={(event) => setBootstrap(event.target.value)} />
+                <Text as="label" htmlFor="bootstrap" size="2" weight="medium">一次性启动口令</Text>
+                <TextField.Root id="bootstrap" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" value={bootstrap} onChange={(event) => setBootstrap(event.target.value)} />
               </div>
             ) : null}
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="username">用户名</Label>
-              <Input id="username" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" autoFocus />
+              <Text as="label" htmlFor="username" size="2" weight="medium">用户名</Text>
+              <TextField.Root id="username" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" autoFocus />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="password">密码</Label>
-              <Input id="password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={bootstrapMode ? "new-password" : "current-password"} />
+              <Text as="label" htmlFor="password" size="2" weight="medium">密码</Text>
+              <TextField.Root id="password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={bootstrapMode ? "new-password" : "current-password"} />
             </div>
             {bootstrapMode ? (
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="confirm">确认密码</Label>
-                <Input id="confirm" type="password" value={confirm} onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" />
+                <Text as="label" htmlFor="confirm" size="2" weight="medium">确认密码</Text>
+                <TextField.Root id="confirm" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" value={confirm} onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" />
               </div>
             ) : null}
             {error === null ? null : <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive">{error}</p>}

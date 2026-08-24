@@ -14,7 +14,7 @@
 - `src/main.tsx` — 路由与壳:`/login` 同一屏按 session 探测结果在登录与 bootstrap 注册间切换;`/password` 是必须改密页;`shell` 下挂六页(`/repos` / `/runs` / `/stats` / `/credentials` / `/settings` / `/access`)。`/credentials` 是模型服务总入口;`/credentials/:provider`、`/credentials/:provider/maintenance`、`/credentials/:provider/models` 分别是服务概览、维护与模型的稳定地址。配置流以 `/credentials/add` 为父地址:内置 provider 用 `builtin/:provider/discover|verify`,自定义创建用 `custom/discover|verify`,自定义修改用 `custom/:provider/discover|verify`;自定义子路由同时要求模型写与凭据写。Router `basepath` 取注入前缀。壳按 `GET /session` 回来的有效权限先过滤导航再渲染:系统管理员全开且独有访问控制页,普通用户只看得到有读权限的页;页面按写权限决定是否渲染保存、刷新、凭据、删除与重跑控件;零权限时导航全藏,内容区给一张说明并列系统管理员。所有业务页在实例启用前显示同一首次配置检查单;任一成功写请求会立即让状态查询失效并刷新。窄视口下侧栏改成顶部横排、可横向滚动。
 - `src/session.ts` — 当前身份与权限的唯一查询,缓存 `GET <前缀>/api/session`;未认证的 401 再由壳送去 `/login`,必须改密时统一送 `/password`,页面组件不各自探测。
 - `src/setup-checklist.tsx` — 首次配置状态与检查单的唯一实现。它读取认证的 `GET /setup-status`,始终显示三步完成状态,只把当前未完成步骤做成入口;入口再按当前会话的有效写权限裁剪。实例启用后整块隐藏。
-- `src/login.tsx` — 登录与首次注册共用的一屏。普通档是用户名加密码;零用户档多 bootstrap 口令与确认密码,注册成功后回账号登录。所有字段有可见 `<Label>`,不靠 placeholder 当标签。
+- `src/login.tsx` — 登录与首次注册共用的一屏。普通档是用户名加密码;零用户档多 bootstrap 口令与确认密码,注册成功后回账号登录。所有字段使用 Themes `Text as="label"` 的可见标签,不靠 placeholder 当标签。
 - `src/password.tsx` — 用户自改密码页,走 `PUT /session/password`;必须改密的人完成后回到自己有权访问的第一页。改密保留当前会话、作废其余会话。
 - `src/access-control.tsx` — 系统管理员独有的 `/access` 页,上半用户表、下半转置权限矩阵(行是权限、列是角色)。角色多时横向滚,权限列 sticky。用户与角色读写走 `GET/POST /users`、`PUT/DELETE /users/:username`、`POST /users/:username/reset-password` 与 `GET/POST /roles`、`PUT/DELETE /roles/:id`;改角色是行内下拉,重置密码、删除用户与删除角色都走 Dialog。三类 write 生效时对应 read 显示为已包含且不可单独移除,`review:rerun` 仍是独立权限。系统管理员不进矩阵;角色创建时不包含任何权限,未分配角色的用户就是零权限。
 - `src/components/mark.tsx` — 产品标记(三条错位短线),与 `index.html` 里内联成 data URI 的 favicon 是同一份图形。用 `currentColor` 上色。
@@ -28,7 +28,7 @@
 
 - `src/settings.tsx` — `/settings` 上的审查策略页。全局模型组合与批次上限各持独立版本、分别保存;409 只恢复冲突项,保留另一项草稿。批次上限收在默认折叠的高级参数里并显示系统默认/自定义来源。
 - `src/components/model-composer.tsx` — 全局组合与仓库覆盖共用的唯一模型选择器。接口是 `{value, onChange, provider?, onValidityChange}`;外部 provider 优先定位,没有传入时优先显示已选模型所属 provider。它只读 `GET /model-services` 的统一候选,不创建 provider、不处理凭据、不刷新目录、不补录模型。左栏按服务分组,右栏筛当前服务模型;已选但失效的模型保留稳定原因与「去模型服务处理」入口,允许移除但通知调用页禁止原样保存。一次最多渲染当前服务的 120 行。
-- `src/components/ui/` — 迁移期 vendored 组件(Dialog / Input / Label / Table / Badge / Card / Command / Popover / Calendar)。Button wrapper 已删除。Calendar 只保留 `react-day-picker` 的日期行为,月份导航使用 Themes `IconButton`,日期使用 Themes `Button`,外观读取 Theme token;`locale` 为 undefined 时不显式传给 `DayButton`,以兼容 `exactOptionalPropertyTypes`。已按视觉定稿把 Card 与 Dialog 的 ring 换成边框、圆角压到 `--radius`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
+- `src/components/ui/` — 迁移期 vendored 组件(Dialog / Table / Badge / Card / Command / Popover / Calendar)。Button、Input 与 Label wrapper 已删除。Calendar 只保留 `react-day-picker` 的日期行为,月份导航使用 Themes `IconButton`,日期使用 Themes `Button`,外观读取 Theme token;`locale` 为 undefined 时不显式传给 `DayButton`,以兼容 `exactOptionalPropertyTypes`。已按视觉定稿把 Card 与 Dialog 的 ring 换成边框、圆角压到 `--radius`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
 - `src/lib/utils.ts` — shadcn 的 `cn()`,clsx 加 tailwind-merge。
 - `src/styles.css` — Radix Theme token 到产品语义 token 与迁移期 Tailwind token 的映射,以及浏览器原生面的接管,没有组件类。三层底色(`--app-chrome` 外壳 / `--app-bg` 内容 / `--app-panel` 面板)、六档字号阶梯(xs 11 / sm 13 / base 14 / lg 16 / xl 19 / 3xl 28,body 就是 sm),以及选区、光标、滚动条与表格数字的默认样式。
 
@@ -42,6 +42,7 @@
 - **失效的已选模型不静默消失。**`GET /model-services` 给稳定原因与处理入口,编辑器原样显示并允许移除;调用页只门禁这一次组合保存。批次上限等无关设置仍可独立提交,最终门禁以服务端同一模型服务投影为准。
 - **模型服务字段与动作按权限裁剪。**`model:read` 才看目标、目录、模型、来源和可用性,`credential:read` 才看凭据审计字段;候选与错误响应不得含明文、密文或主密钥材料。前端只依据返回字段展示,不复制服务端 provider、引用或版本竞争判据。
 - **通用视觉只有 Radix Themes 一条路。**颜色、字号、间距、圆角及组件状态使用 Theme 配置、组件 props 与 Theme tokens；Radix Primitives 只补行为；Tailwind 只处理 Themes 响应式能力无法表达的复杂布局和产品专有结构。页面不得深度覆盖 Radix 内部 DOM,也不得为同一语义另写一套 utility 外观。
+- **文本输入与字段标签直接使用 Themes。**文本输入使用 `TextField.Root`,搜索图标等附件进入 `TextField.Slot`;可见或视觉隐藏的字段标签使用 `Text as="label"` 并保持 `htmlFor`/`id` 关联。输入在窄视口使用响应式 size 和最小触控高度；组合框只复用输入外观,其受控值、候选和键盘行为继续由领域组件持有。
 - **面板只做亮色一套**(issue #46)。不加主题上下文、本地存储、防闪脚本;`dark:` 变体被 `@custom-variant` 改挂到一个谁都不写的类上,等于关掉,shadcn 组件里那些 `dark:` 类因此不生效。要加暗色那天,在令牌层补一段媒体块重定义变量即可。
 - 状态色是三态:`--destructive` 失败、`--warning` 需注意、`--success` 正常。后两个是自建的,shadcn 只给 `--destructive`,升级组件时要自己盯着。三态都以 `text-*` 的形式压在浅底 badge 上,改色值前先算对比度:面板出现的四种底(`#fff` / `--background` / `--muted` / `--chrome`)上都要 ≥ 4.5:1。主色是近黑,不是青,也不是蓝。
 - **选中态按操作语义分三类。**主导航和 tab 表示当前位置,分别用白底卡位与下划线；仓库、模型服务和 `ModelComposer` 的 ProviderSelector 使用同一套实心主色加反白文字,选中项 hover 继续使用深色体系；模型行、命令菜单和批量勾选属于编辑中的选择,使用浅底、描边或 Checkbox。弹窗关闭必须恢复打开前的列表项与 tab,不得回落到第一项。任何选中态都要单独检查 hover、focus 与辅助文字对比度。
@@ -65,6 +66,8 @@
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
 
 ## 变更日志
+
+- 2026-08-24: TextField/Label 组件族迁移到 Radix Themes。认证、访问控制、仓库重跑、审查策略、模型服务与模型组合共 25 个文本输入改用 `TextField.Root`;字段标签改用 `Text as="label"`,搜索图标改用 `TextField.Slot`,保留 datalist、受控值、表单属性、等宽字段、组合按钮连接和窄屏触控尺寸,旧 Input/Label wrapper 删除。
 
 - 2026-08-24: Button/IconButton 组件族迁移到 Radix Themes。业务主操作、次要动作和破坏性动作改用官方 variant、color、size 与 highContrast prop；纯图标动作使用 IconButton 并保留可访问名称；Calendar 移除 `buttonVariants` 依赖，旧 shadcn Button wrapper 删除。
 

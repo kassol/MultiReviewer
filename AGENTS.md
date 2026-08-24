@@ -8,7 +8,7 @@ MultiReviewer:基于真实 Coding Agent 的多模型并行 PR 智能审查工具
 
 ## 技术栈
 
-TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内置的 `node:test`。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004,它是唯一的运行时第三方依赖。持久化用 SQLite。包管理用 pnpm。
+TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内置的 `node:test`。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004,它是唯一的运行时第三方依赖。持久化用 SQLite。管理面板用 React 19、Radix Themes 与 Tailwind v4 构建。包管理用 pnpm。
 
 ## 目录索引
 
@@ -151,6 +151,8 @@ Issue 与 spec 存放于本仓库的 GitHub Issues,通过 `gh` CLI 读写。见 
 Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.md`。
 
 ## 变更日志
+
+- 2026-08-24: 管理面板完成 TextField/Label 组件族迁移。全部文本输入直接使用 Radix Themes `TextField.Root`,可见与隐藏字段标签使用 Themes `Text as="label"` 并保留 `htmlFor`/`id`;模型筛选图标进入 `TextField.Slot`,旧 shadcn Input/Label wrapper 删除。
 
 - 2026-08-24: 管理面板完成 Button/IconButton 整族迁移。业务动作直接使用 Radix Themes 官方组件与视觉属性，纯图标动作保留可访问名称；Calendar 保留日期行为并改用 Themes Button/IconButton 与 Theme token，旧 shadcn Button wrapper 及 `buttonVariants` 删除。
 

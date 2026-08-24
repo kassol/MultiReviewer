@@ -5,7 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useBlocker, useLocation, useNavigate } from "@tanstack/react-router";
 import { CheckIcon, ChevronDownIcon, CrossCircledIcon, ExclamationTriangleIcon, MagnifyingGlassIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
-import { IconButton } from "@radix-ui/themes";
+import { IconButton, Text, TextField } from "@radix-ui/themes";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -22,8 +22,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -442,7 +440,9 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
         <h2 className="text-base font-semibold">选择模型服务来源</h2>
         <p className="mt-1 text-muted-foreground">搜索 Pi 内置 provider，或从同一入口添加自定义 provider。</p>
       </div>
-      <Input
+      <TextField.Root
+        size={{ initial: "3", sm: "2" }}
+        className="min-w-0 w-full max-sm:min-h-11"
         aria-label="搜索 Pi 内置 provider"
         placeholder="输入 provider 标识或名称"
         value={query}
@@ -553,10 +553,12 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
         onSubmit={(event) => { event.preventDefault(); preview.mutate(); }}
       >
         <div className="space-y-1.5">
-          <Label htmlFor="setup-builtin-credential">模型凭据</Label>
-          <Input
+          <Text as="label" htmlFor="setup-builtin-credential" size="2" weight="medium">模型凭据</Text>
+          <TextField.Root
             id="setup-builtin-credential"
             type="password"
+            size={{ initial: "3", sm: "2" }}
+            className="min-w-0 w-full max-sm:min-h-11"
             autoComplete="off"
             value={credential}
             required
@@ -656,9 +658,11 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
         </p>
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="setup-validation-model">验证模型</Label>
-        <Input
+        <Text as="label" htmlFor="setup-validation-model" size="2" weight="medium">验证模型</Text>
+        <TextField.Root
           id="setup-validation-model"
+          size={{ initial: "3", sm: "2" }}
+          className="min-w-0 w-full max-sm:min-h-11"
           list="setup-validation-models"
           value={activeCandidate.validationModel}
           disabled={phase !== null}
@@ -798,10 +802,11 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
       <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); preview.mutate(); }}>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1.5 sm:col-span-2">
-            <Label htmlFor="setup-custom-provider">provider</Label>
-            <Input
+            <Text as="label" htmlFor="setup-custom-provider" size="2" weight="medium">provider</Text>
+            <TextField.Root
               id="setup-custom-provider"
-              className="font-mono"
+              size={{ initial: "3", sm: "2" }}
+              className="min-w-0 w-full font-mono max-sm:min-h-11"
               value={active.provider}
               required
               disabled={phase !== null || editing}
@@ -810,10 +815,11 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
             />
           </div>
           <div className="space-y-1.5 sm:col-span-2">
-            <Label htmlFor="setup-custom-base-url">调用目标</Label>
-            <Input
+            <Text as="label" htmlFor="setup-custom-base-url" size="2" weight="medium">调用目标</Text>
+            <TextField.Root
               id="setup-custom-base-url"
-              className="font-mono"
+              size={{ initial: "3", sm: "2" }}
+              className="min-w-0 w-full font-mono max-sm:min-h-11"
               type="url"
               value={active.baseUrl}
               required
@@ -823,7 +829,7 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="setup-custom-protocol">接口协议</Label>
+            <Text as="label" htmlFor="setup-custom-protocol" size="2" weight="medium">接口协议</Text>
             <select
               id="setup-custom-protocol"
               className="h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50"
@@ -836,10 +842,12 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
             </select>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="setup-custom-credential">模型凭据</Label>
-            <Input
+            <Text as="label" htmlFor="setup-custom-credential" size="2" weight="medium">模型凭据</Text>
+            <TextField.Root
               id="setup-custom-credential"
               type="password"
+              size={{ initial: "3", sm: "2" }}
+              className="min-w-0 w-full max-sm:min-h-11"
               autoComplete="off"
               value={active.credential}
               required
@@ -854,7 +862,7 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
             <p className="mb-2 text-xs text-muted-foreground">地址或协议变化后，只带入你确认的旧模型来源。</p>
             <div className="space-y-1.5">
               {supplementModels.map((model) => (
-                <label key={model.identity} className="flex items-start gap-2 text-sm">
+                <Text as="label" size="2" key={model.identity} className="flex items-start gap-2">
                   <input
                     type="checkbox"
                     className="mt-0.5 size-4"
@@ -867,7 +875,7 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
                     })}
                   />
                   <span className="break-all font-mono text-xs">{model.identity}</span>
-                </label>
+                </Text>
               ))}
             </div>
           </fieldset>
@@ -952,10 +960,11 @@ export function CustomServiceVerifyPage({ provider }: { provider?: string }) {
         </p>
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="setup-custom-validation-model">验证模型</Label>
-        <Input
+        <Text as="label" htmlFor="setup-custom-validation-model" size="2" weight="medium">验证模型</Text>
+        <TextField.Root
           id="setup-custom-validation-model"
-          className="font-mono"
+          size={{ initial: "3", sm: "2" }}
+          className="min-w-0 w-full font-mono max-sm:min-h-11"
           list={active.preview === null ? undefined : "setup-custom-validation-models"}
           value={active.validationModel}
           disabled={phase !== null}
@@ -1192,12 +1201,13 @@ function CredentialControls({
         reverify.mutate();
       }}
     >
-      <Label htmlFor={inputId}>重新验证使用的 model id</Label>
+      <Text as="label" htmlFor={inputId} size="2" weight="medium">重新验证使用的 model id</Text>
       <div className="flex flex-col gap-2 sm:flex-row">
         <div className="flex min-w-0 flex-1">
-          <Input
+          <TextField.Root
             id={inputId}
-            className="min-w-0 rounded-r-none font-mono"
+            size={{ initial: "3", sm: "2" }}
+            className="min-w-0 w-full rounded-r-none font-mono max-sm:min-h-11"
             placeholder="只填 model id，不带 provider 前缀"
             value={validationModel}
             disabled={reverify.isPending}
@@ -1213,8 +1223,8 @@ function CredentialControls({
                 type="button"
                 variant="outline"
                 color="gray"
-                size="2"
-                className="-ml-px rounded-l-none px-2.5"
+                size={{ initial: "3", sm: "2" }}
+                className="-ml-px rounded-l-none px-2.5 max-sm:min-h-11 max-sm:min-w-11"
                 disabled={reverify.isPending}
                 aria-label="从自动发现的模型中选择"
               >
@@ -1505,10 +1515,11 @@ function CustomServiceControls({ service }: { service: ModelService }) {
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-1.5">
-              <Label htmlFor={`rename-provider-${service.provider}`}>新 provider</Label>
-              <Input
+              <Text as="label" htmlFor={`rename-provider-${service.provider}`} size="2" weight="medium">新 provider</Text>
+              <TextField.Root
                 id={`rename-provider-${service.provider}`}
-                className="font-mono"
+                size={{ initial: "3", sm: "2" }}
+                className="min-w-0 w-full font-mono max-sm:min-h-11"
                 value={newProvider}
                 required
                 disabled={renameService.isPending}
@@ -1667,12 +1678,14 @@ function CatalogControls({
         }}
       >
         <div className="flex items-center gap-1.5">
-          <Label htmlFor={inputId}>手动添加模型</Label>
+          <Text as="label" htmlFor={inputId} size="2" weight="medium">手动添加模型</Text>
           <HelpTooltip label="手动添加模型说明" content="只需填写模型 ID。显示名、价格、上下文窗口和能力信息由目录或运行基线提供。" />
         </div>
         <div className="mt-1.5 flex flex-col gap-2 sm:flex-row">
-          <Input
+          <TextField.Root
             id={inputId}
+            size={{ initial: "3", sm: "2" }}
+            className="min-w-0 w-full max-sm:min-h-11"
             value={model}
             disabled={busy || !canValidate}
             placeholder="例如 gpt-5.2-codex"
@@ -1928,21 +1941,25 @@ function ModelsTable({
             <><span className="font-mono tabular-nums">{filteredModels.length}</span> / <span className="font-mono tabular-nums">{models.length}</span> 个模型</>
           )}
         </p>
-        <div className="relative w-full sm:w-64">
-          <MagnifyingGlassIcon aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Label htmlFor="model-list-search" className="sr-only">筛选模型</Label>
-          <Input
+        <div className="w-full sm:w-64">
+          <Text as="label" htmlFor="model-list-search" className="sr-only">筛选模型</Text>
+          <TextField.Root
             id="model-list-search"
+            size={{ initial: "3", sm: "2" }}
+            className="min-w-0 w-full max-sm:min-h-11"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="按名称或 model id 筛选"
-            className="pl-8"
-          />
+          >
+            <TextField.Slot side="left">
+              <MagnifyingGlassIcon aria-hidden="true" />
+            </TextField.Slot>
+          </TextField.Root>
         </div>
       </div>
       {canWriteModels ? (
         <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 text-xs">
-          <label className="flex min-h-9 items-center gap-2">
+          <Text as="label" size="2" className="flex min-h-9 items-center gap-2">
             <input
               type="checkbox"
               checked={allFilteredSelected}
@@ -1951,7 +1968,7 @@ function ModelsTable({
               className="size-4 accent-foreground"
             />
             <span>全选当前结果</span>
-          </label>
+          </Text>
           <span className="text-muted-foreground" aria-live="polite">
             已选 <span className="font-mono tabular-nums">{selectedIds.size}</span> 个
           </span>
