@@ -215,7 +215,7 @@ function ServiceStatus({ service }: { service: ModelService }) {
       ? { label: "正常", icon: Check, className: "bg-success/10 text-success" }
       : service.providerState === "name-conflict"
       ? { label: "已停用", icon: CircleX, className: "bg-destructive/10 text-destructive" }
-      : { label: "暂时不能运行", icon: CircleX, className: "bg-destructive/10 text-destructive" };
+      : { label: "需处理", icon: CircleX, className: "bg-destructive/10 text-destructive" };
   const Icon = detail.icon;
   return (
     <Badge variant="secondary" className={cn("border-0", detail.className)}>
@@ -2194,7 +2194,6 @@ function ServiceDetail({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-lg font-semibold">{service.name}</h2>
-            <ServiceStatus service={service} />
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
             <span className="font-mono">{service.provider}</span> · {service.type === "custom" ? "自定义 provider" : "Pi 内置 provider"}
