@@ -755,12 +755,12 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
       <SetupBody aria-busy={providers.isPending}>
         <div className="flex flex-col gap-0.5">
           <h2 className="text-2xl font-bold tracking-[-0.015em]">选择模型服务来源</h2>
-          <p className="text-text-secondary">搜索 Pi 内置 provider，或从同一入口添加自定义 provider。</p>
+          <p className="text-text-secondary">搜索预置的 provider；要用自己的调用地址就选下方的自定义。</p>
         </div>
         <TextField.Root
           size={{ initial: "3", sm: "2" }}
           className="w-full min-w-0 max-sm:min-h-11"
-          aria-label="搜索 Pi 内置 provider"
+          aria-label="搜索预置的 provider"
           placeholder="输入 provider 标识或名称"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
@@ -771,7 +771,7 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
         </TextField.Root>
         {providers.isPending ? (
           <div role="status" aria-live="polite" aria-busy="true">
-            <span className="sr-only">正在加载 Pi 内置 provider</span>
+            <span className="sr-only">正在加载预置的 provider</span>
             <Skeleton aria-hidden className="h-28" />
           </div>
         ) : providers.isError ? (
@@ -780,7 +780,7 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
             <Callout.Text>内置模型服务加载失败：{(providers.error as Error).message}</Callout.Text>
           </Callout.Root>
         ) : providers.data.providers.length === 0 ? (
-          <EmptyState title="没有匹配的 Pi 内置 provider" className="py-2" />
+          <EmptyState title="没有匹配的 provider" className="py-2" />
         ) : (
           <div
             className="flex max-h-80 flex-col divide-y divide-line overflow-x-hidden overflow-y-auto rounded-lg border border-overlay-line"
@@ -2317,7 +2317,7 @@ function fieldSourceLabel(source: ModelRuntimeFieldSource | null): string {
     : source === "service-interface"
       ? "服务接口"
       : source === "pi-catalog"
-        ? "Pi 目录"
+        ? "预置目录"
         : source === "service-target"
           ? "服务目标"
           : source === "runtime-baseline"
@@ -2825,7 +2825,7 @@ function ServiceDetail({
       <div className="flex min-w-0 flex-col gap-0.5">
         <h2 className="min-w-0 text-3xl font-extrabold tracking-[-0.02em]">{service.name}</h2>
         <p className="text-base text-text-muted">
-          <span className="font-mono">{service.provider}</span> · {service.type === "custom" ? "自定义 provider" : "Pi 内置 provider"}
+          <span className="font-mono">{service.provider}</span> · {service.type === "custom" ? "自定义 provider" : "预置 provider"}
         </p>
       </div>
 
@@ -3008,12 +3008,7 @@ export function ModelServicesPage({
     // 位置也只剩 panel-main-scroll 一个,`restoreScroll` 的回落分支正是为此留的。
     <PageBody width="wide" className="gap-4 sm:gap-[18px]">
       <PageHeader
-        title={(
-          <span className="inline-flex items-center gap-2">
-            模型服务
-            <HelpTooltip label="模型服务说明" content="删除仍被模型组合引用的服务时，系统会列出引用位置并阻止删除。" />
-          </span>
-        )}
+        title="模型服务"
         actions={canWriteCredential ? (
           <Button
             id="add-model-service-trigger"
@@ -3034,7 +3029,7 @@ export function ModelServicesPage({
           <h2 className="text-2xl font-bold tracking-[-0.015em]">模型服务信息不可见</h2>
           <p className="text-text-secondary">
             {canWriteCredential
-              ? "当前会话可写模型凭据，但不能读取现有服务、目录和凭据审计字段。可从页头搜索 Pi 内置 provider 继续配置。"
+              ? "当前会话可写模型凭据，但不能读取现有服务、目录和凭据审计字段。可从页头添加模型服务继续配置。"
               : "当前会话没有模型或凭据读取权限。页头搜索只显示按权限裁剪后的内置 provider 信息。"}
           </p>
         </CardShell>
@@ -3080,7 +3075,7 @@ export function ModelServicesPage({
           >
             <CardHeader
               title="已配置服务"
-              meta={<><span className="font-mono tabular-nums">{services.length}</span> 项 · 含保留的异常状态</>}
+              meta={<><span className="font-mono tabular-nums">{services.length}</span> 项</>}
             />
             {services.map((service) => {
               const isSelected = service.provider === selected?.provider;

@@ -598,11 +598,11 @@ function RepoDetail({
               )}
               <p className="text-base text-text-muted">
                 {following && canWrite
-                  ? "审查策略更新后，这个仓库会同步使用新组合。选择“自定义”可单独调整。"
+                  ? "审查策略更新后，这个仓库会同步使用新组合。"
                   : following
                     ? "这个仓库使用全局模型组合。"
                     : canWrite
-                      ? "仅对这个仓库生效。选择“跟随全局”可清除覆盖。"
+                      ? "这组模型仅对这个仓库生效，不随审查策略变化。"
                       : "这组模型仅对这个仓库生效。"}
               </p>
             </div>
