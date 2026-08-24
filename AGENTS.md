@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-24: 管理面板整体换到 v8「毛玻璃控制台」视觉方向,并把主线工作流打通。视觉侧:令牌层重写(`--v8-*` 是唯一颜色事实来源)、左侧栏改双层毛玻璃顶栏加 underline 导航、窄屏底部 Tab 栏、新增总览页与全局 ⌘K、主从选中态改蓝 tint 加 3px 左条。工作流侧:`GET <前缀>/api/session` 增加 `giteaUrl` 字段,面板由此能指回 pull request——处置只在 Forge 上发生,此前面板报出的待处置数点不进去;总览指标、评审记录筛选与运行详情之间以地址串起,未结束的轮次显示为「运行中」并自动续查。细节见 `web/AGENTS.md` 与 `web/DESIGN.md`。
+
 - 2026-08-24: 主从列表选中态不再声明第二套 hover 背景。模型服务、审查策略与仓库的选中项在默认和悬停时统一保持深色背景与白色文字。
 
 - 2026-08-24: 修复 Radix Themes 未分层样式覆盖 Tailwind 响应式布局。样式入口固定 `theme < base < radix < components < utilities`,Card、Button 与 Table 上明确声明的布局和断点显隐恢复生效；模型服务返回列表链接不再误标为当前地址。
