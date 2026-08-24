@@ -453,9 +453,18 @@ export function OverviewPage() {
           ) : null}
 
           <CardShell className="overflow-hidden">
-            <div className="flex flex-col px-5 pt-3.5">
-              <h2 className="text-2xl font-bold tracking-[-0.015em]">各模型处置率</h2>
-              <span className="text-base text-text-muted">近 7 日</span>
+            <div className="flex items-start justify-between gap-3 px-5 pt-3.5">
+              <div className="flex flex-col">
+                <h2 className="text-2xl font-bold tracking-[-0.015em]">各模型处置率</h2>
+                <span className="text-base text-text-muted">近 7 日</span>
+              </div>
+              {/* 这里是近 7 日的摘要,完整矩阵与可调窗口在处置率页。 */}
+              <Link
+                to="/stats"
+                className="shrink-0 rounded-chip text-md font-medium text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/40"
+              >
+                查看全部
+              </Link>
             </div>
             <ModelRates cells={current.data?.cells ?? []} isPending={current.isPending} />
           </CardShell>
