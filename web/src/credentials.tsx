@@ -2238,7 +2238,12 @@ export function ModelServicesPage({
                   )}
                 >
                   <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
-                    <span className={cn("min-w-0 flex-1 break-words font-medium", service.name === service.provider && "font-mono")}>{service.name}</span>
+                    <span
+                      className={cn("min-w-0 flex-1 truncate font-medium", service.name === service.provider && "font-mono")}
+                      title={service.name}
+                    >
+                      {service.name}
+                    </span>
                     <ServiceStatus service={service} />
                   </div>
                   {service.name === service.provider ? null : (
