@@ -138,7 +138,7 @@ export function ReposPage({
                   aria-current={row.repoId === selected?.repoId ? "true" : undefined}
                   className={`block w-full rounded-sm border px-3 py-2.5 text-left transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${
                     row.repoId === selected?.repoId
-                      ? "border-primary bg-primary font-medium text-primary-foreground"
+                      ? "border-primary bg-primary font-medium text-primary-foreground hover:bg-primary/90"
                       : "border-transparent hover:bg-background/70"
                   }`}
                   onClick={() => setSelectedId(row.repoId)}

@@ -2454,8 +2454,10 @@ export function ModelServicesPage({
                   params={{ provider: service.provider }}
                   aria-current={isSelected ? "page" : undefined}
                   className={cn(
-                    "block w-full px-3 py-3 text-left transition-colors hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-                    isSelected && "bg-primary text-primary-foreground ring-1 ring-inset ring-primary",
+                    "block w-full px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                    isSelected
+                      ? "bg-primary text-primary-foreground ring-1 ring-inset ring-primary hover:bg-primary/90"
+                      : "hover:bg-background/60",
                   )}
                 >
                   <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
