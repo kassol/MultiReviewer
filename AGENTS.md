@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-24: 管理面板完成 Badge/StatusBadge 组件族迁移。来源、身份与类别直接使用 Radix Themes Badge；Review Run、Hook、模型服务、凭据、目录和模型可用性统一经四态 StatusBadge 展示,深色 provider 选中行保留对应状态色；旧 shadcn Badge wrapper 与页面状态色配方删除。
+
 - 2026-08-24: 管理面板完成 TextField/Label 组件族迁移。全部文本输入直接使用 Radix Themes `TextField.Root`,可见与隐藏字段标签使用 Themes `Text as="label"` 并保留 `htmlFor`/`id`;模型筛选图标进入 `TextField.Slot`,旧 shadcn Input/Label wrapper 删除。
 
 - 2026-08-24: 管理面板完成 Button/IconButton 整族迁移。业务动作直接使用 Radix Themes 官方组件与视觉属性，纯图标动作保留可访问名称；Calendar 保留日期行为并改用 Themes Button/IconButton 与 Theme token，旧 shadcn Button wrapper 及 `buttonVariants` 删除。

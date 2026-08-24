@@ -6,8 +6,8 @@ import { CheckCircledIcon, CrossCircledIcon, ExclamationTriangleIcon } from "@ra
 
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
+import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -67,10 +67,9 @@ export async function rerunRequest(run: {
 export function RunPill({ run }: { run: RunItem }) {
   if (run.failed) {
     return (
-      <Badge variant="destructive">
-        <CrossCircledIcon aria-hidden />
+      <StatusBadge tone="error">
         失败
-      </Badge>
+      </StatusBadge>
     );
   }
   const badge = runBadge(run);
@@ -127,20 +126,16 @@ function runBadge(run: RunItem) {
   // resolve 载体,本来就无从处置。
   if (run.total === 0) {
     return (
-      <Badge variant="secondary">
-        <CheckCircledIcon aria-hidden />
+      <StatusBadge tone="neutral" icon={CheckCircledIcon}>
         无可处置项
-      </Badge>
+      </StatusBadge>
     );
   }
   const done = run.resolved === run.total;
   return (
-    <Badge
-      className={done ? "bg-success/12 text-success" : "bg-warning/12 text-warning"}
-    >
-      {done ? <CheckCircledIcon aria-hidden /> : <ExclamationTriangleIcon aria-hidden />}
+    <StatusBadge tone={done ? "success" : "warning"}>
       {run.resolved}/{run.total} 已处置
-    </Badge>
+    </StatusBadge>
   );
 }
 

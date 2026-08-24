@@ -4,14 +4,14 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useBlocker, useLocation, useNavigate } from "@tanstack/react-router";
-import { CheckIcon, ChevronDownIcon, CrossCircledIcon, ExclamationTriangleIcon, MagnifyingGlassIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
-import { IconButton, Text, TextField } from "@radix-ui/themes";
+import { CheckIcon, ChevronDownIcon, CrossCircledIcon, ExclamationTriangleIcon, MagnifyingGlassIcon, MinusCircledIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
+import { Badge, IconButton, Text, TextField } from "@radix-ui/themes";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { PageHeader } from "@/components/page-header";
+import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import {
@@ -211,19 +211,14 @@ function quantity(value: number): string {
 function ServiceStatus({ service, selected = false }: { service: ModelService; selected?: boolean }) {
   const detail =
     service.runCapability.runnable
-      ? { label: "正常", icon: CheckIcon, className: "bg-success/10 text-success" }
+      ? { label: "正常", tone: "success" as const }
       : service.providerState === "name-conflict"
-      ? { label: "已停用", icon: CrossCircledIcon, className: "bg-destructive/10 text-destructive" }
-      : { label: "需处理", icon: CrossCircledIcon, className: "bg-destructive/10 text-destructive" };
-  const Icon = detail.icon;
+      ? { label: "已停用", tone: "error" as const }
+      : { label: "需处理", tone: "error" as const };
   return (
-    <Badge
-      variant="secondary"
-      className={cn("border-0", selected ? "bg-primary-foreground/15 text-primary-foreground" : detail.className)}
-    >
-      <Icon data-icon="inline-start" />
+    <StatusBadge tone={detail.tone} onSolid={selected}>
       {detail.label}
-    </Badge>
+    </StatusBadge>
   );
 }
 
@@ -482,8 +477,8 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
                 <span className="block break-all font-mono text-xs font-medium">{provider.id}</span>
                 <span className="block break-words text-xs text-muted-foreground">{provider.name}</span>
               </span>
-              {provider.conflict ? <Badge variant="destructive">名字冲突</Badge> : null}
-              {provider.configured ? <Badge variant="secondary">已配置</Badge> : <Badge variant="outline">未配置</Badge>}
+              {provider.conflict ? <StatusBadge tone="error">名字冲突</StatusBadge> : null}
+              {provider.configured ? <StatusBadge tone="success">已配置</StatusBadge> : <StatusBadge tone="neutral">未配置</StatusBadge>}
             </button>
           ))}
         </div>
@@ -1013,6 +1008,23 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
       : service.providerState === "normal"
         ? "正常"
         : HEALTH_LABEL[service.health];
+  const providerTone: StatusTone = service.providerState === "name-conflict"
+    ? "error"
+    : service.providerState === "normal"
+      ? "success"
+      : service.health === "healthy"
+        ? "success"
+        : service.health === "attention"
+          ? "warning"
+          : "error";
+  const credentialTone: StatusTone = service.credential.state === "verified" ? "success" : "warning";
+  const directoryTone: StatusTone | null = service.directory === undefined
+    ? null
+    : service.directory.state === "available"
+      ? "success"
+      : service.directory.state === "refresh-failed"
+        ? "warning"
+        : "error";
   return (
     <dl
       className={cn(
@@ -1023,14 +1035,7 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
     >
       <div className="border-b bg-background p-4 sm:border-r xl:border-b-0">
         <dt className="text-xs font-medium text-muted-foreground">模型服务</dt>
-        <dd
-          className={cn(
-            "mt-1 font-medium",
-            service.providerState === "name-conflict" && "text-destructive",
-          )}
-        >
-          {providerLabel}
-        </dd>
+        <dd className="mt-1"><StatusBadge tone={providerTone}>{providerLabel}</StatusBadge></dd>
         {service.target === undefined ? (
           <p className="mt-2 text-xs text-muted-foreground">地址与接口协议按模型读权限隐藏。</p>
         ) : (
@@ -1053,14 +1058,7 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
         service.directory === undefined ? "sm:border-b-0" : "xl:border-r xl:border-b-0",
       )}>
         <dt className="text-xs font-medium text-muted-foreground">模型凭据</dt>
-        <dd
-          className={cn(
-            "mt-1 font-medium",
-            service.credential.state !== "verified" && "text-warning",
-          )}
-        >
-          {CREDENTIAL_LABEL[service.credential.state]}
-        </dd>
+        <dd className="mt-1"><StatusBadge tone={credentialTone}>{CREDENTIAL_LABEL[service.credential.state]}</StatusBadge></dd>
         {canReadCredential ? (
           <div className="mt-2 space-y-1 text-xs text-muted-foreground">
             <p>尾 4 位：<span className={service.credential.last4 === null || service.credential.last4 === undefined ? undefined : "font-mono tabular-nums"}>{service.credential.last4 ?? "未提供"}</span></p>
@@ -1094,16 +1092,7 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
       {service.directory === undefined ? null : (
         <div className="bg-background p-4 sm:col-span-2 xl:col-span-1">
           <dt className="text-xs font-medium text-muted-foreground">模型目录</dt>
-          <dd
-            className={cn(
-              "mt-1 font-medium",
-              service.directory.state === "refresh-failed" && "text-warning",
-              (service.directory.state === "undiscovered" || service.directory.state === "discovery-failed") &&
-                "text-destructive",
-            )}
-          >
-            {DIRECTORY_LABEL[service.directory.state]}
-          </dd>
+          <dd className="mt-1"><StatusBadge tone={directoryTone ?? "neutral"}>{DIRECTORY_LABEL[service.directory.state]}</StatusBadge></dd>
           <div className="mt-2 space-y-1 text-xs text-muted-foreground">
             <p>最近尝试：<span className={service.directory.lastAttemptAt === null ? undefined : "font-mono tabular-nums"}>{localMinute(service.directory.lastAttemptAt)}</span></p>
             <p>最近成功：<span className={service.directory.lastSuccessAt === null ? undefined : "font-mono tabular-nums"}>{localMinute(service.directory.lastSuccessAt)}</span></p>
@@ -1726,7 +1715,7 @@ function CatalogControls({
               return (
                 <li key={entry.identity} className="flex flex-wrap items-center gap-2 px-3 py-2">
                   <span className="min-w-0 flex-1 break-all font-mono text-xs">{entry.identity}</span>
-                  <Badge variant="outline">{SOURCE_LABEL[source]}</Badge>
+                  <Badge color="gray" variant="outline">{SOURCE_LABEL[source]}</Badge>
                   <Button
                     type="button"
                     variant="outline"
@@ -2105,14 +2094,12 @@ function ModelRuntimeFacts({ model }: { model: ModelServiceModel }) {
 function ModelAvailability({ model }: { model: ModelServiceModel }) {
   return model.available ? null : model.unavailableReason === "model-disabled" ? (
     <div className="space-y-1">
-      <Badge variant="outline" className="shrink-0 whitespace-nowrap text-muted-foreground">已停用</Badge>
+      <StatusBadge tone="neutral" icon={MinusCircledIcon}>已停用</StatusBadge>
       <p className="max-w-64 break-words text-xs text-muted-foreground">不会出现在审查策略的模型选择中</p>
     </div>
   ) : (
     <div className="space-y-1">
-      <Badge variant="destructive" className="whitespace-nowrap">
-        <CrossCircledIcon data-icon="inline-start" />不可用
-      </Badge>
+      <StatusBadge tone="error">不可用</StatusBadge>
       <p className="max-w-64 break-words text-xs text-destructive">
         {model.unavailableReasonText ?? "模型不可用"}
       </p>

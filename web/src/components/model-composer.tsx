@@ -4,12 +4,12 @@
  */
 import { Link } from "@tanstack/react-router";
 import { Cross2Icon } from "@radix-ui/react-icons";
-import { TextField } from "@radix-ui/themes";
+import { Badge, TextField } from "@radix-ui/themes";
 import { useEffect, useMemo, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
+import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -52,6 +52,28 @@ type ProviderGroup = {
   service: ModelService | undefined;
   models: ModelServiceModel[];
 };
+
+function ProviderAvailabilityStatus({ group }: { group: ProviderGroup }) {
+  let tone: StatusTone;
+  let label: string;
+  if (group.service === undefined) {
+    tone = "error";
+    label = "模型服务已移除";
+  } else if (group.service.providerState === "name-conflict") {
+    tone = "error";
+    label = "名字冲突，已停用";
+  } else if (group.service.credential.state !== "verified") {
+    tone = "error";
+    label = "模型凭据不可用";
+  } else if (group.models.some((model) => model.available)) {
+    tone = "success";
+    label = "可选择";
+  } else {
+    tone = "warning";
+    label = "没有可用模型";
+  }
+  return <StatusBadge tone={tone}>{label}</StatusBadge>;
+}
 
 export function ModelComposer({ value, onChange, provider, onValidityChange }: ModelComposerProps) {
   const query = useModelServices();
@@ -168,7 +190,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                     <p className="break-all font-mono text-xs font-medium">{identity}</p>
                     <div className="flex flex-wrap items-center gap-1">
                       {candidate?.sources.map((source) => (
-                        <Badge key={source} variant="outline">{SOURCE_LABEL[source]}</Badge>
+                        <Badge key={source} color="gray" variant="outline">{SOURCE_LABEL[source]}</Badge>
                       ))}
                       {reason === null ? null : (
                         <span className="text-xs text-destructive">{reason}</span>
@@ -327,21 +349,7 @@ function ProviderPane({
         {group.name === group.provider ? null : (
           <span className="min-w-0 break-words text-xs text-muted-foreground">{group.name}</span>
         )}
-        <span className={cn(
-          "text-xs font-medium",
-          group.service?.health === "healthy" ? "text-success" : "text-warning",
-          group.service?.health === "disabled" ? "text-destructive" : null,
-        )}>
-          {group.service === undefined
-            ? "模型服务已移除"
-            : group.service.providerState === "name-conflict"
-              ? "名字冲突，已停用"
-              : group.service.credential.state !== "verified"
-                ? "模型凭据不可用"
-                : group.models.some((model) => model.available)
-                  ? "可选择"
-                  : "没有可用模型"}
-        </span>
+        <ProviderAvailabilityStatus group={group} />
         <Link
           to="/credentials"
           className="ml-auto shrink-0 text-xs font-medium underline underline-offset-4"
@@ -414,7 +422,7 @@ function ProviderPane({
                   <span className="break-all font-mono text-xs text-muted-foreground">{model.id}</span>
                   <span className="flex flex-wrap gap-1">
                     {model.sources.map((source) => (
-                      <Badge key={source} variant="outline">{SOURCE_LABEL[source]}</Badge>
+                      <Badge key={source} color="gray" variant="outline">{SOURCE_LABEL[source]}</Badge>
                     ))}
                   </span>
                   {model.available ? null : (

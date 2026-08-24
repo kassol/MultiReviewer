@@ -1,13 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LockClosedIcon, PlusIcon, ResetIcon, TrashIcon } from "@radix-ui/react-icons";
-import { Text, TextField } from "@radix-ui/themes";
+import { Badge, Text, TextField } from "@radix-ui/themes";
 import { useMemo, useState, type FormEvent } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
+import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import {
   Dialog,
@@ -256,8 +256,8 @@ export function AccessControlPage() {
                         <td className="px-3 py-2.5 font-medium">
                           <div className="flex max-w-64 flex-wrap items-center gap-1.5">
                             <span className="max-w-56 truncate" title={user.username}>{user.username}</span>
-                            {user.isSystemAdmin ? <Badge>系统管理员</Badge> : null}
-                            {user.mustChangePassword ? <Badge className="bg-warning/10 text-warning">待改密</Badge> : null}
+                            {user.isSystemAdmin ? <Badge color="gray" variant="soft">系统管理员</Badge> : null}
+                            {user.mustChangePassword ? <StatusBadge tone="warning">待改密</StatusBadge> : null}
                           </div>
                         </td>
                         <td className="max-w-48 truncate px-3 py-2.5 text-muted-foreground" title={user.displayName ?? undefined}>{user.displayName ?? "—"}</td>

@@ -5,8 +5,8 @@ import { CheckCircledIcon, CrossCircledIcon, ExclamationTriangleIcon, UpdateIcon
 import { Text, TextField } from "@radix-ui/themes";
 
 import { HelpTooltip } from "@/components/help-tooltip";
+import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import {
   Command,
@@ -323,25 +323,21 @@ function RepoDetail({
           {repo.owner}/{repo.repo}
         </h2>
         {check.isPending ? (
-          <Badge variant="secondary">
-            <UpdateIcon aria-hidden />
+          <StatusBadge tone="neutral" icon={UpdateIcon}>
             核对中…
-          </Badge>
+          </StatusBadge>
         ) : check.isError ? (
-          <Badge variant="destructive">
-            <CrossCircledIcon aria-hidden />
+          <StatusBadge tone="error">
             核对失败
-          </Badge>
+          </StatusBadge>
         ) : issues.length === 0 ? (
-          <Badge className="bg-success/12 text-success">
-            <CheckCircledIcon aria-hidden />
+          <StatusBadge tone="success">
             Hook 配置正常
-          </Badge>
+          </StatusBadge>
         ) : (
-          <Badge className="bg-warning/12 text-warning">
-            <ExclamationTriangleIcon aria-hidden />
+          <StatusBadge tone="warning">
             {issues.length} 处差异
-          </Badge>
+          </StatusBadge>
         )}
         <span className="text-xs text-muted-foreground">仓库 ID {repo.repoId}</span>
         {canWrite ? (

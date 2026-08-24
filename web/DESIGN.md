@@ -109,7 +109,9 @@ MultiReviewer 管理面板服务两类用户：
 
 状态同时使用文字或图标表达。颜色不单独承担含义。正文与背景的对比度至少达到 WCAG AA 4.5:1。
 
-选中 provider 内的状态 Badge 使用不透明浅色底和对应状态色文字，保证深色选中背景上的可读性。
+选中 provider 内的 StatusBadge 使用对应状态色的官方 `solid` variant；默认表面使用 `soft + highContrast`。两种表面都保留状态文字与图标，深色选中背景中不回落为白色中性标签。
+
+StatusBadge 是运行状态的唯一产品级出口，只暴露 `neutral`、`success`、`warning`、`error` 四种语义。领域组件继续决定状态属于哪一类；StatusBadge 只映射 Radix Gray、Green、Amber、Red 及固定状态图标。来源、身份和类别等中性标签直接使用 Themes Badge，不进入 StatusBadge。
 
 ## 5. 排版
 
@@ -255,7 +257,7 @@ ProviderSelector 是共享产品组件。模型服务页和审查策略中的 pr
 
 ### 9.3 数据展示
 
-- Badge 只表达状态、来源或类别；DataList 表达少量键值详情；Table 表达可比较的多行数据。
+- StatusBadge 只表达运行状态；Themes Badge 表达来源、身份或类别；DataList 表达少量键值详情；Table 表达可比较的多行数据。
 - 事实值和来源在同一行显示，避免为“发现事实”“实际运行”创建重复列。
 - 单元格内容超过可用宽度时截断；完整内容可通过 Tooltip 或详情区读取。
 
