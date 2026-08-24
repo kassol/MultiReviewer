@@ -65,10 +65,15 @@ const { prefix } = injected();
 
 const rootRoute = createRootRoute({ component: () => <Outlet /> });
 
-/** 骨架按正文的列宽和边距摆:换页时它和随后渲染出来的页面占同一块位置,不跳。 */
+/** 表单档正文列宽的几页。骨架选错档就会比正文窄一截,页面到了再横跳回来。 */
+const FORM_WIDTH_PATHS = ["/stats", "/settings", "/access"] as const;
+
+/** 骨架按正文的列宽和边距摆:换页时它和随后渲染出来的页面占同一条内容轨,不跳。 */
 function PageLoading() {
+  const path = window.location.pathname;
+  const width = FORM_WIDTH_PATHS.some((suffix) => path.endsWith(suffix)) ? "form" : "wide";
   return (
-    <PageBody role="status" aria-label="正在加载页面" aria-busy="true">
+    <PageBody width={width} role="status" aria-label="正在加载页面" aria-busy="true">
       <Skeleton aria-hidden className="h-11 w-56 max-w-full" />
       <Skeleton aria-hidden className="h-5 w-96 max-w-full" />
       <Skeleton aria-hidden className="h-56 w-full" />
