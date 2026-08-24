@@ -164,7 +164,7 @@
 
 ## 5. 初步迁移优先级
 
-1. 先建立 Radix Themes 根主题、颜色/字号/间距/圆角 token 和状态映射；当前 `DESIGN.md` 只定义有限视觉规则，代码仍由 Tailwind utility 决定具体状态。[DESIGN.md](../../web/DESIGN.md#L17-L39) [web/AGENTS.md](../../web/AGENTS.md#L38-L47)
+1. 先按 ADR 0011 与 `DESIGN.md` 建立 Radix Themes 根主题、颜色/字号/间距/圆角 token 和状态映射；迁移前的代码仍由 Tailwind utility 决定具体状态。[ADR 0011](../adr/0011-radix-themes-as-panel-visual-system.md) [DESIGN.md](../../web/DESIGN.md)
 2. 用 Themes 直接替换 Button、Badge、Card、TextField、Table、Skeleton、Dialog、Popover、Tooltip、Tabs、Checkbox、Select/Radio 等通用层，保留产品组件 API。
 3. 先抽 `StatusBadge`、`DataList`、`SelectableItem/MasterList`、`Combobox`、`EmptyState/ErrorState` 五个重复模式，再迁页面。它们直接对应当前不一致和重复最多的代码位置。
 4. `ModelComposer`、模型服务三步配置、`ModelsTable`、仓库主从页属于领域组件。保留功能和状态模型，内部改用 Themes；需要的焦点、弹层、选择和确认行为由 Primitives 承担。

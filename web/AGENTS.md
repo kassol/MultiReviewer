@@ -2,7 +2,7 @@
 
 ## 职责
 
-管理面板的前端:TanStack Router + Query 的纯前端 SPA,与 JSON API 同进程部署。样式走 Tailwind v4,组件走 shadcn(Radix 底座)。Vite 构建,产物(`dist/`)不进版本库,在 Docker 多阶段构建里生成,由服务经 `/assets` 与 `<前缀>/*` 提供。领域术语以根目录 `CONTEXT.md` 为准。
+管理面板的前端:TanStack Router + Query 的纯前端 SPA,与 JSON API 同进程部署。现有实现由 Tailwind v4 与 vendored shadcn 组件组成,迁移目标以 Radix Themes 为通用视觉系统、Radix Primitives 补行为、Radix Icons 统一业务图标,Tailwind 只处理复杂布局。Vite 构建,产物(`dist/`)不进版本库,在 Docker 多阶段构建里生成,由服务经 `/assets` 与 `<前缀>/*` 提供。领域术语以根目录 `CONTEXT.md` 为准。
 
 ## 目录结构
 
@@ -18,7 +18,7 @@
 - `src/password.tsx` — 用户自改密码页,走 `PUT /session/password`;必须改密的人完成后回到自己有权访问的第一页。改密保留当前会话、作废其余会话。
 - `src/access-control.tsx` — 系统管理员独有的 `/access` 页,上半用户表、下半转置权限矩阵(行是权限、列是角色)。角色多时横向滚,权限列 sticky。用户与角色读写走 `GET/POST /users`、`PUT/DELETE /users/:username`、`POST /users/:username/reset-password` 与 `GET/POST /roles`、`PUT/DELETE /roles/:id`;改角色是行内下拉,重置密码、删除用户与删除角色都走 Dialog。三类 write 生效时对应 read 显示为已包含且不可单独移除,`review:rerun` 仍是独立权限。系统管理员不进矩阵;角色创建时不包含任何权限,未分配角色的用户就是零权限。
 - `src/components/mark.tsx` — 产品标记(三条错位短线),与 `index.html` 里内联成 data URI 的 favicon 是同一份图形。用 `currentColor` 上色。
-- `src/components/help-tooltip.tsx` — 统一的帮助提示入口。基于 Radix Tooltip 与 Lucide `CircleHelp`,图标按钮可键盘访问,窄屏保留触控尺寸。
+- `src/components/help-tooltip.tsx` — 统一的帮助提示入口。迁移后基于 Radix Themes Tooltip、IconButton 与 Radix Icons,图标按钮可键盘访问,窄屏保留触控尺寸。
 - `src/components/page-body.tsx` — 业务页正文容器。`wide` 与 `form` 两档统一最大宽度、窄屏内边距和页尾留白;主从页只在详情栏复用,不改变分栏结构。
 - `src/components/ui/skeleton.tsx` — 读取中的占位块。带 `data-slot="skeleton"`,`styles.css` 的降低动效偏好那一段据此关掉呼吸动画。
 - `src/repos.tsx` — 仓库页,左列表右详情。模型覆盖是「跟随全局 / 自定义」两态:点「跟随全局」直接清覆盖;点「自定义」在详情内挂与审查策略共用的 `ModelComposer`,以当前生效组合为初值。不可用的既有选择可移除但不得随覆盖再次保存;服务端仍作最终校验。编辑态并成单栏容纳 460px 高的两栏选择器,不套对话框或外层表单。审查配置就绪前注册按钮禁用并指向审查策略,状态失效时已开的注册框随即卸载。注册与移除确认用 shadcn Dialog,不用阻塞渲染线程的 `window.confirm`。
@@ -39,22 +39,22 @@
 - **模型组合编辑器只有一份且只负责选择。**审查策略与仓库覆盖都挂 `components/model-composer.tsx`;配置模型服务、凭据、发现、刷新与补录一律回模型服务页,组合编辑器不得再长出第二条写链。
 - **失效的已选模型不静默消失。**`GET /model-services` 给稳定原因与处理入口,编辑器原样显示并允许移除;调用页只门禁这一次组合保存。批次上限等无关设置仍可独立提交,最终门禁以服务端同一模型服务投影为准。
 - **模型服务字段与动作按权限裁剪。**`model:read` 才看目标、目录、模型、来源和可用性,`credential:read` 才看凭据审计字段;候选与错误响应不得含明文、密文或主密钥材料。前端只依据返回字段展示,不复制服务端 provider、引用或版本竞争判据。
-- **写样式只有 Tailwind utility 一条路。** `styles.css` 只放令牌,不许长出组件类——「这个间距该改哪一个」这个问题正是换底座要消灭的。
+- **通用视觉只有 Radix Themes 一条路。**颜色、字号、间距、圆角及组件状态使用 Theme 配置、组件 props 与 Theme tokens；Radix Primitives 只补行为；Tailwind 只处理 Themes 响应式能力无法表达的复杂布局和产品专有结构。页面不得深度覆盖 Radix 内部 DOM,也不得为同一语义另写一套 utility 外观。
 - **面板只做亮色一套**(issue #46)。不加主题上下文、本地存储、防闪脚本;`dark:` 变体被 `@custom-variant` 改挂到一个谁都不写的类上,等于关掉,shadcn 组件里那些 `dark:` 类因此不生效。要加暗色那天,在令牌层补一段媒体块重定义变量即可。
 - 状态色是三态:`--destructive` 失败、`--warning` 需注意、`--success` 正常。后两个是自建的,shadcn 只给 `--destructive`,升级组件时要自己盯着。三态都以 `text-*` 的形式压在浅底 badge 上,改色值前先算对比度:面板出现的四种底(`#fff` / `--background` / `--muted` / `--chrome`)上都要 ≥ 4.5:1。主色是近黑,不是青,也不是蓝。
-- **选中态按操作语义分三类。**主导航和 tab 表示当前位置,分别用白底卡位与下划线；仓库、模型服务这类主从列表用实心主色加反白文字,选中项 hover 只能继续使用主色；模型组合、命令菜单和批量勾选属于编辑中的选择,使用浅底、描边或原生勾选。弹窗关闭必须恢复打开前的列表项与 tab,不得回落到第一项。任何选中态都要单独检查 hover、focus 与辅助文字对比度。
+- **选中态按操作语义分三类。**主导航和 tab 表示当前位置,分别用白底卡位与下划线；仓库、模型服务和 `ModelComposer` 的 ProviderSelector 使用同一套实心主色加反白文字,选中项 hover 继续使用深色体系；模型行、命令菜单和批量勾选属于编辑中的选择,使用浅底、描边或 Checkbox。弹窗关闭必须恢复打开前的列表项与 tab,不得回落到第一项。任何选中态都要单独检查 hover、focus 与辅助文字对比度。
 - **字号只用令牌里那六档**,不写 `text-[13px]` 这类一次性值。档位各有唯一职责:xs 元信息、sm 正文与控件、base 区块标题、lg 对话框标题与选中仓库、xl 页标题(一页一个)、3xl 只给处置率页的指标数字。
 - **等宽字体只包数字,不包中文。** `font-mono` 会把汉字撑成等宽格,「3 轮」因此读成断开的两块;写法是 `<span className="font-mono tabular-nums">{n}</span> 轮`。
 - 时间一律「年-月-日 时:分」本地时区,不用 `toLocaleString()`——它给的是 `8/14/2026, 6:25:21 PM`,与全站的 ISO 风格对不上。
 - 读取中给骨架块,不给「读取中…」那行字:骨架保住它替代的那块内容的尺寸,数据到了不跳版。
-- 前端不做程序化测试(issue #26 的测试决策):逻辑压在服务端可测的注入变量与 API 契约上(`test/panel-pages.test.ts`);交付时提供手动测试步骤。
-- **手动验证在部署实例上做,不在本机 dev 双进程上做**(根 `AGENTS.md` 的全局规范)。本机没有真 Gitea、没有已注册的仓库、没有模型凭据,面板上大半的屏在那里是空的;dev 双进程留给写样式时的即时反馈,不当验收手段。
+- 前端不做程序化测试(issue #26 的测试决策):逻辑压在服务端可测的注入变量与 API 契约上(`test/panel-pages.test.ts`);视觉与交互由部署实例的端到端验收覆盖。
+- **端到端验收固定在部署实例使用 ego-browser,不在本机 dev 双进程上做**(根 `AGENTS.md` 的全局规范)。本机没有真 Gitea、没有已注册的仓库、没有模型凭据,面板上大半的屏在那里是空的;dev 双进程只用于实现时的即时反馈,不作为验收依据。
 
 ## 依赖关系
 
 不依赖仓库里任何服务端代码;与服务端的契约只有两条:注入全局变量的形状、`<前缀>/api` 的 JSON 端点。
 
-构建期依赖:Tailwind v4 经 `@tailwindcss/vite` 接入;组件依赖 `radix-ui`(单包)、`cmdk`(Command 的底座)、`react-day-picker`(Calendar 的底座)、`class-variance-authority`、`clsx`、`tailwind-merge`、`tw-animate-css`、`lucide-react`。`@/` 别名在 `tsconfig.json` 的 `paths` 与 `vite.config.ts` 的 `resolve.alias` 各配一次,两处要一起改。
+当前构建期依赖是 Tailwind v4、`radix-ui` 单包、cmdk、react-day-picker、class-variance-authority、clsx、tailwind-merge、tw-animate-css 与 Lucide。迁移目标依赖是 `@radix-ui/themes`、必要的 Radix Primitives 与 `@radix-ui/react-icons`;cmdk 与 react-day-picker 只在统一产品组件仍需要对应行为时保留。`@/` 别名在 `tsconfig.json` 的 `paths` 与 `vite.config.ts` 的 `resolve.alias` 各配一次,两处要一起改。
 
 ## 常用命令
 
@@ -63,6 +63,8 @@
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
 
 ## 变更日志
+
+- 2026-08-24: 选定“发布门禁看板”为 Radix Themes 迁移的视觉方向。ProviderSelector 在模型服务与审查策略中统一使用深色实底选中态；模型行、多选与命令项继续使用浅色编辑选择。端到端验收固定使用部署实例与 ego-browser。本条取代同日“审查策略 Provider 保持浅色”的旧视觉限制。
 
 - 2026-08-24: 全面核对选中态。主导航、主从列表、tab、筛选器、模型组合、命令菜单、日期区间与批量勾选按各自语义保持不同层级；修复模型服务与仓库选中行 hover 后底色变浅、反白文字失去对比度，主导航激活文字仍落在次要色，以及子路由同时把“概览”和当前 tab 标成选中的问题。弹窗返回时的 provider/tab 保留写成全局约束。
 
