@@ -2754,12 +2754,17 @@ function ReferenceOverview({ references }: { references: readonly ModelReference
       <CardHeader
         id="service-references"
         title="组合引用"
-        meta={
-          <>
-            <span className="font-mono tabular-nums">{references.length}</span> 个模型标识 ·{" "}
-            <span className="font-mono tabular-nums">{locationCount}</span> 个引用位置
-          </>
-        }
+        // 零引用时不写「0 个模型标识 · 0 个引用位置」:下面那句已经说了没有谁引用它。
+        {...(references.length === 0
+          ? {}
+          : {
+              meta: (
+                <>
+                  <span className="font-mono tabular-nums">{references.length}</span> 个模型标识 ·{" "}
+                  <span className="font-mono tabular-nums">{locationCount}</span> 个引用位置
+                </>
+              ),
+            })}
       />
       <CardSection>
         {references.length === 0 ? (
