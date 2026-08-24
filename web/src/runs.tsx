@@ -432,11 +432,11 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
     },
   });
   const setOpenedRunId = (id: number | null) => {
-    // 只动 run 这一格,别把筛选一起清掉。
+    // 只动 run 这一格,别把筛选一起清掉。开合详情进历史记录(不 replace),后退键因此
+    // 能收起面板;筛选切换则用 replace,否则点几下分段控件就把历史塞满了。
     void navigate({
       to: "/runs",
       search: (prev: Record<string, unknown>) => ({ ...prev, run: id ?? undefined }),
-      replace: true,
     });
   };
   const rerun = useMutation({
