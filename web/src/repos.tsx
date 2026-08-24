@@ -150,6 +150,8 @@ export function ReposPage({
   });
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [registering, setRegistering] = useState(false);
+  /** 刚注册完的仓库名。注册是首次配置的最后一步,这里要说清楚接下来会发生什么。 */
+  const [justRegistered, setJustRegistered] = useState<string | null>(null);
 
   const rows = repos.data ?? [];
   const selected = rows.find((row) => row.repoId === selectedId) ?? rows[0];
@@ -159,6 +161,14 @@ export function ReposPage({
     <Dialog.Root open={registering} onOpenChange={setRegistering}>
       <PageBody width="wide">
         <PageHeader title="仓库" />
+        {justRegistered === null ? null : (
+          <Callout.Root role="status" color="green" size="1">
+            <Callout.Icon><CheckCircledIcon aria-hidden /></Callout.Icon>
+            <Callout.Text>
+              已接入 <span className="font-medium">{justRegistered}</span>。向它推送 pull request 就会自动开始审查。
+            </Callout.Text>
+          </Callout.Root>
+        )}
         {/*
           主从两列。窄屏收成一列,并且是「列表 → 详情」两级:详情有四张卡,把它顺
           排在整张仓库列表下面,选完仓库还要往下滚过整份列表才看得到自己选了什么。
@@ -305,8 +315,9 @@ export function ReposPage({
             回显的就不是当前值了。 */}
         {canWrite && registrationReady && registering ? (
           <RegisterDialogContent
-            onDone={(repoId) => {
+            onDone={(repoId, name) => {
               setRegistering(false);
+              setJustRegistered(name);
               void queryClient.invalidateQueries({ queryKey: ["repos"] }).then(() => {
                 setSelectedId(repoId);
               });
@@ -686,7 +697,7 @@ const SEARCH_DEBOUNCE_MS = 250;
 function RegisterDialogContent({
   onDone,
 }: {
-  onDone: (repoId: number) => void;
+  onDone: (repoId: number, name: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -722,7 +733,7 @@ function RegisterDialogContent({
         return;
       }
       const created = (await response.json()) as { repoId: number };
-      onDone(created.repoId);
+      onDone(created.repoId, `${picked.owner}/${picked.repo}`);
     } catch {
       setError("暂时无法连接服务，请稍后重试。");
     } finally {
