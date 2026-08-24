@@ -2230,6 +2230,7 @@ function ServiceDetail({
               key={candidate}
               to={to}
               params={{ provider: service.provider }}
+              activeOptions={{ exact: true }}
               aria-current={tab === candidate ? "page" : undefined}
               className={cn(
                 "flex min-h-11 items-center border-b-2 border-transparent px-3 py-2 font-medium text-muted-foreground sm:min-h-0",

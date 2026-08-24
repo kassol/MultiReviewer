@@ -149,10 +149,13 @@ function Shell() {
             <Link
               key={item.to}
               to={item.to}
-              className="flex h-11 shrink-0 touch-manipulation items-center rounded-sm border border-transparent px-3 whitespace-nowrap text-muted-foreground outline-none transition-colors hover:bg-background/70 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome sm:h-8 sm:shrink"
+              className="flex h-11 shrink-0 touch-manipulation items-center rounded-sm border px-3 whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome sm:h-8 sm:shrink"
               activeProps={{
                 "aria-current": "page",
                 className: "border-border bg-background font-medium text-foreground",
+              }}
+              inactiveProps={{
+                className: "border-transparent text-muted-foreground hover:bg-background/70 hover:text-foreground",
               }}
             >
               {item.label}
