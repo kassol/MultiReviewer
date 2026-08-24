@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-24: 管理面板完成 Radix 迁移收口。`MasterListItem` 统一仓库、模型服务与模型组合的主从选择；`DateRangePicker`、`EditableModelCombobox`、`EmptyState` 和 `useDialogReturnFocus` 分别统一日期范围、可编辑模型标识、空态与受控浮层焦点返回。页面按路由分块，仓库与模型服务在 `lg` 起采用列表／详情双栏和独立滚动，640–1023px 保持单层切换。源码结构已核对，部署实例的端到端验收仍待执行。
+
 - 2026-08-24: 修正 Radix Themes 弹窗关闭按钮的定位。IconButton 保留自身布局规则，右上角定位交给外层容器，避免窄屏时关闭图标落到弹窗底部；模型服务、新建用户与角色、服务迁移、凭据维护和仓库注册统一处理。
 
 - 2026-08-24: 管理面板补齐弹窗状态生命周期。模型服务三步弹窗从路由返回时恢复 provider、Tab 与两处滚动位置；新建用户、角色和自定义 provider 改名弹窗取消或关闭后清空草稿与提交状态。
@@ -160,11 +162,11 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 - 2026-08-24: 管理面板清理 Radix 迁移后的零引用依赖。移除 `class-variance-authority` 与 `tw-animate-css`，同时删除已无调用方的动画导入和暗色变体守卫；`cmdk`、`react-day-picker` 与 `radix-ui` 继续承担搜索组合框、日期区间和 Primitive 行为。
 
-- 2026-08-24: 管理面板完成模型服务页浮层与导航迁移。重新验证组合框使用 Themes `Popover` 承载 cmdk 搜索和手填；服务详情使用 Themes `TabNav`,发现差异与组合引用使用 Collapsible；稳定路由、当前 provider、当前 Tab 与业务状态保持不变。
+- 2026-08-24: 管理面板完成模型服务页浮层与导航迁移。重新验证统一使用 `EditableModelCombobox` 保留 cmdk 搜索和手填；服务详情使用 Themes `TabNav`,发现差异与组合引用使用 Collapsible；稳定路由、当前 provider、当前 Tab 与业务状态保持不变。
 
 - 2026-08-24: 管理面板完成访问控制表格迁移。用户列表与权限矩阵直接使用 Radix Themes `Table`,保留行内角色选择、权限复选、管理动作、表头关联、粘性首列和容器内横向滚动。
 
-- 2026-08-24: 管理面板完成处置率页 Radix 迁移。日期范围使用受控 Themes `Popover` 承载双月 Calendar,窄屏模型矩阵使用 Collapsible；桌面 Themes `Table`、Finding Identity 口径、范围选择和响应式布局保持不变。
+- 2026-08-24: 管理面板完成处置率页 Radix 迁移。日期范围统一使用 `DateRangePicker`,双月 Calendar 行为只保留在组件内部,窄屏模型矩阵使用 Collapsible；桌面 Themes `Table`、Finding Identity 口径、范围选择和响应式布局保持不变。
 
 - 2026-08-24: 管理面板的审查策略页将批次上限的原生折叠区迁移到 Radix Collapsible，默认折叠、帮助提示、键盘操作、单独保存与版本冲突恢复保持不变。
 
@@ -178,7 +180,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 - 2026-08-24: 管理面板完成原生表单选择控件迁移。访问控制的角色分配使用 Radix Themes `Select`,权限矩阵、模型补录确认和批量管理使用 Themes `Checkbox`,全选状态支持部分选中；可搜索且可手填的 model id 保留 datalist 行为。
 
-- 2026-08-24: 管理面板完成 Skeleton 组件族迁移。所有读取占位块改为直接使用 Radix Themes `Skeleton`，保留原尺寸和布局，并在降低动效偏好时关闭呼吸动画；旧 shadcn Skeleton wrapper 删除。
+- 2026-08-24: 管理面板完成 Skeleton 组件族迁移。所有读取占位块改为直接使用 Radix Themes `Skeleton` 并保留原尺寸和布局；旧 shadcn Skeleton wrapper 与页面级 Skeleton 覆盖删除。
 
 - 2026-08-24: 管理面板完成 Card 组件族迁移。所有独立任务卡改为直接使用 Radix Themes `Card`，长表格、模型服务侧栏和模型组合的局部滚动边界保持不变；审查配置与 Hook 配置的警告改为 Themes `Callout`，旧 shadcn Card wrapper 删除。
 
@@ -192,9 +194,9 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 - 2026-08-24: 管理面板接入 Radix Themes 与 Radix Icons 基础层。应用根和迁移期 Primitive Portal 共用同一亮色 Theme 配置；Radix token 映射到迁移期 Tailwind 语义名,业务页面按组件族继续迁移。
 
-- 2026-08-24: 管理面板的 Radix UI 迁移选定“发布门禁看板”视觉方向。Radix Themes 统一通用视觉,Radix Primitives 补行为,Radix Icons 统一业务图标；模型服务与审查策略共用同一 ProviderSelector 深色选中规则。本条取代同日仅允许模型服务 provider 使用实心选中态的旧限制。
+- 2026-08-24: 管理面板的 Radix UI 迁移选定“发布门禁看板”视觉方向。Radix Themes 统一通用视觉,Radix Primitives 补行为,Radix Icons 统一业务图标；模型服务、仓库与审查策略共用同一 `MasterListItem` 深色选中规则。本条取代同日仅允许模型服务 provider 使用实心选中态的旧限制。
 
-- 2026-08-24: 完成管理面板迁移到 Radix UI 前的源码与官方能力研究。盘点 46 个 shadcn 基础组件、56 个项目组件、22 种 Lucide 图标及浏览器原生控件，明确 Radix Themes、Primitives 与 Icons 的职责边界；Calendar 与可搜索手填组合框需要保留专用行为层或重新设计。
+- 2026-08-24: 完成管理面板迁移到 Radix UI 前的源码与官方能力研究。盘点 46 个 shadcn 基础组件、56 个项目组件、22 种 Lucide 图标及浏览器原生控件，明确 Radix Themes、Primitives 与 Icons 的职责边界；后续以 `DateRangePicker` 与 `EditableModelCombobox` 收口 Calendar 和可搜索手填行为。
 
 - 2026-08-24: 管理面板完成全局选中态审查，统一主导航、主从列表、tab、筛选器与编辑中选择的颜色语义；修复实心选中行 hover 对比度、主导航激活文字颜色和详情 tab 重复选中，并记录弹窗关闭后保留列表项与 tab 的约束。
 

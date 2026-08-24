@@ -1,4 +1,6 @@
-# MultiReviewer 图标与视觉符号清单
+# MultiReviewer 图标与视觉符号清单（迁移前基线）
+
+> 历史资料：本文记录迁移前的 Lucide 与浏览器原生符号，用于核对替换范围。文中的“当前”均指盘点当时的代码，不代表现状；现状以 `radix-ui-current-inventory.md` 为准。
 
 盘点范围：`web/src/**/*`、`web/index.html`、`web/package.json`。统计基于源码静态渲染位置，不把循环产生的运行时实例数计入引用次数，也不把普通标点算作图标。
 

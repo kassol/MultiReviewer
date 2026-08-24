@@ -39,7 +39,7 @@ MultiReviewer 管理面板服务两类用户：
 - `@radix-ui/themes`：唯一通用视觉系统，负责全局 Theme、设计 token、常规组件与默认交互状态。
 - Radix Primitives：只补齐 Themes 未覆盖的行为组件和无障碍语义。
 - `@radix-ui/react-icons`：唯一业务图标库。
-- 产品组件：表达 MultiReviewer 的领域结构，例如 ProviderSelector、ModelComposer、SetupChecklist、StatusBadge。
+- 产品组件：表达 MultiReviewer 的领域结构，例如 MasterListItem、ModelComposer、SetupChecklist、StatusBadge、DateRangePicker、EditableModelCombobox 与 EmptyState。
 - Tailwind CSS：只负责页面布局、容器约束和复杂响应式网格。
 
 产品页面只组合组件。颜色、间距、圆角、阴影与交互状态集中在 Theme 和共享产品组件中定义。
@@ -60,7 +60,7 @@ MultiReviewer 管理面板服务两类用户：
 - 状态、主信息、证据和动作沿稳定列轨排列。长列表优先使用连续行列，减少互不关联的卡片堆叠。
 - 状态位固定在行首，行级动作固定在行尾。用户从左到右完成“判断状态 → 读取原因 → 执行动作”。
 - 失败、需注意和正常使用同一行结构。状态色、文字和图标共同表达结果，布局不会因状态变化而跳动。
-- 模型服务、仓库和审查策略中的 provider 复用同一个 ProviderSelector。深色选中行表示当前工作对象，Checkbox 表示批量选择。
+- 模型服务、仓库和审查策略中的主从列表复用同一个 MasterListItem。深色选中行表示当前工作对象，Checkbox 表示批量选择。
 - 页面页头只保留当前任务、必要范围和一个主要动作。解释性内容进入 HelpTooltip，关键阻塞原因保持可见。
 - 看板语法服务于运行检查与配置管理，不引入工业警示条、拟物仪表或阻断合并的暗示。
 
@@ -89,11 +89,11 @@ MultiReviewer 管理面板服务两类用户：
 | `--text-primary` | 标题、正文 | 接近 `#1f2328` |
 | `--text-secondary` | 元数据、说明 | 接近 `#59636e` |
 | `--border-subtle` | 卡片和分组边界 | 接近 `#d0d7de` |
-| `--selection-solid` | provider 单选 | 高对比近黑色 |
-| `--selection-solid-text` | provider 选中文字 | 白色 |
-| `--selection-solid-hover` | provider 选中项 hover | 保持深色体系并提供可见反馈 |
-| `--selection-solid-muted-text` | provider 选中项辅助文字 | 在深色表面达到正文对比要求 |
-| `--selection-solid-danger-text` | provider 选中项异常文字 | 在深色表面保留错误语义与正文对比 |
+| `--selection-solid` | 主从列表当前项 | 高对比近黑色 |
+| `--selection-solid-text` | 当前项文字 | 白色 |
+| `--selection-solid-hover` | 当前项 hover | 保持深色体系并提供可见反馈 |
+| `--selection-solid-muted-text` | 当前项辅助文字 | 在深色表面达到正文对比要求 |
+| `--selection-solid-danger-text` | 当前项异常文字 | 在深色表面保留错误语义与正文对比 |
 
 精确色值由 Radix token 生成。产品代码不直接引用色阶编号，统一引用上述语义 token。
 
@@ -174,8 +174,9 @@ StatusBadge 是运行状态的唯一产品级出口，只暴露 `neutral`、`suc
 ### 7.3 长列表与主从布局
 
 - Review Run、模型和仓库列表使用明确的局部滚动区域，避免整个页面随长列表持续增长。
-- 桌面主从布局中，左侧选择列表和右侧详情各自管理滚动。
-- 窄屏先显示列表，进入详情后提供明确返回入口。
+- `lg=1024px` 是仓库与模型服务主从双栏的切换点。应用壳仍在 `sm=640px` 切换；640–1023px 内容区继续使用列表／详情单层布局，避免侧栏占宽后再压缩双栏。
+- 双栏下页面根保持 `h-full/min-h-0`，左侧选择列表和右侧详情各自管理纵向滚动，页面不随长列表持续增长。
+- 单层布局先显示列表，进入详情后提供明确返回入口。仓库以本地 `selectedId` 区分列表和详情；模型服务以稳定 provider 路由区分，浏览器前进、后退和刷新保持可恢复。
 - 表头可粘性定位；批量操作栏跟随当前选择，不遮挡列表内容。
 - 长名称和模型标识单行截断，hover/focus 时通过 Tooltip 查看全文。
 - 地址、模型标识等可复制内容提供 Copy 按钮。
@@ -193,9 +194,9 @@ StatusBadge 是运行状态的唯一产品级出口，只暴露 `neutral`、`suc
 - 当前 Tab 使用下划线和加重文字。
 - 弹窗打开和关闭不得改变底层 Tab 状态。
 
-### 8.3 Provider 单选
+### 8.3 主从列表当前项
 
-ProviderSelector 是共享产品组件。模型服务页和审查策略中的 provider 必须使用同一视觉规则：
+MasterListItem 是共享产品组件。模型服务、仓库和审查策略中的当前项必须使用同一视觉规则：
 
 | 状态 | 表现 |
 | --- | --- |
@@ -208,12 +209,12 @@ ProviderSelector 是共享产品组件。模型服务页和审查策略中的 pr
 
 选中态不使用浅灰底。选中行的 hover 不得切回浅色。服务状态通过 Badge 表达，避免重复“可运行”等正文。
 
-两处组件的视觉保持一致，语义属性按行为区分：
+各调用点的视觉保持一致，语义属性按行为区分：
 
-- 路由型 provider 链接使用 `aria-current`。
-- 编辑器中的 provider 按钮使用单选语义和 `aria-pressed`，或使用合适的单选 Primitive。
+- 路由型列表链接使用 `aria-current`。
+- 页内选择按钮使用单选语义和 `aria-pressed`。
 
-实现统一由 `src/components/provider-selector-item.tsx` 承担。路由项通过 `asChild` 组合 Link，页内项渲染 button；组件集中处理深色选中、深色 hover、焦点、辅助文字和异常文字对比度。模型行与 Checkbox 多选继续使用浅色选择反馈。
+实现统一由 `src/components/master-list-item.tsx` 承担。路由项通过 `asChild` 组合 Link，页内项渲染 button；组件集中处理深色选中、深色 hover、焦点、辅助文字和异常文字对比度。模型行与 Checkbox 多选继续使用浅色选择反馈。
 
 ### 8.4 单选与模式切换
 
@@ -273,7 +274,7 @@ ProviderSelector 是共享产品组件。模型服务页和审查策略中的 pr
 - 取消关闭时丢弃弹窗草稿，保留底层 provider、列表项、Tab、筛选和滚动位置。
 - 提交成功后更新底层数据；是否切换当前项由操作结果明确决定。
 - 长内容只滚动 Dialog 内容区，标题和操作区保持可见。
-- 打开后聚焦首个有效操作，关闭后焦点返回触发按钮。
+- 打开后聚焦首个有效操作，关闭后焦点返回触发按钮。受控浮层通过 `useDialogReturnFocus` 在触发事件发生时记录真实元素；触发元素被卸载时返回调用方提供的稳定入口。带 `Dialog.Trigger` 的浮层沿用 Radix 默认返回，路由型浮层使用明确的页面入口。
 
 ### 10.2 AlertDialog
 
@@ -294,7 +295,7 @@ ProviderSelector 是共享产品组件。模型服务页和审查策略中的 pr
 | 局部提交 | Spinner / Button loading | 保留按钮宽度，阻止重复提交 |
 | 成功 | Callout 或局部状态 | 说明完成的对象和结果 |
 | 警告 | Amber Callout | 说明影响和可执行下一步 |
-| 错误 | Red Callout / ErrorState | 说明失败对象、原因和重试入口 |
+| 错误 | Red Callout | 说明失败对象、原因和重试入口 |
 | 空数据 | EmptyState | 说明当前为空和首个可执行动作 |
 | 无搜索结果 | EmptyState | 显示筛选条件和清除入口 |
 
@@ -314,7 +315,7 @@ ProviderSelector 是共享产品组件。模型服务页和审查策略中的 pr
 
 建议统一语义映射：搜索、帮助、关闭、删除、编辑、复制、刷新、返回、展开、外链各固定一个图标，页面不得自行替换同义图标。
 
-## 13. Radix 缺口实现原则
+## 13. Themes 外产品组件
 
 按以下顺序处理 Themes 未覆盖的需求：
 
@@ -324,13 +325,16 @@ ProviderSelector 是共享产品组件。模型服务页和审查策略中的 pr
 4. 保留必要的第三方行为库，并包装为单一产品组件。
 5. 调整功能形态，控制维护成本。
 
-当前明确缺口：
+当前已经实现的 Themes 外产品组件：
 
-- 日期选择：保留日期行为库，使用 Theme token 重做外观，并封装为 DatePicker。
-- 可搜索且可手输的模型标识：暂由统一 Combobox 包装现有行为库。
-- 展开详情：使用 Collapsible 或 Accordion Primitive 封装 Disclosure。
-- Toast：仅用于操作完成后的短暂通知；关键结果仍留在页面内。
-- ScrollArea：只用于需要自定义滚动行为的局部区域，普通页面和表格优先原生 overflow。
+- `MasterListItem`：用 Theme token 与 Slot 统一路由链接和页内按钮的主从列表当前项。
+- `DateRangePicker`：包装 react-day-picker、Themes Popover 与 Calendar 行为适配，外部只处理起止日期。
+- `EditableModelCombobox`：包装 cmdk、Themes TextField 与 Popover，外部只处理值、候选与选择结果。
+- `EmptyState`：组合 Themes Flex/Text/Box，统一资源为空、筛选无结果和零权限状态，并保留调用点原有标题层级。
+- `useDialogReturnFocus`：为受控 Dialog 与 AlertDialog 记录触发元素并恢复焦点，触发元素卸载时使用稳定后备入口。
+- `StatusBadge`、`HelpTooltip`、`ModelComposer`、`PageHeader`、`PageBody` 与 `SetupChecklist`：集中产品语义、页面结构与跨页行为。
+
+Calendar 与 Command 留在 `components/ui` 作为第三方行为适配层，只由对应产品组件或明确的搜索场景调用。简单展开继续直接组合 Collapsible Primitive。普通局部滚动使用原生 overflow；当前没有 Toast 与 ScrollArea 产品组件，关键结果留在页面内。
 
 禁止页面深度覆盖 Radix 内部 DOM。共享组件只暴露产品需要的少量 variant 和 size。
 
@@ -349,20 +353,22 @@ ProviderSelector 是共享产品组件。模型服务页和审查策略中的 pr
 1. `accentColor="gray"` 下主按钮、焦点环和选中 provider 的对比度。
 2. `radius="small"` 在 Card、Dialog、输入框中的一致性。
 3. `scaling="95%"` 的桌面信息密度，以及窄屏触控尺寸。
-4. ProviderSelector 深色选中态在默认、hover、focus、Badge 组合下的可读性。
-5. `sm=640px` 作为侧栏和主从布局切换点是否产生拥挤。
+4. MasterListItem 深色选中态在默认、hover、focus、Badge 组合下的可读性。
+5. 应用壳在 `sm=640px` 切换，主从双栏在 `lg=1024px` 切换；确认 640–1023px 仍为单层列表／详情且无拥挤。
 6. 长模型列表的可视高度、局部滚动、粘性表头和批量操作栏。
 7. 多步凭据 Dialog 的宽度、内容滚动和窄屏布局。
-8. DatePicker、Combobox 与 Theme 组件的视觉一致性和键盘操作。
+8. DateRangePicker、EditableModelCombobox 与 Theme 组件的视觉一致性和键盘操作。
 9. TabNav 与 Router Link 的当前态、前进后退和刷新恢复。
+10. 受控 Dialog / AlertDialog 关闭后的焦点返回，以及触发元素卸载后的稳定后备入口。
 
 验收同时覆盖鼠标、键盘、窄屏、长中文名称、长模型标识、加载、错误、禁用与空数据。
 
 ## 16. 实施约束
 
 - 页面使用 Theme props 和共享产品组件；避免页面级视觉变体。
-- 同一语义组件只有一个实现，ProviderSelector、StatusBadge、Combobox、EmptyState、ErrorState 禁止复制。
+- 同一语义组件只有一个实现，MasterListItem、StatusBadge、DateRangePicker、EditableModelCombobox、EmptyState 禁止复制。通用错误直接使用 Themes Callout，不再包装第二套视觉组件。
 - 弹窗草稿与底层页面状态分开存储。关闭弹窗不得重置底层选择。
 - URL 可表达的页面状态写入路由；临时编辑状态留在组件内。
+- 页面组件使用 `React.lazy + Suspense` 按路由分块；同一页面模块的子路由共用一个动态模块入口。
 - 新组件必须提供可访问名称、键盘行为、完整状态和响应式验证。
 - 视觉改动在部署实例使用 ego-browser 完成端到端验收。

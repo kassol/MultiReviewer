@@ -1,4 +1,6 @@
-# MultiReviewer Web 组件与交互模式盘点
+# MultiReviewer Web 组件与交互模式盘点（迁移前基线）
+
+> 历史资料：本文记录引入 Radix Themes 之前的 shadcn/Lucide 实现，用于追溯迁移范围。文中的“当前”均指盘点当时的代码，不代表现状；现状以 `radix-ui-current-inventory.md` 为准。
 
 ## 范围与口径
 
