@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LockClosedIcon, PlusIcon, ResetIcon, TrashIcon } from "@radix-ui/react-icons";
-import { Badge, Skeleton, Text, TextField } from "@radix-ui/themes";
+import { Badge, Card, Checkbox, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
 import { useMemo, useState, type FormEvent } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -8,7 +8,6 @@ import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Card } from "@radix-ui/themes";
 import {
   Dialog,
   DialogClose,
@@ -264,16 +263,27 @@ export function AccessControlPage() {
                           {user.isSystemAdmin ? (
                             <span className="text-muted-foreground">全部权限</span>
                           ) : (
-                            <select
-                              aria-label={`${user.username} 的角色`}
-                              value={user.roleId ?? ""}
+                            <Select.Root
+                              size={{ initial: "3", sm: "2" }}
+                              value={user.roleId === null ? "unassigned" : String(user.roleId)}
                               disabled={updateUser.isPending}
-                              onChange={(event) => updateUser.mutate({ user, roleId: event.target.value === "" ? null : Number(event.target.value) })}
-                              className={`h-8 max-w-44 rounded-sm border px-2 outline-none max-sm:min-h-11 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/25 focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 ${user.roleId === null ? "border-warning/50 bg-warning/10 text-warning" : "border-border bg-background"}`}
+                              onValueChange={(value) => updateUser.mutate({
+                                user,
+                                roleId: value === "unassigned" ? null : Number(value),
+                              })}
                             >
-                              <option value="">未分配角色</option>
-                              {roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
-                            </select>
+                              <Select.Trigger
+                                aria-label={`${user.username} 的角色`}
+                                color={user.roleId === null ? "amber" : "gray"}
+                                className="max-w-44 max-sm:min-h-11"
+                              />
+                              <Select.Content position="popper" color="gray">
+                                <Select.Item value="unassigned">未分配角色</Select.Item>
+                                {roles.map((role) => (
+                                  <Select.Item key={role.id} value={String(role.id)}>{role.name}</Select.Item>
+                                ))}
+                              </Select.Content>
+                            </Select.Root>
                           )}
                         </td>
                         <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap text-muted-foreground">{localMinute(user.createdAt)}</td>
@@ -347,13 +357,12 @@ export function AccessControlPage() {
                                 return (
                                   <td key={role.id} className="border-l border-border px-3 py-1.5 text-center">
                                     <Text as="label" size="2" className="inline-flex min-h-8 cursor-pointer flex-col items-center justify-center rounded-sm px-1 max-sm:min-h-11 max-sm:min-w-11 hover:bg-muted focus-within:ring-2 focus-within:ring-ring/25 focus-within:ring-offset-1 focus-within:ring-offset-background has-disabled:cursor-not-allowed has-disabled:opacity-70">
-                                      <input
-                                        type="checkbox"
+                                      <Checkbox
+                                        size="2"
                                         aria-label={`${role.name}的${permission.resource}${permission.action}权限${implied ? "，已随管理权限授予" : ""}`}
                                         checked={roleHasPermission(role.permissions, permission.id)}
                                         disabled={updateRole.isPending || implied}
-                                        onChange={() => updateRole.mutate({ role, permission: permission.id })}
-                                        className="size-4 accent-primary outline-none"
+                                        onCheckedChange={() => updateRole.mutate({ role, permission: permission.id })}
                                       />
                                       {implied ? <span className="text-xs text-muted-foreground">随管理权限生效</span> : null}
                                     </Text>

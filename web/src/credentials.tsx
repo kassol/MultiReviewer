@@ -5,14 +5,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useBlocker, useLocation, useNavigate } from "@tanstack/react-router";
 import { CheckIcon, ChevronDownIcon, CrossCircledIcon, ExclamationTriangleIcon, MagnifyingGlassIcon, MinusCircledIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
-import { Badge, IconButton, Skeleton, Text, TextField } from "@radix-ui/themes";
+import { Badge, Card, Checkbox, IconButton, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Card } from "@radix-ui/themes";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import {
   Dialog,
@@ -824,16 +823,18 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
           </div>
           <div className="space-y-1.5">
             <Text as="label" htmlFor="setup-custom-protocol" size="2" weight="medium">接口协议</Text>
-            <select
-              id="setup-custom-protocol"
-              className="h-8 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50"
+            <Select.Root
+              size={{ initial: "3", sm: "2" }}
               value={active.api}
               disabled={phase !== null}
-              onChange={(event) => update({ api: event.target.value as CustomProtocol })}
+              onValueChange={(value) => update({ api: value as CustomProtocol })}
             >
-              <option value="openai-completions">{CUSTOM_PROTOCOL_LABEL["openai-completions"]}</option>
-              <option value="openai-responses">{CUSTOM_PROTOCOL_LABEL["openai-responses"]}</option>
-            </select>
+              <Select.Trigger id="setup-custom-protocol" className="min-w-0 w-full max-sm:min-h-11" />
+              <Select.Content position="popper" color="gray">
+                <Select.Item value="openai-completions">{CUSTOM_PROTOCOL_LABEL["openai-completions"]}</Select.Item>
+                <Select.Item value="openai-responses">{CUSTOM_PROTOCOL_LABEL["openai-responses"]}</Select.Item>
+              </Select.Content>
+            </Select.Root>
           </div>
           <div className="space-y-1.5">
             <Text as="label" htmlFor="setup-custom-credential" size="2" weight="medium">模型凭据</Text>
@@ -857,13 +858,13 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
             <div className="space-y-1.5">
               {supplementModels.map((model) => (
                 <Text as="label" size="2" key={model.identity} className="flex items-start gap-2">
-                  <input
-                    type="checkbox"
-                    className="mt-0.5 size-4"
+                  <Checkbox
+                    size="2"
+                    className="mt-0.5"
                     checked={active.reconfirmedSupplements.includes(model.identity)}
                     disabled={phase !== null}
-                    onChange={(event) => update({
-                      reconfirmedSupplements: event.target.checked
+                    onCheckedChange={(checked) => update({
+                      reconfirmedSupplements: checked === true
                         ? [...active.reconfirmedSupplements, model.identity]
                         : active.reconfirmedSupplements.filter((identity) => identity !== model.identity),
                     })}
@@ -1890,6 +1891,7 @@ function ModelsTable({
   });
 
   const allFilteredSelected = filteredModels.length > 0 && filteredModels.every((model) => selectedIds.has(model.identity));
+  const someFilteredSelected = filteredModels.some((model) => selectedIds.has(model.identity));
   const toggleAllFiltered = (): void => {
     setSelectedIds((current) => {
       const next = new Set(current);
@@ -1948,12 +1950,11 @@ function ModelsTable({
       {canWriteModels ? (
         <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 text-xs">
           <Text as="label" size="2" className="flex min-h-9 items-center gap-2">
-            <input
-              type="checkbox"
-              checked={allFilteredSelected}
-              onChange={toggleAllFiltered}
+            <Checkbox
+              size="2"
+              checked={allFilteredSelected ? true : someFilteredSelected ? "indeterminate" : false}
+              onCheckedChange={toggleAllFiltered}
               aria-label="全选当前筛选结果"
-              className="size-4 accent-foreground"
             />
             <span>全选当前结果</span>
           </Text>
@@ -2010,13 +2011,18 @@ function ModelsTable({
                 <div className="min-w-0">
                   <div className="flex items-start gap-2">
                     {canWriteModels ? (
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(model.identity)}
-                        onChange={() => toggleSelected(model.identity)}
-                        aria-label={`选择 ${model.identity}`}
-                        className="mt-1 size-4 shrink-0 accent-foreground"
-                      />
+                      <Text
+                        as="label"
+                        size="2"
+                        className="mt-0.5 inline-flex min-h-8 min-w-8 shrink-0 cursor-pointer items-start justify-center pt-0.5 max-sm:min-h-11 max-sm:min-w-11"
+                      >
+                        <Checkbox
+                          size="2"
+                          checked={selectedIds.has(model.identity)}
+                          onCheckedChange={() => toggleSelected(model.identity)}
+                          aria-label={`选择 ${model.identity}`}
+                        />
+                      </Text>
                     ) : null}
                     <div className="min-w-0 flex-1">
                       <p className="break-words font-medium" title={model.discovery.name ?? undefined}>

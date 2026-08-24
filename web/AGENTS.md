@@ -43,6 +43,7 @@
 - **模型服务字段与动作按权限裁剪。**`model:read` 才看目标、目录、模型、来源和可用性,`credential:read` 才看凭据审计字段;候选与错误响应不得含明文、密文或主密钥材料。前端只依据返回字段展示,不复制服务端 provider、引用或版本竞争判据。
 - **通用视觉只有 Radix Themes 一条路。**颜色、字号、间距、圆角及组件状态使用 Theme 配置、组件 props 与 Theme tokens；Radix Primitives 只补行为；Tailwind 只处理 Themes 响应式能力无法表达的复杂布局和产品专有结构。页面不得深度覆盖 Radix 内部 DOM,也不得为同一语义另写一套 utility 外观。
 - **文本输入与字段标签直接使用 Themes。**文本输入使用 `TextField.Root`,搜索图标等附件进入 `TextField.Slot`;可见或视觉隐藏的字段标签使用 `Text as="label"` 并保持 `htmlFor`/`id` 关联。输入在窄视口使用响应式 size 和最小触控高度；组合框只复用输入外观,其受控值、候选和键盘行为继续由领域组件持有。
+- **有限枚举与多选直接使用 Themes。**有限枚举使用 `Select`,权限矩阵、模型批量选择和补录确认使用 `Checkbox`;点击区域通过可见标签或可访问名称关联。批量全选必须呈现部分选中的 indeterminate 状态。允许搜索和手填的 model id 继续使用 `TextField` 加 datalist,不退化成有限枚举。
 - **面板只做亮色一套**(issue #46)。不加主题上下文、本地存储、防闪脚本;`dark:` 变体被 `@custom-variant` 改挂到一个谁都不写的类上,等于关掉,shadcn 组件里那些 `dark:` 类因此不生效。要加暗色那天,在令牌层补一段媒体块重定义变量即可。
 - **状态 Badge 只走 `StatusBadge`.** 它固定 neutral / success / warning / error 到 Radix Gray / Green / Amber / Red,默认用 `soft + highContrast`,深色 provider 选中行用对应色 `solid`;颜色、文字与图标共同表达状态。来源、身份和类别直接使用 Themes Badge。页面不得再给 Badge 添加 `bg-success` / `bg-warning` / `bg-destructive` 等状态类。主色是近黑,不是青,也不是蓝。
 - **选中态按操作语义分三类。**主导航和 tab 表示当前位置,分别用白底卡位与下划线；仓库、模型服务和 `ModelComposer` 的 ProviderSelector 使用同一套实心主色加反白文字,选中项 hover 继续使用深色体系；模型行、命令菜单和批量勾选属于编辑中的选择,使用浅底、描边或 Checkbox。弹窗关闭必须恢复打开前的列表项与 tab,不得回落到第一项。任何选中态都要单独检查 hover、focus 与辅助文字对比度。
@@ -66,6 +67,8 @@
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
 
 ## 变更日志
+
+- 2026-08-24: 原生表单选择控件迁移到 Radix Themes。访问控制的角色分配改用 `Select`,权限矩阵与模型服务的补录确认、批量选择改用 `Checkbox`,批量全选补齐 indeterminate 状态；允许搜索和手填的 model id 继续保留 datalist。
 
 - 2026-08-24: Skeleton 组件族迁移到 Radix Themes。全部读取占位块直接使用官方 `Skeleton`，保留原有尺寸与布局，并在降低动效偏好时关闭呼吸动画；旧 shadcn Skeleton wrapper 删除。
 
