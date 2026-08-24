@@ -1,4 +1,4 @@
-import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MutationCache, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
   createRootRoute,
   createRoute,
@@ -8,17 +8,29 @@ import {
   redirect,
   RouterProvider,
   useRouter,
+  useRouterState,
 } from "@tanstack/react-router";
-import { ExitIcon } from "@radix-ui/react-icons";
+import {
+  ArchiveIcon,
+  BarChartIcon,
+  CounterClockwiseClockIcon,
+  DashboardIcon,
+  LightningBoltIcon,
+  LockClosedIcon,
+  MagnifyingGlassIcon,
+  MixerHorizontalIcon,
+  PersonIcon,
+} from "@radix-ui/react-icons";
 import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 
+import { CommandPalette, useCommandPalette } from "@/components/command-palette";
 import { Mark } from "@/components/mark";
 import { EmptyState } from "@/components/empty-state";
 import { PanelTheme } from "@/components/panel-theme";
-import { Card, IconButton, Skeleton, Tooltip } from "@radix-ui/themes";
+import { Card, DropdownMenu, Skeleton } from "@radix-ui/themes";
 
-import { api } from "./api.ts";
+import { api, fetchJson } from "./api.ts";
 import type { ModelServiceTab } from "./credentials.tsx";
 import { injected } from "./injected.ts";
 import {
@@ -28,7 +40,7 @@ import {
   type PanelPermission,
   type PanelSession,
 } from "./session.ts";
-import { SETUP_STATUS_QUERY_KEY, SetupChecklist } from "./setup-checklist.tsx";
+import { SETUP_STATUS_QUERY_KEY, SetupChecklist, useSetupStatus } from "./setup-checklist.tsx";
 import "./styles.css";
 
 const AccessControlPage = lazy(async () => ({ default: (await import("./access-control.tsx")).AccessControlPage }));
@@ -38,6 +50,7 @@ const ReposPage = lazy(async () => ({ default: (await import("./repos.tsx")).Rep
 const RunsPage = lazy(async () => ({ default: (await import("./runs.tsx")).RunsPage }));
 const SettingsPage = lazy(async () => ({ default: (await import("./settings.tsx")).SettingsPage }));
 const StatsPage = lazy(async () => ({ default: (await import("./stats.tsx")).StatsPage }));
+const OverviewPage = lazy(async () => ({ default: (await import("./overview.tsx")).OverviewPage }));
 const credentialsModule = () => import("./credentials.tsx");
 const BuiltinServiceDiscoverPage = lazy(async () => ({ default: (await credentialsModule()).BuiltinServiceDiscoverPage }));
 const BuiltinServiceVerifyPage = lazy(async () => ({ default: (await credentialsModule()).BuiltinServiceVerifyPage }));
@@ -84,22 +97,34 @@ const shellRoute = createRoute({
 
 type PagePermission = PanelPermission | readonly PanelPermission[];
 type NavigationItem = {
-  to: "/repos" | "/runs" | "/stats" | "/credentials" | "/settings" | "/access" | "/password";
+  to: "/" | "/repos" | "/runs" | "/stats" | "/credentials" | "/settings" | "/access" | "/password";
   label: string;
+  /** 移动端底部 Tab 栏用。桌面 underline 导航只有文字,不挂图标。 */
+  icon: typeof DashboardIcon;
   permission?: PagePermission;
   admin?: true;
   always?: true;
 };
 
+/**
+ * 顺序即导航顺序,与设计稿一致:总览打头,账户项收尾。收尾的「修改密码」在桌面端
+ * 走头像菜单,不占 underline 导航的位置。
+ */
 const NAV: readonly NavigationItem[] = [
-  { to: "/runs", label: "评审记录", permission: "review:read" },
-  { to: "/repos", label: "仓库", permission: "repo:read" },
-  { to: "/stats", label: "处置率", permission: "review:read" },
-  { to: "/credentials", label: "模型服务", permission: ["model:read", "model:write", "credential:read", "credential:write"] },
-  { to: "/settings", label: "审查策略", permission: "model:read" },
-  { to: "/access", label: "访问控制", admin: true },
-  { to: "/password", label: "修改密码", always: true },
+  { to: "/", label: "总览", icon: DashboardIcon, permission: "review:read" },
+  { to: "/runs", label: "评审记录", icon: CounterClockwiseClockIcon, permission: "review:read" },
+  { to: "/repos", label: "仓库", icon: ArchiveIcon, permission: "repo:read" },
+  { to: "/stats", label: "处置率", icon: BarChartIcon, permission: "review:read" },
+  { to: "/credentials", label: "模型服务", icon: LightningBoltIcon, permission: ["model:read", "model:write", "credential:read", "credential:write"] },
+  { to: "/settings", label: "审查策略", icon: MixerHorizontalIcon, permission: "model:read" },
+  { to: "/access", label: "访问控制", icon: PersonIcon, admin: true },
+  { to: "/password", label: "修改密码", icon: LockClosedIcon, always: true },
 ];
+
+/** 桌面顶栏的 underline 导航:账户项不在其中。 */
+function primaryNav(session: PanelSession): readonly NavigationItem[] {
+  return visibleNav(session).filter((item) => item.to !== "/password");
+}
 
 function hasPagePermission(session: PanelSession, permission: PagePermission): boolean {
   return typeof permission === "string"
@@ -125,7 +150,8 @@ function homeFor(session: PanelSession): string {
 function Shell() {
   const router = useRouter();
   const { session } = shellRoute.useRouteContext();
-  const items = session.mustChangePassword ? [] : visibleNav(session);
+  const nav = session.mustChangePassword ? [] : primaryNav(session);
+  const palette = useCommandPalette();
 
   async function logout(): Promise<void> {
     await api("/session", { method: "DELETE" }).catch(() => undefined);
@@ -134,104 +160,241 @@ function Shell() {
   }
 
   return (
-    <div className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-x-hidden bg-chrome sm:grid sm:grid-cols-[200px_minmax(0,1fr)]">
-      <aside className="flex min-w-0 max-w-full shrink-0 flex-col overflow-hidden border-border bg-chrome max-sm:border-b sm:overflow-visible sm:border-r">
-        <div className="flex min-h-14 shrink-0 items-center gap-2 border-b border-border px-3">
-          <Mark className="size-5 shrink-0 text-primary" />
-          <span className="truncate font-semibold tracking-tight">MultiReviewer</span>
-          <div className="ml-auto flex min-w-0 items-center gap-1 sm:hidden">
-            <Tooltip content={session.displayName ?? session.username}>
-              <span
-                tabIndex={0}
-                className="max-w-28 truncate rounded-sm text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
-              >
-                {session.displayName ?? session.username}
-              </span>
-            </Tooltip>
-            <Tooltip content="退出登录">
-              <IconButton
-                type="button"
-                variant="ghost"
-                color="gray"
-                size="3"
-                aria-label={`退出登录 ${session.username}`}
-                onClick={() => void logout()}
-                className="shrink-0 touch-manipulation max-sm:min-h-11 max-sm:min-w-11"
-              >
-                <ExitIcon className="size-4" aria-hidden />
-              </IconButton>
-            </Tooltip>
-          </div>
-        </div>
-        <p className="flex items-center justify-between px-3 pt-2 text-xs text-muted-foreground sm:hidden">
-          <span>导航</span>
-          <span>横向滑动查看更多</span>
-        </p>
-        <nav aria-label="面板导航" className="flex min-w-0 max-w-full shrink-0 gap-1 overflow-x-auto px-2 py-2 sm:flex-col sm:overflow-visible">
-          {items.map((item) => (
-            <Link
-              key={item.to}
-              to={item.to}
-              className="flex h-11 shrink-0 touch-manipulation items-center rounded-sm border px-3 whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome sm:h-8 sm:shrink"
-              activeProps={{
-                "aria-current": "page",
-                className: "border-border bg-background font-medium text-foreground",
-              }}
-              inactiveProps={{
-                className: "border-transparent text-muted-foreground hover:bg-background/70 hover:text-foreground",
-              }}
-            >
-              {item.label}
-            </Link>
-          ))}
-        </nav>
-        <div className="mt-auto hidden border-t border-border p-2 sm:block">
-          <div className="flex min-w-0 items-center gap-2 px-2 py-1.5">
-            <div className="min-w-0 flex-1">
-              <Tooltip content={session.displayName ?? session.username}>
-                <p
-                  tabIndex={0}
-                  className="truncate rounded-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
-                >
-                  {session.displayName ?? session.username}
-                </p>
-              </Tooltip>
-              {session.displayName === null ? null : (
-                <Tooltip content={session.username}>
-                  <p
-                    tabIndex={0}
-                    className="truncate rounded-sm text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
-                  >
-                    {session.username}
-                  </p>
-                </Tooltip>
-              )}
-            </div>
-            <Tooltip content="退出登录">
-              <IconButton
-                type="button"
-                variant="ghost"
-                color="gray"
-                size="2"
-                aria-label={`退出登录 ${session.username}`}
-                onClick={() => void logout()}
-                className="shrink-0"
-              >
-                <ExitIcon className="size-4" aria-hidden />
-              </IconButton>
-            </Tooltip>
-          </div>
-        </div>
-      </aside>
-      <main id="panel-main-scroll" className="min-h-0 min-w-0 flex-1 overflow-auto bg-background">
-        <div className="h-full min-h-0 w-full max-w-7xl">
-          <Suspense fallback={<PageLoading />}><Outlet /></Suspense>
-        </div>
+    <div className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-x-hidden bg-background">
+      <TopBar nav={nav} session={session} onSearch={palette.open} onLogout={logout} />
+      {/* Tab 栏是同一列 flex 的兄弟节点,自己占高度,内容区不需要再留底部空白。 */}
+      <main id="panel-main-scroll" className="min-h-0 min-w-0 flex-1 overflow-auto">
+        <Suspense fallback={<PageLoading />}><Outlet /></Suspense>
       </main>
+      <MobileTabBar nav={nav} session={session} onLogout={logout} />
+      <CommandPalette nav={nav} state={palette} />
     </div>
   );
 }
 
+/**
+ * 双层毛玻璃顶栏。第一行是身份与全局动作,第二行是 underline 导航——两层分开,是
+ * 因为导航项会随权限增减,把它和品牌挤在一行会让窄屏下的品牌位置跟着跳。
+ * 移动端只保留第一行,导航交给底部 Tab 栏。
+ */
+function TopBar({
+  nav,
+  session,
+  onSearch,
+  onLogout,
+}: {
+  nav: readonly NavigationItem[];
+  session: PanelSession;
+  onSearch: () => void;
+  onLogout: () => Promise<void>;
+}) {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const current = nav.find((item) => item.to === "/" ? pathname === "/" : pathname.startsWith(item.to));
+  return (
+    <header className="shrink-0 border-b border-chrome-line bg-chrome backdrop-blur-[30px]">
+      <div className="flex items-center justify-between gap-3 px-4 pt-[11px] pb-2 sm:px-7">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="flex size-[26px] shrink-0 items-center justify-center rounded-sm bg-[image:var(--v8-mark-gradient)] shadow-mark">
+            <Mark framed={false} className="size-4 text-white" />
+          </span>
+          <span className="shrink-0 text-xl font-bold tracking-[-0.015em]">MultiReviewer</span>
+          {current === undefined ? null : (
+            <>
+              <span className="text-text-faint max-sm:hidden" aria-hidden>/</span>
+              <span className="truncate text-xl font-semibold max-sm:hidden">{current.label}</span>
+            </>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          <button
+            type="button"
+            onClick={onSearch}
+            aria-label="搜索或跳转"
+            aria-keyshortcuts="Meta+K Control+K"
+            className="flex items-center gap-[7px] rounded-md bg-fill px-3 py-1.5 text-md text-text-muted outline-none transition-colors hover:bg-fill/80 focus-visible:ring-2 focus-visible:ring-ring/40 sm:w-[300px] sm:justify-between"
+          >
+            <span className="flex items-center gap-[7px]">
+              <MagnifyingGlassIcon className="size-3.5" aria-hidden />
+              <span className="max-sm:hidden">搜索或跳转…</span>
+            </span>
+            <kbd className="font-mono text-xs text-text-disabled max-sm:hidden">⌘K</kbd>
+          </button>
+          <UserMenu session={session} onLogout={onLogout} />
+        </div>
+      </div>
+      {nav.length === 0 ? null : (
+        <nav aria-label="面板导航" className="flex items-center gap-0.5 px-5 max-sm:hidden">
+          {nav.map((item) => (
+            <NavLink key={item.to} item={item} session={session} />
+          ))}
+        </nav>
+      )}
+    </header>
+  );
+}
+
+/**
+ * underline 导航项。激活态是 3px 蓝色圆头指示条 + 字重提到 650,底部 padding 相应
+ * 减去指示条的高度,所以激活与未激活的文字基线对齐,切换页面时文字不会上下跳。
+ */
+function NavLink({ item, session }: { item: NavigationItem; session: PanelSession }) {
+  const badge = useNavBadge(item, session);
+  return (
+    <Link
+      to={item.to}
+      activeOptions={{ exact: item.to === "/" }}
+      className="flex flex-col items-stretch outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+    >
+      {({ isActive }) => (
+        <>
+          <span
+            className={`flex items-center gap-[7px] px-3 pt-[7px] whitespace-nowrap transition-colors ${
+              isActive ? "pb-[9px] font-bold text-text" : "pb-3 text-text-secondary hover:text-text"
+            }`}
+          >
+            {item.label}
+            {badge.count === undefined ? null : (
+              <span
+                className={`rounded-full px-[7px] text-sm font-semibold tabular-nums ${
+                  isActive ? "bg-accent-tint text-primary" : "bg-fill text-text-secondary"
+                }`}
+              >
+                {badge.count}
+              </span>
+            )}
+            {badge.alert ? (
+              <span className="size-[7px] rounded-full bg-warning-icon" role="img" aria-label="需要处理" />
+            ) : null}
+          </span>
+          {isActive ? <span className="h-[3px] rounded-t-[3px] bg-primary mx-3" aria-hidden /> : null}
+        </>
+      )}
+    </Link>
+  );
+}
+
+/**
+ * 导航项右侧的计数与告警点。两者都只读已有查询的缓存语义:
+ * - 仓库数直接来自 `/repos` 的数组长度。
+ * - 运行数没有对应的总数端点(`/runs` 是游标分页),所以不显示计数,而不是拿第一页
+ *   的条数冒充总数。
+ * - 模型服务的告警点来自首次配置状态里的「有没有可用模型服务」。
+ */
+function useNavBadge(item: NavigationItem, session: PanelSession): { count?: number; alert: boolean } {
+  const canReadRepos = hasPermission(session, "repo:read");
+  const repos = useQuery({
+    queryKey: ["repos"],
+    queryFn: () => fetchJson<unknown[]>("/repos"),
+    enabled: item.to === "/repos" && canReadRepos,
+  });
+  const setup = useSetupStatus();
+  if (item.to === "/repos") {
+    return repos.data === undefined ? { alert: false } : { count: repos.data.length, alert: false };
+  }
+  if (item.to === "/credentials") {
+    return { alert: setup.data?.hasRunnableModelService === false };
+  }
+  return { alert: false };
+}
+
+/** 顶栏右上角的头像菜单。桌面端的「修改密码」与「退出登录」都收在这里。 */
+function UserMenu({ session, onLogout }: { session: PanelSession; onLogout: () => Promise<void> }) {
+  const name = session.displayName ?? session.username;
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger>
+        <button
+          type="button"
+          aria-label={`账户 ${name}`}
+          className="flex size-[27px] shrink-0 items-center justify-center rounded-full bg-[image:var(--v8-avatar-gradient)] text-base font-medium text-white outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+        >
+          {name.slice(0, 1).toUpperCase()}
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Content align="end" size="2">
+        <DropdownMenu.Label>{name}</DropdownMenu.Label>
+        <DropdownMenu.Item asChild>
+          <Link to="/password">修改密码</Link>
+        </DropdownMenu.Item>
+        <DropdownMenu.Separator />
+        <DropdownMenu.Item color="red" onSelect={() => void onLogout()}>
+          退出登录
+        </DropdownMenu.Item>
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
+  );
+}
+
+/**
+ * 移动端底部 Tab 栏。设计稿画的是固定五项,但导航项随权限增减,所以取前四个有权限
+ * 的页面 + 一个「我的」——「我的」收纳装不下的页面与账户动作,不然低权限用户会看到
+ * 一排空位,高权限用户会丢掉入口。
+ */
+function MobileTabBar({
+  nav,
+  session,
+  onLogout,
+}: {
+  nav: readonly NavigationItem[];
+  session: PanelSession;
+  onLogout: () => Promise<void>;
+}) {
+  if (nav.length === 0) return null;
+  const tabs = nav.slice(0, 4);
+  const overflow = nav.slice(4);
+  const name = session.displayName ?? session.username;
+  return (
+    <nav
+      aria-label="面板导航"
+      className="flex shrink-0 items-stretch border-t border-chrome-line bg-[color:var(--v8-tabbar-bg)] px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur-[30px] sm:hidden"
+    >
+      {tabs.map((item) => (
+        <Link
+          key={item.to}
+          to={item.to}
+          activeOptions={{ exact: item.to === "/" }}
+          className="flex flex-1 flex-col items-center gap-[3px] py-[5px] outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          activeProps={{ className: "text-primary", "aria-current": "page" }}
+          inactiveProps={{ className: "text-text-muted" }}
+        >
+          <item.icon className="size-[21px]" aria-hidden />
+          <span className="text-[10px] font-medium">{item.label}</span>
+        </Link>
+      ))}
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger>
+          <button
+            type="button"
+            className="flex flex-1 flex-col items-center gap-[3px] py-[5px] text-text-muted outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          >
+            <PersonIcon className="size-[21px]" aria-hidden />
+            <span className="text-[10px] font-medium">我的</span>
+          </button>
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Content align="end" size="2">
+          <DropdownMenu.Label>{name}</DropdownMenu.Label>
+          {overflow.map((item) => (
+            <DropdownMenu.Item key={item.to} asChild>
+              <Link to={item.to}>{item.label}</Link>
+            </DropdownMenu.Item>
+          ))}
+          <DropdownMenu.Item asChild>
+            <Link to="/password">修改密码</Link>
+          </DropdownMenu.Item>
+          <DropdownMenu.Separator />
+          <DropdownMenu.Item color="red" onSelect={() => void onLogout()}>
+            退出登录
+          </DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Root>
+    </nav>
+  );
+}
+
+/**
+ * 首页就是总览。看得到评审记录的人落在总览上;只有仓库或模型权限的人落在自己的
+ * 第一个页面;一个权限都没有的人看到说明页,而不是一个空的总览。
+ */
 const indexRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/",
@@ -239,8 +402,14 @@ const indexRoute = createRoute({
     const target = homeFor(context.session);
     if (target !== "/") throw redirect({ to: target });
   },
-  component: ZeroPermissionPage,
+  component: IndexPage,
 });
+
+function IndexPage() {
+  const { session } = shellRoute.useRouteContext();
+  if (!hasPermission(session, "review:read")) return <ZeroPermissionPage />;
+  return <BusinessPage Page={() => <OverviewPage />} />;
+}
 
 function protectedPage(
   path: "/repos" | "/runs" | "/stats" | "/credentials" | "/settings",

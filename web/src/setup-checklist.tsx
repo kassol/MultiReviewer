@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { CrossCircledIcon } from "@radix-ui/react-icons";
 import { Callout, Card } from "@radix-ui/themes";
@@ -25,17 +26,20 @@ export function useSetupStatus() {
   });
 }
 
+/**
+ * 检查条与业务页正文共用同一条内容轨:宽度和左右内边距都跟 `PageBody` 对齐。它比
+ * 正文宽出一截的话,页面顶上就多了一道对不齐的边,而这块本来就是正文的一部分。
+ */
+function ChecklistShell({ children }: { children: ReactNode }) {
+  return <div className="mx-auto w-full max-w-[1240px] px-[18px] pt-6 sm:px-7">{children}</div>;
+}
+
 export function SetupChecklist({ session }: { session: PanelSession }) {
   const status = useSetupStatus();
   if (status.isError) {
     return (
-      <Callout.Root
-        role="alert"
-        color="red"
-        size="2"
-        className="mx-4 mt-4 sm:mx-5"
-        aria-label="首次配置状态读取失败"
-      >
+      <ChecklistShell>
+      <Callout.Root role="alert" color="red" size="2" aria-label="首次配置状态读取失败">
         <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
         <Callout.Text>
           <strong className="font-semibold">首次配置暂时不可用</strong>
@@ -53,13 +57,16 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
           {status.isFetching ? "正在重试…" : "重试"}
         </Button>
       </Callout.Root>
+      </ChecklistShell>
     );
   }
   if (status.data === undefined) {
     return (
-      <Card size="2" className="flex flex-col mx-4 mt-4 gap-2 sm:mx-5" aria-label="正在读取首次配置状态">
-        <h2 className="font-semibold">正在读取首次配置…</h2>
-      </Card>
+      <ChecklistShell>
+        <Card size="2" className="flex flex-col gap-2" aria-label="正在读取首次配置状态">
+          <h2 className="font-semibold">正在读取首次配置…</h2>
+        </Card>
+      </ChecklistShell>
     );
   }
   if (status.data.instanceEnabled) return null;
@@ -94,7 +101,8 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
   ];
 
   return (
-    <Card size="2" className="flex flex-col mx-4 mt-4 gap-2 sm:mx-5" aria-label="首次配置检查单">
+    <ChecklistShell>
+    <Card size="2" className="flex flex-col gap-2" aria-label="首次配置检查单">
       <div>
         <div className="flex items-center gap-1.5">
           <h2 className="font-semibold">完成首次配置</h2>
@@ -116,5 +124,6 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
         ))}
       </ol>
     </Card>
+    </ChecklistShell>
   );
 }

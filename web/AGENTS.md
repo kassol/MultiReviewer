@@ -11,33 +11,36 @@
 - `src/injected.ts` — 读注入全局变量的唯一代码路径,缺失当场报错并在页面写明原因。
 - `src/api.ts` — 面板 API 的唯一入口,基址从注入的前缀来。
 - `src/model-services.ts` — `GET /model-services` 的共享查询与前端契约。模型服务页、全局模型组合和仓库覆盖只消费这一份按权限裁剪的投影;候选按完整 `provider:model` 标识合并来源并携带服务端可用性结论。模型发现事实逐字段带 `service-interface`、`pi-catalog` 或 `service-target` 来源；实际运行字段还可能来自 `runtime-baseline` 或为 `unknown`。模型页以实际运行规格为主并将字段来源去重成一条说明，发现值有差异时才展开显示。服务详情另读服务级运行能力与组合引用位置,前端不从目录状态重复推断。
-- `src/main.tsx` — 路由与壳:`/login` 同一屏按 session 探测结果在登录与 bootstrap 注册间切换;`/password` 是必须改密页;`shell` 下挂六页(`/runs` / `/repos` / `/stats` / `/credentials` / `/settings` / `/access`)。默认进入有权限的评审记录；无 `review:read` 时按导航顺序进入下一个可见页。`/credentials` 是模型服务总入口;`/credentials/:provider`、`/credentials/:provider/maintenance`、`/credentials/:provider/models` 分别是服务概览、维护与模型的稳定地址。配置流以 `/credentials/add` 为父地址:内置 provider 用 `builtin/:provider/discover|verify`,自定义创建用 `custom/discover|verify`,自定义修改用 `custom/:provider/discover|verify`;自定义子路由同时要求模型写与凭据写。页面组件使用 `React.lazy + Suspense` 按路由分块，模型服务的七个路由入口共用同一个 `credentials.tsx` 动态模块。Router `basepath` 取注入前缀。壳按 `GET /session` 回来的有效权限先过滤导航再渲染:系统管理员全开且独有访问控制页,普通用户只看得到有读权限的页;页面按写权限决定是否渲染保存、刷新、凭据、删除与重跑控件;零权限时导航全藏,内容区使用 `EmptyState` 说明并列系统管理员。所有业务页在实例启用前显示同一首次配置检查单;任一成功写请求会立即让状态查询失效并刷新。窄视口下侧栏改成顶部横排、可横向滚动。
+- `src/main.tsx` — 路由与壳:`/login` 同一屏按 session 探测结果在登录与 bootstrap 注册间切换;`/password` 是必须改密页;`shell` 下挂七页(`/` 总览 / `/runs` / `/repos` / `/stats` / `/credentials` / `/settings` / `/access`)。默认进入总览;无 `review:read` 时按导航顺序进入下一个可见页,一个权限都没有时留在 `/` 上显示零权限说明。`/credentials` 是模型服务总入口;`/credentials/:provider`、`/credentials/:provider/maintenance`、`/credentials/:provider/models` 分别是服务概览、维护与模型的稳定地址。配置流以 `/credentials/add` 为父地址:内置 provider 用 `builtin/:provider/discover|verify`,自定义创建用 `custom/discover|verify`,自定义修改用 `custom/:provider/discover|verify`;自定义子路由同时要求模型写与凭据写。页面组件使用 `React.lazy + Suspense` 按路由分块，模型服务的七个路由入口共用同一个 `credentials.tsx` 动态模块。Router `basepath` 取注入前缀。壳按 `GET /session` 回来的有效权限先过滤导航再渲染:系统管理员全开且独有访问控制页,普通用户只看得到有读权限的页;页面按写权限决定是否渲染保存、刷新、凭据、删除与重跑控件;零权限时导航全藏,内容区使用 `EmptyState` 说明并列系统管理员。所有业务页在实例启用前显示同一首次配置检查单;任一成功写请求会立即让状态查询失效并刷新。壳是双层毛玻璃顶栏:上层品牌、面包屑、⌘K 搜索入口与头像菜单,下层 underline 导航(激活项字重 650 + 3px 蓝色圆头指示条,指示条左右各内缩 12px)。导航项右侧的计数与告警点只读已有查询:仓库数取 `/repos` 数组长度,模型服务的琥珀点取 `/setup-status` 的 `hasRunnableModelService`;运行数没有总数端点(`/runs` 是游标分页),因此不显示计数,不拿第一页条数冒充总数。窄视口收起导航层,改成底部毛玻璃 Tab 栏——设计稿画的是固定五项,实现取前四个有权限的页面加一个「我的」,因为导航项随权限增减,固定五项会让低权限用户看到空位、高权限用户丢掉入口。
 - `src/session.ts` — 当前身份与权限的唯一查询,缓存 `GET <前缀>/api/session`;未认证的 401 再由壳送去 `/login`,必须改密时统一送 `/password`,页面组件不各自探测。
 - `src/setup-checklist.tsx` — 首次配置状态与检查单的唯一实现。它读取认证的 `GET /setup-status`,始终显示三步完成状态,只把当前未完成步骤做成入口;入口再按当前会话的有效写权限裁剪。实例启用后整块隐藏。
 - `src/login.tsx` — 登录与首次注册共用的一屏。普通档是用户名加密码;零用户档多 bootstrap 口令与确认密码,注册成功后回账号登录。所有字段使用 Themes `Text as="label"` 的可见标签,不靠 placeholder 当标签。
 - `src/password.tsx` — 用户自改密码页,走 `PUT /session/password`;必须改密的人完成后回到自己有权访问的第一页。改密保留当前会话、作废其余会话。
 - `src/access-control.tsx` — 系统管理员独有的 `/access` 页,上半用户表、下半转置权限矩阵(行是权限、列是角色)。两张表直接使用 Themes Table,横向滚动限制在各自容器内,首列保持粘性；角色多时权限矩阵继续横向滚。用户与角色读写走 `GET/POST /users`、`PUT/DELETE /users/:username`、`POST /users/:username/reset-password` 与 `GET/POST /roles`、`PUT/DELETE /roles/:id`;改角色是行内下拉,新建用户与角色使用 Themes Dialog,重置密码、删除用户与删除角色使用 Themes AlertDialog。三类 write 生效时对应 read 显示为已包含且不可单独移除,`review:rerun` 仍是独立权限。系统管理员不进矩阵;角色创建时不包含任何权限,未分配角色的用户就是零权限。
+- `src/overview.tsx` — `/` 总览页。KPI 卡加最近运行与模型健康,数据全部复用各业务页已有的 queryKey,不新增后端端点;拿不到历史值的同比信息直接不渲染,不造假数。
+- `src/components/command-palette.tsx` — 全局 ⌘K / Ctrl+K 命令面板。快捷键监听挂在 window 上,任意页面任意焦点都能唤起;当前只收导航跳转,触发评审、注册仓库这类要先选对象的动作不进来,进来也只是又一次跳转。内部复用 `ui/command`,选中项按设计稿改成蓝色实底反白。
+- `src/components/page-header.tsx` — 业务页页头。标题走 Display 字体栈 25px/700,随内容滚动、不粘顶:顶栏已经常驻显示当前页名,再粘一条页头就是两层重复页名压掉垂直空间。
 - `src/components/mark.tsx` — 产品标记(三条错位短线),与 `index.html` 里内联成 data URI 的 favicon 是同一份图形。用 `currentColor` 上色。
-- `src/components/panel-theme.tsx` — Radix Theme 根配置的唯一实现。固定亮色、gray accent、solid panel、small radius 与 95% scaling。
+- `src/components/panel-theme.tsx` — Radix Theme 根配置的唯一实现。固定亮色、blue accent、solid panel、medium radius 与 100% scaling。四个取值都不开放给调用方:accent 走 blue 那一族变量再由 `styles.css` 覆写成 `#0071e3`;radius 取 medium 只为拿到圆形滑块,六档圆角终值同样在 `styles.css` 里直接覆写;scaling 固定 100% 避免字号被二次缩放。
 - `src/components/help-tooltip.tsx` — 统一的帮助提示入口。基于 Radix Themes Tooltip、IconButton 与 Radix Icons,图标按钮可键盘访问,窄屏保留触控尺寸。
-- `src/components/status-badge.tsx` — 跨页面运行状态的唯一视觉出口。领域组件只传 `neutral` / `success` / `warning` / `error` 与文字；组件统一 Radix Themes Badge 的色系、variant 和状态图标。深色 provider 选中行改用对应状态色的 solid Badge,不把状态洗成白色中性标签。来源、身份和类别直接使用 Themes Badge。
-- `src/components/master-list-item.tsx` — 主从列表当前项的唯一交互表面。模型服务、仓库与 `ModelComposer` 共用深色实底、白字、固定选中背景、焦点和辅助文字对比规则；选中项悬停不换色。路由项用 `asChild` 组合 Link 并输出 `aria-current`,页内项输出 button 与 `aria-pressed`。模型行和 Checkbox 多选不使用这套深色状态。
+- `src/components/status-badge.tsx` — 跨页面运行状态的唯一视觉出口。领域组件只传 `neutral` / `success` / `warning` / `error` 与文字；组件统一 Radix Themes Badge 的色系、variant 和状态图标,圆角固定 full。选中行是浅色 tint 底,徽章保持 soft,不再需要 solid 变体来压深色底。来源、身份和类别直接使用 Themes Badge。
+- `src/components/master-list-item.tsx` — 主从列表当前项的唯一交互表面。模型服务、仓库与 `ModelComposer` 共用同一套选中态:蓝色 tint 底 + 3px 蓝色左条 + 字重提到 650,文字不反白。左条走 `before` 伪元素而不是 `border-left`,不进盒模型,选中行与未选中行的内容仍然左对齐,调用方不必逐处补 3px padding。选中优先于 hover,选中项悬停不换色。路由项用 `asChild` 组合 Link 并输出 `aria-current`,页内项输出 button 与 `aria-pressed`。模型行和 Checkbox 多选不使用这套深色状态。
 - `src/components/date-range-picker.tsx` — 日期范围的唯一产品入口。内部组合 Themes Popover 与 `ui/calendar`,负责本地日期转换、双月范围和窄屏边界；页面只读写 `{from,to}`。
 - `src/components/editable-model-combobox.tsx` — 可搜索且可手填 model id 的唯一产品入口。内部组合 Themes TextField/Popover 与 `ui/command`,自动发现候选可选，目录外裸 model id 始终可输入。
 - `src/components/empty-state.tsx` — 资源为空、筛选无结果和零权限状态的统一实现。保留原有 `h1` / `h2` / `h3` / 正文层级，不使用装饰性大图标。
 - `src/components/use-dialog-return-focus.ts` — 受控 Dialog / AlertDialog 的焦点返回工具。触发事件发生时记录真实元素，关闭时恢复；触发元素卸载后使用调用方提供的稳定入口，不在弹窗打开后的 effect 中推断焦点来源。
-- `src/components/theme-button.ts` — Radix Themes `Button` 的集中类型适配出口。`@radix-ui/themes` 3.3.0 在 `exactOptionalPropertyTypes` 下把 `highContrast` 推成 `never`;这里仅把它修正为可选 boolean,导出的仍是原始 Button,不增加组件、行为或 DOM。业务 Button 从此处导入,IconButton 继续直接使用 Themes。主要动作固定为 `solid + highContrast`,次要动作使用 `outline` / `ghost`,删除和丢弃使用 `red`;纯图标动作使用 `IconButton` 并提供 `aria-label`。
+- `src/components/theme-button.ts` — Radix Themes `Button` 的集中类型适配出口。`@radix-ui/themes` 3.3.0 在 `exactOptionalPropertyTypes` 下把 `highContrast` 推成 `never`;这里仅把它修正为可选 boolean,导出的仍是原始 Button,不增加组件、行为或 DOM。业务 Button 从此处导入,IconButton 继续直接使用 Themes。主要动作固定为 accent 的 `solid`,**不开 `highContrast`**——三族语义色与 accent 的目标值都落在各自的 11 档上,highContrast 会把颜色推到 12 档,那是 Radix 的默认深色,主按钮会从蓝变回近黑。次要动作使用 `soft` / `outline` / `ghost` 配 `color="gray"`,灰色按钮**保留** `highContrast`(文字才是 `#1d1d1f` 而不是 `#6e6e73`);删除和丢弃使用 `red`;纯图标动作使用 `IconButton` 并提供 `aria-label`。
 - `src/components/page-body.tsx` — 业务页正文容器。`wide` 与 `form` 两档统一最大宽度、窄屏内边距和页尾留白;主从页只在详情栏复用,不改变分栏结构。
 - `src/repos.tsx` — 仓库页,左列表右详情。`lg=1024px` 起双栏，列表和详情各自局部滚动；更窄时只显示一层，进入详情后提供返回仓库列表入口。模型覆盖是「跟随全局 / 自定义」两态:点「跟随全局」直接清覆盖;点「自定义」在详情内挂与审查策略共用的 `ModelComposer`,以当前生效组合为初值。不可用的既有选择可移除但不得随覆盖再次保存;服务端仍作最终校验。编辑态并成单栏容纳 460px 高的两栏选择器,不套对话框或外层表单。审查配置就绪前注册按钮禁用并指向审查策略,状态失效时已开的注册框随即卸载。注册使用 Themes Dialog,移除确认使用 Themes AlertDialog,不用阻塞渲染线程的 `window.confirm`。
 - `src/runs.tsx` — 评审记录页。结论筛选使用 Themes `SegmentedControl`,只过滤已经加载的 Review Run；桌面使用固定列宽的 Themes `Table` 并把横向滚动限制在表格内，窄视口保持按日期分组的单列记录；模型失败原因使用 Collapsible，保留键盘展开、完整原因和逐条重新运行。
 - `src/stats.tsx` — 处置率页。日期范围只调用受控 `DateRangePicker`；桌面模型 × 分类矩阵使用 Themes `Table` 与粘性模型列，窄屏逐模型详情使用 Collapsible，保持 Finding Identity 统计口径、范围选择与移动端可访问性。
-- `src/credentials.tsx` — 模型服务主从页。`lg=1024px` 起双栏，服务列表与详情各自局部滚动；640–1023px 仍只显示列表或详情，详情地址提供返回模型服务列表入口。左侧只列已配置或异常保留的服务;右侧按概览、维护、模型三个稳定地址分层,详情导航直接使用 Themes `TabNav`。概览以服务端运行能力为主状态,目录失败作次级提醒,组合引用使用 Collapsible 展开到全局、跟随全局仓库数与具体仓库覆盖;维护收凭据轮换、地址／协议调整、目录刷新与删除,`name-conflict` 自定义服务在这里原子迁移到新名称并跳到新的稳定地址,普通服务不显示改名入口;重新验证的 model id 统一使用 `EditableModelCombobox`,可选自动发现模型且手填路径始终保留。模型页用模型、运行规格、状态三列展示；调用目标不在每行重复，发现值只在与运行规格不同时用 Collapsible 展开。唯一添加入口同时承载 Pi 内置 provider 搜索与自定义 provider;内置、自定义创建和两类既有服务修改共用来源、模型发现、真实推理三步页。自定义发现先收 provider、调用目标、协议与凭据,协议显示产品名称但提交现有运行时枚举;发现失败或目录缺项仍可在验证页手填 model id。凭据与候选只留流程页内存,刷新不会恢复;未保存离开走应用确认并注册浏览器关闭警告,长操作显示阶段并锁住导航。最终提交重新发现并做最小真实推理;新建成功进入对应服务详情,修改成功回服务概览,两者都不写模型组合。读字段和动作按 `model:*` / `credential:*` 独立权限裁剪,前端从不接收明文或密文。
+- `src/credentials.tsx` — 模型服务主从页。`lg=1024px` 起 `264px minmax(0,1fr)` 双栏，整页跟着壳里的 `panel-main-scroll` 一起滚，列表与详情不各开滚动区；640–1023px 仍只显示列表或详情，详情地址提供返回模型服务列表入口。左侧只列已配置或异常保留的服务;右侧按概览、维护、模型三个稳定地址分层,详情导航直接使用 Themes `TabNav`。概览以服务端运行能力为主状态,目录失败作次级提醒,组合引用使用 Collapsible 展开到全局、跟随全局仓库数与具体仓库覆盖;维护收凭据轮换、地址／协议调整、目录刷新与删除,`name-conflict` 自定义服务在这里原子迁移到新名称并跳到新的稳定地址,普通服务不显示改名入口;重新验证的 model id 统一使用 `EditableModelCombobox`,可选自动发现模型且手填路径始终保留。模型页用模型、运行规格、状态三列展示；调用目标不在每行重复，发现值只在与运行规格不同时用 Collapsible 展开。唯一添加入口同时承载 Pi 内置 provider 搜索与自定义 provider;内置、自定义创建和两类既有服务修改共用来源、模型发现、真实推理三步页。自定义发现先收 provider、调用目标、协议与凭据,协议显示产品名称但提交现有运行时枚举;发现失败或目录缺项仍可在验证页手填 model id。凭据与候选只留流程页内存,刷新不会恢复;未保存离开走应用确认并注册浏览器关闭警告,长操作显示阶段并锁住导航。最终提交重新发现并做最小真实推理;新建成功进入对应服务详情,修改成功回服务概览,两者都不写模型组合。读字段和动作按 `model:*` / `credential:*` 独立权限裁剪,前端从不接收明文或密文。
 
 - `src/settings.tsx` — `/settings` 上的审查策略页。全局模型组合与批次上限各持独立版本、分别保存;409 只恢复冲突项,保留另一项草稿。批次上限使用默认折叠的 Radix Collapsible，并显示系统默认/自定义来源。
 - `src/components/model-composer.tsx` — 全局组合与仓库覆盖共用的唯一模型选择器。接口是 `{value, onChange, provider?, onValidityChange}`;外部 provider 优先定位,没有传入时优先显示已选模型所属 provider。它只读 `GET /model-services` 的统一候选,不创建 provider、不处理凭据、不刷新目录、不补录模型。左栏按服务分组,右栏筛当前服务模型;模型行使用 Themes Checkbox 作为唯一选择控件,整行标签可点击并以浅色反馈选中。已选但失效的模型保留稳定原因与「去模型服务处理」入口,允许移除但通知调用页禁止原样保存。一次最多渲染当前服务的 120 行。
-- `src/components/ui/` — 允许保留的专用行为组件(Command / Calendar)。Command 只封装 cmdk 的搜索与键盘行为,外观直接读取 Radix Theme token；`EditableModelCombobox` 和仓库搜索复用它。Calendar 只保留 `react-day-picker` 的日期行为,月份导航使用 Themes `IconButton`,日期使用 Themes `Button`,外观读取 Theme token,且只由 `DateRangePicker` 调用;`locale` 为 undefined 时不显式传给 `DayButton`,以兼容 `exactOptionalPropertyTypes`。Button、Input、Label、Badge、Card、Skeleton、Table、Dialog 与 Popover wrapper 已删除。侧栏与分栏用 utility 实现,不引入带折叠、移动端抽屉和 cookie 记忆的通用 Sidebar。
+- `src/components/ui/` — 允许保留的专用行为组件(Command / Calendar)。Command 只封装 cmdk 的搜索与键盘行为,外观直接读取 Radix Theme token；`EditableModelCombobox` 和仓库搜索复用它。Calendar 只保留 `react-day-picker` 的日期行为,月份导航使用 Themes `IconButton`,日期使用 Themes `Button`,外观读取 Theme token,且只由 `DateRangePicker` 调用;`locale` 为 undefined 时不显式传给 `DayButton`,以兼容 `exactOptionalPropertyTypes`。Button、Input、Label、Badge、Card、Skeleton、Table、Dialog 与 Popover wrapper 已删除。顶栏、底部 Tab 栏与分栏用 utility 实现,不引入带折叠、移动端抽屉和 cookie 记忆的通用 Sidebar。
 - `src/lib/utils.ts` — className 合并工具 `cn()`,由 clsx 与 tailwind-merge 实现。
-- `src/styles.css` — 样式入口与 Radix Theme token 到产品语义 token、Tailwind token 的映射。cascade layer 顺序固定为 `theme < base < radix < components < utilities`;Tailwind 由自身 layer 输出,Radix Themes 样式统一导入 `radix` layer,保证响应式 display utility 能覆盖组件默认 display。其余只接管浏览器原生面,没有页面组件类。三层底色(`--app-chrome` 外壳 / `--app-bg` 内容 / `--app-panel` 面板)、六档字号阶梯(xs 11 / sm 13 / base 14 / lg 16 / xl 19 / 3xl 28,body 就是 sm),以及选区、光标、滚动条与表格数字的默认样式。
+- `src/styles.css` — 样式入口与 Radix Theme token 到产品语义 token、Tailwind token 的映射。cascade layer 顺序固定为 `theme < base < radix < components < utilities`;Tailwind 由自身 layer 输出,Radix Themes 样式统一导入 `radix` layer,保证响应式 display utility 能覆盖组件默认 display。其余只接管浏览器原生面,没有页面组件类。一套 `--v8-*` 原始令牌(表面、文字四档、边框、accent 蓝与四档 tint、iOS systemFill 叠加、语义色、毛玻璃材质、三层阴影、七档圆角、三套字体栈)是全站唯一的颜色事实来源;`.radix-themes` 块把 Radix 真正被组件消费的那些档位(gray 1–12、accent 1–12、green/amber/red 的 3/9/10/11、focus、radius 1–6、font-size 1–9、font-weight、shadow 1–6)拉到这些值上,组件因此不用逐个改样式;`@theme inline` 再把同一批令牌接进 Tailwind。字号阶梯十一档(xs 11 / sm 11.5 / base 12 / md 13 / lg 13.5 / xl 14 / 2xl 16 / 3xl 18 / 4xl 21 / 5xl 25 / 6xl 29,body 就是 lg 13.5)。本文件的声明不进任何 layer——未分层样式优先级高于所有 layer,天然盖过 `layer(radix)`,不需要 `!important`。其余只接管选区、光标、滚动条与表格数字这些浏览器原生面,没有页面组件类。
 
 ## 模块规范
 
@@ -53,9 +56,9 @@
 - **文本输入与字段标签直接使用 Themes。**文本输入使用 `TextField.Root`,搜索图标等附件进入 `TextField.Slot`;可见或视觉隐藏的字段标签使用 `Text as="label"` 并保持 `htmlFor`/`id` 关联。输入在窄视口使用响应式 size 和最小触控高度；组合框只复用输入外观,其受控值、候选和键盘行为继续由领域组件持有。
 - **有限枚举与多选直接使用 Themes。**有限枚举使用 `Select`,权限矩阵、模型批量选择和补录确认使用 `Checkbox`;点击区域通过可见标签或可访问名称关联。批量全选必须呈现部分选中的 indeterminate 状态。允许搜索和手填的 model id 使用统一的可编辑组合框，保留目录搜索、键盘选择和直接输入裸 model id。
 - **面板只做亮色一套**(issue #46)。`PanelTheme` 明确固定 `appearance="light"`;不加主题上下文、本地存储、防闪脚本或暗色变体。需要暗色时先在设计系统中补齐完整 token 与组件状态,再引入主题切换。
-- **状态 Badge 只走 `StatusBadge`.** 它固定 neutral / success / warning / error 到 Radix Gray / Green / Amber / Red,默认用 `soft + highContrast`,深色 provider 选中行用对应色 `solid`;颜色、文字与图标共同表达状态。来源、身份和类别直接使用 Themes Badge。页面不得再给 Badge 添加 `bg-success` / `bg-warning` / `bg-destructive` 等状态类。主色是近黑,不是青,也不是蓝。
-- **选中态按操作语义分三类。**主导航和 tab 表示当前位置,分别用白底卡位与下划线；仓库、模型服务和 `ModelComposer` 的 `MasterListItem` 使用同一套实心主色加反白文字,选中项 hover 保持同一背景与文字色；模型行、命令菜单和批量勾选属于编辑中的选择,使用浅底、描边或 Checkbox。受控弹窗通过 `useDialogReturnFocus` 记录真实触发元素；关闭必须保留底层列表项与 tab,并把焦点还给触发入口或稳定后备入口。任何选中态都要单独检查 hover、focus 与辅助文字对比度。
-- **字号只用令牌里那六档**,不写 `text-[13px]` 这类一次性值。档位各有唯一职责:xs 元信息、sm 正文与控件、base 区块标题、lg 对话框标题与选中仓库、xl 页标题(一页一个)、3xl 只给处置率页的指标数字。
+- **状态 Badge 只走 `StatusBadge`.** 它固定 neutral / success / warning / error 到 Radix Gray / Green / Amber / Red,固定 `soft` 与 full 圆角,不开 `highContrast`;颜色、文字与图标共同表达状态。来源、身份和类别直接使用 Themes Badge。页面不得再给 Badge 添加 `bg-success` / `bg-warning` / `bg-destructive` 等状态类。**主色是蓝 `#0071e3`**,不是近黑,也不是青。警告是唯一的双色对:图标与状态点用 `#bf8700`,文字压到 `#9a6700`——亮琥珀当文字在白底上过不了 AA。
+- **选中态按操作语义分三类。**主导航和 tab 表示当前位置,用 3px 蓝色圆头指示条加字重 650；仓库、模型服务和 `ModelComposer` 的 `MasterListItem` 使用同一套蓝色 tint 底加 3px 蓝色左条,文字不反白,选中项 hover 保持同一背景；模型行、命令菜单和批量勾选属于编辑中的选择,使用浅底、描边或 Checkbox。左条一律走伪元素,不用 `border-left`——后者会把行内容推右 3px,而这个补偿只要漏一处就错位。受控弹窗通过 `useDialogReturnFocus` 记录真实触发元素；关闭必须保留底层列表项与 tab,并把焦点还给触发入口或稳定后备入口。任何选中态都要单独检查 hover、focus 与辅助文字对比度。
+- **字号只用令牌里那十一档**,不写 `text-[13px]` 这类一次性值。档位各有唯一职责:xs 11 短 SHA 与快捷键、sm 11.5 计数徽章与表头、base 12 元信息与状态徽章、md 13 按钮与控件、lg 13.5 正文基准、xl 14 面包屑当前页与命令面板结果、2xl 16 卡片区块标题、3xl 18 抽屉与模态标题、4xl 21 登录页品牌标题、5xl 25 页标题(一页一个)、6xl 29 KPI 数字。设计稿里 0.5px 步进的八档密度是逐像素目视调优的结果,落到代码里收敛掉——屏幕上看不出来,却会让每个页面各写各的。
 - **等宽字体只包数字,不包中文。** `font-mono` 会把汉字撑成等宽格,「3 轮」因此读成断开的两块;写法是 `<span className="font-mono tabular-nums">{n}</span> 轮`。
 - 时间一律「年-月-日 时:分」本地时区,不用 `toLocaleString()`——它给的是 `8/14/2026, 6:25:21 PM`,与全站的 ISO 风格对不上。
 - 读取中给骨架块,不给「读取中…」那行字:骨架保住它替代的那块内容的尺寸,数据到了不跳版。
@@ -74,7 +77,34 @@
 - `pnpm --filter @multireviewer/web build` — 产出 `dist/`
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
 
+## 视觉规范
+
+2026-08-24 定稿的整体重设计方向，设计稿见 Claude Artifact「MultiReviewer Radix 重设计」（版本 v7-all-pages，三页十二块画板全页覆盖：核心 = 总览、运行+详情、⌘K、移动端总览；业务页 = 仓库、处置率、模型服务、添加模型服务向导；配置与账户 = 审查策略、访问控制、登录、修改密码。画板内文案按真实产品口径精简，不含说明性注释）。原则：信息架构与工程语义取 GitHub，材质与 finish 取 Apple。本节已全量落地，令牌实现在 `src/styles.css`，壳在 `src/main.tsx`。
+
+### Token
+
+- 底色：内容区 `#f5f6f8`，卡面纯白；顶栏与移动端 Tab 栏用半透明白 + backdrop blur（毛玻璃）。
+- 主色一支笔：动作 / 选中 / 图表 / 链接统一 `#0071e3`（在 Radix Themes 下配 `accentColor="blue"` 并以 token 覆盖到该值）；不再使用近黑主色与深色实底选中态。
+- 状态语义色（低饱和）：success `#1a7f37` / warning `#bf8700`（文字用 `#9a6700`）/ error `#cf222e` / 进行中用主色蓝；呈现统一为 soft tint 胶囊（约 9% 透明度同色底 + 深色同色文字）或 16px octicon 式图标（✓ 圆 / ✕ 圆 / ⚠ 三角 / 实心点），不用高饱和大色块。
+- 圆角：卡片 12–14px、控件 9px、chip/胶囊 999px（Radix Themes `radius="medium"` 起步，卡面用 Card 的 surface 覆盖）。
+- 边框与阴影：卡面 1px `rgba(0,0,0,0.055)` 发丝边 + `0 1px 6px rgba(0,0,0,0.04)` 漫射阴影；行分隔 `rgba(0,0,0,0.05)`。
+- 字体：系统栈（Mac 渲染 SF Pro）；页级大标题 25px/700/紧字距，卡标题 16px/650，正文 13.5px；数字一律 `tabular-nums`，KPI 数字 29px/700。字号档位仍走 token，不写一次性值。
+
+### 结构与组件映射
+
+- 壳：左侧栏取消，改双层顶栏——上层面包屑（产品标记 / 页名）+ ⌘K 搜索框 + 账号区，下层横向导航：当前项加粗 + 蓝色圆头短下划线；「仓库」带计数胶囊，「模型服务」异常时带琥珀圆点。窄屏导航改移动端底部 Tab 栏（毛玻璃）。**顶栏导航没有用 Radix `TabNav`**：它的指示条是 2px 方头且铺满整个 trigger，而这里要 3px 圆头、左右各内缩 12px；改它得深度覆写 Radix 内部 DOM，比自绘一个 `span` 代价大，也违反「不深度覆盖 Radix 内部 DOM」那条。模型服务详情页内部的分层导航仍然直接用 `TabNav`。
+- 总览页（新增路由）：KPI 四卡（今日运行 / 待处置发现 / 七日处置率 + 活动圆环 / 模型健康圆点组）+ 最近运行列表 + 模型服务健康与逐模型处置率侧栏。
+- 运行详情：从行内展开改为右侧浮动面板（四边留 14px、18px 圆角、毛玻璃），内部按模型分组为 check-run 式卡片：已处置划线 + 绿 ✓，未处置带 P1/P2 严重度胶囊，失败模型整卡红色语义；底部「重新运行 / 在 Gitea 打开 PR」动作条。
+- ⌘K：cmdk 升为一级入口（顶栏常驻）。面板用 Spotlight 材质（blur + 16px 圆角），保留 `>` 命令前缀与「动作 / 跳转」分组，选中项蓝色实底反白。
+- 筛选：SegmentedControl 保持 iOS 形态（灰底 + 白色浮起选中片）。
+- 短 SHA 用 mono 字体 + 蓝色 tint chip；模型 chip 用灰 tint 胶囊 mono，失败模型红 tint。
+- 选中态三分类语义保留，颜色改为：当前位置 = 蓝下划线 / 加粗；主从列表当前项 = 蓝色 tint 底 + 3px 蓝色左条（替代深色实底反白）；编辑中选择不变（浅底 / 描边 / Checkbox）。弹窗关闭恢复底层项与 tab、`aria-current` 唯一等交互约束全部沿用。
+
 ## 变更日志
+
+- 2026-08-24: 管理面板落地 v8「毛玻璃控制台」视觉方向,「视觉规范」一节从待实施转为现行。令牌层重写:`--v8-*` 原始令牌是唯一颜色事实来源,再把 Radix 真正被组件消费的档位(灰阶、accent、green/amber/red、focus、radius、font-size、font-weight、shadow)拉到这些值上,组件不用逐个改样式;`PanelTheme` 换成 blue accent、medium radius、100% scaling。左侧栏改双层毛玻璃顶栏加 underline 导航,窄屏换底部 Tab 栏(前四个有权限的页面加一个「我的」);新增 `/` 总览页与全局 ⌘K 命令面板。主从选中态从深色实底反白改成蓝色 tint 底加 3px 蓝左条,左条走伪元素不占盒模型;主按钮去掉 `highContrast`——它会把 accent 推到 12 档,主按钮会从蓝变回近黑;字号阶梯从六档扩到十一档。九个页面与五个共享组件全部按设计稿重做,数据流、queryKey、状态机、权限判断与文案含义未变,`aria` 属性从 140 处增至 233 处。
+
+- 2026-08-24: 定稿视觉规范 v6（GitHub 信息架构 × Apple 材质），新增「视觉规范 v6」一节记录 token、结构与组件映射；落地前现行选中态 / StatusBadge / 近黑主色条目继续生效。设计稿经 v1–v6 六轮迭代，历史版本在同一 Artifact 的版本记录中。
 
 - 2026-08-24: 修复 Radix Themes 未分层样式覆盖 Tailwind 响应式显隐。样式入口声明 `theme < base < radix < components < utilities` 并把 Radix 样式导入 `radix` layer；Card、Button、Table 上的 `hidden` 与断点 display utility 恢复预期。模型服务返回列表链接补精确路由匹配，详情地址不再误标当前。
 

@@ -5,14 +5,13 @@ import {
   InfoCircledIcon,
 } from "@radix-ui/react-icons";
 import { Badge, type BadgeProps } from "@radix-ui/themes";
-import type { ComponentType, ForwardRefExoticComponent, ReactNode, RefAttributes } from "react";
+import type { ComponentType, ReactNode } from "react";
 
 export type StatusTone = "neutral" | "success" | "warning" | "error";
 
-type StatusBadgeProps = Omit<BadgeProps, "className" | "color" | "highContrast" | "variant"> & {
+type StatusBadgeProps = Omit<BadgeProps, "className" | "color" | "highContrast" | "variant" | "radius"> & {
   tone: StatusTone;
   icon?: ComponentType<{ "aria-hidden"?: boolean }>;
-  onSolid?: boolean;
   children: ReactNode;
 };
 
@@ -30,25 +29,20 @@ const STATUS_ICON = {
   error: CrossCircledIcon,
 } as const satisfies Record<StatusTone, ComponentType<{ "aria-hidden"?: boolean }>>;
 
-// Themes 3.3.0 在 exactOptionalPropertyTypes 下把 highContrast 推成 never；运行时仍是官方 Badge。
-const StatusBadgeRoot = Badge as ForwardRefExoticComponent<
-  Omit<BadgeProps, "highContrast"> & { highContrast?: boolean } & RefAttributes<HTMLSpanElement>
->;
-
 /**
- * 跨页面状态的唯一视觉出口。领域组件继续决定状态含义，这里只统一颜色、图标和表面适配。
+ * 跨页面状态的唯一视觉出口。领域组件继续决定状态含义,这里只统一颜色、图标和形状。
+ *
+ * 固定 `soft` 加 full 圆角,不开 `highContrast`:三族语义色的目标值就落在各自的 11 档
+ * 上(`--green-11` / `--amber-11` / `--red-11`),而 highContrast 会把文字推到 12 档
+ * ——那是 Radix 的默认深色,不是这套设计定的色。选中行现在是浅色 tint,也不再需要
+ * solid 变体去压深色底。
  */
-export function StatusBadge({ tone, icon, onSolid = false, children, ...props }: StatusBadgeProps) {
+export function StatusBadge({ tone, icon, children, ...props }: StatusBadgeProps) {
   const Icon = icon ?? STATUS_ICON[tone];
   return (
-    <StatusBadgeRoot
-      {...props}
-      color={STATUS_COLOR[tone]}
-      variant={onSolid ? "solid" : "soft"}
-      highContrast={!onSolid}
-    >
+    <Badge {...props} radius="full" color={STATUS_COLOR[tone]} variant="soft">
       <Icon aria-hidden />
       {children}
-    </StatusBadgeRoot>
+    </Badge>
   );
 }

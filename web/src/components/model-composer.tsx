@@ -190,8 +190,8 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                   role="listitem"
                   key={identity}
                   className={cn(
-                    "flex min-w-0 items-start gap-2 rounded-sm border bg-background px-3 py-2",
-                    reason === null ? null : "border-destructive/40 bg-destructive/5",
+                    "flex min-w-0 items-start gap-2 rounded-sm border bg-sunken px-3 py-2",
+                    reason === null ? null : "border-danger/40 bg-danger-tint",
                   )}
                 >
                   <div className="min-w-0 flex-1 space-y-1.5">
@@ -201,7 +201,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                         <Badge key={source} color="gray" variant="outline">{SOURCE_LABEL[source]}</Badge>
                       ))}
                       {reason === null ? null : (
-                        <span className="text-xs text-destructive">{reason}</span>
+                        <span className="text-xs text-danger">{reason}</span>
                       )}
                     </div>
                   </div>
@@ -224,7 +224,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
           </div>
         )}
         {validity.unavailable.length === 0 ? null : (
-          <div className="rounded-sm bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          <div className="rounded-sm bg-danger-tint px-3 py-2 text-xs text-danger">
             不可用模型可以移除，但不能随组合再次保存。服务恢复后会按原标识自动变为可用。{" "}
             <Link to="/credentials" className="font-medium underline underline-offset-4">
               去模型服务处理
@@ -233,9 +233,10 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
         )}
       </Card>
 
+      {/* 两栏选择器:240px 固定列宽 + 自适应右栏,整体固定 380px 高——v8 § 8.3。 */}
       <Card size="1" className="overflow-hidden">
-        <div className="-m-3 flex h-[460px] min-w-0 flex-col sm:grid sm:grid-cols-[220px_minmax(0,1fr)]">
-          <div className="flex h-40 min-h-0 shrink-0 flex-col border-b border-border bg-chrome sm:h-auto sm:border-r sm:border-b-0">
+        <div className="-m-3 flex h-[380px] min-w-0 flex-col sm:grid sm:grid-cols-[240px_minmax(0,1fr)]">
+          <div className="flex h-40 min-h-0 shrink-0 flex-col border-b border-border bg-sunken sm:h-auto sm:border-r sm:border-b-0">
             <p className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
               模型服务 <span className="font-mono tabular-nums">{groups.length}</span> 项
             </p>
@@ -243,7 +244,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
               {query.isPending ? (
                 <div className="p-3"><Skeleton className="h-20" /></div>
               ) : query.isError ? (
-                <p className="px-3 py-4 text-xs text-destructive">可选模型暂不可用。</p>
+                <p className="px-3 py-4 text-xs text-danger">可选模型暂不可用。</p>
               ) : groups.length === 0 ? (
                 <EmptyState title="没有可选择的服务" className="px-3 py-4" />
               ) : (
@@ -273,7 +274,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
             </div>
             <Link
               to="/credentials"
-              className="border-t border-border px-3 py-2 text-xs font-medium hover:bg-background/60"
+              className="border-t border-border px-3 py-2 text-xs font-medium hover:bg-sunken"
             >
               配置或修复服务
             </Link>
@@ -285,7 +286,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                 <Skeleton className="h-40" />
               ) : query.isError ? (
                 <>
-                  <p className="font-medium text-destructive">可选模型暂不可用</p>
+                  <p className="font-medium text-danger">可选模型暂不可用</p>
                   <p className="text-muted-foreground">修复下方读取错误并重试后，才能继续选择或保存。</p>
                 </>
               ) : (
@@ -309,7 +310,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
       </Card>
 
       {query.isError ? (
-        <div className="flex flex-wrap items-center gap-3 rounded-sm bg-destructive/5 px-3 py-2 text-destructive">
+        <div className="flex flex-wrap items-center gap-3 rounded-sm bg-danger-tint px-3 py-2 text-danger">
           <p role="alert">模型列表读取失败：{(query.error as Error).message}</p>
           <Button
             type="button"
@@ -405,9 +406,10 @@ function ProviderPane({
               key={model.identity}
               className={cn(
                 "flex min-w-0 items-start gap-2 border-b border-border px-3 py-2 transition-colors",
-                model.available && picked ? "bg-primary/10 ring-1 ring-inset ring-primary/30" : null,
+                // 已选行底 = accent tint(§1.4 选中面 0.07),不额外描边——勾选框本身已经表达选中。
+                model.available && picked ? "bg-accent-tint" : null,
                 model.available && !picked ? "hover:bg-muted/60" : null,
-                !model.available ? "bg-destructive/5" : null,
+                !model.available ? "bg-danger-tint" : null,
               )}
             >
               <label
@@ -439,7 +441,7 @@ function ProviderPane({
                       ))}
                     </span>
                     {model.available ? null : (
-                      <span className="text-xs text-destructive">
+                      <span className="text-xs text-danger">
                         {model.unavailableReasonText ?? "模型不可用"}
                       </span>
                     )}

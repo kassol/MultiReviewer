@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { ArrowLeftIcon, CheckCircledIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, UpdateIcon } from "@radix-ui/react-icons";
-import { AlertDialog, Callout, Card, Dialog, Flex, IconButton, Skeleton, Text, TextField, Tooltip } from "@radix-ui/themes";
+import { AlertDialog, Callout, Dialog, Flex, IconButton, Skeleton, Text, TextField, Tooltip } from "@radix-ui/themes";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { EmptyState } from "@/components/empty-state";
@@ -64,8 +64,62 @@ function since(iso: string): string {
 function Kv({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
-      <span className="text-muted-foreground">{label}</span>
+      <span className="text-text-muted">{label}</span>
       <span className="ml-auto text-right">{children}</span>
+    </div>
+  );
+}
+
+/**
+ * 卡片外壳。内边距不加在壳上而是落到每个区块里,卡头与内容之间那条分隔线才能通栏——
+ * 这是 v8 卡片与 Radix Card 唯一对不上的地方,所以这里自己写壳。
+ */
+function CardShell({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      className={cn(
+        "flex flex-col rounded-xl border border-card-line bg-surface shadow-card sm:rounded-lg",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+/** 分段控件的一段。激活段是白底浮块,未激活段保持主文字色——降对比度会让它看着像禁用。 */
+function SegmentButton({
+  active,
+  disabled,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  disabled: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "rounded-chip px-3.5 py-1 whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-60 max-sm:min-h-11 max-sm:px-4",
+        active ? "bg-surface font-semibold shadow-control" : "text-text",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** 卡头:左边区块名,右边这张卡自己的控件。 */
+function CardTitle({ title, action }: { title: ReactNode; action?: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 pt-3.5 pb-[11px] sm:px-5">
+      <h3 className="flex items-center gap-1.5 text-2xl font-bold tracking-[-0.015em]">{title}</h3>
+      {action}
     </div>
   );
 }
@@ -102,30 +156,43 @@ export function ReposPage({
 
   return (
     <Dialog.Root open={registering} onOpenChange={setRegistering}>
-      <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <PageBody width="wide">
         <PageHeader
           title="仓库"
           description="已接入 MultiReviewer 的代码仓库。选择仓库查看准入 Key、模型组合与最近的审查记录。"
-          actions={canWrite ? (
-            <Dialog.Trigger>
-              <Button id="register-repo-trigger" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={!registrationReady}>注册仓库</Button>
-            </Dialog.Trigger>
-          ) : undefined}
         />
-        <div className="grid min-h-0 flex-1 overflow-hidden lg:grid-cols-[248px_minmax(0,1fr)]">
+        {/*
+          主从两列。窄屏收成一列,并且是「列表 → 详情」两级:详情有四张卡,把它顺
+          排在整张仓库列表下面,选完仓库还要往下滚过整份列表才看得到自己选了什么。
+        */}
+        <div className="grid items-start gap-4 lg:grid-cols-[264px_minmax(0,1fr)] lg:gap-[18px]">
           <aside
             aria-label="已注册仓库"
             aria-busy={repos.isPending}
             className={cn(
-              "h-full min-h-0 overflow-y-auto border-border bg-chrome lg:border-r",
-              selectedId === null ? "block" : "hidden lg:block",
+              "flex-col gap-2.5",
+              selectedId === null ? "flex" : "hidden lg:flex",
             )}
           >
-          <p className="sticky top-0 z-10 bg-chrome px-4 pt-3.5 pb-2 font-mono text-xs font-semibold tracking-[0.07em] text-muted-foreground">
+          {canWrite ? (
+            <Dialog.Trigger>
+              <Button
+                id="register-repo-trigger"
+                variant="solid"
+                size={{ initial: "4", sm: "2" }}
+                disabled={!registrationReady}
+                className="w-full shadow-accent"
+              >
+                注册仓库
+              </Button>
+            </Dialog.Trigger>
+          ) : null}
+          <p className="px-1 text-sm font-bold tracking-[0.03em] text-text-muted">
             已注册 {rows.length} 个
           </p>
+          <CardShell className="overflow-hidden">
           {repos.isPending ? (
-            <div className="flex flex-col gap-2 px-4 py-1" role="status" aria-live="polite">
+            <div className="flex flex-col gap-2 px-4 py-3" role="status" aria-live="polite">
               <span className="sr-only">正在读取已注册仓库</span>
               <Skeleton className="h-9" />
               <Skeleton className="h-9" />
@@ -134,18 +201,18 @@ export function ReposPage({
           ) : null}
           {/* 一份列表就是一份列表:屏幕阅读器会念出「共 N 项、第 K 项」。 */}
           <ul>
-            {rows.map((row) => (
-              <li key={row.repoId} className="px-2">
+            {rows.map((row, index) => (
+              <li key={row.repoId} className={index === 0 ? undefined : "border-t border-line"}>
                 <MasterListItem
                   data-repo-list-item
                   selected={row.repoId === selected?.repoId}
-                  className="block rounded-sm border border-transparent px-3 py-2.5 data-[selected=true]:font-medium"
+                  className="block px-4 py-3 data-[selected=false]:font-medium"
                   onClick={() => setSelectedId(row.repoId)}
                 >
-                  <span className="block break-all font-mono">
+                  <span className="block break-all text-lg">
                     {row.owner}/{row.repo}
                   </span>
-                  <MasterListItemText className="mt-0.5 block text-xs font-normal">
+                  <MasterListItemText className="mt-px block text-sm font-normal">
                     <span className="tabular-nums">{row.runCount}</span> 轮
                     {row.lastActivity === null
                       ? " · 还没跑过"
@@ -158,12 +225,12 @@ export function ReposPage({
           {rows.length === 0 && !repos.isPending && !repos.isError ? (
             <EmptyState title="暂无已注册仓库" className="px-4 py-2.5" />
           ) : null}
+          </CardShell>
           </aside>
 
-          <PageBody
-            width="form"
+          <div
             className={cn(
-              "h-full min-h-0 gap-4 overflow-y-auto",
+              "min-w-0 flex-col gap-4",
               selectedId === null ? "hidden lg:flex" : "flex",
             )}
             aria-busy={repos.isPending}
@@ -187,7 +254,7 @@ export function ReposPage({
                 <ExclamationTriangleIcon aria-hidden />
               </Callout.Icon>
               <Callout.Text>审查配置就绪后才能注册仓库。先在审查策略中保存至少一个当前可用模型。</Callout.Text>
-              <Button variant="outline" color="gray" size={{ initial: "4", sm: "1" }} className="w-fit" asChild>
+              <Button variant="soft" color="gray" size={{ initial: "4", sm: "1" }} className="w-fit" asChild>
                 <Link to="/settings">前往审查策略</Link>
               </Button>
             </Callout.Root>
@@ -215,8 +282,8 @@ export function ReposPage({
             <EmptyState
               title="暂无已注册仓库"
               titleAs="h2"
-              description={canWrite ? "选择右上角“注册仓库”，搜索并选择要接入的代码仓库。" : "当前没有已注册仓库。"}
-              className="rounded-md border border-border bg-card p-4"
+              description={canWrite ? "选择左侧“注册仓库”，搜索并选择要接入的代码仓库。" : "当前没有已注册仓库。"}
+              className="rounded-lg border border-card-line bg-surface px-5 py-4 shadow-card"
             />
           ) : null}
           {selected === undefined ? null : (
@@ -233,7 +300,7 @@ export function ReposPage({
               }}
             />
           )}
-          </PageBody>
+          </div>
         </div>
 
         {/* 两个表单模态都按需挂载:常驻会把上一次的输入与错误留在 state 里,下次打开
@@ -248,7 +315,7 @@ export function ReposPage({
             }}
           />
         ) : null}
-      </div>
+      </PageBody>
     </Dialog.Root>
   );
 }
@@ -336,44 +403,60 @@ function RepoDetail({
 
   return (
     <>
-      <div className="flex flex-wrap items-center gap-3 border-b border-border pb-4">
-        {/* 页标题是「仓库」,这里是选中的那一个:降一级,字号也降一档。 */}
-        <h2 className="min-w-0 break-all font-mono text-lg font-semibold tracking-tight">
-          {repo.owner}/{repo.repo}
-        </h2>
-        {check.isPending ? (
-          <StatusBadge tone="neutral" icon={UpdateIcon}>
-            核对中…
-          </StatusBadge>
-        ) : check.isError ? (
-          <StatusBadge tone="error">
-            核对失败
-          </StatusBadge>
-        ) : issues.length === 0 ? (
-          <StatusBadge tone="success">
-            Hook 配置正常
-          </StatusBadge>
-        ) : (
-          <StatusBadge tone="warning">
-            {issues.length} 处差异
-          </StatusBadge>
-        )}
-        <span className="text-xs text-muted-foreground">仓库 ID {repo.repoId}</span>
-        {canWrite ? (
-          <Button
-            variant="outline"
-            color="red"
-            size={{ initial: "4", sm: "2" }}
-            className="ml-auto max-sm:w-full"
-            disabled={remove.isPending}
-            onClick={(event) => {
-              removalFocus.captureTrigger(event);
-              setConfirmingRemoval(true);
-            }}
-          >
-            移除仓库
-          </Button>
-        ) : null}
+      {/* 标题与它的元信息贴在一起,和下面的卡片之间才留得出一档间距。 */}
+      <div className="flex flex-col gap-1.5">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          {/* 页标题是「仓库」,这里是选中的那一个:降一级,字号也降一档。 */}
+          <h2 className="min-w-0 flex-1 break-all text-3xl font-extrabold tracking-[-0.02em]">
+            {repo.owner}/{repo.repo}
+          </h2>
+          {check.isPending ? (
+            <StatusBadge tone="neutral" icon={UpdateIcon}>
+              核对中…
+            </StatusBadge>
+          ) : check.isError ? (
+            <StatusBadge tone="error">
+              核对失败
+            </StatusBadge>
+          ) : issues.length === 0 ? (
+            <StatusBadge tone="success">
+              Hook 配置正常
+            </StatusBadge>
+          ) : (
+            <StatusBadge tone="warning">
+              {issues.length} 处差异
+            </StatusBadge>
+          )}
+          {canWrite ? (
+            <Button
+              variant="ghost"
+              color="red"
+              size={{ initial: "4", sm: "2" }}
+              className="shrink-0 max-sm:w-full"
+              disabled={remove.isPending}
+              onClick={(event) => {
+                removalFocus.captureTrigger(event);
+                setConfirmingRemoval(true);
+              }}
+            >
+              移除仓库
+            </Button>
+          ) : null}
+        </div>
+        <section
+          aria-label="仓库统计"
+          className="flex flex-wrap items-center gap-x-4 gap-y-1 text-base text-text-muted"
+        >
+          <span>
+            仓库 ID <b className="font-semibold tabular-nums text-text">{repo.repoId}</b>
+          </span>
+          <span>
+            审查轮次 <b className="font-semibold tabular-nums text-text">{repo.runCount}</b> 轮
+          </span>
+          <span>
+            来源 Finding <b className="font-semibold tabular-nums text-text">{repo.findingCount}</b> 条
+          </span>
+        </section>
       </div>
 
       {feedback === null ? null : (
@@ -404,15 +487,14 @@ function RepoDetail({
           <div className="flex flex-col items-start gap-3">
             {issues.map((issue) => (
               <Kv key={issue.message} label={issue.message}>
-                <span className="text-muted-foreground">{issue.action}</span>
+                <span className="text-text-muted">{issue.action}</span>
               </Kv>
             ))}
             {canWrite ? (
               <Button
                 variant="solid"
-                highContrast
                 size={{ initial: "4", sm: "2" }}
-                className="self-start"
+                className="self-start shadow-accent"
                 disabled={rotate.isPending}
                 onClick={() => rotate.mutate()}
               >
@@ -424,31 +506,37 @@ function RepoDetail({
       ) : null}
 
       {/* 编辑态并成一栏:两栏面板是 220px 的厂商列加一整栏模型列,半宽的格子装不下。 */}
-      <div className={editing ? "grid gap-3" : "grid gap-3 md:grid-cols-2"}>
-        <Card size="2" className="flex flex-col gap-2.5">
-          <div className="flex items-center gap-1.5">
-            <h3 className="text-base font-semibold">准入 Key</h3>
-            <HelpTooltip label="准入 Key 说明" content="面板会自动维护 Hook 凭据，页面不会显示明文。" />
+      <div className={editing ? "grid gap-4" : "grid gap-4 md:grid-cols-2"}>
+        <CardShell>
+          <CardTitle
+            title={
+              <>
+                准入 Key
+                <HelpTooltip label="准入 Key 说明" content="面板会自动维护 Hook 凭据，页面不会显示明文。" />
+              </>
+            }
+          />
+          <div className="flex flex-col gap-2.5 border-t border-line px-4 py-3.5 sm:px-5">
+            <Kv label="状态">已配置到 Hook（不会显示明文）</Kv>
+            <Kv label="代次">
+              <span className="font-mono tabular-nums">
+                {check.data === undefined ? "…" : check.data.expectedGenerations.join(" / ")}
+              </span>
+            </Kv>
+            {canWrite ? (
+              <Button
+                variant="soft"
+                color="gray"
+                size={{ initial: "4", sm: "2" }}
+                className="mt-0.5 self-start"
+                disabled={rotate.isPending}
+                onClick={() => rotate.mutate()}
+              >
+                {rotate.isPending ? "轮转中…" : "轮转 Key"}
+              </Button>
+            ) : null}
           </div>
-          <Kv label="状态">已配置到 Hook（不会显示明文）</Kv>
-          <Kv label="代次">
-            <span className="font-mono tabular-nums">
-              {check.data === undefined ? "…" : check.data.expectedGenerations.join(" / ")}
-            </span>
-          </Kv>
-          {canWrite ? (
-            <Button
-              variant="outline"
-              color="gray"
-              size={{ initial: "4", sm: "2" }}
-              className="self-start"
-              disabled={rotate.isPending}
-              onClick={() => rotate.mutate()}
-            >
-              {rotate.isPending ? "轮转中…" : "轮转 Key"}
-            </Button>
-          ) : null}
-        </Card>
+        </CardShell>
 
         {canWrite && editing ? (
           <ReviewersEditor
@@ -462,76 +550,67 @@ function RepoDetail({
             }}
           />
         ) : (
-          <Card size="2" className="flex flex-col gap-2.5">
-            <h3 className="text-base font-semibold">模型组合</h3>
+          <CardShell>
             {/* 两态开关(issue #69):要么跟随全局,要么本仓库自定义。「一个都没选」
-                这种既不是跟随、也不是有效覆盖的状态在界面上不存在。 */}
-            {canWrite ? <div className="flex gap-2" role="group" aria-label="模型组合来源">
-              <Button
-                type="button"
-                aria-pressed={following}
-                size={{ initial: "4", sm: "1" }}
-                variant={following ? "solid" : "outline"}
-                color="gray"
-                highContrast={following}
-                disabled={followGlobal.isPending}
-                onClick={() => {
-                  if (!following) followGlobal.mutate();
-                }}
-              >
-                跟随全局
-              </Button>
-              <Button
-                type="button"
-                aria-pressed={!following}
-                size={{ initial: "4", sm: "1" }}
-                variant={following ? "outline" : "solid"}
-                color="gray"
-                highContrast={!following}
-                disabled={followGlobal.isPending}
-                onClick={() => setEditing(true)}
-              >
-                自定义
-              </Button>
-            </div> : null}
-            <Kv label={following ? "跟随全局默认" : "本仓库覆盖"}>
-              {shownModels === undefined ? (
-                <span className="text-muted-foreground">使用全局组合</span>
-              ) : (
-                <span><span className="font-mono tabular-nums">{shownModels.length}</span> 个</span>
+                这种既不是跟随、也不是有效覆盖的状态在界面上不存在。
+                分段控件手写而不用 Radix SegmentedControl:那个组件点已激活项不回调,
+                而这里点已激活的「自定义」正是重新打开编辑器的唯一入口。 */}
+            <CardTitle
+              title="模型组合"
+              action={canWrite ? (
+                <div className="flex shrink-0 rounded-sm bg-fill p-0.5 text-base" role="group" aria-label="模型组合来源">
+                  <SegmentButton
+                    active={following}
+                    disabled={followGlobal.isPending}
+                    onClick={() => {
+                      if (!following) followGlobal.mutate();
+                    }}
+                  >
+                    跟随全局
+                  </SegmentButton>
+                  <SegmentButton
+                    active={!following}
+                    disabled={followGlobal.isPending}
+                    onClick={() => setEditing(true)}
+                  >
+                    自定义
+                  </SegmentButton>
+                </div>
+              ) : undefined}
+            />
+            <div className="flex flex-col gap-3 border-t border-line px-4 py-3.5 sm:px-5">
+              <Kv label={following ? "跟随全局默认" : "本仓库覆盖"}>
+                {shownModels === undefined ? (
+                  <span className="text-text-muted">使用全局组合</span>
+                ) : (
+                  <span><span className="tabular-nums">{shownModels.length}</span> 个</span>
+                )}
+              </Kv>
+              {shownModels === undefined || shownModels.length === 0 ? null : (
+                <div className="flex flex-wrap gap-2">
+                  {shownModels.map((model) => (
+                    <span
+                      key={model}
+                      className="rounded-full bg-fill px-3 py-[3px] font-mono text-base break-all"
+                    >
+                      {model}
+                    </span>
+                  ))}
+                </div>
               )}
-            </Kv>
-            {(shownModels ?? []).map((model) => (
-              <div key={model} className="break-all font-mono text-xs">
-                {model}
-              </div>
-            ))}
-            <p className="text-xs text-muted-foreground">
-              {following && canWrite
-                ? "审查策略更新后，这个仓库会同步使用新组合。选择“自定义”可单独调整。"
-                : following
-                  ? "这个仓库使用全局模型组合。"
-                  : canWrite
-                    ? "仅对这个仓库生效。选择“跟随全局”可清除覆盖。"
-                    : "这组模型仅对这个仓库生效。"}
-            </p>
-          </Card>
+              <p className="text-base text-text-muted">
+                {following && canWrite
+                  ? "审查策略更新后，这个仓库会同步使用新组合。选择“自定义”可单独调整。"
+                  : following
+                    ? "这个仓库使用全局模型组合。"
+                    : canWrite
+                      ? "仅对这个仓库生效。选择“跟随全局”可清除覆盖。"
+                      : "这组模型仅对这个仓库生效。"}
+              </p>
+            </div>
+          </CardShell>
         )}
       </div>
-
-      <section aria-label="仓库统计" className="flex flex-wrap items-center gap-x-6 gap-y-2 border-y border-border py-3">
-        <span className="text-muted-foreground">
-          审查轮次{" "}
-          <b className="font-mono font-semibold tabular-nums text-foreground">{repo.runCount}</b> 轮
-        </span>
-        <span className="text-muted-foreground">
-          来源 Finding {" "}
-          <b className="font-mono font-semibold tabular-nums text-foreground">
-            {repo.findingCount}
-          </b>{" "}
-          条
-        </span>
-      </section>
 
       {canReadReviews || canRerun ? (
         <RepoRuns
@@ -556,7 +635,7 @@ function RepoDetail({
             将删除 Gitea 中的 Hook；后续审查请求会因仓库未注册而被拒绝。评审记录和历史模型选择会保留。
           </AlertDialog.Description>
           <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
-            <AlertDialog.Cancel><Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
+            <AlertDialog.Cancel><Button variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>
               取消
             </Button></AlertDialog.Cancel>
             <Button
@@ -662,7 +741,7 @@ function RegisterDialogContent({
           <Command
             shouldFilter={false}
             aria-busy={search.isPending && debounced.trim() !== ""}
-            className="border-border rounded-md border"
+            className="rounded-md border border-card-line"
           >
             <CommandInput
               aria-label="搜索可访问的仓库"
@@ -678,7 +757,7 @@ function RegisterDialogContent({
             />
             <CommandList className="max-h-[300px]">
               {search.isError ? (
-                <p role="alert" className="p-4 text-destructive">
+                <p role="alert" className="p-4 text-danger">
                   {(search.error as Error).message}
                 </p>
               ) : search.isPending && debounced.trim() !== "" ? (
@@ -689,7 +768,7 @@ function RegisterDialogContent({
                   <Skeleton aria-hidden className="h-9" />
                 </div>
               ) : data === undefined || debounced.trim() === "" ? (
-                <p className="p-4 text-muted-foreground">输入关键词开始搜索可访问的仓库。</p>
+                <p className="p-4 text-text-muted">输入关键词开始搜索可访问的仓库。</p>
               ) : data.state === "no-match" ? (
                 <EmptyState
                   title="没有匹配的仓库"
@@ -709,19 +788,19 @@ function RegisterDialogContent({
                         onSelect={() => setPicked(row)}
                       >
                         <span className="flex min-w-0 flex-1 flex-col">
-                          <span className="break-all font-mono">
+                          <span className="break-all">
                             {identity}
                             {picked?.repoId === row.repoId ? (
-                              <span className="text-primary ml-2 font-sans">已选</span>
+                              <span className="ml-2 font-sans text-primary">已选</span>
                             ) : null}
                           </span>
                           {row.reason === undefined ? null : (
-                            <span className="break-words text-xs text-muted-foreground">
+                            <span className="break-words text-sm text-text-muted">
                               {row.reason}
                             </span>
                           )}
                         </span>
-                        <span className="text-muted-foreground shrink-0 text-xs">
+                        <span className="shrink-0 text-sm text-text-muted">
                           仓库 ID {row.repoId}
                         </span>
                       </CommandItem>
@@ -733,23 +812,23 @@ function RegisterDialogContent({
           </Command>
           {/* 只取第一页:剩下的靠继续输入缩小范围,面板不翻页。 */}
           {data?.truncated === true ? (
-            <p className="text-warning text-xs">
+            <p className="text-sm text-warning">
               共 {data.total} 个匹配,这里只显示前 {data.results.length} 个。继续输入以缩小范围。
             </p>
           ) : null}
-          <p className="text-muted-foreground text-xs">
+          <p className="text-sm text-text-muted">
             新仓库默认使用审查策略中的模型组合；注册后可在仓库详情中设置覆盖。
           </p>
           {error === null ? null : (
-            <p role="alert" className="text-destructive">
+            <p role="alert" className="text-danger">
               {error}
             </p>
           )}
           <Flex gap="3" mt="1" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
-            <Dialog.Close><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
+            <Dialog.Close><Button type="button" variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>
               取消
             </Button></Dialog.Close>
-            <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={busy || picked === null}>
+            <Button type="submit" variant="solid" className="shadow-accent" size={{ initial: "4", sm: "2" }} disabled={busy || picked === null}>
               {busy ? "注册中…" : picked === null ? "注册" : `注册 ${picked.owner}/${picked.repo}`}
             </Button>
           </Flex>
@@ -819,57 +898,59 @@ function ReviewersEditor({
   }
 
   return (
-    <div className="flex flex-col gap-4" aria-busy={busy}>
-      <div className="flex flex-col gap-1">
-        <h3 className="text-base font-semibold">
+    <CardShell aria-busy={busy}>
+      <div className="flex flex-col gap-px px-4 pt-3.5 pb-[11px] sm:px-5">
+        <h3 className="text-2xl font-bold tracking-[-0.015em] break-all">
           自定义 {repo.owner}/{repo.repo} 的模型组合
         </h3>
-        <p className="text-muted-foreground">
+        <p className="text-base text-text-muted">
           本仓库覆盖会完全替换全局默认组合，至少选择一个模型。保存后下一次审查使用这组模型；取消则放弃本次修改。
         </p>
       </div>
-      <ModelComposer
-        value={models}
-        onChange={(next) => {
-          setModels(next);
-          setError(null);
-        }}
-        onValidityChange={setValidity}
-      />
-      {error === null ? null : (
-        <p role="alert" className="text-destructive">
-          {error}
-        </p>
-      )}
-      <div className="flex flex-wrap items-center gap-3">
-        <Button
-          variant="solid"
-          highContrast
-          size={{ initial: "4", sm: "2" }}
-          disabled={
-            busy ||
-            models.length === 0 ||
-            !validity.ready ||
-            validity.unavailable.length > 0
-          }
-          onClick={() => void save()}
-        >
-          {busy ? "保存中…" : "保存"}
-        </Button>
-        <Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={onClose}>
-          取消
-        </Button>
-        {models.length === 0 ? (
-          <span className="text-muted-foreground">
-            至少选择一个模型才能保存。要改回全局默认，请取消编辑后选择“跟随全局”。
-          </span>
-        ) : validity.unavailable.length > 0 ? (
-          <span className="text-destructive">先恢复或移除不可用模型，再保存覆盖。</span>
-        ) : !validity.ready ? (
-          <span className="text-muted-foreground">模型状态确认后即可保存覆盖。</span>
-        ) : null}
+      <div className="flex flex-col gap-4 border-t border-line px-4 py-3.5 sm:px-5">
+        <ModelComposer
+          value={models}
+          onChange={(next) => {
+            setModels(next);
+            setError(null);
+          }}
+          onValidityChange={setValidity}
+        />
+        {error === null ? null : (
+          <p role="alert" className="text-danger">
+            {error}
+          </p>
+        )}
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            variant="solid"
+            size={{ initial: "4", sm: "2" }}
+            className="shadow-accent"
+            disabled={
+              busy ||
+              models.length === 0 ||
+              !validity.ready ||
+              validity.unavailable.length > 0
+            }
+            onClick={() => void save()}
+          >
+            {busy ? "保存中…" : "保存"}
+          </Button>
+          <Button variant="soft" color="gray" size={{ initial: "4", sm: "2" }} onClick={onClose}>
+            取消
+          </Button>
+          {models.length === 0 ? (
+            <span className="text-base text-text-muted">
+              至少选择一个模型才能保存。要改回全局默认，请取消编辑后选择“跟随全局”。
+            </span>
+          ) : validity.unavailable.length > 0 ? (
+            <span className="text-base text-danger">先恢复或移除不可用模型，再保存覆盖。</span>
+          ) : !validity.ready ? (
+            <span className="text-base text-text-muted">模型状态确认后即可保存覆盖。</span>
+          ) : null}
+        </div>
       </div>
-    </div>
+    </CardShell>
   );
 }
 
@@ -917,64 +998,71 @@ function RepoRuns({
 
   const rows = runs.data?.runs.slice(0, 8) ?? [];
   return (
-    <Card size="2" className="flex flex-col gap-3" aria-busy={canRead && runs.isPending}>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="text-base font-semibold">{canRead ? "评审记录" : "重新运行审查"}</h3>
-        {canRerun ? <form onSubmit={submit} className="flex flex-wrap gap-2" aria-busy={rerun.isPending}>
-          <Text as="label" htmlFor={`rerun-pr-${repo.repoId}`} className="sr-only">
-            PR 编号
-          </Text>
-          <TextField.Root
-            id={`rerun-pr-${repo.repoId}`}
-            size={{ initial: "3", sm: "2" }}
-            placeholder="PR 编号"
-            inputMode="numeric"
-            className="min-w-0 w-28 max-sm:min-h-11"
-            value={pullNumber}
-            onChange={(event) => setPullNumber(event.target.value)}
-          />
-          <Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }} type="submit" disabled={rerun.isPending}>
-            {rerun.isPending ? "触发中…" : "重新运行"}
-          </Button>
-        </form> : null}
-      </div>
+    <CardShell aria-busy={canRead && runs.isPending}>
+      <CardTitle
+        title={canRead ? "评审记录" : "重新运行审查"}
+        action={canRerun ? (
+          <form onSubmit={submit} className="flex flex-wrap items-center gap-2" aria-busy={rerun.isPending}>
+            <Text as="label" htmlFor={`rerun-pr-${repo.repoId}`} className="sr-only">
+              PR 编号
+            </Text>
+            <TextField.Root
+              id={`rerun-pr-${repo.repoId}`}
+              size={{ initial: "3", sm: "2" }}
+              placeholder="PR 编号"
+              inputMode="numeric"
+              className="w-[120px] min-w-0 max-sm:min-h-11"
+              value={pullNumber}
+              onChange={(event) => setPullNumber(event.target.value)}
+            />
+            <Button variant="soft" color="gray" size={{ initial: "4", sm: "2" }} type="submit" disabled={rerun.isPending}>
+              {rerun.isPending ? "触发中…" : "重新运行"}
+            </Button>
+          </form>
+        ) : undefined}
+      />
       {canRead && runs.isError ? (
-        <Callout.Root role="alert" color="red" size="1">
-          <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-          <Callout.Text>{(runs.error as Error).message}</Callout.Text>
-        </Callout.Root>
+        <div className="border-t border-line px-4 py-3.5 sm:px-5">
+          <Callout.Root role="alert" color="red" size="1">
+            <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+            <Callout.Text>{(runs.error as Error).message}</Callout.Text>
+          </Callout.Root>
+        </div>
       ) : null}
       {canRead && runs.isPending ? (
-        <div className="flex flex-col gap-2" role="status" aria-live="polite">
+        <div className="flex flex-col gap-2 border-t border-line px-4 py-3.5 sm:px-5" role="status" aria-live="polite">
           <span className="sr-only">正在读取仓库评审记录</span>
           <Skeleton className="h-8" />
           <Skeleton className="h-8" />
           <Skeleton className="h-8" />
         </div>
       ) : null}
-      {canRead && rows.length > 0 ? (
-        <div className="divide-y divide-border border-y border-border">
-          {rows.map((run) => (
-            <div key={run.id} className="py-2.5">
-              <Kv
-                label={
-                  <span>
-                    <span className="font-mono">
-                      #{run.pullNumber} · {run.startedAt.slice(0, 16).replace("T", " ")}
-                    </span>
-                    {` · ${run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`}`}
-                  </span>
-                }
-              >
-                <RunPill run={run} />
-              </Kv>
+      {canRead
+        ? rows.map((run) => (
+            // 一行一轮:左边是这一轮的身份与触发方式,右边是处置进度与结论。
+            <div
+              key={run.id}
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-3 sm:px-5"
+            >
+              <span className="min-w-0 flex-1 text-lg font-semibold tabular-nums">
+                #{run.pullNumber}
+                <span className="font-normal text-text-muted">
+                  {` · ${run.startedAt.slice(0, 16).replace("T", " ")}`}
+                  {` · ${run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`}`}
+                </span>
+              </span>
+              <span className="shrink-0 text-base tabular-nums text-text-muted">
+                {run.total === 0 ? "—" : `处置 ${run.resolved}/${run.total}`}
+              </span>
+              <RunPill run={run} />
             </div>
-          ))}
+          ))
+        : null}
+      {canRead && rows.length === 0 && !runs.isPending && !runs.isError ? (
+        <div className="border-t border-line px-4 sm:px-5">
+          <EmptyState title="暂无审查记录" description="这个仓库还没有审查记录。" />
         </div>
       ) : null}
-      {canRead && rows.length === 0 && !runs.isPending && !runs.isError ? (
-        <EmptyState title="暂无审查记录" description="这个仓库还没有审查记录。" className="py-1" />
-      ) : null}
-    </Card>
+    </CardShell>
   );
 }

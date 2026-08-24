@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- 面板只做亮色一套。不声明的话系统切暗色时浏览器会把滚动条与表单控件画成暗色。 -->
     <meta name="color-scheme" content="light" />
-    <meta name="theme-color" content="#f6f8fa" />
+    <meta name="theme-color" content="#f5f6f8" />
     <!-- 面板挂在随机前缀下,不该进任何索引。 -->
     <meta name="robots" content="noindex, nofollow" />
     <!--
@@ -14,18 +14,18 @@
     -->
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231f2328'/%3E%3Cg fill='%23fff'%3E%3Crect x='7' y='9' width='18' height='3' rx='1'/%3E%3Crect x='7' y='14.5' width='12' height='3' rx='1'/%3E%3Crect x='7' y='20' width='15' height='3' rx='1'/%3E%3C/g%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231d1d1f'/%3E%3Cg fill='%23fff'%3E%3Crect x='7' y='9' width='18' height='3' rx='1'/%3E%3Crect x='7' y='14.5' width='12' height='3' rx='1'/%3E%3Crect x='7' y='20' width='15' height='3' rx='1'/%3E%3C/g%3E%3C/svg%3E"
     />
     <title>MultiReviewer</title>
   </head>
-  <!-- 字号走令牌里的 sm(13px):控制台密度的正文档位,卡片内容与它同档。 -->
-  <body class="bg-background text-foreground font-sans text-sm antialiased">
+  <!-- 字号走令牌里的 lg(13.5px):这套设计的正文档位,列表行主标题与它同档。 -->
+  <body class="bg-background text-foreground font-sans text-lg antialiased">
     <!--
-      THESIS: 评审记录是一张检查列表。拒绝卡片堆指标,拒绝青色控制台。
-      OWN-WORLD: 近黑墨、白底、细线盒子。主操作是黑按钮。失败红、通过绿、注意琥珀。系统无衬线。圆角 6px。
-      STORY: 打开即知哪一轮挂了。过滤片收窄,重跑继续。
-      FIRST VIEWPORT: 左栏五项,当前项白底细线。页头计数加 全部/失败/待处置/已处置。表在 1px 盒子里,左列状态字形。
-      FORM: 品类标准件 · 检查列表构图 · seed 75a0358b
+      THESIS: 一眼看清当前能不能顺利完成审查、哪里要处理、处理动作在哪。
+      OWN-WORLD: 冷灰底上浮白卡。顶栏是毛玻璃。主操作是 Apple 蓝。失败红、通过绿、注意琥珀。系统无衬线,字重靠 590 与 650 分层。控件圆角 9px,卡片 12px。
+      STORY: 顶栏认路,总览看势,进列表定位到具体一行,沿同一行读原因并执行下一步。
+      FIRST VIEWPORT: 双层顶栏——品牌与 ⌘K 在上,underline 导航在下,当前项带蓝色圆头短条。正文落在 1240px 内容轨上,卡片浮在灰底。窄屏收起导航层,换底部毛玻璃 Tab 栏。
+      FORM: 毛玻璃控制台 · GitHub 的信息架构 × Apple 的材质
       FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
     -->
     <div id="root"></div>

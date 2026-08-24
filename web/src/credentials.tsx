@@ -4,14 +4,15 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useBlocker, useLocation, useNavigate } from "@tanstack/react-router";
-import { ArrowLeftIcon, CheckIcon, ChevronDownIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, MagnifyingGlassIcon, MinusCircledIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
-import { AlertDialog, Badge, Callout, Card, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, TabNav, Text, TextField, Tooltip } from "@radix-ui/themes";
+import { ArrowLeftIcon, CheckIcon, ChevronDownIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, InfoCircledIcon, MagnifyingGlassIcon, MinusCircledIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
+import { AlertDialog, Badge, Callout, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, TabNav, Text, TextField, Tooltip } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { EditableModelCombobox } from "@/components/editable-model-combobox";
 import { EmptyState } from "@/components/empty-state";
+import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import {
   MasterListItem,
@@ -19,7 +20,7 @@ import {
 } from "@/components/master-list-item";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { useDialogReturnFocus } from "@/components/use-dialog-return-focus";
+import { useDialogReturnFocus, visibleNavCurrentItem } from "@/components/use-dialog-return-focus";
 import { cn } from "@/lib/utils";
 
 import { api, errorText, fetchJson } from "./api.ts";
@@ -204,19 +205,247 @@ function quantity(value: number): string {
   return new Intl.NumberFormat("zh-CN").format(value);
 }
 
-function ServiceStatus({ service, selected = false }: { service: ModelService; selected?: boolean }) {
-  const detail =
-    service.runCapability.runnable
-      ? { label: "正常", tone: "success" as const }
-      : service.providerState === "name-conflict"
-      ? { label: "已停用", tone: "error" as const }
-      : { label: "需处理", tone: "error" as const };
+/**
+ * 卡壳。Themes 的 Card 把圆角画在伪元素上,而这套设计的卡片圆角随视口在 14 / 12 之间
+ * 换档,只改根元素的话边框与底色的圆角会错开;列表卡还要求零内边距加逐行分隔。所以
+ * 壳走 utility + 令牌,壳里的通用件(徽章、输入、按钮、骨架)仍是 Themes 组件。
+ */
+function CardShell({ className, ...props }: React.ComponentProps<"section">) {
   return (
-    <StatusBadge tone={detail.tone} onSolid={selected}>
-      {detail.label}
-    </StatusBadge>
+    <section
+      className={cn(
+        "flex min-w-0 flex-col rounded-xl border border-card-line bg-surface shadow-card sm:rounded-lg",
+        className,
+      )}
+      {...props}
+    />
   );
 }
+
+/** 卡头:左边这张卡叫什么,右边是它当下的计数或那一个动作。 */
+function CardHeader({
+  id,
+  title,
+  help,
+  meta,
+  action,
+}: {
+  id?: string;
+  title: ReactNode;
+  help?: ReactNode;
+  meta?: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 pt-3.5 pb-[11px] sm:px-5">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <h3 id={id} className="min-w-0 text-2xl font-bold tracking-[-0.015em]">{title}</h3>
+        {help}
+      </div>
+      {meta === undefined ? null : <span className="shrink-0 text-base text-text-muted">{meta}</span>}
+      {action}
+    </div>
+  );
+}
+
+/** 卡内分区。与卡头之间用一条行线断开,左右内边距与卡头对齐。 */
+function CardSection({ className, ...props }: React.ComponentProps<"div">) {
+  return <div className={cn("border-t border-line px-4 py-3.5 sm:px-5", className)} {...props} />;
+}
+
+/** 信息网格。设计稿的凭据卡就是这三列;窄屏降两列、再窄一列,值本身不换行。 */
+function InfoGrid({ className, ...props }: React.ComponentProps<"div">) {
+  return <div className={cn("grid gap-4 sm:grid-cols-2 xl:grid-cols-3", className)} {...props} />;
+}
+
+function InfoField({ label, children }: { label: ReactNode; children: ReactNode }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <span className="text-sm text-text-muted">{label}</span>
+      <span className="min-w-0 text-lg">{children}</span>
+    </div>
+  );
+}
+
+/** 等宽值。缺字段时退回正文字体——「未提供」不是一段 id,不该按 id 排版。 */
+function MonoValue({ value }: { value: string | null | undefined }) {
+  return value === null || value === undefined ? (
+    <span className="text-text-muted">未提供</span>
+  ) : (
+    <span className="break-all font-mono text-base">{value}</span>
+  );
+}
+
+const NOTICE_TONE = {
+  warning: { shell: "border-warning-icon/20 bg-warning-tint", icon: "text-warning-icon", title: "text-warning" },
+  danger: { shell: "border-danger/20 bg-danger-tint", icon: "text-danger", title: "text-danger" },
+  neutral: { shell: "border-card-line bg-sunken", icon: "text-text-muted", title: "text-text" },
+} as const;
+
+/**
+ * 行内通知条。设计稿只画了警告一档,危险与中性沿用同一结构换语义色:这三条在页面上
+ * 承担的都是「状态说明 + 下一步」,分档只交给颜色,结构不跟着分叉。
+ */
+function NoticeBar({
+  tone,
+  icon: Icon,
+  title,
+  titleId,
+  children,
+}: {
+  tone: keyof typeof NOTICE_TONE;
+  icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
+  title: ReactNode;
+  titleId?: string;
+  children?: ReactNode;
+}) {
+  const style = NOTICE_TONE[tone];
+  return (
+    <section
+      aria-labelledby={titleId}
+      className={cn("flex items-start gap-2.5 rounded-lg border px-[18px] py-3", style.shell)}
+    >
+      <Icon aria-hidden className={cn("mt-0.5 size-[15px] shrink-0", style.icon)} />
+      <div className="flex min-w-0 flex-col gap-px">
+        <h3 id={titleId} className={cn("text-md font-semibold", style.title)}>{title}</h3>
+        {children === undefined ? null : <div className="text-base text-text-secondary">{children}</div>}
+      </div>
+    </section>
+  );
+}
+
+/** 来源、身份、类别一律走 Themes Badge;等宽只包 model id 与 provider 这类标识。 */
+function SourceBadge({ children }: { children: ReactNode }) {
+  return (
+    <Badge color="gray" variant="soft" radius="full" size="1">
+      {children}
+    </Badge>
+  );
+}
+
+const SERVICE_STATUS_TONE = {
+  success: { dot: "bg-success", text: "text-success" },
+  disabled: { dot: "bg-neutral-dot", text: "text-text-disabled" },
+  error: { dot: "bg-danger", text: "text-danger" },
+} as const;
+
+/**
+ * 服务列表行的状态。判据不变(能不能跑 → 是不是名字冲突),只把徽章换成设计稿的圆点
+ * 加文字:264px 的侧栏里,一枚实心徽章会把服务名挤到只剩两个字。
+ */
+function serviceStatus(service: ModelService): {
+  label: string;
+  tone: keyof typeof SERVICE_STATUS_TONE;
+} {
+  if (service.runCapability.runnable) return { label: "正常", tone: "success" };
+  if (service.providerState === "name-conflict") return { label: "已停用", tone: "disabled" };
+  return { label: "需处理", tone: "error" };
+}
+
+function ServiceStatus({ service }: { service: ModelService }) {
+  const status = serviceStatus(service);
+  const style = SERVICE_STATUS_TONE[status.tone];
+  return (
+    <span className={cn("flex shrink-0 items-center gap-1.5 text-sm font-semibold", style.text)}>
+      <span aria-hidden className={cn("size-[7px] rounded-full", style.dot)} />
+      {status.label}
+    </span>
+  );
+}
+
+const SETUP_STEPS = ["选择来源", "模型发现", "真实验证"] as const;
+
+/**
+ * 三步指示条。已完成用绿勾、当前用实心蓝、未来用灰底数字,连接线跟着前一步的完成度
+ * 变色。窄屏只保留当前步的文字:三段中文标题在 390px 上会把圆点挤成一条竖排。
+ */
+function StepRail({ current }: { current: number }) {
+  return (
+    <ol className="flex items-center gap-2.5" aria-label="配置模型服务步骤">
+      {SETUP_STEPS.map((label, index) => {
+        const step = index + 1;
+        const done = step < current;
+        const active = step === current;
+        return (
+          <Fragment key={label}>
+            {index === 0 ? null : (
+              <li
+                aria-hidden
+                className={cn("h-0.5 min-w-2 flex-1 rounded-full", done ? "bg-success/35" : "bg-fill")}
+              />
+            )}
+            <li
+              aria-current={active ? "step" : undefined}
+              className="flex shrink-0 items-center gap-2"
+            >
+              <span
+                aria-hidden
+                className={cn(
+                  "flex size-[22px] shrink-0 items-center justify-center rounded-full text-sm font-bold",
+                  done && "bg-success-tint text-success",
+                  active && "bg-primary text-white shadow-accent",
+                  !done && !active && "bg-fill text-text-muted",
+                )}
+              >
+                {done ? <CheckIcon className="size-3" /> : step}
+              </span>
+              <span
+                className={cn(
+                  "text-base",
+                  active ? "font-bold" : done ? "font-medium text-success" : "text-text-muted",
+                  active ? null : "max-sm:hidden",
+                )}
+              >
+                {label}
+              </span>
+            </li>
+          </Fragment>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** 向导正文。模态自己不留内边距,正文与页脚各自铺满模态宽度。 */
+function SetupBody({ className, ...props }: React.ComponentProps<"div">) {
+  return <div className={cn("flex min-w-0 flex-col gap-3.5 px-5 py-[18px] sm:px-7", className)} {...props} />;
+}
+
+/**
+ * 向导页脚。左边是当前阶段说明,右边是这一步的两个动作。它粘在模态底部:内容长到要
+ * 滚时,「继续」不该跟着滚出视野。
+ */
+function SetupFooter({ note, children }: { note?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="sticky bottom-0 mt-auto bg-surface">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-overlay-line bg-sunken px-5 py-[15px] sm:px-7">
+        <span className="min-w-0 text-base text-text-muted">{note}</span>
+        <div className="flex flex-wrap items-center gap-2.5 max-sm:w-full">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/** 向导里「刷新页面就没了」的那一屏,三个入口共用。 */
+function SetupExpired({ children }: { children: ReactNode }) {
+  return (
+    <SetupBody>
+      <CardShell className="gap-1.5 px-4 py-4 sm:px-5">
+        <h2 className="text-2xl font-bold tracking-[-0.015em]">配置已过期</h2>
+        <p className="text-text-secondary">
+          刷新或直接打开此地址不会恢复凭据和目录结果，请重新配置模型服务。
+        </p>
+        <div className="pt-1.5">{children}</div>
+      </CardShell>
+    </SetupBody>
+  );
+}
+
+/** 主从栅格。264px 定宽侧栏 + 自适应详情,窄屏改单列各占满宽。 */
+const MASTER_DETAIL_COLUMNS = "lg:grid-cols-[264px_minmax(0,1fr)] lg:items-start lg:gap-[18px]";
+
+/** 模型行三列:模型、运行规格、状态。列宽只在 xl 起生效,更窄时行内纵向堆叠。 */
+const MODEL_ROW_COLUMNS = "xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.35fr)_110px]";
 
 type BuiltinSetupCandidate = {
   kind: "builtin";
@@ -307,7 +536,7 @@ export function ModelServiceSetupLayout() {
   const allowExit = useRef(false);
   const confirmationFocus = useDialogReturnFocus(() =>
     document.getElementById("model-service-setup-close")
-      ?? document.querySelector<HTMLElement>("nav[aria-label='面板导航'] [aria-current='page']"),
+      ?? visibleNavCurrentItem(),
   );
   const search = typeof location.search === "object" && location.search !== null
     ? location.search as Record<string, unknown>
@@ -415,54 +644,41 @@ export function ModelServiceSetupLayout() {
     <ModelServiceSetupContext.Provider value={{ candidate, setCandidate, phase, setPhase, transition, requestClose: closeSetup, finish }}>
       <Dialog.Root open onOpenChange={(open) => { if (!open) closeSetup(); }}>
         <Dialog.Content
-          maxWidth="720px"
+          maxWidth={{ initial: "100%", sm: "720px" }}
           maxHeight="calc(100dvh - 2rem)"
           size={{ initial: "2", sm: "3" }}
-          className="flex min-h-0 flex-col overflow-hidden"
+          // 模态自己不留内边距:头、体、脚三段各自铺满 720px 宽,页脚才能像设计稿那样通栏。
+          className="flex min-h-0 flex-col overflow-hidden rounded-2xl p-0 shadow-modal sm:rounded-3xl"
           aria-busy={phase !== null}
           onEscapeKeyDown={(event) => { if (dirty || phase !== null) event.preventDefault(); }}
           onClickCapture={confirmationFocus.captureBubblingLink}
         >
-          <div className="shrink-0 pr-9">
-            <Dialog.Title size="4" mb="2">配置模型服务</Dialog.Title>
-            <Dialog.Description size="2" color="gray">按步骤完成来源、模型发现和真实验证。未提交内容只保留在当前页面。</Dialog.Description>
+          <div className="flex shrink-0 flex-col gap-4 border-b border-overlay-line px-5 pt-6 pb-[18px] sm:px-7">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <Dialog.Title size="6" mb="0" className="font-extrabold tracking-[-0.02em]">配置模型服务</Dialog.Title>
+                <Dialog.Description size="2" color="gray">按步骤完成来源、模型发现和真实验证。未提交内容只保留在当前页面。</Dialog.Description>
+              </div>
+              <Tooltip content="关闭配置模型服务">
+                <Dialog.Close>
+                  <IconButton
+                    id="model-service-setup-close"
+                    variant="soft"
+                    color="gray"
+                    radius="full"
+                    size={{ initial: "3", sm: "2" }}
+                    className="shrink-0 max-sm:min-h-11 max-sm:min-w-11"
+                    aria-label="关闭配置模型服务"
+                    onClick={confirmationFocus.captureTrigger}
+                  >
+                    <Cross2Icon aria-hidden />
+                  </IconButton>
+                </Dialog.Close>
+              </Tooltip>
+            </div>
+            <StepRail current={currentStep} />
           </div>
-          <nav className="grid grid-cols-3 overflow-hidden rounded-md border text-center text-xs" aria-label="配置模型服务步骤">
-            {["选择来源", "模型发现", "真实验证"].map((label, index) => {
-              const step = index + 1;
-              return (
-                <span
-                  key={label}
-                  aria-current={currentStep === step ? "step" : undefined}
-                  className={cn(
-                    "flex min-h-10 items-center justify-center border-r px-2 py-2 last:border-r-0",
-                    currentStep === step && "bg-muted font-medium text-foreground",
-                    currentStep !== step && "text-muted-foreground",
-                  )}
-                >
-                  {step}. {label}
-                </span>
-              );
-            })}
-          </nav>
-          <div className="mt-4 min-h-0 min-w-0 overflow-y-auto pb-1"><Outlet /></div>
-          <div className="absolute top-3 right-3">
-            <Tooltip content="关闭配置模型服务">
-              <Dialog.Close>
-                <IconButton
-                  id="model-service-setup-close"
-                  variant="ghost"
-                  color="gray"
-                  size={{ initial: "3", sm: "1" }}
-                  className="max-sm:min-h-11 max-sm:min-w-11"
-                  aria-label="关闭配置模型服务"
-                  onClick={confirmationFocus.captureTrigger}
-                >
-                  <Cross2Icon aria-hidden />
-                </IconButton>
-              </Dialog.Close>
-            </Tooltip>
-          </div>
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto"><Outlet /></div>
         </Dialog.Content>
       </Dialog.Root>
       <AlertDialog.Root open={closeRequested} onOpenChange={setCloseRequested}>
@@ -470,9 +686,10 @@ export function ModelServiceSetupLayout() {
           maxWidth="440px"
           maxHeight="calc(100dvh - 2rem)"
           size={{ initial: "2", sm: "3" }}
+          className="rounded-2xl shadow-modal sm:rounded-3xl"
           onCloseAutoFocus={confirmationFocus.onCloseAutoFocus}
         >
-          <AlertDialog.Title size="4" mb="2">丢弃未保存的配置？</AlertDialog.Title>
+          <AlertDialog.Title size="6" mb="2" className="font-extrabold tracking-[-0.02em]">丢弃未保存的配置？</AlertDialog.Title>
           <AlertDialog.Description size="2" color="gray">关闭会丢弃当前页面中的凭据、目录结果和验证模型。</AlertDialog.Description>
           <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
             <AlertDialog.Cancel><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>继续配置</Button></AlertDialog.Cancel>
@@ -485,9 +702,10 @@ export function ModelServiceSetupLayout() {
           maxWidth="440px"
           maxHeight="calc(100dvh - 2rem)"
           size={{ initial: "2", sm: "3" }}
+          className="rounded-2xl shadow-modal sm:rounded-3xl"
           onCloseAutoFocus={confirmationFocus.onCloseAutoFocus}
         >
-          <AlertDialog.Title size="4" mb="2">{phase === null ? "丢弃未保存的配置？" : "模型服务操作仍在进行"}</AlertDialog.Title>
+          <AlertDialog.Title size="6" mb="2" className="font-extrabold tracking-[-0.02em]">{phase === null ? "丢弃未保存的配置？" : "模型服务操作仍在进行"}</AlertDialog.Title>
           <AlertDialog.Description size="2" color="gray">
               {phase === null
                 ? "离开会丢弃当前页面中的凭据、目录结果和验证模型。"
@@ -533,82 +751,87 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
   });
 
   return (
-    <Card
-      size="2"
-      className="flex flex-col gap-4"
-      aria-busy={providers.isPending}
-    >
-      <div>
-        <h2 className="text-base font-semibold">选择模型服务来源</h2>
-        <p className="mt-1 text-muted-foreground">搜索 Pi 内置 provider，或从同一入口添加自定义 provider。</p>
-      </div>
-      <TextField.Root
-        size={{ initial: "3", sm: "2" }}
-        className="min-w-0 w-full max-sm:min-h-11"
-        aria-label="搜索 Pi 内置 provider"
-        placeholder="输入 provider 标识或名称"
-        value={query}
-        onChange={(event) => setQuery(event.target.value)}
-      />
-      {providers.isPending ? (
-        <div role="status" aria-live="polite" aria-busy="true">
-          <span className="sr-only">正在加载 Pi 内置 provider</span>
-          <Skeleton aria-hidden className="h-28" />
+    <>
+      <SetupBody aria-busy={providers.isPending}>
+        <div className="flex flex-col gap-0.5">
+          <h2 className="text-2xl font-bold tracking-[-0.015em]">选择模型服务来源</h2>
+          <p className="text-text-secondary">搜索 Pi 内置 provider，或从同一入口添加自定义 provider。</p>
         </div>
-      ) : providers.isError ? (
-        <Callout.Root role="alert" color="red" size="1">
-          <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-          <Callout.Text>内置模型服务加载失败：{(providers.error as Error).message}</Callout.Text>
-        </Callout.Root>
-      ) : providers.data.providers.length === 0 ? (
-        <EmptyState title="没有匹配的 Pi 内置 provider" className="py-2" />
-      ) : (
-        <div className="max-h-80 divide-y overflow-y-auto rounded-md border" role="list">
-          {providers.data.providers.map((provider) => (
-            <Button
-              key={provider.id}
-              type="button"
-              variant="ghost"
-              color="gray"
-              radius="none"
-              size="3"
-              className="h-auto min-h-11 w-full justify-start gap-3 px-3 py-2 text-left sm:min-h-0"
-              disabled={provider.conflict}
-              onClick={() => {
-                setCandidate({
-                  kind: "builtin",
-                  provider: provider.id,
-                  name: provider.name,
-                  version: provider.version,
-                  credential: "",
-                  preview: null,
-                  validationModel: "",
-                });
-                void navigate({
-                  to: "/credentials/add/builtin/$provider/discover",
-                  params: { provider: provider.id },
-                  search: true,
-                });
-              }}
-            >
-              <span className="min-w-0 flex-1">
-                <span className="block break-all font-mono text-xs font-medium">{provider.id}</span>
-                <span className="block break-words text-xs text-muted-foreground">{provider.name}</span>
-              </span>
-              {provider.conflict ? <StatusBadge tone="error">名字冲突</StatusBadge> : null}
-              {provider.configured ? <StatusBadge tone="success">已配置</StatusBadge> : <StatusBadge tone="neutral">未配置</StatusBadge>}
-            </Button>
-          ))}
-        </div>
-      )}
-      {canWriteCustom ? (
-        <div className="border-t pt-4">
+        <TextField.Root
+          size={{ initial: "3", sm: "2" }}
+          className="w-full min-w-0 max-sm:min-h-11"
+          aria-label="搜索 Pi 内置 provider"
+          placeholder="输入 provider 标识或名称"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        >
+          <TextField.Slot side="left">
+            <MagnifyingGlassIcon aria-hidden="true" />
+          </TextField.Slot>
+        </TextField.Root>
+        {providers.isPending ? (
+          <div role="status" aria-live="polite" aria-busy="true">
+            <span className="sr-only">正在加载 Pi 内置 provider</span>
+            <Skeleton aria-hidden className="h-28" />
+          </div>
+        ) : providers.isError ? (
+          <Callout.Root role="alert" color="red" size="1">
+            <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+            <Callout.Text>内置模型服务加载失败：{(providers.error as Error).message}</Callout.Text>
+          </Callout.Root>
+        ) : providers.data.providers.length === 0 ? (
+          <EmptyState title="没有匹配的 Pi 内置 provider" className="py-2" />
+        ) : (
+          <div
+            className="flex max-h-80 flex-col divide-y divide-line overflow-x-hidden overflow-y-auto rounded-lg border border-overlay-line"
+            role="list"
+          >
+            {providers.data.providers.map((provider) => (
+              <Button
+                key={provider.id}
+                type="button"
+                variant="ghost"
+                color="gray"
+                radius="none"
+                size="3"
+                className="h-auto min-h-11 w-full justify-start gap-3 px-4 py-[11px] text-left sm:min-h-0"
+                disabled={provider.conflict}
+                onClick={() => {
+                  setCandidate({
+                    kind: "builtin",
+                    provider: provider.id,
+                    name: provider.name,
+                    version: provider.version,
+                    credential: "",
+                    preview: null,
+                    validationModel: "",
+                  });
+                  void navigate({
+                    to: "/credentials/add/builtin/$provider/discover",
+                    params: { provider: provider.id },
+                    search: true,
+                  });
+                }}
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block break-all font-mono text-base font-medium">{provider.id}</span>
+                  <span className="block break-words text-sm text-text-muted">{provider.name}</span>
+                </span>
+                {provider.conflict ? <StatusBadge tone="error">名字冲突</StatusBadge> : null}
+                {provider.configured ? <StatusBadge tone="success">已配置</StatusBadge> : <StatusBadge tone="neutral">未配置</StatusBadge>}
+              </Button>
+            ))}
+          </div>
+        )}
+      </SetupBody>
+      <SetupFooter>
+        {canWriteCustom ? (
           <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
             <Link to="/credentials/add/custom/discover" search={true}>添加自定义 provider</Link>
           </Button>
-        </div>
-      ) : null}
-    </Card>
+        ) : null}
+      </SetupFooter>
+    </>
   );
 }
 
@@ -660,26 +883,24 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
   });
 
   return (
-    <Card
-      size="2"
-      className="flex flex-col gap-4"
+    // 表单包住正文和页脚:提交按钮留在页脚里,回车提交和按钮提交仍是同一条路径。
+    <form
+      className="flex min-h-0 flex-1 flex-col"
       aria-busy={metadata.isPending || preview.isPending}
+      onSubmit={(event) => { event.preventDefault(); preview.mutate(); }}
     >
-      <div>
-        <h2 className="text-base font-semibold">填写凭据并发现模型</h2>
-        <p className="mt-1 font-mono text-xs text-muted-foreground">{provider}</p>
-      </div>
-      <form
-        className="space-y-4"
-        onSubmit={(event) => { event.preventDefault(); preview.mutate(); }}
-      >
-        <div className="space-y-1.5">
-          <Text as="label" htmlFor="setup-builtin-credential" size="2" weight="medium">模型凭据</Text>
+      <SetupBody>
+        <div className="flex flex-col gap-0.5">
+          <h2 className="text-2xl font-bold tracking-[-0.015em]">填写凭据并发现模型</h2>
+          <p className="font-mono text-base text-text-muted">{provider}</p>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Text as="label" htmlFor="setup-builtin-credential" size="2" weight="medium" color="gray">模型凭据</Text>
           <TextField.Root
             id="setup-builtin-credential"
             type="password"
             size={{ initial: "3", sm: "2" }}
-            className="min-w-0 w-full max-sm:min-h-11"
+            className="w-full min-w-0 max-sm:min-h-11"
             autoComplete="off"
             value={credential}
             required
@@ -698,7 +919,7 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
               preview.reset();
             }}
           />
-          <p className="text-xs text-muted-foreground">只留在当前页面内存；不会写入 URL、浏览器存储或服务端草稿。</p>
+          <p className="text-base text-text-muted">只留在当前页面内存；不会写入 URL、浏览器存储或服务端草稿。</p>
         </div>
         {preview.error === null ? null : (
           <Callout.Root role="alert" color="red" size="1">
@@ -706,25 +927,65 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
             <Callout.Text>{preview.error.message}</Callout.Text>
           </Callout.Root>
         )}
-        <div className="flex items-center gap-3 border-t pt-3">
-          <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
-            <Link to="/credentials/add" search={true}>返回选择来源</Link>
-          </Button>
-          <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={phase !== null || credential === "" || metadata.data === undefined}>
-            {phase === "discovering" ? "正在发现模型…" : "发现模型"}
-          </Button>
-          {phase === "discovering" ? <span className="text-xs text-muted-foreground">阶段 2/3：正在请求模型目录</span> : null}
-        </div>
-      </form>
-      {metadata.isError ? (
-        <Callout.Root role="alert" color="red" size="1">
-          <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-          <Callout.Text>模型服务状态加载失败：{(metadata.error as Error).message}</Callout.Text>
-        </Callout.Root>
-      ) : metadata.isSuccess && metadata.data === undefined ? (
-        <p role="alert" className="text-destructive">Pi 没有内置 provider {provider}。</p>
-      ) : null}
-    </Card>
+        {metadata.isError ? (
+          <Callout.Root role="alert" color="red" size="1">
+            <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+            <Callout.Text>模型服务状态加载失败：{(metadata.error as Error).message}</Callout.Text>
+          </Callout.Root>
+        ) : metadata.isSuccess && metadata.data === undefined ? (
+          <p role="alert" className="text-danger">Pi 没有内置 provider {provider}。</p>
+        ) : null}
+      </SetupBody>
+      <SetupFooter note={phase === "discovering" ? "阶段 2/3：正在请求模型目录" : undefined}>
+        <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
+          <Link to="/credentials/add" search={true}>返回选择来源</Link>
+        </Button>
+        <Button type="submit" variant="solid" size={{ initial: "4", sm: "2" }} disabled={phase !== null || credential === "" || metadata.data === undefined}>
+          {phase === "discovering" ? "正在发现模型…" : "发现模型"}
+        </Button>
+      </SetupFooter>
+    </form>
+  );
+}
+
+/**
+ * 发现结果清单。它只呈现这一次发现拿回来的 model id 与显示名——预览响应里没有上下文
+ * 窗口和单价,所以设计稿那两栏元信息在这里不画,不拿运行基线的数字冒充发现结果。
+ * 选中行跟着验证模型走:验证模型是在下面的组合框里选的,这里只做回显。
+ */
+function DiscoveredModels({
+  models,
+  selected,
+}: {
+  models: BuiltinPreview["models"];
+  selected: string;
+}) {
+  if (models.length === 0) return null;
+  return (
+    <div className="flex max-h-64 flex-col overflow-x-hidden overflow-y-auto rounded-lg border border-overlay-line">
+      {models.map((model) => {
+        const active = model.id === selected.trim();
+        return (
+          <div
+            key={model.identity}
+            className={cn(
+              "flex items-center gap-3 border-t border-line px-4 py-[11px] first:border-t-0",
+              active && "bg-accent-tint",
+            )}
+          >
+            {active ? (
+              <CheckIcon aria-label="当前验证模型" className="size-3.5 shrink-0 text-primary" />
+            ) : (
+              <span aria-hidden className="size-3.5 shrink-0" />
+            )}
+            <span className="min-w-0 flex-1 break-all font-mono text-base">{model.id}</span>
+            {model.fields.name === undefined ? null : (
+              <span className="shrink-0 text-sm text-text-muted">{model.fields.name}</span>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -757,58 +1018,55 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
 
   if (!ready) {
     return (
-      <Card size="2" className="flex flex-col gap-3">
-        <h2 className="text-base font-semibold">配置已过期</h2>
-        <p className="text-muted-foreground">刷新或直接打开此地址不会恢复凭据和目录结果，请重新配置模型服务。</p>
-        <Link
-          to="/credentials/add/builtin/$provider/discover"
-          params={{ provider }}
-          search={true}
-          className="w-fit underline underline-offset-4"
-        >
-          返回模型发现
-        </Link>
-      </Card>
+      <SetupExpired>
+        <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
+          <Link to="/credentials/add/builtin/$provider/discover" params={{ provider }} search={true}>
+            返回模型发现
+          </Link>
+        </Button>
+      </SetupExpired>
     );
   }
   const activeCandidate = candidate!;
   const activePreview = activeCandidate.preview!;
 
   return (
-    <Card size="2" className="flex flex-col gap-4">
-      <div>
-        <h2 className="text-base font-semibold">选择验证模型</h2>
-        <p className="mt-1 text-muted-foreground">
-          预览发现 <span className="font-mono tabular-nums">{activePreview.models.length}</span> 个模型；最终提交会重新发现并执行最小真实推理。
-        </p>
-      </div>
-      <div className="space-y-1.5">
-        <EditableModelCombobox
-          label="验证模型"
-          value={activeCandidate.validationModel}
-          disabled={phase !== null}
-          candidates={activePreview.models.map((model) => ({
-            id: model.id,
-            name: model.fields.name ?? null,
-          }))}
-          onChange={(validationModel) => setCandidate({ ...activeCandidate, validationModel })}
-        />
-        <p className="text-xs text-muted-foreground">目录里没有目标模型时可手填 model id；真实推理成功后会加入手动来源。</p>
-      </div>
-      {commit.error === null ? null : (
-        <Callout.Root role="alert" color="red" size="1">
-          <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-          <Callout.Text>{commit.error.message}</Callout.Text>
-        </Callout.Root>
-      )}
-      <div className="flex items-center gap-3 border-t pt-3">
+    <>
+      <SetupBody>
+        <div className="flex flex-col gap-0.5">
+          <h2 className="text-2xl font-bold tracking-[-0.015em]">选择验证模型</h2>
+          <p className="text-text-secondary">
+            预览发现 <span className="font-mono tabular-nums">{activePreview.models.length}</span> 个模型；最终提交会重新发现并执行最小真实推理。
+          </p>
+        </div>
+        <DiscoveredModels models={activePreview.models} selected={activeCandidate.validationModel} />
+        <div className="flex flex-col gap-1.5">
+          <EditableModelCombobox
+            label="验证模型"
+            value={activeCandidate.validationModel}
+            disabled={phase !== null}
+            candidates={activePreview.models.map((model) => ({
+              id: model.id,
+              name: model.fields.name ?? null,
+            }))}
+            onChange={(validationModel) => setCandidate({ ...activeCandidate, validationModel })}
+          />
+          <p className="text-base text-text-muted">目录里没有目标模型时可手填 model id；真实推理成功后会加入手动来源。</p>
+        </div>
+        {commit.error === null ? null : (
+          <Callout.Root role="alert" color="red" size="1">
+            <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+            <Callout.Text>{commit.error.message}</Callout.Text>
+          </Callout.Root>
+        )}
+      </SetupBody>
+      <SetupFooter note={phase === "committing" ? "阶段 3/3：重新发现目录并执行真实推理" : undefined}>
         <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
           <Link to="/credentials/add/builtin/$provider/discover" params={{ provider }} search={true}>返回模型发现</Link>
         </Button>
         <Button
           type="button"
           variant="solid"
-          highContrast
           size={{ initial: "4", sm: "2" }}
           disabled={phase !== null || activeCandidate.validationModel.trim() === ""}
           onClick={() => commit.mutate()}
@@ -819,9 +1077,8 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
               ? "验证并创建模型服务"
               : "验证并更新模型服务"}
         </Button>
-        {phase === "committing" ? <span className="text-xs text-muted-foreground">阶段 3/3：重新发现目录并执行真实推理</span> : null}
-      </div>
-    </Card>
+      </SetupFooter>
+    </>
   );
 }
 
@@ -911,35 +1168,45 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
   };
 
   if (editing && serviceQuery.isPending) return (
-    <div role="status" aria-live="polite" aria-busy="true">
+    <SetupBody role="status" aria-live="polite" aria-busy="true">
       <span className="sr-only">正在加载自定义模型服务</span>
       <Skeleton className="h-64" />
-    </div>
+    </SetupBody>
   );
   if (editing && service === undefined) {
     return (
-      <Card size="2" className="flex flex-col gap-3">
-        <h2 className="text-base font-semibold">自定义模型服务不存在</h2>
-        <p className="text-muted-foreground">此稳定地址对应的 provider 已删除或当前不可见。</p>
-        <Link to="/credentials" className="w-fit underline underline-offset-4">返回模型服务</Link>
-      </Card>
+      <SetupBody>
+        <CardShell className="gap-1.5 px-4 py-4 sm:px-5">
+          <h2 className="text-2xl font-bold tracking-[-0.015em]">自定义模型服务不存在</h2>
+          <p className="text-text-secondary">此稳定地址对应的 provider 已删除或当前不可见。</p>
+          <div className="pt-1.5">
+            <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
+              <Link to="/credentials">返回模型服务</Link>
+            </Button>
+          </div>
+        </CardShell>
+      </SetupBody>
     );
   }
 
   return (
-    <Card size="2" className="flex flex-col gap-4" aria-busy={preview.isPending}>
-      <div>
-        <h2 className="text-base font-semibold">配置调用目标并发现模型</h2>
-        <p className="mt-1 text-muted-foreground">发现阶段不需要验证模型；目录失败后仍可手填 model id 进入真实验证。</p>
-      </div>
-      <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); preview.mutate(); }}>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="space-y-1.5 sm:col-span-2">
-            <Text as="label" htmlFor="setup-custom-provider" size="2" weight="medium">provider</Text>
+    <form
+      className="flex min-h-0 flex-1 flex-col"
+      aria-busy={preview.isPending}
+      onSubmit={(event) => { event.preventDefault(); preview.mutate(); }}
+    >
+      <SetupBody>
+        <div className="flex flex-col gap-0.5">
+          <h2 className="text-2xl font-bold tracking-[-0.015em]">配置调用目标并发现模型</h2>
+          <p className="text-text-secondary">发现阶段不需要验证模型；目录失败后仍可手填 model id 进入真实验证。</p>
+        </div>
+        <div className="grid gap-3.5 sm:grid-cols-2">
+          <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <Text as="label" htmlFor="setup-custom-provider" size="2" weight="medium" color="gray">provider</Text>
             <TextField.Root
               id="setup-custom-provider"
               size={{ initial: "3", sm: "2" }}
-              className="min-w-0 w-full font-mono max-sm:min-h-11"
+              className="w-full min-w-0 font-mono max-sm:min-h-11"
               value={active.provider}
               required
               disabled={phase !== null || editing}
@@ -947,12 +1214,12 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
               onChange={(event) => update({ provider: event.target.value })}
             />
           </div>
-          <div className="space-y-1.5 sm:col-span-2">
-            <Text as="label" htmlFor="setup-custom-base-url" size="2" weight="medium">调用目标</Text>
+          <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <Text as="label" htmlFor="setup-custom-base-url" size="2" weight="medium" color="gray">调用目标</Text>
             <TextField.Root
               id="setup-custom-base-url"
               size={{ initial: "3", sm: "2" }}
-              className="min-w-0 w-full font-mono max-sm:min-h-11"
+              className="w-full min-w-0 font-mono max-sm:min-h-11"
               type="url"
               value={active.baseUrl}
               required
@@ -961,28 +1228,28 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
               onChange={(event) => update({ baseUrl: event.target.value })}
             />
           </div>
-          <div className="space-y-1.5">
-            <Text as="label" htmlFor="setup-custom-protocol" size="2" weight="medium">接口协议</Text>
+          <div className="flex flex-col gap-1.5">
+            <Text as="label" htmlFor="setup-custom-protocol" size="2" weight="medium" color="gray">接口协议</Text>
             <Select.Root
               size={{ initial: "3", sm: "2" }}
               value={active.api}
               disabled={phase !== null}
               onValueChange={(value) => update({ api: value as CustomProtocol })}
             >
-              <Select.Trigger id="setup-custom-protocol" className="min-w-0 w-full max-sm:min-h-11" />
+              <Select.Trigger id="setup-custom-protocol" className="w-full min-w-0 max-sm:min-h-11" />
               <Select.Content position="popper" color="gray">
                 <Select.Item value="openai-completions">{CUSTOM_PROTOCOL_LABEL["openai-completions"]}</Select.Item>
                 <Select.Item value="openai-responses">{CUSTOM_PROTOCOL_LABEL["openai-responses"]}</Select.Item>
               </Select.Content>
             </Select.Root>
           </div>
-          <div className="space-y-1.5">
-            <Text as="label" htmlFor="setup-custom-credential" size="2" weight="medium">模型凭据</Text>
+          <div className="flex flex-col gap-1.5">
+            <Text as="label" htmlFor="setup-custom-credential" size="2" weight="medium" color="gray">模型凭据</Text>
             <TextField.Root
               id="setup-custom-credential"
               type="password"
               size={{ initial: "3", sm: "2" }}
-              className="min-w-0 w-full max-sm:min-h-11"
+              className="w-full min-w-0 max-sm:min-h-11"
               autoComplete="off"
               value={active.credential}
               required
@@ -992,26 +1259,37 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
           </div>
         </div>
         {!targetChanged || supplementModels.length === 0 ? null : (
-          <fieldset className="rounded-md border px-3 py-2">
-            <legend className="px-1 text-sm font-medium">重新确认带入新目标的模型</legend>
-            <p className="mb-2 text-xs text-muted-foreground">地址或协议变化后，只带入你确认的旧模型来源。</p>
-            <div className="space-y-1.5">
-              {supplementModels.map((model) => (
-                <Text as="label" size="2" key={model.identity} className="flex items-start gap-2">
-                  <Checkbox
+          <fieldset className="flex min-w-0 flex-col gap-1.5">
+            <legend className="text-md font-semibold text-text-secondary">重新确认带入新目标的模型</legend>
+            <p className="text-base text-text-muted">地址或协议变化后，只带入你确认的旧模型来源。</p>
+            {/* 勾选行整行可点:复选框只有 15px,单靠它命中在触摸屏上必然误点。 */}
+            <div className="mt-1 flex flex-col overflow-hidden rounded-lg border border-overlay-line">
+              {supplementModels.map((model) => {
+                const checked = active.reconfirmedSupplements.includes(model.identity);
+                return (
+                  <Text
+                    as="label"
                     size="2"
-                    className="mt-0.5"
-                    checked={active.reconfirmedSupplements.includes(model.identity)}
-                    disabled={phase !== null}
-                    onCheckedChange={(checked) => update({
-                      reconfirmedSupplements: checked === true
-                        ? [...active.reconfirmedSupplements, model.identity]
-                        : active.reconfirmedSupplements.filter((identity) => identity !== model.identity),
-                    })}
-                  />
-                  <span className="break-all font-mono text-xs">{model.identity}</span>
-                </Text>
-              ))}
+                    key={model.identity}
+                    className={cn(
+                      "flex min-h-11 cursor-pointer items-center gap-3 border-t border-line px-4 py-[11px] first:border-t-0 sm:min-h-0",
+                      checked && "bg-accent-tint",
+                    )}
+                  >
+                    <Checkbox
+                      size="2"
+                      checked={checked}
+                      disabled={phase !== null}
+                      onCheckedChange={(next) => update({
+                        reconfirmedSupplements: next === true
+                          ? [...active.reconfirmedSupplements, model.identity]
+                          : active.reconfirmedSupplements.filter((identity) => identity !== model.identity),
+                      })}
+                    />
+                    <span className="min-w-0 flex-1 break-all font-mono text-base">{model.identity}</span>
+                  </Text>
+                );
+              })}
             </div>
           </fieldset>
         )}
@@ -1021,21 +1299,19 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
             <Callout.Text>{preview.error.message}</Callout.Text>
           </Callout.Root>
         )}
-        <div className="flex items-center gap-3 border-t pt-3">
-          <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={requestClose}>返回</Button>
-          <Button
-            type="submit"
-            variant="solid"
-            highContrast
-            size={{ initial: "4", sm: "2" }}
-            disabled={phase !== null || active.provider.trim() === "" || active.baseUrl.trim() === "" || active.credential === ""}
-          >
-            {phase === "discovering" ? "正在发现模型…" : "发现模型"}
-          </Button>
-          {phase === "discovering" ? <span className="text-xs text-muted-foreground">阶段 2/3：正在请求模型目录</span> : null}
-        </div>
-      </form>
-    </Card>
+      </SetupBody>
+      <SetupFooter note={phase === "discovering" ? "阶段 2/3：正在请求模型目录" : undefined}>
+        <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={requestClose}>返回</Button>
+        <Button
+          type="submit"
+          variant="solid"
+          size={{ initial: "4", sm: "2" }}
+          disabled={phase !== null || active.provider.trim() === "" || active.baseUrl.trim() === "" || active.credential === ""}
+        >
+          {phase === "discovering" ? "正在发现模型…" : "发现模型"}
+        </Button>
+      </SetupFooter>
+    </form>
   );
 }
 
@@ -1074,52 +1350,56 @@ export function CustomServiceVerifyPage({ provider }: { provider?: string }) {
   });
 
   if (active === null) {
-    const backTo = provider === undefined
-      ? "/credentials/add/custom/discover" as const
-      : "/credentials/add/custom/$provider/discover" as const;
     return (
-      <Card size="2" className="flex flex-col gap-3">
-        <h2 className="text-base font-semibold">配置已过期</h2>
-        <p className="text-muted-foreground">刷新或直接打开此地址不会恢复凭据和目录结果，请重新配置模型服务。</p>
-        <Link to={backTo} params={provider === undefined ? {} : { provider }} search={true} className="w-fit underline underline-offset-4">返回模型发现</Link>
-      </Card>
+      <SetupExpired>
+        <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
+          {provider === undefined
+            ? <Link to="/credentials/add/custom/discover" search={true}>返回模型发现</Link>
+            : <Link to="/credentials/add/custom/$provider/discover" params={{ provider }} search={true}>返回模型发现</Link>}
+        </Button>
+      </SetupExpired>
     );
   }
 
   return (
-    <Card size="2" className="flex flex-col gap-4">
-      <div>
-        <h2 className="text-base font-semibold">选择或手填验证模型</h2>
-        <p className="mt-1 text-muted-foreground">
-          {active.preview === null
-            ? `模型发现未完成：${active.discoveryError}`
-            : `模型发现得到 ${active.preview.models.length} 个模型。`}
-          最终提交会重新发现并执行最小真实推理。
-        </p>
-      </div>
-      <div className="space-y-1.5">
-        <EditableModelCombobox
-          label="验证模型"
-          value={active.validationModel}
-          disabled={phase !== null}
-          candidates={(active.preview?.models ?? []).map((model) => ({
-            id: model.id,
-            name: model.fields.name ?? null,
-          }))}
-          onChange={(validationModel) => setCandidate({ ...active, validationModel })}
-        />
-        <p className="text-xs text-muted-foreground">目录缺少目标模型时可手填；真实推理成功后会加入手动来源。</p>
-      </div>
-      {commit.error === null ? null : (
-        <div className="space-y-2">
-          <Callout.Root role="alert" color="red" size="1">
-            <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-            <Callout.Text>{commit.error.message}</Callout.Text>
-          </Callout.Root>
-          <ReferenceBlockers references={(commit.error as ModelServiceMutationError).references} />
+    <>
+      <SetupBody>
+        <div className="flex flex-col gap-0.5">
+          <h2 className="text-2xl font-bold tracking-[-0.015em]">选择或手填验证模型</h2>
+          <p className="text-text-secondary">
+            {active.preview === null
+              ? `模型发现未完成：${active.discoveryError}`
+              : `模型发现得到 ${active.preview.models.length} 个模型。`}
+            最终提交会重新发现并执行最小真实推理。
+          </p>
         </div>
-      )}
-      <div className="flex items-center gap-3 border-t pt-3">
+        {active.preview === null ? null : (
+          <DiscoveredModels models={active.preview.models} selected={active.validationModel} />
+        )}
+        <div className="flex flex-col gap-1.5">
+          <EditableModelCombobox
+            label="验证模型"
+            value={active.validationModel}
+            disabled={phase !== null}
+            candidates={(active.preview?.models ?? []).map((model) => ({
+              id: model.id,
+              name: model.fields.name ?? null,
+            }))}
+            onChange={(validationModel) => setCandidate({ ...active, validationModel })}
+          />
+          <p className="text-base text-text-muted">目录缺少目标模型时可手填；真实推理成功后会加入手动来源。</p>
+        </div>
+        {commit.error === null ? null : (
+          <div className="flex flex-col gap-2">
+            <Callout.Root role="alert" color="red" size="1">
+              <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+              <Callout.Text>{commit.error.message}</Callout.Text>
+            </Callout.Root>
+            <ReferenceBlockers references={(commit.error as ModelServiceMutationError).references} />
+          </div>
+        )}
+      </SetupBody>
+      <SetupFooter note={phase === "committing" ? "阶段 3/3：重新发现目录并执行真实推理" : undefined}>
         <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
           {provider === undefined
             ? <Link to="/credentials/add/custom/discover" search={true}>返回模型发现</Link>
@@ -1128,19 +1408,21 @@ export function CustomServiceVerifyPage({ provider }: { provider?: string }) {
         <Button
           type="button"
           variant="solid"
-          highContrast
           size={{ initial: "4", sm: "2" }}
           disabled={phase !== null || active.validationModel.trim() === ""}
           onClick={() => commit.mutate()}
         >
           {phase === "committing" ? "正在重新发现并验证…" : active.version === null ? "验证并创建" : "验证并更新"}
         </Button>
-        {phase === "committing" ? <span className="text-xs text-muted-foreground">阶段 3/3：重新发现目录并执行真实推理</span> : null}
-      </div>
-    </Card>
+      </SetupFooter>
+    </>
   );
 }
 
+/**
+ * 概览的三张状态卡:服务、凭据、目录。设计稿只画了凭据卡,另外两张沿用同一张卡的骨架
+ * ——卡头放语义徽章,卡身放三列信息。字段按权限缺席时整块换成一句说明,不留空格子。
+ */
 function StateRows({ service, canReadCredential }: { service: ModelService; canReadCredential: boolean }) {
   const providerLabel =
     service.providerState === "name-conflict"
@@ -1166,82 +1448,84 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
         ? "warning"
         : "error";
   return (
-    <dl
-      className={cn(
-        "grid overflow-hidden rounded-md border sm:grid-cols-2",
-        service.directory !== undefined && "xl:grid-cols-3",
-      )}
-      aria-label="模型服务配置状态"
-    >
-      <div className="border-b bg-background p-4 sm:border-r xl:border-b-0">
-        <dt className="text-xs font-medium text-muted-foreground">模型服务</dt>
-        <dd className="mt-1"><StatusBadge tone={providerTone}>{providerLabel}</StatusBadge></dd>
-        {service.target === undefined ? (
-          <p className="mt-2 text-xs text-muted-foreground">地址与接口协议按模型读权限隐藏。</p>
-        ) : (
-          <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-            <p className="break-all">
-              地址：<span className={service.target.baseUrl === null ? undefined : "font-mono"}>{service.target.baseUrl ?? "未提供"}</span>
-            </p>
-            <p>
-              接口协议：{service.type === "custom" && (
-                service.target.api === "openai-completions" || service.target.api === "openai-responses"
-              ) ? CUSTOM_PROTOCOL_LABEL[service.target.api] : (
-                <span className={service.target.api === null ? undefined : "font-mono"}>{service.target.api ?? "未提供"}</span>
-              )}
-            </p>
-          </div>
-        )}
-      </div>
-      <div className={cn(
-        "border-b bg-background p-4",
-        service.directory === undefined ? "sm:border-b-0" : "xl:border-r xl:border-b-0",
-      )}>
-        <dt className="text-xs font-medium text-muted-foreground">模型凭据</dt>
-        <dd className="mt-1"><StatusBadge tone={credentialTone}>{CREDENTIAL_LABEL[service.credential.state]}</StatusBadge></dd>
-        {canReadCredential ? (
-          <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-            <p>尾 4 位：<span className={service.credential.last4 === null || service.credential.last4 === undefined ? undefined : "font-mono tabular-nums"}>{service.credential.last4 ?? "未提供"}</span></p>
-            <p>更新：<span className={service.credential.updatedAt === null || service.credential.updatedAt === undefined ? undefined : "font-mono tabular-nums"}>{localMinute(service.credential.updatedAt)}</span></p>
-            <p>验证：<span className={service.credential.verifiedAt === null || service.credential.verifiedAt === undefined ? undefined : "font-mono tabular-nums"}>{localMinute(service.credential.verifiedAt)}</span></p>
-            <p className="flex min-w-0 items-baseline gap-1">
-              <span className="shrink-0">验证模型：</span>
-              <span
-                className={cn(
-                  "min-w-0 max-w-full overflow-x-auto whitespace-nowrap",
-                  service.credential.validationModel !== null &&
-                    service.credential.validationModel !== undefined &&
-                    "font-mono",
-                )}
-              >
-                {service.credential.validationModel ?? "未提供"}
-              </span>
-            </p>
-            <p>
-              验证方式：
-              {service.credential.verificationSource === null || service.credential.verificationSource === undefined
-                ? "未提供"
-                : VERIFICATION_LABEL[service.credential.verificationSource]}
-            </p>
-          </div>
-        ) : (
-          <p className="mt-2 text-xs text-muted-foreground">尾四位、更新时间与验证记录按权限隐藏。</p>
-        )}
-      </div>
+    <>
+      <CardShell aria-labelledby={`service-state-${service.provider}`}>
+        <CardHeader
+          id={`service-state-${service.provider}`}
+          title="模型服务"
+          action={<StatusBadge tone={providerTone}>{providerLabel}</StatusBadge>}
+        />
+        <CardSection>
+          {service.target === undefined ? (
+            <p className="text-base text-text-muted">地址与接口协议按模型读权限隐藏。</p>
+          ) : (
+            <InfoGrid>
+              <InfoField label="调用目标"><MonoValue value={service.target.baseUrl} /></InfoField>
+              <InfoField label="接口协议">
+                {service.type === "custom" && (
+                  service.target.api === "openai-completions" || service.target.api === "openai-responses"
+                ) ? CUSTOM_PROTOCOL_LABEL[service.target.api] : <MonoValue value={service.target.api} />}
+              </InfoField>
+            </InfoGrid>
+          )}
+        </CardSection>
+      </CardShell>
+
+      <CardShell aria-labelledby={`credential-state-${service.provider}`}>
+        <CardHeader
+          id={`credential-state-${service.provider}`}
+          title="模型凭据"
+          action={<StatusBadge tone={credentialTone}>{CREDENTIAL_LABEL[service.credential.state]}</StatusBadge>}
+        />
+        <CardSection>
+          {canReadCredential ? (
+            <InfoGrid>
+              <InfoField label="尾 4 位">
+                {service.credential.last4 === null || service.credential.last4 === undefined
+                  ? <span className="text-text-muted">未提供</span>
+                  : <span className="font-mono text-base tabular-nums">{service.credential.last4}</span>}
+              </InfoField>
+              {/* 时间戳走比例字:等宽把「2026-08-24 08:15」拉成一条比 model id 还长的格栅。 */}
+              <InfoField label="更新"><span className="tabular-nums">{localMinute(service.credential.updatedAt)}</span></InfoField>
+              <InfoField label="上次验证"><span className="tabular-nums">{localMinute(service.credential.verifiedAt)}</span></InfoField>
+              <InfoField label="验证模型">
+                <span className="block max-w-full overflow-x-auto whitespace-nowrap">
+                  <MonoValue value={service.credential.validationModel} />
+                </span>
+              </InfoField>
+              <InfoField label="验证方式">
+                {service.credential.verificationSource === null || service.credential.verificationSource === undefined
+                  ? <span className="text-text-muted">未提供</span>
+                  : VERIFICATION_LABEL[service.credential.verificationSource]}
+              </InfoField>
+            </InfoGrid>
+          ) : (
+            <p className="text-base text-text-muted">尾四位、更新时间与验证记录按权限隐藏。</p>
+          )}
+        </CardSection>
+      </CardShell>
+
       {service.directory === undefined ? null : (
-        <div className="bg-background p-4 sm:col-span-2 xl:col-span-1">
-          <dt className="text-xs font-medium text-muted-foreground">模型目录</dt>
-          <dd className="mt-1"><StatusBadge tone={directoryTone ?? "neutral"}>{DIRECTORY_LABEL[service.directory.state]}</StatusBadge></dd>
-          <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-            <p>最近尝试：<span className={service.directory.lastAttemptAt === null ? undefined : "font-mono tabular-nums"}>{localMinute(service.directory.lastAttemptAt)}</span></p>
-            <p>最近成功：<span className={service.directory.lastSuccessAt === null ? undefined : "font-mono tabular-nums"}>{localMinute(service.directory.lastSuccessAt)}</span></p>
-            {service.directory.ignoredModelCount > 0 ? (
-              <p>忽略无效项：<span className="font-mono tabular-nums">{service.directory.ignoredModelCount}</span></p>
-            ) : null}
-          </div>
-        </div>
+        <CardShell aria-labelledby={`directory-state-${service.provider}`}>
+          <CardHeader
+            id={`directory-state-${service.provider}`}
+            title="模型目录"
+            action={<StatusBadge tone={directoryTone ?? "neutral"}>{DIRECTORY_LABEL[service.directory.state]}</StatusBadge>}
+          />
+          <CardSection>
+            <InfoGrid>
+              <InfoField label="最近尝试"><span className="tabular-nums">{localMinute(service.directory.lastAttemptAt)}</span></InfoField>
+              <InfoField label="最近成功"><span className="tabular-nums">{localMinute(service.directory.lastSuccessAt)}</span></InfoField>
+              {service.directory.ignoredModelCount > 0 ? (
+                <InfoField label="忽略无效项">
+                  <span className="font-mono tabular-nums">{service.directory.ignoredModelCount}</span>
+                </InfoField>
+              ) : null}
+            </InfoGrid>
+          </CardSection>
+        </CardShell>
       )}
-    </dl>
+    </>
   );
 }
 
@@ -1323,14 +1607,14 @@ function CredentialControls({
 
   const maintenanceForm = (
     <form
-      className={cn("flex flex-col gap-2", !dialog && "px-3 py-3")}
+      className={cn("flex flex-col gap-2.5", !dialog && "border-t border-line px-4 pt-3.5 pb-4 sm:px-5")}
       onSubmit={(event) => {
         event.preventDefault();
         setFeedback(null);
         reverify.mutate();
       }}
     >
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+      <div className="flex flex-col gap-2.5 sm:flex-row sm:items-end">
         <EditableModelCombobox
           label="重新验证使用的 model id"
           value={validationModel}
@@ -1345,7 +1629,7 @@ function CredentialControls({
             reverify.reset();
           }}
         />
-        <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={reverify.isPending || validationModel.trim() === ""}>
+        <Button type="submit" variant="solid" size={{ initial: "4", sm: "2" }} disabled={reverify.isPending || validationModel.trim() === ""}>
           {reverify.isPending ? "正在验证…" : "重新验证"}
         </Button>
         <Button
@@ -1364,7 +1648,7 @@ function CredentialControls({
           <TrashIcon />删除凭据
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground">可从自动发现的模型中选择，也可手填目录外的 model id；提交时会重新发现目录并执行一次最小真实推理。</p>
+      <p className="text-base text-text-muted">可从自动发现的模型中选择，也可手填目录外的 model id；提交时会重新发现目录并执行一次最小真实推理。</p>
       {feedback === null ? null : (
         <Callout.Root
           role={feedback.error ? "alert" : "status"}
@@ -1383,12 +1667,12 @@ function CredentialControls({
   const deleteError = removeCredential.error;
   const deleteConfirmation = (
     <>
-      <AlertDialog.Title size="4" mb="2" className="break-words">删除 {target.provider} 的模型凭据？</AlertDialog.Title>
+      <AlertDialog.Title size="6" mb="2" className="break-words font-extrabold tracking-[-0.02em]">删除 {target.provider} 的模型凭据？</AlertDialog.Title>
       <AlertDialog.Description size="2" color="gray">
         模型目录会保留，但没有凭据时模型不能运行。若全局组合或仓库仍在引用这家 provider，服务会拒绝删除并列出位置。
       </AlertDialog.Description>
       {deleteError === null ? null : (
-        <div className="mt-4 min-h-0 space-y-2 overflow-y-auto">
+        <div className="mt-4 flex min-h-0 flex-col gap-2 overflow-y-auto">
           <Callout.Root role="alert" color="red" size="1">
             <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
             <Callout.Text>{deleteError.message}</Callout.Text>
@@ -1428,10 +1712,11 @@ function CredentialControls({
             maxWidth="640px"
             maxHeight="calc(100dvh - 2rem)"
             size={{ initial: "2", sm: "3" }}
+            className="rounded-2xl shadow-modal sm:rounded-3xl"
             onCloseAutoFocus={dialogFocus.onCloseAutoFocus}
           >
             <div className="pr-9">
-              <Dialog.Title size="4" mb="2" className="break-words">维护 {target.provider} 的模型凭据</Dialog.Title>
+              <Dialog.Title size="6" mb="2" className="break-words font-extrabold tracking-[-0.02em]">维护 {target.provider} 的模型凭据</Dialog.Title>
               <Dialog.Description size="2" color="gray">重新验证使用已存凭据，凭据与已存验证记录不会回到浏览器。</Dialog.Description>
             </div>
             <div className="mt-4">{maintenanceForm}</div>
@@ -1439,9 +1724,10 @@ function CredentialControls({
               <Tooltip content="关闭凭据维护">
                 <Dialog.Close>
                   <IconButton
-                    variant="ghost"
+                    variant="soft"
                     color="gray"
-                    size={{ initial: "3", sm: "1" }}
+                    radius="full"
+                    size={{ initial: "3", sm: "2" }}
                     className="max-sm:min-h-11 max-sm:min-w-11"
                     aria-label="关闭凭据维护"
                   >
@@ -1463,7 +1749,7 @@ function CredentialControls({
             maxWidth="520px"
             maxHeight="calc(100dvh - 2rem)"
             size={{ initial: "2", sm: "3" }}
-            className="flex min-h-0 flex-col overflow-hidden"
+            className="flex min-h-0 flex-col overflow-hidden rounded-2xl shadow-modal sm:rounded-3xl"
             onCloseAutoFocus={deleteFocus.onCloseAutoFocus}
           >
             {deleteConfirmation}
@@ -1474,13 +1760,12 @@ function CredentialControls({
   }
 
   return (
-    <section className="overflow-hidden rounded-md border" aria-labelledby={`credential-actions-${target.provider}`}>
-      <div className="border-b bg-muted px-3 py-2">
-        <div className="flex items-center gap-1.5">
-          <h3 id={`credential-actions-${target.provider}`} className="font-medium">凭据维护</h3>
-          <HelpTooltip label="凭据维护说明" content="重新验证会使用已保存的凭据，凭据不会回到浏览器。" />
-        </div>
-      </div>
+    <CardShell className="overflow-hidden" aria-labelledby={`credential-actions-${target.provider}`}>
+      <CardHeader
+        id={`credential-actions-${target.provider}`}
+        title="凭据维护"
+        help={<HelpTooltip label="凭据维护说明" content="重新验证会使用已保存的凭据，凭据不会回到浏览器。" />}
+      />
       {maintenanceForm}
       <AlertDialog.Root
         open={confirmingDelete}
@@ -1493,39 +1778,40 @@ function CredentialControls({
           maxWidth="520px"
           maxHeight="calc(100dvh - 2rem)"
           size={{ initial: "2", sm: "3" }}
-          className="flex min-h-0 flex-col overflow-hidden"
+          className="flex min-h-0 flex-col overflow-hidden rounded-2xl shadow-modal sm:rounded-3xl"
           onCloseAutoFocus={deleteFocus.onCloseAutoFocus}
         >
           {deleteConfirmation}
         </AlertDialog.Content>
       </AlertDialog.Root>
-    </section>
+    </CardShell>
   );
 }
 
+/** 引用阻塞清单。它总是跟在一条红色 Callout 后面,所以自己只做「先去哪儿删」的清单。 */
 function ReferenceBlockers({ references }: { references: ModelReference[] }) {
   if (references.length === 0) return null;
   return (
-    <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-3">
-      <div className="flex items-center gap-2 text-destructive">
-        <ExclamationTriangleIcon className="size-4 shrink-0" />
-        <p className="font-medium">引用阻塞：先移除下面这些模型引用</p>
+    <section className="rounded-lg border border-danger/20 bg-danger-tint px-4 py-3.5">
+      <div className="flex items-center gap-2 text-danger">
+        <ExclamationTriangleIcon className="size-4 shrink-0" aria-hidden />
+        <p className="font-semibold">引用阻塞：先移除下面这些模型引用</p>
       </div>
-      <p className="mt-1 text-xs text-muted-foreground">
+      <p className="mt-1 text-base text-text-muted">
         到审查策略或对应仓库覆盖里移除引用，再回来重试当前操作。
       </p>
-      <ul className="mt-3 divide-y rounded-sm border bg-background">
+      <ul className="mt-3 flex flex-col overflow-hidden rounded-md border border-card-line bg-surface">
         {references.map((reference) => (
-          <li key={reference.identity} className="px-3 py-2">
-            <p className="break-all font-mono text-xs font-medium">{reference.identity}</p>
-            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
+          <li key={reference.identity} className="border-t border-line px-3 py-2 first:border-t-0">
+            <p className="break-all font-mono text-base font-medium">{reference.identity}</p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-base text-text-muted">
               {reference.locations.map((location, index) => (
                 <li key={`${reference.identity}:${index}`}>
                   {location.kind === "global" ? (
                     <Link
                       to="/settings"
                       search={{ provider: reference.identity.split(":", 1)[0] }}
-                      className="underline underline-offset-4"
+                      className="text-primary underline underline-offset-4"
                     >
                       去审查策略定位 provider
                     </Link>
@@ -1540,7 +1826,7 @@ function ReferenceBlockers({ references }: { references: ModelReference[] }) {
           </li>
         ))}
       </ul>
-    </div>
+    </section>
   );
 }
 
@@ -1610,55 +1896,54 @@ function CustomServiceControls({
     renameService.reset();
   };
   return (
-    <section className="rounded-md border px-3 py-3" aria-labelledby={`custom-actions-${service.provider}`}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <div className="flex items-center gap-1.5">
-            <h3 id={`custom-actions-${service.provider}`} className="font-medium">服务配置</h3>
-            <HelpTooltip label="服务配置说明" content="新配置验证成功前，当前版本与已有模型来源保持不动。" />
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {service.providerState !== "name-conflict" ? null : (
+    <CardShell aria-labelledby={`custom-actions-${service.provider}`}>
+      <CardHeader
+        id={`custom-actions-${service.provider}`}
+        title="服务配置"
+        help={<HelpTooltip label="服务配置说明" content="新配置验证成功前，当前版本与已有模型来源保持不动。" />}
+        action={
+          <div className="flex flex-wrap gap-2.5">
+            {service.providerState !== "name-conflict" ? null : (
+              <Button
+                type="button"
+                variant="outline"
+                color="gray"
+                size={{ initial: "4", sm: "2" }}
+                onClick={(event) => {
+                  renameFocus.captureTrigger(event);
+                  openRename();
+                }}
+              >
+                迁移到新名称
+              </Button>
+            )}
+            {service.providerState === "name-conflict" ? null : (
+              <Button
+                id={`configure-custom-${service.provider}`}
+                type="button"
+                variant="outline"
+                color="gray"
+                size={{ initial: "4", sm: "2" }}
+                onClick={onModify}
+              >
+                修改配置
+              </Button>
+            )}
             <Button
               type="button"
-              variant="outline"
-              color="gray"
+              variant="solid"
+              color="red"
               size={{ initial: "4", sm: "2" }}
               onClick={(event) => {
-                renameFocus.captureTrigger(event);
-                openRename();
+                deleteFocus.captureTrigger(event);
+                setConfirmingDelete(true);
               }}
             >
-              迁移到新名称
+              <TrashIcon />删除服务
             </Button>
-          )}
-          {service.providerState === "name-conflict" ? null : (
-            <Button
-              id={`configure-custom-${service.provider}`}
-              type="button"
-              variant="outline"
-              color="gray"
-              size={{ initial: "4", sm: "2" }}
-              onClick={onModify}
-            >
-              修改配置
-            </Button>
-          )}
-          <Button
-            type="button"
-            variant="solid"
-            color="red"
-            size={{ initial: "4", sm: "2" }}
-            onClick={(event) => {
-              deleteFocus.captureTrigger(event);
-              setConfirmingDelete(true);
-            }}
-          >
-            <TrashIcon />删除服务
-          </Button>
-        </div>
-      </div>
+          </div>
+        }
+      />
       <Dialog.Root
         open={renaming}
         onOpenChange={(open) => {
@@ -1669,6 +1954,7 @@ function CustomServiceControls({
           maxWidth="520px"
           maxHeight="calc(100dvh - 2rem)"
           size={{ initial: "2", sm: "3" }}
+          className="rounded-2xl shadow-modal sm:rounded-3xl"
           onCloseAutoFocus={renameFocus.onCloseAutoFocus}
         >
           <form
@@ -1679,17 +1965,17 @@ function CustomServiceControls({
             }}
           >
             <div className="pr-9">
-              <Dialog.Title size="4" mb="2" className="break-words">迁移 {service.provider} 到新名称</Dialog.Title>
+              <Dialog.Title size="6" mb="2" className="break-words font-extrabold tracking-[-0.02em]">迁移 {service.provider} 到新名称</Dialog.Title>
               <Dialog.Description size="2" color="gray">
                 服务、全局模型组合与全部仓库覆盖会在一个事务中改名。model id 与历史审查记录保持不变。
               </Dialog.Description>
             </div>
-            <div className="space-y-1.5">
-              <Text as="label" htmlFor={`rename-provider-${service.provider}`} size="2" weight="medium">新 provider</Text>
+            <div className="flex flex-col gap-1.5">
+              <Text as="label" htmlFor={`rename-provider-${service.provider}`} size="2" weight="medium" color="gray">新 provider</Text>
               <TextField.Root
                 id={`rename-provider-${service.provider}`}
                 size={{ initial: "3", sm: "2" }}
-                className="min-w-0 w-full font-mono max-sm:min-h-11"
+                className="w-full min-w-0 font-mono max-sm:min-h-11"
                 value={newProvider}
                 required
                 disabled={renameService.isPending}
@@ -1698,11 +1984,11 @@ function CustomServiceControls({
                   renameService.reset();
                 }}
               />
-              <p className="text-xs text-muted-foreground">使用 1–64 位小写字母、数字或连字符。</p>
+              <p className="text-base text-text-muted">使用 1–64 位小写字母、数字或连字符。</p>
             </div>
             {renameService.error === null ? null : (
-              <div className="space-y-2">
-                <p role="alert" className="text-destructive">{renameService.error.message}</p>
+              <div className="flex flex-col gap-2">
+                <p role="alert" className="text-danger">{renameService.error.message}</p>
                 <ReferenceBlockers references={renameService.error.references} />
               </div>
             )}
@@ -1710,7 +1996,7 @@ function CustomServiceControls({
               <Dialog.Close><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} disabled={renameService.isPending}>
                 取消
               </Button></Dialog.Close>
-              <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={renameService.isPending || newProvider.trim() === ""}>
+              <Button type="submit" variant="solid" size={{ initial: "4", sm: "2" }} disabled={renameService.isPending || newProvider.trim() === ""}>
                 {renameService.isPending ? "正在迁移…" : "确认迁移"}
               </Button>
             </Flex>
@@ -1719,9 +2005,10 @@ function CustomServiceControls({
             <Tooltip content="关闭服务迁移">
               <Dialog.Close>
                 <IconButton
-                  variant="ghost"
+                  variant="soft"
                   color="gray"
-                  size={{ initial: "3", sm: "1" }}
+                  radius="full"
+                  size={{ initial: "3", sm: "2" }}
                   className="max-sm:min-h-11 max-sm:min-w-11"
                   aria-label="关闭服务迁移"
                 >
@@ -1743,15 +2030,15 @@ function CustomServiceControls({
           maxWidth="520px"
           maxHeight="calc(100dvh - 2rem)"
           size={{ initial: "2", sm: "3" }}
-          className="flex min-h-0 flex-col overflow-hidden"
+          className="flex min-h-0 flex-col overflow-hidden rounded-2xl shadow-modal sm:rounded-3xl"
           onCloseAutoFocus={deleteFocus.onCloseAutoFocus}
         >
-          <AlertDialog.Title size="4" mb="2" className="break-words">删除 {service.provider}？</AlertDialog.Title>
+          <AlertDialog.Title size="6" mb="2" className="break-words font-extrabold tracking-[-0.02em]">删除 {service.provider}？</AlertDialog.Title>
           <AlertDialog.Description size="2" color="gray">
             服务定义、加密凭据、当前目录与手动模型来源会在一个事务中删除；历史审查记录保留。仍被模型组合引用时不会删除。
           </AlertDialog.Description>
           {removeService.error === null ? null : (
-            <div className="mt-4 min-h-0 space-y-2 overflow-y-auto">
+            <div className="mt-4 flex min-h-0 flex-col gap-2 overflow-y-auto">
               <Callout.Root role="alert" color="red" size="1">
                 <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
                 <Callout.Text>{removeService.error.message}</Callout.Text>
@@ -1769,7 +2056,7 @@ function CustomServiceControls({
           </Flex>
         </AlertDialog.Content>
       </AlertDialog.Root>
-    </section>
+    </CardShell>
   );
 }
 
@@ -1835,38 +2122,41 @@ function CatalogControls({
   const operationError = refresh.error ?? addSupplement.error;
 
   return (
-    <section className="rounded-md border px-3 py-3" aria-labelledby={`catalog-actions-${service.provider}`}>
-      {section === "maintenance" ? <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-1.5">
-            <h3 id={`catalog-actions-${service.provider}`} className="font-medium">模型目录</h3>
-            <HelpTooltip label="模型目录说明" content="刷新只替换自动发现的目录；刷新失败时保留最近一次成功的结果。" />
-          </div>
-        </div>
-        <Button
-          type="button"
-          variant="outline"
-          color="gray"
-          size={{ initial: "4", sm: "2" }}
-          disabled={busy || !canValidate}
-          onClick={() => {
-            addSupplement.reset();
-            refresh.mutate();
-          }}
-        >
-          <ReloadIcon className={cn(refresh.isPending && "animate-spin")} />
-          {refresh.isPending ? "正在刷新…" : "刷新自动目录"}
-        </Button>
+    <CardShell aria-labelledby={`catalog-actions-${service.provider}`}>
+      {section === "maintenance" ? <>
+        <CardHeader
+          id={`catalog-actions-${service.provider}`}
+          title="模型目录"
+          help={<HelpTooltip label="模型目录说明" content="刷新只替换自动发现的目录；刷新失败时保留最近一次成功的结果。" />}
+          action={
+            <Button
+              type="button"
+              variant="outline"
+              color="gray"
+              size={{ initial: "4", sm: "2" }}
+              disabled={busy || !canValidate}
+              onClick={() => {
+                addSupplement.reset();
+                refresh.mutate();
+              }}
+            >
+              <ReloadIcon className={cn(refresh.isPending && "animate-spin")} />
+              {refresh.isPending ? "正在刷新…" : "刷新自动目录"}
+            </Button>
+          }
+        />
         {refresh.error === null ? null : (
-          <Callout.Root role="alert" color="red" size="1" className="basis-full">
-            <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-            <Callout.Text>{refresh.error.message}</Callout.Text>
-          </Callout.Root>
+          <CardSection>
+            <Callout.Root role="alert" color="red" size="1">
+              <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+              <Callout.Text>{refresh.error.message}</Callout.Text>
+            </Callout.Root>
+          </CardSection>
         )}
-      </div> : null}
+      </> : null}
 
       {section === "models" ? <><form
-        className="space-y-1"
+        className="flex flex-col gap-1.5 px-4 pt-3.5 pb-4 sm:px-5"
         onSubmit={(event) => {
           event.preventDefault();
           const submittedModel = model.trim();
@@ -1876,40 +2166,40 @@ function CatalogControls({
         }}
       >
         <div className="flex items-center gap-1.5">
-          <Text as="label" htmlFor={inputId} size="2" weight="medium">手动添加模型</Text>
+          {/* label 兼作这张卡的可访问名称:models 分支没有卡头,壳上的 aria-labelledby 指向它。 */}
+          <Text as="label" id={`catalog-actions-${service.provider}`} htmlFor={inputId} size="2" weight="medium">手动添加模型</Text>
           <HelpTooltip label="手动添加模型说明" content="只需填写模型 ID。显示名、价格、上下文窗口和能力信息由目录或运行基线提供。" />
         </div>
-        <div className="mt-1.5 flex flex-col gap-2 sm:flex-row">
+        <div className="flex flex-col gap-2.5 sm:flex-row">
           <TextField.Root
             id={inputId}
             size={{ initial: "3", sm: "2" }}
-            className="min-w-0 w-full max-sm:min-h-11"
+            className="w-full min-w-0 font-mono max-sm:min-h-11"
             value={model}
             disabled={busy || !canValidate}
             placeholder="例如 gpt-5.2-codex"
             autoComplete="off"
             onChange={(event) => setModel(event.target.value)}
           />
-          <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={busy || !canValidate || model.trim() === ""}>
+          <Button type="submit" variant="solid" size={{ initial: "4", sm: "2" }} disabled={busy || !canValidate || model.trim() === ""}>
             {addSupplement.isPending ? "正在验证…" : "验证并添加"}
           </Button>
         </div>
         {!canValidate ? (
-          <p className="mt-1.5 text-xs text-warning">请先恢复正常 provider 并验证模型凭据。</p>
+          <p className="text-base text-warning">请先恢复正常 provider 并验证模型凭据。</p>
         ) : (
-          <p className="mt-1.5 text-xs text-muted-foreground">价格、窗口、显示名与能力不能手工填写。</p>
+          <p className="text-base text-text-muted">价格、窗口、显示名与能力不能手工填写。</p>
+        )}
+        {operationError === null ? null : (
+          <Callout.Root role="alert" color="red" size="1" className="mt-1.5">
+            <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+            <Callout.Text>{operationError.message}</Callout.Text>
+          </Callout.Root>
         )}
       </form>
 
-      {operationError === null ? null : (
-        <Callout.Root role="alert" color="red" size="1" className="mt-3">
-          <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-          <Callout.Text>{operationError.message}</Callout.Text>
-        </Callout.Root>
-      )}
-
-      <div className="mt-3 border-t pt-3">
-        <p className="text-xs font-medium text-muted-foreground">
+      <CardSection className="py-0">
+        <p className="py-3.5 text-base font-medium text-text-muted">
           当前手动来源 · {service.models === undefined ? (
             "按模型读权限隐藏"
           ) : (
@@ -1917,17 +2207,20 @@ function CatalogControls({
           )}
         </p>
         {service.models === undefined ? (
-          <p className="mt-1.5 text-sm text-muted-foreground">已有来源清单不可见；手动添加和刷新仍由服务端校验。</p>
+          <p className="pb-3.5 text-text-muted">已有来源清单不可见；手动添加和刷新仍由服务端校验。</p>
         ) : supplementalModels.length === 0 ? (
-          <EmptyState title="没有手动添加或迁移保留的模型来源" className="mt-1 py-2" />
+          <EmptyState title="没有手动添加或迁移保留的模型来源" className="pt-0 pb-3.5" />
         ) : (
-          <ul className="mt-2 divide-y rounded-md border">
+          <ul className="mb-3.5 flex flex-col overflow-hidden rounded-md border border-card-line">
             {supplementalModels.map((entry) => {
               const source = entry.sources.includes("manual") ? "manual" : "migration-retention";
               return (
-                <li key={entry.identity} className="flex flex-wrap items-center gap-2 px-3 py-2">
-                  <span className="min-w-0 flex-1 break-all font-mono text-xs">{entry.identity}</span>
-                  <Badge color="gray" variant="outline">{SOURCE_LABEL[source]}</Badge>
+                <li
+                  key={entry.identity}
+                  className="flex flex-wrap items-center gap-2.5 border-t border-line px-3 py-2.5 first:border-t-0"
+                >
+                  <span className="min-w-0 flex-1 break-all font-mono text-base">{entry.identity}</span>
+                  <SourceBadge>{SOURCE_LABEL[source]}</SourceBadge>
                   <Button
                     type="button"
                     variant="outline"
@@ -1947,7 +2240,7 @@ function CatalogControls({
             })}
           </ul>
         )}
-      </div>
+      </CardSection>
 
       <AlertDialog.Root
         open={deleting !== null}
@@ -1961,17 +2254,17 @@ function CatalogControls({
           maxWidth="520px"
           maxHeight="calc(100dvh - 2rem)"
           size={{ initial: "2", sm: "3" }}
-          className="flex min-h-0 flex-col overflow-hidden"
+          className="flex min-h-0 flex-col overflow-hidden rounded-2xl shadow-modal sm:rounded-3xl"
           onCloseAutoFocus={deleteFocus.onCloseAutoFocus}
         >
-          <AlertDialog.Title size="4" mb="2" className="break-words">删除 {deleting?.identity} 的手动来源？</AlertDialog.Title>
+          <AlertDialog.Title size="6" mb="2" className="break-words font-extrabold tracking-[-0.02em]">删除 {deleting?.identity} 的手动来源？</AlertDialog.Title>
           <AlertDialog.Description size="2" color="gray">
             {deleting?.sources.includes("automatic")
               ? "自动发现来源仍会保留，这个模型不会从清单消失。"
               : "这是当前唯一来源；仍被模型组合引用时，服务端会阻止删除并列出位置。"}
           </AlertDialog.Description>
           {removeSupplement.error === null ? null : (
-            <div className="mt-4 min-h-0 space-y-2 overflow-y-auto">
+            <div className="mt-4 flex min-h-0 flex-col gap-2 overflow-y-auto">
               <Callout.Root role="alert" color="red" size="1">
                 <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
                 <Callout.Text>{removeSupplement.error.message}</Callout.Text>
@@ -2004,7 +2297,7 @@ function CatalogControls({
           </Flex>
         </AlertDialog.Content>
       </AlertDialog.Root></> : null}
-    </section>
+    </CardShell>
   );
 }
 
@@ -2143,46 +2436,53 @@ function ModelsTable({
 
   if (models.length === 0) {
     return (
-      <EmptyState
-        title="还没有可用模型"
-        titleAs="h3"
-        description="模型目录尚未成功发现，也没有手动添加或迁移保留的模型。"
-        className="rounded-md border px-4 py-8"
-      />
+      <CardShell>
+        <EmptyState
+          title="还没有可用模型"
+          titleAs="h3"
+          description="模型目录尚未成功发现，也没有手动添加或迁移保留的模型。"
+          className="px-4 py-8 sm:px-5"
+        />
+      </CardShell>
     );
   }
   return (
-    <section
+    <CardShell
       aria-label="模型列表"
-      className="overflow-hidden rounded-md border"
+      className="overflow-hidden"
       aria-busy={updateState.isPending}
     >
-      <div className="flex flex-wrap items-center gap-3 border-b bg-muted px-3 py-2.5">
-        <p className="min-w-0 flex-1 font-medium" aria-live="polite">
-          {normalizedSearch === "" ? (
-            <><span className="font-mono tabular-nums">{models.length}</span> 个模型</>
-          ) : (
-            <><span className="font-mono tabular-nums">{filteredModels.length}</span> / <span className="font-mono tabular-nums">{models.length}</span> 个模型</>
-          )}
-        </p>
-        <div className="w-full sm:w-64">
-          <Text as="label" htmlFor="model-list-search" className="sr-only">筛选模型</Text>
-          <TextField.Root
-            id="model-list-search"
-            size={{ initial: "3", sm: "2" }}
-            className="min-w-0 w-full max-sm:min-h-11"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="按名称或 model id 筛选"
-          >
-            <TextField.Slot side="left">
-              <MagnifyingGlassIcon aria-hidden="true" />
-            </TextField.Slot>
-          </TextField.Root>
-        </div>
-      </div>
+      <CardHeader
+        title="模型目录"
+        meta={
+          <span aria-live="polite">
+            {normalizedSearch === "" ? (
+              <><span className="font-mono tabular-nums">{models.length}</span> 个模型</>
+            ) : (
+              <><span className="font-mono tabular-nums">{filteredModels.length}</span> / <span className="font-mono tabular-nums">{models.length}</span> 个模型</>
+            )}
+          </span>
+        }
+        action={
+          <div className="w-full sm:w-64">
+            <Text as="label" htmlFor="model-list-search" className="sr-only">筛选模型</Text>
+            <TextField.Root
+              id="model-list-search"
+              size={{ initial: "3", sm: "2" }}
+              className="w-full min-w-0 max-sm:min-h-11"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="按名称或 model id 筛选"
+            >
+              <TextField.Slot side="left">
+                <MagnifyingGlassIcon aria-hidden="true" />
+              </TextField.Slot>
+            </TextField.Root>
+          </div>
+        }
+      />
       {canWriteModels ? (
-        <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 text-xs">
+        <CardSection className="flex flex-wrap items-center gap-2.5 py-2">
           <Text as="label" size="2" className="flex min-h-9 items-center gap-2">
             <Checkbox
               size="2"
@@ -2192,10 +2492,10 @@ function ModelsTable({
             />
             <span>全选当前结果</span>
           </Text>
-          <span className="text-muted-foreground" aria-live="polite">
+          <span className="text-base text-text-muted" aria-live="polite">
             已选 <span className="font-mono tabular-nums">{selectedIds.size}</span> 个
           </span>
-          <div className="ml-auto flex flex-wrap gap-2">
+          <div className="ml-auto flex flex-wrap gap-2.5">
             <Button
               type="button"
               variant="outline"
@@ -2217,92 +2517,94 @@ function ModelsTable({
               停用所选
             </Button>
           </div>
-        </div>
+        </CardSection>
       ) : null}
       {feedback === null ? null : (
-        <div className="border-b p-3">
+        <CardSection>
           <Callout.Root role="status" color="green" size="1">
             <Callout.Icon><CheckIcon aria-hidden /></Callout.Icon>
             <Callout.Text>{feedback}</Callout.Text>
           </Callout.Root>
-        </div>
+        </CardSection>
       )}
       {updateState.error === null ? null : (
-        <div className="space-y-2 border-b p-3">
+        <CardSection className="flex flex-col gap-2">
           <Callout.Root role="alert" color="red" size="1">
             <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
             <Callout.Text>{updateState.error.message}</Callout.Text>
           </Callout.Root>
           {updateState.error.references.length === 0 ? null : <ReferenceBlockers references={updateState.error.references} />}
-        </div>
+        </CardSection>
       )}
       {filteredModels.length === 0 ? (
         <EmptyState
           title="没有匹配的模型"
           description="可以换一个名称或 model id。"
-          className="px-4 py-8"
+          className="border-t border-line px-4 py-8 sm:px-5"
         />
       ) : (
-        <div className="max-h-[min(58vh,640px)] divide-y overflow-y-auto">
+        <div className="flex max-h-[min(58vh,640px)] flex-col overflow-x-hidden overflow-y-auto">
+          {/* 表头只在三列真正并排时出现:窄屏行内是纵向堆叠,一排列名对不上任何一列。 */}
+          <div className={cn(
+            "sticky top-0 z-10 hidden gap-3 border-t border-line bg-sunken px-5 py-2 text-sm font-bold text-text-muted xl:grid",
+            MODEL_ROW_COLUMNS,
+          )}>
+            <div>模型</div>
+            <div>运行规格</div>
+            <div>状态</div>
+          </div>
           {visibleModels.map((model) => (
             <article
               key={model.identity}
               className={cn(
-                "px-3 py-3",
-                !model.available && model.unavailableReason !== "model-disabled" && "bg-destructive/5",
-                model.unavailableReason === "model-disabled" && "bg-muted/40",
+                "grid gap-3 border-t border-line px-4 py-3 sm:px-5 xl:items-start",
+                MODEL_ROW_COLUMNS,
+                !model.available && model.unavailableReason !== "model-disabled" && "bg-danger-tint",
+                model.unavailableReason === "model-disabled" && "bg-sunken",
               )}
             >
-              <div className="grid gap-3 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.35fr)]">
-                <div className="min-w-0">
-                  <div className="flex items-start gap-2">
-                    {canWriteModels ? (
-                      <Text
-                        as="label"
-                        size="2"
-                        className="mt-0.5 inline-flex min-h-8 min-w-8 shrink-0 cursor-pointer items-start justify-center pt-0.5 max-sm:min-h-11 max-sm:min-w-11"
-                      >
-                        <Checkbox
-                          size="2"
-                          checked={selectedIds.has(model.identity)}
-                          onCheckedChange={() => toggleSelected(model.identity)}
-                          aria-label={`选择 ${model.identity}`}
-                        />
-                      </Text>
-                    ) : null}
-                    <div className="min-w-0 flex-1">
-                      <p className="break-words font-medium">
-                        {model.discovery.name ?? "未提供显示名"}
-                      </p>
-                      <p
-                        className="mt-0.5 max-w-full overflow-x-auto whitespace-nowrap font-mono text-xs text-muted-foreground"
-                      >
-                        {model.identity}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
-                    <Tooltip content={`来源：${model.sources.map((source) => SOURCE_LABEL[source]).join(" / ")}`}>
-                      <p
-                        tabIndex={0}
-                        className="truncate rounded-sm text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-                      >
-                        来源：{model.sources.map((source) => SOURCE_LABEL[source]).join(" / ")}
-                      </p>
-                    </Tooltip>
-                    <ModelAvailability model={model} />
-                  </div>
+              <div className="flex min-w-0 items-start gap-2">
+                {canWriteModels ? (
+                  <Text
+                    as="label"
+                    size="2"
+                    className="mt-0.5 inline-flex min-h-8 min-w-8 shrink-0 cursor-pointer items-start justify-center pt-0.5 max-sm:min-h-11 max-sm:min-w-11"
+                  >
+                    <Checkbox
+                      size="2"
+                      checked={selectedIds.has(model.identity)}
+                      onCheckedChange={() => toggleSelected(model.identity)}
+                      aria-label={`选择 ${model.identity}`}
+                    />
+                  </Text>
+                ) : null}
+                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <p className="break-words font-medium">
+                    {model.discovery.name ?? "未提供显示名"}
+                  </p>
+                  <p className="max-w-full overflow-x-auto whitespace-nowrap font-mono text-base text-text-muted">
+                    {model.identity}
+                  </p>
+                  <p className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <span className="sr-only">来源：</span>
+                    {model.sources.map((source) => (
+                      <SourceBadge key={source}>{SOURCE_LABEL[source]}</SourceBadge>
+                    ))}
+                  </p>
                 </div>
-                <div className="min-w-0 border-t pt-2 xl:border-l xl:border-t-0 xl:pl-3 xl:pt-0">
-                  <ModelRuntimeFacts model={model} />
-                  <ModelDiscoveryDifference model={model} />
-                </div>
+              </div>
+              <div className="min-w-0 max-xl:border-t max-xl:border-line max-xl:pt-2">
+                <ModelRuntimeFacts model={model} />
+                <ModelDiscoveryDifference model={model} />
+              </div>
+              <div className="min-w-0">
+                <ModelAvailability model={model} />
               </div>
             </article>
           ))}
           {remainingModels > 0 ? (
-            <div className="flex items-center justify-between gap-3 bg-muted/40 px-3 py-3">
-              <p className="text-xs text-muted-foreground" aria-live="polite">
+            <div className="flex items-center justify-between gap-3 border-t border-line bg-sunken px-4 py-3 sm:px-5">
+              <p className="text-base text-text-muted" aria-live="polite">
                 已显示 <span className="font-mono tabular-nums">{visibleModels.length}</span> /{" "}
                 <span className="font-mono tabular-nums">{filteredModels.length}</span> 个
               </p>
@@ -2319,14 +2621,14 @@ function ModelsTable({
           ) : null}
         </div>
       )}
-    </section>
+    </CardShell>
   );
 }
 
 function ModelDiscoveryDifference({ model }: { model: ModelServiceModel }) {
   if (!discoveryDiffersFromRuntime(model)) return null;
   return (
-    <Collapsible.Root className="group/discovery mt-2 text-xs">
+    <Collapsible.Root className="group/discovery mt-2 text-base">
       <Collapsible.Trigger asChild>
         <Button type="button" variant="ghost" color="gray" size={{ initial: "3", sm: "1" }}>
           <ChevronDownIcon className="transition-transform group-data-[state=open]/discovery:rotate-180" aria-hidden />
@@ -2334,7 +2636,7 @@ function ModelDiscoveryDifference({ model }: { model: ModelServiceModel }) {
         </Button>
       </Collapsible.Trigger>
       <Collapsible.Content>
-        <div className="mt-2 space-y-1 border-l pl-3 text-muted-foreground">
+        <div className="mt-2 flex flex-col gap-1 border-l border-line pl-3 text-text-muted">
           <p className="break-words">
             输入：{model.discovery.input === null ? <span className="text-warning">未提供</span> : model.discovery.input.join(" / ")}
             {" · "}推理：{model.discovery.reasoning === null ? <span className="text-warning">未提供</span> : model.discovery.reasoning ? "声明推理" : "不声明推理"}
@@ -2353,7 +2655,7 @@ function ModelDiscoveryDifference({ model }: { model: ModelServiceModel }) {
 function ModelRuntimeFacts({ model }: { model: ModelServiceModel }) {
   const sources = [...new Set(Object.values(model.runtime.sources).map(fieldSourceLabel))];
   return (
-    <div className="space-y-1 text-xs">
+    <div className="flex flex-col gap-1 text-base">
       <p className="flex flex-wrap gap-x-3 gap-y-0.5">
         <span>输入：{model.runtime.input.join(" / ")}</span>
         <span>推理：{model.runtime.reasoning ? "声明推理" : "不声明推理"}</span>
@@ -2362,22 +2664,23 @@ function ModelRuntimeFacts({ model }: { model: ModelServiceModel }) {
       </p>
       <p className="flex flex-wrap gap-x-3 gap-y-0.5">
         <CostValue cost={model.runtime.cost} />
-        <span className="text-muted-foreground">规格来源：{sources.join(" / ")}</span>
+        <span className="text-text-muted">规格来源：{sources.join(" / ")}</span>
       </p>
     </div>
   );
 }
 
 function ModelAvailability({ model }: { model: ModelServiceModel }) {
-  return model.available ? null : model.unavailableReason === "model-disabled" ? (
-    <div className="space-y-1">
+  if (model.available) return <StatusBadge tone="success">可用</StatusBadge>;
+  return model.unavailableReason === "model-disabled" ? (
+    <div className="flex flex-col gap-1">
       <StatusBadge tone="neutral" icon={MinusCircledIcon}>已停用</StatusBadge>
-      <p className="max-w-64 break-words text-xs text-muted-foreground">不会出现在审查策略的模型选择中</p>
+      <p className="max-w-64 break-words text-base text-text-muted">不会出现在审查策略的模型选择中</p>
     </div>
   ) : (
-    <div className="space-y-1">
+    <div className="flex flex-col gap-1">
       <StatusBadge tone="error">不可用</StatusBadge>
-      <p className="max-w-64 break-words text-xs text-destructive">
+      <p className="max-w-64 break-words text-base text-danger">
         {model.unavailableReasonText ?? "模型不可用"}
       </p>
     </div>
@@ -2417,40 +2720,26 @@ function RunCapabilityCard({
         ? "到维护页用新名称重建，或删除这项服务。"
         : null;
   return (
-    <section
-      className={cn(
-        "rounded-md border px-4 py-4",
-        capability.runnable ? "border-success/30 bg-success/5" : "border-destructive/30 bg-destructive/5",
-      )}
-      aria-labelledby={`run-capability-${service.provider}`}
+    <NoticeBar
+      tone="danger"
+      icon={CrossCircledIcon}
+      titleId={`run-capability-${service.provider}`}
+      title={service.providerState === "name-conflict" ? "服务已停用" : "服务需要处理"}
     >
-      <div className="flex items-start gap-2">
-        {capability.runnable
-          ? <CheckIcon className="mt-0.5 size-4 shrink-0 text-success" />
-          : <CrossCircledIcon className="mt-0.5 size-4 shrink-0 text-destructive" />}
-        <div>
-          <h3 id={`run-capability-${service.provider}`} className="font-medium">
-            {service.providerState === "name-conflict" ? "服务已停用" : "服务需要处理"}
-          </h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {capability.reasonText ?? "当前没有可运行模型。"}
-          </p>
-          {!canAct || nextStep === null ? null : (
-            <p className="mt-2 text-xs font-medium">下一步：{nextStep}</p>
-          )}
-        </div>
-      </div>
-    </section>
+      <p>{capability.reasonText ?? "当前没有可运行模型。"}</p>
+      {!canAct || nextStep === null ? null : (
+        <p className="mt-1 font-medium text-text">下一步：{nextStep}</p>
+      )}
+    </NoticeBar>
   );
 }
 
 function ReferenceOverview({ references }: { references: readonly ModelReference[] | undefined }) {
   if (references === undefined) {
     return (
-      <section className="rounded-md border bg-muted/50 px-4 py-4">
-        <h3 className="font-medium">组合引用按模型读权限隐藏</h3>
-        <p className="mt-1 text-xs text-muted-foreground">当前会话只能查看静态服务与凭据状态。</p>
-      </section>
+      <NoticeBar tone="neutral" icon={InfoCircledIcon} title="组合引用按模型读权限隐藏">
+        当前会话只能查看静态服务与凭据状态。
+      </NoticeBar>
     );
   }
   const locationCount = references.reduce(
@@ -2461,45 +2750,52 @@ function ReferenceOverview({ references }: { references: readonly ModelReference
     0,
   );
   return (
-    <section className="rounded-md border px-4 py-4" aria-labelledby="service-references">
-      <h3 id="service-references" className="font-medium">组合引用</h3>
-      <p className="mt-1 text-xs text-muted-foreground">
-        <span className="font-mono tabular-nums">{references.length}</span> 个模型标识 ·{" "}
-        <span className="font-mono tabular-nums">{locationCount}</span> 个引用位置
-      </p>
-      {references.length === 0 ? (
-        <EmptyState title="全局模型组合与仓库覆盖都没有引用这家服务" className="mt-1 py-2" />
-      ) : (
-        <Collapsible.Root className="group/references mt-3">
-          <Collapsible.Trigger asChild>
-            <Button type="button" variant="outline" color="gray" size={{ initial: "3", sm: "1" }}>
-              <ChevronDownIcon className="transition-transform group-data-[state=open]/references:rotate-180" aria-hidden />
-              展开具体位置
-            </Button>
-          </Collapsible.Trigger>
-          <Collapsible.Content>
-            <ul className="mt-3 divide-y rounded-sm border">
-              {references.map((reference) => (
-                <li key={reference.identity} className="px-3 py-2">
-                  <p className="break-all font-mono text-xs font-medium">{reference.identity}</p>
-                  <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
-                    {reference.locations.map((location, index) => (
-                      <li key={`${reference.identity}:${index}`}>
-                        {location.kind === "global"
-                          ? "全局模型组合"
-                          : location.kind === "following-global"
-                            ? `${location.repositoryCount} 个跟随全局的仓库`
-                            : `仓库覆盖 ${location.owner}/${location.repo}`}
-                      </li>
-                    ))}
-                  </ul>
-                </li>
-              ))}
-            </ul>
-          </Collapsible.Content>
-        </Collapsible.Root>
-      )}
-    </section>
+    <CardShell aria-labelledby="service-references">
+      <CardHeader
+        id="service-references"
+        title="组合引用"
+        meta={
+          <>
+            <span className="font-mono tabular-nums">{references.length}</span> 个模型标识 ·{" "}
+            <span className="font-mono tabular-nums">{locationCount}</span> 个引用位置
+          </>
+        }
+      />
+      <CardSection>
+        {references.length === 0 ? (
+          <EmptyState title="全局模型组合与仓库覆盖都没有引用这家服务" className="py-0" />
+        ) : (
+          <Collapsible.Root className="group/references">
+            <Collapsible.Trigger asChild>
+              <Button type="button" variant="outline" color="gray" size={{ initial: "3", sm: "1" }}>
+                <ChevronDownIcon className="transition-transform group-data-[state=open]/references:rotate-180" aria-hidden />
+                展开具体位置
+              </Button>
+            </Collapsible.Trigger>
+            <Collapsible.Content>
+              <ul className="mt-3 flex flex-col overflow-hidden rounded-md border border-card-line">
+                {references.map((reference) => (
+                  <li key={reference.identity} className="border-t border-line px-3 py-2 first:border-t-0">
+                    <p className="break-all font-mono text-base font-medium">{reference.identity}</p>
+                    <ul className="mt-1 list-disc space-y-0.5 pl-5 text-base text-text-muted">
+                      {reference.locations.map((location, index) => (
+                        <li key={`${reference.identity}:${index}`}>
+                          {location.kind === "global"
+                            ? "全局模型组合"
+                            : location.kind === "following-global"
+                              ? `${location.repositoryCount} 个跟随全局的仓库`
+                              : `仓库覆盖 ${location.owner}/${location.repo}`}
+                        </li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
+              </ul>
+            </Collapsible.Content>
+          </Collapsible.Root>
+        )}
+      </CardSection>
+    </CardShell>
   );
 }
 
@@ -2525,19 +2821,24 @@ function ServiceDetail({
   onConfigureCustom: () => void;
 }) {
   return (
-    <div className="min-w-0 space-y-5 max-sm:[&_button]:min-h-11">
-      <section className="flex flex-wrap items-start justify-between gap-3 border-b pb-4">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-lg font-semibold">{service.name}</h2>
-          </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            <span className="font-mono">{service.provider}</span> · {service.type === "custom" ? "自定义 provider" : "Pi 内置 provider"}
-          </p>
-        </div>
-      </section>
+    <div className="flex min-w-0 flex-col gap-4 max-sm:[&_button]:min-h-11">
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <h2 className="min-w-0 text-3xl font-extrabold tracking-[-0.02em]">{service.name}</h2>
+        <p className="text-base text-text-muted">
+          <span className="font-mono">{service.provider}</span> · {service.type === "custom" ? "自定义 provider" : "Pi 内置 provider"}
+        </p>
+      </div>
 
-      <TabNav.Root size="2" aria-label="模型服务详情">
+      {/*
+        激活指示条:Radix 自己画的是通栏 2px,这里只在 data-active 上改成设计稿的 3px 圆头
+        并左右各缩 14px。限定在 data-active 是必须的——不限定的话 Tailwind 会给未激活项也
+        生成一个空的 ::before 盒子,把 tab 的高度顶开。
+      */}
+      <TabNav.Root
+        size="2"
+        aria-label="模型服务详情"
+        className="shadow-[inset_0_-1px_0_0_var(--v8-border-chrome)]"
+      >
         {(["overview", "maintenance", "models"] as const).map((candidate) => {
           if (candidate === "models" && !canReadModels && !canWriteModels) return null;
           const label = candidate === "overview" ? "概览" : candidate === "maintenance" ? "维护" : "模型";
@@ -2546,16 +2847,28 @@ function ServiceDetail({
             : candidate === "maintenance"
               ? "/credentials/$provider/maintenance"
               : "/credentials/$provider/models";
+          const active = tab === candidate;
           return (
-            <TabNav.Link key={candidate} asChild active={tab === candidate}>
+            <TabNav.Link key={candidate} asChild active={active}>
               <Link
                 to={to}
                 params={{ provider: service.provider }}
                 activeOptions={{ exact: true }}
-                aria-current={tab === candidate ? "page" : undefined}
-                className="min-h-11 sm:min-h-0"
+                aria-current={active ? "page" : undefined}
+                className="min-h-11 data-[active]:before:inset-x-3.5 data-[active]:before:h-[3px] data-[active]:before:rounded-t-[3px] sm:min-h-0"
               >
                 {label}
+                {candidate === "models" && service.models !== undefined ? (
+                  <Badge
+                    color={active ? "blue" : "gray"}
+                    variant="soft"
+                    radius="full"
+                    size="1"
+                    className="ml-1.5 tabular-nums"
+                  >
+                    {service.models.length}
+                  </Badge>
+                ) : null}
               </Link>
             </TabNav.Link>
           );
@@ -2570,10 +2883,9 @@ function ServiceDetail({
           canWriteCustom={canWriteCustom}
         />
         {service.directory?.failure === null || service.directory?.failure === undefined ? null : (
-          <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-warning">
-            <p className="font-medium">目录维护提醒</p>
-            <p className="mt-0.5 text-xs">{service.directory.failure}</p>
-          </div>
+          <NoticeBar tone="warning" icon={ExclamationTriangleIcon} title="目录维护提醒">
+            {service.directory.failure}
+          </NoticeBar>
         )}
         <StateRows service={service} canReadCredential={canReadCredential} />
         <ReferenceOverview references={service.references} />
@@ -2591,24 +2903,24 @@ function ServiceDetail({
       ) : null}
 
       {tab === "maintenance" && canWriteCredential && service.type === "builtin" ? (
-        <section className="flex flex-wrap items-center justify-between gap-3 rounded-md border px-3 py-3">
-          <div>
-            <div className="flex items-center gap-1.5">
-              <h3 className="font-medium">模型凭据</h3>
-              <HelpTooltip label="模型凭据说明" content="新凭据完成目录发现和真实推理后，才会替换当前版本。" />
-            </div>
-          </div>
-          <Button
-            id={`configure-builtin-${service.provider}`}
-            type="button"
-            variant="outline"
-            color="gray"
-            size={{ initial: "4", sm: "2" }}
-            onClick={onConfigureBuiltin}
-          >
-            {service.credential.state === "unconfigured" ? "配置凭据" : "换凭据"}
-          </Button>
-        </section>
+        <CardShell>
+          <CardHeader
+            title="模型凭据"
+            help={<HelpTooltip label="模型凭据说明" content="新凭据完成目录发现和真实推理后，才会替换当前版本。" />}
+            action={
+              <Button
+                id={`configure-builtin-${service.provider}`}
+                type="button"
+                variant="outline"
+                color="gray"
+                size={{ initial: "4", sm: "2" }}
+                onClick={onConfigureBuiltin}
+              >
+                {service.credential.state === "unconfigured" ? "配置凭据" : "换凭据"}
+              </Button>
+            }
+          />
+        </CardShell>
       ) : null}
 
       {tab !== "maintenance" || !canWriteCustom || service.type !== "custom" ? null : (
@@ -2620,10 +2932,9 @@ function ServiceDetail({
       ) : null}
 
       {tab === "maintenance" && !canWriteCredential && !canWriteModels && !canWriteCustom ? (
-        <section className="rounded-md border bg-muted/50 px-4 py-5">
-          <p className="font-medium">暂无修改权限</p>
-          <p className="mt-1 text-muted-foreground">当前账号没有修改模型服务的权限。</p>
-        </section>
+        <NoticeBar tone="neutral" icon={InfoCircledIcon} title="暂无修改权限">
+          当前账号没有修改模型服务的权限。
+        </NoticeBar>
       ) : null}
 
       {tab === "models" && canWriteModels ? (
@@ -2633,12 +2944,9 @@ function ServiceDetail({
       {tab !== "models" ? null : canReadModels && service.models !== undefined ? (
         <ModelsTable service={service} models={service.models} canWriteModels={canWriteModels} />
       ) : (
-        <section className="rounded-md border bg-muted/50 px-4 py-5">
-          <p className="font-medium">暂无模型查看权限</p>
-          <p className="mt-1 text-muted-foreground">
-            当前会话可以审计模型凭据，但不能读取地址、接口协议、模型目录与模型清单。
-          </p>
-        </section>
+        <NoticeBar tone="neutral" icon={InfoCircledIcon} title="暂无模型查看权限">
+          当前会话可以审计模型凭据，但不能读取地址、接口协议、模型目录与模型清单。
+        </NoticeBar>
       )}
     </div>
   );
@@ -2647,25 +2955,22 @@ function ServiceDetail({
 function LoadingLayout({ detail }: { detail: boolean }) {
   return (
     <div
-      className="grid min-h-0 flex-1 max-w-[1180px] gap-5 overflow-hidden p-4 sm:p-5 lg:grid-cols-[340px_minmax(0,1fr)]"
+      className={cn("grid min-w-0 gap-4", MASTER_DETAIL_COLUMNS)}
       role="status"
       aria-live="polite"
       aria-busy="true"
     >
       <span className="sr-only">正在加载模型服务</span>
-      <Card
-        size="2"
-        className={cn("h-full min-h-0 flex-col gap-3 overflow-hidden", detail ? "hidden lg:flex" : "flex")}
-      >
-        <Skeleton className="h-10 w-full" />
-        <Skeleton className="h-16 w-full" />
-        <Skeleton className="h-16 w-full" />
-        <Skeleton className="h-16 w-full" />
-      </Card>
-      <div className={cn("min-h-0 space-y-5 overflow-hidden", detail ? "block" : "hidden lg:block")}>
-        <Skeleton className="h-12 w-52" />
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-56 w-full" />
+      <CardShell className={cn("gap-3 p-3", detail ? "hidden lg:flex" : "flex")}>
+        <Skeleton aria-hidden className="h-10 w-full" />
+        <Skeleton aria-hidden className="h-16 w-full" />
+        <Skeleton aria-hidden className="h-16 w-full" />
+        <Skeleton aria-hidden className="h-16 w-full" />
+      </CardShell>
+      <div className={cn("min-w-0 flex-col gap-4", detail ? "flex" : "hidden lg:flex")}>
+        <Skeleton aria-hidden className="h-12 w-52" />
+        <Skeleton aria-hidden className="h-32 w-full" />
+        <Skeleton aria-hidden className="h-56 w-full" />
       </div>
     </div>
   );
@@ -2699,7 +3004,9 @@ export function ModelServicesPage({
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+    // 整页跟着壳里的 main 一起滚:列表与详情不再各自开滚动区,回到这一页时要恢复的
+    // 位置也只剩 panel-main-scroll 一个,`restoreScroll` 的回落分支正是为此留的。
+    <PageBody width="wide" className="gap-4 sm:gap-[18px]">
       <PageHeader
         title="模型服务"
         description={(
@@ -2708,153 +3015,120 @@ export function ModelServicesPage({
             <HelpTooltip label="模型服务说明" content="删除仍被模型组合引用的服务时，系统会列出引用位置并阻止删除。" />
           </span>
         )}
-        actions={(
-          <div className="flex flex-wrap items-center gap-2">
-            {canWriteCredential ? (
-              <Button
-                id="add-model-service-trigger"
-                type="button"
-                variant="solid"
-                highContrast
-                size={{ initial: "4", sm: "2" }}
-                onClick={() => void navigate({
-                  to: "/credentials/add",
-                  search: modelServiceReturnSearch(provider, tab, "add-service"),
-                })}
-              >
-                添加模型服务
-              </Button>
-            ) : null}
-          </div>
-        )}
+        actions={canWriteCredential ? (
+          <Button
+            id="add-model-service-trigger"
+            type="button"
+            variant="solid"
+            size={{ initial: "4", sm: "2" }}
+            onClick={() => void navigate({
+              to: "/credentials/add",
+              search: modelServiceReturnSearch(provider, tab, "add-service"),
+            })}
+          >
+            添加模型服务
+          </Button>
+        ) : undefined}
       />
       {!canReadServices ? (
-        <div className="min-h-0 flex-1 max-w-[760px] overflow-y-auto p-4 sm:p-5">
-          <Card size="2" className="flex flex-col gap-2">
-            <h2 className="text-base font-semibold">模型服务信息不可见</h2>
-            <p className="text-muted-foreground">
-              {canWriteCredential
-                ? "当前会话可写模型凭据，但不能读取现有服务、目录和凭据审计字段。可从页头搜索 Pi 内置 provider 继续配置。"
-                : "当前会话没有模型或凭据读取权限。页头搜索只显示按权限裁剪后的内置 provider 信息。"}
-            </p>
-          </Card>
-        </div>
+        <CardShell className="max-w-[760px] gap-1.5 px-4 py-4 sm:px-5">
+          <h2 className="text-2xl font-bold tracking-[-0.015em]">模型服务信息不可见</h2>
+          <p className="text-text-secondary">
+            {canWriteCredential
+              ? "当前会话可写模型凭据，但不能读取现有服务、目录和凭据审计字段。可从页头搜索 Pi 内置 provider 继续配置。"
+              : "当前会话没有模型或凭据读取权限。页头搜索只显示按权限裁剪后的内置 provider 信息。"}
+          </p>
+        </CardShell>
       ) : query.isPending ? (
         <LoadingLayout detail={provider !== undefined} />
       ) : query.isError ? (
-        <div className="min-h-0 flex-1 max-w-[760px] overflow-y-auto p-4 sm:p-5">
-          <Callout.Root role="alert" color="red" size="2">
-            <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-            <Callout.Text>
-              <strong className="block font-semibold">模型服务加载失败</strong>
-              <span className="mt-1 block">{(query.error as Error).message}</span>
-            </Callout.Text>
-            <Button
-              className="w-fit"
-              type="button"
-              variant="outline"
-              color="gray"
-              size={{ initial: "4", sm: "2" }}
-              disabled={query.isFetching}
-              onClick={() => void query.refetch()}
-            >
-              {query.isFetching ? "正在重试…" : "重试"}
-            </Button>
-          </Callout.Root>
-        </div>
+        <Callout.Root role="alert" color="red" size="2" className="max-w-[760px]">
+          <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+          <Callout.Text>
+            <strong className="block font-semibold">模型服务加载失败</strong>
+            <span className="mt-1 block">{(query.error as Error).message}</span>
+          </Callout.Text>
+          <Button
+            className="w-fit"
+            type="button"
+            variant="outline"
+            color="gray"
+            size={{ initial: "4", sm: "2" }}
+            disabled={query.isFetching}
+            onClick={() => void query.refetch()}
+          >
+            {query.isFetching ? "正在重试…" : "重试"}
+          </Button>
+        </Callout.Root>
       ) : services.length === 0 ? (
-        <div className="min-h-0 flex-1 max-w-[760px] overflow-y-auto p-4 sm:p-5">
+        <CardShell className="max-w-[760px] px-4 py-4 sm:px-5">
           <EmptyState
             title="还没有模型服务"
             titleAs="h2"
+            className="py-0"
             description={(
               <>
               这里只列已配置或保留异常状态的服务。
               {canWriteCredential ? "从页头的添加模型服务进入统一配置流程。" : "当前权限只能查看可见状态。"}
               </>
             )}
-            className="rounded-md border border-border bg-card p-4"
           />
-        </div>
+        </CardShell>
       ) : (
-        <div className="grid min-h-0 flex-1 max-w-[1180px] gap-5 overflow-hidden p-4 sm:p-5 lg:grid-cols-[340px_minmax(0,1fr)]">
-          <Card
-            size="1"
-            className={cn(
-              "h-full min-h-0 flex-col overflow-hidden",
-              provider === undefined ? "flex" : "hidden lg:flex",
-            )}
+        <div className={cn("grid min-w-0 gap-4", MASTER_DETAIL_COLUMNS)}>
+          <CardShell
+            className={cn("overflow-hidden", provider === undefined ? "flex" : "hidden lg:flex")}
           >
-            <div className="-m-3 flex min-h-0 flex-1 flex-col">
-              <div className="shrink-0 border-b bg-muted px-3 py-2.5">
-                <h2 className="font-medium">已配置服务</h2>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  <span className="font-mono tabular-nums">{services.length}</span> 项 · 含保留的异常状态
-                </p>
-              </div>
-              <div id="model-service-list-scroll" className="min-h-0 flex-1 overflow-y-auto">
-                {services.map((service) => {
-                  const isSelected = service.provider === selected?.provider;
-                  return (
-                    <MasterListItem
-                      key={service.provider}
-                      asChild
-                      selected={isSelected}
-                      className="block border-b border-border px-3 py-3 last:border-b-0"
-                    >
-                      <Link to="/credentials/$provider" params={{ provider: service.provider }}>
-                        <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
-                          <Tooltip content={service.name}>
-                            <span
-                              tabIndex={0}
-                              className={cn(
-                                "min-w-0 flex-1 truncate rounded-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-[var(--master-list-focus)] focus-visible:ring-offset-1 focus-visible:ring-offset-background",
-                                service.name === service.provider && "font-mono",
-                              )}
-                            >
-                              {service.name}
-                            </span>
-                          </Tooltip>
-                          <ServiceStatus service={service} selected={isSelected} />
-                        </div>
-                        {service.name === service.provider ? null : (
-                          <MasterListItemText asChild>
-                            <p className="mt-0.5 break-all font-mono text-xs">{service.provider}</p>
-                          </MasterListItemText>
-                        )}
-                        {service.models === undefined || service.directory === undefined ? (
-                          <MasterListItemText asChild>
-                            <p className="mt-1 text-xs">模型数量与发现时间按权限隐藏</p>
-                          </MasterListItemText>
-                        ) : (
-                          <div className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-end gap-3 text-xs">
-                            <span>
-                              <MasterListItemText className="block">模型</MasterListItemText>
-                              <span className="font-mono tabular-nums">{service.models.length}</span> 个
-                            </span>
-                            <span className="min-w-0 text-right">
-                              <MasterListItemText className="block">最近成功</MasterListItemText>
-                              <span className={cn(
-                                "break-words",
-                                service.directory.lastSuccessAt === null ? undefined : "font-mono tabular-nums",
-                              )}>{localMinute(service.directory.lastSuccessAt)}</span>
-                            </span>
-                          </div>
-                        )}
-                      </Link>
-                    </MasterListItem>
-                  );
-                })}
-              </div>
-            </div>
-          </Card>
-          <div
-            id="model-service-detail-scroll"
-            className={cn(
-              "min-h-0 min-w-0 overflow-y-auto pb-16",
-              provider === undefined ? "hidden lg:block" : "block",
-            )}
-          >
+            <CardHeader
+              title="已配置服务"
+              meta={<><span className="font-mono tabular-nums">{services.length}</span> 项 · 含保留的异常状态</>}
+            />
+            {services.map((service) => {
+              const isSelected = service.provider === selected?.provider;
+              // 名字冲突的服务整行压灰:它在列表里的语义是「停用」,状态点单独变灰压不住
+              // 一行黑字的服务名。
+              const dimmed = service.providerState === "name-conflict";
+              return (
+                <MasterListItem
+                  key={service.provider}
+                  asChild
+                  selected={isSelected}
+                  className="block border-t border-line px-4 py-3"
+                >
+                  <Link to="/credentials/$provider" params={{ provider: service.provider }}>
+                    <div className="flex min-w-0 items-center justify-between gap-2.5">
+                      <div className="flex min-w-0 flex-col">
+                        <Tooltip content={service.name}>
+                          <span
+                            tabIndex={0}
+                            className={cn(
+                              "min-w-0 truncate rounded-chip outline-none focus-visible:ring-2 focus-visible:ring-[var(--master-list-focus)] focus-visible:ring-offset-1 focus-visible:ring-offset-surface",
+                              isSelected ? null : "font-medium",
+                              service.name === service.provider && "font-mono",
+                              dimmed && "text-text-disabled",
+                            )}
+                          >
+                            {service.name}
+                          </span>
+                        </Tooltip>
+                        <MasterListItemText asChild>
+                          <span className={cn("min-w-0 truncate text-sm", dimmed && "text-text-disabled")}>
+                            {service.name === service.provider ? null : <>{service.provider} · </>}
+                            {service.type === "custom" ? "自定义" : "内置"}
+                            {service.models === undefined || service.directory === undefined
+                              ? " · 模型数量与发现时间按权限隐藏"
+                              : <> · <span className="font-mono tabular-nums">{service.models.length}</span> 个模型</>}
+                          </span>
+                        </MasterListItemText>
+                      </div>
+                      <ServiceStatus service={service} />
+                    </div>
+                  </Link>
+                </MasterListItem>
+              );
+            })}
+          </CardShell>
+          <div className={cn("min-w-0", provider === undefined ? "hidden lg:block" : "block")}>
             {provider === undefined ? null : (
               <Button variant="ghost" color="gray" size="3" className="mb-3 w-fit lg:hidden" asChild>
                 <Link to="/credentials" activeOptions={{ exact: true }}>
@@ -2864,10 +3138,10 @@ export function ModelServicesPage({
               </Button>
             )}
             {selected === undefined ? (
-              <Card size="2" className="flex flex-col gap-2">
-                <h2 className="text-base font-semibold">模型服务不存在</h2>
-                <p className="text-muted-foreground">该模型服务已删除，或当前账号无权查看。</p>
-              </Card>
+              <CardShell className="gap-1.5 px-4 py-4 sm:px-5">
+                <h2 className="text-2xl font-bold tracking-[-0.015em]">模型服务不存在</h2>
+                <p className="text-text-secondary">该模型服务已删除，或当前账号无权查看。</p>
+              </CardShell>
             ) : (
               <ServiceDetail
                 service={selected}
@@ -2892,6 +3166,6 @@ export function ModelServicesPage({
           </div>
         </div>
       )}
-    </div>
+    </PageBody>
   );
 }

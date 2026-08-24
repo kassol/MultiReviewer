@@ -45,22 +45,21 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
   }
 
   return (
-    <div className="flex min-h-full items-center justify-center bg-chrome px-4 py-8">
-      <div className="flex w-[23rem] max-w-full flex-col gap-4">
-        <div className="flex items-center gap-2.5 px-1">
-          <Mark className="size-6 text-primary" />
-          <h1 className="text-xl font-semibold tracking-tight">MultiReviewer</h1>
+    <div className="flex min-h-full items-center justify-center bg-background px-4 py-8">
+      <div className="flex w-[360px] max-w-full flex-col items-center gap-[26px]">
+        <div className="flex flex-col items-center gap-3">
+          <span className="flex size-11 shrink-0 items-center justify-center rounded-lg bg-[image:var(--v8-mark-gradient)] shadow-mark">
+            <Mark framed={false} className="size-7 text-white" />
+          </span>
+          <h1 className="text-4xl font-extrabold tracking-[-0.02em]">修改密码</h1>
         </div>
-        <Card size="2" className="flex flex-col gap-5">
-          <div className="border-b border-border pb-4">
-            <h2 className="text-base font-semibold">修改密码</h2>
-            <p className="mt-1 break-words text-muted-foreground">
-              {session.mustChangePassword
-                ? "密码已由系统管理员重置。请设置新的密码后继续使用面板。"
-                : "保存后，其他设备上的会话会失效；当前会话继续使用。"}
-            </p>
-          </div>
-          <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
+        <Card size="2" className="flex w-full flex-col gap-3.5 rounded-2xl border-card-line bg-surface px-7 py-[26px] shadow-card">
+          <p className="break-words text-text-muted">
+            {session.mustChangePassword
+              ? "密码已由系统管理员重置。请设置新的密码后继续使用面板。"
+              : "保存后，其他设备上的会话会失效；当前会话继续使用。"}
+          </p>
+          <form onSubmit={submit} className="flex flex-col gap-3.5" aria-busy={busy}>
             <div className="flex flex-col gap-1.5">
               <Text as="label" htmlFor="new-password" size="2" weight="medium">新密码</Text>
               <TextField.Root id="new-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" autoFocus value={password} onChange={(event) => { setPassword(event.target.value); setError(null); }} />
@@ -85,7 +84,7 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
                 <Callout.Text>{error}</Callout.Text>
               </Callout.Root>
             )}
-            <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} className="w-full" disabled={busy || password === "" || confirm === ""}>{busy ? "保存中…" : "保存新密码"}</Button>
+            <Button type="submit" variant="solid" size={{ initial: "4", sm: "2" }} className="w-full" disabled={busy || password === "" || confirm === ""}>{busy ? "保存中…" : "保存新密码"}</Button>
           </form>
         </Card>
       </div>

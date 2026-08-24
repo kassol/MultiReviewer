@@ -4,13 +4,14 @@ import { Fragment, useEffect, useRef, useState } from "react";
 
 import {
   CheckCircledIcon,
-  ChevronDownIcon,
+  Cross2Icon,
   CrossCircledIcon,
   ExclamationTriangleIcon,
 } from "@radix-ui/react-icons";
-import { Callout, Card, SegmentedControl, Skeleton, Table, Tooltip } from "@radix-ui/themes";
-import { Collapsible } from "radix-ui";
+import { Callout, Dialog, IconButton, SegmentedControl, Skeleton, Tooltip } from "@radix-ui/themes";
 
+import { EmptyState } from "@/components/empty-state";
+import { MasterListItem } from "@/components/master-list-item";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
@@ -124,15 +125,15 @@ function runBucket(run: RunItem): Exclude<RunFilter, "all"> {
 function RunStatus({ run }: { run: RunItem }) {
   if (run.failed) {
     return (
-      <CrossCircledIcon className="size-4 text-destructive" aria-label="失败" />
+      <CrossCircledIcon className="size-4 shrink-0 text-destructive" aria-label="失败" />
     );
   }
   if (runHasModelFailure(run)) {
     return (
-      <ExclamationTriangleIcon className="size-4 text-warning" aria-label="部分失败" />
+      <ExclamationTriangleIcon className="size-4 shrink-0 text-warning" aria-label="部分失败" />
     );
   }
-  return <CheckCircledIcon className="size-4 text-success" aria-label="完成" />;
+  return <CheckCircledIcon className="size-4 shrink-0 text-success" aria-label="完成" />;
 }
 
 function runBadge(run: RunItem) {
@@ -153,83 +154,220 @@ function runBadge(run: RunItem) {
   );
 }
 
-function RunModels({ run }: { run: RunItem }) {
-  const failures = run.models.filter((entry) => entry.failure !== null);
+/**
+ * 列表行右侧的结论徽章。与 `RunPill` 的差别只有一处:不带那颗可聚焦的警告图标——
+ * 行本身已经是按钮,里面再放一个可聚焦元素会让键盘焦点掉进按钮内部。部分模型失败
+ * 由行首的状态图标和红色模型 chip 承担,信息没有丢。
+ */
+function rowBadge(run: RunItem) {
+  return run.failed ? <StatusBadge tone="error">失败</StatusBadge> : runBadge(run);
+}
 
+// 分天与时分按浏览器本地时区:UTC 日在东八区会把 16:00 后的 run 归到前一天。
+function localDay(iso: string): string {
+  const date = new Date(iso);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function localClock(iso: string): string {
+  const date = new Date(iso);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function triggerLabel(run: RunItem): string {
+  return run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`;
+}
+
+/** 还没跑完的一轮没有耗时可言,返回 null 让调用点整段省掉,而不是显示一个 0。 */
+function runDuration(run: RunItem): string | null {
+  if (run.finishedAt === null) return null;
+  const seconds = Math.round(
+    (new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000,
+  );
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  const minutes = Math.floor(seconds / 60);
+  return minutes > 0 ? `${minutes}m${seconds % 60}s` : `${seconds}s`;
+}
+
+/** commit hash 的统一表面:等宽 + 蓝 tint,列表副标题与详情面板头共用。 */
+function CommitChip({ sha }: { sha: string }) {
   return (
-    <div className="min-w-0">
-      {run.models.length === 0 ? (
-        <span className="text-muted-foreground">没有模型记录</span>
-      ) : (
-        <ul className="flex min-w-0 flex-col gap-0.5">
-          {run.models.map((entry) => (
-            <li
-              key={entry.model}
-              className={`min-w-0 break-all font-mono text-xs ${
-                entry.failure === null ? "text-muted-foreground" : "text-destructive"
-              }`}
-            >
-              {entry.model}{" "}
-              {entry.failure === null ? (
-                <b className="font-semibold tabular-nums text-foreground">{entry.findings}</b>
-              ) : (
-                <b className="font-semibold">失败</b>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      {failures.length > 0 ? (
-        <Collapsible.Root className="group/failure mt-2">
-          <Collapsible.Trigger asChild>
-            <Button variant="ghost" color="red" size={{ initial: "3", sm: "1" }}>
-              查看 {failures.length} 条失败原因
-              <ChevronDownIcon
-                className="size-3.5 transition-transform group-data-[state=open]/failure:rotate-180"
-                aria-hidden
-              />
-            </Button>
-          </Collapsible.Trigger>
-          <Collapsible.Content>
-            <ul className="mt-1 flex flex-col gap-2 border-l border-destructive/25 py-1 pl-3 text-xs text-destructive">
-              {failures.map((entry) => (
-                <li key={`${entry.model}-why`} className="break-words leading-relaxed">
-                  <span className="break-all font-mono font-medium">{entry.model}</span>
-                  <span aria-hidden> · </span>
-                  {entry.failure}
-                </li>
-              ))}
-            </ul>
-          </Collapsible.Content>
-        </Collapsible.Root>
-      ) : null}
-    </div>
+    <code className="rounded-chip bg-accent-tint-strong px-[5px] font-mono text-xs font-normal text-primary">
+      {sha.slice(0, 7)}
+    </code>
   );
 }
 
-function RunUsage({ run }: { run: RunItem }) {
+/**
+ * 行右侧的模型标签组。设计稿把「哪些模型参与、各报了几条」压成一排 chip:失败的那
+ * 一个变红,扫一眼就知道这轮结论是否完整,不必展开详情。
+ *
+ * 只在 lg 以上出现:窄屏这排 chip 会把标题挤成两个字,状态徽章反而是更该留下的信息。
+ */
+function RunModelChips({ run }: { run: RunItem }) {
+  if (run.models.length === 0) return null;
+  return (
+    <span className="hidden max-w-[38%] shrink-0 flex-wrap justify-end gap-1.5 lg:flex">
+      {run.models.map((entry) => (
+        <span
+          key={entry.model}
+          className={`inline-flex max-w-[11rem] items-center gap-1 truncate rounded-full px-2.5 py-0.5 font-mono text-xs font-normal ${
+            entry.failure === null ? "bg-fill text-text-secondary" : "bg-danger-tint text-danger"
+          }`}
+        >
+          <span className="truncate">{entry.model}</span>
+          <span className="shrink-0 tabular-nums">
+            {entry.failure === null ? entry.findings : "失败"}
+          </span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/**
+ * 运行详情浮动面板。设计稿把它放在四边留白 14px 的位置上而不是贴边全高:面板浮在
+ * 列表上,列表仍然露出来,「我是从哪一行点进来的」这个上下文不丢。
+ *
+ * 窄屏改成底部抽屉(不是全屏):列表的上半屏保持可见,关闭与「重新运行」都落在拇指
+ * 能够到的下缘;全屏会让人以为自己跳了一页,退回去还要找返回入口。
+ */
+function RunDetailPanel({
+  run,
+  canRerun,
+  rerunning,
+  onRerun,
+  onClose,
+}: {
+  run: RunItem;
+  canRerun: boolean;
+  rerunning: boolean;
+  onRerun: () => void;
+  onClose: () => void;
+}) {
   const cost = costPresentation(run.usage);
+  const duration = runDuration(run);
   return (
-    <div className="text-xs">
-      {run.usage === undefined ? null : (
-        <div className="font-mono tabular-nums text-muted-foreground">
-          {run.usage.totalTokens.toLocaleString("zh-CN")} tokens
-        </div>
-      )}
-      <div className="font-mono tabular-nums">{cost.amount}</div>
-      {cost.note === null ? null : <div className="break-words text-warning">{cost.note}</div>}
-    </div>
-  );
-}
+    <Dialog.Root open onOpenChange={(next) => { if (!next) onClose(); }}>
+      <Dialog.Content
+        aria-describedby={undefined}
+        // 四边定位只写 top/right/bottom/left 四个长写法,不混 inset-*:同一属性上「基础值 +
+        // 断点值」的覆盖顺序才是确定的,混了简写会让断点值排在基础值前面而失效。
+        className="!fixed !top-auto !right-0 !bottom-0 !left-0 !m-0 !flex !h-[86dvh] !w-full !max-w-none !flex-col !overflow-hidden !rounded-3xl !rounded-b-none !border-0 !bg-[color:var(--v8-drawer-bg)] !p-0 !shadow-overlay backdrop-blur-[40px] md:!top-3.5 md:!right-3.5 md:!bottom-3.5 md:!left-auto md:!h-auto md:!w-[464px] md:!max-w-[calc(100vw-28px)] md:!rounded-b-3xl"
+      >
+        <header className="flex shrink-0 flex-col gap-3 border-b border-overlay-line px-6 pt-5 pb-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex min-w-0 flex-col gap-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <RunPill run={run} />
+                {duration === null ? null : (
+                  <span className="text-base text-text-muted">耗时 {duration}</span>
+                )}
+              </div>
+              <Dialog.Title className="!mb-0 min-w-0 !text-3xl !font-extrabold !tracking-[-0.02em] break-all">
+                {run.owner}/{run.repo} #{run.pullNumber}
+              </Dialog.Title>
+              <div className="flex flex-wrap items-center gap-1.5 text-base text-text-muted">
+                <CommitChip sha={run.headSha} />
+                <span aria-hidden>·</span>
+                <span className="break-all">{triggerLabel(run)}</span>
+                <span aria-hidden>·</span>
+                <span>{localDay(run.startedAt)} {localClock(run.startedAt)}</span>
+              </div>
+            </div>
+            <Dialog.Close>
+              <IconButton size="1" variant="soft" color="gray" radius="full" aria-label="关闭详情">
+                <Cross2Icon />
+              </IconButton>
+            </Dialog.Close>
+          </div>
+          {run.total === 0 ? null : (
+            <div className="flex flex-col gap-1.5">
+              <div className="flex justify-between text-base text-text-secondary">
+                <span>处置进度</span>
+                <span className="font-bold tabular-nums text-text">
+                  {run.resolved} / {run.total}
+                </span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-[3px] bg-accent-track">
+                <div
+                  className="h-full rounded-[3px] bg-primary"
+                  style={{ width: `${(run.resolved / run.total) * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </header>
 
-function RunTime({ run }: { run: RunItem }) {
-  const date = new Date(run.startedAt);
-  const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-  return (
-    <div className="text-xs text-muted-foreground">
-      <div className="font-mono tabular-nums">{time}</div>
-      <div className="break-words">{run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`}</div>
-    </div>
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-4">
+          {run.models.length === 0 ? (
+            <EmptyState title="没有模型记录" className="py-2" />
+          ) : (
+            run.models.map((entry) => (
+              <section
+                key={entry.model}
+                className={`overflow-hidden rounded-lg bg-surface shadow-control ${
+                  entry.failure === null ? "border border-overlay-line" : "border border-danger/25"
+                }`}
+              >
+                <div
+                  className={`flex items-center justify-between gap-3 px-4 py-2.5 ${
+                    entry.failure === null ? "" : "bg-danger-tint"
+                  }`}
+                >
+                  <h3
+                    className={`min-w-0 truncate font-mono text-base font-bold ${
+                      entry.failure === null ? "" : "text-danger"
+                    }`}
+                  >
+                    {entry.model}
+                  </h3>
+                  {entry.failure === null ? (
+                    <span className="shrink-0 text-sm text-text-muted">
+                      <span className="tabular-nums">{entry.findings}</span> 项发现
+                    </span>
+                  ) : (
+                    <span className="shrink-0 text-sm font-semibold text-danger">失败</span>
+                  )}
+                </div>
+                {/* 失败原因决定要不要重跑(区域封禁重跑也没用,超时重跑就好),所以整段摊开,不折叠。 */}
+                {entry.failure === null ? null : (
+                  <p className="border-t border-danger/15 px-4 py-2.5 text-base leading-relaxed break-words text-text-secondary">
+                    {entry.failure}
+                  </p>
+                )}
+              </section>
+            ))
+          )}
+
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-1 text-sm text-text-muted">
+            {run.usage === undefined ? null : (
+              <span className="tabular-nums">
+                用量 输入 {run.usage.inputTokens.toLocaleString("zh-CN")} · 输出{" "}
+                {run.usage.outputTokens.toLocaleString("zh-CN")} tokens
+              </span>
+            )}
+            <span className="tabular-nums">成本 {cost.amount}</span>
+          </div>
+          {cost.note === null ? null : (
+            <p className="px-1 text-sm break-words text-warning">{cost.note}</p>
+          )}
+        </div>
+
+        {canRerun ? (
+          <footer className="flex shrink-0 justify-end border-t border-overlay-line px-6 py-3.5">
+            <Button
+              variant="solid"
+              size={{ initial: "3", sm: "2" }}
+              disabled={rerunning}
+              onClick={onRerun}
+            >
+              {rerunning ? "重新运行中…" : "重新运行"}
+            </Button>
+          </footer>
+        ) : null}
+      </Dialog.Content>
+    </Dialog.Root>
   );
 }
 
@@ -243,6 +381,8 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
   });
   const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
   const [filter, setFilter] = useState<RunFilter>("all");
+  // 详情面板认 id 不认对象:列表每次刷新都是新对象,认对象会在后台刷新时把面板打空。
+  const [openedRunId, setOpenedRunId] = useState<number | null>(null);
   const rerun = useMutation({
     mutationFn: rerunRequest,
     onSuccess: (text) => setFeedback({ text, isError: false }),
@@ -276,11 +416,6 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
     done: flat.filter((run) => runBucket(run) === "done").length,
   };
   const visible = filter === "all" ? flat : flat.filter((run) => runBucket(run) === filter);
-  // 按浏览器本地时区分天与显示时分:UTC 日在东八区会把 16:00 后的 run 归到前一天。
-  const localDay = (iso: string): string => {
-    const date = new Date(iso);
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-  };
   const visibleGroups = visible.reduce<{ day: string; runs: RunItem[] }[]>((groups, run) => {
     const day = localDay(run.startedAt);
     const current = groups.at(-1);
@@ -288,19 +423,21 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
     else groups.push({ day, runs: [run] });
     return groups;
   }, []);
+  const openedRun = flat.find((run) => run.id === openedRunId) ?? null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PageHeader
-        title="评审记录"
-        description={
-          runs.isPending
-            ? "每一轮审查按时间倒序。"
-            : `${counts.all} 轮 · ${counts.failed} 失败`
-        }
-        actions={<SummaryRate />}
-      />
-      <PageBody width="wide" className="min-h-0 flex-1 gap-3 pb-4 sm:pb-4">
+      <PageBody width="wide" className="min-h-0 flex-1 pb-4 sm:pb-4">
+        <PageHeader
+          title="评审记录"
+          description={
+            runs.isPending
+              ? "每一轮审查按时间倒序。"
+              : `${counts.all} 轮 · ${counts.failed} 失败`
+          }
+          actions={<SummaryRate />}
+        />
+
         {feedback === null ? null : (
           <Callout.Root
             role={feedback.isError ? "alert" : "status"}
@@ -334,6 +471,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
           }}
           size={{ initial: "3", sm: "1" }}
           aria-label="按结论过滤"
+          className="w-fit max-sm:w-full"
         >
           {(
             [
@@ -352,193 +490,118 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
 
         <div
           ref={listViewport}
-          className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain pr-1"
+          className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain"
           aria-busy={runs.isPending || runs.isFetchingNextPage}
           aria-label="评审记录列表"
         >
           {runs.isPending ? (
-            <div className="space-y-2" role="status" aria-live="polite">
+            <div
+              className="flex flex-col gap-2 overflow-hidden rounded-lg border border-card-line bg-surface p-2 shadow-card"
+              role="status"
+              aria-live="polite"
+            >
               <span className="sr-only">正在加载评审记录</span>
               {[0, 1, 2, 3].map((slot) => <Skeleton key={slot} className="h-14" />)}
             </div>
           ) : null}
 
           {visible.length > 0 ? (
-          <Table.Root
-            size="1"
-            variant="surface"
-            layout="fixed"
-            className="hidden min-w-0 max-w-full xl:block"
-          >
-            <caption className="sr-only">审查记录列表</caption>
-            <Table.Header className="sticky top-0 z-10 bg-muted text-xs text-muted-foreground">
-              <Table.Row>
-                <Table.ColumnHeaderCell width="3rem">状态</Table.ColumnHeaderCell>
-                <Table.ColumnHeaderCell width="17%">仓库 / PR</Table.ColumnHeaderCell>
-                <Table.ColumnHeaderCell width="31%">模型</Table.ColumnHeaderCell>
-                <Table.ColumnHeaderCell width="13%">处置</Table.ColumnHeaderCell>
-                <Table.ColumnHeaderCell width="15%">用量 / 费用</Table.ColumnHeaderCell>
-                <Table.ColumnHeaderCell width="12%">时间</Table.ColumnHeaderCell>
-                {canRerun ? (
-                  <Table.ColumnHeaderCell width="5rem">动作</Table.ColumnHeaderCell>
-                ) : null}
-              </Table.Row>
-            </Table.Header>
-            <Table.Body>
+            <div className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
               {visibleGroups.map((group) => (
                 <Fragment key={group.day}>
-                  <Table.Row className="bg-muted/60">
-                    <Table.Cell
-                      colSpan={canRerun ? 7 : 6}
-                      className="font-mono text-xs font-semibold text-muted-foreground"
+                  <h2 className="border-t border-line px-5 pt-3 pb-2 text-sm font-bold tracking-[0.03em] text-text-muted first:border-t-0">
+                    {group.day}
+                  </h2>
+                  {group.runs.map((run) => (
+                    <MasterListItem
+                      key={run.id}
+                      selected={run.id === openedRunId}
+                      onClick={() => setOpenedRunId(run.id)}
+                      aria-haspopup="dialog"
+                      className="group flex items-center gap-3 border-t border-line px-5 py-3"
                     >
-                      {group.day}
-                    </Table.Cell>
-                  </Table.Row>
-                  {group.runs.map((run) => {
-                    const failedRow = runBucket(run) === "failed";
-                    return (
-                      <Table.Row
-                        key={run.id}
-                        align="start"
-                        className={
-                          failedRow
-                            ? "bg-destructive/10"
-                            : "transition-colors hover:bg-muted/40"
-                        }
-                      >
-                        <Table.Cell>
-                          <RunStatus run={run} />
-                        </Table.Cell>
-                        <Table.Cell className="min-w-0">
-                          <div className="break-all">
-                            <span className="font-mono text-xs text-muted-foreground">
-                              {run.owner}/{run.repo}
-                            </span>{" "}
-                            <span className="font-mono font-medium">#{run.pullNumber}</span>
-                          </div>
-                          <div className="font-mono text-xs text-muted-foreground">
-                            {run.headSha.slice(0, 7)}
-                          </div>
-                        </Table.Cell>
-                        <Table.Cell className="min-w-0">
-                          <RunModels run={run} />
-                        </Table.Cell>
-                        <Table.Cell>
-                          <RunPill run={run} />
-                        </Table.Cell>
-                        <Table.Cell>
-                          <RunUsage run={run} />
-                        </Table.Cell>
-                        <Table.Cell>
-                          <RunTime run={run} />
-                        </Table.Cell>
-                        {canRerun ? (
-                          <Table.Cell>
-                            <Button
-                              variant="outline"
-                              color="gray"
-                              size="1"
-                              disabled={rerun.isPending}
-                              onClick={() => rerun.mutate(run)}
-                            >
-                              {rerun.isPending ? "重新运行中…" : "重新运行"}
-                            </Button>
-                          </Table.Cell>
-                        ) : null}
-                      </Table.Row>
-                    );
-                  })}
+                      <RunStatus run={run} />
+                      <span className="flex min-w-0 flex-1 flex-col gap-px">
+                        <span className="truncate text-lg font-semibold group-data-[selected=true]:font-bold">
+                          {run.owner}/{run.repo} #{run.pullNumber}
+                        </span>
+                        {/* 副标题一行说清「哪个 commit、谁触发、什么时候、处置到哪」,
+                            窄屏放开换行:390px 下这四段挤在一行只会各剩两个字。 */}
+                        <span className="flex flex-wrap items-center gap-x-1.5 text-base font-normal text-text-muted">
+                          <CommitChip sha={run.headSha} />
+                          <span aria-hidden>·</span>
+                          <span className="break-all">{triggerLabel(run)}</span>
+                          <span aria-hidden>·</span>
+                          <span className="tabular-nums">{localClock(run.startedAt)}</span>
+                          {run.total === 0 ? null : (
+                            <>
+                              <span aria-hidden>·</span>
+                              <span className="tabular-nums">
+                                处置 {run.resolved}/{run.total}
+                              </span>
+                            </>
+                          )}
+                        </span>
+                      </span>
+                      <RunModelChips run={run} />
+                      <span className="shrink-0">{rowBadge(run)}</span>
+                    </MasterListItem>
+                  ))}
                 </Fragment>
               ))}
-            </Table.Body>
-          </Table.Root>
-          ) : null}
-
-          {visible.length > 0 ? (
-          <div className="space-y-4 xl:hidden">
-            {visibleGroups.map((group) => (
-              <section key={group.day} aria-labelledby={`run-day-${group.day}`} className="space-y-2">
-                <h2 id={`run-day-${group.day}`} className="font-mono text-xs font-semibold text-muted-foreground">
-                  {group.day}
-                </h2>
-                <div className="divide-y divide-border overflow-hidden rounded-md border border-border">
-                  {group.runs.map((run) => {
-                    const failedRow = runBucket(run) === "failed";
-                    return (
-                      <article key={run.id} className={`min-w-0 p-3 ${failedRow ? "bg-destructive/10" : "bg-background"}`}>
-                        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
-                          <div className="flex min-w-0 items-start gap-2">
-                            <span className="mt-0.5 shrink-0"><RunStatus run={run} /></span>
-                            <div className="min-w-0">
-                              <h3 className="break-all font-mono font-medium">
-                                {run.owner}/{run.repo} #{run.pullNumber}
-                              </h3>
-                              <p className="font-mono text-xs text-muted-foreground">{run.headSha.slice(0, 7)}</p>
-                            </div>
-                          </div>
-                          <RunTime run={run} />
-                        </div>
-                        <div className="mt-3 border-t border-border/80 pt-3">
-                          <RunModels run={run} />
-                        </div>
-                        <div className="mt-3 flex flex-wrap items-end justify-between gap-3 border-t border-border/80 pt-3">
-                          <div className="flex min-w-0 flex-wrap items-start gap-x-5 gap-y-2">
-                            <RunPill run={run} />
-                            <RunUsage run={run} />
-                          </div>
-                          {canRerun ? (
-                            <Button
-                              variant="outline"
-                              color="gray"
-                              size={{ initial: "4", sm: "1" }}
-                              disabled={rerun.isPending}
-                              onClick={() => rerun.mutate(run)}
-                            >
-                              {rerun.isPending ? "重新运行中…" : "重新运行"}
-                            </Button>
-                          ) : null}
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-              </section>
-            ))}
-          </div>
+            </div>
           ) : null}
 
           {flat.length === 0 && !runs.isPending && !runs.isError ? (
-          <Card size="2" className="flex flex-col items-start gap-1.5">
-            <h2 className="text-base font-semibold">暂无审查记录</h2>
-            <p className="text-muted-foreground">
-              向已注册仓库提交 pull request 后，系统会自动运行审查。
-              {canRerun ? "如需对已有 pull request 重新运行审查，请到仓库页选择仓库并输入 PR 编号。" : null}
-            </p>
-            {canRerun ? (
-              <Button variant="outline" color="gray" size={{ initial: "4", sm: "1" }} asChild>
-                <Link to="/repos">去仓库页</Link>
-              </Button>
-            ) : null}
-          </Card>
+            <div className="rounded-lg border border-card-line bg-surface px-5 py-4 shadow-card">
+              <EmptyState
+                title="暂无审查记录"
+                titleAs="h2"
+                description={
+                  <>
+                    向已注册仓库提交 pull request 后，系统会自动运行审查。
+                    {canRerun ? "如需对已有 pull request 重新运行审查，请到仓库页选择仓库并输入 PR 编号。" : null}
+                  </>
+                }
+                action={canRerun ? (
+                  <Button variant="outline" color="gray" size={{ initial: "4", sm: "1" }} asChild>
+                    <Link to="/repos">去仓库页</Link>
+                  </Button>
+                ) : undefined}
+              />
+            </div>
           ) : null}
           {flat.length > 0 && visible.length === 0 ? (
-          <p className="rounded-sm border border-dashed border-border px-4 py-6 text-center text-muted-foreground">
-            当前筛选条件下没有审查记录。
-          </p>
+            <p className="rounded-lg border border-dashed border-card-line px-4 py-6 text-center text-text-muted">
+              当前筛选条件下没有审查记录。
+            </p>
           ) : null}
           <div ref={sentinel} />
-          <p className="pt-2 text-center text-xs text-muted-foreground" aria-live="polite">
-          {runs.isFetchingNextPage
-            ? "加载更早的审查记录…"
-            : runs.hasNextPage
-              ? "继续下滑加载更早的审查记录"
-              : flat.length > 0
-                ? "已加载全部记录"
-                : ""}
+          <p className="pt-3 text-center text-sm text-text-muted" aria-live="polite">
+            {runs.isFetchingNextPage
+              ? "加载更早的审查记录…"
+              : runs.hasNextPage
+                ? "继续下滑加载更早的审查记录"
+                : flat.length > 0
+                  ? "已加载全部记录"
+                  : ""}
           </p>
         </div>
       </PageBody>
+
+      {openedRun === null ? null : (
+        <RunDetailPanel
+          run={openedRun}
+          canRerun={canRerun}
+          rerunning={rerun.isPending}
+          onRerun={() => {
+            rerun.mutate(openedRun);
+            // 结果落在页面顶部的 Callout 上,面板压着它人就看不见,所以触发即收面板。
+            setOpenedRunId(null);
+          }}
+          onClose={() => setOpenedRunId(null)}
+        />
+      )}
     </div>
   );
 }

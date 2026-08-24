@@ -1,4 +1,4 @@
-import { CalendarIcon } from "@radix-ui/react-icons";
+import { CalendarIcon, ChevronDownIcon } from "@radix-ui/react-icons";
 import { Popover } from "@radix-ui/themes";
 import { useState } from "react";
 
@@ -41,13 +41,15 @@ export function DateRangePicker({ value, onChange }: DateRangePickerProps) {
           variant="outline"
           color="gray"
           size="3"
-          className="min-w-0 max-w-full text-xs"
+          // v8 描边型控件(§7.14):白底 + 输入框描边 + 控件阴影,不是 Radix outline 默认的灰底块。
+          className="min-w-0 max-w-full gap-[7px] rounded-md border border-input bg-surface px-[15px] py-[7px] text-md font-medium text-text shadow-control"
           aria-label={`选择日期范围，当前为${fromLabel}至${toLabel}`}
         >
-          <CalendarIcon aria-hidden />
-          <span className={value.from === "" ? undefined : "font-mono"}>{fromLabel}</span>
-          <span className="text-muted-foreground">至</span>
-          <span className={value.to === "" ? undefined : "font-mono"}>{toLabel}</span>
+          <CalendarIcon aria-hidden className="text-text-secondary" />
+          <span className={value.from === "" ? "text-text-muted" : "font-mono"}>{fromLabel}</span>
+          <span className="text-text-muted">至</span>
+          <span className={value.to === "" ? "text-text-muted" : "font-mono"}>{toLabel}</span>
+          <ChevronDownIcon aria-hidden className="text-text-muted" />
         </Button>
       </Popover.Trigger>
       <Popover.Content

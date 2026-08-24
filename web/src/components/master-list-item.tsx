@@ -30,6 +30,13 @@ type MasterListItemTextProps = HTMLAttributes<HTMLElement> & {
 
 /**
  * 主从列表当前项的唯一交互表面。路由项使用 asChild + Link，页内选择直接使用 button。
+ *
+ * 选中态是「蓝 tint 底 + 3px 蓝左条 + 字重提到 650」。左条走 `before` 伪元素而不是
+ * `border-left`：伪元素不进盒模型，选中行与未选中行的内容仍然左对齐，调用方不必在
+ * 每一处补 3px 的 padding——设计稿里正是这个补偿漏了一页，行内容跟着右移了 3px。
+ *
+ * 选中优先于 hover：选中项的 hover 不改底色。鼠标扫过一列时，只有当前项保持蓝底，
+ * 指到哪一项就变哪一项的话，"我选中的是哪个" 这个信息在扫读过程中就丢了。
  */
 function masterListItemClassName(
   selected: boolean,
@@ -38,9 +45,10 @@ function masterListItemClassName(
 ): string {
   return cn(
     "relative w-full text-left transition-colors focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--master-list-focus)]",
+    "text-text [--master-list-danger:var(--v8-danger)] [--master-list-muted:var(--v8-text-muted)]",
     selected
-      ? "bg-[var(--selection-solid)] text-[var(--selection-solid-text)] [--master-list-danger:var(--selection-solid-danger-text)] [--master-list-focus:var(--selection-solid-text)] [--master-list-muted:var(--selection-solid-muted-text)]"
-      : "text-[var(--text-primary)] [--master-list-danger:var(--red-11)] [--master-list-focus:var(--selection-solid)] [--master-list-muted:var(--text-secondary)] hover:bg-[var(--gray-3)]",
+      ? "bg-accent-tint font-bold [--master-list-focus:var(--v8-accent)] before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:bg-primary before:content-['']"
+      : "[--master-list-focus:var(--v8-accent)] hover:bg-sunken",
     disabled && "cursor-not-allowed opacity-60",
     className,
   );

@@ -65,20 +65,22 @@ export function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-chrome px-4 py-8">
-      <div className="flex w-[23rem] max-w-full flex-col gap-4">
-        <div className="flex items-center gap-2.5 px-1">
-          <Mark className="size-6 text-primary" />
-          <h1 className="text-xl font-semibold tracking-tight">MultiReviewer</h1>
+    <main className="flex min-h-dvh items-center justify-center bg-background px-4 py-8">
+      <div className="flex w-[360px] max-w-full flex-col items-center gap-[26px]">
+        <div className="flex flex-col items-center gap-3">
+          <span className="flex size-11 shrink-0 items-center justify-center rounded-lg bg-[image:var(--v8-mark-gradient)] shadow-mark">
+            <Mark framed={false} className="size-7 text-white" />
+          </span>
+          <h1 className="text-4xl font-extrabold tracking-[-0.02em]">MultiReviewer</h1>
         </div>
-        <Card size="2" className="flex flex-col gap-5">
+        <Card size="2" className="flex w-full flex-col gap-3.5 rounded-2xl border-card-line bg-surface px-7 py-[26px] shadow-card">
           {bootstrapMode ? (
-            <div className="border-b border-border pb-4">
+            <div className="border-b border-line pb-4">
               <h2 className="text-base font-semibold">注册首个系统管理员</h2>
-              <p className="mt-1 text-muted-foreground">注册完成后，后续注册入口将关闭。</p>
+              <p className="mt-1 text-text-muted">注册完成后，后续注册入口将关闭。</p>
             </div>
           ) : null}
-          <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
+          <form onSubmit={submit} className="flex flex-col gap-3.5" aria-busy={busy}>
             {bootstrapMode ? (
               <div className="flex flex-col gap-1.5">
                 <Text as="label" htmlFor="bootstrap" size="2" weight="medium">一次性启动口令</Text>
@@ -104,7 +106,7 @@ export function LoginPage() {
                 <Callout.Text>{error}</Callout.Text>
               </Callout.Root>
             )}
-            <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} className="w-full" disabled={busy || username === "" || password === ""}>
+            <Button type="submit" variant="solid" size={{ initial: "4", sm: "2" }} className="w-full" disabled={busy || username === "" || password === ""}>
               {busy ? "处理中…" : bootstrapMode ? "注册并登录" : "登录"}
             </Button>
           </form>

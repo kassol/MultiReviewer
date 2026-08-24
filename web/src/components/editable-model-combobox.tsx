@@ -114,7 +114,7 @@ export function EditableModelCombobox({
                     <span className="min-w-0">
                       <span className="block break-all font-mono">{candidate.id}</span>
                       {candidate.name === null || candidate.name === candidate.id ? null : (
-                        <span className="mt-0.5 block break-words text-xs text-muted-foreground">
+                        <span className="mt-0.5 block break-words text-xs text-text-muted">
                           {candidate.name}
                         </span>
                       )}

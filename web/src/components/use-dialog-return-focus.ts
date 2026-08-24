@@ -40,3 +40,20 @@ export function useDialogReturnFocus(fallback?: () => HTMLElement | null) {
 
   return { captureTrigger, captureBubblingLink, onCloseAutoFocus, restoreFocus };
 }
+
+/**
+ * 当前可见的导航激活项,作为弹窗关闭时的后备焦点入口。
+ *
+ * 桌面顶栏导航与移动端底部 Tab 栏同时在 DOM 里,只靠 CSS 断点显隐,所以
+ * `[aria-current='page']` 会命中两个,而 `focus()` 对 `display: none` 的那个静默无效
+ * ——焦点会直接丢在 body 上。这里挑真正占位的那一个。
+ */
+export function visibleNavCurrentItem(): HTMLElement | null {
+  const items = document.querySelectorAll<HTMLElement>(
+    "nav[aria-label='面板导航'] [aria-current='page']",
+  );
+  for (const item of items) {
+    if (item.getClientRects().length > 0) return item;
+  }
+  return null;
+}
