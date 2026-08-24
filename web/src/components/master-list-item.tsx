@@ -62,7 +62,10 @@ export function MasterListItem(
   if (props.asChild) {
     const { selected, className, children } = props;
     return <Slot.Root
-      aria-current={selected ? "page" : undefined}
+      // 用 "true" 而不是 "page":这是列表里的当前项,不是导航里的当前页面。写 "page"
+      // 会让模型服务这类页面同时出现三个 aria-current="page"(顶栏导航项、列表选中项、
+      // 详情 Tab),读屏软件报出三个"当前页面"。
+      aria-current={selected ? "true" : undefined}
       data-selected={selected ? "true" : "false"}
       data-slot="master-list-item"
       className={masterListItemClassName(selected, className)}

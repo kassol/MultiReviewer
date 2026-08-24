@@ -489,7 +489,7 @@ function scrollValue(value: unknown): number | undefined {
 
 function modelServiceStableFocus(): HTMLElement | null {
   return document.querySelector<HTMLElement>("[aria-label='模型服务详情'] [aria-current='page']")
-    ?? document.querySelector<HTMLElement>("[data-slot='master-list-item'][aria-current='page']")
+    ?? document.querySelector<HTMLElement>("[data-slot='master-list-item'][aria-current='true']")
     ?? document.getElementById("add-model-service-trigger");
 }
 

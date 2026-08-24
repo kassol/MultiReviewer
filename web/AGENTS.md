@@ -24,7 +24,7 @@
 - `src/components/panel-theme.tsx` — Radix Theme 根配置的唯一实现。固定亮色、blue accent、solid panel、medium radius 与 100% scaling。四个取值都不开放给调用方:accent 走 blue 那一族变量再由 `styles.css` 覆写成 `#0071e3`;radius 取 medium 只为拿到圆形滑块,六档圆角终值同样在 `styles.css` 里直接覆写;scaling 固定 100% 避免字号被二次缩放。
 - `src/components/help-tooltip.tsx` — 统一的帮助提示入口。基于 Radix Themes Tooltip、IconButton 与 Radix Icons,图标按钮可键盘访问,窄屏保留触控尺寸。
 - `src/components/status-badge.tsx` — 跨页面运行状态的唯一视觉出口。领域组件只传 `neutral` / `success` / `warning` / `error` 与文字；组件统一 Radix Themes Badge 的色系、variant 和状态图标,圆角固定 full。选中行是浅色 tint 底,徽章保持 soft,不再需要 solid 变体来压深色底。来源、身份和类别直接使用 Themes Badge。
-- `src/components/master-list-item.tsx` — 主从列表当前项的唯一交互表面。模型服务、仓库与 `ModelComposer` 共用同一套选中态:蓝色 tint 底 + 3px 蓝色左条 + 字重提到 650,文字不反白。左条走 `before` 伪元素而不是 `border-left`,不进盒模型,选中行与未选中行的内容仍然左对齐,调用方不必逐处补 3px padding。选中优先于 hover,选中项悬停不换色。路由项用 `asChild` 组合 Link 并输出 `aria-current`,页内项输出 button 与 `aria-pressed`。模型行和 Checkbox 多选不使用这套深色状态。
+- `src/components/master-list-item.tsx` — 主从列表当前项的唯一交互表面。模型服务、仓库与 `ModelComposer` 共用同一套选中态:蓝色 tint 底 + 3px 蓝色左条 + 字重提到 650,文字不反白。左条走 `before` 伪元素而不是 `border-left`,不进盒模型,选中行与未选中行的内容仍然左对齐,调用方不必逐处补 3px padding。选中优先于 hover,选中项悬停不换色。路由项用 `asChild` 组合 Link 并输出 `aria-current="true"`,页内项输出 button 与 `aria-pressed`。模型行和 Checkbox 多选不使用这套选中状态。
 - `src/components/date-range-picker.tsx` — 日期范围的唯一产品入口。内部组合 Themes Popover 与 `ui/calendar`,负责本地日期转换、双月范围和窄屏边界；页面只读写 `{from,to}`。
 - `src/components/editable-model-combobox.tsx` — 可搜索且可手填 model id 的唯一产品入口。内部组合 Themes TextField/Popover 与 `ui/command`,自动发现候选可选，目录外裸 model id 始终可输入。
 - `src/components/empty-state.tsx` — 资源为空、筛选无结果和零权限状态的统一实现。保留原有 `h1` / `h2` / `h3` / 正文层级，不使用装饰性大图标。
@@ -55,6 +55,8 @@
 - **响应式显隐依赖固定 cascade layer。**Radix Themes 必须从 `styles.css` 导入 `radix` layer,不得在 TSX 入口单独导入未分层样式；`hidden` 与断点 display utility 才能稳定覆盖 Card、Button、Table 等组件的默认 display。新增样式入口或调整 layer 顺序时必须检查生产 CSS。
 - **文本输入与字段标签直接使用 Themes。**文本输入使用 `TextField.Root`,搜索图标等附件进入 `TextField.Slot`;可见或视觉隐藏的字段标签使用 `Text as="label"` 并保持 `htmlFor`/`id` 关联。输入在窄视口使用响应式 size 和最小触控高度；组合框只复用输入外观,其受控值、候选和键盘行为继续由领域组件持有。
 - **有限枚举与多选直接使用 Themes。**有限枚举使用 `Select`,权限矩阵、模型批量选择和补录确认使用 `Checkbox`;点击区域通过可见标签或可访问名称关联。批量全选必须呈现部分选中的 indeterminate 状态。允许搜索和手填的 model id 使用统一的可编辑组合框，保留目录搜索、键盘选择和直接输入裸 model id。
+- **输入类控件的焦点态是外侧一圈淡蓝环,不是 Radix 默认的内侧实线。**Radix 给 TextField / TextArea / Select 画的是 `outline: 2px solid` 加 `outline-offset: -1px`——实色线压在控件内侧、紧贴输入的文字,看起来像报错高亮。`styles.css` 统一改成 `outline: 3px solid var(--v8-accent-focus)`、offset 0,环落在控件外侧。这条写在设计系统层,页面不再各自处理焦点样式。
+- **说明性文字按设计稿口径给,不写页头描述。**设计稿里没有任何超过十五字的说明句;页名已经出现在顶栏面包屑里,标题下面再写一行"这一页是干什么的"是重复。需要解释规则或后果时用 `HelpTooltip` 挂在标题旁,按需展开。空状态里指路下一步动作的句子保留——那是用户当下唯一能读到的指引。
 - **面板只做亮色一套**(issue #46)。`PanelTheme` 明确固定 `appearance="light"`;不加主题上下文、本地存储、防闪脚本或暗色变体。需要暗色时先在设计系统中补齐完整 token 与组件状态,再引入主题切换。
 - **状态 Badge 只走 `StatusBadge`.** 它固定 neutral / success / warning / error 到 Radix Gray / Green / Amber / Red,固定 `soft` 与 full 圆角,不开 `highContrast`;颜色、文字与图标共同表达状态。来源、身份和类别直接使用 Themes Badge。页面不得再给 Badge 添加 `bg-success` / `bg-warning` / `bg-destructive` 等状态类。**主色是蓝 `#0071e3`**,不是近黑,也不是青。警告是唯一的双色对:图标与状态点用 `#bf8700`,文字压到 `#9a6700`——亮琥珀当文字在白底上过不了 AA。
 - **选中态按操作语义分三类。**主导航和 tab 表示当前位置,用 3px 蓝色圆头指示条加字重 650；仓库、模型服务和 `ModelComposer` 的 `MasterListItem` 使用同一套蓝色 tint 底加 3px 蓝色左条,文字不反白,选中项 hover 保持同一背景；模型行、命令菜单和批量勾选属于编辑中的选择,使用浅底、描边或 Checkbox。左条一律走伪元素,不用 `border-left`——后者会把行内容推右 3px,而这个补偿只要漏一处就错位。受控弹窗通过 `useDialogReturnFocus` 记录真实触发元素；关闭必须保留底层列表项与 tab,并把焦点还给触发入口或稳定后备入口。任何选中态都要单独检查 hover、focus 与辅助文字对比度。
@@ -85,6 +87,8 @@
 
 - 底色：内容区 `#f5f6f8`，卡面纯白；顶栏与移动端 Tab 栏用半透明白 + backdrop blur（毛玻璃）。
 - 主色一支笔：动作 / 选中 / 图表 / 链接统一 `#0071e3`（在 Radix Themes 下配 `accentColor="blue"` 并以 token 覆盖到该值）；不再使用近黑主色与深色实底选中态。
+- 毛玻璃要有东西可模糊：顶栏与移动端 Tab 栏必须**放在滚动容器内**并 `sticky`，不能挂在容器外面当兄弟节点——那样内容永远不从它们底下经过，`backdrop-filter` 背后只剩页面底色，顶栏就是一块纯白平板。
+- 语义色的文字档比设计稿深一级：绿 `#177031`、琥珀 `#8f6000`。设计稿的 `#1a7f37` / `#9a6700` 是按纯白底算的，而徽章文字压在 10% 的同色 tint 上，对比度掉到 4.47 与 4.40，都在 AA 门槛下。图标与实心底仍用原色，两族都是双色对。
 - 状态语义色（低饱和）：success `#1a7f37` / warning `#bf8700`（文字用 `#9a6700`）/ error `#cf222e` / 进行中用主色蓝；呈现统一为 soft tint 胶囊（约 9% 透明度同色底 + 深色同色文字）或 16px octicon 式图标（✓ 圆 / ✕ 圆 / ⚠ 三角 / 实心点），不用高饱和大色块。
 - 圆角：卡片 12–14px、控件 9px、chip/胶囊 999px（Radix Themes `radius="medium"` 起步，卡面用 Card 的 surface 覆盖）。
 - 边框与阴影：卡面 1px `rgba(0,0,0,0.055)` 发丝边 + `0 1px 6px rgba(0,0,0,0.04)` 漫射阴影；行分隔 `rgba(0,0,0,0.05)`。
@@ -98,7 +102,7 @@
 - ⌘K：cmdk 升为一级入口（顶栏常驻）。面板用 Spotlight 材质（blur + 16px 圆角），保留 `>` 命令前缀与「动作 / 跳转」分组，选中项蓝色实底反白。
 - 筛选：SegmentedControl 保持 iOS 形态（灰底 + 白色浮起选中片）。
 - 短 SHA 用 mono 字体 + 蓝色 tint chip；模型 chip 用灰 tint 胶囊 mono，失败模型红 tint。
-- 选中态三分类语义保留，颜色改为：当前位置 = 蓝下划线 / 加粗；主从列表当前项 = 蓝色 tint 底 + 3px 蓝色左条（替代深色实底反白）；编辑中选择不变（浅底 / 描边 / Checkbox）。弹窗关闭恢复底层项与 tab、`aria-current` 唯一等交互约束全部沿用。
+- 选中态三分类语义保留，颜色改为：当前位置 = 蓝下划线 / 加粗；主从列表当前项 = 蓝色 tint 底 + 3px 蓝色左条（替代深色实底反白）；编辑中选择不变（浅底 / 描边 / Checkbox）。弹窗关闭恢复底层项与 tab 等交互约束全部沿用。`aria-current="page"` 只给导航用(顶栏导航项、详情 TabNav);主从列表的当前项用 `aria-current="true"`——它是列表里的当前项,不是当前页面,写成 `page` 会让模型服务这类页面同时报出三个「当前页面」。
 
 ## 变更日志
 

@@ -161,12 +161,18 @@ function Shell() {
 
   return (
     <div className="flex h-dvh w-full min-w-0 max-w-full flex-col overflow-x-hidden bg-background">
-      <TopBar nav={nav} session={session} onSearch={palette.open} onLogout={logout} />
-      {/* Tab 栏是同一列 flex 的兄弟节点,自己占高度,内容区不需要再留底部空白。 */}
-      <main id="panel-main-scroll" className="min-h-0 min-w-0 flex-1 overflow-auto">
-        <Suspense fallback={<PageLoading />}><Outlet /></Suspense>
-      </main>
-      <MobileTabBar nav={nav} session={session} onLogout={logout} />
+      {/*
+        顶栏与移动端 Tab 栏都放进滚动容器里 sticky,而不是当作外面的兄弟节点:毛玻璃
+        要有东西可模糊,内容必须从它们底下滚过去。挂在滚动容器外面时,那层 blur 背后
+        永远只有页面底色,顶栏就是一块纯白平板。
+      */}
+      <div id="panel-main-scroll" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-auto">
+        <TopBar nav={nav} session={session} onSearch={palette.open} onLogout={logout} />
+        <main className="min-w-0 flex-1">
+          <Suspense fallback={<PageLoading />}><Outlet /></Suspense>
+        </main>
+        <MobileTabBar nav={nav} session={session} onLogout={logout} />
+      </div>
       <CommandPalette nav={nav} state={palette} />
     </div>
   );
@@ -191,7 +197,7 @@ function TopBar({
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const current = nav.find((item) => item.to === "/" ? pathname === "/" : pathname.startsWith(item.to));
   return (
-    <header className="shrink-0 border-b border-chrome-line bg-chrome backdrop-blur-[30px]">
+    <header className="sticky top-0 z-30 shrink-0 border-b border-chrome-line bg-chrome backdrop-blur-[30px]">
       <div className="flex items-center justify-between gap-3 px-4 pt-[11px] pb-2 sm:px-7">
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex size-[26px] shrink-0 items-center justify-center rounded-sm bg-[image:var(--v8-mark-gradient)] shadow-mark">
@@ -339,14 +345,19 @@ function MobileTabBar({
   session: PanelSession;
   onLogout: () => Promise<void>;
 }) {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
   if (nav.length === 0) return null;
   const tabs = nav.slice(0, 4);
   const overflow = nav.slice(4);
   const name = session.displayName ?? session.username;
+  // 当前页收在「我的」里时,这个按钮就是激活项。不点亮的话,窄屏打开审查策略或访问
+  // 控制,整条 Tab 栏没有一项是亮的——用户失去"我在哪"的唯一线索。
+  const inOverflow =
+    overflow.some((item) => pathname.startsWith(item.to)) || pathname.startsWith("/password");
   return (
     <nav
       aria-label="面板导航"
-      className="flex shrink-0 items-stretch border-t border-chrome-line bg-[color:var(--v8-tabbar-bg)] px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur-[30px] sm:hidden"
+      className="sticky bottom-0 z-30 flex shrink-0 items-stretch border-t border-chrome-line bg-[color:var(--v8-tabbar-bg)] px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur-[30px] sm:hidden"
     >
       {tabs.map((item) => (
         <Link
@@ -365,7 +376,10 @@ function MobileTabBar({
         <DropdownMenu.Trigger>
           <button
             type="button"
-            className="flex flex-1 flex-col items-center gap-[3px] py-[5px] text-text-muted outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+            {...(inOverflow ? { "aria-current": "page" as const } : {})}
+            className={`flex flex-1 flex-col items-center gap-[3px] py-[5px] outline-none focus-visible:ring-2 focus-visible:ring-ring/40 ${
+              inOverflow ? "text-primary" : "text-text-muted"
+            }`}
           >
             <PersonIcon className="size-[21px]" aria-hidden />
             <span className="text-[10px] font-medium">我的</span>

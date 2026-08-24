@@ -59,13 +59,19 @@
   --v8-fill: rgba(118, 118, 128, 0.12);
 
   /*
-   * 语义色。警告是唯一的双色对:图标用 #bf8700 保持辨识度,文字压到 #9a6700 才在
-   * 白底上过 AA。成功与危险的图标、文字同色。
+   * 语义色。绿与琥珀都是双色对:图标和实心底用设计稿的原色保持辨识度,文字另压深
+   * 一档。红色不用分——它本来就够深。
+   *
+   * 文字为什么比设计稿深:设计稿的 #9a6700 与 #1a7f37 是按纯白底算的,而徽章文字压在
+   * 10% 的同色 tint 上,底比白低一档,对比度跟着掉到 4.40 与 4.47——都差在 AA 的
+   * 4.5 门槛下面。压深后是 4.94 与 5.33。反过来把底调淡也能过,但 6% 的 tint 已经
+   * 看不出胶囊,徽章会散成一行浮字。
    */
-  --v8-success: #1a7f37;
+  --v8-success-icon: #1a7f37;
+  --v8-success: #177031;
   --v8-success-tint: rgba(26, 127, 55, 0.1);
   --v8-warning-icon: #bf8700;
-  --v8-warning: #9a6700;
+  --v8-warning: #8f6000;
   --v8-warning-tint: rgba(191, 135, 0, 0.1);
   --v8-danger: #cf222e;
   --v8-danger-tint: rgba(207, 34, 46, 0.09);
@@ -203,13 +209,12 @@
   /*
    * 语义色三族。Radix 自带的绿/琥珀/红比这套设计艳一档,直接覆写组件真正读的几档,
    * StatusBadge、Callout、color="red" 的按钮就都跟着走了,不用逐个组件改样式。
-   * 琥珀是唯一的双色对:9(图标 / 实心底)用亮的 #bf8700,11(文字)压到 #9a6700——
-   * 亮琥珀当文字在白底上过不了 AA。
+   * 绿与琥珀的 9 档(图标 / 实心底)用原色,11 档(文字)用压深的那支,两族都是双色对。
    */
   --green-3: var(--v8-success-tint);
   --green-a3: var(--v8-success-tint);
-  --green-9: var(--v8-success);
-  --green-10: #177031;
+  --green-9: var(--v8-success-icon);
+  --green-10: var(--v8-success);
   --green-11: var(--v8-success);
   --green-a11: var(--v8-success);
   --amber-3: var(--v8-warning-tint);
@@ -344,6 +349,7 @@
   --color-accent-track: var(--v8-accent-track);
   --color-success-tint: var(--v8-success-tint);
   --color-warning-icon: var(--v8-warning-icon);
+  --color-success-icon: var(--v8-success-icon);
   --color-warning-tint: var(--v8-warning-tint);
   --color-danger: var(--v8-danger);
   --color-danger-tint: var(--v8-danger-tint);

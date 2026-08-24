@@ -387,7 +387,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 | --- | --- |
 | default | 内容、边界和动作清晰 |
 | hover | 强化可点击性，不改变语义色，不降低文字对比度 |
-| focus-visible | 键盘焦点环清楚且不被裁切；产品表面统一 `focus-visible:ring-2 focus-visible:ring-ring/40`（`--ring` 即 `--v8-accent`） |
+| focus-visible | 键盘焦点环清楚且不被裁切。产品表面统一 `focus-visible:ring-2 focus-visible:ring-ring/40`（`--ring` 即 `--v8-accent`）；输入类控件（TextField / TextArea / Select）统一 `outline: 3px solid var(--v8-accent-focus)` 且 offset 为 0，环落在控件**外侧**——Radix 默认的 `2px solid` 加 `-1px` offset 会把实色线压在控件内侧、紧贴输入的文字，读起来像报错高亮 |
 | active | 提供按压反馈，布局不位移 |
 | selected/current | 按第 8 节的三类语义表达 |
 | disabled | 降低对比度，禁用交互和 hover |
