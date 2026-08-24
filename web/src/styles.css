@@ -49,6 +49,47 @@
   --warning-foreground: #ffffff;
 }
 
+/*
+ * Radix Themes 是通用视觉系统。这里仅把既有 Tailwind 页面仍在消费的旧名称映射到
+ * Theme token，保证组件族按批迁移期间只有一份颜色事实。新产品组件直接使用
+ * --app-* / --text-* / --selection-* 或 Radix token，不再新增旧名称。
+ */
+.radix-themes {
+  --app-bg: var(--gray-1);
+  --app-chrome: var(--gray-2);
+  --app-panel: var(--color-panel-solid);
+  --text-primary: var(--gray-12);
+  --text-secondary: var(--gray-11);
+  --border-subtle: var(--gray-6);
+  --selection-solid: var(--gray-12);
+  --selection-solid-text: var(--gray-1);
+
+  --background: var(--app-bg);
+  --foreground: var(--text-primary);
+  --card: var(--app-panel);
+  --card-foreground: var(--text-primary);
+  --popover: var(--app-panel);
+  --popover-foreground: var(--text-primary);
+  --muted: var(--gray-2);
+  --muted-foreground: var(--text-secondary);
+  --border: var(--border-subtle);
+  --input: var(--gray-7);
+  --chrome: var(--app-chrome);
+  --primary: var(--selection-solid);
+  --primary-foreground: var(--selection-solid-text);
+  --secondary: var(--gray-3);
+  --secondary-foreground: var(--text-primary);
+  --accent: var(--gray-3);
+  --accent-foreground: var(--text-primary);
+  --ring: var(--gray-12);
+  --destructive: var(--red-11);
+  --destructive-foreground: var(--red-1);
+  --success: var(--green-11);
+  --success-foreground: var(--green-1);
+  --warning: var(--amber-11);
+  --warning-foreground: var(--amber-1);
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

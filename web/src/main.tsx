@@ -14,6 +14,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { Mark } from "@/components/mark";
+import { PanelTheme } from "@/components/panel-theme";
 import { Card } from "@/components/ui/card";
 
 import { AccessControlPage } from "./access-control.tsx";
@@ -43,6 +44,7 @@ import {
 import { SettingsPage } from "./settings.tsx";
 import { SETUP_STATUS_QUERY_KEY, SetupChecklist } from "./setup-checklist.tsx";
 import { StatsPage } from "./stats.tsx";
+import "@radix-ui/themes/styles.css";
 import "./styles.css";
 
 const { prefix } = injected();
@@ -452,5 +454,11 @@ const queryClient = new QueryClient({
 });
 
 createRoot(document.getElementById("root")!).render(
-  <StrictMode><QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider></StrictMode>,
+  <StrictMode>
+    <PanelTheme>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    </PanelTheme>
+  </StrictMode>,
 );

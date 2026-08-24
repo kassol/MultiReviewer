@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-24: 管理面板接入 Radix Themes 与 Radix Icons 基础层。应用根和迁移期 Primitive Portal 共用同一亮色 Theme 配置；Radix token 映射到迁移期 Tailwind 语义名,业务页面按组件族继续迁移。
+
 - 2026-08-24: 管理面板的 Radix UI 迁移选定“发布门禁看板”视觉方向。Radix Themes 统一通用视觉,Radix Primitives 补行为,Radix Icons 统一业务图标；模型服务与审查策略共用同一 ProviderSelector 深色选中规则。本条取代同日仅允许模型服务 provider 使用实心选中态的旧限制。
 
 - 2026-08-24: 完成管理面板迁移到 Radix UI 前的源码与官方能力研究。盘点 46 个 shadcn 基础组件、56 个项目组件、22 种 Lucide 图标及浏览器原生控件，明确 Radix Themes、Primitives 与 Icons 的职责边界；Calendar 与可搜索手填组合框需要保留专用行为层或重新设计。

@@ -2,7 +2,7 @@
 
 ## 职责
 
-管理面板的前端:TanStack Router + Query 的纯前端 SPA,与 JSON API 同进程部署。现有实现由 Tailwind v4 与 vendored shadcn 组件组成,迁移目标以 Radix Themes 为通用视觉系统、Radix Primitives 补行为、Radix Icons 统一业务图标,Tailwind 只处理复杂布局。Vite 构建,产物(`dist/`)不进版本库,在 Docker 多阶段构建里生成,由服务经 `/assets` 与 `<前缀>/*` 提供。领域术语以根目录 `CONTEXT.md` 为准。
+管理面板的前端:TanStack Router + Query 的纯前端 SPA,与 JSON API 同进程部署。React 根已接入 Radix Themes 与 Radix Icons；现有业务页仍由 Tailwind v4 与 vendored shadcn 组件组成,按组件族迁移。Radix Themes 是通用视觉系统,Radix Primitives 补行为,Radix Icons 统一业务图标,Tailwind 只处理复杂布局。Vite 构建,产物(`dist/`)不进版本库,在 Docker 多阶段构建里生成,由服务经 `/assets` 与 `<前缀>/*` 提供。领域术语以根目录 `CONTEXT.md` 为准。
 
 ## 目录结构
 
@@ -18,7 +18,8 @@
 - `src/password.tsx` — 用户自改密码页,走 `PUT /session/password`;必须改密的人完成后回到自己有权访问的第一页。改密保留当前会话、作废其余会话。
 - `src/access-control.tsx` — 系统管理员独有的 `/access` 页,上半用户表、下半转置权限矩阵(行是权限、列是角色)。角色多时横向滚,权限列 sticky。用户与角色读写走 `GET/POST /users`、`PUT/DELETE /users/:username`、`POST /users/:username/reset-password` 与 `GET/POST /roles`、`PUT/DELETE /roles/:id`;改角色是行内下拉,重置密码、删除用户与删除角色都走 Dialog。三类 write 生效时对应 read 显示为已包含且不可单独移除,`review:rerun` 仍是独立权限。系统管理员不进矩阵;角色创建时不包含任何权限,未分配角色的用户就是零权限。
 - `src/components/mark.tsx` — 产品标记(三条错位短线),与 `index.html` 里内联成 data URI 的 favicon 是同一份图形。用 `currentColor` 上色。
-- `src/components/help-tooltip.tsx` — 统一的帮助提示入口。迁移后基于 Radix Themes Tooltip、IconButton 与 Radix Icons,图标按钮可键盘访问,窄屏保留触控尺寸。
+- `src/components/panel-theme.tsx` — Radix Theme 根配置的唯一实现。应用根与迁移期 Primitive Portal 都复用它,避免浮层回落到 Radix 默认 accent、圆角或缩放。
+- `src/components/help-tooltip.tsx` — 统一的帮助提示入口。基于 Radix Themes Tooltip、IconButton 与 Radix Icons,图标按钮可键盘访问,窄屏保留触控尺寸。
 - `src/components/page-body.tsx` — 业务页正文容器。`wide` 与 `form` 两档统一最大宽度、窄屏内边距和页尾留白;主从页只在详情栏复用,不改变分栏结构。
 - `src/components/ui/skeleton.tsx` — 读取中的占位块。带 `data-slot="skeleton"`,`styles.css` 的降低动效偏好那一段据此关掉呼吸动画。
 - `src/repos.tsx` — 仓库页,左列表右详情。模型覆盖是「跟随全局 / 自定义」两态:点「跟随全局」直接清覆盖;点「自定义」在详情内挂与审查策略共用的 `ModelComposer`,以当前生效组合为初值。不可用的既有选择可移除但不得随覆盖再次保存;服务端仍作最终校验。编辑态并成单栏容纳 460px 高的两栏选择器,不套对话框或外层表单。审查配置就绪前注册按钮禁用并指向审查策略,状态失效时已开的注册框随即卸载。注册与移除确认用 shadcn Dialog,不用阻塞渲染线程的 `window.confirm`。
@@ -28,7 +29,7 @@
 - `src/components/model-composer.tsx` — 全局组合与仓库覆盖共用的唯一模型选择器。接口是 `{value, onChange, provider?, onValidityChange}`;外部 provider 优先定位,没有传入时优先显示已选模型所属 provider。它只读 `GET /model-services` 的统一候选,不创建 provider、不处理凭据、不刷新目录、不补录模型。左栏按服务分组,右栏筛当前服务模型;已选但失效的模型保留稳定原因与「去模型服务处理」入口,允许移除但通知调用页禁止原样保存。一次最多渲染当前服务的 120 行。
 - `src/components/ui/` — shadcn 生成的组件(Dialog / Button / Input / Label / Table / Badge / Card / Command / Popover / Calendar),vendored 源码,改它就是改本项目的组件。Calendar 的底座是 `react-day-picker`;它的 `DayButton` 原样把 `locale` 透传下去,在 `exactOptionalPropertyTypes` 下过不了类型检查,改成 undefined 时不传这个属性。已按视觉定稿把 Card 与 Dialog 的 ring 换成边框、圆角压到 `--radius`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
 - `src/lib/utils.ts` — shadcn 的 `cn()`,clsx 加 tailwind-merge。
-- `src/styles.css` — 设计令牌与浏览器原生面的接管,没有组件类。令牌是品类标准件(近黑主色、白底、冷灰外壳),手艺对标 GitHub / Linear / Vercel。三层底色(`--chrome` 外壳 / `--background` 内容 / `--card` 卡片)、六档字号阶梯(xs 11 / sm 13 / base 14 / lg 16 / xl 19 / 3xl 28,body 就是 sm),以及选区、光标、滚动条与表格数字的默认样式。
+- `src/styles.css` — Radix Theme token 到产品语义 token 与迁移期 Tailwind token 的映射,以及浏览器原生面的接管,没有组件类。三层底色(`--app-chrome` 外壳 / `--app-bg` 内容 / `--app-panel` 面板)、六档字号阶梯(xs 11 / sm 13 / base 14 / lg 16 / xl 19 / 3xl 28,body 就是 sm),以及选区、光标、滚动条与表格数字的默认样式。
 
 ## 模块规范
 
@@ -54,7 +55,7 @@
 
 不依赖仓库里任何服务端代码;与服务端的契约只有两条:注入全局变量的形状、`<前缀>/api` 的 JSON 端点。
 
-当前构建期依赖是 Tailwind v4、`radix-ui` 单包、cmdk、react-day-picker、class-variance-authority、clsx、tailwind-merge、tw-animate-css 与 Lucide。迁移目标依赖是 `@radix-ui/themes`、必要的 Radix Primitives 与 `@radix-ui/react-icons`;cmdk 与 react-day-picker 只在统一产品组件仍需要对应行为时保留。`@/` 别名在 `tsconfig.json` 的 `paths` 与 `vite.config.ts` 的 `resolve.alias` 各配一次,两处要一起改。
+当前构建期依赖是 `@radix-ui/themes`、`@radix-ui/react-icons`、Tailwind v4、`radix-ui` 单包、cmdk、react-day-picker、class-variance-authority、clsx、tailwind-merge、tw-animate-css 与迁移期 Lucide。cmdk 与 react-day-picker 只在统一产品组件仍需要对应行为时保留；Lucide 随业务图标迁移归零后删除。`@/` 别名在 `tsconfig.json` 的 `paths` 与 `vite.config.ts` 的 `resolve.alias` 各配一次,两处要一起改。
 
 ## 常用命令
 
@@ -63,6 +64,8 @@
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
 
 ## 变更日志
+
+- 2026-08-24: 完成 Radix Themes 第一批基础接入。React 根固定为亮色 gray、solid panel、small radius 与 95% scaling；Theme token 映射到迁移期 Tailwind 语义名,现有 Dialog 与 Popover Portal 显式继承 Theme。HelpTooltip 改用 Themes Tooltip、IconButton 与 Radix Icons。
 
 - 2026-08-24: 选定“发布门禁看板”为 Radix Themes 迁移的视觉方向。ProviderSelector 在模型服务与审查策略中统一使用深色实底选中态；模型行、多选与命令项继续使用浅色编辑选择。端到端验收固定使用部署实例与 ego-browser。本条取代同日“审查策略 Provider 保持浅色”的旧视觉限制。
 
