@@ -88,6 +88,7 @@ test("账号登录拿到持久 session cookie,探测回身份,登出后旧 cooki
     permissions: [],
     systemAdmins: ["Admin"],
     mustChangePassword: false,
+    giteaUrl: null,
   });
   const done = await h.request("/session", { method: "DELETE", headers: { cookie: sessionCookie } });
   assert.equal(done.status, 204);

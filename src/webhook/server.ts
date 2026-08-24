@@ -1281,6 +1281,9 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
         isSystemAdmin: session.isSystemAdmin,
         systemAdmins: session.systemAdmins,
         mustChangePassword: session.mustChangePassword,
+        // Forge 的 web 基址。处置只发生在 Forge 的 pull request 上,面板自己做不了;
+        // 不给出这个值,面板就只能报出「还有多少条没处置」,而人点不过去。
+        giteaUrl: deps.gitea === undefined ? null : deps.gitea.baseUrl.replace(/\/+$/, ""),
       });
     },
   },

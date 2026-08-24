@@ -40,7 +40,21 @@ export type PanelSession = {
   isSystemAdmin: boolean;
   mustChangePassword: boolean;
   systemAdmins: string[];
+  /**
+   * Forge 的 web 基址,没有配 Gitea 时是 null。处置 Finding 只发生在 Forge 的
+   * pull request 上,面板给出的每一处「还有多少条没处置」都要能凭它点过去。
+   */
+  giteaUrl: string | null;
 };
+
+/** 某一轮审查对应的 pull request 地址。拿不到 Forge 基址时返回 null,调用方不渲染链接。 */
+export function pullRequestUrl(
+  session: Pick<PanelSession, "giteaUrl">,
+  run: { owner: string; repo: string; pullNumber: number },
+): string | null {
+  if (session.giteaUrl === null) return null;
+  return `${session.giteaUrl}/${run.owner}/${run.repo}/pulls/${run.pullNumber}`;
+}
 
 let cached: PanelSession | null | undefined;
 let pending: Promise<PanelSession | null> | undefined;

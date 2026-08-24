@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Fragment, useEffect, useRef, useState } from "react";
 
@@ -7,6 +7,7 @@ import {
   Cross2Icon,
   CrossCircledIcon,
   ExclamationTriangleIcon,
+  ExternalLinkIcon,
 } from "@radix-ui/react-icons";
 import { Callout, Dialog, IconButton, SegmentedControl, Skeleton, Tooltip } from "@radix-ui/themes";
 
@@ -18,6 +19,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
+import { loadPanelSession, pullRequestUrl } from "./session.ts";
 import { SummaryRate } from "./stats.tsx";
 import { costPresentation, type UsageSummary } from "./usage-cost.ts";
 
@@ -236,12 +238,15 @@ function RunDetailPanel({
   run,
   canRerun,
   rerunning,
+  pullUrl,
   onRerun,
   onClose,
 }: {
   run: RunItem;
   canRerun: boolean;
   rerunning: boolean;
+  /** pull request 地址;没有配 Forge 基址时是 null,那一格不渲染。 */
+  pullUrl: string | null;
   onRerun: () => void;
   onClose: () => void;
 }) {
@@ -354,16 +359,31 @@ function RunDetailPanel({
           )}
         </div>
 
-        {canRerun ? (
-          <footer className="flex shrink-0 justify-end border-t border-overlay-line px-6 py-3.5">
-            <Button
-              variant="solid"
-              size={{ initial: "3", sm: "2" }}
-              disabled={rerunning}
-              onClick={onRerun}
-            >
-              {rerunning ? "重新运行中…" : "重新运行"}
-            </Button>
+        {canRerun || pullUrl !== null ? (
+          <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-overlay-line px-6 py-3.5">
+            {/*
+              处置只在 pull request 上做,面板自己改不了 resolve 状态。这一格是「看完
+              发现,去处置」的唯一出口——少了它,面板报出的待处置数就是一个人点不进
+              去的数字。
+            */}
+            {pullUrl === null ? <span /> : (
+              <Button asChild variant="soft" color="gray" size={{ initial: "3", sm: "2" }}>
+                <a href={pullUrl} target="_blank" rel="noreferrer">
+                  <ExternalLinkIcon aria-hidden />
+                  去 pull request 处置
+                </a>
+              </Button>
+            )}
+            {canRerun ? (
+              <Button
+                variant="solid"
+                size={{ initial: "3", sm: "2" }}
+                disabled={rerunning}
+                onClick={onRerun}
+              >
+                {rerunning ? "重新运行中…" : "重新运行"}
+              </Button>
+            ) : null}
           </footer>
         ) : null}
       </Dialog.Content>
@@ -372,6 +392,9 @@ function RunDetailPanel({
 }
 
 export function RunsPage({ canRerun }: { canRerun: boolean }) {
+  // 只为拿 Forge 基址,好把每一轮指回它的 pull request。与壳共用同一份会话缓存,
+  // 不产生额外请求。
+  const session = useQuery({ queryKey: ["session"], queryFn: loadPanelSession });
   const runs = useInfiniteQuery({
     queryKey: ["runs"],
     initialPageParam: null as number | null,
@@ -591,6 +614,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
           run={openedRun}
           canRerun={canRerun}
           rerunning={rerun.isPending}
+          pullUrl={session.data === undefined || session.data === null ? null : pullRequestUrl(session.data, openedRun)}
           onRerun={() => {
             rerun.mutate(openedRun);
             // 结果落在页面顶部的 Callout 上,面板压着它人就看不见,所以触发即收面板。
