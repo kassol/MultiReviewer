@@ -412,7 +412,17 @@ export function OverviewPage() {
         <aside className="flex flex-col gap-[14px] max-sm:hidden">
           {canReadServices ? (
             <CardShell className="overflow-hidden">
-              <CardTitle title="模型服务" />
+              <CardTitle
+                title="模型服务"
+                action={
+                  <Link
+                    to="/credentials"
+                    className="shrink-0 rounded-chip text-md font-medium text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/40"
+                  >
+                    管理
+                  </Link>
+                }
+              />
               {services.isPending ? (
                 <div className="flex flex-col gap-2 px-5 pb-4" role="status" aria-label="正在读取模型服务" aria-busy="true">
                   {[0, 1, 2].map((row) => (
