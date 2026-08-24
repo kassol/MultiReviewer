@@ -245,6 +245,7 @@ function RunDetailPanel({
   pullUrl,
   onRerun,
   onOpenOther,
+  onSwitchFilter,
   onClose,
 }: {
   run: RunItem;
@@ -255,6 +256,8 @@ function RunDetailPanel({
   onRerun: () => void;
   /** 点到列表里另一轮时换成它,而不是先关面板。 */
   onOpenOther: (id: number) => void;
+  /** 点到筛选控件时切过去,而不是让遮罩把这一下吞掉。 */
+  onSwitchFilter: (next: RunFilter) => void;
   onClose: () => void;
 }) {
   const cost = costPresentation(run.usage);
@@ -269,11 +272,22 @@ function RunDetailPanel({
          * 点别处仍然照常关闭。
          */
         onPointerDownOutside={(event) => {
-          const row = (event.target as HTMLElement | null)?.closest?.("[data-run-id]");
+          const target = event.target as HTMLElement | null;
+          const row = target?.closest?.("[data-run-id]");
           const id = Number((row as HTMLElement | null)?.dataset.runId);
-          if (!Number.isSafeInteger(id) || id <= 0) return;
-          event.preventDefault();
-          onOpenOther(id);
+          if (Number.isSafeInteger(id) && id > 0) {
+            event.preventDefault();
+            onOpenOther(id);
+            return;
+          }
+          // 遮罩盖着筛选控件,不接住这一下的话:面板关掉、筛选没切,人得再点一次。
+          const chip = target?.closest?.("[data-filter-value]") as HTMLElement | null;
+          const next = chip?.dataset.filterValue;
+          if (next === "all" || next === "failed" || next === "pending" || next === "done") {
+            event.preventDefault();
+            onSwitchFilter(next);
+            onClose();
+          }
         }}
         // 四边定位只写 top/right/bottom/left 四个长写法,不混 inset-*:同一属性上「基础值 +
         // 断点值」的覆盖顺序才是确定的,混了简写会让断点值排在基础值前面而失效。
@@ -563,7 +577,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
               ["done", "已处置", counts.done],
             ] as const
           ).map(([id, label, count]) => (
-            <SegmentedControl.Item key={id} value={id}>
+            <SegmentedControl.Item key={id} value={id} data-filter-value={id}>
               {label}
               <span className="ml-1 font-mono tabular-nums">{count}</span>
             </SegmentedControl.Item>
@@ -682,6 +696,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
           rerunning={rerun.isPending}
           pullUrl={session.data === undefined || session.data === null ? null : pullRequestUrl(session.data, openedRun)}
           onOpenOther={setOpenedRunId}
+          onSwitchFilter={setFilter}
           onRerun={() => {
             rerun.mutate(openedRun);
             // 结果落在页面顶部的 Callout 上,面板压着它人就看不见,所以触发即收面板。
