@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { LockClosedIcon, PlusIcon, ResetIcon, TrashIcon } from "@radix-ui/react-icons";
-import { Badge, Card, Checkbox, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
+import { Cross2Icon, LockClosedIcon, PlusIcon, ResetIcon, TrashIcon } from "@radix-ui/react-icons";
+import { AlertDialog, Badge, Card, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
 import { useMemo, useState, type FormEvent } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -8,16 +8,6 @@ import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-
 import { api, errorText, fetchJson } from "./api.ts";
 import {
   PANEL_PERMISSIONS,
@@ -382,26 +372,24 @@ export function AccessControlPage() {
         )}
       </PageBody>
       <CreateDialog kind={createKind} busy={createUser.isPending || createRole.isPending} onClose={() => setCreateKind(null)} onUser={(input) => { setFeedback(null); createUser.mutate(input); }} onRole={(name) => { setFeedback(null); createRole.mutate(name); }} />
-      <Dialog open={confirm !== null} onOpenChange={(open) => { if (!open) { setConfirm(null); setResetPassword(""); } }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{confirm?.kind === "reset" ? "重置密码" : "确认删除"}</DialogTitle>
-            <DialogDescription className="break-words">
-              {confirm?.kind === "reset"
-                ? `为 ${confirm.label} 设置一枚临时密码。现有会话会全部作废，下次登录必须改密码。`
-                : confirm?.kind === "delete-role"
-                  ? `删除角色 ${confirm.label}？仍有人使用时服务会拒绝删除。`
-                  : `删除用户 ${confirm?.label}？其现有会话会一起作废，且无法撤销。`}
-            </DialogDescription>
-          </DialogHeader>
+      <AlertDialog.Root open={confirm !== null} onOpenChange={(open) => { if (!open) { setConfirm(null); setResetPassword(""); } }}>
+        <AlertDialog.Content maxWidth="440px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
+          <AlertDialog.Title size="4" mb="2">{confirm?.kind === "reset" ? "重置密码" : "确认删除"}</AlertDialog.Title>
+          <AlertDialog.Description size="2" color="gray" className="break-words">
+            {confirm?.kind === "reset"
+              ? `为 ${confirm.label} 设置一枚临时密码。现有会话会全部作废，下次登录必须改密码。`
+              : confirm?.kind === "delete-role"
+                ? `删除角色 ${confirm.label}？仍有人使用时服务会拒绝删除。`
+                : `删除用户 ${confirm?.label}？其现有会话会一起作废，且无法撤销。`}
+          </AlertDialog.Description>
           {confirm?.kind === "reset" ? (
-            <div className="flex flex-col gap-1.5">
+            <div className="mt-4 flex flex-col gap-1.5">
               <Text as="label" htmlFor="reset-password" size="2" weight="medium">临时密码</Text>
-              <TextField.Root id="reset-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" autoFocus value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} />
+              <TextField.Root id="reset-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} />
             </div>
           ) : null}
-          <DialogFooter>
-            <DialogClose asChild><Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>取消</Button></DialogClose>
+          <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
+            <AlertDialog.Cancel><Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>取消</Button></AlertDialog.Cancel>
             <Button
               variant="solid"
               color={confirm?.kind === "reset" ? "gray" : "red"}
@@ -412,9 +400,9 @@ export function AccessControlPage() {
             >
               {destructive.isPending ? "处理中…" : confirm?.kind === "reset" ? "重置密码" : "确认删除"}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </Flex>
+        </AlertDialog.Content>
+      </AlertDialog.Root>
     </>
   );
 }
@@ -427,13 +415,13 @@ function CreateDialog({ kind, busy, onClose, onUser, onRole }: { kind: "user" | 
   const submit = (event: FormEvent): void => { event.preventDefault(); if (kind === "user") onUser({ username, displayName, password }); else if (kind === "role") onRole(name); };
 
   return (
-    <Dialog open={kind !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent>
-        <form onSubmit={submit} className="contents" aria-busy={busy}>
-          <DialogHeader>
-            <DialogTitle>{kind === "user" ? "新建用户" : "新建角色"}</DialogTitle>
-            <DialogDescription>{kind === "user" ? "新用户初始未分配角色，首次登录必须修改密码。" : "角色初始不包含任何权限，可在权限矩阵中授予权限。"}</DialogDescription>
-          </DialogHeader>
+    <Dialog.Root open={kind !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <Dialog.Content maxWidth="440px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
+        <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
+          <div className="pr-9">
+            <Dialog.Title size="4" mb="2">{kind === "user" ? "新建用户" : "新建角色"}</Dialog.Title>
+            <Dialog.Description size="2" color="gray">{kind === "user" ? "新用户初始未分配角色，首次登录必须修改密码。" : "角色初始不包含任何权限，可在权限矩阵中授予权限。"}</Dialog.Description>
+          </div>
           {kind === "user" ? (
             <div className="flex flex-col gap-4">
               <div className="flex flex-col gap-1.5">
@@ -455,12 +443,23 @@ function CreateDialog({ kind, busy, onClose, onUser, onRole }: { kind: "user" | 
               <TextField.Root id="new-role-name" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoFocus value={name} onChange={(event) => setName(event.target.value)} />
             </div>
           )}
-          <DialogFooter>
-            <DialogClose asChild><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>取消</Button></DialogClose>
+          <Flex gap="3" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
+            <Dialog.Close><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>取消</Button></Dialog.Close>
             <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={busy || (kind === "user" ? username === "" || password === "" : name === "")}>{busy ? "创建中…" : "创建"}</Button>
-          </DialogFooter>
+          </Flex>
         </form>
-      </DialogContent>
-    </Dialog>
+        <Dialog.Close>
+          <IconButton
+            variant="ghost"
+            color="gray"
+            size={{ initial: "3", sm: "1" }}
+            className="absolute top-3 right-3 max-sm:min-h-11 max-sm:min-w-11"
+            aria-label="关闭新建窗口"
+          >
+            <Cross2Icon />
+          </IconButton>
+        </Dialog.Close>
+      </Dialog.Content>
+    </Dialog.Root>
   );
 }

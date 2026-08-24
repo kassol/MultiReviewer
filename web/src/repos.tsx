@@ -1,13 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
-import { CheckCircledIcon, CrossCircledIcon, ExclamationTriangleIcon, UpdateIcon } from "@radix-ui/react-icons";
-import { Callout, Skeleton, Text, TextField } from "@radix-ui/themes";
+import { CheckCircledIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, UpdateIcon } from "@radix-ui/react-icons";
+import { AlertDialog, Callout, Card, Dialog, Flex, IconButton, Skeleton, Text, TextField } from "@radix-ui/themes";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Card } from "@radix-ui/themes";
 import {
   Command,
   CommandGroup,
@@ -15,14 +14,6 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { cn } from "@/lib/utils";
@@ -526,20 +517,18 @@ function RepoDetail({
         />
       ) : null}
 
-      {canWrite ? <Dialog open={confirmingRemoval} onOpenChange={setConfirmingRemoval}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              移除 {repo.owner}/{repo.repo}?
-            </DialogTitle>
-            <DialogDescription>
-              将删除 Gitea 中的 Hook；后续审查请求会因仓库未注册而被拒绝。评审记录和历史模型选择会保留。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={() => setConfirmingRemoval(false)}>
+      {canWrite ? <AlertDialog.Root open={confirmingRemoval} onOpenChange={setConfirmingRemoval}>
+        <AlertDialog.Content maxWidth="440px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
+          <AlertDialog.Title size="4" mb="2">
+            移除 {repo.owner}/{repo.repo}?
+          </AlertDialog.Title>
+          <AlertDialog.Description size="2" color="gray">
+            将删除 Gitea 中的 Hook；后续审查请求会因仓库未注册而被拒绝。评审记录和历史模型选择会保留。
+          </AlertDialog.Description>
+          <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
+            <AlertDialog.Cancel><Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
               取消
-            </Button>
+            </Button></AlertDialog.Cancel>
             <Button
               variant="solid"
               color="red"
@@ -552,9 +541,9 @@ function RepoDetail({
             >
               移除
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog> : null}
+          </Flex>
+        </AlertDialog.Content>
+      </AlertDialog.Root> : null}
     </>
   );
 }
@@ -638,12 +627,10 @@ function RegisterModal({
 
   const data = search.data;
   return (
-    <Dialog open onOpenChange={(next) => (next ? undefined : onClose())}>
-      <DialogContent aria-describedby={undefined}>
-        <form onSubmit={submit} className="flex flex-col gap-3">
-          <DialogHeader>
-            <DialogTitle>注册仓库</DialogTitle>
-          </DialogHeader>
+    <Dialog.Root open onOpenChange={(next) => (next ? undefined : onClose())}>
+      <Dialog.Content aria-describedby={undefined} maxWidth="640px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
+        <form onSubmit={submit} className="flex min-h-0 flex-col gap-3">
+          <Dialog.Title size="4" mb="1" className="pr-9">注册仓库</Dialog.Title>
           {/* cmdk 自带的过滤按标签文本再筛一次,而结果已经是 Gitea 按关键字搜回来的。 */}
           <Command shouldFilter={false} className="border-border rounded-md border">
             <CommandInput
@@ -724,17 +711,28 @@ function RegisterModal({
               {error}
             </p>
           )}
-          <DialogFooter>
-            <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={onClose}>
+          <Flex gap="3" mt="1" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
+            <Dialog.Close><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
               取消
-            </Button>
+            </Button></Dialog.Close>
             <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={busy || picked === null}>
               {busy ? "注册中…" : picked === null ? "注册" : `注册 ${picked.owner}/${picked.repo}`}
             </Button>
-          </DialogFooter>
+          </Flex>
         </form>
-      </DialogContent>
-    </Dialog>
+        <Dialog.Close>
+          <IconButton
+            variant="ghost"
+            color="gray"
+            size={{ initial: "3", sm: "1" }}
+            className="absolute top-3 right-3 max-sm:min-h-11 max-sm:min-w-11"
+            aria-label="关闭注册仓库"
+          >
+            <Cross2Icon />
+          </IconButton>
+        </Dialog.Close>
+      </Dialog.Content>
+    </Dialog.Root>
   );
 }
 

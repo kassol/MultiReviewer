@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-24: 管理面板完成 Dialog 组件族迁移。普通编辑与三步模型服务配置直接使用 Radix Themes `Dialog`,删除、密码重置、丢弃与离开确认使用 `AlertDialog`;长内容限制在弹窗内部滚动,旧 shadcn Dialog wrapper 删除。
+
 - 2026-08-24: 管理面板完成统计表格迁移。统计矩阵直接使用 Radix Themes `Table`，保留横向局部滚动、粘性模型列、语义 caption、数值布局和移动端折叠展示；旧 shadcn Table wrapper 删除。
 
 - 2026-08-24: 管理面板完成原生表单选择控件迁移。访问控制的角色分配使用 Radix Themes `Select`,权限矩阵、模型补录确认和批量管理使用 Themes `Checkbox`,全选状态支持部分选中；可搜索且可手填的 model id 保留 datalist 行为。

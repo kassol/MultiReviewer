@@ -4,8 +4,8 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useBlocker, useLocation, useNavigate } from "@tanstack/react-router";
-import { CheckIcon, ChevronDownIcon, CrossCircledIcon, ExclamationTriangleIcon, MagnifyingGlassIcon, MinusCircledIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
-import { Badge, Card, Checkbox, IconButton, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
+import { CheckIcon, ChevronDownIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, MagnifyingGlassIcon, MinusCircledIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
+import { AlertDialog, Badge, Card, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -13,14 +13,6 @@ import { PageHeader } from "@/components/page-header";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
@@ -340,15 +332,18 @@ export function ModelServiceSetupLayout() {
 
   return (
     <ModelServiceSetupContext.Provider value={{ candidate, setCandidate, phase, setPhase, transition, finish }}>
-      <Dialog open onOpenChange={(open) => { if (!open) closeSetup(); }}>
-        <DialogContent
-          className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-[720px]"
+      <Dialog.Root open onOpenChange={(open) => { if (!open) closeSetup(); }}>
+        <Dialog.Content
+          maxWidth="720px"
+          maxHeight="calc(100dvh - 2rem)"
+          size={{ initial: "2", sm: "3" }}
+          className="flex min-h-0 flex-col overflow-hidden"
           onEscapeKeyDown={(event) => { if (dirty || phase !== null) event.preventDefault(); }}
         >
-          <DialogHeader>
-            <DialogTitle>配置模型服务</DialogTitle>
-            <DialogDescription>按步骤完成来源、模型发现和真实验证。未提交内容只保留在当前页面。</DialogDescription>
-          </DialogHeader>
+          <div className="shrink-0 pr-9">
+            <Dialog.Title size="4" mb="2">配置模型服务</Dialog.Title>
+            <Dialog.Description size="2" color="gray">按步骤完成来源、模型发现和真实验证。未提交内容只保留在当前页面。</Dialog.Description>
+          </div>
           <nav className="grid grid-cols-3 overflow-hidden rounded-md border text-center text-xs" aria-label="配置模型服务步骤">
             {["选择来源", "模型发现", "真实验证"].map((label, index) => {
               const step = index + 1;
@@ -367,35 +362,42 @@ export function ModelServiceSetupLayout() {
               );
             })}
           </nav>
-          <div className="min-w-0 pb-1"><Outlet /></div>
-        </DialogContent>
-      </Dialog>
-      <Dialog open={closeRequested} onOpenChange={setCloseRequested}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>丢弃未保存的配置？</DialogTitle>
-            <DialogDescription>关闭会丢弃当前页面中的凭据、目录结果和验证模型。</DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={() => setCloseRequested(false)}>继续配置</Button>
-            <Button type="button" variant="solid" color="red" size={{ initial: "4", sm: "2" }} onClick={discardAndClose}>丢弃并关闭</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Dialog open={blocker.status === "blocked"} onOpenChange={(open) => { if (!open) blocker.reset?.(); }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{phase === null ? "丢弃未保存的配置？" : "模型服务操作仍在进行"}</DialogTitle>
-            <DialogDescription>
+          <div className="mt-4 min-h-0 min-w-0 overflow-y-auto pb-1"><Outlet /></div>
+          <Dialog.Close>
+            <IconButton
+              variant="ghost"
+              color="gray"
+              size={{ initial: "3", sm: "1" }}
+              className="absolute top-3 right-3 max-sm:min-h-11 max-sm:min-w-11"
+              aria-label="关闭配置模型服务"
+            >
+              <Cross2Icon />
+            </IconButton>
+          </Dialog.Close>
+        </Dialog.Content>
+      </Dialog.Root>
+      <AlertDialog.Root open={closeRequested} onOpenChange={setCloseRequested}>
+        <AlertDialog.Content maxWidth="440px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
+          <AlertDialog.Title size="4" mb="2">丢弃未保存的配置？</AlertDialog.Title>
+          <AlertDialog.Description size="2" color="gray">关闭会丢弃当前页面中的凭据、目录结果和验证模型。</AlertDialog.Description>
+          <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
+            <AlertDialog.Cancel><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>继续配置</Button></AlertDialog.Cancel>
+            <AlertDialog.Action><Button type="button" variant="solid" color="red" size={{ initial: "4", sm: "2" }} onClick={discardAndClose}>丢弃并关闭</Button></AlertDialog.Action>
+          </Flex>
+        </AlertDialog.Content>
+      </AlertDialog.Root>
+      <AlertDialog.Root open={blocker.status === "blocked"} onOpenChange={(open) => { if (!open) blocker.reset?.(); }}>
+        <AlertDialog.Content maxWidth="440px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
+          <AlertDialog.Title size="4" mb="2">{phase === null ? "丢弃未保存的配置？" : "模型服务操作仍在进行"}</AlertDialog.Title>
+          <AlertDialog.Description size="2" color="gray">
               {phase === null
                 ? "离开会丢弃当前页面中的凭据、目录结果和验证模型。"
                 : "请求结束前会锁定离开与丢弃动作，请等待当前阶段完成。"}
-            </DialogDescription>
-          </DialogHeader>
+          </AlertDialog.Description>
           {phase === null ? (
-            <DialogFooter>
-              <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={() => blocker.reset?.()}>继续配置</Button>
-              <Button
+            <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
+              <AlertDialog.Cancel><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>继续配置</Button></AlertDialog.Cancel>
+              <AlertDialog.Action><Button
                 type="button"
                 variant="solid"
                 color="red"
@@ -407,11 +409,15 @@ export function ModelServiceSetupLayout() {
                 }}
               >
                 丢弃并离开
-              </Button>
-            </DialogFooter>
-          ) : null}
-        </DialogContent>
-      </Dialog>
+              </Button></AlertDialog.Action>
+            </Flex>
+          ) : (
+            <Flex mt="4" justify="end">
+              <AlertDialog.Cancel><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>返回配置</Button></AlertDialog.Cancel>
+            </Flex>
+          )}
+        </AlertDialog.Content>
+      </AlertDialog.Root>
     </ModelServiceSetupContext.Provider>
   );
 }
@@ -1289,32 +1295,26 @@ function CredentialControls({
   const deleteError = removeCredential.error;
   const deleteConfirmation = (
     <>
-      <DialogHeader>
-        <DialogTitle>删除 {target.provider} 的模型凭据？</DialogTitle>
-        <DialogDescription>
-          模型目录会保留，但没有凭据时模型不能运行。若全局组合或仓库仍在引用这家 provider，服务会拒绝删除并列出位置。
-        </DialogDescription>
-      </DialogHeader>
+      <AlertDialog.Title size="4" mb="2" className="break-words">删除 {target.provider} 的模型凭据？</AlertDialog.Title>
+      <AlertDialog.Description size="2" color="gray">
+        模型目录会保留，但没有凭据时模型不能运行。若全局组合或仓库仍在引用这家 provider，服务会拒绝删除并列出位置。
+      </AlertDialog.Description>
       {deleteError === null ? null : (
-        <div className="space-y-2">
+        <div className="mt-4 min-h-0 space-y-2 overflow-y-auto">
           <p role="alert" className="text-destructive">{deleteError.message}</p>
           <ReferenceBlockers references={deleteError.references} />
         </div>
       )}
-      <DialogFooter>
-        <Button
+      <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }} className="shrink-0">
+        <AlertDialog.Cancel><Button
           type="button"
           variant="outline"
           color="gray"
           size={{ initial: "4", sm: "2" }}
           disabled={removeCredential.isPending}
-          onClick={() => {
-            setConfirmingDelete(false);
-            removeCredential.reset();
-          }}
         >
           取消
-        </Button>
+        </Button></AlertDialog.Cancel>
         <Button
           type="button"
           variant="solid"
@@ -1325,25 +1325,50 @@ function CredentialControls({
         >
           {removeCredential.isPending ? "正在删除…" : "确认删除凭据"}
         </Button>
-      </DialogFooter>
+      </Flex>
     </>
   );
 
   if (dialog) {
     return (
-      <Dialog open onOpenChange={(open) => { if (!open) onClose?.(); }}>
-        <DialogContent>
-          {confirmingDelete ? deleteConfirmation : (
-            <>
-              <DialogHeader>
-                <DialogTitle>维护 {target.provider} 的模型凭据</DialogTitle>
-                <DialogDescription>重新验证使用已存凭据，凭据与已存验证记录不会回到浏览器。</DialogDescription>
-              </DialogHeader>
-              {maintenanceForm}
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
+      <>
+        <Dialog.Root open onOpenChange={(open) => { if (!open) onClose?.(); }}>
+          <Dialog.Content maxWidth="640px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
+            <div className="pr-9">
+              <Dialog.Title size="4" mb="2" className="break-words">维护 {target.provider} 的模型凭据</Dialog.Title>
+              <Dialog.Description size="2" color="gray">重新验证使用已存凭据，凭据与已存验证记录不会回到浏览器。</Dialog.Description>
+            </div>
+            <div className="mt-4">{maintenanceForm}</div>
+            <Dialog.Close>
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size={{ initial: "3", sm: "1" }}
+                className="absolute top-3 right-3 max-sm:min-h-11 max-sm:min-w-11"
+                aria-label="关闭凭据维护"
+              >
+                <Cross2Icon />
+              </IconButton>
+            </Dialog.Close>
+          </Dialog.Content>
+        </Dialog.Root>
+        <AlertDialog.Root
+          open={confirmingDelete}
+          onOpenChange={(open) => {
+            setConfirmingDelete(open);
+            if (!open) removeCredential.reset();
+          }}
+        >
+          <AlertDialog.Content
+            maxWidth="520px"
+            maxHeight="calc(100dvh - 2rem)"
+            size={{ initial: "2", sm: "3" }}
+            className="flex min-h-0 flex-col overflow-hidden"
+          >
+            {deleteConfirmation}
+          </AlertDialog.Content>
+        </AlertDialog.Root>
+      </>
     );
   }
 
@@ -1356,15 +1381,22 @@ function CredentialControls({
         </div>
       </div>
       {maintenanceForm}
-      <Dialog
+      <AlertDialog.Root
         open={confirmingDelete}
         onOpenChange={(open) => {
           setConfirmingDelete(open);
           if (!open) removeCredential.reset();
         }}
       >
-        <DialogContent>{deleteConfirmation}</DialogContent>
-      </Dialog>
+        <AlertDialog.Content
+          maxWidth="520px"
+          maxHeight="calc(100dvh - 2rem)"
+          size={{ initial: "2", sm: "3" }}
+          className="flex min-h-0 flex-col overflow-hidden"
+        >
+          {deleteConfirmation}
+        </AlertDialog.Content>
+      </AlertDialog.Root>
     </section>
   );
 }
@@ -1482,27 +1514,27 @@ function CustomServiceControls({ service }: { service: ModelService }) {
           </Button>
         </div>
       </div>
-      <Dialog
+      <Dialog.Root
         open={renaming}
         onOpenChange={(open) => {
           setRenaming(open);
           if (!open) renameService.reset();
         }}
       >
-        <DialogContent>
+        <Dialog.Content maxWidth="520px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
           <form
-            className="space-y-4"
+            className="flex flex-col gap-4"
             onSubmit={(event) => {
               event.preventDefault();
               renameService.mutate();
             }}
           >
-            <DialogHeader>
-              <DialogTitle>迁移 {service.provider} 到新名称</DialogTitle>
-              <DialogDescription>
+            <div className="pr-9">
+              <Dialog.Title size="4" mb="2" className="break-words">迁移 {service.provider} 到新名称</Dialog.Title>
+              <Dialog.Description size="2" color="gray">
                 服务、全局模型组合与全部仓库覆盖会在一个事务中改名。model id 与历史审查记录保持不变。
-              </DialogDescription>
-            </DialogHeader>
+              </Dialog.Description>
+            </div>
             <div className="space-y-1.5">
               <Text as="label" htmlFor={`rename-provider-${service.provider}`} size="2" weight="medium">新 provider</Text>
               <TextField.Root
@@ -1525,47 +1557,61 @@ function CustomServiceControls({ service }: { service: ModelService }) {
                 <ReferenceBlockers references={renameService.error.references} />
               </div>
             )}
-            <DialogFooter>
-              <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} disabled={renameService.isPending} onClick={() => setRenaming(false)}>
+            <Flex gap="3" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
+              <Dialog.Close><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} disabled={renameService.isPending}>
                 取消
-              </Button>
+              </Button></Dialog.Close>
               <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={renameService.isPending || newProvider.trim() === ""}>
                 {renameService.isPending ? "正在迁移…" : "确认迁移"}
               </Button>
-            </DialogFooter>
+            </Flex>
           </form>
-        </DialogContent>
-      </Dialog>
-      <Dialog
+          <Dialog.Close>
+            <IconButton
+              variant="ghost"
+              color="gray"
+              size={{ initial: "3", sm: "1" }}
+              className="absolute top-3 right-3 max-sm:min-h-11 max-sm:min-w-11"
+              aria-label="关闭服务迁移"
+            >
+              <Cross2Icon />
+            </IconButton>
+          </Dialog.Close>
+        </Dialog.Content>
+      </Dialog.Root>
+      <AlertDialog.Root
         open={confirmingDelete}
         onOpenChange={(open) => {
           setConfirmingDelete(open);
           if (!open) removeService.reset();
         }}
       >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>删除 {service.provider}？</DialogTitle>
-            <DialogDescription>
-                服务定义、加密凭据、当前目录与手动模型来源会在一个事务中删除；历史审查记录保留。仍被模型组合引用时不会删除。
-            </DialogDescription>
-          </DialogHeader>
+        <AlertDialog.Content
+          maxWidth="520px"
+          maxHeight="calc(100dvh - 2rem)"
+          size={{ initial: "2", sm: "3" }}
+          className="flex min-h-0 flex-col overflow-hidden"
+        >
+          <AlertDialog.Title size="4" mb="2" className="break-words">删除 {service.provider}？</AlertDialog.Title>
+          <AlertDialog.Description size="2" color="gray">
+            服务定义、加密凭据、当前目录与手动模型来源会在一个事务中删除；历史审查记录保留。仍被模型组合引用时不会删除。
+          </AlertDialog.Description>
           {removeService.error === null ? null : (
-            <div className="space-y-2">
+            <div className="mt-4 min-h-0 space-y-2 overflow-y-auto">
               <p role="alert" className="text-destructive">{removeService.error.message}</p>
               <ReferenceBlockers references={removeService.error.references} />
             </div>
           )}
-          <DialogFooter>
-            <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} disabled={removeService.isPending} onClick={() => setConfirmingDelete(false)}>
+          <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }} className="shrink-0">
+            <AlertDialog.Cancel><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} disabled={removeService.isPending}>
               取消
-            </Button>
+            </Button></AlertDialog.Cancel>
             <Button type="button" variant="solid" color="red" size={{ initial: "4", sm: "2" }} disabled={removeService.isPending} onClick={() => removeService.mutate()}>
               {removeService.isPending ? "正在删除…" : "确认删除服务"}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </Flex>
+        </AlertDialog.Content>
+      </AlertDialog.Root>
     </section>
   );
 }
@@ -1736,7 +1782,7 @@ function CatalogControls({
         )}
       </div>
 
-      <Dialog
+      <AlertDialog.Root
         open={deleting !== null}
         onOpenChange={(open) => {
           if (open) return;
@@ -1744,32 +1790,34 @@ function CatalogControls({
           removeSupplement.reset();
         }}
       >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>删除 {deleting?.identity} 的手动来源？</DialogTitle>
-            <DialogDescription>
-              {deleting?.sources.includes("automatic")
-                ? "自动发现来源仍会保留，这个模型不会从清单消失。"
-                : "这是当前唯一来源；仍被模型组合引用时，服务端会阻止删除并列出位置。"}
-            </DialogDescription>
-          </DialogHeader>
+        <AlertDialog.Content
+          maxWidth="520px"
+          maxHeight="calc(100dvh - 2rem)"
+          size={{ initial: "2", sm: "3" }}
+          className="flex min-h-0 flex-col overflow-hidden"
+        >
+          <AlertDialog.Title size="4" mb="2" className="break-words">删除 {deleting?.identity} 的手动来源？</AlertDialog.Title>
+          <AlertDialog.Description size="2" color="gray">
+            {deleting?.sources.includes("automatic")
+              ? "自动发现来源仍会保留，这个模型不会从清单消失。"
+              : "这是当前唯一来源；仍被模型组合引用时，服务端会阻止删除并列出位置。"}
+          </AlertDialog.Description>
           {removeSupplement.error === null ? null : (
-            <div className="space-y-2">
+            <div className="mt-4 min-h-0 space-y-2 overflow-y-auto">
               <p role="alert" className="text-destructive">{removeSupplement.error.message}</p>
               <ReferenceBlockers references={removeSupplement.error.references} />
             </div>
           )}
-          <DialogFooter>
-            <Button
+          <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }} className="shrink-0">
+            <AlertDialog.Cancel><Button
               type="button"
               variant="outline"
               color="gray"
               size={{ initial: "4", sm: "2" }}
               disabled={removeSupplement.isPending}
-              onClick={() => setDeleting(null)}
             >
               取消
-            </Button>
+            </Button></AlertDialog.Cancel>
             <Button
               type="button"
               variant="solid"
@@ -1782,9 +1830,9 @@ function CatalogControls({
             >
               <TrashIcon />{removeSupplement.isPending ? "正在删除…" : "确认删除来源"}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog></> : null}
+          </Flex>
+        </AlertDialog.Content>
+      </AlertDialog.Root></> : null}
     </section>
   );
 }
