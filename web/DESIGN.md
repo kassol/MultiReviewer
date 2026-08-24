@@ -498,7 +498,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 - `PanelTheme`：全站唯一的 Theme 实例，四个 prop 不开放给调用方。
 - `MasterListItem` 与 `MasterListItemText`：用 Slot 统一路由链接和页内按钮的主从当前项，集中处理蓝 tint 选中、伪元素左条、焦点与辅助文字对比度。
-- `StatusBadge`：运行状态的唯一视觉出口，四种语义映射到 Radix Gray / Green / Amber / Red。
+- `StatusBadge`：运行状态的唯一视觉出口，五种语义映射到 Radix Gray / Blue / Green / Amber / Red（`running` 占蓝那一档）。
 - `CommandPalette` 与 `useCommandPalette`：全局 ⌘K 入口与 Spotlight 材质浮层，内部复用 `ui/command`。
 - `PageHeader` / `PageBody`：页头与正文容器的唯一实现，统一标题层级、正文宽度与页尾留白。
 - `Mark`：产品标记，与 favicon 同图形。
