@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-24: 修复 Radix Themes 未分层样式覆盖 Tailwind 响应式布局。样式入口固定 `theme < base < radix < components < utilities`,Card、Button 与 Table 上明确声明的布局和断点显隐恢复生效；模型服务返回列表链接不再误标为当前地址。
+
 - 2026-08-24: 管理面板完成 Radix 迁移收口。`MasterListItem` 统一仓库、模型服务与模型组合的主从选择；`DateRangePicker`、`EditableModelCombobox`、`EmptyState` 和 `useDialogReturnFocus` 分别统一日期范围、可编辑模型标识、空态与受控浮层焦点返回。页面按路由分块，仓库与模型服务在 `lg` 起采用列表／详情双栏和独立滚动，640–1023px 保持单层切换。源码结构已核对，部署实例的端到端验收仍待执行。
 
 - 2026-08-24: 修正 Radix Themes 弹窗关闭按钮的定位。IconButton 保留自身布局规则，右上角定位交给外层容器，避免窄屏时关闭图标落到弹窗底部；模型服务、新建用户与角色、服务迁移、凭据维护和仓库注册统一处理。

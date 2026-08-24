@@ -1,4 +1,7 @@
+@layer theme, base, radix, components, utilities;
+
 @import "tailwindcss";
+@import "@radix-ui/themes/styles.css" layer(radix);
 
 /*
  * 品类标准件的设计令牌,手艺对标 GitHub / Linear / Vercel。只做亮色一套

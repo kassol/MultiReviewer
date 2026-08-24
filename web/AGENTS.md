@@ -37,7 +37,7 @@
 - `src/components/model-composer.tsx` — 全局组合与仓库覆盖共用的唯一模型选择器。接口是 `{value, onChange, provider?, onValidityChange}`;外部 provider 优先定位,没有传入时优先显示已选模型所属 provider。它只读 `GET /model-services` 的统一候选,不创建 provider、不处理凭据、不刷新目录、不补录模型。左栏按服务分组,右栏筛当前服务模型;模型行使用 Themes Checkbox 作为唯一选择控件,整行标签可点击并以浅色反馈选中。已选但失效的模型保留稳定原因与「去模型服务处理」入口,允许移除但通知调用页禁止原样保存。一次最多渲染当前服务的 120 行。
 - `src/components/ui/` — 允许保留的专用行为组件(Command / Calendar)。Command 只封装 cmdk 的搜索与键盘行为,外观直接读取 Radix Theme token；`EditableModelCombobox` 和仓库搜索复用它。Calendar 只保留 `react-day-picker` 的日期行为,月份导航使用 Themes `IconButton`,日期使用 Themes `Button`,外观读取 Theme token,且只由 `DateRangePicker` 调用;`locale` 为 undefined 时不显式传给 `DayButton`,以兼容 `exactOptionalPropertyTypes`。Button、Input、Label、Badge、Card、Skeleton、Table、Dialog 与 Popover wrapper 已删除。侧栏与分栏用 utility 实现,不引入带折叠、移动端抽屉和 cookie 记忆的通用 Sidebar。
 - `src/lib/utils.ts` — className 合并工具 `cn()`,由 clsx 与 tailwind-merge 实现。
-- `src/styles.css` — Radix Theme token 到产品语义 token 与 Tailwind token 的映射,以及浏览器原生面的接管,没有组件类。三层底色(`--app-chrome` 外壳 / `--app-bg` 内容 / `--app-panel` 面板)、六档字号阶梯(xs 11 / sm 13 / base 14 / lg 16 / xl 19 / 3xl 28,body 就是 sm),以及选区、光标、滚动条与表格数字的默认样式。
+- `src/styles.css` — 样式入口与 Radix Theme token 到产品语义 token、Tailwind token 的映射。cascade layer 顺序固定为 `theme < base < radix < components < utilities`;Tailwind 由自身 layer 输出,Radix Themes 样式统一导入 `radix` layer,保证响应式 display utility 能覆盖组件默认 display。其余只接管浏览器原生面,没有页面组件类。三层底色(`--app-chrome` 外壳 / `--app-bg` 内容 / `--app-panel` 面板)、六档字号阶梯(xs 11 / sm 13 / base 14 / lg 16 / xl 19 / 3xl 28,body 就是 sm),以及选区、光标、滚动条与表格数字的默认样式。
 
 ## 模块规范
 
@@ -49,6 +49,7 @@
 - **失效的已选模型不静默消失。**`GET /model-services` 给稳定原因与处理入口,编辑器原样显示并允许移除;调用页只门禁这一次组合保存。批次上限等无关设置仍可独立提交,最终门禁以服务端同一模型服务投影为准。
 - **模型服务字段与动作按权限裁剪。**`model:read` 才看目标、目录、模型、来源和可用性,`credential:read` 才看凭据审计字段;候选与错误响应不得含明文、密文或主密钥材料。前端只依据返回字段展示,不复制服务端 provider、引用或版本竞争判据。
 - **通用视觉只有 Radix Themes 一条路。**颜色、字号、间距、圆角及组件状态使用 Theme 配置、组件 props 与 Theme tokens；Radix Primitives 只补行为；Tailwind 只处理 Themes 响应式能力无法表达的复杂布局和产品专有结构。页面不得深度覆盖 Radix 内部 DOM,也不得为同一语义另写一套 utility 外观。
+- **响应式显隐依赖固定 cascade layer。**Radix Themes 必须从 `styles.css` 导入 `radix` layer,不得在 TSX 入口单独导入未分层样式；`hidden` 与断点 display utility 才能稳定覆盖 Card、Button、Table 等组件的默认 display。新增样式入口或调整 layer 顺序时必须检查生产 CSS。
 - **文本输入与字段标签直接使用 Themes。**文本输入使用 `TextField.Root`,搜索图标等附件进入 `TextField.Slot`;可见或视觉隐藏的字段标签使用 `Text as="label"` 并保持 `htmlFor`/`id` 关联。输入在窄视口使用响应式 size 和最小触控高度；组合框只复用输入外观,其受控值、候选和键盘行为继续由领域组件持有。
 - **有限枚举与多选直接使用 Themes。**有限枚举使用 `Select`,权限矩阵、模型批量选择和补录确认使用 `Checkbox`;点击区域通过可见标签或可访问名称关联。批量全选必须呈现部分选中的 indeterminate 状态。允许搜索和手填的 model id 使用统一的可编辑组合框，保留目录搜索、键盘选择和直接输入裸 model id。
 - **面板只做亮色一套**(issue #46)。`PanelTheme` 明确固定 `appearance="light"`;不加主题上下文、本地存储、防闪脚本或暗色变体。需要暗色时先在设计系统中补齐完整 token 与组件状态,再引入主题切换。
@@ -74,6 +75,8 @@
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
 
 ## 变更日志
+
+- 2026-08-24: 修复 Radix Themes 未分层样式覆盖 Tailwind 响应式显隐。样式入口声明 `theme < base < radix < components < utilities` 并把 Radix 样式导入 `radix` layer；Card、Button、Table 上的 `hidden` 与断点 display utility 恢复预期。模型服务返回列表链接补精确路由匹配，详情地址不再误标当前。
 
 - 2026-08-24: 完成 Radix 迁移后的产品组件与页面结构收口。主从列表统一为 `MasterListItem`;日期范围、可编辑 model id 与空态分别收进 `DateRangePicker`、`EditableModelCombobox`、`EmptyState`;受控浮层通过 `useDialogReturnFocus` 恢复真实触发点。页面按路由分块，仓库与模型服务在 `lg` 起使用双栏和两侧局部滚动，640–1023px 保持列表／详情单层切换。源码结构已核对，部署实例的端到端验收仍待执行。
 

@@ -29,7 +29,6 @@ import {
   type PanelSession,
 } from "./session.ts";
 import { SETUP_STATUS_QUERY_KEY, SetupChecklist } from "./setup-checklist.tsx";
-import "@radix-ui/themes/styles.css";
 import "./styles.css";
 
 const AccessControlPage = lazy(async () => ({ default: (await import("./access-control.tsx")).AccessControlPage }));

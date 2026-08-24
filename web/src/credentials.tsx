@@ -2857,7 +2857,7 @@ export function ModelServicesPage({
           >
             {provider === undefined ? null : (
               <Button variant="ghost" color="gray" size="3" className="mb-3 w-fit lg:hidden" asChild>
-                <Link to="/credentials">
+                <Link to="/credentials" activeOptions={{ exact: true }}>
                   <ArrowLeftIcon aria-hidden />
                   返回模型服务列表
                 </Link>
