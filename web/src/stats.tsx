@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { CalendarIcon, ChevronDownIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
+import { Card, Popover, Skeleton, Table } from "@radix-ui/themes";
+import { Collapsible } from "radix-ui";
 import { useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -8,8 +10,6 @@ import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/theme-button";
 import { Calendar } from "@/components/ui/calendar";
-import { Card, Skeleton, Table } from "@radix-ui/themes";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 import { api, fetchJson } from "./api.ts";
 import { costPresentation, type UsageSummary } from "./usage-cost.ts";
@@ -145,6 +145,7 @@ export function SummaryRate() {
 export function StatsPage() {
   const [from, setFrom] = useState(() => isoDay(Date.now() - 30 * 24 * 60 * 60 * 1000));
   const [to, setTo] = useState(() => isoDay(Date.now()));
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
 
   const stats = useQuery({
     queryKey: ["stats", from, to],
@@ -185,16 +186,22 @@ export function StatsPage() {
           </span>
         }
         actions={
-          <Popover>
-            <PopoverTrigger asChild>
+          <Popover.Root open={datePickerOpen} onOpenChange={setDatePickerOpen}>
+            <Popover.Trigger>
               <Button variant="outline" color="gray" size="3" className="max-w-full text-xs">
-                <CalendarIcon />
+                <CalendarIcon aria-hidden />
                 <span className={from === "" ? undefined : "font-mono"}>{from === "" ? "起始不限" : from}</span>
-                <span className="text-muted-foreground">→</span>
+                <span className="text-muted-foreground">至</span>
                 <span className={to === "" ? undefined : "font-mono"}>{to === "" ? "至今" : to}</span>
               </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-auto p-0">
+            </Popover.Trigger>
+            <Popover.Content
+              align="end"
+              size="1"
+              maxWidth="calc(100vw - var(--space-4))"
+              maxHeight="calc(100vh - var(--space-4))"
+              className="overflow-auto"
+            >
               <Calendar
                 mode="range"
                 numberOfMonths={2}
@@ -205,8 +212,8 @@ export function StatsPage() {
                   setTo(range?.to === undefined ? "" : dayString(range.to));
                 }}
               />
-            </PopoverContent>
-          </Popover>
+            </Popover.Content>
+          </Popover.Root>
         }
       />
 
@@ -310,8 +317,14 @@ export function StatsPage() {
               {models.map((model) => {
                 const total = modelTotal(model);
                 return (
-                  <details key={model} className="group overflow-hidden rounded-sm border border-border bg-card">
-                    <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 px-3 py-2.5 outline-none [&::-webkit-details-marker]:hidden focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset">
+                  <Collapsible.Root
+                    key={model}
+                    className="group/model-rate overflow-hidden rounded-sm border border-border bg-card"
+                  >
+                    <Collapsible.Trigger
+                      type="button"
+                      className="flex min-h-11 w-full cursor-pointer items-center gap-3 px-3 py-2.5 text-left outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset"
+                    >
                       <div className="min-w-0 flex-1">
                         <p className="break-all font-mono text-xs font-medium">{model}</p>
                         <p className="mt-0.5 text-xs text-muted-foreground">展开查看全部分类</p>
@@ -320,26 +333,31 @@ export function StatsPage() {
                         <span className="mb-1 block text-xs text-muted-foreground">合计</span>
                         <Rate resolved={total.resolved} total={total.total} />
                       </div>
-                      <ChevronDownIcon aria-hidden className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
-                    </summary>
-                    <dl className="divide-y divide-border border-t border-border">
-                      {categories.map((category) => {
-                        const cell = byKey.get(`${model}\n${category}`);
-                        return (
-                          <div key={category} className="grid grid-cols-[minmax(0,1fr)_8rem] items-start gap-3 px-3 py-2.5">
-                            <dt className="break-words text-muted-foreground">{category}</dt>
-                            <dd>
-                              {cell === undefined ? (
-                                <span className="font-mono text-xs tabular-nums text-muted-foreground">—</span>
-                              ) : (
-                                <Rate resolved={cell.resolved} total={denominator(cell)} />
-                              )}
-                            </dd>
-                          </div>
-                        );
-                      })}
-                    </dl>
-                  </details>
+                      <ChevronDownIcon
+                        aria-hidden
+                        className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/model-rate:rotate-180"
+                      />
+                    </Collapsible.Trigger>
+                    <Collapsible.Content>
+                      <dl className="divide-y divide-border border-t border-border">
+                        {categories.map((category) => {
+                          const cell = byKey.get(`${model}\n${category}`);
+                          return (
+                            <div key={category} className="grid grid-cols-[minmax(0,1fr)_8rem] items-start gap-3 px-3 py-2.5">
+                              <dt className="break-words text-muted-foreground">{category}</dt>
+                              <dd>
+                                {cell === undefined ? (
+                                  <span className="font-mono text-xs tabular-nums text-muted-foreground">—</span>
+                                ) : (
+                                  <Rate resolved={cell.resolved} total={denominator(cell)} />
+                                )}
+                              </dd>
+                            </div>
+                          );
+                        })}
+                      </dl>
+                    </Collapsible.Content>
+                  </Collapsible.Root>
                 );
               })}
             </div>
