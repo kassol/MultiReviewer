@@ -21,9 +21,11 @@
 - `src/components/panel-theme.tsx` — Radix Theme 根配置的唯一实现。应用根与迁移期 Primitive Portal 都复用它,避免浮层回落到 Radix 默认 accent、圆角或缩放。
 - `src/components/help-tooltip.tsx` — 统一的帮助提示入口。基于 Radix Themes Tooltip、IconButton 与 Radix Icons,图标按钮可键盘访问,窄屏保留触控尺寸。
 - `src/components/status-badge.tsx` — 跨页面运行状态的唯一视觉出口。领域组件只传 `neutral` / `success` / `warning` / `error` 与文字；组件统一 Radix Themes Badge 的色系、variant 和状态图标。深色 provider 选中行改用对应状态色的 solid Badge,不把状态洗成白色中性标签。来源、身份和类别直接使用 Themes Badge。
+- `src/components/provider-selector-item.tsx` — Provider 单选的唯一交互表面。模型服务主从列表与 `ModelComposer` 共用深色实底、白字、深色 hover、焦点和辅助文字对比规则；路由项用 `asChild` 组合 Link 并输出 `aria-current`,页内项输出 button 与 `aria-pressed`。模型行和 Checkbox 多选不使用这套深色状态。
 - `src/components/theme-button.ts` — Radix Themes `Button` 的集中类型适配出口。`@radix-ui/themes` 3.3.0 在 `exactOptionalPropertyTypes` 下把 `highContrast` 推成 `never`;这里仅把它修正为可选 boolean,导出的仍是原始 Button,不增加组件、行为或 DOM。业务 Button 从此处导入,IconButton 继续直接使用 Themes。主要动作固定为 `solid + highContrast`,次要动作使用 `outline` / `ghost`,删除和丢弃使用 `red`;纯图标动作使用 `IconButton` 并提供 `aria-label`。
 - `src/components/page-body.tsx` — 业务页正文容器。`wide` 与 `form` 两档统一最大宽度、窄屏内边距和页尾留白;主从页只在详情栏复用,不改变分栏结构。
 - `src/repos.tsx` — 仓库页,左列表右详情。模型覆盖是「跟随全局 / 自定义」两态:点「跟随全局」直接清覆盖;点「自定义」在详情内挂与审查策略共用的 `ModelComposer`,以当前生效组合为初值。不可用的既有选择可移除但不得随覆盖再次保存;服务端仍作最终校验。编辑态并成单栏容纳 460px 高的两栏选择器,不套对话框或外层表单。审查配置就绪前注册按钮禁用并指向审查策略,状态失效时已开的注册框随即卸载。注册使用 Themes Dialog,移除确认使用 Themes AlertDialog,不用阻塞渲染线程的 `window.confirm`。
+- `src/runs.tsx` — 评审记录页。结论筛选使用 Themes `SegmentedControl`,只过滤已经加载的 Review Run；桌面使用固定列宽的 Themes `Table` 并把横向滚动限制在表格内，窄视口保持按日期分组的单列记录；模型失败原因使用 Collapsible，保留键盘展开、完整原因和逐条重新运行。
 - `src/credentials.tsx` — 模型服务主从页。左侧只列已配置或异常保留的服务;右侧按概览、维护、模型分层。概览以服务端运行能力为主状态,目录失败作次级提醒,组合引用可展开到全局、跟随全局仓库数与具体仓库覆盖;维护收凭据轮换、地址／协议调整、目录刷新与删除,`name-conflict` 自定义服务在这里原子迁移到新名称并跳到新的稳定地址,普通服务不显示改名入口;重新验证的 model id 用可编辑组合框列出自动发现模型，手填路径始终保留。模型页用模型、运行规格、状态三列展示；调用目标不在每行重复，发现值只在与运行规格不同时展开。唯一添加入口同时承载 Pi 内置 provider 搜索与自定义 provider;内置、自定义创建和两类既有服务修改共用来源、模型发现、真实推理三步页。自定义发现先收 provider、调用目标、协议与凭据,协议显示产品名称但提交现有运行时枚举;发现失败或目录缺项仍可在验证页手填 model id。凭据与候选只留流程页内存,刷新不会恢复;未保存离开走应用确认并注册浏览器关闭警告,长操作显示阶段并锁住导航。最终提交重新发现并做最小真实推理;新建成功进入审查策略并定位 provider,修改成功回服务概览,两者都不写模型组合。读字段和动作按 `model:*` / `credential:*` 独立权限裁剪,前端从不接收明文或密文。
 
 - `src/settings.tsx` — `/settings` 上的审查策略页。全局模型组合与批次上限各持独立版本、分别保存;409 只恢复冲突项,保留另一项草稿。批次上限收在默认折叠的高级参数里并显示系统默认/自定义来源。
@@ -67,6 +69,8 @@
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
 
 ## 变更日志
+
+- 2026-08-24: 评审记录页完成 Radix 页面级迁移。结论筛选使用 Themes `SegmentedControl`,桌面记录表使用 Themes `Table`,模型失败原因使用 Collapsible；筛选范围、日期分组、无限加载、重跑权限和窄屏记录布局保持不变。
 
 - 2026-08-24: Dialog 组件族迁移到 Radix Themes。新建、注册、迁移和三步模型服务配置直接使用 Themes `Dialog`;删除、密码重置、丢弃与离开确认使用 `AlertDialog`;长引用清单与三步内容在弹窗内部滚动,关闭后保留底层列表、provider 与 Tab;旧 shadcn Dialog wrapper 删除。
 

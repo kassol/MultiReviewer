@@ -2,13 +2,19 @@ import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Fragment, useEffect, useRef, useState } from "react";
 
-import { CheckCircledIcon, CrossCircledIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
+import {
+  CheckCircledIcon,
+  ChevronDownIcon,
+  CrossCircledIcon,
+  ExclamationTriangleIcon,
+} from "@radix-ui/react-icons";
+import { Card, SegmentedControl, Skeleton, Table } from "@radix-ui/themes";
+import { Collapsible } from "radix-ui";
 
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Card, Skeleton } from "@radix-ui/themes";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { SummaryRate } from "./stats.tsx";
@@ -165,20 +171,28 @@ function RunModels({ run }: { run: RunItem }) {
         </ul>
       )}
       {failures.length > 0 ? (
-        <details className="mt-2 rounded-sm border border-destructive/25 bg-background/70 text-xs text-destructive">
-          <summary className="flex min-h-11 cursor-pointer items-center px-2 py-1.5 font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/50 xl:min-h-8">
-            查看 {failures.length} 条失败原因
-          </summary>
-          <ul className="space-y-2 border-t border-destructive/20 px-2 py-2">
-            {failures.map((entry) => (
-              <li key={`${entry.model}-why`} className="break-words leading-relaxed">
-                <span className="break-all font-mono font-medium">{entry.model}</span>
-                <span aria-hidden> · </span>
-                {entry.failure}
-              </li>
-            ))}
-          </ul>
-        </details>
+        <Collapsible.Root className="group/failure mt-2">
+          <Collapsible.Trigger asChild>
+            <Button variant="ghost" color="red" size={{ initial: "3", sm: "1" }}>
+              查看 {failures.length} 条失败原因
+              <ChevronDownIcon
+                className="size-3.5 transition-transform group-data-[state=open]/failure:rotate-180"
+                aria-hidden
+              />
+            </Button>
+          </Collapsible.Trigger>
+          <Collapsible.Content>
+            <ul className="mt-1 flex flex-col gap-2 border-l border-destructive/25 py-1 pl-3 text-xs text-destructive">
+              {failures.map((entry) => (
+                <li key={`${entry.model}-why`} className="break-words leading-relaxed">
+                  <span className="break-all font-mono font-medium">{entry.model}</span>
+                  <span aria-hidden> · </span>
+                  {entry.failure}
+                </li>
+              ))}
+            </ul>
+          </Collapsible.Content>
+        </Collapsible.Root>
       ) : null}
     </div>
   );
@@ -298,7 +312,21 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
           </p>
         ) : null}
 
-        <div className="flex flex-wrap gap-1.5" role="group" aria-label="按结论过滤">
+        <SegmentedControl.Root
+          value={filter}
+          onValueChange={(value) => {
+            if (
+              value === "all" ||
+              value === "failed" ||
+              value === "pending" ||
+              value === "done"
+            ) {
+              setFilter(value);
+            }
+          }}
+          size={{ initial: "3", sm: "1" }}
+          aria-label="按结论过滤"
+        >
           {(
             [
               ["all", "全部", counts.all],
@@ -307,84 +335,65 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
               ["done", "已处置", counts.done],
             ] as const
           ).map(([id, label, count]) => (
-            <button
-              key={id}
-              type="button"
-              aria-pressed={filter === id}
-              onClick={() => setFilter(id)}
-              className={`min-h-11 rounded-full px-3 py-1 text-xs font-medium transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50 xl:min-h-7 xl:px-2.5 ${
-                filter === id
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted text-muted-foreground hover:text-foreground"
-              }`}
-            >
+            <SegmentedControl.Item key={id} value={id}>
               {label}
-              <span className="ml-1 tabular-nums">{count}</span>
-            </button>
+              <span className="ml-1 font-mono tabular-nums">{count}</span>
+            </SegmentedControl.Item>
           ))}
-        </div>
+        </SegmentedControl.Root>
 
         {runs.isPending
           ? [0, 1, 2, 3].map((slot) => <Skeleton key={slot} className="h-14" />)
           : null}
 
         {visible.length > 0 ? (
-          <div className="hidden overflow-hidden rounded-md border border-border xl:block">
-            <table className="w-full table-fixed text-left">
-              <caption className="sr-only">审查记录列表</caption>
-              <thead className="bg-muted text-xs text-muted-foreground">
-                <tr>
-                  <th scope="col" className="w-11 px-2 py-2 font-medium">
-                    状态
-                  </th>
-                  <th scope="col" className="w-[17%] px-2 py-2 font-medium">
-                    仓库 / PR
-                  </th>
-                  <th scope="col" className="w-[31%] px-2 py-2 font-medium">
-                    模型
-                  </th>
-                  <th scope="col" className="w-[13%] px-2 py-2 font-medium">
-                    处置
-                  </th>
-                  <th scope="col" className="w-[15%] px-2 py-2 font-medium">
-                    用量 / 费用
-                  </th>
-                  <th scope="col" className="w-[12%] px-2 py-2 font-medium">
-                    时间
-                  </th>
-                  {canRerun ? (
-                    <th scope="col" className="w-16 px-2 py-2 font-medium">
-                      动作
-                    </th>
-                  ) : null}
-                </tr>
-              </thead>
-              <tbody>
-                {visibleGroups.map((group) => (
-                  <Fragment key={group.day}>
-                        <tr className="border-t border-border bg-muted/60">
-                          <th
-                            colSpan={canRerun ? 7 : 6}
-                            className="px-3 py-1.5 font-mono text-xs font-semibold text-muted-foreground"
-                          >
-                            {group.day}
-                          </th>
-                        </tr>
-                    {group.runs.map((run) => {
-                      const failedRow = runBucket(run) === "failed";
-                      return (
-                      <tr
+          <Table.Root
+            size="1"
+            variant="surface"
+            layout="fixed"
+            className="hidden min-w-0 max-w-full xl:block"
+          >
+            <caption className="sr-only">审查记录列表</caption>
+            <Table.Header className="bg-muted text-xs text-muted-foreground">
+              <Table.Row>
+                <Table.ColumnHeaderCell width="3rem">状态</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell width="17%">仓库 / PR</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell width="31%">模型</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell width="13%">处置</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell width="15%">用量 / 费用</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell width="12%">时间</Table.ColumnHeaderCell>
+                {canRerun ? (
+                  <Table.ColumnHeaderCell width="5rem">动作</Table.ColumnHeaderCell>
+                ) : null}
+              </Table.Row>
+            </Table.Header>
+            <Table.Body>
+              {visibleGroups.map((group) => (
+                <Fragment key={group.day}>
+                  <Table.Row className="bg-muted/60">
+                    <Table.Cell
+                      colSpan={canRerun ? 7 : 6}
+                      className="font-mono text-xs font-semibold text-muted-foreground"
+                    >
+                      {group.day}
+                    </Table.Cell>
+                  </Table.Row>
+                  {group.runs.map((run) => {
+                    const failedRow = runBucket(run) === "failed";
+                    return (
+                      <Table.Row
                         key={run.id}
+                        align="start"
                         className={
                           failedRow
-                            ? "border-t border-border bg-destructive/10"
-                            : "border-t border-border transition-colors hover:bg-muted/40"
+                            ? "bg-destructive/10"
+                            : "transition-colors hover:bg-muted/40"
                         }
                       >
-                        <td className="px-2 py-2.5 align-top">
+                        <Table.Cell>
                           <RunStatus run={run} />
-                        </td>
-                        <td className="min-w-0 px-2 py-2.5 align-top">
+                        </Table.Cell>
+                        <Table.Cell className="min-w-0">
                           <div className="break-all">
                             <span className="font-mono text-xs text-muted-foreground">
                               {run.owner}/{run.repo}
@@ -394,40 +403,39 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
                           <div className="font-mono text-xs text-muted-foreground">
                             {run.headSha.slice(0, 7)}
                           </div>
-                        </td>
-                        <td className="min-w-0 px-2 py-2.5 align-top">
+                        </Table.Cell>
+                        <Table.Cell className="min-w-0">
                           <RunModels run={run} />
-                        </td>
-                        <td className="px-2 py-2.5 align-top">
+                        </Table.Cell>
+                        <Table.Cell>
                           <RunPill run={run} />
-                        </td>
-                        <td className="px-2 py-2.5 align-top">
+                        </Table.Cell>
+                        <Table.Cell>
                           <RunUsage run={run} />
-                        </td>
-                        <td className="px-2 py-2.5 align-top">
+                        </Table.Cell>
+                        <Table.Cell>
                           <RunTime run={run} />
-                        </td>
+                        </Table.Cell>
                         {canRerun ? (
-                          <td className="px-2 py-2.5 align-top">
+                          <Table.Cell>
                             <Button
                               variant="outline"
                               color="gray"
-                              size={{ initial: "4", sm: "1" }}
+                              size="1"
                               disabled={rerun.isPending}
                               onClick={() => rerun.mutate(run)}
                             >
                               {rerun.isPending ? "重新运行中…" : "重新运行"}
                             </Button>
-                          </td>
+                          </Table.Cell>
                         ) : null}
-                      </tr>
-                      );
-                    })}
-                  </Fragment>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                      </Table.Row>
+                    );
+                  })}
+                </Fragment>
+              ))}
+            </Table.Body>
+          </Table.Root>
         ) : null}
 
         {visible.length > 0 ? (
