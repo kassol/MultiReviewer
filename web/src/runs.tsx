@@ -273,30 +273,37 @@ function RunDetailPanel({
          */
         onPointerDownOutside={(event) => {
           /*
-           * 按坐标反查,不看 event.target:面板是模态的,遮罩铺在最上层,target 永远是
-           * 遮罩自己,`closest` 一个都匹配不到。elementsFromPoint 返回这一点上的整叠
-           * 元素,遮罩之下那一层才是人真正想点的东西。
+           * 按坐标做几何命中,既不看 event.target,也不用 elementsFromPoint。
            *
-           * 不接住的话,点下一轮、点筛选都得点两次:第一下被当成「关掉面板」吃掉。
+           * 面板是模态的,Radix 会把背景整片设成 `pointer-events: none`:target 永远是
+           * 遮罩自己,而 elementsFromPoint 做的是命中测试,不返回 pointer-events 为 none
+           * 的元素——那一叠里只剩遮罩和 html。两条路都拿不到人真正想点的东西。
+           *
+           * 逐个比对矩形不依赖命中测试,所以不受这层屏蔽影响。不接住的话,点下一轮、
+           * 点筛选都要点两次:第一下被当成「关掉面板」吃掉。
            */
-          const origin = event.detail.originalEvent;
-          const stack = document.elementsFromPoint(origin.clientX, origin.clientY);
-          for (const element of stack) {
-            const row = element.closest?.("[data-run-id]");
-            const id = Number((row as HTMLElement | null)?.dataset.runId);
-            if (Number.isSafeInteger(id) && id > 0) {
-              event.preventDefault();
-              onOpenOther(id);
-              return;
+          const { clientX: x, clientY: y } = event.detail.originalEvent;
+          const hit = (selector: string): HTMLElement | null => {
+            for (const element of document.querySelectorAll<HTMLElement>(selector)) {
+              const rect = element.getBoundingClientRect();
+              if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+                return element;
+              }
             }
-            const chip = element.closest?.("[data-filter-value]") as HTMLElement | null;
-            const next = chip?.dataset.filterValue;
-            if (next === "all" || next === "failed" || next === "pending" || next === "done") {
-              event.preventDefault();
-              onSwitchFilter(next);
-              onClose();
-              return;
-            }
+            return null;
+          };
+
+          const id = Number(hit("[data-run-id]")?.dataset.runId);
+          if (Number.isSafeInteger(id) && id > 0) {
+            event.preventDefault();
+            onOpenOther(id);
+            return;
+          }
+          const next = hit("[data-filter-value]")?.dataset.filterValue;
+          if (next === "all" || next === "failed" || next === "pending" || next === "done") {
+            event.preventDefault();
+            onSwitchFilter(next);
+            onClose();
           }
         }}
         // 四边定位只写 top/right/bottom/left 四个长写法,不混 inset-*:同一属性上「基础值 +
