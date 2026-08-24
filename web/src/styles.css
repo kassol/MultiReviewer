@@ -197,8 +197,8 @@
  * 反馈,一起关掉会让控件看起来没响应。
  */
 @media (prefers-reduced-motion: reduce) {
-  [data-slot="skeleton"] {
-    animation: none;
+  .rt-Skeleton {
+    animation: none !important;
   }
 
   [data-slot="dialog-content"],

@@ -8,9 +8,8 @@ import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/theme-button";
 import { Calendar } from "@/components/ui/calendar";
-import { Card } from "@radix-ui/themes";
+import { Card, Skeleton } from "@radix-ui/themes";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,

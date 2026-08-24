@@ -3,7 +3,7 @@
  * 不连坐批次上限。组合候选与仓库覆盖共用 `ModelComposer` 的模型服务投影。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Text, TextField } from "@radix-ui/themes";
+import { Skeleton, Text, TextField } from "@radix-ui/themes";
 import { useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -15,7 +15,6 @@ import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/theme-button";
 import { Card } from "@radix-ui/themes";
-import { Skeleton } from "@/components/ui/skeleton";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { modelIdentity, parseModelIdentity } from "./model-services.ts";

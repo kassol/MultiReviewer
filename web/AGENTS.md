@@ -23,13 +23,12 @@
 - `src/components/status-badge.tsx` — 跨页面运行状态的唯一视觉出口。领域组件只传 `neutral` / `success` / `warning` / `error` 与文字；组件统一 Radix Themes Badge 的色系、variant 和状态图标。深色 provider 选中行改用对应状态色的 solid Badge,不把状态洗成白色中性标签。来源、身份和类别直接使用 Themes Badge。
 - `src/components/theme-button.ts` — Radix Themes `Button` 的集中类型适配出口。`@radix-ui/themes` 3.3.0 在 `exactOptionalPropertyTypes` 下把 `highContrast` 推成 `never`;这里仅把它修正为可选 boolean,导出的仍是原始 Button,不增加组件、行为或 DOM。业务 Button 从此处导入,IconButton 继续直接使用 Themes。主要动作固定为 `solid + highContrast`,次要动作使用 `outline` / `ghost`,删除和丢弃使用 `red`;纯图标动作使用 `IconButton` 并提供 `aria-label`。
 - `src/components/page-body.tsx` — 业务页正文容器。`wide` 与 `form` 两档统一最大宽度、窄屏内边距和页尾留白;主从页只在详情栏复用,不改变分栏结构。
-- `src/components/ui/skeleton.tsx` — 读取中的占位块。带 `data-slot="skeleton"`,`styles.css` 的降低动效偏好那一段据此关掉呼吸动画。
 - `src/repos.tsx` — 仓库页,左列表右详情。模型覆盖是「跟随全局 / 自定义」两态:点「跟随全局」直接清覆盖;点「自定义」在详情内挂与审查策略共用的 `ModelComposer`,以当前生效组合为初值。不可用的既有选择可移除但不得随覆盖再次保存;服务端仍作最终校验。编辑态并成单栏容纳 460px 高的两栏选择器,不套对话框或外层表单。审查配置就绪前注册按钮禁用并指向审查策略,状态失效时已开的注册框随即卸载。注册与移除确认用 shadcn Dialog,不用阻塞渲染线程的 `window.confirm`。
 - `src/credentials.tsx` — 模型服务主从页。左侧只列已配置或异常保留的服务;右侧按概览、维护、模型分层。概览以服务端运行能力为主状态,目录失败作次级提醒,组合引用可展开到全局、跟随全局仓库数与具体仓库覆盖;维护收凭据轮换、地址／协议调整、目录刷新与删除,`name-conflict` 自定义服务在这里原子迁移到新名称并跳到新的稳定地址,普通服务不显示改名入口;重新验证的 model id 用可编辑组合框列出自动发现模型，手填路径始终保留。模型页用模型、运行规格、状态三列展示；调用目标不在每行重复，发现值只在与运行规格不同时展开。唯一添加入口同时承载 Pi 内置 provider 搜索与自定义 provider;内置、自定义创建和两类既有服务修改共用来源、模型发现、真实推理三步页。自定义发现先收 provider、调用目标、协议与凭据,协议显示产品名称但提交现有运行时枚举;发现失败或目录缺项仍可在验证页手填 model id。凭据与候选只留流程页内存,刷新不会恢复;未保存离开走应用确认并注册浏览器关闭警告,长操作显示阶段并锁住导航。最终提交重新发现并做最小真实推理;新建成功进入审查策略并定位 provider,修改成功回服务概览,两者都不写模型组合。读字段和动作按 `model:*` / `credential:*` 独立权限裁剪,前端从不接收明文或密文。
 
 - `src/settings.tsx` — `/settings` 上的审查策略页。全局模型组合与批次上限各持独立版本、分别保存;409 只恢复冲突项,保留另一项草稿。批次上限收在默认折叠的高级参数里并显示系统默认/自定义来源。
 - `src/components/model-composer.tsx` — 全局组合与仓库覆盖共用的唯一模型选择器。接口是 `{value, onChange, provider?, onValidityChange}`;外部 provider 优先定位,没有传入时优先显示已选模型所属 provider。它只读 `GET /model-services` 的统一候选,不创建 provider、不处理凭据、不刷新目录、不补录模型。左栏按服务分组,右栏筛当前服务模型;已选但失效的模型保留稳定原因与「去模型服务处理」入口,允许移除但通知调用页禁止原样保存。一次最多渲染当前服务的 120 行。
-- `src/components/ui/` — 迁移期 vendored 组件(Dialog / Table / Command / Popover / Calendar)。Button、Input、Label、Badge 与 Card wrapper 已删除。卡片一律直接使用 Radix Themes `Card`；独立任务采用 Theme 的 padding，表格和局部滚动区域用 `size="1"` 加布局层保留全宽内容。Calendar 只保留 `react-day-picker` 的日期行为,月份导航使用 Themes `IconButton`,日期使用 Themes `Button`,外观读取 Theme token;`locale` 为 undefined 时不显式传给 `DayButton`,以兼容 `exactOptionalPropertyTypes`。已按视觉定稿把 Dialog 的 ring 换成边框、圆角压到 `--radius`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
+- `src/components/ui/` — 迁移期 vendored 组件(Dialog / Table / Command / Popover / Calendar)。Button、Input、Label、Badge、Card 与 Skeleton wrapper 已删除。读取中的占位块直接使用 Themes `Skeleton`，并在降低动效偏好时关闭其呼吸动画。卡片一律直接使用 Radix Themes `Card`；独立任务采用 Theme 的 padding，表格和局部滚动区域用 `size="1"` 加布局层保留全宽内容。Calendar 只保留 `react-day-picker` 的日期行为,月份导航使用 Themes `IconButton`,日期使用 Themes `Button`,外观读取 Theme token;`locale` 为 undefined 时不显式传给 `DayButton`,以兼容 `exactOptionalPropertyTypes`。已按视觉定稿把 Dialog 的 ring 换成边框、圆角压到 `--radius`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
 - `src/lib/utils.ts` — shadcn 的 `cn()`,clsx 加 tailwind-merge。
 - `src/styles.css` — Radix Theme token 到产品语义 token 与迁移期 Tailwind token 的映射,以及浏览器原生面的接管,没有组件类。三层底色(`--app-chrome` 外壳 / `--app-bg` 内容 / `--app-panel` 面板)、六档字号阶梯(xs 11 / sm 13 / base 14 / lg 16 / xl 19 / 3xl 28,body 就是 sm),以及选区、光标、滚动条与表格数字的默认样式。
 
@@ -67,6 +66,8 @@
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
 
 ## 变更日志
+
+- 2026-08-24: Skeleton 组件族迁移到 Radix Themes。全部读取占位块直接使用官方 `Skeleton`，保留原有尺寸与布局，并在降低动效偏好时关闭呼吸动画；旧 shadcn Skeleton wrapper 删除。
 
 - 2026-08-24: Card 组件族迁移到 Radix Themes。独立任务卡直接使用 Themes `Card` 的 size 与 surface，表格、模型服务和模型组合的局部滚动区域通过紧凑 Card 保留全宽内容；审查配置与 Hook 配置的警告改用 Themes `Callout`，旧 shadcn Card wrapper 删除。
 

@@ -8,8 +8,7 @@ import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Card } from "@radix-ui/themes";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Card, Skeleton } from "@radix-ui/themes";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { SummaryRate } from "./stats.tsx";

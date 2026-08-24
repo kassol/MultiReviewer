@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
 import { CheckCircledIcon, CrossCircledIcon, ExclamationTriangleIcon, UpdateIcon } from "@radix-ui/react-icons";
-import { Callout, Text, TextField } from "@radix-ui/themes";
+import { Callout, Skeleton, Text, TextField } from "@radix-ui/themes";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { StatusBadge } from "@/components/status-badge";
@@ -25,7 +25,6 @@ import {
 } from "@/components/ui/dialog";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
-import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import {
   ModelComposer,

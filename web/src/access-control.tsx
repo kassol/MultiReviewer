@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LockClosedIcon, PlusIcon, ResetIcon, TrashIcon } from "@radix-ui/react-icons";
-import { Badge, Text, TextField } from "@radix-ui/themes";
+import { Badge, Skeleton, Text, TextField } from "@radix-ui/themes";
 import { useMemo, useState, type FormEvent } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -18,7 +18,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Skeleton } from "@/components/ui/skeleton";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import {

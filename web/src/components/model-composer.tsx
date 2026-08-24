@@ -4,14 +4,13 @@
  */
 import { Link } from "@tanstack/react-router";
 import { Cross2Icon } from "@radix-ui/react-icons";
-import { Badge, TextField } from "@radix-ui/themes";
+import { Badge, Skeleton, TextField } from "@radix-ui/themes";
 import { useEffect, useMemo, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { Card } from "@radix-ui/themes";
-import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
 import {

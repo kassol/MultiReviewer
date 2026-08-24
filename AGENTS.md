@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-24: 管理面板完成 Skeleton 组件族迁移。所有读取占位块改为直接使用 Radix Themes `Skeleton`，保留原尺寸和布局，并在降低动效偏好时关闭呼吸动画；旧 shadcn Skeleton wrapper 删除。
+
 - 2026-08-24: 管理面板完成 Card 组件族迁移。所有独立任务卡改为直接使用 Radix Themes `Card`，长表格、模型服务侧栏和模型组合的局部滚动边界保持不变；审查配置与 Hook 配置的警告改为 Themes `Callout`，旧 shadcn Card wrapper 删除。
 
 - 2026-08-24: 管理面板完成 Badge/StatusBadge 组件族迁移。来源、身份与类别直接使用 Radix Themes Badge；Review Run、Hook、模型服务、凭据、目录和模型可用性统一经四态 StatusBadge 展示,深色 provider 选中行保留对应状态色；旧 shadcn Badge wrapper 与页面状态色配方删除。
