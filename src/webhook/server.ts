@@ -1481,6 +1481,13 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
       handleRefreshModelService(req, res, deps, match![1]!),
   },
   {
+    method: "PUT",
+    pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/model-states$/,
+    access: "model:write",
+    handler: ({ req, res, deps }, match) =>
+      handleUpdateModelServiceModelStates(req, res, deps, match![1]!),
+  },
+  {
     method: "POST",
     pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/supplements$/,
     access: "model:write",
@@ -1693,12 +1700,14 @@ type ModelReadSource = "automatic" | ModelSupplementSource;
 type ModelUnavailableReason =
   | "provider-name-conflict"
   | "credential-unavailable"
-  | "model-source-missing";
+  | "model-source-missing"
+  | "model-disabled";
 
 const MODEL_UNAVAILABLE_REASON_TEXT: Record<ModelUnavailableReason, string> = {
   "provider-name-conflict": "provider 名字冲突，已停用",
   "credential-unavailable": "模型凭据不可用",
   "model-source-missing": "模型来源消失",
+  "model-disabled": "模型已停用",
 };
 
 const BASELINE_RUNTIME_PROJECTION = {
@@ -1720,6 +1729,7 @@ type ProjectedServiceModel = {
   provider: string;
   id: string;
   identity: string;
+  enabled: boolean;
   sources: readonly ModelReadSource[];
   available: boolean;
   unavailableReason: ModelUnavailableReason | null;
@@ -1764,7 +1774,8 @@ type ProjectedServiceModel = {
 type ModelServiceNextAction =
   | "recover-service"
   | "configure-credential"
-  | "add-model-source";
+  | "add-model-source"
+  | "enable-model";
 
 function isHiddenEmptyBuiltinService(
   service: ModelServiceRecord,
@@ -1850,6 +1861,7 @@ function projectServiceModel(
   supplement: ModelServiceRecord["supplements"][number] | undefined,
   serviceTarget: PiBuiltinProviderTarget | undefined,
   credentialState: ModelServiceRecord["credential"]["state"],
+  enabled: boolean,
 ): ProjectedServiceModel {
   const discovery = automatic?.fields ?? {};
   const discoverySources = modelDiscoverySources(service, automatic, serviceTarget);
@@ -1907,11 +1919,12 @@ function projectServiceModel(
         ? "credential-unavailable"
         : !hasCurrentSource || synthesis?.ok !== true
           ? "model-source-missing"
-          : null;
+          : enabled ? null : "model-disabled";
   return {
     provider: service.provider,
     id,
     identity: modelIdentity({ provider: service.provider, model: id }),
+    enabled,
     sources,
     ...modelAvailabilityProjection(unavailableReason),
     discovery: {
@@ -1935,6 +1948,7 @@ function projectMissingServiceModel(spec: ReviewerSpec): ProjectedServiceModel {
     provider: spec.provider,
     id: spec.model,
     identity: modelIdentity(spec),
+    enabled: false,
     sources: [],
     ...modelAvailabilityProjection("model-source-missing"),
     discovery: {
@@ -1966,10 +1980,11 @@ async function projectCurrentModelServices(
   retainedSpecs: readonly ReviewerSpec[] = [],
   includeModels = true,
 ) {
-  const { services, supplements, references } = withStore(deps.dbPath, (store) => ({
+  const { services, supplements, references, states } = withStore(deps.dbPath, (store) => ({
     services: store.listModelServices(),
     supplements: store.listModelSupplements(),
     references: store.listModelReferences(),
+    states: store.listModelServiceModelStates(),
   }));
   const retainedByIdentity = new Map<string, ReviewerSpec>();
   const retainedByProvider = new Map<string, ReviewerSpec[]>();
@@ -1993,6 +2008,9 @@ async function projectCurrentModelServices(
     current.push(supplement);
     supplementByProvider.set(supplement.provider, current);
   }
+  const stateByIdentity = new Map(
+    states.map((state) => [modelIdentity({ provider: state.provider, model: state.model }), state.enabled]),
+  );
 
   const projected = await Promise.all(services.map(async (stored) => {
     const service = {
@@ -2062,6 +2080,7 @@ async function projectCurrentModelServices(
           supplementById.get(id),
           serviceTarget,
           credentialState,
+          stateByIdentity.get(modelIdentity({ provider: service.provider, model: id })) ?? true,
         ),
       );
     const target = service.type === "custom"
@@ -2074,15 +2093,19 @@ async function projectCurrentModelServices(
         ? "provider-name-conflict"
         : credentialState !== "verified"
           ? "credential-unavailable"
-          : "model-source-missing";
+          : models.some((model) => model.unavailableReason === "model-disabled")
+            ? "model-disabled"
+            : "model-source-missing";
     const nextAction: ModelServiceNextAction | null =
       reason === "provider-name-conflict"
         ? "recover-service"
         : reason === "credential-unavailable"
           ? "configure-credential"
           : reason === "model-source-missing"
-            ? "add-model-source"
-            : null;
+          ? "add-model-source"
+          : reason === "model-disabled"
+            ? "enable-model"
+          : null;
     return {
       provider: service.provider,
       name: service.provider,
@@ -2902,6 +2925,79 @@ function parseModelSupplementMutation(
     model: payload["model"],
     expectedVersion: Number(payload["expectedVersion"]),
   };
+}
+
+function parseModelStateMutation(
+  value: unknown,
+): { models: string[]; expectedVersion: number; enabled: boolean } | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const payload = value as Record<string, unknown>;
+  if (
+    Object.keys(payload).some((key) => !["models", "expectedVersion", "enabled"].includes(key)) ||
+    !Array.isArray(payload["models"]) ||
+    payload["models"].length === 0 ||
+    payload["models"].some((model) => typeof model !== "string" || model.trim() !== model || model === "") ||
+    !Number.isInteger(payload["expectedVersion"]) ||
+    Number(payload["expectedVersion"]) <= 0 ||
+    typeof payload["enabled"] !== "boolean"
+  ) return undefined;
+  return {
+    models: [...new Set(payload["models"] as string[])],
+    expectedVersion: Number(payload["expectedVersion"]),
+    enabled: payload["enabled"] as boolean,
+  };
+}
+
+async function handleUpdateModelServiceModelStates(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  provider: string,
+): Promise<void> {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const input = parseModelStateMutation(safeParse(body));
+  if (input === undefined) {
+    return sendJson(res, 400, {
+      error: "模型状态更新需要 models、enabled 与正整数 expectedVersion",
+    });
+  }
+  const result = withStore(deps.dbPath, (store) => {
+    return store.updateModelServiceModelStates(
+      provider,
+      input.expectedVersion,
+      input.models,
+      input.enabled,
+      new Date((deps.now ?? Date.now)()).toISOString(),
+    );
+  });
+  if (result.status === "version-conflict") {
+    const actualVersion = withStore(deps.dbPath, (store) =>
+      store.getModelService(provider)?.version ?? null,
+    );
+    return sendJson(res, 409, {
+      error: "模型服务版本已变化，请重新载入后再更新模型状态",
+      expectedVersion: input.expectedVersion,
+      actualVersion,
+    });
+  }
+  if (result.status === "unknown-models") {
+    return sendJson(res, 400, {
+      error: "模型不属于当前目录",
+      models: result.models,
+    });
+  }
+  if (result.status === "referenced") {
+    return sendJson(res, 409, {
+      error: "已被审查策略引用的模型不能停用，请先调整策略",
+      references: result.references,
+    });
+  }
+  return sendJson(res, 200, {
+    provider,
+    enabled: input.enabled,
+    updated: result.updated,
+  });
 }
 
 async function handleRefreshModelService(

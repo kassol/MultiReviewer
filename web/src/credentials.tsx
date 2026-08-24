@@ -3,7 +3,7 @@
  * `/model-services`；内置候选只留在组件内存，模型字段与凭据审计字段继续按独立权限展示。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, Outlet, useBlocker, useNavigate } from "@tanstack/react-router";
+import { Link, Outlet, useBlocker, useLocation, useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, Check, ChevronDown, CircleX, RefreshCw, Search, Trash2 } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
@@ -271,6 +271,9 @@ function useModelServiceSetup(): ModelServiceSetupContextValue {
 export function ModelServiceSetupLayout() {
   const [candidate, setCandidate] = useState<ModelServiceSetupCandidate | null>(null);
   const [phase, setPhase] = useState<SetupPhase>(null);
+  const [closeRequested, setCloseRequested] = useState(false);
+  const location = useLocation();
+  const navigate = useNavigate();
   const allowExit = useRef(false);
   const dirty = candidate !== null && (
     candidate.credential !== "" ||
@@ -298,21 +301,71 @@ export function ModelServiceSetupLayout() {
       allowExit.current = false;
     });
   };
+  const currentStep = location.pathname.endsWith("/verify") ? 3 : location.pathname.endsWith("/discover") ? 2 : 1;
+  const closeSetup = (): void => {
+    if (phase !== null) return;
+    if (dirty) {
+      setCloseRequested(true);
+      return;
+    }
+    allowExit.current = true;
+    void navigate({ to: "/credentials" }).finally(() => {
+      allowExit.current = false;
+    });
+  };
+  const discardAndClose = (): void => {
+    allowExit.current = true;
+    setCandidate(null);
+    setCloseRequested(false);
+    void navigate({ to: "/credentials" }).finally(() => {
+      allowExit.current = false;
+    });
+  };
 
   return (
     <ModelServiceSetupContext.Provider value={{ candidate, setCandidate, phase, setPhase, transition, finish }}>
-      <PageHeader
-        title="配置模型服务"
-        description="按步骤配置并验证模型服务，未提交内容只保留在当前页面。"
-      />
-      <div className="max-w-[900px] p-4 pb-20 sm:p-5 sm:pb-20">
-        <nav className="mb-5 grid grid-cols-3 overflow-hidden rounded-md border text-center text-xs" aria-label="添加模型服务步骤">
-          <span className="flex min-h-11 items-center justify-center border-r px-2 py-2 sm:min-h-0 sm:px-3">1. 选择来源</span>
-          <span className="flex min-h-11 items-center justify-center border-r px-2 py-2 sm:min-h-0 sm:px-3">2. 模型发现</span>
-          <span className="flex min-h-11 items-center justify-center px-2 py-2 sm:min-h-0 sm:px-3">3. 真实验证</span>
-        </nav>
-        <Outlet />
-      </div>
+      <Dialog open onOpenChange={(open) => { if (!open) closeSetup(); }}>
+        <DialogContent
+          className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-[720px]"
+          onEscapeKeyDown={(event) => { if (dirty || phase !== null) event.preventDefault(); }}
+        >
+          <DialogHeader>
+            <DialogTitle>配置模型服务</DialogTitle>
+            <DialogDescription>按步骤完成来源、模型发现和真实验证。未提交内容只保留在当前页面。</DialogDescription>
+          </DialogHeader>
+          <nav className="grid grid-cols-3 overflow-hidden rounded-md border text-center text-xs" aria-label="配置模型服务步骤">
+            {["选择来源", "模型发现", "真实验证"].map((label, index) => {
+              const step = index + 1;
+              return (
+                <span
+                  key={label}
+                  aria-current={currentStep === step ? "step" : undefined}
+                  className={cn(
+                    "flex min-h-10 items-center justify-center border-r px-2 py-2 last:border-r-0",
+                    currentStep === step && "bg-muted font-medium text-foreground",
+                    currentStep !== step && "text-muted-foreground",
+                  )}
+                >
+                  {step}. {label}
+                </span>
+              );
+            })}
+          </nav>
+          <div className="min-w-0 pb-1"><Outlet /></div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={closeRequested} onOpenChange={setCloseRequested}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>丢弃未保存的配置？</DialogTitle>
+            <DialogDescription>关闭会丢弃当前页面中的凭据、目录结果和验证模型。</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setCloseRequested(false)}>继续配置</Button>
+            <Button type="button" variant="destructive" onClick={discardAndClose}>丢弃并关闭</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={blocker.status === "blocked"} onOpenChange={(open) => { if (!open) blocker.reset?.(); }}>
         <DialogContent>
           <DialogHeader>
@@ -968,7 +1021,7 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
             <p>尾 4 位：<span className={service.credential.last4 === null || service.credential.last4 === undefined ? undefined : "font-mono tabular-nums"}>{service.credential.last4 ?? "未提供"}</span></p>
             <p>更新：<span className={service.credential.updatedAt === null || service.credential.updatedAt === undefined ? undefined : "font-mono tabular-nums"}>{localMinute(service.credential.updatedAt)}</span></p>
             <p>验证：<span className={service.credential.verifiedAt === null || service.credential.verifiedAt === undefined ? undefined : "font-mono tabular-nums"}>{localMinute(service.credential.verifiedAt)}</span></p>
-            <p className="break-all">
+            <p className="break-words">
               验证模型：<span className={service.credential.validationModel === null || service.credential.validationModel === undefined ? undefined : "font-mono"}>{service.credential.validationModel ?? "未提供"}</span>
             </p>
             <p>
@@ -1723,8 +1776,19 @@ function discoveryDiffersFromRuntime(model: ModelServiceModel): boolean {
     !sameCost(model.discovery.cost, model.runtime.cost);
 }
 
-function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
+function ModelsTable({
+  service,
+  models,
+  canWriteModels,
+}: {
+  service: ModelService;
+  models: readonly ModelServiceModel[];
+  canWriteModels: boolean;
+}) {
   const [search, setSearch] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const normalizedSearch = search.trim().toLowerCase();
   const filteredModels = useMemo(() => {
     if (normalizedSearch === "") return models;
@@ -1734,6 +1798,54 @@ function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
       return terms.every((term) => haystack.includes(term));
     });
   }, [models, normalizedSearch]);
+
+  useEffect(() => {
+    const availableIds = new Set(models.map((model) => model.identity));
+    setSelectedIds((current) => {
+      const next = new Set([...current].filter((identity) => availableIds.has(identity)));
+      return next.size === current.size ? current : next;
+    });
+  }, [models]);
+
+  const updateState = useMutation<{ updated: number; enabled: boolean }, ModelServiceMutationError, boolean>({
+    mutationFn: async (enabled) => responseJsonWithReferences(
+      await api(`/model-services/${encodeURIComponent(service.provider)}/model-states`, {
+        method: "PUT",
+        body: JSON.stringify({
+          models: [...selectedIds].map((identity) => identity.slice(service.provider.length + 1)),
+          expectedVersion: service.version,
+          enabled,
+        }),
+      }),
+    ),
+    onSuccess: (result) => {
+      setSelectedIds(new Set());
+      setFeedback(`${result.enabled ? "已启用" : "已停用"} ${result.updated} 个模型。`);
+      void queryClient.invalidateQueries({ queryKey: ["model-services"] });
+    },
+  });
+
+  const allFilteredSelected = filteredModels.length > 0 && filteredModels.every((model) => selectedIds.has(model.identity));
+  const toggleAllFiltered = (): void => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (allFilteredSelected) filteredModels.forEach((model) => next.delete(model.identity));
+      else filteredModels.forEach((model) => next.add(model.identity));
+      return next;
+    });
+    setFeedback(null);
+    updateState.reset();
+  };
+  const toggleSelected = (identity: string): void => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(identity)) next.delete(identity);
+      else next.add(identity);
+      return next;
+    });
+    setFeedback(null);
+    updateState.reset();
+  };
 
   if (models.length === 0) {
     return (
@@ -1765,6 +1877,50 @@ function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
           />
         </div>
       </div>
+      {canWriteModels ? (
+        <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 text-xs">
+          <label className="flex min-h-9 items-center gap-2">
+            <input
+              type="checkbox"
+              checked={allFilteredSelected}
+              onChange={toggleAllFiltered}
+              aria-label="全选当前筛选结果"
+              className="size-4 accent-foreground"
+            />
+            <span>全选当前结果</span>
+          </label>
+          <span className="text-muted-foreground" aria-live="polite">
+            已选 <span className="font-mono tabular-nums">{selectedIds.size}</span> 个
+          </span>
+          <div className="ml-auto flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={selectedIds.size === 0 || updateState.isPending}
+              onClick={() => updateState.mutate(true)}
+            >
+              启用所选
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={selectedIds.size === 0 || updateState.isPending}
+              onClick={() => updateState.mutate(false)}
+            >
+              停用所选
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {feedback === null ? null : <p className="border-b px-3 py-2 text-xs text-success" role="status">{feedback}</p>}
+      {updateState.error === null ? null : (
+        <div className="space-y-2 border-b px-3 py-2 text-xs" role="alert">
+          <p className="text-destructive">{updateState.error.message}</p>
+          {updateState.error.references.length === 0 ? null : <ReferenceBlockers references={updateState.error.references} />}
+        </div>
+      )}
       {filteredModels.length === 0 ? (
         <div className="px-4 py-8 text-center text-muted-foreground">
           没有匹配的模型。可以换一个名称或 model id。
@@ -1772,10 +1928,26 @@ function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
       ) : (
         <div className="max-h-[min(58vh,640px)] divide-y overflow-y-auto">
           {filteredModels.map((model) => (
-            <article key={model.identity} className={cn("px-3 py-3", !model.available && "bg-destructive/5")}>
+            <article
+              key={model.identity}
+              className={cn(
+                "px-3 py-3",
+                !model.available && model.unavailableReason !== "model-disabled" && "bg-destructive/5",
+                model.unavailableReason === "model-disabled" && "bg-muted/40",
+              )}
+            >
               <div className="grid gap-3 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.35fr)]">
                 <div className="min-w-0">
                   <div className="flex items-start gap-2">
+                    {canWriteModels ? (
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(model.identity)}
+                        onChange={() => toggleSelected(model.identity)}
+                        aria-label={`选择 ${model.identity}`}
+                        className="mt-1 size-4 shrink-0 accent-foreground"
+                      />
+                    ) : null}
                     <div className="min-w-0 flex-1">
                       <p className="break-words font-medium">{model.discovery.name ?? "未提供显示名"}</p>
                       <p className="mt-0.5 break-all font-mono text-xs text-muted-foreground">{model.identity}</p>
@@ -1844,6 +2016,11 @@ function ModelAvailability({ model }: { model: ModelServiceModel }) {
     <Badge variant="secondary" className="shrink-0 whitespace-nowrap border-0 bg-success/10 text-success">
       <Check data-icon="inline-start" />可用
     </Badge>
+  ) : model.unavailableReason === "model-disabled" ? (
+    <div className="space-y-1">
+      <Badge variant="outline" className="shrink-0 whitespace-nowrap text-muted-foreground">已停用</Badge>
+      <p className="max-w-64 break-words text-xs text-muted-foreground">不会出现在审查策略的模型选择中</p>
+    </div>
   ) : (
     <div className="space-y-1">
       <Badge variant="destructive" className="whitespace-nowrap">
@@ -1873,6 +2050,7 @@ function RunCapabilityCard({
   const canAct =
     (capability.nextAction === "configure-credential" && canWriteCredential) ||
     (capability.nextAction === "add-model-source" && canWriteModels) ||
+    (capability.nextAction === "enable-model" && canWriteModels) ||
     (capability.nextAction === "recover-service" && canWriteCustom);
   const nextStep =
     capability.nextAction === "configure-credential"
@@ -1881,9 +2059,11 @@ function RunCapabilityCard({
         : "到维护页重新验证或轮换模型凭据。"
       : capability.nextAction === "add-model-source"
         ? "到维护页刷新自动目录，或到模型页手动添加可验证的 model id。"
-        : capability.nextAction === "recover-service"
-          ? "到维护页用新名称重建，或删除这项服务。"
-          : null;
+      : capability.nextAction === "enable-model"
+        ? "到模型页启用至少一个模型。"
+      : capability.nextAction === "recover-service"
+        ? "到维护页用新名称重建，或删除这项服务。"
+        : null;
   return (
     <section
       className={cn(
@@ -2090,7 +2270,7 @@ function ServiceDetail({
       ) : null}
 
       {tab !== "models" ? null : canReadModels && service.models !== undefined ? (
-        <ModelsTable models={service.models} />
+        <ModelsTable service={service} models={service.models} canWriteModels={canWriteModels} />
       ) : (
         <section className="rounded-md border bg-muted/50 px-4 py-5">
           <p className="font-medium">暂无模型查看权限</p>

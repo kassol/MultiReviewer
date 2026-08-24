@@ -17,11 +17,13 @@ export type ModelSource = "automatic" | "manual" | "migration-retention";
 export type ModelUnavailableReason =
   | "provider-name-conflict"
   | "credential-unavailable"
-  | "model-source-missing";
+  | "model-source-missing"
+  | "model-disabled";
 export type ModelServiceNextAction =
   | "recover-service"
   | "configure-credential"
-  | "add-model-source";
+  | "add-model-source"
+  | "enable-model";
 export type ModelReferenceLocation =
   | { kind: "global" }
   | { kind: "following-global"; repositoryCount: number }
@@ -48,6 +50,7 @@ export type ModelServiceModel = {
   provider: string;
   id: string;
   identity: string;
+  enabled: boolean;
   sources: readonly ModelSource[];
   available: boolean;
   unavailableReason: ModelUnavailableReason | null;

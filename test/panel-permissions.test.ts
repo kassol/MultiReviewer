@@ -61,6 +61,7 @@ const ROUTE_EXPECTATIONS = [
   ["POST", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/reverify$/", "credential:write"],
   ["DELETE", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/credential$/", "credential:write"],
   ["POST", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/refresh$/", "model:write"],
+  ["PUT", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/model-states$/", "model:write"],
   ["POST", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/supplements$/", "model:write"],
   ["DELETE", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/supplements$/", "model:write"],
 ] as const;

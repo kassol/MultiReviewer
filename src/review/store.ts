@@ -282,6 +282,14 @@ CREATE TABLE IF NOT EXISTS model_supplement (
     OR (source = 'migration-retention' AND target_fingerprint IS NULL)
   )
 );
+
+CREATE TABLE IF NOT EXISTS model_service_model_state (
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL CHECK (model <> ''),
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (provider, model)
+);
 `;
 
 /**
@@ -464,6 +472,19 @@ export type ModelSupplementRecord = {
   targetFingerprint: string | null;
   createdAt: string;
 };
+
+export type ModelServiceModelStateRecord = {
+  provider: string;
+  model: string;
+  enabled: boolean;
+  updatedAt: string;
+};
+
+export type ModelServiceModelStateUpdateResult =
+  | { status: "updated"; updated: number }
+  | { status: "version-conflict" }
+  | { status: "unknown-models"; models: string[] }
+  | { status: "referenced"; references: ModelReference[] };
 
 export type ModelServiceRecord = {
   provider: string;
@@ -815,6 +836,14 @@ export type Store = {
    * `repo` 表里，自然不参与。凭据、模型补录与服务删除共用这一份引用判据。
    */
   listModelReferences(): ModelReference[];
+  listModelServiceModelStates(provider?: string): ModelServiceModelStateRecord[];
+  updateModelServiceModelStates(
+    provider: string,
+    expectedVersion: number,
+    models: readonly string[],
+    enabled: boolean,
+    updatedAt: string,
+  ): ModelServiceModelStateUpdateResult;
   /** provider 省略时也包含没有当前服务承载的迁移保留。 */
   listModelSupplements(provider?: string): ModelSupplementRecord[];
   startRun(meta: RunMeta): number;
@@ -1077,6 +1106,12 @@ export function openStore(dbPath: string): Store {
        AND service.target_fingerprint IS NOT NULL
        AND credential.state = 'verified'
        AND credential.api_key_encrypted IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM model_service_model_state state
+          WHERE state.provider = service.provider
+            AND state.model = ?
+            AND state.enabled = 0
+       )
        AND (
          EXISTS (
            SELECT 1 FROM model_directory_model automatic
@@ -1099,7 +1134,7 @@ export function openStore(dbPath: string): Store {
   const modelCombinationAvailable = (reviewersJson: string, context: string): boolean => {
     const reviewers = parseStoredReviewers(reviewersJson, context);
     return reviewers.length > 0 && reviewers.every((reviewer) =>
-      availableModel.get(reviewer.provider, reviewer.model, reviewer.model) !== undefined
+      availableModel.get(reviewer.provider, reviewer.model, reviewer.model, reviewer.model) !== undefined
     );
   };
   const referencedModels = (provider: string): Set<string> => {
@@ -1126,7 +1161,7 @@ export function openStore(dbPath: string): Store {
   const recordSupportsCurrentReferences = (record: ModelServiceVersionCommit): boolean => {
     const references = new Set(
       [...referencedModels(record.provider)].filter((model) =>
-        availableModel.get(record.provider, model, model) !== undefined
+        availableModel.get(record.provider, model, model, model) !== undefined
       ),
     );
     if (references.size === 0) return true;
@@ -1862,7 +1897,7 @@ export function openStore(dbPath: string): Store {
         );
         const missing = references.filter(
           (reference) =>
-            availableModel.get(provider, reference.model, reference.model) === undefined,
+            availableModel.get(provider, reference.model, reference.model, reference.model) === undefined,
         );
         if (missing.length > 0) {
           db.exec("ROLLBACK");
@@ -1919,6 +1954,8 @@ export function openStore(dbPath: string): Store {
           .run(newProvider, nextVersion, provider);
         db.prepare("UPDATE model_supplement SET provider = ? WHERE provider = ?")
           .run(newProvider, provider);
+        db.prepare("UPDATE model_service_model_state SET provider = ? WHERE provider = ?")
+          .run(newProvider, provider);
         const validationModel = db.prepare(
           "SELECT validation_model FROM model_service_credential WHERE provider = ?",
         ).get(provider)?.["validation_model"];
@@ -1964,6 +2001,7 @@ export function openStore(dbPath: string): Store {
         db.prepare("DELETE FROM model_directory_model WHERE provider = ?").run(provider);
         db.prepare("DELETE FROM model_directory WHERE provider = ?").run(provider);
         db.prepare("DELETE FROM model_supplement WHERE provider = ?").run(provider);
+        db.prepare("DELETE FROM model_service_model_state WHERE provider = ?").run(provider);
         db.prepare("DELETE FROM model_service_credential WHERE provider = ?").run(provider);
         const removed = db
           .prepare(
@@ -2167,6 +2205,73 @@ export function openStore(dbPath: string): Store {
       return [...references.values()].sort((left, right) =>
         left.identity.localeCompare(right.identity),
       );
+    },
+
+    listModelServiceModelStates(provider) {
+      const rows = provider === undefined
+        ? db.prepare(
+            `SELECT provider, model, enabled, updated_at
+               FROM model_service_model_state ORDER BY provider, model`,
+          ).all()
+        : db.prepare(
+            `SELECT provider, model, enabled, updated_at
+               FROM model_service_model_state WHERE provider = ? ORDER BY model`,
+          ).all(provider);
+      return rows.map((row) => ({
+        provider: String(row["provider"]),
+        model: String(row["model"]),
+        enabled: Number(row["enabled"]) === 1,
+        updatedAt: String(row["updated_at"]),
+      }));
+    },
+
+    updateModelServiceModelStates(provider, expectedVersion, models, enabled, updatedAt) {
+      const requested = [...new Set(models.map((model) => model.trim()))];
+      if (requested.some((model) => model === "")) {
+        throw new Error("模型标识不能为空");
+      }
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const service = db.prepare(
+          "SELECT version FROM model_service WHERE provider = ?",
+        ).get(provider);
+        if (service === undefined || Number(service["version"]) !== expectedVersion) {
+          db.exec("ROLLBACK");
+          return { status: "version-conflict" } as const;
+        }
+        const knownRows = db.prepare(
+          `SELECT model FROM model_directory_model WHERE provider = ? AND service_version = ?
+           UNION SELECT model FROM model_supplement WHERE provider = ?`,
+        ).all(provider, expectedVersion, provider);
+        const known = new Set(knownRows.map((row) => String(row["model"])));
+        const unknownModels = requested.filter((model) => !known.has(model));
+        if (unknownModels.length > 0) {
+          db.exec("ROLLBACK");
+          return { status: "unknown-models", models: unknownModels } as const;
+        }
+        if (!enabled) {
+          const blocked = store.listModelReferences().filter(
+            (reference) => reference.provider === provider && requested.includes(reference.model),
+          );
+          if (blocked.length > 0) {
+            db.exec("ROLLBACK");
+            return { status: "referenced", references: blocked } as const;
+          }
+        }
+        const upsert = db.prepare(
+          `INSERT INTO model_service_model_state (provider, model, enabled, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(provider, model) DO UPDATE SET
+             enabled = excluded.enabled,
+             updated_at = excluded.updated_at`,
+        );
+        for (const model of requested) upsert.run(provider, model, enabled ? 1 : 0, updatedAt);
+        db.exec("COMMIT");
+        return { status: "updated", updated: requested.length } as const;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     },
 
     listModelSupplements(provider) {

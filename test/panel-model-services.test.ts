@@ -314,7 +314,7 @@ function request(h: PanelHarness, cookie: string, path: string): Promise<Respons
 function mutation(
   h: PanelHarness,
   cookie: string,
-  method: "POST" | "DELETE",
+  method: "POST" | "PUT" | "DELETE",
   path: string,
   body: unknown,
 ): Promise<Response> {
@@ -1446,6 +1446,7 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
       provider: "test",
       id: "global-model",
       identity: "test:global-model",
+      enabled: false,
       sources: [],
       available: false,
       unavailableReason: "model-source-missing",
@@ -1538,6 +1539,65 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
   )!;
   assert.deepEqual(adminCorp["credential"], credentialCorp["credential"]);
   assert.deepEqual(adminCorp["models"], corp["models"]);
+});
+
+test("模型目录支持批量停用与重新启用，并拒绝未知模型", async () => {
+  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  seedServices(h);
+  const modelWriter = await cookieFor(h, "model-state-writer", ["model:write"]);
+
+  const initial = (await h.api("GET", "/model-services").then((response) => response.json())) as {
+    services: { provider: string; version: number; models: { id: string; enabled: boolean; available: boolean }[] }[];
+  };
+  const corp = initial.services.find((entry) => entry.provider === "corp-gateway")!;
+  assert.equal(corp.models.find((model) => model.id === "automatic-model")?.enabled, true);
+
+  const disabled = await mutation(h, modelWriter, "PUT", "/model-services/corp-gateway/model-states", {
+    models: ["automatic-model", "both-model"],
+    expectedVersion: corp.version,
+    enabled: false,
+  });
+  assert.equal(disabled.status, 200);
+  assert.deepEqual(await disabled.json(), { provider: "corp-gateway", enabled: false, updated: 2 });
+
+  const projected = (await h.api("GET", "/model-services").then((response) => response.json())) as {
+    services: { provider: string; models: { id: string; enabled: boolean; available: boolean; unavailableReason: string | null }[] }[];
+    candidates: { identity: string }[];
+  };
+  const updated = projected.services.find((entry) => entry.provider === "corp-gateway")!;
+  assert.equal(updated.models.find((model) => model.id === "automatic-model")?.enabled, false);
+  assert.equal(updated.models.find((model) => model.id === "automatic-model")?.available, false);
+  assert.equal(updated.models.find((model) => model.id === "automatic-model")?.unavailableReason, "model-disabled");
+  assert.equal(projected.candidates.some((model) => model.identity === "corp-gateway:automatic-model"), false);
+
+  const unknown = await mutation(h, modelWriter, "PUT", "/model-services/corp-gateway/model-states", {
+    models: ["does-not-exist"],
+    expectedVersion: corp.version,
+    enabled: false,
+  });
+  assert.equal(unknown.status, 400);
+
+  const reenabled = await mutation(h, modelWriter, "PUT", "/model-services/corp-gateway/model-states", {
+    models: ["automatic-model"],
+    expectedVersion: corp.version,
+    enabled: true,
+  });
+  assert.equal(reenabled.status, 200);
+  const store = openStore(h.db.path);
+  assert.equal(store.putGlobalSettings({
+    reviewersJson: JSON.stringify([{ provider: "corp-gateway", model: "automatic-model" }]),
+    maxChangedLinesPerBatch: null,
+  }), true);
+  store.close();
+  const blocked = await mutation(h, modelWriter, "PUT", "/model-services/corp-gateway/model-states", {
+    models: ["automatic-model"],
+    expectedVersion: corp.version,
+    enabled: false,
+  });
+  assert.equal(blocked.status, 409);
+  assert.deepEqual((await blocked.json() as { references: { identity: string }[] }).references.map((entry) => entry.identity), [
+    "corp-gateway:automatic-model",
+  ]);
 });
 
 test("自定义服务中与 Pi 同 model id 的信息来源按字段投影", async () => {
