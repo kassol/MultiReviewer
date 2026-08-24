@@ -82,25 +82,46 @@ function runStatus(run: RunItem): { tone: StatusTone; label: string } {
  * 只改根元素的话边框与底色的圆角会错开;列表卡还要求零内边距加逐行分隔。所以卡壳走
  * utility + 令牌,卡内的通用件(徽章、骨架、进度条、按钮)仍是 Themes 组件。
  */
+/** 卡片表面。可点的 KPI 卡用 Link 承载,共用同一份表面样式。 */
+const CARD_SURFACE = "flex flex-col rounded-xl border border-card-line bg-surface shadow-card sm:rounded-lg";
+
 function CardShell({ className, children }: { className?: string; children: ReactNode }) {
-  return (
-    <div
-      className={cn(
-        "flex flex-col rounded-xl border border-card-line bg-surface shadow-card sm:rounded-lg",
-        className,
-      )}
-    >
-      {children}
-    </div>
-  );
+  return <div className={cn(CARD_SURFACE, className)}>{children}</div>;
 }
 
-function KpiCard({ label, className, children }: { label: string; className?: string; children: ReactNode }) {
-  return (
-    <CardShell className={cn("gap-[3px] px-[17px] py-[15px] sm:gap-[5px] sm:px-[19px] sm:py-[17px]", className)}>
+/**
+ * KPI 卡。给了 `to` 就整卡可点——指标本身回答「有没有事」,能点过去才接得上
+ * 「那去处理」;不给就是一张纯展示卡。
+ */
+function KpiCard({
+  label,
+  className,
+  to,
+  search,
+  children,
+}: {
+  label: string;
+  className?: string;
+  to?: "/runs" | "/credentials";
+  search?: Record<string, string>;
+  children: ReactNode;
+}) {
+  const body = (
+    <>
       <span className="text-sm font-semibold text-text-muted sm:text-base">{label}</span>
       {children}
-    </CardShell>
+    </>
+  );
+  const shell = cn("gap-[3px] px-[17px] py-[15px] sm:gap-[5px] sm:px-[19px] sm:py-[17px]", className);
+  if (to === undefined) return <CardShell className={shell}>{body}</CardShell>;
+  return (
+    <Link
+      to={to}
+      {...(search === undefined ? {} : { search })}
+      className={cn(CARD_SURFACE, shell, "outline-none transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40")}
+    >
+      {body}
+    </Link>
   );
 }
 
@@ -270,7 +291,7 @@ export function OverviewPage() {
           canReadServices ? "sm:grid-cols-4" : "sm:grid-cols-3",
         )}
       >
-        <KpiCard label="今日运行">
+        <KpiCard label="今日运行" to="/runs">
           {runs.isPending ? (
             <KpiSkeleton />
           ) : (
@@ -288,7 +309,7 @@ export function OverviewPage() {
           )}
         </KpiCard>
 
-        <KpiCard label="待处置发现">
+        <KpiCard label="待处置发现" to="/runs" search={{ filter: "pending" }}>
           {runs.isPending ? <KpiSkeleton /> : <KpiNumber>{pendingFindings}</KpiNumber>}
           {runs.isPending ? null : (
             <KpiNote>{`分布在 ${pendingPulls} 个 PR · 最近 ${loaded.length} 轮`}</KpiNote>
@@ -313,7 +334,7 @@ export function OverviewPage() {
         </CardShell>
 
         {canReadServices ? (
-          <KpiCard label="模型健康">
+          <KpiCard label="模型健康" to="/credentials">
             {services.isPending ? (
               <KpiSkeleton />
             ) : (

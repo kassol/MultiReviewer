@@ -403,7 +403,21 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
     getNextPageParam: (last) => last.nextBefore,
   });
   const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
-  const [filter, setFilter] = useState<RunFilter>("all");
+  // 筛选同样记在地址里:总览上的「待处置发现」要能直接落到筛过的列表,而不是把人
+  // 丢到全部记录里再自己点一次。
+  const filter = useRouterState({
+    select: (state) => {
+      const value = (state.location.search as { filter?: unknown }).filter;
+      return value === "failed" || value === "pending" || value === "done" ? value : "all";
+    },
+  });
+  const setFilter = (next: RunFilter) => {
+    void navigate({
+      to: "/runs",
+      search: (prev: Record<string, unknown>) => ({ ...prev, filter: next === "all" ? undefined : next }),
+      replace: true,
+    });
+  };
   // 详情面板认 id 不认对象:列表每次刷新都是新对象,认对象会在后台刷新时把面板打空。
   /*
    * 打开哪一轮记在地址里,不记在组件状态里:总览上点某一轮要能直接落到它的详情,
@@ -418,7 +432,12 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
     },
   });
   const setOpenedRunId = (id: number | null) => {
-    void navigate({ to: "/runs", search: id === null ? {} : { run: id }, replace: true });
+    // 只动 run 这一格,别把筛选一起清掉。
+    void navigate({
+      to: "/runs",
+      search: (prev: Record<string, unknown>) => ({ ...prev, run: id ?? undefined }),
+      replace: true,
+    });
   };
   const rerun = useMutation({
     mutationFn: rerunRequest,
