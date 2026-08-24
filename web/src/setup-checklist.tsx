@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { Button } from "@/components/theme-button";
-import { Card } from "@/components/ui/card";
+import { Card } from "@radix-ui/themes";
 
 import { fetchJson } from "./api.ts";
 import { hasPermission, type PanelSession } from "./session.ts";
@@ -28,7 +28,7 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
   const status = useSetupStatus();
   if (status.isError) {
     return (
-      <Card className="mx-4 mt-4 gap-2 px-4 py-3 sm:mx-5" aria-label="首次配置状态读取失败">
+      <Card size="2" className="flex flex-col mx-4 mt-4 gap-2 sm:mx-5" aria-label="首次配置状态读取失败">
         <h2 className="font-semibold">首次配置暂时不可用</h2>
         <p role="alert" className="text-sm text-destructive">{status.error.message}</p>
         <Button
@@ -47,7 +47,7 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
   }
   if (status.data === undefined) {
     return (
-      <Card className="mx-4 mt-4 gap-2 px-4 py-3 sm:mx-5" aria-label="正在读取首次配置状态">
+      <Card size="2" className="flex flex-col mx-4 mt-4 gap-2 sm:mx-5" aria-label="正在读取首次配置状态">
         <h2 className="font-semibold">正在读取首次配置…</h2>
       </Card>
     );
@@ -84,7 +84,7 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
   ];
 
   return (
-    <Card className="mx-4 mt-4 gap-2 px-4 py-3 sm:mx-5" aria-label="首次配置检查单">
+    <Card size="2" className="flex flex-col mx-4 mt-4 gap-2 sm:mx-5" aria-label="首次配置检查单">
       <div>
         <div className="flex items-center gap-1.5">
           <h2 className="font-semibold">完成首次配置</h2>

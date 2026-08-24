@@ -12,7 +12,7 @@ import { HelpTooltip } from "@/components/help-tooltip";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Card } from "@/components/ui/card";
+import { Card } from "@radix-ui/themes";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import {
   Dialog,
@@ -430,7 +430,7 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
   });
 
   return (
-    <Card className="gap-4 px-4 py-4">
+    <Card size="2" className="flex flex-col gap-4">
       <div>
         <h2 className="text-base font-semibold">选择模型服务来源</h2>
         <p className="mt-1 text-muted-foreground">搜索 Pi 内置 provider，或从同一入口添加自定义 provider。</p>
@@ -538,7 +538,7 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
   });
 
   return (
-    <Card className="gap-4 px-4 py-4">
+    <Card size="2" className="flex flex-col gap-4">
       <div>
         <h2 className="text-base font-semibold">填写凭据并发现模型</h2>
         <p className="mt-1 font-mono text-xs text-muted-foreground">{provider}</p>
@@ -628,7 +628,7 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
 
   if (!ready) {
     return (
-      <Card className="gap-3 px-4 py-5">
+      <Card size="2" className="flex flex-col gap-3">
         <h2 className="text-base font-semibold">配置已过期</h2>
         <p className="text-muted-foreground">刷新或直接打开此地址不会恢复凭据和目录结果，请重新配置模型服务。</p>
         <Link
@@ -645,7 +645,7 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
   const activePreview = activeCandidate.preview!;
 
   return (
-    <Card className="gap-4 px-4 py-4">
+    <Card size="2" className="flex flex-col gap-4">
       <div>
         <h2 className="text-base font-semibold">选择验证模型</h2>
         <p className="mt-1 text-muted-foreground">
@@ -780,7 +780,7 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
   if (editing && serviceQuery.isPending) return <Skeleton className="h-64" />;
   if (editing && service === undefined) {
     return (
-      <Card className="gap-3 px-4 py-5">
+      <Card size="2" className="flex flex-col gap-3">
         <h2 className="text-base font-semibold">自定义模型服务不存在</h2>
         <p className="text-muted-foreground">此稳定地址对应的 provider 已删除或当前不可见。</p>
         <Link to="/credentials" className="w-fit underline underline-offset-4">返回模型服务</Link>
@@ -789,7 +789,7 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
   }
 
   return (
-    <Card className="gap-4 px-4 py-4">
+    <Card size="2" className="flex flex-col gap-4">
       <div>
         <h2 className="text-base font-semibold">配置调用目标并发现模型</h2>
         <p className="mt-1 text-muted-foreground">发现阶段不需要验证模型；目录失败后仍可手填 model id 进入真实验证。</p>
@@ -935,7 +935,7 @@ export function CustomServiceVerifyPage({ provider }: { provider?: string }) {
       ? "/credentials/add/custom/discover" as const
       : "/credentials/add/custom/$provider/discover" as const;
     return (
-      <Card className="gap-3 px-4 py-5">
+      <Card size="2" className="flex flex-col gap-3">
         <h2 className="text-base font-semibold">配置已过期</h2>
         <p className="text-muted-foreground">刷新或直接打开此地址不会恢复凭据和目录结果，请重新配置模型服务。</p>
         <Link to={backTo} params={provider === undefined ? {} : { provider }} className="w-fit underline underline-offset-4">返回模型发现</Link>
@@ -944,7 +944,7 @@ export function CustomServiceVerifyPage({ provider }: { provider?: string }) {
   }
 
   return (
-    <Card className="gap-4 px-4 py-4">
+    <Card size="2" className="flex flex-col gap-4">
       <div>
         <h2 className="text-base font-semibold">选择或手填验证模型</h2>
         <p className="mt-1 text-muted-foreground">
@@ -2360,7 +2360,7 @@ function ServiceDetail({
 function LoadingLayout() {
   return (
     <div className="grid max-w-[1180px] gap-5 p-4 pb-20 sm:p-5 sm:pb-20 xl:grid-cols-[340px_minmax(0,1fr)]">
-      <Card className="self-start gap-3 p-3">
+      <Card size="2" className="flex flex-col self-start gap-3">
         <Skeleton className="h-10 w-full" />
         <Skeleton className="h-16 w-full" />
         <Skeleton className="h-16 w-full" />
@@ -2423,7 +2423,7 @@ export function ModelServicesPage({
       />
       {!canReadServices ? (
         <div className="max-w-[760px] p-4 sm:p-5">
-          <Card className="gap-2 px-4 py-5">
+          <Card size="2" className="flex flex-col gap-2">
             <h2 className="text-base font-semibold">模型服务信息不可见</h2>
             <p className="text-muted-foreground">
               {canWriteCredential
@@ -2436,7 +2436,7 @@ export function ModelServicesPage({
         <LoadingLayout />
       ) : query.isError ? (
         <div className="max-w-[760px] p-4 sm:p-5">
-          <Card className="gap-3 px-4 py-5">
+          <Card size="2" className="flex flex-col gap-3">
             <div>
               <h2 className="text-base font-semibold text-destructive">模型服务加载失败</h2>
               <p className="mt-1 text-muted-foreground">{(query.error as Error).message}</p>
@@ -2456,7 +2456,7 @@ export function ModelServicesPage({
         </div>
       ) : services.length === 0 ? (
         <div className="max-w-[760px] p-4 sm:p-5">
-          <Card className="gap-2 px-4 py-8">
+          <Card size="2" className="flex flex-col gap-2">
             <h2 className="text-base font-semibold">还没有模型服务</h2>
             <p className="text-muted-foreground">
               这里只列已配置或保留异常状态的服务。
@@ -2466,7 +2466,7 @@ export function ModelServicesPage({
         </div>
       ) : selected === undefined ? (
         <div className="max-w-[760px] p-4 sm:p-5">
-          <Card className="gap-2 px-4 py-5">
+          <Card size="2" className="flex flex-col gap-2">
             <h2 className="text-base font-semibold">模型服务不存在</h2>
             <p className="text-muted-foreground">该模型服务已删除，或当前账号无权查看。</p>
             <Link to="/credentials" className="w-fit text-sm underline underline-offset-4">返回模型服务</Link>
@@ -2474,17 +2474,18 @@ export function ModelServicesPage({
         </div>
       ) : (
         <div className="grid max-w-[1180px] gap-5 p-4 pb-20 sm:p-5 sm:pb-20 xl:grid-cols-[340px_minmax(0,1fr)]">
-          <Card className="self-start gap-0 overflow-hidden bg-chrome p-0">
-            <div className="border-b bg-muted px-3 py-2.5">
-              <h2 className="font-medium">已配置服务</h2>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                <span className="font-mono tabular-nums">{services.length}</span> 项 · 含保留的异常状态
-              </p>
-            </div>
-            <div className="max-h-80 divide-y overflow-y-auto xl:max-h-none">
-              {services.map((service) => {
-                const isSelected = service.provider === selected.provider;
-                return <Link
+          <Card size="1" className="self-start overflow-hidden">
+            <div className="-m-3">
+              <div className="border-b bg-muted px-3 py-2.5">
+                <h2 className="font-medium">已配置服务</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  <span className="font-mono tabular-nums">{services.length}</span> 项 · 含保留的异常状态
+                </p>
+              </div>
+              <div className="max-h-80 divide-y overflow-y-auto xl:max-h-none">
+                {services.map((service) => {
+                  const isSelected = service.provider === selected.provider;
+                  return <Link
                   key={service.provider}
                   to="/credentials/$provider"
                   params={{ provider: service.provider }}
@@ -2535,8 +2536,9 @@ export function ModelServicesPage({
                       </span>
                     </div>
                   )}
-                </Link>;
-              })}
+                  </Link>;
+                })}
+              </div>
             </div>
           </Card>
           <ServiceDetail

@@ -29,7 +29,7 @@
 
 - `src/settings.tsx` — `/settings` 上的审查策略页。全局模型组合与批次上限各持独立版本、分别保存;409 只恢复冲突项,保留另一项草稿。批次上限收在默认折叠的高级参数里并显示系统默认/自定义来源。
 - `src/components/model-composer.tsx` — 全局组合与仓库覆盖共用的唯一模型选择器。接口是 `{value, onChange, provider?, onValidityChange}`;外部 provider 优先定位,没有传入时优先显示已选模型所属 provider。它只读 `GET /model-services` 的统一候选,不创建 provider、不处理凭据、不刷新目录、不补录模型。左栏按服务分组,右栏筛当前服务模型;已选但失效的模型保留稳定原因与「去模型服务处理」入口,允许移除但通知调用页禁止原样保存。一次最多渲染当前服务的 120 行。
-- `src/components/ui/` — 迁移期 vendored 组件(Dialog / Table / Card / Command / Popover / Calendar)。Button、Input、Label 与 Badge wrapper 已删除。Calendar 只保留 `react-day-picker` 的日期行为,月份导航使用 Themes `IconButton`,日期使用 Themes `Button`,外观读取 Theme token;`locale` 为 undefined 时不显式传给 `DayButton`,以兼容 `exactOptionalPropertyTypes`。已按视觉定稿把 Card 与 Dialog 的 ring 换成边框、圆角压到 `--radius`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
+- `src/components/ui/` — 迁移期 vendored 组件(Dialog / Table / Command / Popover / Calendar)。Button、Input、Label、Badge 与 Card wrapper 已删除。卡片一律直接使用 Radix Themes `Card`；独立任务采用 Theme 的 padding，表格和局部滚动区域用 `size="1"` 加布局层保留全宽内容。Calendar 只保留 `react-day-picker` 的日期行为,月份导航使用 Themes `IconButton`,日期使用 Themes `Button`,外观读取 Theme token;`locale` 为 undefined 时不显式传给 `DayButton`,以兼容 `exactOptionalPropertyTypes`。已按视觉定稿把 Dialog 的 ring 换成边框、圆角压到 `--radius`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
 - `src/lib/utils.ts` — shadcn 的 `cn()`,clsx 加 tailwind-merge。
 - `src/styles.css` — Radix Theme token 到产品语义 token 与迁移期 Tailwind token 的映射,以及浏览器原生面的接管,没有组件类。三层底色(`--app-chrome` 外壳 / `--app-bg` 内容 / `--app-panel` 面板)、六档字号阶梯(xs 11 / sm 13 / base 14 / lg 16 / xl 19 / 3xl 28,body 就是 sm),以及选区、光标、滚动条与表格数字的默认样式。
 
@@ -67,6 +67,8 @@
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
 
 ## 变更日志
+
+- 2026-08-24: Card 组件族迁移到 Radix Themes。独立任务卡直接使用 Themes `Card` 的 size 与 surface，表格、模型服务和模型组合的局部滚动区域通过紧凑 Card 保留全宽内容；审查配置与 Hook 配置的警告改用 Themes `Callout`，旧 shadcn Card wrapper 删除。
 
 - 2026-08-24: Badge/StatusBadge 组件族迁移到 Radix Themes。来源、身份和类别直接使用官方 Badge；Review Run、Hook、模型服务、模型凭据、模型目录和模型可用性统一使用四态 StatusBadge 并保留文字与状态图标。provider 深色选中行使用对应状态色的 solid Badge,旧 shadcn Badge wrapper 与页面状态色配方删除。
 

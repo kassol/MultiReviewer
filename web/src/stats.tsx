@@ -8,7 +8,7 @@ import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/theme-button";
 import { Calendar } from "@/components/ui/calendar";
-import { Card } from "@/components/ui/card";
+import { Card } from "@radix-ui/themes";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -299,7 +299,7 @@ export function StatsPage() {
         ) : null}
 
         {models.length === 0 && !stats.isPending && !stats.isError ? (
-          <Card className="items-start gap-1.5 px-4">
+          <Card size="2" className="flex flex-col items-start gap-1.5">
             <h2 className="text-base font-semibold">当前时间范围暂无可统计的 Finding</h2>
             <p className="text-muted-foreground">
               统计只包含带行级评论的 Finding。当前时间范围可能没有审查记录，或 Finding 无法关联到变更行。
@@ -353,25 +353,26 @@ export function StatsPage() {
                 );
               })}
             </div>
-            <Card className="hidden min-w-0 max-w-full overflow-hidden py-0 lg:block">
-              <Table>
-                <TableCaption className="sr-only">
-                  逐模型、逐类别的处置率,单元格内容为「已处置/分母(百分比)」。
-                </TableCaption>
-                <TableHeader className="bg-muted text-xs text-muted-foreground">
-                  <TableRow>
-                    <TableHead scope="col" className="sticky left-0 z-20 bg-muted">
-                      模型
-                    </TableHead>
-                    {categories.map((category) => (
-                      <TableHead scope="col" key={category}>
-                        {category}
+            <Card size="1" className="hidden min-w-0 max-w-full overflow-hidden lg:block">
+              <div className="-m-3">
+                <Table>
+                  <TableCaption className="sr-only">
+                    逐模型、逐类别的处置率,单元格内容为「已处置/分母(百分比)」。
+                  </TableCaption>
+                  <TableHeader className="bg-muted text-xs text-muted-foreground">
+                    <TableRow>
+                      <TableHead scope="col" className="sticky left-0 z-20 bg-muted">
+                        模型
                       </TableHead>
-                    ))}
-                    <TableHead scope="col" className="bg-muted/80">
-                      合计
-                    </TableHead>
-                  </TableRow>
+                      {categories.map((category) => (
+                        <TableHead scope="col" key={category}>
+                          {category}
+                        </TableHead>
+                      ))}
+                      <TableHead scope="col" className="bg-muted/80">
+                        合计
+                      </TableHead>
+                    </TableRow>
                 </TableHeader>
                 <TableBody>
                   {models.map((model) => {
@@ -406,7 +407,8 @@ export function StatsPage() {
                     );
                   })}
                 </TableBody>
-              </Table>
+                </Table>
+              </div>
             </Card>
           </section>
         ) : null}

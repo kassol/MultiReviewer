@@ -2,12 +2,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
 import { CheckCircledIcon, CrossCircledIcon, ExclamationTriangleIcon, UpdateIcon } from "@radix-ui/react-icons";
-import { Text, TextField } from "@radix-ui/themes";
+import { Callout, Text, TextField } from "@radix-ui/themes";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Card } from "@/components/ui/card";
+import { Card } from "@radix-ui/themes";
 import {
   Command,
   CommandGroup,
@@ -168,12 +168,15 @@ export function ReposPage({
 
         <PageBody width="form" className="gap-4">
           {canWrite && setup.data !== undefined && !setup.data.reviewConfigurationReady ? (
-            <Card className="items-start gap-2 border-warning/40 bg-warning/5 px-4">
-              <p>审查配置就绪后才能注册仓库。先在审查策略中保存至少一个当前可用模型。</p>
-              <Button variant="outline" color="gray" size={{ initial: "4", sm: "1" }} asChild>
+            <Callout.Root color="amber" size="2">
+              <Callout.Icon>
+                <ExclamationTriangleIcon aria-hidden />
+              </Callout.Icon>
+              <Callout.Text>审查配置就绪后才能注册仓库。先在审查策略中保存至少一个当前可用模型。</Callout.Text>
+              <Button variant="outline" color="gray" size={{ initial: "4", sm: "1" }} className="w-fit" asChild>
                 <Link to="/settings">前往审查策略</Link>
               </Button>
-            </Card>
+            </Callout.Root>
           ) : null}
           {repos.isError ? (
             <p
@@ -201,7 +204,7 @@ export function ReposPage({
             </>
           ) : null}
           {selected === undefined && !repos.isPending && !repos.isError ? (
-            <Card className="items-start gap-1.5 px-4">
+            <Card size="2" className="flex flex-col items-start gap-1.5">
               <h2 className="text-base font-semibold">暂无已注册仓库</h2>
               <p className="text-muted-foreground">
                 {canWrite ? "选择右上角“注册仓库”，搜索并选择要接入的代码仓库。" : "当前没有已注册仓库。"}
@@ -382,34 +385,36 @@ function RepoDetail({
       ) : null}
 
       {issues.length > 0 ? (
-        <Card className="gap-3 bg-warning/5 px-4">
-          <h3 className="flex items-center gap-2 text-base font-semibold">
-            <ExclamationTriangleIcon className="size-4 text-warning" aria-hidden />
-            Hook 配置差异
-          </h3>
-          {issues.map((issue) => (
-            <Kv key={issue.message} label={issue.message}>
-              <span className="text-muted-foreground">{issue.action}</span>
-            </Kv>
-          ))}
-          {canWrite ? (
-            <Button
-              variant="solid"
-              highContrast
-              size={{ initial: "4", sm: "2" }}
-              className="self-start"
-              disabled={rotate.isPending}
-              onClick={() => rotate.mutate()}
-            >
-              {rotate.isPending ? "修复中…" : "轮转并修复"}
-            </Button>
-          ) : null}
-        </Card>
+        <Callout.Root color="amber" size="2">
+          <Callout.Icon>
+            <ExclamationTriangleIcon aria-hidden />
+          </Callout.Icon>
+          <Callout.Text>Hook 配置差异</Callout.Text>
+          <div className="flex flex-col items-start gap-3">
+            {issues.map((issue) => (
+              <Kv key={issue.message} label={issue.message}>
+                <span className="text-muted-foreground">{issue.action}</span>
+              </Kv>
+            ))}
+            {canWrite ? (
+              <Button
+                variant="solid"
+                highContrast
+                size={{ initial: "4", sm: "2" }}
+                className="self-start"
+                disabled={rotate.isPending}
+                onClick={() => rotate.mutate()}
+              >
+                {rotate.isPending ? "修复中…" : "轮转并修复"}
+              </Button>
+            ) : null}
+          </div>
+        </Callout.Root>
       ) : null}
 
       {/* 编辑态并成一栏:两栏面板是 220px 的厂商列加一整栏模型列,半宽的格子装不下。 */}
       <div className={editing ? "grid gap-3" : "grid gap-3 md:grid-cols-2"}>
-        <Card className="gap-2.5 px-4">
+        <Card size="2" className="flex flex-col gap-2.5">
           <div className="flex items-center gap-1.5">
             <h3 className="text-base font-semibold">准入 Key</h3>
             <HelpTooltip label="准入 Key 说明" content="面板会自动维护 Hook 凭据，页面不会显示明文。" />
@@ -446,7 +451,7 @@ function RepoDetail({
             }}
           />
         ) : (
-          <Card className="gap-2.5 px-4">
+          <Card size="2" className="flex flex-col gap-2.5">
             <h3 className="text-base font-semibold">模型组合</h3>
             {/* 两态开关(issue #69):要么跟随全局,要么本仓库自定义。「一个都没选」
                 这种既不是跟随、也不是有效覆盖的状态在界面上不存在。 */}
@@ -878,7 +883,7 @@ function RepoRuns({
 
   const rows = runs.data?.runs.slice(0, 8) ?? [];
   return (
-    <Card className="gap-3 px-4">
+    <Card size="2" className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-base font-semibold">{canRead ? "评审记录" : "重新运行审查"}</h3>
         {canRerun ? <form onSubmit={submit} className="flex flex-wrap gap-2">

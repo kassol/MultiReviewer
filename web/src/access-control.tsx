@@ -8,7 +8,7 @@ import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Card } from "@/components/ui/card";
+import { Card } from "@radix-ui/themes";
 import {
   Dialog,
   DialogClose,
@@ -305,7 +305,7 @@ export function AccessControlPage() {
                 </div>
               )}
               {roles.length === 0 ? (
-                <Card className="items-start gap-2 px-4 py-5">
+                <Card size="2" className="flex flex-col items-start gap-2">
                   <p className="font-medium">还没有角色</p>
                   <p className="text-muted-foreground">角色不会预置。创建角色后，可在权限矩阵中授予权限。</p>
                   <Button variant="solid" highContrast size={{ initial: "4", sm: "2" }} className="mt-1" onClick={() => setCreateKind("role")}><PlusIcon />新建角色</Button>

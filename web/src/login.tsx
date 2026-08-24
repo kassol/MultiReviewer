@@ -4,7 +4,7 @@ import { useEffect, useState, type FormEvent } from "react";
 
 import { Mark } from "@/components/mark";
 import { Button } from "@/components/theme-button";
-import { Card } from "@/components/ui/card";
+import { Card } from "@radix-ui/themes";
 
 import { api } from "./api.ts";
 import { clearPanelSession, loadPanelSession, panelNeedsBootstrap } from "./session.ts";
@@ -72,7 +72,7 @@ export function LoginPage() {
           <Mark className="size-6 text-primary" />
           <h1 className="text-xl font-semibold tracking-tight">MultiReviewer</h1>
         </div>
-        <Card className="gap-5 px-5 py-6">
+        <Card size="2" className="flex flex-col gap-5">
           {bootstrapMode ? (
             <div className="border-b border-border pb-4">
               <h2 className="text-base font-semibold">注册首个系统管理员</h2>

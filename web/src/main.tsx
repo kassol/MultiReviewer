@@ -15,7 +15,7 @@ import { createRoot } from "react-dom/client";
 
 import { Mark } from "@/components/mark";
 import { PanelTheme } from "@/components/panel-theme";
-import { Card } from "@/components/ui/card";
+import { Card } from "@radix-ui/themes";
 
 import { AccessControlPage } from "./access-control.tsx";
 import { api } from "./api.ts";
@@ -403,7 +403,7 @@ function ZeroPermissionPage() {
   const { session } = shellRoute.useRouteContext();
   return (
     <div className="flex min-h-full items-center justify-center p-6">
-      <Card className="w-[30rem] max-w-full items-start gap-2 px-5 py-5">
+      <Card size="2" className="flex flex-col w-[30rem] max-w-full items-start gap-2">
         <h1 className="text-lg font-semibold">当前账号暂无访问权限</h1>
         <p className="text-muted-foreground">当前账号尚未分配角色。请联系系统管理员完成角色分配，然后刷新页面。</p>
         <p className="text-muted-foreground">系统管理员：{session.systemAdmins.join("、")}</p>

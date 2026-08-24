@@ -8,7 +8,7 @@ import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Card } from "@/components/ui/card";
+import { Card } from "@radix-ui/themes";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { api, errorText, fetchJson } from "./api.ts";
@@ -485,7 +485,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
         ) : null}
 
         {flat.length === 0 && !runs.isPending && !runs.isError ? (
-          <Card className="items-start gap-1.5 px-4">
+          <Card size="2" className="flex flex-col items-start gap-1.5">
             <h2 className="text-base font-semibold">暂无审查记录</h2>
             <p className="text-muted-foreground">
               向已注册仓库提交 pull request 后，系统会自动运行审查。

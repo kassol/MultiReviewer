@@ -14,7 +14,7 @@ import {
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/theme-button";
-import { Card } from "@/components/ui/card";
+import { Card } from "@radix-ui/themes";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { api, errorText, fetchJson } from "./api.ts";
@@ -83,7 +83,7 @@ export function SettingsPage({ canWrite }: { canWrite: boolean }) {
 function ReadOnlySettings({ settings }: { settings: Settings }) {
   return (
     <div className="grid gap-5 md:grid-cols-2">
-      <Card className="gap-3 px-4">
+      <Card size="2" className="flex flex-col gap-3">
         <div>
           <h2 className="text-base font-semibold">模型组合</h2>
           <p className="mt-0.5 text-muted-foreground">所有未设置覆盖的仓库使用这组模型。</p>
@@ -96,7 +96,7 @@ function ReadOnlySettings({ settings }: { settings: Settings }) {
           ))}
         </div>
       </Card>
-      <Card className="gap-3 px-4">
+      <Card size="2" className="flex flex-col gap-3">
         <div>
           <h2 className="text-base font-semibold">批次上限</h2>
           <p className="mt-0.5 text-muted-foreground">每批审查最多包含的改动行数。</p>
@@ -249,14 +249,15 @@ function SettingsForm({ settings }: { settings: Settings }) {
             saveLimit.mutate(parsed);
           }}
         >
-          <Card className="gap-0 overflow-hidden p-0">
-            <div className="space-y-3 px-4 py-4">
-              <p className="text-xs text-muted-foreground">
-                取值来源：{limitSource === "default" ? "系统默认" : "自定义"}
-              </p>
-              <div className="flex max-w-sm flex-col gap-1.5">
-                <Text as="label" htmlFor="max-changed-lines" size="2" weight="medium">每批最多改动行数</Text>
-                <TextField.Root
+          <Card size="1" className="overflow-hidden">
+            <div className="-m-3">
+              <div className="space-y-3 px-4 py-4">
+                <p className="text-xs text-muted-foreground">
+                  取值来源：{limitSource === "default" ? "系统默认" : "自定义"}
+                </p>
+                <div className="flex max-w-sm flex-col gap-1.5">
+                  <Text as="label" htmlFor="max-changed-lines" size="2" weight="medium">每批最多改动行数</Text>
+                  <TextField.Root
                   id="max-changed-lines"
                   size={{ initial: "3", sm: "2" }}
                   color={limitFeedback?.isError ? "red" : "gray"}
@@ -271,7 +272,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
                 />
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-3 border-t bg-muted/50 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-3 border-t bg-muted/50 px-4 py-3">
               <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={saveLimit.isPending}>
                 {saveLimit.isPending ? "保存中…" : "保存批次上限"}
               </Button>
@@ -300,6 +301,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
                   {limitFeedback.text}
                 </span>
               )}
+              </div>
             </div>
           </Card>
         </form>

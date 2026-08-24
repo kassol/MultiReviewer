@@ -10,7 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Card } from "@/components/ui/card";
+import { Card } from "@radix-ui/themes";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
@@ -151,7 +151,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
 
   return (
     <div className="flex flex-col gap-4">
-      <Card className="gap-3 px-4">
+      <Card size="2" className="flex flex-col gap-3">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
@@ -220,8 +220,8 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
         )}
       </Card>
 
-      <Card className="gap-0 overflow-hidden p-0">
-        <div className="flex h-[460px] min-w-0 flex-col sm:grid sm:grid-cols-[220px_minmax(0,1fr)]">
+      <Card size="1" className="overflow-hidden">
+        <div className="-m-3 flex h-[460px] min-w-0 flex-col sm:grid sm:grid-cols-[220px_minmax(0,1fr)]">
           <div className="flex h-40 min-h-0 shrink-0 flex-col border-b border-border bg-chrome sm:h-auto sm:border-r sm:border-b-0">
             <p className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
               模型服务 <span className="font-mono tabular-nums">{groups.length}</span> 项

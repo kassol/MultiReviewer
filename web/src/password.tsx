@@ -4,7 +4,7 @@ import { useState, type FormEvent } from "react";
 
 import { Mark } from "@/components/mark";
 import { Button } from "@/components/theme-button";
-import { Card } from "@/components/ui/card";
+import { Card } from "@radix-ui/themes";
 
 import { api, errorText } from "./api.ts";
 import { clearPanelSession, loadPanelSession, type PanelSession } from "./session.ts";
@@ -50,7 +50,7 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
           <Mark className="size-6 text-primary" />
           <h1 className="text-xl font-semibold tracking-tight">MultiReviewer</h1>
         </div>
-        <Card className="gap-5 px-5 py-6">
+        <Card size="2" className="flex flex-col gap-5">
           <div className="border-b border-border pb-4">
             <h2 className="text-base font-semibold">修改密码</h2>
             <p className="mt-1 break-words text-muted-foreground">
