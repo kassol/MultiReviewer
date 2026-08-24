@@ -24,6 +24,7 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
       .join("\n");
     const entrySource = readFileSync(join(process.cwd(), "web/src/main.tsx"), "utf8");
     const styleSource = readFileSync(join(process.cwd(), "web/src/styles.css"), "utf8");
+    const masterListSource = readFileSync(join(process.cwd(), "web/src/components/master-list-item.tsx"), "utf8");
 
     assert.match(javascript, /评审记录列表/);
     assert.match(javascript, /再显示/);
@@ -40,6 +41,7 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
     assert.ok(radixLayer < utilityLayer);
     assert.match(styleSource, /@layer theme, base, radix, components, utilities;/);
     assert.doesNotMatch(entrySource, /@radix-ui\/themes\/styles\.css/);
+    assert.doesNotMatch(masterListSource, /selection-solid-hover/);
     assert.match(javascript, /to:"\/credentials",activeOptions:\{exact:!0\}/);
   } finally {
     rmSync(dist, { recursive: true, force: true });

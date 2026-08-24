@@ -39,7 +39,7 @@ function masterListItemClassName(
   return cn(
     "relative w-full text-left transition-colors focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--master-list-focus)]",
     selected
-      ? "bg-[var(--selection-solid)] text-[var(--selection-solid-text)] [--master-list-danger:var(--selection-solid-danger-text)] [--master-list-focus:var(--selection-solid-text)] [--master-list-muted:var(--selection-solid-muted-text)] hover:bg-[var(--selection-solid-hover)]"
+      ? "bg-[var(--selection-solid)] text-[var(--selection-solid-text)] [--master-list-danger:var(--selection-solid-danger-text)] [--master-list-focus:var(--selection-solid-text)] [--master-list-muted:var(--selection-solid-muted-text)]"
       : "text-[var(--text-primary)] [--master-list-danger:var(--red-11)] [--master-list-focus:var(--selection-solid)] [--master-list-muted:var(--text-secondary)] hover:bg-[var(--gray-3)]",
     disabled && "cursor-not-allowed opacity-60",
     className,

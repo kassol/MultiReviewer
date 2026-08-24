@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-24: 主从列表选中态不再声明第二套 hover 背景。模型服务、审查策略与仓库的选中项在默认和悬停时统一保持深色背景与白色文字。
+
 - 2026-08-24: 修复 Radix Themes 未分层样式覆盖 Tailwind 响应式布局。样式入口固定 `theme < base < radix < components < utilities`,Card、Button 与 Table 上明确声明的布局和断点显隐恢复生效；模型服务返回列表链接不再误标为当前地址。
 
 - 2026-08-24: 管理面板完成 Radix 迁移收口。`MasterListItem` 统一仓库、模型服务与模型组合的主从选择；`DateRangePicker`、`EditableModelCombobox`、`EmptyState` 和 `useDialogReturnFocus` 分别统一日期范围、可编辑模型标识、空态与受控浮层焦点返回。页面按路由分块，仓库与模型服务在 `lg` 起采用列表／详情双栏和独立滚动，640–1023px 保持单层切换。源码结构已核对，部署实例的端到端验收仍待执行。

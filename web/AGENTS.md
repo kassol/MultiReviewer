@@ -21,7 +21,7 @@
 - `src/components/panel-theme.tsx` — Radix Theme 根配置的唯一实现。固定亮色、gray accent、solid panel、small radius 与 95% scaling。
 - `src/components/help-tooltip.tsx` — 统一的帮助提示入口。基于 Radix Themes Tooltip、IconButton 与 Radix Icons,图标按钮可键盘访问,窄屏保留触控尺寸。
 - `src/components/status-badge.tsx` — 跨页面运行状态的唯一视觉出口。领域组件只传 `neutral` / `success` / `warning` / `error` 与文字；组件统一 Radix Themes Badge 的色系、variant 和状态图标。深色 provider 选中行改用对应状态色的 solid Badge,不把状态洗成白色中性标签。来源、身份和类别直接使用 Themes Badge。
-- `src/components/master-list-item.tsx` — 主从列表当前项的唯一交互表面。模型服务、仓库与 `ModelComposer` 共用深色实底、白字、深色 hover、焦点和辅助文字对比规则；路由项用 `asChild` 组合 Link 并输出 `aria-current`,页内项输出 button 与 `aria-pressed`。模型行和 Checkbox 多选不使用这套深色状态。
+- `src/components/master-list-item.tsx` — 主从列表当前项的唯一交互表面。模型服务、仓库与 `ModelComposer` 共用深色实底、白字、固定选中背景、焦点和辅助文字对比规则；选中项悬停不换色。路由项用 `asChild` 组合 Link 并输出 `aria-current`,页内项输出 button 与 `aria-pressed`。模型行和 Checkbox 多选不使用这套深色状态。
 - `src/components/date-range-picker.tsx` — 日期范围的唯一产品入口。内部组合 Themes Popover 与 `ui/calendar`,负责本地日期转换、双月范围和窄屏边界；页面只读写 `{from,to}`。
 - `src/components/editable-model-combobox.tsx` — 可搜索且可手填 model id 的唯一产品入口。内部组合 Themes TextField/Popover 与 `ui/command`,自动发现候选可选，目录外裸 model id 始终可输入。
 - `src/components/empty-state.tsx` — 资源为空、筛选无结果和零权限状态的统一实现。保留原有 `h1` / `h2` / `h3` / 正文层级，不使用装饰性大图标。
@@ -54,7 +54,7 @@
 - **有限枚举与多选直接使用 Themes。**有限枚举使用 `Select`,权限矩阵、模型批量选择和补录确认使用 `Checkbox`;点击区域通过可见标签或可访问名称关联。批量全选必须呈现部分选中的 indeterminate 状态。允许搜索和手填的 model id 使用统一的可编辑组合框，保留目录搜索、键盘选择和直接输入裸 model id。
 - **面板只做亮色一套**(issue #46)。`PanelTheme` 明确固定 `appearance="light"`;不加主题上下文、本地存储、防闪脚本或暗色变体。需要暗色时先在设计系统中补齐完整 token 与组件状态,再引入主题切换。
 - **状态 Badge 只走 `StatusBadge`.** 它固定 neutral / success / warning / error 到 Radix Gray / Green / Amber / Red,默认用 `soft + highContrast`,深色 provider 选中行用对应色 `solid`;颜色、文字与图标共同表达状态。来源、身份和类别直接使用 Themes Badge。页面不得再给 Badge 添加 `bg-success` / `bg-warning` / `bg-destructive` 等状态类。主色是近黑,不是青,也不是蓝。
-- **选中态按操作语义分三类。**主导航和 tab 表示当前位置,分别用白底卡位与下划线；仓库、模型服务和 `ModelComposer` 的 `MasterListItem` 使用同一套实心主色加反白文字,选中项 hover 继续使用深色体系；模型行、命令菜单和批量勾选属于编辑中的选择,使用浅底、描边或 Checkbox。受控弹窗通过 `useDialogReturnFocus` 记录真实触发元素；关闭必须保留底层列表项与 tab,并把焦点还给触发入口或稳定后备入口。任何选中态都要单独检查 hover、focus 与辅助文字对比度。
+- **选中态按操作语义分三类。**主导航和 tab 表示当前位置,分别用白底卡位与下划线；仓库、模型服务和 `ModelComposer` 的 `MasterListItem` 使用同一套实心主色加反白文字,选中项 hover 保持同一背景与文字色；模型行、命令菜单和批量勾选属于编辑中的选择,使用浅底、描边或 Checkbox。受控弹窗通过 `useDialogReturnFocus` 记录真实触发元素；关闭必须保留底层列表项与 tab,并把焦点还给触发入口或稳定后备入口。任何选中态都要单独检查 hover、focus 与辅助文字对比度。
 - **字号只用令牌里那六档**,不写 `text-[13px]` 这类一次性值。档位各有唯一职责:xs 元信息、sm 正文与控件、base 区块标题、lg 对话框标题与选中仓库、xl 页标题(一页一个)、3xl 只给处置率页的指标数字。
 - **等宽字体只包数字,不包中文。** `font-mono` 会把汉字撑成等宽格,「3 轮」因此读成断开的两块;写法是 `<span className="font-mono tabular-nums">{n}</span> 轮`。
 - 时间一律「年-月-日 时:分」本地时区,不用 `toLocaleString()`——它给的是 `8/14/2026, 6:25:21 PM`,与全站的 ISO 风格对不上。
