@@ -46,10 +46,10 @@ MultiReviewer 对 pull request 做多模型并行代码审查。审查挂在 Git
 
 技术约束：
 
-- 现有栈：Vite + React 19 + TanStack Router/Query + Tailwind v4 + shadcn（Radix）。构建产物经 `/assets` 提供，产物不得含面板前缀。
+- 现有栈：Vite + React 19 + TanStack Router/Query + Radix Themes / Primitives / Icons + Tailwind v4。cmdk 与 react-day-picker 分别保留搜索组合框和日期范围行为。构建产物经 `/assets` 提供，产物不得含面板前缀。
 - 只做亮色一套（issue #46）。
 - 前端不做程序化测试（issue #26）；逻辑压在服务端契约上。
-- 写样式只有 Tailwind utility 一条路；`styles.css` 只放令牌。
+- 通用组件外观由 Radix Themes props 与 token 提供；Tailwind utility 负责页面布局和产品结构；`styles.css` 只放 token 映射与浏览器原生表面规则。
 - 不用 `window.confirm`：原生对话框会卡住浏览器自动化。
 - Key 与模型凭据的明文从不回显到前端。
 

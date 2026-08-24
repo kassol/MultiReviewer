@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Cross2Icon, LockClosedIcon, PlusIcon, ResetIcon, TrashIcon } from "@radix-ui/react-icons";
-import { AlertDialog, Badge, Card, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, Table, Text, TextField } from "@radix-ui/themes";
+import { AlertDialog, Badge, Callout, Card, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, Table, Text, TextField } from "@radix-ui/themes";
 import { useMemo, useState, type FormEvent } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -107,6 +107,20 @@ export function AccessControlPage() {
     onError: (error: Error) => setFeedback({ text: error.message, error: true }),
   });
 
+  const openCreateDialog = (kind: "user" | "role"): void => {
+    createUser.reset();
+    createRole.reset();
+    setFeedback(null);
+    setCreateKind(kind);
+  };
+
+  const closeCreateDialog = (): void => {
+    setCreateKind(null);
+    createUser.reset();
+    createRole.reset();
+    setFeedback(null);
+  };
+
   const updateUser = useMutation({
     mutationFn: async (input: { user: User; roleId: number | null }) => {
       const response = await api(`/users/${encodeURIComponent(input.user.username)}`, {
@@ -194,26 +208,21 @@ export function AccessControlPage() {
         description="管理用户、角色和权限。此页仅系统管理员可见。"
         actions={
           <>
-            <Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={() => setCreateKind("role")}><PlusIcon />新建角色</Button>
-            <Button variant="solid" highContrast size={{ initial: "4", sm: "2" }} onClick={() => setCreateKind("user")}><PlusIcon />新建用户</Button>
+            <Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={() => openCreateDialog("role")}><PlusIcon />新建角色</Button>
+            <Button variant="solid" highContrast size={{ initial: "4", sm: "2" }} onClick={() => openCreateDialog("user")}><PlusIcon />新建用户</Button>
           </>
         }
       />
       <PageBody width="wide" className="pb-5 sm:pb-5">
         {feedback === null ? null : (
-          <p
-            role={feedback.error ? "alert" : "status"}
-            className={feedback.error
-              ? "rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive"
-              : "rounded-md border border-success/30 bg-success/10 px-3 py-2 text-success"}
-          >
-            {feedback.text}
-          </p>
+          <Callout.Root role={feedback.error ? "alert" : "status"} color={feedback.error ? "red" : "green"} size="1">
+            <Callout.Text>{feedback.text}</Callout.Text>
+          </Callout.Root>
         )}
         {loadError === null ? null : (
-          <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive">
-            {(loadError as Error).message}
-          </p>
+          <Callout.Root role="alert" color="red" size="1">
+            <Callout.Text>{(loadError as Error).message}</Callout.Text>
+          </Callout.Root>
         )}
         {pending ? (
           <div className="flex flex-col gap-5" role="status" aria-label="正在加载访问控制">
@@ -308,7 +317,7 @@ export function AccessControlPage() {
                 <Card size="2" className="flex flex-col items-start gap-2">
                   <p className="font-medium">还没有角色</p>
                   <p className="text-muted-foreground">角色不会预置。创建角色后，可在权限矩阵中授予权限。</p>
-                  <Button variant="solid" highContrast size={{ initial: "4", sm: "2" }} className="mt-1" onClick={() => setCreateKind("role")}><PlusIcon />新建角色</Button>
+                  <Button variant="solid" highContrast size={{ initial: "4", sm: "2" }} className="mt-1" onClick={() => openCreateDialog("role")}><PlusIcon />新建角色</Button>
                 </Card>
               ) : (
                 <div className="contain-inline-size min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-md border border-border">
@@ -373,7 +382,15 @@ export function AccessControlPage() {
           </>
         )}
       </PageBody>
-      <CreateDialog kind={createKind} busy={createUser.isPending || createRole.isPending} onClose={() => setCreateKind(null)} onUser={(input) => { setFeedback(null); createUser.mutate(input); }} onRole={(name) => { setFeedback(null); createRole.mutate(name); }} />
+      {createKind === null ? null : (
+        <CreateDialog
+          kind={createKind}
+          busy={createUser.isPending || createRole.isPending}
+          onClose={closeCreateDialog}
+          onUser={(input) => { setFeedback(null); createUser.mutate(input); }}
+          onRole={(name) => { setFeedback(null); createRole.mutate(name); }}
+        />
+      )}
       <AlertDialog.Root open={confirm !== null} onOpenChange={(open) => { if (!open) { setConfirm(null); setResetPassword(""); } }}>
         <AlertDialog.Content maxWidth="440px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
           <AlertDialog.Title size="4" mb="2">{confirm?.kind === "reset" ? "重置密码" : "确认删除"}</AlertDialog.Title>
@@ -409,7 +426,7 @@ export function AccessControlPage() {
   );
 }
 
-function CreateDialog({ kind, busy, onClose, onUser, onRole }: { kind: "user" | "role" | null; busy: boolean; onClose: () => void; onUser: (input: { username: string; displayName: string; password: string }) => void; onRole: (name: string) => void }) {
+function CreateDialog({ kind, busy, onClose, onUser, onRole }: { kind: "user" | "role"; busy: boolean; onClose: () => void; onUser: (input: { username: string; displayName: string; password: string }) => void; onRole: (name: string) => void }) {
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
@@ -417,7 +434,7 @@ function CreateDialog({ kind, busy, onClose, onUser, onRole }: { kind: "user" | 
   const submit = (event: FormEvent): void => { event.preventDefault(); if (kind === "user") onUser({ username, displayName, password }); else if (kind === "role") onRole(name); };
 
   return (
-    <Dialog.Root open={kind !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
+    <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
       <Dialog.Content maxWidth="440px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
         <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
           <div className="pr-9">

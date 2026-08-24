@@ -42,7 +42,7 @@
 
 /*
  * Radix Themes 是通用视觉系统。这里仅把既有 Tailwind 页面仍在消费的旧名称映射到
- * Theme token，保证组件族按批迁移期间只有一份颜色事实。新产品组件直接使用
+ * Theme token，保证所有组件只有一份颜色事实。新产品组件直接使用
  * --app-* / --text-* / --selection-* 或 Radix token，不再新增旧名称。
  */
 .radix-themes {
@@ -155,7 +155,7 @@
     overflow-x: hidden;
   }
 
-  /* Tailwind preflight 把边框色置成 currentColor,shadcn 组件默认按 --border 画线。 */
+  /* Tailwind preflight 把边框色置成 currentColor；统一回产品边界色。 */
   * {
     border-color: var(--border);
   }

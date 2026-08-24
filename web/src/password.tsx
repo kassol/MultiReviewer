@@ -1,10 +1,9 @@
 import { useRouter } from "@tanstack/react-router";
-import { Text, TextField } from "@radix-ui/themes";
+import { Callout, Card, Text, TextField } from "@radix-ui/themes";
 import { useState, type FormEvent } from "react";
 
 import { Mark } from "@/components/mark";
 import { Button } from "@/components/theme-button";
-import { Card } from "@radix-ui/themes";
 
 import { api, errorText } from "./api.ts";
 import { clearPanelSession, loadPanelSession, type PanelSession } from "./session.ts";
@@ -68,7 +67,11 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
               <Text as="label" htmlFor="confirm-password" size="2" weight="medium">确认密码</Text>
               <TextField.Root id="confirm-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" value={confirm} onChange={(event) => setConfirm(event.target.value)} />
             </div>
-            {error === null ? null : <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive">{error}</p>}
+            {error === null ? null : (
+              <Callout.Root role="alert" color="red" size="1">
+                <Callout.Text>{error}</Callout.Text>
+              </Callout.Root>
+            )}
             <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} className="w-full" disabled={busy || password === "" || confirm === ""}>{busy ? "保存中…" : "保存新密码"}</Button>
           </form>
         </Card>

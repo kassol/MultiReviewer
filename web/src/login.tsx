@@ -1,10 +1,9 @@
 import { useRouter } from "@tanstack/react-router";
-import { Text, TextField } from "@radix-ui/themes";
+import { Callout, Card, Text, TextField } from "@radix-ui/themes";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { Mark } from "@/components/mark";
 import { Button } from "@/components/theme-button";
-import { Card } from "@radix-ui/themes";
 
 import { api } from "./api.ts";
 import { clearPanelSession, loadPanelSession, panelNeedsBootstrap } from "./session.ts";
@@ -100,7 +99,11 @@ export function LoginPage() {
                 <TextField.Root id="confirm" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" value={confirm} onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" />
               </div>
             ) : null}
-            {error === null ? null : <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-destructive">{error}</p>}
+            {error === null ? null : (
+              <Callout.Root role="alert" color="red" size="1">
+                <Callout.Text>{error}</Callout.Text>
+              </Callout.Root>
+            )}
             <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} className="w-full" disabled={busy || username === "" || password === ""}>
               {busy ? "处理中…" : bootstrapMode ? "注册并登录" : "登录"}
             </Button>

@@ -15,7 +15,7 @@ import { createRoot } from "react-dom/client";
 
 import { Mark } from "@/components/mark";
 import { PanelTheme } from "@/components/panel-theme";
-import { Card } from "@radix-ui/themes";
+import { Card, IconButton } from "@radix-ui/themes";
 
 import { AccessControlPage } from "./access-control.tsx";
 import { api } from "./api.ts";
@@ -80,8 +80,8 @@ type NavigationItem = {
 };
 
 const NAV: readonly NavigationItem[] = [
-  { to: "/repos", label: "仓库", permission: "repo:read" },
   { to: "/runs", label: "评审记录", permission: "review:read" },
+  { to: "/repos", label: "仓库", permission: "repo:read" },
   { to: "/stats", label: "处置率", permission: "review:read" },
   { to: "/credentials", label: "模型服务", permission: ["model:read", "model:write", "credential:read", "credential:write"] },
   { to: "/settings", label: "审查策略", permission: "model:read" },
@@ -131,15 +131,18 @@ function Shell() {
             <span className="max-w-28 truncate text-xs text-muted-foreground" title={session.displayName ?? session.username}>
               {session.displayName ?? session.username}
             </span>
-            <button
+            <IconButton
               type="button"
+              variant="ghost"
+              color="gray"
+              size="3"
               aria-label={`退出登录 ${session.username}`}
               title="退出登录"
               onClick={() => void logout()}
-              className="flex size-11 shrink-0 touch-manipulation items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
+              className="shrink-0 touch-manipulation max-sm:min-h-11 max-sm:min-w-11"
             >
               <ExitIcon className="size-4" />
-            </button>
+            </IconButton>
           </div>
         </div>
         <p className="flex items-center justify-between px-3 pt-2 text-xs text-muted-foreground sm:hidden">
@@ -172,19 +175,22 @@ function Shell() {
                 <p className="truncate text-xs text-muted-foreground" title={session.username}>{session.username}</p>
               )}
             </div>
-            <button
+            <IconButton
               type="button"
+              variant="ghost"
+              color="gray"
+              size="2"
               aria-label={`退出登录 ${session.username}`}
               title="退出登录"
               onClick={() => void logout()}
-              className="flex size-8 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
+              className="shrink-0"
             >
               <ExitIcon className="size-4" />
-            </button>
+            </IconButton>
           </div>
         </div>
       </aside>
-      <main className="min-h-0 min-w-0 flex-1 overflow-auto bg-background">
+      <main id="panel-main-scroll" className="min-h-0 min-w-0 flex-1 overflow-auto bg-background">
         <div className="min-h-full w-full max-w-7xl"><Outlet /></div>
       </main>
     </div>
@@ -195,9 +201,8 @@ const indexRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/",
   beforeLoad: ({ context }) => {
-    if (context.session.mustChangePassword) throw redirect({ to: "/password" });
-    const target = visibleNav(context.session)[0]?.to;
-    if (target !== undefined) throw redirect({ to: target });
+    const target = homeFor(context.session);
+    if (target !== "/") throw redirect({ to: target });
   },
   component: ZeroPermissionPage,
 });

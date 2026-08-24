@@ -1,13 +1,11 @@
 ---
 name: MultiReviewer
-description: "发布门禁看板方向的 MultiReviewer 审查运维面板；Radix Themes 迁移前设计种子。"
+description: "以 Radix Themes 落地发布门禁看板方向的 MultiReviewer 审查运维面板。"
 ---
-
-<!-- SEED: established with the user before implementation; re-run $impeccable document once there's code to capture the actual tokens and components. -->
 
 # MultiReviewer 管理面板设计系统
 
-> 方向已经锁定为“发布门禁看板”。Theme 参数、精确色值、组件尺寸与断点仍是原型候选；完成第 15 节的代表页面验证后，才转为实现基准。
+> “发布门禁看板”已经落地为当前实现基准。Theme 固定为亮色 gray、solid panel、small radius 与 95% scaling；第 15 节用于部署交付验收。
 
 ## 方向契约
 
@@ -46,7 +44,7 @@ MultiReviewer 管理面板服务两类用户：
 
 产品页面只组合组件。颜色、间距、圆角、阴影与交互状态集中在 Theme 和共享产品组件中定义。
 
-### 2.2 Theme 根配置候选
+### 2.2 Theme 根配置
 
 ```tsx
 <Theme appearance="light" accentColor="gray" grayColor="gray"
@@ -55,7 +53,7 @@ MultiReviewer 管理面板服务两类用户：
 </Theme>
 ```
 
-当前只提供浅色模式。以上根配置全部是原型候选；`accentColor`、`grayColor`、`panelBackground`、`radius` 与 `scaling` 的最终值需经代表页面验证，见第 15 节。
+当前只提供浅色模式。以上参数由 `src/components/panel-theme.tsx` 统一提供；页面和浮层不得各自建立 Theme 配置。
 
 ### 2.3 发布门禁看板的结构规则
 
@@ -81,7 +79,7 @@ MultiReviewer 管理面板服务两类用户：
 
 ### 4.1 中性色
 
-以下中性色是原型候选。使用 Radix Gray scale，并通过语义 token 暴露给产品组件：
+中性色使用 Radix Gray scale，并通过语义 token 暴露给产品组件：
 
 | 语义 token | 用途 | 视觉目标 |
 | --- | --- | --- |
@@ -97,11 +95,11 @@ MultiReviewer 管理面板服务两类用户：
 | `--selection-solid-muted-text` | provider 选中项辅助文字 | 在深色表面达到正文对比要求 |
 | `--selection-solid-danger-text` | provider 选中项异常文字 | 在深色表面保留错误语义与正文对比 |
 
-精确色值由 Radix token 生成，并在模型服务、审查策略和评审记录原型中验证。产品代码不直接引用色阶编号，统一引用上述语义 token。
+精确色值由 Radix token 生成。产品代码不直接引用色阶编号，统一引用上述语义 token。
 
 ### 4.2 状态色
 
-以下状态色系是语义约束，具体 Radix 色阶和 contrast/highContrast 组合仍需原型验证。
+以下状态色系是固定语义，具体值由 Radix 组件的 color、variant 与 highContrast 组合产生。
 
 | 状态 | 色系 | 使用位置 |
 | --- | --- | --- |
@@ -124,9 +122,9 @@ StatusBadge 是运行状态的唯一产品级出口，只暴露 `neutral`、`suc
 
 等宽字体仅用于模型标识、Key 尾号、commit SHA、数字指标和日志片段。
 
-### 5.2 层级候选
+### 5.2 层级
 
-以下 `size` 是原型候选，最终值以桌面扫读密度和 390px 触控验证为准。
+以下层级是页面与共享组件的实现基准。
 
 | 层级 | Radix 组件建议 | 用途 |
 | --- | --- | --- |
@@ -140,21 +138,21 @@ StatusBadge 是运行状态的唯一产品级出口，只暴露 `neutral`、`suc
 
 ## 6. 密度、间距与圆角
 
-### 6.1 密度候选
+### 6.1 密度
 
-- 默认从 `scaling="95%"` 候选值开始验证桌面端高密度扫描，并与 `90%` 对照。
-- 常规输入和按钮暂用 `size="2"` 候选值。
-- 核心提交动作暂用 `size="3"` 候选值。
+- Theme 固定使用 `scaling="95%"`，保持桌面端高密度扫描。
+- 常规输入和按钮使用 `size="2"`。
+- 核心提交动作使用 `size="3"`。
 - 窄屏上的主要触控目标高度至少 44px，可通过响应式 size 或外层点击区域实现。
 - 表格和长列表优先紧凑行高，重要状态保持完整文字。
 
-### 6.2 间距候选
+### 6.2 间距
 
-使用 Radix 九级 spacing scale。候选映射为：图标与文字用 `space-1/2`，同组字段用 `space-3`，卡片内部用 `space-4`，相邻任务区用 `space-5`，页面区块用 `space-6`。`space-7` 至 `space-9` 只用于页面级留白。原型验证后固定映射，页面不得自行创建任意间距值。
+使用 Radix 九级 spacing scale。图标与文字用 `space-1/2`，同组字段用 `space-3`，卡片内部用 `space-4`，相邻任务区用 `space-5`，页面区块用 `space-6`。`space-7` 至 `space-9` 只用于页面级留白。页面不得自行创建任意间距值。
 
-### 6.3 圆角与阴影候选
+### 6.3 圆角与阴影
 
-- Theme 从 `radius="small"` 候选值开始，并与 `medium` 对照。
+- Theme 固定使用 `radius="small"`。
 - 表单、按钮、卡片、弹窗沿用组件默认的上下文圆角。
 - 卡片采用实底和细边框，常态不加阴影。
 - Dialog、Popover、Tooltip 可使用 Radix 默认浮层阴影。
@@ -164,7 +162,7 @@ StatusBadge 是运行状态的唯一产品级出口，只暴露 `neutral`、`suc
 
 ### 7.1 应用外壳
 
-- `md=1024px` 暂作为候选切换点：以上使用左侧固定宽度导航，以下使用顶部横向导航和单列内容。
+- `sm=640px` 是应用壳切换点：以上使用左侧固定宽度导航，以下使用顶部横向导航和单列内容。
 - 页面 Header 可保持粘性，包含标题、必要说明和主要动作。
 - 内容区左对齐；宽表和主从工作区使用宽版容器，表单使用窄版容器。
 - 超宽屏保留合理最大宽度，避免行长随视口无限增长。
@@ -344,21 +342,21 @@ ProviderSelector 是共享产品组件。模型服务页和审查策略中的 pr
 - 页面不得用 Tailwind 覆盖 Themes 组件内部的 hover、focus、selected、disabled、loading 或 invalid 状态。
 - 同一布局只能由 Themes 响应式 props 或 Tailwind 断点中的一套规则控制。
 
-## 15. 原型验证清单
+## 15. 部署交付验收清单
 
-以下值进入全量迁移前必须在模型服务、审查策略、评审记录三个代表页面做原型验证：
+交付前在模型服务、审查策略、评审记录三个代表页面验证：
 
-1. `accentColor="gray"` 能否同时满足主按钮、焦点环和选中 provider 的对比度。
-2. `radius="small"` 与 `radius="medium"` 在 Card、Dialog、输入框中的一致性。
-3. `scaling="95%"` 与 `90%` 的桌面信息密度，以及窄屏触控尺寸。
+1. `accentColor="gray"` 下主按钮、焦点环和选中 provider 的对比度。
+2. `radius="small"` 在 Card、Dialog、输入框中的一致性。
+3. `scaling="95%"` 的桌面信息密度，以及窄屏触控尺寸。
 4. ProviderSelector 深色选中态在默认、hover、focus、Badge 组合下的可读性。
-5. `md=1024px` 作为侧栏和主从布局切换点是否产生拥挤。
+5. `sm=640px` 作为侧栏和主从布局切换点是否产生拥挤。
 6. 长模型列表的可视高度、局部滚动、粘性表头和批量操作栏。
 7. 多步凭据 Dialog 的宽度、内容滚动和窄屏布局。
 8. DatePicker、Combobox 与 Theme 组件的视觉一致性和键盘操作。
 9. TabNav 与 Router Link 的当前态、前进后退和刷新恢复。
 
-原型验收同时覆盖鼠标、键盘、窄屏、长中文名称、长模型标识、加载、错误、禁用与空数据。
+验收同时覆盖鼠标、键盘、窄屏、长中文名称、长模型标识、加载、错误、禁用与空数据。
 
 ## 16. 实施约束
 

@@ -4,7 +4,7 @@
  */
 import { Link } from "@tanstack/react-router";
 import { Cross2Icon } from "@radix-ui/react-icons";
-import { Badge, Skeleton, TextField } from "@radix-ui/themes";
+import { Badge, Card, Checkbox, Skeleton, TextField } from "@radix-ui/themes";
 import { useEffect, useMemo, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -14,7 +14,6 @@ import {
 } from "@/components/provider-selector-item";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { Card } from "@radix-ui/themes";
 import { cn } from "@/lib/utils";
 
 import {
@@ -404,43 +403,54 @@ function ProviderPane({
                 !model.available ? "bg-destructive/5" : null,
               )}
             >
-              <button
-                type="button"
-                aria-pressed={picked}
-                disabled={!model.available}
-                className="flex min-w-0 flex-1 flex-col gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-70 sm:flex-row sm:items-center"
-                onClick={() => onToggle(model.identity)}
+              <label
+                className={cn(
+                  "flex min-w-0 flex-1 items-start gap-2",
+                  model.available ? "cursor-pointer" : "cursor-not-allowed opacity-70",
+                )}
               >
-                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="break-words font-medium">
-                    {model.discovery.name ?? model.id}
-                    {picked ? <span className="ml-2 text-xs text-muted-foreground">已选</span> : null}
-                  </span>
-                  <span className="break-all font-mono text-xs text-muted-foreground">{model.id}</span>
-                  <span className="flex flex-wrap gap-1">
-                    {model.sources.map((source) => (
-                      <Badge key={source} color="gray" variant="outline">{SOURCE_LABEL[source]}</Badge>
-                    ))}
-                  </span>
-                  {model.available ? null : (
-                    <span className="text-xs text-destructive">
-                      {model.unavailableReasonText ?? "模型不可用"}
+                <Checkbox
+                  checked={picked}
+                  disabled={!model.available}
+                  aria-label={`选择 ${model.identity}`}
+                  className="mt-0.5 shrink-0"
+                  onCheckedChange={(checked) => {
+                    if (typeof checked === "boolean" && checked !== picked) {
+                      onToggle(model.identity);
+                    }
+                  }}
+                />
+                <span className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="break-words font-medium">
+                      {model.discovery.name ?? model.id}
                     </span>
-                  )}
-                </span>
-                <span className="shrink-0 text-left text-xs text-muted-foreground sm:text-right">
-                  <span><span className="font-mono tabular-nums">{NUMBER_FORMAT.format(model.runtime.contextWindow)}</span> 上下文</span>
-                  <br />
-                  {cost === null ? (
-                    <span className="text-warning">{COST_UNKNOWN_NOTE}</span>
-                  ) : (
-                    <span>
-                      <span className="font-mono tabular-nums">${cost.input}/M</span> 入 ·{" "}
-                      <span className="font-mono tabular-nums">${cost.output}/M</span> 出
+                    <span className="break-all font-mono text-xs text-muted-foreground">{model.id}</span>
+                    <span className="flex flex-wrap gap-1">
+                      {model.sources.map((source) => (
+                        <Badge key={source} color="gray" variant="outline">{SOURCE_LABEL[source]}</Badge>
+                      ))}
                     </span>
-                  )}
+                    {model.available ? null : (
+                      <span className="text-xs text-destructive">
+                        {model.unavailableReasonText ?? "模型不可用"}
+                      </span>
+                    )}
+                  </span>
+                  <span className="shrink-0 text-left text-xs text-muted-foreground sm:text-right">
+                    <span><span className="font-mono tabular-nums">{NUMBER_FORMAT.format(model.runtime.contextWindow)}</span> 上下文</span>
+                    <br />
+                    {cost === null ? (
+                      <span className="text-warning">{COST_UNKNOWN_NOTE}</span>
+                    ) : (
+                      <span>
+                        <span className="font-mono tabular-nums">${cost.input}/M</span> 入 ·{" "}
+                        <span className="font-mono tabular-nums">${cost.output}/M</span> 出
+                      </span>
+                    )}
+                  </span>
                 </span>
-              </button>
+              </label>
               {model.available ? null : (
                 <Link
                   to={model.unavailableAction ?? "/credentials"}

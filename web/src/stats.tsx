@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { CalendarIcon, ChevronDownIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
-import { Card, Popover, Skeleton, Table } from "@radix-ui/themes";
+import { Callout, Card, Popover, Progress, Skeleton, Table } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
 import { useState } from "react";
 
@@ -62,16 +62,8 @@ function humanBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
-/**
- * 进度条:两个 div 的事,不引组件。旁边一定有分子分母的文字,所以对屏幕阅读器隐藏——
- * 念一遍宽度百分比只是把同一个数说两次。
- */
 function Bar({ pct }: { pct: number }) {
-  return (
-    <div aria-hidden className="h-1 overflow-hidden rounded-sm bg-border">
-      <div className="h-full bg-primary" style={{ width: `${pct}%` }} />
-    </div>
-  );
+  return <Progress aria-hidden value={pct} size="1" color="gray" />;
 }
 
 /** 比率永远带原始分子分母,读者自己判断样本够不够(ADR 0006)。 */
@@ -219,13 +211,10 @@ export function StatsPage() {
 
       <PageBody width="wide" className="gap-4 pb-5 sm:pb-5">
         {stats.isError ? (
-          <p
-            role="alert"
-            className="flex items-start gap-2 rounded-sm border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive"
-          >
-            <ExclamationTriangleIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
-            <span>{(stats.error as Error).message}</span>
-          </p>
+          <Callout.Root role="alert" color="red" size="1">
+            <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+            <Callout.Text>{(stats.error as Error).message}</Callout.Text>
+          </Callout.Root>
         ) : null}
 
         {stats.isPending ? (

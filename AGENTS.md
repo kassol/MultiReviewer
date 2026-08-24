@@ -152,6 +152,10 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-24: 管理面板补齐弹窗状态生命周期。模型服务三步弹窗从路由返回时恢复 provider、Tab 与两处滚动位置；新建用户、角色和自定义 provider 改名弹窗取消或关闭后清空草稿与提交状态。
+
+- 2026-08-24: 管理面板的模型组合行改用 Radix Themes Checkbox 作为唯一多选标记,整行可点并保留浅色选中反馈；登录与改密后的默认入口调整为评审记录,无审查读取权限时进入下一个可见页。当前文档同步移除迁移前的 shadcn、暗色变体和已删除依赖说明。
+
 - 2026-08-24: 管理面板清理 Radix 迁移后的零引用依赖。移除 `class-variance-authority` 与 `tw-animate-css`，同时删除已无调用方的动画导入和暗色变体守卫；`cmdk`、`react-day-picker` 与 `radix-ui` 继续承担搜索组合框、日期区间和 Primitive 行为。
 
 - 2026-08-24: 管理面板完成模型服务页浮层与导航迁移。重新验证组合框使用 Themes `Popover` 承载 cmdk 搜索和手填；服务详情使用 Themes `TabNav`,发现差异与组合引用使用 Collapsible；稳定路由、当前 provider、当前 Tab 与业务状态保持不变。

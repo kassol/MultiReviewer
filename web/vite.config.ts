@@ -33,7 +33,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react(), tailwindcss(), injectPrefix],
-    // shadcn 组件用 `@/` 互相引用,与 tsconfig 的 paths 同一套。
+    // 项目源码用 `@/` 指向 src，与 tsconfig 的 paths 同一套。
     resolve: {
       alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
     },

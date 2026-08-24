@@ -242,12 +242,38 @@ type CustomSetupCandidate = {
 type ModelServiceSetupCandidate = BuiltinSetupCandidate | CustomSetupCandidate;
 
 type SetupPhase = "discovering" | "committing" | null;
+type ModelServiceReturnSearch = {
+  returnProvider?: string;
+  returnTab?: ModelServiceTab;
+  returnServiceScroll: number;
+  returnMainScroll: number;
+};
+
+function scrollValue(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function modelServiceReturnSearch(
+  provider: string | undefined,
+  tab: ModelServiceTab,
+): ModelServiceReturnSearch {
+  const serviceList = document.getElementById("model-service-list-scroll");
+  const main = document.getElementById("panel-main-scroll");
+  return {
+    ...(provider === undefined ? {} : { returnProvider: provider, returnTab: tab }),
+    returnServiceScroll: serviceList?.scrollTop ?? 0,
+    returnMainScroll: main?.scrollTop ?? 0,
+  };
+}
+
 type ModelServiceSetupContextValue = {
   candidate: ModelServiceSetupCandidate | null;
   setCandidate: React.Dispatch<React.SetStateAction<ModelServiceSetupCandidate | null>>;
   phase: SetupPhase;
   setPhase: React.Dispatch<React.SetStateAction<SetupPhase>>;
   transition: (navigate: () => Promise<unknown>) => void;
+  requestClose: () => void;
   finish: () => void;
 };
 
@@ -266,26 +292,51 @@ export function ModelServiceSetupLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const allowExit = useRef(false);
+  const search = typeof location.search === "object" && location.search !== null
+    ? location.search as Record<string, unknown>
+    : {};
   const returnProvider =
-    typeof location.search === "object" && location.search !== null &&
-    "returnProvider" in location.search && typeof location.search.returnProvider === "string"
-      ? location.search.returnProvider
+    typeof search.returnProvider === "string"
+      ? search.returnProvider
       : undefined;
   const returnTab =
-    typeof location.search === "object" && location.search !== null &&
-    "returnTab" in location.search &&
-    (location.search.returnTab === "maintenance" || location.search.returnTab === "models")
-      ? location.search.returnTab
+    search.returnTab === "maintenance" || search.returnTab === "models" || search.returnTab === "overview"
+      ? search.returnTab
       : "overview";
-  const navigateBack = (): Promise<unknown> => {
-    if (returnProvider === undefined) return navigate({ to: "/credentials" });
+  const returnServiceScroll = scrollValue(search.returnServiceScroll);
+  const returnMainScroll = scrollValue(search.returnMainScroll);
+  const restoreScroll = (): void => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (returnMainScroll !== undefined) {
+          const main = document.getElementById("panel-main-scroll");
+          if (main !== null) main.scrollTop = returnMainScroll;
+        }
+        if (returnServiceScroll !== undefined) {
+          const serviceList = document.getElementById("model-service-list-scroll");
+          if (serviceList !== null) serviceList.scrollTop = returnServiceScroll;
+        }
+      });
+    });
+  };
+  const navigateBack = async (): Promise<void> => {
+    if (returnProvider === undefined) {
+      await navigate({ to: "/credentials" });
+      restoreScroll();
+      return;
+    }
     if (returnTab === "maintenance") {
-      return navigate({ to: "/credentials/$provider/maintenance", params: { provider: returnProvider } });
+      await navigate({ to: "/credentials/$provider/maintenance", params: { provider: returnProvider } });
+      restoreScroll();
+      return;
     }
     if (returnTab === "models") {
-      return navigate({ to: "/credentials/$provider/models", params: { provider: returnProvider } });
+      await navigate({ to: "/credentials/$provider/models", params: { provider: returnProvider } });
+      restoreScroll();
+      return;
     }
-    return navigate({ to: "/credentials/$provider", params: { provider: returnProvider } });
+    await navigate({ to: "/credentials/$provider", params: { provider: returnProvider } });
+    restoreScroll();
   };
   const dirty = candidate !== null && (
     candidate.credential !== "" ||
@@ -335,7 +386,7 @@ export function ModelServiceSetupLayout() {
   };
 
   return (
-    <ModelServiceSetupContext.Provider value={{ candidate, setCandidate, phase, setPhase, transition, finish }}>
+    <ModelServiceSetupContext.Provider value={{ candidate, setCandidate, phase, setPhase, transition, requestClose: closeSetup, finish }}>
       <Dialog.Root open onOpenChange={(open) => { if (!open) closeSetup(); }}>
         <Dialog.Content
           maxWidth="720px"
@@ -478,6 +529,7 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
                 void navigate({
                   to: "/credentials/add/builtin/$provider/discover",
                   params: { provider: provider.id },
+                  search: true,
                 });
               }}
             >
@@ -494,7 +546,7 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
       {canWriteCustom ? (
         <div className="border-t pt-4">
           <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
-            <Link to="/credentials/add/custom/discover">添加自定义 provider</Link>
+            <Link to="/credentials/add/custom/discover" search={true}>添加自定义 provider</Link>
           </Button>
         </div>
       ) : null}
@@ -541,7 +593,11 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
         preview: result,
         validationModel: result.models[0]?.id ?? "",
       });
-      transition(() => navigate({ to: "/credentials/add/builtin/$provider/verify", params: { provider } }));
+      transition(() => navigate({
+        to: "/credentials/add/builtin/$provider/verify",
+        params: { provider },
+        search: true,
+      }));
     },
   });
 
@@ -585,7 +641,7 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
         {preview.error === null ? null : <p role="alert" className="text-destructive">{preview.error.message}</p>}
         <div className="flex items-center gap-3 border-t pt-3">
           <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
-            <Link to="/credentials/add">返回选择来源</Link>
+            <Link to="/credentials/add" search={true}>返回选择来源</Link>
           </Button>
           <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={phase !== null || credential === "" || metadata.data === undefined}>
             {phase === "discovering" ? "正在发现模型…" : "发现模型"}
@@ -642,6 +698,7 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
         <Link
           to="/credentials/add/builtin/$provider/discover"
           params={{ provider }}
+          search={true}
           className="w-fit underline underline-offset-4"
         >
           返回模型发现
@@ -679,7 +736,7 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
       {commit.error === null ? null : <p role="alert" className="text-destructive">{commit.error.message}</p>}
       <div className="flex items-center gap-3 border-t pt-3">
         <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
-          <Link to="/credentials/add/builtin/$provider/discover" params={{ provider }}>返回模型发现</Link>
+          <Link to="/credentials/add/builtin/$provider/discover" params={{ provider }} search={true}>返回模型发现</Link>
         </Button>
         <Button
           type="button"
@@ -733,7 +790,7 @@ function useCustomSetupService(provider: string | undefined) {
 export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
   const navigate = useNavigate();
   const serviceQuery = useCustomSetupService(provider);
-  const { candidate, setCandidate, phase, setPhase, transition } = useModelServiceSetup();
+  const { candidate, setCandidate, phase, setPhase, transition, requestClose } = useModelServiceSetup();
   const service = serviceQuery.service;
   const active = candidate?.kind === "custom" && (
     provider === undefined ? candidate.version === null : candidate.provider === provider
@@ -774,9 +831,10 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
         transition(() => navigate({
           to: "/credentials/add/custom/$provider/verify",
           params: { provider: active.provider },
+          search: true,
         }));
       } else {
-        transition(() => navigate({ to: "/credentials/add/custom/verify" }));
+        transition(() => navigate({ to: "/credentials/add/custom/verify", search: true }));
       }
     },
   });
@@ -887,7 +945,7 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
         )}
         {preview.error === null ? null : <p role="alert" className="text-destructive">{preview.error.message}</p>}
         <div className="flex items-center gap-3 border-t pt-3">
-          <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}><Link to={editing ? "/credentials/$provider/maintenance" : "/credentials"} params={editing ? { provider } : {}}>返回</Link></Button>
+          <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={requestClose}>返回</Button>
           <Button
             type="submit"
             variant="solid"
@@ -948,7 +1006,7 @@ export function CustomServiceVerifyPage({ provider }: { provider?: string }) {
       <Card size="2" className="flex flex-col gap-3">
         <h2 className="text-base font-semibold">配置已过期</h2>
         <p className="text-muted-foreground">刷新或直接打开此地址不会恢复凭据和目录结果，请重新配置模型服务。</p>
-        <Link to={backTo} params={provider === undefined ? {} : { provider }} className="w-fit underline underline-offset-4">返回模型发现</Link>
+        <Link to={backTo} params={provider === undefined ? {} : { provider }} search={true} className="w-fit underline underline-offset-4">返回模型发现</Link>
       </Card>
     );
   }
@@ -992,8 +1050,8 @@ export function CustomServiceVerifyPage({ provider }: { provider?: string }) {
       <div className="flex items-center gap-3 border-t pt-3">
         <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
           {provider === undefined
-            ? <Link to="/credentials/add/custom/discover">返回模型发现</Link>
-            : <Link to="/credentials/add/custom/$provider/discover" params={{ provider }}>返回模型发现</Link>}
+            ? <Link to="/credentials/add/custom/discover" search={true}>返回模型发现</Link>
+            : <Link to="/credentials/add/custom/$provider/discover" params={{ provider }} search={true}>返回模型发现</Link>}
         </Button>
         <Button
           type="button"
@@ -1450,7 +1508,13 @@ function ReferenceBlockers({ references }: { references: ModelReference[] }) {
   );
 }
 
-function CustomServiceControls({ service }: { service: ModelService }) {
+function CustomServiceControls({
+  service,
+  onModify,
+}: {
+  service: ModelService;
+  onModify: () => void;
+}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -1486,6 +1550,7 @@ function CustomServiceControls({ service }: { service: ModelService }) {
     ),
     onSuccess: async (result) => {
       setRenaming(false);
+      setNewProvider("");
       await queryClient.invalidateQueries({ queryKey: ["model-services"] });
       await navigate({
         to: "/credentials/$provider/maintenance",
@@ -1493,6 +1558,16 @@ function CustomServiceControls({ service }: { service: ModelService }) {
       });
     },
   });
+  const openRename = (): void => {
+    setNewProvider("");
+    renameService.reset();
+    setRenaming(true);
+  };
+  const closeRename = (): void => {
+    setRenaming(false);
+    setNewProvider("");
+    renameService.reset();
+  };
   return (
     <section className="rounded-md border px-3 py-3" aria-labelledby={`custom-actions-${service.provider}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1504,17 +1579,11 @@ function CustomServiceControls({ service }: { service: ModelService }) {
         </div>
         <div className="flex flex-wrap gap-2">
           {service.providerState !== "name-conflict" ? null : (
-            <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={() => setRenaming(true)}>迁移到新名称</Button>
+            <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={openRename}>迁移到新名称</Button>
           )}
           {service.providerState === "name-conflict" ? null : (
-            <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
-              <Link
-                to="/credentials/add/custom/$provider/discover"
-                params={{ provider: service.provider }}
-                search={{ returnProvider: service.provider, returnTab: "maintenance" }}
-              >
-                修改配置
-              </Link>
+            <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={onModify}>
+              修改配置
             </Button>
           )}
           <Button type="button" variant="solid" color="red" size={{ initial: "4", sm: "2" }} onClick={() => setConfirmingDelete(true)}>
@@ -1525,8 +1594,7 @@ function CustomServiceControls({ service }: { service: ModelService }) {
       <Dialog.Root
         open={renaming}
         onOpenChange={(open) => {
-          setRenaming(open);
-          if (!open) renameService.reset();
+          if (!open) closeRename();
         }}
       >
         <Dialog.Content maxWidth="520px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
@@ -2300,6 +2368,8 @@ function ServiceDetail({
   canReadCredential,
   canWriteCredential,
   canWriteCustom,
+  onConfigureBuiltin,
+  onConfigureCustom,
 }: {
   service: ModelService;
   tab: ModelServiceTab;
@@ -2308,6 +2378,8 @@ function ServiceDetail({
   canReadCredential: boolean;
   canWriteCredential: boolean;
   canWriteCustom: boolean;
+  onConfigureBuiltin: () => void;
+  onConfigureCustom: () => void;
 }) {
   return (
     <div className="min-w-0 space-y-5 max-sm:[&_button]:min-h-11">
@@ -2383,20 +2455,14 @@ function ServiceDetail({
               <HelpTooltip label="模型凭据说明" content="新凭据完成目录发现和真实推理后，才会替换当前版本。" />
             </div>
           </div>
-          <Button asChild variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
-            <Link
-              to="/credentials/add/builtin/$provider/discover"
-              params={{ provider: service.provider }}
-              search={{ returnProvider: service.provider, returnTab: "maintenance" }}
-            >
-              {service.credential.state === "unconfigured" ? "配置凭据" : "换凭据"}
-            </Link>
+          <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} onClick={onConfigureBuiltin}>
+            {service.credential.state === "unconfigured" ? "配置凭据" : "换凭据"}
           </Button>
         </section>
       ) : null}
 
       {tab !== "maintenance" || !canWriteCustom || service.type !== "custom" ? null : (
-        <CustomServiceControls service={service} />
+        <CustomServiceControls service={service} onModify={onConfigureCustom} />
       )}
 
       {tab === "maintenance" && canWriteModels ? (
@@ -2461,6 +2527,7 @@ export function ModelServicesPage({
   canReadCredential: boolean;
   canWriteCredential: boolean;
 }) {
+  const navigate = useNavigate();
   const canWriteCustom = canWriteModels && canWriteCredential;
   const canReadServices = canReadModels || canReadCredential;
   const query = useModelServices(canReadServices);
@@ -2485,8 +2552,17 @@ export function ModelServicesPage({
         actions={(
           <div className="flex flex-wrap items-center gap-2">
             {canWriteCredential ? (
-              <Button asChild variant="solid" highContrast size={{ initial: "4", sm: "2" }}>
-                <Link to="/credentials/add">添加模型服务</Link>
+              <Button
+                type="button"
+                variant="solid"
+                highContrast
+                size={{ initial: "4", sm: "2" }}
+                onClick={() => void navigate({
+                  to: "/credentials/add",
+                  search: modelServiceReturnSearch(selected?.provider, tab),
+                })}
+              >
+                添加模型服务
               </Button>
             ) : null}
           </div>
@@ -2553,7 +2629,7 @@ export function ModelServicesPage({
                   <span className="font-mono tabular-nums">{services.length}</span> 项 · 含保留的异常状态
                 </p>
               </div>
-              <div className="max-h-80 overflow-y-auto xl:max-h-none">
+              <div id="model-service-list-scroll" className="max-h-80 overflow-y-auto xl:max-h-none">
                 {services.map((service) => {
                   const isSelected = service.provider === selected.provider;
                   return (
@@ -2612,6 +2688,16 @@ export function ModelServicesPage({
             canReadCredential={canReadCredential}
             canWriteCredential={canWriteCredential}
             canWriteCustom={canWriteCustom && canReadModels}
+            onConfigureBuiltin={() => void navigate({
+              to: "/credentials/add/builtin/$provider/discover",
+              params: { provider: selected.provider },
+              search: modelServiceReturnSearch(selected.provider, tab),
+            })}
+            onConfigureCustom={() => void navigate({
+              to: "/credentials/add/custom/$provider/discover",
+              params: { provider: selected.provider },
+              search: modelServiceReturnSearch(selected.provider, tab),
+            })}
           />
         </div>
       )}

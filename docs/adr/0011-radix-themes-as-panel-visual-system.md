@@ -1,6 +1,12 @@
 # Radix Themes 主导管理面板视觉系统
 
-管理面板当前以 shadcn vendored 组件、Radix Primitives、Tailwind utility、Lucide、cmdk 与 react-day-picker 共同组成。基础组件已有 46 个定义，项目组件已有 56 个定义；主从选中、状态徽标、标签值列表、可搜索单选、弹窗和空态仍存在多份页面级实现。相同产品语义因此可能产生不同的选中、hover、focus 与响应式行为。
+## 实施状态（2026-08-24）
+
+本 ADR 已实施。通用视觉组件已迁移到 Radix Themes，业务图标已迁移到 Radix Icons；专用行为保留 cmdk、react-day-picker 与 Radix Primitives。`class-variance-authority`、`tw-animate-css`、Lucide 和已替换的本地视觉 wrapper 已删除；clsx 与 tailwind-merge 继续为复杂布局组合 className。
+
+## 决策背景
+
+迁移前的管理面板由 shadcn vendored 组件、Radix Primitives、Tailwind utility、Lucide、cmdk 与 react-day-picker 共同组成。基础组件有 46 个定义，项目组件有 56 个定义；主从选中、状态徽标、标签值列表、可搜索单选、弹窗和空态存在多份页面级实现。相同产品语义因此可能产生不同的选中、hover、focus 与响应式行为。
 
 ## Decision
 
@@ -15,11 +21,11 @@
 
 ### 视觉系统与依赖责任
 
-- **Radix Themes 是唯一通用视觉系统。**根 React 树由 `@radix-ui/themes` 的 `Theme` 包裹，固定亮色。颜色、字号、间距、圆角、密度、面板和常用组件状态以 Theme 配置、组件 props 与 Theme tokens 为准。`web/DESIGN.md` 记录锁定方向与候选 token；候选值通过代表页面原型后才能成为实现基准。
+- **Radix Themes 是唯一通用视觉系统。**根 React 树由 `@radix-ui/themes` 的 `Theme` 包裹，固定亮色。颜色、字号、间距、圆角、密度、面板和常用组件状态以 Theme 配置、组件 props 与 Theme tokens 为准。`web/DESIGN.md` 记录锁定方向、Theme 参数和产品组件规则。
 - **Radix Themes 负责通用组件。**Button、IconButton、Badge、Callout、Card、DataList、Progress、Separator、Skeleton、Table、TextField、TextArea、Checkbox、RadioGroup、SegmentedControl、Select、AlertDialog、Dialog、Popover、ScrollArea、Tabs、TabNav、Tooltip 与布局、排版组件优先直接采用 Themes。
 - **Radix Primitives 只补 Themes 的行为缺口。**Accordion、Collapsible、ToggleGroup 等由 Primitive 提供语义、键盘、焦点和受控状态，再用 Theme tokens 构成共享产品组件。Primitive 不建立第二套视觉规则；页面不得直接为同一语义各写一份 Primitive 外观。
 - **Radix Icons 是唯一业务图标库。**页面与共享组件从 `@radix-ui/react-icons` 取业务图标，同一产品语义只保留一个图标决定。纯图标按钮使用 Themes IconButton 并提供可访问名称。MultiReviewer 产品标记与 favicon 继续保留品牌 SVG。
-- **Tailwind 只负责页面布局。**它处理 App Shell、容器约束、主从分栏、复杂网格、局部滚动边界和 Themes 响应式 props 无法表达的布局切换。它不承担组件外观，也不覆盖 Themes 组件内部颜色、字号、圆角、hover、focus、selected、disabled、loading 或 error 状态。完成迁移后，class-variance-authority、tailwind-merge、tw-animate-css 等依赖按实际引用决定是否删除。
+- **Tailwind 只负责页面布局。**它处理 App Shell、容器约束、主从分栏、复杂网格、局部滚动边界和 Themes 响应式 props 无法表达的布局切换。它不承担组件外观，也不覆盖 Themes 组件内部颜色、字号、圆角、hover、focus、selected、disabled、loading 或 error 状态。迁移完成后删除零引用的 class-variance-authority 与 tw-animate-css；clsx 和 tailwind-merge 继续合并复杂布局的 className。
 - **cmdk 只负责可搜索且可手填的选择行为。**仓库异步搜索与验证模型输入统一收进共享 Combobox 产品组件；外观使用 Themes TextField、Popover/Dialog、ScrollArea 和 tokens。官方 Select 足以满足需求时允许调整交互并删除 cmdk；模型标识手填与目录候选并存的能力仍需保留。
 - **react-day-picker 只负责日期与区间选择逻辑。**日历外观使用 Themes 组件与 tokens。若日期窗口可在不增加非法状态的前提下改成官方组件可表达的输入方式，允许调整功能并删除 react-day-picker。
 
