@@ -22,7 +22,7 @@ export type RunItem = {
   pullNumber: number;
   headSha: string;
   startedAt: string;
-  /** 手动重跑的调用者用户名快照;null 即投递触发。 */
+  /** 手动重新运行的调用者用户名快照；null 表示自动触发。 */
   triggeredBy: string | null;
   finishedAt: string | null;
   failed: boolean;
@@ -41,7 +41,7 @@ export type RunItem = {
 
 type RunsPage = { runs: RunItem[]; nextBefore: number | null };
 
-/** 手动重跑。两个入口(时间流逐条、仓库页输 PR 号)共用这一个请求。 */
+/** 手动重新运行。时间流与仓库详情共用这一个请求。 */
 export async function rerunRequest(run: {
   owner: string;
   repo: string;
@@ -52,14 +52,14 @@ export async function rerunRequest(run: {
     body: JSON.stringify(run),
   });
   if (!response.ok) throw new Error(await errorText(response));
-  return `已触发 ${run.owner}/${run.repo} #${run.pullNumber} 的新一轮 Review Run`;
+  return `已触发 ${run.owner}/${run.repo} #${run.pullNumber} 的新一轮审查`;
 }
 
 /**
  * 时间流卡片上的处置进度。与处置率同一口径:只算行级承载的合并组。
  *
  * 「状态到颜色」的映射留在这里:它同时被仓库页与评审记录页用,拆掉这层包装会把
- * 这条规则散到两个调用点。失败与待处置分成两色——一个去重跑,一个去处置。
+ * 这条规则散到两个调用点。失败与待处置分成两色——一个去重新运行,一个去处置。
  *
  * 部分模型失败不占这个位置:那一轮跑通的模型报出的 Finding 是真的、可处置的,
  * 处置进度得留着。失败只加一颗红点提示「这一轮的结论不完整」,原因看卡片上的模型行。
@@ -81,14 +81,14 @@ export function RunPill({ run }: { run: RunItem }) {
       <span
         className="inline-flex shrink-0 items-center text-warning"
         title={[
-          `${down.length}/${run.models.length} 个模型失败,这一轮的覆盖面不全`,
+          `${down.length}/${run.models.length} 个模型失败，本轮审查结果不完整`,
           ...down.map((entry) => `${entry.model}: ${entry.failure}`),
         ].join("\n")}
       >
         <CircleAlert className="size-4" aria-hidden />
         {/* title 只对鼠标成立。这句话让屏幕阅读器与触屏也读得到图标的含义。 */}
         <span className="sr-only">
-          {down.length}/{run.models.length} 个模型失败,这一轮的覆盖面不全
+          {down.length}/{run.models.length} 个模型失败，本轮审查结果不完整
         </span>
       </span>
       {badge}
@@ -211,7 +211,7 @@ function RunTime({ run }: { run: RunItem }) {
   return (
     <div className="text-xs text-muted-foreground">
       <div className="font-mono tabular-nums">{time}</div>
-      <div className="break-words">{run.triggeredBy === null ? "投递" : `手动 · ${run.triggeredBy}`}</div>
+      <div className="break-words">{run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`}</div>
     </div>
   );
 }
@@ -271,7 +271,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
         title="评审记录"
         description={
           runs.isPending
-            ? "每一轮 Review Run 按时间倒序。"
+            ? "每一轮审查按时间倒序。"
             : `${counts.all} 轮 · ${counts.failed} 失败`
         }
         actions={<SummaryRate />}
@@ -337,7 +337,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
         {visible.length > 0 ? (
           <div className="hidden overflow-hidden rounded-md border border-border xl:block">
             <table className="w-full table-fixed text-left">
-              <caption className="sr-only">Review Run 检查列表</caption>
+              <caption className="sr-only">审查记录列表</caption>
               <thead className="bg-muted text-xs text-muted-foreground">
                 <tr>
                   <th scope="col" className="w-11 px-2 py-2 font-medium">
@@ -421,7 +421,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
                               disabled={rerun.isPending}
                               onClick={() => rerun.mutate(run)}
                             >
-                              {rerun.isPending ? "重跑中…" : "重跑"}
+                              {rerun.isPending ? "重新运行中…" : "重新运行"}
                             </Button>
                           </td>
                         ) : null}
@@ -436,7 +436,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
         ) : null}
 
         {visible.length > 0 ? (
-          <div className="space-y-4 xl:hidden" aria-label="Review Run 检查列表">
+          <div className="space-y-4 xl:hidden" aria-label="审查记录列表">
             {visibleGroups.map((group) => (
               <section key={group.day} aria-labelledby={`run-day-${group.day}`} className="space-y-2">
                 <h2 id={`run-day-${group.day}`} className="font-mono text-xs font-semibold text-muted-foreground">
@@ -475,7 +475,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
                               disabled={rerun.isPending}
                               onClick={() => rerun.mutate(run)}
                             >
-                              {rerun.isPending ? "重跑中…" : "重跑"}
+                              {rerun.isPending ? "重新运行中…" : "重新运行"}
                             </Button>
                           ) : null}
                         </div>
@@ -490,10 +490,10 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
 
         {flat.length === 0 && !runs.isPending && !runs.isError ? (
           <Card className="items-start gap-1.5 px-4">
-            <h2 className="text-base font-semibold">还没有 Review Run</h2>
+            <h2 className="text-base font-semibold">暂无审查记录</h2>
             <p className="text-muted-foreground">
-              给已注册的仓库开一个 PR 就会自动跑一轮。
-              {canRerun ? "要对已有的 PR 补一轮,去仓库页选中仓库后输入 PR 号。" : null}
+              向已注册仓库提交 pull request 后，系统会自动运行审查。
+              {canRerun ? "如需对已有 pull request 重新运行审查，请到仓库页选择仓库并输入 PR 编号。" : null}
             </p>
             {canRerun ? (
               <Button variant="outline" size="sm" asChild>
@@ -504,17 +504,17 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
         ) : null}
         {flat.length > 0 && visible.length === 0 ? (
           <p className="rounded-sm border border-dashed border-border px-4 py-6 text-center text-muted-foreground">
-            这一档里没有 Review Run。
+            当前筛选条件下没有审查记录。
           </p>
         ) : null}
         <div ref={sentinel} />
         <p className="pt-2 text-center text-xs text-muted-foreground">
           {runs.isFetchingNextPage
-            ? "加载更早的 Review Run…"
+            ? "加载更早的审查记录…"
             : runs.hasNextPage
-              ? "往下滚加载更早的 Review Run"
+              ? "继续下滑加载更早的审查记录"
               : flat.length > 0
-                ? "到底了"
+                ? "已加载全部记录"
                 : ""}
         </p>
       </PageBody>

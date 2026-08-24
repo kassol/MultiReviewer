@@ -131,8 +131,8 @@ function Shell() {
             </span>
             <button
               type="button"
-              aria-label={`登出 ${session.username}`}
-              title="登出"
+              aria-label={`退出登录 ${session.username}`}
+              title="退出登录"
               onClick={() => void logout()}
               className="flex size-11 shrink-0 touch-manipulation items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
             >
@@ -141,7 +141,7 @@ function Shell() {
           </div>
         </div>
         <p className="flex items-center justify-between px-3 pt-2 text-xs text-muted-foreground sm:hidden">
-          <span>页面</span>
+          <span>导航</span>
           <span>横向滑动查看更多</span>
         </p>
         <nav aria-label="面板导航" className="flex min-w-0 max-w-full shrink-0 gap-1 overflow-x-auto px-2 py-2 sm:flex-col sm:overflow-visible">
@@ -169,8 +169,8 @@ function Shell() {
             </div>
             <button
               type="button"
-              aria-label={`登出 ${session.username}`}
-              title="登出"
+              aria-label={`退出登录 ${session.username}`}
+              title="退出登录"
               onClick={() => void logout()}
               className="flex size-8 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
             >
@@ -399,9 +399,9 @@ function ZeroPermissionPage() {
   return (
     <div className="flex min-h-full items-center justify-center p-6">
       <Card className="w-[30rem] max-w-full items-start gap-2 px-5 py-5">
-        <h1 className="text-lg font-semibold">你的账号还没有任何权限</h1>
-        <p className="text-muted-foreground">账号已经建好,但还没有角色。请联系系统管理员给你一个角色;刷新后,可用页面会出现在导航里。</p>
-        <p className="text-muted-foreground">系统管理员:{session.systemAdmins.join("、")}</p>
+        <h1 className="text-lg font-semibold">当前账号暂无访问权限</h1>
+        <p className="text-muted-foreground">当前账号尚未分配角色。请联系系统管理员完成角色分配，然后刷新页面。</p>
+        <p className="text-muted-foreground">系统管理员：{session.systemAdmins.join("、")}</p>
         <Link to="/password" className="text-sm underline underline-offset-4">修改密码</Link>
       </Card>
     </div>

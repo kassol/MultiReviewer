@@ -6,6 +6,7 @@ import { Link } from "@tanstack/react-router";
 import { X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { HelpTooltip } from "@/components/help-tooltip";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -110,7 +111,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
       if (candidate?.available === true) continue;
       unavailable.push({
         identity,
-        reason: candidate?.unavailableReasonText ?? "模型来源消失",
+        reason: candidate?.unavailableReasonText ?? "模型不可用",
         action: candidate?.unavailableAction ?? "/credentials",
       });
     }
@@ -131,10 +132,10 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
       <Card className="gap-3 px-4">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="min-w-0">
-            <h2 className="text-base font-semibold">模型组合</h2>
-            <p className="mt-0.5 max-w-[68ch] text-muted-foreground">
-              一次审查按这几个模型各跑一遍。这里只选择模型；服务、凭据与模型来源统一到模型服务页处理。
-            </p>
+            <div className="flex items-center gap-1.5">
+              <h2 className="text-base font-semibold">模型组合</h2>
+              <HelpTooltip label="模型组合说明" content="每轮审查会分别调用组合中的模型。模型服务、凭据和模型目录请在模型服务页管理。" />
+            </div>
           </div>
           <Link to="/credentials" className="shrink-0 text-xs underline underline-offset-4">
             管理模型服务
@@ -150,9 +151,9 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
               const candidate = candidateByIdentity.get(identity);
               const reason =
                 candidate?.available === false
-                  ? candidate.unavailableReasonText ?? "模型来源消失"
+                  ? candidate.unavailableReasonText ?? "模型不可用"
                   : candidate === undefined && validity.ready
-                    ? "模型来源消失"
+                    ? "模型不可用"
                     : null;
               return (
                 <div
@@ -189,7 +190,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
         )}
         {validity.unavailable.length === 0 ? null : (
           <div className="rounded-sm bg-destructive/5 px-3 py-2 text-xs text-destructive">
-            不可用模型可以移除，但不能随组合再次保存。恢复服务后会按原标识自动变回可用。{" "}
+            不可用模型可以移除，但不能随组合再次保存。服务恢复后会按原标识自动变为可用。{" "}
             <Link to="/credentials" className="font-medium underline underline-offset-4">
               去模型服务处理
             </Link>
@@ -207,7 +208,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
               {query.isPending ? (
                 <div className="p-3"><Skeleton className="h-20" /></div>
               ) : query.isError ? (
-                <p className="px-3 py-4 text-xs text-destructive">候选暂不可用。</p>
+                <p className="px-3 py-4 text-xs text-destructive">可选模型暂不可用。</p>
               ) : groups.length === 0 ? (
                 <p className="px-3 py-4 text-xs text-muted-foreground">没有可选择的服务。</p>
               ) : (
@@ -255,13 +256,13 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                 <Skeleton className="h-40" />
               ) : query.isError ? (
                 <>
-                  <p className="font-medium text-destructive">模型候选暂不可用</p>
+                  <p className="font-medium text-destructive">可选模型暂不可用</p>
                   <p className="text-muted-foreground">修复下方读取错误并重试后，才能继续选择或保存。</p>
                 </>
               ) : (
                 <>
-                  <p className="font-medium">还没有模型服务候选</p>
-                  <p className="text-muted-foreground">先配置模型服务、凭据与模型来源，再回到这里选择。</p>
+                  <p className="font-medium">暂无可选模型</p>
+                  <p className="text-muted-foreground">先配置模型服务、凭据并完成模型发现，再回到这里选择。</p>
                   <Link to="/credentials" className="w-fit underline underline-offset-4">
                     去配置模型服务
                   </Link>
@@ -281,7 +282,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
 
       {query.isError ? (
         <div className="flex flex-wrap items-center gap-3 rounded-sm bg-destructive/5 px-3 py-2 text-destructive">
-          <p role="alert">模型服务候选读不到：{(query.error as Error).message}</p>
+          <p role="alert">模型列表读取失败：{(query.error as Error).message}</p>
           <Button
             type="button"
             variant="outline"
@@ -368,16 +369,16 @@ function ProviderPane({
         {models.length === 0 ? (
           <div className="flex flex-col items-start gap-1.5 px-4 py-6 text-muted-foreground">
             <p className="font-medium text-foreground">
-              {group.models.length === 0 ? "这项服务还没有模型来源" : "没有匹配的模型"}
+              {group.models.length === 0 ? "这项服务还没有可用模型" : "没有匹配的模型"}
             </p>
             <p>
               {group.models.length === 0
-                ? "先去模型服务发现目录或补录模型。"
+                ? "先去模型服务发现目录或手动添加模型。"
                 : "换一个模型名称或 model id 继续搜索。"}
             </p>
             {group.models.length === 0 ? (
               <Link to="/credentials" className="font-medium text-primary underline underline-offset-4">
-                去发现或补录模型
+                去发现或手动添加模型
               </Link>
             ) : null}
           </div>
@@ -415,7 +416,7 @@ function ProviderPane({
                   </span>
                   {model.available ? null : (
                     <span className="text-xs text-destructive">
-                      {model.unavailableReasonText ?? "模型来源消失"}
+                      {model.unavailableReasonText ?? "模型不可用"}
                     </span>
                   )}
                 </span>

@@ -5,6 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
+import { HelpTooltip } from "@/components/help-tooltip";
 import {
   ModelComposer,
   type ModelComposerValidity,
@@ -47,7 +48,7 @@ export function SettingsPage({ canWrite }: { canWrite: boolean }) {
     <>
       <PageHeader
         title="审查策略"
-        description="模型组合是所有仓库的默认值；高级参数控制一次审查怎样分批。"
+        description="模型组合是所有仓库的默认值；高级参数控制每轮审查如何分批。"
       />
       <PageBody width="form">
         {settings.isError ? (
@@ -98,7 +99,7 @@ function ReadOnlySettings({ settings }: { settings: Settings }) {
       <Card className="gap-3 px-4">
         <div>
           <h2 className="text-base font-semibold">批次上限</h2>
-          <p className="mt-0.5 text-muted-foreground">一次审查最多送入的改动行数。</p>
+          <p className="mt-0.5 text-muted-foreground">每批审查最多包含的改动行数。</p>
         </div>
         <p className="font-mono text-lg font-semibold tabular-nums">
           {settings.maxChangedLinesPerBatch}
@@ -144,7 +145,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
     },
     onSuccess: (saved) => {
       setReviewersVersion(saved.reviewersVersion);
-      setModelFeedback({ text: "模型组合已保存，下一次投递按新组合跑。", isError: false });
+      setModelFeedback({ text: "模型组合已保存，下一次审查将使用新组合。", isError: false });
       queryClient.setQueryData(["settings"], saved);
     },
     onError: (error: Error) => {
@@ -213,7 +214,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
           ) : models.length === 0 ? (
             <span className="text-destructive">至少选择一个可用模型，审查配置才能就绪。</span>
           ) : !modelValidity.ready ? (
-            <span className="text-muted-foreground">候选状态确认后可以保存组合。</span>
+            <span className="text-muted-foreground">模型状态确认后即可保存组合。</span>
           ) : modelFeedback === null ? (
             <span className="text-xs text-muted-foreground">仅保存模型组合，不会改动批次上限。</span>
           ) : (
@@ -228,7 +229,10 @@ function SettingsForm({ settings }: { settings: Settings }) {
       </section>
 
       <details className="border-t pt-5">
-        <summary className="cursor-pointer font-medium">高级参数</summary>
+        <summary className="flex cursor-pointer items-center gap-1.5 font-medium">
+          高级参数
+          <HelpTooltip label="高级参数说明" content="批次上限只影响每轮审查如何拆分改动，不会改变模型组合。" />
+        </summary>
         <form
           className="mt-3"
           onSubmit={(event) => {
@@ -246,15 +250,12 @@ function SettingsForm({ settings }: { settings: Settings }) {
             <div className="space-y-3 px-4 py-4">
               <div>
                 <h2 className="text-base font-semibold">批次上限</h2>
-                <p className="mt-0.5 text-muted-foreground">
-                  超过上限的改动会拆成多批送审；这个值不改变模型组合。
-                </p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  当前来源：{limitSource === "default" ? "系统默认" : "自定义"}
+                  取值来源：{limitSource === "default" ? "系统默认" : "自定义"}
                 </p>
               </div>
               <div className="flex max-w-sm flex-col gap-1.5">
-                <Label htmlFor="max-changed-lines">一批最多改动行数</Label>
+                <Label htmlFor="max-changed-lines">每批最多改动行数</Label>
                 <Input
                   id="max-changed-lines"
                   className="w-40 font-mono"

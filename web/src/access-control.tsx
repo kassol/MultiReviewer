@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
 
+import { HelpTooltip } from "@/components/help-tooltip";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
@@ -53,14 +54,14 @@ type PermissionInfo = {
 };
 
 const PERMISSION_INFO: readonly PermissionInfo[] = [
-  { id: "repo:read", resource: "仓库", action: "读", hint: "仓库列表、hook 核对；写权限包含此项" },
-  { id: "repo:write", resource: "仓库", action: "写", hint: "搜索、注册、移除、改组合、轮转 Key" },
-  { id: "review:read", resource: "评审", action: "读", hint: "评审记录、处置率" },
-  { id: "review:rerun", resource: "评审", action: "重跑", hint: "开一轮 Review Run：会产生费用并在 PR 上发评论" },
-  { id: "model:read", resource: "模型", action: "读", hint: "审查策略与模型服务；写权限包含此项" },
-  { id: "model:write", resource: "模型", action: "写", hint: "改组合、手填模型行、加删自定义 provider" },
-  { id: "credential:read", resource: "凭据", action: "读", hint: "凭据列表，含 key 尾 4 位；写权限包含此项" },
-  { id: "credential:write", resource: "凭据", action: "写", hint: "写入与删除模型凭据" },
+  { id: "repo:read", resource: "仓库", action: "查看", hint: "查看仓库列表和 hook 核对结果。" },
+  { id: "repo:write", resource: "仓库", action: "管理", hint: "搜索、注册和移除仓库，修改模型组合和轮转 Key。" },
+  { id: "review:read", resource: "评审", action: "查看", hint: "查看评审记录和处置率。" },
+  { id: "review:rerun", resource: "评审", action: "重新运行", hint: "重新运行一次评审，会产生模型调用费用并在 PR 上发布评论。" },
+  { id: "model:read", resource: "模型", action: "查看", hint: "查看审查策略和模型服务。" },
+  { id: "model:write", resource: "模型", action: "管理", hint: "修改模型组合、手动添加模型和管理自定义模型服务。" },
+  { id: "credential:read", resource: "凭据", action: "查看", hint: "查看已配置凭据和 Key 末 4 位。" },
+  { id: "credential:write", resource: "凭据", action: "管理", hint: "新增、更新和删除模型凭据。" },
 ];
 
 const RESOURCES = ["仓库", "评审", "模型", "凭据"] as const;
@@ -102,7 +103,7 @@ export function AccessControlPage() {
       responseJson<{ username: string }>(await api("/users", { method: "POST", body: JSON.stringify(input) })),
     onSuccess: ({ username }) => {
       setCreateKind(null);
-      setFeedback({ text: `${username} 已建号；首次登录必须改密码。`, error: false });
+      setFeedback({ text: `已创建用户 ${username}；首次登录必须修改密码。`, error: false });
       refresh();
     },
     onError: (error: Error) => setFeedback({ text: error.message, error: true }),
@@ -113,7 +114,7 @@ export function AccessControlPage() {
       responseJson<Role>(await api("/roles", { method: "POST", body: JSON.stringify({ name, permissions: [] }) })),
     onSuccess: ({ name }) => {
       setCreateKind(null);
-      setFeedback({ text: `${name} 已创建，从全空权限开始。`, error: false });
+      setFeedback({ text: `已创建角色 ${name}，初始不包含任何权限。`, error: false });
       refresh();
     },
     onError: (error: Error) => setFeedback({ text: error.message, error: true }),
@@ -132,7 +133,7 @@ export function AccessControlPage() {
       if (!response.ok) throw new Error(await errorText(response));
     },
     onSuccess: () => {
-      setFeedback({ text: "角色已生效，不用重新登录。", error: false });
+      setFeedback({ text: "用户角色已更新，无需重新登录。", error: false });
       refresh();
     },
     onError: (error: Error) => {
@@ -154,7 +155,7 @@ export function AccessControlPage() {
       );
     },
     onSuccess: () => {
-      setFeedback({ text: "权限已生效，不用重新登录。", error: false });
+      setFeedback({ text: "角色权限已更新，无需重新登录。", error: false });
       refresh();
     },
     onError: (error: Error) => setFeedback({ text: error.message, error: true }),
@@ -203,11 +204,11 @@ export function AccessControlPage() {
     <>
       <PageHeader
         title="访问控制"
-        description="上面是谁能登进来，下面是每个角色能碰哪几格。一屏看全，只有系统管理员看得到。"
+        description="管理用户、角色和权限。此页仅系统管理员可见。"
         actions={
           <>
             <Button variant="outline" onClick={() => setCreateKind("role")}><Plus />新建角色</Button>
-            <Button onClick={() => setCreateKind("user")}><Plus />建号</Button>
+            <Button onClick={() => setCreateKind("user")}><Plus />新建用户</Button>
           </>
         }
       />
@@ -263,7 +264,7 @@ export function AccessControlPage() {
                         <td className="max-w-48 truncate px-3 py-2.5 text-muted-foreground" title={user.displayName ?? undefined}>{user.displayName ?? "—"}</td>
                         <td className="px-3 py-2.5">
                           {user.isSystemAdmin ? (
-                            <span className="text-muted-foreground">权限全开</span>
+                            <span className="text-muted-foreground">全部权限</span>
                           ) : (
                             <select
                               aria-label={`${user.username} 的角色`}
@@ -272,7 +273,7 @@ export function AccessControlPage() {
                               onChange={(event) => updateUser.mutate({ user, roleId: event.target.value === "" ? null : Number(event.target.value) })}
                               className={`h-8 max-w-44 rounded-sm border px-2 outline-none max-sm:min-h-11 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/25 focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 ${user.roleId === null ? "border-warning/50 bg-warning/10 text-warning" : "border-border bg-background"}`}
                             >
-                              <option value="">还没授角色</option>
+                              <option value="">未分配角色</option>
                               {roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
                             </select>
                           )}
@@ -282,7 +283,7 @@ export function AccessControlPage() {
                         <td className="px-3 py-2.5">
                           <div className="flex justify-end gap-1 whitespace-nowrap">
                             <Button variant="ghost" size="xs" onClick={() => setConfirm({ kind: "reset", id: user.username, label: user.username })}><KeyRound />重置密码</Button>
-                            <Button variant="ghost" size="xs" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => setConfirm({ kind: "delete-user", id: user.username, label: user.username })}><Trash2 />删号</Button>
+                            <Button variant="ghost" size="xs" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => setConfirm({ kind: "delete-user", id: user.username, label: user.username })}><Trash2 />删除用户</Button>
                           </div>
                         </td>
                       </tr>
@@ -293,20 +294,21 @@ export function AccessControlPage() {
             </section>
 
             <section className="flex min-w-0 flex-col gap-3" aria-labelledby="permissions-heading">
-              <h2 id="permissions-heading" className="text-base font-semibold">权限</h2>
+              <h2 id="permissions-heading" className="text-base font-semibold">权限矩阵</h2>
               <div className="flex items-start gap-2 rounded-md bg-muted px-3 py-2">
                 <ShieldCheck className="mt-0.5 size-4 shrink-0" />
-                <p className="text-muted-foreground"><span className="font-medium text-foreground">系统管理员</span>不在矩阵里：权限全开、不可编辑，而且可以有多个（<span className="font-mono">{adminCount}</span> 人）。下面这些格子只管自定义角色。</p>
+                <p className="min-w-0 flex-1 text-muted-foreground"><span className="font-medium text-foreground">系统管理员</span>不参与矩阵，始终拥有全部权限（当前 <span className="font-mono">{adminCount}</span> 位）。下方仅管理自定义角色。</p>
+                <HelpTooltip label="系统管理员权限说明" content="系统管理员无需分配自定义角色，始终可以管理用户、角色、仓库、模型服务和审查策略。" />
               </div>
               {unclaimed.size === 0 || roles.length === 0 ? null : (
                 <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-warning">
-                  有 <span className="font-mono">{unclaimed.size}</span> 格权限从未被任何角色勾过。除系统管理员外，没人能使用它盖住的功能。
+                  有 <span className="font-mono">{unclaimed.size}</span> 项权限尚未授予任何角色。除系统管理员外，相关功能当前无人可用。
                 </div>
               )}
               {roles.length === 0 ? (
                 <Card className="items-start gap-2 px-4 py-5">
-                  <p className="font-medium">还没有任何角色，所以矩阵还没有一列</p>
-                  <p className="text-muted-foreground">角色不预置。新建角色会从全空开始；在那之前，除系统管理员外没人能使用任何页面。</p>
+                  <p className="font-medium">还没有角色</p>
+                  <p className="text-muted-foreground">角色不会预置。创建角色后，可在权限矩阵中授予权限。</p>
                   <Button className="mt-1" onClick={() => setCreateKind("role")}><Plus />新建角色</Button>
                 </Card>
               ) : (
@@ -314,7 +316,7 @@ export function AccessControlPage() {
                   <table className="w-full min-w-max border-collapse text-left">
                     <thead>
                       <tr className="bg-muted text-xs text-muted-foreground">
-                        <th scope="col" className="sticky left-0 z-10 min-w-56 bg-muted px-3 py-2 font-medium sm:min-w-72">权限格</th>
+                        <th scope="col" className="sticky left-0 z-10 min-w-56 bg-muted px-3 py-2 font-medium sm:min-w-72">权限</th>
                         {roles.map((role) => (
                           <th key={role.id} scope="col" className="w-36 min-w-36 max-w-36 border-l border-border px-3 py-2 text-center font-medium">
                             <span className="block break-words text-foreground" title={role.name}>{role.name}</span>
@@ -336,10 +338,9 @@ export function AccessControlPage() {
                               <td className={`sticky left-0 z-10 min-w-56 px-3 py-2 sm:min-w-72 ${missing ? "bg-[color-mix(in_oklab,var(--warning)_10%,var(--background))]" : "bg-background"}`}>
                                 <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                                   <span className="font-medium">{permission.action}</span>
-                                  <span className="font-mono text-xs text-muted-foreground">{permission.id}</span>
-                                  {missing ? <span className="text-xs text-warning">未启用</span> : null}
+                                  <HelpTooltip label={`${permission.resource}${permission.action}权限说明`} content={permission.hint} />
+                                  {missing ? <span className="text-xs text-warning">尚未授予</span> : null}
                                 </div>
-                                <p className="text-xs text-muted-foreground">{permission.hint}</p>
                               </td>
                               {roles.map((role) => {
                                 const impliedBy = permissionImpliedBy(permission.id);
@@ -350,13 +351,13 @@ export function AccessControlPage() {
                                     <label className="inline-flex min-h-8 cursor-pointer flex-col items-center justify-center rounded-sm px-1 max-sm:min-h-11 max-sm:min-w-11 hover:bg-muted focus-within:ring-2 focus-within:ring-ring/25 focus-within:ring-offset-1 focus-within:ring-offset-background has-disabled:cursor-not-allowed has-disabled:opacity-70">
                                       <input
                                         type="checkbox"
-                                        aria-label={`${role.name} ${permission.id}${implied ? `，由 ${impliedBy} 包含` : ""}`}
+                                        aria-label={`${role.name}的${permission.resource}${permission.action}权限${implied ? "，已随管理权限授予" : ""}`}
                                         checked={roleHasPermission(role.permissions, permission.id)}
                                         disabled={updateRole.isPending || implied}
                                         onChange={() => updateRole.mutate({ role, permission: permission.id })}
                                         className="size-4 accent-primary outline-none"
                                       />
-                                      {implied ? <span className="text-xs text-muted-foreground">随写生效</span> : null}
+                                      {implied ? <span className="text-xs text-muted-foreground">随管理权限生效</span> : null}
                                     </label>
                                   </td>
                                 );
@@ -383,7 +384,7 @@ export function AccessControlPage() {
                 ? `为 ${confirm.label} 设置一枚临时密码。现有会话会全部作废，下次登录必须改密码。`
                 : confirm?.kind === "delete-role"
                   ? `删除角色 ${confirm.label}？仍有人使用时服务会拒绝删除。`
-                  : `删除账号 ${confirm?.label}？它的现有会话会一起作废，且无法撤销。`}
+                  : `删除用户 ${confirm?.label}？其现有会话会一起作废，且无法撤销。`}
             </DialogDescription>
           </DialogHeader>
           {confirm?.kind === "reset" ? (
@@ -420,8 +421,8 @@ function CreateDialog({ kind, busy, onClose, onUser, onRole }: { kind: "user" | 
       <DialogContent>
         <form onSubmit={submit} className="contents" aria-busy={busy}>
           <DialogHeader>
-            <DialogTitle>{kind === "user" ? "建号" : "新建角色"}</DialogTitle>
-            <DialogDescription>{kind === "user" ? "新账号先没有角色，首次登录必须改密码。" : "角色从全空权限开始，建好后在矩阵里逐格勾选。"}</DialogDescription>
+            <DialogTitle>{kind === "user" ? "新建用户" : "新建角色"}</DialogTitle>
+            <DialogDescription>{kind === "user" ? "新用户初始未分配角色，首次登录必须修改密码。" : "角色初始不包含任何权限，可在权限矩阵中授予权限。"}</DialogDescription>
           </DialogHeader>
           {kind === "user" ? (
             <div className="flex flex-col gap-4">

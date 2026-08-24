@@ -20,7 +20,7 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
     if (password !== confirm) {
-      setError("两次密码不一样");
+      setError("两次输入的密码不一致，请重新输入。");
       return;
     }
     setBusy(true);
@@ -38,7 +38,7 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
       await loadPanelSession();
       await router.navigate({ to: next });
     } catch {
-      setError("请求没发出去，请稍后重试。");
+      setError("暂时无法连接服务，请稍后重试。");
     } finally {
       setBusy(false);
     }
@@ -53,11 +53,11 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
         </div>
         <Card className="gap-5 px-5 py-6">
           <div className="border-b border-border pb-4">
-            <h2 className="text-base font-semibold">{session.mustChangePassword ? "先改密码" : "修改密码"}</h2>
+            <h2 className="text-base font-semibold">修改密码</h2>
             <p className="mt-1 break-words text-muted-foreground">
               {session.mustChangePassword
-                ? `管理员重置了 ${session.username} 的密码。设一枚只有你知道的新密码,才能继续使用面板。`
-                : "保存后其余设备上的会话会失效,当前会话继续使用。"}
+                ? "密码已由系统管理员重置。请设置新的密码后继续使用面板。"
+                : "保存后，其他设备上的会话会失效；当前会话继续使用。"}
             </p>
           </div>
           <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>

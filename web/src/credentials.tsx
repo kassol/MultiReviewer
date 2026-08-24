@@ -7,6 +7,7 @@ import { Link, Outlet, useBlocker, useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, Check, ChevronDown, CircleX, RefreshCw, Trash2 } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
+import { HelpTooltip } from "@/components/help-tooltip";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -192,8 +193,8 @@ const DIRECTORY_LABEL: Record<ModelDirectoryState, string> = {
   "discovery-failed": "发现失败",
 };
 const VERIFICATION_LABEL: Record<NonNullable<ModelService["credential"]["verificationSource"]>, string> = {
-  "legacy-provider-check": "旧版 provider 检查",
-  "legacy-review-run": "旧版 Review Run",
+  "legacy-provider-check": "历史服务检查",
+  "legacy-review-run": "历史审查记录",
   inference: "真实推理",
 };
 
@@ -302,7 +303,7 @@ export function ModelServiceSetupLayout() {
     <ModelServiceSetupContext.Provider value={{ candidate, setCandidate, phase, setPhase, transition, finish }}>
       <PageHeader
         title="配置模型服务"
-        description="选择来源、发现模型、真实验证三步完成；候选配置只留在当前页面内存。"
+        description="按步骤配置并验证模型服务，未提交内容只保留在当前页面。"
       />
       <div className="max-w-[900px] p-4 pb-20 sm:p-5 sm:pb-20">
         <nav className="mb-5 grid grid-cols-3 overflow-hidden rounded-md border text-center text-xs" aria-label="添加模型服务步骤">
@@ -315,10 +316,10 @@ export function ModelServiceSetupLayout() {
       <Dialog open={blocker.status === "blocked"} onOpenChange={(open) => { if (!open) blocker.reset?.(); }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{phase === null ? "丢弃未保存的候选？" : "模型服务操作仍在进行"}</DialogTitle>
+            <DialogTitle>{phase === null ? "丢弃未保存的配置？" : "模型服务操作仍在进行"}</DialogTitle>
             <DialogDescription>
               {phase === null
-                ? "离开会丢弃当前页面内存里的凭据、发现结果和验证模型。"
+                ? "离开会丢弃当前页面中的凭据、目录结果和验证模型。"
                 : "请求结束前会锁定离开与丢弃动作，请等待当前阶段完成。"}
             </DialogDescription>
           </DialogHeader>
@@ -370,7 +371,7 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
       {providers.isPending ? (
         <Skeleton className="h-28" />
       ) : providers.isError ? (
-        <p role="alert" className="text-destructive">内置 provider 读不到：{(providers.error as Error).message}</p>
+        <p role="alert" className="text-destructive">内置模型服务加载失败：{(providers.error as Error).message}</p>
       ) : providers.data.providers.length === 0 ? (
         <p className="text-muted-foreground">没有匹配的 Pi 内置 provider。</p>
       ) : (
@@ -508,7 +509,7 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
         </div>
       </form>
       {metadata.isError ? (
-        <p role="alert" className="text-destructive">provider 状态读不到：{(metadata.error as Error).message}</p>
+        <p role="alert" className="text-destructive">模型服务状态加载失败：{(metadata.error as Error).message}</p>
       ) : metadata.isSuccess && metadata.data === undefined ? (
         <p role="alert" className="text-destructive">Pi 没有内置 provider {provider}。</p>
       ) : null}
@@ -523,7 +524,7 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
   const ready = candidate?.kind === "builtin" && candidate.provider === provider && candidate.preview !== null && candidate.credential !== "";
   const commit = useMutation({
     mutationFn: async () => {
-      if (!ready) throw new Error("发现结果已不在当前页面内存，请重新发现模型");
+      if (!ready) throw new Error("配置已过期，请重新配置模型服务。");
       return responseJson<CredentialMutationResult>(await api("/model-services/builtin/commit", {
         method: "POST",
         body: JSON.stringify({
@@ -551,8 +552,8 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
   if (!ready) {
     return (
       <Card className="gap-3 px-4 py-5">
-        <h2 className="text-base font-semibold">发现结果不在当前页面内存</h2>
-        <p className="text-muted-foreground">刷新和直接打开此地址不会恢复凭据或候选，请回到模型发现重新开始。</p>
+        <h2 className="text-base font-semibold">配置已过期</h2>
+        <p className="text-muted-foreground">刷新或直接打开此地址不会恢复凭据和目录结果，请重新配置模型服务。</p>
         <Link
           to="/credentials/add/builtin/$provider/discover"
           params={{ provider }}
@@ -569,7 +570,7 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
   return (
     <Card className="gap-4 px-4 py-4">
       <div>
-        <h2 className="text-base font-semibold">选择验证模型并提交</h2>
+        <h2 className="text-base font-semibold">选择验证模型</h2>
         <p className="mt-1 text-muted-foreground">
           预览发现 <span className="font-mono tabular-nums">{activePreview.models.length}</span> 个模型；最终提交会重新发现并执行最小真实推理。
         </p>
@@ -586,7 +587,7 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
         <datalist id="setup-validation-models">
           {activePreview.models.map((model) => <option key={model.identity} value={model.id} />)}
         </datalist>
-        <p className="text-xs text-muted-foreground">目录里没有目标模型时可手填 model id；真实推理成功后会形成模型补录。</p>
+        <p className="text-xs text-muted-foreground">目录里没有目标模型时可手填 model id；真实推理成功后会加入手动来源。</p>
       </div>
       {commit.error === null ? null : <p role="alert" className="text-destructive">{commit.error.message}</p>}
       <div className="flex items-center gap-3 border-t pt-3">
@@ -766,8 +767,8 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
         </div>
         {!targetChanged || supplementModels.length === 0 ? null : (
           <fieldset className="rounded-md border px-3 py-2">
-            <legend className="px-1 text-sm font-medium">重新确认带入新目标的模型补录</legend>
-            <p className="mb-2 text-xs text-muted-foreground">地址或协议变化后，仅带入这里明确确认的旧来源。</p>
+            <legend className="px-1 text-sm font-medium">重新确认带入新目标的模型</legend>
+            <p className="mb-2 text-xs text-muted-foreground">地址或协议变化后，只带入你确认的旧模型来源。</p>
             <div className="space-y-1.5">
               {supplementModels.map((model) => (
                 <label key={model.identity} className="flex items-start gap-2 text-sm">
@@ -814,7 +815,7 @@ export function CustomServiceVerifyPage({ provider }: { provider?: string }) {
   const active = ready ? candidate : null;
   const commit = useMutation({
     mutationFn: async () => {
-      if (active === null) throw new Error("候选已不在当前页面内存，请重新执行模型发现");
+      if (active === null) throw new Error("配置已过期，请重新配置模型服务。");
       return responseJsonWithReferences<CredentialMutationResult>(await api("/model-services/custom/commit", {
         method: "POST",
         body: JSON.stringify({
@@ -846,8 +847,8 @@ export function CustomServiceVerifyPage({ provider }: { provider?: string }) {
       : "/credentials/add/custom/$provider/discover" as const;
     return (
       <Card className="gap-3 px-4 py-5">
-        <h2 className="text-base font-semibold">发现结果不在当前页面内存</h2>
-        <p className="text-muted-foreground">刷新和直接打开此地址不会恢复凭据或候选，请重新执行模型发现。</p>
+        <h2 className="text-base font-semibold">配置已过期</h2>
+        <p className="text-muted-foreground">刷新或直接打开此地址不会恢复凭据和目录结果，请重新配置模型服务。</p>
         <Link to={backTo} params={provider === undefined ? {} : { provider }} className="w-fit underline underline-offset-4">返回模型发现</Link>
       </Card>
     );
@@ -880,7 +881,7 @@ export function CustomServiceVerifyPage({ provider }: { provider?: string }) {
             {active.preview.models.map((model) => <option key={model.identity} value={model.id} />)}
           </datalist>
         )}
-        <p className="text-xs text-muted-foreground">目录缺少目标模型时可手填；真实推理成功后会形成模型补录。</p>
+        <p className="text-xs text-muted-foreground">目录缺少目标模型时可手填；真实推理成功后会加入手动来源。</p>
       </div>
       {commit.error === null ? null : (
         <div className="space-y-2">
@@ -971,7 +972,7 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
               验证模型：<span className={service.credential.validationModel === null || service.credential.validationModel === undefined ? undefined : "font-mono"}>{service.credential.validationModel ?? "未提供"}</span>
             </p>
             <p>
-              验证来源：
+              验证方式：
               {service.credential.verificationSource === null || service.credential.verificationSource === undefined
                 ? "未提供"
                 : VERIFICATION_LABEL[service.credential.verificationSource]}
@@ -1173,7 +1174,7 @@ function CredentialControls({
           <Trash2 />删除凭据
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground">可从自动发现的模型中选择，也可手填目录外的 model id；最终会重新发现目录，并用它做一次最小真实推理。</p>
+      <p className="text-xs text-muted-foreground">可从自动发现的模型中选择，也可手填目录外的 model id；提交时会重新发现目录并执行一次最小真实推理。</p>
       {feedback === null ? null : (
         <p role={feedback.error ? "alert" : "status"} className={feedback.error ? "text-destructive" : "text-success"}>
           {feedback.text}
@@ -1242,8 +1243,10 @@ function CredentialControls({
   return (
     <section className="overflow-hidden rounded-md border" aria-labelledby={`credential-actions-${target.provider}`}>
       <div className="border-b bg-muted px-3 py-2">
-        <h3 id={`credential-actions-${target.provider}`} className="font-medium">凭据维护</h3>
-        <p className="text-xs text-muted-foreground">重新验证使用已存凭据，凭据不会回到浏览器。</p>
+        <div className="flex items-center gap-1.5">
+          <h3 id={`credential-actions-${target.provider}`} className="font-medium">凭据维护</h3>
+          <HelpTooltip label="凭据维护说明" content="重新验证会使用已保存的凭据，凭据不会回到浏览器。" />
+        </div>
       </div>
       {maintenanceForm}
       <Dialog
@@ -1347,8 +1350,10 @@ function CustomServiceControls({ service }: { service: ModelService }) {
     <section className="rounded-md border px-3 py-3" aria-labelledby={`custom-actions-${service.provider}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h3 id={`custom-actions-${service.provider}`} className="font-medium">自定义服务维护</h3>
-          <p className="text-xs text-muted-foreground">候选验证成功前，当前版本与全部来源保持不动。</p>
+          <div className="flex items-center gap-1.5">
+            <h3 id={`custom-actions-${service.provider}`} className="font-medium">服务配置</h3>
+            <HelpTooltip label="服务配置说明" content="新配置验证成功前，当前版本与已有模型来源保持不动。" />
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           {service.providerState !== "name-conflict" ? null : (
@@ -1360,7 +1365,7 @@ function CustomServiceControls({ service }: { service: ModelService }) {
                 to="/credentials/add/custom/$provider/discover"
                 params={{ provider: service.provider }}
               >
-                修改候选
+                修改配置
               </Link>
             </Button>
           )}
@@ -1433,7 +1438,7 @@ function CustomServiceControls({ service }: { service: ModelService }) {
           <DialogHeader>
             <DialogTitle>删除 {service.provider}？</DialogTitle>
             <DialogDescription>
-              服务定义、加密凭据、当前目录与模型补录会在一个事务中删除；历史 Review Run 保留。仍被组合引用时不会删除。
+                服务定义、加密凭据、当前目录与手动模型来源会在一个事务中删除；历史审查记录保留。仍被模型组合引用时不会删除。
             </DialogDescription>
           </DialogHeader>
           {removeService.error === null ? null : (
@@ -1518,10 +1523,10 @@ function CatalogControls({
     <section className="rounded-md border px-3 py-3" aria-labelledby={`catalog-actions-${service.provider}`}>
       {section === "maintenance" ? <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 id={`catalog-actions-${service.provider}`} className="font-medium">自动目录维护</h3>
-          <p className="text-xs text-muted-foreground">
-            刷新只替换自动目录；失败时保留最近成功的目录快照。
-          </p>
+          <div className="flex items-center gap-1.5">
+            <h3 id={`catalog-actions-${service.provider}`} className="font-medium">模型目录</h3>
+            <HelpTooltip label="模型目录说明" content="刷新只替换自动发现的目录；刷新失败时保留最近一次成功的结果。" />
+          </div>
         </div>
         <Button
           type="button"
@@ -1550,7 +1555,10 @@ function CatalogControls({
           addSupplement.mutate(submittedModel);
         }}
       >
-        <Label htmlFor={inputId}>补录 model id</Label>
+        <div className="flex items-center gap-1.5">
+          <Label htmlFor={inputId}>手动添加模型</Label>
+          <HelpTooltip label="手动添加模型说明" content="只需填写模型 ID。显示名、价格、上下文窗口和能力信息由目录或运行基线提供。" />
+        </div>
         <div className="mt-1.5 flex flex-col gap-2 sm:flex-row">
           <Input
             id={inputId}
@@ -1561,7 +1569,7 @@ function CatalogControls({
             onChange={(event) => setModel(event.target.value)}
           />
           <Button type="submit" disabled={busy || !canValidate || model.trim() === ""}>
-            {addSupplement.isPending ? "正在验证…" : "验证并补录"}
+            {addSupplement.isPending ? "正在验证…" : "验证并添加"}
           </Button>
         </div>
         {!canValidate ? (
@@ -1577,16 +1585,16 @@ function CatalogControls({
 
       <div className="mt-3 border-t pt-3">
         <p className="text-xs font-medium text-muted-foreground">
-          当前补录来源 · {service.models === undefined ? (
+          当前手动来源 · {service.models === undefined ? (
             "按模型读权限隐藏"
           ) : (
             <span className="font-mono tabular-nums">{supplementalModels.length}</span>
           )}
         </p>
         {service.models === undefined ? (
-          <p className="mt-1.5 text-sm text-muted-foreground">已有来源清单不可见；补录与刷新仍由服务端校验。</p>
+          <p className="mt-1.5 text-sm text-muted-foreground">已有来源清单不可见；手动添加和刷新仍由服务端校验。</p>
         ) : supplementalModels.length === 0 ? (
-          <p className="mt-1.5 text-sm text-muted-foreground">没有模型补录或迁移保留来源。</p>
+          <p className="mt-1.5 text-sm text-muted-foreground">没有手动添加或迁移保留的模型来源。</p>
         ) : (
           <ul className="mt-2 divide-y rounded-md border">
             {supplementalModels.map((entry) => {
@@ -1624,7 +1632,7 @@ function CatalogControls({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>删除 {deleting?.identity} 的补录来源？</DialogTitle>
+            <DialogTitle>删除 {deleting?.identity} 的手动来源？</DialogTitle>
             <DialogDescription>
               {deleting?.sources.includes("automatic")
                 ? "自动发现来源仍会保留，这个模型不会从清单消失。"
@@ -1719,8 +1727,8 @@ function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
   if (models.length === 0) {
     return (
       <section className="rounded-md border px-4 py-8 text-center">
-        <h3 className="text-base font-semibold">还没有模型来源</h3>
-        <p className="mt-1 text-muted-foreground">模型目录尚未成功发现，也没有模型补录或迁移保留。</p>
+        <h3 className="text-base font-semibold">还没有可用模型</h3>
+        <p className="mt-1 text-muted-foreground">模型目录尚未成功发现，也没有手动添加或迁移保留的模型。</p>
       </section>
     );
   }
@@ -1853,7 +1861,7 @@ function ModelAvailability({ model }: { model: ModelServiceModel }) {
         <CircleX data-icon="inline-start" />不可用
       </Badge>
       <p className="max-w-64 break-words text-xs text-destructive">
-        {model.unavailableReasonText ?? "模型来源消失"}
+        {model.unavailableReasonText ?? "模型不可用"}
       </p>
     </div>
   );
@@ -1883,7 +1891,7 @@ function RunCapabilityCard({
         ? "到维护页配置模型凭据。"
         : "到维护页重新验证或轮换模型凭据。"
       : capability.nextAction === "add-model-source"
-        ? "到维护页刷新自动目录，或到模型页补录可验证的 model id。"
+        ? "到维护页刷新自动目录，或到模型页手动添加可验证的 model id。"
         : capability.nextAction === "recover-service"
           ? "到维护页用新名称重建，或删除这项服务。"
           : null;
@@ -1905,7 +1913,7 @@ function RunCapabilityCard({
           </h3>
           <p className="mt-1 text-xs text-muted-foreground">
             {capability.runnable
-              ? "至少一个当前模型具备已验证凭据与可运行来源。"
+              ? "至少一个当前模型具备已验证凭据并可以运行。"
               : capability.reasonText ?? "当前没有可运行模型。"}
           </p>
           {!canAct || nextStep === null ? null : (
@@ -2057,8 +2065,10 @@ function ServiceDetail({
       {tab === "maintenance" && canWriteCredential && service.type === "builtin" ? (
         <section className="flex flex-wrap items-center justify-between gap-3 rounded-md border px-3 py-3">
           <div>
-            <h3 className="font-medium">模型凭据轮换</h3>
-            <p className="text-xs text-muted-foreground">新凭据发现目录并完成真实推理后，才会推进当前版本。</p>
+            <div className="flex items-center gap-1.5">
+              <h3 className="font-medium">模型凭据</h3>
+              <HelpTooltip label="模型凭据说明" content="新凭据完成目录发现和真实推理后，才会替换当前版本。" />
+            </div>
           </div>
           <Button asChild variant="outline">
             <Link
@@ -2081,8 +2091,8 @@ function ServiceDetail({
 
       {tab === "maintenance" && !canWriteCredential && !canWriteModels && !canWriteCustom ? (
         <section className="rounded-md border bg-muted/50 px-4 py-5">
-          <h3 className="font-medium">维护操作按写权限隐藏</h3>
-          <p className="mt-1 text-muted-foreground">当前会话可以查看静态状态与导航，不能修改模型服务。</p>
+          <h3 className="font-medium">当前账号仅可查看</h3>
+          <p className="mt-1 text-muted-foreground">当前账号没有修改模型服务的权限。</p>
         </section>
       ) : null}
 
@@ -2094,7 +2104,7 @@ function ServiceDetail({
         <ModelsTable models={service.models} />
       ) : (
         <section className="rounded-md border bg-muted/50 px-4 py-5">
-          <h3 className="text-base font-semibold">模型字段按权限隐藏</h3>
+          <h3 className="text-base font-semibold">当前账号仅可查看</h3>
           <p className="mt-1 text-muted-foreground">
             当前会话可以审计模型凭据，但不能读取地址、接口协议、模型目录与模型清单。
           </p>
@@ -2152,7 +2162,12 @@ export function ModelServicesPage({
     <>
       <PageHeader
         title="模型服务"
-        description="模型服务、模型凭据与模型目录三条状态彼此独立；删除被组合引用的项目时会列出阻塞位置与下一步。"
+        description={(
+          <span className="inline-flex items-center gap-1.5">
+            管理模型服务、凭据和模型目录。
+            <HelpTooltip label="模型服务说明" content="删除仍被模型组合引用的服务时，系统会列出引用位置并阻止删除。" />
+          </span>
+        )}
         actions={(
           <div className="flex flex-wrap items-center gap-2">
             {canWriteCredential ? (
@@ -2166,7 +2181,7 @@ export function ModelServicesPage({
       {!canReadServices ? (
         <div className="max-w-[760px] p-4 sm:p-5">
           <Card className="gap-2 px-4 py-5">
-            <h2 className="text-base font-semibold">模型服务字段按权限隐藏</h2>
+            <h2 className="text-base font-semibold">当前账号仅可查看</h2>
             <p className="text-muted-foreground">
               {canWriteCredential
                 ? "当前会话可写模型凭据，但不能读取现有服务、目录和凭据审计字段。可从页头搜索 Pi 内置 provider 继续配置。"
@@ -2180,7 +2195,7 @@ export function ModelServicesPage({
         <div className="max-w-[760px] p-4 sm:p-5">
           <Card className="gap-3 px-4 py-5">
             <div>
-              <h2 className="text-base font-semibold text-destructive">模型服务读不到</h2>
+              <h2 className="text-base font-semibold text-destructive">模型服务加载失败</h2>
               <p className="mt-1 text-muted-foreground">{(query.error as Error).message}</p>
             </div>
             <Button
@@ -2208,7 +2223,7 @@ export function ModelServicesPage({
         <div className="max-w-[760px] p-4 sm:p-5">
           <Card className="gap-2 px-4 py-5">
             <h2 className="text-base font-semibold">模型服务不存在</h2>
-            <p className="text-muted-foreground">这个稳定地址对应的 provider 已删除或当前不可见。</p>
+            <p className="text-muted-foreground">该模型服务已删除，或当前账号无权查看。</p>
             <Link to="/credentials" className="w-fit text-sm underline underline-offset-4">返回模型服务</Link>
           </Card>
         </div>

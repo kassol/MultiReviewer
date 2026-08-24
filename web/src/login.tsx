@@ -31,7 +31,7 @@ export function LoginPage() {
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
     if (bootstrapMode && password !== confirm) {
-      setError("两次密码不一样");
+      setError("两次输入的密码不一致，请重新输入。");
       return;
     }
     setBusy(true);
@@ -44,7 +44,7 @@ export function LoginPage() {
         });
         if (registered.status !== 201) {
           const body = (await registered.json().catch(() => null)) as { error?: string } | null;
-          setError(body?.error ?? `注册失败(${registered.status})`);
+          setError(body?.error ?? `注册失败（${registered.status}）`);
           return;
         }
       }
@@ -58,9 +58,9 @@ export function LoginPage() {
         return;
       }
       const body = (await response.json().catch(() => null)) as { error?: string } | null;
-      setError(body?.error ?? `登录失败(${response.status})`);
+      setError(body?.error ?? `登录失败（${response.status}）`);
     } catch {
-      setError("请求没发出去:后端可达吗?dev 下确认双进程都在跑。");
+      setError("暂时无法连接服务，请稍后重试。");
     } finally {
       setBusy(false);
     }
@@ -76,14 +76,14 @@ export function LoginPage() {
         <Card className="gap-5 px-5 py-6">
           {bootstrapMode ? (
             <div className="border-b border-border pb-4">
-              <h2 className="text-base font-semibold">建第一个管理员</h2>
-              <p className="mt-1 text-muted-foreground">第一个注册的人就是系统管理员,注册入口随后关闭。</p>
+              <h2 className="text-base font-semibold">注册首个系统管理员</h2>
+              <p className="mt-1 text-muted-foreground">注册完成后，后续注册入口将关闭。</p>
             </div>
           ) : null}
           <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
             {bootstrapMode ? (
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="bootstrap">bootstrap 口令</Label>
+                <Label htmlFor="bootstrap">一次性启动口令</Label>
                 <Input id="bootstrap" type="password" value={bootstrap} onChange={(event) => setBootstrap(event.target.value)} />
               </div>
             ) : null}

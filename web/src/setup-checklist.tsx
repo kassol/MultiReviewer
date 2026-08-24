@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 
+import { HelpTooltip } from "@/components/help-tooltip";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
@@ -28,7 +29,7 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
   if (status.isError) {
     return (
       <Card className="mx-4 mt-4 gap-2 px-4 py-3 sm:mx-5" aria-label="首次配置状态读取失败">
-        <h2 className="font-semibold">首次配置状态暂时不可用</h2>
+        <h2 className="font-semibold">首次配置暂时不可用</h2>
         <p role="alert" className="text-sm text-destructive">{status.error.message}</p>
         <Button
           className="w-fit"
@@ -46,7 +47,7 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
   if (status.data === undefined) {
     return (
       <Card className="mx-4 mt-4 gap-2 px-4 py-3 sm:mx-5" aria-label="正在读取首次配置状态">
-        <h2 className="font-semibold">正在读取首次配置状态…</h2>
+        <h2 className="font-semibold">正在读取首次配置…</h2>
       </Card>
     );
   }
@@ -60,7 +61,7 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
   const steps = [
     {
       id: "service",
-      label: "配置可运行模型服务",
+      label: "配置并验证模型服务",
       done: status.data.hasRunnableModelService,
       to: "/credentials" as const,
       allowed: hasPermission(session, "credential:write"),
@@ -84,8 +85,13 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
   return (
     <Card className="mx-4 mt-4 gap-2 px-4 py-3 sm:mx-5" aria-label="首次配置检查单">
       <div>
-        <h2 className="font-semibold">完成首次配置</h2>
-        <p className="text-xs text-muted-foreground">按顺序完成三步后，实例开始接收已注册仓库的审查。</p>
+        <div className="flex items-center gap-1.5">
+          <h2 className="font-semibold">完成首次配置</h2>
+          <HelpTooltip
+            label="首次配置说明"
+            content="完成模型服务、审查策略和首个仓库配置后，系统开始处理已注册仓库的审查请求。"
+          />
+        </div>
       </div>
       <ol className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
         {steps.map((step, index) => (

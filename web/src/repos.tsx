@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
 import { CircleAlert, CircleCheck, CircleDashed, CircleX } from "lucide-react";
 
+import { HelpTooltip } from "@/components/help-tooltip";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -106,7 +107,7 @@ export function ReposPage({
     <>
       <PageHeader
         title="仓库"
-        description="接入 MultiReviewer 的仓库。选一个看它的准入 key、模型组合与最近几轮 Review Run。"
+        description="已接入 MultiReviewer 的代码仓库。选择仓库查看准入 Key、模型组合与最近的审查记录。"
         actions={canWrite ? (
           <Button disabled={!registrationReady} onClick={() => setRegistering(true)}>注册仓库</Button>
         ) : undefined}
@@ -155,7 +156,7 @@ export function ReposPage({
             ))}
           </ul>
           {rows.length === 0 && !repos.isPending && !repos.isError ? (
-            <p className="px-4 py-2.5 text-muted-foreground">还没有注册仓库。</p>
+            <p className="px-4 py-2.5 text-muted-foreground">暂无已注册仓库。</p>
           ) : null}
         </aside>
 
@@ -195,9 +196,9 @@ export function ReposPage({
           ) : null}
           {selected === undefined && !repos.isPending && !repos.isError ? (
             <Card className="items-start gap-1.5 px-4">
-              <h2 className="text-base font-semibold">还没有注册仓库</h2>
+              <h2 className="text-base font-semibold">暂无已注册仓库</h2>
               <p className="text-muted-foreground">
-                {canWrite ? "点右上「注册仓库」搜一个接进来——搜的是 bot 能看见的仓库。" : "当前没有已注册仓库。"}
+                {canWrite ? "选择右上角“注册仓库”，搜索并选择要接入的代码仓库。" : "当前没有已注册仓库。"}
               </p>
             </Card>
           ) : null}
@@ -250,7 +251,7 @@ function RepoDetail({
   onRemoved: () => void;
 }) {
   const queryClient = useQueryClient();
-  // 打开仓库时拉一次核对。只展示差异与下一步动作,不自动修——推平由人点轮转。
+  // 打开仓库时拉一次核对。只展示差异与下一步动作，不自动修改 Hook。
   const check = useQuery({
     queryKey: ["repo-hooks", repo.repoId],
     queryFn: () => fetchJson<HookCheck>(`/repos/${repo.repoId}/hooks`),
@@ -297,7 +298,7 @@ function RepoDetail({
       if (!response.ok) throw new Error(await errorText(response));
     },
     onSuccess: () => {
-      setFeedback({ text: "覆盖已清除,跟随全局,下一次投递生效。", isError: false });
+      setFeedback({ text: "覆盖已清除，仓库将跟随全局组合；下一次审查时生效。", isError: false });
       refresh();
     },
     onError: (error: Error) => setFeedback({ text: error.message, isError: true }),
@@ -328,7 +329,7 @@ function RepoDetail({
         ) : issues.length === 0 ? (
           <Badge className="bg-success/12 text-success">
             <CircleCheck aria-hidden />
-            hook 一致
+            Hook 配置正常
           </Badge>
         ) : (
           <Badge className="bg-warning/12 text-warning">
@@ -336,7 +337,7 @@ function RepoDetail({
             {issues.length} 处差异
           </Badge>
         )}
-        <span className="text-xs text-muted-foreground">repo id {repo.repoId}</span>
+        <span className="text-xs text-muted-foreground">仓库 ID {repo.repoId}</span>
         {canWrite ? (
           <Button
             variant="outline"
@@ -380,7 +381,7 @@ function RepoDetail({
         <Card className="gap-3 bg-warning/5 px-4">
           <h3 className="flex items-center gap-2 text-base font-semibold">
             <CircleAlert className="size-4 text-warning" aria-hidden />
-            与 Gitea 的差异
+            Hook 配置差异
           </h3>
           {issues.map((issue) => (
             <Kv key={issue.message} label={issue.message}>
@@ -393,7 +394,7 @@ function RepoDetail({
               disabled={rotate.isPending}
               onClick={() => rotate.mutate()}
             >
-              {rotate.isPending ? "推平中…" : "轮转推平"}
+              {rotate.isPending ? "修复中…" : "轮转并修复"}
             </Button>
           ) : null}
         </Card>
@@ -402,16 +403,16 @@ function RepoDetail({
       {/* 编辑态并成一栏:两栏面板是 220px 的厂商列加一整栏模型列,半宽的格子装不下。 */}
       <div className={editing ? "grid gap-3" : "grid gap-3 md:grid-cols-2"}>
         <Card className="gap-2.5 px-4">
-          <h3 className="text-base font-semibold">准入 key</h3>
-          <Kv label="状态">已填进 hook,不回显</Kv>
+          <div className="flex items-center gap-1.5">
+            <h3 className="text-base font-semibold">准入 Key</h3>
+            <HelpTooltip label="准入 Key 说明" content="面板会自动维护 Hook 凭据，页面不会显示明文。" />
+          </div>
+          <Kv label="状态">已配置到 Hook（不会显示明文）</Kv>
           <Kv label="代次">
             <span className="font-mono tabular-nums">
               {check.data === undefined ? "…" : check.data.expectedGenerations.join(" / ")}
             </span>
           </Kv>
-          <p className="text-xs text-muted-foreground">
-            面板自己把 key 填进 hook 的 secret 字段,人全程不需要碰它。
-          </p>
           {canWrite ? (
             <Button
               variant="outline"
@@ -419,7 +420,7 @@ function RepoDetail({
               disabled={rotate.isPending}
               onClick={() => rotate.mutate()}
             >
-              {rotate.isPending ? "轮转中…" : "轮转 key"}
+              {rotate.isPending ? "轮转中…" : "轮转 Key"}
             </Button>
           ) : null}
         </Card>
@@ -431,7 +432,7 @@ function RepoDetail({
             onClose={() => setEditing(false)}
             onDone={() => {
               setEditing(false);
-              setFeedback({ text: "模型组合已更新,下一次投递生效。", isError: false });
+              setFeedback({ text: "模型组合已更新，下一次审查时生效。", isError: false });
               refresh();
             }}
           />
@@ -462,7 +463,7 @@ function RepoDetail({
             </div> : null}
             <Kv label={following ? "跟随全局默认" : "本仓库覆盖"}>
               {shownModels === undefined ? (
-                <span className="text-muted-foreground">跟随中</span>
+                <span className="text-muted-foreground">使用全局组合</span>
               ) : (
                 <span><span className="font-mono tabular-nums">{shownModels.length}</span> 个</span>
               )}
@@ -474,12 +475,12 @@ function RepoDetail({
             ))}
             <p className="text-xs text-muted-foreground">
               {following && canWrite
-                ? "改审查策略这里跟着变。点「自定义」从当前组合改起。"
+                ? "审查策略更新后，这个仓库会同步使用新组合。选择“自定义”可单独调整。"
                 : following
                   ? "这个仓库使用全局模型组合。"
                   : canWrite
-                    ? "只对这个仓库生效。点「跟随全局」即清除覆盖。"
-                    : "这组模型只对这个仓库生效。"}
+                    ? "仅对这个仓库生效。选择“跟随全局”可清除覆盖。"
+                    : "这组模型仅对这个仓库生效。"}
             </p>
           </Card>
         )}
@@ -488,7 +489,7 @@ function RepoDetail({
       <section className="flex flex-wrap items-center gap-x-6 gap-y-2 border-y border-border py-3">
         <h3 className="text-base font-semibold">累计</h3>
         <span className="text-muted-foreground">
-          Review Run {" "}
+          审查轮次{" "}
           <b className="font-mono font-semibold tabular-nums text-foreground">{repo.runCount}</b> 轮
         </span>
         <span className="text-muted-foreground">
@@ -516,7 +517,7 @@ function RepoDetail({
               移除 {repo.owner}/{repo.repo}?
             </DialogTitle>
             <DialogDescription>
-              会删掉 Gitea 上的 hook,投递从此按未注册拒绝;评审记录保留,模型选型的历史不断。
+              将删除 Gitea 中的 Hook；后续审查请求会因仓库未注册而被拒绝。评审记录和历史模型选择会保留。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -539,7 +540,7 @@ function RepoDetail({
   );
 }
 
-/** 搜索结果的一条。不可选的两类照样返回,`reason` 说明缺什么。 */
+/** 搜索结果的一条。不可选的两类照样返回，`reason` 说明缺少的条件。 */
 type RepoSearchResult = {
   repoId: number;
   owner: string;
@@ -556,12 +557,12 @@ type RepoSearch = {
   results: RepoSearchResult[];
 };
 
-/** 输入停下这么久才发搜索请求。每个按键都发会让后端替浏览器打满 Gitea。 */
+/** 输入暂停一段时间后才发搜索请求，避免每次按键都触发 Gitea 查询。 */
 const SEARCH_DEBOUNCE_MS = 250;
 
 /**
- * 注册仓库(issue #70):输关键字搜 bot 可见的仓库直接选中,不必先去 Gitea 上把
- * owner 与 repo 抄下来。手输两个框已删除——bot 看不见的仓库手输进去也过不了注册时的
+ * 注册仓库(issue #70):输入关键词搜索当前凭据可访问的仓库并直接选择，不必先去 Gitea 上把
+ * owner 与 repo 复制下来。手动输入已删除——当前凭据无法访问的仓库即使输入也无法通过注册时的
  * 权限检查,留个兜底只会把「搜不到」的问题推迟到注册那一刻才暴露。
  *
  * 搜索经本服务代理(`GET <前缀>/api/repos/search`),浏览器不直连 Gitea。已注册与
@@ -610,7 +611,7 @@ function RegisterModal({
       const created = (await response.json()) as { repoId: number };
       onDone(created.repoId);
     } catch {
-      setError("请求没发出去:后端可达吗?");
+      setError("暂时无法连接服务，请稍后重试。");
     } finally {
       setBusy(false);
     }
@@ -627,7 +628,7 @@ function RegisterModal({
           {/* cmdk 自带的过滤按标签文本再筛一次,而结果已经是 Gitea 按关键字搜回来的。 */}
           <Command shouldFilter={false} className="border-border rounded-md border">
             <CommandInput
-              placeholder="搜仓库:owner 或仓库名"
+              placeholder="搜索仓库（owner 或仓库名）"
               value={query}
               // 搜索词一变就丢掉选中项:留着的话改词到无结果再回车,提交的会是上一次
               // 选中的那个仓库,而列表里已经看不见它了。
@@ -650,10 +651,10 @@ function RegisterModal({
                   <Skeleton aria-hidden className="h-9" />
                 </div>
               ) : data === undefined || debounced.trim() === "" ? (
-                <p className="p-4 text-muted-foreground">输关键字开始搜,搜的是 bot 能看见的仓库。</p>
+                <p className="p-4 text-muted-foreground">输入关键词开始搜索可访问的仓库。</p>
               ) : data.state === "no-match" ? (
                 <p className="p-4 text-muted-foreground">
-                  没有匹配的仓库。搜不到通常是 bot 还不是它的协作者,先把 bot 加进那个仓库。
+                  没有匹配的仓库。请确认 Gitea 中的 bot 账号已获得该仓库的访问权限。
                 </p>
               ) : (
                 <CommandGroup>
@@ -681,7 +682,7 @@ function RegisterModal({
                           )}
                         </span>
                         <span className="text-muted-foreground shrink-0 text-xs">
-                          repo id {row.repoId}
+                          仓库 ID {row.repoId}
                         </span>
                       </CommandItem>
                     );
@@ -697,7 +698,7 @@ function RegisterModal({
             </p>
           ) : null}
           <p className="text-muted-foreground text-xs">
-            模型组合先跟随审查策略,注册完在仓库详情里可以改成自定义。
+            新仓库默认使用审查策略中的模型组合；注册后可在仓库详情中设置覆盖。
           </p>
           {error === null ? null : (
             <p role="alert" className="text-destructive">
@@ -757,7 +758,7 @@ function ReviewersEditor({
       }
       onDone();
     } catch {
-      setError("请求没发出去:后端可达吗?");
+      setError("暂时无法连接服务，请稍后重试。");
     } finally {
       setBusy(false);
     }
@@ -770,8 +771,7 @@ function ReviewersEditor({
           自定义 {repo.owner}/{repo.repo} 的模型组合
         </h3>
         <p className="text-muted-foreground">
-          {/* prettier-ignore */}
-          本仓库覆盖:全量替换全局默认,至少选一个。保存后下一次投递按它跑,点「取消」回到上一屏、什么都不改。
+          本仓库覆盖会完全替换全局默认组合，至少选择一个模型。保存后下一次审查使用这组模型；取消则放弃本次修改。
         </p>
       </div>
       <ModelComposer
@@ -804,19 +804,19 @@ function ReviewersEditor({
         </Button>
         {models.length === 0 ? (
           <span className="text-muted-foreground">
-            一个都没选存不了。要回到跟随全局，点「取消」再点「跟随全局」。
+            至少选择一个模型才能保存。要改回全局默认，请取消编辑后选择“跟随全局”。
           </span>
         ) : validity.unavailable.length > 0 ? (
           <span className="text-destructive">先恢复或移除不可用模型，再保存覆盖。</span>
         ) : !validity.ready ? (
-          <span className="text-muted-foreground">候选状态确认后可以保存覆盖。</span>
+          <span className="text-muted-foreground">模型状态确认后即可保存覆盖。</span>
         ) : null}
       </div>
     </div>
   );
 }
 
-/** 本仓库最近的 Review Run,加「输 PR 号重跑」入口(issue #37,从 #34 递延的 runs 表)。 */
+/** 本仓库最近的审查记录，并提供输入 PR 编号重新运行审查的入口。 */
 function RepoRuns({
   repo,
   canRead,
@@ -852,7 +852,7 @@ function RepoRuns({
     event.preventDefault();
     const number = Number(pullNumber);
     if (!Number.isSafeInteger(number) || number <= 0) {
-      onFeedback({ text: "PR 号要是正整数", isError: true });
+      onFeedback({ text: "PR 编号必须是正整数。", isError: true });
       return;
     }
     rerun.mutate({ owner: repo.owner, repo: repo.repo, pullNumber: number });
@@ -862,21 +862,21 @@ function RepoRuns({
   return (
     <Card className="gap-3 px-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="text-base font-semibold">{canRead ? "评审记录" : "手动重跑"}</h3>
+        <h3 className="text-base font-semibold">{canRead ? "评审记录" : "重新运行审查"}</h3>
         {canRerun ? <form onSubmit={submit} className="flex flex-wrap gap-2">
           <label htmlFor={`rerun-pr-${repo.repoId}`} className="sr-only">
-            PR 号
+            PR 编号
           </label>
           <Input
             id={`rerun-pr-${repo.repoId}`}
-            placeholder="PR 号"
+            placeholder="PR 编号"
             inputMode="numeric"
             className="w-28"
             value={pullNumber}
             onChange={(event) => setPullNumber(event.target.value)}
           />
           <Button variant="outline" type="submit" disabled={rerun.isPending}>
-            {rerun.isPending ? "触发中…" : "重跑"}
+            {rerun.isPending ? "触发中…" : "重新运行"}
           </Button>
         </form> : null}
       </div>
@@ -903,7 +903,7 @@ function RepoRuns({
                     <span className="font-mono">
                       #{run.pullNumber} · {run.startedAt.slice(0, 16).replace("T", " ")}
                     </span>
-                    {` · ${run.triggeredBy === null ? "投递" : `手动 · ${run.triggeredBy}`}`}
+                    {` · ${run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`}`}
                   </span>
                 }
               >
@@ -914,7 +914,7 @@ function RepoRuns({
         </div>
       ) : null}
       {canRead && rows.length === 0 && !runs.isPending && !runs.isError ? (
-        <p className="text-xs text-muted-foreground">这个仓库还没有 Review Run。</p>
+        <p className="text-xs text-muted-foreground">这个仓库暂无审查记录。</p>
       ) : null}
     </Card>
   );

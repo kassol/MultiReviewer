@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { CalendarIcon, ChevronDown, CircleAlert } from "lucide-react";
 import { useState } from "react";
 
+import { HelpTooltip } from "@/components/help-tooltip";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
@@ -184,7 +185,15 @@ export function StatsPage() {
     <>
       <PageHeader
         title="处置率"
-        description="人看过并做了结论的 Finding 占比。同一处 Finding 只算一次,进不了行级评论的不计入。"
+        description={
+          <span className="inline-flex items-center gap-1.5">
+            查看不同模型和问题分类的 Finding 处置率。
+            <HelpTooltip
+              label="处置率计算方式"
+              content="处置率 = 已处置 Finding ÷ 可处置 Finding。同一处 Finding 只统计一次；无法关联到行级评论的 Finding 不计入。"
+            />
+          </span>
+        }
         actions={
           <Popover>
             <PopoverTrigger asChild>
@@ -236,7 +245,7 @@ export function StatsPage() {
             className="flex flex-col gap-3 border-y border-border bg-muted/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
           >
             <div className="flex flex-col gap-1">
-              <span className="text-xs text-muted-foreground">时间窗费用</span>
+              <span className="text-xs text-muted-foreground">时间范围费用</span>
               <b className="font-mono text-xl font-semibold tabular-nums">{usageCost.amount}</b>
               {usageCost.note === null ? null : (
                 <span className="text-xs text-warning">{usageCost.note}</span>
@@ -257,7 +266,7 @@ export function StatsPage() {
           <section aria-labelledby="model-rate-heading" className="overflow-hidden rounded-sm border border-border">
             <div className="bg-muted px-3 py-2">
               <h2 id="model-rate-heading" className="text-base font-semibold">
-                模型处置概览
+                按模型统计
               </h2>
             </div>
             <div className="divide-y divide-border">
@@ -291,10 +300,10 @@ export function StatsPage() {
 
         {models.length === 0 && !stats.isPending && !stats.isError ? (
           <Card className="items-start gap-1.5 px-4">
-            <h2 className="text-base font-semibold">这个时间窗里没有可统计的 Finding</h2>
+            <h2 className="text-base font-semibold">当前时间范围暂无可统计的 Finding</h2>
             <p className="text-muted-foreground">
-              分母只算进了行级评论的 Finding。要么这段时间没跑过 Review Run,要么跑出来的
-              Finding 都落在 diff 之外、退化成了 PR 正文。把时间窗放宽再看一次。
+              统计只包含带行级评论的 Finding。当前时间范围可能没有审查记录，或 Finding 无法关联到变更行。
+              请扩大时间范围后重试。
             </p>
           </Card>
         ) : null}
@@ -303,9 +312,9 @@ export function StatsPage() {
           <section aria-labelledby="rate-matrix-heading" className="flex flex-col gap-2">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <h2 id="rate-matrix-heading" className="text-base font-semibold">
-                模型 × 分类
+                模型与分类
               </h2>
-              <p className="text-xs text-muted-foreground">每格为已处置/分母(百分比)</p>
+              <p className="text-xs text-muted-foreground">每格显示已处置数量 / 分母（百分比）</p>
             </div>
             <div className="flex flex-col gap-2 lg:hidden">
               {models.map((model) => {
@@ -404,10 +413,10 @@ export function StatsPage() {
 
         {stats.data === undefined ? null : (
           <section className="border-t border-border pt-4">
-            <h2 className="text-base font-semibold">库体量</h2>
+            <h2 className="text-base font-semibold">数据存储</h2>
             <dl className="mt-2 divide-y divide-border border-y border-border">
               <div className="flex justify-between gap-3 py-2">
-                <dt className="text-muted-foreground">库文件</dt>
+                <dt className="text-muted-foreground">数据库文件</dt>
                 <dd className="font-mono tabular-nums">{humanBytes(stats.data.database.fileBytes)}</dd>
               </div>
               {stats.data.database.tables.map((table) => (
@@ -420,7 +429,7 @@ export function StatsPage() {
               ))}
             </dl>
             <p className="mt-2 text-xs text-muted-foreground">
-              评审记录只写不清:处置率算在历史行上,删行即删样本。
+              评审记录会参与历史处置率统计。
             </p>
           </section>
         )}

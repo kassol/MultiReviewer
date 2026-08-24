@@ -16,8 +16,9 @@
 - `src/setup-checklist.tsx` — 首次配置状态与检查单的唯一实现。它读取认证的 `GET /setup-status`,始终显示三步完成状态,只把当前未完成步骤做成入口;入口再按当前会话的有效写权限裁剪。实例启用后整块隐藏。
 - `src/login.tsx` — 登录与首次注册共用的一屏。普通档是用户名加密码;零用户档多 bootstrap 口令与确认密码,注册成功后回账号登录。所有字段有可见 `<Label>`,不靠 placeholder 当标签。
 - `src/password.tsx` — 用户自改密码页,走 `PUT /session/password`;必须改密的人完成后回到自己有权访问的第一页。改密保留当前会话、作废其余会话。
-- `src/access-control.tsx` — 系统管理员独有的 `/access` 页,上半用户表、下半转置权限矩阵(行是权限格、列是角色)。角色多时横向滚,权限格列 sticky。用户与角色读写走 `GET/POST /users`、`PUT/DELETE /users/:username`、`POST /users/:username/reset-password` 与 `GET/POST /roles`、`PUT/DELETE /roles/:id`;改角色是行内下拉,重置密码、删用户与删角色都走 Dialog。三类 write 生效时对应 read 显示为已包含且不可单独移除,`review:rerun` 仍是独立格。系统管理员不进矩阵;角色从全空创建,没授角色的用户就是零权限。
+- `src/access-control.tsx` — 系统管理员独有的 `/access` 页,上半用户表、下半转置权限矩阵(行是权限、列是角色)。角色多时横向滚,权限列 sticky。用户与角色读写走 `GET/POST /users`、`PUT/DELETE /users/:username`、`POST /users/:username/reset-password` 与 `GET/POST /roles`、`PUT/DELETE /roles/:id`;改角色是行内下拉,重置密码、删除用户与删除角色都走 Dialog。三类 write 生效时对应 read 显示为已包含且不可单独移除,`review:rerun` 仍是独立权限。系统管理员不进矩阵;角色创建时不包含任何权限,未分配角色的用户就是零权限。
 - `src/components/mark.tsx` — 产品标记(三条错位短线),与 `index.html` 里内联成 data URI 的 favicon 是同一份图形。用 `currentColor` 上色。
+- `src/components/help-tooltip.tsx` — 统一的帮助提示入口。基于 Radix Tooltip 与 Lucide `CircleHelp`,图标按钮可键盘访问,窄屏保留触控尺寸。
 - `src/components/page-body.tsx` — 业务页正文容器。`wide` 与 `form` 两档统一最大宽度、窄屏内边距和页尾留白;主从页只在详情栏复用,不改变分栏结构。
 - `src/components/ui/skeleton.tsx` — 读取中的占位块。带 `data-slot="skeleton"`,`styles.css` 的降低动效偏好那一段据此关掉呼吸动画。
 - `src/repos.tsx` — 仓库页,左列表右详情。模型覆盖是「跟随全局 / 自定义」两态:点「跟随全局」直接清覆盖;点「自定义」在详情内挂与审查策略共用的 `ModelComposer`,以当前生效组合为初值。不可用的既有选择可移除但不得随覆盖再次保存;服务端仍作最终校验。编辑态并成单栏容纳 460px 高的两栏选择器,不套对话框或外层表单。审查配置就绪前注册按钮禁用并指向审查策略,状态失效时已开的注册框随即卸载。注册与移除确认用 shadcn Dialog,不用阻塞渲染线程的 `window.confirm`。
@@ -61,6 +62,10 @@
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
 
 ## 变更日志
+
+- 2026-08-24: 统一业务页面的产品术语与说明层级。登录、改密、首次配置、仓库、评审记录、处置率和审查策略页面移除口语化文案；重复说明改为信息图标悬浮提示，图标使用 Lucide。
+
+- 2026-08-24: 精简访问控制页文案与权限矩阵。统一使用“新建用户”“删除用户”“未分配角色”“授予权限”等产品术语,隐藏权限内部标识,把管理员和权限说明收进可键盘访问的 HelpTooltip,交互图标统一使用 Lucide。
 
 - 2026-08-24: 模型页桌面表格收为模型、运行规格、状态三列；窄屏同步使用单块运行规格。模型显示名、标识和来源合并展示，运行字段来源去重成一条说明；发现值仅在与运行规格不同时渐进展开。
 - 2026-08-24: 维护页的凭据重新验证把原生 `datalist` 换成可编辑组合框。自动发现模型可展开、搜索、键盘选择，点选只写入裸 model id；目录外 model id 继续可手填。
