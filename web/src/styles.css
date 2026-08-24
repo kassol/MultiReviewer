@@ -63,6 +63,9 @@
   --border-subtle: var(--gray-6);
   --selection-solid: var(--gray-12);
   --selection-solid-text: var(--gray-1);
+  --selection-solid-hover: var(--gray-11);
+  --selection-solid-muted-text: var(--gray-4);
+  --selection-solid-danger-text: var(--red-4);
 
   --background: var(--app-bg);
   --foreground: var(--text-primary);

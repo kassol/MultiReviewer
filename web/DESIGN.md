@@ -93,6 +93,9 @@ MultiReviewer 管理面板服务两类用户：
 | `--border-subtle` | 卡片和分组边界 | 接近 `#d0d7de` |
 | `--selection-solid` | provider 单选 | 高对比近黑色 |
 | `--selection-solid-text` | provider 选中文字 | 白色 |
+| `--selection-solid-hover` | provider 选中项 hover | 保持深色体系并提供可见反馈 |
+| `--selection-solid-muted-text` | provider 选中项辅助文字 | 在深色表面达到正文对比要求 |
+| `--selection-solid-danger-text` | provider 选中项异常文字 | 在深色表面保留错误语义与正文对比 |
 
 精确色值由 Radix token 生成，并在模型服务、审查策略和评审记录原型中验证。产品代码不直接引用色阶编号，统一引用上述语义 token。
 
@@ -211,6 +214,8 @@ ProviderSelector 是共享产品组件。模型服务页和审查策略中的 pr
 
 - 路由型 provider 链接使用 `aria-current`。
 - 编辑器中的 provider 按钮使用单选语义和 `aria-pressed`，或使用合适的单选 Primitive。
+
+实现统一由 `src/components/provider-selector-item.tsx` 承担。路由项通过 `asChild` 组合 Link，页内项渲染 button；组件集中处理深色选中、深色 hover、焦点、辅助文字和异常文字对比度。模型行与 Checkbox 多选继续使用浅色选择反馈。
 
 ### 8.4 单选与模式切换
 

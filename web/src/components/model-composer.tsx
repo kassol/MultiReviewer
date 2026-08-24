@@ -8,6 +8,10 @@ import { Badge, Skeleton, TextField } from "@radix-ui/themes";
 import { useEffect, useMemo, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
+import {
+  ProviderSelectorItem,
+  ProviderSelectorItemText,
+} from "@/components/provider-selector-item";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { Card } from "@radix-ui/themes";
@@ -237,28 +241,22 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                   const available = group.models.filter((model) => model.available).length;
                   const unavailable = group.models.length - available;
                   return (
-                    <button
+                    <ProviderSelectorItem
                       key={group.provider}
-                      type="button"
-                      aria-pressed={group.provider === selected?.provider}
-                      className={cn(
-                        "flex w-full flex-col items-start gap-0.5 border-b border-border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-                        group.provider === selected?.provider
-                          ? "bg-primary/10 text-foreground ring-1 ring-inset ring-primary/30"
-                          : "hover:bg-background/60",
-                      )}
+                      selected={group.provider === selected?.provider}
+                      className="flex flex-col items-start gap-0.5 border-b border-border px-3 py-2 last:border-b-0"
                       onClick={() => setPickedProvider(group.provider)}
                     >
                       <span className="w-full break-all font-mono font-medium">{group.provider}</span>
-                      <span className="text-xs text-muted-foreground">
+                      <ProviderSelectorItemText className="text-xs">
                         <span className="font-mono tabular-nums">{available}</span> 个可选
                         {unavailable === 0 ? null : (
-                          <span className="text-destructive">
+                          <ProviderSelectorItemText tone="danger">
                             {" "}· <span className="font-mono tabular-nums">{unavailable}</span> 个不可用
-                          </span>
+                          </ProviderSelectorItemText>
                         )}
-                      </span>
-                    </button>
+                      </ProviderSelectorItemText>
+                    </ProviderSelectorItem>
                   );
                 })
               )}

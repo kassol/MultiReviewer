@@ -10,6 +10,10 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { PageHeader } from "@/components/page-header";
+import {
+  ProviderSelectorItem,
+  ProviderSelectorItemText,
+} from "@/components/provider-selector-item";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -2535,61 +2539,53 @@ export function ModelServicesPage({
                   <span className="font-mono tabular-nums">{services.length}</span> 项 · 含保留的异常状态
                 </p>
               </div>
-              <div className="max-h-80 divide-y overflow-y-auto xl:max-h-none">
+              <div className="max-h-80 overflow-y-auto xl:max-h-none">
                 {services.map((service) => {
                   const isSelected = service.provider === selected.provider;
-                  return <Link
-                  key={service.provider}
-                  to="/credentials/$provider"
-                  params={{ provider: service.provider }}
-                  aria-current={isSelected ? "page" : undefined}
-                  className={cn(
-                    "block w-full px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-                    isSelected
-                      ? "bg-primary text-primary-foreground ring-1 ring-inset ring-primary hover:bg-primary/90"
-                      : "hover:bg-background/60",
-                  )}
-                >
-                  <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
-                    <span
-                      className={cn("min-w-0 flex-1 truncate font-medium", service.name === service.provider && "font-mono")}
-                      title={service.name}
+                  return (
+                    <ProviderSelectorItem
+                      key={service.provider}
+                      asChild
+                      selected={isSelected}
+                      className="block border-b border-border px-3 py-3 last:border-b-0"
                     >
-                      {service.name}
-                    </span>
-                    <ServiceStatus service={service} selected={isSelected} />
-                  </div>
-                  {service.name === service.provider ? null : (
-                    <p className={cn(
-                      "mt-0.5 break-all font-mono text-xs",
-                      isSelected ? "text-primary-foreground/75" : "text-muted-foreground",
-                    )}>{service.provider}</p>
-                  )}
-                  {service.models === undefined || service.directory === undefined ? (
-                    <p className={cn(
-                      "mt-1 text-xs",
-                      isSelected ? "text-primary-foreground/75" : "text-muted-foreground",
-                    )}>模型数量与发现时间按权限隐藏</p>
-                  ) : (
-                    <div className={cn(
-                      "mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-end gap-3 text-xs",
-                      isSelected ? "text-primary-foreground/75" : "text-muted-foreground",
-                    )}>
-                      <span>
-                        <span className={cn("block", isSelected ? "text-primary-foreground/75" : "text-muted-foreground")}>模型</span>
-                        <span className={cn("font-mono tabular-nums", isSelected ? "text-primary-foreground" : "text-foreground")}>{service.models.length}</span> 个
-                      </span>
-                      <span className="min-w-0 text-right">
-                        <span className="block">最近成功</span>
-                        <span className={cn(
-                          "break-words",
-                          isSelected ? "text-primary-foreground" : "text-foreground",
-                          service.directory.lastSuccessAt === null ? undefined : "font-mono tabular-nums",
-                        )}>{localMinute(service.directory.lastSuccessAt)}</span>
-                      </span>
-                    </div>
-                  )}
-                  </Link>;
+                      <Link to="/credentials/$provider" params={{ provider: service.provider }}>
+                        <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+                          <span
+                            className={cn("min-w-0 flex-1 truncate font-medium", service.name === service.provider && "font-mono")}
+                            title={service.name}
+                          >
+                            {service.name}
+                          </span>
+                          <ServiceStatus service={service} selected={isSelected} />
+                        </div>
+                        {service.name === service.provider ? null : (
+                          <ProviderSelectorItemText asChild>
+                            <p className="mt-0.5 break-all font-mono text-xs">{service.provider}</p>
+                          </ProviderSelectorItemText>
+                        )}
+                        {service.models === undefined || service.directory === undefined ? (
+                          <ProviderSelectorItemText asChild>
+                            <p className="mt-1 text-xs">模型数量与发现时间按权限隐藏</p>
+                          </ProviderSelectorItemText>
+                        ) : (
+                          <div className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] items-end gap-3 text-xs">
+                            <span>
+                              <ProviderSelectorItemText className="block">模型</ProviderSelectorItemText>
+                              <span className="font-mono tabular-nums">{service.models.length}</span> 个
+                            </span>
+                            <span className="min-w-0 text-right">
+                              <ProviderSelectorItemText className="block">最近成功</ProviderSelectorItemText>
+                              <span className={cn(
+                                "break-words",
+                                service.directory.lastSuccessAt === null ? undefined : "font-mono tabular-nums",
+                              )}>{localMinute(service.directory.lastSuccessAt)}</span>
+                            </span>
+                          </div>
+                        )}
+                      </Link>
+                    </ProviderSelectorItem>
+                  );
                 })}
               </div>
             </div>
