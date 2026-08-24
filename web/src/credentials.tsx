@@ -1673,8 +1673,8 @@ function CostValue({ cost }: { cost: ModelCost | null }) {
   );
 }
 
-function FieldSource({ source }: { source: ModelRuntimeFieldSource | null }) {
-  const label = source === null
+function fieldSourceLabel(source: ModelRuntimeFieldSource | null): string {
+  return source === null
     ? "未知"
     : source === "service-interface"
       ? "服务接口"
@@ -1685,7 +1685,34 @@ function FieldSource({ source }: { source: ModelRuntimeFieldSource | null }) {
           : source === "runtime-baseline"
             ? "运行基线"
             : "未知";
-  return <span className="text-muted-foreground">（{label}）</span>;
+}
+
+function sameInput(left: readonly string[] | null, right: readonly string[]): boolean {
+  return left !== null && left.length === right.length && left.every((value) => right.includes(value));
+}
+
+function sameCost(left: ModelCost | null, right: ModelCost | null): boolean {
+  if (left === null || right === null) return left === right;
+  if (
+    left.input !== right.input ||
+    left.output !== right.output ||
+    left.cacheRead !== right.cacheRead ||
+    left.cacheWrite !== right.cacheWrite
+  ) return false;
+  const leftTiers = left.tiers ?? [];
+  const rightTiers = right.tiers ?? [];
+  return leftTiers.length === rightTiers.length && leftTiers.every((tier, index) => {
+    const other = rightTiers[index];
+    return other !== undefined && tier.inputTokensAbove === other.inputTokensAbove && sameCost(tier, other);
+  });
+}
+
+function discoveryDiffersFromRuntime(model: ModelServiceModel): boolean {
+  return !sameInput(model.discovery.input, model.runtime.input) ||
+    model.discovery.reasoning !== model.runtime.reasoning ||
+    model.discovery.contextWindow !== model.runtime.contextWindow ||
+    model.discovery.maxOutput !== model.runtime.maxOutput ||
+    !sameCost(model.discovery.cost, model.runtime.cost);
 }
 
 function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
@@ -1709,56 +1736,57 @@ function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
         {models.map((model) => (
           <article key={model.identity} className={cn("px-3 py-4", !model.available && "bg-destructive/5")}>
             <div className="flex flex-wrap items-start justify-between gap-2">
-              <p className="min-w-0 break-all font-mono text-xs font-medium">{model.identity}</p>
+              <div className="min-w-0 flex-1">
+                <p className="break-words font-medium">{model.discovery.name ?? "未提供显示名"}</p>
+                <p className="mt-0.5 break-all font-mono text-xs text-muted-foreground">{model.identity}</p>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {model.sources.map((source) => (
+                    <Badge key={source} variant="outline" className="whitespace-nowrap">
+                      {SOURCE_LABEL[source]}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
               <ModelAvailability model={model} />
             </div>
-            <div className="mt-2 flex flex-wrap gap-1">
-              {model.sources.map((source) => (
-                <Badge key={source} variant="outline">{SOURCE_LABEL[source]}</Badge>
-              ))}
-            </div>
-            <div className="mt-3 grid gap-4 border-t pt-3 sm:grid-cols-2">
-              <section>
-                <h4 className="mb-1.5 text-xs font-medium text-muted-foreground">发现事实</h4>
-                <ModelDiscoveryFacts model={model} />
-              </section>
-              <section>
-                <h4 className="mb-1.5 text-xs font-medium text-muted-foreground">实际运行</h4>
-                <ModelRuntimeFacts model={model} />
-              </section>
+            <div className="mt-3 border-t pt-3">
+              <ModelRuntimeFacts model={model} />
+              <ModelDiscoveryDifference model={model} />
             </div>
           </article>
         ))}
       </div>
       <div className="hidden overflow-x-auto xl:block">
-        <table className="w-full min-w-[940px] text-left text-sm">
+        <table className="w-full min-w-[700px] table-fixed text-left text-sm">
+          <colgroup>
+            <col className="w-[34%]" />
+            <col className="w-[51%]" />
+            <col className="w-[15%]" />
+          </colgroup>
           <thead className="border-b text-xs text-muted-foreground">
             <tr>
-              <th className="px-3 py-2 font-medium">模型标识</th>
-              <th className="px-3 py-2 font-medium">来源</th>
-              <th className="px-3 py-2 font-medium">发现事实</th>
-              <th className="px-3 py-2 font-medium">实际运行</th>
-              <th className="px-3 py-2 font-medium">可用性</th>
+              <th className="px-3 py-2 font-medium">模型</th>
+              <th className="px-3 py-2 font-medium">运行规格</th>
+              <th className="px-3 py-2 font-medium">状态</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {models.map((model) => (
               <tr key={model.identity} className={cn(!model.available && "bg-destructive/5")}>
-                <td className="max-w-60 px-3 py-3 align-top">
-                  <span className="break-all font-mono text-xs">{model.identity}</span>
-                </td>
                 <td className="px-3 py-3 align-top">
-                  <div className="flex max-w-44 flex-wrap gap-1">
+                  <p className="break-words font-medium">{model.discovery.name ?? "未提供显示名"}</p>
+                  <p className="mt-0.5 break-all font-mono text-xs text-muted-foreground">{model.identity}</p>
+                  <div className="mt-2 flex flex-wrap gap-1">
                     {model.sources.map((source) => (
-                      <Badge key={source} variant="outline">{SOURCE_LABEL[source]}</Badge>
+                      <Badge key={source} variant="outline" className="whitespace-nowrap">
+                        {SOURCE_LABEL[source]}
+                      </Badge>
                     ))}
                   </div>
                 </td>
                 <td className="px-3 py-3 align-top">
-                  <ModelDiscoveryFacts model={model} />
-                </td>
-                <td className="px-3 py-3 align-top">
                   <ModelRuntimeFacts model={model} />
+                  <ModelDiscoveryDifference model={model} />
                 </td>
                 <td className="px-3 py-3 align-top">
                   <ModelAvailability model={model} />
@@ -1772,73 +1800,43 @@ function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
   );
 }
 
-function ModelDiscoveryFacts({ model }: { model: ModelServiceModel }) {
-  const source = model.discovery.sources;
+function ModelDiscoveryDifference({ model }: { model: ModelServiceModel }) {
+  if (!discoveryDiffersFromRuntime(model)) return null;
   return (
-    <div className="space-y-1 text-xs">
-      <p className="break-words">
-        名称：{model.discovery.name ?? <span className="text-warning">未提供</span>}{" "}
-        <FieldSource source={source.name} />
-      </p>
-      <p>
-        接口：{model.discovery.api ?? <span className="text-warning">未提供</span>}{" "}
-        <FieldSource source={source.api} />
-      </p>
-      <p className="break-all">
-        地址：{model.discovery.baseUrl ?? <span className="text-warning">未提供</span>}{" "}
-        <FieldSource source={source.baseUrl} />
-      </p>
-      <p>
-        输入：{model.discovery.input === null ? <span className="text-warning">未提供</span> : model.discovery.input.join(" / ")}{" "}
-        <FieldSource source={source.input} />
-      </p>
-      <p>
-        推理：{model.discovery.reasoning === null ? <span className="text-warning">未提供</span> : model.discovery.reasoning ? "声明推理" : "不声明推理"}{" "}
-        <FieldSource source={source.reasoning} />
-      </p>
-      <p>
-        上下文：{model.discovery.contextWindow === null ? (
-          <span className="text-warning">未提供</span>
-        ) : (
-          <span className="font-mono tabular-nums">{quantity(model.discovery.contextWindow)}</span>
-        )}{" "}
-        <FieldSource source={source.contextWindow} />
-      </p>
-      <p>
-        最大输出：{model.discovery.maxOutput === null ? (
-          <span className="text-warning">未提供</span>
-        ) : (
-          <span className="font-mono tabular-nums">{quantity(model.discovery.maxOutput)}</span>
-        )}{" "}
-        <FieldSource source={source.maxOutput} />
-      </p>
-      <p><CostValue cost={model.discovery.cost} /> <FieldSource source={source.cost} /></p>
-    </div>
+    <details className="mt-2 text-xs">
+      <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+        发现值与运行规格不同
+      </summary>
+      <div className="mt-2 space-y-1 border-l pl-3 text-muted-foreground">
+        <p className="break-words">
+          输入：{model.discovery.input === null ? <span className="text-warning">未提供</span> : model.discovery.input.join(" / ")}
+          {" · "}推理：{model.discovery.reasoning === null ? <span className="text-warning">未提供</span> : model.discovery.reasoning ? "声明推理" : "不声明推理"}
+        </p>
+        <p>
+          上下文：{model.discovery.contextWindow === null ? <span className="text-warning">未提供</span> : <span className="font-mono tabular-nums">{quantity(model.discovery.contextWindow)}</span>}
+          {" · "}最大输出：{model.discovery.maxOutput === null ? <span className="text-warning">未提供</span> : <span className="font-mono tabular-nums">{quantity(model.discovery.maxOutput)}</span>}
+        </p>
+        <p><CostValue cost={model.discovery.cost} /></p>
+      </div>
+    </details>
   );
 }
 
 function ModelRuntimeFacts({ model }: { model: ModelServiceModel }) {
+  const sources = [...new Set(Object.values(model.runtime.sources).map(fieldSourceLabel))];
   return (
     <div className="space-y-1 text-xs">
       <p className="break-words">
-        输入：{model.runtime.input.join(" / ")}{" "}
-        <FieldSource source={model.runtime.sources.input} />
+        输入：{model.runtime.input.join(" / ")}{" · "}
+        推理：{model.runtime.reasoning ? "声明推理" : "不声明推理"}
       </p>
       <p>
-        推理：{model.runtime.reasoning ? "声明推理" : "不声明推理"}{" "}
-        <FieldSource source={model.runtime.sources.reasoning} />
+        上下文：<span className="font-mono tabular-nums">{quantity(model.runtime.contextWindow)}</span>{" · "}
+        最大输出：<span className="font-mono tabular-nums">{quantity(model.runtime.maxOutput)}</span>
       </p>
-      <p>
-        上下文：<span className="font-mono tabular-nums">{quantity(model.runtime.contextWindow)}</span>{" "}
-        <FieldSource source={model.runtime.sources.contextWindow} />
-      </p>
-      <p>
-        最大输出：<span className="font-mono tabular-nums">{quantity(model.runtime.maxOutput)}</span>{" "}
-        <FieldSource source={model.runtime.sources.maxOutput} />
-      </p>
-      <p>
-        <CostValue cost={model.runtime.cost} />{" "}
-        <FieldSource source={model.runtime.sources.cost} />
+      <p className="break-words">
+        <CostValue cost={model.runtime.cost} />{" · "}
+        <span className="text-muted-foreground">规格来源：{sources.join(" / ")}</span>
       </p>
     </div>
   );
@@ -1846,12 +1844,12 @@ function ModelRuntimeFacts({ model }: { model: ModelServiceModel }) {
 
 function ModelAvailability({ model }: { model: ModelServiceModel }) {
   return model.available ? (
-    <Badge variant="secondary" className="shrink-0 border-0 bg-success/10 text-success">
+    <Badge variant="secondary" className="shrink-0 whitespace-nowrap border-0 bg-success/10 text-success">
       <Check data-icon="inline-start" />可用
     </Badge>
   ) : (
     <div className="space-y-1">
-      <Badge variant="destructive">
+      <Badge variant="destructive" className="whitespace-nowrap">
         <CircleX data-icon="inline-start" />不可用
       </Badge>
       <p className="max-w-64 break-words text-xs text-destructive">
