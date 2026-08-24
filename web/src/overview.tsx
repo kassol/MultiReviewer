@@ -7,13 +7,13 @@ import { useMemo, type ReactNode } from "react";
 import { EmptyState } from "@/components/empty-state";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
-import { StatusBadge, type StatusTone } from "@/components/status-badge";
+import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { cn } from "@/lib/utils";
 
 import { fetchJson } from "./api.ts";
 import { useModelServices, type ModelServiceHealth } from "./model-services.ts";
-import type { RunItem } from "./runs.tsx";
+import { runStatus, type RunItem } from "./runs.tsx";
 import { hasPermission, loadPanelSession } from "./session.ts";
 import type { Cell } from "./stats.tsx";
 
@@ -68,18 +68,6 @@ const HEALTH: Record<ModelServiceHealth, { label: string; dot: string }> = {
 };
 
 /** 与评审记录页 `runBucket` 同一判据:整轮失败 → 模型失败 → 待处置 → 完成。 */
-function runStatus(run: RunItem): { tone: StatusTone; label: string } {
-  // 还没结束的一轮没有结论可言:不写在最前面的话,它会因为「一条可处置项都还没有」
-  // 而被判成「无可处置项」,看上去像跑完了。
-  if (run.finishedAt === null && !run.failed) return { tone: "running", label: "运行中" };
-  if (run.failed) return { tone: "error", label: "运行失败" };
-  if (run.models.some((entry) => entry.failure !== null)) return { tone: "warning", label: "部分失败" };
-  if (run.total === 0) return { tone: "neutral", label: "无可处置项" };
-  return run.resolved === run.total
-    ? { tone: "success", label: "已完成" }
-    : { tone: "warning", label: "待处置" };
-}
-
 /**
  * 卡壳。Themes 的 Card 把圆角画在伪元素上,而这套设计的圆角随视口在 14 / 12 之间换档,
  * 只改根元素的话边框与底色的圆角会错开;列表卡还要求零内边距加逐行分隔。所以卡壳走

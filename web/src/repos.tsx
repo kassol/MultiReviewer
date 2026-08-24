@@ -1079,8 +1079,9 @@ function RepoRuns({
                   {` · ${run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`}`}
                 </span>
               </span>
+              {/* 徽章说结论,这一格说进度。 */}
               <span className="shrink-0 text-base tabular-nums text-text-muted">
-                {run.total === 0 ? "—" : `处置 ${run.resolved}/${run.total}`}
+                {run.total === 0 ? "—" : `${run.resolved}/${run.total}`}
               </span>
               <RunPill run={run} />
             </div>

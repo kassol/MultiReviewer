@@ -15,7 +15,7 @@ import { EmptyState } from "@/components/empty-state";
 import { MasterListItem } from "@/components/master-list-item";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
-import { StatusBadge } from "@/components/status-badge";
+import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
@@ -73,17 +73,6 @@ export async function rerunRequest(run: {
  * 处置进度得留着。失败只加一颗红点提示「这一轮的结论不完整」,原因看卡片上的模型行。
  */
 export function RunPill({ run }: { run: RunItem }) {
-  // 同 overview 的 runStatus:未结束的一轮先于其它判断,否则会显示成「无可处置项」。
-  if (run.finishedAt === null && !run.failed) {
-    return <StatusBadge tone="running">运行中</StatusBadge>;
-  }
-  if (run.failed) {
-    return (
-      <StatusBadge tone="error">
-        失败
-      </StatusBadge>
-    );
-  }
   const badge = runBadge(run);
   const down = run.models.filter((entry) => entry.failure !== null);
   if (down.length === 0) return badge;
@@ -142,20 +131,31 @@ function RunStatus({ run }: { run: RunItem }) {
   return <CheckCircledIcon className="size-4 shrink-0 text-success" aria-label="完成" />;
 }
 
+/**
+ * 一轮审查的结论。总览、评审记录与仓库页共用这一份映射——同一轮在三处显示成不同
+ * 的词,读的人得先确认那是不是同一件事。
+ *
+ * 徽章只说结论,分数由各页自己那一格显示:两边都写就是同一个数字说两遍。
+ *
+ * total 只计行级承载的合并组:纯正文 Finding 的 Run 落在「无可处置项」——正文没有
+ * resolve 载体,本来就无从处置。
+ */
+export function runStatus(run: RunItem): { tone: StatusTone; label: string } {
+  // 未结束的一轮先判:否则它会因为「一条可处置项都还没有」而显示成「无可处置项」。
+  if (run.finishedAt === null && !run.failed) return { tone: "running", label: "运行中" };
+  if (run.failed) return { tone: "error", label: "运行失败" };
+  if (run.models.some((entry) => entry.failure !== null)) return { tone: "warning", label: "部分失败" };
+  if (run.total === 0) return { tone: "neutral", label: "无可处置项" };
+  return run.resolved === run.total
+    ? { tone: "success", label: "已完成" }
+    : { tone: "warning", label: "待处置" };
+}
+
 function runBadge(run: RunItem) {
-  // total 只计行级承载的合并组:纯正文 Finding 的 Run 也落在这一档——正文没有
-  // resolve 载体,本来就无从处置。
-  if (run.total === 0) {
-    return (
-      <StatusBadge tone="neutral" icon={CheckCircledIcon}>
-        无可处置项
-      </StatusBadge>
-    );
-  }
-  const done = run.resolved === run.total;
+  const status = runStatus(run);
   return (
-    <StatusBadge tone={done ? "success" : "warning"}>
-      {run.resolved}/{run.total} 已处置
+    <StatusBadge tone={status.tone} {...(status.tone === "neutral" ? { icon: CheckCircledIcon } : {})}>
+      {status.label}
     </StatusBadge>
   );
 }
@@ -616,17 +616,13 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
                           <span className="break-all">{triggerLabel(run)}</span>
                           <span aria-hidden>·</span>
                           <span className="tabular-nums">{localClock(run.startedAt)}</span>
-                          {run.total === 0 ? null : (
-                            <>
-                              <span aria-hidden>·</span>
-                              <span className="tabular-nums">
-                                处置 {run.resolved}/{run.total}
-                              </span>
-                            </>
-                          )}
                         </span>
                       </span>
                       <RunModelChips run={run} />
+                      {/* 徽章说结论,这一格说进度:两边都写分数就是同一个数字说两遍。 */}
+                      <span className="shrink-0 text-base tabular-nums text-text-muted max-sm:hidden">
+                        {run.total === 0 ? "—" : `${run.resolved}/${run.total}`}
+                      </span>
                       <span className="shrink-0">{rowBadge(run)}</span>
                     </MasterListItem>
                   ))}
