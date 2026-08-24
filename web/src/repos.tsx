@@ -31,6 +31,7 @@ import {
 import { api, errorText, fetchJson } from "./api.ts";
 import { modelIdentity, parseModelIdentity } from "./model-services.ts";
 import { rerunRequest, RunPill, type RunItem } from "./runs.tsx";
+import { loadPanelSession, pullRequestUrl } from "./session.ts";
 import { useSetupStatus } from "./setup-checklist.tsx";
 
 type ReviewerSpec = { provider: string; model: string };
@@ -964,6 +965,8 @@ function RepoRuns({
   onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
 }) {
   const queryClient = useQueryClient();
+  // 只为把每一轮指回它的 pull request——处置在那边做,不在面板里。与壳共用会话缓存。
+  const session = useQuery({ queryKey: ["session"], queryFn: loadPanelSession });
   const runs = useQuery({
     queryKey: ["repo-runs", repo.owner, repo.repo],
     queryFn: () =>
@@ -1042,7 +1045,24 @@ function RepoRuns({
               className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-3 sm:px-5"
             >
               <span className="min-w-0 flex-1 text-lg font-semibold tabular-nums">
-                #{run.pullNumber}
+                {(() => {
+                  const url =
+                    session.data === undefined || session.data === null
+                      ? null
+                      : pullRequestUrl(session.data, run);
+                  return url === null ? (
+                    <span>#{run.pullNumber}</span>
+                  ) : (
+                    <a
+                      href={url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-primary underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/40"
+                    >
+                      #{run.pullNumber}
+                    </a>
+                  );
+                })()}
                 <span className="font-normal text-text-muted">
                   {` · ${run.startedAt.slice(0, 16).replace("T", " ")}`}
                   {` · ${run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`}`}

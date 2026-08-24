@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Fragment, useEffect, useRef, useState } from "react";
 
 import {
@@ -405,7 +405,21 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
   const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
   const [filter, setFilter] = useState<RunFilter>("all");
   // 详情面板认 id 不认对象:列表每次刷新都是新对象,认对象会在后台刷新时把面板打空。
-  const [openedRunId, setOpenedRunId] = useState<number | null>(null);
+  /*
+   * 打开哪一轮记在地址里,不记在组件状态里:总览上点某一轮要能直接落到它的详情,
+   * 而不是落到列表顶上让人再找一遍;地址能分享、浏览器后退键也能收起面板。
+   */
+  const navigate = useNavigate();
+  const openedRunId = useRouterState({
+    select: (state) => {
+      const value = (state.location.search as { run?: unknown }).run;
+      const id = typeof value === "number" ? value : Number(value);
+      return Number.isSafeInteger(id) && id > 0 ? id : null;
+    },
+  });
+  const setOpenedRunId = (id: number | null) => {
+    void navigate({ to: "/runs", search: id === null ? {} : { run: id }, replace: true });
+  };
   const rerun = useMutation({
     mutationFn: rerunRequest,
     onSuccess: (text) => setFeedback({ text, isError: false }),

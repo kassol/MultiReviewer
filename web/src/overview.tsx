@@ -518,6 +518,7 @@ function RunRow({
   return (
     <Link
       to="/runs"
+      search={{ run: run.id }}
       aria-label={`${run.owner}/${run.repo} #${run.pullNumber} ${status.label}`}
       className={cn(
         "flex items-center gap-[11px] border-t border-line px-4 py-3 outline-none transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 sm:gap-3 sm:px-5",
