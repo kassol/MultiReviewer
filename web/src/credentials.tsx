@@ -1021,8 +1021,19 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
             <p>尾 4 位：<span className={service.credential.last4 === null || service.credential.last4 === undefined ? undefined : "font-mono tabular-nums"}>{service.credential.last4 ?? "未提供"}</span></p>
             <p>更新：<span className={service.credential.updatedAt === null || service.credential.updatedAt === undefined ? undefined : "font-mono tabular-nums"}>{localMinute(service.credential.updatedAt)}</span></p>
             <p>验证：<span className={service.credential.verifiedAt === null || service.credential.verifiedAt === undefined ? undefined : "font-mono tabular-nums"}>{localMinute(service.credential.verifiedAt)}</span></p>
-            <p className="break-words">
-              验证模型：<span className={service.credential.validationModel === null || service.credential.validationModel === undefined ? undefined : "font-mono"}>{service.credential.validationModel ?? "未提供"}</span>
+            <p className="flex min-w-0 items-baseline gap-1">
+              <span className="shrink-0">验证模型：</span>
+              <span
+                className={cn(
+                  "min-w-0 max-w-full overflow-x-auto whitespace-nowrap",
+                  service.credential.validationModel !== null &&
+                    service.credential.validationModel !== undefined &&
+                    "font-mono",
+                )}
+                title={service.credential.validationModel ?? undefined}
+              >
+                {service.credential.validationModel ?? "未提供"}
+              </span>
             </p>
             <p>
               验证方式：
