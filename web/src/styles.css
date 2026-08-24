@@ -449,11 +449,29 @@
 
 @layer base {
   html,
-  body,
-  #root {
+  body {
     width: 100%;
     max-width: 100%;
     overflow-x: hidden;
+  }
+
+  /*
+   * 应用外壳自己是一列 h-dvh 的 flex,滚动交给它内部那一个容器。#root 只要写了
+   * `overflow-x: hidden`,另一轴就会按规范被算成 auto,于是它也成了滚动容器——页面
+   * 上因此出现第二条滚动条,外壳那条滚到底了,这条还剩一大截。
+   *
+   * 登录与改密不在外壳里(它们是整屏居中的一页),所以留 auto 让内容超高时能滚。
+   */
+  #root {
+    width: 100%;
+    max-width: 100%;
+    height: 100dvh;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  #root:has(#panel-main-scroll) {
+    overflow-y: hidden;
   }
 
   body {
