@@ -238,7 +238,7 @@ function RunModelChips({ run }: { run: RunItem }) {
  * 窄屏改成底部抽屉(不是全屏):列表的上半屏保持可见,关闭与「重新运行」都落在拇指
  * 能够到的下缘;全屏会让人以为自己跳了一页,退回去还要找返回入口。
  */
-function RunDetailPanel({
+export function RunDetailPanel({
   run,
   canRerun,
   rerunning,

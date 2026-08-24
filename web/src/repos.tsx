@@ -30,7 +30,7 @@ import {
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { modelIdentity, parseModelIdentity } from "./model-services.ts";
-import { rerunRequest, RunPill, type RunItem } from "./runs.tsx";
+import { rerunRequest, RunDetailPanel, RunPill, type RunItem } from "./runs.tsx";
 import { loadPanelSession, pullRequestUrl } from "./session.ts";
 import { useSetupStatus } from "./setup-checklist.tsx";
 
@@ -987,6 +987,8 @@ function RepoRuns({
     enabled: canRead,
   });
   const [pullNumber, setPullNumber] = useState("");
+  /** 打开的那一轮。详情面板与评审记录页共用同一个组件,同一轮在两处看到的一样。 */
+  const [openedRunId, setOpenedRunId] = useState<number | null>(null);
   const rerun = useMutation({
     mutationFn: rerunRequest,
     onSuccess: (text) => {
@@ -1008,6 +1010,7 @@ function RepoRuns({
   };
 
   const rows = runs.data?.runs.slice(0, 8) ?? [];
+  const opened = rows.find((run) => run.id === openedRunId) ?? null;
   return (
     <CardShell aria-busy={canRead && runs.isPending}>
       <CardTitle
@@ -1050,30 +1053,18 @@ function RepoRuns({
       ) : null}
       {canRead
         ? rows.map((run) => (
-            // 一行一轮:左边是这一轮的身份与触发方式,右边是处置进度与结论。
-            <div
+            // 一行一轮:左边是这一轮的身份与触发方式,右边是处置进度与结论。点开是
+            // 评审记录页那同一个详情面板——同一件东西,两处看到的应该一样。
+            <MasterListItem
               key={run.id}
+              selected={run.id === openedRunId}
+              onClick={() => setOpenedRunId(run.id)}
+              aria-haspopup="dialog"
+              data-run-id={run.id}
               className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-3 sm:px-5"
             >
               <span className="min-w-0 flex-1 text-lg font-semibold tabular-nums">
-                {(() => {
-                  const url =
-                    session.data === undefined || session.data === null
-                      ? null
-                      : pullRequestUrl(session.data, run);
-                  return url === null ? (
-                    <span>#{run.pullNumber}</span>
-                  ) : (
-                    <a
-                      href={url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-primary underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/40"
-                    >
-                      #{run.pullNumber}
-                    </a>
-                  );
-                })()}
+                #{run.pullNumber}
                 <span className="font-normal text-text-muted">
                   {` · ${run.startedAt.slice(0, 16).replace("T", " ")}`}
                   {` · ${run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`}`}
@@ -1084,7 +1075,7 @@ function RepoRuns({
                 {run.total === 0 ? "—" : `${run.resolved}/${run.total}`}
               </span>
               <RunPill run={run} />
-            </div>
+            </MasterListItem>
           ))
         : null}
       {canRead && rows.length === 0 && !runs.isPending && !runs.isError ? (
@@ -1092,6 +1083,22 @@ function RepoRuns({
           <EmptyState title="暂无审查记录" />
         </div>
       ) : null}
+      {opened === null ? null : (
+        <RunDetailPanel
+          run={opened}
+          canRerun={canRerun}
+          rerunning={rerun.isPending}
+          pullUrl={session.data === undefined || session.data === null ? null : pullRequestUrl(session.data, opened)}
+          onRerun={() => {
+            rerun.mutate(opened);
+            // 结果落在页面顶部的提示上,面板压着它人就看不见,所以触发即收面板。
+            setOpenedRunId(null);
+          }}
+          onOpenOther={setOpenedRunId}
+          onSwitchFilter={() => undefined}
+          onClose={() => setOpenedRunId(null)}
+        />
+      )}
     </CardShell>
   );
 }

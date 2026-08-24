@@ -2543,7 +2543,10 @@ function ModelsTable({
           className="border-t border-line px-4 py-8 sm:px-5"
         />
       ) : (
-        <div className="flex max-h-[min(58vh,640px)] flex-col overflow-x-hidden overflow-y-auto">
+        // 不给模型清单开自己的滚动条:这一页整页跟外壳滚,再套一层内滚就是两条滚动条
+        // 并存——外壳滚到底了,清单里还剩一大半没露出来。清单上面就是筛选框,长清单
+        // 靠筛,不靠一个 640px 的窗口。
+        <div className="flex flex-col">
           {/* 表头只在三列真正并排时出现:窄屏行内是纵向堆叠,一排列名对不上任何一列。 */}
           <div className={cn(
             "sticky top-0 z-10 hidden gap-3 border-t border-line bg-sunken px-5 py-2 text-sm font-bold text-text-muted xl:grid",
