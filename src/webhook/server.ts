@@ -86,6 +86,7 @@ import {
   type RuntimeModel,
   type RuntimeSynthesisResult,
   type ModelServiceCandidate,
+  type TrustedModelFieldSource,
 } from "../reviewer/model-service-runtime.ts";
 import {
   CUSTOM_PROVIDER_APIS,
@@ -1733,6 +1734,16 @@ type ProjectedServiceModel = {
     contextWindow: number | null;
     maxOutput: number | null;
     cost: ModelCost | null;
+    sources: {
+      name: TrustedModelFieldSource | null;
+      api: TrustedModelFieldSource | null;
+      baseUrl: TrustedModelFieldSource | null;
+      input: TrustedModelFieldSource | null;
+      reasoning: TrustedModelFieldSource | null;
+      contextWindow: TrustedModelFieldSource | null;
+      maxOutput: TrustedModelFieldSource | null;
+      cost: TrustedModelFieldSource | null;
+    };
   };
   runtime: {
     input: readonly ("text" | "image")[];
@@ -1741,11 +1752,11 @@ type ProjectedServiceModel = {
     maxOutput: number;
     cost: ModelCost | null;
     sources: {
-      input: "trusted" | "runtime-baseline";
-      reasoning: "trusted" | "runtime-baseline";
-      contextWindow: "trusted" | "runtime-baseline";
-      maxOutput: "trusted" | "runtime-baseline";
-      cost: "trusted" | "unknown";
+      input: TrustedModelFieldSource | "runtime-baseline";
+      reasoning: TrustedModelFieldSource | "runtime-baseline";
+      contextWindow: TrustedModelFieldSource | "runtime-baseline";
+      maxOutput: TrustedModelFieldSource | "runtime-baseline";
+      cost: TrustedModelFieldSource | "unknown";
     };
   };
 };
@@ -1766,7 +1777,10 @@ function isHiddenEmptyBuiltinService(
     !references.some((reference) => reference.provider === service.provider);
 }
 
-function modelRuntimeProjection(result: RuntimeSynthesisResult | undefined) {
+function modelRuntimeProjection(
+  result: RuntimeSynthesisResult | undefined,
+  sources?: ProjectedServiceModel["discovery"]["sources"],
+) {
   if (result === undefined || !result.ok) return BASELINE_RUNTIME_PROJECTION;
   const runtime = result.value.runtime;
   return {
@@ -1776,12 +1790,40 @@ function modelRuntimeProjection(result: RuntimeSynthesisResult | undefined) {
     maxOutput: runtime.maxTokens,
     cost: runtime.cost ?? null,
     sources: {
-      input: runtime.sources.input,
-      reasoning: runtime.sources.reasoning,
-      contextWindow: runtime.sources.contextWindow,
-      maxOutput: runtime.sources.maxTokens,
-      cost: runtime.sources.cost,
+      input: runtime.sources.input === "trusted" ? sources?.input ?? "service-interface" : runtime.sources.input,
+      reasoning: runtime.sources.reasoning === "trusted"
+        ? sources?.reasoning ?? "service-interface"
+        : runtime.sources.reasoning,
+      contextWindow: runtime.sources.contextWindow === "trusted"
+        ? sources?.contextWindow ?? "service-interface"
+        : runtime.sources.contextWindow,
+      maxOutput: runtime.sources.maxTokens === "trusted"
+        ? sources?.maxOutput ?? "service-interface"
+        : runtime.sources.maxTokens,
+      cost: runtime.sources.cost === "trusted" ? sources?.cost ?? "service-interface" : runtime.sources.cost,
     },
+  };
+}
+
+function modelDiscoverySources(
+  service: ModelServiceRecord,
+  automatic: ModelServiceRecord["automaticModels"][number] | undefined,
+  serviceTarget: PiBuiltinProviderTarget | undefined,
+): ProjectedServiceModel["discovery"]["sources"] {
+  const inferred = (field: keyof DiscoveredModel["fields"]): TrustedModelFieldSource | null => {
+    if (automatic?.fields[field] === undefined) return null;
+    return automatic.fieldSources?.[field] ??
+      (service.type === "builtin" ? "pi-catalog" : "service-interface");
+  };
+  return {
+    name: inferred("name"),
+    api: serviceTarget === undefined ? null : "service-target",
+    baseUrl: serviceTarget === undefined ? null : "service-target",
+    input: inferred("input"),
+    reasoning: inferred("reasoning"),
+    contextWindow: inferred("contextWindow"),
+    maxOutput: inferred("maxTokens"),
+    cost: inferred("cost"),
   };
 }
 
@@ -1810,6 +1852,7 @@ function projectServiceModel(
   credentialState: ModelServiceRecord["credential"]["state"],
 ): ProjectedServiceModel {
   const discovery = automatic?.fields ?? {};
+  const discoverySources = modelDiscoverySources(service, automatic, serviceTarget);
   let synthesis: RuntimeSynthesisResult | undefined;
   if (service.type === "builtin" && serviceTarget !== undefined) {
     synthesis = synthesizeRuntimeModel(
@@ -1873,15 +1916,16 @@ function projectServiceModel(
     ...modelAvailabilityProjection(unavailableReason),
     discovery: {
       name: discovery.name ?? null,
-      api: discovery.api ?? null,
-      baseUrl: discovery.baseUrl ?? null,
+      api: serviceTarget?.api ?? null,
+      baseUrl: serviceTarget?.baseUrl ?? null,
       input: discovery.input ?? null,
       reasoning: discovery.reasoning ?? null,
       contextWindow: discovery.contextWindow ?? null,
       maxOutput: discovery.maxTokens ?? null,
       cost: discovery.cost ?? null,
+      sources: discoverySources,
     },
-    runtime: modelRuntimeProjection(synthesis),
+    runtime: modelRuntimeProjection(synthesis, discoverySources),
   };
 }
 
@@ -1902,6 +1946,16 @@ function projectMissingServiceModel(spec: ReviewerSpec): ProjectedServiceModel {
       contextWindow: null,
       maxOutput: null,
       cost: null,
+      sources: {
+        name: null,
+        api: null,
+        baseUrl: null,
+        input: null,
+        reasoning: null,
+        contextWindow: null,
+        maxOutput: null,
+        cost: null,
+      },
     },
     runtime: BASELINE_RUNTIME_PROJECTION,
   };

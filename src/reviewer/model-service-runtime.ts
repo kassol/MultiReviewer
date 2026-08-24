@@ -7,6 +7,7 @@ import {
   resolvePiBuiltinProviderTarget,
   type LoadOptions,
   type PiBuiltinProviderTarget,
+  type PiProviderCatalog,
 } from "./catalog.ts";
 import { CUSTOM_PROVIDER_APIS, isolatedModelRuntime, type RuntimeApi } from "./model-runtime.ts";
 
@@ -47,11 +48,17 @@ export type TrustedModelFields = {
   maxTokens?: number;
 };
 
+export type TrustedModelFieldSource = "service-interface" | "pi-catalog" | "service-target";
+export type TrustedModelFieldSources = Partial<
+  Record<keyof TrustedModelFields, TrustedModelFieldSource>
+>;
+
 export type DiscoveredModel = {
   identity: string;
   provider: string;
   id: string;
   fields: TrustedModelFields;
+  fieldSources?: TrustedModelFieldSources;
 };
 
 export type ModelOperationFailure = {
@@ -198,6 +205,37 @@ function trustedCost(value: ModelCost | undefined): value is ModelCost {
         ),
     )
   );
+}
+
+function customModelVendor(modelId: string): "openai" | "anthropic" | "google" | undefined {
+  const bareId = modelId.slice(modelId.lastIndexOf("/") + 1).toLowerCase();
+  if (/^(?:gpt(?:[-.]|$)|o\d+(?:[-.]|$))/u.test(bareId)) return "openai";
+  if (/^claude(?:[-.]|$)/u.test(bareId)) return "anthropic";
+  if (/^gemini(?:[-.]|$)/u.test(bareId)) return "google";
+  return undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized === "" ? undefined : normalized;
+}
+
+async function piModelsForCustomCatalog(
+  modelIds: readonly string[],
+  options: DiscoverModelsOptions,
+): Promise<Map<string, PiProviderCatalog["models"][number]>> {
+  const vendors = new Set(modelIds.map(customModelVendor).filter((value) => value !== undefined));
+  const models = new Map<string, PiProviderCatalog["models"][number]>();
+  for (const vendor of vendors) {
+    try {
+      const catalog = await loadPiProviderCatalog(vendor, { ...options, allowNetwork: false });
+      for (const model of catalog?.models ?? []) models.set(`${vendor}:${model.id}`, model);
+    } catch {
+      // Pi 目录只补充信息；读不到时保留服务接口的发现结果。
+    }
+  }
+  return models;
 }
 
 export function synthesizeRuntimeModel(
@@ -363,7 +401,7 @@ export async function discoverModels(
       return failure("invalid-response", `模型服务 ${candidate.provider} 的 /models 响应不兼容`);
     }
 
-    const models: DiscoveredModel[] = [];
+    const rows: { id: string; name?: string }[] = [];
     const seen = new Set<string>();
     let ignoredCount = 0;
     for (const row of body.data) {
@@ -378,11 +416,49 @@ export async function discoverModels(
       const identity = modelIdentity({ provider: candidate.provider, model: id });
       if (seen.has(identity)) continue;
       seen.add(identity);
-      models.push({ identity, provider: candidate.provider, id, fields: {} });
+      const record = row as { display_name?: unknown; name?: unknown };
+      const name = nonEmptyString(record.display_name) ?? nonEmptyString(record.name);
+      rows.push(name === undefined ? { id } : { id, name });
     }
-    if (models.length === 0) {
+    if (rows.length === 0) {
       return failure("empty-catalog", `模型服务 ${candidate.provider} 没有返回可用的 model id`);
     }
+    const piModels = await piModelsForCustomCatalog(rows.map((row) => row.id), options);
+    const models = rows.map(({ id, name }): DiscoveredModel => {
+      const vendor = customModelVendor(id);
+      const piModel = vendor === undefined ? undefined : piModels.get(`${vendor}:${id}`);
+      const fields: TrustedModelFields = {
+        ...(name === undefined
+          ? piModel === undefined || piModel.name.trim() === "" ? {} : { name: piModel.name }
+          : { name }),
+        api: candidate.api,
+        baseUrl,
+        ...(piModel === undefined || !trustedInput(piModel.input) ? {} : { input: piModel.input }),
+        ...(piModel === undefined ? {} : { reasoning: piModel.reasoning }),
+        ...(piModel === undefined || !positiveInteger(piModel.contextWindow)
+          ? {}
+          : { contextWindow: piModel.contextWindow }),
+        ...(piModel === undefined || !positiveInteger(piModel.maxTokens)
+          ? {}
+          : { maxTokens: piModel.maxTokens }),
+      };
+      const fieldSources: TrustedModelFieldSources = {
+        ...(fields.name === undefined ? {} : { name: name === undefined ? "pi-catalog" : "service-interface" }),
+        api: "service-target",
+        baseUrl: "service-target",
+        ...(fields.input === undefined ? {} : { input: "pi-catalog" }),
+        ...(fields.reasoning === undefined ? {} : { reasoning: "pi-catalog" }),
+        ...(fields.contextWindow === undefined ? {} : { contextWindow: "pi-catalog" }),
+        ...(fields.maxTokens === undefined ? {} : { maxTokens: "pi-catalog" }),
+      };
+      return {
+        identity: modelIdentity({ provider: candidate.provider, model: id }),
+        provider: candidate.provider,
+        id,
+        fields,
+        fieldSources,
+      };
+    });
     return { ok: true, models, ignoredCount };
   } catch (error) {
     const timedOut = timeout.aborted;

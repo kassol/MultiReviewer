@@ -26,7 +26,7 @@ function tempDir(prefix: string): string {
   return dir;
 }
 
-test("OpenAI-compatible 发现只保留非空 model id,规范化地址并去重", async () => {
+test("OpenAI-compatible 发现保留非空 model id 与服务目标,并规范化地址去重", async () => {
   const credential = "candidate-secret-must-not-leak";
   const stub = stubFetch({
     "GET /v1/models": {
@@ -58,7 +58,14 @@ test("OpenAI-compatible 发现只保留非空 model id,规范化地址并去重"
           identity: "acme-gateway:acme/code-model",
           provider: "acme-gateway",
           id: "acme/code-model",
-          fields: {},
+          fields: {
+            api: "openai-completions",
+            baseUrl: "https://gateway.example.test/v1",
+          },
+          fieldSources: {
+            api: "service-target",
+            baseUrl: "service-target",
+          },
         },
       ],
     });
@@ -71,6 +78,138 @@ test("OpenAI-compatible 发现只保留非空 model id,规范化地址并去重"
       },
     ]);
     assert.equal(JSON.stringify(result).includes(credential), false);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("OpenAI-compatible 发现保留服务接口名称并按厂商用 Pi 目录补齐运行信息", async () => {
+  const stub = stubFetch({
+    "GET /v1/models": {
+      body: {
+        object: "list",
+        data: [{
+          id: "gpt-5.6-sol",
+          object: "model",
+          created: 1_780_876_800,
+          display_name: "Gateway GPT-5.6 Sol",
+          owned_by: "openai",
+          type: "model",
+        }],
+      },
+    },
+  });
+  try {
+    const result = await discoverModels({
+      kind: "openai-compatible",
+      provider: "sub2-openai",
+      baseUrl: "https://gateway.example.test/v1",
+      api: "openai-completions",
+      credential: "candidate-secret-must-not-leak",
+    }, { allowNetwork: false });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(result.models, [{
+      identity: "sub2-openai:gpt-5.6-sol",
+      provider: "sub2-openai",
+      id: "gpt-5.6-sol",
+      fields: {
+        name: "Gateway GPT-5.6 Sol",
+        api: "openai-completions",
+        baseUrl: "https://gateway.example.test/v1",
+        input: ["text", "image"],
+        reasoning: true,
+        contextWindow: 272_000,
+        maxTokens: 128_000,
+      },
+      fieldSources: {
+        name: "service-interface",
+        api: "service-target",
+        baseUrl: "service-target",
+        input: "pi-catalog",
+        reasoning: "pi-catalog",
+        contextWindow: "pi-catalog",
+        maxTokens: "pi-catalog",
+      },
+    }]);
+    const synthesized = synthesizeRuntimeModel({
+      kind: "openai-compatible",
+      provider: "sub2-openai",
+      baseUrl: "https://gateway.example.test/v1",
+      api: "openai-completions",
+      credential: "candidate-secret-must-not-leak",
+    }, result.models[0]!);
+    assert.equal(synthesized.ok, true);
+    if (synthesized.ok) {
+      assert.equal(synthesized.value.runtime.cost, undefined);
+      assert.equal(synthesized.value.runtime.sources.cost, "unknown");
+    }
+  } finally {
+    stub.restore();
+  }
+});
+
+test("未知型号保留服务接口名称与目标，运行信息回退基线", async () => {
+  const candidate = {
+    kind: "openai-compatible" as const,
+    provider: "corp-unknown",
+    baseUrl: "https://unknown.example.test/v1",
+    api: "openai-responses" as const,
+    credential: "candidate-secret-must-not-leak",
+  };
+  const stub = stubFetch({
+    "GET /v1/models": {
+      body: { data: [{ id: "private-reasoner-7", name: "Private Reasoner 7" }] },
+    },
+  });
+  try {
+    const discovered = await discoverModels(candidate, { allowNetwork: false });
+    assert.equal(discovered.ok, true);
+    if (!discovered.ok) return;
+    assert.deepEqual(discovered.models[0], {
+      identity: "corp-unknown:private-reasoner-7",
+      provider: "corp-unknown",
+      id: "private-reasoner-7",
+      fields: {
+        name: "Private Reasoner 7",
+        api: "openai-responses",
+        baseUrl: "https://unknown.example.test/v1",
+      },
+      fieldSources: {
+        name: "service-interface",
+        api: "service-target",
+        baseUrl: "service-target",
+      },
+    });
+
+    const synthesized = synthesizeRuntimeModel(candidate, discovered.models[0]!);
+    assert.equal(synthesized.ok, true);
+    if (!synthesized.ok) return;
+    assert.deepEqual({
+      input: synthesized.value.runtime.input,
+      reasoning: synthesized.value.runtime.reasoning,
+      contextWindow: synthesized.value.runtime.contextWindow,
+      maxTokens: synthesized.value.runtime.maxTokens,
+      cost: synthesized.value.runtime.cost,
+      sources: synthesized.value.runtime.sources,
+    }, {
+      input: ["text"],
+      reasoning: false,
+      contextWindow: 128_000,
+      maxTokens: 16_000,
+      cost: undefined,
+      sources: {
+        name: "trusted",
+        api: "service-target",
+        baseUrl: "service-target",
+        input: "runtime-baseline",
+        reasoning: "runtime-baseline",
+        cost: "unknown",
+        contextWindow: "runtime-baseline",
+        maxTokens: "runtime-baseline",
+      },
+    });
   } finally {
     stub.restore();
   }

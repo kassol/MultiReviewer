@@ -4,13 +4,14 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useBlocker, useNavigate } from "@tanstack/react-router";
-import { AlertTriangle, Check, CircleX, RefreshCw, Trash2 } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, CircleX, RefreshCw, Trash2 } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import {
   Dialog,
   DialogContent,
@@ -21,6 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
@@ -33,6 +35,7 @@ import {
   type ModelDirectoryState,
   type ModelReference,
   type ModelReferenceLocation,
+  type ModelRuntimeFieldSource,
   type ModelService,
   type ModelServiceHealth,
   type ModelServiceModel,
@@ -1022,6 +1025,7 @@ function CredentialControls({
   const [mutationVersion, setMutationVersion] = useState(target.version);
   const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const expectedVersion = Math.max(target.version, mutationVersion);
 
 
@@ -1078,7 +1082,6 @@ function CredentialControls({
   });
 
   const inputId = `reverify-model-${target.provider}`;
-  const datalistId = `reverify-models-${target.provider}`;
   const maintenanceForm = (
     <form
       className={cn("flex flex-col gap-2", !dialog && "px-3 py-3")}
@@ -1090,24 +1093,70 @@ function CredentialControls({
     >
       <Label htmlFor={inputId}>重新验证使用的 model id</Label>
       <div className="flex flex-col gap-2 sm:flex-row">
-        <Input
-          id={inputId}
-          list={target.models === undefined ? undefined : datalistId}
-          className="font-mono sm:flex-1"
-          placeholder="只填 model id，不带 provider 前缀"
-          value={validationModel}
-          disabled={reverify.isPending}
-          onChange={(event) => {
-            setValidationModel(event.target.value);
-            setFeedback(null);
-            reverify.reset();
-          }}
-        />
-        {target.models === undefined ? null : (
-          <datalist id={datalistId}>
-            {target.models.map((model) => <option key={model.identity} value={model.id} />)}
-          </datalist>
-        )}
+        <div className="flex min-w-0 flex-1">
+          <Input
+            id={inputId}
+            className="min-w-0 rounded-r-none font-mono"
+            placeholder="只填 model id，不带 provider 前缀"
+            value={validationModel}
+            disabled={reverify.isPending}
+            onChange={(event) => {
+              setValidationModel(event.target.value);
+              setFeedback(null);
+              reverify.reset();
+            }}
+          />
+          <Popover open={modelPickerOpen} onOpenChange={setModelPickerOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                className="-ml-px rounded-l-none px-2.5"
+                disabled={reverify.isPending}
+                aria-label="从自动发现的模型中选择"
+              >
+                <ChevronDown />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="start"
+              className="w-[min(32rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] gap-0 p-0"
+            >
+              <Command>
+                <CommandInput placeholder="搜索自动发现的模型" />
+                <CommandList>
+                  <CommandEmpty>
+                    {target.models === undefined
+                      ? "模型目录按权限隐藏。仍可手填 model id。"
+                      : "没有匹配的模型。仍可手填 model id。"}
+                  </CommandEmpty>
+                  {(target.models ?? []).map((model) => (
+                    <CommandItem
+                      key={model.identity}
+                      value={model.id}
+                      keywords={model.discovery.name === null ? [] : [model.discovery.name]}
+                      className="items-start whitespace-normal"
+                      onSelect={() => {
+                        setValidationModel(model.id);
+                        setFeedback(null);
+                        reverify.reset();
+                        setModelPickerOpen(false);
+                      }}
+                    >
+                      <Check
+                        className={cn(
+                          "mt-0.5 shrink-0",
+                          validationModel === model.id ? "opacity-100" : "opacity-0",
+                        )}
+                      />
+                      <span className="min-w-0 break-all font-mono">{model.id}</span>
+                    </CommandItem>
+                  ))}
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+        </div>
         <Button type="submit" disabled={reverify.isPending || validationModel.trim() === ""}>
           {reverify.isPending ? "正在验证…" : "重新验证"}
         </Button>
@@ -1124,7 +1173,7 @@ function CredentialControls({
           <Trash2 />删除凭据
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground">最终会重新发现目录，并用这个 model id 做一次最小真实推理。</p>
+      <p className="text-xs text-muted-foreground">可从自动发现的模型中选择，也可手填目录外的 model id；最终会重新发现目录，并用它做一次最小真实推理。</p>
       {feedback === null ? null : (
         <p role={feedback.error ? "alert" : "status"} className={feedback.error ? "text-destructive" : "text-success"}>
           {feedback.text}
@@ -1624,8 +1673,18 @@ function CostValue({ cost }: { cost: ModelCost | null }) {
   );
 }
 
-function RuntimeSource({ source }: { source: "trusted" | "runtime-baseline" | "unknown" }) {
-  const label = source === "trusted" ? "可信目录" : source === "runtime-baseline" ? "运行基线" : "未知";
+function FieldSource({ source }: { source: ModelRuntimeFieldSource | null }) {
+  const label = source === null
+    ? "未知"
+    : source === "service-interface"
+      ? "服务接口"
+      : source === "pi-catalog"
+        ? "Pi 目录"
+        : source === "service-target"
+          ? "服务目标"
+          : source === "runtime-baseline"
+            ? "运行基线"
+            : "未知";
   return <span className="text-muted-foreground">（{label}）</span>;
 }
 
@@ -1714,24 +1773,46 @@ function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
 }
 
 function ModelDiscoveryFacts({ model }: { model: ModelServiceModel }) {
+  const source = model.discovery.sources;
   return (
     <div className="space-y-1 text-xs">
-      {model.discovery.name === null ? null : <p className="break-words">{model.discovery.name}</p>}
+      <p className="break-words">
+        名称：{model.discovery.name ?? <span className="text-warning">未提供</span>}{" "}
+        <FieldSource source={source.name} />
+      </p>
+      <p>
+        接口：{model.discovery.api ?? <span className="text-warning">未提供</span>}{" "}
+        <FieldSource source={source.api} />
+      </p>
+      <p className="break-all">
+        地址：{model.discovery.baseUrl ?? <span className="text-warning">未提供</span>}{" "}
+        <FieldSource source={source.baseUrl} />
+      </p>
+      <p>
+        输入：{model.discovery.input === null ? <span className="text-warning">未提供</span> : model.discovery.input.join(" / ")}{" "}
+        <FieldSource source={source.input} />
+      </p>
+      <p>
+        推理：{model.discovery.reasoning === null ? <span className="text-warning">未提供</span> : model.discovery.reasoning ? "声明推理" : "不声明推理"}{" "}
+        <FieldSource source={source.reasoning} />
+      </p>
       <p>
         上下文：{model.discovery.contextWindow === null ? (
           <span className="text-warning">未提供</span>
         ) : (
           <span className="font-mono tabular-nums">{quantity(model.discovery.contextWindow)}</span>
-        )}
+        )}{" "}
+        <FieldSource source={source.contextWindow} />
       </p>
       <p>
         最大输出：{model.discovery.maxOutput === null ? (
           <span className="text-warning">未提供</span>
         ) : (
           <span className="font-mono tabular-nums">{quantity(model.discovery.maxOutput)}</span>
-        )}
+        )}{" "}
+        <FieldSource source={source.maxOutput} />
       </p>
-      <p><CostValue cost={model.discovery.cost} /></p>
+      <p><CostValue cost={model.discovery.cost} /> <FieldSource source={source.cost} /></p>
     </div>
   );
 }
@@ -1741,23 +1822,23 @@ function ModelRuntimeFacts({ model }: { model: ModelServiceModel }) {
     <div className="space-y-1 text-xs">
       <p className="break-words">
         输入：{model.runtime.input.join(" / ")}{" "}
-        <RuntimeSource source={model.runtime.sources.input} />
+        <FieldSource source={model.runtime.sources.input} />
       </p>
       <p>
         推理：{model.runtime.reasoning ? "声明推理" : "不声明推理"}{" "}
-        <RuntimeSource source={model.runtime.sources.reasoning} />
+        <FieldSource source={model.runtime.sources.reasoning} />
       </p>
       <p>
         上下文：<span className="font-mono tabular-nums">{quantity(model.runtime.contextWindow)}</span>{" "}
-        <RuntimeSource source={model.runtime.sources.contextWindow} />
+        <FieldSource source={model.runtime.sources.contextWindow} />
       </p>
       <p>
         最大输出：<span className="font-mono tabular-nums">{quantity(model.runtime.maxOutput)}</span>{" "}
-        <RuntimeSource source={model.runtime.sources.maxOutput} />
+        <FieldSource source={model.runtime.sources.maxOutput} />
       </p>
       <p>
         <CostValue cost={model.runtime.cost} />{" "}
-        <RuntimeSource source={model.runtime.sources.cost} />
+        <FieldSource source={model.runtime.sources.cost} />
       </p>
     </div>
   );

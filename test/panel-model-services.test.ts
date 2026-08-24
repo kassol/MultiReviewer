@@ -1229,13 +1229,23 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
   assert.equal(models.every((model) => model.available), true, "刷新失败时最近成功目录仍应可用");
   assert.deepEqual(models[0]!.discovery, {
     name: "Committed Automatic Model",
-    api: "openai-completions",
-    baseUrl: "https://catalog-target.example/v1",
+    api: "openai-responses",
+    baseUrl: "https://models.corp.example/v1",
     input: ["text", "image"],
     reasoning: true,
     contextWindow: null,
     maxOutput: 4096,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    sources: {
+      name: "service-interface",
+      api: "service-target",
+      baseUrl: "service-target",
+      input: "service-interface",
+      reasoning: "service-interface",
+      contextWindow: null,
+      maxOutput: "service-interface",
+      cost: "service-interface",
+    },
   });
   assert.deepEqual(models[0]!.runtime, {
     input: ["text", "image"],
@@ -1244,22 +1254,32 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
     maxOutput: 4096,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     sources: {
-      input: "trusted",
-      reasoning: "trusted",
+      input: "service-interface",
+      reasoning: "service-interface",
       contextWindow: "runtime-baseline",
-      maxOutput: "trusted",
-      cost: "trusted",
+      maxOutput: "service-interface",
+      cost: "service-interface",
     },
   });
   assert.deepEqual(models[1]!.discovery, {
     name: null,
-    api: null,
-    baseUrl: null,
+    api: "openai-responses",
+    baseUrl: "https://models.corp.example/v1",
     input: null,
     reasoning: null,
     contextWindow: null,
     maxOutput: null,
     cost: null,
+    sources: {
+      name: null,
+      api: "service-target",
+      baseUrl: "service-target",
+      input: null,
+      reasoning: null,
+      contextWindow: null,
+      maxOutput: null,
+      cost: null,
+    },
   });
   assert.deepEqual(models[1]!.runtime, {
     input: ["text"],
@@ -1301,13 +1321,23 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
   assert.equal(validationSupplement.unavailableReason, null);
   assert.deepEqual(validationSupplement.discovery, {
     name: null,
-    api: null,
-    baseUrl: null,
+    api: "openai-completions",
+    baseUrl: "https://api.deepseek.com",
     input: null,
     reasoning: null,
     contextWindow: null,
     maxOutput: null,
     cost: null,
+    sources: {
+      name: null,
+      api: "service-target",
+      baseUrl: "service-target",
+      input: null,
+      reasoning: null,
+      contextWindow: null,
+      maxOutput: null,
+      cost: null,
+    },
   });
   assert.deepEqual(validationSupplement.runtime, {
     input: ["text"],
@@ -1346,12 +1376,22 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
   assert.deepEqual(pendingAutomatic.discovery, {
     name: "Committed Snapshot, Not Pi Cache",
     api: "openai-completions",
-    baseUrl: "https://committed-snapshot.example/v1",
+    baseUrl: "https://openrouter.ai/api/v1",
     input: ["image"],
     reasoning: false,
     contextWindow: 7777,
     maxOutput: 333,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    sources: {
+      name: "pi-catalog",
+      api: "service-target",
+      baseUrl: "service-target",
+      input: "pi-catalog",
+      reasoning: "pi-catalog",
+      contextWindow: "pi-catalog",
+      maxOutput: "pi-catalog",
+      cost: "pi-catalog",
+    },
   });
   assert.deepEqual(pendingAutomatic.runtime, {
     input: ["image"],
@@ -1360,11 +1400,11 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
     maxOutput: 333,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     sources: {
-      input: "trusted",
-      reasoning: "trusted",
-      contextWindow: "trusted",
-      maxOutput: "trusted",
-      cost: "trusted",
+      input: "pi-catalog",
+      reasoning: "pi-catalog",
+      contextWindow: "pi-catalog",
+      maxOutput: "pi-catalog",
+      cost: "pi-catalog",
     },
   });
   assert.equal(pendingModels.every((model) => !model.available), true);
@@ -1420,6 +1460,16 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
         contextWindow: null,
         maxOutput: null,
         cost: null,
+        sources: {
+          name: null,
+          api: null,
+          baseUrl: null,
+          input: null,
+          reasoning: null,
+          contextWindow: null,
+          maxOutput: null,
+          cost: null,
+        },
       },
       runtime: {
         input: ["text"],
@@ -1488,6 +1538,94 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
   )!;
   assert.deepEqual(adminCorp["credential"], credentialCorp["credential"]);
   assert.deepEqual(adminCorp["models"], corp["models"]);
+});
+
+test("自定义服务中与 Pi 同 model id 的信息来源按字段投影", async () => {
+  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const provider = "sub2-openai";
+  const baseUrl = "https://sub2.example/v1";
+  const api = "openai-completions" as const;
+  const targetFingerprint = modelServiceTargetFingerprint(baseUrl, api);
+  const store = openStore(h.db.path);
+  assert.equal(store.commitModelServiceVersion(null, service(provider, {
+    type: "custom",
+    baseUrl,
+    api,
+    targetFingerprint,
+    credential: {
+      state: "verified",
+      apiKeyEncrypted: encryptCredential(PANEL_CREDENTIAL_MASTER_KEY, "sub2-secret-1212"),
+      updatedAt: "2026-08-20T01:30:00.000Z",
+      verifiedAt: "2026-08-20T01:31:00.000Z",
+      validationModel: `${provider}:gpt-5.6-sol`,
+      verificationSource: "inference",
+    },
+    automaticModels: [{
+      identity: `${provider}:gpt-5.6-sol`,
+      provider,
+      id: "gpt-5.6-sol",
+      fields: {
+        name: "Sub2 GPT-5.6 Sol",
+        api,
+        baseUrl,
+        input: ["text", "image"],
+        reasoning: true,
+        contextWindow: 272_000,
+        maxTokens: 128_000,
+      },
+      fieldSources: {
+        name: "service-interface",
+        api: "service-target",
+        baseUrl: "service-target",
+        input: "pi-catalog",
+        reasoning: "pi-catalog",
+        contextWindow: "pi-catalog",
+        maxTokens: "pi-catalog",
+      },
+    }],
+  })), 1);
+  store.close();
+
+  const response = await h.api("GET", "/model-services");
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    services: { provider: string; models: { id: string; discovery: unknown; runtime: unknown }[] }[];
+  };
+  const model = body.services.find((entry) => entry.provider === provider)!.models[0]!;
+  assert.deepEqual(model.discovery, {
+    name: "Sub2 GPT-5.6 Sol",
+    api,
+    baseUrl,
+    input: ["text", "image"],
+    reasoning: true,
+    contextWindow: 272_000,
+    maxOutput: 128_000,
+    cost: null,
+    sources: {
+      name: "service-interface",
+      api: "service-target",
+      baseUrl: "service-target",
+      input: "pi-catalog",
+      reasoning: "pi-catalog",
+      contextWindow: "pi-catalog",
+      maxOutput: "pi-catalog",
+      cost: null,
+    },
+  });
+  assert.deepEqual(model.runtime, {
+    input: ["text", "image"],
+    reasoning: true,
+    contextWindow: 272_000,
+    maxOutput: 128_000,
+    cost: null,
+    sources: {
+      input: "pi-catalog",
+      reasoning: "pi-catalog",
+      contextWindow: "pi-catalog",
+      maxOutput: "pi-catalog",
+      cost: "unknown",
+    },
+  });
 });
 
 test("模型服务投影给出运行能力与引用位置，并隐藏没有管理事实的内置 provider", async () => {
@@ -1790,8 +1928,20 @@ test("自定义候选预览无草稿，最终重新发现与真实推理后原�
       expectedVersion: null,
       target: { baseUrl: "https://gateway.example/v1", api: "openai-completions" },
       models: [
-        { identity: "corp-create:reasoner-a", provider: "corp-create", id: "reasoner-a", fields: {} },
-        { identity: "corp-create:reasoner-b", provider: "corp-create", id: "reasoner-b", fields: {} },
+        {
+          identity: "corp-create:reasoner-a",
+          provider: "corp-create",
+          id: "reasoner-a",
+          fields: { api: "openai-completions", baseUrl: "https://gateway.example/v1" },
+          fieldSources: { api: "service-target", baseUrl: "service-target" },
+        },
+        {
+          identity: "corp-create:reasoner-b",
+          provider: "corp-create",
+          id: "reasoner-b",
+          fields: { api: "openai-completions", baseUrl: "https://gateway.example/v1" },
+          fieldSources: { api: "service-target", baseUrl: "service-target" },
+        },
       ],
       ignoredModelCount: 0,
     });
@@ -3236,13 +3386,23 @@ test("模型补录只做一次真实推理并绑定当前目标，失败与旧�
     assert.deepEqual(manual.sources, ["manual"]);
     assert.deepEqual(manual.discovery, {
       name: null,
-      api: null,
-      baseUrl: null,
+      api: "openai-completions",
+      baseUrl: "https://supplement.example/v1",
       input: null,
       reasoning: null,
       contextWindow: null,
       maxOutput: null,
       cost: null,
+      sources: {
+        name: null,
+        api: "service-target",
+        baseUrl: "service-target",
+        input: null,
+        reasoning: null,
+        contextWindow: null,
+        maxOutput: null,
+        cost: null,
+      },
     });
     assert.deepEqual(manual.runtime, {
       input: ["text"],

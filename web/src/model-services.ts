@@ -41,7 +41,8 @@ export type ModelCost = {
   tiers?: readonly (ModelCost & { inputTokensAbove: number })[];
 };
 
-type RuntimeSource = "trusted" | "runtime-baseline";
+export type ModelDiscoveryFieldSource = "service-interface" | "pi-catalog" | "service-target";
+export type ModelRuntimeFieldSource = ModelDiscoveryFieldSource | "runtime-baseline" | "unknown";
 
 export type ModelServiceModel = {
   provider: string;
@@ -61,6 +62,16 @@ export type ModelServiceModel = {
     contextWindow: number | null;
     maxOutput: number | null;
     cost: ModelCost | null;
+    sources: {
+      name: ModelDiscoveryFieldSource | null;
+      api: ModelDiscoveryFieldSource | null;
+      baseUrl: ModelDiscoveryFieldSource | null;
+      input: ModelDiscoveryFieldSource | null;
+      reasoning: ModelDiscoveryFieldSource | null;
+      contextWindow: ModelDiscoveryFieldSource | null;
+      maxOutput: ModelDiscoveryFieldSource | null;
+      cost: ModelDiscoveryFieldSource | null;
+    };
   };
   runtime: {
     input: readonly ("text" | "image")[];
@@ -69,11 +80,11 @@ export type ModelServiceModel = {
     maxOutput: number;
     cost: ModelCost | null;
     sources: {
-      input: RuntimeSource;
-      reasoning: RuntimeSource;
-      contextWindow: RuntimeSource;
-      maxOutput: RuntimeSource;
-      cost: "trusted" | "unknown";
+      input: ModelRuntimeFieldSource;
+      reasoning: ModelRuntimeFieldSource;
+      contextWindow: ModelRuntimeFieldSource;
+      maxOutput: ModelRuntimeFieldSource;
+      cost: ModelRuntimeFieldSource;
     };
   };
 };

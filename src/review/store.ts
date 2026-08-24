@@ -14,7 +14,13 @@ import {
   type ReviewRunReviewerPin,
 } from "../config.ts";
 import { isPanelPermission, type PanelPermission } from "../panel/permissions.ts";
-import type { DiscoveredModel, ModelCost, TrustedModelFields } from "../reviewer/model-service-runtime.ts";
+import type {
+  DiscoveredModel,
+  ModelCost,
+  TrustedModelFields,
+  TrustedModelFieldSource,
+  TrustedModelFieldSources,
+} from "../reviewer/model-service-runtime.ts";
 import type { Category, Disposition, ReviewerUsage, Severity } from "./finding.ts";
 
 export const STORE_SCHEMA = `
@@ -260,6 +266,7 @@ CREATE TABLE IF NOT EXISTS model_directory_model (
   cost_json TEXT,
   context_window INTEGER,
   max_tokens INTEGER,
+  field_sources_json TEXT,
   PRIMARY KEY (provider, model)
 );
 
@@ -297,6 +304,7 @@ const ADD_COLUMNS = [
   "ALTER TABLE review_run ADD COLUMN unknown_cost_reviewer_count INTEGER",
   "ALTER TABLE reviewer_outcome ADD COLUMN known_cost_usd REAL",
   "ALTER TABLE reviewer_outcome ADD COLUMN cost_source TEXT",
+  "ALTER TABLE model_directory_model ADD COLUMN field_sources_json TEXT",
 ];
 
 
@@ -545,6 +553,41 @@ function serializedTrustedCost(cost: ModelCost | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+const TRUSTED_MODEL_FIELD_KEYS = [
+  "name",
+  "api",
+  "baseUrl",
+  "input",
+  "reasoning",
+  "cost",
+  "contextWindow",
+  "maxTokens",
+] as const satisfies readonly (keyof TrustedModelFields)[];
+const TRUSTED_MODEL_FIELD_SOURCES = new Set<TrustedModelFieldSource>([
+  "service-interface",
+  "pi-catalog",
+  "service-target",
+]);
+
+function normalizedTrustedFieldSources(
+  fields: TrustedModelFields,
+  sources: TrustedModelFieldSources | undefined,
+  hasTrustedCost: boolean,
+): TrustedModelFieldSources | undefined {
+  if (sources === undefined) return undefined;
+  const normalized: TrustedModelFieldSources = {};
+  for (const key of TRUSTED_MODEL_FIELD_KEYS) {
+    const source = sources[key];
+    if (
+      source !== undefined &&
+      TRUSTED_MODEL_FIELD_SOURCES.has(source) &&
+      fields[key] !== undefined &&
+      (key !== "cost" || hasTrustedCost)
+    ) normalized[key] = source;
+  }
+  return Object.keys(normalized).length === 0 ? undefined : normalized;
 }
 
 /**
@@ -1738,10 +1781,16 @@ export function openStore(dbPath: string): Store {
         const insertAutomatic = db.prepare(
           `INSERT INTO model_directory_model
              (provider, model, service_version, name, api, base_url, input_json, reasoning,
-              cost_json, context_window, max_tokens)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              cost_json, context_window, max_tokens, field_sources_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const model of automaticModels.values()) {
+          const costJson = serializedTrustedCost(model.fields.cost);
+          const fieldSources = normalizedTrustedFieldSources(
+            model.fields,
+            model.fieldSources,
+            costJson !== null,
+          );
           insertAutomatic.run(
             record.provider,
             model.id,
@@ -1751,9 +1800,10 @@ export function openStore(dbPath: string): Store {
             model.fields.baseUrl ?? null,
             model.fields.input === undefined ? null : JSON.stringify(model.fields.input),
             model.fields.reasoning === undefined ? null : Number(model.fields.reasoning),
-            serializedTrustedCost(model.fields.cost),
+            costJson,
             model.fields.contextWindow ?? null,
             model.fields.maxTokens ?? null,
+            fieldSources === undefined ? null : JSON.stringify(fieldSources),
           );
         }
 
@@ -1966,7 +2016,7 @@ export function openStore(dbPath: string): Store {
       const automaticModels = db
         .prepare(
           `SELECT model, name, api, base_url, input_json, reasoning, cost_json,
-                  context_window, max_tokens
+                  context_window, max_tokens, field_sources_json
              FROM model_directory_model
             WHERE provider = ? AND service_version = ? ORDER BY model`,
         )
@@ -1989,11 +2039,19 @@ export function openStore(dbPath: string): Store {
               : { contextWindow: Number(row["context_window"]) }),
             ...(row["max_tokens"] === null ? {} : { maxTokens: Number(row["max_tokens"]) }),
           };
+          const fieldSources = row["field_sources_json"] === null
+            ? undefined
+            : normalizedTrustedFieldSources(
+                fields,
+                JSON.parse(String(row["field_sources_json"])) as TrustedModelFieldSources,
+                fields.cost !== undefined,
+              );
           return {
             identity: modelIdentity({ provider, model: id }),
             provider,
             id,
             fields,
+            ...(fieldSources === undefined ? {} : { fieldSources }),
           };
         });
       return {

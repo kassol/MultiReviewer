@@ -263,6 +263,15 @@ test("自动目录快照往返稀疏可信字段，并区分未知价格与可�
             contextWindow: 32_000,
             maxTokens: 4096,
           },
+          fieldSources: {
+            name: "service-interface",
+            api: "service-target",
+            baseUrl: "service-target",
+            input: "pi-catalog",
+            reasoning: "pi-catalog",
+            contextWindow: "pi-catalog",
+            maxTokens: "pi-catalog",
+          },
         },
         {
           identity: "corp-gateway:free-model",
@@ -297,7 +306,9 @@ test("自动目录快照往返稀疏可信字段，并区分未知价格与可�
     1,
   );
 
-  assert.deepEqual(store.getModelService("corp-gateway")!.automaticModels, [
+  store.close();
+  const reopened = openStore(db.path);
+  assert.deepEqual(reopened.getModelService("corp-gateway")!.automaticModels, [
     {
       identity: "corp-gateway:free-model",
       provider: "corp-gateway",
@@ -338,9 +349,18 @@ test("自动目录快照往返稀疏可信字段，并区分未知价格与可�
         contextWindow: 32_000,
         maxTokens: 4096,
       },
+      fieldSources: {
+        name: "service-interface",
+        api: "service-target",
+        baseUrl: "service-target",
+        input: "pi-catalog",
+        reasoning: "pi-catalog",
+        contextWindow: "pi-catalog",
+        maxTokens: "pi-catalog",
+      },
     },
   ]);
-  store.close();
+  reopened.close();
   const sqlite = new DatabaseSync(db.path, { readOnly: true });
   const idOnly = sqlite.prepare(
     `SELECT name, api, base_url, input_json, reasoning, cost_json, context_window, max_tokens
