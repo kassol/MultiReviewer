@@ -418,17 +418,19 @@ export function ModelServiceSetupLayout() {
             })}
           </nav>
           <div className="mt-4 min-h-0 min-w-0 overflow-y-auto pb-1"><Outlet /></div>
-          <Dialog.Close>
-            <IconButton
-              variant="ghost"
-              color="gray"
-              size={{ initial: "3", sm: "1" }}
-              className="absolute top-3 right-3 max-sm:min-h-11 max-sm:min-w-11"
-              aria-label="关闭配置模型服务"
-            >
-              <Cross2Icon />
-            </IconButton>
-          </Dialog.Close>
+          <div className="absolute top-3 right-3">
+            <Dialog.Close>
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size={{ initial: "3", sm: "1" }}
+                className="max-sm:min-h-11 max-sm:min-w-11"
+                aria-label="关闭配置模型服务"
+              >
+                <Cross2Icon />
+              </IconButton>
+            </Dialog.Close>
+          </div>
         </Dialog.Content>
       </Dialog.Root>
       <AlertDialog.Root open={closeRequested} onOpenChange={setCloseRequested}>
@@ -1405,17 +1407,19 @@ function CredentialControls({
               <Dialog.Description size="2" color="gray">重新验证使用已存凭据，凭据与已存验证记录不会回到浏览器。</Dialog.Description>
             </div>
             <div className="mt-4">{maintenanceForm}</div>
-            <Dialog.Close>
-              <IconButton
-                variant="ghost"
-                color="gray"
-                size={{ initial: "3", sm: "1" }}
-                className="absolute top-3 right-3 max-sm:min-h-11 max-sm:min-w-11"
-                aria-label="关闭凭据维护"
-              >
-                <Cross2Icon />
-              </IconButton>
-            </Dialog.Close>
+            <div className="absolute top-3 right-3">
+              <Dialog.Close>
+                <IconButton
+                  variant="ghost"
+                  color="gray"
+                  size={{ initial: "3", sm: "1" }}
+                  className="max-sm:min-h-11 max-sm:min-w-11"
+                  aria-label="关闭凭据维护"
+                >
+                  <Cross2Icon />
+                </IconButton>
+              </Dialog.Close>
+            </div>
           </Dialog.Content>
         </Dialog.Root>
         <AlertDialog.Root
@@ -1642,17 +1646,19 @@ function CustomServiceControls({
               </Button>
             </Flex>
           </form>
-          <Dialog.Close>
-            <IconButton
-              variant="ghost"
-              color="gray"
-              size={{ initial: "3", sm: "1" }}
-              className="absolute top-3 right-3 max-sm:min-h-11 max-sm:min-w-11"
-              aria-label="关闭服务迁移"
-            >
-              <Cross2Icon />
-            </IconButton>
-          </Dialog.Close>
+          <div className="absolute top-3 right-3">
+            <Dialog.Close>
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size={{ initial: "3", sm: "1" }}
+                className="max-sm:min-h-11 max-sm:min-w-11"
+                aria-label="关闭服务迁移"
+              >
+                <Cross2Icon />
+              </IconButton>
+            </Dialog.Close>
+          </div>
         </Dialog.Content>
       </Dialog.Root>
       <AlertDialog.Root

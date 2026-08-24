@@ -467,17 +467,19 @@ function CreateDialog({ kind, busy, onClose, onUser, onRole }: { kind: "user" | 
             <Button type="submit" variant="solid" highContrast size={{ initial: "4", sm: "2" }} disabled={busy || (kind === "user" ? username === "" || password === "" : name === "")}>{busy ? "创建中…" : "创建"}</Button>
           </Flex>
         </form>
-        <Dialog.Close>
-          <IconButton
-            variant="ghost"
-            color="gray"
-            size={{ initial: "3", sm: "1" }}
-            className="absolute top-3 right-3 max-sm:min-h-11 max-sm:min-w-11"
-            aria-label="关闭新建窗口"
-          >
-            <Cross2Icon />
-          </IconButton>
-        </Dialog.Close>
+        <div className="absolute top-3 right-3">
+          <Dialog.Close>
+            <IconButton
+              variant="ghost"
+              color="gray"
+              size={{ initial: "3", sm: "1" }}
+              className="max-sm:min-h-11 max-sm:min-w-11"
+              aria-label="关闭新建窗口"
+            >
+              <Cross2Icon />
+            </IconButton>
+          </Dialog.Close>
+        </div>
       </Dialog.Content>
     </Dialog.Root>
   );

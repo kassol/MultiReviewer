@@ -720,17 +720,19 @@ function RegisterModal({
             </Button>
           </Flex>
         </form>
-        <Dialog.Close>
-          <IconButton
-            variant="ghost"
-            color="gray"
-            size={{ initial: "3", sm: "1" }}
-            className="absolute top-3 right-3 max-sm:min-h-11 max-sm:min-w-11"
-            aria-label="关闭注册仓库"
-          >
-            <Cross2Icon />
-          </IconButton>
-        </Dialog.Close>
+        <div className="absolute top-3 right-3">
+          <Dialog.Close>
+            <IconButton
+              variant="ghost"
+              color="gray"
+              size={{ initial: "3", sm: "1" }}
+              className="max-sm:min-h-11 max-sm:min-w-11"
+              aria-label="关闭注册仓库"
+            >
+              <Cross2Icon />
+            </IconButton>
+          </Dialog.Close>
+        </div>
       </Dialog.Content>
     </Dialog.Root>
   );
