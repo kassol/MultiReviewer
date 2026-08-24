@@ -28,7 +28,7 @@
 - `src/runs.tsx` — 评审记录页。结论筛选使用 Themes `SegmentedControl`,只过滤已经加载的 Review Run；桌面使用固定列宽的 Themes `Table` 并把横向滚动限制在表格内，窄视口保持按日期分组的单列记录；模型失败原因使用 Collapsible，保留键盘展开、完整原因和逐条重新运行。
 - `src/credentials.tsx` — 模型服务主从页。左侧只列已配置或异常保留的服务;右侧按概览、维护、模型分层。概览以服务端运行能力为主状态,目录失败作次级提醒,组合引用可展开到全局、跟随全局仓库数与具体仓库覆盖;维护收凭据轮换、地址／协议调整、目录刷新与删除,`name-conflict` 自定义服务在这里原子迁移到新名称并跳到新的稳定地址,普通服务不显示改名入口;重新验证的 model id 用可编辑组合框列出自动发现模型，手填路径始终保留。模型页用模型、运行规格、状态三列展示；调用目标不在每行重复，发现值只在与运行规格不同时展开。唯一添加入口同时承载 Pi 内置 provider 搜索与自定义 provider;内置、自定义创建和两类既有服务修改共用来源、模型发现、真实推理三步页。自定义发现先收 provider、调用目标、协议与凭据,协议显示产品名称但提交现有运行时枚举;发现失败或目录缺项仍可在验证页手填 model id。凭据与候选只留流程页内存,刷新不会恢复;未保存离开走应用确认并注册浏览器关闭警告,长操作显示阶段并锁住导航。最终提交重新发现并做最小真实推理;新建成功进入审查策略并定位 provider,修改成功回服务概览,两者都不写模型组合。读字段和动作按 `model:*` / `credential:*` 独立权限裁剪,前端从不接收明文或密文。
 
-- `src/settings.tsx` — `/settings` 上的审查策略页。全局模型组合与批次上限各持独立版本、分别保存;409 只恢复冲突项,保留另一项草稿。批次上限收在默认折叠的高级参数里并显示系统默认/自定义来源。
+- `src/settings.tsx` — `/settings` 上的审查策略页。全局模型组合与批次上限各持独立版本、分别保存;409 只恢复冲突项,保留另一项草稿。批次上限使用默认折叠的 Radix Collapsible，并显示系统默认/自定义来源。
 - `src/components/model-composer.tsx` — 全局组合与仓库覆盖共用的唯一模型选择器。接口是 `{value, onChange, provider?, onValidityChange}`;外部 provider 优先定位,没有传入时优先显示已选模型所属 provider。它只读 `GET /model-services` 的统一候选,不创建 provider、不处理凭据、不刷新目录、不补录模型。左栏按服务分组,右栏筛当前服务模型;已选但失效的模型保留稳定原因与「去模型服务处理」入口,允许移除但通知调用页禁止原样保存。一次最多渲染当前服务的 120 行。
 - `src/components/ui/` — 迁移期 vendored 组件(Command / Popover / Calendar)。Button、Input、Label、Badge、Card、Skeleton、Table 与 Dialog wrapper 已删除。普通弹窗直接使用 Themes `Dialog`,删除、丢弃与离开确认直接使用 Themes `AlertDialog`。读取中的占位块直接使用 Themes `Skeleton`，并在降低动效偏好时关闭其呼吸动画。卡片一律直接使用 Radix Themes `Card`；局部滚动表格直接使用 Themes `Table.Root`，保留语义 caption 和 sticky 首列。Calendar 只保留 `react-day-picker` 的日期行为,月份导航使用 Themes `IconButton`,日期使用 Themes `Button`,外观读取 Theme token;`locale` 为 undefined 时不显式传给 `DayButton`,以兼容 `exactOptionalPropertyTypes`。**不引 shadcn Sidebar**:那套带折叠、移动端抽屉、cookie 记忆,这个面板一样用不上,侧栏与分栏用 utility 手写,进度条也是两个 div。
 - `src/lib/utils.ts` — shadcn 的 `cn()`,clsx 加 tailwind-merge。
@@ -69,6 +69,8 @@
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
 
 ## 变更日志
+
+- 2026-08-24: 审查策略页的批次上限改用 Radix Collapsible，默认折叠并保留帮助提示、键盘操作、独立保存与版本冲突恢复。
 
 - 2026-08-24: 评审记录页完成 Radix 页面级迁移。结论筛选使用 Themes `SegmentedControl`,桌面记录表使用 Themes `Table`,模型失败原因使用 Collapsible；筛选范围、日期分组、无限加载、重跑权限和窄屏记录布局保持不变。
 
