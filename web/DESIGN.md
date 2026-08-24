@@ -177,7 +177,7 @@ Tailwind preflight 把边框色置成 `currentColor`，`styles.css` 的 base 层
 
 Radix 自带的绿 / 琥珀 / 红比这套设计艳一档，所以 `.radix-themes` 直接覆写组件真正读的那几档（3 / 9 / 10 / 11 与对应 alpha 档），StatusBadge、Callout、`color="red"` 的按钮就都跟着走，不用逐个组件改样式。
 
-StatusBadge 是运行状态的唯一产品级出口，只暴露 `neutral`、`success`、`warning`、`error` 四种语义，固定 `variant="soft"` 与 `radius="full"`，并且**不开 `highContrast`**——三族语义色的目标值就落在各自的 11 档上，highContrast 会把文字推到 12 档，那是 Radix 的默认深色，不是这套设计定的色。选中行现在是浅色 tint，也不再需要 solid 变体去压深色底。来源、身份和类别等中性标签直接使用 Themes Badge，不进 StatusBadge。
+StatusBadge 是运行状态的唯一产品级出口，暴露 `neutral`、`running`、`success`、`warning`、`error` 五种语义，固定 `variant="soft"` 与 `radius="full"`。`running` 走主色蓝而不占用三档语义色——「还没有结论」既不是好也不是坏；一轮审查在结束前必须落在这一档，否则它会掉进「已处置数 / 总数」的判断，因为此时一条可处置项都还没有而显示成「无可处置项」，看上去像跑完了，并且**不开 `highContrast`**——三族语义色的目标值就落在各自的 11 档上，highContrast 会把文字推到 12 档，那是 Radix 的默认深色，不是这套设计定的色。选中行现在是浅色 tint，也不再需要 solid 变体去压深色底。来源、身份和类别等中性标签直接使用 Themes Badge，不进 StatusBadge。
 
 状态同时使用文字或图标表达，颜色不单独承担含义。正文与背景的对比度至少达到 WCAG AA 4.5:1。
 
