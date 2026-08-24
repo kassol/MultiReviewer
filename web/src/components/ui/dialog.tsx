@@ -4,7 +4,7 @@ import { Dialog as DialogPrimitive } from "radix-ui"
 import { PanelTheme } from "@/components/panel-theme"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import { XIcon } from "lucide-react"
+import { Cross2Icon } from "@radix-ui/react-icons"
 
 function Dialog({
   ...props
@@ -78,9 +78,9 @@ function DialogContent({
               className="absolute top-2 right-2"
               size="icon-sm"
             >
-              <XIcon
+              <Cross2Icon
               />
-              <span className="sr-only">Close</span>
+              <span className="sr-only">关闭</span>
             </Button>
           </DialogPrimitive.Close>
         )}

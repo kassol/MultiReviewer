@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { CalendarIcon, ChevronDown, CircleAlert } from "lucide-react";
+import { CalendarIcon, ChevronDownIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import { useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -132,7 +132,7 @@ export function SummaryRate() {
         to="/stats"
         className="flex items-center gap-1.5 rounded-sm border border-destructive/30 bg-destructive/5 px-2.5 py-1.5 text-destructive outline-none transition-colors hover:bg-destructive/10 focus-visible:ring-3 focus-visible:ring-ring/50"
       >
-        <CircleAlert className="size-4" aria-hidden />
+        <ExclamationTriangleIcon className="size-4" aria-hidden />
         <span className="text-xs font-medium">处置率读取失败</span>
       </Link>
     );
@@ -226,7 +226,7 @@ export function StatsPage() {
             role="alert"
             className="flex items-start gap-2 rounded-sm border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive"
           >
-            <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+            <ExclamationTriangleIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
             <span>{(stats.error as Error).message}</span>
           </p>
         ) : null}
@@ -330,7 +330,7 @@ export function StatsPage() {
                         <span className="mb-1 block text-xs text-muted-foreground">合计</span>
                         <Rate resolved={total.resolved} total={total.total} />
                       </div>
-                      <ChevronDown aria-hidden className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+                      <ChevronDownIcon aria-hidden className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
                     </summary>
                     <dl className="divide-y divide-border border-t border-border">
                       {categories.map((category) => {

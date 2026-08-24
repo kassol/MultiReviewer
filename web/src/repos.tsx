@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
-import { CircleAlert, CircleCheck, CircleDashed, CircleX } from "lucide-react";
+import { CheckCircledIcon, CrossCircledIcon, ExclamationTriangleIcon, UpdateIcon } from "@radix-ui/react-icons";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { Badge } from "@/components/ui/badge";
@@ -180,7 +180,7 @@ export function ReposPage({
               role="alert"
               className="flex items-start gap-2 rounded-sm border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive"
             >
-              <CircleX className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <CrossCircledIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
               <span>{(repos.error as Error).message}</span>
             </p>
           ) : null}
@@ -189,7 +189,7 @@ export function ReposPage({
               role="alert"
               className="flex items-start gap-2 rounded-sm border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive"
             >
-              <CircleX className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <CrossCircledIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
               <span>{(settings.error as Error).message}</span>
             </p>
           ) : null}
@@ -324,22 +324,22 @@ function RepoDetail({
         </h2>
         {check.isPending ? (
           <Badge variant="secondary">
-            <CircleDashed aria-hidden />
+            <UpdateIcon aria-hidden />
             核对中…
           </Badge>
         ) : check.isError ? (
           <Badge variant="destructive">
-            <CircleX aria-hidden />
+            <CrossCircledIcon aria-hidden />
             核对失败
           </Badge>
         ) : issues.length === 0 ? (
           <Badge className="bg-success/12 text-success">
-            <CircleCheck aria-hidden />
+            <CheckCircledIcon aria-hidden />
             Hook 配置正常
           </Badge>
         ) : (
           <Badge className="bg-warning/12 text-warning">
-            <CircleAlert aria-hidden />
+            <ExclamationTriangleIcon aria-hidden />
             {issues.length} 处差异
           </Badge>
         )}
@@ -366,9 +366,9 @@ function RepoDetail({
           }`}
         >
           {feedback.isError ? (
-            <CircleX className="mt-0.5 size-4 shrink-0" aria-hidden />
+            <CrossCircledIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
           ) : (
-            <CircleCheck className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
+            <CheckCircledIcon className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
           )}
           <span>{feedback.text}</span>
         </div>
@@ -378,7 +378,7 @@ function RepoDetail({
           role="alert"
           className="flex items-start gap-2 rounded-sm border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive"
         >
-          <CircleX className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <CrossCircledIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
           <span>{(check.error as Error).message}</span>
         </p>
       ) : null}
@@ -386,7 +386,7 @@ function RepoDetail({
       {issues.length > 0 ? (
         <Card className="gap-3 bg-warning/5 px-4">
           <h3 className="flex items-center gap-2 text-base font-semibold">
-            <CircleAlert className="size-4 text-warning" aria-hidden />
+            <ExclamationTriangleIcon className="size-4 text-warning" aria-hidden />
             Hook 配置差异
           </h3>
           {issues.map((issue) => (
@@ -887,7 +887,7 @@ function RepoRuns({
       </div>
       {canRead && runs.isError ? (
         <p role="alert" className="flex items-start gap-2 text-destructive">
-          <CircleX className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <CrossCircledIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
           <span>{(runs.error as Error).message}</span>
         </p>
       ) : null}

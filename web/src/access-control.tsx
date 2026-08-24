@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { LockClosedIcon, PlusIcon, ResetIcon, TrashIcon } from "@radix-ui/react-icons";
 import { useMemo, useState, type FormEvent } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -207,8 +207,8 @@ export function AccessControlPage() {
         description="管理用户、角色和权限。此页仅系统管理员可见。"
         actions={
           <>
-            <Button variant="outline" onClick={() => setCreateKind("role")}><Plus />新建角色</Button>
-            <Button onClick={() => setCreateKind("user")}><Plus />新建用户</Button>
+            <Button variant="outline" onClick={() => setCreateKind("role")}><PlusIcon />新建角色</Button>
+            <Button onClick={() => setCreateKind("user")}><PlusIcon />新建用户</Button>
           </>
         }
       />
@@ -282,8 +282,8 @@ export function AccessControlPage() {
                         <td className="px-3 py-2.5 text-xs whitespace-nowrap text-muted-foreground">{user.lastLoginAt === null ? "从未" : <span className="font-mono">{localMinute(user.lastLoginAt)}</span>}</td>
                         <td className="px-3 py-2.5">
                           <div className="flex justify-end gap-1 whitespace-nowrap">
-                            <Button variant="ghost" size="xs" onClick={() => setConfirm({ kind: "reset", id: user.username, label: user.username })}><KeyRound />重置密码</Button>
-                            <Button variant="ghost" size="xs" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => setConfirm({ kind: "delete-user", id: user.username, label: user.username })}><Trash2 />删除用户</Button>
+                            <Button variant="ghost" size="xs" onClick={() => setConfirm({ kind: "reset", id: user.username, label: user.username })}><ResetIcon />重置密码</Button>
+                            <Button variant="ghost" size="xs" className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => setConfirm({ kind: "delete-user", id: user.username, label: user.username })}><TrashIcon />删除用户</Button>
                           </div>
                         </td>
                       </tr>
@@ -296,7 +296,7 @@ export function AccessControlPage() {
             <section className="flex min-w-0 flex-col gap-3" aria-labelledby="permissions-heading">
               <h2 id="permissions-heading" className="text-base font-semibold">权限矩阵</h2>
               <div className="flex items-start gap-2 rounded-md bg-muted px-3 py-2">
-                <ShieldCheck className="mt-0.5 size-4 shrink-0" />
+                <LockClosedIcon className="mt-0.5 size-4 shrink-0" />
                 <p className="min-w-0 flex-1 text-muted-foreground"><span className="font-medium text-foreground">系统管理员</span>不参与矩阵，始终拥有全部权限（当前 <span className="font-mono">{adminCount}</span> 位）。下方仅管理自定义角色。</p>
                 <HelpTooltip label="系统管理员权限说明" content="系统管理员无需分配自定义角色，始终可以管理用户、角色、仓库、模型服务和审查策略。" />
               </div>
@@ -309,7 +309,7 @@ export function AccessControlPage() {
                 <Card className="items-start gap-2 px-4 py-5">
                   <p className="font-medium">还没有角色</p>
                   <p className="text-muted-foreground">角色不会预置。创建角色后，可在权限矩阵中授予权限。</p>
-                  <Button className="mt-1" onClick={() => setCreateKind("role")}><Plus />新建角色</Button>
+                  <Button className="mt-1" onClick={() => setCreateKind("role")}><PlusIcon />新建角色</Button>
                 </Card>
               ) : (
                 <div className="contain-inline-size min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-md border border-border">
@@ -321,7 +321,7 @@ export function AccessControlPage() {
                           <th key={role.id} scope="col" className="w-36 min-w-36 max-w-36 border-l border-border px-3 py-2 text-center font-medium">
                             <span className="block break-words text-foreground" title={role.name}>{role.name}</span>
                             <span className="block font-normal"><span className="font-mono">{users.filter((user) => user.roleId === role.id).length}</span> 人</span>
-                            <Button variant="ghost" size="xs" className="mt-1 text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => setConfirm({ kind: "delete-role", id: String(role.id), label: role.name })}><Trash2 />删除</Button>
+                            <Button variant="ghost" size="xs" className="mt-1 text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => setConfirm({ kind: "delete-role", id: String(role.id), label: role.name })}><TrashIcon />删除</Button>
                           </th>
                         ))}
                       </tr>

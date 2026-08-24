@@ -2,7 +2,7 @@ import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Fragment, useEffect, useRef, useState } from "react";
 
-import { CircleAlert, CircleCheck, CircleX } from "lucide-react";
+import { CheckCircledIcon, CrossCircledIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
 
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
@@ -68,7 +68,7 @@ export function RunPill({ run }: { run: RunItem }) {
   if (run.failed) {
     return (
       <Badge variant="destructive">
-        <CircleX aria-hidden />
+        <CrossCircledIcon aria-hidden />
         失败
       </Badge>
     );
@@ -85,7 +85,7 @@ export function RunPill({ run }: { run: RunItem }) {
           ...down.map((entry) => `${entry.model}: ${entry.failure}`),
         ].join("\n")}
       >
-        <CircleAlert className="size-4" aria-hidden />
+        <ExclamationTriangleIcon className="size-4" aria-hidden />
         {/* title 只对鼠标成立。这句话让屏幕阅读器与触屏也读得到图标的含义。 */}
         <span className="sr-only">
           {down.length}/{run.models.length} 个模型失败，本轮审查结果不完整
@@ -111,15 +111,15 @@ function runBucket(run: RunItem): Exclude<RunFilter, "all"> {
 function RunStatus({ run }: { run: RunItem }) {
   if (run.failed) {
     return (
-      <CircleX className="size-4 text-destructive" aria-label="失败" />
+      <CrossCircledIcon className="size-4 text-destructive" aria-label="失败" />
     );
   }
   if (runHasModelFailure(run)) {
     return (
-      <CircleAlert className="size-4 text-warning" aria-label="部分失败" />
+      <ExclamationTriangleIcon className="size-4 text-warning" aria-label="部分失败" />
     );
   }
-  return <CircleCheck className="size-4 text-success" aria-label="完成" />;
+  return <CheckCircledIcon className="size-4 text-success" aria-label="完成" />;
 }
 
 function runBadge(run: RunItem) {
@@ -128,7 +128,7 @@ function runBadge(run: RunItem) {
   if (run.total === 0) {
     return (
       <Badge variant="secondary">
-        <CircleCheck aria-hidden />
+        <CheckCircledIcon aria-hidden />
         无可处置项
       </Badge>
     );
@@ -138,7 +138,7 @@ function runBadge(run: RunItem) {
     <Badge
       className={done ? "bg-success/12 text-success" : "bg-warning/12 text-warning"}
     >
-      {done ? <CircleCheck aria-hidden /> : <CircleAlert aria-hidden />}
+      {done ? <CheckCircledIcon aria-hidden /> : <ExclamationTriangleIcon aria-hidden />}
       {run.resolved}/{run.total} 已处置
     </Badge>
   );
@@ -287,9 +287,9 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
             }`}
           >
             {feedback.isError ? (
-              <CircleX className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <CrossCircledIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
             ) : (
-              <CircleCheck className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
+              <CheckCircledIcon className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
             )}
             <span>{feedback.text}</span>
           </div>
@@ -299,7 +299,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
             role="alert"
             className="flex items-start gap-2 rounded-sm border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive"
           >
-            <CircleX className="mt-0.5 size-4 shrink-0" aria-hidden />
+            <CrossCircledIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
             <span>{(runs.error as Error).message}</span>
           </p>
         ) : null}

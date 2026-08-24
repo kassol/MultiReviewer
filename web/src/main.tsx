@@ -9,7 +9,7 @@ import {
   RouterProvider,
   useRouter,
 } from "@tanstack/react-router";
-import { LogOut } from "lucide-react";
+import { ExitIcon } from "@radix-ui/react-icons";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -138,7 +138,7 @@ function Shell() {
               onClick={() => void logout()}
               className="flex size-11 shrink-0 touch-manipulation items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
             >
-              <LogOut className="size-4" />
+              <ExitIcon className="size-4" />
             </button>
           </div>
         </div>
@@ -179,7 +179,7 @@ function Shell() {
               onClick={() => void logout()}
               className="flex size-8 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-chrome"
             >
-              <LogOut className="size-4" />
+              <ExitIcon className="size-4" />
             </button>
           </div>
         </div>

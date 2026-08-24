@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-24: 管理面板完成 Lucide 到 Radix Icons 的整族迁移。状态、搜索、关闭、展开、刷新和动作图标统一使用 `@radix-ui/react-icons`，保留状态文字、可访问名称、加载旋转与品牌 SVG；`lucide-react` 已从前端依赖和锁文件删除。
+
 - 2026-08-24: 管理面板接入 Radix Themes 与 Radix Icons 基础层。应用根和迁移期 Primitive Portal 共用同一亮色 Theme 配置；Radix token 映射到迁移期 Tailwind 语义名,业务页面按组件族继续迁移。
 
 - 2026-08-24: 管理面板的 Radix UI 迁移选定“发布门禁看板”视觉方向。Radix Themes 统一通用视觉,Radix Primitives 补行为,Radix Icons 统一业务图标；模型服务与审查策略共用同一 ProviderSelector 深色选中规则。本条取代同日仅允许模型服务 provider 使用实心选中态的旧限制。

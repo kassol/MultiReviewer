@@ -4,7 +4,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useBlocker, useLocation, useNavigate } from "@tanstack/react-router";
-import { AlertTriangle, Check, ChevronDown, CircleX, RefreshCw, Search, Trash2 } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, CrossCircledIcon, ExclamationTriangleIcon, MagnifyingGlassIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -212,10 +212,10 @@ function quantity(value: number): string {
 function ServiceStatus({ service, selected = false }: { service: ModelService; selected?: boolean }) {
   const detail =
     service.runCapability.runnable
-      ? { label: "正常", icon: Check, className: "bg-success/10 text-success" }
+      ? { label: "正常", icon: CheckIcon, className: "bg-success/10 text-success" }
       : service.providerState === "name-conflict"
-      ? { label: "已停用", icon: CircleX, className: "bg-destructive/10 text-destructive" }
-      : { label: "需处理", icon: CircleX, className: "bg-destructive/10 text-destructive" };
+      ? { label: "已停用", icon: CrossCircledIcon, className: "bg-destructive/10 text-destructive" }
+      : { label: "需处理", icon: CrossCircledIcon, className: "bg-destructive/10 text-destructive" };
   const Icon = detail.icon;
   return (
     <Badge
@@ -1204,7 +1204,7 @@ function CredentialControls({
                 disabled={reverify.isPending}
                 aria-label="从自动发现的模型中选择"
               >
-                <ChevronDown />
+                <ChevronDownIcon />
               </Button>
             </PopoverTrigger>
             <PopoverContent
@@ -1232,7 +1232,7 @@ function CredentialControls({
                         setModelPickerOpen(false);
                       }}
                     >
-                      <Check
+                      <CheckIcon
                         className={cn(
                           "mt-0.5 shrink-0",
                           validationModel === model.id ? "opacity-100" : "opacity-0",
@@ -1259,7 +1259,7 @@ function CredentialControls({
             setConfirmingDelete(true);
           }}
         >
-          <Trash2 />删除凭据
+          <TrashIcon />删除凭据
         </Button>
       </div>
       <p className="text-xs text-muted-foreground">可从自动发现的模型中选择，也可手填目录外的 model id；提交时会重新发现目录并执行一次最小真实推理。</p>
@@ -1355,7 +1355,7 @@ function ReferenceBlockers({ references }: { references: ModelReference[] }) {
   return (
     <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-3">
       <div className="flex items-center gap-2 text-destructive">
-        <AlertTriangle className="size-4 shrink-0" />
+        <ExclamationTriangleIcon className="size-4 shrink-0" />
         <p className="font-medium">引用阻塞：先移除下面这些模型引用</p>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
@@ -1459,7 +1459,7 @@ function CustomServiceControls({ service }: { service: ModelService }) {
             </Button>
           )}
           <Button type="button" variant="destructive" onClick={() => setConfirmingDelete(true)}>
-            <Trash2 />删除服务
+            <TrashIcon />删除服务
           </Button>
         </div>
       </div>
@@ -1626,7 +1626,7 @@ function CatalogControls({
             refresh.mutate();
           }}
         >
-          <RefreshCw className={cn(refresh.isPending && "animate-spin")} />
+          <ReloadIcon className={cn(refresh.isPending && "animate-spin")} />
           {refresh.isPending ? "正在刷新…" : "刷新自动目录"}
         </Button>
         {refresh.error === null ? null : (
@@ -1751,7 +1751,7 @@ function CatalogControls({
                 if (deleting !== null) removeSupplement.mutate(deleting.id);
               }}
             >
-              <Trash2 />{removeSupplement.isPending ? "正在删除…" : "确认删除来源"}
+              <TrashIcon />{removeSupplement.isPending ? "正在删除…" : "确认删除来源"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1902,7 +1902,7 @@ function ModelsTable({
           )}
         </p>
         <div className="relative w-full sm:w-64">
-          <Search aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <MagnifyingGlassIcon aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Label htmlFor="model-list-search" className="sr-only">筛选模型</Label>
           <Input
             id="model-list-search"
@@ -2065,7 +2065,7 @@ function ModelAvailability({ model }: { model: ModelServiceModel }) {
   ) : (
     <div className="space-y-1">
       <Badge variant="destructive" className="whitespace-nowrap">
-        <CircleX data-icon="inline-start" />不可用
+        <CrossCircledIcon data-icon="inline-start" />不可用
       </Badge>
       <p className="max-w-64 break-words text-xs text-destructive">
         {model.unavailableReasonText ?? "模型不可用"}
@@ -2116,8 +2116,8 @@ function RunCapabilityCard({
     >
       <div className="flex items-start gap-2">
         {capability.runnable
-          ? <Check className="mt-0.5 size-4 shrink-0 text-success" />
-          : <CircleX className="mt-0.5 size-4 shrink-0 text-destructive" />}
+          ? <CheckIcon className="mt-0.5 size-4 shrink-0 text-success" />
+          : <CrossCircledIcon className="mt-0.5 size-4 shrink-0 text-destructive" />}
         <div>
           <h3 id={`run-capability-${service.provider}`} className="font-medium">
             {service.providerState === "name-conflict" ? "服务已停用" : "服务需要处理"}

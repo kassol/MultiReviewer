@@ -55,7 +55,7 @@
 
 不依赖仓库里任何服务端代码;与服务端的契约只有两条:注入全局变量的形状、`<前缀>/api` 的 JSON 端点。
 
-当前构建期依赖是 `@radix-ui/themes`、`@radix-ui/react-icons`、Tailwind v4、`radix-ui` 单包、cmdk、react-day-picker、class-variance-authority、clsx、tailwind-merge、tw-animate-css 与迁移期 Lucide。cmdk 与 react-day-picker 只在统一产品组件仍需要对应行为时保留；Lucide 随业务图标迁移归零后删除。`@/` 别名在 `tsconfig.json` 的 `paths` 与 `vite.config.ts` 的 `resolve.alias` 各配一次,两处要一起改。
+当前构建期依赖是 `@radix-ui/themes`、`@radix-ui/react-icons`、Tailwind v4、`radix-ui` 单包、cmdk、react-day-picker、class-variance-authority、clsx、tailwind-merge 与 tw-animate-css。业务图标只从 `@radix-ui/react-icons` 导入；产品标记与 favicon 保留自绘 SVG。cmdk 与 react-day-picker 只在统一产品组件仍需要对应行为时保留。`@/` 别名在 `tsconfig.json` 的 `paths` 与 `vite.config.ts` 的 `resolve.alias` 各配一次,两处要一起改。
 
 ## 常用命令
 
@@ -64,6 +64,8 @@
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
 
 ## 变更日志
+
+- 2026-08-24: 全部业务图标从 Lucide 迁移到 Radix Icons。搜索、关闭、展开、状态、刷新、登出、删除和新增动作各固定一个 Radix 图标；保留状态文字、可访问名称、加载旋转和产品 SVG，移除 `lucide-react` 依赖。
 
 - 2026-08-24: 完成 Radix Themes 第一批基础接入。React 根固定为亮色 gray、solid panel、small radius 与 95% scaling；Theme token 映射到迁移期 Tailwind 语义名,现有 Dialog 与 Popover Portal 显式继承 Theme。HelpTooltip 改用 Themes Tooltip、IconButton 与 Radix Icons。
 

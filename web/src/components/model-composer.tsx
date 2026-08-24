@@ -3,7 +3,7 @@
  * 投影；模型服务、凭据、自动目录与模型补录都回模型服务页处理，这里不发任何服务写请求。
  */
 import { Link } from "@tanstack/react-router";
-import { X } from "lucide-react";
+import { Cross2Icon } from "@radix-ui/react-icons";
 import { useEffect, useMemo, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -181,7 +181,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                     className="-mr-1 flex size-6 shrink-0 touch-manipulation items-center justify-center rounded-sm text-muted-foreground transition-colors max-sm:size-11 hover:bg-muted hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     onClick={() => toggle(identity)}
                   >
-                    <X className="size-3.5" />
+                    <Cross2Icon className="size-3.5" />
                   </button>
                 </div>
               );
