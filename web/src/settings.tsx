@@ -48,7 +48,7 @@ export function SettingsPage({ canWrite }: { canWrite: boolean }) {
     <>
       <PageHeader
         title="审查策略"
-        description="模型组合是所有仓库的默认值；高级参数控制每轮审查如何分批。"
+        description="模型组合是所有仓库的默认值；批次上限控制每轮审查如何分批。"
       />
       <PageBody width="form">
         {settings.isError ? (
@@ -230,8 +230,8 @@ function SettingsForm({ settings }: { settings: Settings }) {
 
       <details className="border-t pt-5">
         <summary className="flex cursor-pointer items-center gap-1.5 font-medium">
-          高级参数
-          <HelpTooltip label="高级参数说明" content="批次上限只影响每轮审查如何拆分改动，不会改变模型组合。" />
+          批次上限
+          <HelpTooltip label="批次上限说明" content="批次上限只影响每轮审查如何拆分改动，不会改变模型组合。" />
         </summary>
         <form
           className="mt-3"
@@ -248,12 +248,9 @@ function SettingsForm({ settings }: { settings: Settings }) {
         >
           <Card className="gap-0 overflow-hidden p-0">
             <div className="space-y-3 px-4 py-4">
-              <div>
-                <h2 className="text-base font-semibold">批次上限</h2>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  取值来源：{limitSource === "default" ? "系统默认" : "自定义"}
-                </p>
-              </div>
+              <p className="text-xs text-muted-foreground">
+                取值来源：{limitSource === "default" ? "系统默认" : "自定义"}
+              </p>
               <div className="flex max-w-sm flex-col gap-1.5">
                 <Label htmlFor="max-changed-lines">每批最多改动行数</Label>
                 <Input

@@ -1733,10 +1733,9 @@ function ModelsTable({ models }: { models: readonly ModelServiceModel[] }) {
     );
   }
   return (
-    <section className="overflow-hidden rounded-md border">
+    <section aria-label="模型列表" className="overflow-hidden rounded-md border">
       <div className="border-b bg-muted px-3 py-2">
-        <h3 className="text-base font-semibold">模型</h3>
-        <p className="text-xs text-muted-foreground">
+        <p className="font-medium">
           <span className="font-mono tabular-nums">{models.length}</span> 个合并后的模型标识
         </p>
       </div>
@@ -2091,7 +2090,7 @@ function ServiceDetail({
 
       {tab === "maintenance" && !canWriteCredential && !canWriteModels && !canWriteCustom ? (
         <section className="rounded-md border bg-muted/50 px-4 py-5">
-          <h3 className="font-medium">当前账号仅可查看</h3>
+          <p className="font-medium">暂无修改权限</p>
           <p className="mt-1 text-muted-foreground">当前账号没有修改模型服务的权限。</p>
         </section>
       ) : null}
@@ -2104,7 +2103,7 @@ function ServiceDetail({
         <ModelsTable models={service.models} />
       ) : (
         <section className="rounded-md border bg-muted/50 px-4 py-5">
-          <h3 className="text-base font-semibold">当前账号仅可查看</h3>
+          <p className="font-medium">暂无模型查看权限</p>
           <p className="mt-1 text-muted-foreground">
             当前会话可以审计模型凭据，但不能读取地址、接口协议、模型目录与模型清单。
           </p>
@@ -2181,7 +2180,7 @@ export function ModelServicesPage({
       {!canReadServices ? (
         <div className="max-w-[760px] p-4 sm:p-5">
           <Card className="gap-2 px-4 py-5">
-            <h2 className="text-base font-semibold">当前账号仅可查看</h2>
+            <h2 className="text-base font-semibold">模型服务信息不可见</h2>
             <p className="text-muted-foreground">
               {canWriteCredential
                 ? "当前会话可写模型凭据，但不能读取现有服务、目录和凭据审计字段。可从页头搜索 Pi 内置 provider 继续配置。"

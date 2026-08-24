@@ -7,13 +7,15 @@
 # 产物是纯静态文件,Vite 与 React 全套只活在这一层,不进运行镜像。dist 不进版本库,
 # 每次构建镜像时在这里生成;产物与面板前缀无关,前缀由服务在运行时注入。
 FROM node:24-slim AS webbuild
-RUN npm install -g pnpm@11.21.0
+RUN npm install -g pnpm@11.21.0 \
+ && npm cache clean --force
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY web/package.json web/
 RUN pnpm install --frozen-lockfile --filter @multireviewer/web
 COPY web ./web
-RUN pnpm --filter @multireviewer/web build
+RUN pnpm --filter @multireviewer/web build \
+ && rm -rf "$(pnpm store path)" /root/.cache /root/.npm
 
 # ── 运行镜像 ─────────────────────────────────────────────────────────────
 FROM node:24-slim
@@ -25,7 +27,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # 版本钉死到产出 pnpm-lock.yaml 的那一个,免得 lockfile 版本对不上。
-RUN npm install -g pnpm@11.21.0
+RUN npm install -g pnpm@11.21.0 \
+ && npm cache clean --force
 
 WORKDIR /app
 
@@ -33,7 +36,8 @@ WORKDIR /app
 # 解析得开,--filter 限定只装服务端的运行时依赖——react 全家不进运行镜像。
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY web/package.json web/
-RUN pnpm install --prod --frozen-lockfile --filter multireviewer
+RUN pnpm install --prod --frozen-lockfile --filter multireviewer \
+ && rm -rf "$(pnpm store path)" /root/.cache /root/.npm
 
 # 源码由 Node 直接运行,无构建步骤,拷进去就能跑。前端只要构建产物。
 COPY src ./src

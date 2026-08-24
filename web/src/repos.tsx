@@ -486,8 +486,7 @@ function RepoDetail({
         )}
       </div>
 
-      <section className="flex flex-wrap items-center gap-x-6 gap-y-2 border-y border-border py-3">
-        <h3 className="text-base font-semibold">累计</h3>
+      <section aria-label="仓库统计" className="flex flex-wrap items-center gap-x-6 gap-y-2 border-y border-border py-3">
         <span className="text-muted-foreground">
           审查轮次{" "}
           <b className="font-mono font-semibold tabular-nums text-foreground">{repo.runCount}</b> 轮

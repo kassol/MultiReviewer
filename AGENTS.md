@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-24: 收紧运行镜像打包。前端构建与运行依赖安装完成后清理 pnpm store、npm cache 与临时缓存,避免把包管理器缓存带进最终镜像层;运行镜像仍只携带服务源码、生产依赖与前端 dist。
+
 - 2026-08-20: 落地 issue #149。因 Pi 内置名称冲突而停用的自定义 provider 可从模型服务维护页原子迁移到新名称;服务、全局模型组合与全部仓库覆盖同事务改写,历史审查记录保持不变。普通模型服务不提供改名。
 - 2026-08-07: 项目初始化。git init,收录初始想法文档 `docs/idea.md`,创建 GitHub public repo。
 - 2026-08-07: 配置 Agent skills 仓库级约定。issue tracker 选 GitHub Issues,triage 标签沿用默认,domain docs 采用 single-context 布局,配置文件写入 `docs/agents/`。
