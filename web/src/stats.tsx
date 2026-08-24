@@ -41,12 +41,6 @@ function isoDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-function humanBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${bytes} B`;
-}
-
 function Bar({ pct }: { pct: number }) {
   return <Progress aria-hidden value={pct} size="1" />;
 }
@@ -428,28 +422,6 @@ export function StatsPage() {
           </section>
         ) : null}
 
-        {stats.data === undefined ? null : (
-          <section className="border-t border-line pt-4">
-            <h2 className="text-2xl font-bold tracking-[-0.015em]">数据存储</h2>
-            <dl className="mt-2 divide-y divide-line border-y border-line">
-              <div className="flex justify-between gap-3 py-2">
-                <dt className="text-text-muted">数据库文件</dt>
-                <dd className="font-mono tabular-nums">{humanBytes(stats.data.database.fileBytes)}</dd>
-              </div>
-              {stats.data.database.tables.map((table) => (
-                <div className="flex justify-between gap-3 py-2" key={table.name}>
-                  <dt className="break-all font-mono text-muted-foreground">{table.name}</dt>
-                  <dd className="shrink-0">
-                    <span className="font-mono tabular-nums">{table.rows}</span> 行
-                  </dd>
-                </div>
-              ))}
-            </dl>
-            <p className="mt-2 text-xs text-muted-foreground">
-              评审记录会参与历史处置率统计。
-            </p>
-          </section>
-        )}
       </PageBody>
     </>
   );

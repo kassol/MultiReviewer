@@ -657,7 +657,7 @@ export function ModelServiceSetupLayout() {
             <div className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 flex-col gap-0.5">
                 <Dialog.Title size="6" mb="0" className="font-extrabold tracking-[-0.02em]">配置模型服务</Dialog.Title>
-                <Dialog.Description size="2" color="gray">按步骤完成来源、模型发现和真实验证。未提交内容只保留在当前页面。</Dialog.Description>
+                <Dialog.Description size="2" color="gray">未提交内容只保留在当前页面。</Dialog.Description>
               </div>
               <Tooltip content="关闭配置模型服务">
                 <Dialog.Close>

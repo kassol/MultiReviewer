@@ -218,8 +218,6 @@ function SettingsForm({ settings }: { settings: Settings }) {
             <span className="text-danger">至少选择一个可用模型，审查配置才能就绪。</span>
           ) : !modelValidity.ready ? (
             <span className="text-muted-foreground">模型状态确认后即可保存组合。</span>
-          ) : modelFeedback === null ? (
-            <span className="text-xs text-muted-foreground">仅保存模型组合，不会改动批次上限。</span>
           ) : null}
         </div>
         {modelFeedback === null ? null : (

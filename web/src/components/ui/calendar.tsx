@@ -5,7 +5,7 @@ import {
   type DayButton,
   type Locale,
 } from "react-day-picker"
-import { IconButton, Tooltip } from "@radix-ui/themes"
+import { IconButton } from "@radix-ui/themes"
 
 import { Button } from "@/components/theme-button"
 import { cn } from "@/lib/utils"
@@ -19,6 +19,7 @@ function Calendar({
   buttonVariant = "ghost",
   locale,
   formatters,
+  labels,
   components,
   ...props
 }: React.ComponentProps<typeof DayPicker> & {
@@ -37,10 +38,18 @@ function Calendar({
       )}
       captionLayout={captionLayout}
       locale={locale}
+      // react-day-picker 不带中文,不给格式化就是一整块英文月份和 Su Mo Tu 星期头
+      // 压在全中文的面板里。这里只改显示,不引入 date-fns 语言包换整套 locale。
       formatters={{
-        formatMonthDropdown: (date) =>
-          date.toLocaleString(locale?.code, { month: "short" }),
+        formatCaption: (date) => `${date.getFullYear()} 年 ${date.getMonth() + 1} 月`,
+        formatWeekdayName: (date) => "日一二三四五六".charAt(date.getDay()),
+        formatMonthDropdown: (date) => `${date.getMonth() + 1} 月`,
         ...formatters,
+      }}
+      labels={{
+        labelPrevious: () => "上个月",
+        labelNext: () => "下个月",
+        ...labels,
       }}
       classNames={{
         root: cn("w-fit", defaultClassNames.root),
@@ -161,30 +170,26 @@ function Calendar({
           <CalendarDayButton {...(locale === undefined ? {} : { locale })} {...props} />
         ),
         PreviousMonthButton: ({ className, children, ...buttonProps }) => (
-          <Tooltip content="上个月">
-            <IconButton
-              {...buttonProps}
-              variant={buttonVariant}
-              color="gray"
-              size="1"
-              className={cn("size-(--cell-size) select-none aria-disabled:opacity-50", className)}
-            >
-              {children}
-            </IconButton>
-          </Tooltip>
+          <IconButton
+            {...buttonProps}
+            variant={buttonVariant}
+            color="gray"
+            size="1"
+            className={cn("size-(--cell-size) select-none aria-disabled:opacity-50", className)}
+          >
+            {children}
+          </IconButton>
         ),
         NextMonthButton: ({ className, children, ...buttonProps }) => (
-          <Tooltip content="下个月">
-            <IconButton
-              {...buttonProps}
-              variant={buttonVariant}
-              color="gray"
-              size="1"
-              className={cn("size-(--cell-size) select-none aria-disabled:opacity-50", className)}
-            >
-              {children}
-            </IconButton>
-          </Tooltip>
+          <IconButton
+            {...buttonProps}
+            variant={buttonVariant}
+            color="gray"
+            size="1"
+            className={cn("size-(--cell-size) select-none aria-disabled:opacity-50", className)}
+          >
+            {children}
+          </IconButton>
         ),
         WeekNumber: ({ children, ...props }) => {
           return (
