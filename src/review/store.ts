@@ -110,7 +110,13 @@ CREATE TABLE IF NOT EXISTS finding (
   -- 承载它的那条 Forge 行级评论:id 供面板按评论 resolve,链接供「跳到 Forge 看原版」。
   -- 正文 fallback 没有行级评论,两项为 NULL;升级前的历史行同样为 NULL。
   comment_id TEXT,
-  comment_html_url TEXT
+  comment_html_url TEXT,
+  -- 面板上作出这次处置的人与时刻。回填链路不写这两列:在 Gitea 上点的 resolve 没有
+  -- 面板身份可记,那一档留 NULL。非 NULL 即「人在面板上显式设置过」。
+  disposed_by TEXT,
+  disposed_at TEXT,
+  -- 处置备注(CONTEXT.md):只存面板,不写入 Forge。至多一条,unresolve 之后仍留着。
+  disposition_note TEXT
 );
 
 CREATE INDEX IF NOT EXISTS finding_by_run ON finding(run_id);
@@ -348,6 +354,9 @@ const ADD_COLUMNS = [
   "ALTER TABLE finding ADD COLUMN comment_id TEXT",
   "ALTER TABLE finding ADD COLUMN comment_html_url TEXT",
   "ALTER TABLE review_run ADD COLUMN range_review_id INTEGER",
+  "ALTER TABLE finding ADD COLUMN disposed_by TEXT",
+  "ALTER TABLE finding ADD COLUMN disposed_at TEXT",
+  "ALTER TABLE finding ADD COLUMN disposition_note TEXT",
 ];
 
 /**
@@ -457,6 +466,19 @@ export type DispositionUpdate = {
   fingerprint: string;
   disposition?: Disposition;
   placement: FindingPlacement;
+};
+
+/**
+ * 面板处置一条 Finding 要用的那几项。处置写在承载它的那条 Forge 评论上,因此这里
+ * 带上评论 id 与它所属仓库;`commentId` 为 null 即 fallback,没有可处置的载体。
+ */
+export type FindingDispositionTarget = {
+  id: number;
+  owner: string;
+  repo: string;
+  commentId: string | null;
+  disposition: Disposition;
+  note: string | null;
 };
 
 export type RunResult = {
@@ -753,11 +775,23 @@ export type RunListItem = {
    * 处置并跳到 Forge 看原版;正文 fallback 没有行级评论,两项为 null。
    */
   findings: {
+    /** 落库行的 id。面板按它处置一条 Finding。 */
+    id: number;
     model: string;
     file: string;
     line: number;
+    severity: Severity;
+    category: Category;
+    description: string;
+    disposition: Disposition;
+    placement: FindingPlacement;
     commentId: string | null;
     commentHtmlUrl: string | null;
+    /** 在面板上处置的人与时刻;在 Gitea 上处置的与升级前的历史行为 null。 */
+    disposedBy: string | null;
+    disposedAt: string | null;
+    /** 处置备注,只存面板。 */
+    note: string | null;
   }[];
   resolved: number;
   total: number;
@@ -1016,6 +1050,25 @@ export type Store = {
     baseSha?: string;
     state?: RangeReviewState;
   }): RangeReviewRecord[];
+  /** 面板处置前要读的那一行。id 不存在时返回 undefined。 */
+  getFinding(id: number): FindingDispositionTarget | undefined;
+  /**
+   * 面板作出的一次处置。写的是「承载它的那条 Forge 评论」名下、同一仓库里的每一行:
+   * 一个合并组落成一条评论,resolve 作用在评论上,组内每一条来源 Finding 的处置因此
+   * 一起变;跨轮折叠的历史行记的也是同一条评论,同样跟着变。
+   *
+   * `note` 省略即保留原备注:unresolve 之后备注仍要留着(CONTEXT.md 处置备注)。
+   * 返回被改写的行数。
+   */
+  recordDisposition(input: {
+    owner: string;
+    repo: string;
+    commentId: string;
+    disposition: Disposition;
+    disposedBy: string;
+    disposedAt: string;
+    note?: string;
+  }): number;
   /** 每张表的行数,给面板展示库体量。不做清理,数字只会涨(ADR 0006 的留存决策)。 */
   tableCounts(): { name: string; rows: number }[];
   /**
@@ -2756,7 +2809,9 @@ export function openStore(dbPath: string): Store {
 
       const byFinding = db
         .prepare(
-          `SELECT run_id, model, file, line, comment_id, comment_html_url
+          `SELECT id, run_id, model, file, line, severity, category, description,
+                  disposition, placement, comment_id, comment_html_url,
+                  disposed_by, disposed_at, disposition_note
              FROM finding
             WHERE run_id IN (${marks}) ORDER BY id`,
         )
@@ -2843,12 +2898,21 @@ export function openStore(dbPath: string): Store {
         const runId = Number(row["run_id"]);
         const list = findings.get(runId) ?? [];
         list.push({
+          id: Number(row["id"]),
           model: String(row["model"]),
           file: String(row["file"]),
           line: Number(row["line"]),
+          severity: String(row["severity"]) as Severity,
+          category: String(row["category"]) as Category,
+          description: String(row["description"]),
+          disposition: String(row["disposition"]) as Disposition,
+          placement: String(row["placement"]) as FindingPlacement,
           commentId: row["comment_id"] === null ? null : String(row["comment_id"]),
           commentHtmlUrl:
             row["comment_html_url"] === null ? null : String(row["comment_html_url"]),
+          disposedBy: row["disposed_by"] === null ? null : String(row["disposed_by"]),
+          disposedAt: row["disposed_at"] === null ? null : String(row["disposed_at"]),
+          note: row["disposition_note"] === null ? null : String(row["disposition_note"]),
         });
         findings.set(runId, list);
       }
@@ -2950,6 +3014,48 @@ export function openStore(dbPath: string): Store {
         .prepare(`SELECT * FROM range_review ${where} ORDER BY id DESC`)
         .all(...params)
         .map(rangeReviewRecord);
+    },
+
+    getFinding(id) {
+      const row = db
+        .prepare(
+          `SELECT f.id, f.comment_id, f.disposition, f.disposition_note,
+                  run.owner, run.repo
+             FROM finding f
+             JOIN review_run run ON f.run_id = run.id
+            WHERE f.id = ?`,
+        )
+        .get(id) as Record<string, unknown> | undefined;
+      if (row === undefined) return undefined;
+      return {
+        id: Number(row["id"]),
+        owner: String(row["owner"]),
+        repo: String(row["repo"]),
+        commentId: row["comment_id"] === null ? null : String(row["comment_id"]),
+        disposition: String(row["disposition"]) as Disposition,
+        note: row["disposition_note"] === null ? null : String(row["disposition_note"]),
+      };
+    },
+
+    recordDisposition(input) {
+      const result = db
+        .prepare(
+          `UPDATE finding
+              SET disposition = ?, disposed_by = ?, disposed_at = ?,
+                  disposition_note = COALESCE(?, disposition_note)
+            WHERE comment_id = ?
+              AND run_id IN (SELECT id FROM review_run WHERE owner = ? AND repo = ?)`,
+        )
+        .run(
+          input.disposition,
+          input.disposedBy,
+          input.disposedAt,
+          input.note ?? null,
+          input.commentId,
+          input.owner,
+          input.repo,
+        );
+      return Number(result.changes);
     },
 
     tableCounts() {

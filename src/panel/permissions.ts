@@ -4,6 +4,7 @@ export const PANEL_PERMISSIONS = [
   "review:read",
   "review:rerun",
   "review:create",
+  "finding:dispose",
   "model:read",
   "model:write",
   "credential:read",

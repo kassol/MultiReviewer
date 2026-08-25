@@ -476,12 +476,18 @@ const reposRoute = protectedPage("/repos", "repo:read", () => {
       canReadModels={hasPermission(session, "model:read")}
       canReadReviews={hasPermission(session, "review:read")}
       canRerun={hasPermission(session, "review:rerun")}
+      canDispose={hasPermission(session, "finding:dispose")}
     />
   );
 });
 const runsRoute = protectedPage("/runs", "review:read", () => {
   const { session } = shellRoute.useRouteContext();
-  return <RunsPage canRerun={hasPermission(session, "review:rerun")} />;
+  return (
+    <RunsPage
+      canRerun={hasPermission(session, "review:rerun")}
+      canDispose={hasPermission(session, "finding:dispose")}
+    />
+  );
 });
 const rangeReviewsRoute = protectedPage("/range-reviews", "review:read", () => {
   const { session } = shellRoute.useRouteContext();

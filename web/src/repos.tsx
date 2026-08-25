@@ -130,11 +130,13 @@ export function ReposPage({
   canReadModels,
   canReadReviews,
   canRerun,
+  canDispose,
 }: {
   canWrite: boolean;
   canReadModels: boolean;
   canReadReviews: boolean;
   canRerun: boolean;
+  canDispose: boolean;
 }) {
   const queryClient = useQueryClient();
   const setup = useSetupStatus();
@@ -302,6 +304,7 @@ export function ReposPage({
               canWrite={canWrite}
               canReadReviews={canReadReviews}
               canRerun={canRerun}
+              canDispose={canDispose}
               onRemoved={() => {
                 setSelectedId(null);
                 void queryClient.invalidateQueries({ queryKey: ["repos"] });
@@ -335,6 +338,7 @@ function RepoDetail({
   canWrite,
   canReadReviews,
   canRerun,
+  canDispose,
   onRemoved,
 }: {
   repo: RepoRow;
@@ -342,6 +346,7 @@ function RepoDetail({
   canWrite: boolean;
   canReadReviews: boolean;
   canRerun: boolean;
+  canDispose: boolean;
   onRemoved: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -624,6 +629,7 @@ function RepoDetail({
           repo={repo}
           canRead={canReadReviews}
           canRerun={canRerun}
+          canDispose={canDispose}
           onFeedback={setFeedback}
         />
       ) : null}
@@ -966,15 +972,17 @@ function RepoRuns({
   repo,
   canRead,
   canRerun,
+  canDispose,
   onFeedback,
 }: {
   repo: RepoRow;
   canRead: boolean;
   canRerun: boolean;
+  canDispose: boolean;
   onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
 }) {
   const queryClient = useQueryClient();
-  // 只为把每一轮指回它的 pull request——处置在那边做,不在面板里。与壳共用会话缓存。
+  // 只为把每一轮指回它的 pull request 看原版。与壳共用会话缓存。
   const session = useQuery({ queryKey: ["session"], queryFn: loadPanelSession });
   const runs = useQuery({
     queryKey: ["repo-runs", repo.owner, repo.repo],
@@ -1085,6 +1093,7 @@ function RepoRuns({
         <RunDetailPanel
           run={opened}
           canRerun={canRerun}
+          canDispose={canDispose}
           rerunning={rerun.isPending}
           pullUrl={session.data === undefined || session.data === null ? null : pullRequestUrl(session.data, opened)}
           onRerun={() => {

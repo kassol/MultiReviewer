@@ -1405,6 +1405,20 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "GET", pattern: "/runs", access: "review:read", handler: ({ req, res, deps }) => handleRuns(req, res, deps) },
   { method: "POST", pattern: "/rerun", access: "review:rerun", handler: ({ req, res, deps, caller }) => handleRerun(req, res, deps, caller!.username) },
   {
+    method: "POST",
+    pattern: /^\/findings\/(\d+)\/resolve$/,
+    access: "finding:dispose",
+    handler: ({ req, res, deps, caller }, match) =>
+      handleDispose(req, res, deps, Number(match![1]), "resolved", caller!.username),
+  },
+  {
+    method: "POST",
+    pattern: /^\/findings\/(\d+)\/unresolve$/,
+    access: "finding:dispose",
+    handler: ({ req, res, deps, caller }, match) =>
+      handleDispose(req, res, deps, Number(match![1]), "unresolved", caller!.username),
+  },
+  {
     method: "GET",
     pattern: "/range-reviews",
     access: "review:read",
@@ -3956,6 +3970,85 @@ async function handleRerun(
     plan,
     triggeredBy,
   );
+}
+
+/** 处置备注是一句话(CONTEXT.md),给它一个宽松的上限,免得面板变成写长文的地方。 */
+const DISPOSITION_NOTE_MAX = 500;
+
+/**
+ * 面板处置一条 Finding:resolve / unresolve,可选附一条只存面板的处置备注。
+ *
+ * 先写 Forge 再落库。Disposition 的权威状态在 Forge 上(ADR 0006),库里那一行只是
+ * 缓存;反过来先落库,Forge 那一步失败就留下「面板说已处置、Gitea 上没有」的假象,
+ * 而下一轮回填还会把它改回去。Forge 上的 resolver 是服务凭据那个机器人账号,操作人
+ * 只记在库里(ADR 0012)。
+ */
+async function handleDispose(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  findingId: number,
+  disposition: "resolved" | "unresolved",
+  disposedBy: string,
+): Promise<void> {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = body.length === 0 ? {} : safeParse(body);
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    return sendJson(res, 400, { error: "body 要是 JSON 对象" });
+  }
+  const rawNote = (payload as { note?: unknown }).note;
+  if (rawNote !== undefined && typeof rawNote !== "string") {
+    return sendJson(res, 400, { error: "note 要是字符串" });
+  }
+  const trimmed = rawNote === undefined ? "" : rawNote.trim();
+  if (trimmed.length > DISPOSITION_NOTE_MAX) {
+    return sendJson(res, 400, { error: `处置备注最多 ${DISPOSITION_NOTE_MAX} 个字` });
+  }
+  // 空备注不清掉已有的那条:unresolve 与再次 resolve 都不带备注,备注要留着。
+  const note = trimmed === "" ? undefined : trimmed;
+
+  const finding = withStore(deps.dbPath, (store) => store.getFinding(findingId));
+  if (finding === undefined) return sendJson(res, 404, { error: "没有这条 Finding" });
+  if (finding.commentId === null) {
+    return sendJson(res, 409, {
+      error: "这条 Finding 只在 review 正文里,没有可处置的行级评论",
+    });
+  }
+  const forge = deps.forges.gitea;
+  if (forge === undefined) {
+    return sendJson(res, 503, { error: "gitea 没有配置 Forge,处置不了" });
+  }
+  const ref = { owner: finding.owner, repo: finding.repo };
+  try {
+    if (disposition === "resolved") await forge.resolveComment(ref, finding.commentId);
+    else await forge.unresolveComment(ref, finding.commentId);
+  } catch (error) {
+    return sendJson(res, 502, {
+      error: `Forge 上${disposition === "resolved" ? "处置" : "撤回处置"}失败:${failureText(error)}`,
+    });
+  }
+  const disposedAt = new Date().toISOString();
+  withStore(deps.dbPath, (store) =>
+    store.recordDisposition({
+      owner: finding.owner,
+      repo: finding.repo,
+      commentId: finding.commentId!,
+      disposition,
+      disposedBy,
+      disposedAt,
+      ...(note === undefined ? {} : { note }),
+    }),
+  );
+  return sendJson(res, 200, {
+    finding: {
+      id: finding.id,
+      disposition,
+      disposedBy,
+      disposedAt,
+      note: note ?? finding.note,
+    },
+  });
 }
 
 /** 范围审查发起时人填的两端。只收 sha:它同时挡住以 `-` 开头的值被 git 当成选项。 */

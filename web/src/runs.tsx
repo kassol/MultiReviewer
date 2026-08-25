@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Fragment, useEffect, useRef, useState } from "react";
 
@@ -9,7 +9,7 @@ import {
   ExclamationTriangleIcon,
   ExternalLinkIcon,
 } from "@radix-ui/react-icons";
-import { Badge, Callout, Dialog, IconButton, SegmentedControl, Skeleton, Tooltip } from "@radix-ui/themes";
+import { Badge, Callout, Dialog, IconButton, SegmentedControl, Skeleton, TextField, Tooltip } from "@radix-ui/themes";
 
 import { EmptyState } from "@/components/empty-state";
 import { MasterListItem } from "@/components/master-list-item";
@@ -45,8 +45,34 @@ export type RunItem = {
   }[];
   /** 会话没有产生统计时省略。 */
   usage?: UsageSummary;
+  /** 本轮落库的每一条来源 Finding。详情面板按模型分组列出并在行内处置。 */
+  findings: RunFinding[];
   resolved: number;
   total: number;
+};
+
+/**
+ * 一条落库的 Finding。`commentId` 为 null 的那些只活在 review 正文里(fallback),
+ * 没有可处置的载体,行内不给处置动作。
+ */
+export type RunFinding = {
+  id: number;
+  model: string;
+  file: string;
+  line: number;
+  severity: "P0" | "P1" | "P2";
+  category: string;
+  description: string;
+  disposition: "resolved" | "unresolved" | "unknown";
+  placement: "inline" | "body";
+  commentId: string | null;
+  /** Forge 上那条原评论的地址。 */
+  commentHtmlUrl: string | null;
+  /** 在面板上处置的人与时刻;在 Gitea 上处置的两项为 null。 */
+  disposedBy: string | null;
+  disposedAt: string | null;
+  /** 处置备注,只存面板。 */
+  note: string | null;
 };
 
 type RunsPage = { runs: RunItem[]; nextBefore: number | null };
@@ -63,6 +89,159 @@ export async function rerunRequest(run: {
   });
   if (!response.ok) throw new Error(await errorText(response));
   return `已触发 ${run.owner}/${run.repo} #${run.pullNumber} 的新一轮审查`;
+}
+
+/**
+ * 面板处置一条 Finding。写 Forge 与落库都在服务端一次做完,备注为空即保留原有那条。
+ */
+async function disposeRequest(input: {
+  id: number;
+  disposition: "resolved" | "unresolved";
+  note: string;
+}): Promise<void> {
+  const note = input.note.trim();
+  const response = await api(
+    `/findings/${input.id}/${input.disposition === "resolved" ? "resolve" : "unresolve"}`,
+    { method: "POST", body: JSON.stringify(note === "" ? {} : { note }) },
+  );
+  if (!response.ok) throw new Error(await errorText(response));
+}
+
+const SEVERITY_COLOR = { P0: "red", P1: "amber", P2: "gray" } as const;
+
+/**
+ * 详情面板里的一条 Finding:正文、严重度、类别、文件与行、跳到 Forge 看原版的链接,
+ * 加上行内处置。
+ *
+ * 处置成功后让时间流那几份查询失效,进度条与列表跟着一起变——处置进度是同一批 finding
+ * 行算出来的,只改本地状态会让两个数字对不上。
+ */
+function FindingRow({ finding, canDispose }: { finding: RunFinding; canDispose: boolean }) {
+  const queryClient = useQueryClient();
+  const [note, setNote] = useState("");
+  const [composing, setComposing] = useState(false);
+  const resolved = finding.disposition === "resolved";
+  const dispose = useMutation({
+    mutationFn: disposeRequest,
+    onSuccess: () => {
+      setComposing(false);
+      setNote("");
+      // 时间流、仓库详情与范围审查详情各读一份轮次投影,处置改的是同一批行。
+      for (const key of [["runs"], ["repo-runs"], ["range-review"]]) {
+        void queryClient.invalidateQueries({ queryKey: key });
+      }
+    },
+  });
+
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-overlay-line px-4 py-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          {resolved ? (
+            <CheckCircledIcon className="size-4 shrink-0 text-success" aria-label="已处置" />
+          ) : (
+            <Badge color={SEVERITY_COLOR[finding.severity]} variant="soft" radius="full">
+              {finding.severity}
+            </Badge>
+          )}
+          <Badge color="gray" variant="soft" radius="full">{finding.category}</Badge>
+          <span className="min-w-0 break-all font-mono text-sm text-text-muted">
+            {finding.file}:{finding.line}
+          </span>
+        </div>
+        {finding.commentHtmlUrl === null ? null : (
+          <Tooltip content="在 Forge 上看这条原评论">
+            <IconButton size="1" variant="ghost" color="gray" radius="full" asChild>
+              <a href={finding.commentHtmlUrl} target="_blank" rel="noreferrer" aria-label="看 Forge 上的原评论">
+                <ExternalLinkIcon />
+              </a>
+            </IconButton>
+          </Tooltip>
+        )}
+      </div>
+
+      <p
+        className={`text-base leading-relaxed break-words ${
+          resolved ? "text-text-muted line-through" : "text-text-secondary"
+        }`}
+      >
+        {finding.description}
+      </p>
+
+      {finding.disposedBy === null ? null : (
+        <p className="text-sm text-text-muted">
+          {resolved ? "已处置" : "撤回处置"} · {finding.disposedBy} ·{" "}
+          <span className="tabular-nums">{localDay(finding.disposedAt!)} {localClock(finding.disposedAt!)}</span>
+        </p>
+      )}
+      {finding.note === null ? null : (
+        <p className="rounded-lg bg-fill px-2.5 py-1.5 text-sm break-words text-text-secondary">
+          备注：{finding.note}
+        </p>
+      )}
+
+      {/* 正文里的 fallback 没有行级评论承载,Forge 上无从 resolve,面板也就不给动作。 */}
+      {finding.commentId === null ? (
+        <p className="text-sm text-text-muted">这条只在 review 正文里，没有可处置的评论。</p>
+      ) : canDispose ? (
+        <div className="flex flex-col gap-2">
+          {composing ? (
+            <TextField.Root
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              maxLength={500}
+              placeholder="处置备注（可选，只存面板）"
+              aria-label="处置备注"
+            />
+          ) : null}
+          <div className="flex items-center gap-2">
+            {resolved ? (
+              <Button
+                variant="soft"
+                color="gray"
+                size="1"
+                highContrast
+                disabled={dispose.isPending}
+                onClick={() => dispose.mutate({ id: finding.id, disposition: "unresolved", note })}
+              >
+                撤回处置
+              </Button>
+            ) : composing ? (
+              <>
+                <Button
+                  variant="solid"
+                  size="1"
+                  disabled={dispose.isPending}
+                  onClick={() => dispose.mutate({ id: finding.id, disposition: "resolved", note })}
+                >
+                  {dispose.isPending ? "处置中…" : "确认处置"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  color="gray"
+                  size="1"
+                  highContrast
+                  onClick={() => { setComposing(false); setNote(""); }}
+                >
+                  取消
+                </Button>
+              </>
+            ) : (
+              <Button variant="soft" color="gray" size="1" highContrast onClick={() => setComposing(true)}>
+                处置
+              </Button>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {dispose.isError ? (
+        <p role="alert" className="text-sm break-words text-danger">
+          {(dispose.error as Error).message}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 /**
@@ -251,6 +430,7 @@ function RunModelChips({ run }: { run: RunItem }) {
 export function RunDetailPanel({
   run,
   canRerun,
+  canDispose,
   rerunning,
   pullUrl,
   onRerun,
@@ -260,6 +440,8 @@ export function RunDetailPanel({
 }: {
   run: RunItem;
   canRerun: boolean;
+  /** 有 `finding:dispose` 权限时行内出现处置动作。 */
+  canDispose: boolean;
   rerunning: boolean;
   /** pull request 地址;没有配 Forge 基址时是 null,那一格不渲染。 */
   pullUrl: string | null;
@@ -402,6 +584,11 @@ export function RunDetailPanel({
                     {entry.failure}
                   </p>
                 )}
+                {run.findings
+                  .filter((finding) => finding.model === entry.model)
+                  .map((finding) => (
+                    <FindingRow key={finding.id} finding={finding} canDispose={canDispose} />
+                  ))}
               </section>
             ))
           )}
@@ -423,15 +610,14 @@ export function RunDetailPanel({
         {canRerun || pullUrl !== null ? (
           <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-overlay-line px-6 py-3.5">
             {/*
-              处置只在 pull request 上做,面板自己改不了 resolve 状态。这一格是「看完
-              发现,去处置」的唯一出口——少了它,面板报出的待处置数就是一个人点不进
-              去的数字。
+              处置在面板行内做,这一格留给「去看原版」:整轮 review 的上下文、别人的
+              讨论与代码本身都在那边,单条 Finding 的链接给不出这些。
             */}
             {pullUrl === null ? <span /> : (
               <Button asChild variant="soft" color="gray" size={{ initial: "3", sm: "2" }}>
                 <a href={pullUrl} target="_blank" rel="noreferrer">
                   <ExternalLinkIcon aria-hidden />
-                  去 pull request 处置
+                  去 pull request 看原版
                 </a>
               </Button>
             )}
@@ -452,7 +638,7 @@ export function RunDetailPanel({
   );
 }
 
-export function RunsPage({ canRerun }: { canRerun: boolean }) {
+export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispose: boolean }) {
   // 只为拿 Forge 基址,好把每一轮指回它的 pull request。与壳共用同一份会话缓存,
   // 不产生额外请求。
   const session = useQuery({ queryKey: ["session"], queryFn: loadPanelSession });
@@ -724,6 +910,7 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
         <RunDetailPanel
           run={openedRun}
           canRerun={canRerun}
+          canDispose={canDispose}
           rerunning={rerun.isPending}
           pullUrl={session.data === undefined || session.data === null ? null : pullRequestUrl(session.data, openedRun)}
           onOpenOther={setOpenedRunId}

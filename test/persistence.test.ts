@@ -646,11 +646,20 @@ test("时间流带上每条 Finding 的 Forge 评论 id 与链接", async () => 
   store.close();
   assert.deepEqual(run.findings, [
     {
+      id: run.findings[0]!.id,
       model: "model-a",
       file: FINDING.file,
       line: FINDING.line,
+      severity: FINDING.severity,
+      category: FINDING.category,
+      description: FINDING.description,
+      disposition: "unknown",
+      placement: "inline",
       commentId: published.id,
       commentHtmlUrl: published.htmlUrl,
+      disposedBy: null,
+      disposedAt: null,
+      note: null,
     },
   ]);
 });
@@ -746,13 +755,23 @@ test("升级前落的 finding 行读得出来,评论 id 与链接为空", () => 
   const store = openStore(db.path);
   const run = store.listRuns({ limit: 10 })[0]!;
   store.close();
+  // 升级前的表连处置人、处置时间与处置备注三列都没有,补列之后旧行三项都是空。
   assert.deepEqual(run.findings, [
     {
+      id: run.findings[0]!.id,
       model: "legacy",
       file: "src/calc.js",
       line: 6,
+      severity: "P0",
+      category: "bug",
+      description: "旧行",
+      disposition: "unknown",
+      placement: "inline",
       commentId: null,
       commentHtmlUrl: null,
+      disposedBy: null,
+      disposedAt: null,
+      note: null,
     },
   ]);
 });

@@ -341,11 +341,11 @@ function RangeReviewDetailPanel({
 
         {containerUrl === null ? null : (
           <footer className="flex shrink-0 items-center justify-end gap-3 border-t border-overlay-line px-6 py-3.5">
-            {/* 处置仍然发生在 Forge 的 pull request 上,这一格是那个出口。 */}
+            {/* 处置在评审记录的详情面板行内做,这一格留给「去看原版」。 */}
             <Button asChild variant="soft" color="gray" size={{ initial: "3", sm: "2" }}>
               <a href={containerUrl} target="_blank" rel="noreferrer">
                 <ExternalLinkIcon aria-hidden />
-                去 pull request 处置
+                去 pull request 看原版
               </a>
             </Button>
           </footer>
