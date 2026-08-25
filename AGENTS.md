@@ -202,7 +202,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 - 2026-08-24: 管理面板的 Radix UI 迁移选定“发布门禁看板”视觉方向。Radix Themes 统一通用视觉,Radix Primitives 补行为,Radix Icons 统一业务图标；模型服务、仓库与审查策略共用同一 `MasterListItem` 深色选中规则。本条取代同日仅允许模型服务 provider 使用实心选中态的旧限制。
 
-- 2026-08-25: 完成范围审查的 grilling。解除 ADR 0001 的「必须走 PR 流程」准入约束:人可在面板指定 base 与比较项发起范围审查,由 MultiReviewer 自建的容器 PR 承载行内 Finding 与 Disposition,见 ADR 0012;代码已改动且未再报出的 Finding 自动 resolve 并以独立处置值「已改动」分开统计,见 ADR 0013。`CONTEXT.md` 新增范围审查、比较项、容器 PR、审查完成、处置备注词条。尚未实现。同日封存 GitHub 实现,见 ADR 0014。共识收拢成 spec [范围审查：容器 PR 承载、面板处置与「已改动」自动处置](https://github.com/kassol/MultiReviewer/issues/152)(`ready-for-agent`),下一步 `/to-tickets`。
+- 2026-08-25: 完成范围审查的 grilling。解除 ADR 0001 的「必须走 PR 流程」准入约束:人可在面板指定 base 与比较项发起范围审查,由 MultiReviewer 自建的容器 PR 承载行内 Finding 与 Disposition,见 ADR 0012;代码已改动且未再报出的 Finding 自动 resolve 并以独立处置值「已改动」分开统计,见 ADR 0013。`CONTEXT.md` 新增范围审查、比较项、容器 PR、审查完成、处置备注词条。尚未实现。同日封存 GitHub 实现,见 ADR 0014。共识收拢成 spec [范围审查：容器 PR 承载、面板处置与「已改动」自动处置](https://github.com/kassol/MultiReviewer/issues/152)(`ready-for-agent`),拆成 8 张子 issue #153–#160,阻塞关系用 GitHub 原生 issue dependencies 表示;#153、#154 两张预重构可立即开工。
 
 - 2026-08-24: 完成管理面板迁移到 Radix UI 前的源码与官方能力研究。盘点 46 个 shadcn 基础组件、56 个项目组件、22 种 Lucide 图标及浏览器原生控件，明确 Radix Themes、Primitives 与 Icons 的职责边界；后续以 `DateRangePicker` 与 `EditableModelCombobox` 收口 Calendar 和可搜索手填行为。
 
