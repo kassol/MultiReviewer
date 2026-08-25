@@ -473,6 +473,7 @@ const reposRoute = protectedPage("/repos", "repo:read", () => {
   return (
     <ReposPage
       canWrite={hasPermission(session, "repo:write")}
+      canCreate={hasPermission(session, "review:create")}
       canReadModels={hasPermission(session, "model:read")}
       canReadReviews={hasPermission(session, "review:read")}
       canRerun={hasPermission(session, "review:rerun")}
@@ -486,6 +487,7 @@ const runsRoute = protectedPage("/runs", "review:read", () => {
     <RunsPage
       canRerun={hasPermission(session, "review:rerun")}
       canDispose={hasPermission(session, "finding:dispose")}
+      canCreate={hasPermission(session, "review:create")}
     />
   );
 });

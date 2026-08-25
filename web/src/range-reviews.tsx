@@ -8,7 +8,7 @@ import {
   CrossCircledIcon,
   ExternalLinkIcon,
 } from "@radix-ui/react-icons";
-import { AlertDialog, Callout, Dialog, Flex, IconButton, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
+import { AlertDialog, Callout, Dialog, Flex, IconButton, Skeleton, Text, TextField } from "@radix-ui/themes";
 
 import { CommitChip } from "@/components/commit-chip";
 import { DetailPanel } from "@/components/detail-panel";
@@ -21,6 +21,7 @@ import { Button } from "@/components/theme-button";
 import { localMinute } from "@/lib/time";
 
 import { api, errorText, fetchJson } from "./api.ts";
+import { RangeReviewLaunch } from "./range-review-launch.tsx";
 import { runStatus, type RunItem } from "./runs.tsx";
 import { loadPanelSession, pullRequestUrl } from "./session.ts";
 import { StageRound, StageSummaryView } from "./stage-summary.tsx";
@@ -30,6 +31,8 @@ export type RangeReview = {
   id: number;
   owner: string;
   repo: string;
+  /** 发起时给的标题(issue #177);升级前的旧记录是 null,按 `#编号` 显示。 */
+  title: string | null;
   baseSha: string;
   comparisonSha: string;
   state: "in-progress" | "completed" | "failed";
@@ -51,8 +54,6 @@ export type RangeReviewComparison = {
   recordedBy: string;
   recordedAt: string;
 };
-
-type RepoRow = { repoId: number; owner: string; repo: string };
 
 const STATE_LABEL: Record<RangeReview["state"], { tone: StatusTone; label: string }> = {
   "in-progress": { tone: "running", label: "进行中" },
@@ -83,7 +84,6 @@ export function RangeReviewsPage({
         ? 10_000
         : false,
   });
-  const [creating, setCreating] = useState(false);
   const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
 
   // 打开哪一条记在地址里:链接能指到具体一个阶段,浏览器后退键能收起详情。
@@ -119,19 +119,9 @@ export function RangeReviewsPage({
               })}
           actions={
             canCreate ? (
-              <Dialog.Root open={creating} onOpenChange={setCreating}>
-                <Dialog.Trigger>
-                  <Button variant="solid" className="shadow-accent" size={{ initial: "3", sm: "2" }}>
-                    发起范围审查
-                  </Button>
-                </Dialog.Trigger>
-                <CreateDialogContent
-                  onCreated={(text) => {
-                    setFeedback({ text, isError: false });
-                    setCreating(false);
-                  }}
-                />
-              </Dialog.Root>
+              <RangeReviewLaunch
+                onLaunched={(text) => setFeedback({ text, isError: false })}
+              />
             ) : undefined
           }
         />
@@ -168,7 +158,7 @@ export function RangeReviewsPage({
                 titleAs="h2"
                 description={
                   canCreate
-                    ? "选一个已注册仓库，填 base commit 与比较项即可发起，不需要仓库里存在 pull request。"
+                    ? "选一个已注册仓库，填标题、base commit 与比较项即可发起，不需要仓库里存在 pull request。"
                     : "发起范围审查需要「评审 · 发起」权限，请联系系统管理员。"
                 }
                 action={
@@ -191,10 +181,13 @@ export function RangeReviewsPage({
                   className="group flex items-center gap-3 border-t border-line px-5 py-3 first:border-t-0"
                 >
                   <span className="flex min-w-0 flex-1 flex-col gap-px">
+                    {/* 名字是发起时填的标题,升级前的旧记录没有,显示它自己的编号。 */}
                     <span className="truncate text-lg font-semibold group-data-[selected=true]:font-bold">
-                      {item.owner}/{item.repo}
+                      {item.title ?? `#${item.id}`}
                     </span>
                     <span className="flex flex-wrap items-center gap-x-1.5 text-base font-normal text-text-muted">
+                      <span className="break-all">{item.owner}/{item.repo}</span>
+                      <span aria-hidden>·</span>
                       <CommitChip sha={item.baseSha} />
                       <span aria-hidden>..</span>
                       <CommitChip sha={item.comparisonSha} />
@@ -291,9 +284,11 @@ function RangeReviewDetailPanel({
         <>
           <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
           <Dialog.Title className="!mb-0 min-w-0 !text-3xl !font-extrabold !tracking-[-0.02em] break-all">
-            {rangeReview.owner}/{rangeReview.repo}
+            {rangeReview.title ?? `#${rangeReview.id}`}
           </Dialog.Title>
           <div className="flex flex-wrap items-center gap-1.5 text-base text-text-muted">
+            <span className="break-all">{rangeReview.owner}/{rangeReview.repo}</span>
+            <span aria-hidden>·</span>
             <span className="break-all">{rangeReview.createdBy}</span>
             <span aria-hidden>·</span>
             <span className="tabular-nums">{localMinute(rangeReview.createdAt)}</span>
@@ -584,170 +579,6 @@ function AdvanceDialogContent({
             size={{ initial: "3", sm: "1" }}
             className="max-sm:min-h-11 max-sm:min-w-11"
             aria-label="关闭推进比较项"
-          >
-            <Cross2Icon aria-hidden />
-          </IconButton>
-        </Dialog.Close>
-      </div>
-    </Dialog.Content>
-  );
-}
-
-/**
- * 发起表单。
- *
- * 同仓库同 base 已经有进行中的时候服务端回 409 并要求确认:那一档不当错误提示,改成
- * 把提交按钮换成「仍然发起」,再点一次带确认标志重发(#152 的 user story 3、4)。
- */
-function CreateDialogContent({ onCreated }: { onCreated: (text: string) => void }) {
-  const repos = useQuery({ queryKey: ["repos"], queryFn: () => fetchJson<RepoRow[]>("/repos") });
-  const queryClient = useQueryClient();
-  const [repoId, setRepoId] = useState<string>("");
-  const [base, setBase] = useState("");
-  const [comparison, setComparison] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [needsConfirmation, setNeedsConfirmation] = useState(false);
-
-  const rows = repos.data ?? [];
-  const picked = rows.find((row) => String(row.repoId) === repoId) ?? null;
-
-  const create = useMutation({
-    mutationFn: async (confirm: boolean) => {
-      const response = await api("/range-reviews", {
-        method: "POST",
-        body: JSON.stringify({
-          owner: picked!.owner,
-          repo: picked!.repo,
-          base: base.trim(),
-          comparison: comparison.trim(),
-          ...(confirm ? { confirm: true } : {}),
-        }),
-      });
-      if (response.status === 409) {
-        const body = (await response.json().catch(() => null)) as {
-          error?: string;
-          needsConfirmation?: boolean;
-        } | null;
-        if (body?.needsConfirmation === true) {
-          return { reminder: body.error ?? "同一个 base 上已经有进行中的范围审查" };
-        }
-        throw new Error(body?.error ?? "请求失败(409)");
-      }
-      if (!response.ok) throw new Error(await errorText(response));
-      return { reminder: null };
-    },
-    onSuccess: (result) => {
-      if (result.reminder !== null) {
-        setNeedsConfirmation(true);
-        setError(result.reminder);
-        return;
-      }
-      void queryClient.invalidateQueries({ queryKey: RANGE_REVIEWS_QUERY_KEY });
-      onCreated(`已发起 ${picked!.owner}/${picked!.repo} 的范围审查，第一轮审查开始运行`);
-    },
-    onError: (failure: Error) => {
-      setNeedsConfirmation(false);
-      setError(failure.message);
-    },
-  });
-
-  const ready = picked !== null && base.trim() !== "" && comparison.trim() !== "";
-
-  return (
-    <Dialog.Content aria-describedby={undefined} maxWidth="560px" size={{ initial: "2", sm: "3" }}>
-      <form
-        className="flex min-h-0 flex-col gap-3"
-        aria-busy={create.isPending}
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!ready) return;
-          create.mutate(needsConfirmation);
-        }}
-      >
-        <Dialog.Title size="4" mb="1" className="pr-9">发起范围审查</Dialog.Title>
-
-        <label className="flex flex-col gap-1.5">
-          <Text as="span" size="2" weight="medium">仓库</Text>
-          <Select.Root
-            value={repoId}
-            onValueChange={(next) => {
-              setRepoId(next);
-              setNeedsConfirmation(false);
-            }}
-            size={{ initial: "3", sm: "2" }}
-          >
-            <Select.Trigger placeholder="选一个已注册仓库" aria-label="仓库" />
-            <Select.Content>
-              {rows.map((row) => (
-                <Select.Item key={row.repoId} value={String(row.repoId)}>
-                  {row.owner}/{row.repo}
-                </Select.Item>
-              ))}
-            </Select.Content>
-          </Select.Root>
-        </label>
-
-        <label className="flex flex-col gap-1.5">
-          <Text as="span" size="2" weight="medium">base commit</Text>
-          <TextField.Root
-            value={base}
-            onChange={(event) => {
-              setBase(event.target.value);
-              setNeedsConfirmation(false);
-            }}
-            placeholder="这个阶段不变的基准 commit sha"
-            spellCheck={false}
-            className="font-mono"
-            size={{ initial: "3", sm: "2" }}
-          />
-        </label>
-
-        <label className="flex flex-col gap-1.5">
-          <Text as="span" size="2" weight="medium">比较项</Text>
-          <TextField.Root
-            value={comparison}
-            onChange={(event) => setComparison(event.target.value)}
-            placeholder="当前被审的 commit sha，必须是 base 的后代"
-            spellCheck={false}
-            className="font-mono"
-            size={{ initial: "3", sm: "2" }}
-          />
-        </label>
-
-        <p className="text-sm text-text-muted">
-          MultiReviewer 会在 Forge 上自建一个永不合并的 pull request 承载 Finding。
-        </p>
-        {error === null ? null : (
-          <p role="alert" className={needsConfirmation ? "text-warning" : "text-danger"}>
-            {error}
-          </p>
-        )}
-
-        <Flex gap="3" mt="1" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
-          <Dialog.Close>
-            <Button type="button" variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>
-              取消
-            </Button>
-          </Dialog.Close>
-          <Button
-            type="submit"
-            variant="solid"
-            className="shadow-accent"
-            size={{ initial: "4", sm: "2" }}
-            disabled={!ready || create.isPending}
-          >
-            {create.isPending ? "发起中…" : needsConfirmation ? "仍然发起" : "发起"}
-          </Button>
-        </Flex>
-      </form>
-      <div className="absolute top-3 right-3">
-        <Dialog.Close>
-          <IconButton
-            variant="ghost"
-            color="gray"
-            size={{ initial: "3", sm: "1" }}
-            className="max-sm:min-h-11 max-sm:min-w-11"
-            aria-label="关闭发起范围审查"
           >
             <Cross2Icon aria-hidden />
           </IconButton>

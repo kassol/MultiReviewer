@@ -81,6 +81,7 @@ import {
   type ModelServiceRecord,
   type ModelServiceVersionCommit,
   type ModelSupplementSource,
+  type RangeReviewRecord,
   type RepoKey,
   type Store,
 } from "../review/store.ts";
@@ -1484,6 +1485,12 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     access: "review:create",
     handler: ({ req, res, deps, caller }) =>
       handleCreateRangeReview(req, res, deps, caller!.username),
+  },
+  {
+    method: "GET",
+    pattern: "/range-reviews/prefill",
+    access: "review:create",
+    handler: ({ req, res, deps }) => handleRangeReviewPrefill(req, res, deps),
   },
   {
     method: "GET",
@@ -4488,6 +4495,36 @@ function handleRangeReviews(
   return sendJson(res, 200, { rangeReviews });
 }
 
+/**
+ * 发起表单打开时的 base 预填值(issue #177):同一仓库最近一个审查完成的范围审查最后
+ * 审到的那个比较项。连续两个阶段因此首尾相接,人不必自己回去找上一段审到哪里。
+ *
+ * 「最近」按完成时刻算,不按发起先后:先发起的那个完全可能后完成。没有已完成的范围
+ * 审查时回 null,表单留空——一个无意义的默认值比空着更容易把人带偏。
+ */
+function handleRangeReviewPrefill(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): void {
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+  const owner = query.get("owner");
+  const repo = query.get("repo");
+  if (owner === null || repo === null) {
+    return sendJson(res, 400, { error: "owner 与 repo 都要给" });
+  }
+  const completed = withStore(deps.dbPath, (store) =>
+    store.listRangeReviews({ owner, repo, state: "completed" }),
+  );
+  let latest: RangeReviewRecord | undefined;
+  for (const record of completed) {
+    if (latest === undefined || (record.completedAt ?? "") > (latest.completedAt ?? "")) {
+      latest = record;
+    }
+  }
+  return sendJson(res, 200, { base: latest?.comparisonSha ?? null });
+}
+
 /** 一个范围审查的详情:记录本身加它名下的轮次。轮次与时间流同一份投影。 */
 function handleRangeReview(
   res: ServerResponse,
@@ -4523,6 +4560,7 @@ async function handleCreateRangeReview(
   const payload = safeParse(body) as {
     owner?: unknown;
     repo?: unknown;
+    title?: unknown;
     base?: unknown;
     comparison?: unknown;
     confirm?: unknown;
@@ -4531,12 +4569,18 @@ async function handleCreateRangeReview(
     payload === null ||
     typeof payload.owner !== "string" ||
     typeof payload.repo !== "string" ||
+    typeof payload.title !== "string" ||
     typeof payload.base !== "string" ||
     typeof payload.comparison !== "string"
   ) {
     return sendJson(res, 400, {
-      error: 'body 要是 {"owner", "repo", "base", "comparison"} 形状的 JSON',
+      error: 'body 要是 {"owner", "repo", "title", "base", "comparison"} 形状的 JSON',
     });
+  }
+  // 标题是这个阶段在评审记录里的名字(CONTEXT.md 范围审查),空白等于没给。
+  const title = payload.title.trim();
+  if (title === "") {
+    return sendJson(res, 400, { error: "标题必填,发起后不可改" });
   }
   if (!COMMIT_SHA.test(payload.base) || !COMMIT_SHA.test(payload.comparison)) {
     return sendJson(res, 400, { error: "base 与比较项都要是 7 到 40 位的 commit sha" });
@@ -4607,6 +4651,7 @@ async function handleCreateRangeReview(
       repoId: registered.repoId,
       owner,
       repo,
+      title,
       baseSha,
       comparisonSha,
       createdBy,

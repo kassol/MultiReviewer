@@ -20,6 +20,7 @@ import { Button } from "@/components/theme-button";
 import { localClock, localDay } from "@/lib/time";
 
 import { api, errorText, fetchJson } from "./api.ts";
+import { RangeReviewLaunch } from "./range-review-launch.tsx";
 import { RunDiff } from "./run-diff.tsx";
 import { RunTrace } from "./run-trace.tsx";
 import { loadPanelSession, pullRequestUrl } from "./session.ts";
@@ -655,7 +656,16 @@ export function stagesPath(query: {
   return search === "" ? "/stages" : `/stages?${search}`;
 }
 
-export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispose: boolean }) {
+export function RunsPage({
+  canRerun,
+  canDispose,
+  canCreate,
+}: {
+  canRerun: boolean;
+  canDispose: boolean;
+  /** 「评审 · 发起」才看得见页头的发起范围审查入口(issue #177)。 */
+  canCreate: boolean;
+}) {
   const navigate = useNavigate();
   /*
    * 筛选与打开哪一行都记在地址里:链接要能指明列表的哪一片、能直接落到某一个阶段,
@@ -768,7 +778,16 @@ export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispo
           {...(stages.isPending
             ? {}
             : { description: `已加载 ${flat.length} 个审查阶段` })}
-          actions={<SummaryRate />}
+          actions={
+            <>
+              <SummaryRate />
+              {canCreate ? (
+                <RangeReviewLaunch
+                  onLaunched={(text) => setFeedback({ text, isError: false })}
+                />
+              ) : null}
+            </>
+          }
         />
 
         {feedback === null ? null : (

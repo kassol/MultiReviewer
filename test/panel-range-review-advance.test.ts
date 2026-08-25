@@ -79,6 +79,7 @@ async function startRangeReview(
   comparison: string,
 ): Promise<RangeReview> {
   const response = await h.api("POST", "/range-reviews", {
+    title: "范围审查标题",
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     base,
@@ -202,6 +203,7 @@ test("发起失败的范围审查不能推进", async () => {
     }),
   });
   const failed = await h.api("POST", "/range-reviews", {
+    title: "范围审查标题",
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     base: h.repo.baseSha,

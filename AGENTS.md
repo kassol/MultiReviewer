@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-25: 落地 issue #177(spec #172)。**范围审查从评审记录页头发起,并且有了自己的标题**:全局评审记录页头的入口先选仓库,仓库页评审记录区块的入口预填仓库,两处与范围审查页用的是同一张表单(`web/src/range-review-launch.tsx`)。表单三个字段——标题、base、比较项;标题必填且发起后不可改,`POST <前缀>/api/range-reviews` 缺标题或只给空白一律 400。`range_review` 补一列 `title`(升级前的旧行是 NULL,评审记录按 `#编号` 显示),`GET <前缀>/api/stages` 的范围审查行从此带着它。表单打开时读新的只读接口 `GET <前缀>/api/range-reviews/prefill?owner=&repo=`(权限格 `review:create`)预填 base:同仓库最近一个审查完成的范围审查的最终比较项,没有已完成的就留空。base 与比较项本票仍是手输 sha,提交列表选择器是 issue #178。「同仓库同 base 已有未完成范围审查时只提醒」一字未改。服务端细节见 `src/AGENTS.md`,面板见 `web/AGENTS.md`。
+
 - 2026-08-25: 落地 issue #174(spec #172)。**评审记录的每一行从一轮 Review Run 变成一个审查阶段**:pull request 阶段按仓库与 pull number 归并,范围审查阶段按范围审查自身标识归并;同一 pull request 推多少次、同一范围审查推进多少次,列表里都只有一行。行上是来源标记、名字(pull request 标题,没有的显示 `#编号`)、状态(pull request 关闭即已结束、重开回到进行中并延续同一阶段;范围审查以审查完成为已结束)、最新一轮的时间与阶段汇总三个数(待处置 / 人工已处置 / 已修复,口径与阶段汇总接口同源)。**筛选与分页在服务端**:状态与来源两个维度,默认全部;全局评审记录与仓库页的评审记录读同一个新接口 `GET <前缀>/api/stages`,一个阶段在两处是同一条记录。点开一行仍是现有的详情抽屉,打开的是这个阶段最新一轮(新增 `GET <前缀>/api/runs/{id}`)。按 Review Run 分页的 `GET <前缀>/api/runs` 保留,只剩总览的「今日运行」与「最近运行」在读它——那两处说的是轮次,不是阶段。权限沿用 `review:read`。独立详情页、页头发起范围审查与删除范围审查页面分别是 issue #175 / #177 / #180。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 
 - 2026-08-25: 落地 [issue #173](https://github.com/kassol/MultiReviewer/issues/173)(spec #172 的第一票)。**评审记录里的行终于有名字**:pull request 触发的每一轮 Review Run 在开跑时记下那个 pull request 的标题,列表里那一行显示它;范围审查触发的轮次不记标题(它的名字来自范围审查自身),升级前跑过的轮次也没有,这两类照旧显示 `#编号`。旧库升级只多一列,不回填历史。这是「评审记录以审查阶段为行」的预重构:阶段行需要一个名字,而标题此前不落库。`CONTEXT.md` 的 Review Run 词条补上这一句。服务端细节见 `src/AGENTS.md`,面板见 `web/AGENTS.md`。

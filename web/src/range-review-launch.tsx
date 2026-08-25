@@ -1,0 +1,270 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+
+import { Cross2Icon } from "@radix-ui/react-icons";
+import { Dialog, Flex, IconButton, Select, Text, TextField } from "@radix-ui/themes";
+
+import { Button } from "@/components/theme-button";
+
+import { api, errorText, fetchJson } from "./api.ts";
+
+type RepoRow = { repoId: number; owner: string; repo: string };
+
+/** 表单里选中的那个仓库。仓库页的入口一开始就有它,全局入口要人先选。 */
+type PickedRepo = { owner: string; repo: string };
+
+/**
+ * 「发起范围审查」入口(issue #177):一个按钮加它的表单,评审记录页头、仓库页的评审
+ * 记录区块与范围审查页共用同一份——三处发起的是同一件事,表单只该有一种样子。
+ *
+ * 给了 `repo` 就是仓库页那一档:仓库预填,表单里不再出现仓库选择。
+ */
+export function RangeReviewLaunch({
+  repo,
+  onLaunched,
+}: {
+  repo?: PickedRepo;
+  onLaunched: (text: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Dialog.Root open={open} onOpenChange={setOpen}>
+      <Dialog.Trigger>
+        <Button variant="solid" className="shadow-accent" size={{ initial: "3", sm: "2" }}>
+          发起范围审查
+        </Button>
+      </Dialog.Trigger>
+      <LaunchDialogContent
+        {...(repo === undefined ? {} : { repo })}
+        onLaunched={(text) => {
+          onLaunched(text);
+          setOpen(false);
+        }}
+      />
+    </Dialog.Root>
+  );
+}
+
+/**
+ * 发起表单。标题、base 与比较项三个字段,标题必填(CONTEXT.md 范围审查)。
+ *
+ * base 打开时按服务端给的预填值填上:同仓库最近一个审查完成的范围审查的最终比较项,
+ * 连续两个阶段因此首尾相接。人自己动过 base 就不再覆盖,换仓库时连同预填一起重来。
+ *
+ * 同仓库同 base 已经有进行中的时候服务端回 409 并要求确认:那一档不当错误提示,改成
+ * 把提交按钮换成「仍然发起」,再点一次带确认标志重发。
+ */
+function LaunchDialogContent({
+  repo,
+  onLaunched,
+}: {
+  repo?: PickedRepo;
+  onLaunched: (text: string) => void;
+}) {
+  const queryClient = useQueryClient();
+  const repos = useQuery({
+    queryKey: ["repos"],
+    queryFn: () => fetchJson<RepoRow[]>("/repos"),
+    enabled: repo === undefined,
+  });
+  const [repoId, setRepoId] = useState<string>("");
+  const [title, setTitle] = useState("");
+  const [base, setBase] = useState("");
+  const [baseTouched, setBaseTouched] = useState(false);
+  const [comparison, setComparison] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [needsConfirmation, setNeedsConfirmation] = useState(false);
+
+  const rows = repos.data ?? [];
+  const picked: PickedRepo | null =
+    repo ?? rows.find((row) => String(row.repoId) === repoId) ?? null;
+
+  const prefill = useQuery({
+    queryKey: ["range-review-prefill", picked?.owner, picked?.repo],
+    queryFn: () =>
+      fetchJson<{ base: string | null }>(
+        `/range-reviews/prefill?owner=${encodeURIComponent(picked!.owner)}&repo=${encodeURIComponent(picked!.repo)}`,
+      ),
+    enabled: picked !== null,
+  });
+  const suggestedBase = prefill.data?.base ?? null;
+  useEffect(() => {
+    if (suggestedBase === null || baseTouched) return;
+    setBase(suggestedBase);
+  }, [suggestedBase, baseTouched]);
+
+  const create = useMutation({
+    mutationFn: async (confirm: boolean) => {
+      const response = await api("/range-reviews", {
+        method: "POST",
+        body: JSON.stringify({
+          owner: picked!.owner,
+          repo: picked!.repo,
+          title: title.trim(),
+          base: base.trim(),
+          comparison: comparison.trim(),
+          ...(confirm ? { confirm: true } : {}),
+        }),
+      });
+      if (response.status === 409) {
+        const body = (await response.json().catch(() => null)) as {
+          error?: string;
+          needsConfirmation?: boolean;
+        } | null;
+        if (body?.needsConfirmation === true) {
+          return { reminder: body.error ?? "同一个 base 上已经有进行中的范围审查" };
+        }
+        throw new Error(body?.error ?? "请求失败(409)");
+      }
+      if (!response.ok) throw new Error(await errorText(response));
+      return { reminder: null };
+    },
+    onSuccess: (result) => {
+      if (result.reminder !== null) {
+        setNeedsConfirmation(true);
+        setError(result.reminder);
+        return;
+      }
+      // 新阶段要在三处列表里都出现:范围审查页、评审记录页与仓库页的评审记录区块。
+      void queryClient.invalidateQueries({ queryKey: ["range-reviews"] });
+      void queryClient.invalidateQueries({ queryKey: ["stages"] });
+      void queryClient.invalidateQueries({ queryKey: ["repo-stages"] });
+      onLaunched(`已发起 ${picked!.owner}/${picked!.repo} 的范围审查，第一轮审查开始运行`);
+    },
+    onError: (failure: Error) => {
+      setNeedsConfirmation(false);
+      setError(failure.message);
+    },
+  });
+
+  const ready =
+    picked !== null && title.trim() !== "" && base.trim() !== "" && comparison.trim() !== "";
+
+  return (
+    <Dialog.Content aria-describedby={undefined} maxWidth="560px" size={{ initial: "2", sm: "3" }}>
+      <form
+        className="flex min-h-0 flex-col gap-3"
+        aria-busy={create.isPending}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!ready) return;
+          create.mutate(needsConfirmation);
+        }}
+      >
+        <Dialog.Title size="4" mb="1" className="pr-9">发起范围审查</Dialog.Title>
+
+        {repo === undefined ? (
+          <label className="flex flex-col gap-1.5">
+            <Text as="span" size="2" weight="medium">仓库</Text>
+            <Select.Root
+              value={repoId}
+              onValueChange={(next) => {
+                setRepoId(next);
+                // 换了仓库,预填与提醒都跟着重来:它们说的是上一个仓库的事。
+                setBase("");
+                setBaseTouched(false);
+                setNeedsConfirmation(false);
+              }}
+              size={{ initial: "3", sm: "2" }}
+            >
+              <Select.Trigger placeholder="选一个已注册仓库" aria-label="仓库" />
+              <Select.Content>
+                {rows.map((row) => (
+                  <Select.Item key={row.repoId} value={String(row.repoId)}>
+                    {row.owner}/{row.repo}
+                  </Select.Item>
+                ))}
+              </Select.Content>
+            </Select.Root>
+          </label>
+        ) : (
+          <p className="text-base text-text-muted">
+            仓库 {repo.owner}/{repo.repo}
+          </p>
+        )}
+
+        <label className="flex flex-col gap-1.5">
+          <Text as="span" size="2" weight="medium">标题</Text>
+          <TextField.Root
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="这个阶段审的是什么，发起后不可改"
+            size={{ initial: "3", sm: "2" }}
+          />
+        </label>
+
+        <label className="flex flex-col gap-1.5">
+          <Text as="span" size="2" weight="medium">base commit</Text>
+          <TextField.Root
+            value={base}
+            onChange={(event) => {
+              setBase(event.target.value);
+              setBaseTouched(true);
+              setNeedsConfirmation(false);
+            }}
+            placeholder="这个阶段不变的基准 commit sha"
+            spellCheck={false}
+            className="font-mono"
+            size={{ initial: "3", sm: "2" }}
+          />
+          {suggestedBase !== null && !baseTouched ? (
+            <Text as="span" size="1" color="gray">
+              已填入上一个审查完成的范围审查的最终比较项。
+            </Text>
+          ) : null}
+        </label>
+
+        <label className="flex flex-col gap-1.5">
+          <Text as="span" size="2" weight="medium">比较项</Text>
+          <TextField.Root
+            value={comparison}
+            onChange={(event) => setComparison(event.target.value)}
+            placeholder="当前被审的 commit sha，必须是 base 的后代"
+            spellCheck={false}
+            className="font-mono"
+            size={{ initial: "3", sm: "2" }}
+          />
+        </label>
+
+        <p className="text-sm text-text-muted">
+          MultiReviewer 会在 Forge 上自建一个永不合并的 pull request 承载 Finding。
+        </p>
+        {error === null ? null : (
+          <p role="alert" className={needsConfirmation ? "text-warning" : "text-danger"}>
+            {error}
+          </p>
+        )}
+
+        <Flex gap="3" mt="1" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
+          <Dialog.Close>
+            <Button type="button" variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>
+              取消
+            </Button>
+          </Dialog.Close>
+          <Button
+            type="submit"
+            variant="solid"
+            className="shadow-accent"
+            size={{ initial: "4", sm: "2" }}
+            disabled={!ready || create.isPending}
+          >
+            {create.isPending ? "发起中…" : needsConfirmation ? "仍然发起" : "发起"}
+          </Button>
+        </Flex>
+      </form>
+      <div className="absolute top-3 right-3">
+        <Dialog.Close>
+          <IconButton
+            variant="ghost"
+            color="gray"
+            size={{ initial: "3", sm: "1" }}
+            className="max-sm:min-h-11 max-sm:min-w-11"
+            aria-label="关闭发起范围审查"
+          >
+            <Cross2Icon aria-hidden />
+          </IconButton>
+        </Dialog.Close>
+      </div>
+    </Dialog.Content>
+  );
+}

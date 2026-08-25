@@ -134,6 +134,7 @@ test("diff API:范围审查的一轮按阶段基准取范围", async () => {
   assert.equal(
     (
       await h.api("POST", "/range-reviews", {
+        title: "范围审查标题",
         owner: HARNESS_PR.owner,
         repo: HARNESS_PR.repo,
         base: h.repo.baseSha,
