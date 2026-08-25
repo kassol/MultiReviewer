@@ -911,6 +911,112 @@ test("承接的新位置落在 diff 之外:不承接,旧行不动", async () => 
   assert.deepEqual(forge.createdReviews[1]!.comments, [], "diff 之外的那条不该发行级评论");
 });
 
+/**
+ * 复核结论自带新位置(issue #170):模型只回 `present` 并给出新位置时,编排层按历史条目
+ * 在那个位置合成本轮的一条去承接,不再等模型自己重报——线上两次验证里它都不重报。
+ */
+
+/** SAME_LINE_CHANGE 之后 sub 的函数头。它在 -U3 的 hunk(3..9 行)内,承得住行级评论。 */
+const NEW_LINE = 5;
+
+test("复核判仍在并给出新位置:模型一条都没重报也照样承接", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  const old = forge.publishedComments[0]!;
+  forge.existingComments.push(...asPublished(forge, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [verdictReviewer("model-a", "present", [], NEW_LINE)],
+  });
+
+  assert.deepEqual(forge.resolvedIds, [old.id], "旧评论没有被 resolve");
+  assert.deepEqual(latestDispositions(db.path), ["continued", "unknown"]);
+
+  const second = forge.createdReviews[1]!;
+  assert.equal(second.comments.length, 1, "该在复核给出的新位置上发一条");
+  assert.equal(second.comments[0]!.line, NEW_LINE);
+  assert.match(second.comments[0]!.body, /延续自/);
+  // 合成的那条抄历史条目的正文与严重度,归属给出这个位置的那个模型。
+  assert.match(second.comments[0]!.body, /sub 多减了 1/);
+  assert.match(second.comments[0]!.body, /model-a/);
+  assert.deepEqual(continuedFrom(db.path), [null, old.htmlUrl]);
+  const synthesized = query(db.path, "SELECT severity, category FROM finding ORDER BY id")[1]!;
+  assert.equal(synthesized["severity"], "P0");
+  assert.equal(synthesized["category"], "bug");
+});
+
+test("复核给的新位置落在 diff 之外:不承接,旧行不动", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asPublished(forge, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
+
+  // 判据与模型自己重报那一档同一条(issue #167):diff 之外的位置没有 resolve 载体,
+  // 承接它等于旧评论被 resolve 掉、新位置却接不住。
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [verdictReviewer("model-a", "present", [], OUT_OF_DIFF_LINE)],
+  });
+
+  assert.deepEqual(forge.resolvedIds, [], "diff 之外的位置却把旧评论 resolve 了");
+  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
+  assert.deepEqual(continuedFrom(db.path), [null]);
+});
+
+test("模型同时重报了同内容的一条:以重报那条为准,不再合成", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  const old = forge.publishedComments[0]!;
+  forge.existingComments.push(...asPublished(forge, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
+
+  // 复核给的新位置是第 5 行,重报的那条在第 6 行。重报带着模型本轮的措辞,比抄旧正文
+  // 更贴近现在的代码,因此由它承接。
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [
+      verdictReviewer(
+        "model-a",
+        "present",
+        [{ ...FINDING, description: "减法仍然多减了 1" }],
+        NEW_LINE,
+      ),
+    ],
+  });
+
+  const second = forge.createdReviews[1]!;
+  assert.equal(second.comments.length, 1, "重报之外又合成了一条");
+  assert.equal(second.comments[0]!.line, FINDING.line);
+  assert.match(second.comments[0]!.body, /减法仍然多减了 1/);
+  assert.match(second.comments[0]!.body, /延续自/);
+  assert.deepEqual(forge.resolvedIds, [old.id]);
+  assert.deepEqual(continuedFrom(db.path), [null, old.htmlUrl]);
+});
+
+test("旧位置的代码没改动:复核给的新位置一并忽略,不产生延续", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asPublished(forge, false));
+  // 改的是 mul,旧 Finding 那处代码原样还在,旧指纹照样算得出。
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [verdictReviewer("model-a", "present", [], NEW_LINE)],
+  });
+
+  assert.deepEqual(forge.resolvedIds, [], "代码没改动却把旧评论 resolve 了");
+  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
+  assert.deepEqual(continuedFrom(db.path), [null]);
+  assert.equal(forge.createdReviews.length, 1, "没有该发的东西却又发了一轮 review");
+});
+
 test("已延续不进处置计数:旧那一轮的进度里不再有它", async () => {
   const { db } = await continueSecondRound();
 

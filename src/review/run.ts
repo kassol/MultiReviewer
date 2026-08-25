@@ -20,6 +20,7 @@ import {
   type MergedFinding,
 } from "./dedupe.ts";
 import type {
+  Category,
   Disposition,
   HistoryFinding,
   Reviewer,
@@ -474,6 +475,87 @@ function presentFindingIds(verdicts: readonly VerdictRecord[]): number[] {
   return [...present].sort((a, b) => a - b);
 }
 
+/**
+ * 复核判仍在时模型一并给出的新位置(issue #170)。行号在子进程里已经过 snippet 锚定
+ * 核对,这里只管配对。
+ */
+type PresentPosition = {
+  line: number;
+  /** 给出这个位置的模型。据它合成出来的那条 Finding 归属它。 */
+  model: string;
+  /** 严重度与分类取历史条目自己的:合成出来的是同一条 Finding 换了位置,不是新的一条。 */
+  severity: Severity;
+  category: Category;
+};
+
+/**
+ * 每条历史 Finding 的新位置。模型对同一条给出多个位置时取本轮配置顺序里靠前那个模型的
+ * ——`deps.reviewers` 的顺序在一轮里固定,结果因此与谁先跑完无关。
+ *
+ * 只收未处置历史条目上的「仍在」结论:已处置的本来就不要结论,已修与无法判断没有可承接
+ * 的位置。失败的 Reviewer 不算,它根本没复核。
+ */
+function presentPositions(
+  history: readonly HistoryFinding[],
+  outcomes: readonly ReviewerOutcome[],
+): Map<number, PresentPosition> {
+  const open = new Map(
+    history
+      .filter((entry) => entry.disposition === "unresolved" || entry.disposition === "unknown")
+      .map((entry) => [entry.id, entry]),
+  );
+  const positions = new Map<number, PresentPosition>();
+  for (const outcome of outcomes) {
+    if (outcome.failure !== undefined) continue;
+    for (const verdict of outcome.verdicts ?? []) {
+      if (verdict.verdict !== "present" || verdict.line === undefined) continue;
+      if (positions.has(verdict.findingId)) continue;
+      const entry = open.get(verdict.findingId);
+      // 升级前的历史行没有严重度与分类,合成不出一条完整的 Finding,这一条只能等重报。
+      if (entry?.severity === undefined || entry.category === undefined) continue;
+      positions.set(verdict.findingId, {
+        line: verdict.line,
+        model: outcome.model,
+        severity: entry.severity,
+        category: entry.category,
+      });
+    }
+  }
+  return positions;
+}
+
+/**
+ * 按历史条目的标题、正文、严重度与分类,在模型给出的新位置合成本轮的一条 Finding
+ * (issue #170)。它归属给出这个位置的模型:那个模型确实说了「这个问题此刻在这一行」。
+ *
+ * 影响与建议留空——旧条目的这两段没有进注入,呈现层本来就跳过空段。
+ */
+function continuedFinding(
+  candidate: ContinuationCandidate,
+  position: PresentPosition,
+): MergedFinding {
+  const said = {
+    model: position.model,
+    severity: position.severity,
+    category: position.category,
+    title: candidate.title,
+    description: candidate.description,
+    impact: "",
+    suggestion: "",
+  };
+  return {
+    file: candidate.file,
+    line: position.line,
+    severity: position.severity,
+    category: position.category,
+    title: candidate.title,
+    description: candidate.description,
+    impact: "",
+    suggestion: "",
+    attributions: [said],
+  };
+}
+
 /** 一次延续:旧 Finding 与本轮承接它的那个合并组。 */
 type Continuation = {
   candidate: ContinuationCandidate;
@@ -502,6 +584,12 @@ type Continuation = {
  * 的。三级排序让结果与模型报出的顺序无关,同一份输入永远给同一个答案。行距本身不设
  * 上限——复核已经说了这个问题仍在,内容也对得上,再加一道行距阈值只会让改动大的那些
  * 延续不上。一条新 Finding 至多承接一条旧 Identity——先来的那条(id 小的)拿走它。
+ *
+ * 本轮一条都没报出、而复核结论自带新位置的(issue #170),按历史条目在那个位置合成一条
+ * (`synthesized`,合并组序号接在本轮之后)。合成的那条同样要过 diff 那一道,理由与上面
+ * 一样。「代码已改写」这道判据在合成之前就走完了:旧指纹还算得出就说明那处代码原样还在,
+ * 这时模型给的新位置一并忽略,不做假延续。模型自己重报了同内容的一条时上面那一步已经挑
+ * 中它,不再合成——重报的那条带着模型本轮的措辞,比抄旧正文更贴近现在的代码。
  */
 function planContinuations(
   candidates: readonly ContinuationCandidate[],
@@ -509,10 +597,12 @@ function planContinuations(
   matched: readonly boolean[],
   diffRanges: DiffRanges,
   worktreePath: string,
-): Continuation[] {
+  positions: ReadonlyMap<number, PresentPosition>,
+): { plans: Continuation[]; synthesized: MergedFinding[] } {
   const byFile = new Map<string, Set<string>>();
   const claimed = new Set<number>();
   const plans: Continuation[] = [];
+  const synthesized: MergedFinding[] = [];
 
   for (const candidate of candidates) {
     let fingerprints = byFile.get(candidate.file);
@@ -539,13 +629,23 @@ function planContinuations(
           a.finding.line - b.finding.line ||
           a.groupIndex - b.groupIndex,
       )[0];
-    if (pick === undefined) continue;
+    if (pick === undefined) {
+      const position = positions.get(candidate.findingId);
+      if (position === undefined) continue;
+      if (!isInDiff(diffRanges, candidate.file, position.line)) continue;
+      plans.push({
+        candidate,
+        groupIndex: findings.length + synthesized.length,
+      });
+      synthesized.push(continuedFinding(candidate, position));
+      continue;
+    }
 
     claimed.add(pick.groupIndex);
     plans.push({ candidate, groupIndex: pick.groupIndex });
   }
 
-  return plans;
+  return { plans, synthesized };
 }
 
 /**
@@ -905,19 +1005,27 @@ export async function runReview(
     // 复核判仍在、旧指纹在本轮 head 上算不出的那些,由本轮在新位置报出的一条承接同一条
     // Finding Identity(CONTEXT.md 已延续,issue #167)。旧评论在这里就被 resolve 掉,
     // 新评论的正文随后带上它的链接;落库要等本轮的行插进去之后。
-    const continuations = failed
-      ? []
-      : await applyContinuations(
-          forge,
-          event,
-          planContinuations(
-            store.continuationCandidates(presentFindingIds(verdicts)),
-            findings,
-            matches.map((match) => match !== undefined),
-            diffRanges,
-            worktree.path,
-          ),
+    // 模型只回了复核结论、没有重报的那些,按它给出的新位置合成本轮的一条(issue #170)。
+    // 合成的接在本轮之后,跨轮匹配与指纹要同步补上——下面的分派循环按同一个下标读这三个
+    // 数组。它是本轮新报的一条,匹配一律记「没有折叠到历史评论上」。
+    const plan = failed
+      ? { plans: [], synthesized: [] }
+      : planContinuations(
+          store.continuationCandidates(presentFindingIds(verdicts)),
+          findings,
+          matches.map((match) => match !== undefined),
+          diffRanges,
+          worktree.path,
+          presentPositions(history, outcomes),
         );
+    for (const synthesized of plan.synthesized) {
+      findings.push(synthesized);
+      groupFingerprints.push(
+        contentFingerprint(worktree.path, synthesized.file, synthesized.line),
+      );
+      matches.push(undefined);
+    }
+    const continuations = failed ? [] : await applyContinuations(forge, event, plan.plans);
     const continuedFrom = new Map(
       continuations.map((plan) => [plan.groupIndex, plan.candidate.commentHtmlUrl]),
     );

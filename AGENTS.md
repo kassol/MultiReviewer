@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-25: 落地 [issue #170](https://github.com/kassol/MultiReviewer/issues/170)。延续(CONTEXT.md 已延续)不再依赖模型在新位置重报:Reviewer 复核判「仍在」时可以在同一次调用里给出该问题此刻所在的行与那一行的原文,平台核对位置后按历史条目在那里合成本轮的一条去承接同一条 Finding Identity。线上两次验证里模型回了「仍在」就不再重报,旧评论一直停在已经不存在的行上,这是那条链路缺的最后一环。模型同时重报同一处时以重报那条为准;代码没改动、或新位置落在本轮 diff 之外的,一律不承接。契约变化记在 ADR 0016,服务端细节见 `src/AGENTS.md`。
+
 - 2026-08-25: 完成审查轨迹的 grilling 并落地。Reviewer 的过程(assistant 文本、工具调用与参数、报出与被拒的 Finding、失败原因)与 Review Run 的编排事件(工作副本就绪、批次起止、每组 Finding 合并及判据、评论已发)以事件行落 `review_trace` 表,随 Review Run 永久保留;面板运行详情页新增「审查轨迹」分段,进行中的轮次经 SSE 实时推送、断线按序号续传,已结束的只读表。`CONTEXT.md` 新增「审查轨迹」词条,决策见 ADR 0017,spec 是 [issue #171](https://github.com/kassol/MultiReviewer/issues/171)。服务端细节见 `src/AGENTS.md`,面板见 `web/AGENTS.md`。
 
 - 2026-08-25: 完成评审记录归并的 grilling。评审记录改以审查阶段为行,pull request 与范围审查同列同形,范围审查不再有自己的页面;详情改为独立地址,默认阶段汇总加轮次时间线;发起与推进比较项改用基于服务端本地 clone 的分支加提交列表选择器,发起必填标题,base 预填上一个已完成范围审查的比较项。`CONTEXT.md` 新增「评审记录」词条并修订审查阶段、范围审查、比较项。共识收拢成 spec [评审记录以审查阶段为单位](https://github.com/kassol/MultiReviewer/issues/172)(`ready-for-agent`),拆成 8 张子 issue #173–#180,阻塞关系用 GitHub 原生 issue dependencies 表示;#173 可立即开工。尚未实现。

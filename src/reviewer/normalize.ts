@@ -107,11 +107,18 @@ const VERDICT: Record<string, ReviewVerdict> = {
 /**
  * 归一化一条复核结论。id 不是正整数即无从对应到历史条目,丢弃;词映射不上按
  * 「无法判断」收——保守优先,而漏给结论本来就是这一档(ADR 0016)。
+ *
+ * 新位置只在「仍在」这一档留着(issue #170):已修与无法判断都没有可承接的位置,
+ * 带着它只会让编排层在一处不成立的地方合成 Finding。行号不是正整数一律丢掉。
  */
 export function normalizeVerdict(raw: RawVerdict): FindingVerdict | undefined {
   if (!Number.isInteger(raw.id) || raw.id < 1) return undefined;
+  const verdict = VERDICT[canonical(String(raw.verdict))] ?? "unclear";
+  const keepLine =
+    verdict === "present" && Number.isInteger(raw.line) && (raw.line as number) >= 1;
   return {
     findingId: raw.id,
-    verdict: VERDICT[canonical(String(raw.verdict))] ?? "unclear",
+    verdict,
+    ...(keepLine ? { line: raw.line } : {}),
   };
 }
