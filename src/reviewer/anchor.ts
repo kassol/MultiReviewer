@@ -73,10 +73,6 @@ export function anchorReport(
   return { ok: true, line: anchored.line };
 }
 
-export type VerdictResult =
-  | { ok: true; line: number }
-  | { ok: false; message: string };
-
 /**
  * `review_prior_finding` 带新位置那一次调用的锚定判定,`message` 是打回时给模型的措辞。
  *
@@ -88,7 +84,7 @@ export type VerdictResult =
 export function anchorVerdict(
   lines: string[] | undefined,
   raw: { file: string; line: number; snippet: string | undefined },
-): VerdictResult {
+): ReportResult {
   const anchored =
     lines === undefined
       ? { ok: false as const, reason: `读不出 ${raw.file}。` }

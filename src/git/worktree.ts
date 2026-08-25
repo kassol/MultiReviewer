@@ -297,9 +297,17 @@ export async function ensureWorktree(options: RepoReadOptions): Promise<void> {
   );
 }
 
-/** 删掉仓库的工作副本(issue #184)。已经不在即当作已删:两者是同一个终态。 */
+/**
+ * 删掉仓库的工作副本(issue #184)。已经不在即当作已删:两者是同一个终态。
+ *
+ * 这个目录上还有准备在跑时先等它跑完——不论是注册后的后台准备还是一次投递触发的
+ * clone,边删边 clone 会让删除撞上刚写出来的文件。等的是 `ensureClone` 那份排队,
+ * 全部调用方都从那里过。
+ */
 export async function removeWorktree(cacheDir: string, ref: RepoRef): Promise<void> {
-  await rm(repoCachePath(cacheDir, ref), { recursive: true, force: true });
+  const path = repoCachePath(cacheDir, ref);
+  await preparingClones.get(path)?.catch(() => {});
+  await rm(path, { recursive: true, force: true });
 }
 
 /** commit 选择器里的一行。短 sha 取前 7 位,与容器 PR 标题、面板各处的写法一致。 */

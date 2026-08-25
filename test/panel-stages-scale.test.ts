@@ -354,14 +354,14 @@ test("几千个阶段:列表一页与详情一次的内容照旧,耗时不随阶
   );
 
   /*
-   * 库大了一百倍,同一个阶段的详情不该跟着变慢:它按标识直接查那一行。倍数放到两倍
-   * ——够宽松,慢机器上也不误报,但拦得住「先把全库阶段归并出来再从里面找一行」,那
-   * 一档下大库要慢好几倍。
+   * 库大了一百倍,同一个阶段的详情不该跟着变慢:它按标识直接查那一行。倍数放到三倍
+   * ——单次只有零点几毫秒,两倍会被计时噪声撞上;三倍仍拦得住「先把全库阶段归并出来
+   * 再从里面找一行」,那一档下大库要慢四倍以上。
    */
   const smallDetailMs = await fastest(() => detail(small, oldestRichStageId));
   const largeDetailMs = await fastest(() => detail(large, oldestRichStageId));
   assert.ok(
-    largeDetailMs < smallDetailMs * 2,
+    largeDetailMs < smallDetailMs * 3,
     `阶段详情:小库 ${smallDetailMs.toFixed(1)}ms,大库 ${largeDetailMs.toFixed(1)}ms`,
   );
 });

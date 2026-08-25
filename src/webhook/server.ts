@@ -5239,10 +5239,8 @@ async function handleRepoSearch(
 }
 
 /**
- * 正在后台准备的工作副本,按缓存目录与仓库名做键(issue #184)。
- *
- * 两用:重试入口据此告诉人「正在准备中」,移除据此等这一次跑完再删目录——边删边 clone
- * 会让删除撞上刚写出来的文件。键取的就是它们争的那个目录。
+ * 正在后台准备的工作副本,按缓存目录与仓库名做键(issue #184)。重试入口据此告诉人
+ * 「正在准备中」;目录本身的互斥与移除前的等待在 `git/worktree.ts` 里。
  */
 const preparingWorktrees = new Map<string, Promise<void>>();
 
@@ -5480,10 +5478,9 @@ async function handleRemove(
   withStore(deps.dbPath, (store) => store.removeRepo(repoId));
 
   // 工作副本随注册一起走(issue #184)。仓库改过名时两个名字下各可能有一份,现名与
-  // 注册时的名字各删一次;已经不在的那一份删起来是空操作。后台还在备副本时先等它
-  // 跑完:边删边 clone 会让删除撞上刚写出来的文件。
+  // 注册时的名字各删一次;已经不在的那一份删起来是空操作。目录上还有准备在跑时
+  // `removeWorktree` 自己会等它跑完。
   for (const target of [ref, { owner: record.owner, repo: record.repo }]) {
-    await preparingWorktrees.get(worktreeKey(deps.cacheDir, target));
     await removeWorktree(deps.cacheDir, target);
   }
   return send(res, 204);
