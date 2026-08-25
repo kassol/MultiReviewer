@@ -129,7 +129,8 @@ function historySection(history: readonly HistoryFinding[]): string {
   );
   const sections = [
     "",
-    "The following findings were already reported in this review stage. Do not report any of them again through report_finding.",
+    "The following findings were already reported in this review stage. Do not report any of them again through report_finding while the lines they point at are unchanged.",
+    "One exception: when the code of a still-open finding was rewritten or moved so that its original lines no longer exist but the problem is still there, give the verdict present AND report it once more through report_finding at its new line. That is how a finding follows the code; without the new report it stays pinned to a line that is gone.",
   ];
   if (open.length > 0) {
     sections.push(
