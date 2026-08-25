@@ -89,7 +89,8 @@ export function CommitPicker({
         <Text as="span" size="2" weight="medium">分支</Text>
         <Select.Root
           value={branch ?? ""}
-          onValueChange={setPicked}
+          // 受控值从占位的 "" 变成默认分支时 Radix 会回调一次 "",不能把它当成人选了空分支。
+          onValueChange={(name) => setPicked(name === "" ? null : name)}
           disabled={rows.length === 0}
           size={{ initial: "3", sm: "2" }}
         >

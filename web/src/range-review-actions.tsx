@@ -120,10 +120,13 @@ export function CompleteAction({
 export function AdvanceAction({
   rangeReview,
   disabled = false,
+  onAdvanced,
 }: {
   rangeReview: RangeReview;
   /** 已经审查完成的阶段按钮留着但不可用(issue #176)。 */
   disabled?: boolean;
+  /** 推进成功后通知外层:新一轮要过一会才建出来,页面据此续查。 */
+  onAdvanced?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -138,7 +141,13 @@ export function AdvanceAction({
           推进比较项
         </Button>
       </Dialog.Trigger>
-      <AdvanceDialogContent rangeReview={rangeReview} onAdvanced={() => setOpen(false)} />
+      <AdvanceDialogContent
+        rangeReview={rangeReview}
+        onAdvanced={() => {
+          setOpen(false);
+          onAdvanced?.();
+        }}
+      />
     </Dialog.Root>
   );
 }

@@ -91,17 +91,27 @@ export function StageDetailPage({
 }) {
   const navigate = useNavigate();
   const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
+  /*
+   * 重跑与推进都是 202 就回:新一轮要等工作副本就绪才落库,那一刻的重取看到的还是
+   * 「没有未完成的轮次」。动作成功后先按时间续查一段,轮次一出现就接回按状态续查。
+   * ponytail: 固定 90 秒的窗口,大仓库 clone 更久时人得手动刷新一次。
+   */
+  const [pollUntil, setPollUntil] = useState(0);
   const detail = useQuery({
     queryKey: ["stage-detail", stageId],
     queryFn: () => fetchJson<StageDetailBody>(`/stages/${encodeURIComponent(stageId)}`),
-    // 还有轮次没跑完就每 10 秒续查,全部结束即停:人最想看结果的正是这几分钟。
+    // 还有轮次没跑完、刚推进的比较项还没有轮次、或刚触发过动作,就每 10 秒续查,
+    // 全部结束即停:人最想看结果的正是这几分钟。
     refetchInterval: (query) =>
-      (query.state.data?.groups ?? []).some((group) =>
-        group.runs.some((run) => run.finishedAt === null && !run.failed),
-      )
+      (query.state.data?.groups ?? []).some(
+        (group) =>
+          group.runs.length === 0 ||
+          group.runs.some((run) => run.finishedAt === null && !run.failed),
+      ) || Date.now() < pollUntil
         ? 10_000
         : false,
   });
+  const armPolling = () => setPollUntil(Date.now() + 90_000);
   /*
    * 打开哪一轮记在地址里:链接能指到具体一轮,刷新之后仍停在它,浏览器后退键能回到
    * 阶段汇总。`file` 是阶段汇总跳过来时带的落点文件,回到汇总时跟着清掉。
@@ -164,6 +174,7 @@ export function StageDetailPage({
                 canCreate={canCreate}
                 canRerun={canRerun}
                 onFeedback={setFeedback}
+                onTriggered={armPolling}
               />
             }
           />
@@ -223,6 +234,7 @@ function StageActions({
   canCreate,
   canRerun,
   onFeedback,
+  onTriggered,
 }: {
   stage: StageItem;
   rangeReview?: RangeReview;
@@ -230,6 +242,8 @@ function StageActions({
   canCreate: boolean;
   canRerun: boolean;
   onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
+  /** 重跑或推进已被服务端接下:新一轮还要过一会才出现,外层据此续查。 */
+  onTriggered: () => void;
 }) {
   const queryClient = useQueryClient();
   const rerun = useMutation({
@@ -239,6 +253,7 @@ function StageActions({
         : rerunRequest({ owner: stage.owner, repo: stage.repo, pullNumber: stage.pullNumber! }),
     onSuccess: (text) => {
       onFeedback({ text, isError: false });
+      onTriggered();
       void queryClient.invalidateQueries({ queryKey: ["stage-detail"] });
     },
     onError: (error: Error) => onFeedback({ text: error.message, isError: true }),
@@ -268,7 +283,9 @@ function StageActions({
       {rangeReview === undefined ? null : (
         <>
           {canDispose ? <CompleteAction rangeReview={rangeReview} disabled={frozen} /> : null}
-          {canCreate ? <AdvanceAction rangeReview={rangeReview} disabled={frozen} /> : null}
+          {canCreate ? (
+            <AdvanceAction rangeReview={rangeReview} disabled={frozen} onAdvanced={onTriggered} />
+          ) : null}
         </>
       )}
     </>
