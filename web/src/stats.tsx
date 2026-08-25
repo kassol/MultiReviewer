@@ -15,8 +15,10 @@ import { cn } from "@/lib/utils";
 import { api, fetchJson } from "./api.ts";
 import { costPresentation, type UsageSummary } from "./usage-cost.ts";
 
+/** 处置率矩阵的一格:仓库 × category(ADR 0015)。 */
 export type Cell = {
-  model: string;
+  owner: string;
+  repo: string;
   category: string;
   /** 分子的人工那一列:人在面板或 Gitea 上 resolve 的。 */
   resolved: number;
@@ -27,20 +29,35 @@ export type Cell = {
   unknownOpen: number;
 };
 
+/**
+ * 一个模型报出过的 Finding 条数。模型这一维只剩这一个数:一条 Finding 由几个模型合报
+ * 时它们各加一,而处置由人决定,拿处置率给模型打分读不出意义(ADR 0015)。
+ */
+export type ModelParticipation = {
+  model: string;
+  findings: number;
+};
+
 type StatsResponse = {
   from: string;
   to: string;
   cells: Cell[];
+  models: ModelParticipation[];
   usage: UsageSummary | null;
   database: { fileBytes: number; tables: { name: string; rows: number }[] };
 };
+
+/** 矩阵那一维的显示名,也是行键。 */
+function repoName(cell: Cell): string {
+  return `${cell.owner}/${cell.repo}`;
+}
 
 /** 分母 = 已处置(人工 + 自动)+ 看过未 resolve + 已关闭 PR 上无人处置(ADR 0006)。 */
 function denominator(cell: Cell): number {
   return cell.resolved + cell.fixed + cell.unresolved + cell.unknownClosed;
 }
 
-/** 分子:人工与自动都算。两者的拆分在「按模型统计」那一段单列。 */
+/** 分子:人工与自动都算。两者的拆分在「按仓库统计」那一段单列。 */
 function disposed(cell: Cell): number {
   return cell.resolved + cell.fixed;
 }
@@ -72,7 +89,7 @@ function Rate({ resolved, total }: { resolved: number; total: number }) {
 /**
  * 矩阵表单元格的纯文本呈现(§7.8):不带进度条,分子分母永远同框,百分比压弱一档。
  * 分母为 0 时用「0/0 (—)」而不是空白——这一格确实有分类归属,只是这段时间没有样本,
- * 与「这个模型 × 分类组合从未出现过」(单元格整体缺失,上层直接渲染「—」)是两回事。
+ * 与「这个仓库 × 分类组合从未出现过」(单元格整体缺失,上层直接渲染「—」)是两回事。
  */
 function RateText({
   resolved,
@@ -100,7 +117,7 @@ function RateText({
 }
 
 /**
- * 一组 cell 求和。总处置率与逐模型处置率是同一个口径,只差过滤条件。
+ * 一组 cell 求和。总处置率与逐仓库处置率是同一个口径,只差过滤条件。
  *
  * `resolved` 是分子合计(人工 + 自动),`manual` 与 `auto` 是它的两列拆分。
  */
@@ -187,12 +204,13 @@ export function StatsPage() {
   });
 
   const cells = stats.data?.cells ?? [];
-  const models = [...new Set(cells.map((cell) => cell.model))].sort();
+  const repos = [...new Set(cells.map(repoName))].sort();
   const categories = [...new Set(cells.map((cell) => cell.category))].sort();
-  const byKey = new Map(cells.map((cell) => [`${cell.model}\n${cell.category}`, cell]));
-  const modelTotal = (model: string) => sum(cells.filter((cell) => cell.model === model));
-  // 矩阵合计行(全部模型)的总计,与逐模型合计同一口径,只是不按 model 过滤。
+  const byKey = new Map(cells.map((cell) => [`${repoName(cell)}\n${cell.category}`, cell]));
+  const repoTotal = (repo: string) => sum(cells.filter((cell) => repoName(cell) === repo));
+  // 矩阵合计行(全部仓库)的总计,与逐仓库合计同一口径,只是不按仓库过滤。
   const grandTotal = sum(cells);
+  const participation = stats.data?.models ?? [];
   const usageCost = costPresentation(stats.data?.usage);
 
   return (
@@ -204,7 +222,7 @@ export function StatsPage() {
               处置率
               <HelpTooltip
                 label="处置率计算方式"
-                content="处置率 = 已处置 Finding ÷ 可处置 Finding。已处置分人工与自动两列：人工是人点的 resolve，自动是系统判定已修复时处置的。同一处 Finding 只统计一次；无法关联到行级评论的 Finding 不计入。"
+                content="处置率 = 已处置 Finding ÷ 可处置 Finding，按仓库与分类分列。已处置分人工与自动两列：人工是人点的 resolve，自动是系统判定已修复时处置的。同一处 Finding 只统计一次，不论几个模型报出；无法关联到行级评论的 Finding 与已延续的都不计入。"
               />
             </span>
           }
@@ -259,26 +277,26 @@ export function StatsPage() {
           </section>
         )}
 
-        {models.length > 0 ? (
+        {repos.length > 0 ? (
           <section
-            aria-labelledby="model-rate-heading"
+            aria-labelledby="repo-rate-heading"
             className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card"
           >
             <div className="border-b border-line px-5 py-3.5">
-              <h2 id="model-rate-heading" className="text-2xl font-bold tracking-[-0.015em]">
-                按模型统计
+              <h2 id="repo-rate-heading" className="text-2xl font-bold tracking-[-0.015em]">
+                按仓库统计
               </h2>
             </div>
             <div className="divide-y divide-line">
-              {models.map((model) => {
-                const total = modelTotal(model);
+              {repos.map((repo) => {
+                const total = repoTotal(repo);
                 const pct = percent(total);
                 return (
                   <div
-                    key={model}
+                    key={repo}
                     className="grid gap-2 px-5 py-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(10rem,1fr)] sm:items-center sm:gap-4"
                   >
-                    <span className="break-all font-mono text-xs text-text-muted">{model}</span>
+                    <span className="break-all font-mono text-xs text-text-muted">{repo}</span>
                     <span className="font-mono text-6xl font-bold leading-[1.15] tracking-[-0.03em] tabular-nums">
                       {pct}%
                     </span>
@@ -304,7 +322,7 @@ export function StatsPage() {
           </section>
         ) : null}
 
-        {models.length === 0 && !stats.isPending && !stats.isError ? (
+        {repos.length === 0 && !stats.isPending && !stats.isError ? (
           <EmptyState
             title="当前时间范围暂无可统计的 Finding"
             titleAs="h2"
@@ -313,28 +331,28 @@ export function StatsPage() {
           />
         ) : null}
 
-        {models.length > 0 ? (
+        {repos.length > 0 ? (
           <section aria-labelledby="rate-matrix-heading" className="flex flex-col gap-2">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <h2 id="rate-matrix-heading" className="text-2xl font-bold tracking-[-0.015em]">
-                模型与分类
+                仓库与分类
               </h2>
               <p className="text-xs text-text-muted">每格显示已处置数量 / 分母（百分比）</p>
             </div>
             <div className="flex flex-col gap-2 lg:hidden">
-              {models.map((model) => {
-                const total = modelTotal(model);
+              {repos.map((repo) => {
+                const total = repoTotal(repo);
                 return (
                   <Collapsible.Root
-                    key={model}
-                    className="group/model-rate overflow-hidden rounded-lg border border-card-line bg-surface shadow-card"
+                    key={repo}
+                    className="group/repo-rate overflow-hidden rounded-lg border border-card-line bg-surface shadow-card"
                   >
                     <Collapsible.Trigger
                       type="button"
                       className="flex min-h-11 w-full cursor-pointer items-center gap-3 px-3 py-2.5 text-left outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset"
                     >
                       <div className="min-w-0 flex-1">
-                        <p className="break-all font-mono text-xs font-medium">{model}</p>
+                        <p className="break-all font-mono text-xs font-medium">{repo}</p>
                         <p className="mt-0.5 text-xs text-text-muted">展开查看全部分类</p>
                       </div>
                       <div className="w-32 shrink-0">
@@ -343,13 +361,13 @@ export function StatsPage() {
                       </div>
                       <ChevronDownIcon
                         aria-hidden
-                        className="size-4 shrink-0 text-text-muted transition-transform group-data-[state=open]/model-rate:rotate-180"
+                        className="size-4 shrink-0 text-text-muted transition-transform group-data-[state=open]/repo-rate:rotate-180"
                       />
                     </Collapsible.Trigger>
                     <Collapsible.Content>
                       <dl className="divide-y divide-line border-t border-line">
                         {categories.map((category) => {
-                          const cell = byKey.get(`${model}\n${category}`);
+                          const cell = byKey.get(`${repo}\n${category}`);
                           return (
                             <div key={category} className="grid grid-cols-[minmax(0,1fr)_8rem] items-start gap-3 px-3 py-2.5">
                               <dt className="break-words text-text-muted">{category}</dt>
@@ -369,17 +387,17 @@ export function StatsPage() {
                 );
               })}
             </div>
-            {/* 桌面矩阵表(§7.8):首列 220px 粘性,「合计」列走 accent tint,合计行(全部模型)走次级面。 */}
+            {/* 桌面矩阵表(§7.8):首列 220px 粘性,「合计」列走 accent tint,合计行(全部仓库)走次级面。 */}
             <Card size="1" className="hidden min-w-0 max-w-full overflow-hidden lg:block">
               <div className="-m-3">
                 <Table.Root size="2">
                   <caption className="sr-only">
-                    逐模型、逐类别的处置率。单元格内容为「已处置 / 可处置（处置率）」，末尾一行是全部模型的合计。
+                    逐仓库、逐类别的处置率。单元格内容为「已处置 / 可处置（处置率）」，末尾一行是全部仓库的合计。
                   </caption>
                   <Table.Header className="bg-sunken text-sm font-bold text-text-muted">
                     <Table.Row>
                       <Table.ColumnHeaderCell className="sticky left-0 z-20 w-[220px] min-w-[220px] border-r border-line bg-sunken">
-                        模型
+                        仓库
                       </Table.ColumnHeaderCell>
                       {categories.map((category) => (
                         <Table.ColumnHeaderCell key={category} className="text-right">
@@ -392,18 +410,18 @@ export function StatsPage() {
                     </Table.Row>
                   </Table.Header>
                   <Table.Body>
-                    {models.map((model) => {
-                      const total = modelTotal(model);
+                    {repos.map((repo) => {
+                      const total = repoTotal(repo);
                       return (
-                        <Table.Row key={model} className="group">
-                          {/* 行首是这一行的表头:屏幕阅读器念单元格时会带上模型名。 */}
+                        <Table.Row key={repo} className="group">
+                          {/* 行首是这一行的表头:屏幕阅读器念单元格时会带上仓库名。 */}
                           <Table.RowHeaderCell
                             className="sticky left-0 z-10 border-r border-line bg-card font-mono font-bold whitespace-nowrap group-hover:bg-sunken"
                           >
-                            {model}
+                            {repo}
                           </Table.RowHeaderCell>
                           {categories.map((category) => {
-                            const cell = byKey.get(`${model}\n${category}`);
+                            const cell = byKey.get(`${repo}\n${category}`);
                             return (
                               <Table.Cell key={category} className="min-w-32 text-right text-base">
                                 {cell === undefined ? (
@@ -422,10 +440,10 @@ export function StatsPage() {
                         </Table.Row>
                       );
                     })}
-                    {/* 合计行(全部模型):按分类对全部模型求和,数据直接派生自已加载的 cells,不发新请求。 */}
+                    {/* 合计行(全部仓库):按分类对全部仓库求和,数据直接派生自已加载的 cells,不发新请求。 */}
                     <Table.Row className="bg-sunken">
                       <Table.RowHeaderCell className="sticky left-0 z-10 border-r border-line bg-sunken font-bold">
-                        全部模型
+                        全部仓库
                       </Table.RowHeaderCell>
                       {categories.map((category) => {
                         const categoryTotal = sum(cells.filter((cell) => cell.category === category));
@@ -443,6 +461,40 @@ export function StatsPage() {
                 </Table.Root>
               </div>
             </Card>
+          </section>
+        ) : null}
+
+        {/* 模型这一维只剩参与条数(ADR 0015):它回答「这个模型有没有在干活」,不回答
+            「它报的问题值不值」——处置由人决定,拿处置率给模型打分读不出意义。 */}
+        {participation.length > 0 ? (
+          <section
+            aria-labelledby="model-participation-heading"
+            className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card"
+          >
+            <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-line px-5 py-3.5">
+              <h2
+                id="model-participation-heading"
+                className="text-2xl font-bold tracking-[-0.015em]"
+              >
+                模型参与条数
+              </h2>
+              <p className="text-xs text-text-muted">该模型报出过的 Finding 条数</p>
+            </div>
+            <dl className="divide-y divide-line">
+              {participation.map((entry) => (
+                <div
+                  key={entry.model}
+                  className="flex items-baseline justify-between gap-4 px-5 py-2.5"
+                >
+                  <dt className="min-w-0 break-all font-mono text-xs text-text-muted">
+                    {entry.model}
+                  </dt>
+                  <dd className="shrink-0 font-mono text-base font-bold tabular-nums">
+                    {entry.findings}
+                  </dd>
+                </div>
+              ))}
+            </dl>
           </section>
         ) : null}
 

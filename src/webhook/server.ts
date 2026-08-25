@@ -4548,7 +4548,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * 处置率统计与库体量。时间窗缺省取最近 30 天;口径全在 `store.dispositionStats`
- * (ADR 0006),这里只做参数与打包——页面矩阵与 API 的数字必须同源。
+ * (仓库 × category)与 `store.modelParticipation`(模型的参与条数),ADR 0006 与
+ * 0015,这里只做参数与打包——页面矩阵与 API 的数字必须同源。
  */
 function handleStats(
   req: IncomingMessage,
@@ -4566,8 +4567,9 @@ function handleStats(
   const from = new Date(fromMs).toISOString();
   const to = new Date(toMs).toISOString();
 
-  const { cells, usage, tables } = withStore(deps.dbPath, (store) => ({
+  const { cells, models, usage, tables } = withStore(deps.dbPath, (store) => ({
     cells: store.dispositionStats(from, to),
+    models: store.modelParticipation(from, to),
     usage: store.usageStats(from, to) ?? null,
     tables: store.tableCounts(),
   }));
@@ -4577,7 +4579,7 @@ function handleStats(
   } catch {
     // 库文件还没建出来:没有一次投递的全新部署,体量就是 0。
   }
-  return sendJson(res, 200, { from, to, cells, usage, database: { fileBytes, tables } });
+  return sendJson(res, 200, { from, to, cells, models, usage, database: { fileBytes, tables } });
 }
 
 /** hook 投递地址里代次之前的部分:`<基地址>/webhook?k=`。 */

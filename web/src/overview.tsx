@@ -23,7 +23,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** `/runs` 的一页。评审记录页持有同一形状,这里只读第一页,所以本地声明一份。 */
 type RunsPageResponse = { runs: RunItem[]; nextBefore: number | null };
 
-/** `/stats` 回包里总览用得上的部分:分类矩阵。用量与库体量归处置率页。 */
+/**
+ * `/stats` 回包里总览用得上的部分:仓库 × 分类矩阵。用量、库体量与模型的参与条数
+ * 归处置率页。
+ */
 type StatsResponse = { cells: Cell[] };
 
 /**
@@ -193,7 +196,7 @@ function ErrorNote({ label, message }: { label: string; message: string }) {
 }
 
 /**
- * 总览。四张 KPI 卡 + 最近运行 + 右栏(模型服务、各模型处置率),数据全部来自其它页面
+ * 总览。四张 KPI 卡 + 最近运行 + 右栏(模型服务、各仓库处置率),数据全部来自其它页面
  * 已有的四个端点,总览不引入自己的端点,查询键也与各页保持一致以共享缓存。
  *
  * 有两处刻意与设计稿不同,都是「没有数据就不画」:「手动触发评审」按钮需要先选定 PR,
@@ -473,7 +476,7 @@ export function OverviewPage() {
           <CardShell className="overflow-hidden">
             <div className="flex items-start justify-between gap-3 px-5 pt-3.5">
               <div className="flex flex-col">
-                <h2 className="text-2xl font-bold tracking-[-0.015em]">各模型处置率</h2>
+                <h2 className="text-2xl font-bold tracking-[-0.015em]">各仓库处置率</h2>
                 <span className="text-base text-text-muted">近 7 日</span>
               </div>
               {/* 这里是近 7 日的摘要,完整矩阵与可调窗口在处置率页。 */}
@@ -484,7 +487,7 @@ export function OverviewPage() {
                 查看全部
               </Link>
             </div>
-            <ModelRates cells={current.data?.cells ?? []} isPending={current.isPending} />
+            <RepoRates cells={current.data?.cells ?? []} isPending={current.isPending} />
           </CardShell>
         </aside>
       </div>
@@ -506,21 +509,23 @@ function useDispositionWindow(window: { from: string; to: string }) {
   });
 }
 
-function ModelRates({ cells, isPending }: { cells: readonly Cell[]; isPending: boolean }) {
+function RepoRates({ cells, isPending }: { cells: readonly Cell[]; isPending: boolean }) {
   if (isPending) {
     return (
-      <div className="flex flex-col gap-3 px-5 py-3.5" role="status" aria-label="正在读取各模型处置率" aria-busy="true">
+      <div className="flex flex-col gap-3 px-5 py-3.5" role="status" aria-label="正在读取各仓库处置率" aria-busy="true">
         {[0, 1, 2].map((row) => (
           <Skeleton key={row} aria-hidden className="h-8" />
         ))}
       </div>
     );
   }
-  const models = [...new Set(cells.map((cell) => cell.model))]
-    .map((model) => ({ model, ...rate(cells.filter((cell) => cell.model === model)) }))
+  // 主维度是仓库(ADR 0015);名字这里现拼,不 import 处置率页那个模块。
+  const name = (cell: Cell) => `${cell.owner}/${cell.repo}`;
+  const repos = [...new Set(cells.map(name))]
+    .map((repo) => ({ repo, ...rate(cells.filter((cell) => name(cell) === repo)) }))
     .filter((entry) => entry.total > 0)
     .sort((left, right) => percent(right) - percent(left));
-  if (models.length === 0) {
+  if (repos.length === 0) {
     return (
       <div className="px-5">
         <EmptyState title="近 7 日没有可统计的处置" description="这个窗口内还没有可处置的 Finding。" />
@@ -529,10 +534,10 @@ function ModelRates({ cells, isPending }: { cells: readonly Cell[]; isPending: b
   }
   return (
     <div className="flex flex-col gap-[13px] px-5 pt-3.5 pb-[18px]">
-      {models.map((entry) => (
-        <div key={entry.model} className="flex flex-col gap-[5px]">
+      {repos.map((entry) => (
+        <div key={entry.repo} className="flex flex-col gap-[5px]">
           <div className="flex items-baseline justify-between gap-3 text-base">
-            <span className="min-w-0 truncate font-mono">{entry.model}</span>
+            <span className="min-w-0 truncate font-mono">{entry.repo}</span>
             <span className="shrink-0 font-bold tabular-nums">
               {percent(entry)}%
               <span className="ml-1 font-normal text-text-muted">

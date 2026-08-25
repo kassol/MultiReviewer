@@ -79,8 +79,10 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
         severity: "P0",
         category: "bug",
         description: "有毛病",
+        // 两个模型报同一处:分母只加一次,参与条数各加一(ADR 0015)。
         attributions: [
           { model: "model-a", severity: "P0", category: "bug", description: "有毛病" },
+          { model: "model-b", severity: "P1", category: "bug", description: "这里也有毛病" },
         ],
         groupIndex: 0,
         disposition: "resolved",
@@ -156,6 +158,7 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
   assert.equal(response.status, 200);
   const body = (await response.json()) as {
     cells: unknown[];
+    models: unknown[];
     usage: {
       totalTokens: number;
       costUsd: number | null;
@@ -167,7 +170,8 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
   };
   assert.deepEqual(body.cells, [
     {
-      model: "model-a",
+      owner: "acme",
+      repo: "widgets",
       category: "bug",
       resolved: 1,
       fixed: 1,
@@ -175,6 +179,11 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
       unknownClosed: 0,
       unknownOpen: 0,
     },
+  ]);
+  // 模型那一维只剩参与条数:model-a 报了两处,model-b 只跟报了其中一处。
+  assert.deepEqual(body.models, [
+    { model: "model-a", findings: 2 },
+    { model: "model-b", findings: 1 },
   ]);
   assert.deepEqual(body.usage, {
     inputTokens: 27,

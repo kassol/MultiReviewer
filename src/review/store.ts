@@ -462,6 +462,38 @@ const PULL_REQUEST_SCOPE = `run_id IN (SELECT id FROM review_run
  */
 const AUTO_DISPOSABLE = "disposition IN ('unknown', 'unresolved') AND disposed_at IS NULL";
 
+/**
+ * 统计口径的共同前半段:`src` 把参与统计的 finding 行摊平(fallback 在最内层就排除),
+ * `identity` 按 Finding Identity(PR + 文件 + 指纹)折叠——指纹为 NULL 的行用自己的 id
+ * 兜底成独立键(算不出指纹就各算一条)。处置率与参与条数共用它,两个数才落在同一批
+ * Identity 上;补的那半段各自接在后面。
+ */
+const STATS_IDENTITY_CTE = `WITH src AS (
+             SELECT f.id, f.category, f.file, f.disposition,
+                    COALESCE(f.fingerprint, 'row:' || f.id) AS fp,
+                    run.owner, run.repo, run.pull_number, run.started_at,
+                    CASE WHEN run.pr_state = 'closed' THEN 1 ELSE 0 END AS closed
+               FROM finding f
+               JOIN review_run run ON f.run_id = run.id
+              WHERE f.placement = 'inline'
+           ),
+           identity AS (
+             SELECT owner, repo, pull_number, file, fp,
+                    MIN(started_at) AS first_seen,
+                    MAX(CASE disposition
+                          WHEN 'resolved' THEN 3
+                          WHEN 'fixed' THEN 2
+                          WHEN 'unresolved' THEN 1
+                          ELSE 0 END) AS disp,
+                    -- 「已延续」的整条 Identity 退出统计(CONTEXT.md 已延续):它只是位置
+                    -- 的交接,分子分母都不进,新位置那条自成一条 Identity。按 MAX 判而不是
+                    -- 逐行过滤——过滤掉那一行,同一条上更早的未处置行还会把它带回分母。
+                    MAX(CASE WHEN disposition = 'continued' THEN 1 ELSE 0 END) AS continued,
+                    MAX(closed) AS closed
+               FROM src
+              GROUP BY owner, repo, pull_number, file, fp
+           )`;
+
 /** Review Run 开始时即已知的元数据。 */
 export type RunMeta = {
   owner: string;
@@ -636,17 +668,20 @@ export type RunResult = {
 };
 
 /**
- * 处置率矩阵的一格:模型 × category。计数单位是**同一处 Finding**(Finding Identity,
- * 见 CONTEXT.md),不是落库行。分母 = resolved + fixed + unresolved + unknownClosed;
- * unknownOpen 不进分母也不上页面,API 带上它只为让口径可对账。「已延续」的那些整条
- * 不出现在这里,它是位置的交接而不是处置(CONTEXT.md 已延续)。
+ * 处置率矩阵的一格:仓库 × category(ADR 0015)。计数单位是**同一处 Finding**
+ * (Finding Identity,见 CONTEXT.md),不是落库行。分母 = resolved + fixed +
+ * unresolved + unknownClosed;unknownOpen 不进分母也不上页面,API 带上它只为让口径
+ * 可对账。「已延续」的那些整条不出现在这里,它是位置的交接而不是处置(CONTEXT.md
+ * 已延续)。
  *
- * Identity 去掉模型之后(ADR 0015)一条 Finding 可以有几个归属,这一格的模型取**首报**
- * 那一个:按每个归属各计一次会让同一条进几格,分母重复计入、比率不可解释。模型这一维
- * 由后续票改成「参与条数」。
+ * 主维度不含模型:一条 Finding 可以有几个归属(ADR 0015),按归属各计一次会让同一条
+ * 进几格、分母重复计入,比率不可解释。模型那一维只剩参与条数,见 `ModelParticipation`。
+ * 一个范围审查与一个 pull request 各是一个审查阶段,阶段之间不折叠,但同一个仓库上的
+ * 各个阶段合成这一行。
  */
 export type DispositionCell = {
-  model: string;
+  owner: string;
+  repo: string;
   category: string;
   /** 分子的人工那一列:人在面板或 Gitea 上 resolve 的(折叠组内任一行算数)。 */
   resolved: number;
@@ -658,6 +693,20 @@ export type DispositionCell = {
   unknownClosed: number;
   /** 开放 PR 上还没人看——它还在流程中,不进分母。 */
   unknownOpen: number;
+};
+
+/**
+ * 一个模型的参与条数:它报出过的 Finding Identity 数(ADR 0015)。Identity 与处置率
+ * 分母同一批——同一时间窗、同样排除 fallback 与「已延续」——差别只在这里按归属摊开,
+ * 一条 Finding 由几个模型合报时每个模型各加一。
+ *
+ * 它不是处置率:模型报出的问题被不被处置由人决定,拿它给模型打分读不出意义(ADR 0015)。
+ * 这一列回答的是「这个模型有没有在干活」。
+ */
+export type ModelParticipation = {
+  model: string;
+  /** 该模型报出过的 Finding Identity 数。 */
+  findings: number;
 };
 
 /** 仓库持有的一把 key。`generation` 是它的代次,写在 hook URL 的 `?k=` 上。 */
@@ -1197,11 +1246,13 @@ export type Store = {
    */
   recordFindingComments(runId: number, refs: readonly FindingCommentRef[]): void;
   /**
-   * 处置率统计(ADR 0006):按 Finding Identity 折叠,fallback(body)排除,unknown
-   * 按 PR 状态分流,时间窗按同一处 Finding 首次报出那轮的开始时间归属(闭区间,
-   * ISO 字符串按字典序即时间序)。
+   * 处置率统计(ADR 0006,主维度见 ADR 0015):按 Finding Identity 折叠,fallback
+   * (body)排除,unknown 按 PR 状态分流,时间窗按同一处 Finding 首次报出那轮的开始
+   * 时间归属(闭区间,ISO 字符串按字典序即时间序)。
    */
   dispositionStats(from: string, to: string): DispositionCell[];
+  /** 同一时间窗、同一批 Identity 上每个模型的参与条数(ADR 0015)。 */
+  modelParticipation(from: string, to: string): ModelParticipation[];
   /** 时间窗内 Review Run 的 token、已知费用小计与未知费用 Reviewer 数。 */
   usageStats(from: string, to: string): RecordedUsage | undefined;
   /**
@@ -3180,54 +3231,21 @@ export function openStore(dbPath: string): Store {
     },
 
     dispositionStats(from, to) {
-      // 三层:src 摊平行(模型取那一行的首报归属),identity 按「PR + 文件 + 指纹」折叠
-      // ——Finding Identity 不含模型(ADR 0015),指纹为 NULL 的行用自己的 id 兜底成
-      // 独立键(算不出指纹就各算一条);labeled 给每个 identity 取它首次报出那一行的
-      // category 与模型(两者都不进折叠键,跨轮漂移时以首次为准,与时间窗归属同一轮)。
+      // 接在共同的 identity 折叠之后:labeled 给每条 Identity 取它首次报出那一行的
+      // category(不进折叠键,跨轮改口不挪格,与时间窗归属同一轮)。
       const rows = db
         .prepare(
-          `WITH src AS (
-             SELECT f.id, f.category, f.file, f.disposition,
-                    (SELECT a.model FROM finding_attribution a
-                      WHERE a.finding_id = f.id ORDER BY a.position LIMIT 1) AS model,
-                    COALESCE(f.fingerprint, 'row:' || f.id) AS fp,
-                    run.owner, run.repo, run.pull_number, run.started_at,
-                    CASE WHEN run.pr_state = 'closed' THEN 1 ELSE 0 END AS closed
-               FROM finding f
-               JOIN review_run run ON f.run_id = run.id
-              WHERE f.placement = 'inline'
-           ),
-           identity AS (
-             SELECT owner, repo, pull_number, file, fp,
-                    MIN(started_at) AS first_seen,
-                    MAX(CASE disposition
-                          WHEN 'resolved' THEN 3
-                          WHEN 'fixed' THEN 2
-                          WHEN 'unresolved' THEN 1
-                          ELSE 0 END) AS disp,
-                    -- 「已延续」的整条 Identity 退出统计(CONTEXT.md 已延续):它只是位置
-                    -- 的交接,分子分母都不进,新位置那条自成一条 Identity。按 MAX 判而不是
-                    -- 逐行过滤——过滤掉那一行,同一条上更早的未处置行还会把它带回分母。
-                    MAX(CASE WHEN disposition = 'continued' THEN 1 ELSE 0 END) AS continued,
-                    MAX(closed) AS closed
-               FROM src
-              GROUP BY owner, repo, pull_number, file, fp
-           ),
+          `${STATS_IDENTITY_CTE},
            labeled AS (
              SELECT identity.*,
                     (SELECT s.category FROM src s
                       WHERE s.owner = identity.owner
                         AND s.repo = identity.repo AND s.pull_number = identity.pull_number
                         AND s.file = identity.file AND s.fp = identity.fp
-                      ORDER BY s.started_at, s.id LIMIT 1) AS category,
-                    (SELECT s.model FROM src s
-                      WHERE s.owner = identity.owner
-                        AND s.repo = identity.repo AND s.pull_number = identity.pull_number
-                        AND s.file = identity.file AND s.fp = identity.fp
-                      ORDER BY s.started_at, s.id LIMIT 1) AS model
+                      ORDER BY s.started_at, s.id LIMIT 1) AS category
                FROM identity
            )
-           SELECT model, category,
+           SELECT owner, repo, category,
                   SUM(CASE WHEN disp = 3 THEN 1 ELSE 0 END) AS resolved,
                   SUM(CASE WHEN disp = 2 THEN 1 ELSE 0 END) AS fixed,
                   SUM(CASE WHEN disp = 1 THEN 1 ELSE 0 END) AS unresolved,
@@ -3235,20 +3253,47 @@ export function openStore(dbPath: string): Store {
                   SUM(CASE WHEN disp = 0 AND closed = 0 THEN 1 ELSE 0 END) AS unknown_open
              FROM labeled
             WHERE continued = 0 AND first_seen >= ? AND first_seen <= ?
-            GROUP BY model, category
-            ORDER BY model, category`,
+            GROUP BY owner, repo, category
+            ORDER BY owner, repo, category`,
         )
         .all(from, to);
       // 逐字段取出:node:sqlite 返回的是 null 原型对象,直接外传会让调用方拿到
       // 一个没有 Object 方法的怪东西。
       return rows.map((row) => ({
-        model: String(row["model"]),
+        owner: String(row["owner"]),
+        repo: String(row["repo"]),
         category: String(row["category"]),
         resolved: Number(row["resolved"]),
         fixed: Number(row["fixed"]),
         unresolved: Number(row["unresolved"]),
         unknownClosed: Number(row["unknown_closed"]),
         unknownOpen: Number(row["unknown_open"]),
+      }));
+    },
+
+    modelParticipation(from, to) {
+      // 先摊成「模型 × Identity」再去重:一条 Identity 在一个阶段里有好几行,同一个
+      // 模型在其中几行上都报过也只算这条一次;不同模型报同一条则各算一次。
+      const rows = db
+        .prepare(
+          `${STATS_IDENTITY_CTE}
+           SELECT model, COUNT(*) AS findings
+             FROM (
+               SELECT DISTINCT a.model, s.owner, s.repo, s.pull_number, s.file, s.fp
+                 FROM src s
+                 JOIN finding_attribution a ON a.finding_id = s.id
+                 JOIN identity i
+                   ON i.owner = s.owner AND i.repo = s.repo
+                  AND i.pull_number = s.pull_number AND i.file = s.file AND i.fp = s.fp
+                WHERE i.continued = 0 AND i.first_seen >= ? AND i.first_seen <= ?
+             )
+            GROUP BY model
+            ORDER BY model`,
+        )
+        .all(from, to);
+      return rows.map((row) => ({
+        model: String(row["model"]),
+        findings: Number(row["findings"]),
       }));
     },
 
