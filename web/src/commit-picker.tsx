@@ -67,8 +67,11 @@ export function CommitPicker({
 
   // base 只在锁定那一档发出去:发起时两端都在挑,任何一条提交都还可能被设成 base。
   const markAgainst = baseLocked ? base : null;
+  // 服务端只在列分支那一步 fetch(user story 29)。重开选择器时分支先从缓存命中、再在后台
+  // 重取,提交列表要等这次重取回来再发,并把它的时刻带进查询键:刚推上去的 commit 才不会
+  // 被推送前缓存的那一页盖住。
   const commits = useInfiniteQuery({
-    queryKey: ["repo-commits", repo.owner, repo.repo, branch, markAgainst],
+    queryKey: ["repo-commits", repo.owner, repo.repo, branch, markAgainst, branches.dataUpdatedAt],
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
       fetchJson<CommitsPage>(
@@ -76,7 +79,7 @@ export function CommitPicker({
           (markAgainst === null ? "" : `&base=${encodeURIComponent(markAgainst)}`),
       ),
     getNextPageParam: (last) => last.nextOffset,
-    enabled: branch !== null,
+    enabled: branch !== null && !branches.isFetching,
   });
   const flat = commits.data?.pages.flatMap((page) => page.commits) ?? [];
 

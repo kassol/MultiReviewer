@@ -27,6 +27,7 @@ import {
   ModelComposer,
   type ModelComposerValidity,
 } from "@/components/model-composer";
+import { localMinute } from "@/lib/time";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { modelIdentity, parseModelIdentity } from "./model-services.ts";
@@ -35,6 +36,7 @@ import {
   rerunRequest,
   StageCounts,
   stageLabel,
+  StageSourceBadge,
   StageStatusBadge,
   stagesPath,
   type StageItem,
@@ -1087,9 +1089,10 @@ function RepoRuns({
                   <span className="font-normal text-text-muted">
                     {stage.latestRunAt === null
                       ? " · 还没有跑过"
-                      : ` · ${stage.latestRunAt.slice(0, 16).replace("T", " ")}`}
+                      : ` · ${localMinute(stage.latestRunAt)}`}
                   </span>
                 </span>
+                <StageSourceBadge stage={stage} />
                 <StageCounts stage={stage} />
                 <StageStatusBadge stage={stage} />
               </Link>
