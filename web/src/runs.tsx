@@ -1,11 +1,10 @@
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   CheckCircledIcon,
   CrossCircledIcon,
-  ExclamationTriangleIcon,
   ExternalLinkIcon,
 } from "@radix-ui/react-icons";
 import { Badge, Callout, Dialog, SegmentedControl, Skeleton, Tooltip } from "@radix-ui/themes";
@@ -97,7 +96,83 @@ export type RunFinding = {
   continuedFrom: string | null;
 };
 
-type RunsPage = { runs: RunItem[]; nextBefore: number | null };
+/**
+ * 评审记录里的一行(issue #174):一个审查阶段,不是一轮 Review Run。同一 pull request
+ * 推多少次、同一范围审查推进多少次,列表里都只有这一行。
+ *
+ * `stageId` 由来源与键合成(`pr:<owner>/<repo>/<number>` 与 `range:<id>`),阶段详情
+ * 的地址用它作路径参数。容器 PR 的序号不在这里:它对面板用户透明(CONTEXT.md 容器 PR)。
+ */
+export type StageItem = {
+  stageId: string;
+  source: "pull-request" | "range-review";
+  owner: string;
+  repo: string;
+  /** pull request 阶段的 PR 号;范围审查阶段为 null。 */
+  pullNumber: number | null;
+  /** 范围审查阶段的标识;pull request 阶段为 null。 */
+  rangeReviewId: number | null;
+  /** pull request 的标题快照;没有标题的旧行与范围审查都是 null。 */
+  title: string | null;
+  status: "active" | "closed";
+  /** 最新一轮 Review Run;范围审查刚发起、一轮都还没跑时为 null。 */
+  latestRunId: number | null;
+  latestRunAt: string | null;
+  /** 最新一轮跑完的时刻;还在跑时为 null,列表据此决定要不要续查。 */
+  latestRunFinishedAt: string | null;
+  /** 阶段汇总的三个数,与 `GET /stage-summary` 同一口径。 */
+  counts: { pending: number; resolved: number; fixed: number };
+};
+
+type StagesPage = { stages: StageItem[]; nextOffset: number | null };
+
+/** 列表可按状态与来源筛选,两项默认都是全部(issue #174)。 */
+export type StageStatusFilter = "all" | "active" | "closed";
+export type StageSourceFilter = "all" | "pull-request" | "range-review";
+
+/**
+ * 一行审查阶段的名字:有标题就用标题,没有的显示 `#编号`(issue #173、#174)。
+ * pull request 的编号是它的 PR 号,范围审查用它自己的标识——容器 PR 的序号不露面。
+ */
+export function stageLabel(stage: StageItem): string {
+  return stage.title ?? `#${stage.pullNumber ?? stage.rangeReviewId}`;
+}
+
+/** 阶段来源。两种来源同列同形,只由这枚标记区分(CONTEXT.md 评审记录)。 */
+function StageSourceBadge({ stage }: { stage: StageItem }) {
+  return (
+    <Badge color="gray" variant="soft" radius="full">
+      {stage.source === "range-review" ? "范围审查" : "pull request"}
+    </Badge>
+  );
+}
+
+/** 阶段只有进行中与已结束两种状态(CONTEXT.md 审查阶段)。 */
+export function StageStatusBadge({ stage }: { stage: StageItem }) {
+  return stage.status === "active" ? (
+    <StatusBadge tone="running">进行中</StatusBadge>
+  ) : (
+    <StatusBadge tone="neutral" icon={CheckCircledIcon}>已结束</StatusBadge>
+  );
+}
+
+/**
+ * 行上的阶段汇总:待处置 / 人工已处置 / 已修复。三个数一起显示,不打开详情就能判断
+ * 优先级;为零的也留着位置,否则三个数的位置会随内容前后错开。
+ */
+export function StageCounts({ stage }: { stage: StageItem }) {
+  return (
+    <span className="flex shrink-0 items-center gap-2 text-base tabular-nums text-text-muted">
+      <span className={stage.counts.pending > 0 ? "text-warning" : undefined}>
+        待处置 {stage.counts.pending}
+      </span>
+      <span aria-hidden>·</span>
+      <span>已处置 {stage.counts.resolved}</span>
+      <span aria-hidden>·</span>
+      <span>已修复 {stage.counts.fixed}</span>
+    </span>
+  );
+}
 
 /** 手动重新运行。时间流与仓库详情共用这一个请求。 */
 export async function rerunRequest(run: {
@@ -114,7 +189,7 @@ export async function rerunRequest(run: {
 }
 
 /**
- * 时间流卡片上的处置进度。与处置率同一口径:只算行级承载的合并组。
+ * 轮次详情头部的处置进度。与处置率同一口径:只算行级承载的合并组。
  *
  * 「状态到颜色」的映射留在这里:它同时被仓库页与评审记录页用,拆掉这层包装会把
  * 这条规则散到两个调用点。失败与待处置分成两色——一个去重新运行,一个去处置。
@@ -122,7 +197,7 @@ export async function rerunRequest(run: {
  * 部分模型失败不占这个位置:那一轮跑通的模型报出的 Finding 是真的、可处置的,
  * 处置进度得留着。失败只加一颗红点提示「这一轮的结论不完整」,原因看卡片上的模型行。
  */
-export function RunPill({ run }: { run: RunItem }) {
+function RunPill({ run }: { run: RunItem }) {
   const badge = runBadge(run);
   const down = run.models.filter((entry) => entry.failure !== null);
   if (down.length === 0) return badge;
@@ -150,32 +225,6 @@ export function RunPill({ run }: { run: RunItem }) {
       </span>
     </Tooltip>
   );
-}
-
-type RunFilter = "all" | "failed" | "pending" | "done";
-
-function runHasModelFailure(run: RunItem): boolean {
-  return run.models.some((entry) => entry.failure !== null);
-}
-
-function runBucket(run: RunItem): Exclude<RunFilter, "all"> {
-  if (run.failed || runHasModelFailure(run)) return "failed";
-  if (run.total > 0 && disposedCount(run) < run.total) return "pending";
-  return "done";
-}
-
-function RunStatus({ run }: { run: RunItem }) {
-  if (run.failed) {
-    return (
-      <CrossCircledIcon className="size-4 shrink-0 text-destructive" aria-label="失败" />
-    );
-  }
-  if (runHasModelFailure(run)) {
-    return (
-      <ExclamationTriangleIcon className="size-4 shrink-0 text-warning" aria-label="部分失败" />
-    );
-  }
-  return <CheckCircledIcon className="size-4 shrink-0 text-success" aria-label="完成" />;
 }
 
 /**
@@ -207,23 +256,6 @@ function runBadge(run: RunItem) {
   );
 }
 
-/**
- * 列表行右侧的结论徽章。与 `RunPill` 的差别只有一处:不带那颗可聚焦的警告图标——
- * 行本身已经是按钮,里面再放一个可聚焦元素会让键盘焦点掉进按钮内部。部分模型失败
- * 由行首的状态图标和红色模型 chip 承担,信息没有丢。
- */
-function rowBadge(run: RunItem) {
-  return run.failed ? <StatusBadge tone="error">失败</StatusBadge> : runBadge(run);
-}
-
-/**
- * 一行审查记录的名字:有标题就用标题,没有的照旧显示 `#编号`(issue #173)。
- * 范围审查那一档与升级前的旧行都没有标题。
- */
-export function runLabel(run: { title: string | null; pullNumber: number }): string {
-  return run.title ?? `#${run.pullNumber}`;
-}
-
 function triggerLabel(run: RunItem): string {
   return run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`;
 }
@@ -248,33 +280,6 @@ function runDuration(run: RunItem): string | null {
   if (!Number.isFinite(seconds) || seconds < 0) return null;
   const minutes = Math.floor(seconds / 60);
   return minutes > 0 ? `${minutes}m${seconds % 60}s` : `${seconds}s`;
-}
-
-/**
- * 行右侧的模型标签组。设计稿把「哪些模型参与、各报了几条」压成一排 chip:失败的那
- * 一个变红,扫一眼就知道这轮结论是否完整,不必展开详情。
- *
- * 只在 lg 以上出现:窄屏这排 chip 会把标题挤成两个字,状态徽章反而是更该留下的信息。
- */
-function RunModelChips({ run }: { run: RunItem }) {
-  if (run.models.length === 0) return null;
-  return (
-    <span className="hidden max-w-[38%] shrink-0 flex-wrap justify-end gap-1.5 lg:flex">
-      {run.models.map((entry) => (
-        <span
-          key={entry.model}
-          className={`inline-flex max-w-[11rem] items-center gap-1 truncate rounded-full px-2.5 py-0.5 font-mono text-xs font-normal ${
-            entry.failure === null ? "bg-fill text-text-secondary" : "bg-danger-tint text-danger"
-          }`}
-        >
-          <span className="truncate">{entry.model}</span>
-          <span className="shrink-0 tabular-nums">
-            {entry.failure === null ? entry.findings : "失败"}
-          </span>
-        </span>
-      ))}
-    </span>
-  );
 }
 
 /**
@@ -309,7 +314,7 @@ export function RunDetailPanel({
   /** 点到列表里另一轮时换成它,而不是先关面板。 */
   onOpenOther: (id: number) => void;
   /** 点到筛选控件时切过去,而不是让遮罩把这一下吞掉。 */
-  onSwitchFilter: (next: RunFilter) => void;
+  onSwitchFilter: (filter: { kind: string; value: string }) => void;
   onClose: () => void;
 }) {
   const cost = costPresentation(run.usage);
@@ -361,10 +366,12 @@ export function RunDetailPanel({
           onOpenOther(id);
           return;
         }
-        const next = hit("[data-filter-value]")?.dataset.filterValue;
-        if (next === "all" || next === "failed" || next === "pending" || next === "done") {
+        const control = hit("[data-filter-value]");
+        const kind = control?.dataset.filterKind;
+        const value = control?.dataset.filterValue;
+        if (kind !== undefined && value !== undefined) {
           event.preventDefault();
-          onSwitchFilter(next);
+          onSwitchFilter({ kind, value });
           onClose();
         }
       }}
@@ -505,49 +512,199 @@ export function RunDetailPanel({
   );
 }
 
-export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispose: boolean }) {
-  // 只为拿 Forge 基址,好把每一轮指回它的 pull request。与壳共用同一份会话缓存,
-  // 不产生额外请求。
+/**
+ * 按 id 取一轮,再把它交给详情面板(issue #174)。
+ *
+ * 评审记录的一行是一个审查阶段,行上只带最新一轮的 id;轮次本身在这里读,评审记录页
+ * 与仓库页共用同一条路径,两处点开的是同一份东西。
+ */
+export function RunDetailPanelById({
+  runId,
+  canRerun,
+  canDispose,
+  rerunning,
+  diffFile,
+  onRerun,
+  onOpenOther,
+  onSwitchFilter,
+  onClose,
+}: {
+  runId: number;
+  canRerun: boolean;
+  canDispose: boolean;
+  rerunning: boolean;
+  diffFile?: string;
+  /** 重跑要的是这一轮本身,取回来之后交回给调用页去发请求。 */
+  onRerun: (run: RunItem) => void;
+  onOpenOther: (id: number) => void;
+  onSwitchFilter: (filter: { kind: string; value: string }) => void;
+  onClose: () => void;
+}) {
+  // 只为拿 Forge 基址,好把这一轮指回它的 pull request。与壳共用同一份会话缓存。
   const session = useQuery({ queryKey: ["session"], queryFn: loadPanelSession });
-  const runs = useInfiniteQuery({
-    queryKey: ["runs"],
-    initialPageParam: null as number | null,
+  const run = useQuery({
+    queryKey: ["run", runId],
+    queryFn: () => fetchJson<{ run: RunItem }>(`/runs/${runId}`),
+    // 还在跑的那一轮每 10 秒续查,跑完就停:人打开面板正是想看它跑出什么。
+    refetchInterval: (query) => (query.state.data?.run.finishedAt === null ? 10_000 : false),
+  });
+  if (run.isError) {
+    return (
+      <DetailPanel
+        onClose={onClose}
+        header={<Dialog.Title className="!mb-0 !text-3xl !font-extrabold">轮次读取失败</Dialog.Title>}
+      >
+        <Callout.Root role="alert" color="red" size="1">
+          <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+          <Callout.Text>{(run.error as Error).message}</Callout.Text>
+        </Callout.Root>
+      </DetailPanel>
+    );
+  }
+  // 读取中先不铺面板:内容一到就整块出现,空壳一闪反而更晃眼。
+  if (run.data === undefined) return null;
+  return (
+    <RunDetailPanel
+      run={run.data.run}
+      canRerun={canRerun}
+      canDispose={canDispose}
+      rerunning={rerunning}
+      pullUrl={
+        session.data === undefined || session.data === null
+          ? null
+          : pullRequestUrl(session.data, run.data.run)
+      }
+      {...(diffFile === undefined ? {} : { diffFile })}
+      onOpenOther={onOpenOther}
+      onSwitchFilter={onSwitchFilter}
+      onRerun={() => onRerun(run.data.run)}
+      onClose={onClose}
+    />
+  );
+}
+
+/** 一行的时间:最新一轮什么时候开跑。范围审查刚发起、还没跑过时说清楚是这一档。 */
+function latestRunLabel(stage: StageItem): string {
+  if (stage.latestRunAt === null) return "还没有跑过";
+  return `最新一轮 ${localDay(stage.latestRunAt)} ${localClock(stage.latestRunAt)}`;
+}
+
+/** 筛选控件的一档。`data-filter-*` 让详情面板接住点在它上面的那一下。 */
+function FilterControl<T extends string>({
+  kind,
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  kind: string;
+  label: string;
+  value: T;
+  options: readonly (readonly [T, string])[];
+  onChange: (next: T) => void;
+}) {
+  return (
+    <SegmentedControl.Root
+      value={value}
+      onValueChange={(next) => {
+        const hit = options.find(([id]) => id === next);
+        if (hit !== undefined) onChange(hit[0]);
+      }}
+      size={{ initial: "3", sm: "1" }}
+      aria-label={label}
+      className="w-fit max-sm:w-full"
+    >
+      {options.map(([id, text]) => (
+        <SegmentedControl.Item key={id} value={id} data-filter-kind={kind} data-filter-value={id}>
+          {text}
+        </SegmentedControl.Item>
+      ))}
+    </SegmentedControl.Root>
+  );
+}
+
+const STATUS_OPTIONS = [
+  ["all", "全部"],
+  ["active", "进行中"],
+  ["closed", "已结束"],
+] as const satisfies readonly (readonly [StageStatusFilter, string])[];
+
+const SOURCE_OPTIONS = [
+  ["all", "全部来源"],
+  ["pull-request", "pull request"],
+  ["range-review", "范围审查"],
+] as const satisfies readonly (readonly [StageSourceFilter, string])[];
+
+/** 阶段列表的查询串。筛选与分页都在服务端做,这里只负责把它们拼准。 */
+export function stagesPath(query: {
+  offset: number;
+  status?: StageStatusFilter;
+  source?: StageSourceFilter;
+  owner?: string;
+  repo?: string;
+}): string {
+  const params = new URLSearchParams();
+  if (query.offset > 0) params.set("offset", String(query.offset));
+  if (query.status !== undefined && query.status !== "all") params.set("status", query.status);
+  if (query.source !== undefined && query.source !== "all") params.set("source", query.source);
+  if (query.owner !== undefined && query.repo !== undefined) {
+    params.set("owner", query.owner);
+    params.set("repo", query.repo);
+  }
+  const search = params.toString();
+  return search === "" ? "/stages" : `/stages?${search}`;
+}
+
+export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispose: boolean }) {
+  const navigate = useNavigate();
+  /*
+   * 筛选与打开哪一行都记在地址里:链接要能指明列表的哪一片、能直接落到某一个阶段,
+   * 浏览器后退键要能收起详情。筛选切换用 replace,否则点几下分段控件就把历史塞满。
+   */
+  const filter = useRouterState({
+    select: (state) => {
+      const search = state.location.search as { status?: unknown; source?: unknown };
+      return {
+        status: (search.status === "active" || search.status === "closed"
+          ? search.status
+          : "all") as StageStatusFilter,
+        source: (search.source === "pull-request" || search.source === "range-review"
+          ? search.source
+          : "all") as StageSourceFilter,
+      };
+    },
+  });
+  const setFilter = (next: Partial<{ status: StageStatusFilter; source: StageSourceFilter }>) => {
+    void navigate({
+      to: "/runs",
+      search: (prev: Record<string, unknown>) => ({
+        ...prev,
+        ...(next.status === undefined ? {} : { status: next.status === "all" ? undefined : next.status }),
+        ...(next.source === undefined ? {} : { source: next.source === "all" ? undefined : next.source }),
+      }),
+      replace: true,
+    });
+  };
+  const stages = useInfiniteQuery({
+    queryKey: ["stages", filter.status, filter.source],
+    initialPageParam: 0,
     queryFn: ({ pageParam }) =>
-      fetchJson<RunsPage>(pageParam === null ? "/runs" : `/runs?before=${pageParam}`),
-    getNextPageParam: (last) => last.nextBefore,
+      fetchJson<StagesPage>(
+        stagesPath({ offset: pageParam, status: filter.status, source: filter.source }),
+      ),
+    getNextPageParam: (last) => last.nextOffset,
     /*
-     * 审查是异步的:推一个 pull request 之后要跑上几分钟。有轮次还没跑完时自动续查,
+     * 审查是异步的:推一个 pull request 之后要跑上几分钟。还有轮次没跑完时自动续查,
      * 跑完就停——否则人只能盯着页面反复点刷新,而这恰恰是最想看结果的那几分钟。
      */
     refetchInterval: (query) =>
       (query.state.data?.pages ?? []).some((page) =>
-        page.runs.some((item) => item.finishedAt === null),
+        page.stages.some((stage) => stage.latestRunId !== null && stage.latestRunFinishedAt === null),
       )
         ? 10_000
         : false,
   });
   const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
-  // 筛选同样记在地址里:总览上的「待处置发现」要能直接落到筛过的列表,而不是把人
-  // 丢到全部记录里再自己点一次。
-  const filter = useRouterState({
-    select: (state) => {
-      const value = (state.location.search as { filter?: unknown }).filter;
-      return value === "failed" || value === "pending" || value === "done" ? value : "all";
-    },
-  });
-  const setFilter = (next: RunFilter) => {
-    void navigate({
-      to: "/runs",
-      search: (prev: Record<string, unknown>) => ({ ...prev, filter: next === "all" ? undefined : next }),
-      replace: true,
-    });
-  };
-  // 详情面板认 id 不认对象:列表每次刷新都是新对象,认对象会在后台刷新时把面板打空。
-  /*
-   * 打开哪一轮记在地址里,不记在组件状态里:总览上点某一轮要能直接落到它的详情,
-   * 而不是落到列表顶上让人再找一遍;地址能分享、浏览器后退键也能收起面板。
-   */
-  const navigate = useNavigate();
   const openedRunId = useRouterState({
     select: (state) => {
       const value = (state.location.search as { run?: unknown }).run;
@@ -556,9 +713,9 @@ export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispo
     },
   });
   const setOpenedRunId = (id: number | null) => {
-    // 只动 run 这一格,别把筛选一起清掉;换一轮或收起面板时把 file 一并清掉——它说的是
+    // 只动 run 这一格,别把筛选一起清掉;换一行或收起面板时把 file 一并清掉——它说的是
     // 「落地先看哪个文件」,只对跳过来的那一轮成立。开合详情进历史记录(不 replace),
-    // 后退键因此能收起面板;筛选切换则用 replace,否则点几下分段控件就把历史塞满了。
+    // 后退键因此能收起面板。
     void navigate({
       to: "/runs",
       search: (prev: Record<string, unknown>) => ({
@@ -581,7 +738,7 @@ export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispo
     onError: (error: Error) => setFeedback({ text: error.message, isError: true }),
   });
 
-  // 滚到底部附近自动加载更早的一页。
+  // 滚到底部附近自动加载下一页。
   const sentinel = useRef<HTMLDivElement>(null);
   const listViewport = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -589,33 +746,18 @@ export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispo
     if (target === null) return;
     const observer = new IntersectionObserver((entries) => {
       if (
-        runs.hasNextPage &&
-        !runs.isFetchingNextPage &&
+        stages.hasNextPage &&
+        !stages.isFetchingNextPage &&
         entries.some((entry) => entry.isIntersecting)
       ) {
-        void runs.fetchNextPage();
+        void stages.fetchNextPage();
       }
     }, { root: listViewport.current, rootMargin: "0px 0px 160px 0px" });
     observer.observe(target);
     return () => observer.disconnect();
-  }, [runs.fetchNextPage, runs.hasNextPage, runs.isFetchingNextPage]);
+  }, [stages.fetchNextPage, stages.hasNextPage, stages.isFetchingNextPage]);
 
-  const flat = runs.data?.pages.flatMap((page) => page.runs) ?? [];
-  const counts = {
-    all: flat.length,
-    failed: flat.filter((run) => runBucket(run) === "failed").length,
-    pending: flat.filter((run) => runBucket(run) === "pending").length,
-    done: flat.filter((run) => runBucket(run) === "done").length,
-  };
-  const visible = filter === "all" ? flat : flat.filter((run) => runBucket(run) === filter);
-  const visibleGroups = visible.reduce<{ day: string; runs: RunItem[] }[]>((groups, run) => {
-    const day = localDay(run.startedAt);
-    const current = groups.at(-1);
-    if (current?.day === day) current.runs.push(run);
-    else groups.push({ day, runs: [run] });
-    return groups;
-  }, []);
-  const openedRun = flat.find((run) => run.id === openedRunId) ?? null;
+  const flat = stages.data?.pages.flatMap((page) => page.stages) ?? [];
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -623,7 +765,9 @@ export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispo
         <PageHeader
           title="评审记录"
           // 读取中不占位说明:计数一到就替换掉,那一行字只会闪一下。
-          {...(runs.isPending ? {} : { description: `${counts.all} 轮 · ${counts.failed} 失败` })}
+          {...(stages.isPending
+            ? {}
+            : { description: `已加载 ${flat.length} 个审查阶段` })}
           actions={<SummaryRate />}
         />
 
@@ -639,51 +783,37 @@ export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispo
             <Callout.Text>{feedback.text}</Callout.Text>
           </Callout.Root>
         )}
-        {runs.isError ? (
+        {stages.isError ? (
           <Callout.Root role="alert" color="red" size="1">
             <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-            <Callout.Text>{(runs.error as Error).message}</Callout.Text>
+            <Callout.Text>{(stages.error as Error).message}</Callout.Text>
           </Callout.Root>
         ) : null}
 
-        <SegmentedControl.Root
-          value={filter}
-          onValueChange={(value) => {
-            if (
-              value === "all" ||
-              value === "failed" ||
-              value === "pending" ||
-              value === "done"
-            ) {
-              setFilter(value);
-            }
-          }}
-          size={{ initial: "3", sm: "1" }}
-          aria-label="按结论过滤"
-          className="w-fit max-sm:w-full"
-        >
-          {(
-            [
-              ["all", "全部", counts.all],
-              ["failed", "失败", counts.failed],
-              ["pending", "待处置", counts.pending],
-              ["done", "已处置", counts.done],
-            ] as const
-          ).map(([id, label, count]) => (
-            <SegmentedControl.Item key={id} value={id} data-filter-value={id}>
-              {label}
-              <span className="ml-1 font-mono tabular-nums">{count}</span>
-            </SegmentedControl.Item>
-          ))}
-        </SegmentedControl.Root>
+        <div className="flex flex-wrap gap-2">
+          <FilterControl
+            kind="status"
+            label="按状态过滤"
+            value={filter.status}
+            options={STATUS_OPTIONS}
+            onChange={(status) => setFilter({ status })}
+          />
+          <FilterControl
+            kind="source"
+            label="按来源过滤"
+            value={filter.source}
+            options={SOURCE_OPTIONS}
+            onChange={(source) => setFilter({ source })}
+          />
+        </div>
 
         <div
           ref={listViewport}
           className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain"
-          aria-busy={runs.isPending || runs.isFetchingNextPage}
+          aria-busy={stages.isPending || stages.isFetchingNextPage}
           aria-label="评审记录列表"
         >
-          {runs.isPending ? (
+          {stages.isPending ? (
             <div
               className="flex flex-col gap-2 overflow-hidden rounded-lg border border-card-line bg-surface p-2 shadow-card"
               role="status"
@@ -694,89 +824,73 @@ export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispo
             </div>
           ) : null}
 
-          {visible.length > 0 ? (
+          {flat.length > 0 ? (
             <div className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
-              {visibleGroups.map((group) => (
-                <Fragment key={group.day}>
-                  <h2 className="border-t border-line px-5 pt-3 pb-2 text-sm font-bold tracking-[0.03em] text-text-muted first:border-t-0">
-                    {group.day}
-                  </h2>
-                  {group.runs.map((run) => (
-                    <MasterListItem
-                      key={run.id}
-                      selected={run.id === openedRunId}
-                      onClick={() => setOpenedRunId(run.id)}
-                      aria-haspopup="dialog"
-                      data-run-id={run.id}
-                      className="group flex items-center gap-3 border-t border-line px-5 py-3"
-                    >
-                      <RunStatus run={run} />
-                      <span className="flex min-w-0 flex-1 flex-col gap-px">
-                        <span className="flex min-w-0 items-center gap-1.5">
-                          <span className="truncate text-lg font-semibold group-data-[selected=true]:font-bold">
-                            {run.owner}/{run.repo} {runLabel(run)}
-                          </span>
-                          <RunSourceBadge run={run} />
-                        </span>
-                        {/* 副标题一行说清「哪个 commit、谁触发、什么时候、处置到哪」,
-                            窄屏放开换行:390px 下这四段挤在一行只会各剩两个字。 */}
-                        <span className="flex flex-wrap items-center gap-x-1.5 text-base font-normal text-text-muted">
-                          <CommitChip sha={run.headSha} />
-                          <span aria-hidden>·</span>
-                          <span className="break-all">{triggerLabel(run)}</span>
-                          <span aria-hidden>·</span>
-                          <span className="tabular-nums">{localClock(run.startedAt)}</span>
-                        </span>
+              {flat.map((stage) => (
+                <MasterListItem
+                  key={stage.stageId}
+                  selected={stage.latestRunId !== null && stage.latestRunId === openedRunId}
+                  // 一轮都还没跑的阶段没有可打开的轮次:点它不做任何事,而不是打开一个空面板。
+                  onClick={() => {
+                    if (stage.latestRunId !== null) setOpenedRunId(stage.latestRunId);
+                  }}
+                  aria-haspopup="dialog"
+                  {...(stage.latestRunId === null ? {} : { "data-run-id": stage.latestRunId })}
+                  className="group flex items-center gap-3 border-t border-line px-5 py-3 first:border-t-0"
+                >
+                  <span className="flex min-w-0 flex-1 flex-col gap-px">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="truncate text-lg font-semibold group-data-[selected=true]:font-bold">
+                        {stage.owner}/{stage.repo} {stageLabel(stage)}
                       </span>
-                      <RunModelChips run={run} />
-                      {/* 徽章说结论,这一格说进度:两边都写分数就是同一个数字说两遍。 */}
-                      <span className="shrink-0 text-base tabular-nums text-text-muted max-sm:hidden">
-                        {run.total === 0 ? "—" : `${disposedCount(run)}/${run.total}`}
-                      </span>
-                      <span className="shrink-0">{rowBadge(run)}</span>
-                    </MasterListItem>
-                  ))}
-                </Fragment>
+                      <StageSourceBadge stage={stage} />
+                    </span>
+                    <span className="flex flex-wrap items-center gap-x-1.5 text-base font-normal text-text-muted">
+                      <span className="tabular-nums">{latestRunLabel(stage)}</span>
+                    </span>
+                  </span>
+                  {/* 三个数在窄屏让位给状态徽章:390px 下它们会把标题挤成两个字。 */}
+                  <span className="max-sm:hidden"><StageCounts stage={stage} /></span>
+                  <span className="shrink-0"><StageStatusBadge stage={stage} /></span>
+                </MasterListItem>
               ))}
             </div>
           ) : null}
 
-          {flat.length === 0 && !runs.isPending && !runs.isError ? (
+          {flat.length === 0 && !stages.isPending && !stages.isError ? (
             <div className="rounded-lg border border-card-line bg-surface px-5 py-4 shadow-card">
               <EmptyState
-                title="暂无审查记录"
+                title={
+                  filter.status === "all" && filter.source === "all"
+                    ? "暂无审查记录"
+                    : "没有符合条件的审查记录"
+                }
                 titleAs="h2"
                 description={
-                  <>
-                    向已注册仓库提交 pull request 后，系统会自动运行审查。
-                    {canRerun ? "如需对已有 pull request 重新运行审查，请到仓库页选择仓库并输入 PR 编号。" : null}
-                  </>
+                  filter.status === "all" && filter.source === "all" ? (
+                    <>
+                      向已注册仓库提交 pull request 后，系统会自动运行审查。
+                      {canRerun ? "如需对已有 pull request 重新运行审查，请到仓库页选择仓库并输入 PR 编号。" : null}
+                    </>
+                  ) : (
+                    "换一个状态或来源再看。"
+                  )
                 }
-                action={canRerun ? (
-                  <Button variant="outline" color="gray" size={{ initial: "4", sm: "1" }} asChild>
-                    <Link to="/repos">去仓库页</Link>
-                  </Button>
-                ) : undefined}
+                action={
+                  canRerun && filter.status === "all" && filter.source === "all" ? (
+                    <Button variant="outline" color="gray" size={{ initial: "4", sm: "1" }} asChild>
+                      <Link to="/repos">去仓库页</Link>
+                    </Button>
+                  ) : undefined
+                }
               />
             </div>
           ) : null}
-          {flat.length > 0 && visible.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-card-line px-4 py-6 text-center text-text-muted">
-              {/*
-                筛选只作用于已经加载的那几页。还有更早的记录没取回来时,说「没有记录」
-                会和总览上的待处置计数对不上——那个数也是按已加载的轮次算的,但人不会
-                这么读。
-              */}
-              {runs.hasNextPage
-                ? "已加载的记录里没有符合条件的，继续下滑会取回更早的记录。"
-                : "没有符合条件的审查记录。"}
-            </p>
-          ) : null}
           <div ref={sentinel} />
           <p className="pt-3 text-center text-sm text-text-muted" aria-live="polite">
-            {runs.isFetchingNextPage
+            {stages.isFetchingNextPage
               ? "加载更早的审查记录…"
-              : runs.hasNextPage
+              : stages.hasNextPage
                 ? "继续下滑加载更早的审查记录"
                 : flat.length > 0
                   ? "已加载全部记录"
@@ -785,18 +899,24 @@ export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispo
         </div>
       </PageBody>
 
-      {openedRun === null ? null : (
-        <RunDetailPanel
-          run={openedRun}
+      {openedRunId === null ? null : (
+        <RunDetailPanelById
+          runId={openedRunId}
           canRerun={canRerun}
           canDispose={canDispose}
           rerunning={rerun.isPending}
-          pullUrl={session.data === undefined || session.data === null ? null : pullRequestUrl(session.data, openedRun)}
           {...(openedFile === undefined ? {} : { diffFile: openedFile })}
           onOpenOther={setOpenedRunId}
-          onSwitchFilter={setFilter}
-          onRerun={() => {
-            rerun.mutate(openedRun);
+          onSwitchFilter={({ kind, value }) => {
+            if (kind === "status" && STATUS_OPTIONS.some(([id]) => id === value)) {
+              setFilter({ status: value as StageStatusFilter });
+            }
+            if (kind === "source" && SOURCE_OPTIONS.some(([id]) => id === value)) {
+              setFilter({ source: value as StageSourceFilter });
+            }
+          }}
+          onRerun={(run) => {
+            rerun.mutate(run);
             // 结果落在页面顶部的 Callout 上,面板压着它人就看不见,所以触发即收面板。
             setOpenedRunId(null);
           }}

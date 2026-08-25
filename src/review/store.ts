@@ -1109,6 +1109,44 @@ export type StageSummary = {
   timeline: StageTimelineEntry[];
 };
 
+/** 一个审查阶段的来源(CONTEXT.md 审查阶段):pull request 或范围审查。 */
+export type StageSource = "pull-request" | "range-review";
+
+/** 一个审查阶段只有这两种状态(CONTEXT.md 审查阶段)。 */
+export type StageStatus = "active" | "closed";
+
+/**
+ * 评审记录里的一行(issue #174):一个审查阶段,不是一轮 Review Run。同一 pull request
+ * 推多少次、同一范围审查推进多少次,这里都只有一行。
+ *
+ * `stageId` 由来源与键合成(`pr:<owner>/<repo>/<number>` 与 `range:<id>`),阶段详情
+ * 的地址用它作路径参数,因此格式要稳定可解析。
+ *
+ * 范围审查的容器 PR 序号不出现在这里:它对面板用户透明(CONTEXT.md 容器 PR),
+ * `pullNumber` 因此只有 pull request 阶段有。范围审查还没有标题字段,`title` 为 null,
+ * 由面板按 `#编号` 显示。
+ */
+export type StageListItem = {
+  stageId: string;
+  source: StageSource;
+  owner: string;
+  repo: string;
+  /** pull request 阶段的 PR 号;范围审查阶段为 null。 */
+  pullNumber: number | null;
+  /** 范围审查阶段的标识;pull request 阶段为 null。 */
+  rangeReviewId: number | null;
+  /** pull request 阶段取最新一轮记下的标题;没有标题的旧行与范围审查都是 null。 */
+  title: string | null;
+  status: StageStatus;
+  /** 最新一轮 Review Run;范围审查刚发起、一轮都还没跑时为 null。 */
+  latestRunId: number | null;
+  latestRunAt: string | null;
+  /** 最新一轮跑完的时刻;还在跑时为 null,面板据此决定要不要续查。 */
+  latestRunFinishedAt: string | null;
+  /** 阶段汇总的三个数,口径与 `stageSummary` 完全一致——它们就是从那里来的。 */
+  counts: StageSummary["counts"];
+};
+
 /**
  * 一个范围审查。分支名与容器 PR 序号是它在 Forge 上的全部痕迹;`lastForgeFailure`
  * 记最近一次 Forge 操作为什么没成,运维凭它分辨是权限还是分支保护。
@@ -1377,7 +1415,27 @@ export type Store = {
     owner?: string;
     repo?: string;
     rangeReviewId?: number;
+    /** 只要这一轮。面板的轮次详情按 id 取,读的与列表是同一份投影。 */
+    id?: number;
   }): RunListItem[];
+  /**
+   * 评审记录的一页(issue #174):每行一个审查阶段,按最新一轮的时间倒序。
+   *
+   * 归并的判据与 `stageScope` 同源:pull request 阶段是「owner + repo + pull number
+   * 且不属于任何范围审查」的全部轮次,范围审查阶段是它名下的全部轮次。三个计数直接
+   * 取 `stageSummary`,列表与详情因此不会各算一套。
+   *
+   * 筛选与分页都在这里做:状态、来源与仓库先筛,再按 `offset` 切页,计数只为这一页
+   * 的那几行算。
+   */
+  listStages(opts: {
+    offset: number;
+    limit: number;
+    owner?: string;
+    repo?: string;
+    status?: StageStatus;
+    source?: StageSource;
+  }): StageListItem[];
   /**
    * 落一条范围审查,返回它的 id。两条分支名由 id 推出,和插入在同一个事务里补上——
    * 记录一旦可见就必须带着分支名,否则中途失败的清理无从知道该删哪两条。
@@ -3749,6 +3807,10 @@ export function openStore(dbPath: string): Store {
         conditions.push("range_review_id = ?");
         params.push(opts.rangeReviewId);
       }
+      if (opts.id !== undefined) {
+        conditions.push("id = ?");
+        params.push(opts.id);
+      }
       const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
       const runs = db
         .prepare(
@@ -3969,6 +4031,131 @@ export function openStore(dbPath: string): Store {
           total: groups.get(id)?.total ?? 0,
         };
       });
+    },
+
+    listStages(opts) {
+      const scoped = opts.owner !== undefined && opts.repo !== undefined;
+      const scopeParams = scoped ? [opts.owner!, opts.repo!] : [];
+
+      // pull request 阶段:每组取 id 最大的那一轮——id 即落库顺序,与开跑时间同序,
+      // 那一轮带着这个阶段当前的标题与关闭标记(关闭标记落在该 PR 的全部轮次上)。
+      const pullRows = db
+        .prepare(
+          `SELECT run.owner AS owner, run.repo AS repo, run.pull_number AS pull_number,
+                  run.id AS latest_run_id, run.started_at AS started_at,
+                  run.finished_at AS finished_at, run.title AS title, run.pr_state AS pr_state
+             FROM review_run run
+             JOIN (SELECT owner, repo, pull_number, MAX(id) AS latest_id
+                     FROM review_run
+                    WHERE range_review_id IS NULL
+                    GROUP BY owner, repo, pull_number) grouped
+               ON grouped.latest_id = run.id
+            ${scoped ? "WHERE run.owner = ? AND run.repo = ?" : ""}`,
+        )
+        .all(...scopeParams);
+
+      // 范围审查阶段:一轮都还没跑的也是一个阶段(发起之后容器 PR 可能还没建出来),
+      // 因此从 range_review 出发,轮次只用来取最新那一轮。
+      const rangeRows = db
+        .prepare(
+          `SELECT rr.id AS id, rr.owner AS owner, rr.repo AS repo, rr.state AS state,
+                  rr.created_at AS created_at,
+                  (SELECT MAX(run.id) FROM review_run run
+                    WHERE run.range_review_id = rr.id) AS latest_run_id
+             FROM range_review rr
+            ${scoped ? "WHERE rr.owner = ? AND rr.repo = ?" : ""}`,
+        )
+        .all(...scopeParams);
+
+      const rangeRunIds = rangeRows
+        .map((row) => row["latest_run_id"])
+        .filter((id): id is number => id !== null)
+        .map(Number);
+      const rangeRunTimes = new Map<number, { startedAt: string; finishedAt: string | null }>();
+      if (rangeRunIds.length > 0) {
+        const marks = rangeRunIds.map(() => "?").join(", ");
+        for (const row of db
+          .prepare(`SELECT id, started_at, finished_at FROM review_run WHERE id IN (${marks})`)
+          .all(...rangeRunIds)) {
+          rangeRunTimes.set(Number(row["id"]), {
+            startedAt: String(row["started_at"]),
+            finishedAt: row["finished_at"] === null ? null : String(row["finished_at"]),
+          });
+        }
+      }
+
+      type Row = {
+        item: Omit<StageListItem, "counts">;
+        scope: StageScope;
+        /** 排序用的时刻:范围审查还没有轮次时用它的发起时刻。 */
+        activityAt: string;
+      };
+      const rows: Row[] = [];
+      for (const row of pullRows) {
+        const owner = String(row["owner"]);
+        const repo = String(row["repo"]);
+        const pullNumber = Number(row["pull_number"]);
+        const startedAt = String(row["started_at"]);
+        rows.push({
+          item: {
+            stageId: `pr:${owner}/${repo}/${pullNumber}`,
+            source: "pull-request",
+            owner,
+            repo,
+            pullNumber,
+            rangeReviewId: null,
+            title: row["title"] === null ? null : String(row["title"]),
+            // 关闭标记在,这个阶段就是已结束;重开时它被清掉,阶段回到进行中。
+            status: row["pr_state"] === "closed" ? "closed" : "active",
+            latestRunId: Number(row["latest_run_id"]),
+            latestRunAt: startedAt,
+            latestRunFinishedAt: row["finished_at"] === null ? null : String(row["finished_at"]),
+          },
+          scope: { owner, repo, pullNumber },
+          activityAt: startedAt,
+        });
+      }
+      for (const row of rangeRows) {
+        const id = Number(row["id"]);
+        const latestRunId = row["latest_run_id"] === null ? null : Number(row["latest_run_id"]);
+        const latestRun = latestRunId === null ? undefined : rangeRunTimes.get(latestRunId);
+        const latestRunAt = latestRun?.startedAt ?? null;
+        const state = String(row["state"]) as RangeReviewState;
+        rows.push({
+          item: {
+            stageId: `range:${id}`,
+            source: "range-review",
+            owner: String(row["owner"]),
+            repo: String(row["repo"]),
+            pullNumber: null,
+            rangeReviewId: id,
+            title: null,
+            // 审查完成即已结束;发起失败的那一档也推不动比较项,同样不再是进行中。
+            status: state === "in-progress" ? "active" : "closed",
+            latestRunId,
+            latestRunAt,
+            latestRunFinishedAt: latestRun?.finishedAt ?? null,
+          },
+          scope: { rangeReviewId: id },
+          activityAt: latestRunAt ?? String(row["created_at"]),
+        });
+      }
+
+      const filtered = rows.filter(
+        (row) =>
+          (opts.status === undefined || row.item.status === opts.status) &&
+          (opts.source === undefined || row.item.source === opts.source),
+      );
+      // 最近有动静的排在前面。时刻相同的按阶段标识兜底,翻页才不会漂。
+      filtered.sort(
+        (a, b) =>
+          b.activityAt.localeCompare(a.activityAt) ||
+          b.item.stageId.localeCompare(a.item.stageId),
+      );
+      // 三个计数只为这一页算:每一行都要读一遍它整个阶段的 Finding。
+      return filtered
+        .slice(opts.offset, opts.offset + opts.limit)
+        .map((row) => ({ ...row.item, counts: store.stageSummary(row.scope).counts }));
     },
 
     createRangeReview(record) {

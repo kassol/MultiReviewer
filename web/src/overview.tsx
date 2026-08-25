@@ -75,7 +75,6 @@ const HEALTH: Record<ModelServiceHealth, { label: string; dot: string }> = {
   disabled: { label: "已停用", dot: "bg-neutral-dot" },
 };
 
-/** 与评审记录页 `runBucket` 同一判据:整轮失败 → 模型失败 → 待处置 → 完成。 */
 /**
  * 卡壳。Themes 的 Card 把圆角画在伪元素上,而这套设计的圆角随视口在 14 / 12 之间换档,
  * 只改根元素的话边框与底色的圆角会错开;列表卡还要求零内边距加逐行分隔。所以卡壳走
@@ -321,7 +320,7 @@ export function OverviewPage() {
           )}
         </KpiCard>
 
-        <KpiCard label="待处置发现" to="/runs" search={{ filter: "pending" }}>
+        <KpiCard label="待处置发现" to="/runs" search={{ status: "active" }}>
           {runs.isPending ? <KpiSkeleton /> : <KpiNumber>{pendingFindings}</KpiNumber>}
           {runs.isPending ? null : (
             <KpiNote>{`分布在 ${pendingPulls} 个 PR · 最近 ${loaded.length} 轮`}</KpiNote>

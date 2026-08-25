@@ -31,14 +31,14 @@ import {
 import { api, errorText, fetchJson } from "./api.ts";
 import { modelIdentity, parseModelIdentity } from "./model-services.ts";
 import {
-  disposedCount,
   rerunRequest,
-  RunDetailPanel,
-  RunPill,
-  runLabel,
-  type RunItem,
+  RunDetailPanelById,
+  StageCounts,
+  stageLabel,
+  StageStatusBadge,
+  stagesPath,
+  type StageItem,
 } from "./runs.tsx";
-import { loadPanelSession, pullRequestUrl } from "./session.ts";
 import { useSetupStatus } from "./setup-checklist.tsx";
 
 type ReviewerSpec = { provider: string; model: string };
@@ -989,13 +989,13 @@ function RepoRuns({
   onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
 }) {
   const queryClient = useQueryClient();
-  // 只为把每一轮指回它的 pull request 看原版。与壳共用会话缓存。
-  const session = useQuery({ queryKey: ["session"], queryFn: loadPanelSession });
-  const runs = useQuery({
-    queryKey: ["repo-runs", repo.owner, repo.repo],
+  // 仓库页的评审记录与全局评审记录读同一个端点、同一种行,只多一对仓库过滤:
+  // 一个审查阶段在两处是同一条记录(issue #174)。
+  const stages = useQuery({
+    queryKey: ["repo-stages", repo.owner, repo.repo],
     queryFn: () =>
-      fetchJson<{ runs: RunItem[] }>(
-        `/runs?owner=${encodeURIComponent(repo.owner)}&repo=${encodeURIComponent(repo.repo)}`,
+      fetchJson<{ stages: StageItem[] }>(
+        stagesPath({ offset: 0, owner: repo.owner, repo: repo.repo }),
       ),
     enabled: canRead,
   });
@@ -1007,7 +1007,7 @@ function RepoRuns({
     onSuccess: (text) => {
       onFeedback({ text, isError: false });
       setPullNumber("");
-      void queryClient.invalidateQueries({ queryKey: ["repo-runs", repo.owner, repo.repo] });
+      void queryClient.invalidateQueries({ queryKey: ["repo-stages", repo.owner, repo.repo] });
     },
     onError: (error: Error) => onFeedback({ text: error.message, isError: true }),
   });
@@ -1022,10 +1022,9 @@ function RepoRuns({
     rerun.mutate({ owner: repo.owner, repo: repo.repo, pullNumber: number });
   };
 
-  const rows = runs.data?.runs.slice(0, 8) ?? [];
-  const opened = rows.find((run) => run.id === openedRunId) ?? null;
+  const rows = stages.data?.stages.slice(0, 8) ?? [];
   return (
-    <CardShell aria-busy={canRead && runs.isPending}>
+    <CardShell aria-busy={canRead && stages.isPending}>
       <CardTitle
         title={canRead ? "评审记录" : "重新运行审查"}
         action={canRerun ? (
@@ -1048,15 +1047,15 @@ function RepoRuns({
           </form>
         ) : undefined}
       />
-      {canRead && runs.isError ? (
+      {canRead && stages.isError ? (
         <div className="border-t border-line px-4 py-3.5 sm:px-5">
           <Callout.Root role="alert" color="red" size="1">
             <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-            <Callout.Text>{(runs.error as Error).message}</Callout.Text>
+            <Callout.Text>{(stages.error as Error).message}</Callout.Text>
           </Callout.Root>
         </div>
       ) : null}
-      {canRead && runs.isPending ? (
+      {canRead && stages.isPending ? (
         <div className="flex flex-col gap-2 border-t border-line px-4 py-3.5 sm:px-5" role="status" aria-live="polite">
           <span className="sr-only">正在读取仓库评审记录</span>
           <Skeleton className="h-8" />
@@ -1065,46 +1064,45 @@ function RepoRuns({
         </div>
       ) : null}
       {canRead
-        ? rows.map((run) => (
-            // 一行一轮:左边是这一轮的身份与触发方式,右边是处置进度与结论。点开是
-            // 评审记录页那同一个详情面板——同一件东西,两处看到的应该一样。
+        ? rows.map((stage) => (
+            // 一行一个审查阶段:左边是它的名字与最新一轮的时间,右边是阶段汇总与状态。
+            // 点开是评审记录页那同一个详情面板——同一件东西,两处看到的应该一样。
             <MasterListItem
-              key={run.id}
-              selected={run.id === openedRunId}
-              onClick={() => setOpenedRunId(run.id)}
+              key={stage.stageId}
+              selected={stage.latestRunId !== null && stage.latestRunId === openedRunId}
+              onClick={() => {
+                if (stage.latestRunId !== null) setOpenedRunId(stage.latestRunId);
+              }}
               aria-haspopup="dialog"
-              data-run-id={run.id}
+              {...(stage.latestRunId === null ? {} : { "data-run-id": stage.latestRunId })}
               className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-3 sm:px-5"
             >
               <span className="min-w-0 flex-1 text-lg font-semibold tabular-nums">
-                {runLabel(run)}
+                {stageLabel(stage)}
                 <span className="font-normal text-text-muted">
-                  {` · ${run.startedAt.slice(0, 16).replace("T", " ")}`}
-                  {` · ${run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`}`}
+                  {stage.latestRunAt === null
+                    ? " · 还没有跑过"
+                    : ` · ${stage.latestRunAt.slice(0, 16).replace("T", " ")}`}
                 </span>
               </span>
-              {/* 徽章说结论,这一格说进度。 */}
-              <span className="shrink-0 text-base tabular-nums text-text-muted">
-                {run.total === 0 ? "—" : `${disposedCount(run)}/${run.total}`}
-              </span>
-              <RunPill run={run} />
+              <StageCounts stage={stage} />
+              <StageStatusBadge stage={stage} />
             </MasterListItem>
           ))
         : null}
-      {canRead && rows.length === 0 && !runs.isPending && !runs.isError ? (
+      {canRead && rows.length === 0 && !stages.isPending && !stages.isError ? (
         <div className="border-t border-line px-4 sm:px-5">
           <EmptyState title="暂无审查记录" />
         </div>
       ) : null}
-      {opened === null ? null : (
-        <RunDetailPanel
-          run={opened}
+      {openedRunId === null ? null : (
+        <RunDetailPanelById
+          runId={openedRunId}
           canRerun={canRerun}
           canDispose={canDispose}
           rerunning={rerun.isPending}
-          pullUrl={session.data === undefined || session.data === null ? null : pullRequestUrl(session.data, opened)}
-          onRerun={() => {
-            rerun.mutate(opened);
+          onRerun={(run) => {
+            rerun.mutate(run);
             // 结果落在页面顶部的提示上,面板压着它人就看不见,所以触发即收面板。
             setOpenedRunId(null);
           }}

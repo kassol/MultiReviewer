@@ -1421,6 +1421,18 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "GET", pattern: "/runs", access: "review:read", handler: ({ req, res, deps }) => handleRuns(req, res, deps) },
   {
     method: "GET",
+    pattern: "/stages",
+    access: "review:read",
+    handler: ({ req, res, deps }) => handleStages(req, res, deps),
+  },
+  {
+    method: "GET",
+    pattern: /^\/runs\/(\d+)$/,
+    access: "review:read",
+    handler: ({ res, deps }, match) => handleRun(res, deps, Number(match![1])),
+  },
+  {
+    method: "GET",
     pattern: /^\/runs\/(\d+)\/diff$/,
     access: "review:read",
     handler: ({ req, res, deps }, match) => handleRunDiff(req, res, deps, Number(match![1])),
@@ -3955,6 +3967,64 @@ function handleRuns(
   );
   const nextBefore = runs.length === RUNS_PAGE ? runs[runs.length - 1]!.id : null;
   return sendJson(res, 200, { runs, nextBefore });
+}
+
+/** 评审记录一页的行数。行是审查阶段,不是轮次(issue #174)。 */
+const STAGES_PAGE = 30;
+
+/**
+ * 评审记录的一页(issue #174):每行一个审查阶段。全局列表与仓库页读的是同一个端点,
+ * 仓库页多给 `owner` + `repo` 一对过滤。
+ *
+ * 筛选维度是状态与来源,两项都省即全部;认不出来的值一律 400——悄悄按「全部」处理,
+ * 人看到的就是一份与自己所选无关的列表。翻页用 `offset`:排序键是最新一轮的时间,
+ * 新一轮随时会把某一行顶上来,id 游标在这里不成立。
+ */
+function handleStages(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): void {
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+  const offsetRaw = query.get("offset");
+  const offset = offsetRaw === null ? 0 : Number(offsetRaw);
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    return sendJson(res, 400, { error: "offset 要是非负整数" });
+  }
+  const owner = query.get("owner");
+  const repo = query.get("repo");
+  if ((owner === null) !== (repo === null)) {
+    return sendJson(res, 400, { error: "owner 与 repo 要成对给,过滤不接受半个键" });
+  }
+  const statusRaw = query.get("status");
+  if (statusRaw !== null && statusRaw !== "active" && statusRaw !== "closed") {
+    return sendJson(res, 400, { error: "status 只能是 active 或 closed" });
+  }
+  const sourceRaw = query.get("source");
+  if (sourceRaw !== null && sourceRaw !== "pull-request" && sourceRaw !== "range-review") {
+    return sendJson(res, 400, { error: "source 只能是 pull-request 或 range-review" });
+  }
+  const stages = withStore(deps.dbPath, (store) =>
+    store.listStages({
+      offset,
+      limit: STAGES_PAGE,
+      ...(owner !== null && repo !== null ? { owner, repo } : {}),
+      ...(statusRaw === null ? {} : { status: statusRaw }),
+      ...(sourceRaw === null ? {} : { source: sourceRaw }),
+    }),
+  );
+  const nextOffset = stages.length === STAGES_PAGE ? offset + STAGES_PAGE : null;
+  return sendJson(res, 200, { stages, nextOffset });
+}
+
+/**
+ * 一轮 Review Run(issue #174)。评审记录的一行点开的是该阶段最新一轮,行上只带它的
+ * id,轮次本身按 id 在这里取,与时间流读的是同一份投影。
+ */
+function handleRun(res: ServerResponse, deps: WebhookServerDeps, runId: number): void {
+  const run = withStore(deps.dbPath, (store) => store.listRuns({ limit: 1, id: runId })[0]);
+  if (run === undefined) return sendJson(res, 404, { error: "没有这一轮 Review Run" });
+  return sendJson(res, 200, { run });
 }
 
 /**

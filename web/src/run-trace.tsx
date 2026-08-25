@@ -475,11 +475,11 @@ export function RunTrace({ run }: { run: RunItem }) {
       source.close();
       setStream("ended");
       /*
-       * 结束信号只说轨迹到头了。这一轮的结论、Finding 与耗时在轮次投影里,让读它的
-       * 三份查询各刷新一次,面板头部与列表跟着从「运行中」变过来——否则要等下一次
-       * 10 秒轮询才对得上。
+       * 结束信号只说轨迹到头了。这一轮的结论、Finding 与耗时在轮次与阶段投影里,让读
+       * 它们的几份查询各刷新一次,面板头部与列表跟着从「运行中」变过来——否则要等下
+       * 一次 10 秒轮询才对得上。
        */
-      for (const projection of [["runs"], ["repo-runs"], ["range-review"]]) {
+      for (const projection of [["stages"], ["repo-stages"], ["run"], ["range-review"]]) {
         void queryClient.invalidateQueries({ queryKey: projection });
       }
     });

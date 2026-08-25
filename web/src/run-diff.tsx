@@ -149,9 +149,15 @@ export function FindingRow({
     onSuccess: () => {
       setComposing(false);
       setNote("");
-      // 时间流、仓库详情与范围审查详情各读一份轮次投影,阶段汇总另读一份按 Finding
-      // Identity 折叠的投影,处置改的是同一批行。
-      for (const key of [["runs"], ["repo-runs"], ["range-review"], ["stage-summary"]]) {
+      // 评审记录、仓库详情与范围审查详情各读一份投影(前两份是阶段列表,行上带阶段
+      // 汇总三个数),打开的那一轮与阶段汇总另各读一份,处置改的是同一批行。
+      for (const key of [
+        ["stages"],
+        ["repo-stages"],
+        ["run"],
+        ["range-review"],
+        ["stage-summary"],
+      ]) {
         void queryClient.invalidateQueries({ queryKey: key });
       }
     },

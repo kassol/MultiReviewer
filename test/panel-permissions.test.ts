@@ -34,6 +34,8 @@ const ROUTE_EXPECTATIONS = [
   ["PUT", "/settings", "model:write"],
   ["GET", "/stats", "review:read"],
   ["GET", "/runs", "review:read"],
+  ["GET", "/stages", "review:read"],
+  ["GET", "/^\\/runs\\/(\\d+)$/", "review:read"],
   ["GET", "/^\\/runs\\/(\\d+)\\/diff$/", "review:read"],
   ["GET", "/^\\/runs\\/(\\d+)\\/trace$/", "review:read"],
   ["GET", "/^\\/runs\\/(\\d+)\\/trace\\/stream$/", "review:read"],

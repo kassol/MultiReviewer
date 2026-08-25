@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-25: 落地 issue #174(spec #172)。**评审记录的每一行从一轮 Review Run 变成一个审查阶段**:pull request 阶段按仓库与 pull number 归并,范围审查阶段按范围审查自身标识归并;同一 pull request 推多少次、同一范围审查推进多少次,列表里都只有一行。行上是来源标记、名字(pull request 标题,没有的显示 `#编号`)、状态(pull request 关闭即已结束、重开回到进行中并延续同一阶段;范围审查以审查完成为已结束)、最新一轮的时间与阶段汇总三个数(待处置 / 人工已处置 / 已修复,口径与阶段汇总接口同源)。**筛选与分页在服务端**:状态与来源两个维度,默认全部;全局评审记录与仓库页的评审记录读同一个新接口 `GET <前缀>/api/stages`,一个阶段在两处是同一条记录。点开一行仍是现有的详情抽屉,打开的是这个阶段最新一轮(新增 `GET <前缀>/api/runs/{id}`)。按 Review Run 分页的 `GET <前缀>/api/runs` 保留,只剩总览的「今日运行」与「最近运行」在读它——那两处说的是轮次,不是阶段。权限沿用 `review:read`。独立详情页、页头发起范围审查与删除范围审查页面分别是 issue #175 / #177 / #180。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
+
 - 2026-08-25: 落地 [issue #173](https://github.com/kassol/MultiReviewer/issues/173)(spec #172 的第一票)。**评审记录里的行终于有名字**:pull request 触发的每一轮 Review Run 在开跑时记下那个 pull request 的标题,列表里那一行显示它;范围审查触发的轮次不记标题(它的名字来自范围审查自身),升级前跑过的轮次也没有,这两类照旧显示 `#编号`。旧库升级只多一列,不回填历史。这是「评审记录以审查阶段为行」的预重构:阶段行需要一个名字,而标题此前不落库。`CONTEXT.md` 的 Review Run 词条补上这一句。服务端细节见 `src/AGENTS.md`,面板见 `web/AGENTS.md`。
 
 - 2026-08-25: 完成审查轨迹的 grilling 并落地。Reviewer 的过程(assistant 文本、工具调用与参数、报出与被拒的 Finding、失败原因)与 Review Run 的编排事件(工作副本就绪、批次起止、每组 Finding 合并及判据、评论已发)以事件行落 `review_trace` 表,随 Review Run 永久保留;面板运行详情页新增「审查轨迹」分段,进行中的轮次经 SSE 实时推送、断线按序号续传,已结束的只读表。`CONTEXT.md` 新增「审查轨迹」词条,决策见 ADR 0017,spec 是 [issue #171](https://github.com/kassol/MultiReviewer/issues/171)。服务端细节见 `src/AGENTS.md`,面板见 `web/AGENTS.md`。
