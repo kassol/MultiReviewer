@@ -859,6 +859,32 @@ test("复核判仍在、代码已改写但本轮没在新位置报出:旧行不�
   assert.deepEqual(continuedFrom(db.path), [null]);
 });
 
+test("本轮那条讲的不是同一回事:不承接,旧行不动", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asPublished(forge, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
+
+  // 判仍在、指纹也变了,但本轮在这个文件里报出的那条与旧条目一个词都不共享。承接它
+  // 就是把旧问题挪到一处无关的代码上,旧评论还被 resolve 掉——比不承接更糟。行号
+  // 撞上也不豁免:旧位置的代码已经改写,行号跨轮之间证明不了两条讲的是同一回事。
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [
+      verdictReviewer("model-a", "present", [
+        { ...FINDING, description: "缺少参数类型校验" },
+      ]),
+    ],
+  });
+
+  assert.deepEqual(forge.resolvedIds, [], "内容对不上却把旧评论 resolve 了");
+  assert.deepEqual(latestDispositions(db.path), ["unresolved", "unknown"]);
+  assert.deepEqual(continuedFrom(db.path), [null, null]);
+  // 本轮那条按新 Finding 正常提出,正文里没有那句「延续自」。
+  assert.doesNotMatch(forge.createdReviews[1]!.comments[0]!.body, /延续自/);
+});
+
 test("已延续不进处置计数:旧那一轮的进度里不再有它", async () => {
   const { db } = await continueSecondRound();
 

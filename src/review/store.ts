@@ -572,11 +572,16 @@ export type AutoDispositionCandidate = {
  * 三种行不在候选里:没有指纹的(判不了代码有没有改写)、没有评论载体或链接的(升级前
  * 的历史行与正文 fallback,resolve 不了也链不过去)、以及已经处置过的(人工处置与
  * 「已修复」都是终点,不再交接位置)。
+ *
+ * `title` 与 `description` 供调用方判「本轮这条讲的是不是同一回事」;升级前的行没有
+ * 标题,取空串,判据自会退回正文。
  */
 export type ContinuationCandidate = {
   findingId: number;
   file: string;
   line: number;
+  title: string;
+  description: string;
   fingerprint: string;
   commentId: string;
   commentHtmlUrl: string;
@@ -3774,7 +3779,8 @@ export function openStore(dbPath: string): Store {
 
     continuationCandidates(findingIds) {
       const probe = db.prepare(
-        `SELECT file, line, fingerprint, comment_id, comment_html_url FROM finding
+        `SELECT file, line, title, description, fingerprint,
+                comment_id, comment_html_url FROM finding
           WHERE id = ? AND fingerprint IS NOT NULL
             AND comment_id IS NOT NULL AND comment_html_url IS NOT NULL
             AND disposition IN ('unknown', 'unresolved')`,
@@ -3787,6 +3793,8 @@ export function openStore(dbPath: string): Store {
             findingId,
             file: String(row["file"]),
             line: Number(row["line"]),
+            title: row["title"] === null ? "" : String(row["title"]),
+            description: String(row["description"]),
             fingerprint: String(row["fingerprint"]),
             commentId: String(row["comment_id"]),
             commentHtmlUrl: String(row["comment_html_url"]),

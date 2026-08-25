@@ -98,8 +98,22 @@ export function contentSimilarity(a: string, b: string): number {
  * 直接拿它比会让不给标题的模型一条都合并不进来。描述必定非空——归一化的硬校验,
  * 见 `reviewer/normalize.ts`——退回它即可,空标题不需要另设一档。
  */
-function comparable(finding: Finding): string {
+function comparable(finding: { title: string; description: string }): string {
   return finding.title === "" ? finding.description : finding.title;
+}
+
+/**
+ * 两条内容讲的是不是同一回事。判据与阈值都取跨模型去重的第二道判据,不另立一套:
+ * 「什么算同一个问题」在一处定,改动时两边一起变。
+ *
+ * 延续用它挡住「同文件里随便一条新 Finding 都能被承接」(issue #167):那一档没有行号
+ * 可依——旧位置的代码已经被改写,行号跨轮之间不再是硬证据,内容是仅剩的判据。
+ */
+export function sameContent(
+  a: { title: string; description: string },
+  b: { title: string; description: string },
+): boolean {
+  return contentSimilarity(comparable(a), comparable(b)) >= SIMILARITY_THRESHOLD;
 }
 
 /**

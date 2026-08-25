@@ -13,7 +13,12 @@ import {
   splitIntoBatches,
   type TimedOutcome,
 } from "./batch.ts";
-import { dedupeFindings, type FindingAttribution, type MergedFinding } from "./dedupe.ts";
+import {
+  dedupeFindings,
+  sameContent,
+  type FindingAttribution,
+  type MergedFinding,
+} from "./dedupe.ts";
 import type {
   Disposition,
   HistoryFinding,
@@ -477,12 +482,17 @@ type Continuation = {
  * `fileFingerprints`——旧指纹落在这个文件此刻算得出的全部指纹里,那处代码就还在原样,
  * 不论它被上下挪了多少行,这时本轮报出的是另一条,不是同一条换了位置。
  *
- * 「本轮在新位置报出」的判据只有两条:同一个文件,且是本轮**新报**的(没有折叠到任何
- * 历史评论上——折叠上的那些自己就是另一条 Identity)。同文件有多条候选时取行号离旧位置
- * 最近的一条;同距取行号小的,再同取合并组序号小的。三级排序让结果与模型报出的顺序
- * 无关,同一份输入永远给同一个答案。不设行距上限:复核已经说了这个问题仍在,而模型在
- * 这个文件里报出的最近一条就是它现在的位置,再加一道阈值只会让改动大的那些延续不上。
- * 一条新 Finding 至多承接一条旧 Identity——先来的那条(id 小的)拿走它。
+ * 「本轮在新位置报出」要同时满足三条:同一个文件、是本轮**新报**的(没有折叠到任何历史
+ * 评论上——折叠上的那些自己就是另一条 Identity),且讲的是同一回事(`dedupe.ts` 的
+ * `sameContent`,判据与阈值同跨模型去重那一道,不另立一套)。内容这一道不能省:少了它,
+ * 同文件里任意一条无关的新 Finding 都会被拿来承接,旧评论就此 resolve,那条问题从此活在
+ * 错的位置上——比不承接更糟。也不给「行号相同」留豁免:跨模型去重那边两个模型读的是同
+ * 一份代码,行号相同是硬证据;这里旧位置的代码已经被改写,行号跨轮之间证明不了什么。
+ *
+ * 三条都过的候选有多个时取行号离旧位置最近的一条;同距取行号小的,再同取合并组序号小
+ * 的。三级排序让结果与模型报出的顺序无关,同一份输入永远给同一个答案。行距本身不设
+ * 上限——复核已经说了这个问题仍在,内容也对得上,再加一道行距阈值只会让改动大的那些
+ * 延续不上。一条新 Finding 至多承接一条旧 Identity——先来的那条(id 小的)拿走它。
  */
 function planContinuations(
   candidates: readonly ContinuationCandidate[],
@@ -504,7 +514,10 @@ function planContinuations(
 
     const pick = findings
       .flatMap((finding, groupIndex) =>
-        matched[groupIndex] || claimed.has(groupIndex) || finding.file !== candidate.file
+        matched[groupIndex] ||
+        claimed.has(groupIndex) ||
+        finding.file !== candidate.file ||
+        !sameContent(candidate, finding)
           ? []
           : [{ finding, groupIndex }],
       )
