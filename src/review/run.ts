@@ -556,6 +556,20 @@ function continuedFinding(
   };
 }
 
+/**
+ * 本轮的一个合并组:合并后的 Finding、它在本轮 head 上的内容指纹,以及它折叠到的那条
+ * 历史评论(没折叠即 undefined)。合并组序号就是它在本轮那个数组里的下标。
+ *
+ * 三样东西同属一个合并组,就放在同一项里(issue #186):分开成三个平行数组时,合成的
+ * 延续要三处同步追加,只要有人在配对与分派之间再插一次数组操作,「延续自」的链接就会挂
+ * 到另一条评论上。
+ */
+type ReviewGroup = {
+  finding: MergedFinding;
+  fingerprint: string | undefined;
+  match: PriorDisposition | undefined;
+};
+
 /** 一次延续:旧 Finding 与本轮承接它的那个合并组。 */
 type Continuation = {
   candidate: ContinuationCandidate;
@@ -586,23 +600,23 @@ type Continuation = {
  * 延续不上。一条新 Finding 至多承接一条旧 Identity——先来的那条(id 小的)拿走它。
  *
  * 本轮一条都没报出、而复核结论自带新位置的(issue #170),按历史条目在那个位置合成一条
- * (`synthesized`,合并组序号接在本轮之后)。合成的那条同样要过 diff 那一道,理由与上面
- * 一样。「代码已改写」这道判据在合成之前就走完了:旧指纹还算得出就说明那处代码原样还在,
+ * (`synthesized`,连指纹与「本轮新报」一起作一个合并组,序号接在本轮之后)。合成的那条
+ * 同样要过 diff 那一道,理由与上面一样。
+ * 「代码已改写」这道判据在合成之前就走完了:旧指纹还算得出就说明那处代码原样还在,
  * 这时模型给的新位置一并忽略,不做假延续。模型自己重报了同内容的一条时上面那一步已经挑
  * 中它,不再合成——重报的那条带着模型本轮的措辞,比抄旧正文更贴近现在的代码。
  */
 function planContinuations(
   candidates: readonly ContinuationCandidate[],
-  findings: readonly MergedFinding[],
-  matched: readonly boolean[],
+  groups: readonly ReviewGroup[],
   diffRanges: DiffRanges,
   worktreePath: string,
   positions: ReadonlyMap<number, PresentPosition>,
-): { plans: Continuation[]; synthesized: MergedFinding[] } {
+): { plans: Continuation[]; synthesized: ReviewGroup[] } {
   const byFile = new Map<string, Set<string>>();
   const claimed = new Set<number>();
   const plans: Continuation[] = [];
-  const synthesized: MergedFinding[] = [];
+  const synthesized: ReviewGroup[] = [];
 
   for (const candidate of candidates) {
     let fingerprints = byFile.get(candidate.file);
@@ -612,9 +626,9 @@ function planContinuations(
     }
     if (fingerprints.has(candidate.fingerprint)) continue;
 
-    const pick = findings
-      .flatMap((finding, groupIndex) =>
-        matched[groupIndex] ||
+    const pick = groups
+      .flatMap(({ finding, match }, groupIndex) =>
+        match !== undefined ||
         claimed.has(groupIndex) ||
         finding.file !== candidate.file ||
         !isInDiff(diffRanges, finding.file, finding.line) ||
@@ -633,11 +647,17 @@ function planContinuations(
       const position = positions.get(candidate.findingId);
       if (position === undefined) continue;
       if (!isInDiff(diffRanges, candidate.file, position.line)) continue;
+      const finding = continuedFinding(candidate, position);
       plans.push({
         candidate,
-        groupIndex: findings.length + synthesized.length,
+        groupIndex: groups.length + synthesized.length,
       });
-      synthesized.push(continuedFinding(candidate, position));
+      synthesized.push({
+        finding,
+        fingerprint: contentFingerprint(worktreePath, finding.file, finding.line),
+        // 它是本轮新报的一条,不折叠到任何历史评论上。
+        match: undefined,
+      });
       continue;
     }
 
@@ -977,10 +997,10 @@ export async function runReview(
 
     recordReviewerOutcomes(trace, outcomes);
 
-    const findings = dedupeFindings(
+    const merged = dedupeFindings(
       outcomes.filter((o) => o.failure === undefined).flatMap((o) => o.findings),
     );
-    recordFindingMerges(trace, findings);
+    recordFindingMerges(trace, merged);
 
     const diffRanges = parseDiffRanges(diff);
     const prior = priorDispositions(priorComments, priorBodies);
@@ -989,12 +1009,14 @@ export async function runReview(
     // 名下全部历史 finding 上。以 Forge 最新状态为准——resolve 后又 unresolve,跟着改。
     store.backfillDispositions(event.owner, event.repo, event.number, backfillUpdates(prior));
 
-    // 指纹在新 head commit 的工作副本下重算:代码没变则与上一轮的锚点相同。跨轮匹配
-    // 整批先算出来——延续要在建评论正文之前知道哪些是本轮新报的。
-    const groupFingerprints = findings.map((finding) =>
-      contentFingerprint(worktree.path, finding.file, finding.line),
-    );
-    const matches = findings.map((finding) => priorMatch(prior, worktree.path, finding));
+    // 本轮的合并组:Finding、它的指纹与它折叠到的历史评论同属一项(issue #186)。指纹在
+    // 新 head commit 的工作副本下重算,代码没变则与上一轮的锚点相同;跨轮匹配整批先算出
+    // 来——延续要在建评论正文之前知道哪些是本轮新报的。
+    const groups: ReviewGroup[] = merged.map((finding) => ({
+      finding,
+      fingerprint: contentFingerprint(worktree.path, finding.file, finding.line),
+      match: priorMatch(prior, worktree.path, finding),
+    }));
 
     // 本轮的复核结论。裁决与落库用同一批记录,面板上看到的与自动处置依据的是同一件事。
     const verdicts = verdictRecords(history, outcomes);
@@ -1009,25 +1031,17 @@ export async function runReview(
     // Finding Identity(CONTEXT.md 已延续,issue #167)。旧评论在这里就被 resolve 掉,
     // 新评论的正文随后带上它的链接;落库要等本轮的行插进去之后。
     // 模型只回了复核结论、没有重报的那些,按它给出的新位置合成本轮的一条(issue #170)。
-    // 合成的接在本轮之后,跨轮匹配与指纹要同步补上——下面的分派循环按同一个下标读这三个
-    // 数组。它是本轮新报的一条,匹配一律记「没有折叠到历史评论上」。
+    // 合成的连指纹与跨轮匹配一起作一个合并组,接在本轮之后——只追加这一处。
     const plan = failed
       ? { plans: [], synthesized: [] }
       : planContinuations(
           store.continuationCandidates(presentFindingIds(verdicts)),
-          findings,
-          matches.map((match) => match !== undefined),
+          groups,
           diffRanges,
           worktree.path,
           presentPositions(history, outcomes),
         );
-    for (const synthesized of plan.synthesized) {
-      findings.push(synthesized);
-      groupFingerprints.push(
-        contentFingerprint(worktree.path, synthesized.file, synthesized.line),
-      );
-      matches.push(undefined);
-    }
+    groups.push(...plan.synthesized);
     const continuations = failed ? [] : await applyContinuations(forge, event, plan.plans);
     const continuedFrom = new Map(
       continuations.map((plan) => [plan.groupIndex, plan.candidate.commentHtmlUrl]),
@@ -1044,10 +1058,7 @@ export async function runReview(
     // 折叠的那些记历史评论;本轮新发的要等发布之后才有 id,这里先留空。
     const groupComments: (PriorDisposition | undefined)[] = [];
 
-    for (const [groupIndex, finding] of findings.entries()) {
-      const fingerprint = groupFingerprints[groupIndex];
-      const match = matches[groupIndex];
-
+    for (const [groupIndex, { finding, fingerprint, match }] of groups.entries()) {
       if (match !== undefined) {
         carried.push({ finding, resolved: match.resolved });
         dispositions.push(match.resolved ? "resolved" : "unresolved");
@@ -1089,18 +1100,17 @@ export async function runReview(
     // 一条 Finding 一行,报出它的每个模型一条归属(ADR 0015):Finding Identity 不含
     // 模型,同一处问题不论几个模型报出都是同一条。指纹取合并组代表行的那一个——评论
     // 锚点埋的就是它,resolve 载体是整组共享的一条评论。
-    const findingRecords: FindingRecord[] = findings.map((merged, groupIndex) => {
-      const fingerprint = groupFingerprints[groupIndex];
+    const findingRecords: FindingRecord[] = groups.map(({ finding, fingerprint }, groupIndex) => {
       // 匹配上历史评论的记那一条:折叠之后本轮不再发新评论,处置的载体仍是它。
       const comment = groupComments[groupIndex];
       return {
-        file: merged.file,
-        line: merged.line,
-        title: merged.title,
-        severity: merged.severity,
-        category: merged.category,
-        description: merged.description,
-        attributions: merged.attributions.map((said) => ({
+        file: finding.file,
+        line: finding.line,
+        title: finding.title,
+        severity: finding.severity,
+        category: finding.category,
+        description: finding.description,
+        attributions: finding.attributions.map((said) => ({
           model: said.model,
           severity: said.severity,
           category: said.category,
@@ -1139,6 +1149,9 @@ export async function runReview(
         candidate: plan.candidate,
       });
     }
+
+    // review 正文、计数与返回值只关心每个合并组的那条 Finding。
+    const findings = groups.map((group) => group.finding);
 
     // 有缺席或覆盖不全的模型时即便零 Finding 也要发:读者需要知道这次审查覆盖面
     // 打了折扣。
