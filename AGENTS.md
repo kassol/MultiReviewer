@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-25: 落地 issue #157。**作者改完代码不用重开一个阶段了**:范围审查详情里点「推进比较项」填新 commit,MultiReviewer 把容器 PR 的 head 分支移过去并按 base..新比较项跑新的一轮,轮次仍归在同一个范围审查下。只要求新比较项是 base 的后代,作者 rebase 之后拉出来的 commit 照样填得进;不是后代当场拒绝,一条分支都不动。推分支失败只记原因,状态留在进行中,改完分支保护再点一次即可。详情页列出历次比较项与各自的轮次。推进需要 `review:create`。审查完成是 issue #158。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
+
 - 2026-08-25: 落地 issue #156。**处置不用再跳 Gitea 了**:Review Run 详情面板按模型列出本轮每一条 Finding(正文、严重度、类别、文件与行,加一枚跳到 Forge 看原评论的链接),有新权限格 `finding:dispose` 的人在行内 resolve / unresolve,并可附一条只存面板的处置备注(CONTEXT.md)。服务端先写 Forge 再落库,Forge 上的 resolver 仍是机器人账号,操作人与时刻记在库里;处置成功即让轮次那几份查询失效,列表与处置进度条当场跟着变。落在 review 正文里的 fallback 没有可处置的评论,面板不给动作、API 也拒绝。在 Gitea 上做的 resolve 照旧经回填回到面板,回填不碰面板记的操作人与备注。新权限格不落到已有角色。「已改动」自动处置与完整 diff 视图分别是 issue #159 / #160。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 
 - 2026-08-25: 落地 issue #155。**直推默认分支的代码现在也能审了**:在面板的新页面「范围审查」选一个已注册仓库、填 base commit 与比较项就能发起,不要求仓库里存在 pull request。MultiReviewer 在 Gitea 上自建两条 `multireviewer/` 前缀的分支与一个永不合并的容器 PR 承载 Finding(ADR 0012),随即跑第一轮 Review Run;容器 PR 自己产生的 webhook 投递按分支前缀丢弃,不会多跑一轮。比较项必须是 base 的后代,判定在本地 clone 上做,填错当场拒绝且一条分支都不留;任一 Forge 步骤失败会记下原因并把已建的分支删掉。同一仓库同一 base 已有进行中的只提醒,确认后仍可再开一个。新增权限格 `review:create`,不自动落到已有角色。评审记录里的轮次标出来源(PR / 范围审查)。推进比较项、审查完成与面板处置分别是 issue #157 / #156 / #158。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。

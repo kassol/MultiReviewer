@@ -40,6 +40,7 @@ const ROUTE_EXPECTATIONS = [
   ["GET", "/range-reviews", "review:read"],
   ["POST", "/range-reviews", "review:create"],
   ["GET", "/^\\/range-reviews\\/(\\d+)$/", "review:read"],
+  ["POST", "/^\\/range-reviews\\/(\\d+)\\/advance$/", "review:create"],
   ["GET", "/repos/search", "repo:write"],
   ["GET", "/repos", "repo:read"],
   ["POST", "/repos", "repo:write"],

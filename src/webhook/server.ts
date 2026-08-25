@@ -26,7 +26,7 @@ import {
   type ReviewerRuntimePlan,
   type ReviewerSpec,
 } from "../config.ts";
-import type { Forge, RepoRef } from "../forge/forge.ts";
+import type { CloneCredentials, Forge, RepoRef } from "../forge/forge.ts";
 import {
   createGiteaHookManager,
   hookConverged,
@@ -48,7 +48,7 @@ import {
   decryptCredential,
   encryptCredential,
 } from "../panel/credential-crypto.ts";
-import { resolveRange, type ResolvedRange } from "../git/worktree.ts";
+import { pushBranch, resolveRange, type ResolvedRange } from "../git/worktree.ts";
 import { DEFAULT_MAX_CHANGED_LINES_PER_BATCH } from "../review/batch.ts";
 import type { Reviewer } from "../review/finding.ts";
 import {
@@ -1436,6 +1436,13 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     pattern: /^\/range-reviews\/(\d+)$/,
     access: "review:read",
     handler: ({ res, deps }, match) => handleRangeReview(res, deps, Number(match![1])),
+  },
+  {
+    method: "POST",
+    pattern: /^\/range-reviews\/(\d+)\/advance$/,
+    access: "review:create",
+    handler: ({ req, res, deps, caller }, match) =>
+      handleAdvanceRangeReview(req, res, deps, Number(match![1]), caller!.username),
   },
   {
     method: "GET",
@@ -4091,6 +4098,7 @@ function handleRangeReview(
 ): void {
   const found = withStore(deps.dbPath, (store) => ({
     rangeReview: store.getRangeReview(id),
+    comparisons: store.listRangeReviewComparisons(id),
     runs: store.listRuns({ limit: RUNS_PAGE, rangeReviewId: id }),
   }));
   if (found.rangeReview === undefined) {
@@ -4257,6 +4265,130 @@ async function handleCreateRangeReview(
     },
     plan,
     createdBy,
+    id,
+  );
+}
+
+/**
+ * 推进比较项(issue #157)。
+ *
+ * 校验只要求新比较项是 base 的后代,不要求是上一个比较项的后代:作者 rebase 之后新的
+ * 比较项对旧的就是旁支,要求后者会把人挡回去重开一个阶段(CONTEXT.md 比较项)。
+ *
+ * 先推分支再改记录:分支在 Forge 上,是这个阶段「当前在审什么」的对外事实,推不上去时
+ * 记录跟着走就是在说一件没发生的事。推 head 分支会投一次 `synchronized`,那条投递按
+ * 分支前缀丢掉(ADR 0012),一次推进只跑一轮。
+ */
+async function handleAdvanceRangeReview(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  id: number,
+  advancedBy: string,
+): Promise<void> {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body) as { comparison?: unknown } | null;
+  if (payload === null || typeof payload.comparison !== "string") {
+    return sendJson(res, 400, { error: 'body 要是 {"comparison"} 形状的 JSON' });
+  }
+  if (!COMMIT_SHA.test(payload.comparison)) {
+    return sendJson(res, 400, { error: "比较项要是 7 到 40 位的 commit sha" });
+  }
+
+  const record = withStore(deps.dbPath, (store) => store.getRangeReview(id));
+  if (record === undefined) {
+    return sendJson(res, 404, { error: "没有这个范围审查" });
+  }
+  if (record.state !== "in-progress" || record.containerPullNumber === null) {
+    return sendJson(res, 409, {
+      error:
+        record.state === "completed"
+          ? "这个范围审查已经审查完成,比较项不再推进"
+          : "这个范围审查没有可用的容器 pull request,重新发起一个",
+    });
+  }
+  const forge = deps.forges.gitea;
+  if (forge === undefined) {
+    return sendJson(res, 503, { error: "gitea 没有配置 Forge,推进不了比较项" });
+  }
+
+  const ref: RepoRef = { owner: record.owner, repo: record.repo };
+  let resolved: ResolvedRange;
+  let cloneUrl: string;
+  let credentials: CloneCredentials;
+  try {
+    const [repository, cloneCredentials] = await Promise.all([
+      forge.getRepository(ref),
+      forge.cloneCredentials(ref),
+    ]);
+    cloneUrl = repository.cloneUrl;
+    credentials = cloneCredentials;
+    resolved = await resolveRange({
+      cacheDir: deps.cacheDir,
+      ref,
+      cloneUrl,
+      credentials,
+      base: record.baseSha,
+      comparison: payload.comparison,
+    });
+  } catch (error) {
+    return sendJson(res, 502, { error: `读不到仓库或取不回代码:${failureText(error)}` });
+  }
+  if (!resolved.ok) {
+    return sendJson(res, 400, { error: RANGE_REJECTION[resolved.reason] });
+  }
+  const { comparisonSha } = resolved;
+
+  // 计划先固定好,与投递、重跑、发起同一个启动器。
+  let plan: ReviewRunPlan;
+  try {
+    plan = await buildRunPlan(deps, record.repoId);
+  } catch (error) {
+    return sendJson(res, 409, {
+      error: `模型覆盖坏了,先改组合再推进:${failureText(error)}`,
+    });
+  }
+
+  try {
+    await pushBranch({
+      cacheDir: deps.cacheDir,
+      ref,
+      cloneUrl,
+      credentials,
+      branch: record.headBranch,
+      sha: comparisonSha,
+    });
+  } catch (error) {
+    const failure = failureText(error);
+    // 状态不动:容器 PR 还在,人改完分支保护再点一次就该继续。
+    withStore(deps.dbPath, (store) => store.recordRangeReviewForgeFailure(id, failure));
+    return sendJson(res, 502, {
+      error: `把容器 PR 的 head 分支推到新比较项失败:${failure}`,
+    });
+  }
+
+  const advancedAt = new Date((deps.now ?? Date.now)()).toISOString();
+  const rangeReview = withStore(deps.dbPath, (store) => {
+    store.advanceRangeReview({ id, comparisonSha, advancedBy, advancedAt });
+    return store.getRangeReview(id)!;
+  });
+  // 与发起同一个回执:先回 202 再开跑,人等的是「已经在跑了」。
+  sendJson(res, 202, { rangeReview });
+  void startRun(
+    deps,
+    forge,
+    {
+      platform: "gitea",
+      owner: record.owner,
+      repo: record.repo,
+      number: record.containerPullNumber,
+      headSha: comparisonSha,
+      draft: false,
+      action: "range-review",
+    },
+    plan,
+    advancedBy,
     id,
   );
 }

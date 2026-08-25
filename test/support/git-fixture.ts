@@ -26,6 +26,19 @@ export type RepoFixture = {
   mergeBaseSha: string;
   /** 在 head 分支上追加一个提交,模拟 PR 作者推送新 commit。返回新的 head sha。 */
   pushToHead(tree: FileTree): string;
+  /**
+   * 从指定 commit 拉出一条分支并提交一次,返回新 commit 的 sha。
+   *
+   * 用来制造「是 base 的后代、不是上一个比较项的后代」那种旁支,即作者 rebase 之后的
+   * 比较项。必须落在一条分支上:工作副本按 `refs/heads/*` 取回,游离的 commit 取不到。
+   */
+  branchFrom(branch: string, startSha: string, tree: FileTree): string;
+  /** 这条分支指向的 commit;分支不存在时返回 undefined。 */
+  branchSha(branch: string): string | undefined;
+  /** 建一条分支或把它移到指定 commit。 */
+  setBranch(branch: string, sha: string): void;
+  /** 删一条分支。不存在即当作已经删掉——两者是同一个终态。 */
+  deleteBranch(branch: string): void;
   cleanup(): void;
 };
 
@@ -83,6 +96,29 @@ export function makeRepo(options: RepoFixtureOptions): RepoFixture {
       const sha = commit(dir, tree, "another head commit");
       git(dir, "checkout", "--quiet", "main");
       return sha;
+    },
+    branchFrom(branch: string, startSha: string, tree: FileTree): string {
+      git(dir, "checkout", "--quiet", "-b", branch, startSha);
+      const sha = commit(dir, tree, `commit on ${branch}`);
+      git(dir, "checkout", "--quiet", "main");
+      return sha;
+    },
+    branchSha(branch: string): string | undefined {
+      try {
+        return git(dir, "rev-parse", "--verify", `refs/heads/${branch}`);
+      } catch {
+        return undefined;
+      }
+    },
+    setBranch(branch: string, sha: string): void {
+      git(dir, "branch", "--force", branch, sha);
+    },
+    deleteBranch(branch: string): void {
+      try {
+        git(dir, "branch", "-D", branch);
+      } catch {
+        // 已经不在了。
+      }
     },
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };

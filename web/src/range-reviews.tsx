@@ -40,6 +40,14 @@ export type RangeReview = {
   lastForgeFailure: string | null;
 };
 
+/** 一个范围审查审过的一个比较项,发起时那个也在内。按记录先后返回。 */
+export type RangeReviewComparison = {
+  id: number;
+  sha: string;
+  recordedBy: string;
+  recordedAt: string;
+};
+
 type RepoRow = { repoId: number; owner: string; repo: string };
 
 const STATE_LABEL: Record<RangeReview["state"], { tone: StatusTone; label: string }> = {
@@ -218,6 +226,7 @@ export function RangeReviewsPage({ canCreate }: { canCreate: boolean }) {
       {opened === null ? null : (
         <RangeReviewDetailPanel
           rangeReview={opened}
+          canCreate={canCreate}
           containerUrl={
             session.data === undefined ||
             session.data === null ||
@@ -244,10 +253,13 @@ export function RangeReviewsPage({ canCreate }: { canCreate: boolean }) {
  */
 function RangeReviewDetailPanel({
   rangeReview,
+  canCreate,
   containerUrl,
   onClose,
 }: {
   rangeReview: RangeReview;
+  /** 有「评审 · 发起」权限才出现推进入口。 */
+  canCreate: boolean;
   /** 容器 PR 的地址;没有 Forge 基址或还没建出来时是 null,那一格不渲染。 */
   containerUrl: string | null;
   onClose: () => void;
@@ -255,14 +267,21 @@ function RangeReviewDetailPanel({
   const detail = useQuery({
     queryKey: ["range-review", rangeReview.id],
     queryFn: () =>
-      fetchJson<{ rangeReview: RangeReview; runs: RunItem[] }>(
-        `/range-reviews/${rangeReview.id}`,
-      ),
+      fetchJson<{
+        rangeReview: RangeReview;
+        comparisons: RangeReviewComparison[];
+        runs: RunItem[];
+      }>(`/range-reviews/${rangeReview.id}`),
     refetchInterval: (query) =>
       (query.state.data?.runs ?? []).some((run) => run.finishedAt === null) ? 10_000 : false,
   });
   const runs = detail.data?.runs ?? [];
+  // 最近推的排在最前,与轮次同序;一个比较项的轮次按 head 归到它名下。
+  const comparisons = [...(detail.data?.comparisons ?? [])].reverse();
   const status = STATE_LABEL[rangeReview.state];
+  const [advancing, setAdvancing] = useState(false);
+  // 已完成与发起失败的都没有可推进的容器 PR,那两档不出现入口。
+  const canAdvance = canCreate && rangeReview.state === "in-progress";
 
   return (
     <Dialog.Root open onOpenChange={(next) => { if (!next) onClose(); }}>
@@ -307,51 +326,185 @@ function RangeReviewDetailPanel({
           )}
 
           <h3 className="pt-1 text-2xl font-semibold">
-            轮次<span className="ml-1.5 font-mono tabular-nums text-text-muted">{runs.length}</span>
+            比较项
+            <span className="ml-1.5 font-mono tabular-nums text-text-muted">
+              {comparisons.length}
+            </span>
           </h3>
           {detail.isPending ? (
             <Skeleton aria-hidden className="h-14" />
-          ) : runs.length === 0 ? (
-            <EmptyState title="还没有轮次" titleAs="h3" className="py-2" />
           ) : (
-            runs.map((run) => {
-              const conclusion = runStatus(run);
-              return (
-                <section
-                  key={run.id}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-overlay-line bg-surface px-4 py-2.5 shadow-control"
-                >
-                  <span className="flex min-w-0 flex-col gap-px">
-                    <span className="flex items-center gap-1.5">
-                      <CommitChip sha={run.headSha} />
-                      <span className="text-base text-text-muted tabular-nums">
-                        {localMinute(run.startedAt)}
-                      </span>
-                    </span>
-                    <span className="text-sm text-text-muted tabular-nums">
-                      {run.total === 0 ? "无可处置项" : `${run.resolved}/${run.total} 已处置`}
-                    </span>
-                  </span>
-                  <StatusBadge tone={conclusion.tone}>{conclusion.label}</StatusBadge>
-                </section>
-              );
-            })
+            comparisons.map((comparison) => (
+              <section key={comparison.id} className="flex flex-col gap-1.5">
+                <div className="flex flex-wrap items-center gap-x-1.5 text-base text-text-muted">
+                  <CommitChip sha={comparison.sha} />
+                  <span className="break-all">{comparison.recordedBy}</span>
+                  <span aria-hidden>·</span>
+                  <span className="tabular-nums">{localMinute(comparison.recordedAt)}</span>
+                </div>
+                {/* 一个比较项对应它被推上去之后跑的那些轮次,按 head 认。 */}
+                {runs
+                  .filter((run) => run.headSha === comparison.sha)
+                  .map((run) => {
+                    const conclusion = runStatus(run);
+                    return (
+                      <div
+                        key={run.id}
+                        className="flex items-center justify-between gap-3 rounded-lg border border-overlay-line bg-surface px-4 py-2.5 shadow-control"
+                      >
+                        <span className="flex min-w-0 flex-col gap-px">
+                          <span className="text-base text-text-muted tabular-nums">
+                            {localMinute(run.startedAt)}
+                          </span>
+                          <span className="text-sm text-text-muted tabular-nums">
+                            {run.total === 0 ? "无可处置项" : `${run.resolved}/${run.total} 已处置`}
+                          </span>
+                        </span>
+                        <StatusBadge tone={conclusion.tone}>{conclusion.label}</StatusBadge>
+                      </div>
+                    );
+                  })}
+              </section>
+            ))
           )}
         </div>
 
-        {containerUrl === null ? null : (
+        {containerUrl === null && !canAdvance ? null : (
           <footer className="flex shrink-0 items-center justify-end gap-3 border-t border-overlay-line px-6 py-3.5">
-            {/* 处置在评审记录的详情面板行内做,这一格留给「去看原版」。 */}
-            <Button asChild variant="soft" color="gray" size={{ initial: "3", sm: "2" }}>
-              <a href={containerUrl} target="_blank" rel="noreferrer">
-                <ExternalLinkIcon aria-hidden />
-                去 pull request 看原版
-              </a>
-            </Button>
+            {/* 处置在评审记录的详情面板行内做,这一格留给推进与「去看原版」。 */}
+            {containerUrl === null ? null : (
+              <Button asChild variant="soft" color="gray" size={{ initial: "3", sm: "2" }}>
+                <a href={containerUrl} target="_blank" rel="noreferrer">
+                  <ExternalLinkIcon aria-hidden />
+                  去 pull request 看原版
+                </a>
+              </Button>
+            )}
+            {canAdvance ? (
+              <Dialog.Root open={advancing} onOpenChange={setAdvancing}>
+                <Dialog.Trigger>
+                  <Button
+                    variant="solid"
+                    className="shadow-accent"
+                    size={{ initial: "3", sm: "2" }}
+                  >
+                    推进比较项
+                  </Button>
+                </Dialog.Trigger>
+                <AdvanceDialogContent
+                  rangeReview={rangeReview}
+                  onAdvanced={() => setAdvancing(false)}
+                />
+              </Dialog.Root>
+            ) : null}
           </footer>
         )}
       </Dialog.Content>
     </Dialog.Root>
+  );
+}
+
+/**
+ * 推进比较项的表单(issue #157)。
+ *
+ * 只收新的比较项:base 是这个阶段不变的基准,推进不改它。服务端只要求新比较项是 base
+ * 的后代,作者 rebase 之后的 commit 照样填得进来。
+ */
+function AdvanceDialogContent({
+  rangeReview,
+  onAdvanced,
+}: {
+  rangeReview: RangeReview;
+  onAdvanced: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [comparison, setComparison] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const advance = useMutation({
+    mutationFn: async () => {
+      const response = await api(`/range-reviews/${rangeReview.id}/advance`, {
+        method: "POST",
+        body: JSON.stringify({ comparison: comparison.trim() }),
+      });
+      if (!response.ok) throw new Error(await errorText(response));
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: RANGE_REVIEWS_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: ["range-review", rangeReview.id] });
+      onAdvanced();
+    },
+    onError: (failure: Error) => setError(failure.message),
+  });
+
+  return (
+    <Dialog.Content aria-describedby={undefined} maxWidth="560px" size={{ initial: "2", sm: "3" }}>
+      <form
+        className="flex min-h-0 flex-col gap-3"
+        aria-busy={advance.isPending}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (comparison.trim() === "") return;
+          advance.mutate();
+        }}
+      >
+        <Dialog.Title size="4" mb="1" className="pr-9">推进比较项</Dialog.Title>
+
+        <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-1 text-base">
+          <dt className="text-text-secondary">base</dt>
+          <dd className="min-w-0 break-all font-mono">{rangeReview.baseSha}</dd>
+          <dt className="text-text-secondary">当前比较项</dt>
+          <dd className="min-w-0 break-all font-mono">{rangeReview.comparisonSha}</dd>
+        </dl>
+
+        <label className="flex flex-col gap-1.5">
+          <Text as="span" size="2" weight="medium">新的比较项</Text>
+          <TextField.Root
+            value={comparison}
+            onChange={(event) => setComparison(event.target.value)}
+            placeholder="作者迭代之后的 commit sha，必须是 base 的后代"
+            spellCheck={false}
+            className="font-mono"
+            size={{ initial: "3", sm: "2" }}
+          />
+        </label>
+
+        <p className="text-sm text-text-muted">
+          推进会把容器 pull request 的 head 分支移到新 commit，并按 base..新比较项跑新的一轮。
+        </p>
+        {error === null ? null : <p role="alert" className="text-danger">{error}</p>}
+
+        <Flex gap="3" mt="1" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
+          <Dialog.Close>
+            <Button type="button" variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>
+              取消
+            </Button>
+          </Dialog.Close>
+          <Button
+            type="submit"
+            variant="solid"
+            className="shadow-accent"
+            size={{ initial: "4", sm: "2" }}
+            disabled={comparison.trim() === "" || advance.isPending}
+          >
+            {advance.isPending ? "推进中…" : "推进"}
+          </Button>
+        </Flex>
+      </form>
+      <div className="absolute top-3 right-3">
+        <Dialog.Close>
+          <IconButton
+            variant="ghost"
+            color="gray"
+            size={{ initial: "3", sm: "1" }}
+            className="max-sm:min-h-11 max-sm:min-w-11"
+            aria-label="关闭推进比较项"
+          >
+            <Cross2Icon aria-hidden />
+          </IconButton>
+        </Dialog.Close>
+      </div>
+    </Dialog.Content>
   );
 }
 

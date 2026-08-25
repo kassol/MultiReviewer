@@ -194,13 +194,26 @@ export async function startPanelHarness(
   const dispatched: PullRequestRef[] = [];
   const recording: Forge = {
     ...base.forge,
+    // 建分支与删分支落到夹具仓库自己身上,和真实 Forge 一样:推进比较项走的是本地
+    // clone 的 `git push`,不经 Forge,只有分支真的在仓库里两条路才看得到同一份事实。
+    createBranch: async (ref, branch: string, fromSha: string) => {
+      await base.forge.createBranch(ref, branch, fromSha);
+      repo.setBranch(branch, fromSha);
+    },
+    deleteBranch: async (ref, branch: string) => {
+      await base.forge.deleteBranch(ref, branch);
+      repo.deleteBranch(branch);
+    },
     getPullRequest: async (ref: PullRequestRef) => {
       dispatched.push(ref);
-      // 容器 PR 是本服务自己开的,读回来的两端就是它那两条分支指向的 commit。
+      // 容器 PR 是本服务自己开的,读回来的两端就是它那两条分支此刻指向的 commit。
       const container = base.createdPullRequests.find((pr) => pr.number === ref.number);
       if (container !== undefined) {
-        const pointsAt = (branch: string): string =>
-          base.createdBranches.findLast((entry) => entry.branch === branch)!.fromSha;
+        const pointsAt = (branch: string): string => {
+          const sha = repo.branchSha(branch);
+          assert.notEqual(sha, undefined, `夹具仓库里没有分支 ${branch}`);
+          return sha!;
+        };
         return {
           number: ref.number,
           draft: false,

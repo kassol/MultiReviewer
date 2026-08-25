@@ -150,6 +150,19 @@ CREATE TABLE IF NOT EXISTS range_review (
 );
 CREATE INDEX IF NOT EXISTS range_review_by_base ON range_review(owner, repo, base_sha);
 
+-- 范围审查先后审过的每一个比较项(issue #157)。当前那个在 range_review.comparison_sha
+-- 上,这张表留的是整段历史:推进之后那一轮 Review Run 没跑起来时,轮次里不会有它的
+-- 记录,而「这个阶段审到过哪里、谁在什么时候推的」仍然要留得下来。
+CREATE TABLE IF NOT EXISTS range_review_comparison (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  range_review_id INTEGER NOT NULL,
+  sha TEXT NOT NULL,
+  recorded_by TEXT NOT NULL,
+  recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS range_review_comparison_by_review
+  ON range_review_comparison(range_review_id);
+
 CREATE TABLE IF NOT EXISTS webhook_delivery (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   owner TEXT NOT NULL,
@@ -820,6 +833,15 @@ export type RangeReviewRecord = {
   lastForgeFailure: string | null;
 };
 
+/** 一个范围审查审过的一个比较项。发起时那个也在内,按记录先后。 */
+export type RangeReviewComparison = {
+  id: number;
+  sha: string;
+  /** 发起或推进的人。 */
+  recordedBy: string;
+  recordedAt: string;
+};
+
 export type PanelRoleRecord = {
   id: number;
   name: string;
@@ -1042,6 +1064,25 @@ export type Store = {
   attachRangeReviewContainer(id: number, containerPullNumber: number): void;
   /** Forge 操作失败:记下原因并让这条进入 failed,它不再占住「同一 base 进行中」。 */
   failRangeReview(id: number, failure: string): void;
+  /**
+   * 记下一次 Forge 操作为什么没成,状态不变。
+   *
+   * 与 `failRangeReview` 分开:发起失败的记录没有容器 PR,只能作废;推进与审查完成
+   * 失败的记录容器 PR 还在,人改完权限再点一次就该继续,把它打成 failed 反而堵死重试。
+   */
+  recordRangeReviewForgeFailure(id: number, failure: string): void;
+  /**
+   * 把当前比较项推到新的 commit,并把它记进历史(issue #157)。上一次的失败原因跟着
+   * 清掉——这一次成了,那条原因说的是上一次的事。
+   */
+  advanceRangeReview(record: {
+    id: number;
+    comparisonSha: string;
+    advancedBy: string;
+    advancedAt: string;
+  }): void;
+  /** 这个范围审查先后审过的比较项,按记录先后。 */
+  listRangeReviewComparisons(rangeReviewId: number): RangeReviewComparison[];
   getRangeReview(id: number): RangeReviewRecord | undefined;
   /** 按 id 倒序。四个过滤条件都可省,省掉即不过滤。 */
   listRangeReviews(opts: {
@@ -2944,6 +2985,7 @@ export function openStore(dbPath: string): Store {
 
     createRangeReview(record) {
       // 分支名要跟着记录一起可见:插入拿到 id 之后立刻补上,失败时整笔回滚。
+      // 发起时的比较项同时进历史表:它是这个阶段审过的第一个 commit。
       db.exec("BEGIN");
       try {
         const result = db
@@ -2967,6 +3009,10 @@ export function openStore(dbPath: string): Store {
         db.prepare(
           "UPDATE range_review SET base_branch = ?, head_branch = ? WHERE id = ?",
         ).run(branches.base, branches.head, id);
+        db.prepare(
+          `INSERT INTO range_review_comparison (range_review_id, sha, recorded_by, recorded_at)
+           VALUES (?, ?, ?, ?)`,
+        ).run(id, record.comparisonSha, record.createdBy, record.createdAt);
         db.exec("COMMIT");
         return id;
       } catch (error) {
@@ -2987,6 +3033,49 @@ export function openStore(dbPath: string): Store {
       db.prepare(
         "UPDATE range_review SET state = 'failed', last_forge_failure = ? WHERE id = ?",
       ).run(failure, id);
+    },
+
+    recordRangeReviewForgeFailure(id, failure) {
+      db.prepare("UPDATE range_review SET last_forge_failure = ? WHERE id = ?").run(
+        failure,
+        id,
+      );
+    },
+
+    advanceRangeReview(record) {
+      db.exec("BEGIN");
+      try {
+        db.prepare(
+          `UPDATE range_review
+              SET comparison_sha = ?, last_forge_failure = NULL
+            WHERE id = ?`,
+        ).run(record.comparisonSha, record.id);
+        db.prepare(
+          `INSERT INTO range_review_comparison (range_review_id, sha, recorded_by, recorded_at)
+           VALUES (?, ?, ?, ?)`,
+        ).run(record.id, record.comparisonSha, record.advancedBy, record.advancedAt);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    listRangeReviewComparisons(rangeReviewId) {
+      return db
+        .prepare(
+          `SELECT id, sha, recorded_by, recorded_at
+             FROM range_review_comparison
+            WHERE range_review_id = ?
+            ORDER BY id`,
+        )
+        .all(rangeReviewId)
+        .map((row) => ({
+          id: Number(row["id"]),
+          sha: String(row["sha"]),
+          recordedBy: String(row["recorded_by"]),
+          recordedAt: String(row["recorded_at"]),
+        }));
     },
 
     getRangeReview(id) {
