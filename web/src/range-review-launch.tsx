@@ -7,6 +7,7 @@ import { Dialog, Flex, IconButton, Select, Text, TextField } from "@radix-ui/the
 import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
+import { CommitPicker } from "./commit-picker.tsx";
 
 type RepoRow = { repoId: number; owner: string; repo: string };
 
@@ -48,8 +49,12 @@ export function RangeReviewLaunch({
 /**
  * 发起表单。标题、base 与比较项三个字段,标题必填(CONTEXT.md 范围审查)。
  *
+ * base 与比较项都从 commit 选择器里点选(issue #178),没有手输框:人只记得分支与提交
+ * 信息,记不住 sha。
+ *
  * base 打开时按服务端给的预填值填上:同仓库最近一个审查完成的范围审查的最终比较项,
- * 连续两个阶段因此首尾相接。人自己动过 base 就不再覆盖,换仓库时连同预填一起重来。
+ * 连续两个阶段因此首尾相接。预填的是一个 sha,它未必在当前分支的第一页里,那就只以
+ * 「已选 base」显示。人自己点过 base 就不再覆盖,换仓库时连同预填一起重来。
  *
  * 同仓库同 base 已经有进行中的时候服务端回 409 并要求确认:那一档不当错误提示,改成
  * 把提交按钮换成「仍然发起」,再点一次带确认标志重发。
@@ -92,6 +97,16 @@ function LaunchDialogContent({
     if (suggestedBase === null || baseTouched) return;
     setBase(suggestedBase);
   }, [suggestedBase, baseTouched]);
+
+  const pick = (role: "base" | "comparison", sha: string): void => {
+    setNeedsConfirmation(false);
+    if (role === "base") {
+      setBase(sha);
+      setBaseTouched(true);
+      return;
+    }
+    setComparison(sha);
+  };
 
   const create = useMutation({
     mutationFn: async (confirm: boolean) => {
@@ -160,9 +175,10 @@ function LaunchDialogContent({
               value={repoId}
               onValueChange={(next) => {
                 setRepoId(next);
-                // 换了仓库,预填与提醒都跟着重来:它们说的是上一个仓库的事。
+                // 换了仓库,两端、预填与提醒都跟着重来:它们说的是上一个仓库的事。
                 setBase("");
                 setBaseTouched(false);
+                setComparison("");
                 setNeedsConfirmation(false);
               }}
               size={{ initial: "3", sm: "2" }}
@@ -193,38 +209,32 @@ function LaunchDialogContent({
           />
         </label>
 
-        <label className="flex flex-col gap-1.5">
-          <Text as="span" size="2" weight="medium">base commit</Text>
-          <TextField.Root
-            value={base}
-            onChange={(event) => {
-              setBase(event.target.value);
-              setBaseTouched(true);
-              setNeedsConfirmation(false);
-            }}
-            placeholder="这个阶段不变的基准 commit sha"
-            spellCheck={false}
-            className="font-mono"
-            size={{ initial: "3", sm: "2" }}
-          />
-          {suggestedBase !== null && !baseTouched ? (
-            <Text as="span" size="1" color="gray">
-              已填入上一个审查完成的范围审查的最终比较项。
-            </Text>
-          ) : null}
-        </label>
+        {picked === null ? null : (
+          <>
+            <div className="flex flex-col gap-1">
+              <Text as="span" size="2" weight="medium">已选</Text>
+              <p className="text-base text-text-muted">
+                base {base === "" ? "还没选" : <code className="font-mono">{base.slice(0, 7)}</code>}
+                ，比较项{" "}
+                {comparison === "" ? "还没选" : <code className="font-mono">{comparison.slice(0, 7)}</code>}
+              </p>
+              {suggestedBase !== null && !baseTouched ? (
+                <Text as="span" size="1" color="gray">
+                  base 已填入上一个审查完成的范围审查的最终比较项。
+                </Text>
+              ) : null}
+            </div>
 
-        <label className="flex flex-col gap-1.5">
-          <Text as="span" size="2" weight="medium">比较项</Text>
-          <TextField.Root
-            value={comparison}
-            onChange={(event) => setComparison(event.target.value)}
-            placeholder="当前被审的 commit sha，必须是 base 的后代"
-            spellCheck={false}
-            className="font-mono"
-            size={{ initial: "3", sm: "2" }}
-          />
-        </label>
+            <CommitPicker
+              // 换仓库时连选择器内部的分支一起重来:上一个仓库的分支在这里不存在。
+              key={`${picked.owner}/${picked.repo}`}
+              repo={picked}
+              base={base === "" ? null : base}
+              comparison={comparison === "" ? null : comparison}
+              onPick={pick}
+            />
+          </>
+        )}
 
         <p className="text-sm text-text-muted">
           MultiReviewer 会在 Forge 上自建一个永不合并的 pull request 承载 Finding。

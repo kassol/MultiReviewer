@@ -35,6 +35,8 @@ export type PullRequest = {
 export type Repository = {
   /** 可供服务端 clone 的地址,凭据由 `cloneCredentials` 单独取得。 */
   cloneUrl: string;
+  /** 仓库的默认分支。commit 选择器的分支下拉默认选中它(issue #178)。 */
+  defaultBranch: string;
 };
 
 export type ChangedFileStatus = "added" | "modified" | "removed" | "renamed";

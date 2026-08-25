@@ -71,6 +71,8 @@ export function memoryForge(init: {
     // 指向同一份本地仓库。
     getRepository: async (_ref: RepoRef): Promise<Repository> => ({
       cloneUrl: state.pullRequest.cloneUrl,
+      // 夹具仓库的默认分支就是 `main`(`test/support/git-fixture.ts` 的 `makeRepo`)。
+      defaultBranch: "main",
     }),
     getPullRequest: async (_ref: PullRequestRef) => state.pullRequest,
     listChangedFiles: async (_ref: PullRequestRef) => init.changedFiles,
