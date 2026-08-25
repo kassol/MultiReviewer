@@ -15,7 +15,7 @@ A GitHub adapter exists for development and testing, but repository admission is
 - A webhook fires on pull request open and on new commits. The service clones the repository server-side and checks out the head commit.
 - Each configured model reviews the change in its own read-only subprocess, holding only its own vendor credentials.
 - Findings from all models are merged, deduplicated, and published as one non-blocking review. The review never blocks the merge — the author keeps the final say.
-- Findings resolved on the platform stay hidden in later runs while the code they point at is unchanged. Disposition data accumulates per model and per category, so you can measure which models earn their keep.
+- Findings resolved on the platform stay hidden in later runs while the code they point at is unchanged. Disposition rates accumulate per repository and per category, so you can measure whether the review work gets acted on. Each model also gets a count of the findings it reported.
 - Repositories are onboarded through a management panel protected by local user accounts and custom roles. The panel also shows run history, manual re-runs, and disposition statistics. Webhooks and their secrets are created and rotated by the panel, never by hand.
 
 ## Deployment
