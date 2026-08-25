@@ -286,7 +286,6 @@ function RangeReviewDetailPanel({
 
   return (
     <DetailPanel
-      width="wide"
       onClose={onClose}
       header={
         <>

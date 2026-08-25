@@ -33,9 +33,7 @@ export type MergedFinding = {
   description: string;
   impact: string;
   suggestion: string;
-  /** 提出它的全部模型,按首报先后。 */
-  models: string[];
-  /** 每个模型各自的说法,与 `models` 同序。 */
+  /** 每个模型各自的说法,按首报先后。 */
   attributions: FindingAttribution[];
 };
 
@@ -216,7 +214,6 @@ function mergeGroup(file: string, group: readonly Finding[]): MergedFinding {
     description: leading.description,
     impact: leading.impact,
     suggestion: leading.suggestion,
-    models: attributions.map((a) => a.model),
     attributions,
   };
 }

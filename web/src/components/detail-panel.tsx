@@ -2,13 +2,10 @@ import { Cross2Icon } from "@radix-ui/react-icons";
 import { Dialog, IconButton } from "@radix-ui/themes";
 
 /**
- * 桌面宽度。wide 装的是完整 diff,一行代码在 464px 里要折三四次,而读 diff 的前提是
- * 一行就是一行;narrow 装的是元信息与轮次列表,再宽只会把每一行拉成一条长横线。
+ * 桌面宽度 920px。两页装的都是完整 diff 或阶段汇总,一行代码在更窄的面板里要折三四次,
+ * 而读 diff 的前提是一行就是一行。
  */
-const WIDTH = {
-  wide: "md:!w-[920px]",
-  narrow: "md:!w-[464px]",
-} as const;
+const WIDTH = "md:!w-[920px]";
 
 /**
  * 主从列表的详情面板(DESIGN.md 10.2)。设计稿把它放在四边留白 14px 的位置上而不是
@@ -17,10 +14,9 @@ const WIDTH = {
  * 窄屏改成底部抽屉(不是全屏):列表的上半屏保持可见,关闭与底部动作都落在拇指能够
  * 到的下缘;全屏会让人以为自己跳了一页,退回去还要找返回入口。
  *
- * 评审记录与范围审查共用这一份外壳,两页只差桌面宽度。
+ * 评审记录与范围审查共用这一份外壳。
  */
 export function DetailPanel({
-  width,
   header,
   headerBelow,
   footer,
@@ -28,7 +24,6 @@ export function DetailPanel({
   onPointerDownOutside,
   children,
 }: {
-  width: keyof typeof WIDTH;
   /** 标题那一列:徽章、`Dialog.Title` 与副标题行。关闭按钮由面板自己出。 */
   header: React.ReactNode;
   /** 标题行下面还要占一块时给,例如处置进度条。 */
@@ -50,7 +45,7 @@ export function DetailPanel({
         {...dismiss}
         // 四边定位只写 top/right/bottom/left 四个长写法,不混 inset-*:同一属性上「基础值 +
         // 断点值」的覆盖顺序才是确定的,混了简写会让断点值排在基础值前面而失效。
-        className={`!fixed !top-auto !right-0 !bottom-0 !left-0 !m-0 !flex !h-[86dvh] !w-full !max-w-none !flex-col !overflow-hidden !rounded-3xl !rounded-b-none !border-0 !bg-[color:var(--v8-drawer-bg)] !p-0 !shadow-overlay backdrop-blur-[40px] md:!top-3.5 md:!right-3.5 md:!bottom-3.5 md:!left-auto md:!h-auto ${WIDTH[width]} md:!max-w-[calc(100vw-28px)] md:!rounded-b-3xl`}
+        className={`!fixed !top-auto !right-0 !bottom-0 !left-0 !m-0 !flex !h-[86dvh] !w-full !max-w-none !flex-col !overflow-hidden !rounded-3xl !rounded-b-none !border-0 !bg-[color:var(--v8-drawer-bg)] !p-0 !shadow-overlay backdrop-blur-[40px] md:!top-3.5 md:!right-3.5 md:!bottom-3.5 md:!left-auto md:!h-auto ${WIDTH} md:!max-w-[calc(100vw-28px)] md:!rounded-b-3xl`}
       >
         <header className="flex shrink-0 flex-col gap-3 border-b border-overlay-line px-6 pt-5 pb-4">
           <div className="flex items-start justify-between gap-3">

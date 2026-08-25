@@ -312,7 +312,6 @@ export function RunDetailPanel({
   const stage = run.rangeReviewId === null && view === "stage";
   return (
     <DetailPanel
-      width="wide"
       onClose={onClose}
       /*
        * 这是主从列表的详情面板。看完一轮接着看下一轮是这一页最常做的事,而模态

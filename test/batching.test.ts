@@ -225,7 +225,7 @@ test("跨批次的 Finding 汇总后统一去重,只发一次 review", async () 
   );
   // 两个模型的来源都在合并结果里;评论正文不署名,合并证据看数据层。
   const onA = result.findings.find((f) => f.file === "src/a.ts")!;
-  assert.deepEqual([...onA.models].sort(), ["model-a", "model-b"]);
+  assert.deepEqual([...onA.attributions.map((a) => a.model)].sort(), ["model-a", "model-b"]);
 });
 
 test("某模型部分批次失败时成功批次的 Finding 照常发布,正文标注覆盖不全并写出第几批失败", async () => {
@@ -294,7 +294,7 @@ test("某模型全部批次失败时按缺席处理,其 Finding 丢弃", async (
 
   assert.equal(result.failed, false);
   assert.equal(result.findings.length, 1);
-  assert.deepEqual(result.findings[0]!.models, ["model-b"]);
+  assert.deepEqual(result.findings[0]!.attributions.map((a) => a.model), ["model-b"]);
 
   const outcome = result.outcomes.find((o) => o.model === "model-a")!;
   assert.match(outcome.failure!, /timeout/);

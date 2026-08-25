@@ -734,19 +734,26 @@ export async function runReview(
   try {
     // 两端一有 runId 就钉在本地 clone 上(issue #161):这一轮结束后远端的分支会被删,
     // 不钉住的话 gc 一跑,这一轮的 diff 就再也打不开。
-    await pinRunCommits(worktree.path, runId, {
-      baseSha: pullRequest.baseSha,
-      headSha: pullRequest.headSha,
-    });
+    // 钉不住只记日志:少一轮历史 diff 是小事,一次审查因此白跑不是。
+    try {
+      await pinRunCommits(worktree.path, runId, {
+        baseSha: pullRequest.baseSha,
+        headSha: pullRequest.headSha,
+      });
+    } catch (error) {
+      console.error(
+        "[review] 钉住这一轮的两端失败,审查照常:",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
 
     // 本阶段已经报过的 Finding,注入给这一轮的每个 Reviewer(ADR 0016)。读在开跑之前:
     // 本轮自己的 Finding 还没落库,这份历史因此正是「上一轮为止」的那些。
-    const history = store.stageHistory({
-      owner: event.owner,
-      repo: event.repo,
-      pullNumber: event.number,
-      ...(deps.rangeReviewId === undefined ? {} : { rangeReviewId: deps.rangeReviewId }),
-    });
+    const history = store.stageHistory(
+      deps.rangeReviewId === undefined
+        ? { owner: event.owner, repo: event.repo, pullNumber: event.number }
+        : { rangeReviewId: deps.rangeReviewId },
+    );
 
     // 批次串行,批内 Reviewer 并行:并行跑批会同时开「批数 × 模型数」个子进程。
     const perBatch: TimedOutcome[][] = [];

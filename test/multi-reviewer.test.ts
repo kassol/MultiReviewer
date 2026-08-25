@@ -80,7 +80,7 @@ test("同一轮两个模型报同一处:一条评论、两段各带模型标识�
   });
 
   assert.equal(result.findings.length, 1, "同一处该合成一条 Finding");
-  assert.deepEqual(result.findings[0]!.models, ["model-a", "model-b"]);
+  assert.deepEqual(result.findings[0]!.attributions.map((a) => a.model), ["model-a", "model-b"]);
   assert.equal(result.findings[0]!.severity, "P0", "严重度该取各归属里最高的");
   assert.equal(result.findings[0]!.category, "design", "分类该取首报那个模型的");
 
@@ -125,9 +125,9 @@ test("行号相差在阈值内视为同一处,超出阈值分开", async () => {
 
   assert.equal(result.findings.length, 2);
   const merged = result.findings.find((f) => f.line <= 4)!;
-  assert.deepEqual([...merged.models].sort(), ["model-a", "model-b"]);
+  assert.deepEqual([...merged.attributions.map((a) => a.model)].sort(), ["model-a", "model-b"]);
   const separate = result.findings.find((f) => f.line === 18)!;
-  assert.deepEqual(separate.models, ["model-b"]);
+  assert.deepEqual(separate.attributions.map((a) => a.model), ["model-b"]);
 });
 
 test("相距 3 行但内容明显不同的两条 Finding 不合并", async () => {
@@ -195,7 +195,7 @@ test("同一缺陷的不同表述相距 2 行仍合并为一条", async () => {
   });
 
   assert.equal(result.findings.length, 1);
-  assert.deepEqual([...result.findings[0]!.models].sort(), ["model-a", "model-b"]);
+  assert.deepEqual([...result.findings[0]!.attributions.map((a) => a.model)].sort(), ["model-a", "model-b"]);
 });
 
 test("标题为空时改用描述判断,描述讲的不是一回事就不合并", async () => {

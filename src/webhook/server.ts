@@ -3971,14 +3971,8 @@ function handleStageSummary(
     const summary = withStore(deps.dbPath, (store) => {
       const rangeReview = store.getRangeReview(rangeReviewId);
       if (rangeReview === undefined) return undefined;
-      // 这一档只按 rangeReviewId 取轮次,另外三项不参与筛选;容器 PR 还没建出来时
-      // 它名下本来就一轮都没有。
-      return store.stageSummary({
-        owner: rangeReview.owner,
-        repo: rangeReview.repo,
-        pullNumber: rangeReview.containerPullNumber ?? 0,
-        rangeReviewId,
-      });
+      // 这一档只按 rangeReviewId 取轮次;容器 PR 还没建出来时它名下本来就一轮都没有。
+      return store.stageSummary({ rangeReviewId });
     });
     if (summary === undefined) return sendJson(res, 404, { error: "没有这个范围审查" });
     return sendJson(res, 200, summary);

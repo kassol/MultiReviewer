@@ -153,7 +153,7 @@ CREATE INDEX IF NOT EXISTS finding_attribution_by_model ON finding_attribution(m
 
 -- 一轮里每个 Reviewer 对每条未处置历史 Finding 的复核结论(ADR 0016)。finding_id
 -- 指注入时该 Finding Identity 的最新一行。漏给结论的按「无法判断」照样落一行并标
--- missing:沉默不是证据,但"这个模型压根没复核"要数得出来。本票只记录,不裁决。
+-- missing:沉默不是证据,但"这个模型压根没复核"要数得出来。这批记录同时是自动处置的裁决输入。
 CREATE TABLE IF NOT EXISTS finding_verdict (
   run_id INTEGER NOT NULL REFERENCES review_run(id),
   model TEXT NOT NULL,
@@ -1298,12 +1298,7 @@ export type Store = {
    * 算不出指纹的行各算一条)折叠,每条取最新一行——那一行才带着当前的处置状态与备注。
    * 不设条数上限;已处置的条目由调用方按 `disposition` 只用那一行的字段。
    */
-  stageHistory(scope: {
-    owner: string;
-    repo: string;
-    pullNumber: number;
-    rangeReviewId?: number;
-  }): HistoryFinding[];
+  stageHistory(scope: StageScope): HistoryFinding[];
   /**
    * 一个审查阶段的当前状态(issue #168):按 Finding Identity 折叠的 Finding 列表、
    * 三个计数与逐轮的时间线。
@@ -1312,12 +1307,7 @@ export type Store = {
    * 算不出指纹的行各算一条;每条取最新一行。延续把同一条 Identity 交接到新位置,交接
    * 前后是同一条:旧那条不单独出现,新那条继承它的首见轮次。
    */
-  stageSummary(scope: {
-    owner: string;
-    repo: string;
-    pullNumber: number;
-    rangeReviewId?: number;
-  }): StageSummary;
+  stageSummary(scope: StageScope): StageSummary;
   /**
    * 把本轮新发出去的行级评论的 id 与链接补到对应的合并组上。
    *
@@ -1780,19 +1770,18 @@ function foldFindingIdentity(db: DatabaseSync): void {
  *
  * 条件里的表别名固定是 `run`,调用方按它 join `review_run`。
  */
-function stageScope(scope: {
-  owner: string;
-  repo: string;
-  pullNumber: number;
-  rangeReviewId?: number;
-}): [string, (string | number)[]] {
-  return scope.rangeReviewId === undefined
-    ? [
+export type StageScope =
+  | { rangeReviewId: number }
+  | { owner: string; repo: string; pullNumber: number };
+
+function stageScope(scope: StageScope): [string, (string | number)[]] {
+  return "rangeReviewId" in scope
+    ? ["run.range_review_id = ?", [scope.rangeReviewId]]
+    : [
         `run.owner = ? AND run.repo = ? AND run.pull_number = ?
            AND run.range_review_id IS NULL`,
         [scope.owner, scope.repo, scope.pullNumber],
-      ]
-    : ["run.range_review_id = ?", [scope.rangeReviewId]];
+      ];
 }
 
 /** 打开当前 schema；schema-v0 数据库必须先经过模型服务迁移器。 */
@@ -3221,7 +3210,7 @@ export function openStore(dbPath: string): Store {
         }
 
         // 复核结论逐条落库(ADR 0016)。漏给的那些由编排层按「无法判断」补齐并标
-        // `missing`,这里只照写:裁决与自动处置是后续票的事。
+        // `missing`,这里只照写:裁决在编排层按同一批记录做完。
         const insertVerdict = db.prepare(
           `INSERT INTO finding_verdict (run_id, model, finding_id, verdict, missing)
            VALUES (?, ?, ?, ?, ?)`,
