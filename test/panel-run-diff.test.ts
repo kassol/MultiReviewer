@@ -5,6 +5,8 @@
  * 那份本地 clone 上取 diff。断言只看外部可观察的行为:HTTP 状态码与响应 JSON。
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 import { after, test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
@@ -191,4 +193,38 @@ test("diff API:没有 review:read 的用户取不到", async () => {
     headers: { cookie },
   });
   assert.equal(denied.status, 403);
+});
+
+/** 在本地 clone 上直接跑一条 git 命令,用来制造并观测 gc 场景。 */
+function runGit(dir: string, ...args: string[]): string {
+  return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
+}
+
+test("diff API:远端 ref 已删且 gc 跑过之后,历史轮次的 diff 仍打得开", async () => {
+  const h = await harnessWithRun();
+  const runId = await latestRunId(h);
+  const clone = join(h.cacheDir, HARNESS_PR.owner, HARNESS_PR.repo);
+
+  // 这一轮的两端钉在本地 clone 上(issue #161)。
+  assert.equal(runGit(clone, "rev-parse", `refs/multireviewer/runs/${runId}/head`), h.repo.headSha);
+  assert.equal(runGit(clone, "rev-parse", `refs/multireviewer/runs/${runId}/base`), h.repo.baseSha);
+
+  // 审查完成后的局面:远端再没有任何 ref 指向这一轮的 head,`fetch --prune` 把远程
+  // 跟踪分支一并删掉,自定义命名空间下那两条不受影响。
+  h.repo.deleteBranch("feature");
+  runGit(clone, "fetch", "--prune", "--quiet", "origin", "+refs/heads/*:refs/remotes/origin/*");
+  assert.equal(runGit(clone, "rev-parse", `refs/multireviewer/runs/${runId}/head`), h.repo.headSha);
+
+  // reflog 也让对象可达,默认 90 天后过期;这里直接过期掉,跑的就是那之后的局面。
+  runGit(clone, "reflog", "expire", "--expire=now", "--all");
+  runGit(clone, "gc", "--prune=now", "--quiet");
+
+  const response = await h.api("GET", `/runs/${runId}/diff`);
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as DiffFiles;
+  assert.equal(body.headSha, h.repo.headSha);
+  assert.deepEqual(
+    body.files.map((file) => file.path),
+    ["src/answer.ts", "src/other.ts"],
+  );
 });

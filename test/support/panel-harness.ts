@@ -47,6 +47,8 @@ export type PanelHarness = {
   /** 内存 Forge 的记录面:建了哪些分支、开了哪些 PR、发了哪些 review。 */
   memory: MemoryForge;
   db: { path: string };
+  /** 工作副本缓存根。本地 clone 在它下面的 `<owner>/<repo>`。 */
+  cacheDir: string;
   dispatched: PullRequestRef[];
   settled: { event: NormalizedEvent; error?: unknown }[];
   factoryCalls: (readonly ReviewerSpec[])[];
@@ -347,6 +349,7 @@ export async function startPanelHarness(
     repo,
     memory: base,
     db,
+    cacheDir: cache.dir,
     dispatched,
     settled,
     factoryCalls,

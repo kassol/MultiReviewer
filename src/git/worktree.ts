@@ -104,6 +104,28 @@ export async function prepareWorktree(
   return { path, mergeBaseSha };
 }
 
+/**
+ * 每一轮 Review Run 在本地 clone 里留下的两条 ref(issue #161)。
+ *
+ * 范围审查完成后容器 PR 的两条分支被删,推进过的历次比较项在远端再无任何 ref 指向,
+ * 本地副本里只剩悬空对象;git 的自动 gc 一跑,历史轮次的 diff 就再也打不开。ref 让
+ * 这些 commit 保持可达。
+ *
+ * 命名空间自成一段:`fetch --prune` 只删 `FETCH_REFSPECS` 目标下的
+ * `refs/remotes/origin/*`,碰不到 `refs/multireviewer/*`。
+ */
+const RUN_REF_PREFIX = "refs/multireviewer/runs";
+
+/** 把一轮 Review Run 的两端钉在本地 clone 上。两端各一条:base 也可能悬空。 */
+export async function pinRunCommits(
+  worktreePath: string,
+  runId: number,
+  commits: { baseSha: string; headSha: string },
+): Promise<void> {
+  await git(worktreePath, ["update-ref", `${RUN_REF_PREFIX}/${runId}/base`, commits.baseSha]);
+  await git(worktreePath, ["update-ref", `${RUN_REF_PREFIX}/${runId}/head`, commits.headSha]);
+}
+
 export type PushBranchOptions = {
   cacheDir: string;
   ref: RepoRef;
