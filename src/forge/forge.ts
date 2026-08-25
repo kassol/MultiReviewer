@@ -51,6 +51,22 @@ export type ExistingReviewComment = {
   line: number;
   body: string;
   resolved: boolean;
+  /** 这条评论在 Forge 页面上的地址。GitHub 实现不回传它(ADR 0014),因此可缺。 */
+  htmlUrl?: string;
+};
+
+/**
+ * 刚发布出去的一条行级评论。
+ *
+ * `id` 与 `htmlUrl` 落到 Finding 上:面板处置要按评论 id resolve,「跳到 Forge 看原版」
+ * 要这个链接。调用方按 `path` + `line` + `body` 把它对应回自己发出去的草稿。
+ */
+export type PublishedReviewComment = {
+  path: string;
+  line: number;
+  body: string;
+  id: string;
+  htmlUrl: string;
 };
 
 /** clone 用的凭据。两个平台都以 basic auth 的形式使用。 */
@@ -70,7 +86,12 @@ export type Reaction = "eyes" | "+1";
 export interface Forge {
   getPullRequest(ref: PullRequestRef): Promise<PullRequest>;
   listChangedFiles(ref: PullRequestRef): Promise<ChangedFile[]>;
-  createReview(ref: PullRequestRef, draft: ReviewDraft): Promise<void>;
+  /**
+   * 发布一条 review,返回本次真正落成行级评论的那些条目。
+   *
+   * 返回值的顺序不作保证;读不回评论标识的平台返回空数组,该轮的 Finding 两项留空。
+   */
+  createReview(ref: PullRequestRef, draft: ReviewDraft): Promise<PublishedReviewComment[]>;
   listReviewComments(ref: PullRequestRef): Promise<ExistingReviewComment[]>;
   /**
    * PR 上每条 review 的正文,人写的与本工具发的都在内。

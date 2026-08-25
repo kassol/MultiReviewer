@@ -6,6 +6,7 @@ import type {
   CloneCredentials,
   ExistingReviewComment,
   Forge,
+  PublishedReviewComment,
   PullRequest,
   PullRequestRef,
   Reaction,
@@ -185,7 +186,10 @@ export function createGitHubForge(options: GitHubForgeOptions): Forge {
       return files;
     },
 
-    async createReview(ref: PullRequestRef, draft: ReviewDraft): Promise<void> {
+    async createReview(
+      ref: PullRequestRef,
+      draft: ReviewDraft,
+    ): Promise<PublishedReviewComment[]> {
       const token = await tokenFor(ref);
       await request(`/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/reviews`, {
         method: "POST",
@@ -203,6 +207,9 @@ export function createGitHubForge(options: GitHubForgeOptions): Forge {
           })),
         }),
       });
+      // GitHub 实现已封存(ADR 0014):不为它补读回评论标识的那一步。空数组的含义是
+      // 「这一侧读不回评论 id 与链接」,该轮 Finding 的这两项因此留空。
+      return [];
     },
 
     async listReviewComments(ref: PullRequestRef): Promise<ExistingReviewComment[]> {

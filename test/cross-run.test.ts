@@ -86,6 +86,7 @@ function asExisting(draft: ReviewDraft, resolved: boolean): ExistingReviewCommen
     line: comment.line,
     body: comment.body,
     resolved,
+    htmlUrl: `https://forge.invalid/comments/thread-${index}`,
   }));
 }
 
@@ -393,4 +394,54 @@ test("人写的 review 正文不带锚点,不参与匹配", async () => {
   assert.match(review.body, /diff 之外/, "人写的 review 正文把本轮 Finding 折叠掉了");
   assert.doesNotMatch(review.body, /<details>/);
   assert.deepEqual(latestDispositions(db.path), ["unknown"]);
+});
+
+test("行级 Finding 记下 Forge 的评论 id 与链接,正文 fallback 两项为空", async () => {
+  const { db, forge, deps } = setup();
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [
+      scriptedReviewer("model-a", [
+        FINDING,
+        // 行距超过跨模型去重容差,两条不会被合并;这条落在 diff 之外,退化进正文。
+        { ...FINDING, line: OUT_OF_DIFF_LINE, description: "mul 的收尾没有校验" },
+      ]),
+    ],
+  });
+
+  // 内存 Forge 按发布顺序给评论编号,链接跟着它走。
+  assert.equal(forge.publishedComments.length, 1);
+  const published = forge.publishedComments[0]!;
+  const rows = query(
+    db.path,
+    "SELECT line, comment_id, comment_html_url FROM finding ORDER BY id",
+  ).map((row) => ({
+    line: Number(row["line"]),
+    commentId: row["comment_id"],
+    commentHtmlUrl: row["comment_html_url"],
+  }));
+  assert.deepEqual(rows, [
+    { line: FINDING.line, commentId: published.id, commentHtmlUrl: published.htmlUrl },
+    { line: OUT_OF_DIFF_LINE, commentId: null, commentHtmlUrl: null },
+  ]);
+});
+
+test("跨轮匹配到历史评论的 Finding,记的是那条历史评论的 id", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+
+  await runReview(EVENT, deps);
+
+  // 第二轮折叠,不发新评论,处置的载体仍是第一轮那条。
+  assert.deepEqual(forge.createdReviews[1]!.comments, []);
+  const latest = query(
+    db.path,
+    "SELECT comment_id, comment_html_url FROM finding ORDER BY id",
+  ).at(-1)!;
+  assert.equal(latest["comment_id"], "thread-0");
+  assert.equal(latest["comment_html_url"], "https://forge.invalid/comments/thread-0");
 });

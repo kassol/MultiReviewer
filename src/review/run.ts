@@ -2,6 +2,7 @@ import type { ReviewRunReviewerPin } from "../config.ts";
 import type {
   ExistingReviewComment,
   Forge,
+  PublishedReviewComment,
   PullRequestRef,
   ReviewCommentDraft,
 } from "../forge/forge.ts";
@@ -23,6 +24,7 @@ import { changedLinesByFile, isInDiff, parseDiffRanges } from "./position.ts";
 import {
   openStore,
   type DispositionUpdate,
+  type FindingCommentRef,
   type FindingPlacement,
   type FindingRecord,
   type OutcomeRecord,
@@ -274,6 +276,10 @@ export type PriorDisposition = {
   resolved: boolean;
   /** 至少有一条行级评论承载它。false 即只活在 review 正文里,没有 resolve 状态可读。 */
   fromInline: boolean;
+  /** 承载它的那条历史行级评论的 id。本轮匹配上就折叠,记的是这一条,不是新发的。 */
+  commentId?: string;
+  /** 那条历史评论在 Forge 页面上的地址。 */
+  commentHtmlUrl?: string;
 };
 
 /**
@@ -295,20 +301,26 @@ export function priorDispositions(
     file: string,
     fingerprint: string,
     resolved: boolean,
-    fromInline: boolean,
+    comment: ExistingReviewComment | undefined,
   ): void => {
     const key = `${file}\n${fingerprint}`;
     const prior = byKey.get(key) ?? { resolved: false, fromInline: false };
+    // 评论标识取先遇到的那一条:同一处的多条历史评论承载的是同一个结论,取哪一条
+    // 都指得回 Forge 上的原文,换来换去只会让记录在轮次之间跳。
+    const commentId = prior.commentId ?? comment?.id;
+    const commentHtmlUrl = prior.commentHtmlUrl ?? comment?.htmlUrl;
     byKey.set(key, {
       resolved: prior.resolved || resolved,
-      fromInline: prior.fromInline || fromInline,
+      fromInline: prior.fromInline || comment !== undefined,
+      ...(commentId === undefined ? {} : { commentId }),
+      ...(commentHtmlUrl === undefined ? {} : { commentHtmlUrl }),
     });
   };
 
   for (const comment of comments) {
     for (const anchor of parseFingerprintAnchors(comment.body)) {
       // 路径以 API 读回的为准:行级评论的锚点里没有它,有也不该盖过评论自己挂的位置。
-      note(comment.path, anchor.fingerprint, comment.resolved, true);
+      note(comment.path, anchor.fingerprint, comment.resolved, comment);
     }
   }
 
@@ -316,8 +328,8 @@ export function priorDispositions(
     for (const anchor of parseFingerprintAnchors(body)) {
       // 正文里的锚点自带路径,没带的定不出「文件 + 指纹」这个键,只能放过。
       if (anchor.file === undefined) continue;
-      // 正文没有 resolve 状态可读,一律按未处置计。
-      note(anchor.file, anchor.fingerprint, false, false);
+      // 正文没有 resolve 状态可读,一律按未处置计,也没有评论 id 可记。
+      note(anchor.file, anchor.fingerprint, false, undefined);
     }
   }
 
@@ -377,6 +389,35 @@ function priorMatch(
     if (match !== undefined) return match;
   }
   return undefined;
+}
+
+/** 一条行级评论的身份:同一轮里 `路径 + 行号 + 正文` 三者相同的草稿只有一条。 */
+function commentKey(comment: { path: string; line: number; body: string }): string {
+  return `${comment.path}\n${comment.line}\n${comment.body}`;
+}
+
+/**
+ * 把发布回来的评论标识对回本轮的合并组。
+ *
+ * 平台读不回标识(GitHub 已封存,ADR 0014)时返回空数组,那一轮的 Finding 两项留空。
+ */
+function commentRefs(
+  drafts: readonly ReviewCommentDraft[],
+  groups: readonly number[],
+  published: readonly PublishedReviewComment[],
+): FindingCommentRef[] {
+  const byKey = new Map(published.map((comment) => [commentKey(comment), comment]));
+  return drafts.flatMap((draft, index) => {
+    const comment = byKey.get(commentKey(draft));
+    if (comment === undefined) return [];
+    return [
+      {
+        groupIndex: groups[index]!,
+        commentId: comment.id,
+        commentHtmlUrl: comment.htmlUrl,
+      },
+    ];
+  });
 }
 
 /**
@@ -487,14 +528,18 @@ export async function runReview(
     store.backfillDispositions(event.owner, event.repo, event.number, backfillUpdates(prior));
 
     const comments: ReviewCommentDraft[] = [];
+    // 与 `comments` 同序:每条草稿属于哪个合并组。发布之后按它把评论标识记回去。
+    const commentGroups: number[] = [];
     const fallbacks: FallbackFinding[] = [];
     const carried: CarriedFinding[] = [];
     // 按合并组下标记住处置结论、来源类型与组指纹,落库时组内每条来源都取它。
     const dispositions: Disposition[] = [];
     const placements: FindingPlacement[] = [];
     const groupFingerprints: (string | undefined)[] = [];
+    // 折叠的那些记历史评论;本轮新发的要等发布之后才有 id,这里先留空。
+    const groupComments: (PriorDisposition | undefined)[] = [];
 
-    for (const finding of findings) {
+    for (const [groupIndex, finding] of findings.entries()) {
       // 指纹在新 head commit 的工作副本下重算:代码没变则与上一轮的锚点相同。
       const fingerprint = contentFingerprint(worktree.path, finding.file, finding.line);
       groupFingerprints.push(fingerprint);
@@ -506,10 +551,12 @@ export async function runReview(
         // 折叠的这条沿用它历史上的载体:有行级评论即有 resolve 载体,进统计;只活在
         // 正文里的没有,排除(ADR 0006)。
         placements.push(match.fromInline ? "inline" : "body");
+        groupComments.push(match);
         continue;
       }
 
       dispositions.push("unknown");
+      groupComments.push(undefined);
       if (isInDiff(diffRanges, finding.file, finding.line)) {
         placements.push("inline");
         comments.push({
@@ -517,6 +564,7 @@ export async function runReview(
           line: finding.line,
           body: findingBody(finding, fingerprint),
         });
+        commentGroups.push(groupIndex);
       } else {
         placements.push("body");
         fallbacks.push({ finding, fingerprint });
@@ -541,6 +589,8 @@ export async function runReview(
     const findingRecords: FindingRecord[] = findings.flatMap((merged, groupIndex) =>
       merged.sources.map((source) => {
         const fingerprint = groupFingerprints[groupIndex];
+        // 匹配上历史评论的记那一条:折叠之后本轮不再发新评论,处置的载体仍是它。
+        const comment = groupComments[groupIndex];
         return {
           model: source.model,
           file: source.file,
@@ -552,6 +602,10 @@ export async function runReview(
           disposition: dispositions[groupIndex]!,
           placement: placements[groupIndex]!,
           ...(fingerprint === undefined ? {} : { fingerprint }),
+          ...(comment?.commentId === undefined ? {} : { commentId: comment.commentId }),
+          ...(comment?.commentHtmlUrl === undefined
+            ? {}
+            : { commentHtmlUrl: comment.commentHtmlUrl }),
         };
       }),
     );
@@ -570,11 +624,12 @@ export async function runReview(
     const hasSomethingToSay =
       findings.length > 0 || absent.length > 0 || partial.length > 0;
     if (!failed && hasSomethingToSay) {
-      await forge.createReview(event, {
+      const published = await forge.createReview(event, {
         body: reviewBody(findings, fallbacks, absent, partial, carried),
         commitSha: pullRequest.headSha,
         comments,
       });
+      store.recordFindingComments(runId, commentRefs(comments, commentGroups, published));
     }
 
     // 跑成功却什么都没发现时,这次审查在 PR 上本来一点痕迹都不会留,与「审查根本

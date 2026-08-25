@@ -102,7 +102,11 @@ CREATE TABLE IF NOT EXISTS finding (
   disposition TEXT NOT NULL DEFAULT 'unknown',
   -- 来源类型:进了行级评论(inline)还是 review 正文(body)。正文没有 resolve 状态
   -- 可读,body 行排除在处置率统计外(ADR 0006)。
-  placement TEXT NOT NULL DEFAULT 'inline'
+  placement TEXT NOT NULL DEFAULT 'inline',
+  -- 承载它的那条 Forge 行级评论:id 供面板按评论 resolve,链接供「跳到 Forge 看原版」。
+  -- 正文 fallback 没有行级评论,两项为 NULL;升级前的历史行同样为 NULL。
+  comment_id TEXT,
+  comment_html_url TEXT
 );
 
 CREATE INDEX IF NOT EXISTS finding_by_run ON finding(run_id);
@@ -313,6 +317,8 @@ const ADD_COLUMNS = [
   "ALTER TABLE reviewer_outcome ADD COLUMN known_cost_usd REAL",
   "ALTER TABLE reviewer_outcome ADD COLUMN cost_source TEXT",
   "ALTER TABLE model_directory_model ADD COLUMN field_sources_json TEXT",
+  "ALTER TABLE finding ADD COLUMN comment_id TEXT",
+  "ALTER TABLE finding ADD COLUMN comment_html_url TEXT",
 ];
 
 
@@ -387,6 +393,17 @@ export type FindingRecord = {
   disposition: Disposition;
   /** 同一合并组共用一个来源类型,组内各来源取值相同。 */
   placement: FindingPlacement;
+  /** 承载它的 Forge 评论 id。本轮新发的评论要等发布之后才知道,那时走 `recordFindingComments`。 */
+  commentId?: string;
+  /** 那条评论在 Forge 页面上的地址。 */
+  commentHtmlUrl?: string;
+};
+
+/** 一个合并组落成的那条 Forge 行级评论。发布之后才拿得到,因此与落库分成两步。 */
+export type FindingCommentRef = {
+  groupIndex: number;
+  commentId: string;
+  commentHtmlUrl: string;
 };
 
 /**
@@ -688,6 +705,17 @@ export type RunListItem = {
   usage?: RecordedUsage;
   /** 本轮固定的模型服务版本与运行模型，不含凭据。 */
   reviewerPins: ReviewRunReviewerPin[];
+  /**
+   * 本轮落库的每一条来源 Finding,带承载它的 Forge 评论 id 与链接。面板据此按评论
+   * 处置并跳到 Forge 看原版;正文 fallback 没有行级评论,两项为 null。
+   */
+  findings: {
+    model: string;
+    file: string;
+    line: number;
+    commentId: string | null;
+    commentHtmlUrl: string | null;
+  }[];
   resolved: number;
   total: number;
 };
@@ -848,6 +876,14 @@ export type Store = {
   listModelSupplements(provider?: string): ModelSupplementRecord[];
   startRun(meta: RunMeta): number;
   finishRun(runId: number, result: RunResult): void;
+  /**
+   * 把本轮新发出去的行级评论的 id 与链接补到对应的合并组上。
+   *
+   * 与 `finishRun` 分成两步:落库要先于发布(发布失败不该把这轮的过程记录一并丢掉),
+   * 而评论 id 只有发布之后才拿得到。跨轮匹配折叠的那些不走这里,它们记的是历史评论,
+   * `finishRun` 时就已经知道。
+   */
+  recordFindingComments(runId: number, refs: readonly FindingCommentRef[]): void;
   /**
    * 处置率统计(ADR 0006):按 Finding Identity 折叠,fallback(body)排除,unknown
    * 按 PR 状态分流,时间窗按同一处 Finding 首次报出那轮的开始时间归属(闭区间,
@@ -2392,8 +2428,9 @@ export function openStore(dbPath: string): Store {
         const insertFinding = db.prepare(
           `INSERT INTO finding
              (run_id, model, file, line, severity, category, description,
-              fingerprint, group_index, disposition, placement)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              fingerprint, group_index, disposition, placement,
+              comment_id, comment_html_url)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const finding of result.findings) {
           insertFinding.run(
@@ -2408,12 +2445,26 @@ export function openStore(dbPath: string): Store {
             finding.groupIndex,
             finding.disposition,
             finding.placement,
+            finding.commentId ?? null,
+            finding.commentHtmlUrl ?? null,
           );
         }
         db.exec("COMMIT");
       } catch (error) {
         db.exec("ROLLBACK");
         throw error;
+      }
+    },
+
+    recordFindingComments(runId, refs) {
+      const update = db.prepare(
+        `UPDATE finding SET comment_id = ?, comment_html_url = ?
+          WHERE run_id = ? AND group_index = ?`,
+      );
+      // 一个合并组落成一条评论,组内每一条来源 Finding 都记它:处置率按提出它的模型
+      // 统计,而处置的载体是整组共享的那一条评论。
+      for (const ref of refs) {
+        update.run(ref.commentId, ref.commentHtmlUrl, runId, ref.groupIndex);
       }
     },
 
@@ -2578,6 +2629,14 @@ export function openStore(dbPath: string): Store {
         )
         .all(...ids);
 
+      const byFinding = db
+        .prepare(
+          `SELECT run_id, model, file, line, comment_id, comment_html_url
+             FROM finding
+            WHERE run_id IN (${marks}) ORDER BY id`,
+        )
+        .all(...ids);
+
       const byPin = db
         .prepare(
           `SELECT run_id, identity, provider, model, model_service_version,
@@ -2654,6 +2713,20 @@ export function openStore(dbPath: string): Store {
         });
         reviewerPins.set(runId, list);
       }
+      const findings = new Map<number, RunListItem["findings"]>();
+      for (const row of byFinding) {
+        const runId = Number(row["run_id"]);
+        const list = findings.get(runId) ?? [];
+        list.push({
+          model: String(row["model"]),
+          file: String(row["file"]),
+          line: Number(row["line"]),
+          commentId: row["comment_id"] === null ? null : String(row["comment_id"]),
+          commentHtmlUrl:
+            row["comment_html_url"] === null ? null : String(row["comment_html_url"]),
+        });
+        findings.set(runId, list);
+      }
       return runs.map((run) => {
         const id = Number(run["id"]);
         const usage = recordedUsage(run);
@@ -2671,6 +2744,7 @@ export function openStore(dbPath: string): Store {
           models: models.get(id) ?? [],
           ...(usage === undefined ? {} : { usage }),
           reviewerPins: reviewerPins.get(id) ?? [],
+          findings: findings.get(id) ?? [],
           resolved: groups.get(id)?.resolved ?? 0,
           total: groups.get(id)?.total ?? 0,
         };

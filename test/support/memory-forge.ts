@@ -3,6 +3,7 @@ import type {
   CloneCredentials,
   ExistingReviewComment,
   Forge,
+  PublishedReviewComment,
   PullRequest,
   PullRequestRef,
   Reaction,
@@ -22,6 +23,8 @@ export type MemoryForge = {
   pullRequest: PullRequest;
   /** 按调用顺序记录发布的 review。 */
   createdReviews: ReviewDraft[];
+  /** 本内存 Forge 为自己发出去的每条行级评论分配的 id 与链接,按发布顺序。 */
+  publishedComments: PublishedReviewComment[];
   /** PR 上既有的 review 评论,可直接追加,用于预置上一轮留下的评论。 */
   existingComments: ExistingReviewComment[];
   /** PR 上既有的 review 正文,可直接追加,用于预置上一轮发出去的正文。 */
@@ -40,6 +43,7 @@ export function memoryForge(init: {
   existingComments?: ExistingReviewComment[];
 }): MemoryForge {
   const createdReviews: ReviewDraft[] = [];
+  const publishedComments: PublishedReviewComment[] = [];
   const resolvedIds: string[] = [];
   const unresolvedIds: string[] = [];
   const existing = [...(init.existingComments ?? [])];
@@ -53,6 +57,19 @@ export function memoryForge(init: {
     listChangedFiles: async (_ref: PullRequestRef) => init.changedFiles,
     createReview: async (_ref: PullRequestRef, draft: ReviewDraft) => {
       createdReviews.push(draft);
+      // 真实平台在发布之后才给出评论 id 与链接,内存 Forge 照做:按发布顺序编号。
+      const published = draft.comments.map((comment, index) => {
+        const serial = publishedComments.length + index + 1;
+        return {
+          path: comment.path,
+          line: comment.line,
+          body: comment.body,
+          id: `comment-${serial}`,
+          htmlUrl: `https://forge.invalid/pulls/7/files#comment-${serial}`,
+        };
+      });
+      publishedComments.push(...published);
+      return published;
     },
     listReviewComments: async (_ref: PullRequestRef) => existing,
     listReviewBodies: async (_ref: PullRequestRef) => existingReviewBodies,
@@ -81,6 +98,7 @@ export function memoryForge(init: {
     forge,
     pullRequest: state.pullRequest,
     createdReviews,
+    publishedComments,
     existingComments: existing,
     existingReviewBodies,
     resolvedIds,

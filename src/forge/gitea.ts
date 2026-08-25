@@ -4,6 +4,7 @@ import type {
   CloneCredentials,
   ExistingReviewComment,
   Forge,
+  PublishedReviewComment,
   PullRequest,
   PullRequestRef,
   Reaction,
@@ -167,25 +168,55 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
       return files;
     },
 
-    async createReview(ref: PullRequestRef, draft: ReviewDraft): Promise<void> {
+    async createReview(
+      ref: PullRequestRef,
+      draft: ReviewDraft,
+    ): Promise<PublishedReviewComment[]> {
       // `CreatePullReviewOptions` 与 `CreatePullReviewComment`,见
       // `modules/structs/pull_review.go`。`event` 的合法取值是同文件里的
       // `ReviewStateType` 常量,COMMENT 不阻断合并。
-      await request(options, "POST", `${repoPath(ref)}/pulls/${ref.number}/reviews`, {
-        commit_id: draft.commitSha,
-        body: draft.body,
-        event: "COMMENT",
-        comments: draft.comments.map((c) => ({
-          path: c.path,
-          body: c.body,
-          // `NewLineNum int64 json:"new_position"`,注释写作 "if comment to new file
-          // line or 0"——是新文件里的行号本身,不是 diff 内的偏移。
-          // `routers/api/v1/repo/pull_review.go` 把它编码成带符号的单个 line:
-          // 正数取自 `new_position`,负数取自 `old_position`。本工具只评论 head
-          // commit,因此从不填 `old_position`。
-          new_position: c.line,
-        })),
-      });
+      const created = await requestJson<{ id: number }>(
+        options,
+        "POST",
+        `${repoPath(ref)}/pulls/${ref.number}/reviews`,
+        {
+          commit_id: draft.commitSha,
+          body: draft.body,
+          event: "COMMENT",
+          comments: draft.comments.map((c) => ({
+            path: c.path,
+            body: c.body,
+            // `NewLineNum int64 json:"new_position"`,注释写作 "if comment to new file
+            // line or 0"——是新文件里的行号本身,不是 diff 内的偏移。
+            // `routers/api/v1/repo/pull_review.go` 把它编码成带符号的单个 line:
+            // 正数取自 `new_position`,负数取自 `old_position`。本工具只评论 head
+            // commit,因此从不填 `old_position`。
+            new_position: c.line,
+          })),
+        },
+      );
+
+      // 创建端点回的是 `PullReview`(`modules/structs/pull_review.go`),里头只有
+      // `comments_count`,没有评论本身,评论 id 与链接因此要按 review id 再取一次。
+      // 零行级评论的那一轮不必发这个请求:回来必然是空数组。
+      if (draft.comments.length === 0) return [];
+      const published = await requestJson<GiteaReviewComment[]>(
+        options,
+        "GET",
+        `${repoPath(ref)}/pulls/${ref.number}/reviews/${created.id}/comments`,
+      );
+      return published
+        // 与 `listReviewComments` 同一道过滤:挂在旧文件一侧的评论对应不到 head
+        // commit 里的行。本工具只发 `new_position`,这里正常不会命中。
+        .filter((comment) => comment.position !== 0)
+        .map((comment) => ({
+          path: comment.path,
+          line: comment.position,
+          body: comment.body,
+          id: String(comment.id),
+          // `HTMLURL string json:"html_url"`,同一个 `PullReviewComment` 结构体。
+          htmlUrl: comment.html_url,
+        }));
     },
 
     async listReviewComments(ref: PullRequestRef): Promise<ExistingReviewComment[]> {
@@ -222,6 +253,7 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
               path: comment.path,
               line: comment.position,
               body: comment.body,
+              htmlUrl: comment.html_url,
               // `Resolver *User json:"resolver"` 没有 omitempty,未处置时是 null。
               resolved: comment.resolver !== null,
             });
@@ -295,6 +327,7 @@ type GiteaReviewComment = {
   path: string;
   position: number;
   body: string;
+  html_url: string;
   resolver: unknown;
 };
 

@@ -629,3 +629,130 @@ test("未知价格与负成本保持未知,同一轮的已知金额只作小计"
   assert.equal(persisted.unknownCostReviewers, 2);
   reopened.close();
 });
+
+test("时间流带上每条 Finding 的 Forge 评论 id 与链接", async () => {
+  const { cache, db, forge } = setup();
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [scriptedReviewer("model-a", [FINDING])],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  const published = forge.publishedComments[0]!;
+  const store = openStore(db.path);
+  const run = store.listRuns({ limit: 10 })[0]!;
+  store.close();
+  assert.deepEqual(run.findings, [
+    {
+      model: "model-a",
+      file: FINDING.file,
+      line: FINDING.line,
+      commentId: published.id,
+      commentHtmlUrl: published.htmlUrl,
+    },
+  ]);
+});
+
+test("升级前的 finding 补评论 id 与链接两列,历史行两项为空", async () => {
+  const { cache, db, forge } = setup();
+
+  // 升级前的 finding 表:没有 comment_id / comment_html_url。CREATE TABLE IF NOT
+  // EXISTS 对既有表什么都不做,少了补列这一步,升级后第一次落库就写不进去。
+  const old = new DatabaseSync(db.path);
+  old.exec(`CREATE TABLE finding (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES review_run(id),
+    model TEXT NOT NULL,
+    file TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    severity TEXT NOT NULL,
+    category TEXT NOT NULL,
+    description TEXT NOT NULL,
+    fingerprint TEXT,
+    group_index INTEGER NOT NULL,
+    disposition TEXT NOT NULL DEFAULT 'unknown',
+    placement TEXT NOT NULL DEFAULT 'inline'
+  )`);
+  old.exec("PRAGMA user_version = 1");
+  old.close();
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [scriptedReviewer("model-a", [FINDING])],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  const store = openStore(db.path);
+  const run = store.listRuns({ limit: 10 })[0]!;
+  store.close();
+  assert.equal(run.findings.length, 1);
+  assert.equal(run.findings[0]!.commentId, forge.publishedComments[0]!.id);
+});
+
+test("升级前落的 finding 行读得出来,评论 id 与链接为空", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const old = new DatabaseSync(db.path);
+  old.exec(`CREATE TABLE review_run (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    head_sha TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    duration_ms INTEGER,
+    changed_files INTEGER NOT NULL,
+    changed_lines INTEGER NOT NULL,
+    batch_count INTEGER NOT NULL,
+    failed INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    total_tokens INTEGER,
+    cost_usd REAL
+  );
+  CREATE TABLE finding (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES review_run(id),
+    model TEXT NOT NULL,
+    file TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    severity TEXT NOT NULL,
+    category TEXT NOT NULL,
+    description TEXT NOT NULL,
+    fingerprint TEXT,
+    group_index INTEGER NOT NULL,
+    disposition TEXT NOT NULL DEFAULT 'unknown',
+    placement TEXT NOT NULL DEFAULT 'inline'
+  )`);
+  const oldRun = old.prepare(
+    `INSERT INTO review_run
+       (owner, repo, pull_number, head_sha, started_at, changed_files, changed_lines, batch_count)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run("acme", "widgets", 7, "old-sha", "2026-08-01T00:00:00.000Z", 1, 2, 1);
+  old.prepare(
+    `INSERT INTO finding
+       (run_id, model, file, line, severity, category, description, group_index)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(Number(oldRun.lastInsertRowid), "legacy", "src/calc.js", 6, "P0", "bug", "旧行", 0);
+  old.exec("PRAGMA user_version = 1");
+  old.close();
+
+  const store = openStore(db.path);
+  const run = store.listRuns({ limit: 10 })[0]!;
+  store.close();
+  assert.deepEqual(run.findings, [
+    {
+      model: "legacy",
+      file: "src/calc.js",
+      line: 6,
+      commentId: null,
+      commentHtmlUrl: null,
+    },
+  ]);
+});

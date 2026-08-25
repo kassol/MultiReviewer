@@ -39,6 +39,20 @@ function routes(overrides: Record<string, Route> = {}): Record<string, Route> {
     "GET /api/v1/repos/acme/widget/pulls/7/files?page=2&limit=100": { body: [] },
     "GET /api/v1/repos/acme/widget/pulls/7/reviews?page=2&limit=100": { body: [] },
     "POST /api/v1/repos/acme/widget/pulls/7/reviews": { body: { id: 99 } },
+    // 创建端点只回 review 自己,评论 id 与链接要按这个 review id 再取一次。
+    "GET /api/v1/repos/acme/widget/pulls/7/reviews/99/comments": {
+      body: [
+        {
+          id: 601,
+          path: "src/a.ts",
+          position: 42,
+          original_position: 0,
+          body: "这里会越界",
+          html_url: `${BASE_URL}/acme/widget/pulls/7/files#issuecomment-601`,
+          resolver: null,
+        },
+      ],
+    },
     "GET /api/v1/repos/acme/widget/pulls/7/reviews?page=1&limit=100": {
       body: [{ id: 11, comments_count: 1 }],
     },
@@ -50,6 +64,7 @@ function routes(overrides: Record<string, Route> = {}): Record<string, Route> {
           position: 42,
           original_position: 0,
           body: "既有评论",
+          html_url: `${BASE_URL}/acme/widget/pulls/7/files#issuecomment-501`,
           resolver: null,
         },
       ],
@@ -123,6 +138,52 @@ test("行级评论带 path 与 new_position,行号是 head commit 里的文件�
   });
 });
 
+test("发布 review 后按 review id 取回评论,带出评论 id 与 html 链接", async (t) => {
+  const stub = stubFetch(routes());
+  t.after(stub.restore);
+
+  const published = await createGiteaForge(OPTIONS).createReview(REF, {
+    body: "MultiReviewer",
+    commitSha: HEAD_SHA,
+    comments: [{ path: "src/a.ts", line: 42, body: "这里会越界" }],
+  });
+
+  assert.deepEqual(published, [
+    {
+      path: "src/a.ts",
+      line: 42,
+      body: "这里会越界",
+      id: "601",
+      htmlUrl: `${BASE_URL}/acme/widget/pulls/7/files#issuecomment-601`,
+    },
+  ]);
+  assert.ok(
+    stub.calls.some(
+      (c) =>
+        c.method === "GET" &&
+        c.url === `${BASE_URL}/api/v1/repos/acme/widget/pulls/7/reviews/99/comments`,
+    ),
+    "没有按创建端点回的 review id 取评论",
+  );
+});
+
+test("零行级评论的一轮不再多发一次取评论的请求", async (t) => {
+  const stub = stubFetch(routes());
+  t.after(stub.restore);
+
+  const published = await createGiteaForge(OPTIONS).createReview(REF, {
+    body: "MultiReviewer",
+    commitSha: HEAD_SHA,
+    comments: [],
+  });
+
+  assert.deepEqual(published, []);
+  assert.ok(
+    !stub.calls.some((c) => c.url.includes("/reviews/99/comments")),
+    "本来就没有行级评论,不该再取一次",
+  );
+});
+
 test("变更文件的状态映射到 ChangedFileStatus 的四个取值", async (t) => {
   const stub = stubFetch(
     routes({
@@ -172,6 +233,7 @@ test("读回 review 评论:position 是文件行号,resolver 非空即已处置"
             position: 42,
             original_position: 0,
             body: "未处置",
+            html_url: `${BASE_URL}/acme/widget/pulls/7/files#issuecomment-501`,
             resolver: null,
           },
           {
@@ -180,6 +242,7 @@ test("读回 review 评论:position 是文件行号,resolver 非空即已处置"
             position: 7,
             original_position: 0,
             body: "已处置",
+            html_url: `${BASE_URL}/acme/widget/pulls/7/files#issuecomment-502`,
             resolver: { id: 3, login: "kassol" },
           },
           // 挂在旧文件一侧的评论对应不到 head commit 里的行,跳过好过编一个行号传下去。
@@ -189,6 +252,7 @@ test("读回 review 评论:position 是文件行号,resolver 非空即已处置"
             position: 0,
             original_position: 9,
             body: "旧侧",
+            html_url: `${BASE_URL}/acme/widget/pulls/7/files#issuecomment-503`,
             resolver: null,
           },
         ],
@@ -200,8 +264,22 @@ test("读回 review 评论:position 是文件行号,resolver 非空即已处置"
   const comments = await createGiteaForge(OPTIONS).listReviewComments(REF);
 
   assert.deepEqual(comments, [
-    { id: "501", path: "src/a.ts", line: 42, body: "未处置", resolved: false },
-    { id: "502", path: "src/b.ts", line: 7, body: "已处置", resolved: true },
+    {
+      id: "501",
+      path: "src/a.ts",
+      line: 42,
+      body: "未处置",
+      resolved: false,
+      htmlUrl: `${BASE_URL}/acme/widget/pulls/7/files#issuecomment-501`,
+    },
+    {
+      id: "502",
+      path: "src/b.ts",
+      line: 7,
+      body: "已处置",
+      resolved: true,
+      htmlUrl: `${BASE_URL}/acme/widget/pulls/7/files#issuecomment-502`,
+    },
   ]);
   assert.ok(
     !stub.calls.some((c) => c.url.includes("/reviews/12/comments")),
