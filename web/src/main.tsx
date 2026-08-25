@@ -51,6 +51,7 @@ const PasswordPage = lazy(async () => ({ default: (await import("./password.tsx"
 const RangeReviewsPage = lazy(async () => ({ default: (await import("./range-reviews.tsx")).RangeReviewsPage }));
 const ReposPage = lazy(async () => ({ default: (await import("./repos.tsx")).ReposPage }));
 const RunsPage = lazy(async () => ({ default: (await import("./runs.tsx")).RunsPage }));
+const StageDetailPage = lazy(async () => ({ default: (await import("./stage-detail.tsx")).StageDetailPage }));
 const SettingsPage = lazy(async () => ({ default: (await import("./settings.tsx")).SettingsPage }));
 const StatsPage = lazy(async () => ({ default: (await import("./stats.tsx")).StatsPage }));
 const OverviewPage = lazy(async () => ({ default: (await import("./overview.tsx")).OverviewPage }));
@@ -476,18 +477,37 @@ const reposRoute = protectedPage("/repos", "repo:read", () => {
       canReadModels={hasPermission(session, "model:read")}
       canReadReviews={hasPermission(session, "review:read")}
       canRerun={hasPermission(session, "review:rerun")}
-      canDispose={hasPermission(session, "finding:dispose")}
     />
   );
 });
 const runsRoute = protectedPage("/runs", "review:read", () => {
   const { session } = shellRoute.useRouteContext();
-  return (
-    <RunsPage
-      canRerun={hasPermission(session, "review:rerun")}
-      canDispose={hasPermission(session, "finding:dispose")}
-    />
-  );
+  return <RunsPage canRerun={hasPermission(session, "review:rerun")} />;
+});
+/**
+ * 一个审查阶段的详情页(issue #175)。地址里的阶段标识就是 `GET /stages` 行上的那一个
+ * (`pr:<owner>/<repo>/<number>` 与 `range:<id>`),里面的斜杠由路由编码成一段。
+ */
+const stageDetailRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/stages/$stageId",
+  beforeLoad: ({ context }) => {
+    if (context.session.mustChangePassword) throw redirect({ to: "/password" });
+    if (!hasPagePermission(context.session, "review:read")) throw redirect({ to: "/" });
+  },
+  component: () => {
+    const { session } = shellRoute.useRouteContext();
+    return (
+      <BusinessPage
+        Page={() => (
+          <StageDetailPage
+            stageId={stageDetailRoute.useParams().stageId}
+            canDispose={hasPermission(session, "finding:dispose")}
+          />
+        )}
+      />
+    );
+  },
 });
 const rangeReviewsRoute = protectedPage("/range-reviews", "review:read", () => {
   const { session } = shellRoute.useRouteContext();
@@ -680,6 +700,7 @@ const routeTree = rootRoute.addChildren([
     indexRoute,
     reposRoute,
     runsRoute,
+    stageDetailRoute,
     rangeReviewsRoute,
     statsRoute,
     credentialsRoute,

@@ -1148,6 +1148,27 @@ export type StageListItem = {
 };
 
 /**
+ * 阶段详情时间线上的一组轮次(issue #175)。一组就是一次代码推进:pull request 阶段
+ * 按 head commit 分,范围审查阶段按比较项分——两边问的都是「这一段代码从哪来」。
+ *
+ * 比较项是人推上去的,因此多带推的人与时刻;pull request 的 head commit 没有这一层,
+ * 两项为 null。
+ */
+export type StageRunGroup = {
+  sha: string;
+  recordedBy: string | null;
+  recordedAt: string | null;
+  /** 这一组里的轮次,新的在前;刚推上去、还没跑过的比较项是空数组。 */
+  runs: StageTimelineEntry[];
+};
+
+/**
+ * 一个审查阶段的详情(issue #175):评审记录里的那一行,加它按代码推进分组的时间线。
+ * 两种来源的阶段用同一份形状,详情页因此只有一套。
+ */
+export type StageDetail = { stage: StageListItem; groups: StageRunGroup[] };
+
+/**
  * 一个范围审查。分支名与容器 PR 序号是它在 Forge 上的全部痕迹;`lastForgeFailure`
  * 记最近一次 Forge 操作为什么没成,运维凭它分辨是权限还是分支保护。
  */
@@ -1436,6 +1457,14 @@ export type Store = {
     status?: StageStatus;
     source?: StageSource;
   }): StageListItem[];
+  /**
+   * 一个审查阶段的详情(issue #175):列表里的那一行,加按代码推进分组的时间线。
+   *
+   * 入参是列表给出的阶段标识(`pr:<owner>/<repo>/<number>` 与 `range:<id>`),认不出
+   * 或没有这个阶段时是 undefined。分组只是把 `stageSummary` 的时间线归到推出它们的那
+   * 次推进下面:pull request 按 head commit,范围审查按比较项。
+   */
+  stageDetail(stageId: string): StageDetail | undefined;
   /**
    * 落一条范围审查,返回它的 id。两条分支名由 id 推出,和插入在同一个事务里补上——
    * 记录一旦可见就必须带着分支名,否则中途失败的清理无从知道该删哪两条。
@@ -1873,6 +1902,51 @@ export type StageScope =
   | { rangeReviewId: number }
   | { owner: string; repo: string; pullNumber: number };
 
+/** 评审记录的一行,外加算计数与时间线要用的范围与排序时刻(`stageRows` 的产物)。 */
+type StageRowEntry = {
+  item: Omit<StageListItem, "counts">;
+  scope: StageScope;
+  /** 排序用的时刻:范围审查还没有轮次时用它的发起时刻。 */
+  activityAt: string;
+};
+
+/**
+ * 时间线分组(issue #175):一组是一次代码推进。范围审查按比较项分,pull request 没有
+ * 比较项这张表,按 head commit 分——两边的分组键都是轮次的 head。
+ *
+ * 比较项在前,顺序就是推进顺序;head 认不出比较项的轮次仍按自己的 head 单独成一组,
+ * 而不是被丢掉——它是真跑过的一轮,时间线上不能没有它。组与组内的轮次都是新的在前。
+ */
+function groupStageRuns(
+  timeline: readonly StageTimelineEntry[],
+  comparisons: readonly RangeReviewComparison[],
+): StageRunGroup[] {
+  // 时间线本身按轮次落库顺序升序,这里的每一组因此也是升序。
+  const byHead = new Map<string, StageTimelineEntry[]>();
+  for (const entry of timeline) {
+    byHead.set(entry.headSha, [...(byHead.get(entry.headSha) ?? []), entry]);
+  }
+  const ascending: StageRunGroup[] = [];
+  for (const comparison of comparisons) {
+    ascending.push({
+      sha: comparison.sha,
+      recordedBy: comparison.recordedBy,
+      recordedAt: comparison.recordedAt,
+      runs: byHead.get(comparison.sha) ?? [],
+    });
+    byHead.delete(comparison.sha);
+  }
+  const rest = [...byHead.entries()].sort(
+    (a, b) => a[1][a[1].length - 1]!.runId - b[1][b[1].length - 1]!.runId,
+  );
+  for (const [sha, runs] of rest) {
+    ascending.push({ sha, recordedBy: null, recordedAt: null, runs });
+  }
+  return ascending
+    .reverse()
+    .map((group) => ({ ...group, runs: [...group.runs].reverse() }));
+}
+
 function stageScope(scope: StageScope): [string, (string | number)[]] {
   return "rangeReviewId" in scope
     ? ["run.range_review_id = ?", [scope.rangeReviewId]]
@@ -2055,6 +2129,132 @@ export function openStore(dbPath: string): Store {
       ) models.add(supplement.model);
     }
     return [...references].every((model) => models.has(model));
+  };
+
+  /**
+   * 评审记录的全部行(issue #174):从 `review_run` 与 `range_review` 两张表归并出审查
+   * 阶段,筛过、排过序,但还不带三个计数——计数要读整个阶段的 Finding,只为真正要用
+   * 的那几行算。列表按页切,详情按阶段标识挑一行(issue #175),两处因此看到同一份行。
+   */
+  const stageRows = (opts: {
+    owner?: string;
+    repo?: string;
+    status?: StageStatus;
+    source?: StageSource;
+  }): StageRowEntry[] => {
+    const scoped = opts.owner !== undefined && opts.repo !== undefined;
+    const scopeParams = scoped ? [opts.owner!, opts.repo!] : [];
+
+    // pull request 阶段:每组取 id 最大的那一轮——id 即落库顺序,与开跑时间同序,
+    // 那一轮带着这个阶段当前的标题与关闭标记(关闭标记落在该 PR 的全部轮次上)。
+    const pullRows = db
+      .prepare(
+        `SELECT run.owner AS owner, run.repo AS repo, run.pull_number AS pull_number,
+                run.id AS latest_run_id, run.started_at AS started_at,
+                run.finished_at AS finished_at, run.title AS title, run.pr_state AS pr_state
+           FROM review_run run
+           JOIN (SELECT owner, repo, pull_number, MAX(id) AS latest_id
+                   FROM review_run
+                  WHERE range_review_id IS NULL
+                  GROUP BY owner, repo, pull_number) grouped
+             ON grouped.latest_id = run.id
+          ${scoped ? "WHERE run.owner = ? AND run.repo = ?" : ""}`,
+      )
+      .all(...scopeParams);
+
+    // 范围审查阶段:一轮都还没跑的也是一个阶段(发起之后容器 PR 可能还没建出来),
+    // 因此从 range_review 出发,轮次只用来取最新那一轮。
+    const rangeRows = db
+      .prepare(
+        `SELECT rr.id AS id, rr.owner AS owner, rr.repo AS repo, rr.state AS state,
+                rr.created_at AS created_at,
+                (SELECT MAX(run.id) FROM review_run run
+                  WHERE run.range_review_id = rr.id) AS latest_run_id
+           FROM range_review rr
+          ${scoped ? "WHERE rr.owner = ? AND rr.repo = ?" : ""}`,
+      )
+      .all(...scopeParams);
+
+    const rangeRunIds = rangeRows
+      .map((row) => row["latest_run_id"])
+      .filter((id): id is number => id !== null)
+      .map(Number);
+    const rangeRunTimes = new Map<number, { startedAt: string; finishedAt: string | null }>();
+    if (rangeRunIds.length > 0) {
+      const marks = rangeRunIds.map(() => "?").join(", ");
+      for (const row of db
+        .prepare(`SELECT id, started_at, finished_at FROM review_run WHERE id IN (${marks})`)
+        .all(...rangeRunIds)) {
+        rangeRunTimes.set(Number(row["id"]), {
+          startedAt: String(row["started_at"]),
+          finishedAt: row["finished_at"] === null ? null : String(row["finished_at"]),
+        });
+      }
+    }
+
+    const rows: StageRowEntry[] = [];
+    for (const row of pullRows) {
+      const owner = String(row["owner"]);
+      const repo = String(row["repo"]);
+      const pullNumber = Number(row["pull_number"]);
+      const startedAt = String(row["started_at"]);
+      rows.push({
+        item: {
+          stageId: `pr:${owner}/${repo}/${pullNumber}`,
+          source: "pull-request",
+          owner,
+          repo,
+          pullNumber,
+          rangeReviewId: null,
+          title: row["title"] === null ? null : String(row["title"]),
+          // 关闭标记在,这个阶段就是已结束;重开时它被清掉,阶段回到进行中。
+          status: row["pr_state"] === "closed" ? "closed" : "active",
+          latestRunId: Number(row["latest_run_id"]),
+          latestRunAt: startedAt,
+          latestRunFinishedAt: row["finished_at"] === null ? null : String(row["finished_at"]),
+        },
+        scope: { owner, repo, pullNumber },
+        activityAt: startedAt,
+      });
+    }
+    for (const row of rangeRows) {
+      const id = Number(row["id"]);
+      const latestRunId = row["latest_run_id"] === null ? null : Number(row["latest_run_id"]);
+      const latestRun = latestRunId === null ? undefined : rangeRunTimes.get(latestRunId);
+      const latestRunAt = latestRun?.startedAt ?? null;
+      const state = String(row["state"]) as RangeReviewState;
+      rows.push({
+        item: {
+          stageId: `range:${id}`,
+          source: "range-review",
+          owner: String(row["owner"]),
+          repo: String(row["repo"]),
+          pullNumber: null,
+          rangeReviewId: id,
+          title: null,
+          // 审查完成即已结束;发起失败的那一档也推不动比较项,同样不再是进行中。
+          status: state === "in-progress" ? "active" : "closed",
+          latestRunId,
+          latestRunAt,
+          latestRunFinishedAt: latestRun?.finishedAt ?? null,
+        },
+        scope: { rangeReviewId: id },
+        activityAt: latestRunAt ?? String(row["created_at"]),
+      });
+    }
+
+    const filtered = rows.filter(
+      (row) =>
+        (opts.status === undefined || row.item.status === opts.status) &&
+        (opts.source === undefined || row.item.source === opts.source),
+    );
+    // 最近有动静的排在前面。时刻相同的按阶段标识兜底,翻页才不会漂。
+    filtered.sort(
+      (a, b) =>
+        b.activityAt.localeCompare(a.activityAt) ||
+        b.item.stageId.localeCompare(a.item.stageId),
+    );
+    return filtered;
   };
 
   const store: Store = {
@@ -4034,128 +4234,26 @@ export function openStore(dbPath: string): Store {
     },
 
     listStages(opts) {
-      const scoped = opts.owner !== undefined && opts.repo !== undefined;
-      const scopeParams = scoped ? [opts.owner!, opts.repo!] : [];
-
-      // pull request 阶段:每组取 id 最大的那一轮——id 即落库顺序,与开跑时间同序,
-      // 那一轮带着这个阶段当前的标题与关闭标记(关闭标记落在该 PR 的全部轮次上)。
-      const pullRows = db
-        .prepare(
-          `SELECT run.owner AS owner, run.repo AS repo, run.pull_number AS pull_number,
-                  run.id AS latest_run_id, run.started_at AS started_at,
-                  run.finished_at AS finished_at, run.title AS title, run.pr_state AS pr_state
-             FROM review_run run
-             JOIN (SELECT owner, repo, pull_number, MAX(id) AS latest_id
-                     FROM review_run
-                    WHERE range_review_id IS NULL
-                    GROUP BY owner, repo, pull_number) grouped
-               ON grouped.latest_id = run.id
-            ${scoped ? "WHERE run.owner = ? AND run.repo = ?" : ""}`,
-        )
-        .all(...scopeParams);
-
-      // 范围审查阶段:一轮都还没跑的也是一个阶段(发起之后容器 PR 可能还没建出来),
-      // 因此从 range_review 出发,轮次只用来取最新那一轮。
-      const rangeRows = db
-        .prepare(
-          `SELECT rr.id AS id, rr.owner AS owner, rr.repo AS repo, rr.state AS state,
-                  rr.created_at AS created_at,
-                  (SELECT MAX(run.id) FROM review_run run
-                    WHERE run.range_review_id = rr.id) AS latest_run_id
-             FROM range_review rr
-            ${scoped ? "WHERE rr.owner = ? AND rr.repo = ?" : ""}`,
-        )
-        .all(...scopeParams);
-
-      const rangeRunIds = rangeRows
-        .map((row) => row["latest_run_id"])
-        .filter((id): id is number => id !== null)
-        .map(Number);
-      const rangeRunTimes = new Map<number, { startedAt: string; finishedAt: string | null }>();
-      if (rangeRunIds.length > 0) {
-        const marks = rangeRunIds.map(() => "?").join(", ");
-        for (const row of db
-          .prepare(`SELECT id, started_at, finished_at FROM review_run WHERE id IN (${marks})`)
-          .all(...rangeRunIds)) {
-          rangeRunTimes.set(Number(row["id"]), {
-            startedAt: String(row["started_at"]),
-            finishedAt: row["finished_at"] === null ? null : String(row["finished_at"]),
-          });
-        }
-      }
-
-      type Row = {
-        item: Omit<StageListItem, "counts">;
-        scope: StageScope;
-        /** 排序用的时刻:范围审查还没有轮次时用它的发起时刻。 */
-        activityAt: string;
-      };
-      const rows: Row[] = [];
-      for (const row of pullRows) {
-        const owner = String(row["owner"]);
-        const repo = String(row["repo"]);
-        const pullNumber = Number(row["pull_number"]);
-        const startedAt = String(row["started_at"]);
-        rows.push({
-          item: {
-            stageId: `pr:${owner}/${repo}/${pullNumber}`,
-            source: "pull-request",
-            owner,
-            repo,
-            pullNumber,
-            rangeReviewId: null,
-            title: row["title"] === null ? null : String(row["title"]),
-            // 关闭标记在,这个阶段就是已结束;重开时它被清掉,阶段回到进行中。
-            status: row["pr_state"] === "closed" ? "closed" : "active",
-            latestRunId: Number(row["latest_run_id"]),
-            latestRunAt: startedAt,
-            latestRunFinishedAt: row["finished_at"] === null ? null : String(row["finished_at"]),
-          },
-          scope: { owner, repo, pullNumber },
-          activityAt: startedAt,
-        });
-      }
-      for (const row of rangeRows) {
-        const id = Number(row["id"]);
-        const latestRunId = row["latest_run_id"] === null ? null : Number(row["latest_run_id"]);
-        const latestRun = latestRunId === null ? undefined : rangeRunTimes.get(latestRunId);
-        const latestRunAt = latestRun?.startedAt ?? null;
-        const state = String(row["state"]) as RangeReviewState;
-        rows.push({
-          item: {
-            stageId: `range:${id}`,
-            source: "range-review",
-            owner: String(row["owner"]),
-            repo: String(row["repo"]),
-            pullNumber: null,
-            rangeReviewId: id,
-            title: null,
-            // 审查完成即已结束;发起失败的那一档也推不动比较项,同样不再是进行中。
-            status: state === "in-progress" ? "active" : "closed",
-            latestRunId,
-            latestRunAt,
-            latestRunFinishedAt: latestRun?.finishedAt ?? null,
-          },
-          scope: { rangeReviewId: id },
-          activityAt: latestRunAt ?? String(row["created_at"]),
-        });
-      }
-
-      const filtered = rows.filter(
-        (row) =>
-          (opts.status === undefined || row.item.status === opts.status) &&
-          (opts.source === undefined || row.item.source === opts.source),
-      );
-      // 最近有动静的排在前面。时刻相同的按阶段标识兜底,翻页才不会漂。
-      filtered.sort(
-        (a, b) =>
-          b.activityAt.localeCompare(a.activityAt) ||
-          b.item.stageId.localeCompare(a.item.stageId),
-      );
       // 三个计数只为这一页算:每一行都要读一遍它整个阶段的 Finding。
-      return filtered
+      return stageRows(opts)
         .slice(opts.offset, opts.offset + opts.limit)
         .map((row) => ({ ...row.item, counts: store.stageSummary(row.scope).counts }));
+    },
+
+    stageDetail(stageId) {
+      const row = stageRows({}).find((candidate) => candidate.item.stageId === stageId);
+      if (row === undefined) return undefined;
+      // 一次 `stageSummary` 同时给出这一行的三个计数与它的时间线:详情页上的汇总与
+      // 时间线本来就是同一个阶段的两种看法,算两遍只会让两者有机会对不上。
+      const summary = store.stageSummary(row.scope);
+      const comparisons =
+        row.item.rangeReviewId === null
+          ? []
+          : store.listRangeReviewComparisons(row.item.rangeReviewId);
+      return {
+        stage: { ...row.item, counts: summary.counts },
+        groups: groupStageRuns(summary.timeline, comparisons),
+      };
     },
 
     createRangeReview(record) {

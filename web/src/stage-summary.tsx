@@ -59,6 +59,30 @@ export type StageSummaryBody = {
   timeline: StageTimelineEntry[];
 };
 
+/**
+ * 一轮 Review Run 落在哪个阶段上:属于范围审查的按它的标识,其余按自己的 pull request。
+ */
+export function runScope(run: {
+  owner: string;
+  repo: string;
+  pullNumber: number;
+  rangeReviewId: number | null;
+}): StageScope {
+  return run.rangeReviewId === null
+    ? { kind: "pull-request", owner: run.owner, repo: run.repo, pullNumber: run.pullNumber }
+    : { kind: "range-review", rangeReviewId: run.rangeReviewId };
+}
+
+/**
+ * 阶段详情地址上的那个标识(issue #175),与 `GET /stages` 行上的 `stageId` 同一格式:
+ * 一个阶段在列表、地址与接口三处是同一个名字。
+ */
+export function stageIdOf(scope: StageScope): string {
+  return scope.kind === "range-review"
+    ? `range:${scope.rangeReviewId}`
+    : `pr:${scope.owner}/${scope.repo}/${scope.pullNumber}`;
+}
+
 function scopePath(scope: StageScope): string {
   return scope.kind === "range-review"
     ? `/stage-summary?rangeReviewId=${scope.rangeReviewId}`
@@ -233,7 +257,8 @@ export function StageSummaryView({
             </span>
             {/* 最新一轮的 diff 位置:处置不必先翻轮次,点过去就是那一轮那个文件。 */}
             <Link
-              to="/runs"
+              to="/stages/$stageId"
+              params={{ stageId: stageIdOf(scope) }}
               search={{ run: finding.lastRunId, file: finding.file }}
               onClick={() => onJumpToRun?.()}
               className="inline-flex shrink-0 items-center gap-1 text-sm text-primary underline underline-offset-4"

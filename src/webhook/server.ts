@@ -1428,6 +1428,13 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     handler: ({ req, res, deps }) => handleStages(req, res, deps),
   },
   {
+    // 阶段标识里有斜杠(`pr:<owner>/<repo>/<number>`),在地址里编码成一段,这里整段收。
+    method: "GET",
+    pattern: /^\/stages\/(.+)$/,
+    access: "review:read",
+    handler: ({ res, deps }, match) => handleStageDetail(res, deps, match![1]!),
+  },
+  {
     method: "GET",
     pattern: /^\/runs\/(\d+)$/,
     access: "review:read",
@@ -4017,6 +4024,29 @@ function handleStages(
   );
   const nextOffset = stages.length === STAGES_PAGE ? offset + STAGES_PAGE : null;
   return sendJson(res, 200, { stages, nextOffset });
+}
+
+/**
+ * 一个审查阶段的详情(issue #175):评审记录里的那一行,加它按代码推进分组的时间线。
+ * 两种来源的阶段用同一份形状,详情页因此只有一个。
+ *
+ * 阶段标识是路径参数,里面的斜杠在地址里编码过,这里先解回来。解不开的与查不到的都是
+ * 404:调用方要知道的都是「没有这个阶段」,而不是「这个标识长得不对」。
+ */
+function handleStageDetail(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  rawStageId: string,
+): void {
+  let stageId: string;
+  try {
+    stageId = decodeURIComponent(rawStageId);
+  } catch {
+    return sendJson(res, 404, { error: "没有这个审查阶段" });
+  }
+  const detail = withStore(deps.dbPath, (store) => store.stageDetail(stageId));
+  if (detail === undefined) return sendJson(res, 404, { error: "没有这个审查阶段" });
+  return sendJson(res, 200, detail);
 }
 
 /**

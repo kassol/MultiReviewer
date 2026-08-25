@@ -16,6 +16,7 @@ import { fetchJson } from "./api.ts";
 import { useModelServices, type ModelServiceHealth } from "./model-services.ts";
 import { disposedCount, runStatus, type RunItem } from "./runs.tsx";
 import { hasPermission, loadPanelSession } from "./session.ts";
+import { runScope, stageIdOf } from "./stage-summary.tsx";
 import type { Cell } from "./stats.tsx";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -570,7 +571,8 @@ function RunRow({
   const time = day === today ? clock : day === yesterday ? `昨天 ${clock}` : `${day.slice(5)} ${clock}`;
   return (
     <Link
-      to="/runs"
+      to="/stages/$stageId"
+      params={{ stageId: stageIdOf(runScope(run)) }}
       search={{ run: run.id }}
       aria-label={`${run.owner}/${run.repo} #${run.pullNumber} ${status.label}`}
       className={cn(

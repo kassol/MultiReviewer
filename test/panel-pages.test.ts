@@ -83,7 +83,13 @@ test("前缀页面返回注入了前缀全局变量的 index.html", async () => 
 test("深层路由刷新不白屏:任意前缀下路径都回同一份注入过的 index.html", async () => {
   const h = await startPages();
 
-  for (const path of [`/${PREFIX}/`, `/${PREFIX}/repos`, `/${PREFIX}/runs/deep/route`]) {
+  // 阶段详情的地址把阶段标识编码成一段(issue #175),刷新它同样要回到 index.html。
+  for (const path of [
+    `/${PREFIX}/`,
+    `/${PREFIX}/repos`,
+    `/${PREFIX}/runs/deep/route`,
+    `/${PREFIX}/stages/${encodeURIComponent("pr:acme/widgets/7")}?run=3`,
+  ]) {
     const response = await h.get(path);
     assert.equal(response.status, 200, path);
     assert.match(await response.text(), /window\.__MULTIREVIEWER__/);

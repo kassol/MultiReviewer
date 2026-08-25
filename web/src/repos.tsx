@@ -32,7 +32,6 @@ import { api, errorText, fetchJson } from "./api.ts";
 import { modelIdentity, parseModelIdentity } from "./model-services.ts";
 import {
   rerunRequest,
-  RunDetailPanelById,
   StageCounts,
   stageLabel,
   StageStatusBadge,
@@ -137,13 +136,11 @@ export function ReposPage({
   canReadModels,
   canReadReviews,
   canRerun,
-  canDispose,
 }: {
   canWrite: boolean;
   canReadModels: boolean;
   canReadReviews: boolean;
   canRerun: boolean;
-  canDispose: boolean;
 }) {
   const queryClient = useQueryClient();
   const setup = useSetupStatus();
@@ -311,7 +308,6 @@ export function ReposPage({
               canWrite={canWrite}
               canReadReviews={canReadReviews}
               canRerun={canRerun}
-              canDispose={canDispose}
               onRemoved={() => {
                 setSelectedId(null);
                 void queryClient.invalidateQueries({ queryKey: ["repos"] });
@@ -345,7 +341,6 @@ function RepoDetail({
   canWrite,
   canReadReviews,
   canRerun,
-  canDispose,
   onRemoved,
 }: {
   repo: RepoRow;
@@ -353,7 +348,6 @@ function RepoDetail({
   canWrite: boolean;
   canReadReviews: boolean;
   canRerun: boolean;
-  canDispose: boolean;
   onRemoved: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -636,7 +630,6 @@ function RepoDetail({
           repo={repo}
           canRead={canReadReviews}
           canRerun={canRerun}
-          canDispose={canDispose}
           onFeedback={setFeedback}
         />
       ) : null}
@@ -979,13 +972,11 @@ function RepoRuns({
   repo,
   canRead,
   canRerun,
-  canDispose,
   onFeedback,
 }: {
   repo: RepoRow;
   canRead: boolean;
   canRerun: boolean;
-  canDispose: boolean;
   onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
 }) {
   const queryClient = useQueryClient();
@@ -1000,8 +991,6 @@ function RepoRuns({
     enabled: canRead,
   });
   const [pullNumber, setPullNumber] = useState("");
-  /** 打开的那一轮。详情面板与评审记录页共用同一个组件,同一轮在两处看到的一样。 */
-  const [openedRunId, setOpenedRunId] = useState<number | null>(null);
   const rerun = useMutation({
     mutationFn: rerunRequest,
     onSuccess: (text) => {
@@ -1066,27 +1055,24 @@ function RepoRuns({
       {canRead
         ? rows.map((stage) => (
             // 一行一个审查阶段:左边是它的名字与最新一轮的时间,右边是阶段汇总与状态。
-            // 点开是评审记录页那同一个详情面板——同一件东西,两处看到的应该一样。
-            <MasterListItem
-              key={stage.stageId}
-              selected={stage.latestRunId !== null && stage.latestRunId === openedRunId}
-              onClick={() => {
-                if (stage.latestRunId !== null) setOpenedRunId(stage.latestRunId);
-              }}
-              aria-haspopup="dialog"
-              {...(stage.latestRunId === null ? {} : { "data-run-id": stage.latestRunId })}
-              className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-3 sm:px-5"
-            >
-              <span className="min-w-0 flex-1 text-lg font-semibold tabular-nums">
-                {stageLabel(stage)}
-                <span className="font-normal text-text-muted">
-                  {stage.latestRunAt === null
-                    ? " · 还没有跑过"
-                    : ` · ${stage.latestRunAt.slice(0, 16).replace("T", " ")}`}
+            // 点开是这个阶段自己的详情页(issue #175),与全局评审记录点开的是同一个地址。
+            <MasterListItem key={stage.stageId} selected={false} asChild>
+              <Link
+                to="/stages/$stageId"
+                params={{ stageId: stage.stageId }}
+                className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-3 sm:px-5"
+              >
+                <span className="min-w-0 flex-1 text-lg font-semibold tabular-nums">
+                  {stageLabel(stage)}
+                  <span className="font-normal text-text-muted">
+                    {stage.latestRunAt === null
+                      ? " · 还没有跑过"
+                      : ` · ${stage.latestRunAt.slice(0, 16).replace("T", " ")}`}
+                  </span>
                 </span>
-              </span>
-              <StageCounts stage={stage} />
-              <StageStatusBadge stage={stage} />
+                <StageCounts stage={stage} />
+                <StageStatusBadge stage={stage} />
+              </Link>
             </MasterListItem>
           ))
         : null}
@@ -1095,22 +1081,6 @@ function RepoRuns({
           <EmptyState title="暂无审查记录" />
         </div>
       ) : null}
-      {openedRunId === null ? null : (
-        <RunDetailPanelById
-          runId={openedRunId}
-          canRerun={canRerun}
-          canDispose={canDispose}
-          rerunning={rerun.isPending}
-          onRerun={(run) => {
-            rerun.mutate(run);
-            // 结果落在页面顶部的提示上,面板压着它人就看不见,所以触发即收面板。
-            setOpenedRunId(null);
-          }}
-          onOpenOther={setOpenedRunId}
-          onSwitchFilter={() => undefined}
-          onClose={() => setOpenedRunId(null)}
-        />
-      )}
     </CardShell>
   );
 }
