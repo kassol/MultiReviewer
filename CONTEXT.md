@@ -13,8 +13,28 @@ _Avoid_: 平台、代码托管、Git 服务
 _Avoid_: 审查任务、review job、扫描
 
 **Review Range**:
-一次 Review Run 覆盖的代码范围,由 pull request 的 base 与 head commit 界定,取其合并 diff。
+一次 Review Run 覆盖的代码范围,由 base 与 head 两个 commit 界定。PR 触发时取 pull request 的 base 与 head,范围审查时 base 是阶段基准,head 是当时的比较项。
 _Avoid_: diff、变更集
+
+**范围审查**:
+由人在面板发起的一个阶段性审查。它以一个 base commit 为该阶段不变的基准,以比较项为当前被审的代码;比较项每推进一次就跑一轮 Review Run。范围不必对应任何既有 pull request,直推默认分支的代码也可审。每个范围审查有自己的标识,不按 base 去重;同一仓库同一 base 已有未完成的范围审查时只提醒。由人标记审查完成而进入终态,完成后再次发起是新的范围审查。
+_Avoid_: 手动审查、自定义评审、commit 审查、长期审查
+
+**比较项**:
+一个范围审查当前被审的 commit。发起时由人指定,之后随作者迭代由人在面板推进;任一时刻的比较项都必须是 base 的后代,不要求是上一个比较项的后代。推进比较项即发起该范围审查的新一轮 Review Run,并同步容器 PR 的 head。
+_Avoid_: head、目标 commit、当前版本
+
+**审查完成**:
+人对一个范围审查作出的终态标记。标记后容器 PR 关闭、其分支删除,比较项不再推进,未处置的 Finding 按未处置计入处置率。PR 触发的 Review Run 没有这个动作,它的终态来自 pull request 本身的关闭。
+_Avoid_: 关闭审查、归档、结束
+
+**处置备注**:
+人在面板处置一条 Finding 时附的一句话,只存在于面板,不写入 Forge。一条 Finding 至多一条,可选。
+_Avoid_: 回复、评论、反馈
+
+**容器 PR**:
+MultiReviewer 为一个范围审查在 Forge 上自建的 pull request,base 分支指向阶段基准,head 分支跟随比较项,只用来承载行内 Finding 与 Disposition,永不合并。它对面板用户透明,只在开发层面存在;Forge 上由固定的分支前缀与标题前缀识别,它产生的 webhook 事件不触发 Review Run。
+_Avoid_: 临时 PR、审查 PR、机器人 PR
 
 **Reviewer**:
 一个绑定了具体模型的审查执行体。一次 Review Run 并行运行多个 Reviewer。
@@ -29,7 +49,7 @@ _Avoid_: issue、问题、comment、告警
 _Avoid_: 去重、指纹、逻辑 Finding
 
 **Disposition**:
-人对一条 Finding 的处置结论。载体是 Forge 上该条 review 评论的 resolve 状态,已 resolve 即已处置。它是判断审查质量的唯一信号来源。
+对一条 Finding 的处置结论。载体是 Forge 上该条 review 评论的 resolve 状态,已 resolve 即已处置。人在面板或 Forge 上作出的是人工处置;新一轮 Review Run 发现一条 Finding 所指代码已改动且未再报出时自动 resolve,记为「已改动」,与人工处置分开统计。自动处置不覆盖人已作出的处置。它是判断审查质量的唯一信号来源。
 _Avoid_: 反馈、评分、标注
 
 **仓库注册表**:

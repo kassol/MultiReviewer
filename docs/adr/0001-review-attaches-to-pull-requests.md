@@ -4,7 +4,7 @@
 
 ## Consequences
 
-- 团队工作流被产品约束:直推默认分支的仓库无法使用本工具。这是有意为之,避免为单一团队习惯做特例。
+- 团队工作流被产品约束:直推默认分支的仓库无法使用本工具。这是有意为之,避免为单一团队习惯做特例。**已被 ADR 0012 解除**:范围审查由容器 PR 承载,不要求走 PR 流程;PR 作为锚点的决策不变。
 - Disposition 有一等载体,无需自建:`PullReviewComment.resolver` 为空即未处置,`POST /repos/{owner}/{repo}/pulls/comments/{id}/resolve` 与 `/unresolve` 可读可写。
 - 跨轮次跟踪材料由平台提供:review 评论回传 `commit_id`、`original_commit_id` 与 `diff_hunk`。
 - 自建 Web 界面、OAuth 登录、自建 Finding 存储全部不需要。

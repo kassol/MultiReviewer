@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-MultiReviewer:基于真实 Coding Agent 的多模型并行 PR 智能审查工具。审查挂载在 pull request 上,结果以行级 review 评论呈现。目标部署平台是公司内部 self-host 的 Gitea,开发阶段以 GitHub 为测试平台,两者通过 forge adapter 兼容。
+MultiReviewer:基于真实 Coding Agent 的多模型并行 PR 智能审查工具。审查挂载在 pull request 上,结果以行级 review 评论呈现。目标部署平台是公司内部 self-host 的 Gitea;GitHub 实现自 2026-08-25 起封存(ADR 0014),新增 Forge 能力只做 Gitea。
 
 领域术语见 `CONTEXT.md`,已定架构决策见 `docs/adr/`。`docs/idea.md` 是初始草案,其中的 GitHub SaaS 定位、交叉验证 P0、自建 Web 界面等设定已被后续 ADR 推翻,仅作历史参考。
 
@@ -129,7 +129,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 
 - 领域术语以 `CONTEXT.md` 定义为准,代码、注释、沟通全程统一
 - commit message 用英文,简洁描述变更意图
-- forge adapter 的接口只包含 Gitea 与 GitHub 都具备的能力,以 Gitea 为基准
+- forge adapter 的接口以 Gitea 能力为基准;GitHub 实现已封存,新增方法不补 GitHub 侧(ADR 0014)
 - Gitea 最低支持社区版 1.26.0 / 企业版 26.0.0(review comment 的 resolve / unresolve 端点自该版本提供)
 - 调用 Gitea API 一律携带凭据,目标实例要求登录后才能调用
 - 测试只验证外部可观察的行为,打在三条验收边界上(issue #26 的测试决策):HTTP 端点(起真服务打 HTTP,注入假 Forge、临时库路径与时钟)、`runReview` 入口(经 `Forge` 与 `Reviewer` 两个注入边界)、SQLite 临时库;git 与 SQLite 用真实实现,落在临时目录
@@ -201,6 +201,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-24: 管理面板接入 Radix Themes 与 Radix Icons 基础层。应用根和迁移期 Primitive Portal 共用同一亮色 Theme 配置；Radix token 映射到迁移期 Tailwind 语义名,业务页面按组件族继续迁移。
 
 - 2026-08-24: 管理面板的 Radix UI 迁移选定“发布门禁看板”视觉方向。Radix Themes 统一通用视觉,Radix Primitives 补行为,Radix Icons 统一业务图标；模型服务、仓库与审查策略共用同一 `MasterListItem` 深色选中规则。本条取代同日仅允许模型服务 provider 使用实心选中态的旧限制。
+
+- 2026-08-25: 完成范围审查的 grilling。解除 ADR 0001 的「必须走 PR 流程」准入约束:人可在面板指定 base 与比较项发起范围审查,由 MultiReviewer 自建的容器 PR 承载行内 Finding 与 Disposition,见 ADR 0012;代码已改动且未再报出的 Finding 自动 resolve 并以独立处置值「已改动」分开统计,见 ADR 0013。`CONTEXT.md` 新增范围审查、比较项、容器 PR、审查完成、处置备注词条。尚未实现。同日封存 GitHub 实现,见 ADR 0014。
 
 - 2026-08-24: 完成管理面板迁移到 Radix UI 前的源码与官方能力研究。盘点 46 个 shadcn 基础组件、56 个项目组件、22 种 Lucide 图标及浏览器原生控件，明确 Radix Themes、Primitives 与 Icons 的职责边界；后续以 `DateRangePicker` 与 `EditableModelCombobox` 收口 Calendar 和可搜索手填行为。
 
