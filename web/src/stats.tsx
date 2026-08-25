@@ -36,12 +36,12 @@ type StatsResponse = {
 };
 
 /** 分母 = 已处置(人工 + 自动)+ 看过未 resolve + 已关闭 PR 上无人处置(ADR 0006)。 */
-export function denominator(cell: Cell): number {
+function denominator(cell: Cell): number {
   return cell.resolved + cell.changed + cell.unresolved + cell.unknownClosed;
 }
 
 /** 分子:人工与自动都算(ADR 0013)。两者的拆分在「按模型统计」那一段单列。 */
-export function disposed(cell: Cell): number {
+function disposed(cell: Cell): number {
   return cell.resolved + cell.changed;
 }
 

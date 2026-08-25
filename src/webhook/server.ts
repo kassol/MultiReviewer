@@ -4128,7 +4128,7 @@ async function handleDispose(
       error: `Forge 上${disposition === "resolved" ? "处置" : "撤回处置"}失败:${failureText(error)}`,
     });
   }
-  const disposedAt = new Date().toISOString();
+  const disposedAt = new Date((deps.now ?? Date.now)()).toISOString();
   withStore(deps.dbPath, (store) =>
     store.recordDisposition({
       owner: finding.owner,
