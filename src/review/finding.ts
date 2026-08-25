@@ -16,8 +16,8 @@ export type Category = "security" | "bug" | "maintainability" | "design";
  * MultiReviewer 自己 resolve 的那一档。两者在 Forge 上是同一个 resolve 状态,分开只在
  * 本地库与处置率统计里。
  *
- * 这一档的名字来自 ADR 0016(它把处置值定为「已修复」),判据仍是 ADR 0013 的指纹规则
- * ——所指代码已改动且本轮未再报出。换成复核结论由后续票落地,本票只换名。
+ * 这一档的判据是 ADR 0016 的复核结论:本轮全部 Reviewer 都判这条历史 Finding 已修。
+ * 指纹变没变都不参与——在上游加判空这类修法指纹不变,同样是修好了。
  */
 export type Disposition = "resolved" | "unresolved" | "unknown" | "fixed";
 

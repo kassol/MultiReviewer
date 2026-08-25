@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS finding (
   comment_html_url TEXT,
   -- 作出这次处置的人与时刻。回填链路不写这两列:在 Gitea 上点的 resolve 没有面板
   -- 身份可记,那一档留 NULL,disposed_by 非 NULL 即「人在面板上显式设置过」。
-  -- 「已修复」自动处置(判据仍是 ADR 0013)只写 disposed_at,处置人留空:disposed_at
+  -- 「已修复」自动处置(ADR 0016)只写 disposed_at,处置人留空:disposed_at
   -- 非 NULL 因此等于「这一行被显式处置过一次」,自动规则据此不再碰它。
   disposed_by TEXT,
   disposed_at TEXT,
@@ -452,7 +452,7 @@ const PULL_REQUEST_SCOPE = `run_id IN (SELECT id FROM review_run
                                         WHERE owner = ? AND repo = ? AND pull_number = ?)`;
 
 /**
- * 还能自动处置的那些行(ADR 0013):当前处置是 unknown 或未处置,且从来没有被显式
+ * 还能自动处置的那些行(ADR 0016):当前处置是 unknown 或未处置,且从来没有被显式
  * 处置过。`disposed_at` 就是那个标记——面板处置写它,自动处置也写它(处置人留空),
  * 于是一行至多被自动处置一次:人把「已修复」改回未处置之后,自动规则不再碰它。
  */
@@ -550,12 +550,12 @@ export type DispositionUpdate = {
 };
 
 /**
- * 「已修复」自动处置(判据仍是 ADR 0013)的一个候选:一处 Finding 的锚点,加上承载它
- * 的那条 Forge 评论——自动处置写回 Forge 的仍是同一个 resolve,载体与人工处置是同一条。
+ * 复核判已修、且还能自动处置的一条历史 Finding(ADR 0016)。`findingId` 是该 Finding
+ * Identity 最新一行的落库 id,也就是注入 Reviewer 时给它的那个;`commentId` 是承载它的
+ * 那条 Forge 评论——自动处置写回 Forge 的仍是同一个 resolve,载体与人工处置是同一条。
  */
 export type AutoDispositionCandidate = {
-  file: string;
-  fingerprint: string;
+  findingId: number;
   commentId: string;
 };
 
@@ -1271,22 +1271,21 @@ export type Store = {
    */
   claimDelivery(owner: string, repo: string, headSha: string): boolean;
   /**
-   * 候选里还能自动处置的那些(ADR 0013):这个 pull request 名下、文件与指纹都对上、
-   * 且从来没有被显式处置过的行。
+   * 这些历史 Finding 里还能自动处置的那些(ADR 0016):当前处置是 unknown 或未处置、
+   * 从来没有被显式处置过、且有一条行级评论承载。只活在 review 正文里的没有 resolve
+   * 载体,写不回 Forge,一律挡掉。
    *
    * 先问库再写 Forge:已经自动处置过的、以及人在面板上处置过的都在这里被挡掉,
    * Forge 那一步因此不会一轮轮重复 resolve 同一条评论,也不会与在 Forge 上撤回处置
    * 的人对着干。
    */
-  pendingAutoDispositions(
-    owner: string,
-    repo: string,
-    pullNumber: number,
-    candidates: readonly AutoDispositionCandidate[],
-  ): AutoDispositionCandidate[];
+  pendingAutoDispositions(findingIds: readonly number[]): AutoDispositionCandidate[];
   /**
-   * 记一次「已修复」自动处置(判据仍是 ADR 0013)。处置人留空——这一档不是人做的;
-   * 处置时刻照记,它同时是「这一行已被显式处置过」的标记,自动规则据此至多碰一行一次。
+   * 记一次「已修复」自动处置(ADR 0016)。处置人留空——这一档不是人做的;处置时刻
+   * 照记,它同时是「这一行已被显式处置过」的标记,自动规则据此至多碰一行一次。
+   *
+   * 落的是整条 Finding Identity:这个 pull request 名下与它同「文件 + 指纹」的历史行
+   * 一并改写,口径与回填一致。
    */
   recordAutoDisposition(
     owner: string,
@@ -1460,7 +1459,7 @@ const MIGRATION_DISPOSITION_RANK: Record<string, number> = {
  * 组内最高,代表段取严重度最高的那条,处置取最强的那一档。每一条旧行留一条模型归属,
  * 历史统计因此不断裂。
  *
- * `changed` 改写为 `fixed`(只换名不换义,判据仍是 ADR 0013 的指纹规则)。重新折叠、
+ * `changed` 改写为 `fixed`(只换名不换义,判据由 ADR 0016 换成复核结论)。重新折叠、
  * 归属写入、删旧行、去掉 model 列与改写字面量全在同一个事务里:中途失败整体回滚,
  * 下次启动从原样重来。
  */
@@ -1576,7 +1575,7 @@ function foldFindingIdentity(db: DatabaseSync): void {
       db.exec("ALTER TABLE finding DROP COLUMN model");
     }
 
-    // 只换名不换义:这一档的判据没变,名字从「已改动」变成「已修复」(ADR 0016)。
+    // 旧库里的「已改动」就是这一档:名字改成「已修复」,判据由 ADR 0016 换成复核结论。
     db.exec("UPDATE finding SET disposition = 'fixed' WHERE disposition = 'changed'");
     db.exec("COMMIT");
   } catch (error) {
@@ -3029,7 +3028,7 @@ export function openStore(dbPath: string): Store {
         // 折叠到已有 Forge 评论的行继承那条评论上一次处置的元数据(issue #152)。处置
         // 的载体是评论(ADR 0006),同一条评论名下的历史行与本轮新行说的是同一次处置:
         // 不继承的话备注与署名活不过下一轮,`disposed_at` 这个「这一行被显式处置过」
-        // 的标记也会被新的一行稀释,自动处置于是又碰它一次(ADR 0013)。`disposition`
+        // 的标记也会被新的一行稀释,自动处置于是又碰它一次(ADR 0016)。`disposition`
         // 不在此列——它由跨轮匹配与回填决定,口径不变。本轮新发的评论不必走这一步:
         // 它的 id 是新的,库里不会有同 id 的历史行,`recordFindingComments` 因此不动。
         db.prepare(
@@ -3678,25 +3677,35 @@ export function openStore(dbPath: string): Store {
       });
     },
 
-    pendingAutoDispositions(owner, repo, pullNumber, candidates) {
+    pendingAutoDispositions(findingIds) {
       const probe = db.prepare(
-        `SELECT 1 FROM finding
-          WHERE file = ? AND fingerprint = ? AND ${AUTO_DISPOSABLE}
-            AND ${PULL_REQUEST_SCOPE} LIMIT 1`,
+        `SELECT comment_id FROM finding
+          WHERE id = ? AND comment_id IS NOT NULL AND ${AUTO_DISPOSABLE}`,
       );
-      return candidates.filter(
-        (candidate) =>
-          probe.get(candidate.file, candidate.fingerprint, owner, repo, pullNumber) !==
-          undefined,
-      );
+      return findingIds.flatMap((findingId) => {
+        const row = probe.get(findingId);
+        if (row === undefined) return [];
+        return [{ findingId, commentId: String(row["comment_id"]) }];
+      });
     },
 
     recordAutoDisposition(owner, repo, pullNumber, candidate, disposedAt) {
+      // 折叠键与 `stageHistory` 同源:文件 + 指纹,算不出指纹的行只有它自己一条。
       db.prepare(
         `UPDATE finding SET disposition = 'fixed', disposed_at = ?
-          WHERE file = ? AND fingerprint = ? AND ${AUTO_DISPOSABLE}
+          WHERE file = (SELECT file FROM finding WHERE id = ?)
+            AND COALESCE(fingerprint, 'row:' || id) =
+                (SELECT COALESCE(fingerprint, 'row:' || id) FROM finding WHERE id = ?)
+            AND ${AUTO_DISPOSABLE}
             AND ${PULL_REQUEST_SCOPE}`,
-      ).run(disposedAt, candidate.file, candidate.fingerprint, owner, repo, pullNumber);
+      ).run(
+        disposedAt,
+        candidate.findingId,
+        candidate.findingId,
+        owner,
+        repo,
+        pullNumber,
+      );
     },
 
     backfillDispositions(owner, repo, pullNumber, updates) {

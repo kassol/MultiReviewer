@@ -23,14 +23,12 @@ import type {
 } from "./finding.ts";
 import {
   contentFingerprint,
-  fileFingerprints,
   fingerprintAnchor,
   parseFingerprintAnchors,
 } from "./fingerprint.ts";
 import { changedLinesByFile, isInDiff, parseDiffRanges } from "./position.ts";
 import {
   openStore,
-  type AutoDispositionCandidate,
   type DispositionUpdate,
   type FindingCommentRef,
   type FindingPlacement,
@@ -397,52 +395,37 @@ function priorMatch(
   prior: ReadonlyMap<string, PriorDisposition>,
   worktreePath: string,
   finding: MergedFinding,
-): { key: string; entry: PriorDisposition } | undefined {
+): PriorDisposition | undefined {
   for (const offset of MATCH_OFFSETS) {
     const line = finding.line + offset;
     if (line < 1) continue;
     const fingerprint = contentFingerprint(worktreePath, finding.file, line);
     if (fingerprint === undefined) continue;
-    const key = `${finding.file}\n${fingerprint}`;
-    const entry = prior.get(key);
-    if (entry !== undefined) return { key, entry };
+    const entry = prior.get(`${finding.file}\n${fingerprint}`);
+    if (entry !== undefined) return entry;
   }
   return undefined;
 }
 
 /**
- * 本轮该自动处置的那些上一轮 Finding(判据见 ADR 0013,处置值记「已修复」)。
+ * 复核判已修的那些历史 Finding(ADR 0016)。
  *
- * 三个条件同时成立才算:所指代码已改动(它的指纹在本轮 head 上算不出)、本轮没有
- * 同一处 Finding 再被报出、Forge 上还没有人处置过它。
+ * 一条的最终结论由本轮全部 Reviewer 的结论合成:任一判仍在则仍在,否则全部判已修才
+ * 是已修,其余(含无法判断与漏给结论)都是无法判断。三档只有已修驱动自动处置——冲突
+ * 时仍在优先,沉默不是证据。
  *
- * 指纹仍算得出却没再报出的不动:那是模型的波动,不是代码的改动。只活在 review 正文
- * 里的不动:正文没有 resolve 载体,无从写回 Forge。
+ * 判据不含指纹:代码原样不动的修法(在上游加判空)同样算已修,代码改了而复核判仍在
+ * 的不算(ADR 0016 取代 0013)。跑失败的 Reviewer 不在这些结论里,它根本没复核。
  */
-function autoDisposeCandidates(
-  prior: ReadonlyMap<string, PriorDisposition>,
-  matched: ReadonlySet<string>,
-  worktreePath: string,
-): AutoDispositionCandidate[] {
-  // 一个文件只算一遍全文指纹:同一个文件里常有好几处 Finding。
-  const byFile = new Map<string, Set<string>>();
-  const candidates: AutoDispositionCandidate[] = [];
-
-  for (const [key, entry] of prior) {
-    if (matched.has(key)) continue;
-    if (entry.resolved) continue;
-    if (entry.commentId === undefined) continue;
-    const [file, fingerprint] = key.split("\n") as [string, string];
-    let fingerprints = byFile.get(file);
-    if (fingerprints === undefined) {
-      fingerprints = fileFingerprints(worktreePath, file);
-      byFile.set(file, fingerprints);
-    }
-    if (fingerprints.has(fingerprint)) continue;
-    candidates.push({ file, fingerprint, commentId: entry.commentId });
+function fixedFindingIds(verdicts: readonly VerdictRecord[]): number[] {
+  const allFixed = new Map<number, boolean>();
+  for (const record of verdicts) {
+    allFixed.set(
+      record.findingId,
+      (allFixed.get(record.findingId) ?? true) && record.verdict === "fixed",
+    );
   }
-
-  return candidates;
+  return [...allFixed].filter(([, fixed]) => fixed).map(([findingId]) => findingId);
 }
 
 /**
@@ -455,14 +438,9 @@ async function autoDispose(
   forge: Forge,
   event: PullRequestEvent,
   store: ReturnType<typeof openStore>,
-  candidates: readonly AutoDispositionCandidate[],
+  findingIds: readonly number[],
 ): Promise<void> {
-  const pending = store.pendingAutoDispositions(
-    event.owner,
-    event.repo,
-    event.number,
-    candidates,
-  );
+  const pending = store.pendingAutoDispositions(findingIds);
   for (const candidate of pending) {
     try {
       await forge.resolveComment({ owner: event.owner, repo: event.repo }, candidate.commentId);
@@ -488,7 +466,7 @@ async function autoDispose(
  *
  * 只对未处置的历史条目要结论——已处置的注入只是背景。漏给结论的按「无法判断」照样
  * 落一行并标 `missing`:沉默不是证据,而「这个模型压根没复核」得数得出来。失败的
- * Reviewer 不记:那不是漏复核,是它根本没跑。本票只记录,不裁决、不动任何处置。
+ * Reviewer 不记:那不是漏复核,是它根本没跑。这批记录同时是自动处置的裁决输入。
  */
 function verdictRecords(
   history: readonly HistoryFinding[],
@@ -685,8 +663,6 @@ export async function runReview(
     const groupFingerprints: (string | undefined)[] = [];
     // 折叠的那些记历史评论;本轮新发的要等发布之后才有 id,这里先留空。
     const groupComments: (PriorDisposition | undefined)[] = [];
-    // 本轮又被报出来的那些历史锚点。自动处置只认没落在这里面的(ADR 0013)。
-    const matchedKeys = new Set<string>();
 
     for (const [groupIndex, finding] of findings.entries()) {
       // 指纹在新 head commit 的工作副本下重算:代码没变则与上一轮的锚点相同。
@@ -695,13 +671,12 @@ export async function runReview(
       const match = priorMatch(prior, worktree.path, finding);
 
       if (match !== undefined) {
-        matchedKeys.add(match.key);
-        carried.push({ finding, resolved: match.entry.resolved });
-        dispositions.push(match.entry.resolved ? "resolved" : "unresolved");
+        carried.push({ finding, resolved: match.resolved });
+        dispositions.push(match.resolved ? "resolved" : "unresolved");
         // 折叠的这条沿用它历史上的载体:有行级评论即有 resolve 载体,进统计;只活在
         // 正文里的没有,排除(ADR 0006)。
-        placements.push(match.entry.fromInline ? "inline" : "body");
-        groupComments.push(match.entry);
+        placements.push(match.fromInline ? "inline" : "body");
+        groupComments.push(match);
         continue;
       }
 
@@ -721,11 +696,13 @@ export async function runReview(
       }
     }
 
-    // 「已修复」自动处置(判据仍是 ADR 0013),PR 触发与范围审查走的是同一段代码。全部
-    // Reviewer 都失败时不做:那种情况下「本轮没再报出」只说明什么都没跑,不是证据。
+    // 本轮的复核结论。裁决与落库用同一批记录,面板上看到的与自动处置依据的是同一件事。
+    const verdicts = verdictRecords(history, outcomes);
+
+    // 「已修复」自动处置(ADR 0016),PR 触发与范围审查走的是同一段代码。全部 Reviewer
+    // 都失败时不做:那一轮一条结论都没有,没有证据就不动。
     if (!failed) {
-      const candidates = autoDisposeCandidates(prior, matchedKeys, worktree.path);
-      await autoDispose(forge, event, store, candidates);
+      await autoDispose(forge, event, store, fixedFindingIds(verdicts));
     }
 
     const outcomeRecords: OutcomeRecord[] = timed.map(({ outcome, durationMs }) => ({
@@ -777,7 +754,7 @@ export async function runReview(
       failed,
       outcomes: outcomeRecords,
       findings: findingRecords,
-      verdicts: verdictRecords(history, outcomes),
+      verdicts,
     });
 
     // 有缺席或覆盖不全的模型时即便零 Finding 也要发:读者需要知道这次审查覆盖面

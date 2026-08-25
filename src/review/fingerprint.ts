@@ -24,9 +24,11 @@ export function contentFingerprint(
 /**
  * 一个文件此刻算得出的全部指纹。
  *
- * 「所指代码是不是已改动」的判据(ADR 0013):上一轮的指纹落在这个集合里,那处代码
- * 就还在,不论它被上下挪了多少行。按历史评论记的行号原地重算做不到这一点——作者在
- * 上面插几行,整个文件的 Finding 都会被误判成已改动,连带被自动处置掉。
+ * 「所指代码是不是已改写」的判据:上一轮的指纹落在这个集合里,那处代码就还在原样,
+ * 不论它被上下挪了多少行。按历史评论记的行号原地重算做不到这一点——作者在上面插
+ * 几行,整个文件的 Finding 都会被读成已改写。
+ *
+ * 自 ADR 0016 起它不再是自动处置的证据(那由复核结论决定),留给「已延续」的判据。
  */
 export function fileFingerprints(worktreePath: string, file: string): Set<string> {
   const fingerprints = new Set<string>();

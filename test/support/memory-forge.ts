@@ -18,6 +18,7 @@ import type {
   ReviewRange,
   Reviewer,
   ReviewerOutcome,
+  ReviewVerdict,
 } from "../../src/review/finding.ts";
 
 export type MemoryForge = {
@@ -200,5 +201,25 @@ export function scriptedReviewer(
         ...(extra?.usage === undefined ? {} : { usage: extra.usage }),
       };
     },
+  };
+}
+
+/**
+ * 对本轮注入的每条历史都回同一个复核结论的 Reviewer(ADR 0016)。历史 Finding 的 id
+ * 由注入决定,用例因此不必猜它在库里是第几行。
+ */
+export function verdictReviewer(
+  model: string,
+  verdict: ReviewVerdict,
+  findings: readonly ScriptedFinding[] = [],
+): ReturnType<typeof scriptedReviewer> {
+  const scripted = scriptedReviewer(model, findings);
+  return {
+    model,
+    calls: scripted.calls,
+    review: async (range, worktreePath, history) => ({
+      ...(await scripted.review(range, worktreePath, history)),
+      verdicts: history.map((entry) => ({ findingId: entry.id, verdict })),
+    }),
   };
 }

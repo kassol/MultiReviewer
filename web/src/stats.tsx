@@ -290,7 +290,7 @@ export function StatsPage() {
                         条已处置
                       </span>
                       <Bar pct={pct} />
-                      {/* 人工与自动分列(ADR 0013):resolve 衡量「人看过」的口径只对
+                      {/* 人工与自动分列(ADR 0016):resolve 衡量「人看过」的口径只对
                           人工那一列成立,合成一个数字会把两件事读成一件。 */}
                       <span className="text-xs text-text-muted">
                         人工 <span className="font-mono tabular-nums">{total.manual}</span>
