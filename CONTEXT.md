@@ -45,12 +45,24 @@ _Avoid_: agent、模型、worker
 _Avoid_: issue、问题、comment、告警
 
 **Finding Identity**:
-判断两条 Finding 是不是同一条的依据,中文叫「同一处 Finding」。同一个 pull request 里、同一个 Reviewer 指向同一处未改动代码的 Finding 是同一条,不论它在多少轮 Review Run 里被报出;代码改动后再次报出的是新的一条。
-_Avoid_: 去重、指纹、逻辑 Finding
+判断两条 Finding 是不是同一条的依据,中文叫「同一处 Finding」。同一个 pull request 里指向同一处未改动代码的 Finding 是同一条,不论由哪个或多少个 Reviewer 报出、在多少轮 Review Run 里被报出;同一轮内多个 Reviewer 报同一处合成一条,归属记全部报出它的 Reviewer。代码改动后经复核判定仍在的,由延续保持同一条;未经复核而在改动后的代码上再次报出的是新的一条。
+_Avoid_: 去重、指纹、逻辑 Finding、按模型各算一条
+
+**审查阶段**:
+处置与统计的单位。一个范围审查从发起到审查完成是一个审查阶段;一个 pull request 从打开到关闭也是一个审查阶段。阶段内所有轮次的 Finding 按 Finding Identity 汇总为阶段的当前状态,轮次只是它的历史。
+_Avoid_: 批次、轮次、Review Run
+
+**复核**:
+新一轮 Review Run 中 Reviewer 对本审查阶段每条未处置的历史 Finding 给出的结论,三选一:仍在、已修、无法判断。漏给结论按无法判断计。多个 Reviewer 结论冲突时仍在优先,全部已修才算已修。
+_Avoid_: 重新审查、验证、确认修复
 
 **Disposition**:
-对一条 Finding 的处置结论。载体是 Forge 上该条 review 评论的 resolve 状态,已 resolve 即已处置。人在面板或 Forge 上作出的是人工处置;新一轮 Review Run 发现一条 Finding 所指代码已改动且未再报出时自动 resolve,记为「已改动」,与人工处置分开统计。自动处置不覆盖人已作出的处置。它是判断审查质量的唯一信号来源。
-_Avoid_: 反馈、评分、标注
+对一条 Finding 的处置结论。载体是 Forge 上该条 review 评论的 resolve 状态,已 resolve 即已处置。人在面板或 Forge 上作出的是人工处置;新一轮 Review Run 中复核判定已修时自动 resolve,记为「已修复」,与人工处置分开统计。自动处置不覆盖人已作出的处置;人把「已修复」改回未处置后它就是人工处置。它是判断审查质量的唯一信号来源。
+_Avoid_: 反馈、评分、标注、已改动
+
+**已延续**:
+一条 Finding 经复核判定仍在、但所指代码已改动时,旧位置的评论所进入的状态:旧评论 resolve,新位置的评论承接同一条 Finding Identity。它只是位置的交接,不是处置,不计入处置率。
+_Avoid_: 已迁移、已转移、已处置
 
 **仓库注册表**:
 准入仓库的清单。主键是 Forge 的数值 repo id,改名与转移 owner 后凭 payload 里的 id 仍能匹配。只有注册表里的仓库的投递会被受理,未注册一律 401。

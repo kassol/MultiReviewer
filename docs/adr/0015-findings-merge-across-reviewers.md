@@ -1,0 +1,14 @@
+# Finding 跨 Reviewer 合并,统计以审查阶段为主维度
+
+ADR 0006 把 Finding Identity 定为 pull request + Reviewer + 文件 + 内容指纹,并把「按模型分列处置率、给多模型选型提供依据」当作面板存在的理由。线上使用(2026-08-25)把这个前提推翻了:多个模型经常报出同一处问题,按模型各算一条意味着 Forge 上同一行挂多条评论、人要逐条处置,而模型之间的处置率对比在这种样本下没有可读的意义——多模型审查的目的是审得全,不是给模型打分。因此 Finding Identity 去掉 Reviewer:同一 pull request 里指向同一处未改动代码的 Finding 就是同一条,同一轮内多个 Reviewer 报同一处合成一条评论(严重度取最高、分类取首报、正文按模型分段),归属记全部报出它的 Reviewer;历史 Finding 对所有 Reviewer 共享。处置率的主维度改为审查阶段(范围审查或 pull request)× category × 时间窗,模型只保留「参与条数」一列辅助。
+
+## Considered Options
+
+- **保留 Reviewer 在 Identity 里,只让模型看到彼此的历史。**评论仍按模型各一条,人处置的次数不减少,而共享历史后模型不再重复报出彼此的问题,按模型分列的数字反而更失真。
+- **合并评论但统计仍按模型。**一条 Finding 归属多个 Reviewer 时每个模型都计一次,分母被重复计入,比率不可解释。
+
+## Consequences
+
+- 本 ADR 取代 ADR 0006 中 Finding Identity 的键定义与「模型 × category」的统计维度;0006 的回填链路、分母口径(resolved + 已修复 + unresolved + 已关闭上的 unknown)、fallback 排除与时间窗归属继续有效。
+- Reviewer 的价值不再由处置率衡量。要判断某个模型该不该留在组合里,看的是它的参与条数与失败率,面板不再提供按模型的处置率比较。
+- 同一轮内的合并以文件 + 指纹为键,相邻两行报出的同一问题指纹不同、不合并,与跨轮折叠一个判据。
