@@ -57,6 +57,9 @@ async function registeredHarness(
       .status,
     201,
   );
+  // 注册后工作副本在后台备(issue #184)。等它跑完再开测:范围审查读的是这份已经在的
+  // 副本,而这一步自己也要读一次仓库,混进来会让「读了几次仓库」数不清。
+  await harness.worktreesPreparedAtLeast(1);
   return harness;
 }
 
@@ -439,6 +442,8 @@ test("范围审查只认得到自己仓库的 clone 地址,不依赖任何既有
       },
     }),
   });
+  // 注册后备工作副本也读一次仓库(issue #184),那一次已经跑完;从这里开始数发起自己的。
+  seen.length = 0;
 
   assert.equal(
     (

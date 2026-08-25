@@ -239,11 +239,17 @@ CREATE TABLE IF NOT EXISTS webhook_delivery (
 -- 仓库注册表。主键是 Forge 的数值 repo id:改名与转移 owner 后凭 payload 里的 id
 -- 仍能匹配,owner/repo 只是注册时的名字,不参与准入。reviewers 是模型覆盖
 -- (ReviewerSpec 的 JSON 数组),NULL 即跟随 global_setting 里的全局模型组合。
+-- worktree_* 三列是工作副本的准备状态(issue #184):state 取 preparing / ready /
+-- failed,升级前注册的那些行是 NULL,按 unknown 读;worktree_failure 只在 failed 时
+-- 有值,worktree_checked_at 是这个结果的时刻。
 CREATE TABLE IF NOT EXISTS repo (
   id INTEGER PRIMARY KEY,
   owner TEXT NOT NULL,
   repo TEXT NOT NULL,
   reviewers TEXT,
+  worktree_state TEXT,
+  worktree_failure TEXT,
+  worktree_checked_at TEXT,
   registered_at TEXT NOT NULL
 );
 
@@ -438,6 +444,9 @@ const ADD_COLUMNS = [
   "ALTER TABLE finding ADD COLUMN continued_from TEXT",
   "ALTER TABLE review_run ADD COLUMN title TEXT",
   "ALTER TABLE range_review ADD COLUMN title TEXT",
+  "ALTER TABLE repo ADD COLUMN worktree_state TEXT",
+  "ALTER TABLE repo ADD COLUMN worktree_failure TEXT",
+  "ALTER TABLE repo ADD COLUMN worktree_checked_at TEXT",
 ];
 
 /**
@@ -944,6 +953,25 @@ export type RepoRecord = {
   reviewersJson: string | null;
 };
 
+/**
+ * 工作副本的准备状态(issue #184)。`unknown` 是升级前注册的仓库与从没备过副本的那些
+ * 行:副本可能在也可能不在,面板据此提供准备入口。
+ */
+export type WorktreeState = "unknown" | "preparing" | "ready" | "failed";
+
+/** 工作副本的准备结果。`failure` 只在 `failed` 时有值,`checkedAt` 是这个结果的时刻。 */
+export type WorktreeStatus = {
+  state: WorktreeState;
+  failure: string | null;
+  checkedAt: string | null;
+};
+
+/** 升级前的 NULL 与任何认不出来的值都按 unknown 读:副本在不在都要人能重新准备。 */
+function worktreeState(value: unknown): WorktreeState {
+  const text = value === null || value === undefined ? "" : String(value);
+  return text === "preparing" || text === "ready" || text === "failed" ? text : "unknown";
+}
+
 /** 仓库列表行:注册信息加累计量。 */
 export type RepoSummary = {
   repoId: number;
@@ -957,6 +985,8 @@ export type RepoSummary = {
   findingCount: number;
   /** 最近一次 Review Run 的开始时间,没跑过为 null。 */
   lastActivity: string | null;
+  /** 工作副本的准备状态(issue #184)。 */
+  worktree: WorktreeStatus;
 };
 
 export type RecordedCostSource = "trusted" | "unknown" | "legacy" | "mixed";
@@ -1331,6 +1361,13 @@ export type Store = {
   setRepoReviewers(repoId: number, reviewersJson: string | null): boolean;
   /** 摘掉注册表行与它的 Key。评审记录一行不动:模型选型的历史不因下线而断。 */
   removeRepo(repoId: number): void;
+  /** 记下工作副本的准备状态(issue #184)。仓库已被移除时没有行可写,静默通过。 */
+  setRepoWorktree(repoId: number, status: WorktreeStatus): void;
+  /**
+   * 把停在「准备中」的行改判失败(issue #184)。进程重启会中断后台的准备,那些行没有
+   * 谁再去改它,面板会一直显示准备中而且给不出重试入口。
+   */
+  failInterruptedWorktrees(failure: string, at: string): void;
   /** 全部已注册仓库,按最近活动排序,没跑过的按注册时间排在后面。 */
   listRepos(): RepoSummary[];
   /** 审查策略。历史值和未写过的项都从版本 1 开始。 */
@@ -2630,6 +2667,22 @@ export function openStore(dbPath: string): Store {
       }
     },
 
+    setRepoWorktree(repoId, status) {
+      db.prepare(
+        `UPDATE repo
+            SET worktree_state = ?, worktree_failure = ?, worktree_checked_at = ?
+          WHERE id = ?`,
+      ).run(status.state, status.failure, status.checkedAt, repoId);
+    },
+
+    failInterruptedWorktrees(failure, at) {
+      db.prepare(
+        `UPDATE repo
+            SET worktree_state = 'failed', worktree_failure = ?, worktree_checked_at = ?
+          WHERE worktree_state = 'preparing'`,
+      ).run(failure, at);
+    },
+
     listRepos() {
       // 评审记录按注册时的 owner/repo 匹配。仓库在 Forge 上改名后新记录用新名字,
       // 旧名字的记录不再计入——注册表的名字由后续的注册流程更新,这里不猜。
@@ -2637,6 +2690,7 @@ export function openStore(dbPath: string): Store {
       const rows = db
         .prepare(
           `SELECT r.id, r.owner, r.repo, r.reviewers,
+                  r.worktree_state, r.worktree_failure, r.worktree_checked_at,
                   (SELECT COUNT(*) FROM review_run run
                     WHERE run.owner = r.owner AND run.repo = r.repo) AS run_count,
                   (SELECT COUNT(*) FROM finding f JOIN review_run run ON f.run_id = run.id
@@ -2655,6 +2709,12 @@ export function openStore(dbPath: string): Store {
         runCount: Number(row["run_count"]),
         findingCount: Number(row["finding_count"]),
         lastActivity: row["last_activity"] === null ? null : String(row["last_activity"]),
+        worktree: {
+          state: worktreeState(row["worktree_state"]),
+          failure: row["worktree_failure"] === null ? null : String(row["worktree_failure"]),
+          checkedAt:
+            row["worktree_checked_at"] === null ? null : String(row["worktree_checked_at"]),
+        },
       }));
     },
 

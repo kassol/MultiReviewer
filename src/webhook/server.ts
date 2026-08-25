@@ -49,12 +49,14 @@ import {
   encryptCredential,
 } from "../panel/credential-crypto.ts";
 import {
+  ensureWorktree,
   listBranchCommits,
   listBranches,
   prepareRangeDiff,
   pushBranch,
   readRangeDiffFiles,
   readRangeFileDiff,
+  removeWorktree,
   resolveRange,
   type BranchCommits,
   type PreparedRange,
@@ -190,6 +192,11 @@ export type WebhookServerDeps = {
   now?: () => number;
   /** 目录失败的真 HTTP 测试缝；生产默认走真实 Pi 目录加载。 */
   discoverModelServiceModels?: typeof discoverModels;
+  /**
+   * 后台准备工作副本(issue #184)结束时回调,`failure` 有值即这一次没备成。不传则把
+   * 失败写进 stderr,成功不出声。
+   */
+  onWorktreePrepared?: (repoId: number, failure?: string) => void;
 };
 
 /** 两个平台标识 pull request 事件的头值相同。 */
@@ -1555,6 +1562,12 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     access: "repo:write",
     handler: ({ res, deps, hookManager }, match) =>
       handleRemove(res, deps, hookManager, Number(match![1])),
+  },
+  {
+    method: "POST",
+    pattern: /^\/repos\/(\d+)\/worktree$/,
+    access: "repo:write",
+    handler: ({ res, deps }, match) => handlePrepareWorktree(res, deps, Number(match![1])),
   },
   {
     method: "PUT",
@@ -5272,6 +5285,111 @@ async function handleRepoSearch(
   });
 }
 
+/**
+ * 正在后台准备的工作副本,按缓存目录与仓库名做键(issue #184)。
+ *
+ * 两用:重试入口据此告诉人「正在准备中」,移除据此等这一次跑完再删目录——边删边 clone
+ * 会让删除撞上刚写出来的文件。键取的就是它们争的那个目录。
+ */
+const preparingWorktrees = new Map<string, Promise<void>>();
+
+function worktreeKey(cacheDir: string, ref: RepoRef): string {
+  return `${cacheDir}\u0000${ref.owner}\u0000${ref.repo}`;
+}
+
+/**
+ * 后台把仓库的工作副本备好(issue #184)。clone 一个大仓库是分钟级的事,注册请求不等
+ * 它;备好之后的 Review Run、diff、分支列表与提交列表都落在这份副本上,只 fetch。
+ *
+ * 准备中途仓库被移除时注册表那一行已经不在,落库改不动任何行——移除会等这一次跑完再
+ * 删目录,副本不会留成孤儿。
+ */
+async function prepareWorktreeInBackground(
+  deps: WebhookServerDeps,
+  repoId: number,
+  ref: RepoRef,
+): Promise<void> {
+  let failure: string | undefined;
+  try {
+    const forge = deps.forges.gitea;
+    if (forge === undefined) throw new Error("gitea 没有配置 Forge,取不回代码");
+    const [repository, credentials] = await Promise.all([
+      forge.getRepository(ref),
+      forge.cloneCredentials(ref),
+    ]);
+    await ensureWorktree({
+      cacheDir: deps.cacheDir,
+      ref,
+      cloneUrl: repository.cloneUrl,
+      credentials,
+    });
+  } catch (error) {
+    failure = failureText(error);
+  }
+
+  try {
+    withStore(deps.dbPath, (store) =>
+      store.setRepoWorktree(repoId, {
+        state: failure === undefined ? "ready" : "failed",
+        failure: failure ?? null,
+        checkedAt: new Date((deps.now ?? Date.now)()).toISOString(),
+      }),
+    );
+  } catch (error) {
+    // 状态写不进去只影响面板显示,副本备成没备成已成事实。这是个后台任务,把未处理的
+    // 拒绝抛出去会带走整个进程。
+    console.error(`工作副本状态落库失败:${ref.owner}/${ref.repo}:${failureText(error)}`);
+  }
+
+  if (deps.onWorktreePrepared !== undefined) {
+    deps.onWorktreePrepared(repoId, failure);
+  } else if (failure !== undefined) {
+    console.error(`工作副本准备失败:${ref.owner}/${ref.repo}:${failure}`);
+  }
+}
+
+/**
+ * 把一次工作副本准备排进后台并当场把状态记成准备中。同一个副本目录已经在准备时返回
+ * false,调用方据此告诉人「正在准备中」。
+ */
+function startWorktreePreparation(
+  deps: WebhookServerDeps,
+  repoId: number,
+  ref: RepoRef,
+): boolean {
+  const key = worktreeKey(deps.cacheDir, ref);
+  if (preparingWorktrees.has(key)) return false;
+  withStore(deps.dbPath, (store) =>
+    store.setRepoWorktree(repoId, { state: "preparing", failure: null, checkedAt: null }),
+  );
+  const running = prepareWorktreeInBackground(deps, repoId, ref).finally(() => {
+    preparingWorktrees.delete(key);
+  });
+  preparingWorktrees.set(key, running);
+  return true;
+}
+
+/**
+ * 重新准备工作副本(issue #184)。第一次没备成、或缓存目录被清掉之后,人在仓库页点它;
+ * 权限与注册、移除同一格(`repo:write`)。
+ */
+function handlePrepareWorktree(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+): void {
+  const record = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+  if (record === undefined) {
+    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+  }
+  const started = startWorktreePreparation(deps, repoId, {
+    owner: record.owner,
+    repo: record.repo,
+  });
+  if (!started) return sendJson(res, 409, { error: "工作副本正在准备中,等它跑完再试" });
+  return sendJson(res, 202, { state: "preparing" });
+}
+
 async function handleRegister(
   req: IncomingMessage,
   res: ServerResponse,
@@ -5361,6 +5479,9 @@ async function handleRegister(
       error: `Gitea 建 hook 失败:${error instanceof Error ? error.message : String(error)}`,
     });
   }
+  // 注册到此为止就成了,工作副本在后台备(issue #184):clone 与它的失败都不该让人在
+  // 接入仓库这一步等着。状态落库,仓库页显示准备中 / 就绪 / 失败并给得出重试入口。
+  startWorktreePreparation(deps, repoId, ref);
   return sendJson(res, 201, { repoId, owner: ref.owner, repo: ref.repo, generation });
 }
 
@@ -5404,6 +5525,14 @@ async function handleRemove(
 
   // 评审记录一行不动:模型选型的历史不因仓库下线而断(移除后的投递按未注册 401)。
   withStore(deps.dbPath, (store) => store.removeRepo(repoId));
+
+  // 工作副本随注册一起走(issue #184)。仓库改过名时两个名字下各可能有一份,现名与
+  // 注册时的名字各删一次;已经不在的那一份删起来是空操作。后台还在备副本时先等它
+  // 跑完:边删边 clone 会让删除撞上刚写出来的文件。
+  for (const target of [ref, { owner: record.owner, repo: record.repo }]) {
+    await preparingWorktrees.get(worktreeKey(deps.cacheDir, target));
+    await removeWorktree(deps.cacheDir, target);
+  }
   return send(res, 204);
 }
 
@@ -5697,6 +5826,14 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
   const clearBootstrap = (): void => {
     bootstrap = undefined;
   };
+  // 进程重启会中断后台的工作副本准备(issue #184),那些行没有谁再去改它。启动时改判
+  // 失败,面板因此显示得出结果、也给得出重试入口。
+  withStore(deps.dbPath, (store) =>
+    store.failInterruptedWorktrees(
+      "服务重启,上一次准备没跑完",
+      new Date((deps.now ?? Date.now)()).toISOString(),
+    ),
+  );
   const hookManager =
     deps.gitea === undefined ? undefined : createGiteaHookManager(deps.gitea);
   const apiPrefix = `/${deps.panelPrefix}/api`;

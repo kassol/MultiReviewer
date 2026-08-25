@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
@@ -67,8 +67,17 @@ export type Worktree = {
   mergeBaseSha: string;
 };
 
+/**
+ * 每个副本目录上排在最后的那一次准备(issue #184)。
+ *
+ * 两次并发的准备打到同一个目录会互相踩:后一次的 clone 看到目录已被前一次占着,当场
+ * 失败。注册后的后台准备与紧接着到来的一次投递正是这个局面,而两者都要的只是「这个
+ * 目录里有一份能解析到目标 commit 的副本」。
+ */
+const preparingClones = new Map<string, Promise<void>>();
+
 /** 首次 clone,之后增量 fetch。缓存目录里因此总有一份能解析到目标 commit 的副本。 */
-async function ensureClone(
+async function cloneOrFetch(
   path: string,
   cloneUrl: string,
   auth: readonly string[],
@@ -80,6 +89,26 @@ async function ensureClone(
 
   // clone 不会带上 pull ref,首次也要 fetch 一次。
   await git(path, [...auth, "fetch", "--prune", "--quiet", "origin", ...FETCH_REFSPECS]);
+}
+
+/**
+ * 备好副本,同一个目录上一次只跑一个。排队而不是跟着前一次的结果走:前一次失败不代表
+ * 这一次也会失败,而它成功之后这一次的 fetch 只是一次快的空转。
+ */
+async function ensureClone(
+  path: string,
+  cloneUrl: string,
+  auth: readonly string[],
+): Promise<void> {
+  const previous = preparingClones.get(path) ?? Promise.resolve();
+  const mine = previous.catch(() => {}).then(() => cloneOrFetch(path, cloneUrl, auth));
+  preparingClones.set(path, mine);
+  try {
+    await mine;
+  } finally {
+    // 后面已经排上新的一次时留着它,那才是「最后一次」。
+    if (preparingClones.get(path) === mine) preparingClones.delete(path);
+  }
 }
 
 /**
@@ -252,6 +281,25 @@ export async function listBranches(options: RepoReadOptions): Promise<string[]> 
   return output
     .split("\n")
     .filter((name) => name !== "" && name !== "HEAD" && !name.startsWith("pull/"));
+}
+
+/**
+ * 备好仓库的工作副本:不在就 clone,已在只 fetch(issue #184)。
+ *
+ * 仓库注册之后由后台任务调它,之后的 Review Run、diff、分支列表与提交列表都落在这份
+ * 已经存在的副本上,人不再为一次 clone 等待。
+ */
+export async function ensureWorktree(options: RepoReadOptions): Promise<void> {
+  await ensureClone(
+    repoCachePath(options.cacheDir, options.ref),
+    options.cloneUrl,
+    authArgs(options.cloneUrl, options.credentials),
+  );
+}
+
+/** 删掉仓库的工作副本(issue #184)。已经不在即当作已删:两者是同一个终态。 */
+export async function removeWorktree(cacheDir: string, ref: RepoRef): Promise<void> {
+  await rm(repoCachePath(cacheDir, ref), { recursive: true, force: true });
 }
 
 /** commit 选择器里的一行。短 sha 取前 7 位,与容器 PR 标题、面板各处的写法一致。 */

@@ -53,6 +53,17 @@ type RepoRow = {
   runCount: number;
   findingCount: number;
   lastActivity: string | null;
+  worktree: WorktreeStatus;
+};
+
+/**
+ * 工作副本的准备状态(issue #184)。`unknown` 是升级前注册的仓库与从没备过副本的那些
+ * 行:副本可能在也可能不在,和失败一样给出准备入口。
+ */
+type WorktreeStatus = {
+  state: "unknown" | "preparing" | "ready" | "failed";
+  failure: string | null;
+  checkedAt: string | null;
 };
 
 type HookCheck = {
@@ -153,6 +164,11 @@ export function ReposPage({
   const repos = useQuery({
     queryKey: ["repos"],
     queryFn: () => fetchJson<RepoRow[]>("/repos"),
+    // 还有仓库的工作副本在后台备(issue #184)就每 5 秒续查,全部有结果即停。
+    refetchInterval: (query) =>
+      (query.state.data ?? []).some((row) => row.worktree.state === "preparing")
+        ? 5_000
+        : false,
   });
   // 审查策略在库里,「跟随全局」跟的就是它的 reviewers。
   const settings = useQuery({
@@ -404,6 +420,19 @@ function RepoDetail({
     onError: (error: Error) => setFeedback({ text: error.message, isError: true }),
   });
 
+  // 备工作副本(issue #184)。注册时后台已经备过一次,这里是失败或从没备过时的入口。
+  const prepareWorktree = useMutation({
+    mutationFn: async () => {
+      const response = await api(`/repos/${repo.repoId}/worktree`, { method: "POST" });
+      if (!response.ok) throw new Error(await errorText(response));
+    },
+    onSuccess: () => {
+      setFeedback({ text: "工作副本正在后台准备,备好后这里会显示就绪。", isError: false });
+      refresh();
+    },
+    onError: (error: Error) => setFeedback({ text: error.message, isError: true }),
+  });
+
   // 「跟随全局」是一个动作:直接把覆盖清掉,不再进编辑框走一遍保存。
   const followGlobal = useMutation({
     mutationFn: async () => {
@@ -449,6 +478,24 @@ function RepoDetail({
           ) : (
             <StatusBadge tone="warning">
               {issues.length} 处差异
+            </StatusBadge>
+          )}
+          {/* 工作副本的状态(issue #184)。就绪即之后的审查与 diff 都不必等 clone。 */}
+          {repo.worktree.state === "preparing" ? (
+            <StatusBadge tone="neutral" icon={UpdateIcon}>
+              工作副本准备中…
+            </StatusBadge>
+          ) : repo.worktree.state === "ready" ? (
+            <StatusBadge tone="success">
+              工作副本就绪
+            </StatusBadge>
+          ) : repo.worktree.state === "failed" ? (
+            <StatusBadge tone="error">
+              工作副本准备失败
+            </StatusBadge>
+          ) : (
+            <StatusBadge tone="warning">
+              工作副本未准备
             </StatusBadge>
           )}
           {canWrite ? (
@@ -499,6 +546,33 @@ function RepoDetail({
         <Callout.Root role="alert" color="red" size="1">
           <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
           <Callout.Text>{(check.error as Error).message}</Callout.Text>
+        </Callout.Root>
+      ) : null}
+
+      {/* 副本没备好时说清楚原因,并给出准备入口:权限与注册、移除同一格。 */}
+      {repo.worktree.state === "failed" || repo.worktree.state === "unknown" ? (
+        <Callout.Root color="amber" size="2">
+          <Callout.Icon>
+            <ExclamationTriangleIcon aria-hidden />
+          </Callout.Icon>
+          <Callout.Text>
+            {repo.worktree.failure
+              ?? "这个仓库还没备过工作副本。备好之后,审查、diff 与分支列表都不必再等一次 clone。"}
+            {repo.worktree.checkedAt === null
+              ? null
+              : `(${localMinute(repo.worktree.checkedAt)})`}
+          </Callout.Text>
+          {canWrite ? (
+            <Button
+              variant="solid"
+              size={{ initial: "4", sm: "2" }}
+              className="self-start shadow-accent"
+              disabled={prepareWorktree.isPending}
+              onClick={() => prepareWorktree.mutate()}
+            >
+              {prepareWorktree.isPending ? "准备中…" : "准备工作副本"}
+            </Button>
+          ) : null}
         </Callout.Root>
       ) : null}
 
