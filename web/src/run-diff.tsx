@@ -12,9 +12,10 @@ import { Badge, Callout, IconButton, Select, Skeleton, TextField, Tooltip } from
 
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/theme-button";
+import { localClock, localDay } from "@/lib/time";
 
 import { api, errorText, fetchJson } from "./api.ts";
-import { localClock, localDay, type RunFinding, type RunItem } from "./runs.tsx";
+import { type RunFinding, type RunItem } from "./runs.tsx";
 
 /** 一个文件在 Review Range 内的改动概览。二进制文件的增删行数是 0 并单独标出。 */
 export type DiffFile = {
@@ -50,7 +51,7 @@ const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
  * 自己解析而不引第三方:要的只是「每一行属于哪一侧、行号是多少」,这正是 hunk 头里
  * 那两个数字加逐行前缀的直接结果,而 Finding 锚定要的也只有新侧行号。
  */
-export function parseUnifiedDiff(patch: string): DiffHunk[] {
+function parseUnifiedDiff(patch: string): DiffHunk[] {
   const hunks: DiffHunk[] = [];
   let current: DiffHunk | undefined;
   let oldLine = 0;
@@ -119,7 +120,7 @@ function findingDisposed(finding: RunFinding): boolean {
  * 处置成功后让轮次那几份查询失效,进度条与列表跟着一起变——处置进度是同一批 finding
  * 行算出来的,只改本地状态会让两个数字对不上。
  */
-export function FindingRow({
+function FindingRow({
   finding,
   canDispose,
 }: {

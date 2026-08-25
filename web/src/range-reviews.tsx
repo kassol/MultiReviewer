@@ -10,12 +10,15 @@ import {
 } from "@radix-ui/react-icons";
 import { AlertDialog, Callout, Dialog, Flex, IconButton, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
 
+import { CommitChip } from "@/components/commit-chip";
+import { DetailPanel } from "@/components/detail-panel";
 import { EmptyState } from "@/components/empty-state";
 import { MasterListItem } from "@/components/master-list-item";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
+import { localMinute } from "@/lib/time";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { disposedCount, runStatus, type RunItem } from "./runs.tsx";
@@ -55,24 +58,6 @@ const STATE_LABEL: Record<RangeReview["state"], { tone: StatusTone; label: strin
   completed: { tone: "success", label: "审查完成" },
   failed: { tone: "error", label: "发起失败" },
 };
-
-function localMinute(iso: string): string {
-  const date = new Date(iso);
-  const pad = (value: number): string => String(value).padStart(2, "0");
-  return (
-    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-    `${pad(date.getHours())}:${pad(date.getMinutes())}`
-  );
-}
-
-/** commit hash 的统一表面,与评审记录页同一份写法。 */
-function CommitChip({ sha }: { sha: string }) {
-  return (
-    <code className="rounded-chip bg-accent-tint-strong px-[5px] font-mono text-xs font-normal text-primary">
-      {sha.slice(0, 7)}
-    </code>
-  );
-}
 
 const RANGE_REVIEWS_QUERY_KEY = ["range-reviews"] as const;
 
@@ -297,104 +282,24 @@ function RangeReviewDetailPanel({
   const canComplete = canDispose && rangeReview.state === "in-progress";
 
   return (
-    <Dialog.Root open onOpenChange={(next) => { if (!next) onClose(); }}>
-      <Dialog.Content
-        aria-describedby={undefined}
-        className="!fixed !top-auto !right-0 !bottom-0 !left-0 !m-0 !flex !h-[86dvh] !w-full !max-w-none !flex-col !overflow-hidden !rounded-3xl !rounded-b-none !border-0 !bg-[color:var(--v8-drawer-bg)] !p-0 !shadow-overlay backdrop-blur-[40px] md:!top-3.5 md:!right-3.5 md:!bottom-3.5 md:!left-auto md:!h-auto md:!w-[464px] md:!max-w-[calc(100vw-28px)] md:!rounded-b-3xl"
-      >
-        <header className="flex shrink-0 flex-col gap-3 border-b border-overlay-line px-6 pt-5 pb-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex min-w-0 flex-col gap-1">
-              <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
-              <Dialog.Title className="!mb-0 min-w-0 !text-3xl !font-extrabold !tracking-[-0.02em] break-all">
-                {rangeReview.owner}/{rangeReview.repo}
-              </Dialog.Title>
-              <div className="flex flex-wrap items-center gap-1.5 text-base text-text-muted">
-                <span className="break-all">{rangeReview.createdBy}</span>
-                <span aria-hidden>·</span>
-                <span className="tabular-nums">{localMinute(rangeReview.createdAt)}</span>
-              </div>
-            </div>
-            <Dialog.Close>
-              <IconButton size="1" variant="soft" color="gray" radius="full" aria-label="关闭详情">
-                <Cross2Icon />
-              </IconButton>
-            </Dialog.Close>
+    <DetailPanel
+      width="narrow"
+      onClose={onClose}
+      header={
+        <>
+          <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
+          <Dialog.Title className="!mb-0 min-w-0 !text-3xl !font-extrabold !tracking-[-0.02em] break-all">
+            {rangeReview.owner}/{rangeReview.repo}
+          </Dialog.Title>
+          <div className="flex flex-wrap items-center gap-1.5 text-base text-text-muted">
+            <span className="break-all">{rangeReview.createdBy}</span>
+            <span aria-hidden>·</span>
+            <span className="tabular-nums">{localMinute(rangeReview.createdAt)}</span>
           </div>
-        </header>
-
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-4">
-          <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2 text-base">
-            <dt className="text-text-secondary">base</dt>
-            <dd className="min-w-0 break-all font-mono text-base">{rangeReview.baseSha}</dd>
-            <dt className="text-text-secondary">当前比较项</dt>
-            <dd className="min-w-0 break-all font-mono text-base">{rangeReview.comparisonSha}</dd>
-            {rangeReview.completedAt === null ? null : (
-              <>
-                <dt className="text-text-secondary">审查完成</dt>
-                <dd className="flex min-w-0 flex-wrap items-center gap-x-1.5">
-                  <span className="break-all">{rangeReview.completedBy}</span>
-                  <span aria-hidden>·</span>
-                  <span className="tabular-nums">{localMinute(rangeReview.completedAt)}</span>
-                </dd>
-              </>
-            )}
-          </dl>
-
-          {rangeReview.lastForgeFailure === null ? null : (
-            <Callout.Root role="alert" color="red" size="1">
-              <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-              <Callout.Text>{rangeReview.lastForgeFailure}</Callout.Text>
-            </Callout.Root>
-          )}
-
-          <h3 className="pt-1 text-2xl font-semibold">
-            比较项
-            <span className="ml-1.5 font-mono tabular-nums text-text-muted">
-              {comparisons.length}
-            </span>
-          </h3>
-          {detail.isPending ? (
-            <Skeleton aria-hidden className="h-14" />
-          ) : (
-            comparisons.map((comparison) => (
-              <section key={comparison.id} className="flex flex-col gap-1.5">
-                <div className="flex flex-wrap items-center gap-x-1.5 text-base text-text-muted">
-                  <CommitChip sha={comparison.sha} />
-                  <span className="break-all">{comparison.recordedBy}</span>
-                  <span aria-hidden>·</span>
-                  <span className="tabular-nums">{localMinute(comparison.recordedAt)}</span>
-                </div>
-                {/* 一个比较项对应它被推上去之后跑的那些轮次,按 head 认。 */}
-                {runs
-                  .filter((run) => run.headSha === comparison.sha)
-                  .map((run) => {
-                    const conclusion = runStatus(run);
-                    return (
-                      <div
-                        key={run.id}
-                        className="flex items-center justify-between gap-3 rounded-lg border border-overlay-line bg-surface px-4 py-2.5 shadow-control"
-                      >
-                        <span className="flex min-w-0 flex-col gap-px">
-                          <span className="text-base text-text-muted tabular-nums">
-                            {localMinute(run.startedAt)}
-                          </span>
-                          <span className="text-sm text-text-muted tabular-nums">
-                            {run.total === 0
-                              ? "无可处置项"
-                              : `${disposedCount(run)}/${run.total} 已处置`}
-                          </span>
-                        </span>
-                        <StatusBadge tone={conclusion.tone}>{conclusion.label}</StatusBadge>
-                      </div>
-                    );
-                  })}
-              </section>
-            ))
-          )}
-        </div>
-
-        {containerUrl === null && !canAdvance && !canComplete ? null : (
+        </>
+      }
+      footer={
+        containerUrl === null && !canAdvance && !canComplete ? null : (
           <footer className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-overlay-line px-6 py-3.5">
             {/* 处置在评审记录的详情面板行内做,这一格留给这个阶段自己的三个动作。 */}
             {canComplete ? (
@@ -426,9 +331,78 @@ function RangeReviewDetailPanel({
               </Dialog.Root>
             ) : null}
           </footer>
+        )
+      }
+    >
+      <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2 text-base">
+        <dt className="text-text-secondary">base</dt>
+        <dd className="min-w-0 break-all font-mono text-base">{rangeReview.baseSha}</dd>
+        <dt className="text-text-secondary">当前比较项</dt>
+        <dd className="min-w-0 break-all font-mono text-base">{rangeReview.comparisonSha}</dd>
+        {rangeReview.completedAt === null ? null : (
+          <>
+            <dt className="text-text-secondary">审查完成</dt>
+            <dd className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+              <span className="break-all">{rangeReview.completedBy}</span>
+              <span aria-hidden>·</span>
+              <span className="tabular-nums">{localMinute(rangeReview.completedAt)}</span>
+            </dd>
+          </>
         )}
-      </Dialog.Content>
-    </Dialog.Root>
+      </dl>
+
+      {rangeReview.lastForgeFailure === null ? null : (
+        <Callout.Root role="alert" color="red" size="1">
+          <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+          <Callout.Text>{rangeReview.lastForgeFailure}</Callout.Text>
+        </Callout.Root>
+      )}
+
+      <h3 className="pt-1 text-2xl font-semibold">
+        比较项
+        <span className="ml-1.5 font-mono tabular-nums text-text-muted">
+          {comparisons.length}
+        </span>
+      </h3>
+      {detail.isPending ? (
+        <Skeleton aria-hidden className="h-14" />
+      ) : (
+        comparisons.map((comparison) => (
+          <section key={comparison.id} className="flex flex-col gap-1.5">
+            <div className="flex flex-wrap items-center gap-x-1.5 text-base text-text-muted">
+              <CommitChip sha={comparison.sha} />
+              <span className="break-all">{comparison.recordedBy}</span>
+              <span aria-hidden>·</span>
+              <span className="tabular-nums">{localMinute(comparison.recordedAt)}</span>
+            </div>
+            {/* 一个比较项对应它被推上去之后跑的那些轮次,按 head 认。 */}
+            {runs
+              .filter((run) => run.headSha === comparison.sha)
+              .map((run) => {
+                const conclusion = runStatus(run);
+                return (
+                  <div
+                    key={run.id}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-overlay-line bg-surface px-4 py-2.5 shadow-control"
+                  >
+                    <span className="flex min-w-0 flex-col gap-px">
+                      <span className="text-base text-text-muted tabular-nums">
+                        {localMinute(run.startedAt)}
+                      </span>
+                      <span className="text-sm text-text-muted tabular-nums">
+                        {run.total === 0
+                          ? "无可处置项"
+                          : `${disposedCount(run)}/${run.total} 已处置`}
+                      </span>
+                    </span>
+                    <StatusBadge tone={conclusion.tone}>{conclusion.label}</StatusBadge>
+                  </div>
+                );
+              })}
+          </section>
+        ))
+      )}
+    </DetailPanel>
   );
 }
 

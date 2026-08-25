@@ -10,6 +10,7 @@ import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { useDialogReturnFocus } from "@/components/use-dialog-return-focus";
+import { localMinute } from "@/lib/time";
 import { api, errorText, fetchJson } from "./api.ts";
 import {
   PANEL_PERMISSIONS,
@@ -56,12 +57,6 @@ const PERMISSION_INFO: readonly PermissionInfo[] = [
 ];
 
 const RESOURCES = ["仓库", "评审", "模型", "凭据"] as const;
-
-function localMinute(iso: string): string {
-  const date = new Date(iso);
-  const pad = (value: number): string => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
 
 async function responseJson<T>(response: Response): Promise<T> {
   if (!response.ok) throw new Error(await errorText(response));

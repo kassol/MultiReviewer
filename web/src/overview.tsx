@@ -4,6 +4,7 @@ import { ChevronRightIcon, CrossCircledIcon } from "@radix-ui/react-icons";
 import { Callout, Progress, Skeleton } from "@radix-ui/themes";
 import { useMemo, type ReactNode } from "react";
 
+import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
@@ -578,9 +579,7 @@ function RunRow({
           {run.owner}/{run.repo} <span className="font-normal text-text-muted">#{run.pullNumber}</span>
         </span>
         <span className="truncate text-base text-text-muted">
-          <span className="rounded-chip bg-accent-tint-strong px-[5px] font-mono text-xs text-primary">
-            {run.headSha.slice(0, 7)}
-          </span>
+          <CommitChip sha={run.headSha} />
           {` · ${run.triggeredBy === null ? "自动" : "手动"} · ${time}`}
           {/* 窄屏没有右侧的计数列,处置进度并进这一行。 */}
           <span className="sm:hidden">

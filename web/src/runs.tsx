@@ -4,19 +4,21 @@ import { Fragment, useEffect, useRef, useState } from "react";
 
 import {
   CheckCircledIcon,
-  Cross2Icon,
   CrossCircledIcon,
   ExclamationTriangleIcon,
   ExternalLinkIcon,
 } from "@radix-ui/react-icons";
-import { Badge, Callout, Dialog, IconButton, SegmentedControl, Skeleton, Tooltip } from "@radix-ui/themes";
+import { Badge, Callout, Dialog, SegmentedControl, Skeleton, Tooltip } from "@radix-ui/themes";
 
+import { CommitChip } from "@/components/commit-chip";
+import { DetailPanel } from "@/components/detail-panel";
 import { EmptyState } from "@/components/empty-state";
 import { MasterListItem } from "@/components/master-list-item";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
+import { localClock, localDay } from "@/lib/time";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { RunDiff } from "./run-diff.tsx";
@@ -204,17 +206,6 @@ function rowBadge(run: RunItem) {
   return run.failed ? <StatusBadge tone="error">失败</StatusBadge> : runBadge(run);
 }
 
-// 分天与时分按浏览器本地时区:UTC 日在东八区会把 16:00 后的 run 归到前一天。
-export function localDay(iso: string): string {
-  const date = new Date(iso);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-}
-
-export function localClock(iso: string): string {
-  const date = new Date(iso);
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-}
-
 function triggerLabel(run: RunItem): string {
   return run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`;
 }
@@ -239,15 +230,6 @@ function runDuration(run: RunItem): string | null {
   if (!Number.isFinite(seconds) || seconds < 0) return null;
   const minutes = Math.floor(seconds / 60);
   return minutes > 0 ? `${minutes}m${seconds % 60}s` : `${seconds}s`;
-}
-
-/** commit hash 的统一表面:等宽 + 蓝 tint,列表副标题与详情面板头共用。 */
-function CommitChip({ sha }: { sha: string }) {
-  return (
-    <code className="rounded-chip bg-accent-tint-strong px-[5px] font-mono text-xs font-normal text-primary">
-      {sha.slice(0, 7)}
-    </code>
-  );
 }
 
 /**
@@ -278,14 +260,11 @@ function RunModelChips({ run }: { run: RunItem }) {
 }
 
 /**
- * 运行详情浮动面板。设计稿把它放在四边留白 14px 的位置上而不是贴边全高:面板浮在
- * 列表上,列表仍然露出来,「我是从哪一行点进来的」这个上下文不丢。
+ * 运行详情面板。外壳(定位、材质、头尾结构与关闭)走共用的 `DetailPanel`,这里只组装
+ * 这一轮的头部、正文与动作条。
  *
- * 窄屏改成底部抽屉(不是全屏):列表的上半屏保持可见,关闭与「重新运行」都落在拇指
- * 能够到的下缘;全屏会让人以为自己跳了一页,退回去还要找返回入口。
- *
- * 桌面宽度 920px:面板里装的是完整 diff,一行代码在 464px 里要折三四次才放得下,
- * 而读 diff 的前提是一行就是一行。列表仍然露出来,主从关系不变。
+ * 桌面取 wide 那一档:面板里装的是完整 diff,一行代码在窄档里要折三四次才放得下,
+ * 而读 diff 的前提是一行就是一行。
  */
 export function RunDetailPanel({
   run,
@@ -315,130 +294,100 @@ export function RunDetailPanel({
   const cost = costPresentation(run.usage);
   const duration = runDuration(run);
   return (
-    <Dialog.Root open onOpenChange={(next) => { if (!next) onClose(); }}>
-      <Dialog.Content
-        aria-describedby={undefined}
+    <DetailPanel
+      width="wide"
+      onClose={onClose}
+      /*
+       * 这是主从列表的详情面板。看完一轮接着看下一轮是这一页最常做的事,而模态
+       * 对话框把「点下一行」变成「先关掉、再点一次」。点到列表行时改成换那一轮,
+       * 点别处仍然照常关闭。
+       */
+      onPointerDownOutside={(event) => {
         /*
-         * 这是主从列表的详情面板。看完一轮接着看下一轮是这一页最常做的事,而模态
-         * 对话框把「点下一行」变成「先关掉、再点一次」。点到列表行时改成换那一轮,
-         * 点别处仍然照常关闭。
+         * 按坐标做几何命中,既不看 event.target,也不用 elementsFromPoint。
+         *
+         * 面板是模态的,Radix 会把背景整片设成 `pointer-events: none`:target 永远是
+         * 遮罩自己,而 elementsFromPoint 做的是命中测试,不返回 pointer-events 为 none
+         * 的元素——那一叠里只剩遮罩和 html。两条路都拿不到人真正想点的东西。
+         *
+         * 逐个比对矩形不依赖命中测试,所以不受这层屏蔽影响。不接住的话,点下一轮、
+         * 点筛选都要点两次:第一下被当成「关掉面板」吃掉。
          */
-        onPointerDownOutside={(event) => {
-          /*
-           * 按坐标做几何命中,既不看 event.target,也不用 elementsFromPoint。
-           *
-           * 面板是模态的,Radix 会把背景整片设成 `pointer-events: none`:target 永远是
-           * 遮罩自己,而 elementsFromPoint 做的是命中测试,不返回 pointer-events 为 none
-           * 的元素——那一叠里只剩遮罩和 html。两条路都拿不到人真正想点的东西。
-           *
-           * 逐个比对矩形不依赖命中测试,所以不受这层屏蔽影响。不接住的话,点下一轮、
-           * 点筛选都要点两次:第一下被当成「关掉面板」吃掉。
-           */
-          const { clientX: x, clientY: y } = event.detail.originalEvent;
-          const hit = (selector: string): HTMLElement | null => {
-            for (const element of document.querySelectorAll<HTMLElement>(selector)) {
-              const rect = element.getBoundingClientRect();
-              if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-                return element;
-              }
+        const { clientX: x, clientY: y } = event.detail.originalEvent;
+        const hit = (selector: string): HTMLElement | null => {
+          for (const element of document.querySelectorAll<HTMLElement>(selector)) {
+            const rect = element.getBoundingClientRect();
+            if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+              return element;
             }
-            return null;
-          };
-
-          const id = Number(hit("[data-run-id]")?.dataset.runId);
-          if (Number.isSafeInteger(id) && id > 0) {
-            event.preventDefault();
-            onOpenOther(id);
-            return;
           }
-          const next = hit("[data-filter-value]")?.dataset.filterValue;
-          if (next === "all" || next === "failed" || next === "pending" || next === "done") {
-            event.preventDefault();
-            onSwitchFilter(next);
-            onClose();
-          }
-        }}
-        // 四边定位只写 top/right/bottom/left 四个长写法,不混 inset-*:同一属性上「基础值 +
-        // 断点值」的覆盖顺序才是确定的,混了简写会让断点值排在基础值前面而失效。
-        className="!fixed !top-auto !right-0 !bottom-0 !left-0 !m-0 !flex !h-[86dvh] !w-full !max-w-none !flex-col !overflow-hidden !rounded-3xl !rounded-b-none !border-0 !bg-[color:var(--v8-drawer-bg)] !p-0 !shadow-overlay backdrop-blur-[40px] md:!top-3.5 md:!right-3.5 md:!bottom-3.5 md:!left-auto md:!h-auto md:!w-[920px] md:!max-w-[calc(100vw-28px)] md:!rounded-b-3xl"
-      >
-        <header className="flex shrink-0 flex-col gap-3 border-b border-overlay-line px-6 pt-5 pb-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex min-w-0 flex-col gap-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <RunPill run={run} />
-                <RunSourceBadge run={run} />
-                {duration === null ? null : (
-                  <span className="text-base text-text-muted">耗时 {duration}</span>
-                )}
-              </div>
-              <Dialog.Title className="!mb-0 min-w-0 !text-3xl !font-extrabold !tracking-[-0.02em] break-all">
-                {run.owner}/{run.repo} #{run.pullNumber}
-              </Dialog.Title>
-              <div className="flex flex-wrap items-center gap-1.5 text-base text-text-muted">
-                <CommitChip sha={run.headSha} />
-                <span aria-hidden>·</span>
-                <span className="break-all">{triggerLabel(run)}</span>
-                <span aria-hidden>·</span>
-                <span>{localDay(run.startedAt)} {localClock(run.startedAt)}</span>
-              </div>
-            </div>
-            <Dialog.Close>
-              <IconButton size="1" variant="soft" color="gray" radius="full" aria-label="关闭详情">
-                <Cross2Icon />
-              </IconButton>
-            </Dialog.Close>
-          </div>
-          {run.total === 0 ? null : (
-            <div className="flex flex-col gap-1.5">
-              <div className="flex justify-between text-base text-text-secondary">
-                <span>处置进度</span>
-                <span className="font-bold tabular-nums text-text">
-                  {disposedCount(run)} / {run.total}
-                </span>
-              </div>
-              {/* 两段一条:人工在前,自动接在后面。两者都是已处置,只是来路不同。 */}
-              <div className="flex h-1.5 overflow-hidden rounded-[3px] bg-accent-track">
-                <div
-                  className="h-full bg-primary"
-                  style={{ width: `${(run.resolved / run.total) * 100}%` }}
-                />
-                <div
-                  className="h-full bg-primary/40"
-                  style={{ width: `${(run.changed / run.total) * 100}%` }}
-                />
-              </div>
-              {run.changed === 0 ? null : (
-                <p className="text-sm text-text-muted tabular-nums">
-                  人工 {run.resolved} · 自动 {run.changed}
-                </p>
-              )}
-            </div>
-          )}
-        </header>
+          return null;
+        };
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-4">
-          {/*
-            详情就是这一轮的完整 diff:文件列表加逐文件 diff,Finding 锚在对应行上。
-            `key` 换成 run.id,换一轮时筛选与展开状态跟着重置,不把上一轮的筛选带过来。
-          */}
-          <RunDiff key={run.id} run={run} canDispose={canDispose} />
-
-          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-1 text-sm text-text-muted">
-            {run.usage === undefined ? null : (
-              <span className="tabular-nums">
-                用量 输入 {run.usage.inputTokens.toLocaleString("zh-CN")} · 输出{" "}
-                {run.usage.outputTokens.toLocaleString("zh-CN")} tokens
-              </span>
+        const id = Number(hit("[data-run-id]")?.dataset.runId);
+        if (Number.isSafeInteger(id) && id > 0) {
+          event.preventDefault();
+          onOpenOther(id);
+          return;
+        }
+        const next = hit("[data-filter-value]")?.dataset.filterValue;
+        if (next === "all" || next === "failed" || next === "pending" || next === "done") {
+          event.preventDefault();
+          onSwitchFilter(next);
+          onClose();
+        }
+      }}
+      header={
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <RunPill run={run} />
+            <RunSourceBadge run={run} />
+            {duration === null ? null : (
+              <span className="text-base text-text-muted">耗时 {duration}</span>
             )}
-            <span className="tabular-nums">成本 {cost.amount}</span>
           </div>
-          {cost.note === null ? null : (
-            <p className="px-1 text-sm break-words text-warning">{cost.note}</p>
-          )}
-        </div>
-
-        {canRerun || pullUrl !== null ? (
+          <Dialog.Title className="!mb-0 min-w-0 !text-3xl !font-extrabold !tracking-[-0.02em] break-all">
+            {run.owner}/{run.repo} #{run.pullNumber}
+          </Dialog.Title>
+          <div className="flex flex-wrap items-center gap-1.5 text-base text-text-muted">
+            <CommitChip sha={run.headSha} />
+            <span aria-hidden>·</span>
+            <span className="break-all">{triggerLabel(run)}</span>
+            <span aria-hidden>·</span>
+            <span>{localDay(run.startedAt)} {localClock(run.startedAt)}</span>
+          </div>
+        </>
+      }
+      headerBelow={
+        run.total === 0 ? null : (
+          <div className="flex flex-col gap-1.5">
+            <div className="flex justify-between text-base text-text-secondary">
+              <span>处置进度</span>
+              <span className="font-bold tabular-nums text-text">
+                {disposedCount(run)} / {run.total}
+              </span>
+            </div>
+            {/* 两段一条:人工在前,自动接在后面。两者都是已处置,只是来路不同。 */}
+            <div className="flex h-1.5 overflow-hidden rounded-[3px] bg-accent-track">
+              <div
+                className="h-full bg-primary"
+                style={{ width: `${(run.resolved / run.total) * 100}%` }}
+              />
+              <div
+                className="h-full bg-primary/40"
+                style={{ width: `${(run.changed / run.total) * 100}%` }}
+              />
+            </div>
+            {run.changed === 0 ? null : (
+              <p className="text-sm text-text-muted tabular-nums">
+                人工 {run.resolved} · 自动 {run.changed}
+              </p>
+            )}
+          </div>
+        )
+      }
+      footer={
+        canRerun || pullUrl !== null ? (
           <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-overlay-line px-6 py-3.5">
             {/*
               处置在面板行内做,这一格留给「去看原版」:整轮 review 的上下文、别人的
@@ -463,9 +412,28 @@ export function RunDetailPanel({
               </Button>
             ) : null}
           </footer>
-        ) : null}
-      </Dialog.Content>
-    </Dialog.Root>
+        ) : null
+      }
+    >
+      {/*
+        详情就是这一轮的完整 diff:文件列表加逐文件 diff,Finding 锚在对应行上。
+        `key` 换成 run.id,换一轮时筛选与展开状态跟着重置,不把上一轮的筛选带过来。
+      */}
+      <RunDiff key={run.id} run={run} canDispose={canDispose} />
+
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-1 text-sm text-text-muted">
+        {run.usage === undefined ? null : (
+          <span className="tabular-nums">
+            用量 输入 {run.usage.inputTokens.toLocaleString("zh-CN")} · 输出{" "}
+            {run.usage.outputTokens.toLocaleString("zh-CN")} tokens
+          </span>
+        )}
+        <span className="tabular-nums">成本 {cost.amount}</span>
+      </div>
+      {cost.note === null ? null : (
+        <p className="px-1 text-sm break-words text-warning">{cost.note}</p>
+      )}
+    </DetailPanel>
   );
 }
 
