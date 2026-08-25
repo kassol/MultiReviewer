@@ -45,6 +45,8 @@ export type RepoFixture = {
 function git(dir: string, ...args: string[]): string {
   return execFileSync("git", ["-C", dir, ...args], {
     encoding: "utf8",
+    // stderr 也收进来:读一条不存在的分支是常规问句,它的报错不该刷在测试输出里。
+    stdio: ["ignore", "pipe", "pipe"],
     env: {
       ...process.env,
       GIT_AUTHOR_NAME: "fixture",

@@ -340,7 +340,10 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
       // Gitea 只拦三种:默认分支与仓库配置的 PR target 分支("can not delete default
       // or pull request target branch")、受保护分支、以及仓库是空库或镜像。容器 PR
       // 的两条分支都不属于这些。
-      await request(options, "DELETE", `${repoPath(ref)}/branches/${branch}`);
+      //
+      // 404 放行:分支已经不在与刚被删掉是同一个终态。审查完成要连着关 PR 与删两条
+      // 分支,中途失败的那次重试会再走一遍前面成功过的步骤,不放行就永远收不了尾。
+      await request(options, "DELETE", `${repoPath(ref)}/branches/${branch}`, undefined, [404]);
     },
 
     async createPullRequest(ref: RepoRef, input: NewPullRequest): Promise<number> {

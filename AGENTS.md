@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-25: 落地 issue #158。**一个阶段可以收尾了**:范围审查详情里点「审查完成」(二次确认),MultiReviewer 关掉承载 Finding 的容器 pull request、删掉那两条分支,记下完成人与时刻,并按 ADR 0006 做一次全量回填——Gitea 上已 resolve 的同步回面板,其余未处置的从此计入处置率的分母。完成后比较项不再推进,同一个仓库同一个 base 再发起就是一个新的范围审查、不再提醒;已完成阶段的全部 Finding、处置与备注照常可查。Forge 那几步任一失败只记原因,状态留在进行中,改完权限再点一次即可。审查完成需要 `finding:dispose`。「已改动」自动处置与完整 diff 视图分别是 issue #159 / #160。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
+
 - 2026-08-25: 落地 issue #157。**作者改完代码不用重开一个阶段了**:范围审查详情里点「推进比较项」填新 commit,MultiReviewer 把容器 PR 的 head 分支移过去并按 base..新比较项跑新的一轮,轮次仍归在同一个范围审查下。只要求新比较项是 base 的后代,作者 rebase 之后拉出来的 commit 照样填得进;不是后代当场拒绝,一条分支都不动。推分支失败只记原因,状态留在进行中,改完分支保护再点一次即可。详情页列出历次比较项与各自的轮次。推进需要 `review:create`。审查完成是 issue #158。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 
 - 2026-08-25: 落地 issue #156。**处置不用再跳 Gitea 了**:Review Run 详情面板按模型列出本轮每一条 Finding(正文、严重度、类别、文件与行,加一枚跳到 Forge 看原评论的链接),有新权限格 `finding:dispose` 的人在行内 resolve / unresolve,并可附一条只存面板的处置备注(CONTEXT.md)。服务端先写 Forge 再落库,Forge 上的 resolver 仍是机器人账号,操作人与时刻记在库里;处置成功即让轮次那几份查询失效,列表与处置进度条当场跟着变。落在 review 正文里的 fallback 没有可处置的评论,面板不给动作、API 也拒绝。在 Gitea 上做的 resolve 照旧经回填回到面板,回填不碰面板记的操作人与备注。新权限格不落到已有角色。「已改动」自动处置与完整 diff 视图分别是 issue #159 / #160。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。

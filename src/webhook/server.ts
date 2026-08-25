@@ -26,7 +26,7 @@ import {
   type ReviewerRuntimePlan,
   type ReviewerSpec,
 } from "../config.ts";
-import type { CloneCredentials, Forge, RepoRef } from "../forge/forge.ts";
+import type { CloneCredentials, Forge, PullRequestRef, RepoRef } from "../forge/forge.ts";
 import {
   createGiteaHookManager,
   hookConverged,
@@ -697,11 +697,13 @@ async function startRun(
  * PR 关闭时的全量回填(ADR 0006):读回全部历史评论与 review 正文,把 resolve 状态
  * 覆盖到该 PR 名下的 finding 上,并给它的 Review Run 记下 pr_state——已关闭 PR 上仍然
  * unknown 的 finding 从此进统计分母。零新增 API 调用:两个读取端点与审查链路同款。
+ *
+ * 范围审查标记审查完成时走的也是这里:容器 PR 关闭就是那条链路的终态(ADR 0012)。
  */
 async function runClosedBackfill(
   deps: WebhookServerDeps,
   forge: Forge,
-  event: NormalizedEvent,
+  event: PullRequestRef,
 ): Promise<void> {
   const [comments, bodies] = await Promise.all([
     forge.listReviewComments(event),
@@ -1443,6 +1445,13 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     access: "review:create",
     handler: ({ req, res, deps, caller }, match) =>
       handleAdvanceRangeReview(req, res, deps, Number(match![1]), caller!.username),
+  },
+  {
+    method: "POST",
+    pattern: /^\/range-reviews\/(\d+)\/complete$/,
+    access: "finding:dispose",
+    handler: ({ res, deps, caller }, match) =>
+      handleCompleteRangeReview(res, deps, Number(match![1]), caller!.username),
   },
   {
     method: "GET",
@@ -4391,6 +4400,63 @@ async function handleAdvanceRangeReview(
     advancedBy,
     id,
   );
+}
+
+/**
+ * 标记审查完成(issue #158)。
+ *
+ * 一个阶段的终态由人给出:容器 PR 关闭、两条分支删除、记录记下完成人与时刻,并按
+ * ADR 0006 的 `closed` 时机做一次全量回填——从此这个阶段上仍然 unknown 的 Finding 进
+ * 处置率的分母。PR 触发那条链路的同一个动作来自 pull request 自己的关闭事件。
+ *
+ * 先关 PR 再删分支:分支还挂着一个开着的 PR 时 Gitea 拒绝删。任一步失败只记原因、状态
+ * 不动,人改完权限再点一次即可;终态记在最后,容器 PR 还开着就写完成会让人再也推不动
+ * 比较项,而仓库里那两条分支还留着。
+ */
+async function handleCompleteRangeReview(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  id: number,
+  completedBy: string,
+): Promise<void> {
+  const record = withStore(deps.dbPath, (store) => store.getRangeReview(id));
+  if (record === undefined) {
+    return sendJson(res, 404, { error: "没有这个范围审查" });
+  }
+  if (record.state !== "in-progress" || record.containerPullNumber === null) {
+    return sendJson(res, 409, {
+      error:
+        record.state === "completed"
+          ? "这个范围审查已经审查完成"
+          : "这个范围审查没有容器 pull request 可收尾",
+    });
+  }
+  const forge = deps.forges.gitea;
+  if (forge === undefined) {
+    return sendJson(res, 503, { error: "gitea 没有配置 Forge,收不了尾" });
+  }
+
+  const ref: RepoRef = { owner: record.owner, repo: record.repo };
+  const container: PullRequestRef = { ...ref, number: record.containerPullNumber };
+  try {
+    await forge.closePullRequest(container);
+    await forge.deleteBranch(ref, record.headBranch);
+    await forge.deleteBranch(ref, record.baseBranch);
+    await runClosedBackfill(deps, forge, container);
+  } catch (error) {
+    const failure = failureText(error);
+    withStore(deps.dbPath, (store) => store.recordRangeReviewForgeFailure(id, failure));
+    return sendJson(res, 502, {
+      error: `在 Forge 上收尾容器 pull request 失败:${failure}`,
+    });
+  }
+
+  const completedAt = new Date((deps.now ?? Date.now)()).toISOString();
+  const rangeReview = withStore(deps.dbPath, (store) => {
+    store.completeRangeReview({ id, completedBy, completedAt });
+    return store.getRangeReview(id)!;
+  });
+  return sendJson(res, 200, { rangeReview });
 }
 
 /** 一天的毫秒数,处置率页的默认时间窗取最近 30 天。 */

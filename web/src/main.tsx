@@ -491,7 +491,12 @@ const runsRoute = protectedPage("/runs", "review:read", () => {
 });
 const rangeReviewsRoute = protectedPage("/range-reviews", "review:read", () => {
   const { session } = shellRoute.useRouteContext();
-  return <RangeReviewsPage canCreate={hasPermission(session, "review:create")} />;
+  return (
+    <RangeReviewsPage
+      canCreate={hasPermission(session, "review:create")}
+      canDispose={hasPermission(session, "finding:dispose")}
+    />
+  );
 });
 const statsRoute = protectedPage("/stats", "review:read", () => <StatsPage />);
 function ModelServicesRoutePage({

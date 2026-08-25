@@ -520,6 +520,20 @@ test("删分支:DELETE /branches/<分支名>,分支名里的斜杠原样留在�
   assert.equal(deleted.auth, `token ${TOKEN}`);
 });
 
+test("删分支:分支已经不在时的 404 不算失败,重试收得了尾", async (t) => {
+  const stub = stubFetch(
+    routes({
+      "DELETE /api/v1/repos/acme/widget/branches/multireviewer/1-base": {
+        status: 404,
+        body: { message: "branch does not exist" },
+      },
+    }),
+  );
+  t.after(stub.restore);
+
+  await createGiteaForge(OPTIONS).deleteBranch(REF, "multireviewer/1-base");
+});
+
 test("建 pull request:POST /pulls,head 与 base 都是分支名,回的是 PR 序号", async (t) => {
   const stub = stubFetch(routes());
   t.after(stub.restore);

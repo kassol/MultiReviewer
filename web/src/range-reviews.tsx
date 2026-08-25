@@ -8,7 +8,7 @@ import {
   CrossCircledIcon,
   ExternalLinkIcon,
 } from "@radix-ui/react-icons";
-import { Callout, Dialog, Flex, IconButton, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
+import { AlertDialog, Callout, Dialog, Flex, IconButton, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
 
 import { EmptyState } from "@/components/empty-state";
 import { MasterListItem } from "@/components/master-list-item";
@@ -76,7 +76,14 @@ function CommitChip({ sha }: { sha: string }) {
 
 const RANGE_REVIEWS_QUERY_KEY = ["range-reviews"] as const;
 
-export function RangeReviewsPage({ canCreate }: { canCreate: boolean }) {
+export function RangeReviewsPage({
+  canCreate,
+  canDispose,
+}: {
+  canCreate: boolean;
+  /** 「评审 · 处置」同时管标记审查完成:那是这个阶段的处置结果封口(#152)。 */
+  canDispose: boolean;
+}) {
   const session = useQuery({ queryKey: ["session"], queryFn: loadPanelSession });
   const list = useQuery({
     queryKey: RANGE_REVIEWS_QUERY_KEY,
@@ -227,6 +234,7 @@ export function RangeReviewsPage({ canCreate }: { canCreate: boolean }) {
         <RangeReviewDetailPanel
           rangeReview={opened}
           canCreate={canCreate}
+          canDispose={canDispose}
           containerUrl={
             session.data === undefined ||
             session.data === null ||
@@ -254,12 +262,15 @@ export function RangeReviewsPage({ canCreate }: { canCreate: boolean }) {
 function RangeReviewDetailPanel({
   rangeReview,
   canCreate,
+  canDispose,
   containerUrl,
   onClose,
 }: {
   rangeReview: RangeReview;
   /** 有「评审 · 发起」权限才出现推进入口。 */
   canCreate: boolean;
+  /** 有「评审 · 处置」权限才出现审查完成入口。 */
+  canDispose: boolean;
   /** 容器 PR 的地址;没有 Forge 基址或还没建出来时是 null,那一格不渲染。 */
   containerUrl: string | null;
   onClose: () => void;
@@ -280,8 +291,10 @@ function RangeReviewDetailPanel({
   const comparisons = [...(detail.data?.comparisons ?? [])].reverse();
   const status = STATE_LABEL[rangeReview.state];
   const [advancing, setAdvancing] = useState(false);
+  const [completing, setCompleting] = useState(false);
   // 已完成与发起失败的都没有可推进的容器 PR,那两档不出现入口。
   const canAdvance = canCreate && rangeReview.state === "in-progress";
+  const canComplete = canDispose && rangeReview.state === "in-progress";
 
   return (
     <Dialog.Root open onOpenChange={(next) => { if (!next) onClose(); }}>
@@ -316,6 +329,16 @@ function RangeReviewDetailPanel({
             <dd className="min-w-0 break-all font-mono text-base">{rangeReview.baseSha}</dd>
             <dt className="text-text-secondary">当前比较项</dt>
             <dd className="min-w-0 break-all font-mono text-base">{rangeReview.comparisonSha}</dd>
+            {rangeReview.completedAt === null ? null : (
+              <>
+                <dt className="text-text-secondary">审查完成</dt>
+                <dd className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+                  <span className="break-all">{rangeReview.completedBy}</span>
+                  <span aria-hidden>·</span>
+                  <span className="tabular-nums">{localMinute(rangeReview.completedAt)}</span>
+                </dd>
+              </>
+            )}
           </dl>
 
           {rangeReview.lastForgeFailure === null ? null : (
@@ -369,9 +392,12 @@ function RangeReviewDetailPanel({
           )}
         </div>
 
-        {containerUrl === null && !canAdvance ? null : (
-          <footer className="flex shrink-0 items-center justify-end gap-3 border-t border-overlay-line px-6 py-3.5">
-            {/* 处置在评审记录的详情面板行内做,这一格留给推进与「去看原版」。 */}
+        {containerUrl === null && !canAdvance && !canComplete ? null : (
+          <footer className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-overlay-line px-6 py-3.5">
+            {/* 处置在评审记录的详情面板行内做,这一格留给这个阶段自己的三个动作。 */}
+            {canComplete ? (
+              <CompleteAction rangeReview={rangeReview} open={completing} onOpenChange={setCompleting} />
+            ) : null}
             {containerUrl === null ? null : (
               <Button asChild variant="soft" color="gray" size={{ initial: "3", sm: "2" }}>
                 <a href={containerUrl} target="_blank" rel="noreferrer">
@@ -401,6 +427,84 @@ function RangeReviewDetailPanel({
         )}
       </Dialog.Content>
     </Dialog.Root>
+  );
+}
+
+/**
+ * 标记审查完成(issue #158)。
+ *
+ * 不可逆:容器 pull request 会被关掉、两条分支会被删掉,这个阶段的比较项从此不再推进,
+ * 所以走 AlertDialog 二次确认,文案写明对象、影响与还剩什么。
+ */
+function CompleteAction({
+  rangeReview,
+  open,
+  onOpenChange,
+}: {
+  rangeReview: RangeReview;
+  open: boolean;
+  onOpenChange: (next: boolean) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+
+  const complete = useMutation({
+    mutationFn: async () => {
+      const response = await api(`/range-reviews/${rangeReview.id}/complete`, { method: "POST" });
+      if (!response.ok) throw new Error(await errorText(response));
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: RANGE_REVIEWS_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: ["range-review", rangeReview.id] });
+    },
+    onError: (failure: Error) => setError(failure.message),
+  });
+
+  return (
+    <>
+      {error === null ? null : (
+        <p role="alert" className="w-full text-danger">{error}</p>
+      )}
+      <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
+        <AlertDialog.Trigger>
+          <Button
+            variant="outline"
+            color="gray"
+            highContrast
+            size={{ initial: "3", sm: "2" }}
+            disabled={complete.isPending}
+          >
+            {complete.isPending ? "收尾中…" : "审查完成"}
+          </Button>
+        </AlertDialog.Trigger>
+        <AlertDialog.Content maxWidth="440px" size={{ initial: "2", sm: "3" }}>
+          <AlertDialog.Title size="4" mb="2">
+            标记 {rangeReview.owner}/{rangeReview.repo} 的这个阶段为审查完成?
+          </AlertDialog.Title>
+          <AlertDialog.Description size="2" color="gray">
+            承载 Finding 的 pull request 会关闭、两条分支会删除，比较项不再推进，未处置的 Finding
+            按未处置计入处置率。全部 Finding、处置与备注仍然看得到；同一个 base 可以再发起一个新的范围审查。
+          </AlertDialog.Description>
+          <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
+            <AlertDialog.Cancel>
+              <Button variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>取消</Button>
+            </AlertDialog.Cancel>
+            <Button
+              variant="solid"
+              color="red"
+              size={{ initial: "4", sm: "2" }}
+              onClick={() => {
+                setError(null);
+                onOpenChange(false);
+                complete.mutate();
+              }}
+            >
+              审查完成
+            </Button>
+          </Flex>
+        </AlertDialog.Content>
+      </AlertDialog.Root>
+    </>
   );
 }
 

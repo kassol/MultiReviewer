@@ -1083,6 +1083,17 @@ export type Store = {
   }): void;
   /** 这个范围审查先后审过的比较项,按记录先后。 */
   listRangeReviewComparisons(rangeReviewId: number): RangeReviewComparison[];
+  /**
+   * 审查完成:进终态并记下完成人与时刻(CONTEXT.md 审查完成)。
+   *
+   * 只在 Forge 那几步都做完之后调用——容器 PR 还开着的时候记成已完成,人就再也推不动
+   * 比较项,而仓库里那两条分支还留着。
+   */
+  completeRangeReview(record: {
+    id: number;
+    completedBy: string;
+    completedAt: string;
+  }): void;
   getRangeReview(id: number): RangeReviewRecord | undefined;
   /** 按 id 倒序。四个过滤条件都可省,省掉即不过滤。 */
   listRangeReviews(opts: {
@@ -3059,6 +3070,15 @@ export function openStore(dbPath: string): Store {
         db.exec("ROLLBACK");
         throw error;
       }
+    },
+
+    completeRangeReview(record) {
+      db.prepare(
+        `UPDATE range_review
+            SET state = 'completed', completed_by = ?, completed_at = ?,
+                last_forge_failure = NULL
+          WHERE id = ?`,
+      ).run(record.completedBy, record.completedAt, record.id);
     },
 
     listRangeReviewComparisons(rangeReviewId) {
