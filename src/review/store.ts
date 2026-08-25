@@ -517,6 +517,20 @@ export type FindingDispositionTarget = {
   note: string | null;
 };
 
+/**
+ * 一轮 Review Run 的 Review Range 两端。base 只有范围审查那一档记在库里(阶段基准),
+ * PR 触发的那一档要去 Forge 上读当时那个 pull request 的 base,因此这里给 null。
+ */
+export type RunRange = {
+  id: number;
+  owner: string;
+  repo: string;
+  pullNumber: number;
+  headSha: string;
+  rangeReviewId: number | null;
+  baseSha: string | null;
+};
+
 export type RunResult = {
   finishedAt: string;
   durationMs: number;
@@ -1130,6 +1144,11 @@ export type Store = {
     baseSha?: string;
     state?: RangeReviewState;
   }): RangeReviewRecord[];
+  /**
+   * 一轮 Review Run 的两端。diff 视图按它去本地 clone 上取 base..head。
+   * id 不存在时返回 undefined。
+   */
+  getRunRange(id: number): RunRange | undefined;
   /** 面板处置前要读的那一行。id 不存在时返回 undefined。 */
   getFinding(id: number): FindingDispositionTarget | undefined;
   /**
@@ -3186,6 +3205,29 @@ export function openStore(dbPath: string): Store {
         .prepare(`SELECT * FROM range_review ${where} ORDER BY id DESC`)
         .all(...params)
         .map(rangeReviewRecord);
+    },
+
+    getRunRange(id) {
+      const row = db
+        .prepare(
+          `SELECT run.id, run.owner, run.repo, run.pull_number, run.head_sha,
+                  run.range_review_id, rr.base_sha
+             FROM review_run run
+             LEFT JOIN range_review rr ON run.range_review_id = rr.id
+            WHERE run.id = ?`,
+        )
+        .get(id) as Record<string, unknown> | undefined;
+      if (row === undefined) return undefined;
+      return {
+        id: Number(row["id"]),
+        owner: String(row["owner"]),
+        repo: String(row["repo"]),
+        pullNumber: Number(row["pull_number"]),
+        headSha: String(row["head_sha"]),
+        rangeReviewId:
+          row["range_review_id"] === null ? null : Number(row["range_review_id"]),
+        baseSha: row["base_sha"] === null ? null : String(row["base_sha"]),
+      };
     },
 
     getFinding(id) {

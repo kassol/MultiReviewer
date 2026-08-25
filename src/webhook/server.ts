@@ -48,7 +48,15 @@ import {
   decryptCredential,
   encryptCredential,
 } from "../panel/credential-crypto.ts";
-import { pushBranch, resolveRange, type ResolvedRange } from "../git/worktree.ts";
+import {
+  pushBranch,
+  readRangeDiffFiles,
+  readRangeFileDiff,
+  resolveRange,
+  type RangeDiffOptions,
+  type RangeDiffRejection,
+  type ResolvedRange,
+} from "../git/worktree.ts";
 import { DEFAULT_MAX_CHANGED_LINES_PER_BATCH } from "../review/batch.ts";
 import type { Reviewer } from "../review/finding.ts";
 import {
@@ -1405,6 +1413,12 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "PUT", pattern: "/settings", access: "model:write", handler: ({ req, res, deps }) => handlePutSettings(req, res, deps) },
   { method: "GET", pattern: "/stats", access: "review:read", handler: ({ req, res, deps }) => handleStats(req, res, deps) },
   { method: "GET", pattern: "/runs", access: "review:read", handler: ({ req, res, deps }) => handleRuns(req, res, deps) },
+  {
+    method: "GET",
+    pattern: /^\/runs\/(\d+)\/diff$/,
+    access: "review:read",
+    handler: ({ req, res, deps }, match) => handleRunDiff(req, res, deps, Number(match![1])),
+  },
   { method: "POST", pattern: "/rerun", access: "review:rerun", handler: ({ req, res, deps, caller }) => handleRerun(req, res, deps, caller!.username) },
   {
     method: "POST",
@@ -3917,6 +3931,76 @@ function handleRuns(
   );
   const nextBefore = runs.length === RUNS_PAGE ? runs[runs.length - 1]!.id : null;
   return sendJson(res, 200, { runs, nextBefore });
+}
+
+/** 本地副本里取不到 Review Range 的三档各自对应一句话。这不是服务出错,是代码不在了。 */
+const RANGE_DIFF_REJECTION: Record<RangeDiffRejection["reason"], string> = {
+  "base-missing": "这一轮的 base commit 已经不在本地副本里,看不了 diff",
+  "head-missing": "这一轮的 head commit 已经不在本地副本里(分支删了或者被强推过),看不了 diff",
+  "no-merge-base": "base 与 head 没有共同祖先,算不出 Review Range",
+};
+
+/**
+ * 一轮 Review Run 的完整 diff。不带 `file` 时回文件列表(每个文件带增删行数),带 `file`
+ * 时只回那一个文件的 unified diff:面板按文件懒加载,大 diff 因此不必一次全取。
+ *
+ * base 的出处两条链路不同——范围审查记着阶段基准,PR 触发的那一档库里只有 head,base
+ * 要去 Forge 上读那个 pull request。取到之后一律按 merge-base 算,与 Reviewer 读的那份
+ * 以及 Forge 的 PR 页面是同一个范围。
+ */
+async function handleRunDiff(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  runId: number,
+): Promise<void> {
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+  const file = query.get("file");
+  const run = withStore(deps.dbPath, (store) => store.getRunRange(runId));
+  if (run === undefined) return sendJson(res, 404, { error: "没有这一轮 Review Run" });
+  const forge = deps.forges.gitea;
+  if (forge === undefined) {
+    return sendJson(res, 503, { error: "gitea 没有配置 Forge,取不了 diff" });
+  }
+
+  const ref: RepoRef = { owner: run.owner, repo: run.repo };
+  let options: RangeDiffOptions;
+  try {
+    const [repository, credentials, pullRequest] = await Promise.all([
+      forge.getRepository(ref),
+      forge.cloneCredentials(ref),
+      run.baseSha === null
+        ? forge.getPullRequest({ ...ref, number: run.pullNumber })
+        : null,
+    ]);
+    options = {
+      cacheDir: deps.cacheDir,
+      ref,
+      cloneUrl: repository.cloneUrl,
+      credentials,
+      baseSha: run.baseSha ?? pullRequest!.baseSha,
+      headSha: run.headSha,
+    };
+  } catch (error) {
+    return sendJson(res, 502, { error: `读不到仓库或取不回代码:${failureText(error)}` });
+  }
+
+  try {
+    if (file === null || file === "") {
+      const listed = await readRangeDiffFiles(options);
+      if (!listed.ok) return sendJson(res, 409, { error: RANGE_DIFF_REJECTION[listed.reason] });
+      return sendJson(res, 200, {
+        baseSha: listed.mergeBaseSha,
+        headSha: run.headSha,
+        files: listed.files,
+      });
+    }
+    const patched = await readRangeFileDiff({ ...options, path: file });
+    if (!patched.ok) return sendJson(res, 409, { error: RANGE_DIFF_REJECTION[patched.reason] });
+    return sendJson(res, 200, { path: file, patch: patched.patch });
+  } catch (error) {
+    return sendJson(res, 502, { error: `取 diff 失败:${failureText(error)}` });
+  }
 }
 
 /**

@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Fragment, useEffect, useRef, useState } from "react";
 
@@ -9,7 +9,7 @@ import {
   ExclamationTriangleIcon,
   ExternalLinkIcon,
 } from "@radix-ui/react-icons";
-import { Badge, Callout, Dialog, IconButton, SegmentedControl, Skeleton, TextField, Tooltip } from "@radix-ui/themes";
+import { Badge, Callout, Dialog, IconButton, SegmentedControl, Skeleton, Tooltip } from "@radix-ui/themes";
 
 import { EmptyState } from "@/components/empty-state";
 import { MasterListItem } from "@/components/master-list-item";
@@ -19,6 +19,7 @@ import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
+import { RunDiff } from "./run-diff.tsx";
 import { loadPanelSession, pullRequestUrl } from "./session.ts";
 import { SummaryRate } from "./stats.tsx";
 import { costPresentation, type UsageSummary } from "./usage-cost.ts";
@@ -45,7 +46,7 @@ export type RunItem = {
   }[];
   /** 会话没有产生统计时省略。 */
   usage?: UsageSummary;
-  /** 本轮落库的每一条来源 Finding。详情面板按模型分组列出并在行内处置。 */
+  /** 本轮落库的每一条来源 Finding。详情的 diff 视图把它们锚在对应文件行上。 */
   findings: RunFinding[];
   /** 人工处置掉的合并组数。 */
   resolved: number;
@@ -98,173 +99,6 @@ export async function rerunRequest(run: {
   });
   if (!response.ok) throw new Error(await errorText(response));
   return `已触发 ${run.owner}/${run.repo} #${run.pullNumber} 的新一轮审查`;
-}
-
-/**
- * 面板处置一条 Finding。写 Forge 与落库都在服务端一次做完,备注为空即保留原有那条。
- */
-async function disposeRequest(input: {
-  id: number;
-  disposition: "resolved" | "unresolved";
-  note: string;
-}): Promise<void> {
-  const note = input.note.trim();
-  const response = await api(
-    `/findings/${input.id}/${input.disposition === "resolved" ? "resolve" : "unresolve"}`,
-    { method: "POST", body: JSON.stringify(note === "" ? {} : { note }) },
-  );
-  if (!response.ok) throw new Error(await errorText(response));
-}
-
-const SEVERITY_COLOR = { P0: "red", P1: "amber", P2: "gray" } as const;
-
-/**
- * 详情面板里的一条 Finding:正文、严重度、类别、文件与行、跳到 Forge 看原版的链接,
- * 加上行内处置。
- *
- * 处置成功后让时间流那几份查询失效,进度条与列表跟着一起变——处置进度是同一批 finding
- * 行算出来的,只改本地状态会让两个数字对不上。
- */
-function FindingRow({ finding, canDispose }: { finding: RunFinding; canDispose: boolean }) {
-  const queryClient = useQueryClient();
-  const [note, setNote] = useState("");
-  const [composing, setComposing] = useState(false);
-  // 人工与自动两档都是已处置:划掉正文、给撤回动作。区别只在下面那行署名上。
-  const autoDisposed = finding.disposition === "changed";
-  const resolved = finding.disposition === "resolved" || autoDisposed;
-  const dispose = useMutation({
-    mutationFn: disposeRequest,
-    onSuccess: () => {
-      setComposing(false);
-      setNote("");
-      // 时间流、仓库详情与范围审查详情各读一份轮次投影,处置改的是同一批行。
-      for (const key of [["runs"], ["repo-runs"], ["range-review"]]) {
-        void queryClient.invalidateQueries({ queryKey: key });
-      }
-    },
-  });
-
-  return (
-    <div className="flex flex-col gap-1.5 border-t border-overlay-line px-4 py-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          {resolved ? (
-            <CheckCircledIcon className="size-4 shrink-0 text-success" aria-label="已处置" />
-          ) : (
-            <Badge color={SEVERITY_COLOR[finding.severity]} variant="soft" radius="full">
-              {finding.severity}
-            </Badge>
-          )}
-          <Badge color="gray" variant="soft" radius="full">{finding.category}</Badge>
-          <span className="min-w-0 break-all font-mono text-sm text-text-muted">
-            {finding.file}:{finding.line}
-          </span>
-        </div>
-        {finding.commentHtmlUrl === null ? null : (
-          <Tooltip content="在 Forge 上看这条原评论">
-            <IconButton size="1" variant="ghost" color="gray" radius="full" asChild>
-              <a href={finding.commentHtmlUrl} target="_blank" rel="noreferrer" aria-label="看 Forge 上的原评论">
-                <ExternalLinkIcon />
-              </a>
-            </IconButton>
-          </Tooltip>
-        )}
-      </div>
-
-      <p
-        className={`text-base leading-relaxed break-words ${
-          resolved ? "text-text-muted line-through" : "text-text-secondary"
-        }`}
-      >
-        {finding.description}
-      </p>
-
-      {autoDisposed ? (
-        <p className="text-sm text-text-muted">
-          代码已改动 · 自动处置
-          {finding.disposedAt === null ? null : (
-            <>
-              {" · "}
-              <span className="tabular-nums">
-                {localDay(finding.disposedAt)} {localClock(finding.disposedAt)}
-              </span>
-            </>
-          )}
-        </p>
-      ) : finding.disposedBy === null ? null : (
-        <p className="text-sm text-text-muted">
-          {resolved ? "已处置" : "撤回处置"} · {finding.disposedBy} ·{" "}
-          <span className="tabular-nums">{localDay(finding.disposedAt!)} {localClock(finding.disposedAt!)}</span>
-        </p>
-      )}
-      {finding.note === null ? null : (
-        <p className="rounded-lg bg-fill px-2.5 py-1.5 text-sm break-words text-text-secondary">
-          备注：{finding.note}
-        </p>
-      )}
-
-      {/* 正文里的 fallback 没有行级评论承载,Forge 上无从 resolve,面板也就不给动作。 */}
-      {finding.commentId === null ? (
-        <p className="text-sm text-text-muted">这条只在 review 正文里，没有可处置的评论。</p>
-      ) : canDispose ? (
-        <div className="flex flex-col gap-2">
-          {composing ? (
-            <TextField.Root
-              value={note}
-              onChange={(event) => setNote(event.target.value)}
-              maxLength={500}
-              placeholder="处置备注（可选，只存面板）"
-              aria-label="处置备注"
-            />
-          ) : null}
-          <div className="flex items-center gap-2">
-            {resolved ? (
-              <Button
-                variant="soft"
-                color="gray"
-                size="1"
-                highContrast
-                disabled={dispose.isPending}
-                onClick={() => dispose.mutate({ id: finding.id, disposition: "unresolved", note })}
-              >
-                撤回处置
-              </Button>
-            ) : composing ? (
-              <>
-                <Button
-                  variant="solid"
-                  size="1"
-                  disabled={dispose.isPending}
-                  onClick={() => dispose.mutate({ id: finding.id, disposition: "resolved", note })}
-                >
-                  {dispose.isPending ? "处置中…" : "确认处置"}
-                </Button>
-                <Button
-                  variant="ghost"
-                  color="gray"
-                  size="1"
-                  highContrast
-                  onClick={() => { setComposing(false); setNote(""); }}
-                >
-                  取消
-                </Button>
-              </>
-            ) : (
-              <Button variant="soft" color="gray" size="1" highContrast onClick={() => setComposing(true)}>
-                处置
-              </Button>
-            )}
-          </div>
-        </div>
-      ) : null}
-
-      {dispose.isError ? (
-        <p role="alert" className="text-sm break-words text-danger">
-          {(dispose.error as Error).message}
-        </p>
-      ) : null}
-    </div>
-  );
 }
 
 /**
@@ -371,12 +205,12 @@ function rowBadge(run: RunItem) {
 }
 
 // 分天与时分按浏览器本地时区:UTC 日在东八区会把 16:00 后的 run 归到前一天。
-function localDay(iso: string): string {
+export function localDay(iso: string): string {
   const date = new Date(iso);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function localClock(iso: string): string {
+export function localClock(iso: string): string {
   const date = new Date(iso);
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
@@ -449,6 +283,9 @@ function RunModelChips({ run }: { run: RunItem }) {
  *
  * 窄屏改成底部抽屉(不是全屏):列表的上半屏保持可见,关闭与「重新运行」都落在拇指
  * 能够到的下缘;全屏会让人以为自己跳了一页,退回去还要找返回入口。
+ *
+ * 桌面宽度 920px:面板里装的是完整 diff,一行代码在 464px 里要折三四次才放得下,
+ * 而读 diff 的前提是一行就是一行。列表仍然露出来,主从关系不变。
  */
 export function RunDetailPanel({
   run,
@@ -523,7 +360,7 @@ export function RunDetailPanel({
         }}
         // 四边定位只写 top/right/bottom/left 四个长写法,不混 inset-*:同一属性上「基础值 +
         // 断点值」的覆盖顺序才是确定的,混了简写会让断点值排在基础值前面而失效。
-        className="!fixed !top-auto !right-0 !bottom-0 !left-0 !m-0 !flex !h-[86dvh] !w-full !max-w-none !flex-col !overflow-hidden !rounded-3xl !rounded-b-none !border-0 !bg-[color:var(--v8-drawer-bg)] !p-0 !shadow-overlay backdrop-blur-[40px] md:!top-3.5 md:!right-3.5 md:!bottom-3.5 md:!left-auto md:!h-auto md:!w-[464px] md:!max-w-[calc(100vw-28px)] md:!rounded-b-3xl"
+        className="!fixed !top-auto !right-0 !bottom-0 !left-0 !m-0 !flex !h-[86dvh] !w-full !max-w-none !flex-col !overflow-hidden !rounded-3xl !rounded-b-none !border-0 !bg-[color:var(--v8-drawer-bg)] !p-0 !shadow-overlay backdrop-blur-[40px] md:!top-3.5 md:!right-3.5 md:!bottom-3.5 md:!left-auto md:!h-auto md:!w-[920px] md:!max-w-[calc(100vw-28px)] md:!rounded-b-3xl"
       >
         <header className="flex shrink-0 flex-col gap-3 border-b border-overlay-line px-6 pt-5 pb-4">
           <div className="flex items-start justify-between gap-3">
@@ -581,50 +418,11 @@ export function RunDetailPanel({
         </header>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-4">
-          {run.models.length === 0 ? (
-            <EmptyState title="没有模型记录" className="py-2" />
-          ) : (
-            run.models.map((entry) => (
-              <section
-                key={entry.model}
-                className={`overflow-hidden rounded-lg bg-surface shadow-control ${
-                  entry.failure === null ? "border border-overlay-line" : "border border-danger/25"
-                }`}
-              >
-                <div
-                  className={`flex items-center justify-between gap-3 px-4 py-2.5 ${
-                    entry.failure === null ? "" : "bg-danger-tint"
-                  }`}
-                >
-                  <h3
-                    className={`min-w-0 truncate font-mono text-base font-bold ${
-                      entry.failure === null ? "" : "text-danger"
-                    }`}
-                  >
-                    {entry.model}
-                  </h3>
-                  {entry.failure === null ? (
-                    <span className="shrink-0 text-sm text-text-muted">
-                      <span className="tabular-nums">{entry.findings}</span> 项发现
-                    </span>
-                  ) : (
-                    <span className="shrink-0 text-sm font-semibold text-danger">失败</span>
-                  )}
-                </div>
-                {/* 失败原因决定要不要重跑(区域封禁重跑也没用,超时重跑就好),所以整段摊开,不折叠。 */}
-                {entry.failure === null ? null : (
-                  <p className="border-t border-danger/15 px-4 py-2.5 text-base leading-relaxed break-words text-text-secondary">
-                    {entry.failure}
-                  </p>
-                )}
-                {run.findings
-                  .filter((finding) => finding.model === entry.model)
-                  .map((finding) => (
-                    <FindingRow key={finding.id} finding={finding} canDispose={canDispose} />
-                  ))}
-              </section>
-            ))
-          )}
+          {/*
+            详情就是这一轮的完整 diff:文件列表加逐文件 diff,Finding 锚在对应行上。
+            `key` 换成 run.id,换一轮时筛选与展开状态跟着重置,不把上一轮的筛选带过来。
+          */}
+          <RunDiff key={run.id} run={run} canDispose={canDispose} />
 
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-1 text-sm text-text-muted">
             {run.usage === undefined ? null : (

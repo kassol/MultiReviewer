@@ -436,7 +436,9 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 ### 10.2 运行详情面板
 
-评审记录的运行详情是浮动面板，不是行内展开：桌面端 `md=768px` 起四边留 14px 悬浮在右侧，宽 464px，`--v8-radius-overlay` 圆角、`--v8-drawer-bg` + blur(40px) 材质、`--v8-shadow-overlay` 投影；窄屏改成 86dvh 的底部抽屉，列表上半屏保持可见，关闭与「重新运行」都落在拇指够得到的位置。面板内按模型分组成卡片：已处置项划线加绿勾，未处置项带优先级徽章，失败模型整卡走红色语义。
+评审记录的运行详情是浮动面板，不是行内展开：桌面端 `md=768px` 起四边留 14px 悬浮在右侧，宽 920px（上限 `calc(100vw-28px)`），`--v8-radius-overlay` 圆角、`--v8-drawer-bg` + blur(40px) 材质、`--v8-shadow-overlay` 投影；窄屏改成 86dvh 的底部抽屉，列表上半屏保持可见，关闭与「重新运行」都落在拇指够得到的位置。面板装的是这一轮的完整 diff，宽度按一行代码定：464px 里一行要折三四次，而读 diff 的前提是一行就是一行。
+
+面板内是文件列表加逐文件 diff：每个文件一张卡，卡头写路径、新增/修改/删除、`+N −M`（增走 `--v8-success`、删走 `--v8-danger`）与这个文件的发现数，点卡头展开或收起。diff 用 `font-mono text-xs` 的三列表格——旧行号、新行号、正文，新增行整行 `--v8-success-tint`、删除行整行 `--v8-danger-tint`，hunk 头走 `--v8-surface-sunken`。Finding 卡片插在它所指的那一行下面：已处置项划线加绿勾，未处置项带优先级徽章；模型失败原因整段摊在最上面的红色 Callout 里，不折叠。
 
 ### 10.3 AlertDialog
 

@@ -214,3 +214,147 @@ export async function readRangeDiff(
     `${mergeBaseSha}..${headSha}`,
   ]);
 }
+
+/**
+ * Review Range 里的一个文件。二进制文件在 git 的 numstat 里是两个 `-`,增删行数按 0
+ * 记并单独标出——面板要显示的是「这个文件没有可读的行改动」,不是「零处改动」。
+ */
+export type RangeDiffFile = {
+  path: string;
+  status: "added" | "modified" | "deleted";
+  additions: number;
+  deletions: number;
+  binary: boolean;
+};
+
+export type RangeDiffOptions = {
+  cacheDir: string;
+  ref: RepoRef;
+  cloneUrl: string;
+  credentials: CloneCredentials;
+  /** Review Range 的起点。范围审查取阶段基准,PR 取那个 pull request 的 base。 */
+  baseSha: string;
+  headSha: string;
+};
+
+/**
+ * 取 diff 之前的失败按原因分档。两端解析不出来是常规局面——分支删了、仓库被强推过,
+ * 那个 commit 就是不在了,调用方据此回一句人看得懂的话,而不是把它当成服务出错。
+ */
+export type RangeDiffRejection = { ok: false; reason: "base-missing" | "head-missing" | "no-merge-base" };
+
+export type RangeDiffFiles = { ok: true; mergeBaseSha: string; files: RangeDiffFile[] } | RangeDiffRejection;
+
+export type RangeDiffPatch = { ok: true; mergeBaseSha: string; patch: string } | RangeDiffRejection;
+
+/**
+ * 重命名检测一律关掉。文件列表与逐文件 patch 是两次 git 调用,而带上重命名检测之后,
+ * 按单个路径取 patch 时 git 只看得到那一侧,同一个文件在列表里是「重命名」、展开却是
+ * 整份新增,两处对不上。关掉之后重命名在两处都是一删一增,说的是同一件事。
+ */
+const NO_RENAMES = ["--no-renames"];
+
+/** 解析两端,必要时才 fetch,并算出 Review Range 的基准。 */
+async function prepareRangeDiff(
+  options: RangeDiffOptions,
+): Promise<{ ok: true; path: string; mergeBaseSha: string } | RangeDiffRejection> {
+  const path = repoCachePath(options.cacheDir, options.ref);
+  const auth = authArgs(options.cloneUrl, options.credentials);
+
+  // 先拿现有副本解析。diff 是读操作,面板按文件逐个展开会反复调它,每次都 fetch 一遍
+  // 等于把每一次展开都变成一次网络往返;缺哪一端才去取。
+  let base = await resolveCommit(path, options.baseSha);
+  let head = await resolveCommit(path, options.headSha);
+  if (base === undefined || head === undefined) {
+    await ensureClone(path, options.cloneUrl, auth);
+    base = await resolveCommit(path, options.baseSha);
+    head = await resolveCommit(path, options.headSha);
+  }
+  if (base === undefined) return { ok: false, reason: "base-missing" };
+  if (head === undefined) return { ok: false, reason: "head-missing" };
+
+  try {
+    const mergeBaseSha = (await git(path, ["merge-base", base, head])).trim();
+    return { ok: true, path, mergeBaseSha };
+  } catch {
+    // 两端没有共同祖先:仓库被重建过,或者 head 来自一段无关历史。
+    return { ok: false, reason: "no-merge-base" };
+  }
+}
+
+/** `-z` 的输出用 NUL 分段,路径因此不带引号也不转义。末段的空串是收尾的那个 NUL。 */
+function splitNul(output: string): string[] {
+  const parts = output.split("\0");
+  if (parts.at(-1) === "") parts.pop();
+  return parts;
+}
+
+/** 每个文件的增删行数。二进制文件的两列是 `-`。 */
+function parseNumstat(output: string): Map<string, { additions: number; deletions: number; binary: boolean }> {
+  const counts = new Map<string, { additions: number; deletions: number; binary: boolean }>();
+  for (const entry of splitNul(output)) {
+    const [additions, deletions, path] = entry.split("\t");
+    if (additions === undefined || deletions === undefined || path === undefined) continue;
+    const binary = additions === "-" || deletions === "-";
+    counts.set(path, {
+      additions: binary ? 0 : Number(additions),
+      deletions: binary ? 0 : Number(deletions),
+      binary,
+    });
+  }
+  return counts;
+}
+
+/**
+ * 一个 Review Range 改动了哪些文件。顺序就是 git 给的顺序。
+ *
+ * 状态与增删行数来自两次调用:`--name-status` 分得出新增与修改,`--numstat` 才有行数。
+ */
+export async function readRangeDiffFiles(options: RangeDiffOptions): Promise<RangeDiffFiles> {
+  const prepared = await prepareRangeDiff(options);
+  if (!prepared.ok) return prepared;
+  const range = `${prepared.mergeBaseSha}..${options.headSha}`;
+  const [nameStatus, numstat] = await Promise.all([
+    git(prepared.path, ["diff", "--name-status", ...NO_RENAMES, "-z", range]),
+    git(prepared.path, ["diff", "--numstat", ...NO_RENAMES, "-z", range]),
+  ]);
+
+  const counts = parseNumstat(numstat);
+  const tokens = splitNul(nameStatus);
+  const files: RangeDiffFile[] = [];
+  // `--name-status -z` 的每个文件占两段:状态码一段,路径一段。
+  for (let index = 0; index + 1 < tokens.length; index += 2) {
+    const code = tokens[index]![0];
+    const path = tokens[index + 1]!;
+    const count = counts.get(path) ?? { additions: 0, deletions: 0, binary: false };
+    files.push({
+      path,
+      status: code === "A" ? "added" : code === "D" ? "deleted" : "modified",
+      ...count,
+    });
+  }
+  return { ok: true, mergeBaseSha: prepared.mergeBaseSha, files };
+}
+
+/**
+ * 一个文件在 Review Range 内的 unified diff。路径经 `--` 交给 git,以 `-` 开头的路径
+ * 因此不会被当成选项;不在这个范围里的路径回空串,由调用方判断。
+ */
+export async function readRangeFileDiff(
+  options: RangeDiffOptions & { path: string },
+): Promise<RangeDiffPatch> {
+  const prepared = await prepareRangeDiff(options);
+  if (!prepared.ok) return prepared;
+  const patch = await git(prepared.path, [
+    "-c",
+    "core.quotePath=false",
+    "diff",
+    "--unified=3",
+    "--no-color",
+    ...NO_RENAMES,
+    `${prepared.mergeBaseSha}..${options.headSha}`,
+    "--",
+    options.path,
+  ]);
+  return { ok: true, mergeBaseSha: prepared.mergeBaseSha, patch };
+}
