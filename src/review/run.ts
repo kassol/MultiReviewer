@@ -32,7 +32,7 @@ import {
   fingerprintAnchor,
   parseFingerprintAnchors,
 } from "./fingerprint.ts";
-import { changedLinesByFile, isInDiff, parseDiffRanges } from "./position.ts";
+import { changedLinesByFile, isInDiff, parseDiffRanges, type DiffRanges } from "./position.ts";
 import {
   openStore,
   type ContinuationCandidate,
@@ -482,9 +482,12 @@ type Continuation = {
  * `fileFingerprints`——旧指纹落在这个文件此刻算得出的全部指纹里,那处代码就还在原样,
  * 不论它被上下挪了多少行,这时本轮报出的是另一条,不是同一条换了位置。
  *
- * 「本轮在新位置报出」要同时满足三条:同一个文件、是本轮**新报**的(没有折叠到任何历史
- * 评论上——折叠上的那些自己就是另一条 Identity),且讲的是同一回事(`dedupe.ts` 的
- * `sameContent`,判据与阈值同跨模型去重那一道,不另立一套)。内容这一道不能省:少了它,
+ * 「本轮在新位置报出」要同时满足四条:同一个文件、是本轮**新报**的(没有折叠到任何历史
+ * 评论上——折叠上的那些自己就是另一条 Identity)、讲的是同一回事(`dedupe.ts` 的
+ * `sameContent`,判据与阈值同跨模型去重那一道,不另立一套),且新位置落在 diff 之内。
+ * diff 之外的那条自己只能退化进 review 正文,没有 resolve 载体:承接它等于旧评论被
+ * resolve 掉、新位置却接不住,而两条都退出处置率分母,分母凭空少一条。内容这一道也不能
+ * 省:少了它,
  * 同文件里任意一条无关的新 Finding 都会被拿来承接,旧评论就此 resolve,那条问题从此活在
  * 错的位置上——比不承接更糟。也不给「行号相同」留豁免:跨模型去重那边两个模型读的是同
  * 一份代码,行号相同是硬证据;这里旧位置的代码已经被改写,行号跨轮之间证明不了什么。
@@ -498,6 +501,7 @@ function planContinuations(
   candidates: readonly ContinuationCandidate[],
   findings: readonly MergedFinding[],
   matched: readonly boolean[],
+  diffRanges: DiffRanges,
   worktreePath: string,
 ): Continuation[] {
   const byFile = new Map<string, Set<string>>();
@@ -517,6 +521,7 @@ function planContinuations(
         matched[groupIndex] ||
         claimed.has(groupIndex) ||
         finding.file !== candidate.file ||
+        !isInDiff(diffRanges, finding.file, finding.line) ||
         !sameContent(candidate, finding)
           ? []
           : [{ finding, groupIndex }],
@@ -825,6 +830,7 @@ export async function runReview(
             store.continuationCandidates(presentFindingIds(verdicts)),
             findings,
             matches.map((match) => match !== undefined),
+            diffRanges,
             worktree.path,
           ),
         );

@@ -144,8 +144,9 @@ export function dedupeFindings(findings: readonly Finding[]): MergedFinding[] {
     else list.push(finding);
   }
 
-  // 报出的先后:入参按 Reviewer 的完成顺序排,分组时要按行号排,首报因此要先记下来
-  // ——归属的次序与合并后的分类都取它(ADR 0015)。
+  // 报出的先后:入参按 Reviewer 的配置顺序排(`run.ts` 按 `deps.reviewers` 拼,谁先跑完
+  // 都不影响),分组时要按行号排,首报因此要先记下来——归属的次序与合并后的分类都取它
+  // (ADR 0015)。按配置顺序而非完成顺序,同一份输入才永远给同一个答案。
   const reportOrder = new Map<Finding, number>(findings.map((f, index) => [f, index]));
 
   const merged: MergedFinding[] = [];
