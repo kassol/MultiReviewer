@@ -3,6 +3,7 @@ import type {
   CloneCredentials,
   ExistingReviewComment,
   Forge,
+  NewPullRequest,
   PublishedReviewComment,
   PullRequest,
   PullRequestRef,
@@ -31,6 +32,11 @@ export type MemoryForge = {
   existingReviewBodies: string[];
   resolvedIds: string[];
   unresolvedIds: string[];
+  /** 容器 PR 的四个写能力,各按调用顺序记录(ADR 0012)。 */
+  createdBranches: { branch: string; fromSha: string }[];
+  deletedBranches: string[];
+  createdPullRequests: (NewPullRequest & { number: number })[];
+  closedPullRequests: number[];
   /** PR 上此刻挂着的 reaction。 */
   reactions: Set<Reaction>;
   /** 全部 reaction 操作,按调用顺序,形如 `add:eyes` / `remove:+1`。 */
@@ -46,6 +52,10 @@ export function memoryForge(init: {
   const publishedComments: PublishedReviewComment[] = [];
   const resolvedIds: string[] = [];
   const unresolvedIds: string[] = [];
+  const createdBranches: { branch: string; fromSha: string }[] = [];
+  const deletedBranches: string[] = [];
+  const createdPullRequests: (NewPullRequest & { number: number })[] = [];
+  const closedPullRequests: number[] = [];
   const existing = [...(init.existingComments ?? [])];
   const existingReviewBodies: string[] = [];
   const reactions = new Set<Reaction>();
@@ -79,6 +89,21 @@ export function memoryForge(init: {
     unresolveComment: async (_ref: RepoRef, commentId: string) => {
       unresolvedIds.push(commentId);
     },
+    createBranch: async (_ref: RepoRef, branch: string, fromSha: string) => {
+      createdBranches.push({ branch, fromSha });
+    },
+    deleteBranch: async (_ref: RepoRef, branch: string) => {
+      deletedBranches.push(branch);
+    },
+    createPullRequest: async (_ref: RepoRef, input: NewPullRequest) => {
+      // 容器 PR 的序号与被审的 PR 分开,从 101 起,免得测试把两者看混。
+      const number = 101 + createdPullRequests.length;
+      createdPullRequests.push({ ...input, number });
+      return number;
+    },
+    closePullRequest: async (ref: PullRequestRef) => {
+      closedPullRequests.push(ref.number);
+    },
     cloneCredentials: async (_ref: RepoRef): Promise<CloneCredentials> => ({
       username: "bot",
       password: "unused-for-local-clone",
@@ -103,6 +128,10 @@ export function memoryForge(init: {
     existingReviewBodies,
     resolvedIds,
     unresolvedIds,
+    createdBranches,
+    deletedBranches,
+    createdPullRequests,
+    closedPullRequests,
     reactions,
     reactionLog,
   };

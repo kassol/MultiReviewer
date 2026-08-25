@@ -6,6 +6,7 @@ import type {
   CloneCredentials,
   ExistingReviewComment,
   Forge,
+  NewPullRequest,
   PublishedReviewComment,
   PullRequest,
   PullRequestRef,
@@ -59,6 +60,11 @@ function appJwt(appId: string, privateKey: string): string {
 }
 
 type InstallationToken = { token: string; expiresAt: number };
+
+/** 封存期间新增的 Forge 能力在这一侧的统一说法(ADR 0014)。 */
+function frozen(method: string): string {
+  return `GitHub 实现已封存(ADR 0014):${method} 未实现,容器 PR 的写能力只做 Gitea。`;
+}
 
 export function createGitHubForge(options: GitHubForgeOptions): Forge {
   const installationTokens = new Map<string, InstallationToken>();
@@ -267,6 +273,24 @@ export function createGitHubForge(options: GitHubForgeOptions): Forge {
 
     async unresolveComment(ref: RepoRef, commentId: string): Promise<void> {
       await graphql(ref, UNRESOLVE_MUTATION, { threadId: commentId });
+    },
+
+    // 容器 PR 的四个写能力只做 Gitea(ADR 0014)。封存期间不为 GitHub 保留兼容层:
+    // 调到就当场报错,静默什么都不做只会让范围审查建出半个容器 PR。
+    async createBranch(_ref: RepoRef, _branch: string, _fromSha: string): Promise<void> {
+      throw new Error(frozen("createBranch"));
+    },
+
+    async deleteBranch(_ref: RepoRef, _branch: string): Promise<void> {
+      throw new Error(frozen("deleteBranch"));
+    },
+
+    async createPullRequest(_ref: RepoRef, _input: NewPullRequest): Promise<number> {
+      throw new Error(frozen("createPullRequest"));
+    },
+
+    async closePullRequest(_ref: PullRequestRef): Promise<void> {
+      throw new Error(frozen("closePullRequest"));
     },
 
     async addReaction(ref: PullRequestRef, reaction: Reaction): Promise<void> {

@@ -7,7 +7,7 @@
 ## 目录结构
 
 - `forge/` — Forge 适配层。`forge.ts` 是接口与领域类型,每个平台一个实现文件。`gitea-hooks.ts` 是 Gitea 专属的 hook 管理模块,不进 `Forge` 接口(ADR 0002 的能力交集不含 hook 管理,面板只服务 Gitea)。
-- `git/` — 工作副本的准备与 diff 读取,直接调用 git 命令。
+- `git/` — 工作副本的准备、diff 读取与分支推送,直接调用 git 命令。
 - `review/` — Review Run 的编排。`run.ts` 是唯一入口 `runReview`,其余是它的内部构件:`store.ts` 是 SQLite 持久化,`fingerprint.ts` 算 Finding 的内容指纹并读写评论正文里的指纹锚点,`position.ts` 解析 diff(可评论的行区间与每个文件的改动行数),`batch.ts` 切批并合并各批次的执行结果。
 - `reviewer/` — Reviewer 的真实实现。`pi-reviewer.ts` 在主进程侧管子进程,`worker.ts` 是子进程入口,两者只经 `protocol.ts` 定义的消息通信。`numbered-read.ts` 与 `anchor.ts` 是 worker 的行号构件(见下)。`catalog.ts` 与 `vendor-catalog.ts` 只为显式模型服务发现读取 Pi 内置、pi.dev 增量与 OpenRouter 厂商目录;`model-service-runtime.ts` 负责发现、可信字段合成与最小真实推理;`model-runtime.ts` 只构造凭据和当前模型配置均隔离的 Pi 运行时。
 - `webhook/` — `server.ts` 是 HTTP 入口:路由表分发 `POST /webhook`(投递:准入验签、规范化两个平台的形状、判幂等、异步触发 `runReview`)与 `<前缀>/api/*`(面板 API),其余路径与方法一律 404。模型服务读取、候选验证、原子提交与 Review Run 固定计划都在这里接入 Store。候选发现与真实推理失败只向面板返回安全摘要和 request id,同一 id 的服务日志保留经已知秘密脱敏后的诊断原因。
@@ -64,6 +64,8 @@
 - 通过签名校验的投递记一行,写明这次做了什么(开始审查 / 草稿不审 / 已审过跳过 / action 不触发 / 非 pull request 事件)。没有这行时,服务正常工作与完全收不到投递在日志上一模一样,只有启动那一句。记录点在签名校验之后:未认证的请求谁都能发,记它们等于把日志交给外人写。仅有的例外是「未注册」与「代次不对」两类准入拒绝,见上面准入那条:按仓库只记首次、集合设上限、仓库名滤掉控制字符。日志出口是 `onDelivery`,与 `onRunSettled` 一样是可注入的,测试收进数组而不刷屏。
 - 前三档是本服务对 pull request 的判定结果,逐条记;后两档与本服务无关,按仓库 + 事件类型 / action 只记首次(`server.ts` 的 `logOnce`)。webhook 订阅通常宽于本服务要的两个 action,PR 下每条评论、每次打标签都投一次,逐条记会把判定结果淹掉。首次仍记而不是完全不记:「投递到底有没有到」只有这行能证明,它同时是测试对「收到了但不处理」的观测点。去重键带 `owner/repo`(`repoTag` 抽,非 PR 事件抽不到时退回全局键):一份实例服务多个仓库,不按仓库分桶时第一个仓库的 push 会把其余仓库的同类投递日志全吞掉,运维看不出后者的 webhook 通没通。去重状态在进程内,重启后每类每仓库再记一次。
 - `Forge` 接口只包含 Gitea 与 GitHub 都具备的能力(ADR 0002)。实现 GitHub 适配时不得因其能力更强而扩张接口。hook 管理不进这个接口,它是 `gitea-hooks.ts` 的 Gitea 专属能力。
+- 容器 PR 的四个写能力在 `Forge` 上是 `createBranch`(从 commit sha 建)、`deleteBranch`、`createPullRequest`(回 PR 序号)与 `closePullRequest`(ADR 0012)。Gitea 侧的端点依据逐处标在 `gitea.ts` 的注释里:建分支 `POST /repos/{owner}/{repo}/branches`,commit sha 走 `old_ref_name`(`old_branch_name` 已 Deprecated 且只收分支名);删分支 `DELETE /repos/{owner}/{repo}/branches/{分支}`,路由是通配段,分支名里的斜杠原样留在路径上,转义成 %2F 反而定位不到;建 PR `POST /repos/{owner}/{repo}/pulls`,`head` 与 `base` 都必须是分支名——这正是容器 PR 需要两条分支的原因;关 PR `PATCH /repos/{owner}/{repo}/pulls/{序号}`,只发 `state: "closed"`。GitHub 实现对这四个方法抛未实现(ADR 0014),封存期间不留兼容层。
+- 把某条分支推到指定 commit 走 `git/worktree.ts` 的 `pushBranch`,不进 Forge 接口:Gitea 没有这样的 API,`git push` 是正规途径(ADR 0012)。它与 `prepareWorktree` 共用同一份缓存工作副本和 `ensureClone`,并且必须带 `--force`——比较项只要求是 base 的后代,作者 rebase 之后新的比较项对旧的就是非快进。
 - hook 管理的契约细节以 `docs/research/gitea-webhook-api.md` 为准:同 URL 的 POST 会堆出重复 hook,幂等靠先列后建、按 `config.url` 匹配;订阅比对只能按集合(回显顺序来自 Go map 迭代);建 hook 用窄订阅哨兵 `pull_request_only` 加 `pull_request_sync`,`active` 必须显式置真;收敛核对看 events 集合、active 与 `config.content_type` 三样;PATCH 的 `events` 是全量覆盖、secret 改不了(换 Key 走删旧建新的轮转,ADR 0007);删 hook 的 404 视为成功;分页以空页收尾(实例会把 limit 钳到 `MAX_RESPONSE_ITEMS`);hook 端点要求仓库 admin 权限,write 不够。
 - `listReviewBodies` 读回 PR 上每条 review 的正文,不违反 ADR 0002:两个平台都能列出 PR 的 review 并拿到它的正文(Gitea 是 `GET /pulls/{index}/reviews` 返回的 `PullReview.Body`,GitHub 是同路径的 REST 端点),取的仍是两边能力的交集。GitHub 那侧不复用 `listReviewComments` 的 GraphQL reviewThreads——那里只有行级评论,没有 review 自己的正文。Gitea 那侧不像 `listReviewComments` 那样跟着 `comments_count` 为 0 跳过:Finding 全部落在 diff 之外的那一轮发出的正是「有正文、零行级评论」的 review,要匹配的锚点就在它的正文里。
 - Finding 的优先级是 `P0` / `P1` / `P2`,P0 最高。归一化层同时收下 `critical` / `high` / `medium` / `low` 这类形容词并映射到 P 级——收窄枚举会让模型自造词汇、调用被拒、Finding 全部丢失(ADR 0004),宽松接收加服务端归一化是配套的两半。
@@ -104,6 +106,8 @@
 第三方依赖只有 Pi(`@earendil-works/pi-coding-agent`)与它的 `typebox`,且只在 `reviewer/` 内使用。
 
 ## 变更日志
+
+- 2026-08-25: 落地 issue #154。`Forge` 新增容器 PR 生命周期的四个写能力 `createBranch` / `deleteBranch` / `createPullRequest` / `closePullRequest`,Gitea 按 1.26 的 `POST /branches`、`DELETE /branches/*`、`POST /pulls` 与 `PATCH /pulls/{index}` 落地(依据逐处标注),GitHub 侧抛未实现(ADR 0014)。`git/worktree.ts` 新增 `pushBranch`(`git push --force`,与 `prepareWorktree` 共用抽出的 `ensureClone`),把某条分支推到指定 commit。内存 Forge 记录四类调用,git fixture 新增 `makeBareRemote`。测试:`gitea-forge` 四条(四个端点的方法、路径与请求体)、新增 `forge-writes` 四条(推分支指向、非快进照样推得动、内存 Forge 的调用记录、GitHub 抛未实现)。
 
 - 2026-08-25: 落地 issue #153。Finding 记住承载它的 Forge 行级评论:`finding` 表加 `comment_id` 与 `comment_html_url` 两列(旧库经 `ADD_COLUMNS` 补,历史行为空),`Forge.createReview` 改回传 `PublishedReviewComment[]`,Gitea 按创建端点回的 review id 再取一次 `/reviews/{id}/comments` 拿 `id` 与 `html_url`,`ExistingReviewComment` 也带上 `htmlUrl`。`runReview` 落库仍先于发布,发布后按「路径 + 行号 + 正文」把评论对回合并组并走新增的 `store.recordFindingComments` 补写;跨轮折叠的记历史评论,正文 fallback 两项留空。`listRuns` 的每一轮多带一份 `findings`(模型、文件、行号与评论 id / 链接)。GitHub 侧封存不补(ADR 0014),`createReview` 回空数组。测试:`cross-run` 两条(行内记 id 与链接、fallback 为空;折叠记历史评论 id)、`persistence` 三条(时间流带链接、旧 finding 表补列、升级前的历史行读得出且两项为空)、`gitea-forge` 两条(按 review id 取回评论、零行级评论不多发请求)。
 

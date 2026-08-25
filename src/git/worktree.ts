@@ -67,6 +67,21 @@ export type Worktree = {
   mergeBaseSha: string;
 };
 
+/** 首次 clone,之后增量 fetch。缓存目录里因此总有一份能解析到目标 commit 的副本。 */
+async function ensureClone(
+  path: string,
+  cloneUrl: string,
+  auth: readonly string[],
+): Promise<void> {
+  if (!existsSync(join(path, ".git"))) {
+    await mkdir(dirname(path), { recursive: true });
+    await git(undefined, [...auth, "clone", "--quiet", cloneUrl, path]);
+  }
+
+  // clone 不会带上 pull ref,首次也要 fetch 一次。
+  await git(path, [...auth, "fetch", "--prune", "--quiet", "origin", ...FETCH_REFSPECS]);
+}
+
 /**
  * 按仓库缓存工作副本:首次 clone,之后增量 fetch,再 checkout 到 head commit。
  */
@@ -76,13 +91,7 @@ export async function prepareWorktree(
   const path = repoCachePath(options.cacheDir, options.ref);
   const auth = authArgs(options.cloneUrl, options.credentials);
 
-  if (!existsSync(join(path, ".git"))) {
-    await mkdir(dirname(path), { recursive: true });
-    await git(undefined, [...auth, "clone", "--quiet", options.cloneUrl, path]);
-  }
-
-  // clone 不会带上 pull ref,首次也要 fetch 一次。
-  await git(path, [...auth, "fetch", "--prune", "--quiet", "origin", ...FETCH_REFSPECS]);
+  await ensureClone(path, options.cloneUrl, auth);
 
   // 分离头指针:工作副本没有本地分支要维护,checkout 目标始终是一个 commit。
   await git(path, ["checkout", "--quiet", "--force", "--detach", options.headSha]);
@@ -93,6 +102,41 @@ export async function prepareWorktree(
   ).trim();
 
   return { path, mergeBaseSha };
+}
+
+export type PushBranchOptions = {
+  cacheDir: string;
+  ref: RepoRef;
+  cloneUrl: string;
+  credentials: CloneCredentials;
+  /** 要推的分支名,不带 `refs/heads/` 前缀。 */
+  branch: string;
+  /** 分支推完之后指向的 commit。 */
+  sha: string;
+};
+
+/**
+ * 把一条分支推到指定的 commit。
+ *
+ * Gitea 没有「把分支指到某个 sha」的 API,`git push` 是正规途径(ADR 0012)。用的是
+ * 与 Reviewer 同一份缓存工作副本,因此不额外 clone 一次。
+ *
+ * `--force`:比较项只要求是 base 的后代,不要求是上一个比较项的后代,作者 rebase 之后
+ * 新的比较项对旧的就是非快进,不带它这一推会被拒。
+ */
+export async function pushBranch(options: PushBranchOptions): Promise<void> {
+  const path = repoCachePath(options.cacheDir, options.ref);
+  const auth = authArgs(options.cloneUrl, options.credentials);
+
+  await ensureClone(path, options.cloneUrl, auth);
+  await git(path, [
+    ...auth,
+    "push",
+    "--force",
+    "--quiet",
+    "origin",
+    `${options.sha}:refs/heads/${options.branch}`,
+  ]);
 }
 
 /** 取 Review Range 的合并 diff。基准是 merge-base,与两个平台 PR 页面显示的一致。 */

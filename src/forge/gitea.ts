@@ -4,6 +4,7 @@ import type {
   CloneCredentials,
   ExistingReviewComment,
   Forge,
+  NewPullRequest,
   PublishedReviewComment,
   PullRequest,
   PullRequestRef,
@@ -294,6 +295,73 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
         "POST",
         `${repoPath(ref)}/pulls/comments/${commentId}/unresolve`,
       );
+    },
+
+    async createBranch(ref: RepoRef, branch: string, fromSha: string): Promise<void> {
+      // `POST /repos/{owner}/{repo}/branches`,见 `routers/api/v1/api.go` 的
+      // `m.Post("", ..., bind(api.CreateBranchRepoOption{}), repo.CreateBranch)` 与
+      // `routers/api/v1/repo/branch.go` 的 `CreateBranch`(swagger `repoCreateBranch`),
+      // 成功回 201。
+      //
+      // 请求体是 `modules/structs/repo.go` 的 `CreateBranchRepoOption`:
+      // `BranchName string json:"new_branch_name"`、
+      // `OldRefName string json:"old_ref_name"`(注释写作 "Name of the old
+      // branch/tag/commit to create from",commit sha 因此合法,`CreateBranch` 对它
+      // 先试 `GetCommit`)。同结构体里的 `old_branch_name` 已标 Deprecated 且只收
+      // 分支名,不用它。
+      await request(options, "POST", `${repoPath(ref)}/branches`, {
+        new_branch_name: branch,
+        old_ref_name: fromSha,
+      });
+    },
+
+    async deleteBranch(ref: RepoRef, branch: string): Promise<void> {
+      // `DELETE /repos/{owner}/{repo}/branches/{branch}`,`branch.go` 的 `DeleteBranch`
+      // (swagger `repoDeleteBranch`),成功回 204 无正文。
+      //
+      // 路由在 `api.go` 里是 `m.Delete("/*", ..., repo.DeleteBranch)`——通配段,分支名
+      // 里的斜杠原样留在路径上,转义成 %2F 反而定位不到分支。
+      //
+      // Gitea 只拦三种:默认分支与仓库配置的 PR target 分支("can not delete default
+      // or pull request target branch")、受保护分支、以及仓库是空库或镜像。容器 PR
+      // 的两条分支都不属于这些。
+      await request(options, "DELETE", `${repoPath(ref)}/branches/${branch}`);
+    },
+
+    async createPullRequest(ref: RepoRef, input: NewPullRequest): Promise<number> {
+      // `POST /repos/{owner}/{repo}/pulls`,`api.go` 里是 `/pulls` 组上的
+      // `m.Combo("").Post(..., bind(api.CreatePullRequestOption{}), repo.CreatePullRequest)`,
+      // 见 `routers/api/v1/repo/pull.go` 的 `CreatePullRequest`(swagger
+      // `repoCreatePullRequest`),成功回 201。
+      //
+      // 请求体是 `modules/structs/pull.go` 的 `CreatePullRequestOption`:`Head`、
+      // `Base`、`Title` 三项 `binding:"Required"`,`Body string json:"body"` 可选。
+      // 响应是 `PullRequest`,序号在 `Index int64 json:"number"` 上。
+      const created = await requestJson<{ number: number }>(
+        options,
+        "POST",
+        `${repoPath(ref)}/pulls`,
+        {
+          head: input.head,
+          base: input.base,
+          title: input.title,
+          body: input.body,
+        },
+      );
+      return created.number;
+    },
+
+    async closePullRequest(ref: PullRequestRef): Promise<void> {
+      // `PATCH /repos/{owner}/{repo}/pulls/{index}`,`api.go` 里是 `/pulls/{index}` 组上的
+      // `m.Combo("").Patch(..., bind(api.EditPullRequestOption{}), repo.EditPullRequest)`,
+      // 见 `pull.go` 的 `EditPullRequest`(swagger `repoEditPullRequest`)。
+      //
+      // 请求体是 `modules/structs/pull.go` 的 `EditPullRequestOption`,状态在
+      // `State *string json:"state"` 上,取 `open` / `closed`。其余字段都是指针或零值
+      // 可省,只发 state 就只改状态。
+      await request(options, "PATCH", `${repoPath(ref)}/pulls/${ref.number}`, {
+        state: "closed",
+      });
     },
 
     async addReaction(ref: PullRequestRef, reaction: Reaction): Promise<void> {

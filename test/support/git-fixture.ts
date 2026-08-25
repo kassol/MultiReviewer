@@ -88,6 +88,33 @@ export function makeRepo(options: RepoFixtureOptions): RepoFixture {
   };
 }
 
+/**
+ * 把一个仓库克隆成 bare 仓库,当作可推送的远端。
+ *
+ * 非 bare 仓库拒收推向它当前检出分支的推送(`denyCurrentBranch`),验证推分支要一个
+ * 真正的远端。
+ */
+export function makeBareRemote(source: string): {
+  dir: string;
+  /** 远端上这条分支指向的 commit;分支不存在时返回 undefined。 */
+  branchSha(branch: string): string | undefined;
+  cleanup(): void;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "multireviewer-remote-"));
+  execFileSync("git", ["clone", "--bare", "--quiet", source, dir]);
+  return {
+    dir,
+    branchSha(branch: string): string | undefined {
+      try {
+        return git(dir, "rev-parse", "--verify", `refs/heads/${branch}`);
+      } catch {
+        return undefined;
+      }
+    },
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
 /** 建一个空的缓存根目录,供工作副本使用。 */
 export function makeCacheDir(): { dir: string; cleanup(): void } {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-cache-"));

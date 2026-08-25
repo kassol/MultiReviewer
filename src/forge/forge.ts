@@ -76,6 +76,20 @@ export type CloneCredentials = {
 };
 
 /**
+ * 新建一个 pull request 所需的全部内容。
+ *
+ * `head` 与 `base` 都是分支名:Gitea 1.26 的建 PR 端点不收 commit sha
+ * (`CreatePullRequestOption.Head` 只认分支名或 `<用户>:<分支>`),容器 PR 因此需要
+ * 两条分支(ADR 0012)。
+ */
+export type NewPullRequest = {
+  head: string;
+  base: string;
+  title: string;
+  body: string;
+};
+
+/**
  * PR 上的 emoji reaction,用来表达审查进度。
  *
  * 只有这两个:`eyes` 是「正在审查」,`+1` 是「审查完毕,未发现问题」。取值用两个平台
@@ -102,6 +116,19 @@ export interface Forge {
   listReviewBodies(ref: PullRequestRef): Promise<string[]>;
   resolveComment(ref: RepoRef, commentId: string): Promise<void>;
   unresolveComment(ref: RepoRef, commentId: string): Promise<void>;
+  /**
+   * 从一个 commit 建分支。容器 PR 的两条分支都这么来(ADR 0012)。
+   *
+   * 只建新分支,不移动已有分支——把分支指到某个 commit 没有 API,那走本地 clone 的
+   * `pushBranch`。
+   */
+  createBranch(ref: RepoRef, branch: string, fromSha: string): Promise<void>;
+  /** 删分支。审查完成时清掉容器 PR 的两条分支,仓库里不留机器人残留。 */
+  deleteBranch(ref: RepoRef, branch: string): Promise<void>;
+  /** 建 pull request,返回它的序号。 */
+  createPullRequest(ref: RepoRef, input: NewPullRequest): Promise<number>;
+  /** 关闭 pull request。容器 PR 永不合并,终态只有关闭。 */
+  closePullRequest(ref: PullRequestRef): Promise<void>;
   cloneCredentials(ref: RepoRef): Promise<CloneCredentials>;
   /** 加一个 reaction。已经加过时不重复添加,也不报错。 */
   addReaction(ref: PullRequestRef, reaction: Reaction): Promise<void>;

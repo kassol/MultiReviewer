@@ -69,6 +69,10 @@ function routes(overrides: Record<string, Route> = {}): Record<string, Route> {
         },
       ],
     },
+    "POST /api/v1/repos/acme/widget/branches": { status: 201, body: { name: "multireviewer/1-base" } },
+    "DELETE /api/v1/repos/acme/widget/branches/multireviewer/1-base": { status: 204 },
+    "POST /api/v1/repos/acme/widget/pulls": { status: 201, body: { number: 42 } },
+    "PATCH /api/v1/repos/acme/widget/pulls/7": { status: 201, body: { number: 7 } },
     "POST /api/v1/repos/acme/widget/pulls/comments/501/resolve": { status: 204 },
     "POST /api/v1/repos/acme/widget/pulls/comments/501/unresolve": { status: 204 },
     ...overrides,
@@ -462,4 +466,70 @@ test("API 报错时抛出的错误不带上凭据", async (t) => {
   assert.match(error.message, /403/);
   assert.ok(!error.message.includes(TOKEN), "错误信息里带上了凭据");
   assert.ok(!error.stack?.includes(TOKEN), "调用栈里带上了凭据");
+});
+
+test("从 commit sha 建分支:POST /branches,老的一侧填 old_ref_name", async (t) => {
+  const stub = stubFetch(routes());
+  t.after(stub.restore);
+
+  await createGiteaForge(OPTIONS).createBranch(REF, "multireviewer/1-base", BASE_SHA);
+
+  const posted = stub.calls.find((c) => c.method === "POST")!;
+  assert.equal(posted.url, `${BASE_URL}/api/v1/repos/acme/widget/branches`);
+  // `old_branch_name` 已标 Deprecated 且只收分支名,commit sha 要走 `old_ref_name`。
+  assert.deepEqual(posted.body, {
+    new_branch_name: "multireviewer/1-base",
+    old_ref_name: BASE_SHA,
+  });
+  assert.equal(posted.auth, `token ${TOKEN}`);
+});
+
+test("删分支:DELETE /branches/<分支名>,分支名里的斜杠原样留在路径上", async (t) => {
+  const stub = stubFetch(routes());
+  t.after(stub.restore);
+
+  await createGiteaForge(OPTIONS).deleteBranch(REF, "multireviewer/1-base");
+
+  const deleted = stub.calls.find((c) => c.method === "DELETE")!;
+  // 路由是 `/branches/*` 通配,斜杠是路径的一部分,转义掉就找不到分支。
+  assert.equal(
+    deleted.url,
+    `${BASE_URL}/api/v1/repos/acme/widget/branches/multireviewer/1-base`,
+  );
+  assert.equal(deleted.auth, `token ${TOKEN}`);
+});
+
+test("建 pull request:POST /pulls,head 与 base 都是分支名,回的是 PR 序号", async (t) => {
+  const stub = stubFetch(routes());
+  t.after(stub.restore);
+
+  const number = await createGiteaForge(OPTIONS).createPullRequest(REF, {
+    head: "multireviewer/1-head",
+    base: "multireviewer/1-base",
+    title: "[MultiReviewer] 范围审查 abcdefg..1234567",
+    body: "面板链接",
+  });
+
+  assert.equal(number, 42);
+  const posted = stub.calls.find((c) => c.method === "POST")!;
+  assert.equal(posted.url, `${BASE_URL}/api/v1/repos/acme/widget/pulls`);
+  assert.deepEqual(posted.body, {
+    head: "multireviewer/1-head",
+    base: "multireviewer/1-base",
+    title: "[MultiReviewer] 范围审查 abcdefg..1234567",
+    body: "面板链接",
+  });
+  assert.equal(posted.auth, `token ${TOKEN}`);
+});
+
+test("关闭 pull request:PATCH /pulls/<序号>,只改 state", async (t) => {
+  const stub = stubFetch(routes());
+  t.after(stub.restore);
+
+  await createGiteaForge(OPTIONS).closePullRequest(REF);
+
+  const patched = stub.calls.find((c) => c.method === "PATCH")!;
+  assert.equal(patched.url, `${BASE_URL}/api/v1/repos/acme/widget/pulls/7`);
+  assert.deepEqual(patched.body, { state: "closed" });
+  assert.equal(patched.auth, `token ${TOKEN}`);
 });
