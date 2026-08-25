@@ -49,6 +49,8 @@ import {
   encryptCredential,
 } from "../panel/credential-crypto.ts";
 import {
+  listBranchCommits,
+  listBranches,
   prepareRangeDiff,
   pushBranch,
   readRangeDiffFiles,
@@ -1518,6 +1520,18 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     access: "finding:dispose",
     handler: ({ res, deps, caller }, match) =>
       handleCompleteRangeReview(res, deps, Number(match![1]), caller!.username),
+  },
+  {
+    method: "GET",
+    pattern: "/repo-branches",
+    access: "review:create",
+    handler: ({ req, res, deps }) => handleRepoBranches(req, res, deps),
+  },
+  {
+    method: "GET",
+    pattern: "/repo-commits",
+    access: "review:create",
+    handler: ({ req, res, deps }) => handleRepoCommits(req, res, deps),
   },
   {
     method: "GET",
@@ -4570,6 +4584,128 @@ function handleRangeReview(
     return sendJson(res, 404, { error: "没有这个范围审查" });
   }
   return sendJson(res, 200, found);
+}
+
+/** commit 选择器一页的提交数上限。人翻页翻的是一段历史,一次给太多只会更难认。 */
+const COMMITS_PAGE = 30;
+const COMMITS_PAGE_MAX = 100;
+
+/**
+ * commit 选择器两个接口的共同前半段:认出是哪个仓库,取到 clone 地址与凭据。
+ *
+ * 仓库必须已注册,与发起范围审查同一条门禁:未注册的仓库不该因为一次读请求就在服务器
+ * 上落一份 clone。前置拒绝时响应已经发出去,回 undefined 让调用方直接返回。
+ */
+async function resolveRepoGitTarget(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): Promise<
+  { ref: RepoRef; cloneUrl: string; defaultBranch: string; credentials: CloneCredentials } | undefined
+> {
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+  const owner = query.get("owner");
+  const repo = query.get("repo");
+  if (owner === null || repo === null) {
+    sendJson(res, 400, { error: "owner 与 repo 都要给" });
+    return undefined;
+  }
+  const registered = withStore(deps.dbPath, (store) => store.listRepos()).some(
+    (row) => row.owner === owner && row.repo === repo,
+  );
+  if (!registered) {
+    sendJson(res, 409, { error: "仓库不在注册表里,先注册再读它的分支与提交" });
+    return undefined;
+  }
+  const forge = deps.forges.gitea;
+  if (forge === undefined) {
+    sendJson(res, 503, { error: "gitea 没有配置 Forge,读不到仓库的分支与提交" });
+    return undefined;
+  }
+  const ref: RepoRef = { owner, repo };
+  try {
+    const [repository, credentials] = await Promise.all([
+      forge.getRepository(ref),
+      forge.cloneCredentials(ref),
+    ]);
+    return {
+      ref,
+      cloneUrl: repository.cloneUrl,
+      defaultBranch: repository.defaultBranch,
+      credentials,
+    };
+  } catch (error) {
+    sendJson(res, 502, { error: `读不到仓库或取不回代码:${failureText(error)}` });
+    return undefined;
+  }
+}
+
+/**
+ * 仓库的分支列表(issue #178)。commit 选择器的分支下拉读它。
+ *
+ * 每次都先 fetch(`listBranches`),刚推上去的提交因此立刻选得到。容器 PR 的两条分支
+ * 是本工具自己建的,按固定前缀滤掉——它们不是人要审的代码(ADR 0012)。
+ */
+async function handleRepoBranches(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): Promise<void> {
+  const target = await resolveRepoGitTarget(req, res, deps);
+  if (target === undefined) return;
+
+  let names: string[];
+  try {
+    names = await listBranches({ cacheDir: deps.cacheDir, ...target });
+  } catch (error) {
+    return sendJson(res, 502, { error: `取不回仓库的分支:${failureText(error)}` });
+  }
+  const branches = names
+    .filter((name) => !isContainerBranch(name))
+    .map((name) => ({ name, isDefault: name === target.defaultBranch }));
+  return sendJson(res, 200, { branches });
+}
+
+/**
+ * 一条分支上的提交(issue #178),新的在前,按 `offset` 翻页。
+ *
+ * 分支查不到就是 404:人手上那份分支列表可能已经过时,而调用方要知道的只是「这条分支
+ * 没有了」。
+ */
+async function handleRepoCommits(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): Promise<void> {
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+  const branch = query.get("branch");
+  if (branch === null || branch === "") {
+    return sendJson(res, 400, { error: "branch 要给" });
+  }
+  const offsetRaw = query.get("offset");
+  const offset = offsetRaw === null ? 0 : Number(offsetRaw);
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    return sendJson(res, 400, { error: "offset 要是非负整数" });
+  }
+  const limitRaw = query.get("limit");
+  const limit = limitRaw === null ? COMMITS_PAGE : Number(limitRaw);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > COMMITS_PAGE_MAX) {
+    return sendJson(res, 400, { error: `limit 要是 1 到 ${COMMITS_PAGE_MAX} 之间的整数` });
+  }
+
+  const target = await resolveRepoGitTarget(req, res, deps);
+  if (target === undefined) return;
+
+  let commits: Awaited<ReturnType<typeof listBranchCommits>>;
+  try {
+    commits = await listBranchCommits({ cacheDir: deps.cacheDir, ...target, branch, offset, limit });
+  } catch (error) {
+    return sendJson(res, 502, { error: `取不回这条分支的提交:${failureText(error)}` });
+  }
+  if (commits === undefined) return sendJson(res, 404, { error: "这个仓库里没有这条分支" });
+  // 这一页取满就还有下一页:提交总数要数完整段历史,为一个翻页按钮不值当。
+  const nextOffset = commits.length === limit ? offset + limit : null;
+  return sendJson(res, 200, { commits, nextOffset });
 }
 
 /**

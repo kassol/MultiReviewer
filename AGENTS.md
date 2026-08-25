@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-25: 落地 issue #178(spec #172)。**发起范围审查改用 commit 选择器,不再手输 sha**:表单里先选分支(默认选中仓库默认分支),再从这条分支的提交列表里点行分别设 base 与比较项,行上有短 sha、提交信息首行、作者与时间,列表分页加载;两端可以各自来自不同分支。数据来自服务端本地 clone(与 Reviewer 同一份),两个新的只读接口 `GET <前缀>/api/repo-branches` 与 `GET <前缀>/api/repo-commits` 权限格都是 `review:create`,仓库要已注册。**列分支前先 fetch**,刚推上去的 commit 立刻选得到;容器 PR 的机器人分支按 `multireviewer/` 前缀滤掉。发起接口与它的后代校验一字未改,选到非后代仍旧被拒并在表单里提示。`Forge.Repository` 补 `defaultBranch`。推进比较项复用同一选择器(base 锁定、非后代置灰)是 issue #179。服务端细节见 `src/AGENTS.md`,面板见 `web/AGENTS.md`。
+
 - 2026-08-25: 落地 issue #177(spec #172)。**范围审查从评审记录页头发起,并且有了自己的标题**:全局评审记录页头的入口先选仓库,仓库页评审记录区块的入口预填仓库,两处与范围审查页用的是同一张表单(`web/src/range-review-launch.tsx`)。表单三个字段——标题、base、比较项;标题必填且发起后不可改,`POST <前缀>/api/range-reviews` 缺标题或只给空白一律 400。`range_review` 补一列 `title`(升级前的旧行是 NULL,评审记录按 `#编号` 显示),`GET <前缀>/api/stages` 的范围审查行从此带着它。表单打开时读新的只读接口 `GET <前缀>/api/range-reviews/prefill?owner=&repo=`(权限格 `review:create`)预填 base:同仓库最近一个审查完成的范围审查的最终比较项,没有已完成的就留空。base 与比较项本票仍是手输 sha,提交列表选择器是 issue #178。「同仓库同 base 已有未完成范围审查时只提醒」一字未改。服务端细节见 `src/AGENTS.md`,面板见 `web/AGENTS.md`。
 
 - 2026-08-25: 落地 issue #175(spec #172)。**一个审查阶段有了自己的详情页**:地址是 `/stages/<阶段标识>`,标识就是评审记录行上的那个(`pr:<owner>/<repo>/<number>` 与 `range:<id>`),可以直接发给同事;pull request 阶段与范围审查阶段共用这一页。打开默认看到阶段汇总——这个阶段此刻还剩什么没处置,顶上三个数与筛选照旧;轮次降为其中的时间线,按一次代码推进分组:pull request 按 head commit,范围审查按比较项。点时间线上的某一轮切到那一轮的完整 diff 与审查轨迹,轮次记在地址上(`?run=`),刷新仍停在那一轮,也能切回阶段汇总;处置仍在 Finding 卡片里行内做。**评审记录列表与仓库页的评审记录区块点开一行改成跳这个地址**,两处原来的详情抽屉与列表页的 `?run=` 一并删掉,不做旧地址跳转。服务端新增 `GET <前缀>/api/stages/{stageId}`(`review:read`):阶段那一行与分组好的时间线一次给全,面板不用自己拼;标识里的斜杠在地址里编码成一段,查不到即 404。范围审查页此票不动,它的推进与审查完成入口仍在自己的详情里,由 issue #176 搬进详情页;重跑同理。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。

@@ -134,12 +134,12 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
       // 的 `Get`(swagger `repoGet`)。响应是 `modules/structs/repo.go:50` 的 `Repository`,
       // clone 地址在 `CloneURL string json:"clone_url"` 上——与 PR 那条路读的
       // `base.repo.clone_url` 是同一个字段。
-      const repository = await requestJson<{ clone_url: string }>(
+      const repository = await requestJson<{ clone_url: string; default_branch: string }>(
         options,
         "GET",
         repoPath(ref),
       );
-      return { cloneUrl: repository.clone_url };
+      return { cloneUrl: repository.clone_url, defaultBranch: repository.default_branch };
     },
 
     async getPullRequest(ref: PullRequestRef): Promise<PullRequest> {

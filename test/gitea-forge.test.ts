@@ -474,7 +474,7 @@ test("读仓库:GET /repos/<owner>/<repo>,clone 地址取 clone_url", async (t) 
   const stub = stubFetch(
     routes({
       "GET /api/v1/repos/acme/widget": {
-        body: { clone_url: `${BASE_URL}/acme/widget.git` },
+        body: { clone_url: `${BASE_URL}/acme/widget.git`, default_branch: "trunk" },
       },
     }),
   );
@@ -485,7 +485,10 @@ test("读仓库:GET /repos/<owner>/<repo>,clone 地址取 clone_url", async (t) 
     repo: "widget",
   });
 
-  assert.deepEqual(repository, { cloneUrl: `${BASE_URL}/acme/widget.git` });
+  assert.deepEqual(repository, {
+    cloneUrl: `${BASE_URL}/acme/widget.git`,
+    defaultBranch: "trunk",
+  });
   const read = stub.calls.find((c) => c.url.endsWith("/repos/acme/widget"))!;
   assert.equal(read.method, "GET");
   assert.equal(read.auth, `token ${TOKEN}`);

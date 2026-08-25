@@ -221,6 +221,97 @@ export async function resolveRange(options: ResolveRangeOptions): Promise<Resolv
   return { ok: true, baseSha, comparisonSha };
 }
 
+export type RepoReadOptions = {
+  cacheDir: string;
+  ref: RepoRef;
+  cloneUrl: string;
+  credentials: CloneCredentials;
+};
+
+/**
+ * 仓库的分支名(issue #178)。commit 选择器读的就是这一份,与 Reviewer 用的是同一个
+ * 本地 clone。
+ *
+ * 每次都先 fetch:人打开选择器是为了选刚推上去的那个 commit,拿一份旧副本给他等于
+ * 选不到。fetch 前的 clone 若还不存在,`ensureClone` 一并建出来。
+ *
+ * `refs/remotes/origin/` 下面除了分支还有两样东西:`FETCH_REFSPECS` 取回的 pull ref
+ * (`pull/<index>`)与 clone 留下的 `HEAD` 符号引用,两者都不是分支,滤掉。
+ */
+export async function listBranches(options: RepoReadOptions): Promise<string[]> {
+  const path = repoCachePath(options.cacheDir, options.ref);
+  const auth = authArgs(options.cloneUrl, options.credentials);
+
+  await ensureClone(path, options.cloneUrl, auth);
+
+  const output = await git(path, [
+    "for-each-ref",
+    "--format=%(refname:strip=3)",
+    "refs/remotes/origin/",
+  ]);
+  return output
+    .split("\n")
+    .filter((name) => name !== "" && name !== "HEAD" && !name.startsWith("pull/"));
+}
+
+/** commit 选择器里的一行。短 sha 取前 7 位,与容器 PR 标题、面板各处的写法一致。 */
+export type RepoCommit = {
+  sha: string;
+  shortSha: string;
+  /** 提交信息首行。`%s` 已经把折行的主题并成一行。 */
+  subject: string;
+  author: string;
+  authoredAt: string;
+};
+
+export type RepoCommitsOptions = RepoReadOptions & {
+  branch: string;
+  offset: number;
+  limit: number;
+};
+
+/** 字段分隔用 unit separator,记录分隔用 `-z` 的 NUL:两者都不可能出现在提交信息里。 */
+const COMMIT_FORMAT = "--format=%H%x1f%an%x1f%aI%x1f%s";
+
+/**
+ * 一条分支上的提交,新的在前,按 offset / limit 分页(issue #178)。
+ *
+ * 分支不存在时回 undefined:人手上那份分支列表可能已经过时,那是常规局面,不是服务出错。
+ * 这里不 fetch——选择器打开时列分支那一步刚取过,翻页再各来一次网络往返只是白等。
+ */
+export async function listBranchCommits(
+  options: RepoCommitsOptions,
+): Promise<RepoCommit[] | undefined> {
+  const path = repoCachePath(options.cacheDir, options.ref);
+  const auth = authArgs(options.cloneUrl, options.credentials);
+
+  // 分支名整段接在固定前缀后面,因此不会被 git 当成选项;副本还没建出来时先建。
+  const ref = `refs/remotes/origin/${options.branch}`;
+  if ((await resolveCommit(path, ref)) === undefined) {
+    await ensureClone(path, options.cloneUrl, auth);
+    if ((await resolveCommit(path, ref)) === undefined) return undefined;
+  }
+
+  const output = await git(path, [
+    "log",
+    "-z",
+    COMMIT_FORMAT,
+    `--skip=${options.offset}`,
+    `--max-count=${options.limit}`,
+    ref,
+  ]);
+  return splitNul(output).map((record) => {
+    const [sha, author, authoredAt, subject] = record.split("\x1f");
+    return {
+      sha: sha!,
+      shortSha: sha!.slice(0, 7),
+      subject: subject ?? "",
+      author: author ?? "",
+      authoredAt: authoredAt ?? "",
+    };
+  });
+}
+
 /** 取 Review Range 的合并 diff。基准是 merge-base,与两个平台 PR 页面显示的一致。 */
 export async function readRangeDiff(
   worktreePath: string,
