@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { normalizeFinding } from "../src/reviewer/normalize.ts";
+import { normalizeFinding, normalizeVerdict } from "../src/reviewer/normalize.ts";
 import { redactModelCredential, reviewerEnv } from "../src/reviewer/env.ts";
 
 const RAW = {
@@ -72,6 +72,31 @@ test("缺字段或行号非法的条目记录为异常", () => {
   ]) {
     const result = normalizeFinding(bad, "m");
     assert.equal(result.ok, false, `${JSON.stringify(bad)} 应当被判为异常`);
+  }
+});
+
+test("复核结论的新位置只留在「仍在」这一档", () => {
+  // 仍在带新位置:编排层据它在新位置合成本轮的一条去承接(issue #170)。
+  assert.deepEqual(normalizeVerdict({ id: 4, verdict: "still present", line: 12 }), {
+    findingId: 4,
+    verdict: "present",
+    line: 12,
+  });
+  // 已修与无法判断都没有可承接的位置,带着它只会让编排层在一处不成立的地方合成 Finding。
+  assert.deepEqual(normalizeVerdict({ id: 4, verdict: "fixed", line: 12 }), {
+    findingId: 4,
+    verdict: "fixed",
+  });
+  assert.deepEqual(normalizeVerdict({ id: 4, verdict: "vibes", line: 12 }), {
+    findingId: 4,
+    verdict: "unclear",
+  });
+  // 行号不是正整数即定不出位置,只留结论。
+  for (const line of [0, -3, 1.5]) {
+    assert.deepEqual(normalizeVerdict({ id: 4, verdict: "present", line }), {
+      findingId: 4,
+      verdict: "present",
+    });
   }
 });
 

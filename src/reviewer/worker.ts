@@ -18,7 +18,7 @@ import {
 import { Type } from "typebox";
 
 import type { HistoryFinding, RawFinding } from "../review/finding.ts";
-import { anchorReport } from "./anchor.ts";
+import { anchorFinding, anchorReport } from "./anchor.ts";
 import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, redactModelCredential } from "./env.ts";
 import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
 import { numberedRead } from "./numbered-read.ts";
@@ -46,7 +46,7 @@ The read tool prefixes every line with its line number, like \`12: code\`. These
 
 Write the title, description, impact and suggestion fields in Chinese. The reviewers of this repository read Chinese. Keep identifiers, file paths, and code fragments in their original form — do not translate them. The severity and category fields stay in the exact English values listed for them.
 
-When the prompt lists findings reported earlier in this review stage, call review_prior_finding exactly once for every one of them that is still open, and never report one of them again through report_finding.`;
+When the prompt lists findings reported earlier in this review stage, call review_prior_finding exactly once for every one of them that is still open, and never report one of them again through report_finding. When one of them is still there but its code was rewritten or moved, give the verdict present with the line and snippet of the place it sits now.`;
 
 /**
  * 枚举字段必须在自身的 `description` 里写明允许值。prototype 实测:仅用字面量联合
@@ -92,8 +92,20 @@ const verdictSchema = Type.Object({
   }),
   verdict: Type.String({
     description:
-      "One of exactly: present, fixed, unclear. present means the problem is still in the code — and if its lines were rewritten or moved, you must also call report_finding once at the new line. fixed means the code has been changed and the problem is gone. unclear means you cannot tell.",
+      "One of exactly: present, fixed, unclear. present means the problem is still in the code — and if its lines were rewritten or moved, also give line and snippet of the place it sits now. fixed means the code has been changed and the problem is gone. unclear means you cannot tell.",
   }),
+  line: Type.Optional(
+    Type.Integer({
+      description:
+        "Only with present, and only when the problem moved: the 1-indexed line it sits on now, copied from the read tool's line number prefix",
+    }),
+  ),
+  snippet: Type.Optional(
+    Type.String({
+      description:
+        "The exact text of that line, copied from the file without the line number prefix. Give it whenever you give line — a line without a matching snippet is dropped.",
+    }),
+  ),
 });
 
 function send(message: WorkerMessage): void {
@@ -131,7 +143,7 @@ function historySection(history: readonly HistoryFinding[]): string {
   const sections = [
     "",
     "The following findings were already reported in this review stage. Do not report any of them again through report_finding while the lines they point at are unchanged.",
-    "One exception: when the code of a still-open finding was rewritten or moved so that its original lines no longer exist but the problem is still there, give the verdict present AND report it once more through report_finding at its new line. That is how a finding follows the code; without the new report it stays pinned to a line that is gone.",
+    "One exception: when the code of a still-open finding was rewritten or moved so that its original lines no longer exist but the problem is still there, give the verdict present and add the line it sits on now together with the snippet of that line. That is how a finding follows the code; without the new line it stays pinned to a line that is gone. The new position in the verdict is enough — you do not have to report it again through report_finding.",
   ];
   if (open.length > 0) {
     sections.push(
@@ -206,18 +218,19 @@ async function run(request: ReviewerRequest): Promise<void> {
     },
   });
 
-  const knownHistoryIds = new Set(request.history.map((entry) => entry.id));
+  const historyById = new Map(request.history.map((entry) => [entry.id, entry]));
   const reviewPriorFinding = defineTool({
     name: REVIEW_PRIOR_FINDING_TOOL,
     label: "Review Prior Finding",
     description:
-      "Give your verdict on one finding reported earlier in this review stage: is it still present, fixed, or can you not tell?",
+      "Give your verdict on one finding reported earlier in this review stage: is it still present, fixed, or can you not tell? When it is still present but its code was rewritten or moved, give the line and snippet of the place it sits now instead of reporting it again.",
     parameters: verdictSchema,
     execute: async (_id, params) => {
-      const raw = params as { id: number; verdict: string };
+      const raw = params as { id: number; verdict: string; line?: number; snippet?: string };
       // 编出来的 id 对不到任何历史条目,打回让模型改用列表里的那个:静默收下会让
       // 一条真实的历史 Finding 少一个结论,而模型自己不会知道。
-      if (!knownHistoryIds.has(raw.id)) {
+      const entry = historyById.get(raw.id);
+      if (entry === undefined) {
         return {
           content: [
             {
@@ -228,7 +241,31 @@ async function run(request: ReviewerRequest): Promise<void> {
           details: {},
         };
       }
-      send({ kind: "verdict", raw: { id: raw.id, verdict: raw.verdict } });
+      if (raw.line === undefined) {
+        send({ kind: "verdict", raw: { id: raw.id, verdict: raw.verdict } });
+        return { content: [{ type: "text", text: "recorded" }], details: {} };
+      }
+      // 新位置与 report_finding 的行号同一道核对(issue #170):模型数行会数偏,抄下来的
+      // 代码不会。锚不上只丢这个位置,结论本身照收——「这个问题还在」是模型给的证据,
+      // 不该因为它把行号抄错而一起作废。
+      const lines = fileLines(request.worktreePath, entry.file);
+      const anchored =
+        lines === undefined
+          ? { ok: false as const, reason: `读不出 ${entry.file}。` }
+          : anchorFinding(lines, raw.line, raw.snippet ?? "");
+      if (!anchored.ok) {
+        send({ kind: "verdict", raw: { id: raw.id, verdict: raw.verdict } });
+        return {
+          content: [
+            {
+              type: "text",
+              text: `verdict recorded, new line NOT recorded: ${anchored.reason} Re-read ${entry.file} and call again with the line number copied from the read output.`,
+            },
+          ],
+          details: {},
+        };
+      }
+      send({ kind: "verdict", raw: { id: raw.id, verdict: raw.verdict, line: anchored.line } });
       return { content: [{ type: "text", text: "recorded" }], details: {} };
     },
   });

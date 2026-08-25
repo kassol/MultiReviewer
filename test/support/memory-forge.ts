@@ -210,11 +210,14 @@ export function scriptedReviewer(
 /**
  * 对本轮注入的每条历史都回同一个复核结论的 Reviewer(ADR 0016)。历史 Finding 的 id
  * 由注入决定,用例因此不必猜它在库里是第几行。
+ *
+ * `line` 是「仍在」这一档一并给出的新位置(issue #170),给了就每条结论都带同一个行号。
  */
 export function verdictReviewer(
   model: string,
   verdict: ReviewVerdict,
   findings: readonly ScriptedFinding[] = [],
+  line?: number,
 ): ReturnType<typeof scriptedReviewer> {
   const scripted = scriptedReviewer(model, findings);
   return {
@@ -222,7 +225,11 @@ export function verdictReviewer(
     calls: scripted.calls,
     review: async (range, worktreePath, history, onEvent) => ({
       ...(await scripted.review(range, worktreePath, history, onEvent)),
-      verdicts: history.map((entry) => ({ findingId: entry.id, verdict })),
+      verdicts: history.map((entry) => ({
+        findingId: entry.id,
+        verdict,
+        ...(line === undefined ? {} : { line }),
+      })),
     }),
   };
 }

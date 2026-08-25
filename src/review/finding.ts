@@ -59,6 +59,12 @@ export type FindingVerdict = {
   /** 对应 `HistoryFinding.id`。 */
   findingId: number;
   verdict: ReviewVerdict;
+  /**
+   * 仍在时这个问题此刻所在的行(issue #170)。模型给了新位置,编排层就据此在新位置合成
+   * 本轮的一条 Finding 去承接同一条 Identity,不再等它自己重报一遍。只有 `present`
+   * 这一档带它,且已经过 snippet 锚定核对。
+   */
+  line?: number;
 };
 
 /**
@@ -68,6 +74,8 @@ export type FindingVerdict = {
 export type RawVerdict = {
   id: number;
   verdict: string;
+  /** 仍在时的新位置(issue #170)。子进程先用 snippet 锚定核对过才回传,对不上不带。 */
+  line?: number;
 };
 
 /**
