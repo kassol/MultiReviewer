@@ -194,11 +194,9 @@ const VERIFICATION_LABEL: Record<NonNullable<ModelService["credential"]["verific
   inference: "真实推理",
 };
 
-function localMinute(iso: string | null | undefined): string {
-  if (iso === null || iso === undefined) return "未提供";
-  const date = new Date(iso);
-  const pad = (value: number): string => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+/** 凭据与目录的时间戳可能还没有,那一档写「未提供」;格式本身与全站同一份。 */
+function localMinuteOrMissing(iso: string | null | undefined): string {
+  return iso === null || iso === undefined ? "未提供" : localMinute(iso);
 }
 
 function quantity(value: number): string {
@@ -1486,8 +1484,8 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
                   : <span className="font-mono text-base tabular-nums">{service.credential.last4}</span>}
               </InfoField>
               {/* 时间戳走比例字:等宽把「2026-08-24 08:15」拉成一条比 model id 还长的格栅。 */}
-              <InfoField label="更新"><span className="tabular-nums">{localMinute(service.credential.updatedAt)}</span></InfoField>
-              <InfoField label="上次验证"><span className="tabular-nums">{localMinute(service.credential.verifiedAt)}</span></InfoField>
+              <InfoField label="更新"><span className="tabular-nums">{localMinuteOrMissing(service.credential.updatedAt)}</span></InfoField>
+              <InfoField label="上次验证"><span className="tabular-nums">{localMinuteOrMissing(service.credential.verifiedAt)}</span></InfoField>
               <InfoField label="验证模型">
                 <span className="block max-w-full overflow-x-auto whitespace-nowrap">
                   <MonoValue value={service.credential.validationModel} />
@@ -1514,8 +1512,8 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
           />
           <CardSection>
             <InfoGrid>
-              <InfoField label="最近尝试"><span className="tabular-nums">{localMinute(service.directory.lastAttemptAt)}</span></InfoField>
-              <InfoField label="最近成功"><span className="tabular-nums">{localMinute(service.directory.lastSuccessAt)}</span></InfoField>
+              <InfoField label="最近尝试"><span className="tabular-nums">{localMinuteOrMissing(service.directory.lastAttemptAt)}</span></InfoField>
+              <InfoField label="最近成功"><span className="tabular-nums">{localMinuteOrMissing(service.directory.lastSuccessAt)}</span></InfoField>
               {service.directory.ignoredModelCount > 0 ? (
                 <InfoField label="忽略无效项">
                   <span className="font-mono tabular-nums">{service.directory.ignoredModelCount}</span>
