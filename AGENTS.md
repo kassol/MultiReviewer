@@ -158,7 +158,6 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 - 2026-08-25: grill 完 issue #162,定下 Finding 跨 Reviewer 合并与以复核结论为证据的自动处置。CONTEXT.md 改写 Finding Identity 与 Disposition,新增审查阶段、复核、已延续三个词条;ADR 0015 取代 0006 的 Identity 键与模型维度,ADR 0016 取代 0013。实现待 spec,当时代码尚未跟进(Identity 与合并、`changed` 改名由 issue #164 落地,复核与自动处置在后续票)。
 
-
 - 2026-08-25: 修 issue #152 的跨轮处置。**处置备注、署名与「人已经看过」这件事不再活一轮就没**:一条 Finding 被新一轮再次报出、折叠回原来那条评论时,面板上填的备注、处置人与处置时刻跟着留在新的一轮上,不再只停在旧那一轮的记录里。人把「已改动」改回未处置之后,即便这条 Finding 又被报出一轮,后面代码真改了也不会再被自动处置一次——人的判断压过自动规则这条口径(ADR 0013)从此跨轮成立。处置结论本身的口径不变。细节见 `src/AGENTS.md`。
 
 - 2026-08-25: 落地 issue #160。**面板上能看到这一轮到底改了什么**:Review Run 详情不再是一份 Finding 清单,而是这一轮 Review Range 的完整 diff——文件列表加逐文件 diff,每条 Finding 挂在它所指的那一行下面,在那里直接 resolve / unresolve 并填备注,不用先记住行号再去 Gitea 找。diff 由服务端从 Reviewer 用的那份本地 clone 生成、按文件分块给,展开一个文件才取它的内容,几百个文件的改动也打得开。按文件、模型、处置状态筛选。指向的代码不在这次改动里、或者只在 review 正文里的那些单独列出,不藏。head commit 已经不在本地副本里(分支删了、仓库被强推过)时说明原因,不报 500。PR 触发与范围审查两类轮次同一个视图。看 diff 需要 `review:read`,处置仍需要 `finding:dispose`。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
