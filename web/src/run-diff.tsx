@@ -108,9 +108,9 @@ async function disposeRequest(input: {
 
 const SEVERITY_COLOR = { P0: "red", P1: "amber", P2: "gray" } as const;
 
-/** 已处置:人工与「已改动」自动处置都算(ADR 0013)。 */
+/** 已处置:人工与「已修复」自动处置都算。 */
 function findingDisposed(finding: RunFinding): boolean {
-  return finding.disposition === "resolved" || finding.disposition === "changed";
+  return finding.disposition === "resolved" || finding.disposition === "fixed";
 }
 
 /**
@@ -131,7 +131,7 @@ function FindingRow({
   const [note, setNote] = useState("");
   const [composing, setComposing] = useState(false);
   // 人工与自动两档都是已处置:划掉正文、给撤回动作。区别只在下面那行署名上。
-  const autoDisposed = finding.disposition === "changed";
+  const autoDisposed = finding.disposition === "fixed";
   const resolved = findingDisposed(finding);
   const dispose = useMutation({
     mutationFn: disposeRequest,
@@ -157,9 +157,15 @@ function FindingRow({
             </Badge>
           )}
           <Badge color="gray" variant="soft" radius="full">{finding.category}</Badge>
-          <span className="min-w-0 break-all font-mono text-sm text-text-muted">
-            {finding.model}
-          </span>
+          {/* 一条 Finding 可以由几个模型报出(ADR 0015):归属逐个列出,一个都不藏。 */}
+          {finding.models.map((model) => (
+            <span
+              key={model}
+              className="min-w-0 break-all font-mono text-sm text-text-muted"
+            >
+              {model}
+            </span>
+          ))}
         </div>
         {finding.commentHtmlUrl === null ? null : (
           <Tooltip content="在 Forge 上看这条原评论">
@@ -182,7 +188,7 @@ function FindingRow({
 
       {autoDisposed ? (
         <p className="text-sm text-text-muted">
-          代码已改动 · 自动处置
+          已修复 · 自动处置
           {finding.disposedAt === null ? null : (
             <>
               {" · "}
@@ -476,7 +482,7 @@ export function RunDiff({ run, canDispose }: { run: RunItem; canDispose: boolean
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
 
   const matches = (finding: RunFinding): boolean =>
-    (model === "all" || finding.model === model) &&
+    (model === "all" || finding.models.includes(model)) &&
     (disposition === "all" || (disposition === "disposed") === findingDisposed(finding));
 
   const files = diff.data?.files ?? [];

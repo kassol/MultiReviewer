@@ -20,8 +20,8 @@ export type Cell = {
   category: string;
   /** 分子的人工那一列:人在面板或 Gitea 上 resolve 的。 */
   resolved: number;
-  /** 分子的自动那一列:「已改动」自动处置(ADR 0013)。 */
-  changed: number;
+  /** 分子的自动那一列:「已修复」自动处置。 */
+  fixed: number;
   unresolved: number;
   unknownClosed: number;
   unknownOpen: number;
@@ -37,12 +37,12 @@ type StatsResponse = {
 
 /** 分母 = 已处置(人工 + 自动)+ 看过未 resolve + 已关闭 PR 上无人处置(ADR 0006)。 */
 function denominator(cell: Cell): number {
-  return cell.resolved + cell.changed + cell.unresolved + cell.unknownClosed;
+  return cell.resolved + cell.fixed + cell.unresolved + cell.unknownClosed;
 }
 
-/** 分子:人工与自动都算(ADR 0013)。两者的拆分在「按模型统计」那一段单列。 */
+/** 分子:人工与自动都算。两者的拆分在「按模型统计」那一段单列。 */
 function disposed(cell: Cell): number {
-  return cell.resolved + cell.changed;
+  return cell.resolved + cell.fixed;
 }
 
 function isoDay(ms: number): string {
@@ -114,7 +114,7 @@ function sum(cells: Cell[]): {
     (acc, cell) => ({
       resolved: acc.resolved + disposed(cell),
       manual: acc.manual + cell.resolved,
-      auto: acc.auto + cell.changed,
+      auto: acc.auto + cell.fixed,
       total: acc.total + denominator(cell),
     }),
     { resolved: 0, manual: 0, auto: 0, total: 0 },
@@ -204,7 +204,7 @@ export function StatsPage() {
               处置率
               <HelpTooltip
                 label="处置率计算方式"
-                content="处置率 = 已处置 Finding ÷ 可处置 Finding。已处置分人工与自动两列：人工是人点的 resolve，自动是代码已改动且未再报出时系统处置的。同一处 Finding 只统计一次；无法关联到行级评论的 Finding 不计入。"
+                content="处置率 = 已处置 Finding ÷ 可处置 Finding。已处置分人工与自动两列：人工是人点的 resolve，自动是系统判定已修复时处置的。同一处 Finding 只统计一次；无法关联到行级评论的 Finding 不计入。"
               />
             </span>
           }

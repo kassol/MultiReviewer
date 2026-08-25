@@ -30,7 +30,7 @@ const HASH = await hashPassword(PASSWORD);
 
 type RunFinding = {
   id: number;
-  model: string;
+  models: string[];
   file: string;
   line: number;
   severity: string;
@@ -100,8 +100,8 @@ test("详情投影列出 Finding 全部字段与 Forge 评论链接", async () =
   assert.notEqual(run, undefined);
   const inline = run!.findings.find((finding) => finding.file === "src/answer.ts" && finding.line === 1);
   assert.notEqual(inline, undefined);
-  // 模型来源就是报出它的那个 Reviewer 绑定的模型。
-  assert.equal(inline!.model, HARNESS_SPEC.model);
+  // 归属就是报出它的那些 Reviewer 绑定的模型(ADR 0015)。
+  assert.deepEqual(inline!.models, [HARNESS_SPEC.model]);
   assert.equal(inline!.severity, "P1");
   assert.equal(inline!.category, "bug");
   assert.equal(inline!.description, "这里会越界");

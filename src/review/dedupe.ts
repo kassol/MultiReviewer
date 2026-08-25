@@ -1,24 +1,42 @@
 import type { Category, Finding, Severity } from "./finding.ts";
 
 /**
- * 同一处问题被多个模型各自提出后合并的结果。
+ * 一条 Finding 的一个归属:某个 Reviewer 对这一处问题的说法(ADR 0015)。
  *
- * 合并保留每一条来源 Finding:模型对同一个缺陷的表述常常不同,只留一条会丢掉
- * 另一个模型看到的角度。
+ * 归属保留每个模型自己的严重度、分类与表述:模型对同一个缺陷的表述常常不同,只留一条
+ * 会丢掉另一个模型看到的角度。同一个模型在一个合并组里报了两条时只留严重度最高的那条
+ * ——归属的单位是模型,不是它按了几次 `report_finding`。
  */
-export type MergedFinding = {
-  file: string;
-  line: number;
+export type FindingAttribution = {
+  model: string;
   severity: Severity;
   category: Category;
-  /** 以下四段取严重度最高的那条来源。 */
   title: string;
   description: string;
   impact: string;
   suggestion: string;
-  /** 提出它的全部模型,按首次出现顺序。 */
+};
+
+/**
+ * 同一处问题被多个 Reviewer 各自提出后合并的结果。它是 Finding Identity 在一轮里的
+ * 呈现单位:一条 Finding 一条评论,归属记全部报出它的 Reviewer(ADR 0015)。
+ */
+export type MergedFinding = {
+  file: string;
+  line: number;
+  /** 取各归属里最高的那一档:宁可高估不漏。 */
+  severity: Severity;
+  /** 取首报那个 Reviewer 的分类:跨模型改口不挪格,与统计里的首轮归属同一取向。 */
+  category: Category;
+  /** 以下四段取严重度最高的那条归属,作为这一条的代表段。 */
+  title: string;
+  description: string;
+  impact: string;
+  suggestion: string;
+  /** 提出它的全部模型,按首报先后。 */
   models: string[];
-  sources: Finding[];
+  /** 每个模型各自的说法,与 `models` 同序。 */
+  attributions: FindingAttribution[];
 };
 
 /**
@@ -114,6 +132,10 @@ export function dedupeFindings(findings: readonly Finding[]): MergedFinding[] {
     else list.push(finding);
   }
 
+  // 报出的先后:入参按 Reviewer 的完成顺序排,分组时要按行号排,首报因此要先记下来
+  // ——归属的次序与合并后的分类都取它(ADR 0015)。
+  const reportOrder = new Map<Finding, number>(findings.map((f, index) => [f, index]));
+
   const merged: MergedFinding[] = [];
   for (const [file, fileFindings] of byFile) {
     const sorted = [...fileFindings].sort((a, b) => a.line - b.line);
@@ -129,20 +151,43 @@ export function dedupeFindings(findings: readonly Finding[]): MergedFinding[] {
       else group.push(finding);
     }
 
-    for (const group of groups) merged.push(mergeGroup(file, group));
+    for (const group of groups) {
+      merged.push(
+        mergeGroup(
+          file,
+          [...group].sort((a, b) => reportOrder.get(a)! - reportOrder.get(b)!),
+        ),
+      );
+    }
   }
 
   return merged;
 }
 
+/** 按首报先后排好的一组 Finding 合成一条。 */
 function mergeGroup(file: string, group: readonly Finding[]): MergedFinding {
   const leading = [...group].sort(
     (a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity],
   )[0]!;
 
-  const models: string[] = [];
+  // 一个模型一条归属,按首报先后。同一个模型报了两条时留严重度高的那条:归属的单位
+  // 是模型,不是它按了几次 report_finding。
+  const attributions: FindingAttribution[] = [];
   for (const finding of group) {
-    if (!models.includes(finding.model)) models.push(finding.model);
+    const said: FindingAttribution = {
+      model: finding.model,
+      severity: finding.severity,
+      category: finding.category,
+      title: finding.title,
+      description: finding.description,
+      impact: finding.impact,
+      suggestion: finding.suggestion,
+    };
+    const index = attributions.findIndex((a) => a.model === said.model);
+    if (index === -1) attributions.push(said);
+    else if (SEVERITY_RANK[said.severity] > SEVERITY_RANK[attributions[index]!.severity]) {
+      attributions[index] = said;
+    }
   }
 
   return {
@@ -150,12 +195,14 @@ function mergeGroup(file: string, group: readonly Finding[]): MergedFinding {
     // 取组内最小行号:偏保守,评论落在问题起始处而非中段。
     line: Math.min(...group.map((f) => f.line)),
     severity: leading.severity,
-    category: leading.category,
+    // 分类取首报(ADR 0015)。严重度取最高是为了不漏,分类没有高低之分,只能定一个
+    // 稳定的取值口径,取首报与统计里「首轮报出的 category 为准」同一取向。
+    category: group[0]!.category,
     title: leading.title,
     description: leading.description,
     impact: leading.impact,
     suggestion: leading.suggestion,
-    models,
-    sources: [...group],
+    models: attributions.map((a) => a.model),
+    attributions,
   };
 }

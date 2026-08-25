@@ -92,10 +92,12 @@ CREATE TABLE IF NOT EXISTS reviewer_outcome (
   cost_source TEXT
 );
 
+-- 一条 Finding 一行:Finding Identity 是「pull request + 文件 + 内容指纹」,不含模型
+-- (ADR 0015)。报出它的模型各记一条 finding_attribution,同一处问题不论几个模型报出
+-- 都只有这一行、只有一条 Forge 评论。
 CREATE TABLE IF NOT EXISTS finding (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id INTEGER NOT NULL REFERENCES review_run(id),
-  model TEXT NOT NULL,
   file TEXT NOT NULL,
   line INTEGER NOT NULL,
   severity TEXT NOT NULL,
@@ -113,8 +115,8 @@ CREATE TABLE IF NOT EXISTS finding (
   comment_html_url TEXT,
   -- 作出这次处置的人与时刻。回填链路不写这两列:在 Gitea 上点的 resolve 没有面板
   -- 身份可记,那一档留 NULL,disposed_by 非 NULL 即「人在面板上显式设置过」。
-  -- 「已改动」自动处置(ADR 0013)只写 disposed_at,处置人留空:disposed_at 非 NULL
-  -- 因此等于「这一行被显式处置过一次」,自动规则据此不再碰它。
+  -- 「已修复」自动处置(判据仍是 ADR 0013)只写 disposed_at,处置人留空:disposed_at
+  -- 非 NULL 因此等于「这一行被显式处置过一次」,自动规则据此不再碰它。
   disposed_by TEXT,
   disposed_at TEXT,
   -- 处置备注(CONTEXT.md):只存面板,不写入 Forge。至多一条,unresolve 之后仍留着。
@@ -122,6 +124,20 @@ CREATE TABLE IF NOT EXISTS finding (
 );
 
 CREATE INDEX IF NOT EXISTS finding_by_run ON finding(run_id);
+
+-- 一条 Finding 的归属:报出它的每个模型一行,带它自己的严重度、分类与表述(ADR 0015)。
+-- position 是首报先后,0 即首报——合并后的分类取它,统计矩阵的模型也取它。
+CREATE TABLE IF NOT EXISTS finding_attribution (
+  finding_id INTEGER NOT NULL REFERENCES finding(id),
+  position INTEGER NOT NULL,
+  model TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  category TEXT NOT NULL,
+  description TEXT NOT NULL,
+  PRIMARY KEY (finding_id, position),
+  UNIQUE (finding_id, model)
+);
+CREATE INDEX IF NOT EXISTS finding_attribution_by_model ON finding_attribution(model);
 
 -- 回填的索引:回填按「文件 + 指纹」改行、按 PR 定位 Review Run。统计矩阵是全表
 -- 聚合,时间窗过滤在聚合之后,建不出能用上的索引。
@@ -386,9 +402,10 @@ const ADD_INDEXES = [
 
 
 /*
- * 历史的裸 model id 不回填(issue #73 的取舍)。升级前 `finding.model` 与
- * `reviewer_outcome.model` 存的是裸 model id,新形态是 `provider:model`,而 provider
- * 从库里恢复不出来——两张表都没记过它,当前的模型组合也不是历史的证据:同一个 model id
+ * 历史的裸 model id 不回填(issue #73 的取舍)。升级前 `finding.model`(现已改为
+ * `finding_attribution.model`)与 `reviewer_outcome.model` 存的是裸 model id,新形态是
+ * `provider:model`,而 provider 从库里恢复不出来——两张表都没记过它,当前的模型组合
+ * 也不是历史的证据:同一个 model id
  * 当初走 deepseek 直连、现在只配了 openrouter,按当前组合反查就会把历史 Finding 永久
  * 标成 openrouter,而这一步改完再也回不去。
  *
@@ -415,7 +432,7 @@ const PULL_REQUEST_SCOPE = `run_id IN (SELECT id FROM review_run
 /**
  * 还能自动处置的那些行(ADR 0013):当前处置是 unknown 或未处置,且从来没有被显式
  * 处置过。`disposed_at` 就是那个标记——面板处置写它,自动处置也写它(处置人留空),
- * 于是一行至多被自动处置一次:人把「已改动」改回未处置之后,自动规则不再碰它。
+ * 于是一行至多被自动处置一次:人把「已修复」改回未处置之后,自动规则不再碰它。
  */
 const AUTO_DISPOSABLE = "disposition IN ('unknown', 'unresolved') AND disposed_at IS NULL";
 
@@ -455,19 +472,33 @@ export type OutcomeRecord = {
 /** Finding 的来源类型:进了行级评论,还是只进了 review 正文(fallback 与正文匹配)。 */
 export type FindingPlacement = "inline" | "body";
 
-/** 一条来源 Finding。`groupIndex` 是它在本次 Review Run 中所属合并组的序号。 */
-export type FindingRecord = {
+/** 一条 Finding 的一个归属:报出它的那个模型自己的说法(ADR 0015)。 */
+export type FindingAttributionRecord = {
   model: string;
-  file: string;
-  line: number;
   severity: Severity;
   category: Category;
   description: string;
+};
+
+/**
+ * 一条 Finding。`groupIndex` 是它在本次 Review Run 中的合并组序号,发布之后按它把
+ * Forge 评论标识记回来。
+ */
+export type FindingRecord = {
+  file: string;
+  line: number;
+  /** 各归属里最高的那一档。 */
+  severity: Severity;
+  /** 首报那个模型的分类。 */
+  category: Category;
+  /** 代表段:严重度最高的那条归属的表述。逐模型的表述在 `attributions` 里。 */
+  description: string;
+  /** 报出它的每个模型一条,按首报先后。至少一条。 */
+  attributions: readonly FindingAttributionRecord[];
   fingerprint?: string;
   groupIndex: number;
-  /** 本轮读回的处置结论。同一合并组内各来源共用一条评论,取值相同。 */
+  /** 本轮读回的处置结论。 */
   disposition: Disposition;
-  /** 同一合并组共用一个来源类型,组内各来源取值相同。 */
   placement: FindingPlacement;
   /** 承载它的 Forge 评论 id。本轮新发的评论要等发布之后才知道,那时走 `recordFindingComments`。 */
   commentId?: string;
@@ -495,8 +526,8 @@ export type DispositionUpdate = {
 };
 
 /**
- * 「已改动」自动处置(ADR 0013)的一个候选:一处 Finding 的锚点,加上承载它的那条
- * Forge 评论——自动处置写回 Forge 的仍是同一个 resolve,载体与人工处置是同一条。
+ * 「已修复」自动处置(判据仍是 ADR 0013)的一个候选:一处 Finding 的锚点,加上承载它
+ * 的那条 Forge 评论——自动处置写回 Forge 的仍是同一个 resolve,载体与人工处置是同一条。
  */
 export type AutoDispositionCandidate = {
   file: string;
@@ -541,16 +572,20 @@ export type RunResult = {
 
 /**
  * 处置率矩阵的一格:模型 × category。计数单位是**同一处 Finding**(Finding Identity,
- * 见 CONTEXT.md),不是落库行。分母 = resolved + changed + unresolved + unknownClosed;
+ * 见 CONTEXT.md),不是落库行。分母 = resolved + fixed + unresolved + unknownClosed;
  * unknownOpen 不进分母也不上页面,API 带上它只为让口径可对账。
+ *
+ * Identity 去掉模型之后(ADR 0015)一条 Finding 可以有几个归属,这一格的模型取**首报**
+ * 那一个:按每个归属各计一次会让同一条进几格,分母重复计入、比率不可解释。模型这一维
+ * 由后续票改成「参与条数」。
  */
 export type DispositionCell = {
   model: string;
   category: string;
   /** 分子的人工那一列:人在面板或 Gitea 上 resolve 的(折叠组内任一行算数)。 */
   resolved: number;
-  /** 分子的自动那一列:「已改动」自动处置(ADR 0013)。人工处置优先于它。 */
-  changed: number;
+  /** 分子的自动那一列:「已修复」自动处置。人工处置优先于它。 */
+  fixed: number;
   /** 人看过但未 resolve。 */
   unresolved: number;
   /** 已关闭 PR 上仍无人处置——到了终态还没人处置,那就是未处置,进分母。 */
@@ -772,7 +807,7 @@ export type RepoSummary = {
   reviewersJson: string | null;
   /** 累计 Review Run 数。按注册时的 owner/repo 匹配评审记录。 */
   runCount: number;
-  /** 累计来源 Finding 数(落库行数,非合并组数)。 */
+  /** 累计 Finding 数(落库行数,同一处的多个模型只算一条)。 */
   findingCount: number;
   /** 最近一次 Review Run 的开始时间,没跑过为 null。 */
   lastActivity: string | null;
@@ -823,13 +858,14 @@ export type RunListItem = {
   /** 本轮固定的模型服务版本与运行模型，不含凭据。 */
   reviewerPins: ReviewRunReviewerPin[];
   /**
-   * 本轮落库的每一条来源 Finding,带承载它的 Forge 评论 id 与链接。面板据此按评论
+   * 本轮落库的每一条 Finding,带承载它的 Forge 评论 id 与链接。面板据此按评论
    * 处置并跳到 Forge 看原版;正文 fallback 没有行级评论,两项为 null。
    */
   findings: {
     /** 落库行的 id。面板按它处置一条 Finding。 */
     id: number;
-    model: string;
+    /** 报出它的全部模型,按首报先后(ADR 0015)。 */
+    models: string[];
     file: string;
     line: number;
     severity: Severity;
@@ -845,10 +881,10 @@ export type RunListItem = {
     /** 处置备注,只存面板。 */
     note: string | null;
   }[];
-  /** 人工处置掉的合并组数。 */
+  /** 人工处置掉的 Finding 条数。 */
   resolved: number;
-  /** 「已改动」自动处置掉的合并组数(ADR 0013)。 */
-  changed: number;
+  /** 「已修复」自动处置掉的 Finding 条数。 */
+  fixed: number;
   total: number;
 };
 
@@ -1153,8 +1189,8 @@ export type Store = {
   getFinding(id: number): FindingDispositionTarget | undefined;
   /**
    * 面板作出的一次处置。写的是「承载它的那条 Forge 评论」名下、同一仓库里的每一行:
-   * 一个合并组落成一条评论,resolve 作用在评论上,组内每一条来源 Finding 的处置因此
-   * 一起变;跨轮折叠的历史行记的也是同一条评论,同样跟着变。
+   * 一条 Finding 落成一条评论,resolve 作用在评论上;跨轮折叠的历史行记的也是同一条
+   * 评论,同样跟着变。
    *
    * `note` 省略即保留原备注:unresolve 之后备注仍要留着(CONTEXT.md 处置备注)。
    * 返回被改写的行数。
@@ -1193,8 +1229,8 @@ export type Store = {
     candidates: readonly AutoDispositionCandidate[],
   ): AutoDispositionCandidate[];
   /**
-   * 记一次「已改动」自动处置(ADR 0013)。处置人留空——这一档不是人做的;处置时刻
-   * 照记,它同时是「这一行已被显式处置过」的标记,自动规则据此至多碰一行一次。
+   * 记一次「已修复」自动处置(判据仍是 ADR 0013)。处置人留空——这一档不是人做的;
+   * 处置时刻照记,它同时是「这一行已被显式处置过」的标记,自动规则据此至多碰一行一次。
    */
   recordAutoDisposition(
     owner: string,
@@ -1207,7 +1243,7 @@ export type Store = {
    * 回填 disposition(ADR 0006):对这个 pull request 名下、文件与指纹都对上的全部
    * 历史 finding,以 Forge 的最新状态覆盖已有值——人 resolve 后又 unresolve,库里跟着改。
    *
-   * 「已改动」不被读回的 resolved 降级成人工处置那一档(ADR 0013)。
+   * 「已修复」不被读回的 resolved 降级成人工处置那一档。
    */
   backfillDispositions(
     owner: string,
@@ -1348,6 +1384,151 @@ export function sumUsage(
 }
 
 
+/** 高的在前,与 `dedupe.ts` 的 SEVERITY_RANK 同序。 */
+const MIGRATION_SEVERITY_RANK: Record<string, number> = { P0: 3, P1: 2, P2: 1 };
+
+/** 同一处上取最强的那一档,与处置率折叠同序。旧字面量 `changed` 与 `fixed` 同档。 */
+const MIGRATION_DISPOSITION_RANK: Record<string, number> = {
+  resolved: 3,
+  fixed: 2,
+  changed: 2,
+  unresolved: 1,
+  unknown: 0,
+};
+
+/**
+ * 把升级前「一模型一行」的 finding 按新的 Finding Identity 重新折叠(ADR 0015)。
+ *
+ * 键是「同一轮 + 文件 + 指纹」,算不出指纹的退回它当初的合并组序号——那正是它当初落成
+ * 的那一条评论。组内 id 最小的那行留下:它是首报,分类与归属次序都以它为准;严重度取
+ * 组内最高,代表段取严重度最高的那条,处置取最强的那一档。每一条旧行留一条模型归属,
+ * 历史统计因此不断裂。
+ *
+ * `changed` 改写为 `fixed`(只换名不换义,判据仍是 ADR 0013 的指纹规则)。重新折叠、
+ * 归属写入、删旧行、去掉 model 列与改写字面量全在同一个事务里:中途失败整体回滚,
+ * 下次启动从原样重来。
+ */
+function foldFindingIdentity(db: DatabaseSync): void {
+  const legacyShape = db
+    .prepare("PRAGMA table_info(finding)")
+    .all()
+    .some((row) => String(row["name"]) === "model");
+  const legacyLiteral =
+    db.prepare("SELECT 1 FROM finding WHERE disposition = 'changed' LIMIT 1").get() !==
+    undefined;
+  if (!legacyShape && !legacyLiteral) return;
+
+  db.exec("BEGIN");
+  try {
+    if (legacyShape) {
+      const rows = db
+        .prepare(
+          `SELECT id, run_id, model, file, line, severity, category, description,
+                  fingerprint, group_index, disposition, placement,
+                  comment_id, comment_html_url, disposed_by, disposed_at, disposition_note
+             FROM finding ORDER BY id`,
+        )
+        .all();
+
+      const groups = new Map<string, Record<string, unknown>[]>();
+      for (const row of rows) {
+        // 指纹算不出的行退回合并组序号:它与同组的其他行落在同一条评论上。
+        const anchor =
+          row["fingerprint"] === null
+            ? `group:${String(row["group_index"])}`
+            : String(row["fingerprint"]);
+        const key = `${String(row["run_id"])}\n${String(row["file"])}\n${anchor}`;
+        const list = groups.get(key) ?? [];
+        list.push(row);
+        groups.set(key, list);
+      }
+
+      const updateKeeper = db.prepare(
+        `UPDATE finding
+            SET line = ?, severity = ?, category = ?, description = ?,
+                disposition = ?, comment_id = ?, comment_html_url = ?,
+                disposed_by = ?, disposed_at = ?, disposition_note = ?
+          WHERE id = ?`,
+      );
+      const insertAttribution = db.prepare(
+        `INSERT INTO finding_attribution
+           (finding_id, position, model, severity, category, description)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      const deleteRow = db.prepare("DELETE FROM finding WHERE id = ?");
+      const firstNotNull = (
+        list: readonly Record<string, unknown>[],
+        column: string,
+      ): unknown => list.find((row) => row[column] !== null)?.[column] ?? null;
+      const strongest = (
+        list: readonly Record<string, unknown>[],
+        column: string,
+        rank: Record<string, number>,
+      ): string =>
+        [...list].sort(
+          (a, b) => (rank[String(b[column])] ?? 0) - (rank[String(a[column])] ?? 0),
+        )[0]![column] as string;
+
+      for (const group of groups.values()) {
+        const keeper = group[0]!;
+        const bySeverity = [...group].sort(
+          (a, b) =>
+            (MIGRATION_SEVERITY_RANK[String(b["severity"])] ?? 0) -
+            (MIGRATION_SEVERITY_RANK[String(a["severity"])] ?? 0),
+        );
+        const leading = bySeverity[0]!;
+        updateKeeper.run(
+          Math.min(...group.map((row) => Number(row["line"]))),
+          String(leading["severity"]),
+          String(keeper["category"]),
+          String(leading["description"]),
+          strongest(group, "disposition", MIGRATION_DISPOSITION_RANK),
+          firstNotNull(group, "comment_id") as string | null,
+          firstNotNull(group, "comment_html_url") as string | null,
+          firstNotNull(group, "disposed_by") as string | null,
+          firstNotNull(group, "disposed_at") as string | null,
+          firstNotNull(group, "disposition_note") as string | null,
+          Number(keeper["id"]),
+        );
+
+        // 一个模型一条归属,按首报先后;同一个模型在组里有两行时留严重度高的那条。
+        const attributions: Record<string, unknown>[] = [];
+        for (const row of group) {
+          const index = attributions.findIndex((a) => a["model"] === row["model"]);
+          if (index === -1) attributions.push(row);
+          else if (
+            (MIGRATION_SEVERITY_RANK[String(row["severity"])] ?? 0) >
+            (MIGRATION_SEVERITY_RANK[String(attributions[index]!["severity"])] ?? 0)
+          ) {
+            attributions[index] = row;
+          }
+        }
+        for (const [position, said] of attributions.entries()) {
+          insertAttribution.run(
+            Number(keeper["id"]),
+            position,
+            String(said["model"]),
+            String(said["severity"]),
+            String(said["category"]),
+            String(said["description"]),
+          );
+        }
+
+        for (const row of group.slice(1)) deleteRow.run(Number(row["id"]));
+      }
+
+      db.exec("ALTER TABLE finding DROP COLUMN model");
+    }
+
+    // 只换名不换义:这一档的判据没变,名字从「已改动」变成「已修复」(ADR 0016)。
+    db.exec("UPDATE finding SET disposition = 'fixed' WHERE disposition = 'changed'");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 /** 打开当前 schema；schema-v0 数据库必须先经过模型服务迁移器。 */
 export function openStore(dbPath: string): Store {
   const db = new DatabaseSync(dbPath, { timeout: BUSY_TIMEOUT_MS });
@@ -1383,6 +1564,13 @@ export function openStore(dbPath: string): Store {
     }
   }
   for (const statement of ADD_INDEXES) db.exec(statement);
+  try {
+    foldFindingIdentity(db);
+  } catch (error) {
+    // 迁移整笔回滚了,库还是升级前那副样子。句柄跟着还回去:webhook 服务是长跑进程。
+    db.close();
+    throw error;
+  }
   const reviewRunColumns = new Set(
     db.prepare("PRAGMA table_info(review_run)").all().map((row) => String(row["name"])),
   );
@@ -2727,15 +2915,19 @@ export function openStore(dbPath: string): Store {
 
         const insertFinding = db.prepare(
           `INSERT INTO finding
-             (run_id, model, file, line, severity, category, description,
+             (run_id, file, line, severity, category, description,
               fingerprint, group_index, disposition, placement,
               comment_id, comment_html_url)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        );
+        const insertAttribution = db.prepare(
+          `INSERT INTO finding_attribution
+             (finding_id, position, model, severity, category, description)
+           VALUES (?, ?, ?, ?, ?, ?)`,
         );
         for (const finding of result.findings) {
-          insertFinding.run(
+          const inserted = insertFinding.run(
             runId,
-            finding.model,
             finding.file,
             finding.line,
             finding.severity,
@@ -2748,6 +2940,17 @@ export function openStore(dbPath: string): Store {
             finding.commentId ?? null,
             finding.commentHtmlUrl ?? null,
           );
+          const findingId = Number(inserted.lastInsertRowid);
+          for (const [position, said] of finding.attributions.entries()) {
+            insertAttribution.run(
+              findingId,
+              position,
+              said.model,
+              said.severity,
+              said.category,
+              said.description,
+            );
+          }
         }
 
         // 折叠到已有 Forge 评论的行继承那条评论上一次处置的元数据(issue #152)。处置
@@ -2783,22 +2986,23 @@ export function openStore(dbPath: string): Store {
         `UPDATE finding SET comment_id = ?, comment_html_url = ?
           WHERE run_id = ? AND group_index = ?`,
       );
-      // 一个合并组落成一条评论,组内每一条来源 Finding 都记它:处置率按提出它的模型
-      // 统计,而处置的载体是整组共享的那一条评论。
+      // 一个合并组落成一条 Finding、一条评论:处置的载体就是它。
       for (const ref of refs) {
         update.run(ref.commentId, ref.commentHtmlUrl, runId, ref.groupIndex);
       }
     },
 
     dispositionStats(from, to) {
-      // 三层:src 摊平行,identity 按「PR + 模型 + 文件 + 指纹」折叠(指纹为 NULL 的
-      // 行用自己的 id 兜底成独立键——算不出指纹就各算一条),labeled 给每个 identity
-      // 取它首次报出那一行的 category(category 不进折叠键,跨轮漂移时以首次为准,
-      // 与时间窗归属同一轮)。
+      // 三层:src 摊平行(模型取那一行的首报归属),identity 按「PR + 文件 + 指纹」折叠
+      // ——Finding Identity 不含模型(ADR 0015),指纹为 NULL 的行用自己的 id 兜底成
+      // 独立键(算不出指纹就各算一条);labeled 给每个 identity 取它首次报出那一行的
+      // category 与模型(两者都不进折叠键,跨轮漂移时以首次为准,与时间窗归属同一轮)。
       const rows = db
         .prepare(
           `WITH src AS (
-             SELECT f.id, f.model, f.category, f.file, f.disposition,
+             SELECT f.id, f.category, f.file, f.disposition,
+                    (SELECT a.model FROM finding_attribution a
+                      WHERE a.finding_id = f.id ORDER BY a.position LIMIT 1) AS model,
                     COALESCE(f.fingerprint, 'row:' || f.id) AS fp,
                     run.owner, run.repo, run.pull_number, run.started_at,
                     CASE WHEN run.pr_state = 'closed' THEN 1 ELSE 0 END AS closed
@@ -2807,29 +3011,34 @@ export function openStore(dbPath: string): Store {
               WHERE f.placement = 'inline'
            ),
            identity AS (
-             SELECT model, owner, repo, pull_number, file, fp,
+             SELECT owner, repo, pull_number, file, fp,
                     MIN(started_at) AS first_seen,
                     MAX(CASE disposition
                           WHEN 'resolved' THEN 3
-                          WHEN 'changed' THEN 2
+                          WHEN 'fixed' THEN 2
                           WHEN 'unresolved' THEN 1
                           ELSE 0 END) AS disp,
                     MAX(closed) AS closed
                FROM src
-              GROUP BY model, owner, repo, pull_number, file, fp
+              GROUP BY owner, repo, pull_number, file, fp
            ),
            labeled AS (
              SELECT identity.*,
                     (SELECT s.category FROM src s
-                      WHERE s.model = identity.model AND s.owner = identity.owner
+                      WHERE s.owner = identity.owner
                         AND s.repo = identity.repo AND s.pull_number = identity.pull_number
                         AND s.file = identity.file AND s.fp = identity.fp
-                      ORDER BY s.started_at, s.id LIMIT 1) AS category
+                      ORDER BY s.started_at, s.id LIMIT 1) AS category,
+                    (SELECT s.model FROM src s
+                      WHERE s.owner = identity.owner
+                        AND s.repo = identity.repo AND s.pull_number = identity.pull_number
+                        AND s.file = identity.file AND s.fp = identity.fp
+                      ORDER BY s.started_at, s.id LIMIT 1) AS model
                FROM identity
            )
            SELECT model, category,
                   SUM(CASE WHEN disp = 3 THEN 1 ELSE 0 END) AS resolved,
-                  SUM(CASE WHEN disp = 2 THEN 1 ELSE 0 END) AS changed,
+                  SUM(CASE WHEN disp = 2 THEN 1 ELSE 0 END) AS fixed,
                   SUM(CASE WHEN disp = 1 THEN 1 ELSE 0 END) AS unresolved,
                   SUM(CASE WHEN disp = 0 AND closed = 1 THEN 1 ELSE 0 END) AS unknown_closed,
                   SUM(CASE WHEN disp = 0 AND closed = 0 THEN 1 ELSE 0 END) AS unknown_open
@@ -2845,7 +3054,7 @@ export function openStore(dbPath: string): Store {
         model: String(row["model"]),
         category: String(row["category"]),
         resolved: Number(row["resolved"]),
-        changed: Number(row["changed"]),
+        fixed: Number(row["fixed"]),
         unresolved: Number(row["unresolved"]),
         unknownClosed: Number(row["unknown_closed"]),
         unknownOpen: Number(row["unknown_open"]),
@@ -2939,22 +3148,23 @@ export function openStore(dbPath: string): Store {
             WHERE run_id IN (${marks}) ORDER BY model`,
         )
         .all(...ids);
+      // 一个模型报了几条:数它的归属,不数 finding 行——一条 Finding 可以有几个归属
+      // (ADR 0015),按行数会把合并掉的那几条从这个模型名下抹掉。
       const byModel = db
         .prepare(
-          `SELECT run_id, model, COUNT(*) AS findings FROM finding
-            WHERE run_id IN (${marks}) GROUP BY run_id, model ORDER BY model`,
+          `SELECT f.run_id AS run_id, a.model AS model, COUNT(*) AS findings
+             FROM finding_attribution a
+             JOIN finding f ON f.id = a.finding_id
+            WHERE f.run_id IN (${marks}) GROUP BY f.run_id, a.model ORDER BY a.model`,
         )
         .all(...ids);
-      // 已处置口径与处置率同源:合并组内任一行已处置即已处置,只认行级承载。人工与
-      // 自动分开数,面板据此把两者分开显示(ADR 0013)。
+      // 已处置口径与处置率同源:只认行级承载。人工与自动分开数,面板据此把两者分开显示。
       const byGroup = db
         .prepare(
           `SELECT run_id,
-                  COUNT(DISTINCT group_index) AS total,
-                  COUNT(DISTINCT CASE WHEN disposition = 'resolved' THEN group_index END)
-                    AS resolved,
-                  COUNT(DISTINCT CASE WHEN disposition = 'changed' THEN group_index END)
-                    AS changed
+                  COUNT(*) AS total,
+                  SUM(CASE WHEN disposition = 'resolved' THEN 1 ELSE 0 END) AS resolved,
+                  SUM(CASE WHEN disposition = 'fixed' THEN 1 ELSE 0 END) AS fixed
              FROM finding
             WHERE run_id IN (${marks}) AND placement = 'inline'
             GROUP BY run_id`,
@@ -2963,11 +3173,19 @@ export function openStore(dbPath: string): Store {
 
       const byFinding = db
         .prepare(
-          `SELECT id, run_id, model, file, line, severity, category, description,
+          `SELECT id, run_id, file, line, severity, category, description,
                   disposition, placement, comment_id, comment_html_url,
                   disposed_by, disposed_at, disposition_note
              FROM finding
             WHERE run_id IN (${marks}) ORDER BY id`,
+        )
+        .all(...ids);
+      const byAttribution = db
+        .prepare(
+          `SELECT a.finding_id AS finding_id, a.model AS model
+             FROM finding_attribution a
+             JOIN finding f ON f.id = a.finding_id
+            WHERE f.run_id IN (${marks}) ORDER BY a.finding_id, a.position`,
         )
         .all(...ids);
 
@@ -3011,11 +3229,11 @@ export function openStore(dbPath: string): Store {
         list.sort((a, b) => a.model.localeCompare(b.model));
         models.set(runId, list);
       }
-      const groups = new Map<number, { resolved: number; changed: number; total: number }>();
+      const groups = new Map<number, { resolved: number; fixed: number; total: number }>();
       for (const row of byGroup) {
         groups.set(Number(row["run_id"]), {
           resolved: Number(row["resolved"]),
-          changed: Number(row["changed"]),
+          fixed: Number(row["fixed"]),
           total: Number(row["total"]),
         });
       }
@@ -3048,13 +3266,20 @@ export function openStore(dbPath: string): Store {
         });
         reviewerPins.set(runId, list);
       }
+      const attributionModels = new Map<number, string[]>();
+      for (const row of byAttribution) {
+        const findingId = Number(row["finding_id"]);
+        const list = attributionModels.get(findingId) ?? [];
+        list.push(String(row["model"]));
+        attributionModels.set(findingId, list);
+      }
       const findings = new Map<number, RunListItem["findings"]>();
       for (const row of byFinding) {
         const runId = Number(row["run_id"]);
         const list = findings.get(runId) ?? [];
         list.push({
           id: Number(row["id"]),
-          model: String(row["model"]),
+          models: attributionModels.get(Number(row["id"])) ?? [],
           file: String(row["file"]),
           line: Number(row["line"]),
           severity: String(row["severity"]) as Severity,
@@ -3092,7 +3317,7 @@ export function openStore(dbPath: string): Store {
           reviewerPins: reviewerPins.get(id) ?? [],
           findings: findings.get(id) ?? [],
           resolved: groups.get(id)?.resolved ?? 0,
-          changed: groups.get(id)?.changed ?? 0,
+          fixed: groups.get(id)?.fixed ?? 0,
           total: groups.get(id)?.total ?? 0,
         };
       });
@@ -3326,7 +3551,7 @@ export function openStore(dbPath: string): Store {
 
     recordAutoDisposition(owner, repo, pullNumber, candidate, disposedAt) {
       db.prepare(
-        `UPDATE finding SET disposition = 'changed', disposed_at = ?
+        `UPDATE finding SET disposition = 'fixed', disposed_at = ?
           WHERE file = ? AND fingerprint = ? AND ${AUTO_DISPOSABLE}
             AND ${PULL_REQUEST_SCOPE}`,
       ).run(disposedAt, candidate.file, candidate.fingerprint, owner, repo, pullNumber);
@@ -3338,12 +3563,12 @@ export function openStore(dbPath: string): Store {
         `UPDATE finding SET disposition = ?, placement = ?
           WHERE file = ? AND fingerprint = ? AND ${PULL_REQUEST_SCOPE}`,
       );
-      // 「已改动」在 Forge 上就是一个 resolve(ADR 0013),读回的 resolved 因此不能把它
-      // 降级成人工那一档——处置率会凭空多出人工处置。读回 unresolved 是另一回事:人在
-      // Forge 上撤回了处置,以 Forge 最新状态为准,照写。
+      // 「已修复」在 Forge 上就是一个 resolve,读回的 resolved 因此不能把它降级成人工
+      // 那一档——处置率会凭空多出人工处置。读回 unresolved 是另一回事:人在 Forge 上
+      // 撤回了处置,以 Forge 最新状态为准,照写。
       const keepAutoDisposed = db.prepare(
         `UPDATE finding SET disposition = ?, placement = ?
-          WHERE file = ? AND fingerprint = ? AND disposition <> 'changed'
+          WHERE file = ? AND fingerprint = ? AND disposition <> 'fixed'
             AND ${PULL_REQUEST_SCOPE}`,
       );
       const placementOnly = db.prepare(

@@ -95,7 +95,7 @@ test("行号落不到 diff 内的 Finding 退化为 PR 级评论且内容不丢"
   assert.match(review.body, /11/);
 });
 
-test("评论按 等级/标题/问题/影响/建议 分段呈现,不出现模型署名", async () => {
+test("评论按 等级/标题 加逐模型的 问题/影响/建议 分段呈现", async () => {
   const { cache, db, forge } = setup(6);
   // 两个模型报同一处:合并后也只呈现一份内容,另一个模型的表述不进评论。
   const finding = {
@@ -126,10 +126,12 @@ test("评论按 等级/标题/问题/影响/建议 分段呈现,不出现模型�
   const body = forge.createdReviews[0]!.comments[0]!.body;
   const [heading] = body.split("\n");
   assert.equal(heading, "**[P0] sub 多减了 1**");
+  assert.match(body, /\n\n\*\*model-a\*\*\n/);
   assert.match(body, /\n\n\*\*问题\*\*:sub\(\) 的返回值比正确结果小 1。/);
   assert.match(body, /\n\n\*\*影响\*\*:所有调用方拿到的差值都错。/);
   assert.match(body, /\n\n\*\*建议\*\*:去掉多余的 - 1。/);
-  assert.doesNotMatch(body, /model-a|model-b|其他模型/);
+  // 另一个模型的表述同样留着,自成一段(ADR 0015)。
+  assert.match(body, /\n\n\*\*model-b\*\*\n\n\*\*问题\*\*:减法结果不对。/);
 });
 
 test("影响与建议为空时整段消失,不留空标签", async () => {

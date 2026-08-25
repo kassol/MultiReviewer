@@ -13,7 +13,7 @@ import {
   splitIntoBatches,
   type TimedOutcome,
 } from "./batch.ts";
-import { dedupeFindings, type MergedFinding } from "./dedupe.ts";
+import { dedupeFindings, type FindingAttribution, type MergedFinding } from "./dedupe.ts";
 import type { Disposition, Reviewer, ReviewerOutcome, Severity } from "./finding.ts";
 import {
   contentFingerprint,
@@ -103,9 +103,11 @@ type FallbackFinding = {
 };
 
 /**
- * 评论是给开发者看的最终结果:等级、标题、问题、影响、建议,分段呈现。
- * 模型署名与各家的不同表述一概不进评论——读的人要的是结论,不是评审过程;
- * 哪个模型说的什么落在数据库里,处置率统计从那里拿。
+ * 评论是给开发者看的最终结果:等级、标题,然后按模型分段的问题、影响、建议。
+ *
+ * 一条评论承载的是同一处问题的全部说法(ADR 0015):同一轮里几个 Reviewer 报同一处
+ * 合成一条,正文每个模型一段并带模型标识,谁都不被丢掉。只有一个模型报出时同样带标识
+ * ——同一条 Finding 的评论不该因为这一轮有几个模型认同而换个形状。
  */
 /** `**[P0] 标题**`。标题空缺时只留等级,不留空尾巴。 */
 function findingHeading(finding: MergedFinding): string {
@@ -114,12 +116,17 @@ function findingHeading(finding: MergedFinding): string {
     : `**[${finding.severity}] ${finding.title}**`;
 }
 
-/** 问题 / 影响 / 建议三段,段间空行分隔。空段整段跳过,不留一个空标签。 */
-function findingSections(finding: MergedFinding): string[] {
-  const lines = ["", `**问题**:${finding.description}`];
-  if (finding.impact !== "") lines.push("", `**影响**:${finding.impact}`);
-  if (finding.suggestion !== "") lines.push("", `**建议**:${finding.suggestion}`);
+/** 一个模型的一段:模型标识,加它自己的问题 / 影响 / 建议。空段整段跳过。 */
+function attributionSection(said: FindingAttribution): string[] {
+  const lines = ["", `**${said.model}**`, "", `**问题**:${said.description}`];
+  if (said.impact !== "") lines.push("", `**影响**:${said.impact}`);
+  if (said.suggestion !== "") lines.push("", `**建议**:${said.suggestion}`);
   return lines;
+}
+
+/** 全部归属按首报先后分段。 */
+function findingSections(finding: MergedFinding): string[] {
+  return finding.attributions.flatMap(attributionSection);
 }
 
 function findingBody(finding: MergedFinding, fingerprint: string | undefined): string {
@@ -397,7 +404,7 @@ function priorMatch(
 }
 
 /**
- * 本轮该自动处置的那些上一轮 Finding(ADR 0013)。
+ * 本轮该自动处置的那些上一轮 Finding(判据见 ADR 0013,处置值记「已修复」)。
  *
  * 三个条件同时成立才算:所指代码已改动(它的指纹在本轮 head 上算不出)、本轮没有
  * 同一处 Finding 再被报出、Forge 上还没有人处置过它。
@@ -454,7 +461,7 @@ async function autoDispose(
       await forge.resolveComment({ owner: event.owner, repo: event.repo }, candidate.commentId);
     } catch (error) {
       console.error(
-        "[review] 「已改动」自动处置写 Forge 失败,这一条留给人处置:",
+        "[review] 「已修复」自动处置写 Forge 失败,这一条留给人处置:",
         error instanceof Error ? error.message : String(error),
       );
       continue;
@@ -653,7 +660,7 @@ export async function runReview(
       }
     }
 
-    // 「已改动」自动处置(ADR 0013),PR 触发与范围审查走的是同一段代码。全部
+    // 「已修复」自动处置(判据仍是 ADR 0013),PR 触发与范围审查走的是同一段代码。全部
     // Reviewer 都失败时不做:那种情况下「本轮没再报出」只说明什么都没跑,不是证据。
     if (!failed) {
       const candidates = autoDisposeCandidates(prior, matchedKeys, worktree.path);
@@ -671,33 +678,35 @@ export async function runReview(
       ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
     }));
 
-    // 落库的是每一条来源 Finding 而非合并后的那一条:处置率要按提出它的模型统计。
-    // `groupIndex` 记住它们被合并成了同一条评论。指纹取合并组代表行的那一个——评论
-    // 锚点埋的就是它,resolve 载体是整组共享的一条评论;按各来源自己的行算指纹,
-    // 代表行不同的模型的历史行会永远回填不到,处置率恰好惩罚锚行选偏的模型。
-    const findingRecords: FindingRecord[] = findings.flatMap((merged, groupIndex) =>
-      merged.sources.map((source) => {
-        const fingerprint = groupFingerprints[groupIndex];
-        // 匹配上历史评论的记那一条:折叠之后本轮不再发新评论,处置的载体仍是它。
-        const comment = groupComments[groupIndex];
-        return {
-          model: source.model,
-          file: source.file,
-          line: source.line,
-          severity: source.severity,
-          category: source.category,
-          description: source.description,
-          groupIndex,
-          disposition: dispositions[groupIndex]!,
-          placement: placements[groupIndex]!,
-          ...(fingerprint === undefined ? {} : { fingerprint }),
-          ...(comment?.commentId === undefined ? {} : { commentId: comment.commentId }),
-          ...(comment?.commentHtmlUrl === undefined
-            ? {}
-            : { commentHtmlUrl: comment.commentHtmlUrl }),
-        };
-      }),
-    );
+    // 一条 Finding 一行,报出它的每个模型一条归属(ADR 0015):Finding Identity 不含
+    // 模型,同一处问题不论几个模型报出都是同一条。指纹取合并组代表行的那一个——评论
+    // 锚点埋的就是它,resolve 载体是整组共享的一条评论。
+    const findingRecords: FindingRecord[] = findings.map((merged, groupIndex) => {
+      const fingerprint = groupFingerprints[groupIndex];
+      // 匹配上历史评论的记那一条:折叠之后本轮不再发新评论,处置的载体仍是它。
+      const comment = groupComments[groupIndex];
+      return {
+        file: merged.file,
+        line: merged.line,
+        severity: merged.severity,
+        category: merged.category,
+        description: merged.description,
+        attributions: merged.attributions.map((said) => ({
+          model: said.model,
+          severity: said.severity,
+          category: said.category,
+          description: said.description,
+        })),
+        groupIndex,
+        disposition: dispositions[groupIndex]!,
+        placement: placements[groupIndex]!,
+        ...(fingerprint === undefined ? {} : { fingerprint }),
+        ...(comment?.commentId === undefined ? {} : { commentId: comment.commentId }),
+        ...(comment?.commentHtmlUrl === undefined
+          ? {}
+          : { commentHtmlUrl: comment.commentHtmlUrl }),
+      };
+    });
 
     // 先落库再发布:发布失败不该把这次 Review Run 的过程记录一并丢掉。
     store.finishRun(runId, {

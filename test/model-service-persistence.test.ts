@@ -973,15 +973,21 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
        (run_id, model, failure, finding_count, anomaly_count, rejected_tool_calls, duration_ms)
      VALUES (?, ?, NULL, 1, 0, 0, 23)`,
   ).run(run.lastInsertRowid, "openai:global-model");
-  sqlite.prepare(
+  const finding = sqlite.prepare(
     `INSERT INTO finding
-       (run_id, model, file, line, severity, category, description, fingerprint, group_index)
-     VALUES (?, ?, 'src/a.ts', 3, 'P1', 'correctness', 'history', 'stable-fingerprint', 0)`,
-  ).run(run.lastInsertRowid, "openai:global-model");
+       (run_id, file, line, severity, category, description, fingerprint, group_index)
+     VALUES (?, 'src/a.ts', 3, 'P1', 'correctness', 'history', 'stable-fingerprint', 0)`,
+  ).run(run.lastInsertRowid);
+  sqlite.prepare(
+    `INSERT INTO finding_attribution
+       (finding_id, position, model, severity, category, description)
+     VALUES (?, 0, ?, 'P1', 'correctness', 'history')`,
+  ).run(finding.lastInsertRowid, "openai:global-model");
   const historyBefore = {
     runs: sqlite.prepare("SELECT * FROM review_run").all(),
     outcomes: sqlite.prepare("SELECT * FROM reviewer_outcome").all(),
     findings: sqlite.prepare("SELECT * FROM finding").all(),
+    attributions: sqlite.prepare("SELECT * FROM finding_attribution").all(),
   };
   sqlite.close();
 
@@ -1019,6 +1025,7 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
     runs: history.prepare("SELECT * FROM review_run").all(),
     outcomes: history.prepare("SELECT * FROM reviewer_outcome").all(),
     findings: history.prepare("SELECT * FROM finding").all(),
+    attributions: history.prepare("SELECT * FROM finding_attribution").all(),
   }, historyBefore);
   history.close();
 });

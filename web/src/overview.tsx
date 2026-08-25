@@ -32,14 +32,14 @@ type StatsResponse = { cells: Cell[] };
  * 与 react-day-picker,import 进来会把那一整块拽进总览的首屏分块。
  */
 function denominator(cell: Cell): number {
-  return cell.resolved + cell.changed + cell.unresolved + cell.unknownClosed;
+  return cell.resolved + cell.fixed + cell.unresolved + cell.unknownClosed;
 }
 
-/** 分子是人工与自动之和(ADR 0013):总览只报一个率,拆解在处置率页。 */
+/** 分子是人工与自动之和:总览只报一个率,拆解在处置率页。 */
 function rate(cells: readonly Cell[]): { resolved: number; total: number } {
   return cells.reduce(
     (acc, cell) => ({
-      resolved: acc.resolved + cell.resolved + cell.changed,
+      resolved: acc.resolved + cell.resolved + cell.fixed,
       total: acc.total + denominator(cell),
     }),
     { resolved: 0, total: 0 },

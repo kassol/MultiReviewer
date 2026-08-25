@@ -166,7 +166,7 @@ test("Review Run 的触发者快照可空且不引用用户表", async () => {
   assert.equal(query(db.path, "SELECT triggered_by FROM review_run")[0]!["triggered_by"], "deleted-operator");
 });
 
-test("每条 Finding 落库并带上来源模型、位置、severity、category 与内容指纹", async () => {
+test("同一处的 Finding 落一行,报出它的每个模型各落一条归属", async () => {
   const { cache, db, forge } = setup();
 
   await runReview(EVENT, {
@@ -179,25 +179,47 @@ test("每条 Finding 落库并带上来源模型、位置、severity、category 
     dbPath: db.path,
   });
 
-  const rows = query(db.path, "SELECT * FROM finding ORDER BY model");
-  // 两个模型报的是同一处,合并成一条评论,但两条来源各自落库。
-  assert.equal(rows.length, 2);
-  assert.deepEqual(
-    rows.map((r) => r["model"]),
-    ["model-a", "model-b"],
+  // Finding Identity 不含模型(ADR 0015):同一处不论几个模型报出都是一条。
+  const rows = query(db.path, "SELECT * FROM finding");
+  assert.equal(rows.length, 1);
+  const row = rows[0]!;
+  assert.equal(row["file"], "src/calc.js");
+  assert.equal(row["line"], 6);
+  assert.equal(row["severity"], "P0");
+  assert.equal(row["category"], "bug");
+  assert.match(row["fingerprint"] as string, /^[0-9a-f]{64}$/);
+  // Disposition 的权威状态在 Forge,本地默认未知。
+  assert.equal(row["disposition"], "unknown");
+
+  const attributions = query(
+    db.path,
+    "SELECT * FROM finding_attribution ORDER BY position",
   );
-  assert.equal(rows[0]!["group_index"], rows[1]!["group_index"]);
-  for (const row of rows) {
-    assert.equal(row["file"], "src/calc.js");
-    assert.equal(row["line"], 6);
-    assert.equal(row["severity"], "P0");
-    assert.equal(row["category"], "bug");
-    assert.match(row["fingerprint"] as string, /^[0-9a-f]{64}$/);
-    // Disposition 的权威状态在 Forge,本地默认未知。
-    assert.equal(row["disposition"], "unknown");
-  }
-  assert.equal(rows[0]!["description"], "sub 多减了 1");
-  assert.equal(rows[1]!["description"], "减法结果偏移");
+  assert.deepEqual(
+    attributions.map((a) => ({
+      finding: a["finding_id"],
+      model: a["model"],
+      severity: a["severity"],
+      category: a["category"],
+      description: a["description"],
+    })),
+    [
+      {
+        finding: row["id"],
+        model: "model-a",
+        severity: "P0",
+        category: "bug",
+        description: "sub 多减了 1",
+      },
+      {
+        finding: row["id"],
+        model: "model-b",
+        severity: "P0",
+        category: "bug",
+        description: "减法结果偏移",
+      },
+    ],
+  );
 });
 
 test("内容指纹只看指向行前后 3 行的代码,不看空白", async () => {
@@ -647,7 +669,7 @@ test("时间流带上每条 Finding 的 Forge 评论 id 与链接", async () => 
   assert.deepEqual(run.findings, [
     {
       id: run.findings[0]!.id,
-      model: "model-a",
+      models: ["model-a"],
       file: FINDING.file,
       line: FINDING.line,
       severity: FINDING.severity,
@@ -759,7 +781,7 @@ test("升级前落的 finding 行读得出来,评论 id 与链接为空", () => 
   assert.deepEqual(run.findings, [
     {
       id: run.findings[0]!.id,
-      model: "legacy",
+      models: ["legacy"],
       file: "src/calc.js",
       line: 6,
       severity: "P0",
@@ -774,4 +796,137 @@ test("升级前落的 finding 行读得出来,评论 id 与链接为空", () => 
       note: null,
     },
   ]);
+});
+
+/**
+ * 升级到新的 Finding Identity(issue #164、ADR 0015)。旧库一模型一行,新库一条 Finding
+ * 加多条归属;`changed` 只换名成 `fixed`,判据不变。
+ */
+const LEGACY_SCHEMA = `CREATE TABLE review_run (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    head_sha TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    duration_ms INTEGER,
+    changed_files INTEGER NOT NULL,
+    changed_lines INTEGER NOT NULL,
+    batch_count INTEGER NOT NULL,
+    failed INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    total_tokens INTEGER,
+    cost_usd REAL
+  );
+  CREATE TABLE finding (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES review_run(id),
+    model TEXT NOT NULL,
+    file TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    severity TEXT NOT NULL,
+    category TEXT NOT NULL,
+    description TEXT NOT NULL,
+    fingerprint TEXT,
+    group_index INTEGER NOT NULL,
+    disposition TEXT NOT NULL DEFAULT 'unknown',
+    placement TEXT NOT NULL DEFAULT 'inline'
+  )`;
+
+/** 一个升级前的库:一轮 Review Run,同一处两个模型各一行,另一处记着「已改动」。 */
+function seedLegacyDb(dbPath: string): void {
+  const old = new DatabaseSync(dbPath);
+  old.exec(LEGACY_SCHEMA);
+  const runId = Number(
+    old
+      .prepare(
+        `INSERT INTO review_run
+           (owner, repo, pull_number, head_sha, started_at, changed_files, changed_lines, batch_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run("acme", "widgets", 7, "old-sha", "2026-08-01T00:00:00.000Z", 1, 2, 1).lastInsertRowid,
+  );
+  const insert = old.prepare(
+    `INSERT INTO finding
+       (run_id, model, file, line, severity, category, description, fingerprint,
+        group_index, disposition)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  // 同一处(同文件同指纹)两行:首报 model-a 记 P1/design,model-b 记 P0/security。
+  insert.run(runId, "model-a", "src/calc.js", 6, "P1", "design", "旧的 a", "fp-1", 0, "unknown");
+  insert.run(runId, "model-b", "src/calc.js", 7, "P0", "security", "旧的 b", "fp-1", 0, "unknown");
+  // 另一处只有一个模型,处置值是旧字面量。
+  insert.run(runId, "model-a", "src/calc.js", 20, "P2", "bug", "旧的 c", "fp-2", 1, "changed");
+  old.exec("PRAGMA user_version = 1");
+  old.close();
+}
+
+test("升级:同轮同键的多行合成一条加多条归属,归属模型保留,changed 改名 fixed", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  seedLegacyDb(db.path);
+
+  const store = openStore(db.path);
+  const run = store.listRuns({ limit: 10 })[0]!;
+  store.close();
+
+  assert.equal(run.findings.length, 2, "同一处的两行该合成一条 Finding");
+  const merged = run.findings.find((f) => f.line === 6)!;
+  // 归属两条都在,模型原样保留(历史统计不断裂)。
+  assert.deepEqual(merged.models, ["model-a", "model-b"]);
+  // 严重度取最高,分类取首报,代表段取严重度最高那条。
+  assert.equal(merged.severity, "P0");
+  assert.equal(merged.category, "design");
+  assert.equal(merged.description, "旧的 b");
+
+  const auto = run.findings.find((f) => f.line === 20)!;
+  assert.equal(auto.disposition, "fixed", "旧的 changed 该改名成 fixed");
+  assert.deepEqual(auto.models, ["model-a"]);
+
+  // model 列没了:Finding Identity 不含模型,归属在 finding_attribution 上。
+  assert.deepEqual(
+    query(db.path, "PRAGMA table_info(finding)").map((row) => row["name"]).includes("model"),
+    false,
+  );
+  assert.equal(query(db.path, "SELECT * FROM finding_attribution").length, 3);
+});
+
+test("升级中途失败:整笔回滚,旧库原样留着", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  seedLegacyDb(db.path);
+  // 人为制造一次中途失败:归属表里先占住 (finding_id, position),迁移的插入撞主键。
+  const seeded = new DatabaseSync(db.path);
+  seeded.exec(`CREATE TABLE finding_attribution (
+    finding_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    model TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    category TEXT NOT NULL,
+    description TEXT NOT NULL,
+    PRIMARY KEY (finding_id, position),
+    UNIQUE (finding_id, model)
+  )`);
+  seeded
+    .prepare(
+      `INSERT INTO finding_attribution
+         (finding_id, position, model, severity, category, description)
+       VALUES (1, 0, '占位', 'P0', 'bug', '占位')`,
+    )
+    .run();
+  seeded.close();
+
+  assert.throws(() => openStore(db.path));
+
+  // 三行一条不少,model 列还在,旧字面量也没被改写:下次启动从原样重来。
+  const rows = query(db.path, "SELECT model, disposition FROM finding ORDER BY id");
+  assert.deepEqual(
+    rows.map((row) => row["model"]),
+    ["model-a", "model-b", "model-a"],
+  );
+  assert.equal(rows[2]!["disposition"], "changed");
 });

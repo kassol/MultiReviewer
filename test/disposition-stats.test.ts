@@ -21,23 +21,30 @@ const T2 = "2026-08-12T00:00:00.000Z";
 const T3 = "2026-08-14T00:00:00.000Z";
 
 function finding(
-  over: Partial<Omit<FindingRecord, "fingerprint">> & { fingerprint?: string | undefined },
+  over: Partial<Omit<FindingRecord, "fingerprint">> & {
+    fingerprint?: string | undefined;
+    /** 首报的模型。统计矩阵那一格取它(ADR 0015)。 */
+    model?: string;
+  },
 ): FindingRecord {
+  const { model, ...rest } = over;
   const base: FindingRecord = {
-    model: "model-a",
     file: "src/a.ts",
     line: 5,
     severity: "P0",
     category: "bug",
     description: "有毛病",
+    attributions: [
+      { model: model ?? "model-a", severity: "P0", category: "bug", description: "有毛病" },
+    ],
     groupIndex: 0,
     disposition: "unknown",
     placement: "inline",
     fingerprint: "fp-1",
   };
-  const merged = { ...base, ...over };
+  const merged = { ...base, ...rest };
   // exactOptionalPropertyTypes:显式的 undefined 不能落在可选字段上,删掉这个键。
-  if ("fingerprint" in over && over.fingerprint === undefined) delete merged.fingerprint;
+  if ("fingerprint" in rest && rest.fingerprint === undefined) delete merged.fingerprint;
   return merged as FindingRecord;
 }
 
@@ -86,7 +93,7 @@ const CASES: Case[] = [
         model: "model-a",
         category: "bug",
         resolved: 1,
-        changed: 0,
+        fixed: 0,
         unresolved: 0,
         unknownClosed: 0,
         unknownOpen: 0,
@@ -94,13 +101,13 @@ const CASES: Case[] = [
     ],
   },
   {
-    name: "「已改动」自成一列,同一处上人工处置盖过自动处置",
+    name: "「已修复」自成一列,同一处上人工处置盖过自动处置",
     seed: (store) => {
-      seedRun(store, { startedAt: T1, findings: [finding({ disposition: "changed" })] });
+      seedRun(store, { startedAt: T1, findings: [finding({ disposition: "fixed" })] });
       // 同一处先被自动处置,人后来又在面板上 resolve:这一条算人工那一列。
       seedRun(store, {
         startedAt: T1,
-        findings: [finding({ fingerprint: "fp-2", disposition: "changed" })],
+        findings: [finding({ fingerprint: "fp-2", disposition: "fixed" })],
       });
       seedRun(store, {
         startedAt: T2,
@@ -112,7 +119,7 @@ const CASES: Case[] = [
         model: "model-a",
         category: "bug",
         resolved: 1,
-        changed: 1,
+        fixed: 1,
         unresolved: 0,
         unknownClosed: 0,
         unknownOpen: 0,
@@ -145,7 +152,7 @@ const CASES: Case[] = [
         model: "model-a",
         category: "bug",
         resolved: 0,
-        changed: 0,
+        fixed: 0,
         unresolved: 0,
         unknownClosed: 0,
         unknownOpen: 2,
@@ -164,7 +171,7 @@ const CASES: Case[] = [
         model: "model-a",
         category: "bug",
         resolved: 0,
-        changed: 0,
+        fixed: 0,
         unresolved: 0,
         unknownClosed: 1,
         unknownOpen: 1,
@@ -187,7 +194,7 @@ const CASES: Case[] = [
         model: "model-a",
         category: "bug",
         resolved: 0,
-        changed: 0,
+        fixed: 0,
         unresolved: 0,
         unknownClosed: 0,
         unknownOpen: 1,
@@ -195,13 +202,12 @@ const CASES: Case[] = [
     ],
   },
   {
-    name: "同指纹跨 PR、跨模型都不折叠:Identity 的键含 PR 与模型",
+    // Identity 的键是 PR + 文件 + 指纹,不含模型(ADR 0015):换个模型报同一处仍是
+    // 同一条,那一格的模型取首报的。跨 PR 的同指纹仍是两条。
+    name: "同指纹跨 PR 不折叠,同一 PR 里换个模型报出仍是同一条",
     seed: (store) => {
-      seedRun(store, {
-        pr: 7,
-        startedAt: T1,
-        findings: [finding({}), finding({ model: "model-b", groupIndex: 1 })],
-      });
+      seedRun(store, { pr: 7, startedAt: T1, findings: [finding({})] });
+      seedRun(store, { pr: 7, startedAt: T2, findings: [finding({ model: "model-b" })] });
       seedRun(store, { pr: 8, startedAt: T1, findings: [finding({})] });
     },
     expected: [
@@ -209,19 +215,10 @@ const CASES: Case[] = [
         model: "model-a",
         category: "bug",
         resolved: 0,
-        changed: 0,
+        fixed: 0,
         unresolved: 0,
         unknownClosed: 0,
         unknownOpen: 2,
-      },
-      {
-        model: "model-b",
-        category: "bug",
-        resolved: 0,
-        changed: 0,
-        unresolved: 0,
-        unknownClosed: 0,
-        unknownOpen: 1,
       },
     ],
   },
@@ -239,7 +236,7 @@ const CASES: Case[] = [
         model: "model-a",
         category: "bug",
         resolved: 1,
-        changed: 0,
+        fixed: 0,
         unresolved: 0,
         unknownClosed: 0,
         unknownOpen: 0,

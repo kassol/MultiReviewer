@@ -63,32 +63,47 @@ const AT_LINE_2 = {
   description: "sub 多减了 1",
 };
 
-test("两个模型对同一处的 Finding 合并为一条,来源模型齐全", async () => {
+test("同一轮两个模型报同一处:一条评论、两段各带模型标识、严重度取最高、分类取首报", async () => {
   const { cache, db, forge, event } = setup();
 
   const result = await runReview(event, {
     forge: forge.forge,
     reviewers: [
-      scriptedReviewer("model-a", [AT_LINE_2]),
-      scriptedReviewer("model-b", [{ ...AT_LINE_2, description: "减法结果偏移" }]),
+      // 首报是 model-a:分类取它的 bug。model-b 报得更重:严重度取它的 P0。
+      scriptedReviewer("model-a", [{ ...AT_LINE_2, severity: "P1", category: "design" }]),
+      scriptedReviewer("model-b", [
+        { ...AT_LINE_2, severity: "P0", category: "security", description: "减法结果偏移" },
+      ]),
     ],
     cacheDir: cache.dir,
     dbPath: db.path,
   });
 
-  assert.equal(result.findings.length, 1);
-  assert.deepEqual([...result.findings[0]!.models].sort(), ["model-a", "model-b"]);
+  assert.equal(result.findings.length, 1, "同一处该合成一条 Finding");
+  assert.deepEqual(result.findings[0]!.models, ["model-a", "model-b"]);
+  assert.equal(result.findings[0]!.severity, "P0", "严重度该取各归属里最高的");
+  assert.equal(result.findings[0]!.category, "design", "分类该取首报那个模型的");
 
   const review = forge.createdReviews[0]!;
-  assert.equal(review.comments.length, 1);
-  // 评论是给开发者的最终结果:只呈现合并后的一份内容,不出现模型署名。
-  assert.match(review.comments[0]!.body, /sub 多减了 1/);
-  assert.doesNotMatch(review.comments[0]!.body, /model-a|model-b|减法结果偏移/);
-  // 合并不丢内容:另一个模型的表述保留在来源里,落库供处置率统计。
-  assert.deepEqual(
-    result.findings[0]!.sources.map((s) => s.description).sort(),
-    ["sub 多减了 1", "减法结果偏移"],
-  );
+  assert.equal(review.comments.length, 1, "同一处该只有一条评论");
+  // 正文按模型分段(ADR 0015):谁说了什么都留着,一个模型也不丢。
+  const body = review.comments[0]!.body;
+  assert.equal(body.split("\n")[0], "**[P0]**");
+  assert.match(body, /\*\*model-a\*\*\n\n\*\*问题\*\*:sub 多减了 1/);
+  assert.match(body, /\*\*model-b\*\*\n\n\*\*问题\*\*:减法结果偏移/);
+  assert.ok(body.indexOf("model-a") < body.indexOf("model-b"), "分段该按首报先后");
+
+  // 库里是一条 Finding 加两条归属,各带自己的严重度、分类与表述。
+  const store = openStore(db.path);
+  try {
+    const findings = store.listRuns({ limit: 1 })[0]!.findings;
+    assert.equal(findings.length, 1);
+    assert.deepEqual(findings[0]!.models, ["model-a", "model-b"]);
+    assert.equal(findings[0]!.severity, "P0");
+    assert.equal(findings[0]!.category, "design");
+  } finally {
+    store.close();
+  }
 });
 
 test("行号相差在阈值内视为同一处,超出阈值分开", async () => {

@@ -73,27 +73,36 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
     ],
     findings: [
       {
-        model: "model-a",
         file: "src/a.ts",
         line: 5,
         severity: "P0",
         category: "bug",
         description: "有毛病",
+        attributions: [
+          { model: "model-a", severity: "P0", category: "bug", description: "有毛病" },
+        ],
         groupIndex: 0,
         disposition: "resolved",
         placement: "inline",
         fingerprint: "fp-1",
       },
-      // 「已改动」自动处置(ADR 0013):与人工处置分列,分母口径不变。
+      // 「已修复」自动处置:与人工处置分列,分母口径不变。
       {
-        model: "model-a",
         file: "src/a.ts",
         line: 20,
         severity: "P1",
         category: "bug",
         description: "另一处已经改掉了",
+        attributions: [
+          {
+            model: "model-a",
+            severity: "P1",
+            category: "bug",
+            description: "另一处已经改掉了",
+          },
+        ],
         groupIndex: 1,
-        disposition: "changed",
+        disposition: "fixed",
         placement: "inline",
         fingerprint: "fp-2",
       },
@@ -159,7 +168,7 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
       model: "model-a",
       category: "bug",
       resolved: 1,
-      changed: 1,
+      fixed: 1,
       unresolved: 0,
       unknownClosed: 0,
       unknownOpen: 0,

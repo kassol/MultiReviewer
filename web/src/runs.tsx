@@ -48,18 +48,18 @@ export type RunItem = {
   }[];
   /** 会话没有产生统计时省略。 */
   usage?: UsageSummary;
-  /** 本轮落库的每一条来源 Finding。详情的 diff 视图把它们锚在对应文件行上。 */
+  /** 本轮落库的每一条 Finding。详情的 diff 视图把它们锚在对应文件行上。 */
   findings: RunFinding[];
-  /** 人工处置掉的合并组数。 */
+  /** 人工处置掉的 Finding 条数。 */
   resolved: number;
-  /** 「已改动」自动处置掉的合并组数(ADR 0013)。 */
-  changed: number;
+  /** 「已修复」自动处置掉的 Finding 条数。 */
+  fixed: number;
   total: number;
 };
 
-/** 已处置的合并组数:人工与自动都算。进度与状态一律按它判(ADR 0013)。 */
-export function disposedCount(run: { resolved: number; changed: number }): number {
-  return run.resolved + run.changed;
+/** 已处置的 Finding 条数:人工与自动都算。进度与状态一律按它判。 */
+export function disposedCount(run: { resolved: number; fixed: number }): number {
+  return run.resolved + run.fixed;
 }
 
 /**
@@ -68,14 +68,15 @@ export function disposedCount(run: { resolved: number; changed: number }): numbe
  */
 export type RunFinding = {
   id: number;
-  model: string;
+  /** 报出它的全部模型,按首报先后(ADR 0015)。 */
+  models: string[];
   file: string;
   line: number;
   severity: "P0" | "P1" | "P2";
   category: string;
   description: string;
-  /** `changed` 是「已改动」自动处置(ADR 0013),处置人为空。 */
-  disposition: "resolved" | "unresolved" | "unknown" | "changed";
+  /** `fixed` 是「已修复」自动处置,处置人为空。 */
+  disposition: "resolved" | "unresolved" | "unknown" | "fixed";
   placement: "inline" | "body";
   commentId: string | null;
   /** Forge 上那条原评论的地址。 */
@@ -375,12 +376,12 @@ export function RunDetailPanel({
               />
               <div
                 className="h-full bg-primary/40"
-                style={{ width: `${(run.changed / run.total) * 100}%` }}
+                style={{ width: `${(run.fixed / run.total) * 100}%` }}
               />
             </div>
-            {run.changed === 0 ? null : (
+            {run.fixed === 0 ? null : (
               <p className="text-sm text-text-muted tabular-nums">
-                人工 {run.resolved} · 自动 {run.changed}
+                人工 {run.resolved} · 自动 {run.fixed}
               </p>
             )}
           </div>

@@ -75,18 +75,28 @@ function seedRun(
       durationMs: 1,
       ...(o.usage === undefined ? {} : { usage: o.usage }),
     })),
-    findings: findings.map((f, i) => ({
-      model: f.model,
-      file: "src/a.ts",
-      line: 5,
-      severity: "P1" as const,
-      category: "bug" as const,
-      description: "示例",
-      groupIndex: f.group ?? i,
-      disposition: (f.disposition ?? "unknown") as never,
-      placement: (f.placement ?? "inline") as never,
-      fingerprint: `fp-${f.group ?? i}`,
-    })),
+    // 同一个 group 的几条是同一处:落成一条 Finding 加几条归属(ADR 0015)。
+    findings: [...new Set(findings.map((f, i) => f.group ?? i))].map((group) => {
+      const members = findings.filter((f, i) => (f.group ?? i) === group);
+      const first = members[0]!;
+      return {
+        file: "src/a.ts",
+        line: 5,
+        severity: "P1" as const,
+        category: "bug" as const,
+        description: "示例",
+        attributions: members.map((f) => ({
+          model: f.model,
+          severity: "P1" as const,
+          category: "bug" as const,
+          description: "示例",
+        })),
+        groupIndex: group,
+        disposition: (first.disposition ?? "unknown") as never,
+        placement: (first.placement ?? "inline") as never,
+        fingerprint: `fp-${group}`,
+      };
+    }),
   });
   store.close();
   return runId;
