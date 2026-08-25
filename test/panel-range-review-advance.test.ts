@@ -41,8 +41,6 @@ type RangeReview = {
   lastForgeFailure: string | null;
 };
 
-type Comparison = { id: number; sha: string; recordedBy: string; recordedAt: string };
-
 /** 每一轮的 Reviewer 都记下自己拿到的 Review Range,推进之后那一轮的范围要能读出来。 */
 type Recorded = { ranges: ReviewRange[] };
 
@@ -232,23 +230,23 @@ test("详情端点给出历次比较项,轮次按 head 对得上", async () => {
   );
   await h.settledAtLeast(2);
 
-  const body = (await (await h.api("GET", `/range-reviews/${rangeReview.id}`)).json()) as {
+  const body = (await (await h.api("GET", `/stages/range:${rangeReview.id}`)).json()) as {
     rangeReview: RangeReview;
-    comparisons: Comparison[];
-    runs: { headSha: string }[];
+    groups: { sha: string; recordedBy: string | null; runs: { headSha: string }[] }[];
   };
   assert.equal(body.rangeReview.comparisonSha, next);
+  // 详情的分组新的在前,比较项因此是推进顺序的倒序。
   assert.deepEqual(
-    body.comparisons.map((item) => item.sha),
-    [h.repo.headSha, next],
+    body.groups.map((group) => group.sha),
+    [next, h.repo.headSha],
   );
   assert.deepEqual(
-    body.comparisons.map((item) => item.recordedBy),
+    body.groups.map((group) => group.recordedBy),
     [PANEL_ADMIN_USERNAME, PANEL_ADMIN_USERNAME],
   );
   // 每个比较项都能在轮次里找到审它的那一轮。
-  for (const comparison of body.comparisons) {
-    assert.ok(body.runs.some((run) => run.headSha === comparison.sha));
+  for (const group of body.groups) {
+    assert.ok(group.runs.some((run) => run.headSha === group.sha));
   }
 });
 

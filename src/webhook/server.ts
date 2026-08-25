@@ -1484,12 +1484,6 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
       handleDispose(req, res, deps, Number(match![1]), "unresolved", caller!.username),
   },
   {
-    method: "GET",
-    pattern: "/range-reviews",
-    access: "review:read",
-    handler: ({ req, res, deps }) => handleRangeReviews(req, res, deps),
-  },
-  {
     method: "POST",
     pattern: "/range-reviews",
     access: "review:create",
@@ -1501,12 +1495,6 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     pattern: "/range-reviews/prefill",
     access: "review:create",
     handler: ({ req, res, deps }) => handleRangeReviewPrefill(req, res, deps),
-  },
-  {
-    method: "GET",
-    pattern: /^\/range-reviews\/(\d+)$/,
-    access: "review:read",
-    handler: ({ res, deps }, match) => handleRangeReview(res, deps, Number(match![1])),
   },
   {
     method: "POST",
@@ -4600,24 +4588,6 @@ function failureText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** 跨仓库的范围审查列表。倒序,过滤与时间流同一套 owner/repo 成对规则。 */
-function handleRangeReviews(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: WebhookServerDeps,
-): void {
-  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
-  const owner = query.get("owner");
-  const repo = query.get("repo");
-  if ((owner === null) !== (repo === null)) {
-    return sendJson(res, 400, { error: "owner 与 repo 要成对给,过滤不接受半个键" });
-  }
-  const rangeReviews = withStore(deps.dbPath, (store) =>
-    store.listRangeReviews(owner !== null && repo !== null ? { owner, repo } : {}),
-  );
-  return sendJson(res, 200, { rangeReviews });
-}
-
 /**
  * 发起表单打开时的 base 预填值(issue #177):同一仓库最近一个审查完成的范围审查最后
  * 审到的那个比较项。连续两个阶段因此首尾相接,人不必自己回去找上一段审到哪里。
@@ -4646,23 +4616,6 @@ function handleRangeReviewPrefill(
     }
   }
   return sendJson(res, 200, { base: latest?.comparisonSha ?? null });
-}
-
-/** 一个范围审查的详情:记录本身加它名下的轮次。轮次与时间流同一份投影。 */
-function handleRangeReview(
-  res: ServerResponse,
-  deps: WebhookServerDeps,
-  id: number,
-): void {
-  const found = withStore(deps.dbPath, (store) => ({
-    rangeReview: store.getRangeReview(id),
-    comparisons: store.listRangeReviewComparisons(id),
-    runs: store.listRuns({ limit: RUNS_PAGE, rangeReviewId: id }),
-  }));
-  if (found.rangeReview === undefined) {
-    return sendJson(res, 404, { error: "没有这个范围审查" });
-  }
-  return sendJson(res, 200, found);
 }
 
 /** commit 选择器一页的提交数上限。人翻页翻的是一段历史,一次给太多只会更难认。 */

@@ -146,6 +146,8 @@
 
 ## 变更日志
 
+- 2026-08-26: 落地 issue #185。`GET <前缀>/api/range-reviews` 与 `GET <前缀>/api/range-reviews/{id}` 两个只读路由从路由表与权限表删掉,`handleRangeReviews` 与 `handleRangeReview` 两个处理函数跟着删。请求这两个路径从此与未知端点同一档:认证过后回 `{"error": "没有这个端点"}` 的 404。它们读的 `listRangeReviews` / `getRangeReview` / `listRangeReviewComparisons` / `listRuns` 一个都不删——base 预填、发起时的提醒、推进、审查完成与阶段详情仍在用。测试改读还在的接口,断言不弱化:`panel-range-reviews` 的两条改用 `GET /stages?source=range-review` 与 `GET /stages/{stageId}`(阶段归属、base 与当前比较项、分组里的那一轮、查不到的 404),`panel-range-review-advance` 的历次比较项改读阶段详情的分组(组是新的在前,顺序因此是推进顺序的倒序),`panel-range-review-complete` 的 Finding、处置人与备注改读 `GET /stage-summary?rangeReviewId=`,`panel-permissions` 的路由期望表少两行,`panel-range-reviews` 另新增一条断言这两个路径现在与未知端点同一档。
+
 - 2026-08-25: 落地 issue #180(spec #172)的服务端部分。范围审查的页面删了(见 `web/AGENTS.md`),容器 pull request 正文里的面板地址因此从 `/range-reviews?range=<id>` 改成这个阶段的详情页 `/stages/range:<id>`——正文里那一行的用处就是「去哪操作」,指向一个已经不存在的页面等于没指。`containerPullRequestBody` 本身与发起、推进、审查完成、重跑四个接口一字未改。`test/panel-range-reviews.test.ts` 里断言正文的那一条跟着改。
 
 - 2026-08-25: 落地 issue #179(spec #172)的服务端部分。`GET <前缀>/api/repo-commits` 多收一个可选的 `base`:带了就为每条提交回一个 `descendsFromBase`,不带时字段不出现、响应一字不变。`git/worktree.ts` 的 `listBranchCommits` 因此换了返回形状——从 `RepoCommit[] | undefined` 改成 `BranchCommits` 判别联合(`branch-unknown` / `base-unknown` 两档失败),base 查不到是 400、分支查不到仍是 404。后代集合由一条 `rev-list --ancestry-path <base>..<分支>` 一次算出,逐条 `merge-base --is-ancestor` 与不带 `--ancestry-path` 的双端范围都不成立(理由见模块规范)。推进接口与它的后代校验一字未改。测试:`panel-commit-picker` 新增四条(分叉历史上的后代标记、从 base 分出去的旁支算后代、不带 base 时无标记、base 非 sha 与查不到都被拒)。

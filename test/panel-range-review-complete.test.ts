@@ -131,10 +131,12 @@ test("完成时全量回填:已 resolve 的同步过来,其余 unknown 进分母
   assert.equal(h.memory.publishedComments.length, 2);
 
   // 人在这个阶段里给第一条留了备注并处置过。
-  const before = (await (await h.api("GET", `/range-reviews/${rangeReview.id}`)).json()) as {
-    runs: { findings: { id: number; commentId: string | null }[] }[];
+  const before = (await (
+    await h.api("GET", `/stage-summary?rangeReviewId=${rangeReview.id}`)
+  ).json()) as {
+    findings: { id: number; commentId: string | null }[];
   };
-  const first = before.runs[0]!.findings.find(
+  const first = before.findings.find(
     (finding) => finding.commentId === h.memory.publishedComments[0]!.id,
   )!;
   assert.equal(
@@ -147,17 +149,17 @@ test("完成时全量回填:已 resolve 的同步过来,其余 unknown 进分母
 
   assert.equal((await h.api("POST", `/range-reviews/${rangeReview.id}/complete`)).status, 200);
 
-  const detail = (await (await h.api("GET", `/range-reviews/${rangeReview.id}`)).json()) as {
-    runs: {
-      findings: {
-        commentId: string | null;
-        disposition: string;
-        disposedBy: string | null;
-        note: string | null;
-      }[];
+  const summary = (await (
+    await h.api("GET", `/stage-summary?rangeReviewId=${rangeReview.id}`)
+  ).json()) as {
+    findings: {
+      commentId: string | null;
+      disposition: string;
+      disposedBy: string | null;
+      note: string | null;
     }[];
   };
-  const findings = detail.runs[0]!.findings;
+  const findings = summary.findings;
   const resolved = findings.find(
     (finding) => finding.commentId === h.memory.publishedComments[0]!.id,
   )!;

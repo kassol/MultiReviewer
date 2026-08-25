@@ -234,14 +234,18 @@ test("同一 base 已有进行中的:先提醒,带确认标志重发即成功,�
   assert.equal((await request(true)).status, 202);
   await h.settledAtLeast(2);
 
-  const list = (await (await h.api("GET", "/range-reviews")).json()) as {
-    rangeReviews: RangeReview[];
+  const list = (await (await h.api("GET", "/stages?source=range-review")).json()) as {
+    stages: { stageId: string }[];
   };
-  assert.equal(list.rangeReviews.length, 2);
-  assert.deepEqual(
-    list.rangeReviews.map((item) => item.baseSha),
-    [h.repo.baseSha, h.repo.baseSha],
-  );
+  assert.equal(list.stages.length, 2);
+  const bases: string[] = [];
+  for (const stage of list.stages) {
+    const detail = (await (
+      await h.api("GET", `/stages/${encodeURIComponent(stage.stageId)}`)
+    ).json()) as { rangeReview: RangeReview };
+    bases.push(detail.rangeReview.baseSha);
+  }
+  assert.deepEqual(bases, [h.repo.baseSha, h.repo.baseSha]);
 });
 
 test("建容器 PR 失败:记下失败原因,已建的两条分支被清理", async () => {
@@ -275,7 +279,7 @@ test("建容器 PR 失败:记下失败原因,已建的两条分支被清理", as
   assert.deepEqual(h.memory.deletedBranches, [record.baseBranch, record.headBranch]);
 });
 
-test("详情端点返回 base、当前比较项与本范围审查的轮次", async () => {
+test("阶段详情返回 base、当前比较项与本范围审查的轮次", async () => {
   const h = await registeredHarness();
   const created = (await (
     await h.api("POST", "/range-reviews", {
@@ -288,19 +292,32 @@ test("详情端点返回 base、当前比较项与本范围审查的轮次", asy
   ).json()) as { rangeReview: RangeReview };
   await h.settledAtLeast(1);
 
-  const detail = await h.api("GET", `/range-reviews/${created.rangeReview.id}`);
+  const detail = await h.api("GET", `/stages/range:${created.rangeReview.id}`);
   assert.equal(detail.status, 200);
   const body = (await detail.json()) as {
+    stage: { rangeReviewId: number | null };
     rangeReview: RangeReview;
-    runs: { id: number; rangeReviewId: number | null; headSha: string }[];
+    groups: { sha: string; runs: { runId: number; headSha: string }[] }[];
   };
+  assert.equal(body.stage.rangeReviewId, created.rangeReview.id);
   assert.equal(body.rangeReview.baseSha, h.repo.baseSha);
   assert.equal(body.rangeReview.comparisonSha, h.repo.headSha);
-  assert.equal(body.runs.length, 1);
-  assert.equal(body.runs[0]!.rangeReviewId, created.rangeReview.id);
-  assert.equal(body.runs[0]!.headSha, h.repo.headSha);
+  assert.equal(body.groups.length, 1);
+  assert.equal(body.groups[0]!.sha, h.repo.headSha);
+  assert.equal(body.groups[0]!.runs.length, 1);
+  assert.equal(body.groups[0]!.runs[0]!.headSha, h.repo.headSha);
 
-  assert.equal((await h.api("GET", "/range-reviews/9999")).status, 404);
+  assert.equal((await h.api("GET", "/stages/range:9999")).status, 404);
+});
+
+test("删掉的两个只读接口与未知端点同一档 404", async () => {
+  const h = await startReadyPanelHarness(cleanups);
+
+  for (const path of ["/range-reviews", "/range-reviews/1"]) {
+    const response = await h.api("GET", path);
+    assert.equal(response.status, 404, path);
+    assert.deepEqual(await response.json(), { error: "没有这个端点" });
+  }
 });
 
 test("时间流区分 PR 触发与范围审查", async () => {
@@ -390,10 +407,9 @@ test("没有 review:create 的用户发起被拒,新权限格不落到已有角�
   assert.equal(denied.status, 403);
   assert.deepEqual(h.memory.createdBranches, []);
 
-  // 只读那一格仍然读得到列表。
+  // 只读那一格仍然读得到评审记录。
   assert.equal(
-    (await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/range-reviews`, { headers: { cookie } }))
-      .status,
+    (await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/stages`, { headers: { cookie } })).status,
     200,
   );
 });
