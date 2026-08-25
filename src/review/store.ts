@@ -21,7 +21,14 @@ import type {
   TrustedModelFieldSource,
   TrustedModelFieldSources,
 } from "../reviewer/model-service-runtime.ts";
-import type { Category, Disposition, ReviewerUsage, Severity } from "./finding.ts";
+import type {
+  Category,
+  Disposition,
+  HistoryFinding,
+  ReviewerUsage,
+  ReviewVerdict,
+  Severity,
+} from "./finding.ts";
 import { containerBranches, type RangeReviewState } from "./range-review.ts";
 
 export const STORE_SCHEMA = `
@@ -102,6 +109,8 @@ CREATE TABLE IF NOT EXISTS finding (
   line INTEGER NOT NULL,
   severity TEXT NOT NULL,
   category TEXT NOT NULL,
+  -- 合并后的标题。历史注入要拿它给已处置的条目占那一行(ADR 0016),升级前的行为 NULL。
+  title TEXT,
   description TEXT NOT NULL,
   fingerprint TEXT,
   group_index INTEGER NOT NULL,
@@ -138,6 +147,18 @@ CREATE TABLE IF NOT EXISTS finding_attribution (
   UNIQUE (finding_id, model)
 );
 CREATE INDEX IF NOT EXISTS finding_attribution_by_model ON finding_attribution(model);
+
+-- 一轮里每个 Reviewer 对每条未处置历史 Finding 的复核结论(ADR 0016)。finding_id
+-- 指注入时该 Finding Identity 的最新一行。漏给结论的按「无法判断」照样落一行并标
+-- missing:沉默不是证据,但"这个模型压根没复核"要数得出来。本票只记录,不裁决。
+CREATE TABLE IF NOT EXISTS finding_verdict (
+  run_id INTEGER NOT NULL REFERENCES review_run(id),
+  model TEXT NOT NULL,
+  finding_id INTEGER NOT NULL REFERENCES finding(id),
+  verdict TEXT NOT NULL,
+  missing INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (run_id, model, finding_id)
+);
 
 -- 回填的索引:回填按「文件 + 指纹」改行、按 PR 定位 Review Run。统计矩阵是全表
 -- 聚合,时间窗过滤在聚合之后,建不出能用上的索引。
@@ -388,6 +409,7 @@ const ADD_COLUMNS = [
   "ALTER TABLE finding ADD COLUMN disposed_by TEXT",
   "ALTER TABLE finding ADD COLUMN disposed_at TEXT",
   "ALTER TABLE finding ADD COLUMN disposition_note TEXT",
+  "ALTER TABLE finding ADD COLUMN title TEXT",
 ];
 
 /**
@@ -487,6 +509,8 @@ export type FindingAttributionRecord = {
 export type FindingRecord = {
   file: string;
   line: number;
+  /** 首报那个模型给的标题。空串即模型没给,历史注入时占位为空。 */
+  title: string;
   /** 各归属里最高的那一档。 */
   severity: Severity;
   /** 首报那个模型的分类。 */
@@ -562,12 +586,25 @@ export type RunRange = {
   baseSha: string | null;
 };
 
+/**
+ * 一个 Reviewer 对一条历史 Finding 的复核结论(ADR 0016)。`findingId` 是注入时该
+ * Finding Identity 的最新一行。`missing` 即这个模型没给这条结论,按「无法判断」落库。
+ */
+export type VerdictRecord = {
+  model: string;
+  findingId: number;
+  verdict: ReviewVerdict;
+  missing: boolean;
+};
+
 export type RunResult = {
   finishedAt: string;
   durationMs: number;
   failed: boolean;
   outcomes: readonly OutcomeRecord[];
   findings: readonly FindingRecord[];
+  /** 本轮各 Reviewer 的复核结论。缺省即这一轮没有历史可复核。 */
+  verdicts?: readonly VerdictRecord[];
 };
 
 /**
@@ -881,6 +918,11 @@ export type RunListItem = {
     /** 处置备注,只存面板。 */
     note: string | null;
   }[];
+  /**
+   * 本轮漏复核的条数(ADR 0016):注入了历史却没给结论的「Reviewer × 历史 Finding」
+   * 对数。它们按「无法判断」落库,这个数说的是模型有没有认真复核。
+   */
+  missedVerdicts: number;
   /** 人工处置掉的 Finding 条数。 */
   resolved: number;
   /** 「已修复」自动处置掉的 Finding 条数。 */
@@ -1098,6 +1140,20 @@ export type Store = {
   listModelSupplements(provider?: string): ModelSupplementRecord[];
   startRun(meta: RunMeta): number;
   finishRun(runId: number, result: RunResult): void;
+  /**
+   * 本审查阶段已经报过的 Finding,注入给这一轮的每个 Reviewer(ADR 0016)。
+   *
+   * 阶段的范围:`rangeReviewId` 给了就取该范围审查名下全部轮次,没给就取该 pull
+   * request 名下、不属于任何范围审查的全部轮次。按 Finding Identity(文件 + 指纹,
+   * 算不出指纹的行各算一条)折叠,每条取最新一行——那一行才带着当前的处置状态与备注。
+   * 不设条数上限;已处置的条目由调用方按 `disposition` 只用那一行的字段。
+   */
+  stageHistory(scope: {
+    owner: string;
+    repo: string;
+    pullNumber: number;
+    rangeReviewId?: number;
+  }): HistoryFinding[];
   /**
    * 把本轮新发出去的行级评论的 id 与链接补到对应的合并组上。
    *
@@ -2915,10 +2971,10 @@ export function openStore(dbPath: string): Store {
 
         const insertFinding = db.prepare(
           `INSERT INTO finding
-             (run_id, file, line, severity, category, description,
+             (run_id, file, line, title, severity, category, description,
               fingerprint, group_index, disposition, placement,
               comment_id, comment_html_url)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         const insertAttribution = db.prepare(
           `INSERT INTO finding_attribution
@@ -2930,6 +2986,7 @@ export function openStore(dbPath: string): Store {
             runId,
             finding.file,
             finding.line,
+            finding.title,
             finding.severity,
             finding.category,
             finding.description,
@@ -2951,6 +3008,22 @@ export function openStore(dbPath: string): Store {
               said.description,
             );
           }
+        }
+
+        // 复核结论逐条落库(ADR 0016)。漏给的那些由编排层按「无法判断」补齐并标
+        // `missing`,这里只照写:裁决与自动处置是后续票的事。
+        const insertVerdict = db.prepare(
+          `INSERT INTO finding_verdict (run_id, model, finding_id, verdict, missing)
+           VALUES (?, ?, ?, ?, ?)`,
+        );
+        for (const verdict of result.verdicts ?? []) {
+          insertVerdict.run(
+            runId,
+            verdict.model,
+            verdict.findingId,
+            verdict.verdict,
+            verdict.missing ? 1 : 0,
+          );
         }
 
         // 折叠到已有 Forge 评论的行继承那条评论上一次处置的元数据(issue #152)。处置
@@ -2979,6 +3052,61 @@ export function openStore(dbPath: string): Store {
         db.exec("ROLLBACK");
         throw error;
       }
+    },
+
+    stageHistory(scope) {
+      // 阶段范围两条链路各一档:范围审查取它名下全部轮次,PR 触发取这个 pull request
+      // 名下、不属于任何范围审查的那些——容器 PR 的轮次不该混进 PR 链路的历史里。
+      const [where, params]: [string, (string | number)[]] =
+        scope.rangeReviewId === undefined
+          ? [
+              `run.owner = ? AND run.repo = ? AND run.pull_number = ?
+                 AND run.range_review_id IS NULL`,
+              [scope.owner, scope.repo, scope.pullNumber],
+            ]
+          : ["run.range_review_id = ?", [scope.rangeReviewId]];
+      // 折叠键与处置率同源(ADR 0015):文件 + 指纹,算不出指纹的行用自己的 id 兜底
+      // 成独立键。同一处取最新那一行——它才带着当前的处置状态、备注与最新表述。
+      const rows = db
+        .prepare(
+          `WITH scoped AS (
+             SELECT f.id AS id, f.file AS file, f.line AS line, f.title AS title,
+                    f.severity AS severity, f.category AS category,
+                    f.description AS description, f.disposition AS disposition,
+                    f.disposition_note AS note,
+                    COALESCE(f.fingerprint, 'row:' || f.id) AS fp
+               FROM finding f
+               JOIN review_run run ON f.run_id = run.id
+              WHERE ${where}
+           )
+           SELECT s.* FROM scoped s
+            WHERE s.id = (SELECT MAX(latest.id) FROM scoped latest
+                           WHERE latest.file = s.file AND latest.fp = s.fp)
+            ORDER BY s.id`,
+        )
+        .all(...params);
+      return rows.map((row) => {
+        const disposition = String(row["disposition"]) as Disposition;
+        const note = row["note"] === null ? undefined : String(row["note"]);
+        const disposed = disposition === "resolved" || disposition === "fixed";
+        return {
+          id: Number(row["id"]),
+          file: String(row["file"]),
+          line: Number(row["line"]),
+          // 升级前的历史行没有标题,占位为空:少一句话胜过让整条历史掉出注入。
+          title: row["title"] === null ? "" : String(row["title"]),
+          disposition,
+          ...(note === undefined ? {} : { note }),
+          // 已处置的只占一行(ADR 0016 的体积控制):正文、严重度与分类都不给。
+          ...(disposed
+            ? {}
+            : {
+                severity: String(row["severity"]) as Severity,
+                category: String(row["category"]) as Category,
+                description: String(row["description"]),
+              }),
+        };
+      });
     },
 
     recordFindingComments(runId, refs) {
@@ -3171,6 +3299,15 @@ export function openStore(dbPath: string): Store {
         )
         .all(...ids);
 
+      // 漏复核只数条数:结论本身在 finding_verdict 里,时间流要的是「有没有认真复核」。
+      const byVerdict = db
+        .prepare(
+          `SELECT run_id, SUM(missing) AS missed
+             FROM finding_verdict
+            WHERE run_id IN (${marks}) GROUP BY run_id`,
+        )
+        .all(...ids);
+
       const byFinding = db
         .prepare(
           `SELECT id, run_id, file, line, severity, category, description,
@@ -3228,6 +3365,10 @@ export function openStore(dbPath: string): Store {
         list.push({ model, findings, failure: null });
         list.sort((a, b) => a.model.localeCompare(b.model));
         models.set(runId, list);
+      }
+      const missedVerdicts = new Map<number, number>();
+      for (const row of byVerdict) {
+        missedVerdicts.set(Number(row["run_id"]), Number(row["missed"] ?? 0));
       }
       const groups = new Map<number, { resolved: number; fixed: number; total: number }>();
       for (const row of byGroup) {
@@ -3316,6 +3457,7 @@ export function openStore(dbPath: string): Store {
           ...(usage === undefined ? {} : { usage }),
           reviewerPins: reviewerPins.get(id) ?? [],
           findings: findings.get(id) ?? [],
+          missedVerdicts: missedVerdicts.get(id) ?? 0,
           resolved: groups.get(id)?.resolved ?? 0,
           fixed: groups.get(id)?.fixed ?? 0,
           total: groups.get(id)?.total ?? 0,

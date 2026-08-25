@@ -1,5 +1,5 @@
 /**
- * `report_finding` 与真实模型之间的契约,桩测不到。
+ * `report_finding`、复核工具与真实模型之间的契约,桩测不到。
  *
  * 默认跳过。它会真实调用一次模型,产生费用。fixture 来自 prototype 分支,
  * 两个文件里埋了四处缺陷。
@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
+import type { HistoryFinding } from "../src/review/finding.ts";
 import { resolvePiBuiltinProviderTarget } from "../src/reviewer/catalog.ts";
 import { createPiReviewer } from "../src/reviewer/pi-reviewer.ts";
 import {
@@ -52,10 +53,10 @@ test("真实 provider 完成一次模型发现与一次最小推理", { skip }, 
   assert.equal(inference.ok, true, inference.ok ? undefined : inference.failure.message);
 });
 
-test("真实模型经 report_finding 产出结构完整的 Finding", { skip }, async () => {
+async function smokeReviewer(): Promise<ReturnType<typeof createPiReviewer>> {
   const target = await resolvePiBuiltinProviderTarget(provider!);
   assert.ok(target, `Pi 内置 provider 不存在或没有运行目标: ${provider}`);
-  const reviewer = createPiReviewer({
+  return createPiReviewer({
     runtimeModel: {
       provider: provider!,
       id: model!,
@@ -80,10 +81,15 @@ test("真实模型经 report_finding 产出结构完整的 Finding", { skip }, a
     },
     apiKey: secret!,
   });
+}
+
+test("真实模型经 report_finding 产出结构完整的 Finding", { skip }, async () => {
+  const reviewer = await smokeReviewer();
 
   const outcome = await reviewer.review(
     { baseSha: "HEAD~1", headSha: "HEAD", files: ["src/db.js", "src/pagination.js"] },
     FIXTURE,
+    [],
   );
 
   assert.equal(outcome.failure, undefined, `Reviewer 失败: ${outcome.failure}`);
@@ -100,4 +106,35 @@ test("真实模型经 report_finding 产出结构完整的 Finding", { skip }, a
     assert.ok(finding.description.length > 0);
     assert.equal(finding.model, `${provider}:${model}`);
   }
+});
+
+/**
+ * 一条历史 Finding,说的问题在 fixture 里根本不成立:`markShipped` 的 UPDATE 用的是
+ * 占位符,不是拼接。模型据此该经复核工具回「已修」(ADR 0016)。
+ */
+const PRIOR: HistoryFinding = {
+  id: 41,
+  file: "src/db.js",
+  line: 13,
+  title: "UPDATE 拼接 orderId",
+  disposition: "unresolved",
+  severity: "P0",
+  category: "security",
+  description:
+    "markShipped 把 orderId 直接拼进 UPDATE 语句,调用方传进来的值会被当成 SQL 执行。",
+};
+
+test("真实模型经复核工具对已修好的历史 Finding 回已修", { skip }, async () => {
+  const reviewer = await smokeReviewer();
+
+  const outcome = await reviewer.review(
+    { baseSha: "HEAD~1", headSha: "HEAD", files: ["src/db.js"] },
+    FIXTURE,
+    [PRIOR],
+  );
+
+  assert.equal(outcome.failure, undefined, `Reviewer 失败: ${outcome.failure}`);
+  // 契约成立的判据:结论经工具回来、认得出注入时给的那个 id、用对了枚举值。
+  assert.deepEqual(outcome.verdicts, [{ findingId: PRIOR.id, verdict: "fixed" }]);
+  assert.equal(outcome.rejectedToolCalls, 0, "存在被拒的工具调用,说明契约失配");
 });

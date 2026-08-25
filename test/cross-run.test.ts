@@ -695,3 +695,186 @@ test("人撤回处置之后再折叠一轮:代码改了也不自动处置", asyn
   assert.deepEqual(forge.resolvedIds, [], "人撤回处置之后又被自动处置了一次");
   assert.deepEqual(latestDispositions(db.path), ["unresolved", "unresolved"]);
 });
+
+/**
+ * 历史注入与复核契约(ADR 0016,issue #165)。本阶段已经报过的 Finding 注入每个
+ * Reviewer,Reviewer 回的复核结论逐条落库。本票只记录,不裁决、不动任何处置。
+ */
+
+/** 本轮落库的复核结论,按落库顺序。 */
+function verdictRows(dbPath: string): Record<string, unknown>[] {
+  return query(
+    dbPath,
+    "SELECT run_id, model, finding_id, verdict, missing FROM finding_verdict ORDER BY rowid",
+  );
+}
+
+/** 第一轮报两处:第 6 行进行级评论(可处置),第 11 行落在 diff 外只进正文。 */
+const TWO_FINDINGS = [
+  { ...FINDING, title: "减法多减一" },
+  {
+    ...FINDING,
+    line: OUT_OF_DIFF_LINE,
+    title: "收尾没校验",
+    description: "mul 的收尾没有校验",
+  },
+];
+
+test("下一轮把本阶段历史注入 Reviewer:未处置的带正文与备注,已处置的只占一行且不带操作人", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, { ...deps, reviewers: [scriptedReviewer("model-a", TWO_FINDINGS)] });
+  // 人在面板上处置了行级那一条,并留了一句备注。备注要跟着注入,操作人不能跟着。
+  disposeInPanel(db.path, forge.publishedComments[0]!.id, "resolved", "确认无影响");
+  forge.existingComments.push(...asPublished(forge, true));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+
+  const second = scriptedReviewer("model-b", []);
+  await runReview(EVENT, { ...deps, reviewers: [second] });
+
+  assert.deepEqual(second.calls[0]!.history, [
+    // 已处置的只占一行:没有正文、严重度与分类,也没有操作人。
+    {
+      id: 1,
+      file: "src/calc.js",
+      line: 6,
+      title: "减法多减一",
+      disposition: "resolved",
+      note: "确认无影响",
+    },
+    // 未处置的给全文:模型要据此判断这个问题还在不在。
+    {
+      id: 2,
+      file: "src/calc.js",
+      line: OUT_OF_DIFF_LINE,
+      title: "收尾没校验",
+      disposition: "unknown",
+      severity: "P0",
+      category: "bug",
+      description: "mul 的收尾没有校验",
+    },
+  ]);
+});
+
+test("历史对所有 Reviewer 共享,每一批拿到的是同一份", async () => {
+  const { repo, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+
+  const first = scriptedReviewer("model-b", []);
+  const other = scriptedReviewer("model-c", []);
+  await runReview(EVENT, { ...deps, reviewers: [first, other] });
+
+  assert.equal(first.calls[0]!.history.length, 1);
+  assert.deepEqual(first.calls[0]!.history, other.calls[0]!.history);
+});
+
+test("复核结论逐条落库,漏给的记为无法判断;时间流带本轮漏复核条数", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asPublished(forge, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [
+      scriptedReviewer("model-b", [], { verdicts: [{ findingId: 1, verdict: "fixed" }] }),
+      // 这个模型一条结论都没给:按无法判断落库,并计进漏复核。
+      scriptedReviewer("model-c", []),
+    ],
+  });
+
+  const rows = verdictRows(db.path);
+  assert.deepEqual(
+    rows.map((row) => ({
+      model: row["model"],
+      finding: Number(row["finding_id"]),
+      verdict: row["verdict"],
+      missing: Number(row["missing"]),
+    })),
+    [
+      { model: "model-b", finding: 1, verdict: "fixed", missing: 0 },
+      { model: "model-c", finding: 1, verdict: "unclear", missing: 1 },
+    ],
+  );
+  // 两轮的结论各归各轮:第一轮没有历史可复核,一条都不该有。
+  assert.deepEqual([...new Set(rows.map((row) => Number(row["run_id"])))], [2]);
+
+  const store = openStore(db.path);
+  const runs = store.listRuns({ limit: 10 });
+  store.close();
+  assert.equal(runs[0]!.missedVerdicts, 1);
+  assert.equal(runs[1]!.missedVerdicts, 0);
+});
+
+test("已处置的历史不要结论:漏复核只数未处置的那些", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  disposeInPanel(db.path, forge.publishedComments[0]!.id, "resolved");
+  forge.existingComments.push(...asPublished(forge, true));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+
+  await runReview(EVENT, { ...deps, reviewers: [scriptedReviewer("model-b", [])] });
+
+  assert.deepEqual(verdictRows(db.path), []);
+});
+
+test("全部 Reviewer 都失败的那一轮不落复核结论:它根本没跑,不是漏复核", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asPublished(forge, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [scriptedReviewer("model-b", [], { failure: "模型服务不可用" })],
+  });
+
+  assert.deepEqual(verdictRows(db.path), []);
+});
+
+test("复核结论不改任何处置:全判已修也不写 Forge、不动库里的处置", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asPublished(forge, false));
+  // 代码没改动,指纹还在:ADR 0013 的旧判据不会插手,动静只可能来自复核结论。
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [
+      scriptedReviewer("model-b", [], { verdicts: [{ findingId: 1, verdict: "fixed" }] }),
+    ],
+  });
+
+  assert.deepEqual(forge.resolvedIds, [], "复核结论不该在本票里驱动自动处置");
+  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
+  assert.deepEqual(dispositionMarks(db.path), [{ by: null, at: null }]);
+});
+
+test("范围审查与 PR 触发各注入自己阶段的历史", async () => {
+  const { deps } = setup();
+
+  // 范围审查那一档:轮次归在 range_review_id 名下(ADR 0012)。
+  await runReview(EVENT, { ...deps, rangeReviewId: 1 });
+
+  // PR 链路看不到范围审查阶段的历史:它们是两个审查阶段(CONTEXT.md 审查阶段)。
+  const onPullRequest = scriptedReviewer("model-b", [
+    { ...FINDING, line: OUT_OF_DIFF_LINE, description: "mul 的收尾没有校验" },
+  ]);
+  await runReview(EVENT, { ...deps, reviewers: [onPullRequest] });
+  assert.deepEqual(onPullRequest.calls[0]!.history, []);
+
+  // 范围审查的下一轮只看得到自己阶段报过的那条。
+  const onRange = scriptedReviewer("model-c", []);
+  await runReview(EVENT, { ...deps, reviewers: [onRange], rangeReviewId: 1 });
+  assert.deepEqual(
+    onRange.calls[0]!.history.map((entry) => ({ id: entry.id, line: entry.line })),
+    [{ id: 1, line: 6 }],
+  );
+});

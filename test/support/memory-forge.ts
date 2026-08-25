@@ -14,6 +14,7 @@ import type {
 } from "../../src/forge/forge.ts";
 import type {
   Finding,
+  HistoryFinding,
   ReviewRange,
   Reviewer,
   ReviewerOutcome,
@@ -150,23 +151,38 @@ export function memoryForge(init: {
 type ScriptedFinding = Omit<Finding, "model" | "title" | "impact" | "suggestion"> &
   Partial<Pick<Finding, "title" | "impact" | "suggestion">>;
 
-/** 返回预设 Finding 的 Reviewer 桩。 */
+/**
+ * 返回预设 Finding 的 Reviewer 桩。
+ *
+ * `calls` 连注入的历史一起记下来:历史注入是这个桩唯一能观测的输入(ADR 0016)。
+ * `verdicts` 给定这一轮的复核结论;不给即一条都没给,编排层按「无法判断」落库。
+ */
 export function scriptedReviewer(
   model: string,
   findings: readonly ScriptedFinding[],
   extra?: Partial<
     Pick<
       ReviewerOutcome,
-      "failure" | "anomalies" | "rejectedToolCalls" | "anchorRejections" | "usage"
+      "failure" | "anomalies" | "rejectedToolCalls" | "anchorRejections" | "usage" | "verdicts"
     >
   >,
-): Reviewer & { calls: { range: ReviewRange; worktreePath: string }[] } {
-  const calls: { range: ReviewRange; worktreePath: string }[] = [];
+): Reviewer & {
+  calls: {
+    range: ReviewRange;
+    worktreePath: string;
+    history: readonly HistoryFinding[];
+  }[];
+} {
+  const calls: {
+    range: ReviewRange;
+    worktreePath: string;
+    history: readonly HistoryFinding[];
+  }[] = [];
   return {
     model,
     calls,
-    review: async (range, worktreePath) => {
-      calls.push({ range, worktreePath });
+    review: async (range, worktreePath, history) => {
+      calls.push({ range, worktreePath, history });
       return {
         model,
         findings: findings.map((f) => ({
@@ -179,6 +195,7 @@ export function scriptedReviewer(
         anomalies: extra?.anomalies ?? [],
         rejectedToolCalls: extra?.rejectedToolCalls ?? 0,
         anchorRejections: extra?.anchorRejections ?? 0,
+        ...(extra?.verdicts === undefined ? {} : { verdicts: extra.verdicts }),
         ...(extra?.failure === undefined ? {} : { failure: extra.failure }),
         ...(extra?.usage === undefined ? {} : { usage: extra.usage }),
       };

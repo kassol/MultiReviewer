@@ -22,6 +22,51 @@ export type Category = "security" | "bug" | "maintainability" | "design";
 export type Disposition = "resolved" | "unresolved" | "unknown" | "fixed";
 
 /**
+ * 一条历史 Finding 的复核结论(CONTEXT.md 复核,ADR 0016):仍在 / 已修 / 无法判断。
+ * 漏给结论按 `unclear` 计——沉默不是证据。
+ */
+export type ReviewVerdict = "present" | "fixed" | "unclear";
+
+/**
+ * 注入 Reviewer 的一条历史 Finding:本审查阶段(范围审查名下全部轮次,或 pull request
+ * 名下全部轮次)里按 Finding Identity 汇总出的当前状态(ADR 0016)。
+ *
+ * 未处置的带全文——模型要据此判断这个问题还在不在;已处置的只占一行,是阶段很长时
+ * 唯一的体积控制。两档都不带操作人:人名不进模型输入(issue #163 的用户故事 16)。
+ */
+export type HistoryFinding = {
+  /** 该 Identity 最新一行的落库 id。Reviewer 回复核结论时原样带回它。 */
+  id: number;
+  file: string;
+  line: number;
+  title: string;
+  /** 处置状态。`resolved` / `fixed` 即已处置,只给这一行。 */
+  disposition: Disposition;
+  /** 处置备注,没有就不带。备注只存面板,注入不改变它的可见范围。 */
+  note?: string;
+  /** 以下三项只有未处置的条目才有。 */
+  severity?: Severity;
+  category?: Category;
+  description?: string;
+};
+
+/** Reviewer 对一条历史 Finding 给出的复核结论。 */
+export type FindingVerdict = {
+  /** 对应 `HistoryFinding.id`。 */
+  findingId: number;
+  verdict: ReviewVerdict;
+};
+
+/**
+ * Reviewer 经复核工具报出的、尚未归一化的结论。`verdict` 是宽松字符串,理由同
+ * `RawFinding` 的枚举字段:收窄会让模型自造词汇、调用被拒(ADR 0004)。
+ */
+export type RawVerdict = {
+  id: number;
+  verdict: string;
+};
+
+/**
  * 一条被提出的代码问题。归属于提出它的 Reviewer,并指向 Review Range 内的具体位置。
  *
  * `line` 是 head commit 中该文件的 1-indexed 行号。
@@ -117,10 +162,23 @@ export type ReviewerOutcome = {
     /** `batchIndex` 从 1 起,直接呈现给读 review 的人。 */
     failures: { batchIndex: number; failure: string }[];
   };
+  /**
+   * 对注入的历史 Finding 逐条给出的复核结论(ADR 0016)。缺省即一条都没给,
+   * 编排层按「无法判断」落库——沉默不是证据,但也不能算它没跑过。
+   */
+  verdicts?: readonly FindingVerdict[];
 };
 
 /** 绑定了具体模型的审查执行体。 */
 export interface Reviewer {
   readonly model: string;
-  review(range: ReviewRange, worktreePath: string): Promise<ReviewerOutcome>;
+  /**
+   * `history` 是本审查阶段已经报过的 Finding(ADR 0016),每一批都给同一份:它说的是
+   * 这个阶段的历史,与本批审哪些文件无关。首轮为空数组。
+   */
+  review(
+    range: ReviewRange,
+    worktreePath: string,
+    history: readonly HistoryFinding[],
+  ): Promise<ReviewerOutcome>;
 }

@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 
 import type {
   Finding,
+  FindingVerdict,
+  HistoryFinding,
   RawFinding,
   ReviewRange,
   Reviewer,
@@ -11,7 +13,7 @@ import type {
 } from "../review/finding.ts";
 import { modelIdentity } from "../config.ts";
 import { MODEL_API_KEY_ENV, reviewerEnv } from "./env.ts";
-import { normalizeFinding } from "./normalize.ts";
+import { normalizeFinding, normalizeVerdict } from "./normalize.ts";
 import type { ReviewerRequest, WorkerMessage, WorkerUsage } from "./protocol.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 
@@ -39,8 +41,8 @@ export type PiReviewerConfig = {
 export function createPiReviewer(config: PiReviewerConfig): Reviewer {
   return {
     model: modelIdentity({ provider: config.runtimeModel.provider, model: config.runtimeModel.id }),
-    review: (range, worktreePath) =>
-      runInChild(WORKER_PATH, config, range, worktreePath),
+    review: (range, worktreePath, history) =>
+      runInChild(WORKER_PATH, config, range, worktreePath, history),
   };
 }
 
@@ -76,6 +78,8 @@ export function runInChild(
   config: PiReviewerConfig,
   range: ReviewRange,
   worktreePath: string,
+  /** 本审查阶段的历史 Finding(ADR 0016)。首轮没有历史,默认空。 */
+  history: readonly HistoryFinding[] = [],
 ): Promise<ReviewerOutcome> {
   return new Promise((resolve) => {
     // 对外一律用完整模型标识；运行字段来自这轮固定的模型服务版本。
@@ -84,6 +88,7 @@ export function runInChild(
       model: config.runtimeModel.id,
     });
     const findings: Finding[] = [];
+    const verdicts: FindingVerdict[] = [];
     const anomalies: { raw: RawFinding; reason: string }[] = [];
     let rejectedToolCalls = 0;
     let anchorRejections = 0;
@@ -131,6 +136,7 @@ export function runInChild(
       resolve({
         model: identity,
         findings,
+        verdicts,
         anomalies,
         rejectedToolCalls,
         anchorRejections,
@@ -149,6 +155,16 @@ export function runInChild(
         const result = normalizeFinding(message.raw, identity);
         if (result.ok) findings.push(result.finding);
         else anomalies.push({ raw: result.raw, reason: result.reason });
+        return;
+      }
+      if (message.kind === "verdict") {
+        // 同一条历史被复核两次时后一条作数:模型改口时最后那句才是它的结论。
+        const verdict = normalizeVerdict(message.raw);
+        if (verdict !== undefined) {
+          const index = verdicts.findIndex((v) => v.findingId === verdict.findingId);
+          if (index === -1) verdicts.push(verdict);
+          else verdicts[index] = verdict;
+        }
         return;
       }
       rejectedToolCalls = message.rejectedToolCalls;
@@ -186,6 +202,7 @@ export function runInChild(
       runtimeModel: config.runtimeModel,
       range,
       worktreePath,
+      history,
     };
     // 必须带 callback:子进程起不来时(例如工作副本目录不存在)投递会失败,
     // 没有 callback 时 Node 把 EPIPE 异步抛出去,try/catch 拦不住,

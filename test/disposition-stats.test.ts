@@ -31,6 +31,7 @@ function finding(
   const base: FindingRecord = {
     file: "src/a.ts",
     line: 5,
+    title: "有毛病",
     severity: "P0",
     category: "bug",
     description: "有毛病",

@@ -17,7 +17,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import type { RawFinding } from "../review/finding.ts";
+import type { HistoryFinding, RawFinding } from "../review/finding.ts";
 import { anchorReport } from "./anchor.ts";
 import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, redactModelCredential } from "./env.ts";
 import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
@@ -32,6 +32,9 @@ const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
 
 const REPORT_FINDING_TOOL = "report_finding";
 
+/** 复核工具,与 report_finding 并列(ADR 0016)。只在本阶段有历史时注册。 */
+const REVIEW_PRIOR_FINDING_TOOL = "review_prior_finding";
+
 const SYSTEM_PROMPT = `You are a code reviewer. Explore the repository with your read tools, then report every problem you find.
 
 Cover correctness, security, maintainability and design. You may open any file in the repository, not only the changed ones — check callers, other branches of a changed function, and the conventions already established in the same module.
@@ -40,7 +43,9 @@ Report each problem by calling the report_finding tool exactly once per problem.
 
 The read tool prefixes every line with its line number, like \`12: code\`. These numbers are the only valid source for the line field of report_finding — copy the number, never count lines yourself. The prefix is not part of the file content. In the snippet field, copy the exact text of the line the problem starts on, without the line number prefix. Pick the most distinctive line of the problem, not a bare brace. A finding whose snippet does not match the file at the reported line is rejected back to you.
 
-Write the title, description, impact and suggestion fields in Chinese. The reviewers of this repository read Chinese. Keep identifiers, file paths, and code fragments in their original form — do not translate them. The severity and category fields stay in the exact English values listed for them.`;
+Write the title, description, impact and suggestion fields in Chinese. The reviewers of this repository read Chinese. Keep identifiers, file paths, and code fragments in their original form — do not translate them. The severity and category fields stay in the exact English values listed for them.
+
+When the prompt lists findings reported earlier in this review stage, call review_prior_finding exactly once for every one of them that is still open, and never report one of them again through report_finding.`;
 
 /**
  * 枚举字段必须在自身的 `description` 里写明允许值。prototype 实测:仅用字面量联合
@@ -79,19 +84,84 @@ const findingSchema = Type.Object({
   }),
 });
 
+/** 复核结论的枚举同样写在字段自己的 description 里,理由同 findingSchema。 */
+const verdictSchema = Type.Object({
+  id: Type.Integer({
+    description: "The id of the prior finding, copied from the list in the prompt",
+  }),
+  verdict: Type.String({
+    description:
+      "One of exactly: present, fixed, unclear. present means the problem is still in the code. fixed means the code has been changed and the problem is gone. unclear means you cannot tell.",
+  }),
+});
+
 function send(message: WorkerMessage): void {
   process.send?.(message);
 }
 
+/** 一条已处置的历史条目只占一行:阶段很长时这是唯一的体积控制(ADR 0016)。 */
+function disposedLine(entry: HistoryFinding): string {
+  const note = entry.note === undefined ? "" : ` 处置备注:${entry.note}`;
+  return `- [${entry.id}] ${entry.file}:${entry.line} ${entry.title} (already disposed:${
+    entry.disposition
+  })${note}`;
+}
+
+/** 未处置的条目给全文:模型要据此判断这个问题还在不在。 */
+function openBlock(entry: HistoryFinding): string {
+  const lines = [
+    `- [${entry.id}] ${entry.file}:${entry.line} [${entry.severity}/${entry.category}] ${entry.title}`,
+    `  ${entry.description}`,
+  ];
+  if (entry.note !== undefined) lines.push(`  处置备注:${entry.note}`);
+  return lines.join("\n");
+}
+
+/**
+ * 本阶段的历史。未处置的逐条复核,已处置的只是背景——同类误报不必再犯,但不必回结论。
+ */
+function historySection(history: readonly HistoryFinding[]): string {
+  const open = history.filter(
+    (entry) => entry.disposition === "unresolved" || entry.disposition === "unknown",
+  );
+  const disposed = history.filter(
+    (entry) => entry.disposition === "resolved" || entry.disposition === "fixed",
+  );
+  const sections = [
+    "",
+    "The following findings were already reported in this review stage. Do not report any of them again through report_finding.",
+  ];
+  if (open.length > 0) {
+    sections.push(
+      "",
+      `Still open — call ${REVIEW_PRIOR_FINDING_TOOL} exactly once for each of these ${open.length}, with its id and your verdict:`,
+      "",
+      ...open.map(openBlock),
+    );
+  }
+  if (disposed.length > 0) {
+    sections.push(
+      "",
+      "Already disposed — no verdict needed. Take the notes as guidance on what this repository does not consider a problem:",
+      "",
+      ...disposed.map(disposedLine),
+    );
+  }
+  return sections.join("\n");
+}
+
 function reviewPrompt(request: ReviewerRequest): string {
   const files = request.range.files.map((f) => `- ${f}`).join("\n");
+  const history =
+    request.history.length === 0 ? "" : `\n${historySection(request.history)}\n`;
   return `Review the changes between commit ${request.range.baseSha} and commit ${request.range.headSha}.
 
 The following files changed. Review the changes in them, using the rest of the repository as context:
 
 ${files}
 
-Use \`git diff ${request.range.baseSha}..${request.range.headSha}\` reasoning from the files themselves — read each changed file and judge the current state of the code.`;
+Use \`git diff ${request.range.baseSha}..${request.range.headSha}\` reasoning from the files themselves — read each changed file and judge the current state of the code.
+${history}`;
 }
 
 /** worktree 内文件的行数组。路径出圈或读不出来返回 undefined,交给调用方措辞。 */
@@ -130,6 +200,33 @@ async function run(request: ReviewerRequest): Promise<void> {
         return { content: [{ type: "text", text: result.message }], details: {} };
       }
       send({ kind: "finding", raw: { ...raw, line: result.line } });
+      return { content: [{ type: "text", text: "recorded" }], details: {} };
+    },
+  });
+
+  const knownHistoryIds = new Set(request.history.map((entry) => entry.id));
+  const reviewPriorFinding = defineTool({
+    name: REVIEW_PRIOR_FINDING_TOOL,
+    label: "Review Prior Finding",
+    description:
+      "Give your verdict on one finding reported earlier in this review stage: is it still present, fixed, or can you not tell?",
+    parameters: verdictSchema,
+    execute: async (_id, params) => {
+      const raw = params as { id: number; verdict: string };
+      // 编出来的 id 对不到任何历史条目,打回让模型改用列表里的那个:静默收下会让
+      // 一条真实的历史 Finding 少一个结论,而模型自己不会知道。
+      if (!knownHistoryIds.has(raw.id)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `no prior finding with id ${raw.id}; use one of the ids listed in the prompt`,
+            },
+          ],
+          details: {},
+        };
+      }
+      send({ kind: "verdict", raw: { id: raw.id, verdict: raw.verdict } });
       return { content: [{ type: "text", text: "recorded" }], details: {} };
     },
   });
@@ -205,8 +302,17 @@ async function run(request: ReviewerRequest): Promise<void> {
     model,
     thinkingLevel: "off",
     modelRuntime,
-    tools: [...READ_ONLY_TOOLS, REPORT_FINDING_TOOL],
-    customTools: [reportFinding, numberedReadTool],
+    // 本阶段没有历史时不注册复核工具:一个无事可复核的工具只会让模型多绕一圈。
+    tools: [
+      ...READ_ONLY_TOOLS,
+      REPORT_FINDING_TOOL,
+      ...(request.history.length === 0 ? [] : [REVIEW_PRIOR_FINDING_TOOL]),
+    ],
+    customTools: [
+      reportFinding,
+      numberedReadTool,
+      ...(request.history.length === 0 ? [] : [reviewPriorFinding]),
+    ],
     resourceLoader,
     sessionManager: SessionManager.inMemory(request.worktreePath),
     settingsManager,

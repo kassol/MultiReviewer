@@ -14,7 +14,13 @@ import {
   type TimedOutcome,
 } from "./batch.ts";
 import { dedupeFindings, type FindingAttribution, type MergedFinding } from "./dedupe.ts";
-import type { Disposition, Reviewer, ReviewerOutcome, Severity } from "./finding.ts";
+import type {
+  Disposition,
+  HistoryFinding,
+  Reviewer,
+  ReviewerOutcome,
+  Severity,
+} from "./finding.ts";
 import {
   contentFingerprint,
   fileFingerprints,
@@ -30,6 +36,7 @@ import {
   type FindingPlacement,
   type FindingRecord,
   type OutcomeRecord,
+  type VerdictRecord,
 } from "./store.ts";
 
 export type PullRequestEvent = PullRequestRef;
@@ -476,6 +483,39 @@ async function autoDispose(
   }
 }
 
+/**
+ * 本轮各 Reviewer 的复核结论,逐条落库(ADR 0016)。
+ *
+ * 只对未处置的历史条目要结论——已处置的注入只是背景。漏给结论的按「无法判断」照样
+ * 落一行并标 `missing`:沉默不是证据,而「这个模型压根没复核」得数得出来。失败的
+ * Reviewer 不记:那不是漏复核,是它根本没跑。本票只记录,不裁决、不动任何处置。
+ */
+function verdictRecords(
+  history: readonly HistoryFinding[],
+  outcomes: readonly ReviewerOutcome[],
+): VerdictRecord[] {
+  const open = history.filter(
+    (entry) => entry.disposition === "unresolved" || entry.disposition === "unknown",
+  );
+  if (open.length === 0) return [];
+
+  return outcomes
+    .filter((outcome) => outcome.failure === undefined)
+    .flatMap((outcome) => {
+      // 编出来的 id 不在本轮注入的历史里,不落库:它对应不到任何一条 Finding。
+      const given = new Map((outcome.verdicts ?? []).map((v) => [v.findingId, v.verdict]));
+      return open.map((entry) => {
+        const verdict = given.get(entry.id);
+        return {
+          model: outcome.model,
+          findingId: entry.id,
+          verdict: verdict ?? ("unclear" as const),
+          missing: verdict === undefined,
+        };
+      });
+    });
+}
+
 /** 一条行级评论的身份:同一轮里 `路径 + 行号 + 正文` 三者相同的草稿只有一条。 */
 function commentKey(comment: { path: string; line: number; body: string }): string {
   return `${comment.path}\n${comment.line}\n${comment.body}`;
@@ -583,6 +623,15 @@ export async function runReview(
       headSha: pullRequest.headSha,
     });
 
+    // 本阶段已经报过的 Finding,注入给这一轮的每个 Reviewer(ADR 0016)。读在开跑之前:
+    // 本轮自己的 Finding 还没落库,这份历史因此正是「上一轮为止」的那些。
+    const history = store.stageHistory({
+      owner: event.owner,
+      repo: event.repo,
+      pullNumber: event.number,
+      ...(deps.rangeReviewId === undefined ? {} : { rangeReviewId: deps.rangeReviewId }),
+    });
+
     // 批次串行,批内 Reviewer 并行:并行跑批会同时开「批数 × 模型数」个子进程。
     const perBatch: TimedOutcome[][] = [];
     for (const files of batches) {
@@ -592,7 +641,12 @@ export async function runReview(
             const begin = Date.now();
             // 工作副本每批都是同一份完整的 head commit:Reviewer 要能读到其他批次
             // 改动后的代码,否则会报出"这个新函数没有调用者"这类因分批而来的误报。
-            const outcome = await reviewer.review({ ...range, files }, worktree.path);
+            // 历史每批都给同一份:它说的是这个阶段的历史,与本批审哪些文件无关。
+            const outcome = await reviewer.review(
+              { ...range, files },
+              worktree.path,
+              history,
+            );
             return { outcome, durationMs: Date.now() - begin };
           }),
         ),
@@ -695,6 +749,7 @@ export async function runReview(
       return {
         file: merged.file,
         line: merged.line,
+        title: merged.title,
         severity: merged.severity,
         category: merged.category,
         description: merged.description,
@@ -722,6 +777,7 @@ export async function runReview(
       failed,
       outcomes: outcomeRecords,
       findings: findingRecords,
+      verdicts: verdictRecords(history, outcomes),
     });
 
     // 有缺席或覆盖不全的模型时即便零 Finding 也要发:读者需要知道这次审查覆盖面

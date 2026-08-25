@@ -1,4 +1,9 @@
-import type { ReviewRange, ReviewerUsage } from "../review/finding.ts";
+import type {
+  HistoryFinding,
+  RawVerdict,
+  ReviewRange,
+  ReviewerUsage,
+} from "../review/finding.ts";
 import type { RawFinding } from "./normalize.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 
@@ -13,6 +18,8 @@ export type ReviewerRequest = {
   runtimeModel: RuntimeModel;
   range: ReviewRange;
   worktreePath: string;
+  /** 本审查阶段已经报过的 Finding(ADR 0016)。首轮为空数组。 */
+  history: readonly HistoryFinding[];
 };
 
 /**
@@ -23,6 +30,7 @@ export type ReviewerRequest = {
  */
 export type WorkerMessage =
   | { kind: "finding"; raw: RawFinding }
+  | { kind: "verdict"; raw: RawVerdict }
   | {
       kind: "done";
       /** 被 Pi 校验拒绝的工具调用次数。不为零而 Finding 为零即契约失配。 */

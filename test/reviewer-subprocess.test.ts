@@ -363,3 +363,47 @@ process.on("message", () => {
   assert.equal(outcome.rejectedToolCalls, 1);
   assert.ok(Date.now() - started < 30_000, "应当在宽限期内结束,而不是等满超时");
 });
+
+test("子进程回的复核结论被归一化,同一条改口取后一条", async () => {
+  const path = worker(`
+process.on("message", () => {
+  process.send({ kind: "verdict", raw: { id: 7, verdict: "STILL PRESENT" } });
+  process.send({ kind: "verdict", raw: { id: 7, verdict: "fixed" } });
+  process.send({ kind: "verdict", raw: { id: 9, verdict: "vibes" } });
+  process.send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0 });
+  process.exit(0);
+});
+`);
+
+  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [
+    { id: 7, file: "src/a.ts", line: 4, title: "越界", disposition: "unresolved" },
+    { id: 9, file: "src/a.ts", line: 9, title: "没校验", disposition: "unresolved" },
+  ]);
+
+  assert.equal(outcome.failure, undefined);
+  // 映射不上的词按无法判断收:保守优先,与漏给结论同一档(ADR 0016)。
+  assert.deepEqual(outcome.verdicts, [
+    { findingId: 7, verdict: "fixed" },
+    { findingId: 9, verdict: "unclear" },
+  ]);
+});
+
+test("子进程把本阶段的历史原样收在任务里:注入是它唯一的历史来源", async () => {
+  const path = worker(`
+process.on("message", (request) => {
+  process.send({
+    kind: "finding",
+    raw: { ...${JSON.stringify(RAW)}, description: JSON.stringify(request.history) },
+  });
+  process.send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0 });
+  process.exit(0);
+});
+`);
+
+  const history = [
+    { id: 3, file: "src/a.ts", line: 4, title: "越界", disposition: "unresolved" as const },
+  ];
+  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), history);
+
+  assert.deepEqual(JSON.parse(outcome.findings[0]!.description), history);
+});

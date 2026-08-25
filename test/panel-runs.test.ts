@@ -36,6 +36,7 @@ type RunRow = {
     usage?: RecordedUsage;
   }[];
   usage?: RecordedUsage;
+  missedVerdicts: number;
   resolved: number;
   total: number;
 };
@@ -51,6 +52,7 @@ function seedRun(
   },
   findings: { model: string; disposition?: string; placement?: string; group?: number }[],
   outcomes: { model: string; failure?: string; usage?: ReviewerUsage }[] = [],
+  verdicts: { model: string; findingId: number; missing?: boolean }[] = [],
 ): number {
   const store = openStore(dbPath);
   const runId = store.startRun({
@@ -82,6 +84,7 @@ function seedRun(
       return {
         file: "src/a.ts",
         line: 5,
+        title: "示例",
         severity: "P1" as const,
         category: "bug" as const,
         description: "示例",
@@ -97,6 +100,13 @@ function seedRun(
         fingerprint: `fp-${group}`,
       };
     }),
+    // 漏给结论的按无法判断落库并标 missing(ADR 0016),时间流数的就是它。
+    verdicts: verdicts.map((v) => ({
+      model: v.model,
+      findingId: v.findingId,
+      verdict: v.missing === true ? ("unclear" as const) : ("fixed" as const),
+      missing: v.missing === true,
+    })),
   });
   store.close();
   return runId;
@@ -409,4 +419,33 @@ test("重跑:模型覆盖生效,经 buildReviewers 构建", async () => {
   assert.deepEqual(h.factoryCalls.at(-1), [
     { provider: "rerun-provider", model: "override-model" },
   ]);
+});
+
+test("时间流 API:每轮带漏复核条数,没有历史可复核的那轮是零", async () => {
+  const h = await startPanelHarness(cleanups);
+  const runId = seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
+    [{ model: "model-a" }],
+    [{ model: "model-a" }],
+  );
+  // 下一轮复核上一轮那条:一个模型给了结论,另一个漏给。
+  const store = openStore(h.db.path);
+  const findingId = store.listRuns({ limit: 10 })[0]!.findings[0]!.id;
+  store.close();
+  seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-03T00:00:00.000Z" },
+    [],
+    [{ model: "model-a" }, { model: "model-b" }],
+    [
+      { model: "model-a", findingId },
+      { model: "model-b", findingId, missing: true },
+    ],
+  );
+
+  const body = (await (await h.api("GET", "/runs")).json()) as { runs: RunRow[] };
+  assert.equal(body.runs[0]!.missedVerdicts, 1);
+  assert.equal(body.runs[1]!.id, runId);
+  assert.equal(body.runs[1]!.missedVerdicts, 0);
 });

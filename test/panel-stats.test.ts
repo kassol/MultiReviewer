@@ -75,6 +75,7 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
       {
         file: "src/a.ts",
         line: 5,
+        title: "有毛病",
         severity: "P0",
         category: "bug",
         description: "有毛病",
@@ -90,6 +91,7 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
       {
         file: "src/a.ts",
         line: 20,
+        title: "另一处已经改掉了",
         severity: "P1",
         category: "bug",
         description: "另一处已经改掉了",

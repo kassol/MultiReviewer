@@ -35,7 +35,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `pnpm test` — 仅测试
 - `MULTIREVIEWER_LIVE_PR=owner/repo#123 GITHUB_TOKEN=$(gh auth token) pnpm test` — 追加运行对真实 GitHub pull request 的验证,它会真实发布评论并改动 resolve 状态
 - `MULTIREVIEWER_GITEA_URL=https://gitea.example.com MULTIREVIEWER_GITEA_TOKEN=<bot 的 PAT> MULTIREVIEWER_GITEA_LIVE_PR=owner/repo#123 pnpm test` — 追加运行对真实 Gitea pull request 的验证,同样会真实发布评论并改动 resolve 状态。它覆盖本实现用到的全部端点,因此跑通即证明这枚 PAT 的 scope 够用
-- `MULTIREVIEWER_SMOKE_PROVIDER=deepseek MULTIREVIEWER_SMOKE_MODEL=deepseek-v4-flash MULTIREVIEWER_SMOKE_ENV=DEEPSEEK_API_KEY pnpm test` — 追加运行 `report_finding` 与真实模型之间的契约验证,它会真实调用模型并产生费用
+- `MULTIREVIEWER_SMOKE_PROVIDER=deepseek MULTIREVIEWER_SMOKE_MODEL=deepseek-v4-flash MULTIREVIEWER_SMOKE_ENV=DEEPSEEK_API_KEY pnpm test` — 追加运行 `report_finding`、复核工具与真实模型之间的契约验证,它会真实调用模型并产生费用
 
 ## 部署
 
@@ -151,6 +151,8 @@ Issue 与 spec 存放于本仓库的 GitHub Issues,通过 `gh` CLI 读写。见 
 Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.md`。
 
 ## 变更日志
+
+- 2026-08-25: 落地 issue #165(ADR 0016 的注入与复核契约)。**后续轮次的模型不再对已经报过的问题一无所知**:每一轮开跑之前,本审查阶段(一个范围审查从发起到审查完成,或一个 pull request 从打开到关闭)报过的 Finding 全部注入每个模型——未处置的连正文、严重度、分类与人填的处置备注一起给,已处置的只占一行;两档都不带操作人,人名不进模型输入,也不设条数上限。模型对每条未处置的历史逐条回一个复核结论(仍在 / 已修 / 无法判断),同时被要求不把历史再报一遍;结论逐条落库,漏给的按「无法判断」记,时间流每轮带上漏复核的条数,凭它看得出哪个模型没有认真复核。**结论本票只记录、不裁决**:自动处置的判据仍是「代码改了且本轮没再报出」,以复核结论为证据的自动处置、延续与阶段汇总是后续的票。细节见 `src/AGENTS.md`。
 
 - 2026-08-25: 落地 issue #164(ADR 0015 的预重构)。**同一处问题不再按模型各挂一条评论**:一条 Finding 的身份从此是「pull request + 文件 + 内容指纹」,不含模型。同一轮里几个模型报同一处,Gitea 上只有一条评论——严重度取最高、分类取首报、正文每个模型一段并写明是谁说的,人只处置一次;上一轮 A 模型报的、这一轮 B 模型又报,仍折叠回原来那条评论,不再重发。面板的 diff 卡片列出这条 Finding 的全部归属模型,按模型筛选照旧。自动处置那一档从「已改动」改名叫「已修复」(库里 `changed` → `fixed`),**只换名不换义**:判据仍是「代码改了且本轮没再报出」,换成模型的复核结论是后续的票。旧库在启动时一笔事务内升级:同一处的旧行合成一条、模型归属一条不少、处置值跟着改名,中途失败整笔回滚。处置率的口径与分母不变。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 

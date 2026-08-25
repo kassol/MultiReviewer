@@ -57,9 +57,9 @@ async function startedHarness(
         const reviewer = scriptedReviewer(plan.spec.model, []);
         return {
           ...reviewer,
-          review: async (range, worktreePath) => {
+          review: async (range, worktreePath, history) => {
             recorded.ranges.push(range);
-            return reviewer.review(range, worktreePath);
+            return reviewer.review(range, worktreePath, history);
           },
         };
       }),

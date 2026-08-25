@@ -1,4 +1,12 @@
-import type { Category, Finding, RawFinding, Severity } from "../review/finding.ts";
+import type {
+  Category,
+  Finding,
+  FindingVerdict,
+  RawFinding,
+  RawVerdict,
+  ReviewVerdict,
+  Severity,
+} from "../review/finding.ts";
 
 export type { RawFinding };
 
@@ -79,5 +87,31 @@ export function normalizeFinding(raw: RawFinding, model: string): NormalizeResul
       suggestion: typeof raw.suggestion === "string" ? raw.suggestion.trim() : "",
       model,
     },
+  };
+}
+
+/**
+ * 复核结论的取值是 present / fixed / unclear,同义词一并收下,理由同 severity:
+ * 收窄枚举会让模型自造词汇、调用被拒(ADR 0004)。
+ */
+const VERDICT: Record<string, ReviewVerdict> = {
+  present: "present",
+  still_present: "present",
+  unfixed: "present",
+  fixed: "fixed",
+  resolved: "fixed",
+  unclear: "unclear",
+  unknown: "unclear",
+};
+
+/**
+ * 归一化一条复核结论。id 不是正整数即无从对应到历史条目,丢弃;词映射不上按
+ * 「无法判断」收——保守优先,而漏给结论本来就是这一档(ADR 0016)。
+ */
+export function normalizeVerdict(raw: RawVerdict): FindingVerdict | undefined {
+  if (!Number.isInteger(raw.id) || raw.id < 1) return undefined;
+  return {
+    findingId: raw.id,
+    verdict: VERDICT[canonical(String(raw.verdict))] ?? "unclear",
   };
 }

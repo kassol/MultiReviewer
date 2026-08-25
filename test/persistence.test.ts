@@ -723,6 +723,50 @@ test("升级前的 finding 补评论 id 与链接两列,历史行两项为空", 
   assert.equal(run.findings[0]!.commentId, forge.publishedComments[0]!.id);
 });
 
+test("升级前的 finding 补 title 列,历史注入时旧行的标题为空", async () => {
+  const { cache, db, forge } = setup();
+
+  // 升级前的 finding 表:没有 title 列。历史注入要拿标题给已处置的条目占那一行
+  // (ADR 0016),少了补列这一步,升级后第一次落库就写不进去。
+  const old = new DatabaseSync(db.path);
+  old.exec(`CREATE TABLE finding (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES review_run(id),
+    file TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    severity TEXT NOT NULL,
+    category TEXT NOT NULL,
+    description TEXT NOT NULL,
+    fingerprint TEXT,
+    group_index INTEGER NOT NULL,
+    disposition TEXT NOT NULL DEFAULT 'unknown',
+    placement TEXT NOT NULL DEFAULT 'inline'
+  )`);
+  old.exec("PRAGMA user_version = 1");
+  old.close();
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [scriptedReviewer("model-a", [{ ...FINDING, title: "减法多减一" }])],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  // 升级前落的那些行没有标题可补:少一句话胜过让整条历史掉出注入。
+  const patch = new DatabaseSync(db.path);
+  patch.exec("UPDATE finding SET title = NULL");
+  patch.close();
+
+  const store = openStore(db.path);
+  const history = store.stageHistory({
+    owner: EVENT.owner,
+    repo: EVENT.repo,
+    pullNumber: EVENT.number,
+  });
+  store.close();
+  assert.deepEqual(history.map((entry) => entry.title), [""]);
+});
+
 test("升级前落的 finding 行读得出来,评论 id 与链接为空", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
