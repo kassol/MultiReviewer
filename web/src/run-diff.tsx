@@ -124,12 +124,13 @@ function findingContinued(finding: RunFinding): boolean {
 
 /**
  * 一条 Finding 的卡片:正文、严重度、类别、文件与行、跳到 Forge 看原版的链接,加上
- * 行内处置。它挂在 diff 的对应行下面,fallback 那一批则单独成段。
+ * 行内处置。它挂在 diff 的对应行下面,fallback 那一批则单独成段;阶段汇总把同一张
+ * 卡片摆在自己的列表里——同一条 Finding 在两处显示成同一个样子,处置也是同一个动作。
  *
- * 处置成功后让轮次那几份查询失效,进度条与列表跟着一起变——处置进度是同一批 finding
- * 行算出来的,只改本地状态会让两个数字对不上。
+ * 处置成功后让轮次与阶段汇总那几份查询失效,进度条、列表与三个计数跟着一起变——它们
+ * 是同一批 finding 行算出来的,只改本地状态会让几个数字对不上。
  */
-function FindingRow({
+export function FindingRow({
   finding,
   canDispose,
 }: {
@@ -148,8 +149,9 @@ function FindingRow({
     onSuccess: () => {
       setComposing(false);
       setNote("");
-      // 时间流、仓库详情与范围审查详情各读一份轮次投影,处置改的是同一批行。
-      for (const key of [["runs"], ["repo-runs"], ["range-review"]]) {
+      // 时间流、仓库详情与范围审查详情各读一份轮次投影,阶段汇总另读一份按 Finding
+      // Identity 折叠的投影,处置改的是同一批行。
+      for (const key of [["runs"], ["repo-runs"], ["range-review"], ["stage-summary"]]) {
         void queryClient.invalidateQueries({ queryKey: key });
       }
     },
@@ -504,12 +506,21 @@ type DispositionFilter = "all" | "pending" | "disposed";
  * 默认只展开有 Finding 的文件。这一页是来看「模型说了什么、说在哪」的,而一个 Review
  * Range 可以有几百个文件,全部展开等于让人先滚过几千行才看到第一条 Finding。
  */
-export function RunDiff({ run, canDispose }: { run: RunItem; canDispose: boolean }) {
+export function RunDiff({
+  run,
+  canDispose,
+  initialFile,
+}: {
+  run: RunItem;
+  canDispose: boolean;
+  /** 打开时先筛到这个文件。阶段汇总跳过来时带着它,人落地就在那处代码上。 */
+  initialFile?: string;
+}) {
   const diff = useQuery({
     queryKey: ["run-diff", run.id],
     queryFn: () => fetchJson<RunDiffFiles>(`/runs/${run.id}/diff`),
   });
-  const [filePath, setFilePath] = useState("all");
+  const [filePath, setFilePath] = useState(initialFile ?? "all");
   const [model, setModel] = useState("all");
   const [disposition, setDisposition] = useState<DispositionFilter>("all");
   // 人手动开合过的文件记在这里,其余按默认规则。

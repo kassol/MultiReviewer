@@ -1419,6 +1419,12 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     access: "review:read",
     handler: ({ req, res, deps }, match) => handleRunDiff(req, res, deps, Number(match![1])),
   },
+  {
+    method: "GET",
+    pattern: "/stage-summary",
+    access: "review:read",
+    handler: ({ req, res, deps }) => handleStageSummary(req, res, deps),
+  },
   { method: "POST", pattern: "/rerun", access: "review:rerun", handler: ({ req, res, deps, caller }) => handleRerun(req, res, deps, caller!.username) },
   {
     method: "POST",
@@ -3931,6 +3937,63 @@ function handleRuns(
   );
   const nextBefore = runs.length === RUNS_PAGE ? runs[runs.length - 1]!.id : null;
   return sendJson(res, 200, { runs, nextBefore });
+}
+
+/**
+ * 一个审查阶段的当前状态(issue #168):按 Finding Identity 汇总的 Finding 列表、三个
+ * 计数与逐轮的时间线。
+ *
+ * 阶段有两条链路,入参因此二选一:`rangeReviewId` 取那个范围审查名下的全部轮次,
+ * `owner` + `repo` + `pullNumber` 取那个 pull request 名下、不属于任何范围审查的那些。
+ * 两条都给或都不给都是 400——「这是哪个阶段」不能由服务端替调用方猜。
+ */
+function handleStageSummary(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): void {
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+  const rangeReviewRaw = query.get("rangeReviewId");
+  const owner = query.get("owner");
+  const repo = query.get("repo");
+  const pullRaw = query.get("pullNumber");
+  const byPullRequest = owner !== null || repo !== null || pullRaw !== null;
+  if ((rangeReviewRaw !== null) === byPullRequest) {
+    return sendJson(res, 400, {
+      error: "要按 rangeReviewId 或 owner + repo + pullNumber 取一个阶段,两条只能给一条",
+    });
+  }
+  if (rangeReviewRaw !== null) {
+    const rangeReviewId = Number(rangeReviewRaw);
+    if (!Number.isSafeInteger(rangeReviewId) || rangeReviewId <= 0) {
+      return sendJson(res, 400, { error: "rangeReviewId 要是正整数" });
+    }
+    const summary = withStore(deps.dbPath, (store) => {
+      const rangeReview = store.getRangeReview(rangeReviewId);
+      if (rangeReview === undefined) return undefined;
+      // 这一档只按 rangeReviewId 取轮次,另外三项不参与筛选;容器 PR 还没建出来时
+      // 它名下本来就一轮都没有。
+      return store.stageSummary({
+        owner: rangeReview.owner,
+        repo: rangeReview.repo,
+        pullNumber: rangeReview.containerPullNumber ?? 0,
+        rangeReviewId,
+      });
+    });
+    if (summary === undefined) return sendJson(res, 404, { error: "没有这个范围审查" });
+    return sendJson(res, 200, summary);
+  }
+  if (owner === null || repo === null || pullRaw === null) {
+    return sendJson(res, 400, { error: "owner、repo 与 pullNumber 要一起给" });
+  }
+  const pullNumber = Number(pullRaw);
+  if (!Number.isSafeInteger(pullNumber) || pullNumber <= 0) {
+    return sendJson(res, 400, { error: "pullNumber 要是正整数" });
+  }
+  const summary = withStore(deps.dbPath, (store) =>
+    store.stageSummary({ owner, repo, pullNumber }),
+  );
+  return sendJson(res, 200, summary);
 }
 
 /** 本地副本里取不到 Review Range 的三档各自对应一句话。这不是服务出错,是代码不在了。 */

@@ -21,8 +21,9 @@ import { Button } from "@/components/theme-button";
 import { localMinute } from "@/lib/time";
 
 import { api, errorText, fetchJson } from "./api.ts";
-import { disposedCount, runStatus, type RunItem } from "./runs.tsx";
+import { runStatus, type RunItem } from "./runs.tsx";
 import { loadPanelSession, pullRequestUrl } from "./session.ts";
+import { StageRound, StageSummaryView } from "./stage-summary.tsx";
 
 /** 一个范围审查。字段与 `GET <前缀>/api/range-reviews` 逐字对应。 */
 export type RangeReview = {
@@ -239,10 +240,12 @@ export function RangeReviewsPage({
 }
 
 /**
- * 详情面板:base、当前比较项与这个阶段跑过的轮次。
+ * 详情面板:base 与当前比较项,加这个阶段按 Finding Identity 汇总的主视图(issue
+ * #168)。轮次降为时间线,挂在推出它的那个比较项下面。
  *
  * 与评审记录页同一个形态——主从列表的详情浮在列表上,列表仍然露出来,「我是从哪一条
- * 点进来的」这个上下文不丢。
+ * 点进来的」这个上下文不丢。宽度取 wide 那一档:这里装的是 Finding 卡片、筛选与行内
+ * 处置,464px 里每张卡片都要折成好几行。
  */
 function RangeReviewDetailPanel({
   rangeReview,
@@ -283,7 +286,7 @@ function RangeReviewDetailPanel({
 
   return (
     <DetailPanel
-      width="narrow"
+      width="wide"
       onClose={onClose}
       header={
         <>
@@ -358,50 +361,53 @@ function RangeReviewDetailPanel({
         </Callout.Root>
       )}
 
-      <h3 className="pt-1 text-2xl font-semibold">
-        比较项
-        <span className="ml-1.5 font-mono tabular-nums text-text-muted">
-          {comparisons.length}
-        </span>
-      </h3>
-      {detail.isPending ? (
-        <Skeleton aria-hidden className="h-14" />
-      ) : (
-        comparisons.map((comparison) => (
-          <section key={comparison.id} className="flex flex-col gap-1.5">
-            <div className="flex flex-wrap items-center gap-x-1.5 text-base text-text-muted">
-              <CommitChip sha={comparison.sha} />
-              <span className="break-all">{comparison.recordedBy}</span>
-              <span aria-hidden>·</span>
-              <span className="tabular-nums">{localMinute(comparison.recordedAt)}</span>
-            </div>
-            {/* 一个比较项对应它被推上去之后跑的那些轮次,按 head 认。 */}
-            {runs
-              .filter((run) => run.headSha === comparison.sha)
-              .map((run) => {
-                const conclusion = runStatus(run);
-                return (
-                  <div
-                    key={run.id}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-overlay-line bg-surface px-4 py-2.5 shadow-control"
-                  >
-                    <span className="flex min-w-0 flex-col gap-px">
-                      <span className="text-base text-text-muted tabular-nums">
-                        {localMinute(run.startedAt)}
-                      </span>
-                      <span className="text-sm text-text-muted tabular-nums">
-                        {run.total === 0
-                          ? "无可处置项"
-                          : `${disposedCount(run)}/${run.total} 已处置`}
-                      </span>
-                    </span>
-                    <StatusBadge tone={conclusion.tone}>{conclusion.label}</StatusBadge>
-                  </div>
-                );
-              })}
-          </section>
-        ))
-      )}
+      {/*
+        主视图是这个阶段按 Finding Identity 汇总的当前状态(issue #168):最新一轮没
+        报出的问题不再藏在旧轮里。轮次降为时间线,挂在推出它的那个比较项下面。
+      */}
+      <StageSummaryView
+        scope={{ kind: "range-review", rangeReviewId: rangeReview.id }}
+        canDispose={canDispose}
+        timeline={(entries) =>
+          detail.isPending ? (
+            <Skeleton aria-hidden className="h-14" />
+          ) : (
+            comparisons.map((comparison) => (
+              <section key={comparison.id} className="flex flex-col gap-1.5">
+                <div className="flex flex-wrap items-center gap-x-1.5 text-base text-text-muted">
+                  <CommitChip sha={comparison.sha} />
+                  <span className="break-all">{comparison.recordedBy}</span>
+                  <span aria-hidden>·</span>
+                  <span className="tabular-nums">{localMinute(comparison.recordedAt)}</span>
+                </div>
+                {/* 一个比较项对应它被推上去之后跑的那些轮次,按 head 认。 */}
+                {entries
+                  .filter((entry) => entry.headSha === comparison.sha)
+                  .reverse()
+                  .map((entry) => {
+                    // 结论徽章仍取评审记录页那一份映射:同一轮在两页显示成同一个词。
+                    const run = runs.find((item) => item.id === entry.runId);
+                    return (
+                      <div key={entry.runId} className="flex flex-col gap-1">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-base text-text-muted tabular-nums">
+                            {localMinute(entry.startedAt)}
+                          </span>
+                          {run === undefined ? null : (
+                            <StatusBadge tone={runStatus(run).tone}>
+                              {runStatus(run).label}
+                            </StatusBadge>
+                          )}
+                        </div>
+                        <StageRound entry={entry} />
+                      </div>
+                    );
+                  })}
+              </section>
+            ))
+          )
+        }
+      />
     </DetailPanel>
   );
 }

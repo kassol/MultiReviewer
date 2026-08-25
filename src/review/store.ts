@@ -965,6 +965,73 @@ export type RunListItem = {
 };
 
 /**
+ * 阶段汇总里的一条 Finding(issue #168):一个审查阶段按 Finding Identity 折叠之后的
+ * 一条,取它最新一轮那一行——只有那一行带着当前的处置状态、备注与承载它的评论。
+ *
+ * `id` 是那一行的落库 id,面板按它走既有的处置接口。`firstRunId` / `lastRunId` 说的是
+ * 这条活了多久:延续过的那些首见轮次跟着 Identity 走,不从交接那一轮重新算。
+ *
+ * 「已延续」的整条不在这里:那处 Finding 已经交接到新位置,新位置那条自己在列表里。
+ */
+export type StageSummaryFinding = {
+  id: number;
+  file: string;
+  line: number;
+  /** 首报那个模型给的标题;升级前的行没有它,占位为空。 */
+  title: string;
+  severity: Severity;
+  category: Category;
+  description: string;
+  /** 报出它的全部模型,按首报先后(ADR 0015)。 */
+  models: string[];
+  disposition: Exclude<Disposition, "continued">;
+  placement: FindingPlacement;
+  commentId: string | null;
+  commentHtmlUrl: string | null;
+  disposedBy: string | null;
+  disposedAt: string | null;
+  note: string | null;
+  /** 承接来的那条旧评论的地址(CONTEXT.md 已延续);不是延续来的为 null。 */
+  continuedFrom: string | null;
+  firstRunId: number;
+  firstReportedAt: string;
+  lastRunId: number;
+  lastReportedAt: string;
+};
+
+/**
+ * 阶段时间线的一轮(issue #168)。轮次降为这个阶段的历史,每轮只说它做了什么:
+ *
+ * - `reported` / `folded` / `continued` 三类互斥,加起来就是这一轮落的 Finding 行数
+ *   ——承接旧位置的算已延续,本阶段更早出现过的算折叠,其余是本轮新报出。
+ * - `fixed` 是本轮复核判已修、且这一条现在仍记着「已修复」的条数(ADR 0016);人事后
+ *   把它改回未处置之后就退出这个数——那一条从此是人工处置。
+ * - `missedVerdicts` 是注入了历史却没给结论的「Reviewer × 历史 Finding」对数。
+ */
+export type StageTimelineEntry = {
+  runId: number;
+  headSha: string;
+  startedAt: string;
+  finishedAt: string | null;
+  failed: boolean;
+  reported: number;
+  folded: number;
+  fixed: number;
+  continued: number;
+  missedVerdicts: number;
+};
+
+/**
+ * 一个审查阶段的当前状态(issue #168)。三个计数与列表同一口径:待处置 + 人工已处置 +
+ * 已修复 恰好等于列表长度,「已延续」两边都不占。
+ */
+export type StageSummary = {
+  findings: StageSummaryFinding[];
+  counts: { pending: number; resolved: number; fixed: number };
+  timeline: StageTimelineEntry[];
+};
+
+/**
  * 一个范围审查。分支名与容器 PR 序号是它在 Forge 上的全部痕迹;`lastForgeFailure`
  * 记最近一次 Forge 操作为什么没成,运维凭它分辨是权限还是分支保护。
  */
@@ -1188,6 +1255,20 @@ export type Store = {
     pullNumber: number;
     rangeReviewId?: number;
   }): HistoryFinding[];
+  /**
+   * 一个审查阶段的当前状态(issue #168):按 Finding Identity 折叠的 Finding 列表、
+   * 三个计数与逐轮的时间线。
+   *
+   * 阶段的范围与 `stageHistory` 同一份判据(`stageScope`)。折叠键同样是「文件 + 指纹」,
+   * 算不出指纹的行各算一条;每条取最新一行。延续把同一条 Identity 交接到新位置,交接
+   * 前后是同一条:旧那条不单独出现,新那条继承它的首见轮次。
+   */
+  stageSummary(scope: {
+    owner: string;
+    repo: string;
+    pullNumber: number;
+    rangeReviewId?: number;
+  }): StageSummary;
   /**
    * 把本轮新发出去的行级评论的 id 与链接补到对应的合并组上。
    *
@@ -1639,6 +1720,28 @@ function foldFindingIdentity(db: DatabaseSync): void {
     db.exec("ROLLBACK");
     throw error;
   }
+}
+
+/**
+ * 一个审查阶段覆盖哪些 Review Run(CONTEXT.md 审查阶段)。两条链路各一档:范围审查取
+ * 它名下全部轮次,PR 触发取这个 pull request 名下、不属于任何范围审查的那些——容器 PR
+ * 的轮次不该混进 PR 链路。历史注入与阶段汇总读的是同一个阶段,判据因此只定这一次。
+ *
+ * 条件里的表别名固定是 `run`,调用方按它 join `review_run`。
+ */
+function stageScope(scope: {
+  owner: string;
+  repo: string;
+  pullNumber: number;
+  rangeReviewId?: number;
+}): [string, (string | number)[]] {
+  return scope.rangeReviewId === undefined
+    ? [
+        `run.owner = ? AND run.repo = ? AND run.pull_number = ?
+           AND run.range_review_id IS NULL`,
+        [scope.owner, scope.repo, scope.pullNumber],
+      ]
+    : ["run.range_review_id = ?", [scope.rangeReviewId]];
 }
 
 /** 打开当前 schema；schema-v0 数据库必须先经过模型服务迁移器。 */
@@ -3111,16 +3214,7 @@ export function openStore(dbPath: string): Store {
     },
 
     stageHistory(scope) {
-      // 阶段范围两条链路各一档:范围审查取它名下全部轮次,PR 触发取这个 pull request
-      // 名下、不属于任何范围审查的那些——容器 PR 的轮次不该混进 PR 链路的历史里。
-      const [where, params]: [string, (string | number)[]] =
-        scope.rangeReviewId === undefined
-          ? [
-              `run.owner = ? AND run.repo = ? AND run.pull_number = ?
-                 AND run.range_review_id IS NULL`,
-              [scope.owner, scope.repo, scope.pullNumber],
-            ]
-          : ["run.range_review_id = ?", [scope.rangeReviewId]];
+      const [where, params] = stageScope(scope);
       // 折叠键与处置率同源(ADR 0015):文件 + 指纹,算不出指纹的行用自己的 id 兜底
       // 成独立键。同一处取最新那一行——它才带着当前的处置状态、备注与最新表述。
       // 最新一行是「已延续」的整条不注入:这处 Finding 已经交接到新位置,新位置那条
@@ -3166,6 +3260,224 @@ export function openStore(dbPath: string): Store {
               }),
         };
       });
+    },
+
+    stageSummary(scope) {
+      const [where, params] = stageScope(scope);
+      const runRows = db
+        .prepare(
+          `SELECT run.id AS id, run.head_sha AS head_sha, run.started_at AS started_at,
+                  run.finished_at AS finished_at, run.failed AS failed
+             FROM review_run run
+            WHERE ${where}
+            ORDER BY run.id`,
+        )
+        .all(...params);
+      if (runRows.length === 0) {
+        return { findings: [], counts: { pending: 0, resolved: 0, fixed: 0 }, timeline: [] };
+      }
+      // 一个阶段的行数有界(轮次 × 每轮的 Finding),折叠在这里用 JS 做:延续要把两个
+      // 指纹接成同一条 Identity,写成 SQL 只会让这一步看不出在做什么。
+      const findingRows = db
+        .prepare(
+          `SELECT f.id AS id, f.run_id AS run_id, f.file AS file, f.line AS line,
+                  f.title AS title, f.severity AS severity, f.category AS category,
+                  f.description AS description, f.disposition AS disposition,
+                  f.placement AS placement, f.comment_id AS comment_id,
+                  f.comment_html_url AS comment_html_url, f.disposed_by AS disposed_by,
+                  f.disposed_at AS disposed_at, f.disposition_note AS note,
+                  f.continued_from AS continued_from,
+                  COALESCE(f.fingerprint, 'row:' || f.id) AS fp
+             FROM finding f
+             JOIN review_run run ON f.run_id = run.id
+            WHERE ${where}
+            ORDER BY f.id`,
+        )
+        .all(...params);
+      const attributionRows = db
+        .prepare(
+          `SELECT a.finding_id AS finding_id, a.model AS model
+             FROM finding_attribution a
+             JOIN finding f ON f.id = a.finding_id
+             JOIN review_run run ON f.run_id = run.id
+            WHERE ${where}
+            ORDER BY a.finding_id, a.position`,
+        )
+        .all(...params);
+      const verdictRows = db
+        .prepare(
+          `SELECT v.run_id AS run_id, v.finding_id AS finding_id, v.verdict AS verdict,
+                  v.missing AS missing
+             FROM finding_verdict v
+             JOIN review_run run ON v.run_id = run.id
+            WHERE ${where}`,
+        )
+        .all(...params);
+
+      const models = new Map<number, string[]>();
+      for (const row of attributionRows) {
+        const id = Number(row["finding_id"]);
+        models.set(id, [...(models.get(id) ?? []), String(row["model"])]);
+      }
+
+      type StageRow = {
+        id: number;
+        runId: number;
+        file: string;
+        fp: string;
+        disposition: Disposition;
+        commentHtmlUrl: string | null;
+        continuedFrom: string | null;
+        row: Record<string, unknown>;
+      };
+      type Identity = { rows: StageRow[]; firstRow: StageRow };
+      // 折叠键与 `stageHistory`、自动处置、回填同源:文件 + 指纹,算不出指纹的行用
+      // 自己的 id 兜底成独立键。行按 id 升序,每组的最后一行就是最新那一轮的。
+      const byKey = new Map<string, Identity>();
+      for (const row of findingRows) {
+        const entry: StageRow = {
+          id: Number(row["id"]),
+          runId: Number(row["run_id"]),
+          file: String(row["file"]),
+          fp: String(row["fp"]),
+          disposition: String(row["disposition"]) as Disposition,
+          commentHtmlUrl:
+            row["comment_html_url"] === null ? null : String(row["comment_html_url"]),
+          continuedFrom: row["continued_from"] === null ? null : String(row["continued_from"]),
+          row,
+        };
+        const key = `${entry.file}\n${entry.fp}`;
+        const identity = byKey.get(key);
+        if (identity === undefined) byKey.set(key, { rows: [entry], firstRow: entry });
+        else identity.rows.push(entry);
+      }
+      const identities = [...byKey.values()];
+
+      // 延续把同一条 Finding Identity 交接到新位置(CONTEXT.md 已延续):新位置那一行
+      // 记着旧评论的地址。首见轮次跟着 Identity 走,否则「活了多久」会从交接那一轮
+      // 重新算。按交接发生的先后处理,链条上更早的那一段先把首见轮次传下去。
+      const successors = new Map<string, Identity>();
+      for (const identity of identities) {
+        for (const row of identity.rows) {
+          if (row.continuedFrom !== null) successors.set(row.continuedFrom, identity);
+        }
+      }
+      const latestOf = (identity: Identity): StageRow => identity.rows[identity.rows.length - 1]!;
+      for (const identity of [...identities].sort((a, b) => latestOf(a).id - latestOf(b).id)) {
+        const latest = latestOf(identity);
+        if (latest.disposition !== "continued" || latest.commentHtmlUrl === null) continue;
+        const successor = successors.get(latest.commentHtmlUrl);
+        if (successor === undefined) continue;
+        if (identity.firstRow.id < successor.firstRow.id) successor.firstRow = identity.firstRow;
+      }
+
+      const startedAt = new Map(
+        runRows.map((run) => [Number(run["id"]), String(run["started_at"])] as const),
+      );
+      const findings: StageSummaryFinding[] = identities
+        .filter((identity) => latestOf(identity).disposition !== "continued")
+        .map((identity) => {
+          const latest = latestOf(identity);
+          const row = latest.row;
+          return {
+            id: latest.id,
+            file: latest.file,
+            line: Number(row["line"]),
+            title: row["title"] === null ? "" : String(row["title"]),
+            severity: String(row["severity"]) as Severity,
+            category: String(row["category"]) as Category,
+            description: String(row["description"]),
+            models: models.get(latest.id) ?? [],
+            disposition: latest.disposition as Exclude<Disposition, "continued">,
+            placement: String(row["placement"]) as FindingPlacement,
+            commentId: row["comment_id"] === null ? null : String(row["comment_id"]),
+            commentHtmlUrl: latest.commentHtmlUrl,
+            disposedBy: row["disposed_by"] === null ? null : String(row["disposed_by"]),
+            disposedAt: row["disposed_at"] === null ? null : String(row["disposed_at"]),
+            note: row["note"] === null ? null : String(row["note"]),
+            // 「延续自」是这条 Identity 的事实,不是某一轮的:交接只发生一次,之后的
+            // 轮次折叠出来的新行不再带它,取整条上第一条带着它的那一行。
+            continuedFrom:
+              identity.rows.find((entry) => entry.continuedFrom !== null)?.continuedFrom ?? null,
+            firstRunId: identity.firstRow.runId,
+            firstReportedAt: startedAt.get(identity.firstRow.runId)!,
+            lastRunId: latest.runId,
+            lastReportedAt: startedAt.get(latest.runId)!,
+          };
+        });
+      // 排序在服务端定一次:待处置在前(这一页要回答「还剩什么没处置」),再按严重度,
+      // 同档按文件与行号,读的人在 diff 里找得到同样的先后。
+      const severityRank: Record<Severity, number> = { P0: 0, P1: 1, P2: 2 };
+      const pending = (finding: StageSummaryFinding): boolean =>
+        finding.disposition === "unknown" || finding.disposition === "unresolved";
+      findings.sort(
+        (a, b) =>
+          Number(pending(b)) - Number(pending(a)) ||
+          severityRank[a.severity] - severityRank[b.severity] ||
+          a.file.localeCompare(b.file) ||
+          a.line - b.line ||
+          a.id - b.id,
+      );
+
+      const counts = { pending: 0, resolved: 0, fixed: 0 };
+      for (const finding of findings) {
+        if (finding.disposition === "fixed") counts.fixed += 1;
+        else if (finding.disposition === "resolved") counts.resolved += 1;
+        else counts.pending += 1;
+      }
+
+      const timeline = new Map<number, StageTimelineEntry>(
+        runRows.map((run) => [
+          Number(run["id"]),
+          {
+            runId: Number(run["id"]),
+            headSha: String(run["head_sha"]),
+            startedAt: String(run["started_at"]),
+            finishedAt: run["finished_at"] === null ? null : String(run["finished_at"]),
+            failed: Number(run["failed"] ?? 0) === 1,
+            reported: 0,
+            folded: 0,
+            fixed: 0,
+            continued: 0,
+            missedVerdicts: 0,
+          },
+        ]),
+      );
+      for (const identity of identities) {
+        for (const row of identity.rows) {
+          const entry = timeline.get(row.runId);
+          if (entry === undefined) continue;
+          // 三类互斥:承接旧位置的算已延续,这条 Identity 更早出现过的算折叠,
+          // 其余是本轮新报出。
+          if (row.continuedFrom !== null) entry.continued += 1;
+          else if (row.id !== identity.rows[0]!.id) entry.folded += 1;
+          else entry.reported += 1;
+        }
+      }
+      // 本轮的自动处置:合成规则与 `run.ts` 的 `fixedFindingIds` 同源——全部结论都判
+      // 已修才是已修。落到「已修复」上的才计数,写 Forge 没成或人事后改回来的不算。
+      const nowFixed = new Set(
+        identities
+          .filter((identity) => latestOf(identity).disposition === "fixed")
+          .flatMap((identity) => identity.rows.map((row) => row.id)),
+      );
+      const allFixed = new Map<string, boolean>();
+      for (const row of verdictRows) {
+        const runId = Number(row["run_id"]);
+        const entry = timeline.get(runId);
+        if (entry === undefined) continue;
+        if (Number(row["missing"]) === 1) entry.missedVerdicts += 1;
+        const key = `${runId}\n${Number(row["finding_id"])}`;
+        allFixed.set(key, (allFixed.get(key) ?? true) && String(row["verdict"]) === "fixed");
+      }
+      for (const [key, fixed] of allFixed) {
+        if (!fixed) continue;
+        const [runIdText, findingIdText] = key.split("\n") as [string, string];
+        if (!nowFixed.has(Number(findingIdText))) continue;
+        timeline.get(Number(runIdText))!.fixed += 1;
+      }
+
+      return { findings, counts, timeline: [...timeline.values()] };
     },
 
     recordFindingComments(runId, refs) {

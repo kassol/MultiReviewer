@@ -23,6 +23,7 @@ import { localClock, localDay } from "@/lib/time";
 import { api, errorText, fetchJson } from "./api.ts";
 import { RunDiff } from "./run-diff.tsx";
 import { loadPanelSession, pullRequestUrl } from "./session.ts";
+import { StageSummaryView } from "./stage-summary.tsx";
 import { SummaryRate } from "./stats.tsx";
 import { costPresentation, type UsageSummary } from "./usage-cost.ts";
 
@@ -278,6 +279,7 @@ export function RunDetailPanel({
   canDispose,
   rerunning,
   pullUrl,
+  diffFile,
   onRerun,
   onOpenOther,
   onSwitchFilter,
@@ -288,6 +290,8 @@ export function RunDetailPanel({
   /** 有 `finding:dispose` 权限时行内出现处置动作。 */
   canDispose: boolean;
   rerunning: boolean;
+  /** 打开时先把 diff 筛到这个文件;阶段汇总跳过来时带着它。 */
+  diffFile?: string;
   /** pull request 地址;没有配 Forge 基址时是 null,那一格不渲染。 */
   pullUrl: string | null;
   onRerun: () => void;
@@ -299,6 +303,13 @@ export function RunDetailPanel({
 }) {
   const cost = costPresentation(run.usage);
   const duration = runDuration(run);
+  /*
+   * PR 触发的那条链路在这里给出与范围审查详情同一个阶段汇总(issue #168):一个 pull
+   * request 从打开到关闭就是一个审查阶段,「这个阶段还剩什么没处置」在两条链路上是
+   * 同一个问题。范围审查的轮次不给这个开关——它的阶段汇总就在范围审查详情页上。
+   */
+  const [view, setView] = useState<"diff" | "stage">("diff");
+  const stage = run.rangeReviewId === null && view === "stage";
   return (
     <DetailPanel
       width="wide"
@@ -421,11 +432,43 @@ export function RunDetailPanel({
         ) : null
       }
     >
+      {run.rangeReviewId === null ? (
+        <SegmentedControl.Root
+          value={view}
+          onValueChange={(value) => setView(value === "stage" ? "stage" : "diff")}
+          size="1"
+          aria-label="详情视图"
+          className="w-fit"
+        >
+          <SegmentedControl.Item value="diff">本轮 diff</SegmentedControl.Item>
+          <SegmentedControl.Item value="stage">阶段汇总</SegmentedControl.Item>
+        </SegmentedControl.Root>
+      ) : null}
+
       {/*
-        详情就是这一轮的完整 diff:文件列表加逐文件 diff,Finding 锚在对应行上。
+        详情默认是这一轮的完整 diff:文件列表加逐文件 diff,Finding 锚在对应行上。
         `key` 换成 run.id,换一轮时筛选与展开状态跟着重置,不把上一轮的筛选带过来。
       */}
-      <RunDiff key={run.id} run={run} canDispose={canDispose} />
+      {stage ? (
+        <StageSummaryView
+          key={`${run.owner}/${run.repo}#${run.pullNumber}`}
+          scope={{
+            kind: "pull-request",
+            owner: run.owner,
+            repo: run.repo,
+            pullNumber: run.pullNumber,
+          }}
+          canDispose={canDispose}
+          onJumpToRun={() => setView("diff")}
+        />
+      ) : (
+        <RunDiff
+          key={run.id}
+          run={run}
+          canDispose={canDispose}
+          {...(diffFile === undefined ? {} : { initialFile: diffFile })}
+        />
+      )}
 
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-1 text-sm text-text-muted">
         {run.usage === undefined ? null : (
@@ -494,13 +537,25 @@ export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispo
     },
   });
   const setOpenedRunId = (id: number | null) => {
-    // 只动 run 这一格,别把筛选一起清掉。开合详情进历史记录(不 replace),后退键因此
-    // 能收起面板;筛选切换则用 replace,否则点几下分段控件就把历史塞满了。
+    // 只动 run 这一格,别把筛选一起清掉;换一轮或收起面板时把 file 一并清掉——它说的是
+    // 「落地先看哪个文件」,只对跳过来的那一轮成立。开合详情进历史记录(不 replace),
+    // 后退键因此能收起面板;筛选切换则用 replace,否则点几下分段控件就把历史塞满了。
     void navigate({
       to: "/runs",
-      search: (prev: Record<string, unknown>) => ({ ...prev, run: id ?? undefined }),
+      search: (prev: Record<string, unknown>) => ({
+        ...prev,
+        run: id ?? undefined,
+        file: undefined,
+      }),
     });
   };
+  // 阶段汇总跳过来时带着文件:那一条 Finding 在哪个文件里,落地就先展开哪个文件。
+  const openedFile = useRouterState({
+    select: (state) => {
+      const value = (state.location.search as { file?: unknown }).file;
+      return typeof value === "string" && value !== "" ? value : undefined;
+    },
+  });
   const rerun = useMutation({
     mutationFn: rerunRequest,
     onSuccess: (text) => setFeedback({ text, isError: false }),
@@ -718,6 +773,7 @@ export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispo
           canDispose={canDispose}
           rerunning={rerun.isPending}
           pullUrl={session.data === undefined || session.data === null ? null : pullRequestUrl(session.data, openedRun)}
+          {...(openedFile === undefined ? {} : { diffFile: openedFile })}
           onOpenOther={setOpenedRunId}
           onSwitchFilter={setFilter}
           onRerun={() => {
