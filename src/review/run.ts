@@ -6,7 +6,7 @@ import type {
   PullRequestRef,
   ReviewCommentDraft,
 } from "../forge/forge.ts";
-import { prepareWorktree, readRangeDiff } from "../git/worktree.ts";
+import { pinRunCommits, prepareWorktree, readRangeDiff } from "../git/worktree.ts";
 import {
   DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
   mergeBatchOutcomes,
@@ -569,6 +569,13 @@ export async function runReview(
   });
 
   try {
+    // 两端一有 runId 就钉在本地 clone 上(issue #161):这一轮结束后远端的分支会被删,
+    // 不钉住的话 gc 一跑,这一轮的 diff 就再也打不开。
+    await pinRunCommits(worktree.path, runId, {
+      baseSha: pullRequest.baseSha,
+      headSha: pullRequest.headSha,
+    });
+
     // 批次串行,批内 Reviewer 并行:并行跑批会同时开「批数 × 模型数」个子进程。
     const perBatch: TimedOutcome[][] = [];
     for (const files of batches) {

@@ -80,7 +80,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 - `MULTIREVIEWER_PORT` — 监听端口,默认 3000。镜像里已设为 3000,走容器时不要再改
 - `MULTIREVIEWER_PANEL_DIST` — 前端构建产物目录,默认 `web/dist`。镜像里是 `/app/web/dist`。产物不在时面板页面回 503(与 404 的「前缀记错」分开)
 - `MULTIREVIEWER_DB` — SQLite 文件位置,默认 `multireviewer.db`。镜像里是 `/data/multireviewer.db`
-- `MULTIREVIEWER_CACHE_DIR` — 工作副本缓存根目录,默认 `.cache/worktrees`;镜像里是 `/data/worktrees`。模型服务显式发现 Pi 内置 provider 时,其下 `pi-models/models-store.json` 只作可丢弃的远程目录输入缓存;数据库里的模型服务版本与目录快照才是面板和 Review Run 的事实。Reviewer 不读取这份缓存,服务也不再生成或读取共享的 `models.json` 当前配置。schema-v0 迁移提交后会先删除旧 `models.json` 与 `models-store.json`,后者只会在之后的显式发现中按新规则重建。填相对路径也能用,不过部署时建议直接写绝对路径,省得跟着工作目录变
+- `MULTIREVIEWER_CACHE_DIR` — 工作副本缓存根目录,默认 `.cache/worktrees`;镜像里是 `/data/worktrees`。模型服务显式发现 Pi 内置 provider 时,其下 `pi-models/models-store.json` 只作可丢弃的远程目录输入缓存;数据库里的模型服务版本与目录快照才是面板和 Review Run 的事实。Reviewer 不读取这份缓存,服务也不再生成或读取共享的 `models.json` 当前配置。schema-v0 迁移提交后会先删除旧 `models.json` 与 `models-store.json`,后者只会在之后的显式发现中按新规则重建。填相对路径也能用,不过部署时建议直接写绝对路径,省得跟着工作目录变。**这个目录被清掉会丢历史轮次的 diff**:每一轮 Review Run 的两端靠本地 clone 里的 `refs/multireviewer/runs/<轮次 id>/base` 与 `/head` 保持可达(issue #161),范围审查完成后容器 PR 的分支已删,远端再没有第二处存着它们。清掉之后新的审查照常跑,打不开的只是已完成阶段那些历史轮次的 diff(面板显示 409 加一句说明);要保留就把它放进持久卷,镜像里的 `/data/worktrees` 已经是
 - `PI_OFFLINE` — Pi 的离线开关,设成任意值(例如 `1`)即关闭模型服务发现中的外部目录增量。显式预览或刷新 Pi 内置 provider 时仍可读 Pi 随包目录,但不请求 pi.dev 或 OpenRouter;未设置时这两层只作为发现输入,成功结果整份写入当前模型服务版本的数据库快照,Review Run 不在运行途中刷新目录
 - `MULTIREVIEWER_CREDENTIAL_MASTER_KEY` — 模型凭据的加密主密钥(ADR 0008),模型服务页用它加解密。**向导会自动生成一枚并写进 `.env`**(已有值时沿用,`FORCE=1` 也不重新生成),手工部署时取一串随机材料即可,例如 `openssl rand -hex 32`。没设时服务照常启动,模型服务页仍可读模型状态,但不能执行凭据动作并会说明差什么——起不来就进不了面板。换掉它等于把已存的凭据作废,模型服务显示未配置,重新粘一次 key 即可
 
@@ -151,6 +151,8 @@ Issue 与 spec 存放于本仓库的 GitHub Issues,通过 `gh` CLI 读写。见 
 Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.md`。
 
 ## 变更日志
+
+- 2026-08-25: 落地 issue #161。**审查完成之后,历史轮次的 diff 仍然打得开**:范围审查完成会删掉容器 PR 的两条分支,推进过的历次比较项从此在 Gitea 上无处可寻,以前只要本地缓存跑过一次 git gc,那些轮次的 diff 就永久 409。现在每一轮开跑时把这一轮的两端钉在本地 clone 上,gc 不再回收。代价写在部署那节的 `MULTIREVIEWER_CACHE_DIR` 上:清掉缓存目录会丢历史轮次的 diff,换机器同理。细节见 `src/AGENTS.md`。
 
 - 2026-08-25: grill 完 issue #162,定下 Finding 跨 Reviewer 合并与以复核结论为证据的自动处置。CONTEXT.md 改写 Finding Identity 与 Disposition,新增审查阶段、复核、已延续三个词条;ADR 0015 取代 0006 的 Identity 键与模型维度,ADR 0016 取代 0013。实现待 spec,代码尚未跟进:当前代码仍按模型各算一条、自动处置仍记 `changed`。
 
