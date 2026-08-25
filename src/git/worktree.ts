@@ -265,9 +265,11 @@ export type RangeDiffOptions = {
  */
 export type RangeDiffRejection = { ok: false; reason: "base-missing" | "head-missing" | "no-merge-base" };
 
-export type RangeDiffFiles = { ok: true; mergeBaseSha: string; files: RangeDiffFile[] } | RangeDiffRejection;
-
-export type RangeDiffPatch = { ok: true; mergeBaseSha: string; patch: string } | RangeDiffRejection;
+/**
+ * 解析好的 Review Range:本地副本的位置与范围的两端。一轮 Review Run 的两端是定的,
+ * 文件列表与逐文件 patch 因此都从同一份它上面取,解析只做一次。
+ */
+export type PreparedRange = { ok: true; path: string; mergeBaseSha: string; headSha: string };
 
 /**
  * 重命名检测一律关掉。文件列表与逐文件 patch 是两次 git 调用,而带上重命名检测之后,
@@ -276,10 +278,15 @@ export type RangeDiffPatch = { ok: true; mergeBaseSha: string; patch: string } |
  */
 const NO_RENAMES = ["--no-renames"];
 
-/** 解析两端,必要时才 fetch,并算出 Review Range 的基准。 */
-async function prepareRangeDiff(
+/**
+ * 解析两端,必要时才 fetch,并算出 Review Range 的基准。
+ *
+ * 单独拿出来给调用方持有:一次准备要两到三个 git 子进程,而面板打开一轮详情会并发取
+ * 几十个文件的 patch,每个文件重做一遍等于把同一段活干几十遍。
+ */
+export async function prepareRangeDiff(
   options: RangeDiffOptions,
-): Promise<{ ok: true; path: string; mergeBaseSha: string } | RangeDiffRejection> {
+): Promise<PreparedRange | RangeDiffRejection> {
   const path = repoCachePath(options.cacheDir, options.ref);
   const auth = authArgs(options.cloneUrl, options.credentials);
 
@@ -297,7 +304,7 @@ async function prepareRangeDiff(
 
   try {
     const mergeBaseSha = (await git(path, ["merge-base", base, head])).trim();
-    return { ok: true, path, mergeBaseSha };
+    return { ok: true, path, mergeBaseSha, headSha: head };
   } catch {
     // 两端没有共同祖先:仓库被重建过,或者 head 来自一段无关历史。
     return { ok: false, reason: "no-merge-base" };
@@ -332,10 +339,8 @@ function parseNumstat(output: string): Map<string, { additions: number; deletion
  *
  * 状态与增删行数来自两次调用:`--name-status` 分得出新增与修改,`--numstat` 才有行数。
  */
-export async function readRangeDiffFiles(options: RangeDiffOptions): Promise<RangeDiffFiles> {
-  const prepared = await prepareRangeDiff(options);
-  if (!prepared.ok) return prepared;
-  const range = `${prepared.mergeBaseSha}..${options.headSha}`;
+export async function readRangeDiffFiles(prepared: PreparedRange): Promise<RangeDiffFile[]> {
+  const range = `${prepared.mergeBaseSha}..${prepared.headSha}`;
   const [nameStatus, numstat] = await Promise.all([
     git(prepared.path, ["diff", "--name-status", ...NO_RENAMES, "-z", range]),
     git(prepared.path, ["diff", "--numstat", ...NO_RENAMES, "-z", range]),
@@ -355,7 +360,7 @@ export async function readRangeDiffFiles(options: RangeDiffOptions): Promise<Ran
       ...count,
     });
   }
-  return { ok: true, mergeBaseSha: prepared.mergeBaseSha, files };
+  return files;
 }
 
 /**
@@ -363,20 +368,18 @@ export async function readRangeDiffFiles(options: RangeDiffOptions): Promise<Ran
  * 因此不会被当成选项;不在这个范围里的路径回空串,由调用方判断。
  */
 export async function readRangeFileDiff(
-  options: RangeDiffOptions & { path: string },
-): Promise<RangeDiffPatch> {
-  const prepared = await prepareRangeDiff(options);
-  if (!prepared.ok) return prepared;
-  const patch = await git(prepared.path, [
+  prepared: PreparedRange,
+  path: string,
+): Promise<string> {
+  return git(prepared.path, [
     "-c",
     "core.quotePath=false",
     "diff",
     "--unified=3",
     "--no-color",
     ...NO_RENAMES,
-    `${prepared.mergeBaseSha}..${options.headSha}`,
+    `${prepared.mergeBaseSha}..${prepared.headSha}`,
     "--",
-    options.path,
+    path,
   ]);
-  return { ok: true, mergeBaseSha: prepared.mergeBaseSha, patch };
 }

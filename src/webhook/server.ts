@@ -49,10 +49,12 @@ import {
   encryptCredential,
 } from "../panel/credential-crypto.ts";
 import {
+  prepareRangeDiff,
   pushBranch,
   readRangeDiffFiles,
   readRangeFileDiff,
   resolveRange,
+  type PreparedRange,
   type RangeDiffOptions,
   type RangeDiffRejection,
   type ResolvedRange,
@@ -4180,27 +4182,26 @@ const RANGE_DIFF_REJECTION: Record<RangeDiffRejection["reason"], string> = {
   "no-merge-base": "base 与 head 没有共同祖先,算不出 Review Range",
 };
 
+/** 准备一轮 diff 的结果:解析好的 Review Range,或者一条给人看的拒绝。 */
+type RunDiffPreparation = PreparedRange | { ok: false; status: number; error: string };
+
 /**
- * 一轮 Review Run 的完整 diff。不带 `file` 时回文件列表(每个文件带增删行数),带 `file`
- * 时只回那一个文件的 unified diff:面板按文件懒加载,大 diff 因此不必一次全取。
+ * 取一轮 diff 之前要做的全部准备:库里的两端、Forge 上的仓库与 pull request、本地副本
+ * 上的两端解析与 merge-base。
  *
  * base 的出处两条链路不同——范围审查记着阶段基准,PR 触发的那一档库里只有 head,base
  * 要去 Forge 上读那个 pull request。取到之后一律按 merge-base 算,与 Reviewer 读的那份
  * 以及 Forge 的 PR 页面是同一个范围。
  */
-async function handleRunDiff(
-  req: IncomingMessage,
-  res: ServerResponse,
+async function prepareRunDiff(
   deps: WebhookServerDeps,
   runId: number,
-): Promise<void> {
-  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
-  const file = query.get("file");
+): Promise<RunDiffPreparation> {
   const run = withStore(deps.dbPath, (store) => store.getRunRange(runId));
-  if (run === undefined) return sendJson(res, 404, { error: "没有这一轮 Review Run" });
+  if (run === undefined) return { ok: false, status: 404, error: "没有这一轮 Review Run" };
   const forge = deps.forges.gitea;
   if (forge === undefined) {
-    return sendJson(res, 503, { error: "gitea 没有配置 Forge,取不了 diff" });
+    return { ok: false, status: 503, error: "gitea 没有配置 Forge,取不了 diff" };
   }
 
   const ref: RepoRef = { owner: run.owner, repo: run.repo };
@@ -4222,22 +4223,86 @@ async function handleRunDiff(
       headSha: run.headSha,
     };
   } catch (error) {
-    return sendJson(res, 502, { error: `读不到仓库或取不回代码:${failureText(error)}` });
+    return { ok: false, status: 502, error: `读不到仓库或取不回代码:${failureText(error)}` };
   }
 
   try {
+    const prepared = await prepareRangeDiff(options);
+    if (!prepared.ok) {
+      return { ok: false, status: 409, error: RANGE_DIFF_REJECTION[prepared.reason] };
+    }
+    return prepared;
+  } catch (error) {
+    return { ok: false, status: 502, error: `取 diff 失败:${failureText(error)}` };
+  }
+}
+
+/**
+ * 一次准备管多久。够一次详情页打开:浏览器对同一站点只开六条连接,几十个文件请求是分
+ * 几拨到的,只合并「同时在飞」的那些会让每一拨各做一遍准备。
+ *
+ * 代价是 PR 触发那一档的 base 跟着 pull request 的 base 分支走,这段时间里 base 分支
+ * 前进了的话,范围晚这么久才跟上。用真实时钟:这里量的是过了多久,不是领域时间。
+ */
+const RUN_DIFF_RANGE_TTL_MS = 10_000;
+
+/** 每一轮最近一次准备。键带上库文件:同一进程里跑多个服务时互不串。 */
+const runDiffPreparations = new Map<string, { at: number; pending: Promise<RunDiffPreparation> }>();
+
+/**
+ * 一轮的准备工作在这段时间里只做一次(issue #181)。
+ *
+ * 面板打开一轮详情会按文件发几十个 `?file=` 请求,而这几十个要的准备是同一份:各做一遍
+ * 等于同一时刻多出几十次 Gitea 往返与上百个 git 子进程,机器被这批活占满,同一进程里排
+ * 在后面的请求(含审查轨迹的 SSE 握手)只能等它干完。
+ *
+ * 只有成功的那次留下来。失败当场丢掉:并发的那一拨仍旧共用一次,而人重试时重新去取,
+ * 不会被一次 Forge 抖动黏住十秒。
+ */
+function runDiffRange(deps: WebhookServerDeps, runId: number): Promise<RunDiffPreparation> {
+  const now = Date.now();
+  for (const [stale, entry] of runDiffPreparations) {
+    if (now - entry.at >= RUN_DIFF_RANGE_TTL_MS) runDiffPreparations.delete(stale);
+  }
+  const key = `${deps.dbPath} ${runId}`;
+  const cached = runDiffPreparations.get(key);
+  if (cached !== undefined) return cached.pending;
+
+  const pending = prepareRunDiff(deps, runId);
+  runDiffPreparations.set(key, { at: now, pending });
+  void pending.then(
+    (prepared) => {
+      if (!prepared.ok) runDiffPreparations.delete(key);
+    },
+    () => runDiffPreparations.delete(key),
+  );
+  return pending;
+}
+
+/**
+ * 一轮 Review Run 的完整 diff。不带 `file` 时回文件列表(每个文件带增删行数),带 `file`
+ * 时只回那一个文件的 unified diff:面板按文件懒加载,大 diff 因此不必一次全取。
+ */
+async function handleRunDiff(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  runId: number,
+): Promise<void> {
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+  const file = query.get("file");
+  const prepared = await runDiffRange(deps, runId);
+  if (!prepared.ok) return sendJson(res, prepared.status, { error: prepared.error });
+
+  try {
     if (file === null || file === "") {
-      const listed = await readRangeDiffFiles(options);
-      if (!listed.ok) return sendJson(res, 409, { error: RANGE_DIFF_REJECTION[listed.reason] });
       return sendJson(res, 200, {
-        baseSha: listed.mergeBaseSha,
-        headSha: run.headSha,
-        files: listed.files,
+        baseSha: prepared.mergeBaseSha,
+        headSha: prepared.headSha,
+        files: await readRangeDiffFiles(prepared),
       });
     }
-    const patched = await readRangeFileDiff({ ...options, path: file });
-    if (!patched.ok) return sendJson(res, 409, { error: RANGE_DIFF_REJECTION[patched.reason] });
-    return sendJson(res, 200, { path: file, patch: patched.patch });
+    return sendJson(res, 200, { path: file, patch: await readRangeFileDiff(prepared, file) });
   } catch (error) {
     return sendJson(res, 502, { error: `取 diff 失败:${failureText(error)}` });
   }
