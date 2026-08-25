@@ -33,6 +33,7 @@ type RangeReview = {
   id: number;
   owner: string;
   repo: string;
+  title: string | null;
   baseSha: string;
   comparisonSha: string;
   state: string;
@@ -79,6 +80,7 @@ test("发起范围审查:建两条分支与容器 PR,第一轮 Review Run 归属
   const h = await registeredHarness({ buildReviewers: reportingReviewers });
 
   const response = await h.api("POST", "/range-reviews", {
+    title: "范围审查标题",
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     base: h.repo.baseSha,
@@ -87,6 +89,7 @@ test("发起范围审查:建两条分支与容器 PR,第一轮 Review Run 归属
   assert.equal(response.status, 202);
   const { rangeReview } = (await response.json()) as { rangeReview: RangeReview };
   assert.equal(rangeReview.state, "in-progress");
+  assert.equal(rangeReview.title, "范围审查标题");
   assert.equal(rangeReview.baseSha, h.repo.baseSha);
   assert.equal(rangeReview.comparisonSha, h.repo.headSha);
   assert.equal(rangeReview.createdBy, PANEL_ADMIN_USERNAME);
@@ -123,10 +126,75 @@ test("发起范围审查:建两条分支与容器 PR,第一轮 Review Run 归属
   assert.equal(runs[0]!.pullNumber, container.number);
 });
 
+test("标题必填:不给与只给空白都被拒,一条分支都不建", async () => {
+  const h = await registeredHarness();
+  const range = {
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    base: h.repo.baseSha,
+    comparison: h.repo.headSha,
+  };
+
+  assert.equal((await h.api("POST", "/range-reviews", range)).status, 400);
+  // 空白不算标题:一个只有空格的名字在列表里与没有名字看起来一样。
+  assert.equal(
+    (await h.api("POST", "/range-reviews", { ...range, title: "   " })).status,
+    400,
+  );
+
+  assert.deepEqual(h.memory.createdBranches, []);
+  assert.deepEqual(h.memory.createdPullRequests, []);
+  const store = openStore(h.db.path);
+  assert.deepEqual(store.listRangeReviews({}), []);
+  store.close();
+});
+
+test("base 预填:取同仓库最近一个审查完成的范围审查的最终比较项,没有则为空", async () => {
+  const h = await registeredHarness();
+  const prefill = async (): Promise<string | null> => {
+    const response = await h.api(
+      "GET",
+      `/range-reviews/prefill?owner=${HARNESS_PR.owner}&repo=${HARNESS_PR.repo}`,
+    );
+    assert.equal(response.status, 200);
+    return ((await response.json()) as { base: string | null }).base;
+  };
+
+  // 一个都没完成时不预填。
+  assert.equal(await prefill(), null);
+
+  const created = await h.api("POST", "/range-reviews", {
+    title: "范围审查标题",
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    base: h.repo.baseSha,
+    comparison: h.repo.headSha,
+  });
+  assert.equal(created.status, 202);
+  const { rangeReview } = (await created.json()) as { rangeReview: RangeReview };
+  await h.settledAtLeast(1);
+
+  // 进行中的那个不算:预填要的是「上一段审到哪里」。
+  assert.equal(await prefill(), null);
+
+  const next = h.repo.pushToHead({ "src/answer.ts": "export const answer = 3;\n" });
+  assert.equal(
+    (await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, { comparison: next }))
+      .status,
+    202,
+  );
+  await h.settledAtLeast(2);
+  assert.equal((await h.api("POST", `/range-reviews/${rangeReview.id}/complete`)).status, 200);
+
+  // 预填的是最终比较项,不是发起时那个。
+  assert.equal(await prefill(), next);
+});
+
 test("比较项不是 base 的后代:拒绝,一条分支都不建", async () => {
   const h = await registeredHarness();
 
   const response = await h.api("POST", "/range-reviews", {
+    title: "范围审查标题",
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     base: h.repo.headSha,
@@ -145,6 +213,7 @@ test("同一 base 已有进行中的:先提醒,带确认标志重发即成功,�
   const h = await registeredHarness();
   const request = (confirm?: true): Promise<Response> =>
     h.api("POST", "/range-reviews", {
+      title: "范围审查标题",
       owner: HARNESS_PR.owner,
       repo: HARNESS_PR.repo,
       base: h.repo.baseSha,
@@ -185,6 +254,7 @@ test("建容器 PR 失败:记下失败原因,已建的两条分支被清理", as
   });
 
   const response = await h.api("POST", "/range-reviews", {
+    title: "范围审查标题",
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     base: h.repo.baseSha,
@@ -208,6 +278,7 @@ test("详情端点返回 base、当前比较项与本范围审查的轮次", asy
   const h = await registeredHarness();
   const created = (await (
     await h.api("POST", "/range-reviews", {
+      title: "范围审查标题",
       owner: HARNESS_PR.owner,
       repo: HARNESS_PR.repo,
       base: h.repo.baseSha,
@@ -247,6 +318,7 @@ test("时间流区分 PR 触发与范围审查", async () => {
   assert.equal(
     (
       await h.api("POST", "/range-reviews", {
+        title: "范围审查标题",
         owner: HARNESS_PR.owner,
         repo: HARNESS_PR.repo,
         base: h.repo.baseSha,
@@ -331,6 +403,7 @@ test("未注册仓库、非 sha 的入参都在碰 Forge 之前被拒", async ()
   assert.equal(
     (
       await h.api("POST", "/range-reviews", {
+        title: "范围审查标题",
         owner: "ghost",
         repo: "gone",
         base: h.repo.baseSha,
@@ -342,6 +415,7 @@ test("未注册仓库、非 sha 的入参都在碰 Forge 之前被拒", async ()
   assert.equal(
     (
       await h.api("POST", "/range-reviews", {
+        title: "范围审查标题",
         owner: HARNESS_PR.owner,
         repo: HARNESS_PR.repo,
         base: "main",
@@ -368,6 +442,7 @@ test("范围审查只认得到自己仓库的 clone 地址,不依赖任何既有
   assert.equal(
     (
       await h.api("POST", "/range-reviews", {
+        title: "范围审查标题",
         owner: HARNESS_PR.owner,
         repo: HARNESS_PR.repo,
         base: h.repo.baseSha,

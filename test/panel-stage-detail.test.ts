@@ -210,6 +210,7 @@ test("阶段详情:范围审查阶段按比较项分组,带推进的人与时刻
     repoId: GITEA_REPO.id,
     owner: "acme",
     repo: "widgets",
+    title: "范围审查阶段",
     baseSha: "base-sha",
     comparisonSha: "cmp-one",
     createdBy: "operator",

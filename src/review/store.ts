@@ -196,6 +196,9 @@ CREATE TABLE IF NOT EXISTS range_review (
   repo_id INTEGER NOT NULL,
   owner TEXT NOT NULL,
   repo TEXT NOT NULL,
+  -- 发起时由人给的标题(issue #177),发起后不可改。升级前的旧行是 NULL,
+  -- 评审记录按「#编号」显示它们。
+  title TEXT,
   base_sha TEXT NOT NULL,
   comparison_sha TEXT NOT NULL,
   state TEXT NOT NULL,
@@ -434,6 +437,7 @@ const ADD_COLUMNS = [
   "ALTER TABLE finding ADD COLUMN title TEXT",
   "ALTER TABLE finding ADD COLUMN continued_from TEXT",
   "ALTER TABLE review_run ADD COLUMN title TEXT",
+  "ALTER TABLE range_review ADD COLUMN title TEXT",
 ];
 
 /**
@@ -1123,8 +1127,8 @@ export type StageStatus = "active" | "closed";
  * 的地址用它作路径参数,因此格式要稳定可解析。
  *
  * 范围审查的容器 PR 序号不出现在这里:它对面板用户透明(CONTEXT.md 容器 PR),
- * `pullNumber` 因此只有 pull request 阶段有。范围审查还没有标题字段,`title` 为 null,
- * 由面板按 `#编号` 显示。
+ * `pullNumber` 因此只有 pull request 阶段有。两种来源的标题都在这里:pull request 取
+ * 最新一轮记下的那个,范围审查取发起时填的那个;升级前的旧行没有,由面板按 `#编号` 显示。
  */
 export type StageListItem = {
   stageId: string;
@@ -1135,7 +1139,7 @@ export type StageListItem = {
   pullNumber: number | null;
   /** 范围审查阶段的标识;pull request 阶段为 null。 */
   rangeReviewId: number | null;
-  /** pull request 阶段取最新一轮记下的标题;没有标题的旧行与范围审查都是 null。 */
+  /** pull request 阶段取最新一轮记下的标题,范围审查取发起时填的;旧行是 null。 */
   title: string | null;
   status: StageStatus;
   /** 最新一轮 Review Run;范围审查刚发起、一轮都还没跑时为 null。 */
@@ -1177,6 +1181,8 @@ export type RangeReviewRecord = {
   repoId: number;
   owner: string;
   repo: string;
+  /** 发起时给的标题(issue #177);升级前的旧行是 null。 */
+  title: string | null;
   baseSha: string;
   comparisonSha: string;
   state: RangeReviewState;
@@ -1249,6 +1255,7 @@ function rangeReviewRecord(row: Record<string, unknown>): RangeReviewRecord {
     repoId: Number(row["repo_id"]),
     owner: String(row["owner"]),
     repo: String(row["repo"]),
+    title: row["title"] === null ? null : String(row["title"]),
     baseSha: String(row["base_sha"]),
     comparisonSha: String(row["comparison_sha"]),
     state: String(row["state"]) as RangeReviewState,
@@ -1473,6 +1480,7 @@ export type Store = {
     repoId: number;
     owner: string;
     repo: string;
+    title: string;
     baseSha: string;
     comparisonSha: string;
     createdBy: string;
@@ -2167,7 +2175,7 @@ export function openStore(dbPath: string): Store {
     const rangeRows = db
       .prepare(
         `SELECT rr.id AS id, rr.owner AS owner, rr.repo AS repo, rr.state AS state,
-                rr.created_at AS created_at,
+                rr.title AS title, rr.created_at AS created_at,
                 (SELECT MAX(run.id) FROM review_run run
                   WHERE run.range_review_id = rr.id) AS latest_run_id
            FROM range_review rr
@@ -2231,7 +2239,7 @@ export function openStore(dbPath: string): Store {
           repo: String(row["repo"]),
           pullNumber: null,
           rangeReviewId: id,
-          title: null,
+          title: row["title"] === null ? null : String(row["title"]),
           // 审查完成即已结束;发起失败的那一档也推不动比较项,同样不再是进行中。
           status: state === "in-progress" ? "active" : "closed",
           latestRunId,
@@ -4264,14 +4272,15 @@ export function openStore(dbPath: string): Store {
         const result = db
           .prepare(
             `INSERT INTO range_review
-               (repo_id, owner, repo, base_sha, comparison_sha, state,
+               (repo_id, owner, repo, title, base_sha, comparison_sha, state,
                 base_branch, head_branch, created_by, created_at)
-             VALUES (?, ?, ?, ?, ?, 'in-progress', '', '', ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, 'in-progress', '', '', ?, ?)`,
           )
           .run(
             record.repoId,
             record.owner,
             record.repo,
+            record.title,
             record.baseSha,
             record.comparisonSha,
             record.createdBy,

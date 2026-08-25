@@ -30,6 +30,7 @@ import {
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { modelIdentity, parseModelIdentity } from "./model-services.ts";
+import { RangeReviewLaunch } from "./range-review-launch.tsx";
 import {
   rerunRequest,
   StageCounts,
@@ -133,11 +134,14 @@ function CardTitle({ title, action }: { title: ReactNode; action?: ReactNode }) 
 
 export function ReposPage({
   canWrite,
+  canCreate,
   canReadModels,
   canReadReviews,
   canRerun,
 }: {
   canWrite: boolean;
+  /** 「评审 · 发起」才看得见评审记录区块里的发起范围审查入口(issue #177)。 */
+  canCreate: boolean;
   canReadModels: boolean;
   canReadReviews: boolean;
   canRerun: boolean;
@@ -306,6 +310,7 @@ export function ReposPage({
               repo={selected}
               globalModels={settings.data?.reviewers.map(modelIdentity)}
               canWrite={canWrite}
+              canCreate={canCreate}
               canReadReviews={canReadReviews}
               canRerun={canRerun}
               onRemoved={() => {
@@ -339,6 +344,7 @@ function RepoDetail({
   repo,
   globalModels,
   canWrite,
+  canCreate,
   canReadReviews,
   canRerun,
   onRemoved,
@@ -346,6 +352,7 @@ function RepoDetail({
   repo: RepoRow;
   globalModels: string[] | undefined;
   canWrite: boolean;
+  canCreate: boolean;
   canReadReviews: boolean;
   canRerun: boolean;
   onRemoved: () => void;
@@ -629,6 +636,7 @@ function RepoDetail({
         <RepoRuns
           repo={repo}
           canRead={canReadReviews}
+          canCreate={canCreate}
           canRerun={canRerun}
           onFeedback={setFeedback}
         />
@@ -971,11 +979,13 @@ function ReviewersEditor({
 function RepoRuns({
   repo,
   canRead,
+  canCreate,
   canRerun,
   onFeedback,
 }: {
   repo: RepoRow;
   canRead: boolean;
+  canCreate: boolean;
   canRerun: boolean;
   onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
 }) {
@@ -1016,24 +1026,34 @@ function RepoRuns({
     <CardShell aria-busy={canRead && stages.isPending}>
       <CardTitle
         title={canRead ? "评审记录" : "重新运行审查"}
-        action={canRerun ? (
-          <form onSubmit={submit} className="flex flex-wrap items-center gap-2" aria-busy={rerun.isPending}>
-            <Text as="label" htmlFor={`rerun-pr-${repo.repoId}`} className="sr-only">
-              PR 编号
-            </Text>
-            <TextField.Root
-              id={`rerun-pr-${repo.repoId}`}
-              size={{ initial: "3", sm: "2" }}
-              placeholder="PR 编号"
-              inputMode="numeric"
-              className="w-[120px] min-w-0 max-sm:min-h-11"
-              value={pullNumber}
-              onChange={(event) => setPullNumber(event.target.value)}
-            />
-            <Button variant="soft" color="gray" size={{ initial: "4", sm: "2" }} type="submit" disabled={rerun.isPending}>
-              {rerun.isPending ? "触发中…" : "重新运行"}
-            </Button>
-          </form>
+        action={canCreate || canRerun ? (
+          <div className="flex flex-wrap items-center gap-2">
+            {canCreate ? (
+              <RangeReviewLaunch
+                repo={{ owner: repo.owner, repo: repo.repo }}
+                onLaunched={(text) => onFeedback({ text, isError: false })}
+              />
+            ) : null}
+            {canRerun ? (
+              <form onSubmit={submit} className="flex flex-wrap items-center gap-2" aria-busy={rerun.isPending}>
+                <Text as="label" htmlFor={`rerun-pr-${repo.repoId}`} className="sr-only">
+                  PR 编号
+                </Text>
+                <TextField.Root
+                  id={`rerun-pr-${repo.repoId}`}
+                  size={{ initial: "3", sm: "2" }}
+                  placeholder="PR 编号"
+                  inputMode="numeric"
+                  className="w-[120px] min-w-0 max-sm:min-h-11"
+                  value={pullNumber}
+                  onChange={(event) => setPullNumber(event.target.value)}
+                />
+                <Button variant="soft" color="gray" size={{ initial: "4", sm: "2" }} type="submit" disabled={rerun.isPending}>
+                  {rerun.isPending ? "触发中…" : "重新运行"}
+                </Button>
+              </form>
+            ) : null}
+          </div>
         ) : undefined}
       />
       {canRead && stages.isError ? (

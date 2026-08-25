@@ -79,6 +79,7 @@ async function registeredHarness(
 /** 发起一个范围审查并等第一轮跑完。 */
 async function startRangeReview(h: PanelHarness): Promise<RangeReview> {
   const response = await h.api("POST", "/range-reviews", {
+    title: "范围审查标题",
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     base: h.repo.baseSha,

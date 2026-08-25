@@ -164,6 +164,7 @@ function seedStage(dbPath: string): { rangeReviewId: number; runs: number[] } {
       repoId: GITEA_REPO.id,
       owner: HARNESS_PR.owner,
       repo: HARNESS_PR.repo,
+      title: "阶段汇总夹具",
       baseSha: "base-sha",
       comparisonSha: "sha-1",
       createdBy: "operator",

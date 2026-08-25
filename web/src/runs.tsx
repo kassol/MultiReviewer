@@ -1,6 +1,6 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { CheckCircledIcon, CrossCircledIcon } from "@radix-ui/react-icons";
 import { Badge, Callout, SegmentedControl, Skeleton } from "@radix-ui/themes";
@@ -14,6 +14,7 @@ import { Button } from "@/components/theme-button";
 import { localClock, localDay } from "@/lib/time";
 
 import { api, errorText, fetchJson } from "./api.ts";
+import { RangeReviewLaunch } from "./range-review-launch.tsx";
 import { SummaryRate } from "./stats.tsx";
 import { type UsageSummary } from "./usage-cost.ts";
 
@@ -268,7 +269,14 @@ export function stagesPath(query: {
   return search === "" ? "/stages" : `/stages?${search}`;
 }
 
-export function RunsPage({ canRerun }: { canRerun: boolean }) {
+export function RunsPage({
+  canRerun,
+  canCreate,
+}: {
+  canRerun: boolean;
+  /** 「评审 · 发起」才看得见页头的发起范围审查入口(issue #177)。 */
+  canCreate: boolean;
+}) {
   const navigate = useNavigate();
   /*
    * 筛选记在地址里:链接要能指明列表的哪一片。筛选切换用 replace,否则点几下分段控件
@@ -317,6 +325,9 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
         ? 10_000
         : false,
   });
+  // 发起范围审查的结果就落在页头下面这一条提示里(issue #177)。
+  const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
+
   // 滚到底部附近自动加载下一页。
   const sentinel = useRef<HTMLDivElement>(null);
   const listViewport = useRef<HTMLDivElement>(null);
@@ -347,9 +358,30 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
           {...(stages.isPending
             ? {}
             : { description: `已加载 ${flat.length} 个审查阶段` })}
-          actions={<SummaryRate />}
+          actions={
+            <>
+              <SummaryRate />
+              {canCreate ? (
+                <RangeReviewLaunch
+                  onLaunched={(text) => setFeedback({ text, isError: false })}
+                />
+              ) : null}
+            </>
+          }
         />
 
+        {feedback === null ? null : (
+          <Callout.Root
+            role={feedback.isError ? "alert" : "status"}
+            color={feedback.isError ? "red" : "green"}
+            size="1"
+          >
+            <Callout.Icon>
+              {feedback.isError ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
+            </Callout.Icon>
+            <Callout.Text>{feedback.text}</Callout.Text>
+          </Callout.Root>
+        )}
         {stages.isError ? (
           <Callout.Root role="alert" color="red" size="1">
             <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>

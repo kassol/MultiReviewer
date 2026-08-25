@@ -474,6 +474,7 @@ const reposRoute = protectedPage("/repos", "repo:read", () => {
   return (
     <ReposPage
       canWrite={hasPermission(session, "repo:write")}
+      canCreate={hasPermission(session, "review:create")}
       canReadModels={hasPermission(session, "model:read")}
       canReadReviews={hasPermission(session, "review:read")}
       canRerun={hasPermission(session, "review:rerun")}
@@ -482,7 +483,12 @@ const reposRoute = protectedPage("/repos", "repo:read", () => {
 });
 const runsRoute = protectedPage("/runs", "review:read", () => {
   const { session } = shellRoute.useRouteContext();
-  return <RunsPage canRerun={hasPermission(session, "review:rerun")} />;
+  return (
+    <RunsPage
+      canRerun={hasPermission(session, "review:rerun")}
+      canCreate={hasPermission(session, "review:create")}
+    />
+  );
 });
 /**
  * 一个审查阶段的详情页(issue #175)。地址里的阶段标识就是 `GET /stages` 行上的那一个

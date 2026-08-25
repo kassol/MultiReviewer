@@ -275,6 +275,7 @@ test("阶段列表:同一范围审查推进两次只占一行,审查完成后已
     201,
   );
   const created = await h.api("POST", "/range-reviews", {
+    title: "范围审查标题",
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     base: h.repo.baseSha,
@@ -297,6 +298,8 @@ test("阶段列表:同一范围审查推进两次只占一行,审查完成后已
   const stage = running.stages[0]!;
   assert.equal(stage.stageId, `range:${rangeReview.id}`);
   assert.equal(stage.source, "range-review");
+  // 行上的名字是发起时填的标题(issue #177),不是容器 PR 的序号。
+  assert.equal(stage.title, "范围审查标题");
   assert.equal(stage.rangeReviewId, rangeReview.id);
   assert.equal(stage.pullNumber, null);
   assert.equal(stage.status, "active");
@@ -337,6 +340,7 @@ test("阶段列表:按状态、按来源筛选各自生效,组合筛选生效,�
     repoId: GITEA_REPO.id,
     owner: "acme",
     repo: "widgets",
+    title: "进行中的范围审查",
     baseSha: "base-sha",
     comparisonSha: "cmp-sha",
     createdBy: "operator",
@@ -346,6 +350,7 @@ test("阶段列表:按状态、按来源筛选各自生效,组合筛选生效,�
     repoId: GITEA_REPO.id,
     owner: "acme",
     repo: "widgets",
+    title: "已完成的范围审查",
     baseSha: "base-sha",
     comparisonSha: "cmp-sha",
     createdBy: "operator",
