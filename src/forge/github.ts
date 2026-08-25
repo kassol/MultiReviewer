@@ -162,6 +162,7 @@ export function createGitHubForge(options: GitHubForgeOptions): Forge {
       const token = await tokenFor(ref);
       const pr = await request<{
         number: number;
+        title: string;
         draft: boolean;
         base: { sha: string; repo: { clone_url: string } };
         head: { sha: string };
@@ -169,6 +170,7 @@ export function createGitHubForge(options: GitHubForgeOptions): Forge {
 
       return {
         number: pr.number,
+        title: pr.title,
         draft: pr.draft,
         baseSha: pr.base.sha,
         headSha: pr.head.sha,

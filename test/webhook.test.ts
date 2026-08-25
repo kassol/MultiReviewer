@@ -123,6 +123,7 @@ async function startHarness(options: HarnessOptions = {}) {
   const base = memoryForge({
     pullRequest: {
       number: PR.number,
+      title: "示例 PR",
       draft: false,
       baseSha: repo.baseSha,
       headSha: repo.headSha,

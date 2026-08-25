@@ -30,6 +30,7 @@ function harness() {
   const forge = memoryForge({
     pullRequest: {
       number: EVENT.number,
+      title: "示例 PR",
       draft: false,
       baseSha: repo.baseSha,
       headSha: repo.headSha,

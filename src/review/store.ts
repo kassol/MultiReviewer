@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS review_run (
   repo TEXT NOT NULL,
   pull_number INTEGER NOT NULL,
   head_sha TEXT NOT NULL,
+  -- 这一轮开跑时那个 pull request 的标题快照。范围审查那一档为 NULL(容器 PR 的标题
+  -- 是本工具自己拼的),升级前落库的旧行也是 NULL。
+  title TEXT,
   -- 这一轮属于哪个范围审查(ADR 0012)。PR 触发的为 NULL;范围审查那一档的
   -- pull_number 是它的容器 PR。
   range_review_id INTEGER,
@@ -430,6 +433,7 @@ const ADD_COLUMNS = [
   "ALTER TABLE finding ADD COLUMN disposition_note TEXT",
   "ALTER TABLE finding ADD COLUMN title TEXT",
   "ALTER TABLE finding ADD COLUMN continued_from TEXT",
+  "ALTER TABLE review_run ADD COLUMN title TEXT",
 ];
 
 /**
@@ -516,6 +520,11 @@ export type RunMeta = {
   repo: string;
   pullNumber: number;
   headSha: string;
+  /**
+   * 开跑时那个 pull request 的标题;省略或 null 即不记(范围审查那一档,它的名字
+   * 来自范围审查自身)。
+   */
+  title?: string | null;
   /** 手动重跑的调用者用户名快照;省略或 null 即投递触发。 */
   triggeredBy?: string | null;
   /** 这一轮归属的范围审查;省略或 null 即 PR 触发(ADR 0012)。 */
@@ -973,6 +982,8 @@ export type RunListItem = {
   repo: string;
   pullNumber: number;
   headSha: string;
+  /** 开跑时那个 pull request 的标题;null 即范围审查那一档或升级前的旧行。 */
+  title: string | null;
   startedAt: string;
   finishedAt: string | null;
   /** 手动重跑的调用者用户名快照;null 即投递触发。 */
@@ -3109,15 +3120,16 @@ export function openStore(dbPath: string): Store {
         const result = db
           .prepare(
             `INSERT INTO review_run
-               (owner, repo, pull_number, head_sha, range_review_id, triggered_by,
+               (owner, repo, pull_number, head_sha, title, range_review_id, triggered_by,
                 started_at, changed_files, changed_lines, batch_count)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             meta.owner,
             meta.repo,
             meta.pullNumber,
             meta.headSha,
+            meta.title ?? null,
             meta.rangeReviewId ?? null,
             meta.triggeredBy ?? null,
             meta.startedAt,
@@ -3740,7 +3752,7 @@ export function openStore(dbPath: string): Store {
       const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
       const runs = db
         .prepare(
-          `SELECT id, owner, repo, pull_number, head_sha, range_review_id, triggered_by,
+          `SELECT id, owner, repo, pull_number, head_sha, title, range_review_id, triggered_by,
                   started_at, finished_at, failed, input_tokens, output_tokens,
                   cache_read_tokens, cache_write_tokens, total_tokens, cost_usd,
                   known_cost_usd, cost_source, unknown_cost_reviewer_count
@@ -3939,6 +3951,7 @@ export function openStore(dbPath: string): Store {
           repo: String(run["repo"]),
           pullNumber: Number(run["pull_number"]),
           headSha: String(run["head_sha"]),
+          title: run["title"] === null ? null : String(run["title"]),
           triggeredBy:
             run["triggered_by"] === null ? null : String(run["triggered_by"]),
           rangeReviewId:

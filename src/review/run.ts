@@ -788,6 +788,9 @@ export async function runReview(
     repo: event.repo,
     pullNumber: event.number,
     headSha: pullRequest.headSha,
+    // 范围审查那一档不记标题:这里读到的是容器 PR 的标题,由本工具自己拼出,
+    // 那个阶段的名字来自范围审查自身(issue #173)。
+    title: deps.rangeReviewId === undefined ? pullRequest.title : null,
     startedAt: startedAt.toISOString(),
     triggeredBy: deps.triggeredBy ?? null,
     rangeReviewId: deps.rangeReviewId ?? null,

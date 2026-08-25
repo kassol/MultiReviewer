@@ -30,7 +30,14 @@ import {
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { modelIdentity, parseModelIdentity } from "./model-services.ts";
-import { disposedCount, rerunRequest, RunDetailPanel, RunPill, type RunItem } from "./runs.tsx";
+import {
+  disposedCount,
+  rerunRequest,
+  RunDetailPanel,
+  RunPill,
+  runLabel,
+  type RunItem,
+} from "./runs.tsx";
 import { loadPanelSession, pullRequestUrl } from "./session.ts";
 import { useSetupStatus } from "./setup-checklist.tsx";
 
@@ -1070,7 +1077,7 @@ function RepoRuns({
               className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-3 sm:px-5"
             >
               <span className="min-w-0 flex-1 text-lg font-semibold tabular-nums">
-                #{run.pullNumber}
+                {runLabel(run)}
                 <span className="font-normal text-text-muted">
                   {` · ${run.startedAt.slice(0, 16).replace("T", " ")}`}
                   {` · ${run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`}`}

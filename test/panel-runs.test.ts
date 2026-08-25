@@ -9,6 +9,7 @@ import { openStore, type RecordedUsage } from "../src/review/store.ts";
 import type { ReviewerUsage } from "../src/review/finding.ts";
 import {
   HARNESS_PR,
+  HARNESS_PR_TITLE,
   PANEL_ADMIN_USERNAME,
   seedAvailableModelService,
   startPanelHarness,
@@ -27,6 +28,7 @@ type RunRow = {
   pullNumber: number;
   headSha: string;
   startedAt: string;
+  title: string | null;
   triggeredBy: string | null;
   failed: boolean;
   models: {
@@ -351,6 +353,30 @@ test("投递触发的 Review Run 不写调用者快照", async () => {
   store.close();
   assert.equal(runs.length, 1);
   assert.equal(runs[0]!.triggeredBy, null);
+});
+
+test("评审记录带 pull request 标题:投递触发的行有标题,升级前的旧行为空", async () => {
+  const h = await startReadyPanelHarness(cleanups);
+  assert.equal(
+    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
+      .status,
+    201,
+  );
+  // 升级前落库的一行:那时还没有标题这一列,它因此为空。
+  seedRun(
+    h.db.path,
+    { owner: "ghost", repo: "gone", pullNumber: 1, startedAt: "2026-08-01T00:00:00.000Z" },
+    [],
+  );
+
+  // opened 与 new-commit 走的是同一个启动器,标题都在开跑时从 pull request 元数据读。
+  assert.equal((await h.deliverViaHook("delivery-head")).status, 200);
+  await h.settledAtLeast(1);
+
+  const body = (await (await h.api("GET", "/runs")).json()) as { runs: RunRow[] };
+  assert.equal(body.runs.length, 2);
+  assert.equal(body.runs[0]!.title, HARNESS_PR_TITLE);
+  assert.equal(body.runs[1]!.title, null);
 });
 
 test("重跑:未注册仓库 409,PR 号不是数字 400", async () => {

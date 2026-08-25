@@ -39,6 +39,7 @@ function setup() {
   const forge = memoryForge({
     pullRequest: {
       number: 1,
+      title: "示例 PR",
       draft: false,
       baseSha: repo.baseSha,
       headSha: repo.headSha,

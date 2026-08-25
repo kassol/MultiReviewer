@@ -41,6 +41,7 @@ function setup(findingLine: number) {
   const forge = memoryForge({
     pullRequest: {
       number: 7,
+      title: "示例 PR",
       draft: false,
       baseSha: repo.baseSha,
       headSha: repo.headSha,
@@ -236,6 +237,7 @@ test("Reviewer 拿到的 Review Range 以 merge-base 为基准,不是 base 分�
   const forge = memoryForge({
     pullRequest: {
       number: 7,
+      title: "示例 PR",
       draft: false,
       baseSha: repo.baseSha,
       headSha: repo.headSha,
@@ -270,6 +272,7 @@ test("同一仓库的第二次 Review Run 复用缓存并增量 fetch 到新的 
   const forge = memoryForge({
     pullRequest: {
       number: 7,
+      title: "示例 PR",
       draft: false,
       baseSha: repo.baseSha,
       headSha: repo.headSha,
@@ -333,6 +336,7 @@ test("Review Run 在首批前固定一份运行计划,后续批次不跟随模�
   const forge = memoryForge({
     pullRequest: {
       number: 7,
+      title: "示例 PR",
       draft: false,
       baseSha: repo.baseSha,
       headSha: repo.headSha,

@@ -9,7 +9,7 @@
 _Avoid_: 平台、代码托管、Git 服务
 
 **Review Run**:
-一次审查执行。针对某个 pull request 的某个 head commit,运行一组 Reviewer,输出一批 Finding。同一 pull request 的每个新 head commit 触发新的 Review Run。
+一次审查执行。针对某个 pull request 的某个 head commit,运行一组 Reviewer,输出一批 Finding。同一 pull request 的每个新 head commit 触发新的 Review Run。pull request 触发的每一轮记下开跑时那个 pull request 的标题;范围审查触发的不记,那个阶段的名字来自范围审查自身。
 _Avoid_: 审查任务、review job、扫描
 
 **Review Range**:

@@ -40,6 +40,7 @@ function setup(head: string = HEAD) {
   const forge = memoryForge({
     pullRequest: {
       number: 7,
+      title: "示例 PR",
       draft: false,
       baseSha: repo.baseSha,
       headSha: repo.headSha,
@@ -414,7 +415,7 @@ test("升级前建的数据库仍能打开,锚定打回列补在既有表上", a
   assert.equal(rows[0]!["anchor_rejections"], 4);
 });
 
-test("升级前的 review_run 补 triggered_by,历史行按投递读", () => {
+test("升级前的 review_run 补 triggered_by 与 title,历史行按投递读且标题为空", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const old = new DatabaseSync(db.path);
@@ -473,6 +474,8 @@ test("升级前的 review_run 补 triggered_by,历史行按投递读", () => {
 
   const store = openStore(db.path);
   assert.equal(store.listRuns({ limit: 10 })[0]!.triggeredBy, null);
+  // 标题那一列是升级补出来的,升级前落的这一行自然没有(issue #173)。
+  assert.equal(store.listRuns({ limit: 10 })[0]!.title, null);
   assert.deepEqual(store.listRuns({ limit: 10 })[0]!.usage, {
     inputTokens: 0,
     outputTokens: 0,
@@ -507,9 +510,11 @@ test("升级前的 review_run 补 triggered_by,历史行按投递读", () => {
     changedLines: 2,
     batchCount: 1,
     triggeredBy: "operator",
+    title: "把登录超时改回三十秒",
     reviewerPins: [],
   });
   assert.equal(store.listRuns({ limit: 10 })[0]!.triggeredBy, "operator");
+  assert.equal(store.listRuns({ limit: 10 })[0]!.title, "把登录超时改回三十秒");
   store.close();
 });
 

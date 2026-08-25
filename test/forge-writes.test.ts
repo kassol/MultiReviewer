@@ -64,6 +64,7 @@ test("内存 Forge 记下建分支、删分支、建 PR 与关 PR 四类调用",
   const forge = memoryForge({
     pullRequest: {
       number: 7,
+      title: "示例 PR",
       draft: false,
       baseSha: repo.baseSha,
       headSha: repo.headSha,

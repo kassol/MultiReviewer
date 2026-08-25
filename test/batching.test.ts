@@ -42,6 +42,7 @@ function setup(sizes: Record<string, number>) {
   const forge = memoryForge({
     pullRequest: {
       number: 7,
+      title: "示例 PR",
       draft: false,
       baseSha: repo.baseSha,
       headSha: repo.headSha,
@@ -414,6 +415,7 @@ test("新增行以 `++ ` 起头时不被读成文件头,该文件的规模照常
   const forge = memoryForge({
     pullRequest: {
       number: 7,
+      title: "示例 PR",
       draft: false,
       baseSha: repo.baseSha,
       headSha: repo.headSha,

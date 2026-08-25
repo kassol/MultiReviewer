@@ -37,6 +37,8 @@ export const HARNESS_PR: PullRequestRef = {
   repo: GITEA_REPO.repo,
   number: 7,
 };
+/** 被审 pull request 的标题。评审记录里那一行的名字就是它。 */
+export const HARNESS_PR_TITLE = "把登录超时改回三十秒";
 
 export type PanelHarness = {
   /** 服务的根地址。未登录调用要自己发请求,不能走带 cookie 的 `api()`。 */
@@ -187,6 +189,7 @@ export async function startPanelHarness(
   const base = memoryForge({
     pullRequest: {
       number: HARNESS_PR.number,
+      title: HARNESS_PR_TITLE,
       draft: false,
       baseSha: repo.baseSha,
       headSha: repo.headSha,
@@ -222,6 +225,7 @@ export async function startPanelHarness(
         };
         return {
           number: ref.number,
+          title: container.title,
           draft: false,
           baseSha: pointsAt(container.base),
           headSha: pointsAt(container.head),

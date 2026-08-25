@@ -16,6 +16,8 @@ export type PullRequestRef = RepoRef & {
 
 export type PullRequest = {
   number: number;
+  /** PR 此刻的标题。Review Run 开跑时把它记进那一轮,评审记录据此有名字。 */
+  title: string;
   draft: boolean;
   /** PR 的 base 分支尖端。Review Range 的基准是它与 head 的 merge-base,不是它本身。 */
   baseSha: string;

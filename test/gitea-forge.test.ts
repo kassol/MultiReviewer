@@ -27,6 +27,7 @@ function routes(overrides: Record<string, Route> = {}): Record<string, Route> {
     "GET /api/v1/repos/acme/widget/pulls/7": {
       body: {
         number: 7,
+        title: "把登录超时改回三十秒",
         draft: false,
         base: { sha: BASE_SHA, repo: { clone_url: `${BASE_URL}/acme/widget.git` } },
         head: { sha: HEAD_SHA },
@@ -109,6 +110,7 @@ test("PR 元数据取 base/head 的 sha 与 base 仓库的 clone 地址", async 
 
   assert.deepEqual(pullRequest, {
     number: 7,
+    title: "把登录超时改回三十秒",
     draft: false,
     baseSha: BASE_SHA,
     headSha: HEAD_SHA,

@@ -13,6 +13,7 @@ import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
   HARNESS_PR,
+  HARNESS_PR_TITLE,
   PANEL_ADMIN_USERNAME,
   PANEL_PREFIX,
   startReadyPanelHarness,
@@ -257,13 +258,17 @@ test("时间流区分 PR 触发与范围审查", async () => {
   await h.settledAtLeast(2);
 
   const body = (await (await h.api("GET", "/runs")).json()) as {
-    runs: { pullNumber: number; rangeReviewId: number | null }[];
+    runs: { pullNumber: number; rangeReviewId: number | null; title: string | null }[];
   };
   assert.equal(body.runs.length, 2);
   // 倒序:范围审查那一轮在前,PR 重跑那一轮的归属为空。
   assert.notEqual(body.runs[0]!.rangeReviewId, null);
   assert.equal(body.runs[1]!.rangeReviewId, null);
   assert.equal(body.runs[1]!.pullNumber, HARNESS_PR.number);
+  // 标题同样分得开:重跑记下被审 pull request 的标题,范围审查那一轮不记——
+  // 它的容器 PR 标题是本工具自己拼的,阶段的名字来自范围审查自身。
+  assert.equal(body.runs[0]!.title, null);
+  assert.equal(body.runs[1]!.title, HARNESS_PR_TITLE);
 });
 
 test("没有 review:create 的用户发起被拒,新权限格不落到已有角色", async () => {

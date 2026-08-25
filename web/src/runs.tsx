@@ -34,6 +34,8 @@ export type RunItem = {
   repo: string;
   pullNumber: number;
   headSha: string;
+  /** 被审 pull request 的标题快照;null 即范围审查那一档或升级前的旧行。 */
+  title: string | null;
   startedAt: string;
   /** 手动重新运行的调用者用户名快照；null 表示自动触发。 */
   triggeredBy: string | null;
@@ -212,6 +214,14 @@ function runBadge(run: RunItem) {
  */
 function rowBadge(run: RunItem) {
   return run.failed ? <StatusBadge tone="error">失败</StatusBadge> : runBadge(run);
+}
+
+/**
+ * 一行审查记录的名字:有标题就用标题,没有的照旧显示 `#编号`(issue #173)。
+ * 范围审查那一档与升级前的旧行都没有标题。
+ */
+export function runLabel(run: { title: string | null; pullNumber: number }): string {
+  return run.title ?? `#${run.pullNumber}`;
 }
 
 function triggerLabel(run: RunItem): string {
@@ -704,7 +714,7 @@ export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispo
                       <span className="flex min-w-0 flex-1 flex-col gap-px">
                         <span className="flex min-w-0 items-center gap-1.5">
                           <span className="truncate text-lg font-semibold group-data-[selected=true]:font-bold">
-                            {run.owner}/{run.repo} #{run.pullNumber}
+                            {run.owner}/{run.repo} {runLabel(run)}
                           </span>
                           <RunSourceBadge run={run} />
                         </span>

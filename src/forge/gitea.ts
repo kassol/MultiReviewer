@@ -144,10 +144,11 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
 
     async getPullRequest(ref: PullRequestRef): Promise<PullRequest> {
       // `modules/structs/pull.go` 的 `PullRequest`:`Index int64 json:"number"`、
-      // `Draft bool json:"draft"`、`Base/Head *PRBranchInfo`;`PRBranchInfo` 的
-      // `Sha string json:"sha"` 与 `Repository *Repository json:"repo"`。
+      // `Title string json:"title"`、`Draft bool json:"draft"`、`Base/Head *PRBranchInfo`;
+      // `PRBranchInfo` 的 `Sha string json:"sha"` 与 `Repository *Repository json:"repo"`。
       const pr = await requestJson<{
         number: number;
+        title: string;
         draft: boolean;
         base: { sha: string; repo: { clone_url: string } };
         head: { sha: string };
@@ -155,6 +156,7 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
 
       return {
         number: pr.number,
+        title: pr.title,
         draft: pr.draft,
         baseSha: pr.base.sha,
         headSha: pr.head.sha,

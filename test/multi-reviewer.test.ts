@@ -44,6 +44,7 @@ function setup() {
   const forge = memoryForge({
     pullRequest: {
       number: 1,
+      title: "示例 PR",
       draft: false,
       baseSha: repo.baseSha,
       headSha: repo.headSha,
@@ -232,6 +233,7 @@ test("不同文件的同一行号不合并", async () => {
   const forge = memoryForge({
     pullRequest: {
       number: 1,
+      title: "示例 PR",
       draft: false,
       baseSha: repo.baseSha,
       headSha: repo.headSha,
