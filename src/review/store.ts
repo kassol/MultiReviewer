@@ -2749,6 +2749,28 @@ export function openStore(dbPath: string): Store {
             finding.commentHtmlUrl ?? null,
           );
         }
+
+        // 折叠到已有 Forge 评论的行继承那条评论上一次处置的元数据(issue #152)。处置
+        // 的载体是评论(ADR 0006),同一条评论名下的历史行与本轮新行说的是同一次处置:
+        // 不继承的话备注与署名活不过下一轮,`disposed_at` 这个「这一行被显式处置过」
+        // 的标记也会被新的一行稀释,自动处置于是又碰它一次(ADR 0013)。`disposition`
+        // 不在此列——它由跨轮匹配与回填决定,口径不变。本轮新发的评论不必走这一步:
+        // 它的 id 是新的,库里不会有同 id 的历史行,`recordFindingComments` 因此不动。
+        db.prepare(
+          `UPDATE finding
+              SET (disposed_by, disposed_at, disposition_note) =
+                    (SELECT prior.disposed_by, prior.disposed_at, prior.disposition_note
+                       FROM finding prior
+                      WHERE prior.comment_id = finding.comment_id
+                        AND prior.run_id <> finding.run_id
+                        AND prior.disposed_at IS NOT NULL
+                      ORDER BY prior.id DESC LIMIT 1)
+            WHERE run_id = ? AND comment_id IS NOT NULL
+              AND EXISTS (SELECT 1 FROM finding prior
+                           WHERE prior.comment_id = finding.comment_id
+                             AND prior.run_id <> finding.run_id
+                             AND prior.disposed_at IS NOT NULL)`,
+        ).run(runId);
         db.exec("COMMIT");
       } catch (error) {
         db.exec("ROLLBACK");

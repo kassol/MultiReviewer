@@ -6,7 +6,7 @@ import type { ExistingReviewComment, ReviewDraft } from "../src/forge/forge.ts";
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
-import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
+import { memoryForge, scriptedReviewer, type MemoryForge } from "./support/memory-forge.ts";
 
 const BASE = `export function add(a, b) {
   return a + b;
@@ -81,6 +81,9 @@ function setup() {
   return { repo, db, forge, deps };
 }
 
+/** 人在面板上处置的时刻。 */
+const DISPOSED_AT = "2026-08-25T00:00:00.000Z";
+
 /** 把上一轮真的发布出去的行级评论,当成 Forge 上的既有评论喂给下一轮。 */
 function asExisting(draft: ReviewDraft, resolved: boolean): ExistingReviewComment[] {
   return draft.comments.map((comment, index) => ({
@@ -91,6 +94,14 @@ function asExisting(draft: ReviewDraft, resolved: boolean): ExistingReviewCommen
     resolved,
     htmlUrl: `https://forge.invalid/comments/thread-${index}`,
   }));
+}
+
+/**
+ * 同上,但连 Forge 给的评论 id 一起带过去。面板处置认的是那个 id,要让处置与下一轮
+ * 的折叠落在同一条评论上,喂回去的就必须是它。
+ */
+function asPublished(forge: MemoryForge, resolved: boolean): ExistingReviewComment[] {
+  return forge.publishedComments.map((comment) => ({ ...comment, resolved }));
 }
 
 function query(dbPath: string, sql: string): Record<string, unknown>[] {
@@ -114,6 +125,7 @@ function disposeInPanel(
   dbPath: string,
   commentId: string,
   disposition: "resolved" | "unresolved",
+  note?: string,
 ): void {
   const store = openStore(dbPath);
   try {
@@ -123,7 +135,8 @@ function disposeInPanel(
       commentId,
       disposition,
       disposedBy: "kassol",
-      disposedAt: "2026-08-25T00:00:00.000Z",
+      disposedAt: DISPOSED_AT,
+      ...(note === undefined ? {} : { note }),
     });
   } finally {
     store.close();
@@ -601,4 +614,52 @@ test("全部 Reviewer 都失败时不自动处置:那一轮没跑,不是没报�
 
   assert.deepEqual(forge.resolvedIds, []);
   assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
+});
+
+test("跨轮折叠继承处置备注与署名:面板处置活过下一轮", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  // 人在面板上处置了它,并留了一句备注。
+  disposeInPanel(db.path, forge.publishedComments[0]!.id, "resolved", "确认无影响");
+  forge.existingComments.push(...asPublished(forge, true));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+
+  await runReview(EVENT, deps);
+
+  assert.deepEqual(forge.createdReviews[1]!.comments, [], "这一轮该折叠到历史评论上");
+  // 面板读的是本轮那一行:处置的载体是评论,同一条评论名下的历史行与本轮新行说的
+  // 是同一次处置,备注与署名不该只活在上一轮那一行上。
+  const store = openStore(db.path);
+  const latest = store.listRuns({ limit: 10 })[0]!;
+  store.close();
+  const carried = latest.findings[0]!;
+  assert.equal(carried.disposition, "resolved");
+  assert.equal(carried.commentId, forge.publishedComments[0]!.id);
+  assert.equal(carried.note, "确认无影响");
+  assert.equal(carried.disposedBy, "kassol");
+  assert.equal(carried.disposedAt, DISPOSED_AT);
+});
+
+test("人撤回处置之后再折叠一轮:代码改了也不自动处置", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  // 人在面板上把它标回未处置:从此这一行是人工处置的地盘(ADR 0013)。
+  disposeInPanel(db.path, forge.publishedComments[0]!.id, "unresolved");
+  forge.existingComments.push(...asPublished(forge, false));
+
+  // 第二轮代码没变,同一条 Finding 又被报出,折叠到那条历史评论上。
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+  await runReview(EVENT, deps);
+
+  // 第三轮代码才改动,本轮没再报出。折叠那一行不继承 `disposed_at` 时,人的免疫被
+  // 新的一行稀释,这条会被自动处置成「已改动」。
+  forge.pullRequest.headSha = repo.pushToHead({
+    "src/calc.js": UNRELATED_CHANGE.replace("return a - b - 1;", "return a - b - 2;"),
+  });
+  await runReview(EVENT, { ...deps, reviewers: SILENT });
+
+  assert.deepEqual(forge.resolvedIds, [], "人撤回处置之后又被自动处置了一次");
+  assert.deepEqual(latestDispositions(db.path), ["unresolved", "unresolved"]);
 });
