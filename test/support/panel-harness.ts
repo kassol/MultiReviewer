@@ -55,6 +55,8 @@ export type PanelHarness = {
   cacheDir: string;
   dispatched: PullRequestRef[];
   settled: { event: NormalizedEvent; error?: unknown }[];
+  /** 后台准备工作副本(issue #184)的结果,按结束先后。 */
+  worktrees: { repoId: number; failure?: string }[];
   factoryCalls: (readonly ReviewerSpec[])[];
   /** 每次组装 Reviewer 时拿到的完整本轮运行计划。 */
   runtimePlans: (readonly ReviewerRuntimePlan[])[];
@@ -66,6 +68,8 @@ export type PanelHarness = {
     snapshot?: { url: string; secret: string },
   ): Promise<Response>;
   settledAtLeast(count: number): Promise<void>;
+  /** 等到至少这么多次工作副本准备已经结束。不猜时序:等的是服务自己发的回调。 */
+  worktreesPreparedAtLeast(count: number): Promise<void>;
 };
 
 /** 凭据测试用的主密钥。缺主密钥那一档传 `credentialMasterKey: undefined` 起 harness。 */
@@ -246,6 +250,8 @@ export async function startPanelHarness(
   const snapshots: ReadonlyMap<string, string>[] = [];
   const settled: { event: NormalizedEvent; error?: unknown }[] = [];
   let waiting: { count: number; resolve: () => void }[] = [];
+  const worktrees: { repoId: number; failure?: string }[] = [];
+  let worktreeWaiting: { count: number; resolve: () => void }[] = [];
 
   const server = createWebhookServer({
     forges: { gitea: forge },
@@ -275,6 +281,14 @@ export async function startPanelHarness(
     ...(options.discoverModelServiceModels === undefined
       ? {}
       : { discoverModelServiceModels: options.discoverModelServiceModels }),
+    onWorktreePrepared: (repoId, failure) => {
+      worktrees.push({ repoId, ...(failure === undefined ? {} : { failure }) });
+      worktreeWaiting = worktreeWaiting.filter((w) => {
+        if (worktrees.length < w.count) return true;
+        w.resolve();
+        return false;
+      });
+    },
     onRunSettled: (event, error) => {
       settled.push({ event, ...(error === undefined ? {} : { error }) });
       waiting = waiting.filter((w) => {
@@ -362,6 +376,7 @@ export async function startPanelHarness(
     cacheDir: cache.dir,
     dispatched,
     settled,
+    worktrees,
     factoryCalls,
     snapshots,
     runtimePlans,
@@ -371,6 +386,12 @@ export async function startPanelHarness(
       if (settled.length >= count) return Promise.resolve();
       return new Promise<void>((resolve) => {
         waiting.push({ count, resolve });
+      });
+    },
+    worktreesPreparedAtLeast(count: number): Promise<void> {
+      if (worktrees.length >= count) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        worktreeWaiting.push({ count, resolve });
       });
     },
   };

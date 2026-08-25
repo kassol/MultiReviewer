@@ -56,6 +56,7 @@ const ROUTE_EXPECTATIONS = [
   ["GET", "/repos", "repo:read"],
   ["POST", "/repos", "repo:write"],
   ["DELETE", "/^\\/repos\\/(\\d+)$/", "repo:write"],
+  ["POST", "/^\\/repos\\/(\\d+)\\/worktree$/", "repo:write"],
   ["PUT", "/^\\/repos\\/(\\d+)\\/reviewers$/", "repo:write"],
   ["POST", "/^\\/repos\\/(\\d+)\\/rotate$/", "repo:write"],
   ["GET", "/^\\/repos\\/(\\d+)\\/hooks$/", "repo:read"],

@@ -203,6 +203,9 @@ test("核对认得出「hook 丢了」与「轮转未收尾」", async () => {
 test("仓库改名后:轮转按现名寻址,核对报出名字漂移", async () => {
   const h = await startHarness();
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
+  // 注册后工作副本在后台备(issue #184)。等它跑完再改名:临时库在测试收尾时就删了,
+  // 留着后台任务跑到那之后只会在日志里留一行写不进库。
+  await h.worktreesPreparedAtLeast(1);
   h.gitea.rename("neworg", "renamed");
 
   const check = (await (await h.api("GET", `/repos/${GITEA_REPO.id}/hooks`)).json()) as {

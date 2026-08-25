@@ -140,6 +140,9 @@ test("列提交带 base:后代标出来,base 自己与旁支都不算", async ()
   const side = h.repo.branchFrom("side", h.repo.mergeBaseSha, {
     "src/side.ts": "export const side = 1;\n",
   });
+  // 副本在注册时就备好了(issue #184),列提交本身不 fetch;和人在选择器里的顺序一样,
+  // 先列一次分支把新推的这两条取回来。
+  await branches(h);
 
   const page = await commits(h, `branch=feature&base=${base}`);
   assert.deepEqual(
