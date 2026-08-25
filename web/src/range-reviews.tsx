@@ -1,14 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useState } from "react";
 
-import {
-  CheckCircledIcon,
-  Cross2Icon,
-  CrossCircledIcon,
-  ExternalLinkIcon,
-} from "@radix-ui/react-icons";
-import { AlertDialog, Callout, Dialog, Flex, IconButton, Skeleton, Text, TextField } from "@radix-ui/themes";
+import { CheckCircledIcon, CrossCircledIcon, ExternalLinkIcon } from "@radix-ui/react-icons";
+import { Callout, Dialog, Skeleton } from "@radix-ui/themes";
 
 import { CommitChip } from "@/components/commit-chip";
 import { DetailPanel } from "@/components/detail-panel";
@@ -20,32 +15,17 @@ import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { localMinute } from "@/lib/time";
 
-import { api, errorText, fetchJson } from "./api.ts";
+import { fetchJson } from "./api.ts";
+import {
+  AdvanceAction,
+  CompleteAction,
+  RANGE_REVIEWS_QUERY_KEY,
+  type RangeReview,
+} from "./range-review-actions.tsx";
 import { RangeReviewLaunch } from "./range-review-launch.tsx";
 import { runStatus, type RunItem } from "./runs.tsx";
 import { loadPanelSession, pullRequestUrl } from "./session.ts";
 import { StageRound, StageSummaryView } from "./stage-summary.tsx";
-
-/** 一个范围审查。字段与 `GET <前缀>/api/range-reviews` 逐字对应。 */
-export type RangeReview = {
-  id: number;
-  owner: string;
-  repo: string;
-  /** 发起时给的标题(issue #177);升级前的旧记录是 null,按 `#编号` 显示。 */
-  title: string | null;
-  baseSha: string;
-  comparisonSha: string;
-  state: "in-progress" | "completed" | "failed";
-  /** 容器 PR 的序号;建出来之前是 null。 */
-  containerPullNumber: number | null;
-  baseBranch: string;
-  headBranch: string;
-  createdBy: string;
-  createdAt: string;
-  completedBy: string | null;
-  completedAt: string | null;
-  lastForgeFailure: string | null;
-};
 
 /** 一个范围审查审过的一个比较项,发起时那个也在内。按记录先后返回。 */
 export type RangeReviewComparison = {
@@ -60,8 +40,6 @@ const STATE_LABEL: Record<RangeReview["state"], { tone: StatusTone; label: strin
   completed: { tone: "success", label: "审查完成" },
   failed: { tone: "error", label: "发起失败" },
 };
-
-const RANGE_REVIEWS_QUERY_KEY = ["range-reviews"] as const;
 
 export function RangeReviewsPage({
   canCreate,
@@ -271,8 +249,6 @@ function RangeReviewDetailPanel({
   // 最近推的排在最前,与轮次同序;一个比较项的轮次按 head 归到它名下。
   const comparisons = [...(detail.data?.comparisons ?? [])].reverse();
   const status = STATE_LABEL[rangeReview.state];
-  const [advancing, setAdvancing] = useState(false);
-  const [completing, setCompleting] = useState(false);
   // 已完成与发起失败的都没有可推进的容器 PR,那两档不出现入口。
   const canAdvance = canCreate && rangeReview.state === "in-progress";
   const canComplete = canDispose && rangeReview.state === "in-progress";
@@ -299,9 +275,7 @@ function RangeReviewDetailPanel({
         containerUrl === null && !canAdvance && !canComplete ? null : (
           <footer className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-overlay-line px-6 py-3.5">
             {/* 处置在评审记录的详情面板行内做,这一格留给这个阶段自己的三个动作。 */}
-            {canComplete ? (
-              <CompleteAction rangeReview={rangeReview} open={completing} onOpenChange={setCompleting} />
-            ) : null}
+            {canComplete ? <CompleteAction rangeReview={rangeReview} /> : null}
             {containerUrl === null ? null : (
               <Button asChild variant="soft" color="gray" size={{ initial: "3", sm: "2" }}>
                 <a href={containerUrl} target="_blank" rel="noreferrer">
@@ -310,23 +284,7 @@ function RangeReviewDetailPanel({
                 </a>
               </Button>
             )}
-            {canAdvance ? (
-              <Dialog.Root open={advancing} onOpenChange={setAdvancing}>
-                <Dialog.Trigger>
-                  <Button
-                    variant="solid"
-                    className="shadow-accent"
-                    size={{ initial: "3", sm: "2" }}
-                  >
-                    推进比较项
-                  </Button>
-                </Dialog.Trigger>
-                <AdvanceDialogContent
-                  rangeReview={rangeReview}
-                  onAdvanced={() => setAdvancing(false)}
-                />
-              </Dialog.Root>
-            ) : null}
+            {canAdvance ? <AdvanceAction rangeReview={rangeReview} /> : null}
           </footer>
         )
       }
@@ -403,187 +361,5 @@ function RangeReviewDetailPanel({
         }
       />
     </DetailPanel>
-  );
-}
-
-/**
- * 标记审查完成(issue #158)。
- *
- * 不可逆:容器 pull request 会被关掉、两条分支会被删掉,这个阶段的比较项从此不再推进,
- * 所以走 AlertDialog 二次确认,文案写明对象、影响与还剩什么。
- */
-function CompleteAction({
-  rangeReview,
-  open,
-  onOpenChange,
-}: {
-  rangeReview: RangeReview;
-  open: boolean;
-  onOpenChange: (next: boolean) => void;
-}) {
-  const queryClient = useQueryClient();
-  const [error, setError] = useState<string | null>(null);
-
-  const complete = useMutation({
-    mutationFn: async () => {
-      const response = await api(`/range-reviews/${rangeReview.id}/complete`, { method: "POST" });
-      if (!response.ok) throw new Error(await errorText(response));
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: RANGE_REVIEWS_QUERY_KEY });
-      void queryClient.invalidateQueries({ queryKey: ["range-review", rangeReview.id] });
-    },
-    onError: (failure: Error) => setError(failure.message),
-  });
-
-  return (
-    <>
-      {error === null ? null : (
-        <p role="alert" className="w-full text-danger">{error}</p>
-      )}
-      <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
-        <AlertDialog.Trigger>
-          <Button
-            variant="outline"
-            color="gray"
-            highContrast
-            size={{ initial: "3", sm: "2" }}
-            disabled={complete.isPending}
-          >
-            {complete.isPending ? "收尾中…" : "审查完成"}
-          </Button>
-        </AlertDialog.Trigger>
-        <AlertDialog.Content maxWidth="440px" size={{ initial: "2", sm: "3" }}>
-          <AlertDialog.Title size="4" mb="2">
-            标记 {rangeReview.owner}/{rangeReview.repo} 的这个阶段为审查完成?
-          </AlertDialog.Title>
-          <AlertDialog.Description size="2" color="gray">
-            承载 Finding 的 pull request 会关闭、两条分支会删除，比较项不再推进，未处置的 Finding
-            按未处置计入处置率。全部 Finding、处置与备注仍然看得到；同一个 base 可以再发起一个新的范围审查。
-          </AlertDialog.Description>
-          <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
-            <AlertDialog.Cancel>
-              <Button variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>取消</Button>
-            </AlertDialog.Cancel>
-            <Button
-              variant="solid"
-              color="red"
-              size={{ initial: "4", sm: "2" }}
-              onClick={() => {
-                setError(null);
-                onOpenChange(false);
-                complete.mutate();
-              }}
-            >
-              审查完成
-            </Button>
-          </Flex>
-        </AlertDialog.Content>
-      </AlertDialog.Root>
-    </>
-  );
-}
-
-/**
- * 推进比较项的表单(issue #157)。
- *
- * 只收新的比较项:base 是这个阶段不变的基准,推进不改它。服务端只要求新比较项是 base
- * 的后代,作者 rebase 之后的 commit 照样填得进来。
- */
-function AdvanceDialogContent({
-  rangeReview,
-  onAdvanced,
-}: {
-  rangeReview: RangeReview;
-  onAdvanced: () => void;
-}) {
-  const queryClient = useQueryClient();
-  const [comparison, setComparison] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  const advance = useMutation({
-    mutationFn: async () => {
-      const response = await api(`/range-reviews/${rangeReview.id}/advance`, {
-        method: "POST",
-        body: JSON.stringify({ comparison: comparison.trim() }),
-      });
-      if (!response.ok) throw new Error(await errorText(response));
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: RANGE_REVIEWS_QUERY_KEY });
-      void queryClient.invalidateQueries({ queryKey: ["range-review", rangeReview.id] });
-      onAdvanced();
-    },
-    onError: (failure: Error) => setError(failure.message),
-  });
-
-  return (
-    <Dialog.Content aria-describedby={undefined} maxWidth="560px" size={{ initial: "2", sm: "3" }}>
-      <form
-        className="flex min-h-0 flex-col gap-3"
-        aria-busy={advance.isPending}
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (comparison.trim() === "") return;
-          advance.mutate();
-        }}
-      >
-        <Dialog.Title size="4" mb="1" className="pr-9">推进比较项</Dialog.Title>
-
-        <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-1 text-base">
-          <dt className="text-text-secondary">base</dt>
-          <dd className="min-w-0 break-all font-mono">{rangeReview.baseSha}</dd>
-          <dt className="text-text-secondary">当前比较项</dt>
-          <dd className="min-w-0 break-all font-mono">{rangeReview.comparisonSha}</dd>
-        </dl>
-
-        <label className="flex flex-col gap-1.5">
-          <Text as="span" size="2" weight="medium">新的比较项</Text>
-          <TextField.Root
-            value={comparison}
-            onChange={(event) => setComparison(event.target.value)}
-            placeholder="作者迭代之后的 commit sha，必须是 base 的后代"
-            spellCheck={false}
-            className="font-mono"
-            size={{ initial: "3", sm: "2" }}
-          />
-        </label>
-
-        <p className="text-sm text-text-muted">
-          推进会把容器 pull request 的 head 分支移到新 commit，并按 base..新比较项跑新的一轮。
-        </p>
-        {error === null ? null : <p role="alert" className="text-danger">{error}</p>}
-
-        <Flex gap="3" mt="1" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
-          <Dialog.Close>
-            <Button type="button" variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>
-              取消
-            </Button>
-          </Dialog.Close>
-          <Button
-            type="submit"
-            variant="solid"
-            className="shadow-accent"
-            size={{ initial: "4", sm: "2" }}
-            disabled={comparison.trim() === "" || advance.isPending}
-          >
-            {advance.isPending ? "推进中…" : "推进"}
-          </Button>
-        </Flex>
-      </form>
-      <div className="absolute top-3 right-3">
-        <Dialog.Close>
-          <IconButton
-            variant="ghost"
-            color="gray"
-            size={{ initial: "3", sm: "1" }}
-            className="max-sm:min-h-11 max-sm:min-w-11"
-            aria-label="关闭推进比较项"
-          >
-            <Cross2Icon aria-hidden />
-          </IconButton>
-        </Dialog.Close>
-      </div>
-    </Dialog.Content>
   );
 }

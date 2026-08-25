@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useState } from "react";
 
@@ -14,10 +14,13 @@ import { Button } from "@/components/theme-button";
 import { localClock, localDay, localMinute } from "@/lib/time";
 
 import { fetchJson } from "./api.ts";
+import { AdvanceAction, CompleteAction, type RangeReview } from "./range-review-actions.tsx";
 import { RunDiff } from "./run-diff.tsx";
 import { RunTrace } from "./run-trace.tsx";
 import {
   disposedCount,
+  rerunRangeReviewRequest,
+  rerunRequest,
   runStatus,
   StageCounts,
   stageLabel,
@@ -43,7 +46,12 @@ type StageRunGroup = {
 };
 
 /** 字段与 `GET <前缀>/api/stages/{stageId}` 逐字对应。 */
-type StageDetailBody = { stage: StageItem; groups: StageRunGroup[] };
+type StageDetailBody = {
+  stage: StageItem;
+  groups: StageRunGroup[];
+  /** 范围审查阶段自己那条记录;pull request 阶段没有这一格(issue #176)。 */
+  rangeReview?: RangeReview;
+};
 
 /**
  * 这个阶段的汇总取哪一片:两种来源各一档,与 `GET /stage-summary` 的入参对应。
@@ -70,12 +78,19 @@ function scopeOf(stage: StageItem): StageScope {
 export function StageDetailPage({
   stageId,
   canDispose,
+  canCreate,
+  canRerun,
 }: {
   stageId: string;
-  /** 有 `finding:dispose` 权限时,汇总与 diff 里都出现行内处置动作。 */
+  /** 有 `finding:dispose` 权限时,汇总与 diff 里都出现行内处置动作,页头出现审查完成。 */
   canDispose: boolean;
+  /** 有 `review:create` 权限才出现推进比较项。 */
+  canCreate: boolean;
+  /** 有 `review:rerun` 权限才出现重跑。 */
+  canRerun: boolean;
 }) {
   const navigate = useNavigate();
+  const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
   const detail = useQuery({
     queryKey: ["stage-detail", stageId],
     queryFn: () => fetchJson<StageDetailBody>(`/stages/${encodeURIComponent(stageId)}`),
@@ -141,12 +156,35 @@ export function StageDetailPage({
           <PageHeader
             title={stageLabel(body.stage)}
             description={`${body.stage.owner}/${body.stage.repo}`}
+            actions={
+              <StageActions
+                stage={body.stage}
+                {...(body.rangeReview === undefined ? {} : { rangeReview: body.rangeReview })}
+                canDispose={canDispose}
+                canCreate={canCreate}
+                canRerun={canRerun}
+                onFeedback={setFeedback}
+              />
+            }
           />
           <div className="flex flex-wrap items-center gap-2">
             <StageSourceBadge stage={body.stage} />
             <StageStatusBadge stage={body.stage} />
             <StageCounts stage={body.stage} />
           </div>
+
+          {feedback === null ? null : (
+            <Callout.Root
+              role={feedback.isError ? "alert" : "status"}
+              color={feedback.isError ? "red" : "green"}
+              size="1"
+            >
+              <Callout.Icon>
+                {feedback.isError ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
+              </Callout.Icon>
+              <Callout.Text>{feedback.text}</Callout.Text>
+            </Callout.Root>
+          )}
 
           {opened.runId === null ? (
             <StageSummaryView
@@ -168,6 +206,72 @@ export function StageDetailPage({
         </>
       )}
     </PageBody>
+  );
+}
+
+/**
+ * 一个阶段的动作(issue #176):推进比较项、审查完成与重跑,都在它自己的详情页做。
+ *
+ * 推进与审查完成只有范围审查阶段有,组件与原范围审查页面共用同一份。重跑两种来源都
+ * 有:pull request 阶段在最新 head 上再跑一轮,范围审查阶段在当前比较项上再跑一轮。
+ * 审查完成之后的范围审查三个动作都留在页面上但不可用——服务端也一律拒绝,终态不再动。
+ */
+function StageActions({
+  stage,
+  rangeReview,
+  canDispose,
+  canCreate,
+  canRerun,
+  onFeedback,
+}: {
+  stage: StageItem;
+  rangeReview?: RangeReview;
+  canDispose: boolean;
+  canCreate: boolean;
+  canRerun: boolean;
+  onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
+}) {
+  const queryClient = useQueryClient();
+  const rerun = useMutation({
+    mutationFn: () =>
+      stage.source === "range-review"
+        ? rerunRangeReviewRequest(stage.rangeReviewId!)
+        : rerunRequest({ owner: stage.owner, repo: stage.repo, pullNumber: stage.pullNumber! }),
+    onSuccess: (text) => {
+      onFeedback({ text, isError: false });
+      void queryClient.invalidateQueries({ queryKey: ["stage-detail"] });
+    },
+    onError: (error: Error) => onFeedback({ text: error.message, isError: true }),
+  });
+  /*
+   * 已经审查完成的范围审查没有可动的容器 PR:比较项不再推进,也不再开新一轮。发起失败
+   * 那一档同理。记录还没到手时先按不可用,免得点下去撞一个 409。
+   */
+  const frozen = stage.source === "range-review" && rangeReview?.state !== "in-progress";
+
+  return (
+    <>
+      {canRerun ? (
+        <Button
+          variant="soft"
+          color="gray"
+          size={{ initial: "3", sm: "2" }}
+          disabled={frozen || rerun.isPending}
+          onClick={() => {
+            onFeedback(null);
+            rerun.mutate();
+          }}
+        >
+          {rerun.isPending ? "触发中…" : "重跑"}
+        </Button>
+      ) : null}
+      {rangeReview === undefined ? null : (
+        <>
+          {canDispose ? <CompleteAction rangeReview={rangeReview} disabled={frozen} /> : null}
+          {canCreate ? <AdvanceAction rangeReview={rangeReview} disabled={frozen} /> : null}
+        </>
+      )}
+    </>
   );
 }
 

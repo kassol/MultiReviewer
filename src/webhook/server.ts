@@ -4037,6 +4037,9 @@ function handleStages(
  * 一个审查阶段的详情(issue #175):评审记录里的那一行,加它按代码推进分组的时间线。
  * 两种来源的阶段用同一份形状,详情页因此只有一个。
  *
+ * 范围审查阶段另带它自己那条记录(issue #176):详情页的推进比较项要 base 与当前比较
+ * 项,审查完成与重跑要它此刻还是不是进行中。pull request 阶段没有这一格。
+ *
  * 阶段标识是路径参数,里面的斜杠在地址里编码过,这里先解回来。解不开的与查不到的都是
  * 404:调用方要知道的都是「没有这个阶段」,而不是「这个标识长得不对」。
  */
@@ -4051,7 +4054,14 @@ function handleStageDetail(
   } catch {
     return sendJson(res, 404, { error: "没有这个审查阶段" });
   }
-  const detail = withStore(deps.dbPath, (store) => store.stageDetail(stageId));
+  const detail = withStore(deps.dbPath, (store) => {
+    const found = store.stageDetail(stageId);
+    if (found === undefined) return undefined;
+    const rangeReviewId = found.stage.rangeReviewId;
+    return rangeReviewId === null
+      ? found
+      : { ...found, rangeReview: store.getRangeReview(rangeReviewId) };
+  });
   if (detail === undefined) return sendJson(res, 404, { error: "没有这个审查阶段" });
   return sendJson(res, 200, detail);
 }
@@ -4346,9 +4356,12 @@ async function handleRunDiff(
 }
 
 /**
- * 手动重跑:对一个 PR 开新一轮 Review Run,走既有的跨轮次折叠。不走幂等 claim——
+ * 手动重跑:对一个阶段开新一轮 Review Run,走既有的跨轮次折叠。不走幂等 claim——
  * 同一 head commit 重复审在这里是合法诉求(spec 原话),claim 只属于 webhook 投递。
- * 入参用 owner/repo 字符串而非数值 id:时间流里的历史行(含已移除仓库)只有名字。
+ *
+ * 两种来源共用这一个端点(issue #176),入参二选一:pull request 阶段给 owner/repo/
+ * pullNumber——用名字而非数值 id,时间流里的历史行(含已移除仓库)只有名字;范围审查
+ * 阶段给 `rangeReviewId`,在它当前的比较项上再跑一轮。
  */
 async function handleRerun(
   req: IncomingMessage,
@@ -4362,7 +4375,15 @@ async function handleRerun(
     owner?: unknown;
     repo?: unknown;
     pullNumber?: unknown;
+    rangeReviewId?: unknown;
   } | null;
+  if (payload !== null && payload.rangeReviewId !== undefined) {
+    const rangeReviewId = payload.rangeReviewId;
+    if (typeof rangeReviewId !== "number" || !Number.isSafeInteger(rangeReviewId) || rangeReviewId <= 0) {
+      return sendJson(res, 400, { error: "rangeReviewId 要是正整数" });
+    }
+    return rerunRangeReview(res, deps, rangeReviewId, triggeredBy);
+  }
   if (
     payload === null ||
     typeof payload.owner !== "string" ||
@@ -4371,7 +4392,8 @@ async function handleRerun(
     !Number.isSafeInteger(payload.pullNumber)
   ) {
     return sendJson(res, 400, {
-      error: 'body 要是 {"owner", "repo", "pullNumber"} 形状,pullNumber 是整数',
+      error:
+        'body 要是 {"owner", "repo", "pullNumber"} 形状(pullNumber 是整数),或 {"rangeReviewId"}',
     });
   }
   const { owner, repo, pullNumber } = payload;
@@ -4411,6 +4433,62 @@ async function handleRerun(
     { platform: "gitea", owner, repo, number: pullNumber, headSha, draft: false, action: "rerun" },
     plan,
     triggeredBy,
+  );
+}
+
+/**
+ * 范围审查阶段的重跑(issue #176):在当前比较项上再跑一轮,新一轮归入同一个范围审查。
+ *
+ * 比较项取库里那一行,不去 Forge 读容器 PR 的 head:「这个阶段此刻在审什么」的权威就是
+ * 这条记录,推进时先推分支再改它。审查完成之后拒绝,与推进同一个理由——终态不再动。
+ * 容器 PR 的序号不进响应:它对面板用户透明(CONTEXT.md 容器 PR)。
+ */
+async function rerunRangeReview(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  id: number,
+  triggeredBy: string,
+): Promise<void> {
+  const record = withStore(deps.dbPath, (store) => store.getRangeReview(id));
+  if (record === undefined) {
+    return sendJson(res, 404, { error: "没有这个范围审查" });
+  }
+  if (record.state !== "in-progress" || record.containerPullNumber === null) {
+    return sendJson(res, 409, {
+      error:
+        record.state === "completed"
+          ? "这个范围审查已经审查完成,不再重跑"
+          : "这个范围审查没有可用的容器 pull request,重新发起一个",
+    });
+  }
+  const forge = deps.forges.gitea;
+  if (forge === undefined) {
+    return sendJson(res, 503, { error: "gitea 没有配置 Forge,重跑不了" });
+  }
+  let plan: ReviewRunPlan;
+  try {
+    plan = await buildRunPlan(deps, record.repoId);
+  } catch (error) {
+    return sendJson(res, 409, {
+      error: `模型覆盖坏了,先改组合再重跑:${failureText(error)}`,
+    });
+  }
+  sendJson(res, 202, { rangeReviewId: id, headSha: record.comparisonSha });
+  void startRun(
+    deps,
+    forge,
+    {
+      platform: "gitea",
+      owner: record.owner,
+      repo: record.repo,
+      number: record.containerPullNumber,
+      headSha: record.comparisonSha,
+      draft: false,
+      action: "rerun",
+    },
+    plan,
+    triggeredBy,
+    id,
   );
 }
 

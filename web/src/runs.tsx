@@ -180,6 +180,19 @@ export async function rerunRequest(run: {
 }
 
 /**
+ * 范围审查阶段的重跑(issue #176):在这个阶段当前的比较项上再跑一轮,与 pull request
+ * 那条走同一个端点,比较项由服务端从记录里取。
+ */
+export async function rerunRangeReviewRequest(rangeReviewId: number): Promise<string> {
+  const response = await api("/rerun", {
+    method: "POST",
+    body: JSON.stringify({ rangeReviewId }),
+  });
+  if (!response.ok) throw new Error(await errorText(response));
+  return "已在当前比较项上触发新一轮审查";
+}
+
+/**
  * 一轮审查的结论。总览、评审记录与仓库页共用这一份映射——同一轮在三处显示成不同
  * 的词,读的人得先确认那是不是同一件事。
  *

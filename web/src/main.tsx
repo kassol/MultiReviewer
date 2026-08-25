@@ -509,6 +509,8 @@ const stageDetailRoute = createRoute({
           <StageDetailPage
             stageId={stageDetailRoute.useParams().stageId}
             canDispose={hasPermission(session, "finding:dispose")}
+            canCreate={hasPermission(session, "review:create")}
+            canRerun={hasPermission(session, "review:rerun")}
           />
         )}
       />
