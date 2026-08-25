@@ -48,6 +48,10 @@ _Avoid_: issue、问题、comment、告警
 判断两条 Finding 是不是同一条的依据,中文叫「同一处 Finding」。同一个 pull request 里指向同一处未改动代码的 Finding 是同一条,不论由哪个或多少个 Reviewer 报出、在多少轮 Review Run 里被报出;同一轮内多个 Reviewer 报同一处合成一条,归属记全部报出它的 Reviewer。代码改动后经复核判定仍在的,由延续保持同一条;未经复核而在改动后的代码上再次报出的是新的一条。
 _Avoid_: 去重、指纹、逻辑 Finding、按模型各算一条
 
+**参与条数**:
+一个模型在处置率统计里的唯一一列辅助数字:该模型报出过的 Finding Identity 数,同一条 Finding 不论被它在几轮里报出都只计一次。它只说明这个模型有没有在干活,不构成处置率,也不是模型质量评分(ADR 0015)。
+_Avoid_: 模型处置率、模型得分、报出数
+
 **审查阶段**:
 处置与统计的单位。一个范围审查从发起到审查完成是一个审查阶段;一个 pull request 从打开到关闭也是一个审查阶段。阶段内所有轮次的 Finding 按 Finding Identity 汇总为阶段的当前状态,轮次只是它的历史。
 _Avoid_: 批次、轮次、Review Run
