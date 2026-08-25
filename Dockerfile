@@ -22,8 +22,14 @@ FROM node:24-slim
 
 # 工作副本靠 git 命令准备(`src/git/worktree.ts` 直接 execFile "git"),基础镜像里没有
 # 它。ca-certificates 是访问 Gitea 与各家模型 HTTPS 接口所需。
+#
+# ripgrep 与 fd-find 供 Reviewer 的 grep / find 工具用。缺了这两个二进制,Pi 会先去
+# GitHub 下载,容器里下不动就各卡满 120 秒的超时再报 could not be downloaded,一轮
+# Review Run 白等约 4 分钟。Debian 的 fd 装出来叫 `fdfind`,Pi 的工具查找按
+# ["fd", "fdfind"] 两个名字依次探测(pi-coding-agent 的 utils/tools-manager.js),
+# 命中 `fdfind` 就直接拿它 spawn,不用另做 `fd` 软链。
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates \
+ && apt-get install -y --no-install-recommends git ca-certificates ripgrep fd-find \
  && rm -rf /var/lib/apt/lists/*
 
 # 版本钉死到产出 pnpm-lock.yaml 的那一个,免得 lockfile 版本对不上。

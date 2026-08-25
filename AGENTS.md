@@ -16,7 +16,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `src/` — 编排服务源码,结构约定见 `src/AGENTS.md`。进程入口是 `src/main.ts`。
 - `web/` — 管理面板前端(Vite + TanStack Router/Query),结构约定见 `web/AGENTS.md`。产物在 Docker 多阶段构建里生成,不进版本库。
 - `test/` — 测试,打在三条验收边界上(HTTP 端点 / 假 Gitea / SQLite 临时库)。`test/support/` 是内存 Forge、脚本化 Reviewer、git fixture、假 Gitea 与面板 harness。
-- `Dockerfile` / `.dockerignore` — 运行镜像。`node:24-slim` 加 git,依赖在镜像内重装(宿主机的 `node_modules` 含平台专属产物,不进镜像)。
+- `Dockerfile` / `.dockerignore` — 运行镜像。`node:24-slim` 加 git、ripgrep 与 fd-find,依赖在镜像内重装(宿主机的 `node_modules` 含平台专属产物,不进镜像)。装 ripgrep 与 fd-find 是给 Reviewer 的 `grep` / `find` 工具用:缺二进制时 Pi 会去 GitHub 下载,容器里下不动就各卡满 120 秒超时,一轮 Review Run 白等约 4 分钟。
 - `docker-compose.yml` — 服务器上的编排定义。与 `.env` 两个文件即可运行,不需要源码。
 - `scripts/build-push.sh` — 在开发机构建镜像并推到 registry,默认目标架构 `linux/amd64`。
 - `scripts/setup.sh` — 部署向导。在服务器上执行,逐步问出 Forge 凭据与面板配置、写 `.env`、拉镜像起容器、以「面板能用」为验收自检;新实例从日志抽出一次性 bootstrap 口令交给第一个系统管理员,仓库接入、用户与角色、模型凭据及模型组合在面板上做。
@@ -371,3 +371,4 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 2026-08-20: 落地 issue #148。自定义 provider 创建与既有模型服务修改复用三步稳定配置页。自定义预览不要求 validation model;发现失败或目录缺项后可手填 model id,最终重新发现并真实推理,成功后作为模型补录随完整版本原子提交。创建成功进入审查策略并定位 provider,修改成功回服务概览;#149 原子改名、#150 检查单和 #144 权限边界保持不变。
 - 2026-08-20: 完成 issue #151 的部署实例验收。既有模型服务完成真实发现与最小推理,失败候选保留 request id 且未创建服务。审查策略独立保存、陈旧写恢复、非空组合、权限包含关系、重复渲染及桌面/窄屏均已走查;需要破坏当前配置才能构造的未就绪注册与冲突改名回滚继续由真实 HTTP 和临时 SQLite 自动化测试覆盖。
 - 2026-08-24: 模型服务配置流程改为弹窗承载三步路由；模型凭据验证模型避免逐字符断行；模型目录增加持久化启用状态与批量管理，停用模型不再进入审查策略可选项，引用中的模型停用会被阻止。
+- 2026-08-25: 落地 issue #182。运行镜像补装 ripgrep 与 fd-find,Reviewer 的 `grep` / `find` 不再触发 Pi 的联网下载。Debian 的 fd 二进制名是 `fdfind`,Pi 的工具查找按 `["fd", "fdfind"]` 依次探测系统 PATH,命中即用,因此不做 `fd` 软链。bookworm 给到 ripgrep 13.0.0 与 fd 8.6.0;fd 8.6.0 没有 `--no-require-git`,Pi 只在搜索路径不在 git 仓库内时才带这个参数,而 Reviewer 的工作目录就是工作副本,实际路径上不会出现。
