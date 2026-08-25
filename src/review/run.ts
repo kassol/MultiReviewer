@@ -43,6 +43,12 @@ import {
   type OutcomeRecord,
   type VerdictRecord,
 } from "./store.ts";
+import {
+  beginTrace,
+  createTraceRecorder,
+  endTrace,
+  type TraceRecorder,
+} from "./trace.ts";
 
 export type PullRequestEvent = PullRequestRef;
 
@@ -637,6 +643,61 @@ function verdictRecords(
     });
 }
 
+/**
+ * 每个 Reviewer 跑完之后的收尾事件(issue #171):失败的记失败原因与退出码,跑完的记
+ * Finding 条数、两种被拒次数与用量。
+ *
+ * 记在全部批次合并之后:一个 Reviewer 一轮只有一条收尾,分批是它的内部构造。
+ */
+function recordReviewerOutcomes(
+  trace: TraceRecorder,
+  outcomes: readonly ReviewerOutcome[],
+): void {
+  for (const outcome of outcomes) {
+    if (outcome.failure !== undefined) {
+      trace.reviewer(outcome.model, "reviewer_failed", {
+        failure: outcome.failure,
+        exitCode: outcome.exitCode ?? null,
+      });
+      continue;
+    }
+    trace.reviewer(outcome.model, "reviewer_finished", {
+      findings: outcome.findings.length,
+      rejectedToolCalls: outcome.rejectedToolCalls,
+      anchorRejections: outcome.anchorRejections,
+      usage: outcome.usage ?? null,
+    });
+  }
+}
+
+/**
+ * 每一组真的合并过的 Finding 一条事件(issue #171 的用户故事 9):成员来自哪个
+ * Reviewer、各自的行号与标题,以及这一组的合并判据。
+ *
+ * 没有合并的组不发事件——一条 Finding 一个组是常态,给它们各发一条只会把轨迹淹掉。
+ */
+function recordFindingMerges(
+  trace: TraceRecorder,
+  findings: readonly MergedFinding[],
+): void {
+  for (const finding of findings) {
+    const merge = finding.merge;
+    if (merge === undefined) continue;
+    trace.run("finding_merged", {
+      file: finding.file,
+      line: finding.line,
+      members: merge.members.map((member) => ({
+        reviewer: member.model,
+        line: member.line,
+        title: member.title,
+      })),
+      // 判据整个作一个对象:`same_line` 那一档没有数可给,`distance` 那一档带行距与
+      // 相似度(0 到 1 的 Jaccard 原值,面板自己换算成百分比)。
+      criteria: merge.criterion,
+    });
+  }
+}
+
 /** 一条行级评论的身份:同一轮里 `路径 + 行号 + 正文` 三者相同的草稿只有一条。 */
 function commentKey(comment: { path: string; line: number; body: string }): string {
   return `${comment.path}\n${comment.line}\n${comment.body}`;
@@ -736,7 +797,19 @@ export async function runReview(
     reviewerPins: deps.reviewerPins ?? [],
   });
 
+  // 一有 runId 就可以接受订阅(ADR 0017):面板打开进行中的轮次时要能接上实时推送,
+  // 而第一条编排事件紧接着就发出来了。
+  beginTrace(runId);
+  const trace = createTraceRecorder(store, runId);
+
   try {
+    // 工作副本在 startRun 之前就备好了,轨迹的第一条因此是它——面板据此知道这一轮
+    // 审的是哪两端(issue #171 的用户故事 1)。
+    trace.run("worktree_ready", {
+      baseSha: worktree.mergeBaseSha,
+      headSha: pullRequest.headSha,
+    });
+
     // 两端一有 runId 就钉在本地 clone 上(issue #161):这一轮结束后远端的分支会被删,
     // 不钉住的话 gc 一跑,这一轮的 diff 就再也打不开。
     // 钉不住只记日志:少一轮历史 diff 是小事,一次审查因此白跑不是。
@@ -762,7 +835,10 @@ export async function runReview(
 
     // 批次串行,批内 Reviewer 并行:并行跑批会同时开「批数 × 模型数」个子进程。
     const perBatch: TimedOutcome[][] = [];
-    for (const files of batches) {
+    for (const [index, files] of batches.entries()) {
+      // 批次序号从 1 起,直接呈现给看轨迹的人,与 `incompleteCoverage` 同一口径。
+      const batch = { index: index + 1, total: batches.length, files };
+      trace.run("batch_started", batch);
       perBatch.push(
         await Promise.all(
           deps.reviewers.map(async (reviewer) => {
@@ -774,11 +850,16 @@ export async function runReview(
               { ...range, files },
               worktree.path,
               history,
+              (event) => {
+                const { kind, ...payload } = event;
+                trace.reviewer(reviewer.model, kind, payload);
+              },
             );
             return { outcome, durationMs: Date.now() - begin };
           }),
         ),
       );
+      trace.run("batch_finished", batch);
     }
     // 汇总在全部批次跑完之后做一次:一次 Review Run 只发一次 review。
     const timed = deps.reviewers.map((_, index) =>
@@ -791,9 +872,12 @@ export async function runReview(
     // 全部失败时零 Finding 不代表代码没问题,发一条空 review 会把失败读成通过。
     const failed = outcomes.length > 0 && absent.length === outcomes.length;
 
+    recordReviewerOutcomes(trace, outcomes);
+
     const findings = dedupeFindings(
       outcomes.filter((o) => o.failure === undefined).flatMap((o) => o.findings),
     );
+    recordFindingMerges(trace, findings);
 
     const diffRanges = parseDiffRanges(diff);
     const prior = priorDispositions(priorComments, priorBodies);
@@ -956,6 +1040,7 @@ export async function runReview(
         comments,
       });
       store.recordFindingComments(runId, commentRefs(comments, commentGroups, published));
+      trace.run("review_posted", { findingCount: findings.length });
     }
 
     // 跑成功却什么都没发现时,这次审查在 PR 上本来一点痕迹都不会留,与「审查根本
@@ -963,6 +1048,8 @@ export async function runReview(
     if (!failed && !hasSomethingToSay) {
       await tryReaction(() => forge.addReaction(event, "+1"));
     }
+
+    trace.run("run_finished", { failed, findingCount: findings.length });
 
     return {
       headSha: pullRequest.headSha,
@@ -973,6 +1060,9 @@ export async function runReview(
       fallbackCount: fallbacks.length,
     };
   } finally {
+    // 订阅者一定要收到结束信号:成功、失败、中途抛异常都要,否则页面会一直等下去。
+    // 抛异常那一档没有 `run_finished` 落库——这一轮确实没跑完,轨迹照实停在崩溃前。
+    endTrace(runId);
     store.close();
     // 「正在审查」一定要撤掉:成功、失败、中途抛异常都要。留着它 PR 上会永远挂着
     // 一只眼睛,看起来像审查卡死了。

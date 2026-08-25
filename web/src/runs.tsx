@@ -22,6 +22,7 @@ import { localClock, localDay } from "@/lib/time";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { RunDiff } from "./run-diff.tsx";
+import { RunTrace } from "./run-trace.tsx";
 import { loadPanelSession, pullRequestUrl } from "./session.ts";
 import { StageSummaryView } from "./stage-summary.tsx";
 import { SummaryRate } from "./stats.tsx";
@@ -307,9 +308,13 @@ export function RunDetailPanel({
    * PR 触发的那条链路在这里给出与范围审查详情同一个阶段汇总(issue #168):一个 pull
    * request 从打开到关闭就是一个审查阶段,「这个阶段还剩什么没处置」在两条链路上是
    * 同一个问题。范围审查的轮次不给这个开关——它的阶段汇总就在范围审查详情页上。
+   *
+   * 审查轨迹(issue #171)两条链路都给:它说的是「这一轮是怎么跑出来的」,与轮次由谁
+   * 触发无关。
    */
-  const [view, setView] = useState<"diff" | "stage">("diff");
-  const stage = run.rangeReviewId === null && view === "stage";
+  const [view, setView] = useState<"diff" | "stage" | "trace">("diff");
+  // 阶段汇总只有 PR 触发那条链路有;停在它上面时点开一轮范围审查,退回本轮 diff。
+  const active = view === "stage" && run.rangeReviewId !== null ? "diff" : view;
   return (
     <DetailPanel
       onClose={onClose}
@@ -431,24 +436,29 @@ export function RunDetailPanel({
         ) : null
       }
     >
-      {run.rangeReviewId === null ? (
-        <SegmentedControl.Root
-          value={view}
-          onValueChange={(value) => setView(value === "stage" ? "stage" : "diff")}
-          size="1"
-          aria-label="详情视图"
-          className="w-fit"
-        >
-          <SegmentedControl.Item value="diff">本轮 diff</SegmentedControl.Item>
+      <SegmentedControl.Root
+        value={active}
+        onValueChange={(value) => {
+          if (value === "diff" || value === "stage" || value === "trace") setView(value);
+        }}
+        size="1"
+        aria-label="详情视图"
+        className="w-fit"
+      >
+        <SegmentedControl.Item value="diff">本轮 diff</SegmentedControl.Item>
+        {run.rangeReviewId === null ? (
           <SegmentedControl.Item value="stage">阶段汇总</SegmentedControl.Item>
-        </SegmentedControl.Root>
-      ) : null}
+        ) : null}
+        <SegmentedControl.Item value="trace">审查轨迹</SegmentedControl.Item>
+      </SegmentedControl.Root>
 
       {/*
         详情默认是这一轮的完整 diff:文件列表加逐文件 diff,Finding 锚在对应行上。
         `key` 换成 run.id,换一轮时筛选与展开状态跟着重置,不把上一轮的筛选带过来。
       */}
-      {stage ? (
+      {active === "trace" ? (
+        <RunTrace key={run.id} run={run} />
+      ) : active === "stage" ? (
         <StageSummaryView
           key={`${run.owner}/${run.repo}#${run.pullNumber}`}
           scope={{

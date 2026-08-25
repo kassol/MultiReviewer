@@ -17,6 +17,7 @@ import type {
   HistoryFinding,
   ReviewRange,
   Reviewer,
+  ReviewerEvent,
   ReviewerOutcome,
   ReviewVerdict,
 } from "../../src/review/finding.ts";
@@ -157,6 +158,7 @@ type ScriptedFinding = Omit<Finding, "model" | "title" | "impact" | "suggestion"
  *
  * `calls` 连注入的历史一起记下来:历史注入是这个桩唯一能观测的输入(ADR 0016)。
  * `verdicts` 给定这一轮的复核结论;不给即一条都没给,编排层按「无法判断」落库。
+ * `events` 是这一轮按顺序发出的过程事件(issue #171),在返回结果之前逐条发出。
  */
 export function scriptedReviewer(
   model: string,
@@ -166,7 +168,7 @@ export function scriptedReviewer(
       ReviewerOutcome,
       "failure" | "anomalies" | "rejectedToolCalls" | "anchorRejections" | "usage" | "verdicts"
     >
-  >,
+  > & { events?: readonly ReviewerEvent[] },
 ): Reviewer & {
   calls: {
     range: ReviewRange;
@@ -182,8 +184,9 @@ export function scriptedReviewer(
   return {
     model,
     calls,
-    review: async (range, worktreePath, history) => {
+    review: async (range, worktreePath, history, onEvent) => {
       calls.push({ range, worktreePath, history });
+      for (const event of extra?.events ?? []) onEvent?.(event);
       return {
         model,
         findings: findings.map((f) => ({
@@ -217,8 +220,8 @@ export function verdictReviewer(
   return {
     model,
     calls: scripted.calls,
-    review: async (range, worktreePath, history) => ({
-      ...(await scripted.review(range, worktreePath, history)),
+    review: async (range, worktreePath, history, onEvent) => ({
+      ...(await scripted.review(range, worktreePath, history, onEvent)),
       verdicts: history.map((entry) => ({ findingId: entry.id, verdict })),
     }),
   };

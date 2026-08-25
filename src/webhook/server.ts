@@ -83,6 +83,7 @@ import {
   type Store,
 } from "../review/store.ts";
 import { modelServiceTargetFingerprint } from "../review/model-service-migration.ts";
+import { subscribeTrace, type TraceEvent } from "../review/trace.ts";
 import {
   conflictingBuiltinProviderNames,
   listPiBuiltinProviders,
@@ -155,6 +156,8 @@ export type WebhookServerDeps = {
   onDelivery?: (message: string) => void;
   /** 「只记首次」集合的上限,默认 `LOGGED_ONCE_MAX`。只该测试注入,用来触达封顶分支。 */
   loggedOnceMax?: number;
+  /** 审查轨迹 SSE 的心跳间隔(毫秒),默认 `TRACE_HEARTBEAT_MS`。只该测试注入。 */
+  traceHeartbeatMs?: number;
   /** 测试注入 bootstrap 口令;生产省略即在零用户时随机生成。 */
   bootstrapSecret?: string;
   /** 零用户启动时拿到 bootstrap 口令;生产打印,测试可观察或忽略。 */
@@ -191,6 +194,9 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 /** 「只记首次」集合的上限。准入拒绝的去重键含未认证方可自选的仓库 id,不设限会被写满内存。 */
 const LOGGED_ONCE_MAX = 10_000;
+
+/** 审查轨迹 SSE 的心跳间隔。要短过反代常见的 60 秒读超时,并留出余量。 */
+const TRACE_HEARTBEAT_MS = 15_000;
 
 /**
  * 「PR 新增 commit」两个平台拼写不同:GitHub 是 `synchronize`,Gitea 是 `synchronized`。
@@ -1418,6 +1424,18 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     pattern: /^\/runs\/(\d+)\/diff$/,
     access: "review:read",
     handler: ({ req, res, deps }, match) => handleRunDiff(req, res, deps, Number(match![1])),
+  },
+  {
+    method: "GET",
+    pattern: /^\/runs\/(\d+)\/trace$/,
+    access: "review:read",
+    handler: ({ res, deps }, match) => handleRunTrace(res, deps, Number(match![1])),
+  },
+  {
+    method: "GET",
+    pattern: /^\/runs\/(\d+)\/trace\/stream$/,
+    access: "review:read",
+    handler: ({ req, res, deps }, match) => handleRunTraceStream(req, res, deps, Number(match![1])),
   },
   {
     method: "GET",
@@ -3988,6 +4006,101 @@ function handleStageSummary(
     store.stageSummary({ owner, repo, pullNumber }),
   );
   return sendJson(res, 200, summary);
+}
+
+/**
+ * 一轮 Review Run 的审查轨迹(CONTEXT.md,issue #171),按 `seq` 升序。
+ *
+ * 权限与轮次详情一致(`review:read`):能看轮次就能看它的轨迹,不另配一格。升级前跑过的
+ * 轮次一条事件都没有,回空列表——那不是错误,是那时候还不记过程。
+ */
+function handleRunTrace(res: ServerResponse, deps: WebhookServerDeps, runId: number): void {
+  const events = withStore(deps.dbPath, (store) =>
+    store.getRunRange(runId) === undefined ? undefined : store.listTrace(runId),
+  );
+  if (events === undefined) return sendJson(res, 404, { error: "没有这一轮 Review Run" });
+  return sendJson(res, 200, { events });
+}
+
+/** 续传起点的一个来源。认不出来的按 0 算,即「从头给」。 */
+function positiveSeq(raw: string | undefined | null): number {
+  const seq = Number(raw);
+  return Number.isSafeInteger(seq) && seq > 0 ? seq : 0;
+}
+
+/** 一条 SSE 帧:`id` 取 `seq`,断线之后浏览器用它作 `Last-Event-ID` 续传。 */
+function traceFrame(event: TraceEvent): string {
+  return `id: ${event.seq}\nevent: trace\ndata: ${JSON.stringify(event)}\n\n`;
+}
+
+/**
+ * 审查轨迹的实时推送(issue #171)。
+ *
+ * 先订阅再回放,两步之间没有 await:事件由同一个进程同步广播,中间插不进第三方,
+ * 因此既不会漏也不会重。这一轮已经结束时不订阅,回放完直接发 `end` 并关闭——没有后续
+ * 事件可等,让页面挂着等于让它永远转圈。
+ */
+function handleRunTraceStream(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  runId: number,
+): void {
+  const exists = withStore(deps.dbPath, (store) => store.getRunRange(runId) !== undefined);
+  if (!exists) return sendJson(res, 404, { error: "没有这一轮 Review Run" });
+
+  // 只补这个序号之后的那些。两条来源:浏览器重连时自动带的 `Last-Event-ID`,以及
+  // 查询串上的 `?after=`——原生 `EventSource` 设不了首个请求的请求头,面板打开时先取
+  // `/trace` 补历史、再拿最后那个 seq 接流,只能走查询串。两个都在时取大的:它们说的
+  // 是同一件事,取小的会把已经收到的事件再发一遍。认不出来的值按「从头给」处理。
+  const header = req.headers["last-event-id"];
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+  const afterSeq = Math.max(
+    positiveSeq(Array.isArray(header) ? header[0] : header),
+    positiveSeq(query.get("after")),
+  );
+
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+    // 反代默认缓冲响应体,缓冲下来「实时」就变成了跑完一次性出现。
+    "x-accel-buffering": "no",
+  });
+  // 头要立刻发出去。`?after=` 给的是最后一条时没有可回放的帧,不 flush 的话 node 会把头
+  // 攒到第一次 write,页面这边就是「连了但没 open」,反代等满读超时再按失败断掉——
+  // 浏览器把没握手成功的 EventSource 当永久失败,不再重连。
+  res.flushHeaders();
+
+  // 模型一次调用可以静默一两分钟,长过反代的读超时。定时写一条 SSE 注释帧(以冒号开头,
+  // 浏览器不当事件),让反代看到上游还活着。
+  const heartbeat = setInterval(() => {
+    res.write(": keep-alive\n\n");
+  }, deps.traceHeartbeatMs ?? TRACE_HEARTBEAT_MS);
+
+  const finish = (): void => {
+    clearInterval(heartbeat);
+    res.write("event: end\ndata: {}\n\n");
+    res.end();
+  };
+
+  const unsubscribe = subscribeTrace(runId, {
+    onEvent: (event) => res.write(traceFrame(event)),
+    onEnd: finish,
+  });
+
+  for (const event of withStore(deps.dbPath, (store) => store.listTrace(runId, afterSeq))) {
+    res.write(traceFrame(event));
+  }
+
+  if (unsubscribe === undefined) {
+    finish();
+    return;
+  }
+  res.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
 }
 
 /** 本地副本里取不到 Review Range 的三档各自对应一句话。这不是服务出错,是代码不在了。 */

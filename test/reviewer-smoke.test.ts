@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-import type { HistoryFinding } from "../src/review/finding.ts";
+import type { HistoryFinding, ReviewerEvent } from "../src/review/finding.ts";
 import { resolvePiBuiltinProviderTarget } from "../src/reviewer/catalog.ts";
 import { createPiReviewer } from "../src/reviewer/pi-reviewer.ts";
 import {
@@ -86,10 +86,28 @@ async function smokeReviewer(): Promise<ReturnType<typeof createPiReviewer>> {
 test("真实模型经 report_finding 产出结构完整的 Finding", { skip }, async () => {
   const reviewer = await smokeReviewer();
 
+  // 轨迹的另一半契约(issue #171):真实子进程里那条订阅确实把 Pi 的会话事件转发上来。
+  const events: ReviewerEvent[] = [];
   const outcome = await reviewer.review(
     { baseSha: "HEAD~1", headSha: "HEAD", files: ["src/db.js", "src/pagination.js"] },
     FIXTURE,
     [],
+    (event) => events.push(event),
+  );
+
+  assert.ok(
+    events.some((event) => event.kind === "assistant_message"),
+    "至少要转发一条模型说的话",
+  );
+  assert.ok(
+    events.some((event) => event.kind === "tool_call"),
+    "至少要转发一次工具调用",
+  );
+  // 凭据不出现在任何事件正文里:轨迹会原样呈现给能看这一轮的人。
+  assert.equal(
+    JSON.stringify(events).includes(secret!),
+    false,
+    "事件正文里出现了本轮模型凭据",
   );
 
   assert.equal(outcome.failure, undefined, `Reviewer 失败: ${outcome.failure}`);

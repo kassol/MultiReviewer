@@ -30,6 +30,7 @@ import type {
   Severity,
 } from "./finding.ts";
 import { containerBranches, type RangeReviewState } from "./range-review.ts";
+import type { TraceEvent, TraceEventInput, TraceKind, TraceScope } from "./trace.ts";
 
 export const STORE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS review_run (
@@ -161,6 +162,21 @@ CREATE TABLE IF NOT EXISTS finding_verdict (
   verdict TEXT NOT NULL,
   missing INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (run_id, model, finding_id)
+);
+
+-- 一轮 Review Run 的审查轨迹(CONTEXT.md,ADR 0017):按时间顺序发生的事件,一行一条。
+-- seq 在一轮之内自增,断线续传按它续;reviewer 是模型标识,与 reviewer_outcome.model
+-- 同一个值,轮次级事件为 NULL。payload 是事件正文的 JSON 文本,不设长度上限。
+-- 随 Review Run 永久保留:Review Run 没有删除路径,轨迹也没有。
+CREATE TABLE IF NOT EXISTS review_trace (
+  run_id INTEGER NOT NULL REFERENCES review_run(id),
+  seq INTEGER NOT NULL,
+  at TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  reviewer TEXT,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  PRIMARY KEY (run_id, seq)
 );
 
 -- 回填的索引:回填按「文件 + 指纹」改行、按 PR 定位 Review Run。统计矩阵是全表
@@ -1318,6 +1334,18 @@ export type Store = {
    * `finishRun` 时就已经知道。
    */
   recordFindingComments(runId: number, refs: readonly FindingCommentRef[]): void;
+  /**
+   * 追加一条审查轨迹(CONTEXT.md,ADR 0017),返回落库后的那条(带序号与时刻)。
+   *
+   * 序号在一轮之内自增,由这一句 INSERT 自己算——SQLite 的单句写是原子的,不需要先查
+   * 后写,并发的两条也不会拿到同一个号。
+   */
+  appendTrace(runId: number, event: TraceEventInput): TraceEvent;
+  /**
+   * 一轮的轨迹,按 `seq` 升序。`afterSeq` 给了就只回它之后的那些,断线续传用。
+   * 没有事件的轮次得到空数组——升级前跑过的轮次就是这一档。
+   */
+  listTrace(runId: number, afterSeq?: number): TraceEvent[];
   /**
    * 处置率统计(ADR 0006,主维度见 ADR 0015):按 Finding Identity 折叠,fallback
    * (body)排除,unknown 按 PR 状态分流,时间窗按同一处 Finding 首次报出那轮的开始
@@ -3531,6 +3559,55 @@ export function openStore(dbPath: string): Store {
       for (const ref of refs) {
         update.run(ref.commentId, ref.commentHtmlUrl, runId, ref.groupIndex);
       }
+    },
+
+    appendTrace(runId, event) {
+      const at = new Date().toISOString();
+      const payload = JSON.stringify(event.payload ?? null);
+      const reviewer = event.reviewer ?? null;
+      // 序号在这一句里算:子查询与插入在同一条语句内,SQLite 不会让两条并发的写拿到
+      // 同一个号,先查后写才会。
+      const inserted = db
+        .prepare(
+          `INSERT INTO review_trace (run_id, seq, at, scope, reviewer, kind, payload)
+           VALUES (
+             ?,
+             (SELECT COALESCE(MAX(seq), 0) + 1 FROM review_trace WHERE run_id = ?),
+             ?, ?, ?, ?, ?
+           )
+           RETURNING seq`,
+        )
+        .get(runId, runId, at, event.scope, reviewer, event.kind, payload);
+      const seq = Number(inserted?.["seq"]);
+      return {
+        seq,
+        runId,
+        at,
+        scope: event.scope,
+        ...(event.reviewer === undefined ? {} : { reviewer: event.reviewer }),
+        kind: event.kind,
+        payload: event.payload,
+      };
+    },
+
+    listTrace(runId, afterSeq) {
+      const rows = db
+        .prepare(
+          `SELECT seq, at, scope, reviewer, kind, payload
+             FROM review_trace
+            WHERE run_id = ? AND seq > ?
+            ORDER BY seq`,
+        )
+        .all(runId, afterSeq ?? 0);
+      return rows.map((row) => ({
+        seq: Number(row["seq"]),
+        runId,
+        at: String(row["at"]),
+        scope: String(row["scope"]) as TraceScope,
+        ...(row["reviewer"] === null ? {} : { reviewer: String(row["reviewer"]) }),
+        kind: String(row["kind"]) as TraceKind,
+        payload: JSON.parse(String(row["payload"])) as unknown,
+      }));
     },
 
     dispositionStats(from, to) {

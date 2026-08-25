@@ -23,6 +23,7 @@ import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, redactModelCredential } from "./en
 import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
 import { numberedRead } from "./numbered-read.ts";
 import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
+import { reviewerEventStream } from "./trace-events.ts";
 
 /**
  * 只读靠允许清单强制:未列出的工具 Pi 不会注册,模型没有写入的调用路径。
@@ -319,7 +320,11 @@ async function run(request: ReviewerRequest): Promise<void> {
     settingsManager,
   });
 
+  // 审查轨迹只订阅并转发,不做判断(ADR 0017)。凭据在转换那一步就抹掉。
+  const forwardEvent = reviewerEventStream(apiKey, (event) => send({ kind: "event", event }));
+
   session.subscribe((event) => {
+    forwardEvent(event);
     // 只数 report_finding 的失败。read 或 grep 出错是模型在探索仓库时的正常摩擦,
     // 把它们算进来会让"契约失配"这个信号失去意义。
     if (

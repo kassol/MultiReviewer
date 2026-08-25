@@ -4,8 +4,16 @@ import { injected } from "./injected.ts";
  * 面板 API 的唯一入口。基址从注入的前缀来,cookie 同源自动携带;带 body 的请求
  * 默认按 JSON 发。
  */
+/**
+ * 面板 API 的绝对路径。`EventSource` 只收一个 URL,进不了 `api()` 的封装,由这里给出
+ * 同一份基址——「API 装在哪个前缀下」仍然只写一次。
+ */
+export function apiUrl(path: string): string {
+  return `/${injected().prefix}/api${path}`;
+}
+
 export function api(path: string, init?: RequestInit): Promise<Response> {
-  return fetch(`/${injected().prefix}/api${path}`, {
+  return fetch(apiUrl(path), {
     ...init,
     headers: {
       ...(init?.body === undefined ? {} : { "content-type": "application/json" }),

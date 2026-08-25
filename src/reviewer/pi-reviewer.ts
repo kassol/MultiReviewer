@@ -8,6 +8,7 @@ import type {
   RawFinding,
   ReviewRange,
   Reviewer,
+  ReviewerEvent,
   ReviewerOutcome,
   ReviewerUsage,
 } from "../review/finding.ts";
@@ -41,8 +42,8 @@ export type PiReviewerConfig = {
 export function createPiReviewer(config: PiReviewerConfig): Reviewer {
   return {
     model: modelIdentity({ provider: config.runtimeModel.provider, model: config.runtimeModel.id }),
-    review: (range, worktreePath, history) =>
-      runInChild(WORKER_PATH, config, range, worktreePath, history),
+    review: (range, worktreePath, history, onEvent) =>
+      runInChild(WORKER_PATH, config, range, worktreePath, history, onEvent),
   };
 }
 
@@ -80,6 +81,8 @@ export function runInChild(
   worktreePath: string,
   /** 本审查阶段的历史 Finding(ADR 0016)。首轮没有历史,默认空。 */
   history: readonly HistoryFinding[] = [],
+  /** 子进程转发上来的过程事件的去处(issue #171)。不关心过程的调用方不传。 */
+  onEvent: (event: ReviewerEvent) => void = () => {},
 ): Promise<ReviewerOutcome> {
   return new Promise((resolve) => {
     // 对外一律用完整模型标识；运行字段来自这轮固定的模型服务版本。
@@ -126,7 +129,7 @@ export function runInChild(
       return;
     }
 
-    const finish = (failure: string | undefined): void => {
+    const finish = (failure: string | undefined, exitCode?: number): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -141,6 +144,8 @@ export function runInChild(
         rejectedToolCalls,
         anchorRejections,
         ...(failure === undefined ? {} : { failure }),
+        // 退出码只在失败时有意义,进轨迹的失败事件带上它(issue #171)。
+        ...(exitCode === undefined ? {} : { exitCode }),
         ...(usage === undefined ? {} : { usage }),
       });
     };
@@ -155,6 +160,10 @@ export function runInChild(
         const result = normalizeFinding(message.raw, identity);
         if (result.ok) findings.push(result.finding);
         else anomalies.push({ raw: result.raw, reason: result.reason });
+        return;
+      }
+      if (message.kind === "event") {
+        onEvent(message.event);
         return;
       }
       if (message.kind === "verdict") {
@@ -188,11 +197,12 @@ export function runInChild(
           signal === null
             ? `子进程未回报结果即退出,退出码 ${code}`
             : `子进程被信号 ${signal} 终止`,
+          code ?? undefined,
         );
         return;
       }
       if (code !== 0) {
-        finish(done.failure ?? `子进程退出码 ${code}`);
+        finish(done.failure ?? `子进程退出码 ${code}`, code ?? undefined);
         return;
       }
       finish(done.failure);

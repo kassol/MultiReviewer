@@ -41,6 +41,8 @@ export const HARNESS_PR: PullRequestRef = {
 export type PanelHarness = {
   /** 服务的根地址。未登录调用要自己发请求,不能走带 cookie 的 `api()`。 */
   serverUrl: string;
+  /** 登录之后的会话 cookie。`api()` 覆盖不到的请求(自定义请求头)自己拼时用它。 */
+  cookie: string;
   gitea: FakeGitea;
   /** 被审的真实仓库。范围审查的两端要从它取真的 commit sha。 */
   repo: RepoFixture;
@@ -132,6 +134,8 @@ export type PanelHarnessOptions = {
   discoverModelServiceModels?: WebhookServerDeps["discoverModelServiceModels"];
   /** 在 harness 的 Forge 外再包一层,用来让某个方法失败。省略即不包。 */
   wrapForge?: (forge: Forge) => Forge;
+  /** 审查轨迹 SSE 的心跳间隔,省略取服务默认值。 */
+  traceHeartbeatMs?: number;
 };
 
 export async function startPanelHarness(
@@ -263,6 +267,7 @@ export async function startPanelHarness(
     gitea: { baseUrl: gitea.url, token: "bot-pat" },
     ...(credentialMasterKey === undefined ? {} : { credentialMasterKey }),
     onDelivery: () => {},
+    ...(options.traceHeartbeatMs === undefined ? {} : { traceHeartbeatMs: options.traceHeartbeatMs }),
     ...(options.discoverModelServiceModels === undefined
       ? {}
       : { discoverModelServiceModels: options.discoverModelServiceModels }),
@@ -345,6 +350,7 @@ export async function startPanelHarness(
 
   return {
     serverUrl,
+    cookie,
     gitea,
     repo,
     memory: base,

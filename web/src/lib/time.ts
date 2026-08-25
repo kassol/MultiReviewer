@@ -18,6 +18,15 @@ export function localClock(iso: string): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+/**
+ * 「时:分:秒」。审查轨迹是全站唯一带秒的地方:一轮里几十条事件都落在同一两分钟内,
+ * 只到分钟会让整列时间戳读成一串相同的数。
+ */
+export function localSecond(iso: string): string {
+  const date = new Date(iso);
+  return `${localClock(iso)}:${pad(date.getSeconds())}`;
+}
+
 /** 「年-月-日 时:分」一整串。日期与时分同时要显示的地方用它。 */
 export function localMinute(iso: string): string {
   return `${localDay(iso)} ${localClock(iso)}`;

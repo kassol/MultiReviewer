@@ -2,6 +2,7 @@ import type {
   HistoryFinding,
   RawVerdict,
   ReviewRange,
+  ReviewerEvent,
   ReviewerUsage,
 } from "../review/finding.ts";
 import type { RawFinding } from "./normalize.ts";
@@ -31,6 +32,8 @@ export type ReviewerRequest = {
 export type WorkerMessage =
   | { kind: "finding"; raw: RawFinding }
   | { kind: "verdict"; raw: RawVerdict }
+  /** 一条过程事件,与 Finding 回传并列(issue #171)。子进程只转发,不做判断。 */
+  | { kind: "event"; event: ReviewerEvent }
   | {
       kind: "done";
       /** 被 Pi 校验拒绝的工具调用次数。不为零而 Finding 为零即契约失配。 */

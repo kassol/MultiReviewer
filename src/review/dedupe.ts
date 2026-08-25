@@ -18,6 +18,36 @@ export type FindingAttribution = {
 };
 
 /**
+ * 一组为什么被判成同一处:同一行,或相距几行且相似度多少。
+ *
+ * 它是 `sameSpot` 那两道判据的原样呈现,不另立口径——面板要解释合并,解释的必须是
+ * 真正做出这个决定的那两个数(issue #171 的用户故事 9)。
+ */
+export type MergeCriterion =
+  | { kind: "same_line" }
+  | { kind: "distance"; distance: number; similarity: number };
+
+/** 合并组里的一个成员:哪个 Reviewer 在哪一行说了什么。 */
+export type MergeMember = {
+  /** 报出它的 Reviewer 所绑定的模型标识。 */
+  model: string;
+  line: number;
+  title: string;
+};
+
+/**
+ * 一次合并的判据与成员(issue #171)。只有真的合并了(成员多于一条)的组才有。
+ *
+ * 一组可能由多次两两判定串起来,`criterion` 因此取其中最松的那条证据:全部由「同一行」
+ * 串起来才记 `same_line`,只要有一次靠行距容差并进来,就记那次里行距最大的一条。读的人
+ * 要能看到这组最弱的那道证据,而不是最强的。
+ */
+export type MergeEvidence = {
+  members: MergeMember[];
+  criterion: MergeCriterion;
+};
+
+/**
  * 同一处问题被多个 Reviewer 各自提出后合并的结果。它是 Finding Identity 在一轮里的
  * 呈现单位:一条 Finding 一条评论,归属记全部报出它的 Reviewer(ADR 0015)。
  */
@@ -35,6 +65,8 @@ export type MergedFinding = {
   suggestion: string;
   /** 每个模型各自的说法,按首报先后。 */
   attributions: FindingAttribution[];
+  /** 这一组为什么被合并(issue #171)。只有一个成员即没有合并过,这一项缺省。 */
+  merge?: MergeEvidence;
 };
 
 /**
@@ -121,11 +153,36 @@ export function sameContent(
  * 核对过的(见 `reviewer/anchor.ts`),同一行是「同一处」的硬证据,拿标题措辞去推翻
  * 它是用弱信号盖强信号。要防的是相邻而非同一行的那种误合并。
  */
-function isSameSpot(a: Finding, b: Finding): boolean {
+function sameSpot(a: Finding, b: Finding): MergeCriterion | undefined {
   const distance = Math.abs(a.line - b.line);
-  if (distance > LINE_TOLERANCE) return false;
-  if (distance === 0) return true;
-  return contentSimilarity(comparable(a), comparable(b)) >= SIMILARITY_THRESHOLD;
+  if (distance > LINE_TOLERANCE) return undefined;
+  if (distance === 0) return { kind: "same_line" };
+  const similarity = contentSimilarity(comparable(a), comparable(b));
+  if (similarity < SIMILARITY_THRESHOLD) return undefined;
+  return { kind: "distance", distance, similarity };
+}
+
+/** 一条 Finding 并进某个组时,组里与它最贴近的那条证据。并不进去即 undefined。 */
+function joinCriterion(group: readonly Finding[], finding: Finding): MergeCriterion | undefined {
+  let best: Extract<MergeCriterion, { kind: "distance" }> | undefined;
+  for (const member of group) {
+    const criterion = sameSpot(member, finding);
+    if (criterion === undefined) continue;
+    // 同一行是硬证据,遇到即定;其余取行距最近的那条。
+    if (criterion.kind === "same_line") return criterion;
+    if (best === undefined || criterion.distance < best.distance) best = criterion;
+  }
+  return best;
+}
+
+/** 一组的合并判据:全部由「同一行」串起来才是 same_line,否则取行距最大的那条。 */
+function groupCriterion(joins: readonly MergeCriterion[]): MergeCriterion {
+  let widest: Extract<MergeCriterion, { kind: "distance" }> | undefined;
+  for (const join of joins) {
+    if (join.kind !== "distance") continue;
+    if (widest === undefined || join.distance > widest.distance) widest = join;
+  }
+  return widest ?? { kind: "same_line" };
 }
 
 /** 数字大的先行。合并后的那条取组内最高优先级。 */
@@ -152,23 +209,32 @@ export function dedupeFindings(findings: readonly Finding[]): MergedFinding[] {
   const merged: MergedFinding[] = [];
   for (const [file, fileFindings] of byFile) {
     const sorted = [...fileFindings].sort((a, b) => a.line - b.line);
-    const groups: Finding[][] = [];
+    // `joins` 与 `members` 里第二条起的成员一一对应:每条并进来时凭的是哪道判据。
+    const groups: { members: Finding[]; joins: MergeCriterion[] }[] = [];
 
     for (const finding of sorted) {
       // 与组内任一条同处即并入,不只比组内最后一条。加了内容判据之后分组不再是行号
       // 区间:一条 Finding 可能与组里靠前的那条讲的是一回事,却与最后一条无关,只比
       // 最后一条会把它单独拆出去,同一个缺陷因此发两条评论。行距那一半仍是链式的
       // ——一串两两相近的 Finding 应当聚成一组。
-      const group = groups.find((g) => g.some((member) => isSameSpot(member, finding)));
-      if (group === undefined) groups.push([finding]);
-      else group.push(finding);
+      let joined = false;
+      for (const group of groups) {
+        const criterion = joinCriterion(group.members, finding);
+        if (criterion === undefined) continue;
+        group.members.push(finding);
+        group.joins.push(criterion);
+        joined = true;
+        break;
+      }
+      if (!joined) groups.push({ members: [finding], joins: [] });
     }
 
     for (const group of groups) {
       merged.push(
         mergeGroup(
           file,
-          [...group].sort((a, b) => reportOrder.get(a)! - reportOrder.get(b)!),
+          [...group.members].sort((a, b) => reportOrder.get(a)! - reportOrder.get(b)!),
+          group.joins,
         ),
       );
     }
@@ -178,7 +244,11 @@ export function dedupeFindings(findings: readonly Finding[]): MergedFinding[] {
 }
 
 /** 按首报先后排好的一组 Finding 合成一条。 */
-function mergeGroup(file: string, group: readonly Finding[]): MergedFinding {
+function mergeGroup(
+  file: string,
+  group: readonly Finding[],
+  joins: readonly MergeCriterion[],
+): MergedFinding {
   const leading = [...group].sort(
     (a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity],
   )[0]!;
@@ -216,5 +286,18 @@ function mergeGroup(file: string, group: readonly Finding[]): MergedFinding {
     impact: leading.impact,
     suggestion: leading.suggestion,
     attributions,
+    // 只有一个成员的组没有合并过,不产生合并事件(issue #171 的用户故事 10)。
+    ...(group.length === 1
+      ? {}
+      : {
+          merge: {
+            members: group.map((finding) => ({
+              model: finding.model,
+              line: finding.line,
+              title: finding.title,
+            })),
+            criterion: groupCriterion(joins),
+          },
+        }),
   };
 }

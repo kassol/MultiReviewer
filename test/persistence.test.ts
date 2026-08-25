@@ -768,6 +768,41 @@ test("升级前的 finding 补 title 列,历史注入时旧行的标题为空", 
   assert.deepEqual(history.map((entry) => entry.title), [""]);
 });
 
+test("升级前建的数据库:轨迹表补出来,历史轮次的轨迹是空列表而不是报错", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  // 升级前的库里根本没有 review_trace 这张表。新表走 CREATE TABLE IF NOT EXISTS,
+  // 打开时补出来即可;补不出来,那一轮的 /trace 会直接抛。
+  const old = new DatabaseSync(db.path);
+  old.exec(LEGACY_SCHEMA);
+  const runId = Number(
+    old
+      .prepare(
+        `INSERT INTO review_run
+           (owner, repo, pull_number, head_sha, started_at, changed_files, changed_lines, batch_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run("acme", "widgets", 7, "old-sha", "2026-08-01T00:00:00.000Z", 1, 2, 1).lastInsertRowid,
+  );
+  old.exec("PRAGMA user_version = 1");
+  old.close();
+
+  const store = openStore(db.path);
+  try {
+    assert.deepEqual(store.listTrace(runId), [], "那时候还不记过程,空列表不是错误");
+    // 补出来的表照常能写:升级之后跑的那一轮从序号 1 起。
+    const appended = store.appendTrace(runId, {
+      scope: "run",
+      kind: "worktree_ready",
+      payload: { baseSha: "a", headSha: "b" },
+    });
+    assert.equal(appended.seq, 1);
+    assert.deepEqual(store.listTrace(runId), [appended]);
+  } finally {
+    store.close();
+  }
+});
+
 test("升级前落的 finding 行读得出来,评论 id 与链接为空", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);

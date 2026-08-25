@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
+import type { ReviewerEvent } from "../src/review/finding.ts";
 import { runInChild } from "../src/reviewer/pi-reviewer.ts";
 
 const cleanups: (() => void)[] = [];
@@ -59,6 +60,66 @@ const RAW = {
   category: "logic_error",
   description: "越界",
 };
+
+test("子进程转发的过程事件经 IPC 逐条交给编排层", async () => {
+  const path = worker(`
+process.on("message", () => {
+  process.send({ kind: "event", event: { kind: "assistant_message", text: "先读一遍" } });
+  process.send({
+    kind: "event",
+    event: {
+      kind: "tool_call",
+      tool: "read",
+      args: { path: "src/a.ts" },
+      durationMs: 12,
+      isError: false,
+      error: null,
+      resultLength: 40,
+    },
+  });
+  process.send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0 });
+  process.exit(0);
+});
+`);
+
+  const events: ReviewerEvent[] = [];
+  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [], (event) =>
+    events.push(event),
+  );
+
+  assert.equal(outcome.failure, undefined);
+  assert.deepEqual(events, [
+    { kind: "assistant_message", text: "先读一遍" },
+    {
+      kind: "tool_call",
+      tool: "read",
+      args: { path: "src/a.ts" },
+      durationMs: 12,
+      isError: false,
+      error: null,
+      resultLength: 40,
+    },
+  ]);
+});
+
+test("子进程未回报即崩溃:退出码带回来,给失败事件用", async () => {
+  const path = worker(`
+process.on("message", () => {
+  process.send({ kind: "event", event: { kind: "assistant_message", text: "崩之前说的" } });
+  process.exit(7);
+});
+`);
+
+  const events: ReviewerEvent[] = [];
+  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [], (event) =>
+    events.push(event),
+  );
+
+  assert.match(outcome.failure ?? "", /退出码 7/);
+  assert.equal(outcome.exitCode, 7);
+  // 崩溃前转发上来的那条仍然作数:失败也要能追溯。
+  assert.deepEqual(events, [{ kind: "assistant_message", text: "崩之前说的" }]);
+});
 
 test("正常回报的条目被归一化并附上模型标识", async () => {
   const path = worker(`

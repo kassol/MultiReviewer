@@ -155,6 +155,12 @@ export type ReviewerOutcome = {
   anchorRejections: number;
   /** 有值即该 Reviewer 失败,其 findings 不代表"代码没问题"。 */
   failure?: string;
+  /**
+   * 子进程的退出码。只有真实子进程跑完一批且退出码非零时才有,进轨迹的失败事件带上它
+   * (issue #171)。分批执行时合并出来的失败原因来自多批,单个退出码说不清是哪一批,
+   * 那一档不带。
+   */
+  exitCode?: number;
   /** 子进程未回报结果即退出时取不到用量。 */
   usage?: ReviewerUsage;
   /**
@@ -173,16 +179,43 @@ export type ReviewerOutcome = {
   verdicts?: readonly FindingVerdict[];
 };
 
+/**
+ * Reviewer 执行过程中发出的一条事件,进这一轮的审查轨迹(CONTEXT.md 审查轨迹,
+ * issue #171)。两档都由子进程订阅 Pi 的会话事件转发而来,编排层只落库与广播。
+ *
+ * 事件正文不设长度上限;工具返回的内容只记长度,不记正文(ADR 0017)。
+ */
+export type ReviewerEvent =
+  /** 模型说完的一整段话。按 Pi 的 `message_end` 记,不记流式增量。 */
+  | { kind: "assistant_message"; text: string }
+  /** 一次工具调用跑完。按 Pi 的 `tool_execution_end` 记一条。 */
+  | {
+      kind: "tool_call";
+      tool: string;
+      /** 模型给的参数,原样转成 JSON。 */
+      args: unknown;
+      durationMs: number;
+      /** 真即这次调用被拒或抛错,`error` 是原因。 */
+      isError: boolean;
+      error: string | null;
+      /** 返回的文本内容有多长。正文本身不进轨迹。 */
+      resultLength: number;
+    };
+
 /** 绑定了具体模型的审查执行体。 */
 export interface Reviewer {
   readonly model: string;
   /**
    * `history` 是本审查阶段已经报过的 Finding(ADR 0016),每一批都给同一份:它说的是
    * 这个阶段的历史,与本批审哪些文件无关。首轮为空数组。
+   *
+   * `onEvent` 收这个 Reviewer 的过程事件(issue #171),编排层一定传,一条即写一条轨迹。
+   * 声明成可选是给直接调 `review` 的调用方留的余地:不看过程的地方不必造一个空回调。
    */
   review(
     range: ReviewRange,
     worktreePath: string,
     history: readonly HistoryFinding[],
+    onEvent?: (event: ReviewerEvent) => void,
   ): Promise<ReviewerOutcome>;
 }
