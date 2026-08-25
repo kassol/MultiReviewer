@@ -228,3 +228,54 @@ test("diff API:远端 ref 已删且 gc 跑过之后,历史轮次的 diff 仍打�
     ["src/answer.ts", "src/other.ts"],
   );
 });
+
+/**
+ * 详情页打开一轮时按文件并发取 patch(issue #181)。同一轮的准备工作——库里的两端、
+ * Forge 上的仓库与 pull request、本地副本上的两端解析——对这几十个请求是同一份;各做
+ * 一遍就是几十次 Forge 往返加上百个 git 子进程,同一进程里排在后面的请求(含审查轨迹
+ * 的 SSE 握手)只能等这批活干完。
+ */
+test("diff API:同一轮的并发文件请求共用一次准备,不按请求数放大 Forge 往返", async () => {
+  const h = await harnessWithRun();
+
+  // 一轮改到 20 个文件:面板默认展开有 Finding 的那些,大范围一次就是这个量级。
+  const paths = Array.from({ length: 20 }, (_, index) => `src/mod${index}.ts`);
+  const headSha = h.repo.pushToHead(
+    Object.fromEntries(paths.map((path, index) => [path, `export const v = ${index};\n`])),
+  );
+  const store = openStore(h.db.path);
+  const runId = store.startRun({
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    pullNumber: HARNESS_PR.number,
+    headSha,
+    startedAt: "2026-08-25T00:00:00.000Z",
+    changedFiles: paths.length,
+    changedLines: paths.length,
+    batchCount: 1,
+    reviewerPins: [],
+  });
+  store.close();
+
+  // 详情页打开的一整套请求:先文件列表,再按文件取 patch。
+  const dispatchedBefore = h.dispatched.length;
+  const listed = await h.api("GET", `/runs/${runId}/diff`);
+  assert.equal(listed.status, 200);
+  const files = ((await listed.json()) as DiffFiles).files.map((file) => file.path);
+  for (const path of paths) assert.ok(files.includes(path), `文件列表里没有 ${path}`);
+
+  const responses = await Promise.all(
+    paths.map((path) => h.api("GET", `/runs/${runId}/diff?file=${encodeURIComponent(path)}`)),
+  );
+
+  // 合并的是准备,不是结果:每个请求仍旧只拿到自己那个文件的 patch。
+  for (const [index, response] of responses.entries()) {
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as DiffPatch;
+    assert.equal(body.path, paths[index]);
+    assert.match(body.patch, new RegExp(`^\\+\\+\\+ b/src/mod${index}\\.ts$`, "m"));
+  }
+
+  // 21 个请求只读一次 pull request——修复前是一个请求读一次。
+  assert.equal(h.dispatched.length - dispatchedBefore, 1);
+});
