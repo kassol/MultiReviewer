@@ -13,7 +13,11 @@ import { reviewerEventStream } from "../src/reviewer/trace-events.ts";
 const CREDENTIAL = "sk-live-trace-credential";
 
 /** 收下转出来的事件,并给一个可控的时钟——耗时要断言得出确定值。 */
-function collector(credential: string | undefined = CREDENTIAL): {
+function collector(
+  credential: string | undefined = CREDENTIAL,
+  /** 哪几次调用是锚定打回的,与 worker 里那份名单同一个语义(issue #187)。 */
+  anchorRejected: (toolCallId: string) => boolean = () => false,
+): {
   events: ReviewerEvent[];
   observe: ReturnType<typeof reviewerEventStream>;
   tick(ms: number): void;
@@ -22,7 +26,12 @@ function collector(credential: string | undefined = CREDENTIAL): {
   let clock = 1000;
   return {
     events,
-    observe: reviewerEventStream(credential, (event) => events.push(event), () => clock),
+    observe: reviewerEventStream(
+      credential,
+      (event) => events.push(event),
+      () => clock,
+      anchorRejected,
+    ),
     tick: (ms) => {
       clock += ms;
     },
@@ -133,6 +142,67 @@ test("被拒的工具调用带原因,原因就是返回的那段文本", () => {
   assert.equal(event.isError, true);
   assert.equal(event.error, "severity: expected one of P0, P1, P2");
   assert.deepEqual(event.args, { file: "src/db.js", severity: "critical" });
+});
+
+test("锚定打回的复核调用按被拒记入轨迹,原因是打回的措辞", () => {
+  // 打回走正常工具返回,Pi 因此报 isError=false;名单里那几次由这一层标出来。
+  const { events, observe } = collector(CREDENTIAL, (id) => id === "call-7");
+  observe({
+    type: "tool_execution_start",
+    toolCallId: "call-7",
+    toolName: "review_prior_finding",
+    args: { id: 12, verdict: "present", line: 88, snippet: "return history.slice(count);" },
+  });
+  observe({
+    type: "tool_execution_end",
+    toolCallId: "call-7",
+    toolName: "review_prior_finding",
+    result: {
+      content: [
+        { type: "text", text: "verdict recorded, new line NOT recorded: 第 88 行的内容对不上。" },
+      ],
+    },
+    isError: false,
+  });
+
+  const event = events[0]!;
+  assert.equal(event.kind, "tool_call");
+  if (event.kind !== "tool_call") return;
+  assert.equal(event.isError, true);
+  assert.equal(
+    event.error,
+    "verdict recorded, new line NOT recorded: 第 88 行的内容对不上。",
+  );
+  // 是哪条历史 Finding、模型给的行号是多少,都在参数里,不另加字段。
+  assert.deepEqual(event.args, {
+    id: 12,
+    verdict: "present",
+    line: 88,
+    snippet: "return history.slice(count);",
+  });
+});
+
+test("锚得上的复核调用不算被拒", () => {
+  const { events, observe } = collector(CREDENTIAL, (id) => id === "call-7");
+  observe({
+    type: "tool_execution_start",
+    toolCallId: "call-8",
+    toolName: "review_prior_finding",
+    args: { id: 12, verdict: "present", line: 88 },
+  });
+  observe({
+    type: "tool_execution_end",
+    toolCallId: "call-8",
+    toolName: "review_prior_finding",
+    result: { content: [{ type: "text", text: "recorded" }] },
+    isError: false,
+  });
+
+  const event = events[0]!;
+  assert.equal(event.kind, "tool_call");
+  if (event.kind !== "tool_call") return;
+  assert.equal(event.isError, false);
+  assert.equal(event.error, null);
 });
 
 test("凭据不出现在任何事件正文里:说的话、工具参数、被拒的原因都抹掉", () => {

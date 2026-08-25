@@ -18,7 +18,7 @@ import {
 import { Type } from "typebox";
 
 import type { HistoryFinding, RawFinding } from "../review/finding.ts";
-import { anchorFinding, anchorReport } from "./anchor.ts";
+import { anchorReport, anchorVerdict } from "./anchor.ts";
 import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, redactModelCredential } from "./env.ts";
 import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
 import { numberedRead } from "./numbered-read.ts";
@@ -196,21 +196,26 @@ function fileLines(worktreePath: string, file: string): string[] | undefined {
 
 async function run(request: ReviewerRequest): Promise<void> {
   let rejectedToolCalls = 0;
-  let anchorRejections = 0;
+  /**
+   * 锚定打回的那几次调用,按 toolCallId 记(issue #187)。它同时是两样东西:收尾事件
+   * 的「锚定被拒」就是它的大小,轨迹据它把这几次标成被拒。两条打回路径
+   * (`report_finding` 与 `review_prior_finding`)记同一份,口径因此只有一个。
+   */
+  const anchorRejectedCalls = new Set<string>();
 
   const reportFinding = defineTool({
     name: REPORT_FINDING_TOOL,
     label: "Report Finding",
     description: "Report one problem found in the code under review.",
     parameters: findingSchema,
-    execute: async (_id, params) => {
+    execute: async (id, params) => {
       const raw = params as RawFinding;
       const result = anchorReport(fileLines(request.worktreePath, raw.file), raw);
       if (!result.ok) {
         // 打回走正常返回而非工具错误:rejectedToolCalls 只统计 Pi 的 schema 校验
         // 失败,即"契约失配"信号,锚定失败是另一回事,混进去信号就没了。因此另记
         // 一个数——模型不重报时这条 Finding 就静默消失了,没有它谁都不知道丢过。
-        anchorRejections += 1;
+        anchorRejectedCalls.add(id);
         return { content: [{ type: "text", text: result.message }], details: {} };
       }
       send({ kind: "finding", raw: { ...raw, line: result.line } });
@@ -225,7 +230,7 @@ async function run(request: ReviewerRequest): Promise<void> {
     description:
       "Give your verdict on one finding reported earlier in this review stage: is it still present, fixed, or can you not tell? When it is still present but its code was rewritten or moved, give the line and snippet of the place it sits now instead of reporting it again.",
     parameters: verdictSchema,
-    execute: async (_id, params) => {
+    execute: async (id, params) => {
       const raw = params as { id: number; verdict: string; line?: number; snippet?: string };
       // 编出来的 id 对不到任何历史条目,打回让模型改用列表里的那个:静默收下会让
       // 一条真实的历史 Finding 少一个结论,而模型自己不会知道。
@@ -248,22 +253,18 @@ async function run(request: ReviewerRequest): Promise<void> {
       // 新位置与 report_finding 的行号同一道核对(issue #170):模型数行会数偏,抄下来的
       // 代码不会。锚不上只丢这个位置,结论本身照收——「这个问题还在」是模型给的证据,
       // 不该因为它把行号抄错而一起作废。
-      const lines = fileLines(request.worktreePath, entry.file);
-      const anchored =
-        lines === undefined
-          ? { ok: false as const, reason: `读不出 ${entry.file}。` }
-          : anchorFinding(lines, raw.line, raw.snippet ?? "");
+      const anchored = anchorVerdict(fileLines(request.worktreePath, entry.file), {
+        file: entry.file,
+        line: raw.line,
+        snippet: raw.snippet,
+      });
       if (!anchored.ok) {
         send({ kind: "verdict", raw: { id: raw.id, verdict: raw.verdict } });
-        return {
-          content: [
-            {
-              type: "text",
-              text: `verdict recorded, new line NOT recorded: ${anchored.reason} Re-read ${entry.file} and call again with the line number copied from the read output.`,
-            },
-          ],
-          details: {},
-        };
+        // 与 report_finding 的锚定失败同一口径(issue #187):记进「锚定被拒」,轨迹里
+        // 留一条被拒记录。不记的话模型一直把新位置抄错时,延续一直触发不了,而线上
+        // 看起来像模型根本没给过位置。
+        anchorRejectedCalls.add(id);
+        return { content: [{ type: "text", text: anchored.message }], details: {} };
       }
       send({ kind: "verdict", raw: { id: raw.id, verdict: raw.verdict, line: anchored.line } });
       return { content: [{ type: "text", text: "recorded" }], details: {} };
@@ -357,8 +358,14 @@ async function run(request: ReviewerRequest): Promise<void> {
     settingsManager,
   });
 
-  // 审查轨迹只订阅并转发,不做判断(ADR 0017)。凭据在转换那一步就抹掉。
-  const forwardEvent = reviewerEventStream(apiKey, (event) => send({ kind: "event", event }));
+  // 审查轨迹只订阅并转发,不做判断(ADR 0017)。凭据在转换那一步就抹掉;锚不上是本进程
+  // 自己的判定,按 toolCallId 交下去,由转换那一层标成被拒(issue #187)。
+  const forwardEvent = reviewerEventStream(
+    apiKey,
+    (event) => send({ kind: "event", event }),
+    Date.now,
+    (toolCallId) => anchorRejectedCalls.has(toolCallId),
+  );
 
   session.subscribe((event) => {
     forwardEvent(event);
@@ -407,7 +414,7 @@ async function run(request: ReviewerRequest): Promise<void> {
   send({
     kind: "done",
     rejectedToolCalls,
-    anchorRejections,
+    anchorRejections: anchorRejectedCalls.size,
     usage,
     ...(failure === undefined ? {} : { failure }),
   });

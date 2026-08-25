@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { anchorVerdict } from "../src/reviewer/anchor.ts";
 import { normalizeFinding, normalizeVerdict } from "../src/reviewer/normalize.ts";
 import { redactModelCredential, reviewerEnv } from "../src/reviewer/env.ts";
 
@@ -98,6 +99,57 @@ test("复核结论的新位置只留在「仍在」这一档", () => {
       verdict: "present",
     });
   }
+});
+
+const PRIOR_LINES = [
+  "export function recent(count) {",
+  "  return history.slice(-count);",
+  "}",
+];
+
+test("复核结论的新位置锚得上时不打回,给出校正后的行号", () => {
+  // 模型报的行号偏了一行,snippet 抄得对,与 report_finding 同一道校正。
+  assert.deepEqual(
+    anchorVerdict(PRIOR_LINES, {
+      file: "src/history.ts",
+      line: 3,
+      snippet: "return history.slice(-count);",
+    }),
+    { ok: true, line: 2 },
+  );
+});
+
+test("复核结论的新位置锚不上时打回,措辞点名文件并要求重给行号", () => {
+  const result = anchorVerdict(PRIOR_LINES, {
+    file: "src/history.ts",
+    line: 2,
+    snippet: "return history.slice(count);",
+  });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  // 结论照收写在措辞里:打回的只是这个位置。
+  assert.match(result.message, /verdict recorded, new line NOT recorded/);
+  assert.match(result.message, /src\/history\.ts/);
+});
+
+test("复核结论带位置但文件读不出来时同样打回", () => {
+  const result = anchorVerdict(undefined, {
+    file: "src/gone.ts",
+    line: 2,
+    snippet: "return history.slice(-count);",
+  });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.match(result.message, /src\/gone\.ts/);
+});
+
+test("复核结论没抄 snippet 时打回,不拿裸行号当位置", () => {
+  const result = anchorVerdict(PRIOR_LINES, {
+    file: "src/history.ts",
+    line: 2,
+    snippet: undefined,
+  });
+  assert.equal(result.ok, false);
 });
 
 test("子进程只拿到自家厂商的凭据,拿不到 forge 凭据与其他厂商凭据", () => {

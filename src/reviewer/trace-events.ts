@@ -56,6 +56,12 @@ export function reviewerEventStream(
   credential: string | undefined,
   emit: (event: ReviewerEvent) => void,
   now: () => number = Date.now,
+  /**
+   * 这次调用是不是锚定打回的(issue #187)。打回走正常工具返回而非工具错误,Pi 因此报
+   * `isError=false`;不在这里标出来的话,一次被丢掉位置的调用在面板上与一次正常调用
+   * 长得一模一样。判断仍在 worker 那边,这一层只按名单标记。
+   */
+  anchorRejected: (toolCallId: string) => boolean = () => false,
 ): (event: PiSessionEvent) => void {
   const pending = new Map<string, PendingCall>();
 
@@ -87,15 +93,14 @@ export function reviewerEventStream(
     // 要回答的问题。被拒时那段文本就是原因,照记——它说明契约在哪一步没对上。
     const content = textBlocks((ended.result as { content?: unknown } | null)?.content);
     const resultLength = content.reduce((sum, text) => sum + text.length, 0);
+    const isError = ended.isError || anchorRejected(ended.toolCallId);
     emit({
       kind: "tool_call",
       tool: ended.toolName,
       args: redactedJson(call?.args, credential),
       durationMs: call === undefined ? 0 : now() - call.startedAt,
-      isError: ended.isError,
-      error: ended.isError
-        ? redactModelCredential(content.join("\n"), credential)
-        : null,
+      isError,
+      error: isError ? redactModelCredential(content.join("\n"), credential) : null,
       resultLength,
     });
   };

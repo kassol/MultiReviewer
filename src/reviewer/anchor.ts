@@ -72,3 +72,32 @@ export function anchorReport(
   }
   return { ok: true, line: anchored.line };
 }
+
+export type VerdictResult =
+  | { ok: true; line: number }
+  | { ok: false; message: string };
+
+/**
+ * `review_prior_finding` 带新位置那一次调用的锚定判定,`message` 是打回时给模型的措辞。
+ *
+ * 与 `anchorReport` 同一道核对,区别只在打回的范围:结论本身照收,打回丢掉的只是这个
+ * 新位置。打回同样是"模型报的位置不可信",调用方与 `report_finding` 记同一个数
+ * (issue #187)——模型一直把新位置抄错时,延续一直触发不了,线上看起来却像模型
+ * 根本没给过位置。
+ */
+export function anchorVerdict(
+  lines: string[] | undefined,
+  raw: { file: string; line: number; snippet: string | undefined },
+): VerdictResult {
+  const anchored =
+    lines === undefined
+      ? { ok: false as const, reason: `读不出 ${raw.file}。` }
+      : anchorFinding(lines, raw.line, raw.snippet ?? "");
+  if (!anchored.ok) {
+    return {
+      ok: false,
+      message: `verdict recorded, new line NOT recorded: ${anchored.reason} Re-read ${raw.file} and call again with the line number copied from the read output.`,
+    };
+  }
+  return { ok: true, line: anchored.line };
+}
