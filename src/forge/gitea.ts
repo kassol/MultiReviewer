@@ -10,6 +10,7 @@ import type {
   PullRequestRef,
   Reaction,
   RepoRef,
+  Repository,
   ReviewDraft,
 } from "./forge.ts";
 
@@ -127,6 +128,20 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
   const repoPath = (ref: RepoRef): string => `/repos/${ref.owner}/${ref.repo}`;
 
   return {
+    async getRepository(ref: RepoRef): Promise<Repository> {
+      // `GET /repos/{owner}/{repo}`,`routers/api/v1/api.go` 的 `/repos/{username}/{reponame}`
+      // 组上 `m.Combo("").Get(reqAnyRepoReader(), repo.Get)`,见 `routers/api/v1/repo/repo.go`
+      // 的 `Get`(swagger `repoGet`)。响应是 `modules/structs/repo.go:50` 的 `Repository`,
+      // clone 地址在 `CloneURL string json:"clone_url"` 上——与 PR 那条路读的
+      // `base.repo.clone_url` 是同一个字段。
+      const repository = await requestJson<{ clone_url: string }>(
+        options,
+        "GET",
+        repoPath(ref),
+      );
+      return { cloneUrl: repository.clone_url };
+    },
+
     async getPullRequest(ref: PullRequestRef): Promise<PullRequest> {
       // `modules/structs/pull.go` 的 `PullRequest`:`Index int64 json:"number"`、
       // `Draft bool json:"draft"`、`Base/Head *PRBranchInfo`;`PRBranchInfo` 的

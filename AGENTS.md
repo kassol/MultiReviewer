@@ -100,7 +100,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 - **HTTPS 是门禁的前提,不是可选项。**会话 cookie 带 `Secure`,明文 HTTP 下浏览器根本不发它;`MULTIREVIEWER_BASE_URL` 是明文 http 且非 localhost 时服务直接拒绝启动(localhost 放行,浏览器把它当安全上下文)。本服务自己不终止 TLS,证书与 https 由外部反代负责,归部署方。
 - **面板前缀不是安全边界。**未认证的 API 请求一律 401,端点存在与否都一样,前缀只是路由匹配的第一段。它挡的是「面板地址被爬到」,挡不住知道地址的人;真正的门禁是用户账号与会话 cookie。前缀轮换只会让旧的 `Path` 限定 cookie 失配,不构成额外保护。
 
-账号是本服务自己管理的本地账号,不复用 Gitea、GitHub 或其他身份源。系统管理员在访问控制页建用户、重置密码、删用户,并创建自定义角色;每个普通用户挂一个角色,角色由 8 个权限格组成(`repo:read` / `repo:write` / `review:read` / `review:rerun` / `model:read` / `model:write` / `credential:read` / `credential:write`)。三类写权限各自包含同资源的读权限,`review:rerun` 不包含 `review:read`;角色矩阵会把被包含的读权限显示为随写生效。系统管理员不是角色且始终全权限。口令强度在注册、自改密码与管理员重置三条路径上都**不设下限**;服务唯一兜底是失败后的登录闸门最多退避 30 秒,并在撞上闸门时留一行含账号、源 IP 与失败次数的日志。部署方若有强度要求,必须在组织流程或外围身份治理中另行约束;服务不会替部署方判定弱口令。
+账号是本服务自己管理的本地账号,不复用 Gitea、GitHub 或其他身份源。系统管理员在访问控制页建用户、重置密码、删用户,并创建自定义角色;每个普通用户挂一个角色,角色由 9 个权限格组成(`repo:read` / `repo:write` / `review:read` / `review:rerun` / `review:create` / `model:read` / `model:write` / `credential:read` / `credential:write`)。三类写权限各自包含同资源的读权限,`review:rerun` 与 `review:create` 都不包含 `review:read`;新增权限格不会自动落到已有角色上,升级不扩权;角色矩阵会把被包含的读权限显示为随写生效。系统管理员不是角色且始终全权限。口令强度在注册、自改密码与管理员重置三条路径上都**不设下限**;服务唯一兜底是失败后的登录闸门最多退避 30 秒,并在撞上闸门时留一行含账号、源 IP 与失败次数的日志。部署方若有强度要求,必须在组织流程或外围身份治理中另行约束;服务不会替部署方判定弱口令。
 
 ### Gitea 的准备步骤
 
@@ -151,6 +151,8 @@ Issue 与 spec 存放于本仓库的 GitHub Issues,通过 `gh` CLI 读写。见 
 Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.md`。
 
 ## 变更日志
+
+- 2026-08-25: 落地 issue #155。**直推默认分支的代码现在也能审了**:在面板的新页面「范围审查」选一个已注册仓库、填 base commit 与比较项就能发起,不要求仓库里存在 pull request。MultiReviewer 在 Gitea 上自建两条 `multireviewer/` 前缀的分支与一个永不合并的容器 PR 承载 Finding(ADR 0012),随即跑第一轮 Review Run;容器 PR 自己产生的 webhook 投递按分支前缀丢弃,不会多跑一轮。比较项必须是 base 的后代,判定在本地 clone 上做,填错当场拒绝且一条分支都不留;任一 Forge 步骤失败会记下原因并把已建的分支删掉。同一仓库同一 base 已有进行中的只提醒,确认后仍可再开一个。新增权限格 `review:create`,不自动落到已有角色。评审记录里的轮次标出来源(PR / 范围审查)。推进比较项、审查完成与面板处置分别是 issue #157 / #156 / #158。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 
 - 2026-08-25: 落地 issue #154。Forge 获得容器 PR 需要的写能力:从 commit sha 建分支、删分支、建 pull request、关闭 pull request,只做 Gitea 实现(ADR 0014);把分支推到指定 commit 走本地 clone 的 `git push --force`。容器 PR 的生命周期本身还没接上,见 issue #155。细节见 `src/AGENTS.md`。
 

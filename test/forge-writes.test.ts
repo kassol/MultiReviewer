@@ -100,10 +100,11 @@ test("内存 Forge 记下建分支、删分支、建 PR 与关 PR 四类调用",
   assert.deepEqual(forge.deletedBranches, [BRANCH]);
 });
 
-test("GitHub 实现对四个写方法抛未实现", async () => {
+test("GitHub 实现对范围审查新增的方法抛未实现", async () => {
   const forge = createGitHubForge({ auth: { kind: "token", token: "unused" } });
 
   // 封存期间不为 GitHub 补新能力(ADR 0014):调到就当场报错,不静默什么都不做。
+  await assert.rejects(() => forge.getRepository(REF), /未实现/);
   await assert.rejects(() => forge.createBranch(REF, BRANCH, "a".repeat(40)), /未实现/);
   await assert.rejects(() => forge.deleteBranch(REF, BRANCH), /未实现/);
   await assert.rejects(

@@ -22,6 +22,7 @@ import type {
   TrustedModelFieldSources,
 } from "../reviewer/model-service-runtime.ts";
 import type { Category, Disposition, ReviewerUsage, Severity } from "./finding.ts";
+import { containerBranches, type RangeReviewState } from "./range-review.ts";
 
 export const STORE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS review_run (
@@ -30,6 +31,9 @@ CREATE TABLE IF NOT EXISTS review_run (
   repo TEXT NOT NULL,
   pull_number INTEGER NOT NULL,
   head_sha TEXT NOT NULL,
+  -- 这一轮属于哪个范围审查(ADR 0012)。PR 触发的为 NULL;范围审查那一档的
+  -- pull_number 是它的容器 PR。
+  range_review_id INTEGER,
   -- pull request 的状态,closed 回填写上,NULL 即尚未见到关闭。unknown 的 finding
   -- 只在已关闭的 PR 上进统计分母(ADR 0006)。
   pr_state TEXT,
@@ -115,6 +119,30 @@ CREATE INDEX IF NOT EXISTS finding_by_run ON finding(run_id);
 -- 聚合,时间窗过滤在聚合之后,建不出能用上的索引。
 CREATE INDEX IF NOT EXISTS finding_by_anchor ON finding(file, fingerprint);
 CREATE INDEX IF NOT EXISTS review_run_by_pr ON review_run(owner, repo, pull_number);
+
+-- 范围审查(ADR 0012):人在面板发起的一个阶段性审查,不依赖任何既有 pull request。
+-- 不按 base 去重,每次发起都是新的一条;同一仓库同一 base 已有进行中的只提醒。
+-- 两条分支名由 id 推出,仍然落库——清理与展示要读同一份事实,而不是各自再推一次。
+-- 不引用 repo(id):仓库移除后评审记录只写不清,范围审查同理。
+CREATE TABLE IF NOT EXISTS range_review (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id INTEGER NOT NULL,
+  owner TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  base_sha TEXT NOT NULL,
+  comparison_sha TEXT NOT NULL,
+  state TEXT NOT NULL,
+  container_pull_number INTEGER,
+  base_branch TEXT NOT NULL,
+  head_branch TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  completed_by TEXT,
+  completed_at TEXT,
+  -- 最近一次 Forge 操作的失败原因。是权限还是分支保护,只有这一行能说明。
+  last_forge_failure TEXT
+);
+CREATE INDEX IF NOT EXISTS range_review_by_base ON range_review(owner, repo, base_sha);
 
 CREATE TABLE IF NOT EXISTS webhook_delivery (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -319,6 +347,17 @@ const ADD_COLUMNS = [
   "ALTER TABLE model_directory_model ADD COLUMN field_sources_json TEXT",
   "ALTER TABLE finding ADD COLUMN comment_id TEXT",
   "ALTER TABLE finding ADD COLUMN comment_html_url TEXT",
+  "ALTER TABLE review_run ADD COLUMN range_review_id INTEGER",
+];
+
+/**
+ * 建在 `ADD_COLUMNS` 补出来的列上的索引。
+ *
+ * 不能放进 `STORE_SCHEMA`:升级前建的表里那一列还不存在,而 `CREATE TABLE IF NOT
+ * EXISTS` 不会补,建索引会当场报「no such column」。补列之后再建就都有了。
+ */
+const ADD_INDEXES = [
+  "CREATE INDEX IF NOT EXISTS review_run_by_range ON review_run(range_review_id)",
 ];
 
 
@@ -353,6 +392,8 @@ export type RunMeta = {
   headSha: string;
   /** 手动重跑的调用者用户名快照;省略或 null 即投递触发。 */
   triggeredBy?: string | null;
+  /** 这一轮归属的范围审查;省略或 null 即 PR 触发(ADR 0012)。 */
+  rangeReviewId?: number | null;
   startedAt: string;
   /** 预估规模:本次 Review Range 覆盖的文件数。 */
   changedFiles: number;
@@ -694,6 +735,8 @@ export type RunListItem = {
   finishedAt: string | null;
   /** 手动重跑的调用者用户名快照;null 即投递触发。 */
   triggeredBy: string | null;
+  /** 这一轮归属的范围审查;null 即 PR 触发。时间流据此区分两类来源。 */
+  rangeReviewId: number | null;
   failed: boolean;
   models: {
     model: string;
@@ -718,6 +761,29 @@ export type RunListItem = {
   }[];
   resolved: number;
   total: number;
+};
+
+/**
+ * 一个范围审查。分支名与容器 PR 序号是它在 Forge 上的全部痕迹;`lastForgeFailure`
+ * 记最近一次 Forge 操作为什么没成,运维凭它分辨是权限还是分支保护。
+ */
+export type RangeReviewRecord = {
+  id: number;
+  repoId: number;
+  owner: string;
+  repo: string;
+  baseSha: string;
+  comparisonSha: string;
+  state: RangeReviewState;
+  /** 容器 PR 的序号;建出来之前为 null。 */
+  containerPullNumber: number | null;
+  baseBranch: string;
+  headBranch: string;
+  createdBy: string;
+  createdAt: string;
+  completedBy: string | null;
+  completedAt: string | null;
+  lastForgeFailure: string | null;
 };
 
 export type PanelRoleRecord = {
@@ -761,6 +827,28 @@ function failureExcerpt(raw: unknown): string | null {
   return text.length > FAILURE_EXCERPT_CHARS
     ? `${text.slice(0, FAILURE_EXCERPT_CHARS)}…`
     : text;
+}
+
+function rangeReviewRecord(row: Record<string, unknown>): RangeReviewRecord {
+  return {
+    id: Number(row["id"]),
+    repoId: Number(row["repo_id"]),
+    owner: String(row["owner"]),
+    repo: String(row["repo"]),
+    baseSha: String(row["base_sha"]),
+    comparisonSha: String(row["comparison_sha"]),
+    state: String(row["state"]) as RangeReviewState,
+    containerPullNumber:
+      row["container_pull_number"] === null ? null : Number(row["container_pull_number"]),
+    baseBranch: String(row["base_branch"]),
+    headBranch: String(row["head_branch"]),
+    createdBy: String(row["created_by"]),
+    createdAt: String(row["created_at"]),
+    completedBy: row["completed_by"] === null ? null : String(row["completed_by"]),
+    completedAt: row["completed_at"] === null ? null : String(row["completed_at"]),
+    lastForgeFailure:
+      row["last_forge_failure"] === null ? null : String(row["last_forge_failure"]),
+  };
 }
 
 export type Store = {
@@ -896,7 +984,38 @@ export type Store = {
    * 时间流的一页:按 id 倒序(id 即落库顺序,与开跑时间同序),`beforeId` 取更早的
    * 一页。覆盖全部评审记录——已移除仓库的历史照常出现,这是留存决策的呈现面。
    */
-  listRuns(opts: { beforeId?: number; limit: number; owner?: string; repo?: string }): RunListItem[];
+  listRuns(opts: {
+    beforeId?: number;
+    limit: number;
+    owner?: string;
+    repo?: string;
+    rangeReviewId?: number;
+  }): RunListItem[];
+  /**
+   * 落一条范围审查,返回它的 id。两条分支名由 id 推出,和插入在同一个事务里补上——
+   * 记录一旦可见就必须带着分支名,否则中途失败的清理无从知道该删哪两条。
+   */
+  createRangeReview(record: {
+    repoId: number;
+    owner: string;
+    repo: string;
+    baseSha: string;
+    comparisonSha: string;
+    createdBy: string;
+    createdAt: string;
+  }): number;
+  /** 容器 PR 建成后记下它的序号,并清掉上一次的失败原因。 */
+  attachRangeReviewContainer(id: number, containerPullNumber: number): void;
+  /** Forge 操作失败:记下原因并让这条进入 failed,它不再占住「同一 base 进行中」。 */
+  failRangeReview(id: number, failure: string): void;
+  getRangeReview(id: number): RangeReviewRecord | undefined;
+  /** 按 id 倒序。四个过滤条件都可省,省掉即不过滤。 */
+  listRangeReviews(opts: {
+    owner?: string;
+    repo?: string;
+    baseSha?: string;
+    state?: RangeReviewState;
+  }): RangeReviewRecord[];
   /** 每张表的行数,给面板展示库体量。不做清理,数字只会涨(ADR 0006 的留存决策)。 */
   tableCounts(): { name: string; rows: number }[];
   /**
@@ -1084,6 +1203,7 @@ export function openStore(dbPath: string): Store {
       if (!/duplicate column name/i.test(String(error))) throw error;
     }
   }
+  for (const statement of ADD_INDEXES) db.exec(statement);
   const reviewRunColumns = new Set(
     db.prepare("PRAGMA table_info(review_run)").all().map((row) => String(row["name"])),
   );
@@ -2337,15 +2457,16 @@ export function openStore(dbPath: string): Store {
         const result = db
           .prepare(
             `INSERT INTO review_run
-               (owner, repo, pull_number, head_sha, triggered_by, started_at,
-                changed_files, changed_lines, batch_count)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               (owner, repo, pull_number, head_sha, range_review_id, triggered_by,
+                started_at, changed_files, changed_lines, batch_count)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             meta.owner,
             meta.repo,
             meta.pullNumber,
             meta.headSha,
+            meta.rangeReviewId ?? null,
             meta.triggeredBy ?? null,
             meta.startedAt,
             meta.changedFiles,
@@ -2583,10 +2704,14 @@ export function openStore(dbPath: string): Store {
         conditions.push("owner = ? AND repo = ?");
         params.push(opts.owner, opts.repo);
       }
+      if (opts.rangeReviewId !== undefined) {
+        conditions.push("range_review_id = ?");
+        params.push(opts.rangeReviewId);
+      }
       const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
       const runs = db
         .prepare(
-          `SELECT id, owner, repo, pull_number, head_sha, triggered_by,
+          `SELECT id, owner, repo, pull_number, head_sha, range_review_id, triggered_by,
                   started_at, finished_at, failed, input_tokens, output_tokens,
                   cache_read_tokens, cache_write_tokens, total_tokens, cost_usd,
                   known_cost_usd, cost_source, unknown_cost_reviewer_count
@@ -2738,6 +2863,8 @@ export function openStore(dbPath: string): Store {
           headSha: String(run["head_sha"]),
           triggeredBy:
             run["triggered_by"] === null ? null : String(run["triggered_by"]),
+          rangeReviewId:
+            run["range_review_id"] === null ? null : Number(run["range_review_id"]),
           startedAt: String(run["started_at"]),
           finishedAt: run["finished_at"] === null ? null : String(run["finished_at"]),
           failed: Number(run["failed"]) === 1,
@@ -2749,6 +2876,80 @@ export function openStore(dbPath: string): Store {
           total: groups.get(id)?.total ?? 0,
         };
       });
+    },
+
+    createRangeReview(record) {
+      // 分支名要跟着记录一起可见:插入拿到 id 之后立刻补上,失败时整笔回滚。
+      db.exec("BEGIN");
+      try {
+        const result = db
+          .prepare(
+            `INSERT INTO range_review
+               (repo_id, owner, repo, base_sha, comparison_sha, state,
+                base_branch, head_branch, created_by, created_at)
+             VALUES (?, ?, ?, ?, ?, 'in-progress', '', '', ?, ?)`,
+          )
+          .run(
+            record.repoId,
+            record.owner,
+            record.repo,
+            record.baseSha,
+            record.comparisonSha,
+            record.createdBy,
+            record.createdAt,
+          );
+        const id = Number(result.lastInsertRowid);
+        const branches = containerBranches(id);
+        db.prepare(
+          "UPDATE range_review SET base_branch = ?, head_branch = ? WHERE id = ?",
+        ).run(branches.base, branches.head, id);
+        db.exec("COMMIT");
+        return id;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    attachRangeReviewContainer(id, containerPullNumber) {
+      db.prepare(
+        `UPDATE range_review
+            SET container_pull_number = ?, last_forge_failure = NULL
+          WHERE id = ?`,
+      ).run(containerPullNumber, id);
+    },
+
+    failRangeReview(id, failure) {
+      db.prepare(
+        "UPDATE range_review SET state = 'failed', last_forge_failure = ? WHERE id = ?",
+      ).run(failure, id);
+    },
+
+    getRangeReview(id) {
+      const row = db.prepare("SELECT * FROM range_review WHERE id = ?").get(id);
+      return row === undefined ? undefined : rangeReviewRecord(row);
+    },
+
+    listRangeReviews(opts) {
+      const conditions: string[] = [];
+      const params: (number | string)[] = [];
+      if (opts.owner !== undefined && opts.repo !== undefined) {
+        conditions.push("owner = ? AND repo = ?");
+        params.push(opts.owner, opts.repo);
+      }
+      if (opts.baseSha !== undefined) {
+        conditions.push("base_sha = ?");
+        params.push(opts.baseSha);
+      }
+      if (opts.state !== undefined) {
+        conditions.push("state = ?");
+        params.push(opts.state);
+      }
+      const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+      return db
+        .prepare(`SELECT * FROM range_review ${where} ORDER BY id DESC`)
+        .all(...params)
+        .map(rangeReviewRecord);
     },
 
     tableCounts() {

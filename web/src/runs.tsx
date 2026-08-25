@@ -9,7 +9,7 @@ import {
   ExclamationTriangleIcon,
   ExternalLinkIcon,
 } from "@radix-ui/react-icons";
-import { Callout, Dialog, IconButton, SegmentedControl, Skeleton, Tooltip } from "@radix-ui/themes";
+import { Badge, Callout, Dialog, IconButton, SegmentedControl, Skeleton, Tooltip } from "@radix-ui/themes";
 
 import { EmptyState } from "@/components/empty-state";
 import { MasterListItem } from "@/components/master-list-item";
@@ -32,6 +32,8 @@ export type RunItem = {
   startedAt: string;
   /** 手动重新运行的调用者用户名快照；null 表示自动触发。 */
   triggeredBy: string | null;
+  /** 这一轮归属的范围审查；null 即由 pull request 触发。 */
+  rangeReviewId: number | null;
   finishedAt: string | null;
   failed: boolean;
   /** 一行一个参与本轮的模型。`failure` 非 null 即这个模型这轮失败了(节选文本)。 */
@@ -181,6 +183,17 @@ function triggerLabel(run: RunItem): string {
   return run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`;
 }
 
+/**
+ * 轮次的来源:pull request 还是范围审查。
+ *
+ * 两条链路的 `pullNumber` 都指向一个真实 PR(范围审查那条指的是容器 PR),不标出来
+ * 的话,列表里一行「acme/widgets #101」看不出这是人开的 PR 还是本工具自建的容器。
+ */
+function RunSourceBadge({ run }: { run: RunItem }) {
+  if (run.rangeReviewId === null) return null;
+  return <Badge color="gray" variant="soft" radius="full">范围审查</Badge>;
+}
+
 /** 还没跑完的一轮没有耗时可言,返回 null 让调用点整段省掉,而不是显示一个 0。 */
 function runDuration(run: RunItem): string | null {
   if (run.finishedAt === null) return null;
@@ -312,6 +325,7 @@ export function RunDetailPanel({
             <div className="flex min-w-0 flex-col gap-1">
               <div className="flex flex-wrap items-center gap-2">
                 <RunPill run={run} />
+                <RunSourceBadge run={run} />
                 {duration === null ? null : (
                   <span className="text-base text-text-muted">耗时 {duration}</span>
                 )}
@@ -633,8 +647,11 @@ export function RunsPage({ canRerun }: { canRerun: boolean }) {
                     >
                       <RunStatus run={run} />
                       <span className="flex min-w-0 flex-1 flex-col gap-px">
-                        <span className="truncate text-lg font-semibold group-data-[selected=true]:font-bold">
-                          {run.owner}/{run.repo} #{run.pullNumber}
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className="truncate text-lg font-semibold group-data-[selected=true]:font-bold">
+                            {run.owner}/{run.repo} #{run.pullNumber}
+                          </span>
+                          <RunSourceBadge run={run} />
                         </span>
                         {/* 副标题一行说清「哪个 commit、谁触发、什么时候、处置到哪」,
                             窄屏放开换行:390px 下这四段挤在一行只会各剩两个字。 */}

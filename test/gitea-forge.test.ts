@@ -468,6 +468,27 @@ test("API 报错时抛出的错误不带上凭据", async (t) => {
   assert.ok(!error.stack?.includes(TOKEN), "调用栈里带上了凭据");
 });
 
+test("读仓库:GET /repos/<owner>/<repo>,clone 地址取 clone_url", async (t) => {
+  const stub = stubFetch(
+    routes({
+      "GET /api/v1/repos/acme/widget": {
+        body: { clone_url: `${BASE_URL}/acme/widget.git` },
+      },
+    }),
+  );
+  t.after(stub.restore);
+
+  const repository = await createGiteaForge(OPTIONS).getRepository({
+    owner: "acme",
+    repo: "widget",
+  });
+
+  assert.deepEqual(repository, { cloneUrl: `${BASE_URL}/acme/widget.git` });
+  const read = stub.calls.find((c) => c.url.endsWith("/repos/acme/widget"))!;
+  assert.equal(read.method, "GET");
+  assert.equal(read.auth, `token ${TOKEN}`);
+});
+
 test("从 commit sha 建分支:POST /branches,老的一侧填 old_ref_name", async (t) => {
   const stub = stubFetch(routes());
   t.after(stub.restore);

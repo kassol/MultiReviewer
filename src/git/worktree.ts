@@ -139,6 +139,66 @@ export async function pushBranch(options: PushBranchOptions): Promise<void> {
   ]);
 }
 
+export type ResolveRangeOptions = {
+  cacheDir: string;
+  ref: RepoRef;
+  cloneUrl: string;
+  credentials: CloneCredentials;
+  /** 阶段基准的 revision,由人在面板填。 */
+  base: string;
+  /** 比较项的 revision,由人在面板填。 */
+  comparison: string;
+};
+
+/**
+ * 范围审查两端的解析结果。失败按原因分档,调用方据此告诉人是哪一个填错了。
+ */
+export type ResolvedRange =
+  | { ok: true; baseSha: string; comparisonSha: string }
+  | { ok: false; reason: "base-unknown" | "comparison-unknown" | "not-descendant" };
+
+/** `git rev-parse` 解析不出来的 revision 不是异常,是人填错了,回 undefined。 */
+async function resolveCommit(path: string, revision: string): Promise<string | undefined> {
+  try {
+    // `^{commit}` 让标签与树对象都归到 commit 上;`--quiet` 让失败只体现在退出码上。
+    return (
+      await git(path, ["rev-parse", "--verify", "--quiet", `${revision}^{commit}`])
+    ).trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 在本地 clone 上解析范围审查的两端,并判断比较项是不是 base 的后代(ADR 0012)。
+ *
+ * Gitea 的 compare 端点只给 commit 列表,判不了任意两个 commit 的祖先关系;本地
+ * clone 是 Reviewer 已经在用的那一份,`git merge-base --is-ancestor` 是正规途径。
+ *
+ * 两端相同也判不通过:那个范围是空的,而 Gitea 的建 PR 端点本来就拒收 head 与 base
+ * 指向同一个 commit 的请求,让人在面板上当场知道比事后收到一句 Forge 报错好。
+ */
+export async function resolveRange(options: ResolveRangeOptions): Promise<ResolvedRange> {
+  const path = repoCachePath(options.cacheDir, options.ref);
+  const auth = authArgs(options.cloneUrl, options.credentials);
+
+  await ensureClone(path, options.cloneUrl, auth);
+
+  const baseSha = await resolveCommit(path, options.base);
+  if (baseSha === undefined) return { ok: false, reason: "base-unknown" };
+  const comparisonSha = await resolveCommit(path, options.comparison);
+  if (comparisonSha === undefined) return { ok: false, reason: "comparison-unknown" };
+  if (baseSha === comparisonSha) return { ok: false, reason: "not-descendant" };
+
+  try {
+    // 不是祖先时退出码为 1,promisify 过的 execFile 因此抛。
+    await git(path, ["merge-base", "--is-ancestor", baseSha, comparisonSha]);
+  } catch {
+    return { ok: false, reason: "not-descendant" };
+  }
+  return { ok: true, baseSha, comparisonSha };
+}
+
 /** 取 Review Range 的合并 diff。基准是 merge-base,与两个平台 PR 页面显示的一致。 */
 export async function readRangeDiff(
   worktreePath: string,

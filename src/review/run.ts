@@ -68,6 +68,8 @@ export type ReviewRunDeps = {
   reviewerPins?: readonly ReviewRunReviewerPin[];
   /** 手动重跑的调用者用户名快照;自动投递不传。 */
   triggeredBy?: string;
+  /** 这一轮归属的范围审查;PR 触发不传(ADR 0012)。 */
+  rangeReviewId?: number;
 };
 
 export type ReviewRunResult = {
@@ -483,6 +485,7 @@ export async function runReview(
     headSha: pullRequest.headSha,
     startedAt: startedAt.toISOString(),
     triggeredBy: deps.triggeredBy ?? null,
+    rangeReviewId: deps.rangeReviewId ?? null,
     changedFiles: range.files.length,
     changedLines: [...changedLines.values()].reduce((sum, n) => sum + n, 0),
     batchCount: batches.length,

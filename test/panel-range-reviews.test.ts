@@ -1,0 +1,375 @@
+/**
+ * 范围审查的发起(issue #155)。
+ *
+ * 打在面板 API 的真实 HTTP 缝上:内存 Forge 记下建了哪两条分支、开了哪个容器 PR,
+ * git fixture 提供真实的祖先关系,脚本 Reviewer 让第一轮真的跑完并发出行级评论。
+ * 断言只看外部可观察的行为:HTTP 响应、Forge 收到什么调用、库里落了什么行。
+ */
+import assert from "node:assert/strict";
+import { after, test } from "node:test";
+
+import type { Forge, RepoRef } from "../src/forge/forge.ts";
+import { hashPassword } from "../src/panel/password.ts";
+import { openStore } from "../src/review/store.ts";
+import {
+  HARNESS_PR,
+  PANEL_ADMIN_USERNAME,
+  PANEL_PREFIX,
+  startReadyPanelHarness,
+  type PanelHarness,
+} from "./support/panel-harness.ts";
+import { scriptedReviewer } from "./support/memory-forge.ts";
+
+const cleanups: (() => void)[] = [];
+after(() => {
+  for (const cleanup of cleanups) cleanup();
+});
+
+const PASSWORD = "range-review-test-password";
+const HASH = await hashPassword(PASSWORD);
+
+type RangeReview = {
+  id: number;
+  owner: string;
+  repo: string;
+  baseSha: string;
+  comparisonSha: string;
+  state: string;
+  containerPullNumber: number | null;
+  baseBranch: string;
+  headBranch: string;
+  createdBy: string;
+  createdAt: string;
+  completedBy: string | null;
+  completedAt: string | null;
+  lastForgeFailure: string | null;
+};
+
+/** 每个用例都要一个已注册的仓库,发起才有对象。 */
+async function registeredHarness(
+  options: Parameters<typeof startReadyPanelHarness>[1] = {},
+): Promise<PanelHarness> {
+  const harness = await startReadyPanelHarness(cleanups, options);
+  assert.equal(
+    (await harness.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
+      .status,
+    201,
+  );
+  return harness;
+}
+
+/** 报一条 Finding 的 Reviewer:容器 PR 上要真的出现行级评论。 */
+const reportingReviewers: NonNullable<
+  Parameters<typeof startReadyPanelHarness>[1]
+>["buildReviewers"] = (plans) =>
+  plans.map((plan) =>
+    scriptedReviewer(plan.spec.model, [
+      {
+        file: "src/answer.ts",
+        line: 1,
+        severity: "P1",
+        category: "bug",
+        description: "这里会越界",
+      },
+    ]),
+  );
+
+test("发起范围审查:建两条分支与容器 PR,第一轮 Review Run 归属它并发出行级评论", async () => {
+  const h = await registeredHarness({ buildReviewers: reportingReviewers });
+
+  const response = await h.api("POST", "/range-reviews", {
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    base: h.repo.baseSha,
+    comparison: h.repo.headSha,
+  });
+  assert.equal(response.status, 202);
+  const { rangeReview } = (await response.json()) as { rangeReview: RangeReview };
+  assert.equal(rangeReview.state, "in-progress");
+  assert.equal(rangeReview.baseSha, h.repo.baseSha);
+  assert.equal(rangeReview.comparisonSha, h.repo.headSha);
+  assert.equal(rangeReview.createdBy, PANEL_ADMIN_USERNAME);
+  assert.equal(rangeReview.baseBranch, `multireviewer/${rangeReview.id}-base`);
+  assert.equal(rangeReview.headBranch, `multireviewer/${rangeReview.id}-head`);
+  assert.equal(rangeReview.containerPullNumber, h.memory.createdPullRequests[0]!.number);
+
+  // 两条分支分别指向阶段基准与比较项。
+  assert.deepEqual(h.memory.createdBranches, [
+    { branch: rangeReview.baseBranch, fromSha: h.repo.baseSha },
+    { branch: rangeReview.headBranch, fromSha: h.repo.headSha },
+  ]);
+  const container = h.memory.createdPullRequests[0]!;
+  assert.equal(container.head, rangeReview.headBranch);
+  assert.equal(container.base, rangeReview.baseBranch);
+  assert.equal(
+    container.title,
+    `[MultiReviewer] 范围审查 ${h.repo.baseSha.slice(0, 7)}..${h.repo.headSha.slice(0, 7)}`,
+  );
+  assert.match(container.body, new RegExp(`/${PANEL_PREFIX}/range-reviews\\?range=${rangeReview.id}`));
+
+  await h.settledAtLeast(1);
+  assert.equal(h.settled[0]!.error, undefined);
+  // 容器 PR 上有行级评论。
+  assert.equal(h.memory.createdReviews.length, 1);
+  assert.equal(h.memory.createdReviews[0]!.comments.length, 1);
+  assert.equal(h.memory.createdReviews[0]!.comments[0]!.path, "src/answer.ts");
+
+  const store = openStore(h.db.path);
+  const runs = store.listRuns({ limit: 30 });
+  store.close();
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]!.rangeReviewId, rangeReview.id);
+  assert.equal(runs[0]!.pullNumber, container.number);
+});
+
+test("比较项不是 base 的后代:拒绝,一条分支都不建", async () => {
+  const h = await registeredHarness();
+
+  const response = await h.api("POST", "/range-reviews", {
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    base: h.repo.headSha,
+    comparison: h.repo.baseSha,
+  });
+  assert.equal(response.status, 400);
+  assert.deepEqual(h.memory.createdBranches, []);
+  assert.deepEqual(h.memory.createdPullRequests, []);
+
+  const store = openStore(h.db.path);
+  assert.deepEqual(store.listRangeReviews({}), []);
+  store.close();
+});
+
+test("同一 base 已有进行中的:先提醒,带确认标志重发即成功,两条记录并存", async () => {
+  const h = await registeredHarness();
+  const request = (confirm?: true): Promise<Response> =>
+    h.api("POST", "/range-reviews", {
+      owner: HARNESS_PR.owner,
+      repo: HARNESS_PR.repo,
+      base: h.repo.baseSha,
+      comparison: h.repo.headSha,
+      ...(confirm === undefined ? {} : { confirm }),
+    });
+
+  assert.equal((await request()).status, 202);
+  await h.settledAtLeast(1);
+
+  const reminded = await request();
+  assert.equal(reminded.status, 409);
+  const body = (await reminded.json()) as { needsConfirmation?: boolean; existing?: RangeReview[] };
+  assert.equal(body.needsConfirmation, true);
+  assert.equal(body.existing?.length, 1);
+
+  assert.equal((await request(true)).status, 202);
+  await h.settledAtLeast(2);
+
+  const list = (await (await h.api("GET", "/range-reviews")).json()) as {
+    rangeReviews: RangeReview[];
+  };
+  assert.equal(list.rangeReviews.length, 2);
+  assert.deepEqual(
+    list.rangeReviews.map((item) => item.baseSha),
+    [h.repo.baseSha, h.repo.baseSha],
+  );
+});
+
+test("建容器 PR 失败:记下失败原因,已建的两条分支被清理", async () => {
+  const h = await registeredHarness({
+    wrapForge: (forge: Forge) => ({
+      ...forge,
+      createPullRequest: async () => {
+        throw new Error("branch protection 拦住了");
+      },
+    }),
+  });
+
+  const response = await h.api("POST", "/range-reviews", {
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    base: h.repo.baseSha,
+    comparison: h.repo.headSha,
+  });
+  assert.equal(response.status, 502);
+  const { rangeReviewId } = (await response.json()) as { rangeReviewId: number };
+
+  const store = openStore(h.db.path);
+  const record = store.getRangeReview(rangeReviewId)!;
+  store.close();
+  assert.equal(record.state, "failed");
+  assert.equal(record.containerPullNumber, null);
+  assert.match(record.lastForgeFailure!, /branch protection/);
+
+  // 半建的分支不留在仓库里。
+  assert.deepEqual(h.memory.deletedBranches, [record.baseBranch, record.headBranch]);
+});
+
+test("详情端点返回 base、当前比较项与本范围审查的轮次", async () => {
+  const h = await registeredHarness();
+  const created = (await (
+    await h.api("POST", "/range-reviews", {
+      owner: HARNESS_PR.owner,
+      repo: HARNESS_PR.repo,
+      base: h.repo.baseSha,
+      comparison: h.repo.headSha,
+    })
+  ).json()) as { rangeReview: RangeReview };
+  await h.settledAtLeast(1);
+
+  const detail = await h.api("GET", `/range-reviews/${created.rangeReview.id}`);
+  assert.equal(detail.status, 200);
+  const body = (await detail.json()) as {
+    rangeReview: RangeReview;
+    runs: { id: number; rangeReviewId: number | null; headSha: string }[];
+  };
+  assert.equal(body.rangeReview.baseSha, h.repo.baseSha);
+  assert.equal(body.rangeReview.comparisonSha, h.repo.headSha);
+  assert.equal(body.runs.length, 1);
+  assert.equal(body.runs[0]!.rangeReviewId, created.rangeReview.id);
+  assert.equal(body.runs[0]!.headSha, h.repo.headSha);
+
+  assert.equal((await h.api("GET", "/range-reviews/9999")).status, 404);
+});
+
+test("时间流区分 PR 触发与范围审查", async () => {
+  const h = await registeredHarness();
+  assert.equal(
+    (
+      await h.api("POST", "/rerun", {
+        owner: HARNESS_PR.owner,
+        repo: HARNESS_PR.repo,
+        pullNumber: HARNESS_PR.number,
+      })
+    ).status,
+    202,
+  );
+  await h.settledAtLeast(1);
+  assert.equal(
+    (
+      await h.api("POST", "/range-reviews", {
+        owner: HARNESS_PR.owner,
+        repo: HARNESS_PR.repo,
+        base: h.repo.baseSha,
+        comparison: h.repo.headSha,
+      })
+    ).status,
+    202,
+  );
+  await h.settledAtLeast(2);
+
+  const body = (await (await h.api("GET", "/runs")).json()) as {
+    runs: { pullNumber: number; rangeReviewId: number | null }[];
+  };
+  assert.equal(body.runs.length, 2);
+  // 倒序:范围审查那一轮在前,PR 重跑那一轮的归属为空。
+  assert.notEqual(body.runs[0]!.rangeReviewId, null);
+  assert.equal(body.runs[1]!.rangeReviewId, null);
+  assert.equal(body.runs[1]!.pullNumber, HARNESS_PR.number);
+});
+
+test("没有 review:create 的用户发起被拒,新权限格不落到已有角色", async () => {
+  const h = await registeredHarness();
+  const store = openStore(h.db.path);
+  // 升级前就存在的角色:它拿到的是当时的全部评审权限,不含新增的 review:create。
+  const legacy = store.createPanelRole({
+    name: "老的评审角色",
+    permissions: ["review:read", "review:rerun"],
+    createdAt: "2026-08-20T00:00:00.000Z",
+  });
+  store.createPanelUser({
+    username: "range-reader",
+    displayName: null,
+    passwordHash: HASH,
+    mustChangePassword: false,
+    createdAt: "2026-08-20T00:00:00.000Z",
+    isSystemAdmin: false,
+    roleId: legacy.id,
+  });
+  store.close();
+
+  const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "range-reader", password: PASSWORD }),
+  });
+  assert.equal(login.status, 204);
+  const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
+
+  const session = (await (
+    await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, { headers: { cookie } })
+  ).json()) as { permissions: string[] };
+  assert.deepEqual(session.permissions, ["review:read", "review:rerun"]);
+
+  const denied = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/range-reviews`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({
+      owner: HARNESS_PR.owner,
+      repo: HARNESS_PR.repo,
+      base: h.repo.baseSha,
+      comparison: h.repo.headSha,
+    }),
+  });
+  assert.equal(denied.status, 403);
+  assert.deepEqual(h.memory.createdBranches, []);
+
+  // 只读那一格仍然读得到列表。
+  assert.equal(
+    (await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/range-reviews`, { headers: { cookie } }))
+      .status,
+    200,
+  );
+});
+
+test("未注册仓库、非 sha 的入参都在碰 Forge 之前被拒", async () => {
+  const h = await registeredHarness();
+
+  assert.equal(
+    (
+      await h.api("POST", "/range-reviews", {
+        owner: "ghost",
+        repo: "gone",
+        base: h.repo.baseSha,
+        comparison: h.repo.headSha,
+      })
+    ).status,
+    409,
+  );
+  assert.equal(
+    (
+      await h.api("POST", "/range-reviews", {
+        owner: HARNESS_PR.owner,
+        repo: HARNESS_PR.repo,
+        base: "main",
+        comparison: h.repo.headSha,
+      })
+    ).status,
+    400,
+  );
+  assert.deepEqual(h.memory.createdBranches, []);
+});
+
+test("范围审查只认得到自己仓库的 clone 地址,不依赖任何既有 pull request", async () => {
+  const seen: RepoRef[] = [];
+  const h = await registeredHarness({
+    wrapForge: (forge: Forge) => ({
+      ...forge,
+      getRepository: async (ref: RepoRef) => {
+        seen.push(ref);
+        return forge.getRepository(ref);
+      },
+    }),
+  });
+
+  assert.equal(
+    (
+      await h.api("POST", "/range-reviews", {
+        owner: HARNESS_PR.owner,
+        repo: HARNESS_PR.repo,
+        base: h.repo.baseSha,
+        comparison: h.repo.headSha,
+      })
+    ).status,
+    202,
+  );
+  assert.deepEqual(seen, [{ owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }]);
+});

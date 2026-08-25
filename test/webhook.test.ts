@@ -787,3 +787,33 @@ test("签名不过的投递不进日志——否则日志由外人写", async ()
   assert.equal(response.status, 401);
   assert.deepEqual(h.deliveries, []);
 });
+
+test("容器 PR 的事件按分支前缀丢弃,不触发审查也不进幂等表", async () => {
+  const h = await startHarness();
+  // 容器 PR 的两条分支都带固定前缀(ADR 0012),推进比较项会投一次 synchronized。
+  const container = (action: string): Promise<Response> => {
+    const body = JSON.stringify({
+      action,
+      number: 101,
+      pull_request: {
+        draft: false,
+        head: { sha: "container-head", ref: "multireviewer/1-head" },
+        base: { ref: "multireviewer/1-base" },
+      },
+      repository: { id: REPO_ID, name: PR.repo, owner: { login: PR.owner } },
+    });
+    return h.post(body, {
+      "x-gitea-event": "pull_request",
+      "x-hub-signature-256": sign(body),
+    });
+  };
+
+  assert.equal((await container("opened")).status, 200);
+  assert.equal((await container("synchronized")).status, 200);
+  assert.deepEqual(h.dispatched, []);
+
+  const sqlite = new DatabaseSync(h.db.path);
+  const rows = sqlite.prepare("SELECT COUNT(*) AS n FROM webhook_delivery").all();
+  sqlite.close();
+  assert.equal(Number(rows[0]!["n"]), 0);
+});

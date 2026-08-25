@@ -15,6 +15,7 @@ import {
   BarChartIcon,
   CounterClockwiseClockIcon,
   DashboardIcon,
+  LayersIcon,
   LightningBoltIcon,
   LockClosedIcon,
   MagnifyingGlassIcon,
@@ -47,6 +48,7 @@ import "./styles.css";
 const AccessControlPage = lazy(async () => ({ default: (await import("./access-control.tsx")).AccessControlPage }));
 const LoginPage = lazy(async () => ({ default: (await import("./login.tsx")).LoginPage }));
 const PasswordPage = lazy(async () => ({ default: (await import("./password.tsx")).PasswordPage }));
+const RangeReviewsPage = lazy(async () => ({ default: (await import("./range-reviews.tsx")).RangeReviewsPage }));
 const ReposPage = lazy(async () => ({ default: (await import("./repos.tsx")).ReposPage }));
 const RunsPage = lazy(async () => ({ default: (await import("./runs.tsx")).RunsPage }));
 const SettingsPage = lazy(async () => ({ default: (await import("./settings.tsx")).SettingsPage }));
@@ -102,7 +104,16 @@ const shellRoute = createRoute({
 
 type PagePermission = PanelPermission | readonly PanelPermission[];
 type NavigationItem = {
-  to: "/" | "/repos" | "/runs" | "/stats" | "/credentials" | "/settings" | "/access" | "/password";
+  to:
+    | "/"
+    | "/repos"
+    | "/runs"
+    | "/range-reviews"
+    | "/stats"
+    | "/credentials"
+    | "/settings"
+    | "/access"
+    | "/password";
   label: string;
   /** 移动端底部 Tab 栏用。桌面 underline 导航只有文字,不挂图标。 */
   icon: typeof DashboardIcon;
@@ -118,6 +129,7 @@ type NavigationItem = {
 const NAV: readonly NavigationItem[] = [
   { to: "/", label: "总览", icon: DashboardIcon, permission: "review:read" },
   { to: "/runs", label: "评审记录", icon: CounterClockwiseClockIcon, permission: "review:read" },
+  { to: "/range-reviews", label: "范围审查", icon: LayersIcon, permission: "review:read" },
   { to: "/repos", label: "仓库", icon: ArchiveIcon, permission: "repo:read" },
   { to: "/stats", label: "处置率", icon: BarChartIcon, permission: "review:read" },
   { to: "/credentials", label: "模型服务", icon: LightningBoltIcon, permission: ["model:read", "model:write", "credential:read", "credential:write"] },
@@ -431,7 +443,7 @@ function IndexPage() {
 }
 
 function protectedPage(
-  path: "/repos" | "/runs" | "/stats" | "/credentials" | "/settings",
+  path: "/repos" | "/runs" | "/range-reviews" | "/stats" | "/credentials" | "/settings",
   permission: PagePermission,
   component: () => React.JSX.Element,
 ) {
@@ -470,6 +482,10 @@ const reposRoute = protectedPage("/repos", "repo:read", () => {
 const runsRoute = protectedPage("/runs", "review:read", () => {
   const { session } = shellRoute.useRouteContext();
   return <RunsPage canRerun={hasPermission(session, "review:rerun")} />;
+});
+const rangeReviewsRoute = protectedPage("/range-reviews", "review:read", () => {
+  const { session } = shellRoute.useRouteContext();
+  return <RangeReviewsPage canCreate={hasPermission(session, "review:create")} />;
 });
 const statsRoute = protectedPage("/stats", "review:read", () => <StatsPage />);
 function ModelServicesRoutePage({
@@ -653,6 +669,7 @@ const routeTree = rootRoute.addChildren([
     indexRoute,
     reposRoute,
     runsRoute,
+    rangeReviewsRoute,
     statsRoute,
     credentialsRoute,
     modelServiceRoute,

@@ -12,6 +12,7 @@ import type {
   PullRequestRef,
   Reaction,
   RepoRef,
+  Repository,
   ReviewDraft,
 } from "./forge.ts";
 
@@ -63,7 +64,7 @@ type InstallationToken = { token: string; expiresAt: number };
 
 /** 封存期间新增的 Forge 能力在这一侧的统一说法(ADR 0014)。 */
 function frozen(method: string): string {
-  return `GitHub 实现已封存(ADR 0014):${method} 未实现,容器 PR 的写能力只做 Gitea。`;
+  return `GitHub 实现已封存(ADR 0014):${method} 未实现,范围审查只做 Gitea。`;
 }
 
 export function createGitHubForge(options: GitHubForgeOptions): Forge {
@@ -275,8 +276,12 @@ export function createGitHubForge(options: GitHubForgeOptions): Forge {
       await graphql(ref, UNRESOLVE_MUTATION, { threadId: commentId });
     },
 
-    // 容器 PR 的四个写能力只做 Gitea(ADR 0014)。封存期间不为 GitHub 保留兼容层:
+    // 范围审查的 Forge 能力只做 Gitea(ADR 0014)。封存期间不为 GitHub 保留兼容层:
     // 调到就当场报错,静默什么都不做只会让范围审查建出半个容器 PR。
+    async getRepository(_ref: RepoRef): Promise<Repository> {
+      throw new Error(frozen("getRepository"));
+    },
+
     async createBranch(_ref: RepoRef, _branch: string, _fromSha: string): Promise<void> {
       throw new Error(frozen("createBranch"));
     },

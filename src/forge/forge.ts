@@ -24,6 +24,17 @@ export type PullRequest = {
   cloneUrl: string;
 };
 
+/**
+ * 仓库自身的元数据。
+ *
+ * 范围审查发起时仓库里可能一个 pull request 都没有,而工作副本仍要 clone 得下来
+ * (ADR 0012),所以 clone 地址不能只从 `getPullRequest` 那条路取。
+ */
+export type Repository = {
+  /** 可供服务端 clone 的地址,凭据由 `cloneCredentials` 单独取得。 */
+  cloneUrl: string;
+};
+
 export type ChangedFileStatus = "added" | "modified" | "removed" | "renamed";
 
 export type ChangedFile = {
@@ -98,6 +109,11 @@ export type NewPullRequest = {
 export type Reaction = "eyes" | "+1";
 
 export interface Forge {
+  /**
+   * 读仓库自身的元数据。范围审查发起时还没有容器 PR,clone 地址只能从这里来
+   * (ADR 0012)。
+   */
+  getRepository(ref: RepoRef): Promise<Repository>;
   getPullRequest(ref: PullRequestRef): Promise<PullRequest>;
   listChangedFiles(ref: PullRequestRef): Promise<ChangedFile[]>;
   /**

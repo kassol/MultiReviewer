@@ -22,8 +22,8 @@ import { encryptCredential } from "../../src/panel/credential-crypto.ts";
 import { modelServiceTargetFingerprint } from "../../src/review/model-service-migration.ts";
 import { openStore } from "../../src/review/store.ts";
 import { startFakeGitea, type FakeGitea } from "./fake-gitea.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./git-fixture.ts";
-import { memoryForge, scriptedReviewer } from "./memory-forge.ts";
+import { makeCacheDir, makeDbPath, makeRepo, type RepoFixture } from "./git-fixture.ts";
+import { memoryForge, scriptedReviewer, type MemoryForge } from "./memory-forge.ts";
 
 export const PANEL_ADMIN_USERNAME = "panel-admin";
 export const PANEL_ADMIN_PASSWORD = "panel-harness-password";
@@ -42,6 +42,10 @@ export type PanelHarness = {
   /** 服务的根地址。未登录调用要自己发请求,不能走带 cookie 的 `api()`。 */
   serverUrl: string;
   gitea: FakeGitea;
+  /** 被审的真实仓库。范围审查的两端要从它取真的 commit sha。 */
+  repo: RepoFixture;
+  /** 内存 Forge 的记录面:建了哪些分支、开了哪些 PR、发了哪些 review。 */
+  memory: MemoryForge;
   db: { path: string };
   dispatched: PullRequestRef[];
   settled: { event: NormalizedEvent; error?: unknown }[];
@@ -124,6 +128,8 @@ export type PanelHarnessOptions = {
   /** 先写进库的全局模型组合。省略取 `[HARNESS_SPEC]`,给空数组即「还没配组合」。 */
   reviewers?: readonly ReviewerSpec[];
   discoverModelServiceModels?: WebhookServerDeps["discoverModelServiceModels"];
+  /** 在 harness 的 Forge 外再包一层,用来让某个方法失败。省略即不包。 */
+  wrapForge?: (forge: Forge) => Forge;
 };
 
 export async function startPanelHarness(
@@ -186,10 +192,23 @@ export async function startPanelHarness(
     ],
   });
   const dispatched: PullRequestRef[] = [];
-  const forge: Forge = {
+  const recording: Forge = {
     ...base.forge,
     getPullRequest: async (ref: PullRequestRef) => {
       dispatched.push(ref);
+      // 容器 PR 是本服务自己开的,读回来的两端就是它那两条分支指向的 commit。
+      const container = base.createdPullRequests.find((pr) => pr.number === ref.number);
+      if (container !== undefined) {
+        const pointsAt = (branch: string): string =>
+          base.createdBranches.findLast((entry) => entry.branch === branch)!.fromSha;
+        return {
+          number: ref.number,
+          draft: false,
+          baseSha: pointsAt(container.base),
+          headSha: pointsAt(container.head),
+          cloneUrl: repo.dir,
+        };
+      }
       // 与真实 Forge 同构:不存在的 PR 号抛错,而不是回同一份 PR。
       if (ref.number !== HARNESS_PR.number) {
         throw new Error(`PR #${ref.number} 不存在`);
@@ -197,6 +216,7 @@ export async function startPanelHarness(
       return base.forge.getPullRequest(ref);
     },
   };
+  const forge = options.wrapForge === undefined ? recording : options.wrapForge(recording);
 
   const factoryCalls: (readonly ReviewerSpec[])[] = [];
   const runtimePlans: (readonly ReviewerRuntimePlan[])[] = [];
@@ -311,6 +331,8 @@ export async function startPanelHarness(
   return {
     serverUrl,
     gitea,
+    repo,
+    memory: base,
     db,
     dispatched,
     settled,

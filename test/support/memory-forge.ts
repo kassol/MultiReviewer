@@ -9,6 +9,7 @@ import type {
   PullRequestRef,
   Reaction,
   RepoRef,
+  Repository,
   ReviewDraft,
 } from "../../src/forge/forge.ts";
 import type {
@@ -63,6 +64,11 @@ export function memoryForge(init: {
   const state = { pullRequest: { ...init.pullRequest } };
 
   const forge: Forge = {
+    // 范围审查发起时还没有 pull request,clone 地址从仓库自己读——夹具里这两者
+    // 指向同一份本地仓库。
+    getRepository: async (_ref: RepoRef): Promise<Repository> => ({
+      cloneUrl: state.pullRequest.cloneUrl,
+    }),
     getPullRequest: async (_ref: PullRequestRef) => state.pullRequest,
     listChangedFiles: async (_ref: PullRequestRef) => init.changedFiles,
     createReview: async (_ref: PullRequestRef, draft: ReviewDraft) => {

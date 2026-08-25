@@ -26,7 +26,7 @@ import {
   type ReviewerRuntimePlan,
   type ReviewerSpec,
 } from "../config.ts";
-import type { Forge } from "../forge/forge.ts";
+import type { Forge, RepoRef } from "../forge/forge.ts";
 import {
   createGiteaHookManager,
   hookConverged,
@@ -48,8 +48,15 @@ import {
   decryptCredential,
   encryptCredential,
 } from "../panel/credential-crypto.ts";
+import { resolveRange, type ResolvedRange } from "../git/worktree.ts";
 import { DEFAULT_MAX_CHANGED_LINES_PER_BATCH } from "../review/batch.ts";
 import type { Reviewer } from "../review/finding.ts";
+import {
+  containerBranches,
+  containerPullRequestBody,
+  containerPullRequestTitle,
+  isContainerBranch,
+} from "../review/range-review.ts";
 import {
   backfillUpdates,
   createReviewRunPlan,
@@ -109,9 +116,9 @@ export type NormalizedEvent = {
   /**
    * 前两个动作触发 Review Run;`closed` 触发对该 PR 的 disposition 全量回填
    * (ADR 0006),`reopened` 清掉关闭标记,都不跑审查。其余动作在规范化时就被滤掉。
-   * `rerun` 不来自投递,是面板手动重跑的标记——日志里要与真实投递分得开。
+   * `rerun` 与 `range-review` 不来自投递,是面板发起的标记——日志里要与真实投递分得开。
    */
-  action: "opened" | "new-commit" | "closed" | "reopened" | "rerun";
+  action: "opened" | "new-commit" | "closed" | "reopened" | "rerun" | "range-review";
 };
 
 export type WebhookServerDeps = {
@@ -246,9 +253,28 @@ function pullRequestSource(req: IncomingMessage): Platform | undefined {
 type RawPayload = {
   action?: unknown;
   number?: unknown;
-  pull_request?: { draft?: unknown; head?: { sha?: unknown } };
+  pull_request?: {
+    draft?: unknown;
+    head?: { sha?: unknown; ref?: unknown };
+    base?: { ref?: unknown };
+  };
   repository?: { id?: unknown; name?: unknown; owner?: { login?: unknown } };
 };
+
+/**
+ * 投递里的容器 PR 分支名,不是容器 PR 时返回 undefined。
+ *
+ * 两个平台的 `pull_request.head.ref` / `base.ref` 都是分支名(Gitea 见
+ * `modules/structs/pull.go` 的 `PRBranchInfo.Ref json:"ref"`)。两侧都看:容器 PR
+ * 的两条分支都带前缀,只认一侧会在字段缺失时漏掉。
+ */
+function containerBranchOf(payload: unknown): string | undefined {
+  const raw = payload as RawPayload | null;
+  const head = raw?.pull_request?.head?.ref;
+  if (isContainerBranch(head)) return head;
+  const base = raw?.pull_request?.base?.ref;
+  return isContainerBranch(base) ? base : undefined;
+}
 
 /**
  * 把一个平台的 pull_request payload 解析成 `NormalizedEvent`。
@@ -645,6 +671,7 @@ async function startRun(
   event: NormalizedEvent,
   plan: ReviewRunPlan,
   triggeredBy?: string,
+  rangeReviewId?: number,
 ): Promise<void> {
   const settled = deps.onRunSettled ?? logFailure;
   try {
@@ -656,6 +683,7 @@ async function startRun(
         cacheDir: deps.cacheDir,
         dbPath: deps.dbPath,
         ...(triggeredBy === undefined ? {} : { triggeredBy }),
+        ...(rangeReviewId === undefined ? {} : { rangeReviewId }),
       },
     );
   } catch (error) {
@@ -753,6 +781,15 @@ async function handle(
       `event:${repoTag(payload)}:${String(name)}`,
       `收到 ${String(name)} 事件,只有 pull request 会触发审查`,
     );
+    return send(res, 200);
+  }
+
+  // 容器 PR 是本服务自己开的,它的事件一律丢弃(ADR 0012):推进比较项要推 head 分支,
+  // 那一推会投一次 synchronized,受理它就是同一次推进跑两轮。也不走幂等 claim——
+  // 幂等键留给真正由人发起的那一轮,让它仍然能重试。
+  const containerBranch = containerBranchOf(payload);
+  if (containerBranch !== undefined) {
+    log(`${describeRepo(payload, repoId)} 的容器 PR 分支 ${containerBranch} — 不触发审查`);
     return send(res, 200);
   }
 
@@ -1367,6 +1404,25 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "GET", pattern: "/stats", access: "review:read", handler: ({ req, res, deps }) => handleStats(req, res, deps) },
   { method: "GET", pattern: "/runs", access: "review:read", handler: ({ req, res, deps }) => handleRuns(req, res, deps) },
   { method: "POST", pattern: "/rerun", access: "review:rerun", handler: ({ req, res, deps, caller }) => handleRerun(req, res, deps, caller!.username) },
+  {
+    method: "GET",
+    pattern: "/range-reviews",
+    access: "review:read",
+    handler: ({ req, res, deps }) => handleRangeReviews(req, res, deps),
+  },
+  {
+    method: "POST",
+    pattern: "/range-reviews",
+    access: "review:create",
+    handler: ({ req, res, deps, caller }) =>
+      handleCreateRangeReview(req, res, deps, caller!.username),
+  },
+  {
+    method: "GET",
+    pattern: /^\/range-reviews\/(\d+)$/,
+    access: "review:read",
+    handler: ({ res, deps }, match) => handleRangeReview(res, deps, Number(match![1])),
+  },
   {
     method: "GET",
     pattern: "/repos/search",
@@ -3899,6 +3955,216 @@ async function handleRerun(
     { platform: "gitea", owner, repo, number: pullNumber, headSha, draft: false, action: "rerun" },
     plan,
     triggeredBy,
+  );
+}
+
+/** 范围审查发起时人填的两端。只收 sha:它同时挡住以 `-` 开头的值被 git 当成选项。 */
+const COMMIT_SHA = /^[0-9a-f]{7,40}$/i;
+
+/** 解析失败的三档各自对应一句话,人据此知道是哪一端填错了。 */
+const RANGE_REJECTION: Record<Extract<ResolvedRange, { ok: false }>["reason"], string> = {
+  "base-unknown": "base 在这个仓库里找不到,确认 commit 已经推上去了",
+  "comparison-unknown": "比较项在这个仓库里找不到,确认 commit 已经推上去了",
+  "not-descendant": "比较项必须是 base 的后代,而且不能与 base 是同一个 commit",
+};
+
+function failureText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** 跨仓库的范围审查列表。倒序,过滤与时间流同一套 owner/repo 成对规则。 */
+function handleRangeReviews(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): void {
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+  const owner = query.get("owner");
+  const repo = query.get("repo");
+  if ((owner === null) !== (repo === null)) {
+    return sendJson(res, 400, { error: "owner 与 repo 要成对给,过滤不接受半个键" });
+  }
+  const rangeReviews = withStore(deps.dbPath, (store) =>
+    store.listRangeReviews(owner !== null && repo !== null ? { owner, repo } : {}),
+  );
+  return sendJson(res, 200, { rangeReviews });
+}
+
+/** 一个范围审查的详情:记录本身加它名下的轮次。轮次与时间流同一份投影。 */
+function handleRangeReview(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  id: number,
+): void {
+  const found = withStore(deps.dbPath, (store) => ({
+    rangeReview: store.getRangeReview(id),
+    runs: store.listRuns({ limit: RUNS_PAGE, rangeReviewId: id }),
+  }));
+  if (found.rangeReview === undefined) {
+    return sendJson(res, 404, { error: "没有这个范围审查" });
+  }
+  return sendJson(res, 200, found);
+}
+
+/**
+ * 发起一个范围审查(ADR 0012)。
+ *
+ * 顺序是「先验后写」:解析两端与后代关系、组装运行计划都在碰 Forge 之前完成,填错的
+ * 请求因此一条分支都不会留下。落记录先于建分支——分支名由记录 id 推出,而任一步失败
+ * 都要有地方记下原因(user story 19)。
+ */
+async function handleCreateRangeReview(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  createdBy: string,
+): Promise<void> {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body) as {
+    owner?: unknown;
+    repo?: unknown;
+    base?: unknown;
+    comparison?: unknown;
+    confirm?: unknown;
+  } | null;
+  if (
+    payload === null ||
+    typeof payload.owner !== "string" ||
+    typeof payload.repo !== "string" ||
+    typeof payload.base !== "string" ||
+    typeof payload.comparison !== "string"
+  ) {
+    return sendJson(res, 400, {
+      error: 'body 要是 {"owner", "repo", "base", "comparison"} 形状的 JSON',
+    });
+  }
+  if (!COMMIT_SHA.test(payload.base) || !COMMIT_SHA.test(payload.comparison)) {
+    return sendJson(res, 400, { error: "base 与比较项都要是 7 到 40 位的 commit sha" });
+  }
+  const { owner, repo } = payload;
+
+  const registered = withStore(deps.dbPath, (store) => store.listRepos()).find(
+    (row) => row.owner === owner && row.repo === repo,
+  );
+  if (registered === undefined) {
+    return sendJson(res, 409, { error: "仓库不在注册表里,先注册再发起范围审查" });
+  }
+  const forge = deps.forges.gitea;
+  if (forge === undefined) {
+    return sendJson(res, 503, { error: "gitea 没有配置 Forge,发起不了范围审查" });
+  }
+
+  // 后代关系只有本地 clone 判得了:Gitea 的 compare 端点给不出任意两个 commit 的
+  // 祖先关系(ADR 0012)。clone 地址从仓库自己读,这时还没有任何 pull request。
+  const ref: RepoRef = { owner, repo };
+  let resolved: ResolvedRange;
+  try {
+    const [repository, credentials] = await Promise.all([
+      forge.getRepository(ref),
+      forge.cloneCredentials(ref),
+    ]);
+    resolved = await resolveRange({
+      cacheDir: deps.cacheDir,
+      ref,
+      cloneUrl: repository.cloneUrl,
+      credentials,
+      base: payload.base,
+      comparison: payload.comparison,
+    });
+  } catch (error) {
+    return sendJson(res, 502, { error: `读不到仓库或取不回代码:${failureText(error)}` });
+  }
+  if (!resolved.ok) {
+    return sendJson(res, 400, { error: RANGE_REJECTION[resolved.reason] });
+  }
+  const { baseSha, comparisonSha } = resolved;
+
+  // 同一 base 不去重,只提醒:确实要并行两个阶段是合法诉求(CONTEXT.md 范围审查)。
+  const existing = withStore(deps.dbPath, (store) =>
+    store.listRangeReviews({ owner, repo, baseSha, state: "in-progress" }),
+  );
+  if (existing.length > 0 && payload.confirm !== true) {
+    return sendJson(res, 409, {
+      error: `这个仓库的同一个 base 上还有 ${existing.length} 个进行中的范围审查`,
+      needsConfirmation: true,
+      existing,
+    });
+  }
+
+  // 与投递、重跑同一个启动器:计划在建分支之前固定好,坏组合不会留下半个容器 PR。
+  let plan: ReviewRunPlan;
+  try {
+    plan = await buildRunPlan(deps, registered.repoId);
+  } catch (error) {
+    return sendJson(res, 409, {
+      error: `模型覆盖坏了,先改组合再发起:${failureText(error)}`,
+    });
+  }
+
+  const createdAt = new Date((deps.now ?? Date.now)()).toISOString();
+  const id = withStore(deps.dbPath, (store) =>
+    store.createRangeReview({
+      repoId: registered.repoId,
+      owner,
+      repo,
+      baseSha,
+      comparisonSha,
+      createdBy,
+      createdAt,
+    }),
+  );
+  const branches = containerBranches(id);
+  const built: string[] = [];
+  let containerPullNumber: number;
+  try {
+    await forge.createBranch(ref, branches.base, baseSha);
+    built.push(branches.base);
+    await forge.createBranch(ref, branches.head, comparisonSha);
+    built.push(branches.head);
+    containerPullNumber = await forge.createPullRequest(ref, {
+      head: branches.head,
+      base: branches.base,
+      title: containerPullRequestTitle(baseSha, comparisonSha),
+      body: containerPullRequestBody(
+        `${deps.baseUrl}/${deps.panelPrefix}/range-reviews?range=${id}`,
+      ),
+    });
+  } catch (error) {
+    const failure = failureText(error);
+    // 已经建出来的分支收回去:半建的分支留在仓库里,人重试时看到的是两处残留。
+    // 删失败不覆盖原因——原因是「为什么建不出来」,那才是要排查的东西。
+    for (const branch of built) {
+      await forge.deleteBranch(ref, branch).catch(() => undefined);
+    }
+    withStore(deps.dbPath, (store) => store.failRangeReview(id, failure));
+    return sendJson(res, 502, {
+      error: `在 Forge 上建容器 PR 失败:${failure}`,
+      rangeReviewId: id,
+    });
+  }
+
+  const rangeReview = withStore(deps.dbPath, (store) => {
+    store.attachRangeReviewContainer(id, containerPullNumber);
+    return store.getRangeReview(id)!;
+  });
+  // 先回 202 再开跑:一轮审查要跑上几分钟,人等的是「已经在跑了」这个回执。
+  sendJson(res, 202, { rangeReview });
+  void startRun(
+    deps,
+    forge,
+    {
+      platform: "gitea",
+      owner,
+      repo,
+      number: containerPullNumber,
+      headSha: comparisonSha,
+      draft: false,
+      action: "range-review",
+    },
+    plan,
+    createdBy,
+    id,
   );
 }
 
