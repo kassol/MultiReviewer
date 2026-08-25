@@ -86,6 +86,33 @@ const CASES: Case[] = [
         model: "model-a",
         category: "bug",
         resolved: 1,
+        changed: 0,
+        unresolved: 0,
+        unknownClosed: 0,
+        unknownOpen: 0,
+      },
+    ],
+  },
+  {
+    name: "「已改动」自成一列,同一处上人工处置盖过自动处置",
+    seed: (store) => {
+      seedRun(store, { startedAt: T1, findings: [finding({ disposition: "changed" })] });
+      // 同一处先被自动处置,人后来又在面板上 resolve:这一条算人工那一列。
+      seedRun(store, {
+        startedAt: T1,
+        findings: [finding({ fingerprint: "fp-2", disposition: "changed" })],
+      });
+      seedRun(store, {
+        startedAt: T2,
+        findings: [finding({ fingerprint: "fp-2", disposition: "resolved" })],
+      });
+    },
+    expected: [
+      {
+        model: "model-a",
+        category: "bug",
+        resolved: 1,
+        changed: 1,
         unresolved: 0,
         unknownClosed: 0,
         unknownOpen: 0,
@@ -118,6 +145,7 @@ const CASES: Case[] = [
         model: "model-a",
         category: "bug",
         resolved: 0,
+        changed: 0,
         unresolved: 0,
         unknownClosed: 0,
         unknownOpen: 2,
@@ -136,6 +164,7 @@ const CASES: Case[] = [
         model: "model-a",
         category: "bug",
         resolved: 0,
+        changed: 0,
         unresolved: 0,
         unknownClosed: 1,
         unknownOpen: 1,
@@ -158,6 +187,7 @@ const CASES: Case[] = [
         model: "model-a",
         category: "bug",
         resolved: 0,
+        changed: 0,
         unresolved: 0,
         unknownClosed: 0,
         unknownOpen: 1,
@@ -179,6 +209,7 @@ const CASES: Case[] = [
         model: "model-a",
         category: "bug",
         resolved: 0,
+        changed: 0,
         unresolved: 0,
         unknownClosed: 0,
         unknownOpen: 2,
@@ -187,6 +218,7 @@ const CASES: Case[] = [
         model: "model-b",
         category: "bug",
         resolved: 0,
+        changed: 0,
         unresolved: 0,
         unknownClosed: 0,
         unknownOpen: 1,
@@ -207,6 +239,7 @@ const CASES: Case[] = [
         model: "model-a",
         category: "bug",
         resolved: 1,
+        changed: 0,
         unresolved: 0,
         unknownClosed: 0,
         unknownOpen: 0,

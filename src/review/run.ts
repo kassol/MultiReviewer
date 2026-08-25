@@ -17,12 +17,14 @@ import { dedupeFindings, type MergedFinding } from "./dedupe.ts";
 import type { Disposition, Reviewer, ReviewerOutcome, Severity } from "./finding.ts";
 import {
   contentFingerprint,
+  fileFingerprints,
   fingerprintAnchor,
   parseFingerprintAnchors,
 } from "./fingerprint.ts";
 import { changedLinesByFile, isInDiff, parseDiffRanges } from "./position.ts";
 import {
   openStore,
+  type AutoDispositionCandidate,
   type DispositionUpdate,
   type FindingCommentRef,
   type FindingPlacement,
@@ -381,16 +383,90 @@ function priorMatch(
   prior: ReadonlyMap<string, PriorDisposition>,
   worktreePath: string,
   finding: MergedFinding,
-): PriorDisposition | undefined {
+): { key: string; entry: PriorDisposition } | undefined {
   for (const offset of MATCH_OFFSETS) {
     const line = finding.line + offset;
     if (line < 1) continue;
     const fingerprint = contentFingerprint(worktreePath, finding.file, line);
     if (fingerprint === undefined) continue;
-    const match = prior.get(`${finding.file}\n${fingerprint}`);
-    if (match !== undefined) return match;
+    const key = `${finding.file}\n${fingerprint}`;
+    const entry = prior.get(key);
+    if (entry !== undefined) return { key, entry };
   }
   return undefined;
+}
+
+/**
+ * 本轮该自动处置的那些上一轮 Finding(ADR 0013)。
+ *
+ * 三个条件同时成立才算:所指代码已改动(它的指纹在本轮 head 上算不出)、本轮没有
+ * 同一处 Finding 再被报出、Forge 上还没有人处置过它。
+ *
+ * 指纹仍算得出却没再报出的不动:那是模型的波动,不是代码的改动。只活在 review 正文
+ * 里的不动:正文没有 resolve 载体,无从写回 Forge。
+ */
+function autoDisposeCandidates(
+  prior: ReadonlyMap<string, PriorDisposition>,
+  matched: ReadonlySet<string>,
+  worktreePath: string,
+): AutoDispositionCandidate[] {
+  // 一个文件只算一遍全文指纹:同一个文件里常有好几处 Finding。
+  const byFile = new Map<string, Set<string>>();
+  const candidates: AutoDispositionCandidate[] = [];
+
+  for (const [key, entry] of prior) {
+    if (matched.has(key)) continue;
+    if (entry.resolved) continue;
+    if (entry.commentId === undefined) continue;
+    const [file, fingerprint] = key.split("\n") as [string, string];
+    let fingerprints = byFile.get(file);
+    if (fingerprints === undefined) {
+      fingerprints = fileFingerprints(worktreePath, file);
+      byFile.set(file, fingerprints);
+    }
+    if (fingerprints.has(fingerprint)) continue;
+    candidates.push({ file, fingerprint, commentId: entry.commentId });
+  }
+
+  return candidates;
+}
+
+/**
+ * 逐条自动处置:先写 Forge 再落库。Disposition 的权威状态在 Forge 上(ADR 0006),
+ * 反过来会留下「库里说已处置、Gitea 上没有」,而下一轮回填还会把它改回去。
+ *
+ * 单条失败只记日志:少一条自动处置是小事,一次审查因此白跑不是。
+ */
+async function autoDispose(
+  forge: Forge,
+  event: PullRequestEvent,
+  store: ReturnType<typeof openStore>,
+  candidates: readonly AutoDispositionCandidate[],
+): Promise<void> {
+  const pending = store.pendingAutoDispositions(
+    event.owner,
+    event.repo,
+    event.number,
+    candidates,
+  );
+  for (const candidate of pending) {
+    try {
+      await forge.resolveComment({ owner: event.owner, repo: event.repo }, candidate.commentId);
+    } catch (error) {
+      console.error(
+        "[review] 「已改动」自动处置写 Forge 失败,这一条留给人处置:",
+        error instanceof Error ? error.message : String(error),
+      );
+      continue;
+    }
+    store.recordAutoDisposition(
+      event.owner,
+      event.repo,
+      event.number,
+      candidate,
+      new Date().toISOString(),
+    );
+  }
 }
 
 /** 一条行级评论的身份:同一轮里 `路径 + 行号 + 正文` 三者相同的草稿只有一条。 */
@@ -541,6 +617,8 @@ export async function runReview(
     const groupFingerprints: (string | undefined)[] = [];
     // 折叠的那些记历史评论;本轮新发的要等发布之后才有 id,这里先留空。
     const groupComments: (PriorDisposition | undefined)[] = [];
+    // 本轮又被报出来的那些历史锚点。自动处置只认没落在这里面的(ADR 0013)。
+    const matchedKeys = new Set<string>();
 
     for (const [groupIndex, finding] of findings.entries()) {
       // 指纹在新 head commit 的工作副本下重算:代码没变则与上一轮的锚点相同。
@@ -549,12 +627,13 @@ export async function runReview(
       const match = priorMatch(prior, worktree.path, finding);
 
       if (match !== undefined) {
-        carried.push({ finding, resolved: match.resolved });
-        dispositions.push(match.resolved ? "resolved" : "unresolved");
+        matchedKeys.add(match.key);
+        carried.push({ finding, resolved: match.entry.resolved });
+        dispositions.push(match.entry.resolved ? "resolved" : "unresolved");
         // 折叠的这条沿用它历史上的载体:有行级评论即有 resolve 载体,进统计;只活在
         // 正文里的没有,排除(ADR 0006)。
-        placements.push(match.fromInline ? "inline" : "body");
-        groupComments.push(match);
+        placements.push(match.entry.fromInline ? "inline" : "body");
+        groupComments.push(match.entry);
         continue;
       }
 
@@ -572,6 +651,13 @@ export async function runReview(
         placements.push("body");
         fallbacks.push({ finding, fingerprint });
       }
+    }
+
+    // 「已改动」自动处置(ADR 0013),PR 触发与范围审查走的是同一段代码。全部
+    // Reviewer 都失败时不做:那种情况下「本轮没再报出」只说明什么都没跑,不是证据。
+    if (!failed) {
+      const candidates = autoDisposeCandidates(prior, matchedKeys, worktree.path);
+      await autoDispose(forge, event, store, candidates);
     }
 
     const outcomeRecords: OutcomeRecord[] = timed.map(({ outcome, durationMs }) => ({

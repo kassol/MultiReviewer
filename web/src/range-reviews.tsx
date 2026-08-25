@@ -18,7 +18,7 @@ import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
-import { runStatus, type RunItem } from "./runs.tsx";
+import { disposedCount, runStatus, type RunItem } from "./runs.tsx";
 import { loadPanelSession, pullRequestUrl } from "./session.ts";
 
 /** 一个范围审查。字段与 `GET <前缀>/api/range-reviews` 逐字对应。 */
@@ -380,7 +380,9 @@ function RangeReviewDetailPanel({
                             {localMinute(run.startedAt)}
                           </span>
                           <span className="text-sm text-text-muted tabular-nums">
-                            {run.total === 0 ? "无可处置项" : `${run.resolved}/${run.total} 已处置`}
+                            {run.total === 0
+                              ? "无可处置项"
+                              : `${disposedCount(run)}/${run.total} 已处置`}
                           </span>
                         </span>
                         <StatusBadge tone={conclusion.tone}>{conclusion.label}</StatusBadge>

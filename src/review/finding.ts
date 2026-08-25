@@ -9,10 +9,14 @@ export type Severity = "P0" | "P1" | "P2";
 export type Category = "security" | "bug" | "maintainability" | "design";
 
 /**
- * 人对一条 Finding 的处置结论,取自 Forge 上对应 review 评论的 resolve 状态。
+ * 一条 Finding 的处置结论,取自 Forge 上对应 review 评论的 resolve 状态。
  * 本轮没有匹配到既有评论时无从得知,记 `unknown`。
+ *
+ * `resolved` 是人工处置,人在面板或 Gitea 上点的都算;`changed` 是「已改动」自动处置
+ * (ADR 0013):所指代码已改动且本轮未再报出时,MultiReviewer 自己 resolve 的那一档。
+ * 两者在 Forge 上是同一个 resolve 状态,分开只在本地库与处置率统计里。
  */
-export type Disposition = "resolved" | "unresolved" | "unknown";
+export type Disposition = "resolved" | "unresolved" | "unknown" | "changed";
 
 /**
  * 一条被提出的代码问题。归属于提出它的 Reviewer,并指向 Review Range 内的具体位置。

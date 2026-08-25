@@ -30,7 +30,7 @@ import {
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { modelIdentity, parseModelIdentity } from "./model-services.ts";
-import { rerunRequest, RunDetailPanel, RunPill, type RunItem } from "./runs.tsx";
+import { disposedCount, rerunRequest, RunDetailPanel, RunPill, type RunItem } from "./runs.tsx";
 import { loadPanelSession, pullRequestUrl } from "./session.ts";
 import { useSetupStatus } from "./setup-checklist.tsx";
 
@@ -1078,7 +1078,7 @@ function RepoRuns({
               </span>
               {/* 徽章说结论,这一格说进度。 */}
               <span className="shrink-0 text-base tabular-nums text-text-muted">
-                {run.total === 0 ? "—" : `${run.resolved}/${run.total}`}
+                {run.total === 0 ? "—" : `${disposedCount(run)}/${run.total}`}
               </span>
               <RunPill run={run} />
             </MasterListItem>

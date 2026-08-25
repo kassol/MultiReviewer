@@ -111,8 +111,10 @@ CREATE TABLE IF NOT EXISTS finding (
   -- 正文 fallback 没有行级评论,两项为 NULL;升级前的历史行同样为 NULL。
   comment_id TEXT,
   comment_html_url TEXT,
-  -- 面板上作出这次处置的人与时刻。回填链路不写这两列:在 Gitea 上点的 resolve 没有
-  -- 面板身份可记,那一档留 NULL。非 NULL 即「人在面板上显式设置过」。
+  -- 作出这次处置的人与时刻。回填链路不写这两列:在 Gitea 上点的 resolve 没有面板
+  -- 身份可记,那一档留 NULL,disposed_by 非 NULL 即「人在面板上显式设置过」。
+  -- 「已改动」自动处置(ADR 0013)只写 disposed_at,处置人留空:disposed_at 非 NULL
+  -- 因此等于「这一行被显式处置过一次」,自动规则据此不再碰它。
   disposed_by TEXT,
   disposed_at TEXT,
   -- 处置备注(CONTEXT.md):只存面板,不写入 Forge。至多一条,unresolve 之后仍留着。
@@ -406,6 +408,17 @@ const GLOBAL_MAX_CHANGED_LINES_VERSION_KEY = "max_changed_lines_per_batch_versio
  */
 const BUSY_TIMEOUT_MS = 5_000;
 
+/** 「同一个 pull request 名下的历史 finding」。回填与自动处置都按它限定范围。 */
+const PULL_REQUEST_SCOPE = `run_id IN (SELECT id FROM review_run
+                                        WHERE owner = ? AND repo = ? AND pull_number = ?)`;
+
+/**
+ * 还能自动处置的那些行(ADR 0013):当前处置是 unknown 或未处置,且从来没有被显式
+ * 处置过。`disposed_at` 就是那个标记——面板处置写它,自动处置也写它(处置人留空),
+ * 于是一行至多被自动处置一次:人把「已改动」改回未处置之后,自动规则不再碰它。
+ */
+const AUTO_DISPOSABLE = "disposition IN ('unknown', 'unresolved') AND disposed_at IS NULL";
+
 /** Review Run 开始时即已知的元数据。 */
 export type RunMeta = {
   owner: string;
@@ -482,6 +495,16 @@ export type DispositionUpdate = {
 };
 
 /**
+ * 「已改动」自动处置(ADR 0013)的一个候选:一处 Finding 的锚点,加上承载它的那条
+ * Forge 评论——自动处置写回 Forge 的仍是同一个 resolve,载体与人工处置是同一条。
+ */
+export type AutoDispositionCandidate = {
+  file: string;
+  fingerprint: string;
+  commentId: string;
+};
+
+/**
  * 面板处置一条 Finding 要用的那几项。处置写在承载它的那条 Forge 评论上,因此这里
  * 带上评论 id 与它所属仓库;`commentId` 为 null 即 fallback,没有可处置的载体。
  */
@@ -504,14 +527,16 @@ export type RunResult = {
 
 /**
  * 处置率矩阵的一格:模型 × category。计数单位是**同一处 Finding**(Finding Identity,
- * 见 CONTEXT.md),不是落库行。分母 = resolved + unresolved + unknownClosed;
+ * 见 CONTEXT.md),不是落库行。分母 = resolved + changed + unresolved + unknownClosed;
  * unknownOpen 不进分母也不上页面,API 带上它只为让口径可对账。
  */
 export type DispositionCell = {
   model: string;
   category: string;
-  /** 分子:已处置(折叠组内任一行 resolved 即已处置)。 */
+  /** 分子的人工那一列:人在面板或 Gitea 上 resolve 的(折叠组内任一行算数)。 */
   resolved: number;
+  /** 分子的自动那一列:「已改动」自动处置(ADR 0013)。人工处置优先于它。 */
+  changed: number;
   /** 人看过但未 resolve。 */
   unresolved: number;
   /** 已关闭 PR 上仍无人处置——到了终态还没人处置,那就是未处置,进分母。 */
@@ -806,7 +831,10 @@ export type RunListItem = {
     /** 处置备注,只存面板。 */
     note: string | null;
   }[];
+  /** 人工处置掉的合并组数。 */
   resolved: number;
+  /** 「已改动」自动处置掉的合并组数(ADR 0013)。 */
+  changed: number;
   total: number;
 };
 
@@ -1132,8 +1160,35 @@ export type Store = {
    */
   claimDelivery(owner: string, repo: string, headSha: string): boolean;
   /**
+   * 候选里还能自动处置的那些(ADR 0013):这个 pull request 名下、文件与指纹都对上、
+   * 且从来没有被显式处置过的行。
+   *
+   * 先问库再写 Forge:已经自动处置过的、以及人在面板上处置过的都在这里被挡掉,
+   * Forge 那一步因此不会一轮轮重复 resolve 同一条评论,也不会与在 Forge 上撤回处置
+   * 的人对着干。
+   */
+  pendingAutoDispositions(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    candidates: readonly AutoDispositionCandidate[],
+  ): AutoDispositionCandidate[];
+  /**
+   * 记一次「已改动」自动处置(ADR 0013)。处置人留空——这一档不是人做的;处置时刻
+   * 照记,它同时是「这一行已被显式处置过」的标记,自动规则据此至多碰一行一次。
+   */
+  recordAutoDisposition(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    candidate: AutoDispositionCandidate,
+    disposedAt: string,
+  ): void;
+  /**
    * 回填 disposition(ADR 0006):对这个 pull request 名下、文件与指纹都对上的全部
    * 历史 finding,以 Forge 的最新状态覆盖已有值——人 resolve 后又 unresolve,库里跟着改。
+   *
+   * 「已改动」不被读回的 resolved 降级成人工处置那一档(ADR 0013)。
    */
   backfillDispositions(
     owner: string,
@@ -2714,7 +2769,8 @@ export function openStore(dbPath: string): Store {
              SELECT model, owner, repo, pull_number, file, fp,
                     MIN(started_at) AS first_seen,
                     MAX(CASE disposition
-                          WHEN 'resolved' THEN 2
+                          WHEN 'resolved' THEN 3
+                          WHEN 'changed' THEN 2
                           WHEN 'unresolved' THEN 1
                           ELSE 0 END) AS disp,
                     MAX(closed) AS closed
@@ -2731,7 +2787,8 @@ export function openStore(dbPath: string): Store {
                FROM identity
            )
            SELECT model, category,
-                  SUM(CASE WHEN disp = 2 THEN 1 ELSE 0 END) AS resolved,
+                  SUM(CASE WHEN disp = 3 THEN 1 ELSE 0 END) AS resolved,
+                  SUM(CASE WHEN disp = 2 THEN 1 ELSE 0 END) AS changed,
                   SUM(CASE WHEN disp = 1 THEN 1 ELSE 0 END) AS unresolved,
                   SUM(CASE WHEN disp = 0 AND closed = 1 THEN 1 ELSE 0 END) AS unknown_closed,
                   SUM(CASE WHEN disp = 0 AND closed = 0 THEN 1 ELSE 0 END) AS unknown_open
@@ -2747,6 +2804,7 @@ export function openStore(dbPath: string): Store {
         model: String(row["model"]),
         category: String(row["category"]),
         resolved: Number(row["resolved"]),
+        changed: Number(row["changed"]),
         unresolved: Number(row["unresolved"]),
         unknownClosed: Number(row["unknown_closed"]),
         unknownOpen: Number(row["unknown_open"]),
@@ -2846,13 +2904,16 @@ export function openStore(dbPath: string): Store {
             WHERE run_id IN (${marks}) GROUP BY run_id, model ORDER BY model`,
         )
         .all(...ids);
-      // 已处置口径与处置率同源:合并组内任一行 resolved 即已处置,只认行级承载。
+      // 已处置口径与处置率同源:合并组内任一行已处置即已处置,只认行级承载。人工与
+      // 自动分开数,面板据此把两者分开显示(ADR 0013)。
       const byGroup = db
         .prepare(
           `SELECT run_id,
                   COUNT(DISTINCT group_index) AS total,
                   COUNT(DISTINCT CASE WHEN disposition = 'resolved' THEN group_index END)
-                    AS resolved
+                    AS resolved,
+                  COUNT(DISTINCT CASE WHEN disposition = 'changed' THEN group_index END)
+                    AS changed
              FROM finding
             WHERE run_id IN (${marks}) AND placement = 'inline'
             GROUP BY run_id`,
@@ -2909,10 +2970,11 @@ export function openStore(dbPath: string): Store {
         list.sort((a, b) => a.model.localeCompare(b.model));
         models.set(runId, list);
       }
-      const groups = new Map<number, { resolved: number; total: number }>();
+      const groups = new Map<number, { resolved: number; changed: number; total: number }>();
       for (const row of byGroup) {
         groups.set(Number(row["run_id"]), {
           resolved: Number(row["resolved"]),
+          changed: Number(row["changed"]),
           total: Number(row["total"]),
         });
       }
@@ -2989,6 +3051,7 @@ export function openStore(dbPath: string): Store {
           reviewerPins: reviewerPins.get(id) ?? [],
           findings: findings.get(id) ?? [],
           resolved: groups.get(id)?.resolved ?? 0,
+          changed: groups.get(id)?.changed ?? 0,
           total: groups.get(id)?.total ?? 0,
         };
       });
@@ -3184,17 +3247,44 @@ export function openStore(dbPath: string): Store {
       });
     },
 
+    pendingAutoDispositions(owner, repo, pullNumber, candidates) {
+      const probe = db.prepare(
+        `SELECT 1 FROM finding
+          WHERE file = ? AND fingerprint = ? AND ${AUTO_DISPOSABLE}
+            AND ${PULL_REQUEST_SCOPE} LIMIT 1`,
+      );
+      return candidates.filter(
+        (candidate) =>
+          probe.get(candidate.file, candidate.fingerprint, owner, repo, pullNumber) !==
+          undefined,
+      );
+    },
+
+    recordAutoDisposition(owner, repo, pullNumber, candidate, disposedAt) {
+      db.prepare(
+        `UPDATE finding SET disposition = 'changed', disposed_at = ?
+          WHERE file = ? AND fingerprint = ? AND ${AUTO_DISPOSABLE}
+            AND ${PULL_REQUEST_SCOPE}`,
+      ).run(disposedAt, candidate.file, candidate.fingerprint, owner, repo, pullNumber);
+    },
+
     backfillDispositions(owner, repo, pullNumber, updates) {
       if (updates.length === 0) return;
-      const scope = `run_id IN (SELECT id FROM review_run
-                                 WHERE owner = ? AND repo = ? AND pull_number = ?)`;
       const withDisposition = db.prepare(
         `UPDATE finding SET disposition = ?, placement = ?
-          WHERE file = ? AND fingerprint = ? AND ${scope}`,
+          WHERE file = ? AND fingerprint = ? AND ${PULL_REQUEST_SCOPE}`,
+      );
+      // 「已改动」在 Forge 上就是一个 resolve(ADR 0013),读回的 resolved 因此不能把它
+      // 降级成人工那一档——处置率会凭空多出人工处置。读回 unresolved 是另一回事:人在
+      // Forge 上撤回了处置,以 Forge 最新状态为准,照写。
+      const keepAutoDisposed = db.prepare(
+        `UPDATE finding SET disposition = ?, placement = ?
+          WHERE file = ? AND fingerprint = ? AND disposition <> 'changed'
+            AND ${PULL_REQUEST_SCOPE}`,
       );
       const placementOnly = db.prepare(
         `UPDATE finding SET placement = ?
-          WHERE file = ? AND fingerprint = ? AND ${scope}`,
+          WHERE file = ? AND fingerprint = ? AND ${PULL_REQUEST_SCOPE}`,
       );
       db.exec("BEGIN");
       try {
@@ -3202,7 +3292,9 @@ export function openStore(dbPath: string): Store {
           if (entry.disposition === undefined) {
             placementOnly.run(entry.placement, entry.file, entry.fingerprint, owner, repo, pullNumber);
           } else {
-            withDisposition.run(
+            const update =
+              entry.disposition === "resolved" ? keepAutoDisposed : withDisposition;
+            update.run(
               entry.disposition,
               entry.placement,
               entry.file,

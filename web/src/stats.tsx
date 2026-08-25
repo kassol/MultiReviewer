@@ -18,7 +18,10 @@ import { costPresentation, type UsageSummary } from "./usage-cost.ts";
 export type Cell = {
   model: string;
   category: string;
+  /** 分子的人工那一列:人在面板或 Gitea 上 resolve 的。 */
   resolved: number;
+  /** 分子的自动那一列:「已改动」自动处置(ADR 0013)。 */
+  changed: number;
   unresolved: number;
   unknownClosed: number;
   unknownOpen: number;
@@ -32,9 +35,14 @@ type StatsResponse = {
   database: { fileBytes: number; tables: { name: string; rows: number }[] };
 };
 
-/** 分母 = 已处置 + 看过未 resolve + 已关闭 PR 上无人处置(ADR 0006)。 */
+/** 分母 = 已处置(人工 + 自动)+ 看过未 resolve + 已关闭 PR 上无人处置(ADR 0006)。 */
 export function denominator(cell: Cell): number {
-  return cell.resolved + cell.unresolved + cell.unknownClosed;
+  return cell.resolved + cell.changed + cell.unresolved + cell.unknownClosed;
+}
+
+/** 分子:人工与自动都算(ADR 0013)。两者的拆分在「按模型统计」那一段单列。 */
+export function disposed(cell: Cell): number {
+  return cell.resolved + cell.changed;
 }
 
 function isoDay(ms: number): string {
@@ -91,14 +99,25 @@ function RateText({
   );
 }
 
-/** 一组 cell 求和。总处置率与逐模型处置率是同一个口径,只差过滤条件。 */
-function sum(cells: Cell[]): { resolved: number; total: number } {
+/**
+ * 一组 cell 求和。总处置率与逐模型处置率是同一个口径,只差过滤条件。
+ *
+ * `resolved` 是分子合计(人工 + 自动),`manual` 与 `auto` 是它的两列拆分。
+ */
+function sum(cells: Cell[]): {
+  resolved: number;
+  manual: number;
+  auto: number;
+  total: number;
+} {
   return cells.reduce(
     (acc, cell) => ({
-      resolved: acc.resolved + cell.resolved,
+      resolved: acc.resolved + disposed(cell),
+      manual: acc.manual + cell.resolved,
+      auto: acc.auto + cell.changed,
       total: acc.total + denominator(cell),
     }),
-    { resolved: 0, total: 0 },
+    { resolved: 0, manual: 0, auto: 0, total: 0 },
   );
 }
 
@@ -171,8 +190,7 @@ export function StatsPage() {
   const models = [...new Set(cells.map((cell) => cell.model))].sort();
   const categories = [...new Set(cells.map((cell) => cell.category))].sort();
   const byKey = new Map(cells.map((cell) => [`${cell.model}\n${cell.category}`, cell]));
-  const modelTotal = (model: string): { resolved: number; total: number } =>
-    sum(cells.filter((cell) => cell.model === model));
+  const modelTotal = (model: string) => sum(cells.filter((cell) => cell.model === model));
   // 矩阵合计行(全部模型)的总计,与逐模型合计同一口径,只是不按 model 过滤。
   const grandTotal = sum(cells);
   const usageCost = costPresentation(stats.data?.usage);
@@ -186,7 +204,7 @@ export function StatsPage() {
               处置率
               <HelpTooltip
                 label="处置率计算方式"
-                content="处置率 = 已处置 Finding ÷ 可处置 Finding。同一处 Finding 只统计一次；无法关联到行级评论的 Finding 不计入。"
+                content="处置率 = 已处置 Finding ÷ 可处置 Finding。已处置分人工与自动两列：人工是人点的 resolve，自动是代码已改动且未再报出时系统处置的。同一处 Finding 只统计一次；无法关联到行级评论的 Finding 不计入。"
               />
             </span>
           }
@@ -272,6 +290,12 @@ export function StatsPage() {
                         条已处置
                       </span>
                       <Bar pct={pct} />
+                      {/* 人工与自动分列(ADR 0013):resolve 衡量「人看过」的口径只对
+                          人工那一列成立,合成一个数字会把两件事读成一件。 */}
+                      <span className="text-xs text-text-muted">
+                        人工 <span className="font-mono tabular-nums">{total.manual}</span>
+                        {" · "}自动 <span className="font-mono tabular-nums">{total.auto}</span>
+                      </span>
                     </div>
                   </div>
                 );
@@ -333,7 +357,7 @@ export function StatsPage() {
                                 {cell === undefined ? (
                                   <span className="font-mono text-xs tabular-nums text-text-muted">—</span>
                                 ) : (
-                                  <Rate resolved={cell.resolved} total={denominator(cell)} />
+                                  <Rate resolved={disposed(cell)} total={denominator(cell)} />
                                 )}
                               </dd>
                             </div>
@@ -387,7 +411,7 @@ export function StatsPage() {
                                     —
                                   </span>
                                 ) : (
-                                  <RateText resolved={cell.resolved} total={denominator(cell)} />
+                                  <RateText resolved={disposed(cell)} total={denominator(cell)} />
                                 )}
                               </Table.Cell>
                             );

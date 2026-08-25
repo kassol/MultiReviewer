@@ -47,9 +47,17 @@ export type RunItem = {
   usage?: UsageSummary;
   /** 本轮落库的每一条来源 Finding。详情面板按模型分组列出并在行内处置。 */
   findings: RunFinding[];
+  /** 人工处置掉的合并组数。 */
   resolved: number;
+  /** 「已改动」自动处置掉的合并组数(ADR 0013)。 */
+  changed: number;
   total: number;
 };
+
+/** 已处置的合并组数:人工与自动都算。进度与状态一律按它判(ADR 0013)。 */
+export function disposedCount(run: { resolved: number; changed: number }): number {
+  return run.resolved + run.changed;
+}
 
 /**
  * 一条落库的 Finding。`commentId` 为 null 的那些只活在 review 正文里(fallback),
@@ -63,7 +71,8 @@ export type RunFinding = {
   severity: "P0" | "P1" | "P2";
   category: string;
   description: string;
-  disposition: "resolved" | "unresolved" | "unknown";
+  /** `changed` 是「已改动」自动处置(ADR 0013),处置人为空。 */
+  disposition: "resolved" | "unresolved" | "unknown" | "changed";
   placement: "inline" | "body";
   commentId: string | null;
   /** Forge 上那条原评论的地址。 */
@@ -120,7 +129,9 @@ function FindingRow({ finding, canDispose }: { finding: RunFinding; canDispose: 
   const queryClient = useQueryClient();
   const [note, setNote] = useState("");
   const [composing, setComposing] = useState(false);
-  const resolved = finding.disposition === "resolved";
+  // 人工与自动两档都是已处置:划掉正文、给撤回动作。区别只在下面那行署名上。
+  const autoDisposed = finding.disposition === "changed";
+  const resolved = finding.disposition === "resolved" || autoDisposed;
   const dispose = useMutation({
     mutationFn: disposeRequest,
     onSuccess: () => {
@@ -168,7 +179,19 @@ function FindingRow({ finding, canDispose }: { finding: RunFinding; canDispose: 
         {finding.description}
       </p>
 
-      {finding.disposedBy === null ? null : (
+      {autoDisposed ? (
+        <p className="text-sm text-text-muted">
+          代码已改动 · 自动处置
+          {finding.disposedAt === null ? null : (
+            <>
+              {" · "}
+              <span className="tabular-nums">
+                {localDay(finding.disposedAt)} {localClock(finding.disposedAt)}
+              </span>
+            </>
+          )}
+        </p>
+      ) : finding.disposedBy === null ? null : (
         <p className="text-sm text-text-muted">
           {resolved ? "已处置" : "撤回处置"} · {finding.disposedBy} ·{" "}
           <span className="tabular-nums">{localDay(finding.disposedAt!)} {localClock(finding.disposedAt!)}</span>
@@ -291,7 +314,7 @@ function runHasModelFailure(run: RunItem): boolean {
 
 function runBucket(run: RunItem): Exclude<RunFilter, "all"> {
   if (run.failed || runHasModelFailure(run)) return "failed";
-  if (run.total > 0 && run.resolved < run.total) return "pending";
+  if (run.total > 0 && disposedCount(run) < run.total) return "pending";
   return "done";
 }
 
@@ -324,7 +347,7 @@ export function runStatus(run: RunItem): { tone: StatusTone; label: string } {
   if (run.failed) return { tone: "error", label: "运行失败" };
   if (run.models.some((entry) => entry.failure !== null)) return { tone: "warning", label: "部分失败" };
   if (run.total === 0) return { tone: "neutral", label: "无可处置项" };
-  return run.resolved === run.total
+  return disposedCount(run) === run.total
     ? { tone: "success", label: "已完成" }
     : { tone: "warning", label: "待处置" };
 }
@@ -534,15 +557,25 @@ export function RunDetailPanel({
               <div className="flex justify-between text-base text-text-secondary">
                 <span>处置进度</span>
                 <span className="font-bold tabular-nums text-text">
-                  {run.resolved} / {run.total}
+                  {disposedCount(run)} / {run.total}
                 </span>
               </div>
-              <div className="h-1.5 overflow-hidden rounded-[3px] bg-accent-track">
+              {/* 两段一条:人工在前,自动接在后面。两者都是已处置,只是来路不同。 */}
+              <div className="flex h-1.5 overflow-hidden rounded-[3px] bg-accent-track">
                 <div
-                  className="h-full rounded-[3px] bg-primary"
+                  className="h-full bg-primary"
                   style={{ width: `${(run.resolved / run.total) * 100}%` }}
                 />
+                <div
+                  className="h-full bg-primary/40"
+                  style={{ width: `${(run.changed / run.total) * 100}%` }}
+                />
               </div>
+              {run.changed === 0 ? null : (
+                <p className="text-sm text-text-muted tabular-nums">
+                  人工 {run.resolved} · 自动 {run.changed}
+                </p>
+              )}
             </div>
           )}
         </header>
@@ -852,7 +885,7 @@ export function RunsPage({ canRerun, canDispose }: { canRerun: boolean; canDispo
                       <RunModelChips run={run} />
                       {/* 徽章说结论,这一格说进度:两边都写分数就是同一个数字说两遍。 */}
                       <span className="shrink-0 text-base tabular-nums text-text-muted max-sm:hidden">
-                        {run.total === 0 ? "—" : `${run.resolved}/${run.total}`}
+                        {run.total === 0 ? "—" : `${disposedCount(run)}/${run.total}`}
                       </span>
                       <span className="shrink-0">{rowBadge(run)}</span>
                     </MasterListItem>

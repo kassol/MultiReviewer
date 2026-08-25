@@ -4,6 +4,7 @@ import { after, test } from "node:test";
 
 import type { ExistingReviewComment, ReviewDraft } from "../src/forge/forge.ts";
 import { runReview } from "../src/review/run.ts";
+import { openStore } from "../src/review/store.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
 
@@ -28,6 +29,8 @@ const UNRELATED_CHANGE = HEAD.replace("return a * b;", "return a * b * 2;");
 const SAME_LINE_CHANGE = HEAD.replace("return a - b - 1;", "return a - b - 2;");
 // 改 add。第 11 行既不会被卷进 diff,它的指纹窗口(8..14 行)也不变。
 const DISTANT_CHANGE = HEAD.replace("return a + b;", "return a + b + 0;");
+// 在文件头插 5 行:sub 整段原样下移,指纹算得出,只是不在原来那个行号上了。
+const SHIFTED = `// 1\n// 2\n// 3\n// 4\n// 5\n${HEAD}`;
 
 /** mul 的收尾行。-U3 的 hunk 只覆盖 3..9 行,它落在 diff 之外,退化进 review 正文。 */
 const OUT_OF_DIFF_LINE = 11;
@@ -96,6 +99,34 @@ function query(dbPath: string, sql: string): Record<string, unknown>[] {
     return db.prepare(sql).all() as unknown as Record<string, unknown>[];
   } finally {
     db.close();
+  }
+}
+
+/** 落库的处置人与处置时刻,按落库顺序。 */
+function dispositionMarks(dbPath: string): { by: unknown; at: unknown }[] {
+  return query(dbPath, "SELECT disposed_by, disposed_at FROM finding ORDER BY id").map(
+    (row) => ({ by: row["disposed_by"], at: row["disposed_at"] }),
+  );
+}
+
+/** 人在面板上处置一条 Finding:落库这一步与面板 API 走同一段代码。 */
+function disposeInPanel(
+  dbPath: string,
+  commentId: string,
+  disposition: "resolved" | "unresolved",
+): void {
+  const store = openStore(dbPath);
+  try {
+    store.recordDisposition({
+      owner: EVENT.owner,
+      repo: EVENT.repo,
+      commentId,
+      disposition,
+      disposedBy: "kassol",
+      disposedAt: "2026-08-25T00:00:00.000Z",
+    });
+  } finally {
+    store.close();
   }
 }
 
@@ -444,4 +475,130 @@ test("跨轮匹配到历史评论的 Finding,记的是那条历史评论的 id",
   ).at(-1)!;
   assert.equal(latest["comment_id"], "thread-0");
   assert.equal(latest["comment_html_url"], "https://forge.invalid/comments/thread-0");
+});
+
+/**
+ * 「已改动」自动处置(ADR 0013,issue #159)。上一轮的一条 Finding 摆在这里:代码
+ * 改没改、本轮有没有再报出、人动没动过它,三个条件的组合各验一遍。
+ */
+
+/** 本轮一条 Finding 都不报:自动处置认的是「没再报出」,不是「报了别的」。 */
+const SILENT = [scriptedReviewer("model-a", [])];
+
+test("代码已改动且本轮未再报出:Forge 收到 resolve,库里记「已改动」", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
+
+  await runReview(EVENT, { ...deps, reviewers: SILENT });
+
+  assert.deepEqual(forge.resolvedIds, ["thread-0"], "自动处置没有写回 Forge");
+  assert.deepEqual(latestDispositions(db.path), ["changed"]);
+  // 处置人留空,处置时刻照记:这一档不是人做的,时刻同时是「已被处置过」的标记。
+  const [mark] = dispositionMarks(db.path);
+  assert.equal(mark!.by, null);
+  assert.notEqual(mark!.at, null);
+
+  // 面板的处置进度把人工与自动分开数:这一条落在自动那一列。
+  const store = openStore(db.path);
+  const first = store.listRuns({ limit: 10 }).at(-1)!;
+  store.close();
+  assert.deepEqual(
+    { resolved: first.resolved, changed: first.changed, total: first.total },
+    { resolved: 0, changed: 1, total: 1 },
+  );
+});
+
+test("指纹仍算得出、只是本轮没再报出:不动", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+
+  await runReview(EVENT, { ...deps, reviewers: SILENT });
+
+  assert.deepEqual(forge.resolvedIds, [], "模型的波动被当成了代码的改动");
+  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
+});
+
+test("整段代码只是下移超过容差:指纹仍算得出,不自动处置", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  // 作者在文件头加了 5 行,sub 原样下移。按历史行号原地重算指纹会算不出,
+  // 于是把整个文件的 Finding 都误判成已改动。
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SHIFTED });
+
+  await runReview(EVENT, { ...deps, reviewers: SILENT });
+
+  assert.deepEqual(forge.resolvedIds, [], "代码只是挪了位置,却被当成已改动");
+  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
+});
+
+test("人已经在 Forge 上处置过的:代码改了也不自动处置", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, true));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
+
+  await runReview(EVENT, { ...deps, reviewers: SILENT });
+
+  assert.deepEqual(forge.resolvedIds, []);
+  assert.deepEqual(latestDispositions(db.path), ["resolved"], "人工处置被自动处置盖掉了");
+});
+
+test("回填不把「已改动」降级成人工处置", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
+  await runReview(EVENT, { ...deps, reviewers: SILENT });
+  assert.deepEqual(latestDispositions(db.path), ["changed"]);
+
+  // 自动处置写回 Forge 之后,那条评论在 Forge 上就是 resolved,下一轮照样读回来。
+  for (const comment of forge.existingComments) comment.resolved = true;
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": DISTANT_CHANGE });
+  await runReview(EVENT, { ...deps, reviewers: SILENT });
+
+  assert.deepEqual(latestDispositions(db.path), ["changed"], "回填把自动处置读成了人工处置");
+});
+
+test("人把「已改动」改回未处置之后,下一轮不再自动处置", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
+  await runReview(EVENT, { ...deps, reviewers: SILENT });
+  assert.deepEqual(latestDispositions(db.path), ["changed"]);
+
+  // 人在面板上撤回了这次自动处置:从此这一行是人工处置的地盘。
+  disposeInPanel(db.path, forge.publishedComments[0]!.id, "unresolved");
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": DISTANT_CHANGE });
+  await runReview(EVENT, { ...deps, reviewers: SILENT });
+
+  assert.deepEqual(forge.resolvedIds, ["thread-0"], "人撤回之后又被自动处置了一次");
+  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
+});
+
+test("全部 Reviewer 都失败时不自动处置:那一轮没跑,不是没报出", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [scriptedReviewer("model-a", [], { failure: "模型服务不可用" })],
+  });
+
+  assert.deepEqual(forge.resolvedIds, []);
+  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
 });

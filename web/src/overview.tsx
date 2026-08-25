@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 
 import { fetchJson } from "./api.ts";
 import { useModelServices, type ModelServiceHealth } from "./model-services.ts";
-import { runStatus, type RunItem } from "./runs.tsx";
+import { disposedCount, runStatus, type RunItem } from "./runs.tsx";
 import { hasPermission, loadPanelSession } from "./session.ts";
 import type { Cell } from "./stats.tsx";
 
@@ -31,12 +31,16 @@ type StatsResponse = { cells: Cell[] };
  * 与 react-day-picker,import 进来会把那一整块拽进总览的首屏分块。
  */
 function denominator(cell: Cell): number {
-  return cell.resolved + cell.unresolved + cell.unknownClosed;
+  return cell.resolved + cell.changed + cell.unresolved + cell.unknownClosed;
 }
 
+/** 分子是人工与自动之和(ADR 0013):总览只报一个率,拆解在处置率页。 */
 function rate(cells: readonly Cell[]): { resolved: number; total: number } {
   return cells.reduce(
-    (acc, cell) => ({ resolved: acc.resolved + cell.resolved, total: acc.total + denominator(cell) }),
+    (acc, cell) => ({
+      resolved: acc.resolved + cell.resolved + cell.changed,
+      total: acc.total + denominator(cell),
+    }),
     { resolved: 0, total: 0 },
   );
 }
@@ -243,8 +247,11 @@ export function OverviewPage() {
     !hasMore || loaded.some((run) => localDay(new Date(run.startedAt)) < day);
   const todayRuns = loaded.filter((run) => localDay(new Date(run.startedAt)) === today).length;
   const yesterdayRuns = loaded.filter((run) => localDay(new Date(run.startedAt)) === yesterday).length;
-  const pendingRuns = loaded.filter((run) => !run.failed && run.total > run.resolved);
-  const pendingFindings = pendingRuns.reduce((total, run) => total + (run.total - run.resolved), 0);
+  const pendingRuns = loaded.filter((run) => !run.failed && run.total > disposedCount(run));
+  const pendingFindings = pendingRuns.reduce(
+    (total, run) => total + (run.total - disposedCount(run)),
+    0,
+  );
   const pendingPulls = new Set(pendingRuns.map((run) => `${run.owner}/${run.repo}#${run.pullNumber}`)).size;
 
   const currentRate = rate(current.data?.cells ?? []);
@@ -576,11 +583,13 @@ function RunRow({
           </span>
           {` · ${run.triggeredBy === null ? "自动" : "手动"} · ${time}`}
           {/* 窄屏没有右侧的计数列,处置进度并进这一行。 */}
-          <span className="sm:hidden">{run.total === 0 ? "" : ` · 处置 ${run.resolved}/${run.total}`}</span>
+          <span className="sm:hidden">
+            {run.total === 0 ? "" : ` · 处置 ${disposedCount(run)}/${run.total}`}
+          </span>
         </span>
       </span>
       <span className="shrink-0 text-base tabular-nums text-text-muted max-sm:hidden">
-        {run.total === 0 ? "—" : `处置 ${run.resolved}/${run.total}`}
+        {run.total === 0 ? "—" : `处置 ${disposedCount(run)}/${run.total}`}
       </span>
       <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
       <ChevronRightIcon className="size-3 shrink-0 text-text-faint" aria-hidden />

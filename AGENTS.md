@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-25: 落地 issue #159。**作者改了代码就等于处置**:新一轮 Review Run 发现上一轮某条 Finding 所指的代码已经改动、本轮又没有再报出来时,MultiReviewer 自己去 Forge 上 resolve 那条评论,处置值记「已改动」(CONTEXT.md Disposition,ADR 0013)。代码没改、只是这一轮模型没再提的不动——那是模型的波动。人已经作出的处置一律不覆盖:Forge 上已 resolve 的不碰,人在面板上把「已改动」改回未处置之后,自动规则也不再碰它。回填照常以 Forge 为准,但不把「已改动」读成人工处置。PR 触发与范围审查是同一段代码,两条链路一起生效。处置率因此分人工与自动两列(分母口径不变):处置率页的每个模型多一行「人工 x · 自动 y」,Review Run 详情的进度条拆成两段,Finding 行上的自动处置写「代码已改动 · 自动处置」。
+
 - 2026-08-25: 落地 issue #158。**一个阶段可以收尾了**:范围审查详情里点「审查完成」(二次确认),MultiReviewer 关掉承载 Finding 的容器 pull request、删掉那两条分支,记下完成人与时刻,并按 ADR 0006 做一次全量回填——Gitea 上已 resolve 的同步回面板,其余未处置的从此计入处置率的分母。完成后比较项不再推进,同一个仓库同一个 base 再发起就是一个新的范围审查、不再提醒;已完成阶段的全部 Finding、处置与备注照常可查。Forge 那几步任一失败只记原因,状态留在进行中,改完权限再点一次即可。审查完成需要 `finding:dispose`。「已改动」自动处置与完整 diff 视图分别是 issue #159 / #160。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 
 - 2026-08-25: 落地 issue #157。**作者改完代码不用重开一个阶段了**:范围审查详情里点「推进比较项」填新 commit,MultiReviewer 把容器 PR 的 head 分支移过去并按 base..新比较项跑新的一轮,轮次仍归在同一个范围审查下。只要求新比较项是 base 的后代,作者 rebase 之后拉出来的 commit 照样填得进;不是后代当场拒绝,一条分支都不动。推分支失败只记原因,状态留在进行中,改完分支保护再点一次即可。详情页列出历次比较项与各自的轮次。推进需要 `review:create`。审查完成是 issue #158。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。

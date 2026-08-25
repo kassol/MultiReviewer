@@ -84,6 +84,19 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
         placement: "inline",
         fingerprint: "fp-1",
       },
+      // 「已改动」自动处置(ADR 0013):与人工处置分列,分母口径不变。
+      {
+        model: "model-a",
+        file: "src/a.ts",
+        line: 20,
+        severity: "P1",
+        category: "bug",
+        description: "另一处已经改掉了",
+        groupIndex: 1,
+        disposition: "changed",
+        placement: "inline",
+        fingerprint: "fp-2",
+      },
     ],
   });
   const secondRunId = seed.startRun({
@@ -146,6 +159,7 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
       model: "model-a",
       category: "bug",
       resolved: 1,
+      changed: 1,
       unresolved: 0,
       unknownClosed: 0,
       unknownOpen: 0,
@@ -167,7 +181,7 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
   // 库体量与实际文件一致;行数与刚种进去的数据对得上。
   assert.equal(body.database.fileBytes, statSync(h.db.path).size);
   const rows = new Map(body.database.tables.map((table) => [table.name, table.rows]));
-  assert.equal(rows.get("finding"), 1);
+  assert.equal(rows.get("finding"), 2);
   assert.equal(rows.get("review_run"), 2);
   assert.ok(rows.has("webhook_delivery"));
   assert.ok(rows.has("repo_key"));

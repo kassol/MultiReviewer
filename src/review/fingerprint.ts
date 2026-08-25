@@ -16,21 +16,48 @@ export function contentFingerprint(
   file: string,
   line: number,
 ): string | undefined {
+  const lines = readLines(worktreePath, file);
+  if (lines === undefined) return undefined;
+  return windowFingerprint(lines, line);
+}
+
+/**
+ * 一个文件此刻算得出的全部指纹。
+ *
+ * 「所指代码是不是已改动」的判据(ADR 0013):上一轮的指纹落在这个集合里,那处代码
+ * 就还在,不论它被上下挪了多少行。按历史评论记的行号原地重算做不到这一点——作者在
+ * 上面插几行,整个文件的 Finding 都会被误判成已改动,连带被自动处置掉。
+ */
+export function fileFingerprints(worktreePath: string, file: string): Set<string> {
+  const fingerprints = new Set<string>();
+  const lines = readLines(worktreePath, file);
+  // 文件被删掉或改名时读不到,一个指纹都算不出:那处代码确实已经不在了。
+  if (lines === undefined) return fingerprints;
+  for (let line = 1; line <= lines.length; line += 1) {
+    const fingerprint = windowFingerprint(lines, line);
+    if (fingerprint !== undefined) fingerprints.add(fingerprint);
+  }
+  return fingerprints;
+}
+
+/** 读工作副本里的一个文件,按行切开。读不到即没有指纹可算。 */
+function readLines(worktreePath: string, file: string): string[] | undefined {
   // 路径由模型给出,属半可信输入(ADR 0004),不能让它读到工作副本之外。
   const root = resolve(worktreePath);
   const full = resolve(root, file);
   if (full !== root && !full.startsWith(root + sep)) return undefined;
 
-  let content: string;
   try {
-    content = readFileSync(full, "utf8");
+    return readFileSync(full, "utf8").split("\n");
   } catch {
     // 模型报出的路径可能指不到仓库里的文件,此时没有指纹可算。
     return undefined;
   }
+}
 
-  const window = content
-    .split("\n")
+/** 指定行那一扇窗口的指纹。窗口整扇为空(文件尾的空行)时没有指纹可算。 */
+function windowFingerprint(lines: readonly string[], line: number): string | undefined {
+  const window = lines
     .slice(Math.max(0, line - 1 - CONTEXT_LINES), line + CONTEXT_LINES)
     .map((text) => text.trim().replace(/\s+/g, " "))
     .filter((text) => text !== "");
