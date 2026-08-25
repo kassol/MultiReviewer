@@ -15,8 +15,8 @@ type RepoRow = { repoId: number; owner: string; repo: string };
 type PickedRepo = { owner: string; repo: string };
 
 /**
- * 「发起范围审查」入口(issue #177):一个按钮加它的表单,评审记录页头、仓库页的评审
- * 记录区块与范围审查页共用同一份——三处发起的是同一件事,表单只该有一种样子。
+ * 「发起范围审查」入口(issue #177):一个按钮加它的表单,评审记录页头与仓库页的评审
+ * 记录区块共用同一份——两处发起的是同一件事,表单只该有一种样子。
  *
  * 给了 `repo` 就是仓库页那一档:仓库预填,表单里不再出现仓库选择。
  */
@@ -140,8 +140,7 @@ function LaunchDialogContent({
         setError(result.reminder);
         return;
       }
-      // 新阶段要在三处列表里都出现:范围审查页、评审记录页与仓库页的评审记录区块。
-      void queryClient.invalidateQueries({ queryKey: ["range-reviews"] });
+      // 新阶段要在两处列表里都出现:评审记录页与仓库页的评审记录区块。
       void queryClient.invalidateQueries({ queryKey: ["stages"] });
       void queryClient.invalidateQueries({ queryKey: ["repo-stages"] });
       onLaunched(`已发起 ${picked!.owner}/${picked!.repo} 的范围审查，第一轮审查开始运行`);

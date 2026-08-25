@@ -15,7 +15,6 @@ import {
   BarChartIcon,
   CounterClockwiseClockIcon,
   DashboardIcon,
-  LayersIcon,
   LightningBoltIcon,
   LockClosedIcon,
   MagnifyingGlassIcon,
@@ -48,7 +47,6 @@ import "./styles.css";
 const AccessControlPage = lazy(async () => ({ default: (await import("./access-control.tsx")).AccessControlPage }));
 const LoginPage = lazy(async () => ({ default: (await import("./login.tsx")).LoginPage }));
 const PasswordPage = lazy(async () => ({ default: (await import("./password.tsx")).PasswordPage }));
-const RangeReviewsPage = lazy(async () => ({ default: (await import("./range-reviews.tsx")).RangeReviewsPage }));
 const ReposPage = lazy(async () => ({ default: (await import("./repos.tsx")).ReposPage }));
 const RunsPage = lazy(async () => ({ default: (await import("./runs.tsx")).RunsPage }));
 const StageDetailPage = lazy(async () => ({ default: (await import("./stage-detail.tsx")).StageDetailPage }));
@@ -109,7 +107,6 @@ type NavigationItem = {
     | "/"
     | "/repos"
     | "/runs"
-    | "/range-reviews"
     | "/stats"
     | "/credentials"
     | "/settings"
@@ -130,7 +127,6 @@ type NavigationItem = {
 const NAV: readonly NavigationItem[] = [
   { to: "/", label: "总览", icon: DashboardIcon, permission: "review:read" },
   { to: "/runs", label: "评审记录", icon: CounterClockwiseClockIcon, permission: "review:read" },
-  { to: "/range-reviews", label: "范围审查", icon: LayersIcon, permission: "review:read" },
   { to: "/repos", label: "仓库", icon: ArchiveIcon, permission: "repo:read" },
   { to: "/stats", label: "处置率", icon: BarChartIcon, permission: "review:read" },
   { to: "/credentials", label: "模型服务", icon: LightningBoltIcon, permission: ["model:read", "model:write", "credential:read", "credential:write"] },
@@ -444,7 +440,7 @@ function IndexPage() {
 }
 
 function protectedPage(
-  path: "/repos" | "/runs" | "/range-reviews" | "/stats" | "/credentials" | "/settings",
+  path: "/repos" | "/runs" | "/stats" | "/credentials" | "/settings",
   permission: PagePermission,
   component: () => React.JSX.Element,
 ) {
@@ -516,15 +512,6 @@ const stageDetailRoute = createRoute({
       />
     );
   },
-});
-const rangeReviewsRoute = protectedPage("/range-reviews", "review:read", () => {
-  const { session } = shellRoute.useRouteContext();
-  return (
-    <RangeReviewsPage
-      canCreate={hasPermission(session, "review:create")}
-      canDispose={hasPermission(session, "finding:dispose")}
-    />
-  );
 });
 const statsRoute = protectedPage("/stats", "review:read", () => <StatsPage />);
 function ModelServicesRoutePage({
@@ -709,7 +696,6 @@ const routeTree = rootRoute.addChildren([
     reposRoute,
     runsRoute,
     stageDetailRoute,
-    rangeReviewsRoute,
     statsRoute,
     credentialsRoute,
     modelServiceRoute,

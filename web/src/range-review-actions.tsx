@@ -30,22 +30,17 @@ export type RangeReview = {
   lastForgeFailure: string | null;
 };
 
-export const RANGE_REVIEWS_QUERY_KEY = ["range-reviews"] as const;
-
 /**
- * 推进与审查完成之后要重取的几处:范围审查自己的记录、阶段详情与阶段汇总。首段整片
- * 失效,不逐个拼键——同一个阶段在详情页与旧的范围审查页各有一份查询,动作在哪一页
- * 发起,另一页回来时看到的都该是新状态。
+ * 推进与审查完成之后要重取的两处:阶段详情与阶段汇总。首段整片失效,不逐个拼键——
+ * 同一个阶段在详情页里两份查询各读一半,动作走完看到的都该是新状态。
  */
-function refreshRangeReview(queryClient: QueryClient, id: number): void {
-  void queryClient.invalidateQueries({ queryKey: RANGE_REVIEWS_QUERY_KEY });
-  void queryClient.invalidateQueries({ queryKey: ["range-review", id] });
+function refreshRangeReview(queryClient: QueryClient): void {
   void queryClient.invalidateQueries({ queryKey: ["stage-detail"] });
   void queryClient.invalidateQueries({ queryKey: ["stage-summary"] });
 }
 
 /**
- * 标记审查完成(issue #158)。范围审查页与阶段详情页共用这一个(issue #176)。
+ * 标记审查完成(issue #158)。入口在阶段详情页的页头(issue #176)。
  *
  * 不可逆:容器 pull request 会被关掉、两条分支会被删掉,这个阶段的比较项从此不再推进,
  * 所以走 AlertDialog 二次确认,文案写明对象、影响与还剩什么。
@@ -67,7 +62,7 @@ export function CompleteAction({
       const response = await api(`/range-reviews/${rangeReview.id}/complete`, { method: "POST" });
       if (!response.ok) throw new Error(await errorText(response));
     },
-    onSuccess: () => refreshRangeReview(queryClient, rangeReview.id),
+    onSuccess: () => refreshRangeReview(queryClient),
     onError: (failure: Error) => setError(failure.message),
   });
 
@@ -120,7 +115,7 @@ export function CompleteAction({
 }
 
 /**
- * 推进比较项(issue #157)。范围审查页与阶段详情页共用这一个(issue #176)。
+ * 推进比较项(issue #157)。入口在阶段详情页的页头(issue #176)。
  */
 export function AdvanceAction({
   rangeReview,
@@ -177,7 +172,7 @@ function AdvanceDialogContent({
       if (!response.ok) throw new Error(await errorText(response));
     },
     onSuccess: () => {
-      refreshRangeReview(queryClient, rangeReview.id);
+      refreshRangeReview(queryClient);
       onAdvanced();
     },
     onError: (failure: Error) => setError(failure.message),

@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-25: 落地 issue #180(spec #172),spec #172 的 8 张子票(#173–#180)到此全部落地。**范围审查没有自己的页面了**:`/range-reviews` 路由、主导航里的「范围审查」项与 `web/src/range-reviews.tsx` 一并删掉,旧地址不做跳转——面板在前缀下照常回 index.html,路由认不出来就是常规的未找到。面板从此只有一种看审查的方式:评审记录列表一行一个审查阶段,点开是 `/stages/<阶段标识>`,范围审查的发起在评审记录页头与仓库页的评审记录区块,推进比较项、审查完成与重跑都在阶段详情页的页头。发起、推进、审查完成与重跑四个接口一字未改。只为那一页存在的东西跟着删:主从详情面板的外壳 `web/src/components/detail-panel.tsx`(它最后的消费者就是这一页)、查询键 `RANGE_REVIEWS_QUERY_KEY` 与 `["range-review", id]`——两个键在页面删掉之后没有任何读者,只剩几处失效调用空转,一并清掉。容器 pull request 正文里给的面板地址改指阶段详情页(`/stages/range:<id>`),否则从 Forge 点进来落在一个已经不存在的页面上。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
+
 - 2026-08-25: 落地 issue #179(spec #172)。**推进比较项复用发起时的 commit 选择器,base 锁定**:推进对话框里 base 只以短 sha 显示、改不了,人从分支与提交列表里点选新的比较项,手输框已删。不是 base 后代的提交在列表里置灰不可选,切换分支后规则照旧——每次列提交都带着这个阶段的 base。`GET <前缀>/api/repo-commits` 因此多收一个可选的 `base`,带了就为每条提交回 `descendsFromBase`,不带时字段不出现、响应形状不变;`base` 只收 7 到 40 位的 sha,查不到这个 commit 回 400(分支查不到仍是 404)。后代口径与推进接口的校验一致:base 自己不算后代。推进接口与它的后代校验一字未改,绕过页面直接调接口仍旧被拒。服务端细节见 `src/AGENTS.md`,面板见 `web/AGENTS.md`。
 
 - 2026-08-25: 落地 issue #176(spec #172)。**一个审查阶段的操作都在它的详情页上做**:推进比较项、审查完成与重跑三个动作进了 `/stages/<阶段标识>` 的页头。推进与审查完成只对范围审查阶段出现,行为与原范围审查页一致(推进这一票仍是手输 commit sha,issue #179 换成 commit 选择器),实现从范围审查页搬进共用组件,两个页面只有一份。**重跑对两种来源一致**:pull request 阶段在最新 head 上再跑一轮(现状不变),范围审查阶段在当前比较项上再跑一轮——`POST <前缀>/api/rerun` 的 body 因此二选一,给 `rangeReviewId` 即范围审查那一档,新起的 Review Run 归入同一个阶段。**审查完成之后的范围审查是终态**:推进与重跑都回 409,页面上那三个按钮留着但不可点。权限沿用:重跑 `review:rerun`、推进 `review:create`、审查完成 `finding:dispose`,按钮按权限出现。范围审查页还在(issue #180 删),只是不再自己实现推进与审查完成。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。

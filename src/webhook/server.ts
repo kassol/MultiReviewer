@@ -4936,7 +4936,8 @@ async function handleCreateRangeReview(
       base: branches.base,
       title: containerPullRequestTitle(baseSha, comparisonSha),
       body: containerPullRequestBody(
-        `${deps.baseUrl}/${deps.panelPrefix}/range-reviews?range=${id}`,
+        // 范围审查没有自己的页面(issue #180),点进去的是它这个阶段的详情页。
+        `${deps.baseUrl}/${deps.panelPrefix}/stages/range:${id}`,
       ),
     });
   } catch (error) {

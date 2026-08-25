@@ -120,7 +120,7 @@ function bucketOf(finding: StageFinding): Exclude<DispositionFilter, "all"> {
  * 一个审查阶段的主视图(issue #168):按 Finding Identity 汇总的列表、顶部三个计数,
  * 加这个阶段的时间线。
  *
- * 范围审查详情与 PR 触发的轮次详情共用这一份——「这个阶段还剩什么没处置」是同一个
+ * 范围审查阶段与 pull request 阶段共用这一份——「这个阶段还剩什么没处置」是同一个
  * 问题,两条链路不该显示成两个样子。
  */
 export function StageSummaryView({

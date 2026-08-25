@@ -109,7 +109,8 @@ test("发起范围审查:建两条分支与容器 PR,第一轮 Review Run 归属
     container.title,
     `[MultiReviewer] 范围审查 ${h.repo.baseSha.slice(0, 7)}..${h.repo.headSha.slice(0, 7)}`,
   );
-  assert.match(container.body, new RegExp(`/${PANEL_PREFIX}/range-reviews\\?range=${rangeReview.id}`));
+  // 正文里的面板地址指这个阶段的详情页:范围审查没有自己的页面(issue #180)。
+  assert.match(container.body, new RegExp(`/${PANEL_PREFIX}/stages/range:${rangeReview.id}`));
 
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);

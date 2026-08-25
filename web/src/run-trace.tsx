@@ -479,7 +479,7 @@ export function RunTrace({ run }: { run: RunItem }) {
        * 它们的几份查询各刷新一次,面板头部与列表跟着从「运行中」变过来——否则要等下
        * 一次 10 秒轮询才对得上。
        */
-      for (const projection of [["stages"], ["repo-stages"], ["run"], ["range-review"]]) {
+      for (const projection of [["stages"], ["repo-stages"], ["run"]]) {
         void queryClient.invalidateQueries({ queryKey: projection });
       }
     });

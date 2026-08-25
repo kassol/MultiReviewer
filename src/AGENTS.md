@@ -146,6 +146,8 @@
 
 ## 变更日志
 
+- 2026-08-25: 落地 issue #180(spec #172)的服务端部分。范围审查的页面删了(见 `web/AGENTS.md`),容器 pull request 正文里的面板地址因此从 `/range-reviews?range=<id>` 改成这个阶段的详情页 `/stages/range:<id>`——正文里那一行的用处就是「去哪操作」,指向一个已经不存在的页面等于没指。`containerPullRequestBody` 本身与发起、推进、审查完成、重跑四个接口一字未改。`test/panel-range-reviews.test.ts` 里断言正文的那一条跟着改。
+
 - 2026-08-25: 落地 issue #179(spec #172)的服务端部分。`GET <前缀>/api/repo-commits` 多收一个可选的 `base`:带了就为每条提交回一个 `descendsFromBase`,不带时字段不出现、响应一字不变。`git/worktree.ts` 的 `listBranchCommits` 因此换了返回形状——从 `RepoCommit[] | undefined` 改成 `BranchCommits` 判别联合(`branch-unknown` / `base-unknown` 两档失败),base 查不到是 400、分支查不到仍是 404。后代集合由一条 `rev-list --ancestry-path <base>..<分支>` 一次算出,逐条 `merge-base --is-ancestor` 与不带 `--ancestry-path` 的双端范围都不成立(理由见模块规范)。推进接口与它的后代校验一字未改。测试:`panel-commit-picker` 新增四条(分叉历史上的后代标记、从 base 分出去的旁支算后代、不带 base 时无标记、base 非 sha 与查不到都被拒)。
 
 - 2026-08-25: 落地 issue #176(spec #172)的服务端部分。**重跑接受范围审查标识**:`POST /rerun` 的 body 二选一,给 `rangeReviewId` 就在那个范围审查当前的比较项上开新一轮,归入同一个阶段(`range_review_id` 与触发人按现有口径记),回 202 带 `{rangeReviewId, headSha}`;审查完成或发起失败的范围审查回 409,与推进同一个拒绝口径,不存在回 404,pull request 那一档的入参与行为一字未动。比较项取库里那一行、不读 Forge:推进是先推分支再改记录,记录就是这个阶段此刻在审什么。**阶段详情多一格**:`GET /stages/{stageId}` 对范围审查阶段带上 `rangeReview` 那条记录,详情页的三个动作(推进、审查完成、重跑)据它决定能不能点,前端不用为一个状态再取一份。测试在 `test/panel-range-review-rerun.test.ts`:重跑后同一阶段两轮、head 仍是当前比较项、容器 PR 的两条分支不动;完成后重跑与推进都 409 且不开新一轮;入参 404 / 400;`review:rerun` 能跑、只有 `review:create` 的被 403。
