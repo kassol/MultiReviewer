@@ -115,6 +115,8 @@
 
 ## 变更日志
 
+- 2026-08-26: spec #172 落地后的评审与线上验证修补。仓库页评审记录行改用 `lib/time` 的 `localMinute` 并补上来源标记(此前打的是 UTC 切片,与 `/runs` 同一行差 8 小时)。`commit-picker.tsx`:提交列表等分支重取(服务端 fetch 发生在那一步)回来再发、并把重取时刻带进查询键,重开选择器能看到刚推的 commit;`Select` 的受控值从占位 `""` 变成默认分支时 Radix 会回调一次 `""`,现在把它当「没选」而不是选了空分支——此前整页新加载后分支卡在「读取分支中…」、提交列表报「branch 要给」。`stage-detail.tsx`:重跑与推进都是 202 就回、新一轮要等工作副本就绪才落库,只按「有未完成轮次」续查永远启动不了;动作成功后先按 90 秒窗口续查,刚推进、还没有轮次的比较项也算要续查,轮次一出现就接回按状态续查。
+
 - 2026-08-25: 落地 issue #180 的面板部分。**范围审查页删掉了**:`/range-reviews` 路由、`NAV` 里的「范围审查」项(连同只它在用的 `LayersIcon`)与 `src/range-reviews.tsx` 一起没了,旧地址不做跳转,交给路由的常规未找到。`src/components/detail-panel.tsx` 跟着删——评审记录在 issue #175 之后就不用它了,范围审查页是它最后的消费者。查询键也清掉:`RANGE_REVIEWS_QUERY_KEY`(`["range-reviews"]`)与 `["range-review", id]` 在页面删掉之后没有读者,`range-review-actions.tsx` 的 `refreshRangeReview` 只剩 `stage-detail` / `stage-summary` 两段,`range-review-launch.tsx` 发起成功后只失效 `stages` / `repo-stages`,`run-diff.tsx` 与 `run-trace.tsx` 处置和轨迹结束时要失效的那一串里去掉 `["range-review"]`。`range-review-launch.tsx` 与 `range-review-actions.tsx` 两个组件本身没动,入口分别只剩评审记录页头 / 仓库页评审记录区块与阶段详情页页头。
 
 - 2026-08-25: 落地 issue #179 的面板部分。推进比较项不再手输 sha:`range-review-actions.tsx` 的推进对话框换成 `commit-picker.tsx` 的 `baseLocked` 那一档,base 显示为锁定的短 sha,人只选新的比较项(选中的也以短 sha 显示在 base 与当前比较项旁边)。选择器在这一档把 base 一起发给 `GET /repo-commits`,`descendsFromBase` 为 false 的行整行压暗、「设为比较项」不可点;base 进了查询键,切换分支后按同一个 base 重新标记,作者 rebase 到另一条从 base 分出去的分支上的 commit 照样选得到。提交按钮在选出比较项之前禁用。范围审查页与阶段详情页共用同一个组件,两处推进入口一起改。服务端的后代校验一字未改。
