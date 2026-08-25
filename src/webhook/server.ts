@@ -56,6 +56,7 @@ import {
   readRangeDiffFiles,
   readRangeFileDiff,
   resolveRange,
+  type BranchCommits,
   type PreparedRange,
   type RangeDiffOptions,
   type RangeDiffRejection,
@@ -4749,6 +4750,11 @@ async function handleRepoBranches(
  *
  * 分支查不到就是 404:人手上那份分支列表可能已经过时,而调用方要知道的只是「这条分支
  * 没有了」。
+ *
+ * 可选的 `base`(issue #179)让每条提交多带一个「是不是 base 的后代」:推进比较项时
+ * 选择器据此置灰非后代的行,人在提交之前就知道哪些选择不合法。它与两端一样只收 sha,
+ * 这同时挡住以 `-` 开头的值被 git 当成选项;查不到这个 commit 与发起时填错 base 是
+ * 同一回事,回同一句话。
  */
 async function handleRepoCommits(
   req: IncomingMessage,
@@ -4770,20 +4776,35 @@ async function handleRepoCommits(
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > COMMITS_PAGE_MAX) {
     return sendJson(res, 400, { error: `limit 要是 1 到 ${COMMITS_PAGE_MAX} 之间的整数` });
   }
+  const base = query.get("base");
+  if (base !== null && !COMMIT_SHA.test(base)) {
+    return sendJson(res, 400, { error: "base 要是 7 到 40 位的 commit sha" });
+  }
 
   const target = await resolveRepoGitTarget(req, res, deps);
   if (target === undefined) return;
 
-  let commits: Awaited<ReturnType<typeof listBranchCommits>>;
+  let listed: BranchCommits;
   try {
-    commits = await listBranchCommits({ cacheDir: deps.cacheDir, ...target, branch, offset, limit });
+    listed = await listBranchCommits({
+      cacheDir: deps.cacheDir,
+      ...target,
+      branch,
+      offset,
+      limit,
+      ...(base === null ? {} : { base }),
+    });
   } catch (error) {
     return sendJson(res, 502, { error: `取不回这条分支的提交:${failureText(error)}` });
   }
-  if (commits === undefined) return sendJson(res, 404, { error: "这个仓库里没有这条分支" });
+  if (!listed.ok) {
+    return listed.reason === "branch-unknown"
+      ? sendJson(res, 404, { error: "这个仓库里没有这条分支" })
+      : sendJson(res, 400, { error: RANGE_REJECTION["base-unknown"] });
+  }
   // 这一页取满就还有下一页:提交总数要数完整段历史,为一个翻页按钮不值当。
-  const nextOffset = commits.length === limit ? offset + limit : null;
-  return sendJson(res, 200, { commits, nextOffset });
+  const nextOffset = listed.commits.length === limit ? offset + limit : null;
+  return sendJson(res, 200, { commits: listed.commits, nextOffset });
 }
 
 /**

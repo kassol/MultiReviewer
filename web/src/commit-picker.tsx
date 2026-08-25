@@ -16,6 +16,8 @@ type RepoCommit = {
   subject: string;
   author: string;
   authoredAt: string;
+  /** 是不是 base 的后代。只在 `baseLocked` 那一档跟着请求里的 base 一起回来。 */
+  descendsFromBase?: boolean;
 };
 
 type CommitsPage = { commits: RepoCommit[]; nextOffset: number | null };
@@ -34,7 +36,9 @@ const ROLE_LABEL: Record<CommitRole, string> = { base: "base", comparison: "比�
  *
  * 两端各自记的是 sha,分支只是找它的路径:选完 base 换一条分支再选比较项,已选的 base
  * 不受影响(user story 33)。`baseLocked` 是推进比较项那一档(issue #179):base 由调用方
- * 定死,列表里只出现「设为比较项」。
+ * 定死,列表里只出现「设为比较项」,并且把 base 一起发给列提交接口——不是 base 后代的
+ * 提交推进接口本来就会拒,置灰让人在点之前就知道。base 跟着分支一起进查询键,换一条
+ * 分支拿到的仍是按同一个 base 标好的一页。
  */
 export function CommitPicker({
   repo,
@@ -61,12 +65,15 @@ export function CommitPicker({
   const branch =
     picked ?? rows.find((row) => row.isDefault)?.name ?? rows[0]?.name ?? null;
 
+  // base 只在锁定那一档发出去:发起时两端都在挑,任何一条提交都还可能被设成 base。
+  const markAgainst = baseLocked ? base : null;
   const commits = useInfiniteQuery({
-    queryKey: ["repo-commits", repo.owner, repo.repo, branch],
+    queryKey: ["repo-commits", repo.owner, repo.repo, branch, markAgainst],
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
       fetchJson<CommitsPage>(
-        `/repo-commits?${scope}&branch=${encodeURIComponent(branch!)}&offset=${pageParam}`,
+        `/repo-commits?${scope}&branch=${encodeURIComponent(branch!)}&offset=${pageParam}` +
+          (markAgainst === null ? "" : `&base=${encodeURIComponent(markAgainst)}`),
       ),
     getNextPageParam: (last) => last.nextOffset,
     enabled: branch !== null,
@@ -129,6 +136,7 @@ export function CommitPicker({
             }
             {...(base === commit.sha ? { picked: "base" as const } : {})}
             {...(comparison === commit.sha ? { picked: "comparison" as const } : {})}
+            blocked={commit.descendsFromBase === false}
             onPick={onPick}
           />
         ))}
@@ -157,20 +165,30 @@ export function CommitPicker({
   );
 }
 
-/** 提交列表的一行:短 sha、信息首行、作者与时间,加把它设成一端的按钮。 */
+/**
+ * 提交列表的一行:短 sha、信息首行、作者与时间,加把它设成一端的按钮。
+ *
+ * `blocked` 是不是 base 后代那一档(issue #179):整行压暗、按钮不可点,选它没有意义。
+ */
 function CommitRow({
   commit,
   roles,
   picked,
+  blocked,
   onPick,
 }: {
   commit: RepoCommit;
   roles: readonly CommitRole[];
   picked?: CommitRole;
+  blocked: boolean;
   onPick: (role: CommitRole, sha: string) => void;
 }) {
   return (
-    <div className="flex items-center gap-3 border-t border-line px-4 py-[11px] first:border-t-0">
+    <div
+      className={`flex items-center gap-3 border-t border-line px-4 py-[11px] first:border-t-0${
+        blocked ? " opacity-50" : ""
+      }`}
+    >
       <span className="flex min-w-0 flex-1 flex-col gap-px">
         <span className="flex min-w-0 items-center gap-1.5">
           <code className="rounded-chip bg-accent-tint-strong px-[5px] font-mono text-xs text-primary">
@@ -193,6 +211,7 @@ function CommitRow({
           color="gray"
           size="1"
           className="shrink-0"
+          disabled={blocked}
           onClick={() => onPick(role, commit.sha)}
         >
           设为 {ROLE_LABEL[role]}

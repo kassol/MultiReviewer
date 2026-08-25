@@ -262,13 +262,22 @@ export type RepoCommit = {
   subject: string;
   author: string;
   authoredAt: string;
+  /** 是不是 base 的后代。只在调用方给了 base 时出现(issue #179)。 */
+  descendsFromBase?: boolean;
 };
 
 export type RepoCommitsOptions = RepoReadOptions & {
   branch: string;
   offset: number;
   limit: number;
+  /** 推进比较项那一档给的阶段基准(issue #179);给了就为每条标出后代关系。 */
+  base?: string;
 };
+
+/** 列提交的结果。两种失败都是人给的东西查不到,不是服务出错,调用方各回一句话。 */
+export type BranchCommits =
+  | { ok: true; commits: RepoCommit[] }
+  | { ok: false; reason: "branch-unknown" | "base-unknown" };
 
 /** 字段分隔用 unit separator,记录分隔用 `-z` 的 NUL:两者都不可能出现在提交信息里。 */
 const COMMIT_FORMAT = "--format=%H%x1f%an%x1f%aI%x1f%s";
@@ -276,12 +285,19 @@ const COMMIT_FORMAT = "--format=%H%x1f%an%x1f%aI%x1f%s";
 /**
  * 一条分支上的提交,新的在前,按 offset / limit 分页(issue #178)。
  *
- * 分支不存在时回 undefined:人手上那份分支列表可能已经过时,那是常规局面,不是服务出错。
- * 这里不 fetch——选择器打开时列分支那一步刚取过,翻页再各来一次网络往返只是白等。
+ * 分支不存在时回 `branch-unknown`:人手上那份分支列表可能已经过时,那是常规局面,不是
+ * 服务出错。这里不 fetch——选择器打开时列分支那一步刚取过,翻页再各来一次网络往返只是
+ * 白等。
+ *
+ * 给了 `base` 就为这一页的每条标出它是不是 base 的后代(issue #179),推进比较项据此
+ * 置灰。口径与推进接口的校验一致(`resolveRange`):base 自己不算后代,那个范围是空的。
+ * 一条 `rev-list --ancestry-path` 一次算出整条分支上的后代集合,再逐条对照——逐条
+ * `merge-base --is-ancestor` 要为一页拉起几十个 git 进程。`--ancestry-path` 是必需的:
+ * `base..分支` 还会带上从 base 之前分出去、并进这条分支的旁支,那些不是 base 的后代。
  */
 export async function listBranchCommits(
   options: RepoCommitsOptions,
-): Promise<RepoCommit[] | undefined> {
+): Promise<BranchCommits> {
   const path = repoCachePath(options.cacheDir, options.ref);
   const auth = authArgs(options.cloneUrl, options.credentials);
 
@@ -289,7 +305,21 @@ export async function listBranchCommits(
   const ref = `refs/remotes/origin/${options.branch}`;
   if ((await resolveCommit(path, ref)) === undefined) {
     await ensureClone(path, options.cloneUrl, auth);
-    if ((await resolveCommit(path, ref)) === undefined) return undefined;
+    if ((await resolveCommit(path, ref)) === undefined) {
+      return { ok: false, reason: "branch-unknown" };
+    }
+  }
+
+  let descendants: Set<string> | undefined;
+  if (options.base !== undefined) {
+    const baseSha = await resolveCommit(path, options.base);
+    if (baseSha === undefined) return { ok: false, reason: "base-unknown" };
+    const reachable = await git(path, [
+      "rev-list",
+      "--ancestry-path",
+      `${baseSha}..${ref}`,
+    ]);
+    descendants = new Set(reachable.split("\n").filter((line) => line !== ""));
   }
 
   const output = await git(path, [
@@ -300,7 +330,7 @@ export async function listBranchCommits(
     `--max-count=${options.limit}`,
     ref,
   ]);
-  return splitNul(output).map((record) => {
+  const commits = splitNul(output).map((record) => {
     const [sha, author, authoredAt, subject] = record.split("\x1f");
     return {
       sha: sha!,
@@ -308,8 +338,10 @@ export async function listBranchCommits(
       subject: subject ?? "",
       author: author ?? "",
       authoredAt: authoredAt ?? "",
+      ...(descendants === undefined ? {} : { descendsFromBase: descendants.has(sha!) }),
     };
   });
+  return { ok: true, commits };
 }
 
 /** 取 Review Range 的合并 diff。基准是 merge-base,与两个平台 PR 页面显示的一致。 */

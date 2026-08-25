@@ -2,11 +2,12 @@ import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-q
 import { useState } from "react";
 
 import { Cross2Icon } from "@radix-ui/react-icons";
-import { AlertDialog, Dialog, Flex, IconButton, Text, TextField } from "@radix-ui/themes";
+import { AlertDialog, Dialog, Flex, IconButton } from "@radix-ui/themes";
 
 import { Button } from "@/components/theme-button";
 
 import { api, errorText } from "./api.ts";
+import { CommitPicker } from "./commit-picker.tsx";
 
 /** 一个范围审查。字段与 `GET <前缀>/api/range-reviews` 逐字对应。 */
 export type RangeReview = {
@@ -150,8 +151,11 @@ export function AdvanceAction({
 /**
  * 推进比较项的表单(issue #157)。
  *
- * 只收新的比较项:base 是这个阶段不变的基准,推进不改它。服务端只要求新比较项是 base
- * 的后代,作者 rebase 之后的 commit 照样填得进来。
+ * 只收新的比较项:base 是这个阶段不变的基准,推进不改它,所以选择器走 `baseLocked`
+ * 那一档(issue #179),base 只以短 sha 显示。手输框已删——人只记得分支与提交信息。
+ *
+ * 不是 base 后代的提交在列表里置灰:服务端本来就会拒,人不该点下去才知道。作者 rebase
+ * 之后的 commit 仍在另一条从 base 分出去的分支上,换条分支照样选得到(user story 33)。
  */
 function AdvanceDialogContent({
   rangeReview,
@@ -161,14 +165,14 @@ function AdvanceDialogContent({
   onAdvanced: () => void;
 }) {
   const queryClient = useQueryClient();
-  const [comparison, setComparison] = useState("");
+  const [comparison, setComparison] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const advance = useMutation({
     mutationFn: async () => {
       const response = await api(`/range-reviews/${rangeReview.id}/advance`, {
         method: "POST",
-        body: JSON.stringify({ comparison: comparison.trim() }),
+        body: JSON.stringify({ comparison }),
       });
       if (!response.ok) throw new Error(await errorText(response));
     },
@@ -186,33 +190,37 @@ function AdvanceDialogContent({
         aria-busy={advance.isPending}
         onSubmit={(event) => {
           event.preventDefault();
-          if (comparison.trim() === "") return;
+          if (comparison === null) return;
           advance.mutate();
         }}
       >
         <Dialog.Title size="4" mb="1" className="pr-9">推进比较项</Dialog.Title>
 
         <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-1 text-base">
-          <dt className="text-text-secondary">base</dt>
-          <dd className="min-w-0 break-all font-mono">{rangeReview.baseSha}</dd>
+          <dt className="text-text-secondary">base（锁定）</dt>
+          <dd className="min-w-0 font-mono">{rangeReview.baseSha.slice(0, 7)}</dd>
           <dt className="text-text-secondary">当前比较项</dt>
-          <dd className="min-w-0 break-all font-mono">{rangeReview.comparisonSha}</dd>
+          <dd className="min-w-0 font-mono">{rangeReview.comparisonSha.slice(0, 7)}</dd>
+          <dt className="text-text-secondary">新的比较项</dt>
+          <dd className="min-w-0 font-mono">
+            {comparison === null ? "还没选" : comparison.slice(0, 7)}
+          </dd>
         </dl>
 
-        <label className="flex flex-col gap-1.5">
-          <Text as="span" size="2" weight="medium">新的比较项</Text>
-          <TextField.Root
-            value={comparison}
-            onChange={(event) => setComparison(event.target.value)}
-            placeholder="作者迭代之后的 commit sha，必须是 base 的后代"
-            spellCheck={false}
-            className="font-mono"
-            size={{ initial: "3", sm: "2" }}
-          />
-        </label>
+        <CommitPicker
+          repo={{ owner: rangeReview.owner, repo: rangeReview.repo }}
+          base={rangeReview.baseSha}
+          comparison={comparison}
+          baseLocked
+          onPick={(_role, sha) => {
+            setError(null);
+            setComparison(sha);
+          }}
+        />
 
         <p className="text-sm text-text-muted">
-          推进会把容器 pull request 的 head 分支移到新 commit，并按 base..新比较项跑新的一轮。
+          不是 base 后代的提交选不了。推进会把容器 pull request 的 head
+          分支移到新 commit，并按 base..新比较项跑新的一轮。
         </p>
         {error === null ? null : <p role="alert" className="text-danger">{error}</p>}
 
@@ -227,7 +235,7 @@ function AdvanceDialogContent({
             variant="solid"
             className="shadow-accent"
             size={{ initial: "4", sm: "2" }}
-            disabled={comparison.trim() === "" || advance.isPending}
+            disabled={comparison === null || advance.isPending}
           >
             {advance.isPending ? "推进中…" : "推进"}
           </Button>

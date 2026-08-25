@@ -25,6 +25,8 @@ type Commit = {
   subject: string;
   author: string;
   authoredAt: string;
+  /** 带 base 查时才有(issue #179)。 */
+  descendsFromBase?: boolean;
 };
 
 const REPO_QUERY = `owner=${HARNESS_PR.owner}&repo=${HARNESS_PR.repo}`;
@@ -128,4 +130,77 @@ test("列分支与列提交:仓库要注册,分支要存在", async () => {
     (await h.api("GET", `/repo-commits?${REPO_QUERY}&branch=feature&offset=-1`)).status,
     400,
   );
+});
+
+test("列提交带 base:后代标出来,base 自己与旁支都不算", async () => {
+  const h = await registeredHarness();
+  // base 取 feature 上的 head,它后面再推一个 commit;另有一条从 base 之前分出去的分支。
+  const base = h.repo.headSha;
+  const advanced = h.repo.pushToHead({ "src/answer.ts": "export const answer = 3;\n" });
+  const side = h.repo.branchFrom("side", h.repo.mergeBaseSha, {
+    "src/side.ts": "export const side = 1;\n",
+  });
+
+  const page = await commits(h, `branch=feature&base=${base}`);
+  assert.deepEqual(
+    page.commits.map((commit) => [commit.sha, commit.descendsFromBase]),
+    [
+      [advanced, true],
+      // base 自己不是自己的后代:推进接口也拒绝比较项与 base 是同一个 commit。
+      [base, false],
+      [h.repo.mergeBaseSha, false],
+    ],
+  );
+
+  // 切到另一条分支,置灰规则照旧:这条从 base 之前分出去,整条都不是后代。
+  const other = await commits(h, `branch=side&base=${base}`);
+  assert.deepEqual(
+    other.commits.map((commit) => [commit.sha, commit.descendsFromBase]),
+    [
+      [side, false],
+      [h.repo.mergeBaseSha, false],
+    ],
+  );
+});
+
+test("列提交带 base:从 base 分出去的旁支算后代", async () => {
+  const h = await registeredHarness();
+  const base = h.repo.headSha;
+  const rebased = h.repo.branchFrom("rebased", base, {
+    "src/answer.ts": "export const answer = 4;\n",
+  });
+
+  const page = await commits(h, `branch=rebased&base=${base}`);
+  assert.deepEqual(
+    page.commits.map((commit) => [commit.sha, commit.descendsFromBase]),
+    [
+      [rebased, true],
+      [base, false],
+      [h.repo.mergeBaseSha, false],
+    ],
+  );
+});
+
+test("列提交不带 base:响应形状不变,没有后代标记", async () => {
+  const h = await registeredHarness();
+
+  const page = await commits(h, "branch=feature");
+  for (const commit of page.commits) {
+    assert.equal("descendsFromBase" in commit, false);
+  }
+});
+
+test("列提交:base 不是 sha 或不在这个仓库里都被拒", async () => {
+  const h = await registeredHarness();
+
+  assert.equal(
+    (await h.api("GET", `/repo-commits?${REPO_QUERY}&branch=feature&base=nope`)).status,
+    400,
+  );
+  const missing = await h.api(
+    "GET",
+    `/repo-commits?${REPO_QUERY}&branch=feature&base=0123456789abcdef0123456789abcdef01234567`,
+  );
+  assert.equal(missing.status, 400);
+  assert.match(((await missing.json()) as { error: string }).error, /base/);
 });
