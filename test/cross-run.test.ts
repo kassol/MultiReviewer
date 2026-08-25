@@ -1018,6 +1018,82 @@ test("旧位置的代码没改动:复核给的新位置一并忽略,不产生延
   assert.equal(forge.createdReviews.length, 1, "没有该发的东西却又发了一轮 review");
 });
 
+/** 第一轮里退化进 review 正文的那条:它指的代码不会被本轮的改动碰到,下一轮照旧折叠。 */
+const MUL_FINDING = {
+  ...FINDING,
+  line: OUT_OF_DIFF_LINE,
+  description: "mul 的结果没有做溢出保护",
+};
+
+/** 本轮另报的两条,与旧条目一个词都不共享:承接不到它们身上,各自按新 Finding 提出。 */
+const UNRELATED_FINDINGS = [
+  { ...FINDING, line: 3, description: "加法没有校验参数类型" },
+  { ...FINDING, line: 7, description: "文件末尾缺少换行" },
+];
+
+test("合成的那条与本轮多条新报并存:「延续自」只落在承接它的那条评论上", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  // 第一轮报两条:sub 那条在 diff 内发行级评论,mul 那条退化进 review 正文。
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [scriptedReviewer("model-a", [FINDING, MUL_FINDING])],
+  });
+  const old = forge.publishedComments[0]!;
+  forge.existingComments.push(...asPublished(forge, false));
+  forge.existingReviewBodies.push(forge.createdReviews[0]!.body);
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
+
+  // 第二轮:mul 那条代码未改动照旧折叠,另报两条无关的新 Finding,sub 那条只回复核结论
+  // 并带新位置——合成的那条接在本轮之后,合并组序号最大。
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [
+      verdictReviewer("model-a", "present", [MUL_FINDING, ...UNRELATED_FINDINGS], NEW_LINE),
+    ],
+  });
+
+  assert.deepEqual(forge.resolvedIds, [old.id], "旧评论没有被 resolve");
+
+  const second = forge.createdReviews[1]!;
+  assert.equal(second.comments.length, 3, "两条新报加合成的那条,该发三条行级评论");
+  for (const comment of second.comments) {
+    if (comment.line === NEW_LINE) {
+      assert.match(comment.body, /延续自/);
+      assert.ok(comment.body.includes(old.htmlUrl), "承接的那条没带旧评论的链接");
+      continue;
+    }
+    assert.doesNotMatch(comment.body, /延续自/, `第 ${comment.line} 行不该带「延续自」`);
+  }
+
+  // 每条评论的锚点与它自己那一行的落库指纹一致:合成的那条追加在后面,不该让别人的
+  // 指纹挪位。
+  const stored = new Map(
+    query(db.path, "SELECT line, fingerprint FROM finding ORDER BY id")
+      .slice(2)
+      .map((row) => [Number(row["line"]), row["fingerprint"]]),
+  );
+  for (const comment of second.comments) {
+    assert.equal(
+      ANCHOR.exec(comment.body)?.[1],
+      stored.get(comment.line),
+      `第 ${comment.line} 行的锚点与落库指纹对不上`,
+    );
+  }
+
+  // 跨轮匹配同样不受影响:mul 那条照旧折叠进正文,两条新报与合成的那条都是本轮新报。
+  assert.match(second.body, /尚未处置/);
+  assert.deepEqual(latestDispositions(db.path), [
+    "continued",
+    "unknown",
+    "unknown",
+    "unknown",
+    "unresolved",
+    "unknown",
+  ]);
+  assert.deepEqual(continuedFrom(db.path), [null, null, null, null, null, old.htmlUrl]);
+});
+
 test("已延续不进处置计数:旧那一轮的进度里不再有它", async () => {
   const { db } = await continueSecondRound();
 
