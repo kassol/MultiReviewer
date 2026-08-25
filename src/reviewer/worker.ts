@@ -91,7 +91,7 @@ const verdictSchema = Type.Object({
   }),
   verdict: Type.String({
     description:
-      "One of exactly: present, fixed, unclear. present means the problem is still in the code. fixed means the code has been changed and the problem is gone. unclear means you cannot tell.",
+      "One of exactly: present, fixed, unclear. present means the problem is still in the code — and if its lines were rewritten or moved, you must also call report_finding once at the new line. fixed means the code has been changed and the problem is gone. unclear means you cannot tell.",
   }),
 });
 
