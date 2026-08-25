@@ -16,10 +16,14 @@ export type Category = "security" | "bug" | "maintainability" | "design";
  * MultiReviewer 自己 resolve 的那一档。两者在 Forge 上是同一个 resolve 状态,分开只在
  * 本地库与处置率统计里。
  *
- * 这一档的判据是 ADR 0016 的复核结论:本轮全部 Reviewer 都判这条历史 Finding 已修。
- * 指纹变没变都不参与——在上游加判空这类修法指纹不变,同样是修好了。
+ * `fixed` 这一档的判据是 ADR 0016 的复核结论:本轮全部 Reviewer 都判这条历史 Finding
+ * 已修。指纹变没变都不参与——在上游加判空这类修法指纹不变,同样是修好了。
+ *
+ * `continued` 是「已延续」(CONTEXT.md),不是处置:复核判仍在而所指代码已改写时,旧
+ * 位置的那一行进这一档,同一条 Finding Identity 由新位置那条承接。它在 Forge 上同样是
+ * 一个 resolve,但不计入处置率的分子分母。
  */
-export type Disposition = "resolved" | "unresolved" | "unknown" | "fixed";
+export type Disposition = "resolved" | "unresolved" | "unknown" | "fixed" | "continued";
 
 /**
  * 一条历史 Finding 的复核结论(CONTEXT.md 复核,ADR 0016):仍在 / 已修 / 无法判断。

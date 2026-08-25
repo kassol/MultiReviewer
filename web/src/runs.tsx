@@ -75,8 +75,11 @@ export type RunFinding = {
   severity: "P0" | "P1" | "P2";
   category: string;
   description: string;
-  /** `fixed` 是「已修复」自动处置,处置人为空。 */
-  disposition: "resolved" | "unresolved" | "unknown" | "fixed";
+  /**
+   * `fixed` 是「已修复」自动处置,处置人为空;`continued` 是「已延续」——这处代码已改写,
+   * 同一条 Finding 由新一轮在新位置那条承接,这一行只剩交接的记录,不是处置。
+   */
+  disposition: "resolved" | "unresolved" | "unknown" | "fixed" | "continued";
   placement: "inline" | "body";
   commentId: string | null;
   /** Forge 上那条原评论的地址。 */
@@ -86,6 +89,8 @@ export type RunFinding = {
   disposedAt: string | null;
   /** 处置备注,只存面板。 */
   note: string | null;
+  /** 承接来的那条旧评论的地址(CONTEXT.md 已延续);不是延续来的为 null。 */
+  continuedFrom: string | null;
 };
 
 type RunsPage = { runs: RunItem[]; nextBefore: number | null };

@@ -23,12 +23,14 @@ import type {
 } from "./finding.ts";
 import {
   contentFingerprint,
+  fileFingerprints,
   fingerprintAnchor,
   parseFingerprintAnchors,
 } from "./fingerprint.ts";
 import { changedLinesByFile, isInDiff, parseDiffRanges } from "./position.ts";
 import {
   openStore,
+  type ContinuationCandidate,
   type DispositionUpdate,
   type FindingCommentRef,
   type FindingPlacement,
@@ -105,6 +107,8 @@ type FallbackFinding = {
   finding: MergedFinding;
   /** 指纹算不出时正文里没有锚点可埋,这条下一轮匹配不上。 */
   fingerprint: string | undefined;
+  /** 它承接的那条旧评论的地址(CONTEXT.md 已延续),没有承接即 undefined。 */
+  continuedFrom: string | undefined;
 };
 
 /**
@@ -134,8 +138,23 @@ function findingSections(finding: MergedFinding): string[] {
   return finding.attributions.flatMap(attributionSection);
 }
 
-function findingBody(finding: MergedFinding, fingerprint: string | undefined): string {
+/**
+ * 延续的那一句(CONTEXT.md 已延续):这条评论承接的是旧位置那条 Finding,不是新提出的
+ * 一条。带链接是为了让人一眼跳回去看当初的讨论与处置备注——库里的继承看不见,评论上
+ * 这一句是 Forge 那侧唯一能说明「同一个问题换了位置」的地方。
+ */
+function continuedNote(commentHtmlUrl: string): string {
+  return `延续自 [上一处评论](${commentHtmlUrl}):这处代码已改写,复核判定同一个问题仍在。`;
+}
+
+function findingBody(
+  finding: MergedFinding,
+  fingerprint: string | undefined,
+  continuedFrom: string | undefined,
+): string {
   const lines = [findingHeading(finding), ...findingSections(finding)];
+
+  if (continuedFrom !== undefined) lines.push("", continuedNote(continuedFrom));
 
   // 锚点是下一轮认出这条评论的唯一凭据,指纹算不出时就没有跨轮次匹配可言。
   if (fingerprint !== undefined) lines.push("", fingerprintAnchor(fingerprint));
@@ -144,12 +163,15 @@ function findingBody(finding: MergedFinding, fingerprint: string | undefined): s
 }
 
 /** diff 外的 Finding 没有行级评论承载,正文里的这一块就是它的完整呈现。 */
-function fallbackBlock({ finding, fingerprint }: FallbackFinding): string[] {
+function fallbackBlock({ finding, fingerprint, continuedFrom }: FallbackFinding): string[] {
   const lines = [
     "",
     `\`${finding.file}:${finding.line}\` ${findingHeading(finding)}`,
     ...findingSections(finding),
   ];
+
+  // 延续的新位置也可能落在 diff 之外:那一档没有行级评论,这一句就写在这块里。
+  if (continuedFrom !== undefined) lines.push("", continuedNote(continuedFrom));
 
   // 这一块同样是本工具的产出,同样要能被下一轮认出来:没有锚点它每轮都会全文重发。
   // 锚点里带上文件路径——正文不像行级评论那样有一个由 API 给出的路径。
@@ -429,6 +451,109 @@ function fixedFindingIds(verdicts: readonly VerdictRecord[]): number[] {
 }
 
 /**
+ * 复核判仍在的那些历史 Finding(ADR 0016)。合成规则与 `fixedFindingIds` 同源:任一
+ * Reviewer 判仍在,这条的最终结论就是仍在。它是延续的第一个条件。
+ *
+ * 升序返回,配对因此不受结论落库顺序影响。
+ */
+function presentFindingIds(verdicts: readonly VerdictRecord[]): number[] {
+  const present = new Set(
+    verdicts.filter((record) => record.verdict === "present").map((record) => record.findingId),
+  );
+  return [...present].sort((a, b) => a - b);
+}
+
+/** 一次延续:旧 Finding 与本轮承接它的那个合并组。 */
+type Continuation = {
+  candidate: ContinuationCandidate;
+  groupIndex: number;
+};
+
+/**
+ * 配对延续(CONTEXT.md 已延续,issue #167):复核判仍在、旧指纹在本轮 head 上算不出的
+ * 那些历史 Finding,交给本轮在新位置报出的一条承接同一个 Identity。
+ *
+ * 两个条件缺一不可。「仍在」由调用方按复核结论筛过;「代码已改写」的判据是
+ * `fileFingerprints`——旧指纹落在这个文件此刻算得出的全部指纹里,那处代码就还在原样,
+ * 不论它被上下挪了多少行,这时本轮报出的是另一条,不是同一条换了位置。
+ *
+ * 「本轮在新位置报出」的判据只有两条:同一个文件,且是本轮**新报**的(没有折叠到任何
+ * 历史评论上——折叠上的那些自己就是另一条 Identity)。同文件有多条候选时取行号离旧位置
+ * 最近的一条;同距取行号小的,再同取合并组序号小的。三级排序让结果与模型报出的顺序
+ * 无关,同一份输入永远给同一个答案。不设行距上限:复核已经说了这个问题仍在,而模型在
+ * 这个文件里报出的最近一条就是它现在的位置,再加一道阈值只会让改动大的那些延续不上。
+ * 一条新 Finding 至多承接一条旧 Identity——先来的那条(id 小的)拿走它。
+ */
+function planContinuations(
+  candidates: readonly ContinuationCandidate[],
+  findings: readonly MergedFinding[],
+  matched: readonly boolean[],
+  worktreePath: string,
+): Continuation[] {
+  const byFile = new Map<string, Set<string>>();
+  const claimed = new Set<number>();
+  const plans: Continuation[] = [];
+
+  for (const candidate of candidates) {
+    let fingerprints = byFile.get(candidate.file);
+    if (fingerprints === undefined) {
+      fingerprints = fileFingerprints(worktreePath, candidate.file);
+      byFile.set(candidate.file, fingerprints);
+    }
+    if (fingerprints.has(candidate.fingerprint)) continue;
+
+    const pick = findings
+      .flatMap((finding, groupIndex) =>
+        matched[groupIndex] || claimed.has(groupIndex) || finding.file !== candidate.file
+          ? []
+          : [{ finding, groupIndex }],
+      )
+      .sort(
+        (a, b) =>
+          Math.abs(a.finding.line - candidate.line) -
+            Math.abs(b.finding.line - candidate.line) ||
+          a.finding.line - b.finding.line ||
+          a.groupIndex - b.groupIndex,
+      )[0];
+    if (pick === undefined) continue;
+
+    claimed.add(pick.groupIndex);
+    plans.push({ candidate, groupIndex: pick.groupIndex });
+  }
+
+  return plans;
+}
+
+/**
+ * 把配好的延续写到 Forge 上:旧评论 resolve。写在建评论正文之前——新评论里那句「延续
+ * 自」得是真的,resolve 没成就不该说这话。单条失败只记日志并放弃这一条延续:旧行留在
+ * 未处置,本轮那条按新 Finding 正常提出,少一次位置交接不该让整轮审查白跑。
+ */
+async function applyContinuations(
+  forge: Forge,
+  event: PullRequestEvent,
+  plans: readonly Continuation[],
+): Promise<Continuation[]> {
+  const applied: Continuation[] = [];
+  for (const plan of plans) {
+    try {
+      await forge.resolveComment(
+        { owner: event.owner, repo: event.repo },
+        plan.candidate.commentId,
+      );
+    } catch (error) {
+      console.error(
+        "[review] 「已延续」的旧评论 resolve 失败,这一条不延续:",
+        error instanceof Error ? error.message : String(error),
+      );
+      continue;
+    }
+    applied.push(plan);
+  }
+  return applied;
+}
+
+/**
  * 逐条自动处置:先写 Forge 再落库。Disposition 的权威状态在 Forge 上(ADR 0006),
  * 反过来会留下「库里说已处置、Gitea 上没有」,而下一轮回填还会把它改回去。
  *
@@ -652,23 +777,55 @@ export async function runReview(
     // 名下全部历史 finding 上。以 Forge 最新状态为准——resolve 后又 unresolve,跟着改。
     store.backfillDispositions(event.owner, event.repo, event.number, backfillUpdates(prior));
 
+    // 指纹在新 head commit 的工作副本下重算:代码没变则与上一轮的锚点相同。跨轮匹配
+    // 整批先算出来——延续要在建评论正文之前知道哪些是本轮新报的。
+    const groupFingerprints = findings.map((finding) =>
+      contentFingerprint(worktree.path, finding.file, finding.line),
+    );
+    const matches = findings.map((finding) => priorMatch(prior, worktree.path, finding));
+
+    // 本轮的复核结论。裁决与落库用同一批记录,面板上看到的与自动处置依据的是同一件事。
+    const verdicts = verdictRecords(history, outcomes);
+
+    // 「已修复」自动处置(ADR 0016),PR 触发与范围审查走的是同一段代码。全部 Reviewer
+    // 都失败时不做:那一轮一条结论都没有,没有证据就不动。延续同理。
+    if (!failed) {
+      await autoDispose(forge, event, store, fixedFindingIds(verdicts));
+    }
+
+    // 复核判仍在、旧指纹在本轮 head 上算不出的那些,由本轮在新位置报出的一条承接同一条
+    // Finding Identity(CONTEXT.md 已延续,issue #167)。旧评论在这里就被 resolve 掉,
+    // 新评论的正文随后带上它的链接;落库要等本轮的行插进去之后。
+    const continuations = failed
+      ? []
+      : await applyContinuations(
+          forge,
+          event,
+          planContinuations(
+            store.continuationCandidates(presentFindingIds(verdicts)),
+            findings,
+            matches.map((match) => match !== undefined),
+            worktree.path,
+          ),
+        );
+    const continuedFrom = new Map(
+      continuations.map((plan) => [plan.groupIndex, plan.candidate.commentHtmlUrl]),
+    );
+
     const comments: ReviewCommentDraft[] = [];
     // 与 `comments` 同序:每条草稿属于哪个合并组。发布之后按它把评论标识记回去。
     const commentGroups: number[] = [];
     const fallbacks: FallbackFinding[] = [];
     const carried: CarriedFinding[] = [];
-    // 按合并组下标记住处置结论、来源类型与组指纹,落库时组内每条来源都取它。
+    // 按合并组下标记住处置结论与来源类型,落库时组内每条来源都取它。
     const dispositions: Disposition[] = [];
     const placements: FindingPlacement[] = [];
-    const groupFingerprints: (string | undefined)[] = [];
     // 折叠的那些记历史评论;本轮新发的要等发布之后才有 id,这里先留空。
     const groupComments: (PriorDisposition | undefined)[] = [];
 
     for (const [groupIndex, finding] of findings.entries()) {
-      // 指纹在新 head commit 的工作副本下重算:代码没变则与上一轮的锚点相同。
-      const fingerprint = contentFingerprint(worktree.path, finding.file, finding.line);
-      groupFingerprints.push(fingerprint);
-      const match = priorMatch(prior, worktree.path, finding);
+      const fingerprint = groupFingerprints[groupIndex];
+      const match = matches[groupIndex];
 
       if (match !== undefined) {
         carried.push({ finding, resolved: match.resolved });
@@ -682,27 +839,19 @@ export async function runReview(
 
       dispositions.push("unknown");
       groupComments.push(undefined);
+      const continued = continuedFrom.get(groupIndex);
       if (isInDiff(diffRanges, finding.file, finding.line)) {
         placements.push("inline");
         comments.push({
           path: finding.file,
           line: finding.line,
-          body: findingBody(finding, fingerprint),
+          body: findingBody(finding, fingerprint, continued),
         });
         commentGroups.push(groupIndex);
       } else {
         placements.push("body");
-        fallbacks.push({ finding, fingerprint });
+        fallbacks.push({ finding, fingerprint, continuedFrom: continued });
       }
-    }
-
-    // 本轮的复核结论。裁决与落库用同一批记录,面板上看到的与自动处置依据的是同一件事。
-    const verdicts = verdictRecords(history, outcomes);
-
-    // 「已修复」自动处置(ADR 0016),PR 触发与范围审查走的是同一段代码。全部 Reviewer
-    // 都失败时不做:那一轮一条结论都没有,没有证据就不动。
-    if (!failed) {
-      await autoDispose(forge, event, store, fixedFindingIds(verdicts));
     }
 
     const outcomeRecords: OutcomeRecord[] = timed.map(({ outcome, durationMs }) => ({
@@ -756,6 +905,19 @@ export async function runReview(
       findings: findingRecords,
       verdicts,
     });
+
+    // 延续落库要等本轮的行插进去:旧行的备注、处置人与处置时刻随 Identity 抄到承接它的
+    // 那一行上,旧行改记「已延续」。
+    for (const plan of continuations) {
+      store.recordContinuation({
+        owner: event.owner,
+        repo: event.repo,
+        pullNumber: event.number,
+        runId,
+        groupIndex: plan.groupIndex,
+        candidate: plan.candidate,
+      });
+    }
 
     // 有缺席或覆盖不全的模型时即便零 Finding 也要发:读者需要知道这次审查覆盖面
     // 打了折扣。

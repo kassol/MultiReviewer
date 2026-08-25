@@ -128,6 +128,33 @@ const CASES: Case[] = [
     ],
   },
   {
+    // 「已延续」只是位置的交接(CONTEXT.md 已延续):旧那一条整条退出统计,新位置那条
+    // 自成一条 Identity,分母因此不加。整条退出而不是只跳过那一行——同一条上更早的
+    // 未处置行还在,只过滤那一行会把它原样带回分母。
+    name: "已延续不进分子分母,新位置那条独立计一条",
+    seed: (store) => {
+      seedRun(store, { startedAt: T1, findings: [finding({})] });
+      seedRun(store, {
+        startedAt: T2,
+        findings: [
+          finding({ disposition: "continued" }),
+          finding({ fingerprint: "fp-2", line: 20, groupIndex: 1 }),
+        ],
+      });
+    },
+    expected: [
+      {
+        model: "model-a",
+        category: "bug",
+        resolved: 0,
+        fixed: 0,
+        unresolved: 0,
+        unknownClosed: 0,
+        unknownOpen: 1,
+      },
+    ],
+  },
+  {
     name: "fallback(body)排除在统计外,即便它被标了 resolved",
     seed: (store) => {
       seedRun(store, {

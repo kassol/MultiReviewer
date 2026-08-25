@@ -114,6 +114,15 @@ function findingDisposed(finding: RunFinding): boolean {
 }
 
 /**
+ * 已延续:这处代码已改写,同一条 Finding 由后续轮次在新位置那条承接(CONTEXT.md
+ * 已延续)。它既不是处置也不是待处置,两个筛选都不收它,行内也不给处置动作——要处置的
+ * 是新位置那一条。
+ */
+function findingContinued(finding: RunFinding): boolean {
+  return finding.disposition === "continued";
+}
+
+/**
  * 一条 Finding 的卡片:正文、严重度、类别、文件与行、跳到 Forge 看原版的链接,加上
  * 行内处置。它挂在 diff 的对应行下面,fallback 那一批则单独成段。
  *
@@ -133,6 +142,7 @@ function FindingRow({
   // 人工与自动两档都是已处置:划掉正文、给撤回动作。区别只在下面那行署名上。
   const autoDisposed = finding.disposition === "fixed";
   const resolved = findingDisposed(finding);
+  const continued = findingContinued(finding);
   const dispose = useMutation({
     mutationFn: disposeRequest,
     onSuccess: () => {
@@ -180,11 +190,34 @@ function FindingRow({
 
       <p
         className={`text-base leading-relaxed break-words ${
-          resolved ? "text-text-muted line-through" : "text-text-secondary"
+          resolved
+            ? "text-text-muted line-through"
+            : continued
+              ? "text-text-muted"
+              : "text-text-secondary"
         }`}
       >
         {finding.description}
       </p>
+
+      {continued ? (
+        <p className="text-sm text-text-muted">
+          已延续 · 这处代码已改写，同一条 Finding 由后面的轮次在新位置接着跟
+        </p>
+      ) : null}
+      {finding.continuedFrom === null ? null : (
+        <p className="text-sm text-text-muted">
+          <a
+            href={finding.continuedFrom}
+            target="_blank"
+            rel="noreferrer"
+            className="text-primary underline underline-offset-4"
+          >
+            延续自上一处评论
+          </a>
+          {" · "}这处代码已改写，复核判定同一个问题仍在
+        </p>
+      )}
 
       {autoDisposed ? (
         <p className="text-sm text-text-muted">
@@ -210,8 +243,9 @@ function FindingRow({
         </p>
       )}
 
-      {/* 正文里的 fallback 没有行级评论承载,Forge 上无从 resolve,面板也就不给动作。 */}
-      {finding.commentId === null ? (
+      {/* 正文里的 fallback 没有行级评论承载,Forge 上无从 resolve,面板也就不给动作;
+          已延续的那条要处置的是新位置那一行,这里同样不给。 */}
+      {continued ? null : finding.commentId === null ? (
         <p className="text-sm text-text-muted">这条只在 review 正文里，没有可处置的评论。</p>
       ) : canDispose ? (
         <div className="flex flex-col gap-2">
@@ -481,9 +515,12 @@ export function RunDiff({ run, canDispose }: { run: RunItem; canDispose: boolean
   // 人手动开合过的文件记在这里,其余按默认规则。
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
 
+  // 已延续的那条两个筛选都不收:它既不待处置也不是处置,只在「全部」下作为历史出现。
   const matches = (finding: RunFinding): boolean =>
     (model === "all" || finding.models.includes(model)) &&
-    (disposition === "all" || (disposition === "disposed") === findingDisposed(finding));
+    (disposition === "all" ||
+      (!findingContinued(finding) &&
+        (disposition === "disposed") === findingDisposed(finding)));
 
   const files = diff.data?.files ?? [];
   const inDiff = new Set(files.map((file) => file.path));

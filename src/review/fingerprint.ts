@@ -28,7 +28,8 @@ export function contentFingerprint(
  * 不论它被上下挪了多少行。按历史评论记的行号原地重算做不到这一点——作者在上面插
  * 几行,整个文件的 Finding 都会被读成已改写。
  *
- * 自 ADR 0016 起它不再是自动处置的证据(那由复核结论决定),留给「已延续」的判据。
+ * 自 ADR 0016 起它不再是自动处置的证据(那由复核结论决定),只作「已延续」的判据:
+ * 复核判仍在而旧指纹在这里算不出,那处代码就是被改写了,同一条 Finding 要交接到新位置。
  */
 export function fileFingerprints(worktreePath: string, file: string): Set<string> {
   const fingerprints = new Set<string>();

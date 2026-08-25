@@ -129,7 +129,10 @@ CREATE TABLE IF NOT EXISTS finding (
   disposed_by TEXT,
   disposed_at TEXT,
   -- 处置备注(CONTEXT.md):只存面板,不写入 Forge。至多一条,unresolve 之后仍留着。
-  disposition_note TEXT
+  disposition_note TEXT,
+  -- 这一行承接的那条旧评论在 Forge 页面上的地址(CONTEXT.md 已延续,issue #167)。
+  -- 只有延续过来的新行有它,面板据此显示「延续自」;其余行为 NULL。
+  continued_from TEXT
 );
 
 CREATE INDEX IF NOT EXISTS finding_by_run ON finding(run_id);
@@ -410,6 +413,7 @@ const ADD_COLUMNS = [
   "ALTER TABLE finding ADD COLUMN disposed_at TEXT",
   "ALTER TABLE finding ADD COLUMN disposition_note TEXT",
   "ALTER TABLE finding ADD COLUMN title TEXT",
+  "ALTER TABLE finding ADD COLUMN continued_from TEXT",
 ];
 
 /**
@@ -560,6 +564,25 @@ export type AutoDispositionCandidate = {
 };
 
 /**
+ * 一条还能被延续的历史 Finding(CONTEXT.md 已延续,issue #167)。`findingId` 是注入
+ * Reviewer 时给它的那个 id;`file` 与 `fingerprint` 供调用方判「旧指纹在本轮 head 上还
+ * 算不算得出」;`commentId` 与 `commentHtmlUrl` 是它的旧评论——延续要 resolve 它,并把
+ * 它的链接写进新评论。
+ *
+ * 三种行不在候选里:没有指纹的(判不了代码有没有改写)、没有评论载体或链接的(升级前
+ * 的历史行与正文 fallback,resolve 不了也链不过去)、以及已经处置过的(人工处置与
+ * 「已修复」都是终点,不再交接位置)。
+ */
+export type ContinuationCandidate = {
+  findingId: number;
+  file: string;
+  line: number;
+  fingerprint: string;
+  commentId: string;
+  commentHtmlUrl: string;
+};
+
+/**
  * 面板处置一条 Finding 要用的那几项。处置写在承载它的那条 Forge 评论上,因此这里
  * 带上评论 id 与它所属仓库;`commentId` 为 null 即 fallback,没有可处置的载体。
  */
@@ -610,7 +633,8 @@ export type RunResult = {
 /**
  * 处置率矩阵的一格:模型 × category。计数单位是**同一处 Finding**(Finding Identity,
  * 见 CONTEXT.md),不是落库行。分母 = resolved + fixed + unresolved + unknownClosed;
- * unknownOpen 不进分母也不上页面,API 带上它只为让口径可对账。
+ * unknownOpen 不进分母也不上页面,API 带上它只为让口径可对账。「已延续」的那些整条
+ * 不出现在这里,它是位置的交接而不是处置(CONTEXT.md 已延续)。
  *
  * Identity 去掉模型之后(ADR 0015)一条 Finding 可以有几个归属,这一格的模型取**首报**
  * 那一个:按每个归属各计一次会让同一条进几格,分母重复计入、比率不可解释。模型这一维
@@ -917,6 +941,11 @@ export type RunListItem = {
     disposedAt: string | null;
     /** 处置备注,只存面板。 */
     note: string | null;
+    /**
+     * 这一行承接的那条旧评论的地址(CONTEXT.md 已延续)。面板据此显示「延续自」;
+     * 不是延续来的行为 null。
+     */
+    continuedFrom: string | null;
   }[];
   /**
    * 本轮漏复核的条数(ADR 0016):注入了历史却没给结论的「Reviewer × 历史 Finding」
@@ -1295,10 +1324,33 @@ export type Store = {
     disposedAt: string,
   ): void;
   /**
+   * 这些历史 Finding 里还能被延续的那些(CONTEXT.md 已延续,issue #167)。判据见
+   * `ContinuationCandidate`;顺序与传入的 id 同序,调用方据此得到确定的配对结果。
+   */
+  continuationCandidates(findingIds: readonly number[]): ContinuationCandidate[];
+  /**
+   * 记一次延续:旧行改记「已延续」,处置备注、处置人与处置时刻随 Identity 落到本轮
+   * 新行上,新行同时记下旧评论的链接。
+   *
+   * 旧那一侧落的是整条 Finding Identity(同「文件 + 指纹」的历史行一并改写),口径与
+   * 「已修复」自动处置和回填一致。元数据继承与 issue #152 同一个理由:处置的载体换了
+   * 位置,人的备注、署名与「已经显式处置过」这个标记要跟着走,否则自动规则会再碰一次。
+   */
+  recordContinuation(input: {
+    owner: string;
+    repo: string;
+    pullNumber: number;
+    /** 承接它的本轮 Review Run 与合并组。 */
+    runId: number;
+    groupIndex: number;
+    candidate: ContinuationCandidate;
+  }): void;
+  /**
    * 回填 disposition(ADR 0006):对这个 pull request 名下、文件与指纹都对上的全部
    * 历史 finding,以 Forge 的最新状态覆盖已有值——人 resolve 后又 unresolve,库里跟着改。
    *
-   * 「已修复」不被读回的 resolved 降级成人工处置那一档。
+   * 「已修复」不被读回的 resolved 降级成人工处置那一档;「已延续」两个方向都不被覆盖
+   * ——那条评论的 resolve 状态说的已经不是这条 Finding 的处置。
    */
   backfillDispositions(
     owner: string,
@@ -3066,6 +3118,8 @@ export function openStore(dbPath: string): Store {
           : ["run.range_review_id = ?", [scope.rangeReviewId]];
       // 折叠键与处置率同源(ADR 0015):文件 + 指纹,算不出指纹的行用自己的 id 兜底
       // 成独立键。同一处取最新那一行——它才带着当前的处置状态、备注与最新表述。
+      // 最新一行是「已延续」的整条不注入:这处 Finding 已经交接到新位置,新位置那条
+      // 自己在历史里,再给一遍就是同一个问题让模型复核两次。
       const rows = db
         .prepare(
           `WITH scoped AS (
@@ -3081,6 +3135,7 @@ export function openStore(dbPath: string): Store {
            SELECT s.* FROM scoped s
             WHERE s.id = (SELECT MAX(latest.id) FROM scoped latest
                            WHERE latest.file = s.file AND latest.fp = s.fp)
+              AND s.disposition <> 'continued'
             ORDER BY s.id`,
         )
         .all(...params);
@@ -3145,6 +3200,10 @@ export function openStore(dbPath: string): Store {
                           WHEN 'fixed' THEN 2
                           WHEN 'unresolved' THEN 1
                           ELSE 0 END) AS disp,
+                    -- 「已延续」的整条 Identity 退出统计(CONTEXT.md 已延续):它只是位置
+                    -- 的交接,分子分母都不进,新位置那条自成一条 Identity。按 MAX 判而不是
+                    -- 逐行过滤——过滤掉那一行,同一条上更早的未处置行还会把它带回分母。
+                    MAX(CASE WHEN disposition = 'continued' THEN 1 ELSE 0 END) AS continued,
                     MAX(closed) AS closed
                FROM src
               GROUP BY owner, repo, pull_number, file, fp
@@ -3170,7 +3229,7 @@ export function openStore(dbPath: string): Store {
                   SUM(CASE WHEN disp = 0 AND closed = 1 THEN 1 ELSE 0 END) AS unknown_closed,
                   SUM(CASE WHEN disp = 0 AND closed = 0 THEN 1 ELSE 0 END) AS unknown_open
              FROM labeled
-            WHERE first_seen >= ? AND first_seen <= ?
+            WHERE continued = 0 AND first_seen >= ? AND first_seen <= ?
             GROUP BY model, category
             ORDER BY model, category`,
         )
@@ -3286,6 +3345,8 @@ export function openStore(dbPath: string): Store {
         )
         .all(...ids);
       // 已处置口径与处置率同源:只认行级承载。人工与自动分开数,面板据此把两者分开显示。
+      // 「已延续」两头都不占:它既不是处置,也不该继续挂在这一轮的待处置里等人去点
+      // ——那处 Finding 已经交接到新位置,要处置的是新位置那条。
       const byGroup = db
         .prepare(
           `SELECT run_id,
@@ -3294,6 +3355,7 @@ export function openStore(dbPath: string): Store {
                   SUM(CASE WHEN disposition = 'fixed' THEN 1 ELSE 0 END) AS fixed
              FROM finding
             WHERE run_id IN (${marks}) AND placement = 'inline'
+              AND disposition <> 'continued'
             GROUP BY run_id`,
         )
         .all(...ids);
@@ -3311,7 +3373,7 @@ export function openStore(dbPath: string): Store {
         .prepare(
           `SELECT id, run_id, file, line, severity, category, description,
                   disposition, placement, comment_id, comment_html_url,
-                  disposed_by, disposed_at, disposition_note
+                  disposed_by, disposed_at, disposition_note, continued_from
              FROM finding
             WHERE run_id IN (${marks}) ORDER BY id`,
         )
@@ -3433,6 +3495,8 @@ export function openStore(dbPath: string): Store {
           disposedBy: row["disposed_by"] === null ? null : String(row["disposed_by"]),
           disposedAt: row["disposed_at"] === null ? null : String(row["disposed_at"]),
           note: row["disposition_note"] === null ? null : String(row["disposition_note"]),
+          continuedFrom:
+            row["continued_from"] === null ? null : String(row["continued_from"]),
         });
         findings.set(runId, list);
       }
@@ -3708,18 +3772,75 @@ export function openStore(dbPath: string): Store {
       );
     },
 
+    continuationCandidates(findingIds) {
+      const probe = db.prepare(
+        `SELECT file, line, fingerprint, comment_id, comment_html_url FROM finding
+          WHERE id = ? AND fingerprint IS NOT NULL
+            AND comment_id IS NOT NULL AND comment_html_url IS NOT NULL
+            AND disposition IN ('unknown', 'unresolved')`,
+      );
+      return findingIds.flatMap((findingId) => {
+        const row = probe.get(findingId);
+        if (row === undefined) return [];
+        return [
+          {
+            findingId,
+            file: String(row["file"]),
+            line: Number(row["line"]),
+            fingerprint: String(row["fingerprint"]),
+            commentId: String(row["comment_id"]),
+            commentHtmlUrl: String(row["comment_html_url"]),
+          },
+        ];
+      });
+    },
+
+    recordContinuation({ owner, repo, pullNumber, runId, groupIndex, candidate }) {
+      db.exec("BEGIN");
+      try {
+        // 先把旧行的三列抄到新行上,再改旧行的处置值:两条语句都只碰自己那一侧,
+        // 顺序其实无关,写成这样是让「谁继承谁」一眼看得出来。
+        db.prepare(
+          `UPDATE finding
+              SET (disposed_by, disposed_at, disposition_note, continued_from) =
+                    (SELECT prior.disposed_by, prior.disposed_at, prior.disposition_note, ?
+                       FROM finding prior WHERE prior.id = ?)
+            WHERE run_id = ? AND group_index = ?`,
+        ).run(candidate.commentHtmlUrl, candidate.findingId, runId, groupIndex);
+        // 折叠键与 `stageHistory`、自动处置同源:文件 + 指纹。本轮新行的指纹必然与它
+        // 不同——旧指纹在本轮 head 上算不出正是延续的前提,不会被这一笔一起改掉。
+        db.prepare(
+          `UPDATE finding SET disposition = 'continued'
+            WHERE file = (SELECT file FROM finding WHERE id = ?)
+              AND COALESCE(fingerprint, 'row:' || id) =
+                  (SELECT COALESCE(fingerprint, 'row:' || id) FROM finding WHERE id = ?)
+              AND disposition IN ('unknown', 'unresolved')
+              AND ${PULL_REQUEST_SCOPE}`,
+        ).run(candidate.findingId, candidate.findingId, owner, repo, pullNumber);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
     backfillDispositions(owner, repo, pullNumber, updates) {
       if (updates.length === 0) return;
+      // 「已延续」两个方向都不覆盖:延续时旧评论被 resolve 过,读回的 resolved 是那次
+      // 交接的痕迹,不是处置;人在 Forge 上把它 unresolve 也一样——这条 Finding 的当前
+      // 位置已经在新行上,旧行只剩「已经交接过」这一个事实。
       const withDisposition = db.prepare(
         `UPDATE finding SET disposition = ?, placement = ?
-          WHERE file = ? AND fingerprint = ? AND ${PULL_REQUEST_SCOPE}`,
+          WHERE file = ? AND fingerprint = ? AND disposition <> 'continued'
+            AND ${PULL_REQUEST_SCOPE}`,
       );
       // 「已修复」在 Forge 上就是一个 resolve,读回的 resolved 因此不能把它降级成人工
       // 那一档——处置率会凭空多出人工处置。读回 unresolved 是另一回事:人在 Forge 上
       // 撤回了处置,以 Forge 最新状态为准,照写。
       const keepAutoDisposed = db.prepare(
         `UPDATE finding SET disposition = ?, placement = ?
-          WHERE file = ? AND fingerprint = ? AND disposition <> 'fixed'
+          WHERE file = ? AND fingerprint = ?
+            AND disposition <> 'fixed' AND disposition <> 'continued'
             AND ${PULL_REQUEST_SCOPE}`,
       );
       const placementOnly = db.prepare(

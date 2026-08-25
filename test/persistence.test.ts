@@ -682,6 +682,7 @@ test("时间流带上每条 Finding 的 Forge 评论 id 与链接", async () => 
       disposedBy: null,
       disposedAt: null,
       note: null,
+      continuedFrom: null,
     },
   ]);
 });
@@ -821,7 +822,7 @@ test("升级前落的 finding 行读得出来,评论 id 与链接为空", () => 
   const store = openStore(db.path);
   const run = store.listRuns({ limit: 10 })[0]!;
   store.close();
-  // 升级前的表连处置人、处置时间与处置备注三列都没有,补列之后旧行三项都是空。
+  // 升级前的表连处置人、处置时间、处置备注与「延续自」几列都没有,补列之后旧行全是空。
   assert.deepEqual(run.findings, [
     {
       id: run.findings[0]!.id,
@@ -838,6 +839,7 @@ test("升级前落的 finding 行读得出来,评论 id 与链接为空", () => 
       disposedBy: null,
       disposedAt: null,
       note: null,
+      continuedFrom: null,
     },
   ]);
 });
