@@ -602,10 +602,10 @@ export type AutoDispositionCandidate = {
  * 它的链接写进新评论。
  *
  * 三种行不在候选里:没有指纹的(判不了代码有没有改写)、没有评论载体或链接的(升级前
- * 的历史行与正文 fallback,resolve 不了也链不过去)、以及已经被显式处置过的。最后这一道
- * 与「已修复」自动处置同一个谓词(`AUTO_DISPOSABLE`):处置值是终点固然出局,人把它改回
- * 未处置也出局——`disposed_at` 是「人碰过」的标记,自动规则从此不再碰这一条,延续也是
- * 自动规则(issue #163)。
+ * 的历史行与正文 fallback,resolve 不了也链不过去)、以及已经处置过的(人工处置与
+ * 「已修复」都是终点,不再交接位置)。判据只看处置值,不看 `disposed_at`:延续是位置的
+ * 交接,不是处置,「已修复」自动处置那道「人碰过就不再碰」的闸门不适用于它——人显式标回
+ * 未处置的那条照样参与延续,它的备注与署名跟着 Identity 走到新位置(issue #163 US 36)。
  *
  * `title` 与 `description` 供调用方判「本轮这条讲的是不是同一回事」;升级前的行没有
  * 标题,取空串,判据自会退回正文。
@@ -4131,7 +4131,7 @@ export function openStore(dbPath: string): Store {
                 comment_id, comment_html_url FROM finding
           WHERE id = ? AND fingerprint IS NOT NULL
             AND comment_id IS NOT NULL AND comment_html_url IS NOT NULL
-            AND ${AUTO_DISPOSABLE}`,
+            AND disposition IN ('unknown', 'unresolved')`,
       );
       return findingIds.flatMap((findingId) => {
         const row = probe.get(findingId);

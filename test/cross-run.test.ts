@@ -821,20 +821,28 @@ test("复核判仍在、代码已改写:新位置那条承接同一条,旧评论
   assert.deepEqual(continuedFrom(db.path), [null, old.htmlUrl]);
 });
 
-test("延续把旧行的处置元数据带到新行上:没人碰过时新行三项都空", async () => {
-  const { db, forge } = await continueSecondRound();
+test("延续把旧行的备注、处置人与处置时刻带到新行上", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  const old = forge.publishedComments[0]!;
+  // 人处置过又撤回:备注与署名留在旧行上,延续要把它们带到新位置去。延续是位置的交接
+  // 不是处置,「已修复」自动处置那道「人碰过就不再碰」的闸门不适用于它(issue #163 US 36)。
+  disposeInPanel(db.path, old.id, "resolved", "确认无影响");
+  disposeInPanel(db.path, old.id, "unresolved");
+  forge.existingComments.push(...asPublished(forge, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
+
+  await runReview(EVENT, { ...deps, reviewers: continuing() });
 
   const store = openStore(db.path);
   const latest = store.listRuns({ limit: 10 })[0]!;
   store.close();
-  // 面板读的是本轮那一行:延续自的链接要落在它上面,diff 卡片据此显示「延续自」。
   const carried = latest.findings[0]!;
-  assert.equal(carried.continuedFrom, forge.publishedComments[0]!.htmlUrl);
-  // 人已经显式处置过的根本不进延续候选(见「人撤回处置之后走延续」那条),能被承接的
-  // 旧行这三项必然是空的。
-  assert.equal(carried.note, null);
-  assert.equal(carried.disposedBy, null);
-  assert.equal(carried.disposedAt, null);
+  assert.equal(carried.note, "确认无影响");
+  assert.equal(carried.disposedBy, "kassol");
+  assert.equal(carried.disposedAt, DISPOSED_AT);
+  assert.equal(carried.continuedFrom, old.htmlUrl);
 });
 
 test("复核判仍在、代码已改写但本轮没在新位置报出:旧行不动", async () => {
@@ -875,26 +883,6 @@ test("本轮那条讲的不是同一回事:不承接,旧行不动", async () => 
   assert.deepEqual(latestDispositions(db.path), ["unresolved", "unknown"]);
   assert.deepEqual(continuedFrom(db.path), [null, null]);
   // 本轮那条按新 Finding 正常提出,正文里没有那句「延续自」。
-  assert.doesNotMatch(forge.createdReviews[1]!.comments[0]!.body, /延续自/);
-});
-
-test("人撤回处置之后走延续:不承接,旧行不动", async () => {
-  const { repo, db, forge, deps } = setup();
-
-  await runReview(EVENT, deps);
-  const old = forge.publishedComments[0]!;
-  // 人在面板上把它标回未处置:从此这一行是人工处置的地盘(ADR 0016,issue #163)。
-  disposeInPanel(db.path, old.id, "unresolved");
-  forge.existingComments.push(...asPublished(forge, false));
-  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
-
-  // 判仍在、指纹也变了、本轮还在同一处报出内容对得上的一条:延续的三条都过。人已经
-  // 显式处置过的那条仍不该被自动规则碰——延续同样是自动规则。
-  await runReview(EVENT, { ...deps, reviewers: continuing() });
-
-  assert.deepEqual(forge.resolvedIds, [], "人撤回处置之后又被延续 resolve 了一次");
-  assert.deepEqual(latestDispositions(db.path), ["unresolved", "unknown"]);
-  assert.deepEqual(continuedFrom(db.path), [null, null]);
   assert.doesNotMatch(forge.createdReviews[1]!.comments[0]!.body, /延续自/);
 });
 
