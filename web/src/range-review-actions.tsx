@@ -9,7 +9,7 @@ import { Button } from "@/components/theme-button";
 import { api, errorText } from "./api.ts";
 import { CommitPicker } from "./commit-picker.tsx";
 
-/** 一个范围审查。字段与 `GET <前缀>/api/range-reviews` 逐字对应。 */
+/** 一个范围审查。字段与 `GET <前缀>/api/stages/{stageId}` 的 `rangeReview` 那一格逐字对应。 */
 export type RangeReview = {
   id: number;
   owner: string;
