@@ -196,7 +196,7 @@ export function StageSummaryView({
                 : "border-card-line bg-surface"
             }`}
           >
-            <span className="text-sm text-text-muted">{DISPOSITION_LABEL[id]}</span>
+            <span className="text-sm text-text-secondary">{DISPOSITION_LABEL[id]}</span>
             <span className="text-4xl font-bold tabular-nums">{value}</span>
           </button>
         ))}
@@ -226,7 +226,7 @@ export function StageSummaryView({
           </Select.Content>
         </Select.Root>
         {summary.data === undefined ? null : (
-          <span className="text-sm text-text-muted">
+          <span className="text-sm text-text-secondary">
             <span className="font-mono tabular-nums">{visible.length}</span> / {findings.length} 条
           </span>
         )}
@@ -234,16 +234,16 @@ export function StageSummaryView({
 
       {summary.isPending ? (
         <div className="flex flex-col gap-2" role="status" aria-live="polite">
-          <span className="sr-only">正在加载这个阶段的汇总</span>
+          <span className="sr-only">正在加载审查阶段汇总</span>
           {[0, 1, 2].map((slot) => <Skeleton key={slot} className="h-16" />)}
         </div>
       ) : null}
 
       {summary.data !== undefined && findings.length === 0 ? (
-        <EmptyState title="这个阶段还没有 Finding" className="py-2" />
+        <EmptyState title="当前审查阶段暂无 Finding" className="py-2" />
       ) : null}
       {summary.data !== undefined && findings.length > 0 && visible.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-card-line px-4 py-6 text-center text-text-muted">
+        <p className="rounded-lg border border-dashed border-card-line px-4 py-6 text-center text-text-secondary">
           没有符合筛选条件的 Finding。
         </p>
       ) : null}
@@ -266,21 +266,24 @@ export function StageSummaryView({
               trace: undefined,
             })}
             replace
-            className="block px-4 pt-2.5 outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40"
+            aria-label={`查看 ${finding.file}:${finding.line} 对应的代码差异`}
+            className="group block px-4 pt-2.5 outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40"
           >
             <span className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-              <span className="min-w-0 font-mono text-sm break-all text-text-muted">
+              <span className="min-w-0 font-mono text-sm break-all text-text-secondary">
                 {finding.file}:{finding.line}
               </span>
-              <span className="inline-flex shrink-0 items-center gap-1 text-sm text-primary">
-                <FileTextIcon aria-hidden />
-                看这处 diff
+              <span
+                className="inline-flex size-7 shrink-0 items-center justify-center rounded-md bg-accent-tint-strong text-primary transition-colors group-hover:bg-accent-track"
+                aria-hidden
+              >
+                <FileTextIcon />
               </span>
             </span>
             {finding.title === "" ? null : (
               <span className="block pt-1 text-lg font-semibold break-words">{finding.title}</span>
             )}
-            <span className="block pt-1 text-sm text-text-muted tabular-nums">
+            <span className="block pt-1 text-sm text-text-secondary tabular-nums">
               第 {roundOf.get(finding.firstRunId) ?? "?"} 轮首次报出 · 第{" "}
               {roundOf.get(finding.lastRunId) ?? "?"} 轮最近一次 ·{" "}
               {localMinute(finding.lastReportedAt)}
@@ -292,15 +295,15 @@ export function StageSummaryView({
 
       <h3 className="pt-1 text-2xl font-semibold">
         时间线
-        <span className="ml-1.5 font-mono tabular-nums text-text-muted">{entries.length}</span>
+        <span className="ml-1.5 font-mono tabular-nums text-text-secondary">{entries.length}</span>
       </h3>
       {timeline === undefined ? (
         entries.length === 0 ? (
-          <EmptyState title="这个阶段还没有跑过 Review Run" className="py-2" />
+          <EmptyState title="该审查阶段尚无 Review Run" className="py-2" />
         ) : (
           [...entries].reverse().map((entry) => (
             <div key={entry.runId} className="flex flex-col gap-1.5">
-              <div className="flex flex-wrap items-center gap-x-1.5 text-base text-text-muted">
+              <div className="flex flex-wrap items-center gap-x-1.5 text-base text-text-secondary">
                 <CommitChip sha={entry.headSha} />
                 <span className="tabular-nums">{localMinute(entry.startedAt)}</span>
               </div>
@@ -326,20 +329,20 @@ export function StageRound({ entry }: { entry: StageTimelineEntry }) {
   const cells = (
     [
       ["新报出", entry.reported, "text-text"],
-      ["折叠", entry.folded, "text-text-muted"],
+      ["折叠", entry.folded, "text-text-secondary"],
       ["已修复", entry.fixed, "text-success"],
-      ["已延续", entry.continued, "text-text-muted"],
+      ["已延续", entry.continued, "text-text-secondary"],
       ["漏复核", entry.missedVerdicts, "text-warning"],
     ] as const
   ).filter(([, value]) => value > 0);
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-overlay-line bg-surface px-4 py-2.5 text-base shadow-control">
       {entry.finishedAt === null && !entry.failed ? (
-        <span className="text-text-muted">运行中…</span>
+        <span className="text-text-secondary">运行中…</span>
       ) : entry.failed ? (
-        <span className="text-danger">这一轮失败了</span>
+        <span className="text-danger">本轮 Review Run 失败</span>
       ) : cells.length === 0 ? (
-        <span className="text-text-muted">这一轮没有变化</span>
+        <span className="text-text-secondary">本轮未产生 Finding 状态变化</span>
       ) : (
         cells.map(([label, value, tone]) => (
           <span key={label} className={tone}>

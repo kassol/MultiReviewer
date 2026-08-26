@@ -55,8 +55,8 @@ type PermissionInfo = {
 const PERMISSION_INFO: readonly PermissionInfo[] = [
   { id: "repo:write", resource: "仓库", action: "管理", hint: "搜索、注册和移除仓库，修改模型组合和轮转 Key。" },
   { id: "review:rerun", resource: "评审", action: "重新运行", hint: "重新运行一次评审，会产生模型调用费用并在 PR 上发布评论。" },
-  { id: "review:create", resource: "评审", action: "发起", hint: "发起范围审查，会在 Forge 上自建分支与容器 pull request 并立即跑一轮。" },
-  { id: "finding:dispose", resource: "评审", action: "处置", hint: "在面板上 resolve / unresolve 一条 Finding 并附处置备注，Forge 上的评论状态跟着改。" },
+  { id: "review:create", resource: "评审", action: "发起", hint: "发起范围审查，并立即启动首轮 Review Run。" },
+  { id: "finding:dispose", resource: "评审", action: "处置", hint: "在面板处置 Finding 并填写可选处置备注；Forge 评论的 Disposition 将同步更新。" },
   { id: "model:read", resource: "模型", action: "查看", hint: "查看审查策略和模型服务。" },
   { id: "model:write", resource: "模型", action: "管理", hint: "修改模型组合、手动添加模型和管理自定义模型服务。" },
   { id: "credential:read", resource: "凭据", action: "查看", hint: "查看已配置凭据和 Key 末 4 位。" },
@@ -442,7 +442,7 @@ export function AccessControlPage() {
               </div>
               {roles.length === 0 ? (
                 <div className="border-t border-line px-4 pb-4 sm:px-5">
-                  <EmptyState title="还没有自定义角色" />
+                  <EmptyState title="尚无自定义角色" />
                 </div>
               ) : (
                 <div className="contain-inline-size min-w-0 max-w-full overflow-x-auto overscroll-x-contain border-t border-line">
@@ -538,13 +538,19 @@ export function AccessControlPage() {
       </Dialog.Root>
       <AlertDialog.Root open={confirm !== null} onOpenChange={(open) => { if (!open) { setConfirm(null); setResetPassword(""); } }}>
         <AlertDialog.Content onCloseAutoFocus={confirmFocus.onCloseAutoFocus} maxWidth="440px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
-          <AlertDialog.Title size="4" mb="2">{confirm?.kind === "reset" ? "重置密码" : "确认删除"}</AlertDialog.Title>
+          <AlertDialog.Title size="4" mb="2">
+            {confirm?.kind === "reset"
+              ? "重置密码"
+              : confirm?.kind === "delete-role"
+                ? `删除角色 ${confirm.label}？`
+                : `删除用户 ${confirm?.label}？`}
+          </AlertDialog.Title>
           <AlertDialog.Description size="2" color="gray" className="break-words">
             {confirm?.kind === "reset"
               ? `为 ${confirm.label} 设置一枚临时密码。现有会话会全部作废，下次登录必须改密码。`
               : confirm?.kind === "delete-role"
-                ? `删除角色 ${confirm.label}？仍有人使用时服务会拒绝删除。`
-                : `删除用户 ${confirm?.label}？其现有会话会一起作废，且无法撤销。`}
+                ? "仍有人使用时，服务会拒绝删除该角色。"
+                : "现有会话会一并作废；删除后无法恢复。"}
           </AlertDialog.Description>
           {confirm?.kind === "reset" ? (
             <div className="mt-4 flex flex-col gap-1.5">
@@ -562,7 +568,13 @@ export function AccessControlPage() {
               disabled={destructive.isPending || (confirm?.kind === "reset" && resetPassword === "")}
               onClick={() => { if (confirm !== null) destructive.mutate({ target: confirm, password: resetPassword }); }}
             >
-              {destructive.isPending ? "处理中…" : confirm?.kind === "reset" ? "重置密码" : "确认删除"}
+              {destructive.isPending
+                ? "处理中…"
+                : confirm?.kind === "reset"
+                  ? "重置密码"
+                  : confirm?.kind === "delete-role"
+                    ? "删除角色"
+                    : "删除用户"}
             </Button>
           </Flex>
         </AlertDialog.Content>
@@ -574,7 +586,7 @@ export function AccessControlPage() {
 /** 仓库多选。分配的是仓库注册表里的全部仓库,勾了哪些就是这个人能看见的。 */
 function RepoChecklist({ repos, selected, disabled, onToggle }: { repos: readonly AssignableRepo[]; selected: readonly number[]; disabled: boolean; onToggle: (repoId: number) => void }) {
   if (repos.length === 0) {
-    return <Text as="p" size="2" color="gray">还没有注册任何仓库，注册后才能分配。</Text>;
+    return <Text as="p" size="2" color="gray">尚未注册仓库。注册后即可分配。</Text>;
   }
   return (
     <div className="flex max-h-56 flex-col gap-0.5 overflow-y-auto overscroll-contain rounded-lg border border-line p-1.5">

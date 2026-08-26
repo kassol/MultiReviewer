@@ -31,7 +31,7 @@ class SettingsConflict extends Error {
   readonly latest: Settings;
 
   constructor(latest: Settings) {
-    super("这项审查策略已被其他人修改，已重新加载该项。请确认后再保存。");
+    super("当前审查策略已被其他用户修改。系统已重新加载最新版本，请确认后再次保存。");
     this.latest = latest;
   }
 }
@@ -245,7 +245,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
             const parsed = Number(limit.trim());
             if (limit.trim() === "" || !Number.isInteger(parsed) || parsed <= 0) {
               setLimitFeedback({
-                text: "批次上限要填正整数，这次没保存。",
+                text: "请输入正整数。批次上限未保存。",
                 isError: true,
                 isField: true,
               });

@@ -170,8 +170,8 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
         </div>
         {value.length === 0 ? (
           <EmptyState
-            title="还没选模型"
-            description="先选择服务，再加入可用模型。"
+            title="尚未选择模型"
+            description="请先选择模型服务，再添加可用模型。"
             className="rounded-sm bg-muted px-3 py-3"
           />
         ) : (
@@ -291,8 +291,8 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
               ) : (
                 <EmptyState
                   title="暂无可选模型"
-                  description="先配置模型服务、凭据并完成模型发现，再回到这里选择。"
-                  action={<Link to="/credentials" className="underline underline-offset-4">去配置模型服务</Link>}
+                  description="请先配置模型服务和凭据，并完成模型发现，再返回本页选择模型。"
+                  action={<Link to="/credentials" className="underline underline-offset-4">配置模型服务</Link>}
                   className="p-0"
                 />
               )}
@@ -368,8 +368,8 @@ function ProviderPane({
         <TextField.Root
           size={{ initial: "3", sm: "2" }}
           className="min-w-0 w-full max-sm:min-h-11"
-          aria-label={`在 ${group.provider} 里搜模型`}
-          placeholder={`在 ${group.provider} 里搜模型`}
+          aria-label={`搜索 ${group.provider} 的模型`}
+          placeholder={`搜索 ${group.provider} 的模型`}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
@@ -385,13 +385,13 @@ function ProviderPane({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {models.length === 0 ? (
           <EmptyState
-            title={group.models.length === 0 ? "这项服务还没有可用模型" : "没有匹配的模型"}
+            title={group.models.length === 0 ? "该模型服务暂无可用模型" : "没有匹配的模型"}
             description={group.models.length === 0
-              ? "先去模型服务发现目录或手动添加模型。"
-              : "换一个模型名称或 model id 继续搜索。"}
+              ? "请先在模型服务中发现或手动添加模型。"
+              : "请调整模型名称或 model id 后重新搜索。"}
             action={group.models.length === 0 ? (
               <Link to="/credentials" className="font-medium text-primary underline underline-offset-4">
-                去发现或手动添加模型
+                发现或手动添加模型
               </Link>
             ) : undefined}
             className="px-4 py-6"

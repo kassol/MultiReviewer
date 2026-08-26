@@ -213,7 +213,7 @@ export function runStatus(run: RunItem): { tone: StatusTone; label: string } {
 
 /** 一行的时间:最新一轮什么时候开跑。范围审查刚发起、还没跑过时说清楚是这一档。 */
 function latestRunLabel(stage: StageItem): string {
-  if (stage.latestRunAt === null) return "还没有跑过";
+  if (stage.latestRunAt === null) return "尚无 Review Run";
   return `最新一轮 ${localDay(stage.latestRunAt)} ${localClock(stage.latestRunAt)}`;
 }
 
@@ -304,7 +304,7 @@ function repositoryValue(row: Repository): string {
 
 /** 左栏每行仓库名下面的那行小字:最近一次审查在什么时候,没跑过就直说没跑过。 */
 function repoActivityLabel(row: RepoRow): string {
-  return row.lastActivity === null ? "还没跑过" : `最近 ${since(row.lastActivity)}`;
+  return row.lastActivity === null ? "尚无 Review Run" : `最近 ${since(row.lastActivity)}`;
 }
 
 /** 行操作菜单与注册按钮共用的一组回调:两处做的都是仓库注册表上的写动作(issue #195)。 */
@@ -594,7 +594,7 @@ export function RunsPage({
     onFeedback: setFeedback,
     onRegistered: (repo) => {
       setFeedback({
-        text: `已接入 ${repo.owner}/${repo.repo}。向它推送 pull request 就会自动开始审查。`,
+        text: `已注册 ${repo.owner}/${repo.repo}。该仓库收到 pull request 更新后将自动开始审查。`,
         isError: false,
       });
       selectRepository(repo);
@@ -652,9 +652,9 @@ export function RunsPage({
         {unassigned ? (
           <div className="rounded-lg border border-card-line bg-surface px-5 py-4 shadow-card">
             <EmptyState
-              title="还没有仓库分配给你"
+              title="尚未分配仓库"
               titleAs="h2"
-              description="看得到哪些评审记录由仓库分配决定。请联系系统管理员把你负责的仓库分配给这个账号。"
+              description="评审记录的可见范围由仓库分配决定。请联系系统管理员为该账号分配负责的仓库。"
               // 注册按钮照 `repo:write` 出现:自己注册的仓库自动分配给自己(issue #192),
               // 一个仓库都没分到的仓库维护者靠它走出这个空态(issue #195)。
               action={
@@ -772,7 +772,7 @@ export function RunsPage({
                 {flat.length === 0 && !stages.isPending && !stages.isError ? (
                   <div className="rounded-lg border border-card-line bg-surface px-5 py-4 shadow-card">
                     <EmptyState
-                      title={unfiltered ? "暂无审查记录" : "没有符合条件的审查记录"}
+                      title={unfiltered ? "暂无评审记录" : "没有符合条件的评审记录"}
                       titleAs="h2"
                       description={
                         unfiltered ? (
@@ -781,7 +781,7 @@ export function RunsPage({
                             {canRerun ? "如需对已有 pull request 重新运行审查，在左栏选中它的仓库后输入 PR 编号。" : null}
                           </>
                         ) : (
-                          "换一个仓库、状态或来源再看。"
+                          "请更改仓库、状态或来源筛选条件。"
                         )
                       }
                     />
@@ -790,11 +790,11 @@ export function RunsPage({
                 <div ref={sentinel} />
                 <p className="pt-3 text-center text-sm text-text-muted" aria-live="polite">
                   {stages.isFetchingNextPage
-                    ? "加载更早的审查记录…"
+                    ? "加载更早的评审记录…"
                     : stages.hasNextPage
-                      ? "继续下滑加载更早的审查记录"
+                      ? "向下滚动以加载更早的评审记录"
                       : flat.length > 0
-                        ? "已加载全部记录"
+                        ? "已加载全部评审记录"
                         : ""}
                 </p>
               </div>

@@ -19,7 +19,7 @@ import {
   MixerHorizontalIcon,
   PersonIcon,
 } from "@radix-ui/react-icons";
-import { lazy, StrictMode, Suspense } from "react";
+import { lazy, StrictMode, Suspense, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 
 import { CommandPalette, useCommandPalette } from "@/components/command-palette";
@@ -155,6 +155,14 @@ function Shell() {
   const { session } = shellRoute.useRouteContext();
   const nav = session.mustChangePassword ? [] : primaryNav(session);
   const palette = useCommandPalette();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+
+  useEffect(() => {
+    const page = pathname.startsWith("/stages")
+      ? "审查阶段"
+      : NAV.find((item) => item.to === "/" ? pathname === "/" : pathname.startsWith(item.to))?.label;
+    document.title = page === undefined ? "MultiReviewer" : `${page} · MultiReviewer`;
+  }, [pathname]);
 
   async function logout(): Promise<void> {
     await api("/session", { method: "DELETE" }).catch(() => undefined);
@@ -251,27 +259,33 @@ function TopBar({
  */
 function NavLink({ item }: { item: NavigationItem }) {
   const alert = useNavAlert(item);
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const stageUnderRecords = item.to === "/" && pathname.startsWith("/stages");
   return (
     <Link
       to={item.to}
       activeOptions={{ exact: item.to === "/" }}
+      aria-current={stageUnderRecords ? "page" : undefined}
       className="flex flex-col items-stretch outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
     >
-      {({ isActive }) => (
-        <>
-          <span
-            className={`flex items-center gap-[7px] px-3 pt-[7px] whitespace-nowrap transition-colors ${
-              isActive ? "pb-[9px] font-bold text-text" : "pb-3 text-text-secondary hover:text-text"
-            }`}
-          >
-            {item.label}
-            {alert ? (
-              <span className="size-[7px] rounded-full bg-warning-icon" role="img" aria-label="需要处理" />
-            ) : null}
-          </span>
-          {isActive ? <span className="h-[3px] rounded-t-[3px] bg-primary mx-3" aria-hidden /> : null}
-        </>
-      )}
+      {({ isActive }) => {
+        const active = isActive || stageUnderRecords;
+        return (
+          <>
+            <span
+              className={`flex items-center gap-[7px] px-3 pt-[7px] whitespace-nowrap transition-colors ${
+                active ? "pb-[9px] font-bold text-text" : "pb-3 text-text-secondary hover:text-text"
+              }`}
+            >
+              {item.label}
+              {alert ? (
+                <span className="size-[7px] rounded-full bg-warning-icon" role="img" aria-label="模型服务需要处理" />
+              ) : null}
+            </span>
+            {active ? <span className="h-[3px] rounded-t-[3px] bg-primary mx-3" aria-hidden /> : null}
+          </>
+        );
+      }}
     </Link>
   );
 }
@@ -342,19 +356,28 @@ function MobileTabBar({
       aria-label="面板导航"
       className="sticky bottom-0 z-30 flex shrink-0 items-stretch border-t border-chrome-line bg-[color:var(--v8-tabbar-bg)] px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur-[30px] sm:hidden"
     >
-      {tabs.map((item) => (
-        <Link
-          key={item.to}
-          to={item.to}
-          activeOptions={{ exact: item.to === "/" }}
-          className="flex flex-1 flex-col items-center gap-[3px] py-[5px] outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-          activeProps={{ className: "text-primary", "aria-current": "page" }}
-          inactiveProps={{ className: "text-text-muted" }}
-        >
-          <item.icon className="size-[21px]" aria-hidden />
-          <span className="text-[10px] font-medium">{item.label}</span>
-        </Link>
-      ))}
+      {tabs.map((item) => {
+        const stageUnderRecords = item.to === "/" && pathname.startsWith("/stages");
+        return (
+          <Link
+            key={item.to}
+            to={item.to}
+            activeOptions={{ exact: item.to === "/" }}
+            aria-current={stageUnderRecords ? "page" : undefined}
+            className="flex flex-1 flex-col items-center gap-[3px] py-[5px] outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          >
+            {({ isActive }) => {
+              const tone = isActive || stageUnderRecords ? "text-primary" : "text-text-muted";
+              return (
+                <>
+                  <item.icon className={`size-[21px] ${tone}`} aria-hidden />
+                  <span className={`text-[10px] font-medium ${tone}`}>{item.label}</span>
+                </>
+              );
+            }}
+          </Link>
+        );
+      })}
       <DropdownMenu.Root>
         <DropdownMenu.Trigger>
           <button
@@ -671,9 +694,12 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <PanelTheme>
-      <QueryClientProvider client={queryClient}>
-        <RouterProvider router={router} />
-      </QueryClientProvider>
+      <>
+        <QueryClientProvider client={queryClient}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>
+        <div id="panel-portal" />
+      </>
     </PanelTheme>
   </StrictMode>,
 );

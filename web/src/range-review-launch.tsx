@@ -132,7 +132,7 @@ function LaunchDialogContent({
       }
       // 新阶段要出现在评审记录列表里,而列表只有这一份(issue #189)。
       void queryClient.invalidateQueries({ queryKey: ["stages"] });
-      onLaunched(`已发起 ${repo.owner}/${repo.repo} 的范围审查，第一轮审查开始运行`);
+      onLaunched(`已发起 ${repo.owner}/${repo.repo} 的范围审查，首轮 Review Run 已开始运行`);
     },
     onError: (failure: Error) => {
       setNeedsConfirmation(false);
@@ -159,22 +159,27 @@ function LaunchDialogContent({
           仓库 {repo.owner}/{repo.repo}
         </p>
 
-        <label className="flex flex-col gap-1.5">
-          <Text as="span" size="2" weight="medium">标题</Text>
+        <div className="flex flex-col gap-1.5">
+          <Text as="label" htmlFor="range-review-title" size="2" weight="medium">标题</Text>
           <TextField.Root
+            id="range-review-title"
+            aria-describedby="range-review-title-help"
             value={title}
             onChange={(event) => setTitle(event.target.value)}
-            placeholder="这个阶段审的是什么，发起后不可改"
+            placeholder="例如：认证流程重构"
             size={{ initial: "3", sm: "2" }}
           />
-        </label>
+          <Text id="range-review-title-help" as="span" size="1" color="gray">
+            标题在范围审查发起后不可修改。
+          </Text>
+        </div>
 
         <div className="flex flex-col gap-1">
           <Text as="span" size="2" weight="medium">已选</Text>
           <p className="text-base text-text-muted">
-            base {base === "" ? "还没选" : <code className="font-mono">{base.slice(0, 7)}</code>}
+            base {base === "" ? "尚未选择" : <code className="font-mono">{base.slice(0, 7)}</code>}
             ，比较项{" "}
-            {comparison === "" ? "还没选" : <code className="font-mono">{comparison.slice(0, 7)}</code>}
+            {comparison === "" ? "尚未选择" : <code className="font-mono">{comparison.slice(0, 7)}</code>}
           </p>
           {suggestedBase !== null && !baseTouched ? (
             <Text as="span" size="1" color="gray">
@@ -191,7 +196,7 @@ function LaunchDialogContent({
         />
 
         <p className="text-sm text-text-muted">
-          MultiReviewer 会在 Forge 上自建一个永不合并的 pull request 承载 Finding。
+          Finding 将发布到 Forge；范围审查不会合并代码。
         </p>
         {error === null ? null : (
           <p role="alert" className={needsConfirmation ? "text-warning" : "text-danger"}>

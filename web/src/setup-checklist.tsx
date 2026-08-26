@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { CrossCircledIcon } from "@radix-ui/react-icons";
-import { Callout, Card } from "@radix-ui/themes";
+import { Callout, Card, Skeleton } from "@radix-ui/themes";
 
 import { HelpTooltip } from "@/components/help-tooltip";
 import { Button } from "@/components/theme-button";
@@ -63,8 +63,15 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
   if (status.data === undefined) {
     return (
       <ChecklistShell>
-        <Card size="2" className="flex flex-col gap-2" aria-label="正在读取首次配置状态">
-          <h2 className="font-semibold">正在读取首次配置…</h2>
+        <Card
+          size="2"
+          className="flex flex-col gap-2"
+          role="status"
+          aria-label="正在读取首次配置状态"
+          aria-busy="true"
+        >
+          <Skeleton aria-hidden className="h-5 w-40" />
+          <Skeleton aria-hidden className="h-10 w-full" />
         </Card>
       </ChecklistShell>
     );

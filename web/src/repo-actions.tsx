@@ -377,7 +377,7 @@ function ConfigureDialogContent({
       if (!response.ok) throw new Error(await errorText(response));
     },
     onSuccess: () => {
-      setFeedback({ text: "工作副本正在后台准备,备好后这里会显示就绪。", isError: false });
+      setFeedback({ text: "工作副本正在后台准备，完成后状态将更新为“就绪”。", isError: false });
       refresh();
     },
     onError: (error: Error) => setFeedback({ text: error.message, isError: true }),
@@ -503,8 +503,8 @@ function ConfigureDialogContent({
               )}
               <p className="text-base text-text-muted">
                 {following
-                  ? "审查策略更新后，这个仓库会同步使用新组合。"
-                  : "这组模型仅对这个仓库生效，不随审查策略变化。"}
+                  ? "审查策略更新后，本仓库将同步使用新组合。"
+                  : "该模型组合仅对本仓库生效，不随审查策略变化。"}
               </p>
             </>
           )}
@@ -569,7 +569,7 @@ function ConfigureDialogContent({
             <>
               <p className="text-base text-text-muted">
                 {repo.worktree.failure
-                  ?? "这个仓库还没备过工作副本。备好之后,审查、diff 与分支列表都不必再等一次 clone。"}
+                  ?? "该仓库尚未准备工作副本。准备完成后，审查、代码差异和分支列表可直接使用本地副本。"}
                 {repo.worktree.checkedAt === null
                   ? null
                   : `(${localMinute(repo.worktree.checkedAt)})`}
@@ -908,7 +908,7 @@ function RegisterDialogContent({
           {/* 只取第一页:剩下的靠继续输入缩小范围,面板不翻页。 */}
           {data?.truncated === true ? (
             <p className="text-sm text-warning">
-              共 {data.total} 个匹配,这里只显示前 {data.results.length} 个。继续输入以缩小范围。
+              共 {data.total} 个匹配，当前显示前 {data.results.length} 个。继续输入以缩小范围。
             </p>
           ) : null}
           <p className="text-sm text-text-muted">

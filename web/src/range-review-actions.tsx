@@ -80,16 +80,17 @@ export function CompleteAction({
             size={{ initial: "3", sm: "2" }}
             disabled={disabled || complete.isPending}
           >
-            {complete.isPending ? "收尾中…" : "审查完成"}
+            {complete.isPending ? "正在标记完成…" : "审查完成"}
           </Button>
         </AlertDialog.Trigger>
         <AlertDialog.Content maxWidth="440px" size={{ initial: "2", sm: "3" }}>
           <AlertDialog.Title size="4" mb="2">
-            标记 {rangeReview.owner}/{rangeReview.repo} 的这个阶段为审查完成?
+            将 {rangeReview.owner}/{rangeReview.repo} 的当前范围审查标记为审查完成？
           </AlertDialog.Title>
           <AlertDialog.Description size="2" color="gray">
-            承载 Finding 的 pull request 会关闭、两条分支会删除，比较项不再推进，未处置的 Finding
-            按未处置计入处置率。全部 Finding、处置与备注仍然看得到；同一个 base 可以再发起一个新的范围审查。
+            承载 Finding 的 Forge pull request 将关闭，两个临时分支将删除，比较项将无法继续推进。
+            未处置 Finding 继续按未处置计入处置率；Finding、处置和备注均会保留。
+            后续可使用相同 base 发起新的范围审查。
           </AlertDialog.Description>
           <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
             <AlertDialog.Cancel>
@@ -207,7 +208,7 @@ function AdvanceDialogContent({
           <dd className="min-w-0 font-mono">{rangeReview.comparisonSha.slice(0, 7)}</dd>
           <dt className="text-text-secondary">新的比较项</dt>
           <dd className="min-w-0 font-mono">
-            {comparison === null ? "还没选" : comparison.slice(0, 7)}
+            {comparison === null ? "尚未选择" : comparison.slice(0, 7)}
           </dd>
         </dl>
 
@@ -223,8 +224,7 @@ function AdvanceDialogContent({
         />
 
         <p className="text-sm text-text-muted">
-          不是 base 后代的提交选不了。推进会把容器 pull request 的 head
-          分支移到新 commit，并按 base..新比较项跑新的一轮。
+          只能选择 base 的后代提交。推进后将基于 base 与新比较项启动一轮 Review Run。
         </p>
         {error === null ? null : <p role="alert" className="text-danger">{error}</p>}
 

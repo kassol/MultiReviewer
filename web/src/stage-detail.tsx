@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   ArrowLeftIcon,
@@ -8,6 +8,7 @@ import {
   Cross2Icon,
   CrossCircledIcon,
   ExternalLinkIcon,
+  ReaderIcon,
 } from "@radix-ui/react-icons";
 import { Callout, IconButton, Skeleton, Tooltip } from "@radix-ui/themes";
 import { Dialog } from "radix-ui";
@@ -364,13 +365,13 @@ function StageTimeline({
   groups: StageRunGroup[];
 }) {
   if (groups.length === 0) {
-    return <EmptyState title="这个阶段还没有跑过 Review Run" className="py-2" />;
+    return <EmptyState title="该审查阶段尚无 Review Run" className="py-2" />;
   }
   return (
     <>
       {groups.map((group) => (
         <section key={group.sha} className="flex flex-col gap-1.5">
-          <div className="flex flex-wrap items-center gap-x-1.5 text-base text-text-muted">
+          <div className="flex flex-wrap items-center gap-x-1.5 text-base text-text-secondary">
             <CommitChip sha={group.sha} />
             {group.recordedBy === null ? null : (
               <>
@@ -383,8 +384,8 @@ function StageTimeline({
             )}
           </div>
           {group.runs.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-card-line px-4 py-3 text-base text-text-muted">
-              {stage.source === "range-review" ? "这个比较项还没有跑过" : "这个 commit 还没有跑过"}
+            <p className="rounded-lg border border-dashed border-card-line px-4 py-3 text-base text-text-secondary">
+              {stage.source === "range-review" ? "该比较项尚未运行审查" : "该 commit 尚未运行审查"}
             </p>
           ) : (
             group.runs.map((entry) => (
@@ -398,11 +399,15 @@ function StageTimeline({
                   finding: undefined,
                 })}
                 replace
-                className="flex flex-col gap-1 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                aria-label={`查看 ${localMinute(entry.startedAt)} 的审查轨迹`}
+                className="group flex flex-col gap-1 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
               >
-                <span className="flex items-center justify-between gap-3 text-base text-text-muted">
+                <span className="flex items-center justify-between gap-3 text-base text-text-secondary">
                   <span className="tabular-nums">{localMinute(entry.startedAt)}</span>
-                  <span className="text-primary">看这一轮的审查轨迹</span>
+                  <span className="inline-flex items-center gap-1 font-medium text-primary">
+                    <ReaderIcon aria-hidden />
+                    审查轨迹
+                  </span>
                 </span>
                 <StageRound entry={entry} />
               </Link>
@@ -416,7 +421,7 @@ function StageTimeline({
 
 /**
  * 阶段页唯一的下钻表面(issue #189):桌面从右侧滑入、固定宽度、内部独立滚动,窄视口
- * 占满整屏。Esc、遮罩与关闭按钮三种关法都由 Radix 的对话框原语给,焦点回到触发它的
+ * 从底部升起并保留阶段上下文。Esc、遮罩与关闭按钮三种关法都由 Radix 的对话框原语给,焦点回到触发它的
  * 那一行。用原语而不是 Themes 的 Dialog:后者是居中模态,改成侧边抽屉得深度覆写它的
  * 内部 DOM。
  */
@@ -434,6 +439,12 @@ function StageDrawer({
   onCloseAutoFocus: (event: { preventDefault: () => void }) => void;
   children: React.ReactNode;
 }) {
+  const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setPortalHost(document.getElementById("panel-portal"));
+  }, []);
+  if (portalHost === null) return null;
+
   return (
     <Dialog.Root
       open
@@ -441,14 +452,14 @@ function StageDrawer({
         if (!next) onClose();
       }}
     >
-      <Dialog.Portal>
+      <Dialog.Portal container={portalHost}>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-scrim" />
         <Dialog.Content
           aria-describedby={undefined}
           onCloseAutoFocus={onCloseAutoFocus}
-          className="fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-card-line bg-surface shadow-overlay outline-none sm:w-[min(920px,92vw)]"
+          className="fixed inset-x-0 bottom-0 z-50 flex h-[86dvh] w-full flex-col overflow-hidden rounded-t-3xl bg-[color:var(--v8-drawer-bg)] shadow-overlay outline-none backdrop-[var(--v8-drawer-blur)] md:inset-y-3.5 md:right-3.5 md:left-auto md:h-auto md:w-[min(920px,calc(100vw-28px))] md:rounded-3xl"
         >
-          <div className="flex items-start justify-between gap-3 border-b border-card-line px-4 py-3">
+          <div className="flex items-start justify-between gap-3 border-b border-overlay-line px-4 py-3 sm:px-5 sm:py-4">
             <div className="flex min-w-0 flex-col gap-1">
               <Dialog.Title className="min-w-0 break-all text-3xl font-semibold">
                 {title}
@@ -456,12 +467,18 @@ function StageDrawer({
               {headline}
             </div>
             <Dialog.Close asChild>
-              <IconButton variant="ghost" color="gray" size="2" aria-label={`关闭 ${title}`}>
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size="2"
+                className="min-h-11 min-w-11 md:min-h-0 md:min-w-0"
+                aria-label={`关闭${title}`}
+              >
                 <Cross2Icon />
               </IconButton>
             </Dialog.Close>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-5 sm:py-4 md:pb-4">
             {children}
           </div>
         </Dialog.Content>
@@ -500,13 +517,22 @@ function FindingDrawer({
 
   return (
     <StageDrawer
-      title={finding === undefined ? "Finding" : `${finding.file}:${finding.line}`}
+      title="代码差异"
+      {...(finding === undefined
+        ? {}
+        : {
+            headline: (
+              <span className="break-all font-mono text-base text-text-secondary">
+                {finding.file}:{finding.line}
+              </span>
+            ),
+          })}
       onClose={onClose}
       onCloseAutoFocus={onCloseAutoFocus}
     >
       {summary.isPending ? (
         <div role="status" aria-live="polite">
-          <span className="sr-only">正在加载这条 Finding</span>
+          <span className="sr-only">正在加载 Finding</span>
           <Skeleton className="h-40" />
         </div>
       ) : summary.isError ? (
@@ -516,9 +542,9 @@ function FindingDrawer({
         </Callout.Root>
       ) : finding === undefined || latestRunId === null ? (
         <EmptyState
-          title="这条 Finding 不在这个阶段的当前状态里"
+          title="该 Finding 已不在当前审查阶段的汇总中"
           titleAs="h2"
-          description="它可能已经交接到了新位置,回到列表里找承接它的那一条。"
+          description="该 Finding 可能已延续至新位置。请返回列表查看承接记录。"
         />
       ) : (
         <FilePatch
@@ -574,7 +600,7 @@ function RoundDrawer({
         </Callout.Root>
       ) : null}
       {run.isPending ? (
-        <div role="status" aria-label="正在加载这一轮" aria-busy="true">
+        <div role="status" aria-label="正在加载本轮 Review Run" aria-busy="true">
           <Skeleton aria-hidden className="h-56 w-full" />
         </div>
       ) : null}
@@ -588,24 +614,38 @@ function RoundDrawer({
               <Callout.Root key={entry.model} role="alert" color="red" size="1">
                 <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
                 <Callout.Text>
-                  <span className="break-all font-mono">{entry.model}</span> 这一轮失败：{entry.failure}
+                  <span className="break-all font-mono">{entry.model}</span> 本轮运行失败：{entry.failure}
                 </Callout.Text>
               </Callout.Root>
             ))}
           {/* 这一轮的 token 用量:运行诊断信息,不折算金额(issue #188)。 */}
           {run.data.run.usage === undefined ? null : (
-            <p className="text-sm text-text-muted tabular-nums">
-              用量 输入 {run.data.run.usage.inputTokens.toLocaleString("zh-CN")} · 输出{" "}
-              {run.data.run.usage.outputTokens.toLocaleString("zh-CN")} tokens
-            </p>
+            <section
+              aria-label="Token 用量"
+              className="flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-lg bg-sunken px-3 py-2 text-sm text-text-secondary tabular-nums"
+            >
+              <span className="font-semibold text-text">
+                总计 {run.data.run.usage.totalTokens.toLocaleString("zh-CN")}
+              </span>
+              <span>输入 {run.data.run.usage.inputTokens.toLocaleString("zh-CN")}</span>
+              <span>输出 {run.data.run.usage.outputTokens.toLocaleString("zh-CN")}</span>
+              <span>缓存读 {run.data.run.usage.cacheReadTokens.toLocaleString("zh-CN")}</span>
+              <span>缓存写 {run.data.run.usage.cacheWriteTokens.toLocaleString("zh-CN")}</span>
+            </section>
           )}
           <RunTrace run={run.data.run} />
           {pullUrl === null ? null : (
             <div>
-              <Button asChild variant="soft" color="gray" size={{ initial: "3", sm: "2" }}>
+              <Button
+                asChild
+                variant="soft"
+                color="gray"
+                size={{ initial: "3", sm: "2" }}
+                className="min-h-11 sm:min-h-0"
+              >
                 <a href={pullUrl} target="_blank" rel="noreferrer">
                   <ExternalLinkIcon aria-hidden />
-                  去 pull request 看原版
+                  在 Forge 查看 pull request
                 </a>
               </Button>
             </div>
@@ -620,7 +660,7 @@ function RoundDrawer({
 function RunHeadline({ run }: { run: RunItem }) {
   const duration = runDuration(run);
   return (
-    <span className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-base text-text-muted">
+    <span className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-base text-text-secondary">
       <RunPill run={run} />
       <CommitChip sha={run.headSha} />
       <span className="break-all">{triggerLabel(run)}</span>
@@ -653,16 +693,7 @@ function RunPill({ run }: { run: RunItem }) {
   return (
     <Tooltip
       maxWidth="32rem"
-      content={(
-        <span className="block space-y-1">
-          <span className="block font-medium">{failureSummary}</span>
-          {down.map((entry) => (
-            <span key={entry.model} className="block break-words">
-              <span className="break-all font-mono">{entry.model}</span>：{entry.failure}
-            </span>
-          ))}
-        </span>
-      )}
+      content={failureSummary}
     >
       <span
         tabIndex={0}

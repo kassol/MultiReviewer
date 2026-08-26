@@ -126,7 +126,7 @@ function summarize(value: unknown, limit = 160): string {
 
 function EventTime({ at }: { at: string }) {
   return (
-    <span className="w-[4.5rem] shrink-0 pt-px font-mono text-xs tabular-nums text-text-faint">
+    <span className="w-[4.5rem] shrink-0 pt-px font-mono text-xs tabular-nums text-text-secondary">
       {localSecond(at)}
     </span>
   );
@@ -174,7 +174,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
               <span className="font-mono tabular-nums">{total ?? "?"}</span> 批{label}
             </span>
             {files.length === 0 ? null : (
-              <span className="flex flex-wrap gap-x-2 gap-y-0.5 font-mono text-xs break-all text-text-muted">
+              <span className="flex flex-wrap gap-x-2 gap-y-0.5 font-mono text-xs break-all text-text-secondary">
                 {files.map((file) => <span key={file}>{file}</span>)}
               </span>
             )}
@@ -193,7 +193,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
                 合并 <span className="font-mono tabular-nums">{list.length}</span> 条 Finding
               </span>
               {file === null ? null : (
-                <span className="font-mono text-xs break-all text-text-muted">
+                <span className="font-mono text-xs break-all text-text-secondary">
                   {file}
                   {line === null ? "" : `:${line}`}
                 </span>
@@ -206,9 +206,9 @@ function RunMilestone({ event }: { event: TraceEvent }) {
               <ul className="flex flex-col gap-0.5">
                 {list.map((member, index) => (
                   <li key={`${member.reviewer}-${index}`} className="flex flex-wrap items-baseline gap-1.5 text-sm">
-                    <span className="font-mono break-all text-text-muted">{member.reviewer}</span>
+                    <span className="font-mono break-all text-text-secondary">{member.reviewer}</span>
                     {member.line === null ? null : (
-                      <span className="font-mono tabular-nums text-text-faint">第 {member.line} 行</span>
+                      <span className="font-mono tabular-nums text-text-secondary">第 {member.line} 行</span>
                     )}
                     <span className="min-w-0 break-words text-text-secondary">{member.title}</span>
                   </li>
@@ -266,12 +266,12 @@ function ToolCall({ event }: { event: TraceEvent }) {
             type="button"
             onClick={() => setOpen(!open)}
             aria-expanded={open}
-            className="min-w-0 flex-1 truncate text-left font-mono text-xs text-text-muted underline decoration-dotted underline-offset-4 hover:text-text-secondary focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+            className="min-w-0 flex-1 truncate text-left font-mono text-xs text-text-secondary underline decoration-dotted underline-offset-4 hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
           >
             {summarize(args)}
           </button>
         )}
-        <span className="shrink-0 font-mono text-xs tabular-nums text-text-faint">
+        <span className="shrink-0 font-mono text-xs tabular-nums text-text-secondary">
           {duration === null ? null : `${duration}ms`}
           {duration !== null && resultLength !== null ? " · " : null}
           {resultLength === null ? null : `返回 ${resultLength} 字符`}
@@ -279,7 +279,7 @@ function ToolCall({ event }: { event: TraceEvent }) {
       </div>
       {isError ? (
         <p className="rounded-lg bg-danger-tint px-2.5 py-1.5 text-sm break-words text-danger">
-          调用被拒或出错{error === null ? "" : `：${error}`}
+          工具调用被拒绝或发生错误{error === null ? "" : `：${error}`}
         </p>
       ) : null}
       {open && args !== undefined ? (
@@ -311,7 +311,7 @@ function ReviewerEvent({ event }: { event: TraceEvent }) {
           <Callout.Root role="alert" color="red" size="1">
             <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
             <Callout.Text>
-              这个 Reviewer 失败：{str(payload, "failure") ?? "未记录原因"}
+              Reviewer 运行失败：{str(payload, "failure") ?? "未记录原因"}
               {exitCode === null ? null : `（退出码 ${exitCode}）`}
             </Callout.Text>
           </Callout.Root>
@@ -330,11 +330,11 @@ function ReviewerEvent({ event }: { event: TraceEvent }) {
             </span>
             {rejected === null || rejected === 0 ? null : (
               <span className="text-warning">
-                被契约挡下 <span className="font-mono tabular-nums">{rejected}</span> 次
+                契约校验拒绝 <span className="font-mono tabular-nums">{rejected}</span> 次
               </span>
             )}
             {input === null && output === null ? null : (
-              <span className="text-sm text-text-muted">
+              <span className="text-sm text-text-secondary">
                 用量 输入 <span className="font-mono tabular-nums">{input ?? 0}</span> · 输出{" "}
                 <span className="font-mono tabular-nums">{output ?? 0}</span> tokens
               </span>
@@ -381,30 +381,34 @@ function ReviewerTrace({
         type="button"
         onClick={onToggle}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 px-3 py-2.5 text-left hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+        className="flex min-h-11 w-full items-center gap-2 px-3 py-2.5 text-left hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
       >
         {open ? (
           <ChevronDownIcon className="size-4 shrink-0 text-text-faint" aria-hidden />
         ) : (
           <ChevronRightIcon className="size-4 shrink-0 text-text-faint" aria-hidden />
         )}
-        <span
-          className={`min-w-0 flex-1 break-all font-mono text-base ${failure === null ? "text-text" : "text-danger"}`}
-        >
-          {reviewer}
-        </span>
-        {failure === null ? null : <Badge color="red" variant="soft" radius="full">失败</Badge>}
-        <span className="shrink-0 text-sm text-text-muted">
-          <span className="font-mono tabular-nums">{messages}</span> 段文本 ·{" "}
-          <span className="font-mono tabular-nums">{toolCalls}</span> 次工具
+        <span className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
+          <span
+            className={`min-w-0 flex-1 break-all font-mono text-base ${failure === null ? "text-text" : "text-danger"}`}
+          >
+            {reviewer}
+          </span>
+          <span className="flex flex-wrap items-center gap-2 text-sm text-text-secondary">
+            {failure === null ? null : <Badge color="red" variant="soft" radius="full">失败</Badge>}
+            <span className="shrink-0">
+              <span className="font-mono tabular-nums">{messages}</span> 段文本 ·{" "}
+              <span className="font-mono tabular-nums">{toolCalls}</span> 次工具
+            </span>
+          </span>
         </span>
       </button>
 
       {open ? (
         <div className="border-t border-overlay-line">
           {events.length === 0 ? (
-            <p className="px-3 py-2.5 text-base text-text-muted">
-              这个 Reviewer 还没有产生事件。
+            <p className="px-3 py-2.5 text-base text-text-secondary">
+              该 Reviewer 尚未产生事件。
             </p>
           ) : (
             <ul className="flex flex-col">
@@ -518,10 +522,10 @@ export function RunTrace({ run }: { run: RunItem }) {
       ) : null}
 
       {live ? (
-        <p className="flex items-center gap-1.5 px-1 text-sm text-text-muted" aria-live="polite">
+        <p className="flex items-center gap-1.5 px-1 text-sm text-text-secondary" aria-live="polite">
           <span
             className={`size-1.5 shrink-0 rounded-full ${
-              stream === "open" ? "bg-primary" : stream === "retry" ? "bg-warning" : "bg-text-faint"
+              stream === "open" ? "bg-primary" : stream === "retry" ? "bg-warning-icon" : "bg-text-faint"
             }`}
             aria-hidden
           />
@@ -531,7 +535,7 @@ export function RunTrace({ run }: { run: RunItem }) {
 
       {trace.isPending ? (
         <div className="flex flex-col gap-2" role="status" aria-live="polite">
-          <span className="sr-only">正在加载这一轮的审查轨迹</span>
+          <span className="sr-only">正在加载本轮审查轨迹</span>
           {[0, 1, 2].map((slot) => <Skeleton key={slot} className="h-12" />)}
         </div>
       ) : null}
@@ -540,7 +544,7 @@ export function RunTrace({ run }: { run: RunItem }) {
         <section className="overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control">
           <h3 className="border-b border-overlay-line px-3 py-2.5 text-2xl font-bold">
             本轮里程碑
-            <span className="ml-2 font-mono text-base font-normal tabular-nums text-text-muted">
+            <span className="ml-2 font-mono text-base font-normal tabular-nums text-text-secondary">
               {milestones.length}
             </span>
           </h3>
@@ -565,8 +569,8 @@ export function RunTrace({ run }: { run: RunItem }) {
 
       {trace.data !== undefined && events.length === 0 && reviewers.length === 0 ? (
         <EmptyState
-          title="这一轮没有留下审查轨迹"
-          description="它跑在轨迹开始记录之前。"
+          title="本轮无审查轨迹"
+          description="该 Review Run 早于审查轨迹功能启用。"
           className="py-2"
         />
       ) : null}

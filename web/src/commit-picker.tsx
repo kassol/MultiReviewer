@@ -162,7 +162,7 @@ export function CommitPicker({
         ) : null}
 
         {flat.length === 0 && !commits.isPending && !commits.isError ? (
-          <p className="px-4 py-3 text-base text-text-muted">这条分支上没有提交。</p>
+          <p className="px-4 py-3 text-base text-text-muted">该分支暂无提交。</p>
         ) : null}
       </div>
     </div>

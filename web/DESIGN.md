@@ -440,6 +440,8 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 面板内是文件列表加逐文件 diff：每个文件一张卡，卡头写路径、新增/修改/删除、`+N −M`（增走 `--v8-success`、删走 `--v8-danger`）与这个文件的发现数，点卡头展开或收起。diff 用 `font-mono text-xs` 的三列表格——旧行号、新行号、正文，新增行整行 `--v8-success-tint`、删除行整行 `--v8-danger-tint`，hunk 头走 `--v8-surface-sunken`。Finding 卡片插在它所指的那一行下面：已处置项划线加绿勾，未处置项带优先级徽章；模型失败原因整段摊在最上面的红色 Callout 里，不折叠。
 
+阶段详情使用同一浮层规格承载单条 Finding 的代码差异与单轮审查轨迹。Finding 列表入口使用 `FileTextIcon` 图标与动态可访问名称,Review Run 入口使用 `ReaderIcon` 加「审查轨迹」;界面不使用「看这处」「看这一轮」等依赖视觉上下文的动作名称。代码长行在 diff 容器内横向滚动,不折断代码,不把横向溢出传到页面。移动端关闭、Forge 外链、处置和 Reviewer 展开动作的触控区域至少 44px。该 Primitive Dialog 的 Portal 固定挂到 `PanelTheme` 内的 `#panel-portal`,确保 Themes 组件继承同一套颜色、字号和圆角变量。
+
 ### 10.3 AlertDialog
 
 删除用户、角色、仓库、模型服务和其他不可逆动作使用 AlertDialog。文案明确对象、影响和恢复方式。不使用阻塞渲染线程的 `window.confirm`。

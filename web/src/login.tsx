@@ -20,6 +20,7 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    document.title = "登录 · MultiReviewer";
     void loadPanelSession().then((session) => {
       if (session !== null) return router.navigate({ to: "/" });
       setBootstrapMode(panelNeedsBootstrap());

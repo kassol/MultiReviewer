@@ -190,7 +190,7 @@ const DIRECTORY_LABEL: Record<ModelDirectoryState, string> = {
 };
 const VERIFICATION_LABEL: Record<NonNullable<ModelService["credential"]["verificationSource"]>, string> = {
   "legacy-provider-check": "历史服务检查",
-  "legacy-review-run": "历史审查记录",
+  "legacy-review-run": "历史 Review Run",
   inference: "真实推理",
 };
 
@@ -351,7 +351,7 @@ function ServiceStatus({ service }: { service: ModelService }) {
   );
 }
 
-const SETUP_STEPS = ["选择来源", "模型发现", "真实验证"] as const;
+const SETUP_STEPS = ["选择来源", "模型发现", "真实推理"] as const;
 
 /**
  * 三步指示条。已完成用绿勾、当前用实心蓝、未来用灰底数字,连接线跟着前一步的完成度
@@ -753,12 +753,12 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
       <SetupBody aria-busy={providers.isPending}>
         <div className="flex flex-col gap-0.5">
           <h2 className="text-2xl font-bold tracking-[-0.015em]">选择模型服务来源</h2>
-          <p className="text-text-secondary">搜索预置的 provider，或使用自定义调用地址。</p>
+          <p className="text-text-secondary">搜索内置 provider，或配置自定义调用地址。</p>
         </div>
         <TextField.Root
           size={{ initial: "3", sm: "2" }}
           className="w-full min-w-0 max-sm:min-h-11"
-          aria-label="搜索预置的 provider"
+          aria-label="搜索内置 provider"
           placeholder="输入 provider 标识或名称"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
@@ -769,7 +769,7 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
         </TextField.Root>
         {providers.isPending ? (
           <div role="status" aria-live="polite" aria-busy="true">
-            <span className="sr-only">正在加载预置的 provider</span>
+            <span className="sr-only">正在加载内置 provider</span>
             <Skeleton aria-hidden className="h-28" />
           </div>
         ) : providers.isError ? (
@@ -853,7 +853,7 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
   const preview = useMutation({
     mutationFn: async () => {
       const current = metadata.data;
-      if (current === undefined) throw new Error(`Pi 没有内置 provider ${provider}`);
+      if (current === undefined) throw new Error(`未找到内置 provider ${provider}`);
       return responseJson<BuiltinPreview>(await api("/model-services/builtin/preview", {
         method: "POST",
         body: JSON.stringify({ provider, credential, expectedVersion: current.version }),
@@ -931,7 +931,7 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
             <Callout.Text>模型服务状态加载失败：{(metadata.error as Error).message}</Callout.Text>
           </Callout.Root>
         ) : metadata.isSuccess && metadata.data === undefined ? (
-          <p role="alert" className="text-danger">Pi 没有内置 provider {provider}。</p>
+          <p role="alert" className="text-danger">未找到内置 provider {provider}。</p>
         ) : null}
       </SetupBody>
       <SetupFooter note={phase === "discovering" ? "阶段 2/3：正在请求模型目录" : undefined}>
@@ -1196,7 +1196,7 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
       <SetupBody>
         <div className="flex flex-col gap-0.5">
           <h2 className="text-2xl font-bold tracking-[-0.015em]">配置调用目标并发现模型</h2>
-          <p className="text-text-secondary">发现阶段不需要验证模型；目录失败后仍可手填 model id 进入真实验证。</p>
+          <p className="text-text-secondary">发现阶段不需要验证模型；目录失败后仍可手填 model id 进入真实推理。</p>
         </div>
         <div className="grid gap-3.5 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5 sm:col-span-2">
@@ -1793,10 +1793,10 @@ function ReferenceBlockers({ references }: { references: ModelReference[] }) {
     <section className="rounded-lg border border-danger/20 bg-danger-tint px-4 py-3.5">
       <div className="flex items-center gap-2 text-danger">
         <ExclamationTriangleIcon className="size-4 shrink-0" aria-hidden />
-        <p className="font-semibold">引用阻塞：先移除下面这些模型引用</p>
+        <p className="font-semibold">删除受阻：请先移除以下模型引用</p>
       </div>
       <p className="mt-1 text-base text-text-muted">
-        到审查策略或对应仓库覆盖里移除引用，再回来重试当前操作。
+        请先在审查策略或对应仓库覆盖中移除引用，然后重试当前操作。
       </p>
       <ul className="mt-3 flex flex-col overflow-hidden rounded-md border border-card-line bg-surface">
         {references.map((reference) => (
@@ -1965,7 +1965,7 @@ function CustomServiceControls({
             <div className="pr-9">
               <Dialog.Title size="6" mb="2" className="break-words font-extrabold tracking-[-0.02em]">迁移 {service.provider} 到新名称</Dialog.Title>
               <Dialog.Description size="2" color="gray">
-                服务、全局模型组合与全部仓库覆盖会在一个事务中改名。model id 与历史审查记录保持不变。
+                服务、全局模型组合与全部仓库覆盖会在一个事务中改名。model id 与历史 Review Run 保持不变。
               </Dialog.Description>
             </div>
             <div className="flex flex-col gap-1.5">
@@ -2033,7 +2033,7 @@ function CustomServiceControls({
         >
           <AlertDialog.Title size="6" mb="2" className="break-words font-extrabold tracking-[-0.02em]">删除 {service.provider}？</AlertDialog.Title>
           <AlertDialog.Description size="2" color="gray">
-            服务定义、加密凭据、当前目录与手动模型来源会在一个事务中删除；历史审查记录保留。仍被模型组合引用时不会删除。
+            服务定义、加密凭据、当前目录与手动模型来源会在一个事务中删除；历史 Review Run 保留。仍被模型组合引用时不会删除。
           </AlertDialog.Description>
           {removeService.error === null ? null : (
             <div className="mt-4 flex min-h-0 flex-col gap-2 overflow-y-auto">
@@ -2258,7 +2258,7 @@ function CatalogControls({
           <AlertDialog.Title size="6" mb="2" className="break-words font-extrabold tracking-[-0.02em]">删除 {deleting?.identity} 的手动来源？</AlertDialog.Title>
           <AlertDialog.Description size="2" color="gray">
             {deleting?.sources.includes("automatic")
-              ? "自动发现来源仍会保留，这个模型不会从清单消失。"
+              ? "自动发现来源仍会保留，该模型不会从清单中移除。"
               : "这是当前唯一来源；仍被模型组合引用时，服务端会阻止删除并列出位置。"}
           </AlertDialog.Description>
           {removeSupplement.error === null ? null : (
@@ -2305,7 +2305,7 @@ function fieldSourceLabel(source: ModelRuntimeFieldSource | null): string {
     : source === "service-interface"
       ? "服务接口"
       : source === "pi-catalog"
-        ? "预置目录"
+        ? "Pi 目录"
         : source === "service-target"
           ? "服务目标"
           : source === "runtime-baseline"
@@ -2409,7 +2409,7 @@ function ModelsTable({
     return (
       <CardShell>
         <EmptyState
-          title="还没有可用模型"
+          title="暂无可用模型"
           titleAs="h3"
           description="模型目录尚未成功发现，也没有手动添加或迁移保留的模型。"
           className="px-4 py-8 sm:px-5"
@@ -2510,7 +2510,7 @@ function ModelsTable({
       {filteredModels.length === 0 ? (
         <EmptyState
           title="没有匹配的模型"
-          description="可以换一个名称或 model id。"
+          description="请调整名称或 model id 后重新搜索。"
           className="border-t border-line px-4 py-8 sm:px-5"
         />
       ) : (
@@ -2687,7 +2687,7 @@ function RunCapabilityCard({
       : capability.nextAction === "enable-model"
         ? "到模型页启用至少一个模型。"
       : capability.nextAction === "recover-service"
-        ? "到维护页用新名称重建，或删除这项服务。"
+        ? "到维护页迁移到新名称，或删除该服务。"
         : null;
   return (
     <NoticeBar
@@ -2738,7 +2738,7 @@ function ReferenceOverview({ references }: { references: readonly ModelReference
       />
       <CardSection>
         {references.length === 0 ? (
-          <EmptyState title="全局模型组合与仓库覆盖都没有引用这家服务" className="py-0" />
+          <EmptyState title="全局模型组合与仓库覆盖均未引用该服务" className="py-0" />
         ) : (
           <ul className="flex flex-col overflow-hidden rounded-md border border-card-line">
             {references.map((reference) => (
@@ -2790,7 +2790,7 @@ function ServiceDetail({
       <div className="flex min-w-0 flex-col gap-0.5">
         <h2 className="min-w-0 text-3xl font-extrabold tracking-[-0.02em]">{service.name}</h2>
         <p className="text-base text-text-muted">
-          <span className="font-mono">{service.provider}</span> · {service.type === "custom" ? "自定义 provider" : "预置 provider"}
+          <span className="font-mono">{service.provider}</span> · {service.type === "custom" ? "自定义 provider" : "内置 provider"}
         </p>
       </div>
 
@@ -2881,7 +2881,7 @@ function ServiceDetail({
                 size={{ initial: "4", sm: "2" }}
                 onClick={onConfigureBuiltin}
               >
-                {service.credential.state === "unconfigured" ? "配置凭据" : "换凭据"}
+                {service.credential.state === "unconfigured" ? "配置凭据" : "轮换凭据"}
               </Button>
             }
           />
@@ -3020,13 +3020,13 @@ export function ModelServicesPage({
       ) : services.length === 0 ? (
         <CardShell className="max-w-[760px] px-4 py-4 sm:px-5">
           <EmptyState
-            title="还没有模型服务"
+            title="尚未配置模型服务"
             titleAs="h2"
             className="py-0"
             description={
               canWriteCredential
-                ? "这里只列已配置或保留异常状态的服务。"
-                : "这里只列已配置或保留异常状态的服务。当前权限只能查看可见状态。"
+                ? "清单仅显示已配置或保留异常状态的模型服务。"
+                : "清单仅显示已配置或保留异常状态的模型服务。当前权限只能查看可见状态。"
             }
           />
         </CardShell>

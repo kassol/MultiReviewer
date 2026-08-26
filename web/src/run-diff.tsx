@@ -149,16 +149,28 @@ export function FindingRow({
           {finding.models.map((model) => (
             <span
               key={model}
-              className="min-w-0 break-all font-mono text-sm text-text-muted"
+              className="min-w-0 break-all font-mono text-sm text-text-secondary"
             >
               {model}
             </span>
           ))}
         </div>
         {finding.commentHtmlUrl === null ? null : (
-          <Tooltip content="在 Forge 上看这条原评论">
-            <IconButton size="1" variant="ghost" color="gray" radius="full" asChild>
-              <a href={finding.commentHtmlUrl} target="_blank" rel="noreferrer" aria-label="看 Forge 上的原评论">
+          <Tooltip content="在 Forge 查看原始评论">
+            <IconButton
+              size="1"
+              variant="ghost"
+              color="gray"
+              radius="full"
+              className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0"
+              asChild
+            >
+              <a
+                href={finding.commentHtmlUrl}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`在 Forge 查看 ${finding.file}:${finding.line} 的原始评论`}
+              >
                 <ExternalLinkIcon />
               </a>
             </IconButton>
@@ -168,14 +180,14 @@ export function FindingRow({
 
       <p
         className={`text-base leading-relaxed break-words ${
-          resolved ? "text-text-muted line-through" : "text-text-secondary"
+          resolved ? "text-text-secondary line-through" : "text-text-secondary"
         }`}
       >
         {finding.description}
       </p>
 
       {finding.continuedFrom === null ? null : (
-        <p className="text-sm text-text-muted">
+        <p className="text-sm text-text-secondary">
           <a
             href={finding.continuedFrom}
             target="_blank"
@@ -184,12 +196,12 @@ export function FindingRow({
           >
             延续自上一处评论
           </a>
-          {" · "}这处代码已改写，复核判定同一个问题仍在
+          {" · "}原位置代码已改写；复核判定该 Finding 仍在
         </p>
       )}
 
       {autoDisposed ? (
-        <p className="text-sm text-text-muted">
+        <p className="text-sm text-text-secondary">
           已修复 · 自动处置
           {finding.disposedAt === null ? null : (
             <>
@@ -201,7 +213,7 @@ export function FindingRow({
           )}
         </p>
       ) : finding.disposedBy === null ? null : (
-        <p className="text-sm text-text-muted">
+        <p className="text-sm text-text-secondary">
           {resolved ? "已处置" : "撤回处置"} · {finding.disposedBy} ·{" "}
           <span className="tabular-nums">{localDay(finding.disposedAt!)} {localClock(finding.disposedAt!)}</span>
         </p>
@@ -214,7 +226,9 @@ export function FindingRow({
 
       {/* 正文里的 fallback 没有行级评论承载,Forge 上无从 resolve,面板也就不给动作。 */}
       {finding.commentId === null ? (
-        <p className="text-sm text-text-muted">这条只在 review 正文里，没有可处置的评论。</p>
+        <p className="text-sm text-text-secondary">
+          该 Finding 仅发布在 pull request review 正文中，未生成可处置的行级评论。
+        </p>
       ) : canDispose ? (
         <div className="flex flex-col gap-2">
           {composing ? (
@@ -231,10 +245,12 @@ export function FindingRow({
               <Button
                 variant="soft"
                 color="gray"
-                size="1"
+                size={{ initial: "3", sm: "1" }}
+                className="min-h-11 sm:min-h-0"
                 highContrast
                 disabled={dispose.isPending}
                 onClick={() => dispose.mutate({ id: finding.id, disposition: "unresolved", note })}
+                aria-label={`撤回 ${finding.file}:${finding.line} 的 Finding 处置`}
               >
                 撤回处置
               </Button>
@@ -242,24 +258,36 @@ export function FindingRow({
               <>
                 <Button
                   variant="solid"
-                  size="1"
+                  size={{ initial: "3", sm: "1" }}
+                  className="min-h-11 sm:min-h-0"
                   disabled={dispose.isPending}
                   onClick={() => dispose.mutate({ id: finding.id, disposition: "resolved", note })}
+                  aria-label={`确认处置 ${finding.file}:${finding.line} 的 Finding`}
                 >
                   {dispose.isPending ? "处置中…" : "确认处置"}
                 </Button>
                 <Button
                   variant="ghost"
                   color="gray"
-                  size="1"
+                  size={{ initial: "3", sm: "1" }}
+                  className="min-h-11 sm:min-h-0"
                   highContrast
                   onClick={() => { setComposing(false); setNote(""); }}
+                  aria-label={`取消处置 ${finding.file}:${finding.line} 的 Finding`}
                 >
                   取消
                 </Button>
               </>
             ) : (
-              <Button variant="soft" color="gray" size="1" highContrast onClick={() => setComposing(true)}>
+              <Button
+                variant="soft"
+                color="gray"
+                size={{ initial: "3", sm: "1" }}
+                className="min-h-11 sm:min-h-0"
+                highContrast
+                onClick={() => setComposing(true)}
+                aria-label={`处置 ${finding.file}:${finding.line} 的 Finding`}
+              >
                 处置
               </Button>
             )}
@@ -357,7 +385,7 @@ export function FilePatch({
   if (patch.isPending) {
     return (
       <div role="status" aria-live="polite">
-        <span className="sr-only">正在加载这个文件的 diff</span>
+        <span className="sr-only">正在加载文件代码差异</span>
         <Skeleton className="h-40" />
       </div>
     );
@@ -366,7 +394,7 @@ export function FilePatch({
     return (
       <div className="overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control">
         <p className="bg-warning-tint px-3 py-1.5 text-sm text-warning">
-          取不到这一轮的 diff，下面这些 Finding 没有可锚的行。{(patch.error as Error).message}
+          无法读取本轮代码差异：{(patch.error as Error).message}。以下 Finding 无法锚定到代码行。
         </p>
         {findings.map((finding) => (
           <FindingRow key={finding.id} finding={finding} canDispose={canDispose} />
@@ -381,8 +409,8 @@ export function FilePatch({
         <div className="border-b border-overlay-line">
           <p className="bg-warning-tint px-3 py-1.5 text-sm text-warning">
             {hunks.length === 0
-              ? "这个文件不在这一轮的改动里，下面这些 Finding 没有可锚的行。"
-              : "下面这些 Finding 指向的行不在这一轮的改动里。"}
+              ? "该文件不在本轮变更范围内，以下 Finding 无法锚定到代码行。"
+              : "以下 Finding 指向的代码行不在本轮变更范围内。"}
           </p>
           {unanchored.map((finding) => (
             <FindingRow key={finding.id} finding={finding} canDispose={canDispose} />
@@ -390,55 +418,57 @@ export function FilePatch({
         </div>
       )}
       {hunks.length === 0 ? null : (
-        <table className="w-full border-collapse font-mono text-xs">
-          <tbody>
-            {hunks.map((hunk, hunkIndex) => (
-              <Fragment key={hunkIndex}>
-                <tr className="bg-sunken">
-                  <td colSpan={3} className="px-3 py-1 break-all text-text-muted">
-                    {hunk.header}
-                  </td>
-                </tr>
-                {hunk.lines.map((line, index) => (
-                  <Fragment key={index}>
-                    <tr
-                      {...(line.newLine !== null && line.newLine === focusLine
-                        ? { ref: focusRow }
-                        : {})}
-                      className={
-                        line.kind === "add"
-                          ? "bg-success-tint"
-                          : line.kind === "del"
-                            ? "bg-danger-tint"
-                            : ""
-                      }
-                    >
-                      <td className="w-10 px-1.5 text-right align-top tabular-nums text-text-faint select-none">
-                        {line.oldLine ?? ""}
-                      </td>
-                      <td className="w-10 px-1.5 text-right align-top tabular-nums text-text-faint select-none">
-                        {line.newLine ?? ""}
-                      </td>
-                      <td className="px-2 align-top break-all whitespace-pre-wrap text-text-secondary">
-                        <span className="select-none text-text-faint">
-                          {line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}
-                        </span>
-                        {line.text}
-                      </td>
-                    </tr>
-                    {line.newLine === null ? null : (
-                      <FindingCells
-                        findings={byLine.get(line.newLine) ?? []}
-                        canDispose={canDispose}
-                        {...(focusFindingId === undefined ? {} : { focusFindingId })}
-                      />
-                    )}
-                  </Fragment>
-                ))}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
+        <div className="overflow-x-auto overscroll-x-contain">
+          <table className="w-max min-w-full border-collapse font-mono text-xs" aria-label={`${path} 的代码差异`}>
+            <tbody>
+              {hunks.map((hunk, hunkIndex) => (
+                <Fragment key={hunkIndex}>
+                  <tr className="bg-sunken">
+                    <td colSpan={3} className="px-3 py-1 whitespace-pre text-text-secondary">
+                      {hunk.header}
+                    </td>
+                  </tr>
+                  {hunk.lines.map((line, index) => (
+                    <Fragment key={index}>
+                      <tr
+                        {...(line.newLine !== null && line.newLine === focusLine
+                          ? { ref: focusRow }
+                          : {})}
+                        className={
+                          line.kind === "add"
+                            ? "bg-success-tint"
+                            : line.kind === "del"
+                              ? "bg-danger-tint"
+                              : ""
+                        }
+                      >
+                        <td className="w-10 px-1.5 text-right align-top tabular-nums text-text-secondary select-none">
+                          {line.oldLine ?? ""}
+                        </td>
+                        <td className="w-10 px-1.5 text-right align-top tabular-nums text-text-secondary select-none">
+                          {line.newLine ?? ""}
+                        </td>
+                        <td className="px-2 align-top whitespace-pre text-text">
+                          <span className="select-none text-text-secondary">
+                            {line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}
+                          </span>
+                          {line.text}
+                        </td>
+                      </tr>
+                      {line.newLine === null ? null : (
+                        <FindingCells
+                          findings={byLine.get(line.newLine) ?? []}
+                          canDispose={canDispose}
+                          {...(focusFindingId === undefined ? {} : { focusFindingId })}
+                        />
+                      )}
+                    </Fragment>
+                  ))}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

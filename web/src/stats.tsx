@@ -260,7 +260,7 @@ export function StatsPage() {
             className="flex flex-col gap-4 rounded-lg border border-card-line bg-surface px-[19px] py-[17px] shadow-card sm:flex-row sm:items-center sm:justify-between"
           >
             <div className="flex flex-col gap-[5px]">
-              <span className="text-base font-semibold text-text-muted">时间范围 tokens</span>
+              <span className="text-base font-semibold text-text-muted">Token 用量</span>
               <b className="font-mono text-6xl font-extrabold leading-[1.15] tracking-[-0.03em] tabular-nums">
                 {stats.data.usage === null
                   ? "—"
@@ -333,7 +333,7 @@ export function StatsPage() {
           <EmptyState
             title="当前时间范围暂无可统计的 Finding"
             titleAs="h2"
-            description="统计只包含带行级评论的 Finding。当前时间范围可能没有审查记录，或 Finding 无法关联到变更行。请扩大时间范围后重试。"
+            description="统计只包含带行级评论的 Finding。当前时间范围可能没有评审记录，或 Finding 无法关联到变更行。请扩大时间范围后重试。"
             className="rounded-lg border border-card-line bg-surface p-4 shadow-card"
           />
         ) : null}
@@ -485,7 +485,7 @@ export function StatsPage() {
               >
                 模型参与条数
               </h2>
-              <p className="text-xs text-text-muted">该模型报出过的 Finding 条数</p>
+              <p className="text-xs text-text-muted">该模型的参与条数；同一处 Finding 仅统计一次</p>
             </div>
             <dl className="divide-y divide-line">
               {participation.map((entry) => (
