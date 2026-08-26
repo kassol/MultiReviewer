@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useState, type MouseEventHandler } from "react";
 
 import { CrossCircledIcon, FileTextIcon } from "@radix-ui/react-icons";
 import { Callout, Select, Skeleton } from "@radix-ui/themes";
@@ -144,12 +144,15 @@ export function StageSummaryView({
   scope,
   canDispose,
   timeline,
+  onDrawerTrigger,
 }: {
   scope: StageScope;
   /** 有 `finding:dispose` 权限时行内出现处置动作。 */
   canDispose: boolean;
   /** 时间线怎么摆由页面定:范围审查按比较项分组,PR 那条直接一列。 */
   timeline?: (entries: StageTimelineEntry[]) => React.ReactNode;
+  /** 侧滑打开前记录触发链接,关闭后恢复焦点。 */
+  onDrawerTrigger?: MouseEventHandler<HTMLAnchorElement>;
 }) {
   const summary = useStageSummary(scope);
   const [disposition, setDisposition] = useState<DispositionFilter>("all");
@@ -266,6 +269,7 @@ export function StageSummaryView({
               trace: undefined,
             })}
             replace
+            onClick={onDrawerTrigger}
             aria-label={`查看 ${finding.file}:${finding.line} 对应的代码差异`}
             className="group block px-4 pt-2.5 outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40"
           >

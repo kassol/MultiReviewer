@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type MouseEventHandler } from "react";
 
 import {
   ArrowLeftIcon,
@@ -245,12 +245,18 @@ export function StageDetailPage({
           )}
 
           {/* 两个侧滑入口都是这一块里的链接:焦点来源在冒泡到这里时记下来。 */}
-          <div onClickCapture={returnFocus.captureBubblingLink}>
+          <div>
             <StageSummaryView
               scope={scopeOf(body.stage)}
               canDispose={canDispose}
+              onDrawerTrigger={returnFocus.captureTrigger}
               timeline={() => (
-                <StageTimeline stageId={stageId} groups={body.groups} stage={body.stage} />
+                <StageTimeline
+                  stageId={stageId}
+                  groups={body.groups}
+                  stage={body.stage}
+                  onDrawerTrigger={returnFocus.captureTrigger}
+                />
               )}
             />
           </div>
@@ -359,10 +365,12 @@ function StageTimeline({
   stageId,
   stage,
   groups,
+  onDrawerTrigger,
 }: {
   stageId: string;
   stage: StageItem;
   groups: StageRunGroup[];
+  onDrawerTrigger: MouseEventHandler<HTMLAnchorElement>;
 }) {
   if (groups.length === 0) {
     return <EmptyState title="该审查阶段尚无 Review Run" className="py-2" />;
@@ -399,6 +407,7 @@ function StageTimeline({
                   finding: undefined,
                 })}
                 replace
+                onClick={onDrawerTrigger}
                 aria-label={`查看 ${localMinute(entry.startedAt)} 的审查轨迹`}
                 className="group flex flex-col gap-1 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
               >
