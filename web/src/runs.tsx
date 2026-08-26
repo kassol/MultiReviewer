@@ -1,12 +1,12 @@
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
 import { CheckCircledIcon, CrossCircledIcon } from "@radix-ui/react-icons";
-import { Badge, Callout, SegmentedControl, Skeleton } from "@radix-ui/themes";
+import { Badge, Callout, SegmentedControl, Select, Skeleton } from "@radix-ui/themes";
 
 import { EmptyState } from "@/components/empty-state";
-import { MasterListItem } from "@/components/master-list-item";
+import { MasterListItem, MasterListItemText } from "@/components/master-list-item";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
@@ -58,7 +58,7 @@ export type RunItem = {
 };
 
 /** 已处置的 Finding 条数:人工与自动都算。进度与状态一律按它判。 */
-export function disposedCount(run: { resolved: number; fixed: number }): number {
+function disposedCount(run: { resolved: number; fixed: number }): number {
   return run.resolved + run.fixed;
 }
 
@@ -199,8 +199,8 @@ export async function rerunRangeReviewRequest(rangeReviewId: number): Promise<st
 }
 
 /**
- * 一轮审查的结论。总览、评审记录与仓库页共用这一份映射——同一轮在三处显示成不同
- * 的词,读的人得先确认那是不是同一件事。
+ * 一轮审查的结论。评审记录与阶段页共用这一份映射——同一轮在两处显示成不同的词,
+ * 读的人得先确认那是不是同一件事。
  *
  * 徽章只说结论,分数由各页自己那一格显示:两边都写就是同一个数字说两遍。
  *
@@ -288,13 +288,167 @@ function stagesPath(query: {
   return search === "" ? "/stages" : `/stages?${search}`;
 }
 
+/**
+ * 工作副本的准备状态(issue #184)。`unknown` 是升级前注册的仓库与从没备过副本的那些
+ * 行:副本可能在也可能不在,和失败一样给出准备入口。
+ */
+export type WorktreeStatus = {
+  state: "unknown" | "preparing" | "ready" | "failed";
+  failure: string | null;
+  checkedAt: string | null;
+};
+
+/** `GET /repos` 的一行。服务端已按最近活动倒序给出,也已按仓库分配收窄。 */
+export type RepoRow = {
+  repoId: number;
+  owner: string;
+  repo: string;
+  reviewers: ReviewerSpec[] | null;
+  runCount: number;
+  findingCount: number;
+  lastActivity: string | null;
+  worktree: WorktreeStatus;
+};
+
+export type ReviewerSpec = { provider: string; model: string };
+
+export function since(iso: string): string {
+  const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60_000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} 小时前`;
+  return `${Math.round(hours / 24)} 天前`;
+}
+
+/** 「全部仓库」在窄视口那个 Select 里的取值。仓库名里有斜杠,所以它不能是空串。 */
+const ALL_REPOS = "all";
+
+type Repository = { owner: string; repo: string };
+
+function repositoryValue(row: Repository): string {
+  return `${row.owner}/${row.repo}`;
+}
+
+/** 左栏与窄视口 Select 共用的一行文字:最近活动,加上工作副本没就绪时的那枚标记。 */
+function repoActivityLabel(row: RepoRow): string {
+  return row.lastActivity === null ? "还没跑过" : `最近 ${since(row.lastActivity)}`;
+}
+
+/**
+ * 首页左栏:这个账号可见的仓库,首项是「全部仓库」。它是右栏的过滤条件,不是第二份
+ * 列表(CONTEXT.md 评审记录),所以选中项只写进地址上的一对 `owner` + `repo`。
+ */
+function RepoSidebar({
+  repos,
+  isPending,
+  selected,
+  onSelect,
+}: {
+  repos: readonly RepoRow[];
+  isPending: boolean;
+  selected: Repository | null;
+  onSelect: (next: Repository | null) => void;
+}) {
+  return (
+    <aside
+      aria-label="仓库"
+      aria-busy={isPending}
+      className="w-[264px] shrink-0 overflow-y-auto overscroll-y-contain max-lg:hidden"
+    >
+      <div className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
+        {isPending ? (
+          <div className="flex flex-col gap-2 px-4 py-3" role="status" aria-live="polite">
+            <span className="sr-only">正在读取仓库</span>
+            {[0, 1, 2].map((slot) => <Skeleton key={slot} className="h-9" />)}
+          </div>
+        ) : (
+          <ul>
+            <li>
+              <MasterListItem
+                selected={selected === null}
+                className="block px-4 py-3 data-[selected=false]:font-medium"
+                onClick={() => onSelect(null)}
+              >
+                <span className="block text-lg">全部仓库</span>
+              </MasterListItem>
+            </li>
+            {repos.map((row) => (
+              <li key={row.repoId} className="border-t border-line">
+                <MasterListItem
+                  selected={selected !== null && selected.owner === row.owner && selected.repo === row.repo}
+                  className="block px-4 py-3 data-[selected=false]:font-medium"
+                  onClick={() => onSelect({ owner: row.owner, repo: row.repo })}
+                >
+                  <span className="block break-all text-lg">
+                    {row.owner}/{row.repo}
+                  </span>
+                  <MasterListItemText className="mt-px block text-sm font-normal">
+                    {repoActivityLabel(row)}
+                  </MasterListItemText>
+                  {row.worktree.state === "ready" ? null : (
+                    <span className="mt-1.5 block">
+                      <StatusBadge tone="warning">工作副本未就绪</StatusBadge>
+                    </span>
+                  )}
+                </MasterListItem>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+/** 窄视口下左栏折叠成的仓库选择器。切换写的是同一份地址参数。 */
+function RepoSelect({
+  repos,
+  selected,
+  onSelect,
+}: {
+  repos: readonly RepoRow[];
+  selected: Repository | null;
+  onSelect: (next: Repository | null) => void;
+}) {
+  return (
+    <div className="lg:hidden">
+      <Select.Root
+        size="3"
+        value={selected === null ? ALL_REPOS : repositoryValue(selected)}
+        onValueChange={(next) => {
+          if (next === ALL_REPOS) return onSelect(null);
+          // 仓库名不含斜杠,owner 与 repo 因此按第一个斜杠切开。认不出的取值一律不动
+          // 地址——Radix 在受控值换档时会多回调一次空串。
+          const slash = next.indexOf("/");
+          if (slash > 0) onSelect({ owner: next.slice(0, slash), repo: next.slice(slash + 1) });
+        }}
+      >
+        <Select.Trigger aria-label="按仓库过滤" className="w-full" />
+        <Select.Content position="popper">
+          <Select.Item value={ALL_REPOS}>全部仓库</Select.Item>
+          {repos.map((row) => (
+            <Select.Item key={row.repoId} value={repositoryValue(row)}>
+              {row.owner}/{row.repo}
+              {row.worktree.state === "ready" ? null : " · 工作副本未就绪"}
+            </Select.Item>
+          ))}
+        </Select.Content>
+      </Select.Root>
+    </div>
+  );
+}
+
 export function RunsPage({
   canRerun,
   canCreate,
+  unassigned,
 }: {
   canRerun: boolean;
   /** 「评审 · 发起」才看得见页头的发起范围审查入口(issue #177)。 */
   canCreate: boolean;
+  /** 一个仓库都没分到的普通用户:两栏换成一段让他联系管理员的说明(issue #194)。 */
+  unassigned: boolean;
 }) {
   const navigate = useNavigate();
   /*
@@ -326,7 +480,7 @@ export function RunsPage({
   });
   const setFilter = (next: Partial<{ status: StageStatusFilter; source: StageSourceFilter }>) => {
     void navigate({
-      to: "/runs",
+      to: "/",
       search: (prev: Record<string, unknown>) => ({
         ...prev,
         ...(next.status === undefined ? {} : { status: next.status === "all" ? undefined : next.status }),
@@ -335,10 +489,15 @@ export function RunsPage({
       replace: true,
     });
   };
-  const clearRepository = () => {
+  // 左栏与窄视口 Select 写的是同一份地址参数:「全部仓库」即这两个键都不在。
+  const selectRepository = (next: Repository | null) => {
     void navigate({
-      to: "/runs",
-      search: (prev: Record<string, unknown>) => ({ ...prev, owner: undefined, repo: undefined }),
+      to: "/",
+      search: (prev: Record<string, unknown>) => ({
+        ...prev,
+        owner: next?.owner,
+        repo: next?.repo,
+      }),
       replace: true,
     });
   };
@@ -377,6 +536,12 @@ export function RunsPage({
       )
         ? 10_000
         : false,
+  });
+  // 左栏读的是 `GET /repos`,它已经按仓库分配收窄、按最近活动倒序(issue #194)。
+  const repos = useQuery({
+    queryKey: ["repos"],
+    queryFn: () => fetchJson<RepoRow[]>("/repos"),
+    enabled: !unassigned,
   });
   // 发起范围审查的结果就落在页头下面这一条提示里(issue #177)。
   const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
@@ -444,115 +609,132 @@ export function RunsPage({
           </Callout.Root>
         ) : null}
 
-        <div className="flex flex-wrap gap-2">
-          <FilterControl
-            label="按状态过滤"
-            value={filter.status}
-            options={STATUS_OPTIONS}
-            onChange={(status) => setFilter({ status })}
-          />
-          <FilterControl
-            label="按来源过滤"
-            value={filter.source}
-            options={SOURCE_OPTIONS}
-            onChange={(source) => setFilter({ source })}
-          />
-          {/* 仓库过滤没有分段控件可摆:它的取值是全部已注册仓库,只显示当前这一个并给清除。 */}
-          {filter.repository === null ? null : (
-            <span className="flex items-center gap-1.5 rounded-full bg-accent-tint px-3 text-base text-primary">
-              仓库 {filter.repository.owner}/{filter.repository.repo}
-              <Button variant="ghost" color="gray" size="1" highContrast onClick={clearRepository}>
-                清除
-              </Button>
-            </span>
-          )}
-        </div>
+        {unassigned ? (
+          <div className="rounded-lg border border-card-line bg-surface px-5 py-4 shadow-card">
+            <EmptyState
+              title="还没有仓库分配给你"
+              titleAs="h2"
+              description="看得到哪些评审记录由仓库分配决定。请联系系统管理员把你负责的仓库分配给这个账号。"
+            />
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row lg:gap-[18px]">
+            <RepoSidebar
+              repos={repos.data ?? []}
+              isPending={repos.isPending}
+              selected={filter.repository}
+              onSelect={selectRepository}
+            />
+            <RepoSelect
+              repos={repos.data ?? []}
+              selected={filter.repository}
+              onSelect={selectRepository}
+            />
 
-        <div
-          ref={listViewport}
-          className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain"
-          aria-busy={stages.isPending || stages.isFetchingNextPage}
-          aria-label="评审记录列表"
-        >
-          {stages.isPending ? (
-            <div
-              className="flex flex-col gap-2 overflow-hidden rounded-lg border border-card-line bg-surface p-2 shadow-card"
-              role="status"
-              aria-live="polite"
-            >
-              <span className="sr-only">正在加载评审记录</span>
-              {[0, 1, 2, 3].map((slot) => <Skeleton key={slot} className="h-14" />)}
-            </div>
-          ) : null}
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+              <div className="flex flex-wrap gap-2">
+                <FilterControl
+                  label="按状态过滤"
+                  value={filter.status}
+                  options={STATUS_OPTIONS}
+                  onChange={(status) => setFilter({ status })}
+                />
+                <FilterControl
+                  label="按来源过滤"
+                  value={filter.source}
+                  options={SOURCE_OPTIONS}
+                  onChange={(source) => setFilter({ source })}
+                />
+              </div>
 
-          {flat.length > 0 ? (
-            <div className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
-              {flat.map((stage) => (
-                // 点一行是进这个阶段自己的地址(issue #175):详情能直接分享,后退键回到列表。
-                // 当前过滤跟着进去,阶段页那个返回才回得到同一片列表(issue #189)。
-                <MasterListItem key={stage.stageId} selected={false} asChild>
-                  <Link
-                    to="/stages/$stageId"
-                    params={{ stageId: stage.stageId }}
-                    search={carried}
-                    className="group flex items-center gap-3 border-t border-line px-5 py-3 first:border-t-0"
+              <div
+                ref={listViewport}
+                className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain"
+                aria-busy={stages.isPending || stages.isFetchingNextPage}
+                aria-label="评审记录列表"
+              >
+                {stages.isPending ? (
+                  <div
+                    className="flex flex-col gap-2 overflow-hidden rounded-lg border border-card-line bg-surface p-2 shadow-card"
+                    role="status"
+                    aria-live="polite"
                   >
-                    <span className="flex min-w-0 flex-1 flex-col gap-px">
-                      <span className="flex min-w-0 items-center gap-1.5">
-                        <span className="truncate text-lg font-semibold">
-                          {stage.owner}/{stage.repo} {stageLabel(stage)}
-                        </span>
-                        <StageSourceBadge stage={stage} />
-                      </span>
-                      <span className="flex flex-wrap items-center gap-x-1.5 text-base font-normal text-text-muted">
-                        <span className="tabular-nums">{latestRunLabel(stage)}</span>
-                      </span>
-                    </span>
-                    {/* 三个数在窄屏让位给状态徽章:390px 下它们会把标题挤成两个字。 */}
-                    <span className="max-sm:hidden"><StageCounts stage={stage} /></span>
-                    <span className="shrink-0"><StageStatusBadge stage={stage} /></span>
-                  </Link>
-                </MasterListItem>
-              ))}
-            </div>
-          ) : null}
+                    <span className="sr-only">正在加载评审记录</span>
+                    {[0, 1, 2, 3].map((slot) => <Skeleton key={slot} className="h-14" />)}
+                  </div>
+                ) : null}
 
-          {flat.length === 0 && !stages.isPending && !stages.isError ? (
-            <div className="rounded-lg border border-card-line bg-surface px-5 py-4 shadow-card">
-              <EmptyState
-                title={unfiltered ? "暂无审查记录" : "没有符合条件的审查记录"}
-                titleAs="h2"
-                description={
-                  unfiltered ? (
-                    <>
-                      向已注册仓库提交 pull request 后，系统会自动运行审查。
-                      {canRerun ? "如需对已有 pull request 重新运行审查，请到仓库页选择仓库并输入 PR 编号。" : null}
-                    </>
-                  ) : (
-                    "换一个仓库、状态或来源再看。"
-                  )
-                }
-                action={
-                  canRerun && unfiltered ? (
-                    <Button variant="outline" color="gray" size={{ initial: "4", sm: "1" }} asChild>
-                      <Link to="/repos">去仓库页</Link>
-                    </Button>
-                  ) : undefined
-                }
-              />
+                {flat.length > 0 ? (
+                  <div className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
+                    {flat.map((stage) => (
+                      // 点一行是进这个阶段自己的地址(issue #175):详情能直接分享,后退键回到列表。
+                      // 当前过滤跟着进去,阶段页那个返回才回得到同一片列表(issue #189)。
+                      <MasterListItem key={stage.stageId} selected={false} asChild>
+                        <Link
+                          to="/stages/$stageId"
+                          params={{ stageId: stage.stageId }}
+                          search={carried}
+                          className="group flex items-center gap-3 border-t border-line px-5 py-3 first:border-t-0"
+                        >
+                          <span className="flex min-w-0 flex-1 flex-col gap-px">
+                            <span className="flex min-w-0 items-center gap-1.5">
+                              <span className="truncate text-lg font-semibold">
+                                {stage.owner}/{stage.repo} {stageLabel(stage)}
+                              </span>
+                              <StageSourceBadge stage={stage} />
+                            </span>
+                            <span className="flex flex-wrap items-center gap-x-1.5 text-base font-normal text-text-muted">
+                              <span className="tabular-nums">{latestRunLabel(stage)}</span>
+                            </span>
+                          </span>
+                          {/* 三个数在窄屏让位给状态徽章:390px 下它们会把标题挤成两个字。 */}
+                          <span className="max-sm:hidden"><StageCounts stage={stage} /></span>
+                          <span className="shrink-0"><StageStatusBadge stage={stage} /></span>
+                        </Link>
+                      </MasterListItem>
+                    ))}
+                  </div>
+                ) : null}
+
+                {flat.length === 0 && !stages.isPending && !stages.isError ? (
+                  <div className="rounded-lg border border-card-line bg-surface px-5 py-4 shadow-card">
+                    <EmptyState
+                      title={unfiltered ? "暂无审查记录" : "没有符合条件的审查记录"}
+                      titleAs="h2"
+                      description={
+                        unfiltered ? (
+                          <>
+                            向已注册仓库提交 pull request 后，系统会自动运行审查。
+                            {canRerun ? "如需对已有 pull request 重新运行审查，请到仓库页选择仓库并输入 PR 编号。" : null}
+                          </>
+                        ) : (
+                          "换一个仓库、状态或来源再看。"
+                        )
+                      }
+                      action={
+                        canRerun && unfiltered ? (
+                          <Button variant="outline" color="gray" size={{ initial: "4", sm: "1" }} asChild>
+                            <Link to="/repos">去仓库页</Link>
+                          </Button>
+                        ) : undefined
+                      }
+                    />
+                  </div>
+                ) : null}
+                <div ref={sentinel} />
+                <p className="pt-3 text-center text-sm text-text-muted" aria-live="polite">
+                  {stages.isFetchingNextPage
+                    ? "加载更早的审查记录…"
+                    : stages.hasNextPage
+                      ? "继续下滑加载更早的审查记录"
+                      : flat.length > 0
+                        ? "已加载全部记录"
+                        : ""}
+                </p>
+              </div>
             </div>
-          ) : null}
-          <div ref={sentinel} />
-          <p className="pt-3 text-center text-sm text-text-muted" aria-live="polite">
-            {stages.isFetchingNextPage
-              ? "加载更早的审查记录…"
-              : stages.hasNextPage
-                ? "继续下滑加载更早的审查记录"
-                : flat.length > 0
-                  ? "已加载全部记录"
-                  : ""}
-          </p>
-        </div>
+          </div>
+        )}
       </PageBody>
     </div>
   );

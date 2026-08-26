@@ -32,6 +32,10 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
     for (const gone of ["回到阶段汇总", "去最新一轮 diff", "本轮 diff"]) {
       assert.doesNotMatch(javascript, new RegExp(gone), gone);
     }
+    // 首页就是评审记录(issue #194):总览页与 `/runs` 路由一起删了,左栏首项是「全部仓库」。
+    assert.doesNotMatch(javascript, /总览/);
+    assert.doesNotMatch(javascript, /to:"\/runs"/);
+    assert.match(javascript, /全部仓库/);
     assert.match(javascript, /再显示/);
     assert.match(javascript, /add-model-service-trigger/);
     assert.match(javascript, /configure-builtin-/);

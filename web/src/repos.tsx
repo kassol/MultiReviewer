@@ -32,46 +32,14 @@ import { localMinute } from "@/lib/time";
 import { api, errorText, fetchJson } from "./api.ts";
 import { modelIdentity, parseModelIdentity } from "./model-services.ts";
 import { RangeReviewLaunch } from "./range-review-launch.tsx";
-import { rerunRequest } from "./runs.tsx";
+import { rerunRequest, since, type RepoRow, type ReviewerSpec } from "./runs.tsx";
 import { useSetupStatus } from "./setup-checklist.tsx";
-
-type ReviewerSpec = { provider: string; model: string };
-
-type RepoRow = {
-  repoId: number;
-  owner: string;
-  repo: string;
-  reviewers: ReviewerSpec[] | null;
-  runCount: number;
-  findingCount: number;
-  lastActivity: string | null;
-  worktree: WorktreeStatus;
-};
-
-/**
- * 工作副本的准备状态(issue #184)。`unknown` 是升级前注册的仓库与从没备过副本的那些
- * 行:副本可能在也可能不在,和失败一样给出准备入口。
- */
-type WorktreeStatus = {
-  state: "unknown" | "preparing" | "ready" | "failed";
-  failure: string | null;
-  checkedAt: string | null;
-};
 
 type HookCheck = {
   expectedGenerations: number[];
   hooks: { id: number; generation: number; active: boolean }[];
   issues: { message: string; action: string }[];
 };
-
-function since(iso: string): string {
-  const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60_000);
-  if (minutes < 1) return "刚刚";
-  if (minutes < 60) return `${minutes} 分钟前`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours} 小时前`;
-  return `${Math.round(hours / 24)} 天前`;
-}
 
 /** 键值行:详情面板里成对出现的那一行。 */
 function Kv({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
@@ -1102,9 +1070,9 @@ function RepoRuns({
         ) : undefined}
       />
       <div className="border-t border-line px-4 py-3.5 sm:px-5">
-        {/* 同一份评审记录列表,只是带上这个仓库的过滤(issue #189)。 */}
+        {/* 同一份评审记录列表——它就是首页,只是带上这个仓库的过滤(issue #189、#194)。 */}
         <Link
-          to="/runs"
+          to="/"
           search={{ owner: repo.owner, repo: repo.repo }}
           className="inline-flex items-center gap-1 text-base text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/40"
         >

@@ -185,7 +185,7 @@ export function StageDetailPage({
     <PageBody width="wide">
       <div>
         <Link
-          to="/runs"
+          to="/"
           search={location.filters}
           className="inline-flex items-center gap-1 text-base text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/40"
         >

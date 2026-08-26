@@ -14,7 +14,6 @@ import {
   ArchiveIcon,
   BarChartIcon,
   CounterClockwiseClockIcon,
-  DashboardIcon,
   LightningBoltIcon,
   LockClosedIcon,
   MagnifyingGlassIcon,
@@ -51,7 +50,6 @@ const RunsPage = lazy(async () => ({ default: (await import("./runs.tsx")).RunsP
 const StageDetailPage = lazy(async () => ({ default: (await import("./stage-detail.tsx")).StageDetailPage }));
 const SettingsPage = lazy(async () => ({ default: (await import("./settings.tsx")).SettingsPage }));
 const StatsPage = lazy(async () => ({ default: (await import("./stats.tsx")).StatsPage }));
-const OverviewPage = lazy(async () => ({ default: (await import("./overview.tsx")).OverviewPage }));
 const credentialsModule = () => import("./credentials.tsx");
 const BuiltinServiceDiscoverPage = lazy(async () => ({ default: (await credentialsModule()).BuiltinServiceDiscoverPage }));
 const BuiltinServiceVerifyPage = lazy(async () => ({ default: (await credentialsModule()).BuiltinServiceVerifyPage }));
@@ -105,7 +103,6 @@ type NavigationItem = {
   to:
     | "/"
     | "/repos"
-    | "/runs"
     | "/stats"
     | "/credentials"
     | "/settings"
@@ -113,19 +110,18 @@ type NavigationItem = {
     | "/password";
   label: string;
   /** 移动端底部 Tab 栏用。桌面 underline 导航只有文字,不挂图标。 */
-  icon: typeof DashboardIcon;
+  icon: typeof CounterClockwiseClockIcon;
   /** 省略即登录就看得见:读范围由仓库分配决定,不由权限格门控(ADR 0018)。 */
   permission?: PagePermission;
   admin?: true;
 };
 
 /**
- * 顺序即导航顺序,与设计稿一致:总览打头,账户项收尾。收尾的「修改密码」在桌面端
- * 走头像菜单,不占 underline 导航的位置。
+ * 顺序即导航顺序:评审记录打头——它就是首页(issue #194),账户项收尾。收尾的「修改
+ * 密码」在桌面端走头像菜单,不占 underline 导航的位置。
  */
 const NAV: readonly NavigationItem[] = [
-  { to: "/", label: "总览", icon: DashboardIcon },
-  { to: "/runs", label: "评审记录", icon: CounterClockwiseClockIcon },
+  { to: "/", label: "评审记录", icon: CounterClockwiseClockIcon },
   { to: "/repos", label: "仓库", icon: ArchiveIcon },
   { to: "/stats", label: "处置率", icon: BarChartIcon },
   { to: "/credentials", label: "模型服务", icon: LightningBoltIcon, permission: ["model:read", "model:write", "credential:read", "credential:write"] },
@@ -207,8 +203,8 @@ function TopBar({
 }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   // 阶段页不是一张并列的页,它是从评审记录点进去的一个阶段:面包屑因此与它页顶那个
-  // 返回一致,都指着评审记录(issue #189)。
-  const located = pathname.startsWith("/stages") ? "/runs" : pathname;
+  // 返回一致,都指着评审记录——也就是首页(issue #189、#194)。
+  const located = pathname.startsWith("/stages") ? "/" : pathname;
   const current = nav.find((item) => item.to === "/" ? located === "/" : located.startsWith(item.to));
   return (
     <header className="sticky top-0 z-30 shrink-0 border-b border-chrome-line bg-chrome backdrop-blur-[30px]">
@@ -296,8 +292,8 @@ function NavLink({ item }: { item: NavigationItem }) {
 /**
  * 导航项右侧的计数与告警点。两者都只读已有查询的缓存语义:
  * - 仓库数直接来自 `/repos` 的数组长度。
- * - 运行数没有对应的总数端点(`/runs` 是游标分页),所以不显示计数,而不是拿第一页
- *   的条数冒充总数。
+ * - 评审记录没有对应的总数端点(`/stages` 按 offset 翻页),所以不显示计数,而不是拿
+ *   第一页的条数冒充总数。
  * - 模型服务的告警点来自首次配置状态里的「有没有可用模型服务」。
  */
 function useNavBadge(item: NavigationItem): { count?: number; alert: boolean } {
@@ -418,19 +414,36 @@ function MobileTabBar({
   );
 }
 
-/** 首页就是总览。登录就落在这里,读得到多少由仓库分配决定。 */
+/**
+ * 首页就是评审记录(issue #194)。登录就落在这里:左栏是这个账号可见的仓库,右栏是
+ * 所选仓库的审查阶段列表,可见多少由仓库分配决定。
+ */
 const indexRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/",
   beforeLoad: ({ context }) => {
     if (context.session.mustChangePassword) throw redirect({ to: "/password" });
   },
-  component: () => <BusinessPage Page={() => <OverviewPage />} />,
+  component: () => {
+    const { session } = shellRoute.useRouteContext();
+    return (
+      <BusinessPage
+        Page={() => (
+          <RunsPage
+            canRerun={hasPermission(session, "review:rerun")}
+            canCreate={hasPermission(session, "review:create")}
+            // 一个仓库都没分到的普通用户看到的是一段说明,不是一份空列表(issue #194)。
+            unassigned={session.repoIds !== null && session.repoIds.length === 0}
+          />
+        )}
+      />
+    );
+  },
 });
 
 /** `permission` 省略即登录就进得去,与导航项同一档判据。 */
 function protectedPage(
-  path: "/repos" | "/runs" | "/stats" | "/credentials" | "/settings",
+  path: "/repos" | "/stats" | "/credentials" | "/settings",
   permission: PagePermission | undefined,
   component: () => React.JSX.Element,
 ) {
@@ -465,15 +478,6 @@ const reposRoute = protectedPage("/repos", undefined, () => {
       canCreate={hasPermission(session, "review:create")}
       canReadModels={hasPermission(session, "model:read")}
       canRerun={hasPermission(session, "review:rerun")}
-    />
-  );
-});
-const runsRoute = protectedPage("/runs", undefined, () => {
-  const { session } = shellRoute.useRouteContext();
-  return (
-    <RunsPage
-      canRerun={hasPermission(session, "review:rerun")}
-      canCreate={hasPermission(session, "review:create")}
     />
   );
 });
@@ -665,7 +669,6 @@ const routeTree = rootRoute.addChildren([
   shellRoute.addChildren([
     indexRoute,
     reposRoute,
-    runsRoute,
     stageDetailRoute,
     statsRoute,
     credentialsRoute,
