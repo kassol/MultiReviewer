@@ -50,8 +50,6 @@ export type RunItem = {
   }[];
   /** 会话没有产生统计时省略。 */
   usage?: UsageSummary;
-  /** 本轮落库的每一条 Finding。详情的 diff 视图把它们锚在对应文件行上。 */
-  findings: RunFinding[];
   /** 人工处置掉的 Finding 条数。 */
   resolved: number;
   /** 「已修复」自动处置掉的 Finding 条数。 */
@@ -271,7 +269,7 @@ const SOURCE_OPTIONS = [
 ] as const satisfies readonly (readonly [StageSourceFilter, string])[];
 
 /** 阶段列表的查询串。筛选与分页都在服务端做,这里只负责把它们拼准。 */
-export function stagesPath(query: {
+function stagesPath(query: {
   offset: number;
   status?: StageStatusFilter;
   source?: StageSourceFilter;

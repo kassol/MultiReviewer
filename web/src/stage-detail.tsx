@@ -84,7 +84,7 @@ function scopeOf(stage: StageItem): StageScope {
 }
 
 /** 侧滑打开的是哪一样(issue #189):两者互斥,地址上都在时按 Finding 那一档算。 */
-type OpenedDrawer = { kind: "finding"; id: number } | { kind: "round"; id: number } | null;
+type OpenedDrawer = { kind: "finding"; id: number } | { kind: "trace"; id: number } | null;
 
 function positiveId(value: unknown): number | null {
   const id = typeof value === "number" ? value : Number(value);
@@ -111,7 +111,7 @@ function listFilters(search: Record<string, unknown>): Record<string, string> {
  * 而且只有一种视图:上半是这个阶段当前状态下仍存在的 Finding,下半是时间线,一轮一行。
  *
  * 下钻只有侧滑一种,在同一路由上由查询参数驱动:`finding=` 是那条 Finding 所在文件的
- * diff,`round=` 是那一轮的审查轨迹。页顶只有一个返回,回到来时的那份列表。
+ * diff,`trace=` 是那一轮的审查轨迹。页顶只有一个返回,回到来时的那份列表。
  */
 export function StageDetailPage({
   stageId,
@@ -158,12 +158,12 @@ export function StageDetailPage({
     select: (state) => {
       const search = state.location.search as Record<string, unknown>;
       const finding = positiveId(search.finding);
-      const round = positiveId(search.round);
+      const trace = positiveId(search.trace);
       const drawer: OpenedDrawer =
         finding !== null
           ? { kind: "finding", id: finding }
-          : round !== null
-            ? { kind: "round", id: round }
+          : trace !== null
+            ? { kind: "trace", id: trace }
             : null;
       return { drawer, filters: listFilters(search) };
     },
@@ -173,7 +173,7 @@ export function StageDetailPage({
     void navigate({
       to: "/stages/$stageId",
       params: { stageId },
-      search: (prev: Record<string, unknown>) => ({ ...prev, finding: undefined, round: undefined }),
+      search: (prev: Record<string, unknown>) => ({ ...prev, finding: undefined, trace: undefined }),
       replace: true,
     });
   };
@@ -258,6 +258,7 @@ export function StageDetailPage({
             <FindingDrawer
               key={location.drawer.id}
               scope={scopeOf(body.stage)}
+              latestRunId={body.stage.latestRunId}
               findingId={location.drawer.id}
               canDispose={canDispose}
               onClose={closeDrawer}
@@ -393,7 +394,7 @@ function StageTimeline({
                 params={{ stageId }}
                 search={(prev: Record<string, unknown>) => ({
                   ...prev,
-                  round: entry.runId,
+                  trace: entry.runId,
                   finding: undefined,
                 })}
                 replace
@@ -440,29 +441,31 @@ function StageDrawer({
         if (!next) onClose();
       }}
     >
-      <Dialog.Overlay className="fixed inset-0 z-40 bg-[rgba(0,0,0,0.25)]" />
-      <Dialog.Content
-        aria-describedby={undefined}
-        onCloseAutoFocus={onCloseAutoFocus}
-        className="fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-card-line bg-surface shadow-overlay outline-none sm:w-[min(920px,92vw)]"
-      >
-        <div className="flex items-start justify-between gap-3 border-b border-card-line px-4 py-3">
-          <div className="flex min-w-0 flex-col gap-1">
-            <Dialog.Title className="min-w-0 break-all text-3xl font-semibold">
-              {title}
-            </Dialog.Title>
-            {headline}
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-scrim" />
+        <Dialog.Content
+          aria-describedby={undefined}
+          onCloseAutoFocus={onCloseAutoFocus}
+          className="fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-card-line bg-surface shadow-overlay outline-none sm:w-[min(920px,92vw)]"
+        >
+          <div className="flex items-start justify-between gap-3 border-b border-card-line px-4 py-3">
+            <div className="flex min-w-0 flex-col gap-1">
+              <Dialog.Title className="min-w-0 break-all text-3xl font-semibold">
+                {title}
+              </Dialog.Title>
+              {headline}
+            </div>
+            <Dialog.Close asChild>
+              <IconButton variant="ghost" color="gray" size="2" aria-label={`关闭 ${title}`}>
+                <Cross2Icon />
+              </IconButton>
+            </Dialog.Close>
           </div>
-          <Dialog.Close asChild>
-            <IconButton variant="ghost" color="gray" size="2" aria-label="关闭侧滑">
-              <Cross2Icon />
-            </IconButton>
-          </Dialog.Close>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
-          {children}
-        </div>
-      </Dialog.Content>
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
+            {children}
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
     </Dialog.Root>
   );
 }
@@ -473,12 +476,15 @@ function StageDrawer({
  */
 function FindingDrawer({
   scope,
+  latestRunId,
   findingId,
   canDispose,
   onClose,
   onCloseAutoFocus,
 }: {
   scope: StageScope;
+  /** 这个阶段最新一轮 Review Run;一轮都还没跑过时为 null,那时也不会有 Finding。 */
+  latestRunId: number | null;
   findingId: number;
   canDispose: boolean;
   onClose: () => void;
@@ -508,7 +514,7 @@ function FindingDrawer({
           <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
           <Callout.Text>{(summary.error as Error).message}</Callout.Text>
         </Callout.Root>
-      ) : finding === undefined ? (
+      ) : finding === undefined || latestRunId === null ? (
         <EmptyState
           title="这条 Finding 不在这个阶段的当前状态里"
           titleAs="h2"
@@ -516,7 +522,7 @@ function FindingDrawer({
         />
       ) : (
         <FilePatch
-          runId={finding.lastRunId}
+          runId={latestRunId}
           path={finding.file}
           findings={sameFile}
           canDispose={canDispose}
@@ -529,7 +535,8 @@ function FindingDrawer({
 
 /**
  * 一轮的侧滑:这一轮的审查轨迹,运行中的实时刷新。头部是它的结论、commit、触发来源、
- * 开跑时刻与耗时;末尾留一条去 pull request 看原版的出口。
+ * 开跑时刻与耗时,下面是失败模型的原因与这一轮的 token 用量;末尾留一条去 pull request
+ * 看原版的出口。
  */
 function RoundDrawer({
   runId,
@@ -574,6 +581,24 @@ function RoundDrawer({
 
       {run.data === undefined ? null : (
         <div className="flex flex-col gap-3">
+          {/* 失败原因决定要不要重跑(区域封禁重跑也没用,超时重跑就好),所以整段摊开。 */}
+          {run.data.run.models
+            .filter((entry) => entry.failure !== null)
+            .map((entry) => (
+              <Callout.Root key={entry.model} role="alert" color="red" size="1">
+                <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+                <Callout.Text>
+                  <span className="break-all font-mono">{entry.model}</span> 这一轮失败：{entry.failure}
+                </Callout.Text>
+              </Callout.Root>
+            ))}
+          {/* 这一轮的 token 用量:运行诊断信息,不折算金额(issue #188)。 */}
+          {run.data.run.usage === undefined ? null : (
+            <p className="text-sm text-text-muted tabular-nums">
+              用量 输入 {run.data.run.usage.inputTokens.toLocaleString("zh-CN")} · 输出{" "}
+              {run.data.run.usage.outputTokens.toLocaleString("zh-CN")} tokens
+            </p>
+          )}
           <RunTrace run={run.data.run} />
           {pullUrl === null ? null : (
             <div>

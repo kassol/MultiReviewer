@@ -263,7 +263,7 @@ export function StageSummaryView({
             search={(prev: Record<string, unknown>) => ({
               ...prev,
               finding: finding.id,
-              round: undefined,
+              trace: undefined,
             })}
             replace
             className="block px-4 pt-2.5 outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40"

@@ -343,6 +343,7 @@
   --color-card-line: var(--v8-border-card);
   --color-chrome-line: var(--v8-border-chrome);
   --color-overlay-line: var(--v8-border-overlay);
+  --color-scrim: var(--v8-scrim);
   --color-fill: var(--v8-fill);
   --color-accent-tint: var(--v8-accent-tint);
   --color-accent-tint-strong: var(--v8-accent-tint-strong);

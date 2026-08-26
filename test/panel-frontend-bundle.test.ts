@@ -28,8 +28,7 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
 
     assert.match(javascript, /评审记录列表/);
     // 导航收敛成三层之后(issue #189),阶段页只有一种视图:轮次视图与它的两个入口
-    // 一起没了,页头名词只剩「评审记录」。
-    assert.match(javascript, /评审记录/);
+    // 一起没了。
     for (const gone of ["回到阶段汇总", "去最新一轮 diff", "本轮 diff"]) {
       assert.doesNotMatch(javascript, new RegExp(gone), gone);
     }

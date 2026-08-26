@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fragment, useEffect, useRef, useState } from "react";
 
-import { CheckCircledIcon, CrossCircledIcon, ExternalLinkIcon } from "@radix-ui/react-icons";
-import { Badge, Callout, IconButton, Skeleton, TextField, Tooltip } from "@radix-ui/themes";
+import { CheckCircledIcon, ExternalLinkIcon } from "@radix-ui/react-icons";
+import { Badge, IconButton, Skeleton, TextField, Tooltip } from "@radix-ui/themes";
 
 import { Button } from "@/components/theme-button";
 import { localClock, localDay } from "@/lib/time";
@@ -95,15 +95,6 @@ function findingDisposed(finding: RunFinding): boolean {
 }
 
 /**
- * 已延续:这处代码已改写,同一条 Finding 由后续轮次在新位置那条承接(CONTEXT.md
- * 已延续)。它既不是处置也不是待处置,两个筛选都不收它,行内也不给处置动作——要处置的
- * 是新位置那一条。
- */
-function findingContinued(finding: RunFinding): boolean {
-  return finding.disposition === "continued";
-}
-
-/**
  * 一条 Finding 的卡片:正文、严重度、类别、文件与行、跳到 Forge 看原版的链接,加上
  * 行内处置。它挂在 diff 的对应行下面,fallback 那一批则单独成段;阶段汇总把同一张
  * 卡片摆在自己的列表里——同一条 Finding 在两处显示成同一个样子,处置也是同一个动作。
@@ -124,7 +115,6 @@ export function FindingRow({
   // 人工与自动两档都是已处置:划掉正文、给撤回动作。区别只在下面那行署名上。
   const autoDisposed = finding.disposition === "fixed";
   const resolved = findingDisposed(finding);
-  const continued = findingContinued(finding);
   const dispose = useMutation({
     mutationFn: disposeRequest,
     onSuccess: () => {
@@ -178,21 +168,12 @@ export function FindingRow({
 
       <p
         className={`text-base leading-relaxed break-words ${
-          resolved
-            ? "text-text-muted line-through"
-            : continued
-              ? "text-text-muted"
-              : "text-text-secondary"
+          resolved ? "text-text-muted line-through" : "text-text-secondary"
         }`}
       >
         {finding.description}
       </p>
 
-      {continued ? (
-        <p className="text-sm text-text-muted">
-          已延续 · 这处代码已改写，同一条 Finding 由后面的轮次在新位置接着跟
-        </p>
-      ) : null}
       {finding.continuedFrom === null ? null : (
         <p className="text-sm text-text-muted">
           <a
@@ -231,9 +212,8 @@ export function FindingRow({
         </p>
       )}
 
-      {/* 正文里的 fallback 没有行级评论承载,Forge 上无从 resolve,面板也就不给动作;
-          已延续的那条要处置的是新位置那一行,这里同样不给。 */}
-      {continued ? null : finding.commentId === null ? (
+      {/* 正文里的 fallback 没有行级评论承载,Forge 上无从 resolve,面板也就不给动作。 */}
+      {finding.commentId === null ? (
         <p className="text-sm text-text-muted">这条只在 review 正文里，没有可处置的评论。</p>
       ) : canDispose ? (
         <div className="flex flex-col gap-2">
@@ -384,11 +364,10 @@ export function FilePatch({
   }
   if (patch.isError) {
     return (
-      <div className="flex flex-col gap-3">
-        <Callout.Root role="alert" color="red" size="1">
-          <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-          <Callout.Text>{(patch.error as Error).message}</Callout.Text>
-        </Callout.Root>
+      <div className="overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control">
+        <p className="bg-warning-tint px-3 py-1.5 text-sm text-warning">
+          取不到这一轮的 diff，下面这些 Finding 没有可锚的行。{(patch.error as Error).message}
+        </p>
         {findings.map((finding) => (
           <FindingRow key={finding.id} finding={finding} canDispose={canDispose} />
         ))}

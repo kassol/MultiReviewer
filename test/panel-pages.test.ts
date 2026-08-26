@@ -91,7 +91,7 @@ test("深层路由刷新不白屏:任意前缀下路径都回同一份注入过�
     `/${PREFIX}/runs/deep/route`,
     `/${PREFIX}/runs?owner=acme&repo=widgets&status=active`,
     `/${PREFIX}/stages/${encodeURIComponent("pr:acme/widgets/7")}?finding=42`,
-    `/${PREFIX}/stages/${encodeURIComponent("pr:acme/widgets/7")}?round=3`,
+    `/${PREFIX}/stages/${encodeURIComponent("pr:acme/widgets/7")}?trace=3`,
   ]) {
     const response = await h.get(path);
     assert.equal(response.status, 200, path);
