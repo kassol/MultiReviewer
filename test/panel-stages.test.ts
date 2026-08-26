@@ -35,6 +35,7 @@ type StageRow = {
   status: "active" | "closed";
   latestRunId: number | null;
   latestRunAt: string | null;
+  latestRunFinishedAt: string | null;
   counts: { pending: number; resolved: number; fixed: number };
 };
 
@@ -266,6 +267,35 @@ test("阶段列表:pull request 关闭后已结束,重开回到进行中且仍�
   assert.equal(reopened.stages.length, 1);
   assert.equal(reopened.stages[0]!.stageId, stageId);
   assert.equal(reopened.stages[0]!.status, "active");
+});
+
+test("阶段列表:已关闭 pull request 手动重跑后仍是已结束,重开后回到进行中", async () => {
+  const h = await startReadyPanelHarness(cleanups);
+  assert.equal(
+    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
+    201,
+  );
+  assert.equal((await h.deliverViaHook("delivery-head")).status, 200);
+  await h.settledAtLeast(1);
+
+  assert.equal((await deliver(h, "closed", "delivery-head")).status, 200);
+  await h.settledAtLeast(2);
+  assert.equal((await stages(h)).stages[0]!.status, "closed");
+
+  const rerun = await h.api("POST", "/rerun", {
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    pullNumber: HARNESS_PR.number,
+  });
+  assert.equal(rerun.status, 202);
+  await h.settledAtLeast(3);
+
+  const rerunFinished = (await stages(h)).stages[0]!;
+  assert.equal(rerunFinished.status, "closed");
+  assert.notEqual(rerunFinished.latestRunFinishedAt, null);
+
+  assert.equal((await deliver(h, "reopened", "delivery-head")).status, 200);
+  assert.equal((await stages(h)).stages[0]!.status, "active");
 });
 
 test("阶段列表:同一范围审查推进两次只占一行,审查完成后已结束", async () => {

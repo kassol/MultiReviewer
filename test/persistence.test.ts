@@ -62,6 +62,40 @@ function query(dbPath: string, sql: string): Record<string, unknown>[] {
   }
 }
 
+test("打开数据库修复已关闭 PR 的空状态新轮次,重开后的空状态保持不变", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  openStore(db.path).close();
+
+  const seeded = new DatabaseSync(db.path);
+  const insert = seeded.prepare(
+    `INSERT INTO review_run
+       (owner, repo, pull_number, head_sha, pr_state, started_at,
+        changed_files, changed_lines, batch_count)
+     VALUES ('acme', 'widgets', 7, ?, ?, ?, 1, 1, 1)`,
+  );
+  insert.run("sha-closed", "closed", "2026-08-01T00:00:00.000Z");
+  insert.run("sha-rerun", null, "2026-08-02T00:00:00.000Z");
+  seeded.close();
+
+  const repaired = openStore(db.path);
+  assert.equal(repaired.listStages({ offset: 0, limit: 30 })[0]?.status, "closed");
+  assert.deepEqual(
+    query(db.path, "SELECT pr_state FROM review_run ORDER BY id").map((row) => row["pr_state"]),
+    ["closed", "closed"],
+  );
+
+  repaired.markPullRequestState("acme", "widgets", 7, null);
+  repaired.close();
+  const reopened = openStore(db.path);
+  assert.equal(reopened.listStages({ offset: 0, limit: 30 })[0]?.status, "active");
+  assert.deepEqual(
+    query(db.path, "SELECT pr_state FROM review_run ORDER BY id").map((row) => row["pr_state"]),
+    [null, null],
+  );
+  reopened.close();
+});
+
 test("历史审查策略进入独立初始版本，写一项只推进该项版本", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);

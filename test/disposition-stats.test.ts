@@ -225,6 +225,35 @@ const CASES: Case[] = [
     ],
   },
   {
+    name: "已关闭阶段新增 Review Run 继承关闭状态,新 Finding 进入关闭档",
+    seed: (store) => {
+      seedRun(store, { pr: 7, startedAt: T1, findings: [] });
+      store.markPullRequestState("acme", "widgets", 7, "closed");
+      seedRun(store, {
+        pr: 7,
+        startedAt: T2,
+        findings: [finding({ fingerprint: "fp-after-close" })],
+      });
+      assert.equal(
+        store.listStages({ offset: 0, limit: 30 })[0]?.status,
+        "closed",
+        "新一轮必须保留阶段的关闭状态",
+      );
+    },
+    expected: [
+      {
+        owner: "acme",
+        repo: "widgets",
+        category: "bug",
+        resolved: 0,
+        fixed: 0,
+        unresolved: 0,
+        unknownClosed: 1,
+        unknownOpen: 0,
+      },
+    ],
+  },
+  {
     name: "时间窗按同一处 Finding 首次报出那轮归属,再次报出不改归属",
     seed: (store) => {
       // fp-old 首见于窗外,窗内再次报出也不算进来;fp-new 首见于窗内。

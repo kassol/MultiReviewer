@@ -2047,6 +2047,29 @@ function dropCostColumns(db: DatabaseSync): void {
   }
 }
 
+/**
+ * 修复手动重跑曾打破的 PR 阶段状态不变量:关闭事件把同一 PR 的全部轮次标为 closed,
+ * 但旧版 `startRun` 新增的行没有继承该值。组内仍有 closed 即表示之后没有收到 reopened;
+ * reopened 会把该 PR 的全部行清为 NULL,因此不会被这一步改回关闭。
+ */
+function repairPullRequestStates(db: DatabaseSync): void {
+  db.prepare(
+    `UPDATE review_run AS current
+        SET pr_state = 'closed'
+      WHERE current.range_review_id IS NULL
+        AND current.pr_state IS NULL
+        AND EXISTS (
+          SELECT 1
+            FROM review_run AS historical
+           WHERE historical.owner = current.owner
+             AND historical.repo = current.repo
+             AND historical.pull_number = current.pull_number
+             AND historical.range_review_id IS NULL
+             AND historical.pr_state = 'closed'
+        )`,
+  ).run();
+}
+
 /** 打开当前 schema；schema-v0 数据库必须先经过模型服务迁移器。 */
 export function openStore(dbPath: string): Store {
   const db = new DatabaseSync(dbPath, { timeout: BUSY_TIMEOUT_MS });
@@ -2091,6 +2114,7 @@ export function openStore(dbPath: string): Store {
   }
   dropCostColumns(db);
   dropRetiredPanelPermissions(db);
+  repairPullRequestStates(db);
 
   // 系统管理员 bootstrap 与普通创建共用同一条用户写入语义。
   const writePanelUser = (record: Omit<PanelUserRecord, "lastLoginAt">): void => {
@@ -3386,12 +3410,26 @@ export function openStore(dbPath: string): Store {
     startRun(meta) {
       db.exec("BEGIN");
       try {
+        const rangeReviewId = meta.rangeReviewId ?? null;
+        // PR 状态属于整个审查阶段。closed/reopened 会改写该 PR 的全部历史行;新轮次在
+        // 同一事务里继承当前值,手动重跑已关闭 PR 时不能凭一行 NULL 把阶段改回进行中。
+        const pullRequestState =
+          rangeReviewId === null &&
+          db.prepare(
+            `SELECT 1
+               FROM review_run
+              WHERE owner = ? AND repo = ? AND pull_number = ?
+                AND range_review_id IS NULL AND pr_state = 'closed'
+              LIMIT 1`,
+          ).get(meta.owner, meta.repo, meta.pullNumber) !== undefined
+            ? "closed"
+            : null;
         const result = db
           .prepare(
             `INSERT INTO review_run
-               (owner, repo, pull_number, head_sha, title, range_review_id, triggered_by,
-                started_at, changed_files, changed_lines, batch_count)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               (owner, repo, pull_number, head_sha, title, range_review_id, pr_state,
+                triggered_by, started_at, changed_files, changed_lines, batch_count)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             meta.owner,
@@ -3399,7 +3437,8 @@ export function openStore(dbPath: string): Store {
             meta.pullNumber,
             meta.headSha,
             meta.title ?? null,
-            meta.rangeReviewId ?? null,
+            rangeReviewId,
+            pullRequestState,
             meta.triggeredBy ?? null,
             meta.startedAt,
             meta.changedFiles,
