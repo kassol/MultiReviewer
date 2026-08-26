@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
-import { openStore, type RecordedUsage } from "../src/review/store.ts";
+import { openStore } from "../src/review/store.ts";
 import type { ReviewerUsage } from "../src/review/finding.ts";
 import {
   HARNESS_PR,
@@ -35,9 +35,9 @@ type RunRow = {
     model: string;
     findings: number;
     failure: string | null;
-    usage?: RecordedUsage;
+    usage?: ReviewerUsage;
   }[];
-  usage?: RecordedUsage;
+  usage?: ReviewerUsage;
   missedVerdicts: number;
   resolved: number;
   total: number;

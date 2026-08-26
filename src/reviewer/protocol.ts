@@ -8,9 +8,6 @@ import type {
 import type { RawFinding } from "./normalize.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 
-/** 子进程回传的 token 用量,与产品侧同一形状。 */
-export type WorkerUsage = ReviewerUsage;
-
 /** 主进程交给 Reviewer 子进程的任务。 */
 export type ReviewerRequest = {
   /** 本轮固定的完整运行模型；不含凭据。 */
@@ -41,5 +38,5 @@ export type WorkerMessage =
       /** 会话内可见的失败原因,来自 errorMessage 或最后一条消息的 stopReason。 */
       failure?: string;
       /** Pi 会话统计出的用量。会话没建起来时取不到。 */
-      usage?: WorkerUsage;
+      usage?: ReviewerUsage;
     };

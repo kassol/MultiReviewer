@@ -944,17 +944,8 @@ export type RepoSummary = {
   worktree: WorktreeStatus;
 };
 
-/** 面板读取的持久化用量,只有 token 五列。 */
-export type RecordedUsage = {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  totalTokens: number;
-};
-
 /** 一个时间窗里的用量聚合:落了用量的 Review Run 数,加它们的 token 之和。 */
-export type UsageStats = RecordedUsage & { runs: number };
+export type UsageStats = ReviewerUsage & { runs: number };
 
 /**
  * 时间流里的一条 Review Run。`models` 一行一个参与本轮的模型,按模型名排序:行的
@@ -980,10 +971,10 @@ export type RunListItem = {
     model: string;
     findings: number;
     failure: string | null;
-    usage?: RecordedUsage;
+    usage?: ReviewerUsage;
   }[];
   /** 本轮没有任何会话统计时省略，与失败/未运行的既有缺失语义一致。 */
-  usage?: RecordedUsage;
+  usage?: ReviewerUsage;
   /** 本轮固定的模型服务版本与运行模型，不含凭据。 */
   reviewerPins: ReviewRunReviewerPin[];
   /**
@@ -1633,7 +1624,7 @@ function usageColumns(usage: ReviewerUsage | undefined): (number | null)[] {
   ];
 }
 
-function recordedUsage(row: Record<string, unknown>): RecordedUsage | undefined {
+function recordedUsage(row: Record<string, unknown>): ReviewerUsage | undefined {
   if (row["total_tokens"] === null || row["total_tokens"] === undefined) return undefined;
   return {
     inputTokens: Number(row["input_tokens"] ?? 0),

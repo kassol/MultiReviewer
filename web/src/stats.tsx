@@ -13,6 +13,7 @@ import { PageHeader } from "@/components/page-header";
 import { cn } from "@/lib/utils";
 
 import { api, fetchJson } from "./api.ts";
+import type { UsageSummary } from "./runs.tsx";
 
 /** 处置率矩阵的一格:仓库 × category(ADR 0015)。 */
 export type Cell = {
@@ -38,21 +39,14 @@ export type ModelParticipation = {
 };
 
 /** 时间窗里的用量:落了用量的 Review Run 数与它们的 token 之和。一轮都没有时 null。 */
-type UsageSummary = {
-  runs: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  totalTokens: number;
-};
+type UsageStats = UsageSummary & { runs: number };
 
 type StatsResponse = {
   from: string;
   to: string;
   cells: Cell[];
   models: ModelParticipation[];
-  usage: UsageSummary | null;
+  usage: UsageStats | null;
   database: { fileBytes: number; tables: { name: string; rows: number }[] };
 };
 

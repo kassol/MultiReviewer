@@ -26,6 +26,7 @@ export type ModelServiceMigrationSummary = {
   migrationRetentions: number;
   globalCombinationModels: number;
   repositoryOverrides: number;
+  /** 旧 model_row 里带着新 schema 仍保留的事实(上下文窗口 / 最大输出)却被丢掉的行数;单价事实已随 issue #188 消失,不计。 */
   discardedLegacyModelFactRows: number;
 };
 

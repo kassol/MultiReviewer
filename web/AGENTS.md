@@ -115,7 +115,7 @@
 
 ## 变更日志
 
-- 2026-08-26: 落地 issue #188 的面板部分。`src/usage-cost.ts` 删除(`costPresentation` 与 `CostPresentation` 没有第二个用途),`UsageSummary` 改由 `runs.tsx` 导出、只有 token 五列。`stats.tsx` 页顶的卡从「时间范围费用」换成「时间范围 tokens」:总 token 走 6xl 主读数,四个分项在它下面一行,右侧是运行次数(`/stats` 的 `usage.runs`)。`stage-detail.tsx` 的轮次末尾删掉「成本」与它的警告句,只留 token 一行。`model-services.ts` 的 `ModelCost` 与 discovery / runtime 两处的 `cost` 字段、`credentials.tsx` 的 `CostValue` 与 `sameCost`、`model-composer.tsx` 模型行上的单价与「费用未记账」全部删除;模型行右侧只剩上下文。
+- 2026-08-26: 落地 issue #188 的面板部分。`src/usage-cost.ts` 删除(`costPresentation` 与 `CostPresentation` 没有第二个用途),`UsageSummary` 改由 `runs.tsx` 导出、只有 token 五列。`stats.tsx` 页顶的卡从「时间范围费用」换成「时间范围 tokens」:总 token 走 6xl 主读数,四个分项在它下面一行,右侧是运行次数(`/stats` 的 `usage.runs`)。`stage-detail.tsx` 的轮次末尾删掉「成本」与它的警告句,只留 token 一行。`model-services.ts` 的 `ModelCost` 与 discovery / runtime 两处的 `cost` 字段、`credentials.tsx` 的 `CostValue` 与 `sameCost`、`model-composer.tsx` 模型行上的单价与「费用未记账」全部删除;模型行右侧只剩上下文。评审复核后 `stats.tsx` 不再自带一份同名类型,改为 `UsageStats = UsageSummary & { runs }`,`UsageSummary` 从 `runs.tsx` 引入。
 - 2026-08-26: 落地 issue #184 的面板部分。`RepoRow` 多一个 `worktree`(`state` / `failure` / `checkedAt`),仓库详情头部加工作副本徽章,失败与未准备两档给出原因与「准备工作副本」按钮,`repos` 查询在有仓库准备中时每 5 秒续查。其余区块一行没动。
 - 2026-08-26: 落地 issue #185 的面板部分。`range-review-actions.tsx` 里 `RangeReview` 契约类型的注释改指它实际的来源——`GET <前缀>/api/stages/{stageId}` 的 `rangeReview` 那一格(服务端把 `GET /range-reviews` 与 `GET /range-reviews/{id}` 删了)。本文档里 `run-diff.tsx` 处置成功与 `run-trace.tsx` 轨迹结束时的失效清单还写着 `range-review` 那一份查询,代码在 issue #180 就已经去掉,文字跟着改成现状。组件代码一行未动。
 
