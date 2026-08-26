@@ -297,6 +297,13 @@ CREATE TABLE IF NOT EXISTS panel_session (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS panel_session_by_user ON panel_session(username);
+
+-- 仓库分配:一个用户能看见并操作的仓库集合。系统管理员不受限,不在这里留行。
+CREATE TABLE IF NOT EXISTS panel_user_repo (
+  username TEXT NOT NULL REFERENCES panel_user(username),
+  repo_id INTEGER NOT NULL REFERENCES repo(id),
+  PRIMARY KEY (username, repo_id)
+);
 `;
 
 
@@ -1256,7 +1263,10 @@ export type Store = {
     record: { name: string; permissions: readonly PanelPermission[] },
   ): PanelRoleRecord | undefined;
   removePanelRole(id: number): { removed: boolean; usernames: string[] };
-  listPanelUsers(): PanelUserRecord[];
+  /** 每行带上这个用户的仓库分配;系统管理员不受限,它那一行照样只回落库的行。 */
+  listPanelUsers(): (PanelUserRecord & { repoIds: number[] })[];
+  /** 整组覆盖一个用户的仓库分配。空数组即清空,重复的 repo id 只落一行。 */
+  setPanelUserRepos(username: string, repoIds: readonly number[]): void;
   updatePanelUser(
     username: string,
     record: { displayName: string | null; roleId: number | null; isSystemAdmin: boolean },
@@ -1301,7 +1311,7 @@ export type Store = {
   getRepo(repoId: number): RepoRecord | undefined;
   /** 改写模型覆盖；与当前模型服务原子校验，状态变化返回 false。null 即跟随全局。 */
   setRepoReviewers(repoId: number, reviewersJson: string | null): boolean;
-  /** 摘掉注册表行与它的 Key。评审记录一行不动:模型选型的历史不因下线而断。 */
+  /** 摘掉注册表行、它的 Key 与它的仓库分配。评审记录一行不动:模型选型的历史不因下线而断。 */
   removeRepo(repoId: number): void;
   /** 记下工作副本的准备状态(issue #184)。仓库已被移除时没有行可写,静默通过。 */
   setRepoWorktree(repoId: number, status: WorktreeStatus): void;
@@ -2232,6 +2242,15 @@ export function openStore(dbPath: string): Store {
     },
 
     listPanelUsers() {
+      const assigned = new Map<string, number[]>();
+      for (const row of db
+        .prepare("SELECT username, repo_id FROM panel_user_repo ORDER BY repo_id")
+        .all()) {
+        const username = String(row["username"]);
+        const repoIds = assigned.get(username);
+        if (repoIds === undefined) assigned.set(username, [Number(row["repo_id"])]);
+        else repoIds.push(Number(row["repo_id"]));
+      }
       return db
         .prepare(
           `SELECT username, display_name, password_hash, must_change_password, created_at,
@@ -2247,7 +2266,23 @@ export function openStore(dbPath: string): Store {
           lastLoginAt: row["last_login_at"] === null ? null : String(row["last_login_at"]),
           isSystemAdmin: Number(row["is_system_admin"]) === 1,
           roleId: row["role_id"] === null ? null : Number(row["role_id"]),
+          repoIds: assigned.get(String(row["username"])) ?? [],
         }));
+    },
+
+    setPanelUserRepos(username, repoIds) {
+      db.exec("BEGIN");
+      try {
+        db.prepare("DELETE FROM panel_user_repo WHERE username = ?").run(username);
+        const insert = db.prepare(
+          "INSERT OR IGNORE INTO panel_user_repo (username, repo_id) VALUES (?, ?)",
+        );
+        for (const repoId of repoIds) insert.run(username, repoId);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     },
 
     updatePanelUser(username, record) {
@@ -2402,6 +2437,7 @@ export function openStore(dbPath: string): Store {
       db.exec("BEGIN");
       try {
         db.prepare("DELETE FROM panel_session WHERE username = ?").run(username);
+        db.prepare("DELETE FROM panel_user_repo WHERE username = ?").run(username);
         db.prepare("DELETE FROM panel_user WHERE username = ?").run(username);
         db.exec("COMMIT");
       } catch (error) {
@@ -2509,6 +2545,7 @@ export function openStore(dbPath: string): Store {
       db.exec("BEGIN");
       try {
         db.prepare("DELETE FROM repo_key WHERE repo_id = ?").run(repoId);
+        db.prepare("DELETE FROM panel_user_repo WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM repo WHERE id = ?").run(repoId);
         db.exec("COMMIT");
       } catch (error) {

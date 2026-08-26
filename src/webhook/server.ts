@@ -1126,13 +1126,29 @@ function panelSession(req: IncomingMessage, deps: WebhookServerDeps) {
         ? []
         : (store.listPanelRoles().find((role) => role.id === session.roleId)?.permissions ?? []);
     const permissions = effectivePanelPermissions(storedPermissions);
-    const systemAdmins = store
-      .listPanelUsers()
+    const users = store.listPanelUsers();
+    const systemAdmins = users
       .filter((user) => user.isSystemAdmin)
       .map((user) => user.displayName ?? user.username);
-    return { ...session, permissions, systemAdmins, hash, raw, renewed };
+    // 仓库分配挂在用户上;系统管理员不受限,对外就是 null。
+    const repoIds = session.isSystemAdmin
+      ? null
+      : (users.find((user) => user.username === session.username)?.repoIds ?? []);
+    return { ...session, permissions, systemAdmins, repoIds, hash, raw, renewed };
   });
 }
+/**
+ * 请求体里的仓库分配。缺省与 null 都表示这次不改,数组是整组覆盖(空数组即清空);
+ * 形状不对回 `"invalid"`,由调用方翻成 400。
+ */
+function parseRepoIds(value: unknown): number[] | null | "invalid" {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.some((repoId) => !Number.isSafeInteger(repoId))) {
+    return "invalid";
+  }
+  return value as number[];
+}
+
 async function handlePanelUsers(req: IncomingMessage, res: ServerResponse, deps: WebhookServerDeps) {
   if (req.method === "GET") {
     return sendJson(res, 200, {
@@ -1143,7 +1159,12 @@ async function handlePanelUsers(req: IncomingMessage, res: ServerResponse, deps:
   }
   const body = await readBody(req, res);
   if (body === undefined) return;
-  const value = safeParse(body) as { username?: unknown; password?: unknown; displayName?: unknown } | null;
+  const value = safeParse(body) as {
+    username?: unknown;
+    password?: unknown;
+    displayName?: unknown;
+    repoIds?: unknown;
+  } | null;
   if (
     value === null ||
     typeof value.username !== "string" ||
@@ -1151,6 +1172,8 @@ async function handlePanelUsers(req: IncomingMessage, res: ServerResponse, deps:
     !PANEL_USERNAME.test(value.username) ||
     (value.displayName !== undefined && typeof value.displayName !== "string")
   ) return sendJson(res, 400, { error: "用户名或密码形状不对" });
+  const repoIds = parseRepoIds(value.repoIds);
+  if (repoIds === "invalid") return sendJson(res, 400, { error: "repoIds 要是整型数组" });
   const displayName = value.displayName === undefined ? null : value.displayName;
   const password = value.password;
   const username = value.username;
@@ -1158,7 +1181,7 @@ async function handlePanelUsers(req: IncomingMessage, res: ServerResponse, deps:
   if (existsInHistory) return sendJson(res, 409, { error: "这个用户名在评审记录里出现过,换一个" });
   const passwordHash = await hashPassword(password);
   try {
-    withStore(deps.dbPath, (store) =>
+    withStore(deps.dbPath, (store) => {
       store.createPanelUser({
         username,
         displayName,
@@ -1167,8 +1190,9 @@ async function handlePanelUsers(req: IncomingMessage, res: ServerResponse, deps:
         createdAt: new Date((deps.now ?? Date.now)()).toISOString(),
         isSystemAdmin: false,
         roleId: null,
-      }),
-    );
+      });
+      if (repoIds !== null) store.setPanelUserRepos(username, repoIds);
+    });
   } catch {
     return sendJson(res, 409, { error: "用户名已存在" });
   }
@@ -1200,6 +1224,7 @@ async function handlePanelUser(
     displayName?: unknown;
     roleId?: unknown;
     isSystemAdmin?: unknown;
+    repoIds?: unknown;
   } | null;
   if (
     value === null ||
@@ -1207,12 +1232,16 @@ async function handlePanelUser(
     (value.roleId !== null && typeof value.roleId !== "number") ||
     typeof value.isSystemAdmin !== "boolean"
   ) return sendJson(res, 400, { error: "用户更新形状不对" });
+  const repoIds = parseRepoIds(value.repoIds);
+  if (repoIds === "invalid") return sendJson(res, 400, { error: "repoIds 要是整型数组" });
   const displayName = value.displayName;
   const roleId = value.roleId;
   const isSystemAdmin = value.isSystemAdmin;
-  const result = withStore(deps.dbPath, (store) =>
-    store.updatePanelUser(username, { displayName, roleId, isSystemAdmin }),
-  );
+  const result = withStore(deps.dbPath, (store) => {
+    const outcome = store.updatePanelUser(username, { displayName, roleId, isSystemAdmin });
+    if (outcome === "updated" && repoIds !== null) store.setPanelUserRepos(username, repoIds);
+    return outcome;
+  });
   if (result === "missing") return sendJson(res, 404, { error: "用户不存在" });
   if (result === "last-system-admin") return sendJson(res, 409, { error: "不能降级最后一个系统管理员" });
   return send(res, 204);
@@ -1332,6 +1361,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
         permissions: session.permissions,
         isSystemAdmin: session.isSystemAdmin,
         systemAdmins: session.systemAdmins,
+        repoIds: session.repoIds,
         mustChangePassword: session.mustChangePassword,
         // Forge 的 web 基址。处置只发生在 Forge 的 pull request 上,面板自己做不了;
         // 不给出这个值,面板就只能报出「还有多少条没处置」,而人点不过去。

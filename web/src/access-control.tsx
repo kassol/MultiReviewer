@@ -34,6 +34,15 @@ type User = {
   lastLoginAt: string | null;
   isSystemAdmin: boolean;
   roleId: number | null;
+  /** 仓库分配。系统管理员不受限,这一列对他没有意义。 */
+  repoIds: number[];
+};
+
+/** 仓库多选要的那几格,来自 `GET <前缀>/api/repos`。 */
+type AssignableRepo = {
+  repoId: number;
+  owner: string;
+  repo: string;
 };
 
 type PermissionInfo = {
@@ -58,6 +67,12 @@ const PERMISSION_INFO: readonly PermissionInfo[] = [
 
 const RESOURCES = ["仓库", "评审", "模型", "凭据"] as const;
 
+function toggleRepoId(repoIds: readonly number[], repoId: number): number[] {
+  return repoIds.includes(repoId)
+    ? repoIds.filter((item) => item !== repoId)
+    : [...repoIds, repoId];
+}
+
 async function responseJson<T>(response: Response): Promise<T> {
   if (!response.ok) throw new Error(await errorText(response));
   return (await response.json()) as T;
@@ -69,6 +84,8 @@ export function AccessControlPage() {
   const [createKind, setCreateKind] = useState<"user" | "role" | null>(null);
   const [confirm, setConfirm] = useState<{ kind: "reset" | "delete-user" | "delete-role"; id: string; label: string } | null>(null);
   const [resetPassword, setResetPassword] = useState("");
+  const [assign, setAssign] = useState<{ user: User; repoIds: number[] } | null>(null);
+  const assignFocus = useDialogReturnFocus(() => document.getElementById("create-user-trigger"));
   const confirmFallbackId = useRef<"create-user-trigger" | "create-role-trigger">("create-user-trigger");
   const confirmFocus = useDialogReturnFocus(() =>
     document.getElementById(confirmFallbackId.current)
@@ -84,6 +101,10 @@ export function AccessControlPage() {
     queryKey: ["roles"],
     queryFn: async () => (await fetchJson<{ roles: Role[] }>("/roles")).roles,
   });
+  const reposQuery = useQuery({
+    queryKey: ["repos"],
+    queryFn: () => fetchJson<AssignableRepo[]>("/repos"),
+  });
 
   const refresh = (): void => {
     void queryClient.invalidateQueries({ queryKey: ["users"] });
@@ -91,7 +112,7 @@ export function AccessControlPage() {
   };
 
   const createUser = useMutation({
-    mutationFn: async (input: { username: string; displayName: string; password: string }) =>
+    mutationFn: async (input: { username: string; displayName: string; password: string; repoIds: number[] }) =>
       responseJson<{ username: string }>(await api("/users", { method: "POST", body: JSON.stringify(input) })),
     onSuccess: ({ username }) => {
       setCreateKind(null);
@@ -148,6 +169,27 @@ export function AccessControlPage() {
     },
   });
 
+  const assignRepos = useMutation({
+    mutationFn: async (input: { user: User; repoIds: number[] }) => {
+      const response = await api(`/users/${encodeURIComponent(input.user.username)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          displayName: input.user.displayName,
+          roleId: input.user.roleId,
+          isSystemAdmin: false,
+          repoIds: input.repoIds,
+        }),
+      });
+      if (!response.ok) throw new Error(await errorText(response));
+    },
+    onSuccess: (_value, { user }) => {
+      setAssign(null);
+      setFeedback({ text: `${user.username} 的仓库分配已更新，无需重新登录。`, error: false });
+      refresh();
+    },
+    onError: (error: Error) => setFeedback({ text: error.message, error: true }),
+  });
+
   const updateRole = useMutation({
     mutationFn: async (input: { role: Role; permission: PanelPermission }) => {
       const permissions = input.role.permissions.includes(input.permission)
@@ -202,6 +244,7 @@ export function AccessControlPage() {
 
   const users = usersQuery.data ?? [];
   const roles = rolesQuery.data ?? [];
+  const repos = reposQuery.data ?? [];
   const adminCount = users.filter((user) => user.isSystemAdmin).length;
   const unclaimed = useMemo(() => {
     return new Set(
@@ -211,7 +254,7 @@ export function AccessControlPage() {
     );
   }, [roles]);
   const pending = usersQuery.isPending || rolesQuery.isPending;
-  const loadError = usersQuery.error ?? rolesQuery.error;
+  const loadError = usersQuery.error ?? rolesQuery.error ?? reposQuery.error;
 
   return (
     <>
@@ -252,6 +295,7 @@ export function AccessControlPage() {
                   kind="user"
                   open={createKind === "user"}
                   busy={createUser.isPending}
+                  repos={repos}
                   trigger={<Button id="create-user-trigger" variant="solid" size={{ initial: "4", sm: "2" }}><PlusIcon />新建用户</Button>}
                   onOpen={() => openCreateDialog("user")}
                   onClose={closeCreateDialog}
@@ -267,6 +311,7 @@ export function AccessControlPage() {
                       <Table.ColumnHeaderCell className="sticky left-0 z-20 bg-sunken">用户名</Table.ColumnHeaderCell>
                       <Table.ColumnHeaderCell>显示名</Table.ColumnHeaderCell>
                       <Table.ColumnHeaderCell>角色</Table.ColumnHeaderCell>
+                      <Table.ColumnHeaderCell>已分配仓库</Table.ColumnHeaderCell>
                       <Table.ColumnHeaderCell>创建</Table.ColumnHeaderCell>
                       <Table.ColumnHeaderCell>最后登录</Table.ColumnHeaderCell>
                       <Table.ColumnHeaderCell><span className="sr-only">操作</span></Table.ColumnHeaderCell>
@@ -336,6 +381,21 @@ export function AccessControlPage() {
                             </Select.Root>
                           )}
                         </Table.Cell>
+                        <Table.Cell>
+                          {user.isSystemAdmin ? (
+                            <span className="text-text-muted">全部仓库</span>
+                          ) : (
+                            <Button
+                              variant="ghost"
+                              color="gray"
+                              size={{ initial: "4", sm: "1" }}
+                              aria-label={`分配 ${user.username} 的仓库`}
+                              onClick={(event) => { setFeedback(null); assignFocus.captureTrigger(event); setAssign({ user, repoIds: user.repoIds }); }}
+                            >
+                              <span className="font-mono">{user.repoIds.length}</span> 个
+                            </Button>
+                          )}
+                        </Table.Cell>
                         <Table.Cell className="font-mono text-xs whitespace-nowrap text-text-muted">{localMinute(user.createdAt)}</Table.Cell>
                         <Table.Cell className="text-xs whitespace-nowrap text-text-muted">{user.lastLoginAt === null ? "从未" : <span className="font-mono">{localMinute(user.lastLoginAt)}</span>}</Table.Cell>
                         <Table.Cell>
@@ -361,6 +421,7 @@ export function AccessControlPage() {
                   kind="role"
                   open={createKind === "role"}
                   busy={createRole.isPending}
+                  repos={repos}
                   trigger={<Button id="create-role-trigger" variant="soft" color="gray" size={{ initial: "4", sm: "2" }}><PlusIcon />新建角色</Button>}
                   onOpen={() => openCreateDialog("role")}
                   onClose={closeCreateDialog}
@@ -449,6 +510,35 @@ export function AccessControlPage() {
           </>
         )}
       </PageBody>
+      <Dialog.Root open={assign !== null} onOpenChange={(open) => { if (!open) setAssign(null); }}>
+        <Dialog.Content onCloseAutoFocus={assignFocus.onCloseAutoFocus} maxWidth="440px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
+          <Dialog.Title size="4" mb="2">分配仓库</Dialog.Title>
+          <Dialog.Description size="2" color="gray">
+            勾选 {assign?.user.username} 能看到的仓库。系统管理员不受分配限制。
+          </Dialog.Description>
+          <div className="mt-4">
+            <RepoChecklist
+              repos={repos}
+              selected={assign?.repoIds ?? []}
+              disabled={assignRepos.isPending}
+              onToggle={(repoId) => setAssign((current) => current === null
+                ? current
+                : { ...current, repoIds: toggleRepoId(current.repoIds, repoId) })}
+            />
+          </div>
+          <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
+            <Dialog.Close><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>取消</Button></Dialog.Close>
+            <Button
+              variant="solid"
+              size={{ initial: "4", sm: "2" }}
+              disabled={assignRepos.isPending}
+              onClick={() => { if (assign !== null) assignRepos.mutate(assign); }}
+            >
+              {assignRepos.isPending ? "保存中…" : "保存"}
+            </Button>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
       <AlertDialog.Root open={confirm !== null} onOpenChange={(open) => { if (!open) { setConfirm(null); setResetPassword(""); } }}>
         <AlertDialog.Content onCloseAutoFocus={confirmFocus.onCloseAutoFocus} maxWidth="440px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
           <AlertDialog.Title size="4" mb="2">{confirm?.kind === "reset" ? "重置密码" : "确认删除"}</AlertDialog.Title>
@@ -484,17 +574,41 @@ export function AccessControlPage() {
   );
 }
 
-function CreateDialog({ kind, open, busy, trigger, onOpen, onClose, onUser, onRole }: { kind: "user" | "role"; open: boolean; busy: boolean; trigger: ReactNode; onOpen: () => void; onClose: () => void; onUser: (input: { username: string; displayName: string; password: string }) => void; onRole: (name: string) => void }) {
+/** 仓库多选。分配的是仓库注册表里的全部仓库,勾了哪些就是这个人能看见的。 */
+function RepoChecklist({ repos, selected, disabled, onToggle }: { repos: readonly AssignableRepo[]; selected: readonly number[]; disabled: boolean; onToggle: (repoId: number) => void }) {
+  if (repos.length === 0) {
+    return <Text as="p" size="2" color="gray">还没有注册任何仓库，注册后才能分配。</Text>;
+  }
+  return (
+    <div className="flex max-h-56 flex-col gap-0.5 overflow-y-auto overscroll-contain rounded-lg border border-line p-1.5">
+      {repos.map((repo) => (
+        <Text as="label" key={repo.repoId} size="2" className="flex min-h-9 cursor-pointer items-center gap-2 rounded-sm px-2 max-sm:min-h-11 hover:bg-sunken has-disabled:cursor-not-allowed has-disabled:opacity-70">
+          <Checkbox
+            size="2"
+            checked={selected.includes(repo.repoId)}
+            disabled={disabled}
+            onCheckedChange={() => onToggle(repo.repoId)}
+          />
+          <span className="min-w-0 truncate">{repo.owner}/{repo.repo}</span>
+        </Text>
+      ))}
+    </div>
+  );
+}
+
+function CreateDialog({ kind, open, busy, repos, trigger, onOpen, onClose, onUser, onRole }: { kind: "user" | "role"; open: boolean; busy: boolean; repos: readonly AssignableRepo[]; trigger: ReactNode; onOpen: () => void; onClose: () => void; onUser: (input: { username: string; displayName: string; password: string; repoIds: number[] }) => void; onRole: (name: string) => void }) {
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
+  const [repoIds, setRepoIds] = useState<number[]>([]);
   const [name, setName] = useState("");
-  const submit = (event: FormEvent): void => { event.preventDefault(); if (kind === "user") onUser({ username, displayName, password }); else if (kind === "role") onRole(name); };
+  const submit = (event: FormEvent): void => { event.preventDefault(); if (kind === "user") onUser({ username, displayName, password, repoIds }); else if (kind === "role") onRole(name); };
   useEffect(() => {
     if (open) return;
     setUsername("");
     setDisplayName("");
     setPassword("");
+    setRepoIds([]);
     setName("");
   }, [open]);
 
@@ -520,6 +634,15 @@ function CreateDialog({ kind, open, busy, trigger, onOpen, onClose, onUser, onRo
               <div className="flex flex-col gap-1.5">
                 <Text as="label" htmlFor="new-password" size="2" weight="medium">临时密码</Text>
                 <TextField.Root id="new-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Text as="span" size="2" weight="medium">分配仓库</Text>
+                <RepoChecklist
+                  repos={repos}
+                  selected={repoIds}
+                  disabled={busy}
+                  onToggle={(repoId) => setRepoIds((current) => toggleRepoId(current, repoId))}
+                />
               </div>
             </div>
           ) : (

@@ -42,6 +42,8 @@ export type PanelSession = {
   isSystemAdmin: boolean;
   mustChangePassword: boolean;
   systemAdmins: string[];
+  /** 仓库分配:这个账号能看见的仓库 id。系统管理员不受限,是 null。 */
+  repoIds: number[] | null;
   /**
    * Forge 的 web 基址,没有配 Gitea 时是 null。处置 Finding 只发生在 Forge 的
    * pull request 上,面板给出的每一处「还有多少条没处置」都要能凭它点过去。

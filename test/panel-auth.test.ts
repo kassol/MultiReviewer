@@ -87,6 +87,7 @@ test("账号登录拿到持久 session cookie,探测回身份,登出后旧 cooki
     isSystemAdmin: true,
     permissions: [],
     systemAdmins: ["Admin"],
+    repoIds: null,
     mustChangePassword: false,
     giteaUrl: null,
   });
