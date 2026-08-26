@@ -942,6 +942,8 @@ type PanelRouteContext = {
   bootstrapSecret: () => string | undefined;
   clearBootstrap: () => void;
   caller?: { username: string; isSystemAdmin: boolean; permissions: readonly PanelPermission[] };
+  /** 账号可见的仓库。鉴权之后解析一次,读写接口共用,见 `repoScope`。 */
+  scope?: RepoScope;
 };
 type PanelRouteHandler = (
   context: PanelRouteContext,
@@ -952,8 +954,112 @@ type PanelRoute = {
   pattern: string | RegExp;
   access: PanelAccess;
   allowedWhilePasswordExpired?: true;
+  /**
+   * 这个端点的目标仓库从哪里认。声明了就在鉴权之后统一判仓库分配,分配外一律 404。
+   * 目标从请求体里来的端点(重跑、发起范围审查)在 handler 里自己判:过滤层读不了
+   * 请求体,读了 handler 就没得读。列表类端点也不声明,它们按分配收窄而不是拒绝。
+   */
+  scope?: PanelScopeTarget;
   handler: PanelRouteHandler;
 };
+
+/**
+ * 账号可见的仓库(CONTEXT.md 仓库分配)。系统管理员不受限:`refs` 是 undefined,
+ * 两个判定一律放行。
+ */
+type RepoScope = {
+  /** 分配内的 owner/repo 对,列表接口据此收窄;不受限时 undefined。 */
+  refs: readonly RepoRef[] | undefined;
+  allowsId(repoId: number): boolean;
+  allows(owner: string, repo: string): boolean;
+};
+
+/** 端点的目标仓库怎么认:路径里第 `group` 个捕获组是哪种标识,或者从查询串上认。 */
+type PanelScopeTarget =
+  | { by: "repo" | "run" | "range-review" | "finding"; group: number }
+  | { by: "query" };
+
+const UNRESTRICTED_SCOPE: RepoScope = {
+  refs: undefined,
+  allowsId: () => true,
+  allows: () => true,
+};
+
+/**
+ * 这个账号可见的仓库。`repoIds` 为 null 即系统管理员,不受限。
+ *
+ * 分配挂在 repo id 上,而评审记录只记 owner/repo:注册表是两者之间唯一的对照表,
+ * 因此这里一次把两种形式都取好。仓库移除后它的历史评审记录不再可见——注册表里
+ * 没有行,分配也随之级联删掉了。
+ */
+function repoScope(deps: WebhookServerDeps, repoIds: readonly number[] | null): RepoScope {
+  if (repoIds === null) return UNRESTRICTED_SCOPE;
+  const ids = new Set(repoIds);
+  // 按 id 逐行取,不走 `listRepos`:那一份带着每个仓库的累计量,而这里只要名字。
+  const refs = withStore(deps.dbPath, (store) =>
+    repoIds.flatMap((repoId) => {
+      const row = store.getRepo(repoId);
+      return row === undefined ? [] : [{ owner: row.owner, repo: row.repo }];
+    }),
+  );
+  return {
+    refs,
+    allowsId: (repoId) => ids.has(repoId),
+    allows: (owner, repo) => refs.some((ref) => ref.owner === owner && ref.repo === repo),
+  };
+}
+
+/**
+ * 这个请求的目标是不是在分配内。目标本身不存在时放行:那一档由 handler 回它自己的
+ * 404,过滤层不替它判「不存在」。
+ */
+function scopeAllowsTarget(
+  deps: WebhookServerDeps,
+  scope: RepoScope,
+  target: PanelScopeTarget,
+  req: IncomingMessage,
+  match: RegExpMatchArray | undefined,
+): boolean {
+  if (scope.refs === undefined) return true;
+  if (target.by === "query") {
+    // 查询串上的两种目标形式:成对的 owner + repo,或者一个范围审查标识。
+    const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+    const owner = query.get("owner");
+    const repo = query.get("repo");
+    if (owner !== null && repo !== null && !scope.allows(owner, repo)) return false;
+    const rangeReviewRaw = query.get("rangeReviewId");
+    if (rangeReviewRaw === null) return true;
+    return rangeReviewAllowed(deps, scope, Number(rangeReviewRaw));
+  }
+  const id = Number(match![target.group]);
+  if (target.by === "repo") return scope.allowsId(id);
+  if (target.by === "range-review") return rangeReviewAllowed(deps, scope, id);
+  return withStore(deps.dbPath, (store) => {
+    const row = target.by === "run" ? store.getRunRange(id) : store.getFinding(id);
+    return row === undefined || scope.allows(row.owner, row.repo);
+  });
+}
+
+function rangeReviewAllowed(deps: WebhookServerDeps, scope: RepoScope, id: number): boolean {
+  const record = withStore(deps.dbPath, (store) => store.getRangeReview(id));
+  return record === undefined || scope.allows(record.owner, record.repo);
+}
+
+/** 分配外的目标与不存在同形:404 的措辞跟着 handler 自己那一句。 */
+function scopeMissText(target: PanelScopeTarget, match: RegExpMatchArray | undefined): string {
+  switch (target.by) {
+    case "repo":
+      return `没有 repo id 为 ${Number(match![target.group])} 的注册仓库`;
+    case "run":
+      return "没有这一轮 Review Run";
+    case "range-review":
+      return "没有这个范围审查";
+    case "finding":
+      return "没有这条 Finding";
+    case "query":
+      return "没有这个仓库";
+  }
+}
 
 function panelPermissionGranted(
   access: PanelAccess,
@@ -970,8 +1076,10 @@ function panelPermissionGranted(
 /** 自定义模型服务名与删除路由共用的字符和长度边界。 */
 const CUSTOM_PROVIDER_NAME = CUSTOM_PROVIDER_NAME_PATTERN;
 
-function listRepos(res: ServerResponse, deps: WebhookServerDeps): void {
-  const rows = withStore(deps.dbPath, (store) => store.listRepos());
+function listRepos(res: ServerResponse, deps: WebhookServerDeps, scope: RepoScope): void {
+  const rows = withStore(deps.dbPath, (store) => store.listRepos()).filter((row) =>
+    scope.allowsId(row.repoId),
+  );
   return sendJson(
     res,
     200,
@@ -1446,56 +1554,78 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   },
   { method: "GET", pattern: "/settings", access: "model:read", handler: ({ res, deps }) => handleGetSettings(res, deps) },
   { method: "PUT", pattern: "/settings", access: "model:write", handler: ({ req, res, deps }) => handlePutSettings(req, res, deps) },
-  { method: "GET", pattern: "/stats", access: "review:read", handler: ({ req, res, deps }) => handleStats(req, res, deps) },
-  { method: "GET", pattern: "/runs", access: "review:read", handler: ({ req, res, deps }) => handleRuns(req, res, deps) },
+  {
+    method: "GET",
+    pattern: "/stats",
+    access: "review:read",
+    handler: ({ req, res, deps, scope }) => handleStats(req, res, deps, scope!),
+  },
+  {
+    method: "GET",
+    pattern: "/runs",
+    access: "review:read",
+    handler: ({ req, res, deps, scope }) => handleRuns(req, res, deps, scope!),
+  },
   {
     method: "GET",
     pattern: "/stages",
     access: "review:read",
-    handler: ({ req, res, deps }) => handleStages(req, res, deps),
+    handler: ({ req, res, deps, scope }) => handleStages(req, res, deps, scope!),
   },
   {
     // 阶段标识里有斜杠(`pr:<owner>/<repo>/<number>`),在地址里编码成一段,这里整段收。
     method: "GET",
     pattern: /^\/stages\/(.+)$/,
     access: "review:read",
-    handler: ({ res, deps }, match) => handleStageDetail(res, deps, match![1]!),
+    handler: ({ res, deps, scope }, match) => handleStageDetail(res, deps, match![1]!, scope!),
   },
   {
     method: "GET",
     pattern: /^\/runs\/(\d+)$/,
     access: "review:read",
+    scope: { by: "run", group: 1 },
     handler: ({ res, deps }, match) => handleRun(res, deps, Number(match![1])),
   },
   {
     method: "GET",
     pattern: /^\/runs\/(\d+)\/diff$/,
     access: "review:read",
+    scope: { by: "run", group: 1 },
     handler: ({ req, res, deps }, match) => handleRunDiff(req, res, deps, Number(match![1])),
   },
   {
     method: "GET",
     pattern: /^\/runs\/(\d+)\/trace$/,
     access: "review:read",
+    scope: { by: "run", group: 1 },
     handler: ({ res, deps }, match) => handleRunTrace(res, deps, Number(match![1])),
   },
   {
     method: "GET",
     pattern: /^\/runs\/(\d+)\/trace\/stream$/,
     access: "review:read",
+    scope: { by: "run", group: 1 },
     handler: ({ req, res, deps }, match) => handleRunTraceStream(req, res, deps, Number(match![1])),
   },
   {
     method: "GET",
     pattern: "/stage-summary",
     access: "review:read",
+    scope: { by: "query" },
     handler: ({ req, res, deps }) => handleStageSummary(req, res, deps),
   },
-  { method: "POST", pattern: "/rerun", access: "review:rerun", handler: ({ req, res, deps, caller }) => handleRerun(req, res, deps, caller!.username) },
+  {
+    method: "POST",
+    pattern: "/rerun",
+    access: "review:rerun",
+    handler: ({ req, res, deps, caller, scope }) =>
+      handleRerun(req, res, deps, caller!.username, scope!),
+  },
   {
     method: "POST",
     pattern: /^\/findings\/(\d+)\/resolve$/,
     access: "finding:dispose",
+    scope: { by: "finding", group: 1 },
     handler: ({ req, res, deps, caller }, match) =>
       handleDispose(req, res, deps, Number(match![1]), "resolved", caller!.username),
   },
@@ -1503,6 +1633,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     method: "POST",
     pattern: /^\/findings\/(\d+)\/unresolve$/,
     access: "finding:dispose",
+    scope: { by: "finding", group: 1 },
     handler: ({ req, res, deps, caller }, match) =>
       handleDispose(req, res, deps, Number(match![1]), "unresolved", caller!.username),
   },
@@ -1510,19 +1641,21 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     method: "POST",
     pattern: "/range-reviews",
     access: "review:create",
-    handler: ({ req, res, deps, caller }) =>
-      handleCreateRangeReview(req, res, deps, caller!.username),
+    handler: ({ req, res, deps, caller, scope }) =>
+      handleCreateRangeReview(req, res, deps, caller!.username, scope!),
   },
   {
     method: "GET",
     pattern: "/range-reviews/prefill",
     access: "review:create",
+    scope: { by: "query" },
     handler: ({ req, res, deps }) => handleRangeReviewPrefill(req, res, deps),
   },
   {
     method: "POST",
     pattern: /^\/range-reviews\/(\d+)\/advance$/,
     access: "review:create",
+    scope: { by: "range-review", group: 1 },
     handler: ({ req, res, deps, caller }, match) =>
       handleAdvanceRangeReview(req, res, deps, Number(match![1]), caller!.username),
   },
@@ -1530,6 +1663,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     method: "POST",
     pattern: /^\/range-reviews\/(\d+)\/complete$/,
     access: "finding:dispose",
+    scope: { by: "range-review", group: 1 },
     handler: ({ res, deps, caller }, match) =>
       handleCompleteRangeReview(res, deps, Number(match![1]), caller!.username),
   },
@@ -1537,12 +1671,14 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     method: "GET",
     pattern: "/repo-branches",
     access: "review:create",
+    scope: { by: "query" },
     handler: ({ req, res, deps }) => handleRepoBranches(req, res, deps),
   },
   {
     method: "GET",
     pattern: "/repo-commits",
     access: "review:create",
+    scope: { by: "query" },
     handler: ({ req, res, deps }) => handleRepoCommits(req, res, deps),
   },
   {
@@ -1552,18 +1688,24 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     handler: ({ req, res, deps, hookManager }) =>
       handleRepoSearch(req, res, deps, hookManager),
   },
-  { method: "GET", pattern: "/repos", access: "repo:read", handler: ({ res, deps }) => listRepos(res, deps) },
+  {
+    method: "GET",
+    pattern: "/repos",
+    access: "repo:read",
+    handler: ({ res, deps, scope }) => listRepos(res, deps, scope!),
+  },
   {
     method: "POST",
     pattern: "/repos",
     access: "repo:write",
-    handler: ({ req, res, deps, hookManager }) =>
-      handleRegister(req, res, deps, hookManager),
+    handler: ({ req, res, deps, hookManager, caller }) =>
+      handleRegister(req, res, deps, hookManager, caller!),
   },
   {
     method: "DELETE",
     pattern: /^\/repos\/(\d+)$/,
     access: "repo:write",
+    scope: { by: "repo", group: 1 },
     handler: ({ res, deps, hookManager }, match) =>
       handleRemove(res, deps, hookManager, Number(match![1])),
   },
@@ -1571,12 +1713,14 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     method: "POST",
     pattern: /^\/repos\/(\d+)\/worktree$/,
     access: "repo:write",
+    scope: { by: "repo", group: 1 },
     handler: ({ res, deps }, match) => handlePrepareWorktree(res, deps, Number(match![1])),
   },
   {
     method: "PUT",
     pattern: /^\/repos\/(\d+)\/reviewers$/,
     access: "repo:write",
+    scope: { by: "repo", group: 1 },
     handler: ({ req, res, deps }, match) =>
       handleSetReviewers(req, res, deps, Number(match![1])),
   },
@@ -1584,6 +1728,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     method: "POST",
     pattern: /^\/repos\/(\d+)\/rotate$/,
     access: "repo:write",
+    scope: { by: "repo", group: 1 },
     handler: ({ res, deps, hookManager }, match) =>
       handleRotate(res, deps, hookManager, Number(match![1])),
   },
@@ -1591,6 +1736,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     method: "GET",
     pattern: /^\/repos\/(\d+)\/hooks$/,
     access: "repo:read",
+    scope: { by: "repo", group: 1 },
     handler: ({ res, deps, hookManager }, match) =>
       handleHookCheck(res, deps, hookManager, Number(match![1])),
   },
@@ -1772,9 +1918,17 @@ async function handlePanelApi(
   ) {
     return sendJson(res, 403, { error: "没有这一格权限" });
   }
+  // 权限格在前、仓库分配在后:没有这一格的人对每个仓库都是 403,先判它不泄露任何
+  // 「这个仓库存在」的信息;有这一格的人才会看到分配决定的 404。
+  const scope = repoScope(deps, session.repoIds);
+  const target = matched.route.scope;
+  if (target !== undefined && !scopeAllowsTarget(deps, scope, target, req, matched.match)) {
+    return sendJson(res, 404, { error: scopeMissText(target, matched.match) });
+  }
   return matched.route.handler(
     {
       ...context,
+      scope,
       caller: {
         username: session.username,
         isSystemAdmin: session.isSystemAdmin,
@@ -3982,6 +4136,7 @@ function handleRuns(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
+  scope: RepoScope,
 ): void {
   const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
   const beforeRaw = query.get("before");
@@ -4001,8 +4156,13 @@ function handleRuns(
       ...(owner !== null && repo !== null ? { owner, repo } : {}),
     }),
   );
+  // 游标取的是这一页最后一行的 id,分配外的行滤掉之后它也不变:翻页照常走完整段
+  // 时间流,人看到的只是其中属于自己的那些。
   const nextBefore = runs.length === RUNS_PAGE ? runs[runs.length - 1]!.id : null;
-  return sendJson(res, 200, { runs, nextBefore });
+  return sendJson(res, 200, {
+    runs: runs.filter((run) => scope.allows(run.owner, run.repo)),
+    nextBefore,
+  });
 }
 
 /** 评审记录一页的行数。行是审查阶段,不是轮次(issue #174)。 */
@@ -4020,6 +4180,7 @@ function handleStages(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
+  scope: RepoScope,
 ): void {
   const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
   const offsetRaw = query.get("offset");
@@ -4044,6 +4205,8 @@ function handleStages(
     store.listStages({
       offset,
       limit: STAGES_PAGE,
+      // 收窄在 SQL 里做:回到 JS 再滤会让「这一页有几行」与翻页游标对不上。
+      ...(scope.refs === undefined ? {} : { repos: scope.refs }),
       ...(owner !== null && repo !== null ? { owner, repo } : {}),
       ...(statusRaw === null ? {} : { status: statusRaw }),
       ...(sourceRaw === null ? {} : { source: sourceRaw }),
@@ -4067,6 +4230,7 @@ function handleStageDetail(
   res: ServerResponse,
   deps: WebhookServerDeps,
   rawStageId: string,
+  scope: RepoScope,
 ): void {
   let stageId: string;
   try {
@@ -4082,7 +4246,9 @@ function handleStageDetail(
       ? found
       : { ...found, rangeReview: store.getRangeReview(rangeReviewId) };
   });
-  if (detail === undefined) return sendJson(res, 404, { error: "没有这个审查阶段" });
+  if (detail === undefined || !scope.allows(detail.stage.owner, detail.stage.repo)) {
+    return sendJson(res, 404, { error: "没有这个审查阶段" });
+  }
   return sendJson(res, 200, detail);
 }
 
@@ -4388,6 +4554,7 @@ async function handleRerun(
   res: ServerResponse,
   deps: WebhookServerDeps,
   triggeredBy: string,
+  scope: RepoScope,
 ): Promise<void> {
   const body = await readBody(req, res);
   if (body === undefined) return;
@@ -4402,7 +4569,7 @@ async function handleRerun(
     if (typeof rangeReviewId !== "number" || !Number.isSafeInteger(rangeReviewId) || rangeReviewId <= 0) {
       return sendJson(res, 400, { error: "rangeReviewId 要是正整数" });
     }
-    return rerunRangeReview(res, deps, rangeReviewId, triggeredBy);
+    return rerunRangeReview(res, deps, rangeReviewId, triggeredBy, scope);
   }
   if (
     payload === null ||
@@ -4418,6 +4585,8 @@ async function handleRerun(
   }
   const { owner, repo, pullNumber } = payload;
 
+  // 目标在请求体里,过滤层看不到,这里自己判:分配外与不存在同形。
+  if (!scope.allows(owner, repo)) return sendJson(res, 404, { error: "没有这个仓库" });
   const registered = withStore(deps.dbPath, (store) => store.listRepos()).find(
     (row) => row.owner === owner && row.repo === repo,
   );
@@ -4468,9 +4637,10 @@ async function rerunRangeReview(
   deps: WebhookServerDeps,
   id: number,
   triggeredBy: string,
+  scope: RepoScope,
 ): Promise<void> {
   const record = withStore(deps.dbPath, (store) => store.getRangeReview(id));
-  if (record === undefined) {
+  if (record === undefined || !scope.allows(record.owner, record.repo)) {
     return sendJson(res, 404, { error: "没有这个范围审查" });
   }
   if (record.state !== "in-progress" || record.containerPullNumber === null) {
@@ -4789,6 +4959,7 @@ async function handleCreateRangeReview(
   res: ServerResponse,
   deps: WebhookServerDeps,
   createdBy: string,
+  scope: RepoScope,
 ): Promise<void> {
   const body = await readBody(req, res);
   if (body === undefined) return;
@@ -4822,6 +4993,8 @@ async function handleCreateRangeReview(
   }
   const { owner, repo } = payload;
 
+  // 目标在请求体里,过滤层看不到,这里自己判:分配外与不存在同形。
+  if (!scope.allows(owner, repo)) return sendJson(res, 404, { error: "没有这个仓库" });
   const registered = withStore(deps.dbPath, (store) => store.listRepos()).find(
     (row) => row.owner === owner && row.repo === repo,
   );
@@ -5141,6 +5314,7 @@ function handleStats(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
+  scope: RepoScope,
 ): void {
   const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
   const nowMs = (deps.now ?? Date.now)();
@@ -5153,7 +5327,7 @@ function handleStats(
   const from = new Date(fromMs).toISOString();
   const to = new Date(toMs).toISOString();
 
-  const { cells, models, usage, tables } = withStore(deps.dbPath, (store) => ({
+  const { cells: allCells, models, usage, tables } = withStore(deps.dbPath, (store) => ({
     cells: store.dispositionStats(from, to),
     models: store.modelParticipation(from, to),
     usage: store.usageStats(from, to) ?? null,
@@ -5165,6 +5339,8 @@ function handleStats(
   } catch {
     // 库文件还没建出来:没有一次投递的全新部署,体量就是 0。
   }
+  // 矩阵一行一个仓库,分配外的那些直接不给:页面上的数字要与人看得到的列表对得上。
+  const cells = allCells.filter((cell) => scope.allows(cell.owner, cell.repo));
   return sendJson(res, 200, { from, to, cells, models, usage, database: { fileBytes, tables } });
 }
 
@@ -5350,6 +5526,7 @@ async function handleRegister(
   res: ServerResponse,
   deps: WebhookServerDeps,
   hookManager: GiteaHookManager | undefined,
+  caller: PanelCaller,
 ): Promise<void> {
   if (!(await setupStatus(deps)).reviewConfigurationReady) {
     return sendJson(res, 409, {
@@ -5421,6 +5598,8 @@ async function handleRegister(
       generation,
       key,
       ...(reviewersJson === undefined ? {} : { reviewersJson }),
+      // 注册者立刻看得到自己接进来的仓库。系统管理员不受分配限制,不留这一行。
+      ...(caller.isSystemAdmin ? {} : { assignTo: caller.username }),
     }),
   );
   if (!registered) {

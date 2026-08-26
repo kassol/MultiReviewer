@@ -1301,6 +1301,8 @@ export type Store = {
     generation: number;
     key: string;
     reviewersJson?: string;
+    /** 注册者的用户名。给了就在同一个事务里把这个仓库分配给他(issue #192)。 */
+    assignTo?: string;
   }): boolean;
   /** 给仓库加一把 key,轮转(ADR 0007)开新代次用。同仓库同代次重复添加直接抛。 */
   addRepoKey(repoId: number, generation: number, key: string): void;
@@ -1450,6 +1452,11 @@ export type Store = {
     limit: number;
     owner?: string;
     repo?: string;
+    /**
+     * 只给这些仓库的阶段(仓库分配,issue #192)。省略即不限,空数组即一个都不给。
+     * 与 `owner` + `repo` 同时给时取交集:两者说的是同一件事的两个来源。
+     */
+    repos?: readonly { owner: string; repo: string }[];
     status?: StageStatus;
     source?: StageSource;
   }): StageListItem[];
@@ -2469,6 +2476,11 @@ export function openStore(dbPath: string): Store {
           record.generation,
           record.key,
         );
+        if (record.assignTo !== undefined) {
+          db.prepare(
+            "INSERT OR IGNORE INTO panel_user_repo (username, repo_id) VALUES (?, ?)",
+          ).run(record.assignTo, record.repoId);
+        }
         db.exec("COMMIT");
         return true;
       } catch (error) {
@@ -4158,8 +4170,23 @@ export function openStore(dbPath: string): Store {
     listStages(opts) {
       // 归并、筛选、排序与切页都在这一条查询里:回到 JS 的只有这一页的那几行。
       const scoped = opts.owner !== undefined && opts.repo !== undefined;
-      const params: (string | number)[] = [];
-      if (scoped) params.push(opts.owner!, opts.repo!, opts.owner!, opts.repo!);
+      // 仓库过滤先合成一组 owner/repo 对:请求给的那一对与账号可见的那些是同一个维度。
+      const pairs =
+        opts.repos === undefined
+          ? scoped
+            ? [{ owner: opts.owner!, repo: opts.repo! }]
+            : undefined
+          : opts.repos.filter(
+              (pair) => !scoped || (pair.owner === opts.owner && pair.repo === opts.repo),
+            );
+      const repoFilter = (prefix: string): string =>
+        pairs === undefined
+          ? ""
+          : pairs.length === 0
+            ? "0"
+            : `(${pairs.map(() => `(${prefix}owner = ? AND ${prefix}repo = ?)`).join(" OR ")})`;
+      const pairParams = (pairs ?? []).flatMap((pair) => [pair.owner, pair.repo]);
+      const params: (string | number)[] = [...pairParams, ...pairParams];
       const conditions: string[] = [];
       if (opts.status !== undefined) {
         conditions.push("status = ?");
@@ -4172,9 +4199,9 @@ export function openStore(dbPath: string): Store {
       params.push(opts.limit, opts.offset);
       const rows = db
         .prepare(
-          `SELECT * FROM (${pullStageQuery(scoped ? "owner = ? AND repo = ?" : "")}
+          `SELECT * FROM (${pullStageQuery(repoFilter(""))}
                           UNION ALL
-                          ${rangeStageQuery(scoped ? "rr.owner = ? AND rr.repo = ?" : "")})
+                          ${rangeStageQuery(repoFilter("rr."))})
             ${conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : ""}
             -- 最近有动静的排在前面。时刻相同的按阶段标识兜底,翻页才不会漂。
             ORDER BY activity_at DESC, stage_id DESC

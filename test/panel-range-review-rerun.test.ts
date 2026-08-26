@@ -11,6 +11,7 @@ import { after, test } from "node:test";
 import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
+  GITEA_REPO,
   HARNESS_PR,
   PANEL_PREFIX,
   startReadyPanelHarness,
@@ -61,7 +62,7 @@ async function startRangeReview(h: PanelHarness): Promise<RangeReview> {
   return rangeReview;
 }
 
-/** 登录一个自定义权限的用户,拿它的会话 cookie。 */
+/** 登录一个自定义权限的用户,拿它的会话 cookie。仓库一并分给他:可见才能操作。 */
 async function userCookie(
   h: PanelHarness,
   username: string,
@@ -82,6 +83,7 @@ async function userCookie(
     isSystemAdmin: false,
     roleId: role.id,
   });
+  store.setPanelUserRepos(username, [GITEA_REPO.id]);
   store.close();
 
   const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {

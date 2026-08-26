@@ -160,6 +160,14 @@ function findingId(store: Store, runId: number, fingerprint: string): number {
 function seedStage(dbPath: string): { rangeReviewId: number; runs: number[] } {
   const store = openStore(dbPath);
   try {
+    // 注册表里要有这个仓库:普通用户的可见范围由「分配的 repo id」经注册表认出来。
+    store.registerRepo({
+      repoId: GITEA_REPO.id,
+      owner: HARNESS_PR.owner,
+      repo: HARNESS_PR.repo,
+      generation: 1,
+      key: "stage-summary-key",
+    });
     const rangeReviewId = store.createRangeReview({
       repoId: GITEA_REPO.id,
       owner: HARNESS_PR.owner,
@@ -383,7 +391,7 @@ test("阶段汇总要 review:read:未登录 401,没有这一格 403", async () =
   assert.equal((await fetch(`${h.serverUrl}${path}`, { headers: { cookie: otherCookie } })).status, 403);
 });
 
-/** 建一个只挂指定权限的用户并登录,拿它的会话 cookie。 */
+/** 建一个只挂指定权限的用户并登录,拿它的会话 cookie。仓库一并分给他:可见才能读。 */
 async function userCookie(
   h: PanelHarness,
   username: string,
@@ -405,6 +413,7 @@ async function userCookie(
       isSystemAdmin: false,
       roleId: role.id,
     });
+    store.setPanelUserRepos(username, [GITEA_REPO.id]);
   } finally {
     store.close();
   }
