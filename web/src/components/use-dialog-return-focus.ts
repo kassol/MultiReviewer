@@ -35,18 +35,27 @@ export function useDialogReturnFocus(fallback?: () => HTMLElement | null) {
     const triggerHref = triggerHrefRef.current;
     triggerRef.current = null;
     triggerHrefRef.current = null;
-    requestAnimationFrame(() => {
+    const focusTarget = (attempt: number): void => {
       const replacement = triggerHref === null
         ? null
         : [...document.querySelectorAll<HTMLElement>("a[href]")]
             .find((candidate) => candidate.getAttribute("href") === triggerHref) ?? null;
-      const target = canReceiveFocus(trigger)
-        ? trigger
-        : canReceiveFocus(replacement)
-          ? replacement
-          : fallback?.() ?? null;
+      if (canReceiveFocus(trigger)) {
+        trigger.focus({ preventScroll: true });
+        return;
+      }
+      if (canReceiveFocus(replacement)) {
+        replacement.focus({ preventScroll: true });
+        return;
+      }
+      if (triggerHref !== null && attempt < 2) {
+        requestAnimationFrame(() => focusTarget(attempt + 1));
+        return;
+      }
+      const target = fallback?.() ?? null;
       if (canReceiveFocus(target)) target.focus({ preventScroll: true });
-    });
+    };
+    requestAnimationFrame(() => focusTarget(0));
   }, [fallback]);
 
   const onCloseAutoFocus = useCallback((event: CloseAutoFocusEvent): void => {
