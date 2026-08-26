@@ -47,9 +47,6 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
           cacheReadTokens: 0,
           cacheWriteTokens: 0,
           totalTokens: 10,
-          costUsd: 0.125,
-          knownCostUsd: 0.125,
-          costSource: "trusted",
         },
       },
       {
@@ -65,9 +62,6 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
           cacheReadTokens: 1,
           cacheWriteTokens: 1,
           totalTokens: 20,
-          costUsd: null,
-          knownCostUsd: 0,
-          costSource: "unknown",
         },
       },
     ],
@@ -141,9 +135,6 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
           cacheReadTokens: 0,
           cacheWriteTokens: 0,
           totalTokens: 5,
-          costUsd: 0.25,
-          knownCostUsd: 0.25,
-          costSource: "trusted",
         },
       },
     ],
@@ -159,13 +150,7 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
   const body = (await response.json()) as {
     cells: unknown[];
     models: unknown[];
-    usage: {
-      totalTokens: number;
-      costUsd: number | null;
-      knownCostUsd: number;
-      costIncomplete: boolean;
-      unknownCostReviewers: number;
-    } | null;
+    usage: { runs: number; totalTokens: number } | null;
     database: { fileBytes: number; tables: { name: string; rows: number }[] };
   };
   assert.deepEqual(body.cells, [
@@ -185,17 +170,14 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
     { model: "model-a", findings: 2 },
     { model: "model-b", findings: 1 },
   ]);
+  // 用量只剩运行次数与 token 五列(issue #188):金额不再折算,也不再落库。
   assert.deepEqual(body.usage, {
+    runs: 2,
     inputTokens: 27,
     outputTokens: 6,
     cacheReadTokens: 1,
     cacheWriteTokens: 1,
     totalTokens: 35,
-    costUsd: null,
-    knownCostUsd: 0.375,
-    costSource: "unknown",
-    costIncomplete: true,
-    unknownCostReviewers: 1,
   });
 
   // 库体量与实际文件一致;行数与刚种进去的数据对得上。

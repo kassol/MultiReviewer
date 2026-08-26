@@ -16,7 +16,6 @@ import {
 import { isPanelPermission, type PanelPermission } from "../panel/permissions.ts";
 import type {
   DiscoveredModel,
-  ModelCost,
   TrustedModelFields,
   TrustedModelFieldSource,
   TrustedModelFieldSources,
@@ -61,11 +60,7 @@ CREATE TABLE IF NOT EXISTS review_run (
   output_tokens INTEGER,
   cache_read_tokens INTEGER,
   cache_write_tokens INTEGER,
-  total_tokens INTEGER,
-  cost_usd REAL,
-  known_cost_usd REAL,
-  cost_source TEXT,
-  unknown_cost_reviewer_count INTEGER
+  total_tokens INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS review_run_reviewer_pin (
@@ -97,10 +92,7 @@ CREATE TABLE IF NOT EXISTS reviewer_outcome (
   output_tokens INTEGER,
   cache_read_tokens INTEGER,
   cache_write_tokens INTEGER,
-  total_tokens INTEGER,
-  cost_usd REAL,
-  known_cost_usd REAL,
-  cost_source TEXT
+  total_tokens INTEGER
 );
 
 -- 一条 Finding 一行:Finding Identity 是「pull request + 文件 + 内容指纹」,不含模型
@@ -384,7 +376,6 @@ CREATE TABLE IF NOT EXISTS model_directory_model (
   base_url TEXT,
   input_json TEXT,
   reasoning INTEGER CHECK (reasoning IS NULL OR reasoning IN (0, 1)),
-  cost_json TEXT,
   context_window INTEGER,
   max_tokens INTEGER,
   field_sources_json TEXT,
@@ -428,11 +419,6 @@ const ADD_COLUMNS = [
   "ALTER TABLE review_run ADD COLUMN pr_state TEXT",
   "ALTER TABLE review_run ADD COLUMN triggered_by TEXT",
   "ALTER TABLE finding ADD COLUMN placement TEXT NOT NULL DEFAULT 'inline'",
-  "ALTER TABLE review_run ADD COLUMN known_cost_usd REAL",
-  "ALTER TABLE review_run ADD COLUMN cost_source TEXT",
-  "ALTER TABLE review_run ADD COLUMN unknown_cost_reviewer_count INTEGER",
-  "ALTER TABLE reviewer_outcome ADD COLUMN known_cost_usd REAL",
-  "ALTER TABLE reviewer_outcome ADD COLUMN cost_source TEXT",
   "ALTER TABLE model_directory_model ADD COLUMN field_sources_json TEXT",
   "ALTER TABLE finding ADD COLUMN comment_id TEXT",
   "ALTER TABLE finding ADD COLUMN comment_html_url TEXT",
@@ -870,41 +856,12 @@ export type ModelServiceVersionCommit = Omit<ModelServiceRecord, "version" | "au
   supplements: readonly Omit<ModelSupplementRecord, "provider">[];
 };
 
-function serializedTrustedCost(cost: ModelCost | undefined): string | null {
-  if (cost === undefined || typeof cost !== "object" || cost === null) return null;
-  if (![cost.input, cost.output, cost.cacheRead, cost.cacheWrite].every((rate) => Number.isFinite(rate) && rate >= 0)) {
-    return null;
-  }
-  if (
-    cost.tiers !== undefined &&
-    (!Array.isArray(cost.tiers) ||
-      cost.tiers.some(
-        (tier) =>
-          typeof tier !== "object" ||
-          tier === null ||
-          !Number.isSafeInteger(tier.inputTokensAbove) ||
-          tier.inputTokensAbove <= 0 ||
-          ![tier.input, tier.output, tier.cacheRead, tier.cacheWrite].every(
-            (rate) => Number.isFinite(rate) && rate >= 0,
-          ),
-      ))
-  ) {
-    return null;
-  }
-  try {
-    return JSON.stringify(cost) ?? null;
-  } catch {
-    return null;
-  }
-}
-
 const TRUSTED_MODEL_FIELD_KEYS = [
   "name",
   "api",
   "baseUrl",
   "input",
   "reasoning",
-  "cost",
   "contextWindow",
   "maxTokens",
 ] as const satisfies readonly (keyof TrustedModelFields)[];
@@ -917,7 +874,6 @@ const TRUSTED_MODEL_FIELD_SOURCES = new Set<TrustedModelFieldSource>([
 function normalizedTrustedFieldSources(
   fields: TrustedModelFields,
   sources: TrustedModelFieldSources | undefined,
-  hasTrustedCost: boolean,
 ): TrustedModelFieldSources | undefined {
   if (sources === undefined) return undefined;
   const normalized: TrustedModelFieldSources = {};
@@ -926,8 +882,7 @@ function normalizedTrustedFieldSources(
     if (
       source !== undefined &&
       TRUSTED_MODEL_FIELD_SOURCES.has(source) &&
-      fields[key] !== undefined &&
-      (key !== "cost" || hasTrustedCost)
+      fields[key] !== undefined
     ) normalized[key] = source;
   }
   return Object.keys(normalized).length === 0 ? undefined : normalized;
@@ -989,21 +944,17 @@ export type RepoSummary = {
   worktree: WorktreeStatus;
 };
 
-export type RecordedCostSource = "trusted" | "unknown" | "legacy" | "mixed";
-
-/** 面板读取的持久化用量；历史数字保留为 legacy，未知金额另带已知小计。 */
+/** 面板读取的持久化用量,只有 token 五列。 */
 export type RecordedUsage = {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
   totalTokens: number;
-  costUsd: number | null;
-  knownCostUsd: number;
-  costSource: RecordedCostSource;
-  costIncomplete: boolean;
-  unknownCostReviewers: number;
 };
+
+/** 一个时间窗里的用量聚合:落了用量的 Review Run 数,加它们的 token 之和。 */
+export type UsageStats = RecordedUsage & { runs: number };
 
 /**
  * 时间流里的一条 Review Run。`models` 一行一个参与本轮的模型,按模型名排序:行的
@@ -1468,8 +1419,8 @@ export type Store = {
   dispositionStats(from: string, to: string): DispositionCell[];
   /** 同一时间窗、同一批 Identity 上每个模型的参与条数(ADR 0015)。 */
   modelParticipation(from: string, to: string): ModelParticipation[];
-  /** 时间窗内 Review Run 的 token、已知费用小计与未知费用 Reviewer 数。 */
-  usageStats(from: string, to: string): RecordedUsage | undefined;
+  /** 时间窗内落了用量的 Review Run 数与它们的 token 之和。一条都没有时缺失。 */
+  usageStats(from: string, to: string): UsageStats | undefined;
   /**
    * 时间流的一页:按 id 倒序(id 即落库顺序,与开跑时间同序),`beforeId` 取更早的
    * 一页。覆盖全部评审记录——已移除仓库的历史照常出现,这是留存决策的呈现面。
@@ -1671,89 +1622,29 @@ export type Store = {
   close(): void;
 };
 
-function nonNegativeFinite(value: unknown): number | undefined {
-  if (value === null || value === undefined) return undefined;
-  const numeric = Number(value);
-  return Number.isFinite(numeric) && numeric >= 0 ? numeric : undefined;
-}
-
-/** 坏的或来源不可信的金额在持久化边界统一降为未知，绝不夹成零。 */
-function normalizedUsage(usage: ReviewerUsage): ReviewerUsage {
-  const costUsd = nonNegativeFinite(usage.costUsd);
-  if (usage.costSource === "trusted" && costUsd !== undefined) {
-    return { ...usage, costUsd, knownCostUsd: costUsd, costSource: "trusted" };
-  }
-  return {
-    ...usage,
-    costUsd: null,
-    knownCostUsd: nonNegativeFinite(usage.knownCostUsd) ?? 0,
-    costSource: "unknown",
-  };
-}
-
-function usageColumns(usage: ReviewerUsage | undefined): (number | string | null)[] {
-  if (usage === undefined) return Array.from({ length: 8 }, () => null);
-  const recorded = normalizedUsage(usage);
+function usageColumns(usage: ReviewerUsage | undefined): (number | null)[] {
+  if (usage === undefined) return Array.from({ length: 5 }, () => null);
   return [
-    recorded.inputTokens,
-    recorded.outputTokens,
-    recorded.cacheReadTokens,
-    recorded.cacheWriteTokens,
-    recorded.totalTokens,
-    recorded.costUsd,
-    recorded.knownCostUsd,
-    recorded.costSource,
+    usage.inputTokens,
+    usage.outputTokens,
+    usage.cacheReadTokens,
+    usage.cacheWriteTokens,
+    usage.totalTokens,
   ];
 }
 
-function unknownCostReviewerCount(outcomes: readonly { usage?: ReviewerUsage }[]): number {
-  return outcomes.reduce(
-    (count, outcome) =>
-      count +
-      (outcome.usage !== undefined && normalizedUsage(outcome.usage).costSource === "unknown"
-        ? 1
-        : 0),
-    0,
-  );
-}
-
-function recordedUsage(
-  row: Record<string, unknown>,
-  unknownCountColumn = "unknown_cost_reviewer_count",
-): RecordedUsage | undefined {
+function recordedUsage(row: Record<string, unknown>): RecordedUsage | undefined {
   if (row["total_tokens"] === null || row["total_tokens"] === undefined) return undefined;
-
-  const rawSource = row["cost_source"];
-  let costSource: RecordedCostSource =
-    rawSource === "trusted" || rawSource === "unknown" || rawSource === "legacy"
-      ? rawSource
-      : row["cost_usd"] === null || row["cost_usd"] === undefined
-        ? "unknown"
-        : "legacy";
-  const numericCost = nonNegativeFinite(row["cost_usd"]);
-  if (costSource !== "unknown" && numericCost === undefined) costSource = "unknown";
-  const costUsd = costSource === "unknown" ? null : numericCost!;
-  const unknownCostReviewers =
-    nonNegativeFinite(row[unknownCountColumn]) ?? (costSource === "unknown" ? 1 : 0);
-
   return {
     inputTokens: Number(row["input_tokens"] ?? 0),
     outputTokens: Number(row["output_tokens"] ?? 0),
     cacheReadTokens: Number(row["cache_read_tokens"] ?? 0),
     cacheWriteTokens: Number(row["cache_write_tokens"] ?? 0),
     totalTokens: Number(row["total_tokens"]),
-    costUsd,
-    knownCostUsd: nonNegativeFinite(row["known_cost_usd"]) ?? costUsd ?? 0,
-    costSource,
-    costIncomplete: costSource === "unknown" || unknownCostReviewers > 0,
-    unknownCostReviewers,
   };
 }
 
-/**
- * 累加 Reviewer 用量。没有任何会话统计时保持缺失；任一项价格未知时总费用未知，但 token 与
- * 已知金额小计照常累加。未知占优使跨批次和整轮聚合使用同一条语义。
- */
+/** 累加 Reviewer 用量。没有任何会话统计时保持缺失;跨批次与整轮聚合同一条语义。 */
 export function sumUsage(
   outcomes: readonly { usage?: ReviewerUsage }[],
 ): ReviewerUsage | undefined {
@@ -1768,24 +1659,13 @@ export function sumUsage(
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     totalTokens: 0,
-    costUsd: 0,
-    knownCostUsd: 0,
-    costSource: "trusted",
   };
-  for (const rawUsage of usages) {
-    const usage = normalizedUsage(rawUsage);
+  for (const usage of usages) {
     total.inputTokens += usage.inputTokens;
     total.outputTokens += usage.outputTokens;
     total.cacheReadTokens += usage.cacheReadTokens;
     total.cacheWriteTokens += usage.cacheWriteTokens;
     total.totalTokens += usage.totalTokens;
-    total.knownCostUsd += usage.knownCostUsd;
-    if (usage.costSource === "unknown" || usage.costUsd === null) {
-      total.costSource = "unknown";
-      total.costUsd = null;
-    } else if (total.costUsd !== null) {
-      total.costUsd += usage.costUsd;
-    }
   }
   return total;
 }
@@ -2073,6 +1953,39 @@ function stageScope(scope: StageScope): [string, (string | number)[]] {
       ];
 }
 
+/**
+ * 计费下线(issue #188):升级前的库里还留着四列金额与模型行的价目。`CREATE TABLE IF
+ * NOT EXISTS` 碰不到既有表,不删就是僵尸列——新代码一列都不写,它们只会让 schema 与
+ * 代码对不上。token 五列与它们的数字一行不动:用量是运行诊断信息,与计费无关。
+ *
+ * 逐列 DROP COLUMN,与 `finding.model` 那次删列同一个机制。列本来就不在时跳过:同一个
+ * 库第二次打开走的就是这一档。
+ */
+const DROPPED_COST_COLUMNS: readonly (readonly [string, string])[] = [
+  ["review_run", "cost_usd"],
+  ["review_run", "known_cost_usd"],
+  ["review_run", "cost_source"],
+  ["review_run", "unknown_cost_reviewer_count"],
+  ["reviewer_outcome", "cost_usd"],
+  ["reviewer_outcome", "known_cost_usd"],
+  ["reviewer_outcome", "cost_source"],
+  ["model_directory_model", "cost_json"],
+];
+
+function dropCostColumns(db: DatabaseSync): void {
+  const columnsOf = new Map<string, Set<string>>();
+  for (const [table, column] of DROPPED_COST_COLUMNS) {
+    let columns = columnsOf.get(table);
+    if (columns === undefined) {
+      columns = new Set(
+        db.prepare(`PRAGMA table_info(${table})`).all().map((row) => String(row["name"])),
+      );
+      columnsOf.set(table, columns);
+    }
+    if (columns.has(column)) db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+  }
+}
+
 /** 打开当前 schema；schema-v0 数据库必须先经过模型服务迁移器。 */
 export function openStore(dbPath: string): Store {
   const db = new DatabaseSync(dbPath, { timeout: BUSY_TIMEOUT_MS });
@@ -2115,35 +2028,7 @@ export function openStore(dbPath: string): Store {
     db.close();
     throw error;
   }
-  const reviewRunColumns = new Set(
-    db.prepare("PRAGMA table_info(review_run)").all().map((row) => String(row["name"])),
-  );
-  const reviewerOutcomeColumns = new Set(
-    db.prepare("PRAGMA table_info(reviewer_outcome)").all().map((row) => String(row["name"])),
-  );
-  if (
-    reviewRunColumns.has("total_tokens") &&
-    reviewRunColumns.has("cost_usd") &&
-    reviewerOutcomeColumns.has("total_tokens") &&
-    reviewerOutcomeColumns.has("cost_usd")
-  ) {
-    db.exec(`
-      UPDATE reviewer_outcome
-         SET known_cost_usd = CASE WHEN cost_usd >= 0 THEN cost_usd ELSE 0 END,
-             cost_source = CASE WHEN cost_usd >= 0 THEN 'legacy' ELSE 'unknown' END
-       WHERE total_tokens IS NOT NULL AND cost_source IS NULL;
-      UPDATE review_run
-         SET known_cost_usd = CASE WHEN cost_usd >= 0 THEN cost_usd ELSE 0 END,
-             cost_source = CASE WHEN cost_usd >= 0 THEN 'legacy' ELSE 'unknown' END,
-             unknown_cost_reviewer_count = CASE
-               WHEN cost_usd >= 0 THEN 0
-               ELSE MAX(1, (SELECT COUNT(*) FROM reviewer_outcome outcome
-                             WHERE outcome.run_id = review_run.id
-                               AND outcome.cost_source = 'unknown'))
-             END
-       WHERE total_tokens IS NOT NULL AND cost_source IS NULL;
-    `);
-  }
+  dropCostColumns(db);
 
   // 系统管理员 bootstrap 与普通创建共用同一条用户写入语义。
   const writePanelUser = (record: Omit<PanelUserRecord, "lastLoginAt">): void => {
@@ -2935,16 +2820,11 @@ export function openStore(dbPath: string): Store {
         const insertAutomatic = db.prepare(
           `INSERT INTO model_directory_model
              (provider, model, service_version, name, api, base_url, input_json, reasoning,
-              cost_json, context_window, max_tokens, field_sources_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              context_window, max_tokens, field_sources_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const model of automaticModels.values()) {
-          const costJson = serializedTrustedCost(model.fields.cost);
-          const fieldSources = normalizedTrustedFieldSources(
-            model.fields,
-            model.fieldSources,
-            costJson !== null,
-          );
+          const fieldSources = normalizedTrustedFieldSources(model.fields, model.fieldSources);
           insertAutomatic.run(
             record.provider,
             model.id,
@@ -2954,7 +2834,6 @@ export function openStore(dbPath: string): Store {
             model.fields.baseUrl ?? null,
             model.fields.input === undefined ? null : JSON.stringify(model.fields.input),
             model.fields.reasoning === undefined ? null : Number(model.fields.reasoning),
-            costJson,
             model.fields.contextWindow ?? null,
             model.fields.maxTokens ?? null,
             fieldSources === undefined ? null : JSON.stringify(fieldSources),
@@ -3172,7 +3051,7 @@ export function openStore(dbPath: string): Store {
       }
       const automaticModels = db
         .prepare(
-          `SELECT model, name, api, base_url, input_json, reasoning, cost_json,
+          `SELECT model, name, api, base_url, input_json, reasoning,
                   context_window, max_tokens, field_sources_json
              FROM model_directory_model
             WHERE provider = ? AND service_version = ? ORDER BY model`,
@@ -3188,9 +3067,6 @@ export function openStore(dbPath: string): Store {
               ? {}
               : { input: JSON.parse(String(row["input_json"])) as readonly ("text" | "image")[] }),
             ...(row["reasoning"] === null ? {} : { reasoning: Number(row["reasoning"]) === 1 }),
-            ...(row["cost_json"] === null
-              ? {}
-              : { cost: JSON.parse(String(row["cost_json"])) as ModelCost }),
             ...(row["context_window"] === null
               ? {}
               : { contextWindow: Number(row["context_window"]) }),
@@ -3201,7 +3077,6 @@ export function openStore(dbPath: string): Store {
             : normalizedTrustedFieldSources(
                 fields,
                 JSON.parse(String(row["field_sources_json"])) as TrustedModelFieldSources,
-                fields.cost !== undefined,
               );
           return {
             identity: modelIdentity({ provider, model: id }),
@@ -3476,15 +3351,13 @@ export function openStore(dbPath: string): Store {
           `UPDATE review_run
               SET finished_at = ?, duration_ms = ?, failed = ?,
                   input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
-                  cache_write_tokens = ?, total_tokens = ?, cost_usd = ?,
-                  known_cost_usd = ?, cost_source = ?, unknown_cost_reviewer_count = ?
+                  cache_write_tokens = ?, total_tokens = ?
             WHERE id = ?`,
         ).run(
           result.finishedAt,
           result.durationMs,
           result.failed ? 1 : 0,
           ...usageColumns(runUsage),
-          runUsage === undefined ? null : unknownCostReviewerCount(result.outcomes),
           runId,
         );
 
@@ -3493,8 +3366,8 @@ export function openStore(dbPath: string): Store {
              (run_id, model, failure, finding_count, anomaly_count,
               rejected_tool_calls, anchor_rejections, duration_ms,
               input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-              total_tokens, cost_usd, known_cost_usd, cost_source)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              total_tokens)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const outcome of result.outcomes) {
           insertOutcome.run(
@@ -3997,40 +3870,21 @@ export function openStore(dbPath: string): Store {
                   SUM(output_tokens) AS output_tokens,
                   SUM(cache_read_tokens) AS cache_read_tokens,
                   SUM(cache_write_tokens) AS cache_write_tokens,
-                  SUM(total_tokens) AS total_tokens,
-                  SUM(known_cost_usd) AS known_cost_usd,
-                  SUM(COALESCE(unknown_cost_reviewer_count, 0)) AS unknown_cost_reviewer_count,
-                  SUM(CASE WHEN cost_source = 'trusted' THEN 1 ELSE 0 END) AS trusted_rows,
-                  SUM(CASE WHEN cost_source = 'legacy' THEN 1 ELSE 0 END) AS legacy_rows
+                  SUM(total_tokens) AS total_tokens
              FROM review_run
             WHERE total_tokens IS NOT NULL AND started_at >= ? AND started_at <= ?`,
         )
         .get(from, to)!;
-      if (Number(row["usage_rows"]) === 0) return undefined;
+      const runs = Number(row["usage_rows"]);
+      if (runs === 0) return undefined;
 
-      const unknownCostReviewers = Number(row["unknown_cost_reviewer_count"] ?? 0);
-      const trustedRows = Number(row["trusted_rows"] ?? 0);
-      const legacyRows = Number(row["legacy_rows"] ?? 0);
-      const costSource: RecordedCostSource =
-        unknownCostReviewers > 0
-          ? "unknown"
-          : trustedRows > 0 && legacyRows > 0
-            ? "mixed"
-            : legacyRows > 0
-              ? "legacy"
-              : "trusted";
-      const knownCostUsd = Number(row["known_cost_usd"] ?? 0);
       return {
+        runs,
         inputTokens: Number(row["input_tokens"] ?? 0),
         outputTokens: Number(row["output_tokens"] ?? 0),
         cacheReadTokens: Number(row["cache_read_tokens"] ?? 0),
         cacheWriteTokens: Number(row["cache_write_tokens"] ?? 0),
         totalTokens: Number(row["total_tokens"] ?? 0),
-        costUsd: unknownCostReviewers > 0 ? null : knownCostUsd,
-        knownCostUsd,
-        costSource,
-        costIncomplete: unknownCostReviewers > 0,
-        unknownCostReviewers,
       };
     },
 
@@ -4058,8 +3912,7 @@ export function openStore(dbPath: string): Store {
         .prepare(
           `SELECT id, owner, repo, pull_number, head_sha, title, range_review_id, triggered_by,
                   started_at, finished_at, failed, input_tokens, output_tokens,
-                  cache_read_tokens, cache_write_tokens, total_tokens, cost_usd,
-                  known_cost_usd, cost_source, unknown_cost_reviewer_count
+                  cache_read_tokens, cache_write_tokens, total_tokens
              FROM review_run ${where}
             ORDER BY id DESC LIMIT ?`,
         )
@@ -4074,8 +3927,7 @@ export function openStore(dbPath: string): Store {
       const byOutcome = db
         .prepare(
           `SELECT run_id, model, failure, input_tokens, output_tokens,
-                  cache_read_tokens, cache_write_tokens, total_tokens, cost_usd,
-                  known_cost_usd, cost_source
+                  cache_read_tokens, cache_write_tokens, total_tokens
              FROM reviewer_outcome
             WHERE run_id IN (${marks}) ORDER BY model`,
         )

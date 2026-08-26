@@ -327,21 +327,13 @@ test("锚定打回次数跨批次累加,不是只留最后一批的数", async (
   assert.equal(rows[0]!["anchor_rejections"], 5);
 });
 
-test("跨批次费用按未知占优，已知小计与全部 token 仍累加", () => {
-  const usage = (
-    totalTokens: number,
-    costUsd: number | null,
-    knownCostUsd: number,
-    costSource: ReviewerUsage["costSource"],
-  ): ReviewerUsage => ({
+test("跨批次的 token 用量按五列累加", () => {
+  const usage = (totalTokens: number): ReviewerUsage => ({
     inputTokens: totalTokens - 3,
     outputTokens: 1,
     cacheReadTokens: 1,
     cacheWriteTokens: 1,
     totalTokens,
-    costUsd,
-    knownCostUsd,
-    costSource,
   });
   const timed = (entry: ReviewerUsage) => ({
     durationMs: 1,
@@ -355,28 +347,14 @@ test("跨批次费用按未知占优，已知小计与全部 token 仍累加", (
     },
   });
 
-  const mixed = mergeBatchOutcomes([
-    timed(usage(10, 0.4, 0.4, "trusted")),
-    timed(usage(20, null, 0, "unknown")),
-  ]);
-  assert.deepEqual(mixed.outcome.usage, {
+  const merged = mergeBatchOutcomes([timed(usage(10)), timed(usage(20))]);
+  assert.deepEqual(merged.outcome.usage, {
     inputTokens: 24,
     outputTokens: 2,
     cacheReadTokens: 2,
     cacheWriteTokens: 2,
     totalTokens: 30,
-    costUsd: null,
-    knownCostUsd: 0.4,
-    costSource: "unknown",
   });
-
-  const known = mergeBatchOutcomes([
-    timed(usage(10, 0, 0, "trusted")),
-    timed(usage(20, 0.4, 0.4, "trusted")),
-  ]);
-  assert.equal(known.outcome.usage?.costUsd, 0.4);
-  assert.equal(known.outcome.usage?.knownCostUsd, 0.4);
-  assert.equal(known.outcome.usage?.costSource, "trusted");
 });
 
 test("Review Run 开始时记录预估规模:变更文件数、改动行数与批数", async () => {

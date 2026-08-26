@@ -65,7 +65,6 @@ async function smokeReviewer(): Promise<ReturnType<typeof createPiReviewer>> {
       baseUrl: target.baseUrl,
       input: ["text"],
       reasoning: false,
-      cost: undefined,
       contextWindow: 128_000,
       maxTokens: 16_000,
       sources: {
@@ -74,7 +73,6 @@ async function smokeReviewer(): Promise<ReturnType<typeof createPiReviewer>> {
         baseUrl: "service-target",
         input: "runtime-baseline",
         reasoning: "runtime-baseline",
-        cost: "unknown",
         contextWindow: "runtime-baseline",
         maxTokens: "runtime-baseline",
       },

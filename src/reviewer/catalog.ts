@@ -37,16 +37,6 @@ export type CatalogVendor = "ok" | "unavailable" | "off";
  */
 const MODEL_REFRESH_TIMEOUT_MS = 10_000;
 
-/** 模型单价,原样透出 Pi 的 `ModelCost`(单位随 Pi,不做换算)。 */
-export type CatalogCost = {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  tiers?: readonly (CatalogCost & { inputTokensAbove: number })[];
-};
-
-
 /** 模型服务发现的可注入项。 */
 export type LoadOptions = {
   allowNetwork?: boolean;
@@ -63,7 +53,6 @@ export type PiCatalogModel = {
   baseUrl: string;
   input: readonly ("text" | "image")[];
   reasoning: boolean;
-  cost: CatalogCost;
   contextWindow: number;
   maxTokens: number;
 };
@@ -112,7 +101,6 @@ export function loadPiProviderCatalog(
         baseUrl: model.baseUrl,
         input: model.input,
         reasoning: model.reasoning,
-        cost: model.cost,
         contextWindow: model.contextWindow,
         maxTokens: model.maxTokens,
       })),
@@ -218,8 +206,8 @@ type Store = Record<string, StoreEntry | undefined>;
  * 该拉的不拉。`lastModified` 反过来必须改成现在——Pi 拿它与内置表的生成时间比,早于内置表
  * 的整条丢掉,沿用旧值时补进来的行会在下一次读目录时凭空消失。
  *
- * 清单没变时也照写:这些行的单价与上下文窗口以厂商那份清单为准,跳过写入等于把第一次拉到
- * 的那份价格冻在落盘里。一次目录加载只付一次,而目录在进程里是缓存住的。
+ * 清单没变时也照写:这些行的上下文窗口以厂商那份清单为准,跳过写入等于把第一次拉到的
+ * 那一份冻在落盘里。一次目录加载只付一次,而目录在进程里是缓存住的。
  *
  * 先写临时文件再原子改名:显式预览或刷新可能同时读取这份可丢弃缓存,不能让 Pi 看到只写了
  * 一半的 JSON。
@@ -294,7 +282,7 @@ export async function listPiBuiltinProviders(): Promise<PiBuiltinProvider[]> {
 
 /**
  * Pi 当前内置 provider 的调用目标。只返回合成模型所需的 api/baseUrl，不把当前 Pi 的
- * name、能力、上下文或价格混进数据库已提交的自动目录事实。Pi 给内置模型补录合成新行时
+ * name、能力或上下文混进数据库已提交的自动目录事实。Pi 给内置模型补录合成新行时
  * 继承该 provider 第一行模型的目标；这里沿用同一目标，确保面板判定与真实运行一致。
  */
 export async function resolvePiBuiltinProviderTarget(

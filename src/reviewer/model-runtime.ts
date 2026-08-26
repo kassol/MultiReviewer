@@ -31,6 +31,13 @@ export function modelCatalogStorePath(root?: string): string | undefined {
 export const CUSTOM_PROVIDER_APIS = ["openai-completions", "openai-responses"] as const;
 
 /**
+ * 注册进 Pi 的模型必须带费率:pi-ai 每次调用都拿它折算会话统计,缺这一项当场抛
+ * (`pi-ai/dist/models.js` 的 `calculateCost` 直接读 `model.cost.tiers`)。产品自己不
+ * 记账(issue #188),这里给零费率把它填住,Pi 回的那个数字没有读取方。
+ */
+export const ZERO_MODEL_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
+
+/**
  * 建一份凭据与 `models.json` 都私有的运行时。可选的 store 只是发现输入缓存，绝不把旧的
  * 当前模型配置带进模型服务发现或 Review Run。
  */
@@ -51,7 +58,6 @@ export async function isolatedPinnedModelRuntime(
   target: RuntimeModel,
 ): Promise<ModelRuntime> {
   const runtime = await isolatedModelRuntime(agentDir, undefined);
-  const cost = target.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   runtime.registerProvider(target.provider, {
     name: target.provider,
     baseUrl: target.baseUrl,
@@ -64,15 +70,7 @@ export async function isolatedPinnedModelRuntime(
         baseUrl: target.baseUrl,
         reasoning: target.reasoning,
         input: [...target.input],
-        cost: {
-          input: cost.input,
-          output: cost.output,
-          cacheRead: cost.cacheRead,
-          cacheWrite: cost.cacheWrite,
-          ...(cost.tiers === undefined
-            ? {}
-            : { tiers: cost.tiers.map((tier) => ({ ...tier })) }),
-        },
+        cost: { ...ZERO_MODEL_COST },
         contextWindow: target.contextWindow,
         maxTokens: target.maxTokens,
       },

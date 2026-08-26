@@ -31,7 +31,6 @@ import {
 } from "./runs.tsx";
 import { loadPanelSession, pullRequestUrl } from "./session.ts";
 import { StageRound, StageSummaryView, type StageScope, type StageTimelineEntry } from "./stage-summary.tsx";
-import { costPresentation } from "./usage-cost.ts";
 
 /**
  * 时间线上的一组轮次(issue #175):一组是一次代码推进。pull request 阶段按 head
@@ -433,7 +432,6 @@ function RunBody({
   pullUrl: string | null;
   onView: (next: "diff" | "trace") => void;
 }) {
-  const cost = costPresentation(run.usage);
   const duration = runDuration(run);
   return (
     <>
@@ -495,17 +493,14 @@ function RunBody({
         />
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-1 text-sm text-text-muted">
-        {run.usage === undefined ? null : (
+      {run.usage === undefined ? null : (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-sm text-text-muted">
           <span className="tabular-nums">
             用量 输入 {run.usage.inputTokens.toLocaleString("zh-CN")} · 输出{" "}
-            {run.usage.outputTokens.toLocaleString("zh-CN")} tokens
+            {run.usage.outputTokens.toLocaleString("zh-CN")} · 共{" "}
+            {run.usage.totalTokens.toLocaleString("zh-CN")} tokens
           </span>
-        )}
-        <span className="tabular-nums">成本 {cost.amount}</span>
-      </div>
-      {cost.note === null ? null : (
-        <p className="px-1 text-sm break-words text-warning">{cost.note}</p>
+        </div>
       )}
 
       {/*

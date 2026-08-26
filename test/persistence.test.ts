@@ -415,6 +415,139 @@ test("升级前建的数据库仍能打开,锚定打回列补在既有表上", a
   assert.equal(rows[0]!["anchor_rejections"], 4);
 });
 
+test("升级删掉费用列,token 五列与历史数字仍在", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const old = new DatabaseSync(db.path);
+  old.exec(`CREATE TABLE review_run (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    head_sha TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    duration_ms INTEGER,
+    changed_files INTEGER NOT NULL,
+    changed_lines INTEGER NOT NULL,
+    batch_count INTEGER NOT NULL,
+    failed INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    total_tokens INTEGER,
+    cost_usd REAL,
+    known_cost_usd REAL,
+    cost_source TEXT,
+    unknown_cost_reviewer_count INTEGER
+  );
+  CREATE TABLE reviewer_outcome (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES review_run(id),
+    model TEXT NOT NULL,
+    failure TEXT,
+    finding_count INTEGER NOT NULL,
+    anomaly_count INTEGER NOT NULL,
+    rejected_tool_calls INTEGER NOT NULL,
+    anchor_rejections INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    total_tokens INTEGER,
+    cost_usd REAL,
+    known_cost_usd REAL,
+    cost_source TEXT
+  );
+  CREATE TABLE model_directory_model (
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL CHECK (model <> ''),
+    service_version INTEGER NOT NULL CHECK (service_version > 0),
+    name TEXT,
+    api TEXT,
+    base_url TEXT,
+    input_json TEXT,
+    reasoning INTEGER CHECK (reasoning IS NULL OR reasoning IN (0, 1)),
+    cost_json TEXT,
+    context_window INTEGER,
+    max_tokens INTEGER,
+    field_sources_json TEXT,
+    PRIMARY KEY (provider, model)
+  )`);
+  const oldRun = old.prepare(
+    `INSERT INTO review_run
+       (owner, repo, pull_number, head_sha, started_at, changed_files, changed_lines, batch_count,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens,
+        cost_usd, known_cost_usd, cost_source, unknown_cost_reviewer_count)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run("acme", "widgets", 7, "old-sha", "2026-08-01T00:00:00.000Z", 1, 2, 1,
+    8, 2, 3, 1, 14, 0.0042, 0.0042, "trusted", 0);
+  old.prepare(
+    `INSERT INTO reviewer_outcome
+       (run_id, model, finding_count, anomaly_count, rejected_tool_calls, duration_ms,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens,
+        cost_usd, known_cost_usd, cost_source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(Number(oldRun.lastInsertRowid), "legacy-model", 0, 0, 0, 1, 8, 2, 3, 1, 14, 0.0042, 0.0042, "trusted");
+  old.prepare(
+    `INSERT INTO model_directory_model
+       (provider, model, service_version, name, cost_json, context_window)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run("deepseek", "deepseek-v4-flash", 1, "DeepSeek V4 Flash", '{"input":1}', 128000);
+  old.exec("PRAGMA user_version = 1");
+  old.close();
+
+  const store = openStore(db.path);
+  store.close();
+
+  const columns = (table: string): string[] =>
+    query(db.path, `PRAGMA table_info(${table})`).map((row) => String(row["name"]));
+  for (const column of ["cost_usd", "known_cost_usd", "cost_source", "unknown_cost_reviewer_count"]) {
+    assert.equal(columns("review_run").includes(column), false, `review_run 仍有 ${column}`);
+  }
+  for (const column of ["cost_usd", "known_cost_usd", "cost_source"]) {
+    assert.equal(columns("reviewer_outcome").includes(column), false, `reviewer_outcome 仍有 ${column}`);
+  }
+  assert.equal(columns("model_directory_model").includes("cost_json"), false);
+
+  // token 五列与它们的数字都要留下:用量是运行诊断信息,与计费无关。
+  const tokenColumns = [
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "total_tokens",
+  ];
+  for (const column of tokenColumns) {
+    assert.equal(columns("review_run").includes(column), true);
+    assert.equal(columns("reviewer_outcome").includes(column), true);
+  }
+
+  const reopened = openStore(db.path);
+  const run = reopened.listRuns({ limit: 10 })[0]!;
+  assert.deepEqual(run.usage, {
+    inputTokens: 8,
+    outputTokens: 2,
+    cacheReadTokens: 3,
+    cacheWriteTokens: 1,
+    totalTokens: 14,
+  });
+  assert.deepEqual(run.models[0]!.usage, {
+    inputTokens: 8,
+    outputTokens: 2,
+    cacheReadTokens: 3,
+    cacheWriteTokens: 1,
+    totalTokens: 14,
+  });
+  reopened.close();
+
+  const model = query(db.path, "SELECT * FROM model_directory_model")[0]!;
+  assert.equal(model["name"], "DeepSeek V4 Flash");
+  assert.equal(model["context_window"], 128000);
+});
+
 test("升级前的 review_run 补 triggered_by 与 title,历史行按投递读且标题为空", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
@@ -482,11 +615,6 @@ test("升级前的 review_run 补 triggered_by 与 title,历史行按投递读�
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     totalTokens: 10,
-    costUsd: 0,
-    knownCostUsd: 0,
-    costSource: "legacy",
-    costIncomplete: false,
-    unknownCostReviewers: 0,
   });
   assert.deepEqual(store.listRuns({ limit: 10 })[0]!.models[0]!.usage, {
     inputTokens: 8,
@@ -494,11 +622,6 @@ test("升级前的 review_run 补 triggered_by 与 title,历史行按投递读�
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     totalTokens: 10,
-    costUsd: 0,
-    knownCostUsd: 0,
-    costSource: "legacy",
-    costIncomplete: false,
-    unknownCostReviewers: 0,
   });
   store.startRun({
     owner: "acme",
@@ -527,11 +650,8 @@ test("用量与耗时落库,Review Run 一级是各 Reviewer 之和", async () =
     cacheReadTokens: 900,
     cacheWriteTokens: 100,
     totalTokens: 2500,
-    costUsd: 0.0042,
-    knownCostUsd: 0.0042,
-    costSource: "trusted",
   };
-  const freeUsage: ReviewerUsage = { ...usage, costUsd: 0, knownCostUsd: 0 };
+  const freeUsage: ReviewerUsage = { ...usage, totalTokens: 2500 };
   const slow: Reviewer = {
     model: "slow-model",
     review: async () => {
@@ -556,18 +676,12 @@ test("用量与耗时落库,Review Run 一级是各 Reviewer 之和", async () =
 
   const outcomes = query(db.path, "SELECT * FROM reviewer_outcome ORDER BY model");
   assert.equal(outcomes[0]!["total_tokens"], 2500);
-  assert.equal(outcomes[0]!["cost_usd"], 0);
-  assert.equal(outcomes[0]!["cost_source"], "trusted");
   const slowRow = outcomes.find((r) => r["model"] === "slow-model")!;
   assert.ok((slowRow["duration_ms"] as number) >= 30, "Reviewer 的耗时没有被记录");
 
   const run = query(db.path, "SELECT * FROM review_run")[0]!;
   assert.equal(run["input_tokens"], 2400);
   assert.equal(run["total_tokens"], 5000);
-  assert.equal(run["cost_usd"], 0.0042);
-  assert.equal(run["known_cost_usd"], 0.0042);
-  assert.equal(run["cost_source"], "trusted");
-  assert.equal(run["unknown_cost_reviewer_count"], 0);
   assert.ok((run["duration_ms"] as number) >= 30);
 });
 
@@ -592,71 +706,6 @@ test("同一数据库上的第二次 Review Run 追加一行,不覆盖上一次"
   assert.notEqual(runs[0]!["head_sha"], runs[1]!["head_sha"]);
   assert.equal(query(db.path, "SELECT * FROM finding").length, 2);
 });
-// Pi 可能因路由价格或不可信目录回报负数；产品不能把它记成 0。未知价格同理，二者都应
-// 保存为未知，同时保留其他 Reviewer 的已知金额小计。
-test("未知价格与负成本保持未知,同一轮的已知金额只作小计", async () => {
-  const { cache, db, forge } = setup();
-
-  const negative: ReviewerUsage = {
-    inputTokens: 120,
-    outputTokens: 40,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    totalTokens: 160,
-    costUsd: -0.9,
-    knownCostUsd: -0.9,
-    costSource: "trusted",
-  };
-  const priced: ReviewerUsage = {
-    ...negative,
-    costUsd: 0.25,
-    knownCostUsd: 0.25,
-  };
-  const unknown: ReviewerUsage = {
-    ...negative,
-    costUsd: null,
-    knownCostUsd: 0,
-    costSource: "unknown",
-  };
-
-  await runReview(EVENT, {
-    forge: forge.forge,
-    reviewers: [
-      scriptedReviewer("openrouter:openrouter/auto", [FINDING], { usage: negative }),
-      scriptedReviewer("deepseek:deepseek-v4-flash", [FINDING], { usage: priced }),
-      scriptedReviewer("unknown-price", [FINDING], { usage: unknown }),
-    ],
-    cacheDir: cache.dir,
-    dbPath: db.path,
-  });
-
-  assert.deepEqual(
-    query(db.path, "SELECT model, cost_usd, cost_source FROM reviewer_outcome ORDER BY model").map(
-      (row) => [row["model"], row["cost_usd"], row["cost_source"]],
-    ),
-    [
-      ["deepseek:deepseek-v4-flash", 0.25, "trusted"],
-      ["openrouter:openrouter/auto", null, "unknown"],
-      ["unknown-price", null, "unknown"],
-    ],
-  );
-  // 负数不是费用，不能再写成可信 0；整轮保留已知小计并由未知占优。
-  const run = query(db.path, "SELECT * FROM review_run")[0]!;
-  assert.equal(run["cost_usd"], null);
-  assert.equal(run["known_cost_usd"], 0.25);
-  assert.equal(run["cost_source"], "unknown");
-  assert.equal(run["unknown_cost_reviewer_count"], 2);
-
-  // 后续开库只读持久化事实，不会拿新的目录价格回算这一轮。
-  const reopened = openStore(db.path);
-  const persisted = reopened.listRuns({ limit: 1 })[0]!.usage!;
-  assert.equal(persisted.costUsd, null);
-  assert.equal(persisted.knownCostUsd, 0.25);
-  assert.equal(persisted.costSource, "unknown");
-  assert.equal(persisted.unknownCostReviewers, 2);
-  reopened.close();
-});
-
 test("时间流带上每条 Finding 的 Forge 评论 id 与链接", async () => {
   const { cache, db, forge } = setup();
 

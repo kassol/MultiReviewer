@@ -28,7 +28,6 @@ import { api, errorText, fetchJson } from "./api.ts";
 import {
   SOURCE_LABEL,
   useModelServices,
-  type ModelCost,
   type ModelCredentialState,
   type ModelDirectoryState,
   type ModelReference,
@@ -949,7 +948,7 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
 
 /**
  * 发现结果清单。它只呈现这一次发现拿回来的 model id 与显示名——预览响应里没有上下文
- * 窗口和单价,所以设计稿那两栏元信息在这里不画,不拿运行基线的数字冒充发现结果。
+ * 窗口,所以设计稿那两栏元信息在这里不画,不拿运行基线的数字冒充发现结果。
  * 选中行跟着验证模型走:验证模型是在下面的组合框里选的,这里只做回显。
  */
 function DiscoveredModels({
@@ -2167,7 +2166,7 @@ function CatalogControls({
         <div className="flex items-center gap-1.5">
           {/* label 兼作这张卡的可访问名称:models 分支没有卡头,壳上的 aria-labelledby 指向它。 */}
           <Text as="label" id={`catalog-actions-${service.provider}`} htmlFor={inputId} size="2" weight="medium">手动添加模型</Text>
-          <HelpTooltip label="手动添加模型说明" content="只需填写模型 ID。显示名、价格、上下文窗口和能力信息由目录或运行基线提供。" />
+          <HelpTooltip label="手动添加模型说明" content="只需填写模型 ID。显示名、上下文窗口和能力信息由目录或运行基线提供。" />
         </div>
         <div className="flex flex-col gap-2.5 sm:flex-row">
           <TextField.Root
@@ -2187,7 +2186,7 @@ function CatalogControls({
         {!canValidate ? (
           <p className="text-base text-warning">请先恢复正常 provider 并验证模型凭据。</p>
         ) : (
-          <p className="text-base text-text-muted">价格、窗口、显示名与能力不能手工填写。</p>
+          <p className="text-base text-text-muted">窗口、显示名与能力不能手工填写。</p>
         )}
         {operationError === null ? null : (
           <Callout.Root role="alert" color="red" size="1" className="mt-1.5">
@@ -2300,16 +2299,6 @@ function CatalogControls({
   );
 }
 
-function CostValue({ cost }: { cost: ModelCost | null }) {
-  if (cost === null) return <span className="text-warning">费用未记账</span>;
-  return (
-    <span>
-      输入 <span className="font-mono tabular-nums">${cost.input}/M</span> · 输出{" "}
-      <span className="font-mono tabular-nums">${cost.output}/M</span>
-    </span>
-  );
-}
-
 function fieldSourceLabel(source: ModelRuntimeFieldSource | null): string {
   return source === null
     ? "未知"
@@ -2328,28 +2317,11 @@ function sameInput(left: readonly string[] | null, right: readonly string[]): bo
   return left !== null && left.length === right.length && left.every((value) => right.includes(value));
 }
 
-function sameCost(left: ModelCost | null, right: ModelCost | null): boolean {
-  if (left === null || right === null) return left === right;
-  if (
-    left.input !== right.input ||
-    left.output !== right.output ||
-    left.cacheRead !== right.cacheRead ||
-    left.cacheWrite !== right.cacheWrite
-  ) return false;
-  const leftTiers = left.tiers ?? [];
-  const rightTiers = right.tiers ?? [];
-  return leftTiers.length === rightTiers.length && leftTiers.every((tier, index) => {
-    const other = rightTiers[index];
-    return other !== undefined && tier.inputTokensAbove === other.inputTokensAbove && sameCost(tier, other);
-  });
-}
-
 function discoveryDiffersFromRuntime(model: ModelServiceModel): boolean {
   return !sameInput(model.discovery.input, model.runtime.input) ||
     model.discovery.reasoning !== model.runtime.reasoning ||
     model.discovery.contextWindow !== model.runtime.contextWindow ||
-    model.discovery.maxOutput !== model.runtime.maxOutput ||
-    !sameCost(model.discovery.cost, model.runtime.cost);
+    model.discovery.maxOutput !== model.runtime.maxOutput;
 }
 
 const MODEL_ROWS_PAGE_SIZE = 40;
@@ -2647,7 +2619,6 @@ function ModelDiscoveryDifference({ model }: { model: ModelServiceModel }) {
             上下文：{model.discovery.contextWindow === null ? <span className="text-warning">未提供</span> : <span className="font-mono tabular-nums">{quantity(model.discovery.contextWindow)}</span>}
             {" · "}最大输出：{model.discovery.maxOutput === null ? <span className="text-warning">未提供</span> : <span className="font-mono tabular-nums">{quantity(model.discovery.maxOutput)}</span>}
           </p>
-          <p><CostValue cost={model.discovery.cost} /></p>
         </div>
       </Collapsible.Content>
     </Collapsible.Root>
@@ -2664,10 +2635,7 @@ function ModelRuntimeFacts({ model }: { model: ModelServiceModel }) {
         <span>上下文：<span className="font-mono tabular-nums">{quantity(model.runtime.contextWindow)}</span></span>
         <span>最大输出：<span className="font-mono tabular-nums">{quantity(model.runtime.maxOutput)}</span></span>
       </p>
-      <p className="flex flex-wrap gap-x-3 gap-y-0.5">
-        <CostValue cost={model.runtime.cost} />
-        <span className="text-text-muted">规格来源：{sources.join(" / ")}</span>
-      </p>
+      <p className="text-text-muted">规格来源：{sources.join(" / ")}</p>
     </div>
   );
 }

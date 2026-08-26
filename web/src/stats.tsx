@@ -13,7 +13,6 @@ import { PageHeader } from "@/components/page-header";
 import { cn } from "@/lib/utils";
 
 import { api, fetchJson } from "./api.ts";
-import { costPresentation, type UsageSummary } from "./usage-cost.ts";
 
 /** 处置率矩阵的一格:仓库 × category(ADR 0015)。 */
 export type Cell = {
@@ -36,6 +35,16 @@ export type Cell = {
 export type ModelParticipation = {
   model: string;
   findings: number;
+};
+
+/** 时间窗里的用量:落了用量的 Review Run 数与它们的 token 之和。一轮都没有时 null。 */
+type UsageSummary = {
+  runs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
 };
 
 type StatsResponse = {
@@ -211,7 +220,6 @@ export function StatsPage() {
   // 矩阵合计行(全部仓库)的总计,与逐仓库合计同一口径,只是不按仓库过滤。
   const grandTotal = sum(cells);
   const participation = stats.data?.models ?? [];
-  const usageCost = costPresentation(stats.data?.usage);
 
   return (
     <>
@@ -252,26 +260,31 @@ export function StatsPage() {
         ) : null}
 
         {stats.data === undefined ? null : (
-          // KPI 卡同款读数(§7.6):费用是本页主指标走 29px,tokens 是次要读数压小一档。
+          // KPI 卡同款读数(§7.6):token 是本页主读数走 29px,运行次数与明细压小一档。
           <section
             aria-label="时间窗用量"
             className="flex flex-col gap-4 rounded-lg border border-card-line bg-surface px-[19px] py-[17px] shadow-card sm:flex-row sm:items-center sm:justify-between"
           >
             <div className="flex flex-col gap-[5px]">
-              <span className="text-base font-semibold text-text-muted">时间范围费用</span>
+              <span className="text-base font-semibold text-text-muted">时间范围 tokens</span>
               <b className="font-mono text-6xl font-extrabold leading-[1.15] tracking-[-0.03em] tabular-nums">
-                {usageCost.amount}
-              </b>
-              {usageCost.note === null ? null : (
-                <span className="text-base text-warning">{usageCost.note}</span>
-              )}
-            </div>
-            <div className="flex flex-col gap-[5px] sm:items-end sm:text-right">
-              <span className="text-base font-semibold text-text-muted">tokens</span>
-              <div className="font-mono text-2xl font-bold tabular-nums">
                 {stats.data.usage === null
                   ? "—"
                   : stats.data.usage.totalTokens.toLocaleString("zh-CN")}
+              </b>
+              {stats.data.usage === null ? null : (
+                <span className="text-base text-text-muted tabular-nums">
+                  输入 {stats.data.usage.inputTokens.toLocaleString("zh-CN")} · 输出{" "}
+                  {stats.data.usage.outputTokens.toLocaleString("zh-CN")} · 缓存读{" "}
+                  {stats.data.usage.cacheReadTokens.toLocaleString("zh-CN")} · 缓存写{" "}
+                  {stats.data.usage.cacheWriteTokens.toLocaleString("zh-CN")}
+                </span>
+              )}
+            </div>
+            <div className="flex flex-col gap-[5px] sm:items-end sm:text-right">
+              <span className="text-base font-semibold text-text-muted">运行次数</span>
+              <div className="font-mono text-2xl font-bold tabular-nums">
+                {stats.data.usage === null ? "—" : stats.data.usage.runs.toLocaleString("zh-CN")}
               </div>
             </div>
           </section>

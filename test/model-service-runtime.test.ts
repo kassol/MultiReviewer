@@ -142,8 +142,8 @@ test("OpenAI-compatible 发现保留服务接口名称并按厂商用 Pi 目录�
     }, result.models[0]!);
     assert.equal(synthesized.ok, true);
     if (synthesized.ok) {
-      assert.equal(synthesized.value.runtime.cost, undefined);
-      assert.equal(synthesized.value.runtime.sources.cost, "unknown");
+      assert.equal(synthesized.value.runtime.contextWindow, 272_000);
+      assert.equal(synthesized.value.runtime.sources.contextWindow, "trusted");
     }
   } finally {
     stub.restore();
@@ -191,21 +191,18 @@ test("未知型号保留服务接口名称与目标，运行信息回退基线",
       reasoning: synthesized.value.runtime.reasoning,
       contextWindow: synthesized.value.runtime.contextWindow,
       maxTokens: synthesized.value.runtime.maxTokens,
-      cost: synthesized.value.runtime.cost,
       sources: synthesized.value.runtime.sources,
     }, {
       input: ["text"],
       reasoning: false,
       contextWindow: 128_000,
       maxTokens: 16_000,
-      cost: undefined,
       sources: {
         name: "trusted",
         api: "service-target",
         baseUrl: "service-target",
         input: "runtime-baseline",
         reasoning: "runtime-baseline",
-        cost: "unknown",
         contextWindow: "runtime-baseline",
         maxTokens: "runtime-baseline",
       },
@@ -283,7 +280,7 @@ test("OpenAI-compatible 发现把坏响应、空目录、请求失败与超时�
   }
 });
 
-test("运行模型逐字段采用可信信息,缺项固定回落到 text-only 128k/16k 且价格保持未知", () => {
+test("运行模型逐字段采用可信信息,缺项固定回落到 text-only 128k/16k", () => {
   assert.deepEqual(MODEL_RUNTIME_BASELINE, {
     input: ["text"],
     reasoning: false,
@@ -324,8 +321,7 @@ test("运行模型逐字段采用可信信息,缺项固定回落到 text-only 12
         reasoning: false,
         contextWindow: 32_000,
         maxTokens: 16_000,
-        cost: undefined,
-        sources: {
+          sources: {
           name: "trusted",
           api: "service-target",
           baseUrl: "service-target",
@@ -333,53 +329,20 @@ test("运行模型逐字段采用可信信息,缺项固定回落到 text-only 12
           reasoning: "runtime-baseline",
           contextWindow: "trusted",
           maxTokens: "runtime-baseline",
-          cost: "unknown",
-        },
+          },
       },
     },
   });
   assert.equal(JSON.stringify(result).includes(candidate.credential), false);
 
-  const knownZero = synthesizeRuntimeModel(candidate, {
+  const trustedFields = synthesizeRuntimeModel(candidate, {
     ...discovery,
-    fields: {
-      reasoning: false,
-      maxTokens: 2048,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    },
+    fields: { reasoning: false, maxTokens: 2048 },
   });
-  assert.equal(knownZero.ok, true);
-  if (knownZero.ok) {
-    assert.deepEqual(knownZero.value.runtime.cost, {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-    });
-    assert.equal(knownZero.value.runtime.sources.cost, "trusted");
-    assert.equal(knownZero.value.runtime.sources.reasoning, "trusted");
-    assert.equal(knownZero.value.runtime.sources.maxTokens, "trusted");
-  }
-
-  const unusablePrice = synthesizeRuntimeModel(candidate, {
-    ...discovery,
-    fields: { cost: { input: -1, output: 1, cacheRead: 0, cacheWrite: 0 } },
-  });
-  assert.equal(unusablePrice.ok, true);
-  if (unusablePrice.ok) {
-    assert.equal(unusablePrice.value.runtime.cost, undefined);
-    assert.equal(unusablePrice.value.runtime.sources.cost, "unknown");
-  }
-  const nonFinitePrice = synthesizeRuntimeModel(candidate, {
-    ...discovery,
-    fields: {
-      cost: { input: Number.POSITIVE_INFINITY, output: 1, cacheRead: 0, cacheWrite: 0 },
-    },
-  });
-  assert.equal(nonFinitePrice.ok, true);
-  if (nonFinitePrice.ok) {
-    assert.equal(nonFinitePrice.value.runtime.cost, undefined);
-    assert.equal(nonFinitePrice.value.runtime.sources.cost, "unknown");
+  assert.equal(trustedFields.ok, true);
+  if (trustedFields.ok) {
+    assert.equal(trustedFields.value.runtime.sources.reasoning, "trusted");
+    assert.equal(trustedFields.value.runtime.sources.maxTokens, "trusted");
   }
 });
 
@@ -462,7 +425,6 @@ test("内置 provider 目标解析只返回当前 Pi 的 api 与 baseUrl", async
         reasoning: synthesized.value.runtime.reasoning,
         contextWindow: synthesized.value.runtime.contextWindow,
         maxTokens: synthesized.value.runtime.maxTokens,
-        cost: synthesized.value.runtime.cost,
       },
       {
         name: "deepseek-v4-flash",
@@ -471,8 +433,7 @@ test("内置 provider 目标解析只返回当前 Pi 的 api 与 baseUrl", async
         reasoning: false,
         contextWindow: 128_000,
         maxTokens: 16_000,
-        cost: undefined,
-      },
+        },
     );
   }
 });
@@ -600,7 +561,6 @@ test("Reviewer 固定运行模型不读取可变共享当前配置", async () =>
     baseUrl: "https://pinned-run.example.test/v1",
     input: ["text"],
     reasoning: false,
-    cost: undefined,
     contextWindow: 128_000,
     maxTokens: 16_000,
     sources: {
@@ -609,7 +569,6 @@ test("Reviewer 固定运行模型不读取可变共享当前配置", async () =>
       baseUrl: "service-target",
       input: "runtime-baseline",
       reasoning: "runtime-baseline",
-      cost: "unknown",
       contextWindow: "runtime-baseline",
       maxTokens: "runtime-baseline",
     },

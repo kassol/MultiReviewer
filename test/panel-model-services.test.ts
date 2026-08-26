@@ -118,7 +118,6 @@ function seedServices(h: PanelHarness): { ciphertexts: string[]; plaintexts: str
               baseUrl: "https://catalog-target.example/v1",
               input: ["text", "image"],
               reasoning: true,
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
               maxTokens: 4096,
             },
           },
@@ -177,7 +176,6 @@ function seedServices(h: PanelHarness): { ciphertexts: string[]; plaintexts: str
               baseUrl: "https://committed-snapshot.example/v1",
               input: ["image"],
               reasoning: false,
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
               contextWindow: 7777,
               maxTokens: 333,
             },
@@ -395,7 +393,6 @@ function openRouterRow(id: string): Record<string, unknown> {
     name: `测试目录 ${id}`,
     context_length: 128_000,
     architecture: { input_modalities: ["text"] },
-    pricing: { prompt: "0.000002", completion: "0.000008" },
     top_provider: { context_length: 128_000, max_completion_tokens: 4096 },
     supported_parameters: ["tools"],
   };
@@ -1214,9 +1211,8 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
       reasoning: boolean | null;
       contextWindow: number | null;
       maxOutput: number | null;
-      cost: unknown;
     };
-    runtime: { contextWindow: number; maxOutput: number; cost: unknown; sources: Record<string, string> };
+    runtime: { contextWindow: number; maxOutput: number; sources: Record<string, string> };
   }[];
   assert.deepEqual(
     models.map((model) => ({ id: model.id, sources: model.sources })),
@@ -1235,7 +1231,6 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
     reasoning: true,
     contextWindow: null,
     maxOutput: 4096,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     sources: {
       name: "service-interface",
       api: "service-target",
@@ -1244,7 +1239,6 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
       reasoning: "service-interface",
       contextWindow: null,
       maxOutput: "service-interface",
-      cost: "service-interface",
     },
   });
   assert.deepEqual(models[0]!.runtime, {
@@ -1252,13 +1246,11 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
     reasoning: true,
     contextWindow: 128_000,
     maxOutput: 4096,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     sources: {
       input: "service-interface",
       reasoning: "service-interface",
       contextWindow: "runtime-baseline",
       maxOutput: "service-interface",
-      cost: "service-interface",
     },
   });
   assert.deepEqual(models[1]!.discovery, {
@@ -1269,7 +1261,6 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
     reasoning: null,
     contextWindow: null,
     maxOutput: null,
-    cost: null,
     sources: {
       name: null,
       api: "service-target",
@@ -1278,21 +1269,18 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
       reasoning: null,
       contextWindow: null,
       maxOutput: null,
-      cost: null,
-    },
+      },
   });
   assert.deepEqual(models[1]!.runtime, {
     input: ["text"],
     reasoning: false,
     contextWindow: 128_000,
     maxOutput: 16_000,
-    cost: null,
     sources: {
       input: "runtime-baseline",
       reasoning: "runtime-baseline",
       contextWindow: "runtime-baseline",
       maxOutput: "runtime-baseline",
-      cost: "unknown",
     },
   });
   const builtin = modelBody.services.find((entry) => entry["provider"] === "deepseek")!;
@@ -1327,7 +1315,6 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
     reasoning: null,
     contextWindow: null,
     maxOutput: null,
-    cost: null,
     sources: {
       name: null,
       api: "service-target",
@@ -1336,21 +1323,18 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
       reasoning: null,
       contextWindow: null,
       maxOutput: null,
-      cost: null,
-    },
+      },
   });
   assert.deepEqual(validationSupplement.runtime, {
     input: ["text"],
     reasoning: false,
     contextWindow: 128_000,
     maxOutput: 16_000,
-    cost: null,
     sources: {
       input: "runtime-baseline",
       reasoning: "runtime-baseline",
       contextWindow: "runtime-baseline",
       maxOutput: "runtime-baseline",
-      cost: "unknown",
     },
   });
   const migrationRetention = builtinModels.find((model) => model.id === "migration-model")!;
@@ -1381,7 +1365,6 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
     reasoning: false,
     contextWindow: 7777,
     maxOutput: 333,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     sources: {
       name: "pi-catalog",
       api: "service-target",
@@ -1390,7 +1373,6 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
       reasoning: "pi-catalog",
       contextWindow: "pi-catalog",
       maxOutput: "pi-catalog",
-      cost: "pi-catalog",
     },
   });
   assert.deepEqual(pendingAutomatic.runtime, {
@@ -1398,13 +1380,11 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
     reasoning: false,
     contextWindow: 7777,
     maxOutput: 333,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     sources: {
       input: "pi-catalog",
       reasoning: "pi-catalog",
       contextWindow: "pi-catalog",
       maxOutput: "pi-catalog",
-      cost: "pi-catalog",
     },
   });
   assert.equal(pendingModels.every((model) => !model.available), true);
@@ -1460,8 +1440,7 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
         reasoning: null,
         contextWindow: null,
         maxOutput: null,
-        cost: null,
-        sources: {
+            sources: {
           name: null,
           api: null,
           baseUrl: null,
@@ -1469,22 +1448,19 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
           reasoning: null,
           contextWindow: null,
           maxOutput: null,
-          cost: null,
-        },
+              },
       },
       runtime: {
         input: ["text"],
         reasoning: false,
         contextWindow: 128_000,
         maxOutput: 16_000,
-        cost: null,
-        sources: {
+            sources: {
           input: "runtime-baseline",
           reasoning: "runtime-baseline",
           contextWindow: "runtime-baseline",
           maxOutput: "runtime-baseline",
-          cost: "unknown",
-        },
+            },
       },
     },
     "已经保存但服务与来源都消失的模型仍要留在统一候选里",
@@ -1660,7 +1636,6 @@ test("自定义服务中与 Pi 同 model id 的信息来源按字段投影", asy
     reasoning: true,
     contextWindow: 272_000,
     maxOutput: 128_000,
-    cost: null,
     sources: {
       name: "service-interface",
       api: "service-target",
@@ -1669,21 +1644,18 @@ test("自定义服务中与 Pi 同 model id 的信息来源按字段投影", asy
       reasoning: "pi-catalog",
       contextWindow: "pi-catalog",
       maxOutput: "pi-catalog",
-      cost: null,
-    },
+      },
   });
   assert.deepEqual(model.runtime, {
     input: ["text", "image"],
     reasoning: true,
     contextWindow: 272_000,
     maxOutput: 128_000,
-    cost: null,
     sources: {
       input: "pi-catalog",
       reasoning: "pi-catalog",
       contextWindow: "pi-catalog",
       maxOutput: "pi-catalog",
-      cost: "unknown",
     },
   });
 });
@@ -3452,8 +3424,7 @@ test("模型补录只做一次真实推理并绑定当前目标，失败与旧�
       reasoning: null,
       contextWindow: null,
       maxOutput: null,
-      cost: null,
-      sources: {
+        sources: {
         name: null,
         api: "service-target",
         baseUrl: "service-target",
@@ -3461,22 +3432,19 @@ test("模型补录只做一次真实推理并绑定当前目标，失败与旧�
         reasoning: null,
         contextWindow: null,
         maxOutput: null,
-        cost: null,
-      },
+          },
     });
     assert.deepEqual(manual.runtime, {
       input: ["text"],
       reasoning: false,
       contextWindow: 128_000,
       maxOutput: 16_000,
-      cost: null,
-      sources: {
+        sources: {
         input: "runtime-baseline",
         reasoning: "runtime-baseline",
         contextWindow: "runtime-baseline",
         maxOutput: "runtime-baseline",
-        cost: "unknown",
-      },
+        },
     });
 
     const callsBeforeStale = stub.calls.length;

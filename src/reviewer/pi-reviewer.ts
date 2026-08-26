@@ -15,7 +15,7 @@ import type {
 import { modelIdentity } from "../config.ts";
 import { MODEL_API_KEY_ENV, reviewerEnv } from "./env.ts";
 import { normalizeFinding, normalizeVerdict } from "./normalize.ts";
-import type { ReviewerRequest, WorkerMessage, WorkerUsage } from "./protocol.ts";
+import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 
 const WORKER_PATH = fileURLToPath(new URL("./worker.ts", import.meta.url));
@@ -44,29 +44,6 @@ export function createPiReviewer(config: PiReviewerConfig): Reviewer {
     model: modelIdentity({ provider: config.runtimeModel.provider, model: config.runtimeModel.id }),
     review: (range, worktreePath, history, onEvent) =>
       runInChild(WORKER_PATH, config, range, worktreePath, history, onEvent),
-  };
-}
-
-/**
- * Pi 必须拿到数字单价并始终回一个数字成本；只有本轮固定价格可信且结果可用时，那个数字
- * 才能越过适配边界成为产品费用。可信免费因此仍是 0，未知价格不会被伪装成免费。
- */
-function reviewerUsage(
-  raw: WorkerUsage,
-  pinnedCostSource: RuntimeModel["sources"]["cost"],
-): ReviewerUsage {
-  const trusted =
-    pinnedCostSource === "trusted" && Number.isFinite(raw.costUsd) && raw.costUsd >= 0;
-  const costUsd = trusted ? raw.costUsd : null;
-  return {
-    inputTokens: raw.inputTokens,
-    outputTokens: raw.outputTokens,
-    cacheReadTokens: raw.cacheReadTokens,
-    cacheWriteTokens: raw.cacheWriteTokens,
-    totalTokens: raw.totalTokens,
-    costUsd,
-    knownCostUsd: costUsd ?? 0,
-    costSource: trusted ? "trusted" : "unknown",
   };
 }
 
@@ -178,9 +155,7 @@ export function runInChild(
       }
       rejectedToolCalls = message.rejectedToolCalls;
       anchorRejections = message.anchorRejections;
-      usage = message.usage === undefined
-        ? undefined
-        : reviewerUsage(message.usage, config.runtimeModel.sources.cost);
+      usage = message.usage;
       done = message;
       // 结果已经拿到,不该再为一个赖着不退出的子进程等满超时。
       clearTimeout(timer);

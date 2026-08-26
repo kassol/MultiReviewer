@@ -35,14 +35,6 @@ export type ModelReference = {
   locations: ModelReferenceLocation[];
 };
 
-export type ModelCost = {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  tiers?: readonly (ModelCost & { inputTokensAbove: number })[];
-};
-
 export type ModelDiscoveryFieldSource = "service-interface" | "pi-catalog" | "service-target";
 export type ModelRuntimeFieldSource = ModelDiscoveryFieldSource | "runtime-baseline" | "unknown";
 
@@ -64,7 +56,6 @@ export type ModelServiceModel = {
     reasoning: boolean | null;
     contextWindow: number | null;
     maxOutput: number | null;
-    cost: ModelCost | null;
     sources: {
       name: ModelDiscoveryFieldSource | null;
       api: ModelDiscoveryFieldSource | null;
@@ -73,7 +64,6 @@ export type ModelServiceModel = {
       reasoning: ModelDiscoveryFieldSource | null;
       contextWindow: ModelDiscoveryFieldSource | null;
       maxOutput: ModelDiscoveryFieldSource | null;
-      cost: ModelDiscoveryFieldSource | null;
     };
   };
   runtime: {
@@ -81,13 +71,11 @@ export type ModelServiceModel = {
     reasoning: boolean;
     contextWindow: number;
     maxOutput: number;
-    cost: ModelCost | null;
     sources: {
       input: ModelRuntimeFieldSource;
       reasoning: ModelRuntimeFieldSource;
       contextWindow: ModelRuntimeFieldSource;
       maxOutput: ModelRuntimeFieldSource;
-      cost: ModelRuntimeFieldSource;
     };
   };
 };

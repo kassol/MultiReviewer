@@ -27,7 +27,6 @@ function readyPlan(spec: ReviewerSpec, credential = `${spec.provider}-secret`): 
       baseUrl: `https://${spec.provider}.example.test/v1`,
       input: ["text"],
       reasoning: false,
-      cost: undefined,
       contextWindow: 128_000,
       maxTokens: 16_000,
       sources: {
@@ -36,7 +35,6 @@ function readyPlan(spec: ReviewerSpec, credential = `${spec.provider}-secret`): 
         baseUrl: "service-target",
         input: "runtime-baseline",
         reasoning: "runtime-baseline",
-        cost: "unknown",
         contextWindow: "runtime-baseline",
         maxTokens: "runtime-baseline",
       },

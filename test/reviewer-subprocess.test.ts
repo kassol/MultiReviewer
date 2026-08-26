@@ -25,7 +25,6 @@ const CONFIG = {
     baseUrl: "https://pinned.example.test/v1",
     input: ["text"] as const,
     reasoning: false,
-    cost: undefined,
     contextWindow: 128_000,
     maxTokens: 16_000,
     sources: {
@@ -244,7 +243,7 @@ process.on("message", () => {
   assert.equal(outcome.rejectedToolCalls, 1);
 });
 
-test("固定价格来源决定 Pi 数字能不能成为产品费用", async () => {
+test("子进程回报的 token 用量原样成为该 Reviewer 的用量", async () => {
   const path = worker(`
 process.on("message", () => {
   process.send({
@@ -257,67 +256,20 @@ process.on("message", () => {
       cacheReadTokens: 20,
       cacheWriteTokens: 5,
       totalTokens: 185,
-      costUsd: 0.25,
     },
   });
   process.exit(0);
 });
 `);
 
-  const unknown = await runInChild(path, CONFIG, RANGE, tmpdir());
-  assert.deepEqual(unknown.usage, {
+  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir());
+  assert.deepEqual(outcome.usage, {
     inputTokens: 120,
     outputTokens: 40,
     cacheReadTokens: 20,
     cacheWriteTokens: 5,
     totalTokens: 185,
-    costUsd: null,
-    knownCostUsd: 0,
-    costSource: "unknown",
   });
-
-  const trustedConfig = {
-    ...CONFIG,
-    runtimeModel: {
-      ...CONFIG.runtimeModel,
-      cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
-      sources: { ...CONFIG.runtimeModel.sources, cost: "trusted" as const },
-    },
-  };
-  const knownPaid = await runInChild(path, trustedConfig, RANGE, tmpdir());
-  assert.equal(knownPaid.usage?.costUsd, 0.25);
-  assert.equal(knownPaid.usage?.knownCostUsd, 0.25);
-  assert.equal(knownPaid.usage?.costSource, "trusted");
-
-  const freePath = worker(`
-process.on("message", () => {
-  process.send({
-    kind: "done",
-    rejectedToolCalls: 0,
-    anchorRejections: 0,
-    usage: {
-      inputTokens: 1,
-      outputTokens: 1,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      totalTokens: 2,
-      costUsd: 0,
-    },
-  });
-  process.exit(0);
-});
-`);
-  const freeConfig = {
-    ...trustedConfig,
-    runtimeModel: {
-      ...trustedConfig.runtimeModel,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    },
-  };
-  const knownFree = await runInChild(freePath, freeConfig, RANGE, tmpdir());
-  assert.equal(knownFree.usage?.costUsd, 0);
-  assert.equal(knownFree.usage?.knownCostUsd, 0);
-  assert.equal(knownFree.usage?.costSource, "trusted");
 });
 
 test("子进程的环境里只有自家那一份模型凭据", async () => {

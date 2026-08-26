@@ -1,9 +1,9 @@
 /**
  * 厂商目录:某一家模型厂商自己公布的模型清单,用来补远程目录仍缺的模型。
  *
- * 这轮只接 OpenRouter。13 家实测里只有它免鉴权就给全量,而且响应自带单价与上下文窗口
+ * 这轮只接 OpenRouter。13 家实测里只有它免鉴权就给全量,而且响应自带上下文窗口
  * (`docs/research/vendor-model-catalog-apis.md`):接一家要 key 的会让目录加载反过来依赖
- * 凭据表,「还没配凭据也能看见完整目录」随之失效;缺单价的行会让 Review Run 成本恒为零。
+ * 凭据表,「还没配凭据也能看见完整目录」随之失效。
  *
  * 一家一个实现,没有注册表、没有配置项、面板上没有开关。真要接第二家时,这里多一个对象、
  * `catalog.ts` 那边多问它一次,比先造一层注册表便宜。
@@ -14,12 +14,6 @@ const OPENROUTER_PROVIDER = "openrouter";
 
 /** OpenRouter 的 v1,与远程目录落盘里那些 OpenRouter 行写的是同一个。 */
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
-
-/**
- * 官网单价是「每 token 多少美元」的字符串,而落盘那一份是每百万 token。差的就是这个
- * 10^6:不换算的话 Review Run 的成本会小六个数量级,统计上等于没花钱。
- */
-const TOKENS_PER_PRICE_UNIT = 1_000_000;
 
 /**
  * 官网不给 `max_completion_tokens` 时的回落。Pi 内置表里这样的行(实测 31 条)填的也是
@@ -44,7 +38,6 @@ export type VendorModel = {
   provider: string;
   reasoning: boolean;
   input: ("text" | "image")[];
-  cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   contextWindow: number;
   maxTokens: number;
 };
@@ -62,14 +55,13 @@ type OpenRouterEntry = {
   name: string;
   context_length: number;
   architecture?: { input_modalities?: string[] };
-  pricing: Record<string, string | undefined>;
   top_provider?: { context_length?: number; max_completion_tokens?: number };
   supported_parameters?: string[];
 };
 
 /**
  * 认得出的那些行。字段缺斤少两的一律跳过而不是补默认值:落盘那一行是子进程建模型的全部
- * 依据,猜出来的上下文窗口或单价比少一个模型难查得多。
+ * 依据,猜出来的上下文窗口比少一个模型难查得多。
  */
 function isOpenRouterEntry(value: unknown): value is OpenRouterEntry {
   if (typeof value !== "object" || value === null) return false;
@@ -78,23 +70,11 @@ function isOpenRouterEntry(value: unknown): value is OpenRouterEntry {
     typeof entry.id === "string" &&
     entry.id !== "" &&
     typeof entry.name === "string" &&
-    typeof entry.context_length === "number" &&
-    typeof entry.pricing === "object" &&
-    entry.pricing !== null &&
-    Number.isFinite(Number(entry.pricing.prompt)) &&
-    Number.isFinite(Number(entry.pricing.completion))
+    typeof entry.context_length === "number"
   );
 }
 
 function toVendorModel(entry: OpenRouterEntry): VendorModel {
-  // 负数按「没有单价」收。官网给路由类模型(`openrouter/auto` 那几个)的单价是 "-1",意思是
-  // 随路由到的那个模型浮动,不是一个费率。照乘 10^6 会落成 -1000000:面板上写作
-  // `$-1000000/M`,而 Review Run 的成本会算成负数、把累计花费往下拽。Pi 内置的那条 `auto`
-  // 记的也是 0,取值因此与它一致。
-  const perMillion = (price: string | undefined): number => {
-    const value = Number(price) * TOKENS_PER_PRICE_UNIT;
-    return Number.isFinite(value) && value > 0 ? value : 0;
-  };
   const modalities = entry.architecture?.input_modalities ?? [];
   return {
     id: entry.id,
@@ -108,12 +88,6 @@ function toVendorModel(entry: OpenRouterEntry): VendorModel {
     // Pi 的模型只认 text 与 image 两种输入,官网还会报 file / audio / video。全部现货都收
     // 文本,图生图之类的能不能当 Reviewer 由 Review Run 自己失败并写原因(issue #75)。
     input: modalities.includes("image") ? ["text", "image"] : ["text"],
-    cost: {
-      input: perMillion(entry.pricing.prompt),
-      output: perMillion(entry.pricing.completion),
-      cacheRead: perMillion(entry.pricing["input_cache_read"]),
-      cacheWrite: perMillion(entry.pricing["input_cache_write"]),
-    },
     // 顶层那个 context_length 是全部上游里最大的一个,`top_provider` 才是实际会被路由到的
     // 那家的窗口。Pi 内置表取的也是后者。
     contextWindow: entry.top_provider?.context_length ?? entry.context_length,

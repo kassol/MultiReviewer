@@ -301,7 +301,7 @@ export async function migrateModelServiceDatabase(options: ModelServiceMigration
       const legacyFactColumns = new Set(
         db.prepare("PRAGMA table_info(model_row)").all().map((row) => String(row["name"])),
       );
-      const discardedPredicates = ["cost_input", "cost_output", "context_window", "max_output_tokens"]
+      const discardedPredicates = ["context_window", "max_output_tokens"]
         .filter((column) => legacyFactColumns.has(column))
         .map((column) => `"${column}" IS NOT NULL`);
       const discardedLegacyModelFactRows = discardedPredicates.length === 0 ? 0 : Number(

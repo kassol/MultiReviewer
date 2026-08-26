@@ -188,35 +188,29 @@ test("时间流 API:失败的模型照样出现在 JSON 里,带失败原因", as
   assert.equal(Object.hasOwn(body.runs[0]!.models[0]!, "usage"), false);
 });
 
-test("时间流 API:混合费用返回已知小计、未知状态与未知 Reviewer 数", async () => {
+test("时间流 API:整轮用量是各 Reviewer 的 token 之和", async () => {
   const h = await startPanelHarness(cleanups);
-  const known: ReviewerUsage = {
+  const first: ReviewerUsage = {
     inputTokens: 8,
     outputTokens: 2,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
     totalTokens: 10,
-    costUsd: 0.1,
-    knownCostUsd: 0.1,
-    costSource: "trusted",
   };
-  const unknown: ReviewerUsage = {
+  const second: ReviewerUsage = {
     inputTokens: 15,
     outputTokens: 3,
     cacheReadTokens: 1,
     cacheWriteTokens: 1,
     totalTokens: 20,
-    costUsd: null,
-    knownCostUsd: 0,
-    costSource: "unknown",
   };
   seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
     [],
     [
-      { model: "model-a", usage: known },
-      { model: "model-b", usage: unknown },
+      { model: "model-a", usage: first },
+      { model: "model-b", usage: second },
     ],
   );
 
@@ -227,36 +221,9 @@ test("时间流 API:混合费用返回已知小计、未知状态与未知 Revie
     cacheReadTokens: 1,
     cacheWriteTokens: 1,
     totalTokens: 30,
-    costUsd: null,
-    knownCostUsd: 0.1,
-    costSource: "unknown",
-    costIncomplete: true,
-    unknownCostReviewers: 1,
   });
-  assert.deepEqual(body.runs[0]!.models[0]!.usage, {
-    inputTokens: 8,
-    outputTokens: 2,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    totalTokens: 10,
-    costUsd: 0.1,
-    knownCostUsd: 0.1,
-    costSource: "trusted",
-    costIncomplete: false,
-    unknownCostReviewers: 0,
-  });
-  assert.deepEqual(body.runs[0]!.models[1]!.usage, {
-    inputTokens: 15,
-    outputTokens: 3,
-    cacheReadTokens: 1,
-    cacheWriteTokens: 1,
-    totalTokens: 20,
-    costUsd: null,
-    knownCostUsd: 0,
-    costSource: "unknown",
-    costIncomplete: true,
-    unknownCostReviewers: 1,
-  });
+  assert.deepEqual(body.runs[0]!.models[0]!.usage, first);
+  assert.deepEqual(body.runs[0]!.models[1]!.usage, second);
 });
 
 test("时间流 API:满页给 nextBefore 游标,翻页不重不漏;owner/repo 过滤", async () => {

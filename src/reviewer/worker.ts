@@ -398,8 +398,8 @@ async function run(request: ReviewerRequest): Promise<void> {
   const failure =
     rawFailure === undefined ? undefined : redactModelCredential(rawFailure, apiKey);
 
-  // 用量必须在 dispose 之前读:会话销毁后统计随之消失。
-  // 成本由 Pi 自带的定价表折算,该表内置在包里,不受空的 modelsPath 影响。
+  // 用量必须在 dispose 之前读:会话销毁后统计随之消失。只取 token 明细,`stats.cost`
+  // 是 Pi 按自带价目表折算的估算,产品不记账,读它没有意义。
   const stats = session.getSessionStats();
   const usage = {
     inputTokens: stats.tokens.input,
@@ -407,7 +407,6 @@ async function run(request: ReviewerRequest): Promise<void> {
     cacheReadTokens: stats.tokens.cacheRead,
     cacheWriteTokens: stats.tokens.cacheWrite,
     totalTokens: stats.tokens.total,
-    costUsd: stats.cost,
   };
 
   session.dispose();

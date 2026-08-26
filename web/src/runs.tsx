@@ -16,7 +16,15 @@ import { localClock, localDay } from "@/lib/time";
 import { api, errorText, fetchJson } from "./api.ts";
 import { RangeReviewLaunch } from "./range-review-launch.tsx";
 import { SummaryRate } from "./stats.tsx";
-import { type UsageSummary } from "./usage-cost.ts";
+
+/** 一轮或一个 Reviewer 的 token 用量。运行诊断信息,不折算金额(issue #188)。 */
+export type UsageSummary = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+};
 
 export type RunItem = {
   id: number;

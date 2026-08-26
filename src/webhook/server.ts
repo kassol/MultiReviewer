@@ -106,7 +106,6 @@ import {
   synthesizeRuntimeModel,
   type DiscoveredModel,
   type ModelOperationFailure,
-  type ModelCost,
   type RuntimeModel,
   type RuntimeSynthesisResult,
   type ModelServiceCandidate,
@@ -481,19 +480,6 @@ function frozenRuntimeModel(runtime: RuntimeModel): RuntimeModel {
   return Object.freeze({
     ...runtime,
     input: Object.freeze([...runtime.input]),
-    cost:
-      runtime.cost === undefined
-        ? undefined
-        : Object.freeze({
-            ...runtime.cost,
-            ...(runtime.cost.tiers === undefined
-              ? {}
-              : {
-                  tiers: Object.freeze(
-                    runtime.cost.tiers.map((tier) => Object.freeze({ ...tier })),
-                  ),
-                }),
-          }),
     sources: Object.freeze({ ...runtime.sources }),
   });
 }
@@ -1886,13 +1872,11 @@ const BASELINE_RUNTIME_PROJECTION = {
   reasoning: MODEL_RUNTIME_BASELINE.reasoning,
   contextWindow: MODEL_RUNTIME_BASELINE.contextWindow,
   maxOutput: MODEL_RUNTIME_BASELINE.maxTokens,
-  cost: null,
   sources: {
     input: "runtime-baseline",
     reasoning: "runtime-baseline",
     contextWindow: "runtime-baseline",
     maxOutput: "runtime-baseline",
-    cost: "unknown",
   },
 } as const;
 
@@ -1914,7 +1898,6 @@ type ProjectedServiceModel = {
     reasoning: boolean | null;
     contextWindow: number | null;
     maxOutput: number | null;
-    cost: ModelCost | null;
     sources: {
       name: TrustedModelFieldSource | null;
       api: TrustedModelFieldSource | null;
@@ -1923,7 +1906,6 @@ type ProjectedServiceModel = {
       reasoning: TrustedModelFieldSource | null;
       contextWindow: TrustedModelFieldSource | null;
       maxOutput: TrustedModelFieldSource | null;
-      cost: TrustedModelFieldSource | null;
     };
   };
   runtime: {
@@ -1931,13 +1913,11 @@ type ProjectedServiceModel = {
     reasoning: boolean;
     contextWindow: number;
     maxOutput: number;
-    cost: ModelCost | null;
     sources: {
       input: TrustedModelFieldSource | "runtime-baseline";
       reasoning: TrustedModelFieldSource | "runtime-baseline";
       contextWindow: TrustedModelFieldSource | "runtime-baseline";
       maxOutput: TrustedModelFieldSource | "runtime-baseline";
-      cost: TrustedModelFieldSource | "unknown";
     };
   };
 };
@@ -1970,7 +1950,6 @@ function modelRuntimeProjection(
     reasoning: runtime.reasoning,
     contextWindow: runtime.contextWindow,
     maxOutput: runtime.maxTokens,
-    cost: runtime.cost ?? null,
     sources: {
       input: runtime.sources.input === "trusted" ? sources?.input ?? "service-interface" : runtime.sources.input,
       reasoning: runtime.sources.reasoning === "trusted"
@@ -1982,7 +1961,6 @@ function modelRuntimeProjection(
       maxOutput: runtime.sources.maxTokens === "trusted"
         ? sources?.maxOutput ?? "service-interface"
         : runtime.sources.maxTokens,
-      cost: runtime.sources.cost === "trusted" ? sources?.cost ?? "service-interface" : runtime.sources.cost,
     },
   };
 }
@@ -2005,7 +1983,6 @@ function modelDiscoverySources(
     reasoning: inferred("reasoning"),
     contextWindow: inferred("contextWindow"),
     maxOutput: inferred("maxTokens"),
-    cost: inferred("cost"),
   };
 }
 
@@ -2106,7 +2083,6 @@ function projectServiceModel(
       reasoning: discovery.reasoning ?? null,
       contextWindow: discovery.contextWindow ?? null,
       maxOutput: discovery.maxTokens ?? null,
-      cost: discovery.cost ?? null,
       sources: discoverySources,
     },
     runtime: modelRuntimeProjection(synthesis, discoverySources),
@@ -2130,7 +2106,6 @@ function projectMissingServiceModel(spec: ReviewerSpec): ProjectedServiceModel {
       reasoning: null,
       contextWindow: null,
       maxOutput: null,
-      cost: null,
       sources: {
         name: null,
         api: null,
@@ -2139,7 +2114,6 @@ function projectMissingServiceModel(spec: ReviewerSpec): ProjectedServiceModel {
         reasoning: null,
         contextWindow: null,
         maxOutput: null,
-        cost: null,
       },
     },
     runtime: BASELINE_RUNTIME_PROJECTION,

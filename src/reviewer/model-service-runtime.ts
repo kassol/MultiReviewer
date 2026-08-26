@@ -9,7 +9,12 @@ import {
   type PiBuiltinProviderTarget,
   type PiProviderCatalog,
 } from "./catalog.ts";
-import { CUSTOM_PROVIDER_APIS, isolatedModelRuntime, type RuntimeApi } from "./model-runtime.ts";
+import {
+  CUSTOM_PROVIDER_APIS,
+  isolatedModelRuntime,
+  ZERO_MODEL_COST,
+  type RuntimeApi,
+} from "./model-runtime.ts";
 
 export type OpenAICompatibleModelServiceCandidate = {
   kind: "openai-compatible";
@@ -29,21 +34,12 @@ export type ModelServiceCandidate =
   | BuiltinModelServiceCandidate
   | OpenAICompatibleModelServiceCandidate;
 
-export type ModelCost = {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  tiers?: readonly (ModelCost & { inputTokensAbove: number })[];
-};
-
 export type TrustedModelFields = {
   name?: string;
   api?: string;
   baseUrl?: string;
   input?: readonly ("text" | "image")[];
   reasoning?: boolean;
-  cost?: ModelCost;
   contextWindow?: number;
   maxTokens?: number;
 };
@@ -99,7 +95,6 @@ export type RuntimeModel = {
   baseUrl: string;
   input: readonly ("text" | "image")[];
   reasoning: boolean;
-  cost: ModelCost | undefined;
   contextWindow: number;
   maxTokens: number;
   sources: {
@@ -108,7 +103,6 @@ export type RuntimeModel = {
     baseUrl: "service-target";
     input: "trusted" | "runtime-baseline";
     reasoning: "trusted" | "runtime-baseline";
-    cost: "trusted" | "unknown";
     contextWindow: "trusted" | "runtime-baseline";
     maxTokens: "trusted" | "runtime-baseline";
   };
@@ -191,22 +185,6 @@ function trustedInput(value: unknown): value is readonly ("text" | "image")[] {
   );
 }
 
-function trustedCost(value: ModelCost | undefined): value is ModelCost {
-  if (value === undefined) return false;
-  const rates = [value.input, value.output, value.cacheRead, value.cacheWrite];
-  if (!rates.every((rate) => Number.isFinite(rate) && rate >= 0)) return false;
-  return (
-    value.tiers === undefined ||
-    value.tiers.every(
-      (tier) =>
-        positiveInteger(tier.inputTokensAbove) &&
-        [tier.input, tier.output, tier.cacheRead, tier.cacheWrite].every(
-          (rate) => Number.isFinite(rate) && rate >= 0,
-        ),
-    )
-  );
-}
-
 function customModelVendor(modelId: string): "openai" | "anthropic" | "google" | undefined {
   const bareId = modelId.slice(modelId.lastIndexOf("/") + 1).toLowerCase();
   if (/^(?:gpt(?:[-.]|$)|o\d+(?:[-.]|$))/u.test(bareId)) return "openai";
@@ -280,7 +258,6 @@ export function synthesizeRuntimeModel(
     ? fields.contextWindow
     : MODEL_RUNTIME_BASELINE.contextWindow;
   const maxTokens = positiveInteger(fields.maxTokens) ? fields.maxTokens : MODEL_RUNTIME_BASELINE.maxTokens;
-  const cost = trustedCost(fields.cost) ? fields.cost : undefined;
 
   return {
     ok: true,
@@ -296,7 +273,6 @@ export function synthesizeRuntimeModel(
         reasoning,
         contextWindow,
         maxTokens,
-        cost,
         sources: {
           name: name === fields.name ? "trusted" : "model-id",
           api: "service-target",
@@ -305,7 +281,6 @@ export function synthesizeRuntimeModel(
           reasoning: typeof fields.reasoning === "boolean" ? "trusted" : "runtime-baseline",
           contextWindow: contextWindow === fields.contextWindow ? "trusted" : "runtime-baseline",
           maxTokens: maxTokens === fields.maxTokens ? "trusted" : "runtime-baseline",
-          cost: cost === undefined ? "unknown" : "trusted",
         },
       },
     },
@@ -340,7 +315,6 @@ async function discoverBuiltinModels(
         ...(normalizeModelServiceBaseUrl(model.baseUrl) === undefined ? {} : { baseUrl: model.baseUrl }),
         ...(trustedInput(model.input) ? { input: model.input } : {}),
         reasoning: model.reasoning,
-        ...(trustedCost(model.cost) ? { cost: model.cost } : {}),
         ...(positiveInteger(model.contextWindow) ? { contextWindow: model.contextWindow } : {}),
         ...(positiveInteger(model.maxTokens) ? { maxTokens: model.maxTokens } : {}),
       };
@@ -493,26 +467,6 @@ export async function validateMinimalInference(
     }
 
     const target = synthesized.value.runtime;
-    const cost =
-      target.cost === undefined
-        ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
-        : {
-            input: target.cost.input,
-            output: target.cost.output,
-            cacheRead: target.cost.cacheRead,
-            cacheWrite: target.cost.cacheWrite,
-            ...(target.cost.tiers === undefined
-              ? {}
-              : {
-                  tiers: target.cost.tiers.map((tier) => ({
-                    inputTokensAbove: tier.inputTokensAbove,
-                    input: tier.input,
-                    output: tier.output,
-                    cacheRead: tier.cacheRead,
-                    cacheWrite: tier.cacheWrite,
-                  })),
-                }),
-          };
     const model = {
       provider: target.provider,
       id: target.id,
@@ -521,7 +475,9 @@ export async function validateMinimalInference(
       baseUrl: target.baseUrl,
       reasoning: target.reasoning,
       input: [...target.input],
-      cost,
+      // Pi 的模型必须带这一项,它拿它折算自己的会话统计。产品不读那个数字,给零费率
+      // 即可;缺这一项 pi-ai 会在算成本时当场抛。
+      cost: ZERO_MODEL_COST,
       contextWindow: target.contextWindow,
       maxTokens: target.maxTokens,
     };

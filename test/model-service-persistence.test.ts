@@ -213,7 +213,7 @@ function createLegacyFixture(): {
     ciphertexts: [...ciphertexts, "not-a-decryptable-ciphertext"],
   };
 }
-test("自动目录快照往返稀疏可信字段，并区分未知价格与可信零价格", () => {
+test("自动目录快照往返稀疏可信字段", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -277,28 +277,7 @@ test("自动目录快照往返稀疏可信字段，并区分未知价格与可�
           identity: "corp-gateway:free-model",
           provider: "corp-gateway",
           id: "free-model",
-          fields: {
-            reasoning: false,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          },
-        },
-        {
-          identity: "corp-gateway:negative-price",
-          provider: "corp-gateway",
-          id: "negative-price",
-          fields: {
-            name: "Negative price is not trusted",
-            cost: { input: -1, output: 0, cacheRead: 0, cacheWrite: 0 },
-          },
-        },
-        {
-          identity: "corp-gateway:non-finite-price",
-          provider: "corp-gateway",
-          id: "non-finite-price",
-          fields: {
-            name: "Non-finite price is not trusted",
-            cost: { input: 0, output: Number.POSITIVE_INFINITY, cacheRead: 0, cacheWrite: 0 },
-          },
+          fields: { reasoning: false },
         },
       ],
       supplements: [],
@@ -313,28 +292,13 @@ test("自动目录快照往返稀疏可信字段，并区分未知价格与可�
       identity: "corp-gateway:free-model",
       provider: "corp-gateway",
       id: "free-model",
-      fields: {
-        reasoning: false,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      },
+      fields: { reasoning: false },
     },
     {
       identity: "corp-gateway:id-only-model",
       provider: "corp-gateway",
       id: "id-only-model",
       fields: {},
-    },
-    {
-      identity: "corp-gateway:negative-price",
-      provider: "corp-gateway",
-      id: "negative-price",
-      fields: { name: "Negative price is not trusted" },
-    },
-    {
-      identity: "corp-gateway:non-finite-price",
-      provider: "corp-gateway",
-      id: "non-finite-price",
-      fields: { name: "Non-finite price is not trusted" },
     },
     {
       identity: "corp-gateway:sparse-model",
@@ -363,7 +327,7 @@ test("自动目录快照往返稀疏可信字段，并区分未知价格与可�
   reopened.close();
   const sqlite = new DatabaseSync(db.path, { readOnly: true });
   const idOnly = sqlite.prepare(
-    `SELECT name, api, base_url, input_json, reasoning, cost_json, context_window, max_tokens
+    `SELECT name, api, base_url, input_json, reasoning, context_window, max_tokens
        FROM model_directory_model WHERE provider = ? AND model = ?`,
   ).get("corp-gateway", "id-only-model")!;
   assert.deepEqual(
@@ -373,26 +337,12 @@ test("自动目录快照往返稀疏可信字段，并区分未知价格与可�
       idOnly["base_url"],
       idOnly["input_json"],
       idOnly["reasoning"],
-      idOnly["cost_json"],
       idOnly["context_window"],
       idOnly["max_tokens"],
     ],
-    [null, null, null, null, null, null, null, null],
+    [null, null, null, null, null, null, null],
     "运行基线被写成了自动发现事实",
   );
-  const prices = sqlite.prepare(
-    `SELECT model, cost_json FROM model_directory_model
-      WHERE provider = ? AND model IN ('free-model', 'negative-price', 'non-finite-price')
-      ORDER BY model`,
-  ).all("corp-gateway");
-  assert.deepEqual(JSON.parse(String(prices[0]!["cost_json"])), {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-  });
-  assert.equal(prices[1]!["cost_json"], null);
-  assert.equal(prices[2]!["cost_json"], null);
   sqlite.close();
 });
 
@@ -635,7 +585,7 @@ test("真实旧库先留唯一备份，再按证据与来源优先级一次迁�
     migrationRetentions: 3,
     globalCombinationModels: 3,
     repositoryOverrides: 1,
-    discardedLegacyModelFactRows: 3,
+    discardedLegacyModelFactRows: 2,
   });
   assert.equal(readFileSync(occupiedBackup, "utf8"), "existing backup must survive");
 
@@ -788,7 +738,7 @@ test("旧库缺少后期模型字段时仍迁移，并只统计实际存在的�
   });
   assert.equal(migrated.status, "migrated");
   if (migrated.status !== "migrated") return;
-  assert.equal(migrated.summary.discardedLegacyModelFactRows, 2);
+  assert.equal(migrated.summary.discardedLegacyModelFactRows, 1);
 });
 
 test("仓库覆盖 JSON 非法时整个迁移回滚，旧库与组合原样可读", async () => {
@@ -1237,7 +1187,6 @@ test("Review Run 审计只持久化服务版本与运行模型,不落凭据、�
       baseUrl: "https://pinned.example.test/v1",
       input: ["text"],
       reasoning: false,
-      cost: undefined,
       contextWindow: 128_000,
       maxTokens: 16_000,
       sources: {
@@ -1246,7 +1195,6 @@ test("Review Run 审计只持久化服务版本与运行模型,不落凭据、�
         baseUrl: "service-target",
         input: "runtime-baseline",
         reasoning: "runtime-baseline",
-        cost: "unknown",
         contextWindow: "runtime-baseline",
         maxTokens: "runtime-baseline",
       },
@@ -1279,7 +1227,7 @@ test("Review Run 审计只持久化服务版本与运行模型,不落凭据、�
   const projected = store.listRuns({ limit: 1 })[0]!.reviewerPins[0]!;
   assert.equal(projected.identity, "corp:pinned-model");
   assert.equal(projected.modelServiceVersion, 9);
-  assert.equal(projected.runtimeModel?.sources.cost, "unknown");
+  assert.equal(projected.runtimeModel?.sources.contextWindow, "runtime-baseline");
   assert.equal(JSON.stringify(projected).includes("plaintext-reviewer-secret"), false);
   store.close();
 });
