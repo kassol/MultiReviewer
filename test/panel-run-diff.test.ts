@@ -176,7 +176,7 @@ test("diff API:一格权限都没有的用户,只要仓库分给了他就读得�
     isSystemAdmin: false,
     roleId: null,
   });
-  store.setPanelUserRepos("diff-reader", [GITEA_REPO.id]);
+  store.setPanelUserAssignment("diff-reader", [GITEA_REPO.id]);
   store.close();
 
   const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {

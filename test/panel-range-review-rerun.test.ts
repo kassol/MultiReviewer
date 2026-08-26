@@ -83,7 +83,7 @@ async function userCookie(
     isSystemAdmin: false,
     roleId: role.id,
   });
-  store.setPanelUserRepos(username, [GITEA_REPO.id]);
+  store.setPanelUserAssignment(username, [GITEA_REPO.id]);
   store.close();
 
   const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {

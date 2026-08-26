@@ -325,7 +325,7 @@ test("阶段详情:未认证 401,一格权限都没有的人分到仓库就读�
     isSystemAdmin: false,
     roleId: null,
   });
-  store.setPanelUserRepos("plain-user", [GITEA_REPO.id]);
+  store.setPanelUserAssignment("plain-user", [GITEA_REPO.id]);
   store.close();
   const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
     method: "POST",

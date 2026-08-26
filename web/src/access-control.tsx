@@ -419,7 +419,6 @@ export function AccessControlPage() {
                   kind="role"
                   open={createKind === "role"}
                   busy={createRole.isPending}
-                  repos={repos}
                   trigger={<Button id="create-role-trigger" variant="soft" color="gray" size={{ initial: "4", sm: "2" }}><PlusIcon />新建角色</Button>}
                   onOpen={() => openCreateDialog("role")}
                   onClose={closeCreateDialog}
@@ -594,7 +593,8 @@ function RepoChecklist({ repos, selected, disabled, onToggle }: { repos: readonl
   );
 }
 
-function CreateDialog({ kind, open, busy, repos, trigger, onOpen, onClose, onUser, onRole }: { kind: "user" | "role"; open: boolean; busy: boolean; repos: readonly AssignableRepo[]; trigger: ReactNode; onOpen: () => void; onClose: () => void; onUser: (input: { username: string; displayName: string; password: string; repoIds: number[] }) => void; onRole: (name: string) => void }) {
+/** `repos` 只有 `kind="user"` 那一档要:新建角色不分配仓库。 */
+function CreateDialog({ kind, open, busy, repos, trigger, onOpen, onClose, onUser, onRole }: { kind: "user" | "role"; open: boolean; busy: boolean; repos?: readonly AssignableRepo[]; trigger: ReactNode; onOpen: () => void; onClose: () => void; onUser: (input: { username: string; displayName: string; password: string; repoIds: number[] }) => void; onRole: (name: string) => void }) {
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
@@ -633,10 +633,11 @@ function CreateDialog({ kind, open, busy, repos, trigger, onOpen, onClose, onUse
                 <Text as="label" htmlFor="new-password" size="2" weight="medium">临时密码</Text>
                 <TextField.Root id="new-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
               </div>
-              <div className="flex flex-col gap-1.5">
-                <Text as="span" size="2" weight="medium">分配仓库</Text>
+              {/* 勾选组不是单个控件,标签靠 `aria-labelledby` 挂在整组上。 */}
+              <div className="flex flex-col gap-1.5" role="group" aria-labelledby="new-user-repos-label">
+                <Text as="span" id="new-user-repos-label" size="2" weight="medium">分配仓库</Text>
                 <RepoChecklist
-                  repos={repos}
+                  repos={repos ?? []}
                   selected={repoIds}
                   disabled={busy}
                   onToggle={(repoId) => setRepoIds((current) => toggleRepoId(current, repoId))}

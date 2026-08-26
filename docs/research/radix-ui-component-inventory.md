@@ -81,7 +81,7 @@
 | `Shell` | `main.tsx:111`，路由根调用。[源码](../../web/src/main.tsx#L111-L217) | session、权限导航、登出、桌面侧栏/窄屏横向导航、当前页 | 自定义应用壳；Themes `Flex/Box/Link/Button`，导航选中规则自定义 |
 | `BusinessPage` | `main.tsx:219`。[源码](../../web/src/main.tsx#L219-L227) | 组合 SetupChecklist 与路由页 | 自定义布局组合 |
 | `ModelServicesRoutePage` | `main.tsx:245`。[源码](../../web/src/main.tsx#L245-L265) | 路由参数投影为 overview/maintenance/models | 自定义路由适配层，无视觉迁移 |
-| `ZeroPermissionPage` | `main.tsx:400`。[源码](../../web/src/main.tsx#L400-L412) | 零权限空态卡片 | Themes `Card/Heading/Text` |
+| `ZeroPermissionPage` | 盘点时在 `main.tsx:400`；该页已随 issue #193 删除，源码链接不再给出。 | 零权限空态卡片 | Themes `Card/Heading/Text` |
 | `LoginPage` | `login.tsx:14`。[源码](../../web/src/login.tsx#L14-L111) | session 探测、登录/bootstrap 两种表单、busy/error | 自定义页面；Themes `Card/TextField/Button/Callout` |
 | `PasswordPage` | `password.tsx:13`。[源码](../../web/src/password.tsx#L13-L78) | 新密码/确认、busy/error、完成跳转 | 自定义页面；Themes 表单组件 |
 | `AccessControlPage` | `access-control.tsx:80`。[源码](../../web/src/access-control.tsx#L80-L410) | 用户/角色 Query 与 mutations、行内角色 Select、权限 checkbox、多个确认 Dialog | 自定义领域页；Themes `Table/Select/Checkbox/Dialog/Callout` 组合 |

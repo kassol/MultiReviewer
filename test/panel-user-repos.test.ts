@@ -167,8 +167,18 @@ test("删除用户与移除仓库都不留分配行", async () => {
 /** 播种一轮跑完的 Review Run,附一条已处置的 Finding:处置率矩阵要有格子可数。 */
 function seedRun(
   h: PanelHarness,
-  meta: { owner: string; repo: string; pullNumber: number; startedAt: string },
+  meta: {
+    owner: string;
+    repo: string;
+    pullNumber: number;
+    startedAt: string;
+    /** 报出这条 Finding 的模型。两个仓库各给一个,参与条数才看得出按分配收窄。 */
+    model?: string;
+    /** 这一轮的 token 用量。省略即这一轮没落用量,不进 `usage`。 */
+    tokens?: number;
+  },
 ): number {
+  const model = meta.model ?? "model-a";
   const store = openStore(h.db.path);
   const runId = store.startRun({
     owner: meta.owner,
@@ -187,12 +197,23 @@ function seedRun(
     failed: false,
     outcomes: [
       {
-        model: "model-a",
+        model,
         findingCount: 1,
         anomalyCount: 0,
         rejectedToolCalls: 0,
         anchorRejections: 0,
         durationMs: 1,
+        ...(meta.tokens === undefined
+          ? {}
+          : {
+              usage: {
+                inputTokens: meta.tokens,
+                outputTokens: 0,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                totalTokens: meta.tokens,
+              },
+            }),
       },
     ],
     findings: [
@@ -203,9 +224,7 @@ function seedRun(
         severity: "P1",
         category: "bug",
         description: "示例",
-        attributions: [
-          { model: "model-a", severity: "P1", category: "bug", description: "示例" },
-        ],
+        attributions: [{ model, severity: "P1", category: "bug", description: "示例" }],
         groupIndex: 0,
         disposition: "resolved",
         placement: "inline",
@@ -262,7 +281,7 @@ async function scopedUser(
       isSystemAdmin: false,
       roleId: role.id,
     });
-    store.setPanelUserRepos(username, repoIds);
+    store.setPanelUserAssignment(username, repoIds);
   } finally {
     store.close();
   }
@@ -328,6 +347,102 @@ test("普通用户的仓库、阶段与处置率只含分配到的仓库", async
     cells: { repo: string }[];
   };
   assert.deepEqual(stats.cells.map((cell) => cell.repo), ["alpha"]);
+});
+
+test("模型参与条数与 token 用量与处置率矩阵同一口径,都只算分配到的仓库", async () => {
+  const h = await startReadyPanelHarness(cleanups);
+  const alpha = seedRepo(h, 101, "acme", "alpha");
+  seedRepo(h, 102, "acme", "beta");
+  seedRun(h, {
+    owner: "acme",
+    repo: "alpha",
+    pullNumber: 1,
+    startedAt: "2026-08-10T00:00:00.000Z",
+    model: "model-alpha",
+    tokens: 100,
+  });
+  seedRun(h, {
+    owner: "acme",
+    repo: "beta",
+    pullNumber: 2,
+    startedAt: "2026-08-11T00:00:00.000Z",
+    model: "model-beta",
+    tokens: 7,
+  });
+  const cookie = await scopedUser(h, "reviewer", [alpha], ALL_PERMISSIONS);
+  type Stats = {
+    models: { model: string; findings: number }[];
+    usage: { runs: number; totalTokens: number } | null;
+  };
+
+  const mine = (await (await get(h, cookie, `/stats${STATS_WINDOW}`)).json()) as Stats;
+  assert.deepEqual(mine.models, [{ model: "model-alpha", findings: 1 }]);
+  assert.deepEqual(mine.usage, {
+    runs: 1,
+    inputTokens: 100,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 100,
+  });
+
+  const all = (await (await h.api("GET", `/stats${STATS_WINDOW}`)).json()) as Stats;
+  assert.deepEqual(all.models.map((row) => row.model), ["model-alpha", "model-beta"]);
+  assert.equal(all.usage?.runs, 2);
+  assert.equal(all.usage?.totalTokens, 107);
+});
+
+test("时间流的收窄在 SQL 里做:分配外的一整页不会把自己那一行挤掉", async () => {
+  const h = await startReadyPanelHarness(cleanups);
+  const alpha = seedRepo(h, 101, "acme", "alpha");
+  seedRepo(h, 102, "acme", "beta");
+  // 自己的那一轮最旧,分配外的仓库在它上面压满一整页(时间流一页 30 行)。收窄要是回到
+  // JS 再做,这一页会滤成空的,而 nextBefore 照样按满页给出去。
+  seedRun(h, { owner: "acme", repo: "alpha", pullNumber: 1, startedAt: "2026-08-10T00:00:00.000Z" });
+  for (let index = 1; index <= 31; index += 1) {
+    seedRun(h, {
+      owner: "acme",
+      repo: "beta",
+      pullNumber: index,
+      startedAt: "2026-08-11T00:00:00.000Z",
+    });
+  }
+  const cookie = await scopedUser(h, "reviewer", [alpha], ALL_PERMISSIONS);
+
+  const body = (await (await get(h, cookie, "/runs")).json()) as {
+    runs: { repo: string }[];
+    nextBefore: number | null;
+  };
+  assert.deepEqual(body.runs.map((run) => run.repo), ["alpha"]);
+  assert.equal(body.nextBefore, null);
+});
+
+test("受限账号对未注册的 owner/repo 与分配外同形 404,系统管理员才走注册表那一档", async () => {
+  const { h, cookie } = await twoRepoHarness();
+  const ghost = "owner=acme&repo=ghost";
+  const cases: [string, string, unknown?][] = [
+    ["POST", "/rerun", { owner: "acme", repo: "ghost", pullNumber: 1 }],
+    [
+      "POST",
+      "/range-reviews",
+      { owner: "acme", repo: "ghost", title: "t", base: "a".repeat(40), comparison: "b".repeat(40) },
+    ],
+    ["GET", `/range-reviews/prefill?${ghost}`],
+    ["GET", `/repo-branches?${ghost}`],
+    ["GET", `/repo-commits?${ghost}&branch=main`],
+    ["GET", `/stage-summary?${ghost}&pullNumber=1`],
+  ];
+  for (const [method, path, body] of cases) {
+    const response = await post(h, cookie, method, path, body);
+    assert.equal(response.status, 404, `${method} ${path}`);
+    // 措辞与分配外那一句逐字相同:仓库没注册这件事不该从 404 的措辞里漏出去。
+    assert.deepEqual(await response.json(), { error: "没有这个仓库" }, `${method} ${path}`);
+  }
+
+  // 系统管理员看得到整张注册表,「先注册」这一档只对他成立。
+  const rerun = await h.api("POST", "/rerun", { owner: "acme", repo: "ghost", pullNumber: 1 });
+  assert.equal(rerun.status, 409);
+  assert.deepEqual(await rerun.json(), { error: "仓库不在注册表里,先注册再重跑" });
 });
 
 test("系统管理员不受分配限制,三份列表都看得到两个仓库", async () => {
@@ -444,7 +559,7 @@ test("webhook 投递不经过仓库分配", async () => {
   );
   // 谁都没分到这个仓库也照样投递:webhook 路径不经过过滤层。
   const store = openStore(h.db.path);
-  store.setPanelUserRepos("maintainer", []);
+  store.setPanelUserAssignment("maintainer", []);
   store.close();
 
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);

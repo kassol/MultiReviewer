@@ -520,6 +520,22 @@ const STATS_IDENTITY_CTE = `WITH src AS (
               GROUP BY owner, repo, pull_number, file, fp
            )`;
 
+/**
+ * 一组 owner/repo 对的过滤条件(CONTEXT.md 仓库分配)。省略即不限,空数组即一个都不
+ * 给;`prefix` 是这两列在查询里的表别名前缀。
+ */
+function repoPairCondition(
+  pairs: readonly { owner: string; repo: string }[] | undefined,
+  prefix: string,
+): { sql: string; params: string[] } {
+  if (pairs === undefined) return { sql: "1", params: [] };
+  if (pairs.length === 0) return { sql: "0", params: [] };
+  return {
+    sql: `(${pairs.map(() => `(${prefix}owner = ? AND ${prefix}repo = ?)`).join(" OR ")})`,
+    params: pairs.flatMap((pair) => [pair.owner, pair.repo]),
+  };
+}
+
 /** Review Run 开始时即已知的元数据。 */
 export type RunMeta = {
   owner: string;
@@ -1266,7 +1282,7 @@ export type Store = {
   /** 每行带上这个用户的仓库分配;系统管理员不受限,它那一行照样只回落库的行。 */
   listPanelUsers(): (PanelUserRecord & { repoIds: number[] })[];
   /** 整组覆盖一个用户的仓库分配。空数组即清空,重复的 repo id 只落一行。 */
-  setPanelUserRepos(username: string, repoIds: readonly number[]): void;
+  setPanelUserAssignment(username: string, repoIds: readonly number[]): void;
   updatePanelUser(
     username: string,
     record: { displayName: string | null; roleId: number | null; isSystemAdmin: boolean },
@@ -1420,10 +1436,24 @@ export type Store = {
    * 时间归属(闭区间,ISO 字符串按字典序即时间序)。
    */
   dispositionStats(from: string, to: string): DispositionCell[];
-  /** 同一时间窗、同一批 Identity 上每个模型的参与条数(ADR 0015)。 */
-  modelParticipation(from: string, to: string): ModelParticipation[];
-  /** 时间窗内落了用量的 Review Run 数与它们的 token 之和。一条都没有时缺失。 */
-  usageStats(from: string, to: string): UsageStats | undefined;
+  /**
+   * 同一时间窗、同一批 Identity 上每个模型的参与条数(ADR 0015)。`repos` 给了就只
+   * 数这些仓库的(仓库分配),省略即不限,空数组即一个都不数。
+   */
+  modelParticipation(
+    from: string,
+    to: string,
+    repos?: readonly { owner: string; repo: string }[],
+  ): ModelParticipation[];
+  /**
+   * 时间窗内落了用量的 Review Run 数与它们的 token 之和。一条都没有时缺失。
+   * `repos` 与参与条数同一档口径。
+   */
+  usageStats(
+    from: string,
+    to: string,
+    repos?: readonly { owner: string; repo: string }[],
+  ): UsageStats | undefined;
   /**
    * 时间流的一页:按 id 倒序(id 即落库顺序,与开跑时间同序),`beforeId` 取更早的
    * 一页。覆盖全部评审记录——已移除仓库的历史照常出现,这是留存决策的呈现面。
@@ -1434,6 +1464,11 @@ export type Store = {
     owner?: string;
     repo?: string;
     rangeReviewId?: number;
+    /**
+     * 只给这些仓库的轮次(仓库分配)。省略即不限,空数组即一个都不给。收窄在 SQL 里
+     * 做,这一页的行数才与 `limit` 和游标对得上。
+     */
+    repos?: readonly { owner: string; repo: string }[];
     /** 只要这一轮。面板的轮次详情按 id 取,读的与列表是同一份投影。 */
     id?: number;
   }): RunListItem[];
@@ -2296,7 +2331,7 @@ export function openStore(dbPath: string): Store {
         }));
     },
 
-    setPanelUserRepos(username, repoIds) {
+    setPanelUserAssignment(username, repoIds) {
       db.exec("BEGIN");
       try {
         db.prepare("DELETE FROM panel_user_repo WHERE username = ?").run(username);
@@ -3895,7 +3930,8 @@ export function openStore(dbPath: string): Store {
       }));
     },
 
-    modelParticipation(from, to) {
+    modelParticipation(from, to, repos) {
+      const filter = repoPairCondition(repos, "s.");
       // 先摊成「模型 × Identity」再去重:一条 Identity 在一个阶段里有好几行,同一个
       // 模型在其中几行上都报过也只算这条一次;不同模型报同一条则各算一次。
       const rows = db
@@ -3910,18 +3946,20 @@ export function openStore(dbPath: string): Store {
                    ON i.owner = s.owner AND i.repo = s.repo
                   AND i.pull_number = s.pull_number AND i.file = s.file AND i.fp = s.fp
                 WHERE i.continued = 0 AND i.first_seen >= ? AND i.first_seen <= ?
+                  AND ${filter.sql}
              )
             GROUP BY model
             ORDER BY model`,
         )
-        .all(from, to);
+        .all(from, to, ...filter.params);
       return rows.map((row) => ({
         model: String(row["model"]),
         findings: Number(row["findings"]),
       }));
     },
 
-    usageStats(from, to) {
+    usageStats(from, to, repos) {
+      const filter = repoPairCondition(repos, "");
       const row = db
         .prepare(
           `SELECT COUNT(*) AS usage_rows,
@@ -3931,9 +3969,10 @@ export function openStore(dbPath: string): Store {
                   SUM(cache_write_tokens) AS cache_write_tokens,
                   SUM(total_tokens) AS total_tokens
              FROM review_run
-            WHERE total_tokens IS NOT NULL AND started_at >= ? AND started_at <= ?`,
+            WHERE total_tokens IS NOT NULL AND started_at >= ? AND started_at <= ?
+              AND ${filter.sql}`,
         )
-        .get(from, to)!;
+        .get(from, to, ...filter.params)!;
       const runs = Number(row["usage_rows"]);
       if (runs === 0) return undefined;
 
@@ -3961,6 +4000,11 @@ export function openStore(dbPath: string): Store {
       if (opts.rangeReviewId !== undefined) {
         conditions.push("range_review_id = ?");
         params.push(opts.rangeReviewId);
+      }
+      if (opts.repos !== undefined) {
+        const filter = repoPairCondition(opts.repos, "");
+        conditions.push(filter.sql);
+        params.push(...filter.params);
       }
       if (opts.id !== undefined) {
         conditions.push("id = ?");

@@ -180,7 +180,7 @@ test("轨迹的可见范围与轮次详情一致:一格权限都没有的人,分
     isSystemAdmin: false,
     roleId: null,
   });
-  store.setPanelUserRepos("no-permission", [GITEA_REPO.id]);
+  store.setPanelUserAssignment("no-permission", [GITEA_REPO.id]);
   store.close();
 
   const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {

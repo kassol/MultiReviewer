@@ -290,7 +290,10 @@ function since(iso: string): string {
   return `${Math.round(hours / 24)} 天前`;
 }
 
-/** 「全部仓库」在窄视口那个 Select 里的取值。仓库名里有斜杠,所以它不能是空串。 */
+/**
+ * 「全部仓库」在窄视口那个 Select 里的取值。不能是空串:Radix 在受控值换档时会用空串
+ * 回调一次,那一次要认得出来并且不动地址。取值不带斜杠,也就撞不上任何 `owner/repo`。
+ */
 const ALL_REPOS = "all";
 
 type Repository = { owner: string; repo: string };
@@ -299,7 +302,7 @@ function repositoryValue(row: Repository): string {
   return `${row.owner}/${row.repo}`;
 }
 
-/** 左栏与窄视口 Select 共用的一行文字:最近活动,加上工作副本没就绪时的那枚标记。 */
+/** 左栏每行仓库名下面的那行小字:最近一次审查在什么时候,没跑过就直说没跑过。 */
 function repoActivityLabel(row: RepoRow): string {
   return row.lastActivity === null ? "还没跑过" : `最近 ${since(row.lastActivity)}`;
 }
@@ -416,8 +419,8 @@ function RepoSelect({
       value={selected === null ? ALL_REPOS : repositoryValue(selected)}
       onValueChange={(next) => {
         if (next === ALL_REPOS) return onSelect(null);
-        // 仓库名不含斜杠,owner 与 repo 因此按第一个斜杠切开。认不出的取值一律不动
-        // 地址——Radix 在受控值换档时会多回调一次空串。
+        // 取值是 `owner/repo`,owner 不含斜杠,所以按第一个斜杠切开。认不出的取值一律
+        // 不动地址——Radix 在受控值换档时会多回调一次空串。
         const slash = next.indexOf("/");
         if (slash > 0) onSelect({ owner: next.slice(0, slash), repo: next.slice(slash + 1) });
       }}

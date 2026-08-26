@@ -52,7 +52,7 @@ bash setup.sh
 docker compose pull && docker compose up -d
 ```
 
-向导的边界收在「面板能用」:生成随机面板前缀与凭据主密钥、问基地址,起服务后打登录页并探测 `GET <前缀>/api/session`。零用户时该端点回 401 加 `bootstrap: true`,向导再从容器日志抽出一次性 bootstrap 口令;已有账号时 401 不带这一位,正常提示用已有账号登录。bootstrap 只在库里零用户时打印,注册第一个用户成功即失效,服务重启换一枚,不进 `.env` 也不落库;第一个注册的人就是系统管理员,注册入口随后关闭。仓库接入、用户与角色、模型服务、模型组合与覆盖都在面板上做;首次进入业务页会显示「可运行模型服务 → 审查配置就绪 → 注册仓库」检查单,实例启用后隐藏。仓库注册要求审查配置先就绪,未就绪时服务端在访问 Gitea、生成 Key 与写库之前回 409。系统不预置角色,所以给同事建号前先建角色并勾权限格,新号不授角色就是零权限。向导不问模型凭据也不问模型标识,不生成全局 webhook secret,也不指导手工配 hook;检出已废除的变量(`MULTIREVIEWER_ADMIN_TOKEN` / `MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` / `MULTIREVIEWER_GITEA_REPO` / `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` / `MULTIREVIEWER_DEEPSEEK_MODEL` / `MULTIREVIEWER_OPENROUTER_MODEL`)会清掉并说明原因。清理之前先把 `.env` 复制成 `.env.bak-<YYYYMMDD>`,同一天重跑不覆盖已有副本——被清掉的旧值只在这份副本里,模型服务配好后自行删除。
+向导的边界收在「面板能用」:生成随机面板前缀与凭据主密钥、问基地址,起服务后打登录页并探测 `GET <前缀>/api/session`。零用户时该端点回 401 加 `bootstrap: true`,向导再从容器日志抽出一次性 bootstrap 口令;已有账号时 401 不带这一位,正常提示用已有账号登录。bootstrap 只在库里零用户时打印,注册第一个用户成功即失效,服务重启换一枚,不进 `.env` 也不落库;第一个注册的人就是系统管理员,注册入口随后关闭。仓库接入、用户与角色、模型服务、模型组合与覆盖都在面板上做;首次进入业务页会显示「可运行模型服务 → 审查配置就绪 → 注册仓库」检查单,实例启用后隐藏。仓库注册要求审查配置先就绪,未就绪时服务端在访问 Gitea、生成 Key 与写库之前回 409。系统不预置角色,给同事建号时先把仓库分给他:不授角色的账号读得到分到的仓库,要写或做动作时才建角色并勾权限格(ADR 0018)。向导不问模型凭据也不问模型标识,不生成全局 webhook secret,也不指导手工配 hook;检出已废除的变量(`MULTIREVIEWER_ADMIN_TOKEN` / `MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` / `MULTIREVIEWER_GITEA_REPO` / `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` / `MULTIREVIEWER_DEEPSEEK_MODEL` / `MULTIREVIEWER_OPENROUTER_MODEL`)会清掉并说明原因。清理之前先把 `.env` 复制成 `.env.bak-<YYYYMMDD>`,同一天重跑不覆盖已有副本——被清掉的旧值只在这份副本里,模型服务配好后自行删除。
 
 两处容易踩的地方:
 

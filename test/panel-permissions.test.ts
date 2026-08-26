@@ -16,71 +16,78 @@ const PASSWORD = "permission-test-password";
 const HASH = await hashPassword(PASSWORD);
 
 const ROUTE_EXPECTATIONS = [
-  ["POST", "/session", "public"],
-  ["POST", "/users/bootstrap", "public"],
-  ["GET", "/session", "authenticated-only"],
-  ["GET", "/users", "system-admin-only"],
-  ["POST", "/users", "system-admin-only"],
-  ["PUT", "/^\\/users\\/([a-z0-9._-]{1,32})$/", "system-admin-only"],
-  ["DELETE", "/^\\/users\\/([a-z0-9._-]{1,32})$/", "system-admin-only"],
-  ["POST", "/^\\/users\\/([a-z0-9._-]{1,32})\\/reset-password$/", "system-admin-only"],
-  ["PUT", "/session/password", "authenticated-only"],
-  ["GET", "/roles", "system-admin-only"],
-  ["POST", "/roles", "system-admin-only"],
-  ["PUT", "/^\\/roles\\/(\\d+)$/", "system-admin-only"],
-  ["DELETE", "/^\\/roles\\/(\\d+)$/", "system-admin-only"],
-  ["DELETE", "/session", "authenticated-only"],
-  ["GET", "/setup-status", "authenticated-only"],
-  ["GET", "/settings", "model:read"],
-  ["PUT", "/settings", "model:write"],
-  ["GET", "/stats", "authenticated-only"],
-  ["GET", "/runs", "authenticated-only"],
-  ["GET", "/stages", "authenticated-only"],
-  ["GET", "/^\\/stages\\/(.+)$/", "authenticated-only"],
-  ["GET", "/^\\/runs\\/(\\d+)$/", "authenticated-only"],
-  ["GET", "/^\\/runs\\/(\\d+)\\/diff$/", "authenticated-only"],
-  ["GET", "/^\\/runs\\/(\\d+)\\/trace$/", "authenticated-only"],
-  ["GET", "/^\\/runs\\/(\\d+)\\/trace\\/stream$/", "authenticated-only"],
-  ["GET", "/stage-summary", "authenticated-only"],
-  ["POST", "/rerun", "review:rerun"],
-  ["POST", "/^\\/findings\\/(\\d+)\\/resolve$/", "finding:dispose"],
-  ["POST", "/^\\/findings\\/(\\d+)\\/unresolve$/", "finding:dispose"],
-  ["POST", "/range-reviews", "review:create"],
-  ["GET", "/range-reviews/prefill", "review:create"],
-  ["POST", "/^\\/range-reviews\\/(\\d+)\\/advance$/", "review:create"],
-  ["POST", "/^\\/range-reviews\\/(\\d+)\\/complete$/", "finding:dispose"],
-  ["GET", "/repo-branches", "review:create"],
-  ["GET", "/repo-commits", "review:create"],
-  ["GET", "/repos/search", "repo:write"],
-  ["GET", "/repos", "authenticated-only"],
-  ["POST", "/repos", "repo:write"],
-  ["DELETE", "/^\\/repos\\/(\\d+)$/", "repo:write"],
-  ["POST", "/^\\/repos\\/(\\d+)\\/worktree$/", "repo:write"],
-  ["PUT", "/^\\/repos\\/(\\d+)\\/reviewers$/", "repo:write"],
-  ["POST", "/^\\/repos\\/(\\d+)\\/rotate$/", "repo:write"],
-  ["GET", "/^\\/repos\\/(\\d+)\\/hooks$/", "authenticated-only"],
-  ["GET", "/model-services", "anyOf:model:read|credential:read"],
-  ["GET", "/model-services/providers", "anyOf:model:read|model:write|credential:read|credential:write"],
-  ["POST", "/^\\/model-services\\/builtin\\/preview$/", "credential:write"],
-  ["POST", "/^\\/model-services\\/builtin\\/commit$/", "credential:write"],
-  ["POST", "/^\\/model-services\\/custom\\/preview$/", "allOf:model:write|credential:write"],
-  ["POST", "/^\\/model-services\\/custom\\/commit$/", "allOf:model:write|credential:write"],
+  ["POST", "/session", "public", "-"],
+  ["POST", "/users/bootstrap", "public", "-"],
+  ["GET", "/session", "authenticated-only", "-"],
+  ["GET", "/users", "system-admin-only", "-"],
+  ["POST", "/users", "system-admin-only", "-"],
+  ["PUT", "/^\\/users\\/([a-z0-9._-]{1,32})$/", "system-admin-only", "-"],
+  ["DELETE", "/^\\/users\\/([a-z0-9._-]{1,32})$/", "system-admin-only", "-"],
+  ["POST", "/^\\/users\\/([a-z0-9._-]{1,32})\\/reset-password$/", "system-admin-only", "-"],
+  ["PUT", "/session/password", "authenticated-only", "-"],
+  ["GET", "/roles", "system-admin-only", "-"],
+  ["POST", "/roles", "system-admin-only", "-"],
+  ["PUT", "/^\\/roles\\/(\\d+)$/", "system-admin-only", "-"],
+  ["DELETE", "/^\\/roles\\/(\\d+)$/", "system-admin-only", "-"],
+  ["DELETE", "/session", "authenticated-only", "-"],
+  ["GET", "/setup-status", "authenticated-only", "-"],
+  ["GET", "/settings", "model:read", "-"],
+  ["PUT", "/settings", "model:write", "-"],
+  ["GET", "/stats", "authenticated-only", "-"],
+  ["GET", "/runs", "authenticated-only", "-"],
+  ["GET", "/stages", "authenticated-only", "-"],
+  ["GET", "/^\\/stages\\/(.+)$/", "authenticated-only", "-"],
+  ["GET", "/^\\/runs\\/(\\d+)$/", "authenticated-only", "run:1"],
+  ["GET", "/^\\/runs\\/(\\d+)\\/diff$/", "authenticated-only", "run:1"],
+  ["GET", "/^\\/runs\\/(\\d+)\\/trace$/", "authenticated-only", "run:1"],
+  ["GET", "/^\\/runs\\/(\\d+)\\/trace\\/stream$/", "authenticated-only", "run:1"],
+  ["GET", "/stage-summary", "authenticated-only", "query"],
+  ["POST", "/rerun", "review:rerun", "-"],
+  ["POST", "/^\\/findings\\/(\\d+)\\/resolve$/", "finding:dispose", "finding:1"],
+  ["POST", "/^\\/findings\\/(\\d+)\\/unresolve$/", "finding:dispose", "finding:1"],
+  ["POST", "/range-reviews", "review:create", "-"],
+  ["GET", "/range-reviews/prefill", "review:create", "query"],
+  ["POST", "/^\\/range-reviews\\/(\\d+)\\/advance$/", "review:create", "range-review:1"],
+  ["POST", "/^\\/range-reviews\\/(\\d+)\\/complete$/", "finding:dispose", "range-review:1"],
+  ["GET", "/repo-branches", "review:create", "query"],
+  ["GET", "/repo-commits", "review:create", "query"],
+  ["GET", "/repos/search", "repo:write", "-"],
+  ["GET", "/repos", "authenticated-only", "-"],
+  ["POST", "/repos", "repo:write", "-"],
+  ["DELETE", "/^\\/repos\\/(\\d+)$/", "repo:write", "repo:1"],
+  ["POST", "/^\\/repos\\/(\\d+)\\/worktree$/", "repo:write", "repo:1"],
+  ["PUT", "/^\\/repos\\/(\\d+)\\/reviewers$/", "repo:write", "repo:1"],
+  ["POST", "/^\\/repos\\/(\\d+)\\/rotate$/", "repo:write", "repo:1"],
+  ["GET", "/^\\/repos\\/(\\d+)\\/hooks$/", "authenticated-only", "repo:1"],
+  ["GET", "/model-services", "anyOf:model:read|credential:read", "-"],
+  [
+    "GET",
+    "/model-services/providers",
+    "anyOf:model:read|model:write|credential:read|credential:write",
+    "-",
+  ],
+  ["POST", "/^\\/model-services\\/builtin\\/preview$/", "credential:write", "-"],
+  ["POST", "/^\\/model-services\\/builtin\\/commit$/", "credential:write", "-"],
+  ["POST", "/^\\/model-services\\/custom\\/preview$/", "allOf:model:write|credential:write", "-"],
+  ["POST", "/^\\/model-services\\/custom\\/commit$/", "allOf:model:write|credential:write", "-"],
   [
     "POST",
     "/^\\/model-services\\/custom\\/([a-z0-9-]{1,64})\\/rename$/",
     "allOf:model:write|credential:write",
+    "-",
   ],
   [
     "DELETE",
     "/^\\/model-services\\/custom\\/([a-z0-9-]{1,64})$/",
     "allOf:model:write|credential:write",
+    "-",
   ],
-  ["POST", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/reverify$/", "credential:write"],
-  ["DELETE", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/credential$/", "credential:write"],
-  ["POST", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/refresh$/", "model:write"],
-  ["PUT", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/model-states$/", "model:write"],
-  ["POST", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/supplements$/", "model:write"],
-  ["DELETE", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/supplements$/", "model:write"],
+  ["POST", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/reverify$/", "credential:write", "-"],
+  ["DELETE", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/credential$/", "credential:write", "-"],
+  ["POST", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/refresh$/", "model:write", "-"],
+  ["PUT", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/model-states$/", "model:write", "-"],
+  ["POST", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/supplements$/", "model:write", "-"],
+  ["DELETE", "/^\\/model-services\\/([A-Za-z0-9_-]+)\\/supplements$/", "model:write", "-"],
 ] as const;
 
 function routeAccess(access: (typeof PANEL_ROUTES)[number]["access"]): string {
@@ -89,12 +96,23 @@ function routeAccess(access: (typeof PANEL_ROUTES)[number]["access"]): string {
   return `allOf:${access.allOf.join("|")}`;
 }
 
+/** 第四列:这个端点的目标仓库从哪里认(仓库分配),`-` 是不声明。 */
+function routeAssignment(assignment: (typeof PANEL_ROUTES)[number]["assignment"]): string {
+  if (assignment === undefined) return "-";
+  return assignment.by === "query" ? "query" : `${assignment.by}:${assignment.group}`;
+}
+
 function routeKey(route: (typeof PANEL_ROUTES)[number]): string {
-  return `${route.method} ${String(route.pattern)} ${routeAccess(route.access)}`;
+  return [
+    route.method,
+    String(route.pattern),
+    routeAccess(route.access),
+    routeAssignment(route.assignment),
+  ].join(" ");
 }
 
 function expectedRouteKey(route: (typeof ROUTE_EXPECTATIONS)[number]): string {
-  return `${route[0]} ${route[1]} ${route[2]}`;
+  return `${route[0]} ${route[1]} ${route[2]} ${route[3]}`;
 }
 
 function addPermissionUser(
@@ -333,7 +351,7 @@ test("升级把旧角色里的两个读权限格清掉,其余格不动", async (
   assert.deepEqual(remaining, ["review:rerun"]);
 });
 
-test("手写权限期望表与面板代码路由集合完全相等", () => {
+test("手写权限与仓库分配期望表与面板代码路由集合完全相等", () => {
   const actual = PANEL_ROUTES.map(routeKey).sort();
   const expected = ROUTE_EXPECTATIONS.map(expectedRouteKey).sort();
   assert.equal(new Set(actual).size, actual.length, "代码路由表里有重复声明");
