@@ -321,7 +321,7 @@ test("运行模型逐字段采用可信信息,缺项固定回落到 text-only 12
         reasoning: false,
         contextWindow: 32_000,
         maxTokens: 16_000,
-          sources: {
+        sources: {
           name: "trusted",
           api: "service-target",
           baseUrl: "service-target",
@@ -329,7 +329,7 @@ test("运行模型逐字段采用可信信息,缺项固定回落到 text-only 12
           reasoning: "runtime-baseline",
           contextWindow: "trusted",
           maxTokens: "runtime-baseline",
-          },
+        },
       },
     },
   });
@@ -433,7 +433,7 @@ test("内置 provider 目标解析只返回当前 Pi 的 api 与 baseUrl", async
         reasoning: false,
         contextWindow: 128_000,
         maxTokens: 16_000,
-        },
+      },
     );
   }
 });

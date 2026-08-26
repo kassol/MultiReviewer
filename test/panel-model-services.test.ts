@@ -1269,7 +1269,7 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
       reasoning: null,
       contextWindow: null,
       maxOutput: null,
-      },
+    },
   });
   assert.deepEqual(models[1]!.runtime, {
     input: ["text"],
@@ -1323,7 +1323,7 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
       reasoning: null,
       contextWindow: null,
       maxOutput: null,
-      },
+    },
   });
   assert.deepEqual(validationSupplement.runtime, {
     input: ["text"],
@@ -1440,7 +1440,7 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
         reasoning: null,
         contextWindow: null,
         maxOutput: null,
-            sources: {
+        sources: {
           name: null,
           api: null,
           baseUrl: null,
@@ -1448,19 +1448,19 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
           reasoning: null,
           contextWindow: null,
           maxOutput: null,
-              },
+        },
       },
       runtime: {
         input: ["text"],
         reasoning: false,
         contextWindow: 128_000,
         maxOutput: 16_000,
-            sources: {
+        sources: {
           input: "runtime-baseline",
           reasoning: "runtime-baseline",
           contextWindow: "runtime-baseline",
           maxOutput: "runtime-baseline",
-            },
+        },
       },
     },
     "已经保存但服务与来源都消失的模型仍要留在统一候选里",
@@ -1644,7 +1644,7 @@ test("自定义服务中与 Pi 同 model id 的信息来源按字段投影", asy
       reasoning: "pi-catalog",
       contextWindow: "pi-catalog",
       maxOutput: "pi-catalog",
-      },
+    },
   });
   assert.deepEqual(model.runtime, {
     input: ["text", "image"],
@@ -3424,7 +3424,7 @@ test("模型补录只做一次真实推理并绑定当前目标，失败与旧�
       reasoning: null,
       contextWindow: null,
       maxOutput: null,
-        sources: {
+      sources: {
         name: null,
         api: "service-target",
         baseUrl: "service-target",
@@ -3432,19 +3432,19 @@ test("模型补录只做一次真实推理并绑定当前目标，失败与旧�
         reasoning: null,
         contextWindow: null,
         maxOutput: null,
-          },
+      },
     });
     assert.deepEqual(manual.runtime, {
       input: ["text"],
       reasoning: false,
       contextWindow: 128_000,
       maxOutput: 16_000,
-        sources: {
+      sources: {
         input: "runtime-baseline",
         reasoning: "runtime-baseline",
         contextWindow: "runtime-baseline",
         maxOutput: "runtime-baseline",
-        },
+      },
     });
 
     const callsBeforeStale = stub.calls.length;

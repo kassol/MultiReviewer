@@ -33,7 +33,6 @@ const CONFIG = {
       baseUrl: "service-target" as const,
       input: "runtime-baseline" as const,
       reasoning: "runtime-baseline" as const,
-      cost: "unknown" as const,
       contextWindow: "runtime-baseline" as const,
       maxTokens: "runtime-baseline" as const,
     },

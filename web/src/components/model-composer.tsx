@@ -446,8 +446,6 @@ function ProviderPane({
                   </span>
                   <span className="shrink-0 text-left text-xs text-muted-foreground sm:text-right">
                     <span><span className="font-mono tabular-nums">{NUMBER_FORMAT.format(model.runtime.contextWindow)}</span> 上下文</span>
-                    <br />
-                    <span><span className="font-mono tabular-nums">{NUMBER_FORMAT.format(model.runtime.maxOutput)}</span> 最大输出</span>
                   </span>
                 </span>
               </label>

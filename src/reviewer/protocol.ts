@@ -40,6 +40,6 @@ export type WorkerMessage =
       anchorRejections: number;
       /** 会话内可见的失败原因,来自 errorMessage 或最后一条消息的 stopReason。 */
       failure?: string;
-      /** Pi 会话统计出的用量与成本。会话没建起来时取不到。 */
+      /** Pi 会话统计出的用量。会话没建起来时取不到。 */
       usage?: WorkerUsage;
     };

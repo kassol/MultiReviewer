@@ -497,8 +497,7 @@ function RunBody({
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-sm text-text-muted">
           <span className="tabular-nums">
             用量 输入 {run.usage.inputTokens.toLocaleString("zh-CN")} · 输出{" "}
-            {run.usage.outputTokens.toLocaleString("zh-CN")} · 共{" "}
-            {run.usage.totalTokens.toLocaleString("zh-CN")} tokens
+            {run.usage.outputTokens.toLocaleString("zh-CN")} tokens
           </span>
         </div>
       )}

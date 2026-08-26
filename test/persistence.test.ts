@@ -651,7 +651,6 @@ test("用量与耗时落库,Review Run 一级是各 Reviewer 之和", async () =
     cacheWriteTokens: 100,
     totalTokens: 2500,
   };
-  const freeUsage: ReviewerUsage = { ...usage, totalTokens: 2500 };
   const slow: Reviewer = {
     model: "slow-model",
     review: async () => {
@@ -669,7 +668,7 @@ test("用量与耗时落库,Review Run 一级是各 Reviewer 之和", async () =
 
   await runReview(EVENT, {
     forge: forge.forge,
-    reviewers: [scriptedReviewer("model-a", [FINDING], { usage: freeUsage }), slow],
+    reviewers: [scriptedReviewer("model-a", [FINDING], { usage }), slow],
     cacheDir: cache.dir,
     dbPath: db.path,
   });
