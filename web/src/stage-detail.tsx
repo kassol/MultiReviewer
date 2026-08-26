@@ -2,8 +2,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { ArrowLeftIcon, CheckCircledIcon, CrossCircledIcon, ExternalLinkIcon } from "@radix-ui/react-icons";
-import { Callout, SegmentedControl, Skeleton, Tooltip } from "@radix-ui/themes";
+import {
+  ArrowLeftIcon,
+  CheckCircledIcon,
+  Cross2Icon,
+  CrossCircledIcon,
+  ExternalLinkIcon,
+} from "@radix-ui/react-icons";
+import { Callout, IconButton, Skeleton, Tooltip } from "@radix-ui/themes";
+import { Dialog } from "radix-ui";
 
 import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
@@ -11,14 +18,17 @@ import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
+import {
+  useDialogReturnFocus,
+  visibleNavCurrentItem,
+} from "@/components/use-dialog-return-focus";
 import { localClock, localDay, localMinute } from "@/lib/time";
 
 import { fetchJson } from "./api.ts";
 import { AdvanceAction, CompleteAction, type RangeReview } from "./range-review-actions.tsx";
-import { RunDiff } from "./run-diff.tsx";
+import { FilePatch } from "./run-diff.tsx";
 import { RunTrace } from "./run-trace.tsx";
 import {
-  disposedCount,
   rerunRangeReviewRequest,
   rerunRequest,
   runStatus,
@@ -30,7 +40,13 @@ import {
   type StageItem,
 } from "./runs.tsx";
 import { loadPanelSession, pullRequestUrl } from "./session.ts";
-import { StageRound, StageSummaryView, type StageScope, type StageTimelineEntry } from "./stage-summary.tsx";
+import {
+  StageRound,
+  StageSummaryView,
+  useStageSummary,
+  type StageScope,
+  type StageTimelineEntry,
+} from "./stage-summary.tsx";
 
 /**
  * 时间线上的一组轮次(issue #175):一组是一次代码推进。pull request 阶段按 head
@@ -67,12 +83,35 @@ function scopeOf(stage: StageItem): StageScope {
       };
 }
 
+/** 侧滑打开的是哪一样(issue #189):两者互斥,地址上都在时按 Finding 那一档算。 */
+type OpenedDrawer = { kind: "finding"; id: number } | { kind: "round"; id: number } | null;
+
+function positiveId(value: unknown): number | null {
+  const id = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
 /**
- * 审查阶段的详情页(issue #175)。一个阶段有自己的地址,两种来源共用这一页。
+ * 来时那份评审记录列表的过滤(issue #189)。阶段页自己不读它们,只原样带在地址上再交
+ * 还给返回链接:人回到的是自己来的那一片列表,而不是一份无过滤的全量。
+ */
+const LIST_FILTER_KEYS = ["owner", "repo", "status", "source"] as const;
+
+function listFilters(search: Record<string, unknown>): Record<string, string> {
+  const carried: Record<string, string> = {};
+  for (const key of LIST_FILTER_KEYS) {
+    const value = search[key];
+    if (typeof value === "string" && value !== "") carried[key] = value;
+  }
+  return carried;
+}
+
+/**
+ * 审查阶段的详情页(issue #175、#189)。一个阶段有自己的地址,两种来源共用这一页,
+ * 而且只有一种视图:上半是这个阶段当前状态下仍存在的 Finding,下半是时间线,一轮一行。
  *
- * 默认是阶段汇总(`stage-summary.tsx`):这个阶段此刻还剩什么没处置。轮次降为其中的
- * 时间线,按代码推进分组;点某一轮切到那一轮的完整 diff 与审查轨迹,那一轮记在地址上
- * (`?run=`),刷新仍停在它,收起即回到汇总。
+ * 下钻只有侧滑一种,在同一路由上由查询参数驱动:`finding=` 是那条 Finding 所在文件的
+ * diff,`round=` 是那一轮的审查轨迹。页顶只有一个返回,回到来时的那份列表。
  */
 export function StageDetailPage({
   stageId,
@@ -81,7 +120,7 @@ export function StageDetailPage({
   canRerun,
 }: {
   stageId: string;
-  /** 有 `finding:dispose` 权限时,汇总与 diff 里都出现行内处置动作,页头出现审查完成。 */
+  /** 有 `finding:dispose` 权限时,列表与侧滑里都出现行内处置动作,页头出现审查完成。 */
   canDispose: boolean;
   /** 有 `review:create` 权限才出现推进比较项。 */
   canCreate: boolean;
@@ -112,27 +151,34 @@ export function StageDetailPage({
   });
   const armPolling = () => setPollUntil(Date.now() + 90_000);
   /*
-   * 打开哪一轮记在地址里:链接能指到具体一轮,刷新之后仍停在它,浏览器后退键能回到
-   * 阶段汇总。`file` 是阶段汇总跳过来时带的落点文件,回到汇总时跟着清掉。
+   * 侧滑开的是哪一条与来时的列表过滤都记在地址里:刷新仍停在同一条,链接发给同事打开
+   * 的也是它。旧地址上的 `run=` 不再有读者,带着它进来就是一张普通的阶段页。
    */
-  const opened = useRouterState({
+  const location = useRouterState({
     select: (state) => {
-      const search = state.location.search as { run?: unknown; file?: unknown };
-      const id = typeof search.run === "number" ? search.run : Number(search.run);
-      return {
-        runId: Number.isSafeInteger(id) && id > 0 ? id : null,
-        file: typeof search.file === "string" && search.file !== "" ? search.file : undefined,
-      };
+      const search = state.location.search as Record<string, unknown>;
+      const finding = positiveId(search.finding);
+      const round = positiveId(search.round);
+      const drawer: OpenedDrawer =
+        finding !== null
+          ? { kind: "finding", id: finding }
+          : round !== null
+            ? { kind: "round", id: round }
+            : null;
+      return { drawer, filters: listFilters(search) };
     },
   });
-  const backToSummary = (): void => {
-    // 只清这一轮与它的落点文件,地址上其余的格子不动。
+  // 开关侧滑都走 replace:它是这一页里的一次下钻,不该往浏览器历史里塞一条。
+  const closeDrawer = (): void => {
     void navigate({
       to: "/stages/$stageId",
       params: { stageId },
-      search: (prev: Record<string, unknown>) => ({ ...prev, run: undefined, file: undefined }),
+      search: (prev: Record<string, unknown>) => ({ ...prev, finding: undefined, round: undefined }),
+      replace: true,
     });
   };
+  // 关掉侧滑之后焦点回到点开它的那条 Finding 或那一轮;那一行已经不在时退回当前导航项。
+  const returnFocus = useDialogReturnFocus(visibleNavCurrentItem);
 
   const body = detail.data;
   return (
@@ -140,6 +186,7 @@ export function StageDetailPage({
       <div>
         <Link
           to="/runs"
+          search={location.filters}
           className="inline-flex items-center gap-1 text-base text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/40"
         >
           <ArrowLeftIcon aria-hidden />
@@ -196,7 +243,8 @@ export function StageDetailPage({
             </Callout.Root>
           )}
 
-          {opened.runId === null ? (
+          {/* 两个侧滑入口都是这一块里的链接:焦点来源在冒泡到这里时记下来。 */}
+          <div onClick={returnFocus.captureBubblingLink}>
             <StageSummaryView
               scope={scopeOf(body.stage)}
               canDispose={canDispose}
@@ -204,13 +252,23 @@ export function StageDetailPage({
                 <StageTimeline stageId={stageId} groups={body.groups} stage={body.stage} />
               )}
             />
-          ) : (
-            <StageRunView
-              key={opened.runId}
-              runId={opened.runId}
+          </div>
+
+          {location.drawer === null ? null : location.drawer.kind === "finding" ? (
+            <FindingDrawer
+              key={location.drawer.id}
+              scope={scopeOf(body.stage)}
+              findingId={location.drawer.id}
               canDispose={canDispose}
-              {...(opened.file === undefined ? {} : { diffFile: opened.file })}
-              onBack={backToSummary}
+              onClose={closeDrawer}
+              onCloseAutoFocus={returnFocus.onCloseAutoFocus}
+            />
+          ) : (
+            <RoundDrawer
+              key={location.drawer.id}
+              runId={location.drawer.id}
+              onClose={closeDrawer}
+              onCloseAutoFocus={returnFocus.onCloseAutoFocus}
             />
           )}
         </>
@@ -293,7 +351,7 @@ function StageActions({
 
 /**
  * 阶段的时间线:全部轮次按时间排列,一次代码推进一组——pull request 是一个 head
- * commit,范围审查是一个比较项。点一轮进那一轮的 diff。
+ * commit,范围审查是一个比较项。点一轮在侧滑里看它的审查轨迹(issue #189)。
  */
 function StageTimeline({
   stageId,
@@ -333,12 +391,17 @@ function StageTimeline({
                 key={entry.runId}
                 to="/stages/$stageId"
                 params={{ stageId }}
-                search={{ run: entry.runId }}
+                search={(prev: Record<string, unknown>) => ({
+                  ...prev,
+                  round: entry.runId,
+                  finding: undefined,
+                })}
+                replace
                 className="flex flex-col gap-1 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
               >
                 <span className="flex items-center justify-between gap-3 text-base text-text-muted">
                   <span className="tabular-nums">{localMinute(entry.startedAt)}</span>
-                  <span className="text-primary">看这一轮的 diff</span>
+                  <span className="text-primary">看这一轮的审查轨迹</span>
                 </span>
                 <StageRound entry={entry} />
               </Link>
@@ -351,20 +414,131 @@ function StageTimeline({
 }
 
 /**
- * 一轮的完整视图:本轮 diff 与审查轨迹。处置在 diff 的 Finding 卡片里行内做,
- * 与阶段汇总用的是同一个组件、同一个接口。
+ * 阶段页唯一的下钻表面(issue #189):桌面从右侧滑入、固定宽度、内部独立滚动,窄视口
+ * 占满整屏。Esc、遮罩与关闭按钮三种关法都由 Radix 的对话框原语给,焦点回到触发它的
+ * 那一行。用原语而不是 Themes 的 Dialog:后者是居中模态,改成侧边抽屉得深度覆写它的
+ * 内部 DOM。
  */
-function StageRunView({
-  runId,
+function StageDrawer({
+  title,
+  headline,
+  onClose,
+  onCloseAutoFocus,
+  children,
+}: {
+  title: string;
+  /** 标题下面那一行元信息;还没读到内容时不给。 */
+  headline?: React.ReactNode;
+  onClose: () => void;
+  onCloseAutoFocus: (event: { preventDefault: () => void }) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <Dialog.Root
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+    >
+      <Dialog.Overlay className="fixed inset-0 z-40 bg-[rgba(0,0,0,0.25)]" />
+      <Dialog.Content
+        aria-describedby={undefined}
+        onCloseAutoFocus={onCloseAutoFocus}
+        className="fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-card-line bg-surface shadow-overlay outline-none sm:w-[min(920px,92vw)]"
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-card-line px-4 py-3">
+          <div className="flex min-w-0 flex-col gap-1">
+            <Dialog.Title className="min-w-0 break-all text-3xl font-semibold">
+              {title}
+            </Dialog.Title>
+            {headline}
+          </div>
+          <Dialog.Close asChild>
+            <IconButton variant="ghost" color="gray" size="2" aria-label="关闭侧滑">
+              <Cross2Icon />
+            </IconButton>
+          </Dialog.Close>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
+          {children}
+        </div>
+      </Dialog.Content>
+    </Dialog.Root>
+  );
+}
+
+/**
+ * 一条 Finding 的侧滑:最新一轮 Review Range 里它所在文件的 diff,滚到并高亮它锚定的
+ * 那一行,同文件的其它 Finding 挂在各自行下。处置就在卡片里做,与列表是同一个动作。
+ */
+function FindingDrawer({
+  scope,
+  findingId,
   canDispose,
-  diffFile,
-  onBack,
+  onClose,
+  onCloseAutoFocus,
+}: {
+  scope: StageScope;
+  findingId: number;
+  canDispose: boolean;
+  onClose: () => void;
+  onCloseAutoFocus: (event: { preventDefault: () => void }) => void;
+}) {
+  // 与阶段页正文同一份查询:处置之后两处一起变,侧滑也不再多发一次请求。
+  const summary = useStageSummary(scope);
+  const finding = summary.data?.findings.find((entry) => entry.id === findingId);
+  const sameFile =
+    finding === undefined
+      ? []
+      : (summary.data?.findings ?? []).filter((entry) => entry.file === finding.file);
+
+  return (
+    <StageDrawer
+      title={finding === undefined ? "Finding" : `${finding.file}:${finding.line}`}
+      onClose={onClose}
+      onCloseAutoFocus={onCloseAutoFocus}
+    >
+      {summary.isPending ? (
+        <div role="status" aria-live="polite">
+          <span className="sr-only">正在加载这条 Finding</span>
+          <Skeleton className="h-40" />
+        </div>
+      ) : summary.isError ? (
+        <Callout.Root role="alert" color="red" size="1">
+          <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+          <Callout.Text>{(summary.error as Error).message}</Callout.Text>
+        </Callout.Root>
+      ) : finding === undefined ? (
+        <EmptyState
+          title="这条 Finding 不在这个阶段的当前状态里"
+          titleAs="h2"
+          description="它可能已经交接到了新位置,回到列表里找承接它的那一条。"
+        />
+      ) : (
+        <FilePatch
+          runId={finding.lastRunId}
+          path={finding.file}
+          findings={sameFile}
+          canDispose={canDispose}
+          focusFindingId={finding.id}
+        />
+      )}
+    </StageDrawer>
+  );
+}
+
+/**
+ * 一轮的侧滑:这一轮的审查轨迹,运行中的实时刷新。头部是它的结论、commit、触发来源、
+ * 开跑时刻与耗时;末尾留一条去 pull request 看原版的出口。
+ */
+function RoundDrawer({
+  runId,
+  onClose,
+  onCloseAutoFocus,
 }: {
   runId: number;
-  canDispose: boolean;
-  /** 打开时先把 diff 筛到这个文件;阶段汇总跳过来时带着它。 */
-  diffFile?: string;
-  onBack: () => void;
+  onClose: () => void;
+  onCloseAutoFocus: (event: { preventDefault: () => void }) => void;
 }) {
   // 只为拿 Forge 基址,好把这一轮指回它的 pull request。与壳共用同一份会话缓存。
   const session = useQuery({ queryKey: ["session"], queryFn: loadPanelSession });
@@ -374,17 +548,18 @@ function StageRunView({
     // 还在跑的那一轮每 10 秒续查,跑完就停:人打开它正是想看它跑出什么。
     refetchInterval: (query) => (query.state.data?.run.finishedAt === null ? 10_000 : false),
   });
-  const [view, setView] = useState<"diff" | "trace">("diff");
+  const pullUrl =
+    run.data === undefined || session.data === undefined || session.data === null
+      ? null
+      : pullRequestUrl(session.data, run.data.run);
 
   return (
-    <div className="flex flex-col gap-3">
-      <div>
-        <Button variant="soft" color="gray" size={{ initial: "3", sm: "2" }} onClick={onBack}>
-          <ArrowLeftIcon aria-hidden />
-          回到阶段汇总
-        </Button>
-      </div>
-
+    <StageDrawer
+      title="审查轨迹"
+      {...(run.data === undefined ? {} : { headline: <RunHeadline run={run.data.run} /> })}
+      onClose={onClose}
+      onCloseAutoFocus={onCloseAutoFocus}
+    >
       {run.isError ? (
         <Callout.Root role="alert" color="red" size="1">
           <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
@@ -392,131 +567,47 @@ function StageRunView({
         </Callout.Root>
       ) : null}
       {run.isPending ? (
-        <div className="flex flex-col gap-2" role="status" aria-label="正在加载这一轮" aria-busy="true">
-          <Skeleton aria-hidden className="h-8 w-64 max-w-full" />
+        <div role="status" aria-label="正在加载这一轮" aria-busy="true">
           <Skeleton aria-hidden className="h-56 w-full" />
         </div>
       ) : null}
 
       {run.data === undefined ? null : (
-        <RunBody
-          run={run.data.run}
-          canDispose={canDispose}
-          view={view}
-          onView={setView}
-          {...(diffFile === undefined ? {} : { diffFile })}
-          pullUrl={
-            session.data === undefined || session.data === null
-              ? null
-              : pullRequestUrl(session.data, run.data.run)
-          }
-        />
-      )}
-    </div>
-  );
-}
-
-function RunBody({
-  run,
-  canDispose,
-  view,
-  diffFile,
-  pullUrl,
-  onView,
-}: {
-  run: RunItem;
-  canDispose: boolean;
-  view: "diff" | "trace";
-  diffFile?: string;
-  /** pull request 地址;没有配 Forge 基址时是 null,那一格不渲染。 */
-  pullUrl: string | null;
-  onView: (next: "diff" | "trace") => void;
-}) {
-  const duration = runDuration(run);
-  return (
-    <>
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-base text-text-muted">
-        <RunPill run={run} />
-        <CommitChip sha={run.headSha} />
-        <span className="break-all">{triggerLabel(run)}</span>
-        <span aria-hidden>·</span>
-        <span className="tabular-nums">{localDay(run.startedAt)} {localClock(run.startedAt)}</span>
-        {duration === null ? null : (
-          <>
-            <span aria-hidden>·</span>
-            <span>耗时 {duration}</span>
-          </>
-        )}
-      </div>
-
-      {run.total === 0 ? null : (
-        <div className="flex flex-col gap-1.5">
-          <div className="flex justify-between text-base text-text-secondary">
-            <span>处置进度</span>
-            <span className="font-bold tabular-nums text-text">
-              {disposedCount(run)} / {run.total}
-            </span>
-          </div>
-          {/* 两段一条:人工在前,自动接在后面。两者都是已处置,只是来路不同。 */}
-          <div className="flex h-1.5 overflow-hidden rounded-[3px] bg-accent-track">
-            <div className="h-full bg-primary" style={{ width: `${(run.resolved / run.total) * 100}%` }} />
-            <div className="h-full bg-primary/40" style={{ width: `${(run.fixed / run.total) * 100}%` }} />
-          </div>
-          {run.fixed === 0 ? null : (
-            <p className="text-sm text-text-muted tabular-nums">
-              人工 {run.resolved} · 自动 {run.fixed}
-            </p>
+        <div className="flex flex-col gap-3">
+          <RunTrace run={run.data.run} />
+          {pullUrl === null ? null : (
+            <div>
+              <Button asChild variant="soft" color="gray" size={{ initial: "3", sm: "2" }}>
+                <a href={pullUrl} target="_blank" rel="noreferrer">
+                  <ExternalLinkIcon aria-hidden />
+                  去 pull request 看原版
+                </a>
+              </Button>
+            </div>
           )}
         </div>
       )}
+    </StageDrawer>
+  );
+}
 
-      <SegmentedControl.Root
-        value={view}
-        onValueChange={(next) => {
-          if (next === "diff" || next === "trace") onView(next);
-        }}
-        size="1"
-        aria-label="轮次视图"
-        className="w-fit"
-      >
-        <SegmentedControl.Item value="diff">本轮 diff</SegmentedControl.Item>
-        <SegmentedControl.Item value="trace">审查轨迹</SegmentedControl.Item>
-      </SegmentedControl.Root>
-
-      {view === "trace" ? (
-        <RunTrace run={run} />
-      ) : (
-        <RunDiff
-          run={run}
-          canDispose={canDispose}
-          {...(diffFile === undefined ? {} : { initialFile: diffFile })}
-        />
+/** 侧滑头部那一行:这一轮是什么结论、跑的哪个 commit、谁触发的、什么时候跑了多久。 */
+function RunHeadline({ run }: { run: RunItem }) {
+  const duration = runDuration(run);
+  return (
+    <span className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-base text-text-muted">
+      <RunPill run={run} />
+      <CommitChip sha={run.headSha} />
+      <span className="break-all">{triggerLabel(run)}</span>
+      <span aria-hidden>·</span>
+      <span className="tabular-nums">{localDay(run.startedAt)} {localClock(run.startedAt)}</span>
+      {duration === null ? null : (
+        <>
+          <span aria-hidden>·</span>
+          <span>耗时 {duration}</span>
+        </>
       )}
-
-      {run.usage === undefined ? null : (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-sm text-text-muted">
-          <span className="tabular-nums">
-            用量 输入 {run.usage.inputTokens.toLocaleString("zh-CN")} · 输出{" "}
-            {run.usage.outputTokens.toLocaleString("zh-CN")} tokens
-          </span>
-        </div>
-      )}
-
-      {/*
-        处置在 diff 里行内做,这一格留给「去看原版」:整轮 review 的上下文、别人的讨论
-        与代码本身都在那边,单条 Finding 的链接给不出这些。
-      */}
-      {pullUrl === null ? null : (
-        <div>
-          <Button asChild variant="soft" color="gray" size={{ initial: "3", sm: "2" }}>
-            <a href={pullUrl} target="_blank" rel="noreferrer">
-              <ExternalLinkIcon aria-hidden />
-              去 pull request 看原版
-            </a>
-          </Button>
-        </div>
-      )}
-    </>
+    </span>
   );
 }
 

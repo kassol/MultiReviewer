@@ -84,11 +84,14 @@ test("深层路由刷新不白屏:任意前缀下路径都回同一份注入过�
   const h = await startPages();
 
   // 阶段详情的地址把阶段标识编码成一段(issue #175),刷新它同样要回到 index.html。
+  // 侧滑与列表的仓库过滤都写在地址上(issue #189),刷新它们也是同一份 index.html。
   for (const path of [
     `/${PREFIX}/`,
     `/${PREFIX}/repos`,
     `/${PREFIX}/runs/deep/route`,
-    `/${PREFIX}/stages/${encodeURIComponent("pr:acme/widgets/7")}?run=3`,
+    `/${PREFIX}/runs?owner=acme&repo=widgets&status=active`,
+    `/${PREFIX}/stages/${encodeURIComponent("pr:acme/widgets/7")}?finding=42`,
+    `/${PREFIX}/stages/${encodeURIComponent("pr:acme/widgets/7")}?round=3`,
   ]) {
     const response = await h.get(path);
     assert.equal(response.status, 200, path);

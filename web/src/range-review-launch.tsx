@@ -140,9 +140,8 @@ function LaunchDialogContent({
         setError(result.reminder);
         return;
       }
-      // 新阶段要在两处列表里都出现:评审记录页与仓库页的评审记录区块。
+      // 新阶段要出现在评审记录列表里,而列表只有这一份(issue #189)。
       void queryClient.invalidateQueries({ queryKey: ["stages"] });
-      void queryClient.invalidateQueries({ queryKey: ["repo-stages"] });
       onLaunched(`已发起 ${picked!.owner}/${picked!.repo} 的范围审查，第一轮审查开始运行`);
     },
     onError: (failure: Error) => {

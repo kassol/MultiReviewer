@@ -93,12 +93,29 @@ function scopePath(scope: StageScope): string {
 
 /**
  * 阶段汇总的查询键。首段固定是 `stage-summary`:行内处置成功后按这一段整片失效,
- * 处置完的那一条立刻从待处置里退出去(与轮次那三份查询同一个理由)。
+ * 处置完的那一条立刻从待处置里退出去(与轮次那两份查询同一个理由)。
  */
 function stageSummaryKey(scope: StageScope): (string | number)[] {
   return scope.kind === "range-review"
     ? ["stage-summary", "range-review", scope.rangeReviewId]
     : ["stage-summary", "pull-request", scope.owner, scope.repo, scope.pullNumber];
+}
+
+/**
+ * 一个审查阶段的当前状态。阶段页的正文与 Finding 侧滑读的是同一份(issue #189):
+ * 侧滑要的「这条 Finding 在哪个文件、同文件还有哪几条」就在这份里,查询键相同,
+ * React Query 因此只发一次请求,两处看到的也永远是同一批行。
+ */
+export function useStageSummary(scope: StageScope) {
+  return useQuery({
+    queryKey: stageSummaryKey(scope),
+    queryFn: () => fetchJson<StageSummaryBody>(scopePath(scope)),
+    // 还有轮次没跑完就每 10 秒续查,全部结束即停:人最想看结果的正是这几分钟。
+    refetchInterval: (query) =>
+      (query.state.data?.timeline ?? []).some((entry) => entry.finishedAt === null)
+        ? 10_000
+        : false,
+  });
 }
 
 type DispositionFilter = "all" | "pending" | "resolved" | "fixed";
@@ -127,29 +144,14 @@ export function StageSummaryView({
   scope,
   canDispose,
   timeline,
-  onJumpToRun,
 }: {
   scope: StageScope;
   /** 有 `finding:dispose` 权限时行内出现处置动作。 */
   canDispose: boolean;
   /** 时间线怎么摆由页面定:范围审查按比较项分组,PR 那条直接一列。 */
   timeline?: (entries: StageTimelineEntry[]) => React.ReactNode;
-  /**
-   * 点了「去最新一轮 diff」之后调用方还要做的事。PR 那条链路的汇总就摆在轮次详情
-   * 面板里,不切回 diff 的话地址变了而人看到的还是汇总;范围审查那条是跨页跳转,
-   * 不必给。
-   */
-  onJumpToRun?: () => void;
 }) {
-  const summary = useQuery({
-    queryKey: stageSummaryKey(scope),
-    queryFn: () => fetchJson<StageSummaryBody>(scopePath(scope)),
-    // 还有轮次没跑完就每 10 秒续查,全部结束即停:人最想看结果的正是这几分钟。
-    refetchInterval: (query) =>
-      (query.state.data?.timeline ?? []).some((entry) => entry.finishedAt === null)
-        ? 10_000
-        : false,
-  });
+  const summary = useStageSummary(scope);
   const [disposition, setDisposition] = useState<DispositionFilter>("all");
   const [filePath, setFilePath] = useState("all");
 
@@ -251,30 +253,39 @@ export function StageSummaryView({
           key={finding.id}
           className="overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control"
         >
-          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 pt-2.5">
-            <span className="min-w-0 font-mono text-sm break-all text-text-muted">
-              {finding.file}:{finding.line}
+          {/*
+            点一条 Finding 就在侧滑里看它的 diff(issue #189):卡头整块是那个入口,
+            地址上多一个 `finding=`,关掉侧滑就回到这一页本身。
+          */}
+          <Link
+            to="/stages/$stageId"
+            params={{ stageId: stageIdOf(scope) }}
+            search={(prev: Record<string, unknown>) => ({
+              ...prev,
+              finding: finding.id,
+              round: undefined,
+            })}
+            replace
+            className="block px-4 pt-2.5 outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40"
+          >
+            <span className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+              <span className="min-w-0 font-mono text-sm break-all text-text-muted">
+                {finding.file}:{finding.line}
+              </span>
+              <span className="inline-flex shrink-0 items-center gap-1 text-sm text-primary">
+                <FileTextIcon aria-hidden />
+                看这处 diff
+              </span>
             </span>
-            {/* 最新一轮的 diff 位置:处置不必先翻轮次,点过去就是那一轮那个文件。 */}
-            <Link
-              to="/stages/$stageId"
-              params={{ stageId: stageIdOf(scope) }}
-              search={{ run: finding.lastRunId, file: finding.file }}
-              onClick={() => onJumpToRun?.()}
-              className="inline-flex shrink-0 items-center gap-1 text-sm text-primary underline underline-offset-4"
-            >
-              <FileTextIcon aria-hidden />
-              去最新一轮 diff
-            </Link>
-          </div>
-          {finding.title === "" ? null : (
-            <p className="px-4 pt-1 text-lg font-semibold break-words">{finding.title}</p>
-          )}
-          <p className="px-4 pt-1 text-sm text-text-muted tabular-nums">
-            第 {roundOf.get(finding.firstRunId) ?? "?"} 轮首次报出 · 第{" "}
-            {roundOf.get(finding.lastRunId) ?? "?"} 轮最近一次 ·{" "}
-            {localMinute(finding.lastReportedAt)}
-          </p>
+            {finding.title === "" ? null : (
+              <span className="block pt-1 text-lg font-semibold break-words">{finding.title}</span>
+            )}
+            <span className="block pt-1 text-sm text-text-muted tabular-nums">
+              第 {roundOf.get(finding.firstRunId) ?? "?"} 轮首次报出 · 第{" "}
+              {roundOf.get(finding.lastRunId) ?? "?"} 轮最近一次 ·{" "}
+              {localMinute(finding.lastReportedAt)}
+            </span>
+          </Link>
           <FindingRow finding={finding} canDispose={canDispose} />
         </section>
       ))}

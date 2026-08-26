@@ -209,7 +209,10 @@ function TopBar({
   onLogout: () => Promise<void>;
 }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const current = nav.find((item) => item.to === "/" ? pathname === "/" : pathname.startsWith(item.to));
+  // 阶段页不是一张并列的页,它是从评审记录点进去的一个阶段:面包屑因此与它页顶那个
+  // 返回一致,都指着评审记录(issue #189)。
+  const located = pathname.startsWith("/stages") ? "/runs" : pathname;
+  const current = nav.find((item) => item.to === "/" ? located === "/" : located.startsWith(item.to));
   return (
     <header className="sticky top-0 z-30 shrink-0 border-b border-chrome-line bg-chrome backdrop-blur-[30px]">
       <div className="flex items-center justify-between gap-3 px-4 pt-[11px] pb-2 sm:px-7">

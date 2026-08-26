@@ -300,12 +300,21 @@ export function RunsPage({
 }) {
   const navigate = useNavigate();
   /*
-   * 筛选记在地址里:链接要能指明列表的哪一片。筛选切换用 replace,否则点几下分段控件
-   * 就把历史塞满。点开一行是跳到那个阶段自己的地址(issue #175),列表页不再开抽屉。
+   * 三个筛选都记在地址里:链接要能指明列表的哪一片。筛选切换用 replace,否则点几下分段
+   * 控件就把历史塞满。点开一行是跳到那个阶段自己的地址(issue #175),列表页不再开抽屉。
+   * 仓库那一档是一对 owner + repo(issue #189):只给半个键服务端会 400,所以两个都在
+   * 才算数——仓库页的「评审记录」链接进来的就是这一档。
    */
   const filter = useRouterState({
     select: (state) => {
-      const search = state.location.search as { status?: unknown; source?: unknown };
+      const search = state.location.search as {
+        status?: unknown;
+        source?: unknown;
+        owner?: unknown;
+        repo?: unknown;
+      };
+      const owner = typeof search.owner === "string" && search.owner !== "" ? search.owner : null;
+      const repo = typeof search.repo === "string" && search.repo !== "" ? search.repo : null;
       return {
         status: (search.status === "active" || search.status === "closed"
           ? search.status
@@ -313,6 +322,7 @@ export function RunsPage({
         source: (search.source === "pull-request" || search.source === "range-review"
           ? search.source
           : "all") as StageSourceFilter,
+        repository: owner === null || repo === null ? null : { owner, repo },
       };
     },
   });
@@ -327,12 +337,36 @@ export function RunsPage({
       replace: true,
     });
   };
+  const clearRepository = () => {
+    void navigate({
+      to: "/runs",
+      search: (prev: Record<string, unknown>) => ({ ...prev, owner: undefined, repo: undefined }),
+      replace: true,
+    });
+  };
+  // 阶段页的返回要回到这一片列表,所以进去时把当前过滤原样带上(issue #189)。
+  const carried: Record<string, string> = {
+    ...(filter.status === "all" ? {} : { status: filter.status }),
+    ...(filter.source === "all" ? {} : { source: filter.source }),
+    ...(filter.repository === null ? {} : filter.repository),
+  };
   const stages = useInfiniteQuery({
-    queryKey: ["stages", filter.status, filter.source],
+    queryKey: [
+      "stages",
+      filter.status,
+      filter.source,
+      filter.repository?.owner ?? null,
+      filter.repository?.repo ?? null,
+    ],
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
       fetchJson<StagesPage>(
-        stagesPath({ offset: pageParam, status: filter.status, source: filter.source }),
+        stagesPath({
+          offset: pageParam,
+          status: filter.status,
+          source: filter.source,
+          ...(filter.repository ?? {}),
+        }),
       ),
     getNextPageParam: (last) => last.nextOffset,
     /*
@@ -369,6 +403,8 @@ export function RunsPage({
   }, [stages.fetchNextPage, stages.hasNextPage, stages.isFetchingNextPage]);
 
   const flat = stages.data?.pages.flatMap((page) => page.stages) ?? [];
+  const unfiltered =
+    filter.status === "all" && filter.source === "all" && filter.repository === null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -423,6 +459,15 @@ export function RunsPage({
             options={SOURCE_OPTIONS}
             onChange={(source) => setFilter({ source })}
           />
+          {/* 仓库过滤没有分段控件可摆:它的取值是全部已注册仓库,只显示当前这一个并给清除。 */}
+          {filter.repository === null ? null : (
+            <span className="flex items-center gap-1.5 rounded-full bg-accent-tint px-3 text-base text-primary">
+              仓库 {filter.repository.owner}/{filter.repository.repo}
+              <Button variant="ghost" color="gray" size="1" highContrast onClick={clearRepository}>
+                清除
+              </Button>
+            </span>
+          )}
         </div>
 
         <div
@@ -446,10 +491,12 @@ export function RunsPage({
             <div className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
               {flat.map((stage) => (
                 // 点一行是进这个阶段自己的地址(issue #175):详情能直接分享,后退键回到列表。
+                // 当前过滤跟着进去,阶段页那个返回才回得到同一片列表(issue #189)。
                 <MasterListItem key={stage.stageId} selected={false} asChild>
                   <Link
                     to="/stages/$stageId"
                     params={{ stageId: stage.stageId }}
+                    search={carried}
                     className="group flex items-center gap-3 border-t border-line px-5 py-3 first:border-t-0"
                   >
                     <span className="flex min-w-0 flex-1 flex-col gap-px">
@@ -475,24 +522,20 @@ export function RunsPage({
           {flat.length === 0 && !stages.isPending && !stages.isError ? (
             <div className="rounded-lg border border-card-line bg-surface px-5 py-4 shadow-card">
               <EmptyState
-                title={
-                  filter.status === "all" && filter.source === "all"
-                    ? "暂无审查记录"
-                    : "没有符合条件的审查记录"
-                }
+                title={unfiltered ? "暂无审查记录" : "没有符合条件的审查记录"}
                 titleAs="h2"
                 description={
-                  filter.status === "all" && filter.source === "all" ? (
+                  unfiltered ? (
                     <>
                       向已注册仓库提交 pull request 后，系统会自动运行审查。
                       {canRerun ? "如需对已有 pull request 重新运行审查，请到仓库页选择仓库并输入 PR 编号。" : null}
                     </>
                   ) : (
-                    "换一个状态或来源再看。"
+                    "换一个仓库、状态或来源再看。"
                   )
                 }
                 action={
-                  canRerun && filter.status === "all" && filter.source === "all" ? (
+                  canRerun && unfiltered ? (
                     <Button variant="outline" color="gray" size={{ initial: "4", sm: "1" }} asChild>
                       <Link to="/repos">去仓库页</Link>
                     </Button>

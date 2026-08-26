@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { ArrowLeftIcon, CheckCircledIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, UpdateIcon } from "@radix-ui/react-icons";
+import { ArrowLeftIcon, ArrowRightIcon, CheckCircledIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, UpdateIcon } from "@radix-ui/react-icons";
 import { AlertDialog, Callout, Dialog, Flex, IconButton, Skeleton, Text, TextField, Tooltip } from "@radix-ui/themes";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -32,15 +32,7 @@ import { localMinute } from "@/lib/time";
 import { api, errorText, fetchJson } from "./api.ts";
 import { modelIdentity, parseModelIdentity } from "./model-services.ts";
 import { RangeReviewLaunch } from "./range-review-launch.tsx";
-import {
-  rerunRequest,
-  StageCounts,
-  stageLabel,
-  StageSourceBadge,
-  StageStatusBadge,
-  stagesPath,
-  type StageItem,
-} from "./runs.tsx";
+import { rerunRequest } from "./runs.tsx";
 import { useSetupStatus } from "./setup-checklist.tsx";
 
 type ReviewerSpec = { provider: string; model: string };
@@ -1051,7 +1043,12 @@ function ReviewersEditor({
   );
 }
 
-/** 本仓库最近的审查记录，并提供输入 PR 编号重新运行审查的入口。 */
+/**
+ * 通往这个仓库的评审记录,并提供发起范围审查与输入 PR 编号重新运行审查的入口。
+ *
+ * 这里不再自己列一遍审查阶段(issue #189):评审记录只有一份,仓库是它的一个过滤条件,
+ * 内嵌第二份列表只会让同一个阶段有两个入口、两种返回。
+ */
 function RepoRuns({
   repo,
   canRead,
@@ -1065,24 +1062,12 @@ function RepoRuns({
   canRerun: boolean;
   onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
 }) {
-  const queryClient = useQueryClient();
-  // 仓库页的评审记录与全局评审记录读同一个端点、同一种行,只多一对仓库过滤:
-  // 一个审查阶段在两处是同一条记录(issue #174)。
-  const stages = useQuery({
-    queryKey: ["repo-stages", repo.owner, repo.repo],
-    queryFn: () =>
-      fetchJson<{ stages: StageItem[] }>(
-        stagesPath({ offset: 0, owner: repo.owner, repo: repo.repo }),
-      ),
-    enabled: canRead,
-  });
   const [pullNumber, setPullNumber] = useState("");
   const rerun = useMutation({
     mutationFn: rerunRequest,
     onSuccess: (text) => {
       onFeedback({ text, isError: false });
       setPullNumber("");
-      void queryClient.invalidateQueries({ queryKey: ["repo-stages", repo.owner, repo.repo] });
     },
     onError: (error: Error) => onFeedback({ text: error.message, isError: true }),
   });
@@ -1097,9 +1082,8 @@ function RepoRuns({
     rerun.mutate({ owner: repo.owner, repo: repo.repo, pullNumber: number });
   };
 
-  const rows = stages.data?.stages.slice(0, 8) ?? [];
   return (
-    <CardShell aria-busy={canRead && stages.isPending}>
+    <CardShell>
       <CardTitle
         title={canRead ? "评审记录" : "重新运行审查"}
         action={canCreate || canRerun ? (
@@ -1132,50 +1116,17 @@ function RepoRuns({
           </div>
         ) : undefined}
       />
-      {canRead && stages.isError ? (
+      {canRead ? (
         <div className="border-t border-line px-4 py-3.5 sm:px-5">
-          <Callout.Root role="alert" color="red" size="1">
-            <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-            <Callout.Text>{(stages.error as Error).message}</Callout.Text>
-          </Callout.Root>
-        </div>
-      ) : null}
-      {canRead && stages.isPending ? (
-        <div className="flex flex-col gap-2 border-t border-line px-4 py-3.5 sm:px-5" role="status" aria-live="polite">
-          <span className="sr-only">正在读取仓库评审记录</span>
-          <Skeleton className="h-8" />
-          <Skeleton className="h-8" />
-          <Skeleton className="h-8" />
-        </div>
-      ) : null}
-      {canRead
-        ? rows.map((stage) => (
-            // 一行一个审查阶段:左边是它的名字与最新一轮的时间,右边是阶段汇总与状态。
-            // 点开是这个阶段自己的详情页(issue #175),与全局评审记录点开的是同一个地址。
-            <MasterListItem key={stage.stageId} selected={false} asChild>
-              <Link
-                to="/stages/$stageId"
-                params={{ stageId: stage.stageId }}
-                className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-3 sm:px-5"
-              >
-                <span className="min-w-0 flex-1 text-lg font-semibold tabular-nums">
-                  {stageLabel(stage)}
-                  <span className="font-normal text-text-muted">
-                    {stage.latestRunAt === null
-                      ? " · 还没有跑过"
-                      : ` · ${localMinute(stage.latestRunAt)}`}
-                  </span>
-                </span>
-                <StageSourceBadge stage={stage} />
-                <StageCounts stage={stage} />
-                <StageStatusBadge stage={stage} />
-              </Link>
-            </MasterListItem>
-          ))
-        : null}
-      {canRead && rows.length === 0 && !stages.isPending && !stages.isError ? (
-        <div className="border-t border-line px-4 sm:px-5">
-          <EmptyState title="暂无审查记录" />
+          {/* 同一份评审记录列表,只是带上这个仓库的过滤(issue #189)。 */}
+          <Link
+            to="/runs"
+            search={{ owner: repo.owner, repo: repo.repo }}
+            className="inline-flex items-center gap-1 text-base text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/40"
+          >
+            看这个仓库的评审记录
+            <ArrowRightIcon aria-hidden />
+          </Link>
         </div>
       ) : null}
     </CardShell>
