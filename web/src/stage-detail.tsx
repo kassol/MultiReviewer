@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useEffect, useState, type MouseEventHandler } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEventHandler } from "react";
 
 import {
   ArrowLeftIcon,
@@ -178,8 +178,22 @@ export function StageDetailPage({
       replace: true,
     });
   };
-  // 关掉侧滑之后焦点回到点开它的那条 Finding 或那一轮;那一行已经不在时退回当前导航项。
-  const returnFocus = useDialogReturnFocus(visibleNavCurrentItem);
+  // 关掉侧滑之后按查询参数找回同一条入口。路由更新会重建 Link,不能只保存旧 DOM 节点。
+  const lastDrawer = useRef(location.drawer);
+  if (location.drawer !== null) lastDrawer.current = location.drawer;
+  const drawerFocusFallback = useCallback((): HTMLElement | null => {
+    const drawer = lastDrawer.current;
+    if (drawer !== null) {
+      const parameter = drawer.kind === "finding" ? "finding" : "trace";
+      const target = [...document.querySelectorAll<HTMLAnchorElement>("a[href]")].find((candidate) =>
+        new URL(candidate.href).searchParams.get(parameter) === String(drawer.id) &&
+        candidate.getClientRects().length > 0
+      );
+      if (target !== undefined) return target;
+    }
+    return visibleNavCurrentItem();
+  }, []);
+  const returnFocus = useDialogReturnFocus(drawerFocusFallback);
 
   const body = detail.data;
   return (
