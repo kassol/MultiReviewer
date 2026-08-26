@@ -141,7 +141,7 @@ _Avoid_: 操作员、成员、账户
 _Avoid_: 用户组、权限模板、管理员角色
 
 **权限格**:
-面板 API 对一类资源的一档读写或动作能力,字面量形如 `repo:read`。角色是权限格的子集;新增权限格不会自动落到已有角色上。`repo:write`、`model:write` 与 `credential:write` 各自包含同资源的读权限;`review:rerun` 是独立动作,不包含 `review:read`。
+面板 API 对一类资源的一档写或动作能力,字面量形如 `repo:write`。读评审记录、仓库与处置率不由权限格决定:登录即可读,读得到哪些由仓库分配决定(ADR 0018)。角色是权限格的子集;新增权限格不会自动落到已有角色上。八格是 `repo:write`、`review:rerun`、`review:create`、`finding:dispose`、`model:read`、`model:write`、`credential:read`、`credential:write`;`model:write` 与 `credential:write` 各自包含同资源的读权限,隐含关系只剩这两对。
 _Avoid_: scope、能力、权限点
 
 **系统管理员**:

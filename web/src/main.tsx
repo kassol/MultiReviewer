@@ -26,7 +26,6 @@ import { createRoot } from "react-dom/client";
 
 import { CommandPalette, useCommandPalette } from "@/components/command-palette";
 import { Mark } from "@/components/mark";
-import { EmptyState } from "@/components/empty-state";
 import { PageBody } from "@/components/page-body";
 import { PanelTheme } from "@/components/panel-theme";
 import { DropdownMenu, Skeleton } from "@radix-ui/themes";
@@ -115,9 +114,9 @@ type NavigationItem = {
   label: string;
   /** 移动端底部 Tab 栏用。桌面 underline 导航只有文字,不挂图标。 */
   icon: typeof DashboardIcon;
+  /** 省略即登录就看得见:读范围由仓库分配决定,不由权限格门控(ADR 0018)。 */
   permission?: PagePermission;
   admin?: true;
-  always?: true;
 };
 
 /**
@@ -125,14 +124,14 @@ type NavigationItem = {
  * 走头像菜单,不占 underline 导航的位置。
  */
 const NAV: readonly NavigationItem[] = [
-  { to: "/", label: "总览", icon: DashboardIcon, permission: "review:read" },
-  { to: "/runs", label: "评审记录", icon: CounterClockwiseClockIcon, permission: "review:read" },
-  { to: "/repos", label: "仓库", icon: ArchiveIcon, permission: "repo:read" },
-  { to: "/stats", label: "处置率", icon: BarChartIcon, permission: "review:read" },
+  { to: "/", label: "总览", icon: DashboardIcon },
+  { to: "/runs", label: "评审记录", icon: CounterClockwiseClockIcon },
+  { to: "/repos", label: "仓库", icon: ArchiveIcon },
+  { to: "/stats", label: "处置率", icon: BarChartIcon },
   { to: "/credentials", label: "模型服务", icon: LightningBoltIcon, permission: ["model:read", "model:write", "credential:read", "credential:write"] },
   { to: "/settings", label: "审查策略", icon: MixerHorizontalIcon, permission: "model:read" },
   { to: "/access", label: "访问控制", icon: PersonIcon, admin: true },
-  { to: "/password", label: "修改密码", icon: LockClosedIcon, always: true },
+  { to: "/password", label: "修改密码", icon: LockClosedIcon },
 ];
 
 /** 桌面顶栏的 underline 导航:账户项不在其中。 */
@@ -147,18 +146,16 @@ function hasPagePermission(session: PanelSession, permission: PagePermission): b
 }
 
 function visibleNav(session: PanelSession) {
-  const hasBusinessAccess = session.isSystemAdmin || session.permissions.length > 0;
   return NAV.filter((item) =>
-    (item.always === true && hasBusinessAccess) ||
-    (item.admin === true
+    item.admin === true
       ? session.isSystemAdmin
-      : item.permission !== undefined && hasPagePermission(session, item.permission)),
+      : item.permission === undefined || hasPagePermission(session, item.permission),
   );
 }
 
+/** 登录就落首页;还没改过密码的先去改密页。 */
 function homeFor(session: PanelSession): string {
-  if (session.mustChangePassword) return "/password";
-  return visibleNav(session)[0]?.to ?? "/";
+  return session.mustChangePassword ? "/password" : "/";
 }
 
 function Shell() {
@@ -248,7 +245,7 @@ function TopBar({
       {nav.length === 0 ? null : (
         <nav aria-label="面板导航" className="flex items-center gap-0.5 px-5 max-sm:hidden">
           {nav.map((item) => (
-            <NavLink key={item.to} item={item} session={session} />
+            <NavLink key={item.to} item={item} />
           ))}
         </nav>
       )}
@@ -260,8 +257,8 @@ function TopBar({
  * underline 导航项。激活态是 3px 蓝色圆头指示条 + 字重提到 650,底部 padding 相应
  * 减去指示条的高度,所以激活与未激活的文字基线对齐,切换页面时文字不会上下跳。
  */
-function NavLink({ item, session }: { item: NavigationItem; session: PanelSession }) {
-  const badge = useNavBadge(item, session);
+function NavLink({ item }: { item: NavigationItem }) {
+  const badge = useNavBadge(item);
   return (
     <Link
       to={item.to}
@@ -303,12 +300,11 @@ function NavLink({ item, session }: { item: NavigationItem; session: PanelSessio
  *   的条数冒充总数。
  * - 模型服务的告警点来自首次配置状态里的「有没有可用模型服务」。
  */
-function useNavBadge(item: NavigationItem, session: PanelSession): { count?: number; alert: boolean } {
-  const canReadRepos = hasPermission(session, "repo:read");
+function useNavBadge(item: NavigationItem): { count?: number; alert: boolean } {
   const repos = useQuery({
     queryKey: ["repos"],
     queryFn: () => fetchJson<unknown[]>("/repos"),
-    enabled: item.to === "/repos" && canReadRepos,
+    enabled: item.to === "/repos",
   });
   const setup = useSetupStatus();
   if (item.to === "/repos") {
@@ -422,29 +418,20 @@ function MobileTabBar({
   );
 }
 
-/**
- * 首页就是总览。看得到评审记录的人落在总览上;只有仓库或模型权限的人落在自己的
- * 第一个页面;一个权限都没有的人看到说明页,而不是一个空的总览。
- */
+/** 首页就是总览。登录就落在这里,读得到多少由仓库分配决定。 */
 const indexRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/",
   beforeLoad: ({ context }) => {
-    const target = homeFor(context.session);
-    if (target !== "/") throw redirect({ to: target });
+    if (context.session.mustChangePassword) throw redirect({ to: "/password" });
   },
-  component: IndexPage,
+  component: () => <BusinessPage Page={() => <OverviewPage />} />,
 });
 
-function IndexPage() {
-  const { session } = shellRoute.useRouteContext();
-  if (!hasPermission(session, "review:read")) return <ZeroPermissionPage />;
-  return <BusinessPage Page={() => <OverviewPage />} />;
-}
-
+/** `permission` 省略即登录就进得去,与导航项同一档判据。 */
 function protectedPage(
   path: "/repos" | "/runs" | "/stats" | "/credentials" | "/settings",
-  permission: PagePermission,
+  permission: PagePermission | undefined,
   component: () => React.JSX.Element,
 ) {
   return createRoute({
@@ -452,7 +439,9 @@ function protectedPage(
     path,
     beforeLoad: ({ context }) => {
       if (context.session.mustChangePassword) throw redirect({ to: "/password" });
-      if (!hasPagePermission(context.session, permission)) throw redirect({ to: "/" });
+      if (permission !== undefined && !hasPagePermission(context.session, permission)) {
+        throw redirect({ to: "/" });
+      }
     },
     component: () => <BusinessPage Page={component} />,
   });
@@ -468,19 +457,18 @@ function BusinessPage({ Page }: { Page: () => React.JSX.Element }) {
   );
 }
 
-const reposRoute = protectedPage("/repos", "repo:read", () => {
+const reposRoute = protectedPage("/repos", undefined, () => {
   const { session } = shellRoute.useRouteContext();
   return (
     <ReposPage
       canWrite={hasPermission(session, "repo:write")}
       canCreate={hasPermission(session, "review:create")}
       canReadModels={hasPermission(session, "model:read")}
-      canReadReviews={hasPermission(session, "review:read")}
       canRerun={hasPermission(session, "review:rerun")}
     />
   );
 });
-const runsRoute = protectedPage("/runs", "review:read", () => {
+const runsRoute = protectedPage("/runs", undefined, () => {
   const { session } = shellRoute.useRouteContext();
   return (
     <RunsPage
@@ -498,7 +486,6 @@ const stageDetailRoute = createRoute({
   path: "/stages/$stageId",
   beforeLoad: ({ context }) => {
     if (context.session.mustChangePassword) throw redirect({ to: "/password" });
-    if (!hasPagePermission(context.session, "review:read")) throw redirect({ to: "/" });
   },
   component: () => {
     const { session } = shellRoute.useRouteContext();
@@ -516,7 +503,7 @@ const stageDetailRoute = createRoute({
     );
   },
 });
-const statsRoute = protectedPage("/stats", "review:read", () => <StatsPage />);
+const statsRoute = protectedPage("/stats", undefined, () => <StatsPage />);
 function ModelServicesRoutePage({
   provider,
   tab,
@@ -672,25 +659,6 @@ const passwordRoute = createRoute({
     return <PasswordPage session={session} next={homeFor({ ...session, mustChangePassword: false })} />;
   },
 });
-function ZeroPermissionPage() {
-  const { session } = shellRoute.useRouteContext();
-  return (
-    <div className="flex min-h-full items-center justify-center p-6">
-      <EmptyState
-        title="当前账号暂无访问权限"
-        titleAs="h1"
-        description={(
-          <>
-            <span className="block">当前账号尚未分配角色。请联系系统管理员完成角色分配，然后刷新页面。</span>
-            <span className="mt-1 block">系统管理员：{session.systemAdmins.join("、")}</span>
-          </>
-        )}
-        action={<Link to="/password" className="text-sm underline underline-offset-4">修改密码</Link>}
-        className="w-[30rem] max-w-full rounded-md border border-border bg-card p-4"
-      />
-    </div>
-  );
-}
 
 const routeTree = rootRoute.addChildren([
   loginRoute,

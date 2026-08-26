@@ -53,9 +53,7 @@ type PermissionInfo = {
 };
 
 const PERMISSION_INFO: readonly PermissionInfo[] = [
-  { id: "repo:read", resource: "仓库", action: "查看", hint: "查看仓库列表和 hook 核对结果。" },
   { id: "repo:write", resource: "仓库", action: "管理", hint: "搜索、注册和移除仓库，修改模型组合和轮转 Key。" },
-  { id: "review:read", resource: "评审", action: "查看", hint: "查看评审记录和处置率。" },
   { id: "review:rerun", resource: "评审", action: "重新运行", hint: "重新运行一次评审，会产生模型调用费用并在 PR 上发布评论。" },
   { id: "review:create", resource: "评审", action: "发起", hint: "发起范围审查，会在 Forge 上自建分支与容器 pull request 并立即跑一轮。" },
   { id: "finding:dispose", resource: "评审", action: "处置", hint: "在面板上 resolve / unresolve 一条 Finding 并附处置备注，Forge 上的评论状态跟着改。" },

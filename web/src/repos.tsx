@@ -141,14 +141,12 @@ export function ReposPage({
   canWrite,
   canCreate,
   canReadModels,
-  canReadReviews,
   canRerun,
 }: {
   canWrite: boolean;
   /** 「评审 · 发起」才看得见评审记录区块里的发起范围审查入口(issue #177)。 */
   canCreate: boolean;
   canReadModels: boolean;
-  canReadReviews: boolean;
   canRerun: boolean;
 }) {
   const queryClient = useQueryClient();
@@ -321,7 +319,6 @@ export function ReposPage({
               globalModels={settings.data?.reviewers.map(modelIdentity)}
               canWrite={canWrite}
               canCreate={canCreate}
-              canReadReviews={canReadReviews}
               canRerun={canRerun}
               onRemoved={() => {
                 setSelectedId(null);
@@ -355,7 +352,6 @@ function RepoDetail({
   globalModels,
   canWrite,
   canCreate,
-  canReadReviews,
   canRerun,
   onRemoved,
 }: {
@@ -363,7 +359,6 @@ function RepoDetail({
   globalModels: string[] | undefined;
   canWrite: boolean;
   canCreate: boolean;
-  canReadReviews: boolean;
   canRerun: boolean;
   onRemoved: () => void;
 }) {
@@ -700,15 +695,7 @@ function RepoDetail({
         )}
       </div>
 
-      {canReadReviews || canRerun ? (
-        <RepoRuns
-          repo={repo}
-          canRead={canReadReviews}
-          canCreate={canCreate}
-          canRerun={canRerun}
-          onFeedback={setFeedback}
-        />
-      ) : null}
+      <RepoRuns repo={repo} canCreate={canCreate} canRerun={canRerun} onFeedback={setFeedback} />
 
       {canWrite ? <AlertDialog.Root open={confirmingRemoval} onOpenChange={setConfirmingRemoval}>
         <AlertDialog.Content
@@ -1051,13 +1038,11 @@ function ReviewersEditor({
  */
 function RepoRuns({
   repo,
-  canRead,
   canCreate,
   canRerun,
   onFeedback,
 }: {
   repo: RepoRow;
-  canRead: boolean;
   canCreate: boolean;
   canRerun: boolean;
   onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
@@ -1085,7 +1070,7 @@ function RepoRuns({
   return (
     <CardShell>
       <CardTitle
-        title={canRead ? "评审记录" : "重新运行审查"}
+        title="评审记录"
         action={canCreate || canRerun ? (
           <div className="flex flex-wrap items-center gap-2">
             {canCreate ? (
@@ -1116,19 +1101,17 @@ function RepoRuns({
           </div>
         ) : undefined}
       />
-      {canRead ? (
-        <div className="border-t border-line px-4 py-3.5 sm:px-5">
-          {/* 同一份评审记录列表,只是带上这个仓库的过滤(issue #189)。 */}
-          <Link
-            to="/runs"
-            search={{ owner: repo.owner, repo: repo.repo }}
-            className="inline-flex items-center gap-1 text-base text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/40"
-          >
-            看这个仓库的评审记录
-            <ArrowRightIcon aria-hidden />
-          </Link>
-        </div>
-      ) : null}
+      <div className="border-t border-line px-4 py-3.5 sm:px-5">
+        {/* 同一份评审记录列表,只是带上这个仓库的过滤(issue #189)。 */}
+        <Link
+          to="/runs"
+          search={{ owner: repo.owner, repo: repo.repo }}
+          className="inline-flex items-center gap-1 text-base text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/40"
+        >
+          看这个仓库的评审记录
+          <ArrowRightIcon aria-hidden />
+        </Link>
+      </div>
     </CardShell>
   );
 }
