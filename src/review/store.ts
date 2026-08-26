@@ -1980,6 +1980,24 @@ const DROPPED_COST_COLUMNS: readonly (readonly [string, string])[] = [
   ["model_directory_model", "cost_json"],
 ];
 
+/**
+ * 退役的读权限格(issue #193):读范围改由仓库分配决定,`repo:read` 与 `review:read`
+ * 不再是权限格。升级前的角色里还留着这两种行,`isPanelPermission` 已经不认它们,留
+ * 着只会让角色矩阵与库对不上,而且角色一保存就会连带把它们写回去。
+ *
+ * 建 schema 时顺手删,不递增 `user_version`:那个版本号被模型服务迁移器独占
+ * (`MODEL_SERVICE_SCHEMA_VERSION`),高于它的库开不起来。删空行是幂等的,第二次打开
+ * 同一个库删到零行。
+ */
+const RETIRED_PANEL_PERMISSIONS = ["repo:read", "review:read"];
+
+function dropRetiredPanelPermissions(db: DatabaseSync): void {
+  db.prepare(
+    `DELETE FROM panel_role_permission
+      WHERE permission IN (${RETIRED_PANEL_PERMISSIONS.map(() => "?").join(", ")})`,
+  ).run(...RETIRED_PANEL_PERMISSIONS);
+}
+
 function dropCostColumns(db: DatabaseSync): void {
   const columnsOf = new Map<string, Set<string>>();
   for (const [table, column] of DROPPED_COST_COLUMNS) {
@@ -2037,6 +2055,7 @@ export function openStore(dbPath: string): Store {
     throw error;
   }
   dropCostColumns(db);
+  dropRetiredPanelPermissions(db);
 
   // 系统管理员 bootstrap 与普通创建共用同一条用户写入语义。
   const writePanelUser = (record: Omit<PanelUserRecord, "lastLoginAt">): void => {

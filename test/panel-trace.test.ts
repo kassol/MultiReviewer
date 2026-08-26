@@ -10,8 +10,10 @@ import type { HistoryFinding, ReviewRange, Reviewer, ReviewerEvent } from "../sr
 import { openStore } from "../src/review/store.ts";
 import type { TraceEvent, TraceKind } from "../src/review/trace.ts";
 import {
+  GITEA_REPO,
   HARNESS_PR,
   PANEL_PREFIX,
+  seedHistoricalRepo,
   startPanelHarness,
   startReadyPanelHarness,
   type PanelHarness,
@@ -162,32 +164,29 @@ test("不存在的轮次:`/trace` 与 `/trace/stream` 都回 404", async () => {
   await stream.text();
 });
 
-test("轨迹的可见范围与轮次详情一致:没有 review:read 的人两个端点都进不去", async () => {
+test("轨迹的可见范围与轮次详情一致:一格权限都没有的人,分到仓库就读得到两个端点", async () => {
   const h = await startPanelHarness(cleanups);
   const runId = seedFinishedRun(h.db.path, [{ kind: "assistant_message", text: "第一句" }]);
+  seedHistoricalRepo(h);
 
   const password = "trace-permission-password";
   const store = openStore(h.db.path);
-  const role = store.createPanelRole({
-    name: "只读模型",
-    permissions: ["model:read"],
-    createdAt: "2026-08-25T00:00:00.000Z",
-  });
   store.createPanelUser({
-    username: "no-review",
+    username: "no-permission",
     displayName: null,
     passwordHash: await hashPassword(password),
     mustChangePassword: false,
     createdAt: "2026-08-25T00:00:00.000Z",
     isSystemAdmin: false,
-    roleId: role.id,
+    roleId: null,
   });
+  store.setPanelUserRepos("no-permission", [GITEA_REPO.id]);
   store.close();
 
   const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username: "no-review", password }),
+    body: JSON.stringify({ username: "no-permission", password }),
   });
   const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
 
@@ -195,7 +194,7 @@ test("轨迹的可见范围与轮次详情一致:没有 review:read 的人两个
     const response = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api${path}`, {
       headers: { cookie },
     });
-    assert.equal(response.status, 403, `${path} 该被门禁挡住`);
+    assert.equal(response.status, 200, `${path} 登录即可读`);
     await response.text();
   }
 });

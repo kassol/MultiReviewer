@@ -182,7 +182,7 @@ test("没有 finding:dispose 的用户处置被拒,新权限格不落到已有�
   // 升级前就存在的角色:它拿到的是当时的全部评审权限,不含新增的 finding:dispose。
   const legacy = store.createPanelRole({
     name: "老的评审角色",
-    permissions: ["review:read", "review:rerun", "review:create"],
+    permissions: ["review:rerun", "review:create"],
     createdAt: "2026-08-20T00:00:00.000Z",
   });
   store.createPanelUser({
@@ -207,7 +207,7 @@ test("没有 finding:dispose 的用户处置被拒,新权限格不落到已有�
   const session = (await (
     await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, { headers: { cookie } })
   ).json()) as { permissions: string[] };
-  assert.deepEqual(session.permissions, ["review:read", "review:rerun", "review:create"]);
+  assert.deepEqual(session.permissions, ["review:rerun", "review:create"]);
 
   const denied = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/findings/${target.id}/resolve`, {
     method: "POST",

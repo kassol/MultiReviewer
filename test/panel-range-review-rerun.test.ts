@@ -169,7 +169,7 @@ test("范围审查重跑要 review:rerun:有它的用户跑得动,没有的被�
   const rangeReview = await startRangeReview(h);
 
   // 只能推进、不能重跑的角色:重跑独立于 review:create。
-  const advancerCookie = await userCookie(h, "range-advancer", ["review:read", "review:create"]);
+  const advancerCookie = await userCookie(h, "range-advancer", ["review:create"]);
   const denied = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/rerun`, {
     method: "POST",
     headers: { cookie: advancerCookie, "content-type": "application/json" },
@@ -178,7 +178,7 @@ test("范围审查重跑要 review:rerun:有它的用户跑得动,没有的被�
   assert.equal(denied.status, 403);
   assert.equal(h.settled.length, 1);
 
-  const rerunnerCookie = await userCookie(h, "range-rerunner", ["review:read", "review:rerun"]);
+  const rerunnerCookie = await userCookie(h, "range-rerunner", ["review:rerun"]);
   const allowed = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/rerun`, {
     method: "POST",
     headers: { cookie: rerunnerCookie, "content-type": "application/json" },

@@ -370,7 +370,7 @@ test("没有 review:create 的用户发起被拒,新权限格不落到已有角�
   // 升级前就存在的角色:它拿到的是当时的全部评审权限,不含新增的 review:create。
   const legacy = store.createPanelRole({
     name: "老的评审角色",
-    permissions: ["review:read", "review:rerun"],
+    permissions: ["review:rerun"],
     createdAt: "2026-08-20T00:00:00.000Z",
   });
   store.createPanelUser({
@@ -395,7 +395,7 @@ test("没有 review:create 的用户发起被拒,新权限格不落到已有角�
   const session = (await (
     await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, { headers: { cookie } })
   ).json()) as { permissions: string[] };
-  assert.deepEqual(session.permissions, ["review:read", "review:rerun"]);
+  assert.deepEqual(session.permissions, ["review:rerun"]);
 
   const denied = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/range-reviews`, {
     method: "POST",

@@ -12,6 +12,7 @@ import { after, test } from "node:test";
 import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
+  GITEA_REPO,
   HARNESS_PR,
   PANEL_PREFIX,
   startReadyPanelHarness,
@@ -161,39 +162,35 @@ test("diff API:范围审查的一轮按阶段基准取范围", async () => {
   );
 });
 
-test("diff API:没有 review:read 的用户取不到", async () => {
+test("diff API:一格权限都没有的用户,只要仓库分给了他就读得到", async () => {
   const h = await harnessWithRun();
   const runId = await latestRunId(h);
 
   const store = openStore(h.db.path);
-  const role = store.createPanelRole({
-    name: "只管仓库",
-    permissions: ["repo:read"],
-    createdAt: "2026-08-25T00:00:00.000Z",
-  });
   store.createPanelUser({
-    username: "diff-outsider",
+    username: "diff-reader",
     displayName: null,
     passwordHash: HASH,
     mustChangePassword: false,
     createdAt: "2026-08-25T00:00:00.000Z",
     isSystemAdmin: false,
-    roleId: role.id,
+    roleId: null,
   });
+  store.setPanelUserRepos("diff-reader", [GITEA_REPO.id]);
   store.close();
 
   const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username: "diff-outsider", password: PASSWORD }),
+    body: JSON.stringify({ username: "diff-reader", password: PASSWORD }),
   });
   assert.equal(login.status, 204);
   const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
 
-  const denied = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/runs/${runId}/diff`, {
+  const response = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/runs/${runId}/diff`, {
     headers: { cookie },
   });
-  assert.equal(denied.status, 403);
+  assert.equal(response.status, 200);
 });
 
 /** 在本地 clone 上直接跑一条 git 命令,用来制造并观测 gc 场景。 */

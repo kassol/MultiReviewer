@@ -12,6 +12,7 @@ import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   PANEL_PREFIX,
+  seedHistoricalRepo,
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -300,7 +301,7 @@ test("阶段详情:标识认不出或阶段不存在都是 404", async () => {
   assert.equal((await h.api("GET", "/stages/%zz")).status, 404);
 });
 
-test("阶段详情:未认证 401,没有评审读权限 403", async () => {
+test("阶段详情:未认证 401,一格权限都没有的人分到仓库就读得到", async () => {
   const h = await startPanelHarness(cleanups);
   seedRun(h.db.path, {
     owner: "acme",
@@ -312,29 +313,26 @@ test("阶段详情:未认证 401,没有评审读权限 403", async () => {
   const path = `/${PANEL_PREFIX}/api/stages/${encodeURIComponent("pr:acme/widgets/7")}`;
   assert.equal((await fetch(`${h.serverUrl}${path}`)).status, 401);
 
+  seedHistoricalRepo(h);
   const password = "stage-detail-test-password";
   const store = openStore(h.db.path);
-  const role = store.createPanelRole({
-    name: "只读仓库",
-    permissions: ["repo:read"],
-    createdAt: "2026-08-20T00:00:00.000Z",
-  });
   store.createPanelUser({
-    username: "repo-reader",
+    username: "plain-user",
     displayName: null,
     passwordHash: await hashPassword(password),
     mustChangePassword: false,
     createdAt: "2026-08-20T00:00:00.000Z",
     isSystemAdmin: false,
-    roleId: role.id,
+    roleId: null,
   });
+  store.setPanelUserRepos("plain-user", [GITEA_REPO.id]);
   store.close();
   const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username: "repo-reader", password }),
+    body: JSON.stringify({ username: "plain-user", password }),
   });
   assert.equal(login.status, 204);
   const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
-  assert.equal((await fetch(`${h.serverUrl}${path}`, { headers: { cookie } })).status, 403);
+  assert.equal((await fetch(`${h.serverUrl}${path}`, { headers: { cookie } })).status, 200);
 });

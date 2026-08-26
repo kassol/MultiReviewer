@@ -1,7 +1,9 @@
+/**
+ * 权限格只管写与动作。读评审记录、仓库与处置率登录即可,能读多少由仓库分配决定
+ * (ADR 0018),`repo:read` 与 `review:read` 因此不再是权限格。
+ */
 export const PANEL_PERMISSIONS = [
-  "repo:read",
   "repo:write",
-  "review:read",
   "review:rerun",
   "review:create",
   "finding:dispose",
@@ -22,7 +24,6 @@ export function isPanelPermission(value: string): value is PanelPermission {
 }
 
 const IMPLIED_PANEL_PERMISSIONS: Partial<Record<PanelPermission, PanelPermission>> = {
-  "repo:read": "repo:write",
   "model:read": "model:write",
   "credential:read": "credential:write",
 };

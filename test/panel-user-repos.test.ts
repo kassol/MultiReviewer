@@ -271,9 +271,7 @@ async function scopedUser(
 
 /** 全部面板权限格。可见范围由分配决定,这些用例要的是「权限不挡路」。 */
 const ALL_PERMISSIONS: readonly PanelPermission[] = [
-  "repo:read",
   "repo:write",
-  "review:read",
   "review:rerun",
   "review:create",
   "finding:dispose",

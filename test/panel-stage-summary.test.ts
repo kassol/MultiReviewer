@@ -3,7 +3,7 @@
  *
  * 打在面板 API 的真实 HTTP 缝上:库由 Store 自己的写入口播种(落轮次、自动处置、
  * 延续都走产品代码那几个方法),断言只看 HTTP 响应——列表按 Finding Identity 折叠成
- * 什么样、三个计数、时间线每轮五个数,以及这个端点要 `review:read`。
+ * 什么样、三个计数、时间线每轮五个数,以及这个端点登录即可读。
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
@@ -377,18 +377,15 @@ test("阶段汇总的入参:两条链路只能选一条,范围审查不存在时
   assert.equal((await h.api("GET", "/stage-summary?rangeReviewId=4242")).status, 404);
 });
 
-test("阶段汇总要 review:read:未登录 401,没有这一格 403", async () => {
+test("阶段汇总登录即可读:未登录 401,一格权限都没有的人分到仓库就读得到", async () => {
   const h = await startPanelHarness(cleanups);
   const { rangeReviewId } = seedStage(h.db.path);
   const path = `/${PANEL_PREFIX}/api/stage-summary?rangeReviewId=${rangeReviewId}`;
 
   assert.equal((await fetch(`${h.serverUrl}${path}`)).status, 401);
 
-  const readerCookie = await userCookie(h, "stage-reader", ["review:read"]);
+  const readerCookie = await userCookie(h, "stage-reader", []);
   assert.equal((await fetch(`${h.serverUrl}${path}`, { headers: { cookie: readerCookie } })).status, 200);
-
-  const otherCookie = await userCookie(h, "stage-rerunner", ["review:rerun"]);
-  assert.equal((await fetch(`${h.serverUrl}${path}`, { headers: { cookie: otherCookie } })).status, 403);
 });
 
 /** 建一个只挂指定权限的用户并登录,拿它的会话 cookie。仓库一并分给他:可见才能读。 */

@@ -258,7 +258,7 @@ test("没有 review:create 的用户推进被拒,分支不动", async () => {
   const store = openStore(h.db.path);
   const role = store.createPanelRole({
     name: "只读评审角色",
-    permissions: ["review:read", "review:rerun"],
+    permissions: ["review:rerun"],
     createdAt: "2026-08-20T00:00:00.000Z",
   });
   store.createPanelUser({

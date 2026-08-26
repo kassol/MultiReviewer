@@ -239,7 +239,7 @@ test("没有 finding:dispose 的用户标记不了审查完成", async () => {
   // 有发起权限、没有处置权限:两格互相独立。
   const role = store.createPanelRole({
     name: "只发起的角色",
-    permissions: ["review:read", "review:create"],
+    permissions: ["review:create"],
     createdAt: "2026-08-20T00:00:00.000Z",
   });
   store.createPanelUser({

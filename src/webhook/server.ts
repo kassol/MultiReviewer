@@ -1557,60 +1557,60 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   {
     method: "GET",
     pattern: "/stats",
-    access: "review:read",
+    access: "authenticated-only",
     handler: ({ req, res, deps, scope }) => handleStats(req, res, deps, scope!),
   },
   {
     method: "GET",
     pattern: "/runs",
-    access: "review:read",
+    access: "authenticated-only",
     handler: ({ req, res, deps, scope }) => handleRuns(req, res, deps, scope!),
   },
   {
     method: "GET",
     pattern: "/stages",
-    access: "review:read",
+    access: "authenticated-only",
     handler: ({ req, res, deps, scope }) => handleStages(req, res, deps, scope!),
   },
   {
     // 阶段标识里有斜杠(`pr:<owner>/<repo>/<number>`),在地址里编码成一段,这里整段收。
     method: "GET",
     pattern: /^\/stages\/(.+)$/,
-    access: "review:read",
+    access: "authenticated-only",
     handler: ({ res, deps, scope }, match) => handleStageDetail(res, deps, match![1]!, scope!),
   },
   {
     method: "GET",
     pattern: /^\/runs\/(\d+)$/,
-    access: "review:read",
+    access: "authenticated-only",
     scope: { by: "run", group: 1 },
     handler: ({ res, deps }, match) => handleRun(res, deps, Number(match![1])),
   },
   {
     method: "GET",
     pattern: /^\/runs\/(\d+)\/diff$/,
-    access: "review:read",
+    access: "authenticated-only",
     scope: { by: "run", group: 1 },
     handler: ({ req, res, deps }, match) => handleRunDiff(req, res, deps, Number(match![1])),
   },
   {
     method: "GET",
     pattern: /^\/runs\/(\d+)\/trace$/,
-    access: "review:read",
+    access: "authenticated-only",
     scope: { by: "run", group: 1 },
     handler: ({ res, deps }, match) => handleRunTrace(res, deps, Number(match![1])),
   },
   {
     method: "GET",
     pattern: /^\/runs\/(\d+)\/trace\/stream$/,
-    access: "review:read",
+    access: "authenticated-only",
     scope: { by: "run", group: 1 },
     handler: ({ req, res, deps }, match) => handleRunTraceStream(req, res, deps, Number(match![1])),
   },
   {
     method: "GET",
     pattern: "/stage-summary",
-    access: "review:read",
+    access: "authenticated-only",
     scope: { by: "query" },
     handler: ({ req, res, deps }) => handleStageSummary(req, res, deps),
   },
@@ -1691,7 +1691,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   {
     method: "GET",
     pattern: "/repos",
-    access: "repo:read",
+    access: "authenticated-only",
     handler: ({ res, deps, scope }) => listRepos(res, deps, scope!),
   },
   {
@@ -1735,7 +1735,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   {
     method: "GET",
     pattern: /^\/repos\/(\d+)\/hooks$/,
-    access: "repo:read",
+    access: "authenticated-only",
     scope: { by: "repo", group: 1 },
     handler: ({ res, deps, hookManager }, match) =>
       handleHookCheck(res, deps, hookManager, Number(match![1])),
@@ -4316,8 +4316,9 @@ function handleStageSummary(
 /**
  * 一轮 Review Run 的审查轨迹(CONTEXT.md,issue #171),按 `seq` 升序。
  *
- * 权限与轮次详情一致(`review:read`):能看轮次就能看它的轨迹,不另配一格。升级前跑过的
- * 轮次一条事件都没有,回空列表——那不是错误,是那时候还不记过程。
+ * 可见范围与轮次详情一致(登录即可读,仓库分配决定读得到哪些):能看轮次就能看它的
+ * 轨迹,不另配一格。升级前跑过的轮次一条事件都没有,回空列表——那不是错误,是
+ * 那时候还不记过程。
  */
 function handleRunTrace(res: ServerResponse, deps: WebhookServerDeps, runId: number): void {
   const events = withStore(deps.dbPath, (store) =>

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
@@ -32,15 +33,15 @@ const ROUTE_EXPECTATIONS = [
   ["GET", "/setup-status", "authenticated-only"],
   ["GET", "/settings", "model:read"],
   ["PUT", "/settings", "model:write"],
-  ["GET", "/stats", "review:read"],
-  ["GET", "/runs", "review:read"],
-  ["GET", "/stages", "review:read"],
-  ["GET", "/^\\/stages\\/(.+)$/", "review:read"],
-  ["GET", "/^\\/runs\\/(\\d+)$/", "review:read"],
-  ["GET", "/^\\/runs\\/(\\d+)\\/diff$/", "review:read"],
-  ["GET", "/^\\/runs\\/(\\d+)\\/trace$/", "review:read"],
-  ["GET", "/^\\/runs\\/(\\d+)\\/trace\\/stream$/", "review:read"],
-  ["GET", "/stage-summary", "review:read"],
+  ["GET", "/stats", "authenticated-only"],
+  ["GET", "/runs", "authenticated-only"],
+  ["GET", "/stages", "authenticated-only"],
+  ["GET", "/^\\/stages\\/(.+)$/", "authenticated-only"],
+  ["GET", "/^\\/runs\\/(\\d+)$/", "authenticated-only"],
+  ["GET", "/^\\/runs\\/(\\d+)\\/diff$/", "authenticated-only"],
+  ["GET", "/^\\/runs\\/(\\d+)\\/trace$/", "authenticated-only"],
+  ["GET", "/^\\/runs\\/(\\d+)\\/trace\\/stream$/", "authenticated-only"],
+  ["GET", "/stage-summary", "authenticated-only"],
   ["POST", "/rerun", "review:rerun"],
   ["POST", "/^\\/findings\\/(\\d+)\\/resolve$/", "finding:dispose"],
   ["POST", "/^\\/findings\\/(\\d+)\\/unresolve$/", "finding:dispose"],
@@ -51,13 +52,13 @@ const ROUTE_EXPECTATIONS = [
   ["GET", "/repo-branches", "review:create"],
   ["GET", "/repo-commits", "review:create"],
   ["GET", "/repos/search", "repo:write"],
-  ["GET", "/repos", "repo:read"],
+  ["GET", "/repos", "authenticated-only"],
   ["POST", "/repos", "repo:write"],
   ["DELETE", "/^\\/repos\\/(\\d+)$/", "repo:write"],
   ["POST", "/^\\/repos\\/(\\d+)\\/worktree$/", "repo:write"],
   ["PUT", "/^\\/repos\\/(\\d+)\\/reviewers$/", "repo:write"],
   ["POST", "/^\\/repos\\/(\\d+)\\/rotate$/", "repo:write"],
-  ["GET", "/^\\/repos\\/(\\d+)\\/hooks$/", "repo:read"],
+  ["GET", "/^\\/repos\\/(\\d+)\\/hooks$/", "authenticated-only"],
   ["GET", "/model-services", "anyOf:model:read|credential:read"],
   ["GET", "/model-services/providers", "anyOf:model:read|model:write|credential:read|credential:write"],
   ["POST", "/^\\/model-services\\/builtin\\/preview$/", "credential:write"],
@@ -166,7 +167,7 @@ test("写权限在会话与端点统一包含对应读权限，review:rerun 保�
   addPermissionUser(h, "rerunner", ["review:rerun"]);
 
   const cases = [
-    ["repo-writer", ["repo:read", "repo:write"], "/repos"],
+    ["repo-writer", ["repo:write"], "/repos"],
     ["effective-model-writer", ["model:read", "model:write"], "/settings"],
     [
       "effective-credential-writer",
@@ -201,7 +202,7 @@ test("写权限在会话与端点统一包含对应读权限，review:rerun 保�
         headers: { cookie: rerunCookie },
       })
     ).status,
-    403,
+    200,
   );
   assert.equal(
     (
@@ -250,13 +251,86 @@ test("无人引用的角色连权限关系一起删除", async () => {
   const h = await startPanelHarness(cleanups);
   const created = await h.api("POST", "/roles", {
     name: "待删除角色",
-    permissions: ["review:read"],
+    permissions: ["review:rerun"],
   });
   assert.equal(created.status, 201);
   const role = (await created.json()) as { id: number };
   assert.equal((await h.api("DELETE", `/roles/${role.id}`)).status, 204);
   const roles = (await (await h.api("GET", "/roles")).json()) as { roles: { id: number }[] };
   assert.ok(!roles.roles.some((item) => item.id === role.id));
+});
+
+test("无角色的普通用户登录即可读仓库、评审记录与处置率", async () => {
+  const h = await startPanelHarness(cleanups);
+  const store = openStore(h.db.path);
+  store.createPanelUser({
+    username: "plain",
+    displayName: null,
+    passwordHash: HASH,
+    mustChangePassword: false,
+    createdAt: "2026-08-26T00:00:00.000Z",
+    isSystemAdmin: false,
+    roleId: null,
+  });
+  store.close();
+  const cookie = await userCookie(h.serverUrl, "plain");
+  for (const path of ["/repos", "/stages", "/runs", "/stats"]) {
+    const response = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api${path}`, {
+      headers: { cookie },
+    });
+    assert.equal(response.status, 200, path);
+  }
+});
+
+test("退役的两个读权限格不再被认得:角色写入回 400", async () => {
+  const h = await startPanelHarness(cleanups);
+  for (const retired of ["repo:read", "review:read"]) {
+    const created = await h.api("POST", "/roles", { name: `角色-${retired}`, permissions: [retired] });
+    assert.equal(created.status, 400, `POST ${retired}`);
+    assert.deepEqual(await created.json(), { error: "有认不出的权限格" });
+  }
+  const role = (await (
+    await h.api("POST", "/roles", { name: "评审动作", permissions: ["review:rerun"] })
+  ).json()) as { id: number };
+  const updated = await h.api("PUT", `/roles/${role.id}`, {
+    name: "评审动作",
+    permissions: ["review:rerun", "review:read"],
+  });
+  assert.equal(updated.status, 400);
+  assert.deepEqual(await updated.json(), { error: "有认不出的权限格" });
+  const roles = (await (await h.api("GET", "/roles")).json()) as {
+    roles: { id: number; permissions: string[] }[];
+  };
+  assert.deepEqual(roles.roles.find((item) => item.id === role.id)?.permissions, ["review:rerun"]);
+});
+
+test("升级把旧角色里的两个读权限格清掉,其余格不动", async () => {
+  const h = await startPanelHarness(cleanups);
+  const role = (await (
+    await h.api("POST", "/roles", { name: "升级前角色", permissions: ["review:rerun"] })
+  ).json()) as { id: number };
+  const legacy = new DatabaseSync(h.db.path);
+  for (const permission of ["repo:read", "review:read"]) {
+    legacy
+      .prepare("INSERT INTO panel_role_permission (role_id, permission) VALUES (?, ?)")
+      .run(role.id, permission);
+  }
+  legacy.close();
+
+  const store = openStore(h.db.path);
+  const rows = store
+    .listPanelRoles()
+    .find((item) => item.id === role.id);
+  store.close();
+  assert.deepEqual(rows?.permissions, ["review:rerun"]);
+
+  const check = new DatabaseSync(h.db.path);
+  const remaining = check
+    .prepare("SELECT permission FROM panel_role_permission WHERE role_id = ? ORDER BY permission")
+    .all(role.id)
+    .map((row) => String(row["permission"]));
+  check.close();
+  assert.deepEqual(remaining, ["review:rerun"]);
 });
 
 test("手写权限期望表与面板代码路由集合完全相等", () => {
