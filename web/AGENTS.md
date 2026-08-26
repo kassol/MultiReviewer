@@ -16,7 +16,7 @@
 - `src/setup-checklist.tsx` — 首次配置状态与检查单的唯一实现。它读取认证的 `GET /setup-status`,始终显示三步完成状态,只把当前未完成步骤做成入口;入口再按当前会话的有效写权限裁剪。实例启用后整块隐藏。
 - `src/login.tsx` — 登录与首次注册共用的一屏。普通档是用户名加密码;零用户档多 bootstrap 口令与确认密码,注册成功后回账号登录。所有字段使用 Themes `Text as="label"` 的可见标签,不靠 placeholder 当标签。
 - `src/password.tsx` — 用户自改密码页,走 `PUT /session/password`;必须改密的人完成后回到自己有权访问的第一页。改密保留当前会话、作废其余会话。
-- `src/access-control.tsx` — 系统管理员独有的 `/access` 页,上半用户表、下半转置权限矩阵(行是权限、列是角色)。两张表直接使用 Themes Table,横向滚动限制在各自容器内,首列保持粘性；角色多时权限矩阵继续横向滚。用户与角色读写走 `GET/POST /users`、`PUT/DELETE /users/:username`、`POST /users/:username/reset-password` 与 `GET/POST /roles`、`PUT/DELETE /roles/:id`;改角色是行内下拉,新建用户与角色使用 Themes Dialog,重置密码、删除用户与删除角色使用 Themes AlertDialog。三类 write 生效时对应 read 显示为已包含且不可单独移除,`review:rerun` 仍是独立权限。系统管理员不进矩阵;角色创建时不包含任何权限,未分配角色的用户就是零权限。
+- `src/access-control.tsx` — 系统管理员独有的 `/access` 页,上半用户表、下半转置权限矩阵(行是权限、列是角色)。两张表直接使用 Themes Table,横向滚动限制在各自容器内,首列保持粘性；角色多时权限矩阵继续横向滚。用户与角色读写走 `GET/POST /users`、`PUT/DELETE /users/:username`、`POST /users/:username/reset-password` 与 `GET/POST /roles`、`PUT/DELETE /roles/:id`;改角色是行内下拉,新建用户与角色使用 Themes Dialog,重置密码、删除用户与删除角色使用 Themes AlertDialog。model 与 credential 的 write 生效时对应 read 显示为已包含且不可单独移除,`review:rerun` 仍是独立权限。系统管理员不进矩阵;角色创建时不包含任何权限,未分配角色的用户没有写与动作权限,读范围由仓库分配决定(ADR 0018)。用户表的「已分配仓库」列打开分配弹窗,写 `PUT /users/:username` 的 `repoIds`。
 - `src/components/command-palette.tsx` — 全局 ⌘K / Ctrl+K 命令面板。快捷键监听挂在 window 上,任意页面任意焦点都能唤起;当前只收导航跳转,触发评审、注册仓库这类要先选对象的动作不进来,进来也只是又一次跳转。内部复用 `ui/command`,选中项按设计稿改成蓝色实底反白。
 - `src/components/page-header.tsx` — 业务页页头。标题走 Display 字体栈 25px/700,随内容滚动、不粘顶:顶栏已经常驻显示当前页名,再粘一条页头就是两层重复页名压掉垂直空间。
 - `src/components/mark.tsx` — 产品标记(三条错位短线),与 `index.html` 里内联成 data URI 的 favicon 是同一份图形。用 `currentColor` 上色。
