@@ -457,7 +457,8 @@ function StageDrawer({
         <Dialog.Content
           aria-describedby={undefined}
           onCloseAutoFocus={onCloseAutoFocus}
-          className="fixed inset-x-0 bottom-0 z-50 flex h-[86dvh] w-full flex-col overflow-hidden rounded-t-3xl bg-[color:var(--v8-drawer-bg)] shadow-overlay outline-none backdrop-[var(--v8-drawer-blur)] md:inset-y-3.5 md:right-3.5 md:left-auto md:h-auto md:w-[min(920px,calc(100vw-28px))] md:rounded-3xl"
+          style={{ backdropFilter: "var(--v8-drawer-blur)" }}
+          className="fixed inset-x-0 bottom-0 z-50 flex h-[86dvh] w-full flex-col overflow-hidden rounded-t-3xl bg-[color:var(--v8-drawer-bg)] shadow-overlay outline-none md:inset-y-3.5 md:right-3.5 md:left-auto md:h-auto md:w-[min(920px,calc(100vw-28px))] md:rounded-3xl"
         >
           <div className="flex items-start justify-between gap-3 border-b border-overlay-line px-4 py-3 sm:px-5 sm:py-4">
             <div className="flex min-w-0 flex-col gap-1">
