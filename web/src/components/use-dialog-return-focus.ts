@@ -14,21 +14,37 @@ function canReceiveFocus(element: HTMLElement | null): element is HTMLElement {
 /** 受控浮层在触发事件发生时记录焦点来源，并在关闭后显式恢复。 */
 export function useDialogReturnFocus(fallback?: () => HTMLElement | null) {
   const triggerRef = useRef<HTMLElement | null>(null);
+  const triggerHrefRef = useRef<string | null>(null);
 
   const captureTrigger = useCallback((event: TriggerEvent): void => {
     triggerRef.current = event.currentTarget;
+    triggerHrefRef.current = event.currentTarget instanceof HTMLAnchorElement
+      ? event.currentTarget.getAttribute("href")
+      : null;
   }, []);
 
   const captureBubblingLink = useCallback((event: BubblingTriggerEvent): void => {
     if (!(event.target instanceof Element)) return;
-    triggerRef.current = event.target.closest<HTMLElement>("a[href]");
+    const trigger = event.target.closest<HTMLAnchorElement>("a[href]");
+    triggerRef.current = trigger;
+    triggerHrefRef.current = trigger?.getAttribute("href") ?? null;
   }, []);
 
   const restoreFocus = useCallback((): void => {
     const trigger = triggerRef.current;
+    const triggerHref = triggerHrefRef.current;
     triggerRef.current = null;
+    triggerHrefRef.current = null;
     requestAnimationFrame(() => {
-      const target = canReceiveFocus(trigger) ? trigger : fallback?.() ?? null;
+      const replacement = triggerHref === null
+        ? null
+        : [...document.querySelectorAll<HTMLElement>("a[href]")]
+            .find((candidate) => candidate.getAttribute("href") === triggerHref) ?? null;
+      const target = canReceiveFocus(trigger)
+        ? trigger
+        : canReceiveFocus(replacement)
+          ? replacement
+          : fallback?.() ?? null;
       if (canReceiveFocus(target)) target.focus({ preventScroll: true });
     });
   }, [fallback]);
