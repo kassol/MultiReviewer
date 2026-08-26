@@ -95,7 +95,8 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
       id: "repository",
       label: "注册首个仓库",
       done: status.data.hasRepository,
-      to: "/repos" as const,
+      // 注册入口在首页左栏顶部(issue #195),仓库页已经没了。
+      to: "/" as const,
       allowed: hasPermission(session, "repo:write"),
     },
   ];

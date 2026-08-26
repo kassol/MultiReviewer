@@ -85,10 +85,11 @@ test("深层路由刷新不白屏:任意前缀下路径都回同一份注入过�
 
   // 阶段详情的地址把阶段标识编码成一段(issue #175),刷新它同样要回到 index.html。
   // 侧滑与列表的仓库过滤都写在地址上(issue #189、#194),刷新它们也是同一份 index.html。
-  // 首页就是评审记录,选中的仓库写在它的查询参数上(issue #194)。
+  // 首页就是评审记录,选中的仓库写在它的查询参数上(issue #194);仓库页与 `/repos`
+  // 路由已经没了(issue #195),管仓库在首页左栏的行操作里做。
   for (const path of [
     `/${PREFIX}/`,
-    `/${PREFIX}/repos`,
+    `/${PREFIX}/stats`,
     `/${PREFIX}/?owner=acme&repo=widgets&status=active`,
     `/${PREFIX}/stages/${encodeURIComponent("pr:acme/widgets/7")}?finding=42`,
     `/${PREFIX}/stages/${encodeURIComponent("pr:acme/widgets/7")}?trace=3`,
@@ -127,11 +128,11 @@ test("/assets 的路径穿越被挡住", async () => {
 test("前端产物缺失时页面回 503 并说明部署缺口,不与 404 混淆", async () => {
   const h = await startPages({ withDist: false });
 
-  const page = await h.get(`/${PREFIX}/repos`);
+  const page = await h.get(`/${PREFIX}/stats`);
   assert.equal(page.status, 503);
   assert.match(await page.text(), /web\/dist|MULTIREVIEWER_PANEL_DIST/);
 
   // 前缀猜错仍是裸 404:503 只出现在真前缀下。
-  assert.equal((await h.get("/wrong-prefix/repos")).status, 404);
+  assert.equal((await h.get("/wrong-prefix/stats")).status, 404);
   assert.equal((await h.get("/assets/app.js")).status, 404);
 });

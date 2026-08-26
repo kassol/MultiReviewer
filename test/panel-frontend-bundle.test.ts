@@ -36,6 +36,9 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
     assert.doesNotMatch(javascript, /总览/);
     assert.doesNotMatch(javascript, /to:"\/runs"/);
     assert.match(javascript, /全部仓库/);
+    // 管仓库不再离开评审记录(issue #195):仓库页与 `/repos` 路由删了,注册入口在首页左栏。
+    assert.doesNotMatch(javascript, /to:"\/repos"/);
+    assert.match(javascript, /注册仓库/);
     assert.match(javascript, /再显示/);
     assert.match(javascript, /add-model-service-trigger/);
     assert.match(javascript, /configure-builtin-/);

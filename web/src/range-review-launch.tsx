@@ -2,29 +2,28 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { Cross2Icon } from "@radix-ui/react-icons";
-import { Dialog, Flex, IconButton, Select, Text, TextField } from "@radix-ui/themes";
+import { Dialog, Flex, IconButton, Text, TextField } from "@radix-ui/themes";
 
 import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { CommitPicker } from "./commit-picker.tsx";
 
-type RepoRow = { repoId: number; owner: string; repo: string };
-
-/** 表单里选中的那个仓库。仓库页的入口一开始就有它,全局入口要人先选。 */
+/** 表单里的那个仓库。入口只在选中具体仓库时出现,所以它一开始就有(issue #195)。 */
 type PickedRepo = { owner: string; repo: string };
 
 /**
- * 「发起范围审查」入口(issue #177):一个按钮加它的表单,评审记录页头与仓库页的评审
- * 记录区块共用同一份——两处发起的是同一件事,表单只该有一种样子。
+ * 「发起范围审查」入口(issue #177):一个按钮加它的表单,首页右栏头部与阶段页共用同
+ * 一份——两处发起的是同一件事,表单只该有一种样子。
  *
- * 给了 `repo` 就是仓库页那一档:仓库预填,表单里不再出现仓库选择。
+ * 仓库由调用方给定并预填:选「全部仓库」时这个入口整个不出现(issue #195),表单里
+ * 因此不再有仓库选择。
  */
 export function RangeReviewLaunch({
   repo,
   onLaunched,
 }: {
-  repo?: PickedRepo;
+  repo: PickedRepo;
   onLaunched: (text: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -36,7 +35,9 @@ export function RangeReviewLaunch({
         </Button>
       </Dialog.Trigger>
       <LaunchDialogContent
-        {...(repo === undefined ? {} : { repo })}
+        // 换一个仓库,标题与两端跟着重来:它们说的是上一个仓库的事。
+        key={`${repo.owner}/${repo.repo}`}
+        repo={repo}
         onLaunched={(text) => {
           onLaunched(text);
           setOpen(false);
@@ -63,16 +64,10 @@ function LaunchDialogContent({
   repo,
   onLaunched,
 }: {
-  repo?: PickedRepo;
+  repo: PickedRepo;
   onLaunched: (text: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const repos = useQuery({
-    queryKey: ["repos"],
-    queryFn: () => fetchJson<RepoRow[]>("/repos"),
-    enabled: repo === undefined,
-  });
-  const [repoId, setRepoId] = useState<string>("");
   const [title, setTitle] = useState("");
   const [base, setBase] = useState("");
   const [baseTouched, setBaseTouched] = useState(false);
@@ -80,17 +75,12 @@ function LaunchDialogContent({
   const [error, setError] = useState<string | null>(null);
   const [needsConfirmation, setNeedsConfirmation] = useState(false);
 
-  const rows = repos.data ?? [];
-  const picked: PickedRepo | null =
-    repo ?? rows.find((row) => String(row.repoId) === repoId) ?? null;
-
   const prefill = useQuery({
-    queryKey: ["range-review-prefill", picked?.owner, picked?.repo],
+    queryKey: ["range-review-prefill", repo.owner, repo.repo],
     queryFn: () =>
       fetchJson<{ base: string | null }>(
-        `/range-reviews/prefill?owner=${encodeURIComponent(picked!.owner)}&repo=${encodeURIComponent(picked!.repo)}`,
+        `/range-reviews/prefill?owner=${encodeURIComponent(repo.owner)}&repo=${encodeURIComponent(repo.repo)}`,
       ),
-    enabled: picked !== null,
   });
   const suggestedBase = prefill.data?.base ?? null;
   useEffect(() => {
@@ -113,8 +103,8 @@ function LaunchDialogContent({
       const response = await api("/range-reviews", {
         method: "POST",
         body: JSON.stringify({
-          owner: picked!.owner,
-          repo: picked!.repo,
+          owner: repo.owner,
+          repo: repo.repo,
           title: title.trim(),
           base: base.trim(),
           comparison: comparison.trim(),
@@ -142,7 +132,7 @@ function LaunchDialogContent({
       }
       // 新阶段要出现在评审记录列表里,而列表只有这一份(issue #189)。
       void queryClient.invalidateQueries({ queryKey: ["stages"] });
-      onLaunched(`已发起 ${picked!.owner}/${picked!.repo} 的范围审查，第一轮审查开始运行`);
+      onLaunched(`已发起 ${repo.owner}/${repo.repo} 的范围审查，第一轮审查开始运行`);
     },
     onError: (failure: Error) => {
       setNeedsConfirmation(false);
@@ -150,8 +140,7 @@ function LaunchDialogContent({
     },
   });
 
-  const ready =
-    picked !== null && title.trim() !== "" && base.trim() !== "" && comparison.trim() !== "";
+  const ready = title.trim() !== "" && base.trim() !== "" && comparison.trim() !== "";
 
   return (
     <Dialog.Content aria-describedby={undefined} maxWidth="560px" size={{ initial: "2", sm: "3" }}>
@@ -166,36 +155,9 @@ function LaunchDialogContent({
       >
         <Dialog.Title size="4" mb="1" className="pr-9">发起范围审查</Dialog.Title>
 
-        {repo === undefined ? (
-          <label className="flex flex-col gap-1.5">
-            <Text as="span" size="2" weight="medium">仓库</Text>
-            <Select.Root
-              value={repoId}
-              onValueChange={(next) => {
-                setRepoId(next);
-                // 换了仓库,两端、预填与提醒都跟着重来:它们说的是上一个仓库的事。
-                setBase("");
-                setBaseTouched(false);
-                setComparison("");
-                setNeedsConfirmation(false);
-              }}
-              size={{ initial: "3", sm: "2" }}
-            >
-              <Select.Trigger placeholder="选一个已注册仓库" aria-label="仓库" />
-              <Select.Content>
-                {rows.map((row) => (
-                  <Select.Item key={row.repoId} value={String(row.repoId)}>
-                    {row.owner}/{row.repo}
-                  </Select.Item>
-                ))}
-              </Select.Content>
-            </Select.Root>
-          </label>
-        ) : (
-          <p className="text-base text-text-muted">
-            仓库 {repo.owner}/{repo.repo}
-          </p>
-        )}
+        <p className="text-base text-text-muted">
+          仓库 {repo.owner}/{repo.repo}
+        </p>
 
         <label className="flex flex-col gap-1.5">
           <Text as="span" size="2" weight="medium">标题</Text>
@@ -207,32 +169,26 @@ function LaunchDialogContent({
           />
         </label>
 
-        {picked === null ? null : (
-          <>
-            <div className="flex flex-col gap-1">
-              <Text as="span" size="2" weight="medium">已选</Text>
-              <p className="text-base text-text-muted">
-                base {base === "" ? "还没选" : <code className="font-mono">{base.slice(0, 7)}</code>}
-                ，比较项{" "}
-                {comparison === "" ? "还没选" : <code className="font-mono">{comparison.slice(0, 7)}</code>}
-              </p>
-              {suggestedBase !== null && !baseTouched ? (
-                <Text as="span" size="1" color="gray">
-                  base 已填入上一个审查完成的范围审查的最终比较项。
-                </Text>
-              ) : null}
-            </div>
+        <div className="flex flex-col gap-1">
+          <Text as="span" size="2" weight="medium">已选</Text>
+          <p className="text-base text-text-muted">
+            base {base === "" ? "还没选" : <code className="font-mono">{base.slice(0, 7)}</code>}
+            ，比较项{" "}
+            {comparison === "" ? "还没选" : <code className="font-mono">{comparison.slice(0, 7)}</code>}
+          </p>
+          {suggestedBase !== null && !baseTouched ? (
+            <Text as="span" size="1" color="gray">
+              base 已填入上一个审查完成的范围审查的最终比较项。
+            </Text>
+          ) : null}
+        </div>
 
-            <CommitPicker
-              // 换仓库时连选择器内部的分支一起重来:上一个仓库的分支在这里不存在。
-              key={`${picked.owner}/${picked.repo}`}
-              repo={picked}
-              base={base === "" ? null : base}
-              comparison={comparison === "" ? null : comparison}
-              onPick={pick}
-            />
-          </>
-        )}
+        <CommitPicker
+          repo={repo}
+          base={base === "" ? null : base}
+          comparison={comparison === "" ? null : comparison}
+          onPick={pick}
+        />
 
         <p className="text-sm text-text-muted">
           MultiReviewer 会在 Forge 上自建一个永不合并的 pull request 承载 Finding。

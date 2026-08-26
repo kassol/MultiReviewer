@@ -1,4 +1,4 @@
-import { MutationCache, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   createRootRoute,
   createRoute,
@@ -11,7 +11,6 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import {
-  ArchiveIcon,
   BarChartIcon,
   CounterClockwiseClockIcon,
   LightningBoltIcon,
@@ -29,7 +28,7 @@ import { PageBody } from "@/components/page-body";
 import { PanelTheme } from "@/components/panel-theme";
 import { DropdownMenu, Skeleton } from "@radix-ui/themes";
 
-import { api, fetchJson } from "./api.ts";
+import { api } from "./api.ts";
 import type { ModelServiceTab } from "./credentials.tsx";
 import { injected } from "./injected.ts";
 import {
@@ -45,7 +44,6 @@ import "./styles.css";
 const AccessControlPage = lazy(async () => ({ default: (await import("./access-control.tsx")).AccessControlPage }));
 const LoginPage = lazy(async () => ({ default: (await import("./login.tsx")).LoginPage }));
 const PasswordPage = lazy(async () => ({ default: (await import("./password.tsx")).PasswordPage }));
-const ReposPage = lazy(async () => ({ default: (await import("./repos.tsx")).ReposPage }));
 const RunsPage = lazy(async () => ({ default: (await import("./runs.tsx")).RunsPage }));
 const StageDetailPage = lazy(async () => ({ default: (await import("./stage-detail.tsx")).StageDetailPage }));
 const SettingsPage = lazy(async () => ({ default: (await import("./settings.tsx")).SettingsPage }));
@@ -102,7 +100,6 @@ type PagePermission = PanelPermission | readonly PanelPermission[];
 type NavigationItem = {
   to:
     | "/"
-    | "/repos"
     | "/stats"
     | "/credentials"
     | "/settings"
@@ -122,7 +119,6 @@ type NavigationItem = {
  */
 const NAV: readonly NavigationItem[] = [
   { to: "/", label: "评审记录", icon: CounterClockwiseClockIcon },
-  { to: "/repos", label: "仓库", icon: ArchiveIcon },
   { to: "/stats", label: "处置率", icon: BarChartIcon },
   { to: "/credentials", label: "模型服务", icon: LightningBoltIcon, permission: ["model:read", "model:write", "credential:read", "credential:write"] },
   { to: "/settings", label: "审查策略", icon: MixerHorizontalIcon, permission: "model:read" },
@@ -254,7 +250,7 @@ function TopBar({
  * 减去指示条的高度,所以激活与未激活的文字基线对齐,切换页面时文字不会上下跳。
  */
 function NavLink({ item }: { item: NavigationItem }) {
-  const badge = useNavBadge(item);
+  const alert = useNavAlert(item);
   return (
     <Link
       to={item.to}
@@ -269,16 +265,7 @@ function NavLink({ item }: { item: NavigationItem }) {
             }`}
           >
             {item.label}
-            {badge.count === undefined ? null : (
-              <span
-                className={`rounded-full px-[7px] text-sm font-semibold tabular-nums ${
-                  isActive ? "bg-accent-tint text-primary" : "bg-fill text-text-secondary"
-                }`}
-              >
-                {badge.count}
-              </span>
-            )}
-            {badge.alert ? (
+            {alert ? (
               <span className="size-[7px] rounded-full bg-warning-icon" role="img" aria-label="需要处理" />
             ) : null}
           </span>
@@ -290,26 +277,13 @@ function NavLink({ item }: { item: NavigationItem }) {
 }
 
 /**
- * 导航项右侧的计数与告警点。两者都只读已有查询的缓存语义:
- * - 仓库数直接来自 `/repos` 的数组长度。
- * - 评审记录没有对应的总数端点(`/stages` 按 offset 翻页),所以不显示计数,而不是拿
- *   第一页的条数冒充总数。
- * - 模型服务的告警点来自首次配置状态里的「有没有可用模型服务」。
+ * 导航项右侧的告警点,只读已有查询的缓存语义:模型服务那一点来自首次配置状态里的
+ * 「有没有可用模型服务」。导航上不显示计数——评审记录没有总数端点(`/stages` 按 offset
+ * 翻页),拿第一页的条数冒充总数会说谎(issue #195:仓库那一项已经不在导航里了)。
  */
-function useNavBadge(item: NavigationItem): { count?: number; alert: boolean } {
-  const repos = useQuery({
-    queryKey: ["repos"],
-    queryFn: () => fetchJson<unknown[]>("/repos"),
-    enabled: item.to === "/repos",
-  });
+function useNavAlert(item: NavigationItem): boolean {
   const setup = useSetupStatus();
-  if (item.to === "/repos") {
-    return repos.data === undefined ? { alert: false } : { count: repos.data.length, alert: false };
-  }
-  if (item.to === "/credentials") {
-    return { alert: setup.data?.hasRunnableModelService === false };
-  }
-  return { alert: false };
+  return item.to === "/credentials" && setup.data?.hasRunnableModelService === false;
 }
 
 /** 顶栏右上角的头像菜单。桌面端的「修改密码」与「退出登录」都收在这里。 */
@@ -432,6 +406,8 @@ const indexRoute = createRoute({
           <RunsPage
             canRerun={hasPermission(session, "review:rerun")}
             canCreate={hasPermission(session, "review:create")}
+            canWrite={hasPermission(session, "repo:write")}
+            canReadModels={hasPermission(session, "model:read")}
             // 一个仓库都没分到的普通用户看到的是一段说明,不是一份空列表(issue #194)。
             unassigned={session.repoIds !== null && session.repoIds.length === 0}
           />
@@ -443,7 +419,7 @@ const indexRoute = createRoute({
 
 /** `permission` 省略即登录就进得去,与导航项同一档判据。 */
 function protectedPage(
-  path: "/repos" | "/stats" | "/credentials" | "/settings",
+  path: "/stats" | "/credentials" | "/settings",
   permission: PagePermission | undefined,
   component: () => React.JSX.Element,
 ) {
@@ -470,17 +446,6 @@ function BusinessPage({ Page }: { Page: () => React.JSX.Element }) {
   );
 }
 
-const reposRoute = protectedPage("/repos", undefined, () => {
-  const { session } = shellRoute.useRouteContext();
-  return (
-    <ReposPage
-      canWrite={hasPermission(session, "repo:write")}
-      canCreate={hasPermission(session, "review:create")}
-      canReadModels={hasPermission(session, "model:read")}
-      canRerun={hasPermission(session, "review:rerun")}
-    />
-  );
-});
 /**
  * 一个审查阶段的详情页(issue #175)。地址里的阶段标识就是 `GET /stages` 行上的那一个
  * (`pr:<owner>/<repo>/<number>` 与 `range:<id>`),里面的斜杠由路由编码成一段。
@@ -668,7 +633,6 @@ const routeTree = rootRoute.addChildren([
   loginRoute,
   shellRoute.addChildren([
     indexRoute,
-    reposRoute,
     stageDetailRoute,
     statsRoute,
     credentialsRoute,

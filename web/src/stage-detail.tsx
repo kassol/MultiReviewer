@@ -26,11 +26,11 @@ import { localClock, localDay, localMinute } from "@/lib/time";
 
 import { fetchJson } from "./api.ts";
 import { AdvanceAction, CompleteAction, type RangeReview } from "./range-review-actions.tsx";
+import { rerunRequest } from "./repo-actions.tsx";
 import { FilePatch } from "./run-diff.tsx";
 import { RunTrace } from "./run-trace.tsx";
 import {
   rerunRangeReviewRequest,
-  rerunRequest,
   runStatus,
   StageCounts,
   stageLabel,

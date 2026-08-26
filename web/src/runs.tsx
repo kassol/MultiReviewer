@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { Link, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
 import { CheckCircledIcon, CrossCircledIcon } from "@radix-ui/react-icons";
@@ -10,11 +10,18 @@ import { MasterListItem, MasterListItemText } from "@/components/master-list-ite
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
-import { Button } from "@/components/theme-button";
 import { localClock, localDay } from "@/lib/time";
+import { cn } from "@/lib/utils";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { RangeReviewLaunch } from "./range-review-launch.tsx";
+import {
+  RegisterRepo,
+  RepoRowMenu,
+  RerunPullRequest,
+  type RepoRow,
+} from "./repo-actions.tsx";
+import { clearPanelSession } from "./session.ts";
 import { SummaryRate } from "./stats.tsx";
 
 /** 一轮或一个 Reviewer 的 token 用量。运行诊断信息,不折算金额(issue #188)。 */
@@ -171,20 +178,6 @@ export function StageCounts({ stage }: { stage: StageItem }) {
   );
 }
 
-/** 手动重新运行。时间流与仓库详情共用这一个请求。 */
-export async function rerunRequest(run: {
-  owner: string;
-  repo: string;
-  pullNumber: number;
-}): Promise<string> {
-  const response = await api("/rerun", {
-    method: "POST",
-    body: JSON.stringify(run),
-  });
-  if (!response.ok) throw new Error(await errorText(response));
-  return `已触发 ${run.owner}/${run.repo} #${run.pullNumber} 的新一轮审查`;
-}
-
 /**
  * 范围审查阶段的重跑(issue #176):在这个阶段当前的比较项上再跑一轮,与 pull request
  * 那条走同一个端点,比较项由服务端从记录里取。
@@ -288,31 +281,7 @@ function stagesPath(query: {
   return search === "" ? "/stages" : `/stages?${search}`;
 }
 
-/**
- * 工作副本的准备状态(issue #184)。`unknown` 是升级前注册的仓库与从没备过副本的那些
- * 行:副本可能在也可能不在,和失败一样给出准备入口。
- */
-export type WorktreeStatus = {
-  state: "unknown" | "preparing" | "ready" | "failed";
-  failure: string | null;
-  checkedAt: string | null;
-};
-
-/** `GET /repos` 的一行。服务端已按最近活动倒序给出,也已按仓库分配收窄。 */
-export type RepoRow = {
-  repoId: number;
-  owner: string;
-  repo: string;
-  reviewers: ReviewerSpec[] | null;
-  runCount: number;
-  findingCount: number;
-  lastActivity: string | null;
-  worktree: WorktreeStatus;
-};
-
-export type ReviewerSpec = { provider: string; model: string };
-
-export function since(iso: string): string {
+function since(iso: string): string {
   const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60_000);
   if (minutes < 1) return "刚刚";
   if (minutes < 60) return `${minutes} 分钟前`;
@@ -335,27 +304,44 @@ function repoActivityLabel(row: RepoRow): string {
   return row.lastActivity === null ? "还没跑过" : `最近 ${since(row.lastActivity)}`;
 }
 
+/** 行操作菜单与注册按钮共用的一组回调:两处做的都是仓库注册表上的写动作(issue #195)。 */
+type RepoAdmin = {
+  /** `repo:write`。没有它时注册按钮与行操作菜单都不出现。 */
+  canWrite: boolean;
+  canReadModels: boolean;
+  onFeedback: (feedback: { text: string; isError: boolean }) => void;
+  onRegistered: (repo: Repository) => void;
+  onRemoved: (repo: Repository) => void;
+};
+
 /**
  * 首页左栏:这个账号可见的仓库,首项是「全部仓库」。它是右栏的过滤条件,不是第二份
  * 列表(CONTEXT.md 评审记录),所以选中项只写进地址上的一对 `owner` + `repo`。
+ *
+ * 顶上是「注册仓库」,每行右上角是「…」行操作(issue #195),两处都按 `repo:write` 出现。
  */
 function RepoSidebar({
   repos,
   isPending,
   selected,
   onSelect,
+  admin,
 }: {
   repos: readonly RepoRow[];
   isPending: boolean;
   selected: Repository | null;
   onSelect: (next: Repository | null) => void;
+  admin: RepoAdmin;
 }) {
   return (
     <aside
       aria-label="仓库"
       aria-busy={isPending}
-      className="w-[264px] shrink-0 overflow-y-auto overscroll-y-contain max-lg:hidden"
+      className="flex w-[264px] shrink-0 flex-col gap-2.5 overflow-y-auto overscroll-y-contain max-lg:hidden"
     >
+      {admin.canWrite ? (
+        <RegisterRepo onRegistered={admin.onRegistered} className="w-full" />
+      ) : null}
       <div className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
         {isPending ? (
           <div className="flex flex-col gap-2 px-4 py-3" role="status" aria-live="polite">
@@ -374,10 +360,14 @@ function RepoSidebar({
               </MasterListItem>
             </li>
             {repos.map((row) => (
-              <li key={row.repoId} className="border-t border-line">
+              // 「…」压在行上而不是排进行内容:行本身是一个按钮,按钮里套不了按钮。
+              <li key={row.repoId} className="relative border-t border-line">
                 <MasterListItem
                   selected={selected !== null && selected.owner === row.owner && selected.repo === row.repo}
-                  className="block px-4 py-3 data-[selected=false]:font-medium"
+                  className={cn(
+                    "block px-4 py-3 data-[selected=false]:font-medium",
+                    admin.canWrite && "pr-12",
+                  )}
                   onClick={() => onSelect({ owner: row.owner, repo: row.repo })}
                 >
                   <span className="block break-all text-lg">
@@ -392,6 +382,15 @@ function RepoSidebar({
                     </span>
                   )}
                 </MasterListItem>
+                {admin.canWrite ? (
+                  <RepoRowMenu
+                    repo={row}
+                    canReadModels={admin.canReadModels}
+                    onFeedback={admin.onFeedback}
+                    onRemoved={() => admin.onRemoved({ owner: row.owner, repo: row.repo })}
+                    className="absolute top-2 right-2"
+                  />
+                ) : null}
               </li>
             ))}
           </ul>
@@ -412,50 +411,56 @@ function RepoSelect({
   onSelect: (next: Repository | null) => void;
 }) {
   return (
-    <div className="lg:hidden">
-      <Select.Root
-        size="3"
-        value={selected === null ? ALL_REPOS : repositoryValue(selected)}
-        onValueChange={(next) => {
-          if (next === ALL_REPOS) return onSelect(null);
-          // 仓库名不含斜杠,owner 与 repo 因此按第一个斜杠切开。认不出的取值一律不动
-          // 地址——Radix 在受控值换档时会多回调一次空串。
-          const slash = next.indexOf("/");
-          if (slash > 0) onSelect({ owner: next.slice(0, slash), repo: next.slice(slash + 1) });
-        }}
-      >
-        <Select.Trigger aria-label="按仓库过滤" className="w-full" />
-        <Select.Content position="popper">
-          <Select.Item value={ALL_REPOS}>全部仓库</Select.Item>
-          {repos.map((row) => (
-            <Select.Item key={row.repoId} value={repositoryValue(row)}>
-              {row.owner}/{row.repo}
-              {row.worktree.state === "ready" ? null : " · 工作副本未就绪"}
-            </Select.Item>
-          ))}
-        </Select.Content>
-      </Select.Root>
-    </div>
+    <Select.Root
+      size="3"
+      value={selected === null ? ALL_REPOS : repositoryValue(selected)}
+      onValueChange={(next) => {
+        if (next === ALL_REPOS) return onSelect(null);
+        // 仓库名不含斜杠,owner 与 repo 因此按第一个斜杠切开。认不出的取值一律不动
+        // 地址——Radix 在受控值换档时会多回调一次空串。
+        const slash = next.indexOf("/");
+        if (slash > 0) onSelect({ owner: next.slice(0, slash), repo: next.slice(slash + 1) });
+      }}
+    >
+      <Select.Trigger aria-label="按仓库过滤" className="min-w-0 flex-1" />
+      <Select.Content position="popper">
+        <Select.Item value={ALL_REPOS}>全部仓库</Select.Item>
+        {repos.map((row) => (
+          <Select.Item key={row.repoId} value={repositoryValue(row)}>
+            {row.owner}/{row.repo}
+            {row.worktree.state === "ready" ? null : " · 工作副本未就绪"}
+          </Select.Item>
+        ))}
+      </Select.Content>
+    </Select.Root>
   );
 }
 
 export function RunsPage({
   canRerun,
   canCreate,
+  canWrite,
+  canReadModels,
   unassigned,
 }: {
+  /** 「评审 · 重跑」才看得见右栏头部的重跑 PR(issue #195)。 */
   canRerun: boolean;
-  /** 「评审 · 发起」才看得见页头的发起范围审查入口(issue #177)。 */
+  /** 「评审 · 发起」才看得见右栏头部的发起范围审查入口(issue #177、#195)。 */
   canCreate: boolean;
+  /** 「仓库 · 写入」才看得见左栏顶部的注册按钮与每行的行操作菜单(issue #195)。 */
+  canWrite: boolean;
+  /** 配置弹窗里「跟随全局」跟的是审查策略,读它要「模型 · 读取」。 */
+  canReadModels: boolean;
   /** 一个仓库都没分到的普通用户:两栏换成一段让他联系管理员的说明(issue #194)。 */
   unassigned: boolean;
 }) {
   const navigate = useNavigate();
+  const router = useRouter();
   /*
    * 三个筛选都记在地址里:链接要能指明列表的哪一片。筛选切换用 replace,否则点几下分段
    * 控件就把历史塞满。点开一行是跳到那个阶段自己的地址(issue #175),列表页不再开抽屉。
    * 仓库那一档是一对 owner + repo(issue #189):只给半个键服务端会 400,所以两个都在
-   * 才算数——仓库页的「评审记录」链接进来的就是这一档。
+   * 才算数——左栏、窄视口那个 Select 与阶段页的返回写的都是这一对。
    */
   const filter = useRouterState({
     select: (state) => {
@@ -542,8 +547,13 @@ export function RunsPage({
     queryKey: ["repos"],
     queryFn: () => fetchJson<RepoRow[]>("/repos"),
     enabled: !unassigned,
+    // 还有仓库的工作副本在后台备(issue #184)就每 5 秒续查,全部有结果即停。
+    refetchInterval: (query) =>
+      (query.state.data ?? []).some((row) => row.worktree.state === "preparing")
+        ? 5_000
+        : false,
   });
-  // 发起范围审查的结果就落在页头下面这一条提示里(issue #177)。
+  // 发起、重跑与行操作的结果都落在页头下面这一条提示里(issue #177、#195)。
   const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
 
   // 滚到底部附近自动加载下一页。
@@ -568,6 +578,42 @@ export function RunsPage({
   const flat = stages.data?.pages.flatMap((page) => page.stages) ?? [];
   const unfiltered =
     filter.status === "all" && filter.source === "all" && filter.repository === null;
+  const rows = repos.data ?? [];
+  // 行操作要的是这一行的全部字段(模型覆盖、代次、工作副本),地址上只有 owner 与 repo。
+  const selected = filter.repository;
+  const selectedRow =
+    selected === null
+      ? undefined
+      : rows.find((row) => row.owner === selected.owner && row.repo === selected.repo);
+  const admin: RepoAdmin = {
+    canWrite,
+    canReadModels,
+    onFeedback: setFeedback,
+    onRegistered: (repo) => {
+      setFeedback({
+        text: `已接入 ${repo.owner}/${repo.repo}。向它推送 pull request 就会自动开始审查。`,
+        isError: false,
+      });
+      selectRepository(repo);
+      // 自己注册的仓库自动分配给自己(issue #192),而 `repoIds` 是登录时的那一份快照:
+      // 不重新探测的话,零分配的仓库维护者注册完仍停在那段空态上。
+      if (unassigned) {
+        clearPanelSession();
+        void router.invalidate();
+      }
+    },
+    // 移除的正是当前选中的那个仓库时退回「全部仓库」:它的过滤条件已经不存在了。
+    onRemoved: (repo) => {
+      setFeedback({ text: `已移除 ${repo.owner}/${repo.repo}。`, isError: false });
+      if (
+        filter.repository !== null &&
+        filter.repository.owner === repo.owner &&
+        filter.repository.repo === repo.repo
+      ) {
+        selectRepository(null);
+      }
+    },
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -578,16 +624,7 @@ export function RunsPage({
           {...(stages.isPending
             ? {}
             : { description: `已加载 ${flat.length} 个审查阶段` })}
-          actions={
-            <>
-              <SummaryRate />
-              {canCreate ? (
-                <RangeReviewLaunch
-                  onLaunched={(text) => setFeedback({ text, isError: false })}
-                />
-              ) : null}
-            </>
-          }
+          actions={<SummaryRate />}
         />
 
         {feedback === null ? null : (
@@ -615,24 +652,44 @@ export function RunsPage({
               title="还没有仓库分配给你"
               titleAs="h2"
               description="看得到哪些评审记录由仓库分配决定。请联系系统管理员把你负责的仓库分配给这个账号。"
+              // 注册按钮照 `repo:write` 出现:自己注册的仓库自动分配给自己(issue #192),
+              // 一个仓库都没分到的仓库维护者靠它走出这个空态(issue #195)。
+              action={
+                canWrite ? (
+                  <RegisterRepo onRegistered={admin.onRegistered} className="w-fit" />
+                ) : undefined
+              }
             />
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row lg:gap-[18px]">
             <RepoSidebar
-              repos={repos.data ?? []}
+              repos={rows}
               isPending={repos.isPending}
-              selected={filter.repository}
+              selected={selected}
               onSelect={selectRepository}
+              admin={admin}
             />
-            <RepoSelect
-              repos={repos.data ?? []}
-              selected={filter.repository}
-              onSelect={selectRepository}
-            />
+            {/* 窄视口下左栏折叠成这一行:选择器加它旁边的行操作菜单(issue #195)。 */}
+            <div className="flex items-center gap-2 lg:hidden">
+              <RepoSelect repos={rows} selected={selected} onSelect={selectRepository} />
+              {canWrite ? (
+                <RegisterRepo onRegistered={admin.onRegistered} className="shrink-0" />
+              ) : null}
+              {canWrite && selectedRow !== undefined ? (
+                <RepoRowMenu
+                  repo={selectedRow}
+                  canReadModels={canReadModels}
+                  onFeedback={setFeedback}
+                  onRemoved={() => admin.onRemoved(selectedRow)}
+                />
+              ) : null}
+            </div>
 
             <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-              <div className="flex flex-wrap gap-2">
+              {/* 右栏头部:左边是两个筛选,右边是这个仓库上的动作。选「全部仓库」时
+                  两个动作都不出现——它们要一个具体的仓库(issue #195)。 */}
+              <div className="flex flex-wrap items-center gap-2">
                 <FilterControl
                   label="按状态过滤"
                   value={filter.status}
@@ -645,6 +702,19 @@ export function RunsPage({
                   options={SOURCE_OPTIONS}
                   onChange={(source) => setFilter({ source })}
                 />
+                {selected !== null && (canCreate || canRerun) ? (
+                  <div className="flex flex-wrap items-center gap-2 lg:ml-auto">
+                    {canCreate ? (
+                      <RangeReviewLaunch
+                        repo={selected}
+                        onLaunched={(text) => setFeedback({ text, isError: false })}
+                      />
+                    ) : null}
+                    {canRerun ? (
+                      <RerunPullRequest repo={selected} onFeedback={setFeedback} />
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
 
               <div
@@ -705,18 +775,11 @@ export function RunsPage({
                         unfiltered ? (
                           <>
                             向已注册仓库提交 pull request 后，系统会自动运行审查。
-                            {canRerun ? "如需对已有 pull request 重新运行审查，请到仓库页选择仓库并输入 PR 编号。" : null}
+                            {canRerun ? "如需对已有 pull request 重新运行审查，在左栏选中它的仓库后输入 PR 编号。" : null}
                           </>
                         ) : (
                           "换一个仓库、状态或来源再看。"
                         )
-                      }
-                      action={
-                        canRerun && unfiltered ? (
-                          <Button variant="outline" color="gray" size={{ initial: "4", sm: "1" }} asChild>
-                            <Link to="/repos">去仓库页</Link>
-                          </Button>
-                        ) : undefined
                       }
                     />
                   </div>
