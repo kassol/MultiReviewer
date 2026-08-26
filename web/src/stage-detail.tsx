@@ -245,7 +245,7 @@ export function StageDetailPage({
           )}
 
           {/* 两个侧滑入口都是这一块里的链接:焦点来源在冒泡到这里时记下来。 */}
-          <div onClick={returnFocus.captureBubblingLink}>
+          <div onClickCapture={returnFocus.captureBubblingLink}>
             <StageSummaryView
               scope={scopeOf(body.stage)}
               canDispose={canDispose}
