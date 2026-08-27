@@ -577,7 +577,7 @@ export function CommitPicker({
           </Select.Content>
         </Select.Root>
         {legalContext ? (
-          <Text as="label" size="2" className="flex min-h-10 cursor-pointer items-center gap-2 px-1">
+          <Text as="label" size="2" className="flex min-h-11 cursor-pointer items-center gap-2 px-1">
             <Checkbox
               checked={activeFilters.legalOnly}
               onCheckedChange={(checked) => updateFilters({ legalOnly: checked === true })}
