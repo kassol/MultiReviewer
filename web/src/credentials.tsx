@@ -2556,7 +2556,7 @@ function ModelsTable({
                   <p className="break-words font-medium">
                     {model.discovery.name ?? "未提供显示名"}
                   </p>
-                  <p className="max-w-full overflow-x-auto whitespace-nowrap font-mono text-base text-text-muted">
+                  <p className="max-w-full break-all font-mono text-base text-text-muted">
                     {model.identity}
                   </p>
                   <p className="mt-1 flex flex-wrap items-center gap-1.5">

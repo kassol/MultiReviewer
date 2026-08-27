@@ -178,7 +178,13 @@ function Shell() {
         永远只有页面底色,顶栏就是一块纯白平板。
       */}
       <div id="panel-main-scroll" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-auto">
-        <TopBar nav={nav} session={session} onSearch={palette.open} onLogout={logout} />
+        <TopBar
+          nav={nav}
+          session={session}
+          searchButtonRef={palette.triggerRef}
+          onSearch={palette.open}
+          onLogout={logout}
+        />
         <main className="min-w-0 flex-1">
           <Suspense fallback={<PageLoading />}><Outlet /></Suspense>
         </main>
@@ -197,11 +203,13 @@ function Shell() {
 function TopBar({
   nav,
   session,
+  searchButtonRef,
   onSearch,
   onLogout,
 }: {
   nav: readonly NavigationItem[];
   session: PanelSession;
+  searchButtonRef: React.RefObject<HTMLButtonElement | null>;
   onSearch: () => void;
   onLogout: () => Promise<void>;
 }) {
@@ -227,11 +235,12 @@ function TopBar({
         </div>
         <div className="flex shrink-0 items-center gap-3">
           <button
+            ref={searchButtonRef}
             type="button"
             onClick={onSearch}
             aria-label="搜索或跳转"
             aria-keyshortcuts="Meta+K Control+K"
-            className="flex items-center gap-[7px] rounded-md bg-fill px-3 py-1.5 text-md text-text-muted outline-none transition-colors hover:bg-fill/80 focus-visible:ring-2 focus-visible:ring-ring/40 sm:w-[300px] sm:justify-between"
+            className="flex min-h-11 min-w-11 items-center justify-center gap-[7px] rounded-md bg-fill px-0 text-md text-text-muted outline-none transition-colors hover:bg-fill/80 focus-visible:ring-2 focus-visible:ring-ring/40 sm:w-[300px] sm:justify-between sm:px-3 lg:min-h-0 lg:min-w-0 lg:py-1.5"
           >
             <span className="flex items-center gap-[7px]">
               <MagnifyingGlassIcon className="size-3.5" aria-hidden />
@@ -243,7 +252,10 @@ function TopBar({
         </div>
       </div>
       {nav.length === 0 ? null : (
-        <nav aria-label="面板导航" className="flex items-center gap-0.5 px-5 max-sm:hidden">
+        <nav
+          aria-label="面板导航"
+          className="flex items-center gap-0.5 overflow-x-auto overscroll-x-contain px-5 max-sm:hidden"
+        >
           {nav.map((item) => (
             <NavLink key={item.to} item={item} />
           ))}
@@ -266,7 +278,7 @@ function NavLink({ item }: { item: NavigationItem }) {
       to={item.to}
       activeOptions={{ exact: item.to === "/" }}
       aria-current={stageUnderRecords ? "page" : undefined}
-      className="flex flex-col items-stretch outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+      className="flex min-h-11 shrink-0 flex-col items-stretch justify-end outline-none focus-visible:ring-2 focus-visible:ring-ring/40 lg:min-h-0"
     >
       {({ isActive }) => {
         const active = isActive || stageUnderRecords;
@@ -309,9 +321,11 @@ function UserMenu({ session, onLogout }: { session: PanelSession; onLogout: () =
         <button
           type="button"
           aria-label={`账户 ${name}`}
-          className="flex size-[27px] shrink-0 items-center justify-center rounded-full bg-[image:var(--v8-avatar-gradient)] text-base font-medium text-white outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          className="flex size-11 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/40 lg:size-[27px]"
         >
-          {name.slice(0, 1).toUpperCase()}
+          <span className="flex size-[27px] items-center justify-center rounded-full bg-[image:var(--v8-avatar-gradient)] text-base font-medium text-white">
+            {name.slice(0, 1).toUpperCase()}
+          </span>
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Content align="end" size="2">
@@ -364,7 +378,7 @@ function MobileTabBar({
             to={item.to}
             activeOptions={{ exact: item.to === "/" }}
             aria-current={stageUnderRecords ? "page" : undefined}
-            className="flex flex-1 flex-col items-center gap-[3px] py-[5px] outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+            className="flex min-h-11 flex-1 flex-col items-center justify-center gap-[3px] py-[5px] outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
           >
             {({ isActive }) => {
               const tone = isActive || stageUnderRecords ? "text-primary" : "text-text-muted";
@@ -383,7 +397,7 @@ function MobileTabBar({
           <button
             type="button"
             {...(inOverflow ? { "aria-current": "page" as const } : {})}
-            className={`flex flex-1 flex-col items-center gap-[3px] py-[5px] outline-none focus-visible:ring-2 focus-visible:ring-ring/40 ${
+            className={`flex min-h-11 flex-1 flex-col items-center justify-center gap-[3px] py-[5px] outline-none focus-visible:ring-2 focus-visible:ring-ring/40 ${
               inOverflow ? "text-primary" : "text-text-muted"
             }`}
           >

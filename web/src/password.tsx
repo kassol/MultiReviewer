@@ -15,7 +15,6 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const passwordsMismatch = error !== null && password !== confirm;
 
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -62,7 +61,18 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
           <form onSubmit={submit} className="flex flex-col gap-3.5" aria-busy={busy}>
             <div className="flex flex-col gap-1.5">
               <Text as="label" htmlFor="new-password" size="2" weight="medium">新密码</Text>
-              <TextField.Root id="new-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" autoFocus value={password} onChange={(event) => { setPassword(event.target.value); setError(null); }} />
+              <TextField.Root
+                id="new-password"
+                type="password"
+                size={{ initial: "3", sm: "2" }}
+                className="min-w-0 w-full max-sm:min-h-11"
+                autoComplete="new-password"
+                autoFocus
+                value={password}
+                aria-invalid={error !== null || undefined}
+                aria-describedby={error === null ? undefined : "password-error"}
+                onChange={(event) => { setPassword(event.target.value); setError(null); }}
+              />
             </div>
             <div className="flex flex-col gap-1.5">
               <Text as="label" htmlFor="confirm-password" size="2" weight="medium">确认密码</Text>
@@ -73,8 +83,8 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
                 className="min-w-0 w-full max-sm:min-h-11"
                 autoComplete="new-password"
                 value={confirm}
-                aria-invalid={passwordsMismatch || undefined}
-                aria-describedby={passwordsMismatch ? "password-error" : undefined}
+                aria-invalid={error !== null || undefined}
+                aria-describedby={error === null ? undefined : "password-error"}
                 onChange={(event) => { setConfirm(event.target.value); setError(null); }}
               />
             </div>

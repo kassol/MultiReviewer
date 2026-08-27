@@ -122,7 +122,7 @@ export function SetupChecklist({ session }: { session: PanelSession }) {
       </div>
       <ol className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
         {steps.map((step, index) => (
-          <li key={step.id} className={step.done ? "text-success" : current === step.id ? "font-medium" : "text-muted-foreground"}>
+          <li key={step.id} className={step.done ? "text-success" : current === step.id ? "font-medium" : "text-text-muted"}>
             {current === step.id && step.allowed ? (
               <Link className="underline underline-offset-4" to={step.to}>{index + 1}. {step.label}</Link>
             ) : (

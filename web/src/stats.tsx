@@ -160,7 +160,7 @@ export function SummaryRate() {
     return (
       <Link
         to="/stats"
-        className="flex items-center gap-1.5 rounded-sm border border-destructive/30 bg-destructive/5 px-2.5 py-1.5 text-destructive outline-none transition-colors hover:bg-destructive/10 focus-visible:ring-3 focus-visible:ring-ring/50"
+        className="flex min-h-11 items-center gap-1.5 rounded-sm border border-danger/30 bg-danger-tint px-2.5 py-1.5 text-danger outline-none transition-colors hover:border-danger/50 focus-visible:ring-3 focus-visible:ring-ring/50 lg:min-h-0"
       >
         <ExclamationTriangleIcon className="size-4" aria-hidden />
         <span className="text-xs font-medium">处置率读取失败</span>
@@ -176,10 +176,10 @@ export function SummaryRate() {
   return (
     <Link
       to="/stats"
-      className="flex items-baseline gap-1.5 rounded-sm border border-border bg-card px-2.5 py-1.5 outline-none transition-colors hover:border-primary/50 hover:text-primary focus-visible:ring-3 focus-visible:ring-ring/50"
+      className="flex min-h-11 items-baseline gap-1.5 rounded-sm border border-card-line bg-surface px-2.5 py-1.5 outline-none transition-colors hover:border-primary/50 hover:text-primary focus-visible:ring-3 focus-visible:ring-ring/50 lg:min-h-0"
     >
       <b className="font-mono text-base font-semibold tabular-nums">{percent(all)}%</b>
-      <span className="text-xs text-muted-foreground">
+      <span className="text-xs text-text-muted">
         近 30 天处置率 {all.resolved}/{all.total}
       </span>
     </Link>
@@ -423,7 +423,7 @@ export function StatsPage() {
                         <Table.Row key={repo} className="group">
                           {/* 行首是这一行的表头:屏幕阅读器念单元格时会带上仓库名。 */}
                           <Table.RowHeaderCell
-                            className="sticky left-0 z-10 border-r border-line bg-card font-mono font-bold whitespace-nowrap group-hover:bg-sunken"
+                            className="sticky left-0 z-10 border-r border-line bg-surface font-mono font-bold whitespace-nowrap group-hover:bg-sunken"
                           >
                             {repo}
                           </Table.RowHeaderCell>

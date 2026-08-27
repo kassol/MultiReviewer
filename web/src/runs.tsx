@@ -10,6 +10,7 @@ import { MasterListItem, MasterListItemText } from "@/components/master-list-ite
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
+import { Button } from "@/components/theme-button";
 import { localClock, localDay } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
@@ -167,13 +168,13 @@ export function StageStatusBadge({ stage }: { stage: StageItem }) {
 export function StageCounts({ stage }: { stage: StageItem }) {
   return (
     <span className="flex shrink-0 items-center gap-2 text-base tabular-nums text-text-muted">
-      <span className={stage.counts.pending > 0 ? "text-warning" : undefined}>
+      <span className={`whitespace-nowrap ${stage.counts.pending > 0 ? "text-warning" : ""}`}>
         待处置 {stage.counts.pending}
       </span>
       <span aria-hidden>·</span>
-      <span>已处置 {stage.counts.resolved}</span>
+      <span className="whitespace-nowrap">已处置 {stage.counts.resolved}</span>
       <span aria-hidden>·</span>
-      <span>已修复 {stage.counts.fixed}</span>
+      <span className="whitespace-nowrap">已修复 {stage.counts.fixed}</span>
     </span>
   );
 }
@@ -509,6 +510,19 @@ export function RunsPage({
       replace: true,
     });
   };
+  const clearFilters = () => {
+    void navigate({
+      to: "/",
+      search: (prev: Record<string, unknown>) => ({
+        ...prev,
+        status: undefined,
+        source: undefined,
+        owner: undefined,
+        repo: undefined,
+      }),
+      replace: true,
+    });
+  };
   // 阶段页的返回要回到这一片列表,所以进去时把当前过滤原样带上(issue #189)。
   const carried: Record<string, string> = {
     ...(filter.status === "all" ? {} : { status: filter.status }),
@@ -747,21 +761,24 @@ export function RunsPage({
                           to="/stages/$stageId"
                           params={{ stageId: stage.stageId }}
                           search={carried}
-                          className="group flex items-center gap-3 border-t border-line px-5 py-3 first:border-t-0"
+                          className="group grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 border-t border-line px-4 py-3 first:border-t-0 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center sm:px-5"
                         >
-                          <span className="flex min-w-0 flex-1 flex-col gap-px">
-                            <span className="flex min-w-0 items-center gap-1.5">
-                              <span className="truncate text-lg font-semibold">
-                                {stage.owner}/{stage.repo} {stageLabel(stage)}
+                          <span className="flex min-w-0 flex-col gap-1">
+                            <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+                              <span className="min-w-0 break-all font-mono text-sm text-text-muted">
+                                {stage.owner}/{stage.repo}
                               </span>
                               <StageSourceBadge stage={stage} />
+                            </span>
+                            <span className="break-words text-lg font-semibold">
+                              {stageLabel(stage)}
                             </span>
                             <span className="flex flex-wrap items-center gap-x-1.5 text-base font-normal text-text-muted">
                               <span className="tabular-nums">{latestRunLabel(stage)}</span>
                             </span>
+                            <span className="mt-0.5 sm:hidden"><StageCounts stage={stage} /></span>
                           </span>
-                          {/* 三个数在窄屏让位给状态徽章:390px 下它们会把标题挤成两个字。 */}
-                          <span className="max-sm:hidden"><StageCounts stage={stage} /></span>
+                          <span className="hidden sm:block"><StageCounts stage={stage} /></span>
                           <span className="shrink-0"><StageStatusBadge stage={stage} /></span>
                         </Link>
                       </MasterListItem>
@@ -784,6 +801,17 @@ export function RunsPage({
                           "请更改仓库、状态或来源筛选条件。"
                         )
                       }
+                      action={unfiltered ? undefined : (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          color="gray"
+                          size={{ initial: "4", sm: "1" }}
+                          onClick={clearFilters}
+                        >
+                          清除筛选
+                        </Button>
+                      )}
                     />
                   </div>
                 ) : null}

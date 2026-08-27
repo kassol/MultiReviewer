@@ -448,6 +448,20 @@
   --text-field-padding: 11px;
 }
 
+/*
+ * 组件的响应式 size 负责视觉密度，输入方式负责命中面积。触屏设备即使宽于 640px
+ * （平板横屏、触屏笔记本），小号控件也保持 44px；鼠标桌面仍沿用紧凑尺寸。
+ */
+@media (pointer: coarse) {
+  .radix-themes :where(.rt-Button, .rt-IconButton, .rt-TextFieldRoot, .rt-SelectTrigger) {
+    min-height: 44px;
+  }
+
+  .radix-themes :where(.rt-IconButton) {
+    min-width: 44px;
+  }
+}
+
 @layer base {
   html,
   body {

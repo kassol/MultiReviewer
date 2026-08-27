@@ -83,7 +83,7 @@ function ReadOnlySettings({ settings }: { settings: Settings }) {
       <Card size="2" className="flex flex-col gap-3">
         <div>
           <h2 className="text-2xl font-bold tracking-[-0.015em]">模型组合</h2>
-          <p className="mt-0.5 text-muted-foreground">所有未设置覆盖的仓库使用这组模型。</p>
+          <p className="mt-0.5 text-text-muted">所有未设置覆盖的仓库使用这组模型。</p>
         </div>
         <div className="space-y-1.5">
           {settings.reviewers.map((reviewer) => (
@@ -96,7 +96,7 @@ function ReadOnlySettings({ settings }: { settings: Settings }) {
       <Card size="2" className="flex flex-col gap-3">
         <div>
           <h2 className="text-2xl font-bold tracking-[-0.015em]">批次上限</h2>
-          <p className="mt-0.5 text-muted-foreground">每批审查最多包含的改动行数。</p>
+          <p className="mt-0.5 text-text-muted">每批审查最多包含的改动行数。</p>
         </div>
         <p className="font-mono text-lg font-semibold tabular-nums">
           {settings.maxChangedLinesPerBatch}
@@ -216,7 +216,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
           ) : models.length === 0 ? (
             <span className="text-danger">至少选择一个可用模型，审查配置才能就绪。</span>
           ) : !modelValidity.ready ? (
-            <span className="text-muted-foreground">模型状态确认后即可保存组合。</span>
+            <span className="text-text-muted">模型状态确认后即可保存组合。</span>
           ) : null}
         </div>
         {modelFeedback === null ? null : (
@@ -255,7 +255,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
           }}
         >
           <div className="space-y-3 border-t border-card-line px-5 py-4">
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-text-muted">
               取值来源：{limitSource === "default" ? "系统默认" : "自定义"}
             </p>
             <div className="flex max-w-sm flex-col gap-1.5">
@@ -302,7 +302,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
               </Button>
             ) : null}
             {limitFeedback === null ? (
-              <span className="text-xs text-muted-foreground">单独保存，不受模型组合可用性影响。</span>
+              <span className="text-xs text-text-muted">单独保存，不受模型组合可用性影响。</span>
             ) : limitFeedback.isField ? (
               <span
                 id="max-changed-lines-error"

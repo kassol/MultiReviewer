@@ -1,6 +1,6 @@
 import { Dialog, VisuallyHidden } from "@radix-ui/themes";
 import { Link, useRouter } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command";
 import { CommandInput } from "@/components/ui/command";
@@ -10,6 +10,7 @@ export type CommandPaletteState = {
   open: () => void;
   close: () => void;
   setOpen: (next: boolean) => void;
+  triggerRef: RefObject<HTMLButtonElement | null>;
 };
 
 /**
@@ -18,6 +19,7 @@ export type CommandPaletteState = {
  */
 export function useCommandPalette(): CommandPaletteState {
   const [isOpen, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== "k" || !(event.metaKey || event.ctrlKey)) return;
@@ -32,6 +34,7 @@ export function useCommandPalette(): CommandPaletteState {
     open: useCallback(() => setOpen(true), []),
     close: useCallback(() => setOpen(false), []),
     setOpen,
+    triggerRef,
   };
 }
 
@@ -58,6 +61,10 @@ export function CommandPalette({
       <Dialog.Content
         aria-label="命令面板"
         className="!top-[158px] !w-[584px] !max-w-[calc(100vw-32px)] !translate-y-0 !rounded-2xl !border-0 !bg-[color:var(--v8-palette-bg)] !p-0 !shadow-palette backdrop-blur-[50px]"
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          requestAnimationFrame(() => state.triggerRef.current?.focus());
+        }}
       >
         <VisuallyHidden>
           <Dialog.Title>命令面板</Dialog.Title>

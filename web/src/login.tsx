@@ -107,7 +107,18 @@ export function LoginPage() {
                 <Callout.Text>{error}</Callout.Text>
               </Callout.Root>
             )}
-            <Button type="submit" variant="solid" size={{ initial: "4", sm: "2" }} className="w-full" disabled={busy || username === "" || password === ""}>
+            <Button
+              type="submit"
+              variant="solid"
+              size={{ initial: "4", sm: "2" }}
+              className="w-full"
+              disabled={
+                busy ||
+                username === "" ||
+                password === "" ||
+                (bootstrapMode && (bootstrap === "" || confirm === ""))
+              }
+            >
               {busy ? "处理中…" : bootstrapMode ? "注册并登录" : "登录"}
             </Button>
           </form>

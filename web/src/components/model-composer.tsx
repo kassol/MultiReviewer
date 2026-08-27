@@ -172,7 +172,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
           <EmptyState
             title="尚未选择模型"
             description="请先选择模型服务，再添加可用模型。"
-            className="rounded-sm bg-muted px-3 py-3"
+            className="rounded-sm bg-sunken px-3 py-3"
           />
         ) : (
           <div className="grid gap-2 sm:grid-cols-2" aria-label="已选模型" role="list">
@@ -235,8 +235,8 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
       {/* 两栏选择器:240px 固定列宽 + 自适应右栏,整体固定 380px 高——v8 § 8.3。 */}
       <Card size="1" className="overflow-hidden">
         <div className="-m-3 flex h-[380px] min-w-0 flex-col sm:grid sm:grid-cols-[240px_minmax(0,1fr)]">
-          <div className="flex h-40 min-h-0 shrink-0 flex-col border-b border-border bg-sunken sm:h-auto sm:border-r sm:border-b-0">
-            <p className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
+          <div className="flex h-40 min-h-0 shrink-0 flex-col border-b border-line bg-sunken sm:h-auto sm:border-r sm:border-b-0">
+            <p className="border-b border-line px-3 py-2 text-xs font-medium text-text-muted">
               模型服务 <span className="font-mono tabular-nums">{groups.length}</span> 项
             </p>
             <div className="min-h-0 flex-1 overflow-y-auto">
@@ -254,7 +254,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                     <MasterListItem
                       key={group.provider}
                       selected={group.provider === selected?.provider}
-                      className="flex flex-col items-start gap-0.5 border-b border-border px-3 py-2 last:border-b-0"
+                      className="flex flex-col items-start gap-0.5 border-b border-line px-3 py-2 last:border-b-0"
                       onClick={() => setPickedProvider(group.provider)}
                     >
                       <span className="w-full break-all font-mono font-medium">{group.provider}</span>
@@ -273,7 +273,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
             </div>
             <Link
               to="/credentials"
-              className="border-t border-border px-3 py-2 text-xs font-medium hover:bg-sunken"
+              className="border-t border-line px-3 py-2 text-xs font-medium hover:bg-sunken"
             >
               配置或修复服务
             </Link>
@@ -286,7 +286,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
               ) : query.isError ? (
                 <>
                   <p className="font-medium text-danger">可选模型暂不可用</p>
-                  <p className="text-muted-foreground">重试后才能继续选择或保存。</p>
+                  <p className="text-text-muted">重试后才能继续选择或保存。</p>
                 </>
               ) : (
                 <EmptyState
@@ -350,10 +350,10 @@ function ProviderPane({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-3 py-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-3 py-2">
         <span className="min-w-0 break-all font-mono font-medium">{group.provider}</span>
         {group.name === group.provider ? null : (
-          <span className="min-w-0 break-words text-xs text-muted-foreground">{group.name}</span>
+          <span className="min-w-0 break-words text-xs text-text-muted">{group.name}</span>
         )}
         <ProviderAvailabilityStatus group={group} />
         <Link
@@ -364,7 +364,7 @@ function ProviderPane({
         </Link>
       </div>
 
-      <div className="border-b border-border bg-muted/50 px-3 py-2">
+      <div className="border-b border-line bg-sunken px-3 py-2">
         <TextField.Root
           size={{ initial: "3", sm: "2" }}
           className="min-w-0 w-full max-sm:min-h-11"
@@ -373,7 +373,7 @@ function ProviderPane({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
-        <p className="mt-1.5 text-xs text-muted-foreground" aria-live="polite">
+        <p className="mt-1.5 text-xs text-text-muted" aria-live="polite">
           {query.trim() === "" ? "当前服务" : "搜索结果"}共{" "}
           <span className="font-mono tabular-nums">{matched.length}</span> 个
           {hidden > 0 ? (
@@ -403,10 +403,10 @@ function ProviderPane({
             <div
               key={model.identity}
               className={cn(
-                "flex min-w-0 items-start gap-2 border-b border-border px-3 py-2 transition-colors",
+                "flex min-w-0 items-start gap-2 border-b border-line px-3 py-2 transition-colors",
                 // 已选行底 = accent tint(§1.4 选中面 0.07),不额外描边——勾选框本身已经表达选中。
                 model.available && picked ? "bg-accent-tint" : null,
-                model.available && !picked ? "hover:bg-muted/60" : null,
+                model.available && !picked ? "hover:bg-sunken" : null,
                 !model.available ? "bg-danger-tint" : null,
               )}
             >
@@ -432,7 +432,7 @@ function ProviderPane({
                     <span className="break-words font-medium">
                       {model.discovery.name ?? model.id}
                     </span>
-                    <span className="break-all font-mono text-xs text-muted-foreground">{model.id}</span>
+                    <span className="break-all font-mono text-xs text-text-muted">{model.id}</span>
                     <span className="flex flex-wrap gap-1">
                       {model.sources.map((source) => (
                         <Badge key={source} color="gray" variant="outline">{SOURCE_LABEL[source]}</Badge>
@@ -444,7 +444,7 @@ function ProviderPane({
                       </span>
                     )}
                   </span>
-                  <span className="shrink-0 text-left text-xs text-muted-foreground sm:text-right">
+                  <span className="shrink-0 text-left text-xs text-text-muted sm:text-right">
                     <span><span className="font-mono tabular-nums">{NUMBER_FORMAT.format(model.runtime.contextWindow)}</span> 上下文</span>
                   </span>
                 </span>

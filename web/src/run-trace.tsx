@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 import { ChevronDownIcon, ChevronRightIcon, CrossCircledIcon } from "@radix-ui/react-icons";
 import { Badge, Callout, Skeleton } from "@radix-ui/themes";
@@ -137,7 +137,7 @@ function UnknownEvent({ event }: { event: TraceEvent }) {
   return (
     <div className="flex min-w-0 flex-col gap-1">
       <span className="font-mono text-base text-text">{event.kind}</span>
-      <pre className="overflow-x-auto rounded-lg bg-fill px-2.5 py-1.5 font-mono text-xs text-text-secondary">
+      <pre className="rounded-lg bg-fill px-2.5 py-1.5 font-mono text-xs break-all whitespace-pre-wrap text-text-secondary">
         {pretty(event.payload)}
       </pre>
     </div>
@@ -249,6 +249,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
 /** 一次工具调用:一行摘要,参数全文按需展开。返回内容只记长度,不入轨迹。 */
 function ToolCall({ event }: { event: TraceEvent }) {
   const [open, setOpen] = useState(false);
+  const argsId = useId();
   const payload = event.payload;
   const tool = str(payload, "tool") ?? "(未命名工具)";
   const args = payload["args"];
@@ -266,7 +267,8 @@ function ToolCall({ event }: { event: TraceEvent }) {
             type="button"
             onClick={() => setOpen(!open)}
             aria-expanded={open}
-            className="min-w-0 flex-1 truncate text-left font-mono text-xs text-text-secondary underline decoration-dotted underline-offset-4 hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+            aria-controls={argsId}
+            className="min-h-11 min-w-0 flex-1 truncate text-left font-mono text-xs text-text-secondary underline decoration-dotted underline-offset-4 hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none sm:min-h-0"
           >
             {summarize(args)}
           </button>
@@ -283,7 +285,7 @@ function ToolCall({ event }: { event: TraceEvent }) {
         </p>
       ) : null}
       {open && args !== undefined ? (
-        <pre className="overflow-x-auto rounded-lg bg-fill px-2.5 py-1.5 font-mono text-xs whitespace-pre-wrap text-text-secondary">
+        <pre id={argsId} className="rounded-lg bg-fill px-2.5 py-1.5 font-mono text-xs break-all whitespace-pre-wrap text-text-secondary">
           {pretty(args)}
         </pre>
       ) : null}
