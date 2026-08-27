@@ -18,6 +18,7 @@ const MAX_BUFFER = 64 * 1024 * 1024;
 const FETCH_REFSPECS = [
   "+refs/heads/*:refs/remotes/origin/*",
   "+refs/pull/*/head:refs/remotes/origin/pull/*",
+  "+refs/tags/*:refs/tags/*",
 ];
 
 async function git(cwd: string | undefined, args: string[]): Promise<string> {
@@ -267,11 +268,16 @@ export type RepoReadOptions = {
  * `refs/remotes/origin/` 下面除了分支还有两样东西:`FETCH_REFSPECS` 取回的 pull ref
  * (`pull/<index>`)与 clone 留下的 `HEAD` 符号引用,两者都不是分支,滤掉。
  */
-export async function listBranches(options: RepoReadOptions): Promise<string[]> {
+export async function listBranches(
+  options: RepoReadOptions,
+  refresh = true,
+): Promise<string[]> {
   const path = repoCachePath(options.cacheDir, options.ref);
   const auth = authArgs(options.cloneUrl, options.credentials);
 
-  await ensureClone(path, options.cloneUrl, auth);
+  if (refresh || !existsSync(join(path, ".git"))) {
+    await ensureClone(path, options.cloneUrl, auth);
+  }
 
   const output = await git(path, [
     "for-each-ref",
@@ -320,6 +326,16 @@ export type RepoCommit = {
   authoredAt: string;
   /** 是不是 base 的后代。只在调用方给了 base 时出现(issue #179)。 */
   descendsFromBase?: boolean;
+  /** 搜索只命中提交信息正文时，回显第一处命中附近的片段。 */
+  messageMatchExcerpt?: string;
+};
+
+type PickerFilterOptions = {
+  query?: string;
+  authoredFrom?: number;
+  authoredTo?: number;
+  merge?: "all" | "only" | "non";
+  legalOnly?: boolean;
 };
 
 export type RepoCommitsOptions = RepoReadOptions & {
@@ -328,15 +344,128 @@ export type RepoCommitsOptions = RepoReadOptions & {
   limit: number;
   /** 推进比较项那一档给的阶段基准(issue #179);给了就为每条标出后代关系。 */
   base?: string;
-};
+} & PickerFilterOptions;
 
 /** 列提交的结果。两种失败都是人给的东西查不到,不是服务出错,调用方各回一句话。 */
 export type BranchCommits =
   | { ok: true; commits: RepoCommit[] }
   | { ok: false; reason: "branch-unknown" | "base-unknown" };
 
-/** 字段分隔用 unit separator,记录分隔用 `-z` 的 NUL:两者都不可能出现在提交信息里。 */
-const COMMIT_FORMAT = "--format=%H%x1f%an%x1f%aI%x1f%s";
+/**
+ * 筛选用的内部提交形状。完整信息、邮箱与父提交只参与匹配，不直接放进面板响应。
+ */
+type CommitRecord = RepoCommit & {
+  authorEmail: string;
+  message: string;
+  parentCount: number;
+};
+
+/** 字段用 NUL 分隔。Git 对象禁止 NUL，但允许其余控制字符。 */
+const COMMIT_FORMAT = "--format=%H%x00%an%x00%ae%x00%aI%x00%P%x00%s%x00%B%x00";
+const COMMIT_FIELD_COUNT = 7;
+
+/**
+ * pretty format 与 for-each-ref 会在每条格式化记录后补一个换行。字段数固定，因此按
+ * NUL 切开后逐组读取；不能拿双 NUL 当记录边界，空 parents 等字段本身就会产生双 NUL。
+ * 只去掉每组首字段前由 Git 补的换行，提交或 Tag 消息里的换行原样保留。
+ */
+function fixedNulRecords(output: string, fieldCount: number): string[][] {
+  const fields = output.split("\0");
+  const records: string[][] = [];
+  for (let index = 0; index + fieldCount <= fields.length; index += fieldCount) {
+    const record = fields.slice(index, index + fieldCount);
+    record[0] = record[0]!.replace(/^\n/, "");
+    if (record[0] === "") break;
+    records.push(record);
+  }
+  return records;
+}
+
+function parseCommitRecord(record: readonly string[]): CommitRecord {
+  const [sha, author, authorEmail, authoredAt, parents, subject, message] = record;
+  return {
+    sha: sha!,
+    shortSha: sha!.slice(0, 7),
+    subject: subject ?? "",
+    author: author ?? "",
+    authoredAt: authoredAt ?? "",
+    authorEmail: authorEmail ?? "",
+    message: message ?? "",
+    parentCount: (parents ?? "").split(" ").filter((parent) => parent !== "").length,
+  };
+}
+
+function pickerTerms(query: string | undefined): string[] {
+  const trimmed = query?.trim() ?? "";
+  return trimmed === "" ? [] : trimmed.toLocaleLowerCase().split(/\s+/);
+}
+
+function commitMatches(record: CommitRecord, terms: readonly string[]): boolean {
+  const message = record.message.toLocaleLowerCase();
+  const author = record.author.toLocaleLowerCase();
+  const email = record.authorEmail.toLocaleLowerCase();
+  const sha = record.sha.toLocaleLowerCase();
+  return terms.every(
+    (term) => sha.startsWith(term) || message.includes(term) || author.includes(term) || email.includes(term),
+  );
+}
+
+/** 正文里第一处只能靠正文解释的命中，截成一段可读的附近文本。 */
+function messageMatchExcerpt(record: CommitRecord, terms: readonly string[]): string | undefined {
+  const hiddenTerms = terms.filter((term) =>
+    !record.sha.toLocaleLowerCase().startsWith(term) &&
+    !record.subject.toLocaleLowerCase().includes(term) &&
+    !record.author.toLocaleLowerCase().includes(term) &&
+    !record.authorEmail.toLocaleLowerCase().includes(term)
+  );
+  if (hiddenTerms.length === 0) return undefined;
+  for (const raw of record.message.split(/\r?\n/).slice(1)) {
+    const line = raw.trim();
+    if (line === "") continue;
+    const lower = line.toLocaleLowerCase();
+    const at = hiddenTerms.reduce((first, term) => {
+      const next = lower.indexOf(term);
+      return next < 0 ? first : first < 0 ? next : Math.min(first, next);
+    }, -1);
+    if (at < 0) continue;
+    if (line.length <= 180) return line;
+    const start = Math.max(0, at - 60);
+    const end = Math.min(line.length, start + 180);
+    return `${start === 0 ? "" : "…"}${line.slice(start, end)}${end === line.length ? "" : "…"}`;
+  }
+  return undefined;
+}
+
+function filteredCommitRows(
+  records: readonly CommitRecord[],
+  options: PickerFilterOptions & { offset: number; limit: number },
+  descendants: ReadonlySet<string> | undefined,
+): RepoCommit[] {
+  const terms = pickerTerms(options.query);
+  return records
+    .filter((record) => {
+      if (!commitMatches(record, terms)) return false;
+      const authored = Date.parse(record.authoredAt);
+      if (options.authoredFrom !== undefined && authored < options.authoredFrom) return false;
+      if (options.authoredTo !== undefined && authored > options.authoredTo) return false;
+      if (options.merge === "only" && record.parentCount < 2) return false;
+      if (options.merge === "non" && record.parentCount >= 2) return false;
+      return options.legalOnly !== true || descendants?.has(record.sha) === true;
+    })
+    .slice(options.offset, options.offset + options.limit)
+    .map((record) => {
+      const excerpt = messageMatchExcerpt(record, terms);
+      return {
+        sha: record.sha,
+        shortSha: record.shortSha,
+        subject: record.subject,
+        author: record.author,
+        authoredAt: record.authoredAt,
+        ...(descendants === undefined ? {} : { descendsFromBase: descendants.has(record.sha) }),
+        ...(excerpt === undefined ? {} : { messageMatchExcerpt: excerpt }),
+      };
+    });
+}
 
 /**
  * 一条分支上的提交,新的在前,按 offset / limit 分页(issue #178)。
@@ -378,26 +507,220 @@ export async function listBranchCommits(
     descendants = new Set(reachable.split("\n").filter((line) => line !== ""));
   }
 
-  const output = await git(path, [
-    "log",
-    "-z",
-    COMMIT_FORMAT,
-    `--skip=${options.offset}`,
-    `--max-count=${options.limit}`,
-    ref,
-  ]);
-  const commits = splitNul(output).map((record) => {
-    const [sha, author, authoredAt, subject] = record.split("\x1f");
-    return {
-      sha: sha!,
-      shortSha: sha!.slice(0, 7),
-      subject: subject ?? "",
-      author: author ?? "",
-      authoredAt: authoredAt ?? "",
-      ...(descendants === undefined ? {} : { descendsFromBase: descendants.has(sha!) }),
-    };
-  });
+  // 搜索、日期、merge 与合法后代必须先组合再分页，所以一次读出这条分支的历史并按 Git
+  // 原顺序筛选。没有相关性排序，翻页不会改变历史顺序。
+  const output = await git(path, ["log", COMMIT_FORMAT, ref]);
+  const commits = filteredCommitRows(
+    fixedNulRecords(output, COMMIT_FIELD_COUNT).map(parseCommitRecord),
+    options,
+    descendants,
+  );
   return { ok: true, commits };
+}
+
+/** Tag 选择器里的一行。Tag 只负责定位，`sha` 始终是递归 peel 后的 commit。 */
+export type RepoTag = {
+  name: string;
+  sha: string;
+  shortSha: string;
+  subject: string;
+  author: string;
+  authoredAt: string;
+  /** 只有附注 Tag 才有；轻量 Tag 的创建时间就是目标 commit 的作者时间。 */
+  tagger?: string;
+  taggedAt?: string;
+  descendsFromBase?: boolean;
+  messageMatchExcerpt?: string;
+};
+
+export type RepoTagsOptions = RepoReadOptions & {
+  offset: number;
+  limit: number;
+  base?: string;
+} & PickerFilterOptions;
+
+export type RepoTags =
+  | { ok: true; tags: RepoTag[]; hasUsableTags: boolean }
+  | { ok: false; reason: "base-unknown" };
+
+/**
+ * `for-each-ref` 的字段。常见的轻量与一层附注 Tag 一次读齐；附注 Tag 指向另一条 Tag
+ * 时再单独递归 peel，那一档很少见，不为它让每条 Tag 多起一个 git 进程。
+ */
+const TAG_FIELDS = [
+  "%(refname:strip=2)",
+  "%(objecttype)",
+  "%(objectname)",
+  "%(*objecttype)",
+  "%(*objectname)",
+  "%(subject)",
+  "%(*subject)",
+  "%(authorname)",
+  "%(*authorname)",
+  "%(authoremail:trim)",
+  "%(*authoremail:trim)",
+  "%(authordate:iso-strict)",
+  "%(*authordate:iso-strict)",
+  "%(parent)",
+  "%(*parent)",
+  "%(contents)",
+  "%(*contents)",
+  "%(taggername)",
+  "%(taggerdate:iso-strict)",
+] as const;
+const TAG_FORMAT = TAG_FIELDS.join("%00");
+
+async function commitMetadata(path: string, revision: string): Promise<CommitRecord | undefined> {
+  const sha = await resolveCommit(path, revision);
+  if (sha === undefined) return undefined;
+  const output = await git(path, ["show", "-s", COMMIT_FORMAT, sha]);
+  const [record] = fixedNulRecords(output, COMMIT_FIELD_COUNT);
+  return record === undefined ? undefined : parseCommitRecord(record);
+}
+
+/** 一次取出所有 refs 下 base 的后代，供 Tag 模式标记任意目标 commit。 */
+async function allDescendants(path: string, baseSha: string): Promise<Set<string>> {
+  const output = await git(path, ["rev-list", "--all", "--children"]);
+  const children = new Map<string, string[]>();
+  for (const line of output.split("\n")) {
+    const [parent, ...next] = line.split(" ");
+    if (parent !== "") children.set(parent!, next);
+  }
+  const descendants = new Set<string>();
+  const pending = [...(children.get(baseSha) ?? [])];
+  while (pending.length > 0) {
+    const sha = pending.pop()!;
+    if (descendants.has(sha)) continue;
+    descendants.add(sha);
+    pending.push(...(children.get(sha) ?? []));
+  }
+  return descendants;
+}
+
+/**
+ * 本地 Tag 列表，按创建时间倒序。轻量 Tag 用目标 commit 的作者时间；附注 Tag 用 tagger
+ * 时间。只有最终能递归 peel 成 commit 的 refs 才返回，tree/blob Tag 不出现在选择器里。
+ *
+ * 这里不主动 fetch：选择器打开或手动刷新时列分支那一步已同步 branches + tags；搜索、
+ * 筛选和翻页只读本地 refs，不能把每次输入都变成一次网络请求。副本不存在时仍会创建。
+ */
+export async function listTags(options: RepoTagsOptions): Promise<RepoTags> {
+  const path = repoCachePath(options.cacheDir, options.ref);
+  if (!existsSync(join(path, ".git"))) {
+    await ensureClone(path, options.cloneUrl, authArgs(options.cloneUrl, options.credentials));
+  }
+
+  let descendants: Set<string> | undefined;
+  if (options.base !== undefined) {
+    const baseSha = await resolveCommit(path, options.base);
+    if (baseSha === undefined) return { ok: false, reason: "base-unknown" };
+    descendants = await allDescendants(path, baseSha);
+  }
+
+  const output = await git(path, [
+    "for-each-ref",
+    "--sort=-refname",
+    "--sort=-creatordate",
+    `--format=${TAG_FORMAT}%00`,
+    "refs/tags/",
+  ]);
+  const records = fixedNulRecords(output, TAG_FIELDS.length);
+  const tags: Array<{ row: RepoTag; commit: CommitRecord; createdAt: string }> = [];
+  for (const record of records) {
+    const [
+      name,
+      objectType,
+      objectSha,
+      peeledType,
+      peeledSha,
+      subject,
+      peeledSubject,
+      author,
+      peeledAuthor,
+      authorEmail,
+      peeledAuthorEmail,
+      authoredAt,
+      peeledAuthoredAt,
+      parents,
+      peeledParents,
+      message,
+      peeledMessage,
+      tagger,
+      taggedAt,
+    ] = record;
+
+    const annotated = objectType === "tag";
+    let commit: CommitRecord | undefined;
+    if (objectType === "commit") {
+      commit = {
+        sha: objectSha!,
+        shortSha: objectSha!.slice(0, 7),
+        subject: subject ?? "",
+        author: author ?? "",
+        authoredAt: authoredAt ?? "",
+        authorEmail: authorEmail ?? "",
+        message: message ?? "",
+        parentCount: (parents ?? "").split(" ").filter((parent) => parent !== "").length,
+      };
+    } else if (peeledType === "commit") {
+      commit = {
+        sha: peeledSha!,
+        shortSha: peeledSha!.slice(0, 7),
+        subject: peeledSubject ?? "",
+        author: peeledAuthor ?? "",
+        authoredAt: peeledAuthoredAt ?? "",
+        authorEmail: peeledAuthorEmail ?? "",
+        message: peeledMessage ?? "",
+        parentCount: (peeledParents ?? "").split(" ").filter((parent) => parent !== "").length,
+      };
+    } else if (peeledType === "tag") {
+      commit = await commitMetadata(path, `refs/tags/${name}`);
+    }
+    if (commit === undefined) continue;
+    tags.push({
+      commit,
+      createdAt: annotated ? taggedAt ?? "" : commit.authoredAt,
+      row: {
+        name: name!,
+        sha: commit.sha,
+        shortSha: commit.shortSha,
+        subject: commit.subject,
+        author: commit.author,
+        authoredAt: commit.authoredAt,
+        ...(annotated ? { tagger: tagger ?? "", taggedAt: taggedAt ?? "" } : {}),
+      },
+    });
+  }
+
+  const terms = pickerTerms(options.query);
+  const filtered = tags
+    // `for-each-ref` 的 lightweight `creatordate` 实际取 committer date；产品口径明确取目标
+    // commit 的 authored time，所以在解析后按真正要展示的两个来源重排。
+    .sort((left, right) => {
+      const byTime = Date.parse(right.createdAt) - Date.parse(left.createdAt);
+      if (byTime !== 0) return byTime;
+      return left.row.name < right.row.name ? 1 : left.row.name > right.row.name ? -1 : 0;
+    })
+    .filter(({ row, commit }) => {
+      const name = row.name.toLocaleLowerCase();
+      if (!terms.every((term) => name.includes(term) || commitMatches(commit, [term]))) return false;
+      const authored = Date.parse(commit.authoredAt);
+      if (options.authoredFrom !== undefined && authored < options.authoredFrom) return false;
+      if (options.authoredTo !== undefined && authored > options.authoredTo) return false;
+      if (options.merge === "only" && commit.parentCount < 2) return false;
+      if (options.merge === "non" && commit.parentCount >= 2) return false;
+      return options.legalOnly !== true || descendants?.has(commit.sha) === true;
+    })
+    .slice(options.offset, options.offset + options.limit)
+    .map(({ row, commit }) => {
+      const excerpt = messageMatchExcerpt(commit, terms.filter((term) => !row.name.toLocaleLowerCase().includes(term)));
+      return {
+        ...row,
+        ...(descendants === undefined ? {} : { descendsFromBase: descendants.has(commit.sha) }),
+        ...(excerpt === undefined ? {} : { messageMatchExcerpt: excerpt }),
+      };
+    });
+  return { ok: true, tags: filtered, hasUsableTags: tags.length > 0 };
 }
 
 /** 取 Review Range 的合并 diff。基准是 merge-base,与两个平台 PR 页面显示的一致。 */

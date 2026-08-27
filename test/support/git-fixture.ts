@@ -17,6 +17,13 @@ export type RepoFixtureOptions = {
   baseAdvance?: FileTree;
 };
 
+export type FixtureCommitOptions = {
+  message?: string;
+  authorName?: string;
+  authorEmail?: string;
+  authoredAt?: string;
+};
+
 export type RepoFixture = {
   /** 仓库路径,可直接作为 clone 源。 */
   dir: string;
@@ -33,12 +40,22 @@ export type RepoFixture = {
    * 比较项。必须落在一条分支上:工作副本按 `refs/heads/*` 取回,游离的 commit 取不到。
    */
   branchFrom(branch: string, startSha: string, tree: FileTree): string;
+  /** 在已有分支上追加一条可定制提交信息、作者和作者时间的 commit。 */
+  commitToBranch(branch: string, tree: FileTree, options?: FixtureCommitOptions): string;
+  /** 把 source 分支以 merge commit 合进 target，返回 merge commit。 */
+  mergeInto(target: string, source: string, message?: string): string;
   /** 这条分支指向的 commit;分支不存在时返回 undefined。 */
   branchSha(branch: string): string | undefined;
   /** 建一条分支或把它移到指定 commit。 */
   setBranch(branch: string, sha: string): void;
   /** 删一条分支。不存在即当作已经删掉——两者是同一个终态。 */
   deleteBranch(branch: string): void;
+  /** 建一条轻量 Tag，已存在时移动到新的 commit。 */
+  setLightweightTag(name: string, sha: string): void;
+  /** 建一条附注 Tag，已存在时移动到新的 commit。 */
+  setAnnotatedTag(name: string, sha: string, message?: string): void;
+  /** 删除 Tag。不存在即当作已经删掉。 */
+  deleteTag(name: string): void;
   cleanup(): void;
 };
 
@@ -65,10 +82,27 @@ function writeTree(dir: string, tree: FileTree): void {
   }
 }
 
-function commit(dir: string, tree: FileTree, message: string): string {
+function commit(
+  dir: string,
+  tree: FileTree,
+  message: string,
+  options: FixtureCommitOptions = {},
+): string {
   writeTree(dir, tree);
   git(dir, "add", "-A");
-  git(dir, "commit", "-m", message);
+  git(
+    dir,
+    "commit",
+    "-m",
+    options.message ?? message,
+    ...(options.authorName === undefined && options.authorEmail === undefined
+      ? []
+      : [
+          "--author",
+          `${options.authorName ?? "fixture"} <${options.authorEmail ?? "fixture@example.invalid"}>`,
+        ]),
+    ...(options.authoredAt === undefined ? [] : ["--date", options.authoredAt]),
+  );
   return git(dir, "rev-parse", "HEAD");
 }
 
@@ -105,6 +139,19 @@ export function makeRepo(options: RepoFixtureOptions): RepoFixture {
       git(dir, "checkout", "--quiet", "main");
       return sha;
     },
+    commitToBranch(branch: string, tree: FileTree, options: FixtureCommitOptions = {}): string {
+      git(dir, "checkout", "--quiet", branch);
+      const sha = commit(dir, tree, `commit on ${branch}`, options);
+      git(dir, "checkout", "--quiet", "main");
+      return sha;
+    },
+    mergeInto(target: string, source: string, message = `merge ${source}`): string {
+      git(dir, "checkout", "--quiet", target);
+      git(dir, "merge", "--quiet", "--no-ff", source, "--message", message);
+      const sha = git(dir, "rev-parse", "HEAD");
+      git(dir, "checkout", "--quiet", "main");
+      return sha;
+    },
     branchSha(branch: string): string | undefined {
       try {
         return git(dir, "rev-parse", "--verify", `refs/heads/${branch}`);
@@ -118,6 +165,19 @@ export function makeRepo(options: RepoFixtureOptions): RepoFixture {
     deleteBranch(branch: string): void {
       try {
         git(dir, "branch", "-D", branch);
+      } catch {
+        // 已经不在了。
+      }
+    },
+    setLightweightTag(name: string, sha: string): void {
+      git(dir, "tag", "--force", name, sha);
+    },
+    setAnnotatedTag(name: string, sha: string, message = `tag ${name}`): void {
+      git(dir, "tag", "--force", "--annotate", name, sha, "--message", message);
+    },
+    deleteTag(name: string): void {
+      try {
+        git(dir, "tag", "--delete", name);
       } catch {
         // 已经不在了。
       }

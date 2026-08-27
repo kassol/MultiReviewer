@@ -52,6 +52,7 @@ import {
   ensureWorktree,
   listBranchCommits,
   listBranches,
+  listTags,
   prepareRangeDiff,
   pushBranch,
   readRangeDiffFiles,
@@ -1715,6 +1716,13 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     access: "review:create",
     assignment: { by: "query" },
     handler: ({ req, res, deps }) => handleRepoCommits(req, res, deps),
+  },
+  {
+    method: "GET",
+    pattern: "/repo-tags",
+    access: "review:create",
+    assignment: { by: "query" },
+    handler: ({ req, res, deps }) => handleRepoTags(req, res, deps),
   },
   {
     method: "GET",
@@ -4865,9 +4873,77 @@ function handleRangeReviewPrefill(
 /** commit 选择器一页的提交数上限。人翻页翻的是一段历史,一次给太多只会更难认。 */
 const COMMITS_PAGE = 30;
 const COMMITS_PAGE_MAX = 100;
+const BRANCH_MATCH_MAX = 50;
+
+type PickerQuery = {
+  offset: number;
+  limit: number;
+  base?: string;
+  query?: string;
+  authoredFrom?: number;
+  authoredTo?: number;
+  merge?: "all" | "only" | "non";
+  legalOnly?: boolean;
+};
+
+/** commit 与 Tag 共用的搜索、筛选和分页参数。日期是浏览器本地日界线换算后的 ISO 时刻。 */
+function parsePickerQuery(query: URLSearchParams): { ok: true; value: PickerQuery } | { ok: false; error: string } {
+  const offsetRaw = query.get("offset");
+  const offset = offsetRaw === null ? 0 : Number(offsetRaw);
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    return { ok: false, error: "offset 要是非负整数" };
+  }
+  const limitRaw = query.get("limit");
+  const limit = limitRaw === null ? COMMITS_PAGE : Number(limitRaw);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > COMMITS_PAGE_MAX) {
+    return { ok: false, error: `limit 要是 1 到 ${COMMITS_PAGE_MAX} 之间的整数` };
+  }
+  const base = query.get("base");
+  if (base !== null && !COMMIT_SHA.test(base)) {
+    return { ok: false, error: "base 要是 7 到 40 位的 commit sha" };
+  }
+  const merge = query.get("merge") ?? "all";
+  if (merge !== "all" && merge !== "only" && merge !== "non") {
+    return { ok: false, error: "merge 要是 all、only 或 non" };
+  }
+  const legal = query.get("legal") ?? "all";
+  if (legal !== "all" && legal !== "only") {
+    return { ok: false, error: "legal 要是 all 或 only" };
+  }
+  if (legal === "only" && base === null) {
+    return { ok: false, error: "只看合法后代时要先给 base" };
+  }
+  const fromRaw = query.get("from");
+  const toRaw = query.get("to");
+  const authoredFrom = fromRaw === null ? undefined : Date.parse(fromRaw);
+  const authoredTo = toRaw === null ? undefined : Date.parse(toRaw);
+  if (authoredFrom !== undefined && !Number.isFinite(authoredFrom)) {
+    return { ok: false, error: "from 要是有效的 ISO 时间" };
+  }
+  if (authoredTo !== undefined && !Number.isFinite(authoredTo)) {
+    return { ok: false, error: "to 要是有效的 ISO 时间" };
+  }
+  if (authoredFrom !== undefined && authoredTo !== undefined && authoredFrom > authoredTo) {
+    return { ok: false, error: "from 不能晚于 to" };
+  }
+  const search = query.get("q")?.trim() ?? "";
+  return {
+    ok: true,
+    value: {
+      offset,
+      limit,
+      ...(base === null ? {} : { base }),
+      ...(search === "" ? {} : { query: search }),
+      ...(authoredFrom === undefined ? {} : { authoredFrom }),
+      ...(authoredTo === undefined ? {} : { authoredTo }),
+      ...(merge === "all" ? {} : { merge }),
+      ...(legal === "only" ? { legalOnly: true } : {}),
+    },
+  };
+}
 
 /**
- * commit 选择器两个接口的共同前半段:认出是哪个仓库,取到 clone 地址与凭据。
+ * commit 选择器三个接口的共同前半段:认出是哪个仓库,取到 clone 地址与凭据。
  *
  * 仓库必须已注册,与发起范围审查同一条门禁:未注册的仓库不该因为一次读请求就在服务器
  * 上落一份 clone。前置拒绝时响应已经发出去,回 undefined 让调用方直接返回。
@@ -4917,29 +4993,53 @@ async function resolveRepoGitTarget(
 }
 
 /**
- * 仓库的分支列表(issue #178)。commit 选择器的分支下拉读它。
- *
- * 每次都先 fetch(`listBranches`),刚推上去的提交因此立刻选得到。容器 PR 的两条分支
- * 是本工具自己建的,按固定前缀滤掉——它们不是人要审的代码(ADR 0012)。
+ * 仓库的分支列表(issue #178)。commit 选择器打开或手动刷新时用 `refresh=1` 同步分支
+ * 与 Tag；组合框输入时用 `refresh=0` 只搜本地 refs。容器 PR 的两条分支是本工具自己
+ * 建的,按固定前缀滤掉——它们不是人要审的代码(ADR 0012)。
  */
 async function handleRepoBranches(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
 ): Promise<void> {
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+  const refreshRaw = query.get("refresh");
+  if (refreshRaw !== null && refreshRaw !== "0" && refreshRaw !== "1") {
+    return sendJson(res, 400, { error: "refresh 要是 0 或 1" });
+  }
+  const exactRaw = query.get("exact");
+  if (exactRaw !== null && exactRaw !== "0" && exactRaw !== "1") {
+    return sendJson(res, 400, { error: "exact 要是 0 或 1" });
+  }
+  const refresh = refreshRaw !== "0";
+  const exact = exactRaw === "1";
+  const search = (query.get("q") ?? "").trim().toLocaleLowerCase();
   const target = await resolveRepoGitTarget(req, res, deps);
   if (target === undefined) return;
 
   let names: string[];
   try {
-    names = await listBranches({ cacheDir: deps.cacheDir, ...target });
+    names = await listBranches({ cacheDir: deps.cacheDir, ...target }, refresh);
   } catch (error) {
     return sendJson(res, 502, { error: `取不回仓库的分支:${failureText(error)}` });
   }
-  const branches = names
-    .filter((name) => !isContainerBranch(name))
-    .map((name) => ({ name, isDefault: name === target.defaultBranch }));
-  return sendJson(res, 200, { branches });
+  const humanBranches = names.filter((name) => {
+    const container: boolean = isContainerBranch(name);
+    return !container;
+  });
+  const matched = humanBranches
+    .filter((name) => search === "" || (exact
+      ? name.toLocaleLowerCase() === search
+      : name.toLocaleLowerCase().includes(search)))
+    .map((name) => ({ name, isDefault: name === target.defaultBranch }))
+    .sort((left, right) => {
+      if (left.isDefault !== right.isDefault) return left.isDefault ? -1 : 1;
+      return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
+    });
+  return sendJson(res, 200, {
+    branches: matched.slice(0, BRANCH_MATCH_MAX),
+    truncated: matched.length > BRANCH_MATCH_MAX,
+  });
 }
 
 /**
@@ -4963,20 +5063,8 @@ async function handleRepoCommits(
   if (branch === null || branch === "") {
     return sendJson(res, 400, { error: "branch 要给" });
   }
-  const offsetRaw = query.get("offset");
-  const offset = offsetRaw === null ? 0 : Number(offsetRaw);
-  if (!Number.isSafeInteger(offset) || offset < 0) {
-    return sendJson(res, 400, { error: "offset 要是非负整数" });
-  }
-  const limitRaw = query.get("limit");
-  const limit = limitRaw === null ? COMMITS_PAGE : Number(limitRaw);
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > COMMITS_PAGE_MAX) {
-    return sendJson(res, 400, { error: `limit 要是 1 到 ${COMMITS_PAGE_MAX} 之间的整数` });
-  }
-  const base = query.get("base");
-  if (base !== null && !COMMIT_SHA.test(base)) {
-    return sendJson(res, 400, { error: "base 要是 7 到 40 位的 commit sha" });
-  }
+  const parsed = parsePickerQuery(query);
+  if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
 
   const target = await resolveRepoGitTarget(req, res, deps);
   if (target === undefined) return;
@@ -4987,9 +5075,7 @@ async function handleRepoCommits(
       cacheDir: deps.cacheDir,
       ...target,
       branch,
-      offset,
-      limit,
-      ...(base === null ? {} : { base }),
+      ...parsed.value,
     });
   } catch (error) {
     return sendJson(res, 502, { error: `取不回这条分支的提交:${failureText(error)}` });
@@ -5000,8 +5086,40 @@ async function handleRepoCommits(
       : sendJson(res, 400, { error: RANGE_REJECTION["base-unknown"] });
   }
   // 这一页取满就还有下一页:提交总数要数完整段历史,为一个翻页按钮不值当。
-  const nextOffset = listed.commits.length === limit ? offset + limit : null;
+  const nextOffset = listed.commits.length === parsed.value.limit
+    ? parsed.value.offset + parsed.value.limit
+    : null;
   return sendJson(res, 200, { commits: listed.commits, nextOffset });
+}
+
+/** 本地 Tag 列表。refs 的同步由选择器打开时的 `/repo-branches` 一次完成。 */
+async function handleRepoTags(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): Promise<void> {
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+  const parsed = parsePickerQuery(query);
+  if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
+
+  const target = await resolveRepoGitTarget(req, res, deps);
+  if (target === undefined) return;
+  try {
+    const listed = await listTags({ cacheDir: deps.cacheDir, ...target, ...parsed.value });
+    if (!listed.ok) {
+      return sendJson(res, 400, { error: RANGE_REJECTION["base-unknown"] });
+    }
+    const nextOffset = listed.tags.length === parsed.value.limit
+      ? parsed.value.offset + parsed.value.limit
+      : null;
+    return sendJson(res, 200, {
+      tags: listed.tags,
+      nextOffset,
+      hasUsableTags: listed.hasUsableTags,
+    });
+  } catch (error) {
+    return sendJson(res, 502, { error: `取不回仓库的 Tag:${failureText(error)}` });
+  }
 }
 
 /**

@@ -7,7 +7,11 @@ import { AlertDialog, Dialog, Flex, IconButton } from "@radix-ui/themes";
 import { Button } from "@/components/theme-button";
 
 import { api, errorText } from "./api.ts";
-import { CommitPicker } from "./commit-picker.tsx";
+import {
+  CommitPicker,
+  commitSelectionLabel,
+  type CommitSelection,
+} from "./commit-picker.tsx";
 
 /** 一个范围审查。字段与 `GET <前缀>/api/stages/{stageId}` 的 `rangeReview` 那一格逐字对应。 */
 export type RangeReview = {
@@ -142,13 +146,15 @@ export function AdvanceAction({
           推进比较项
         </Button>
       </Dialog.Trigger>
-      <AdvanceDialogContent
-        rangeReview={rangeReview}
-        onAdvanced={() => {
-          setOpen(false);
-          onAdvanced?.();
-        }}
-      />
+      {open ? (
+        <AdvanceDialogContent
+          rangeReview={rangeReview}
+          onAdvanced={() => {
+            setOpen(false);
+            onAdvanced?.();
+          }}
+        />
+      ) : null}
     </Dialog.Root>
   );
 }
@@ -170,14 +176,14 @@ function AdvanceDialogContent({
   onAdvanced: () => void;
 }) {
   const queryClient = useQueryClient();
-  const [comparison, setComparison] = useState<string | null>(null);
+  const [comparison, setComparison] = useState<CommitSelection | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const advance = useMutation({
     mutationFn: async () => {
       const response = await api(`/range-reviews/${rangeReview.id}/advance`, {
         method: "POST",
-        body: JSON.stringify({ comparison }),
+        body: JSON.stringify({ comparison: comparison?.sha ?? "" }),
       });
       if (!response.ok) throw new Error(await errorText(response));
     },
@@ -189,9 +195,14 @@ function AdvanceDialogContent({
   });
 
   return (
-    <Dialog.Content aria-describedby={undefined} maxWidth="560px" size={{ initial: "2", sm: "3" }}>
+    <Dialog.Content
+      aria-describedby={undefined}
+      maxWidth="720px"
+      size={{ initial: "2", sm: "3" }}
+      className="max-h-[calc(100dvh-2rem)] overflow-hidden"
+    >
       <form
-        className="flex min-h-0 flex-col gap-3"
+        className="flex max-h-[calc(100dvh-5rem)] min-h-0 flex-col gap-3"
         aria-busy={advance.isPending}
         onSubmit={(event) => {
           event.preventDefault();
@@ -207,19 +218,19 @@ function AdvanceDialogContent({
           <dt className="text-text-secondary">当前比较项</dt>
           <dd className="min-w-0 font-mono">{rangeReview.comparisonSha.slice(0, 7)}</dd>
           <dt className="text-text-secondary">新的比较项</dt>
-          <dd className="min-w-0 font-mono">
-            {comparison === null ? "尚未选择" : comparison.slice(0, 7)}
+          <dd className="min-w-0 break-all">
+            {comparison === null ? "尚未选择" : commitSelectionLabel(comparison)}
           </dd>
         </dl>
 
         <CommitPicker
           repo={{ owner: rangeReview.owner, repo: rangeReview.repo }}
-          base={rangeReview.baseSha}
+          base={{ sha: rangeReview.baseSha }}
           comparison={comparison}
           baseLocked
-          onPick={(_role, sha) => {
+          onPick={(_role, selection) => {
             setError(null);
-            setComparison(sha);
+            setComparison(selection);
           }}
         />
 
@@ -228,7 +239,13 @@ function AdvanceDialogContent({
         </p>
         {error === null ? null : <p role="alert" className="text-danger">{error}</p>}
 
-        <Flex gap="3" mt="1" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
+        <Flex
+          gap="3"
+          mt="1"
+          justify="end"
+          direction={{ initial: "column-reverse", sm: "row" }}
+          className="shrink-0 bg-surface pt-2"
+        >
           <Dialog.Close>
             <Button type="button" variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>
               取消

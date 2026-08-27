@@ -118,7 +118,7 @@ test("副本已就绪之后,一次审查与一次分支列表都不再 clone", a
     ((await branches.json()) as { branches: { name: string }[] }).branches.map(
       (branch) => branch.name,
     ),
-    ["feature", "main"],
+    ["main", "feature"],
   );
 
   assert.equal(existsSync(marker), true, "两条链路都该复用已有副本,不再 clone");

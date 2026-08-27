@@ -7,7 +7,11 @@ import { Dialog, Flex, IconButton, Text, TextField } from "@radix-ui/themes";
 import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
-import { CommitPicker } from "./commit-picker.tsx";
+import {
+  CommitPicker,
+  commitSelectionLabel,
+  type CommitSelection,
+} from "./commit-picker.tsx";
 
 /** 表单里的那个仓库。入口只在选中具体仓库时出现,所以它一开始就有(issue #195)。 */
 type PickedRepo = { owner: string; repo: string };
@@ -34,15 +38,17 @@ export function RangeReviewLaunch({
           发起范围审查
         </Button>
       </Dialog.Trigger>
-      <LaunchDialogContent
-        // 换一个仓库,标题与两端跟着重来:它们说的是上一个仓库的事。
-        key={`${repo.owner}/${repo.repo}`}
-        repo={repo}
-        onLaunched={(text) => {
-          onLaunched(text);
-          setOpen(false);
-        }}
-      />
+      {open ? (
+        <LaunchDialogContent
+          // 关闭再打开、或换一个仓库时，表单与选择器都从该仓库的当前事实重来。
+          key={`${repo.owner}/${repo.repo}`}
+          repo={repo}
+          onLaunched={(text) => {
+            onLaunched(text);
+            setOpen(false);
+          }}
+        />
+      ) : null}
     </Dialog.Root>
   );
 }
@@ -69,9 +75,9 @@ function LaunchDialogContent({
 }) {
   const queryClient = useQueryClient();
   const [title, setTitle] = useState("");
-  const [base, setBase] = useState("");
+  const [base, setBase] = useState<CommitSelection | null>(null);
   const [baseTouched, setBaseTouched] = useState(false);
-  const [comparison, setComparison] = useState("");
+  const [comparison, setComparison] = useState<CommitSelection | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [needsConfirmation, setNeedsConfirmation] = useState(false);
 
@@ -85,17 +91,18 @@ function LaunchDialogContent({
   const suggestedBase = prefill.data?.base ?? null;
   useEffect(() => {
     if (suggestedBase === null || baseTouched) return;
-    setBase(suggestedBase);
+    setBase({ sha: suggestedBase });
   }, [suggestedBase, baseTouched]);
 
-  const pick = (role: "base" | "comparison", sha: string): void => {
+  const pick = (role: "base" | "comparison", selection: CommitSelection): void => {
     setNeedsConfirmation(false);
     if (role === "base") {
-      setBase(sha);
+      setBase(selection);
+      setComparison(null);
       setBaseTouched(true);
       return;
     }
-    setComparison(sha);
+    setComparison(selection);
   };
 
   const create = useMutation({
@@ -106,8 +113,8 @@ function LaunchDialogContent({
           owner: repo.owner,
           repo: repo.repo,
           title: title.trim(),
-          base: base.trim(),
-          comparison: comparison.trim(),
+          base: base?.sha ?? "",
+          comparison: comparison?.sha ?? "",
           ...(confirm ? { confirm: true } : {}),
         }),
       });
@@ -140,12 +147,17 @@ function LaunchDialogContent({
     },
   });
 
-  const ready = title.trim() !== "" && base.trim() !== "" && comparison.trim() !== "";
+  const ready = title.trim() !== "" && base !== null && comparison !== null;
 
   return (
-    <Dialog.Content aria-describedby={undefined} maxWidth="560px" size={{ initial: "2", sm: "3" }}>
+    <Dialog.Content
+      aria-describedby={undefined}
+      maxWidth="720px"
+      size={{ initial: "2", sm: "3" }}
+      className="max-h-[calc(100dvh-2rem)] overflow-hidden"
+    >
       <form
-        className="flex min-h-0 flex-col gap-3"
+        className="flex max-h-[calc(100dvh-5rem)] min-h-0 flex-col gap-3"
         aria-busy={create.isPending}
         onSubmit={(event) => {
           event.preventDefault();
@@ -177,9 +189,11 @@ function LaunchDialogContent({
         <div className="flex flex-col gap-1">
           <Text as="span" size="2" weight="medium">已选</Text>
           <p className="text-base text-text-muted">
-            base {base === "" ? "尚未选择" : <code className="font-mono">{base.slice(0, 7)}</code>}
+            base {base === null ? "尚未选择" : <span className="break-all">{commitSelectionLabel(base)}</span>}
             ，比较项{" "}
-            {comparison === "" ? "尚未选择" : <code className="font-mono">{comparison.slice(0, 7)}</code>}
+            {comparison === null
+              ? "尚未选择"
+              : <span className="break-all">{commitSelectionLabel(comparison)}</span>}
           </p>
           {suggestedBase !== null && !baseTouched ? (
             <Text as="span" size="1" color="gray">
@@ -190,8 +204,8 @@ function LaunchDialogContent({
 
         <CommitPicker
           repo={repo}
-          base={base === "" ? null : base}
-          comparison={comparison === "" ? null : comparison}
+          base={base}
+          comparison={comparison}
           onPick={pick}
         />
 
@@ -204,7 +218,13 @@ function LaunchDialogContent({
           </p>
         )}
 
-        <Flex gap="3" mt="1" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
+        <Flex
+          gap="3"
+          mt="1"
+          justify="end"
+          direction={{ initial: "column-reverse", sm: "row" }}
+          className="shrink-0 bg-surface pt-2"
+        >
           <Dialog.Close>
             <Button type="button" variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>
               取消
