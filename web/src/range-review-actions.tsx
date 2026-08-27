@@ -2,7 +2,7 @@ import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-q
 import { useState } from "react";
 
 import { Cross2Icon } from "@radix-ui/react-icons";
-import { AlertDialog, Dialog, Flex, IconButton } from "@radix-ui/themes";
+import { AlertDialog, Badge, Dialog, Flex, IconButton, Text } from "@radix-ui/themes";
 
 import { Button } from "@/components/theme-button";
 
@@ -197,12 +197,12 @@ function AdvanceDialogContent({
   return (
     <Dialog.Content
       aria-describedby={undefined}
-      maxWidth="720px"
+      maxWidth="800px"
       size={{ initial: "2", sm: "3" }}
-      className="max-h-[calc(100dvh-2rem)] overflow-hidden"
+      className="h-[min(780px,calc(100dvh-4.5rem))] overflow-hidden p-0"
     >
       <form
-        className="flex max-h-[calc(100dvh-5rem)] min-h-0 flex-col gap-3"
+        className="flex h-full min-h-0 flex-col"
         aria-busy={advance.isPending}
         onSubmit={(event) => {
           event.preventDefault();
@@ -210,64 +210,87 @@ function AdvanceDialogContent({
           advance.mutate();
         }}
       >
-        <Dialog.Title size="4" mb="1" className="pr-9">推进比较项</Dialog.Title>
+        <div className="shrink-0 border-b border-overlay-line px-4 py-3 sm:px-5 sm:py-4">
+          <Flex gap="2" align="baseline" wrap="wrap" className="pr-10">
+            <Dialog.Title size="4" mb="0">推进比较项</Dialog.Title>
+            <Text as="span" size="2" color="gray" className="break-all">
+              {rangeReview.owner}/{rangeReview.repo}
+            </Text>
+          </Flex>
+        </div>
 
-        <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-1 text-base">
-          <dt className="text-text-secondary">base（锁定）</dt>
-          <dd className="min-w-0 font-mono">{rangeReview.baseSha.slice(0, 7)}</dd>
-          <dt className="text-text-secondary">当前比较项</dt>
-          <dd className="min-w-0 font-mono">{rangeReview.comparisonSha.slice(0, 7)}</dd>
-          <dt className="text-text-secondary">新的比较项</dt>
-          <dd className="min-w-0 break-all">
-            {comparison === null ? "尚未选择" : commitSelectionLabel(comparison)}
-          </dd>
-        </dl>
+        <div className="flex min-h-0 flex-1 flex-col gap-3 px-3 py-3 sm:px-5 sm:py-4">
+          <dl className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-3">
+            <div className="min-w-0 rounded-lg bg-sunken px-3 py-2">
+              <dt className="flex items-center gap-1.5 text-sm text-text-muted">
+                基准 <Badge color="gray" variant="soft">锁定</Badge>
+              </dt>
+              <dd className="mt-0.5 min-w-0 truncate font-mono text-base" title={rangeReview.baseSha}>
+                {rangeReview.baseSha.slice(0, 7)}
+              </dd>
+            </div>
+            <div className="min-w-0 rounded-lg bg-sunken px-3 py-2">
+              <dt className="text-sm text-text-muted">当前比较项</dt>
+              <dd className="mt-0.5 min-w-0 truncate font-mono text-base" title={rangeReview.comparisonSha}>
+                {rangeReview.comparisonSha.slice(0, 7)}
+              </dd>
+            </div>
+            <div className="col-span-2 min-w-0 rounded-lg bg-accent-tint px-3 py-2 sm:col-span-1">
+              <dt className="text-sm text-primary">新比较项</dt>
+              <dd
+                className="mt-0.5 min-w-0 truncate text-base"
+                title={comparison === null ? undefined : commitSelectionLabel(comparison)}
+              >
+                {comparison === null ? "待选择" : commitSelectionLabel(comparison)}
+              </dd>
+            </div>
+          </dl>
 
-        <CommitPicker
-          repo={{ owner: rangeReview.owner, repo: rangeReview.repo }}
-          base={{ sha: rangeReview.baseSha }}
-          comparison={comparison}
-          baseLocked
-          onPick={(_role, selection) => {
-            setError(null);
-            setComparison(selection);
-          }}
-        />
+          <CommitPicker
+            repo={{ owner: rangeReview.owner, repo: rangeReview.repo }}
+            base={{ sha: rangeReview.baseSha }}
+            comparison={comparison}
+            baseLocked
+            onPick={(_role, selection) => {
+              setError(null);
+              setComparison(selection);
+            }}
+          />
+        </div>
 
-        <p className="text-sm text-text-muted">
-          只能选择 base 的后代提交。推进后将基于 base 与新比较项启动一轮 Review Run。
-        </p>
-        {error === null ? null : <p role="alert" className="text-danger">{error}</p>}
-
-        <Flex
-          gap="3"
-          mt="1"
-          justify="end"
-          direction={{ initial: "column-reverse", sm: "row" }}
-          className="shrink-0 bg-surface pt-2"
-        >
-          <Dialog.Close>
-            <Button type="button" variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>
-              取消
-            </Button>
-          </Dialog.Close>
-          <Button
-            type="submit"
-            variant="solid"
-            className="shadow-accent"
-            size={{ initial: "4", sm: "2" }}
-            disabled={comparison === null || advance.isPending}
-          >
-            {advance.isPending ? "推进中…" : "推进"}
-          </Button>
-        </Flex>
+        <div className="shrink-0 border-t border-overlay-line bg-sunken px-4 py-3 sm:px-5">
+          {error === null ? null : (
+            <p role="alert" className="mb-2 break-words text-sm text-danger">{error}</p>
+          )}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+            <Text as="p" size="1" color="gray">
+              仅可选择基准的后代；推进后启动新一轮 Review Run。
+            </Text>
+            <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex">
+              <Dialog.Close>
+                <Button type="button" variant="soft" color="gray" size={{ initial: "3", sm: "2" }} className="min-h-11 w-full sm:min-h-0 sm:w-auto">
+                  取消
+                </Button>
+              </Dialog.Close>
+              <Button
+                type="submit"
+                variant="solid"
+                className="min-h-11 w-full shadow-accent sm:min-h-0 sm:w-auto"
+                size={{ initial: "3", sm: "2" }}
+                disabled={comparison === null || advance.isPending}
+              >
+                {advance.isPending ? "推进中…" : "推进"}
+              </Button>
+            </div>
+          </div>
+        </div>
       </form>
-      <div className="absolute top-3 right-3">
+      <div className="absolute top-2.5 right-2.5 sm:top-3.5 sm:right-3.5">
         <Dialog.Close>
           <IconButton
             variant="ghost"
             color="gray"
-            size={{ initial: "3", sm: "1" }}
+            size="3"
             className="max-sm:min-h-11 max-sm:min-w-11"
             aria-label="关闭推进比较项"
           >

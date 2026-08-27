@@ -9,7 +9,6 @@ import { Button } from "@/components/theme-button";
 import { api, errorText, fetchJson } from "./api.ts";
 import {
   CommitPicker,
-  commitSelectionLabel,
   type CommitSelection,
 } from "./commit-picker.tsx";
 
@@ -152,12 +151,12 @@ function LaunchDialogContent({
   return (
     <Dialog.Content
       aria-describedby={undefined}
-      maxWidth="720px"
+      maxWidth="800px"
       size={{ initial: "2", sm: "3" }}
-      className="max-h-[calc(100dvh-2rem)] overflow-hidden"
+      className="h-[min(780px,calc(100dvh-4.5rem))] overflow-hidden p-0"
     >
       <form
-        className="flex max-h-[calc(100dvh-5rem)] min-h-0 flex-col gap-3"
+        className="flex h-full min-h-0 flex-col"
         aria-busy={create.isPending}
         onSubmit={(event) => {
           event.preventDefault();
@@ -165,88 +164,80 @@ function LaunchDialogContent({
           create.mutate(needsConfirmation);
         }}
       >
-        <Dialog.Title size="4" mb="1" className="pr-9">发起范围审查</Dialog.Title>
+        <div className="shrink-0 border-b border-overlay-line px-4 py-3 sm:px-5 sm:py-4">
+          <Flex gap="2" align="baseline" wrap="wrap" className="pr-10">
+            <Dialog.Title size="4" mb="0">发起范围审查</Dialog.Title>
+            <Text as="span" size="2" color="gray" className="break-all">
+              {repo.owner}/{repo.repo}
+            </Text>
+          </Flex>
 
-        <p className="text-base text-text-muted">
-          仓库 {repo.owner}/{repo.repo}
-        </p>
-
-        <div className="flex flex-col gap-1.5">
-          <Text as="label" htmlFor="range-review-title" size="2" weight="medium">标题</Text>
-          <TextField.Root
-            id="range-review-title"
-            aria-describedby="range-review-title-help"
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder="例如：认证流程重构"
-            size={{ initial: "3", sm: "2" }}
-          />
-          <Text id="range-review-title-help" as="span" size="1" color="gray">
-            标题在范围审查发起后不可修改。
+          <div className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
+            <Text as="label" htmlFor="range-review-title" size="2" weight="medium">标题</Text>
+            <TextField.Root
+              id="range-review-title"
+              autoFocus
+              aria-describedby="range-review-title-help"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder="例如：认证流程重构"
+              size="3"
+              className="min-h-11"
+            />
+          </div>
+          <Text id="range-review-title-help" as="p" size="1" color="gray" className="mt-1 text-right">
+            发起后不可修改
+            {suggestedBase !== null && !baseTouched ? "；已沿用上次完成审查的最终比较项作为基准" : ""}
           </Text>
         </div>
 
-        <div className="flex flex-col gap-1">
-          <Text as="span" size="2" weight="medium">已选</Text>
-          <p className="text-base text-text-muted">
-            base {base === null ? "尚未选择" : <span className="break-all">{commitSelectionLabel(base)}</span>}
-            ，比较项{" "}
-            {comparison === null
-              ? "尚未选择"
-              : <span className="break-all">{commitSelectionLabel(comparison)}</span>}
-          </p>
-          {suggestedBase !== null && !baseTouched ? (
-            <Text as="span" size="1" color="gray">
-              base 已填入上一个审查完成的范围审查的最终比较项。
-            </Text>
-          ) : null}
+        <div className="flex min-h-0 flex-1 px-3 py-3 sm:px-5 sm:py-4">
+          <CommitPicker
+            repo={repo}
+            base={base}
+            comparison={comparison}
+            onPick={pick}
+          />
         </div>
 
-        <CommitPicker
-          repo={repo}
-          base={base}
-          comparison={comparison}
-          onPick={pick}
-        />
-
-        <p className="text-sm text-text-muted">
-          Finding 将发布到 Forge；范围审查不会合并代码。
-        </p>
-        {error === null ? null : (
-          <p role="alert" className={needsConfirmation ? "text-warning" : "text-danger"}>
-            {error}
-          </p>
-        )}
-
-        <Flex
-          gap="3"
-          mt="1"
-          justify="end"
-          direction={{ initial: "column-reverse", sm: "row" }}
-          className="shrink-0 bg-surface pt-2"
-        >
-          <Dialog.Close>
-            <Button type="button" variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>
-              取消
-            </Button>
-          </Dialog.Close>
-          <Button
-            type="submit"
-            variant="solid"
-            className="shadow-accent"
-            size={{ initial: "4", sm: "2" }}
-            disabled={!ready || create.isPending}
-          >
-            {create.isPending ? "发起中…" : needsConfirmation ? "仍然发起" : "发起"}
-          </Button>
-        </Flex>
+        <div className="shrink-0 border-t border-overlay-line bg-sunken px-4 py-3 sm:px-5">
+          {error === null ? null : (
+            <p
+              role="alert"
+              className={`mb-2 break-words text-sm ${needsConfirmation ? "text-warning" : "text-danger"}`}
+            >
+              {error}
+            </p>
+          )}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+            <Text as="p" size="1" color="gray">
+              Finding 发布到 Forge；范围审查不会合并代码。
+            </Text>
+            <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex">
+              <Dialog.Close>
+                <Button type="button" variant="soft" color="gray" size={{ initial: "3", sm: "2" }} className="min-h-11 w-full sm:min-h-0 sm:w-auto">
+                  取消
+                </Button>
+              </Dialog.Close>
+              <Button
+                type="submit"
+                variant="solid"
+                className="min-h-11 w-full shadow-accent sm:min-h-0 sm:w-auto"
+                size={{ initial: "3", sm: "2" }}
+                disabled={!ready || create.isPending}
+              >
+                {create.isPending ? "发起中…" : needsConfirmation ? "仍然发起" : "发起"}
+              </Button>
+            </div>
+          </div>
+        </div>
       </form>
-      <div className="absolute top-3 right-3">
+      <div className="absolute top-2.5 right-2.5 sm:top-3.5 sm:right-3.5">
         <Dialog.Close>
           <IconButton
             variant="ghost"
             color="gray"
-            size={{ initial: "3", sm: "1" }}
+            size="3"
             className="max-sm:min-h-11 max-sm:min-w-11"
             aria-label="关闭发起范围审查"
           >

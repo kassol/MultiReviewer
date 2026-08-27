@@ -261,48 +261,106 @@ function SelectionBadges({
   );
 }
 
+function PickerFilters({
+  filters,
+  legalContext,
+  onChange,
+}: {
+  filters: FilterState;
+  legalContext: boolean;
+  onChange: (patch: Partial<FilterState>) => void;
+}) {
+  return (
+    <>
+      <Select.Root
+        value={filters.datePreset}
+        onValueChange={(value) => onChange({ datePreset: value as DatePreset })}
+      >
+        <Select.Trigger aria-label="提交日期" className="min-h-11 w-full sm:min-h-10 sm:w-auto" />
+        <Select.Content>
+          <Select.Item value="all">不限日期</Select.Item>
+          <Select.Item value="7">最近 7 天</Select.Item>
+          <Select.Item value="30">最近 30 天</Select.Item>
+          <Select.Item value="90">最近 90 天</Select.Item>
+          <Select.Item value="custom">自定义日期</Select.Item>
+        </Select.Content>
+      </Select.Root>
+      <Select.Root
+        value={filters.merge}
+        onValueChange={(value) => onChange({ merge: value as MergeFilter })}
+      >
+        <Select.Trigger aria-label="合并提交筛选" className="min-h-11 w-full sm:min-h-10 sm:w-auto" />
+        <Select.Content>
+          <Select.Item value="all">全部提交</Select.Item>
+          <Select.Item value="only">仅合并提交</Select.Item>
+          <Select.Item value="non">排除合并提交</Select.Item>
+        </Select.Content>
+      </Select.Root>
+      {legalContext ? (
+        <Text as="label" size="2" className="flex min-h-11 cursor-pointer items-center gap-2 px-1 whitespace-nowrap">
+          <Checkbox
+            checked={filters.legalOnly}
+            onCheckedChange={(checked) => onChange({ legalOnly: checked === true })}
+          />
+          仅合法后代
+        </Text>
+      ) : null}
+    </>
+  );
+}
+
 function PickerResultRow({
   disabled,
+  selected,
   onClick,
   content,
   badges,
   metadata,
 }: {
   disabled: boolean;
+  selected: boolean;
   onClick: () => void;
   content: ReactNode;
   badges: ReactNode;
   metadata: ReactNode;
 }) {
   return (
-    <Button
-      type="button"
-      role="listitem"
-      variant="surface"
-      color="gray"
-      highContrast
-      disabled={disabled}
-      onClick={onClick}
-      className="h-auto min-h-16 w-full justify-start whitespace-normal px-3 py-2.5 text-left"
-    >
-      <Box className="w-full">
-        <Flex justify="between" gap="3" align="start">
-          <div className="min-w-0">{content}</div>
-          {badges}
-        </Flex>
-        <Flex gap="2" wrap="wrap" align="center" className="mt-1.5">
-          {metadata}
-        </Flex>
-      </Box>
-    </Button>
+    <li>
+      <Button
+        type="button"
+        variant="ghost"
+        color="gray"
+        highContrast
+        aria-disabled={disabled}
+        aria-pressed={selected}
+        onClick={() => {
+          if (!disabled) onClick();
+        }}
+        className={`m-0 h-auto min-h-16 w-full justify-start rounded-none whitespace-normal px-3 py-2.5 text-left focus-visible:z-10${
+          selected ? " bg-accent-tint hover:bg-accent-tint-strong" : " hover:bg-sunken"
+        }${disabled ? " cursor-not-allowed opacity-55" : ""}`}
+      >
+        <Box className="w-full">
+          <Flex justify="between" gap="3" align="start">
+            <div className="min-w-0">{content}</div>
+            {badges}
+          </Flex>
+          <Flex gap="2" wrap="wrap" align="center" className="mt-1.5">
+            {metadata}
+          </Flex>
+        </Box>
+      </Button>
+    </li>
   );
 }
 
 function ResultsSkeleton() {
   return (
-    <div className="space-y-2">
+    <div className="divide-y divide-overlay-line">
       {[0, 1, 2].map((index) => (
-        <Skeleton key={index} height="76px" />
+        <div key={index} className="px-3 py-2.5">
+          <Skeleton height="56px" />
+        </div>
       ))}
     </div>
   );
@@ -328,6 +386,7 @@ export function CommitPicker({
   const [refreshGeneration, setRefreshGeneration] = useState(0);
   const sourceLabelId = useId();
   const roleLabelId = useId();
+  const resultsLabelId = useId();
   const activeFilters = filters[mode];
   const debouncedBranchCommitSearch = useDebounced(filters.branch.search, 250);
   const debouncedTagSearch = useDebounced(filters.tag.search, 250);
@@ -427,10 +486,15 @@ export function CommitPicker({
     ? syncedBranches.data?.truncated ?? false
     : branchMatches.data?.truncated ?? false;
   const legalContext = role === "comparison" && base !== null;
-  const hasFilters = activeFilters.search.trim() !== ""
+  const hasExplicitFilters = activeFilters.search.trim() !== ""
     || activeFilters.datePreset !== "all"
-    || activeFilters.merge !== "all"
-    || (legalContext && activeFilters.legalOnly);
+    || activeFilters.merge !== "all";
+  const legalOnlyIsSoleFilter = legalContext && activeFilters.legalOnly && !hasExplicitFilters;
+  const hasFilters = hasExplicitFilters || (legalContext && activeFilters.legalOnly);
+  const secondaryFilterCount = Number(activeFilters.datePreset !== "all")
+    + Number(activeFilters.merge !== "all")
+    + Number(legalContext && activeFilters.legalOnly);
+  const rowCount = mode === "branch" ? commitRows.length : tagRows.length;
 
   function updateFilters(patch: Partial<FilterState>) {
     setFilters((current) => ({
@@ -463,138 +527,205 @@ export function CommitPicker({
     : tags.error);
 
   return (
-    <Box className="flex min-h-0 flex-1 flex-col gap-3">
-      <Flex gap="3" wrap="wrap" align="end">
-        <Box className="min-w-48 flex-1">
-          <Text id={sourceLabelId} as="div" size="1" color="gray" weight="medium" className="mb-1 block">
-            来源
+    <Box className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-overlay-line bg-surface">
+      {!baseLocked ? (
+        <div className="shrink-0 border-b border-overlay-line bg-sunken p-2.5">
+          <Text id={roleLabelId} as="div" size="1" color="gray" weight="medium" className="mb-1.5">
+            审查范围
           </Text>
-          <SegmentedControl.Root
-            aria-labelledby={sourceLabelId}
-            value={mode}
-            onValueChange={(value) => setMode(value as PickerMode)}
-            className="w-full"
-          >
-            <SegmentedControl.Item value="branch" className="flex-1">分支</SegmentedControl.Item>
-            <SegmentedControl.Item value="tag" className="flex-1">Tag</SegmentedControl.Item>
-          </SegmentedControl.Root>
-        </Box>
-        <Box className="min-w-48 flex-1">
-          <Text id={roleLabelId} as="div" size="1" color="gray" weight="medium" className="mb-1 block">
-            当前选择
-          </Text>
-          <SegmentedControl.Root
-            aria-labelledby={roleLabelId}
-            value={role}
-            onValueChange={(value) => {
-              if (value === "base" && baseLocked) return;
-              if (value === "comparison" && base === null) return;
-              setRole(value as CommitRole);
-            }}
-            className="w-full"
-          >
-            <SegmentedControl.Item
-              value="base"
-              aria-disabled={baseLocked}
-              className={`flex-1${baseLocked ? " pointer-events-none opacity-45" : ""}`}
+          <div role="group" aria-labelledby={roleLabelId} className="grid grid-cols-2 gap-2">
+            <Button
+              type="button"
+              variant={role === "base" ? "soft" : "ghost"}
+              color={role === "base" ? "blue" : "gray"}
+              aria-pressed={role === "base"}
+              onClick={() => setRole("base")}
+              className="h-auto min-h-14 min-w-0 justify-start whitespace-normal px-2.5 py-2 text-left"
             >
-              基准
-            </SegmentedControl.Item>
-            <SegmentedControl.Item
-              value="comparison"
-              aria-disabled={base === null}
-              className={`flex-1${base === null ? " pointer-events-none opacity-45" : ""}`}
+              <span className="min-w-0">
+                <span className="flex items-center gap-1.5 font-semibold">
+                  基准
+                  {base === null ? null : <Badge color="blue" variant="soft">已选</Badge>}
+                </span>
+                <span
+                  title={base === null ? undefined : commitSelectionLabel(base)}
+                  className="mt-0.5 block truncate text-sm text-text-muted"
+                >
+                  {base === null ? "选择审查起点" : commitSelectionLabel(base)}
+                </span>
+              </span>
+            </Button>
+            <Button
+              type="button"
+              variant={role === "comparison" ? "soft" : "ghost"}
+              color={role === "comparison" ? "blue" : "gray"}
+              aria-pressed={role === "comparison"}
+              disabled={base === null}
+              onClick={() => setRole("comparison")}
+              className="h-auto min-h-14 min-w-0 justify-start whitespace-normal px-2.5 py-2 text-left"
             >
-              比较项
-            </SegmentedControl.Item>
-          </SegmentedControl.Root>
-        </Box>
-        <Tooltip content="同步并刷新分支与 Tag">
-          <IconButton
-            type="button"
-            variant="soft"
-            color="gray"
+              <span className="min-w-0">
+                <span className="flex items-center gap-1.5 font-semibold">
+                  比较项
+                  {comparison === null ? null : <Badge color="green" variant="soft">已选</Badge>}
+                </span>
+                <span
+                  title={comparison === null ? undefined : commitSelectionLabel(comparison)}
+                  className="mt-0.5 block truncate text-sm text-text-muted"
+                >
+                  {base === null
+                    ? "先选择基准"
+                    : comparison === null
+                      ? "选择审查终点"
+                      : commitSelectionLabel(comparison)}
+                </span>
+              </span>
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="shrink-0 space-y-2 border-b border-overlay-line p-2.5 sm:p-3">
+        <Flex gap="2" align="center">
+          <Box className="w-32 shrink-0 sm:w-36">
+            <Text id={sourceLabelId} as="div" className="sr-only">
+              来源
+            </Text>
+            <SegmentedControl.Root
+              aria-labelledby={sourceLabelId}
+              value={mode}
+              onValueChange={(value) => setMode(value as PickerMode)}
+              className="min-h-11 w-full"
+            >
+              <SegmentedControl.Item value="branch" className="flex-1">分支</SegmentedControl.Item>
+              <SegmentedControl.Item value="tag" className="flex-1">Tag</SegmentedControl.Item>
+            </SegmentedControl.Root>
+          </Box>
+          <Box className="min-w-0 flex-1">
+            {mode === "branch" ? (
+              <BranchCombobox
+                branch={branch}
+                branches={branches}
+                search={branchSearch}
+                loading={branchOptionsLoading}
+                truncated={branchesTruncated}
+                onSearch={setBranchSearch}
+                onSelect={(value) => {
+                  setBrowsedBranch(value);
+                  setMissingBranch(undefined);
+                }}
+              />
+            ) : (
+              <Text as="p" size="2" color="gray" className="truncate px-1">
+                浏览仓库中已同步的 Tag
+              </Text>
+            )}
+          </Box>
+          <Tooltip content="同步并刷新分支与 Tag">
+            <IconButton
+              type="button"
+              variant="soft"
+              color="gray"
+              size="3"
+              className="min-h-11 min-w-11"
+              aria-label="刷新分支与 Tag"
+              disabled={syncedBranches.isFetching}
+              onClick={refreshRefs}
+            >
+              <ReloadIcon className={syncedBranches.isFetching ? "animate-spin" : ""} />
+            </IconButton>
+          </Tooltip>
+        </Flex>
+
+        <Flex gap="2" align="center">
+          <TextField.Root
+            value={activeFilters.search}
+            onChange={(event) => updateFilters({ search: event.currentTarget.value })}
+            placeholder={mode === "branch"
+              ? "搜索 SHA、提交信息或作者…"
+              : "搜索 Tag、SHA、提交信息或作者…"}
+            aria-label={mode === "branch" ? "搜索提交" : "搜索 Tag"}
+            autoFocus={baseLocked}
             size="3"
-            aria-label="刷新分支与 Tag"
-            disabled={syncedBranches.isFetching}
-            onClick={refreshRefs}
+            className="min-h-11 min-w-0 flex-1"
           >
-            <ReloadIcon className={syncedBranches.isFetching ? "animate-spin" : ""} />
-          </IconButton>
-        </Tooltip>
-      </Flex>
+            <TextField.Slot><MagnifyingGlassIcon /></TextField.Slot>
+          </TextField.Root>
 
-      {mode === "branch" ? (
-        <BranchCombobox
-          branch={branch}
-          branches={branches}
-          search={branchSearch}
-          loading={branchOptionsLoading}
-          truncated={branchesTruncated}
-          onSearch={setBranchSearch}
-          onSelect={(value) => {
-            setBrowsedBranch(value);
-            setMissingBranch(undefined);
-          }}
-        />
-      ) : null}
-
-      <TextField.Root
-        value={activeFilters.search}
-        onChange={(event) => updateFilters({ search: event.currentTarget.value })}
-        placeholder={mode === "branch"
-          ? "搜索 SHA、完整提交信息或作者…"
-          : "搜索 Tag、SHA、完整提交信息或作者…"}
-        aria-label={mode === "branch" ? "搜索提交" : "搜索 Tag"}
-        size="3"
-      >
-        <TextField.Slot><MagnifyingGlassIcon /></TextField.Slot>
-      </TextField.Root>
-
-      <Flex gap="2" wrap="wrap" align="center">
-        <Select.Root
-          value={activeFilters.datePreset}
-          onValueChange={(value) => updateFilters({ datePreset: value as DatePreset })}
-        >
-          <Select.Trigger aria-label="提交日期" className="min-h-10" />
-          <Select.Content>
-            <Select.Item value="all">不限日期</Select.Item>
-            <Select.Item value="7">最近 7 天</Select.Item>
-            <Select.Item value="30">最近 30 天</Select.Item>
-            <Select.Item value="90">最近 90 天</Select.Item>
-            <Select.Item value="custom">自定义日期</Select.Item>
-          </Select.Content>
-        </Select.Root>
-        <Select.Root
-          value={activeFilters.merge}
-          onValueChange={(value) => updateFilters({ merge: value as MergeFilter })}
-        >
-          <Select.Trigger aria-label="合并提交筛选" className="min-h-10" />
-          <Select.Content>
-            <Select.Item value="all">全部提交</Select.Item>
-            <Select.Item value="only">仅合并提交</Select.Item>
-            <Select.Item value="non">排除合并提交</Select.Item>
-          </Select.Content>
-        </Select.Root>
-        {legalContext ? (
-          <Text as="label" size="2" className="flex min-h-11 cursor-pointer items-center gap-2 px-1">
-            <Checkbox
-              checked={activeFilters.legalOnly}
-              onCheckedChange={(checked) => updateFilters({ legalOnly: checked === true })}
+          <div className="hidden items-center gap-2 sm:flex">
+            <PickerFilters
+              filters={activeFilters}
+              legalContext={legalContext}
+              onChange={updateFilters}
             />
-            仅合法后代
-          </Text>
+          </div>
+
+          <div className="sm:hidden">
+            <Popover.Root>
+              <Popover.Trigger>
+                <Button type="button" variant="soft" color="gray" className="min-h-11 whitespace-nowrap">
+                  筛选
+                  {secondaryFilterCount > 0 ? (
+                    <Badge color="blue" variant="soft" className="ml-1 tabular-nums">
+                      {secondaryFilterCount}
+                    </Badge>
+                  ) : null}
+                </Button>
+              </Popover.Trigger>
+              <Popover.Content
+                align="end"
+                sideOffset={6}
+                className="w-[min(20rem,calc(100vw-2rem))]"
+              >
+                <Text as="p" size="2" weight="bold" className="mb-2">筛选提交</Text>
+                <div className="space-y-2">
+                  <PickerFilters
+                    filters={activeFilters}
+                    legalContext={legalContext}
+                    onChange={updateFilters}
+                  />
+                  {activeFilters.datePreset === "custom" ? (
+                    <DateRangePicker
+                      value={activeFilters.customRange}
+                      onChange={(customRange) => updateFilters({ customRange })}
+                    />
+                  ) : null}
+                </div>
+              </Popover.Content>
+            </Popover.Root>
+          </div>
+        </Flex>
+
+        {activeFilters.datePreset === "custom" ? (
+          <div className="hidden sm:block">
+            <DateRangePicker
+              value={activeFilters.customRange}
+              onChange={(customRange) => updateFilters({ customRange })}
+            />
+          </div>
         ) : null}
-      </Flex>
+      </div>
 
-      {activeFilters.datePreset === "custom" ? (
-        <DateRangePicker
-          value={activeFilters.customRange}
-          onChange={(customRange) => updateFilters({ customRange })}
-        />
-      ) : null}
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-overlay-line bg-sunken px-3 py-2">
+        <Text id={resultsLabelId} as="span" size="2" weight="medium">
+          选择{role === "base" ? "基准" : "比较项"}
+        </Text>
+        <Text as="span" size="1" color="gray" className="tabular-nums">
+          {initialLoading ? "正在读取…" : `已加载 ${rowCount} 条`}
+        </Text>
+      </div>
+      <Text as="span" className="sr-only" aria-live="polite">
+        {initialLoading
+          ? `正在读取可选${mode === "branch" ? "提交" : "Tag"}`
+          : queryError !== null && queryError !== undefined
+            ? "可选提交读取失败"
+            : `已加载 ${rowCount} 条可选${mode === "branch" ? "提交" : "Tag"}`}
+      </Text>
 
-      <Box className="min-h-0 flex-1 overflow-y-auto pr-1" aria-live="polite">
+      <Box
+        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain"
+        aria-labelledby={resultsLabelId}
+      >
         {initialLoading ? <ResultsSkeleton /> : null}
         {queryError !== null && queryError !== undefined ? (
           <EmptyState
@@ -620,11 +751,27 @@ export function CommitPicker({
         {!initialLoading && queryError === null && mode === "branch" && commitRows.length === 0
           && branch !== null && branchExists.data === true ? (
             <EmptyState
-              title={hasFilters ? "筛选后没有结果" : "这条分支没有可选提交"}
-              description={hasFilters ? "调整筛选条件，或恢复默认筛选。" : "请改选其他分支。"}
-              {...(hasFilters
-                ? { action: <Button type="button" variant="soft" onClick={resetFilters}>重置筛选</Button> }
-                : {})}
+              title={legalOnlyIsSoleFilter
+                ? "没有合法后代"
+                : hasFilters
+                  ? "筛选后没有结果"
+                  : "这条分支没有可选提交"}
+              description={legalOnlyIsSoleFilter
+                ? "当前分支没有可选的合法后代；可查看全部提交以确认分支位置。"
+                : hasFilters
+                  ? "调整筛选条件，或恢复默认筛选。"
+                  : "请改选其他分支。"}
+              {...(legalOnlyIsSoleFilter
+                ? {
+                    action: (
+                      <Button type="button" variant="soft" onClick={() => updateFilters({ legalOnly: false })}>
+                        查看全部提交
+                      </Button>
+                    ),
+                  }
+                : hasFilters
+                  ? { action: <Button type="button" variant="soft" onClick={resetFilters}>重置筛选</Button> }
+                  : {})}
             />
           ) : null}
 
@@ -636,15 +783,23 @@ export function CommitPicker({
             />
           ) : (
             <EmptyState
-              title="筛选后没有结果"
-              description="调整筛选条件，或恢复默认筛选。"
-              action={<Button type="button" variant="soft" onClick={resetFilters}>重置筛选</Button>}
+              title={legalOnlyIsSoleFilter ? "没有合法后代" : "筛选后没有结果"}
+              description={legalOnlyIsSoleFilter
+                ? "没有 Tag 指向可选的合法后代；可查看全部 Tag 以确认范围。"
+                : "调整筛选条件，或恢复默认筛选。"}
+              action={legalOnlyIsSoleFilter
+                ? (
+                    <Button type="button" variant="soft" onClick={() => updateFilters({ legalOnly: false })}>
+                      查看全部 Tag
+                    </Button>
+                  )
+                : <Button type="button" variant="soft" onClick={resetFilters}>重置筛选</Button>}
             />
           )
         ) : null}
 
         {mode === "branch" && commitRows.length > 0 ? (
-          <div className="space-y-2" role="list" aria-label="提交列表">
+          <ul className="divide-y divide-overlay-line" aria-label="提交列表">
             {commitRows.map((commit) => {
               const blocked = role === "comparison"
                 && (base === null || commit.descendsFromBase === false);
@@ -652,6 +807,7 @@ export function CommitPicker({
                 <PickerResultRow
                   key={commit.sha}
                   disabled={blocked}
+                  selected={role === "base" ? commit.sha === base?.sha : commit.sha === comparison?.sha}
                   onClick={() => pick(
                     commit.sha,
                     branch === null ? undefined : { kind: "branch", name: branch },
@@ -683,17 +839,18 @@ export function CommitPicker({
                 />
               );
             })}
-          </div>
+          </ul>
         ) : null}
 
         {mode === "tag" && tagRows.length > 0 ? (
-          <div className="space-y-2" role="list" aria-label="Tag 列表">
+          <ul className="divide-y divide-overlay-line" aria-label="Tag 列表">
             {tagRows.map((tag) => {
               const blocked = role === "comparison" && (base === null || tag.descendsFromBase === false);
               return (
                 <PickerResultRow
                   key={tag.name}
                   disabled={blocked}
+                  selected={role === "base" ? tag.sha === base?.sha : tag.sha === comparison?.sha}
                   onClick={() => pick(
                     tag.sha,
                     { kind: "tag", name: tag.name },
@@ -732,7 +889,7 @@ export function CommitPicker({
                 />
               );
             })}
-          </div>
+          </ul>
         ) : null}
 
         {currentQuery.hasNextPage ? (
@@ -740,7 +897,7 @@ export function CommitPicker({
             type="button"
             variant="soft"
             color="gray"
-            className="mt-3 min-h-11 w-full"
+            className="m-3 min-h-11 w-[calc(100%-1.5rem)]"
             disabled={currentQuery.isFetchingNextPage}
             aria-busy={currentQuery.isFetchingNextPage}
             onClick={() => void currentQuery.fetchNextPage()}
