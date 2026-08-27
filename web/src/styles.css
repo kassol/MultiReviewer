@@ -453,7 +453,7 @@
  * （平板横屏、触屏笔记本），小号控件也保持 44px；鼠标桌面仍沿用紧凑尺寸。
  */
 @media (pointer: coarse) {
-  .radix-themes :where(.rt-Button, .rt-IconButton, .rt-TextFieldRoot, .rt-SelectTrigger) {
+  .radix-themes :where(.rt-Button, .rt-IconButton, .rt-TextFieldRoot, .rt-SelectTrigger, .rt-SegmentedControlItem) {
     min-height: 44px;
   }
 
