@@ -436,11 +436,11 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 ### 10.2 运行详情面板
 
-评审记录的运行详情是浮动面板，不是行内展开：桌面端 `md=768px` 起四边留 14px 悬浮在右侧，宽 920px（上限 `calc(100vw-28px)`），`--v8-radius-overlay` 圆角、`--v8-drawer-bg` + blur(40px) 材质、`--v8-shadow-overlay` 投影；窄屏改成 86dvh 的底部抽屉，列表上半屏保持可见，关闭与「重新运行」都落在拇指够得到的位置。面板装的是这一轮的完整 diff，宽度按一行代码定：464px 里一行要折三四次，而读 diff 的前提是一行就是一行。
+评审记录的运行详情是浮动面板，不是行内展开：桌面端 `md=768px` 起四边留 14px 悬浮在右侧，宽 920px（上限 `calc(100vw-28px)`），`--v8-radius-overlay` 圆角、`--v8-drawer-bg` + blur(40px) 材质、`--v8-shadow-overlay` 投影；窄屏改成 86dvh 的底部抽屉，列表上半屏保持可见，关闭与「重新运行」都落在拇指够得到的位置。面板装的是代码差异与审查证据，桌面宽度为代码保留足够上下文，窄屏则由代码列 soft wrap 适配可用宽度。
 
 面板内是文件列表加逐文件 diff：每个文件一张卡，卡头写路径、新增/修改/删除、`+N −M`（增走 `--v8-success`、删走 `--v8-danger`）与这个文件的发现数，点卡头展开或收起。diff 用 `font-mono text-xs` 的三列表格——旧行号、新行号、正文，新增行整行 `--v8-success-tint`、删除行整行 `--v8-danger-tint`，hunk 头走 `--v8-surface-sunken`。Finding 卡片插在它所指的那一行下面：已处置项划线加绿勾，未处置项带优先级徽章；模型失败原因整段摊在最上面的红色 Callout 里，不折叠。
 
-阶段详情使用同一浮层规格承载单条 Finding 的代码差异与单轮审查轨迹。Finding 列表入口使用 `FileTextIcon` 图标与动态可访问名称,Review Run 入口使用 `ReaderIcon` 加「审查轨迹」;界面不使用「看这处」「看这一轮」等依赖视觉上下文的动作名称。代码长行在 diff 容器内横向滚动,不折断代码,不把横向溢出传到页面。移动端关闭、Forge 外链、处置和 Reviewer 展开动作的触控区域至少 44px。该 Primitive Dialog 的 Portal 固定挂到 `PanelTheme` 内的 `#panel-portal`,确保 Themes 组件继承同一套颜色、字号和圆角变量。
+阶段详情使用同一浮层规格承载单条 Finding 的代码差异与单轮审查轨迹。Finding 列表入口使用 `FileTextIcon` 图标与动态可访问名称,Review Run 入口使用 `ReaderIcon` 加「审查轨迹」;界面不使用「看这处」「看这一轮」等依赖视觉上下文的动作名称。diff 的旧 / 新行号列固定,代码列按可用宽度 soft wrap；续行仍属于同一个逻辑行,不重复行号,缩进与空格保留,侧滑自身不产生横向滚动。移动端关闭、Forge 外链、处置和 Reviewer 展开动作的触控区域至少 44px。该 Primitive Dialog 的 Portal 固定挂到 `PanelTheme` 内的 `#panel-portal`,确保 Themes 组件继承同一套颜色、字号和圆角变量。
 
 ### 10.3 AlertDialog
 

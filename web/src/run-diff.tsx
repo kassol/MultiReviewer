@@ -418,13 +418,18 @@ export function FilePatch({
         </div>
       )}
       {hunks.length === 0 ? null : (
-        <div className="overflow-x-auto overscroll-x-contain">
-          <table className="w-max min-w-full border-collapse font-mono text-xs" aria-label={`${path} 的代码差异`}>
+        <div className="min-w-0">
+          <table className="w-full table-fixed border-collapse font-mono text-xs" aria-label={`${path} 的代码差异`}>
+            <colgroup>
+              <col className="w-10" />
+              <col className="w-10" />
+              <col />
+            </colgroup>
             <tbody>
               {hunks.map((hunk, hunkIndex) => (
                 <Fragment key={hunkIndex}>
                   <tr className="bg-sunken">
-                    <td colSpan={3} className="px-3 py-1 whitespace-pre text-text-secondary">
+                    <td colSpan={3} className="px-3 py-1 whitespace-pre-wrap break-words text-text-secondary">
                       {hunk.header}
                     </td>
                   </tr>
@@ -448,7 +453,7 @@ export function FilePatch({
                         <td className="w-10 px-1.5 text-right align-top tabular-nums text-text-secondary select-none">
                           {line.newLine ?? ""}
                         </td>
-                        <td className="px-2 align-top whitespace-pre text-text">
+                        <td className="px-2 align-top whitespace-pre-wrap break-words text-text">
                           <span className="select-none text-text-secondary">
                             {line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}
                           </span>
