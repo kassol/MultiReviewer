@@ -26,6 +26,7 @@ import type {
   Disposition,
   HistoryFinding,
   ReviewerUsage,
+  ReviewRule,
   ReviewVerdict,
   Severity,
 } from "./finding.ts";
@@ -485,6 +486,8 @@ const ADD_COLUMNS = [
   "ALTER TABLE finding ADD COLUMN line_author_name TEXT",
   "ALTER TABLE finding ADD COLUMN line_author_email TEXT",
   "ALTER TABLE finding ADD COLUMN line_author_at TEXT",
+  "ALTER TABLE review_run ADD COLUMN rule_set_version INTEGER",
+  "ALTER TABLE finding ADD COLUMN rule_id INTEGER",
 ];
 
 /**
@@ -605,6 +608,11 @@ export type RunMeta = {
   batchCount: number;
   /** 本轮固定的非秘密模型服务审计快照；没有 Reviewer 时显式传空数组。 */
   reviewerPins: readonly ReviewRunReviewerPin[];
+  /**
+   * 本轮冻结的规则集版本(CONTEXT.md 规则集版本,issue #204)。省略或 null 即这一轮
+   * 没有规则注入,回看历史轮次时也就知道当时没有规则可依。
+   */
+  ruleSetVersion?: number | null;
 };
 
 export type OutcomeRecord = {
@@ -658,6 +666,11 @@ export type FindingRecord = {
   commentHtmlUrl?: string;
   /** 行作者(CONTEXT.md),按本轮 head 判定;判不出来时不给,四列留 NULL。 */
   lineAuthor?: LineAuthor;
+  /**
+   * 模型自报、已经过校验的命中规则(issue #204)。只落库:本期不展示、不进指纹,
+   * 也不参与 Finding Identity 与合并去重。
+   */
+  ruleId?: number;
 };
 
 /** 一个合并组落成的那条 Forge 行级评论。发布之后才拿得到,因此与落库分成两步。 */
@@ -890,6 +903,13 @@ export type ReviewRunStoreSnapshot = Readonly<{
   reviewers: readonly ReviewerSpec[];
   maxChangedLinesPerBatch: number | null;
   modelServices: readonly ModelServiceRecord[];
+  /**
+   * 本轮要冻结的规则集版本(issue #204)。仓库还没确认过规则集时为 null。与模型服务
+   * 版本同律:这份快照一取出来就固定,之后的规则变更追不上已经开跑的这一轮。
+   */
+  ruleSetVersion: number | null;
+  /** 那一版的生效规则全体。按批次路由前的全集,空规则集给空数组。 */
+  rules: readonly ReviewRule[];
 }>;
 
 export type ModelReferenceLocation =
@@ -3003,11 +3023,21 @@ export function openStore(dbPath: string): Store {
           const service = store.getModelService(provider);
           return service === undefined ? [] : [service];
         });
+        const ruleSet = store.getRuleSet(repoId);
         db.exec("COMMIT");
         return {
           reviewers: Object.freeze([...reviewers]),
           maxChangedLinesPerBatch: settings.maxChangedLinesPerBatch,
           modelServices: Object.freeze(modelServices),
+          ruleSetVersion: ruleSet?.version ?? null,
+          // 注入只要标识、作用范围与那一句陈述;层标签是人给规则分组用的,不进模型输入。
+          rules: Object.freeze(
+            (ruleSet?.rules ?? []).map((rule) => ({
+              id: rule.id,
+              scope: rule.scope,
+              statement: rule.statement,
+            })),
+          ),
         };
       } catch (error) {
         db.exec("ROLLBACK");
@@ -3704,8 +3734,9 @@ export function openStore(dbPath: string): Store {
           .prepare(
             `INSERT INTO review_run
                (owner, repo, pull_number, head_sha, title, range_review_id, pr_state,
-                triggered_by, started_at, changed_files, changed_lines, batch_count)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                triggered_by, started_at, changed_files, changed_lines, batch_count,
+                rule_set_version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             meta.owner,
@@ -3720,6 +3751,7 @@ export function openStore(dbPath: string): Store {
             meta.changedFiles,
             meta.changedLines,
             meta.batchCount,
+            meta.ruleSetVersion ?? null,
           );
         const runId = Number(result.lastInsertRowid);
         const insertPin = db.prepare(
@@ -3797,8 +3829,9 @@ export function openStore(dbPath: string): Store {
              (run_id, file, line, title, severity, category, description,
               fingerprint, group_index, disposition, placement,
               comment_id, comment_html_url,
-              line_author_sha, line_author_name, line_author_email, line_author_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              line_author_sha, line_author_name, line_author_email, line_author_at,
+              rule_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         const insertAttribution = db.prepare(
           `INSERT INTO finding_attribution
@@ -3824,6 +3857,7 @@ export function openStore(dbPath: string): Store {
             finding.lineAuthor?.name ?? null,
             finding.lineAuthor?.email ?? null,
             finding.lineAuthor?.authoredAt ?? null,
+            finding.ruleId ?? null,
           );
           const findingId = Number(inserted.lastInsertRowid);
           for (const [position, said] of finding.attributions.entries()) {

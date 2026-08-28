@@ -671,6 +671,8 @@ async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<Re
     deps.buildReviewers(plans),
     snapshot.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
     plans.map(reviewerPin),
+    // 规则集与模型服务版本在同一次读事务里冻结(issue #204)。
+    { version: snapshot.ruleSetVersion, rules: snapshot.rules },
   );
 }
 

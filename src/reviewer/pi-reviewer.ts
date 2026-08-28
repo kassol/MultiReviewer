@@ -8,6 +8,7 @@ import type {
   RawFinding,
   ReviewIntent,
   ReviewRange,
+  ReviewRule,
   Reviewer,
   ReviewerEvent,
   ReviewerOutcome,
@@ -43,8 +44,8 @@ export type PiReviewerConfig = {
 export function createPiReviewer(config: PiReviewerConfig): Reviewer {
   return {
     model: modelIdentity({ provider: config.runtimeModel.provider, model: config.runtimeModel.id }),
-    review: (range, worktreePath, history, intent, onEvent) =>
-      runInChild(WORKER_PATH, config, range, worktreePath, history, intent, onEvent),
+    review: (range, worktreePath, history, intent, rules, onEvent) =>
+      runInChild(WORKER_PATH, config, range, worktreePath, history, intent, rules, onEvent),
   };
 }
 
@@ -61,6 +62,8 @@ export function runInChild(
   history: readonly HistoryFinding[] = [],
   /** 这一轮声称要做的事(issue #201)。取不到意图上下文的调用方不传。 */
   intent?: ReviewIntent,
+  /** 本批要按的评审规则(issue #204)。空规则集与不传等价。 */
+  rules: readonly ReviewRule[] = [],
   /** 子进程转发上来的过程事件的去处(issue #171)。不关心过程的调用方不传。 */
   onEvent: (event: ReviewerEvent) => void = () => {},
 ): Promise<ReviewerOutcome> {
@@ -70,6 +73,7 @@ export function runInChild(
       provider: config.runtimeModel.provider,
       model: config.runtimeModel.id,
     });
+    const ruleIds = new Set(rules.map((rule) => rule.id));
     const findings: Finding[] = [];
     const verdicts: FindingVerdict[] = [];
     const anomalies: { raw: RawFinding; reason: string }[] = [];
@@ -137,7 +141,8 @@ export function runInChild(
 
     child.on("message", (message: WorkerMessage) => {
       if (message.kind === "finding") {
-        const result = normalizeFinding(message.raw, identity);
+        // 模型自报的规则标识在这里校验:注入的这一批规则是它唯一的合法取值(issue #204)。
+        const result = normalizeFinding(message.raw, identity, ruleIds);
         if (result.ok) findings.push(result.finding);
         else anomalies.push({ raw: result.raw, reason: result.reason });
         return;
@@ -192,6 +197,8 @@ export function runInChild(
       worktreePath,
       history,
       ...(intent === undefined ? {} : { intent }),
+      // 空规则集不带这一项:子进程据此不渲染规则段,prompt 与没有规则集时逐字一致。
+      ...(rules.length === 0 ? {} : { rules }),
     };
     // 必须带 callback:子进程起不来时(例如工作副本目录不存在)投递会失败,
     // 没有 callback 时 Node 把 EPIPE 异步抛出去,try/catch 拦不住,

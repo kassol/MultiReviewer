@@ -81,7 +81,7 @@ process.on("message", () => {
 `);
 
   const events: ReviewerEvent[] = [];
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [], undefined, (event) =>
+  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [], undefined, [], (event) =>
     events.push(event),
   );
 
@@ -109,7 +109,7 @@ process.on("message", () => {
 `);
 
   const events: ReviewerEvent[] = [];
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [], undefined, (event) =>
+  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [], undefined, [], (event) =>
     events.push(event),
   );
 
@@ -418,4 +418,45 @@ process.on("message", (request) => {
   const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), history);
 
   assert.deepEqual(JSON.parse(outcome.findings[0]!.description), history);
+});
+
+test("本轮注入的评审规则原样进任务;空规则集不带这一项", async () => {
+  const path = worker(`
+process.on("message", (request) => {
+  process.send({
+    kind: "finding",
+    raw: { ...${JSON.stringify(RAW)}, description: JSON.stringify(request.rules ?? "absent") },
+  });
+  process.send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0 });
+  process.exit(0);
+});
+`);
+
+  const rules = [{ id: 5, scope: "src/**", statement: "src 下不写 any" }];
+  const injected = await runInChild(path, CONFIG, RANGE, tmpdir(), [], undefined, rules);
+  assert.deepEqual(JSON.parse(injected.findings[0]!.description), rules);
+
+  // 空规则集要与「这一票之前」逐字一致:任务里根本没有这一项,prompt 因此没有规则段。
+  const empty = await runInChild(path, CONFIG, RANGE, tmpdir(), [], undefined, []);
+  assert.equal(JSON.parse(empty.findings[0]!.description), "absent");
+});
+
+test("模型自报的规则标识经服务端校验后才成为 Finding 的一部分", async () => {
+  const path = worker(`
+process.on("message", () => {
+  process.send({ kind: "finding", raw: { ...${JSON.stringify(RAW)}, ruleId: 5 } });
+  process.send({ kind: "finding", raw: { ...${JSON.stringify(RAW)}, line: 9, ruleId: 404 } });
+  process.send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0 });
+  process.exit(0);
+});
+`);
+
+  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [], undefined, [
+    { id: 5, scope: "src/**", statement: "src 下不写 any" },
+  ]);
+
+  assert.deepEqual(
+    outcome.findings.map((finding) => finding.ruleId),
+    [5, undefined],
+  );
 });

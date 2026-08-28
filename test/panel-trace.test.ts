@@ -10,6 +10,7 @@ import type {
   HistoryFinding,
   ReviewIntent,
   ReviewRange,
+  ReviewRule,
   Reviewer,
   ReviewerEvent,
 } from "../src/review/finding.ts";
@@ -297,6 +298,7 @@ function pausedReviewer(model: string): Reviewer & {
       _worktreePath: string,
       _history: readonly HistoryFinding[],
       _intent?: ReviewIntent,
+      _rules?: readonly ReviewRule[],
       onEvent?: (event: ReviewerEvent) => void,
     ) => {
       emit = onEvent ?? (() => {});

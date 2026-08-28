@@ -98,6 +98,11 @@ export type Finding = {
   suggestion: string;
   /** 提出它的 Reviewer 所绑定的模型标识。 */
   model: string;
+  /**
+   * 模型自报命中的那条评审规则(issue #204),已经过服务端校验:只有本轮注入过的标识
+   * 留得下来。它只落库,不进内容指纹,不参与 Finding Identity 与合并去重。
+   */
+  ruleId?: number;
 };
 
 /** 一次 Review Run 覆盖的代码范围。`baseSha` 是 merge-base,不是 base 分支尖端。 */
@@ -127,6 +132,22 @@ export type ReviewIntent = {
 };
 
 /**
+ * 注入 Reviewer 的一条评审规则(CONTEXT.md 评审规则,issue #204)。取自本轮冻结的那个
+ * 规则集版本的快照,按批次路由:作用范围命中该批文件的,加上全仓库规则。
+ *
+ * `id` 是规则标识,模型报 Finding 时自报命中的就是它;`scope` 一并给出,否则模型无从
+ * 知道一条带作用范围的规则只管这一批里的哪些文件。层标签不注入:它是人给规则分组用的
+ * 标签,对判代码没有作用。
+ */
+export type ReviewRule = {
+  id: number;
+  /** 作用范围,glob;空串即全仓库。 */
+  scope: string;
+  /** 那一句规范陈述。 */
+  statement: string;
+};
+
+/**
  * Reviewer 经 `report_finding` 报出的、尚未归一化的条目。
  *
  * `severity` 与 `category` 是宽松字符串:用字面量联合强制时模型会自造词汇导致调用
@@ -146,6 +167,8 @@ export type RawFinding = {
   description: string;
   impact: string;
   suggestion: string;
+  /** 模型自报命中的那条规则的标识(issue #204)。没有命中任何规则时不给。 */
+  ruleId?: number;
 };
 
 /** 一个 Reviewer 一次执行的 token 用量。运行诊断信息,不折算金额。 */
@@ -231,6 +254,10 @@ export interface Reviewer {
    * `intent` 是这一轮声称要做的事(issue #201),每一批也都给同一份:它说的是整个
    * Review Range 的意图,与本批审哪些文件无关。取不到意图上下文的调用方不传。
    *
+   * `rules` 是本轮冻结的规则集版本里、作用范围命中这一批文件的评审规则,加上全仓库
+   * 规则(issue #204)。它与 `history`、`intent` 不同,每一批各给各的——规则按作用范围
+   * 路由,一条只管某个目录的规则不该进不含那个目录的批次。空规则集给空数组。
+   *
    * `onEvent` 收这个 Reviewer 的过程事件(issue #171),编排层一定传,一条即写一条轨迹。
    * 声明成可选是给直接调 `review` 的调用方留的余地:不看过程的地方不必造一个空回调。
    */
@@ -239,6 +266,7 @@ export interface Reviewer {
     worktreePath: string,
     history: readonly HistoryFinding[],
     intent?: ReviewIntent,
+    rules?: readonly ReviewRule[],
     onEvent?: (event: ReviewerEvent) => void,
   ): Promise<ReviewerOutcome>;
 }

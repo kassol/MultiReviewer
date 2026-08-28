@@ -8,6 +8,7 @@ import {
   createReviewRunPlan,
   INTENT_BODY_CHARS,
   INTENT_COMMIT_LIMIT,
+  rulesForBatch,
   runReview,
 } from "../src/review/run.ts";
 import {
@@ -716,4 +717,97 @@ test("意图上下文过长时正文保头部、commit 列表按条数截断", a
   assert.equal(intent.omittedCommits, 2);
   // 留下的是最新的那些:被砍掉的是区间里最早的两条。
   assert.match(intent.commits[0]!, new RegExp(`第 ${INTENT_COMMIT_LIMIT + 1} 次迭代`));
+});
+
+test("作用范围的 glob 语义:* 不跨目录,** 跨任意层且可为零层", () => {
+  const cases: [string, string, boolean][] = [
+    // 空作用范围即全仓库,任何文件都命中。
+    ["", "src/a.ts", true],
+    ["src/a.ts", "src/a.ts", true],
+    ["src/a.ts", "src/b.ts", false],
+    ["src/*.ts", "src/a.ts", true],
+    ["src/*.ts", "src/deep/a.ts", false],
+    ["src/**/*.ts", "src/a.ts", true],
+    ["src/**/*.ts", "src/deep/more/a.ts", true],
+    ["src/**", "src/deep/a.ts", true],
+    ["src/**", "srcx/a.ts", false],
+    ["**/*.test.ts", "a.test.ts", true],
+    ["**/*.test.ts", "test/a.test.ts", true],
+    ["*.ts", "a.ts", true],
+    ["*.ts", "src/a.ts", false],
+    // 正则元字符按字面量处理,不当模式解释。
+    ["src/a+b.ts", "src/a+b.ts", true],
+    ["src/a.ts", "srcXa.ts", false],
+  ];
+
+  for (const [scope, file, expected] of cases) {
+    assert.equal(
+      rulesForBatch([{ id: 1, scope, statement: "s" }], [file]).length === 1,
+      expected,
+      `作用范围 ${scope} 对 ${file} 的判定不对`,
+    );
+  }
+});
+
+test("Review Run 记下开跑时冻结的规则集版本,Finding 记下模型自报的命中规则", async () => {
+  const { cache, db, forge } = setup(6);
+  const reviewer = scriptedReviewer("stub-model", [
+    {
+      file: "src/calc.ts",
+      line: 6,
+      severity: "P0",
+      category: "bug",
+      description: "sub() 多减了 1",
+      ruleId: 9,
+    },
+  ]);
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    {
+      forge: forge.forge,
+      reviewers: [reviewer],
+      cacheDir: cache.dir,
+      dbPath: db.path,
+      ruleSetVersion: 4,
+      rules: [{ id: 9, scope: "", statement: "减法不许多减" }],
+    },
+  );
+
+  assert.deepEqual(reviewer.calls[0]!.rules, [
+    { id: 9, scope: "", statement: "减法不许多减" },
+  ]);
+
+  const db2 = new DatabaseSync(db.path, { readOnly: true });
+  try {
+    assert.equal(
+      db2.prepare("SELECT rule_set_version FROM review_run").get()!["rule_set_version"],
+      4,
+    );
+    assert.equal(db2.prepare("SELECT rule_id FROM finding ORDER BY id").get()!["rule_id"], 9);
+  } finally {
+    db2.close();
+  }
+});
+
+test("空规则集时不注入规则,Review Run 不记规则集版本", async () => {
+  const { cache, db, forge, reviewer } = setup(6);
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+  );
+
+  assert.deepEqual(reviewer.calls[0]!.rules, []);
+
+  const db2 = new DatabaseSync(db.path, { readOnly: true });
+  try {
+    assert.equal(
+      db2.prepare("SELECT rule_set_version FROM review_run").get()!["rule_set_version"],
+      null,
+    );
+    assert.equal(db2.prepare("SELECT rule_id FROM finding ORDER BY id").get()!["rule_id"], null);
+  } finally {
+    db2.close();
+  }
 });

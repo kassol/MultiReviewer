@@ -488,3 +488,37 @@ test("没有 rule:write 的人写不动规则,分配外的仓库同形 404", asy
     `没有 repo id 为 ${beta} 的注册仓库`,
   );
 });
+
+test("Review Run 的启动快照冻结规则集版本与当时那组规则,之后的变更不追上来", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  try {
+    assert.equal(
+      store.registerRepo({ repoId: 91, owner: "acme", repo: "frozen", generation: 1, key: "k" }),
+      true,
+    );
+    assert.equal(
+      store.addReviewRule(91, { scope: "src/**", statement: "src 下不写 any", layer: "工程" }),
+      2,
+    );
+
+    const snapshot = store.getReviewRunSnapshot(91);
+    assert.equal(snapshot.ruleSetVersion, 2);
+    assert.deepEqual(
+      snapshot.rules.map((rule) => [rule.scope, rule.statement]),
+      [["src/**", "src 下不写 any"]],
+    );
+
+    // 已开跑的那一轮拿着上面这份快照跑完,规则集在它跑的过程中变了也不跟。
+    assert.equal(store.addReviewRule(91, { scope: "", statement: "新规则", layer: "工程" }), 3);
+    assert.equal(snapshot.ruleSetVersion, 2);
+    assert.equal(snapshot.rules.length, 1);
+
+    const next = store.getReviewRunSnapshot(91);
+    assert.equal(next.ruleSetVersion, 3);
+    assert.equal(next.rules.length, 2);
+  } finally {
+    store.close();
+  }
+});

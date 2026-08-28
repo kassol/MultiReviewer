@@ -65,6 +65,11 @@ export type MergedFinding = {
   suggestion: string;
   /** 每个模型各自的说法,按首报先后。 */
   attributions: FindingAttribution[];
+  /**
+   * 组内首个自报了命中规则的成员给的那个标识(issue #204)。命中规则说的是「这一处问题
+   * 违反了哪条规则」,与谁报出无关,因此不逐模型记,也不参与合并判定。
+   */
+  ruleId?: number;
   /** 这一组为什么被合并(issue #171)。只有一个成员即没有合并过,这一项缺省。 */
   merge?: MergeEvidence;
 };
@@ -273,6 +278,10 @@ function mergeGroup(
     }
   }
 
+  // 按首报先后取第一个给出命中规则的成员:模型自报是稀疏的,取代表段那条会让一组里
+  // 唯一报出规则的那个模型的自报白丢。
+  const ruleId = group.find((finding) => finding.ruleId !== undefined)?.ruleId;
+
   return {
     file,
     // 取组内最小行号:偏保守,评论落在问题起始处而非中段。
@@ -286,6 +295,7 @@ function mergeGroup(
     impact: leading.impact,
     suggestion: leading.suggestion,
     attributions,
+    ...(ruleId === undefined ? {} : { ruleId }),
     // 只有一个成员的组没有合并过,不产生合并事件(issue #171 的用户故事 10)。
     ...(group.length === 1
       ? {}

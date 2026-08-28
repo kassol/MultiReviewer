@@ -52,7 +52,18 @@ function canonical(value: string): string {
   return value.trim().toLowerCase().replace(/[\s-]+/g, "_");
 }
 
-export function normalizeFinding(raw: RawFinding, model: string): NormalizeResult {
+/**
+ * 归一化一条报出的 Finding。
+ *
+ * `ruleIds` 是本轮注入给这个 Reviewer 的规则标识(issue #204)。模型自报的标识在这里
+ * 校验:对不上就置空,条目本身照收——命中哪条规则是附加信息,报错一条真实的问题不该
+ * 因为它把标识记岔而整条丢掉。不传即这一批一条规则都没注入,任何标识都对不上。
+ */
+export function normalizeFinding(
+  raw: RawFinding,
+  model: string,
+  ruleIds: ReadonlySet<number> = new Set(),
+): NormalizeResult {
   if (typeof raw.file !== "string" || raw.file.trim() === "") {
     return { ok: false, reason: "file 为空", raw };
   }
@@ -86,6 +97,9 @@ export function normalizeFinding(raw: RawFinding, model: string): NormalizeResul
       impact: typeof raw.impact === "string" ? raw.impact.trim() : "",
       suggestion: typeof raw.suggestion === "string" ? raw.suggestion.trim() : "",
       model,
+      ...(typeof raw.ruleId === "number" && ruleIds.has(raw.ruleId)
+        ? { ruleId: raw.ruleId }
+        : {}),
     },
   };
 }

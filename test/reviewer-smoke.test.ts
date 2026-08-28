@@ -91,6 +91,7 @@ test("真实模型经 report_finding 产出结构完整的 Finding", { skip }, a
     FIXTURE,
     [],
     undefined,
+    [],
     (event) => events.push(event),
   );
 

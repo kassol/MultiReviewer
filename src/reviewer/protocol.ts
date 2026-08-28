@@ -3,6 +3,7 @@ import type {
   RawVerdict,
   ReviewIntent,
   ReviewRange,
+  ReviewRule,
   ReviewerEvent,
   ReviewerUsage,
 } from "../review/finding.ts";
@@ -19,6 +20,11 @@ export type ReviewerRequest = {
   history: readonly HistoryFinding[];
   /** 这一轮声称要做的事(issue #201)。取不到意图上下文时不带。 */
   intent?: ReviewIntent;
+  /**
+   * 本批要按的评审规则(issue #204):本轮冻结的规则集版本里,作用范围命中这一批文件的
+   * 那些,加上全仓库规则。空规则集不带这一项,prompt 因此与没有规则集时逐字一致。
+   */
+  rules?: readonly ReviewRule[];
 };
 
 /**

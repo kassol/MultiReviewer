@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { anchorVerdict } from "../src/reviewer/anchor.ts";
 import { normalizeFinding, normalizeVerdict } from "../src/reviewer/normalize.ts";
 import { redactModelCredential, reviewerEnv } from "../src/reviewer/env.ts";
+import { reviewPrompt } from "../src/reviewer/worker.ts";
 
 const RAW = {
   file: "src/db.js",
@@ -189,4 +190,54 @@ test("子进程失败文本回传前抹掉本轮模型凭据", () => {
   );
   assert.equal(failure.includes(credential), false);
   assert.equal(failure, "request with Bearer [REDACTED] failed; credential=[REDACTED]");
+});
+
+const PROMPT_RANGE = { baseSha: "aaa", headSha: "bbb", files: ["src/a.ts"] };
+
+test("空规则集不渲染规则段,prompt 与没有规则集时逐字一致", () => {
+  const withoutRules = reviewPrompt({ range: PROMPT_RANGE, history: [] });
+  const withEmptyRules = reviewPrompt({ range: PROMPT_RANGE, history: [], rules: [] });
+
+  assert.equal(withEmptyRules, withoutRules);
+  assert.equal(/rule/i.test(withoutRules), false);
+});
+
+test("注入的评审规则进 prompt,每条带标识与作用范围", () => {
+  const prompt = reviewPrompt({
+    range: PROMPT_RANGE,
+    history: [],
+    rules: [
+      { id: 7, scope: "", statement: "对外接口的入参一律在边界处校验" },
+      { id: 9, scope: "src/**/*.ts", statement: "禁止在 src 下写 any" },
+    ],
+  });
+
+  assert.match(prompt, /\[7\]/);
+  assert.match(prompt, /对外接口的入参一律在边界处校验/);
+  assert.match(prompt, /\[9\]/);
+  assert.match(prompt, /src\/\*\*\/\*\.ts/);
+  assert.match(prompt, /禁止在 src 下写 any/);
+  // 规则标识是模型自报命中的凭据,prompt 必须说清它要怎么带回来。
+  assert.match(prompt, /ruleId/);
+});
+
+test("模型自报的规则标识经服务端校验:本轮注入过的留下,对不上的置空", () => {
+  const injected = new Set([7, 9]);
+
+  const hit = normalizeFinding({ ...RAW, ruleId: 9 }, "m", injected);
+  assert.equal(hit.ok, true);
+  if (hit.ok) assert.equal(hit.finding.ruleId, 9);
+
+  // 编出来的标识不落库:命中统计要能当证据用,不能收模型的臆造。
+  const invented = normalizeFinding({ ...RAW, ruleId: 42 }, "m", injected);
+  assert.equal(invented.ok, true);
+  if (invented.ok) assert.equal(invented.finding.ruleId, undefined);
+
+  // 一条规则都没注入时,任何标识都对不上。
+  const noRules = normalizeFinding({ ...RAW, ruleId: 9 }, "m");
+  assert.equal(noRules.ok, true);
+  if (noRules.ok) assert.equal(noRules.finding.ruleId, undefined);
+
+  // 规则标识不参与 Finding 的取舍:对不上只置空,条目本身照收。
+  assert.equal(normalizeFinding(RAW, "m", injected).ok, true);
 });

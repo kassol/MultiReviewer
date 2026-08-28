@@ -17,7 +17,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import type { HistoryFinding, RawFinding, ReviewIntent } from "../review/finding.ts";
+import type {
+  HistoryFinding,
+  RawFinding,
+  ReviewIntent,
+  ReviewRule,
+} from "../review/finding.ts";
 import { anchorReport, anchorVerdict } from "./anchor.ts";
 import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, redactModelCredential } from "./env.ts";
 import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
@@ -53,7 +58,7 @@ When the prompt lists findings reported earlier in this review stage, call revie
  * 罗列时模型会自造词汇,Pi 逐条拒绝,而模型连续收到校验错误也不改正,正确的
  * Finding 因此全部丢失。宽松字符串加服务端归一化是配套的另一半。
  */
-const findingSchema = Type.Object({
+const FINDING_FIELDS = {
   file: Type.String({ description: "Repository-relative path of the file" }),
   line: Type.Integer({
     description:
@@ -83,6 +88,22 @@ const findingSchema = Type.Object({
   suggestion: Type.String({
     description: "How to fix it, written in Chinese",
   }),
+};
+
+const findingSchema = Type.Object(FINDING_FIELDS);
+
+/**
+ * 注入过评审规则的那一批才多这一个字段(issue #204)。空规则集下工具的形状与这一票
+ * 之前逐字一致:没有规则可命中时留着一个规则标识字段,只会请模型编一个填进来。
+ */
+const findingWithRuleSchema = Type.Object({
+  ...FINDING_FIELDS,
+  ruleId: Type.Optional(
+    Type.Integer({
+      description:
+        "Only when this problem violates one of the review rules listed in the prompt: the id of that rule, copied from its [id] prefix. Leave it out otherwise — never invent an id.",
+    }),
+  ),
 });
 
 /** 复核结论的枚举同样写在字段自己的 description 里,理由同 findingSchema。 */
@@ -191,13 +212,40 @@ function intentSection(intent: ReviewIntent): string {
   return lines.join("\n");
 }
 
-function reviewPrompt(request: ReviewerRequest): string {
+/** 一条规则:标识在最前,模型自报命中时抄的就是它;作用范围空串即全仓库。 */
+function ruleBullet(rule: ReviewRule): string {
+  const scope = rule.scope === "" ? "whole repository" : rule.scope;
+  return `- [${rule.id}] (${scope}) ${rule.statement}`;
+}
+
+/**
+ * 这个仓库既定的评审规则(issue #204)。它是团队定下的标准,不是模型的临场判断:
+ * 违反规则的地方优先按规则判,规则没覆盖到的照常自行判断。
+ */
+function rulesSection(rules: readonly ReviewRule[]): string {
+  return [
+    "",
+    "This repository has an agreed set of review rules. Judge the code against them first: code that violates one of them is a finding, whatever you would have thought of it otherwise. They do not narrow your review — report problems they do not cover as usual.",
+    "Each rule is listed with its id in brackets and the paths it applies to in parentheses. When a finding violates one of these rules, pass that rule's id as ruleId in report_finding. Never invent an id, and leave the field out when no rule applies.",
+    "",
+    ...rules.map(ruleBullet),
+  ].join("\n");
+}
+
+export function reviewPrompt(
+  request: Pick<ReviewerRequest, "range" | "history" | "intent" | "rules">,
+): string {
   const files = request.range.files.map((f) => `- ${f}`).join("\n");
   const history =
     request.history.length === 0 ? "" : `\n${historySection(request.history)}\n`;
   const intent = request.intent === undefined ? "" : `${intentSection(request.intent)}\n`;
+  // 空规则集与没有规则集同一条路径:两者都不渲染规则段。
+  const rules =
+    request.rules === undefined || request.rules.length === 0
+      ? ""
+      : `${rulesSection(request.rules)}\n`;
   return `Review the changes between commit ${request.range.baseSha} and commit ${request.range.headSha}.
-${intent}
+${intent}${rules}
 The following files changed. Review the changes in them, using the rest of the repository as context:
 
 ${files}
@@ -223,6 +271,7 @@ function fileLines(worktreePath: string, file: string): string[] | undefined {
 }
 
 async function run(request: ReviewerRequest): Promise<void> {
+  const hasRules = request.rules !== undefined && request.rules.length > 0;
   let rejectedToolCalls = 0;
   /**
    * 锚定打回的那几次调用,按 toolCallId 记(issue #187)。它同时是两样东西:收尾事件
@@ -235,7 +284,7 @@ async function run(request: ReviewerRequest): Promise<void> {
     name: REPORT_FINDING_TOOL,
     label: "Report Finding",
     description: "Report one problem found in the code under review.",
-    parameters: findingSchema,
+    parameters: hasRules ? findingWithRuleSchema : findingSchema,
     execute: async (id, params) => {
       const raw = params as RawFinding;
       const result = anchorReport(fileLines(request.worktreePath, raw.file), raw);

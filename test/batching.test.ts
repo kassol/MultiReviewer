@@ -423,3 +423,32 @@ test("新增行以 `++ ` 起头时不被读成文件头,该文件的规模照常
   assert.equal(run["changed_lines"], 120);
   assert.equal(run["batch_count"], 2);
 });
+
+test("每批只注入 glob 命中该批文件的规则,全仓库规则每批都给", async () => {
+  const { cache, db, forge } = setup({ "src/a.ts": 60, "src/b.ts": 30, "src/c.ts": 60 });
+  const reviewer = scriptedReviewer("model-a", []);
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [reviewer],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    maxChangedLinesPerBatch: 100,
+    ruleSetVersion: 3,
+    rules: [
+      { id: 1, scope: "", statement: "改动要带测试" },
+      { id: 2, scope: "src/a.ts", statement: "a 里不写 any" },
+      { id: 3, scope: "src/c.*", statement: "c 里不写 console" },
+      { id: 4, scope: "docs/**", statement: "文档要跟着改" },
+    ],
+  });
+
+  // a(60)+b(30) 是第一批,c 自成第二批。规则跟着批次里的文件走,一条都不该串批。
+  assert.deepEqual(
+    reviewer.calls.map((call) => call.rules.map((rule) => rule.id)),
+    [
+      [1, 2],
+      [1, 3],
+    ],
+  );
+});

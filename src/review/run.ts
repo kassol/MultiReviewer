@@ -33,6 +33,7 @@ import type {
   ReviewIntent,
   Reviewer,
   ReviewerOutcome,
+  ReviewRule,
   Severity,
 } from "./finding.ts";
 import {
@@ -69,6 +70,10 @@ export type ReviewRunPlan = Readonly<{
   reviewers: readonly Reviewer[];
   maxChangedLinesPerBatch: number;
   reviewerPins: readonly ReviewRunReviewerPin[];
+  /** 本轮冻结的规则集版本(issue #204)。仓库还没确认过规则集时为 null。 */
+  ruleSetVersion: number | null;
+  /** 那一版的生效规则全体,按批次路由前的全集。 */
+  rules: readonly ReviewRule[];
 }>;
 
 /** 从启动时的配置快照生成一次运行计划。复制 Reviewer 列表,使组合的后续改动只影响下一轮。 */
@@ -76,11 +81,18 @@ export function createReviewRunPlan(
   reviewers: readonly Reviewer[],
   maxChangedLinesPerBatch: number,
   reviewerPins: readonly ReviewRunReviewerPin[],
+  /** 本轮冻结的规则集(issue #204)。规则与模型服务版本同律,一并在开跑前定死。 */
+  ruleSet: { version: number | null; rules: readonly ReviewRule[] } = {
+    version: null,
+    rules: [],
+  },
 ): ReviewRunPlan {
   return Object.freeze({
     reviewers: Object.freeze([...reviewers]),
     maxChangedLinesPerBatch,
     reviewerPins: Object.freeze([...reviewerPins]),
+    ruleSetVersion: ruleSet.version,
+    rules: Object.freeze([...ruleSet.rules]),
   });
 }
 
@@ -99,6 +111,10 @@ export type ReviewRunDeps = {
   triggeredBy?: string;
   /** 这一轮归属的范围审查;PR 触发不传(ADR 0012)。 */
   rangeReviewId?: number;
+  /** 本轮冻结的规则集版本(issue #204)。不传即这一轮没有规则可依。 */
+  ruleSetVersion?: number | null;
+  /** 本轮冻结的那一版规则全体。不传即空规则集,注入与这一票之前逐字一致。 */
+  rules?: readonly ReviewRule[];
 };
 
 export type ReviewRunResult = {
@@ -946,6 +962,58 @@ async function readIntent(
 }
 
 /**
+ * 作用范围的 glob 编译成正则。语义只有两个通配符,面板侧将来按同一套解释:
+ *
+ * - `*` 匹配一段路径内的任意字符,不跨目录分隔符;
+ * - `**` 匹配任意层目录,后面紧跟目录分隔符时那一层可以为零层。写作
+ *   `src/`+`**`+`/*.ts` 的规则因此也命中 `src/a.ts`——不这样处理的话最常见的那种
+ *   写法反而漏掉直接子文件。
+ *
+ * 其余字符一律按字面量,正则元字符先转义:作用范围是人手写的路径,不是正则。
+ */
+function scopePattern(scope: string): RegExp {
+  let source = "";
+  for (let index = 0; index < scope.length; ) {
+    const char = scope[index]!;
+    if (char !== "*") {
+      source += char.replace(/[.*+?^${}()|[\]\\]/, "\\$&");
+      index += 1;
+      continue;
+    }
+    if (scope[index + 1] !== "*") {
+      source += "[^/]*";
+      index += 1;
+      continue;
+    }
+    if (scope[index + 2] === "/") {
+      source += "(?:.*/)?";
+      index += 3;
+      continue;
+    }
+    source += ".*";
+    index += 2;
+  }
+  return new RegExp(`^${source}$`);
+}
+
+/**
+ * 这一批要注入的评审规则(issue #204):作用范围命中该批任一文件的,加上全仓库规则。
+ *
+ * 全仓库规则不看文件:空作用范围就是「这个仓库的每一处都算」,末批为空文件集时同样给。
+ * 保持传入顺序,规则在各批之间的呈现次序因此稳定。
+ */
+export function rulesForBatch(
+  rules: readonly ReviewRule[],
+  files: readonly string[],
+): readonly ReviewRule[] {
+  return rules.filter((rule) => {
+    if (rule.scope === "") return true;
+    const pattern = scopePattern(rule.scope);
+    return files.some((file) => pattern.test(file));
+  });
+}
+
+/**
  * 一次 Review Run:解析 Review Range、准备工作副本、运行 Reviewer、发布 review 评论。
  */
 export async function runReview(
@@ -1016,6 +1084,9 @@ export async function runReview(
     changedLines: [...changedLines.values()].reduce((sum, n) => sum + n, 0),
     batchCount: batches.length,
     reviewerPins: deps.reviewerPins ?? [],
+    // 规则集版本在这里定死(issue #204):这一轮之后的规则变更追不上已经开跑的它,
+    // 回看历史轮次时也就知道当时按的是哪一版。
+    ruleSetVersion: deps.ruleSetVersion ?? null,
   });
 
   // 一有 runId 就可以接受订阅(ADR 0017):面板打开进行中的轮次时要能接上实时推送,
@@ -1074,6 +1145,9 @@ export async function runReview(
     for (const [index, files] of batches.entries()) {
       // 批次序号从 1 起,直接呈现给看轨迹的人,与 `incompleteCoverage` 同一口径。
       const batch = { index: index + 1, total: batches.length, files };
+      // 规则按作用范围路由到批次(issue #204):只管某个目录的规则不进不含那个目录的
+      // 批次,批内每个 Reviewer 拿到的是同一份。
+      const rules = rulesForBatch(deps.rules ?? [], files);
       trace.run("batch_started", batch);
       perBatch.push(
         await Promise.all(
@@ -1087,6 +1161,7 @@ export async function runReview(
               worktree.path,
               history,
               intent,
+              rules,
               (event) => {
                 const { kind, ...payload } = event;
                 trace.reviewer(reviewer.model, kind, payload);
@@ -1252,6 +1327,8 @@ export async function runReview(
         ...(lineAuthors[groupIndex] === undefined
           ? {}
           : { lineAuthor: lineAuthors[groupIndex] }),
+        // 命中规则只落库(issue #204):不进指纹、不进评论正文,合并组取组内首个自报的。
+        ...(finding.ruleId === undefined ? {} : { ruleId: finding.ruleId }),
       };
     });
 
