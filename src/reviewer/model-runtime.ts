@@ -27,8 +27,8 @@ export function modelCatalogStorePath(root?: string): string | undefined {
   return join(dir, "models-store.json");
 }
 
-/** 自定义 OpenAI-compatible 模型服务允许使用的 Pi 接口协议。 */
-export const CUSTOM_PROVIDER_APIS = ["openai-completions", "openai-responses"] as const;
+/** 自定义 provider 允许使用的 Pi 接口协议。 */
+export const CUSTOM_PROVIDER_APIS = ["openai-completions", "openai-responses", "anthropic-messages"] as const;
 
 /**
  * 注册进 Pi 的模型必须带费率:pi-ai 每次调用都拿它折算会话统计,缺这一项当场抛

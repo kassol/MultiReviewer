@@ -74,10 +74,11 @@ type CredentialTarget = {
   models: readonly ModelServiceModel[] | undefined;
 };
 
-type CustomProtocol = "openai-completions" | "openai-responses";
+type CustomProtocol = "openai-completions" | "openai-responses" | "anthropic-messages";
 const CUSTOM_PROTOCOL_LABEL: Record<CustomProtocol, string> = {
   "openai-completions": "Chat Completions (/chat/completions)",
   "openai-responses": "Responses (/responses)",
+  "anthropic-messages": "Anthropic Messages (/v1/messages)",
 };
 type CustomPreview = {
   provider: string;
@@ -1086,7 +1087,9 @@ function customSetupInitial(service: ModelService | undefined): CustomSetupCandi
     kind: "custom",
     provider: service?.provider ?? "",
     baseUrl: service?.target?.baseUrl ?? "",
-    api: service?.target?.api === "openai-responses" ? "openai-responses" : "openai-completions",
+    api: service?.target?.api === "openai-responses" || service?.target?.api === "anthropic-messages"
+      ? service.target.api
+      : "openai-completions",
     version: service?.version ?? null,
     credential: "",
     preview: null,
@@ -1238,6 +1241,7 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
               <Select.Content position="popper" color="gray">
                 <Select.Item value="openai-completions">{CUSTOM_PROTOCOL_LABEL["openai-completions"]}</Select.Item>
                 <Select.Item value="openai-responses">{CUSTOM_PROTOCOL_LABEL["openai-responses"]}</Select.Item>
+                <Select.Item value="anthropic-messages">{CUSTOM_PROTOCOL_LABEL["anthropic-messages"]}</Select.Item>
               </Select.Content>
             </Select.Root>
           </div>
@@ -1461,7 +1465,8 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
               <InfoField label="调用目标"><MonoValue value={service.target.baseUrl} /></InfoField>
               <InfoField label="接口协议">
                 {service.type === "custom" && (
-                  service.target.api === "openai-completions" || service.target.api === "openai-responses"
+                  service.target.api === "openai-completions" || service.target.api === "openai-responses" ||
+                  service.target.api === "anthropic-messages"
                 ) ? CUSTOM_PROTOCOL_LABEL[service.target.api] : <MonoValue value={service.target.api} />}
               </InfoField>
             </InfoGrid>

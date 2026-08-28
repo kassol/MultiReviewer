@@ -43,7 +43,7 @@ test("OpenAI-compatible 发现保留非空 model id 与服务目标,并规范化
   });
   try {
     const result = await discoverModels({
-      kind: "openai-compatible",
+      kind: "custom",
       provider: "acme-gateway",
       baseUrl: "https://gateway.example.test/v1///",
       api: "openai-completions",
@@ -101,7 +101,7 @@ test("OpenAI-compatible 发现保留服务接口名称并按厂商用 Pi 目录�
   });
   try {
     const result = await discoverModels({
-      kind: "openai-compatible",
+      kind: "custom",
       provider: "sub2-openai",
       baseUrl: "https://gateway.example.test/v1",
       api: "openai-completions",
@@ -134,7 +134,7 @@ test("OpenAI-compatible 发现保留服务接口名称并按厂商用 Pi 目录�
       },
     }]);
     const synthesized = synthesizeRuntimeModel({
-      kind: "openai-compatible",
+      kind: "custom",
       provider: "sub2-openai",
       baseUrl: "https://gateway.example.test/v1",
       api: "openai-completions",
@@ -152,7 +152,7 @@ test("OpenAI-compatible 发现保留服务接口名称并按厂商用 Pi 目录�
 
 test("未知型号保留服务接口名称与目标，运行信息回退基线", async () => {
   const candidate = {
-    kind: "openai-compatible" as const,
+    kind: "custom" as const,
     provider: "corp-unknown",
     baseUrl: "https://unknown.example.test/v1",
     api: "openai-responses" as const,
@@ -215,7 +215,7 @@ test("未知型号保留服务接口名称与目标，运行信息回退基线",
 test("OpenAI-compatible 发现把坏响应、空目录、请求失败与超时变成稳定且脱敏的结果", async () => {
   const credential = "candidate-secret-must-not-leak";
   const candidate = {
-    kind: "openai-compatible" as const,
+    kind: "custom" as const,
     provider: "acme-gateway",
     baseUrl: "https://gateway.example.test/v1",
     api: "openai-completions" as const,
@@ -289,7 +289,7 @@ test("运行模型逐字段采用可信信息,缺项固定回落到 text-only 12
   });
 
   const candidate = {
-    kind: "openai-compatible" as const,
+    kind: "custom" as const,
     provider: "acme-gateway",
     baseUrl: "https://gateway.example.test/v1/",
     api: "openai-responses" as const,
@@ -349,7 +349,7 @@ test("运行模型逐字段采用可信信息,缺项固定回落到 text-only 12
 test("最小真实推理使用候选地址、协议、凭据与验证模型,且只发这一笔请求", async () => {
   const credential = "inference-secret-must-not-leak";
   const candidate = {
-    kind: "openai-compatible" as const,
+    kind: "custom" as const,
     provider: "acme-gateway",
     baseUrl: "https://gateway.example.test/v1/",
     api: "openai-completions" as const,
@@ -579,4 +579,126 @@ test("Reviewer 固定运行模型不读取可变共享当前配置", async () =>
   assert.equal(model.baseUrl, "https://pinned-run.example.test/v1");
   assert.equal(model.reasoning, false);
   assert.equal(existsSync(join(agentDir, "models.json")), false, "固定模型不该写成共享运行文件");
+});
+
+test("anthropic 发现走 x-api-key 与版本头,带 limit=1000,并解析 display_name", async () => {
+  const credential = "anthropic-secret-must-not-leak";
+  const calls: { url: string; headers: Record<string, string | null> }[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    calls.push({
+      url: String(input),
+      headers: {
+        "x-api-key": headers.get("x-api-key"),
+        "anthropic-version": headers.get("anthropic-version"),
+        authorization: headers.get("authorization"),
+      },
+    });
+    return new Response(JSON.stringify({
+      data: [
+        { type: "model", id: "claude-opus-4-7", display_name: "Claude Opus 4.7", created_at: "2026-02-01T00:00:00Z" },
+        { type: "model", id: "relay-only-model" },
+      ],
+      has_more: false,
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const result = await discoverModels({
+      kind: "custom",
+      provider: "sub2anthropic",
+      baseUrl: "https://gateway.example.test/v1",
+      api: "anthropic-messages",
+      credential,
+    }, { allowNetwork: false });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.url, "https://gateway.example.test/v1/models?limit=1000");
+    assert.deepEqual(calls[0]!.headers, {
+      "x-api-key": credential,
+      "anthropic-version": "2023-06-01",
+      authorization: null,
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(result.models.map((model) => ({ id: model.id, name: model.fields.name })), [
+      { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
+      { id: "relay-only-model", name: undefined },
+    ]);
+    assert.equal(result.models[0]!.fields.api, "anthropic-messages");
+    assert.equal(JSON.stringify(result).includes(credential), false);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("anthropic 运行模型剥掉 baseUrl 尾部 /v1,发现与存库地址不变", () => {
+  const candidate = {
+    kind: "custom" as const,
+    provider: "sub2anthropic",
+    baseUrl: "https://gateway.example.test/v1/",
+    api: "anthropic-messages" as const,
+    credential: "anthropic-secret-must-not-leak",
+  };
+  const discovery: DiscoveredModel = {
+    identity: "sub2anthropic:claude-opus-4-7",
+    provider: "sub2anthropic",
+    id: "claude-opus-4-7",
+    fields: { name: "Claude Opus 4.7" },
+  };
+  const result = synthesizeRuntimeModel(candidate, discovery);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  // @anthropic-ai/sdk 自己在 baseURL 后拼 /v1/messages,带 /v1 注册会打到 /v1/v1/messages。
+  assert.equal(result.value.runtime.baseUrl, "https://gateway.example.test");
+  // 不带 /v1 的地址原样保留,SDK 拼出的仍是 /v1/messages。
+  const bare = synthesizeRuntimeModel(
+    { ...candidate, baseUrl: "https://bare.example.test" },
+    { ...discovery, identity: "sub2anthropic:claude-opus-4-7" },
+  );
+  assert.equal(bare.ok, true);
+  if (bare.ok) assert.equal(bare.value.runtime.baseUrl, "https://bare.example.test");
+});
+
+test("anthropic 最小真实推理打到剥掉 /v1 后的 /v1/messages,凭据走 x-api-key", async () => {
+  const credential = "anthropic-inference-secret-must-not-leak";
+  const candidate = {
+    kind: "custom" as const,
+    provider: "sub2anthropic",
+    baseUrl: "https://gateway.example.test/v1",
+    api: "anthropic-messages" as const,
+    credential,
+  };
+  const calls: { url: string; apiKey: string | null; auth: string | null; body: Record<string, unknown> }[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    calls.push({
+      url: String(input),
+      apiKey: headers.get("x-api-key"),
+      auth: headers.get("authorization"),
+      body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+    });
+    const events = [
+      ["message_start", { type: "message_start", message: { id: "msg_validation", type: "message", role: "assistant", content: [], model: "claude-opus-4-7", stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 } } }],
+      ["content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }],
+      ["content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "OK" } }],
+      ["content_block_stop", { type: "content_block_stop", index: 0 }],
+      ["message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } }],
+      ["message_stop", { type: "message_stop" }],
+    ] as const;
+    const stream = events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join("");
+    return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+  }) as typeof fetch;
+  try {
+    const result = await validateMinimalInference(candidate, "claude-opus-4-7");
+    assert.deepEqual(result, { ok: true });
+    assert.equal(calls.length, 1, "真实推理之外又发了别的请求");
+    assert.equal(calls[0]!.url, "https://gateway.example.test/v1/messages");
+    assert.equal(calls[0]!.apiKey, credential);
+    assert.equal(calls[0]!.body["model"], "claude-opus-4-7");
+    assert.equal(JSON.stringify(result).includes(credential), false);
+  } finally {
+    globalThis.fetch = original;
+  }
 });

@@ -550,7 +550,7 @@ function synthesisForRun(
   }
   return synthesizeRuntimeModel(
     {
-      kind: "openai-compatible",
+      kind: "custom",
       provider: service.provider,
       baseUrl: target.baseUrl,
       api: target.api as (typeof CUSTOM_PROVIDER_APIS)[number],
@@ -2428,7 +2428,7 @@ function projectServiceModel(
   ) {
     synthesis = synthesizeRuntimeModel(
       {
-        kind: "openai-compatible",
+        kind: "custom",
         provider: service.provider,
         baseUrl: serviceTarget.baseUrl,
         api: serviceTarget.api as (typeof CUSTOM_PROVIDER_APIS)[number],
@@ -3174,7 +3174,7 @@ async function handleReverifyModelService(
   }
 
   candidate = {
-    kind: "openai-compatible",
+    kind: "custom",
     provider,
     baseUrl: current.baseUrl!,
     api: current.api as (typeof CUSTOM_PROVIDER_APIS)[number],
@@ -3395,7 +3395,7 @@ async function storedModelServiceRuntime(
   let target:
     | { kind: "builtin" }
     | {
-        kind: "openai-compatible";
+        kind: "custom";
         baseUrl: string;
         api: (typeof CUSTOM_PROVIDER_APIS)[number];
       };
@@ -3422,7 +3422,7 @@ async function storedModelServiceRuntime(
       return { ok: false, error: `${provider} 的目标绑定不一致，请重新配置` };
     }
     target = {
-      kind: "openai-compatible",
+      kind: "custom",
       baseUrl: current.baseUrl,
       api: current.api as (typeof CUSTOM_PROVIDER_APIS)[number],
     };
@@ -3436,7 +3436,7 @@ async function storedModelServiceRuntime(
     candidate: target.kind === "builtin"
       ? { kind: "builtin", provider, credential }
       : {
-          kind: "openai-compatible",
+          kind: "custom",
           provider,
           baseUrl: target.baseUrl,
           api: target.api,
@@ -3958,7 +3958,7 @@ async function handlePreviewCustomModelService(
     return sendJson(res, 409, { error: `${input.provider} 与当前 Pi 内置 provider 名字冲突` });
   }
   const candidate = {
-    kind: "openai-compatible" as const,
+    kind: "custom" as const,
     provider: input.provider,
     baseUrl: input.baseUrl,
     api: input.api,
@@ -4029,7 +4029,7 @@ async function handleCommitCustomModelService(
 
 
   const candidate = {
-    kind: "openai-compatible" as const,
+    kind: "custom" as const,
     provider: input.provider,
     baseUrl: input.baseUrl,
     api: input.api,

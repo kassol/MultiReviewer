@@ -16,8 +16,8 @@ import {
   type RuntimeApi,
 } from "./model-runtime.ts";
 
-export type OpenAICompatibleModelServiceCandidate = {
-  kind: "openai-compatible";
+export type CustomModelServiceCandidate = {
+  kind: "custom";
   provider: string;
   baseUrl: string;
   api: (typeof CUSTOM_PROVIDER_APIS)[number];
@@ -32,7 +32,7 @@ export type BuiltinModelServiceCandidate = {
 
 export type ModelServiceCandidate =
   | BuiltinModelServiceCandidate
-  | OpenAICompatibleModelServiceCandidate;
+  | CustomModelServiceCandidate;
 
 export type TrustedModelFields = {
   name?: string;
@@ -251,6 +251,9 @@ export function synthesizeRuntimeModel(
     };
   }
 
+  // @anthropic-ai/sdk 把 /v1/messages 整段拼在 baseURL 后面:存库与发现都用带 /v1 的
+  // 地址(与 OpenAI 系同一种填法),注册运行时前剥掉尾部 /v1,否则拼成 /v1/v1/messages。
+  const runtimeBaseUrl = targetApi === "anthropic-messages" ? baseUrl.replace(/\/v1$/u, "") : baseUrl;
   const name = typeof fields.name === "string" && fields.name.trim() !== "" ? fields.name : discovery.id;
   const input = trustedInput(fields.input) ? fields.input : MODEL_RUNTIME_BASELINE.input;
   const reasoning = typeof fields.reasoning === "boolean" ? fields.reasoning : MODEL_RUNTIME_BASELINE.reasoning;
@@ -268,7 +271,7 @@ export function synthesizeRuntimeModel(
         id: discovery.id,
         name,
         api: targetApi,
-        baseUrl,
+        baseUrl: runtimeBaseUrl,
         input,
         reasoning,
         contextWindow,
@@ -333,6 +336,35 @@ async function discoverBuiltinModels(
   }
 }
 
+/** Anthropic 端点的日期版本头,值取自官方文档当前版本。 */
+const ANTHROPIC_API_VERSION = "2023-06-01";
+
+/**
+ * 发现请求按接口协议分派。anthropic-messages 的端点不认 Bearer 形式的 api key,
+ * 鉴权走 `x-api-key` 加 `anthropic-version`;再带 `limit=1000`——官方 `/v1/models`
+ * 默认一页只回 20 条。两种协议的响应同为 `{data:[{id,…}]}`,解析共用一套。
+ */
+function discoveryRequest(
+  baseUrl: string,
+  api: (typeof CUSTOM_PROVIDER_APIS)[number],
+  credential: string,
+): { url: string; headers: Record<string, string> } {
+  if (api === "anthropic-messages") {
+    return {
+      url: `${baseUrl}/models?limit=1000`,
+      headers: {
+        accept: "application/json",
+        "x-api-key": credential,
+        "anthropic-version": ANTHROPIC_API_VERSION,
+      },
+    };
+  }
+  return {
+    url: `${baseUrl}/models`,
+    headers: { accept: "application/json", authorization: `Bearer ${credential}` },
+  };
+}
+
 export async function discoverModels(
   candidate: ModelServiceCandidate,
   options: DiscoverModelsOptions = {},
@@ -346,10 +378,8 @@ export async function discoverModels(
   const timeout = AbortSignal.timeout(options.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS);
   const signal = options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout]);
   try {
-    const response = await fetch(`${baseUrl}/models`, {
-      headers: { accept: "application/json", authorization: `Bearer ${candidate.credential}` },
-      signal,
-    });
+    const request = discoveryRequest(baseUrl, candidate.api, candidate.credential);
+    const response = await fetch(request.url, { headers: request.headers, signal });
     const responseText = await response.text();
     if (!response.ok) {
       const excerpt = redactFailureText(responseText, [candidate.credential]);
@@ -481,7 +511,7 @@ export async function validateMinimalInference(
       contextWindow: target.contextWindow,
       maxTokens: target.maxTokens,
     };
-    if (candidate.kind === "openai-compatible") {
+    if (candidate.kind === "custom") {
       modelRuntime.registerProvider(candidate.provider, {
         name: candidate.provider,
         api: candidate.api,

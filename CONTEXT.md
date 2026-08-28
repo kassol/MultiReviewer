@@ -169,7 +169,7 @@ _Avoid_: overlay、pi.dev 目录、远程增量
 _Avoid_: 官方目录、vendor catalog、模型列表 API
 
 **自定义 provider**:
-操作员新增的一项 OpenAI-compatible 模型服务。名字由操作员起,限小写字母、数字与连字符,与 Pi 内置 provider 共用同一命名空间;新建时撞名拒收,升级迁来的既有撞名服务停用但保留全部配置。冲突服务验证新名称后,服务及全局模型组合与模型覆盖里的引用在同一事务中改名,旧冲突项随即消失。一个名字对应一个 base URL、一个接口协议与一把模型凭据;同一个端点要接两个 base URL 就起两个名字。base URL 与接口协议都是必填。
+操作员新增的一项模型服务,接口协议限于受支持的协议清单(当前:OpenAI Completions / OpenAI Responses / Anthropic Messages)。名字由操作员起,限小写字母、数字与连字符,与 Pi 内置 provider 共用同一命名空间;新建时撞名拒收,升级迁来的既有撞名服务停用但保留全部配置。冲突服务验证新名称后,服务及全局模型组合与模型覆盖里的引用在同一事务中改名,旧冲突项随即消失。一个名字对应一个 base URL、一个接口协议与一把模型凭据;同一个端点要接两个 base URL 就起两个名字。base URL 与接口协议都是必填。
 _Avoid_: 自建 provider、custom provider、私有厂商
 
 **模型补录**:
