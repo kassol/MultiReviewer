@@ -728,7 +728,9 @@ export async function findingLineAuthors(
   const byRevisionAndFile = new Map<string, number[]>();
   for (const [index, query] of queries.entries()) {
     const key = `${query.revision}\n${query.file}`;
-    byRevisionAndFile.set(key, [...(byRevisionAndFile.get(key) ?? []), index]);
+    const indexes = byRevisionAndFile.get(key);
+    if (indexes === undefined) byRevisionAndFile.set(key, [index]);
+    else indexes.push(index);
   }
   const authors: (LineAuthor | undefined)[] = queries.map(() => undefined);
   for (const indexes of byRevisionAndFile.values()) {
