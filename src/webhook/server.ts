@@ -92,6 +92,7 @@ import {
   type RangeReviewRecord,
   type RepoKey,
   type RepoSummary,
+  type ReviewRuleInput,
   type StageScope,
   type Store,
 } from "../review/store.ts";
@@ -1793,6 +1794,30 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     access: "authenticated-only",
     assignment: { by: "repo", group: 1 },
     handler: ({ res, deps }, match) => handleRuleSet(res, deps, Number(match![1])),
+  },
+  {
+    // 规则的手工增删改(issue #203)由 `rule:write` 这一格拦下,读侧不受它影响。
+    method: "POST",
+    pattern: /^\/repos\/(\d+)\/rules$/,
+    access: "rule:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ req, res, deps }, match) => handleAddRule(req, res, deps, Number(match![1])),
+  },
+  {
+    method: "PUT",
+    pattern: /^\/repos\/(\d+)\/rules\/(\d+)$/,
+    access: "rule:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ req, res, deps }, match) =>
+      handleUpdateRule(req, res, deps, Number(match![1]), Number(match![2])),
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/repos\/(\d+)\/rules\/(\d+)$/,
+    access: "rule:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ res, deps }, match) =>
+      handleRetireRule(res, deps, Number(match![1]), Number(match![2])),
   },
   {
     method: "GET",
@@ -5734,6 +5759,82 @@ function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: num
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
   return sendJson(res, 200, ruleSet);
+}
+
+/**
+ * 手工写一条评审规则要的三样(issue #203)。规范陈述与层标签是规则的两个必填面——
+ * 空陈述不构成规范,空层标签在面板上分不了组;作用范围可以不给,空值即全仓库。
+ */
+async function readRuleInput(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<ReviewRuleInput | undefined> {
+  const body = await readBody(req, res);
+  if (body === undefined) return undefined;
+  const payload = safeParse(body) as
+    | { scope?: unknown; statement?: unknown; layer?: unknown }
+    | null;
+  const text = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+  const input = {
+    scope: payload?.scope === undefined ? "" : text(payload.scope),
+    statement: text(payload?.statement),
+    layer: text(payload?.layer),
+  };
+  if (input.statement === "" || input.layer === "") {
+    sendJson(res, 400, {
+      error: 'body 要是 {"scope": "…", "statement": "…", "layer": "…"} 形状的 JSON,规范陈述与层标签不能为空',
+    });
+    return undefined;
+  }
+  return input;
+}
+
+const NO_ACTIVE_RULE = "这条规则不在这个仓库的生效规则里";
+
+async function handleAddRule(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+): Promise<void> {
+  const input = await readRuleInput(req, res);
+  if (input === undefined) return;
+  const version = withStore(deps.dbPath, (store) => store.addReviewRule(repoId, input));
+  if (version === undefined) {
+    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+  }
+  return sendJson(res, 201, { version });
+}
+
+async function handleUpdateRule(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+  ruleId: number,
+): Promise<void> {
+  const input = await readRuleInput(req, res);
+  if (input === undefined) return;
+  const version = withStore(deps.dbPath, (store) =>
+    store.updateReviewRule(repoId, ruleId, input),
+  );
+  if (version === undefined) return sendJson(res, 404, { error: NO_ACTIVE_RULE });
+  return sendJson(res, 200, { version });
+}
+
+/**
+ * 废止一条规则(issue #203)。DELETE 是「让它不再生效」而不是删行:废止的规则不再进
+ * 规则集,但历史版本的快照与面板的已废止那一段都还要取得到它。
+ */
+function handleRetireRule(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+  ruleId: number,
+): void {
+  const version = withStore(deps.dbPath, (store) => store.retireReviewRule(repoId, ruleId));
+  if (version === undefined) return sendJson(res, 404, { error: NO_ACTIVE_RULE });
+  return sendJson(res, 200, { version });
 }
 
 /**

@@ -141,7 +141,7 @@ _Avoid_: 操作员、成员、账户
 _Avoid_: 用户组、权限模板、管理员角色
 
 **权限格**:
-面板 API 对一类资源的一档写或动作能力,字面量形如 `repo:write`。读评审记录、仓库与处置率不由权限格决定:登录即可读,读得到哪些由仓库分配决定(ADR 0018)。角色是权限格的子集;新增权限格不会自动落到已有角色上。八格是 `repo:write`、`review:rerun`、`review:create`、`finding:dispose`、`model:read`、`model:write`、`credential:read`、`credential:write`;`model:write` 与 `credential:write` 各自包含同资源的读权限,隐含关系只剩这两对。
+面板 API 对一类资源的一档写或动作能力,字面量形如 `repo:write`。读评审记录、仓库与处置率不由权限格决定:登录即可读,读得到哪些由仓库分配决定(ADR 0018)。角色是权限格的子集;新增权限格不会自动落到已有角色上。九格是 `repo:write`、`review:rerun`、`review:create`、`finding:dispose`、`rule:write`、`model:read`、`model:write`、`credential:read`、`credential:write`;`model:write` 与 `credential:write` 各自包含同资源的读权限,隐含关系只剩这两对,`rule:write` 不隐含任何读权限。
 _Avoid_: scope、能力、权限点
 
 **系统管理员**:
@@ -197,7 +197,7 @@ _Avoid_: rule、规范、约定、评审标准
 _Avoid_: 规则库、规则列表、规则文件
 
 **规则集版本**:
-一次规则确认或裁决采纳后共同生效的规则集快照。Review Run 开始时固定使用一个规则集版本,运行中不跟随之后的变更。
+一次规则确认、裁决采纳或手工增删改之后共同生效的规则集快照。Review Run 开始时固定使用一个规则集版本,运行中不跟随之后的变更。
 _Avoid_: 规则版本、规则快照
 
 **基点探索**:

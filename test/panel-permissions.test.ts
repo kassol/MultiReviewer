@@ -61,6 +61,9 @@ const ROUTE_EXPECTATIONS = [
   ["POST", "/^\\/repos\\/(\\d+)\\/rotate$/", "repo:write", "repo:1"],
   ["GET", "/^\\/repos\\/(\\d+)\\/hooks$/", "authenticated-only", "repo:1"],
   ["GET", "/^\\/repos\\/(\\d+)\\/rules$/", "authenticated-only", "repo:1"],
+  ["POST", "/^\\/repos\\/(\\d+)\\/rules$/", "rule:write", "repo:1"],
+  ["PUT", "/^\\/repos\\/(\\d+)\\/rules\\/(\\d+)$/", "rule:write", "repo:1"],
+  ["DELETE", "/^\\/repos\\/(\\d+)\\/rules\\/(\\d+)$/", "rule:write", "repo:1"],
   ["GET", "/model-services", "anyOf:model:read|credential:read", "-"],
   [
     "GET",
@@ -234,6 +237,25 @@ test("写权限在会话与端点统一包含对应读权限，review:rerun 保�
     ).status,
     400,
   );
+});
+
+test("新增的 rule:write 不落到已有角色上,持有它的人也只多这一格", async () => {
+  const h = await startPanelHarness(cleanups);
+  // 已有角色只勾了重跑:新增权限格不会自动落到它上面(角色是权限格的子集)。
+  addPermissionUser(h, "rerun-only", ["review:rerun"]);
+  const rerunCookie = await userCookie(h.serverUrl, "rerun-only");
+  const rerunSession = (await (
+    await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, { headers: { cookie: rerunCookie } })
+  ).json()) as { permissions: PanelPermission[] };
+  assert.deepEqual(rerunSession.permissions, ["review:rerun"]);
+
+  // rule:write 不隐含任何读权限:读侧沿用登录加仓库分配(ADR 0019)。
+  addPermissionUser(h, "rule-writer", ["rule:write"]);
+  const cookie = await userCookie(h.serverUrl, "rule-writer");
+  const session = (await (
+    await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, { headers: { cookie } })
+  ).json()) as { permissions: PanelPermission[] };
+  assert.deepEqual(session.permissions, ["rule:write"]);
 });
 
 test("普通用户不能调用系统管理员端点", async () => {

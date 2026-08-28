@@ -1027,10 +1027,22 @@ export type ReviewRuleRecord = {
 /**
  * 一个仓库当前生效的规则集与它的规则集版本(CONTEXT.md)。`version` 为 null 即这个
  * 仓库还没确认过规则集;已确认的空规则集是版本有值、规则为空。
+ *
+ * `retired` 是这个仓库废止过的规则,按废止的先后给:废止的规则不再生效,但仍要查得到
+ * (issue #203)。修改一条规则同样在这里留下改之前那一版——两态生命周期里,内容被换掉
+ * 的那一行确实是在那一版上停止生效的。
  */
 export type RuleSet = {
   version: number | null;
   rules: ReviewRuleRecord[];
+  retired: ReviewRuleRecord[];
+};
+
+/** 一条评审规则里由人填的三样:作用范围(空串即全仓库)、那一句规范陈述与层标签。 */
+export type ReviewRuleInput = {
+  scope: string;
+  statement: string;
+  layer: string;
 };
 
 /** 一个时间窗里的用量聚合:落了用量的 Review Run 数,加它们的 token 之和。 */
@@ -1432,6 +1444,22 @@ export type Store = {
    * 注册表行上,没有那一行就没有规则集可谈。
    */
   getRuleSet(repoId: number): RuleSet | undefined;
+  /**
+   * 手工新增一条评审规则(issue #203):推进一版规则集版本,新规则从那一版起生效,出处
+   * 记人工。返回新的规则集版本;仓库不在注册表里回 undefined。
+   */
+  addReviewRule(repoId: number, input: ReviewRuleInput): number | undefined;
+  /**
+   * 手工修改一条生效中的规则:推进一版,旧行废止于那一版、新内容作为新行生效于那一版。
+   * 历史版本的快照因此仍取到旧内容。出处沿用旧行——改文字不改变这条规则当初从哪来。
+   * 规则不在这个仓库的生效规则里时回 undefined,一版都不推进。
+   */
+  updateReviewRule(repoId: number, ruleId: number, input: ReviewRuleInput): number | undefined;
+  /**
+   * 手工废止一条生效中的规则:推进一版,那一行废止于那一版,之后可查不可用。规则不在
+   * 这个仓库的生效规则里时回 undefined。
+   */
+  retireReviewRule(repoId: number, ruleId: number): number | undefined;
   /** 审查策略。历史值和未写过的项都从版本 1 开始。 */
   getGlobalSettings(): GlobalSettings;
   /** 按独立版本改写全局模型组合；陈旧版本或模型服务状态变化返回 false。 */
@@ -2133,6 +2161,12 @@ const DROPPED_COST_COLUMNS: readonly (readonly [string, string])[] = [
 const RETIRED_PANEL_PERMISSIONS = ["repo:read", "review:read"];
 
 /**
+ * 人手工写下的规则在 `review_rule.origin` 上的出处(issue #203)。基点探索与处置反哺
+ * 各写各的字面量,那两条链路是后续票的范围。
+ */
+const MANUAL_RULE_ORIGIN = "manual";
+
+/**
  * 存量迁移(issue #202):升级前注册的仓库全部视同已确认空规则集。给还没有任何规则集
  * 版本的仓库补一行版本 1——没有规则行,语义就是「空集已确认」,评审行为与现状一致。
  *
@@ -2368,6 +2402,63 @@ export function openStore(dbPath: string): Store {
     if (row === undefined) return undefined;
     const entry = stageRowEntry(row as Record<string, unknown>);
     return entry.item.stageId === stageId ? entry : undefined;
+  };
+
+  const repoExists = (repoId: number): boolean =>
+    db.prepare("SELECT 1 FROM repo WHERE id = ?").get(repoId) !== undefined;
+
+  /** 这条规则还生效吗:生效即回它的出处(改一条规则要沿用它),否则回 undefined。 */
+  const activeRuleOrigin = (repoId: number, ruleId: number): string | undefined => {
+    const row = db
+      .prepare(
+        "SELECT origin FROM review_rule WHERE id = ? AND repo_id = ? AND retired_version IS NULL",
+      )
+      .get(ruleId, repoId);
+    return row === undefined ? undefined : String(row["origin"]);
+  };
+
+  const insertReviewRule = (
+    repoId: number,
+    input: ReviewRuleInput,
+    origin: string,
+    version: number,
+    at: string,
+  ): void => {
+    db.prepare(
+      `INSERT INTO review_rule
+         (repo_id, scope, statement, layer, state, origin, effective_version, retired_version, created_at)
+       VALUES (?, ?, ?, ?, 'active', ?, ?, NULL, ?)`,
+    ).run(repoId, input.scope, input.statement, input.layer, origin, version, at);
+  };
+
+  const retireRuleRow = (ruleId: number, version: number): void => {
+    db.prepare(
+      "UPDATE review_rule SET state = 'retired', retired_version = ? WHERE id = ?",
+    ).run(version, ruleId);
+  };
+
+  /**
+   * 推进一版规则集版本,在同一个写事务里跑规则那几行改动。规则集版本与它带来的规则
+   * 变更必须一起落:落了版本没落规则,那一版的快照就是错的。
+   */
+  const inRuleSetVersion = <T>(repoId: number, write: (version: number, at: string) => T): T => {
+    db.exec("BEGIN");
+    try {
+      const current = db
+        .prepare("SELECT MAX(version) AS version FROM rule_set_version WHERE repo_id = ?")
+        .get(repoId)?.["version"];
+      const version = (current === null || current === undefined ? 0 : Number(current)) + 1;
+      const at = new Date().toISOString();
+      db.prepare(
+        "INSERT INTO rule_set_version (repo_id, version, created_at) VALUES (?, ?, ?)",
+      ).run(repoId, version, at);
+      const result = write(version, at);
+      db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
   };
 
   const store: Store = {
@@ -2827,30 +2918,57 @@ export function openStore(dbPath: string): Store {
     },
 
     getRuleSet(repoId) {
-      if (db.prepare("SELECT 1 FROM repo WHERE id = ?").get(repoId) === undefined) {
-        return undefined;
-      }
+      if (!repoExists(repoId)) return undefined;
       const version = db
         .prepare("SELECT MAX(version) AS version FROM rule_set_version WHERE repo_id = ?")
         .get(repoId)?.["version"];
-      const rules = db
-        .prepare(
-          `SELECT id, scope, statement, layer, origin
-             FROM review_rule
-            WHERE repo_id = ? AND retired_version IS NULL
-            ORDER BY id`,
-        )
-        .all(repoId);
+      const select = (where: string): ReviewRuleRecord[] =>
+        db
+          .prepare(
+            `SELECT id, scope, statement, layer, origin
+               FROM review_rule
+              WHERE repo_id = ? AND ${where}
+              ORDER BY id`,
+          )
+          .all(repoId)
+          .map((row) => ({
+            id: Number(row["id"]),
+            scope: String(row["scope"]),
+            statement: String(row["statement"]),
+            layer: String(row["layer"]),
+            origin: String(row["origin"]),
+          }));
       return {
         version: version === null || version === undefined ? null : Number(version),
-        rules: rules.map((row) => ({
-          id: Number(row["id"]),
-          scope: String(row["scope"]),
-          statement: String(row["statement"]),
-          layer: String(row["layer"]),
-          origin: String(row["origin"]),
-        })),
+        rules: select("retired_version IS NULL"),
+        retired: select("retired_version IS NOT NULL"),
       };
+    },
+
+    addReviewRule(repoId, input) {
+      if (!repoExists(repoId)) return undefined;
+      return inRuleSetVersion(repoId, (version, at) => {
+        insertReviewRule(repoId, input, MANUAL_RULE_ORIGIN, version, at);
+        return version;
+      });
+    },
+
+    updateReviewRule(repoId, ruleId, input) {
+      const origin = activeRuleOrigin(repoId, ruleId);
+      if (origin === undefined) return undefined;
+      return inRuleSetVersion(repoId, (version, at) => {
+        retireRuleRow(ruleId, version);
+        insertReviewRule(repoId, input, origin, version, at);
+        return version;
+      });
+    },
+
+    retireReviewRule(repoId, ruleId) {
+      if (activeRuleOrigin(repoId, ruleId) === undefined) return undefined;
+      return inRuleSetVersion(repoId, (version) => {
+        retireRuleRow(ruleId, version);
+        return version;
+      });
     },
 
     getGlobalSettings() {
