@@ -6,6 +6,7 @@ import type {
   FindingVerdict,
   HistoryFinding,
   RawFinding,
+  ReviewIntent,
   ReviewRange,
   Reviewer,
   ReviewerEvent,
@@ -42,8 +43,8 @@ export type PiReviewerConfig = {
 export function createPiReviewer(config: PiReviewerConfig): Reviewer {
   return {
     model: modelIdentity({ provider: config.runtimeModel.provider, model: config.runtimeModel.id }),
-    review: (range, worktreePath, history, onEvent) =>
-      runInChild(WORKER_PATH, config, range, worktreePath, history, onEvent),
+    review: (range, worktreePath, history, intent, onEvent) =>
+      runInChild(WORKER_PATH, config, range, worktreePath, history, intent, onEvent),
   };
 }
 
@@ -58,6 +59,8 @@ export function runInChild(
   worktreePath: string,
   /** 本审查阶段的历史 Finding(ADR 0016)。首轮没有历史,默认空。 */
   history: readonly HistoryFinding[] = [],
+  /** 这一轮声称要做的事(issue #201)。取不到意图上下文的调用方不传。 */
+  intent?: ReviewIntent,
   /** 子进程转发上来的过程事件的去处(issue #171)。不关心过程的调用方不传。 */
   onEvent: (event: ReviewerEvent) => void = () => {},
 ): Promise<ReviewerOutcome> {
@@ -188,6 +191,7 @@ export function runInChild(
       range,
       worktreePath,
       history,
+      ...(intent === undefined ? {} : { intent }),
     };
     // 必须带 callback:子进程起不来时(例如工作副本目录不存在)投递会失败,
     // 没有 callback 时 Node 把 EPIPE 异步抛出去,try/catch 拦不住,

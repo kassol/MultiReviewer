@@ -4,7 +4,17 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
-import { createReviewRunPlan, runReview } from "../src/review/run.ts";
+import {
+  createReviewRunPlan,
+  INTENT_BODY_CHARS,
+  INTENT_COMMIT_LIMIT,
+  runReview,
+} from "../src/review/run.ts";
+import {
+  containerPullRequestBody,
+  containerPullRequestTitle,
+} from "../src/review/range-review.ts";
+import { openStore } from "../src/review/store.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer, verdictReviewer } from "./support/memory-forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
@@ -560,4 +570,150 @@ test("延续到新一轮的 Finding 按新 head 重算行作者,不沿用上一�
     { sha: bobSha, name: BOB.name, email: BOB.email },
     "延续过来的那一行没有按新 head 重算行作者",
   );
+});
+
+test("PR 触发的轮次把 pull request 标题、正文与 commit 列表交给 Reviewer", async () => {
+  const repo = makeRepo({
+    base: { "src/calc.ts": BASE_CALC },
+    head: { "src/calc.ts": HEAD_CALC },
+  });
+  const cache = makeCacheDir();
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
+
+  const headSha = repo.commitToBranch(
+    "feature",
+    { "src/calc.ts": HEAD_CALC.replace("return a * b;", "return a * b + 0;") },
+    { message: "fix: 收紧 sub 的差值\n\n关联需求 #42" },
+  );
+
+  const forge = memoryForge({
+    pullRequest: {
+      number: 7,
+      title: "修正 sub 的差值",
+      body: "本 PR 把 sub 少减的那 1 补回来。\n\n取舍:mul 的溢出这一轮先不动。",
+      draft: false,
+      baseSha: repo.baseSha,
+      headSha,
+      cloneUrl: repo.dir,
+    },
+    changedFiles: [{ path: "src/calc.ts", status: "modified" }],
+  });
+  const reviewer = scriptedReviewer("stub-model", []);
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+  );
+
+  const intent = reviewer.calls[0]!.intent;
+  assert.notEqual(intent, undefined);
+  assert.equal(intent!.title, "修正 sub 的差值");
+  assert.match(intent!.body ?? "", /取舍:mul 的溢出这一轮先不动。/);
+  // 新的在前,commit message 取全文——目的与关联需求常写在正文里。
+  assert.equal(intent!.commits.length, 2);
+  assert.match(intent!.commits[0]!, /fix: 收紧 sub 的差值/);
+  assert.match(intent!.commits[0]!, /关联需求 #42/);
+  assert.equal(intent!.omittedCommits, 0);
+});
+
+test("范围审查的轮次带范围审查标题与同区间 commit 列表,不带容器 PR 的正文", async () => {
+  const repo = makeRepo({
+    base: { "src/calc.ts": BASE_CALC },
+    head: { "src/calc.ts": HEAD_CALC },
+  });
+  const cache = makeCacheDir();
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
+
+  const store = openStore(db.path);
+  const rangeReviewId = store.createRangeReview({
+    repoId: 1,
+    owner: "acme",
+    repo: "widgets",
+    title: "上线前复核 v2.3",
+    baseSha: repo.mergeBaseSha,
+    comparisonSha: repo.headSha,
+    createdBy: "kassol",
+    createdAt: new Date().toISOString(),
+  });
+  store.close();
+
+  const forge = memoryForge({
+    pullRequest: {
+      number: 101,
+      title: containerPullRequestTitle(repo.mergeBaseSha, repo.headSha),
+      body: containerPullRequestBody("https://panel.invalid/"),
+      draft: false,
+      baseSha: repo.mergeBaseSha,
+      headSha: repo.headSha,
+      cloneUrl: repo.dir,
+    },
+    changedFiles: [{ path: "src/calc.ts", status: "modified" }],
+  });
+  const reviewer = scriptedReviewer("stub-model", []);
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 101 },
+    {
+      forge: forge.forge,
+      reviewers: [reviewer],
+      cacheDir: cache.dir,
+      dbPath: db.path,
+      rangeReviewId,
+    },
+  );
+
+  const intent = reviewer.calls[0]!.intent;
+  assert.equal(intent!.title, "上线前复核 v2.3");
+  // 容器 PR 的正文由本工具自己拼出,不是意图来源。
+  assert.equal(intent!.body, undefined);
+  assert.equal(intent!.commits.length, 1);
+});
+
+test("意图上下文过长时正文保头部、commit 列表按条数截断", async () => {
+  const repo = makeRepo({
+    base: { "src/calc.ts": BASE_CALC },
+    head: { "src/calc.ts": HEAD_CALC },
+  });
+  const cache = makeCacheDir();
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
+
+  // 连同夹具自带的那条 head commit,区间里共 INTENT_COMMIT_LIMIT + 2 条。
+  let headSha = repo.headSha;
+  for (let index = 1; index <= INTENT_COMMIT_LIMIT + 1; index += 1) {
+    headSha = repo.commitToBranch(
+      "feature",
+      { "src/calc.ts": `${HEAD_CALC}// ${index}\n` },
+      { message: `chore: 第 ${index} 次迭代` },
+    );
+  }
+
+  const body = "详".repeat(INTENT_BODY_CHARS + 100);
+  const forge = memoryForge({
+    pullRequest: {
+      number: 7,
+      title: "长正文的 PR",
+      body,
+      draft: false,
+      baseSha: repo.baseSha,
+      headSha,
+      cloneUrl: repo.dir,
+    },
+    changedFiles: [{ path: "src/calc.ts", status: "modified" }],
+  });
+  const reviewer = scriptedReviewer("stub-model", []);
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+  );
+
+  const intent = reviewer.calls[0]!.intent!;
+  assert.equal(intent.body, `${"详".repeat(INTENT_BODY_CHARS)}…`);
+  assert.equal(intent.commits.length, INTENT_COMMIT_LIMIT);
+  assert.equal(intent.omittedCommits, 2);
+  // 留下的是最新的那些:被砍掉的是区间里最早的两条。
+  assert.match(intent.commits[0]!, new RegExp(`第 ${INTENT_COMMIT_LIMIT + 1} 次迭代`));
 });

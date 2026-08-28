@@ -17,7 +17,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import type { HistoryFinding, RawFinding } from "../review/finding.ts";
+import type { HistoryFinding, RawFinding, ReviewIntent } from "../review/finding.ts";
 import { anchorReport, anchorVerdict } from "./anchor.ts";
 import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, redactModelCredential } from "./env.ts";
 import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
@@ -164,12 +164,40 @@ function historySection(history: readonly HistoryFinding[]): string {
   return sections.join("\n");
 }
 
+/** 一条 commit message:首行做条目,其余行缩进跟在下面,多行信息因此不会散成几条。 */
+function commitBullet(message: string): string {
+  return `- ${message.split("\n").join("\n  ")}`;
+}
+
+/**
+ * 这一轮声称要做的事(issue #201)。它是作者的主张,不是代码的事实——模型要拿它当
+ * 判据去对照代码,而不是当成代码已经做到的描述。
+ */
+function intentSection(intent: ReviewIntent): string {
+  const lines = [
+    "",
+    "The author claims this change does the following. This is intent, not a description of what the code actually does. Judge the code against it: behaviour that is claimed but missing, and behaviour that is present but never claimed, are both problems — report them through report_finding like any other.",
+  ];
+  if (intent.title !== "") lines.push("", `Title: ${intent.title}`);
+  if (intent.body !== undefined) lines.push("", "Description:", "", intent.body);
+  if (intent.commits.length > 0) {
+    lines.push("", "Commit messages in this range, newest first:", "");
+    lines.push(...intent.commits.map(commitBullet));
+    // 截断过就说清楚,否则模型会把这几条当成这个范围的全部改动。
+    if (intent.omittedCommits > 0) {
+      lines.push(`- (${intent.omittedCommits} older commit messages omitted)`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function reviewPrompt(request: ReviewerRequest): string {
   const files = request.range.files.map((f) => `- ${f}`).join("\n");
   const history =
     request.history.length === 0 ? "" : `\n${historySection(request.history)}\n`;
+  const intent = request.intent === undefined ? "" : `${intentSection(request.intent)}\n`;
   return `Review the changes between commit ${request.range.baseSha} and commit ${request.range.headSha}.
-
+${intent}
 The following files changed. Review the changes in them, using the rest of the repository as context:
 
 ${files}

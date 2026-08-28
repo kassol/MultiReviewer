@@ -149,6 +149,7 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
       const pr = await requestJson<{
         number: number;
         title: string;
+        body?: string | null;
         draft: boolean;
         base: { sha: string; repo: { clone_url: string } };
         head: { sha: string };
@@ -157,6 +158,10 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
       return {
         number: pr.number,
         title: pr.title,
+        // `PullRequest.Body string json:"body"`。空正文与读不回正文同为「没有意图可读」。
+        ...(pr.body === undefined || pr.body === null || pr.body === ""
+          ? {}
+          : { body: pr.body }),
         draft: pr.draft,
         baseSha: pr.base.sha,
         headSha: pr.head.sha,

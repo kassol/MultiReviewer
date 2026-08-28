@@ -1,6 +1,7 @@
 import type {
   HistoryFinding,
   RawVerdict,
+  ReviewIntent,
   ReviewRange,
   ReviewerEvent,
   ReviewerUsage,
@@ -16,6 +17,8 @@ export type ReviewerRequest = {
   worktreePath: string;
   /** 本审查阶段已经报过的 Finding(ADR 0016)。首轮为空数组。 */
   history: readonly HistoryFinding[];
+  /** 这一轮声称要做的事(issue #201)。取不到意图上下文时不带。 */
+  intent?: ReviewIntent;
 };
 
 /**

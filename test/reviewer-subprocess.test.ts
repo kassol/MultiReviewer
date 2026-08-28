@@ -81,7 +81,7 @@ process.on("message", () => {
 `);
 
   const events: ReviewerEvent[] = [];
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [], (event) =>
+  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [], undefined, (event) =>
     events.push(event),
   );
 
@@ -109,7 +109,7 @@ process.on("message", () => {
 `);
 
   const events: ReviewerEvent[] = [];
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [], (event) =>
+  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [], undefined, (event) =>
     events.push(event),
   );
 

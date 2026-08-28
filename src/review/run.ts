@@ -10,6 +10,7 @@ import {
   pinRunCommits,
   prepareWorktree,
   readLineAuthors,
+  readRangeCommits,
   readRangeDiff,
   type LineAuthor,
 } from "../git/worktree.ts";
@@ -29,6 +30,7 @@ import type {
   Category,
   Disposition,
   HistoryFinding,
+  ReviewIntent,
   Reviewer,
   ReviewerOutcome,
   Severity,
@@ -904,6 +906,46 @@ function commentRefs(
 }
 
 /**
+ * 意图上下文的两道截断(issue #201)。正文保头部:作者把这次改动要做什么写在开头,
+ * 越往后越是复现步骤与截图。commit 列表保最新的几条:早期那些多半已被后来的改写覆盖。
+ * 两个阈值都取整,超出的部分对判断规格保真度的边际价值远低于它占掉的上下文。
+ */
+export const INTENT_BODY_CHARS = 4000;
+export const INTENT_COMMIT_LIMIT = 30;
+
+/**
+ * 这一轮声称要做的事(issue #201)。
+ *
+ * commit 列表读本地 clone,读不出来只记日志、给一份没有 commit 的意图:少一份意图
+ * 上下文是小事,一次审查因此白跑不是。
+ */
+async function readIntent(
+  worktreePath: string,
+  range: { baseSha: string; headSha: string },
+  source: { title: string; body?: string },
+): Promise<ReviewIntent> {
+  let all: string[] = [];
+  try {
+    all = await readRangeCommits(worktreePath, range.baseSha, range.headSha);
+  } catch (error) {
+    console.error(
+      "[review] 读这一轮的 commit 列表失败,审查照常:",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  const body =
+    source.body !== undefined && source.body.length > INTENT_BODY_CHARS
+      ? `${source.body.slice(0, INTENT_BODY_CHARS)}…`
+      : source.body;
+  return {
+    title: source.title,
+    ...(body === undefined || body === "" ? {} : { body }),
+    commits: all.slice(0, INTENT_COMMIT_LIMIT),
+    omittedCommits: Math.max(0, all.length - INTENT_COMMIT_LIMIT),
+  };
+}
+
+/**
  * 一次 Review Run:解析 Review Range、准备工作副本、运行 Reviewer、发布 review 评论。
  */
 export async function runReview(
@@ -1012,6 +1054,21 @@ export async function runReview(
         : { rangeReviewId: deps.rangeReviewId },
     );
 
+    // 这一轮声称要做的事(issue #201)。范围审查的标题来自它自己,不是容器 PR 的标题
+    // ——那个标题与正文都由本工具拼出(`range-review.ts`),不含任何作者意图。
+    const rangeReview =
+      deps.rangeReviewId === undefined ? undefined : store.getRangeReview(deps.rangeReviewId);
+    const intent = await readIntent(
+      worktree.path,
+      { baseSha: worktree.mergeBaseSha, headSha: pullRequest.headSha },
+      deps.rangeReviewId === undefined
+        ? {
+            title: pullRequest.title,
+            ...(pullRequest.body === undefined ? {} : { body: pullRequest.body }),
+          }
+        : { title: rangeReview?.title ?? "" },
+    );
+
     // 批次串行,批内 Reviewer 并行:并行跑批会同时开「批数 × 模型数」个子进程。
     const perBatch: TimedOutcome[][] = [];
     for (const [index, files] of batches.entries()) {
@@ -1029,6 +1086,7 @@ export async function runReview(
               { ...range, files },
               worktree.path,
               history,
+              intent,
               (event) => {
                 const { kind, ...payload } = event;
                 trace.reviewer(reviewer.model, kind, payload);

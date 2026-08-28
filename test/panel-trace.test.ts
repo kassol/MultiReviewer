@@ -6,7 +6,13 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
-import type { HistoryFinding, ReviewRange, Reviewer, ReviewerEvent } from "../src/review/finding.ts";
+import type {
+  HistoryFinding,
+  ReviewIntent,
+  ReviewRange,
+  Reviewer,
+  ReviewerEvent,
+} from "../src/review/finding.ts";
 import { openStore } from "../src/review/store.ts";
 import type { TraceEvent, TraceKind } from "../src/review/trace.ts";
 import {
@@ -290,6 +296,7 @@ function pausedReviewer(model: string): Reviewer & {
       _range: ReviewRange,
       _worktreePath: string,
       _history: readonly HistoryFinding[],
+      _intent?: ReviewIntent,
       onEvent?: (event: ReviewerEvent) => void,
     ) => {
       emit = onEvent ?? (() => {});

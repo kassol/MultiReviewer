@@ -829,6 +829,28 @@ export async function readRangeDiff(
 }
 
 /**
+ * Review Range 里每条 commit 的 message 全文,新的在前(issue #201)。
+ *
+ * 记录之间用 NUL 隔开:提交信息本身可以含空行与任何缩进,拿换行当分隔会把一条多行
+ * 信息切成几条。基准与 `readRangeDiff` 同为 merge-base,两者说的是同一个范围。
+ */
+export async function readRangeCommits(
+  worktreePath: string,
+  mergeBaseSha: string,
+  headSha: string,
+): Promise<string[]> {
+  const output = await git(worktreePath, [
+    "log",
+    "--format=%B%x00",
+    `${mergeBaseSha}..${headSha}`,
+  ]);
+  return output
+    .split("\0")
+    .map((message) => message.trim())
+    .filter((message) => message !== "");
+}
+
+/**
  * Review Range 里的一个文件。二进制文件在 git 的 numstat 里是两个 `-`,增删行数按 0
  * 记并单独标出——面板要显示的是「这个文件没有可读的行改动」,不是「零处改动」。
  */

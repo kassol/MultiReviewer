@@ -108,6 +108,25 @@ export type ReviewRange = {
 };
 
 /**
+ * 这一轮声称要做的事(issue #201)。Reviewer 据此在正确性之外判断规格保真度:声称的
+ * 行为缺失、未声称的行为混入。
+ *
+ * 两个来源各给自己那份:pull request 触发的轮次带那个 PR 的标题与正文,范围审查的轮次
+ * 只有发起时人给的标题——容器 PR 的标题与正文由本工具自己拼出(`range-review.ts`),
+ * 不是意图来源。commit 列表两档同一口径:Review Range 内的那些。
+ */
+export type ReviewIntent = {
+  /** pull request 标题,或范围审查标题。读不到时为空串。 */
+  title: string;
+  /** pull request 正文,过长时保头部截断。范围审查与空正文都不带。 */
+  body?: string;
+  /** Review Range 内的 commit message 全文,新的在前,按条数截断。 */
+  commits: readonly string[];
+  /** 按条数截断掉的 commit 条数。截断过的列表要让模型知道自己没看全。 */
+  omittedCommits: number;
+};
+
+/**
  * Reviewer 经 `report_finding` 报出的、尚未归一化的条目。
  *
  * `severity` 与 `category` 是宽松字符串:用字面量联合强制时模型会自造词汇导致调用
@@ -209,6 +228,9 @@ export interface Reviewer {
    * `history` 是本审查阶段已经报过的 Finding(ADR 0016),每一批都给同一份:它说的是
    * 这个阶段的历史,与本批审哪些文件无关。首轮为空数组。
    *
+   * `intent` 是这一轮声称要做的事(issue #201),每一批也都给同一份:它说的是整个
+   * Review Range 的意图,与本批审哪些文件无关。取不到意图上下文的调用方不传。
+   *
    * `onEvent` 收这个 Reviewer 的过程事件(issue #171),编排层一定传,一条即写一条轨迹。
    * 声明成可选是给直接调 `review` 的调用方留的余地:不看过程的地方不必造一个空回调。
    */
@@ -216,6 +238,7 @@ export interface Reviewer {
     range: ReviewRange,
     worktreePath: string,
     history: readonly HistoryFinding[],
+    intent?: ReviewIntent,
     onEvent?: (event: ReviewerEvent) => void,
   ): Promise<ReviewerOutcome>;
 }

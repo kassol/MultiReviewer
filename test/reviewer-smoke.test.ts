@@ -90,6 +90,7 @@ test("真实模型经 report_finding 产出结构完整的 Finding", { skip }, a
     { baseSha: "HEAD~1", headSha: "HEAD", files: ["src/db.js", "src/pagination.js"] },
     FIXTURE,
     [],
+    undefined,
     (event) => events.push(event),
   );
 
