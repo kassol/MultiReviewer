@@ -181,8 +181,8 @@ function LaunchDialogContent({
               value={title}
               onChange={(event) => setTitle(event.target.value)}
               placeholder="例如：认证流程重构"
-              size="3"
-              className="min-h-11"
+              size={{ initial: "3", sm: "2" }}
+              className="max-sm:min-h-11"
             />
           </div>
           <Text id="range-review-title-help" as="p" size="1" color="gray" className="mt-1 text-right">

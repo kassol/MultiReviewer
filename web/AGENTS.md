@@ -116,6 +116,7 @@
 
 ## 变更日志
 
+- 2026-08-28: commit 选择器对齐设计系统(`commit-picker.tsx`,附带 `range-review-launch.tsx` 的标题输入框)。控件统一走 `size={{ initial: "3", sm: "2" }}` 加 `max-sm:min-h-11`,桌面不再是 44px 大块;分支组合框、窄屏「筛选」按钮改成 v8 描边型控件(白底 + `border-input` + `shadow-control`),刷新改 ghost 图标按钮;结果行改用 `MasterListItem`(蓝 tint + 左条 + 650),不可选行保留 `aria-disabled` 留在 Tab 序;短 SHA 走 `CommitChip`,行标题 `text-lg`、元数据 `text-base`;base / 比较项两格改成 `RoleCell`(当前步 accent tint,其余步描边型),已选时显示 chip 加「经 分支名」;「比较项」「附注」徽章从绿 / 紫改灰或蓝,绿只承载状态。功能与查询未改。
 - 2026-08-27: 范围审查 commit 选择器改为分支 / Tag 双模式和 base / 比较项引导角色。新增分支组合框、完整信息搜索、作者日期、merge 与合法后代筛选、Tag 元数据和正文命中片段；筛选在对话框关闭时重置,手动刷新保留已选 SHA。发起时重选 base 清比较项,推进与发起都使用同一后代校验体验；选择时的分支或 Tag 名只在摘要展示,POST 仍只发 SHA。弹窗改为内部滚动并保留移动端 footer。
 - 2026-08-27: 阶段详情 Finding 侧滑里的代码差异改为 soft wrap。diff 表格固定为侧滑可用宽度,旧 / 新行号列保持固定,代码与 hunk 头保留空白并在边界内折行;一个逻辑行折成几段时仍只显示一次行号,新增 / 删除底色与 Finding 锚定结构不变。横向滚动容器随之删除,超长连续字符也不会撑宽侧滑。服务端接口与 diff 解析未改变。
 - 2026-08-26: 落地 issue #196。阶段详情的 Finding 入口改为 diff 图标,Review Run 入口统一为「审查轨迹」;`StageDrawer` 按 `md=768px` 分成 86dvh 底部抽屉与四边留白的 920px 毛玻璃浮动面板,并通过 `#panel-portal` 继承唯一 `PanelTheme`。代码差异改为单行显示和容器内横向滚动,移动端侧滑动作补足 44px,审查轨迹证据提高对比度并补全五项 token 用量。全站用户可见文案完成一次源码审计,浏览器标题带当前页面。服务端契约与领域行为未改变。
