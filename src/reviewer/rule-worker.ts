@@ -5,29 +5,22 @@
  * 读不写,产出经一个自定义工具逐条回传主进程。区别只在任务本身——这里读的是基点 commit
  * 上的仓库全貌,产出的是规范性陈述,不是 Finding。
  */
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import {
   createAgentSession,
-  DefaultResourceLoader,
   defineTool,
   SessionManager,
-  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import type { ReviewRule } from "../review/finding.ts";
-import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, redactModelCredential } from "./env.ts";
-import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
+import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import {
   RULE_LIMIT,
   type DispositionFeedback,
   type RuleWorkerMessage,
   type RuleWorkerRequest,
 } from "./rule-agent.ts";
-import { numberedReadTool, ruleBullet } from "./worker-tools.ts";
+import { numberedReadTool, prepareAgentRuntime, ruleBullet } from "./worker-tools.ts";
 
 /** 只读靠允许清单强制:未列出的工具 Pi 不会注册,模型没有写入的调用路径。 */
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
@@ -160,36 +153,17 @@ async function run(request: RuleWorkerRequest): Promise<void> {
     },
   });
 
-  // 空的 agentDir:不让宿主机上的全局扩展、skill、设置与凭据渗进探索会话。
-  const agentDir = mkdtempSync(join(tmpdir(), "multireviewer-rule-agent-"));
-  process.env[PI_AGENT_DIR_ENV] = agentDir;
-
-  const apiKey = process.env[MODEL_API_KEY_ENV];
-  if (apiKey === undefined || apiKey === "") {
-    send({ kind: "done", failure: "缺少模型凭据" });
+  const prepared = await prepareAgentRuntime({
+    agentDirPrefix: "multireviewer-rule-agent-",
+    worktreePath: request.worktreePath,
+    runtimeModel: request.runtimeModel,
+    systemPrompt: SYSTEM_PROMPT,
+  });
+  if ("failure" in prepared) {
+    send({ kind: "done", failure: prepared.failure });
     return;
   }
-
-  const runtime = request.runtimeModel;
-  const modelRuntime = await isolatedPinnedModelRuntime(agentDir, runtime);
-  await modelRuntime.setRuntimeApiKey(runtime.provider, apiKey);
-  const model = modelRuntime.getModel(runtime.provider, runtime.id);
-  if (!model) {
-    send({ kind: "done", failure: `固定运行模型无法加载: ${runtime.provider}/${runtime.id}` });
-    return;
-  }
-
-  const settingsManager = SettingsManager.inMemory({
-    compaction: { enabled: false },
-    retry: { enabled: true, maxRetries: 1 },
-  });
-  const resourceLoader = new DefaultResourceLoader({
-    cwd: request.worktreePath,
-    agentDir,
-    settingsManager,
-    systemPromptOverride: () => SYSTEM_PROMPT,
-  });
-  await resourceLoader.reload();
+  const { agentDir, apiKey, model, modelRuntime, settingsManager, resourceLoader } = prepared;
 
   const { session } = await createAgentSession({
     cwd: request.worktreePath,

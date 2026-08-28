@@ -86,14 +86,22 @@ function ruleFieldsBody(form: RuleFormState): string {
 
 /**
  * 一组规则表单的增删改。生效规则与规则草案各有一组端点,写法却是同一套:`id` 为 null 即
- * POST 新增、有值即 PUT 改这一条,`{ remove }` 即 DELETE 那一条。两者的差别只有端点前缀
- * 与成功后清空哪一份表单,由入参给。
+ * POST 新增、有值即 PUT 改这一条,`{ retire }` 与 `{ deleteDraft }` 即 DELETE 那一条。
+ * 两者的差别只有端点前缀与成功后清空哪一份表单,由入参给。
+ *
+ * 删那一档分成两个名字:生效规则的那一次是**废止**(CONTEXT.md 的两态之一,那条规则
+ * 仍要查得到),规则草案的那一次是**删除**(还没确认,删了就不剩什么)。请求形状相同,
+ * 说的却是两件事,同名会让读代码的人以为它们是一回事。
  */
 function useRuleEdits(basePath: string, onSuccess: () => void) {
   return useMutation({
-    mutationFn: async (action: RuleFormState | { remove: number }): Promise<void> => {
-      const response = "remove" in action
-        ? await api(`${basePath}/${action.remove}`, { method: "DELETE" })
+    mutationFn: async (
+      action: RuleFormState | { retire: number } | { deleteDraft: number },
+    ): Promise<void> => {
+      const response = "retire" in action
+        ? await api(`${basePath}/${action.retire}`, { method: "DELETE" })
+        : "deleteDraft" in action
+        ? await api(`${basePath}/${action.deleteDraft}`, { method: "DELETE" })
         : await api(action.id === null ? basePath : `${basePath}/${action.id}`, {
             method: action.id === null ? "POST" : "PUT",
             body: ruleFieldsBody(action),
@@ -256,7 +264,7 @@ function RuleSetDialogContent({
           onLaunched={reload}
           onEdit={setDraftEdit}
           onSubmitEdit={() => changeDraft.mutate(draftEdit!)}
-          onRemove={(id) => changeDraft.mutate({ remove: id })}
+          onDeleteDraft={(id) => changeDraft.mutate({ deleteDraft: id })}
           onConfirm={() => confirm.mutate()}
         />
       ) : null}
@@ -332,7 +340,7 @@ function RuleSetDialogContent({
                             color="gray"
                             size={{ initial: "3", sm: "1" }}
                             disabled={change.isPending}
-                            onClick={() => change.mutate({ remove: rule.id })}
+                            onClick={() => change.mutate({ retire: rule.id })}
                           >
                             废止
                           </Button>
@@ -627,7 +635,7 @@ function ExplorationSection({
   onLaunched,
   onEdit,
   onSubmitEdit,
-  onRemove,
+  onDeleteDraft,
   onConfirm,
 }: {
   repo: { repoId: number; owner: string; repo: string };
@@ -637,7 +645,7 @@ function ExplorationSection({
   onLaunched: () => void;
   onEdit: (draft: RuleFormState | null) => void;
   onSubmitEdit: () => void;
-  onRemove: (id: number) => void;
+  onDeleteDraft: (id: number) => void;
   onConfirm: () => void;
 }) {
   const exploration = ruleSet.exploration;
@@ -723,7 +731,7 @@ function ExplorationSection({
                     color="gray"
                     size={{ initial: "3", sm: "1" }}
                     disabled={busy}
-                    onClick={() => onRemove(rule.id)}
+                    onClick={() => onDeleteDraft(rule.id)}
                   >
                     删除
                   </Button>

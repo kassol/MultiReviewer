@@ -6,6 +6,7 @@
  * 与 issue #205 / #207 同一个位置;后台任务的结束等服务自己发的回调,不猜时序。
  */
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { after, test } from "node:test";
 
 import { openStore } from "../src/review/store.ts";
@@ -170,6 +171,21 @@ test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,
       ["modify", ruleId, "改写现集里的那一条"],
     ],
   );
+});
+
+test("反哺跑完即释放那一份一次性工作树", async () => {
+  const agent = scriptedRuleAgent(() => ({ items: [] }));
+  const h = await harnessWithFindings(agent);
+  const findings = await inlineFindings(h);
+
+  assert.equal((await dispose(h, findings[0]!.id, NOTE)).status, 200);
+  await h.dispositionFeedbackAtLeast(1);
+  assert.equal(h.dispositionFeedbacks[0]!.failure, undefined);
+
+  // agent 读过的那份工作副本用完即删(issue #212):留着的话每一条带备注的处置都在缓存
+  // 根下堆一份完整工作副本,而它只在这一次解读期间有用。
+  assert.equal(agent.calls.length, 1);
+  assert.equal(existsSync(agent.calls[0]!.worktreePath), false);
 });
 
 test("无备注的处置不触发任何解读", async () => {

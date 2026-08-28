@@ -4,16 +4,10 @@
  * 每个 Reviewer 一个进程,进程的环境里只有它自己那一家厂商的凭据(见 `env.ts`)。
  * 这里跑一个 Pi 会话,把模型经 `report_finding` 报出的每条原始条目立即回传主进程。
  */
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import {
   createAgentSession,
-  DefaultResourceLoader,
   defineTool,
   SessionManager,
-  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -24,11 +18,15 @@ import type {
   ReviewRule,
 } from "../review/finding.ts";
 import { anchorReport, anchorVerdict } from "./anchor.ts";
-import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, redactModelCredential } from "./env.ts";
-import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
+import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
 import { reviewerEventStream } from "./trace-events.ts";
-import { fileLines, numberedReadTool, ruleBullet } from "./worker-tools.ts";
+import {
+  fileLines,
+  numberedReadTool,
+  prepareAgentRuntime,
+  ruleBullet,
+} from "./worker-tools.ts";
 
 /**
  * 只读靠允许清单强制:未列出的工具 Pi 不会注册,模型没有写入的调用路径。
@@ -326,44 +324,17 @@ async function run(request: ReviewerRequest): Promise<void> {
     },
   });
 
-  // 空的 agentDir:不让宿主机上的全局扩展、skill、设置与凭据渗进审查会话。
-  const agentDir = mkdtempSync(join(tmpdir(), "multireviewer-agent-"));
-  process.env[PI_AGENT_DIR_ENV] = agentDir;
-
-  const apiKey = process.env[MODEL_API_KEY_ENV];
-  if (apiKey === undefined || apiKey === "") {
-    send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0, failure: "缺少模型凭据" });
+  const prepared = await prepareAgentRuntime({
+    agentDirPrefix: "multireviewer-agent-",
+    worktreePath: request.worktreePath,
+    runtimeModel: request.runtimeModel,
+    systemPrompt: SYSTEM_PROMPT,
+  });
+  if ("failure" in prepared) {
+    send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0, failure: prepared.failure });
     return;
   }
-
-  // 只从 IPC 里的本轮快照注册这一项运行模型。子进程不读共享的当前模型投影，因此模型服务
-  // 在 Review Run 中途切版也不会改掉后续批次的地址、协议或模型字段。
-  const runtime = request.runtimeModel;
-  const modelRuntime = await isolatedPinnedModelRuntime(agentDir, runtime);
-  await modelRuntime.setRuntimeApiKey(runtime.provider, apiKey);
-
-  const model = modelRuntime.getModel(runtime.provider, runtime.id);
-  if (!model) {
-    send({
-      kind: "done",
-      rejectedToolCalls: 0,
-      anchorRejections: 0,
-      failure: `固定运行模型无法加载: ${runtime.provider}/${runtime.id}`,
-    });
-    return;
-  }
-
-  const settingsManager = SettingsManager.inMemory({
-    compaction: { enabled: false },
-    retry: { enabled: true, maxRetries: 1 },
-  });
-  const resourceLoader = new DefaultResourceLoader({
-    cwd: request.worktreePath,
-    agentDir,
-    settingsManager,
-    systemPromptOverride: () => SYSTEM_PROMPT,
-  });
-  await resourceLoader.reload();
+  const { agentDir, apiKey, model, modelRuntime, settingsManager, resourceLoader } = prepared;
 
   const { session } = await createAgentSession({
     cwd: request.worktreePath,

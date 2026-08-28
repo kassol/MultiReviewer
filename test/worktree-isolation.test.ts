@@ -130,6 +130,31 @@ test("进程被杀留下的一次性工作树,由下一次准备清掉", async (
   await next.release();
 });
 
+test("这个仓库上还有工作树在用时不清扫,并发那一次的登记因此保得住", async () => {
+  const { repo, cache } = setup();
+  const clone = repoCachePath(cache.dir, REF);
+
+  const live = await prepare(cache.dir, repo.dir, repo.headSha);
+  // 上一次进程留下的样子。它在这里只作探针:清扫跑没跑,看它还在不在。
+  const stale = join(dirname(live.path), "stale");
+  execFileSync("git", ["-C", clone, "worktree", "add", "--quiet", "--detach", stale, repo.headSha]);
+
+  // 还有一份在用时的那一次准备:残留原样留着,`worktree prune` 一次也没跑——跑了就会
+  // 把另一次 add 刚登记、目录还没建出来的那一份一起丢掉。
+  const concurrent = await prepare(cache.dir, repo.dir, repo.mergeBaseSha);
+  assert.equal(existsSync(stale), true, "还有工作树在用时就清扫了");
+  assert.equal(readCalc(concurrent), BASE_CALC);
+  assert.equal(readCalc(live), HEAD_CALC);
+
+  await live.release();
+  await concurrent.release();
+
+  // 安静下来之后的那一次照旧清掉它。
+  const next = await prepare(cache.dir, repo.dir, repo.headSha);
+  assert.equal(existsSync(stale), false);
+  await next.release();
+});
+
 test("移除仓库时缓存 clone 与派生出去的工作树一起删掉", async () => {
   const { repo, cache } = setup();
 

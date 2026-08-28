@@ -90,16 +90,23 @@ function checkoutsPath(cacheDir: string, ref: RepoRef): string {
  * 本进程还在用的一次性工作树。
  *
  * 进程被杀时 `release` 跑不到,目录与 git 的登记都会留下来。留下的那些必然不在这个集合
- * 里——本进程从未开过它们,因此下一次准备时可以放心清掉,而并发进行中的那些照旧留着。
+ * 里——本进程从未开过它们,因此在这个仓库上没有并发参与者的那一次准备可以放心清掉。
  */
 const liveCheckouts = new Set<string>();
 
-/** 清掉上一次进程留下的一次性工作树。没有残留时连 `prune` 都不跑,不去碰并发的登记。 */
+/**
+ * 清掉上一次进程留下的一次性工作树。
+ *
+ * 这个仓库上本进程还有工作树在用、或有一次 `worktree add` 正跑着时整段跳过。`worktree
+ * prune` 只看目录在不在:另一次 add 已经登记、目录还没建出来的那半拍里跑 prune 会把它的
+ * 登记丢掉,那份工作树随后就用不了了。路径先记进 `liveCheckouts` 再建目录,判据因此也覆
+ * 盖得到正在建的那一份。残留留到这个仓库安静下来的下一次准备再清。
+ */
 async function sweepCheckouts(clonePath: string, root: string): Promise<void> {
-  const entries = await readdir(root).catch(() => [] as string[]);
-  const leaked = entries.map((name) => join(root, name)).filter((dir) => !liveCheckouts.has(dir));
+  for (const dir of liveCheckouts) if (dirname(dir) === root) return;
+  const leaked = await readdir(root).catch(() => [] as string[]);
   if (leaked.length === 0) return;
-  for (const dir of leaked) await rm(dir, { recursive: true, force: true });
+  for (const name of leaked) await rm(join(root, name), { recursive: true, force: true });
   // 目录先删,再让 git 把指向它们的登记一起丢掉。
   await git(clonePath, ["worktree", "prune"]);
 }

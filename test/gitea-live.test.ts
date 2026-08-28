@@ -80,6 +80,8 @@ test("Gitea 实现对真实 pull request 完成整条发布与处置链路", { s
   const ranges = parseDiffRanges(
     await readRangeDiff(worktree.path, worktree.mergeBaseSha, pullRequest.headSha),
   );
+  // 位置算完就放掉这一份一次性工作树,下面的 runReview 自己再派生一份。
+  await worktree.release();
   const [file, fileRanges] = [...ranges].find(([, r]) => r.length > 0) ?? [];
   assert.ok(file !== undefined && fileRanges !== undefined, "PR 的 diff 中没有可评论的位置");
 

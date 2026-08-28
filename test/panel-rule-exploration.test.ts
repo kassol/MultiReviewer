@@ -6,6 +6,7 @@
  * 实现注入,对齐脚本化 Reviewer 先例;真模型链路由 smoke 覆盖。
  */
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { after, test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
@@ -335,6 +336,26 @@ test("面板发起基点探索:产出落草案、按重要性截断为 30 条", 
   assert.equal(agent.calls.length, 1);
   assert.equal(agent.calls[0]!.baselineSha, h.repo.baseSha);
   assert.equal(agent.calls[0]!.model, "test:global-model");
+});
+
+test("探索跑完即释放那一份一次性工作树", async () => {
+  const agent = scriptedRuleAgent({ items: [item("探索出来的一条")] });
+  const { h, cookie } = await registeredHarness({ ruleAgent: agent });
+
+  assert.equal(
+    (await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-exploration`, {
+      baseline: h.repo.baseSha,
+      provider: "test",
+      model: "global-model",
+    })).status,
+    202,
+  );
+  await h.explorationsAtLeast(1);
+
+  // agent 读过的那份工作副本用完即删(issue #212):留着的话每一次探索都在缓存根下堆一份
+  // 完整工作副本,而它只在这一次探索期间有用。
+  assert.equal(agent.calls.length, 1);
+  assert.equal(existsSync(agent.calls[0]!.worktreePath), false);
 });
 
 test("面板逐条增删改草案后整组确认,生成第一个规则集版本", async () => {
