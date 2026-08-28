@@ -65,6 +65,8 @@ export type PanelHarness = {
   worktrees: { repoId: number; failure?: string }[];
   /** 后台跑完的基点探索(issue #205),按结束先后。 */
   explorations: { repoId: number; failure?: string }[];
+  /** 后台跑完的处置反哺解读(issue #208),按结束先后。 */
+  dispositionFeedbacks: { findingId: number; failure?: string }[];
   factoryCalls: (readonly ReviewerSpec[])[];
   /** 每次组装 Reviewer 时拿到的完整本轮运行计划。 */
   runtimePlans: (readonly ReviewerRuntimePlan[])[];
@@ -80,6 +82,8 @@ export type PanelHarness = {
   worktreesPreparedAtLeast(count: number): Promise<void>;
   /** 等到至少这么多次基点探索已经结束(issue #205)。 */
   explorationsAtLeast(count: number): Promise<void>;
+  /** 等到至少这么多次处置反哺解读已经结束(issue #208)。 */
+  dispositionFeedbackAtLeast(count: number): Promise<void>;
 };
 
 /** 凭据测试用的主密钥。缺主密钥那一档传 `credentialMasterKey: undefined` 起 harness。 */
@@ -266,6 +270,8 @@ export async function startPanelHarness(
   let worktreeWaiting: { count: number; resolve: () => void }[] = [];
   const explorations: { repoId: number; failure?: string }[] = [];
   let explorationWaiting: { count: number; resolve: () => void }[] = [];
+  const dispositionFeedbacks: { findingId: number; failure?: string }[] = [];
+  let feedbackWaiting: { count: number; resolve: () => void }[] = [];
 
   const server = createWebhookServer({
     forges: { gitea: forge },
@@ -295,11 +301,21 @@ export async function startPanelHarness(
     ...(options.discoverModelServiceModels === undefined
       ? {}
       : { discoverModelServiceModels: options.discoverModelServiceModels }),
-    ...(options.ruleAgent === undefined ? {} : { ruleAgent: options.ruleAgent }),
+    // 默认注入一个零产出的规则 agent:不给的话探索与处置反哺会去 fork 真的 Pi 子进程,
+    // 而 harness 上的模型服务指向的是一个假地址。要断言产出的用例自己传脚本化实现。
+    ruleAgent: options.ruleAgent ?? (async () => ({ items: [] })),
     onRuleExplorationSettled: (repoId, failure) => {
       explorations.push({ repoId, ...(failure === undefined ? {} : { failure }) });
       explorationWaiting = explorationWaiting.filter((w) => {
         if (explorations.length < w.count) return true;
+        w.resolve();
+        return false;
+      });
+    },
+    onDispositionFeedbackSettled: (findingId, failure) => {
+      dispositionFeedbacks.push({ findingId, ...(failure === undefined ? {} : { failure }) });
+      feedbackWaiting = feedbackWaiting.filter((w) => {
+        if (dispositionFeedbacks.length < w.count) return true;
         w.resolve();
         return false;
       });
@@ -401,6 +417,7 @@ export async function startPanelHarness(
     settled,
     worktrees,
     explorations,
+    dispositionFeedbacks,
     factoryCalls,
     snapshots,
     runtimePlans,
@@ -422,6 +439,12 @@ export async function startPanelHarness(
       if (explorations.length >= count) return Promise.resolve();
       return new Promise<void>((resolve) => {
         explorationWaiting.push({ count, resolve });
+      });
+    },
+    dispositionFeedbackAtLeast(count: number): Promise<void> {
+      if (dispositionFeedbacks.length >= count) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        feedbackWaiting.push({ count, resolve });
       });
     },
   };

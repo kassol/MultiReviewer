@@ -43,12 +43,34 @@ export type RuleAgentItem = {
   retire?: boolean;
 };
 
+/**
+ * 触发一次处置反哺的那条处置(CONTEXT.md 处置反哺,issue #208)。备注是解读的输入本身,
+ * Finding 的上下文形态从简——位置、标题与描述都从库里取,不另去 Forge 上取原文。
+ */
+export type DispositionFeedback = {
+  /** 处置备注原文。 */
+  note: string;
+  /** 被处置的那条 Finding。 */
+  finding: {
+    file: string;
+    line: number;
+    /** 合并后的标题,升级前落库的历史行没有。 */
+    title: string | null;
+    description: string;
+  };
+};
+
 /** 交给规则 agent 的一次任务。 */
 export type RuleAgentRequest = {
   /** 已经 checkout 到基点 commit 的工作副本。 */
   worktreePath: string;
   /** 基点 commit(CONTEXT.md 基点探索)。 */
   baselineSha: string;
+  /**
+   * 处置反哺的输入(issue #208)。缺席即这一次是基点探索;有值即解读这条处置备注,
+   * `baselineSha` 那时是这条 Finding 报出时的那个 head commit,工作副本停在它上面。
+   */
+  feedback?: DispositionFeedback;
   /** 本次固定的完整运行模型;不含凭据。 */
   runtimeModel: RuntimeModel;
   /** 该模型绑定厂商的模型凭据。子进程的环境里只会有这一份。 */
@@ -161,6 +183,7 @@ export function runRuleAgentChild(
       baselineSha: request.baselineSha,
       runtimeModel: request.runtimeModel,
       existingRules: request.existingRules,
+      ...(request.feedback === undefined ? {} : { feedback: request.feedback }),
     };
     child.send(payload, (error) => {
       if (error !== null) finish(`无法向子进程投递任务: ${error.message}`);

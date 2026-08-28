@@ -86,6 +86,7 @@ import {
 import {
   CUSTOM_PROVIDER_NAME_PATTERN,
   openStore,
+  type FindingDispositionTarget,
   type ModelReference,
   type ModelServiceRecord,
   type ModelServiceVersionCommit,
@@ -222,6 +223,11 @@ export type WebhookServerDeps = {
    * 成功不出声——与工作副本准备同一条口径。
    */
   onRuleExplorationSettled?: (repoId: number, failure?: string) => void;
+  /**
+   * 后台跑完一次处置反哺解读时回调(issue #208),`failure` 有值即这一次没解读成。
+   * 不传则把失败写进 stderr,成功不出声——与基点探索同一条口径。
+   */
+  onDispositionFeedbackSettled?: (findingId: number, failure?: string) => void;
 };
 
 /** 两个平台标识 pull request 事件的头值相同。 */
@@ -5024,7 +5030,7 @@ async function handleDispose(
       ...(note === undefined ? {} : { note }),
     }),
   );
-  return sendJson(res, 200, {
+  sendJson(res, 200, {
     finding: {
       id: finding.id,
       disposition,
@@ -5033,6 +5039,8 @@ async function handleDispose(
       note: note ?? finding.note,
     },
   });
+  // 处置备注落库即排一次处置反哺(issue #208)。没有备注的处置不构成反哺输入,零触发。
+  if (note !== undefined) void runDispositionFeedbackInBackground(deps, finding, note);
 }
 
 /** 范围审查发起时人填的两端。只收 sha:它同时挡住以 `-` 开头的值被 git 当成选项。 */
@@ -6030,6 +6038,10 @@ function usableRuleItems(items: readonly RuleAgentItem[]): RuleAgentItem[] {
 function proposalsFromItems(
   items: readonly RuleAgentItem[],
   activeRules: readonly ReviewRuleRecord[],
+  origin: Pick<RuleProposalInput, "source" | "sourceNote"> = {
+    source: "baseline-exploration",
+    sourceNote: null,
+  },
 ): RuleProposalInput[] {
   const byId = new Map(activeRules.map((rule) => [rule.id, rule]));
   const proposals: RuleProposalInput[] = [];
@@ -6043,8 +6055,7 @@ function proposalsFromItems(
         scope: item.scope,
         statement: item.statement,
         layer: item.layer,
-        source: "baseline-exploration",
-        sourceNote: null,
+        ...origin,
       });
       continue;
     }
@@ -6055,8 +6066,7 @@ function proposalsFromItems(
       scope: content.scope,
       statement: content.statement,
       layer: content.layer,
-      source: "baseline-exploration",
-      sourceNote: null,
+      ...origin,
     });
   }
   return proposals;
@@ -6143,6 +6153,114 @@ async function runRuleExplorationInBackground(
     deps.onRuleExplorationSettled(repoId, failure);
   } else if (failure !== undefined) {
     console.error(`基点探索失败:${ref.owner}/${ref.repo}:${failure}`);
+  }
+}
+
+/**
+ * 模型标识回到 spec。`modelIdentity` 以首次出现的冒号为界(部分 model id 自带斜杠),
+ * 这里按同一条口径切回去:基点探索只记下标识,反哺沿用它时要还原成运行计划的输入。
+ */
+function specFromIdentity(identity: string): ReviewerSpec | undefined {
+  const colon = identity.indexOf(":");
+  if (colon <= 0 || colon === identity.length - 1) return undefined;
+  return { provider: identity.slice(0, colon), model: identity.slice(colon + 1) };
+}
+
+/**
+ * 一次处置反哺的后台执行(CONTEXT.md 处置反哺,issue #208)。处置备注落库之后即时排一次,
+ * 不绑 Review Run:把备注、被处置的那条 Finding 与该仓库当前生效的规则集交给规则 agent,
+ * 产出经与基点探索同一套映射排进修订提案队列,出处标处置反哺、附注放备注原文。产出为空
+ * 是合法结果,那时一条提案都不留。
+ *
+ * 失败留一行日志就停,不自动重试:反哺是旁路,重试只会在模型持续不可用时变成风暴,而人
+ * 下一次写备注本来就会再排一次。整件事与处置写入解耦,解读失败不影响处置本身。
+ */
+async function runDispositionFeedbackInBackground(
+  deps: WebhookServerDeps,
+  finding: FindingDispositionTarget,
+  note: string,
+): Promise<void> {
+  const ref: RepoRef = { owner: finding.owner, repo: finding.repo };
+  let failure: string | undefined;
+  try {
+    const forge = deps.forges.gitea;
+    if (forge === undefined) throw new Error("gitea 没有配置 Forge,取不回代码");
+    const context = withStore(deps.dbPath, (store) => {
+      const row = store
+        .listRepos()
+        .find((entry) => entry.owner === ref.owner && entry.repo === ref.repo);
+      if (row === undefined) return undefined;
+      const exploration = store.getRuleExploration(row.repoId);
+      return {
+        repoId: row.repoId,
+        rules: store.getRuleSet(row.repoId)?.rules ?? [],
+        explored: exploration === null ? undefined : specFromIdentity(exploration.model),
+      };
+    });
+    if (context === undefined) throw new Error("这个仓库不在注册表里");
+    // 沿用该仓库最近一次基点探索所用的模型;从未探索过就用全局模型组合的第一个。
+    const spec = context.explored ?? globalSettings(deps).reviewers[0];
+    if (spec === undefined) {
+      throw new Error("这个仓库没有基点探索记录、全局模型组合也是空的,解读用不了模型");
+    }
+    const [plan] = await materializeReviewerPlans(
+      deps,
+      withStore(deps.dbPath, (store) => store.listModelServices()),
+      [spec],
+    );
+    if (plan === undefined || plan.runtimeModel === null || plan.credential === null) {
+      throw new Error(plan?.failure ?? `模型 ${modelIdentity(spec)} 不可用`);
+    }
+    const [repository, credentials] = await Promise.all([
+      forge.getRepository(ref),
+      forge.cloneCredentials(ref),
+    ]);
+    // 工作副本停在这条 Finding 报出时的那个 head commit 上:备注说的是那时的代码。
+    const worktree = await prepareWorktree({
+      cacheDir: deps.cacheDir,
+      ref,
+      cloneUrl: repository.cloneUrl,
+      credentials,
+      headSha: finding.headSha,
+      baseSha: finding.headSha,
+    });
+    const agent = deps.ruleAgent ?? createPiRuleAgent();
+    const result = await agent({
+      worktreePath: worktree.path,
+      baselineSha: finding.headSha,
+      runtimeModel: plan.runtimeModel,
+      apiKey: plan.credential,
+      existingRules: context.rules.map((rule) => ({
+        id: rule.id,
+        scope: rule.scope,
+        statement: rule.statement,
+      })),
+      feedback: {
+        note,
+        finding: {
+          file: finding.file,
+          line: finding.line,
+          title: finding.title,
+          description: finding.description,
+        },
+      },
+    });
+    if (result.failure !== undefined) throw new Error(result.failure);
+    const proposals = proposalsFromItems(usableRuleItems(result.items), context.rules, {
+      source: "disposition-feedback",
+      sourceNote: note,
+    });
+    withStore(deps.dbPath, (store) => {
+      for (const proposal of proposals) store.addRuleProposal(context.repoId, proposal);
+    });
+  } catch (error) {
+    failure = failureText(error);
+  }
+
+  if (deps.onDispositionFeedbackSettled !== undefined) {
+    deps.onDispositionFeedbackSettled(finding.id, failure);
+  } else if (failure !== undefined) {
+    console.error(`处置反哺失败:${ref.owner}/${ref.repo} 的 Finding ${finding.id}:${failure}`);
   }
 }
 

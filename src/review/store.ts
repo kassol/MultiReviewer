@@ -787,6 +787,9 @@ export type ContinuationCandidate = {
 /**
  * 面板处置一条 Finding 要用的那几项。处置写在承载它的那条 Forge 评论上,因此这里
  * 带上评论 id 与它所属仓库;`commentId` 为 null 即 fallback,没有可处置的载体。
+ *
+ * 位置、标题、描述与本轮 head commit 是处置反哺的输入(issue #208):带备注的处置要把
+ * 这条 Finding 的上下文交给 agent,工作副本也停在它报出时的那个 commit 上。
  */
 export type FindingDispositionTarget = {
   id: number;
@@ -795,6 +798,13 @@ export type FindingDispositionTarget = {
   commentId: string | null;
   disposition: Disposition;
   note: string | null;
+  file: string;
+  line: number;
+  /** 合并后的标题。升级前落库的历史行为 null。 */
+  title: string | null;
+  description: string;
+  /** 报出这条 Finding 的那一轮 Review Run 的 head commit。 */
+  headSha: string;
 };
 
 /**
@@ -5275,7 +5285,8 @@ export function openStore(dbPath: string): Store {
       const row = db
         .prepare(
           `SELECT f.id, f.comment_id, f.disposition, f.disposition_note,
-                  run.owner, run.repo
+                  f.file, f.line, f.title, f.description,
+                  run.owner, run.repo, run.head_sha
              FROM finding f
              JOIN review_run run ON f.run_id = run.id
             WHERE f.id = ?`,
@@ -5289,6 +5300,11 @@ export function openStore(dbPath: string): Store {
         commentId: row["comment_id"] === null ? null : String(row["comment_id"]),
         disposition: String(row["disposition"]) as Disposition,
         note: row["disposition_note"] === null ? null : String(row["disposition_note"]),
+        file: String(row["file"]),
+        line: Number(row["line"]),
+        title: row["title"] === null ? null : String(row["title"]),
+        description: String(row["description"]),
+        headSha: String(row["head_sha"]),
       };
     },
 

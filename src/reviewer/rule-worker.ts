@@ -22,7 +22,12 @@ import type { ReviewRule } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, redactModelCredential } from "./env.ts";
 import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
 import { numberedRead } from "./numbered-read.ts";
-import { RULE_LIMIT, type RuleWorkerMessage, type RuleWorkerRequest } from "./rule-agent.ts";
+import {
+  RULE_LIMIT,
+  type DispositionFeedback,
+  type RuleWorkerMessage,
+  type RuleWorkerRequest,
+} from "./rule-agent.ts";
 
 /** 只读靠允许清单强制:未列出的工具 Pi 不会注册,模型没有写入的调用路径。 */
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
@@ -102,6 +107,31 @@ ${existing}
 Start from the repository's own documentation and configuration, then read the code that matters most: the entry points, the modules everything else depends on, and the places where mistakes would be expensive. Look for the conventions the existing code already keeps to, and state them as obligations.
 
 Report each rule through ${PROPOSE_RULE_TOOL}. When you have reported everything worth confirming, stop.`;
+}
+
+/**
+ * 处置反哺的提示(issue #208)。同一个 agent、同一套产出协议,输入换成一条处置备注与
+ * 它处置掉的那条 Finding:要的是「这条意见该不该成为长期标准」,不是重新推导整套规则。
+ *
+ * 明写「报不出变更是预期结果」:一条只了结眼前那一条 Finding 的备注不构成规则,而 agent
+ * 手里有个报告工具时倾向于用它。
+ */
+export function feedbackPrompt(
+  request: Pick<RuleWorkerRequest, "existingRules"> & { feedback: DispositionFeedback },
+): string {
+  const { note, finding } = request.feedback;
+  const existing =
+    request.existingRules.length === 0 ? "" : `${existingSection(request.existingRules)}\n`;
+  return `A reviewer of this repository just disposed of one finding and left a note explaining the decision. Judge what that note says about the standards this repository should be reviewed by.
+
+Finding: ${finding.title ?? finding.description}
+Location: ${finding.file}:${finding.line}
+Description: ${finding.description}
+Disposition note: ${note}
+${existing}
+Report only what the note itself justifies. A note that settles this one finding and nothing more justifies no change at all — reporting nothing is an expected outcome. Read the code around the finding when you need it to tell a one-off from a standing obligation.
+
+Report each change through ${PROPOSE_RULE_TOOL}. When you have nothing more to report, stop.`;
 }
 
 /** worktree 内文件的行数组。路径出圈或读不出来返回 undefined,交给调用方措辞。 */
@@ -219,7 +249,11 @@ async function run(request: RuleWorkerRequest): Promise<void> {
 
   let thrown: string | undefined;
   try {
-    await session.prompt(rulePrompt(request));
+    await session.prompt(
+      request.feedback === undefined
+        ? rulePrompt(request)
+        : feedbackPrompt({ existingRules: request.existingRules, feedback: request.feedback }),
+    );
   } catch (error) {
     thrown = String(error instanceof Error ? error.message : error);
   }
