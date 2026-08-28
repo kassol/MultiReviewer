@@ -6,7 +6,13 @@ import type {
   PullRequestRef,
   ReviewCommentDraft,
 } from "../forge/forge.ts";
-import { pinRunCommits, prepareWorktree, readRangeDiff } from "../git/worktree.ts";
+import {
+  pinRunCommits,
+  prepareWorktree,
+  readLineAuthors,
+  readRangeDiff,
+  type LineAuthor,
+} from "../git/worktree.ts";
 import {
   DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
   mergeBatchOutcomes,
@@ -698,6 +704,46 @@ async function applyContinuations(
 }
 
 /**
+ * 本轮每条 Finding 的行作者(CONTEXT.md),与传入的顺序一一对应,判不出来的那些是
+ * undefined。
+ *
+ * 每轮按自己的 head 重算,不沿用上一轮:延续过来的 Finding 行号已经漂移,抄上一轮的
+ * 结果会把这一行记到别人头上。同一个文件的多条合成一次 `git blame`——逐条起一个 git
+ * 进程的话,一轮几十条 Finding 就是几十次进程启动。
+ *
+ * 判定失败只记日志、留空:行作者是给人看的归属信息,取不到不该让整轮审查白跑。失败以
+ * 文件为单位,那个文件的这几条一起留空,下次读取时再补(issue #199)。
+ */
+async function findingLineAuthors(
+  worktreePath: string,
+  headSha: string,
+  findings: readonly { file: string; line: number }[],
+): Promise<(LineAuthor | undefined)[]> {
+  const byFile = new Map<string, number[]>();
+  for (const [index, finding] of findings.entries()) {
+    byFile.set(finding.file, [...(byFile.get(finding.file) ?? []), index]);
+  }
+  const authors: (LineAuthor | undefined)[] = findings.map(() => undefined);
+  for (const [file, indexes] of byFile) {
+    try {
+      const found = await readLineAuthors(
+        worktreePath,
+        headSha,
+        file,
+        indexes.map((index) => findings[index]!.line),
+      );
+      for (const index of indexes) authors[index] = found.get(findings[index]!.line);
+    } catch (error) {
+      console.error(
+        `[review] ${file} 的行作者判定失败,这几条留空,审查照常:`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+  return authors;
+}
+
+/**
  * 逐条自动处置:先写 Forge 再落库。Disposition 的权威状态在 Forge 上(ADR 0006),
  * 反过来会留下「库里说已处置、Gitea 上没有」,而下一轮回填还会把它改回去。
  *
@@ -1097,6 +1143,14 @@ export async function runReview(
       ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
     }));
 
+    // 行作者(CONTEXT.md)在本轮 head 上判定,与 Finding 一起落库:统计不该依赖有人
+    // 打开过侧滑。
+    const lineAuthors = await findingLineAuthors(
+      worktree.path,
+      pullRequest.headSha,
+      groups.map((group) => group.finding),
+    );
+
     // 一条 Finding 一行,报出它的每个模型一条归属(ADR 0015):Finding Identity 不含
     // 模型,同一处问题不论几个模型报出都是同一条。指纹取合并组代表行的那一个——评论
     // 锚点埋的就是它,resolve 载体是整组共享的一条评论。
@@ -1124,6 +1178,9 @@ export async function runReview(
         ...(comment?.commentHtmlUrl === undefined
           ? {}
           : { commentHtmlUrl: comment.commentHtmlUrl }),
+        ...(lineAuthors[groupIndex] === undefined
+          ? {}
+          : { lineAuthor: lineAuthors[groupIndex] }),
       };
     });
 

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
 import { createReviewRunPlan, runReview } from "../src/review/run.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
-import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
+import { memoryForge, scriptedReviewer, verdictReviewer } from "./support/memory-forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 
 const BASE_CALC = `export function add(a: number, b: number) {
@@ -393,4 +394,170 @@ test("Review Run 在首批前固定一份运行计划,后续批次不跟随模�
   assert.deepEqual(calls, [["src/a.ts"], ["src/b.ts"]]);
   assert.equal(replacement.calls.length, 0);
   assert.deepEqual(result.outcomes.map((outcome) => outcome.model), ["planned-model"]);
+});
+
+/** 行作者(CONTEXT.md)判定用的两个作者。 */
+const ALICE = { name: "Alice Lin", email: "alice@example.invalid" };
+const BOB = { name: "Bob Ma", email: "bob@example.invalid" };
+
+type LineAuthorRow = {
+  line: number;
+  sha: unknown;
+  name: unknown;
+  email: unknown;
+  at: unknown;
+};
+
+/** 落库的行作者四列,按落库顺序。 */
+function lineAuthors(dbPath: string): LineAuthorRow[] {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    return db
+      .prepare(
+        `SELECT line, line_author_sha AS sha, line_author_name AS name,
+                line_author_email AS email, line_author_at AS at
+           FROM finding ORDER BY id`,
+      )
+      .all() as unknown as LineAuthorRow[];
+  } finally {
+    db.close();
+  }
+}
+
+/** 落库的「延续自」链接,按落库顺序。 */
+function continuedFrom(dbPath: string): unknown[] {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    return (
+      db.prepare("SELECT continued_from FROM finding ORDER BY id").all() as unknown as Record<
+        string,
+        unknown
+      >[]
+    ).map((row) => row["continued_from"]);
+  } finally {
+    db.close();
+  }
+}
+
+test("落库的 Finding 记下本轮 head 上各自那一行的行作者", async () => {
+  const repo = makeRepo({
+    base: { "src/calc.ts": BASE_CALC },
+    head: { "src/calc.ts": HEAD_CALC },
+  });
+  const cache = makeCacheDir();
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
+
+  // 两个作者各改一行:第 2 行归 Alice,第 6 行归 Bob。
+  const aliceCalc = HEAD_CALC.replace("return a + b;", "return a + b + 0;");
+  const aliceSha = repo.commitToBranch(
+    "feature",
+    { "src/calc.ts": aliceCalc },
+    { authorName: ALICE.name, authorEmail: ALICE.email },
+  );
+  const bobCalc = aliceCalc.replace("return a - b - 1;", "return a - b - 2;");
+  const bobSha = repo.commitToBranch(
+    "feature",
+    { "src/calc.ts": bobCalc },
+    { authorName: BOB.name, authorEmail: BOB.email },
+  );
+
+  const forge = memoryForge({
+    pullRequest: {
+      number: 7,
+      title: "示例 PR",
+      draft: false,
+      baseSha: repo.baseSha,
+      headSha: bobSha,
+      cloneUrl: repo.dir,
+    },
+    changedFiles: [{ path: "src/calc.ts", status: "modified" }],
+  });
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    {
+      forge: forge.forge,
+      reviewers: [
+        scriptedReviewer("stub-model", [
+          at(2, "P1", "add 多加了 0"),
+          at(6, "P0", "sub 多减了 2"),
+        ]),
+      ],
+      cacheDir: cache.dir,
+      dbPath: db.path,
+    },
+  );
+
+  const rows = [...lineAuthors(db.path)].sort((a, b) => a.line - b.line);
+  assert.deepEqual(
+    rows.map((row) => ({ line: row.line, sha: row.sha, name: row.name, email: row.email })),
+    [
+      { line: 2, sha: aliceSha, name: ALICE.name, email: ALICE.email },
+      { line: 6, sha: bobSha, name: BOB.name, email: BOB.email },
+    ],
+  );
+  for (const row of rows) assert.match(String(row.at), /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test("延续到新一轮的 Finding 按新 head 重算行作者,不沿用上一轮", async () => {
+  const repo = makeRepo({
+    base: { "src/calc.ts": BASE_CALC },
+    head: { "src/calc.ts": HEAD_CALC },
+  });
+  const cache = makeCacheDir();
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
+
+  const forge = memoryForge({
+    pullRequest: {
+      number: 7,
+      title: "示例 PR",
+      draft: false,
+      baseSha: repo.baseSha,
+      headSha: repo.headSha,
+      cloneUrl: repo.dir,
+    },
+    changedFiles: [{ path: "src/calc.ts", status: "modified" }],
+  });
+  const event = { owner: "acme", repo: "widgets", number: 7 };
+  const deps = {
+    forge: forge.forge,
+    reviewers: [scriptedReviewer("model-a", [at(6, "P0", "sub 多减了 1")])],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  };
+
+  await runReview(event, deps);
+
+  // 上一轮发出去的评论当成 Forge 上的既有评论喂回去:延续要在它上面发生。
+  forge.existingComments.push(
+    ...forge.publishedComments.map((comment) => ({ ...comment, resolved: false })),
+  );
+  // Bob 改写了 Finding 所指的那一行:旧指纹在新 head 上算不出,复核判仍在即触发延续。
+  const bobSha = repo.commitToBranch(
+    "feature",
+    { "src/calc.ts": HEAD_CALC.replace("return a - b - 1;", "return a - b - 2;") },
+    { authorName: BOB.name, authorEmail: BOB.email },
+  );
+  forge.pullRequest.headSha = bobSha;
+
+  await runReview(event, {
+    ...deps,
+    reviewers: [verdictReviewer("model-a", "present", [at(6, "P0", "sub 仍然多减了")])],
+  });
+
+  // 承接的那一行确实是延续过来的:它记下了旧评论的地址。
+  const [first, second] = continuedFrom(db.path);
+  assert.equal(first, null);
+  assert.notEqual(second, null);
+
+  const rows = lineAuthors(db.path);
+  assert.equal(rows.length, 2, "两轮各落一行");
+  assert.equal(rows[0]!.name, "fixture", "第一轮那一行的行作者是当时改这一行的人");
+  assert.deepEqual(
+    { sha: rows[1]!.sha, name: rows[1]!.name, email: rows[1]!.email },
+    { sha: bobSha, name: BOB.name, email: BOB.email },
+    "延续过来的那一行没有按新 head 重算行作者",
+  );
 });

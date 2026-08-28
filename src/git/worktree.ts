@@ -156,6 +156,91 @@ export async function pinRunCommits(
   await git(worktreePath, ["update-ref", `${RUN_REF_PREFIX}/${runId}/head`, commits.headSha]);
 }
 
+/** 一行代码的行作者(CONTEXT.md):最后改动它的那个 git author 与那次提交。 */
+export type LineAuthor = {
+  /** 那次提交的完整 sha。 */
+  sha: string;
+  /** git author 的姓名,原样。 */
+  name: string;
+  /** git author 的邮箱,原样。 */
+  email: string;
+  /** authored 时间,ISO 字符串。 */
+  authoredAt: string;
+};
+
+/** porcelain 每组的头一行:`<40 位 sha> <原文件行号> <本次结果里的行号> [<行数>]`。 */
+const BLAME_GROUP_HEADER = /^([0-9a-f]{40}) \d+ (\d+)/;
+
+/**
+ * 解析 `git blame --porcelain` 的输出。
+ *
+ * 同一个提交第二次出现时只有头一行,姓名、邮箱与时间不再重复,因此按 sha 记住已经
+ * 读到的那份。每组以一行制表符开头的原文收尾,读到它就把这一行的结果定下来。
+ */
+function parseLineAuthors(output: string): Map<number, LineAuthor> {
+  const authors = new Map<number, LineAuthor>();
+  const commits = new Map<string, { name?: string; email?: string; time?: number }>();
+  let sha: string | undefined;
+  let line: number | undefined;
+  for (const row of output.split("\n")) {
+    const header = BLAME_GROUP_HEADER.exec(row);
+    if (header !== null) {
+      sha = header[1]!;
+      line = Number(header[2]);
+      continue;
+    }
+    if (sha === undefined || line === undefined) continue;
+    const commit = commits.get(sha) ?? {};
+    commits.set(sha, commit);
+    if (row.startsWith("author ")) commit.name = row.slice("author ".length);
+    else if (row.startsWith("author-mail ")) {
+      commit.email = row.slice("author-mail ".length).replace(/^<|>$/g, "");
+    } else if (row.startsWith("author-time ")) {
+      commit.time = Number(row.slice("author-time ".length));
+    } else if (row.startsWith("\t")) {
+      if (commit.name !== undefined && commit.email !== undefined && commit.time !== undefined) {
+        authors.set(line, {
+          sha,
+          name: commit.name,
+          email: commit.email,
+          authoredAt: new Date(commit.time * 1000).toISOString(),
+        });
+      }
+    }
+  }
+  return authors;
+}
+
+/**
+ * 判定一个文件里若干行在指定 revision 上的行作者,回「行号 → 行作者」。
+ *
+ * 一个文件一次调用,多条行号合成多段 `-L`:逐行起一个 git 进程的话,一轮几十条
+ * Finding 就是几十次进程启动,而它们问的是同一个文件同一个 revision。
+ *
+ * 按 revision 判定,不依赖工作副本此刻 checkout 在哪个 commit:历史轮次的 head 由
+ * `pinRunCommits` 钉住(issue #161),仍然可达。取的是 author 而非 committer——
+ * cherry-pick 与 rebase 会把 committer 换成做这次操作的人,写下这一行的仍是 author。
+ *
+ * 行号越界、文件在该 revision 上不存在、revision 不可达都由 git 报错,调用方按需捕获。
+ */
+export async function readLineAuthors(
+  worktreePath: string,
+  revision: string,
+  file: string,
+  lines: readonly number[],
+): Promise<Map<number, LineAuthor>> {
+  const ranges = [...new Set(lines)].flatMap((line) => ["-L", `${line},${line}`]);
+  const output = await git(worktreePath, [
+    "blame",
+    "--porcelain",
+    ...ranges,
+    revision,
+    "--",
+    file,
+  ]);
+  return parseLineAuthors(output);
+}
+
 export type PushBranchOptions = {
   cacheDir: string;
   ref: RepoRef;

@@ -13,6 +13,7 @@ import {
   type ReviewerSpec,
   type ReviewRunReviewerPin,
 } from "../config.ts";
+import type { LineAuthor } from "../git/worktree.ts";
 import { isPanelPermission, type PanelPermission } from "../panel/permissions.ts";
 import type {
   DiscoveredModel,
@@ -128,7 +129,15 @@ CREATE TABLE IF NOT EXISTS finding (
   disposition_note TEXT,
   -- 这一行承接的那条旧评论在 Forge 页面上的地址(CONTEXT.md 已延续,issue #167)。
   -- 只有延续过来的新行有它,面板据此显示「延续自」;其余行为 NULL。
-  continued_from TEXT
+  continued_from TEXT,
+  -- 行作者(CONTEXT.md):这条 Finding 所在行在本轮 head 上最后一次改动的 git author
+  -- 与那次提交。评审落库时一并写入,四列要么一起有值、要么一起是 NULL。
+  -- 四列同 NULL 即「未判定」:升级前落的行,以及判定失败留空的那些。读路径会在阶段
+  -- 汇总里补录并回写这四列(issue #199),因此 NULL 不是终态。
+  line_author_sha TEXT,
+  line_author_name TEXT,
+  line_author_email TEXT,
+  line_author_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS finding_by_run ON finding(run_id);
@@ -440,6 +449,10 @@ const ADD_COLUMNS = [
   "ALTER TABLE repo ADD COLUMN worktree_state TEXT",
   "ALTER TABLE repo ADD COLUMN worktree_failure TEXT",
   "ALTER TABLE repo ADD COLUMN worktree_checked_at TEXT",
+  "ALTER TABLE finding ADD COLUMN line_author_sha TEXT",
+  "ALTER TABLE finding ADD COLUMN line_author_name TEXT",
+  "ALTER TABLE finding ADD COLUMN line_author_email TEXT",
+  "ALTER TABLE finding ADD COLUMN line_author_at TEXT",
 ];
 
 /**
@@ -611,6 +624,8 @@ export type FindingRecord = {
   commentId?: string;
   /** 那条评论在 Forge 页面上的地址。 */
   commentHtmlUrl?: string;
+  /** 行作者(CONTEXT.md),按本轮 head 判定;判不出来时不给,四列留 NULL。 */
+  lineAuthor?: LineAuthor;
 };
 
 /** 一个合并组落成的那条 Forge 行级评论。发布之后才拿得到,因此与落库分成两步。 */
@@ -1070,6 +1085,8 @@ export type StageSummaryFinding = {
   note: string | null;
   /** 承接来的那条旧评论的地址(CONTEXT.md 已延续);不是延续来的为 null。 */
   continuedFrom: string | null;
+  /** 行作者(CONTEXT.md),取最新那一轮判定的结果;未判定为 null,面板显示「无法追溯」。 */
+  lineAuthor: LineAuthor | null;
   firstRunId: number;
   firstReportedAt: string;
   lastRunId: number;
@@ -3520,8 +3537,9 @@ export function openStore(dbPath: string): Store {
           `INSERT INTO finding
              (run_id, file, line, title, severity, category, description,
               fingerprint, group_index, disposition, placement,
-              comment_id, comment_html_url)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              comment_id, comment_html_url,
+              line_author_sha, line_author_name, line_author_email, line_author_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         const insertAttribution = db.prepare(
           `INSERT INTO finding_attribution
@@ -3543,6 +3561,10 @@ export function openStore(dbPath: string): Store {
             finding.placement,
             finding.commentId ?? null,
             finding.commentHtmlUrl ?? null,
+            finding.lineAuthor?.sha ?? null,
+            finding.lineAuthor?.name ?? null,
+            finding.lineAuthor?.email ?? null,
+            finding.lineAuthor?.authoredAt ?? null,
           );
           const findingId = Number(inserted.lastInsertRowid);
           for (const [position, said] of finding.attributions.entries()) {
@@ -3675,6 +3697,8 @@ export function openStore(dbPath: string): Store {
                   f.comment_html_url AS comment_html_url, f.disposed_by AS disposed_by,
                   f.disposed_at AS disposed_at, f.disposition_note AS note,
                   f.continued_from AS continued_from,
+                  f.line_author_sha AS line_author_sha, f.line_author_name AS line_author_name,
+                  f.line_author_email AS line_author_email, f.line_author_at AS line_author_at,
                   COALESCE(f.fingerprint, 'row:' || f.id) AS fp
              FROM finding f
              JOIN review_run run ON f.run_id = run.id
@@ -3787,6 +3811,16 @@ export function openStore(dbPath: string): Store {
             // 轮次折叠出来的新行不再带它,取整条上第一条带着它的那一行。
             continuedFrom:
               identity.rows.find((entry) => entry.continuedFrom !== null)?.continuedFrom ?? null,
+            // 四列同 NULL 即未判定:取最新那一轮的判定结果,每轮各算各的。
+            lineAuthor:
+              row["line_author_sha"] === null
+                ? null
+                : {
+                    sha: String(row["line_author_sha"]),
+                    name: String(row["line_author_name"]),
+                    email: String(row["line_author_email"]),
+                    authoredAt: String(row["line_author_at"]),
+                  },
             firstRunId: identity.firstRow.runId,
             firstReportedAt: startedAt.get(identity.firstRow.runId)!,
             lastRunId: latest.runId,

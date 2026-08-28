@@ -4,6 +4,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { CheckCircledIcon, ExternalLinkIcon } from "@radix-ui/react-icons";
 import { Badge, IconButton, Skeleton, TextField, Tooltip } from "@radix-ui/themes";
 
+import { CommitChip } from "@/components/commit-chip";
 import { Button } from "@/components/theme-button";
 import { localClock, localDay } from "@/lib/time";
 
@@ -92,6 +93,31 @@ const SEVERITY_COLOR = { P0: "red", P1: "amber", P2: "gray" } as const;
 /** 已处置:人工与「已修复」自动处置都算。 */
 function findingDisposed(finding: RunFinding): boolean {
   return finding.disposition === "resolved" || finding.disposition === "fixed";
+}
+
+/**
+ * 行作者(CONTEXT.md):这一行最后一次改动的 git author 与那次提交,「姓名 · 短 sha ·
+ * 日期」一行。同名作者靠邮箱区分,邮箱放 Tooltip;判不出来时写明「无法追溯」,免得空
+ * 白被读成页面坏了。短 sha 不做链接:本票不引入 Forge 的 commit 页地址。
+ */
+function LineAuthorLine({ lineAuthor }: { lineAuthor: RunFinding["lineAuthor"] }) {
+  if (lineAuthor === null) {
+    return <p className="text-sm text-text-secondary">行作者：无法追溯</p>;
+  }
+  return (
+    <p className="flex flex-wrap items-center gap-1.5 text-sm text-text-secondary">
+      <span>行作者：</span>
+      <Tooltip content={lineAuthor.email}>
+        <span tabIndex={0} className="break-all">
+          {lineAuthor.name}
+        </span>
+      </Tooltip>
+      <span aria-hidden>·</span>
+      <CommitChip sha={lineAuthor.sha} />
+      <span aria-hidden>·</span>
+      <span className="tabular-nums">{localDay(lineAuthor.authoredAt)}</span>
+    </p>
+  );
 }
 
 /**
@@ -185,6 +211,8 @@ export function FindingRow({
       >
         {finding.description}
       </p>
+
+      <LineAuthorLine lineAuthor={finding.lineAuthor} />
 
       {finding.continuedFrom === null ? null : (
         <p className="text-sm text-text-secondary">

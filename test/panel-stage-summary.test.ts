@@ -44,6 +44,7 @@ type SummaryFinding = {
   disposedAt: string | null;
   note: string | null;
   continuedFrom: string | null;
+  lineAuthor: { sha: string; name: string; email: string; authoredAt: string } | null;
   firstRunId: number;
   firstReportedAt: string;
   lastRunId: number;
@@ -77,6 +78,7 @@ type SeedFinding = {
   placement?: "inline" | "body";
   models?: string[];
   commentId?: string;
+  lineAuthor?: { sha: string; name: string; email: string; authoredAt: string };
 };
 
 /** 落一轮 Review Run:一条 Finding 一个合并组,归属按传入的模型逐条落。 */
@@ -128,6 +130,7 @@ function seedRun(
             commentId: finding.commentId,
             commentHtmlUrl: `https://gitea.example.test/comments/${finding.commentId}`,
           }),
+      ...(finding.lineAuthor === undefined ? {} : { lineAuthor: finding.lineAuthor }),
     })),
     verdicts: verdicts.map((entry) => ({
       model: entry.model,
@@ -364,6 +367,55 @@ test("阶段汇总按 pull request 取范围:容器 PR 的轮次不混进 PR 链
   );
   assert.deepEqual(body.counts, { pending: 1, resolved: 0, fixed: 0 });
   assert.equal(body.timeline.length, 1);
+});
+
+test("阶段汇总每条 Finding 带行作者,未判定的那条是 null", async () => {
+  const h = await startPanelHarness(cleanups);
+  const store = openStore(h.db.path);
+  try {
+    seedRun(
+      store,
+      {
+        owner: HARNESS_PR.owner,
+        repo: HARNESS_PR.repo,
+        pullNumber: HARNESS_PR.number,
+        headSha: "pr-sha-1",
+        startedAt: "2026-08-21T01:00:00.000Z",
+      },
+      [
+        {
+          file: "src/pr.ts",
+          line: 2,
+          fingerprint: "fp-authored",
+          commentId: "p1",
+          lineAuthor: {
+            sha: "0123456789abcdef0123456789abcdef01234567",
+            name: "Alice Lin",
+            email: "alice@example.invalid",
+            authoredAt: "2026-08-21T00:30:00.000Z",
+          },
+        },
+        // 四列同 NULL 即未判定:侧滑显示「无法追溯」,读路径按 null 给。
+        { file: "src/pr.ts", line: 9, fingerprint: "fp-unknown", commentId: "p2" },
+      ],
+    );
+  } finally {
+    store.close();
+  }
+
+  const body = await summaryOf(
+    h,
+    `owner=${HARNESS_PR.owner}&repo=${HARNESS_PR.repo}&pullNumber=${HARNESS_PR.number}`,
+  );
+  const authored = body.findings.find((finding) => finding.description === "正文 fp-authored")!;
+  assert.deepEqual(authored.lineAuthor, {
+    sha: "0123456789abcdef0123456789abcdef01234567",
+    name: "Alice Lin",
+    email: "alice@example.invalid",
+    authoredAt: "2026-08-21T00:30:00.000Z",
+  });
+  const unknown = body.findings.find((finding) => finding.description === "正文 fp-unknown")!;
+  assert.equal(unknown.lineAuthor, null);
 });
 
 test("阶段汇总的入参:两条链路只能选一条,范围审查不存在时 404", async () => {
