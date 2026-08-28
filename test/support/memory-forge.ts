@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import type {
   ChangedFile,
   CloneCredentials,
@@ -212,6 +215,27 @@ export function scriptedReviewer(
         ...(extra?.failure === undefined ? {} : { failure: extra.failure }),
         ...(extra?.usage === undefined ? {} : { usage: extra.usage }),
       };
+    },
+  };
+}
+
+/**
+ * 在 Reviewer 跑着的时候把工作副本里某个文件读下来。
+ *
+ * 一次性工作树用完即删(issue #212),Review Run 返回之后那个目录已经不在了;要验
+ * Reviewer 读到的是哪一版代码,只能在它手里还拿着那份副本的时候读。
+ */
+export function readingReviewer(
+  base: ReturnType<typeof scriptedReviewer>,
+  file: string,
+): ReturnType<typeof scriptedReviewer> & { seen: string[] } {
+  const seen: string[] = [];
+  return {
+    ...base,
+    seen,
+    review: (range, worktreePath, history, intent, rules, onEvent) => {
+      seen.push(readFileSync(join(worktreePath, file), "utf8"));
+      return base.review(range, worktreePath, history, intent, rules, onEvent);
     },
   };
 }

@@ -1045,356 +1045,362 @@ export async function runReview(
     baseSha: pullRequest.baseSha,
   });
 
-  const range = {
-    baseSha: worktree.mergeBaseSha,
-    headSha: pullRequest.headSha,
-    files: changedFiles
-      .filter((f) => f.status !== "removed")
-      .map((f) => f.path),
-  };
-
-  // diff 在 Reviewer 之前读:Review Range 的规模要在开跑之前落库,分批也按它切。
-  const diff = await readRangeDiff(
-    worktree.path,
-    worktree.mergeBaseSha,
-    pullRequest.headSha,
-  );
-  const changedLines = changedLinesByFile(diff);
-  const batches = splitIntoBatches(
-    range.files,
-    changedLines,
-    deps.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
-  );
-
-  // 句柄的存活期覆盖整段审查(最长二十分钟),中途出错必须归还:webhook 服务是长跑
-  // 进程,泄漏的连接会一次次攒下来。
-  const store = openStore(deps.dbPath);
-  const runId = store.startRun({
-    owner: event.owner,
-    repo: event.repo,
-    pullNumber: event.number,
-    headSha: pullRequest.headSha,
-    // 范围审查那一档不记标题:这里读到的是容器 PR 的标题,由本工具自己拼出,
-    // 那个阶段的名字来自范围审查自身(issue #173)。
-    title: deps.rangeReviewId === undefined ? pullRequest.title : null,
-    startedAt: startedAt.toISOString(),
-    triggeredBy: deps.triggeredBy ?? null,
-    rangeReviewId: deps.rangeReviewId ?? null,
-    changedFiles: range.files.length,
-    changedLines: [...changedLines.values()].reduce((sum, n) => sum + n, 0),
-    batchCount: batches.length,
-    reviewerPins: deps.reviewerPins ?? [],
-    // 规则集版本在这里定死(issue #204):这一轮之后的规则变更追不上已经开跑的它,
-    // 回看历史轮次时也就知道当时按的是哪一版。
-    ruleSetVersion: deps.ruleSetVersion ?? null,
-  });
-
-  // 一有 runId 就可以接受订阅(ADR 0017):面板打开进行中的轮次时要能接上实时推送,
-  // 而第一条编排事件紧接着就发出来了。
-  beginTrace(runId);
-  const trace = createTraceRecorder(store, runId);
-
+  // 这份工作树只属于这一轮,读完就删:同一个仓库上并发的另一轮、一次重探索或一次
+  // 处置反哺各有各的一份,谁都不会把别人正在读的文件换掉(issue #212)。
   try {
-    // 工作副本在 startRun 之前就备好了,轨迹的第一条因此是它——面板据此知道这一轮
-    // 审的是哪两端(issue #171 的用户故事 1)。
-    trace.run("worktree_ready", {
+    const range = {
       baseSha: worktree.mergeBaseSha,
       headSha: pullRequest.headSha,
+      files: changedFiles
+        .filter((f) => f.status !== "removed")
+        .map((f) => f.path),
+    };
+
+    // diff 在 Reviewer 之前读:Review Range 的规模要在开跑之前落库,分批也按它切。
+    const diff = await readRangeDiff(
+      worktree.path,
+      worktree.mergeBaseSha,
+      pullRequest.headSha,
+    );
+    const changedLines = changedLinesByFile(diff);
+    const batches = splitIntoBatches(
+      range.files,
+      changedLines,
+      deps.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+    );
+
+    // 句柄的存活期覆盖整段审查(最长二十分钟),中途出错必须归还:webhook 服务是长跑
+    // 进程,泄漏的连接会一次次攒下来。
+    const store = openStore(deps.dbPath);
+    const runId = store.startRun({
+      owner: event.owner,
+      repo: event.repo,
+      pullNumber: event.number,
+      headSha: pullRequest.headSha,
+      // 范围审查那一档不记标题:这里读到的是容器 PR 的标题,由本工具自己拼出,
+      // 那个阶段的名字来自范围审查自身(issue #173)。
+      title: deps.rangeReviewId === undefined ? pullRequest.title : null,
+      startedAt: startedAt.toISOString(),
+      triggeredBy: deps.triggeredBy ?? null,
+      rangeReviewId: deps.rangeReviewId ?? null,
+      changedFiles: range.files.length,
+      changedLines: [...changedLines.values()].reduce((sum, n) => sum + n, 0),
+      batchCount: batches.length,
+      reviewerPins: deps.reviewerPins ?? [],
+      // 规则集版本在这里定死(issue #204):这一轮之后的规则变更追不上已经开跑的它,
+      // 回看历史轮次时也就知道当时按的是哪一版。
+      ruleSetVersion: deps.ruleSetVersion ?? null,
     });
 
-    // 两端一有 runId 就钉在本地 clone 上(issue #161):这一轮结束后远端的分支会被删,
-    // 不钉住的话 gc 一跑,这一轮的 diff 就再也打不开。
-    // 钉不住只记日志:少一轮历史 diff 是小事,一次审查因此白跑不是。
+    // 一有 runId 就可以接受订阅(ADR 0017):面板打开进行中的轮次时要能接上实时推送,
+    // 而第一条编排事件紧接着就发出来了。
+    beginTrace(runId);
+    const trace = createTraceRecorder(store, runId);
+
     try {
-      await pinRunCommits(worktree.path, runId, {
-        baseSha: pullRequest.baseSha,
+      // 工作副本在 startRun 之前就备好了,轨迹的第一条因此是它——面板据此知道这一轮
+      // 审的是哪两端(issue #171 的用户故事 1)。
+      trace.run("worktree_ready", {
+        baseSha: worktree.mergeBaseSha,
         headSha: pullRequest.headSha,
       });
-    } catch (error) {
-      console.error(
-        "[review] 钉住这一轮的两端失败,审查照常:",
-        error instanceof Error ? error.message : String(error),
-      );
-    }
 
-    // 本阶段已经报过的 Finding,注入给这一轮的每个 Reviewer(ADR 0016)。读在开跑之前:
-    // 本轮自己的 Finding 还没落库,这份历史因此正是「上一轮为止」的那些。
-    const history = store.stageHistory(
-      deps.rangeReviewId === undefined
-        ? { owner: event.owner, repo: event.repo, pullNumber: event.number }
-        : { rangeReviewId: deps.rangeReviewId },
-    );
-
-    // 这一轮声称要做的事(issue #201)。范围审查的标题来自它自己,不是容器 PR 的标题
-    // ——那个标题与正文都由本工具拼出(`range-review.ts`),不含任何作者意图。
-    const rangeReview =
-      deps.rangeReviewId === undefined ? undefined : store.getRangeReview(deps.rangeReviewId);
-    const intent = await readIntent(
-      worktree.path,
-      { baseSha: worktree.mergeBaseSha, headSha: pullRequest.headSha },
-      deps.rangeReviewId === undefined
-        ? {
-            title: pullRequest.title,
-            ...(pullRequest.body === undefined ? {} : { body: pullRequest.body }),
-          }
-        : { title: rangeReview?.title ?? "" },
-    );
-
-    // 批次串行,批内 Reviewer 并行:并行跑批会同时开「批数 × 模型数」个子进程。
-    const perBatch: TimedOutcome[][] = [];
-    for (const [index, files] of batches.entries()) {
-      // 批次序号从 1 起,直接呈现给看轨迹的人,与 `incompleteCoverage` 同一口径。
-      const batch = { index: index + 1, total: batches.length, files };
-      // 规则按作用范围路由到批次(issue #204):只管某个目录的规则不进不含那个目录的
-      // 批次,批内每个 Reviewer 拿到的是同一份。
-      const rules = rulesForBatch(deps.rules ?? [], files);
-      trace.run("batch_started", batch);
-      perBatch.push(
-        await Promise.all(
-          deps.reviewers.map(async (reviewer) => {
-            const begin = Date.now();
-            // 工作副本每批都是同一份完整的 head commit:Reviewer 要能读到其他批次
-            // 改动后的代码,否则会报出"这个新函数没有调用者"这类因分批而来的误报。
-            // 历史每批都给同一份:它说的是这个阶段的历史,与本批审哪些文件无关。
-            const outcome = await reviewer.review(
-              { ...range, files },
-              worktree.path,
-              history,
-              intent,
-              rules,
-              (event) => {
-                const { kind, ...payload } = event;
-                trace.reviewer(reviewer.model, kind, payload);
-              },
-            );
-            return { outcome, durationMs: Date.now() - begin };
-          }),
-        ),
-      );
-      trace.run("batch_finished", batch);
-    }
-    // 汇总在全部批次跑完之后做一次:一次 Review Run 只发一次 review。
-    const timed = deps.reviewers.map((_, index) =>
-      mergeBatchOutcomes(perBatch.map((batch) => batch[index]!)),
-    );
-    const outcomes = timed.map((t) => t.outcome);
-
-    const absent = outcomes.filter((outcome) => outcome.failure !== undefined);
-    const partial = outcomes.filter((o) => o.incompleteCoverage !== undefined);
-    // 全部失败时零 Finding 不代表代码没问题,发一条空 review 会把失败读成通过。
-    const failed = outcomes.length > 0 && absent.length === outcomes.length;
-
-    recordReviewerOutcomes(trace, outcomes);
-
-    const merged = dedupeFindings(
-      outcomes.filter((o) => o.failure === undefined).flatMap((o) => o.findings),
-    );
-    recordFindingMerges(trace, merged);
-
-    const diffRanges = parseDiffRanges(diff);
-    const prior = priorDispositions(priorComments, priorBodies);
-
-    // 顺手回写(ADR 0006):这批读回的 resolve 状态本来用完即弃,现在覆盖到这个 PR
-    // 名下全部历史 finding 上。以 Forge 最新状态为准——resolve 后又 unresolve,跟着改。
-    store.backfillDispositions(event.owner, event.repo, event.number, backfillUpdates(prior));
-
-    // 本轮的合并组:Finding、它的指纹与它折叠到的历史评论同属一项(issue #186)。指纹在
-    // 新 head commit 的工作副本下重算,代码没变则与上一轮的锚点相同;跨轮匹配整批先算出
-    // 来——延续要在建评论正文之前知道哪些是本轮新报的。
-    const groups: ReviewGroup[] = merged.map((finding) => ({
-      finding,
-      fingerprint: contentFingerprint(worktree.path, finding.file, finding.line),
-      match: priorMatch(prior, worktree.path, finding),
-    }));
-
-    // 本轮的复核结论。裁决与落库用同一批记录,面板上看到的与自动处置依据的是同一件事。
-    const verdicts = verdictRecords(history, outcomes);
-
-    // 「已修复」自动处置(ADR 0016),PR 触发与范围审查走的是同一段代码。全部 Reviewer
-    // 都失败时不做:那一轮一条结论都没有,没有证据就不动。延续同理。
-    if (!failed) {
-      await autoDispose(forge, event, store, fixedFindingIds(verdicts));
-    }
-
-    // 复核判仍在、旧指纹在本轮 head 上算不出的那些,由本轮在新位置报出的一条承接同一条
-    // Finding Identity(CONTEXT.md 已延续,issue #167)。旧评论在这里就被 resolve 掉,
-    // 新评论的正文随后带上它的链接;落库要等本轮的行插进去之后。
-    // 模型只回了复核结论、没有重报的那些,按它给出的新位置合成本轮的一条(issue #170)。
-    // 合成的连指纹与跨轮匹配一起作一个合并组,接在本轮之后——只追加这一处。
-    const plan = failed
-      ? { plans: [], synthesized: [] }
-      : planContinuations(
-          store.continuationCandidates(presentFindingIds(verdicts)),
-          groups,
-          diffRanges,
-          worktree.path,
-          presentPositions(history, outcomes),
-        );
-    groups.push(...plan.synthesized);
-    const continuations = failed ? [] : await applyContinuations(forge, event, plan.plans);
-    const continuedFrom = new Map(
-      continuations.map((plan) => [plan.groupIndex, plan.candidate.commentHtmlUrl]),
-    );
-
-    const comments: ReviewCommentDraft[] = [];
-    // 与 `comments` 同序:每条草稿属于哪个合并组。发布之后按它把评论标识记回去。
-    const commentGroups: number[] = [];
-    const fallbacks: FallbackFinding[] = [];
-    const carried: CarriedFinding[] = [];
-    // 按合并组下标记住处置结论与来源类型,落库时组内每条来源都取它。
-    const dispositions: Disposition[] = [];
-    const placements: FindingPlacement[] = [];
-    // 折叠的那些记历史评论;本轮新发的要等发布之后才有 id,这里先留空。
-    const groupComments: (PriorDisposition | undefined)[] = [];
-
-    for (const [groupIndex, { finding, fingerprint, match }] of groups.entries()) {
-      if (match !== undefined) {
-        carried.push({ finding, resolved: match.resolved });
-        dispositions.push(match.resolved ? "resolved" : "unresolved");
-        // 折叠的这条沿用它历史上的载体:有行级评论即有 resolve 载体,进统计;只活在
-        // 正文里的没有,排除(ADR 0006)。
-        placements.push(match.fromInline ? "inline" : "body");
-        groupComments.push(match);
-        continue;
-      }
-
-      dispositions.push("unknown");
-      groupComments.push(undefined);
-      const continued = continuedFrom.get(groupIndex);
-      if (isInDiff(diffRanges, finding.file, finding.line)) {
-        placements.push("inline");
-        comments.push({
-          path: finding.file,
-          line: finding.line,
-          body: findingBody(finding, fingerprint, continued),
+      // 两端一有 runId 就钉在本地 clone 上(issue #161):这一轮结束后远端的分支会被删,
+      // 不钉住的话 gc 一跑,这一轮的 diff 就再也打不开。
+      // 钉不住只记日志:少一轮历史 diff 是小事,一次审查因此白跑不是。
+      try {
+        await pinRunCommits(worktree.path, runId, {
+          baseSha: pullRequest.baseSha,
+          headSha: pullRequest.headSha,
         });
-        commentGroups.push(groupIndex);
-      } else {
-        placements.push("body");
-        fallbacks.push({ finding, fingerprint, continuedFrom: continued });
+      } catch (error) {
+        console.error(
+          "[review] 钉住这一轮的两端失败,审查照常:",
+          error instanceof Error ? error.message : String(error),
+        );
       }
-    }
 
-    const outcomeRecords: OutcomeRecord[] = timed.map(({ outcome, durationMs }) => ({
-      model: outcome.model,
-      findingCount: outcome.findings.length,
-      anomalyCount: outcome.anomalies.length,
-      rejectedToolCalls: outcome.rejectedToolCalls,
-      anchorRejections: outcome.anchorRejections,
-      durationMs,
-      ...(outcome.failure === undefined ? {} : { failure: outcome.failure }),
-      ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
-    }));
+      // 本阶段已经报过的 Finding,注入给这一轮的每个 Reviewer(ADR 0016)。读在开跑之前:
+      // 本轮自己的 Finding 还没落库,这份历史因此正是「上一轮为止」的那些。
+      const history = store.stageHistory(
+        deps.rangeReviewId === undefined
+          ? { owner: event.owner, repo: event.repo, pullNumber: event.number }
+          : { rangeReviewId: deps.rangeReviewId },
+      );
 
-    // 行作者(CONTEXT.md)在本轮 head 上判定,与 Finding 一起落库:统计不该依赖有人
-    // 打开过侧滑。
-    const lineAuthors = await findingLineAuthors(
-      worktree.path,
-      groups.map((group) => ({
-        revision: pullRequest.headSha,
-        file: group.finding.file,
-        line: group.finding.line,
-      })),
-    );
+      // 这一轮声称要做的事(issue #201)。范围审查的标题来自它自己,不是容器 PR 的标题
+      // ——那个标题与正文都由本工具拼出(`range-review.ts`),不含任何作者意图。
+      const rangeReview =
+        deps.rangeReviewId === undefined ? undefined : store.getRangeReview(deps.rangeReviewId);
+      const intent = await readIntent(
+        worktree.path,
+        { baseSha: worktree.mergeBaseSha, headSha: pullRequest.headSha },
+        deps.rangeReviewId === undefined
+          ? {
+              title: pullRequest.title,
+              ...(pullRequest.body === undefined ? {} : { body: pullRequest.body }),
+            }
+          : { title: rangeReview?.title ?? "" },
+      );
 
-    // 一条 Finding 一行,报出它的每个模型一条归属(ADR 0015):Finding Identity 不含
-    // 模型,同一处问题不论几个模型报出都是同一条。指纹取合并组代表行的那一个——评论
-    // 锚点埋的就是它,resolve 载体是整组共享的一条评论。
-    const findingRecords: FindingRecord[] = groups.map(({ finding, fingerprint }, groupIndex) => {
-      // 匹配上历史评论的记那一条:折叠之后本轮不再发新评论,处置的载体仍是它。
-      const comment = groupComments[groupIndex];
-      return {
-        file: finding.file,
-        line: finding.line,
-        title: finding.title,
-        severity: finding.severity,
-        category: finding.category,
-        description: finding.description,
-        attributions: finding.attributions.map((said) => ({
-          model: said.model,
-          severity: said.severity,
-          category: said.category,
-          description: said.description,
+      // 批次串行,批内 Reviewer 并行:并行跑批会同时开「批数 × 模型数」个子进程。
+      const perBatch: TimedOutcome[][] = [];
+      for (const [index, files] of batches.entries()) {
+        // 批次序号从 1 起,直接呈现给看轨迹的人,与 `incompleteCoverage` 同一口径。
+        const batch = { index: index + 1, total: batches.length, files };
+        // 规则按作用范围路由到批次(issue #204):只管某个目录的规则不进不含那个目录的
+        // 批次,批内每个 Reviewer 拿到的是同一份。
+        const rules = rulesForBatch(deps.rules ?? [], files);
+        trace.run("batch_started", batch);
+        perBatch.push(
+          await Promise.all(
+            deps.reviewers.map(async (reviewer) => {
+              const begin = Date.now();
+              // 工作副本每批都是同一份完整的 head commit:Reviewer 要能读到其他批次
+              // 改动后的代码,否则会报出"这个新函数没有调用者"这类因分批而来的误报。
+              // 历史每批都给同一份:它说的是这个阶段的历史,与本批审哪些文件无关。
+              const outcome = await reviewer.review(
+                { ...range, files },
+                worktree.path,
+                history,
+                intent,
+                rules,
+                (event) => {
+                  const { kind, ...payload } = event;
+                  trace.reviewer(reviewer.model, kind, payload);
+                },
+              );
+              return { outcome, durationMs: Date.now() - begin };
+            }),
+          ),
+        );
+        trace.run("batch_finished", batch);
+      }
+      // 汇总在全部批次跑完之后做一次:一次 Review Run 只发一次 review。
+      const timed = deps.reviewers.map((_, index) =>
+        mergeBatchOutcomes(perBatch.map((batch) => batch[index]!)),
+      );
+      const outcomes = timed.map((t) => t.outcome);
+
+      const absent = outcomes.filter((outcome) => outcome.failure !== undefined);
+      const partial = outcomes.filter((o) => o.incompleteCoverage !== undefined);
+      // 全部失败时零 Finding 不代表代码没问题,发一条空 review 会把失败读成通过。
+      const failed = outcomes.length > 0 && absent.length === outcomes.length;
+
+      recordReviewerOutcomes(trace, outcomes);
+
+      const merged = dedupeFindings(
+        outcomes.filter((o) => o.failure === undefined).flatMap((o) => o.findings),
+      );
+      recordFindingMerges(trace, merged);
+
+      const diffRanges = parseDiffRanges(diff);
+      const prior = priorDispositions(priorComments, priorBodies);
+
+      // 顺手回写(ADR 0006):这批读回的 resolve 状态本来用完即弃,现在覆盖到这个 PR
+      // 名下全部历史 finding 上。以 Forge 最新状态为准——resolve 后又 unresolve,跟着改。
+      store.backfillDispositions(event.owner, event.repo, event.number, backfillUpdates(prior));
+
+      // 本轮的合并组:Finding、它的指纹与它折叠到的历史评论同属一项(issue #186)。指纹在
+      // 新 head commit 的工作副本下重算,代码没变则与上一轮的锚点相同;跨轮匹配整批先算出
+      // 来——延续要在建评论正文之前知道哪些是本轮新报的。
+      const groups: ReviewGroup[] = merged.map((finding) => ({
+        finding,
+        fingerprint: contentFingerprint(worktree.path, finding.file, finding.line),
+        match: priorMatch(prior, worktree.path, finding),
+      }));
+
+      // 本轮的复核结论。裁决与落库用同一批记录,面板上看到的与自动处置依据的是同一件事。
+      const verdicts = verdictRecords(history, outcomes);
+
+      // 「已修复」自动处置(ADR 0016),PR 触发与范围审查走的是同一段代码。全部 Reviewer
+      // 都失败时不做:那一轮一条结论都没有,没有证据就不动。延续同理。
+      if (!failed) {
+        await autoDispose(forge, event, store, fixedFindingIds(verdicts));
+      }
+
+      // 复核判仍在、旧指纹在本轮 head 上算不出的那些,由本轮在新位置报出的一条承接同一条
+      // Finding Identity(CONTEXT.md 已延续,issue #167)。旧评论在这里就被 resolve 掉,
+      // 新评论的正文随后带上它的链接;落库要等本轮的行插进去之后。
+      // 模型只回了复核结论、没有重报的那些,按它给出的新位置合成本轮的一条(issue #170)。
+      // 合成的连指纹与跨轮匹配一起作一个合并组,接在本轮之后——只追加这一处。
+      const plan = failed
+        ? { plans: [], synthesized: [] }
+        : planContinuations(
+            store.continuationCandidates(presentFindingIds(verdicts)),
+            groups,
+            diffRanges,
+            worktree.path,
+            presentPositions(history, outcomes),
+          );
+      groups.push(...plan.synthesized);
+      const continuations = failed ? [] : await applyContinuations(forge, event, plan.plans);
+      const continuedFrom = new Map(
+        continuations.map((plan) => [plan.groupIndex, plan.candidate.commentHtmlUrl]),
+      );
+
+      const comments: ReviewCommentDraft[] = [];
+      // 与 `comments` 同序:每条草稿属于哪个合并组。发布之后按它把评论标识记回去。
+      const commentGroups: number[] = [];
+      const fallbacks: FallbackFinding[] = [];
+      const carried: CarriedFinding[] = [];
+      // 按合并组下标记住处置结论与来源类型,落库时组内每条来源都取它。
+      const dispositions: Disposition[] = [];
+      const placements: FindingPlacement[] = [];
+      // 折叠的那些记历史评论;本轮新发的要等发布之后才有 id,这里先留空。
+      const groupComments: (PriorDisposition | undefined)[] = [];
+
+      for (const [groupIndex, { finding, fingerprint, match }] of groups.entries()) {
+        if (match !== undefined) {
+          carried.push({ finding, resolved: match.resolved });
+          dispositions.push(match.resolved ? "resolved" : "unresolved");
+          // 折叠的这条沿用它历史上的载体:有行级评论即有 resolve 载体,进统计;只活在
+          // 正文里的没有,排除(ADR 0006)。
+          placements.push(match.fromInline ? "inline" : "body");
+          groupComments.push(match);
+          continue;
+        }
+
+        dispositions.push("unknown");
+        groupComments.push(undefined);
+        const continued = continuedFrom.get(groupIndex);
+        if (isInDiff(diffRanges, finding.file, finding.line)) {
+          placements.push("inline");
+          comments.push({
+            path: finding.file,
+            line: finding.line,
+            body: findingBody(finding, fingerprint, continued),
+          });
+          commentGroups.push(groupIndex);
+        } else {
+          placements.push("body");
+          fallbacks.push({ finding, fingerprint, continuedFrom: continued });
+        }
+      }
+
+      const outcomeRecords: OutcomeRecord[] = timed.map(({ outcome, durationMs }) => ({
+        model: outcome.model,
+        findingCount: outcome.findings.length,
+        anomalyCount: outcome.anomalies.length,
+        rejectedToolCalls: outcome.rejectedToolCalls,
+        anchorRejections: outcome.anchorRejections,
+        durationMs,
+        ...(outcome.failure === undefined ? {} : { failure: outcome.failure }),
+        ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+      }));
+
+      // 行作者(CONTEXT.md)在本轮 head 上判定,与 Finding 一起落库:统计不该依赖有人
+      // 打开过侧滑。
+      const lineAuthors = await findingLineAuthors(
+        worktree.path,
+        groups.map((group) => ({
+          revision: pullRequest.headSha,
+          file: group.finding.file,
+          line: group.finding.line,
         })),
-        groupIndex,
-        disposition: dispositions[groupIndex]!,
-        placement: placements[groupIndex]!,
-        ...(fingerprint === undefined ? {} : { fingerprint }),
-        ...(comment?.commentId === undefined ? {} : { commentId: comment.commentId }),
-        ...(comment?.commentHtmlUrl === undefined
-          ? {}
-          : { commentHtmlUrl: comment.commentHtmlUrl }),
-        ...(lineAuthors[groupIndex] === undefined
-          ? {}
-          : { lineAuthor: lineAuthors[groupIndex] }),
-        // 命中规则只落库(issue #204):不进指纹、不进评论正文,合并组取组内首个自报的。
-        ...(finding.ruleId === undefined ? {} : { ruleId: finding.ruleId }),
+      );
+
+      // 一条 Finding 一行,报出它的每个模型一条归属(ADR 0015):Finding Identity 不含
+      // 模型,同一处问题不论几个模型报出都是同一条。指纹取合并组代表行的那一个——评论
+      // 锚点埋的就是它,resolve 载体是整组共享的一条评论。
+      const findingRecords: FindingRecord[] = groups.map(({ finding, fingerprint }, groupIndex) => {
+        // 匹配上历史评论的记那一条:折叠之后本轮不再发新评论,处置的载体仍是它。
+        const comment = groupComments[groupIndex];
+        return {
+          file: finding.file,
+          line: finding.line,
+          title: finding.title,
+          severity: finding.severity,
+          category: finding.category,
+          description: finding.description,
+          attributions: finding.attributions.map((said) => ({
+            model: said.model,
+            severity: said.severity,
+            category: said.category,
+            description: said.description,
+          })),
+          groupIndex,
+          disposition: dispositions[groupIndex]!,
+          placement: placements[groupIndex]!,
+          ...(fingerprint === undefined ? {} : { fingerprint }),
+          ...(comment?.commentId === undefined ? {} : { commentId: comment.commentId }),
+          ...(comment?.commentHtmlUrl === undefined
+            ? {}
+            : { commentHtmlUrl: comment.commentHtmlUrl }),
+          ...(lineAuthors[groupIndex] === undefined
+            ? {}
+            : { lineAuthor: lineAuthors[groupIndex] }),
+          // 命中规则只落库(issue #204):不进指纹、不进评论正文,合并组取组内首个自报的。
+          ...(finding.ruleId === undefined ? {} : { ruleId: finding.ruleId }),
+        };
+      });
+
+      // 先落库再发布:发布失败不该把这次 Review Run 的过程记录一并丢掉。
+      store.finishRun(runId, {
+        finishedAt: new Date().toISOString(),
+        durationMs: Date.now() - startedAt.getTime(),
+        failed,
+        outcomes: outcomeRecords,
+        findings: findingRecords,
+        verdicts,
+      });
+
+      // 延续落库要等本轮的行插进去:旧行的备注、处置人与处置时刻随 Identity 抄到承接它的
+      // 那一行上,旧行改记「已延续」。
+      for (const plan of continuations) {
+        store.recordContinuation({
+          owner: event.owner,
+          repo: event.repo,
+          pullNumber: event.number,
+          runId,
+          groupIndex: plan.groupIndex,
+          candidate: plan.candidate,
+        });
+      }
+
+      // review 正文、计数与返回值只关心每个合并组的那条 Finding。
+      const findings = groups.map((group) => group.finding);
+
+      // 有缺席或覆盖不全的模型时即便零 Finding 也要发:读者需要知道这次审查覆盖面
+      // 打了折扣。
+      const hasSomethingToSay =
+        findings.length > 0 || absent.length > 0 || partial.length > 0;
+      if (!failed && hasSomethingToSay) {
+        const published = await forge.createReview(event, {
+          body: reviewBody(findings, fallbacks, absent, partial, carried),
+          commitSha: pullRequest.headSha,
+          comments,
+        });
+        store.recordFindingComments(runId, commentRefs(comments, commentGroups, published));
+        trace.run("review_posted", { findingCount: findings.length });
+      }
+
+      // 跑成功却什么都没发现时,这次审查在 PR 上本来一点痕迹都不会留,与「审查根本
+      // 没跑」无从区分。这个赞就是那条痕迹。
+      if (!failed && !hasSomethingToSay) {
+        await tryReaction(() => forge.addReaction(event, "+1"));
+      }
+
+      trace.run("run_finished", { failed, findingCount: findings.length });
+
+      return {
+        headSha: pullRequest.headSha,
+        findings,
+        outcomes,
+        failed,
+        inlineCount: comments.length,
+        fallbackCount: fallbacks.length,
       };
-    });
-
-    // 先落库再发布:发布失败不该把这次 Review Run 的过程记录一并丢掉。
-    store.finishRun(runId, {
-      finishedAt: new Date().toISOString(),
-      durationMs: Date.now() - startedAt.getTime(),
-      failed,
-      outcomes: outcomeRecords,
-      findings: findingRecords,
-      verdicts,
-    });
-
-    // 延续落库要等本轮的行插进去:旧行的备注、处置人与处置时刻随 Identity 抄到承接它的
-    // 那一行上,旧行改记「已延续」。
-    for (const plan of continuations) {
-      store.recordContinuation({
-        owner: event.owner,
-        repo: event.repo,
-        pullNumber: event.number,
-        runId,
-        groupIndex: plan.groupIndex,
-        candidate: plan.candidate,
-      });
+    } finally {
+      // 订阅者一定要收到结束信号:成功、失败、中途抛异常都要,否则页面会一直等下去。
+      // 抛异常那一档没有 `run_finished` 落库——这一轮确实没跑完,轨迹照实停在崩溃前。
+      endTrace(runId);
+      store.close();
+      // 「正在审查」一定要撤掉:成功、失败、中途抛异常都要。留着它 PR 上会永远挂着
+      // 一只眼睛,看起来像审查卡死了。
+      await tryReaction(() => forge.removeReaction(event, "eyes"));
     }
-
-    // review 正文、计数与返回值只关心每个合并组的那条 Finding。
-    const findings = groups.map((group) => group.finding);
-
-    // 有缺席或覆盖不全的模型时即便零 Finding 也要发:读者需要知道这次审查覆盖面
-    // 打了折扣。
-    const hasSomethingToSay =
-      findings.length > 0 || absent.length > 0 || partial.length > 0;
-    if (!failed && hasSomethingToSay) {
-      const published = await forge.createReview(event, {
-        body: reviewBody(findings, fallbacks, absent, partial, carried),
-        commitSha: pullRequest.headSha,
-        comments,
-      });
-      store.recordFindingComments(runId, commentRefs(comments, commentGroups, published));
-      trace.run("review_posted", { findingCount: findings.length });
-    }
-
-    // 跑成功却什么都没发现时,这次审查在 PR 上本来一点痕迹都不会留,与「审查根本
-    // 没跑」无从区分。这个赞就是那条痕迹。
-    if (!failed && !hasSomethingToSay) {
-      await tryReaction(() => forge.addReaction(event, "+1"));
-    }
-
-    trace.run("run_finished", { failed, findingCount: findings.length });
-
-    return {
-      headSha: pullRequest.headSha,
-      findings,
-      outcomes,
-      failed,
-      inlineCount: comments.length,
-      fallbackCount: fallbacks.length,
-    };
   } finally {
-    // 订阅者一定要收到结束信号:成功、失败、中途抛异常都要,否则页面会一直等下去。
-    // 抛异常那一档没有 `run_finished` 落库——这一轮确实没跑完,轨迹照实停在崩溃前。
-    endTrace(runId);
-    store.close();
-    // 「正在审查」一定要撤掉:成功、失败、中途抛异常都要。留着它 PR 上会永远挂着
-    // 一只眼睛,看起来像审查卡死了。
-    await tryReaction(() => forge.removeReaction(event, "eyes"));
+    await worktree.release();
   }
 }

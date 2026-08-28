@@ -9,7 +9,7 @@ import { mergeBatchOutcomes } from "../src/review/batch.ts";
 import { runReview } from "../src/review/run.ts";
 import type { FileTree } from "./support/git-fixture.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
-import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
+import { memoryForge, readingReviewer, scriptedReviewer } from "./support/memory-forge.ts";
 
 const EVENT = { owner: "acme", repo: "widgets", number: 7 };
 
@@ -173,7 +173,7 @@ test("单个文件的改动行数就超过阈值时它自成一批,不被拒审�
 
 test("每一批拿到的都是同一个完整的 head commit 工作副本", async () => {
   const { cache, db, forge, head } = setup({ "src/a.ts": 60, "src/c.ts": 60 });
-  const reviewer = scriptedReviewer("model-a", []);
+  const reviewer = readingReviewer(scriptedReviewer("model-a", []), "src/c.ts");
 
   await runReview(EVENT, {
     forge: forge.forge,
@@ -189,8 +189,7 @@ test("每一批拿到的都是同一个完整的 head commit 工作副本", asyn
 
   // 第一批只审 src/a.ts,但 src/c.ts 在工作副本里仍是 head 版本:分批不该让
   // Reviewer 读到旧代码,否则会报出「这个新函数没有调用者」这类误报。
-  const worktree = reviewer.calls[0]!.worktreePath;
-  assert.equal(readFileSync(join(worktree, "src/c.ts"), "utf8"), head["src/c.ts"]);
+  assert.deepEqual(reviewer.seen, [head["src/c.ts"], head["src/c.ts"]]);
 });
 
 test("跨批次的 Finding 汇总后统一去重,只发一次 review", async () => {

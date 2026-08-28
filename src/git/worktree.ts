@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
@@ -70,7 +71,38 @@ export type Worktree = {
   path: string;
   /** Review Range 的基准:base 与 head 的 merge-base。 */
   mergeBaseSha: string;
+  /** 读完就调,把这份一次性工作树删掉。删不掉不抛,由下一次准备的清扫兜住。 */
+  release(): Promise<void>;
 };
+
+/**
+ * 一次性工作树的存放处:`<缓存根>/.checkouts/<owner>/<repo>/<随机>`(issue #212)。
+ *
+ * 与缓存 clone 同在缓存根下,清缓存目录与移除仓库都一并带走它。单开一段 `.checkouts`
+ * 而不是塞进 clone 里:owner 名不以点开头,这一段因此撞不上任何仓库的缓存路径,也不会
+ * 在 clone 的工作区里留下未跟踪的目录。
+ */
+function checkoutsPath(cacheDir: string, ref: RepoRef): string {
+  return join(cacheDir, ".checkouts", ref.owner, ref.repo);
+}
+
+/**
+ * 本进程还在用的一次性工作树。
+ *
+ * 进程被杀时 `release` 跑不到,目录与 git 的登记都会留下来。留下的那些必然不在这个集合
+ * 里——本进程从未开过它们,因此下一次准备时可以放心清掉,而并发进行中的那些照旧留着。
+ */
+const liveCheckouts = new Set<string>();
+
+/** 清掉上一次进程留下的一次性工作树。没有残留时连 `prune` 都不跑,不去碰并发的登记。 */
+async function sweepCheckouts(clonePath: string, root: string): Promise<void> {
+  const entries = await readdir(root).catch(() => [] as string[]);
+  const leaked = entries.map((name) => join(root, name)).filter((dir) => !liveCheckouts.has(dir));
+  if (leaked.length === 0) return;
+  for (const dir of leaked) await rm(dir, { recursive: true, force: true });
+  // 目录先删,再让 git 把指向它们的登记一起丢掉。
+  await git(clonePath, ["worktree", "prune"]);
+}
 
 /**
  * 每个副本目录上排在最后的那一次准备(issue #184)。
@@ -117,25 +149,52 @@ async function ensureClone(
 }
 
 /**
- * 按仓库缓存工作副本:首次 clone,之后增量 fetch,再 checkout 到 head commit。
+ * 备好一份读得到 head commit 的工作副本:缓存 clone 首次 clone、之后增量 fetch,再从它
+ * 派生一份只属于这次调用的工作树(issue #212)。
+ *
+ * 缓存 clone 自己不再被 checkout。同一个仓库上并发的参与者有四类——两条 Review Run、
+ * 基点重探索与处置反哺,它们停在各自的 commit 上,共用一份 checkout 就会互相踩:正在读
+ * 文件的 agent 读到另一次 checkout 的内容,Finding 的行号与 snippet 就锚错了地方。
+ *
+ * 对象库与 refs 仍是 clone 那一份:`refs/multireviewer/runs/*` 在哪个工作树上写、读都是
+ * 同一条(issue #161)。
  */
 export async function prepareWorktree(
   options: PrepareWorktreeOptions,
 ): Promise<Worktree> {
-  const path = repoCachePath(options.cacheDir, options.ref);
+  const clonePath = repoCachePath(options.cacheDir, options.ref);
   const auth = authArgs(options.cloneUrl, options.credentials);
 
-  await ensureClone(path, options.cloneUrl, auth);
-
-  // 分离头指针:工作副本没有本地分支要维护,checkout 目标始终是一个 commit。
-  await git(path, ["checkout", "--quiet", "--force", "--detach", options.headSha]);
-  await git(path, ["clean", "-qfdx"]);
+  await ensureClone(clonePath, options.cloneUrl, auth);
 
   const mergeBaseSha = (
-    await git(path, ["merge-base", options.baseSha, options.headSha])
+    await git(clonePath, ["merge-base", options.baseSha, options.headSha])
   ).trim();
 
-  return { path, mergeBaseSha };
+  const root = checkoutsPath(options.cacheDir, options.ref);
+  await sweepCheckouts(clonePath, root);
+  const path = join(root, randomUUID());
+  // 先记再建:并发的那一次清扫据此认得出这份正在建的工作树。
+  liveCheckouts.add(path);
+  try {
+    await mkdir(root, { recursive: true });
+    // 分离头指针:一次性工作树没有本地分支要维护,目标始终是一个 commit。
+    await git(clonePath, ["worktree", "add", "--quiet", "--detach", path, options.headSha]);
+  } catch (error) {
+    liveCheckouts.delete(path);
+    await rm(path, { recursive: true, force: true });
+    throw error;
+  }
+
+  return {
+    path,
+    mergeBaseSha,
+    release: async () => {
+      liveCheckouts.delete(path);
+      // 删不掉不抛:调用方此刻已经读完了,残留由下一次准备的清扫兜住。
+      await git(clonePath, ["worktree", "remove", "--force", path]).catch(() => {});
+    },
+  };
 }
 
 /**
@@ -403,6 +462,8 @@ export async function removeWorktree(cacheDir: string, ref: RepoRef): Promise<vo
   const path = repoCachePath(cacheDir, ref);
   await preparingClones.get(path)?.catch(() => {});
   await rm(path, { recursive: true, force: true });
+  // 派生出去的一次性工作树在另一段目录下,跟着一起删:它们的对象库刚被删掉,留着是空壳。
+  await rm(checkoutsPath(cacheDir, ref), { recursive: true, force: true });
 }
 
 /** commit 选择器里的一行。短 sha 取前 7 位,与容器 PR 标题、面板各处的写法一致。 */

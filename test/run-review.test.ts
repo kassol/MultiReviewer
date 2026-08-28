@@ -17,7 +17,12 @@ import {
 } from "../src/review/range-review.ts";
 import { openStore } from "../src/review/store.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
-import { memoryForge, scriptedReviewer, verdictReviewer } from "./support/memory-forge.ts";
+import {
+  memoryForge,
+  readingReviewer,
+  scriptedReviewer,
+  verdictReviewer,
+} from "./support/memory-forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 
 const BASE_CALC = `export function add(a: number, b: number) {
@@ -292,7 +297,7 @@ test("同一仓库的第二次 Review Run 复用缓存并增量 fetch 到新的 
     },
     changedFiles: [{ path: "src/calc.ts", status: "modified" }],
   });
-  const reviewer = scriptedReviewer("stub-model", []);
+  const reviewer = readingReviewer(scriptedReviewer("stub-model", []), "src/calc.ts");
   const event = { owner: "acme", repo: "widgets", number: 7 };
   const deps = {
     forge: forge.forge,
@@ -302,10 +307,9 @@ test("同一仓库的第二次 Review Run 复用缓存并增量 fetch 到新的 
   };
 
   await runReview(event, deps);
-  const worktree = reviewer.calls[0]!.worktreePath;
 
-  // 放进 .git 的标记不受 `git clean` 影响,重新 clone 才会让它消失。
-  const marker = join(worktree, ".git", "multireviewer-cache-marker");
+  // 放进缓存 clone 的 .git 的标记,重新 clone 才会让它消失。
+  const marker = join(cache.dir, event.owner, event.repo, ".git", "multireviewer-cache-marker");
   writeFileSync(marker, "first run");
 
   const NEXT_CALC = HEAD_CALC.replace("return a * b;", "return a * b * 2;");
@@ -313,21 +317,20 @@ test("同一仓库的第二次 Review Run 复用缓存并增量 fetch 到新的 
 
   await runReview(event, deps);
 
-  assert.equal(reviewer.calls[1]!.worktreePath, worktree);
   assert.ok(existsSync(marker), "第二次 Review Run 重新 clone 了仓库,而非增量 fetch");
-  assert.equal(readFileSync(join(worktree, "src/calc.ts"), "utf8"), NEXT_CALC);
+  assert.deepEqual(reviewer.seen, [HEAD_CALC, NEXT_CALC]);
 });
 
 test("工作副本 checkout 到 head commit,Reviewer 读到的是改动后的代码", async () => {
-  const { cache, db, forge, reviewer } = setup(6);
+  const { cache, db, forge, reviewer: scripted } = setup(6);
+  const reviewer = readingReviewer(scripted, "src/calc.ts");
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
     { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
   );
 
-  const worktree = reviewer.calls[0]!.worktreePath;
-  assert.equal(readFileSync(join(worktree, "src/calc.ts"), "utf8"), HEAD_CALC);
+  assert.deepEqual(reviewer.seen, [HEAD_CALC]);
 });
 
 test("Review Run 在首批前固定一份运行计划,后续批次不跟随模型组合改动", async () => {

@@ -66,6 +66,7 @@ import {
   type RangeDiffOptions,
   type RangeDiffRejection,
   type ResolvedRange,
+  type Worktree,
 } from "../git/worktree.ts";
 import { DEFAULT_MAX_CHANGED_LINES_PER_BATCH } from "../review/batch.ts";
 import type { Reviewer } from "../review/finding.ts";
@@ -6089,6 +6090,7 @@ async function runRuleExplorationInBackground(
   plan: ReviewerRuntimePlan,
 ): Promise<void> {
   let failure: string | undefined;
+  let worktree: Worktree | undefined;
   try {
     const forge = deps.forges.gitea;
     if (forge === undefined) throw new Error("gitea 没有配置 Forge,取不回代码");
@@ -6100,7 +6102,7 @@ async function runRuleExplorationInBackground(
       forge.cloneCredentials(ref),
     ]);
     // 基点探索看的是这一个 commit 上的仓库全貌,没有 Review Range,两端因此都是它。
-    const worktree = await prepareWorktree({
+    worktree = await prepareWorktree({
       cacheDir: deps.cacheDir,
       ref,
       cloneUrl: repository.cloneUrl,
@@ -6139,6 +6141,8 @@ async function runRuleExplorationInBackground(
     );
   } catch (error) {
     failure = failureText(error);
+  } finally {
+    await worktree?.release();
   }
 
   try {
@@ -6189,6 +6193,7 @@ async function runDispositionFeedbackInBackground(
 ): Promise<void> {
   const ref: RepoRef = { owner: finding.owner, repo: finding.repo };
   let failure: string | undefined;
+  let worktree: Worktree | undefined;
   try {
     const forge = deps.forges.gitea;
     if (forge === undefined) throw new Error("gitea 没有配置 Forge,取不回代码");
@@ -6223,7 +6228,7 @@ async function runDispositionFeedbackInBackground(
       forge.cloneCredentials(ref),
     ]);
     // 工作副本停在这条 Finding 报出时的那个 head commit 上:备注说的是那时的代码。
-    const worktree = await prepareWorktree({
+    worktree = await prepareWorktree({
       cacheDir: deps.cacheDir,
       ref,
       cloneUrl: repository.cloneUrl,
@@ -6262,6 +6267,8 @@ async function runDispositionFeedbackInBackground(
     });
   } catch (error) {
     failure = failureText(error);
+  } finally {
+    await worktree?.release();
   }
 
   if (deps.onDispositionFeedbackSettled !== undefined) {
