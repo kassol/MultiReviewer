@@ -100,6 +100,11 @@ type CommitPickerProps = {
   base: CommitSelection | null;
   comparison: CommitSelection | null;
   baseLocked?: boolean;
+  /**
+   * 只选一个 commit 的那一档(issue #205 的基点探索):固定停在 `base` 这一侧,不显示
+   * 两格切换、选完也不跳到比较项。`singleLabel` 是这一侧在结果栏里的名字。
+   */
+  singleLabel?: string;
   onPick: (role: CommitRole, selection: CommitSelection) => void;
 };
 
@@ -432,11 +437,15 @@ export function CommitPicker({
   base,
   comparison,
   baseLocked = false,
+  singleLabel,
   onPick,
 }: CommitPickerProps) {
   const { owner, repo } = repoRef;
   const [mode, setMode] = useState<PickerMode>("branch");
-  const [role, setRole] = useState<CommitRole>(baseLocked || base !== null ? "comparison" : "base");
+  const single = singleLabel !== undefined;
+  const [role, setRole] = useState<CommitRole>(
+    !single && (baseLocked || base !== null) ? "comparison" : "base",
+  );
   const [filters, setFilters] = useState<Record<PickerMode, FilterState>>({
     branch: defaultFilters(),
     tag: defaultFilters(),
@@ -455,9 +464,10 @@ export function CommitPicker({
   const debouncedBranchSearch = useDebounced(branchSearch, 250);
 
   useEffect(() => {
+    if (single) return;
     if (baseLocked || base !== null) setRole("comparison");
     else setRole("base");
-  }, [base?.sha, baseLocked]);
+  }, [base?.sha, baseLocked, single]);
 
   const syncedBranches = useQuery({
     queryKey: ["repo-picker-sync", owner, repo, refreshGeneration],
@@ -571,7 +581,7 @@ export function CommitPicker({
   function pick(sha: string, source: CommitSelection["source"], descendsFromBase?: boolean) {
     if (role === "comparison" && (base === null || descendsFromBase === false)) return;
     onPick(role, { sha, ...(source === undefined ? {} : { source }) });
-    if (role === "base" && !baseLocked) setRole("comparison");
+    if (role === "base" && !baseLocked && !single) setRole("comparison");
   }
 
   function refreshRefs() {
@@ -589,7 +599,7 @@ export function CommitPicker({
 
   return (
     <Box className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
-      {!baseLocked ? (
+      {!baseLocked && !single ? (
         <div className="shrink-0 border-b border-line bg-sunken px-3 py-2.5 sm:px-4 sm:py-3">
           <Text id={roleLabelId} as="div" className="sr-only">
             审查范围
@@ -745,7 +755,7 @@ export function CommitPicker({
 
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line bg-sunken px-4 py-1.5">
         <span id={resultsLabelId} className="text-sm font-bold text-text-secondary">
-          选择{role === "base" ? "基准" : "比较项"}
+          选择{singleLabel ?? (role === "base" ? "基准" : "比较项")}
         </span>
         <span className="text-sm text-text-muted tabular-nums">
           {initialLoading ? "正在读取…" : `已加载 ${rowCount} 条`}

@@ -296,6 +296,37 @@ CREATE TABLE IF NOT EXISTS review_rule (
 );
 CREATE INDEX IF NOT EXISTS review_rule_by_repo ON review_rule(repo_id);
 
+-- 基点探索(CONTEXT.md,issue #205)。每仓库至多一行:重新探索覆盖上一次的那一行,
+-- 「同仓库同时只跑一个」因此就是这一行的 state 是不是 running。
+--
+-- model 是这次探索所用的模型标识,它同时是「这个仓库最近一次探索用的是什么模型」那份
+-- 记录:规则确认清空草案时不动这一行,处置反哺据它沿用同一个模型(issue #208)。
+CREATE TABLE IF NOT EXISTS rule_exploration (
+  repo_id INTEGER PRIMARY KEY REFERENCES repo(id),
+  baseline_sha TEXT NOT NULL,
+  model TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('running', 'failed', 'completed')),
+  failure TEXT,
+  started_at TEXT NOT NULL,
+  finished_at TEXT
+);
+
+-- 规则草案(CONTEXT.md,issue #205)。每仓库至多一份,重新探索覆盖未确认的旧草案;
+-- 规则确认把这里的条目整组搬进 review_rule 之后清空。
+--
+-- 与 review_rule 分表而不是给它加一列「未确认」:草案条目没有生效版本,混在同一张表
+-- 里,规则集版本 V 的那句 WHERE 就要多一道「而且不是草案」的条件。
+CREATE TABLE IF NOT EXISTS rule_draft_item (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id INTEGER NOT NULL REFERENCES repo(id),
+  scope TEXT NOT NULL,
+  statement TEXT NOT NULL,
+  layer TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS rule_draft_item_by_repo ON rule_draft_item(repo_id);
+
 
 -- 审查策略,一项一行。reviewers 是全局模型组合,与 repo.reviewers 同构(ReviewerSpec
 -- 的 JSON 数组);max_changed_lines_per_batch 是正整数的字符串形,缺行即取默认值。两项各有
@@ -1065,6 +1096,26 @@ export type ReviewRuleInput = {
   layer: string;
 };
 
+/**
+ * 一个仓库最近一次基点探索(CONTEXT.md,issue #205)。每仓库至多一次,重新探索覆盖它。
+ * `model` 是那次所用的模型标识,规则确认之后仍留着——处置反哺沿用它(issue #208)。
+ */
+export type RuleExploration = {
+  state: "running" | "failed" | "completed";
+  baselineSha: string;
+  model: string;
+  /** 失败原因,只有 `failed` 那一档有值。人据此知道发生了什么,并可重试。 */
+  failure: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+};
+
+/** 规则草案里的一条(CONTEXT.md)。`origin` 与生效规则同一套字面量。 */
+export type RuleDraftItem = ReviewRuleInput & {
+  id: number;
+  origin: string;
+};
+
 /** 一个时间窗里的用量聚合:落了用量的 Review Run 数,加它们的 token 之和。 */
 export type UsageStats = ReviewerUsage & { runs: number };
 
@@ -1480,6 +1531,39 @@ export type Store = {
    * 这个仓库的生效规则里时回 undefined。
    */
   retireReviewRule(repoId: number, ruleId: number): number | undefined;
+  /** 这个仓库最近一次基点探索(issue #205)。从没探索过或仓库不在注册表里回 null。 */
+  getRuleExploration(repoId: number): RuleExploration | null;
+  /**
+   * 发起一次基点探索:那一行改写成运行中,失败原因与结束时刻清掉。同仓库已经有一次在
+   * 跑时回 false(同时只跑一个),仓库不在注册表里同样回 false。草案这时不动——探索没
+   * 跑出结果之前不该先把人手上那份删掉。
+   */
+  startRuleExploration(
+    repoId: number,
+    run: { baselineSha: string; model: string; startedAt: string },
+  ): boolean;
+  /** 探索完成:整组覆盖规则草案,那一行改写成已完成。调用方负责截断与去空。 */
+  finishRuleExploration(repoId: number, items: readonly ReviewRuleInput[], at: string): void;
+  /** 探索失败:留下原因,草案保持原样。人看得到原因,并可重新发起。 */
+  failRuleExploration(repoId: number, failure: string, at: string): void;
+  /**
+   * 把停在运行中的探索改判失败(与 `failInterruptedWorktrees` 同一个理由):进程重启会
+   * 中断后台的探索,那些行没有谁再去改它,面板会一直显示运行中而且给不出重试入口。
+   */
+  failInterruptedRuleExplorations(failure: string, at: string): void;
+  /** 这个仓库当前的规则草案,按 id 排序。没有草案即空数组。 */
+  getRuleDraft(repoId: number): RuleDraftItem[];
+  /** 往草案里手工加一条,出处记人工。返回新条目的 id;仓库不在注册表里回 undefined。 */
+  addRuleDraftItem(repoId: number, input: ReviewRuleInput): number | undefined;
+  /** 改草案里的一条。出处沿用旧值——改文字不改变这条当初从哪来。不在草案里回 false。 */
+  updateRuleDraftItem(repoId: number, itemId: number, input: ReviewRuleInput): boolean;
+  /** 删草案里的一条。草案未确认,删就是删掉,没有历史版本要为它保留。 */
+  deleteRuleDraftItem(repoId: number, itemId: number): boolean;
+  /**
+   * 规则确认(CONTEXT.md):草案整组成为生效规则,推进一个规则集版本,草案清空。返回
+   * 新的规则集版本;没有草案可确认时回 undefined,一版都不推进。
+   */
+  confirmRuleDraft(repoId: number): number | undefined;
   /** 审查策略。历史值和未写过的项都从版本 1 开始。 */
   getGlobalSettings(): GlobalSettings;
   /** 按独立版本改写全局模型组合；陈旧版本或模型服务状态变化返回 false。 */
@@ -2181,10 +2265,13 @@ const DROPPED_COST_COLUMNS: readonly (readonly [string, string])[] = [
 const RETIRED_PANEL_PERMISSIONS = ["repo:read", "review:read"];
 
 /**
- * 人手工写下的规则在 `review_rule.origin` 上的出处(issue #203)。基点探索与处置反哺
- * 各写各的字面量,那两条链路是后续票的范围。
+ * 人手工写下的规则在 `review_rule.origin` 上的出处(issue #203)。人往规则草案里手写
+ * 的那些同样记它(issue #205);处置反哺另写自己的字面量,那条链路是后续票的范围。
  */
 const MANUAL_RULE_ORIGIN = "manual";
+
+/** 基点探索推导出的规则在 `origin` 上的出处(issue #205)。处置反哺另写自己的字面量。 */
+const BASELINE_EXPLORATION_RULE_ORIGIN = "baseline-exploration";
 
 /**
  * 存量迁移(issue #202):升级前注册的仓库全部视同已确认空规则集。给还没有任何规则集
@@ -2878,6 +2965,8 @@ export function openStore(dbPath: string): Store {
         // 规则集跟着仓库走:留下来只会在同一个 repo id 重新注册时复活一份没人认过的规则。
         db.prepare("DELETE FROM review_rule WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM rule_set_version WHERE repo_id = ?").run(repoId);
+        db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
+        db.prepare("DELETE FROM rule_exploration WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM repo WHERE id = ?").run(repoId);
         db.exec("COMMIT");
       } catch (error) {
@@ -2987,6 +3076,146 @@ export function openStore(dbPath: string): Store {
       if (activeRuleOrigin(repoId, ruleId) === undefined) return undefined;
       return inRuleSetVersion(repoId, (version) => {
         retireRuleRow(ruleId, version);
+        return version;
+      });
+    },
+
+    getRuleExploration(repoId) {
+      const row = db
+        .prepare(
+          `SELECT baseline_sha, model, state, failure, started_at, finished_at
+             FROM rule_exploration WHERE repo_id = ?`,
+        )
+        .get(repoId);
+      if (row === undefined) return null;
+      const failure = row["failure"];
+      const finishedAt = row["finished_at"];
+      return {
+        state: String(row["state"]) as RuleExploration["state"],
+        baselineSha: String(row["baseline_sha"]),
+        model: String(row["model"]),
+        failure: failure === null || failure === undefined ? null : String(failure),
+        startedAt: String(row["started_at"]),
+        finishedAt: finishedAt === null || finishedAt === undefined ? null : String(finishedAt),
+      };
+    },
+
+    startRuleExploration(repoId, run) {
+      if (!repoExists(repoId)) return false;
+      const running = db
+        .prepare("SELECT 1 FROM rule_exploration WHERE repo_id = ? AND state = 'running'")
+        .get(repoId);
+      if (running !== undefined) return false;
+      db.prepare(
+        `INSERT INTO rule_exploration
+           (repo_id, baseline_sha, model, state, failure, started_at, finished_at)
+         VALUES (?, ?, ?, 'running', NULL, ?, NULL)
+         ON CONFLICT(repo_id) DO UPDATE SET
+           baseline_sha = excluded.baseline_sha,
+           model = excluded.model,
+           state = 'running',
+           failure = NULL,
+           started_at = excluded.started_at,
+           finished_at = NULL`,
+      ).run(repoId, run.baselineSha, run.model, run.startedAt);
+      return true;
+    },
+
+    finishRuleExploration(repoId, items, at) {
+      db.exec("BEGIN");
+      try {
+        // 整组覆盖:草案每仓库至多一份,重探索的产出取代未确认的旧草案(含人手加的条目)。
+        db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
+        const insert = db.prepare(
+          `INSERT INTO rule_draft_item (repo_id, scope, statement, layer, origin, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        );
+        for (const item of items) {
+          insert.run(
+            repoId,
+            item.scope,
+            item.statement,
+            item.layer,
+            BASELINE_EXPLORATION_RULE_ORIGIN,
+            at,
+          );
+        }
+        db.prepare(
+          "UPDATE rule_exploration SET state = 'completed', failure = NULL, finished_at = ? WHERE repo_id = ?",
+        ).run(at, repoId);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    failRuleExploration(repoId, failure, at) {
+      db.prepare(
+        "UPDATE rule_exploration SET state = 'failed', failure = ?, finished_at = ? WHERE repo_id = ?",
+      ).run(failure, at, repoId);
+    },
+
+    failInterruptedRuleExplorations(failure, at) {
+      db.prepare(
+        `UPDATE rule_exploration
+            SET state = 'failed', failure = ?, finished_at = ?
+          WHERE state = 'running'`,
+      ).run(failure, at);
+    },
+
+    getRuleDraft(repoId) {
+      return db
+        .prepare(
+          `SELECT id, scope, statement, layer, origin
+             FROM rule_draft_item WHERE repo_id = ? ORDER BY id`,
+        )
+        .all(repoId)
+        .map((row) => ({
+          id: Number(row["id"]),
+          scope: String(row["scope"]),
+          statement: String(row["statement"]),
+          layer: String(row["layer"]),
+          origin: String(row["origin"]),
+        }));
+    },
+
+    addRuleDraftItem(repoId, input) {
+      if (!repoExists(repoId)) return undefined;
+      const inserted = db
+        .prepare(
+          `INSERT INTO rule_draft_item (repo_id, scope, statement, layer, origin, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(repoId, input.scope, input.statement, input.layer, MANUAL_RULE_ORIGIN, new Date().toISOString());
+      return Number(inserted.lastInsertRowid);
+    },
+
+    updateRuleDraftItem(repoId, itemId, input) {
+      // 出处沿用旧值,SQL 不碰 origin 这一列。
+      const changed = db
+        .prepare(
+          "UPDATE rule_draft_item SET scope = ?, statement = ?, layer = ? WHERE id = ? AND repo_id = ?",
+        )
+        .run(input.scope, input.statement, input.layer, itemId, repoId);
+      return changed.changes > 0;
+    },
+
+    deleteRuleDraftItem(repoId, itemId) {
+      const deleted = db
+        .prepare("DELETE FROM rule_draft_item WHERE id = ? AND repo_id = ?")
+        .run(itemId, repoId);
+      return deleted.changes > 0;
+    },
+
+    confirmRuleDraft(repoId) {
+      if (store.getRuleDraft(repoId).length === 0) return undefined;
+      return inRuleSetVersion(repoId, (version, at) => {
+        // 草案在同一个写事务里读:确认与它带来的规则变更必须一起落。
+        for (const item of store.getRuleDraft(repoId)) {
+          insertReviewRule(repoId, item, item.origin, version, at);
+        }
+        db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
         return version;
       });
     },

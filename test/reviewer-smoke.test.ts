@@ -16,6 +16,7 @@ import { test } from "node:test";
 import type { HistoryFinding, ReviewerEvent } from "../src/review/finding.ts";
 import { resolvePiBuiltinProviderTarget } from "../src/reviewer/catalog.ts";
 import { createPiReviewer } from "../src/reviewer/pi-reviewer.ts";
+import { createPiRuleAgent, RULE_LIMIT } from "../src/reviewer/rule-agent.ts";
 import {
   discoverModels,
   validateMinimalInference,
@@ -155,4 +156,48 @@ test("真实模型经复核工具对已修好的历史 Finding 回已修", { ski
   // 契约成立的判据:结论经工具回来、认得出注入时给的那个 id、用对了枚举值。
   assert.deepEqual(outcome.verdicts, [{ findingId: PRIOR.id, verdict: "fixed" }]);
   assert.equal(outcome.rejectedToolCalls, 0, "存在被拒的工具调用,说明契约失配");
+});
+
+/**
+ * 规则 agent 与真实模型之间的契约(issue #205),桩测不到:propose_rule 的形状、
+ * 「只收规范性陈述」这条要求以及 30 条上限,都要真模型跑一遍才知道立不立得住。
+ */
+test("真实模型经 propose_rule 推导出规范性的评审规则", { skip }, async () => {
+  const target = await resolvePiBuiltinProviderTarget(provider!);
+  assert.ok(target, `Pi 内置 provider 不存在或没有运行目标: ${provider}`);
+  const result = await createPiRuleAgent()({
+    worktreePath: FIXTURE,
+    baselineSha: "HEAD",
+    runtimeModel: {
+      provider: provider!,
+      id: model!,
+      name: model!,
+      api: target.api,
+      baseUrl: target.baseUrl,
+      input: ["text"],
+      reasoning: false,
+      contextWindow: 128_000,
+      maxTokens: 16_000,
+      sources: {
+        name: "model-id",
+        api: "service-target",
+        baseUrl: "service-target",
+        input: "runtime-baseline",
+        reasoning: "runtime-baseline",
+        contextWindow: "runtime-baseline",
+        maxTokens: "runtime-baseline",
+      },
+    },
+    apiKey: secret!,
+    existingRules: [],
+  });
+
+  assert.equal(result.failure, undefined, `规则 agent 失败: ${result.failure}`);
+  assert.ok(result.items.length > 0, "至少要产出一条规则");
+  // 上限由服务端截断兜底,这里看的是模型自己有没有把它当回事。
+  assert.ok(result.items.length <= RULE_LIMIT * 2, "产出条数远超上限,提示措辞没起作用");
+  for (const item of result.items) {
+    assert.ok(item.statement.trim().length > 0);
+    assert.ok(item.layer.trim().length > 0);
+  }
 });

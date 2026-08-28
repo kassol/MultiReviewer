@@ -51,6 +51,7 @@ import {
 import {
   ensureWorktree,
   listBranchCommits,
+  prepareWorktree,
   listBranches,
   listTags,
   prepareRangeDiff,
@@ -93,6 +94,7 @@ import {
   type RepoKey,
   type RepoSummary,
   type ReviewRuleInput,
+  type RuleExploration,
   type StageScope,
   type Store,
 } from "../review/store.ts";
@@ -121,6 +123,11 @@ import {
   CUSTOM_PROVIDER_APIS,
   modelCatalogStorePath,
 } from "../reviewer/model-runtime.ts";
+import {
+  createPiRuleAgent,
+  RULE_LIMIT,
+  type RuleAgent,
+} from "../reviewer/rule-agent.ts";
 
 export type Platform = "github" | "gitea";
 
@@ -202,6 +209,16 @@ export type WebhookServerDeps = {
    * 失败写进 stderr,成功不出声。
    */
   onWorktreePrepared?: (repoId: number, failure?: string) => void;
+  /**
+   * 规则 agent 的注入边界(issue #205,ADR 0019)。基点探索与日后的处置反哺共用它;
+   * 不传即用 Pi 子进程的真实实现,测试注入脚本化实现。
+   */
+  ruleAgent?: RuleAgent;
+  /**
+   * 后台跑完一次基点探索时回调,`failure` 有值即这一次没跑成。不传则把失败写进 stderr,
+   * 成功不出声——与工作副本准备同一条口径。
+   */
+  onRuleExplorationSettled?: (repoId: number, failure?: string) => void;
 };
 
 /** 两个平台标识 pull request 事件的头值相同。 */
@@ -605,18 +622,23 @@ function materializedReviewerPlan(
 }
 
 /**
- * 自动投递与手动重跑共用的唯一启动入口。一次 SQLite 读事务固定生效组合、批次上限、引用
- * 服务版本及其密文；事务外只解析这份快照并各解密一次，第一批开始后不再读当前配置。
+ * 把一批模型标识落成不可变的运行计划:地址与接口协议、运行模型、凭据各解一次。
+ *
+ * Review Run 与基点探索共用它(issue #205):两者要的是同一件事——「这个模型此刻跑不
+ * 跑得起来,跑得起来的话用哪套运行参数与哪把凭据」,判据没有理由有两份。
  */
-async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<ReviewRunPlan> {
-  const snapshot = withStore(deps.dbPath, (store) => store.getReviewRunSnapshot(repoId));
-  const customProviders = snapshot.modelServices
+async function materializeReviewerPlans(
+  deps: WebhookServerDeps,
+  modelServices: readonly ModelServiceRecord[],
+  specs: readonly ReviewerSpec[],
+): Promise<readonly ReviewerRuntimePlan[]> {
+  const customProviders = modelServices
     .filter((service) => service.type === "custom")
     .map((service) => service.provider);
   const [conflictingProviders, builtinTargets] = await Promise.all([
     conflictingBuiltinProviderNames(customProviders),
     Promise.all(
-      snapshot.modelServices
+      modelServices
         .filter((service) => service.type === "builtin")
         .map(async (service) =>
           [service.provider, await resolvePiBuiltinProviderTarget(service.provider)] as const,
@@ -624,9 +646,9 @@ async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<Re
     ),
   ]);
 
-  const services = new Map(snapshot.modelServices.map((service) => [service.provider, service]));
+  const services = new Map(modelServices.map((service) => [service.provider, service]));
   const targets = new Map<string, ModelServiceTarget>();
-  for (const service of snapshot.modelServices) {
+  for (const service of modelServices) {
     if (service.type === "custom" && service.baseUrl !== null && service.api !== null) {
       targets.set(service.provider, { baseUrl: service.baseUrl, api: service.api });
     }
@@ -638,7 +660,7 @@ async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<Re
   const credentials = new Map<string, string>();
   const masterKey = deps.credentialMasterKey;
   if (masterKey !== undefined && masterKey !== "") {
-    for (const service of snapshot.modelServices) {
+    for (const service of modelServices) {
       const target = targets.get(service.provider);
       const targetFingerprint =
         target === undefined ? undefined : modelServiceTargetFingerprint(target.baseUrl, target.api);
@@ -656,8 +678,8 @@ async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<Re
     }
   }
 
-  const plans = Object.freeze(
-    snapshot.reviewers.map((spec) =>
+  return Object.freeze(
+    specs.map((spec) =>
       materializedReviewerPlan(
         spec,
         services.get(spec.provider),
@@ -667,6 +689,15 @@ async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<Re
       ),
     ),
   );
+}
+
+/**
+ * 自动投递与手动重跑共用的唯一启动入口。一次 SQLite 读事务固定生效组合、批次上限、引用
+ * 服务版本及其密文；事务外只解析这份快照并各解密一次，第一批开始后不再读当前配置。
+ */
+async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<ReviewRunPlan> {
+  const snapshot = withStore(deps.dbPath, (store) => store.getReviewRunSnapshot(repoId));
+  const plans = await materializeReviewerPlans(deps, snapshot.modelServices, snapshot.reviewers);
   return createReviewRunPlan(
     deps.buildReviewers(plans),
     snapshot.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
@@ -1712,21 +1743,24 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   {
     method: "GET",
     pattern: "/repo-branches",
-    access: "review:create",
+    // 发起范围审查与发起基点探索都从这里选 commit(issue #205),两格任一即可读。
+    access: { anyOf: ["review:create", "rule:write"] },
     assignment: { by: "query" },
     handler: ({ req, res, deps }) => handleRepoBranches(req, res, deps),
   },
   {
     method: "GET",
     pattern: "/repo-commits",
-    access: "review:create",
+    // 发起范围审查与发起基点探索都从这里选 commit(issue #205),两格任一即可读。
+    access: { anyOf: ["review:create", "rule:write"] },
     assignment: { by: "query" },
     handler: ({ req, res, deps }) => handleRepoCommits(req, res, deps),
   },
   {
     method: "GET",
     pattern: "/repo-tags",
-    access: "review:create",
+    // 发起范围审查与发起基点探索都从这里选 commit(issue #205),两格任一即可读。
+    access: { anyOf: ["review:create", "rule:write"] },
     assignment: { by: "query" },
     handler: ({ req, res, deps }) => handleRepoTags(req, res, deps),
   },
@@ -1820,6 +1854,53 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     assignment: { by: "repo", group: 1 },
     handler: ({ res, deps }, match) =>
       handleRetireRule(res, deps, Number(match![1]), Number(match![2])),
+  },
+  {
+    // 基点探索的发起(issue #205)。与规则确认同一格:两者都是「谁定这个仓库的标准」。
+    method: "POST",
+    pattern: /^\/repos\/(\d+)\/rule-exploration$/,
+    access: "rule:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ req, res, deps }, match) =>
+      handleStartRuleExploration(req, res, deps, Number(match![1])),
+  },
+  {
+    method: "POST",
+    pattern: /^\/repos\/(\d+)\/rule-draft$/,
+    access: "rule:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ req, res, deps }, match) =>
+      handleAddDraftItem(req, res, deps, Number(match![1])),
+  },
+  {
+    method: "POST",
+    pattern: /^\/repos\/(\d+)\/rule-draft\/confirm$/,
+    access: "rule:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ res, deps }, match) => handleConfirmRuleDraft(res, deps, Number(match![1])),
+  },
+  {
+    method: "PUT",
+    pattern: /^\/repos\/(\d+)\/rule-draft\/(\d+)$/,
+    access: "rule:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ req, res, deps }, match) =>
+      handleUpdateDraftItem(req, res, deps, Number(match![1]), Number(match![2])),
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/repos\/(\d+)\/rule-draft\/(\d+)$/,
+    access: "rule:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ res, deps }, match) =>
+      handleDeleteDraftItem(res, deps, Number(match![1]), Number(match![2])),
+  },
+  {
+    // 发起探索时可选的那些模型。可用性判据与全局模型组合读的是同一份投影。
+    method: "GET",
+    pattern: "/rule-models",
+    access: "rule:write",
+    handler: ({ res, deps }) => handleRuleModels(res, deps),
   },
   {
     method: "GET",
@@ -5752,15 +5833,27 @@ function startWorktreePreparation(
 }
 
 /**
- * 一个仓库当前生效的规则集与它的规则集版本(issue #202)。空规则集是合法状态:版本
- * 有值、规则为空,面板据此给空态,评审行为与现状一致。
+ * 一个仓库当前生效的规则集与它的规则集版本(issue #202),连它此刻的基点探索与规则
+ * 草案一起给(issue #205)。空规则集是合法状态:版本有值、规则为空,面板据此给空态,
+ * 评审行为与现状一致。
+ *
+ * 探索与草案不另开一个端点:它们回答的是同一个问题的两半——「这个仓库现在按什么标准
+ * 评审,以及还有什么在等人确认」,面板一次读取就该拿全。
  */
 function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: number): void {
-  const ruleSet = withStore(deps.dbPath, (store) => store.getRuleSet(repoId));
-  if (ruleSet === undefined) {
+  const view = withStore(deps.dbPath, (store) => {
+    const ruleSet = store.getRuleSet(repoId);
+    if (ruleSet === undefined) return undefined;
+    return {
+      ...ruleSet,
+      exploration: store.getRuleExploration(repoId),
+      draft: store.getRuleDraft(repoId),
+    };
+  });
+  if (view === undefined) {
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
-  return sendJson(res, 200, ruleSet);
+  return sendJson(res, 200, view);
 }
 
 /**
@@ -5836,6 +5929,251 @@ function handleRetireRule(
 ): void {
   const version = withStore(deps.dbPath, (store) => store.retireReviewRule(repoId, ruleId));
   if (version === undefined) return sendJson(res, 404, { error: NO_ACTIVE_RULE });
+  return sendJson(res, 200, { version });
+}
+
+const NO_DRAFT_ITEM = "这条规则不在这个仓库的规则草案里";
+
+/**
+ * 发起基点探索时可选的模型(issue #205)。可用性判据与全局模型组合、审查配置就绪读的
+ * 是同一份投影,面板因此不必自己判「这个模型此刻能不能跑」。
+ */
+async function handleRuleModels(res: ServerResponse, deps: WebhookServerDeps): Promise<void> {
+  const projection = await projectCurrentModelServices(deps);
+  return sendJson(res, 200, {
+    models: projection.candidates
+      .filter((candidate) => candidate.available)
+      .map((candidate) => ({
+        identity: candidate.identity,
+        provider: candidate.provider,
+        model: candidate.id,
+      })),
+  });
+}
+
+/**
+ * agent 产出到规则草案之间的那道收窄(ADR 0019)。只收规范性陈述的两个必填面,
+ * 再按重要性截断为至多 30 条——上限的本质是人一次确认得完、不麻木,由服务端把住,
+ * 不指望模型自己数得准。
+ */
+function usableRuleItems(items: readonly ReviewRuleInput[]): ReviewRuleInput[] {
+  return items
+    .map((item) => ({
+      scope: item.scope.trim(),
+      statement: item.statement.trim(),
+      layer: item.layer.trim(),
+    }))
+    .filter((item) => item.statement !== "" && item.layer !== "")
+    .slice(0, RULE_LIMIT);
+}
+
+/**
+ * 一次基点探索的后台执行:把工作副本 checkout 到基点 commit,交给规则 agent,产出落成
+ * 规则草案。失败留原因(CONTEXT.md 基点探索),人看得到、也可以再发起一次。
+ */
+async function runRuleExplorationInBackground(
+  deps: WebhookServerDeps,
+  repoId: number,
+  ref: RepoRef,
+  baselineSha: string,
+  plan: ReviewerRuntimePlan,
+): Promise<void> {
+  let failure: string | undefined;
+  try {
+    const forge = deps.forges.gitea;
+    if (forge === undefined) throw new Error("gitea 没有配置 Forge,取不回代码");
+    if (plan.runtimeModel === null || plan.credential === null) {
+      throw new Error(plan.failure ?? `模型 ${modelIdentity(plan.spec)} 不可用`);
+    }
+    const [repository, credentials] = await Promise.all([
+      forge.getRepository(ref),
+      forge.cloneCredentials(ref),
+    ]);
+    // 基点探索看的是这一个 commit 上的仓库全貌,没有 Review Range,两端因此都是它。
+    const worktree = await prepareWorktree({
+      cacheDir: deps.cacheDir,
+      ref,
+      cloneUrl: repository.cloneUrl,
+      credentials,
+      headSha: baselineSha,
+      baseSha: baselineSha,
+    });
+    const existingRules = withStore(deps.dbPath, (store) => store.getRuleSet(repoId)?.rules ?? []);
+    const agent = deps.ruleAgent ?? createPiRuleAgent();
+    const result = await agent({
+      worktreePath: worktree.path,
+      baselineSha,
+      runtimeModel: plan.runtimeModel,
+      apiKey: plan.credential,
+      existingRules: existingRules.map((rule) => ({
+        id: rule.id,
+        scope: rule.scope,
+        statement: rule.statement,
+      })),
+    });
+    if (result.failure !== undefined) throw new Error(result.failure);
+    withStore(deps.dbPath, (store) =>
+      store.finishRuleExploration(
+        repoId,
+        usableRuleItems(result.items),
+        new Date((deps.now ?? Date.now)()).toISOString(),
+      ),
+    );
+  } catch (error) {
+    failure = failureText(error);
+  }
+
+  try {
+    if (failure !== undefined) {
+      withStore(deps.dbPath, (store) =>
+        store.failRuleExploration(
+          repoId,
+          failure!,
+          new Date((deps.now ?? Date.now)()).toISOString(),
+        ),
+      );
+    }
+  } catch (error) {
+    // 这是个后台任务,把未处理的拒绝抛出去会带走整个进程。
+    console.error(`基点探索状态落库失败:${ref.owner}/${ref.repo}:${failureText(error)}`);
+  }
+
+  if (deps.onRuleExplorationSettled !== undefined) {
+    deps.onRuleExplorationSettled(repoId, failure);
+  } else if (failure !== undefined) {
+    console.error(`基点探索失败:${ref.owner}/${ref.repo}:${failure}`);
+  }
+}
+
+/**
+ * 发起一次基点探索(issue #205)。基点 commit 与所用模型都由人给定;模型的可用性判据
+ * 与开一轮 Review Run 完全相同——同一套运行计划物化,跑不起来的模型在这里就拦下。
+ *
+ * 规则集非空的仓库不走这条路:那时重探索的产出是修订提案,要逐条裁决(issue #207)。
+ * 「当前规则集为空」因此是草案与提案的分界。
+ */
+async function handleStartRuleExploration(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+): Promise<void> {
+  const body = await readBody(req, res);
+  if (body === undefined) return;
+  const payload = safeParse(body) as
+    | { baseline?: unknown; provider?: unknown; model?: unknown }
+    | null;
+  if (
+    payload === null ||
+    typeof payload.baseline !== "string" ||
+    typeof payload.provider !== "string" ||
+    typeof payload.model !== "string"
+  ) {
+    return sendJson(res, 400, {
+      error: 'body 要是 {"baseline", "provider", "model"} 形状的 JSON',
+    });
+  }
+  if (!COMMIT_SHA.test(payload.baseline)) {
+    return sendJson(res, 400, { error: "基点要是 7 到 40 位的 commit sha" });
+  }
+  const spec: ReviewerSpec = { provider: payload.provider, model: payload.model };
+
+  const repo = withStore(deps.dbPath, (store) => {
+    const row = store.listRepos().find((entry) => entry.repoId === repoId);
+    return row === undefined
+      ? undefined
+      : { ref: { owner: row.owner, repo: row.repo }, ruleSet: store.getRuleSet(repoId) };
+  });
+  if (repo === undefined) {
+    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+  }
+  if ((repo.ruleSet?.rules.length ?? 0) > 0) {
+    return sendJson(res, 409, {
+      error: "这个仓库的规则集已经不是空的,重新探索的产出要作修订提案逐条裁决",
+    });
+  }
+
+  const [plan] = await materializeReviewerPlans(
+    deps,
+    withStore(deps.dbPath, (store) => store.listModelServices()),
+    [spec],
+  );
+  if (plan === undefined || plan.failure !== null) {
+    return sendJson(res, 400, {
+      error: plan?.failure ?? `模型 ${modelIdentity(spec)} 不可用`,
+    });
+  }
+
+  const started = withStore(deps.dbPath, (store) =>
+    store.startRuleExploration(repoId, {
+      baselineSha: payload.baseline as string,
+      model: modelIdentity(spec),
+      startedAt: new Date((deps.now ?? Date.now)()).toISOString(),
+    }),
+  );
+  if (!started) {
+    return sendJson(res, 409, { error: "这个仓库已经有一次基点探索在跑,等它结束再发起" });
+  }
+
+  const exploration = withStore(deps.dbPath, (store) => store.getRuleExploration(repoId));
+  // 先回 202 再开跑:探索要跑上几分钟,人等的是「已经在跑了」这个回执。
+  sendJson(res, 202, { exploration });
+  void runRuleExplorationInBackground(deps, repoId, repo.ref, payload.baseline, plan);
+}
+
+async function handleAddDraftItem(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+): Promise<void> {
+  const input = await readRuleInput(req, res);
+  if (input === undefined) return;
+  const id = withStore(deps.dbPath, (store) => store.addRuleDraftItem(repoId, input));
+  if (id === undefined) {
+    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+  }
+  return sendJson(res, 201, { id });
+}
+
+async function handleUpdateDraftItem(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+  itemId: number,
+): Promise<void> {
+  const input = await readRuleInput(req, res);
+  if (input === undefined) return;
+  const updated = withStore(deps.dbPath, (store) =>
+    store.updateRuleDraftItem(repoId, itemId, input),
+  );
+  if (!updated) return sendJson(res, 404, { error: NO_DRAFT_ITEM });
+  return sendJson(res, 200, { id: itemId });
+}
+
+/** 删草案里的一条。草案未确认,删就是删掉——没有历史版本的快照要为它保留。 */
+function handleDeleteDraftItem(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+  itemId: number,
+): void {
+  const deleted = withStore(deps.dbPath, (store) => store.deleteRuleDraftItem(repoId, itemId));
+  if (!deleted) return sendJson(res, 404, { error: NO_DRAFT_ITEM });
+  return sendJson(res, 200, { id: itemId });
+}
+
+/** 规则确认(CONTEXT.md):草案整组生效,生成这个仓库的下一个规则集版本。 */
+function handleConfirmRuleDraft(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+): void {
+  const version = withStore(deps.dbPath, (store) => store.confirmRuleDraft(repoId));
+  if (version === undefined) {
+    return sendJson(res, 409, { error: "这个仓库没有待确认的规则草案" });
+  }
   return sendJson(res, 200, { version });
 }
 
@@ -6300,12 +6638,17 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
   };
   // 进程重启会中断后台的工作副本准备(issue #184),那些行没有谁再去改它。启动时改判
   // 失败,面板因此显示得出结果、也给得出重试入口。
-  withStore(deps.dbPath, (store) =>
+  withStore(deps.dbPath, (store) => {
     store.failInterruptedWorktrees(
       "服务重启,上一次准备没跑完",
       new Date((deps.now ?? Date.now)()).toISOString(),
-    ),
-  );
+    );
+    // 后台跑的基点探索同理(issue #205):停在运行中的那一行没有谁再去改它。
+    store.failInterruptedRuleExplorations(
+      "服务重启,上一次探索没跑完",
+      new Date((deps.now ?? Date.now)()).toISOString(),
+    );
+  });
   const hookManager =
     deps.gitea === undefined ? undefined : createGiteaHookManager(deps.gitea);
   const apiPrefix = `/${deps.panelPrefix}/api`;

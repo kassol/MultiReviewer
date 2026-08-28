@@ -10,6 +10,7 @@ import { after, test } from "node:test";
 
 import type { ReviewerEvent } from "../src/review/finding.ts";
 import { runInChild } from "../src/reviewer/pi-reviewer.ts";
+import { runRuleAgentChild } from "../src/reviewer/rule-agent.ts";
 
 const cleanups: (() => void)[] = [];
 after(() => {
@@ -459,4 +460,51 @@ process.on("message", () => {
     outcome.findings.map((finding) => finding.ruleId),
     [5, undefined],
   );
+});
+
+/**
+ * 规则 agent 的子进程边界(issue #205)。与 Reviewer 同一套 harness:受控 worker 驱动
+ * 那些真实模型无法按需复现的路径,任务原样进子进程、条目逐条回来、崩溃有原因。
+ */
+const RULE_REQUEST = {
+  worktreePath: tmpdir(),
+  baselineSha: "abc1234",
+  runtimeModel: CONFIG.runtimeModel,
+  apiKey: CONFIG.apiKey,
+  existingRules: [{ id: 7, scope: "", statement: "已经在集里的一条" }],
+};
+
+test("规则 agent 的任务原样进子进程,产出的条目逐条回来", async () => {
+  const path = worker(`
+process.on("message", (request) => {
+  process.send({
+    kind: "rule",
+    item: { scope: request.baselineSha, statement: JSON.stringify(request.existingRules), layer: "架构" },
+  });
+  process.send({ kind: "rule", item: { scope: "", statement: "第二条", layer: "安全" } });
+  process.send({ kind: "done" });
+  process.exit(0);
+});
+`);
+
+  const result = await runRuleAgentChild(path, RULE_REQUEST);
+  assert.equal(result.failure, undefined);
+  assert.equal(result.items.length, 2);
+  assert.equal(result.items[0]!.scope, RULE_REQUEST.baselineSha);
+  assert.deepEqual(JSON.parse(result.items[0]!.statement), RULE_REQUEST.existingRules);
+  assert.equal(result.items[1]!.layer, "安全");
+});
+
+test("规则 agent 的子进程未回报结果即退出时,失败原因带上退出码", async () => {
+  const path = worker(`
+process.on("message", () => {
+  process.send({ kind: "rule", item: { scope: "", statement: "只报了一条就崩", layer: "架构" } });
+  process.exit(3);
+});
+`);
+
+  const result = await runRuleAgentChild(path, RULE_REQUEST);
+  assert.match(result.failure ?? "", /退出码 3/);
+  // 已经收到的条目照留:崩溃不该把这一次的产出一起抹掉。
+  assert.equal(result.items.length, 1);
 });

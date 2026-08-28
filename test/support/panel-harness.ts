@@ -57,6 +57,8 @@ export type PanelHarness = {
   settled: { event: NormalizedEvent; error?: unknown }[];
   /** 后台准备工作副本(issue #184)的结果,按结束先后。 */
   worktrees: { repoId: number; failure?: string }[];
+  /** 后台跑完的基点探索(issue #205),按结束先后。 */
+  explorations: { repoId: number; failure?: string }[];
   factoryCalls: (readonly ReviewerSpec[])[];
   /** 每次组装 Reviewer 时拿到的完整本轮运行计划。 */
   runtimePlans: (readonly ReviewerRuntimePlan[])[];
@@ -70,6 +72,8 @@ export type PanelHarness = {
   settledAtLeast(count: number): Promise<void>;
   /** 等到至少这么多次工作副本准备已经结束。不猜时序:等的是服务自己发的回调。 */
   worktreesPreparedAtLeast(count: number): Promise<void>;
+  /** 等到至少这么多次基点探索已经结束(issue #205)。 */
+  explorationsAtLeast(count: number): Promise<void>;
 };
 
 /** 凭据测试用的主密钥。缺主密钥那一档传 `credentialMasterKey: undefined` 起 harness。 */
@@ -142,6 +146,8 @@ export type PanelHarnessOptions = {
   wrapForge?: (forge: Forge) => Forge;
   /** 审查轨迹 SSE 的心跳间隔,省略取服务默认值。 */
   traceHeartbeatMs?: number;
+  /** 规则 agent(issue #205)。省略即用真实的 Pi 子进程实现,用例注入脚本化实现。 */
+  ruleAgent?: WebhookServerDeps["ruleAgent"];
 };
 
 export async function startPanelHarness(
@@ -252,6 +258,8 @@ export async function startPanelHarness(
   let waiting: { count: number; resolve: () => void }[] = [];
   const worktrees: { repoId: number; failure?: string }[] = [];
   let worktreeWaiting: { count: number; resolve: () => void }[] = [];
+  const explorations: { repoId: number; failure?: string }[] = [];
+  let explorationWaiting: { count: number; resolve: () => void }[] = [];
 
   const server = createWebhookServer({
     forges: { gitea: forge },
@@ -281,6 +289,15 @@ export async function startPanelHarness(
     ...(options.discoverModelServiceModels === undefined
       ? {}
       : { discoverModelServiceModels: options.discoverModelServiceModels }),
+    ...(options.ruleAgent === undefined ? {} : { ruleAgent: options.ruleAgent }),
+    onRuleExplorationSettled: (repoId, failure) => {
+      explorations.push({ repoId, ...(failure === undefined ? {} : { failure }) });
+      explorationWaiting = explorationWaiting.filter((w) => {
+        if (explorations.length < w.count) return true;
+        w.resolve();
+        return false;
+      });
+    },
     onWorktreePrepared: (repoId, failure) => {
       worktrees.push({ repoId, ...(failure === undefined ? {} : { failure }) });
       worktreeWaiting = worktreeWaiting.filter((w) => {
@@ -377,6 +394,7 @@ export async function startPanelHarness(
     dispatched,
     settled,
     worktrees,
+    explorations,
     factoryCalls,
     snapshots,
     runtimePlans,
@@ -392,6 +410,12 @@ export async function startPanelHarness(
       if (worktrees.length >= count) return Promise.resolve();
       return new Promise<void>((resolve) => {
         worktreeWaiting.push({ count, resolve });
+      });
+    },
+    explorationsAtLeast(count: number): Promise<void> {
+      if (explorations.length >= count) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        explorationWaiting.push({ count, resolve });
       });
     },
   };

@@ -2,8 +2,8 @@
  * 规则集落库与面板可见(issue #202),规则的手工增删改(issue #203)。
  *
  * 两条缝:SQLite 临时库验存量迁移、规则集版本推进与快照回溯,面板 API 走真实 HTTP 验
- * 读取、`rule:write` 拦截与仓库分配收窄。基点探索与裁决那两条写入链路是后续票的事,
- * 它们的规则行由用例直接落进临时库。
+ * 读取、`rule:write` 拦截与仓库分配收窄。基点探索走 `panel-rule-exploration.test.ts`,
+ * 这里的基点探索出处规则行由用例直接落进临时库;裁决那条写入链路是后续票的事。
  */
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -38,6 +38,9 @@ type RuleSetResponse = {
   version: number | null;
   rules: RuleResponse[];
   retired: RuleResponse[];
+  /** 基点探索与规则草案与规则集同一份读取(issue #205)。这一组用例里都还是空的。 */
+  exploration: unknown;
+  draft: unknown[];
 };
 
 /** 直接落一行注册表:这几条用例要的是仓库存在,不是它的 hook。 */
@@ -258,6 +261,8 @@ test("面板按仓库读规则集:分配内可读,空规则集也给出当前版
     version: 1,
     rules: [],
     retired: [],
+    exploration: null,
+    draft: [],
   });
 
   seedRule(h.db.path, {
