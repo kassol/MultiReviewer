@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { Cross2Icon } from "@radix-ui/react-icons";
-import { Dialog, Flex, IconButton, Text, TextField } from "@radix-ui/themes";
+import { Dialog, IconButton, Text, TextField } from "@radix-ui/themes";
 
 import { Button } from "@/components/theme-button";
 
@@ -165,12 +165,13 @@ function LaunchDialogContent({
         }}
       >
         <div className="shrink-0 border-b border-overlay-line px-4 py-3 sm:px-5 sm:py-4">
-          <Flex gap="2" align="baseline" wrap="wrap" className="pr-10">
-            <Dialog.Title size="4" mb="0">发起范围审查</Dialog.Title>
-            <Text as="span" size="2" color="gray" className="break-all">
+          {/* 仓库名放在同一个标题里:Heading 与 Text 各带 leading-trim 伪元素,分成两个元素做 baseline 对齐会错位。 */}
+          <Dialog.Title size="4" mb="0" className="pr-10">
+            发起范围审查
+            <span className="ml-2 break-all text-md font-normal text-text-secondary">
               {repo.owner}/{repo.repo}
-            </Text>
-          </Flex>
+            </span>
+          </Dialog.Title>
 
           <div className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
             <Text as="label" htmlFor="range-review-title" size="2" weight="medium">标题</Text>

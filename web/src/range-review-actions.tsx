@@ -211,12 +211,13 @@ function AdvanceDialogContent({
         }}
       >
         <div className="shrink-0 border-b border-overlay-line px-4 py-3 sm:px-5 sm:py-4">
-          <Flex gap="2" align="baseline" wrap="wrap" className="pr-10">
-            <Dialog.Title size="4" mb="0">推进比较项</Dialog.Title>
-            <Text as="span" size="2" color="gray" className="break-all">
+          {/* 仓库名放在同一个标题里:Heading 与 Text 各带 leading-trim 伪元素,分成两个元素做 baseline 对齐会错位。 */}
+          <Dialog.Title size="4" mb="0" className="pr-10">
+            推进比较项
+            <span className="ml-2 break-all text-md font-normal text-text-secondary">
               {rangeReview.owner}/{rangeReview.repo}
-            </Text>
-          </Flex>
+            </span>
+          </Dialog.Title>
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 px-3 py-3 sm:px-5 sm:py-4">
