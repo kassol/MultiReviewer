@@ -75,6 +75,35 @@ type RuleFormState = { id: number | null; scope: string; statement: string; laye
 
 const BLANK_DRAFT: RuleFormState = { id: null, scope: "", statement: "", layer: "" };
 
+/** 规则三样的请求 body。三处写侧(生效规则、规则草案、提案的改后内容)同一个形状。 */
+function ruleFieldsBody(form: RuleFormState): string {
+  return JSON.stringify({
+    scope: form.scope.trim(),
+    statement: form.statement.trim(),
+    layer: form.layer.trim(),
+  });
+}
+
+/**
+ * 一组规则表单的增删改。生效规则与规则草案各有一组端点,写法却是同一套:`id` 为 null 即
+ * POST 新增、有值即 PUT 改这一条,`{ remove }` 即 DELETE 那一条。两者的差别只有端点前缀
+ * 与成功后清空哪一份表单,由入参给。
+ */
+function useRuleEdits(basePath: string, onSuccess: () => void) {
+  return useMutation({
+    mutationFn: async (action: RuleFormState | { remove: number }): Promise<void> => {
+      const response = "remove" in action
+        ? await api(`${basePath}/${action.remove}`, { method: "DELETE" })
+        : await api(action.id === null ? basePath : `${basePath}/${action.id}`, {
+            method: action.id === null ? "POST" : "PUT",
+            body: ruleFieldsBody(action),
+          });
+      if (!response.ok) throw new Error(await errorText(response));
+    },
+    onSuccess,
+  });
+}
+
 /**
  * 规则集入口(issue #202):首页右栏头部选中一个仓库时的一个按钮加它的弹窗。
  *
@@ -138,47 +167,15 @@ function RuleSetDialogContent({
   };
 
   // 三个写动作走同一次改动:每一次都推进一个规则集版本,回来重读这一份规则集。
-  const change = useMutation({
-    mutationFn: async (action: RuleFormState | { retire: number }): Promise<void> => {
-      const rules = `/repos/${repo.repoId}/rules`;
-      const response = "retire" in action
-        ? await api(`${rules}/${action.retire}`, { method: "DELETE" })
-        : await api(action.id === null ? rules : `${rules}/${action.id}`, {
-            method: action.id === null ? "POST" : "PUT",
-            body: JSON.stringify({
-              scope: action.scope.trim(),
-              statement: action.statement.trim(),
-              layer: action.layer.trim(),
-            }),
-          });
-      if (!response.ok) throw new Error(await errorText(response));
-    },
-    onSuccess: () => {
-      setDraft(null);
-      reload();
-    },
+  const change = useRuleEdits(`/repos/${repo.repoId}/rules`, () => {
+    setDraft(null);
+    reload();
   });
 
   // 草案的增删改与生效规则各走各的端点:草案还没确认,改它不推进规则集版本。
-  const changeDraft = useMutation({
-    mutationFn: async (action: RuleFormState | { remove: number }): Promise<void> => {
-      const items = `/repos/${repo.repoId}/rule-draft`;
-      const response = "remove" in action
-        ? await api(`${items}/${action.remove}`, { method: "DELETE" })
-        : await api(action.id === null ? items : `${items}/${action.id}`, {
-            method: action.id === null ? "POST" : "PUT",
-            body: JSON.stringify({
-              scope: action.scope.trim(),
-              statement: action.statement.trim(),
-              layer: action.layer.trim(),
-            }),
-          });
-      if (!response.ok) throw new Error(await errorText(response));
-    },
-    onSuccess: () => {
-      setDraftEdit(null);
-      reload();
-    },
+  const changeDraft = useRuleEdits(`/repos/${repo.repoId}/rule-draft`, () => {
+    setDraftEdit(null);
+    reload();
   });
 
   /**
@@ -192,15 +189,7 @@ function RuleSetDialogContent({
       const path = `/repos/${repo.repoId}/rule-proposals/${action.id}`;
       const response = await api(`${path}/${action.accept ? "accept" : "reject"}`, {
         method: "POST",
-        ...(action.edit === undefined
-          ? {}
-          : {
-              body: JSON.stringify({
-                scope: action.edit.scope.trim(),
-                statement: action.edit.statement.trim(),
-                layer: action.edit.layer.trim(),
-              }),
-            }),
+        ...(action.edit === undefined ? {} : { body: ruleFieldsBody(action.edit) }),
       });
       if (!response.ok) throw new Error(await errorText(response));
     },
@@ -343,7 +332,7 @@ function RuleSetDialogContent({
                             color="gray"
                             size={{ initial: "3", sm: "1" }}
                             disabled={change.isPending}
-                            onClick={() => change.mutate({ retire: rule.id })}
+                            onClick={() => change.mutate({ remove: rule.id })}
                           >
                             废止
                           </Button>

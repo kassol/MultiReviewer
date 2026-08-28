@@ -87,6 +87,7 @@ import {
 import {
   CUSTOM_PROVIDER_NAME_PATTERN,
   openStore,
+  toReviewRule,
   type FindingDispositionTarget,
   type ModelReference,
   type ModelServiceRecord,
@@ -5923,31 +5924,52 @@ function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: num
 }
 
 /**
- * 手工写一条评审规则要的三样(issue #203)。规范陈述与层标签是规则的两个必填面——
- * 空陈述不构成规范,空层标签在面板上分不了组;作用范围可以不给,空值即全仓库。
+ * 一条评审规则的三样(issue #203)。规范陈述与层标签是规则的两个必填面——空陈述不构成
+ * 规范,空层标签在面板上分不了组;作用范围可以不给,空值即全仓库。
+ *
+ * 手写规则、草案增改与提案的改后内容读的是同一个形状,因此同一个解析:`noneMeansUnchanged`
+ * 为 true 时三样一个都没给回 `null`(采纳提案的「按队列里那份原样采纳」),否则按缺失校验。
+ * 返回 `undefined` 即已经回过 400。
  */
-async function readRuleInput(
+async function readRuleFields(
   req: IncomingMessage,
   res: ServerResponse,
-): Promise<ReviewRuleInput | undefined> {
+  options: { error: string; noneMeansUnchanged: boolean },
+): Promise<ReviewRuleInput | null | undefined> {
   const body = await readBody(req, res);
   if (body === undefined) return undefined;
   const payload = safeParse(body) as
     | { scope?: unknown; statement?: unknown; layer?: unknown }
     | null;
+  if (
+    options.noneMeansUnchanged &&
+    (payload === null ||
+      (payload.scope === undefined && payload.statement === undefined && payload.layer === undefined))
+  ) {
+    return null;
+  }
   const text = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
   const input = {
-    scope: payload?.scope === undefined ? "" : text(payload.scope),
+    scope: text(payload?.scope),
     statement: text(payload?.statement),
     layer: text(payload?.layer),
   };
   if (input.statement === "" || input.layer === "") {
-    sendJson(res, 400, {
-      error: 'body 要是 {"scope": "…", "statement": "…", "layer": "…"} 形状的 JSON,规范陈述与层标签不能为空',
-    });
+    sendJson(res, 400, { error: options.error });
     return undefined;
   }
   return input;
+}
+
+async function readRuleInput(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<ReviewRuleInput | undefined> {
+  const input = await readRuleFields(req, res, {
+    error: 'body 要是 {"scope": "…", "statement": "…", "layer": "…"} 形状的 JSON,规范陈述与层标签不能为空',
+    noneMeansUnchanged: false,
+  });
+  return input ?? undefined;
 }
 
 const NO_ACTIVE_RULE = "这条规则不在这个仓库的生效规则里";
@@ -6118,11 +6140,7 @@ async function runRuleExplorationInBackground(
       baselineSha,
       runtimeModel: plan.runtimeModel,
       apiKey: plan.credential,
-      existingRules: existingRules.map((rule) => ({
-        id: rule.id,
-        scope: rule.scope,
-        statement: rule.statement,
-      })),
+      existingRules: existingRules.map(toReviewRule),
     });
     if (result.failure !== undefined) throw new Error(result.failure);
     const items = usableRuleItems(result.items);
@@ -6242,11 +6260,7 @@ async function runDispositionFeedbackInBackground(
       baselineSha: finding.headSha,
       runtimeModel: plan.runtimeModel,
       apiKey: plan.credential,
-      existingRules: context.rules.map((rule) => ({
-        id: rule.id,
-        scope: rule.scope,
-        statement: rule.statement,
-      })),
+      existingRules: context.rules.map(toReviewRule),
       feedback: {
         note,
         finding: {
@@ -6394,34 +6408,14 @@ const NO_PENDING_PROPOSAL = "这条提案不在这个仓库的待裁决队列里
  * 采纳时可选的改后内容(issue #207)。三样一个都没给即按队列里那份原样采纳;给了就与
  * 手写规则同一道校验(规范陈述与层标签不能为空)。返回 `undefined` 即已经回过 400。
  */
-async function readProposalEdit(
+function readProposalEdit(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<ReviewRuleInput | null | undefined> {
-  const body = await readBody(req, res);
-  if (body === undefined) return undefined;
-  const payload = safeParse(body) as
-    | { scope?: unknown; statement?: unknown; layer?: unknown }
-    | null;
-  if (
-    payload === null ||
-    (payload.scope === undefined && payload.statement === undefined && payload.layer === undefined)
-  ) {
-    return null;
-  }
-  const text = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
-  const input = {
-    scope: text(payload.scope),
-    statement: text(payload.statement),
-    layer: text(payload.layer),
-  };
-  if (input.statement === "" || input.layer === "") {
-    sendJson(res, 400, {
-      error: '改后的内容要是 {"scope": "…", "statement": "…", "layer": "…"} 形状的 JSON,规范陈述与层标签不能为空',
-    });
-    return undefined;
-  }
-  return input;
+  return readRuleFields(req, res, {
+    error: '改后的内容要是 {"scope": "…", "statement": "…", "layer": "…"} 形状的 JSON,规范陈述与层标签不能为空',
+    noneMeansUnchanged: true,
+  });
 }
 
 /**

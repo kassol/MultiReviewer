@@ -1111,6 +1111,14 @@ export type ReviewRuleRecord = {
 };
 
 /**
+ * 规则集里的一条 → 交给模型的那一份(issue #204)。只要标识、作用范围与那一句陈述;
+ * 层标签是人给规则分组用的,不进模型输入。启动快照、基点探索与处置反哺三处同一份投影。
+ */
+export function toReviewRule(rule: ReviewRuleRecord): ReviewRule {
+  return { id: rule.id, scope: rule.scope, statement: rule.statement };
+}
+
+/**
  * 一个仓库当前生效的规则集与它的规则集版本(CONTEXT.md)。`version` 为 null 即这个
  * 仓库还没确认过规则集;已确认的空规则集是版本有值、规则为空。
  *
@@ -3468,14 +3476,7 @@ export function openStore(dbPath: string): Store {
           maxChangedLinesPerBatch: settings.maxChangedLinesPerBatch,
           modelServices: Object.freeze(modelServices),
           ruleSetVersion: ruleSet?.version ?? null,
-          // 注入只要标识、作用范围与那一句陈述;层标签是人给规则分组用的,不进模型输入。
-          rules: Object.freeze(
-            (ruleSet?.rules ?? []).map((rule) => ({
-              id: rule.id,
-              scope: rule.scope,
-              statement: rule.statement,
-            })),
-          ),
+          rules: Object.freeze((ruleSet?.rules ?? []).map(toReviewRule)),
         };
       } catch (error) {
         db.exec("ROLLBACK");
