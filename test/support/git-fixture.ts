@@ -2,7 +2,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+
+import { openStore } from "../../src/review/store.ts";
 
 export type FileTree = Record<string, string>;
 
@@ -230,19 +231,17 @@ export function makeDbPath(): { path: string; cleanup(): void } {
 }
 
 /**
- * 把仓库补成「已确认空规则集」:存量迁移(issue #206)给升级前注册的仓库落的就是这一行。
- * 门禁分代之后新注册的仓库没有规则集版本,不做规则确认就不跑 Review Run;要审查行为的
- * 测试用它把仓库播种成升级前那一代。
+ * 把仓库确认成空规则集:门禁分代(issue #206)之后新注册的仓库没有规则集版本,不做规则
+ * 确认就不跑 Review Run;要审查行为的测试用它把这一步做掉。
+ *
+ * 走产品自己的规则确认(issue #200:空规则集是合法状态,空草案确认得了),不直写版本表
+ * ——绕过产品路径播种的状态,产品路径变了测试也发现不了。仓库不在注册表里时什么都不写。
  */
 export function confirmEmptyRuleSet(dbPath: string, repoId: number): void {
-  const db = new DatabaseSync(dbPath);
+  const store = openStore(dbPath);
   try {
-    // 与存量迁移同一句形状:仓库不在注册表里就什么都不写。
-    db.prepare(
-      `INSERT OR IGNORE INTO rule_set_version (repo_id, version, created_at)
-       SELECT id, 1, ? FROM repo WHERE id = ?`,
-    ).run(new Date().toISOString(), repoId);
+    store.confirmRuleDraft(repoId);
   } finally {
-    db.close();
+    store.close();
   }
 }

@@ -145,7 +145,7 @@ export function runRuleAgentChild(
     };
 
     const timer = setTimeout(
-      () => finish(`基点探索超时,超过 ${TIMEOUT_MS / 60_000} 分钟未结束`),
+      () => finish(`规则 agent 超时,超过 ${TIMEOUT_MS / 60_000} 分钟未结束`),
       TIMEOUT_MS,
     );
 

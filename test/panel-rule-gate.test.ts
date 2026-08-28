@@ -112,3 +112,30 @@ test("规则集未确认时发起范围审查回 409,一条分支都不建", asy
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
 });
+
+test("零规则确认:未确认的仓库确认空规则集之后,同一个入口即放行", async () => {
+  const h = await freshlyRegistered();
+
+  // 草案一条都不加就确认:空规则集是合法状态(issue #200),门禁看的是有没有版本。
+  const confirmed = await h.api("POST", `/repos/${GITEA_REPO.id}/rule-draft/confirm`);
+  assert.equal(confirmed.status, 200);
+  assert.deepEqual(await confirmed.json(), { version: 1 });
+
+  const store = openStore(h.db.path);
+  const ruleSet = store.getRuleSet(GITEA_REPO.id)!;
+  store.close();
+  assert.equal(ruleSet.version, 1);
+  assert.deepEqual(ruleSet.rules, []);
+
+  const allowed = await h.api("POST", "/rerun", {
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    pullNumber: HARNESS_PR.number,
+  });
+  assert.equal(allowed.status, 202);
+  await h.settledAtLeast(1);
+  assert.equal(h.settled[0]!.error, undefined);
+
+  // 确认过的仓库没有第二份可确认的草案。
+  assert.equal((await h.api("POST", `/repos/${GITEA_REPO.id}/rule-draft/confirm`)).status, 409);
+});

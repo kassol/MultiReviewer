@@ -2,8 +2,9 @@
  * 修订提案队列与裁决(issue #207)。
  *
  * 两条缝:SQLite 临时库验提案状态机与三种变更类型各自的落库形态,面板 API 走真实 HTTP
- * 验规则集非空时探索产出入队、逐条裁决(原样采纳 / 改后采纳 / 驳回)、采纳推进规则集
- * 版本与 `rule:write` 拦截。规则 agent 仍用脚本化实现注入,与 issue #205 同一个位置。
+ * 验规则集已确认时探索产出入队(含已确认的空规则集)、逐条裁决(原样采纳 / 改后采纳 /
+ * 驳回)、采纳推进规则集版本与 `rule:write` 拦截。规则 agent 仍用脚本化实现注入,与
+ * issue #205 同一个位置。
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
@@ -300,7 +301,7 @@ test("目标规则已经不生效时采纳不了,一版都不推进;移除仓库
   }
 });
 
-test("规则集非空时探索产出进提案队列,草案一行不动", async () => {
+test("规则集已确认时探索产出进提案队列,草案一行不动", async () => {
   const items: RuleAgentItem[] = [];
   const { h, cookie, agent } = await confirmedHarness(items);
   const rules = (await ruleSet(h, cookie)).rules;
@@ -436,4 +437,42 @@ test("没有 rule:write 的人裁决不了,但读得到提案队列", async () =
     404,
   );
   assert.equal((await ruleSet(h, cookie)).proposals[0]!.state, "pending");
+});
+
+test("已确认的空规则集重探索:产出仍进提案队列,不回到草案", async () => {
+  const items: RuleAgentItem[] = [];
+  const agent: RuleAgent = async () => ({ items });
+  const h = await startReadyPanelHarness(cleanups, { ruleAgent: agent });
+  assert.equal(
+    (await h.api("POST", "/repos", { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo })).status,
+    201,
+  );
+  await h.worktreesPreparedAtLeast(1);
+  const cookie = await scopedUser(h, "empty-set-writer", [GITEA_REPO.id], ["rule:write"]);
+  const path = `/repos/${GITEA_REPO.id}`;
+
+  // 确认一个空规则集(issue #200):规则一条都没有,但这个仓库已经确认过了。
+  assert.equal((await send(h, cookie, "POST", `${path}/rule-draft/confirm`)).status, 200);
+  assert.equal((await ruleSet(h, cookie)).version, 1);
+
+  items.push({ scope: "", statement: "重探索提的那条", layer: "架构" });
+  assert.equal(
+    (await send(h, cookie, "POST", `${path}/rule-exploration`, {
+      baseline: h.repo.baseSha,
+      provider: "test",
+      model: "global-model",
+    })).status,
+    202,
+  );
+  await h.explorationsAtLeast(1);
+
+  // 分界按有没有规则集版本取:已确认的空集重探索走提案队列,不再产出草案。
+  const body = await ruleSet(h, cookie);
+  assert.deepEqual(body.draft, []);
+  assert.deepEqual(
+    body.proposals.map((row) => [row.change, row.targetRuleId, row.statement, row.state]),
+    [["add", null, "重探索提的那条", "pending"]],
+  );
+  assert.equal(body.version, 1);
+  assert.deepEqual(body.rules, []);
 });

@@ -5550,6 +5550,11 @@ async function handleAdvanceRangeReview(
           : "这个范围审查没有可用的容器 pull request,重新发起一个",
     });
   }
+  // 四个发起入口同一道门禁(issue #206)。确认不可逆、范围审查又只能在确认之后发起,
+  // 这个分支因此不可达;留着是为了「开跑之前必过门禁」不随入口数量漏掉一处。
+  if (ruleSetUnconfirmed(deps.dbPath, record.repoId)) {
+    return sendJson(res, 409, { error: RULE_SET_UNCONFIRMED });
+  }
   const forge = deps.forges.gitea;
   if (forge === undefined) {
     return sendJson(res, 503, { error: "gitea 没有配置 Forge,推进不了比较项" });
@@ -6103,7 +6108,8 @@ async function runRuleExplorationInBackground(
       headSha: baselineSha,
       baseSha: baselineSha,
     });
-    const existingRules = withStore(deps.dbPath, (store) => store.getRuleSet(repoId)?.rules ?? []);
+    const ruleSet = withStore(deps.dbPath, (store) => store.getRuleSet(repoId));
+    const existingRules = ruleSet?.rules ?? [];
     const agent = deps.ruleAgent ?? createPiRuleAgent();
     const result = await agent({
       worktreePath: worktree.path,
@@ -6119,10 +6125,11 @@ async function runRuleExplorationInBackground(
     if (result.failure !== undefined) throw new Error(result.failure);
     const items = usableRuleItems(result.items);
     const at = new Date((deps.now ?? Date.now)()).toISOString();
-    // 规则集为空即这一次产出规则草案,非空即产出修订提案(CONTEXT.md 基点探索)。判据
-    // 读的是交给 agent 的那一份现有规则集:同一次探索里两处不该各读各的。
+    // 规则集未确认即这一次产出规则草案,已确认(含空集)即产出修订提案(CONTEXT.md
+    // 基点探索,issue #207)。判据读的是交给 agent 的那一份规则集:同一次探索里两处不该
+    // 各读各的。按版本而不是按规则为不为空分界:已确认的空规则集重探索也该走提案队列。
     withStore(deps.dbPath, (store) =>
-      existingRules.length === 0
+      (ruleSet?.version ?? null) === null
         ? store.finishRuleExploration(repoId, items, at)
         : store.finishRuleExplorationAsProposals(
             repoId,
@@ -6298,10 +6305,7 @@ async function handleStartRuleExploration(
   }
   const spec: ReviewerSpec = { provider: payload.provider, model: payload.model };
 
-  const repo = withStore(deps.dbPath, (store) => {
-    const row = store.listRepos().find((entry) => entry.repoId === repoId);
-    return row === undefined ? undefined : { owner: row.owner, repo: row.repo };
-  });
+  const repo = withStore(deps.dbPath, (store) => store.getRepo(repoId));
   if (repo === undefined) {
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
@@ -6451,7 +6455,10 @@ function handleRejectRuleProposal(
   return sendJson(res, 200, { id: proposalId });
 }
 
-/** 规则确认(CONTEXT.md):草案整组生效,生成这个仓库的下一个规则集版本。 */
+/**
+ * 规则确认(CONTEXT.md):草案整组生效,生成这个仓库的下一个规则集版本。规则集还没确认
+ * 的仓库确认空草案照样成立(issue #200):那一版是一个空集,门禁随之放行。
+ */
 function handleConfirmRuleDraft(
   res: ServerResponse,
   deps: WebhookServerDeps,
@@ -6459,7 +6466,7 @@ function handleConfirmRuleDraft(
 ): void {
   const version = withStore(deps.dbPath, (store) => store.confirmRuleDraft(repoId));
   if (version === undefined) {
-    return sendJson(res, 409, { error: "这个仓库没有待确认的规则草案" });
+    return sendJson(res, 409, { error: "这个仓库的规则集已经确认,没有待确认的规则草案" });
   }
   return sendJson(res, 200, { version });
 }

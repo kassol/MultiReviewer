@@ -1632,8 +1632,9 @@ export type Store = {
   /** 删草案里的一条。草案未确认,删就是删掉,没有历史版本要为它保留。 */
   deleteRuleDraftItem(repoId: number, itemId: number): boolean;
   /**
-   * 规则确认(CONTEXT.md):草案整组成为生效规则,推进一个规则集版本,草案清空。返回
-   * 新的规则集版本;没有草案可确认时回 undefined,一版都不推进。
+   * 规则确认(CONTEXT.md):草案整组成为生效规则,推进一个规则集版本,草案清空。还没
+   * 确认过的仓库可以确认空草案——空规则集是合法状态(issue #200),那一版就是一个空集。
+   * 返回新的规则集版本;仓库不在注册表里、或规则集已确认而草案为空时回 undefined。
    */
   confirmRuleDraft(repoId: number): number | undefined;
   /** 这个仓库的修订提案队列,按排队先后。待裁决与已裁决的都在里面。 */
@@ -3348,7 +3349,13 @@ export function openStore(dbPath: string): Store {
     },
 
     confirmRuleDraft(repoId) {
-      if (store.getRuleDraft(repoId).length === 0) return undefined;
+      if (!repoExists(repoId)) return undefined;
+      // 空规则集是合法状态(issue #200):还没确认过的仓库确认空草案就是在说「这个仓库
+      // 没有规则」,照样生成一个版本,门禁随之放行。已确认的仓库拿空草案再确认只会白推
+      // 一版,那时回 undefined。
+      if (store.getRuleDraft(repoId).length === 0 && store.getRuleSet(repoId)?.version !== null) {
+        return undefined;
+      }
       return inRuleSetVersion(repoId, (version, at) => {
         // 草案在同一个写事务里读:确认与它带来的规则变更必须一起落。
         for (const item of store.getRuleDraft(repoId)) {

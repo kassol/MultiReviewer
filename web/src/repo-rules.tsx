@@ -2,9 +2,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { Cross2Icon, CrossCircledIcon } from "@radix-ui/react-icons";
-import { Callout, Dialog, IconButton, Select, Skeleton, Text, TextField, Tooltip } from "@radix-ui/themes";
+import { Badge, Callout, Dialog, IconButton, Select, Skeleton, Text, TextField, Tooltip } from "@radix-ui/themes";
 
+import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
+import { HelpTooltip } from "@/components/help-tooltip";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 
@@ -64,10 +66,14 @@ type RuleSet = {
 /** `GET /rule-models` 的一项:发起基点探索时可选的模型。 */
 type RuleModel = { identity: string; provider: string; model: string };
 
-/** 编辑中的那条规则:`id` 为 null 即新增,有值即改这一条。 */
-type RuleDraft = { id: number | null; scope: string; statement: string; layer: string };
+/**
+ * 表单里编辑中的那条规则:`id` 为 null 即新增,有值即改这一条。生效规则、规则草案与修订
+ * 提案三张表单共用它。它与 CONTEXT.md 的「规则草案」(`ruleSet.draft`)不是一回事,因此
+ * 不叫 `RuleDraft`。
+ */
+type RuleFormState = { id: number | null; scope: string; statement: string; layer: string };
 
-const BLANK_DRAFT: RuleDraft = { id: null, scope: "", statement: "", layer: "" };
+const BLANK_DRAFT: RuleFormState = { id: null, scope: "", statement: "", layer: "" };
 
 /**
  * 规则集入口(issue #202):首页右栏头部选中一个仓库时的一个按钮加它的弹窗。
@@ -117,9 +123,9 @@ function RuleSetDialogContent({
   canWrite: boolean;
 }) {
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<RuleDraft | null>(null);
-  const [draftEdit, setDraftEdit] = useState<RuleDraft | null>(null);
-  const [proposalEdit, setProposalEdit] = useState<RuleDraft | null>(null);
+  const [draft, setDraft] = useState<RuleFormState | null>(null);
+  const [draftEdit, setDraftEdit] = useState<RuleFormState | null>(null);
+  const [proposalEdit, setProposalEdit] = useState<RuleFormState | null>(null);
   const ruleSet = useQuery({
     queryKey: ["repo-rules", repo.repoId],
     queryFn: () => fetchJson<RuleSet>(`/repos/${repo.repoId}/rules`),
@@ -133,7 +139,7 @@ function RuleSetDialogContent({
 
   // 三个写动作走同一次改动:每一次都推进一个规则集版本,回来重读这一份规则集。
   const change = useMutation({
-    mutationFn: async (action: RuleDraft | { retire: number }): Promise<void> => {
+    mutationFn: async (action: RuleFormState | { retire: number }): Promise<void> => {
       const rules = `/repos/${repo.repoId}/rules`;
       const response = "retire" in action
         ? await api(`${rules}/${action.retire}`, { method: "DELETE" })
@@ -155,7 +161,7 @@ function RuleSetDialogContent({
 
   // 草案的增删改与生效规则各走各的端点:草案还没确认,改它不推进规则集版本。
   const changeDraft = useMutation({
-    mutationFn: async (action: RuleDraft | { remove: number }): Promise<void> => {
+    mutationFn: async (action: RuleFormState | { remove: number }): Promise<void> => {
       const items = `/repos/${repo.repoId}/rule-draft`;
       const response = "remove" in action
         ? await api(`${items}/${action.remove}`, { method: "DELETE" })
@@ -181,7 +187,7 @@ function RuleSetDialogContent({
    */
   const decide = useMutation({
     mutationFn: async (
-      action: { id: number; accept: boolean; edit?: RuleDraft },
+      action: { id: number; accept: boolean; edit?: RuleFormState },
     ): Promise<void> => {
       const path = `/repos/${repo.repoId}/rule-proposals/${action.id}`;
       const response = await api(`${path}/${action.accept ? "accept" : "reject"}`, {
@@ -316,7 +322,7 @@ function RuleSetDialogContent({
         <div className="flex flex-col gap-3.5">
           {byLayer(ruleSet.data.rules).map(([layer, rules]) => (
             <section key={layer} className="flex flex-col gap-2">
-              <h3 className="text-lg font-bold tracking-[-0.015em]">{layer}</h3>
+              <h3 className="text-2xl font-bold tracking-[-0.015em]">{layer}</h3>
               <ul className="overflow-hidden rounded-lg border border-card-line">
                 {rules.map((rule) => (
                   <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
@@ -345,9 +351,9 @@ function RuleSetDialogContent({
                       ) : null}
                     </div>
                     <span className="mt-1.5 inline-block">
-                      <StatusBadge tone="neutral">
+                      <Badge color="gray" variant="soft">
                         {rule.scope === "" ? "全仓库" : rule.scope}
-                      </StatusBadge>
+                      </Badge>
                     </span>
                   </li>
                 ))}
@@ -359,7 +365,7 @@ function RuleSetDialogContent({
 
       {ruleSet.data === undefined || ruleSet.data.retired.length === 0 ? null : (
         <section className="mt-3.5 flex flex-col gap-2">
-          <h3 className="text-lg font-bold tracking-[-0.015em]">已废止</h3>
+          <h3 className="text-2xl font-bold tracking-[-0.015em]">已废止</h3>
           <ul className="overflow-hidden rounded-lg border border-card-line">
             {ruleSet.data.retired.map((rule) => (
               <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
@@ -367,7 +373,7 @@ function RuleSetDialogContent({
                   {rule.statement}
                 </Text>
                 <span className="mt-1.5 inline-block">
-                  <StatusBadge tone="neutral">{rule.layer}</StatusBadge>
+                  <Badge color="gray" variant="soft">{rule.layer}</Badge>
                 </span>
               </li>
             ))}
@@ -406,11 +412,11 @@ function RuleForm({
   onCancel,
   onSubmit,
 }: {
-  draft: RuleDraft;
+  draft: RuleFormState;
   busy: boolean;
   /** 提交那一颗的字。省略即按新增 / 保存,裁决那一段给「改后采纳」。 */
   submitLabel?: string;
-  onChange: (draft: RuleDraft) => void;
+  onChange: (draft: RuleFormState) => void;
   onCancel: () => void;
   onSubmit: () => void;
 }) {
@@ -492,9 +498,9 @@ function ProposalSection({
 }: {
   ruleSet: RuleSet;
   canWrite: boolean;
-  edit: RuleDraft | null;
+  edit: RuleFormState | null;
   busy: boolean;
-  onEdit: (draft: RuleDraft | null) => void;
+  onEdit: (draft: RuleFormState | null) => void;
   onDecide: (id: number, accept: boolean) => void;
   onSubmitEdit: () => void;
 }) {
@@ -509,10 +515,10 @@ function ProposalSection({
 
   return (
     <section className="mb-3.5 flex flex-col gap-2 rounded-lg border border-card-line p-3">
-      <h3 className="text-lg font-bold tracking-[-0.015em]">修订提案</h3>
-      <Text as="p" size="1" color="gray">
-        规则集的每次变更都要你裁决:采纳生成新的规则集版本,驳回只留下记录。
-      </Text>
+      <div className="flex items-center gap-1">
+        <h3 className="text-2xl font-bold tracking-[-0.015em]">修订提案</h3>
+        <HelpTooltip content="规则集的每次变更都要你裁决:采纳生成新的规则集版本,驳回只留下记录。" />
+      </div>
 
       {pending.length === 0 ? null : (
         <ul className="overflow-hidden rounded-lg border border-card-line">
@@ -559,11 +565,11 @@ function ProposalSection({
                 ) : null}
               </div>
               <span className="mt-1.5 inline-flex flex-wrap gap-1.5">
-                <StatusBadge tone="neutral">{CHANGE_LABEL[proposal.change]}</StatusBadge>
-                <StatusBadge tone="neutral">{SOURCE_LABEL[proposal.source]}</StatusBadge>
-                <StatusBadge tone="neutral">
+                <Badge color="gray" variant="soft">{CHANGE_LABEL[proposal.change]}</Badge>
+                <Badge color="gray" variant="soft">{SOURCE_LABEL[proposal.source]}</Badge>
+                <Badge color="gray" variant="soft">
                   {proposal.scope === "" ? "全仓库" : proposal.scope}
-                </StatusBadge>
+                </Badge>
               </span>
               {target(proposal) === null ? null : (
                 <Text as="p" size="1" color="gray" className="mt-1.5">
@@ -605,8 +611,8 @@ function ProposalSection({
                   <StatusBadge tone={proposal.state === "accepted" ? "success" : "neutral"}>
                     {proposal.state === "accepted" ? "已采纳" : "已驳回"}
                   </StatusBadge>
-                  <StatusBadge tone="neutral">{CHANGE_LABEL[proposal.change]}</StatusBadge>
-                  <StatusBadge tone="neutral">{SOURCE_LABEL[proposal.source]}</StatusBadge>
+                  <Badge color="gray" variant="soft">{CHANGE_LABEL[proposal.change]}</Badge>
+                  <Badge color="gray" variant="soft">{SOURCE_LABEL[proposal.source]}</Badge>
                 </span>
               </li>
             ))}
@@ -620,8 +626,9 @@ function ProposalSection({
 /**
  * 基点探索、规则草案与规则确认那一段(issue #205)。只在有 `rule:write` 时出现。
  *
- * 规则集非空的仓库照样发起得了探索(issue #207):**当前规则集为空是草案与提案的分界**,
- * 非空时那一次的产出排进上面的修订提案队列,草案与规则确认那两样因此不再显示。
+ * 已确认的仓库照样发起得了探索(issue #207):**有没有规则集版本是草案与提案的分界**,
+ * 已确认时那一次的产出排进上面的修订提案队列,草案与规则确认那两样因此不再显示。空规则
+ * 集是合法状态(issue #200),因此未确认时草案为空也确认得了。
  */
 function ExplorationSection({
   repo,
@@ -636,38 +643,40 @@ function ExplorationSection({
 }: {
   repo: { repoId: number; owner: string; repo: string };
   ruleSet: RuleSet;
-  draft: RuleDraft | null;
+  draft: RuleFormState | null;
   busy: boolean;
   onLaunched: () => void;
-  onEdit: (draft: RuleDraft | null) => void;
+  onEdit: (draft: RuleFormState | null) => void;
   onSubmitEdit: () => void;
   onRemove: (id: number) => void;
   onConfirm: () => void;
 }) {
   const exploration = ruleSet.exploration;
   const running = exploration?.state === "running";
-  const confirmed = ruleSet.rules.length > 0;
+  // 分界按有没有规则集版本取,不按规则为不为空:已确认的空规则集重探索也走提案队列。
+  const confirmed = ruleSet.version !== null;
 
   return (
     <section className="mb-3.5 flex flex-col gap-2 rounded-lg border border-card-line p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-lg font-bold tracking-[-0.015em]">
-          {confirmed ? "基点探索" : "规则草案"}
-        </h3>
+        <div className="flex items-center gap-1">
+          <h3 className="text-2xl font-bold tracking-[-0.015em]">
+            {confirmed ? "基点探索" : "规则草案"}
+          </h3>
+          <HelpTooltip
+            content={
+              confirmed
+                ? "规则集已经确认,再次探索的产出排进上面的修订提案队列,由你逐条裁决。"
+                : "基点探索让 agent 从一个 commit 上的代码推导规则初稿,至多 30 条,由你逐条改定后整组确认。"
+            }
+          />
+        </div>
         <ExplorationLaunch repo={repo} busy={running} onLaunched={onLaunched} />
       </div>
-
-      {exploration === null || confirmed ? (
-        <Text as="p" size="1" color="gray">
-          {confirmed
-            ? "规则集已经非空,再次探索的产出排进上面的修订提案队列,由你逐条裁决。"
-            : "基点探索让 agent 从一个 commit 上的代码推导规则初稿,至多 30 条,由你逐条改定后整组确认。"}
-        </Text>
-      ) : null}
       {exploration === null ? null : (
         <Text as="p" size="1" color="gray">
           {running ? "正在探索" : exploration.state === "failed" ? "上次探索失败" : "已完成探索"}
-          {" · "}基点 {exploration.baselineSha.slice(0, 7)} · 模型 {exploration.model}
+          {" · "}基点 <CommitChip sha={exploration.baselineSha} /> · 模型 {exploration.model}
         </Text>
       )}
 
@@ -688,13 +697,12 @@ function ExplorationSection({
           >
             向草案新增
           </Button>
-          <Button
-            size={{ initial: "3", sm: "2" }}
-            disabled={busy || ruleSet.draft.length === 0}
-            onClick={onConfirm}
-          >
-            确认这组规则
+          <Button size={{ initial: "3", sm: "2" }} disabled={busy} onClick={onConfirm}>
+            {ruleSet.draft.length === 0 ? "确认空规则集" : "确认这组规则"}
           </Button>
+          {ruleSet.draft.length === 0 ? (
+            <HelpTooltip content="确认空规则集即宣布这个仓库没有规则:审查随之放行,评审不注入任何规则。之后再探索,产出排进修订提案队列。" />
+          ) : null}
         </div>
       ) : (
         <RuleForm
@@ -733,10 +741,10 @@ function ExplorationSection({
                 </div>
               </div>
               <span className="mt-1.5 inline-flex gap-1.5">
-                <StatusBadge tone="neutral">{rule.layer}</StatusBadge>
-                <StatusBadge tone="neutral">
+                <Badge color="gray" variant="soft">{rule.layer}</Badge>
+                <Badge color="gray" variant="soft">
                   {rule.scope === "" ? "全仓库" : rule.scope}
-                </StatusBadge>
+                </Badge>
               </span>
             </li>
           ))}
@@ -871,6 +879,10 @@ function ExplorationLaunchContent({
             <span className="ml-2 break-all text-md font-normal text-text-secondary">
               {repo.owner}/{repo.repo}
             </span>
+            <HelpTooltip
+              className="ml-1 align-middle"
+              content="产出至多 30 条规则草案,由你逐条改定后整组确认。"
+            />
           </Dialog.Title>
           <div className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
             <Text as="label" htmlFor="rule-exploration-model" size="2" weight="medium">模型</Text>
@@ -885,9 +897,6 @@ function ExplorationLaunchContent({
               </Select.Content>
             </Select.Root>
           </div>
-          <Text as="p" size="1" color="gray" className="mt-1 text-right">
-            产出至多 30 条规则草案,由你逐条改定后整组确认
-          </Text>
         </div>
 
         <div className="flex min-h-0 flex-1 px-3 py-3 sm:px-5 sm:py-4">

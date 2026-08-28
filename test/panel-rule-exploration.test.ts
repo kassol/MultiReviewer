@@ -239,8 +239,8 @@ test("规则确认整组生效:草案成为生效规则、推进一版、草案�
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 72, owner: "acme", repo: "confirmed", generation: 1, key: "k" });
-    // 没有草案时确认不动任何东西。
-    assert.equal(store.confirmRuleDraft(72), undefined);
+    // 仓库不在注册表里时确认不动任何东西。
+    assert.equal(store.confirmRuleDraft(999), undefined);
 
     store.startRuleExploration(72, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
     store.finishRuleExploration(72, [item("公开函数要有类型标注", "架构", "src/**")], AT);
@@ -259,8 +259,9 @@ test("规则确认整组生效:草案成为生效规则、推进一版、草案�
       ],
     );
     assert.deepEqual(store.getRuleDraft(72), []);
-    // 确认之后不留第二份可确认的草案。
+    // 确认之后不留第二份可确认的草案:已确认的仓库拿空草案再确认一版都不推进。
     assert.equal(store.confirmRuleDraft(72), undefined);
+    assert.equal(store.getRuleSet(72)!.version, 1);
     // 探索记录本身留着:后续反哺要沿用这个仓库最近一次探索所用的模型。
     assert.equal(store.getRuleExploration(72)?.model, "test:m");
   } finally {
@@ -506,4 +507,26 @@ test("发起要一个可用模型与一个 commit sha,坏入参一律 400", asyn
   assert.deepEqual((await models.json()) as { models: unknown[] }, {
     models: [{ identity: "test:global-model", provider: "test", model: "global-model" }],
   });
+});
+
+test("规则集未确认的仓库确认得了空规则集:生成第一版,草案一条都不需要", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  try {
+    store.registerRepo({ repoId: 73, owner: "acme", repo: "empty", generation: 1, key: "k" });
+    assert.equal(store.getRuleSet(73)!.version, null);
+
+    // 空规则集是合法状态(issue #200):没探索过、草案为空,确认的就是一个空集。
+    assert.equal(store.confirmRuleDraft(73), 1);
+    const confirmed = store.getRuleSet(73)!;
+    assert.equal(confirmed.version, 1);
+    assert.deepEqual(confirmed.rules, []);
+
+    // 已经确认过了,再确认一次不推进版本。
+    assert.equal(store.confirmRuleDraft(73), undefined);
+    assert.equal(store.getRuleSet(73)!.version, 1);
+  } finally {
+    store.close();
+  }
 });
