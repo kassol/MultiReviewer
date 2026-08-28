@@ -1787,6 +1787,14 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
       handleHookCheck(res, deps, hookManager, Number(match![1])),
   },
   {
+    // 规则集读侧不挂权限格(ADR 0019):登录加仓库分配即可读,分配外由过滤层判 404。
+    method: "GET",
+    pattern: /^\/repos\/(\d+)\/rules$/,
+    access: "authenticated-only",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ res, deps }, match) => handleRuleSet(res, deps, Number(match![1])),
+  },
+  {
     method: "GET",
     pattern: "/model-services",
     access: { anyOf: ["model:read", "credential:read"] },
@@ -5714,6 +5722,18 @@ function startWorktreePreparation(
   });
   preparingWorktrees.set(key, running);
   return true;
+}
+
+/**
+ * 一个仓库当前生效的规则集与它的规则集版本(issue #202)。空规则集是合法状态:版本
+ * 有值、规则为空,面板据此给空态,评审行为与现状一致。
+ */
+function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: number): void {
+  const ruleSet = withStore(deps.dbPath, (store) => store.getRuleSet(repoId));
+  if (ruleSet === undefined) {
+    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+  }
+  return sendJson(res, 200, ruleSet);
 }
 
 /**

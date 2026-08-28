@@ -263,6 +263,38 @@ CREATE TABLE IF NOT EXISTS repo_key (
   PRIMARY KEY (repo_id, generation)
 );
 
+-- 规则集版本(CONTEXT.md)。一次规则确认或裁决采纳记一行,版本按仓库从 1 递增。
+-- 有没有行就是「这个仓库确认过规则集没有」的判据:空规则集是合法状态,它与「还没
+-- 确认」在规则行上分不出来,只有这张表分得出。
+CREATE TABLE IF NOT EXISTS rule_set_version (
+  repo_id INTEGER NOT NULL REFERENCES repo(id),
+  version INTEGER NOT NULL CHECK (version > 0),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (repo_id, version)
+);
+
+-- 评审规则(CONTEXT.md)。scope 是 glob,空串即全仓库;statement 是那一句规范陈述;
+-- layer 是自由文本层标签;origin 是出处。
+--
+-- 两态生命周期不另存历史表:effective_version 是它进集的那一版,retired_version 是它
+-- 被废止的那一版(NULL 即仍生效)。规则集版本 V 的快照因此是一句 WHERE——
+-- effective_version <= V 且(retired_version 为 NULL 或 > V),Review Run 冻结版本后按
+-- 它取当时那一组。state 与 retired_version 由 CHECK 绑死,两者不会各说各话。
+CREATE TABLE IF NOT EXISTS review_rule (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id INTEGER NOT NULL REFERENCES repo(id),
+  scope TEXT NOT NULL,
+  statement TEXT NOT NULL,
+  layer TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('active', 'retired')),
+  origin TEXT NOT NULL,
+  effective_version INTEGER NOT NULL,
+  retired_version INTEGER,
+  created_at TEXT NOT NULL,
+  CHECK ((state = 'active') = (retired_version IS NULL))
+);
+CREATE INDEX IF NOT EXISTS review_rule_by_repo ON review_rule(repo_id);
+
 
 -- 审查策略,一项一行。reviewers 是全局模型组合,与 repo.reviewers 同构(ReviewerSpec
 -- 的 JSON 数组);max_changed_lines_per_batch 是正整数的字符串形,缺行即取默认值。两项各有
@@ -982,6 +1014,25 @@ export type RepoSummary = {
   worktree: WorktreeStatus;
 };
 
+/** 规则集里的一条评审规则(CONTEXT.md)。`scope` 空串即全仓库。 */
+export type ReviewRuleRecord = {
+  id: number;
+  scope: string;
+  statement: string;
+  layer: string;
+  /** 出处。这一票只有读,写它的是基点探索、处置反哺与人手写三条链路。 */
+  origin: string;
+};
+
+/**
+ * 一个仓库当前生效的规则集与它的规则集版本(CONTEXT.md)。`version` 为 null 即这个
+ * 仓库还没确认过规则集;已确认的空规则集是版本有值、规则为空。
+ */
+export type RuleSet = {
+  version: number | null;
+  rules: ReviewRuleRecord[];
+};
+
 /** 一个时间窗里的用量聚合:落了用量的 Review Run 数,加它们的 token 之和。 */
 export type UsageStats = ReviewerUsage & { runs: number };
 
@@ -1376,6 +1427,11 @@ export type Store = {
   failInterruptedWorktrees(failure: string, at: string): void;
   /** 全部已注册仓库,按最近活动排序,没跑过的按注册时间排在后面。 */
   listRepos(): RepoSummary[];
+  /**
+   * 这个仓库当前生效的规则集与它的规则集版本。未注册的仓库回 undefined——规则集挂在
+   * 注册表行上,没有那一行就没有规则集可谈。
+   */
+  getRuleSet(repoId: number): RuleSet | undefined;
   /** 审查策略。历史值和未写过的项都从版本 1 开始。 */
   getGlobalSettings(): GlobalSettings;
   /** 按独立版本改写全局模型组合；陈旧版本或模型服务状态变化返回 false。 */
@@ -2076,6 +2132,22 @@ const DROPPED_COST_COLUMNS: readonly (readonly [string, string])[] = [
  */
 const RETIRED_PANEL_PERMISSIONS = ["repo:read", "review:read"];
 
+/**
+ * 存量迁移(issue #202):升级前注册的仓库全部视同已确认空规则集。给还没有任何规则集
+ * 版本的仓库补一行版本 1——没有规则行,语义就是「空集已确认」,评审行为与现状一致。
+ *
+ * 与删退役权限格同一个机制:建 schema 之后跑,不递增 `user_version`(那个版本号被模型
+ * 服务迁移器独占)。`INSERT OR IGNORE` 让它幂等,第二次打开同一个库一行都不写。
+ */
+function seedConfirmedEmptyRuleSets(db: DatabaseSync): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO rule_set_version (repo_id, version, created_at)
+     SELECT id, 1, ?
+       FROM repo
+      WHERE NOT EXISTS (SELECT 1 FROM rule_set_version WHERE repo_id = repo.id)`,
+  ).run(new Date().toISOString());
+}
+
 function dropRetiredPanelPermissions(db: DatabaseSync): void {
   db.prepare(
     `DELETE FROM panel_role_permission
@@ -2164,6 +2236,7 @@ export function openStore(dbPath: string): Store {
   }
   dropCostColumns(db);
   dropRetiredPanelPermissions(db);
+  seedConfirmedEmptyRuleSets(db);
   repairPullRequestStates(db);
 
   // 系统管理员 bootstrap 与普通创建共用同一条用户写入语义。
@@ -2604,6 +2677,11 @@ export function openStore(dbPath: string): Store {
           record.generation,
           record.key,
         );
+        // 注册即得到已确认空规则集(issue #202),与存量迁移落到同一个状态:这一票
+        // 还没有规则确认这一步,新仓库不该比升级过来的仓库多一种状态。
+        db.prepare(
+          "INSERT INTO rule_set_version (repo_id, version, created_at) VALUES (?, 1, ?)",
+        ).run(record.repoId, new Date().toISOString());
         if (record.assignTo !== undefined) {
           db.prepare(
             "INSERT OR IGNORE INTO panel_user_repo (username, repo_id) VALUES (?, ?)",
@@ -2686,6 +2764,9 @@ export function openStore(dbPath: string): Store {
       try {
         db.prepare("DELETE FROM repo_key WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM panel_user_repo WHERE repo_id = ?").run(repoId);
+        // 规则集跟着仓库走:留下来只会在同一个 repo id 重新注册时复活一份没人认过的规则。
+        db.prepare("DELETE FROM review_rule WHERE repo_id = ?").run(repoId);
+        db.prepare("DELETE FROM rule_set_version WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM repo WHERE id = ?").run(repoId);
         db.exec("COMMIT");
       } catch (error) {
@@ -2743,6 +2824,33 @@ export function openStore(dbPath: string): Store {
             row["worktree_checked_at"] === null ? null : String(row["worktree_checked_at"]),
         },
       }));
+    },
+
+    getRuleSet(repoId) {
+      if (db.prepare("SELECT 1 FROM repo WHERE id = ?").get(repoId) === undefined) {
+        return undefined;
+      }
+      const version = db
+        .prepare("SELECT MAX(version) AS version FROM rule_set_version WHERE repo_id = ?")
+        .get(repoId)?.["version"];
+      const rules = db
+        .prepare(
+          `SELECT id, scope, statement, layer, origin
+             FROM review_rule
+            WHERE repo_id = ? AND retired_version IS NULL
+            ORDER BY id`,
+        )
+        .all(repoId);
+      return {
+        version: version === null || version === undefined ? null : Number(version),
+        rules: rules.map((row) => ({
+          id: Number(row["id"]),
+          scope: String(row["scope"]),
+          statement: String(row["statement"]),
+          layer: String(row["layer"]),
+          origin: String(row["origin"]),
+        })),
+      };
     },
 
     getGlobalSettings() {

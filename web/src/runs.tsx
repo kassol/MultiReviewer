@@ -22,6 +22,7 @@ import {
   RerunPullRequest,
   type RepoRow,
 } from "./repo-actions.tsx";
+import { RepoRules } from "./repo-rules.tsx";
 import { clearPanelSession } from "./session.ts";
 import { SummaryRate } from "./stats.tsx";
 
@@ -724,8 +725,10 @@ export function RunsPage({
                   options={SOURCE_OPTIONS}
                   onChange={(source) => setFilter({ source })}
                 />
-                {selected !== null && (canCreate || canRerun) ? (
+                {selected !== null && (selectedRow !== undefined || canCreate || canRerun) ? (
                   <div className="flex flex-wrap items-center gap-2 lg:ml-auto">
+                    {/* 规则集只读,登录加仓库分配即可看(ADR 0019),不跟着写权限出现。 */}
+                    {selectedRow === undefined ? null : <RepoRules repo={selectedRow} />}
                     {canCreate ? (
                       <RangeReviewLaunch
                         repo={selected}

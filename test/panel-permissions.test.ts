@@ -60,6 +60,7 @@ const ROUTE_EXPECTATIONS = [
   ["PUT", "/^\\/repos\\/(\\d+)\\/reviewers$/", "repo:write", "repo:1"],
   ["POST", "/^\\/repos\\/(\\d+)\\/rotate$/", "repo:write", "repo:1"],
   ["GET", "/^\\/repos\\/(\\d+)\\/hooks$/", "authenticated-only", "repo:1"],
+  ["GET", "/^\\/repos\\/(\\d+)\\/rules$/", "authenticated-only", "repo:1"],
   ["GET", "/model-services", "anyOf:model:read|credential:read", "-"],
   [
     "GET",
