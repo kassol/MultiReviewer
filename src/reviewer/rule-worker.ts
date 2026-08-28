@@ -5,9 +5,9 @@
  * 读不写,产出经一个自定义工具逐条回传主进程。区别只在任务本身——这里读的是基点 commit
  * 上的仓库全貌,产出的是规范性陈述,不是 Finding。
  */
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { join } from "node:path";
 
 import {
   createAgentSession,
@@ -21,13 +21,13 @@ import { Type } from "typebox";
 import type { ReviewRule } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, redactModelCredential } from "./env.ts";
 import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
-import { numberedRead } from "./numbered-read.ts";
 import {
   RULE_LIMIT,
   type DispositionFeedback,
   type RuleWorkerMessage,
   type RuleWorkerRequest,
 } from "./rule-agent.ts";
+import { numberedReadTool, ruleBullet } from "./worker-tools.ts";
 
 /** 只读靠允许清单强制:未列出的工具 Pi 不会注册,模型没有写入的调用路径。 */
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
@@ -88,9 +88,7 @@ function existingSection(rules: readonly ReviewRule[]): string {
     "",
     "This repository already agreed on the following rules, each with its id:",
     "",
-    ...rules.map(
-      (rule) => `- [${rule.id}] (${rule.scope === "" ? "whole repository" : rule.scope}) ${rule.statement}`,
-    ),
+    ...rules.map(ruleBullet),
     "",
     "Report changes against that list, not the list itself. Do not restate a rule that still holds as it stands — a rule you do not report stays in force. For each change, call propose_rule once:",
     "- to reword or narrow an agreed rule, pass its rule_id and the full new statement;",
@@ -134,22 +132,6 @@ Report only what the note itself justifies. A note that settles this one finding
 Report each change through ${PROPOSE_RULE_TOOL}. When you have nothing more to report, stop.`;
 }
 
-/** worktree 内文件的行数组。路径出圈或读不出来返回 undefined,交给调用方措辞。 */
-function fileLines(worktreePath: string, file: string): string[] | undefined {
-  const root = resolve(worktreePath);
-  const abs = resolve(root, file);
-  if (!abs.startsWith(root + sep)) return undefined;
-  let content: string;
-  try {
-    content = readFileSync(abs, "utf8");
-  } catch {
-    return undefined;
-  }
-  const lines = content.split("\n");
-  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
-  return lines;
-}
-
 async function run(request: RuleWorkerRequest): Promise<void> {
   const proposeRule = defineTool({
     name: PROPOSE_RULE_TOOL,
@@ -175,31 +157,6 @@ async function run(request: RuleWorkerRequest): Promise<void> {
         },
       });
       return { content: [{ type: "text", text: "recorded" }], details: {} };
-    },
-  });
-
-  /** 覆盖 Pi 内建的 read,与 Reviewer 子进程同一个实现:每行带 `N: ` 前缀。 */
-  const numberedReadTool = defineTool({
-    name: "read",
-    label: "Read",
-    description:
-      "Read the contents of a text file. Every line is prefixed with its 1-indexed line number, like `12: code`. Output is truncated for large files; use offset/limit to continue.",
-    parameters: Type.Object({
-      path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
-      offset: Type.Optional(
-        Type.Number({ description: "Line number to start reading from (1-indexed)" }),
-      ),
-      limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
-    }),
-    execute: async (_id, { path, offset, limit }) => {
-      const lines = fileLines(request.worktreePath, path);
-      if (lines === undefined) {
-        throw new Error(`cannot read ${path}: not a readable file inside the repository`);
-      }
-      return {
-        content: [{ type: "text", text: numberedRead(lines.join("\n"), offset, limit) }],
-        details: {},
-      };
     },
   });
 
@@ -241,7 +198,7 @@ async function run(request: RuleWorkerRequest): Promise<void> {
     thinkingLevel: "off",
     modelRuntime,
     tools: [...READ_ONLY_TOOLS, PROPOSE_RULE_TOOL],
-    customTools: [proposeRule, numberedReadTool],
+    customTools: [proposeRule, numberedReadTool(request.worktreePath)],
     resourceLoader,
     sessionManager: SessionManager.inMemory(request.worktreePath),
     settingsManager,

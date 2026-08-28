@@ -5,12 +5,11 @@
  * 本次要用的模型运行参数与该仓库现有的规则集,输出一批结构化的评审规则条目。测试注入
  * 脚本化实现(对齐脚本化 Reviewer 先例),真实实现走与 Reviewer 同一套 Pi 子进程基建。
  */
-import { fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import type { ReviewRule } from "../review/finding.ts";
-import { MODEL_API_KEY_ENV, reviewerEnv } from "./env.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
+import { runWorkerChild } from "./subprocess.ts";
 
 const WORKER_PATH = fileURLToPath(new URL("./rule-worker.ts", import.meta.url));
 
@@ -19,12 +18,6 @@ const WORKER_PATH = fileURLToPath(new URL("./rule-worker.ts", import.meta.url));
  * 的靠反哺补。模型多报的由服务端截断,不指望它自己数得准。
  */
 export const RULE_LIMIT = 30;
-
-/** 一个卡住的 agent 不是失败,是永远不返回。取值与 Reviewer 那道闸同一量级。 */
-const TIMEOUT_MS = 20 * 60 * 1000;
-
-/** 回报结果之后留给子进程收尾的时间。超过就当它退不掉,强杀并按已收到的结果结束。 */
-const EXIT_GRACE_MS = 5000;
 
 /** agent 推导出的一条评审规则,形状与人手填的那三样相同(CONTEXT.md 评审规则)。 */
 export type RuleAgentItem = {
@@ -104,89 +97,34 @@ export function createPiRuleAgent(): RuleAgent {
 }
 
 /**
- * 子进程的生命周期管理与结果收集。`workerPath` 是参数而非常量,使失败路径(未回报即
- * 退出、被信号终止)能用受控的 worker 脚本驱动测试。
+ * 子进程回传条目的收集。进程本身的生命周期在 `subprocess.ts`,与 Reviewer 共用一份;
+ * `workerPath` 是参数而非常量,使失败路径(未回报即退出、被信号终止)能用受控的
+ * worker 脚本驱动测试。
  */
-export function runRuleAgentChild(
+export async function runRuleAgentChild(
   workerPath: string,
   request: RuleAgentRequest,
 ): Promise<RuleAgentResult> {
-  return new Promise((resolve) => {
-    const items: RuleAgentItem[] = [];
-    let done: { failure?: string } | undefined;
-    let settled = false;
-    let graceTimer: NodeJS.Timeout | undefined;
+  const items: RuleAgentItem[] = [];
 
-    let child: ChildProcess;
-    try {
-      child = fork(workerPath, {
-        cwd: request.worktreePath,
-        env: reviewerEnv(process.env, { [MODEL_API_KEY_ENV]: request.apiKey }),
-        // 不继承父进程的 execArgv:在 `node --test` 下跑时 worker 会被当成测试文件启动。
-        execArgv: [],
-        stdio: ["ignore", "inherit", "inherit", "ipc"],
-      });
-    } catch (error) {
-      resolve({
-        items: [],
-        failure: `子进程无法启动: ${error instanceof Error ? error.message : String(error)}`,
-      });
-      return;
-    }
+  const payload: RuleWorkerRequest = {
+    worktreePath: request.worktreePath,
+    baselineSha: request.baselineSha,
+    runtimeModel: request.runtimeModel,
+    existingRules: request.existingRules,
+    ...(request.feedback === undefined ? {} : { feedback: request.feedback }),
+  };
 
-    const finish = (failure: string | undefined): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (graceTimer !== undefined) clearTimeout(graceTimer);
-      child.removeAllListeners();
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      resolve({ items, ...(failure === undefined ? {} : { failure }) });
-    };
-
-    const timer = setTimeout(
-      () => finish(`规则 agent 超时,超过 ${TIMEOUT_MS / 60_000} 分钟未结束`),
-      TIMEOUT_MS,
-    );
-
-    child.on("message", (message: RuleWorkerMessage) => {
-      if (message.kind === "rule") {
-        items.push(message.item);
-        return;
-      }
-      done = message;
-      clearTimeout(timer);
-      graceTimer = setTimeout(() => finish(message.failure), EXIT_GRACE_MS);
-    });
-
-    child.on("error", (error) => finish(`子进程无法启动: ${error.message}`));
-
-    child.on("exit", (code, signal) => {
-      // 退出码优先于会话状态:异常终止时 `done` 根本没发出来。
-      if (done === undefined) {
-        finish(
-          signal === null
-            ? `子进程未回报结果即退出,退出码 ${code}`
-            : `子进程被信号 ${signal} 终止`,
-        );
-        return;
-      }
-      if (code !== 0) {
-        finish(done.failure ?? `子进程退出码 ${code}`);
-        return;
-      }
-      finish(done.failure);
-    });
-
-    const payload: RuleWorkerRequest = {
-      worktreePath: request.worktreePath,
-      baselineSha: request.baselineSha,
-      runtimeModel: request.runtimeModel,
-      existingRules: request.existingRules,
-      ...(request.feedback === undefined ? {} : { feedback: request.feedback }),
-    };
-    child.send(payload, (error) => {
-      if (error !== null) finish(`无法向子进程投递任务: ${error.message}`);
-    });
+  const { failure } = await runWorkerChild<RuleWorkerMessage>({
+    workerPath,
+    worktreePath: request.worktreePath,
+    apiKey: request.apiKey,
+    timeoutSubject: "规则 agent",
+    payload,
+    onMessage: (message) => {
+      if (message.kind === "rule") items.push(message.item);
+    },
   });
+
+  return { items, ...(failure === undefined ? {} : { failure }) };
 }

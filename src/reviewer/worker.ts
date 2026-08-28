@@ -4,9 +4,9 @@
  * 每个 Reviewer 一个进程,进程的环境里只有它自己那一家厂商的凭据(见 `env.ts`)。
  * 这里跑一个 Pi 会话,把模型经 `report_finding` 报出的每条原始条目立即回传主进程。
  */
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { join } from "node:path";
 
 import {
   createAgentSession,
@@ -26,9 +26,9 @@ import type {
 import { anchorReport, anchorVerdict } from "./anchor.ts";
 import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, redactModelCredential } from "./env.ts";
 import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
-import { numberedRead } from "./numbered-read.ts";
 import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
 import { reviewerEventStream } from "./trace-events.ts";
+import { fileLines, numberedReadTool, ruleBullet } from "./worker-tools.ts";
 
 /**
  * 只读靠允许清单强制:未列出的工具 Pi 不会注册,模型没有写入的调用路径。
@@ -212,12 +212,6 @@ function intentSection(intent: ReviewIntent): string {
   return lines.join("\n");
 }
 
-/** 一条规则:标识在最前,模型自报命中时抄的就是它;作用范围空串即全仓库。 */
-function ruleBullet(rule: ReviewRule): string {
-  const scope = rule.scope === "" ? "whole repository" : rule.scope;
-  return `- [${rule.id}] (${scope}) ${rule.statement}`;
-}
-
 /**
  * 这个仓库既定的评审规则(issue #204)。它是团队定下的标准,不是模型的临场判断:
  * 违反规则的地方优先按规则判,规则没覆盖到的照常自行判断。
@@ -252,22 +246,6 @@ ${files}
 
 Use \`git diff ${request.range.baseSha}..${request.range.headSha}\` reasoning from the files themselves — read each changed file and judge the current state of the code.
 ${history}`;
-}
-
-/** worktree 内文件的行数组。路径出圈或读不出来返回 undefined,交给调用方措辞。 */
-function fileLines(worktreePath: string, file: string): string[] | undefined {
-  const root = resolve(worktreePath);
-  const abs = resolve(root, file);
-  if (!abs.startsWith(root + sep)) return undefined;
-  let content: string;
-  try {
-    content = readFileSync(abs, "utf8");
-  } catch {
-    return undefined;
-  }
-  const lines = content.split("\n");
-  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
-  return lines;
 }
 
 async function run(request: ReviewerRequest): Promise<void> {
@@ -348,32 +326,6 @@ async function run(request: ReviewerRequest): Promise<void> {
     },
   });
 
-  /**
-   * 覆盖 Pi 内建的 read:内建实现返回裸内容,模型只能自己数行,行号漂移就从这来。
-   * schema 与内建一致,模型的使用习惯不变,唯一区别是每行带 `N: ` 前缀。
-   */
-  const numberedReadTool = defineTool({
-    name: "read",
-    label: "Read",
-    description:
-      "Read the contents of a text file. Every line is prefixed with its 1-indexed line number, like `12: code`. Output is truncated for large files; use offset/limit to continue.",
-    parameters: Type.Object({
-      path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
-      offset: Type.Optional(
-        Type.Number({ description: "Line number to start reading from (1-indexed)" }),
-      ),
-      limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
-    }),
-    execute: async (_id, { path, offset, limit }) => {
-      const lines = fileLines(request.worktreePath, path);
-      if (lines === undefined) {
-        throw new Error(`cannot read ${path}: not a readable file inside the repository`);
-      }
-      const text = numberedRead(lines.join("\n"), offset, limit);
-      return { content: [{ type: "text", text }], details: {} };
-    },
-  });
-
   // 空的 agentDir:不让宿主机上的全局扩展、skill、设置与凭据渗进审查会话。
   const agentDir = mkdtempSync(join(tmpdir(), "multireviewer-agent-"));
   process.env[PI_AGENT_DIR_ENV] = agentDir;
@@ -427,7 +379,7 @@ async function run(request: ReviewerRequest): Promise<void> {
     ],
     customTools: [
       reportFinding,
-      numberedReadTool,
+      numberedReadTool(request.worktreePath),
       ...(request.history.length === 0 ? [] : [reviewPriorFinding]),
     ],
     resourceLoader,
