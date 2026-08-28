@@ -6,6 +6,10 @@
  * 什么样、三个计数、时间线每轮五个数,以及这个端点登录即可读。
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
@@ -416,6 +420,123 @@ test("阶段汇总每条 Finding 带行作者,未判定的那条是 null", async
   });
   const unknown = body.findings.find((finding) => finding.description === "正文 fp-unknown")!;
   assert.equal(unknown.lineAuthor, null);
+});
+
+type StoredLineAuthor = { sha: unknown; name: unknown; email: unknown; at: unknown };
+
+/** 库里落着的行作者四列,按落库顺序。补录写没写回只能从库里看。 */
+function storedLineAuthors(dbPath: string): StoredLineAuthor[] {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const rows = db
+      .prepare(
+        `SELECT line_author_sha AS sha, line_author_name AS name,
+                line_author_email AS email, line_author_at AS at
+           FROM finding ORDER BY id`,
+      )
+      .all() as unknown as Record<string, unknown>[];
+    // node:sqlite 的行是无原型对象,`deepEqual` 会拿它跟字面量比出差异。
+    return rows.map((row) => ({
+      sha: row["sha"],
+      name: row["name"],
+      email: row["email"],
+      at: row["at"],
+    }));
+  } finally {
+    db.close();
+  }
+}
+
+/** 把夹具仓库克隆成这个仓库的缓存副本:补录在它上面按 revision 判定。 */
+function cloneRepoCache(h: PanelHarness): string {
+  const path = join(h.cacheDir, HARNESS_PR.owner, HARNESS_PR.repo);
+  mkdirSync(dirname(path), { recursive: true });
+  execFileSync("git", ["clone", "--quiet", h.repo.dir, path]);
+  return path;
+}
+
+const PR_QUERY = `owner=${HARNESS_PR.owner}&repo=${HARNESS_PR.repo}&pullNumber=${HARNESS_PR.number}`;
+
+test("阶段汇总给升级前的 Finding 补录行作者并写回,之后不再重算", async () => {
+  const h = await startPanelHarness(cleanups);
+  // 升级前那一轮的 head,由一个认得出的作者改出来。
+  const headSha = h.repo.commitToBranch(
+    "feature",
+    { "src/answer.ts": "export const answer = 3;\n" },
+    { authorName: "Alice Lin", authorEmail: "alice@example.invalid" },
+  );
+  const cached = cloneRepoCache(h);
+
+  const store = openStore(h.db.path);
+  try {
+    // 行作者四列全空:这条是升级前落的。
+    seedRun(
+      store,
+      {
+        owner: HARNESS_PR.owner,
+        repo: HARNESS_PR.repo,
+        pullNumber: HARNESS_PR.number,
+        headSha,
+        startedAt: "2026-08-21T01:00:00.000Z",
+      },
+      [{ file: "src/answer.ts", line: 1, fingerprint: "fp-old", commentId: "p1" }],
+    );
+  } finally {
+    store.close();
+  }
+
+  const body = await summaryOf(h, PR_QUERY);
+  assert.equal(body.findings.length, 1);
+  const lineAuthor = body.findings[0]!.lineAuthor;
+  assert.notEqual(lineAuthor, null);
+  assert.equal(lineAuthor!.sha, headSha);
+  assert.equal(lineAuthor!.name, "Alice Lin");
+  assert.equal(lineAuthor!.email, "alice@example.invalid");
+  assert.match(lineAuthor!.authoredAt, /^\d{4}-\d{2}-\d{2}T/);
+
+  // 库里已经写回,不只是这一次响应算出来的。
+  assert.deepEqual(storedLineAuthors(h.db.path), [
+    {
+      sha: headSha,
+      name: "Alice Lin",
+      email: "alice@example.invalid",
+      at: lineAuthor!.authoredAt,
+    },
+  ]);
+
+  // 写回之后不再重算:缓存副本没了也照样给得出同一个行作者。
+  rmSync(cached, { recursive: true, force: true });
+  const again = await summaryOf(h, PR_QUERY);
+  assert.deepEqual(again.findings[0]!.lineAuthor, lineAuthor);
+});
+
+test("阶段汇总补录不了行作者时照常 200,那几条留空等下次读取再试", async () => {
+  const h = await startPanelHarness(cleanups);
+  cloneRepoCache(h);
+
+  const store = openStore(h.db.path);
+  try {
+    // 这一轮的 head 在缓存副本里不可达:评审失败提前退出、没跑过钉住那一步的旧轮次。
+    seedRun(
+      store,
+      {
+        owner: HARNESS_PR.owner,
+        repo: HARNESS_PR.repo,
+        pullNumber: HARNESS_PR.number,
+        headSha: "0000000000000000000000000000000000000000",
+        startedAt: "2026-08-21T01:00:00.000Z",
+      },
+      [{ file: "src/answer.ts", line: 1, fingerprint: "fp-unreachable", commentId: "p1" }],
+    );
+  } finally {
+    store.close();
+  }
+
+  const body = await summaryOf(h, PR_QUERY);
+  assert.equal(body.findings[0]!.lineAuthor, null);
+  assert.deepEqual(storedLineAuthors(h.db.path), [
+    { sha: null, name: null, email: null, at: null },
+  ]);
 });
 
 test("阶段汇总的入参:两条链路只能选一条,范围审查不存在时 404", async () => {

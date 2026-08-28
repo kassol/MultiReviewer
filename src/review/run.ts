@@ -703,39 +703,47 @@ async function applyContinuations(
   return applied;
 }
 
+/** 要判行作者的一处位置:在哪个 revision 上、哪个文件的哪一行。 */
+export type LineAuthorQuery = {
+  /** 判定所依据的 commit,即这条 Finding 所属那一轮的 head。 */
+  revision: string;
+  file: string;
+  line: number;
+};
+
 /**
- * 本轮每条 Finding 的行作者(CONTEXT.md),与传入的顺序一一对应,判不出来的那些是
- * undefined。
+ * 逐条判行作者(CONTEXT.md),与传入的顺序一一对应,判不出来的那些是 undefined。
  *
- * 每轮按自己的 head 重算,不沿用上一轮:延续过来的 Finding 行号已经漂移,抄上一轮的
- * 结果会把这一行记到别人头上。同一个文件的多条合成一次 `git blame`——逐条起一个 git
- * 进程的话,一轮几十条 Finding 就是几十次进程启动。
+ * 每轮按自己的 head 判,不沿用上一轮:延续过来的 Finding 行号已经漂移,抄上一轮的
+ * 结果会把这一行记到别人头上。因此按「revision + 文件」分组,一组合成一次
+ * `git blame`——逐条起一个 git 进程的话,一轮几十条 Finding 就是几十次进程启动。
  *
  * 判定失败只记日志、留空:行作者是给人看的归属信息,取不到不该让整轮审查白跑。失败以
- * 文件为单位,那个文件的这几条一起留空,下次读取时再补(issue #199)。
+ * 组为单位,那一组的这几条一起留空,下次读取时在阶段汇总里再补(issue #199)。
  */
-async function findingLineAuthors(
-  worktreePath: string,
-  headSha: string,
-  findings: readonly { file: string; line: number }[],
+export async function findingLineAuthors(
+  repoPath: string,
+  queries: readonly LineAuthorQuery[],
 ): Promise<(LineAuthor | undefined)[]> {
-  const byFile = new Map<string, number[]>();
-  for (const [index, finding] of findings.entries()) {
-    byFile.set(finding.file, [...(byFile.get(finding.file) ?? []), index]);
+  const byRevisionAndFile = new Map<string, number[]>();
+  for (const [index, query] of queries.entries()) {
+    const key = `${query.revision}\n${query.file}`;
+    byRevisionAndFile.set(key, [...(byRevisionAndFile.get(key) ?? []), index]);
   }
-  const authors: (LineAuthor | undefined)[] = findings.map(() => undefined);
-  for (const [file, indexes] of byFile) {
+  const authors: (LineAuthor | undefined)[] = queries.map(() => undefined);
+  for (const indexes of byRevisionAndFile.values()) {
+    const first = queries[indexes[0]!]!;
     try {
       const found = await readLineAuthors(
-        worktreePath,
-        headSha,
-        file,
-        indexes.map((index) => findings[index]!.line),
+        repoPath,
+        first.revision,
+        first.file,
+        indexes.map((index) => queries[index]!.line),
       );
-      for (const index of indexes) authors[index] = found.get(findings[index]!.line);
+      for (const index of indexes) authors[index] = found.get(queries[index]!.line);
     } catch (error) {
       console.error(
-        `[review] ${file} 的行作者判定失败,这几条留空,审查照常:`,
+        `[review] ${first.file} 在 ${first.revision} 上的行作者判定失败,这几条留空:`,
         error instanceof Error ? error.message : String(error),
       );
     }
@@ -1147,8 +1155,11 @@ export async function runReview(
     // 打开过侧滑。
     const lineAuthors = await findingLineAuthors(
       worktree.path,
-      pullRequest.headSha,
-      groups.map((group) => group.finding),
+      groups.map((group) => ({
+        revision: pullRequest.headSha,
+        file: group.finding.file,
+        line: group.finding.line,
+      })),
     );
 
     // 一条 Finding 一行,报出它的每个模型一条归属(ADR 0015):Finding Identity 不含

@@ -47,7 +47,11 @@ function authArgs(cloneUrl: string, credentials: CloneCredentials): string[] {
   return ["-c", `http.extraHeader=Authorization: Basic ${basic}`];
 }
 
-function repoCachePath(cacheDir: string, ref: RepoRef): string {
+/**
+ * 一个仓库的缓存副本目录。按 revision 读历史(如补录行作者)时要它,而那些调用不
+ * 备副本、只用已经在磁盘上的那一份,因此这里只拼路径、不保证目录存在。
+ */
+export function repoCachePath(cacheDir: string, ref: RepoRef): string {
   // 分两级目录。owner 与 repo 都可以含下划线,用分隔符拼成单段会让
   // `a_b/c` 与 `a/b_c` 撞进同一个缓存。
   return join(cacheDir, ref.owner, ref.repo);

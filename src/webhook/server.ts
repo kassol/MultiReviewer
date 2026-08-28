@@ -6,7 +6,7 @@
  * `Forge` 接口里也没有这类方法:审查是建议,不是门禁,人保留最终判断权。
  */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import {
   createServer,
@@ -58,6 +58,7 @@ import {
   readRangeDiffFiles,
   readRangeFileDiff,
   removeWorktree,
+  repoCachePath,
   resolveRange,
   type BranchCommits,
   type PreparedRange,
@@ -76,6 +77,7 @@ import {
 import {
   backfillUpdates,
   createReviewRunPlan,
+  findingLineAuthors,
   priorDispositions,
   runReview,
   type ReviewRunPlan,
@@ -90,6 +92,7 @@ import {
   type RangeReviewRecord,
   type RepoKey,
   type RepoSummary,
+  type StageScope,
   type Store,
 } from "../review/store.ts";
 import { modelServiceTargetFingerprint } from "../review/model-service-migration.ts";
@@ -4305,18 +4308,63 @@ function handleRun(res: ServerResponse, deps: WebhookServerDeps, runId: number):
 }
 
 /**
+ * 给这个阶段里还没判过行作者的 Finding 补录(issue #199)。
+ *
+ * 升级前落的行没有行作者,判定失败留空的那些也没有。补录放在读路径上:阶段页被打开
+ * 时顺手判一次,前端不用知道这回事,也不必为历史数据跑一次全库迁移。
+ *
+ * 在仓库的缓存副本上按各自那一轮的 head 判:历史轮次的 head 由 `pinRunCommits` 钉住
+ * (issue #161),仍然可达。副本不在、head 不可达、行号越界都算判不出来,那几条留
+ * NULL,下次读取再试。整个补录包在 try 里:行作者是附带的归属信息,取不到不该让阶段
+ * 页打不开。
+ */
+async function backfillLineAuthors(
+  deps: WebhookServerDeps,
+  ref: RepoRef,
+  scope: StageScope,
+): Promise<void> {
+  try {
+    const repoPath = repoCachePath(deps.cacheDir, ref);
+    // 副本还没备过就没什么可判的。先看一眼而不是让 git 逐组报错:阶段页每打开一次就
+    // 要为每条留空的 Finding 白起一个 git 进程,还会往日志里刷一遍同样的失败。
+    if (!existsSync(join(repoPath, ".git"))) return;
+    const pending = withStore(deps.dbPath, (store) => store.pendingLineAuthors(scope));
+    if (pending.length === 0) return;
+    const authors = await findingLineAuthors(
+      repoPath,
+      pending.map((entry) => ({ revision: entry.headSha, file: entry.file, line: entry.line })),
+    );
+    const found = pending.flatMap((entry, index) => {
+      const lineAuthor = authors[index];
+      return lineAuthor === undefined ? [] : [{ findingId: entry.findingId, lineAuthor }];
+    });
+    if (found.length > 0) {
+      withStore(deps.dbPath, (store) => store.recordLineAuthors(found));
+    }
+  } catch (error) {
+    console.error(
+      "[panel] 行作者补录失败,这个阶段的那几条仍留空:",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
+/**
  * 一个审查阶段的当前状态(issue #168):按 Finding Identity 汇总的 Finding 列表、三个
  * 计数与逐轮的时间线。
  *
  * 阶段有两条链路,入参因此二选一:`rangeReviewId` 取那个范围审查名下的全部轮次,
  * `owner` + `repo` + `pullNumber` 取那个 pull request 名下、不属于任何范围审查的那些。
  * 两条都给或都不给都是 400——「这是哪个阶段」不能由服务端替调用方猜。
+ *
+ * 汇总取出来之前先补一次行作者(issue #199):补上的这一次就带出去,补不上的按 null
+ * 给,两种都照常 200。
  */
-function handleStageSummary(
+async function handleStageSummary(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
-): void {
+): Promise<void> {
   const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
   const rangeReviewRaw = query.get("rangeReviewId");
   const owner = query.get("owner");
@@ -4333,14 +4381,12 @@ function handleStageSummary(
     if (!Number.isSafeInteger(rangeReviewId) || rangeReviewId <= 0) {
       return sendJson(res, 400, { error: "rangeReviewId 要是正整数" });
     }
-    const summary = withStore(deps.dbPath, (store) => {
-      const rangeReview = store.getRangeReview(rangeReviewId);
-      if (rangeReview === undefined) return undefined;
-      // 这一档只按 rangeReviewId 取轮次;容器 PR 还没建出来时它名下本来就一轮都没有。
-      return store.stageSummary({ rangeReviewId });
-    });
-    if (summary === undefined) return sendJson(res, 404, { error: "没有这个范围审查" });
-    return sendJson(res, 200, summary);
+    const rangeReview = withStore(deps.dbPath, (store) => store.getRangeReview(rangeReviewId));
+    if (rangeReview === undefined) return sendJson(res, 404, { error: "没有这个范围审查" });
+    // 这一档只按 rangeReviewId 取轮次;容器 PR 还没建出来时它名下本来就一轮都没有。
+    const scope = { rangeReviewId };
+    await backfillLineAuthors(deps, rangeReview, scope);
+    return sendJson(res, 200, withStore(deps.dbPath, (store) => store.stageSummary(scope)));
   }
   if (owner === null || repo === null || pullRaw === null) {
     return sendJson(res, 400, { error: "owner、repo 与 pullNumber 要一起给" });
@@ -4349,10 +4395,9 @@ function handleStageSummary(
   if (!Number.isSafeInteger(pullNumber) || pullNumber <= 0) {
     return sendJson(res, 400, { error: "pullNumber 要是正整数" });
   }
-  const summary = withStore(deps.dbPath, (store) =>
-    store.stageSummary({ owner, repo, pullNumber }),
-  );
-  return sendJson(res, 200, summary);
+  const scope = { owner, repo, pullNumber };
+  await backfillLineAuthors(deps, { owner, repo }, scope);
+  return sendJson(res, 200, withStore(deps.dbPath, (store) => store.stageSummary(scope)));
 }
 
 /**

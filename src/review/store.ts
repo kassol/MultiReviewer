@@ -1094,6 +1094,25 @@ export type StageSummaryFinding = {
 };
 
 /**
+ * 一条还没判过行作者的 Finding(issue #199):四列同 NULL 的那些。
+ *
+ * 带上它自己那一轮的 head:行作者按所属 Review Run 的 head 判定,一个阶段里各轮的
+ * head 各不相同,补录时不能拿最新那一轮的去判所有行。
+ */
+export type PendingLineAuthorFinding = {
+  findingId: number;
+  headSha: string;
+  file: string;
+  line: number;
+};
+
+/** 一条 Finding 补录到的行作者(issue #199)。 */
+export type FindingLineAuthor = {
+  findingId: number;
+  lineAuthor: LineAuthor;
+};
+
+/**
  * 阶段时间线的一轮(issue #168)。轮次降为这个阶段的历史,每轮只说它做了什么:
  *
  * - `reported` / `folded` / `continued` 三类互斥,加起来就是这一轮落的 Finding 行数
@@ -1427,6 +1446,20 @@ export type Store = {
    * 前后是同一条:旧那条不单独出现,新那条继承它的首见轮次。
    */
   stageSummary(scope: StageScope): StageSummary;
+  /**
+   * 这个阶段里行作者四列还是 NULL 的 Finding(issue #199),按 id 升序。
+   *
+   * 升级前落的行,以及当时判定失败留空的那些,都在里面。读路径拿它去补录:NULL 不是
+   * 终态,补不上的下次读取再试。
+   */
+  pendingLineAuthors(scope: StageScope): PendingLineAuthorFinding[];
+  /**
+   * 把补录到的行作者写回四列(issue #199)。
+   *
+   * 只写还是 NULL 的那些:补录是异步的,期间可能有新一轮把这条 Finding 的行作者写上,
+   * 那一份按自己的 head 判,比补录这份新。
+   */
+  recordLineAuthors(authors: readonly FindingLineAuthor[]): void;
   /**
    * 把本轮新发出去的行级评论的 id 与链接补到对应的合并组上。
    *
@@ -3900,6 +3933,43 @@ export function openStore(dbPath: string): Store {
       }
 
       return { findings, counts, timeline: [...timeline.values()] };
+    },
+
+    pendingLineAuthors(scope) {
+      const [where, params] = stageScope(scope);
+      const rows = db
+        .prepare(
+          `SELECT f.id AS id, run.head_sha AS head_sha, f.file AS file, f.line AS line
+             FROM finding f
+             JOIN review_run run ON f.run_id = run.id
+            WHERE ${where} AND f.line_author_sha IS NULL
+            ORDER BY f.id`,
+        )
+        .all(...params);
+      return rows.map((row) => ({
+        findingId: Number(row["id"]),
+        headSha: String(row["head_sha"]),
+        file: String(row["file"]),
+        line: Number(row["line"]),
+      }));
+    },
+
+    recordLineAuthors(authors) {
+      const update = db.prepare(
+        `UPDATE finding
+            SET line_author_sha = ?, line_author_name = ?,
+                line_author_email = ?, line_author_at = ?
+          WHERE id = ? AND line_author_sha IS NULL`,
+      );
+      for (const entry of authors) {
+        update.run(
+          entry.lineAuthor.sha,
+          entry.lineAuthor.name,
+          entry.lineAuthor.email,
+          entry.lineAuthor.authoredAt,
+          entry.findingId,
+        );
+      }
     },
 
     recordFindingComments(runId, refs) {
