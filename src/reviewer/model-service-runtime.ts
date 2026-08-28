@@ -14,6 +14,8 @@ import {
   isolatedModelRuntime,
   ZERO_MODEL_COST,
   type RuntimeApi,
+  type RuntimeModelCompat,
+  type RuntimeThinkingLevelMap,
 } from "./model-runtime.ts";
 
 export type CustomModelServiceCandidate = {
@@ -42,6 +44,8 @@ export type TrustedModelFields = {
   reasoning?: boolean;
   contextWindow?: number;
   maxTokens?: number;
+  thinkingLevelMap?: RuntimeThinkingLevelMap;
+  compat?: RuntimeModelCompat;
 };
 
 export type TrustedModelFieldSource = "service-interface" | "pi-catalog" | "service-target";
@@ -97,6 +101,8 @@ export type RuntimeModel = {
   reasoning: boolean;
   contextWindow: number;
   maxTokens: number;
+  thinkingLevelMap?: RuntimeThinkingLevelMap;
+  compat?: RuntimeModelCompat;
   sources: {
     name: "trusted" | "model-id";
     api: "service-target";
@@ -105,6 +111,8 @@ export type RuntimeModel = {
     reasoning: "trusted" | "runtime-baseline";
     contextWindow: "trusted" | "runtime-baseline";
     maxTokens: "trusted" | "runtime-baseline";
+    thinkingLevelMap?: "trusted";
+    compat?: "trusted";
   };
 };
 
@@ -261,6 +269,8 @@ export function synthesizeRuntimeModel(
     ? fields.contextWindow
     : MODEL_RUNTIME_BASELINE.contextWindow;
   const maxTokens = positiveInteger(fields.maxTokens) ? fields.maxTokens : MODEL_RUNTIME_BASELINE.maxTokens;
+  const thinkingLevelMap = fields.thinkingLevelMap;
+  const compat = fields.compat;
 
   return {
     ok: true,
@@ -276,6 +286,8 @@ export function synthesizeRuntimeModel(
         reasoning,
         contextWindow,
         maxTokens,
+        ...(thinkingLevelMap === undefined ? {} : { thinkingLevelMap }),
+        ...(compat === undefined ? {} : { compat }),
         sources: {
           name: name === fields.name ? "trusted" : "model-id",
           api: "service-target",
@@ -284,6 +296,8 @@ export function synthesizeRuntimeModel(
           reasoning: typeof fields.reasoning === "boolean" ? "trusted" : "runtime-baseline",
           contextWindow: contextWindow === fields.contextWindow ? "trusted" : "runtime-baseline",
           maxTokens: maxTokens === fields.maxTokens ? "trusted" : "runtime-baseline",
+          ...(thinkingLevelMap === undefined ? {} : { thinkingLevelMap: "trusted" as const }),
+          ...(compat === undefined ? {} : { compat: "trusted" as const }),
         },
       },
     },
@@ -320,6 +334,8 @@ async function discoverBuiltinModels(
         reasoning: model.reasoning,
         ...(positiveInteger(model.contextWindow) ? { contextWindow: model.contextWindow } : {}),
         ...(positiveInteger(model.maxTokens) ? { maxTokens: model.maxTokens } : {}),
+        ...(model.thinkingLevelMap === undefined ? {} : { thinkingLevelMap: model.thinkingLevelMap }),
+        ...(model.compat === undefined ? {} : { compat: model.compat }),
       };
       models.push({ identity, provider: candidate.provider, id, fields });
     }
@@ -445,6 +461,8 @@ export async function discoverModels(
         ...(piModel === undefined || !positiveInteger(piModel.maxTokens)
           ? {}
           : { maxTokens: piModel.maxTokens }),
+        ...(piModel?.thinkingLevelMap === undefined ? {} : { thinkingLevelMap: piModel.thinkingLevelMap }),
+        ...(piModel?.compat === undefined ? {} : { compat: piModel.compat }),
       };
       const fieldSources: TrustedModelFieldSources = {
         ...(fields.name === undefined ? {} : { name: name === undefined ? "pi-catalog" : "service-interface" }),
@@ -454,6 +472,8 @@ export async function discoverModels(
         ...(fields.reasoning === undefined ? {} : { reasoning: "pi-catalog" }),
         ...(fields.contextWindow === undefined ? {} : { contextWindow: "pi-catalog" }),
         ...(fields.maxTokens === undefined ? {} : { maxTokens: "pi-catalog" }),
+        ...(fields.thinkingLevelMap === undefined ? {} : { thinkingLevelMap: "pi-catalog" }),
+        ...(fields.compat === undefined ? {} : { compat: "pi-catalog" }),
       };
       return {
         identity: modelIdentity({ provider: candidate.provider, model: id }),
@@ -510,6 +530,8 @@ export async function validateMinimalInference(
       cost: ZERO_MODEL_COST,
       contextWindow: target.contextWindow,
       maxTokens: target.maxTokens,
+      ...(target.thinkingLevelMap === undefined ? {} : { thinkingLevelMap: target.thinkingLevelMap }),
+      ...(target.compat === undefined ? {} : { compat: target.compat }),
     };
     if (candidate.kind === "custom") {
       modelRuntime.registerProvider(candidate.provider, {
@@ -536,7 +558,8 @@ export async function validateMinimalInference(
         maxRetries: 0,
         maxTokens: 16,
         signal,
-        temperature: 0,
+        // 不带 temperature:验证只看这一笔请求能不能通,而 adaptive thinking 模型
+        // (fable / opus-5)对显式 temperature 直接 400 deprecated。
         timeoutMs,
       },
     );

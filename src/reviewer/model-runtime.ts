@@ -9,6 +9,19 @@ export type RuntimeApi = NonNullable<
   Parameters<ModelRuntime["registerProvider"]>[1]["api"]
 >;
 
+type RegisterProviderModel = NonNullable<
+  Parameters<ModelRuntime["registerProvider"]>[1]["models"]
+>[number];
+
+/**
+ * Pi 的思考档位映射与请求兼容性。adaptive thinking 模型(fable / opus-5 一类)靠
+ * `thinkingLevelMap.off: null` 压掉 `thinking.type: "disabled"`——这类端点拒收该字段;
+ * 靠 `compat.forceAdaptiveThinking` 在启用思考时走 adaptive 而不是 budget。缺了它们,
+ * 对 anthropic 协议的最小真实推理与 Review Run 会被这类模型以 400 拒掉。
+ */
+export type RuntimeThinkingLevelMap = NonNullable<RegisterProviderModel["thinkingLevelMap"]>;
+export type RuntimeModelCompat = NonNullable<RegisterProviderModel["compat"]>;
+
 export const CACHE_DIR_ENV = "MULTIREVIEWER_CACHE_DIR";
 const DEFAULT_CACHE_DIR = ".cache/worktrees";
 const MODEL_CATALOG_DIR = "pi-models";
@@ -73,6 +86,8 @@ export async function isolatedPinnedModelRuntime(
         cost: { ...ZERO_MODEL_COST },
         contextWindow: target.contextWindow,
         maxTokens: target.maxTokens,
+        ...(target.thinkingLevelMap === undefined ? {} : { thinkingLevelMap: target.thinkingLevelMap }),
+        ...(target.compat === undefined ? {} : { compat: target.compat }),
       },
     ],
   });

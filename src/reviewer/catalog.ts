@@ -9,6 +9,8 @@ import {
   isolatedModelRuntime,
   modelCatalogStorePath,
   type RuntimeApi,
+  type RuntimeModelCompat,
+  type RuntimeThinkingLevelMap,
 } from "./model-runtime.ts";
 import { openRouterCatalog, type VendorCatalog, type VendorModel } from "./vendor-catalog.ts";
 
@@ -55,6 +57,8 @@ export type PiCatalogModel = {
   reasoning: boolean;
   contextWindow: number;
   maxTokens: number;
+  thinkingLevelMap?: RuntimeThinkingLevelMap;
+  compat?: RuntimeModelCompat;
 };
 
 export type PiProviderCatalog = {
@@ -103,6 +107,9 @@ export function loadPiProviderCatalog(
         reasoning: model.reasoning,
         contextWindow: model.contextWindow,
         maxTokens: model.maxTokens,
+        // 内置表里这两项可能是 null(如 opus-4-5 的 thinkingLevelMap),null 即没有。
+        ...(model.thinkingLevelMap == null ? {} : { thinkingLevelMap: model.thinkingLevelMap }),
+        ...(model.compat == null ? {} : { compat: model.compat }),
       })),
     };
   });

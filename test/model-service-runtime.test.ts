@@ -122,6 +122,8 @@ test("OpenAI-compatible 发现保留服务接口名称并按厂商用 Pi 目录�
         reasoning: true,
         contextWindow: 272_000,
         maxTokens: 128_000,
+        thinkingLevelMap: { off: "none", minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
+        compat: { supportsStrictMode: true, supportsOpenAIGrammarTools: true, supportsToolSearch: true, supportsExplicitPromptCacheMode: true },
       },
       fieldSources: {
         name: "service-interface",
@@ -131,6 +133,8 @@ test("OpenAI-compatible 发现保留服务接口名称并按厂商用 Pi 目录�
         reasoning: "pi-catalog",
         contextWindow: "pi-catalog",
         maxTokens: "pi-catalog",
+        thinkingLevelMap: "pi-catalog",
+        compat: "pi-catalog",
       },
     }]);
     const synthesized = synthesizeRuntimeModel({
@@ -598,6 +602,7 @@ test("anthropic 发现走 x-api-key 与版本头,带 limit=1000,并解析 displa
     return new Response(JSON.stringify({
       data: [
         { type: "model", id: "claude-opus-4-7", display_name: "Claude Opus 4.7", created_at: "2026-02-01T00:00:00Z" },
+        { type: "model", id: "claude-fable-5", display_name: "Claude Fable 5" },
         { type: "model", id: "relay-only-model" },
       ],
       has_more: false,
@@ -623,9 +628,17 @@ test("anthropic 发现走 x-api-key 与版本头,带 limit=1000,并解析 displa
     if (!result.ok) return;
     assert.deepEqual(result.models.map((model) => ({ id: model.id, name: model.fields.name })), [
       { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
+      { id: "claude-fable-5", name: "Claude Fable 5" },
       { id: "relay-only-model", name: undefined },
     ]);
     assert.equal(result.models[0]!.fields.api, "anthropic-messages");
+    // adaptive thinking 元数据从 Pi 内置目录补上:off: null 压掉 thinking.type=disabled。
+    const fable = result.models[1]!;
+    const fableCompat = fable.fields.compat as { forceAdaptiveThinking?: boolean } | undefined;
+    assert.equal(fableCompat?.forceAdaptiveThinking, true);
+    assert.equal(fable.fields.thinkingLevelMap?.off, null);
+    assert.equal(fable.fieldSources?.thinkingLevelMap, "pi-catalog");
+    assert.equal(fable.fieldSources?.compat, "pi-catalog");
     assert.equal(JSON.stringify(result).includes(credential), false);
   } finally {
     globalThis.fetch = original;
@@ -680,7 +693,7 @@ test("anthropic 最小真实推理打到剥掉 /v1 后的 /v1/messages,凭据走
       body: JSON.parse(String(init?.body)) as Record<string, unknown>,
     });
     const events = [
-      ["message_start", { type: "message_start", message: { id: "msg_validation", type: "message", role: "assistant", content: [], model: "claude-opus-4-7", stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 } } }],
+      ["message_start", { type: "message_start", message: { id: "msg_validation", type: "message", role: "assistant", content: [], model: "claude-fable-5", stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 } } }],
       ["content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }],
       ["content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "OK" } }],
       ["content_block_stop", { type: "content_block_stop", index: 0 }],
@@ -691,12 +704,25 @@ test("anthropic 最小真实推理打到剥掉 /v1 后的 /v1/messages,凭据走
     return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
   }) as typeof fetch;
   try {
-    const result = await validateMinimalInference(candidate, "claude-opus-4-7");
+    const discovered: DiscoveredModel = {
+      identity: "sub2anthropic:claude-fable-5",
+      provider: "sub2anthropic",
+      id: "claude-fable-5",
+      fields: {
+        reasoning: true,
+        thinkingLevelMap: { off: null, xhigh: "xhigh", max: "max" },
+        compat: { forceAdaptiveThinking: true },
+      },
+    };
+    const result = await validateMinimalInference(candidate, discovered);
     assert.deepEqual(result, { ok: true });
     assert.equal(calls.length, 1, "真实推理之外又发了别的请求");
     assert.equal(calls[0]!.url, "https://gateway.example.test/v1/messages");
     assert.equal(calls[0]!.apiKey, credential);
-    assert.equal(calls[0]!.body["model"], "claude-opus-4-7");
+    assert.equal(calls[0]!.body["model"], "claude-fable-5");
+    // adaptive thinking 模型对这两个字段直接 400:off: null 压掉 thinking,验证不带 temperature。
+    assert.equal("thinking" in calls[0]!.body, false);
+    assert.equal("temperature" in calls[0]!.body, false);
     assert.equal(JSON.stringify(result).includes(credential), false);
   } finally {
     globalThis.fetch = original;

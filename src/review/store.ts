@@ -484,6 +484,8 @@ CREATE TABLE IF NOT EXISTS model_directory_model (
   context_window INTEGER,
   max_tokens INTEGER,
   field_sources_json TEXT,
+  thinking_level_map_json TEXT,
+  compat_json TEXT,
   PRIMARY KEY (provider, model)
 );
 
@@ -544,6 +546,8 @@ const ADD_COLUMNS = [
   "ALTER TABLE finding ADD COLUMN line_author_at TEXT",
   "ALTER TABLE review_run ADD COLUMN rule_set_version INTEGER",
   "ALTER TABLE finding ADD COLUMN rule_id INTEGER",
+  "ALTER TABLE model_directory_model ADD COLUMN thinking_level_map_json TEXT",
+  "ALTER TABLE model_directory_model ADD COLUMN compat_json TEXT",
 ];
 
 /**
@@ -1020,6 +1024,8 @@ const TRUSTED_MODEL_FIELD_KEYS = [
   "reasoning",
   "contextWindow",
   "maxTokens",
+  "thinkingLevelMap",
+  "compat",
 ] as const satisfies readonly (keyof TrustedModelFields)[];
 const TRUSTED_MODEL_FIELD_SOURCES = new Set<TrustedModelFieldSource>([
   "service-interface",
@@ -3683,8 +3689,8 @@ export function openStore(dbPath: string): Store {
         const insertAutomatic = db.prepare(
           `INSERT INTO model_directory_model
              (provider, model, service_version, name, api, base_url, input_json, reasoning,
-              context_window, max_tokens, field_sources_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              context_window, max_tokens, field_sources_json, thinking_level_map_json, compat_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const model of automaticModels.values()) {
           const fieldSources = normalizedTrustedFieldSources(model.fields, model.fieldSources);
@@ -3700,6 +3706,8 @@ export function openStore(dbPath: string): Store {
             model.fields.contextWindow ?? null,
             model.fields.maxTokens ?? null,
             fieldSources === undefined ? null : JSON.stringify(fieldSources),
+            model.fields.thinkingLevelMap === undefined ? null : JSON.stringify(model.fields.thinkingLevelMap),
+            model.fields.compat === undefined ? null : JSON.stringify(model.fields.compat),
           );
         }
 
@@ -3915,7 +3923,7 @@ export function openStore(dbPath: string): Store {
       const automaticModels = db
         .prepare(
           `SELECT model, name, api, base_url, input_json, reasoning,
-                  context_window, max_tokens, field_sources_json
+                  context_window, max_tokens, field_sources_json, thinking_level_map_json, compat_json
              FROM model_directory_model
             WHERE provider = ? AND service_version = ? ORDER BY model`,
         )
@@ -3934,6 +3942,12 @@ export function openStore(dbPath: string): Store {
               ? {}
               : { contextWindow: Number(row["context_window"]) }),
             ...(row["max_tokens"] === null ? {} : { maxTokens: Number(row["max_tokens"]) }),
+            ...(row["thinking_level_map_json"] === null
+              ? {}
+              : { thinkingLevelMap: JSON.parse(String(row["thinking_level_map_json"])) as NonNullable<TrustedModelFields["thinkingLevelMap"]> }),
+            ...(row["compat_json"] === null
+              ? {}
+              : { compat: JSON.parse(String(row["compat_json"])) as NonNullable<TrustedModelFields["compat"]> }),
           };
           const fieldSources = row["field_sources_json"] === null
             ? undefined
