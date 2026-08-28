@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
 import type { Forge, PullRequestRef } from "../src/forge/forge.ts";
-import type { Reviewer, ReviewRange } from "../src/review/finding.ts";
+import type { Reviewer } from "../src/review/finding.ts";
 import {
   createWebhookServer,
   normalizeEvent,
@@ -65,7 +65,7 @@ function gatedReviewer(model: string): Reviewer & {
     model,
     entered: entered.promise,
     release: gate.resolve,
-    review: async (_range: ReviewRange) => {
+    review: async () => {
       entered.resolve();
       await gate.promise;
       return { model, findings: [], anomalies: [], rejectedToolCalls: 0, anchorRejections: 0 };

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-import type { ReviewerEvent } from "../src/review/finding.ts";
+import type { ReviewerEvent, ReviewerInput } from "../src/review/finding.ts";
 import { runInChild } from "../src/reviewer/pi-reviewer.ts";
 import { runRuleAgentChild } from "../src/reviewer/rule-agent.ts";
 
@@ -41,6 +41,11 @@ const CONFIG = {
   apiKey: "vendor-secret",
 };
 const RANGE = { baseSha: "aaa", headSha: "bbb", files: ["src/a.ts"] };
+
+/** 直调 `runInChild` 的输入,用例只写自己关心的那几项。 */
+function input(extra: Partial<Omit<ReviewerInput, "range">> = {}): ReviewerInput {
+  return { range: RANGE, worktreePath: tmpdir(), history: [], ...extra };
+}
 
 /** 把一段 worker 脚本写进临时目录并返回路径。 */
 function worker(body: string): string {
@@ -82,9 +87,7 @@ process.on("message", () => {
 `);
 
   const events: ReviewerEvent[] = [];
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [], undefined, [], (event) =>
-    events.push(event),
-  );
+  const outcome = await runInChild(path, CONFIG, input({ rules: [], onEvent: (event) => events.push(event) }));
 
   assert.equal(outcome.failure, undefined);
   assert.deepEqual(events, [
@@ -110,9 +113,7 @@ process.on("message", () => {
 `);
 
   const events: ReviewerEvent[] = [];
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [], undefined, [], (event) =>
-    events.push(event),
-  );
+  const outcome = await runInChild(path, CONFIG, input({ rules: [], onEvent: (event) => events.push(event) }));
 
   assert.match(outcome.failure ?? "", /退出码 7/);
   assert.equal(outcome.exitCode, 7);
@@ -129,7 +130,7 @@ process.on("message", () => {
 });
 `);
 
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir());
+  const outcome = await runInChild(path, CONFIG, input());
 
   assert.equal(outcome.failure, undefined);
   assert.equal(outcome.findings.length, 1);
@@ -149,7 +150,7 @@ process.on("message", () => {
 });
 `);
 
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir());
+  const outcome = await runInChild(path, CONFIG, input());
 
   assert.deepEqual(outcome.findings, []);
   assert.equal(outcome.anomalies.length, 1);
@@ -165,7 +166,7 @@ process.on("message", () => {
 });
 `);
 
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir());
+  const outcome = await runInChild(path, CONFIG, input());
 
   assert.equal(outcome.failure, "402 dead credential");
   assert.deepEqual(outcome.findings, []);
@@ -179,7 +180,7 @@ process.on("message", () => {
 });
 `);
 
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir());
+  const outcome = await runInChild(path, CONFIG, input());
 
   assert.notEqual(outcome.failure, undefined);
   assert.match(outcome.failure!, /退出码 3/);
@@ -192,7 +193,7 @@ process.on("message", () => {
 });
 `);
 
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir());
+  const outcome = await runInChild(path, CONFIG, input());
 
   assert.notEqual(outcome.failure, undefined);
   assert.match(outcome.failure!, /SIGKILL/);
@@ -206,7 +207,7 @@ process.on("message", () => {
 });
 `);
 
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir());
+  const outcome = await runInChild(path, CONFIG, input());
 
   // Finding 保留下来,但 failure 有值,调用方据此知道这次审查不完整。
   assert.equal(outcome.findings.length, 1);
@@ -221,7 +222,7 @@ process.on("message", () => {
 });
 `);
 
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir());
+  const outcome = await runInChild(path, CONFIG, input());
 
   assert.equal(outcome.rejectedToolCalls, 4);
   assert.deepEqual(outcome.findings, []);
@@ -236,7 +237,7 @@ process.on("message", () => {
 });
 `);
 
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir());
+  const outcome = await runInChild(path, CONFIG, input());
 
   // 两个数分列:契约失配与"位置报不准"是两种毛病,合成一个数就看不出该改哪头。
   assert.equal(outcome.anchorRejections, 3);
@@ -262,7 +263,7 @@ process.on("message", () => {
 });
 `);
 
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir());
+  const outcome = await runInChild(path, CONFIG, input());
   assert.deepEqual(outcome.usage, {
     inputTokens: 120,
     outputTokens: 40,
@@ -304,7 +305,7 @@ process.on("message", () => {
   process.env["MODEL_CREDENTIAL_CIPHERTEXT"] = "v1.ciphertext-secret";
   let outcome;
   try {
-    outcome = await runInChild(path, CONFIG, RANGE, tmpdir());
+    outcome = await runInChild(path, CONFIG, input());
   } finally {
     process.env = saved;
   }
@@ -337,7 +338,7 @@ process.on("message", (request) => {
   const workdir = mkdtempSync(join(tmpdir(), "multireviewer-worktree-"));
   cleanups.push(() => rmSync(workdir, { recursive: true, force: true }));
 
-  const outcome = await runInChild(path, CONFIG, RANGE, workdir);
+  const outcome = await runInChild(path, CONFIG, input({ worktreePath: workdir }));
 
   const echoed = JSON.parse(outcome.findings[0]!.description);
   assert.deepEqual(echoed.range, RANGE);
@@ -355,8 +356,7 @@ test("工作副本目录不存在时,失败落在这一个 Reviewer 上而不是
   const outcome = await runInChild(
     path,
     CONFIG,
-    RANGE,
-    join(tmpdir(), "multireviewer-does-not-exist"),
+    input({ worktreePath: join(tmpdir(), "multireviewer-does-not-exist") }),
   );
 
   assert.notEqual(outcome.failure, undefined);
@@ -371,7 +371,7 @@ process.on("message", () => {
 `);
 
   const started = Date.now();
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir());
+  const outcome = await runInChild(path, CONFIG, input());
 
   assert.equal(outcome.rejectedToolCalls, 1);
   assert.ok(Date.now() - started < 30_000, "应当在宽限期内结束,而不是等满超时");
@@ -388,10 +388,16 @@ process.on("message", () => {
 });
 `);
 
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [
-    { id: 7, file: "src/a.ts", line: 4, title: "越界", disposition: "unresolved" },
-    { id: 9, file: "src/a.ts", line: 9, title: "没校验", disposition: "unresolved" },
-  ]);
+  const outcome = await runInChild(
+    path,
+    CONFIG,
+    input({
+      history: [
+        { id: 7, file: "src/a.ts", line: 4, title: "越界", disposition: "unresolved" },
+        { id: 9, file: "src/a.ts", line: 9, title: "没校验", disposition: "unresolved" },
+      ],
+    }),
+  );
 
   assert.equal(outcome.failure, undefined);
   // 映射不上的词按无法判断收:保守优先,与漏给结论同一档(ADR 0016)。
@@ -416,7 +422,7 @@ process.on("message", (request) => {
   const history = [
     { id: 3, file: "src/a.ts", line: 4, title: "越界", disposition: "unresolved" as const },
   ];
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), history);
+  const outcome = await runInChild(path, CONFIG, input({ history }));
 
   assert.deepEqual(JSON.parse(outcome.findings[0]!.description), history);
 });
@@ -434,11 +440,11 @@ process.on("message", (request) => {
 `);
 
   const rules = [{ id: 5, scope: "src/**", statement: "src 下不写 any" }];
-  const injected = await runInChild(path, CONFIG, RANGE, tmpdir(), [], undefined, rules);
+  const injected = await runInChild(path, CONFIG, input({ rules }));
   assert.deepEqual(JSON.parse(injected.findings[0]!.description), rules);
 
   // 空规则集要与「这一票之前」逐字一致:任务里根本没有这一项,prompt 因此没有规则段。
-  const empty = await runInChild(path, CONFIG, RANGE, tmpdir(), [], undefined, []);
+  const empty = await runInChild(path, CONFIG, input({ rules: [] }));
   assert.equal(JSON.parse(empty.findings[0]!.description), "absent");
 });
 
@@ -452,9 +458,11 @@ process.on("message", () => {
 });
 `);
 
-  const outcome = await runInChild(path, CONFIG, RANGE, tmpdir(), [], undefined, [
-    { id: 5, scope: "src/**", statement: "src 下不写 any" },
-  ]);
+  const outcome = await runInChild(
+    path,
+    CONFIG,
+    input({ rules: [{ id: 5, scope: "src/**", statement: "src 下不写 any" }] }),
+  );
 
   assert.deepEqual(
     outcome.findings.map((finding) => finding.ruleId),

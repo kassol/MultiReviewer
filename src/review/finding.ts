@@ -244,29 +244,41 @@ export type ReviewerEvent =
       resultLength: number;
     };
 
+/**
+ * 一个 Reviewer 跑一批所需的全部输入(issue #211)。用选项对象而不是位置参数:注入项
+ * 已有五项且可选的夹在中间,再添一项就要在调用处数逗号。
+ *
+ * 字段与 `ReviewerRequest` 同名同义,那边只多一份 `runtimeModel`,并去掉不可跨进程
+ * 传递的 `onEvent`。
+ */
+export type ReviewerInput = {
+  range: ReviewRange;
+  worktreePath: string;
+  /**
+   * 本审查阶段已经报过的 Finding(ADR 0016),每一批都给同一份:它说的是这个阶段的
+   * 历史,与本批审哪些文件无关。首轮为空数组。
+   */
+  history: readonly HistoryFinding[];
+  /**
+   * 这一轮声称要做的事(issue #201),每一批也都给同一份:它说的是整个 Review Range
+   * 的意图,与本批审哪些文件无关。取不到意图上下文的调用方不传。
+   */
+  intent?: ReviewIntent;
+  /**
+   * 本轮冻结的规则集版本里、作用范围命中这一批文件的评审规则,加上全仓库规则
+   * (issue #204)。它与 `history`、`intent` 不同,每一批各给各的——规则按作用范围
+   * 路由,一条只管某个目录的规则不该进不含那个目录的批次。空规则集给空数组。
+   */
+  rules?: readonly ReviewRule[];
+  /**
+   * 收这个 Reviewer 的过程事件(issue #171),编排层一定传,一条即写一条轨迹。
+   * 声明成可选是给直接调 `review` 的调用方留的余地:不看过程的地方不必造一个空回调。
+   */
+  onEvent?: (event: ReviewerEvent) => void;
+};
+
 /** 绑定了具体模型的审查执行体。 */
 export interface Reviewer {
   readonly model: string;
-  /**
-   * `history` 是本审查阶段已经报过的 Finding(ADR 0016),每一批都给同一份:它说的是
-   * 这个阶段的历史,与本批审哪些文件无关。首轮为空数组。
-   *
-   * `intent` 是这一轮声称要做的事(issue #201),每一批也都给同一份:它说的是整个
-   * Review Range 的意图,与本批审哪些文件无关。取不到意图上下文的调用方不传。
-   *
-   * `rules` 是本轮冻结的规则集版本里、作用范围命中这一批文件的评审规则,加上全仓库
-   * 规则(issue #204)。它与 `history`、`intent` 不同,每一批各给各的——规则按作用范围
-   * 路由,一条只管某个目录的规则不该进不含那个目录的批次。空规则集给空数组。
-   *
-   * `onEvent` 收这个 Reviewer 的过程事件(issue #171),编排层一定传,一条即写一条轨迹。
-   * 声明成可选是给直接调 `review` 的调用方留的余地:不看过程的地方不必造一个空回调。
-   */
-  review(
-    range: ReviewRange,
-    worktreePath: string,
-    history: readonly HistoryFinding[],
-    intent?: ReviewIntent,
-    rules?: readonly ReviewRule[],
-    onEvent?: (event: ReviewerEvent) => void,
-  ): Promise<ReviewerOutcome>;
+  review(input: ReviewerInput): Promise<ReviewerOutcome>;
 }

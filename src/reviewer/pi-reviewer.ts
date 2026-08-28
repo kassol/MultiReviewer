@@ -3,13 +3,9 @@ import { fileURLToPath } from "node:url";
 import type {
   Finding,
   FindingVerdict,
-  HistoryFinding,
   RawFinding,
-  ReviewIntent,
-  ReviewRange,
-  ReviewRule,
   Reviewer,
-  ReviewerEvent,
+  ReviewerInput,
   ReviewerOutcome,
   ReviewerUsage,
 } from "../review/finding.ts";
@@ -34,8 +30,7 @@ export type PiReviewerConfig = {
 export function createPiReviewer(config: PiReviewerConfig): Reviewer {
   return {
     model: modelIdentity({ provider: config.runtimeModel.provider, model: config.runtimeModel.id }),
-    review: (range, worktreePath, history, intent, rules, onEvent) =>
-      runInChild(WORKER_PATH, config, range, worktreePath, history, intent, rules, onEvent),
+    review: (input) => runInChild(WORKER_PATH, config, input),
   };
 }
 
@@ -46,17 +41,18 @@ export function createPiReviewer(config: PiReviewerConfig): Reviewer {
 export async function runInChild(
   workerPath: string,
   config: PiReviewerConfig,
-  range: ReviewRange,
-  worktreePath: string,
-  /** 本审查阶段的历史 Finding(ADR 0016)。首轮没有历史,默认空。 */
-  history: readonly HistoryFinding[] = [],
-  /** 这一轮声称要做的事(issue #201)。取不到意图上下文的调用方不传。 */
-  intent?: ReviewIntent,
-  /** 本批要按的评审规则(issue #204)。空规则集与不传等价。 */
-  rules: readonly ReviewRule[] = [],
-  /** 子进程转发上来的过程事件的去处(issue #171)。不关心过程的调用方不传。 */
-  onEvent: (event: ReviewerEvent) => void = () => {},
+  input: ReviewerInput,
 ): Promise<ReviewerOutcome> {
+  const {
+    range,
+    worktreePath,
+    history,
+    intent,
+    // 空规则集与不传等价。
+    rules = [],
+    // 子进程转发上来的过程事件的去处(issue #171)。不关心过程的调用方不传。
+    onEvent = () => {},
+  } = input;
   // 对外一律用完整模型标识；运行字段来自这轮固定的模型服务版本。
   const identity = modelIdentity({
     provider: config.runtimeModel.provider,

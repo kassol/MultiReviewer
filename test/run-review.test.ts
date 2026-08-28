@@ -374,7 +374,7 @@ test("Review Run 在首批前固定一份运行计划,后续批次不跟随模�
   const calls: string[][] = [];
   const planned: Reviewer = {
     model: "planned-model",
-    review: async (range) => {
+    review: async ({ range }) => {
       calls.push([...range.files]);
       if (calls.length === 1) {
         enteredFirstBatch();

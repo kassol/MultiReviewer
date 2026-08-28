@@ -78,7 +78,7 @@ function batchedReviewer(
   return {
     model,
     calls,
-    review: async (range, worktreePath) => {
+    review: async ({ range, worktreePath }) => {
       const step = script[calls.length] ?? {};
       calls.push({ range, worktreePath });
       return {

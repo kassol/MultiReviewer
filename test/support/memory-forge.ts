@@ -196,7 +196,7 @@ export function scriptedReviewer(
   return {
     model,
     calls,
-    review: async (range, worktreePath, history, intent, rules, onEvent) => {
+    review: async ({ range, worktreePath, history, intent, rules, onEvent }) => {
       calls.push({ range, worktreePath, history, intent, rules: rules ?? [] });
       for (const event of extra?.events ?? []) onEvent?.(event);
       return {
@@ -233,9 +233,9 @@ export function readingReviewer(
   return {
     ...base,
     seen,
-    review: (range, worktreePath, history, intent, rules, onEvent) => {
-      seen.push(readFileSync(join(worktreePath, file), "utf8"));
-      return base.review(range, worktreePath, history, intent, rules, onEvent);
+    review: (input) => {
+      seen.push(readFileSync(join(input.worktreePath, file), "utf8"));
+      return base.review(input);
     },
   };
 }
@@ -256,9 +256,9 @@ export function verdictReviewer(
   return {
     model,
     calls: scripted.calls,
-    review: async (range, worktreePath, history, intent, rules, onEvent) => ({
-      ...(await scripted.review(range, worktreePath, history, intent, rules, onEvent)),
-      verdicts: history.map((entry) => ({
+    review: async (input) => ({
+      ...(await scripted.review(input)),
+      verdicts: input.history.map((entry) => ({
         findingId: entry.id,
         verdict,
         ...(line === undefined ? {} : { line }),

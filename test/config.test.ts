@@ -66,11 +66,11 @@ test("完整运行计划各建成一个 Reviewer,身份取固定的 provider:mod
 test("不可用的计划不抛,Reviewer 一跑就留下该项的稳定失败", async () => {
   const failure = "deepseek 的模型凭据待重新验证,deepseek:deepseek-v4-flash 这次没跑。";
   const reviewer = buildReviewers([failedPlan(VALID[1]!, failure)])[0]!;
-  const outcome = await reviewer.review(
-    { baseSha: "base", headSha: "head", files: [] },
-    "/nonexistent-worktree",
-    [],
-  );
+  const outcome = await reviewer.review({
+    range: { baseSha: "base", headSha: "head", files: [] },
+    worktreePath: "/nonexistent-worktree",
+    history: [],
+  });
   assert.equal(outcome.failure, failure);
   assert.deepEqual(outcome.findings, []);
 });
@@ -78,11 +78,11 @@ test("不可用的计划不抛,Reviewer 一跑就留下该项的稳定失败", a
 test("一个模型都没配时建出的 Reviewer 一跑就报失败,而不是零 Reviewer", async () => {
   const reviewers = buildReviewers([]);
   assert.equal(reviewers.length, 1);
-  const outcome = await reviewers[0]!.review(
-    { baseSha: "base", headSha: "head", files: [] },
-    "/nonexistent-worktree",
-    [],
-  );
+  const outcome = await reviewers[0]!.review({
+    range: { baseSha: "base", headSha: "head", files: [] },
+    worktreePath: "/nonexistent-worktree",
+    history: [],
+  });
   assert.match(outcome.failure ?? "", /还没有配置模型组合/);
 });
 
@@ -93,11 +93,11 @@ test("运行计划意外缺字段时也只失败自身,不掀掉可用同伴", a
   };
   const reviewers = buildReviewers([incomplete, readyPlan(VALID[1]!)]);
   assert.equal(reviewers.length, 2);
-  const outcome = await reviewers[0]!.review(
-    { baseSha: "base", headSha: "head", files: [] },
-    "/nonexistent-worktree",
-    [],
-  );
+  const outcome = await reviewers[0]!.review({
+    range: { baseSha: "base", headSha: "head", files: [] },
+    worktreePath: "/nonexistent-worktree",
+    history: [],
+  });
   assert.match(outcome.failure ?? "", /不可变运行计划不完整/);
   assert.equal(reviewers[1]!.model, "deepseek:deepseek-v4-flash");
 });

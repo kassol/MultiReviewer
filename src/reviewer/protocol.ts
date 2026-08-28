@@ -1,30 +1,16 @@
-import type {
-  HistoryFinding,
-  RawVerdict,
-  ReviewIntent,
-  ReviewRange,
-  ReviewRule,
-  ReviewerEvent,
-  ReviewerUsage,
-} from "../review/finding.ts";
+import type { RawVerdict, ReviewerEvent, ReviewerInput, ReviewerUsage } from "../review/finding.ts";
 import type { RawFinding } from "./normalize.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 
-/** 主进程交给 Reviewer 子进程的任务。 */
-export type ReviewerRequest = {
+/**
+ * 主进程交给 Reviewer 子进程的任务:注入边界那份输入,去掉跨不了进程的 `onEvent`
+ * (事件走 `WorkerMessage` 回传),加上本轮固定的完整运行模型。
+ *
+ * 空规则集不带 `rules` 这一项,prompt 因此与没有规则集时逐字一致。
+ */
+export type ReviewerRequest = Omit<ReviewerInput, "onEvent"> & {
   /** 本轮固定的完整运行模型；不含凭据。 */
   runtimeModel: RuntimeModel;
-  range: ReviewRange;
-  worktreePath: string;
-  /** 本审查阶段已经报过的 Finding(ADR 0016)。首轮为空数组。 */
-  history: readonly HistoryFinding[];
-  /** 这一轮声称要做的事(issue #201)。取不到意图上下文时不带。 */
-  intent?: ReviewIntent;
-  /**
-   * 本批要按的评审规则(issue #204):本轮冻结的规则集版本里,作用范围命中这一批文件的
-   * 那些,加上全仓库规则。空规则集不带这一项,prompt 因此与没有规则集时逐字一致。
-   */
-  rules?: readonly ReviewRule[];
 };
 
 /**

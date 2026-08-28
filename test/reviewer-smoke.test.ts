@@ -87,14 +87,13 @@ test("真实模型经 report_finding 产出结构完整的 Finding", { skip }, a
 
   // 轨迹的另一半契约(issue #171):真实子进程里那条订阅确实把 Pi 的会话事件转发上来。
   const events: ReviewerEvent[] = [];
-  const outcome = await reviewer.review(
-    { baseSha: "HEAD~1", headSha: "HEAD", files: ["src/db.js", "src/pagination.js"] },
-    FIXTURE,
-    [],
-    undefined,
-    [],
-    (event) => events.push(event),
-  );
+  const outcome = await reviewer.review({
+    range: { baseSha: "HEAD~1", headSha: "HEAD", files: ["src/db.js", "src/pagination.js"] },
+    worktreePath: FIXTURE,
+    history: [],
+    rules: [],
+    onEvent: (event) => events.push(event),
+  });
 
   assert.ok(
     events.some((event) => event.kind === "assistant_message"),
@@ -146,11 +145,11 @@ const PRIOR: HistoryFinding = {
 test("真实模型经复核工具对已修好的历史 Finding 回已修", { skip }, async () => {
   const reviewer = await smokeReviewer();
 
-  const outcome = await reviewer.review(
-    { baseSha: "HEAD~1", headSha: "HEAD", files: ["src/db.js"] },
-    FIXTURE,
-    [PRIOR],
-  );
+  const outcome = await reviewer.review({
+    range: { baseSha: "HEAD~1", headSha: "HEAD", files: ["src/db.js"] },
+    worktreePath: FIXTURE,
+    history: [PRIOR],
+  });
 
   assert.equal(outcome.failure, undefined, `Reviewer 失败: ${outcome.failure}`);
   // 契约成立的判据:结论经工具回来、认得出注入时给的那个 id、用对了枚举值。

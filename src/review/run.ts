@@ -1159,17 +1159,17 @@ export async function runReview(
               // 工作副本每批都是同一份完整的 head commit:Reviewer 要能读到其他批次
               // 改动后的代码,否则会报出"这个新函数没有调用者"这类因分批而来的误报。
               // 历史每批都给同一份:它说的是这个阶段的历史,与本批审哪些文件无关。
-              const outcome = await reviewer.review(
-                { ...range, files },
-                worktree.path,
+              const outcome = await reviewer.review({
+                range: { ...range, files },
+                worktreePath: worktree.path,
                 history,
                 intent,
                 rules,
-                (event) => {
+                onEvent: (event) => {
                   const { kind, ...payload } = event;
                   trace.reviewer(reviewer.model, kind, payload);
                 },
-              );
+              });
               return { outcome, durationMs: Date.now() - begin };
             }),
           ),
