@@ -18,6 +18,7 @@ import {
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 
 const cleanups: (() => void)[] = [];
 after(() => {
@@ -247,6 +248,7 @@ test("阶段列表:pull request 关闭后已结束,重开回到进行中且仍�
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook("delivery-head")).status, 200);
   await h.settledAtLeast(1);
 
@@ -275,6 +277,7 @@ test("阶段列表:已关闭 pull request 手动重跑后仍是已结束,重开�
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook("delivery-head")).status, 200);
   await h.settledAtLeast(1);
 
@@ -304,6 +307,7 @@ test("阶段列表:同一范围审查推进两次只占一行,审查完成后已
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   const created = await h.api("POST", "/range-reviews", {
     title: "范围审查标题",
     owner: HARNESS_PR.owner,

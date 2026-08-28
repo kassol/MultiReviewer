@@ -617,7 +617,7 @@ export function RunsPage({
     onFeedback: setFeedback,
     onRegistered: (repo) => {
       setFeedback({
-        text: `已注册 ${repo.owner}/${repo.repo}。该仓库收到 pull request 更新后将自动开始审查。`,
+        text: `已注册 ${repo.owner}/${repo.repo}。先在「规则集」里完成规则确认,该仓库的审查才会开始。`,
         isError: false,
       });
       selectRepository(repo);

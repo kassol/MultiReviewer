@@ -8,6 +8,7 @@ import { after, test } from "node:test";
 import { openStore } from "../src/review/store.ts";
 import type { ReviewerUsage } from "../src/review/finding.ts";
 import {
+  GITEA_REPO,
   HARNESS_PR,
   HARNESS_PR_TITLE,
   PANEL_ADMIN_USERNAME,
@@ -15,6 +16,7 @@ import {
   startPanelHarness,
   startReadyPanelHarness,
 } from "./support/panel-harness.ts";
+import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 
 const cleanups: (() => void)[] = [];
 after(() => {
@@ -273,6 +275,7 @@ test("重跑:注册仓库触发新 Review Run,同一 head commit 重复审合法
       .status,
     201,
   );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
 
   const rerun = await h.api("POST", "/rerun", {
     owner: HARNESS_PR.owner,
@@ -311,6 +314,7 @@ test("投递触发的 Review Run 不写调用者快照", async () => {
       .status,
     201,
   );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
 
   assert.equal((await h.deliverViaHook("delivery-head")).status, 200);
   await h.settledAtLeast(1);
@@ -329,6 +333,7 @@ test("评审记录带 pull request 标题:投递触发的行有标题,升级前�
       .status,
     201,
   );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   // 升级前落库的一行:那时还没有标题这一列,它因此为空。
   seedRun(
     h.db.path,
@@ -374,6 +379,7 @@ test("重跑:PR 号读不到 404,不开跑", async () => {
       .status,
     201,
   );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   const rerun = await h.api("POST", "/rerun", {
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
@@ -400,6 +406,7 @@ test("重跑:模型覆盖生效,经 buildReviewers 构建", async () => {
     ).status,
     201,
   );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   h.factoryCalls.length = 0;
 
   const rerun = await h.api("POST", "/rerun", {

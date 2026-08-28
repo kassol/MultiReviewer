@@ -11,6 +11,7 @@ import { after, test } from "node:test";
 import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
+  GITEA_REPO,
   HARNESS_PR,
   HARNESS_SPEC,
   PANEL_ADMIN_USERNAME,
@@ -18,6 +19,7 @@ import {
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
 
 const cleanups: (() => void)[] = [];
@@ -74,6 +76,8 @@ async function harnessWithRun(): Promise<PanelHarness> {
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
+  // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「规则集已确认」那一侧。
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);

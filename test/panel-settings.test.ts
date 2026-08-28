@@ -13,12 +13,14 @@ import { buildReviewers } from "../src/config.ts";
 import { DEFAULT_MAX_CHANGED_LINES_PER_BATCH } from "../src/review/batch.ts";
 import { openStore } from "../src/review/store.ts";
 import {
+  GITEA_REPO,
   HARNESS_PR,
   seedAvailableModelService,
   seedHistoricalRepo,
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 
 const cleanups: (() => void)[] = [];
 after(() => {
@@ -362,6 +364,7 @@ test("改过的全局组合下一次投递就生效", async () => {
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal(
     (
       await putReviewers(h, [{ provider: "test", model: "swapped-model" }])

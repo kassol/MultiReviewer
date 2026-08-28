@@ -174,11 +174,17 @@ function RuleSetDialogContent({
       <Dialog.Title size="4" mb="1" className="pr-9 break-all">
         {repo.owner}/{repo.repo} 的规则集
       </Dialog.Title>
-      {typeof ruleSet.data?.version === "number" ? (
+      {ruleSet.data === undefined ? null : typeof ruleSet.data.version === "number" ? (
         <Text as="p" size="1" color="gray" mb="3">
           规则集版本 {ruleSet.data.version}
         </Text>
-      ) : null}
+      ) : (
+        /* 门禁分代(issue #206):没有规则集版本即还没确认,这个仓库暂不执行 Review Run。
+           下面就是基点探索与规则确认那一段,引导到位。 */
+        <Text as="p" size="1" color="orange" mb="3">
+          规则集未确认:完成规则确认前,这个仓库的投递只记录不审,面板也发起不了审查。
+        </Text>
+      )}
 
       {ruleSet.isPending ? (
         <div className="flex flex-col gap-2" role="status" aria-live="polite">

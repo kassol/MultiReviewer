@@ -12,6 +12,7 @@ import type { Forge, RepoRef } from "../src/forge/forge.ts";
 import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
+  GITEA_REPO,
   HARNESS_PR,
   HARNESS_PR_TITLE,
   PANEL_ADMIN_USERNAME,
@@ -19,6 +20,7 @@ import {
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
 
 const cleanups: (() => void)[] = [];
@@ -57,6 +59,8 @@ async function registeredHarness(
       .status,
     201,
   );
+  // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「规则集已确认」那一侧。
+  confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   // 注册后工作副本在后台备(issue #184)。等它跑完再开测:范围审查读的是这份已经在的
   // 副本,而这一步自己也要读一次仓库,混进来会让「读了几次仓库」数不清。
   await harness.worktreesPreparedAtLeast(1);

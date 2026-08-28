@@ -2277,8 +2277,10 @@ const BASELINE_EXPLORATION_RULE_ORIGIN = "baseline-exploration";
  * 存量迁移(issue #202):升级前注册的仓库全部视同已确认空规则集。给还没有任何规则集
  * 版本的仓库补一行版本 1——没有规则行,语义就是「空集已确认」,评审行为与现状一致。
  *
- * 与删退役权限格同一个机制:建 schema 之后跑,不递增 `user_version`(那个版本号被模型
- * 服务迁移器独占)。`INSERT OR IGNORE` 让它幂等,第二次打开同一个库一行都不写。
+ * 只在 `rule_set_version` 建表那一次跑(issue #206):门禁分代之后,「没有版本行」是
+ * 「规则集未确认」的唯一判据,再跑一遍会把新注册、还没做规则确认的仓库误判成已确认。
+ * 建表那一刻正是升级的那一刻,库里此时的仓库就是升级前既有的那些。不递增 `user_version`
+ * (那个版本号被模型服务迁移器独占)。
  */
 function seedConfirmedEmptyRuleSets(db: DatabaseSync): void {
   db.prepare(
@@ -2336,6 +2338,10 @@ function repairPullRequestStates(db: DatabaseSync): void {
 /** 打开当前 schema；schema-v0 数据库必须先经过模型服务迁移器。 */
 export function openStore(dbPath: string): Store {
   const db = new DatabaseSync(dbPath, { timeout: BUSY_TIMEOUT_MS });
+  // 建表之前问一次:存量迁移的判据是「这一次打开才把 `rule_set_version` 建出来」。
+  const ruleSetVersionTableExisted = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'rule_set_version'")
+    .get() !== undefined;
   let modelServiceSchemaVersion = Number(
     db.prepare("PRAGMA user_version").get()?.["user_version"] ?? 0,
   );
@@ -2377,7 +2383,7 @@ export function openStore(dbPath: string): Store {
   }
   dropCostColumns(db);
   dropRetiredPanelPermissions(db);
-  seedConfirmedEmptyRuleSets(db);
+  if (!ruleSetVersionTableExisted) seedConfirmedEmptyRuleSets(db);
   repairPullRequestStates(db);
 
   // 系统管理员 bootstrap 与普通创建共用同一条用户写入语义。
@@ -2875,11 +2881,6 @@ export function openStore(dbPath: string): Store {
           record.generation,
           record.key,
         );
-        // 注册即得到已确认空规则集(issue #202),与存量迁移落到同一个状态:这一票
-        // 还没有规则确认这一步,新仓库不该比升级过来的仓库多一种状态。
-        db.prepare(
-          "INSERT INTO rule_set_version (repo_id, version, created_at) VALUES (?, 1, ?)",
-        ).run(record.repoId, new Date().toISOString());
         if (record.assignTo !== undefined) {
           db.prepare(
             "INSERT OR IGNORE INTO panel_user_repo (username, repo_id) VALUES (?, ?)",

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 export type FileTree = Record<string, string>;
 
@@ -226,4 +227,22 @@ export function makeDbPath(): { path: string; cleanup(): void } {
     path: join(dir, "multireviewer.db"),
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
+}
+
+/**
+ * 把仓库补成「已确认空规则集」:存量迁移(issue #206)给升级前注册的仓库落的就是这一行。
+ * 门禁分代之后新注册的仓库没有规则集版本,不做规则确认就不跑 Review Run;要审查行为的
+ * 测试用它把仓库播种成升级前那一代。
+ */
+export function confirmEmptyRuleSet(dbPath: string, repoId: number): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    // 与存量迁移同一句形状:仓库不在注册表里就什么都不写。
+    db.prepare(
+      `INSERT OR IGNORE INTO rule_set_version (repo_id, version, created_at)
+       SELECT id, 1, ? FROM repo WHERE id = ?`,
+    ).run(new Date().toISOString(), repoId);
+  } finally {
+    db.close();
+  }
 }

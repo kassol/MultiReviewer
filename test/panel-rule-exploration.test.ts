@@ -247,9 +247,10 @@ test("规则确认整组生效:草案成为生效规则、推进一版、草案�
     const manual = store.addRuleDraftItem(72, item("入参要在边界上校验", "安全"))!;
     assert.equal(store.updateRuleDraftItem(72, manual, item("入参要在边界上校验并给原因", "安全")), true);
 
-    assert.equal(store.confirmRuleDraft(72), 2);
+    // 规则确认产生这个仓库的第一个规则集版本(issue #206:注册不再落版本)。
+    assert.equal(store.confirmRuleDraft(72), 1);
     const confirmed = store.getRuleSet(72)!;
-    assert.equal(confirmed.version, 2);
+    assert.equal(confirmed.version, 1);
     assert.deepEqual(
       confirmed.rules.map((rule) => [rule.scope, rule.statement, rule.layer, rule.origin]),
       [
@@ -325,8 +326,8 @@ test("面板发起基点探索:产出落草案、按重要性截断为 30 条", 
   assert.equal(body.draft[0]!.statement, "第 1 条规范陈述");
   assert.equal(body.draft[29]!.statement, "第 30 条规范陈述");
   assert.equal(body.draft[0]!.origin, "baseline-exploration");
-  // 规则集本身还没动:草案要人确认才生效。
-  assert.equal(body.version, 1);
+  // 规则集本身还没动:草案要人确认才生效,确认之前这个仓库都是「规则集未确认」。
+  assert.equal(body.version, null);
   assert.deepEqual(body.rules, []);
 
   // agent 拿到的是基点上的工作副本与选定的模型。
@@ -384,10 +385,10 @@ test("面板逐条增删改草案后整组确认,生成第一个规则集版本"
 
   const confirmed = await send(h, cookie, "POST", `${path}/rule-draft/confirm`);
   assert.equal(confirmed.status, 200);
-  assert.deepEqual(await confirmed.json(), { version: 2 });
+  assert.deepEqual(await confirmed.json(), { version: 1 });
 
   const after = await ruleSet(h, cookie);
-  assert.equal(after.version, 2);
+  assert.equal(after.version, 1);
   assert.deepEqual(
     after.rules.map((rule) => [rule.scope, rule.statement, rule.layer, rule.origin]),
     [

@@ -25,6 +25,7 @@ import {
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 
 const cleanups: (() => void)[] = [];
 after(() => {
@@ -324,6 +325,7 @@ test("进行中的轮次:先回放已有事件,再收到新写入的那条,结�
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await paused.started;
 
@@ -364,6 +366,7 @@ test("进行中的轮次:没有可回放的事件时响应头也立刻发出,静
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await paused.started;
   const runId = openStoreRunId(h.db.path);

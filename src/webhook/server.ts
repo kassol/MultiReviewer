@@ -714,6 +714,21 @@ function lookupAdmission(dbPath: string, repoId: number): Admission {
 }
 
 /**
+ * 门禁分代(issue #206):新注册的仓库在完成规则确认之前不执行 Review Run。判据是
+ * 「这个仓库有没有规则集版本」——空规则集是合法状态,它与「还没确认」只有版本表分得出
+ * (存量迁移把升级前注册的仓库全部写成了已确认空规则集,它们照旧放行)。
+ *
+ * 挡在启动运行计划之前:未确认的仓库连快照都不取,Run 根本不会开始,冻结规则集版本
+ * 那一步(issue #204)因此永远读不到「没有版本」的仓库。
+ */
+function ruleSetUnconfirmed(dbPath: string, repoId: number): boolean {
+  return withStore(dbPath, (store) => store.getRuleSet(repoId)?.version ?? null) === null;
+}
+
+/** 未确认规则集时拒绝发起审查的那句话。三个发起入口共用,措辞一致。 */
+const RULE_SET_UNCONFIRMED = "这个仓库还没确认规则集,先在规则集里探索并确认规则,再发起审查";
+
+/**
  * 开一轮 Review Run。调用方一律 `void` 它:这是长跑服务,后台任务的 rejection 不接住就会
  * 变成 unhandledRejection 把进程带崩,所以整段包在 try 里,失败一律经 `settled` 出去。
  */
@@ -896,6 +911,13 @@ async function handle(
   // 草稿 PR 在触发层就挡掉,不进 runReview:作者还没打算让人看这份代码。
   if (event.draft) {
     log(`${describe(event)} — 草稿,不审`);
+    return send(res, 200);
+  }
+
+  // 门禁分代(issue #206):投递照常受理(验签、记录),只是不跑 Run。规则确认一完成
+  // 下一次投递即放行,不需要重启。
+  if (ruleSetUnconfirmed(deps.dbPath, repoId)) {
+    log(`${describe(event)} — 规则集还没确认,只记录不审`);
     return send(res, 200);
   }
 
@@ -4819,6 +4841,9 @@ async function handleRerun(
   // 目标在请求体里,过滤层看不到,这里自己判。
   const registered = assignedRegisteredRepo(res, deps, assignment, { owner, repo }, "重跑");
   if (registered === undefined) return;
+  if (ruleSetUnconfirmed(deps.dbPath, registered.repoId)) {
+    return sendJson(res, 409, { error: RULE_SET_UNCONFIRMED });
+  }
   const forge = deps.forges.gitea;
   if (forge === undefined) {
     return sendJson(res, 503, { error: "gitea 没有配置 Forge,重跑不了" });
@@ -4876,6 +4901,9 @@ async function rerunRangeReview(
           ? "这个范围审查已经审查完成,不再重跑"
           : "这个范围审查没有可用的容器 pull request,重新发起一个",
     });
+  }
+  if (ruleSetUnconfirmed(deps.dbPath, record.repoId)) {
+    return sendJson(res, 409, { error: RULE_SET_UNCONFIRMED });
   }
   const forge = deps.forges.gitea;
   if (forge === undefined) {
@@ -5332,6 +5360,9 @@ async function handleCreateRangeReview(
   // 目标在请求体里,过滤层看不到,这里自己判。
   const registered = assignedRegisteredRepo(res, deps, assignment, { owner, repo }, "发起范围审查");
   if (registered === undefined) return;
+  if (ruleSetUnconfirmed(deps.dbPath, registered.repoId)) {
+    return sendJson(res, 409, { error: RULE_SET_UNCONFIRMED });
+  }
   const forge = deps.forges.gitea;
   if (forge === undefined) {
     return sendJson(res, 503, { error: "gitea 没有配置 Forge,发起不了范围审查" });

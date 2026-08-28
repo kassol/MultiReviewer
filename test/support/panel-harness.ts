@@ -22,7 +22,13 @@ import { encryptCredential } from "../../src/panel/credential-crypto.ts";
 import { modelServiceTargetFingerprint } from "../../src/review/model-service-migration.ts";
 import { openStore } from "../../src/review/store.ts";
 import { startFakeGitea, type FakeGitea } from "./fake-gitea.ts";
-import { makeCacheDir, makeDbPath, makeRepo, type RepoFixture } from "./git-fixture.ts";
+import {
+  confirmEmptyRuleSet,
+  makeCacheDir,
+  makeDbPath,
+  makeRepo,
+  type RepoFixture,
+} from "./git-fixture.ts";
 import { memoryForge, scriptedReviewer, type MemoryForge } from "./memory-forge.ts";
 
 export const PANEL_ADMIN_USERNAME = "panel-admin";
@@ -448,5 +454,7 @@ export function seedHistoricalRepo(
   } finally {
     store.close();
   }
+  // 「升级前已经存在」的另一半:存量迁移把这些仓库写成已确认空规则集(issue #206)。
+  confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   return { url: `${PANEL_BASE_URL}/webhook?k=1`, secret: key };
 }

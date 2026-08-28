@@ -12,12 +12,14 @@ import type { Forge, PullRequestRef } from "../src/forge/forge.ts";
 import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
+  GITEA_REPO,
   HARNESS_PR,
   PANEL_ADMIN_USERNAME,
   PANEL_PREFIX,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
 
 const cleanups: (() => void)[] = [];
@@ -73,6 +75,8 @@ async function registeredHarness(
       .status,
     201,
   );
+  // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「规则集已确认」那一侧。
+  confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   return harness;
 }
 

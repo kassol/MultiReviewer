@@ -19,6 +19,7 @@ import {
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 
 const cleanups: (() => void)[] = [];
 after(() => {
@@ -557,6 +558,7 @@ test("webhook 投递不经过仓库分配", async () => {
     (await post(h, cookie, "POST", "/repos", { owner: PR.owner, repo: PR.repo })).status,
     201,
   );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   // 谁都没分到这个仓库也照样投递:webhook 路径不经过过滤层。
   const store = openStore(h.db.path);
   store.setPanelUserAssignment("maintainer", []);

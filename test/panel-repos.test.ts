@@ -13,7 +13,7 @@ import { after, test } from "node:test";
 import type { ReviewerSpec } from "../src/config.ts";
 import { openStore } from "../src/review/store.ts";
 import { createWebhookServer } from "../src/webhook/server.ts";
-import { makeCacheDir, makeDbPath } from "./support/git-fixture.ts";
+import { confirmEmptyRuleSet, makeCacheDir, makeDbPath } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   HARNESS_PR as PR,
@@ -46,6 +46,7 @@ test("注册建好 hook,种子 PR 的投递被受理并跑完审查", async () =
     repo: PR.repo,
     generation: 1,
   });
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
 
   // hook 由面板建出:URL 带 ?k=1、secret 是 64 位十六进制 Key、窄订阅、显式激活。
   assert.equal(h.gitea.hooks.length, 1);
@@ -92,6 +93,7 @@ test("重复注册回 409", async () => {
 test("移除删掉 hook 并摘注册表,历史保留,投递从此 401", async () => {
   const h = await startHarness();
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook("sha-1")).status, 200);
   await h.settledAtLeast(1);
 
@@ -122,6 +124,7 @@ test("移除删掉 hook 并摘注册表,历史保留,投递从此 401", async ()
 test("hook 删除失败时移除被阻止,注册保持原样", async () => {
   const h = await startHarness();
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   h.gitea.control.failDelete = true;
 
   const removal = await h.api("DELETE", `/repos/${GITEA_REPO.id}`);
@@ -146,6 +149,7 @@ test("配置了模型覆盖的仓库,Review Run 用覆盖后的组合", async ()
       .status,
     201,
   );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook("sha-1")).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
@@ -171,6 +175,7 @@ test("模型覆盖可编辑:PUT 全量替换、null 清除,坏覆盖 400", async
   const h = await startPanelHarness(cleanups);
   seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   const override: ReviewerSpec[] = [
     { provider: "test", model: "swapped-model" },
   ];
@@ -306,6 +311,7 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
 test("仓库列表带累计量,按最近活动排序,没跑过的排最后", async () => {
   const h = await startHarness();
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook("sha-1")).status, 200);
   await h.settledAtLeast(1);
 

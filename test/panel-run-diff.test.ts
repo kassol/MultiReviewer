@@ -18,6 +18,7 @@ import {
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 
 const cleanups: (() => void)[] = [];
 after(() => {
@@ -45,6 +46,7 @@ async function harnessWithRun(): Promise<PanelHarness> {
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
@@ -132,6 +134,7 @@ test("diff API:范围审查的一轮按阶段基准取范围", async () => {
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal(
     (
       await h.api("POST", "/range-reviews", {

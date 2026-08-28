@@ -57,7 +57,10 @@ function seedRepo(h: PanelHarness, repoId: number, owner: string, repo: string):
   return repoId;
 }
 
-/** 落一条基点探索出处的评审规则。那条写入链路是后续票的范围,这里按 schema 直接写。 */
+/**
+ * 落一条基点探索出处的评审规则。那条写入链路是后续票的范围,这里按 schema 直接写。
+ * 顺带补上版本 1 那一行:有规则就说明这个仓库确认过规则集(issue #206 的门禁判据)。
+ */
 function seedRule(
   dbPath: string,
   rule: {
@@ -71,6 +74,9 @@ function seedRule(
 ): void {
   const db = new DatabaseSync(dbPath);
   const retired = rule.retiredVersion ?? null;
+  db.prepare(
+    "INSERT OR IGNORE INTO rule_set_version (repo_id, version, created_at) VALUES (?, 1, ?)",
+  ).run(rule.repoId, "2026-08-28T00:00:00.000Z");
   db.prepare(
     `INSERT INTO review_rule
        (repo_id, scope, statement, layer, state, origin, effective_version, retired_version, created_at)
@@ -163,11 +169,11 @@ async function ruleWriterCookie(
   return cookie;
 }
 
-test("升级前注册的仓库开库后成为已确认空规则集", () => {
+test("升级前注册的仓库开库后成为已确认空规则集,之后新注册的不跟着补", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
 
-  // 升级前的库:注册表里有行,规则集版本表还没有任何一行。
+  // 升级前的库:注册表里有行,规则集版本表这个功能才建,还不存在。
   const before = openStore(db.path);
   before.close();
   const raw = new DatabaseSync(db.path);
@@ -177,22 +183,32 @@ test("升级前注册的仓库开库后成为已确认空规则集", () => {
     "legacy",
     "2026-01-01T00:00:00.000Z",
   );
-  raw.prepare("DELETE FROM rule_set_version").run();
+  raw.exec("DROP TABLE rule_set_version");
   raw.close();
 
+  // 升级:建表那一次跑存量迁移。
   const after = openStore(db.path);
   try {
     assert.deepEqual(after.getRuleSet(77), { version: 1, rules: [], retired: [] });
-    // 幂等:同一个库第二次打开不再叠版本。
-    const again = openStore(db.path);
-    assert.equal(again.getRuleSet(77)?.version, 1);
-    again.close();
+    assert.equal(
+      after.registerRepo({ repoId: 78, owner: "acme", repo: "fresh", generation: 1, key: "k" }),
+      true,
+    );
   } finally {
     after.close();
   }
+
+  // 分代:迁移不再跑第二遍,升级之后新注册的仓库仍然是「规则集未确认」。
+  const again = openStore(db.path);
+  try {
+    assert.equal(again.getRuleSet(77)?.version, 1);
+    assert.equal(again.getRuleSet(78)?.version, null);
+  } finally {
+    again.close();
+  }
 });
 
-test("注册仓库即得到已确认空规则集,移除仓库连规则一起摘掉", () => {
+test("新注册的仓库规则集未确认,移除仓库连规则一起摘掉", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -201,7 +217,8 @@ test("注册仓库即得到已确认空规则集,移除仓库连规则一起摘�
       store.registerRepo({ repoId: 88, owner: "acme", repo: "fresh", generation: 1, key: "k" }),
       true,
     );
-    assert.deepEqual(store.getRuleSet(88), { version: 1, rules: [], retired: [] });
+    // 门禁分代(issue #206):注册不再落版本,规则确认才落第一版。
+    assert.deepEqual(store.getRuleSet(88), { version: null, rules: [], retired: [] });
     // 没注册的仓库没有规则集可读。
     assert.equal(store.getRuleSet(999), undefined);
 
@@ -250,7 +267,7 @@ test("规则集只给当前生效的规则,废止的那条不在集内", () => {
   }
 });
 
-test("面板按仓库读规则集:分配内可读,空规则集也给出当前版本", async () => {
+test("面板按仓库读规则集:分配内可读,未确认的仓库版本为 null", async () => {
   const h = await startReadyPanelHarness(cleanups);
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const cookie = await scopedUser(h, "reader", [alpha]);
@@ -258,7 +275,7 @@ test("面板按仓库读规则集:分配内可读,空规则集也给出当前版
   const empty = await get(h, cookie, `/repos/${alpha}/rules`);
   assert.equal(empty.status, 200);
   assert.deepEqual((await empty.json()) as RuleSetResponse, {
-    version: 1,
+    version: null,
     rules: [],
     retired: [],
     exploration: null,
@@ -323,13 +340,13 @@ test("手工新增、修改与废止各推进一版,历史版本的快照仍取�
       store.registerRepo({ repoId: 91, owner: "acme", repo: "edited", generation: 1, key: "k" }),
       true,
     );
-    // 注册那一版是 1,三次手工变更各推进一版。
+    // 注册不落版本(issue #206),第一次手工变更就是这个仓库的第一版。
     assert.equal(
       store.addReviewRule(91, { scope: "", statement: "公开函数要有类型标注", layer: "架构" }),
-      2,
+      1,
     );
     const added = store.getRuleSet(91)!;
-    assert.equal(added.version, 2);
+    assert.equal(added.version, 1);
     assert.deepEqual(added.rules.map((rule) => [rule.statement, rule.origin]), [
       ["公开函数要有类型标注", "manual"],
     ]);
@@ -341,10 +358,10 @@ test("手工新增、修改与废止各推进一版,历史版本的快照仍取�
         statement: "导出的函数要有类型标注",
         layer: "架构",
       }),
-      3,
+      2,
     );
     const edited = store.getRuleSet(91)!;
-    assert.equal(edited.version, 3);
+    assert.equal(edited.version, 2);
     assert.deepEqual(edited.rules.map((rule) => [rule.scope, rule.statement, rule.origin]), [
       ["src/**", "导出的函数要有类型标注", "manual"],
     ]);
@@ -357,9 +374,9 @@ test("手工新增、修改与废止各推进一版,历史版本的快照仍取�
     );
     assert.equal(store.retireReviewRule(91, ruleId), undefined);
 
-    assert.equal(store.retireReviewRule(91, edited.rules[0]!.id), 4);
+    assert.equal(store.retireReviewRule(91, edited.rules[0]!.id), 3);
     const retired = store.getRuleSet(91)!;
-    assert.equal(retired.version, 4);
+    assert.equal(retired.version, 3);
     assert.deepEqual(retired.rules, []);
     // 废止的不再生效但可查:改之前那一版与刚废止的那条都在。
     assert.deepEqual(retired.retired.map((rule) => rule.statement), [
@@ -382,10 +399,9 @@ test("手工新增、修改与废止各推进一版,历史版本的快照仍取�
       )
       .all(version, version)
       .map((row) => String(row["statement"]));
-  assert.deepEqual(snapshot(1), []);
-  assert.deepEqual(snapshot(2), ["公开函数要有类型标注"]);
-  assert.deepEqual(snapshot(3), ["导出的函数要有类型标注"]);
-  assert.deepEqual(snapshot(4), []);
+  assert.deepEqual(snapshot(1), ["公开函数要有类型标注"]);
+  assert.deepEqual(snapshot(2), ["导出的函数要有类型标注"]);
+  assert.deepEqual(snapshot(3), []);
   raw.close();
 });
 
@@ -400,11 +416,11 @@ test("面板手工增删改规则:rule:write 放行,版本逐次推进,废止的
     layer: "安全",
   });
   assert.equal(created.status, 201);
-  assert.deepEqual(await created.json(), { version: 2 });
+  assert.deepEqual(await created.json(), { version: 1 });
 
   const afterCreate = (await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as
     RuleSetResponse;
-  assert.equal(afterCreate.version, 2);
+  assert.equal(afterCreate.version, 1);
   assert.deepEqual(afterCreate.rules.map(({ id, ...rule }) => rule), [
     { scope: "src/api/**", statement: "入参要在边界上校验", layer: "安全", origin: "manual" },
   ]);
@@ -416,7 +432,7 @@ test("面板手工增删改规则:rule:write 放行,版本逐次推进,废止的
     layer: "安全",
   });
   assert.equal(updated.status, 200);
-  assert.deepEqual(await updated.json(), { version: 3 });
+  assert.deepEqual(await updated.json(), { version: 2 });
 
   const afterUpdate = (await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as
     RuleSetResponse;
@@ -427,11 +443,11 @@ test("面板手工增删改规则:rule:write 放行,版本逐次推进,废止的
 
   const retired = await send(h, cookie, "DELETE", `/repos/${alpha}/rules/${editedId}`);
   assert.equal(retired.status, 200);
-  assert.deepEqual(await retired.json(), { version: 4 });
+  assert.deepEqual(await retired.json(), { version: 3 });
 
   const afterRetire = (await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as
     RuleSetResponse;
-  assert.equal(afterRetire.version, 4);
+  assert.equal(afterRetire.version, 3);
   assert.deepEqual(afterRetire.rules, []);
   assert.deepEqual(afterRetire.retired.map((rule) => rule.statement), [
     "入参要在边界上校验",
@@ -468,7 +484,7 @@ test("规范陈述与层标签不能为空,坏 body 一律 400 且不推进版�
     assert.equal(response.status, 400, JSON.stringify(payload));
   }
   const ruleSet = (await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as RuleSetResponse;
-  assert.equal(ruleSet.version, 1);
+  assert.equal(ruleSet.version, null);
   assert.deepEqual(ruleSet.rules, []);
 });
 
@@ -505,23 +521,23 @@ test("Review Run 的启动快照冻结规则集版本与当时那组规则,之�
     );
     assert.equal(
       store.addReviewRule(91, { scope: "src/**", statement: "src 下不写 any", layer: "工程" }),
-      2,
+      1,
     );
 
     const snapshot = store.getReviewRunSnapshot(91);
-    assert.equal(snapshot.ruleSetVersion, 2);
+    assert.equal(snapshot.ruleSetVersion, 1);
     assert.deepEqual(
       snapshot.rules.map((rule) => [rule.scope, rule.statement]),
       [["src/**", "src 下不写 any"]],
     );
 
     // 已开跑的那一轮拿着上面这份快照跑完,规则集在它跑的过程中变了也不跟。
-    assert.equal(store.addReviewRule(91, { scope: "", statement: "新规则", layer: "工程" }), 3);
-    assert.equal(snapshot.ruleSetVersion, 2);
+    assert.equal(store.addReviewRule(91, { scope: "", statement: "新规则", layer: "工程" }), 2);
+    assert.equal(snapshot.ruleSetVersion, 1);
     assert.equal(snapshot.rules.length, 1);
 
     const next = store.getReviewRunSnapshot(91);
-    assert.equal(next.ruleSetVersion, 3);
+    assert.equal(next.ruleSetVersion, 2);
     assert.equal(next.rules.length, 2);
   } finally {
     store.close();
