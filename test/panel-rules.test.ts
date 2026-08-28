@@ -38,9 +38,13 @@ type RuleSetResponse = {
   version: number | null;
   rules: RuleResponse[];
   retired: RuleResponse[];
-  /** 基点探索与规则草案与规则集同一份读取(issue #205)。这一组用例里都还是空的。 */
+  /**
+   * 基点探索、规则草案与修订提案队列与规则集同一份读取(issue #205、#207)。这一组
+   * 用例里都还是空的。
+   */
   exploration: unknown;
   draft: unknown[];
+  proposals: unknown[];
 };
 
 /** 直接落一行注册表:这几条用例要的是仓库存在,不是它的 hook。 */
@@ -280,6 +284,7 @@ test("面板按仓库读规则集:分配内可读,未确认的仓库版本为 nu
     retired: [],
     exploration: null,
     draft: [],
+    proposals: [],
   });
 
   seedRule(h.db.path, {

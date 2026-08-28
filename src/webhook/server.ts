@@ -94,7 +94,9 @@ import {
   type RepoKey,
   type RepoSummary,
   type ReviewRuleInput,
+  type ReviewRuleRecord,
   type RuleExploration,
+  type RuleProposalInput,
   type StageScope,
   type Store,
 } from "../review/store.ts";
@@ -127,6 +129,7 @@ import {
   createPiRuleAgent,
   RULE_LIMIT,
   type RuleAgent,
+  type RuleAgentItem,
 } from "../reviewer/rule-agent.ts";
 
 export type Platform = "github" | "gitea";
@@ -1916,6 +1919,23 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     assignment: { by: "repo", group: 1 },
     handler: ({ res, deps }, match) =>
       handleDeleteDraftItem(res, deps, Number(match![1]), Number(match![2])),
+  },
+  {
+    // 裁决(issue #207)与规则确认同一格:两者都是「谁定这个仓库的标准」。
+    method: "POST",
+    pattern: /^\/repos\/(\d+)\/rule-proposals\/(\d+)\/accept$/,
+    access: "rule:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ req, res, deps }, match) =>
+      handleAcceptRuleProposal(req, res, deps, Number(match![1]), Number(match![2])),
+  },
+  {
+    method: "POST",
+    pattern: /^\/repos\/(\d+)\/rule-proposals\/(\d+)\/reject$/,
+    access: "rule:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ res, deps }, match) =>
+      handleRejectRuleProposal(res, deps, Number(match![1]), Number(match![2])),
   },
   {
     // 发起探索时可选的那些模型。可用性判据与全局模型组合读的是同一份投影。
@@ -5864,12 +5884,12 @@ function startWorktreePreparation(
 }
 
 /**
- * 一个仓库当前生效的规则集与它的规则集版本(issue #202),连它此刻的基点探索与规则
- * 草案一起给(issue #205)。空规则集是合法状态:版本有值、规则为空,面板据此给空态,
+ * 一个仓库当前生效的规则集与它的规则集版本(issue #202),连它此刻的基点探索、规则
+ * 草案与修订提案队列一起给(issue #205、#207)。空规则集是合法状态:版本有值、规则为空,面板据此给空态,
  * 评审行为与现状一致。
  *
- * 探索与草案不另开一个端点:它们回答的是同一个问题的两半——「这个仓库现在按什么标准
- * 评审,以及还有什么在等人确认」,面板一次读取就该拿全。
+ * 探索、草案与提案队列不另开端点:它们回答的是同一个问题的两半——「这个仓库现在按
+ * 什么标准评审,以及还有什么在等人裁决」,面板一次读取就该拿全。
  */
 function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: number): void {
   const view = withStore(deps.dbPath, (store) => {
@@ -5879,6 +5899,7 @@ function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: num
       ...ruleSet,
       exploration: store.getRuleExploration(repoId),
       draft: store.getRuleDraft(repoId),
+      proposals: store.getRuleProposals(repoId),
     };
   });
   if (view === undefined) {
@@ -5987,15 +6008,58 @@ async function handleRuleModels(res: ServerResponse, deps: WebhookServerDeps): P
  * 再按重要性截断为至多 30 条——上限的本质是人一次确认得完、不麻木,由服务端把住,
  * 不指望模型自己数得准。
  */
-function usableRuleItems(items: readonly ReviewRuleInput[]): ReviewRuleInput[] {
+function usableRuleItems(items: readonly RuleAgentItem[]): RuleAgentItem[] {
   return items
     .map((item) => ({
+      ...item,
       scope: item.scope.trim(),
       statement: item.statement.trim(),
       layer: item.layer.trim(),
     }))
     .filter((item) => item.statement !== "" && item.layer !== "")
     .slice(0, RULE_LIMIT);
+}
+
+/**
+ * 探索产出到修订提案的映射(issue #207)。规则集非空时 agent 提的是对照现有规则的变更,
+ * 服务端只按目标规则认得出认不出分派,映射从简:目标规则仍生效时按有没有废止标记成为
+ * 废止或修改,认不出目标的成为新增。**带废止标记却认不出目标的丢掉**——没有目标的废止
+ * 不成其为一条变更,当成新增会把要删的规则又加一遍。废止那一档的内容取目标规则的原样:
+ * 队列里那条要说得出它废止的是什么。
+ */
+function proposalsFromItems(
+  items: readonly RuleAgentItem[],
+  activeRules: readonly ReviewRuleRecord[],
+): RuleProposalInput[] {
+  const byId = new Map(activeRules.map((rule) => [rule.id, rule]));
+  const proposals: RuleProposalInput[] = [];
+  for (const item of items) {
+    const target = item.targetRuleId === undefined ? undefined : byId.get(item.targetRuleId);
+    if (target === undefined) {
+      if (item.retire === true) continue;
+      proposals.push({
+        change: "add",
+        targetRuleId: null,
+        scope: item.scope,
+        statement: item.statement,
+        layer: item.layer,
+        source: "baseline-exploration",
+        sourceNote: null,
+      });
+      continue;
+    }
+    const content = item.retire === true ? target : item;
+    proposals.push({
+      change: item.retire === true ? "retire" : "modify",
+      targetRuleId: target.id,
+      scope: content.scope,
+      statement: content.statement,
+      layer: content.layer,
+      source: "baseline-exploration",
+      sourceNote: null,
+    });
+  }
+  return proposals;
 }
 
 /**
@@ -6043,12 +6107,18 @@ async function runRuleExplorationInBackground(
       })),
     });
     if (result.failure !== undefined) throw new Error(result.failure);
+    const items = usableRuleItems(result.items);
+    const at = new Date((deps.now ?? Date.now)()).toISOString();
+    // 规则集为空即这一次产出规则草案,非空即产出修订提案(CONTEXT.md 基点探索)。判据
+    // 读的是交给 agent 的那一份现有规则集:同一次探索里两处不该各读各的。
     withStore(deps.dbPath, (store) =>
-      store.finishRuleExploration(
-        repoId,
-        usableRuleItems(result.items),
-        new Date((deps.now ?? Date.now)()).toISOString(),
-      ),
+      existingRules.length === 0
+        ? store.finishRuleExploration(repoId, items, at)
+        : store.finishRuleExplorationAsProposals(
+            repoId,
+            proposalsFromItems(items, existingRules),
+            at,
+          ),
     );
   } catch (error) {
     failure = failureText(error);
@@ -6080,8 +6150,9 @@ async function runRuleExplorationInBackground(
  * 发起一次基点探索(issue #205)。基点 commit 与所用模型都由人给定;模型的可用性判据
  * 与开一轮 Review Run 完全相同——同一套运行计划物化,跑不起来的模型在这里就拦下。
  *
- * 规则集非空的仓库不走这条路:那时重探索的产出是修订提案,要逐条裁决(issue #207)。
- * 「当前规则集为空」因此是草案与提案的分界。
+ * 规则集非空的仓库同样发起得了(issue #207):**当前规则集为空是草案与提案的分界**,
+ * 非空时这一次的产出排进修订提案队列等人逐条裁决,不覆盖草案。分界判在探索结束那一刻,
+ * 发起这里因此不看规则集。
  */
 async function handleStartRuleExploration(
   req: IncomingMessage,
@@ -6111,17 +6182,10 @@ async function handleStartRuleExploration(
 
   const repo = withStore(deps.dbPath, (store) => {
     const row = store.listRepos().find((entry) => entry.repoId === repoId);
-    return row === undefined
-      ? undefined
-      : { ref: { owner: row.owner, repo: row.repo }, ruleSet: store.getRuleSet(repoId) };
+    return row === undefined ? undefined : { owner: row.owner, repo: row.repo };
   });
   if (repo === undefined) {
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
-  }
-  if ((repo.ruleSet?.rules.length ?? 0) > 0) {
-    return sendJson(res, 409, {
-      error: "这个仓库的规则集已经不是空的,重新探索的产出要作修订提案逐条裁决",
-    });
   }
 
   const [plan] = await materializeReviewerPlans(
@@ -6149,7 +6213,7 @@ async function handleStartRuleExploration(
   const exploration = withStore(deps.dbPath, (store) => store.getRuleExploration(repoId));
   // 先回 202 再开跑:探索要跑上几分钟,人等的是「已经在跑了」这个回执。
   sendJson(res, 202, { exploration });
-  void runRuleExplorationInBackground(deps, repoId, repo.ref, payload.baseline, plan);
+  void runRuleExplorationInBackground(deps, repoId, repo, payload.baseline, plan);
 }
 
 async function handleAddDraftItem(
@@ -6193,6 +6257,80 @@ function handleDeleteDraftItem(
   const deleted = withStore(deps.dbPath, (store) => store.deleteRuleDraftItem(repoId, itemId));
   if (!deleted) return sendJson(res, 404, { error: NO_DRAFT_ITEM });
   return sendJson(res, 200, { id: itemId });
+}
+
+const NO_PENDING_PROPOSAL = "这条提案不在这个仓库的待裁决队列里";
+
+/**
+ * 采纳时可选的改后内容(issue #207)。三样一个都没给即按队列里那份原样采纳;给了就与
+ * 手写规则同一道校验(规范陈述与层标签不能为空)。返回 `undefined` 即已经回过 400。
+ */
+async function readProposalEdit(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<ReviewRuleInput | null | undefined> {
+  const body = await readBody(req, res);
+  if (body === undefined) return undefined;
+  const payload = safeParse(body) as
+    | { scope?: unknown; statement?: unknown; layer?: unknown }
+    | null;
+  if (
+    payload === null ||
+    (payload.scope === undefined && payload.statement === undefined && payload.layer === undefined)
+  ) {
+    return null;
+  }
+  const text = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+  const input = {
+    scope: text(payload.scope),
+    statement: text(payload.statement),
+    layer: text(payload.layer),
+  };
+  if (input.statement === "" || input.layer === "") {
+    sendJson(res, 400, {
+      error: '改后的内容要是 {"scope": "…", "statement": "…", "layer": "…"} 形状的 JSON,规范陈述与层标签不能为空',
+    });
+    return undefined;
+  }
+  return input;
+}
+
+/**
+ * 采纳一条修订提案(CONTEXT.md 裁决):按变更类型落库并生成新的规则集版本。body 可以
+ * 带改后的内容——采纳前人改得动这一条,改后的那一份既进规则集也覆盖队列里的记录。
+ */
+async function handleAcceptRuleProposal(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+  proposalId: number,
+): Promise<void> {
+  const edit = await readProposalEdit(req, res);
+  if (edit === undefined) return;
+  const version = withStore(deps.dbPath, (store) =>
+    edit === null
+      ? store.acceptRuleProposal(repoId, proposalId)
+      : store.acceptRuleProposal(repoId, proposalId, edit),
+  );
+  if (version === undefined) {
+    return sendJson(res, 404, {
+      error: `${NO_PENDING_PROPOSAL},或它要改的规则已经不再生效`,
+    });
+  }
+  return sendJson(res, 200, { version });
+}
+
+/** 驳回一条修订提案:只改状态,规则集一版都不推进。 */
+function handleRejectRuleProposal(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+  proposalId: number,
+): void {
+  const rejected = withStore(deps.dbPath, (store) => store.rejectRuleProposal(repoId, proposalId));
+  if (!rejected) return sendJson(res, 404, { error: NO_PENDING_PROPOSAL });
+  return sendJson(res, 200, { id: proposalId });
 }
 
 /** 规则确认(CONTEXT.md):草案整组生效,生成这个仓库的下一个规则集版本。 */

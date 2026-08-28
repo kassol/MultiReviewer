@@ -440,8 +440,8 @@ test("探索失败原因可见并可重试,运行中不接第二次发起", asyn
   assert.deepEqual(done.draft.map((row) => row.statement), ["重试之后的一条"]);
 });
 
-test("规则集非空时不再走草案:重探索的产出是修订提案,那是后续票的范围", async () => {
-  const agent = scriptedRuleAgent({ items: [item("不该跑到的一条")] });
+test("规则集非空时不再走草案:产出排进修订提案队列(issue #207 的分界)", async () => {
+  const agent = scriptedRuleAgent({ items: [item("探索提的一条")] });
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
   const path = `/repos/${GITEA_REPO.id}`;
   assert.equal(
@@ -453,13 +453,16 @@ test("规则集非空时不再走草案:重探索的产出是修订提案,那是
     201,
   );
 
-  const rejected = await send(h, cookie, "POST", `${path}/rule-exploration`, {
+  const started = await send(h, cookie, "POST", `${path}/rule-exploration`, {
     baseline: h.repo.baseSha,
     provider: "test",
     model: "global-model",
   });
-  assert.equal(rejected.status, 409);
-  assert.equal(agent.calls.length, 0);
+  assert.equal(started.status, 202);
+  await h.explorationsAtLeast(1);
+  assert.equal(agent.calls.length, 1);
+  // 草案一行不动:裁决与队列的形态由 `panel-rule-proposals.test.ts` 验。
+  assert.deepEqual((await ruleSet(h, cookie)).draft, []);
 });
 
 test("没有 rule:write 的人发起不了探索也确认不了,分配外的仓库同形 404", async () => {

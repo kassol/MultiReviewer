@@ -327,6 +327,31 @@ CREATE TABLE IF NOT EXISTS rule_draft_item (
 );
 CREATE INDEX IF NOT EXISTS rule_draft_item_by_repo ON rule_draft_item(repo_id);
 
+-- 修订提案(CONTEXT.md,issue #207)。一条待裁决的规则集变更:change 是变更类型,
+-- target_rule_id 是修改与废止指向的现有规则(新增没有目标),scope / statement / layer
+-- 是提案内容(废止那一档是目标规则当时的原样,只为看得懂队列里这条要废止什么),
+-- source 是出处二元,source_note 放触发它的处置备注(只有处置反哺有,issue #208)。
+--
+-- 与规则草案分表:草案是「还没有规则集时的那一整份」,提案是「已有规则集之上的一条
+-- 变更」,它多出变更类型、目标规则、出处与状态机四样,共用一张表就要给草案留四列空值。
+CREATE TABLE IF NOT EXISTS rule_proposal (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id INTEGER NOT NULL REFERENCES repo(id),
+  change TEXT NOT NULL CHECK (change IN ('add', 'modify', 'retire')),
+  target_rule_id INTEGER,
+  scope TEXT NOT NULL,
+  statement TEXT NOT NULL,
+  layer TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('baseline-exploration', 'disposition-feedback')),
+  source_note TEXT,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'accepted', 'rejected')),
+  created_at TEXT NOT NULL,
+  decided_at TEXT,
+  CHECK ((state = 'pending') = (decided_at IS NULL)),
+  CHECK ((change = 'add') = (target_rule_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS rule_proposal_by_repo ON rule_proposal(repo_id);
+
 
 -- 审查策略,一项一行。reviewers 是全局模型组合,与 repo.reviewers 同构(ReviewerSpec
 -- 的 JSON 数组);max_changed_lines_per_batch 是正整数的字符串形,缺行即取默认值。两项各有
@@ -1116,6 +1141,34 @@ export type RuleDraftItem = ReviewRuleInput & {
   origin: string;
 };
 
+/** 一条修订提案的变更类型(CONTEXT.md 修订提案):新增、修改或废止。 */
+export type RuleProposalChange = "add" | "modify" | "retire";
+
+/**
+ * 一条修订提案的出处(CONTEXT.md 修订提案)。二元:基点探索与处置反哺。反哺那一档由
+ * issue #208 产生,字面量在这里先定好——两条链路要用同一套词。
+ */
+export type RuleProposalSource = "baseline-exploration" | "disposition-feedback";
+
+/** 排进队列的一条修订提案。内容三样与评审规则同形,采纳前人可以改。 */
+export type RuleProposalInput = ReviewRuleInput & {
+  change: RuleProposalChange;
+  /** 修改与废止指向的现有规则;新增没有目标,为 null。 */
+  targetRuleId: number | null;
+  source: RuleProposalSource;
+  /** 出处附注:处置反哺放触发它的处置备注,基点探索没有。 */
+  sourceNote: string | null;
+};
+
+/** 队列里的一条修订提案。`state` 是裁决状态机,裁决过的仍留在队列里供查。 */
+export type RuleProposal = RuleProposalInput & {
+  id: number;
+  state: "pending" | "accepted" | "rejected";
+  createdAt: string;
+  /** 裁决时刻,待裁决时为 null。 */
+  decidedAt: string | null;
+};
+
 /** 一个时间窗里的用量聚合:落了用量的 Review Run 数,加它们的 token 之和。 */
 export type UsageStats = ReviewerUsage & { runs: number };
 
@@ -1544,6 +1597,15 @@ export type Store = {
   ): boolean;
   /** 探索完成:整组覆盖规则草案,那一行改写成已完成。调用方负责截断与去空。 */
   finishRuleExploration(repoId: number, items: readonly ReviewRuleInput[], at: string): void;
+  /**
+   * 探索完成,产出排进修订提案队列(issue #207):规则集已经非空时走这一条,草案一行
+   * 不动。那一行同样改写成已完成。调用方负责截断、去空与变更类型的映射。
+   */
+  finishRuleExplorationAsProposals(
+    repoId: number,
+    proposals: readonly RuleProposalInput[],
+    at: string,
+  ): void;
   /** 探索失败:留下原因,草案保持原样。人看得到原因,并可重新发起。 */
   failRuleExploration(repoId: number, failure: string, at: string): void;
   /**
@@ -1564,6 +1626,26 @@ export type Store = {
    * 新的规则集版本;没有草案可确认时回 undefined,一版都不推进。
    */
   confirmRuleDraft(repoId: number): number | undefined;
+  /** 这个仓库的修订提案队列,按排队先后。待裁决与已裁决的都在里面。 */
+  getRuleProposals(repoId: number): RuleProposal[];
+  /** 排一条修订提案进队列。返回它的 id;仓库不在注册表里回 undefined。 */
+  addRuleProposal(repoId: number, input: RuleProposalInput): number | undefined;
+  /**
+   * 采纳一条待裁决的提案(CONTEXT.md 裁决):推进一版规则集版本,按变更类型落库——
+   * 新增写一行新规则(出处沿用提案的出处)、修改是旧行废止于新版加新内容作为新行、
+   * 废止只让目标那一行停止生效。`input` 有值即人在采纳前改过内容,改后的那一份既落进
+   * 规则集也覆盖队列里这一条(裁决历史要说得出实际采纳的是什么)。
+   *
+   * 返回新的规则集版本。提案不在待裁决队列里、或修改与废止的目标规则已经不生效时回
+   * undefined,一版都不推进。
+   */
+  acceptRuleProposal(
+    repoId: number,
+    proposalId: number,
+    input?: ReviewRuleInput,
+  ): number | undefined;
+  /** 驳回一条待裁决的提案:只改状态,规则集一版都不推进。不在待裁决队列里回 false。 */
+  rejectRuleProposal(repoId: number, proposalId: number): boolean;
   /** 审查策略。历史值和未写过的项都从版本 1 开始。 */
   getGlobalSettings(): GlobalSettings;
   /** 按独立版本改写全局模型组合；陈旧版本或模型服务状态变化返回 false。 */
@@ -2544,6 +2626,40 @@ export function openStore(dbPath: string): Store {
     ).run(repoId, input.scope, input.statement, input.layer, origin, version, at);
   };
 
+  const completeRuleExploration = (repoId: number, at: string): void => {
+    db.prepare(
+      "UPDATE rule_exploration SET state = 'completed', failure = NULL, finished_at = ? WHERE repo_id = ?",
+    ).run(at, repoId);
+  };
+
+  const insertRuleProposal = (repoId: number, input: RuleProposalInput, at: string): number => {
+    const inserted = db
+      .prepare(
+        `INSERT INTO rule_proposal
+           (repo_id, change, target_rule_id, scope, statement, layer, source, source_note,
+            state, created_at, decided_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL)`,
+      )
+      .run(
+        repoId,
+        input.change,
+        input.targetRuleId,
+        input.scope,
+        input.statement,
+        input.layer,
+        input.source,
+        input.sourceNote,
+        at,
+      );
+    return Number(inserted.lastInsertRowid);
+  };
+
+  /** 这条提案还等着裁决吗:是即回它自己,否则回 undefined(裁决过的裁不了第二次)。 */
+  const pendingProposal = (repoId: number, proposalId: number): RuleProposal | undefined =>
+    store
+      .getRuleProposals(repoId)
+      .find((row) => row.id === proposalId && row.state === "pending");
+
   const retireRuleRow = (ruleId: number, version: number): void => {
     db.prepare(
       "UPDATE review_rule SET state = 'retired', retired_version = ? WHERE id = ?",
@@ -2968,6 +3084,7 @@ export function openStore(dbPath: string): Store {
         db.prepare("DELETE FROM rule_set_version WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM rule_exploration WHERE repo_id = ?").run(repoId);
+        db.prepare("DELETE FROM rule_proposal WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM repo WHERE id = ?").run(repoId);
         db.exec("COMMIT");
       } catch (error) {
@@ -3141,9 +3258,20 @@ export function openStore(dbPath: string): Store {
             at,
           );
         }
-        db.prepare(
-          "UPDATE rule_exploration SET state = 'completed', failure = NULL, finished_at = ? WHERE repo_id = ?",
-        ).run(at, repoId);
+        completeRuleExploration(repoId, at);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    finishRuleExplorationAsProposals(repoId, proposals, at) {
+      db.exec("BEGIN");
+      try {
+        // 排进队列而不是覆盖:提案是已有规则集之上的一条变更,人裁决采纳才改变规则集。
+        for (const item of proposals) insertRuleProposal(repoId, item, at);
+        completeRuleExploration(repoId, at);
         db.exec("COMMIT");
       } catch (error) {
         db.exec("ROLLBACK");
@@ -3219,6 +3347,69 @@ export function openStore(dbPath: string): Store {
         db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
         return version;
       });
+    },
+
+    getRuleProposals(repoId) {
+      return db
+        .prepare(
+          `SELECT id, change, target_rule_id, scope, statement, layer, source, source_note,
+                  state, created_at, decided_at
+             FROM rule_proposal WHERE repo_id = ? ORDER BY id`,
+        )
+        .all(repoId)
+        .map((row) => ({
+          id: Number(row["id"]),
+          change: String(row["change"]) as RuleProposalChange,
+          targetRuleId: row["target_rule_id"] === null ? null : Number(row["target_rule_id"]),
+          scope: String(row["scope"]),
+          statement: String(row["statement"]),
+          layer: String(row["layer"]),
+          source: String(row["source"]) as RuleProposalSource,
+          sourceNote: row["source_note"] === null ? null : String(row["source_note"]),
+          state: String(row["state"]) as RuleProposal["state"],
+          createdAt: String(row["created_at"]),
+          decidedAt: row["decided_at"] === null ? null : String(row["decided_at"]),
+        }));
+    },
+
+    addRuleProposal(repoId, input) {
+      if (!repoExists(repoId)) return undefined;
+      return insertRuleProposal(repoId, input, new Date().toISOString());
+    },
+
+    acceptRuleProposal(repoId, proposalId, input) {
+      const queued = pendingProposal(repoId, proposalId);
+      if (queued === undefined) return undefined;
+      const content = input ?? { scope: queued.scope, statement: queued.statement, layer: queued.layer };
+      // 修改与废止都要目标规则此刻仍然生效:它已经被人废止掉时,这条提案落不下去。
+      const targetOrigin =
+        queued.targetRuleId === null ? undefined : activeRuleOrigin(repoId, queued.targetRuleId);
+      if (queued.change !== "add" && targetOrigin === undefined) return undefined;
+      return inRuleSetVersion(repoId, (version, at) => {
+        if (queued.change === "add") {
+          insertReviewRule(repoId, content, queued.source, version, at);
+        } else {
+          retireRuleRow(queued.targetRuleId!, version);
+          // 修改沿用旧行的出处:改文字不改变这条规则当初从哪来(issue #203 同一条口径)。
+          if (queued.change === "modify") {
+            insertReviewRule(repoId, content, targetOrigin!, version, at);
+          }
+        }
+        db.prepare(
+          `UPDATE rule_proposal
+              SET state = 'accepted', scope = ?, statement = ?, layer = ?, decided_at = ?
+            WHERE id = ?`,
+        ).run(content.scope, content.statement, content.layer, at, proposalId);
+        return version;
+      });
+    },
+
+    rejectRuleProposal(repoId, proposalId) {
+      if (pendingProposal(repoId, proposalId) === undefined) return false;
+      db.prepare(
+        "UPDATE rule_proposal SET state = 'rejected', decided_at = ? WHERE id = ?",
+      ).run(new Date().toISOString(), proposalId);
+      return true;
     },
 
     getGlobalSettings() {

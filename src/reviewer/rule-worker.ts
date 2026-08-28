@@ -56,19 +56,41 @@ const ruleSchema = Type.Object({
         "A glob limiting the paths this rule applies to, such as `src/api/**`. Leave it out when the rule applies to the whole repository.",
     }),
   ),
+  rule_id: Type.Optional(
+    Type.Number({
+      description:
+        "The id of the agreed rule this change targets, taken from the list of agreed rules. Leave it out when you propose a rule that is not in that list.",
+    }),
+  ),
+  retire: Type.Optional(
+    Type.Boolean({
+      description:
+        "Set to true together with rule_id to retire that agreed rule instead of restating it. Restate the rule you want retired in the statement field.",
+    }),
+  ),
 });
 
 function send(message: RuleWorkerMessage): void {
   process.send?.(message);
 }
 
-/** 现有规则集。首次探索时是空的,这一段因此不渲染。 */
+/**
+ * 现有规则集。首次探索时是空的,这一段因此不渲染;非空即这一次提的是对照它的变更
+ * (issue #207),条目带上标识,agent 据此指出改哪一条、废止哪一条。
+ */
 function existingSection(rules: readonly ReviewRule[]): string {
   return [
     "",
-    "This repository already agreed on the following rules. Do not repeat them; report only what they do not cover.",
+    "This repository already agreed on the following rules, each with its id:",
     "",
-    ...rules.map((rule) => `- (${rule.scope === "" ? "whole repository" : rule.scope}) ${rule.statement}`),
+    ...rules.map(
+      (rule) => `- [${rule.id}] (${rule.scope === "" ? "whole repository" : rule.scope}) ${rule.statement}`,
+    ),
+    "",
+    "Report changes against that list, not the list itself. Do not restate a rule that still holds as it stands — a rule you do not report stays in force. For each change, call propose_rule once:",
+    "- to reword or narrow an agreed rule, pass its rule_id and the full new statement;",
+    "- to retire an agreed rule the code no longer justifies, pass its rule_id, retire=true and restate that rule;",
+    "- to add a standard the list does not cover, leave rule_id out.",
   ].join("\n");
 }
 
@@ -105,13 +127,21 @@ async function run(request: RuleWorkerRequest): Promise<void> {
     description: "Report one review rule this repository should be judged by.",
     parameters: ruleSchema,
     execute: async (_id, params) => {
-      const raw = params as { statement: string; layer: string; scope?: string };
+      const raw = params as {
+        statement: string;
+        layer: string;
+        scope?: string;
+        rule_id?: number;
+        retire?: boolean;
+      };
       send({
         kind: "rule",
         item: {
           scope: raw.scope ?? "",
           statement: raw.statement,
           layer: raw.layer,
+          ...(raw.rule_id === undefined ? {} : { targetRuleId: raw.rule_id }),
+          ...(raw.retire === true ? { retire: true } : {}),
         },
       });
       return { content: [{ type: "text", text: "recorded" }], details: {} };

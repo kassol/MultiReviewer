@@ -69,6 +69,8 @@ const ROUTE_EXPECTATIONS = [
   ["POST", "/^\\/repos\\/(\\d+)\\/rule-draft\\/confirm$/", "rule:write", "repo:1"],
   ["PUT", "/^\\/repos\\/(\\d+)\\/rule-draft\\/(\\d+)$/", "rule:write", "repo:1"],
   ["DELETE", "/^\\/repos\\/(\\d+)\\/rule-draft\\/(\\d+)$/", "rule:write", "repo:1"],
+  ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/(\\d+)\\/accept$/", "rule:write", "repo:1"],
+  ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/(\\d+)\\/reject$/", "rule:write", "repo:1"],
   ["GET", "/rule-models", "rule:write", "-"],
   ["GET", "/model-services", "anyOf:model:read|credential:read", "-"],
   [

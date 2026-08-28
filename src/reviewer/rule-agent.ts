@@ -34,6 +34,13 @@ export type RuleAgentItem = {
   statement: string;
   /** 自由文本层标签。 */
   layer: string;
+  /**
+   * 这一条针对的现有规则标识(issue #207)。规则集非空时 agent 提的是对照现有规则的
+   * 变更,认得出目标即修改或废止,认不出即新增;规则集为空时恒缺席。
+   */
+  targetRuleId?: number;
+  /** 这一条要废止 `targetRuleId` 那条规则。没有目标的废止不成其为一条变更。 */
+  retire?: boolean;
 };
 
 /** 交给规则 agent 的一次任务。 */
