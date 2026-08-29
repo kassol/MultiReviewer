@@ -20,7 +20,12 @@ import {
   type RuleWorkerMessage,
   type RuleWorkerRequest,
 } from "./rule-agent.ts";
-import { numberedReadTool, prepareAgentRuntime, ruleBullet } from "./worker-tools.ts";
+import {
+  numberedReadTool,
+  prepareAgentRuntime,
+  ruleBullet,
+  sessionThinkingLevel,
+} from "./worker-tools.ts";
 
 /** 只读靠允许清单强制:未列出的工具 Pi 不会注册,模型没有写入的调用路径。 */
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
@@ -169,7 +174,7 @@ async function run(request: RuleWorkerRequest): Promise<void> {
     cwd: request.worktreePath,
     agentDir,
     model,
-    thinkingLevel: "off",
+    thinkingLevel: sessionThinkingLevel(request.runtimeModel.reasoning, request.thinkingLevel),
     modelRuntime,
     tools: [...READ_ONLY_TOOLS, PROPOSE_RULE_TOOL],
     customTools: [proposeRule, numberedReadTool(request.worktreePath)],

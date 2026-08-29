@@ -28,7 +28,7 @@ after(() => {
 });
 
 type SettingsBody = {
-  reviewers: { provider: string; model: string }[];
+  reviewers: { provider: string; model: string; thinkingLevel?: string }[];
   reviewersVersion: number;
   maxChangedLinesPerBatch: number;
   maxChangedLinesPerBatchSource: "default" | "custom";
@@ -468,4 +468,44 @@ test("组合里有撞名的自定义 provider 时,那一个模型的失败原因
     /模型服务.*不存在/,
     "不撞名但缺当前模型服务的那一个没有留下独立原因",
   );
+});
+
+test("思考档位随模型组合与仓库覆盖一起读写,取值不认得时整组拒收", async () => {
+  const h = await startPanelHarness(cleanups);
+  seedAvailableModelService(h, "test", ["global-model", "second-model"]);
+
+  const bad = await putReviewers(h, [
+    { provider: "test", model: "global-model", thinkingLevel: "turbo" },
+  ]);
+  assert.equal(bad.status, 400);
+  assert.match(((await bad.json()) as { error: string }).error, /全局模型组合.*思考档位/);
+
+  const saved = await putReviewers(h, [
+    { provider: "test", model: "global-model", thinkingLevel: "high" },
+    { provider: "test", model: "second-model" },
+  ]);
+  assert.equal(saved.status, 200);
+  const settings = await readSettings(h);
+  assert.equal(settings.reviewers[0]!.thinkingLevel, "high");
+  assert.equal(Object.hasOwn(settings.reviewers[1]!, "thinkingLevel"), false);
+
+  // 每仓库覆盖与全局同构:同一套判据,档位一样存得下。
+  const register = await h.api("POST", "/repos", {
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+  });
+  assert.equal(register.status, 201);
+  const { repoId } = (await register.json()) as { repoId: number };
+  assert.equal(
+    (await h.api("PUT", `/repos/${repoId}/reviewers`, {
+      reviewers: [{ provider: "test", model: "second-model", thinkingLevel: "low" }],
+    })).status,
+    204,
+  );
+  const repos = (await (await h.api("GET", "/repos")).json()) as {
+    repoId: number;
+    reviewers: { thinkingLevel?: string }[] | null;
+  }[];
+  const row = repos.find((entry) => entry.repoId === repoId)!;
+  assert.equal(row.reviewers?.[0]?.thinkingLevel, "low");
 });

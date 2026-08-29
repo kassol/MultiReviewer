@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   assertReviewerSpecs,
   buildReviewers,
+  GLOBAL_REVIEWERS_CONTEXT,
   parseGlobalReviewers,
   type ReviewerRuntimePlan,
   type ReviewerSpec,
@@ -147,4 +148,30 @@ test("库里没写过全局组合时是空数组,写过的按同一套判据校�
   assert.deepEqual(parseGlobalReviewers(null), []);
   assert.deepEqual(parseGlobalReviewers(JSON.stringify(VALID)), VALID);
   assert.deepEqual(parseGlobalReviewers("[]"), []);
+});
+
+test("模型引用可带思考档位:未设即缺席,取值不认得时报错并指认来源", () => {
+  assert.deepEqual(
+    assertReviewerSpecs(
+      [{ provider: "a", model: "m", thinkingLevel: "high" }],
+      GLOBAL_REVIEWERS_CONTEXT,
+    ),
+    [{ provider: "a", model: "m", thinkingLevel: "high" }],
+  );
+  assert.deepEqual(parseGlobalReviewers(null), []);
+  assert.throws(
+    () =>
+      assertReviewerSpecs([{ provider: "a", model: "m", thinkingLevel: "turbo" }], "仓库 7 的模型覆盖"),
+    /仓库 7 的模型覆盖.*思考档位/,
+  );
+});
+
+test("思考档位随模型组合原样读写,未设的那一项读回来仍然没有这个字段", () => {
+  const stored = JSON.stringify([
+    { provider: "a", model: "m", thinkingLevel: "medium" },
+    { provider: "b", model: "m" },
+  ]);
+  const parsed = parseGlobalReviewers(stored);
+  assert.equal(parsed[0]!.thinkingLevel, "medium");
+  assert.equal(Object.hasOwn(parsed[1]!, "thinkingLevel"), false);
 });

@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import type { ThinkingLevel } from "../config.ts";
 import type { ReviewRule } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV } from "./env.ts";
 import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
@@ -71,6 +72,18 @@ export function numberedReadTool(worktreePath: string) {
 export function ruleBullet(rule: ReviewRule): string {
   const scope = rule.scope === "" ? "whole repository" : rule.scope;
   return `- [${rule.id}] (${scope}) ${rule.statement}`;
+}
+
+/**
+ * 这次会话实际用的思考档位。模型不声明推理能力时落回 `off` 照常跑:档位挂在模型引用处,
+ * 而同一处引用可能在模型信息更新后不再声明推理能力——那时该跑的仍然要跑,不是配置错误。
+ */
+export function sessionThinkingLevel(
+  reasoning: boolean,
+  level: ThinkingLevel | undefined,
+): ThinkingLevel {
+  if (!reasoning) return "off";
+  return level ?? "off";
 }
 
 /** 会话跑起来所需的那一套。两个子进程各自的 `createAgentSession` 从这里取。 */

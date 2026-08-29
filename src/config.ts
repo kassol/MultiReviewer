@@ -2,12 +2,32 @@ import type { Reviewer } from "./review/finding.ts";
 import { createPiReviewer } from "./reviewer/pi-reviewer.ts";
 import type { RuntimeModel } from "./reviewer/model-service-runtime.ts";
 
+/**
+ * 思考档位的取值(CONTEXT.md)。与 Pi 的 `ThinkingLevel` 逐字一致:档位最终原样交给
+ * 会话,自己另起一套名字只会在某一天对不上。
+ */
+export const THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
 /** 模型组合的一项。凭据按 provider 查库得到(ADR 0008),这里不带凭据。 */
 export type ReviewerSpec = {
   /** Pi 的 provider 标识。 */
   provider: string;
   /** Pi 的 model 标识。模型标识另取 `modelIdentity`。 */
   model: string;
+  /**
+   * 这一处模型引用的思考档位(CONTEXT.md)。缺席即 `off`,与档位可配之前逐字一致;
+   * 模型不声明推理能力时运行侧静默落回 `off`,不在这里拦。
+   */
+  thinkingLevel?: ThinkingLevel;
 };
 
 /**
@@ -48,6 +68,12 @@ export function assertReviewerSpecs(
       if (typeof fieldValue !== "string" || fieldValue === "") {
         throw new Error(`${context}的第 ${index + 1} 项没有 ${field}。`);
       }
+    }
+    const level = (entry as Record<string, unknown>)["thinkingLevel"];
+    if (level !== undefined && !THINKING_LEVELS.includes(level as ThinkingLevel)) {
+      throw new Error(
+        `${context}的第 ${index + 1} 项的思考档位不认得:${String(level)},只收 ${THINKING_LEVELS.join(" / ")}。`,
+      );
     }
     const identity = modelIdentity(entry as ReviewerSpec);
     if (seen.has(identity)) {
@@ -167,6 +193,8 @@ export function buildReviewers(plans: readonly ReviewerRuntimePlan[]): Reviewer[
     return createPiReviewer({
       runtimeModel: plan.runtimeModel,
       apiKey: plan.credential,
+      // 档位挂在模型引用处:本轮用的是计划冻结下来的那一份,开跑后改设置不影响本轮。
+      ...(plan.spec.thinkingLevel === undefined ? {} : { thinkingLevel: plan.spec.thinkingLevel }),
     });
   });
 }

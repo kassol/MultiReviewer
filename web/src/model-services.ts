@@ -143,3 +143,55 @@ export function parseModelIdentity(identity: string): { provider: string; model:
   const at = identity.indexOf(":");
   return { provider: identity.slice(0, at), model: identity.slice(at + 1) };
 }
+
+/**
+ * 思考档位的取值与展示名(CONTEXT.md)。与服务端 `THINKING_LEVELS` 逐字一致;`off` 与
+ * 不设这个字段同义,控件选回 `off` 即把字段去掉,组合里因此不留一堆等同默认的值。
+ */
+export const THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
+export const THINKING_LEVEL_LABEL: Record<ThinkingLevel, string> = {
+  off: "关闭",
+  minimal: "极简",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "超高",
+  max: "最高",
+};
+
+/** 编辑器里的一处模型引用:模型标识加它自己的思考档位。 */
+export type ModelRef = { identity: string; thinkingLevel?: ThinkingLevel };
+
+/** 后端的一项模型组合 → 编辑器里的一处模型引用。 */
+export function toModelRef(spec: {
+  provider: string;
+  model: string;
+  thinkingLevel?: ThinkingLevel;
+}): ModelRef {
+  return {
+    identity: modelIdentity(spec),
+    ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
+  };
+}
+
+/** 编辑器里的一处模型引用 → 后端的一项模型组合。 */
+export function fromModelRef(ref: ModelRef): {
+  provider: string;
+  model: string;
+  thinkingLevel?: ThinkingLevel;
+} {
+  return {
+    ...parseModelIdentity(ref.identity),
+    ...(ref.thinkingLevel === undefined ? {} : { thinkingLevel: ref.thinkingLevel }),
+  };
+}

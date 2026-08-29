@@ -12,6 +12,11 @@ import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { CommitPicker, type CommitSelection } from "./commit-picker.tsx";
+import {
+  THINKING_LEVEL_LABEL,
+  THINKING_LEVELS,
+  type ThinkingLevel,
+} from "./model-services.ts";
 
 /** `GET /repos/{id}/rules` 的一条评审规则(CONTEXT.md)。`scope` 空串即全仓库。 */
 type ReviewRule = {
@@ -27,6 +32,7 @@ type RuleExploration = {
   state: "running" | "failed" | "completed";
   baselineSha: string;
   model: string;
+  thinkingLevel: ThinkingLevel | null;
   failure: string | null;
   startedAt: string;
   finishedAt: string | null;
@@ -64,7 +70,7 @@ type RuleSet = {
 };
 
 /** `GET /rule-models` 的一项:发起基点探索时可选的模型。 */
-type RuleModel = { identity: string; provider: string; model: string };
+type RuleModel = { identity: string; provider: string; model: string; reasoning: boolean };
 
 /**
  * 表单里编辑中的那条规则:`id` 为 null 即新增,有值即改这一条。生效规则、规则草案与修订
@@ -674,6 +680,9 @@ function ExplorationSection({
         <Text as="p" size="1" color="gray">
           {running ? "正在探索" : exploration.state === "failed" ? "上次探索失败" : "已完成探索"}
           {" · "}基点 <CommitChip sha={exploration.baselineSha} /> · 模型 {exploration.model}
+          {exploration.thinkingLevel === null
+            ? null
+            : ` · 思考 ${THINKING_LEVEL_LABEL[exploration.thinkingLevel]}`}
         </Text>
       )}
 
@@ -799,6 +808,7 @@ function ExplorationLaunchContent({
   const [baseline, setBaseline] = useState<CommitSelection | null>(null);
   const [touched, setTouched] = useState(false);
   const [model, setModel] = useState<string>("");
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>("off");
   const [error, setError] = useState<string | null>(null);
   const query = `owner=${encodeURIComponent(repo.owner)}&repo=${encodeURIComponent(repo.repo)}`;
 
@@ -845,6 +855,8 @@ function ExplorationLaunchContent({
           baseline: baseline?.sha ?? "",
           provider: picked.provider,
           model: picked.model,
+          // 模型不声明推理能力时不带档位:那一档运行侧本来就会落回关闭。
+          ...(picked.reasoning && thinkingLevel !== "off" ? { thinkingLevel } : {}),
         }),
       });
       if (!response.ok) throw new Error(await errorText(response));
@@ -854,6 +866,7 @@ function ExplorationLaunchContent({
   });
 
   const ready = baseline !== null && model !== "";
+  const reasoning = available.find((entry) => entry.identity === model)?.reasoning === true;
 
   return (
     <Dialog.Content
@@ -893,6 +906,32 @@ function ExplorationLaunchContent({
                 ))}
               </Select.Content>
             </Select.Root>
+            <div className="flex items-center gap-1">
+              <Text size="2" weight="medium">思考档位</Text>
+              <HelpTooltip content="档位越高,agent 推导规则前想得越久,这一次探索也越慢越贵。" />
+            </div>
+            {reasoning ? (
+              <Select.Root
+                value={thinkingLevel}
+                onValueChange={(next) => setThinkingLevel(next as ThinkingLevel)}
+                size={{ initial: "3", sm: "2" }}
+              >
+                <Select.Trigger aria-label="思考档位" />
+                <Select.Content position="popper">
+                  {THINKING_LEVELS.map((level) => (
+                    <Select.Item key={level} value={level}>
+                      {THINKING_LEVEL_LABEL[level]}
+                    </Select.Item>
+                  ))}
+                </Select.Content>
+              </Select.Root>
+            ) : (
+              <div>
+                <Badge color="gray" variant="outline">
+                  {model === "" ? "先选模型" : "不支持思考档位"}
+                </Badge>
+              </div>
+            )}
           </div>
         </div>
 

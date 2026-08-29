@@ -9,7 +9,7 @@ import type {
   ReviewerOutcome,
   ReviewerUsage,
 } from "../review/finding.ts";
-import { modelIdentity } from "../config.ts";
+import { modelIdentity, type ThinkingLevel } from "../config.ts";
 import { normalizeFinding, normalizeVerdict } from "./normalize.ts";
 import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
@@ -22,6 +22,8 @@ export type PiReviewerConfig = {
   runtimeModel: RuntimeModel;
   /** 该 Reviewer 绑定厂商的模型凭据。子进程的环境里只会有这一份。 */
   apiKey: string;
+  /** 本轮这一处模型引用的思考档位(CONTEXT.md)。缺席即 `off`。 */
+  thinkingLevel?: ThinkingLevel;
 };
 
 /**
@@ -68,6 +70,7 @@ export async function runInChild(
 
   const request: ReviewerRequest = {
     runtimeModel: config.runtimeModel,
+    ...(config.thinkingLevel === undefined ? {} : { thinkingLevel: config.thinkingLevel }),
     range,
     worktreePath,
     history,

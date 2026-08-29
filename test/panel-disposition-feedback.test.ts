@@ -286,3 +286,40 @@ test("解读失败留原因、不重排,产出为空不产生提案", async () =
   assert.equal(agent.calls.length, 2);
   assert.deepEqual(await proposals(h), []);
 });
+
+test("反哺沿用最近一次探索的思考档位,探索没选档位时反哺也不带", async () => {
+  const agent = scriptedRuleAgent(() => ({ items: [] }));
+  const h = await harnessWithFindings(agent);
+  const findings = await inlineFindings(h);
+
+  const startExploration = (thinkingLevel?: "high"): void => {
+    const store = openStore(h.db.path);
+    try {
+      assert.equal(
+        store.startRuleExploration(GITEA_REPO.id, {
+          baselineSha: h.repo.baseSha,
+          model: "test:global-model",
+          ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+          startedAt: "2026-08-29T00:00:00.000Z",
+        }),
+        true,
+      );
+      // 记录停在运行中就发起不了下一次,这里只关心档位有没有留下来。
+      store.finishRuleExploration(GITEA_REPO.id, [], "2026-08-29T00:00:00.000Z");
+    } finally {
+      store.close();
+    }
+  };
+
+  startExploration("high");
+  assert.equal((await dispose(h, findings[0]!.id, NOTE)).status, 200);
+  await h.dispositionFeedbackAtLeast(1);
+  assert.equal(h.dispositionFeedbacks[0]!.failure, undefined);
+  assert.equal(agent.calls[0]!.thinkingLevel, "high");
+
+  startExploration();
+  assert.equal((await dispose(h, findings[1]!.id, NOTE)).status, 200);
+  await h.dispositionFeedbackAtLeast(2);
+  assert.equal(h.dispositionFeedbacks[1]!.failure, undefined);
+  assert.equal(agent.calls[1]!.thinkingLevel, undefined);
+});

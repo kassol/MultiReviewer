@@ -41,7 +41,13 @@ import {
 import { localMinute } from "@/lib/time";
 
 import { api, errorText, fetchJson } from "./api.ts";
-import { modelIdentity, parseModelIdentity } from "./model-services.ts";
+import {
+  fromModelRef,
+  modelIdentity,
+  toModelRef,
+  type ModelRef,
+  type ThinkingLevel,
+} from "./model-services.ts";
 import { useSetupStatus } from "./setup-checklist.tsx";
 
 /**
@@ -71,7 +77,7 @@ export type WorktreeStatus = {
   checkedAt: string | null;
 };
 
-export type ReviewerSpec = { provider: string; model: string };
+export type ReviewerSpec = { provider: string; model: string; thinkingLevel?: ThinkingLevel };
 
 /** `GET /repos` 的一行。服务端已按最近活动倒序给出,也已按仓库分配收窄。 */
 export type RepoRow = {
@@ -399,11 +405,14 @@ function ConfigureDialogContent({
     onError: (error: Error) => setFeedback({ text: error.message, isError: true }),
   });
 
-  const globalModels = settings.data?.reviewers.map(modelIdentity);
+  const globalModels = settings.data?.reviewers.map(toModelRef);
   const issues = check.data?.issues ?? [];
   const following = repo.reviewers === null;
   // 覆盖存的是 spec,展示要和全局那侧一样是模型标识 `provider:model`。
-  const shownModels = repo.reviewers === null ? globalModels : repo.reviewers.map(modelIdentity);
+  const shownModels =
+    repo.reviewers === null
+      ? globalModels?.map((ref) => ref.identity)
+      : repo.reviewers.map(modelIdentity);
 
   return (
     <Dialog.Content
@@ -617,12 +626,12 @@ function ReviewersEditor({
   onDone,
 }: {
   repo: RepoRow;
-  globalModels: string[];
+  globalModels: ModelRef[];
   onClose: () => void;
   onDone: () => void;
 }) {
-  const [models, setModels] = useState(() =>
-    repo.reviewers === null ? globalModels : repo.reviewers.map(modelIdentity),
+  const [models, setModels] = useState<ModelRef[]>(() =>
+    repo.reviewers === null ? globalModels : repo.reviewers.map(toModelRef),
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -637,7 +646,7 @@ function ReviewersEditor({
     try {
       const response = await api(`/repos/${repo.repoId}/reviewers`, {
         method: "PUT",
-        body: JSON.stringify({ reviewers: models.map(parseModelIdentity) }),
+        body: JSON.stringify({ reviewers: models.map(fromModelRef) }),
       });
       if (!response.ok) {
         setError(await errorText(response));

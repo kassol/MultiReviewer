@@ -7,6 +7,7 @@
  */
 import { fileURLToPath } from "node:url";
 
+import type { ThinkingLevel } from "../config.ts";
 import type { ReviewRule } from "../review/finding.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 import { runWorkerChild } from "./subprocess.ts";
@@ -66,6 +67,11 @@ export type RuleAgentRequest = {
   feedback?: DispositionFeedback;
   /** 本次固定的完整运行模型;不含凭据。 */
   runtimeModel: RuntimeModel;
+  /**
+   * 这一处模型引用的思考档位(CONTEXT.md)。缺席即 `off`;基点探索由发起的人选,处置
+   * 反哺沿用该仓库最近一次探索的那一档。
+   */
+  thinkingLevel?: ThinkingLevel;
   /** 该模型绑定厂商的模型凭据。子进程的环境里只会有这一份。 */
   apiKey: string;
   /**
@@ -112,6 +118,7 @@ export async function runRuleAgentChild(
     baselineSha: request.baselineSha,
     runtimeModel: request.runtimeModel,
     existingRules: request.existingRules,
+    ...(request.thinkingLevel === undefined ? {} : { thinkingLevel: request.thinkingLevel }),
     ...(request.feedback === undefined ? {} : { feedback: request.feedback }),
   };
 

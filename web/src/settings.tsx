@@ -17,10 +17,15 @@ import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
-import { modelIdentity, parseModelIdentity } from "./model-services.ts";
+import {
+  fromModelRef,
+  modelIdentity,
+  toModelRef,
+  type ThinkingLevel,
+} from "./model-services.ts";
 
 type Settings = {
-  reviewers: { provider: string; model: string }[];
+  reviewers: { provider: string; model: string; thinkingLevel?: ThinkingLevel }[];
   reviewersVersion: number;
   maxChangedLinesPerBatch: number;
   maxChangedLinesPerBatchSource: "default" | "custom";
@@ -109,7 +114,7 @@ function ReadOnlySettings({ settings }: { settings: Settings }) {
 function SettingsForm({ settings }: { settings: Settings }) {
   const queryClient = useQueryClient();
   const requestedProvider = new URLSearchParams(window.location.search).get("provider") ?? undefined;
-  const [models, setModels] = useState(() => settings.reviewers.map(modelIdentity));
+  const [models, setModels] = useState(() => settings.reviewers.map(toModelRef));
   const [reviewersVersion, setReviewersVersion] = useState(settings.reviewersVersion);
   const [limit, setLimit] = useState(String(settings.maxChangedLinesPerBatch));
   const [limitSource, setLimitSource] = useState(settings.maxChangedLinesPerBatchSource);
@@ -133,7 +138,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
       const response = await api("/settings", {
         method: "PUT",
         body: JSON.stringify({
-          reviewers: models.map(parseModelIdentity),
+          reviewers: models.map(fromModelRef),
           expectedVersion: reviewersVersion,
         }),
       });
@@ -148,7 +153,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
     },
     onError: (error: Error) => {
       if (error instanceof SettingsConflict) {
-        setModels(error.latest.reviewers.map(modelIdentity));
+        setModels(error.latest.reviewers.map(toModelRef));
         setReviewersVersion(error.latest.reviewersVersion);
         queryClient.setQueryData(["settings"], error.latest);
       }

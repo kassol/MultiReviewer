@@ -26,6 +26,7 @@ import {
   numberedReadTool,
   prepareAgentRuntime,
   ruleBullet,
+  sessionThinkingLevel,
 } from "./worker-tools.ts";
 
 /**
@@ -340,7 +341,7 @@ async function run(request: ReviewerRequest): Promise<void> {
     cwd: request.worktreePath,
     agentDir,
     model,
-    thinkingLevel: "off",
+    thinkingLevel: sessionThinkingLevel(request.runtimeModel.reasoning, request.thinkingLevel),
     modelRuntime,
     // 本阶段没有历史时不注册复核工具:一个无事可复核的工具只会让模型多绕一圈。
     tools: [

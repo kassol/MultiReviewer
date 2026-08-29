@@ -4,7 +4,7 @@
  */
 import { Link } from "@tanstack/react-router";
 import { Cross2Icon } from "@radix-ui/react-icons";
-import { Badge, Card, Checkbox, IconButton, Skeleton, TextField, Tooltip } from "@radix-ui/themes";
+import { Badge, Card, Checkbox, IconButton, Select, Skeleton, TextField, Tooltip } from "@radix-ui/themes";
 import { useEffect, useMemo, useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -19,9 +19,13 @@ import { cn } from "@/lib/utils";
 
 import {
   SOURCE_LABEL,
+  THINKING_LEVEL_LABEL,
+  THINKING_LEVELS,
   useModelServices,
+  type ModelRef,
   type ModelService,
   type ModelServiceModel,
+  type ThinkingLevel,
 } from "../model-services.ts";
 
 const MODELS_SHOWN = 120;
@@ -39,9 +43,9 @@ export type ModelComposerValidity = {
 };
 
 export type ModelComposerProps = {
-  /** 当前模型组合，元素是完整模型标识 `provider:model`。 */
-  value: string[];
-  onChange: (next: string[]) => void;
+  /** 当前模型组合，一项是一处模型引用:完整模型标识加它自己的思考档位。 */
+  value: ModelRef[];
+  onChange: (next: ModelRef[]) => void;
   /** 外部希望优先定位的 provider；省略时优先显示已选模型所属 provider。 */
   provider?: string | undefined;
   /** 调用页只用它门禁本层保存；批次上限等无关写入不得被连坐。 */
@@ -82,9 +86,10 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
   const [pickedProvider, setPickedProvider] = useState<string | null>(null);
   const services = query.data?.services ?? [];
   const candidates = query.data?.candidates ?? [];
+  const picked = useMemo(() => new Set(value.map((ref) => ref.identity)), [value]);
   const visibleCandidates = useMemo(
-    () => candidates.filter((candidate) => candidate.available || value.includes(candidate.identity)),
-    [candidates, value],
+    () => candidates.filter((candidate) => candidate.available || picked.has(candidate.identity)),
+    [candidates, picked],
   );
 
   const candidateByIdentity = useMemo(
@@ -123,14 +128,14 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
       left.provider.localeCompare(right.provider),
     );
   }, [services, visibleCandidates]);
-  const selectedProvider = pickedProvider ?? provider ?? value[0]?.split(":", 1)[0];
+  const selectedProvider = pickedProvider ?? provider ?? value[0]?.identity.split(":", 1)[0];
   const selected = groups.find((group) => group.provider === selectedProvider) ?? groups[0];
 
   const validity = useMemo<ModelComposerValidity>(() => {
     const ready = query.isSuccess && query.data.candidates !== undefined;
     if (!ready) return { ready: false, unavailable: [] };
     const unavailable: UnavailableSelection[] = [];
-    for (const identity of value) {
+    for (const { identity } of value) {
       const candidate = candidateByIdentity.get(identity);
       if (candidate?.available === true) continue;
       unavailable.push({
@@ -145,9 +150,21 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
 
   const toggle = (identity: string): void => {
     onChange(
-      value.includes(identity)
-        ? value.filter((item) => item !== identity)
-        : [...value, identity],
+      picked.has(identity)
+        ? value.filter((item) => item.identity !== identity)
+        : [...value, { identity }],
+    );
+  };
+
+  // 档位挂在这一处引用上,不是模型的属性:同一个模型在全局与某个仓库覆盖里可以各选各的。
+  // 选回「关闭」即把字段去掉,与从没设过等价,组合里因此不留一堆等同默认的值。
+  const setLevel = (identity: string, level: ThinkingLevel): void => {
+    onChange(
+      value.map((item) =>
+        item.identity === identity
+          ? { identity, ...(level === "off" ? {} : { thinkingLevel: level }) }
+          : item,
+      ),
     );
   };
 
@@ -176,7 +193,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
           />
         ) : (
           <div className="grid gap-2 sm:grid-cols-2" aria-label="已选模型" role="list">
-            {value.map((identity) => {
+            {value.map(({ identity, thinkingLevel }) => {
               const candidate = candidateByIdentity.get(identity);
               const reason =
                 candidate?.available === false
@@ -203,6 +220,27 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                         <span className="text-xs text-danger">{reason}</span>
                       )}
                     </div>
+                    {candidate?.runtime.reasoning === false ? (
+                      <Badge color="gray" variant="outline">不支持思考档位</Badge>
+                    ) : candidate === undefined ? null : (
+                      <Select.Root
+                        value={thinkingLevel ?? "off"}
+                        size={{ initial: "2", sm: "1" }}
+                        onValueChange={(next) => setLevel(identity, next as ThinkingLevel)}
+                      >
+                        <Select.Trigger
+                          aria-label={`${identity} 的思考档位`}
+                          className="max-sm:min-h-11"
+                        />
+                        <Select.Content position="popper">
+                          {THINKING_LEVELS.map((level) => (
+                            <Select.Item key={level} value={level}>
+                              思考 {THINKING_LEVEL_LABEL[level]}
+                            </Select.Item>
+                          ))}
+                        </Select.Content>
+                      </Select.Root>
+                    )}
                   </div>
                   <Tooltip content={`移除 ${identity}`}>
                     <IconButton
@@ -301,7 +339,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
             <ProviderPane
               key={selected.provider}
               group={selected}
-              value={value}
+              picked={picked}
               onToggle={toggle}
             />
           )}
@@ -329,11 +367,11 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
 
 function ProviderPane({
   group,
-  value,
+  picked,
   onToggle,
 }: {
   group: ProviderGroup;
-  value: string[];
+  picked: ReadonlySet<string>;
   onToggle: (identity: string) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -398,15 +436,15 @@ function ProviderPane({
           />
         ) : null}
         {models.map((model) => {
-          const picked = value.includes(model.identity);
+          const chosen = picked.has(model.identity);
           return (
             <div
               key={model.identity}
               className={cn(
                 "flex min-w-0 items-start gap-2 border-b border-line px-3 py-2 transition-colors",
                 // 已选行底 = accent tint(§1.4 选中面 0.07),不额外描边——勾选框本身已经表达选中。
-                model.available && picked ? "bg-accent-tint" : null,
-                model.available && !picked ? "hover:bg-sunken" : null,
+                model.available && chosen ? "bg-accent-tint" : null,
+                model.available && !chosen ? "hover:bg-sunken" : null,
                 !model.available ? "bg-danger-tint" : null,
               )}
             >
@@ -417,12 +455,12 @@ function ProviderPane({
                 )}
               >
                 <Checkbox
-                  checked={picked}
+                  checked={chosen}
                   disabled={!model.available}
                   aria-label={`选择 ${model.identity}`}
                   className="mt-0.5 shrink-0"
                   onCheckedChange={(checked) => {
-                    if (typeof checked === "boolean" && checked !== picked) {
+                    if (typeof checked === "boolean" && checked !== chosen) {
                       onToggle(model.identity);
                     }
                   }}

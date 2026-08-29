@@ -34,6 +34,7 @@ type ExplorationResponse = {
   state: "running" | "failed" | "completed";
   baselineSha: string;
   model: string;
+  thinkingLevel: string | null;
   failure: string | null;
   startedAt: string;
   finishedAt: string | null;
@@ -62,13 +63,26 @@ function item(statement: string, layer = "架构", scope = ""): RuleAgentItem {
 /** 固定产出的规则 agent。脚本化实现,与脚本化 Reviewer 同一个位置上的注入。 */
 function scriptedRuleAgent(
   result: { items: RuleAgentItem[]; failure?: string },
-): RuleAgent & { calls: { worktreePath: string; baselineSha: string; model: string }[] } {
-  const calls: { worktreePath: string; baselineSha: string; model: string }[] = [];
+): RuleAgent & {
+  calls: {
+    worktreePath: string;
+    baselineSha: string;
+    model: string;
+    thinkingLevel: string | undefined;
+  }[];
+} {
+  const calls: {
+    worktreePath: string;
+    baselineSha: string;
+    model: string;
+    thinkingLevel: string | undefined;
+  }[] = [];
   const agent = async (request: Parameters<RuleAgent>[0]) => {
     calls.push({
       worktreePath: request.worktreePath,
       baselineSha: request.baselineSha,
       model: `${request.runtimeModel.provider}:${request.runtimeModel.id}`,
+      thinkingLevel: request.thinkingLevel,
     });
     return result;
   };
@@ -526,7 +540,9 @@ test("发起要一个可用模型与一个 commit sha,坏入参一律 400", asyn
   const models = await get(h, cookie, "/rule-models");
   assert.equal(models.status, 200);
   assert.deepEqual((await models.json()) as { models: unknown[] }, {
-    models: [{ identity: "test:global-model", provider: "test", model: "global-model" }],
+    models: [
+      { identity: "test:global-model", provider: "test", model: "global-model", reasoning: false },
+    ],
   });
 });
 
@@ -550,4 +566,62 @@ test("规则集未确认的仓库确认得了空规则集:生成第一版,草案
   } finally {
     store.close();
   }
+});
+
+test("探索记下这一次选的思考档位,没选即留空", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  try {
+    store.registerRepo({ repoId: 75, owner: "acme", repo: "leveled", generation: 1, key: "k" });
+    store.startRuleExploration(75, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
+    assert.equal(store.getRuleExploration(75)?.thinkingLevel, null);
+    store.finishRuleExploration(75, [], AT);
+
+    assert.equal(
+      store.startRuleExploration(75, {
+        baselineSha: "abc1234",
+        model: "test:m",
+        thinkingLevel: "high",
+        startedAt: AT,
+      }),
+      true,
+    );
+    assert.equal(store.getRuleExploration(75)?.thinkingLevel, "high");
+    store.finishRuleExploration(75, [], AT);
+
+    // 重探索不选档位即回到没选:上一次那一档不该悄悄跟着这一次跑。
+    store.startRuleExploration(75, { baselineSha: "def5678", model: "test:m", startedAt: AT });
+    assert.equal(store.getRuleExploration(75)?.thinkingLevel, null);
+  } finally {
+    store.close();
+  }
+});
+
+test("发起探索可同时选思考档位:档位进 agent、落进探索记录,取值不认得时 400", async () => {
+  const agent = scriptedRuleAgent({ items: [item("探索出来的一条")] });
+  const { h, cookie } = await registeredHarness({ ruleAgent: agent });
+  const path = `/repos/${GITEA_REPO.id}/rule-exploration`;
+
+  const bad = await send(h, cookie, "POST", path, {
+    baseline: h.repo.baseSha,
+    provider: "test",
+    model: "global-model",
+    thinkingLevel: "turbo",
+  });
+  assert.equal(bad.status, 400);
+  assert.equal(agent.calls.length, 0);
+
+  const started = await send(h, cookie, "POST", path, {
+    baseline: h.repo.baseSha,
+    provider: "test",
+    model: "global-model",
+    thinkingLevel: "medium",
+  });
+  assert.equal(started.status, 202);
+  await h.explorationsAtLeast(1);
+
+  assert.equal(agent.calls.length, 1);
+  assert.equal(agent.calls[0]!.thinkingLevel, "medium");
+  assert.equal((await ruleSet(h, cookie)).exploration?.thinkingLevel, "medium");
 });

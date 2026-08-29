@@ -11,6 +11,7 @@ import { after, test } from "node:test";
 import type { ReviewerEvent, ReviewerInput } from "../src/review/finding.ts";
 import { runInChild } from "../src/reviewer/pi-reviewer.ts";
 import { runRuleAgentChild } from "../src/reviewer/rule-agent.ts";
+import { sessionThinkingLevel } from "../src/reviewer/worker-tools.ts";
 
 const cleanups: (() => void)[] = [];
 after(() => {
@@ -515,4 +516,54 @@ process.on("message", () => {
   assert.match(result.failure ?? "", /退出码 3/);
   // 已经收到的条目照留:崩溃不该把这一次的产出一起抹掉。
   assert.equal(result.items.length, 1);
+});
+
+test("这一处模型引用的思考档位随任务进子进程,未设即不带这一项", async () => {
+  const path = worker(`
+process.on("message", (request) => {
+  process.send({
+    kind: "finding",
+    raw: {
+      file: "echo",
+      line: 1,
+      severity: "low",
+      category: "design",
+      description: JSON.stringify(request),
+    },
+  });
+  process.send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0 });
+  process.exit(0);
+});
+`);
+
+  const picked = await runInChild(path, { ...CONFIG, thinkingLevel: "high" }, input());
+  assert.equal(JSON.parse(picked.findings[0]!.description).thinkingLevel, "high");
+
+  const plain = await runInChild(path, CONFIG, input());
+  assert.equal(Object.hasOwn(JSON.parse(plain.findings[0]!.description), "thinkingLevel"), false);
+});
+
+test("规则 agent 的思考档位同样原样进子进程", async () => {
+  const path = worker(`
+process.on("message", (request) => {
+  process.send({
+    kind: "rule",
+    item: { scope: "", statement: String(request.thinkingLevel), layer: "架构" },
+  });
+  process.send({ kind: "done" });
+  process.exit(0);
+});
+`);
+
+  const picked = await runRuleAgentChild(path, { ...RULE_REQUEST, thinkingLevel: "low" });
+  assert.equal(picked.items[0]!.statement, "low");
+
+  const plain = await runRuleAgentChild(path, RULE_REQUEST);
+  assert.equal(plain.items[0]!.statement, "undefined");
+});
+
+test("模型不声明推理能力时会话档位落回 off,配了档位也照常跑", () => {
+  assert.equal(sessionThinkingLevel(true, "xhigh"), "xhigh");
+  assert.equal(sessionThinkingLevel(true, undefined), "off");
+  assert.equal(sessionThinkingLevel(false, "xhigh"), "off");
 });

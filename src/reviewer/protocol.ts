@@ -1,3 +1,4 @@
+import type { ThinkingLevel } from "../config.ts";
 import type { RawVerdict, ReviewerEvent, ReviewerInput, ReviewerUsage } from "../review/finding.ts";
 import type { RawFinding } from "./normalize.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
@@ -11,6 +12,8 @@ import type { RuntimeModel } from "./model-service-runtime.ts";
 export type ReviewerRequest = Omit<ReviewerInput, "onEvent"> & {
   /** 本轮固定的完整运行模型；不含凭据。 */
   runtimeModel: RuntimeModel;
+  /** 本轮这一处模型引用的思考档位(CONTEXT.md)。缺席即 `off`。 */
+  thinkingLevel?: ThinkingLevel;
 };
 
 /**

@@ -12,6 +12,7 @@ import {
   modelIdentity,
   type ReviewerSpec,
   type ReviewRunReviewerPin,
+  type ThinkingLevel,
 } from "../config.ts";
 import type { LineAuthor } from "../git/worktree.ts";
 import { isPanelPermission, type PanelPermission } from "../panel/permissions.ts";
@@ -301,10 +302,13 @@ CREATE INDEX IF NOT EXISTS review_rule_by_repo ON review_rule(repo_id);
 --
 -- model 是这次探索所用的模型标识,它同时是「这个仓库最近一次探索用的是什么模型」那份
 -- 记录:规则确认清空草案时不动这一行,处置反哺据它沿用同一个模型(issue #208)。
+-- thinking_level 同理是那一次选的思考档位(NULL 即没选,等同 off),反哺一并沿用
+-- (issue #213)。
 CREATE TABLE IF NOT EXISTS rule_exploration (
   repo_id INTEGER PRIMARY KEY REFERENCES repo(id),
   baseline_sha TEXT NOT NULL,
   model TEXT NOT NULL,
+  thinking_level TEXT,
   state TEXT NOT NULL CHECK (state IN ('running', 'failed', 'completed')),
   failure TEXT,
   started_at TEXT NOT NULL,
@@ -548,6 +552,7 @@ const ADD_COLUMNS = [
   "ALTER TABLE finding ADD COLUMN rule_id INTEGER",
   "ALTER TABLE model_directory_model ADD COLUMN thinking_level_map_json TEXT",
   "ALTER TABLE model_directory_model ADD COLUMN compat_json TEXT",
+  "ALTER TABLE rule_exploration ADD COLUMN thinking_level TEXT",
 ];
 
 /**
@@ -1148,11 +1153,13 @@ export type ReviewRuleInput = {
 /**
  * 一个仓库最近一次基点探索(CONTEXT.md,issue #205)。每仓库至多一次,重新探索覆盖它。
  * `model` 是那次所用的模型标识,规则确认之后仍留着——处置反哺沿用它(issue #208)。
+ * `thinkingLevel` 是那次选的思考档位,null 即没选(等同 off),反哺一并沿用(issue #213)。
  */
 export type RuleExploration = {
   state: "running" | "failed" | "completed";
   baselineSha: string;
   model: string;
+  thinkingLevel: ThinkingLevel | null;
   /** 失败原因,只有 `failed` 那一档有值。人据此知道发生了什么,并可重试。 */
   failure: string | null;
   startedAt: string;
@@ -1617,7 +1624,13 @@ export type Store = {
    */
   startRuleExploration(
     repoId: number,
-    run: { baselineSha: string; model: string; startedAt: string },
+    run: {
+      baselineSha: string;
+      model: string;
+      /** 这一次选的思考档位(CONTEXT.md)。缺席即没选,等同 off。 */
+      thinkingLevel?: ThinkingLevel;
+      startedAt: string;
+    },
   ): boolean;
   /** 探索完成:整组覆盖规则草案,那一行改写成已完成。调用方负责截断与去空。 */
   finishRuleExploration(repoId: number, items: readonly ReviewRuleInput[], at: string): void;
@@ -3226,17 +3239,22 @@ export function openStore(dbPath: string): Store {
     getRuleExploration(repoId) {
       const row = db
         .prepare(
-          `SELECT baseline_sha, model, state, failure, started_at, finished_at
+          `SELECT baseline_sha, model, thinking_level, state, failure, started_at, finished_at
              FROM rule_exploration WHERE repo_id = ?`,
         )
         .get(repoId);
       if (row === undefined) return null;
       const failure = row["failure"];
       const finishedAt = row["finished_at"];
+      const thinkingLevel = row["thinking_level"];
       return {
         state: String(row["state"]) as RuleExploration["state"],
         baselineSha: String(row["baseline_sha"]),
         model: String(row["model"]),
+        thinkingLevel:
+          thinkingLevel === null || thinkingLevel === undefined
+            ? null
+            : (String(thinkingLevel) as ThinkingLevel),
         failure: failure === null || failure === undefined ? null : String(failure),
         startedAt: String(row["started_at"]),
         finishedAt: finishedAt === null || finishedAt === undefined ? null : String(finishedAt),
@@ -3251,16 +3269,17 @@ export function openStore(dbPath: string): Store {
       if (running !== undefined) return false;
       db.prepare(
         `INSERT INTO rule_exploration
-           (repo_id, baseline_sha, model, state, failure, started_at, finished_at)
-         VALUES (?, ?, ?, 'running', NULL, ?, NULL)
+           (repo_id, baseline_sha, model, thinking_level, state, failure, started_at, finished_at)
+         VALUES (?, ?, ?, ?, 'running', NULL, ?, NULL)
          ON CONFLICT(repo_id) DO UPDATE SET
            baseline_sha = excluded.baseline_sha,
            model = excluded.model,
+           thinking_level = excluded.thinking_level,
            state = 'running',
            failure = NULL,
            started_at = excluded.started_at,
            finished_at = NULL`,
-      ).run(repoId, run.baselineSha, run.model, run.startedAt);
+      ).run(repoId, run.baselineSha, run.model, run.thinkingLevel ?? null, run.startedAt);
       return true;
     },
 

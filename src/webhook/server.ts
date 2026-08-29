@@ -25,6 +25,8 @@ import {
   type ModelServiceTarget,
   type ReviewerRuntimePlan,
   type ReviewerSpec,
+  THINKING_LEVELS,
+  type ThinkingLevel,
 } from "../config.ts";
 import type { CloneCredentials, Forge, PullRequestRef, RepoRef } from "../forge/forge.ts";
 import {
@@ -6035,6 +6037,8 @@ async function handleRuleModels(res: ServerResponse, deps: WebhookServerDeps): P
         identity: candidate.identity,
         provider: candidate.provider,
         model: candidate.id,
+        // 思考档位只对声明了推理能力的模型有效,发起表单据此决定档位控件给不给点。
+        reasoning: candidate.runtime.reasoning,
       })),
   });
 }
@@ -6141,6 +6145,7 @@ async function runRuleExplorationInBackground(
       runtimeModel: plan.runtimeModel,
       apiKey: plan.credential,
       existingRules: existingRules.map(toReviewRule),
+      ...(plan.spec.thinkingLevel === undefined ? {} : { thinkingLevel: plan.spec.thinkingLevel }),
     });
     if (result.failure !== undefined) throw new Error(result.failure);
     const items = usableRuleItems(result.items);
@@ -6189,10 +6194,18 @@ async function runRuleExplorationInBackground(
  * 模型标识回到 spec。`modelIdentity` 以首次出现的冒号为界(部分 model id 自带斜杠),
  * 这里按同一条口径切回去:基点探索只记下标识,反哺沿用它时要还原成运行计划的输入。
  */
-function specFromIdentity(identity: string): ReviewerSpec | undefined {
+function specFromIdentity(
+  identity: string,
+  thinkingLevel: ThinkingLevel | null,
+): ReviewerSpec | undefined {
   const colon = identity.indexOf(":");
   if (colon <= 0 || colon === identity.length - 1) return undefined;
-  return { provider: identity.slice(0, colon), model: identity.slice(colon + 1) };
+  return {
+    provider: identity.slice(0, colon),
+    model: identity.slice(colon + 1),
+    // 沿用那一次探索选的思考档位:反哺解读的是同一个仓库的同一类判断。
+    ...(thinkingLevel === null ? {} : { thinkingLevel }),
+  };
 }
 
 /**
@@ -6224,7 +6237,10 @@ async function runDispositionFeedbackInBackground(
       return {
         repoId: row.repoId,
         rules: store.getRuleSet(row.repoId)?.rules ?? [],
-        explored: exploration === null ? undefined : specFromIdentity(exploration.model),
+        explored:
+          exploration === null
+            ? undefined
+            : specFromIdentity(exploration.model, exploration.thinkingLevel),
       };
     });
     if (context === undefined) throw new Error("这个仓库不在注册表里");
@@ -6261,6 +6277,7 @@ async function runDispositionFeedbackInBackground(
       runtimeModel: plan.runtimeModel,
       apiKey: plan.credential,
       existingRules: context.rules.map(toReviewRule),
+      ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
       feedback: {
         note,
         finding: {
@@ -6309,7 +6326,7 @@ async function handleStartRuleExploration(
   const body = await readBody(req, res);
   if (body === undefined) return;
   const payload = safeParse(body) as
-    | { baseline?: unknown; provider?: unknown; model?: unknown }
+    | { baseline?: unknown; provider?: unknown; model?: unknown; thinkingLevel?: unknown }
     | null;
   if (
     payload === null ||
@@ -6324,7 +6341,18 @@ async function handleStartRuleExploration(
   if (!COMMIT_SHA.test(payload.baseline)) {
     return sendJson(res, 400, { error: "基点要是 7 到 40 位的 commit sha" });
   }
-  const spec: ReviewerSpec = { provider: payload.provider, model: payload.model };
+  // 档位与模型组合那一侧同一套取值(CONTEXT.md 思考档位),不另起判据。
+  const level = payload.thinkingLevel;
+  if (level !== undefined && !THINKING_LEVELS.includes(level as ThinkingLevel)) {
+    return sendJson(res, 400, {
+      error: `思考档位不认得:${String(level)},只收 ${THINKING_LEVELS.join(" / ")}。`,
+    });
+  }
+  const spec: ReviewerSpec = {
+    provider: payload.provider,
+    model: payload.model,
+    ...(level === undefined ? {} : { thinkingLevel: level as ThinkingLevel }),
+  };
 
   const repo = withStore(deps.dbPath, (store) => store.getRepo(repoId));
   if (repo === undefined) {
@@ -6346,6 +6374,7 @@ async function handleStartRuleExploration(
     store.startRuleExploration(repoId, {
       baselineSha: payload.baseline as string,
       model: modelIdentity(spec),
+      ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
       startedAt: new Date((deps.now ?? Date.now)()).toISOString(),
     }),
   );
