@@ -173,45 +173,6 @@ async function ruleWriterCookie(
   return cookie;
 }
 
-test("升级前注册的仓库开库后成为已确认空规则集,之后新注册的不跟着补", () => {
-  const db = makeDbPath();
-  cleanups.push(db.cleanup);
-
-  // 升级前的库:注册表里有行,规则集版本表这个功能才建,还不存在。
-  const before = openStore(db.path);
-  before.close();
-  const raw = new DatabaseSync(db.path);
-  raw.prepare("INSERT INTO repo (id, owner, repo, registered_at) VALUES (?, ?, ?, ?)").run(
-    77,
-    "acme",
-    "legacy",
-    "2026-01-01T00:00:00.000Z",
-  );
-  raw.exec("DROP TABLE rule_set_version");
-  raw.close();
-
-  // 升级:建表那一次跑存量迁移。
-  const after = openStore(db.path);
-  try {
-    assert.deepEqual(after.getRuleSet(77), { version: 1, rules: [], retired: [] });
-    assert.equal(
-      after.registerRepo({ repoId: 78, owner: "acme", repo: "fresh", generation: 1, key: "k" }),
-      true,
-    );
-  } finally {
-    after.close();
-  }
-
-  // 分代:迁移不再跑第二遍,升级之后新注册的仓库仍然是「规则集未确认」。
-  const again = openStore(db.path);
-  try {
-    assert.equal(again.getRuleSet(77)?.version, 1);
-    assert.equal(again.getRuleSet(78)?.version, null);
-  } finally {
-    again.close();
-  }
-});
-
 test("新注册的仓库规则集未确认,移除仓库连规则一起摘掉", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);

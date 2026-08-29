@@ -2,8 +2,7 @@
  * 进程入口。读环境变量建出 Forge,起 webhook 服务。模型组合与批次上限在库里,
  * 由面板的设置页管(issue #66)。
  */
-import { readFileSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { buildReviewers } from "./config.ts";
 
 import {
@@ -13,12 +12,6 @@ import {
 } from "./forge/gitea.ts";
 import { createGitHubForge, type GitHubAuth } from "./forge/github.ts";
 import { CREDENTIAL_MASTER_KEY_ENV } from "./panel/credential-crypto.ts";
-import {
-  acknowledgeModelServiceMigration,
-  migrateModelServiceDatabase,
-  type ModelServiceMigrationSummary,
-} from "./review/model-service-migration.ts";
-import { listPiBuiltinProviders } from "./reviewer/catalog.ts";
 import { createWebhookServer } from "./webhook/server.ts";
 
 const DEFAULT_PORT = 3000;
@@ -118,23 +111,6 @@ if (gitea === undefined && github === undefined) {
 // 条链路都是哑的,而这要等到第一次有人处置 Finding 才会显形——宁可起不来。
 if (gitea !== undefined) await assertSupportedVersion(gitea);
 
-let pendingMigrationSummary: ModelServiceMigrationSummary | undefined;
-const migration = await migrateModelServiceDatabase({
-  dbPath,
-  ...(process.env[CREDENTIAL_MASTER_KEY_ENV] === undefined
-    ? {}
-    : { credentialMasterKey: process.env[CREDENTIAL_MASTER_KEY_ENV] }),
-  builtinProviderNames: new Set(
-    (await listPiBuiltinProviders()).map((provider) => provider.id),
-  ),
-});
-if (migration.status === "migrated" || migration.status === "projection-pending") {
-  const projectionDir = join(resolve(cacheDir), "pi-models");
-  rmSync(join(projectionDir, "models.json"), { force: true });
-  rmSync(join(projectionDir, "models-store.json"), { force: true });
-  pendingMigrationSummary = migration.summary;
-}
-
 const server = createWebhookServer({
   forges: {
     ...(github === undefined ? {} : { github: createGitHubForge({ auth: github }) }),
@@ -161,9 +137,5 @@ const server = createWebhookServer({
 });
 
 server.listen(port, () => {
-  if (pendingMigrationSummary !== undefined) {
-    console.log(JSON.stringify({ event: "model-service-migration", summary: pendingMigrationSummary }));
-    acknowledgeModelServiceMigration(dbPath);
-  }
   console.log(`MultiReviewer webhook 监听 ${port}`);
 });

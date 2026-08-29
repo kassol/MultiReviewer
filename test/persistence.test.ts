@@ -62,40 +62,6 @@ function query(dbPath: string, sql: string): Record<string, unknown>[] {
   }
 }
 
-test("打开数据库修复已关闭 PR 的空状态新轮次,重开后的空状态保持不变", () => {
-  const db = makeDbPath();
-  cleanups.push(db.cleanup);
-  openStore(db.path).close();
-
-  const seeded = new DatabaseSync(db.path);
-  const insert = seeded.prepare(
-    `INSERT INTO review_run
-       (owner, repo, pull_number, head_sha, pr_state, started_at,
-        changed_files, changed_lines, batch_count)
-     VALUES ('acme', 'widgets', 7, ?, ?, ?, 1, 1, 1)`,
-  );
-  insert.run("sha-closed", "closed", "2026-08-01T00:00:00.000Z");
-  insert.run("sha-rerun", null, "2026-08-02T00:00:00.000Z");
-  seeded.close();
-
-  const repaired = openStore(db.path);
-  assert.equal(repaired.listStages({ offset: 0, limit: 30 })[0]?.status, "closed");
-  assert.deepEqual(
-    query(db.path, "SELECT pr_state FROM review_run ORDER BY id").map((row) => row["pr_state"]),
-    ["closed", "closed"],
-  );
-
-  repaired.markPullRequestState("acme", "widgets", 7, null);
-  repaired.close();
-  const reopened = openStore(db.path);
-  assert.equal(reopened.listStages({ offset: 0, limit: 30 })[0]?.status, "active");
-  assert.deepEqual(
-    query(db.path, "SELECT pr_state FROM review_run ORDER BY id").map((row) => row["pr_state"]),
-    [null, null],
-  );
-  reopened.close();
-});
-
 test("历史审查策略进入独立初始版本，写一项只推进该项版本", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
@@ -449,139 +415,6 @@ test("升级前建的数据库仍能打开,锚定打回列补在既有表上", a
   assert.equal(rows[0]!["anchor_rejections"], 4);
 });
 
-test("升级删掉费用列,token 五列与历史数字仍在", () => {
-  const db = makeDbPath();
-  cleanups.push(db.cleanup);
-  const old = new DatabaseSync(db.path);
-  old.exec(`CREATE TABLE review_run (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner TEXT NOT NULL,
-    repo TEXT NOT NULL,
-    pull_number INTEGER NOT NULL,
-    head_sha TEXT NOT NULL,
-    started_at TEXT NOT NULL,
-    finished_at TEXT,
-    duration_ms INTEGER,
-    changed_files INTEGER NOT NULL,
-    changed_lines INTEGER NOT NULL,
-    batch_count INTEGER NOT NULL,
-    failed INTEGER,
-    input_tokens INTEGER,
-    output_tokens INTEGER,
-    cache_read_tokens INTEGER,
-    cache_write_tokens INTEGER,
-    total_tokens INTEGER,
-    cost_usd REAL,
-    known_cost_usd REAL,
-    cost_source TEXT,
-    unknown_cost_reviewer_count INTEGER
-  );
-  CREATE TABLE reviewer_outcome (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id INTEGER NOT NULL REFERENCES review_run(id),
-    model TEXT NOT NULL,
-    failure TEXT,
-    finding_count INTEGER NOT NULL,
-    anomaly_count INTEGER NOT NULL,
-    rejected_tool_calls INTEGER NOT NULL,
-    anchor_rejections INTEGER NOT NULL DEFAULT 0,
-    duration_ms INTEGER NOT NULL,
-    input_tokens INTEGER,
-    output_tokens INTEGER,
-    cache_read_tokens INTEGER,
-    cache_write_tokens INTEGER,
-    total_tokens INTEGER,
-    cost_usd REAL,
-    known_cost_usd REAL,
-    cost_source TEXT
-  );
-  CREATE TABLE model_directory_model (
-    provider TEXT NOT NULL,
-    model TEXT NOT NULL CHECK (model <> ''),
-    service_version INTEGER NOT NULL CHECK (service_version > 0),
-    name TEXT,
-    api TEXT,
-    base_url TEXT,
-    input_json TEXT,
-    reasoning INTEGER CHECK (reasoning IS NULL OR reasoning IN (0, 1)),
-    cost_json TEXT,
-    context_window INTEGER,
-    max_tokens INTEGER,
-    field_sources_json TEXT,
-    PRIMARY KEY (provider, model)
-  )`);
-  const oldRun = old.prepare(
-    `INSERT INTO review_run
-       (owner, repo, pull_number, head_sha, started_at, changed_files, changed_lines, batch_count,
-        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens,
-        cost_usd, known_cost_usd, cost_source, unknown_cost_reviewer_count)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run("acme", "widgets", 7, "old-sha", "2026-08-01T00:00:00.000Z", 1, 2, 1,
-    8, 2, 3, 1, 14, 0.0042, 0.0042, "trusted", 0);
-  old.prepare(
-    `INSERT INTO reviewer_outcome
-       (run_id, model, finding_count, anomaly_count, rejected_tool_calls, duration_ms,
-        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens,
-        cost_usd, known_cost_usd, cost_source)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(Number(oldRun.lastInsertRowid), "legacy-model", 0, 0, 0, 1, 8, 2, 3, 1, 14, 0.0042, 0.0042, "trusted");
-  old.prepare(
-    `INSERT INTO model_directory_model
-       (provider, model, service_version, name, cost_json, context_window)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run("deepseek", "deepseek-v4-flash", 1, "DeepSeek V4 Flash", '{"input":1}', 128000);
-  old.exec("PRAGMA user_version = 1");
-  old.close();
-
-  const store = openStore(db.path);
-  store.close();
-
-  const columns = (table: string): string[] =>
-    query(db.path, `PRAGMA table_info(${table})`).map((row) => String(row["name"]));
-  for (const column of ["cost_usd", "known_cost_usd", "cost_source", "unknown_cost_reviewer_count"]) {
-    assert.equal(columns("review_run").includes(column), false, `review_run 仍有 ${column}`);
-  }
-  for (const column of ["cost_usd", "known_cost_usd", "cost_source"]) {
-    assert.equal(columns("reviewer_outcome").includes(column), false, `reviewer_outcome 仍有 ${column}`);
-  }
-  assert.equal(columns("model_directory_model").includes("cost_json"), false);
-
-  // token 五列与它们的数字都要留下:用量是运行诊断信息,与计费无关。
-  const tokenColumns = [
-    "input_tokens",
-    "output_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
-    "total_tokens",
-  ];
-  for (const column of tokenColumns) {
-    assert.equal(columns("review_run").includes(column), true);
-    assert.equal(columns("reviewer_outcome").includes(column), true);
-  }
-
-  const reopened = openStore(db.path);
-  const run = reopened.listRuns({ limit: 10 })[0]!;
-  assert.deepEqual(run.usage, {
-    inputTokens: 8,
-    outputTokens: 2,
-    cacheReadTokens: 3,
-    cacheWriteTokens: 1,
-    totalTokens: 14,
-  });
-  assert.deepEqual(run.models[0]!.usage, {
-    inputTokens: 8,
-    outputTokens: 2,
-    cacheReadTokens: 3,
-    cacheWriteTokens: 1,
-    totalTokens: 14,
-  });
-  reopened.close();
-
-  const model = query(db.path, "SELECT * FROM model_directory_model")[0]!;
-  assert.equal(model["name"], "DeepSeek V4 Flash");
-  assert.equal(model["context_window"], 128000);
-});
-
 test("升级前的 review_run 补 triggered_by 与 title,历史行按投递读且标题为空", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
@@ -783,7 +616,6 @@ test("升级前的 finding 补评论 id 与链接两列,历史行两项为空", 
   old.exec(`CREATE TABLE finding (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id INTEGER NOT NULL REFERENCES review_run(id),
-    model TEXT NOT NULL,
     file TEXT NOT NULL,
     line INTEGER NOT NULL,
     severity TEXT NOT NULL,
@@ -917,7 +749,6 @@ test("升级前落的 finding 行读得出来,评论 id 与链接为空", () => 
   CREATE TABLE finding (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id INTEGER NOT NULL REFERENCES review_run(id),
-    model TEXT NOT NULL,
     file TEXT NOT NULL,
     line INTEGER NOT NULL,
     severity TEXT NOT NULL,
@@ -935,20 +766,21 @@ test("升级前落的 finding 行读得出来,评论 id 与链接为空", () => 
   ).run("acme", "widgets", 7, "old-sha", "2026-08-01T00:00:00.000Z", 1, 2, 1);
   old.prepare(
     `INSERT INTO finding
-       (run_id, model, file, line, severity, category, description, group_index)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(Number(oldRun.lastInsertRowid), "legacy", "src/calc.js", 6, "P0", "bug", "旧行", 0);
+       (run_id, file, line, severity, category, description, group_index)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(Number(oldRun.lastInsertRowid), "src/calc.js", 6, "P0", "bug", "旧行", 0);
   old.exec("PRAGMA user_version = 1");
   old.close();
 
   const store = openStore(db.path);
   const run = store.listRuns({ limit: 10 })[0]!;
   store.close();
-  // 升级前的表连处置人、处置时间、处置备注与「延续自」几列都没有,补列之后旧行全是空。
+  // 升级前的表连处置人、处置时间、处置备注与「延续自」几列都没有,补列之后旧行全是空;
+  // 归属表那时也还没有,旧行读出来一个模型都不挂。
   assert.deepEqual(run.findings, [
     {
       id: run.findings[0]!.id,
-      models: ["legacy"],
+      models: [],
       file: "src/calc.js",
       line: 6,
       severity: "P0",
@@ -966,10 +798,7 @@ test("升级前落的 finding 行读得出来,评论 id 与链接为空", () => 
   ]);
 });
 
-/**
- * 升级到新的 Finding Identity(issue #164、ADR 0015)。旧库一模型一行,新库一条 Finding
- * 加多条归属;`changed` 只换名成 `fixed`,判据不变。
- */
+/** 升级前的一份库结构:`review_trace` 那张表还不存在。 */
 const LEGACY_SCHEMA = `CREATE TABLE review_run (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
@@ -993,7 +822,6 @@ const LEGACY_SCHEMA = `CREATE TABLE review_run (
   CREATE TABLE finding (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id INTEGER NOT NULL REFERENCES review_run(id),
-    model TEXT NOT NULL,
     file TEXT NOT NULL,
     line INTEGER NOT NULL,
     severity TEXT NOT NULL,
@@ -1004,97 +832,3 @@ const LEGACY_SCHEMA = `CREATE TABLE review_run (
     disposition TEXT NOT NULL DEFAULT 'unknown',
     placement TEXT NOT NULL DEFAULT 'inline'
   )`;
-
-/** 一个升级前的库:一轮 Review Run,同一处两个模型各一行,另一处记着「已改动」。 */
-function seedLegacyDb(dbPath: string): void {
-  const old = new DatabaseSync(dbPath);
-  old.exec(LEGACY_SCHEMA);
-  const runId = Number(
-    old
-      .prepare(
-        `INSERT INTO review_run
-           (owner, repo, pull_number, head_sha, started_at, changed_files, changed_lines, batch_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run("acme", "widgets", 7, "old-sha", "2026-08-01T00:00:00.000Z", 1, 2, 1).lastInsertRowid,
-  );
-  const insert = old.prepare(
-    `INSERT INTO finding
-       (run_id, model, file, line, severity, category, description, fingerprint,
-        group_index, disposition)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  // 同一处(同文件同指纹)两行:首报 model-a 记 P1/design,model-b 记 P0/security。
-  insert.run(runId, "model-a", "src/calc.js", 6, "P1", "design", "旧的 a", "fp-1", 0, "unknown");
-  insert.run(runId, "model-b", "src/calc.js", 7, "P0", "security", "旧的 b", "fp-1", 0, "unknown");
-  // 另一处只有一个模型,处置值是旧字面量。
-  insert.run(runId, "model-a", "src/calc.js", 20, "P2", "bug", "旧的 c", "fp-2", 1, "changed");
-  old.exec("PRAGMA user_version = 1");
-  old.close();
-}
-
-test("升级:同轮同键的多行合成一条加多条归属,归属模型保留,changed 改名 fixed", () => {
-  const db = makeDbPath();
-  cleanups.push(db.cleanup);
-  seedLegacyDb(db.path);
-
-  const store = openStore(db.path);
-  const run = store.listRuns({ limit: 10 })[0]!;
-  store.close();
-
-  assert.equal(run.findings.length, 2, "同一处的两行该合成一条 Finding");
-  const merged = run.findings.find((f) => f.line === 6)!;
-  // 归属两条都在,模型原样保留(历史统计不断裂)。
-  assert.deepEqual(merged.models, ["model-a", "model-b"]);
-  // 严重度取最高,分类取首报,代表段取严重度最高那条。
-  assert.equal(merged.severity, "P0");
-  assert.equal(merged.category, "design");
-  assert.equal(merged.description, "旧的 b");
-
-  const auto = run.findings.find((f) => f.line === 20)!;
-  assert.equal(auto.disposition, "fixed", "旧的 changed 该改名成 fixed");
-  assert.deepEqual(auto.models, ["model-a"]);
-
-  // model 列没了:Finding Identity 不含模型,归属在 finding_attribution 上。
-  assert.deepEqual(
-    query(db.path, "PRAGMA table_info(finding)").map((row) => row["name"]).includes("model"),
-    false,
-  );
-  assert.equal(query(db.path, "SELECT * FROM finding_attribution").length, 3);
-});
-
-test("升级中途失败:整笔回滚,旧库原样留着", () => {
-  const db = makeDbPath();
-  cleanups.push(db.cleanup);
-  seedLegacyDb(db.path);
-  // 人为制造一次中途失败:归属表里先占住 (finding_id, position),迁移的插入撞主键。
-  const seeded = new DatabaseSync(db.path);
-  seeded.exec(`CREATE TABLE finding_attribution (
-    finding_id INTEGER NOT NULL,
-    position INTEGER NOT NULL,
-    model TEXT NOT NULL,
-    severity TEXT NOT NULL,
-    category TEXT NOT NULL,
-    description TEXT NOT NULL,
-    PRIMARY KEY (finding_id, position),
-    UNIQUE (finding_id, model)
-  )`);
-  seeded
-    .prepare(
-      `INSERT INTO finding_attribution
-         (finding_id, position, model, severity, category, description)
-       VALUES (1, 0, '占位', 'P0', 'bug', '占位')`,
-    )
-    .run();
-  seeded.close();
-
-  assert.throws(() => openStore(db.path));
-
-  // 三行一条不少,model 列还在,旧字面量也没被改写:下次启动从原样重来。
-  const rows = query(db.path, "SELECT model, disposition FROM finding ORDER BY id");
-  assert.deepEqual(
-    rows.map((row) => row["model"]),
-    ["model-a", "model-b", "model-a"],
-  );
-  assert.equal(rows[2]!["disposition"], "changed");
-});

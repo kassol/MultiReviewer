@@ -89,6 +89,7 @@ import {
 } from "../review/run.ts";
 import {
   CUSTOM_PROVIDER_NAME_PATTERN,
+  modelServiceTargetFingerprint,
   openStore,
   toReviewRule,
   type FindingDispositionTarget,
@@ -106,7 +107,6 @@ import {
   type StageScope,
   type Store,
 } from "../review/store.ts";
-import { modelServiceTargetFingerprint } from "../review/model-service-migration.ts";
 import {
   ruleChannel,
   runChannel,

@@ -7,12 +7,12 @@ import { decryptCredential, encryptCredential } from "../src/panel/credential-cr
 import { hashPassword } from "../src/panel/password.ts";
 import type { PanelPermission } from "../src/panel/permissions.ts";
 import {
+  modelServiceTargetFingerprint,
   openStore,
   type ModelReference,
   type ModelReferenceLocation,
   type ModelServiceVersionCommit,
 } from "../src/review/store.ts";
-import { modelServiceTargetFingerprint } from "../src/review/model-service-migration.ts";
 import {
   PANEL_CREDENTIAL_MASTER_KEY,
   PANEL_PREFIX,

@@ -4,8 +4,7 @@ import { after, test } from "node:test";
 import { buildReviewers, modelIdentity } from "../src/config.ts";
 import { encryptCredential } from "../src/panel/credential-crypto.ts";
 import type { ReviewerOutcome } from "../src/review/finding.ts";
-import { modelServiceTargetFingerprint } from "../src/review/model-service-migration.ts";
-import { openStore } from "../src/review/store.ts";
+import { modelServiceTargetFingerprint, openStore } from "../src/review/store.ts";
 import type { TrustedModelFields } from "../src/reviewer/model-service-runtime.ts";
 import {
   HARNESS_PR,

@@ -4,6 +4,7 @@
  * Disposition 的权威状态在 Forge 上,`finding.disposition` 只缓存最近一次读回的
  * 结果,默认 `unknown`。
  */
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
 import {
@@ -443,8 +444,21 @@ CREATE TABLE IF NOT EXISTS panel_user_repo (
 
 
 /**
+ * 模型服务目标(地址 + 协议)的指纹。手动补录绑定它:只轮换凭据时可沿用,地址或协议
+ * 变了就是另一个目标,补录必须逐项重录。
+ */
+export function modelServiceTargetFingerprint(baseUrl: string, api: string): string {
+  const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
+  return createHash("sha256")
+    .update(normalizedBaseUrl, "utf8")
+    .update("\0")
+    .update(api.trim(), "utf8")
+    .digest("hex");
+}
+
+/**
  * 模型服务的当前态。只保留当前版本；运行中的 Review Run 在内存里持有旧版本，不为它建
- * 历史表。迁移模块也复用这段建表语句，确保新库与迁入库只有一份 schema 定义。
+ * 历史表。
  */
 export const MODEL_SERVICE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS model_service (
@@ -2135,152 +2149,6 @@ export function sumUsage(
   return total;
 }
 
-
-/** 高的在前,与 `dedupe.ts` 的 SEVERITY_RANK 同序。 */
-const MIGRATION_SEVERITY_RANK: Record<string, number> = { P0: 3, P1: 2, P2: 1 };
-
-/** 同一处上取最强的那一档,与处置率折叠同序。旧字面量 `changed` 与 `fixed` 同档。 */
-const MIGRATION_DISPOSITION_RANK: Record<string, number> = {
-  resolved: 3,
-  fixed: 2,
-  changed: 2,
-  unresolved: 1,
-  unknown: 0,
-};
-
-/**
- * 把升级前「一模型一行」的 finding 按新的 Finding Identity 重新折叠(ADR 0015)。
- *
- * 键是「同一轮 + 文件 + 指纹」,算不出指纹的退回它当初的合并组序号——那正是它当初落成
- * 的那一条评论。组内 id 最小的那行留下:它是首报,分类与归属次序都以它为准;严重度取
- * 组内最高,代表段取严重度最高的那条,处置取最强的那一档。每一条旧行留一条模型归属,
- * 历史统计因此不断裂。
- *
- * `changed` 改写为 `fixed`(只换名不换义,判据由 ADR 0016 换成复核结论)。重新折叠、
- * 归属写入、删旧行、去掉 model 列与改写字面量全在同一个事务里:中途失败整体回滚,
- * 下次启动从原样重来。
- */
-function foldFindingIdentity(db: DatabaseSync): void {
-  const legacyShape = db
-    .prepare("PRAGMA table_info(finding)")
-    .all()
-    .some((row) => String(row["name"]) === "model");
-  const legacyLiteral =
-    db.prepare("SELECT 1 FROM finding WHERE disposition = 'changed' LIMIT 1").get() !==
-    undefined;
-  if (!legacyShape && !legacyLiteral) return;
-
-  db.exec("BEGIN");
-  try {
-    if (legacyShape) {
-      const rows = db
-        .prepare(
-          `SELECT id, run_id, model, file, line, severity, category, description,
-                  fingerprint, group_index, disposition, placement,
-                  comment_id, comment_html_url, disposed_by, disposed_at, disposition_note
-             FROM finding ORDER BY id`,
-        )
-        .all();
-
-      const groups = new Map<string, Record<string, unknown>[]>();
-      for (const row of rows) {
-        // 指纹算不出的行退回合并组序号:它与同组的其他行落在同一条评论上。
-        const anchor =
-          row["fingerprint"] === null
-            ? `group:${String(row["group_index"])}`
-            : String(row["fingerprint"]);
-        const key = `${String(row["run_id"])}\n${String(row["file"])}\n${anchor}`;
-        const list = groups.get(key) ?? [];
-        list.push(row);
-        groups.set(key, list);
-      }
-
-      const updateKeeper = db.prepare(
-        `UPDATE finding
-            SET line = ?, severity = ?, category = ?, description = ?,
-                disposition = ?, comment_id = ?, comment_html_url = ?,
-                disposed_by = ?, disposed_at = ?, disposition_note = ?
-          WHERE id = ?`,
-      );
-      const insertAttribution = db.prepare(
-        `INSERT INTO finding_attribution
-           (finding_id, position, model, severity, category, description)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      );
-      const deleteRow = db.prepare("DELETE FROM finding WHERE id = ?");
-      const firstNotNull = (
-        list: readonly Record<string, unknown>[],
-        column: string,
-      ): unknown => list.find((row) => row[column] !== null)?.[column] ?? null;
-      const strongest = (
-        list: readonly Record<string, unknown>[],
-        column: string,
-        rank: Record<string, number>,
-      ): string =>
-        [...list].sort(
-          (a, b) => (rank[String(b[column])] ?? 0) - (rank[String(a[column])] ?? 0),
-        )[0]![column] as string;
-
-      for (const group of groups.values()) {
-        const keeper = group[0]!;
-        const bySeverity = [...group].sort(
-          (a, b) =>
-            (MIGRATION_SEVERITY_RANK[String(b["severity"])] ?? 0) -
-            (MIGRATION_SEVERITY_RANK[String(a["severity"])] ?? 0),
-        );
-        const leading = bySeverity[0]!;
-        updateKeeper.run(
-          Math.min(...group.map((row) => Number(row["line"]))),
-          String(leading["severity"]),
-          String(keeper["category"]),
-          String(leading["description"]),
-          strongest(group, "disposition", MIGRATION_DISPOSITION_RANK),
-          firstNotNull(group, "comment_id") as string | null,
-          firstNotNull(group, "comment_html_url") as string | null,
-          firstNotNull(group, "disposed_by") as string | null,
-          firstNotNull(group, "disposed_at") as string | null,
-          firstNotNull(group, "disposition_note") as string | null,
-          Number(keeper["id"]),
-        );
-
-        // 一个模型一条归属,按首报先后;同一个模型在组里有两行时留严重度高的那条。
-        const attributions: Record<string, unknown>[] = [];
-        for (const row of group) {
-          const index = attributions.findIndex((a) => a["model"] === row["model"]);
-          if (index === -1) attributions.push(row);
-          else if (
-            (MIGRATION_SEVERITY_RANK[String(row["severity"])] ?? 0) >
-            (MIGRATION_SEVERITY_RANK[String(attributions[index]!["severity"])] ?? 0)
-          ) {
-            attributions[index] = row;
-          }
-        }
-        for (const [position, said] of attributions.entries()) {
-          insertAttribution.run(
-            Number(keeper["id"]),
-            position,
-            String(said["model"]),
-            String(said["severity"]),
-            String(said["category"]),
-            String(said["description"]),
-          );
-        }
-
-        for (const row of group.slice(1)) deleteRow.run(Number(row["id"]));
-      }
-
-      db.exec("ALTER TABLE finding DROP COLUMN model");
-    }
-
-    // 旧库里的「已改动」就是这一档:名字改成「已修复」,判据由 ADR 0016 换成复核结论。
-    db.exec("UPDATE finding SET disposition = 'fixed' WHERE disposition = 'changed'");
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-}
-
 /**
  * 一个审查阶段覆盖哪些 Review Run(CONTEXT.md 审查阶段)。两条链路各一档:范围审查取
  * 它名下全部轮次,PR 触发取这个 pull request 名下、不属于任何范围审查的那些——容器 PR
@@ -2419,36 +2287,6 @@ function stageScope(scope: StageScope): [string, (string | number)[]] {
 }
 
 /**
- * 计费下线(issue #188):升级前的库里还留着四列金额与模型行的价目。`CREATE TABLE IF
- * NOT EXISTS` 碰不到既有表,不删就是僵尸列——新代码一列都不写,它们只会让 schema 与
- * 代码对不上。token 五列与它们的数字一行不动:用量是运行诊断信息,与计费无关。
- *
- * 逐列 DROP COLUMN,与 `finding.model` 那次删列同一个机制。列本来就不在时跳过:同一个
- * 库第二次打开走的就是这一档。
- */
-const DROPPED_COST_COLUMNS: readonly (readonly [string, string])[] = [
-  ["review_run", "cost_usd"],
-  ["review_run", "known_cost_usd"],
-  ["review_run", "cost_source"],
-  ["review_run", "unknown_cost_reviewer_count"],
-  ["reviewer_outcome", "cost_usd"],
-  ["reviewer_outcome", "known_cost_usd"],
-  ["reviewer_outcome", "cost_source"],
-  ["model_directory_model", "cost_json"],
-];
-
-/**
- * 退役的读权限格(issue #193):读范围改由仓库分配决定,`repo:read` 与 `review:read`
- * 不再是权限格。升级前的角色里还留着这两种行,`isPanelPermission` 已经不认它们,留
- * 着只会让角色矩阵与库对不上,而且角色一保存就会连带把它们写回去。
- *
- * 建 schema 时顺手删,不递增 `user_version`:那个版本号被模型服务迁移器独占
- * (`MODEL_SERVICE_SCHEMA_VERSION`),高于它的库开不起来。删空行是幂等的,第二次打开
- * 同一个库删到零行。
- */
-const RETIRED_PANEL_PERMISSIONS = ["repo:read", "review:read"];
-
-/**
  * 人手工写下的规则在 `review_rule.origin` 上的出处(issue #203)。人往规则草案里手写
  * 的那些同样记它(issue #205);处置反哺另写自己的字面量,那条链路是后续票的范围。
  */
@@ -2457,75 +2295,9 @@ const MANUAL_RULE_ORIGIN = "manual";
 /** 基点探索推导出的规则在 `origin` 上的出处(issue #205)。处置反哺另写自己的字面量。 */
 const BASELINE_EXPLORATION_RULE_ORIGIN = "baseline-exploration";
 
-/**
- * 存量迁移(issue #202):升级前注册的仓库全部视同已确认空规则集。给还没有任何规则集
- * 版本的仓库补一行版本 1——没有规则行,语义就是「空集已确认」,评审行为与现状一致。
- *
- * 只在 `rule_set_version` 建表那一次跑(issue #206):门禁分代之后,「没有版本行」是
- * 「规则集未确认」的唯一判据,再跑一遍会把新注册、还没做规则确认的仓库误判成已确认。
- * 建表那一刻正是升级的那一刻,库里此时的仓库就是升级前既有的那些。不递增 `user_version`
- * (那个版本号被模型服务迁移器独占)。
- */
-function seedConfirmedEmptyRuleSets(db: DatabaseSync): void {
-  db.prepare(
-    `INSERT OR IGNORE INTO rule_set_version (repo_id, version, created_at)
-     SELECT id, 1, ?
-       FROM repo
-      WHERE NOT EXISTS (SELECT 1 FROM rule_set_version WHERE repo_id = repo.id)`,
-  ).run(new Date().toISOString());
-}
-
-function dropRetiredPanelPermissions(db: DatabaseSync): void {
-  db.prepare(
-    `DELETE FROM panel_role_permission
-      WHERE permission IN (${RETIRED_PANEL_PERMISSIONS.map(() => "?").join(", ")})`,
-  ).run(...RETIRED_PANEL_PERMISSIONS);
-}
-
-function dropCostColumns(db: DatabaseSync): void {
-  const columnsOf = new Map<string, Set<string>>();
-  for (const [table, column] of DROPPED_COST_COLUMNS) {
-    let columns = columnsOf.get(table);
-    if (columns === undefined) {
-      columns = new Set(
-        db.prepare(`PRAGMA table_info(${table})`).all().map((row) => String(row["name"])),
-      );
-      columnsOf.set(table, columns);
-    }
-    if (columns.has(column)) db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
-  }
-}
-
-/**
- * 修复手动重跑曾打破的 PR 阶段状态不变量:关闭事件把同一 PR 的全部轮次标为 closed,
- * 但旧版 `startRun` 新增的行没有继承该值。组内仍有 closed 即表示之后没有收到 reopened;
- * reopened 会把该 PR 的全部行清为 NULL,因此不会被这一步改回关闭。
- */
-function repairPullRequestStates(db: DatabaseSync): void {
-  db.prepare(
-    `UPDATE review_run AS current
-        SET pr_state = 'closed'
-      WHERE current.range_review_id IS NULL
-        AND current.pr_state IS NULL
-        AND EXISTS (
-          SELECT 1
-            FROM review_run AS historical
-           WHERE historical.owner = current.owner
-             AND historical.repo = current.repo
-             AND historical.pull_number = current.pull_number
-             AND historical.range_review_id IS NULL
-             AND historical.pr_state = 'closed'
-        )`,
-  ).run();
-}
-
-/** 打开当前 schema；schema-v0 数据库必须先经过模型服务迁移器。 */
+/** 打开当前 schema；schema-v0 数据库开不起来。 */
 export function openStore(dbPath: string): Store {
   const db = new DatabaseSync(dbPath, { timeout: BUSY_TIMEOUT_MS });
-  // 建表之前问一次:存量迁移的判据是「这一次打开才把 `rule_set_version` 建出来」。
-  const ruleSetVersionTableExisted = db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'rule_set_version'")
-    .get() !== undefined;
   let modelServiceSchemaVersion = Number(
     db.prepare("PRAGMA user_version").get()?.["user_version"] ?? 0,
   );
@@ -2537,7 +2309,8 @@ export function openStore(dbPath: string): Store {
     );
     if (existingTables !== 0) {
       db.close();
-      throw new Error("schema-v0 数据库必须先完成模型服务迁移");
+      // 迁移器已随 issue #217 删除:现役实例都迁完了,留着的只有这道拒绝启动。
+      throw new Error("schema-v0 数据库开不起来:本程序不再带模型服务迁移器");
     }
     db.exec(STORE_SCHEMA);
     db.exec(MODEL_SERVICE_SCHEMA);
@@ -2558,17 +2331,6 @@ export function openStore(dbPath: string): Store {
     }
   }
   for (const statement of ADD_INDEXES) db.exec(statement);
-  try {
-    foldFindingIdentity(db);
-  } catch (error) {
-    // 迁移整笔回滚了,库还是升级前那副样子。句柄跟着还回去:webhook 服务是长跑进程。
-    db.close();
-    throw error;
-  }
-  dropCostColumns(db);
-  dropRetiredPanelPermissions(db);
-  if (!ruleSetVersionTableExisted) seedConfirmedEmptyRuleSets(db);
-  repairPullRequestStates(db);
 
   // 系统管理员 bootstrap 与普通创建共用同一条用户写入语义。
   const writePanelUser = (record: Omit<PanelUserRecord, "lastLoginAt">): void => {

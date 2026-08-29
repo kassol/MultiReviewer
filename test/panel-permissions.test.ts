@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
@@ -354,35 +353,6 @@ test("退役的两个读权限格不再被认得:角色写入回 400", async () 
     roles: { id: number; permissions: string[] }[];
   };
   assert.deepEqual(roles.roles.find((item) => item.id === role.id)?.permissions, ["review:rerun"]);
-});
-
-test("升级把旧角色里的两个读权限格清掉,其余格不动", async () => {
-  const h = await startPanelHarness(cleanups);
-  const role = (await (
-    await h.api("POST", "/roles", { name: "升级前角色", permissions: ["review:rerun"] })
-  ).json()) as { id: number };
-  const legacy = new DatabaseSync(h.db.path);
-  for (const permission of ["repo:read", "review:read"]) {
-    legacy
-      .prepare("INSERT INTO panel_role_permission (role_id, permission) VALUES (?, ?)")
-      .run(role.id, permission);
-  }
-  legacy.close();
-
-  const store = openStore(h.db.path);
-  const rows = store
-    .listPanelRoles()
-    .find((item) => item.id === role.id);
-  store.close();
-  assert.deepEqual(rows?.permissions, ["review:rerun"]);
-
-  const check = new DatabaseSync(h.db.path);
-  const remaining = check
-    .prepare("SELECT permission FROM panel_role_permission WHERE role_id = ? ORDER BY permission")
-    .all(role.id)
-    .map((row) => String(row["permission"]));
-  check.close();
-  assert.deepEqual(remaining, ["review:rerun"]);
 });
 
 test("手写权限与仓库分配期望表与面板代码路由集合完全相等", () => {
