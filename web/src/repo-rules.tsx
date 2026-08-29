@@ -230,13 +230,16 @@ function RuleSetDialogContent({
   });
 
   return (
+    // 标题钉住,正文自己滚:提案与规则多起来(AI-API 一轮 29 条)会把弹窗撑出视口,
+    // 标题和关闭全被推走(修复自部署实例的走查)。
     <Dialog.Content
       aria-describedby={undefined}
       maxWidth="680px"
       maxHeight="calc(100dvh - 2rem)"
       size={{ initial: "2", sm: "3" }}
+      className="flex flex-col overflow-hidden"
     >
-      <Dialog.Title size="4" mb="1" className="pr-9 break-all">
+      <Dialog.Title size="4" mb="1" className="shrink-0 pr-9 break-all">
         {repo.owner}/{repo.repo} 的规则集
       </Dialog.Title>
       {ruleSet.data === undefined ? null : typeof ruleSet.data.version === "number" ? (
@@ -250,6 +253,8 @@ function RuleSetDialogContent({
           规则集未确认:完成规则确认前,这个仓库的投递只记录不审,面板也发起不了审查。
         </Text>
       )}
+
+      <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1">
 
       {ruleSet.isPending ? (
         <div className="flex flex-col gap-2" role="status" aria-live="polite">
@@ -342,7 +347,7 @@ function RuleSetDialogContent({
                       {canWrite ? (
                         <div className="flex shrink-0 gap-1">
                           <Button
-                            variant="ghost"
+                            variant="soft"
                             color="gray"
                             size={{ initial: "3", sm: "1" }}
                             onClick={() => setDraft({ ...rule, id: rule.id })}
@@ -350,7 +355,7 @@ function RuleSetDialogContent({
                             修改
                           </Button>
                           <Button
-                            variant="ghost"
+                            variant="soft"
                             color="gray"
                             size={{ initial: "3", sm: "1" }}
                             disabled={change.isPending}
@@ -391,6 +396,7 @@ function RuleSetDialogContent({
           </ul>
         </section>
       )}
+      </div>
 
       <div className="absolute top-3 right-3">
         <Tooltip content="关闭规则集">
@@ -538,7 +544,7 @@ function ProposalSection({
                 {canWrite && edit?.id !== proposal.id ? (
                   <div className="flex shrink-0 gap-1">
                     <Button
-                      variant="ghost"
+                      variant="soft"
                       color="gray"
                       size={{ initial: "3", sm: "1" }}
                       onClick={() =>
@@ -553,7 +559,7 @@ function ProposalSection({
                       修改
                     </Button>
                     <Button
-                      variant="ghost"
+                      variant="soft"
                       color="gray"
                       size={{ initial: "3", sm: "1" }}
                       disabled={busy}
@@ -562,7 +568,7 @@ function ProposalSection({
                       采纳
                     </Button>
                     <Button
-                      variant="ghost"
+                      variant="soft"
                       color="gray"
                       size={{ initial: "3", sm: "1" }}
                       disabled={busy}
@@ -700,11 +706,7 @@ function ExplorationSection({
           </Text>
           {/* 运行中实时看,结束后回看(issue #214)。轨迹在弹窗里开,不新建顶级导航。 */}
           {exploration.traceTaskId === null ? null : (
-            <RuleTraceButton
-              repoId={repo.repoId}
-              taskId={exploration.traceTaskId}
-              label={running ? "看它在做什么" : "查看轨迹"}
-            />
+            <RuleTraceButton repoId={repo.repoId} taskId={exploration.traceTaskId} />
           )}
         </div>
       )}
@@ -751,7 +753,7 @@ function ExplorationSection({
                 <Text as="p" size="2">{rule.statement}</Text>
                 <div className="flex shrink-0 gap-1">
                   <Button
-                    variant="ghost"
+                    variant="soft"
                     color="gray"
                     size={{ initial: "3", sm: "1" }}
                     onClick={() => onEdit({ ...rule, id: rule.id })}
@@ -759,7 +761,7 @@ function ExplorationSection({
                     修改
                   </Button>
                   <Button
-                    variant="ghost"
+                    variant="soft"
                     color="gray"
                     size={{ initial: "3", sm: "1" }}
                     disabled={busy}

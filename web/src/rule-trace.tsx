@@ -60,7 +60,7 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
       // 整条文本摊开,不截断:这就是「它当时在想什么」的唯一记录。
       return (
         <p className="min-w-0 text-base leading-relaxed break-words whitespace-pre-wrap text-text-secondary">
-          {str(payload, "text") ?? "(空文本)"}
+          {(str(payload, "text") ?? "(空文本)").trim()}
         </p>
       );
     case "tool_call":
@@ -180,20 +180,25 @@ export function RuleTraceButton({
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Trigger>
-        <Button variant="ghost" color="gray" size={{ initial: "3", sm: "1" }}>
+        <Button variant="soft" color="gray" size={{ initial: "3", sm: "1" }}>
           {label}
         </Button>
       </Dialog.Trigger>
       {open ? (
+        /* 标题与关闭钉住,事件列表自己滚:轨迹动辄几十条事件,让它撑高弹窗会把标题和
+           关闭都推出视口(修复自部署实例的走查)。 */
         <Dialog.Content
           aria-describedby={undefined}
           maxWidth="680px"
           maxHeight="calc(100dvh - 2rem)"
           size={{ initial: "2", sm: "3" }}
+          className="flex flex-col overflow-hidden"
         >
-          <Dialog.Title size="4" mb="3" className="pr-9">规则轨迹</Dialog.Title>
-          <RuleTrace repoId={repoId} taskId={taskId} />
-          <div className="mt-3 flex justify-end">
+          <Dialog.Title size="4" mb="3" className="shrink-0 pr-9">规则轨迹</Dialog.Title>
+          <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1">
+            <RuleTrace repoId={repoId} taskId={taskId} />
+          </div>
+          <div className="mt-3 flex shrink-0 justify-end">
             <Dialog.Close>
               <Button variant="soft" color="gray" size={{ initial: "3", sm: "2" }}>关闭</Button>
             </Dialog.Close>
