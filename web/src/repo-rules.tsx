@@ -235,7 +235,7 @@ function RuleSetDialogContent({
     <Dialog.Content
       aria-describedby={undefined}
       maxWidth="680px"
-      maxHeight="calc(100dvh - 2rem)"
+      maxHeight="min(780px, calc(100dvh - 4.5rem))"
       size={{ initial: "2", sm: "3" }}
       className="flex flex-col overflow-hidden"
     >
