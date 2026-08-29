@@ -9,6 +9,7 @@ import { AlertDialog, Badge, Callout, Checkbox, Dialog, Flex, IconButton, Select
 import { Collapsible } from "radix-ui";
 import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
 
+import { CardShell } from "@/components/card-shell";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { EditableModelCombobox } from "@/components/editable-model-combobox";
 import { EmptyState } from "@/components/empty-state";
@@ -202,23 +203,6 @@ function localMinuteOrMissing(iso: string | null | undefined): string {
 
 function quantity(value: number): string {
   return new Intl.NumberFormat("zh-CN").format(value);
-}
-
-/**
- * 卡壳。Themes 的 Card 把圆角画在伪元素上,而这套设计的卡片圆角随视口在 14 / 12 之间
- * 换档,只改根元素的话边框与底色的圆角会错开;列表卡还要求零内边距加逐行分隔。所以
- * 壳走 utility + 令牌,壳里的通用件(徽章、输入、按钮、骨架)仍是 Themes 组件。
- */
-function CardShell({ className, ...props }: React.ComponentProps<"section">) {
-  return (
-    <section
-      className={cn(
-        "flex min-w-0 flex-col rounded-xl border border-card-line bg-surface shadow-card sm:rounded-lg",
-        className,
-      )}
-      {...props}
-    />
-  );
 }
 
 /** 卡头:左边这张卡叫什么,右边是它当下的计数或那一个动作。 */

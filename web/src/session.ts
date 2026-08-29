@@ -90,13 +90,6 @@ export function panelNeedsBootstrap(): boolean {
   return bootstrapNeeded;
 }
 
-
-export function cachePanelSession(session: PanelSession): void {
-  cached = session;
-  pending = undefined;
-  bootstrapNeeded = false;
-}
-
 export function clearPanelSession(): void {
   cached = undefined;
   pending = undefined;

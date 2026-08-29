@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { Button } from "@/components/theme-button";
 import { Calendar } from "@/components/ui/calendar";
+import { localDay } from "@/lib/time";
 
 export type DateRangeValue = Readonly<{
   from: string;
@@ -16,12 +17,6 @@ type DateRangePickerProps = {
 };
 
 /** 日历日期与 `YYYY-MM-DD` 互转时只读本地字段，避免 UTC 偏移所选日期。 */
-function dayString(date: Date): string {
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  return `${date.getFullYear()}-${month}-${day}`;
-}
-
 function dayDate(day: string): Date | undefined {
   const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
   if (parts === null) return undefined;
@@ -66,8 +61,8 @@ export function DateRangePicker({ value, onChange }: DateRangePickerProps) {
           selected={{ from: fromDate, to: dayDate(value.to) }}
           onSelect={(range) => {
             onChange({
-              from: range?.from === undefined ? "" : dayString(range.from),
-              to: range?.to === undefined ? "" : dayString(range.to),
+              from: range?.from === undefined ? "" : localDay(range.from),
+              to: range?.to === undefined ? "" : localDay(range.to),
             });
           }}
         />

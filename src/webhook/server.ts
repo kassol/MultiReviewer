@@ -404,10 +404,10 @@ function repoTag(payload: unknown): string {
   return typeof owner === "string" && typeof repo === "string" ? `${owner}/${repo}` : "";
 }
 
-/** body 解析成 JSON,失败返回 null。无关事件的 payload 只为抽出仓库,不值得为它抛。 */
-function safeParse(body: Buffer): unknown {
+/** 解析成 JSON,失败返回 null。无关事件的 payload 只为抽出仓库,不值得为它抛。 */
+function safeParse(body: Buffer | string): unknown {
   try {
-    return JSON.parse(body.toString("utf8"));
+    return JSON.parse(body.toString());
   } catch {
     return null;
   }
@@ -1205,7 +1205,7 @@ function listRepos(res: ServerResponse, deps: WebhookServerDeps, assignment: Rep
       ...row,
       // 覆盖以解析后的形状交给前端,编辑时原样回传 PUT。坏 JSON(直接写库的遗留)
       // 按 null 透出——一行坏数据不该把整个列表拖成 500,投递链对同一列也是这个态度。
-      reviewers: reviewersJson === null ? null : safeParseJson(reviewersJson),
+      reviewers: reviewersJson === null ? null : safeParse(reviewersJson),
     })),
   );
 }
@@ -4362,14 +4362,6 @@ async function handleRenameConflictingCustomModelService(
   });
 }
 
-
-function safeParseJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-}
 
 /**
  * 解析并校验一段模型组合入参。审查策略、仓库注册与每仓库覆盖共用同一形状判据；

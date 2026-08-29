@@ -8,8 +8,9 @@ function pad(value: number): string {
   return String(value).padStart(2, "0");
 }
 
-export function localDay(iso: string): string {
-  const date = new Date(iso);
+/** 日历控件直接给 `Date`:按 UTC 转字符串会把东八区选的日子挪前一天。 */
+export function localDay(iso: string | Date): string {
+  const date = typeof iso === "string" ? new Date(iso) : iso;
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 

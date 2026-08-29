@@ -96,7 +96,7 @@ function existingSection(rules: readonly ReviewRule[]): string {
   ].join("\n");
 }
 
-export function rulePrompt(request: Pick<RuleWorkerRequest, "baselineSha" | "existingRules">): string {
+function rulePrompt(request: Pick<RuleWorkerRequest, "baselineSha" | "existingRules">): string {
   const existing =
     request.existingRules.length === 0 ? "" : `${existingSection(request.existingRules)}\n`;
   return `Derive the review rules of the repository as it stands at commit ${request.baselineSha}.
@@ -113,7 +113,7 @@ Report each rule through ${PROPOSE_RULE_TOOL}. When you have reported everything
  * 明写「报不出变更是预期结果」:一条只了结眼前那一条 Finding 的备注不构成规则,而 agent
  * 手里有个报告工具时倾向于用它。
  */
-export function feedbackPrompt(
+function feedbackPrompt(
   request: Pick<RuleWorkerRequest, "existingRules"> & { feedback: DispositionFeedback },
 ): string {
   const { note, finding } = request.feedback;

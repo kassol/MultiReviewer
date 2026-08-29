@@ -16,12 +16,10 @@ export const PANEL_PERMISSIONS = [
 
 export type PanelPermission = (typeof PANEL_PERMISSIONS)[number];
 
-const PANEL_PERMISSION_SET: Record<string, true> = Object.fromEntries(
-  PANEL_PERMISSIONS.map((permission) => [permission, true]),
-);
+const PANEL_PERMISSION_SET: ReadonlySet<string> = new Set(PANEL_PERMISSIONS);
 
 export function isPanelPermission(value: string): value is PanelPermission {
-  return PANEL_PERMISSION_SET[value] === true;
+  return PANEL_PERMISSION_SET.has(value);
 }
 
 const IMPLIED_PANEL_PERMISSIONS: Partial<Record<PanelPermission, PanelPermission>> = {

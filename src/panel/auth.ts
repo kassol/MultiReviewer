@@ -38,8 +38,8 @@ export function sessionHash(sessionId: string): string {
   return createHash("sha256").update(sessionId).digest("hex");
 }
 
-export function createPanelAuth(options: PanelAuthOptions | (() => number) = {}): PanelAuth {
-  const { now = Date.now, onGate } = typeof options === "function" ? { now: options } : options;
+export function createPanelAuth(options: PanelAuthOptions = {}): PanelAuth {
+  const { now = Date.now, onGate } = options;
   const failures = new Map<string, { count: number; nextAttemptAt: number }>();
   let activeVerifications = 0;
   const verificationQueue: (() => void)[] = [];
@@ -57,60 +57,45 @@ export function createPanelAuth(options: PanelAuthOptions | (() => number) = {})
     }
   }
 
-  async function check(
-    key: string,
-    hash: string,
-    password: string,
-    success: () => boolean,
-    gateEvent?: LoginGateEvent,
-  ): Promise<LoginOutcome> {
-    const record = failures.get(key);
-    const checkedAt = now();
-    if (record !== undefined && record.nextAttemptAt > checkedAt) {
-      return {
-        ok: false,
-        status: 429,
-        retryAfter: Math.max(1, Math.ceil((record.nextAttemptAt - checkedAt) / 1_000)),
-      };
-    }
-
-    const valid = await verify(hash, password);
-    if (valid && success()) {
-      failures.delete(key);
-      return { ok: true };
-    }
-
-    if (record === undefined && failures.size >= TRACKED_KEYS_MAX) {
-      const evictionTime = now();
-      for (const [tracked, value] of failures) {
-        if (value.nextAttemptAt <= evictionTime) {
-          failures.delete(tracked);
-          break;
-        }
-      }
-      if (failures.size >= TRACKED_KEYS_MAX) return { ok: false, status: 401 };
-    }
-    const count = (record?.count ?? 0) + 1;
-    const nextAttemptAt =
-      count <= FREE_ATTEMPTS
-        ? 0
-        : now() + Math.min(BACKOFF_BASE_MS * 2 ** (count - FREE_ATTEMPTS - 1), BACKOFF_MAX_MS);
-    failures.set(key, { count, nextAttemptAt });
-    if (nextAttemptAt > 0 && gateEvent !== undefined) onGate?.({ ...gateEvent, count });
-    return { ok: false, status: 401 };
-  }
-
   return {
-    login(candidate, password, ip) {
+    async login(candidate, password, ip) {
       const account = candidate.username;
       // 用户名字符集不含冒号,所以 account 与 bootstrap 两类键不可能相撞。
-      return check(
-        `account:${account}`,
-        candidate.passwordHash ?? DUMMY_PASSWORD_HASH,
-        password,
-        () => candidate.passwordHash !== undefined,
-        { account, ip, count: 0 },
-      );
+      const key = `account:${account}`;
+      const record = failures.get(key);
+      const checkedAt = now();
+      if (record !== undefined && record.nextAttemptAt > checkedAt) {
+        return {
+          ok: false,
+          status: 429,
+          retryAfter: Math.max(1, Math.ceil((record.nextAttemptAt - checkedAt) / 1_000)),
+        };
+      }
+
+      const valid = await verify(candidate.passwordHash ?? DUMMY_PASSWORD_HASH, password);
+      if (valid && candidate.passwordHash !== undefined) {
+        failures.delete(key);
+        return { ok: true };
+      }
+
+      if (record === undefined && failures.size >= TRACKED_KEYS_MAX) {
+        const evictionTime = now();
+        for (const [tracked, value] of failures) {
+          if (value.nextAttemptAt <= evictionTime) {
+            failures.delete(tracked);
+            break;
+          }
+        }
+        if (failures.size >= TRACKED_KEYS_MAX) return { ok: false, status: 401 };
+      }
+      const count = (record?.count ?? 0) + 1;
+      const nextAttemptAt =
+        count <= FREE_ATTEMPTS
+          ? 0
+          : now() + Math.min(BACKOFF_BASE_MS * 2 ** (count - FREE_ATTEMPTS - 1), BACKOFF_MAX_MS);
+      failures.set(key, { count, nextAttemptAt });
+      if (nextAttemptAt > 0) onGate?.({ account, ip, count });
+      return { ok: false, status: 401 };
     },
   };
 }

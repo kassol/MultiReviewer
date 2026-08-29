@@ -12,7 +12,7 @@ import {
   type RuntimeModelCompat,
   type RuntimeThinkingLevelMap,
 } from "./model-runtime.ts";
-import { openRouterCatalog, type VendorCatalog, type VendorModel } from "./vendor-catalog.ts";
+import { openRouterCatalog, type VendorModel } from "./vendor-catalog.ts";
 
 /**
  * 远程目录那一层的结果。`ok` 是内置目录加上了 pi.dev 的增量;`unavailable` 是远程
@@ -152,7 +152,7 @@ async function loadPiRuntime(options: LoadOptions): Promise<{
  */
 async function mergeVendorCatalog(
   runtime: ModelRuntime,
-  vendor: VendorCatalog,
+  vendor: typeof openRouterCatalog,
   storePath: string | undefined,
   timeoutMs: number,
 ): Promise<CatalogVendor> {

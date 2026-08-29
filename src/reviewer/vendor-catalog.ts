@@ -42,13 +42,6 @@ export type VendorModel = {
   maxTokens: number;
 };
 
-/** 一家厂商的目录。一家一个实现。 */
-export type VendorCatalog = {
-  provider: string;
-  /** 拉一份现货清单。非 2xx、超时、响应不像目录都算没拉到,回 undefined。 */
-  fetchModels: (timeoutMs: number) => Promise<VendorModel[] | undefined>;
-};
-
 /** 官网响应里本实现读的那几项,字段名照抄官网。 */
 type OpenRouterEntry = {
   id: string;
@@ -118,7 +111,9 @@ async function fetchOpenRouterModels(timeoutMs: number): Promise<VendorModel[] |
   }
 }
 
-export const openRouterCatalog: VendorCatalog = {
+/** OpenRouter 的厂商目录。一家厂商一个实现,形状由这一份定。 */
+export const openRouterCatalog = {
   provider: OPENROUTER_PROVIDER,
+  /** 拉一份现货清单。非 2xx、超时、响应不像目录都算没拉到,回 undefined。 */
   fetchModels: fetchOpenRouterModels,
 };

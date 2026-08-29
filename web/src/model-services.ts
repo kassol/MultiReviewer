@@ -141,7 +141,7 @@ export function modelIdentity(spec: { provider: string; model: string }): string
 }
 
 /** 标识拆回原有 ReviewerSpec；model id 本身允许带冒号，只切第一个。 */
-export function parseModelIdentity(identity: string): { provider: string; model: string } {
+function parseModelIdentity(identity: string): { provider: string; model: string } {
   const at = identity.indexOf(":");
   return { provider: identity.slice(0, at), model: identity.slice(at + 1) };
 }

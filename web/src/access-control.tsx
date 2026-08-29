@@ -3,6 +3,7 @@ import { CheckCircledIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon
 import { AlertDialog, Badge, Callout, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, Table, Text, TextField, Tooltip } from "@radix-ui/themes";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 
+import { CardShell } from "@/components/card-shell";
 import { EmptyState } from "@/components/empty-state";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { PageBody } from "@/components/page-body";
@@ -282,10 +283,7 @@ export function AccessControlPage() {
           </div>
         ) : (
           <>
-            <section
-              className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-card-line bg-surface shadow-card sm:rounded-lg"
-              aria-labelledby="users-heading"
-            >
+            <CardShell className="overflow-hidden" aria-labelledby="users-heading">
               <div className="flex items-center justify-between gap-3 px-4 pt-3.5 pb-[11px] sm:px-5">
                 <h2 id="users-heading" className="flex items-baseline gap-2 text-2xl font-bold tracking-[-0.015em]">
                   用户 <span className="font-mono text-xs font-normal text-text-muted">{users.length}</span>
@@ -408,12 +406,9 @@ export function AccessControlPage() {
                   </Table.Body>
                 </Table.Root>
               </div>
-            </section>
+            </CardShell>
 
-            <section
-              className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-card-line bg-surface shadow-card sm:rounded-lg"
-              aria-labelledby="permissions-heading"
-            >
+            <CardShell className="overflow-hidden" aria-labelledby="permissions-heading">
               <div className="flex items-center justify-between gap-3 px-4 pt-3.5 pb-[11px] sm:px-5">
                 <h2 id="permissions-heading" className="text-2xl font-bold tracking-[-0.015em]">权限矩阵</h2>
                 <CreateDialog
@@ -504,7 +499,7 @@ export function AccessControlPage() {
                   </Table.Root>
                 </div>
               )}
-            </section>
+            </CardShell>
           </>
         )}
       </PageBody>
