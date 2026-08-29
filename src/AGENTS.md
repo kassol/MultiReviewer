@@ -12,7 +12,7 @@
 - `reviewer/` — Reviewer 的真实实现。`pi-reviewer.ts` 在主进程侧收子进程回传的消息,`worker.ts` 是子进程入口,两者只经 `protocol.ts` 定义的消息通信。`subprocess.ts` 是 Reviewer 与规则 agent 共用的子进程生命周期(fork 选项、超时闸、宽限期与失败判定只有一份,收什么由调用方在 `onMessage` 里做),`worker-tools.ts` 是两个子进程共用的会话构件(`fileLines`、带号 `read` 工具、规则条目的 prompt 行格式、把思考档位落成会话取值的 `sessionThinkingLevel`,以及备好 agentDir、私有模型运行时与会话设置的 `prepareAgentRuntime`)。`numbered-read.ts` 与 `anchor.ts` 是 worker 的行号构件(见下),`trace-events.ts` 把 Pi 的会话事件转成 Reviewer 事件(见下)。`rule-agent.ts` 是规则 agent 的注入边界与它的 Pi 实现,`rule-worker.ts` 是那条链路的子进程入口(见下)。`catalog.ts` 与 `vendor-catalog.ts` 只为显式模型服务发现读取 Pi 内置、pi.dev 增量与 OpenRouter 厂商目录;`model-service-runtime.ts` 负责发现、可信字段合成与最小真实推理;`model-runtime.ts` 只构造凭据和当前模型配置均隔离的 Pi 运行时。
 - `webhook/` — `server.ts` 是 HTTP 入口:路由表分发 `POST /webhook`(投递:准入验签、规范化两个平台的形状、判幂等、异步触发 `runReview`)与 `<前缀>/api/*`(面板 API),其余路径与方法一律 404。模型服务读取、候选验证、原子提交与 Review Run 固定计划都在这里接入 Store。候选发现与真实推理失败只向面板返回安全摘要和 request id,同一 id 的服务日志保留经已知秘密脱敏后的诊断原因。
 - `panel/` — 管理面板的服务端构件。`auth.ts` 是认证判定(token 比对、session、按 IP 退避锁定),纯逻辑不碰 HTTP,时钟可注入。`credential-crypto.ts` 是模型凭据的加解密(AES-256-GCM,纯函数,主密钥由调用方传入,解不开返回 undefined 而非抛),主密钥的环境变量名也定在这里。
-- `main.ts` — 进程入口。先识别并迁移 schema-v0 模型数据,清理旧运行投影,再读环境变量建 Forge 与 HTTP 服务。模型组合、模型服务与批次上限都在库里,不经配置文件。
+- `main.ts` — 进程入口。读环境变量建 Forge 与 HTTP 服务。模型组合、模型服务与批次上限都在库里,不经配置文件。
 
 ## 模块规范
 
@@ -152,7 +152,7 @@
 - Gitea 的版本检查在 `main.ts` 启动时做一次,不合格就报错退出:版本不够时 resolve / unresolve 会 404,要等到第一次有人处置 Finding 才显形。企业版从 `/api/v1/version` 返回的是自家版本号:对企业版 26.4.4 实测读到 `26.4.4`,不是对应的社区版 `1.26.4`。版本号解析不出来时放行——把合规实例挡在门外比漏检更糟。
 - 凭据不写进 remote URL,也不落盘。每次 git 调用以 `http.extraHeader` 传入。
 - 模型凭据只经 `MODEL_API_KEY_ENV` 一个环境变量进入 Reviewer 子进程,不进 IPC 消息、运行文件、命令参数或子进程的其他环境变量——这些位置会被日志与崩溃转储带出去。
-- 数据库里的 `model_service`、`model_service_credential`、`model_directory`、`model_directory_model` 与 `model_supplement` 是模型配置、目录与来源的唯一真相源。旧 `custom_provider`、`model_credential`、`model_row` 不属于当前 schema,只能由一次性 schema-v0 迁移器读取。
+- 数据库里的 `model_service`、`model_service_credential`、`model_directory`、`model_directory_model` 与 `model_supplement` 是模型配置、目录与来源的唯一真相源。旧 `custom_provider`、`model_credential`、`model_row` 不属于当前 schema;一次性迁移器已随 issue #217 删除,带这些旧表的 schema-v0 库直接拒绝启动。
 - 候选配置不落库。预览只返回脱敏发现结果;最终提交重新发现并跑一次最小真实推理,然后以强制 `expectedVersion` 在一个事务里整份推进服务、凭据、目录和补录。验证或版本竞争失败时当前版本一行不动。
 - Pi 内置、pi.dev 增量与厂商目录只在显式预览或刷新时作为发现输入。`MULTIREVIEWER_CACHE_DIR/pi-models/models-store.json` 可以缓存远程输入,但数据库目录快照才是产品事实;共享 `models.json` 当前配置已删除,Reviewer 不读 `models-store.json`,也不在 Run 中刷新目录。
 - Review Run 只经 `getReviewRunSnapshot` 读一次生效组合与其引用的模型服务版本,只解密这些服务的凭据,再把 provider、model id、地址、协议、可信运行字段与服务版本冻结进运行计划。后续批次与下一次配置切换隔离;审计只落非秘密的服务版本和运行模型。
