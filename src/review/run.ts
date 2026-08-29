@@ -57,6 +57,7 @@ import {
   beginTrace,
   createTraceRecorder,
   endTrace,
+  runChannel,
   type TraceRecorder,
 } from "./trace.ts";
 
@@ -1094,7 +1095,7 @@ export async function runReview(
 
     // 一有 runId 就可以接受订阅(ADR 0017):面板打开进行中的轮次时要能接上实时推送,
     // 而第一条编排事件紧接着就发出来了。
-    beginTrace(runId);
+    beginTrace(runChannel(runId));
     const trace = createTraceRecorder(store, runId);
 
     try {
@@ -1394,7 +1395,7 @@ export async function runReview(
     } finally {
       // 订阅者一定要收到结束信号:成功、失败、中途抛异常都要,否则页面会一直等下去。
       // 抛异常那一档没有 `run_finished` 落库——这一轮确实没跑完,轨迹照实停在崩溃前。
-      endTrace(runId);
+      endTrace(runChannel(runId));
       store.close();
       // 「正在审查」一定要撤掉:成功、失败、中途抛异常都要。留着它 PR 上会永远挂着
       // 一只眼睛,看起来像审查卡死了。

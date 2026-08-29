@@ -32,7 +32,15 @@ import type {
   Severity,
 } from "./finding.ts";
 import { containerBranches, type RangeReviewState } from "./range-review.ts";
-import type { TraceEvent, TraceEventInput, TraceKind, TraceScope } from "./trace.ts";
+import type {
+  RuleTraceEvent,
+  RuleTraceEventInput,
+  RuleTraceKind,
+  TraceEvent,
+  TraceEventInput,
+  TraceKind,
+  TraceScope,
+} from "./trace.ts";
 
 export const STORE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS review_run (
@@ -356,6 +364,29 @@ CREATE TABLE IF NOT EXISTS rule_proposal (
 );
 CREATE INDEX IF NOT EXISTS rule_proposal_by_repo ON rule_proposal(repo_id);
 
+-- 规则轨迹(CONTEXT.md,issue #214)。一次基点探索或一次处置反哺是一条轨迹,task_id
+-- 标识它,seq 在一条轨迹之内自增。事件行的形状与 review_trace 同源(ADR 0017):按时间
+-- 顺序一行一条,payload 是 JSON 文本、不设长度上限。
+--
+-- 与 review_trace 分表:那张表的每一行都挂在一个 Review Run 上(run_id 引用 review_run),
+-- 而规则 agent 跑在 Review Run 之外,共用一张表就要给它的行留一个空的 run_id 与一套
+-- 说不通的 scope。
+--
+-- 没有单独的任务表:task_id 由这一句 INSERT 里的子查询取全表的 MAX+1 分配(与 seq 同一条
+-- 口径),第一条 rule_agent_started 事件就是这条轨迹的存在本身,起了却一条事件都没有的
+-- 任务因此不存在。source 与 repo_id 逐行重复,换来的是不必维护第二张表的生命周期。
+CREATE TABLE IF NOT EXISTS rule_trace (
+  task_id INTEGER NOT NULL,
+  repo_id INTEGER NOT NULL REFERENCES repo(id),
+  source TEXT NOT NULL CHECK (source IN ('baseline-exploration', 'disposition-feedback')),
+  seq INTEGER NOT NULL,
+  at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  PRIMARY KEY (task_id, seq)
+);
+CREATE INDEX IF NOT EXISTS rule_trace_by_repo ON rule_trace(repo_id);
+
 
 -- 审查策略,一项一行。reviewers 是全局模型组合,与 repo.reviewers 同构(ReviewerSpec
 -- 的 JSON 数组);max_changed_lines_per_batch 是正整数的字符串形,缺行即取默认值。两项各有
@@ -553,6 +584,7 @@ const ADD_COLUMNS = [
   "ALTER TABLE model_directory_model ADD COLUMN thinking_level_map_json TEXT",
   "ALTER TABLE model_directory_model ADD COLUMN compat_json TEXT",
   "ALTER TABLE rule_exploration ADD COLUMN thinking_level TEXT",
+  "ALTER TABLE rule_proposal ADD COLUMN trace_task_id INTEGER",
 ];
 
 /**
@@ -1189,6 +1221,11 @@ export type RuleProposalInput = ReviewRuleInput & {
   source: RuleProposalSource;
   /** 出处附注:处置反哺放触发它的处置备注,基点探索没有。 */
   sourceNote: string | null;
+  /**
+   * 提出它的那一次规则 agent 任务的轨迹标识(CONTEXT.md 规则轨迹,issue #214)。人据此
+   * 回溯到「这条提案是怎么推出来的」。轨迹没起来时为 null,升级前入队的旧提案同理。
+   */
+  traceTaskId: number | null;
 };
 
 /** 队列里的一条修订提案。`state` 是裁决状态机,裁决过的仍留在队列里供查。 */
@@ -1788,6 +1825,24 @@ export type Store = {
    * 没有事件的轮次得到空数组——升级前跑过的轮次就是这一档。
    */
   listTrace(runId: number, afterSeq?: number): TraceEvent[];
+  /**
+   * 起一条规则轨迹(CONTEXT.md 规则轨迹,issue #214),返回它的任务标识。
+   *
+   * 标识与序号都由这一句 INSERT 自己算,口径与 `appendTrace` 相同;写下的第一条事件
+   * 是 `rule_agent_started`,`payload` 是这一次任务的入参。
+   */
+  startRuleTrace(repoId: number, source: RuleProposalSource, payload: unknown): number;
+  /** 追加一条规则轨迹事件,返回落库后的那条(带序号与时刻)。 */
+  appendRuleTrace(taskId: number, event: RuleTraceEventInput): RuleTraceEvent;
+  /** 一条规则轨迹,按 `seq` 升序。`afterSeq` 给了就只回它之后的那些,断线续传用。 */
+  listRuleTrace(taskId: number, afterSeq?: number): RuleTraceEvent[];
+  /** 这条规则轨迹挂在哪个仓库上。认不出的任务回 undefined,可见性据它判。 */
+  ruleTraceRepo(taskId: number): number | undefined;
+  /**
+   * 这个仓库最近一次基点探索的轨迹标识,没有即 null。基点探索每仓库至多一次、重新
+   * 探索覆盖上一次,最近的那一条就是 `rule_exploration` 那一行的过程。
+   */
+  latestExplorationTrace(repoId: number): number | null;
   /**
    * 处置率统计(ADR 0006,主维度见 ADR 0015):按 Finding Identity 折叠,fallback
    * (body)排除,unknown 按 PR 状态分流,时间窗按同一处 Finding 首次报出那轮的开始
@@ -2675,8 +2730,8 @@ export function openStore(dbPath: string): Store {
       .prepare(
         `INSERT INTO rule_proposal
            (repo_id, change, target_rule_id, scope, statement, layer, source, source_note,
-            state, created_at, decided_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL)`,
+            trace_task_id, state, created_at, decided_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL)`,
       )
       .run(
         repoId,
@@ -2687,6 +2742,7 @@ export function openStore(dbPath: string): Store {
         input.layer,
         input.source,
         input.sourceNote,
+        input.traceTaskId,
         at,
       );
     return Number(inserted.lastInsertRowid);
@@ -3123,6 +3179,7 @@ export function openStore(dbPath: string): Store {
         db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM rule_exploration WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM rule_proposal WHERE repo_id = ?").run(repoId);
+        db.prepare("DELETE FROM rule_trace WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM repo WHERE id = ?").run(repoId);
         db.exec("COMMIT");
       } catch (error) {
@@ -3403,7 +3460,7 @@ export function openStore(dbPath: string): Store {
       return db
         .prepare(
           `SELECT id, change, target_rule_id, scope, statement, layer, source, source_note,
-                  state, created_at, decided_at
+                  trace_task_id, state, created_at, decided_at
              FROM rule_proposal WHERE repo_id = ? ORDER BY id`,
         )
         .all(repoId)
@@ -3416,6 +3473,10 @@ export function openStore(dbPath: string): Store {
           layer: String(row["layer"]),
           source: String(row["source"]) as RuleProposalSource,
           sourceNote: row["source_note"] === null ? null : String(row["source_note"]),
+          traceTaskId:
+            row["trace_task_id"] === null || row["trace_task_id"] === undefined
+              ? null
+              : Number(row["trace_task_id"]),
           state: String(row["state"]) as RuleProposal["state"],
           createdAt: String(row["created_at"]),
           decidedAt: row["decided_at"] === null ? null : String(row["decided_at"]),
@@ -4762,6 +4823,74 @@ export function openStore(dbPath: string): Store {
         kind: String(row["kind"]) as TraceKind,
         payload: JSON.parse(String(row["payload"])) as unknown,
       }));
+    },
+
+    startRuleTrace(repoId, source, payload) {
+      const at = new Date().toISOString();
+      // 任务标识与序号在同一句里算:先查后写会让并发的两次任务拿到同一个号。
+      const inserted = db
+        .prepare(
+          `INSERT INTO rule_trace (task_id, repo_id, source, seq, at, kind, payload)
+           VALUES (
+             (SELECT COALESCE(MAX(task_id), 0) + 1 FROM rule_trace),
+             ?, ?, 1, ?, 'rule_agent_started', ?
+           )
+           RETURNING task_id`,
+        )
+        .get(repoId, source, at, JSON.stringify(payload ?? null));
+      return Number(inserted?.["task_id"]);
+    },
+
+    appendRuleTrace(taskId, event) {
+      const at = new Date().toISOString();
+      const payload = JSON.stringify(event.payload ?? null);
+      // repo_id 与 source 从这条轨迹的头一行抄:它们描述的是整条轨迹,逐行重复只是
+      // 为了让可见性与级联删除各只读一张表。
+      const inserted = db
+        .prepare(
+          `INSERT INTO rule_trace (task_id, repo_id, source, seq, at, kind, payload)
+           SELECT ?, repo_id, source,
+                  (SELECT COALESCE(MAX(seq), 0) + 1 FROM rule_trace WHERE task_id = ?),
+                  ?, ?, ?
+             FROM rule_trace WHERE task_id = ? ORDER BY seq LIMIT 1
+           RETURNING seq`,
+        )
+        .get(taskId, taskId, at, event.kind, payload, taskId);
+      return { seq: Number(inserted?.["seq"]), taskId, at, kind: event.kind, payload: event.payload };
+    },
+
+    listRuleTrace(taskId, afterSeq) {
+      return db
+        .prepare(
+          `SELECT seq, at, kind, payload
+             FROM rule_trace
+            WHERE task_id = ? AND seq > ?
+            ORDER BY seq`,
+        )
+        .all(taskId, afterSeq ?? 0)
+        .map((row) => ({
+          seq: Number(row["seq"]),
+          taskId,
+          at: String(row["at"]),
+          kind: String(row["kind"]) as RuleTraceKind,
+          payload: JSON.parse(String(row["payload"])) as unknown,
+        }));
+    },
+
+    ruleTraceRepo(taskId) {
+      const row = db.prepare("SELECT repo_id FROM rule_trace WHERE task_id = ? LIMIT 1").get(taskId);
+      return row === undefined ? undefined : Number(row["repo_id"]);
+    },
+
+    latestExplorationTrace(repoId) {
+      const row = db
+        .prepare(
+          `SELECT MAX(task_id) AS task_id FROM rule_trace
+            WHERE repo_id = ? AND source = 'baseline-exploration'`,
+        )
+        .get(repoId);
+      const taskId = row?.["task_id"];
+      return taskId === null || taskId === undefined ? null : Number(taskId);
     },
 
     dispositionStats(from, to) {

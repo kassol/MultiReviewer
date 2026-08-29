@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { ChevronDownIcon, ChevronRightIcon, CrossCircledIcon } from "@radix-ui/react-icons";
 import { Badge, Callout, Skeleton } from "@radix-ui/themes";
@@ -27,8 +27,8 @@ export type TraceEvent = {
   payload: Record<string, unknown>;
 };
 
-/** `GET /runs/{id}/trace` 的全量事件,按 `seq` 升序。 */
-type TraceList = { events: TraceEvent[] };
+/** `GET …/trace` 的全量事件,按 `seq` 升序。审查轨迹与规则轨迹同一个形状。 */
+type TraceList<E> = { events: E[] };
 
 function traceKey(runId: number): [string, number] {
   return ["run-trace", runId];
@@ -38,7 +38,10 @@ function traceKey(runId: number): [string, number] {
  * 同一个 seq 只留一条并保持升序:断线重连会把重叠的那几条再回放一遍,而 SSE 的到达
  * 顺序不是契约的一部分。
  */
-function appendEvent(prev: TraceList | undefined, event: TraceEvent): TraceList {
+function appendEvent<E extends { seq: number }>(
+  prev: TraceList<E> | undefined,
+  event: E,
+): TraceList<E> {
   const events = prev?.events ?? [];
   if (events.some((known) => known.seq === event.seq)) return { events };
   const at = events.findIndex((known) => known.seq > event.seq);
@@ -49,12 +52,12 @@ function appendEvent(prev: TraceList | undefined, event: TraceEvent): TraceList 
 
 // payload 是 `Record<string, unknown>`:每个字段读之前先验一次形状,后端改了字段
 // 名或类型时那一格显示成缺失,而不是让整个面板白屏。
-function str(payload: Record<string, unknown>, key: string): string | null {
+export function str(payload: Record<string, unknown>, key: string): string | null {
   const value = payload[key];
   return typeof value === "string" && value !== "" ? value : null;
 }
 
-function num(payload: Record<string, unknown>, key: string): number | null {
+export function num(payload: Record<string, unknown>, key: string): number | null {
   const value = payload[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -124,7 +127,7 @@ function summarize(value: unknown, limit = 160): string {
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
-function EventTime({ at }: { at: string }) {
+export function EventTime({ at }: { at: string }) {
   return (
     <span className="w-[4.5rem] shrink-0 pt-px font-mono text-xs tabular-nums text-text-secondary">
       {localSecond(at)}
@@ -133,7 +136,7 @@ function EventTime({ at }: { at: string }) {
 }
 
 /** 认不出的事件按原样摊开:轨迹的用途是追溯,藏起来等于把一条真实事件抹掉。 */
-function UnknownEvent({ event }: { event: TraceEvent }) {
+export function UnknownEvent({ event }: { event: { kind: string; payload: Record<string, unknown> } }) {
   return (
     <div className="flex min-w-0 flex-col gap-1">
       <span className="font-mono text-base text-text">{event.kind}</span>
@@ -247,7 +250,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
 }
 
 /** 一次工具调用:一行摘要,参数全文按需展开。返回内容只记长度,不入轨迹。 */
-function ToolCall({ event }: { event: TraceEvent }) {
+export function ToolCall({ event }: { event: { payload: Record<string, unknown> } }) {
   const [open, setOpen] = useState(false);
   const argsId = useId();
   const payload = event.payload;
@@ -431,61 +434,63 @@ const STREAM_LABEL = {
   ended: "本轮轨迹已结束",
 } as const;
 
+export type StreamState = keyof typeof STREAM_LABEL;
+
 /**
- * Review Run 详情的审查轨迹视图(CONTEXT.md 审查轨迹,issue #171)。
- *
- * 历史由 `GET /runs/{id}/trace` 一次取全,进行中的那一轮再接 SSE 把增量追加到同一份
- * 查询缓存里——两条来源写同一个数组,页面就不必区分「这条是取回来的还是推过来的」。
+ * 一条轨迹的读取:历史一次取全,再把 SSE 的增量追加进同一份查询缓存——两条来源写同一个
+ * 数组,页面就不必区分「这条是取回来的还是推过来的」。审查轨迹与规则轨迹共用它
+ * (issue #214),差别只有取哪个端点、还在不在跑,以及结束时该刷新哪几份投影。
  */
-export function RunTrace({ run }: { run: RunItem }) {
+export function useTrace<E extends { seq: number }>(options: {
+  queryKey: readonly unknown[];
+  /** 全量端点。流的端点固定是它加 `/stream`。 */
+  path: string;
+  /** 这条轨迹还可能有新事件吗。false 即只读历史,不连流。 */
+  live: boolean;
+  /** 收到结束信号时要刷新的那几份查询。 */
+  invalidateOnEnd?: readonly (readonly unknown[])[];
+}): { events: E[]; query: ReturnType<typeof useQuery<TraceList<E>>>; stream: StreamState } {
+  const { queryKey, path, live } = options;
   const queryClient = useQueryClient();
-  const trace = useQuery({
-    queryKey: traceKey(run.id),
-    queryFn: () => fetchJson<TraceList>(`/runs/${run.id}/trace`),
+  const query = useQuery({
+    queryKey,
+    queryFn: () => fetchJson<TraceList<E>>(path),
     // 事件只增不改,取回来的那一段永远不会变。不设这一条的话,窗口重新聚焦会用一份
     // 旧快照把 SSE 追加进来的增量整片盖掉。
     staleTime: Number.POSITIVE_INFINITY,
   });
-  const live = run.finishedAt === null && !run.failed;
-  const [stream, setStream] = useState<keyof typeof STREAM_LABEL>("idle");
-  // 人手动开合过的 Reviewer 记在这里,其余按默认规则。
-  const [toggled, setToggled] = useState<Record<string, boolean>>({});
-  const loaded = trace.isSuccess;
+  const [stream, setStream] = useState<StreamState>("idle");
+  const loaded = query.isSuccess;
+  // 要刷新的那几份查询每次渲染都是新数组,放进依赖会让连接每渲染一次就重来一遍。
+  const invalidate = useRef(options.invalidateOnEnd);
+  invalidate.current = options.invalidateOnEnd;
 
   useEffect(() => {
     if (!live || !loaded) return;
-    const key = traceKey(run.id);
-    const known = queryClient.getQueryData<TraceList>(key)?.events ?? [];
+    const known = queryClient.getQueryData<TraceList<E>>(queryKey)?.events ?? [];
     /*
      * 原生 `EventSource` 不能给首个请求设 `Last-Event-ID`,用 `?after=` 表达同样的
      * 语义:从这个 seq 之后开始。之后浏览器自动重连时会自己带上 `Last-Event-ID`,
      * 断线那几秒的事件因此不会丢。
      */
-    const source = new EventSource(
-      apiUrl(`/runs/${run.id}/trace/stream?after=${known.at(-1)?.seq ?? 0}`),
-    );
+    const source = new EventSource(apiUrl(`${path}/stream?after=${known.at(-1)?.seq ?? 0}`));
     // 握手成功前只说「正在连接」:`open` 才是服务端真的把头发过来了。
     setStream("connecting");
     source.addEventListener("open", () => setStream("open"));
     source.addEventListener("trace", (event) => {
       const raw = (event as MessageEvent<string>).data;
-      let parsed: TraceEvent;
+      let parsed: E;
       try {
-        parsed = JSON.parse(raw) as TraceEvent;
+        parsed = JSON.parse(raw) as E;
       } catch {
         return;
       }
-      queryClient.setQueryData<TraceList>(key, (prev) => appendEvent(prev, parsed));
+      queryClient.setQueryData<TraceList<E>>(queryKey, (prev) => appendEvent(prev, parsed));
     });
     source.addEventListener("end", () => {
       source.close();
       setStream("ended");
-      /*
-       * 结束信号只说轨迹到头了。这一轮的结论、Finding 与耗时在轮次与阶段投影里,让读
-       * 它们的几份查询各刷新一次,面板头部与列表跟着从「运行中」变过来——否则要等下
-       * 一次 10 秒轮询才对得上。
-       */
-      for (const projection of [["stages"], ["stage-detail"], ["run"]]) {
+      for (const projection of invalidate.current ?? []) {
         void queryClient.invalidateQueries({ queryKey: projection });
       }
     });
@@ -494,9 +499,50 @@ export function RunTrace({ run }: { run: RunItem }) {
       setStream(source.readyState === EventSource.CLOSED ? "idle" : "retry");
     };
     return () => source.close();
-  }, [live, loaded, run.id, queryClient]);
+    // `queryKey` 按内容比:调用方每次渲染给的是一个新数组,按引用比会让连接每渲染
+    // 一次就重来一遍。
+  }, [live, loaded, path, queryClient, JSON.stringify(queryKey)]);
 
-  const events = trace.data?.events ?? [];
+  return { events: query.data?.events ?? [], query, stream };
+}
+
+/** 实时状态那一行。轨迹还在跑时才出现。 */
+export function StreamStatus({ stream }: { stream: StreamState }) {
+  return (
+    <p className="flex items-center gap-1.5 px-1 text-sm text-text-secondary" aria-live="polite">
+      <span
+        className={`size-1.5 shrink-0 rounded-full ${
+          stream === "open" ? "bg-primary" : stream === "retry" ? "bg-warning-icon" : "bg-text-faint"
+        }`}
+        aria-hidden
+      />
+      {STREAM_LABEL[stream]}
+    </p>
+  );
+}
+
+/**
+ * Review Run 详情的审查轨迹视图(CONTEXT.md 审查轨迹,issue #171)。
+ *
+ * 历史由 `GET /runs/{id}/trace` 一次取全,进行中的那一轮再接 SSE 把增量追加到同一份
+ * 查询缓存里——两条来源写同一个数组,页面就不必区分「这条是取回来的还是推过来的」。
+ */
+export function RunTrace({ run }: { run: RunItem }) {
+  /*
+   * 结束信号只说轨迹到头了。这一轮的结论、Finding 与耗时在轮次与阶段投影里,让读它们的
+   * 几份查询各刷新一次,面板头部与列表跟着从「运行中」变过来——否则要等下一次 10 秒轮询
+   * 才对得上。
+   */
+  const { events, query: trace, stream } = useTrace<TraceEvent>({
+    queryKey: traceKey(run.id),
+    path: `/runs/${run.id}/trace`,
+    live: run.finishedAt === null && !run.failed,
+    invalidateOnEnd: [["stages"], ["stage-detail"], ["run"]],
+  });
+  const live = run.finishedAt === null && !run.failed;
+  // 人手动开合过的 Reviewer 记在这里,其余按默认规则。
+  const [toggled, setToggled] = useState<Record<string, boolean>>({});
+
   const milestones = events.filter((event) => event.scope === "run");
   const byReviewer = new Map<string, TraceEvent[]>();
   for (const event of events) {
@@ -523,17 +569,7 @@ export function RunTrace({ run }: { run: RunItem }) {
         </Callout.Root>
       ) : null}
 
-      {live ? (
-        <p className="flex items-center gap-1.5 px-1 text-sm text-text-secondary" aria-live="polite">
-          <span
-            className={`size-1.5 shrink-0 rounded-full ${
-              stream === "open" ? "bg-primary" : stream === "retry" ? "bg-warning-icon" : "bg-text-faint"
-            }`}
-            aria-hidden
-          />
-          {STREAM_LABEL[stream]}
-        </p>
-      ) : null}
+      {live ? <StreamStatus stream={stream} /> : null}
 
       {trace.isPending ? (
         <div className="flex flex-col gap-2" role="status" aria-live="polite">

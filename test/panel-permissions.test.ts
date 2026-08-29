@@ -61,6 +61,8 @@ const ROUTE_EXPECTATIONS = [
   ["POST", "/^\\/repos\\/(\\d+)\\/rotate$/", "repo:write", "repo:1"],
   ["GET", "/^\\/repos\\/(\\d+)\\/hooks$/", "authenticated-only", "repo:1"],
   ["GET", "/^\\/repos\\/(\\d+)\\/rules$/", "authenticated-only", "repo:1"],
+  ["GET", "/^\\/repos\\/(\\d+)\\/rule-traces\\/(\\d+)$/", "authenticated-only", "repo:1"],
+  ["GET", "/^\\/repos\\/(\\d+)\\/rule-traces\\/(\\d+)\\/stream$/", "authenticated-only", "repo:1"],
   ["POST", "/^\\/repos\\/(\\d+)\\/rules$/", "rule:write", "repo:1"],
   ["PUT", "/^\\/repos\\/(\\d+)\\/rules\\/(\\d+)$/", "rule:write", "repo:1"],
   ["DELETE", "/^\\/repos\\/(\\d+)\\/rules\\/(\\d+)$/", "rule:write", "repo:1"],

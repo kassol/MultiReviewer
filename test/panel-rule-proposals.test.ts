@@ -56,6 +56,7 @@ function proposal(overrides: Partial<RuleProposalInput> = {}): RuleProposalInput
   return {
     change: "add",
     targetRuleId: null,
+    traceTaskId: null,
     scope: "",
     statement: "新提的一条规范陈述",
     layer: "架构",

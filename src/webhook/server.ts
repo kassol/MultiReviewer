@@ -106,7 +106,15 @@ import {
   type Store,
 } from "../review/store.ts";
 import { modelServiceTargetFingerprint } from "../review/model-service-migration.ts";
-import { subscribeTrace, type TraceEvent } from "../review/trace.ts";
+import {
+  ruleChannel,
+  runChannel,
+  startRuleTrace,
+  subscribeTrace,
+  type RuleTraceEvent,
+  type RuleTraceRecorder,
+  type TraceEvent,
+} from "../review/trace.ts";
 import {
   conflictingBuiltinProviderNames,
   listPiBuiltinProviders,
@@ -134,6 +142,7 @@ import {
   createPiRuleAgent,
   RULE_LIMIT,
   type RuleAgent,
+  type RuleAgentEvent,
   type RuleAgentItem,
 } from "../reviewer/rule-agent.ts";
 
@@ -1865,6 +1874,23 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     access: "authenticated-only",
     assignment: { by: "repo", group: 1 },
     handler: ({ res, deps }, match) => handleRuleSet(res, deps, Number(match![1])),
+  },
+  {
+    // 规则轨迹(issue #214)与规则集读侧同一格:能看这个仓库的规则集就能看它是怎么来的。
+    method: "GET",
+    pattern: /^\/repos\/(\d+)\/rule-traces\/(\d+)$/,
+    access: "authenticated-only",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ res, deps }, match) =>
+      handleRuleTrace(res, deps, Number(match![1]), Number(match![2])),
+  },
+  {
+    method: "GET",
+    pattern: /^\/repos\/(\d+)\/rule-traces\/(\d+)\/stream$/,
+    access: "authenticated-only",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ req, res, deps }, match) =>
+      handleRuleTraceStream(req, res, deps, Number(match![1]), Number(match![2])),
   },
   {
     // 规则的手工增删改(issue #203)由 `rule:write` 这一格拦下,读侧不受它影响。
@@ -4590,7 +4616,7 @@ function positiveSeq(raw: string | undefined | null): number {
 }
 
 /** 一条 SSE 帧:`id` 取 `seq`,断线之后浏览器用它作 `Last-Event-ID` 续传。 */
-function traceFrame(event: TraceEvent): string {
+function traceFrame(event: TraceEvent | RuleTraceEvent): string {
   return `id: ${event.seq}\nevent: trace\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
@@ -4609,7 +4635,22 @@ function handleRunTraceStream(
 ): void {
   const exists = withStore(deps.dbPath, (store) => store.getRunRange(runId) !== undefined);
   if (!exists) return sendJson(res, 404, { error: "没有这一轮 Review Run" });
+  return streamTrace(req, res, deps, runChannel(runId), (afterSeq) =>
+    withStore(deps.dbPath, (store) => store.listTrace(runId, afterSeq)),
+  );
+}
 
+/**
+ * 一条轨迹的实时推送(issue #171,issue #214 起规则轨迹共用)。回放与订阅之外的差别只有
+ * 「事件从哪里读」,由 `replay` 给。
+ */
+function streamTrace(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  channel: string,
+  replay: (afterSeq: number) => readonly (TraceEvent | RuleTraceEvent)[],
+): void {
   // 只补这个序号之后的那些。两条来源:浏览器重连时自动带的 `Last-Event-ID`,以及
   // 查询串上的 `?after=`——原生 `EventSource` 设不了首个请求的请求头,面板打开时先取
   // `/trace` 补历史、再拿最后那个 seq 接流,只能走查询串。两个都在时取大的:它们说的
@@ -4645,14 +4686,12 @@ function handleRunTraceStream(
     res.end();
   };
 
-  const unsubscribe = subscribeTrace(runId, {
+  const unsubscribe = subscribeTrace(channel, {
     onEvent: (event) => res.write(traceFrame(event)),
     onEnd: finish,
   });
 
-  for (const event of withStore(deps.dbPath, (store) => store.listTrace(runId, afterSeq))) {
-    res.write(traceFrame(event));
-  }
+  for (const event of replay(afterSeq)) res.write(traceFrame(event));
 
   if (unsubscribe === undefined) {
     finish();
@@ -5912,9 +5951,14 @@ function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: num
   const view = withStore(deps.dbPath, (store) => {
     const ruleSet = store.getRuleSet(repoId);
     if (ruleSet === undefined) return undefined;
+    const exploration = store.getRuleExploration(repoId);
     return {
       ...ruleSet,
-      exploration: store.getRuleExploration(repoId),
+      // 探索的轨迹标识(issue #214):最近一次探索的那一条,就是这一行记的那一次的过程。
+      exploration:
+        exploration === null
+          ? null
+          : { ...exploration, traceTaskId: store.latestExplorationTrace(repoId) },
       draft: store.getRuleDraft(repoId),
       proposals: store.getRuleProposals(repoId),
     };
@@ -5923,6 +5967,46 @@ function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: num
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
   return sendJson(res, 200, view);
+}
+
+const NO_RULE_TRACE = "这个仓库没有这条规则轨迹";
+
+/**
+ * 这条规则轨迹属于这个仓库吗(CONTEXT.md 规则轨迹,issue #214)。
+ *
+ * 端点挂在仓库下面,可见性因此与规则集读侧同一套:登录加仓库分配,分配外由过滤层判
+ * 404。这里再拦一道「任务不在这个仓库」——不拦的话,分到了任意一个仓库的人就能凭标识
+ * 读到别人仓库的探索过程。
+ */
+function ruleTraceInRepo(deps: WebhookServerDeps, repoId: number, taskId: number): boolean {
+  return withStore(deps.dbPath, (store) => store.ruleTraceRepo(taskId)) === repoId;
+}
+
+/** 一条规则轨迹的全量事件,按 `seq` 升序。 */
+function handleRuleTrace(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+  taskId: number,
+): void {
+  if (!ruleTraceInRepo(deps, repoId, taskId)) return sendJson(res, 404, { error: NO_RULE_TRACE });
+  return sendJson(res, 200, {
+    events: withStore(deps.dbPath, (store) => store.listRuleTrace(taskId)),
+  });
+}
+
+/** 一条规则轨迹的实时推送。跑完的那些回放完即发结束信号,与审查轨迹同一套。 */
+function handleRuleTraceStream(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+  taskId: number,
+): void {
+  if (!ruleTraceInRepo(deps, repoId, taskId)) return sendJson(res, 404, { error: NO_RULE_TRACE });
+  return streamTrace(req, res, deps, ruleChannel(taskId), (afterSeq) =>
+    withStore(deps.dbPath, (store) => store.listRuleTrace(taskId, afterSeq)),
+  );
 }
 
 /**
@@ -6070,10 +6154,7 @@ function usableRuleItems(items: readonly RuleAgentItem[]): RuleAgentItem[] {
 function proposalsFromItems(
   items: readonly RuleAgentItem[],
   activeRules: readonly ReviewRuleRecord[],
-  origin: Pick<RuleProposalInput, "source" | "sourceNote"> = {
-    source: "baseline-exploration",
-    sourceNote: null,
-  },
+  origin: Pick<RuleProposalInput, "source" | "sourceNote" | "traceTaskId">,
 ): RuleProposalInput[] {
   const byId = new Map(activeRules.map((rule) => [rule.id, rule]));
   const proposals: RuleProposalInput[] = [];
@@ -6105,6 +6186,15 @@ function proposalsFromItems(
 }
 
 /**
+ * 规则 agent 的一条过程事件落进规则轨迹(issue #214)。两条链路共用:事件类型就是轨迹
+ * 的事件类型,`kind` 之外的那几项原样成为 payload——与 Review Run 那侧同一条口径。
+ */
+function recordRuleAgentEvent(trace: RuleTraceRecorder, event: RuleAgentEvent): void {
+  const { kind, ...payload } = event;
+  trace.record(kind, payload);
+}
+
+/**
  * 一次基点探索的后台执行:把工作副本 checkout 到基点 commit,交给规则 agent,产出落成
  * 规则草案。失败留原因(CONTEXT.md 基点探索),人看得到、也可以再发起一次。
  */
@@ -6117,6 +6207,19 @@ async function runRuleExplorationInBackground(
 ): Promise<void> {
   let failure: string | undefined;
   let worktree: Worktree | undefined;
+  // 轨迹从发起这一刻起(CONTEXT.md 规则轨迹,issue #214):取不回代码、模型用不了这些
+  // 失败也发生在探索之内,人来这条轨迹就是要看它究竟卡在哪一步。
+  const trace = startRuleTrace(
+    (use) => withStore(deps.dbPath, use),
+    repoId,
+    "baseline-exploration",
+    {
+      source: "baseline-exploration",
+      baselineSha,
+      model: modelIdentity(plan.spec),
+      thinkingLevel: plan.spec.thinkingLevel ?? null,
+    },
+  );
   try {
     const forge = deps.forges.gitea;
     if (forge === undefined) throw new Error("gitea 没有配置 Forge,取不回代码");
@@ -6146,6 +6249,7 @@ async function runRuleExplorationInBackground(
       apiKey: plan.credential,
       existingRules: existingRules.map(toReviewRule),
       ...(plan.spec.thinkingLevel === undefined ? {} : { thinkingLevel: plan.spec.thinkingLevel }),
+      onEvent: (event) => recordRuleAgentEvent(trace, event),
     });
     if (result.failure !== undefined) throw new Error(result.failure);
     const items = usableRuleItems(result.items);
@@ -6158,13 +6262,20 @@ async function runRuleExplorationInBackground(
         ? store.finishRuleExploration(repoId, items, at)
         : store.finishRuleExplorationAsProposals(
             repoId,
-            proposalsFromItems(items, existingRules),
+            proposalsFromItems(items, existingRules, {
+              source: "baseline-exploration",
+              sourceNote: null,
+              traceTaskId: trace.taskId,
+            }),
             at,
           ),
     );
+    trace.record("rule_agent_finished", { items: items.length });
   } catch (error) {
     failure = failureText(error);
+    trace.record("rule_agent_failed", { failure });
   } finally {
+    trace.end();
     await worktree?.release();
   }
 
@@ -6225,6 +6336,8 @@ async function runDispositionFeedbackInBackground(
   const ref: RepoRef = { owner: finding.owner, repo: finding.repo };
   let failure: string | undefined;
   let worktree: Worktree | undefined;
+  // 轨迹起在选定模型之后:这一次挂在哪个仓库、用哪个模型,那之前都还不知道。
+  let trace: RuleTraceRecorder | undefined;
   try {
     const forge = deps.forges.gitea;
     if (forge === undefined) throw new Error("gitea 没有配置 Forge,取不回代码");
@@ -6249,6 +6362,19 @@ async function runDispositionFeedbackInBackground(
     if (spec === undefined) {
       throw new Error("这个仓库没有基点探索记录、全局模型组合也是空的,解读用不了模型");
     }
+    trace = startRuleTrace(
+      (use) => withStore(deps.dbPath, use),
+      context.repoId,
+      "disposition-feedback",
+      {
+        source: "disposition-feedback",
+        note,
+        finding: { id: finding.id, file: finding.file, line: finding.line },
+        baselineSha: finding.headSha,
+        model: modelIdentity(spec),
+        thinkingLevel: spec.thinkingLevel ?? null,
+      },
+    );
     const [plan] = await materializeReviewerPlans(
       deps,
       withStore(deps.dbPath, (store) => store.listModelServices()),
@@ -6287,18 +6413,23 @@ async function runDispositionFeedbackInBackground(
           description: finding.description,
         },
       },
+      onEvent: (event) => recordRuleAgentEvent(trace!, event),
     });
     if (result.failure !== undefined) throw new Error(result.failure);
     const proposals = proposalsFromItems(usableRuleItems(result.items), context.rules, {
       source: "disposition-feedback",
       sourceNote: note,
+      traceTaskId: trace.taskId,
     });
     withStore(deps.dbPath, (store) => {
       for (const proposal of proposals) store.addRuleProposal(context.repoId, proposal);
     });
+    trace.record("rule_agent_finished", { items: proposals.length });
   } catch (error) {
     failure = failureText(error);
+    trace?.record("rule_agent_failed", { failure });
   } finally {
+    trace?.end();
     await worktree?.release();
   }
 

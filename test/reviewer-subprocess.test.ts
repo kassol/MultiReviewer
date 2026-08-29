@@ -10,7 +10,7 @@ import { after, test } from "node:test";
 
 import type { ReviewerEvent, ReviewerInput } from "../src/review/finding.ts";
 import { runInChild } from "../src/reviewer/pi-reviewer.ts";
-import { runRuleAgentChild } from "../src/reviewer/rule-agent.ts";
+import { runRuleAgentChild, type RuleAgentEvent } from "../src/reviewer/rule-agent.ts";
 import { sessionThinkingLevel } from "../src/reviewer/worker-tools.ts";
 
 const cleanups: (() => void)[] = [];
@@ -502,6 +502,31 @@ process.on("message", (request) => {
   assert.equal(result.items[0]!.scope, RULE_REQUEST.baselineSha);
   assert.deepEqual(JSON.parse(result.items[0]!.statement), RULE_REQUEST.existingRules);
   assert.equal(result.items[1]!.layer, "安全");
+});
+
+test("规则 agent 的会话事件与提出的条目按发生顺序回调给编排层", async () => {
+  const path = worker(`
+process.on("message", () => {
+  process.send({ kind: "event", event: { kind: "assistant_message", text: "先读文档" } });
+  process.send({ kind: "rule", item: { scope: "", statement: "第一条", layer: "架构" } });
+  process.send({ kind: "event", event: { kind: "tool_call", tool: "grep", args: { pattern: "x" }, durationMs: 3, isError: false, error: null, resultLength: 9 } });
+  process.send({ kind: "done" });
+  process.exit(0);
+});
+`);
+
+  const events: RuleAgentEvent[] = [];
+  const result = await runRuleAgentChild(path, {
+    ...RULE_REQUEST,
+    onEvent: (event) => events.push(event),
+  });
+  assert.equal(result.failure, undefined);
+  assert.equal(result.items.length, 1);
+  // 条目既进产出也进事件流:轨迹要记下它是在哪两步之间提出来的。
+  assert.deepEqual(
+    events.map((event) => event.kind),
+    ["assistant_message", "rule_proposed", "tool_call"],
+  );
 });
 
 test("规则 agent 的子进程未回报结果即退出时,失败原因带上退出码", async () => {

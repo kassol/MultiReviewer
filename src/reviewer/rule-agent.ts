@@ -8,7 +8,7 @@
 import { fileURLToPath } from "node:url";
 
 import type { ThinkingLevel } from "../config.ts";
-import type { ReviewRule } from "../review/finding.ts";
+import type { ReviewerEvent, ReviewRule } from "../review/finding.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 import { runWorkerChild } from "./subprocess.ts";
 
@@ -54,6 +54,14 @@ export type DispositionFeedback = {
   };
 };
 
+/**
+ * 规则 agent 跑的过程里逐条冒出来的事件(CONTEXT.md 规则轨迹,issue #214)。前两档是
+ * Pi 的会话事件,与 Reviewer 那侧同一个转换的产物;`rule_proposed` 是它经 `propose_rule`
+ * 提出的一条规则,与最终产出的那一条是同一个对象——事件流回答「什么时候提的」,产出
+ * 回答「提了什么」。
+ */
+export type RuleAgentEvent = ReviewerEvent | { kind: "rule_proposed"; item: RuleAgentItem };
+
 /** 交给规则 agent 的一次任务。 */
 export type RuleAgentRequest = {
   /** 已经 checkout 到基点 commit 的工作副本。 */
@@ -79,6 +87,11 @@ export type RuleAgentRequest = {
    * 在集里(issue #207、#208)。
    */
   existingRules: readonly ReviewRule[];
+  /**
+   * 过程事件的回调(issue #214)。逐条给,调用方落成规则轨迹。不进 IPC 消息:它是一个
+   * 函数,跨不了进程边界,子进程那边由 `RuleWorkerMessage` 回传。
+   */
+  onEvent?: (event: RuleAgentEvent) => void;
 };
 
 /** 一次探索的产出。`failure` 有值即这一次没跑成,条目按空处理。 */
@@ -90,11 +103,12 @@ export type RuleAgentResult = {
 export type RuleAgent = (request: RuleAgentRequest) => Promise<RuleAgentResult>;
 
 /** 子进程收到的任务。凭据走环境变量,不进 IPC 消息(与 Reviewer 同一条口径)。 */
-export type RuleWorkerRequest = Omit<RuleAgentRequest, "apiKey">;
+export type RuleWorkerRequest = Omit<RuleAgentRequest, "apiKey" | "onEvent">;
 
-/** 子进程回传的消息:每条规则一发,收尾一发。 */
+/** 子进程回传的消息:每条规则一发,过程事件一条一发,收尾一发。 */
 export type RuleWorkerMessage =
   | { kind: "rule"; item: RuleAgentItem }
+  | { kind: "event"; event: ReviewerEvent }
   | { kind: "done"; failure?: string };
 
 /** 基于 Pi SDK 的规则 agent。每次探索 fork 一个子进程,环境只含自家厂商凭据。 */
@@ -129,7 +143,14 @@ export async function runRuleAgentChild(
     timeoutSubject: "规则 agent",
     payload,
     onMessage: (message) => {
-      if (message.kind === "rule") items.push(message.item);
+      if (message.kind === "event") {
+        request.onEvent?.(message.event);
+        return;
+      }
+      if (message.kind !== "rule") return;
+      items.push(message.item);
+      // 条目与事件一起给:轨迹要按发生顺序记下这一条是在哪两次工具调用之间提出来的。
+      request.onEvent?.({ kind: "rule_proposed", item: message.item });
     },
   });
 

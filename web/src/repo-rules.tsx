@@ -12,6 +12,7 @@ import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { CommitPicker, type CommitSelection } from "./commit-picker.tsx";
+import { RuleTraceButton } from "./rule-trace.tsx";
 import {
   THINKING_LEVEL_LABEL,
   THINKING_LEVELS,
@@ -36,6 +37,8 @@ type RuleExploration = {
   failure: string | null;
   startedAt: string;
   finishedAt: string | null;
+  /** 这一次探索的规则轨迹(CONTEXT.md,issue #214)。升级前跑过的那些没有,为 null。 */
+  traceTaskId: number | null;
 };
 
 /**
@@ -51,6 +54,8 @@ type RuleProposal = {
   layer: string;
   source: "baseline-exploration" | "disposition-feedback";
   sourceNote: string | null;
+  /** 提出它的那一次规则轨迹(issue #214)。人据此回溯这条提案是怎么推出来的。 */
+  traceTaskId: number | null;
   state: "pending" | "accepted" | "rejected";
   decidedAt: string | null;
 };
@@ -277,6 +282,7 @@ function RuleSetDialogContent({
 
       {ruleSet.data === undefined || ruleSet.data.proposals.length === 0 ? null : (
         <ProposalSection
+          repoId={repo.repoId}
           ruleSet={ruleSet.data}
           canWrite={canWrite}
           edit={proposalEdit}
@@ -491,6 +497,7 @@ const SOURCE_LABEL = {
  * 是同一个问题的两半;采纳与驳回按 `rule:write` 出现。
  */
 function ProposalSection({
+  repoId,
   ruleSet,
   canWrite,
   edit,
@@ -499,6 +506,7 @@ function ProposalSection({
   onDecide,
   onSubmitEdit,
 }: {
+  repoId: number;
   ruleSet: RuleSet;
   canWrite: boolean;
   edit: RuleFormState | null;
@@ -567,12 +575,16 @@ function ProposalSection({
                   </div>
                 ) : null}
               </div>
-              <span className="mt-1.5 inline-flex flex-wrap gap-1.5">
+              <span className="mt-1.5 inline-flex flex-wrap items-center gap-1.5">
                 <Badge color="gray" variant="soft">{CHANGE_LABEL[proposal.change]}</Badge>
                 <Badge color="gray" variant="soft">{SOURCE_LABEL[proposal.source]}</Badge>
                 <Badge color="gray" variant="soft">
                   {proposal.scope === "" ? "全仓库" : proposal.scope}
                 </Badge>
+                {/* 出处回溯(issue #214):这条提案是哪一次探索或反哺推出来的。 */}
+                {proposal.traceTaskId === null ? null : (
+                  <RuleTraceButton repoId={repoId} taskId={proposal.traceTaskId} />
+                )}
               </span>
               {target(proposal) === null ? null : (
                 <Text as="p" size="1" color="gray" className="mt-1.5">
@@ -610,12 +622,15 @@ function ProposalSection({
             {decided.map((proposal) => (
               <li key={proposal.id} className="border-t border-line px-4 py-3 first:border-t-0">
                 <Text as="p" size="2" color="gray">{proposal.statement}</Text>
-                <span className="mt-1.5 inline-flex flex-wrap gap-1.5">
+                <span className="mt-1.5 inline-flex flex-wrap items-center gap-1.5">
                   <StatusBadge tone={proposal.state === "accepted" ? "success" : "neutral"}>
                     {proposal.state === "accepted" ? "已采纳" : "已驳回"}
                   </StatusBadge>
                   <Badge color="gray" variant="soft">{CHANGE_LABEL[proposal.change]}</Badge>
                   <Badge color="gray" variant="soft">{SOURCE_LABEL[proposal.source]}</Badge>
+                  {proposal.traceTaskId === null ? null : (
+                    <RuleTraceButton repoId={repoId} taskId={proposal.traceTaskId} />
+                  )}
                 </span>
               </li>
             ))}
@@ -677,13 +692,23 @@ function ExplorationSection({
         <ExplorationLaunch repo={repo} busy={running} onLaunched={onLaunched} />
       </div>
       {exploration === null ? null : (
-        <Text as="p" size="1" color="gray">
-          {running ? "正在探索" : exploration.state === "failed" ? "上次探索失败" : "已完成探索"}
-          {" · "}基点 <CommitChip sha={exploration.baselineSha} /> · 模型 {exploration.model}
-          {exploration.thinkingLevel === null
-            ? null
-            : ` · 思考 ${THINKING_LEVEL_LABEL[exploration.thinkingLevel]}`}
-        </Text>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <Text as="span" size="1" color="gray">
+            {running ? "正在探索" : exploration.state === "failed" ? "上次探索失败" : "已完成探索"}
+            {" · "}基点 <CommitChip sha={exploration.baselineSha} /> · 模型 {exploration.model}
+            {exploration.thinkingLevel === null
+              ? null
+              : ` · 思考 ${THINKING_LEVEL_LABEL[exploration.thinkingLevel]}`}
+          </Text>
+          {/* 运行中实时看,结束后回看(issue #214)。轨迹在弹窗里开,不新建顶级导航。 */}
+          {exploration.traceTaskId === null ? null : (
+            <RuleTraceButton
+              repoId={repo.repoId}
+              taskId={exploration.traceTaskId}
+              label={running ? "看它在做什么" : "查看轨迹"}
+            />
+          )}
+        </div>
       )}
 
       {exploration?.state === "failed" && exploration.failure !== null ? (

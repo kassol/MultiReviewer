@@ -20,6 +20,7 @@ import {
   type RuleWorkerMessage,
   type RuleWorkerRequest,
 } from "./rule-agent.ts";
+import { reviewerEventStream } from "./trace-events.ts";
 import {
   numberedReadTool,
   prepareAgentRuntime,
@@ -182,6 +183,11 @@ async function run(request: RuleWorkerRequest): Promise<void> {
     sessionManager: SessionManager.inMemory(request.worktreePath),
     settingsManager,
   });
+
+  // 规则轨迹只订阅并转发,不做判断(ADR 0017、issue #214):转换与 Reviewer 那侧共用
+  // 同一个,凭据在转换那一步就抹掉。
+  const forwardEvent = reviewerEventStream(apiKey, (event) => send({ kind: "event", event }));
+  session.subscribe(forwardEvent);
 
   let thrown: string | undefined;
   try {
