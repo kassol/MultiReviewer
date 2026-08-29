@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS review_run_reviewer_pin (
   api TEXT,
   runtime_model_json TEXT,
   materialization_failure TEXT,
+  thinking_level TEXT,
   PRIMARY KEY (run_id, position),
   UNIQUE (run_id, identity)
 );
@@ -317,6 +318,7 @@ CREATE TABLE IF NOT EXISTS rule_exploration (
   baseline_sha TEXT NOT NULL,
   model TEXT NOT NULL,
   thinking_level TEXT,
+  trace_task_id INTEGER,
   state TEXT NOT NULL CHECK (state IN ('running', 'failed', 'completed')),
   failure TEXT,
   started_at TEXT NOT NULL,
@@ -585,6 +587,8 @@ const ADD_COLUMNS = [
   "ALTER TABLE model_directory_model ADD COLUMN compat_json TEXT",
   "ALTER TABLE rule_exploration ADD COLUMN thinking_level TEXT",
   "ALTER TABLE rule_proposal ADD COLUMN trace_task_id INTEGER",
+  "ALTER TABLE rule_exploration ADD COLUMN trace_task_id INTEGER",
+  "ALTER TABLE review_run_reviewer_pin ADD COLUMN thinking_level TEXT",
 ];
 
 /**
@@ -1186,12 +1190,14 @@ export type ReviewRuleInput = {
  * 一个仓库最近一次基点探索(CONTEXT.md,issue #205)。每仓库至多一次,重新探索覆盖它。
  * `model` 是那次所用的模型标识,规则确认之后仍留着——处置反哺沿用它(issue #208)。
  * `thinkingLevel` 是那次选的思考档位,null 即没选(等同 off),反哺一并沿用(issue #213)。
+ * `traceTaskId` 是那一次的规则轨迹,轨迹起头落库失败与升级前跑过的那些都是 null。
  */
 export type RuleExploration = {
   state: "running" | "failed" | "completed";
   baselineSha: string;
   model: string;
   thinkingLevel: ThinkingLevel | null;
+  traceTaskId: number | null;
   /** 失败原因,只有 `failed` 那一档有值。人据此知道发生了什么,并可重试。 */
   failure: string | null;
   startedAt: string;
@@ -1839,10 +1845,13 @@ export type Store = {
   /** 这条规则轨迹挂在哪个仓库上。认不出的任务回 undefined,可见性据它判。 */
   ruleTraceRepo(taskId: number): number | undefined;
   /**
-   * 这个仓库最近一次基点探索的轨迹标识,没有即 null。基点探索每仓库至多一次、重新
-   * 探索覆盖上一次,最近的那一条就是 `rule_exploration` 那一行的过程。
+   * 把这一次基点探索与它的规则轨迹显式关联起来(issue #214)。发起那一刻起完轨迹就写,
+   * 轨迹起头失败即不写,那一行的 `trace_task_id` 保持 NULL,面板不显示入口。
+   *
+   * 不按「这个仓库最近一条 baseline-exploration 轨迹」反推:轨迹起头失败时那样会把
+   * 上一次探索的过程挂到这一行上,人点进去看到的是另一次任务。
    */
-  latestExplorationTrace(repoId: number): number | null;
+  setRuleExplorationTrace(repoId: number, taskId: number): void;
   /**
    * 处置率统计(ADR 0006,主维度见 ADR 0015):按 Finding Identity 折叠,fallback
    * (body)排除,unknown 按 PR 状态分流,时间窗按同一处 Finding 首次报出那轮的开始
@@ -3296,7 +3305,8 @@ export function openStore(dbPath: string): Store {
     getRuleExploration(repoId) {
       const row = db
         .prepare(
-          `SELECT baseline_sha, model, thinking_level, state, failure, started_at, finished_at
+          `SELECT baseline_sha, model, thinking_level, trace_task_id, state, failure,
+                  started_at, finished_at
              FROM rule_exploration WHERE repo_id = ?`,
         )
         .get(repoId);
@@ -3304,6 +3314,7 @@ export function openStore(dbPath: string): Store {
       const failure = row["failure"];
       const finishedAt = row["finished_at"];
       const thinkingLevel = row["thinking_level"];
+      const traceTaskId = row["trace_task_id"];
       return {
         state: String(row["state"]) as RuleExploration["state"],
         baselineSha: String(row["baseline_sha"]),
@@ -3312,6 +3323,8 @@ export function openStore(dbPath: string): Store {
           thinkingLevel === null || thinkingLevel === undefined
             ? null
             : (String(thinkingLevel) as ThinkingLevel),
+        traceTaskId:
+          traceTaskId === null || traceTaskId === undefined ? null : Number(traceTaskId),
         failure: failure === null || failure === undefined ? null : String(failure),
         startedAt: String(row["started_at"]),
         finishedAt: finishedAt === null || finishedAt === undefined ? null : String(finishedAt),
@@ -3326,12 +3339,14 @@ export function openStore(dbPath: string): Store {
       if (running !== undefined) return false;
       db.prepare(
         `INSERT INTO rule_exploration
-           (repo_id, baseline_sha, model, thinking_level, state, failure, started_at, finished_at)
-         VALUES (?, ?, ?, ?, 'running', NULL, ?, NULL)
+           (repo_id, baseline_sha, model, thinking_level, trace_task_id,
+            state, failure, started_at, finished_at)
+         VALUES (?, ?, ?, ?, NULL, 'running', NULL, ?, NULL)
          ON CONFLICT(repo_id) DO UPDATE SET
            baseline_sha = excluded.baseline_sha,
            model = excluded.model,
            thinking_level = excluded.thinking_level,
+           trace_task_id = NULL,
            state = 'running',
            failure = NULL,
            started_at = excluded.started_at,
@@ -4290,8 +4305,8 @@ export function openStore(dbPath: string): Store {
         const insertPin = db.prepare(
           `INSERT INTO review_run_reviewer_pin
              (run_id, position, identity, provider, model, model_service_version,
-              base_url, api, runtime_model_json, materialization_failure)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              base_url, api, runtime_model_json, materialization_failure, thinking_level)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const [position, pin] of meta.reviewerPins.entries()) {
           insertPin.run(
@@ -4305,6 +4320,7 @@ export function openStore(dbPath: string): Store {
             pin.target?.api ?? null,
             pin.runtimeModel === null ? null : JSON.stringify(pin.runtimeModel),
             pin.failure,
+            pin.thinkingLevel,
           );
         }
         db.exec("COMMIT");
@@ -4882,15 +4898,9 @@ export function openStore(dbPath: string): Store {
       return row === undefined ? undefined : Number(row["repo_id"]);
     },
 
-    latestExplorationTrace(repoId) {
-      const row = db
-        .prepare(
-          `SELECT MAX(task_id) AS task_id FROM rule_trace
-            WHERE repo_id = ? AND source = 'baseline-exploration'`,
-        )
-        .get(repoId);
-      const taskId = row?.["task_id"];
-      return taskId === null || taskId === undefined ? null : Number(taskId);
+    setRuleExplorationTrace(repoId, taskId) {
+      db.prepare("UPDATE rule_exploration SET trace_task_id = ? WHERE repo_id = ?")
+        .run(taskId, repoId);
     },
 
     dispositionStats(from, to) {
@@ -5095,7 +5105,7 @@ export function openStore(dbPath: string): Store {
       const byPin = db
         .prepare(
           `SELECT run_id, identity, provider, model, model_service_version,
-                  base_url, api, runtime_model_json, materialization_failure
+                  base_url, api, runtime_model_json, materialization_failure, thinking_level
              FROM review_run_reviewer_pin
             WHERE run_id IN (${marks}) ORDER BY run_id, position`,
         )
@@ -5152,6 +5162,10 @@ export function openStore(dbPath: string): Store {
           identity: String(row["identity"]),
           provider: String(row["provider"]),
           model: String(row["model"]),
+          thinkingLevel:
+            row["thinking_level"] === null || row["thinking_level"] === undefined
+              ? null
+              : (String(row["thinking_level"]) as ThinkingLevel),
           modelServiceVersion:
             row["model_service_version"] === null
               ? null

@@ -75,8 +75,6 @@ test("规则轨迹的任务分号、续读与级联", () => {
       store.registerRepo({ repoId: 90, owner: "acme", repo: "traced", generation: 1, key: "k" }),
       true,
     );
-    assert.equal(store.latestExplorationTrace(90), null);
-
     const first = store.startRuleTrace(90, "baseline-exploration", { model: "test:m" });
     const second = store.startRuleTrace(90, "disposition-feedback", { note: "备注原文" });
     // 两条轨迹各自一份序号,互不干扰。
@@ -102,10 +100,31 @@ test("规则轨迹的任务分号、续读与级联", () => {
     );
     assert.equal(store.listRuleTrace(second).length, 1);
 
-    // 最近一次基点探索的那一条认得出来,反哺那一条不参与。
-    assert.equal(store.latestExplorationTrace(90), first);
-    const third = store.startRuleTrace(90, "baseline-exploration", { model: "test:m2" });
-    assert.equal(store.latestExplorationTrace(90), third);
+    // 探索与它的轨迹显式关联(issue #214):写进 `rule_exploration` 那一行的就是这一次的
+    // 轨迹,不按「这个仓库最近一条探索轨迹」反推。
+    assert.equal(
+      store.startRuleExploration(90, {
+        baselineSha: "abc1234",
+        model: "test:m",
+        startedAt: "2026-08-29T00:00:00.000Z",
+      }),
+      true,
+    );
+    assert.equal(store.getRuleExploration(90)?.traceTaskId, null);
+    store.setRuleExplorationTrace(90, first);
+    assert.equal(store.getRuleExploration(90)?.traceTaskId, first);
+    // 重新探索是另一次任务:上一次的轨迹标识不留在这一行上,这一次轨迹起头失败时因此
+    // 不会把上一次的过程挂到它名下。
+    store.failRuleExploration(90, "停下", "2026-08-29T00:10:00.000Z");
+    assert.equal(
+      store.startRuleExploration(90, {
+        baselineSha: "def5678",
+        model: "test:m2",
+        startedAt: "2026-08-29T01:00:00.000Z",
+      }),
+      true,
+    );
+    assert.equal(store.getRuleExploration(90)?.traceTaskId, null);
 
     assert.equal(store.ruleTraceRepo(first), 90);
     assert.equal(store.ruleTraceRepo(9999), undefined);
@@ -113,7 +132,7 @@ test("规则轨迹的任务分号、续读与级联", () => {
     // 规则集跟着仓库走,轨迹同理。
     store.removeRepo(90);
     assert.equal(store.listRuleTrace(first).length, 0);
-    assert.equal(store.latestExplorationTrace(90), null);
+    assert.equal(store.getRuleExploration(90), null);
   } finally {
     store.close();
   }

@@ -7,6 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
 import { openStore } from "../src/review/store.ts";
@@ -108,6 +109,19 @@ async function proposals(h: PanelHarness): Promise<ProposalResponse[]> {
   const response = await h.api("GET", `/repos/${GITEA_REPO.id}/rules`);
   assert.equal(response.status, 200);
   return ((await response.json()) as { proposals: ProposalResponse[] }).proposals;
+}
+
+/** 这个仓库留下的规则轨迹事件,按落库顺序。没有列表端点,直接读库。 */
+function ruleTraceKinds(h: PanelHarness): string[] {
+  const db = new DatabaseSync(h.db.path, { readOnly: true });
+  try {
+    return db
+      .prepare("SELECT kind FROM rule_trace WHERE repo_id = ? ORDER BY task_id, seq")
+      .all(GITEA_REPO.id)
+      .map((row) => String(row["kind"]));
+  } finally {
+    db.close();
+  }
 }
 
 function dispose(h: PanelHarness, findingId: number, note?: string): Promise<Response> {
@@ -260,6 +274,9 @@ test("从未探索过且全局组合为空:跳过解读留一行原因,零提案
   assert.match(h.dispositionFeedbacks[0]!.failure ?? "", /模型/);
   assert.equal(agent.calls.length, 0);
   assert.deepEqual(await proposals(h), []);
+  // 轨迹从任务开始就起(issue #214):选不出模型也是反哺之内的失败,人来这条轨迹就是要
+  // 看它卡在哪一步,而不是一片空白。
+  assert.deepEqual(ruleTraceKinds(h), ["rule_agent_started", "rule_agent_failed"]);
 });
 
 test("解读失败留原因、不重排,产出为空不产生提案", async () => {

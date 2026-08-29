@@ -22,6 +22,7 @@ import {
   modelIdentity,
   parseGlobalReviewers,
   reviewerPin,
+  supportedThinkingLevels,
   type ModelServiceTarget,
   type ReviewerRuntimePlan,
   type ReviewerSpec,
@@ -2294,6 +2295,8 @@ const MODEL_UNAVAILABLE_REASON_TEXT: Record<ModelUnavailableReason, string> = {
 const BASELINE_RUNTIME_PROJECTION = {
   input: MODEL_RUNTIME_BASELINE.input,
   reasoning: MODEL_RUNTIME_BASELINE.reasoning,
+  // 兜底那一档不声明推理能力,支持的档位因此只有「关闭」。
+  thinkingLevels: supportedThinkingLevels(MODEL_RUNTIME_BASELINE),
   contextWindow: MODEL_RUNTIME_BASELINE.contextWindow,
   maxOutput: MODEL_RUNTIME_BASELINE.maxTokens,
   sources: {
@@ -2335,6 +2338,8 @@ type ProjectedServiceModel = {
   runtime: {
     input: readonly ("text" | "image")[];
     reasoning: boolean;
+    /** 这个模型支持的思考档位(CONTEXT.md)。面板只列这几档,保存与发起也只收这几档。 */
+    thinkingLevels: readonly ThinkingLevel[];
     contextWindow: number;
     maxOutput: number;
     sources: {
@@ -2372,6 +2377,7 @@ function modelRuntimeProjection(
   return {
     input: runtime.input,
     reasoning: runtime.reasoning,
+    thinkingLevels: supportedThinkingLevels(runtime),
     contextWindow: runtime.contextWindow,
     maxOutput: runtime.maxTokens,
     sources: {
@@ -2756,14 +2762,30 @@ async function ensureModelCombinationAvailable(
       action: candidate?.unavailableAction ?? "/credentials",
     });
   }
-  if (unavailable.length === 0) return true;
-  sendJson(res, 400, {
-    error: `${context}包含不可用模型：${unavailable
-      .map((entry) => `${entry.identity}（${entry.reasonText}）`)
-      .join("；")}。请先到模型服务恢复，或从组合中移除。`,
-    unavailable,
-  });
-  return false;
+  if (unavailable.length > 0) {
+    sendJson(res, 400, {
+      error: `${context}包含不可用模型：${unavailable
+        .map((entry) => `${entry.identity}（${entry.reasonText}）`)
+        .join("；")}。请先到模型服务恢复，或从组合中移除。`,
+      unavailable,
+    });
+    return false;
+  }
+  // 档位的判据与面板列出来的那几档同一个函数(CONTEXT.md 思考档位):模型不支持的那一档
+  // Pi 会 clamp 到相邻可用档,静默跑成人没选的那一档,所以在这里拦。缺席即「关闭」,
+  // 而 adaptive 模型连「关闭」都不支持,那一档同样要显式选过。
+  for (const spec of specs) {
+    const identity = modelIdentity(spec);
+    const levels = candidateByIdentity.get(identity)?.runtime.thinkingLevels;
+    if (levels === undefined) continue;
+    const level = spec.thinkingLevel ?? "off";
+    if (levels.includes(level)) continue;
+    sendJson(res, 400, {
+      error: `${context}的 ${identity} 不支持思考档位 ${level}，它支持的是 ${levels.join(" / ")}。`,
+    });
+    return false;
+  }
+  return true;
 }
 
 async function setupStatus(deps: WebhookServerDeps): Promise<{
@@ -5951,14 +5973,10 @@ function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: num
   const view = withStore(deps.dbPath, (store) => {
     const ruleSet = store.getRuleSet(repoId);
     if (ruleSet === undefined) return undefined;
-    const exploration = store.getRuleExploration(repoId);
     return {
       ...ruleSet,
-      // 探索的轨迹标识(issue #214):最近一次探索的那一条,就是这一行记的那一次的过程。
-      exploration:
-        exploration === null
-          ? null
-          : { ...exploration, traceTaskId: store.latestExplorationTrace(repoId) },
+      // 轨迹标识由 `rule_exploration.trace_task_id` 显式给(issue #214)。
+      exploration: store.getRuleExploration(repoId),
       draft: store.getRuleDraft(repoId),
       proposals: store.getRuleProposals(repoId),
     };
@@ -6121,8 +6139,9 @@ async function handleRuleModels(res: ServerResponse, deps: WebhookServerDeps): P
         identity: candidate.identity,
         provider: candidate.provider,
         model: candidate.id,
-        // 思考档位只对声明了推理能力的模型有效,发起表单据此决定档位控件给不给点。
-        reasoning: candidate.runtime.reasoning,
+        // 发起表单只列这几档(CONTEXT.md 思考档位):列出模型不支持的档位,人选了之后
+        // Pi 会 clamp 成别的一档,跑的就不是他选的那一档。
+        thinkingLevels: candidate.runtime.thinkingLevels,
       })),
   });
 }
@@ -6220,6 +6239,11 @@ async function runRuleExplorationInBackground(
       thinkingLevel: plan.spec.thinkingLevel ?? null,
     },
   );
+  // 显式关联:轨迹起头失败时这一列保持 NULL,面板不显示入口,也不会挂到上一次探索的轨迹上。
+  const traceTaskId = trace.taskId;
+  if (traceTaskId !== null) {
+    withStore(deps.dbPath, (store) => store.setRuleExplorationTrace(repoId, traceTaskId));
+  }
   try {
     const forge = deps.forges.gitea;
     if (forge === undefined) throw new Error("gitea 没有配置 Forge,取不回代码");
@@ -6336,11 +6360,11 @@ async function runDispositionFeedbackInBackground(
   const ref: RepoRef = { owner: finding.owner, repo: finding.repo };
   let failure: string | undefined;
   let worktree: Worktree | undefined;
-  // 轨迹起在选定模型之后:这一次挂在哪个仓库、用哪个模型,那之前都还不知道。
+  // 轨迹从任务开始就起,与基点探索同一条口径(CONTEXT.md 规则轨迹):Forge 没配、模型
+  // 用不了都是反哺之内的失败,人来这条轨迹就是要看它究竟卡在哪一步。仓库不在注册表里那
+  // 一档仍然没有轨迹——那时连挂在哪个仓库上都说不出来,只留一行日志。
   let trace: RuleTraceRecorder | undefined;
   try {
-    const forge = deps.forges.gitea;
-    if (forge === undefined) throw new Error("gitea 没有配置 Forge,取不回代码");
     const context = withStore(deps.dbPath, (store) => {
       const row = store
         .listRepos()
@@ -6359,9 +6383,6 @@ async function runDispositionFeedbackInBackground(
     if (context === undefined) throw new Error("这个仓库不在注册表里");
     // 沿用该仓库最近一次基点探索所用的模型;从未探索过就用全局模型组合的第一个。
     const spec = context.explored ?? globalSettings(deps).reviewers[0];
-    if (spec === undefined) {
-      throw new Error("这个仓库没有基点探索记录、全局模型组合也是空的,解读用不了模型");
-    }
     trace = startRuleTrace(
       (use) => withStore(deps.dbPath, use),
       context.repoId,
@@ -6371,10 +6392,16 @@ async function runDispositionFeedbackInBackground(
         note,
         finding: { id: finding.id, file: finding.file, line: finding.line },
         baselineSha: finding.headSha,
-        model: modelIdentity(spec),
-        thinkingLevel: spec.thinkingLevel ?? null,
+        // 一个模型都选不出来时这一次就是失败,轨迹照样留下它卡在哪一步。
+        model: spec === undefined ? null : modelIdentity(spec),
+        thinkingLevel: spec?.thinkingLevel ?? null,
       },
     );
+    const forge = deps.forges.gitea;
+    if (forge === undefined) throw new Error("gitea 没有配置 Forge,取不回代码");
+    if (spec === undefined) {
+      throw new Error("这个仓库没有基点探索记录、全局模型组合也是空的,解读用不了模型");
+    }
     const [plan] = await materializeReviewerPlans(
       deps,
       withStore(deps.dbPath, (store) => store.listModelServices()),
@@ -6495,9 +6522,18 @@ async function handleStartRuleExploration(
     withStore(deps.dbPath, (store) => store.listModelServices()),
     [spec],
   );
-  if (plan === undefined || plan.failure !== null) {
+  if (plan === undefined || plan.failure !== null || plan.runtimeModel === null) {
     return sendJson(res, 400, {
       error: plan?.failure ?? `模型 ${modelIdentity(spec)} 不可用`,
+    });
+  }
+  // 档位与模型组合那侧同一个判据(CONTEXT.md 思考档位):选了模型不支持的那一档,Pi 会
+  // clamp 成相邻可用档,跑的就不是人选的那一档。
+  const levels = supportedThinkingLevels(plan.runtimeModel);
+  const picked = spec.thinkingLevel ?? "off";
+  if (!levels.includes(picked)) {
+    return sendJson(res, 400, {
+      error: `${modelIdentity(spec)} 不支持思考档位 ${picked}，它支持的是 ${levels.join(" / ")}。`,
     });
   }
 

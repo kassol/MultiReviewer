@@ -470,9 +470,14 @@ test("组合里有撞名的自定义 provider 时,那一个模型的失败原因
   );
 });
 
-test("思考档位随模型组合与仓库覆盖一起读写,取值不认得时整组拒收", async () => {
+test("思考档位随模型组合与仓库覆盖一起读写,取值不认得或模型不支持时整组拒收", async () => {
   const h = await startPanelHarness(cleanups);
-  seedAvailableModelService(h, "test", ["global-model", "second-model"]);
+  seedAvailableModelService(h, "test", ["global-model", "second-model"], { reasoning: true });
+  // adaptive 模型:`thinkingLevelMap.off` 为 null 即它关不掉思考,「关闭」不是它的一档。
+  seedAvailableModelService(h, "always", ["adaptive-model"], {
+    reasoning: true,
+    thinkingLevelMap: { off: null },
+  });
 
   const bad = await putReviewers(h, [
     { provider: "test", model: "global-model", thinkingLevel: "turbo" },
@@ -508,4 +513,29 @@ test("思考档位随模型组合与仓库覆盖一起读写,取值不认得时�
   }[];
   const row = repos.find((entry) => entry.repoId === repoId)!;
   assert.equal(row.reviewers?.[0]?.thinkingLevel, "low");
+
+  // 取值认得、这个模型却不支持的那一档同样整组拒收:放过去只会被运行侧 clamp 成别的
+  // 一档,人以为选的是这一档。
+  const tooHigh = await putReviewers(h, [
+    { provider: "test", model: "global-model", thinkingLevel: "max" },
+  ]);
+  assert.equal(tooHigh.status, 400);
+  assert.match(
+    ((await tooHigh.json()) as { error: string }).error,
+    /test:global-model 不支持思考档位 max/,
+  );
+
+  // 缺席即「关闭」,而 adaptive 模型连「关闭」都不支持:那一档也要显式选过。
+  const implicitOff = await putReviewers(h, [{ provider: "always", model: "adaptive-model" }]);
+  assert.equal(implicitOff.status, 400);
+  assert.match(
+    ((await implicitOff.json()) as { error: string }).error,
+    /always:adaptive-model 不支持思考档位 off/,
+  );
+  assert.equal(
+    (await putReviewers(h, [
+      { provider: "always", model: "adaptive-model", thinkingLevel: "medium" },
+    ])).status,
+    200,
+  );
 });

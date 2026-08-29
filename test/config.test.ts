@@ -6,6 +6,7 @@ import {
   buildReviewers,
   GLOBAL_REVIEWERS_CONTEXT,
   parseGlobalReviewers,
+  supportedThinkingLevels,
   type ReviewerRuntimePlan,
   type ReviewerSpec,
 } from "../src/config.ts";
@@ -174,4 +175,30 @@ test("思考档位随模型组合原样读写,未设的那一项读回来仍然�
   const parsed = parseGlobalReviewers(stored);
   assert.equal(parsed[0]!.thinkingLevel, "medium");
   assert.equal(Object.hasOwn(parsed[1]!, "thinkingLevel"), false);
+});
+
+test("模型支持的思考档位按 thinkingLevelMap 算,与 pi-ai 的判据逐字一致", () => {
+  // 不声明推理能力就只有「关闭」。
+  assert.deepEqual(supportedThinkingLevels({ reasoning: false }), ["off"]);
+  // 没有映射即取默认那几档:`xhigh` 与 `max` 是模型自己 opt-in 的两档,没写就没有。
+  assert.deepEqual(supportedThinkingLevels({ reasoning: true }), [
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+  ]);
+  // 映射成 null 的那一档端点不认:adaptive 模型的「关闭」就是这样压掉的。
+  assert.deepEqual(
+    supportedThinkingLevels({ reasoning: true, thinkingLevelMap: { off: null } }),
+    ["minimal", "low", "medium", "high"],
+  );
+  // 映射里写了 `xhigh` / `max` 才有这两档。
+  assert.deepEqual(
+    supportedThinkingLevels({
+      reasoning: true,
+      thinkingLevelMap: { minimal: null, low: null, medium: null, max: "maximum" },
+    }),
+    ["off", "high", "max"],
+  );
 });

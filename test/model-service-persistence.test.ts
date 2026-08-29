@@ -1176,7 +1176,7 @@ test("Review Run 审计只持久化服务版本与运行模型,不落凭据、�
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   const plan: ReviewerRuntimePlan = {
-    spec: { provider: "corp", model: "pinned-model" },
+    spec: { provider: "corp", model: "pinned-model", thinkingLevel: "high" },
     modelServiceVersion: 9,
     target: { api: "openai-completions", baseUrl: "https://pinned.example.test/v1" },
     runtimeModel: {
@@ -1223,10 +1223,13 @@ test("Review Run 审计只持久化服务版本与运行模型,不落凭据、�
   assert.equal(serialized.includes("master-key"), false);
   assert.equal(persisted["model_service_version"], 9);
   assert.equal(persisted["base_url"], "https://pinned.example.test/v1");
+  // 冻结快照记下这一轮用的档位:事后回看那一轮时说得出它是按哪一档跑的。
+  assert.equal(persisted["thinking_level"], "high");
 
   const projected = store.listRuns({ limit: 1 })[0]!.reviewerPins[0]!;
   assert.equal(projected.identity, "corp:pinned-model");
   assert.equal(projected.modelServiceVersion, 9);
+  assert.equal(projected.thinkingLevel, "high");
   assert.equal(projected.runtimeModel?.sources.contextWindow, "runtime-baseline");
   assert.equal(JSON.stringify(projected).includes("plaintext-reviewer-secret"), false);
   store.close();

@@ -1244,6 +1244,7 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
   assert.deepEqual(models[0]!.runtime, {
     input: ["text", "image"],
     reasoning: true,
+    thinkingLevels: ["off", "minimal", "low", "medium", "high"],
     contextWindow: 128_000,
     maxOutput: 4096,
     sources: {
@@ -1274,6 +1275,7 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
   assert.deepEqual(models[1]!.runtime, {
     input: ["text"],
     reasoning: false,
+    thinkingLevels: ["off"],
     contextWindow: 128_000,
     maxOutput: 16_000,
     sources: {
@@ -1328,6 +1330,7 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
   assert.deepEqual(validationSupplement.runtime, {
     input: ["text"],
     reasoning: false,
+    thinkingLevels: ["off"],
     contextWindow: 128_000,
     maxOutput: 16_000,
     sources: {
@@ -1378,6 +1381,7 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
   assert.deepEqual(pendingAutomatic.runtime, {
     input: ["image"],
     reasoning: false,
+    thinkingLevels: ["off"],
     contextWindow: 7777,
     maxOutput: 333,
     sources: {
@@ -1453,6 +1457,7 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
       runtime: {
         input: ["text"],
         reasoning: false,
+        thinkingLevels: ["off"],
         contextWindow: 128_000,
         maxOutput: 16_000,
         sources: {
@@ -1649,6 +1654,7 @@ test("自定义服务中与 Pi 同 model id 的信息来源按字段投影", asy
   assert.deepEqual(model.runtime, {
     input: ["text", "image"],
     reasoning: true,
+    thinkingLevels: ["off", "minimal", "low", "medium", "high"],
     contextWindow: 272_000,
     maxOutput: 128_000,
     sources: {
@@ -3437,6 +3443,7 @@ test("模型补录只做一次真实推理并绑定当前目标，失败与旧�
     assert.deepEqual(manual.runtime, {
       input: ["text"],
       reasoning: false,
+      thinkingLevels: ["off"],
       contextWindow: 128_000,
       maxOutput: 16_000,
       sources: {

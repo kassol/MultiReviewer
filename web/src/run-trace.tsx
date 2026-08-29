@@ -6,6 +6,7 @@ import { Badge, Callout, Skeleton } from "@radix-ui/themes";
 
 import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
+import { num, str } from "@/lib/payload";
 import { localSecond } from "@/lib/time";
 
 import { apiUrl, fetchJson } from "./api.ts";
@@ -48,18 +49,6 @@ function appendEvent<E extends { seq: number }>(
   return at === -1
     ? { events: [...events, event] }
     : { events: [...events.slice(0, at), event, ...events.slice(at)] };
-}
-
-// payload 是 `Record<string, unknown>`:每个字段读之前先验一次形状,后端改了字段
-// 名或类型时那一格显示成缺失,而不是让整个面板白屏。
-export function str(payload: Record<string, unknown>, key: string): string | null {
-  const value = payload[key];
-  return typeof value === "string" && value !== "" ? value : null;
-}
-
-export function num(payload: Record<string, unknown>, key: string): number | null {
-  const value = payload[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function record(payload: Record<string, unknown>, key: string): Record<string, unknown> | null {
@@ -533,13 +522,13 @@ export function RunTrace({ run }: { run: RunItem }) {
    * 几份查询各刷新一次,面板头部与列表跟着从「运行中」变过来——否则要等下一次 10 秒轮询
    * 才对得上。
    */
+  const live = run.finishedAt === null && !run.failed;
   const { events, query: trace, stream } = useTrace<TraceEvent>({
     queryKey: traceKey(run.id),
     path: `/runs/${run.id}/trace`,
-    live: run.finishedAt === null && !run.failed,
+    live,
     invalidateOnEnd: [["stages"], ["stage-detail"], ["run"]],
   });
-  const live = run.finishedAt === null && !run.failed;
   // 人手动开合过的 Reviewer 记在这里,其余按默认规则。
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
 

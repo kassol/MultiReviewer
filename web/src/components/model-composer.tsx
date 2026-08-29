@@ -20,7 +20,6 @@ import { cn } from "@/lib/utils";
 import {
   SOURCE_LABEL,
   THINKING_LEVEL_LABEL,
-  THINKING_LEVELS,
   useModelServices,
   type ModelRef,
   type ModelService,
@@ -149,11 +148,14 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
   useEffect(() => onValidityChange?.(validity), [onValidityChange, validity]);
 
   const toggle = (identity: string): void => {
-    onChange(
-      picked.has(identity)
-        ? value.filter((item) => item.identity !== identity)
-        : [...value, { identity }],
-    );
+    if (picked.has(identity)) {
+      onChange(value.filter((item) => item.identity !== identity));
+      return;
+    }
+    // 新选进来的模型带它自己的第一档:adaptive 模型不支持「关闭」,不带就等于选了一档
+    // 它不支持的,保存时会被服务端拒。
+    const first = candidateByIdentity.get(identity)?.runtime.thinkingLevels[0] ?? "off";
+    onChange([...value, { identity, ...(first === "off" ? {} : { thinkingLevel: first }) }]);
   };
 
   // 档位挂在这一处引用上,不是模型的属性:同一个模型在全局与某个仓库覆盖里可以各选各的。
@@ -220,26 +222,37 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                         <span className="text-xs text-danger">{reason}</span>
                       )}
                     </div>
-                    {candidate?.runtime.reasoning === false ? (
+                    {candidate === undefined ? null : candidate.runtime.thinkingLevels.length <= 1 ? (
                       <Badge color="gray" variant="outline">不支持思考档位</Badge>
-                    ) : candidate === undefined ? null : (
-                      <Select.Root
-                        value={thinkingLevel ?? "off"}
-                        size={{ initial: "2", sm: "1" }}
-                        onValueChange={(next) => setLevel(identity, next as ThinkingLevel)}
-                      >
-                        <Select.Trigger
-                          aria-label={`${identity} 的思考档位`}
-                          className="max-sm:min-h-11"
-                        />
-                        <Select.Content position="popper">
-                          {THINKING_LEVELS.map((level) => (
-                            <Select.Item key={level} value={level}>
-                              思考 {THINKING_LEVEL_LABEL[level]}
-                            </Select.Item>
-                          ))}
-                        </Select.Content>
-                      </Select.Root>
+                    ) : (
+                      // 只列这个模型支持的档位:列出它不支持的那些,人选了之后运行侧会
+                      // clamp 成相邻可用档,跑的就不是他选的那一档。
+                      <div className="flex items-center gap-1">
+                        <Select.Root
+                          value={thinkingLevel ?? "off"}
+                          size={{ initial: "2", sm: "1" }}
+                          onValueChange={(next) => setLevel(identity, next as ThinkingLevel)}
+                        >
+                          <Select.Trigger
+                            aria-label={`${identity} 的思考档位`}
+                            placeholder="选一档"
+                            className="max-sm:min-h-11"
+                          />
+                          <Select.Content position="popper">
+                            {candidate.runtime.thinkingLevels.map((level) => (
+                              <Select.Item key={level} value={level}>
+                                思考 {THINKING_LEVEL_LABEL[level]}
+                              </Select.Item>
+                            ))}
+                          </Select.Content>
+                        </Select.Root>
+                        {candidate.runtime.thinkingLevels.includes("off") ? null : (
+                          <HelpTooltip
+                            label={`${identity} 始终思考`}
+                            content="这个模型关不掉思考,只能选它投入多少。"
+                          />
+                        )}
+                      </div>
                     )}
                   </div>
                   <Tooltip content={`移除 ${identity}`}>

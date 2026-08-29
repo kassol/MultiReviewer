@@ -12,12 +12,8 @@ import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { CommitPicker, type CommitSelection } from "./commit-picker.tsx";
-import { RuleTraceButton } from "./rule-trace.tsx";
-import {
-  THINKING_LEVEL_LABEL,
-  THINKING_LEVELS,
-  type ThinkingLevel,
-} from "./model-services.ts";
+import { RuleTraceButton, SOURCE_LABEL } from "./rule-trace.tsx";
+import { THINKING_LEVEL_LABEL, type ThinkingLevel } from "./model-services.ts";
 
 /** `GET /repos/{id}/rules` 的一条评审规则(CONTEXT.md)。`scope` 空串即全仓库。 */
 type ReviewRule = {
@@ -75,7 +71,13 @@ type RuleSet = {
 };
 
 /** `GET /rule-models` 的一项:发起基点探索时可选的模型。 */
-type RuleModel = { identity: string; provider: string; model: string; reasoning: boolean };
+type RuleModel = {
+  identity: string;
+  provider: string;
+  model: string;
+  /** 这个模型支持的思考档位。表单只列这几档,服务端发起时也只收这几档。 */
+  thinkingLevels: ThinkingLevel[];
+};
 
 /**
  * 表单里编辑中的那条规则:`id` 为 null 即新增,有值即改这一条。生效规则、规则草案与修订
@@ -485,10 +487,6 @@ function RuleForm({
 }
 
 const CHANGE_LABEL = { add: "新增", modify: "修改", retire: "废止" } as const;
-const SOURCE_LABEL = {
-  "baseline-exploration": "基点探索",
-  "disposition-feedback": "处置反哺",
-} as const;
 
 /**
  * 修订提案队列与裁决那一段(issue #207)。待裁决的排在前面,已裁决的留在后面供查。
@@ -870,6 +868,13 @@ function ExplorationLaunchContent({
     setModel(available[0]!.identity);
   }, [available, model]);
 
+  // 档位只在所选模型支持的那几档里取:换了模型而旧档位它不支持时落回它自己的第一档,
+  // 免得发起时被服务端拒。选中的那一档不另存一份状态,由这里推出来。
+  const levels = available.find((entry) => entry.identity === model)?.thinkingLevels ?? [];
+  const level = levels.includes(thinkingLevel) ? thinkingLevel : levels[0] ?? "off";
+  // 只有「关闭」一档即这个模型不支持思考档位。
+  const picking = levels.length > 1;
+
   const start = useMutation({
     mutationFn: async (): Promise<void> => {
       const picked = available.find((entry) => entry.identity === model);
@@ -880,8 +885,8 @@ function ExplorationLaunchContent({
           baseline: baseline?.sha ?? "",
           provider: picked.provider,
           model: picked.model,
-          // 模型不声明推理能力时不带档位:那一档运行侧本来就会落回关闭。
-          ...(picked.reasoning && thinkingLevel !== "off" ? { thinkingLevel } : {}),
+          // 「关闭」不带这一项:缺席即关闭,与从没选过等价。
+          ...(level === "off" ? {} : { thinkingLevel: level }),
         }),
       });
       if (!response.ok) throw new Error(await errorText(response));
@@ -891,7 +896,6 @@ function ExplorationLaunchContent({
   });
 
   const ready = baseline !== null && model !== "";
-  const reasoning = available.find((entry) => entry.identity === model)?.reasoning === true;
 
   return (
     <Dialog.Content
@@ -932,29 +936,46 @@ function ExplorationLaunchContent({
               </Select.Content>
             </Select.Root>
             <div className="flex items-center gap-1">
-              <Text size="2" weight="medium">思考档位</Text>
+              <Text
+                as="label"
+                {...(picking ? { htmlFor: "rule-exploration-thinking" } : {})}
+                size="2"
+                weight="medium"
+              >
+                思考档位
+              </Text>
               <HelpTooltip content="档位越高,agent 推导规则前想得越久,这一次探索也越慢越贵。" />
             </div>
-            {reasoning ? (
-              <Select.Root
-                value={thinkingLevel}
-                onValueChange={(next) => setThinkingLevel(next as ThinkingLevel)}
-                size={{ initial: "3", sm: "2" }}
-              >
-                <Select.Trigger aria-label="思考档位" />
-                <Select.Content position="popper">
-                  {THINKING_LEVELS.map((level) => (
-                    <Select.Item key={level} value={level}>
-                      {THINKING_LEVEL_LABEL[level]}
-                    </Select.Item>
-                  ))}
-                </Select.Content>
-              </Select.Root>
+            {picking ? (
+              // 只列这个模型支持的档位:列出它不支持的那些,运行侧会 clamp 成相邻可用档,
+              // 跑的就不是人选的那一档。
+              <div className="flex items-center gap-1">
+                <Select.Root
+                  value={level}
+                  onValueChange={(next) => setThinkingLevel(next as ThinkingLevel)}
+                  size={{ initial: "3", sm: "2" }}
+                >
+                  <Select.Trigger id="rule-exploration-thinking" />
+                  <Select.Content position="popper">
+                    {levels.map((entry) => (
+                      <Select.Item key={entry} value={entry}>
+                        {THINKING_LEVEL_LABEL[entry]}
+                      </Select.Item>
+                    ))}
+                  </Select.Content>
+                </Select.Root>
+                {levels.includes("off") ? null : (
+                  <HelpTooltip
+                    label="这个模型始终思考"
+                    content="这个模型关不掉思考,只能选它投入多少。"
+                  />
+                )}
+              </div>
+            ) : model === "" ? (
+              <Text size="2" color="gray">先选模型</Text>
             ) : (
               <div>
-                <Badge color="gray" variant="outline">
-                  {model === "" ? "先选模型" : "不支持思考档位"}
-                </Badge>
+                <Badge color="gray" variant="outline">不支持思考档位</Badge>
               </div>
             )}
           </div>

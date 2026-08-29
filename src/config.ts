@@ -41,6 +41,27 @@ export function modelIdentity(spec: { provider: string; model: string }): string
 }
 
 /**
+ * 这个模型支持的思考档位(CONTEXT.md 思考档位)。判据与 pi-ai 的
+ * `getSupportedThinkingLevels` 逐字一致:不声明推理能力时只有 `off`;声明了则按
+ * `thinkingLevelMap` 筛——映射成 null 的那一档端点不认(adaptive 模型的 `off` 就是
+ * 这样压掉的),`xhigh` 与 `max` 是模型自己 opt-in 的两档,映射里没写就没有。
+ *
+ * 判据只有这一份:面板列哪几档、保存组合与发起探索时拒哪几档都读它。选了模型不支持的
+ * 那一档 Pi 会 clamp 到相邻可用档——人以为选了「关闭」而模型仍在思考,静默地不是人选的。
+ */
+export function supportedThinkingLevels(
+  model: Pick<RuntimeModel, "reasoning" | "thinkingLevelMap">,
+): ThinkingLevel[] {
+  if (!model.reasoning) return ["off"];
+  return THINKING_LEVELS.filter((level) => {
+    const mapped = model.thinkingLevelMap?.[level];
+    if (mapped === null) return false;
+    if (level === "xhigh" || level === "max") return mapped !== undefined;
+    return true;
+  });
+}
+
+/**
  * 校验一组 ReviewerSpec 并返回。全局模型组合与每仓库模型覆盖共用这套判据,
  * `context` 写进报错里指认来源(全局还是哪个仓库)。
  *
@@ -118,6 +139,8 @@ export type ReviewRunReviewerPin = Readonly<{
   identity: string;
   provider: string;
   model: string;
+  /** 这一轮这处模型引用用的思考档位,null 即没选(等同 off)。 */
+  thinkingLevel: ThinkingLevel | null;
   modelServiceVersion: number | null;
   target: ModelServiceTarget | null;
   runtimeModel: RuntimeModel | null;
@@ -133,6 +156,7 @@ export function reviewerPin(plan: ReviewerRuntimePlan): ReviewRunReviewerPin {
     identity: modelIdentity(plan.spec),
     provider: plan.spec.provider,
     model: plan.spec.model,
+    thinkingLevel: plan.spec.thinkingLevel ?? null,
     modelServiceVersion: plan.modelServiceVersion,
     target: plan.target,
     runtimeModel: plan.runtimeModel,

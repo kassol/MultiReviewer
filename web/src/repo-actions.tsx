@@ -43,7 +43,7 @@ import { localMinute } from "@/lib/time";
 import { api, errorText, fetchJson } from "./api.ts";
 import {
   fromModelRef,
-  modelIdentity,
+  THINKING_LEVEL_LABEL,
   toModelRef,
   type ModelRef,
   type ThinkingLevel,
@@ -408,11 +408,8 @@ function ConfigureDialogContent({
   const globalModels = settings.data?.reviewers.map(toModelRef);
   const issues = check.data?.issues ?? [];
   const following = repo.reviewers === null;
-  // 覆盖存的是 spec,展示要和全局那侧一样是模型标识 `provider:model`。
-  const shownModels =
-    repo.reviewers === null
-      ? globalModels?.map((ref) => ref.identity)
-      : repo.reviewers.map(modelIdentity);
+  // 覆盖存的是 spec,展示与全局那侧同一个形状:模型标识加它自己的思考档位。
+  const shownModels = repo.reviewers === null ? globalModels : repo.reviewers.map(toModelRef);
 
   return (
     <Dialog.Content
@@ -500,12 +497,17 @@ function ConfigureDialogContent({
               </Kv>
               {shownModels === undefined || shownModels.length === 0 ? null : (
                 <div className="flex flex-wrap gap-2">
-                  {shownModels.map((model) => (
+                  {shownModels.map(({ identity, thinkingLevel }) => (
                     <span
-                      key={model}
+                      key={identity}
                       className="rounded-full bg-fill px-3 py-[3px] font-mono text-base break-all"
                     >
-                      {model}
+                      {identity}
+                      {thinkingLevel === undefined ? null : (
+                        <span className="ml-1.5 font-sans text-text-muted">
+                          思考 {THINKING_LEVEL_LABEL[thinkingLevel]}
+                        </span>
+                      )}
                     </span>
                   ))}
                 </div>

@@ -1,20 +1,14 @@
 import { useState } from "react";
 
 import { CrossCircledIcon } from "@radix-ui/react-icons";
-import { Badge, Callout, Dialog, Skeleton, Text } from "@radix-ui/themes";
+import { Badge, Callout, Dialog, Skeleton } from "@radix-ui/themes";
 
 import { CommitChip } from "@/components/commit-chip";
+import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/theme-button";
+import { num, str } from "@/lib/payload";
 
-import {
-  EventTime,
-  StreamStatus,
-  ToolCall,
-  UnknownEvent,
-  num,
-  str,
-  useTrace,
-} from "./run-trace.tsx";
+import { EventTime, StreamStatus, ToolCall, UnknownEvent, useTrace } from "./run-trace.tsx";
 
 /**
  * 规则轨迹里的一条事件(CONTEXT.md 规则轨迹,issue #214)。与审查轨迹同源,少了轮次与
@@ -29,7 +23,8 @@ type RuleTraceEvent = {
   payload: Record<string, unknown>;
 };
 
-const SOURCE_LABEL: Record<string, string> = {
+/** 规则轨迹与修订提案共用的出处文案。同一个二元只有这一份字面量。 */
+export const SOURCE_LABEL: Record<string, string> = {
   "baseline-exploration": "基点探索",
   "disposition-feedback": "处置反哺",
 };
@@ -161,7 +156,7 @@ export function RuleTrace({ repoId, taskId }: { repoId: number; taskId: number }
       )}
 
       {query.data !== undefined && events.length === 0 ? (
-        <Text as="p" size="2" color="gray">这一次没有留下过程记录。</Text>
+        <EmptyState title="这一次没有过程记录" className="py-2" />
       ) : null}
     </div>
   );

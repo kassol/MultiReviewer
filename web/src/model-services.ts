@@ -69,6 +69,8 @@ export type ModelServiceModel = {
   runtime: {
     input: readonly ("text" | "image")[];
     reasoning: boolean;
+    /** 这个模型支持的思考档位。档位控件只列这几档,服务端保存时也只收这几档。 */
+    thinkingLevels: readonly ThinkingLevel[];
     contextWindow: number;
     maxOutput: number;
     sources: {

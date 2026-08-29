@@ -17,6 +17,7 @@ import { makeDbPath } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   PANEL_PREFIX as PREFIX,
+  seedAvailableModelService,
   startReadyPanelHarness,
   type PanelHarness,
   type PanelHarnessOptions,
@@ -539,9 +540,15 @@ test("发起要一个可用模型与一个 commit sha,坏入参一律 400", asyn
   // 可用模型清单与全局模型组合读的是同一份可用性判据。
   const models = await get(h, cookie, "/rule-models");
   assert.equal(models.status, 200);
+  // 每项带的是这个模型支持的思考档位:发起表单只列这几档,不由 reasoning 一个布尔放全档。
   assert.deepEqual((await models.json()) as { models: unknown[] }, {
     models: [
-      { identity: "test:global-model", provider: "test", model: "global-model", reasoning: false },
+      {
+        identity: "test:global-model",
+        provider: "test",
+        model: "global-model",
+        thinkingLevels: ["off"],
+      },
     ],
   });
 });
@@ -598,24 +605,39 @@ test("探索记下这一次选的思考档位,没选即留空", () => {
   }
 });
 
-test("发起探索可同时选思考档位:档位进 agent、落进探索记录,取值不认得时 400", async () => {
+test("发起探索可同时选思考档位:档位进 agent、落进探索记录,取值不认得或模型不支持时 400", async () => {
   const agent = scriptedRuleAgent({ items: [item("探索出来的一条")] });
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
+  // 思考得起来的那个模型另开一条服务:harness 自带的那个什么都不声明,只支持「关闭」。
+  seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
   const path = `/repos/${GITEA_REPO.id}/rule-exploration`;
 
   const bad = await send(h, cookie, "POST", path, {
     baseline: h.repo.baseSha,
-    provider: "test",
-    model: "global-model",
+    provider: "think",
+    model: "deep",
     thinkingLevel: "turbo",
   });
   assert.equal(bad.status, 400);
+
+  // 取值认得、这个模型却不支持的那一档同样 400:放过去只会被运行侧 clamp 成别的一档。
+  const unsupported = await send(h, cookie, "POST", path, {
+    baseline: h.repo.baseSha,
+    provider: "think",
+    model: "deep",
+    thinkingLevel: "xhigh",
+  });
+  assert.equal(unsupported.status, 400);
+  assert.match(
+    ((await unsupported.json()) as { error: string }).error,
+    /不支持思考档位 xhigh/,
+  );
   assert.equal(agent.calls.length, 0);
 
   const started = await send(h, cookie, "POST", path, {
     baseline: h.repo.baseSha,
-    provider: "test",
-    model: "global-model",
+    provider: "think",
+    model: "deep",
     thinkingLevel: "medium",
   });
   assert.equal(started.status, 202);

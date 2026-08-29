@@ -19,6 +19,7 @@ import {
 } from "../../src/webhook/server.ts";
 import { hashPassword } from "../../src/panel/password.ts";
 import { encryptCredential } from "../../src/panel/credential-crypto.ts";
+import type { DiscoveredModel } from "../../src/reviewer/model-service-runtime.ts";
 import { modelServiceTargetFingerprint } from "../../src/review/model-service-migration.ts";
 import { openStore } from "../../src/review/store.ts";
 import { startFakeGitea, type FakeGitea } from "./fake-gitea.ts";
@@ -95,11 +96,17 @@ export const HARNESS_SPEC: ReviewerSpec = {
   model: "global-model",
 };
 
-/** 为组合写入测试建一条真实可用的自定义模型服务；不碰旧目录与旧凭据表。 */
+/**
+ * 为组合写入测试建一条真实可用的自定义模型服务；不碰旧目录与旧凭据表。
+ *
+ * `fields` 整份服务共用,省略即什么都不声明(推理能力因此落到运行基线的 false,
+ * 支持的思考档位只有 `off`)。要一个思考得起来的模型就显式给 `reasoning: true`。
+ */
 export function seedAvailableModelService(
   harness: Pick<PanelHarness, "db">,
   provider: string,
   models: readonly string[],
+  fields: DiscoveredModel["fields"] = {},
 ): void {
   assert.ok(models.length > 0, "测试模型服务至少要有一个模型");
   const baseUrl = `https://${provider}.models.example.test/v1`;
@@ -135,7 +142,7 @@ export function seedAvailableModelService(
         identity: `${provider}:${model}`,
         provider,
         id: model,
-        fields: {},
+        fields,
       })),
       supplements: [],
     }), 1);
