@@ -436,6 +436,19 @@ async function readBody(
   return Buffer.concat(chunks);
 }
 
+/**
+ * 读完请求体再解析成 JSON。返回 `undefined` 只有一个意思:体积超限,413 已经发出去了,
+ * 调用方直接 return。解析失败仍是 `null`,由各处自己的 400 文案回答。
+ */
+async function readJson<T = unknown>(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<T | undefined> {
+  const body = await readBody(req, res);
+  if (body === undefined) return undefined;
+  return safeParse(body) as T;
+}
+
 /** 日志里指认一次投递。head commit 取前 7 位,与 git 的短 SHA 一致。 */
 function describe(event: NormalizedEvent): string {
   return `${event.platform} ${event.owner}/${event.repo}#${event.number} ${event.action} @${event.headSha.slice(0, 7)}`;
@@ -987,6 +1000,20 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+/**
+ * 乐观并发的版本冲突。面板拿的版本号与库里当前的对不上就走这里,回的两个版本号让面板
+ * 知道该重新载入哪一份。`error` 按各端点的措辞传入——文案说的是「重新打开配置」还是
+ * 「重新载入后再补录」,取决于面板下一步该做什么。
+ */
+function versionConflict(
+  res: ServerResponse,
+  expectedVersion: number | null,
+  actualVersion: number | null,
+  error = "模型服务版本已变化，请重新打开配置",
+): void {
+  sendJson(res, 409, { error, expectedVersion, actualVersion });
+}
+
 /** Cookie 头里 `name` 的值。只认第一个匹配,面板只发这一个 cookie。 */
 function cookieValue(header: string | undefined, name: string): string | undefined {
   if (header === undefined) return undefined;
@@ -1224,9 +1251,8 @@ async function handleLogin(
   deps: WebhookServerDeps,
   auth: PanelAuth,
 ): Promise<void> {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body) as { username?: unknown; password?: unknown } | null;
+  const payload = await readJson<{ username?: unknown; password?: unknown } | null>(req, res);
+  if (payload === undefined) return;
   if (
     payload === null ||
     typeof payload.username !== "string" ||
@@ -1283,13 +1309,12 @@ async function handleBootstrapRegister(
     res.setHeader("retry-after", String(retryAfter));
     return sendJson(res, 429, { error: `太快了,${retryAfter} 秒后再试` });
   }
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body) as {
+  const payload = await readJson<{
     bootstrap?: unknown;
     username?: unknown;
     password?: unknown;
-  } | null;
+  } | null>(req, res);
+  if (payload === undefined) return;
   if (
     payload === null ||
     typeof payload.bootstrap !== "string" ||
@@ -1383,14 +1408,13 @@ async function handlePanelUsers(req: IncomingMessage, res: ServerResponse, deps:
       ),
     });
   }
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const value = safeParse(body) as {
+  const value = await readJson<{
     username?: unknown;
     password?: unknown;
     displayName?: unknown;
     repoIds?: unknown;
-  } | null;
+  } | null>(req, res);
+  if (value === undefined) return;
   if (
     value === null ||
     typeof value.username !== "string" ||
@@ -1444,14 +1468,13 @@ async function handlePanelUser(
       store.close();
     }
   }
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const value = safeParse(body) as {
+  const value = await readJson<{
     displayName?: unknown;
     roleId?: unknown;
     isSystemAdmin?: unknown;
     repoIds?: unknown;
-  } | null;
+  } | null>(req, res);
+  if (value === undefined) return;
   if (
     value === null ||
     (value.displayName !== null && typeof value.displayName !== "string") ||
@@ -1479,9 +1502,8 @@ async function handleResetPanelPassword(
   deps: WebhookServerDeps,
   username: string,
 ) {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const value = safeParse(body) as { password?: unknown } | null;
+  const value = await readJson<{ password?: unknown } | null>(req, res);
+  if (value === undefined) return;
   if (value === null || typeof value.password !== "string") return sendJson(res, 400, { error: "密码形状不对" });
   const passwordHash = await hashPassword(value.password);
   const updated = withStore(deps.dbPath, (store) => store.resetPanelPassword(username, passwordHash));
@@ -1494,9 +1516,8 @@ async function handleSelfPassword(
   deps: WebhookServerDeps,
   caller: { username: string },
 ) {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const value = safeParse(body) as { password?: unknown } | null;
+  const value = await readJson<{ password?: unknown } | null>(req, res);
+  if (value === undefined) return;
   if (value === null || typeof value.password !== "string") return sendJson(res, 400, { error: "密码形状不对" });
   const passwordHash = await hashPassword(value.password);
   const raw = cookieValue(req.headers.cookie, SESSION_COOKIE)!;
@@ -1511,9 +1532,8 @@ async function handlePanelRoles(req: IncomingMessage, res: ServerResponse, deps:
   if (req.method === "GET") {
     return sendJson(res, 200, { roles: withStore(deps.dbPath, (store) => store.listPanelRoles()) });
   }
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const value = safeParse(body) as { name?: unknown; permissions?: unknown } | null;
+  const value = await readJson<{ name?: unknown; permissions?: unknown } | null>(req, res);
+  if (value === undefined) return;
   if (value === null || typeof value.name !== "string" || !Array.isArray(value.permissions)) {
     return sendJson(res, 400, { error: "角色形状不对" });
   }
@@ -1540,9 +1560,8 @@ async function handlePanelRole(req: IncomingMessage, res: ServerResponse, deps: 
     if (result.usernames.length > 0) return sendJson(res, 409, { error: "角色仍在使用", usernames: result.usernames });
     return result.removed ? send(res, 204) : sendJson(res, 404, { error: "角色不存在" });
   }
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const value = safeParse(body) as { name?: unknown; permissions?: unknown } | null;
+  const value = await readJson<{ name?: unknown; permissions?: unknown } | null>(req, res);
+  if (value === undefined) return;
   if (value === null || typeof value.name !== "string" || !Array.isArray(value.permissions)) return sendJson(res, 400, { error: "角色形状不对" });
   const permissions = value.permissions.filter((permission): permission is string => typeof permission === "string");
   if (permissions.length !== value.permissions.length || !permissions.every(isPanelPermission)) return sendJson(res, 400, { error: "有认不出的权限格" });
@@ -2205,9 +2224,8 @@ async function handlePutSettings(
   res: ServerResponse,
   deps: WebhookServerDeps,
 ): Promise<void> {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const decoded = safeParse(body);
+  const decoded = await readJson(req, res);
+  if (decoded === undefined) return;
   if (decoded === null || typeof decoded !== "object" || Array.isArray(decoded)) {
     return sendJson(res, 400, { error: "body 要是 JSON 对象" });
   }
@@ -2899,18 +2917,160 @@ async function handleBuiltinProviderSearch(
   return sendJson(res, 200, { providers });
 }
 
+/** 一条模型服务补录记录在一次版本提交里的样子。 */
+type CommittedSupplement = ModelServiceVersionCommit["supplements"][number];
+
+/** 目录发现的固定调用形状:允许联网,带上本地目录缓存(没配就不带)。 */
+function discoverServiceModels(
+  deps: WebhookServerDeps,
+  candidate: ModelServiceCandidate,
+): ReturnType<typeof discoverModels> {
+  const catalogStorePath = modelCatalogStorePath(deps.cacheDir);
+  return (deps.discoverModelServiceModels ?? discoverModels)(candidate, {
+    allowNetwork: true,
+    ...(catalogStorePath === undefined ? {} : { catalogStorePath }),
+  });
+}
+
+/**
+ * 预览与提交入口共有的两道闸:同名位置被另一种模型服务占着,以及乐观版本对不上。
+ * 回 true 表示已经答复过,调用方直接 return。
+ */
+function occupiedOrStale(
+  res: ServerResponse,
+  provider: string,
+  type: "builtin" | "custom",
+  current: ModelServiceRecord | undefined,
+  expectedVersion: number | null,
+): boolean {
+  if (current !== undefined && current.type !== type) {
+    const occupier = type === "builtin" ? "自定义" : "内置";
+    sendJson(res, 409, { error: `${provider} 已被同名${occupier}模型服务占用` });
+    return true;
+  }
+  const actualVersion = current?.version ?? null;
+  if (actualVersion !== expectedVersion) {
+    versionConflict(res, expectedVersion, actualVersion);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 预览两条路径(内置 / 自定义)共有的收尾:按候选发现目录,失败只回安全摘要,成功把
+ * 目标与目录原样交给面板。目标从哪来是两条路径唯一的差别。
+ */
+async function sendModelServicePreview(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  input: {
+    candidate: ModelServiceCandidate;
+    expectedVersion: number | null;
+    target: ModelServiceTarget;
+  },
+): Promise<void> {
+  const discovered = await discoverServiceModels(deps, input.candidate);
+  if (!discovered.ok) {
+    return sendCandidateFailure(res, discovered.failure, [input.candidate.credential], "discovery");
+  }
+  return sendJson(res, 200, {
+    provider: input.candidate.provider,
+    expectedVersion: input.expectedVersion,
+    target: input.target,
+    models: discovered.models,
+    ignoredModelCount: discovered.ignoredCount,
+  });
+}
+
+/** 目录里没有验证模型时补录它。已有同名补录原地替换,不追加第二条。 */
+function upsertSupplement(supplements: CommittedSupplement[], entry: CommittedSupplement): void {
+  const index = supplements.findIndex((existing) => existing.model === entry.model);
+  if (index === -1) supplements.push(entry);
+  else supplements[index] = entry;
+}
+
+/**
+ * 一次提交之后目录该是什么样。发现失败保住上一次成功的时间(从没成功过是首次发现失败),
+ * 发现成功但目录里没有验证模型也算发现失败(那条已经补录进来),其余可用。
+ * `failureSecrets` 给了就对失败原因脱敏——内置目标不含用户填的地址,那条原样落库。
+ */
+function committedDirectory(input: {
+  discovered: Awaited<ReturnType<typeof discoverModels>>;
+  validationInDirectory: boolean;
+  validationModel: string;
+  committedAt: string;
+  lastSuccessAt: string | null;
+  failureSecrets?: readonly string[];
+}): ModelServiceVersionCommit["directory"] {
+  if (!input.discovered.ok) {
+    return {
+      state: input.lastSuccessAt === null ? "discovery-failed" : "refresh-failed",
+      lastAttemptAt: input.committedAt,
+      lastSuccessAt: input.lastSuccessAt,
+      failure:
+        input.failureSecrets === undefined
+          ? input.discovered.failure.message
+          : redactCandidateFailure(input.discovered.failure, input.failureSecrets).message,
+      ignoredModelCount: 0,
+    };
+  }
+  if (!input.validationInDirectory) {
+    return {
+      state: "discovery-failed",
+      lastAttemptAt: input.committedAt,
+      lastSuccessAt: null,
+      failure: `最终目录里已没有验证模型 ${input.validationModel}；真实推理成功后已补录该模型`,
+      ignoredModelCount: input.discovered.ignoredCount,
+    };
+  }
+  return {
+    state: "available",
+    lastAttemptAt: input.committedAt,
+    lastSuccessAt: input.committedAt,
+    failure: null,
+    ignoredModelCount: input.discovered.ignoredCount,
+  };
+}
+
+/**
+ * 提交一次版本并答复。提交没成只有一个原因:期间有人把版本推进了,此时读一次当前版本
+ * 号一并回给面板。三条提交路径(内置、自定义、重验)的事务边界因此只有这一处。
+ */
+function commitAndRespond(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  provider: string,
+  expectedVersion: number | null,
+  record: ModelServiceVersionCommit,
+): void {
+  const version = withStore(deps.dbPath, (store) =>
+    store.commitModelServiceVersion(expectedVersion, record),
+  );
+  if (version === undefined) {
+    const actualVersion = withStore(deps.dbPath, (store) =>
+      store.getModelService(provider)?.version ?? null,
+    );
+    return versionConflict(res, expectedVersion, actualVersion);
+  }
+  return sendJson(res, 200, {
+    provider,
+    version,
+    credential: { state: "verified" },
+    directory: { state: record.directory.state },
+  });
+}
+
 async function handlePreviewBuiltinModelService(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
 ): Promise<void> {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body) as {
+  const payload = await readJson<{
     provider?: unknown;
     credential?: unknown;
     expectedVersion?: unknown;
-  } | null;
+  } | null>(req, res);
+  if (payload === undefined) return;
   if (
     payload === null ||
     typeof payload.provider !== "string" ||
@@ -2925,35 +3085,15 @@ async function handlePreviewBuiltinModelService(
   const provider = payload.provider;
   const expectedVersion = payload.expectedVersion as number | null;
   const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
-  if (current !== undefined && current.type !== "builtin") {
-    return sendJson(res, 409, { error: `${provider} 已被同名自定义模型服务占用` });
-  }
-  const actualVersion = current?.version ?? null;
-  if (actualVersion !== expectedVersion) {
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新打开配置",
-      expectedVersion,
-      actualVersion,
-    });
-  }
+  if (occupiedOrStale(res, provider, "builtin", current, expectedVersion)) return;
   const target = await resolvePiBuiltinProviderTarget(provider);
   if (target === undefined) {
     return sendJson(res, 400, { error: `Pi 没有内置 provider ${provider}` });
   }
-  const catalogStorePath = modelCatalogStorePath(deps.cacheDir);
-  const discovered = await (deps.discoverModelServiceModels ?? discoverModels)(
-    { kind: "builtin", provider, credential: payload.credential },
-    { allowNetwork: true, ...(catalogStorePath === undefined ? {} : { catalogStorePath }) },
-  );
-  if (!discovered.ok) {
-    return sendCandidateFailure(res, discovered.failure, [payload.credential], "discovery");
-  }
-  return sendJson(res, 200, {
-    provider,
+  return sendModelServicePreview(res, deps, {
+    candidate: { kind: "builtin", provider, credential: payload.credential },
     expectedVersion,
     target,
-    models: discovered.models,
-    ignoredModelCount: discovered.ignoredCount,
   });
 }
 
@@ -2973,17 +3113,7 @@ async function commitVerifiedBuiltinModelService(
     return sendJson(res, 503, { error: MASTER_KEY_MISSING });
   }
   const current = withStore(deps.dbPath, (store) => store.getModelService(input.provider));
-  if (current !== undefined && current.type !== "builtin") {
-    return sendJson(res, 409, { error: `${input.provider} 已被同名自定义模型服务占用` });
-  }
-  const actualVersion = current?.version ?? null;
-  if (actualVersion !== input.expectedVersion) {
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新打开配置",
-      expectedVersion: input.expectedVersion,
-      actualVersion,
-    });
-  }
+  if (occupiedOrStale(res, input.provider, "builtin", current, input.expectedVersion)) return;
   const target = await resolvePiBuiltinProviderTarget(input.provider);
   if (target === undefined) {
     return sendJson(res, 400, { error: `Pi 没有内置 provider ${input.provider}` });
@@ -2993,11 +3123,7 @@ async function commitVerifiedBuiltinModelService(
     provider: input.provider,
     credential: input.credential,
   };
-  const catalogStorePath = modelCatalogStorePath(deps.cacheDir);
-  const discovered = await (deps.discoverModelServiceModels ?? discoverModels)(candidate, {
-    allowNetwork: true,
-    ...(catalogStorePath === undefined ? {} : { catalogStorePath }),
-  });
+  const discovered = await discoverServiceModels(deps, candidate);
   const validationDiscovery = discovered.ok
     ? discovered.models.find((model) => model.id === input.validationModel)
     : undefined;
@@ -3011,53 +3137,28 @@ async function commitVerifiedBuiltinModelService(
 
   const committedAt = new Date((deps.now ?? Date.now)()).toISOString();
   const targetFingerprint = modelServiceTargetFingerprint(target.baseUrl, target.api);
-  const needsValidationSupplement = !discovered.ok || validationDiscovery === undefined;
-  const supplements = (current?.supplements ?? []).map((entry) => ({
+  const supplements: CommittedSupplement[] = (current?.supplements ?? []).map((entry) => ({
     model: entry.model,
     source: entry.source,
     targetFingerprint: entry.targetFingerprint,
     createdAt: entry.createdAt,
   }));
-  if (needsValidationSupplement) {
-    const supplement = {
+  if (!discovered.ok || validationDiscovery === undefined) {
+    upsertSupplement(supplements, {
       model: input.validationModel,
-      source: "manual" as const,
+      source: "manual",
       targetFingerprint,
       createdAt:
         supplements.find((entry) => entry.model === input.validationModel)?.createdAt ?? committedAt,
-    };
-    const index = supplements.findIndex((entry) => entry.model === input.validationModel);
-    if (index === -1) supplements.push(supplement);
-    else supplements[index] = supplement;
+    });
   }
-
-  let directory: ModelServiceVersionCommit["directory"];
-  if (!discovered.ok) {
-    const lastSuccessAt = current?.directory.lastSuccessAt ?? null;
-    directory = {
-      state: lastSuccessAt === null ? "discovery-failed" : "refresh-failed",
-      lastAttemptAt: committedAt,
-      lastSuccessAt,
-      failure: discovered.failure.message,
-      ignoredModelCount: 0,
-    };
-  } else if (validationDiscovery === undefined) {
-    directory = {
-      state: "discovery-failed",
-      lastAttemptAt: committedAt,
-      lastSuccessAt: null,
-      failure: `最终目录里已没有验证模型 ${input.validationModel}；真实推理成功后已补录该模型`,
-      ignoredModelCount: discovered.ignoredCount,
-    };
-  } else {
-    directory = {
-      state: "available",
-      lastAttemptAt: committedAt,
-      lastSuccessAt: committedAt,
-      failure: null,
-      ignoredModelCount: discovered.ignoredCount,
-    };
-  }
+  const directory = committedDirectory({
+    discovered,
+    validationInDirectory: validationDiscovery !== undefined,
+    validationModel: input.validationModel,
+    committedAt,
+    lastSuccessAt: current?.directory.lastSuccessAt ?? null,
+  });
   const record: ModelServiceVersionCommit = {
     provider: input.provider,
     type: "builtin",
@@ -3079,25 +3180,7 @@ async function commitVerifiedBuiltinModelService(
     automaticModels: discovered.ok ? discovered.models : (current?.automaticModels ?? []),
     supplements,
   };
-  const version = withStore(deps.dbPath, (store) =>
-    store.commitModelServiceVersion(input.expectedVersion, record),
-  );
-  if (version === undefined) {
-    const latestVersion = withStore(deps.dbPath, (store) =>
-      store.getModelService(input.provider)?.version ?? null,
-    );
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新打开配置",
-      expectedVersion: input.expectedVersion,
-      actualVersion: latestVersion,
-    });
-  }
-  return sendJson(res, 200, {
-    provider: input.provider,
-    version,
-    credential: { state: "verified" },
-    directory: { state: directory.state },
-  });
+  return commitAndRespond(res, deps, input.provider, input.expectedVersion, record);
 }
 
 async function handleCommitBuiltinModelService(
@@ -3105,14 +3188,13 @@ async function handleCommitBuiltinModelService(
   res: ServerResponse,
   deps: WebhookServerDeps,
 ): Promise<void> {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body) as {
+  const payload = await readJson<{
     provider?: unknown;
     credential?: unknown;
     validationModel?: unknown;
     expectedVersion?: unknown;
-  } | null;
+  } | null>(req, res);
+  if (payload === undefined) return;
   if (
     payload === null ||
     typeof payload.provider !== "string" ||
@@ -3145,12 +3227,11 @@ async function handleReverifyModelService(
   if (masterKey === undefined || masterKey === "") {
     return sendJson(res, 503, { error: MASTER_KEY_MISSING });
   }
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body) as {
+  const payload = await readJson<{
     validationModel?: unknown;
     expectedVersion?: unknown;
-  } | null;
+  } | null>(req, res);
+  if (payload === undefined) return;
   if (
     payload === null ||
     typeof payload.validationModel !== "string" ||
@@ -3168,11 +3249,7 @@ async function handleReverifyModelService(
     return sendJson(res, 404, { error: `没有模型服务 ${provider}` });
   }
   if (current.version !== expectedVersion) {
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新打开配置",
-      expectedVersion,
-      actualVersion: current.version,
-    });
+    return versionConflict(res, expectedVersion, current.version);
   }
 
   let candidate: ModelServiceCandidate;
@@ -3230,11 +3307,7 @@ async function handleReverifyModelService(
     api: current.api as (typeof CUSTOM_PROVIDER_APIS)[number],
     credential,
   };
-  const catalogStorePath = modelCatalogStorePath(deps.cacheDir);
-  const discovered = await (deps.discoverModelServiceModels ?? discoverModels)(candidate, {
-    allowNetwork: true,
-    ...(catalogStorePath === undefined ? {} : { catalogStorePath }),
-  });
+  const discovered = await discoverServiceModels(deps, candidate);
   const validationDiscovery = discovered.ok
     ? discovered.models.find((model) => model.id === validationModel)
     : undefined;
@@ -3246,48 +3319,30 @@ async function handleReverifyModelService(
   if (!validation.ok) return sendCandidateFailure(res, validation.failure, secrets);
 
   const committedAt = new Date((deps.now ?? Date.now)()).toISOString();
-  const supplements = current.supplements.map((entry) => ({
+  const supplements: CommittedSupplement[] = current.supplements.map((entry) => ({
     model: entry.model,
     source: entry.source,
     targetFingerprint: entry.targetFingerprint,
     createdAt: entry.createdAt,
   }));
   if (!discovered.ok || validationDiscovery === undefined) {
-    const supplement = {
+    upsertSupplement(supplements, {
       model: validationModel,
-      source: "manual" as const,
+      source: "manual",
       targetFingerprint,
       createdAt:
         current.supplements.find((entry) => entry.model === validationModel)?.createdAt ??
         committedAt,
-    };
-    const existing = supplements.findIndex((entry) => entry.model === validationModel);
-    if (existing === -1) supplements.push(supplement);
-    else supplements[existing] = supplement;
+    });
   }
-  const directory: ModelServiceVersionCommit["directory"] = !discovered.ok
-    ? {
-        state: current.directory.lastSuccessAt === null ? "discovery-failed" : "refresh-failed",
-        lastAttemptAt: committedAt,
-        lastSuccessAt: current.directory.lastSuccessAt,
-        failure: redactCandidateFailure(discovered.failure, secrets).message,
-        ignoredModelCount: 0,
-      }
-    : validationDiscovery === undefined
-      ? {
-          state: "discovery-failed",
-          lastAttemptAt: committedAt,
-          lastSuccessAt: null,
-          failure: `最终目录里已没有验证模型 ${validationModel}；真实推理成功后已补录该模型`,
-          ignoredModelCount: discovered.ignoredCount,
-        }
-      : {
-          state: "available",
-          lastAttemptAt: committedAt,
-          lastSuccessAt: committedAt,
-          failure: null,
-          ignoredModelCount: discovered.ignoredCount,
-        };
+  const directory = committedDirectory({
+    discovered,
+    validationInDirectory: validationDiscovery !== undefined,
+    validationModel,
+    committedAt,
+    lastSuccessAt: current.directory.lastSuccessAt,
+    failureSecrets: secrets,
+  });
   const record: ModelServiceVersionCommit = {
     provider,
     type: "custom",
@@ -3309,25 +3364,7 @@ async function handleReverifyModelService(
     automaticModels: discovered.ok ? discovered.models : current.automaticModels,
     supplements,
   };
-  const version = withStore(deps.dbPath, (store) =>
-    store.commitModelServiceVersion(expectedVersion, record),
-  );
-  if (version === undefined) {
-    const actualVersion = withStore(deps.dbPath, (store) =>
-      store.getModelService(provider)?.version ?? null,
-    );
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新打开配置",
-      expectedVersion,
-      actualVersion,
-    });
-  }
-  return sendJson(res, 200, {
-    provider,
-    version,
-    credential: { state: "verified" },
-    directory: { state: directory.state },
-  });
+  return commitAndRespond(res, deps, provider, expectedVersion, record);
 }
 
 async function handleDeleteModelServiceCredential(
@@ -3336,9 +3373,8 @@ async function handleDeleteModelServiceCredential(
   deps: WebhookServerDeps,
   provider: string,
 ): Promise<void> {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body) as { expectedVersion?: unknown } | null;
+  const payload = await readJson<{ expectedVersion?: unknown } | null>(req, res);
+  if (payload === undefined) return;
   if (
     payload === null ||
     !Number.isInteger(payload.expectedVersion) ||
@@ -3352,11 +3388,7 @@ async function handleDeleteModelServiceCredential(
     return sendJson(res, 404, { error: `没有模型服务 ${provider}` });
   }
   if (current.version !== expectedVersion) {
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新打开配置",
-      expectedVersion,
-      actualVersion: current.version,
-    });
+    return versionConflict(res, expectedVersion, current.version);
   }
   const references = withStore(deps.dbPath, (store) =>
     store.listModelReferences().filter((reference) => reference.provider === provider),
@@ -3400,11 +3432,7 @@ async function handleDeleteModelServiceCredential(
     const actualVersion = withStore(deps.dbPath, (store) =>
       store.getModelService(provider)?.version ?? null,
     );
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化或仍被模型组合引用，请重新打开配置",
-      expectedVersion,
-      actualVersion,
-    });
+    return versionConflict(res, expectedVersion, actualVersion, "模型服务版本已变化或仍被模型组合引用，请重新打开配置");
   }
   return sendJson(res, 200, {
     provider,
@@ -3545,9 +3573,9 @@ async function handleUpdateModelServiceModelStates(
   deps: WebhookServerDeps,
   provider: string,
 ): Promise<void> {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const input = parseModelStateMutation(safeParse(body));
+  const payload = await readJson(req, res);
+  if (payload === undefined) return;
+  const input = parseModelStateMutation(payload);
   if (input === undefined) {
     return sendJson(res, 400, {
       error: "模型状态更新需要 models、enabled 与正整数 expectedVersion",
@@ -3566,11 +3594,7 @@ async function handleUpdateModelServiceModelStates(
     const actualVersion = withStore(deps.dbPath, (store) =>
       store.getModelService(provider)?.version ?? null,
     );
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新载入后再更新模型状态",
-      expectedVersion: input.expectedVersion,
-      actualVersion,
-    });
+    return versionConflict(res, input.expectedVersion, actualVersion, "模型服务版本已变化，请重新载入后再更新模型状态");
   }
   if (result.status === "unknown-models") {
     return sendJson(res, 400, {
@@ -3601,9 +3625,8 @@ async function handleRefreshModelService(
   if (masterKey === undefined || masterKey === "") {
     return sendJson(res, 503, { error: MASTER_KEY_MISSING });
   }
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body) as { expectedVersion?: unknown } | null;
+  const payload = await readJson<{ expectedVersion?: unknown } | null>(req, res);
+  if (payload === undefined) return;
   if (
     payload === null ||
     !Number.isInteger(payload.expectedVersion) ||
@@ -3617,11 +3640,7 @@ async function handleRefreshModelService(
     return sendJson(res, 404, { error: `没有模型服务 ${provider}` });
   }
   if (current.version !== expectedVersion) {
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新载入后再刷新",
-      expectedVersion,
-      actualVersion: current.version,
-    });
+    return versionConflict(res, expectedVersion, current.version, "模型服务版本已变化，请重新载入后再刷新");
   }
   if (await hasCurrentCustomProviderNameConflict(current)) {
     return sendJson(res, 409, {
@@ -3632,11 +3651,7 @@ async function handleRefreshModelService(
   if (!runtime.ok) return sendJson(res, 409, { error: `${runtime.error}，不能刷新目录` });
   const { candidate, targetFingerprint } = runtime;
 
-  const catalogStorePath = modelCatalogStorePath(deps.cacheDir);
-  const discovered = await (deps.discoverModelServiceModels ?? discoverModels)(candidate, {
-    allowNetwork: true,
-    ...(catalogStorePath === undefined ? {} : { catalogStorePath }),
-  });
+  const discovered = await discoverServiceModels(deps, candidate);
   const attemptedAt = new Date((deps.now ?? Date.now)()).toISOString();
   const failure = discovered.ok
     ? null
@@ -3682,11 +3697,7 @@ async function handleRefreshModelService(
     const actualVersion = withStore(deps.dbPath, (store) =>
       store.getModelService(provider)?.version ?? null,
     );
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新载入后再刷新",
-      expectedVersion,
-      actualVersion,
-    });
+    return versionConflict(res, expectedVersion, actualVersion, "模型服务版本已变化，请重新载入后再刷新");
   }
   return sendJson(res, 200, {
     provider,
@@ -3709,9 +3720,9 @@ async function handleAddModelSupplement(
   if (masterKey === undefined || masterKey === "") {
     return sendJson(res, 503, { error: MASTER_KEY_MISSING });
   }
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const input = parseModelSupplementMutation(safeParse(body));
+  const payload = await readJson(req, res);
+  if (payload === undefined) return;
+  const input = parseModelSupplementMutation(payload);
   if (input === undefined) {
     return sendJson(res, 400, {
       error: "模型补录只接受 model 与正整数 expectedVersion",
@@ -3722,11 +3733,7 @@ async function handleAddModelSupplement(
     return sendJson(res, 404, { error: `没有模型服务 ${provider}` });
   }
   if (current.version !== input.expectedVersion) {
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新载入后再补录",
-      expectedVersion: input.expectedVersion,
-      actualVersion: current.version,
-    });
+    return versionConflict(res, input.expectedVersion, current.version, "模型服务版本已变化，请重新载入后再补录");
   }
   if (await hasCurrentCustomProviderNameConflict(current)) {
     return sendJson(res, 409, {
@@ -3778,11 +3785,7 @@ async function handleAddModelSupplement(
     const actualVersion = withStore(deps.dbPath, (store) =>
       store.getModelService(provider)?.version ?? null,
     );
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新载入后再补录",
-      expectedVersion: input.expectedVersion,
-      actualVersion,
-    });
+    return versionConflict(res, input.expectedVersion, actualVersion, "模型服务版本已变化，请重新载入后再补录");
   }
   return sendJson(res, 200, {
     provider,
@@ -3799,9 +3802,9 @@ async function handleDeleteModelSupplement(
   deps: WebhookServerDeps,
   provider: string,
 ): Promise<void> {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const input = parseModelSupplementMutation(safeParse(body));
+  const payload = await readJson(req, res);
+  if (payload === undefined) return;
+  const input = parseModelSupplementMutation(payload);
   if (input === undefined) {
     return sendJson(res, 400, {
       error: "删除模型补录只接受 model 与正整数 expectedVersion",
@@ -3812,11 +3815,7 @@ async function handleDeleteModelSupplement(
     return sendJson(res, 404, { error: `没有模型服务 ${provider}` });
   }
   if (current.version !== input.expectedVersion) {
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新载入后再删除补录",
-      expectedVersion: input.expectedVersion,
-      actualVersion: current.version,
-    });
+    return versionConflict(res, input.expectedVersion, current.version, "模型服务版本已变化，请重新载入后再删除补录");
   }
   const supplement = current.supplements.find((entry) => entry.model === input.model);
   if (supplement === undefined) {
@@ -3867,11 +3866,7 @@ async function handleDeleteModelSupplement(
     const actualVersion = withStore(deps.dbPath, (store) =>
       store.getModelService(provider)?.version ?? null,
     );
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新载入后再删除补录",
-      expectedVersion: input.expectedVersion,
-      actualVersion,
-    });
+    return versionConflict(res, input.expectedVersion, actualVersion, "模型服务版本已变化，请重新载入后再删除补录");
   }
   return sendJson(res, 200, {
     provider,
@@ -3986,48 +3981,27 @@ async function handlePreviewCustomModelService(
   res: ServerResponse,
   deps: WebhookServerDeps,
 ): Promise<void> {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const input = parseCustomModelServiceCandidate(safeParse(body), false);
+  const payload = await readJson(req, res);
+  if (payload === undefined) return;
+  const input = parseCustomModelServiceCandidate(payload, false);
   if (input === undefined) {
     return sendJson(res, 400, { error: "自定义模型服务候选形状不对" });
   }
   const current = withStore(deps.dbPath, (store) => store.getModelService(input.provider));
-  if (current !== undefined && current.type !== "custom") {
-    return sendJson(res, 409, { error: `${input.provider} 已被同名内置模型服务占用` });
-  }
-  const actualVersion = current?.version ?? null;
-  if (actualVersion !== input.expectedVersion) {
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新打开配置",
-      expectedVersion: input.expectedVersion,
-      actualVersion,
-    });
-  }
+  if (occupiedOrStale(res, input.provider, "custom", current, input.expectedVersion)) return;
   if ((await listPiBuiltinProviders()).some(({ id }) => id === input.provider)) {
     return sendJson(res, 409, { error: `${input.provider} 与当前 Pi 内置 provider 名字冲突` });
   }
-  const candidate = {
-    kind: "custom" as const,
-    provider: input.provider,
-    baseUrl: input.baseUrl,
-    api: input.api,
-    credential: input.credential,
-  };
-  const catalogStorePath = modelCatalogStorePath(deps.cacheDir);
-  const discovered = await (deps.discoverModelServiceModels ?? discoverModels)(candidate, {
-    allowNetwork: true,
-    ...(catalogStorePath === undefined ? {} : { catalogStorePath }),
-  });
-  if (!discovered.ok) {
-    return sendCandidateFailure(res, discovered.failure, [input.credential], "discovery");
-  }
-  return sendJson(res, 200, {
-    provider: input.provider,
+  return sendModelServicePreview(res, deps, {
+    candidate: {
+      kind: "custom",
+      provider: input.provider,
+      baseUrl: input.baseUrl,
+      api: input.api,
+      credential: input.credential,
+    },
     expectedVersion: input.expectedVersion,
     target: { baseUrl: input.baseUrl, api: input.api },
-    models: discovered.models,
-    ignoredModelCount: discovered.ignoredCount,
   });
 }
 
@@ -4040,9 +4014,9 @@ async function handleCommitCustomModelService(
   if (masterKey === undefined || masterKey === "") {
     return sendJson(res, 503, { error: MASTER_KEY_MISSING });
   }
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const input = parseCustomModelServiceCandidate(safeParse(body));
+  const payload = await readJson(req, res);
+  if (payload === undefined) return;
+  const input = parseCustomModelServiceCandidate(payload);
   if (input === undefined) {
     return sendJson(res, 400, { error: "自定义模型服务最终候选形状不对" });
   }
@@ -4050,17 +4024,7 @@ async function handleCommitCustomModelService(
     current: store.getModelService(input.provider),
     knownSupplements: store.listModelSupplements(input.provider),
   }));
-  if (current !== undefined && current.type !== "custom") {
-    return sendJson(res, 409, { error: `${input.provider} 已被同名内置模型服务占用` });
-  }
-  const actualVersion = current?.version ?? null;
-  if (actualVersion !== input.expectedVersion) {
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新打开配置",
-      expectedVersion: input.expectedVersion,
-      actualVersion,
-    });
-  }
+  if (occupiedOrStale(res, input.provider, "custom", current, input.expectedVersion)) return;
   if ((await listPiBuiltinProviders()).some(({ id }) => id === input.provider)) {
     return sendJson(res, 409, { error: `${input.provider} 与当前 Pi 内置 provider 名字冲突` });
   }
@@ -4085,11 +4049,7 @@ async function handleCommitCustomModelService(
     api: input.api,
     credential: input.credential,
   };
-  const catalogStorePath = modelCatalogStorePath(deps.cacheDir);
-  const discovered = await (deps.discoverModelServiceModels ?? discoverModels)(candidate, {
-    allowNetwork: true,
-    ...(catalogStorePath === undefined ? {} : { catalogStorePath }),
-  });
+  const discovered = await discoverServiceModels(deps, candidate);
   const validationDiscovery = discovered.ok
     ? discovered.models.find((model) => model.id === input.validationModel)
     : undefined;
@@ -4104,7 +4064,7 @@ async function handleCommitCustomModelService(
   const committedAt = new Date((deps.now ?? Date.now)()).toISOString();
   const targetFingerprint = modelServiceTargetFingerprint(input.baseUrl, input.api);
   const sameTarget = current?.targetFingerprint === targetFingerprint;
-  const supplements = sameTarget
+  const supplements: CommittedSupplement[] = sameTarget
     ? knownSupplements.map((entry) => ({
         model: entry.model,
         source: entry.source,
@@ -4121,17 +4081,14 @@ async function handleCommitCustomModelService(
         };
       });
   if (!discovered.ok || validationDiscovery === undefined) {
-    const supplement = {
+    upsertSupplement(supplements, {
       model: input.validationModel,
-      source: "manual" as const,
+      source: "manual",
       targetFingerprint,
       createdAt:
         current?.supplements.find((entry) => entry.model === input.validationModel)?.createdAt ??
         committedAt,
-    };
-    const index = supplements.findIndex((entry) => entry.model === input.validationModel);
-    if (index === -1) supplements.push(supplement);
-    else supplements[index] = supplement;
+    });
   }
   if (!sameTarget) {
     const nextModels = new Set(discovered.ok ? discovered.models.map(({ id }) => id) : []);
@@ -4151,33 +4108,14 @@ async function handleCommitCustomModelService(
       });
     }
   }
-  let directory: ModelServiceVersionCommit["directory"];
-  if (!discovered.ok) {
-    const lastSuccessAt = sameTarget ? current?.directory.lastSuccessAt ?? null : null;
-    directory = {
-      state: lastSuccessAt === null ? "discovery-failed" : "refresh-failed",
-      lastAttemptAt: committedAt,
-      lastSuccessAt,
-      failure: redactCandidateFailure(discovered.failure, [input.credential]).message,
-      ignoredModelCount: 0,
-    };
-  } else if (validationDiscovery === undefined) {
-    directory = {
-      state: "discovery-failed",
-      lastAttemptAt: committedAt,
-      lastSuccessAt: null,
-      failure: `最终目录里已没有验证模型 ${input.validationModel}；真实推理成功后已补录该模型`,
-      ignoredModelCount: discovered.ignoredCount,
-    };
-  } else {
-    directory = {
-      state: "available",
-      lastAttemptAt: committedAt,
-      lastSuccessAt: committedAt,
-      failure: null,
-      ignoredModelCount: discovered.ignoredCount,
-    };
-  }
+  const directory = committedDirectory({
+    discovered,
+    validationInDirectory: validationDiscovery !== undefined,
+    validationModel: input.validationModel,
+    committedAt,
+    lastSuccessAt: sameTarget ? current?.directory.lastSuccessAt ?? null : null,
+    failureSecrets: [input.credential],
+  });
   const record: ModelServiceVersionCommit = {
     provider: input.provider,
     type: "custom",
@@ -4203,25 +4141,7 @@ async function handleCommitCustomModelService(
         : [],
     supplements,
   };
-  const version = withStore(deps.dbPath, (store) =>
-    store.commitModelServiceVersion(input.expectedVersion, record),
-  );
-  if (version === undefined) {
-    const latestVersion = withStore(deps.dbPath, (store) =>
-      store.getModelService(input.provider)?.version ?? null,
-    );
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新打开配置",
-      expectedVersion: input.expectedVersion,
-      actualVersion: latestVersion,
-    });
-  }
-  return sendJson(res, 200, {
-    provider: input.provider,
-    version,
-    credential: { state: "verified" },
-    directory: { state: directory.state },
-  });
+  return commitAndRespond(res, deps, input.provider, input.expectedVersion, record);
 }
 
 async function handleDeleteCustomModelService(
@@ -4230,9 +4150,8 @@ async function handleDeleteCustomModelService(
   deps: WebhookServerDeps,
   provider: string,
 ): Promise<void> {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body);
+  const payload = await readJson(req, res);
+  if (payload === undefined) return;
   if (
     payload === null ||
     typeof payload !== "object" ||
@@ -4255,11 +4174,7 @@ async function handleDeleteCustomModelService(
     return sendJson(res, 400, { error: `${provider} 不是自定义模型服务` });
   }
   if (current.version !== expectedVersion) {
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新打开配置",
-      expectedVersion,
-      actualVersion: current.version,
-    });
+    return versionConflict(res, expectedVersion, current.version);
   }
   if (references.length > 0) {
     return sendJson(res, 409, {
@@ -4274,11 +4189,7 @@ async function handleDeleteCustomModelService(
     const actualVersion = withStore(deps.dbPath, (store) =>
       store.getModelService(provider)?.version ?? null,
     );
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新打开配置",
-      expectedVersion,
-      actualVersion,
-    });
+    return versionConflict(res, expectedVersion, actualVersion);
   }
   return sendJson(res, 200, { provider, deleted: true });
 }
@@ -4289,9 +4200,8 @@ async function handleRenameConflictingCustomModelService(
   deps: WebhookServerDeps,
   currentProvider: string,
 ): Promise<void> {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body);
+  const payload = await readJson(req, res);
+  if (payload === undefined) return;
   if (
     payload === null ||
     typeof payload !== "object" ||
@@ -4314,11 +4224,7 @@ async function handleRenameConflictingCustomModelService(
     return sendJson(res, 404, { error: `没有自定义模型服务 ${currentProvider}` });
   }
   if (current.version !== expectedVersion) {
-    return sendJson(res, 409, {
-      error: "模型服务版本已变化，请重新打开配置",
-      expectedVersion,
-      actualVersion: current.version,
-    });
+    return versionConflict(res, expectedVersion, current.version);
   }
   if (current.type !== "custom" || current.disabledReason !== "name-conflict") {
     return sendJson(res, 409, { error: "只有因 provider 名称冲突而停用的自定义服务可以改名" });
@@ -4355,11 +4261,7 @@ async function handleRenameConflictingCustomModelService(
   const actualVersion = withStore(deps.dbPath, (store) =>
     store.getModelService(currentProvider)?.version ?? null,
   );
-  return sendJson(res, 409, {
-    error: "模型服务版本已变化，请重新打开配置",
-    expectedVersion,
-    actualVersion,
-  });
+  return versionConflict(res, expectedVersion, actualVersion);
 }
 
 
@@ -4892,14 +4794,13 @@ async function handleRerun(
   triggeredBy: string,
   assignment: RepoAssignment,
 ): Promise<void> {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body) as {
+  const payload = await readJson<{
     owner?: unknown;
     repo?: unknown;
     pullNumber?: unknown;
     rangeReviewId?: unknown;
-  } | null;
+  } | null>(req, res);
+  if (payload === undefined) return;
   if (payload !== null && payload.rangeReviewId !== undefined) {
     const rangeReviewId = payload.rangeReviewId;
     if (typeof rangeReviewId !== "number" || !Number.isSafeInteger(rangeReviewId) || rangeReviewId <= 0) {
@@ -5410,16 +5311,15 @@ async function handleCreateRangeReview(
   createdBy: string,
   assignment: RepoAssignment,
 ): Promise<void> {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body) as {
+  const payload = await readJson<{
     owner?: unknown;
     repo?: unknown;
     title?: unknown;
     base?: unknown;
     comparison?: unknown;
     confirm?: unknown;
-  } | null;
+  } | null>(req, res);
+  if (payload === undefined) return;
   if (
     payload === null ||
     typeof payload.owner !== "string" ||
@@ -5585,9 +5485,8 @@ async function handleAdvanceRangeReview(
   id: number,
   advancedBy: string,
 ): Promise<void> {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body) as { comparison?: unknown } | null;
+  const payload = await readJson<{ comparison?: unknown } | null>(req, res);
+  if (payload === undefined) return;
   if (payload === null || typeof payload.comparison !== "string") {
     return sendJson(res, 400, { error: 'body 要是 {"comparison"} 形状的 JSON' });
   }
@@ -6032,11 +5931,11 @@ async function readRuleFields(
   res: ServerResponse,
   options: { error: string; noneMeansUnchanged: boolean },
 ): Promise<ReviewRuleInput | null | undefined> {
-  const body = await readBody(req, res);
-  if (body === undefined) return undefined;
-  const payload = safeParse(body) as
-    | { scope?: unknown; statement?: unknown; layer?: unknown }
-    | null;
+  const payload = await readJson<{ scope?: unknown; statement?: unknown; layer?: unknown } | null>(
+    req,
+    res,
+  );
+  if (payload === undefined) return undefined;
   if (
     options.noneMeansUnchanged &&
     (payload === null ||
@@ -6473,11 +6372,10 @@ async function handleStartRuleExploration(
   deps: WebhookServerDeps,
   repoId: number,
 ): Promise<void> {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body) as
-    | { baseline?: unknown; provider?: unknown; model?: unknown; thinkingLevel?: unknown }
-    | null;
+  const payload = await readJson<
+    { baseline?: unknown; provider?: unknown; model?: unknown; thinkingLevel?: unknown } | null
+  >(req, res);
+  if (payload === undefined) return;
   if (
     payload === null ||
     typeof payload.baseline !== "string" ||
@@ -6697,13 +6595,12 @@ async function handleRegister(
   if (hookManager === undefined) {
     return sendJson(res, 500, { error: "没有配置 Gitea,无法注册仓库" });
   }
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body) as {
+  const payload = await readJson<{
     owner?: unknown;
     repo?: unknown;
     reviewers?: unknown;
-  } | null;
+  } | null>(req, res);
+  if (payload === undefined) return;
   if (
     payload === null ||
     typeof payload.owner !== "string" ||
@@ -6843,9 +6740,8 @@ async function handleSetReviewers(
   if (record === undefined) {
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = safeParse(body) as { reviewers?: unknown } | null;
+  const payload = await readJson<{ reviewers?: unknown } | null>(req, res);
+  if (payload === undefined) return;
   if (payload === null || !("reviewers" in payload)) {
     return sendJson(res, 400, {
       error: 'body 要是 {"reviewers": [...]} 或 {"reviewers": null} 形状的 JSON',
