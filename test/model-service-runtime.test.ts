@@ -123,7 +123,13 @@ test("OpenAI-compatible 发现保留服务接口名称并按厂商用 Pi 目录�
         contextWindow: 272_000,
         maxTokens: 128_000,
         thinkingLevelMap: { off: "none", minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
-        compat: { supportsStrictMode: true, supportsOpenAIGrammarTools: true, supportsToolSearch: true, supportsExplicitPromptCacheMode: true },
+        compat: {
+          supportsStrictMode: true,
+          supportsOpenAIGrammarTools: true,
+          supportsToolSearch: true,
+          supportsExplicitPromptCacheMode: true,
+          supportsAdditionalTools: true,
+        },
       },
       fieldSources: {
         name: "service-interface",
