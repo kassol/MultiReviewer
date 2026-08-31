@@ -2,6 +2,8 @@
 
 > 2026-08-25: Finding Identity 的键去掉 Reviewer、统计主维度改为审查阶段 × category,由 ADR 0015 取代;回填链路、分母口径、fallback 排除与时间窗归属继续有效。
 
+> 2026-08-31: 锚定收敛落地后(Finding 锚点必须在 diff hunk 内,锚不进的在 report_finding 打回重锚,仍不进则丢弃并记轨迹),diff 外 Finding 不再写进 review 正文,「fallback Finding 排除在统计之外」一款失去适用对象;其余口径继续有效。
+
 `finding.disposition` 只在落库那一刻写一次,取的是本轮匹配到的历史评论的 resolve 状态,此后再无更新。首次报出的一律记 `unknown`;人 resolve 了评论、作者也改了代码的那一条,下一轮不会被重新报出,于是永远不留下 `resolved` 行。直接拿 `finding` 表算比率,等于用一个只收录「被 resolve 但代码没改」的样本去衡量审查质量,同时又按来源行计数,让活得久的 Finding 被反复计入分母。因此处置率不建在原始行上:分母的单位是 **Finding Identity**,disposition 由一条回填链路从 Forge 补齐。
 
 处置率是 Disposition 的派生度量,不是新的领域概念,故不在 `CONTEXT.md` 立词条。它衡量「人看过并做了结论」,不衡量「问题被修复」——resolve 状态证明不了后者。
