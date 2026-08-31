@@ -826,6 +826,7 @@ function ProposalSection({
                     repoId={repoId}
                     taskId={proposal.traceTaskId}
                     context={`来自提案:${proposal.statement}`}
+                    highlight={proposal.statement}
                   />
                 )}
               </span>
