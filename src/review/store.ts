@@ -27,6 +27,8 @@ import type {
   Category,
   Disposition,
   HistoryFinding,
+  KnowledgeEntry,
+  KnowledgeType,
   ProjectFact,
   ReviewerUsage,
   ReviewRule,
@@ -1178,12 +1180,6 @@ export type RepoSummary = {
   worktree: WorktreeStatus;
 };
 
-/**
- * 一条知识条目是评审规则还是项目事实(CONTEXT.md,ADR 0020)。封闭枚举,新增取值要新
- * 开一份 ADR。
- */
-export type KnowledgeType = "rule" | "fact";
-
 /** 知识集里的一条知识条目(CONTEXT.md)。`scope` 空串即全仓库;事实型的 `layer` 是空串。 */
 export type ReviewRuleRecord = {
   id: number;
@@ -1210,6 +1206,15 @@ export function toReviewRule(rule: ReviewRuleRecord): ReviewRule {
  */
 export function toProjectFact(entry: ReviewRuleRecord): ProjectFact {
   return { id: entry.id, scope: entry.scope, statement: entry.statement };
+}
+
+/**
+ * 知识集里的一条 → 交给规则 agent 的那一份(issue #222)。比注入那两份多一个 `type`:
+ * agent 提的是对照现有知识集的变更,分不清哪条是哪型就分不清「改一条规则」与「废止一条
+ * 过期事实」。层标签同样不给——它是人分组用的,对推导没有作用。
+ */
+export function toKnowledgeEntry(entry: ReviewRuleRecord): KnowledgeEntry {
+  return { id: entry.id, type: entry.type, scope: entry.scope, statement: entry.statement };
 }
 
 /**

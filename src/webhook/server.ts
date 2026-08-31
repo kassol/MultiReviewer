@@ -91,9 +91,8 @@ import {
   CUSTOM_PROVIDER_NAME_PATTERN,
   modelServiceTargetFingerprint,
   openStore,
-  toReviewRule,
+  toKnowledgeEntry,
   type FindingDispositionTarget,
-  type KnowledgeType,
   type ModelReference,
   type ModelServiceRecord,
   type ModelServiceVersionCommit,
@@ -6069,26 +6068,31 @@ async function handleRuleModels(res: ServerResponse, deps: WebhookServerDeps): P
 }
 
 /**
- * agent 产出到知识草案之间的那道收窄(ADR 0019)。只收规范性陈述的两个必填面,
+ * agent 产出到知识草案与修订提案之间的那道收窄(ADR 0019、ADR 0020)。两型分档判,与
+ * 人手填走同一套判据(`readRuleFields`):
+ *
+ * - 规则要陈述与层标签都非空;
+ * - 事实只要陈述非空,层标签强制成空串(层标签属规则型),陈述超过 `FACT_STATEMENT_LIMIT`
+ *   的整条丢掉——**丢掉而不是截断**,截断出来的半句事实比没有更糟。
+ *
  * 再按重要性截断为至多 30 条——上限的本质是人一次确认得完、不麻木,由服务端把住,
  * 不指望模型自己数得准。
  */
-function usableRuleItems(items: readonly RuleAgentItem[]): UsableRuleItem[] {
+function usableRuleItems(items: readonly RuleAgentItem[]): RuleAgentItem[] {
   return items
     .map((item) => ({
       ...item,
-      // 基点探索这一票只产出评审规则,两型产出是后续票的事(issue #222)。
-      type: "rule" as const,
       scope: item.scope.trim(),
       statement: item.statement.trim(),
-      layer: item.layer.trim(),
+      layer: item.type === "rule" ? item.layer.trim() : "",
     }))
-    .filter((item) => item.statement !== "" && item.layer !== "")
+    .filter((item) =>
+      item.type === "rule"
+        ? item.statement !== "" && item.layer !== ""
+        : item.statement !== "" && item.statement.length <= FACT_STATEMENT_LIMIT,
+    )
     .slice(0, RULE_LIMIT);
 }
-
-/** 收窄之后的一条:agent 给的那几样,加上服务端判定的两型之一。 */
-type UsableRuleItem = RuleAgentItem & { type: KnowledgeType };
 
 /**
  * 探索产出到修订提案的映射(issue #207)。知识集非空时 agent 提的是对照现有规则的变更,
@@ -6098,7 +6102,7 @@ type UsableRuleItem = RuleAgentItem & { type: KnowledgeType };
  * 队列里那条要说得出它废止的是什么。
  */
 function proposalsFromItems(
-  items: readonly UsableRuleItem[],
+  items: readonly RuleAgentItem[],
   activeRules: readonly ReviewRuleRecord[],
   origin: Pick<RuleProposalInput, "source" | "sourceNote" | "traceTaskId">,
 ): RuleProposalInput[] {
@@ -6202,7 +6206,7 @@ async function runRuleExplorationInBackground(
       baselineSha,
       runtimeModel: plan.runtimeModel,
       apiKey: plan.credential,
-      existingRules: existingRules.map(toReviewRule),
+      existingKnowledge: existingRules.map(toKnowledgeEntry),
       ...(plan.spec.thinkingLevel === undefined ? {} : { thinkingLevel: plan.spec.thinkingLevel }),
       onEvent: (event) => recordRuleAgentEvent(trace, event),
     });
@@ -6360,7 +6364,7 @@ async function runDispositionFeedbackInBackground(
       baselineSha: finding.headSha,
       runtimeModel: plan.runtimeModel,
       apiKey: plan.credential,
-      existingRules: context.rules.map(toReviewRule),
+      existingKnowledge: context.rules.map(toKnowledgeEntry),
       ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
       feedback: {
         note,

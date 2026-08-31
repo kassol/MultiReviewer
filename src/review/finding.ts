@@ -148,6 +148,25 @@ export type ReviewRule = {
 };
 
 /**
+ * 一条知识条目是评审规则还是项目事实(CONTEXT.md,ADR 0020)。封闭枚举,新增取值要新
+ * 开一份 ADR。落库那一侧、注入那一侧与规则 agent 的产出共用这一个字面量。
+ */
+export type KnowledgeType = "rule" | "fact";
+
+/**
+ * 交给规则 agent 的一条现有知识条目(CONTEXT.md,issue #222)。**带标识也带两型**:
+ * agent 提的是对照现有知识集的变更,不知道哪条是哪型就分不清「改一条规则」与「废止一条
+ * 过期事实」。Reviewer 那侧的注入不用这个形状——它按型分两段,事实不给标识。
+ */
+export type KnowledgeEntry = {
+  id: number;
+  type: KnowledgeType;
+  /** 作用范围,glob;空串即全仓库。 */
+  scope: string;
+  statement: string;
+};
+
+/**
  * 注入 Reviewer 的一条项目事实(CONTEXT.md 项目事实,issue #221)。与评审规则取自同一个
  * 知识集版本、按同一条作用范围路由,注入时另起一段:它是判断依据,本身不构成 Finding。
  *

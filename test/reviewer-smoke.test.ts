@@ -188,7 +188,7 @@ test("真实模型经 propose_rule 推导出规范性的评审规则", { skip },
       },
     },
     apiKey: secret!,
-    existingRules: [],
+    existingKnowledge: [],
   });
 
   assert.equal(result.failure, undefined, `规则 agent 失败: ${result.failure}`);

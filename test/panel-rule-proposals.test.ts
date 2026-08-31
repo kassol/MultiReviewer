@@ -158,8 +158,8 @@ async function confirmedHarness(items: RuleAgentItem[]): Promise<{
   await h.worktreesPreparedAtLeast(1);
   const cookie = await scopedUser(h, "proposal-writer", [GITEA_REPO.id], ["knowledge:write"]);
   for (const rule of [
-    { scope: "", statement: "会被改的那条", layer: "架构" },
-    { scope: "", statement: "会被废止的那条", layer: "安全" },
+    { type: "rule", scope: "", statement: "会被改的那条", layer: "架构" },
+    { type: "rule", scope: "", statement: "会被废止的那条", layer: "安全" },
   ]) {
     assert.equal((await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rules`, rule)).status, 201);
   }
@@ -308,11 +308,11 @@ test("知识集已确认时探索产出进提案队列,草案一行不动", asyn
   const { h, cookie, agent } = await confirmedHarness(items);
   const rules = (await ruleSet(h, cookie)).rules;
   items.push(
-    { scope: "", statement: "改过的陈述", layer: "架构", targetRuleId: rules[0]!.id },
-    { scope: "", statement: "会被废止的那条", layer: "安全", targetRuleId: rules[1]!.id, retire: true },
-    { scope: "src/**", statement: "全新的一条", layer: "测试" },
+    { type: "rule", scope: "", statement: "改过的陈述", layer: "架构", targetRuleId: rules[0]!.id },
+    { type: "rule", scope: "", statement: "会被废止的那条", layer: "安全", targetRuleId: rules[1]!.id, retire: true },
+    { type: "rule", scope: "src/**", statement: "全新的一条", layer: "测试" },
     // 对不上现有规则的废止不成其为一条变更,丢掉。
-    { scope: "", statement: "对不上目标的废止", layer: "架构", targetRuleId: 4242, retire: true },
+    { type: "rule", scope: "", statement: "对不上目标的废止", layer: "架构", targetRuleId: 4242, retire: true },
   );
 
   const started = await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-exploration`, {
@@ -347,9 +347,9 @@ test("逐条裁决:改后采纳、原样采纳与驳回,只有采纳推进知识
   const path = `/repos/${GITEA_REPO.id}`;
   const rules = (await ruleSet(h, cookie)).rules;
   items.push(
-    { scope: "", statement: "agent 提的改法", layer: "架构", targetRuleId: rules[0]!.id },
-    { scope: "", statement: "会被废止的那条", layer: "安全", targetRuleId: rules[1]!.id, retire: true },
-    { scope: "src/**", statement: "全新的一条", layer: "测试" },
+    { type: "rule", scope: "", statement: "agent 提的改法", layer: "架构", targetRuleId: rules[0]!.id },
+    { type: "rule", scope: "", statement: "会被废止的那条", layer: "安全", targetRuleId: rules[1]!.id, retire: true },
+    { type: "rule", scope: "src/**", statement: "全新的一条", layer: "测试" },
   );
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
@@ -413,7 +413,7 @@ test("没有 knowledge:write 的人裁决不了,但读得到提案队列", async
   const { h, cookie } = await confirmedHarness(items);
   const path = `/repos/${GITEA_REPO.id}`;
   const rules = (await ruleSet(h, cookie)).rules;
-  items.push({ scope: "", statement: "改过的陈述", layer: "架构", targetRuleId: rules[0]!.id });
+  items.push({ type: "rule", scope: "", statement: "改过的陈述", layer: "架构", targetRuleId: rules[0]!.id });
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
@@ -457,7 +457,7 @@ test("已确认的空知识集重探索:产出仍进提案队列,不回到草案
   assert.equal((await send(h, cookie, "POST", `${path}/rule-draft/confirm`)).status, 200);
   assert.equal((await ruleSet(h, cookie)).version, 1);
 
-  items.push({ scope: "", statement: "重探索提的那条", layer: "架构" });
+  items.push({ type: "rule", scope: "", statement: "重探索提的那条", layer: "架构" });
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,

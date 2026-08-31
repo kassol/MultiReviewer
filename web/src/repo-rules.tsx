@@ -12,16 +12,8 @@ import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { CommitPicker, type CommitSelection } from "./commit-picker.tsx";
-import { RuleTraceButton, SOURCE_LABEL } from "./rule-trace.tsx";
+import { RuleTraceButton, SOURCE_LABEL, TYPE_LABEL, type KnowledgeType } from "./rule-trace.tsx";
 import { THINKING_LEVEL_LABEL, type ThinkingLevel } from "./model-services.ts";
-
-/**
- * 一条知识条目是评审规则还是项目事实(CONTEXT.md,ADR 0020)。封闭的两值枚举。
- */
-type KnowledgeType = "rule" | "fact";
-
-/** 两型在面板上的名字。徽章、表单与说明句共用这一份,不各写各的。 */
-const TYPE_LABEL: Record<KnowledgeType, string> = { rule: "评审规则", fact: "项目事实" };
 
 /** 事实型陈述的字数上限,与服务端同一个数:超了服务端 400,表单先拦一道。 */
 const FACT_STATEMENT_LIMIT = 500;
@@ -636,7 +628,7 @@ function ProposalSection({
   const target = (proposal: RuleProposal): string | null => {
     if (proposal.targetRuleId === null) return null;
     const rule = ruleSet.rules.find((entry) => entry.id === proposal.targetRuleId);
-    return rule === undefined ? `规则 ${proposal.targetRuleId}(已不生效)` : rule.statement;
+    return rule === undefined ? `条目 ${proposal.targetRuleId}(已不生效)` : rule.statement;
   };
 
   return (
@@ -692,6 +684,8 @@ function ProposalSection({
                 ) : null}
               </div>
               <span className="mt-1.5 inline-flex flex-wrap items-center gap-1.5">
+                {/* 采纳的后果两型不同(issue #222):规则违反即 Finding,事实只作判断依据。 */}
+                <Badge color="gray" variant="soft">{TYPE_LABEL[proposal.type]}</Badge>
                 <Badge color="gray" variant="soft">{CHANGE_LABEL[proposal.change]}</Badge>
                 <Badge color="gray" variant="soft">{SOURCE_LABEL[proposal.source]}</Badge>
                 <Badge color="gray" variant="soft">
@@ -704,7 +698,7 @@ function ProposalSection({
               </span>
               {target(proposal) === null ? null : (
                 <Text as="p" size="1" color="gray" className="mt-1.5">
-                  目标规则:{target(proposal)}
+                  目标条目:{target(proposal)}
                 </Text>
               )}
               {proposal.sourceNote === null ? null : (
@@ -742,6 +736,7 @@ function ProposalSection({
                   <StatusBadge tone={proposal.state === "accepted" ? "success" : "neutral"}>
                     {proposal.state === "accepted" ? "已采纳" : "已驳回"}
                   </StatusBadge>
+                  <Badge color="gray" variant="soft">{TYPE_LABEL[proposal.type]}</Badge>
                   <Badge color="gray" variant="soft">{CHANGE_LABEL[proposal.change]}</Badge>
                   <Badge color="gray" variant="soft">{SOURCE_LABEL[proposal.source]}</Badge>
                   {proposal.traceTaskId === null ? null : (
@@ -801,7 +796,7 @@ function ExplorationSection({
             content={
               confirmed
                 ? "知识集已经确认,再次探索的产出排进上面的修订提案队列,由你逐条裁决。"
-                : "基点探索让 agent 从一个 commit 上的代码推导规则初稿,至多 30 条,由你逐条改定后整组确认。"
+                : "基点探索让 agent 从一个 commit 上的代码推导评审规则与项目事实的初稿,至多 30 条,由你逐条改定后整组确认。"
             }
           />
         </div>
@@ -1038,7 +1033,7 @@ function ExplorationLaunchContent({
             </span>
             <HelpTooltip
               className="ml-1 align-middle"
-              content="产出至多 30 条知识草案,由你逐条改定后整组确认。"
+              content="产出至多 30 条知识草案(评审规则与项目事实两型),由你逐条改定后整组确认。"
             />
           </Dialog.Title>
           <div className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">

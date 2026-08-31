@@ -8,7 +8,7 @@
 import { fileURLToPath } from "node:url";
 
 import type { ThinkingLevel } from "../config.ts";
-import type { ReviewerEvent, ReviewRule } from "../review/finding.ts";
+import type { KnowledgeEntry, KnowledgeType, ReviewerEvent } from "../review/finding.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 import { runWorkerChild } from "./subprocess.ts";
 
@@ -20,20 +20,25 @@ const WORKER_PATH = fileURLToPath(new URL("./rule-worker.ts", import.meta.url));
  */
 export const RULE_LIMIT = 30;
 
-/** agent 推导出的一条评审规则,形状与人手填的那三样相同(CONTEXT.md 评审规则)。 */
+/**
+ * agent 推导出的一条知识条目,形状与人手填的那几样相同(CONTEXT.md 知识条目)。
+ * 探索与反哺两条链路共用它,`type` 两值由 agent 自己判(issue #222)。
+ */
 export type RuleAgentItem = {
+  /** 这一条是评审规则还是项目事实(ADR 0020)。 */
+  type: KnowledgeType;
   /** 作用范围,glob;空串即全仓库。 */
   scope: string;
-  /** 那一句规范陈述。 */
+  /** 那一句陈述:规则型是规范陈述,事实型是可核查的现状陈述。 */
   statement: string;
-  /** 自由文本层标签。 */
+  /** 自由文本层标签。属规则型,事实型是空串。 */
   layer: string;
   /**
-   * 这一条针对的现有规则标识(issue #207)。知识集非空时 agent 提的是对照现有规则的
-   * 变更,认得出目标即修改或废止,认不出即新增;知识集为空时恒缺席。
+   * 这一条针对的现有知识条目标识(issue #207)。知识集非空时 agent 提的是对照现有知识
+   * 集的变更,认得出目标即修改或废止,认不出即新增;知识集为空时恒缺席。
    */
   targetRuleId?: number;
-  /** 这一条要废止 `targetRuleId` 那条规则。没有目标的废止不成其为一条变更。 */
+  /** 这一条要废止 `targetRuleId` 那条条目。没有目标的废止不成其为一条变更。 */
   retire?: boolean;
 };
 
@@ -83,10 +88,10 @@ export type RuleAgentRequest = {
   /** 该模型绑定厂商的模型凭据。子进程的环境里只会有这一份。 */
   apiKey: string;
   /**
-   * 这个仓库现有的知识集。首次基点探索时是空的;反哺与重探索要它才知道哪些标准已经
-   * 在集里(issue #207、#208)。
+   * 这个仓库现有的知识集,两型都在、各带标识与自己的 type(issue #222)。首次基点探索时
+   * 是空的;反哺与重探索要它才知道哪些标准与事实已经在集里(issue #207、#208)。
    */
-  existingRules: readonly ReviewRule[];
+  existingKnowledge: readonly KnowledgeEntry[];
   /**
    * 过程事件的回调(issue #214)。逐条给,调用方落成知识轨迹。不进 IPC 消息:它是一个
    * 函数,跨不了进程边界,子进程那边由 `RuleWorkerMessage` 回传。
@@ -131,7 +136,7 @@ export async function runRuleAgentChild(
     worktreePath: request.worktreePath,
     baselineSha: request.baselineSha,
     runtimeModel: request.runtimeModel,
-    existingRules: request.existingRules,
+    existingKnowledge: request.existingKnowledge,
     ...(request.thinkingLevel === undefined ? {} : { thinkingLevel: request.thinkingLevel }),
     ...(request.feedback === undefined ? {} : { feedback: request.feedback }),
   };

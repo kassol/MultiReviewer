@@ -11,6 +11,7 @@ import { after, test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
 import { hashPassword } from "../src/panel/password.ts";
+import type { KnowledgeEntry } from "../src/review/finding.ts";
 import { openStore, type ReviewRuleInput } from "../src/review/store.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
 import { makeDbPath } from "./support/git-fixture.ts";
@@ -43,6 +44,8 @@ type ExplorationResponse = {
 
 type DraftItemResponse = {
   id: number;
+  /** 两型之一(ADR 0020,issue #222)。探索两型都产出,草案逐条带自己的那一个。 */
+  type: "rule" | "fact";
   scope: string;
   statement: string;
   layer: string;
@@ -51,15 +54,22 @@ type DraftItemResponse = {
 
 type RuleSetResponse = {
   version: number | null;
-  rules: { id: number; scope: string; statement: string; layer: string; origin: string }[];
+  rules: {
+    id: number;
+    type: "rule" | "fact";
+    scope: string;
+    statement: string;
+    layer: string;
+    origin: string;
+  }[];
   retired: { id: number; statement: string }[];
   exploration: ExplorationResponse | null;
   draft: DraftItemResponse[];
 };
 
 /**
- * 一条探索产出。既当脚本化 agent 的产出,也直接落进草案,因此两个形状都满足;这一票的
- * 探索只产出评审规则(issue #221),`type` 恒为 rule。
+ * 一条规则型探索产出。既当脚本化 agent 的产出,也直接落进草案,因此两个形状都满足。
+ * 两型产出的用例(issue #222)自己写出每一条的 `type`。
  */
 function item(statement: string, layer = "架构", scope = ""): RuleAgentItem & ReviewRuleInput {
   return { type: "rule", scope, statement, layer };
@@ -74,6 +84,7 @@ function scriptedRuleAgent(
     baselineSha: string;
     model: string;
     thinkingLevel: string | undefined;
+    existingKnowledge: readonly KnowledgeEntry[];
   }[];
 } {
   const calls: {
@@ -81,6 +92,7 @@ function scriptedRuleAgent(
     baselineSha: string;
     model: string;
     thinkingLevel: string | undefined;
+    existingKnowledge: readonly KnowledgeEntry[];
   }[] = [];
   const agent = async (request: Parameters<RuleAgent>[0]) => {
     calls.push({
@@ -88,6 +100,7 @@ function scriptedRuleAgent(
       baselineSha: request.baselineSha,
       model: `${request.runtimeModel.provider}:${request.runtimeModel.id}`,
       thinkingLevel: request.thinkingLevel,
+      existingKnowledge: request.existingKnowledge,
     });
     return result;
   };
@@ -355,6 +368,93 @@ test("面板发起基点探索:产出落草案、按重要性截断为 30 条", 
   assert.equal(agent.calls.length, 1);
   assert.equal(agent.calls[0]!.baselineSha, h.repo.baseSha);
   assert.equal(agent.calls[0]!.model, "test:global-model");
+});
+
+test("探索产出两型条目:草案各带自己的 type,确认后两型同入知识集", async () => {
+  const agent = scriptedRuleAgent({
+    items: [
+      { type: "rule", scope: "src/api/**", statement: "入参要在边界上校验", layer: "安全" },
+      // 事实没有层标签(层标签属规则型),服务端强制成空串,不因此被丢掉。
+      {
+        type: "fact",
+        scope: "src/api/**",
+        statement: "全局拦截器覆盖 /api 下的全部路由",
+        layer: "架构",
+      },
+      // 陈述空的两型都丢;层标签空的规则丢,同样情形的事实留下。
+      { type: "rule", scope: "", statement: "缺层标签的规则", layer: "  " },
+      { type: "fact", scope: "", statement: " ", layer: "" },
+      // 超长的事实整条丢掉——截断出来的半句事实比没有更糟(ADR 0020)。
+      { type: "fact", scope: "", statement: "长".repeat(501), layer: "" },
+    ],
+  });
+  const { h, cookie } = await registeredHarness({ ruleAgent: agent });
+  const path = `/repos/${GITEA_REPO.id}`;
+
+  assert.equal(
+    (await send(h, cookie, "POST", `${path}/rule-exploration`, {
+      baseline: h.repo.baseSha,
+      provider: "test",
+      model: "global-model",
+    })).status,
+    202,
+  );
+  await h.explorationsAtLeast(1);
+
+  const drafted = await ruleSet(h, cookie);
+  assert.deepEqual(
+    drafted.draft.map((row) => [row.type, row.statement, row.layer]),
+    [
+      ["rule", "入参要在边界上校验", "安全"],
+      ["fact", "全局拦截器覆盖 /api 下的全部路由", ""],
+    ],
+  );
+
+  // 知识确认整组生效:两型一起进知识集,一个版本。
+  assert.equal((await send(h, cookie, "POST", `${path}/rule-draft/confirm`)).status, 200);
+  const confirmed = await ruleSet(h, cookie);
+  assert.equal(confirmed.version, 1);
+  assert.deepEqual(
+    confirmed.rules.map((row) => [row.type, row.statement, row.origin]),
+    [
+      ["rule", "入参要在边界上校验", "baseline-exploration"],
+      ["fact", "全局拦截器覆盖 /api 下的全部路由", "baseline-exploration"],
+    ],
+  );
+});
+
+test("重探索交给 agent 的现有知识集两型都在,各带标识与自己的 type", async () => {
+  const agent = scriptedRuleAgent({ items: [] });
+  const { h, cookie } = await registeredHarness({ ruleAgent: agent });
+  const path = `/repos/${GITEA_REPO.id}`;
+
+  for (const entry of [
+    { type: "rule", scope: "", statement: "改动要带测试", layer: "工程" },
+    { type: "fact", scope: "", statement: "这个服务只跑在内网" },
+  ]) {
+    assert.equal((await send(h, cookie, "POST", `${path}/rules`, entry)).status, 201);
+  }
+
+  assert.equal(
+    (await send(h, cookie, "POST", `${path}/rule-exploration`, {
+      baseline: h.repo.baseSha,
+      provider: "test",
+      model: "global-model",
+    })).status,
+    202,
+  );
+  await h.explorationsAtLeast(1);
+
+  // 分不清哪条是规则、哪条是事实,agent 就分不清「改一条标准」与「废止一条过期事实」。
+  assert.deepEqual(
+    agent.calls[0]!.existingKnowledge.map((entry) => [entry.type, entry.statement]),
+    [
+      ["rule", "改动要带测试"],
+      ["fact", "这个服务只跑在内网"],
+    ],
+  );
+  // 层标签不交给 agent:它是人分组用的,对推导没有作用。
+  assert.equal("layer" in agent.calls[0]!.existingKnowledge[0]!, false);
 });
 
 test("探索跑完即释放那一份一次性工作树", async () => {

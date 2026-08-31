@@ -12,7 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import type { ReviewRule } from "../review/finding.ts";
+import type { KnowledgeEntry } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import {
   RULE_LIMIT,
@@ -21,38 +21,41 @@ import {
   type RuleWorkerRequest,
 } from "./rule-agent.ts";
 import { reviewerEventStream } from "./trace-events.ts";
-import {
-  numberedReadTool,
-  prepareAgentRuntime,
-  ruleBullet,
-  sessionThinkingLevel,
-} from "./worker-tools.ts";
+import { numberedReadTool, prepareAgentRuntime, sessionThinkingLevel } from "./worker-tools.ts";
 
 /** 只读靠允许清单强制:未列出的工具 Pi 不会注册,模型没有写入的调用路径。 */
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
 
 const PROPOSE_RULE_TOOL = "propose_rule";
 
-const SYSTEM_PROMPT = `You are deriving the review rules of one repository. Explore it with your read tools, then report the rules a code reviewer should judge this repository by.
+const SYSTEM_PROMPT = `You are deriving the knowledge a code reviewer needs about one repository. Explore it with your read tools, then report that knowledge as entries of two kinds.
 
-A rule is a normative statement — what the code ought to do. "Handlers must validate request bodies at the boundary" is a rule. "Handlers live in src/api" is a description of the current code, not a rule: never report descriptions, file inventories, dependency lists or architecture maps. If you cannot phrase something as an obligation, leave it out.
+A **rule** is a normative statement — what the code ought to do. "Handlers must validate request bodies at the boundary" is a rule. Violating a rule is a finding, so a rule has to be something a reviewer would genuinely flag.
 
-Report each rule by calling the propose_rule tool exactly once per rule. Do not describe rules in prose — a rule that is not reported through the tool does not exist.
+A **fact** is a checkable statement about how this repository, its architecture or its environment actually is. "A global interceptor covers every route under /api" is a fact. A fact is never a finding: it is what the reviewer uses to stop guessing, so that it does not report code that the architecture already covers. Report a fact when a reviewer who had not read that part of the codebase would otherwise assume something false.
 
-Report at most ${RULE_LIMIT} rules, most important first. Importance means how much damage a violation does in this repository. Prefer few rules that matter over many that are obvious; a reviewer has to confirm every one of them by hand. Do not restate what a linter or the type checker already enforces.
+Give every entry the kind it really is. Do not dress a fact up as an obligation to get it in, and do not report a rule that only restates what the code happens to do today. Leave out file inventories and dependency lists: those go stale without ever changing a review.
+
+Report each entry by calling the propose_rule tool exactly once per entry. Do not describe entries in prose — an entry that is not reported through the tool does not exist.
+
+Report at most ${RULE_LIMIT} entries, most important first. Importance means how much a reviewer's judgement improves by having it. Prefer few entries that matter over many that are obvious; a reviewer has to confirm every one of them by hand. Do not restate what a linter or the type checker already enforces.
 
 Write the statement and layer fields in Chinese. The reviewers of this repository read Chinese. Keep identifiers, file paths and code fragments in their original form — do not translate them.
 
 The read tool prefixes every line with its line number, like \`12: code\`. The prefix is not part of the file content.`;
 
 const ruleSchema = Type.Object({
+  type: Type.String({
+    description:
+      "One of exactly: rule, fact. rule is a normative statement — what the code ought to do; violating it is a finding. fact is a checkable statement about how this repository actually is; it is grounds for judgement and never a finding by itself.",
+  }),
   statement: Type.String({
     description:
-      "One normative sentence in Chinese: what code in this repository must or must not do. Not a description of what the code currently is.",
+      "One sentence in Chinese. For a rule: what code in this repository must or must not do. For a fact: what is actually the case in this repository, phrased so a reader can check it against the code.",
   }),
   layer: Type.String({
     description:
-      "A short Chinese free-text label grouping this rule with related ones, such as 架构 / 安全 / 数据 / 测试. Reuse the same label across rules that belong together.",
+      "Only for a rule: a short Chinese free-text label grouping it with related rules, such as 架构 / 安全 / 数据 / 测试. Reuse the same label across rules that belong together. Leave it empty for a fact.",
   }),
   scope: Type.Optional(
     Type.String({
@@ -63,13 +66,13 @@ const ruleSchema = Type.Object({
   rule_id: Type.Optional(
     Type.Number({
       description:
-        "The id of the agreed rule this change targets, taken from the list of agreed rules. Leave it out when you propose a rule that is not in that list.",
+        "The id of the agreed entry this change targets, taken from the list of agreed knowledge. Leave it out when you propose an entry that is not in that list.",
     }),
   ),
   retire: Type.Optional(
     Type.Boolean({
       description:
-        "Set to true together with rule_id to retire that agreed rule instead of restating it. Restate the rule you want retired in the statement field.",
+        "Set to true together with rule_id to retire that agreed entry instead of restating it. Restate the entry you want retired in the statement field. Use it for a rule the code no longer justifies, and for a fact the code has outgrown.",
     }),
   ),
 });
@@ -80,30 +83,44 @@ function send(message: RuleWorkerMessage): void {
 
 /**
  * 现有知识集。首次探索时是空的,这一段因此不渲染;非空即这一次提的是对照它的变更
- * (issue #207),条目带上标识,agent 据此指出改哪一条、废止哪一条。
+ * (issue #207),条目带上标识与它是哪一型(issue #222),agent 据此指出改哪一条、
+ * 废止哪一条——分不清哪条是规则、哪条是事实,就分不清「改一条标准」与「废止一条过期
+ * 事实」。
  */
-function existingSection(rules: readonly ReviewRule[]): string {
+function existingSection(entries: readonly KnowledgeEntry[]): string {
   return [
     "",
-    "This repository already agreed on the following rules, each with its id:",
+    "This repository already agreed on the following knowledge, each entry with its id and its kind:",
     "",
-    ...rules.map(ruleBullet),
+    ...entries.map(knowledgeBullet),
     "",
-    "Report changes against that list, not the list itself. Do not restate a rule that still holds as it stands — a rule you do not report stays in force. For each change, call propose_rule once:",
-    "- to reword or narrow an agreed rule, pass its rule_id and the full new statement;",
-    "- to retire an agreed rule the code no longer justifies, pass its rule_id, retire=true and restate that rule;",
-    "- to add a standard the list does not cover, leave rule_id out.",
+    "Report changes against that list, not the list itself. Do not restate an entry that still holds as it stands — an entry you do not report stays in force. For each change, call propose_rule once:",
+    "- to reword or narrow an agreed entry, pass its rule_id and the full new statement;",
+    "- to retire an agreed entry the code no longer justifies or has outgrown, pass its rule_id, retire=true and restate that entry;",
+    "- to add a standard or a fact the list does not cover, leave rule_id out.",
   ].join("\n");
 }
 
-function rulePrompt(request: Pick<RuleWorkerRequest, "baselineSha" | "existingRules">): string {
-  const existing =
-    request.existingRules.length === 0 ? "" : `${existingSection(request.existingRules)}\n`;
-  return `Derive the review rules of the repository as it stands at commit ${request.baselineSha}.
-${existing}
-Start from the repository's own documentation and configuration, then read the code that matters most: the entry points, the modules everything else depends on, and the places where mistakes would be expensive. Look for the conventions the existing code already keeps to, and state them as obligations.
+/**
+ * 现有知识集里的一条给 agent 看的样子:标识、两型之一、作用范围与那一句陈述。与 Reviewer
+ * 那侧的 `ruleBullet` 分开:那边按型分两段渲染、事实不给标识,这边是一份要被指名修改的
+ * 清单,两型必须在同一份里各自认得出来。
+ */
+function knowledgeBullet(entry: KnowledgeEntry): string {
+  const scope = entry.scope === "" ? "whole repository" : entry.scope;
+  return `- [${entry.id}] (${entry.type}) (${scope}) ${entry.statement}`;
+}
 
-Report each rule through ${PROPOSE_RULE_TOOL}. When you have reported everything worth confirming, stop.`;
+function rulePrompt(request: Pick<RuleWorkerRequest, "baselineSha" | "existingKnowledge">): string {
+  const existing =
+    request.existingKnowledge.length === 0 ? "" : `${existingSection(request.existingKnowledge)}\n`;
+  return `Derive the review knowledge of the repository as it stands at commit ${request.baselineSha}.
+${existing}
+Start from the repository's own documentation and configuration, then read the code that matters most: the entry points, the modules everything else depends on, and the places where mistakes would be expensive.
+
+Two things come out of that reading. The conventions the existing code already keeps to become rules, stated as obligations. The load-bearing arrangements a reviewer cannot see from a diff — what a shared layer already guarantees, what the deployment or the data actually look like — become facts.
+
+Report each entry through ${PROPOSE_RULE_TOOL}. When you have reported everything worth confirming, stop.`;
 }
 
 /**
@@ -114,11 +131,13 @@ Report each rule through ${PROPOSE_RULE_TOOL}. When you have reported everything
  * 手里有个报告工具时倾向于用它。
  */
 function feedbackPrompt(
-  request: Pick<RuleWorkerRequest, "existingRules"> & { feedback: DispositionFeedback },
+  request: Pick<RuleWorkerRequest, "existingKnowledge"> & { feedback: DispositionFeedback },
 ): string {
   const { note, finding } = request.feedback;
   const existing =
-    request.existingRules.length === 0 ? "" : `${existingSection(request.existingRules)}\n`;
+    request.existingKnowledge.length === 0
+      ? ""
+      : `${existingSection(request.existingKnowledge)}\n`;
   return `A reviewer of this repository just disposed of one finding and left a note explaining the decision. Judge what that note says about the standards this repository should be reviewed by.
 
 Finding: ${finding.title ?? finding.description}
@@ -126,7 +145,9 @@ Location: ${finding.file}:${finding.line}
 Description: ${finding.description}
 Disposition note: ${note}
 ${existing}
-Report only what the note itself justifies. A note that settles this one finding and nothing more justifies no change at all — reporting nothing is an expected outcome. Read the code around the finding when you need it to tell a one-off from a standing obligation.
+Distil the note by what it says, not by how it is phrased. A note that says this repository should or should not do something is a **rule**. A note that explains why the finding was wrong by pointing at how this repository already is — a shared layer that already covers it, a constraint of the deployment, a property of the data — is a **fact**: report it as one, so the next review has that ground instead of guessing again.
+
+Report only what the note itself justifies. A note that settles this one finding and nothing more justifies no change at all — reporting nothing is an expected outcome. Read the code around the finding when you need it to tell a one-off from a standing rule, or to check a fact before stating it.
 
 Report each change through ${PROPOSE_RULE_TOOL}. When you have nothing more to report, stop.`;
 }
@@ -139,6 +160,7 @@ async function run(request: RuleWorkerRequest): Promise<void> {
     parameters: ruleSchema,
     execute: async (_id, params) => {
       const raw = params as {
+        type: string;
         statement: string;
         layer: string;
         scope?: string;
@@ -148,6 +170,9 @@ async function run(request: RuleWorkerRequest): Promise<void> {
       send({
         kind: "rule",
         item: {
+          // 两型是封闭枚举:认不得的取值当规则收(与升级前逐字一致),服务端仍会再校验
+          // 一次陈述与层标签。宽松字符串加归一化是与 report_finding 同一条口径(ADR 0004)。
+          type: raw.type === "fact" ? "fact" : "rule",
           scope: raw.scope ?? "",
           statement: raw.statement,
           layer: raw.layer,
@@ -194,7 +219,10 @@ async function run(request: RuleWorkerRequest): Promise<void> {
     await session.prompt(
       request.feedback === undefined
         ? rulePrompt(request)
-        : feedbackPrompt({ existingRules: request.existingRules, feedback: request.feedback }),
+        : feedbackPrompt({
+            existingKnowledge: request.existingKnowledge,
+            feedback: request.feedback,
+          }),
     );
   } catch (error) {
     thrown = String(error instanceof Error ? error.message : error);

@@ -23,6 +23,15 @@ type RuleTraceEvent = {
   payload: Record<string, unknown>;
 };
 
+/** 一条知识条目是评审规则还是项目事实(CONTEXT.md,ADR 0020)。封闭的两值枚举。 */
+export type KnowledgeType = "rule" | "fact";
+
+/**
+ * 两型在面板上的名字。知识轨迹、知识集弹窗与修订提案队列共用这一份——与 `SOURCE_LABEL`
+ * 同一条口径,同一个二元只有这一份字面量。
+ */
+export const TYPE_LABEL: Record<KnowledgeType, string> = { rule: "评审规则", fact: "项目事实" };
+
 /** 知识轨迹与修订提案共用的出处文案。同一个二元只有这一份字面量。 */
 export const SOURCE_LABEL: Record<string, string> = {
   "baseline-exploration": "基点探索",
@@ -78,7 +87,11 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
           </span>
           <span className="flex flex-wrap gap-1.5">
             <Badge color="gray" variant="soft" radius="full">提出一条</Badge>
-            {str(item, "layer") === null ? null : (
+            {/* 两型产出(issue #222):轨迹里要说得出这一条提的是规则还是事实。 */}
+            <Badge color="gray" variant="soft" radius="full">
+              {TYPE_LABEL[str(item, "type") === "fact" ? "fact" : "rule"]}
+            </Badge>
+            {str(item, "layer") === null || str(item, "layer") === "" ? null : (
               <Badge color="gray" variant="soft" radius="full">{str(item, "layer")}</Badge>
             )}
             <Badge color="gray" variant="soft" radius="full">{scope ?? "全仓库"}</Badge>

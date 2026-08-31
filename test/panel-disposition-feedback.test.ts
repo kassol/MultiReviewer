@@ -32,6 +32,8 @@ const NOTE = "这类越界要在边界上一次判掉,不要每处再判";
 
 type ProposalResponse = {
   id: number;
+  /** 两型之一(ADR 0020,issue #222)。规范性结论提为规则,描述性结论提为事实。 */
+  type: "rule" | "fact";
   change: "add" | "modify" | "retire";
   targetRuleId: number | null;
   scope: string;
@@ -151,8 +153,8 @@ test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,
     store.close();
   }
   items = [
-    { scope: "src/**", statement: "边界上一次判空", layer: "架构" },
-    { scope: "", statement: "改写现集里的那一条", layer: "安全", targetRuleId: ruleId },
+    { type: "rule", scope: "src/**", statement: "边界上一次判空", layer: "架构" },
+    { type: "rule", scope: "", statement: "改写现集里的那一条", layer: "安全", targetRuleId: ruleId },
   ];
 
   const [target] = await inlineFindings(h);
@@ -168,7 +170,7 @@ test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,
   assert.equal(request.feedback?.finding.line, target!.line);
   assert.equal(request.feedback?.finding.description, "这里会越界");
   assert.deepEqual(
-    request.existingRules.map((rule) => rule.statement),
+    request.existingKnowledge.map((rule) => rule.statement),
     ["入参要在边界上校验"],
   );
 
@@ -188,6 +190,52 @@ test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,
   );
 });
 
+test("描述性备注蒸馏为事实提案,采纳后进知识集并注入下一轮", async () => {
+  let items: RuleAgentItem[] = [];
+  const agent = scriptedRuleAgent(() => ({ items }));
+  const h = await harnessWithFindings(agent);
+
+  // 这条备注说的是「这个仓库已经是怎样」,不是「代码应当怎样」:它该成为一条事实,
+  // 让下一轮的 Reviewer 有这块地面可站,而不是又一条谁也判不了违反的规则。
+  const note = "这里有全局拦截器兜底,/api 下的路由都过它";
+  items = [
+    { type: "fact", scope: "src/api/**", statement: "全局拦截器覆盖 /api 下的全部路由", layer: "" },
+  ];
+
+  const [target] = await inlineFindings(h);
+  assert.equal((await dispose(h, target!.id, note)).status, 200);
+  await h.dispositionFeedbackAtLeast(1);
+  assert.equal(h.dispositionFeedbacks[0]!.failure, undefined);
+
+  const queued = await proposals(h);
+  assert.deepEqual(
+    queued.map((entry) => [entry.type, entry.change, entry.statement, entry.layer]),
+    [["fact", "add", "全局拦截器覆盖 /api 下的全部路由", ""]],
+  );
+  assert.equal(queued[0]!.sourceNote, note);
+
+  // 裁决采纳:事实进知识集,并成为启动快照里注入 Reviewer 的那一份。
+  assert.equal(
+    (await h.api("POST", `/repos/${GITEA_REPO.id}/rule-proposals/${queued[0]!.id}/accept`)).status,
+    200,
+  );
+  const store = openStore(h.db.path);
+  try {
+    assert.deepEqual(
+      store.getRuleSet(GITEA_REPO.id)!.rules.map((entry) => [entry.type, entry.origin]),
+      [["fact", "disposition-feedback"]],
+    );
+    const snapshot = store.getReviewRunSnapshot(GITEA_REPO.id);
+    assert.deepEqual(snapshot.rules, []);
+    assert.deepEqual(
+      snapshot.facts.map((fact) => [fact.scope, fact.statement]),
+      [["src/api/**", "全局拦截器覆盖 /api 下的全部路由"]],
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test("反哺跑完即释放那一份一次性工作树", async () => {
   const agent = scriptedRuleAgent(() => ({ items: [] }));
   const h = await harnessWithFindings(agent);
@@ -205,7 +253,7 @@ test("反哺跑完即释放那一份一次性工作树", async () => {
 
 test("无备注的处置不触发任何解读", async () => {
   const agent = scriptedRuleAgent(() => ({
-    items: [{ scope: "", statement: "一条规范陈述", layer: "架构" }],
+    items: [{ type: "rule", scope: "", statement: "一条规范陈述", layer: "架构" }],
   }));
   const h = await harnessWithFindings(agent);
   const findings = await inlineFindings(h);
@@ -257,7 +305,7 @@ test("反哺沿用最近一次基点探索所用的模型,没探索过就用全�
 
 test("从未探索过且全局组合为空:跳过解读留一行原因,零提案", async () => {
   const agent = scriptedRuleAgent(() => ({
-    items: [{ scope: "", statement: "一条规范陈述", layer: "架构" }],
+    items: [{ type: "rule", scope: "", statement: "一条规范陈述", layer: "架构" }],
   }));
   const h = await harnessWithFindings(agent);
   const findings = await inlineFindings(h);
