@@ -1,11 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircledIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, LockClosedIcon, PlusIcon, ResetIcon, TrashIcon } from "@radix-ui/react-icons";
-import { AlertDialog, Badge, Callout, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, Table, Text, TextField, Tooltip } from "@radix-ui/themes";
+import { CheckCircledIcon, Cross2Icon, CrossCircledIcon, DotsHorizontalIcon, PlusIcon } from "@radix-ui/react-icons";
+import { AlertDialog, Badge, Callout, Checkbox, Dialog, DropdownMenu, Flex, IconButton, Select, Skeleton, Switch, Table, Tabs, Text, TextField, Tooltip } from "@radix-ui/themes";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { EmptyState } from "@/components/empty-state";
-import { HelpTooltip } from "@/components/help-tooltip";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
@@ -67,6 +66,14 @@ const PERMISSION_INFO: readonly PermissionInfo[] = [
 
 const RESOURCES = ["仓库", "评审", "模型", "凭据"] as const;
 
+/**
+ * Tabs 激活指示条与模型服务详情的 TabNav 同一形态:3px 圆头、左右各缩 14px。限定在
+ * data-[state=active] 是必须的——不限定的话 Tailwind 会给未激活项也生成一个空的
+ * ::before 盒子,把 tab 的高度顶开。
+ */
+const TAB_TRIGGER =
+  "data-[state=active]:before:inset-x-3.5 data-[state=active]:before:h-[3px] data-[state=active]:before:rounded-t-[3px]";
+
 function toggleRepoId(repoIds: readonly number[], repoId: number): number[] {
   return repoIds.includes(repoId)
     ? repoIds.filter((item) => item !== repoId)
@@ -85,6 +92,8 @@ export function AccessControlPage() {
   const [confirm, setConfirm] = useState<{ kind: "reset" | "delete-user" | "delete-role"; id: string; label: string } | null>(null);
   const [resetPassword, setResetPassword] = useState("");
   const [assign, setAssign] = useState<{ user: User; repoIds: number[] } | null>(null);
+  /** 权限编辑当前停在哪个角色 tab。null 或已删角色时落回第一个角色。 */
+  const [roleTab, setRoleTab] = useState<string | null>(null);
   const assignFocus = useDialogReturnFocus(() => document.getElementById("create-user-trigger"));
   const confirmFallbackId = useRef<"create-user-trigger" | "create-role-trigger">("create-user-trigger");
   const confirmFocus = useDialogReturnFocus(() =>
@@ -125,9 +134,11 @@ export function AccessControlPage() {
   const createRole = useMutation({
     mutationFn: async (name: string) =>
       responseJson<Role>(await api("/roles", { method: "POST", body: JSON.stringify({ name, permissions: [] }) })),
-    onSuccess: ({ name }) => {
+    onSuccess: (role) => {
       setCreateKind(null);
-      setFeedback({ text: `已创建角色 ${name}，初始不包含任何权限。`, error: false });
+      // 直接切到新角色的 tab:创建的下一步就是给它开权限,不让人再找一遍。
+      setRoleTab(String(role.id));
+      setFeedback({ text: `已创建角色 ${role.name}，在下方为它开启权限。`, error: false });
       refresh();
     },
     onError: (error: Error) => setFeedback({ text: error.message, error: true }),
@@ -160,7 +171,7 @@ export function AccessControlPage() {
       if (!response.ok) throw new Error(await errorText(response));
     },
     onSuccess: () => {
-      setFeedback({ text: "用户角色已更新，无需重新登录。", error: false });
+      setFeedback({ text: "角色已更新，立即生效。", error: false });
       refresh();
     },
     onError: (error: Error) => {
@@ -184,7 +195,7 @@ export function AccessControlPage() {
     },
     onSuccess: (_value, { user }) => {
       setAssign(null);
-      setFeedback({ text: `${user.username} 的仓库分配已更新，无需重新登录。`, error: false });
+      setFeedback({ text: `已更新 ${user.username} 的仓库分配。`, error: false });
       refresh();
     },
     onError: (error: Error) => setFeedback({ text: error.message, error: true }),
@@ -202,10 +213,8 @@ export function AccessControlPage() {
         }),
       );
     },
-    onSuccess: () => {
-      setFeedback({ text: "角色权限已更新，无需重新登录。", error: false });
-      refresh();
-    },
+    // 开关翻转本身就是成功反馈,这里不再往页顶推一条提示;失败才需要说话。
+    onSuccess: refresh,
     onError: (error: Error) => setFeedback({ text: error.message, error: true }),
   });
 
@@ -255,6 +264,8 @@ export function AccessControlPage() {
   }, [roles]);
   const pending = usersQuery.isPending || rolesQuery.isPending;
   const loadError = usersQuery.error ?? rolesQuery.error ?? reposQuery.error;
+  // 选中的角色 tab。没点过或角色已删时落回第一个,角色为空即整段换空态。
+  const selectedRole = roles.find((role) => String(role.id) === roleTab) ?? roles[0];
 
   return (
     <>
@@ -316,9 +327,11 @@ export function AccessControlPage() {
                   </Table.Header>
                   <Table.Body>
                     {users.map((user) => (
-                      <Table.Row key={user.username} align="start" className="group hover:bg-sunken">
+                      // align="center":每格内容高度不一(头像行、下拉、纯文本),顶对齐会让
+                      // 整行看着错位——这正是走查里点名的问题。
+                      <Table.Row key={user.username} align="center" className="group hover:bg-sunken">
                         <Table.RowHeaderCell className="sticky left-0 z-10 bg-surface font-semibold group-hover:bg-sunken">
-                          <div className="flex max-w-64 flex-wrap items-center gap-[9px]">
+                          <div className="flex items-center gap-2 whitespace-nowrap">
                             <span
                               aria-hidden
                               className={`flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
@@ -340,7 +353,8 @@ export function AccessControlPage() {
                           </div>
                         </Table.RowHeaderCell>
                         <Table.Cell className="max-w-48 text-text-muted">
-                          {user.displayName === null ? "—" : (
+                          {/* 空串与 null 同义:创建时显示名可留空,留空存的就是空串。 */}
+                          {user.displayName === null || user.displayName === "" ? "—" : (
                             <Tooltip content={user.displayName}>
                               <span
                                 tabIndex={0}
@@ -364,7 +378,10 @@ export function AccessControlPage() {
                                 roleId: value === "unassigned" ? null : Number(value),
                               })}
                             >
+                              {/* ghost 形态:表格里一格一个描边框太重,行内属性编辑只要
+                                  文字加箭头;未分配用琥珀字色保留警示。 */}
                               <Select.Trigger
+                                variant="ghost"
                                 aria-label={`${user.username} 的角色`}
                                 color={user.roleId === null ? "amber" : "gray"}
                                 className="max-w-44 max-sm:min-h-11"
@@ -396,9 +413,28 @@ export function AccessControlPage() {
                         <Table.Cell className="font-mono text-xs whitespace-nowrap text-text-muted">{localMinute(user.createdAt)}</Table.Cell>
                         <Table.Cell className="text-xs whitespace-nowrap text-text-muted">{user.lastLoginAt === null ? "从未" : <span className="font-mono">{localMinute(user.lastLoginAt)}</span>}</Table.Cell>
                         <Table.Cell>
-                          <div className="flex justify-end gap-1 whitespace-nowrap">
-                            <Button variant="ghost" color="gray" size={{ initial: "4", sm: "1" }} onClick={(event) => { confirmFallbackId.current = "create-user-trigger"; confirmFocus.captureTrigger(event); setConfirm({ kind: "reset", id: user.username, label: user.username }); }}><ResetIcon />重置密码</Button>
-                            <Button variant="ghost" color="red" size={{ initial: "4", sm: "1" }} onClick={(event) => { confirmFallbackId.current = "create-user-trigger"; confirmFocus.captureTrigger(event); setConfirm({ kind: "delete-user", id: user.username, label: user.username }); }}><TrashIcon />删除用户</Button>
+                          {/* 行操作收进「…」菜单,与首页仓库行同一语法:两颗带字按钮逐行
+                              重复只会把表格拖宽。菜单项一选中菜单就关,焦点来源因此记在
+                              这颗「…」上,确认弹窗关闭后还回来。 */}
+                          <div className="flex justify-end">
+                            <DropdownMenu.Root>
+                              <DropdownMenu.Trigger>
+                                <IconButton
+                                  variant="ghost"
+                                  color="gray"
+                                  size={{ initial: "3", sm: "1" }}
+                                  className="max-sm:min-h-11 max-sm:min-w-11"
+                                  aria-label={`${user.username} 的操作`}
+                                  onClick={(event) => { confirmFallbackId.current = "create-user-trigger"; confirmFocus.captureTrigger(event); }}
+                                >
+                                  <DotsHorizontalIcon aria-hidden />
+                                </IconButton>
+                              </DropdownMenu.Trigger>
+                              <DropdownMenu.Content align="end" size="2">
+                                <DropdownMenu.Item onSelect={() => setConfirm({ kind: "reset", id: user.username, label: user.username })}>重置密码</DropdownMenu.Item>
+                                <DropdownMenu.Item color="red" onSelect={() => setConfirm({ kind: "delete-user", id: user.username, label: user.username })}>删除用户</DropdownMenu.Item>
+                              </DropdownMenu.Content>
+                            </DropdownMenu.Root>
                           </div>
                         </Table.Cell>
                       </Table.Row>
@@ -410,7 +446,7 @@ export function AccessControlPage() {
 
             <CardShell className="overflow-hidden" aria-labelledby="permissions-heading">
               <div className="flex items-center justify-between gap-3 px-4 pt-3.5 pb-[11px] sm:px-5">
-                <h2 id="permissions-heading" className="text-2xl font-bold tracking-[-0.015em]">权限矩阵</h2>
+                <h2 id="permissions-heading" className="text-2xl font-bold tracking-[-0.015em]">角色权限</h2>
                 <CreateDialog
                   kind="role"
                   open={createKind === "role"}
@@ -422,82 +458,94 @@ export function AccessControlPage() {
                   onRole={(name) => { setFeedback(null); createRole.mutate(name); }}
                 />
               </div>
-              <div className="flex flex-col gap-3 border-t border-line px-4 py-3 sm:px-5">
-                <div className="flex items-start gap-2 rounded-lg bg-sunken px-3 py-2">
-                  <LockClosedIcon className="mt-0.5 size-4 shrink-0" />
-                  <p className="min-w-0 flex-1 text-text-muted"><span className="font-medium text-text">系统管理员</span>（<span className="font-mono">{adminCount}</span> 位）始终拥有全部权限，不在矩阵内。</p>
-                </div>
-                {unclaimed.size === 0 || roles.length === 0 ? null : (
-                  <Callout.Root color="amber" size="1">
-                    <Callout.Icon><ExclamationTriangleIcon aria-hidden /></Callout.Icon>
-                    <Callout.Text>
-                      有 <span className="font-mono">{unclaimed.size}</span> 项权限尚未授予任何角色。除系统管理员外，相关功能当前无人可用。
-                    </Callout.Text>
-                  </Callout.Root>
-                )}
-              </div>
-              {roles.length === 0 ? (
+              {roles.length === 0 || selectedRole === undefined ? (
                 <div className="border-t border-line px-4 pb-4 sm:px-5">
-                  <EmptyState title="尚无自定义角色" />
+                  <EmptyState
+                    title="尚无自定义角色"
+                    description="新建角色后在这里逐项开启权限;系统管理员始终拥有全部权限。"
+                  />
                 </div>
               ) : (
-                <div className="contain-inline-size min-w-0 max-w-full overflow-x-auto overscroll-x-contain border-t border-line">
-                  <Table.Root size="1" className="w-full min-w-max">
-                    <caption className="sr-only">自定义角色权限矩阵</caption>
-                    <Table.Header>
-                      <Table.Row className="bg-sunken text-sm font-bold text-text-muted">
-                        <Table.ColumnHeaderCell className="sticky left-0 z-20 min-w-56 bg-sunken sm:min-w-72">权限</Table.ColumnHeaderCell>
-                        {roles.map((role) => (
-                          <Table.ColumnHeaderCell key={role.id} className="w-36 min-w-36 max-w-36 border-l border-line text-center">
-                            <span className="block break-words text-text">{role.name}</span>
-                            <span className="block font-normal"><span className="font-mono">{users.filter((user) => user.roleId === role.id).length}</span> 人</span>
-                            <Button variant="ghost" color="red" size={{ initial: "4", sm: "1" }} className="mt-1" onClick={(event) => { confirmFallbackId.current = "create-role-trigger"; confirmFocus.captureTrigger(event); setConfirm({ kind: "delete-role", id: String(role.id), label: role.name }); }}><TrashIcon />删除</Button>
-                          </Table.ColumnHeaderCell>
-                        ))}
-                      </Table.Row>
-                    </Table.Header>
-                    <Table.Body>
+                /* 一次编辑一个角色:横排一列一个角色的矩阵在角色多时挤成窄柱,勾选格离
+                   权限名越来越远。顶部选角色,下面整块都是这个角色的权限清单。 */
+                <Tabs.Root
+                  value={String(selectedRole.id)}
+                  onValueChange={setRoleTab}
+                  className="flex min-w-0 flex-col border-t border-line"
+                >
+                  <Tabs.List
+                    size="2"
+                    className="overflow-x-auto px-2 shadow-[inset_0_-1px_0_0_var(--v8-border-chrome)] sm:px-3"
+                    aria-label="选择要编辑的角色"
+                  >
+                    {roles.map((role) => (
+                      <Tabs.Trigger key={role.id} value={String(role.id)} className={TAB_TRIGGER}>
+                        {role.name}
+                        <Badge
+                          color={selectedRole.id === role.id ? "blue" : "gray"}
+                          variant="soft"
+                          radius="full"
+                          size="1"
+                          className="ml-1.5 tabular-nums"
+                        >
+                          {users.filter((user) => user.roleId === role.id).length}
+                        </Badge>
+                      </Tabs.Trigger>
+                    ))}
+                  </Tabs.List>
+                  <div className="flex flex-col gap-3 px-4 py-3.5 sm:px-5">
+                    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                      <Text size="1" color="gray">
+                        系统管理员（<span className="font-mono">{adminCount}</span> 位）始终拥有全部权限，不在角色内。
+                      </Text>
+                      <Button
+                        variant="ghost"
+                        color="red"
+                        size={{ initial: "3", sm: "1" }}
+                        onClick={(event) => { confirmFallbackId.current = "create-role-trigger"; confirmFocus.captureTrigger(event); setConfirm({ kind: "delete-role", id: String(selectedRole.id), label: selectedRole.name }); }}
+                      >
+                        删除角色
+                      </Button>
+                    </div>
+                    <ul className="overflow-hidden rounded-lg border border-card-line">
                       {RESOURCES.flatMap((resource) => [
-                        <Table.Row key={`${resource}-heading`} className="bg-sunken">
-                          <Table.Cell colSpan={roles.length + 1} className="sticky left-0 text-xs font-medium text-text-muted">{resource}</Table.Cell>
-                        </Table.Row>,
+                        <li key={`${resource}-heading`} className="border-t border-line bg-sunken px-4 py-1.5 text-xs font-medium text-text-muted first:border-t-0">
+                          {resource}
+                        </li>,
                         ...PERMISSION_INFO.filter((permission) => permission.resource === resource).map((permission) => {
-                          const missing = unclaimed.has(permission.id);
+                          const impliedBy = permissionImpliedBy(permission.id);
+                          const implied = impliedBy !== undefined && selectedRole.permissions.includes(impliedBy);
                           return (
-                            <Table.Row key={permission.id} className={missing ? "bg-warning-tint" : undefined}>
-                              <Table.RowHeaderCell className={`sticky left-0 z-10 min-w-56 sm:min-w-72 ${missing ? "bg-[color-mix(in_oklab,var(--v8-warning-icon)_10%,var(--v8-surface))]" : "bg-surface"}`}>
-                                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                                  <span className="font-medium">{permission.action}</span>
-                                  <HelpTooltip label={`${permission.resource}${permission.action}权限说明`} content={permission.hint} />
-                                  {missing ? <span className="text-xs text-warning">尚未授予</span> : null}
+                            <li key={permission.id} className="flex items-center justify-between gap-3 border-t border-line px-4 py-2.5">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                                  <span className="text-sm font-medium">{permission.action}</span>
+                                  {implied ? (
+                                    <Badge color="gray" variant="soft" size="1">随「管理」生效</Badge>
+                                  ) : null}
+                                  {/* 跨角色的盲区提示只在真盲的那一行亮:除系统管理员外,
+                                      这项能力当前无人可用。 */}
+                                  {unclaimed.has(permission.id) ? (
+                                    <Badge color="amber" variant="soft" size="1">未授予任何角色</Badge>
+                                  ) : null}
                                 </div>
-                              </Table.RowHeaderCell>
-                              {roles.map((role) => {
-                                const impliedBy = permissionImpliedBy(permission.id);
-                                const implied =
-                                  impliedBy !== undefined && role.permissions.includes(impliedBy);
-                                return (
-                                  <Table.Cell key={role.id} className="border-l border-line text-center">
-                                    <Text as="label" size="2" className="inline-flex min-h-8 cursor-pointer flex-col items-center justify-center rounded-sm px-1 max-sm:min-h-11 max-sm:min-w-11 hover:bg-sunken focus-within:ring-2 focus-within:ring-ring/25 focus-within:ring-offset-1 focus-within:ring-offset-background has-disabled:cursor-not-allowed has-disabled:opacity-70">
-                                      <Checkbox
-                                        size="2"
-                                        aria-label={`${role.name}的${permission.resource}${permission.action}权限${implied ? "，已随管理权限授予" : ""}`}
-                                        checked={roleHasPermission(role.permissions, permission.id)}
-                                        disabled={updateRole.isPending || implied}
-                                        onCheckedChange={() => updateRole.mutate({ role, permission: permission.id })}
-                                      />
-                                      {implied ? <span className="text-xs text-text-muted">随管理权限生效</span> : null}
-                                    </Text>
-                                  </Table.Cell>
-                                );
-                              })}
-                            </Table.Row>
+                                <p className="text-xs text-text-muted">{permission.hint}</p>
+                              </div>
+                              <Switch
+                                size="2"
+                                className="shrink-0"
+                                aria-label={`${selectedRole.name}的${permission.resource}${permission.action}权限${implied ? "，已随管理权限授予" : ""}`}
+                                checked={roleHasPermission(selectedRole.permissions, permission.id)}
+                                disabled={updateRole.isPending || implied}
+                                onCheckedChange={() => updateRole.mutate({ role: selectedRole, permission: permission.id })}
+                              />
+                            </li>
                           );
                         }),
                       ])}
-                    </Table.Body>
-                  </Table.Root>
-                </div>
+                    </ul>
+                  </div>
+                </Tabs.Root>
               )}
             </CardShell>
           </>
@@ -625,7 +673,7 @@ function CreateDialog({ kind, open, busy, repos, trigger, onOpen, onClose, onUse
         <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
           <div className="pr-9">
             <Dialog.Title size="4" mb="2">{kind === "user" ? "新建用户" : "新建角色"}</Dialog.Title>
-            <Dialog.Description size="2" color="gray">{kind === "user" ? "新用户初始未分配角色，首次登录必须修改密码。" : "角色初始不包含任何权限，可在权限矩阵中授予权限。"}</Dialog.Description>
+            <Dialog.Description size="2" color="gray">{kind === "user" ? "新用户初始未分配角色，首次登录必须修改密码。" : "角色初始不包含任何权限，创建后在下方逐项开启。"}</Dialog.Description>
           </div>
           {kind === "user" ? (
             <div className="flex flex-col gap-4">

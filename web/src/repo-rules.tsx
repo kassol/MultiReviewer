@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState } from "react";
 
 import { Cross2Icon, CrossCircledIcon } from "@radix-ui/react-icons";
-import { Badge, Callout, Checkbox, Dialog, IconButton, Select, Skeleton, Text, TextArea, TextField, Tooltip } from "@radix-ui/themes";
+import { Badge, Callout, Checkbox, Dialog, IconButton, Select, Skeleton, Tabs, Text, TextArea, TextField, Tooltip } from "@radix-ui/themes";
 
 import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
@@ -199,6 +199,17 @@ export function RepoRules({
   );
 }
 
+/** 弹窗的三个 tab:生效条目、修订提案队列、基点探索(未确认时叫知识草案)。 */
+type DialogTab = "entries" | "proposals" | "exploration";
+
+/**
+ * Tabs 激活指示条与模型服务详情的 TabNav 同一形态:3px 圆头、左右各缩 14px。限定在
+ * data-[state=active] 是必须的——不限定的话 Tailwind 会给未激活项也生成一个空的
+ * ::before 盒子,把 tab 的高度顶开。
+ */
+const TAB_TRIGGER =
+  "data-[state=active]:before:inset-x-3.5 data-[state=active]:before:h-[3px] data-[state=active]:before:rounded-t-[3px]";
+
 function RuleSetDialogContent({
   repo,
   canWrite,
@@ -210,6 +221,8 @@ function RuleSetDialogContent({
   const [draft, setDraft] = useState<RuleFormState | null>(null);
   const [draftEdit, setDraftEdit] = useState<RuleFormState | null>(null);
   const [proposalEdit, setProposalEdit] = useState<RuleFormState | null>(null);
+  /** 人点过的 tab。null 即还没点过,按数据推默认落点。 */
+  const [pickedTab, setPickedTab] = useState<DialogTab | null>(null);
   const ruleSet = useQuery({
     queryKey: ["repo-rules", repo.repoId],
     queryFn: () => fetchJson<RuleSet>(`/repos/${repo.repoId}/rules`),
@@ -279,32 +292,45 @@ function RuleSetDialogContent({
     onSuccess: reload,
   });
 
+  const data = ruleSet.data;
+  const pendingCount = data?.proposals.filter((row) => row.state === "pending").length ?? 0;
+  // 队列 tab 的可见性与升级前一致:有过提案就一直在(已裁决的留在里面供查)。
+  const showProposals = data !== undefined && data.proposals.length > 0;
+  // 未确认时完成知识确认是当前唯一要紧的事(issue #206 的门禁),默认落在草案 tab;
+  // 其余默认落生效条目——弹窗叫「知识集」,先回答「现在按什么标准评审」。
+  const fallbackTab = data !== undefined && data.version === null && canWrite
+    ? "exploration"
+    : "entries";
+  const wanted = pickedTab ?? fallbackTab;
+  const tab = (wanted === "proposals" && !showProposals) || (wanted === "exploration" && !canWrite)
+    ? "entries"
+    : wanted;
+
   return (
-    // 标题钉住,正文自己滚:提案与规则多起来(AI-API 一轮 29 条)会把弹窗撑出视口,
-    // 标题和关闭全被推走(修复自部署实例的走查)。
+    // 标题与 tab 栏钉住,正文自己滚:提案与规则多起来(AI-API 一轮 29 条)会把弹窗撑出
+    // 视口,标题和关闭全被推走(修复自部署实例的走查)。
     <Dialog.Content
       aria-describedby={undefined}
       maxWidth="680px"
-      maxHeight="min(780px, calc(100dvh - 4.5rem))"
       size={{ initial: "2", sm: "3" }}
-      className="flex flex-col overflow-hidden"
+      // 高度定死而不是随内容:三个 tab 的内容量差得远,跟着内容缩放的话每次切 tab
+      // 整个弹窗都在跳。
+      className="flex h-[min(680px,calc(100dvh-4.5rem))] flex-col overflow-hidden"
     >
       <Dialog.Title size="4" mb="1" className="shrink-0 pr-9 break-all">
         {repo.owner}/{repo.repo} 的知识集
       </Dialog.Title>
-      {ruleSet.data === undefined ? null : typeof ruleSet.data.version === "number" ? (
-        <Text as="p" size="1" color="gray" mb="3">
-          知识集版本 {ruleSet.data.version}
+      {data === undefined ? null : typeof data.version === "number" ? (
+        <Text as="p" size="1" color="gray" mb="2">
+          知识集版本 {data.version}
         </Text>
       ) : (
         /* 门禁分代(issue #206):没有知识集版本即还没确认,这个仓库暂不执行 Review Run。
-           下面就是基点探索与知识确认那一段,引导到位。 */
-        <Text as="p" size="1" color="orange" mb="3">
+           默认 tab 就落在知识草案上,引导到位。 */
+        <Text as="p" size="1" color="orange" mb="2">
           知识集未确认:完成知识确认前,这个仓库的投递只记录不审,面板也发起不了审查。
         </Text>
       )}
-
-      <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1">
 
       {ruleSet.isPending ? (
         <div className="flex flex-col gap-2" role="status" aria-live="polite">
@@ -315,7 +341,7 @@ function RuleSetDialogContent({
 
       {ruleSet.isError || change.isError || changeDraft.isError || confirm.isError
         || decide.isError ? (
-        <Callout.Root role="alert" color="red" size="1" mb="3">
+        <Callout.Root role="alert" color="red" size="1" mb="3" className="shrink-0">
           <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
           <Callout.Text>
             {((ruleSet.error ?? change.error ?? changeDraft.error ?? confirm.error ?? decide.error) as Error).message}
@@ -323,84 +349,102 @@ function RuleSetDialogContent({
         </Callout.Root>
       ) : null}
 
-      {canWrite && ruleSet.data !== undefined ? (
-        <ExplorationSection
-          repo={repo}
-          ruleSet={ruleSet.data}
-          draft={draftEdit}
-          busy={changeDraft.isPending || confirm.isPending}
-          onLaunched={reload}
-          onEdit={setDraftEdit}
-          onSubmitEdit={() => changeDraft.mutate(draftEdit!)}
-          onDeleteDraft={(id) => changeDraft.mutate({ deleteDraft: id })}
-          onConfirm={(itemIds) => confirm.mutate(itemIds)}
-        />
-      ) : null}
+      {data === undefined ? null : (
+        <Tabs.Root
+          value={tab}
+          onValueChange={(next) => setPickedTab(next as DialogTab)}
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          {/* 与模型服务详情同一套 tab 语法:3px 圆头指示条,底线通栏。 */}
+          <Tabs.List size="2" className="shrink-0 shadow-[inset_0_-1px_0_0_var(--v8-border-chrome)]">
+            <Tabs.Trigger value="entries" className={TAB_TRIGGER}>
+              知识条目
+              {data.rules.length > 0 ? (
+                <Badge
+                  color={tab === "entries" ? "blue" : "gray"}
+                  variant="soft"
+                  radius="full"
+                  size="1"
+                  className="ml-1.5 tabular-nums"
+                >
+                  {data.rules.length}
+                </Badge>
+              ) : null}
+            </Tabs.Trigger>
+            {showProposals ? (
+              <Tabs.Trigger value="proposals" className={TAB_TRIGGER}>
+                修订提案
+                {/* 待裁决数是这颗 tab 的注意力信号,无论停在哪个 tab 都亮着。 */}
+                {pendingCount > 0 ? (
+                  <Badge color="amber" variant="soft" radius="full" size="1" className="ml-1.5 tabular-nums">
+                    {pendingCount}
+                  </Badge>
+                ) : null}
+              </Tabs.Trigger>
+            ) : null}
+            {canWrite ? (
+              <Tabs.Trigger value="exploration" className={TAB_TRIGGER}>
+                {data.version === null ? "知识草案" : "基点探索"}
+                {data.exploration?.state === "running" ? (
+                  <Badge color="blue" variant="soft" radius="full" size="1" className="ml-1.5">
+                    进行中
+                  </Badge>
+                ) : data.version === null && data.draft.length > 0 ? (
+                  <Badge color="amber" variant="soft" radius="full" size="1" className="ml-1.5 tabular-nums">
+                    {data.draft.length}
+                  </Badge>
+                ) : null}
+              </Tabs.Trigger>
+            ) : null}
+          </Tabs.List>
 
-      {ruleSet.data === undefined || ruleSet.data.proposals.length === 0 ? null : (
-        <ProposalSection
-          repoId={repo.repoId}
-          ruleSet={ruleSet.data}
-          canWrite={canWrite}
-          edit={proposalEdit}
-          busy={decide.isPending}
-          onEdit={setProposalEdit}
-          onDecide={(id, accept) => decide.mutate({ id, accept })}
-          onDecideAll={(ids, accept) => decide.mutate({ ids, accept })}
-          onSubmitEdit={() =>
-            decide.mutate({ id: proposalEdit!.id!, accept: true, edit: proposalEdit! })
-          }
-        />
-      )}
+          <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1 pt-3">
+            <Tabs.Content value="entries">
+              {canWrite && data.draft.length === 0 ? (
+                draft === null ? (
+                  <div className="mb-3">
+                    <Button
+                      variant="soft"
+                      size={{ initial: "3", sm: "2" }}
+                      onClick={() => setDraft(BLANK_DRAFT)}
+                    >
+                      新增知识条目
+                    </Button>
+                  </div>
+                ) : (
+                  <RuleForm
+                    draft={draft}
+                    busy={change.isPending}
+                    onChange={setDraft}
+                    onCancel={() => setDraft(null)}
+                    onSubmit={() => change.mutate(draft)}
+                  />
+                )
+              ) : null}
 
-      {canWrite && ruleSet.data !== undefined && ruleSet.data.draft.length === 0 ? (
-        draft === null ? (
-          <div className="mb-3">
-            <Button
-              variant="soft"
-              size={{ initial: "3", sm: "2" }}
-              onClick={() => setDraft(BLANK_DRAFT)}
-            >
-              新增知识条目
-            </Button>
-          </div>
-        ) : (
-          <RuleForm
-            draft={draft}
-            busy={change.isPending}
-            onChange={setDraft}
-            onCancel={() => setDraft(null)}
-            onSubmit={() => change.mutate(draft)}
-          />
-        )
-      ) : null}
+              {data.rules.length === 0 ? (
+                <EmptyState
+                  title="这个仓库还没有知识条目"
+                  titleAs="h3"
+                  description="空知识集是合法状态:评审照常执行,只是没有知识注入。"
+                />
+              ) : null}
 
-      {ruleSet.data !== undefined
-        && ruleSet.data.rules.length === 0
-        && ruleSet.data.draft.length === 0 ? (
-        <EmptyState
-          title="这个仓库还没有知识条目"
-          titleAs="h3"
-          description="空知识集是合法状态:评审照常执行,只是没有知识注入。"
-        />
-      ) : null}
-
-      {ruleSet.data === undefined ? null : (
-        <div className="flex flex-col gap-3.5">
-          {/* 生效条目只按两型分段(ADR 0020),与修订提案区同一套语法。 */}
-          {ruleSet.data.rules.some((entry) => entry.type === "rule") ? (
+              <div className="flex flex-col gap-3.5">
+                {/* 生效条目只按两型分段(ADR 0020),与修订提案区同一套语法。 */}
+                {data.rules.some((entry) => entry.type === "rule") ? (
             <section className="flex flex-col gap-2">
               <div className="flex items-center gap-1">
                 <h3 className="text-xs font-semibold text-text-muted">
                   {TYPE_LABEL.rule}
                   <span className="ml-1.5 font-normal">
-                    {ruleSet.data.rules.filter((entry) => entry.type === "rule").length}
+                    {data.rules.filter((entry) => entry.type === "rule").length}
                   </span>
                 </h3>
                 <HelpTooltip content="评审规则说的是代码应当怎样,违反它即是一条 Finding。" />
               </div>
               <ul className="overflow-hidden rounded-lg border border-card-line">
-                {ruleSet.data.rules
+                {data.rules
                   .filter((entry) => entry.type === "rule")
                   .map((rule) => (
                     <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
@@ -443,19 +487,19 @@ function RuleSetDialogContent({
             </section>
           ) : null}
 
-          {ruleSet.data.rules.every((entry) => entry.type === "rule") ? null : (
+                {data.rules.some((entry) => entry.type === "fact") ? (
             <section className="flex flex-col gap-2">
               <div className="flex items-center gap-1">
                 <h3 className="text-xs font-semibold text-text-muted">
                   {TYPE_LABEL.fact}
                   <span className="ml-1.5 font-normal">
-                    {ruleSet.data.rules.filter((entry) => entry.type === "fact").length}
+                    {data.rules.filter((entry) => entry.type === "fact").length}
                   </span>
                 </h3>
                 <HelpTooltip content="项目事实是 Reviewer 的判断依据,本身不产 Finding;与代码矛盾时以代码为准。" />
               </div>
               <ul className="overflow-hidden rounded-lg border border-card-line">
-                {ruleSet.data.rules
+                {data.rules
                   .filter((entry) => entry.type === "fact")
                   .map((fact) => (
                     <li key={fact.id} className="border-t border-line px-4 py-3 first:border-t-0">
@@ -496,32 +540,68 @@ function RuleSetDialogContent({
                   ))}
               </ul>
             </section>
-          )}
-        </div>
-      )}
+                ) : null}
 
-      {ruleSet.data === undefined || ruleSet.data.retired.length === 0 ? null : (
-        <section className="mt-3.5 flex flex-col gap-2">
-          <h3 className="text-xs font-semibold text-text-muted">
-            已废止
-            <span className="ml-1.5 font-normal">{ruleSet.data.retired.length}</span>
-          </h3>
-          <ul className="overflow-hidden rounded-lg border border-card-line">
-            {ruleSet.data.retired.map((rule) => (
-              <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
-                <Text as="p" size="2" color="gray" className="line-through">
-                  {rule.statement}
-                </Text>
-                <span className="mt-1.5 inline-block">
-                  {/* 废止的那一条也要说得出它是哪一型。 */}
-                  <Badge color="gray" variant="soft">{TYPE_LABEL[rule.type]}</Badge>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
+                {/* 废止的不再生效但仍要查得到(issue #203):收进折叠,与已裁决同一语法。 */}
+                {data.retired.length === 0 ? null : (
+                  <details>
+                    <summary className="cursor-pointer text-sm text-text-secondary">
+                      已废止 {data.retired.length} 条
+                    </summary>
+                    <ul className="mt-2 overflow-hidden rounded-lg border border-card-line">
+                      {data.retired.map((rule) => (
+                        <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
+                          <Text as="p" size="2" color="gray" className="line-through">
+                            {rule.statement}
+                          </Text>
+                          <span className="mt-1.5 inline-block">
+                            {/* 废止的那一条也要说得出它是哪一型。 */}
+                            <Badge color="gray" variant="soft">{TYPE_LABEL[rule.type]}</Badge>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </div>
+            </Tabs.Content>
+
+            {showProposals ? (
+              <Tabs.Content value="proposals">
+                <ProposalSection
+                  repoId={repo.repoId}
+                  ruleSet={data}
+                  canWrite={canWrite}
+                  edit={proposalEdit}
+                  busy={decide.isPending}
+                  onEdit={setProposalEdit}
+                  onDecide={(id, accept) => decide.mutate({ id, accept })}
+                  onDecideAll={(ids, accept) => decide.mutate({ ids, accept })}
+                  onSubmitEdit={() =>
+                    decide.mutate({ id: proposalEdit!.id!, accept: true, edit: proposalEdit! })
+                  }
+                />
+              </Tabs.Content>
+            ) : null}
+
+            {canWrite ? (
+              <Tabs.Content value="exploration">
+                <ExplorationSection
+                  repo={repo}
+                  ruleSet={data}
+                  draft={draftEdit}
+                  busy={changeDraft.isPending || confirm.isPending}
+                  onLaunched={reload}
+                  onEdit={setDraftEdit}
+                  onSubmitEdit={() => changeDraft.mutate(draftEdit!)}
+                  onDeleteDraft={(id) => changeDraft.mutate({ deleteDraft: id })}
+                  onConfirm={(itemIds) => confirm.mutate(itemIds)}
+                />
+              </Tabs.Content>
+            ) : null}
+          </div>
+        </Tabs.Root>
       )}
-      </div>
 
       <div className="absolute top-3 right-3">
         <Tooltip content="关闭知识集">
@@ -729,10 +809,14 @@ function ProposalSection({
   };
 
   return (
-    <section className="mb-3.5 flex flex-col gap-2 rounded-lg border border-card-line p-3">
+    // tab 本身已经叫「修订提案」,这里不再立一层大标题,头行直接是队列状态与批量动作。
+    <section className="flex flex-col gap-2" aria-label="修订提案">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-1">
-          <h3 className="text-2xl font-bold tracking-[-0.015em]">修订提案</h3>
+          <h3 className="text-xs font-semibold text-text-muted">
+            待裁决
+            <span className="ml-1.5 font-normal">{pending.length}</span>
+          </h3>
           <HelpTooltip content="知识集的每次变更都要你裁决:采纳生成新的知识集版本,驳回只留下记录。批量采纳一次只生成一个版本。" />
         </div>
         {canWrite && pending.length > 0 ? (
@@ -766,7 +850,9 @@ function ProposalSection({
         ) : null}
       </div>
 
-      {pending.length === 0 ? null : (
+      {pending.length === 0 ? (
+        <Text as="p" size="2" color="gray">没有待裁决的提案。</Text>
+      ) : (
         <ul className="overflow-hidden rounded-lg border border-card-line">
           {pending.map((proposal) => (
             <li key={proposal.id} className="border-t border-line px-4 py-3 first:border-t-0">
@@ -946,37 +1032,37 @@ function ExplorationSection({
   const pick = useSelection(ruleSet.draft.map((row) => row.id), true);
 
   return (
-    <section className="mb-3.5 flex flex-col gap-2 rounded-lg border border-card-line p-3">
+    // tab 本身已经命名这一段,头行直接是探索状态与发起按钮,不再立一层大标题。
+    <section className="flex flex-col gap-2" aria-label={confirmed ? "基点探索" : "知识草案"}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-1">
-          <h3 className="text-2xl font-bold tracking-[-0.015em]">
-            {confirmed ? "基点探索" : "知识草案"}
-          </h3>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          {exploration === null ? (
+            <Text as="span" size="1" color="gray">还没探索过这个仓库</Text>
+          ) : (
+            <>
+              <Text as="span" size="1" color="gray">
+                {running ? "正在探索" : exploration.state === "failed" ? "上次探索失败" : "已完成探索"}
+                {" · "}基点 <CommitChip sha={exploration.baselineSha} /> · 模型 {exploration.model}
+                {exploration.thinkingLevel === null
+                  ? null
+                  : ` · 思考 ${THINKING_LEVEL_LABEL[exploration.thinkingLevel]}`}
+              </Text>
+              {/* 运行中实时看,结束后回看(issue #214)。轨迹在弹窗里开,不新建顶级导航。 */}
+              {exploration.traceTaskId === null ? null : (
+                <RuleTraceButton repoId={repo.repoId} taskId={exploration.traceTaskId} />
+              )}
+            </>
+          )}
           <HelpTooltip
             content={
               confirmed
-                ? "知识集已经确认,再次探索的产出排进上面的修订提案队列,由你逐条裁决。"
+                ? "知识集已经确认,再次探索的产出排进「修订提案」,由你逐条裁决。"
                 : "基点探索让 agent 从一个 commit 上的代码推导评审规则与项目事实的初稿,由你勾选后整组确认。"
             }
           />
         </div>
         <ExplorationLaunch repo={repo} busy={running} onLaunched={onLaunched} />
       </div>
-      {exploration === null ? null : (
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <Text as="span" size="1" color="gray">
-            {running ? "正在探索" : exploration.state === "failed" ? "上次探索失败" : "已完成探索"}
-            {" · "}基点 <CommitChip sha={exploration.baselineSha} /> · 模型 {exploration.model}
-            {exploration.thinkingLevel === null
-              ? null
-              : ` · 思考 ${THINKING_LEVEL_LABEL[exploration.thinkingLevel]}`}
-          </Text>
-          {/* 运行中实时看,结束后回看(issue #214)。轨迹在弹窗里开,不新建顶级导航。 */}
-          {exploration.traceTaskId === null ? null : (
-            <RuleTraceButton repoId={repo.repoId} taskId={exploration.traceTaskId} />
-          )}
-        </div>
-      )}
 
       {exploration?.state === "failed" && exploration.failure !== null ? (
         <Callout.Root role="alert" color="red" size="1">

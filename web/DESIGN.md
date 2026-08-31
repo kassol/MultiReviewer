@@ -371,7 +371,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 ### 8.3 编辑中的选择：浅底、描边或 Checkbox
 
-- 模型启用、批量选择和权限矩阵使用 Checkbox；父级全选使用 indeterminate 状态。
+- 模型启用与批量选择使用 Checkbox，父级全选使用 indeterminate 状态；角色权限这类开了即时生效的单体开关使用 Switch。
 - 已选行使用浅色强调，Checkbox 是主要选中标记。
 - 固定选项单选使用 RadioGroup；紧凑模式切换使用 SegmentedControl 或单选 ToggleGroup，必选的 ToggleGroup 拦截空值。
 - Switch 仅用于点击后立即生效的开关。
