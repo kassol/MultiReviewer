@@ -209,17 +209,6 @@ export function RepoRules({
   );
 }
 
-/** 按层标签把规则分组,层内保持服务端给的顺序,层之间按首次出现的先后。 */
-function byLayer(rules: readonly ReviewRule[]): [string, ReviewRule[]][] {
-  const groups = new Map<string, ReviewRule[]>();
-  for (const rule of rules) {
-    const group = groups.get(rule.layer);
-    if (group === undefined) groups.set(rule.layer, [rule]);
-    else group.push(rule);
-  }
-  return [...groups];
-}
-
 function RuleSetDialogContent({
   repo,
   canWrite,
@@ -408,52 +397,61 @@ function RuleSetDialogContent({
 
       {ruleSet.data === undefined ? null : (
         <div className="flex flex-col gap-3.5">
-          {/* 规则按层标签分组,事实自成一段(ADR 0020):层标签属规则型,事实没有可分的
-              组,混进层分组里只会多出一个空标签的组。 */}
-          {byLayer(ruleSet.data.rules.filter((entry) => entry.type === "rule")).map(([layer, rules]) => (
-            <section key={layer} className="flex flex-col gap-2">
-              {/* 条目分组行,不是弹窗的区块标题:字级压到条目正文之下,视觉主体留给条目卡。 */}
-              <h3 className="text-xs font-semibold text-text-muted">
-                {layer}
-                <span className="ml-1.5 font-normal">{rules.length}</span>
-              </h3>
+          {/* 生效条目只按两型分段(ADR 0020),与修订提案区同一套语法:层标签是规则的
+              属性,降为条目上的徽章——把属性抬成分组,单条组会像「一条配一个标题」。 */}
+          {ruleSet.data.rules.some((entry) => entry.type === "rule") ? (
+            <section className="flex flex-col gap-2">
+              <div className="flex items-center gap-1">
+                <h3 className="text-xs font-semibold text-text-muted">
+                  {TYPE_LABEL.rule}
+                  <span className="ml-1.5 font-normal">
+                    {ruleSet.data.rules.filter((entry) => entry.type === "rule").length}
+                  </span>
+                </h3>
+                <HelpTooltip content="评审规则说的是代码应当怎样,违反它即是一条 Finding。" />
+              </div>
               <ul className="overflow-hidden rounded-lg border border-card-line">
-                {rules.map((rule) => (
-                  <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
-                    <div className="flex items-start justify-between gap-2">
-                      <Text as="p" size="2">{rule.statement}</Text>
-                      {canWrite ? (
-                        <div className="flex shrink-0 gap-1">
-                          <Button
-                            variant="soft"
-                            color="gray"
-                            size={{ initial: "3", sm: "1" }}
-                            onClick={() => setDraft({ ...rule, id: rule.id })}
-                          >
-                            修改
-                          </Button>
-                          <Button
-                            variant="soft"
-                            color="gray"
-                            size={{ initial: "3", sm: "1" }}
-                            disabled={change.isPending}
-                            onClick={() => change.mutate({ retire: rule.id })}
-                          >
-                            废止
-                          </Button>
-                        </div>
-                      ) : null}
-                    </div>
-                    <span className="mt-1.5 inline-block">
-                      <Badge color="gray" variant="soft">
-                        {rule.scope === "" ? "全仓库" : rule.scope}
-                      </Badge>
-                    </span>
-                  </li>
-                ))}
+                {ruleSet.data.rules
+                  .filter((entry) => entry.type === "rule")
+                  .map((rule) => (
+                    <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
+                      <div className="flex items-start justify-between gap-2">
+                        <Text as="p" size="2">{rule.statement}</Text>
+                        {canWrite ? (
+                          <div className="flex shrink-0 gap-1">
+                            <Button
+                              variant="soft"
+                              color="gray"
+                              size={{ initial: "3", sm: "1" }}
+                              onClick={() => setDraft({ ...rule, id: rule.id })}
+                            >
+                              修改
+                            </Button>
+                            <Button
+                              variant="soft"
+                              color="gray"
+                              size={{ initial: "3", sm: "1" }}
+                              disabled={change.isPending}
+                              onClick={() => change.mutate({ retire: rule.id })}
+                            >
+                              废止
+                            </Button>
+                          </div>
+                        ) : null}
+                      </div>
+                      <span className="mt-1.5 inline-flex flex-wrap gap-1">
+                        {rule.layer === "" ? null : (
+                          <Badge color="gray" variant="soft">{rule.layer}</Badge>
+                        )}
+                        <Badge color="gray" variant="soft">
+                          {rule.scope === "" ? "全仓库" : rule.scope}
+                        </Badge>
+                      </span>
+                    </li>
+                  ))}
               </ul>
             </section>
-          ))}
+          ) : null}
 
           {ruleSet.data.rules.every((entry) => entry.type === "rule") ? null : (
             <section className="flex flex-col gap-2">
