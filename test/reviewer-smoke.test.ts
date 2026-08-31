@@ -13,9 +13,11 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-import type { HistoryFinding, ReviewerEvent } from "../src/review/finding.ts";
+import { mergeByProposal } from "../src/review/dedupe.ts";
+import type { Finding, HistoryFinding, ReviewerEvent } from "../src/review/finding.ts";
 import { EVIDENCE_SPAWN_BUDGET, EVIDENCE_TOOL } from "../src/reviewer/evidence.ts";
 import { resolvePiBuiltinProviderTarget } from "../src/reviewer/catalog.ts";
+import { createPiMergeAgent } from "../src/reviewer/merge-agent.ts";
 import { createPiReviewer } from "../src/reviewer/pi-reviewer.ts";
 import { createPiRuleAgent } from "../src/reviewer/rule-agent.ts";
 import {
@@ -263,4 +265,83 @@ test("真实模型对跨文件存疑场景派出取证", { skip }, async () => {
   // 断报比错报更常见,也是回归时最先坏的那一档。
   assert.ok(outcome.usage !== undefined, "派过取证的这一轮没有回报用量");
   assert.ok(outcome.usage.totalTokens > 0, "派过取证的这一轮用量为零");
+});
+
+/**
+ * 合并 agent 与真实模型之间的契约(issue #228,ADR 0022),桩测不到:propose_merge_group
+ * 的形状、「每条恰好落在一组」这条要求以及组内理由,都要真模型跑一遍才知道立不立得住。
+ *
+ * 三条输入里两条讲同一个问题、一条讲另一个,期望的分组因此是确定的;但模型的判断本来
+ * 就不确定,断言只守契约那一半——方案过得了编排层的三条硬性质验收。
+ */
+test("真实模型经 propose_merge_group 给出过得了验收的分组方案", { skip }, async () => {
+  const target = await resolvePiBuiltinProviderTarget(provider!);
+  assert.ok(target, `Pi 内置 provider 不存在或没有运行目标: ${provider}`);
+  const findings: Finding[] = [
+    {
+      file: "src/pagination.js",
+      line: 3,
+      severity: "P1",
+      category: "bug",
+      title: "页码下界没有校验",
+      description: "page 小于 1 时偏移量算成负数。",
+      impact: "",
+      suggestion: "",
+      model: "model-a",
+    },
+    {
+      file: "src/pagination.js",
+      line: 3,
+      severity: "P2",
+      category: "maintainability",
+      title: "缺少页码的下界检查",
+      description: "page 参数没有被限制在 1 以上。",
+      impact: "",
+      suggestion: "",
+      model: "model-b",
+    },
+    {
+      file: "src/pagination.js",
+      line: 4,
+      severity: "P1",
+      category: "bug",
+      title: "每页条数没有上限",
+      description: "size 可以取任意大的值。",
+      impact: "",
+      suggestion: "",
+      model: "model-b",
+    },
+  ];
+
+  const result = await createPiMergeAgent({
+    runtimeModel: {
+      provider: provider!,
+      id: model!,
+      name: model!,
+      api: target.api,
+      baseUrl: target.baseUrl,
+      input: ["text"],
+      reasoning: false,
+      contextWindow: 128_000,
+      maxTokens: 16_000,
+      sources: {
+        name: "model-id",
+        api: "service-target",
+        baseUrl: "service-target",
+        input: "runtime-baseline",
+        reasoning: "runtime-baseline",
+        contextWindow: "runtime-baseline",
+        maxTokens: "runtime-baseline",
+      },
+    },
+    apiKey: secret!,
+  })({ findings, worktreePath: FIXTURE });
+
+  assert.equal(result.failure, undefined, `合并 agent 失败: ${result.failure}`);
+  for (const group of result.groups) {
+    assert.ok(group.reason.trim().length > 0, "分组没有给合并理由");
+  }
+  const outcome = mergeByProposal(findings, result.groups);
+  assert.ok("merged" in outcome, `分组方案没过验收: ${"rejected" in outcome ? outcome.rejected : ""}`);
+  assert.ok(result.usage !== undefined && result.usage.totalTokens > 0, "这一次没有回报用量");
 });

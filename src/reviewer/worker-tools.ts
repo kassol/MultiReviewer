@@ -19,7 +19,7 @@ import { Type } from "typebox";
 
 import type { ThinkingLevel } from "../config.ts";
 import type { ProjectFact, ReviewRule } from "../review/finding.ts";
-import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV } from "./env.ts";
+import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, redactModelCredential } from "./env.ts";
 import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 import { numberedRead } from "./numbered-read.ts";
@@ -140,6 +140,28 @@ export function sessionThinkingLevel(
 ): ThinkingLevel {
   if (!reasoning) return "off";
   return level ?? "off";
+}
+
+/**
+ * 会话收尾时的失败原因:先取跑 prompt 时抛出的异常,再取 agent 状态里的错误,最后取
+ * 末条 assistant 消息上的 `stopReason=error`;凭据一律先抹掉。三个子进程收尾同一句话,
+ * 分三份只会让某一天其中一处悄悄改掉。
+ */
+export function sessionFailure(
+  session: {
+    messages: readonly { role: string; stopReason?: string; errorMessage?: string }[];
+    agent: { state: { errorMessage?: string } };
+  },
+  thrown: string | undefined,
+  apiKey: string,
+): string | undefined {
+  const lastAssistant = session.messages.findLast((m) => m.role === "assistant");
+  const stopReasonFailure =
+    lastAssistant?.stopReason === "error"
+      ? (lastAssistant.errorMessage ?? "stopReason=error")
+      : undefined;
+  const rawFailure = thrown ?? session.agent.state.errorMessage ?? stopReasonFailure;
+  return rawFailure === undefined ? undefined : redactModelCredential(rawFailure, apiKey);
 }
 
 /** 会话跑起来所需的那一套。两个子进程各自的 `createAgentSession` 从这里取。 */

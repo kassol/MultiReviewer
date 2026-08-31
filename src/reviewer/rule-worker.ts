@@ -21,10 +21,11 @@ import type {
 } from "./rule-agent.ts";
 import { reviewerEventStream } from "./trace-events.ts";
 import {
+  READ_ONLY_TOOLS,
   numberedReadTool,
   oneLine,
   prepareAgentRuntime,
-  READ_ONLY_TOOLS,
+  sessionFailure,
   sessionThinkingLevel,
 } from "./worker-tools.ts";
 
@@ -227,14 +228,7 @@ async function run(request: RuleWorkerRequest): Promise<void> {
   }
 
   // `session.prompt()` 在模型调用失败时也正常返回,失败只在这两处可见。
-  const lastAssistant = session.messages.findLast((m) => m.role === "assistant");
-  const stopReasonFailure =
-    lastAssistant?.stopReason === "error"
-      ? (lastAssistant.errorMessage ?? "stopReason=error")
-      : undefined;
-  const rawFailure = thrown ?? session.agent.state.errorMessage ?? stopReasonFailure;
-  const failure =
-    rawFailure === undefined ? undefined : redactModelCredential(rawFailure, apiKey);
+  const failure = sessionFailure(session, thrown, apiKey);
 
   session.dispose();
   send({ kind: "done", ...(failure === undefined ? {} : { failure }) });

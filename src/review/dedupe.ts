@@ -1,4 +1,4 @@
-import type { Category, Finding, Severity } from "./finding.ts";
+import type { Category, Finding, ReviewerEvent, ReviewerUsage, Severity } from "./finding.ts";
 
 /**
  * 一条 Finding 的一个归属:某个 Reviewer 对这一处问题的说法(ADR 0015)。
@@ -19,14 +19,16 @@ export type FindingAttribution = {
 };
 
 /**
- * 一组为什么被判成同一处:同一行,或相距几行且相似度多少。
+ * 一组为什么被判成同一处:合并 agent 的一句理由,或算法档的同一行 / 行距加相似度。
  *
- * 它是 `sameSpot` 那两道判据的原样呈现,不另立口径——面板要解释合并,解释的必须是
- * 真正做出这个决定的那两个数(issue #171 的用户故事 9)。
+ * 算法两档是 `sameSpot` 那两道判据的原样呈现,不另立口径——面板要解释合并,解释的
+ * 必须是真正做出这个决定的那两个数(issue #171 的用户故事 9)。`agent` 档同律:那一句
+ * 理由就是做出这个决定的东西本身(issue #228)。
  */
 export type MergeCriterion =
   | { kind: "same_line" }
-  | { kind: "distance"; distance: number; similarity: number };
+  | { kind: "distance"; distance: number; similarity: number }
+  | { kind: "agent"; reason: string };
 
 /** 合并组里的一个成员:哪个 Reviewer 在哪一行说了什么。 */
 export type MergeMember = {
@@ -159,7 +161,7 @@ export function sameContent(
  * 核对过的(见 `reviewer/anchor.ts`),同一行是「同一处」的硬证据,拿标题措辞去推翻
  * 它是用弱信号盖强信号。要防的是相邻而非同一行的那种误合并。
  */
-function sameSpot(a: Finding, b: Finding): MergeCriterion | undefined {
+function sameSpot(a: Finding, b: Finding): AlgorithmCriterion | undefined {
   const distance = Math.abs(a.line - b.line);
   if (distance > LINE_TOLERANCE) return undefined;
   if (distance === 0) return { kind: "same_line" };
@@ -173,8 +175,11 @@ function sameSpot(a: Finding, b: Finding): MergeCriterion | undefined {
   return { kind: "distance", distance, similarity };
 }
 
+/** 算法档的两道判据。`agent` 档由合并 agent 给,不经这几个函数。 */
+type AlgorithmCriterion = Exclude<MergeCriterion, { kind: "agent" }>;
+
 /** 一条 Finding 并进某个组时,组里与它最贴近的那条证据。并不进去即 undefined。 */
-function joinCriterion(group: readonly Finding[], finding: Finding): MergeCriterion | undefined {
+function joinCriterion(group: readonly Finding[], finding: Finding): AlgorithmCriterion | undefined {
   let best: Extract<MergeCriterion, { kind: "distance" }> | undefined;
   for (const member of group) {
     const criterion = sameSpot(member, finding);
@@ -187,7 +192,7 @@ function joinCriterion(group: readonly Finding[], finding: Finding): MergeCriter
 }
 
 /** 一组的合并判据:全部由「同一行」串起来才是 same_line,否则取行距最大的那条。 */
-function groupCriterion(joins: readonly MergeCriterion[]): MergeCriterion {
+function groupCriterion(joins: readonly AlgorithmCriterion[]): AlgorithmCriterion {
   let widest: Extract<MergeCriterion, { kind: "distance" }> | undefined;
   for (const join of joins) {
     if (join.kind !== "distance") continue;
@@ -221,7 +226,7 @@ export function dedupeFindings(findings: readonly Finding[]): MergedFinding[] {
   for (const [file, fileFindings] of byFile) {
     const sorted = [...fileFindings].sort((a, b) => a.line - b.line);
     // `joins` 与 `members` 里第二条起的成员一一对应:每条并进来时凭的是哪道判据。
-    const groups: { members: Finding[]; joins: MergeCriterion[] }[] = [];
+    const groups: { members: Finding[]; joins: AlgorithmCriterion[] }[] = [];
 
     for (const finding of sorted) {
       // 与组内任一条同处即并入,不只比组内最后一条。加了内容判据之后分组不再是行号
@@ -245,7 +250,7 @@ export function dedupeFindings(findings: readonly Finding[]): MergedFinding[] {
         mergeGroup(
           file,
           [...group.members].sort((a, b) => reportOrder.get(a)! - reportOrder.get(b)!),
-          group.joins,
+          groupCriterion(group.joins),
         ),
       );
     }
@@ -254,11 +259,122 @@ export function dedupeFindings(findings: readonly Finding[]): MergedFinding[] {
   return merged;
 }
 
+/**
+ * 合并 agent 提出的一组(issue #228):成员编号是它收到的那份 Finding 列表的下标,
+ * 理由是这一组为什么是同一个问题的一句话。
+ */
+export type MergeGroupProposal = {
+  members: readonly number[];
+  reason: string;
+};
+
+/**
+ * 合并 agent 的注入边界(issue #228,ADR 0022)。与 `Reviewer`、`RuleAgent` 同构:编排层
+ * 只认这一个函数类型,真实实现是 Pi 子进程(`reviewer/merge-agent.ts`),测试注入脚本化
+ * 实现。模型与凭据在建它的时候就固定了,不随任务给。
+ */
+export type MergeAgent = (request: MergeAgentRequest) => Promise<MergeAgentResult>;
+
+/** 交给合并 agent 的一次任务。 */
+export type MergeAgentRequest = {
+  /**
+   * 本轮全部成功 Reviewer 的 Finding,按 Reviewer 的配置顺序拼好。下标即成员编号,
+   * 分组方案与验收都按它对齐。
+   */
+  findings: readonly Finding[];
+  /** 本轮的一次性工作副本。agent 需要翻代码时读的就是它。 */
+  worktreePath: string;
+  /** 过程事件的回调。逐条给,调用方落成审查轨迹。 */
+  onEvent?: (event: ReviewerEvent) => void;
+};
+
+/** 一次合并的产出。`failure` 有值即这一次没跑成,调用方回退到算法合并。 */
+export type MergeAgentResult = {
+  groups: MergeGroupProposal[];
+  failure?: string;
+  /** 这次会话的 token 用量。会话没建起来时取不到。 */
+  usage?: ReviewerUsage;
+};
+
+/** 分组方案的验收结果:过了给合并结果,没过给一句拒绝理由,调用方据此回退并记轨迹。 */
+export type MergeProposalOutcome =
+  | { merged: MergedFinding[] }
+  | { rejected: string };
+
+/**
+ * 按合并 agent 的分组方案合并(issue #228)。语义判断是它的,三条硬性质是代码的:
+ *
+ * 1. 每条输入 Finding 恰好落在一组里(不丢不重);
+ * 2. 一组的成员同属一个文件;
+ * 3. 一组里每个成员与组内至少一个其他成员行距不超过 `LINE_TOLERANCE`。
+ *
+ * 三条是「同一处」的位置语义,合并改的只是「这两条讲的是不是同一回事」那一半,位置
+ * 这一半不交出去。任一条不成立即整份方案作废,调用方退回 `dedupeFindings`——半份采纳
+ * 会让检出率悄悄少一块,而检出率是代码要守住的那个量。
+ *
+ * 行号、严重度、分类、归属折叠与代表段的派生规则全部沿用算法档那一套(`mergeGroup`),
+ * 呈现语义因此与升级前逐字一致。
+ */
+export function mergeByProposal(
+  findings: readonly Finding[],
+  groups: readonly MergeGroupProposal[],
+): MergeProposalOutcome {
+  const claimed = new Set<number>();
+  for (const group of groups) {
+    // 空组不是合法方案:它分不到任何条目,后面取代表时还会当场崩——验收的职责正是
+    // 把一切不成立的方案挡成回退,而不是让它变成异常。
+    if (group.members.length === 0) return { rejected: "方案里有一组没有任何成员" };
+    for (const member of group.members) {
+      if (!Number.isInteger(member) || member < 0 || member >= findings.length) {
+        return { rejected: `分组里的编号 ${member} 不是 0 到 ${findings.length - 1} 之间的条目` };
+      }
+      if (claimed.has(member)) return { rejected: `第 ${member} 条被分进了两组` };
+      claimed.add(member);
+    }
+  }
+  if (claimed.size !== findings.length) {
+    return { rejected: `${findings.length - claimed.size} 条 Finding 没有被分进任何一组` };
+  }
+
+  const merged: MergedFinding[] = [];
+  for (const group of groups) {
+    // 成员编号即首报先后:输入按 Reviewer 的配置顺序拼(`run.ts`),下标就是报出的次序。
+    const members = [...group.members].sort((a, b) => a - b).map((index) => findings[index]!);
+    const file = members[0]!.file;
+    if (members.some((member) => member.file !== file)) {
+      return { rejected: `一组里混了不同文件:${[...new Set(members.map((m) => m.file))].join("、")}` };
+    }
+    if (
+      members.length > 1 &&
+      members.some((member) =>
+        members.every(
+          (other) => other === member || Math.abs(other.line - member.line) > LINE_TOLERANCE,
+        ),
+      )
+    ) {
+      return {
+        rejected: `${file} 的一组里有成员与组内任何其他成员都相距超过 ${LINE_TOLERANCE} 行`,
+      };
+    }
+    merged.push(mergeGroup(file, members, { kind: "agent", reason: group.reason }));
+  }
+
+  // 与算法档同序:文件按首次出现的先后,组内按代表行号升序。呈现次序不因换了分组方式而变。
+  const fileOrder = new Map<string, number>();
+  for (const finding of findings) {
+    if (!fileOrder.has(finding.file)) fileOrder.set(finding.file, fileOrder.size);
+  }
+  merged.sort(
+    (a, b) => fileOrder.get(a.file)! - fileOrder.get(b.file)! || a.line - b.line,
+  );
+  return { merged };
+}
+
 /** 按首报先后排好的一组 Finding 合成一条。 */
 function mergeGroup(
   file: string,
   group: readonly Finding[],
-  joins: readonly MergeCriterion[],
+  criterion: MergeCriterion,
 ): MergedFinding {
   const leading = [...group].sort(
     (a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity],
@@ -320,7 +436,7 @@ function mergeGroup(
               line: finding.line,
               title: finding.title,
             })),
-            criterion: groupCriterion(joins),
+            criterion,
           },
         }),
   };

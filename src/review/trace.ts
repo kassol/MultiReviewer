@@ -26,6 +26,10 @@ export type RunTraceKind =
   | "batch_started"
   | "batch_finished"
   | "finding_merged"
+  /** 合并 agent 跑完(issue #228):它给出几组,以及这次会话的 token 用量。 */
+  | "merge_agent_finished"
+  /** 合并 agent 失败或分组方案没过验收,这一轮的合并退回算法档(issue #228)。 */
+  | "merge_fallback"
   /** 落点锚不进本轮 diff、被丢弃的一条 Finding(issue #224)。 */
   | "finding_discarded"
   | "review_posted"
@@ -48,7 +52,8 @@ export type RuleTraceKind =
 
 /**
  * 轨迹里的一条事件。`seq` 在一轮之内自增,断线续传按它续;`reviewer` 是模型标识,
- * 与 `reviewer_outcome.model` 是同一个值,轮次级事件没有它。
+ * 与 `reviewer_outcome.model` 是同一个值,轮次级事件没有它。合并 agent 的会话事件也走
+ * 这一档,占一个固定名字(`MERGE_AGENT_TRACE_NAME`),与哪个模型跑的它无关(issue #228)。
  */
 export type TraceEvent = {
   seq: number;

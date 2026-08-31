@@ -72,6 +72,7 @@ import {
   type Worktree,
 } from "../git/worktree.ts";
 import { DEFAULT_MAX_CHANGED_LINES_PER_BATCH } from "../review/batch.ts";
+import type { MergeAgent } from "../review/dedupe.ts";
 import type { Reviewer } from "../review/finding.ts";
 import {
   containerBranches,
@@ -139,6 +140,7 @@ import {
   CUSTOM_PROVIDER_APIS,
   modelCatalogStorePath,
 } from "../reviewer/model-runtime.ts";
+import { createPiMergeAgent } from "../reviewer/merge-agent.ts";
 import {
   createPiRuleAgent,
   type RuleAgent,
@@ -737,7 +739,25 @@ async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<Re
     plans.map(reviewerPin),
     // 知识集与模型服务版本在同一次读事务里冻结(issue #204),两型一体(issue #221)。
     { version: snapshot.ruleSetVersion, rules: snapshot.rules, facts: snapshot.facts },
+    mergeAgentFor(plans),
   );
+}
+
+/**
+ * 本轮的合并 agent(issue #228):取配置序第一个 Reviewer 已经物化好的模型快照、凭据与
+ * 思考档位,零新增配置面与凭据面。第一项跑不了(缺凭据或缺运行模型)时不建——这一轮的
+ * 合并走算法档,与这一票之前逐字一致。
+ */
+function mergeAgentFor(plans: readonly ReviewerRuntimePlan[]): MergeAgent | undefined {
+  const first = plans[0];
+  if (first === undefined || first.credential === null || first.runtimeModel === null) {
+    return undefined;
+  }
+  return createPiMergeAgent({
+    runtimeModel: first.runtimeModel,
+    apiKey: first.credential,
+    ...(first.spec.thinkingLevel === undefined ? {} : { thinkingLevel: first.spec.thinkingLevel }),
+  });
 }
 
 type Admission = { keys: RepoKey[] };
