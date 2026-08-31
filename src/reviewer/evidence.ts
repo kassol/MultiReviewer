@@ -1,0 +1,212 @@
+/**
+ * 取证子代理(CONTEXT.md 取证,ADR 0021,issue #226)。
+ *
+ * Reviewer 在报出跨文件因果主张前派一个只读子代理沿调用链核查。执行体是 vendor 进镜像的
+ * `pi-subagents`:建会话时把它与唯一的自定义取证 agent 一起铺进该会话的临时 agentDir。
+ * 这是对「空 agentDir 隔绝宿主扩展」的受控例外——铺进去的内容全部由本文件生成或由镜像
+ * 构建固定,不来自宿主机运行环境。
+ *
+ * 三道约束各有各的落点,不要合并:
+ * - **禁用内置 agent**:`settings.json` 的 `subagents.disableBuiltins`。worker 能写文件、
+ *   researcher 要联网,审查环境不该有它们。
+ * - **能力天花板**:`PI_SUBAGENT_CAPABILITY_CEILING_V1` 环境变量,在派出之前判定。它挡的
+ *   不是我们自己写的那份 agent 定义,而是被审仓库工作副本里可能存在的 `.pi/agents/*.md`
+ *   ——那是半可信输入,agent 定义里写 `tools: bash` 就能把只读会话变成可写会话。
+ * - **spawn 预算**:`PI_SUBAGENT_MAX_SPAWNS_PER_RUN`。取证是针对存疑 Finding 的定向动作,
+ *   单轮超过 8 次说明在滥派。
+ *
+ * 子会话与 Reviewer 同模型同凭据同思考档位:子代理跑在另一个 pi 进程里,读不到本进程内存
+ * 里注册的那一项模型,因此把同一份运行模型另写一份 `models.json`;凭据写的是环境变量引用
+ * 而非明文,子进程从继承来的环境里取。
+ */
+import { mkdirSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+
+import type { ThinkingLevel } from "../config.ts";
+import type { ProjectFact, ReviewRule } from "../review/finding.ts";
+import { MODEL_API_KEY_ENV } from "./env.ts";
+import { ZERO_MODEL_COST } from "./model-runtime.ts";
+import type { RuntimeModel } from "./model-service-runtime.ts";
+import { factBullet, READ_ONLY_TOOLS, ruleBullet } from "./worker-tools.ts";
+
+/** 取证工具在会话里的名字,由 pi-subagents 注册。 */
+export const EVIDENCE_TOOL = "subagent";
+
+/** 唯一的自定义取证 agent。内置 agent 全部禁用,能力天花板也只放行这一个名字。 */
+export const EVIDENCE_AGENT = "evidence";
+
+/** 单轮取证次数上限(ADR 0021)。 */
+export const EVIDENCE_SPAWN_BUDGET = 8;
+
+const SPAWN_BUDGET_ENV = "PI_SUBAGENT_MAX_SPAWNS_PER_RUN";
+const CAPABILITY_CEILING_ENV = "PI_SUBAGENT_CAPABILITY_CEILING_V1";
+
+/** 天花板的来源标签,打回文案里会带上它,让人看得出是谁挡的。 */
+const CEILING_SOURCE = "multireviewer";
+
+/**
+ * 取证子会话的能力天花板。**白名单写死在这里,不从会话的工具面透传**:透传意味着
+ * 「Reviewer 现在有哪些工具」变成子代理有哪些工具的判据,而 `report_finding` 与取证工具
+ * 本身都在 Reviewer 那一面上——报不报由 Reviewer 裁决,取证只交证据;取证工具不进子代理
+ * 的工具面,单层因此是构造出来的,不靠深度计数。
+ */
+export function evidenceCeiling(): {
+  version: 1;
+  allowedTools: string[];
+  allowedAgents: string[];
+  denyExtensions: boolean;
+  sources: string[];
+} {
+  return {
+    version: 1,
+    allowedTools: [...READ_ONLY_TOOLS].sort(),
+    allowedAgents: [EVIDENCE_AGENT],
+    denyExtensions: true,
+    sources: [CEILING_SOURCE],
+  };
+}
+
+/** 天花板的传递形态:base64url 的 JSON,pi-subagents 从环境变量里解出来。 */
+export function encodeEvidenceCeiling(): string {
+  return Buffer.from(JSON.stringify(evidenceCeiling()), "utf8").toString("base64url");
+}
+
+/** vendor 进镜像的 pi-subagents 包根目录。它是一个 pi 包,整个目录交给资源加载器。 */
+export function vendoredSubagentsPath(): string {
+  return dirname(createRequire(import.meta.url).resolve("pi-subagents"));
+}
+
+/**
+ * 子进程要读的模型目录。字段逐项取自本轮固定的运行模型,与主进程内存里注册的那一项同源;
+ * 凭据写成环境变量引用,明文不落盘。
+ */
+export function childModelCatalog(model: RuntimeModel): unknown {
+  return {
+    providers: {
+      [model.provider]: {
+        name: model.provider,
+        baseUrl: model.baseUrl,
+        api: model.api,
+        apiKey: `$${MODEL_API_KEY_ENV}`,
+        models: [
+          {
+            id: model.id,
+            name: model.name,
+            reasoning: model.reasoning,
+            input: [...model.input],
+            cost: { ...ZERO_MODEL_COST },
+            contextWindow: model.contextWindow,
+            maxTokens: model.maxTokens,
+            ...(model.thinkingLevelMap === undefined
+              ? {}
+              : { thinkingLevelMap: model.thinkingLevelMap }),
+            ...(model.compat === undefined ? {} : { compat: model.compat }),
+          },
+        ],
+      },
+    },
+  };
+}
+
+/**
+ * 取证子会话收到的知识注入(issue #226)。与 Reviewer 那一份是同一批条目、同一套行格式,
+ * 措辞按取证的职责改写:子代理不产 Finding,知识对它只是「省下你本来只能猜的那些」。
+ */
+function knowledgeSection(
+  rules: readonly ReviewRule[],
+  facts: readonly ProjectFact[],
+): string {
+  const sections: string[] = [];
+  if (rules.length > 0) {
+    sections.push(
+      "",
+      "This repository has an agreed set of review rules. They tell you what the reviewer judges the code against, so you know which details matter. You do not judge and you do not report violations — you only bring back what the code actually does.",
+      "",
+      ...rules.map(ruleBullet),
+    );
+  }
+  if (facts.length > 0) {
+    sections.push(
+      "",
+      "This repository has also agreed on a set of project facts: statements about how this codebase, its architecture and its environment actually are. Use them as grounds for judgement — they tell you what you would otherwise have to assume or verify yourself. When the code contradicts a fact, the code wins: report what you read and say that the fact no longer holds.",
+      "",
+      ...facts.map(factBullet),
+    );
+  }
+  return sections.join("\n");
+}
+
+/**
+ * 取证 agent 的定义文件。frontmatter 是它的行为约束,正文是它的系统提示。
+ *
+ * `tools` 只有只读四件套:pi-subagents 把它当严格允许清单,取证工具本身与 `report_finding`
+ * 都不在其中。`model: inherit` 取父会话那一项模型,`thinking` 与 Reviewer 同档。三个
+ * `inherit*: false` 让子会话只拿到这里写下的东西,不吃工作副本里的 `AGENTS.md` 与技能目录
+ * ——那是被审仓库的内容,半可信。`acceptance` 关掉验收契约:取证交的是证据,不是交付物。
+ */
+export function evidenceAgentDefinition(options: {
+  thinkingLevel: ThinkingLevel;
+  rules: readonly ReviewRule[];
+  facts: readonly ProjectFact[];
+}): string {
+  const knowledge = knowledgeSection(options.rules, options.facts);
+  return `---
+name: ${EVIDENCE_AGENT}
+description: Read-only investigation of one causal claim about this repository. Give it a single claim to check; it reads the code along the call chain and comes back with file:line evidence.
+tools: ${READ_ONLY_TOOLS.join(", ")}
+model: inherit
+thinking: ${options.thinkingLevel}
+systemPromptMode: replace
+inheritProjectContext: false
+inheritGlobalContext: false
+inheritSkills: false
+allowNestedSubagents: false
+acceptance: { level: "none", reason: "evidence report, not a deliverable" }
+---
+
+You check one claim about this repository by reading its code, and you report what you found. You do not judge the code and you do not decide whether anything is a problem — the reviewer who sent you does that with your evidence in hand.
+
+Read as widely as the claim requires: callers, callees, sibling branches, configuration, unchanged files. Your reading radius is the whole repository.
+
+Answer with evidence, not with impressions. Every statement you make about the code must name the file and the line you read it on, written as \`path/to/file.ts:42\`. When you could not settle the claim, say exactly what you looked at and what is still missing — an honest "not established" is worth more than a guess.
+
+Keep the report short. The reviewer needs the answer and the lines it rests on, not a tour of the repository.
+${knowledge}`;
+}
+
+/**
+ * 把取证子代理铺进这个会话的临时 agentDir,并设好它的两个环境闸。
+ *
+ * 调用点在 `prepareAgentRuntime` 之后、`createAgentSession` 之前:`models.json` 要在主进程
+ * 的模型运行时建好之后再写,免得它反过来盖掉内存里已经注册好的那一项模型;而 agent 定义
+ * 与设置要在会话起来之前就位,派出取证时 pi-subagents 现读这两处。
+ */
+export function installEvidenceKit(options: {
+  agentDir: string;
+  runtimeModel: RuntimeModel;
+  thinkingLevel: ThinkingLevel;
+  rules: readonly ReviewRule[];
+  facts: readonly ProjectFact[];
+}): void {
+  const { agentDir } = options;
+  writeFileSync(
+    join(agentDir, "settings.json"),
+    JSON.stringify({ subagents: { disableBuiltins: true } }, null, 2),
+  );
+  writeFileSync(
+    join(agentDir, "models.json"),
+    JSON.stringify(childModelCatalog(options.runtimeModel), null, 2),
+  );
+  mkdirSync(join(agentDir, "agents"), { recursive: true });
+  writeFileSync(
+    join(agentDir, "agents", `${EVIDENCE_AGENT}.md`),
+    evidenceAgentDefinition({
+      thinkingLevel: options.thinkingLevel,
+      rules: options.rules,
+      facts: options.facts,
+    }),
+  );
+  process.env[SPAWN_BUDGET_ENV] = String(EVIDENCE_SPAWN_BUDGET);
+  process.env[CAPABILITY_CEILING_ENV] = encodeEvidenceCeiling();
+}

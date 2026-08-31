@@ -20,10 +20,12 @@ import type {
   RuleWorkerRequest,
 } from "./rule-agent.ts";
 import { reviewerEventStream } from "./trace-events.ts";
-import { numberedReadTool, prepareAgentRuntime, sessionThinkingLevel } from "./worker-tools.ts";
-
-/** 只读靠允许清单强制:未列出的工具 Pi 不会注册,模型没有写入的调用路径。 */
-const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
+import {
+  numberedReadTool,
+  prepareAgentRuntime,
+  READ_ONLY_TOOLS,
+  sessionThinkingLevel,
+} from "./worker-tools.ts";
 
 const PROPOSE_RULE_TOOL = "propose_rule";
 

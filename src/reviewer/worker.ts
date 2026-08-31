@@ -20,6 +20,12 @@ import type {
 } from "../review/finding.ts";
 import { anchorReport, anchorVerdict } from "./anchor.ts";
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
+import {
+  EVIDENCE_AGENT,
+  EVIDENCE_TOOL,
+  installEvidenceKit,
+  vendoredSubagentsPath,
+} from "./evidence.ts";
 import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
 import { reviewerEventStream } from "./trace-events.ts";
 import {
@@ -28,15 +34,10 @@ import {
   fileLines,
   numberedReadTool,
   prepareAgentRuntime,
+  READ_ONLY_TOOLS,
   ruleBullet,
   sessionThinkingLevel,
 } from "./worker-tools.ts";
-
-/**
- * 只读靠允许清单强制:未列出的工具 Pi 不会注册,模型没有写入的调用路径。
- * `read` 在清单里但实际注册的是下面的自定义实现——customTools 同名覆盖内建。
- */
-const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
 
 const REPORT_FINDING_TOOL = "report_finding";
 
@@ -50,6 +51,8 @@ Cover correctness, security, maintainability and design. You may open any file i
 Report each problem by calling the report_finding tool exactly once per problem. Do not describe problems in prose — a problem that is not reported through the tool does not exist. When you have reported everything, stop.
 
 The read tool prefixes every line with its line number, like \`12: code\`. These numbers are the only valid source for the line field of report_finding — copy the number, never count lines yourself. The prefix is not part of the file content. In the snippet field, copy the exact text of the line the problem starts on, without the line number prefix. Pick the most distinctive line of the problem, not a bare brace. A finding whose snippet does not match the file at the reported line is rejected back to you.
+
+Never assert anything about code you have not read. A finding that depends on how another file behaves — that a caller passes an unchecked value, that no middleware already handles this, that an annotation is missing, that this value never reaches the database — is only reportable once you have read the code it depends on. Before you report a claim like that, send an ${EVIDENCE_AGENT} investigation with the ${EVIDENCE_TOOL} tool: state the single claim you want checked, and it comes back with file:line evidence. Read the evidence and decide yourself whether the problem holds; the investigator does not decide, and it never reports findings. Investigate the claims that carry a finding, not every passing thought.
 
 Every finding must be anchored on a line this change actually touches. Read as widely as you need — callers, other branches, unchanged files — but report the problem at the end of its causal chain on the changed side: the changed line that is wrong, or the changed line that depends on the unchanged code you object to. A finding anchored outside the diff is rejected back to you, and a finding you never re-anchor is lost.
 
@@ -391,11 +394,17 @@ async function run(request: ReviewerRequest): Promise<void> {
     },
   });
 
+  const thinkingLevel = sessionThinkingLevel(
+    request.runtimeModel.reasoning,
+    request.thinkingLevel,
+  );
+
   const prepared = await prepareAgentRuntime({
     agentDirPrefix: "multireviewer-agent-",
     worktreePath: request.worktreePath,
     runtimeModel: request.runtimeModel,
     systemPrompt: SYSTEM_PROMPT,
+    extensionPaths: [vendoredSubagentsPath()],
   });
   if ("failure" in prepared) {
     send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0, failure: prepared.failure });
@@ -403,16 +412,26 @@ async function run(request: ReviewerRequest): Promise<void> {
   }
   const { agentDir, apiKey, model, modelRuntime, settingsManager, resourceLoader } = prepared;
 
+  // 取证子代理的铺装(issue #226)。知识注入与 Reviewer 拿到的是同一批条目。
+  installEvidenceKit({
+    agentDir,
+    runtimeModel: request.runtimeModel,
+    thinkingLevel,
+    rules: request.rules ?? [],
+    facts: request.facts ?? [],
+  });
+
   const { session } = await createAgentSession({
     cwd: request.worktreePath,
     agentDir,
     model,
-    thinkingLevel: sessionThinkingLevel(request.runtimeModel.reasoning, request.thinkingLevel),
+    thinkingLevel,
     modelRuntime,
     // 本阶段没有历史时不注册复核工具:一个无事可复核的工具只会让模型多绕一圈。
     tools: [
       ...READ_ONLY_TOOLS,
       REPORT_FINDING_TOOL,
+      EVIDENCE_TOOL,
       ...(request.history.length === 0 ? [] : [REVIEW_PRIOR_FINDING_TOOL]),
     ],
     customTools: [

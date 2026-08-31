@@ -24,6 +24,15 @@ import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 import { numberedRead } from "./numbered-read.ts";
 
+/**
+ * 只读靠允许清单强制:未列出的工具 Pi 不会注册,模型没有写入的调用路径。两个子进程与
+ * 取证子代理的工具面同为这四样,分成三份只会让某一天其中一处悄悄多出一个能写的工具。
+ *
+ * `read` 在清单里,但两个子进程实际注册的是下面那个带行号的自定义实现——customTools
+ * 同名覆盖内建。取证子代理跑在另一个进程里,拿到的是 Pi 的内建 `read`。
+ */
+export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
+
 /** worktree 内文件的行数组。路径出圈或读不出来返回 undefined,交给调用方措辞。 */
 export function fileLines(worktreePath: string, file: string): string[] | undefined {
   const root = resolve(worktreePath);
@@ -133,6 +142,11 @@ export async function prepareAgentRuntime(options: {
   worktreePath: string;
   runtimeModel: RuntimeModel;
   systemPrompt: string;
+  /**
+   * 额外铺进这个会话的扩展(issue #226)。空 agentDir 的隔离对它开一个受控例外:路径由
+   * 调用方给出、指向镜像里 vendor 好的包,不来自宿主机的全局扩展目录。
+   */
+  extensionPaths?: readonly string[];
 }): Promise<AgentRuntime | { failure: string }> {
   // 空的 agentDir:不让宿主机上的全局扩展、skill、设置与凭据渗进会话。
   const agentDir = mkdtempSync(join(tmpdir(), options.agentDirPrefix));
@@ -158,6 +172,9 @@ export async function prepareAgentRuntime(options: {
     cwd: options.worktreePath,
     agentDir,
     settingsManager,
+    ...(options.extensionPaths === undefined || options.extensionPaths.length === 0
+      ? {}
+      : { additionalExtensionPaths: [...options.extensionPaths] }),
     systemPromptOverride: () => options.systemPrompt,
   });
   await resourceLoader.reload();

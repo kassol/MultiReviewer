@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import type { HistoryFinding, ReviewerEvent } from "../src/review/finding.ts";
+import { EVIDENCE_SPAWN_BUDGET, EVIDENCE_TOOL } from "../src/reviewer/evidence.ts";
 import { resolvePiBuiltinProviderTarget } from "../src/reviewer/catalog.ts";
 import { createPiReviewer } from "../src/reviewer/pi-reviewer.ts";
 import { createPiRuleAgent } from "../src/reviewer/rule-agent.ts";
@@ -208,5 +209,39 @@ test("真实模型经 propose_rule 推导出规范性的评审规则", { skip },
   for (const item of result.items) {
     assert.ok(item.statement.trim().length > 0);
     if (item.type === "rule") assert.ok(item.layer.trim().length > 0);
+  }
+});
+
+/**
+ * 取证子代理与真实模型之间的契约(issue #226,ADR 0021),桩测不到:模型会不会在跨文件
+ * 的因果主张前派取证、派出去的那一次能不能跑通,都要真模型跑一遍才知道。
+ *
+ * 夹具 `orders-api.js` 自己看不出问题:注入在 `db.js`、页码下界在 `pagination.js`,
+ * 只审这一个文件时,任何 Finding 都依赖没读过的代码——正是要取证的形状。
+ */
+test("真实模型对跨文件存疑场景派出取证", { skip }, async () => {
+  const reviewer = await smokeReviewer();
+
+  const events: ReviewerEvent[] = [];
+  const outcome = await reviewer.review({
+    range: { baseSha: "HEAD~1", headSha: "HEAD", files: ["src/orders-api.js"] },
+    worktreePath: FIXTURE,
+    commentable: { "src/orders-api.js": [{ start: 1, end: 11 }] },
+    history: [],
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.equal(outcome.failure, undefined, `Reviewer 失败: ${outcome.failure}`);
+
+  const evidence = events.filter(
+    (event) => event.kind === "tool_call" && event.tool === EVIDENCE_TOOL,
+  );
+  assert.ok(evidence.length > 0, "跨文件主张前一次取证都没派");
+  // 预算是硬闸:超过它的那几次会被拒,派得动说明铺装与凭据都对上了。
+  assert.ok(evidence.length <= EVIDENCE_SPAWN_BUDGET, "取证次数超出本轮预算");
+  for (const call of evidence) {
+    if (call.kind !== "tool_call") continue;
+    assert.equal(call.isError, false, `取证调用被拒: ${call.error}`);
+    assert.ok(call.resultLength > 0, "取证没有带回任何内容");
   }
 });
