@@ -15,7 +15,7 @@ Pi 本体不内建 subagent,官方注册表包 pi-subagents 以扩展形态提�
 ## Consequences
 
 - pi-subagents 是取证子代理的唯一实现路线,Considered Options 里的自写方案不是退路(评审复核 2026-08-31):headless SDK 会话下的加载验证若不成立,该实现阻塞并回到决策,允许在 pi-subagents 路线内调整铺装方式反复尝试,不自动改道任何替代实现。
-- 镜像构建新增 vendor 步骤;pi-subagents 跟版策略同 Pi 本体:按需升级、过差异、跑全量测试。
+- vendor 的实现形态是普通运行时依赖(package.json 钉版),镜像里既有的 `pnpm install --prod --frozen-lockfile` 即完成装载,运行时不联网装包;不需要单独的镜像构建步骤。pi-subagents 跟版策略同 Pi 本体:按需升级、过差异、跑全量测试。
 - 取证半径与落点分离成为明文约束:子代理可读全仓库,`report_finding` 的锚点必须落在 diff hunk 内(锚定收敛,见 ADR 0006 修订附记),锚不进的打回重锚,仍不进则丢弃并记轨迹,原 body 降级路径退役。
 - 子会话 token 用量并入所属 Reviewer 的统计。
 - 审查轨迹的事件模型要容纳嵌套来源(取证子会话),面板轨迹视图相应扩展。
