@@ -4556,7 +4556,11 @@ export function openStore(dbPath: string): Store {
       const models = new Map<number, string[]>();
       for (const row of attributionRows) {
         const id = Number(row["finding_id"]);
-        models.set(id, [...(models.get(id) ?? []), String(row["model"])]);
+        const list = models.get(id) ?? [];
+        const model = String(row["model"]);
+        // 同一模型的多条归属只算一枚(ADR 0015 修订),口径同轮次列表那份。
+        if (!list.includes(model)) list.push(model);
+        models.set(id, list);
       }
 
       type StageRow = {
@@ -5176,7 +5180,10 @@ export function openStore(dbPath: string): Store {
       for (const row of byAttribution) {
         const findingId = Number(row["finding_id"]);
         const list = attributionModels.get(findingId) ?? [];
-        list.push(String(row["model"]));
+        const model = String(row["model"]);
+        // 同一模型的多条归属(ADR 0015 修订)只贡献一枚模型标识:这份列表回答的是
+        // 「哪些模型报出它」,不是有几段归属。
+        if (!list.includes(model)) list.push(model);
         attributionModels.set(findingId, list);
       }
       const findings = new Map<number, RunListItem["findings"]>();

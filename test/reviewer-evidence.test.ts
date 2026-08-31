@@ -19,6 +19,7 @@ import {
   evidenceAgentDefinition,
   evidenceCeiling,
   evidenceTranscriptEvents,
+  evidenceUsageTotals,
   installEvidenceKit,
   vendoredSubagentsPath,
 } from "../src/reviewer/evidence.ts";
@@ -260,4 +261,48 @@ test("transcript 读不到或形状认不出时回空,取证本身照常", () =>
   assert.deepEqual(evidenceTranscriptEvents(toolResult(path)), [
     { kind: "assistant_message", text: "读到一半就断了" },
   ]);
+});
+
+test("铺装写下 asyncByDefault=false,agent 定义带 async:false——取证默认前台", () => {
+  const agentDir = install();
+  const config = JSON.parse(
+    readFileSync(join(agentDir, "extensions", "subagent", "config.json"), "utf8"),
+  );
+  assert.equal(config.asyncByDefault, false);
+  const definition = readFileSync(join(agentDir, "agents", `${EVIDENCE_AGENT}.md`), "utf8");
+  assert.match(definition, /^async: false$/m);
+});
+
+test("子会话用量从 transcript 逐消息累加,与 Reviewer 的 usage 同形", () => {
+  const path = writeTranscript([
+    {
+      recordType: "message",
+      role: "assistant",
+      text: "读调用链",
+      usage: { input: 100, output: 20, cacheRead: 3000, cacheWrite: 50, cost: {} },
+    },
+    { recordType: "tool_start", toolCallId: "c1", toolName: "read", argsPayload: "{}" },
+    { recordType: "tool_end", toolCallId: "c1", toolName: "read" },
+    {
+      recordType: "message",
+      role: "assistant",
+      text: "证据如下",
+      usage: { input: 200, output: 30, cacheRead: 4000, cacheWrite: 0, cost: {} },
+    },
+  ]);
+  assert.deepEqual(evidenceUsageTotals(toolResult(path)), {
+    inputTokens: 300,
+    outputTokens: 50,
+    cacheReadTokens: 7000,
+    cacheWriteTokens: 50,
+    totalTokens: 7400,
+  });
+});
+
+test("transcript 里一行 usage 都没有时用量回 undefined,不伪造零", () => {
+  const path = writeTranscript([
+    { recordType: "message", role: "assistant", text: "没带用量" },
+  ]);
+  assert.equal(evidenceUsageTotals(toolResult(path)), undefined);
+  assert.equal(evidenceUsageTotals(toolResult("/no/such/transcript.jsonl")), undefined);
 });

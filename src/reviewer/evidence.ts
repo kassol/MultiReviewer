@@ -155,6 +155,7 @@ export function evidenceAgentDefinition(options: {
 name: ${EVIDENCE_AGENT}
 description: Read-only investigation of one causal claim about this repository. Give it a single claim to check; it reads the code along the call chain and comes back with file:line evidence.
 tools: ${READ_ONLY_TOOLS.join(", ")}
+async: false
 model: inherit
 thinking: ${options.thinkingLevel}
 systemPromptMode: replace
@@ -195,6 +196,15 @@ export function installEvidenceKit(options: {
   writeFileSync(
     join(agentDir, "settings.json"),
     JSON.stringify({ subagents: { disableBuiltins: true } }, null, 2),
+  );
+  // 取证一律前台跑(Run 49 实测):异步派单只回一个任务 id,模型轮询不到结果就把同一
+  // 主张重跑一遍——双倍花销,而且异步那次的 transcript 不在返回里,过程与用量都进不了
+  // 轨迹。三道锁:这份 config 把省参调用的默认改成前台,agent frontmatter 的
+  // `async: false` 同义,系统提示再叮嘱一句。显式传 `async: true` 仍拦不住,接受。
+  mkdirSync(join(agentDir, "extensions", "subagent"), { recursive: true });
+  writeFileSync(
+    join(agentDir, "extensions", "subagent", "config.json"),
+    JSON.stringify({ asyncByDefault: false }, null, 2),
   );
   writeFileSync(
     join(agentDir, "models.json"),
@@ -240,7 +250,65 @@ type TranscriptRecord = {
   toolName?: unknown;
   argsPayload?: unknown;
   isError?: unknown;
+  /** pi-subagents 归一化后的用量:{ input, output, cacheRead, cacheWrite, cost }。 */
+  usage?: unknown;
 };
+
+/** 取证子会话的 token 用量,字段与 Reviewer 的 usage 同名同义。 */
+export type EvidenceUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+};
+
+/**
+ * 一次取证调用花掉的子会话用量(从 transcript 的逐消息 usage 累加)。
+ *
+ * 子代理跑在另一个 pi 进程里,主会话的 `getSessionStats` 数不到它——不补的话面板的
+ * Token 用量系统性少报,取证用得越多失真越大。一行 usage 都读不到时回 undefined,
+ * 与「取不到就不伪造」同一口径。
+ */
+export function evidenceUsageTotals(result: unknown): EvidenceUsage | undefined {
+  let found = false;
+  const total = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  for (const path of transcriptPaths(result)) {
+    let content: string;
+    try {
+      content = readFileSync(path, "utf8");
+    } catch {
+      continue;
+    }
+    for (const line of content.split("\n")) {
+      if (line.trim() === "") continue;
+      let record: TranscriptRecord;
+      try {
+        record = JSON.parse(line) as TranscriptRecord;
+      } catch {
+        continue;
+      }
+      const usage = record.usage as
+        | { input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown }
+        | null
+        | undefined;
+      if (usage === null || typeof usage !== "object") continue;
+      found = true;
+      total.input += typeof usage.input === "number" ? usage.input : 0;
+      total.output += typeof usage.output === "number" ? usage.output : 0;
+      total.cacheRead += typeof usage.cacheRead === "number" ? usage.cacheRead : 0;
+      total.cacheWrite += typeof usage.cacheWrite === "number" ? usage.cacheWrite : 0;
+    }
+  }
+  if (!found) return undefined;
+  return {
+    inputTokens: total.input,
+    outputTokens: total.output,
+    cacheReadTokens: total.cacheRead,
+    cacheWriteTokens: total.cacheWrite,
+    totalTokens: total.input + total.output + total.cacheRead + total.cacheWrite,
+  };
+}
 
 function text(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;

@@ -24,6 +24,7 @@ import {
   EVIDENCE_AGENT,
   EVIDENCE_TOOL,
   evidenceTranscriptEvents,
+  evidenceUsageTotals,
   installEvidenceKit,
   vendoredSubagentsPath,
 } from "./evidence.ts";
@@ -54,7 +55,7 @@ Report each problem by calling the report_finding tool exactly once per problem.
 
 The read tool prefixes every line with its line number, like \`12: code\`. These numbers are the only valid source for the line field of report_finding — copy the number, never count lines yourself. The prefix is not part of the file content. In the snippet field, copy the exact text of the line the problem starts on, without the line number prefix. Pick the most distinctive line of the problem, not a bare brace. A finding whose snippet does not match the file at the reported line is rejected back to you.
 
-Never assert anything about code you have not read. A finding that depends on how another file behaves — that a caller passes an unchecked value, that no middleware already handles this, that an annotation is missing, that this value never reaches the database — is only reportable once you have read the code it depends on. Before you report a claim like that, call the ${EVIDENCE_TOOL} tool with agent set to "${EVIDENCE_AGENT}" — that is the only agent available: state the single claim you want checked, and it comes back with file:line evidence. Read the evidence and decide yourself whether the problem holds; the investigator does not decide, and it never reports findings. Investigate the claims that carry a finding, not every passing thought.
+Never assert anything about code you have not read. A finding that depends on how another file behaves — that a caller passes an unchecked value, that no middleware already handles this, that an annotation is missing, that this value never reaches the database — is only reportable once you have read the code it depends on. Before you report a claim like that, call the ${EVIDENCE_TOOL} tool with agent set to "${EVIDENCE_AGENT}" — that is the only agent available: state the single claim you want checked, and the call waits and returns file:line evidence directly. Never pass async and never poll for status — one call, one answer. Read the evidence and decide yourself whether the problem holds; the investigator does not decide, and it never reports findings. Investigate the claims that carry a finding, not every passing thought.
 
 Every finding must be anchored on a line this change actually touches. Read as widely as you need — callers, other branches, unchanged files — but report the problem at the end of its causal chain on the changed side: the changed line that is wrong, or the changed line that depends on the unchanged code you object to. A finding anchored outside the diff is rejected back to you, and a finding you never re-anchor is lost.
 
@@ -466,8 +467,21 @@ async function run(request: ReviewerRequest): Promise<void> {
       toolName === EVIDENCE_TOOL ? evidenceTranscriptEvents(result) : [],
   );
 
+  // 取证子会话的用量累计。子代理在另一个 pi 进程里,主会话的统计数不到它,从每次
+  // 调用返回的 transcript 累加。异步派单的返回没有 transcript,数不到——异步已在铺装
+  // 层默认关掉(`installEvidenceKit`),模型显式强开的那一档接受少计。
+  const evidenceTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   session.subscribe((event) => {
     forwardEvent(event);
+    if (event.type === "tool_execution_end" && !event.isError && event.toolName === EVIDENCE_TOOL) {
+      const spent = evidenceUsageTotals((event as { result?: unknown }).result);
+      if (spent !== undefined) {
+        evidenceTokens.input += spent.inputTokens;
+        evidenceTokens.output += spent.outputTokens;
+        evidenceTokens.cacheRead += spent.cacheReadTokens;
+        evidenceTokens.cacheWrite += spent.cacheWriteTokens;
+      }
+    }
     // 只数 report_finding 的失败。read 或 grep 出错是模型在探索仓库时的正常摩擦,
     // 把它们算进来会让"契约失配"这个信号失去意义。
     if (
@@ -500,12 +514,19 @@ async function run(request: ReviewerRequest): Promise<void> {
   // 用量必须在 dispose 之前读:会话销毁后统计随之消失。只取 token 明细,`stats.cost`
   // 是 Pi 按自带价目表折算的估算,产品不记账,读它没有意义。
   const stats = session.getSessionStats();
+  // 取证子会话的用量并进同一份:它们花在同一次审查、同一份凭据上,分开记要动协议、
+  // 库与面板三层,而读的人要的是「这轮花了多少」。
   const usage = {
-    inputTokens: stats.tokens.input,
-    outputTokens: stats.tokens.output,
-    cacheReadTokens: stats.tokens.cacheRead,
-    cacheWriteTokens: stats.tokens.cacheWrite,
-    totalTokens: stats.tokens.total,
+    inputTokens: stats.tokens.input + evidenceTokens.input,
+    outputTokens: stats.tokens.output + evidenceTokens.output,
+    cacheReadTokens: stats.tokens.cacheRead + evidenceTokens.cacheRead,
+    cacheWriteTokens: stats.tokens.cacheWrite + evidenceTokens.cacheWrite,
+    totalTokens:
+      stats.tokens.total +
+      evidenceTokens.input +
+      evidenceTokens.output +
+      evidenceTokens.cacheRead +
+      evidenceTokens.cacheWrite,
   };
 
   session.dispose();
