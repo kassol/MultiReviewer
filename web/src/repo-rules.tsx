@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState } from "react";
 
 import { Cross2Icon, CrossCircledIcon } from "@radix-ui/react-icons";
-import { Badge, Callout, Checkbox, Dialog, IconButton, Select, Skeleton, Text, TextField, Tooltip } from "@radix-ui/themes";
+import { Badge, Callout, Checkbox, Dialog, IconButton, Select, Skeleton, Text, TextArea, TextField, Tooltip } from "@radix-ui/themes";
 
 import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
@@ -597,9 +597,12 @@ function RuleForm({
             ? "规范陈述"
             : `项目事实陈述(至多 ${FACT_STATEMENT_LIMIT} 字,已写 ${statement.length})`}
         </Text>
-        <TextField.Root
+        {/* 多行输入:陈述常常一句写不下,单行框在长句上没法回看。换行在注入侧压成
+            单行(worker-tools 的 oneLine),prompt 的列表结构不受影响。 */}
+        <TextArea
           size={{ initial: "3", sm: "2" }}
-          className="max-sm:min-h-11"
+          rows={3}
+          resize="vertical"
           value={draft.statement}
           onChange={(event) => onChange({ ...draft, statement: event.target.value })}
           autoFocus
@@ -819,7 +822,11 @@ function ProposalSection({
                 </Badge>
                 {/* 出处回溯(issue #214):这条提案是哪一次探索或反哺推出来的。 */}
                 {proposal.traceTaskId === null ? null : (
-                  <RuleTraceButton repoId={repoId} taskId={proposal.traceTaskId} />
+                  <RuleTraceButton
+                    repoId={repoId}
+                    taskId={proposal.traceTaskId}
+                    context={`来自提案:${proposal.statement}`}
+                  />
                 )}
               </span>
               {target(proposal) === null ? null : (
@@ -869,7 +876,11 @@ function ProposalSection({
                   <Badge color="gray" variant="soft">{TYPE_LABEL[proposal.type]}</Badge>
                   <Badge color="gray" variant="soft">{SOURCE_LABEL[proposal.source]}</Badge>
                   {proposal.traceTaskId === null ? null : (
-                    <RuleTraceButton repoId={repoId} taskId={proposal.traceTaskId} />
+                    <RuleTraceButton
+                      repoId={repoId}
+                      taskId={proposal.traceTaskId}
+                      context={`来自提案:${proposal.statement}`}
+                    />
                   )}
                 </span>
               </li>

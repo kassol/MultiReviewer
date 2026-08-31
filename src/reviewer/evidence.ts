@@ -172,6 +172,8 @@ Read as widely as the claim requires: callers, callees, sibling branches, config
 Answer with evidence, not with impressions. Every statement you make about the code must name the file and the line you read it on, written as \`path/to/file.ts:42\`. When you could not settle the claim, say exactly what you looked at and what is still missing — an honest "not established" is worth more than a guess.
 
 Keep the report short. The reviewer needs the answer and the lines it rests on, not a tour of the repository.
+
+Write the report and everything you say in Chinese — your words end up in a trace read by this repository's maintainers. Keep identifiers, file paths and code fragments in their original form.
 ${knowledge}`;
 }
 

@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { CrossCircledIcon } from "@radix-ui/react-icons";
-import { Badge, Callout, Dialog, Skeleton } from "@radix-ui/themes";
+import { Badge, Callout, Dialog, Skeleton, Text } from "@radix-ui/themes";
 
 import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
@@ -181,10 +181,13 @@ export function RuleTraceButton({
   repoId,
   taskId,
   label = "查看轨迹",
+  context,
 }: {
   repoId: number;
   taskId: number;
   label?: string;
+  /** 这份轨迹是从哪条记录点进来的。一次任务产多条提案,不带它就认不出对应关系。 */
+  context?: string;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -204,7 +207,14 @@ export function RuleTraceButton({
           size={{ initial: "2", sm: "3" }}
           className="flex flex-col overflow-hidden"
         >
-          <Dialog.Title size="4" mb="3" className="shrink-0 pr-9">知识轨迹</Dialog.Title>
+          <Dialog.Title size="4" mb={context === undefined ? "3" : "1"} className="shrink-0 pr-9">
+            知识轨迹
+          </Dialog.Title>
+          {context === undefined ? null : (
+            <Text as="p" size="1" color="gray" className="mb-3 shrink-0 line-clamp-2 pr-9">
+              {context}
+            </Text>
+          )}
           <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1">
             <RuleTrace repoId={repoId} taskId={taskId} />
           </div>

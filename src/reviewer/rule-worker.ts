@@ -22,6 +22,7 @@ import type {
 import { reviewerEventStream } from "./trace-events.ts";
 import {
   numberedReadTool,
+  oneLine,
   prepareAgentRuntime,
   READ_ONLY_TOOLS,
   sessionThinkingLevel,
@@ -42,6 +43,8 @@ Report each entry by calling the propose_rule tool exactly once per entry. Do no
 Order the entries by importance, most important first. Importance means how much a reviewer's judgement improves by having it. Report as many as this repository genuinely warrants and no more: every entry is confirmed by hand, so one that is obvious, that a linter or the type checker already enforces, or that no reviewer would act on costs the reader time and earns nothing.
 
 Write the statement field in Chinese. The reviewers of this repository read Chinese. Keep identifiers, file paths and code fragments in their original form — do not translate them.
+
+Narrate in Chinese too: everything you say between tool calls goes into a trace read by this repository's maintainers, so write those sentences in Chinese — one short line on what you are about to look at and what you are trying to establish, before each group of tool calls.
 
 The read tool prefixes every line with its line number, like \`12: code\`. The prefix is not part of the file content.`;
 
@@ -105,7 +108,7 @@ function existingSection(entries: readonly KnowledgeEntry[]): string {
  */
 function knowledgeBullet(entry: KnowledgeEntry): string {
   const scope = entry.scope === "" ? "whole repository" : entry.scope;
-  return `- [${entry.id}] (${entry.type}) (${scope}) ${entry.statement}`;
+  return `- [${entry.id}] (${entry.type}) (${scope}) ${oneLine(entry.statement)}`;
 }
 
 function rulePrompt(request: Pick<RuleWorkerRequest, "baselineSha" | "existingKnowledge">): string {

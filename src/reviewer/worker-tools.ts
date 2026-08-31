@@ -77,10 +77,18 @@ export function numberedReadTool(worktreePath: string) {
   });
 }
 
+/**
+ * 陈述压成单行再进 prompt:录入侧是多行输入框,而注入是一行一条的列表,
+ * 换行会把一条陈述拆成几条残句。
+ */
+export function oneLine(statement: string): string {
+  return statement.replace(/\s*\n+\s*/g, " ");
+}
+
 /** 一条规则:标识在最前,模型自报命中时抄的就是它;作用范围空串即全仓库。 */
 export function ruleBullet(rule: ReviewRule): string {
   const scope = rule.scope === "" ? "whole repository" : rule.scope;
-  return `- [${rule.id}] (${scope}) ${rule.statement}`;
+  return `- [${rule.id}] (${scope}) ${oneLine(rule.statement)}`;
 }
 
 /**
@@ -89,7 +97,7 @@ export function ruleBullet(rule: ReviewRule): string {
  */
 export function factBullet(fact: ProjectFact): string {
   const scope = fact.scope === "" ? "whole repository" : fact.scope;
-  return `- (${scope}) ${fact.statement}`;
+  return `- (${scope}) ${oneLine(fact.statement)}`;
 }
 
 /**

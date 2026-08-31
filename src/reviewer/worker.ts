@@ -59,6 +59,8 @@ Every finding must be anchored on a line this change actually touches. Read as w
 
 Write the title, description, impact and suggestion fields in Chinese. The reviewers of this repository read Chinese. Keep identifiers, file paths, and code fragments in their original form — do not translate them. The severity and category fields stay in the exact English values listed for them.
 
+Narrate in Chinese too: everything you say between tool calls goes into a review trace read by the same people, so write those sentences in Chinese — one short line on what you are about to check and why, before each group of tool calls.
+
 When the prompt lists findings reported earlier in this review stage, call review_prior_finding exactly once for every one of them that is still open, and never report one of them again through report_finding. When one of them is still there but its code was rewritten or moved, give the verdict present with the line and snippet of the place it sits now.`;
 
 /**
