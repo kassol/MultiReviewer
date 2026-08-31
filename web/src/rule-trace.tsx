@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { CrossCircledIcon } from "@radix-ui/react-icons";
 import { Badge, Callout, Dialog, Skeleton, Text } from "@radix-ui/themes";
@@ -124,7 +124,16 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
  * 一律接流,不先判「还在不在跑」:跑完的那些服务端回放完就发结束信号,判据因此在服务端
  * 只有一处,面板不必再猜一次。
  */
-export function RuleTrace({ repoId, taskId }: { repoId: number; taskId: number }) {
+export function RuleTrace({
+  repoId,
+  taskId,
+  highlight,
+}: {
+  repoId: number;
+  taskId: number;
+  /** 从某条提案点进来时,那条提案的陈述:命中的 rule_proposed 事件高亮并滚到视口。 */
+  highlight?: string;
+}) {
   const { events, query, stream } = useTrace<RuleTraceEvent>({
     queryKey: ["rule-trace", repoId, taskId],
     path: `/repos/${repoId}/rule-traces/${taskId}`,
@@ -132,6 +141,22 @@ export function RuleTrace({ repoId, taskId }: { repoId: number; taskId: number }
     // 轨迹跑完的同时产出也落库了,回头重读这个仓库的知识集。
     invalidateOnEnd: [["repo-rules", repoId]],
   });
+
+  /** 一次任务产多条提案共用同一份轨迹,不定位就要人肉眼扫哪条 rule_proposed 是它。 */
+  const isHit = (event: RuleTraceEvent): boolean => {
+    if (highlight === undefined || event.kind !== "rule_proposed") return false;
+    const item = event.payload["item"];
+    if (typeof item !== "object" || item === null) return false;
+    const statement = (item as Record<string, unknown>)["statement"];
+    return typeof statement === "string" && statement.trim() === highlight.trim();
+  };
+  // 只在首次渲染出命中条目时滚一次:实时流会不断追加事件,每次都滚会把人拽走。
+  const scrolled = useRef(false);
+  const hitRef = (node: HTMLLIElement | null): void => {
+    if (node === null || scrolled.current) return;
+    scrolled.current = true;
+    node.scrollIntoView({ block: "center" });
+  };
 
   return (
     <div className="flex flex-col gap-3">
@@ -153,15 +178,21 @@ export function RuleTrace({ repoId, taskId }: { repoId: number; taskId: number }
 
       {events.length === 0 ? null : (
         <ul className="flex flex-col overflow-hidden rounded-lg border border-overlay-line bg-surface">
-          {events.map((event) => (
-            <li
-              key={event.seq}
-              className="flex items-start gap-2 border-t border-overlay-line px-3 py-2 first:border-t-0"
-            >
-              <EventTime at={event.at} />
-              <div className="min-w-0 flex-1"><RuleEventBody event={event} /></div>
-            </li>
-          ))}
+          {events.map((event) => {
+            const hit = isHit(event);
+            return (
+              <li
+                key={event.seq}
+                ref={hit ? hitRef : undefined}
+                className={`flex items-start gap-2 border-t border-overlay-line px-3 py-2 first:border-t-0 ${
+                  hit ? "bg-accent-tint" : ""
+                }`}
+              >
+                <EventTime at={event.at} />
+                <div className="min-w-0 flex-1"><RuleEventBody event={event} /></div>
+              </li>
+            );
+          })}
         </ul>
       )}
 
@@ -182,12 +213,15 @@ export function RuleTraceButton({
   taskId,
   label = "查看轨迹",
   context,
+  highlight,
 }: {
   repoId: number;
   taskId: number;
   label?: string;
   /** 这份轨迹是从哪条记录点进来的。一次任务产多条提案,不带它就认不出对应关系。 */
   context?: string;
+  /** 点进来那条提案的陈述,用于在事件列表里高亮并定位对应的 rule_proposed。 */
+  highlight?: string;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -216,7 +250,11 @@ export function RuleTraceButton({
             </Text>
           )}
           <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1">
-            <RuleTrace repoId={repoId} taskId={taskId} />
+            <RuleTrace
+              repoId={repoId}
+              taskId={taskId}
+              {...(highlight === undefined ? {} : { highlight })}
+            />
           </div>
           <div className="mt-3 flex shrink-0 justify-end">
             <Dialog.Close>
