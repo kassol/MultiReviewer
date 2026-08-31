@@ -27,6 +27,7 @@ import {
   installEvidenceKit,
   vendoredSubagentsPath,
 } from "./evidence.ts";
+import { GIT_TOOL, gitTool } from "./git-tool.ts";
 import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
 import { reviewerEventStream } from "./trace-events.ts";
 import {
@@ -303,7 +304,7 @@ The following files changed. Review the changes in them, using the rest of the r
 
 ${files}
 
-Use \`git diff ${request.range.baseSha}..${request.range.headSha}\` reasoning from the files themselves — read each changed file and judge the current state of the code.
+Start with the git tool: \`diff ${request.range.baseSha}..${request.range.headSha} --stat\` for the shape of the change, then per-file diffs — that is the only way to see removed lines and deleted files. Then read the changed files and judge the current state of the code.
 ${history}`;
 }
 
@@ -436,6 +437,7 @@ async function run(request: ReviewerRequest): Promise<void> {
     // 本阶段没有历史时不注册复核工具:一个无事可复核的工具只会让模型多绕一圈。
     tools: [
       ...READ_ONLY_TOOLS,
+      GIT_TOOL,
       REPORT_FINDING_TOOL,
       EVIDENCE_TOOL,
       ...(request.history.length === 0 ? [] : [REVIEW_PRIOR_FINDING_TOOL]),
@@ -443,6 +445,7 @@ async function run(request: ReviewerRequest): Promise<void> {
     customTools: [
       reportFinding,
       numberedReadTool(request.worktreePath),
+      gitTool(request.worktreePath),
       ...(request.history.length === 0 ? [] : [reviewPriorFinding]),
     ],
     resourceLoader,
