@@ -122,6 +122,8 @@
 
 - 2026-08-31: 落地 issue #227(父 issue #219,ADR 0021)的面板部分。**审查轨迹里展开得开每一次取证的完整过程**。`run-trace.tsx` 的 `ToolCall` 多读一格 `payload.nested`(取证子会话自己的事件,由服务端随那次调用一起落库),非空时在参数展开之下多一个「取证过程(N 条)」按钮,默认折叠,展开后以左侧竖线缩进列出每条子事件;新增内部组件 `NestedEvent`,说话与工具调用两档各自复用外层已有的渲染(`ToolCall` 递归到自己),认不出的走 `UnknownEvent`。**没有新查询、没有新端点、没有新路由**:嵌套事件与外层事件在同一条 `GET /runs/{id}/trace` 与同一条 SSE 上,实时看与结束后回看因此天然是同一条路径。子事件没有自己的 `seq`(它们随派出它的那次调用一起落库),列表的 key 取索引。沿惯例无程序化测试(issue #26),交互走部署实例验收:进行中的轮次展开一个 Reviewer → 看到一次 `subagent` 调用 → 点开「取证过程」→ 看到子代理的 read / grep 与它最后那段带 file:line 的报告 → 收起再刷新页面,同一块仍在。
 
+- 2026-08-31: commit 选择器空态居中(部署后反馈)。`empty-state.tsx` 增加 `align` 档(缺省 `start` 零行为变化;`center` 加水平居中与 `text-center`),`commit-picker.tsx` 结果区七处空态经局部包装 `PickerEmpty` 统一走 `center + h-full justify-center`——结果区是弹窗里的一整块高容器,左上角贴边的一行式空态会让整块留白悬空。窄容器里的既有空态(评审记录、知识集等)不受影响。
+
 - 2026-08-31: 知识集弹窗条目分组降级(部署后反馈)。层标签、「项目事实」与「已废止」三处分组行从 `text-2xl font-bold` 降为 `text-xs font-semibold text-text-muted` 并附条目数——它们是条目分组,不是弹窗的功能区块,原字级压过弹窗标题、被读成页面小标题;「基点探索/知识草案」「修订提案」两个真正的区块标题保持原级,层级由此拉开。
 
 - 2026-08-31: 首页右栏工具行崩排修复与本轮指令文案收敛(部署后反馈)。`RerunPullRequest` 从工具行平铺三控件改成「重跑 PR」按钮 + Popover 表单(Popover 先例:commit-picker):指令输入框此前 `flex-1 basis-[220px]` 抢占剩余宽度把整行挤到换行,且自由文本框贴着筛选 chips 会被读成筛选器;表单内两字段带可见 label 与一次性提示,成功后关闭并清空。`RUN_DIRECTIVE_PLACEHOLDER` 从整句说明缩成纯示例「如:只报 P0」——placeholder 不再承担字段名义,三处入口的 label 各自承担。

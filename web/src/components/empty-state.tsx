@@ -8,6 +8,8 @@ type EmptyStateProps = {
   titleAs?: "h1" | "h2" | "h3" | "p";
   description?: ReactNode;
   action?: ReactNode;
+  /** `start` 是窄容器里的一行式反馈;整块高容器(如选择器的结果区)用 `center`。 */
+  align?: "start" | "center";
   className?: string;
 };
 
@@ -17,15 +19,16 @@ export function EmptyState({
   titleAs: Title = "p",
   description,
   action,
+  align = "start",
   className,
 }: EmptyStateProps) {
   return (
     <Flex
       direction="column"
-      align="start"
+      align={align}
       gap="1"
       role="status"
-      className={cn("py-4", className)}
+      className={cn("py-4", align === "center" && "text-center", className)}
     >
       <Text asChild size="3" weight="medium">
         <Title>{title}</Title>

@@ -19,6 +19,11 @@ import { fetchJson } from "./api.ts";
 import { CommitChip } from "./components/commit-chip.tsx";
 import { DateRangePicker, type DateRangeValue } from "./components/date-range-picker.tsx";
 import { EmptyState } from "./components/empty-state.tsx";
+
+/** 结果区的空态:这块是弹窗里的一整块高容器,贴左上角会让整块留白悬空,统一居中。 */
+function PickerEmpty(props: Parameters<typeof EmptyState>[0]) {
+  return <EmptyState align="center" className="h-full justify-center" {...props} />;
+}
 import { MasterListItem } from "./components/master-list-item.tsx";
 import { Button } from "./components/theme-button.ts";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "./components/ui/command";
@@ -775,29 +780,29 @@ export function CommitPicker({
       >
         {initialLoading ? <ResultsSkeleton /> : null}
         {queryError !== null && queryError !== undefined ? (
-          <EmptyState
+          <PickerEmpty
             title="取不到可选提交"
             description={queryError instanceof Error ? queryError.message : "请稍后重试。"}
           />
         ) : null}
         {!initialLoading && queryError === null && mode === "branch"
           && syncedBranches.data?.branches.length === 0 ? (
-            <EmptyState title="没有可选分支" description="仓库里还没有可用于范围审查的分支。" />
+            <PickerEmpty title="没有可选分支" description="仓库里还没有可用于范围审查的分支。" />
           ) : null}
         {!initialLoading && queryError === null && mode === "branch" && missingBranch !== undefined ? (
-          <EmptyState
+          <PickerEmpty
             title="原分支已不可用"
             description={`“${missingBranch}” 已消失或无法解析，请重新选择分支。已选的提交 SHA 不受影响。`}
           />
         ) : null}
         {!initialLoading && queryError === null && mode === "branch" && branch === null
           && syncedBranches.data !== undefined && syncedBranches.data.branches.length > 0 ? (
-            <EmptyState title="请选择分支" description="同步后原分支已不可用，请从上方重新选择。" />
+            <PickerEmpty title="请选择分支" description="同步后原分支已不可用，请从上方重新选择。" />
           ) : null}
 
         {!initialLoading && queryError === null && mode === "branch" && commitRows.length === 0
           && branch !== null && branchExists.data === true ? (
-            <EmptyState
+            <PickerEmpty
               title={legalOnlyIsSoleFilter
                 ? "没有合法后代"
                 : hasFilters
@@ -824,12 +829,12 @@ export function CommitPicker({
 
         {!initialLoading && queryError === null && mode === "tag" && tagRows.length === 0 ? (
           tags.data?.pages[0]?.hasUsableTags === false ? (
-            <EmptyState
+            <PickerEmpty
               title="没有可用 Tag"
               description="仓库没有指向提交的 Tag；指向 tree 或 blob 的 Tag 不会出现在这里。"
             />
           ) : (
-            <EmptyState
+            <PickerEmpty
               title={legalOnlyIsSoleFilter ? "没有合法后代" : "筛选后没有结果"}
               description={legalOnlyIsSoleFilter
                 ? "没有 Tag 指向可选的合法后代；可查看全部 Tag 以确认范围。"
