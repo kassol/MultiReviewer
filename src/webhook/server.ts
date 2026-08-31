@@ -4801,7 +4801,7 @@ function assignedRegisteredRepo(
 const RUN_DIRECTIVE_MAX = 500;
 
 /**
- * 三个发起重审的端点共用的本轮指令解析(CONTEXT.md 本轮指令,issue #225)。
+ * 四个发起入口共用的本轮指令解析(CONTEXT.md 本轮指令,issue #225)。
  *
  * 非必填:不给、给空串、给一串空白都是「这一轮没有指令」,返回 undefined。类型不对或
  * 超长回 400——静默截断会让人以为整句都进去了,而模型只看到半句。拒绝时响应已经发出去,
@@ -5371,6 +5371,7 @@ async function handleCreateRangeReview(
     base?: unknown;
     comparison?: unknown;
     confirm?: unknown;
+    directive?: unknown;
   } | null>(req, res);
   if (payload === undefined) return;
   if (
@@ -5393,6 +5394,9 @@ async function handleCreateRangeReview(
   if (!COMMIT_SHA.test(payload.base) || !COMMIT_SHA.test(payload.comparison)) {
     return sendJson(res, 400, { error: "base 与比较项都要是 7 到 40 位的 commit sha" });
   }
+  // 发起也是一次开跑,同样可以附本轮指令(issue #225):它只进随发起触发的这一轮。
+  const directive = readDirective(res, payload.directive);
+  if (directive === "rejected") return;
   const { owner, repo } = payload;
 
   // 目标在请求体里,过滤层看不到,这里自己判。
@@ -5518,6 +5522,7 @@ async function handleCreateRangeReview(
     plan,
     createdBy,
     id,
+    directive,
   );
 }
 

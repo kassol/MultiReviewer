@@ -118,6 +118,8 @@
 
 ## 变更日志
 
+- 2026-08-31: 落地 issue #225 的第四个入口的面板部分。`range-review-launch.tsx` 的发起表单在 commit 选择器下面多一格「本轮指令(选填)」:`TextArea`(`rows=2`,`maxLength=500`),placeholder 用 `repo-actions.tsx` 导出的 `RUN_DIRECTIVE_PLACEHOLDER`,下面一行提示「指令只作用于发起出来的这一轮;要长期生效的要求请录进知识集。」。留空即不带这一格,与另外三个入口同一套判断。
+
 - 2026-08-31: 随机面板前缀移除(团队决定)。**面板挂根路径**:`src/injected.ts` 删除,Router 不再设 `basepath`,`api.ts` 的基址直接是 `/api`;`vite.config.ts` 的注入插件删掉,dev proxy 从 `<前缀>/api` 改成 `/api`。`index.html` 由服务原样返回,与服务端的契约只剩 `/api` 下的 JSON 端点。理由:随机前缀只防扫描器枚举,门禁一直是账号与会话 cookie;内部部署下这层隐匿带来的运维摩擦大于收益。
 
 - 2026-08-31: 层标签退役(团队决定),已裁决提案行改说裁决短语。**层标签**:`repo-rules.tsx` 的 `ReviewRule` / `RuleProposal` / `RuleFormState` 各去掉 `layer`,`RuleForm` 删掉「层标签」那一格(连 `isRule` 分支整块)与它那一道 ready 校验,生效区、已废止区与草案区三处层徽章删除,`rule-trace.tsx` 的 `rule_proposed` 层徽章一并删。层标签不注入模型也不参与判定,留着只剩录入负担与徽章噪音;库列保留免迁移,详见 `src/AGENTS.md`。**裁决短语**:已裁决那一段的 `StatusBadge` 从「已采纳 / 已驳回」换成 `DECISION_LABEL` 按裁决 × 变更类型合成的一句话(如「驳回了废止提案,条目保留」),同行的 `CHANGE_LABEL` 徽章删除。原因是裁决的对象是提案而不是条目:「已驳回」加一枚「废止」徽章并排,人会读成「这条规则被驳回」,而被驳回的其实是废止它的那个提案。`CHANGE_LABEL` 待裁决那一段仍在用,保留。沿惯例无程序化测试,视觉由部署实例验收。

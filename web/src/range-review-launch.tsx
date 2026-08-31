@@ -2,11 +2,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { Cross2Icon } from "@radix-ui/react-icons";
-import { Dialog, IconButton, Text, TextField } from "@radix-ui/themes";
+import { Dialog, IconButton, Text, TextArea, TextField } from "@radix-ui/themes";
 
 import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
+import { RUN_DIRECTIVE_PLACEHOLDER } from "./repo-actions.tsx";
 import {
   CommitPicker,
   type CommitSelection,
@@ -64,6 +65,8 @@ export function RangeReviewLaunch({
  *
  * 同仓库同 base 已经有进行中的时候服务端回 409 并要求确认:那一档不当错误提示,改成
  * 把提交按钮换成「仍然发起」,再点一次带确认标志重发。
+ *
+ * 本轮指令(issue #225)选填,只进随发起触发的那一轮,与另外三个发起入口同一格。
  */
 function LaunchDialogContent({
   repo,
@@ -77,6 +80,7 @@ function LaunchDialogContent({
   const [base, setBase] = useState<CommitSelection | null>(null);
   const [baseTouched, setBaseTouched] = useState(false);
   const [comparison, setComparison] = useState<CommitSelection | null>(null);
+  const [directive, setDirective] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [needsConfirmation, setNeedsConfirmation] = useState(false);
 
@@ -106,6 +110,8 @@ function LaunchDialogContent({
 
   const create = useMutation({
     mutationFn: async (confirm: boolean) => {
+      // 留空即不带这一格,与另外三个入口同一套判断。
+      const trimmed = directive.trim();
       const response = await api("/range-reviews", {
         method: "POST",
         body: JSON.stringify({
@@ -115,6 +121,7 @@ function LaunchDialogContent({
           base: base?.sha ?? "",
           comparison: comparison?.sha ?? "",
           ...(confirm ? { confirm: true } : {}),
+          ...(trimmed === "" ? {} : { directive: trimmed }),
         }),
       });
       if (response.status === 409) {
@@ -192,13 +199,33 @@ function LaunchDialogContent({
           </Text>
         </div>
 
-        <div className="flex min-h-0 flex-1 px-3 py-3 sm:px-5 sm:py-4">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 px-3 py-3 sm:px-5 sm:py-4">
           <CommitPicker
             repo={repo}
             base={base}
             comparison={comparison}
             onPick={pick}
           />
+
+          <div className="shrink-0">
+            <Text as="label" htmlFor="range-review-directive" size="1" color="gray">
+              本轮指令(选填)
+            </Text>
+            <TextArea
+              id="range-review-directive"
+              size="2"
+              rows={2}
+              maxLength={500}
+              className="mt-1"
+              aria-describedby="range-review-directive-help"
+              placeholder={RUN_DIRECTIVE_PLACEHOLDER}
+              value={directive}
+              onChange={(event) => setDirective(event.target.value)}
+            />
+            <Text id="range-review-directive-help" as="p" size="1" color="gray" className="mt-1">
+              指令只作用于发起出来的这一轮;要长期生效的要求请录进知识集。
+            </Text>
+          </div>
         </div>
 
         <div className="shrink-0 border-t border-overlay-line bg-sunken px-4 py-3 sm:px-5">

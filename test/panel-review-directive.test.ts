@@ -1,7 +1,7 @@
 /**
  * 本轮指令(CONTEXT.md,issue #225):发起重审时附的一次性要求。
  *
- * 打在面板 API 的真实 HTTP 缝上(先例 `panel-range-review-rerun`):三个发起入口各带一次
+ * 打在面板 API 的真实 HTTP 缝上(先例 `panel-range-review-rerun`):四个发起入口各带一次
  * 指令,库里那一轮记下它,下一轮不带。断言只看外部可观察的行为。
  */
 import assert from "node:assert/strict";
@@ -54,13 +54,21 @@ function directives(h: PanelHarness, rangeReviewId?: number): (string | null)[] 
 
 type RangeReview = { id: number; comparisonSha: string; containerPullNumber: number | null };
 
-async function startRangeReview(h: PanelHarness): Promise<RangeReview> {
-  const response = await h.api("POST", "/range-reviews", {
+/** 发起范围审查的合法请求体。坏指令那几条只换 `directive` 一格。 */
+function launchBody(h: PanelHarness): Record<string, unknown> {
+  return {
     title: "范围审查标题",
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     base: h.repo.baseSha,
     comparison: h.repo.headSha,
+  };
+}
+
+async function startRangeReview(h: PanelHarness, directive?: string): Promise<RangeReview> {
+  const response = await h.api("POST", "/range-reviews", {
+    ...launchBody(h),
+    ...(directive === undefined ? {} : { directive }),
   });
   assert.equal(response.status, 202);
   const { rangeReview } = (await response.json()) as { rangeReview: RangeReview };
@@ -159,6 +167,46 @@ test("空白指令与不给指令同一档,超长与非字符串一律 400", asy
   assert.equal((await h.api("POST", "/rerun", { ...target, directive: "  \n " })).status, 202);
   await h.settledAtLeast(2);
   assert.deepEqual(directives(h), [null, null]);
+});
+
+test("发起范围审查附本轮指令:随发起触发的首轮记下它,下一轮不带", async () => {
+  const h = await registeredHarness();
+  const rangeReview = await startRangeReview(h, DIRECTIVE);
+
+  // 同一个阶段再跑一轮,这次不附指令。
+  assert.equal(
+    (await h.api("POST", "/rerun", { rangeReviewId: rangeReview.id })).status,
+    202,
+  );
+  await h.settledAtLeast(2);
+
+  assert.deepEqual(directives(h, rangeReview.id), [DIRECTIVE, null]);
+});
+
+test("发起范围审查的指令超长或非字符串一律 400,一轮都不开跑", async () => {
+  const h = await registeredHarness();
+
+  assert.equal(
+    (await h.api("POST", "/range-reviews", { ...launchBody(h), directive: "很".repeat(501) }))
+      .status,
+    400,
+  );
+  assert.equal(
+    (await h.api("POST", "/range-reviews", { ...launchBody(h), directive: 7 })).status,
+    400,
+  );
+  // 指令在碰 Forge 之前就判掉:一条分支、一个容器 PR、一轮 Review Run 都不该留下。
+  assert.deepEqual(h.memory.createdBranches, []);
+  assert.deepEqual(h.memory.createdPullRequests, []);
+  assert.equal(h.settled.length, 0);
+
+  // 全空白与不给同一档,发起照常走完。
+  assert.equal(
+    (await h.api("POST", "/range-reviews", { ...launchBody(h), directive: "  \n " })).status,
+    202,
+  );
+  await h.settledAtLeast(1);
+  assert.deepEqual(directives(h), [null]);
 });
 
 test("没有 review:rerun 的用户发不出带指令的重审", async () => {
