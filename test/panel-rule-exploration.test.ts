@@ -807,7 +807,9 @@ test("面板批量确认草案:勾选的进知识集,坏 body 400,勾空的那�
   const drafted = (await ruleSet(h, cookie)).draft;
   assert.equal(drafted.length, 3);
 
-  for (const body of [{ itemIds: [0] }, { itemIds: ["7"] }, { itemIds: [1, 1] }]) {
+  // 空数组当场拒:它落下去会确认出一个空版本并把整份草案删掉,而人真正想说的
+  // 「确认空知识集」是不给这一项。
+  for (const body of [{ itemIds: [] }, { itemIds: [0] }, { itemIds: ["7"] }, { itemIds: [1, 1] }]) {
     assert.equal(
       (await send(h, cookie, "POST", `${path}/rule-draft/confirm`, body)).status,
       400,

@@ -499,6 +499,9 @@ test("批量采纳一次只推进一个知识集版本;有一条落不下去就�
 
     // 空的一组不推版:一个空版本只会让版本轴多一格看不出来历的。
     assert.equal(store.acceptRuleProposals(84, []), undefined);
+    // 同一条报两遍会被落两遍,库层自己拒,不指望端点那一道。
+    assert.equal(store.acceptRuleProposals(84, [ids[0]!, ids[0]!]), undefined);
+    assert.equal(store.rejectRuleProposals(84, [ids[0]!, ids[0]!]), false);
     // 有一条不在待裁决队列里就整组不做,一行都不改。
     assert.equal(store.acceptRuleProposals(84, [...ids, 4242]), undefined);
     assert.deepEqual(

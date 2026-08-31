@@ -3436,7 +3436,10 @@ export function openStore(dbPath: string): Store {
 
     acceptRuleProposals(repoId, proposalIds) {
       // 空的一组不推版:没有要采纳的东西,一个空版本只会让版本轴多一格看不出来历的。
-      if (proposalIds.length === 0) return undefined;
+      // 同一条报两遍同样拒:它会被落两遍,而人真正想说的是「这几条」。
+      if (proposalIds.length === 0 || new Set(proposalIds).size !== proposalIds.length) {
+        return undefined;
+      }
       // 先全部算一遍再落:全成或全不成。部分成功会让人对着一份说不清哪些落了的队列继续裁决。
       const planned = proposalIds.map((id) => plannedAcceptance(repoId, id));
       if (planned.some((entry) => entry === undefined)) return undefined;
@@ -3460,7 +3463,9 @@ export function openStore(dbPath: string): Store {
     },
 
     rejectRuleProposals(repoId, proposalIds) {
-      if (proposalIds.length === 0) return false;
+      if (proposalIds.length === 0 || new Set(proposalIds).size !== proposalIds.length) {
+        return false;
+      }
       // 与批量采纳同一条口径:先全部认一遍,有一条不在待裁决队列里就一条都不改。
       if (proposalIds.some((id) => pendingProposal(repoId, id) === undefined)) return false;
       const at = new Date().toISOString();
