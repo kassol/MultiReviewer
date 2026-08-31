@@ -15,9 +15,24 @@ import { CommitPicker, type CommitSelection } from "./commit-picker.tsx";
 import { RuleTraceButton, SOURCE_LABEL } from "./rule-trace.tsx";
 import { THINKING_LEVEL_LABEL, type ThinkingLevel } from "./model-services.ts";
 
-/** `GET /repos/{id}/rules` 的一条评审规则(CONTEXT.md)。`scope` 空串即全仓库。 */
+/**
+ * 一条知识条目是评审规则还是项目事实(CONTEXT.md,ADR 0020)。封闭的两值枚举。
+ */
+type KnowledgeType = "rule" | "fact";
+
+/** 两型在面板上的名字。徽章、表单与说明句共用这一份,不各写各的。 */
+const TYPE_LABEL: Record<KnowledgeType, string> = { rule: "评审规则", fact: "项目事实" };
+
+/** 事实型陈述的字数上限,与服务端同一个数:超了服务端 400,表单先拦一道。 */
+const FACT_STATEMENT_LIMIT = 500;
+
+/**
+ * `GET /repos/{id}/rules` 的一条知识条目(CONTEXT.md)。`scope` 空串即全仓库;`layer`
+ * 属规则型,事实型是空串。
+ */
 type ReviewRule = {
   id: number;
+  type: KnowledgeType;
   scope: string;
   statement: string;
   layer: string;
@@ -43,6 +58,7 @@ type RuleExploration = {
  */
 type RuleProposal = {
   id: number;
+  type: KnowledgeType;
   change: "add" | "modify" | "retire";
   targetRuleId: number | null;
   scope: string;
@@ -84,16 +100,26 @@ type RuleModel = {
  * 提案三张表单共用它。它与 CONTEXT.md 的「知识草案」(`ruleSet.draft`)不是一回事,因此
  * 不叫 `RuleDraft`。
  */
-type RuleFormState = { id: number | null; scope: string; statement: string; layer: string };
+type RuleFormState = {
+  id: number | null;
+  type: KnowledgeType;
+  scope: string;
+  statement: string;
+  layer: string;
+};
 
-const BLANK_DRAFT: RuleFormState = { id: null, scope: "", statement: "", layer: "" };
+const BLANK_DRAFT: RuleFormState = { id: null, type: "rule", scope: "", statement: "", layer: "" };
 
-/** 规则三样的请求 body。三处写侧(生效规则、知识草案、提案的改后内容)同一个形状。 */
+/**
+ * 一条知识条目的请求 body。三处写侧(生效条目、知识草案、提案的改后内容)同一个形状。
+ * 层标签属规则型:事实型发空串,服务端同判。
+ */
 function ruleFieldsBody(form: RuleFormState): string {
   return JSON.stringify({
+    type: form.type,
     scope: form.scope.trim(),
     statement: form.statement.trim(),
-    layer: form.layer.trim(),
+    layer: form.type === "rule" ? form.layer.trim() : "",
   });
 }
 
@@ -310,7 +336,7 @@ function RuleSetDialogContent({
               size={{ initial: "3", sm: "2" }}
               onClick={() => setDraft(BLANK_DRAFT)}
             >
-              新增规则
+              新增知识条目
             </Button>
           </div>
         ) : (
@@ -328,15 +354,17 @@ function RuleSetDialogContent({
         && ruleSet.data.rules.length === 0
         && ruleSet.data.draft.length === 0 ? (
         <EmptyState
-          title="这个仓库还没有评审规则"
+          title="这个仓库还没有知识条目"
           titleAs="h3"
-          description="空知识集是合法状态:评审照常执行,只是没有规则注入。"
+          description="空知识集是合法状态:评审照常执行,只是没有知识注入。"
         />
       ) : null}
 
       {ruleSet.data === undefined ? null : (
         <div className="flex flex-col gap-3.5">
-          {byLayer(ruleSet.data.rules).map(([layer, rules]) => (
+          {/* 规则按层标签分组,事实自成一段(ADR 0020):层标签属规则型,事实没有可分的
+              组,混进层分组里只会多出一个空标签的组。 */}
+          {byLayer(ruleSet.data.rules.filter((entry) => entry.type === "rule")).map(([layer, rules]) => (
             <section key={layer} className="flex flex-col gap-2">
               <h3 className="text-2xl font-bold tracking-[-0.015em]">{layer}</h3>
               <ul className="overflow-hidden rounded-lg border border-card-line">
@@ -376,6 +404,52 @@ function RuleSetDialogContent({
               </ul>
             </section>
           ))}
+
+          {ruleSet.data.rules.every((entry) => entry.type === "rule") ? null : (
+            <section className="flex flex-col gap-2">
+              <div className="flex items-center gap-1">
+                <h3 className="text-2xl font-bold tracking-[-0.015em]">{TYPE_LABEL.fact}</h3>
+                <HelpTooltip content="事实是 Reviewer 的判断依据,本身不产 Finding;与代码矛盾时以代码为准。" />
+              </div>
+              <ul className="overflow-hidden rounded-lg border border-card-line">
+                {ruleSet.data.rules
+                  .filter((entry) => entry.type === "fact")
+                  .map((fact) => (
+                    <li key={fact.id} className="border-t border-line px-4 py-3 first:border-t-0">
+                      <div className="flex items-start justify-between gap-2">
+                        <Text as="p" size="2">{fact.statement}</Text>
+                        {canWrite ? (
+                          <div className="flex shrink-0 gap-1">
+                            <Button
+                              variant="soft"
+                              color="gray"
+                              size={{ initial: "3", sm: "1" }}
+                              onClick={() => setDraft({ ...fact, id: fact.id })}
+                            >
+                              修改
+                            </Button>
+                            <Button
+                              variant="soft"
+                              color="gray"
+                              size={{ initial: "3", sm: "1" }}
+                              disabled={change.isPending}
+                              onClick={() => change.mutate({ retire: fact.id })}
+                            >
+                              废止
+                            </Button>
+                          </div>
+                        ) : null}
+                      </div>
+                      <span className="mt-1.5 inline-block">
+                        <Badge color="gray" variant="soft">
+                          {fact.scope === "" ? "全仓库" : fact.scope}
+                        </Badge>
+                      </span>
+                    </li>
+                  ))}
+              </ul>
+            </section>
+          )}
         </div>
       )}
 
@@ -388,8 +462,12 @@ function RuleSetDialogContent({
                 <Text as="p" size="2" color="gray" className="line-through">
                   {rule.statement}
                 </Text>
-                <span className="mt-1.5 inline-block">
-                  <Badge color="gray" variant="soft">{rule.layer}</Badge>
+                <span className="mt-1.5 inline-flex flex-wrap gap-1.5">
+                  {/* 事实没有层标签,这里改用两型的名字:废止的那一条也要说得出它是哪一型。 */}
+                  <Badge color="gray" variant="soft">{TYPE_LABEL[rule.type]}</Badge>
+                  {rule.layer === "" ? null : (
+                    <Badge color="gray" variant="soft">{rule.layer}</Badge>
+                  )}
                 </span>
               </li>
             ))}
@@ -418,8 +496,14 @@ function RuleSetDialogContent({
 }
 
 /**
- * 新增与修改共用的一张表(issue #203)。规范陈述与层标签是两个必填面——空陈述不构成
- * 规范,空层标签在这个弹窗里分不了组;作用范围留空即全仓库,与服务端同一判据。
+ * 新增与修改共用的一张表(issue #203、#221)。两型同一张表(ADR 0020),第一格就是选
+ * 哪一型,后面几格跟着换:
+ *
+ * - **评审规则**要规范陈述与层标签(空陈述不构成规范,空层标签在这个弹窗里分不了组);
+ * - **项目事实**只要那一句可核查的陈述,层标签整格不出现——它属规则型,给了服务端也
+ *   不收;陈述另有字数上限,事实是一句话不是一段说明。
+ *
+ * 作用范围两型都可以留空,空即全仓库。这里的必填判据与服务端逐条对应。
  */
 function RuleForm({
   draft,
@@ -437,7 +521,10 @@ function RuleForm({
   onCancel: () => void;
   onSubmit: () => void;
 }) {
-  const ready = draft.statement.trim() !== "" && draft.layer.trim() !== "";
+  const statement = draft.statement.trim();
+  const isRule = draft.type === "rule";
+  const overLimit = !isRule && statement.length > FACT_STATEMENT_LIMIT;
+  const ready = statement !== "" && !overLimit && (!isRule || draft.layer.trim() !== "");
   return (
     <form
       className="mb-3 flex flex-col gap-2 rounded-lg border border-card-line p-3"
@@ -446,8 +533,29 @@ function RuleForm({
         if (ready && !busy) onSubmit();
       }}
     >
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-1">
+          <Text as="label" htmlFor="knowledge-type" size="1" color="gray">类型</Text>
+          <HelpTooltip content="评审规则说的是代码应当怎样,违反它即是一条 Finding;项目事实说的是这个仓库实际怎样,只作模型的判断依据,本身不产 Finding。" />
+        </div>
+        <Select.Root
+          value={draft.type}
+          onValueChange={(next) => onChange({ ...draft, type: next as KnowledgeType })}
+          size={{ initial: "3", sm: "2" }}
+        >
+          <Select.Trigger id="knowledge-type" />
+          <Select.Content position="popper">
+            <Select.Item value="rule">{TYPE_LABEL.rule}</Select.Item>
+            <Select.Item value="fact">{TYPE_LABEL.fact}</Select.Item>
+          </Select.Content>
+        </Select.Root>
+      </div>
       <label className="flex flex-col gap-1">
-        <Text size="1" color="gray">规范陈述</Text>
+        <Text size="1" color={overLimit ? "red" : "gray"}>
+          {isRule
+            ? "规范陈述"
+            : `事实陈述(至多 ${FACT_STATEMENT_LIMIT} 字,已写 ${statement.length})`}
+        </Text>
         <TextField.Root
           size={{ initial: "3", sm: "2" }}
           className="max-sm:min-h-11"
@@ -456,15 +564,18 @@ function RuleForm({
           autoFocus
         />
       </label>
-      <label className="flex flex-col gap-1">
-        <Text size="1" color="gray">层标签</Text>
-        <TextField.Root
-          size={{ initial: "3", sm: "2" }}
-          className="max-sm:min-h-11"
-          value={draft.layer}
-          onChange={(event) => onChange({ ...draft, layer: event.target.value })}
-        />
-      </label>
+      {/* 层标签属规则型:事实型整格不出现,而不是摆一个填了也不收的空格。 */}
+      {isRule ? (
+        <label className="flex flex-col gap-1">
+          <Text size="1" color="gray">层标签</Text>
+          <TextField.Root
+            size={{ initial: "3", sm: "2" }}
+            className="max-sm:min-h-11"
+            value={draft.layer}
+            onChange={(event) => onChange({ ...draft, layer: event.target.value })}
+          />
+        </label>
+      ) : null}
       <label className="flex flex-col gap-1">
         <Text size="1" color="gray">作用范围(glob,留空即全仓库)</Text>
         <TextField.Root
@@ -550,6 +661,7 @@ function ProposalSection({
                       onClick={() =>
                         onEdit({
                           id: proposal.id,
+                          type: proposal.type,
                           scope: proposal.scope,
                           statement: proposal.statement,
                           layer: proposal.layer,
@@ -729,7 +841,7 @@ function ExplorationSection({
             向草案新增
           </Button>
           <Button size={{ initial: "3", sm: "2" }} disabled={busy} onClick={onConfirm}>
-            {ruleSet.draft.length === 0 ? "确认空知识集" : "确认这组规则"}
+            {ruleSet.draft.length === 0 ? "确认空知识集" : "确认这组知识"}
           </Button>
           {ruleSet.draft.length === 0 ? (
             <HelpTooltip content="确认空知识集即宣布这个仓库没有规则:审查随之放行,评审不注入任何规则。之后再探索,产出排进修订提案队列。" />
@@ -771,8 +883,12 @@ function ExplorationSection({
                   </Button>
                 </div>
               </div>
-              <span className="mt-1.5 inline-flex gap-1.5">
-                <Badge color="gray" variant="soft">{rule.layer}</Badge>
+              <span className="mt-1.5 inline-flex flex-wrap gap-1.5">
+                {/* 草案里两型并列(ADR 0020),确认时一起进知识集,徽章要分得出哪条是哪型。 */}
+                <Badge color="gray" variant="soft">{TYPE_LABEL[rule.type]}</Badge>
+                {rule.layer === "" ? null : (
+                  <Badge color="gray" variant="soft">{rule.layer}</Badge>
+                )}
                 <Badge color="gray" variant="soft">
                   {rule.scope === "" ? "全仓库" : rule.scope}
                 </Badge>

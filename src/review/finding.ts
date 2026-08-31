@@ -148,6 +148,21 @@ export type ReviewRule = {
 };
 
 /**
+ * 注入 Reviewer 的一条项目事实(CONTEXT.md 项目事实,issue #221)。与评审规则取自同一个
+ * 知识集版本、按同一条作用范围路由,注入时另起一段:它是判断依据,本身不构成 Finding。
+ *
+ * `id` 不进 prompt——事实不是 `ruleId` 的合法取值,给出标识只会请模型编一个填进来。它仍
+ * 随注入一路带到子进程:`report_finding` 要凭它认出指向事实的标识并打回。
+ */
+export type ProjectFact = {
+  id: number;
+  /** 作用范围,glob;空串即全仓库。 */
+  scope: string;
+  /** 那一句可核查的事实陈述。 */
+  statement: string;
+};
+
+/**
  * Reviewer 经 `report_finding` 报出的、尚未归一化的条目。
  *
  * `severity` 与 `category` 是宽松字符串:用字面量联合强制时模型会自造词汇导致调用
@@ -270,6 +285,12 @@ export type ReviewerInput = {
    * 路由,一条只管某个目录的规则不该进不含那个目录的批次。空知识集给空数组。
    */
   rules?: readonly ReviewRule[];
+  /**
+   * 本轮冻结的知识集版本里、作用范围命中这一批文件的项目事实,加上全仓库事实
+   * (issue #221)。路由与 `rules` 同一条口径;事实集为空给空数组,prompt 因此不渲染
+   * 事实段,与升级前逐字一致。
+   */
+  facts?: readonly ProjectFact[];
   /**
    * 收这个 Reviewer 的过程事件(issue #171),编排层一定传,一条即写一条轨迹。
    * 声明成可选是给直接调 `review` 的调用方留的余地:不看过程的地方不必造一个空回调。

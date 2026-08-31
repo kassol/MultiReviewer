@@ -33,6 +33,7 @@ import type {
   ReviewIntent,
   Reviewer,
   ReviewerOutcome,
+  ProjectFact,
   ReviewRule,
   Severity,
 } from "./finding.ts";
@@ -73,8 +74,10 @@ export type ReviewRunPlan = Readonly<{
   reviewerPins: readonly ReviewRunReviewerPin[];
   /** 本轮冻结的知识集版本(issue #204)。仓库还没确认过知识集时为 null。 */
   ruleSetVersion: number | null;
-  /** 那一版的生效规则全体,按批次路由前的全集。 */
+  /** 那一版的生效评审规则全体,按批次路由前的全集。 */
   rules: readonly ReviewRule[];
+  /** 那一版的生效项目事实全体(issue #221),同样是路由前的全集。 */
+  facts: readonly ProjectFact[];
 }>;
 
 /** 从启动时的配置快照生成一次运行计划。复制 Reviewer 列表,使组合的后续改动只影响下一轮。 */
@@ -82,8 +85,15 @@ export function createReviewRunPlan(
   reviewers: readonly Reviewer[],
   maxChangedLinesPerBatch: number,
   reviewerPins: readonly ReviewRunReviewerPin[],
-  /** 本轮冻结的知识集(issue #204)。规则与模型服务版本同律,一并在开跑前定死。 */
-  ruleSet: { version: number | null; rules: readonly ReviewRule[] } = {
+  /**
+   * 本轮冻结的知识集(issue #204)。两型一体冻结(issue #221):同一个版本、同一次读取,
+   * 与模型服务版本同律,一并在开跑前定死。
+   */
+  ruleSet: {
+    version: number | null;
+    rules: readonly ReviewRule[];
+    facts?: readonly ProjectFact[];
+  } = {
     version: null,
     rules: [],
   },
@@ -94,6 +104,7 @@ export function createReviewRunPlan(
     reviewerPins: Object.freeze([...reviewerPins]),
     ruleSetVersion: ruleSet.version,
     rules: Object.freeze([...ruleSet.rules]),
+    facts: Object.freeze([...(ruleSet.facts ?? [])]),
   });
 }
 
@@ -116,6 +127,8 @@ export type ReviewRunDeps = {
   ruleSetVersion?: number | null;
   /** 本轮冻结的那一版规则全体。不传即空知识集,注入与这一票之前逐字一致。 */
   rules?: readonly ReviewRule[];
+  /** 本轮冻结的那一版项目事实全体(issue #221)。不传即没有事实可依。 */
+  facts?: readonly ProjectFact[];
 };
 
 export type ReviewRunResult = {
@@ -998,15 +1011,16 @@ function scopePattern(scope: string): RegExp {
 }
 
 /**
- * 这一批要注入的评审规则(issue #204):作用范围命中该批任一文件的,加上全仓库规则。
+ * 这一批要注入的知识条目(issue #204、#221):作用范围命中该批任一文件的,加上全仓库
+ * 条目。评审规则与项目事实各调一次,两型同一条路由口径。
  *
- * 全仓库规则不看文件:空作用范围就是「这个仓库的每一处都算」,末批为空文件集时同样给。
- * 保持传入顺序,规则在各批之间的呈现次序因此稳定。
+ * 全仓库条目不看文件:空作用范围就是「这个仓库的每一处都算」,末批为空文件集时同样给。
+ * 保持传入顺序,条目在各批之间的呈现次序因此稳定。
  */
-export function rulesForBatch(
-  rules: readonly ReviewRule[],
+export function knowledgeForBatch<T extends { scope: string }>(
+  rules: readonly T[],
   files: readonly string[],
-): readonly ReviewRule[] {
+): readonly T[] {
   return rules.filter((rule) => {
     if (rule.scope === "") return true;
     const pattern = scopePattern(rule.scope);
@@ -1149,9 +1163,10 @@ export async function runReview(
       for (const [index, files] of batches.entries()) {
         // 批次序号从 1 起,直接呈现给看轨迹的人,与 `incompleteCoverage` 同一口径。
         const batch = { index: index + 1, total: batches.length, files };
-        // 规则按作用范围路由到批次(issue #204):只管某个目录的规则不进不含那个目录的
-        // 批次,批内每个 Reviewer 拿到的是同一份。
-        const rules = rulesForBatch(deps.rules ?? [], files);
+        // 知识条目按作用范围路由到批次(issue #204):只管某个目录的条目不进不含那个
+        // 目录的批次,批内每个 Reviewer 拿到的是同一份。两型同一条口径(issue #221)。
+        const rules = knowledgeForBatch(deps.rules ?? [], files);
+        const facts = knowledgeForBatch(deps.facts ?? [], files);
         trace.run("batch_started", batch);
         perBatch.push(
           await Promise.all(
@@ -1166,6 +1181,7 @@ export async function runReview(
                 history,
                 intent,
                 rules,
+                facts,
                 onEvent: (event) => {
                   const { kind, ...payload } = event;
                   trace.reviewer(reviewer.model, kind, payload);

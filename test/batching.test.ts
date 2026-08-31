@@ -423,7 +423,7 @@ test("新增行以 `++ ` 起头时不被读成文件头,该文件的规模照常
   assert.equal(run["batch_count"], 2);
 });
 
-test("每批只注入 glob 命中该批文件的规则,全仓库规则每批都给", async () => {
+test("每批只注入 glob 命中该批文件的知识条目,全仓库条目每批都给,两型同一条口径", async () => {
   const { cache, db, forge } = setup({ "src/a.ts": 60, "src/b.ts": 30, "src/c.ts": 60 });
   const reviewer = scriptedReviewer("model-a", []);
 
@@ -440,14 +440,27 @@ test("每批只注入 glob 命中该批文件的规则,全仓库规则每批都�
       { id: 3, scope: "src/c.*", statement: "c 里不写 console" },
       { id: 4, scope: "docs/**", statement: "文档要跟着改" },
     ],
+    // 事实与规则同一条路由(issue #221):一条只描述某个目录的事实不进不含它的批次。
+    facts: [
+      { id: 11, scope: "", statement: "这个服务只跑在内网" },
+      { id: 12, scope: "src/a.ts", statement: "a 的调用方只有 b" },
+      { id: 13, scope: "docs/**", statement: "文档由另一个仓库生成" },
+    ],
   });
 
-  // a(60)+b(30) 是第一批,c 自成第二批。规则跟着批次里的文件走,一条都不该串批。
+  // a(60)+b(30) 是第一批,c 自成第二批。条目跟着批次里的文件走,一条都不该串批。
   assert.deepEqual(
     reviewer.calls.map((call) => call.rules.map((rule) => rule.id)),
     [
       [1, 2],
       [1, 3],
+    ],
+  );
+  assert.deepEqual(
+    reviewer.calls.map((call) => call.facts.map((fact) => fact.id)),
+    [
+      [11, 12],
+      [11],
     ],
   );
 });

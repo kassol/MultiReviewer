@@ -93,6 +93,7 @@ import {
   openStore,
   toReviewRule,
   type FindingDispositionTarget,
+  type KnowledgeType,
   type ModelReference,
   type ModelServiceRecord,
   type ModelServiceVersionCommit,
@@ -738,8 +739,8 @@ async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<Re
     deps.buildReviewers(plans),
     snapshot.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
     plans.map(reviewerPin),
-    // 知识集与模型服务版本在同一次读事务里冻结(issue #204)。
-    { version: snapshot.ruleSetVersion, rules: snapshot.rules },
+    // 知识集与模型服务版本在同一次读事务里冻结(issue #204),两型一体(issue #221)。
+    { version: snapshot.ruleSetVersion, rules: snapshot.rules, facts: snapshot.facts },
   );
 }
 
@@ -5919,11 +5920,28 @@ function handleRuleTraceStream(
 }
 
 /**
- * 一条评审规则的三样(issue #203)。规范陈述与层标签是规则的两个必填面——空陈述不构成
- * 规范,空层标签在面板上分不了组;作用范围可以不给,空值即全仓库。
+ * 一条事实型陈述最多多少字(ADR 0020)。事实是一句可核查的陈述,不是一段说明:全量注入
+ * 的体积靠治理而不是靠服务端截断,但录入这一道要拦住把整篇架构文档粘进来的那种写法。
+ * 服务端只拒收,不截断——截断出来的半句事实比没有更糟。
+ */
+const FACT_STATEMENT_LIMIT = 500;
+
+/** body 里那个 `type` 认不得时回的话。两型是封闭枚举(ADR 0020)。 */
+const BAD_KNOWLEDGE_TYPE = 'type 只收 "rule"(评审规则)或 "fact"(项目事实)';
+
+/** 事实型陈述超长时回的话。 */
+const FACT_TOO_LONG = `项目事实的陈述不能超过 ${FACT_STATEMENT_LIMIT} 字`;
+
+/**
+ * 一条知识条目由人填的那几样(issue #203、#221)。`type` 是两型之一,缺省即评审规则——
+ * 升级前的面板只写得出规则,缺省因此与它逐字等价。
  *
- * 手写规则、草案增改与提案的改后内容读的是同一个形状,因此同一个解析:`noneMeansUnchanged`
- * 为 true 时三样一个都没给回 `null`(采纳提案的「按队列里那份原样采纳」),否则按缺失校验。
+ * 两型的必填面不同:**规则**要规范陈述与层标签(空陈述不构成规范,空层标签在面板上分不
+ * 了组);**事实**只要那一句陈述,层标签属规则型(ADR 0020),事实型一律空串,陈述另有
+ * 长度上限。作用范围两型都可以不给,空值即全仓库。
+ *
+ * 手写条目、草案增改与提案的改后内容读的是同一个形状,因此同一个解析:`noneMeansUnchanged`
+ * 为 true 时几样一个都没给回 `null`(采纳提案的「按队列里那份原样采纳」),否则按缺失校验。
  * 返回 `undefined` 即已经回过 400。
  */
 async function readRuleFields(
@@ -5931,26 +5949,39 @@ async function readRuleFields(
   res: ServerResponse,
   options: { error: string; noneMeansUnchanged: boolean },
 ): Promise<ReviewRuleInput | null | undefined> {
-  const payload = await readJson<{ scope?: unknown; statement?: unknown; layer?: unknown } | null>(
-    req,
-    res,
-  );
+  const payload = await readJson<
+    { type?: unknown; scope?: unknown; statement?: unknown; layer?: unknown } | null
+  >(req, res);
   if (payload === undefined) return undefined;
   if (
     options.noneMeansUnchanged &&
     (payload === null ||
-      (payload.scope === undefined && payload.statement === undefined && payload.layer === undefined))
+      (payload.type === undefined &&
+        payload.scope === undefined &&
+        payload.statement === undefined &&
+        payload.layer === undefined))
   ) {
     return null;
   }
+  const rawType = payload?.type ?? "rule";
+  if (rawType !== "rule" && rawType !== "fact") {
+    sendJson(res, 400, { error: BAD_KNOWLEDGE_TYPE });
+    return undefined;
+  }
   const text = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
-  const input = {
+  const input: ReviewRuleInput = {
+    type: rawType,
     scope: text(payload?.scope),
     statement: text(payload?.statement),
-    layer: text(payload?.layer),
+    // 层标签属规则型:事实型给了也不收,库里那一行因此不会留着一个说不通的标签。
+    layer: rawType === "rule" ? text(payload?.layer) : "",
   };
-  if (input.statement === "" || input.layer === "") {
+  if (input.statement === "" || (rawType === "rule" && input.layer === "")) {
     sendJson(res, 400, { error: options.error });
+    return undefined;
+  }
+  if (rawType === "fact" && input.statement.length > FACT_STATEMENT_LIMIT) {
+    sendJson(res, 400, { error: FACT_TOO_LONG });
     return undefined;
   }
   return input;
@@ -5961,7 +5992,7 @@ async function readRuleInput(
   res: ServerResponse,
 ): Promise<ReviewRuleInput | undefined> {
   const input = await readRuleFields(req, res, {
-    error: 'body 要是 {"scope": "…", "statement": "…", "layer": "…"} 形状的 JSON,规范陈述与层标签不能为空',
+    error: 'body 要是 {"type": "rule" | "fact", "scope": "…", "statement": "…", "layer": "…"} 形状的 JSON,陈述不能为空,评审规则的层标签也不能为空',
     noneMeansUnchanged: false,
   });
   return input ?? undefined;
@@ -6042,10 +6073,12 @@ async function handleRuleModels(res: ServerResponse, deps: WebhookServerDeps): P
  * 再按重要性截断为至多 30 条——上限的本质是人一次确认得完、不麻木,由服务端把住,
  * 不指望模型自己数得准。
  */
-function usableRuleItems(items: readonly RuleAgentItem[]): RuleAgentItem[] {
+function usableRuleItems(items: readonly RuleAgentItem[]): UsableRuleItem[] {
   return items
     .map((item) => ({
       ...item,
+      // 基点探索这一票只产出评审规则,两型产出是后续票的事(issue #222)。
+      type: "rule" as const,
       scope: item.scope.trim(),
       statement: item.statement.trim(),
       layer: item.layer.trim(),
@@ -6053,6 +6086,9 @@ function usableRuleItems(items: readonly RuleAgentItem[]): RuleAgentItem[] {
     .filter((item) => item.statement !== "" && item.layer !== "")
     .slice(0, RULE_LIMIT);
 }
+
+/** 收窄之后的一条:agent 给的那几样,加上服务端判定的两型之一。 */
+type UsableRuleItem = RuleAgentItem & { type: KnowledgeType };
 
 /**
  * 探索产出到修订提案的映射(issue #207)。知识集非空时 agent 提的是对照现有规则的变更,
@@ -6062,7 +6098,7 @@ function usableRuleItems(items: readonly RuleAgentItem[]): RuleAgentItem[] {
  * 队列里那条要说得出它废止的是什么。
  */
 function proposalsFromItems(
-  items: readonly RuleAgentItem[],
+  items: readonly UsableRuleItem[],
   activeRules: readonly ReviewRuleRecord[],
   origin: Pick<RuleProposalInput, "source" | "sourceNote" | "traceTaskId">,
 ): RuleProposalInput[] {
@@ -6073,6 +6109,7 @@ function proposalsFromItems(
     if (target === undefined) {
       if (item.retire === true) continue;
       proposals.push({
+        type: item.type,
         change: "add",
         targetRuleId: null,
         scope: item.scope,
@@ -6082,8 +6119,11 @@ function proposalsFromItems(
       });
       continue;
     }
+    // 废止那一档的内容取目标条目的原样,连它是规则还是事实一起:队列里那条要说得出
+    // 它废止的是什么。
     const content = item.retire === true ? target : item;
     proposals.push({
+      type: content.type,
       change: item.retire === true ? "retire" : "modify",
       targetRuleId: target.id,
       scope: content.scope,
@@ -6499,7 +6539,7 @@ function readProposalEdit(
   res: ServerResponse,
 ): Promise<ReviewRuleInput | null | undefined> {
   return readRuleFields(req, res, {
-    error: '改后的内容要是 {"scope": "…", "statement": "…", "layer": "…"} 形状的 JSON,规范陈述与层标签不能为空',
+    error: '改后的内容要是 {"type": "rule" | "fact", "scope": "…", "statement": "…", "layer": "…"} 形状的 JSON,陈述不能为空,评审规则的层标签也不能为空',
     noneMeansUnchanged: true,
   });
 }

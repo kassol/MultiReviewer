@@ -139,6 +139,7 @@ test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,
   try {
     assert.notEqual(
       store.addReviewRule(GITEA_REPO.id, {
+        type: "rule",
         scope: "",
         statement: "入参要在边界上校验",
         layer: "安全",

@@ -8,7 +8,7 @@ import {
   createReviewRunPlan,
   INTENT_BODY_CHARS,
   INTENT_COMMIT_LIMIT,
-  rulesForBatch,
+  knowledgeForBatch,
   runReview,
 } from "../src/review/run.ts";
 import {
@@ -745,7 +745,7 @@ test("作用范围的 glob 语义:* 不跨目录,** 跨任意层且可为零层"
 
   for (const [scope, file, expected] of cases) {
     assert.equal(
-      rulesForBatch([{ id: 1, scope, statement: "s" }], [file]).length === 1,
+      knowledgeForBatch([{ id: 1, scope, statement: "s" }], [file]).length === 1,
       expected,
       `作用范围 ${scope} 对 ${file} 的判定不对`,
     );
@@ -802,6 +802,7 @@ test("空知识集时不注入规则,Review Run 不记知识集版本", async ()
   );
 
   assert.deepEqual(reviewer.calls[0]!.rules, []);
+  assert.deepEqual(reviewer.calls[0]!.facts, []);
 
   const db2 = new DatabaseSync(db.path, { readOnly: true });
   try {

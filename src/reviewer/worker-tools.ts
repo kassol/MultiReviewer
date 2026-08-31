@@ -18,7 +18,7 @@ import {
 import { Type } from "typebox";
 
 import type { ThinkingLevel } from "../config.ts";
-import type { ReviewRule } from "../review/finding.ts";
+import type { ProjectFact, ReviewRule } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV } from "./env.ts";
 import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
@@ -72,6 +72,30 @@ export function numberedReadTool(worktreePath: string) {
 export function ruleBullet(rule: ReviewRule): string {
   const scope = rule.scope === "" ? "whole repository" : rule.scope;
   return `- [${rule.id}] (${scope}) ${rule.statement}`;
+}
+
+/**
+ * 一条项目事实(issue #221):只有作用范围与那一句陈述,**不给标识**。事实不是 `ruleId`
+ * 的合法取值,列出标识只会请模型编一个填进来。
+ */
+export function factBullet(fact: ProjectFact): string {
+  const scope = fact.scope === "" ? "whole repository" : fact.scope;
+  return `- (${scope}) ${fact.statement}`;
+}
+
+/**
+ * 模型自报的规则标识指向了一条项目事实时的打回理由(issue #221)。事实是判断依据,
+ * 本身不构成 Finding,拿它当命中的规则报出来说明这条 Finding 的依据就不成立——静默置空
+ * 会让模型以为自己报对了,理由要回给它,让它改报或不报。
+ *
+ * 与锚定打回同一条口径:返回一句话交给模型,`report_finding` 本身不抛错。
+ */
+export function factRuleIdRejection(
+  ruleId: number | undefined,
+  factIds: ReadonlySet<number>,
+): string | undefined {
+  if (ruleId === undefined || !factIds.has(ruleId)) return undefined;
+  return `rejected: ${ruleId} is a project fact, not a review rule. Facts are grounds for judgement and are never findings by themselves. Report this problem without ruleId, or cite the review rule it actually violates.`;
 }
 
 /**

@@ -28,6 +28,8 @@ const PASSWORD = "rules-test-password";
 
 type RuleResponse = {
   id: number;
+  /** 两型之一(ADR 0020,issue #221)。存量条目全部读成规则型。 */
+  type: "rule" | "fact";
   scope: string;
   statement: string;
   layer: string;
@@ -64,6 +66,9 @@ function seedRepo(h: PanelHarness, repoId: number, owner: string, repo: string):
 /**
  * 落一条基点探索出处的评审规则。那条写入链路是后续票的范围,这里按 schema 直接写。
  * 顺带补上版本 1 那一行:有规则就说明这个仓库确认过知识集(issue #206 的门禁判据)。
+ *
+ * **INSERT 里没有 `type` 这一列**:升级前落的行就是这个样子,补列的 DEFAULT 因此就是
+ * ADR 0020 的存量迁移本身——读出来的每一条都是规则型。
  */
 function seedRule(
   dbPath: string,
@@ -262,6 +267,8 @@ test("面板按仓库读知识集:分配内可读,未确认的仓库版本为 nu
     body.rules.map(({ id, ...rule }) => rule),
     [
       {
+        // 存量行没有这一列,补列的 DEFAULT 把它读成规则型(ADR 0020 的存量迁移)。
+        type: "rule",
         scope: "src/api/**",
         statement: "入参要在边界上校验",
         layer: "安全",
@@ -308,7 +315,7 @@ test("手工新增、修改与废止各推进一版,历史版本的快照仍取�
     );
     // 注册不落版本(issue #206),第一次手工变更就是这个仓库的第一版。
     assert.equal(
-      store.addReviewRule(91, { scope: "", statement: "公开函数要有类型标注", layer: "架构" }),
+      store.addReviewRule(91, { type: "rule", scope: "", statement: "公开函数要有类型标注", layer: "架构" }),
       1,
     );
     const added = store.getRuleSet(91)!;
@@ -320,6 +327,7 @@ test("手工新增、修改与废止各推进一版,历史版本的快照仍取�
     const ruleId = added.rules[0]!.id;
     assert.equal(
       store.updateReviewRule(91, ruleId, {
+        type: "rule",
         scope: "src/**",
         statement: "导出的函数要有类型标注",
         layer: "架构",
@@ -333,9 +341,9 @@ test("手工新增、修改与废止各推进一版,历史版本的快照仍取�
     ]);
 
     // 没注册的仓库、不在这个仓库里的规则与已废止的规则都写不动。
-    assert.equal(store.addReviewRule(999, { scope: "", statement: "x", layer: "y" }), undefined);
+    assert.equal(store.addReviewRule(999, { type: "rule", scope: "", statement: "x", layer: "y" }), undefined);
     assert.equal(
-      store.updateReviewRule(91, 4242, { scope: "", statement: "x", layer: "y" }),
+      store.updateReviewRule(91, 4242, { type: "rule", scope: "", statement: "x", layer: "y" }),
       undefined,
     );
     assert.equal(store.retireReviewRule(91, ruleId), undefined);
@@ -388,7 +396,13 @@ test("面板手工增删改规则:knowledge:write 放行,版本逐次推进,废�
     RuleSetResponse;
   assert.equal(afterCreate.version, 1);
   assert.deepEqual(afterCreate.rules.map(({ id, ...rule }) => rule), [
-    { scope: "src/api/**", statement: "入参要在边界上校验", layer: "安全", origin: "manual" },
+    {
+      type: "rule",
+      scope: "src/api/**",
+      statement: "入参要在边界上校验",
+      layer: "安全",
+      origin: "manual",
+    },
   ]);
   const ruleId = afterCreate.rules[0]!.id;
 
@@ -486,7 +500,7 @@ test("Review Run 的启动快照冻结知识集版本与当时那组规则,之�
       true,
     );
     assert.equal(
-      store.addReviewRule(91, { scope: "src/**", statement: "src 下不写 any", layer: "工程" }),
+      store.addReviewRule(91, { type: "rule", scope: "src/**", statement: "src 下不写 any", layer: "工程" }),
       1,
     );
 
@@ -498,13 +512,157 @@ test("Review Run 的启动快照冻结知识集版本与当时那组规则,之�
     );
 
     // 已开跑的那一轮拿着上面这份快照跑完,知识集在它跑的过程中变了也不跟。
-    assert.equal(store.addReviewRule(91, { scope: "", statement: "新规则", layer: "工程" }), 2);
+    assert.equal(store.addReviewRule(91, { type: "rule", scope: "", statement: "新规则", layer: "工程" }), 2);
     assert.equal(snapshot.ruleSetVersion, 1);
     assert.equal(snapshot.rules.length, 1);
 
     const next = store.getReviewRunSnapshot(91);
     assert.equal(next.ruleSetVersion, 2);
     assert.equal(next.rules.length, 2);
+  } finally {
+    store.close();
+  }
+});
+
+test("面板手填项目事实:与规则同一套端点,层标签留空,版本照样推进", async () => {
+  const h = await startReadyPanelHarness(cleanups);
+  const alpha = seedRepo(h, 101, "acme", "alpha");
+  const cookie = await ruleWriterCookie(h, "rule-writer", [alpha]);
+
+  const created = await send(h, cookie, "POST", `/repos/${alpha}/rules`, {
+    type: "fact",
+    scope: "src/api/**",
+    // 层标签属规则型:事实型给了也不收,库里那一行不会留着一个说不通的标签。
+    layer: "安全",
+    statement: "全局拦截器覆盖 /api 下的全部路由",
+  });
+  assert.equal(created.status, 201);
+  assert.deepEqual(await created.json(), { version: 1 });
+
+  const afterCreate = (await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as
+    RuleSetResponse;
+  assert.deepEqual(afterCreate.rules.map(({ id, ...entry }) => entry), [
+    {
+      type: "fact",
+      scope: "src/api/**",
+      statement: "全局拦截器覆盖 /api 下的全部路由",
+      layer: "",
+      origin: "manual",
+    },
+  ]);
+  const factId = afterCreate.rules[0]!.id;
+
+  // 改与废止走的是同一条路径:两型不各有一套端点(ADR 0020)。
+  const updated = await send(h, cookie, "PUT", `/repos/${alpha}/rules/${factId}`, {
+    type: "fact",
+    scope: "",
+    statement: "全局拦截器覆盖全部路由",
+  });
+  assert.equal(updated.status, 200);
+  assert.deepEqual(await updated.json(), { version: 2 });
+
+  const retired = await send(h, cookie, "DELETE", `/repos/${alpha}/rules/${
+    ((await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as RuleSetResponse).rules[0]!.id
+  }`);
+  assert.equal(retired.status, 200);
+  assert.deepEqual(await retired.json(), { version: 3 });
+
+  const afterRetire = (await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as
+    RuleSetResponse;
+  assert.deepEqual(afterRetire.rules, []);
+  assert.deepEqual(afterRetire.retired.map((entry) => [entry.type, entry.statement]), [
+    ["fact", "全局拦截器覆盖 /api 下的全部路由"],
+    ["fact", "全局拦截器覆盖全部路由"],
+  ]);
+});
+
+test("事实型录入的两道校验:陈述超长与认不得的 type 各回 400,一版都不推进", async () => {
+  const h = await startReadyPanelHarness(cleanups);
+  const alpha = seedRepo(h, 101, "acme", "alpha");
+  const cookie = await ruleWriterCookie(h, "rule-writer", [alpha]);
+
+  // 事实是一句可核查的陈述,不是一段说明:服务端只拒收,不截断——截断出来的半句事实
+  // 比没有更糟。
+  const tooLong = await send(h, cookie, "POST", `/repos/${alpha}/rules`, {
+    type: "fact",
+    statement: "长".repeat(501),
+  });
+  assert.equal(tooLong.status, 400);
+  assert.match(((await tooLong.json()) as { error: string }).error, /500/);
+
+  // 恰好到上限的收得下:上限是 500 字,不是 499。
+  const atLimit = await send(h, cookie, "POST", `/repos/${alpha}/rules`, {
+    type: "fact",
+    statement: "长".repeat(500),
+  });
+  assert.equal(atLimit.status, 201);
+
+  // 两型是封闭枚举:第三个取值要新开一份 ADR,端点这里先拦下。
+  for (const type of ["knowledge", "", 7]) {
+    const response = await send(h, cookie, "POST", `/repos/${alpha}/rules`, {
+      type,
+      statement: "随便一句",
+      layer: "架构",
+    });
+    assert.equal(response.status, 400, JSON.stringify(type));
+  }
+
+  // 空陈述两型同判:事实同样不能是空的。
+  assert.equal(
+    (await send(h, cookie, "POST", `/repos/${alpha}/rules`, { type: "fact", statement: " " }))
+      .status,
+    400,
+  );
+
+  const ruleSet = (await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as RuleSetResponse;
+  // 只有那一条合法的落了下去,四次被拒的一版都没推进。
+  assert.equal(ruleSet.version, 1);
+  assert.equal(ruleSet.rules.length, 1);
+});
+
+test("启动快照按 type 把两型分开,同一个知识集版本一起冻结", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  try {
+    assert.equal(
+      store.registerRepo({ repoId: 92, owner: "acme", repo: "typed", generation: 1, key: "k" }),
+      true,
+    );
+    assert.equal(
+      store.addReviewRule(92, {
+        type: "rule",
+        scope: "src/**",
+        statement: "src 下不写 any",
+        layer: "工程",
+      }),
+      1,
+    );
+    assert.equal(
+      store.addReviewRule(92, {
+        type: "fact",
+        scope: "",
+        statement: "全局拦截器覆盖全部路由",
+        layer: "",
+      }),
+      2,
+    );
+
+    const snapshot = store.getReviewRunSnapshot(92);
+    // 一个版本,两份注入:规则带标识(模型自报命中的凭据),事实同样带标识但不进 prompt。
+    assert.equal(snapshot.ruleSetVersion, 2);
+    assert.deepEqual(
+      snapshot.rules.map((rule) => [rule.scope, rule.statement]),
+      [["src/**", "src 下不写 any"]],
+    );
+    assert.deepEqual(
+      snapshot.facts.map((fact) => [fact.scope, fact.statement]),
+      [["", "全局拦截器覆盖全部路由"]],
+    );
+
+    // 纯规则集的事实那一份是空数组,行为与升级前逐字一致。
+    assert.equal(store.retireReviewRule(92, snapshot.facts[0]!.id), 3);
+    assert.deepEqual(store.getReviewRunSnapshot(92).facts, []);
   } finally {
     store.close();
   }

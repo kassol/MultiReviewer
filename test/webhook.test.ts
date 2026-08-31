@@ -268,6 +268,7 @@ test("知识集还没确认的仓库:投递照常受理但不跑 Run,知识确�
   try {
     assert.notEqual(
       store.addRuleDraftItem(REPO_ID, {
+        type: "rule",
         scope: "",
         statement: "公开函数要有类型标注",
         layer: "架构",

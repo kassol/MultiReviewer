@@ -5,6 +5,7 @@ import { anchorVerdict } from "../src/reviewer/anchor.ts";
 import { normalizeFinding, normalizeVerdict } from "../src/reviewer/normalize.ts";
 import { redactModelCredential, reviewerEnv } from "../src/reviewer/env.ts";
 import { reviewPrompt } from "../src/reviewer/worker.ts";
+import { factRuleIdRejection } from "../src/reviewer/worker-tools.ts";
 
 const RAW = {
   file: "src/db.js",
@@ -219,6 +220,64 @@ test("注入的评审规则进 prompt,每条带标识与作用范围", () => {
   assert.match(prompt, /禁止在 src 下写 any/);
   // 规则标识是模型自报命中的凭据,prompt 必须说清它要怎么带回来。
   assert.match(prompt, /ruleId/);
+});
+
+test("空事实集不渲染事实段,prompt 与升级前逐字一致", () => {
+  const rules = [{ id: 7, scope: "", statement: "对外接口的入参一律在边界处校验" }];
+  const withoutFacts = reviewPrompt({ range: PROMPT_RANGE, history: [], rules });
+  const withEmptyFacts = reviewPrompt({ range: PROMPT_RANGE, history: [], rules, facts: [] });
+
+  assert.equal(withEmptyFacts, withoutFacts);
+  assert.equal(/fact/i.test(withoutFacts), false);
+  // 两型各判各的:只有事实、没有规则的知识集同样渲染得出事实段。
+  const factsOnly = reviewPrompt({
+    range: PROMPT_RANGE,
+    history: [],
+    facts: [{ id: 3, scope: "", statement: "全局拦截器覆盖 /api 下的全部路由" }],
+  });
+  assert.equal(/review rules/i.test(factsOnly), false);
+  assert.match(factsOnly, /全局拦截器覆盖 \/api 下的全部路由/);
+});
+
+test("注入的项目事实自成一段:不带标识,写明它是判断依据、不产 Finding、以代码为准", () => {
+  const prompt = reviewPrompt({
+    range: PROMPT_RANGE,
+    history: [],
+    rules: [{ id: 7, scope: "", statement: "对外接口的入参一律在边界处校验" }],
+    facts: [
+      { id: 41, scope: "src/api/**", statement: "全局拦截器覆盖 /api 下的全部路由" },
+      { id: 42, scope: "", statement: "这个服务只跑在内网" },
+    ],
+  });
+
+  assert.match(prompt, /全局拦截器覆盖 \/api 下的全部路由/);
+  assert.match(prompt, /src\/api\/\*\*/);
+  assert.match(prompt, /这个服务只跑在内网/);
+  // 事实不进 ruleId 的合法取值:列出标识只会请模型编一个填进来。
+  assert.equal(prompt.includes("[41]"), false);
+  assert.equal(prompt.includes("[42]"), false);
+  // 三句语义缺一不可(ADR 0020):判断依据、不产 Finding、与代码矛盾以代码为准。
+  assert.match(prompt, /grounds for judgement/);
+  assert.match(prompt, /never a finding/);
+  assert.match(prompt, /the code wins/);
+  // 规则段照旧,两段并列。
+  assert.match(prompt, /\[7\]/);
+});
+
+test("模型拿事实标识当 ruleId 报出时被打回,理由回给模型", () => {
+  const facts = new Set([41, 42]);
+
+  const rejected = factRuleIdRejection(41, facts);
+  assert.notEqual(rejected, undefined);
+  // 打回要说清两件事:这是一条事实,以及接下来该怎么报。
+  assert.match(rejected!, /project fact/);
+  assert.match(rejected!, /without ruleId/);
+
+  // 指向规则的标识与压根没给标识的都照常放行,校验仍由 `normalizeFinding` 那一道做。
+  assert.equal(factRuleIdRejection(7, facts), undefined);
+  assert.equal(factRuleIdRejection(undefined, facts), undefined);
+  // 一条事实都没注入时任何标识都拦不住。
+  assert.equal(factRuleIdRejection(41, new Set()), undefined);
 });
 
 test("模型自报的规则标识经服务端校验:本轮注入过的留下,对不上的置空", () => {

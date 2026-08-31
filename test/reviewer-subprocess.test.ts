@@ -449,6 +449,31 @@ process.on("message", (request) => {
   assert.equal(JSON.parse(empty.findings[0]!.description), "absent");
 });
 
+test("本轮注入的项目事实原样进任务;空事实集不带这一项", async () => {
+  const path = worker(`
+process.on("message", (request) => {
+  process.send({
+    kind: "finding",
+    raw: { ...${JSON.stringify(RAW)}, description: JSON.stringify(request.facts ?? "absent") },
+  });
+  process.send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0 });
+  process.exit(0);
+});
+`);
+
+  const facts = [{ id: 41, scope: "src/api/**", statement: "全局拦截器覆盖 /api 下的全部路由" }];
+  const injected = await runInChild(path, CONFIG, input({ facts }));
+  assert.deepEqual(JSON.parse(injected.findings[0]!.description), facts);
+
+  // 两型各判各的:只有规则、没有事实时任务里同样没有这一项,prompt 与升级前逐字一致。
+  const empty = await runInChild(
+    path,
+    CONFIG,
+    input({ rules: [{ id: 5, scope: "", statement: "改动要带测试" }], facts: [] }),
+  );
+  assert.equal(JSON.parse(empty.findings[0]!.description), "absent");
+});
+
 test("模型自报的规则标识经服务端校验后才成为 Finding 的一部分", async () => {
   const path = worker(`
 process.on("message", () => {

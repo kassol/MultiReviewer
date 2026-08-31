@@ -18,6 +18,7 @@ import type {
 import type {
   Finding,
   HistoryFinding,
+  ProjectFact,
   ReviewIntent,
   ReviewRange,
   ReviewRule,
@@ -163,8 +164,8 @@ type ScriptedFinding = Omit<Finding, "model" | "title" | "impact" | "suggestion"
 /**
  * 返回预设 Finding 的 Reviewer 桩。
  *
- * `calls` 连注入的历史、意图上下文与本批的评审规则一起记下来:这几份注入是这个桩
- * 唯一能观测的输入(ADR 0016、issue #201、issue #204)。
+ * `calls` 连注入的历史、意图上下文与本批的评审规则、项目事实一起记下来:这几份注入是
+ * 这个桩唯一能观测的输入(ADR 0016、issue #201、issue #204、issue #221)。
  * `verdicts` 给定这一轮的复核结论;不给即一条都没给,编排层按「无法判断」落库。
  * `events` 是这一轮按顺序发出的过程事件(issue #171),在返回结果之前逐条发出。
  */
@@ -184,6 +185,7 @@ export function scriptedReviewer(
     history: readonly HistoryFinding[];
     intent: ReviewIntent | undefined;
     rules: readonly ReviewRule[];
+    facts: readonly ProjectFact[];
   }[];
 } {
   const calls: {
@@ -192,12 +194,13 @@ export function scriptedReviewer(
     history: readonly HistoryFinding[];
     intent: ReviewIntent | undefined;
     rules: readonly ReviewRule[];
+    facts: readonly ProjectFact[];
   }[] = [];
   return {
     model,
     calls,
-    review: async ({ range, worktreePath, history, intent, rules, onEvent }) => {
-      calls.push({ range, worktreePath, history, intent, rules: rules ?? [] });
+    review: async ({ range, worktreePath, history, intent, rules, facts, onEvent }) => {
+      calls.push({ range, worktreePath, history, intent, rules: rules ?? [], facts: facts ?? [] });
       for (const event of extra?.events ?? []) onEvent?.(event);
       return {
         model,

@@ -11,7 +11,7 @@ import { after, test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
 import { hashPassword } from "../src/panel/password.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore, type ReviewRuleInput } from "../src/review/store.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
 import { makeDbPath } from "./support/git-fixture.ts";
 import {
@@ -57,8 +57,12 @@ type RuleSetResponse = {
   draft: DraftItemResponse[];
 };
 
-function item(statement: string, layer = "架构", scope = ""): RuleAgentItem {
-  return { scope, statement, layer };
+/**
+ * 一条探索产出。既当脚本化 agent 的产出,也直接落进草案,因此两个形状都满足;这一票的
+ * 探索只产出评审规则(issue #221),`type` 恒为 rule。
+ */
+function item(statement: string, layer = "架构", scope = ""): RuleAgentItem & ReviewRuleInput {
+  return { type: "rule", scope, statement, layer };
 }
 
 /** 固定产出的规则 agent。脚本化实现,与脚本化 Reviewer 同一个位置上的注入。 */

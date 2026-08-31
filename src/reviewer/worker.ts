@@ -13,6 +13,7 @@ import { Type } from "typebox";
 
 import type {
   HistoryFinding,
+  ProjectFact,
   RawFinding,
   ReviewIntent,
   ReviewRule,
@@ -22,6 +23,8 @@ import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
 import { reviewerEventStream } from "./trace-events.ts";
 import {
+  factBullet,
+  factRuleIdRejection,
   fileLines,
   numberedReadTool,
   prepareAgentRuntime,
@@ -225,20 +228,44 @@ function rulesSection(rules: readonly ReviewRule[]): string {
   ].join("\n");
 }
 
+/**
+ * 这个仓库既定的项目事实(CONTEXT.md 项目事实,issue #221)。三句语义缺一不可:它是
+ * 判断依据(省下你本来只能猜的那些)、它本身不产 Finding、它与代码矛盾时以代码为准。
+ *
+ * 与规则段并列而不合并:两者对模型的要求相反——规则是拿来判违反的,事实是拿来免于臆断
+ * 的,写在同一段里模型会把事实也当成可违反的标准去报。
+ */
+function factsSection(facts: readonly ProjectFact[]): string {
+  return [
+    "",
+    "This repository has also agreed on a set of project facts: statements about how this codebase, its architecture and its environment actually are. Use them as grounds for judgement — they tell you what you would otherwise have to assume or verify yourself.",
+    "A fact is never a finding on its own. Do not report a fact as a problem, and do not report code merely for relying on one. Facts carry no ids: never pass one as ruleId.",
+    "When the code contradicts a fact, the code wins — judge the code as you read it. Say that the fact no longer holds only inside a finding whose problem is that contradiction.",
+    "Each fact is listed with the paths it describes in parentheses.",
+    "",
+    ...facts.map(factBullet),
+  ].join("\n");
+}
+
 export function reviewPrompt(
-  request: Pick<ReviewerRequest, "range" | "history" | "intent" | "rules">,
+  request: Pick<ReviewerRequest, "range" | "history" | "intent" | "rules" | "facts">,
 ): string {
   const files = request.range.files.map((f) => `- ${f}`).join("\n");
   const history =
     request.history.length === 0 ? "" : `\n${historySection(request.history)}\n`;
   const intent = request.intent === undefined ? "" : `${intentSection(request.intent)}\n`;
-  // 空知识集与没有知识集同一条路径:两者都不渲染规则段。
+  // 空知识集与没有知识集同一条路径:两者都不渲染规则段。事实段同律,两型各判各的——
+  // 只有事实没有规则的知识集同样成立。
   const rules =
     request.rules === undefined || request.rules.length === 0
       ? ""
       : `${rulesSection(request.rules)}\n`;
+  const facts =
+    request.facts === undefined || request.facts.length === 0
+      ? ""
+      : `${factsSection(request.facts)}\n`;
   return `Review the changes between commit ${request.range.baseSha} and commit ${request.range.headSha}.
-${intent}${rules}
+${intent}${rules}${facts}
 The following files changed. Review the changes in them, using the rest of the repository as context:
 
 ${files}
@@ -249,6 +276,8 @@ ${history}`;
 
 async function run(request: ReviewerRequest): Promise<void> {
   const hasRules = request.rules !== undefined && request.rules.length > 0;
+  /** 本批注入的事实标识(issue #221)。模型拿它们当 `ruleId` 报出时这次调用被打回。 */
+  const factIds = new Set((request.facts ?? []).map((fact) => fact.id));
   let rejectedToolCalls = 0;
   /**
    * 锚定打回的那几次调用,按 toolCallId 记(issue #187)。它同时是两样东西:收尾事件
@@ -264,6 +293,12 @@ async function run(request: ReviewerRequest): Promise<void> {
     parameters: hasRules ? findingWithRuleSchema : findingSchema,
     execute: async (id, params) => {
       const raw = params as RawFinding;
+      // 事实型条目不是 ruleId 的合法取值(ADR 0020):拿事实当命中的规则报出来,这条
+      // Finding 的依据本身就不成立,打回并说明理由,由模型改报或不报。
+      const factRejection = factRuleIdRejection(raw.ruleId, factIds);
+      if (factRejection !== undefined) {
+        return { content: [{ type: "text", text: factRejection }], details: {} };
+      }
       const result = anchorReport(fileLines(request.worktreePath, raw.file), raw);
       if (!result.ok) {
         // 打回走正常返回而非工具错误:rejectedToolCalls 只统计 Pi 的 schema 校验

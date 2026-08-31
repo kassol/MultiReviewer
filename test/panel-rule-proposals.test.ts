@@ -54,6 +54,7 @@ type RuleSetResponse = {
 
 function proposal(overrides: Partial<RuleProposalInput> = {}): RuleProposalInput {
   return {
+    type: "rule",
     change: "add",
     targetRuleId: null,
     traceTaskId: null,
@@ -202,8 +203,8 @@ test("三种变更类型各自的落库形态:新增进集、修改留下旧那�
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 81, owner: "acme", repo: "decided", generation: 1, key: "k" });
-    store.addReviewRule(81, { scope: "", statement: "会被改的那条", layer: "架构" });
-    assert.equal(store.addReviewRule(81, { scope: "", statement: "会被废止的那条", layer: "安全" }), 2);
+    store.addReviewRule(81, { type: "rule", scope: "", statement: "会被改的那条", layer: "架构" });
+    assert.equal(store.addReviewRule(81, { type: "rule", scope: "", statement: "会被废止的那条", layer: "安全" }), 2);
     const [target, doomed] = store.getRuleSet(81)!.rules;
 
     const added = store.addRuleProposal(81, proposal({ statement: "探索提的新规则", scope: "src/**" }))!;
@@ -260,7 +261,7 @@ test("采纳前改内容:落库的是改后的那一份,队列里也留改后的
     store.registerRepo({ repoId: 82, owner: "acme", repo: "edited", generation: 1, key: "k" });
     const id = store.addRuleProposal(82, proposal({ statement: "原样的陈述" }))!;
     assert.equal(
-      store.acceptRuleProposal(82, id, { scope: "src/**", statement: "改后的陈述", layer: "安全" }),
+      store.acceptRuleProposal(82, id, { type: "rule", scope: "src/**", statement: "改后的陈述", layer: "安全" }),
       1,
     );
     assert.deepEqual(
@@ -281,7 +282,7 @@ test("目标规则已经不生效时采纳不了,一版都不推进;移除仓库
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 83, owner: "acme", repo: "stale", generation: 1, key: "k" });
-    store.addReviewRule(83, { scope: "", statement: "先有的那条", layer: "架构" });
+    store.addReviewRule(83, { type: "rule", scope: "", statement: "先有的那条", layer: "架构" });
     const rule = store.getRuleSet(83)!.rules[0]!;
     const id = store.addRuleProposal(
       83,

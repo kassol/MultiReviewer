@@ -27,6 +27,7 @@ import type {
   Category,
   Disposition,
   HistoryFinding,
+  ProjectFact,
   ReviewerUsage,
   ReviewRule,
   ReviewVerdict,
@@ -285,16 +286,22 @@ CREATE TABLE IF NOT EXISTS rule_set_version (
   PRIMARY KEY (repo_id, version)
 );
 
--- 评审规则(CONTEXT.md)。scope 是 glob,空串即全仓库;statement 是那一句规范陈述;
--- layer 是自由文本层标签;origin 是出处。
+-- 知识条目(CONTEXT.md)。scope 是 glob,空串即全仓库;statement 是那一句陈述;
+-- layer 是自由文本层标签(层标签属规则型,事实型为空串);origin 是出处。
+--
+-- type 是封闭的两值枚举(ADR 0020):rule 是评审规则,违反即 Finding;fact 是项目
+-- 事实,注入后只作判断依据。两型同表是因为它们形状同构——作用范围、陈述、出处与两态
+-- 生命周期一模一样,差别只在注入模板与消费语义。升级前的行没有这一列,DEFAULT 把它们
+-- 全部读成规则型(ADR 0020 的存量迁移)。
 --
 -- 两态生命周期不另存历史表:effective_version 是它进集的那一版,retired_version 是它
 -- 被废止的那一版(NULL 即仍生效)。知识集版本 V 的快照因此是一句 WHERE——
 -- effective_version <= V 且(retired_version 为 NULL 或 > V),Review Run 冻结版本后按
--- 它取当时那一组。state 与 retired_version 由 CHECK 绑死,两者不会各说各话。
+-- 它取当时那一组,两型一体。state 与 retired_version 由 CHECK 绑死,两者不会各说各话。
 CREATE TABLE IF NOT EXISTS review_rule (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   repo_id INTEGER NOT NULL REFERENCES repo(id),
+  type TEXT NOT NULL DEFAULT 'rule' CHECK (type IN ('rule', 'fact')),
   scope TEXT NOT NULL,
   statement TEXT NOT NULL,
   layer TEXT NOT NULL,
@@ -334,6 +341,7 @@ CREATE TABLE IF NOT EXISTS rule_exploration (
 CREATE TABLE IF NOT EXISTS rule_draft_item (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   repo_id INTEGER NOT NULL REFERENCES repo(id),
+  type TEXT NOT NULL DEFAULT 'rule' CHECK (type IN ('rule', 'fact')),
   scope TEXT NOT NULL,
   statement TEXT NOT NULL,
   layer TEXT NOT NULL,
@@ -352,6 +360,7 @@ CREATE INDEX IF NOT EXISTS rule_draft_item_by_repo ON rule_draft_item(repo_id);
 CREATE TABLE IF NOT EXISTS rule_proposal (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   repo_id INTEGER NOT NULL REFERENCES repo(id),
+  type TEXT NOT NULL DEFAULT 'rule' CHECK (type IN ('rule', 'fact')),
   change TEXT NOT NULL CHECK (change IN ('add', 'modify', 'retire')),
   target_rule_id INTEGER,
   scope TEXT NOT NULL,
@@ -603,6 +612,12 @@ const ADD_COLUMNS = [
   "ALTER TABLE rule_proposal ADD COLUMN trace_task_id INTEGER",
   "ALTER TABLE rule_exploration ADD COLUMN trace_task_id INTEGER",
   "ALTER TABLE review_run_reviewer_pin ADD COLUMN thinking_level TEXT",
+  // 知识条目的两值枚举(ADR 0020,issue #221)。DEFAULT 就是存量迁移本身:升级前落的
+  // 每一行都是评审规则,补出来的这一列把它们原样读成规则型。CHECK 只在新建的表上,
+  // `ALTER TABLE` 加不了约束;封闭枚举由 TypeScript 的联合类型与端点校验共同把住。
+  "ALTER TABLE review_rule ADD COLUMN type TEXT NOT NULL DEFAULT 'rule'",
+  "ALTER TABLE rule_draft_item ADD COLUMN type TEXT NOT NULL DEFAULT 'rule'",
+  "ALTER TABLE rule_proposal ADD COLUMN type TEXT NOT NULL DEFAULT 'rule'",
 ];
 
 /**
@@ -1033,8 +1048,10 @@ export type ReviewRunStoreSnapshot = Readonly<{
    * 版本同律:这份快照一取出来就固定,之后的规则变更追不上已经开跑的这一轮。
    */
   ruleSetVersion: number | null;
-  /** 那一版的生效规则全体。按批次路由前的全集,空知识集给空数组。 */
+  /** 那一版的生效评审规则全体。按批次路由前的全集,空知识集给空数组。 */
   rules: readonly ReviewRule[];
+  /** 那一版的生效项目事实全体(issue #221)。与规则同一版本、同一路由,注入时另起一段。 */
+  facts: readonly ProjectFact[];
 }>;
 
 export type ModelReferenceLocation =
@@ -1161,9 +1178,16 @@ export type RepoSummary = {
   worktree: WorktreeStatus;
 };
 
-/** 知识集里的一条评审规则(CONTEXT.md)。`scope` 空串即全仓库。 */
+/**
+ * 一条知识条目是评审规则还是项目事实(CONTEXT.md,ADR 0020)。封闭枚举,新增取值要新
+ * 开一份 ADR。
+ */
+export type KnowledgeType = "rule" | "fact";
+
+/** 知识集里的一条知识条目(CONTEXT.md)。`scope` 空串即全仓库;事实型的 `layer` 是空串。 */
 export type ReviewRuleRecord = {
   id: number;
+  type: KnowledgeType;
   scope: string;
   statement: string;
   layer: string;
@@ -1180,6 +1204,15 @@ export function toReviewRule(rule: ReviewRuleRecord): ReviewRule {
 }
 
 /**
+ * 事实型条目 → 交给模型的那一份(issue #221)。形状与规则的那一份同构:标识虽然不进
+ * prompt(事实不作 ruleId 的合法取值),但子进程要凭它认出模型自报的标识指向的是一条
+ * 事实,并把这次调用打回。
+ */
+export function toProjectFact(entry: ReviewRuleRecord): ProjectFact {
+  return { id: entry.id, scope: entry.scope, statement: entry.statement };
+}
+
+/**
  * 一个仓库当前生效的知识集与它的知识集版本(CONTEXT.md)。`version` 为 null 即这个
  * 仓库还没确认过知识集;已确认的空知识集是版本有值、规则为空。
  *
@@ -1193,8 +1226,12 @@ export type RuleSet = {
   retired: ReviewRuleRecord[];
 };
 
-/** 一条评审规则里由人填的三样:作用范围(空串即全仓库)、那一句规范陈述与层标签。 */
+/**
+ * 一条知识条目里由人填的那几样:两型之一、作用范围(空串即全仓库)、那一句陈述与层标签。
+ * 层标签属规则型,事实型一律空串(ADR 0020)。
+ */
 export type ReviewRuleInput = {
+  type: KnowledgeType;
   scope: string;
   statement: string;
   layer: string;
@@ -2473,14 +2510,22 @@ export function openStore(dbPath: string): Store {
   const repoExists = (repoId: number): boolean =>
     db.prepare("SELECT 1 FROM repo WHERE id = ?").get(repoId) !== undefined;
 
-  /** 这条规则还生效吗:生效即回它的出处(改一条规则要沿用它),否则回 undefined。 */
-  const activeRuleOrigin = (repoId: number, ruleId: number): string | undefined => {
+  /**
+   * 这条知识条目还生效吗:生效即回它的出处与两型之一(改一条要沿用出处、废止一条要
+   * 说得出它是规则还是事实),否则回 undefined。
+   */
+  const activeRule = (
+    repoId: number,
+    ruleId: number,
+  ): { origin: string; type: KnowledgeType } | undefined => {
     const row = db
       .prepare(
-        "SELECT origin FROM review_rule WHERE id = ? AND repo_id = ? AND retired_version IS NULL",
+        "SELECT origin, type FROM review_rule WHERE id = ? AND repo_id = ? AND retired_version IS NULL",
       )
       .get(ruleId, repoId);
-    return row === undefined ? undefined : String(row["origin"]);
+    return row === undefined
+      ? undefined
+      : { origin: String(row["origin"]), type: String(row["type"]) as KnowledgeType };
   };
 
   const insertReviewRule = (
@@ -2492,9 +2537,9 @@ export function openStore(dbPath: string): Store {
   ): void => {
     db.prepare(
       `INSERT INTO review_rule
-         (repo_id, scope, statement, layer, state, origin, effective_version, retired_version, created_at)
-       VALUES (?, ?, ?, ?, 'active', ?, ?, NULL, ?)`,
-    ).run(repoId, input.scope, input.statement, input.layer, origin, version, at);
+         (repo_id, type, scope, statement, layer, state, origin, effective_version, retired_version, created_at)
+       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, NULL, ?)`,
+    ).run(repoId, input.type, input.scope, input.statement, input.layer, origin, version, at);
   };
 
   const completeRuleExploration = (repoId: number, at: string): void => {
@@ -2507,12 +2552,13 @@ export function openStore(dbPath: string): Store {
     const inserted = db
       .prepare(
         `INSERT INTO rule_proposal
-           (repo_id, change, target_rule_id, scope, statement, layer, source, source_note,
+           (repo_id, type, change, target_rule_id, scope, statement, layer, source, source_note,
             trace_task_id, state, created_at, decided_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL)`,
       )
       .run(
         repoId,
+        input.type,
         input.change,
         input.targetRuleId,
         input.scope,
@@ -3025,7 +3071,7 @@ export function openStore(dbPath: string): Store {
       const select = (where: string): ReviewRuleRecord[] =>
         db
           .prepare(
-            `SELECT id, scope, statement, layer, origin
+            `SELECT id, type, scope, statement, layer, origin
                FROM review_rule
               WHERE repo_id = ? AND ${where}
               ORDER BY id`,
@@ -3033,6 +3079,7 @@ export function openStore(dbPath: string): Store {
           .all(repoId)
           .map((row) => ({
             id: Number(row["id"]),
+            type: String(row["type"]) as KnowledgeType,
             scope: String(row["scope"]),
             statement: String(row["statement"]),
             layer: String(row["layer"]),
@@ -3054,17 +3101,17 @@ export function openStore(dbPath: string): Store {
     },
 
     updateReviewRule(repoId, ruleId, input) {
-      const origin = activeRuleOrigin(repoId, ruleId);
-      if (origin === undefined) return undefined;
+      const existing = activeRule(repoId, ruleId);
+      if (existing === undefined) return undefined;
       return inRuleSetVersion(repoId, (version, at) => {
         retireRuleRow(ruleId, version);
-        insertReviewRule(repoId, input, origin, version, at);
+        insertReviewRule(repoId, input, existing.origin, version, at);
         return version;
       });
     },
 
     retireReviewRule(repoId, ruleId) {
-      if (activeRuleOrigin(repoId, ruleId) === undefined) return undefined;
+      if (activeRule(repoId, ruleId) === undefined) return undefined;
       return inRuleSetVersion(repoId, (version) => {
         retireRuleRow(ruleId, version);
         return version;
@@ -3130,12 +3177,13 @@ export function openStore(dbPath: string): Store {
         // 整组覆盖:草案每仓库至多一份,重探索的产出取代未确认的旧草案(含人手加的条目)。
         db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
         const insert = db.prepare(
-          `INSERT INTO rule_draft_item (repo_id, scope, statement, layer, origin, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO rule_draft_item (repo_id, type, scope, statement, layer, origin, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const item of items) {
           insert.run(
             repoId,
+            item.type,
             item.scope,
             item.statement,
             item.layer,
@@ -3181,12 +3229,13 @@ export function openStore(dbPath: string): Store {
     getRuleDraft(repoId) {
       return db
         .prepare(
-          `SELECT id, scope, statement, layer, origin
+          `SELECT id, type, scope, statement, layer, origin
              FROM rule_draft_item WHERE repo_id = ? ORDER BY id`,
         )
         .all(repoId)
         .map((row) => ({
           id: Number(row["id"]),
+          type: String(row["type"]) as KnowledgeType,
           scope: String(row["scope"]),
           statement: String(row["statement"]),
           layer: String(row["layer"]),
@@ -3198,10 +3247,18 @@ export function openStore(dbPath: string): Store {
       if (!repoExists(repoId)) return undefined;
       const inserted = db
         .prepare(
-          `INSERT INTO rule_draft_item (repo_id, scope, statement, layer, origin, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO rule_draft_item (repo_id, type, scope, statement, layer, origin, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(repoId, input.scope, input.statement, input.layer, MANUAL_RULE_ORIGIN, new Date().toISOString());
+        .run(
+          repoId,
+          input.type,
+          input.scope,
+          input.statement,
+          input.layer,
+          MANUAL_RULE_ORIGIN,
+          new Date().toISOString(),
+        );
       return Number(inserted.lastInsertRowid);
     },
 
@@ -3209,9 +3266,9 @@ export function openStore(dbPath: string): Store {
       // 出处沿用旧值,SQL 不碰 origin 这一列。
       const changed = db
         .prepare(
-          "UPDATE rule_draft_item SET scope = ?, statement = ?, layer = ? WHERE id = ? AND repo_id = ?",
+          "UPDATE rule_draft_item SET type = ?, scope = ?, statement = ?, layer = ? WHERE id = ? AND repo_id = ?",
         )
-        .run(input.scope, input.statement, input.layer, itemId, repoId);
+        .run(input.type, input.scope, input.statement, input.layer, itemId, repoId);
       return changed.changes > 0;
     },
 
@@ -3243,13 +3300,14 @@ export function openStore(dbPath: string): Store {
     getRuleProposals(repoId) {
       return db
         .prepare(
-          `SELECT id, change, target_rule_id, scope, statement, layer, source, source_note,
+          `SELECT id, type, change, target_rule_id, scope, statement, layer, source, source_note,
                   trace_task_id, state, created_at, decided_at
              FROM rule_proposal WHERE repo_id = ? ORDER BY id`,
         )
         .all(repoId)
         .map((row) => ({
           id: Number(row["id"]),
+          type: String(row["type"]) as KnowledgeType,
           change: String(row["change"]) as RuleProposalChange,
           targetRuleId: row["target_rule_id"] === null ? null : Number(row["target_rule_id"]),
           scope: String(row["scope"]),
@@ -3275,26 +3333,31 @@ export function openStore(dbPath: string): Store {
     acceptRuleProposal(repoId, proposalId, input) {
       const queued = pendingProposal(repoId, proposalId);
       if (queued === undefined) return undefined;
-      const content = input ?? { scope: queued.scope, statement: queued.statement, layer: queued.layer };
-      // 修改与废止都要目标规则此刻仍然生效:它已经被人废止掉时,这条提案落不下去。
-      const targetOrigin =
-        queued.targetRuleId === null ? undefined : activeRuleOrigin(repoId, queued.targetRuleId);
-      if (queued.change !== "add" && targetOrigin === undefined) return undefined;
+      const content = input ?? {
+        type: queued.type,
+        scope: queued.scope,
+        statement: queued.statement,
+        layer: queued.layer,
+      };
+      // 修改与废止都要目标条目此刻仍然生效:它已经被人废止掉时,这条提案落不下去。
+      const target =
+        queued.targetRuleId === null ? undefined : activeRule(repoId, queued.targetRuleId);
+      if (queued.change !== "add" && target === undefined) return undefined;
       return inRuleSetVersion(repoId, (version, at) => {
         if (queued.change === "add") {
           insertReviewRule(repoId, content, queued.source, version, at);
         } else {
           retireRuleRow(queued.targetRuleId!, version);
-          // 修改沿用旧行的出处:改文字不改变这条规则当初从哪来(issue #203 同一条口径)。
+          // 修改沿用旧行的出处:改文字不改变这条条目当初从哪来(issue #203 同一条口径)。
           if (queued.change === "modify") {
-            insertReviewRule(repoId, content, targetOrigin!, version, at);
+            insertReviewRule(repoId, content, target!.origin, version, at);
           }
         }
         db.prepare(
           `UPDATE rule_proposal
-              SET state = 'accepted', scope = ?, statement = ?, layer = ?, decided_at = ?
+              SET state = 'accepted', type = ?, scope = ?, statement = ?, layer = ?, decided_at = ?
             WHERE id = ?`,
-        ).run(content.scope, content.statement, content.layer, at, proposalId);
+        ).run(content.type, content.scope, content.statement, content.layer, at, proposalId);
         return version;
       });
     },
@@ -3346,7 +3409,14 @@ export function openStore(dbPath: string): Store {
           maxChangedLinesPerBatch: settings.maxChangedLinesPerBatch,
           modelServices: Object.freeze(modelServices),
           ruleSetVersion: ruleSet?.version ?? null,
-          rules: Object.freeze((ruleSet?.rules ?? []).map(toReviewRule)),
+          // 两型在同一份快照里按 type 分开(issue #221):注入时各走各的模板,冻结的
+          // 版本只有一个。
+          rules: Object.freeze(
+            (ruleSet?.rules ?? []).filter((entry) => entry.type === "rule").map(toReviewRule),
+          ),
+          facts: Object.freeze(
+            (ruleSet?.rules ?? []).filter((entry) => entry.type === "fact").map(toProjectFact),
+          ),
         };
       } catch (error) {
         db.exec("ROLLBACK");
