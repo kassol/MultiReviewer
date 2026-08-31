@@ -646,3 +646,48 @@ test("面板批量采纳与批量驳回:一次一版,坏 body 一律 400", async
   );
   assert.equal((await ruleSet(h, cookie)).version, 3);
 });
+
+test("批量采纳里两条指向同一个目标:整组不做,不让一条规则裂成两条", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  try {
+    store.registerRepo({ repoId: 87, owner: "acme", repo: "same-target", generation: 1, key: "k" });
+    store.addReviewRule(87, { type: "rule", scope: "", statement: "本来那条", layer: "架构" });
+    const rule = store.getRuleSet(87)!.rules[0]!;
+    // 同一次探索报两条 `rule_id` 相同的变更,或两次反哺各排一条,队列里就会并存。
+    const twoModify = [
+      store.addRuleProposal(
+        87,
+        proposal({ change: "modify", targetRuleId: rule.id, statement: "改法甲" }),
+      )!,
+      store.addRuleProposal(
+        87,
+        proposal({ change: "modify", targetRuleId: rule.id, statement: "改法乙" }),
+      )!,
+    ];
+
+    // 逐条采纳没有这个问题:第一条落完目标就废止了,第二条自然裁不了。批量采纳按同一
+    // 时刻算完再一起落,两条都算得过,落下去就是「旧行废止一次、新行插两遍」。
+    assert.equal(store.acceptRuleProposals(87, twoModify), undefined);
+    assert.equal(store.getRuleSet(87)!.version, 1);
+    assert.deepEqual(store.getRuleProposals(87).map((row) => row.state), ["pending", "pending"]);
+
+    // 修改与废止指向同一条同理:废止的意图会被修改插回的新行抵消。
+    const mixed = [
+      twoModify[0]!,
+      store.addRuleProposal(
+        87,
+        proposal({ change: "retire", targetRuleId: rule.id, statement: "本来那条" }),
+      )!,
+    ];
+    assert.equal(store.acceptRuleProposals(87, mixed), undefined);
+    assert.equal(store.getRuleSet(87)!.version, 1);
+
+    // 各指各的目标照常成组落下去。
+    assert.equal(store.acceptRuleProposals(87, [twoModify[0]!]), 2);
+    assert.deepEqual(store.getRuleSet(87)!.rules.map((row) => row.statement), ["改法甲"]);
+  } finally {
+    store.close();
+  }
+});

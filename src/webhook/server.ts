@@ -6675,13 +6675,16 @@ async function handleConfirmRuleDraft(
   if (payload === undefined) return;
   const itemIds = payload?.itemIds;
   if (itemIds !== undefined) {
+    // 空数组当场拒(与 `readProposalIds` 同一条口径):`{"itemIds": []}` 落下去会确认出
+    // 一个空版本并把整份草案删掉,而人真正想说的「确认空知识集」是不给这一项。
     if (
       !Array.isArray(itemIds) ||
+      itemIds.length === 0 ||
       !itemIds.every((id) => Number.isInteger(id) && (id as number) > 0) ||
       new Set(itemIds as number[]).size !== itemIds.length
     ) {
       return sendJson(res, 400, {
-        error: 'itemIds 要是一组正整数的草案条目标识,不能重复;整组确认时不给这一项',
+        error: 'itemIds 要是一组正整数的草案条目标识,至少一条、不能重复;整组确认时不给这一项',
       });
     }
   }

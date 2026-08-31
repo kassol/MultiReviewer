@@ -1794,7 +1794,8 @@ export type Store = {
    *
    * 全成或全不成:其中任意一条不在待裁决队列里、或它要改的条目已经不生效,整次回
    * undefined,一行都不改。部分成功会让人对着一份说不清哪些落了的队列继续裁决。
-   * 空数组同样回 undefined:没有要采纳的东西,不该白推一版。
+   * **组内两条指向同一个目标条目同样整次回 undefined**:那一组落下去会让一条规则裂成
+   * 两条,该由人自己挑一条。空数组同样回 undefined:没有要采纳的东西,不该白推一版。
    */
   acceptRuleProposals(repoId: number, proposalIds: readonly number[]): number | undefined;
   /** 驳回一条待裁决的提案:只改状态,知识集一版都不推进。不在待裁决队列里回 false。 */
@@ -3439,6 +3440,12 @@ export function openStore(dbPath: string): Store {
       // 先全部算一遍再落:全成或全不成。部分成功会让人对着一份说不清哪些落了的队列继续裁决。
       const planned = proposalIds.map((id) => plannedAcceptance(repoId, id));
       if (planned.some((entry) => entry === undefined)) return undefined;
+      // 组内两条指向同一个目标同样整组不做。判据是「目标此刻还生效吗」,而它对整组只算
+      // 一次:两条 modify 会把旧行废止一次、新行插两遍,一条规则就此裂成两条;modify 与
+      // retire 撞上,废止的意图会被修改插回的新行抵消。逐条采纳没有这个洞——第一条落完
+      // 目标就废止了,第二条自然裁不了;批量要人自己挑一条,而不是替他挑。
+      const targets = planned.map((entry) => entry!.queued.targetRuleId).filter((id) => id !== null);
+      if (new Set(targets).size !== targets.length) return undefined;
       return inRuleSetVersion(repoId, (version, at) => {
         // 全组共用同一个版本号(issue #223):逐条各推一版会让一次裁决在版本轴上散成上百格。
         for (const entry of planned) applyAcceptance(repoId, entry!, version, at);
@@ -3457,7 +3464,15 @@ export function openStore(dbPath: string): Store {
       // 与批量采纳同一条口径:先全部认一遍,有一条不在待裁决队列里就一条都不改。
       if (proposalIds.some((id) => pendingProposal(repoId, id) === undefined)) return false;
       const at = new Date().toISOString();
-      for (const id of proposalIds) rejectProposalRow(id, at);
+      // 一组状态一起落:「一条都不改」这句话要成立,中途出错时已经改掉的那几条得退回去。
+      db.exec("BEGIN");
+      try {
+        for (const id of proposalIds) rejectProposalRow(id, at);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
       return true;
     },
 
