@@ -227,7 +227,7 @@ export function RuleTraceButton({
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Trigger>
-        <Button variant="soft" color="gray" size={{ initial: "3", sm: "1" }}>
+        <Button variant="outline" color="gray" highContrast size={{ initial: "3", sm: "1" }}>
           {label}
         </Button>
       </Dialog.Trigger>

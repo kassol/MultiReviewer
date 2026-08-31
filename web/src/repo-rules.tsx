@@ -409,16 +409,18 @@ function RuleSetDialogContent({
                         {canWrite ? (
                           <div className="flex shrink-0 gap-1">
                             <Button
-                              variant="soft"
+                              variant="outline"
                               color="gray"
+                              highContrast
                               size={{ initial: "3", sm: "1" }}
                               onClick={() => setDraft({ ...rule, id: rule.id })}
                             >
                               修改
                             </Button>
                             <Button
-                              variant="soft"
+                              variant="outline"
                               color="gray"
+                              highContrast
                               size={{ initial: "3", sm: "1" }}
                               disabled={change.isPending}
                               onClick={() => change.mutate({ retire: rule.id })}
@@ -460,16 +462,18 @@ function RuleSetDialogContent({
                         {canWrite ? (
                           <div className="flex shrink-0 gap-1">
                             <Button
-                              variant="soft"
+                              variant="outline"
                               color="gray"
+                              highContrast
                               size={{ initial: "3", sm: "1" }}
                               onClick={() => setDraft({ ...fact, id: fact.id })}
                             >
                               修改
                             </Button>
                             <Button
-                              variant="soft"
+                              variant="outline"
                               color="gray"
+                              highContrast
                               size={{ initial: "3", sm: "1" }}
                               disabled={change.isPending}
                               onClick={() => change.mutate({ retire: fact.id })}
@@ -744,8 +748,9 @@ function ProposalSection({
               采纳勾选的 {pick.selected.length} 条
             </Button>
             <Button
-              variant="soft"
+              variant="outline"
               color="gray"
+              highContrast
               size={{ initial: "3", sm: "1" }}
               disabled={busy || pick.selected.length === 0}
               onClick={() => onDecideAll(pick.selected, false)}
@@ -777,8 +782,9 @@ function ProposalSection({
                 {canWrite && edit?.id !== proposal.id ? (
                   <div className="flex shrink-0 gap-1">
                     <Button
-                      variant="soft"
+                      variant="outline"
                       color="gray"
+                      highContrast
                       size={{ initial: "3", sm: "1" }}
                       onClick={() =>
                         onEdit({
@@ -793,7 +799,6 @@ function ProposalSection({
                     </Button>
                     <Button
                       variant="soft"
-                      color="gray"
                       size={{ initial: "3", sm: "1" }}
                       disabled={busy}
                       onClick={() => onDecide(proposal.id, true)}
@@ -801,8 +806,9 @@ function ProposalSection({
                       采纳
                     </Button>
                     <Button
-                      variant="soft"
+                      variant="outline"
                       color="gray"
+                      highContrast
                       size={{ initial: "3", sm: "1" }}
                       disabled={busy}
                       onClick={() => onDecide(proposal.id, false)}
@@ -1026,16 +1032,18 @@ function ExplorationSection({
                 </Text>
                 <div className="flex shrink-0 gap-1">
                   <Button
-                    variant="soft"
+                    variant="outline"
                     color="gray"
+                    highContrast
                     size={{ initial: "3", sm: "1" }}
                     onClick={() => onEdit({ ...rule, id: rule.id })}
                   >
                     修改
                   </Button>
                   <Button
-                    variant="soft"
+                    variant="outline"
                     color="gray"
+                    highContrast
                     size={{ initial: "3", sm: "1" }}
                     disabled={busy}
                     onClick={() => onDeleteDraft(rule.id)}
