@@ -48,6 +48,8 @@ Report each problem by calling the report_finding tool exactly once per problem.
 
 The read tool prefixes every line with its line number, like \`12: code\`. These numbers are the only valid source for the line field of report_finding — copy the number, never count lines yourself. The prefix is not part of the file content. In the snippet field, copy the exact text of the line the problem starts on, without the line number prefix. Pick the most distinctive line of the problem, not a bare brace. A finding whose snippet does not match the file at the reported line is rejected back to you.
 
+Every finding must be anchored on a line this change actually touches. Read as widely as you need — callers, other branches, unchanged files — but report the problem at the end of its causal chain on the changed side: the changed line that is wrong, or the changed line that depends on the unchanged code you object to. A finding anchored outside the diff is rejected back to you, and a finding you never re-anchor is lost.
+
 Write the title, description, impact and suggestion fields in Chinese. The reviewers of this repository read Chinese. Keep identifiers, file paths, and code fragments in their original form — do not translate them. The severity and category fields stay in the exact English values listed for them.
 
 When the prompt lists findings reported earlier in this review stage, call review_prior_finding exactly once for every one of them that is still open, and never report one of them again through report_finding. When one of them is still there but its code was rewritten or moved, give the verdict present with the line and snippet of the place it sits now.`;
@@ -264,7 +266,11 @@ async function run(request: ReviewerRequest): Promise<void> {
     parameters: hasRules ? findingWithRuleSchema : findingSchema,
     execute: async (id, params) => {
       const raw = params as RawFinding;
-      const result = anchorReport(fileLines(request.worktreePath, raw.file), raw);
+      const result = anchorReport(
+        fileLines(request.worktreePath, raw.file),
+        request.commentable,
+        raw,
+      );
       if (!result.ok) {
         // 打回走正常返回而非工具错误:rejectedToolCalls 只统计 Pi 的 schema 校验
         // 失败,即"契约失配"信号,锚定失败是另一回事,混进去信号就没了。因此另记
@@ -307,11 +313,11 @@ async function run(request: ReviewerRequest): Promise<void> {
       // 新位置与 report_finding 的行号同一道核对(issue #170):模型数行会数偏,抄下来的
       // 代码不会。锚不上只丢这个位置,结论本身照收——「这个问题还在」是模型给的证据,
       // 不该因为它把行号抄错而一起作废。
-      const anchored = anchorVerdict(fileLines(request.worktreePath, entry.file), {
-        file: entry.file,
-        line: raw.line,
-        snippet: raw.snippet,
-      });
+      const anchored = anchorVerdict(
+        fileLines(request.worktreePath, entry.file),
+        request.commentable,
+        { file: entry.file, line: raw.line, snippet: raw.snippet },
+      );
       if (!anchored.ok) {
         send({ kind: "verdict", raw: { id: raw.id, verdict: raw.verdict } });
         // 与 report_finding 的锚定失败同一口径(issue #187):记进「锚定被拒」,轨迹里

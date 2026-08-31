@@ -26,6 +26,7 @@ import type {
   ReviewerOutcome,
   ReviewVerdict,
 } from "../../src/review/finding.ts";
+import type { DiffRanges } from "../../src/review/position.ts";
 
 export type MemoryForge = {
   forge: Forge;
@@ -160,11 +161,21 @@ export function memoryForge(init: {
 type ScriptedFinding = Omit<Finding, "model" | "title" | "impact" | "suggestion"> &
   Partial<Pick<Finding, "title" | "impact" | "suggestion">>;
 
+/** 桩记下的一次调用:全部注入项,用例据此断言编排层交了什么下去。 */
+type ScriptedCall = {
+  range: ReviewRange;
+  worktreePath: string;
+  commentable: DiffRanges;
+  history: readonly HistoryFinding[];
+  intent: ReviewIntent | undefined;
+  rules: readonly ReviewRule[];
+};
+
 /**
  * 返回预设 Finding 的 Reviewer 桩。
  *
- * `calls` 连注入的历史、意图上下文与本批的评审规则一起记下来:这几份注入是这个桩
- * 唯一能观测的输入(ADR 0016、issue #201、issue #204)。
+ * `calls` 连注入的历史、意图上下文、本批的评审规则与可评论行区间一起记下来:这几份注入
+ * 是这个桩唯一能观测的输入(ADR 0016、issue #201、issue #204、issue #224)。
  * `verdicts` 给定这一轮的复核结论;不给即一条都没给,编排层按「无法判断」落库。
  * `events` 是这一轮按顺序发出的过程事件(issue #171),在返回结果之前逐条发出。
  */
@@ -177,27 +188,13 @@ export function scriptedReviewer(
       "failure" | "anomalies" | "rejectedToolCalls" | "anchorRejections" | "usage" | "verdicts"
     >
   > & { events?: readonly ReviewerEvent[] },
-): Reviewer & {
-  calls: {
-    range: ReviewRange;
-    worktreePath: string;
-    history: readonly HistoryFinding[];
-    intent: ReviewIntent | undefined;
-    rules: readonly ReviewRule[];
-  }[];
-} {
-  const calls: {
-    range: ReviewRange;
-    worktreePath: string;
-    history: readonly HistoryFinding[];
-    intent: ReviewIntent | undefined;
-    rules: readonly ReviewRule[];
-  }[] = [];
+): Reviewer & { calls: ScriptedCall[] } {
+  const calls: ScriptedCall[] = [];
   return {
     model,
     calls,
-    review: async ({ range, worktreePath, history, intent, rules, onEvent }) => {
-      calls.push({ range, worktreePath, history, intent, rules: rules ?? [] });
+    review: async ({ range, worktreePath, commentable, history, intent, rules, onEvent }) => {
+      calls.push({ range, worktreePath, commentable, history, intent, rules: rules ?? [] });
       for (const event of extra?.events ?? []) onEvent?.(event);
       return {
         model,

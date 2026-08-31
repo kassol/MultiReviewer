@@ -48,6 +48,7 @@ export async function runInChild(
   const {
     range,
     worktreePath,
+    commentable,
     history,
     intent,
     // 空知识集与不传等价。
@@ -73,6 +74,7 @@ export async function runInChild(
     ...(config.thinkingLevel === undefined ? {} : { thinkingLevel: config.thinkingLevel }),
     range,
     worktreePath,
+    commentable,
     history,
     ...(intent === undefined ? {} : { intent }),
     // 空知识集不带这一项:子进程据此不渲染规则段,prompt 与没有知识集时逐字一致。

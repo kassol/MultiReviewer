@@ -45,7 +45,7 @@ const RANGE = { baseSha: "aaa", headSha: "bbb", files: ["src/a.ts"] };
 
 /** 直调 `runInChild` 的输入,用例只写自己关心的那几项。 */
 function input(extra: Partial<Omit<ReviewerInput, "range">> = {}): ReviewerInput {
-  return { range: RANGE, worktreePath: tmpdir(), history: [], ...extra };
+  return { range: RANGE, worktreePath: tmpdir(), commentable: {}, history: [], ...extra };
 }
 
 /** 把一段 worker 脚本写进临时目录并返回路径。 */
@@ -447,6 +447,25 @@ process.on("message", (request) => {
   // 空知识集要与「这一票之前」逐字一致:任务里根本没有这一项,prompt 因此没有规则段。
   const empty = await runInChild(path, CONFIG, input({ rules: [] }));
   assert.equal(JSON.parse(empty.findings[0]!.description), "absent");
+});
+
+test("本轮 diff 的可评论行区间随任务进子进程,跨 IPC 不丢", async () => {
+  const path = worker(`
+process.on("message", (request) => {
+  process.send({
+    kind: "finding",
+    raw: { ...${JSON.stringify(RAW)}, description: JSON.stringify(request.commentable) },
+  });
+  process.send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0 });
+  process.exit(0);
+});
+`);
+
+  const commentable = { "src/a.ts": [{ start: 3, end: 9 }], "src/b.ts": [{ start: 1, end: 2 }] };
+  const outcome = await runInChild(path, CONFIG, input({ commentable }));
+
+  // 锚定校验在子进程里做,这份区间是它唯一的判据;Map 过不了 IPC,形状因此是普通对象。
+  assert.deepEqual(JSON.parse(outcome.findings[0]!.description), commentable);
 });
 
 test("模型自报的规则标识经服务端校验后才成为 Finding 的一部分", async () => {

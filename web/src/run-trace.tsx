@@ -210,6 +210,31 @@ function RunMilestone({ event }: { event: TraceEvent }) {
           </div>
         );
       }
+      case "finding_discarded": {
+        const file = str(payload, "file");
+        const line = num(payload, "line");
+        const title = str(payload, "title");
+        const list = strings(payload, "reviewers");
+        return (
+          <div className="flex min-w-0 flex-col gap-1">
+            <span className="flex flex-wrap items-center gap-1.5">
+              <span className="text-base text-text">锚不进本次改动,已丢弃</span>
+              {file === null ? null : (
+                <span className="font-mono text-xs break-all text-text-secondary">
+                  {file}
+                  {line === null ? "" : `:${line}`}
+                </span>
+              )}
+              {list.length === 0 ? null : (
+                <Badge color="gray" variant="soft" radius="full">{list.join(" / ")}</Badge>
+              )}
+            </span>
+            {title === null || title === "" ? null : (
+              <span className="min-w-0 break-words text-sm text-text-secondary">{title}</span>
+            )}
+          </div>
+        );
+      }
       case "review_posted": {
         const count = num(payload, "findingCount");
         return (

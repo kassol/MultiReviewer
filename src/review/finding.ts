@@ -1,3 +1,5 @@
+import type { DiffRanges } from "./position.ts";
+
 /**
  * Finding 的优先级,P0 最高。
  *
@@ -254,6 +256,14 @@ export type ReviewerEvent =
 export type ReviewerInput = {
   range: ReviewRange;
   worktreePath: string;
+  /**
+   * 本轮 Review Range 的 diff 在新文件一侧的可评论行区间(issue #224)。Finding 与复核
+   * 的新位置都必须锚在其中,锚不进的当场打回让模型重锚。
+   *
+   * 给的是整个 Review Range 的那一份,不按批次裁剪:落点的判据是「这次改动碰过这一行」,
+   * 与这一批分到哪几个文件无关,裁剪只会让跨批次的合法落点被误拒。
+   */
+  commentable: DiffRanges;
   /**
    * 本审查阶段已经报过的 Finding(ADR 0016),每一批都给同一份:它说的是这个阶段的
    * 历史,与本批审哪些文件无关。首轮为空数组。

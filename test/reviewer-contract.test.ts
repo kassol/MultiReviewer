@@ -108,10 +108,13 @@ const PRIOR_LINES = [
   "}",
 ];
 
+/** 这几个用例只看 snippet 那一道,可评论行区间给到覆盖整段。 */
+const PRIOR_RANGES = { "src/history.ts": [{ start: 1, end: 3 }] };
+
 test("复核结论的新位置锚得上时不打回,给出校正后的行号", () => {
   // 模型报的行号偏了一行,snippet 抄得对,与 report_finding 同一道校正。
   assert.deepEqual(
-    anchorVerdict(PRIOR_LINES, {
+    anchorVerdict(PRIOR_LINES, PRIOR_RANGES, {
       file: "src/history.ts",
       line: 3,
       snippet: "return history.slice(-count);",
@@ -121,7 +124,7 @@ test("复核结论的新位置锚得上时不打回,给出校正后的行号", (
 });
 
 test("复核结论的新位置锚不上时打回,措辞点名文件并要求重给行号", () => {
-  const result = anchorVerdict(PRIOR_LINES, {
+  const result = anchorVerdict(PRIOR_LINES, PRIOR_RANGES, {
     file: "src/history.ts",
     line: 2,
     snippet: "return history.slice(count);",
@@ -134,7 +137,7 @@ test("复核结论的新位置锚不上时打回,措辞点名文件并要求重�
 });
 
 test("复核结论带位置但文件读不出来时同样打回", () => {
-  const result = anchorVerdict(undefined, {
+  const result = anchorVerdict(undefined, PRIOR_RANGES, {
     file: "src/gone.ts",
     line: 2,
     snippet: "return history.slice(-count);",
@@ -145,7 +148,7 @@ test("复核结论带位置但文件读不出来时同样打回", () => {
 });
 
 test("复核结论没抄 snippet 时打回,不拿裸行号当位置", () => {
-  const result = anchorVerdict(PRIOR_LINES, {
+  const result = anchorVerdict(PRIOR_LINES, PRIOR_RANGES, {
     file: "src/history.ts",
     line: 2,
     snippet: undefined,

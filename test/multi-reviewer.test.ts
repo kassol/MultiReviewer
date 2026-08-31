@@ -24,7 +24,7 @@ export function mod(a, b) {
 }
 `;
 
-// 改第 2 行与第 18 行,两个 hunk 各带 3 行上下文,新侧覆盖 1..5 与 15..21。
+// 改第 2 行与第 14 行,两个 hunk 各带 3 行上下文,新侧覆盖 1..5 与 11..17。
 const HEAD = BASE.replace("return a - b;", "return a - b - 1;").replace(
   "return a % b;",
   "return a % b + 0;",
@@ -114,10 +114,10 @@ test("行号相差在阈值内视为同一处,超出阈值分开", async () => {
     forge: forge.forge,
     reviewers: [
       scriptedReviewer("model-a", [AT_LINE_2]),
-      // 第 4 行与第 2 行相差 2,在阈值内;第 18 行远在阈值外。
+      // 第 4 行与第 2 行相差 2,在阈值内;第 14 行远在阈值外,两处都锚得进 diff。
       scriptedReviewer("model-b", [
         { ...AT_LINE_2, line: 4 },
-        { ...AT_LINE_2, line: 18, description: "mod 加了 0" },
+        { ...AT_LINE_2, line: 14, description: "mod 加了 0" },
       ]),
     ],
     cacheDir: cache.dir,
@@ -127,7 +127,7 @@ test("行号相差在阈值内视为同一处,超出阈值分开", async () => {
   assert.equal(result.findings.length, 2);
   const merged = result.findings.find((f) => f.line <= 4)!;
   assert.deepEqual([...merged.attributions.map((a) => a.model)].sort(), ["model-a", "model-b"]);
-  const separate = result.findings.find((f) => f.line === 18)!;
+  const separate = result.findings.find((f) => f.line === 14)!;
   assert.deepEqual(separate.attributions.map((a) => a.model), ["model-b"]);
 });
 
