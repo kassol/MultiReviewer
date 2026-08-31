@@ -15,6 +15,7 @@ import {
   DropdownMenu,
   Flex,
   IconButton,
+  Popover,
   Skeleton,
   Text,
   TextField,
@@ -110,8 +111,11 @@ export async function rerunRequest(run: {
   return `已触发 ${run.owner}/${run.repo} #${run.pullNumber} 的新一轮审查`;
 }
 
-/** 本轮指令输入框的共同措辞:三处重审入口挂同一句,人不必分别理解一遍。 */
-export const RUN_DIRECTIVE_PLACEHOLDER = "本轮指令(选填,如「只报 P0」「重点看并发」)";
+/**
+ * 本轮指令输入框的共同措辞:三处重审入口挂同一句,人不必分别理解一遍。
+ * 字段名义与一次性语义由各处可见的 label 与提示承担,placeholder 只举例。
+ */
+export const RUN_DIRECTIVE_PLACEHOLDER = "如:只报 P0";
 
 /**
  * 桌面左栏与窄视口那一行各挂一份注册入口,同一时刻只有一份真正占位——`display: none`
@@ -731,12 +735,14 @@ export function RerunPullRequest({
   repo: { owner: string; repo: string };
   onFeedback: (feedback: Feedback) => void;
 }) {
+  const [open, setOpen] = useState(false);
   const [pullNumber, setPullNumber] = useState("");
   const [directive, setDirective] = useState("");
   const rerun = useMutation({
     mutationFn: rerunRequest,
     onSuccess: (text) => {
       onFeedback({ text, isError: false });
+      setOpen(false);
       setPullNumber("");
       // 指令一并清空:它只属于刚发出去的那一轮,留在框里下次会被顺手带上。
       setDirective("");
@@ -761,35 +767,53 @@ export function RerunPullRequest({
   };
 
   return (
-    <form onSubmit={submit} className="flex flex-wrap items-center gap-2" aria-busy={rerun.isPending}>
-      <Text as="label" htmlFor="rerun-pull-number" className="sr-only">
-        PR 编号
-      </Text>
-      <TextField.Root
-        id="rerun-pull-number"
-        size={{ initial: "3", sm: "2" }}
-        placeholder="PR 编号"
-        inputMode="numeric"
-        className="w-[120px] min-w-0 max-sm:min-h-11"
-        value={pullNumber}
-        onChange={(event) => setPullNumber(event.target.value)}
-      />
-      <Text as="label" htmlFor="rerun-directive" className="sr-only">
-        本轮指令
-      </Text>
-      <TextField.Root
-        id="rerun-directive"
-        size={{ initial: "3", sm: "2" }}
-        placeholder={RUN_DIRECTIVE_PLACEHOLDER}
-        maxLength={500}
-        className="min-w-0 flex-1 basis-[220px] max-sm:min-h-11"
-        value={directive}
-        onChange={(event) => setDirective(event.target.value)}
-      />
-      <Button variant="soft" color="gray" size={{ initial: "4", sm: "2" }} type="submit" disabled={rerun.isPending}>
-        {rerun.isPending ? "触发中…" : "重新运行"}
-      </Button>
-    </form>
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger>
+        <Button variant="soft" color="gray" size={{ initial: "3", sm: "2" }}>
+          重跑 PR
+        </Button>
+      </Popover.Trigger>
+      {/* 工具行里只留这颗按钮:三个控件平铺会把整行挤到换行,而自由文本框贴着
+          筛选 chips 会被读成筛选器。表单收进 Popover,字段名义由可见 label 承担。 */}
+      <Popover.Content width="300px" align="end">
+        <form onSubmit={submit} className="flex flex-col gap-2" aria-busy={rerun.isPending}>
+          <label className="flex flex-col gap-1">
+            <Text size="1" color="gray">
+              PR 编号
+            </Text>
+            <TextField.Root
+              size={{ initial: "3", sm: "2" }}
+              placeholder="如:42"
+              inputMode="numeric"
+              className="max-sm:min-h-11"
+              value={pullNumber}
+              onChange={(event) => setPullNumber(event.target.value)}
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <Text size="1" color="gray">
+              本轮指令(选填)
+            </Text>
+            <TextField.Root
+              size={{ initial: "3", sm: "2" }}
+              placeholder={RUN_DIRECTIVE_PLACEHOLDER}
+              maxLength={500}
+              className="max-sm:min-h-11"
+              value={directive}
+              onChange={(event) => setDirective(event.target.value)}
+            />
+          </label>
+          <Text size="1" color="gray">
+            指令只作用于这一轮;要长期生效的要求请录进知识集。
+          </Text>
+          <Flex justify="end" mt="1">
+            <Button size={{ initial: "3", sm: "2" }} type="submit" disabled={rerun.isPending}>
+              {rerun.isPending ? "触发中…" : "重新运行"}
+            </Button>
+          </Flex>
+        </form>
+      </Popover.Content>
+    </Popover.Root>
   );
 }
 
