@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
@@ -48,9 +49,9 @@ const ROUTE_EXPECTATIONS = [
   ["GET", "/range-reviews/prefill", "review:create", "query"],
   ["POST", "/^\\/range-reviews\\/(\\d+)\\/advance$/", "review:create", "range-review:1"],
   ["POST", "/^\\/range-reviews\\/(\\d+)\\/complete$/", "finding:dispose", "range-review:1"],
-  ["GET", "/repo-branches", "anyOf:review:create|rule:write", "query"],
-  ["GET", "/repo-commits", "anyOf:review:create|rule:write", "query"],
-  ["GET", "/repo-tags", "anyOf:review:create|rule:write", "query"],
+  ["GET", "/repo-branches", "anyOf:review:create|knowledge:write", "query"],
+  ["GET", "/repo-commits", "anyOf:review:create|knowledge:write", "query"],
+  ["GET", "/repo-tags", "anyOf:review:create|knowledge:write", "query"],
   ["GET", "/repos/search", "repo:write", "-"],
   ["GET", "/repos", "authenticated-only", "-"],
   ["POST", "/repos", "repo:write", "-"],
@@ -62,17 +63,17 @@ const ROUTE_EXPECTATIONS = [
   ["GET", "/^\\/repos\\/(\\d+)\\/rules$/", "authenticated-only", "repo:1"],
   ["GET", "/^\\/repos\\/(\\d+)\\/rule-traces\\/(\\d+)$/", "authenticated-only", "repo:1"],
   ["GET", "/^\\/repos\\/(\\d+)\\/rule-traces\\/(\\d+)\\/stream$/", "authenticated-only", "repo:1"],
-  ["POST", "/^\\/repos\\/(\\d+)\\/rules$/", "rule:write", "repo:1"],
-  ["PUT", "/^\\/repos\\/(\\d+)\\/rules\\/(\\d+)$/", "rule:write", "repo:1"],
-  ["DELETE", "/^\\/repos\\/(\\d+)\\/rules\\/(\\d+)$/", "rule:write", "repo:1"],
-  ["POST", "/^\\/repos\\/(\\d+)\\/rule-exploration$/", "rule:write", "repo:1"],
-  ["POST", "/^\\/repos\\/(\\d+)\\/rule-draft$/", "rule:write", "repo:1"],
-  ["POST", "/^\\/repos\\/(\\d+)\\/rule-draft\\/confirm$/", "rule:write", "repo:1"],
-  ["PUT", "/^\\/repos\\/(\\d+)\\/rule-draft\\/(\\d+)$/", "rule:write", "repo:1"],
-  ["DELETE", "/^\\/repos\\/(\\d+)\\/rule-draft\\/(\\d+)$/", "rule:write", "repo:1"],
-  ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/(\\d+)\\/accept$/", "rule:write", "repo:1"],
-  ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/(\\d+)\\/reject$/", "rule:write", "repo:1"],
-  ["GET", "/rule-models", "rule:write", "-"],
+  ["POST", "/^\\/repos\\/(\\d+)\\/rules$/", "knowledge:write", "repo:1"],
+  ["PUT", "/^\\/repos\\/(\\d+)\\/rules\\/(\\d+)$/", "knowledge:write", "repo:1"],
+  ["DELETE", "/^\\/repos\\/(\\d+)\\/rules\\/(\\d+)$/", "knowledge:write", "repo:1"],
+  ["POST", "/^\\/repos\\/(\\d+)\\/rule-exploration$/", "knowledge:write", "repo:1"],
+  ["POST", "/^\\/repos\\/(\\d+)\\/rule-draft$/", "knowledge:write", "repo:1"],
+  ["POST", "/^\\/repos\\/(\\d+)\\/rule-draft\\/confirm$/", "knowledge:write", "repo:1"],
+  ["PUT", "/^\\/repos\\/(\\d+)\\/rule-draft\\/(\\d+)$/", "knowledge:write", "repo:1"],
+  ["DELETE", "/^\\/repos\\/(\\d+)\\/rule-draft\\/(\\d+)$/", "knowledge:write", "repo:1"],
+  ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/(\\d+)\\/accept$/", "knowledge:write", "repo:1"],
+  ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/(\\d+)\\/reject$/", "knowledge:write", "repo:1"],
+  ["GET", "/rule-models", "knowledge:write", "-"],
   ["GET", "/model-services", "anyOf:model:read|credential:read", "-"],
   [
     "GET",
@@ -248,7 +249,7 @@ test("写权限在会话与端点统一包含对应读权限，review:rerun 保�
   );
 });
 
-test("新增的 rule:write 不落到已有角色上,持有它的人也只多这一格", async () => {
+test("新增的 knowledge:write 不落到已有角色上,持有它的人也只多这一格", async () => {
   const h = await startPanelHarness(cleanups);
   // 已有角色只勾了重跑:新增权限格不会自动落到它上面(角色是权限格的子集)。
   addPermissionUser(h, "rerun-only", ["review:rerun"]);
@@ -258,13 +259,33 @@ test("新增的 rule:write 不落到已有角色上,持有它的人也只多这�
   ).json()) as { permissions: PanelPermission[] };
   assert.deepEqual(rerunSession.permissions, ["review:rerun"]);
 
-  // rule:write 不隐含任何读权限:读侧沿用登录加仓库分配(ADR 0019)。
-  addPermissionUser(h, "rule-writer", ["rule:write"]);
+  // knowledge:write 不隐含任何读权限:读侧沿用登录加仓库分配(ADR 0019)。
+  addPermissionUser(h, "rule-writer", ["knowledge:write"]);
   const cookie = await userCookie(h.serverUrl, "rule-writer");
   const session = (await (
     await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, { headers: { cookie } })
   ).json()) as { permissions: PanelPermission[] };
-  assert.deepEqual(session.permissions, ["rule:write"]);
+  assert.deepEqual(session.permissions, ["knowledge:write"]);
+});
+
+test("升级把存量角色的 rule:write 改写成 knowledge:write,其余格不动", async () => {
+  const h = await startPanelHarness(cleanups);
+  const role = (await (
+    await h.api("POST", "/roles", { name: "升级前角色", permissions: ["review:rerun"] })
+  ).json()) as { id: number };
+  const legacy = new DatabaseSync(h.db.path);
+  legacy
+    .prepare("INSERT INTO panel_role_permission (role_id, permission) VALUES (?, ?)")
+    .run(role.id, "rule:write");
+  legacy.close();
+
+  // 迁移在开库那一刻跑完;跑第二遍没有旧行,结果一样(ADR 0020,issue #220)。
+  for (const pass of [1, 2]) {
+    const store = openStore(h.db.path);
+    const permissions = store.listPanelRoles().find((item) => item.id === role.id)?.permissions;
+    store.close();
+    assert.deepEqual(permissions, ["knowledge:write", "review:rerun"], `第 ${pass} 次开库`);
+  }
 });
 
 test("普通用户不能调用系统管理员端点", async () => {

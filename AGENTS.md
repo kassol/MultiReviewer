@@ -152,6 +152,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-31: 落地 issue #220(父 issue #219,ADR 0020)。**权限格 `rule:write` 改名 `knowledge:write`,面板与代码内术语换成知识集词表**。纯机械改名,零新行为:同一格管的还是那几个写侧端点,存量角色在开库时一次性改写字面量,能力无增减。面板上的「规则集」「规则集版本 N」「规则集未确认」「空规则集」按 CONTEXT.md 换成知识集那一组,访问控制页的角色矩阵那一行从「评审 · 规则治理」变成「评审 · 知识治理」。端点路径、表名、类型名与变量名一律不动,那是后续票的施工面。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
+
 - 2026-08-29: 落地 issue #217。**删掉六处已经完成使命的一次性迁移**:schema-v0 的模型服务迁移器整个文件、以及开库时跑的五个升级块(旧 Finding 按新身份折叠、删费用列、清退役读权限格、修复关闭 PR 的空状态、存量仓库补「已确认空规则集」)。删除依据是所有部署实例都已在当前版本上启动过至少一次(现役实例只有 00-test),这些代码路径再也不会命中。**schema-v0 数据库拒绝启动的报错保留**:库里已有表却仍是版本 0 时开库直接抛错,升级路径由更早的版本负责。面板、接口、schema 与运行行为一格未变。细节见 `src/AGENTS.md`。
 - 2026-08-29: **自定义 provider 新增 `anthropic-messages` 接口协议**。ANTHROPIC_BASE_URL 式网关(Claude Code 中转一类)可作为模型服务接入:模型发现按协议分派鉴权头,运行时注册剥掉 baseUrl 尾部 /v1(@anthropic-ai/sdk 自拼 /v1/messages),推理验证与 Review Run 复用 Pi 原生协议支持、零适配。候选 kind 字面量 `openai-compatible` 更名 `custom`,`CONTEXT.md` 的「自定义 provider」词条不再限定 OpenAI-compatible。live 验证另暴露 adaptive thinking 模型拒收 `thinking.type: disabled` 与显式 temperature:思考元数据(`thinkingLevelMap` / `compat`)现随运行模型全链路携带并落库两列。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 - 2026-08-29: 落地 issue #212。**同一个仓库上并发的几件事不再互相换掉对方正在读的代码**:以前每个仓库只有一份缓存工作副本,两条并发的 Review Run、一次基点重探索与一次处置反哺都往它上面 checkout,后到的那一次会把前一次正在读的文件换成另一个 commit 的内容,Finding 的行号与代码片段因此锚到错的地方。现在缓存副本只负责 clone 与 fetch,每一次要读代码的调用从它派生一份一次性工作树、用完即删。对操作员可见的变化只有缓存根下多一段 `.checkouts/`(可弃的中间物,见部署那节的 `MULTIREVIEWER_CACHE_DIR`)。细节见 `src/AGENTS.md`。

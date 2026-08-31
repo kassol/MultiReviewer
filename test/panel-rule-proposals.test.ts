@@ -2,8 +2,8 @@
  * 修订提案队列与裁决(issue #207)。
  *
  * 两条缝:SQLite 临时库验提案状态机与三种变更类型各自的落库形态,面板 API 走真实 HTTP
- * 验规则集已确认时探索产出入队(含已确认的空规则集)、逐条裁决(原样采纳 / 改后采纳 /
- * 驳回)、采纳推进规则集版本与 `rule:write` 拦截。规则 agent 仍用脚本化实现注入,与
+ * 验知识集已确认时探索产出入队(含已确认的空知识集)、逐条裁决(原样采纳 / 改后采纳 /
+ * 驳回)、采纳推进知识集版本与 `knowledge:write` 拦截。规则 agent 仍用脚本化实现注入,与
  * issue #205 同一个位置。
  */
 import assert from "node:assert/strict";
@@ -155,7 +155,7 @@ async function confirmedHarness(items: RuleAgentItem[]): Promise<{
     201,
   );
   await h.worktreesPreparedAtLeast(1);
-  const cookie = await scopedUser(h, "proposal-writer", [GITEA_REPO.id], ["rule:write"]);
+  const cookie = await scopedUser(h, "proposal-writer", [GITEA_REPO.id], ["knowledge:write"]);
   for (const rule of [
     { scope: "", statement: "会被改的那条", layer: "架构" },
     { scope: "", statement: "会被废止的那条", layer: "安全" },
@@ -165,7 +165,7 @@ async function confirmedHarness(items: RuleAgentItem[]): Promise<{
   return { h, cookie, agent: state };
 }
 
-test("提案状态机:待裁决只裁一次,驳回不动规则集", () => {
+test("提案状态机:待裁决只裁一次,驳回不动知识集", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -186,7 +186,7 @@ test("提案状态机:待裁决只裁一次,驳回不动规则集", () => {
     assert.equal(store.rejectRuleProposal(80, id), true);
     assert.equal(store.getRuleProposals(80)[0]!.state, "rejected");
     assert.notEqual(store.getRuleProposals(80)[0]!.decidedAt, null);
-    // 驳回只改状态:一版都不推进,规则集仍然没有确认过。
+    // 驳回只改状态:一版都不推进,知识集仍然没有确认过。
     assert.equal(store.getRuleSet(80)?.version, null);
     // 裁决过的提案裁不了第二次。
     assert.equal(store.rejectRuleProposal(80, id), false);
@@ -302,7 +302,7 @@ test("目标规则已经不生效时采纳不了,一版都不推进;移除仓库
   }
 });
 
-test("规则集已确认时探索产出进提案队列,草案一行不动", async () => {
+test("知识集已确认时探索产出进提案队列,草案一行不动", async () => {
   const items: RuleAgentItem[] = [];
   const { h, cookie, agent } = await confirmedHarness(items);
   const rules = (await ruleSet(h, cookie)).rules;
@@ -325,7 +325,7 @@ test("规则集已确认时探索产出进提案队列,草案一行不动", asyn
 
   const body = await ruleSet(h, cookie);
   assert.equal(body.exploration?.state, "completed");
-  // 草案是「还没有规则集时那一整份」,这条链路不碰它。
+  // 草案是「还没有知识集时那一整份」,这条链路不碰它。
   assert.deepEqual(body.draft, []);
   assert.deepEqual(
     body.proposals.map((row) => [row.change, row.targetRuleId, row.statement, row.source, row.state]),
@@ -335,12 +335,12 @@ test("规则集已确认时探索产出进提案队列,草案一行不动", asyn
       ["add", null, "全新的一条", "baseline-exploration", "pending"],
     ],
   );
-  // 规则集本身还没动:提案要人裁决才落。
+  // 知识集本身还没动:提案要人裁决才落。
   assert.equal(body.version, 2);
   assert.equal(body.rules.length, 2);
 });
 
-test("逐条裁决:改后采纳、原样采纳与驳回,只有采纳推进规则集版本", async () => {
+test("逐条裁决:改后采纳、原样采纳与驳回,只有采纳推进知识集版本", async () => {
   const items: RuleAgentItem[] = [];
   const { h, cookie } = await confirmedHarness(items);
   const path = `/repos/${GITEA_REPO.id}`;
@@ -407,7 +407,7 @@ test("逐条裁决:改后采纳、原样采纳与驳回,只有采纳推进规则
   );
 });
 
-test("没有 rule:write 的人裁决不了,但读得到提案队列", async () => {
+test("没有 knowledge:write 的人裁决不了,但读得到提案队列", async () => {
   const items: RuleAgentItem[] = [];
   const { h, cookie } = await confirmedHarness(items);
   const path = `/repos/${GITEA_REPO.id}`;
@@ -432,7 +432,7 @@ test("没有 rule:write 的人裁决不了,但读得到提案队列", async () =
   assert.equal((await send(h, reader, "POST", `${path}/rule-proposals/${queued.id}/reject`)).status, 403);
 
   // 分配外的仓库与没注册同形 404。
-  const outsider = await scopedUser(h, "proposal-outsider", [], ["rule:write"]);
+  const outsider = await scopedUser(h, "proposal-outsider", [], ["knowledge:write"]);
   assert.equal(
     (await send(h, outsider, "POST", `${path}/rule-proposals/${queued.id}/accept`)).status,
     404,
@@ -440,7 +440,7 @@ test("没有 rule:write 的人裁决不了,但读得到提案队列", async () =
   assert.equal((await ruleSet(h, cookie)).proposals[0]!.state, "pending");
 });
 
-test("已确认的空规则集重探索:产出仍进提案队列,不回到草案", async () => {
+test("已确认的空知识集重探索:产出仍进提案队列,不回到草案", async () => {
   const items: RuleAgentItem[] = [];
   const agent: RuleAgent = async () => ({ items });
   const h = await startReadyPanelHarness(cleanups, { ruleAgent: agent });
@@ -449,10 +449,10 @@ test("已确认的空规则集重探索:产出仍进提案队列,不回到草案
     201,
   );
   await h.worktreesPreparedAtLeast(1);
-  const cookie = await scopedUser(h, "empty-set-writer", [GITEA_REPO.id], ["rule:write"]);
+  const cookie = await scopedUser(h, "empty-set-writer", [GITEA_REPO.id], ["knowledge:write"]);
   const path = `/repos/${GITEA_REPO.id}`;
 
-  // 确认一个空规则集(issue #200):规则一条都没有,但这个仓库已经确认过了。
+  // 确认一个空知识集(issue #200):规则一条都没有,但这个仓库已经确认过了。
   assert.equal((await send(h, cookie, "POST", `${path}/rule-draft/confirm`)).status, 200);
   assert.equal((await ruleSet(h, cookie)).version, 1);
 
@@ -467,7 +467,7 @@ test("已确认的空规则集重探索:产出仍进提案队列,不回到草案
   );
   await h.explorationsAtLeast(1);
 
-  // 分界按有没有规则集版本取:已确认的空集重探索走提案队列,不再产出草案。
+  // 分界按有没有知识集版本取:已确认的空集重探索走提案队列,不再产出草案。
   const body = await ruleSet(h, cookie);
   assert.deepEqual(body.draft, []);
   assert.deepEqual(

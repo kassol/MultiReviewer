@@ -444,7 +444,7 @@ const indexRoute = createRoute({
             canRerun={hasPermission(session, "review:rerun")}
             canCreate={hasPermission(session, "review:create")}
             canWrite={hasPermission(session, "repo:write")}
-            canWriteRules={hasPermission(session, "rule:write")}
+            canWriteRules={hasPermission(session, "knowledge:write")}
             canReadModels={hasPermission(session, "model:read")}
             // 一个仓库都没分到的普通用户看到的是一段说明,不是一份空列表(issue #194)。
             unassigned={session.repoIds !== null && session.repoIds.length === 0}

@@ -80,7 +80,7 @@ function scriptedRuleAgent(
   return Object.assign(agent, { calls });
 }
 
-/** 一个已注册、已确认空规则集的仓库,跑完一轮并落下两条带行级评论的 Finding。 */
+/** 一个已注册、已确认空知识集的仓库,跑完一轮并落下两条带行级评论的 Finding。 */
 async function harnessWithFindings(ruleAgent: RuleAgent): Promise<PanelHarness> {
   const h = await startReadyPanelHarness(cleanups, {
     ruleAgent,
@@ -90,7 +90,7 @@ async function harnessWithFindings(ruleAgent: RuleAgent): Promise<PanelHarness> 
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
-  // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「规则集已确认」那一侧。
+  // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
   confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await h.settledAtLeast(1);
@@ -111,7 +111,7 @@ async function proposals(h: PanelHarness): Promise<ProposalResponse[]> {
   return ((await response.json()) as { proposals: ProposalResponse[] }).proposals;
 }
 
-/** 这个仓库留下的规则轨迹事件,按落库顺序。没有列表端点,直接读库。 */
+/** 这个仓库留下的知识轨迹事件,按落库顺序。没有列表端点,直接读库。 */
 function ruleTraceKinds(h: PanelHarness): string[] {
   const db = new DatabaseSync(h.db.path, { readOnly: true });
   try {

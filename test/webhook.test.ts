@@ -86,7 +86,7 @@ type HarnessOptions = {
   omitGiteaForge?: boolean;
   /** 压低「只记首次」集合的上限,触达封顶分支。 */
   loggedOnceMax?: number;
-  /** 把被审仓库留在「规则集未确认」那一侧(issue #206),验门禁。 */
+  /** 把被审仓库留在「知识集未确认」那一侧(issue #206),验门禁。 */
   ruleSetUnconfirmed?: boolean;
 };
 
@@ -121,7 +121,7 @@ async function startHarness(options: HarnessOptions = {}) {
     key: KEY_B,
   });
   seed.close();
-  // 这两个仓库播种成升级前那一代:门禁分代(issue #206)只挡新注册且未确认规则集的仓库。
+  // 这两个仓库播种成升级前那一代:门禁分代(issue #206)只挡新注册且未确认知识集的仓库。
   if (options.ruleSetUnconfirmed !== true) confirmEmptyRuleSet(db.path, REPO_ID);
   confirmEmptyRuleSet(db.path, REPO_B_ID);
 
@@ -252,18 +252,18 @@ test("签名正确的投递被受理并触发 Review Run", async () => {
   assert.deepEqual(h.dispatched, [PR]);
 });
 
-test("规则集还没确认的仓库:投递照常受理但不跑 Run,规则确认后放行", async () => {
+test("知识集还没确认的仓库:投递照常受理但不跑 Run,知识确认后放行", async () => {
   const h = await startHarness({ ruleSetUnconfirmed: true });
 
   // 受理照旧:验签过了就是 200,只是不开 Run,并留下一行说明原因。
   assert.equal((await h.deliver("gitea", "synchronized", { headSha: "sha-1" })).status, 200);
   assert.deepEqual(h.dispatched, []);
   assert.equal(
-    h.deliveries.filter((line) => line.includes("规则集还没确认,只记录不审")).length,
+    h.deliveries.filter((line) => line.includes("知识集还没确认,只记录不审")).length,
     1,
   );
 
-  // 规则确认:草案整组生效,这个仓库有了第一个规则集版本。
+  // 知识确认:草案整组生效,这个仓库有了第一个知识集版本。
   const store = openStore(h.db.path);
   try {
     assert.notEqual(

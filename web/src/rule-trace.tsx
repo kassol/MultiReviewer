@@ -11,8 +11,8 @@ import { num, str } from "@/lib/payload";
 import { EventTime, StreamStatus, ToolCall, UnknownEvent, useTrace } from "./run-trace.tsx";
 
 /**
- * 规则轨迹里的一条事件(CONTEXT.md 规则轨迹,issue #214)。与审查轨迹同源,少了轮次与
- * Reviewer 那两格:一条规则轨迹只有一个 agent。`kind` 是开放的字符串,认不出的那条按原样
+ * 知识轨迹里的一条事件(CONTEXT.md 知识轨迹,issue #214)。与审查轨迹同源,少了轮次与
+ * Reviewer 那两格:一条知识轨迹只有一个 agent。`kind` 是开放的字符串,认不出的那条按原样
  * 摊出 payload。
  */
 type RuleTraceEvent = {
@@ -23,7 +23,7 @@ type RuleTraceEvent = {
   payload: Record<string, unknown>;
 };
 
-/** 规则轨迹与修订提案共用的出处文案。同一个二元只有这一份字面量。 */
+/** 知识轨迹与修订提案共用的出处文案。同一个二元只有这一份字面量。 */
 export const SOURCE_LABEL: Record<string, string> = {
   "baseline-exploration": "基点探索",
   "disposition-feedback": "处置反哺",
@@ -108,7 +108,7 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
 }
 
 /**
- * 一条规则轨迹(issue #214)。历史一次取全,还在跑的接 SSE 实时追加,两者共用审查轨迹
+ * 一条知识轨迹(issue #214)。历史一次取全,还在跑的接 SSE 实时追加,两者共用审查轨迹
  * 那一份读取(`useTrace`)。
  *
  * 一律接流,不先判「还在不在跑」:跑完的那些服务端回放完就发结束信号,判据因此在服务端
@@ -119,7 +119,7 @@ export function RuleTrace({ repoId, taskId }: { repoId: number; taskId: number }
     queryKey: ["rule-trace", repoId, taskId],
     path: `/repos/${repoId}/rule-traces/${taskId}`,
     live: true,
-    // 轨迹跑完的同时产出也落库了,回头重读这个仓库的规则集。
+    // 轨迹跑完的同时产出也落库了,回头重读这个仓库的知识集。
     invalidateOnEnd: [["repo-rules", repoId]],
   });
 
@@ -136,7 +136,7 @@ export function RuleTrace({ repoId, taskId }: { repoId: number; taskId: number }
 
       {query.isPending ? (
         <div className="flex flex-col gap-2" role="status" aria-live="polite">
-          <span className="sr-only">正在加载这一次的规则轨迹</span>
+          <span className="sr-only">正在加载这一次的知识轨迹</span>
           {[0, 1, 2].map((slot) => <Skeleton key={slot} className="h-12" />)}
         </div>
       ) : null}
@@ -163,9 +163,9 @@ export function RuleTrace({ repoId, taskId }: { repoId: number; taskId: number }
 }
 
 /**
- * 进入一条规则轨迹的入口:规则集弹窗里的一个按钮加它自己的弹窗(issue #214)。
+ * 进入一条知识轨迹的入口:知识集弹窗里的一个按钮加它自己的弹窗(issue #214)。
  *
- * 不新建顶级导航:轨迹回答的是「这个仓库的规则是怎么来的」,与规则集是同一件事的两半。
+ * 不新建顶级导航:轨迹回答的是「这个仓库的规则是怎么来的」,与知识集是同一件事的两半。
  */
 export function RuleTraceButton({
   repoId,
@@ -194,7 +194,7 @@ export function RuleTraceButton({
           size={{ initial: "2", sm: "3" }}
           className="flex flex-col overflow-hidden"
         >
-          <Dialog.Title size="4" mb="3" className="shrink-0 pr-9">规则轨迹</Dialog.Title>
+          <Dialog.Title size="4" mb="3" className="shrink-0 pr-9">知识轨迹</Dialog.Title>
           <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1">
             <RuleTrace repoId={repoId} taskId={taskId} />
           </div>

@@ -483,7 +483,7 @@ export function seedHistoricalRepo(
   } finally {
     store.close();
   }
-  // 「升级前已经存在」的另一半:存量迁移把这些仓库写成已确认空规则集(issue #206)。
+  // 「升级前已经存在」的另一半:存量迁移把这些仓库写成已确认空知识集(issue #206)。
   confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   return { url: `${PANEL_BASE_URL}/webhook?k=1`, secret: key };
 }

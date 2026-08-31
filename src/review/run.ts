@@ -71,7 +71,7 @@ export type ReviewRunPlan = Readonly<{
   reviewers: readonly Reviewer[];
   maxChangedLinesPerBatch: number;
   reviewerPins: readonly ReviewRunReviewerPin[];
-  /** 本轮冻结的规则集版本(issue #204)。仓库还没确认过规则集时为 null。 */
+  /** 本轮冻结的知识集版本(issue #204)。仓库还没确认过知识集时为 null。 */
   ruleSetVersion: number | null;
   /** 那一版的生效规则全体,按批次路由前的全集。 */
   rules: readonly ReviewRule[];
@@ -82,7 +82,7 @@ export function createReviewRunPlan(
   reviewers: readonly Reviewer[],
   maxChangedLinesPerBatch: number,
   reviewerPins: readonly ReviewRunReviewerPin[],
-  /** 本轮冻结的规则集(issue #204)。规则与模型服务版本同律,一并在开跑前定死。 */
+  /** 本轮冻结的知识集(issue #204)。规则与模型服务版本同律,一并在开跑前定死。 */
   ruleSet: { version: number | null; rules: readonly ReviewRule[] } = {
     version: null,
     rules: [],
@@ -112,9 +112,9 @@ export type ReviewRunDeps = {
   triggeredBy?: string;
   /** 这一轮归属的范围审查;PR 触发不传(ADR 0012)。 */
   rangeReviewId?: number;
-  /** 本轮冻结的规则集版本(issue #204)。不传即这一轮没有规则可依。 */
+  /** 本轮冻结的知识集版本(issue #204)。不传即这一轮没有规则可依。 */
   ruleSetVersion?: number | null;
-  /** 本轮冻结的那一版规则全体。不传即空规则集,注入与这一票之前逐字一致。 */
+  /** 本轮冻结的那一版规则全体。不传即空知识集,注入与这一票之前逐字一致。 */
   rules?: readonly ReviewRule[];
 };
 
@@ -1088,7 +1088,7 @@ export async function runReview(
       changedLines: [...changedLines.values()].reduce((sum, n) => sum + n, 0),
       batchCount: batches.length,
       reviewerPins: deps.reviewerPins ?? [],
-      // 规则集版本在这里定死(issue #204):这一轮之后的规则变更追不上已经开跑的它,
+      // 知识集版本在这里定死(issue #204):这一轮之后的规则变更追不上已经开跑的它,
       // 回看历史轮次时也就知道当时按的是哪一版。
       ruleSetVersion: deps.ruleSetVersion ?? null,
     });

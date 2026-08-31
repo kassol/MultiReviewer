@@ -275,8 +275,8 @@ CREATE TABLE IF NOT EXISTS repo_key (
   PRIMARY KEY (repo_id, generation)
 );
 
--- 规则集版本(CONTEXT.md)。一次规则确认或裁决采纳记一行,版本按仓库从 1 递增。
--- 有没有行就是「这个仓库确认过规则集没有」的判据:空规则集是合法状态,它与「还没
+-- 知识集版本(CONTEXT.md)。一次知识确认或裁决采纳记一行,版本按仓库从 1 递增。
+-- 有没有行就是「这个仓库确认过知识集没有」的判据:空知识集是合法状态,它与「还没
 -- 确认」在规则行上分不出来,只有这张表分得出。
 CREATE TABLE IF NOT EXISTS rule_set_version (
   repo_id INTEGER NOT NULL REFERENCES repo(id),
@@ -289,7 +289,7 @@ CREATE TABLE IF NOT EXISTS rule_set_version (
 -- layer 是自由文本层标签;origin 是出处。
 --
 -- 两态生命周期不另存历史表:effective_version 是它进集的那一版,retired_version 是它
--- 被废止的那一版(NULL 即仍生效)。规则集版本 V 的快照因此是一句 WHERE——
+-- 被废止的那一版(NULL 即仍生效)。知识集版本 V 的快照因此是一句 WHERE——
 -- effective_version <= V 且(retired_version 为 NULL 或 > V),Review Run 冻结版本后按
 -- 它取当时那一组。state 与 retired_version 由 CHECK 绑死,两者不会各说各话。
 CREATE TABLE IF NOT EXISTS review_rule (
@@ -311,7 +311,7 @@ CREATE INDEX IF NOT EXISTS review_rule_by_repo ON review_rule(repo_id);
 -- 「同仓库同时只跑一个」因此就是这一行的 state 是不是 running。
 --
 -- model 是这次探索所用的模型标识,它同时是「这个仓库最近一次探索用的是什么模型」那份
--- 记录:规则确认清空草案时不动这一行,处置反哺据它沿用同一个模型(issue #208)。
+-- 记录:知识确认清空草案时不动这一行,处置反哺据它沿用同一个模型(issue #208)。
 -- thinking_level 同理是那一次选的思考档位(NULL 即没选,等同 off),反哺一并沿用
 -- (issue #213)。
 CREATE TABLE IF NOT EXISTS rule_exploration (
@@ -326,11 +326,11 @@ CREATE TABLE IF NOT EXISTS rule_exploration (
   finished_at TEXT
 );
 
--- 规则草案(CONTEXT.md,issue #205)。每仓库至多一份,重新探索覆盖未确认的旧草案;
--- 规则确认把这里的条目整组搬进 review_rule 之后清空。
+-- 知识草案(CONTEXT.md,issue #205)。每仓库至多一份,重新探索覆盖未确认的旧草案;
+-- 知识确认把这里的条目整组搬进 review_rule 之后清空。
 --
 -- 与 review_rule 分表而不是给它加一列「未确认」:草案条目没有生效版本,混在同一张表
--- 里,规则集版本 V 的那句 WHERE 就要多一道「而且不是草案」的条件。
+-- 里,知识集版本 V 的那句 WHERE 就要多一道「而且不是草案」的条件。
 CREATE TABLE IF NOT EXISTS rule_draft_item (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   repo_id INTEGER NOT NULL REFERENCES repo(id),
@@ -342,12 +342,12 @@ CREATE TABLE IF NOT EXISTS rule_draft_item (
 );
 CREATE INDEX IF NOT EXISTS rule_draft_item_by_repo ON rule_draft_item(repo_id);
 
--- 修订提案(CONTEXT.md,issue #207)。一条待裁决的规则集变更:change 是变更类型,
+-- 修订提案(CONTEXT.md,issue #207)。一条待裁决的知识集变更:change 是变更类型,
 -- target_rule_id 是修改与废止指向的现有规则(新增没有目标),scope / statement / layer
 -- 是提案内容(废止那一档是目标规则当时的原样,只为看得懂队列里这条要废止什么),
 -- source 是出处二元,source_note 放触发它的处置备注(只有处置反哺有,issue #208)。
 --
--- 与规则草案分表:草案是「还没有规则集时的那一整份」,提案是「已有规则集之上的一条
+-- 与知识草案分表:草案是「还没有知识集时的那一整份」,提案是「已有知识集之上的一条
 -- 变更」,它多出变更类型、目标规则、出处与状态机四样,共用一张表就要给草案留四列空值。
 CREATE TABLE IF NOT EXISTS rule_proposal (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -367,7 +367,7 @@ CREATE TABLE IF NOT EXISTS rule_proposal (
 );
 CREATE INDEX IF NOT EXISTS rule_proposal_by_repo ON rule_proposal(repo_id);
 
--- 规则轨迹(CONTEXT.md,issue #214)。一次基点探索或一次处置反哺是一条轨迹,task_id
+-- 知识轨迹(CONTEXT.md,issue #214)。一次基点探索或一次处置反哺是一条轨迹,task_id
 -- 标识它,seq 在一条轨迹之内自增。事件行的形状与 review_trace 同源(ADR 0017):按时间
 -- 顺序一行一条,payload 是 JSON 文本、不设长度上限。
 --
@@ -724,7 +724,7 @@ export type RunMeta = {
   /** 本轮固定的非秘密模型服务审计快照；没有 Reviewer 时显式传空数组。 */
   reviewerPins: readonly ReviewRunReviewerPin[];
   /**
-   * 本轮冻结的规则集版本(CONTEXT.md 规则集版本,issue #204)。省略或 null 即这一轮
+   * 本轮冻结的知识集版本(CONTEXT.md 知识集版本,issue #204)。省略或 null 即这一轮
    * 没有规则注入,回看历史轮次时也就知道当时没有规则可依。
    */
   ruleSetVersion?: number | null;
@@ -1029,11 +1029,11 @@ export type ReviewRunStoreSnapshot = Readonly<{
   maxChangedLinesPerBatch: number | null;
   modelServices: readonly ModelServiceRecord[];
   /**
-   * 本轮要冻结的规则集版本(issue #204)。仓库还没确认过规则集时为 null。与模型服务
+   * 本轮要冻结的知识集版本(issue #204)。仓库还没确认过知识集时为 null。与模型服务
    * 版本同律:这份快照一取出来就固定,之后的规则变更追不上已经开跑的这一轮。
    */
   ruleSetVersion: number | null;
-  /** 那一版的生效规则全体。按批次路由前的全集,空规则集给空数组。 */
+  /** 那一版的生效规则全体。按批次路由前的全集,空知识集给空数组。 */
   rules: readonly ReviewRule[];
 }>;
 
@@ -1161,7 +1161,7 @@ export type RepoSummary = {
   worktree: WorktreeStatus;
 };
 
-/** 规则集里的一条评审规则(CONTEXT.md)。`scope` 空串即全仓库。 */
+/** 知识集里的一条评审规则(CONTEXT.md)。`scope` 空串即全仓库。 */
 export type ReviewRuleRecord = {
   id: number;
   scope: string;
@@ -1172,7 +1172,7 @@ export type ReviewRuleRecord = {
 };
 
 /**
- * 规则集里的一条 → 交给模型的那一份(issue #204)。只要标识、作用范围与那一句陈述;
+ * 知识集里的一条 → 交给模型的那一份(issue #204)。只要标识、作用范围与那一句陈述;
  * 层标签是人给规则分组用的,不进模型输入。启动快照、基点探索与处置反哺三处同一份投影。
  */
 export function toReviewRule(rule: ReviewRuleRecord): ReviewRule {
@@ -1180,8 +1180,8 @@ export function toReviewRule(rule: ReviewRuleRecord): ReviewRule {
 }
 
 /**
- * 一个仓库当前生效的规则集与它的规则集版本(CONTEXT.md)。`version` 为 null 即这个
- * 仓库还没确认过规则集;已确认的空规则集是版本有值、规则为空。
+ * 一个仓库当前生效的知识集与它的知识集版本(CONTEXT.md)。`version` 为 null 即这个
+ * 仓库还没确认过知识集;已确认的空知识集是版本有值、规则为空。
  *
  * `retired` 是这个仓库废止过的规则,按废止的先后给:废止的规则不再生效,但仍要查得到
  * (issue #203)。修改一条规则同样在这里留下改之前那一版——两态生命周期里,内容被换掉
@@ -1202,9 +1202,9 @@ export type ReviewRuleInput = {
 
 /**
  * 一个仓库最近一次基点探索(CONTEXT.md,issue #205)。每仓库至多一次,重新探索覆盖它。
- * `model` 是那次所用的模型标识,规则确认之后仍留着——处置反哺沿用它(issue #208)。
+ * `model` 是那次所用的模型标识,知识确认之后仍留着——处置反哺沿用它(issue #208)。
  * `thinkingLevel` 是那次选的思考档位,null 即没选(等同 off),反哺一并沿用(issue #213)。
- * `traceTaskId` 是那一次的规则轨迹,轨迹起头落库失败与升级前跑过的那些都是 null。
+ * `traceTaskId` 是那一次的知识轨迹,轨迹起头落库失败与升级前跑过的那些都是 null。
  */
 export type RuleExploration = {
   state: "running" | "failed" | "completed";
@@ -1218,7 +1218,7 @@ export type RuleExploration = {
   finishedAt: string | null;
 };
 
-/** 规则草案里的一条(CONTEXT.md)。`origin` 与生效规则同一套字面量。 */
+/** 知识草案里的一条(CONTEXT.md)。`origin` 与生效规则同一套字面量。 */
 export type RuleDraftItem = ReviewRuleInput & {
   id: number;
   origin: string;
@@ -1242,7 +1242,7 @@ export type RuleProposalInput = ReviewRuleInput & {
   /** 出处附注:处置反哺放触发它的处置备注,基点探索没有。 */
   sourceNote: string | null;
   /**
-   * 提出它的那一次规则 agent 任务的轨迹标识(CONTEXT.md 规则轨迹,issue #214)。人据此
+   * 提出它的那一次规则 agent 任务的轨迹标识(CONTEXT.md 知识轨迹,issue #214)。人据此
    * 回溯到「这条提案是怎么推出来的」。轨迹没起来时为 null,升级前入队的旧提案同理。
    */
   traceTaskId: number | null;
@@ -1652,13 +1652,13 @@ export type Store = {
   /** 全部已注册仓库,按最近活动排序,没跑过的按注册时间排在后面。 */
   listRepos(): RepoSummary[];
   /**
-   * 这个仓库当前生效的规则集与它的规则集版本。未注册的仓库回 undefined——规则集挂在
-   * 注册表行上,没有那一行就没有规则集可谈。
+   * 这个仓库当前生效的知识集与它的知识集版本。未注册的仓库回 undefined——知识集挂在
+   * 注册表行上,没有那一行就没有知识集可谈。
    */
   getRuleSet(repoId: number): RuleSet | undefined;
   /**
-   * 手工新增一条评审规则(issue #203):推进一版规则集版本,新规则从那一版起生效,出处
-   * 记人工。返回新的规则集版本;仓库不在注册表里回 undefined。
+   * 手工新增一条评审规则(issue #203):推进一版知识集版本,新规则从那一版起生效,出处
+   * 记人工。返回新的知识集版本;仓库不在注册表里回 undefined。
    */
   addReviewRule(repoId: number, input: ReviewRuleInput): number | undefined;
   /**
@@ -1689,10 +1689,10 @@ export type Store = {
       startedAt: string;
     },
   ): boolean;
-  /** 探索完成:整组覆盖规则草案,那一行改写成已完成。调用方负责截断与去空。 */
+  /** 探索完成:整组覆盖知识草案,那一行改写成已完成。调用方负责截断与去空。 */
   finishRuleExploration(repoId: number, items: readonly ReviewRuleInput[], at: string): void;
   /**
-   * 探索完成,产出排进修订提案队列(issue #207):规则集已经非空时走这一条,草案一行
+   * 探索完成,产出排进修订提案队列(issue #207):知识集已经非空时走这一条,草案一行
    * 不动。那一行同样改写成已完成。调用方负责截断、去空与变更类型的映射。
    */
   finishRuleExplorationAsProposals(
@@ -1707,7 +1707,7 @@ export type Store = {
    * 中断后台的探索,那些行没有谁再去改它,面板会一直显示运行中而且给不出重试入口。
    */
   failInterruptedRuleExplorations(failure: string, at: string): void;
-  /** 这个仓库当前的规则草案,按 id 排序。没有草案即空数组。 */
+  /** 这个仓库当前的知识草案,按 id 排序。没有草案即空数组。 */
   getRuleDraft(repoId: number): RuleDraftItem[];
   /** 往草案里手工加一条,出处记人工。返回新条目的 id;仓库不在注册表里回 undefined。 */
   addRuleDraftItem(repoId: number, input: ReviewRuleInput): number | undefined;
@@ -1716,9 +1716,9 @@ export type Store = {
   /** 删草案里的一条。草案未确认,删就是删掉,没有历史版本要为它保留。 */
   deleteRuleDraftItem(repoId: number, itemId: number): boolean;
   /**
-   * 规则确认(CONTEXT.md):草案整组成为生效规则,推进一个规则集版本,草案清空。还没
-   * 确认过的仓库可以确认空草案——空规则集是合法状态(issue #200),那一版就是一个空集。
-   * 返回新的规则集版本;仓库不在注册表里、或规则集已确认而草案为空时回 undefined。
+   * 知识确认(CONTEXT.md):草案整组成为生效规则,推进一个知识集版本,草案清空。还没
+   * 确认过的仓库可以确认空草案——空知识集是合法状态(issue #200),那一版就是一个空集。
+   * 返回新的知识集版本;仓库不在注册表里、或知识集已确认而草案为空时回 undefined。
    */
   confirmRuleDraft(repoId: number): number | undefined;
   /** 这个仓库的修订提案队列,按排队先后。待裁决与已裁决的都在里面。 */
@@ -1726,12 +1726,12 @@ export type Store = {
   /** 排一条修订提案进队列。返回它的 id;仓库不在注册表里回 undefined。 */
   addRuleProposal(repoId: number, input: RuleProposalInput): number | undefined;
   /**
-   * 采纳一条待裁决的提案(CONTEXT.md 裁决):推进一版规则集版本,按变更类型落库——
+   * 采纳一条待裁决的提案(CONTEXT.md 裁决):推进一版知识集版本,按变更类型落库——
    * 新增写一行新规则(出处沿用提案的出处)、修改是旧行废止于新版加新内容作为新行、
    * 废止只让目标那一行停止生效。`input` 有值即人在采纳前改过内容,改后的那一份既落进
-   * 规则集也覆盖队列里这一条(裁决历史要说得出实际采纳的是什么)。
+   * 知识集也覆盖队列里这一条(裁决历史要说得出实际采纳的是什么)。
    *
-   * 返回新的规则集版本。提案不在待裁决队列里、或修改与废止的目标规则已经不生效时回
+   * 返回新的知识集版本。提案不在待裁决队列里、或修改与废止的目标规则已经不生效时回
    * undefined,一版都不推进。
    */
   acceptRuleProposal(
@@ -1739,7 +1739,7 @@ export type Store = {
     proposalId: number,
     input?: ReviewRuleInput,
   ): number | undefined;
-  /** 驳回一条待裁决的提案:只改状态,规则集一版都不推进。不在待裁决队列里回 false。 */
+  /** 驳回一条待裁决的提案:只改状态,知识集一版都不推进。不在待裁决队列里回 false。 */
   rejectRuleProposal(repoId: number, proposalId: number): boolean;
   /** 审查策略。历史值和未写过的项都从版本 1 开始。 */
   getGlobalSettings(): GlobalSettings;
@@ -1846,20 +1846,20 @@ export type Store = {
    */
   listTrace(runId: number, afterSeq?: number): TraceEvent[];
   /**
-   * 起一条规则轨迹(CONTEXT.md 规则轨迹,issue #214),返回它的任务标识。
+   * 起一条知识轨迹(CONTEXT.md 知识轨迹,issue #214),返回它的任务标识。
    *
    * 标识与序号都由这一句 INSERT 自己算,口径与 `appendTrace` 相同;写下的第一条事件
    * 是 `rule_agent_started`,`payload` 是这一次任务的入参。
    */
   startRuleTrace(repoId: number, source: RuleProposalSource, payload: unknown): number;
-  /** 追加一条规则轨迹事件,返回落库后的那条(带序号与时刻)。 */
+  /** 追加一条知识轨迹事件,返回落库后的那条(带序号与时刻)。 */
   appendRuleTrace(taskId: number, event: RuleTraceEventInput): RuleTraceEvent;
-  /** 一条规则轨迹,按 `seq` 升序。`afterSeq` 给了就只回它之后的那些,断线续传用。 */
+  /** 一条知识轨迹,按 `seq` 升序。`afterSeq` 给了就只回它之后的那些,断线续传用。 */
   listRuleTrace(taskId: number, afterSeq?: number): RuleTraceEvent[];
-  /** 这条规则轨迹挂在哪个仓库上。认不出的任务回 undefined,可见性据它判。 */
+  /** 这条知识轨迹挂在哪个仓库上。认不出的任务回 undefined,可见性据它判。 */
   ruleTraceRepo(taskId: number): number | undefined;
   /**
-   * 把这一次基点探索与它的规则轨迹显式关联起来(issue #214)。发起那一刻起完轨迹就写,
+   * 把这一次基点探索与它的知识轨迹显式关联起来(issue #214)。发起那一刻起完轨迹就写,
    * 轨迹起头失败即不写,那一行的 `trace_task_id` 保持 NULL,面板不显示入口。
    *
    * 不按「这个仓库最近一条 baseline-exploration 轨迹」反推:轨迹起头失败时那样会把
@@ -2287,7 +2287,7 @@ function stageScope(scope: StageScope): [string, (string | number)[]] {
 }
 
 /**
- * 人手工写下的规则在 `review_rule.origin` 上的出处(issue #203)。人往规则草案里手写
+ * 人手工写下的规则在 `review_rule.origin` 上的出处(issue #203)。人往知识草案里手写
  * 的那些同样记它(issue #205);处置反哺另写自己的字面量,那条链路是后续票的范围。
  */
 const MANUAL_RULE_ORIGIN = "manual";
@@ -2331,6 +2331,13 @@ export function openStore(dbPath: string): Store {
     }
   }
   for (const statement of ADD_INDEXES) db.exec(statement);
+
+  // 权限格 `rule:write` 改名 `knowledge:write`(ADR 0020,issue #220):存量角色照旧持有
+  // 同一格能力,只是字面量换了。`OR REPLACE` 让同一角色两格都有时旧行让位给新行;跑第
+  // 二遍已经没有旧行,零影响。
+  db.exec(
+    "UPDATE OR REPLACE panel_role_permission SET permission = 'knowledge:write' WHERE permission = 'rule:write'",
+  );
 
   // 系统管理员 bootstrap 与普通创建共用同一条用户写入语义。
   const writePanelUser = (record: Omit<PanelUserRecord, "lastLoginAt">): void => {
@@ -2532,7 +2539,7 @@ export function openStore(dbPath: string): Store {
   };
 
   /**
-   * 推进一版规则集版本,在同一个写事务里跑规则那几行改动。规则集版本与它带来的规则
+   * 推进一版知识集版本,在同一个写事务里跑规则那几行改动。知识集版本与它带来的规则
    * 变更必须一起落:落了版本没落规则,那一版的快照就是错的。
    */
   const inRuleSetVersion = <T>(repoId: number, write: (version: number, at: string) => T): T => {
@@ -2944,7 +2951,7 @@ export function openStore(dbPath: string): Store {
       try {
         db.prepare("DELETE FROM repo_key WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM panel_user_repo WHERE repo_id = ?").run(repoId);
-        // 规则集跟着仓库走:留下来只会在同一个 repo id 重新注册时复活一份没人认过的规则。
+        // 知识集跟着仓库走:留下来只会在同一个 repo id 重新注册时复活一份没人认过的规则。
         db.prepare("DELETE FROM review_rule WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM rule_set_version WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
@@ -3147,7 +3154,7 @@ export function openStore(dbPath: string): Store {
     finishRuleExplorationAsProposals(repoId, proposals, at) {
       db.exec("BEGIN");
       try {
-        // 排进队列而不是覆盖:提案是已有规则集之上的一条变更,人裁决采纳才改变规则集。
+        // 排进队列而不是覆盖:提案是已有知识集之上的一条变更,人裁决采纳才改变知识集。
         for (const item of proposals) insertRuleProposal(repoId, item, at);
         completeRuleExploration(repoId, at);
         db.exec("COMMIT");
@@ -3217,7 +3224,7 @@ export function openStore(dbPath: string): Store {
 
     confirmRuleDraft(repoId) {
       if (!repoExists(repoId)) return undefined;
-      // 空规则集是合法状态(issue #200):还没确认过的仓库确认空草案就是在说「这个仓库
+      // 空知识集是合法状态(issue #200):还没确认过的仓库确认空草案就是在说「这个仓库
       // 没有规则」,照样生成一个版本,门禁随之放行。已确认的仓库拿空草案再确认只会白推
       // 一版,那时回 undefined。
       if (store.getRuleDraft(repoId).length === 0 && store.getRuleSet(repoId)?.version !== null) {

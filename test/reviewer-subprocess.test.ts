@@ -428,7 +428,7 @@ process.on("message", (request) => {
   assert.deepEqual(JSON.parse(outcome.findings[0]!.description), history);
 });
 
-test("本轮注入的评审规则原样进任务;空规则集不带这一项", async () => {
+test("本轮注入的评审规则原样进任务;空知识集不带这一项", async () => {
   const path = worker(`
 process.on("message", (request) => {
   process.send({
@@ -444,7 +444,7 @@ process.on("message", (request) => {
   const injected = await runInChild(path, CONFIG, input({ rules }));
   assert.deepEqual(JSON.parse(injected.findings[0]!.description), rules);
 
-  // 空规则集要与「这一票之前」逐字一致:任务里根本没有这一项,prompt 因此没有规则段。
+  // 空知识集要与「这一票之前」逐字一致:任务里根本没有这一项,prompt 因此没有规则段。
   const empty = await runInChild(path, CONFIG, input({ rules: [] }));
   assert.equal(JSON.parse(empty.findings[0]!.description), "absent");
 });

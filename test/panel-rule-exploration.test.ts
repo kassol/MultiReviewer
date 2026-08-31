@@ -1,8 +1,8 @@
 /**
- * 基点探索与规则确认(issue #205)。
+ * 基点探索与知识确认(issue #205)。
  *
- * 两条缝:SQLite 临时库验探索状态机、草案覆盖与规则确认推进版本,面板 API 走真实 HTTP
- * 验发起、状态可见、草案逐条增删改、整组确认与 `rule:write` 拦截。规则 agent 用脚本化
+ * 两条缝:SQLite 临时库验探索状态机、草案覆盖与知识确认推进版本,面板 API 走真实 HTTP
+ * 验发起、状态可见、草案逐条增删改、整组确认与 `knowledge:write` 拦截。规则 agent 用脚本化
  * 实现注入,对齐脚本化 Reviewer 先例;真模型链路由 smoke 覆盖。
  */
 import assert from "node:assert/strict";
@@ -164,7 +164,7 @@ async function registeredHarness(
   });
   assert.equal(registered.status, 201);
   await h.worktreesPreparedAtLeast(1);
-  const cookie = await scopedUser(h, "rule-writer", [GITEA_REPO.id], ["rule:write"]);
+  const cookie = await scopedUser(h, "rule-writer", [GITEA_REPO.id], ["knowledge:write"]);
   return { h, cookie };
 }
 
@@ -249,7 +249,7 @@ test("重探索覆盖未确认的旧草案,人手工加的那条一并被覆盖"
   }
 });
 
-test("规则确认整组生效:草案成为生效规则、推进一版、草案清空", () => {
+test("知识确认整组生效:草案成为生效规则、推进一版、草案清空", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -263,7 +263,7 @@ test("规则确认整组生效:草案成为生效规则、推进一版、草案�
     const manual = store.addRuleDraftItem(72, item("入参要在边界上校验", "安全"))!;
     assert.equal(store.updateRuleDraftItem(72, manual, item("入参要在边界上校验并给原因", "安全")), true);
 
-    // 规则确认产生这个仓库的第一个规则集版本(issue #206:注册不再落版本)。
+    // 知识确认产生这个仓库的第一个知识集版本(issue #206:注册不再落版本)。
     assert.equal(store.confirmRuleDraft(72), 1);
     const confirmed = store.getRuleSet(72)!;
     assert.equal(confirmed.version, 1);
@@ -343,7 +343,7 @@ test("面板发起基点探索:产出落草案、按重要性截断为 30 条", 
   assert.equal(body.draft[0]!.statement, "第 1 条规范陈述");
   assert.equal(body.draft[29]!.statement, "第 30 条规范陈述");
   assert.equal(body.draft[0]!.origin, "baseline-exploration");
-  // 规则集本身还没动:草案要人确认才生效,确认之前这个仓库都是「规则集未确认」。
+  // 知识集本身还没动:草案要人确认才生效,确认之前这个仓库都是「知识集未确认」。
   assert.equal(body.version, null);
   assert.deepEqual(body.rules, []);
 
@@ -373,7 +373,7 @@ test("探索跑完即释放那一份一次性工作树", async () => {
   assert.equal(existsSync(agent.calls[0]!.worktreePath), false);
 });
 
-test("面板逐条增删改草案后整组确认,生成第一个规则集版本", async () => {
+test("面板逐条增删改草案后整组确认,生成第一个知识集版本", async () => {
   const agent = scriptedRuleAgent({ items: [item("探索出来的一条", "架构", "src/**")] });
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
   const path = `/repos/${GITEA_REPO.id}`;
@@ -477,7 +477,7 @@ test("探索失败原因可见并可重试,运行中不接第二次发起", asyn
   assert.deepEqual(done.draft.map((row) => row.statement), ["重试之后的一条"]);
 });
 
-test("规则集非空时不再走草案:产出排进修订提案队列(issue #207 的分界)", async () => {
+test("知识集非空时不再走草案:产出排进修订提案队列(issue #207 的分界)", async () => {
   const agent = scriptedRuleAgent({ items: [item("探索提的一条")] });
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
   const path = `/repos/${GITEA_REPO.id}`;
@@ -502,20 +502,20 @@ test("规则集非空时不再走草案:产出排进修订提案队列(issue #20
   assert.deepEqual((await ruleSet(h, cookie)).draft, []);
 });
 
-test("没有 rule:write 的人发起不了探索也确认不了,分配外的仓库同形 404", async () => {
+test("没有 knowledge:write 的人发起不了探索也确认不了,分配外的仓库同形 404", async () => {
   const agent = scriptedRuleAgent({ items: [] });
   const { h } = await registeredHarness({ ruleAgent: agent });
   const path = `/repos/${GITEA_REPO.id}`;
   const launch = { baseline: h.repo.baseSha, provider: "test", model: "global-model" };
 
   const reader = await scopedUser(h, "rules-reader", [GITEA_REPO.id]);
-  // 读得到规则集与草案的人不等于发起得了探索。
+  // 读得到知识集与草案的人不等于发起得了探索。
   assert.equal((await get(h, reader, `${path}/rules`)).status, 200);
   assert.equal((await send(h, reader, "POST", `${path}/rule-exploration`, launch)).status, 403);
   assert.equal((await send(h, reader, "POST", `${path}/rule-draft`, {})).status, 403);
   assert.equal((await send(h, reader, "POST", `${path}/rule-draft/confirm`)).status, 403);
 
-  const outsider = await scopedUser(h, "other-writer", [], ["rule:write"]);
+  const outsider = await scopedUser(h, "other-writer", [], ["knowledge:write"]);
   const outside = await send(h, outsider, "POST", `${path}/rule-exploration`, launch);
   assert.equal(outside.status, 404);
   assert.equal(agent.calls.length, 0);
@@ -553,7 +553,7 @@ test("发起要一个可用模型与一个 commit sha,坏入参一律 400", asyn
   });
 });
 
-test("规则集未确认的仓库确认得了空规则集:生成第一版,草案一条都不需要", () => {
+test("知识集未确认的仓库确认得了空知识集:生成第一版,草案一条都不需要", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -561,7 +561,7 @@ test("规则集未确认的仓库确认得了空规则集:生成第一版,草案
     store.registerRepo({ repoId: 73, owner: "acme", repo: "empty", generation: 1, key: "k" });
     assert.equal(store.getRuleSet(73)!.version, null);
 
-    // 空规则集是合法状态(issue #200):没探索过、草案为空,确认的就是一个空集。
+    // 空知识集是合法状态(issue #200):没探索过、草案为空,确认的就是一个空集。
     assert.equal(store.confirmRuleDraft(73), 1);
     const confirmed = store.getRuleSet(73)!;
     assert.equal(confirmed.version, 1);

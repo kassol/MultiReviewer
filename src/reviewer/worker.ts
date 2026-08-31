@@ -92,7 +92,7 @@ const FINDING_FIELDS = {
 const findingSchema = Type.Object(FINDING_FIELDS);
 
 /**
- * 注入过评审规则的那一批才多这一个字段(issue #204)。空规则集下工具的形状与这一票
+ * 注入过评审规则的那一批才多这一个字段(issue #204)。空知识集下工具的形状与这一票
  * 之前逐字一致:没有规则可命中时留着一个规则标识字段,只会请模型编一个填进来。
  */
 const findingWithRuleSchema = Type.Object({
@@ -232,7 +232,7 @@ export function reviewPrompt(
   const history =
     request.history.length === 0 ? "" : `\n${historySection(request.history)}\n`;
   const intent = request.intent === undefined ? "" : `${intentSection(request.intent)}\n`;
-  // 空规则集与没有规则集同一条路径:两者都不渲染规则段。
+  // 空知识集与没有知识集同一条路径:两者都不渲染规则段。
   const rules =
     request.rules === undefined || request.rules.length === 0
       ? ""

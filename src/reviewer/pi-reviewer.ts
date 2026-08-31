@@ -50,7 +50,7 @@ export async function runInChild(
     worktreePath,
     history,
     intent,
-    // 空规则集与不传等价。
+    // 空知识集与不传等价。
     rules = [],
     // 子进程转发上来的过程事件的去处(issue #171)。不关心过程的调用方不传。
     onEvent = () => {},
@@ -75,7 +75,7 @@ export async function runInChild(
     worktreePath,
     history,
     ...(intent === undefined ? {} : { intent }),
-    // 空规则集不带这一项:子进程据此不渲染规则段,prompt 与没有规则集时逐字一致。
+    // 空知识集不带这一项:子进程据此不渲染规则段,prompt 与没有知识集时逐字一致。
     ...(rules.length === 0 ? {} : { rules }),
   };
 

@@ -28,7 +28,7 @@ export type TraceEvent = {
   payload: Record<string, unknown>;
 };
 
-/** `GET …/trace` 的全量事件,按 `seq` 升序。审查轨迹与规则轨迹同一个形状。 */
+/** `GET …/trace` 的全量事件,按 `seq` 升序。审查轨迹与知识轨迹同一个形状。 */
 type TraceList<E> = { events: E[] };
 
 function traceKey(runId: number): [string, number] {
@@ -427,7 +427,7 @@ export type StreamState = keyof typeof STREAM_LABEL;
 
 /**
  * 一条轨迹的读取:历史一次取全,再把 SSE 的增量追加进同一份查询缓存——两条来源写同一个
- * 数组,页面就不必区分「这条是取回来的还是推过来的」。审查轨迹与规则轨迹共用它
+ * 数组,页面就不必区分「这条是取回来的还是推过来的」。审查轨迹与知识轨迹共用它
  * (issue #214),差别只有取哪个端点、还在不在跑,以及结束时该刷新哪几份投影。
  */
 export function useTrace<E extends { seq: number }>(options: {

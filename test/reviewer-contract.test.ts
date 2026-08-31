@@ -194,7 +194,7 @@ test("子进程失败文本回传前抹掉本轮模型凭据", () => {
 
 const PROMPT_RANGE = { baseSha: "aaa", headSha: "bbb", files: ["src/a.ts"] };
 
-test("空规则集不渲染规则段,prompt 与没有规则集时逐字一致", () => {
+test("空知识集不渲染规则段,prompt 与没有知识集时逐字一致", () => {
   const withoutRules = reviewPrompt({ range: PROMPT_RANGE, history: [] });
   const withEmptyRules = reviewPrompt({ range: PROMPT_RANGE, history: [], rules: [] });
 

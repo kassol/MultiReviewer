@@ -79,7 +79,7 @@ function send(message: RuleWorkerMessage): void {
 }
 
 /**
- * 现有规则集。首次探索时是空的,这一段因此不渲染;非空即这一次提的是对照它的变更
+ * 现有知识集。首次探索时是空的,这一段因此不渲染;非空即这一次提的是对照它的变更
  * (issue #207),条目带上标识,agent 据此指出改哪一条、废止哪一条。
  */
 function existingSection(rules: readonly ReviewRule[]): string {
@@ -184,7 +184,7 @@ async function run(request: RuleWorkerRequest): Promise<void> {
     settingsManager,
   });
 
-  // 规则轨迹只订阅并转发,不做判断(ADR 0017、issue #214):转换与 Reviewer 那侧共用
+  // 知识轨迹只订阅并转发,不做判断(ADR 0017、issue #214):转换与 Reviewer 那侧共用
   // 同一个,凭据在转换那一步就抹掉。
   const forwardEvent = reviewerEventStream(apiKey, (event) => send({ kind: "event", event }));
   session.subscribe(forwardEvent);

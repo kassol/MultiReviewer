@@ -2,7 +2,7 @@
  * 规则 agent 的注入边界(issue #205,ADR 0019)。
  *
  * 基点探索与日后的处置反哺共用这一个接口:输入一份工作副本、它停在的那个基点 commit、
- * 本次要用的模型运行参数与该仓库现有的规则集,输出一批结构化的评审规则条目。测试注入
+ * 本次要用的模型运行参数与该仓库现有的知识集,输出一批结构化的评审规则条目。测试注入
  * 脚本化实现(对齐脚本化 Reviewer 先例),真实实现走与 Reviewer 同一套 Pi 子进程基建。
  */
 import { fileURLToPath } from "node:url";
@@ -29,8 +29,8 @@ export type RuleAgentItem = {
   /** 自由文本层标签。 */
   layer: string;
   /**
-   * 这一条针对的现有规则标识(issue #207)。规则集非空时 agent 提的是对照现有规则的
-   * 变更,认得出目标即修改或废止,认不出即新增;规则集为空时恒缺席。
+   * 这一条针对的现有规则标识(issue #207)。知识集非空时 agent 提的是对照现有规则的
+   * 变更,认得出目标即修改或废止,认不出即新增;知识集为空时恒缺席。
    */
   targetRuleId?: number;
   /** 这一条要废止 `targetRuleId` 那条规则。没有目标的废止不成其为一条变更。 */
@@ -55,7 +55,7 @@ export type DispositionFeedback = {
 };
 
 /**
- * 规则 agent 跑的过程里逐条冒出来的事件(CONTEXT.md 规则轨迹,issue #214)。前两档是
+ * 规则 agent 跑的过程里逐条冒出来的事件(CONTEXT.md 知识轨迹,issue #214)。前两档是
  * Pi 的会话事件,与 Reviewer 那侧同一个转换的产物;`rule_proposed` 是它经 `propose_rule`
  * 提出的一条规则,与最终产出的那一条是同一个对象——事件流回答「什么时候提的」,产出
  * 回答「提了什么」。
@@ -83,12 +83,12 @@ export type RuleAgentRequest = {
   /** 该模型绑定厂商的模型凭据。子进程的环境里只会有这一份。 */
   apiKey: string;
   /**
-   * 这个仓库现有的规则集。首次基点探索时是空的;反哺与重探索要它才知道哪些标准已经
+   * 这个仓库现有的知识集。首次基点探索时是空的;反哺与重探索要它才知道哪些标准已经
    * 在集里(issue #207、#208)。
    */
   existingRules: readonly ReviewRule[];
   /**
-   * 过程事件的回调(issue #214)。逐条给,调用方落成规则轨迹。不进 IPC 消息:它是一个
+   * 过程事件的回调(issue #214)。逐条给,调用方落成知识轨迹。不进 IPC 消息:它是一个
    * 函数,跨不了进程边界,子进程那边由 `RuleWorkerMessage` 回传。
    */
   onEvent?: (event: RuleAgentEvent) => void;

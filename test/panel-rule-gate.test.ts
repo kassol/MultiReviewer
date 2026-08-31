@@ -1,8 +1,8 @@
 /**
- * 新仓库门禁分代(issue #206):新注册的仓库在完成规则确认之前不执行 Review Run。
+ * 新仓库门禁分代(issue #206):新注册的仓库在完成知识确认之前不执行 Review Run。
  *
  * 打在面板 API 的真实 HTTP 缝上:手动重跑与发起范围审查在未确认时回 409 并说明差什么,
- * 规则确认之后同一个入口即放行。webhook 投递那一面在 `webhook.test.ts`(那里看得到
+ * 知识确认之后同一个入口即放行。webhook 投递那一面在 `webhook.test.ts`(那里看得到
  * 投递日志),存量迁移与「注册不再落版本」在 `panel-rules.test.ts` 的临时库上。
  */
 import assert from "node:assert/strict";
@@ -22,9 +22,9 @@ after(() => {
 });
 
 /** 门禁那句话。三个发起入口共用同一份措辞。 */
-const UNCONFIRMED = "这个仓库还没确认规则集,先在规则集里探索并确认规则,再发起审查";
+const UNCONFIRMED = "这个仓库还没确认知识集,先在知识集里探索并确认规则,再发起审查";
 
-/** 刚注册完的仓库:规则集未确认,门禁生效。 */
+/** 刚注册完的仓库:知识集未确认,门禁生效。 */
 async function freshlyRegistered(): Promise<PanelHarness> {
   const harness = await startReadyPanelHarness(cleanups);
   assert.equal(
@@ -36,7 +36,7 @@ async function freshlyRegistered(): Promise<PanelHarness> {
   return harness;
 }
 
-/** 走面板自己的规则确认:草案加一条,整组确认,生成第一个规则集版本。 */
+/** 走面板自己的知识确认:草案加一条,整组确认,生成第一个知识集版本。 */
 async function confirmRules(h: PanelHarness): Promise<void> {
   const path = `/repos/${GITEA_REPO.id}/rule-draft`;
   assert.equal(
@@ -56,7 +56,7 @@ async function errorOf(response: Response): Promise<string> {
   return ((await response.json()) as { error: string }).error;
 }
 
-test("规则集未确认时手动重跑回 409,规则确认后同一个入口放行", async () => {
+test("知识集未确认时手动重跑回 409,知识确认后同一个入口放行", async () => {
   const h = await freshlyRegistered();
 
   const blocked = await h.api("POST", "/rerun", {
@@ -84,7 +84,7 @@ test("规则集未确认时手动重跑回 409,规则确认后同一个入口放
   assert.equal(h.settled[0]!.error, undefined);
 });
 
-test("规则集未确认时发起范围审查回 409,一条分支都不建", async () => {
+test("知识集未确认时发起范围审查回 409,一条分支都不建", async () => {
   const h = await freshlyRegistered();
 
   const blocked = await h.api("POST", "/range-reviews", {
@@ -113,10 +113,10 @@ test("规则集未确认时发起范围审查回 409,一条分支都不建", asy
   assert.equal(h.settled[0]!.error, undefined);
 });
 
-test("零规则确认:未确认的仓库确认空规则集之后,同一个入口即放行", async () => {
+test("零条目的知识确认:未确认的仓库确认空知识集之后,同一个入口即放行", async () => {
   const h = await freshlyRegistered();
 
-  // 草案一条都不加就确认:空规则集是合法状态(issue #200),门禁看的是有没有版本。
+  // 草案一条都不加就确认:空知识集是合法状态(issue #200),门禁看的是有没有版本。
   const confirmed = await h.api("POST", `/repos/${GITEA_REPO.id}/rule-draft/confirm`);
   assert.equal(confirmed.status, 200);
   assert.deepEqual(await confirmed.json(), { version: 1 });

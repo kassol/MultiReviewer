@@ -1,8 +1,8 @@
 /**
- * 规则轨迹(CONTEXT.md,issue #214)。
+ * 知识轨迹(CONTEXT.md,issue #214)。
  *
  * 两条缝:SQLite 临时库验任务分配、序号、续读与级联;面板 API 走真实 HTTP 验基点探索与
- * 处置反哺各留下一条轨迹、提案回溯得到自己那一条、可见性与规则集读侧一致、以及结束之后
+ * 处置反哺各留下一条轨迹、提案回溯得到自己那一条、可见性与知识集读侧一致、以及结束之后
  * 连流回放完就发结束信号。规则 agent 仍用脚本化实现注入,与 issue #205 / #208 同一个位置。
  */
 import assert from "node:assert/strict";
@@ -66,7 +66,7 @@ async function traceEvents(h: PanelHarness, taskId: number): Promise<TraceEventR
   return ((await response.json()) as { events: TraceEventResponse[] }).events;
 }
 
-test("规则轨迹的任务分号、续读与级联", () => {
+test("知识轨迹的任务分号、续读与级联", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -129,7 +129,7 @@ test("规则轨迹的任务分号、续读与级联", () => {
     assert.equal(store.ruleTraceRepo(first), 90);
     assert.equal(store.ruleTraceRepo(9999), undefined);
 
-    // 规则集跟着仓库走,轨迹同理。
+    // 知识集跟着仓库走,轨迹同理。
     store.removeRepo(90);
     assert.equal(store.listRuleTrace(first).length, 0);
     assert.equal(store.getRuleExploration(90), null);
@@ -138,7 +138,7 @@ test("规则轨迹的任务分号、续读与级联", () => {
   }
 });
 
-test("一次基点探索留下一条轨迹:说的话、调的工具与提出的条目都在,规则集读得到它", async () => {
+test("一次基点探索留下一条轨迹:说的话、调的工具与提出的条目都在,知识集读得到它", async () => {
   const h = await startReadyPanelHarness(cleanups, {
     ruleAgent: narratingRuleAgent([{ scope: "", statement: "公开函数要有类型标注", layer: "架构" }]),
   });
@@ -232,7 +232,7 @@ test("一次处置反哺留下一条轨迹,提案回溯得到它", async () => {
   assert.equal(events.at(-1)!.kind, "rule_agent_finished");
 });
 
-test("规则轨迹的可见性与规则集读侧一致:分配外 404,别的仓库的任务也 404", async () => {
+test("知识轨迹的可见性与知识集读侧一致:分配外 404,别的仓库的任务也 404", async () => {
   const h = await startReadyPanelHarness(cleanups, {
     ruleAgent: narratingRuleAgent([]),
   });

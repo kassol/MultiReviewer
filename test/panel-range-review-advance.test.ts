@@ -69,7 +69,7 @@ async function startedHarness(
       .status,
     201,
   );
-  // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「规则集已确认」那一侧。
+  // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
   confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   return harness;
 }

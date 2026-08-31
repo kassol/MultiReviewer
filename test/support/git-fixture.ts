@@ -231,10 +231,10 @@ export function makeDbPath(): { path: string; cleanup(): void } {
 }
 
 /**
- * 把仓库确认成空规则集:门禁分代(issue #206)之后新注册的仓库没有规则集版本,不做规则
+ * 把仓库确认成空知识集:门禁分代(issue #206)之后新注册的仓库没有知识集版本,不做知识
  * 确认就不跑 Review Run;要审查行为的测试用它把这一步做掉。
  *
- * 走产品自己的规则确认(issue #200:空规则集是合法状态,空草案确认得了),不直写版本表
+ * 走产品自己的知识确认(issue #200:空知识集是合法状态,空草案确认得了),不直写版本表
  * ——绕过产品路径播种的状态,产品路径变了测试也发现不了。仓库不在注册表里时什么都不写。
  */
 export function confirmEmptyRuleSet(dbPath: string, repoId: number): void {

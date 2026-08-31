@@ -58,7 +58,7 @@ const PERMISSION_INFO: readonly PermissionInfo[] = [
   { id: "review:rerun", resource: "评审", action: "重新运行", hint: "重新运行一次评审，会产生模型调用费用并在 PR 上发布评论。" },
   { id: "review:create", resource: "评审", action: "发起", hint: "发起范围审查，并立即启动首轮 Review Run。" },
   { id: "finding:dispose", resource: "评审", action: "处置", hint: "在面板处置 Finding 并填写可选处置备注；Forge 评论的 Disposition 将同步更新。" },
-  { id: "rule:write", resource: "评审", action: "规则治理", hint: "新增、修改和废止这个仓库的评审规则，每次变更推进一个规则集版本。" },
+  { id: "knowledge:write", resource: "评审", action: "知识治理", hint: "新增、修改和废止这个仓库的评审规则，每次变更推进一个知识集版本。" },
   { id: "model:read", resource: "模型", action: "查看", hint: "查看审查策略和模型服务。" },
   { id: "model:write", resource: "模型", action: "管理", hint: "修改模型组合、手动添加模型和管理自定义模型服务。" },
   { id: "credential:read", resource: "凭据", action: "查看", hint: "查看已配置凭据和 Key 末 4 位。" },

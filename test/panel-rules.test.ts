@@ -1,8 +1,8 @@
 /**
- * 规则集落库与面板可见(issue #202),规则的手工增删改(issue #203)。
+ * 知识集落库与面板可见(issue #202),规则的手工增删改(issue #203)。
  *
- * 两条缝:SQLite 临时库验存量迁移、规则集版本推进与快照回溯,面板 API 走真实 HTTP 验
- * 读取、`rule:write` 拦截与仓库分配收窄。基点探索走 `panel-rule-exploration.test.ts`,
+ * 两条缝:SQLite 临时库验存量迁移、知识集版本推进与快照回溯,面板 API 走真实 HTTP 验
+ * 读取、`knowledge:write` 拦截与仓库分配收窄。基点探索走 `panel-rule-exploration.test.ts`,
  * 这里的基点探索出处规则行由用例直接落进临时库;裁决那条写入链路是后续票的事。
  */
 import assert from "node:assert/strict";
@@ -39,7 +39,7 @@ type RuleSetResponse = {
   rules: RuleResponse[];
   retired: RuleResponse[];
   /**
-   * 基点探索、规则草案与修订提案队列与规则集同一份读取(issue #205、#207)。这一组
+   * 基点探索、知识草案与修订提案队列与知识集同一份读取(issue #205、#207)。这一组
    * 用例里都还是空的。
    */
   exploration: unknown;
@@ -63,7 +63,7 @@ function seedRepo(h: PanelHarness, repoId: number, owner: string, repo: string):
 
 /**
  * 落一条基点探索出处的评审规则。那条写入链路是后续票的范围,这里按 schema 直接写。
- * 顺带补上版本 1 那一行:有规则就说明这个仓库确认过规则集(issue #206 的门禁判据)。
+ * 顺带补上版本 1 那一行:有规则就说明这个仓库确认过知识集(issue #206 的门禁判据)。
  */
 function seedRule(
   dbPath: string,
@@ -145,7 +145,7 @@ function send(
   });
 }
 
-/** 一个挂着 `rule:write` 角色、并分到这几个仓库的账号。 */
+/** 一个挂着 `knowledge:write` 角色、并分到这几个仓库的账号。 */
 async function ruleWriterCookie(
   h: PanelHarness,
   username: string,
@@ -156,7 +156,7 @@ async function ruleWriterCookie(
   try {
     const role = store.createPanelRole({
       name: `role-${username}`,
-      permissions: ["rule:write"],
+      permissions: ["knowledge:write"],
       createdAt: "2026-08-20T00:00:00.000Z",
     });
     assert.equal(
@@ -173,7 +173,7 @@ async function ruleWriterCookie(
   return cookie;
 }
 
-test("新注册的仓库规则集未确认,移除仓库连规则一起摘掉", () => {
+test("新注册的仓库知识集未确认,移除仓库连规则一起摘掉", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -182,9 +182,9 @@ test("新注册的仓库规则集未确认,移除仓库连规则一起摘掉", (
       store.registerRepo({ repoId: 88, owner: "acme", repo: "fresh", generation: 1, key: "k" }),
       true,
     );
-    // 门禁分代(issue #206):注册不再落版本,规则确认才落第一版。
+    // 门禁分代(issue #206):注册不再落版本,知识确认才落第一版。
     assert.deepEqual(store.getRuleSet(88), { version: null, rules: [], retired: [] });
-    // 没注册的仓库没有规则集可读。
+    // 没注册的仓库没有知识集可读。
     assert.equal(store.getRuleSet(999), undefined);
 
     store.removeRepo(88);
@@ -194,7 +194,7 @@ test("新注册的仓库规则集未确认,移除仓库连规则一起摘掉", (
   }
 });
 
-test("规则集只给当前生效的规则,废止的那条不在集内", () => {
+test("知识集只给当前生效的规则,废止的那条不在集内", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -232,7 +232,7 @@ test("规则集只给当前生效的规则,废止的那条不在集内", () => {
   }
 });
 
-test("面板按仓库读规则集:分配内可读,未确认的仓库版本为 null", async () => {
+test("面板按仓库读知识集:分配内可读,未确认的仓库版本为 null", async () => {
   const h = await startReadyPanelHarness(cleanups);
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const cookie = await scopedUser(h, "reader", [alpha]);
@@ -271,7 +271,7 @@ test("面板按仓库读规则集:分配内可读,未确认的仓库版本为 nu
   );
 });
 
-test("分配外的仓库与没注册的 id 读规则集同形 404", async () => {
+test("分配外的仓库与没注册的 id 读知识集同形 404", async () => {
   const h = await startReadyPanelHarness(cleanups);
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const beta = seedRepo(h, 102, "acme", "beta");
@@ -353,7 +353,7 @@ test("手工新增、修改与废止各推进一版,历史版本的快照仍取�
     store.close();
   }
 
-  // 快照回溯:规则集版本 V 的那一组按 effective_version <= V 且未在 V 之前废止取。
+  // 快照回溯:知识集版本 V 的那一组按 effective_version <= V 且未在 V 之前废止取。
   const raw = new DatabaseSync(db.path);
   const snapshot = (version: number): string[] =>
     raw
@@ -371,7 +371,7 @@ test("手工新增、修改与废止各推进一版,历史版本的快照仍取�
   raw.close();
 });
 
-test("面板手工增删改规则:rule:write 放行,版本逐次推进,废止的仍读得到", async () => {
+test("面板手工增删改规则:knowledge:write 放行,版本逐次推进,废止的仍读得到", async () => {
   const h = await startReadyPanelHarness(cleanups);
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const cookie = await ruleWriterCookie(h, "rule-writer", [alpha]);
@@ -454,11 +454,11 @@ test("规范陈述与层标签不能为空,坏 body 一律 400 且不推进版�
   assert.deepEqual(ruleSet.rules, []);
 });
 
-test("没有 rule:write 的人写不动规则,分配外的仓库同形 404", async () => {
+test("没有 knowledge:write 的人写不动规则,分配外的仓库同形 404", async () => {
   const h = await startReadyPanelHarness(cleanups);
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const beta = seedRepo(h, 102, "acme", "beta");
-  // 读得到规则集的人不等于改得动:这个账号有仓库分配,没有权限格。
+  // 读得到知识集的人不等于改得动:这个账号有仓库分配,没有权限格。
   const readerCookie = await scopedUser(h, "rules-reader", [alpha]);
   assert.equal((await get(h, readerCookie, `/repos/${alpha}/rules`)).status, 200);
   const body = { scope: "", statement: "入参要校验", layer: "安全" };
@@ -476,7 +476,7 @@ test("没有 rule:write 的人写不动规则,分配外的仓库同形 404", asy
   );
 });
 
-test("Review Run 的启动快照冻结规则集版本与当时那组规则,之后的变更不追上来", () => {
+test("Review Run 的启动快照冻结知识集版本与当时那组规则,之后的变更不追上来", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -497,7 +497,7 @@ test("Review Run 的启动快照冻结规则集版本与当时那组规则,之�
       [["src/**", "src 下不写 any"]],
     );
 
-    // 已开跑的那一轮拿着上面这份快照跑完,规则集在它跑的过程中变了也不跟。
+    // 已开跑的那一轮拿着上面这份快照跑完,知识集在它跑的过程中变了也不跟。
     assert.equal(store.addReviewRule(91, { scope: "", statement: "新规则", layer: "工程" }), 2);
     assert.equal(snapshot.ruleSetVersion, 1);
     assert.equal(snapshot.rules.length, 1);

@@ -738,7 +738,7 @@ async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<Re
     deps.buildReviewers(plans),
     snapshot.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
     plans.map(reviewerPin),
-    // 规则集与模型服务版本在同一次读事务里冻结(issue #204)。
+    // 知识集与模型服务版本在同一次读事务里冻结(issue #204)。
     { version: snapshot.ruleSetVersion, rules: snapshot.rules },
   );
 }
@@ -750,19 +750,19 @@ function lookupAdmission(dbPath: string, repoId: number): Admission {
 }
 
 /**
- * 门禁分代(issue #206):新注册的仓库在完成规则确认之前不执行 Review Run。判据是
- * 「这个仓库有没有规则集版本」——空规则集是合法状态,它与「还没确认」只有版本表分得出
- * (存量迁移把升级前注册的仓库全部写成了已确认空规则集,它们照旧放行)。
+ * 门禁分代(issue #206):新注册的仓库在完成知识确认之前不执行 Review Run。判据是
+ * 「这个仓库有没有知识集版本」——空知识集是合法状态,它与「还没确认」只有版本表分得出
+ * (存量迁移把升级前注册的仓库全部写成了已确认空知识集,它们照旧放行)。
  *
- * 挡在启动运行计划之前:未确认的仓库连快照都不取,Run 根本不会开始,冻结规则集版本
+ * 挡在启动运行计划之前:未确认的仓库连快照都不取,Run 根本不会开始,冻结知识集版本
  * 那一步(issue #204)因此永远读不到「没有版本」的仓库。
  */
 function ruleSetUnconfirmed(dbPath: string, repoId: number): boolean {
   return withStore(dbPath, (store) => store.getRuleSet(repoId)?.version ?? null) === null;
 }
 
-/** 未确认规则集时拒绝发起审查的那句话。三个发起入口共用,措辞一致。 */
-const RULE_SET_UNCONFIRMED = "这个仓库还没确认规则集,先在规则集里探索并确认规则,再发起审查";
+/** 未确认知识集时拒绝发起审查的那句话。三个发起入口共用,措辞一致。 */
+const RULE_SET_UNCONFIRMED = "这个仓库还没确认知识集,先在知识集里探索并确认规则,再发起审查";
 
 /**
  * 开一轮 Review Run。调用方一律 `void` 它:这是长跑服务,后台任务的 rejection 不接住就会
@@ -950,10 +950,10 @@ async function handle(
     return send(res, 200);
   }
 
-  // 门禁分代(issue #206):投递照常受理(验签、记录),只是不跑 Run。规则确认一完成
+  // 门禁分代(issue #206):投递照常受理(验签、记录),只是不跑 Run。知识确认一完成
   // 下一次投递即放行,不需要重启。
   if (ruleSetUnconfirmed(deps.dbPath, repoId)) {
-    log(`${describe(event)} — 规则集还没确认,只记录不审`);
+    log(`${describe(event)} — 知识集还没确认,只记录不审`);
     return send(res, 200);
   }
 
@@ -1808,7 +1808,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     method: "GET",
     pattern: "/repo-branches",
     // 发起范围审查与发起基点探索都从这里选 commit(issue #205),两格任一即可读。
-    access: { anyOf: ["review:create", "rule:write"] },
+    access: { anyOf: ["review:create", "knowledge:write"] },
     assignment: { by: "query" },
     handler: ({ req, res, deps }) => handleRepoBranches(req, res, deps),
   },
@@ -1816,7 +1816,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     method: "GET",
     pattern: "/repo-commits",
     // 发起范围审查与发起基点探索都从这里选 commit(issue #205),两格任一即可读。
-    access: { anyOf: ["review:create", "rule:write"] },
+    access: { anyOf: ["review:create", "knowledge:write"] },
     assignment: { by: "query" },
     handler: ({ req, res, deps }) => handleRepoCommits(req, res, deps),
   },
@@ -1824,7 +1824,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     method: "GET",
     pattern: "/repo-tags",
     // 发起范围审查与发起基点探索都从这里选 commit(issue #205),两格任一即可读。
-    access: { anyOf: ["review:create", "rule:write"] },
+    access: { anyOf: ["review:create", "knowledge:write"] },
     assignment: { by: "query" },
     handler: ({ req, res, deps }) => handleRepoTags(req, res, deps),
   },
@@ -1888,7 +1888,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
       handleHookCheck(res, deps, hookManager, Number(match![1])),
   },
   {
-    // 规则集读侧不挂权限格(ADR 0019):登录加仓库分配即可读,分配外由过滤层判 404。
+    // 知识集读侧不挂权限格(ADR 0019):登录加仓库分配即可读,分配外由过滤层判 404。
     method: "GET",
     pattern: /^\/repos\/(\d+)\/rules$/,
     access: "authenticated-only",
@@ -1896,7 +1896,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     handler: ({ res, deps }, match) => handleRuleSet(res, deps, Number(match![1])),
   },
   {
-    // 规则轨迹(issue #214)与规则集读侧同一格:能看这个仓库的规则集就能看它是怎么来的。
+    // 知识轨迹(issue #214)与知识集读侧同一格:能看这个仓库的知识集就能看它是怎么来的。
     method: "GET",
     pattern: /^\/repos\/(\d+)\/rule-traces\/(\d+)$/,
     access: "authenticated-only",
@@ -1913,17 +1913,17 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
       handleRuleTraceStream(req, res, deps, Number(match![1]), Number(match![2])),
   },
   {
-    // 规则的手工增删改(issue #203)由 `rule:write` 这一格拦下,读侧不受它影响。
+    // 规则的手工增删改(issue #203)由 `knowledge:write` 这一格拦下,读侧不受它影响。
     method: "POST",
     pattern: /^\/repos\/(\d+)\/rules$/,
-    access: "rule:write",
+    access: "knowledge:write",
     assignment: { by: "repo", group: 1 },
     handler: ({ req, res, deps }, match) => handleAddRule(req, res, deps, Number(match![1])),
   },
   {
     method: "PUT",
     pattern: /^\/repos\/(\d+)\/rules\/(\d+)$/,
-    access: "rule:write",
+    access: "knowledge:write",
     assignment: { by: "repo", group: 1 },
     handler: ({ req, res, deps }, match) =>
       handleUpdateRule(req, res, deps, Number(match![1]), Number(match![2])),
@@ -1931,16 +1931,16 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   {
     method: "DELETE",
     pattern: /^\/repos\/(\d+)\/rules\/(\d+)$/,
-    access: "rule:write",
+    access: "knowledge:write",
     assignment: { by: "repo", group: 1 },
     handler: ({ res, deps }, match) =>
       handleRetireRule(res, deps, Number(match![1]), Number(match![2])),
   },
   {
-    // 基点探索的发起(issue #205)。与规则确认同一格:两者都是「谁定这个仓库的标准」。
+    // 基点探索的发起(issue #205)。与知识确认同一格:两者都是「谁定这个仓库的标准」。
     method: "POST",
     pattern: /^\/repos\/(\d+)\/rule-exploration$/,
-    access: "rule:write",
+    access: "knowledge:write",
     assignment: { by: "repo", group: 1 },
     handler: ({ req, res, deps }, match) =>
       handleStartRuleExploration(req, res, deps, Number(match![1])),
@@ -1948,7 +1948,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   {
     method: "POST",
     pattern: /^\/repos\/(\d+)\/rule-draft$/,
-    access: "rule:write",
+    access: "knowledge:write",
     assignment: { by: "repo", group: 1 },
     handler: ({ req, res, deps }, match) =>
       handleAddDraftItem(req, res, deps, Number(match![1])),
@@ -1956,14 +1956,14 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   {
     method: "POST",
     pattern: /^\/repos\/(\d+)\/rule-draft\/confirm$/,
-    access: "rule:write",
+    access: "knowledge:write",
     assignment: { by: "repo", group: 1 },
     handler: ({ res, deps }, match) => handleConfirmRuleDraft(res, deps, Number(match![1])),
   },
   {
     method: "PUT",
     pattern: /^\/repos\/(\d+)\/rule-draft\/(\d+)$/,
-    access: "rule:write",
+    access: "knowledge:write",
     assignment: { by: "repo", group: 1 },
     handler: ({ req, res, deps }, match) =>
       handleUpdateDraftItem(req, res, deps, Number(match![1]), Number(match![2])),
@@ -1971,16 +1971,16 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   {
     method: "DELETE",
     pattern: /^\/repos\/(\d+)\/rule-draft\/(\d+)$/,
-    access: "rule:write",
+    access: "knowledge:write",
     assignment: { by: "repo", group: 1 },
     handler: ({ res, deps }, match) =>
       handleDeleteDraftItem(res, deps, Number(match![1]), Number(match![2])),
   },
   {
-    // 裁决(issue #207)与规则确认同一格:两者都是「谁定这个仓库的标准」。
+    // 裁决(issue #207)与知识确认同一格:两者都是「谁定这个仓库的标准」。
     method: "POST",
     pattern: /^\/repos\/(\d+)\/rule-proposals\/(\d+)\/accept$/,
-    access: "rule:write",
+    access: "knowledge:write",
     assignment: { by: "repo", group: 1 },
     handler: ({ req, res, deps }, match) =>
       handleAcceptRuleProposal(req, res, deps, Number(match![1]), Number(match![2])),
@@ -1988,7 +1988,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   {
     method: "POST",
     pattern: /^\/repos\/(\d+)\/rule-proposals\/(\d+)\/reject$/,
-    access: "rule:write",
+    access: "knowledge:write",
     assignment: { by: "repo", group: 1 },
     handler: ({ res, deps }, match) =>
       handleRejectRuleProposal(res, deps, Number(match![1]), Number(match![2])),
@@ -1997,7 +1997,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     // 发起探索时可选的那些模型。可用性判据与全局模型组合读的是同一份投影。
     method: "GET",
     pattern: "/rule-models",
-    access: "rule:write",
+    access: "knowledge:write",
     handler: ({ res, deps }) => handleRuleModels(res, deps),
   },
   {
@@ -4557,7 +4557,7 @@ function handleRunTraceStream(
 }
 
 /**
- * 一条轨迹的实时推送(issue #171,issue #214 起规则轨迹共用)。回放与订阅之外的差别只有
+ * 一条轨迹的实时推送(issue #171,issue #214 起知识轨迹共用)。回放与订阅之外的差别只有
  * 「事件从哪里读」,由 `replay` 给。
  */
 function streamTrace(
@@ -5853,8 +5853,8 @@ function startWorktreePreparation(
 }
 
 /**
- * 一个仓库当前生效的规则集与它的规则集版本(issue #202),连它此刻的基点探索、规则
- * 草案与修订提案队列一起给(issue #205、#207)。空规则集是合法状态:版本有值、规则为空,面板据此给空态,
+ * 一个仓库当前生效的知识集与它的知识集版本(issue #202),连它此刻的基点探索、知识
+ * 草案与修订提案队列一起给(issue #205、#207)。空知识集是合法状态:版本有值、规则为空,面板据此给空态,
  * 评审行为与现状一致。
  *
  * 探索、草案与提案队列不另开端点:它们回答的是同一个问题的两半——「这个仓库现在按
@@ -5878,12 +5878,12 @@ function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: num
   return sendJson(res, 200, view);
 }
 
-const NO_RULE_TRACE = "这个仓库没有这条规则轨迹";
+const NO_RULE_TRACE = "这个仓库没有这条知识轨迹";
 
 /**
- * 这条规则轨迹属于这个仓库吗(CONTEXT.md 规则轨迹,issue #214)。
+ * 这条知识轨迹属于这个仓库吗(CONTEXT.md 知识轨迹,issue #214)。
  *
- * 端点挂在仓库下面,可见性因此与规则集读侧同一套:登录加仓库分配,分配外由过滤层判
+ * 端点挂在仓库下面,可见性因此与知识集读侧同一套:登录加仓库分配,分配外由过滤层判
  * 404。这里再拦一道「任务不在这个仓库」——不拦的话,分到了任意一个仓库的人就能凭标识
  * 读到别人仓库的探索过程。
  */
@@ -5891,7 +5891,7 @@ function ruleTraceInRepo(deps: WebhookServerDeps, repoId: number, taskId: number
   return withStore(deps.dbPath, (store) => store.ruleTraceRepo(taskId)) === repoId;
 }
 
-/** 一条规则轨迹的全量事件,按 `seq` 升序。 */
+/** 一条知识轨迹的全量事件,按 `seq` 升序。 */
 function handleRuleTrace(
   res: ServerResponse,
   deps: WebhookServerDeps,
@@ -5904,7 +5904,7 @@ function handleRuleTrace(
   });
 }
 
-/** 一条规则轨迹的实时推送。跑完的那些回放完即发结束信号,与审查轨迹同一套。 */
+/** 一条知识轨迹的实时推送。跑完的那些回放完即发结束信号,与审查轨迹同一套。 */
 function handleRuleTraceStream(
   req: IncomingMessage,
   res: ServerResponse,
@@ -6002,7 +6002,7 @@ async function handleUpdateRule(
 
 /**
  * 废止一条规则(issue #203)。DELETE 是「让它不再生效」而不是删行:废止的规则不再进
- * 规则集,但历史版本的快照与面板的已废止那一段都还要取得到它。
+ * 知识集,但历史版本的快照与面板的已废止那一段都还要取得到它。
  */
 function handleRetireRule(
   res: ServerResponse,
@@ -6015,7 +6015,7 @@ function handleRetireRule(
   return sendJson(res, 200, { version });
 }
 
-const NO_DRAFT_ITEM = "这条规则不在这个仓库的规则草案里";
+const NO_DRAFT_ITEM = "这条规则不在这个仓库的知识草案里";
 
 /**
  * 发起基点探索时可选的模型(issue #205)。可用性判据与全局模型组合、审查配置就绪读的
@@ -6038,7 +6038,7 @@ async function handleRuleModels(res: ServerResponse, deps: WebhookServerDeps): P
 }
 
 /**
- * agent 产出到规则草案之间的那道收窄(ADR 0019)。只收规范性陈述的两个必填面,
+ * agent 产出到知识草案之间的那道收窄(ADR 0019)。只收规范性陈述的两个必填面,
  * 再按重要性截断为至多 30 条——上限的本质是人一次确认得完、不麻木,由服务端把住,
  * 不指望模型自己数得准。
  */
@@ -6055,7 +6055,7 @@ function usableRuleItems(items: readonly RuleAgentItem[]): RuleAgentItem[] {
 }
 
 /**
- * 探索产出到修订提案的映射(issue #207)。规则集非空时 agent 提的是对照现有规则的变更,
+ * 探索产出到修订提案的映射(issue #207)。知识集非空时 agent 提的是对照现有规则的变更,
  * 服务端只按目标规则认得出认不出分派,映射从简:目标规则仍生效时按有没有废止标记成为
  * 废止或修改,认不出目标的成为新增。**带废止标记却认不出目标的丢掉**——没有目标的废止
  * 不成其为一条变更,当成新增会把要删的规则又加一遍。废止那一档的内容取目标规则的原样:
@@ -6096,7 +6096,7 @@ function proposalsFromItems(
 }
 
 /**
- * 规则 agent 的一条过程事件落进规则轨迹(issue #214)。两条链路共用:事件类型就是轨迹
+ * 规则 agent 的一条过程事件落进知识轨迹(issue #214)。两条链路共用:事件类型就是轨迹
  * 的事件类型,`kind` 之外的那几项原样成为 payload——与 Review Run 那侧同一条口径。
  */
 function recordRuleAgentEvent(trace: RuleTraceRecorder, event: RuleAgentEvent): void {
@@ -6106,7 +6106,7 @@ function recordRuleAgentEvent(trace: RuleTraceRecorder, event: RuleAgentEvent): 
 
 /**
  * 一次基点探索的后台执行:把工作副本 checkout 到基点 commit,交给规则 agent,产出落成
- * 规则草案。失败留原因(CONTEXT.md 基点探索),人看得到、也可以再发起一次。
+ * 知识草案。失败留原因(CONTEXT.md 基点探索),人看得到、也可以再发起一次。
  */
 async function runRuleExplorationInBackground(
   deps: WebhookServerDeps,
@@ -6117,7 +6117,7 @@ async function runRuleExplorationInBackground(
 ): Promise<void> {
   let failure: string | undefined;
   let worktree: Worktree | undefined;
-  // 轨迹从发起这一刻起(CONTEXT.md 规则轨迹,issue #214):取不回代码、模型用不了这些
+  // 轨迹从发起这一刻起(CONTEXT.md 知识轨迹,issue #214):取不回代码、模型用不了这些
   // 失败也发生在探索之内,人来这条轨迹就是要看它究竟卡在哪一步。
   const trace = startRuleTrace(
     (use) => withStore(deps.dbPath, use),
@@ -6169,9 +6169,9 @@ async function runRuleExplorationInBackground(
     if (result.failure !== undefined) throw new Error(result.failure);
     const items = usableRuleItems(result.items);
     const at = new Date((deps.now ?? Date.now)()).toISOString();
-    // 规则集未确认即这一次产出规则草案,已确认(含空集)即产出修订提案(CONTEXT.md
-    // 基点探索,issue #207)。判据读的是交给 agent 的那一份规则集:同一次探索里两处不该
-    // 各读各的。按版本而不是按规则为不为空分界:已确认的空规则集重探索也该走提案队列。
+    // 知识集未确认即这一次产出知识草案,已确认(含空集)即产出修订提案(CONTEXT.md
+    // 基点探索,issue #207)。判据读的是交给 agent 的那一份知识集:同一次探索里两处不该
+    // 各读各的。按版本而不是按规则为不为空分界:已确认的空知识集重探索也该走提案队列。
     withStore(deps.dbPath, (store) =>
       (ruleSet?.version ?? null) === null
         ? store.finishRuleExploration(repoId, items, at)
@@ -6236,7 +6236,7 @@ function specFromIdentity(
 
 /**
  * 一次处置反哺的后台执行(CONTEXT.md 处置反哺,issue #208)。处置备注落库之后即时排一次,
- * 不绑 Review Run:把备注、被处置的那条 Finding 与该仓库当前生效的规则集交给规则 agent,
+ * 不绑 Review Run:把备注、被处置的那条 Finding 与该仓库当前生效的知识集交给规则 agent,
  * 产出经与基点探索同一套映射排进修订提案队列,出处标处置反哺、附注放备注原文。产出为空
  * 是合法结果,那时一条提案都不留。
  *
@@ -6251,7 +6251,7 @@ async function runDispositionFeedbackInBackground(
   const ref: RepoRef = { owner: finding.owner, repo: finding.repo };
   let failure: string | undefined;
   let worktree: Worktree | undefined;
-  // 轨迹从任务开始就起,与基点探索同一条口径(CONTEXT.md 规则轨迹):Forge 没配、模型
+  // 轨迹从任务开始就起,与基点探索同一条口径(CONTEXT.md 知识轨迹):Forge 没配、模型
   // 用不了都是反哺之内的失败,人来这条轨迹就是要看它究竟卡在哪一步。仓库不在注册表里那
   // 一档仍然没有轨迹——那时连挂在哪个仓库上都说不出来,只留一行日志。
   let trace: RuleTraceRecorder | undefined;
@@ -6362,9 +6362,9 @@ async function runDispositionFeedbackInBackground(
  * 发起一次基点探索(issue #205)。基点 commit 与所用模型都由人给定;模型的可用性判据
  * 与开一轮 Review Run 完全相同——同一套运行计划物化,跑不起来的模型在这里就拦下。
  *
- * 规则集非空的仓库同样发起得了(issue #207):**当前规则集为空是草案与提案的分界**,
+ * 知识集非空的仓库同样发起得了(issue #207):**当前知识集为空是草案与提案的分界**,
  * 非空时这一次的产出排进修订提案队列等人逐条裁决,不覆盖草案。分界判在探索结束那一刻,
- * 发起这里因此不看规则集。
+ * 发起这里因此不看知识集。
  */
 async function handleStartRuleExploration(
   req: IncomingMessage,
@@ -6505,8 +6505,8 @@ function readProposalEdit(
 }
 
 /**
- * 采纳一条修订提案(CONTEXT.md 裁决):按变更类型落库并生成新的规则集版本。body 可以
- * 带改后的内容——采纳前人改得动这一条,改后的那一份既进规则集也覆盖队列里的记录。
+ * 采纳一条修订提案(CONTEXT.md 裁决):按变更类型落库并生成新的知识集版本。body 可以
+ * 带改后的内容——采纳前人改得动这一条,改后的那一份既进知识集也覆盖队列里的记录。
  */
 async function handleAcceptRuleProposal(
   req: IncomingMessage,
@@ -6530,7 +6530,7 @@ async function handleAcceptRuleProposal(
   return sendJson(res, 200, { version });
 }
 
-/** 驳回一条修订提案:只改状态,规则集一版都不推进。 */
+/** 驳回一条修订提案:只改状态,知识集一版都不推进。 */
 function handleRejectRuleProposal(
   res: ServerResponse,
   deps: WebhookServerDeps,
@@ -6543,7 +6543,7 @@ function handleRejectRuleProposal(
 }
 
 /**
- * 规则确认(CONTEXT.md):草案整组生效,生成这个仓库的下一个规则集版本。规则集还没确认
+ * 知识确认(CONTEXT.md):草案整组生效,生成这个仓库的下一个知识集版本。知识集还没确认
  * 的仓库确认空草案照样成立(issue #200):那一版是一个空集,门禁随之放行。
  */
 function handleConfirmRuleDraft(
@@ -6553,7 +6553,7 @@ function handleConfirmRuleDraft(
 ): void {
   const version = withStore(deps.dbPath, (store) => store.confirmRuleDraft(repoId));
   if (version === undefined) {
-    return sendJson(res, 409, { error: "这个仓库的规则集已经确认,没有待确认的规则草案" });
+    return sendJson(res, 409, { error: "这个仓库的知识集已经确认,没有待确认的知识草案" });
   }
   return sendJson(res, 200, { version });
 }

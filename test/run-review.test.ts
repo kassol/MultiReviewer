@@ -752,7 +752,7 @@ test("作用范围的 glob 语义:* 不跨目录,** 跨任意层且可为零层"
   }
 });
 
-test("Review Run 记下开跑时冻结的规则集版本,Finding 记下模型自报的命中规则", async () => {
+test("Review Run 记下开跑时冻结的知识集版本,Finding 记下模型自报的命中规则", async () => {
   const { cache, db, forge } = setup(6);
   const reviewer = scriptedReviewer("stub-model", [
     {
@@ -793,7 +793,7 @@ test("Review Run 记下开跑时冻结的规则集版本,Finding 记下模型自
   }
 });
 
-test("空规则集时不注入规则,Review Run 不记规则集版本", async () => {
+test("空知识集时不注入规则,Review Run 不记知识集版本", async () => {
   const { cache, db, forge, reviewer } = setup(6);
 
   await runReview(

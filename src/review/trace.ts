@@ -1,5 +1,5 @@
 /**
- * 审查轨迹(CONTEXT.md):一轮 Review Run 里按时间顺序发生的事件序列。规则轨迹
+ * 审查轨迹(CONTEXT.md):一轮 Review Run 里按时间顺序发生的事件序列。知识轨迹
  * (CONTEXT.md,issue #214)同源:一次基点探索或一次处置反哺是一条,事件形状与广播共用
  * 这一份,只是落在另一张表上。
  *
@@ -32,7 +32,7 @@ export type RunTraceKind =
 export type TraceKind = ReviewerTraceKind | RunTraceKind;
 
 /**
- * 规则轨迹的事件类型(CONTEXT.md 规则轨迹,issue #214)。前三档与 Reviewer 那侧同形,
+ * 知识轨迹的事件类型(CONTEXT.md 知识轨迹,issue #214)。前三档与 Reviewer 那侧同形,
  * 因为它们来自同一个转换(`reviewer/trace-events.ts`);另外三档由编排层在这次任务开始、
  * 提出条目与收尾时补。
  */
@@ -66,7 +66,7 @@ export type TraceEventInput = {
   payload: unknown;
 };
 
-/** 规则轨迹里的一条事件。`seq` 在一条轨迹之内自增,`taskId` 是这条轨迹的标识。 */
+/** 知识轨迹里的一条事件。`seq` 在一条轨迹之内自增,`taskId` 是这条轨迹的标识。 */
 export type RuleTraceEvent = {
   seq: number;
   taskId: number;
@@ -75,7 +75,7 @@ export type RuleTraceEvent = {
   payload: unknown;
 };
 
-/** 待写入的一条规则轨迹事件。`seq` 与 `at` 由落库那一步给。 */
+/** 待写入的一条知识轨迹事件。`seq` 与 `at` 由落库那一步给。 */
 export type RuleTraceEventInput = { kind: RuleTraceKind; payload: unknown };
 
 type Subscriber = {
@@ -176,7 +176,7 @@ export function createTraceRecorder(store: Store, runId: number): TraceRecorder 
   };
 }
 
-/** 一条规则轨迹的写入口(issue #214)。`taskId` 为 null 即这条轨迹没起来,写入是空操作。 */
+/** 一条知识轨迹的写入口(issue #214)。`taskId` 为 null 即这条轨迹没起来,写入是空操作。 */
 export type RuleTraceRecorder = {
   taskId: number | null;
   record(kind: RuleTraceKind, payload: unknown): void;
@@ -184,7 +184,7 @@ export type RuleTraceRecorder = {
 };
 
 /**
- * 起一条规则轨迹并返回它的写入口。第一条 `rule_agent_started` 事件同时是这条轨迹的
+ * 起一条知识轨迹并返回它的写入口。第一条 `rule_agent_started` 事件同时是这条轨迹的
  * 标识来源(见 `rule_trace` 表)。
  *
  * 落库失败(起头那一条也算)只记日志:轨迹记的是过程,规则条目与提案不读它,少一条
@@ -199,7 +199,7 @@ export function startRuleTrace(
 ): RuleTraceRecorder {
   const failed = (error: unknown): void => {
     console.error(
-      "[review] 规则轨迹落库失败,任务照常:",
+      "[review] 知识轨迹落库失败,任务照常:",
       error instanceof Error ? error.message : String(error),
     );
   };

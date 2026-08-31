@@ -33,7 +33,7 @@ type RuleExploration = {
   failure: string | null;
   startedAt: string;
   finishedAt: string | null;
-  /** 这一次探索的规则轨迹(CONTEXT.md,issue #214)。升级前跑过的那些没有,为 null。 */
+  /** 这一次探索的知识轨迹(CONTEXT.md,issue #214)。升级前跑过的那些没有,为 null。 */
   traceTaskId: number | null;
 };
 
@@ -50,16 +50,16 @@ type RuleProposal = {
   layer: string;
   source: "baseline-exploration" | "disposition-feedback";
   sourceNote: string | null;
-  /** 提出它的那一次规则轨迹(issue #214)。人据此回溯这条提案是怎么推出来的。 */
+  /** 提出它的那一次知识轨迹(issue #214)。人据此回溯这条提案是怎么推出来的。 */
   traceTaskId: number | null;
   state: "pending" | "accepted" | "rejected";
   decidedAt: string | null;
 };
 
 /**
- * 这个仓库当前生效的规则集与它的规则集版本。`version` 为 null 即还没确认过;`retired`
+ * 这个仓库当前生效的知识集与它的知识集版本。`version` 为 null 即还没确认过;`retired`
  * 是废止过的规则,不再生效但仍要查得到(issue #203)。`exploration`、`draft` 与
- * `proposals` 是等人确认或裁决的那一半(issue #205、#207),与规则集同一份读取。
+ * `proposals` 是等人确认或裁决的那一半(issue #205、#207),与知识集同一份读取。
  */
 type RuleSet = {
   version: number | null;
@@ -80,15 +80,15 @@ type RuleModel = {
 };
 
 /**
- * 表单里编辑中的那条规则:`id` 为 null 即新增,有值即改这一条。生效规则、规则草案与修订
- * 提案三张表单共用它。它与 CONTEXT.md 的「规则草案」(`ruleSet.draft`)不是一回事,因此
+ * 表单里编辑中的那条规则:`id` 为 null 即新增,有值即改这一条。生效规则、知识草案与修订
+ * 提案三张表单共用它。它与 CONTEXT.md 的「知识草案」(`ruleSet.draft`)不是一回事,因此
  * 不叫 `RuleDraft`。
  */
 type RuleFormState = { id: number | null; scope: string; statement: string; layer: string };
 
 const BLANK_DRAFT: RuleFormState = { id: null, scope: "", statement: "", layer: "" };
 
-/** 规则三样的请求 body。三处写侧(生效规则、规则草案、提案的改后内容)同一个形状。 */
+/** 规则三样的请求 body。三处写侧(生效规则、知识草案、提案的改后内容)同一个形状。 */
 function ruleFieldsBody(form: RuleFormState): string {
   return JSON.stringify({
     scope: form.scope.trim(),
@@ -98,12 +98,12 @@ function ruleFieldsBody(form: RuleFormState): string {
 }
 
 /**
- * 一组规则表单的增删改。生效规则与规则草案各有一组端点,写法却是同一套:`id` 为 null 即
+ * 一组规则表单的增删改。生效规则与知识草案各有一组端点,写法却是同一套:`id` 为 null 即
  * POST 新增、有值即 PUT 改这一条,`{ retire }` 与 `{ deleteDraft }` 即 DELETE 那一条。
  * 两者的差别只有端点前缀与成功后清空哪一份表单,由入参给。
  *
  * 删那一档分成两个名字:生效规则的那一次是**废止**(CONTEXT.md 的两态之一,那条规则
- * 仍要查得到),规则草案的那一次是**删除**(还没确认,删了就不剩什么)。请求形状相同,
+ * 仍要查得到),知识草案的那一次是**删除**(还没确认,删了就不剩什么)。请求形状相同,
  * 说的却是两件事,同名会让读代码的人以为它们是一回事。
  */
 function useRuleEdits(basePath: string, onSuccess: () => void) {
@@ -126,11 +126,11 @@ function useRuleEdits(basePath: string, onSuccess: () => void) {
 }
 
 /**
- * 规则集入口(issue #202):首页右栏头部选中一个仓库时的一个按钮加它的弹窗。
+ * 知识集入口(issue #202):首页右栏头部选中一个仓库时的一个按钮加它的弹窗。
  *
  * 读侧不挂权限格(ADR 0019),登录加仓库分配即可读,因此这个按钮与「发起范围审查」
- * 「重跑」并排却不跟着写权限出现;手工增删改那三个入口按 `rule:write` 出现
- * (issue #203)。规则怎么来是同一个弹窗里的基点探索与规则确认(issue #205,见
+ * 「重跑」并排却不跟着写权限出现;手工增删改那三个入口按 `knowledge:write` 出现
+ * (issue #203)。规则怎么来是同一个弹窗里的基点探索与知识确认(issue #205,见
  * `ExplorationSection`),之后怎么改是修订提案队列与逐条裁决(issue #207,见
  * `ProposalSection`)。
  */
@@ -146,7 +146,7 @@ export function RepoRules({
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Trigger>
         <Button variant="soft" color="gray" size={{ initial: "3", sm: "2" }}>
-          规则集
+          知识集
         </Button>
       </Dialog.Trigger>
       {open ? <RuleSetDialogContent repo={repo} canWrite={canWrite} /> : null}
@@ -187,13 +187,13 @@ function RuleSetDialogContent({
     void queryClient.invalidateQueries({ queryKey: ["repo-rules", repo.repoId] });
   };
 
-  // 三个写动作走同一次改动:每一次都推进一个规则集版本,回来重读这一份规则集。
+  // 三个写动作走同一次改动:每一次都推进一个知识集版本,回来重读这一份知识集。
   const change = useRuleEdits(`/repos/${repo.repoId}/rules`, () => {
     setDraft(null);
     reload();
   });
 
-  // 草案的增删改与生效规则各走各的端点:草案还没确认,改它不推进规则集版本。
+  // 草案的增删改与生效规则各走各的端点:草案还没确认,改它不推进知识集版本。
   const changeDraft = useRuleEdits(`/repos/${repo.repoId}/rule-draft`, () => {
     setDraftEdit(null);
     reload();
@@ -201,7 +201,7 @@ function RuleSetDialogContent({
 
   /**
    * 裁决一条修订提案(CONTEXT.md,issue #207)。采纳可以带改后的内容,不带即按队列里
-   * 那份原样采纳;采纳推进一个规则集版本,驳回只改状态。
+   * 那份原样采纳;采纳推进一个知识集版本,驳回只改状态。
    */
   const decide = useMutation({
     mutationFn: async (
@@ -220,7 +220,7 @@ function RuleSetDialogContent({
     },
   });
 
-  /** 规则确认(CONTEXT.md):整组生效,生成这个仓库的下一个规则集版本。 */
+  /** 知识确认(CONTEXT.md):整组生效,生成这个仓库的下一个知识集版本。 */
   const confirm = useMutation({
     mutationFn: async (): Promise<void> => {
       const response = await api(`/repos/${repo.repoId}/rule-draft/confirm`, { method: "POST" });
@@ -240,17 +240,17 @@ function RuleSetDialogContent({
       className="flex flex-col overflow-hidden"
     >
       <Dialog.Title size="4" mb="1" className="shrink-0 pr-9 break-all">
-        {repo.owner}/{repo.repo} 的规则集
+        {repo.owner}/{repo.repo} 的知识集
       </Dialog.Title>
       {ruleSet.data === undefined ? null : typeof ruleSet.data.version === "number" ? (
         <Text as="p" size="1" color="gray" mb="3">
-          规则集版本 {ruleSet.data.version}
+          知识集版本 {ruleSet.data.version}
         </Text>
       ) : (
-        /* 门禁分代(issue #206):没有规则集版本即还没确认,这个仓库暂不执行 Review Run。
-           下面就是基点探索与规则确认那一段,引导到位。 */
+        /* 门禁分代(issue #206):没有知识集版本即还没确认,这个仓库暂不执行 Review Run。
+           下面就是基点探索与知识确认那一段,引导到位。 */
         <Text as="p" size="1" color="orange" mb="3">
-          规则集未确认:完成规则确认前,这个仓库的投递只记录不审,面板也发起不了审查。
+          知识集未确认:完成知识确认前,这个仓库的投递只记录不审,面板也发起不了审查。
         </Text>
       )}
 
@@ -258,7 +258,7 @@ function RuleSetDialogContent({
 
       {ruleSet.isPending ? (
         <div className="flex flex-col gap-2" role="status" aria-live="polite">
-          <span className="sr-only">正在读取规则集</span>
+          <span className="sr-only">正在读取知识集</span>
           {[0, 1].map((slot) => <Skeleton key={slot} className="h-14" />)}
         </div>
       ) : null}
@@ -330,7 +330,7 @@ function RuleSetDialogContent({
         <EmptyState
           title="这个仓库还没有评审规则"
           titleAs="h3"
-          description="空规则集是合法状态:评审照常执行,只是没有规则注入。"
+          description="空知识集是合法状态:评审照常执行,只是没有规则注入。"
         />
       ) : null}
 
@@ -399,14 +399,14 @@ function RuleSetDialogContent({
       </div>
 
       <div className="absolute top-3 right-3">
-        <Tooltip content="关闭规则集">
+        <Tooltip content="关闭知识集">
           <Dialog.Close>
             <IconButton
               variant="ghost"
               color="gray"
               size={{ initial: "3", sm: "1" }}
               className="max-sm:min-h-11 max-sm:min-w-11"
-              aria-label="关闭规则集"
+              aria-label="关闭知识集"
             >
               <Cross2Icon aria-hidden />
             </IconButton>
@@ -497,8 +497,8 @@ const CHANGE_LABEL = { add: "新增", modify: "修改", retire: "废止" } as co
 /**
  * 修订提案队列与裁决那一段(issue #207)。待裁决的排在前面,已裁决的留在后面供查。
  *
- * 队列本身对所有读得到规则集的人可见——「还有什么在等人裁决」与「现在按什么标准评审」
- * 是同一个问题的两半;采纳与驳回按 `rule:write` 出现。
+ * 队列本身对所有读得到知识集的人可见——「还有什么在等人裁决」与「现在按什么标准评审」
+ * 是同一个问题的两半;采纳与驳回按 `knowledge:write` 出现。
  */
 function ProposalSection({
   repoId,
@@ -532,7 +532,7 @@ function ProposalSection({
     <section className="mb-3.5 flex flex-col gap-2 rounded-lg border border-card-line p-3">
       <div className="flex items-center gap-1">
         <h3 className="text-2xl font-bold tracking-[-0.015em]">修订提案</h3>
-        <HelpTooltip content="规则集的每次变更都要你裁决:采纳生成新的规则集版本,驳回只留下记录。" />
+        <HelpTooltip content="知识集的每次变更都要你裁决:采纳生成新的知识集版本,驳回只留下记录。" />
       </div>
 
       {pending.length === 0 ? null : (
@@ -646,10 +646,10 @@ function ProposalSection({
 }
 
 /**
- * 基点探索、规则草案与规则确认那一段(issue #205)。只在有 `rule:write` 时出现。
+ * 基点探索、知识草案与知识确认那一段(issue #205)。只在有 `knowledge:write` 时出现。
  *
- * 已确认的仓库照样发起得了探索(issue #207):**有没有规则集版本是草案与提案的分界**,
- * 已确认时那一次的产出排进上面的修订提案队列,草案与规则确认那两样因此不再显示。空规则
+ * 已确认的仓库照样发起得了探索(issue #207):**有没有知识集版本是草案与提案的分界**,
+ * 已确认时那一次的产出排进上面的修订提案队列,草案与知识确认那两样因此不再显示。空知识
  * 集是合法状态(issue #200),因此未确认时草案为空也确认得了。
  */
 function ExplorationSection({
@@ -675,7 +675,7 @@ function ExplorationSection({
 }) {
   const exploration = ruleSet.exploration;
   const running = exploration?.state === "running";
-  // 分界按有没有规则集版本取,不按规则为不为空:已确认的空规则集重探索也走提案队列。
+  // 分界按有没有知识集版本取,不按规则为不为空:已确认的空知识集重探索也走提案队列。
   const confirmed = ruleSet.version !== null;
 
   return (
@@ -683,12 +683,12 @@ function ExplorationSection({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-1">
           <h3 className="text-2xl font-bold tracking-[-0.015em]">
-            {confirmed ? "基点探索" : "规则草案"}
+            {confirmed ? "基点探索" : "知识草案"}
           </h3>
           <HelpTooltip
             content={
               confirmed
-                ? "规则集已经确认,再次探索的产出排进上面的修订提案队列,由你逐条裁决。"
+                ? "知识集已经确认,再次探索的产出排进上面的修订提案队列,由你逐条裁决。"
                 : "基点探索让 agent 从一个 commit 上的代码推导规则初稿,至多 30 条,由你逐条改定后整组确认。"
             }
           />
@@ -729,10 +729,10 @@ function ExplorationSection({
             向草案新增
           </Button>
           <Button size={{ initial: "3", sm: "2" }} disabled={busy} onClick={onConfirm}>
-            {ruleSet.draft.length === 0 ? "确认空规则集" : "确认这组规则"}
+            {ruleSet.draft.length === 0 ? "确认空知识集" : "确认这组规则"}
           </Button>
           {ruleSet.draft.length === 0 ? (
-            <HelpTooltip content="确认空规则集即宣布这个仓库没有规则:审查随之放行,评审不注入任何规则。之后再探索,产出排进修订提案队列。" />
+            <HelpTooltip content="确认空知识集即宣布这个仓库没有规则:审查随之放行,评审不注入任何规则。之后再探索,产出排进修订提案队列。" />
           ) : null}
         </div>
       ) : (
@@ -922,7 +922,7 @@ function ExplorationLaunchContent({
             </span>
             <HelpTooltip
               className="ml-1 align-middle"
-              content="产出至多 30 条规则草案,由你逐条改定后整组确认。"
+              content="产出至多 30 条知识草案,由你逐条改定后整组确认。"
             />
           </Dialog.Title>
           <div className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">

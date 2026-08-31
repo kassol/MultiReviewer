@@ -7,7 +7,7 @@ import type { RuntimeModel } from "./model-service-runtime.ts";
  * 主进程交给 Reviewer 子进程的任务:注入边界那份输入,去掉跨不了进程的 `onEvent`
  * (事件走 `WorkerMessage` 回传),加上本轮固定的完整运行模型。
  *
- * 空规则集不带 `rules` 这一项,prompt 因此与没有规则集时逐字一致。
+ * 空知识集不带 `rules` 这一项,prompt 因此与没有知识集时逐字一致。
  */
 export type ReviewerRequest = Omit<ReviewerInput, "onEvent"> & {
   /** 本轮固定的完整运行模型；不含凭据。 */
