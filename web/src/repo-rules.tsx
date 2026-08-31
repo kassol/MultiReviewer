@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { Cross2Icon, CrossCircledIcon } from "@radix-ui/react-icons";
-import { Badge, Callout, Dialog, IconButton, Select, Skeleton, Text, TextField, Tooltip } from "@radix-ui/themes";
+import { Badge, Callout, Checkbox, Dialog, IconButton, Select, Skeleton, Text, TextField, Tooltip } from "@radix-ui/themes";
 
 import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
@@ -144,6 +144,43 @@ function useRuleEdits(basePath: string, onSuccess: () => void) {
 }
 
 /**
+ * 一组条目的勾选态(issue #223)。草案与修订提案两处共用:上百条时逐条点击点不完,
+ * 勾选之后一次裁决完。
+ *
+ * `all` 为真即当前这一组全部勾上——它是**推出来的**,不另存一份状态,否则列表变化时
+ * 两份状态会各说各话。全选那一颗按 `some && !all` 显示 indeterminate(`web/AGENTS.md`
+ * 的批量规范)。
+ */
+function useSelection(ids: readonly number[], defaultAll: boolean) {
+  const key = ids.join(",");
+  const [picked, setPicked] = useState<Set<number>>(() => new Set(defaultAll ? ids : []));
+  // 列表换了就按默认重来:上一次勾的那些标识可能已经不在队列里了。
+  useEffect(() => {
+    setPicked(new Set(defaultAll ? key.split(",").filter(Boolean).map(Number) : []));
+  }, [key, defaultAll]);
+
+  const toggle = (id: number, on: boolean): void => {
+    setPicked((current) => {
+      const next = new Set(current);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+  const all = ids.length > 0 && ids.every((id) => picked.has(id));
+  const some = ids.some((id) => picked.has(id));
+  return {
+    picked,
+    /** 按列表顺序给出勾选的那些:请求里的次序因此与人看到的一致。 */
+    selected: ids.filter((id) => picked.has(id)),
+    toggle,
+    /** 全选那一颗的状态:全勾 / 部分勾 / 一条不勾。 */
+    headState: all ? true : some ? ("indeterminate" as const) : false,
+    toggleAll: (on: boolean): void => setPicked(new Set(on ? ids : [])),
+  };
+}
+
+/**
  * 知识集入口(issue #202):首页右栏头部选中一个仓库时的一个按钮加它的弹窗。
  *
  * 读侧不挂权限格(ADR 0019),登录加仓库分配即可读,因此这个按钮与「发起范围审查」
@@ -223,13 +260,23 @@ function RuleSetDialogContent({
    */
   const decide = useMutation({
     mutationFn: async (
-      action: { id: number; accept: boolean; edit?: RuleFormState },
+      action:
+        | { id: number; accept: boolean; edit?: RuleFormState }
+        | { ids: readonly number[]; accept: boolean },
     ): Promise<void> => {
-      const path = `/repos/${repo.repoId}/rule-proposals/${action.id}`;
-      const response = await api(`${path}/${action.accept ? "accept" : "reject"}`, {
-        method: "POST",
-        ...(action.edit === undefined ? {} : { body: ruleFieldsBody(action.edit) }),
-      });
+      const base = `/repos/${repo.repoId}/rule-proposals`;
+      // 批量裁决走另一对端点(issue #223):采纳一整组只推进一个知识集版本,而逐条采纳
+      // 还带「改后采纳」的改后内容,两者要的 body 不是一回事。
+      const response =
+        "ids" in action
+          ? await api(`${base}/${action.accept ? "accept" : "reject"}`, {
+              method: "POST",
+              body: JSON.stringify({ ids: action.ids }),
+            })
+          : await api(`${base}/${action.id}/${action.accept ? "accept" : "reject"}`, {
+              method: "POST",
+              ...(action.edit === undefined ? {} : { body: ruleFieldsBody(action.edit) }),
+            });
       if (!response.ok) throw new Error(await errorText(response));
     },
     onSuccess: () => {
@@ -238,10 +285,16 @@ function RuleSetDialogContent({
     },
   });
 
-  /** 知识确认(CONTEXT.md):整组生效,生成这个仓库的下一个知识集版本。 */
+  /**
+   * 知识确认(CONTEXT.md):勾选的那些生效,生成这个仓库的下一个知识集版本。
+   * `itemIds` 为空即整组确认(草案本来就是空的那一档),与升级前逐字一致。
+   */
   const confirm = useMutation({
-    mutationFn: async (): Promise<void> => {
-      const response = await api(`/repos/${repo.repoId}/rule-draft/confirm`, { method: "POST" });
+    mutationFn: async (itemIds: readonly number[]): Promise<void> => {
+      const response = await api(`/repos/${repo.repoId}/rule-draft/confirm`, {
+        method: "POST",
+        ...(itemIds.length === 0 ? {} : { body: JSON.stringify({ itemIds }) }),
+      });
       if (!response.ok) throw new Error(await errorText(response));
     },
     onSuccess: reload,
@@ -301,7 +354,7 @@ function RuleSetDialogContent({
           onEdit={setDraftEdit}
           onSubmitEdit={() => changeDraft.mutate(draftEdit!)}
           onDeleteDraft={(id) => changeDraft.mutate({ deleteDraft: id })}
-          onConfirm={() => confirm.mutate()}
+          onConfirm={(itemIds) => confirm.mutate(itemIds)}
         />
       ) : null}
 
@@ -314,6 +367,7 @@ function RuleSetDialogContent({
           busy={decide.isPending}
           onEdit={setProposalEdit}
           onDecide={(id, accept) => decide.mutate({ id, accept })}
+          onDecideAll={(ids, accept) => decide.mutate({ ids, accept })}
           onSubmitEdit={() =>
             decide.mutate({ id: proposalEdit!.id!, accept: true, edit: proposalEdit! })
           }
@@ -595,6 +649,31 @@ function RuleForm({
   );
 }
 
+/** 一段列表头上的全选(issue #223)。可见标签与 Checkbox 关联,窄屏保留触控尺寸。 */
+function SelectAll({
+  id,
+  state,
+  label,
+  onChange,
+}: {
+  id: string;
+  state: boolean | "indeterminate";
+  label: string;
+  onChange: (on: boolean) => void;
+}) {
+  return (
+    <Text as="label" size="1" color="gray" className="flex items-center gap-1.5">
+      <Checkbox
+        id={id}
+        checked={state}
+        onCheckedChange={(next) => onChange(next === true)}
+        size={{ initial: "2", sm: "1" }}
+      />
+      {label}
+    </Text>
+  );
+}
+
 const CHANGE_LABEL = { add: "新增", modify: "修改", retire: "废止" } as const;
 
 /**
@@ -611,6 +690,7 @@ function ProposalSection({
   busy,
   onEdit,
   onDecide,
+  onDecideAll,
   onSubmitEdit,
 }: {
   repoId: number;
@@ -620,10 +700,13 @@ function ProposalSection({
   busy: boolean;
   onEdit: (draft: RuleFormState | null) => void;
   onDecide: (id: number, accept: boolean) => void;
+  onDecideAll: (ids: readonly number[], accept: boolean) => void;
   onSubmitEdit: () => void;
 }) {
   const pending = ruleSet.proposals.filter((row) => row.state === "pending");
   const decided = ruleSet.proposals.filter((row) => row.state !== "pending");
+  // 提案默认一条不勾:采纳是改变知识集的动作,该由人一条条挑,不该默认全中。
+  const pick = useSelection(pending.map((row) => row.id), false);
   /** 修改与废止指向的那条现有规则。已经不在生效规则里时只显示标识。 */
   const target = (proposal: RuleProposal): string | null => {
     if (proposal.targetRuleId === null) return null;
@@ -633,9 +716,38 @@ function ProposalSection({
 
   return (
     <section className="mb-3.5 flex flex-col gap-2 rounded-lg border border-card-line p-3">
-      <div className="flex items-center gap-1">
-        <h3 className="text-2xl font-bold tracking-[-0.015em]">修订提案</h3>
-        <HelpTooltip content="知识集的每次变更都要你裁决:采纳生成新的知识集版本,驳回只留下记录。" />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-1">
+          <h3 className="text-2xl font-bold tracking-[-0.015em]">修订提案</h3>
+          <HelpTooltip content="知识集的每次变更都要你裁决:采纳生成新的知识集版本,驳回只留下记录。批量采纳一次只生成一个版本。" />
+        </div>
+        {canWrite && pending.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <SelectAll
+              id="rule-proposals-all"
+              state={pick.headState}
+              label={`全选(${pick.selected.length}/${pending.length})`}
+              onChange={pick.toggleAll}
+            />
+            <Button
+              variant="soft"
+              size={{ initial: "3", sm: "1" }}
+              disabled={busy || pick.selected.length === 0}
+              onClick={() => onDecideAll(pick.selected, true)}
+            >
+              采纳勾选的 {pick.selected.length} 条
+            </Button>
+            <Button
+              variant="soft"
+              color="gray"
+              size={{ initial: "3", sm: "1" }}
+              disabled={busy || pick.selected.length === 0}
+              onClick={() => onDecideAll(pick.selected, false)}
+            >
+              驳回
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       {pending.length === 0 ? null : (
@@ -643,7 +755,19 @@ function ProposalSection({
           {pending.map((proposal) => (
             <li key={proposal.id} className="border-t border-line px-4 py-3 first:border-t-0">
               <div className="flex items-start justify-between gap-2">
-                <Text as="p" size="2">{proposal.statement}</Text>
+                {canWrite ? (
+                  <Text as="label" size="2" className="flex min-w-0 items-start gap-2">
+                    <Checkbox
+                      checked={pick.picked.has(proposal.id)}
+                      onCheckedChange={(next) => pick.toggle(proposal.id, next === true)}
+                      size={{ initial: "2", sm: "1" }}
+                      className="mt-0.5"
+                    />
+                    <span className="min-w-0 break-words">{proposal.statement}</span>
+                  </Text>
+                ) : (
+                  <Text as="p" size="2">{proposal.statement}</Text>
+                )}
                 {canWrite && edit?.id !== proposal.id ? (
                   <div className="flex shrink-0 gap-1">
                     <Button
@@ -778,12 +902,14 @@ function ExplorationSection({
   onEdit: (draft: RuleFormState | null) => void;
   onSubmitEdit: () => void;
   onDeleteDraft: (id: number) => void;
-  onConfirm: () => void;
+  onConfirm: (itemIds: readonly number[]) => void;
 }) {
   const exploration = ruleSet.exploration;
   const running = exploration?.state === "running";
   // 分界按有没有知识集版本取,不按规则为不为空:已确认的空知识集重探索也走提案队列。
   const confirmed = ruleSet.version !== null;
+  // 草案默认全勾:确认这一整组是常规动作,取消勾选是例外(issue #223)。
+  const pick = useSelection(ruleSet.draft.map((row) => row.id), true);
 
   return (
     <section className="mb-3.5 flex flex-col gap-2 rounded-lg border border-card-line p-3">
@@ -796,7 +922,7 @@ function ExplorationSection({
             content={
               confirmed
                 ? "知识集已经确认,再次探索的产出排进上面的修订提案队列,由你逐条裁决。"
-                : "基点探索让 agent 从一个 commit 上的代码推导评审规则与项目事实的初稿,至多 30 条,由你逐条改定后整组确认。"
+                : "基点探索让 agent 从一个 commit 上的代码推导评审规则与项目事实的初稿,由你勾选后整组确认。"
             }
           />
         </div>
@@ -835,8 +961,14 @@ function ExplorationSection({
           >
             向草案新增
           </Button>
-          <Button size={{ initial: "3", sm: "2" }} disabled={busy} onClick={onConfirm}>
-            {ruleSet.draft.length === 0 ? "确认空知识集" : "确认这组知识"}
+          <Button
+            size={{ initial: "3", sm: "2" }}
+            disabled={busy || (ruleSet.draft.length > 0 && pick.selected.length === 0)}
+            onClick={() => onConfirm(pick.selected)}
+          >
+            {ruleSet.draft.length === 0
+              ? "确认空知识集"
+              : `确认勾选的 ${pick.selected.length} 条`}
           </Button>
           {ruleSet.draft.length === 0 ? (
             <HelpTooltip content="确认空知识集即宣布这个仓库没有规则:审查随之放行,评审不注入任何规则。之后再探索,产出排进修订提案队列。" />
@@ -853,11 +985,27 @@ function ExplorationSection({
       )}
 
       {ruleSet.draft.length === 0 ? null : (
+        <>
+        <SelectAll
+          id="rule-draft-all"
+          state={pick.headState}
+          label={`全选(${pick.selected.length}/${ruleSet.draft.length})`}
+          onChange={pick.toggleAll}
+        />
         <ul className="overflow-hidden rounded-lg border border-card-line">
           {ruleSet.draft.map((rule) => (
             <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
               <div className="flex items-start justify-between gap-2">
-                <Text as="p" size="2">{rule.statement}</Text>
+                <Text as="label" size="2" className="flex min-w-0 items-start gap-2">
+                  {/* 没勾的那些不进知识集,随草案一并丢弃(issue #223)。 */}
+                  <Checkbox
+                    checked={pick.picked.has(rule.id)}
+                    onCheckedChange={(next) => pick.toggle(rule.id, next === true)}
+                    size={{ initial: "2", sm: "1" }}
+                    className="mt-0.5"
+                  />
+                  <span className="min-w-0 break-words">{rule.statement}</span>
+                </Text>
                 <div className="flex shrink-0 gap-1">
                   <Button
                     variant="soft"
@@ -891,6 +1039,7 @@ function ExplorationSection({
             </li>
           ))}
         </ul>
+        </>
       )}
     </section>
   );
@@ -1033,7 +1182,7 @@ function ExplorationLaunchContent({
             </span>
             <HelpTooltip
               className="ml-1 align-middle"
-              content="产出至多 30 条知识草案(评审规则与项目事实两型),由你逐条改定后整组确认。"
+              content="产出知识草案(评审规则与项目事实两型),条数不设上限,由你勾选后整组确认。"
             />
           </Dialog.Title>
           <div className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">

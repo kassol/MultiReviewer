@@ -14,11 +14,10 @@ import { Type } from "typebox";
 
 import type { KnowledgeEntry } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
-import {
-  RULE_LIMIT,
-  type DispositionFeedback,
-  type RuleWorkerMessage,
-  type RuleWorkerRequest,
+import type {
+  DispositionFeedback,
+  RuleWorkerMessage,
+  RuleWorkerRequest,
 } from "./rule-agent.ts";
 import { reviewerEventStream } from "./trace-events.ts";
 import { numberedReadTool, prepareAgentRuntime, sessionThinkingLevel } from "./worker-tools.ts";
@@ -38,7 +37,7 @@ Give every entry the kind it really is. Do not dress a fact up as an obligation 
 
 Report each entry by calling the propose_rule tool exactly once per entry. Do not describe entries in prose — an entry that is not reported through the tool does not exist.
 
-Report at most ${RULE_LIMIT} entries, most important first. Importance means how much a reviewer's judgement improves by having it. Prefer few entries that matter over many that are obvious; a reviewer has to confirm every one of them by hand. Do not restate what a linter or the type checker already enforces.
+Order the entries by importance, most important first. Importance means how much a reviewer's judgement improves by having it. Report as many as this repository genuinely warrants and no more: every entry is confirmed by hand, so one that is obvious, that a linter or the type checker already enforces, or that no reviewer would act on costs the reader time and earns nothing.
 
 Write the statement and layer fields in Chinese. The reviewers of this repository read Chinese. Keep identifiers, file paths and code fragments in their original form — do not translate them.
 

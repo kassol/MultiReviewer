@@ -1758,11 +1758,17 @@ export type Store = {
   /** 删草案里的一条。草案未确认,删就是删掉,没有历史版本要为它保留。 */
   deleteRuleDraftItem(repoId: number, itemId: number): boolean;
   /**
-   * 知识确认(CONTEXT.md):草案整组成为生效规则,推进一个知识集版本,草案清空。还没
+   * 知识确认(CONTEXT.md):草案整组成为生效条目,推进一个知识集版本,草案清空。还没
    * 确认过的仓库可以确认空草案——空知识集是合法状态(issue #200),那一版就是一个空集。
-   * 返回新的知识集版本;仓库不在注册表里、或知识集已确认而草案为空时回 undefined。
+   *
+   * `itemIds` 给了就只确认这几条,其余的随草案一并丢弃(issue #223 的批量确认:在确认页
+   * 取消勾选,与逐条删掉再整组确认是同一件事)。**其中任意一条不在这个仓库的草案里就
+   * 整次不做**,回 undefined:一份过期的勾选不该悄悄确认成另一组条目。不给即整组确认。
+   *
+   * 返回新的知识集版本;仓库不在注册表里、或知识集已确认而这一次确认的是空的一组时回
+   * undefined。
    */
-  confirmRuleDraft(repoId: number): number | undefined;
+  confirmRuleDraft(repoId: number, itemIds?: readonly number[]): number | undefined;
   /** 这个仓库的修订提案队列,按排队先后。待裁决与已裁决的都在里面。 */
   getRuleProposals(repoId: number): RuleProposal[];
   /** 排一条修订提案进队列。返回它的 id;仓库不在注册表里回 undefined。 */
@@ -1781,8 +1787,23 @@ export type Store = {
     proposalId: number,
     input?: ReviewRuleInput,
   ): number | undefined;
+  /**
+   * 批量采纳一组待裁决的提案(issue #223):在同一个写事务里按排队先后逐条落库,
+   * **一次只推进一个知识集版本**——逐条各推一版会让一次裁决在版本轴上散成上百格,
+   * 之后回看「那一次采纳的是哪一组」再也拼不回来。
+   *
+   * 全成或全不成:其中任意一条不在待裁决队列里、或它要改的条目已经不生效,整次回
+   * undefined,一行都不改。部分成功会让人对着一份说不清哪些落了的队列继续裁决。
+   * 空数组同样回 undefined:没有要采纳的东西,不该白推一版。
+   */
+  acceptRuleProposals(repoId: number, proposalIds: readonly number[]): number | undefined;
   /** 驳回一条待裁决的提案:只改状态,知识集一版都不推进。不在待裁决队列里回 false。 */
   rejectRuleProposal(repoId: number, proposalId: number): boolean;
+  /**
+   * 批量驳回一组待裁决的提案(issue #223)。与单条同义,只是一次改一组;知识集一版都不
+   * 推进。其中任意一条不在待裁决队列里即整次回 false,一条都不改。
+   */
+  rejectRuleProposals(repoId: number, proposalIds: readonly number[]): boolean;
   /** 审查策略。历史值和未写过的项都从版本 1 开始。 */
   getGlobalSettings(): GlobalSettings;
   /** 按独立版本改写全局模型组合；陈旧版本或模型服务状态变化返回 false。 */
@@ -2583,6 +2604,67 @@ export function openStore(dbPath: string): Store {
       .getRuleProposals(repoId)
       .find((row) => row.id === proposalId && row.state === "pending");
 
+  /**
+   * 一条提案采纳前算得出来的全部东西:队列里那一条、实际要落的内容、以及修改与废止的
+   * 目标条目此刻的出处。单条与批量共用它,判据因此只有一份;算不出来即这一条采纳不了。
+   */
+  type PlannedAcceptance = {
+    queued: RuleProposal;
+    content: ReviewRuleInput;
+    targetOrigin: string | undefined;
+  };
+
+  const plannedAcceptance = (
+    repoId: number,
+    proposalId: number,
+    input?: ReviewRuleInput,
+  ): PlannedAcceptance | undefined => {
+    const queued = pendingProposal(repoId, proposalId);
+    if (queued === undefined) return undefined;
+    const content = input ?? {
+      type: queued.type,
+      scope: queued.scope,
+      statement: queued.statement,
+      layer: queued.layer,
+    };
+    // 修改与废止都要目标条目此刻仍然生效:它已经被人废止掉时,这条提案落不下去。
+    const target =
+      queued.targetRuleId === null ? undefined : activeRule(repoId, queued.targetRuleId);
+    if (queued.change !== "add" && target === undefined) return undefined;
+    return { queued, content, targetOrigin: target?.origin };
+  };
+
+  /** 采纳一条提案在写事务里做的那几笔。版本号由调用方给:批量采纳全组共用同一个。 */
+  const applyAcceptance = (
+    repoId: number,
+    planned: PlannedAcceptance,
+    version: number,
+    at: string,
+  ): void => {
+    const { queued, content, targetOrigin } = planned;
+    if (queued.change === "add") {
+      insertReviewRule(repoId, content, queued.source, version, at);
+    } else {
+      retireRuleRow(queued.targetRuleId!, version);
+      // 修改沿用旧行的出处:改文字不改变这条条目当初从哪来(issue #203 同一条口径)。
+      if (queued.change === "modify") {
+        insertReviewRule(repoId, content, targetOrigin!, version, at);
+      }
+    }
+    db.prepare(
+      `UPDATE rule_proposal
+          SET state = 'accepted', type = ?, scope = ?, statement = ?, layer = ?, decided_at = ?
+        WHERE id = ?`,
+    ).run(content.type, content.scope, content.statement, content.layer, at, queued.id);
+  };
+
+  const rejectProposalRow = (proposalId: number, at: string): void => {
+    db.prepare("UPDATE rule_proposal SET state = 'rejected', decided_at = ? WHERE id = ?").run(
+      at,
+      proposalId,
+    );
+  };
+
   const retireRuleRow = (ruleId: number, version: number): void => {
     db.prepare(
       "UPDATE review_rule SET state = 'retired', retired_version = ? WHERE id = ?",
@@ -3284,19 +3366,26 @@ export function openStore(dbPath: string): Store {
       return deleted.changes > 0;
     },
 
-    confirmRuleDraft(repoId) {
+    confirmRuleDraft(repoId, itemIds) {
       if (!repoExists(repoId)) return undefined;
+      const draft = store.getRuleDraft(repoId);
+      // 勾选里有一条不在草案里就整次不做:一份过期的勾选不该悄悄确认成另一组条目。
+      const selected =
+        itemIds === undefined
+          ? draft
+          : itemIds.map((id) => draft.find((item) => item.id === id));
+      if (selected.some((item) => item === undefined)) return undefined;
       // 空知识集是合法状态(issue #200):还没确认过的仓库确认空草案就是在说「这个仓库
-      // 没有规则」,照样生成一个版本,门禁随之放行。已确认的仓库拿空草案再确认只会白推
-      // 一版,那时回 undefined。
-      if (store.getRuleDraft(repoId).length === 0 && store.getRuleSet(repoId)?.version !== null) {
+      // 没有知识条目」,照样生成一个版本,门禁随之放行。已确认的仓库拿空的一组再确认只会
+      // 白推一版,那时回 undefined。
+      if (selected.length === 0 && store.getRuleSet(repoId)?.version !== null) {
         return undefined;
       }
       return inRuleSetVersion(repoId, (version, at) => {
-        // 草案在同一个写事务里读:确认与它带来的规则变更必须一起落。
-        for (const item of store.getRuleDraft(repoId)) {
-          insertReviewRule(repoId, item, item.origin, version, at);
+        for (const item of selected) {
+          insertReviewRule(repoId, item!, item!.origin, version, at);
         }
+        // 没勾选的随草案一并丢弃:草案是一次性的那一份,确认完就不剩什么了。
         db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
         return version;
       });
@@ -3336,42 +3425,39 @@ export function openStore(dbPath: string): Store {
     },
 
     acceptRuleProposal(repoId, proposalId, input) {
-      const queued = pendingProposal(repoId, proposalId);
-      if (queued === undefined) return undefined;
-      const content = input ?? {
-        type: queued.type,
-        scope: queued.scope,
-        statement: queued.statement,
-        layer: queued.layer,
-      };
-      // 修改与废止都要目标条目此刻仍然生效:它已经被人废止掉时,这条提案落不下去。
-      const target =
-        queued.targetRuleId === null ? undefined : activeRule(repoId, queued.targetRuleId);
-      if (queued.change !== "add" && target === undefined) return undefined;
+      const planned = plannedAcceptance(repoId, proposalId, input);
+      if (planned === undefined) return undefined;
       return inRuleSetVersion(repoId, (version, at) => {
-        if (queued.change === "add") {
-          insertReviewRule(repoId, content, queued.source, version, at);
-        } else {
-          retireRuleRow(queued.targetRuleId!, version);
-          // 修改沿用旧行的出处:改文字不改变这条条目当初从哪来(issue #203 同一条口径)。
-          if (queued.change === "modify") {
-            insertReviewRule(repoId, content, target!.origin, version, at);
-          }
-        }
-        db.prepare(
-          `UPDATE rule_proposal
-              SET state = 'accepted', type = ?, scope = ?, statement = ?, layer = ?, decided_at = ?
-            WHERE id = ?`,
-        ).run(content.type, content.scope, content.statement, content.layer, at, proposalId);
+        applyAcceptance(repoId, planned, version, at);
+        return version;
+      });
+    },
+
+    acceptRuleProposals(repoId, proposalIds) {
+      // 空的一组不推版:没有要采纳的东西,一个空版本只会让版本轴多一格看不出来历的。
+      if (proposalIds.length === 0) return undefined;
+      // 先全部算一遍再落:全成或全不成。部分成功会让人对着一份说不清哪些落了的队列继续裁决。
+      const planned = proposalIds.map((id) => plannedAcceptance(repoId, id));
+      if (planned.some((entry) => entry === undefined)) return undefined;
+      return inRuleSetVersion(repoId, (version, at) => {
+        // 全组共用同一个版本号(issue #223):逐条各推一版会让一次裁决在版本轴上散成上百格。
+        for (const entry of planned) applyAcceptance(repoId, entry!, version, at);
         return version;
       });
     },
 
     rejectRuleProposal(repoId, proposalId) {
       if (pendingProposal(repoId, proposalId) === undefined) return false;
-      db.prepare(
-        "UPDATE rule_proposal SET state = 'rejected', decided_at = ? WHERE id = ?",
-      ).run(new Date().toISOString(), proposalId);
+      rejectProposalRow(proposalId, new Date().toISOString());
+      return true;
+    },
+
+    rejectRuleProposals(repoId, proposalIds) {
+      if (proposalIds.length === 0) return false;
+      // 与批量采纳同一条口径:先全部认一遍,有一条不在待裁决队列里就一条都不改。
+      if (proposalIds.some((id) => pendingProposal(repoId, id) === undefined)) return false;
+      const at = new Date().toISOString();
+      for (const id of proposalIds) rejectProposalRow(id, at);
       return true;
     },
 

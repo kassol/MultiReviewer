@@ -141,7 +141,6 @@ import {
 } from "../reviewer/model-runtime.ts";
 import {
   createPiRuleAgent,
-  RULE_LIMIT,
   type RuleAgent,
   type RuleAgentEvent,
   type RuleAgentItem,
@@ -1958,7 +1957,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     pattern: /^\/repos\/(\d+)\/rule-draft\/confirm$/,
     access: "knowledge:write",
     assignment: { by: "repo", group: 1 },
-    handler: ({ res, deps }, match) => handleConfirmRuleDraft(res, deps, Number(match![1])),
+    handler: ({ req, res, deps }, match) => handleConfirmRuleDraft(req, res, deps, Number(match![1])),
   },
   {
     method: "PUT",
@@ -1992,6 +1991,24 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     assignment: { by: "repo", group: 1 },
     handler: ({ res, deps }, match) =>
       handleRejectRuleProposal(res, deps, Number(match![1]), Number(match![2])),
+  },
+  {
+    // 批量裁决(issue #223)。与逐条那两条并列而不是取代它们:逐条采纳还带「改后采纳」
+    // 的改后内容,批量采纳按队列里那份原样采纳,两者要的 body 不是一回事。
+    method: "POST",
+    pattern: /^\/repos\/(\d+)\/rule-proposals\/accept$/,
+    access: "knowledge:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ req, res, deps }, match) =>
+      handleDecideRuleProposals(req, res, deps, Number(match![1]), true),
+  },
+  {
+    method: "POST",
+    pattern: /^\/repos\/(\d+)\/rule-proposals\/reject$/,
+    access: "knowledge:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ req, res, deps }, match) =>
+      handleDecideRuleProposals(req, res, deps, Number(match![1]), false),
   },
   {
     // 发起探索时可选的那些模型。可用性判据与全局模型组合读的是同一份投影。
@@ -6075,8 +6092,8 @@ async function handleRuleModels(res: ServerResponse, deps: WebhookServerDeps): P
  * - 事实只要陈述非空,层标签强制成空串(层标签属规则型),陈述超过 `FACT_STATEMENT_LIMIT`
  *   的整条丢掉——**丢掉而不是截断**,截断出来的半句事实比没有更糟。
  *
- * 再按重要性截断为至多 30 条——上限的本质是人一次确认得完、不麻木,由服务端把住,
- * 不指望模型自己数得准。
+ * **不再有条数上限**(issue #223,ADR 0020):原来那道 30 条截断的前提是人逐条确认,
+ * 确认页改成批量裁决之后前提不再成立,而截断会让大仓库的知识起步一开始就残缺。
  */
 function usableRuleItems(items: readonly RuleAgentItem[]): RuleAgentItem[] {
   return items
@@ -6090,8 +6107,7 @@ function usableRuleItems(items: readonly RuleAgentItem[]): RuleAgentItem[] {
       item.type === "rule"
         ? item.statement !== "" && item.layer !== ""
         : item.statement !== "" && item.statement.length <= FACT_STATEMENT_LIMIT,
-    )
-    .slice(0, RULE_LIMIT);
+    );
 }
 
 /**
@@ -6534,6 +6550,9 @@ function handleDeleteDraftItem(
 
 const NO_PENDING_PROPOSAL = "这条提案不在这个仓库的待裁决队列里";
 
+/** 批量裁决时那一组里有条目落不下去的说法。整组不做,一条都不改。 */
+const NOT_ALL_PENDING = "不在这个仓库的待裁决队列里";
+
 /**
  * 采纳时可选的改后内容(issue #207)。三样一个都没给即按队列里那份原样采纳;给了就与
  * 手写规则同一道校验(规范陈述与层标签不能为空)。返回 `undefined` 即已经回过 400。
@@ -6574,6 +6593,60 @@ async function handleAcceptRuleProposal(
   return sendJson(res, 200, { version });
 }
 
+/**
+ * 一次批量裁决要裁哪几条(issue #223)。body 是 `{"ids": [1, 2, 3]}`,正整数、非空、
+ * 不重复;认不出形状即已经回过 400,返回 `undefined`。
+ *
+ * 重复的标识当场拒:同一条采纳两次会在同一版里把它落两遍,而人真正想说的是「这几条」。
+ */
+async function readProposalIds(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<number[] | undefined> {
+  const payload = await readJson<{ ids?: unknown } | null>(req, res);
+  if (payload === undefined) return undefined;
+  const ids = payload?.ids;
+  const bad = (): undefined => {
+    sendJson(res, 400, { error: 'body 要是 {"ids": [提案标识, …]} 形状的 JSON,至少一条,不能重复' });
+    return undefined;
+  };
+  if (!Array.isArray(ids) || ids.length === 0) return bad();
+  if (!ids.every((id) => Number.isInteger(id) && (id as number) > 0)) return bad();
+  if (new Set(ids as number[]).size !== ids.length) return bad();
+  return ids as number[];
+}
+
+/**
+ * 批量采纳或批量驳回一组修订提案(issue #223)。**采纳一次只推进一个知识集版本**:
+ * 逐条各推一版会让一次裁决在版本轴上散成上百格,之后回看「那一次采纳的是哪一组」再也
+ * 拼不回来。全成或全不成——其中一条已经被裁决过、或它要改的条目已经不生效,整次 404,
+ * 面板重读队列即可看到当前状态。
+ *
+ * 批量采纳不收改后的内容:改一条要看着它改,那是逐条那条路径的事。
+ */
+async function handleDecideRuleProposals(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+  accept: boolean,
+): Promise<void> {
+  const ids = await readProposalIds(req, res);
+  if (ids === undefined) return;
+  if (!accept) {
+    const rejected = withStore(deps.dbPath, (store) => store.rejectRuleProposals(repoId, ids));
+    if (!rejected) return sendJson(res, 404, { error: `这一组里有提案${NOT_ALL_PENDING}` });
+    return sendJson(res, 200, { ids });
+  }
+  const version = withStore(deps.dbPath, (store) => store.acceptRuleProposals(repoId, ids));
+  if (version === undefined) {
+    return sendJson(res, 404, {
+      error: `这一组里有提案${NOT_ALL_PENDING},或它要改的条目已经不再生效`,
+    });
+  }
+  return sendJson(res, 200, { version });
+}
+
 /** 驳回一条修订提案:只改状态,知识集一版都不推进。 */
 function handleRejectRuleProposal(
   res: ServerResponse,
@@ -6590,14 +6663,37 @@ function handleRejectRuleProposal(
  * 知识确认(CONTEXT.md):草案整组生效,生成这个仓库的下一个知识集版本。知识集还没确认
  * 的仓库确认空草案照样成立(issue #200):那一版是一个空集,门禁随之放行。
  */
-function handleConfirmRuleDraft(
+async function handleConfirmRuleDraft(
+  req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
   repoId: number,
-): void {
-  const version = withStore(deps.dbPath, (store) => store.confirmRuleDraft(repoId));
+): Promise<void> {
+  // body 里给 `itemIds` 即只确认勾选的那几条,其余随草案一并丢弃(issue #223 的批量确认:
+  // 在确认页取消勾选,与逐条删掉再整组确认是同一件事)。不给即整组确认,与升级前一致。
+  const payload = await readJson<{ itemIds?: unknown } | null>(req, res);
+  if (payload === undefined) return;
+  const itemIds = payload?.itemIds;
+  if (itemIds !== undefined) {
+    if (
+      !Array.isArray(itemIds) ||
+      !itemIds.every((id) => Number.isInteger(id) && (id as number) > 0) ||
+      new Set(itemIds as number[]).size !== itemIds.length
+    ) {
+      return sendJson(res, 400, {
+        error: 'itemIds 要是一组正整数的草案条目标识,不能重复;整组确认时不给这一项',
+      });
+    }
+  }
+  const version = withStore(deps.dbPath, (store) =>
+    itemIds === undefined
+      ? store.confirmRuleDraft(repoId)
+      : store.confirmRuleDraft(repoId, itemIds as number[]),
+  );
   if (version === undefined) {
-    return sendJson(res, 409, { error: "这个仓库的知识集已经确认,没有待确认的知识草案" });
+    return sendJson(res, 409, {
+      error: "这个仓库的知识集已经确认而这一次确认的是空的一组,或勾选里有条目已经不在草案里",
+    });
   }
   return sendJson(res, 200, { version });
 }

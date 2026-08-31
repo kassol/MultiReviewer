@@ -15,12 +15,6 @@ import { runWorkerChild } from "./subprocess.ts";
 const WORKER_PATH = fileURLToPath(new URL("./rule-worker.ts", import.meta.url));
 
 /**
- * 一次探索最多留下几条(ADR 0019)。上限的本质是人一次确认得完、不麻木;宁缺勿滥,缺
- * 的靠反哺补。模型多报的由服务端截断,不指望它自己数得准。
- */
-export const RULE_LIMIT = 30;
-
-/**
  * agent 推导出的一条知识条目,形状与人手填的那几样相同(CONTEXT.md 知识条目)。
  * 探索与反哺两条链路共用它,`type` 两值由 agent 自己判(issue #222)。
  */

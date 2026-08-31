@@ -16,7 +16,7 @@ import { test } from "node:test";
 import type { HistoryFinding, ReviewerEvent } from "../src/review/finding.ts";
 import { resolvePiBuiltinProviderTarget } from "../src/reviewer/catalog.ts";
 import { createPiReviewer } from "../src/reviewer/pi-reviewer.ts";
-import { createPiRuleAgent, RULE_LIMIT } from "../src/reviewer/rule-agent.ts";
+import { createPiRuleAgent } from "../src/reviewer/rule-agent.ts";
 import {
   discoverModels,
   validateMinimalInference,
@@ -192,11 +192,10 @@ test("真实模型经 propose_rule 推导出规范性的评审规则", { skip },
   });
 
   assert.equal(result.failure, undefined, `规则 agent 失败: ${result.failure}`);
-  assert.ok(result.items.length > 0, "至少要产出一条规则");
-  // 上限由服务端截断兜底,这里看的是模型自己有没有把它当回事。
-  assert.ok(result.items.length <= RULE_LIMIT * 2, "产出条数远超上限,提示措辞没起作用");
+  assert.ok(result.items.length > 0, "至少要产出一条知识条目");
+  // 条数不再设上限(issue #223),这里只看两型的必填面对不对得上。
   for (const item of result.items) {
     assert.ok(item.statement.trim().length > 0);
-    assert.ok(item.layer.trim().length > 0);
+    if (item.type === "rule") assert.ok(item.layer.trim().length > 0);
   }
 });

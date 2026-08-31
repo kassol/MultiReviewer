@@ -73,6 +73,9 @@ const ROUTE_EXPECTATIONS = [
   ["DELETE", "/^\\/repos\\/(\\d+)\\/rule-draft\\/(\\d+)$/", "knowledge:write", "repo:1"],
   ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/(\\d+)\\/accept$/", "knowledge:write", "repo:1"],
   ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/(\\d+)\\/reject$/", "knowledge:write", "repo:1"],
+  // 批量裁决与逐条同一格(issue #223):都是「谁定这个仓库的标准」。
+  ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/accept$/", "knowledge:write", "repo:1"],
+  ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/reject$/", "knowledge:write", "repo:1"],
   ["GET", "/rule-models", "knowledge:write", "-"],
   ["GET", "/model-services", "anyOf:model:read|credential:read", "-"],
   [

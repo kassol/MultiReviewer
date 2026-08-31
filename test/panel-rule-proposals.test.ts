@@ -478,3 +478,171 @@ test("已确认的空知识集重探索:产出仍进提案队列,不回到草案
   assert.equal(body.version, 1);
   assert.deepEqual(body.rules, []);
 });
+
+test("批量采纳一次只推进一个知识集版本;有一条落不下去就整组不做", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  try {
+    store.registerRepo({ repoId: 84, owner: "acme", repo: "bulk", generation: 1, key: "k" });
+    store.addReviewRule(84, { type: "rule", scope: "", statement: "会被改的那条", layer: "架构" });
+    const target = store.getRuleSet(84)!.rules[0]!;
+
+    const ids = [
+      store.addRuleProposal(84, proposal({ statement: "新提的第一条" }))!,
+      store.addRuleProposal(84, proposal({ type: "fact", statement: "一条事实", layer: "" }))!,
+      store.addRuleProposal(
+        84,
+        proposal({ change: "modify", targetRuleId: target.id, statement: "改过的陈述" }),
+      )!,
+    ];
+
+    // 空的一组不推版:一个空版本只会让版本轴多一格看不出来历的。
+    assert.equal(store.acceptRuleProposals(84, []), undefined);
+    // 有一条不在待裁决队列里就整组不做,一行都不改。
+    assert.equal(store.acceptRuleProposals(84, [...ids, 4242]), undefined);
+    assert.deepEqual(
+      store.getRuleProposals(84).map((row) => row.state),
+      ["pending", "pending", "pending"],
+    );
+    assert.equal(store.getRuleSet(84)!.version, 1);
+
+    // 三条一起采纳:一个版本,不是三个。
+    assert.equal(store.acceptRuleProposals(84, ids), 2);
+    const after = store.getRuleSet(84)!;
+    assert.equal(after.version, 2);
+    assert.deepEqual(
+      after.rules.map((entry) => [entry.type, entry.statement]),
+      [
+        ["rule", "新提的第一条"],
+        ["fact", "一条事实"],
+        ["rule", "改过的陈述"],
+      ],
+    );
+    // 修改那一条的旧版本仍查得到:两态生命周期与逐条采纳同一条口径。
+    assert.deepEqual(after.retired.map((entry) => entry.statement), ["会被改的那条"]);
+    assert.deepEqual(
+      store.getRuleProposals(84).map((row) => row.state),
+      ["accepted", "accepted", "accepted"],
+    );
+    // 裁决过的裁不了第二次。
+    assert.equal(store.acceptRuleProposals(84, ids), undefined);
+  } finally {
+    store.close();
+  }
+});
+
+test("批量采纳里目标条目已经不生效:整组不做,一版都不推进", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  try {
+    store.registerRepo({ repoId: 85, owner: "acme", repo: "stale-bulk", generation: 1, key: "k" });
+    store.addReviewRule(85, { type: "rule", scope: "", statement: "先有的那条", layer: "架构" });
+    const rule = store.getRuleSet(85)!.rules[0]!;
+    const ids = [
+      store.addRuleProposal(85, proposal({ statement: "本来能落的那条" }))!,
+      store.addRuleProposal(
+        85,
+        proposal({ change: "modify", targetRuleId: rule.id, statement: "改过的陈述" }),
+      )!,
+    ];
+    assert.equal(store.retireReviewRule(85, rule.id), 2);
+
+    assert.equal(store.acceptRuleProposals(85, ids), undefined);
+    assert.equal(store.getRuleSet(85)!.version, 2);
+    assert.deepEqual(
+      store.getRuleProposals(85).map((row) => row.state),
+      ["pending", "pending"],
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test("批量驳回一组:全改状态,知识集一版都不推进", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  try {
+    store.registerRepo({ repoId: 86, owner: "acme", repo: "bulk-reject", generation: 1, key: "k" });
+    const ids = [
+      store.addRuleProposal(86, proposal({ statement: "驳回的第一条" }))!,
+      store.addRuleProposal(86, proposal({ statement: "驳回的第二条" }))!,
+    ];
+
+    assert.equal(store.rejectRuleProposals(86, []), false);
+    assert.equal(store.rejectRuleProposals(86, [...ids, 4242]), false);
+    assert.deepEqual(store.getRuleProposals(86).map((row) => row.state), ["pending", "pending"]);
+
+    assert.equal(store.rejectRuleProposals(86, ids), true);
+    assert.deepEqual(store.getRuleProposals(86).map((row) => row.state), ["rejected", "rejected"]);
+    // 驳回不动知识集:这个仓库仍然没有确认过。
+    assert.equal(store.getRuleSet(86)!.version, null);
+  } finally {
+    store.close();
+  }
+});
+
+test("面板批量采纳与批量驳回:一次一版,坏 body 一律 400", async () => {
+  const items: RuleAgentItem[] = [];
+  const { h, cookie } = await confirmedHarness(items);
+  const path = `/repos/${GITEA_REPO.id}`;
+  items.push(
+    { type: "rule", scope: "", statement: "批量提的第一条", layer: "架构" },
+    { type: "fact", scope: "", statement: "批量提的一条事实", layer: "" },
+    { type: "rule", scope: "", statement: "要被驳回的那条", layer: "测试" },
+  );
+  assert.equal(
+    (await send(h, cookie, "POST", `${path}/rule-exploration`, {
+      baseline: h.repo.baseSha,
+      provider: "test",
+      model: "global-model",
+    })).status,
+    202,
+  );
+  await h.explorationsAtLeast(1);
+
+  const before = await ruleSet(h, cookie);
+  assert.equal(before.proposals.length, 3);
+  const queued = before.proposals.map((row) => row.id);
+  // 手工建的两条生效规则已经推到版本 2,批量采纳应当只再推一版。
+  assert.equal(before.version, 2);
+
+  for (const body of [{}, { ids: [] }, { ids: [1, 1] }, { ids: [0] }, { ids: ["7"] }]) {
+    assert.equal(
+      (await send(h, cookie, "POST", `${path}/rule-proposals/accept`, body)).status,
+      400,
+      JSON.stringify(body),
+    );
+  }
+
+  const rejected = await send(h, cookie, "POST", `${path}/rule-proposals/reject`, {
+    ids: [queued[2]],
+  });
+  assert.equal(rejected.status, 200);
+
+  const accepted = await send(h, cookie, "POST", `${path}/rule-proposals/accept`, {
+    ids: [queued[0], queued[1]],
+  });
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(await accepted.json(), { version: 3 });
+
+  const after = await ruleSet(h, cookie);
+  assert.equal(after.version, 3);
+  assert.deepEqual(
+    after.proposals.map((row) => row.state),
+    ["accepted", "accepted", "rejected"],
+  );
+  assert.deepEqual(
+    after.rules.map((row) => row.statement),
+    ["会被改的那条", "会被废止的那条", "批量提的第一条", "批量提的一条事实"],
+  );
+
+  // 已经裁决过的那一组整次 404,一版都不推进。
+  assert.equal(
+    (await send(h, cookie, "POST", `${path}/rule-proposals/accept`, { ids: [queued[0]] })).status,
+    404,
+  );
+  assert.equal((await ruleSet(h, cookie)).version, 3);
+});

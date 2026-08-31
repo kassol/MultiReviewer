@@ -339,7 +339,8 @@ test("重启时把停在运行中的探索改判失败,面板因此给得出重�
   }
 });
 
-test("面板发起基点探索:产出落草案、按重要性截断为 30 条", async () => {
+test("面板发起基点探索:产出完整落草案,不再被条数上限截断", async () => {
+  // 上限在 issue #223 里连同批量确认一起去掉:截断会让大仓库的知识起步一开始就残缺。
   const many = Array.from({ length: 42 }, (_, index) => item(`第 ${index + 1} 条规范陈述`));
   const agent = scriptedRuleAgent({ items: many });
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
@@ -356,9 +357,9 @@ test("面板发起基点探索:产出落草案、按重要性截断为 30 条", 
   assert.equal(body.exploration?.state, "completed");
   assert.equal(body.exploration?.baselineSha, h.repo.baseSha);
   assert.equal(body.exploration?.model, "test:global-model");
-  assert.equal(body.draft.length, 30);
+  assert.equal(body.draft.length, 42);
   assert.equal(body.draft[0]!.statement, "第 1 条规范陈述");
-  assert.equal(body.draft[29]!.statement, "第 30 条规范陈述");
+  assert.equal(body.draft[41]!.statement, "第 42 条规范陈述");
   assert.equal(body.draft[0]!.origin, "baseline-exploration");
   // 知识集本身还没动:草案要人确认才生效,确认之前这个仓库都是「知识集未确认」。
   assert.equal(body.version, null);
@@ -750,4 +751,83 @@ test("发起探索可同时选思考档位:档位进 agent、落进探索记录,
   assert.equal(agent.calls.length, 1);
   assert.equal(agent.calls[0]!.thinkingLevel, "medium");
   assert.equal((await ruleSet(h, cookie)).exploration?.thinkingLevel, "medium");
+});
+
+test("批量确认只落勾选的那几条,没勾的随草案一并丢弃,一次推一版", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  try {
+    store.registerRepo({ repoId: 76, owner: "acme", repo: "picked", generation: 1, key: "k" });
+    store.startRuleExploration(76, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
+    store.finishRuleExploration(
+      76,
+      [item("留下的第一条"), item("不要的那条"), item("留下的第二条")],
+      AT,
+    );
+    const draft = store.getRuleDraft(76);
+    const keep = [draft[0]!.id, draft[2]!.id];
+
+    // 一份过期的勾选不该悄悄确认成另一组条目:有一条不在草案里就整次不做。
+    assert.equal(store.confirmRuleDraft(76, [...keep, 4242]), undefined);
+    assert.equal(store.getRuleDraft(76).length, 3);
+    assert.equal(store.getRuleSet(76)!.version, null);
+
+    assert.equal(store.confirmRuleDraft(76, keep), 1);
+    const confirmed = store.getRuleSet(76)!;
+    assert.equal(confirmed.version, 1);
+    assert.deepEqual(confirmed.rules.map((entry) => entry.statement), [
+      "留下的第一条",
+      "留下的第二条",
+    ]);
+    // 没勾的随草案一并丢弃:草案是一次性的那一份,确认完就不剩什么了。
+    assert.deepEqual(store.getRuleDraft(76), []);
+    assert.deepEqual(confirmed.retired, []);
+  } finally {
+    store.close();
+  }
+});
+
+test("面板批量确认草案:勾选的进知识集,坏 body 400,勾空的那一组 409", async () => {
+  const agent = scriptedRuleAgent({
+    items: [item("探索的第一条"), item("探索的第二条"), item("探索的第三条")],
+  });
+  const { h, cookie } = await registeredHarness({ ruleAgent: agent });
+  const path = `/repos/${GITEA_REPO.id}`;
+
+  assert.equal(
+    (await send(h, cookie, "POST", `${path}/rule-exploration`, {
+      baseline: h.repo.baseSha,
+      provider: "test",
+      model: "global-model",
+    })).status,
+    202,
+  );
+  await h.explorationsAtLeast(1);
+  const drafted = (await ruleSet(h, cookie)).draft;
+  assert.equal(drafted.length, 3);
+
+  for (const body of [{ itemIds: [0] }, { itemIds: ["7"] }, { itemIds: [1, 1] }]) {
+    assert.equal(
+      (await send(h, cookie, "POST", `${path}/rule-draft/confirm`, body)).status,
+      400,
+      JSON.stringify(body),
+    );
+  }
+  // 勾选里有条目已经不在草案里:409,一版都不推进。
+  assert.equal(
+    (await send(h, cookie, "POST", `${path}/rule-draft/confirm`, { itemIds: [4242] })).status,
+    409,
+  );
+  assert.equal((await ruleSet(h, cookie)).version, null);
+
+  const confirmed = await send(h, cookie, "POST", `${path}/rule-draft/confirm`, {
+    itemIds: [drafted[0]!.id, drafted[2]!.id],
+  });
+  assert.equal(confirmed.status, 200);
+  assert.deepEqual(await confirmed.json(), { version: 1 });
+
+  const after = await ruleSet(h, cookie);
+  assert.deepEqual(after.rules.map((row) => row.statement), ["探索的第一条", "探索的第三条"]);
+  assert.deepEqual(after.draft, []);
 });
