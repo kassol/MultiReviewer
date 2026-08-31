@@ -199,8 +199,6 @@ export type WebhookServerDeps = {
   bootstrapSecret?: string;
   /** 零用户启动时拿到 bootstrap 口令;生产打印,测试可观察或忽略。 */
   onBootstrap?: (secret: string) => void;
-  /** 面板路径的随机首段(不含斜杠),API 挂在 `/<前缀>/api` 下。 */
-  panelPrefix: string;
   /** 服务对外的基地址(实例根),注册仓库时用它拼 hook 的投递地址 `<基地址>/webhook?k=<代次>`。 */
   baseUrl: string;
   /** 前端构建产物目录(Vite 的 dist)。目录不在时页面路由回 503,与 404 分开。 */
@@ -1030,10 +1028,10 @@ function cookieValue(header: string | undefined, name: string): string | undefin
  * 会话 cookie 的 Set-Cookie 头。登录与登出共用一个拼装点:清除用的属性必须与写入时
  * 逐字一致,Path 差一个字浏览器就不删,旧 cookie 会留在浏览器里。
  */
-function sessionCookieHeader(prefix: string, value: string, maxAgeSeconds: number): string {
+function sessionCookieHeader(value: string, maxAgeSeconds: number): string {
   return (
     `${SESSION_COOKIE}=${value}; HttpOnly; Secure; SameSite=Strict; ` +
-    `Path=/${prefix}; Max-Age=${maxAgeSeconds}`
+    `Path=/; Max-Age=${maxAgeSeconds}`
   );
 }
 
@@ -1288,7 +1286,7 @@ async function handleLogin(
     }),
   );
   res.writeHead(204, {
-    "set-cookie": sessionCookieHeader(deps.panelPrefix, raw, Math.floor(SESSION_TTL_MS / 1000)),
+    "set-cookie": sessionCookieHeader(raw, Math.floor(SESSION_TTL_MS / 1000)),
   });
   res.end();
 }
@@ -1577,7 +1575,7 @@ function handleLogout(req: IncomingMessage, res: ServerResponse, deps: WebhookSe
   if (raw !== undefined) {
     withStore(deps.dbPath, (store) => store.removePanelSession(sessionHash(raw)));
   }
-  res.writeHead(204, { "set-cookie": sessionCookieHeader(deps.panelPrefix, "", 0) });
+  res.writeHead(204, { "set-cookie": sessionCookieHeader("", 0) });
   res.end();
 }
 
@@ -2154,7 +2152,7 @@ async function handlePanelApi(
   bootstrapSecret: () => string | undefined,
   clearBootstrap: () => void,
 ): Promise<void> {
-  const sub = pathname(req).slice(`/${deps.panelPrefix}/api`.length) || "/";
+  const sub = pathname(req).slice("/api".length) || "/";
   const matched = findPanelRoute(req.method, sub);
   const context: PanelRouteContext = {
     req,
@@ -2177,7 +2175,7 @@ async function handlePanelApi(
   if (session.renewed) {
     res.setHeader(
       "set-cookie",
-      sessionCookieHeader(deps.panelPrefix, session.raw, Math.floor(SESSION_TTL_MS / 1000)),
+      sessionCookieHeader(session.raw, Math.floor(SESSION_TTL_MS / 1000)),
     );
   }
   if (matched === undefined) return sendJson(res, 404, { error: "没有这个端点" });
@@ -5482,7 +5480,7 @@ async function handleCreateRangeReview(
       title: containerPullRequestTitle(baseSha, comparisonSha),
       body: containerPullRequestBody(
         // 范围审查没有自己的页面(issue #180),点进去的是它这个阶段的详情页。
-        `${deps.baseUrl}/${deps.panelPrefix}/stages/range:${id}`,
+        `${deps.baseUrl}/stages/range:${id}`,
       ),
     });
   } catch (error) {
@@ -7155,27 +7153,20 @@ async function serveAsset(
 }
 
 /**
- * 前缀下的页面:注入过前缀全局变量的 index.html。前缀是运行时随机值,构建产物与它
- * 无关——Router basepath 与前端 API 基址都从这个注入的变量读。深层路由刷新也走这里,
- * 客户端路由自己接管路径。
+ * 面板页面:原样返回 index.html。深层路由刷新也走这里,客户端路由自己接管路径。
  */
 async function servePage(res: ServerResponse, deps: WebhookServerDeps): Promise<void> {
   let html: string;
   try {
     html = await readFile(join(deps.panelDist, "index.html"), "utf8");
   } catch {
-    // 与 404 分开:404 是「前缀记错了」,这里是「前端没构建 / 路径配错」的部署问题。
+    // 503 与 404 分开:这里是「前端没构建 / 路径配错」的部署问题。
     res.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
     res.end("面板前端产物缺失:镜像构建要包含 web/dist,或检查 MULTIREVIEWER_PANEL_DIST。");
     return;
   }
-  // 前缀经启动校验只含 URL 安全字符,JSON.stringify 后不可能拼出闭合脚本的序列。
-  const injected = html.replace(
-    "</head>",
-    `<script>window.__MULTIREVIEWER__ = ${JSON.stringify({ prefix: deps.panelPrefix })};</script></head>`,
-  );
   res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-  res.end(injected);
+  res.end(html);
 }
 
 export function createWebhookServer(deps: WebhookServerDeps): Server {
@@ -7210,20 +7201,20 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
   });
   const hookManager =
     deps.gitea === undefined ? undefined : createGiteaHookManager(deps.gitea);
-  const apiPrefix = `/${deps.panelPrefix}/api`;
   return createServer((req, res) => {
-    // 路由表(issue #26):`POST /webhook` → 投递;`<前缀>/api/*` → 面板 API;
-    // `<前缀>` 与 `<前缀>/*` → 注入过的 index.html;`/assets/*` → 构建产物;其余一律
-    // 404,不重定向——`GET /webhook` 与 `/` 也是,重定向会把扫描器引向真实入口。
+    // 路由表(issue #26):`POST /webhook` → 投递;`/api/*` → 面板 API;`/assets/*` →
+    // 构建产物;其余的 GET → index.html,由客户端路由接管;非 GET 一律 404。
+    // `/webhook` 上的其它方法也是 404:那是投递入口,不是面板页面。
     const path = pathname(req);
-    if (req.method === "POST" && path === "/webhook") {
+    if (path === "/webhook") {
+      if (req.method !== "POST") return send(res, 404);
       void handle(req, res, deps, loggedOnce).catch((error: unknown) => {
         console.error("webhook 处理失败:", error instanceof Error ? error.message : error);
         if (!res.headersSent) send(res, 500);
       });
       return;
     }
-    if (path === apiPrefix || path.startsWith(`${apiPrefix}/`)) {
+    if (path === "/api" || path.startsWith("/api/")) {
       void handlePanelApi(
         req,
         res,
@@ -7250,8 +7241,7 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
       });
       return;
     }
-    const pagePrefix = `/${deps.panelPrefix}`;
-    if (req.method === "GET" && (path === pagePrefix || path.startsWith(`${pagePrefix}/`))) {
+    if (req.method === "GET") {
       void servePage(res, deps).catch(() => {
         if (!res.headersSent) send(res, 500);
       });

@@ -21,7 +21,6 @@ import {
   PANEL_ADMIN_USERNAME as ADMIN_USERNAME,
   PANEL_BASE_URL as BASE_URL,
   PANEL_CREDENTIAL_MASTER_KEY,
-  PANEL_PREFIX as PREFIX,
   seedAvailableModelService,
   startPanelHarness,
   startReadyPanelHarness,
@@ -427,7 +426,6 @@ test("没配 Gitea 时注册与移除回 500,说明配置缺口", async () => {
     cacheDir: cache.dir,
     dbPath: db.path,
     bootstrapSecret: "panel-repos-bootstrap",
-    panelPrefix: PREFIX,
     baseUrl: BASE_URL,
     credentialMasterKey: PANEL_CREDENTIAL_MASTER_KEY,
     panelDist: `${cache.dir}/no-dist`,
@@ -441,7 +439,7 @@ test("没配 Gitea 时注册与移除回 500,说明配置缺口", async () => {
     server.closeAllConnections();
     server.close();
   });
-  const registered = await fetch(`http://127.0.0.1:${port}/${PREFIX}/api/users/bootstrap`, {
+  const registered = await fetch(`http://127.0.0.1:${port}/api/users/bootstrap`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -451,14 +449,14 @@ test("没配 Gitea 时注册与移除回 500,说明配置缺口", async () => {
     }),
   });
   assert.equal(registered.status, 201);
-  const login = await fetch(`http://127.0.0.1:${port}/${PREFIX}/api/session`, {
+  const login = await fetch(`http://127.0.0.1:${port}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: ADMIN_USERNAME, password: ADMIN_PASSWORD }),
   });
   const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
 
-  const register = await fetch(`http://127.0.0.1:${port}/${PREFIX}/api/repos`, {
+  const register = await fetch(`http://127.0.0.1:${port}/api/repos`, {
     method: "POST",
     headers: { cookie },
     body: JSON.stringify({ owner: "a", repo: "b" }),

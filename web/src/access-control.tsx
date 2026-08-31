@@ -39,7 +39,7 @@ type User = {
   repoIds: number[];
 };
 
-/** 仓库多选要的那几格,来自 `GET <前缀>/api/repos`。 */
+/** 仓库多选要的那几格,来自 `GET /api/repos`。 */
 type AssignableRepo = {
   repoId: number;
   owner: string;

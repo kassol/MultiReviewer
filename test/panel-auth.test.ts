@@ -7,7 +7,6 @@ import { openStore } from "../src/review/store.ts";
 import { createWebhookServer } from "../src/webhook/server.ts";
 import { makeCacheDir, makeDbPath } from "./support/git-fixture.ts";
 
-const PREFIX = "panel-abc123";
 const USERNAME = "admin";
 const PASSWORD = "test-password";
 const PASSWORD_HASH = await hashPassword(PASSWORD);
@@ -39,7 +38,6 @@ async function startPanel(options: { empty?: boolean; now?: () => number } = {})
     cacheDir: cache.dir,
     dbPath: db.path,
     bootstrapSecret: "bootstrap-test",
-    panelPrefix: PREFIX,
     baseUrl: "https://reviewer.example.test",
     panelDist: `${cache.dir}/no-dist`,
     ...(options.now === undefined ? {} : { now: options.now }),
@@ -53,7 +51,7 @@ async function startPanel(options: { empty?: boolean; now?: () => number } = {})
     server.close();
   });
   const request = (path: string, init: RequestInit = {}): Promise<Response> =>
-    fetch(`${baseUrl}/${PREFIX}/api${path}`, init);
+    fetch(`${baseUrl}/api${path}`, init);
   return { baseUrl, dbPath: db.path, request };
 }
 
@@ -77,7 +75,7 @@ test("账号登录拿到持久 session cookie,探测回身份,登出后旧 cooki
   assert.match(header, /HttpOnly/);
   assert.match(header, /Secure/);
   assert.match(header, /SameSite=Strict/);
-  assert.match(header, new RegExp(`Path=/${PREFIX}`));
+  assert.match(header, /Path=\//);
   const sessionCookie = cookie(response);
   const who = await h.request("/session", { headers: { cookie: sessionCookie } });
   assert.equal(who.status, 200);

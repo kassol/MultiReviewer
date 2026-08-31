@@ -28,7 +28,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 ## 常用命令
 
 - `pnpm start` — 起 webhook 服务,环境变量见「部署」
-- `pnpm --filter @multireviewer/web dev` — 面板前端本地联调:与 `pnpm start` 双进程,前缀读同一份 `.env` 的 `MULTIREVIEWER_PANEL_PREFIX`,Vite proxy 把 `<前缀>/api` 转本机后端
+- `pnpm --filter @multireviewer/web dev` — 面板前端本地联调:与 `pnpm start` 双进程,Vite proxy 把 `/api` 转本机后端(端口读同一份 `.env` 的 `MULTIREVIEWER_PORT`)
 - `pnpm --filter @multireviewer/web build` — 前端构建(镜像里自动做,本地跑服务要面板时手动跑一次)
 - `pnpm check` — 类型检查加全部测试,提交前跑它(不含前端类型检查,改 `web/` 后另跑 `pnpm --filter @multireviewer/web typecheck`)
 - `pnpm typecheck` — 仅类型检查
@@ -52,7 +52,7 @@ bash setup.sh
 docker compose pull && docker compose up -d
 ```
 
-向导的边界收在「面板能用」:生成随机面板前缀与凭据主密钥、问基地址,起服务后打登录页并探测 `GET <前缀>/api/session`。零用户时该端点回 401 加 `bootstrap: true`,向导再从容器日志抽出一次性 bootstrap 口令;已有账号时 401 不带这一位,正常提示用已有账号登录。bootstrap 只在库里零用户时打印,注册第一个用户成功即失效,服务重启换一枚,不进 `.env` 也不落库;第一个注册的人就是系统管理员,注册入口随后关闭。仓库接入、用户与角色、模型服务、模型组合与覆盖都在面板上做;首次进入业务页会显示「可运行模型服务 → 审查配置就绪 → 注册仓库」检查单,实例启用后隐藏。仓库注册要求审查配置先就绪,未就绪时服务端在访问 Gitea、生成 Key 与写库之前回 409。系统不预置角色,给同事建号时先把仓库分给他:不授角色的账号读得到分到的仓库,要写或做动作时才建角色并勾权限格(ADR 0018)。向导不问模型凭据也不问模型标识,不生成全局 webhook secret,也不指导手工配 hook;检出已废除的变量(`MULTIREVIEWER_ADMIN_TOKEN` / `MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` / `MULTIREVIEWER_GITEA_REPO` / `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` / `MULTIREVIEWER_DEEPSEEK_MODEL` / `MULTIREVIEWER_OPENROUTER_MODEL`)会清掉并说明原因。清理之前先把 `.env` 复制成 `.env.bak-<YYYYMMDD>`,同一天重跑不覆盖已有副本——被清掉的旧值只在这份副本里,模型服务配好后自行删除。
+向导的边界收在「面板能用」:生成凭据主密钥、问基地址,起服务后打登录页并探测 `GET /api/session`。零用户时该端点回 401 加 `bootstrap: true`,向导再从容器日志抽出一次性 bootstrap 口令;已有账号时 401 不带这一位,正常提示用已有账号登录。bootstrap 只在库里零用户时打印,注册第一个用户成功即失效,服务重启换一枚,不进 `.env` 也不落库;第一个注册的人就是系统管理员,注册入口随后关闭。仓库接入、用户与角色、模型服务、模型组合与覆盖都在面板上做;首次进入业务页会显示「可运行模型服务 → 审查配置就绪 → 注册仓库」检查单,实例启用后隐藏。仓库注册要求审查配置先就绪,未就绪时服务端在访问 Gitea、生成 Key 与写库之前回 409。系统不预置角色,给同事建号时先把仓库分给他:不授角色的账号读得到分到的仓库,要写或做动作时才建角色并勾权限格(ADR 0018)。向导不问模型凭据也不问模型标识,不生成全局 webhook secret,也不指导手工配 hook;检出已废除的变量(`MULTIREVIEWER_ADMIN_TOKEN` / `MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` / `MULTIREVIEWER_GITEA_REPO` / `MULTIREVIEWER_PANEL_PREFIX` / `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` / `MULTIREVIEWER_DEEPSEEK_MODEL` / `MULTIREVIEWER_OPENROUTER_MODEL`)会清掉并说明原因。清理之前先把 `.env` 复制成 `.env.bak-<YYYYMMDD>`,同一天重跑不覆盖已有副本——被清掉的旧值只在这份副本里,模型服务配好后自行删除。
 
 两处容易踩的地方:
 
@@ -61,11 +61,10 @@ docker compose pull && docker compose up -d
 
 不用容器直接跑时 `pnpm start` 起同一个服务,启动时用 `--env-file-if-exists=.env` 读取同目录的 `.env`。
 
-webhook 指向 `POST /webhook?k=<代次>` 这一个端点(路径固定,其余路径与方法一律 404),content type 选 JSON,secret 填该仓库的 Key。投递凭所属仓库的 Key 准入:仓库要先进注册表,未注册一律 401,没有全局 secret。hook 的建立与 Key 的管理由面板完成:注册(`POST /<前缀>/api/repos`)自动在 Gitea 建 hook 并落 Key,移除自动删 hook。GitHub 仓库没有注册途径。
+webhook 指向 `POST /webhook?k=<代次>` 这一个端点(路径固定,其余路径与方法一律 404),content type 选 JSON,secret 填该仓库的 Key。投递凭所属仓库的 Key 准入:仓库要先进注册表,未注册一律 401,没有全局 secret。hook 的建立与 Key 的管理由面板完成:注册(`POST /api/repos`)自动在 Gitea 建 hook 并落 Key,移除自动删 hook。GitHub 仓库没有注册途径。
 
 必需的环境变量:
 
-- `MULTIREVIEWER_PANEL_PREFIX` — 面板路径的随机首段,只能由字母、数字、`-` 与 `_` 组成,且不能是 `webhook` 或 `assets`
 - `MULTIREVIEWER_BASE_URL` — 服务对外的基地址(实例根,不含路径)。明文 http 且非 localhost 时拒绝启动:Secure cookie 发不出去,面板会打得开却登不进。它取代向导旧变量 `MULTIREVIEWER_PUBLIC_URL`——旧值含 `/webhook` 后缀,同名不同义会静默出错,故换名弃用
 
 Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起得来却一次审查都跑不了比起不来更难发现:
@@ -78,7 +77,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 可选的环境变量:
 
 - `MULTIREVIEWER_PORT` — 监听端口,默认 3000。镜像里已设为 3000,走容器时不要再改
-- `MULTIREVIEWER_PANEL_DIST` — 前端构建产物目录,默认 `web/dist`。镜像里是 `/app/web/dist`。产物不在时面板页面回 503(与 404 的「前缀记错」分开)
+- `MULTIREVIEWER_PANEL_DIST` — 前端构建产物目录,默认 `web/dist`。镜像里是 `/app/web/dist`。产物不在时面板页面回 503(与 404 分开)
 - `MULTIREVIEWER_DB` — SQLite 文件位置,默认 `multireviewer.db`。镜像里是 `/data/multireviewer.db`
 - `MULTIREVIEWER_CACHE_DIR` — 工作副本缓存根目录,默认 `.cache/worktrees`;镜像里是 `/data/worktrees`。模型服务显式发现 Pi 内置 provider 时,其下 `pi-models/models-store.json` 只作可丢弃的远程目录输入缓存;数据库里的模型服务版本与目录快照才是面板和 Review Run 的事实。Reviewer 不读取这份缓存,服务也不再生成或读取共享的 `models.json` 当前配置。schema-v0 迁移提交后会先删除旧 `models.json` 与 `models-store.json`,后者只会在之后的显式发现中按新规则重建。填相对路径也能用,不过部署时建议直接写绝对路径,省得跟着工作目录变。**仓库注册成功后服务在后台把它的工作副本 clone 到这里**(issue #184),之后的 Review Run、diff、分支列表与提交列表都在这份副本上只做 fetch;副本不在时仍会按需现 clone,只是那一次慢一些。副本的准备状态在首页左栏的行操作里显示,失败可重试。要读代码的每一次调用(一轮 Review Run、一次基点探索、一次处置反哺)从这份副本另派生一份一次性工作树,放在同一个根下的 `.checkouts/<owner>/<仓库>/` 里,用完即删——同一个仓库上并发的几件事因此各读各的那个 commit(issue #212)。这些目录是可弃的中间物,进程被杀留下的那些由下一次准备清掉;持久卷要保的仍是缓存副本本身。**磁盘代价按并发数算**:同一个仓库上并发的每个参与者各持一份完整工作副本,峰值占用是缓存副本加上并发数乘以一份工作副本,持久卷容量按这个峰值预估。**这个目录被清掉会丢历史轮次的 diff**:每一轮 Review Run 的两端靠本地 clone 里的 `refs/multireviewer/runs/<轮次 id>/base` 与 `/head` 保持可达(issue #161),范围审查完成后容器 PR 的分支已删,远端再没有第二处存着它们。清掉之后新的审查照常跑,打不开的只是已完成阶段那些历史轮次的 diff(面板显示 409 加一句说明),各仓库的工作副本会在下一次用到时重新 clone;要保留就把它放进持久卷,镜像里的 `/data/worktrees` 已经是
 - `PI_OFFLINE` — Pi 的离线开关,设成任意值(例如 `1`)即关闭模型服务发现中的外部目录增量。显式预览或刷新 Pi 内置 provider 时仍可读 Pi 随包目录,但不请求 pi.dev 或 OpenRouter;未设置时这两层只作为发现输入,成功结果整份写入当前模型服务版本的数据库快照,Review Run 不在运行途中刷新目录
@@ -98,7 +97,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 
 - **怀疑某个人的会话 cookie 泄露时,由系统管理员在访问控制页重置那个人的密码。**重置会只作废该用户的全部会话,并要求他用临时密码登录后立即改密,不牵连其他人。会话已经落 SQLite,所以**重启容器不再清空会话**;登出只作废当前会话,用户自己改密码会保留当前会话并踢掉其余会话。
 - **HTTPS 是门禁的前提,不是可选项。**会话 cookie 带 `Secure`,明文 HTTP 下浏览器根本不发它;`MULTIREVIEWER_BASE_URL` 是明文 http 且非 localhost 时服务直接拒绝启动(localhost 放行,浏览器把它当安全上下文)。本服务自己不终止 TLS,证书与 https 由外部反代负责,归部署方。
-- **面板前缀不是安全边界。**未认证的 API 请求一律 401,端点存在与否都一样,前缀只是路由匹配的第一段。它挡的是「面板地址被爬到」,挡不住知道地址的人;真正的门禁是用户账号与会话 cookie。前缀轮换只会让旧的 `Path` 限定 cookie 失配,不构成额外保护。
+- **面板挂在基地址的根路径上,没有隐匿层。**未认证的 API 请求一律 401,端点存在与否都一样;门禁是用户账号与会话 cookie。随机面板前缀在 2026-08-31 移除:它只挡扫描器枚举,内部部署下的运维摩擦大于收益。
 
 账号是本服务自己管理的本地账号,不复用 Gitea、GitHub 或其他身份源。系统管理员在访问控制页建用户、重置密码、删用户,并创建自定义角色;每个普通用户挂一个角色,角色由 8 个权限格组成(`repo:write` / `review:rerun` / `review:create` / `finding:dispose` / `model:read` / `model:write` / `credential:read` / `credential:write`)。读评审记录、仓库与处置率不由权限格决定:登录即可读,读得到哪些由仓库分配决定(ADR 0018),没有角色的账号照样看得见分给它的仓库。`model:write` 与 `credential:write` 各自包含同资源的读权限,隐含关系只剩这两对;新增权限格不会自动落到已有角色上,升级不扩权;角色矩阵会把被包含的读权限显示为随写生效。系统管理员不是角色且始终全权限。口令强度在注册、自改密码与管理员重置三条路径上都**不设下限**;服务唯一兜底是失败后的登录闸门最多退避 30 秒,并在撞上闸门时留一行含账号、源 IP 与失败次数的日志。部署方若有强度要求,必须在组织流程或外围身份治理中另行约束;服务不会替部署方判定弱口令。
 
@@ -134,7 +133,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 - 调用 Gitea API 一律携带凭据,目标实例要求登录后才能调用
 - 测试只验证外部可观察的行为,打在三条验收边界上(issue #26 的测试决策):HTTP 端点(起真服务打 HTTP,注入假 Forge、临时库路径与时钟)、`runReview` 入口(经 `Forge` 与 `Reviewer` 两个注入边界)、SQLite 临时库;git 与 SQLite 用真实实现,落在临时目录
 - 需要真实凭据或真实平台的测试默认跳过,由环境变量显式开启
-- **交付前的验证一律在部署实例上做,不在开发机起服务。**自动化测试照旧在本机跑(那是验收边界上的断言,与实例无关),但「改完之后人去确认它真的能用」这一步走部署实例:面板操作、webhook 投递、真实 Review Run 都在那里验。本机 dev 双进程验不出这类东西——它没有真 Gitea、没有已注册的仓库、没有模型凭据,补齐这些的成本比推一次镜像高,而验完的结论还不能代表实例。开发机因此不常驻 `.env` 里的面板变量(面板前缀 / 基地址 / 凭据主密钥);要在本机起面板时临时补,验完删掉
+- **交付前的验证一律在部署实例上做,不在开发机起服务。**自动化测试照旧在本机跑(那是验收边界上的断言,与实例无关),但「改完之后人去确认它真的能用」这一步走部署实例:面板操作、webhook 投递、真实 Review Run 都在那里验。本机 dev 双进程验不出这类东西——它没有真 Gitea、没有已注册的仓库、没有模型凭据,补齐这些的成本比推一次镜像高,而验完的结论还不能代表实例。开发机因此不常驻 `.env` 里的面板变量(基地址 / 凭据主密钥);要在本机起面板时临时补,验完删掉
 
 ## Agent skills
 
@@ -152,6 +151,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-08-31: **随机面板前缀移除,面板改挂根路径。**面板页面在 `/`、面板 API 在 `/api`,`/webhook` 与 `/assets` 不变;非 API / webhook / assets 的 GET 一律回 index.html,由客户端路由接管。`MULTIREVIEWER_PANEL_PREFIX` 彻底废除:`main.ts` 不再读它、`server.ts` 的 `panelPrefix` 依赖项删掉、会话 cookie 的 `Path` 改成 `/`、前端不再有注入的前缀全局变量(`web/src/injected.ts` 删除,Router 不设 `basepath`,`api.ts` 直接打 `/api`),Vite 的注入插件也随之删掉、dev proxy 改成 `/api`。向导不再生成前缀,并把它加进「已废除变量」的清理清单(照旧先备份 `.env`),自检探测改打根路径的 `GET /api/session`。**不做兼容期、不做旧前缀重定向**:随机前缀只防扫描器枚举,真正的门禁是账号与会话;内部部署下这层隐匿带来的运维摩擦(书签、反代规则、排障时多一层「路径对不对」)大于收益。升级后旧的 `/<前缀>/...` 书签一律 404,改用基地址本身。
 - 2026-08-31: 落地 issue #220(父 issue #219,ADR 0020)。**权限格 `rule:write` 改名 `knowledge:write`,面板与代码内术语换成知识集词表**。纯机械改名,零新行为:同一格管的还是那几个写侧端点,存量角色在开库时一次性改写字面量,能力无增减。面板上的「规则集」「规则集版本 N」「规则集未确认」「空规则集」按 CONTEXT.md 换成知识集那一组,访问控制页的角色矩阵那一行从「评审 · 规则治理」变成「评审 · 知识治理」。端点路径、表名、类型名与变量名一律不动,那是后续票的施工面。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 
 - 2026-08-29: 落地 issue #217。**删掉六处已经完成使命的一次性迁移**:schema-v0 的模型服务迁移器整个文件、以及开库时跑的五个升级块(旧 Finding 按新身份折叠、删费用列、清退役读权限格、修复关闭 PR 的空状态、存量仓库补「已确认空规则集」)。删除依据是所有部署实例都已在当前版本上启动过至少一次(现役实例只有 00-test),这些代码路径再也不会命中。**schema-v0 数据库拒绝启动的报错保留**:库里已有表却仍是版本 0 时开库直接抛错,升级路径由更早的版本负责。面板、接口、schema 与运行行为一格未变。细节见 `src/AGENTS.md`。

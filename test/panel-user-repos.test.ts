@@ -15,7 +15,6 @@ import {
   GITEA_REPO,
   PANEL_ADMIN_USERNAME,
   HARNESS_PR as PR,
-  PANEL_PREFIX as PREFIX,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -70,7 +69,7 @@ async function assignedRepoIds(h: PanelHarness, username: string): Promise<numbe
 }
 
 async function userCookie(h: PanelHarness, username: string): Promise<string> {
-  const response = await fetch(`${h.serverUrl}/${PREFIX}/api/session`, {
+  const response = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password: PASSWORD }),
@@ -138,7 +137,7 @@ test("会话带上仓库分配:普通用户是自己的集合,系统管理员是
   await createUser(h, "reviewer", [alpha]);
 
   const cookie = await userCookie(h, "reviewer");
-  const mine = await fetch(`${h.serverUrl}/${PREFIX}/api/session`, { headers: { cookie } });
+  const mine = await fetch(`${h.serverUrl}/api/session`, { headers: { cookie } });
   assert.equal(mine.status, 200);
   assert.deepEqual(((await mine.json()) as { repoIds: number[] | null }).repoIds, [alpha]);
 
@@ -298,7 +297,7 @@ const ALL_PERMISSIONS: readonly PanelPermission[] = [
 ];
 
 function get(h: PanelHarness, cookie: string, path: string): Promise<Response> {
-  return fetch(`${h.serverUrl}/${PREFIX}/api${path}`, { headers: { cookie } });
+  return fetch(`${h.serverUrl}/api${path}`, { headers: { cookie } });
 }
 
 function post(
@@ -308,7 +307,7 @@ function post(
   path: string,
   body?: unknown,
 ): Promise<Response> {
-  return fetch(`${h.serverUrl}/${PREFIX}/api${path}`, {
+  return fetch(`${h.serverUrl}/api${path}`, {
     method,
     headers: { cookie, ...(body === undefined ? {} : { "content-type": "application/json" }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),

@@ -11,7 +11,6 @@ import { after, test } from "node:test";
 import {
   GITEA_REPO,
   HARNESS_PR as PR,
-  PANEL_PREFIX as PREFIX,
   startPanelHarness,
   startReadyPanelHarness,
 } from "./support/panel-harness.ts";
@@ -116,6 +115,6 @@ test("只取第一页,装不下时报总数并标截断", async () => {
 
 test("搜索走面板门禁:没有 session 一律 401", async () => {
   const h = await startHarness();
-  const response = await fetch(`${h.serverUrl}/${PREFIX}/api/repos/search?q=widgets`);
+  const response = await fetch(`${h.serverUrl}/api/repos/search?q=widgets`);
   assert.equal(response.status, 401);
 });

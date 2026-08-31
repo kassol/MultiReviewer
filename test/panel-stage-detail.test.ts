@@ -11,7 +11,6 @@ import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
-  PANEL_PREFIX,
   seedHistoricalRepo,
   startPanelHarness,
   type PanelHarness,
@@ -310,7 +309,7 @@ test("阶段详情:未认证 401,一格权限都没有的人分到仓库就读�
     headSha: "head-one",
     startedAt: "2026-08-01T00:00:00.000Z",
   });
-  const path = `/${PANEL_PREFIX}/api/stages/${encodeURIComponent("pr:acme/widgets/7")}`;
+  const path = `/api/stages/${encodeURIComponent("pr:acme/widgets/7")}`;
   assert.equal((await fetch(`${h.serverUrl}${path}`)).status, 401);
 
   seedHistoricalRepo(h);
@@ -327,7 +326,7 @@ test("阶段详情:未认证 401,一格权限都没有的人分到仓库就读�
   });
   store.setPanelUserAssignment("plain-user", [GITEA_REPO.id]);
   store.close();
-  const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+  const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: "plain-user", password }),

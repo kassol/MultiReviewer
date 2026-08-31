@@ -13,7 +13,6 @@ import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
-  PANEL_PREFIX,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -89,7 +88,7 @@ async function userCookie(
   store.setPanelUserAssignment(username, [GITEA_REPO.id]);
   store.close();
 
-  const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+  const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password: PASSWORD }),
@@ -173,7 +172,7 @@ test("范围审查重跑要 review:rerun:有它的用户跑得动,没有的被�
 
   // 只能推进、不能重跑的角色:重跑独立于 review:create。
   const advancerCookie = await userCookie(h, "range-advancer", ["review:create"]);
-  const denied = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/rerun`, {
+  const denied = await fetch(`${h.serverUrl}/api/rerun`, {
     method: "POST",
     headers: { cookie: advancerCookie, "content-type": "application/json" },
     body: JSON.stringify({ rangeReviewId: rangeReview.id }),
@@ -182,7 +181,7 @@ test("范围审查重跑要 review:rerun:有它的用户跑得动,没有的被�
   assert.equal(h.settled.length, 1);
 
   const rerunnerCookie = await userCookie(h, "range-rerunner", ["review:rerun"]);
-  const allowed = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/rerun`, {
+  const allowed = await fetch(`${h.serverUrl}/api/rerun`, {
     method: "POST",
     headers: { cookie: rerunnerCookie, "content-type": "application/json" },
     body: JSON.stringify({ rangeReviewId: rangeReview.id }),

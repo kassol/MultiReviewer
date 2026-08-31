@@ -60,7 +60,6 @@ async function boot(
     MULTIREVIEWER_DB: dbPath,
     MULTIREVIEWER_CACHE_DIR: cacheDir,
     MULTIREVIEWER_ADMIN_TOKEN: "boot-test-admin-token",
-    MULTIREVIEWER_PANEL_PREFIX: "boot-test-prefix",
     // 明文 http 但 localhost:基地址校验要放行本机调试。
     MULTIREVIEWER_BASE_URL: "http://localhost:3000",
     // 0 让内核挑一个空闲端口,并发跑测试时不会撞上。
@@ -127,12 +126,6 @@ test("admin token 缺失不拦启动,零用户时打印 bootstrap 口令", async
   const result = await boot({ GITHUB_TOKEN: "ghp-stub", MULTIREVIEWER_ADMIN_TOKEN: "" });
   assert.equal(result.listening, true);
   assert.match(result.output, /bootstrap:/);
-});
-
-test("面板前缀撞上固定入口或带非法字符时启动失败", async () => {
-  const result = await boot({ GITHUB_TOKEN: "ghp-stub", MULTIREVIEWER_PANEL_PREFIX: "webhook" });
-  assert.equal(result.listening, false);
-  assert.match(result.output, /MULTIREVIEWER_PANEL_PREFIX/);
 });
 
 test("基地址不是 http(s) 时启动失败", async () => {

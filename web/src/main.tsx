@@ -30,7 +30,6 @@ import { DropdownMenu, Skeleton } from "@radix-ui/themes";
 
 import { api } from "./api.ts";
 import type { ModelServiceTab } from "./credentials.tsx";
-import { injected } from "./injected.ts";
 import {
   clearPanelSession,
   hasPermission,
@@ -56,8 +55,6 @@ const CustomServiceVerifyPage = lazy(async () => ({ default: (await credentialsM
 const ModelServiceSetupLayout = lazy(async () => ({ default: (await credentialsModule()).ModelServiceSetupLayout }));
 const ModelServiceSourcePage = lazy(async () => ({ default: (await credentialsModule()).ModelServiceSourcePage }));
 const ModelServicesPage = lazy(async () => ({ default: (await credentialsModule()).ModelServicesPage }));
-
-const { prefix } = injected();
 
 const rootRoute = createRootRoute({ component: () => <Outlet /> });
 
@@ -692,7 +689,7 @@ const routeTree = rootRoute.addChildren([
   ]),
 ]);
 
-const router = createRouter({ routeTree, basepath: `/${prefix}` });
+const router = createRouter({ routeTree });
 
 declare module "@tanstack/react-router" {
   interface Register { router: typeof router }

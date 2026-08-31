@@ -6,7 +6,7 @@ import { hashPassword } from "../src/panel/password.ts";
 import type { PanelPermission } from "../src/panel/permissions.ts";
 import { openStore } from "../src/review/store.ts";
 import { PANEL_ROUTES } from "../src/webhook/server.ts";
-import { PANEL_PREFIX, startPanelHarness, type PanelHarness } from "./support/panel-harness.ts";
+import { startPanelHarness, type PanelHarness } from "./support/panel-harness.ts";
 
 const cleanups: (() => void)[] = [];
 after(() => {
@@ -157,7 +157,7 @@ function addPermissionUser(
 }
 
 async function userCookie(serverUrl: string, username: string): Promise<string> {
-  const response = await fetch(`${serverUrl}/${PANEL_PREFIX}/api/session`, {
+  const response = await fetch(`${serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password: PASSWORD }),
@@ -184,7 +184,7 @@ test("角色权限每请求现读:改角色后不用重登立即生效", async (
 
   const cookie = await userCookie(h.serverUrl, "reader");
   const request = (): Promise<Response> =>
-    fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/settings`, { headers: { cookie } });
+    fetch(`${h.serverUrl}/api/settings`, { headers: { cookie } });
   assert.equal((await request()).status, 403);
   const update = openStore(h.db.path);
   assert.equal(
@@ -213,28 +213,28 @@ test("写权限在会话与端点统一包含对应读权限，review:rerun 保�
   ] as const;
   for (const [username, permissions, readPath] of cases) {
     const cookie = await userCookie(h.serverUrl, username);
-    const session = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+    const session = await fetch(`${h.serverUrl}/api/session`, {
       headers: { cookie },
     });
     assert.equal(session.status, 200);
     const body = (await session.json()) as { permissions: PanelPermission[] };
     assert.deepEqual(body.permissions, permissions);
     assert.equal(
-      (await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api${readPath}`, { headers: { cookie } }))
+      (await fetch(`${h.serverUrl}/api${readPath}`, { headers: { cookie } }))
         .status,
       200,
     );
   }
 
   const rerunCookie = await userCookie(h.serverUrl, "rerunner");
-  const rerunSession = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+  const rerunSession = await fetch(`${h.serverUrl}/api/session`, {
     headers: { cookie: rerunCookie },
   });
   const rerunBody = (await rerunSession.json()) as { permissions: PanelPermission[] };
   assert.deepEqual(rerunBody.permissions, ["review:rerun"]);
   assert.equal(
     (
-      await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/runs`, {
+      await fetch(`${h.serverUrl}/api/runs`, {
         headers: { cookie: rerunCookie },
       })
     ).status,
@@ -242,7 +242,7 @@ test("写权限在会话与端点统一包含对应读权限，review:rerun 保�
   );
   assert.equal(
     (
-      await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/rerun`, {
+      await fetch(`${h.serverUrl}/api/rerun`, {
         method: "POST",
         headers: { cookie: rerunCookie, "content-type": "application/json" },
         body: "{}",
@@ -258,7 +258,7 @@ test("新增的 knowledge:write 不落到已有角色上,持有它的人也只�
   addPermissionUser(h, "rerun-only", ["review:rerun"]);
   const rerunCookie = await userCookie(h.serverUrl, "rerun-only");
   const rerunSession = (await (
-    await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, { headers: { cookie: rerunCookie } })
+    await fetch(`${h.serverUrl}/api/session`, { headers: { cookie: rerunCookie } })
   ).json()) as { permissions: PanelPermission[] };
   assert.deepEqual(rerunSession.permissions, ["review:rerun"]);
 
@@ -266,7 +266,7 @@ test("新增的 knowledge:write 不落到已有角色上,持有它的人也只�
   addPermissionUser(h, "rule-writer", ["knowledge:write"]);
   const cookie = await userCookie(h.serverUrl, "rule-writer");
   const session = (await (
-    await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, { headers: { cookie } })
+    await fetch(`${h.serverUrl}/api/session`, { headers: { cookie } })
   ).json()) as { permissions: PanelPermission[] };
   assert.deepEqual(session.permissions, ["knowledge:write"]);
 });
@@ -305,19 +305,19 @@ test("普通用户不能调用系统管理员端点", async () => {
   });
   store.close();
   const cookie = await userCookie(h.serverUrl, "ordinary");
-  const response = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/roles`, { headers: { cookie } });
+  const response = await fetch(`${h.serverUrl}/api/roles`, { headers: { cookie } });
   assert.equal(response.status, 403);
   assert.deepEqual(await response.json(), { error: "只有系统管理员能做" });
   assert.equal(
     (
-      await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/setup-status`, {
+      await fetch(`${h.serverUrl}/api/setup-status`, {
         headers: { cookie },
       })
     ).status,
     200,
   );
   assert.equal(
-    (await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/setup-status`)).status,
+    (await fetch(`${h.serverUrl}/api/setup-status`)).status,
     401,
   );
 });
@@ -350,7 +350,7 @@ test("无角色的普通用户登录即可读仓库、评审记录与处置率",
   store.close();
   const cookie = await userCookie(h.serverUrl, "plain");
   for (const path of ["/repos", "/stages", "/runs", "/stats"]) {
-    const response = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api${path}`, {
+    const response = await fetch(`${h.serverUrl}/api${path}`, {
       headers: { cookie },
     });
     assert.equal(response.status, 200, path);
@@ -402,7 +402,7 @@ test("allOf 路由必须同时持有模型写与凭据写，系统管理员仍�
     ["DELETE", "/model-services/custom/missing-service"],
   ] as const;
   const invoke = (cookie: string, method: string, path: string): Promise<Response> =>
-    fetch(`${h.serverUrl}/${PANEL_PREFIX}/api${path}`, {
+    fetch(`${h.serverUrl}/api${path}`, {
       method,
       headers: { cookie, "content-type": "application/json" },
       body: "{}",
@@ -442,7 +442,7 @@ test("旧模型 API 已从路由表删除，认证后统一返回 404", async ()
     );
   }
 
-  const anonymous = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/catalog`);
+  const anonymous = await fetch(`${h.serverUrl}/api/catalog`);
   assert.equal(anonymous.status, 401, "未知 API 仍应先经过会话门禁");
 });
 
@@ -459,7 +459,7 @@ test("目录刷新与补录变更只要求模型写权限", async () => {
   ] as const;
   for (const [method, path] of mutations) {
     const invoke = (cookie: string): Promise<Response> =>
-      fetch(`${h.serverUrl}/${PANEL_PREFIX}/api${path}`, {
+      fetch(`${h.serverUrl}/api${path}`, {
         method,
         headers: { cookie, "content-type": "application/json" },
         body: "{}",
@@ -480,7 +480,7 @@ test("模型写或凭据写权限可读取各自包含的模型服务字段", as
   addPermissionUser(h, "model-service-credential-writer", ["credential:write"]);
   for (const username of ["model-service-model-writer", "model-service-credential-writer"]) {
     const cookie = await userCookie(h.serverUrl, username);
-    const response = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/model-services`, {
+    const response = await fetch(`${h.serverUrl}/api/model-services`, {
       headers: { cookie },
     });
     assert.equal(response.status, 200, username);

@@ -34,7 +34,6 @@ import { memoryForge, scriptedReviewer, type MemoryForge } from "./memory-forge.
 export const PANEL_ADMIN_USERNAME = "panel-admin";
 export const PANEL_ADMIN_PASSWORD = "panel-harness-password";
 const PANEL_ADMIN_PASSWORD_HASH = await hashPassword(PANEL_ADMIN_PASSWORD);
-export const PANEL_PREFIX = "panel-harness-prefix";
 export const PANEL_BASE_URL = "https://reviewer.example.test";
 
 export const GITEA_REPO = { id: 4242, owner: "acme", repo: "widgets" };
@@ -297,7 +296,6 @@ export async function startPanelHarness(
     cacheDir: cache.dir,
     dbPath: db.path,
     bootstrapSecret: "panel-harness-bootstrap",
-    panelPrefix: PANEL_PREFIX,
     baseUrl: PANEL_BASE_URL,
     panelDist: `${cache.dir}/no-dist`,
     gitea: { baseUrl: gitea.url, token: "bot-pat" },
@@ -353,7 +351,7 @@ export async function startPanelHarness(
     server.close();
   });
 
-  const login = await fetch(`${serverUrl}/${PANEL_PREFIX}/api/session`, {
+  const login = await fetch(`${serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: PANEL_ADMIN_USERNAME, password: PANEL_ADMIN_PASSWORD }),
@@ -362,7 +360,7 @@ export async function startPanelHarness(
   const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
 
   function api(method: string, path: string, body?: unknown): Promise<Response> {
-    return fetch(`${serverUrl}/${PANEL_PREFIX}/api${path}`, {
+    return fetch(`${serverUrl}/api${path}`, {
       method,
       headers: {
         cookie,

@@ -842,7 +842,7 @@ const SEARCH_DEBOUNCE_MS = 250;
  * owner 与 repo 复制下来。手动输入已删除——当前凭据无法访问的仓库即使输入也无法通过注册时的
  * 权限检查,留个兜底只会把「搜不到」的问题推迟到注册那一刻才暴露。
  *
- * 搜索经本服务代理(`GET <前缀>/api/repos/search`),浏览器不直连 Gitea。已注册与
+ * 搜索经本服务代理(`GET /api/repos/search`),浏览器不直连 Gitea。已注册与
  * 无 admin 权限两类照样列出、只是置灰:过滤掉会让人明知仓库存在却搜不到。
  */
 function RegisterDialogContent({

@@ -77,22 +77,10 @@ function assertUsableBaseUrl(value: string): void {
   }
 }
 
-/** 面板前缀是路径的一段,字符要 URL 安全,且不能撞上路由表里的固定入口。 */
-function panelPrefix(): string {
-  const value = required("MULTIREVIEWER_PANEL_PREFIX");
-  if (!/^[A-Za-z0-9_-]+$/.test(value) || value === "webhook" || value === "assets") {
-    throw new Error(
-      `MULTIREVIEWER_PANEL_PREFIX 只能由字母、数字、- 与 _ 组成,且不能是 webhook 或 assets:${value}`,
-    );
-  }
-  return value;
-}
-
 const port = Number(process.env["MULTIREVIEWER_PORT"] ?? DEFAULT_PORT);
 const dbPath = process.env["MULTIREVIEWER_DB"] ?? "multireviewer.db";
 const cacheDir = process.env["MULTIREVIEWER_CACHE_DIR"] ?? ".cache/worktrees";
 
-const prefix = panelPrefix();
 const baseUrl = required("MULTIREVIEWER_BASE_URL");
 assertUsableBaseUrl(baseUrl);
 
@@ -118,7 +106,6 @@ const server = createWebhookServer({
   },
   cacheDir,
   dbPath,
-  panelPrefix: prefix,
   baseUrl,
   panelDist: process.env["MULTIREVIEWER_PANEL_DIST"] ?? "web/dist",
   // 模型凭据的主密钥(ADR 0008)。没配不拦启动:凭据页会说明差什么,而服务起不来

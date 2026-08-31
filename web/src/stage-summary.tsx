@@ -22,7 +22,7 @@ export type StageScope =
   | { kind: "pull-request"; owner: string; repo: string; pullNumber: number };
 
 /**
- * 阶段汇总里的一条 Finding。字段与 `GET <前缀>/api/stage-summary` 逐字对应:它是轮次
+ * 阶段汇总里的一条 Finding。字段与 `GET /api/stage-summary` 逐字对应:它是轮次
  * 那份 Finding 投影再加「这条活了多久」——同一条 Finding 在两处显示成同一个样子,
  * 行内处置也走同一个组件。
  */

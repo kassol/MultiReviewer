@@ -2,17 +2,16 @@
 
 ## 职责
 
-管理面板的前端:TanStack Router + Query 的纯前端 SPA,与 JSON API 同进程部署。Radix Themes 是通用视觉系统,Radix Primitives 补行为,Radix Icons 统一业务图标,Tailwind v4 只处理复杂布局；cmdk 与 react-day-picker 保留搜索组合框和日期范围的专用行为。Vite 构建,产物(`dist/`)不进版本库,在 Docker 多阶段构建里生成,由服务经 `/assets` 与 `<前缀>/*` 提供。领域术语以根目录 `CONTEXT.md` 为准。
+管理面板的前端:TanStack Router + Query 的纯前端 SPA,与 JSON API 同进程部署。Radix Themes 是通用视觉系统,Radix Primitives 补行为,Radix Icons 统一业务图标,Tailwind v4 只处理复杂布局；cmdk 与 react-day-picker 保留搜索组合框和日期范围的专用行为。Vite 构建,产物(`dist/`)不进版本库,在 Docker 多阶段构建里生成,由服务经 `/assets` 与根路径的 SPA fallback 提供。领域术语以根目录 `CONTEXT.md` 为准。
 
 ## 目录结构
 
-- `index.html` — Vite 入口。生产由服务注入前缀全局变量后返回;dev 由 `vite.config.ts` 的内联插件注入同名变量。
-- `vite.config.ts` — 前缀与后端端口从仓库根的同一份 `.env` 读(`loadEnv`);dev proxy 把 `<前缀>/api` 转本机后端;注入插件 `apply: "serve"`,只在 dev 生效。
-- `src/injected.ts` — 读注入全局变量的唯一代码路径,缺失当场报错并在页面写明原因。
-- `src/api.ts` — 面板 API 的唯一入口,基址从注入的前缀来。`apiUrl(path)` 给出同一份绝对路径,供 `EventSource` 这类只收 URL、进不了 `api()` 封装的调用点用——「API 装在哪个前缀下」仍然只写一次。
+- `index.html` — Vite 入口。生产由服务原样返回,深层路由刷新也回它。
+- `vite.config.ts` — 后端端口从仓库根的 `.env` 读(`loadEnv`);dev proxy 把 `/api` 转本机后端。
+- `src/api.ts` — 面板 API 的唯一入口,基址是 `/api`。`apiUrl(path)` 给出同一份绝对路径,供 `EventSource` 这类只收 URL、进不了 `api()` 封装的调用点用。
 - `src/model-services.ts` — `GET /model-services` 的共享查询与前端契约。模型服务页、全局模型组合和仓库覆盖只消费这一份按权限裁剪的投影;候选按完整 `provider:model` 标识合并来源并携带服务端可用性结论。模型发现事实逐字段带 `service-interface`、`pi-catalog` 或 `service-target` 来源；实际运行字段还可能来自 `runtime-baseline` 或为 `unknown`。模型页以实际运行规格为主并将字段来源去重成一条说明，发现值有差异时才展开显示。服务详情另读服务级运行能力与组合引用位置,前端不从目录状态重复推断。
-- `src/main.tsx` — 路由与壳:`/login` 同一屏按 session 探测结果在登录与 bootstrap 注册间切换;`/password` 是必须改密页;`shell` 下挂五页(`/` 评审记录 / `/stats` / `/credentials` / `/settings` / `/access`),外加不进导航的阶段详情 `/stages/$stageId`(issue #175:它是从评审记录点进去的一个阶段,不是一张并列的页;路径参数就是 `GET /stages` 行上的阶段标识,里面的斜杠由 TanStack Router 自己编码成一段;顶栏面包屑在这个地址上显示「评审记录」,与页顶那个唯一的返回一致,issue #189、#194——两者都指首页)。登录就落首页,首页就是评审记录(issue #194,`homeFor` 只在还没改过密码时改判 `/password`):评审记录与处置率登录即可进,读得到多少由仓库分配决定(ADR 0018),因此没有按权限分流,也没有零权限说明页。仓库页与 `/repos` 路由已经没了(issue #195):管仓库是首页左栏上的行操作,首页因此还收 `canWrite` 与 `canReadModels` 两格。首页把会话的 `repoIds` 折成一个 `unassigned` 传给 `RunsPage`——一个仓库都没分到的普通用户看到的是一段说明,不是一份空的两栏。`/credentials` 是模型服务总入口;`/credentials/:provider`、`/credentials/:provider/maintenance`、`/credentials/:provider/models` 分别是服务概览、维护与模型的稳定地址。配置流以 `/credentials/add` 为父地址:内置 provider 用 `builtin/:provider/discover|verify`,自定义创建用 `custom/discover|verify`,自定义修改用 `custom/:provider/discover|verify`;自定义子路由同时要求模型写与凭据写。页面组件使用 `React.lazy + Suspense` 按路由分块，模型服务的七个路由入口共用同一个 `credentials.tsx` 动态模块。Router `basepath` 取注入前缀。壳按 `GET /session` 回来的有效权限先过滤导航再渲染:导航项不写 `permission` 即登录就看得见(评审记录、处置率、修改密码),写了的按它过滤(模型服务、审查策略),访问控制只对系统管理员出现;页面按写权限决定是否渲染保存、刷新、凭据、删除与重跑控件。所有业务页在实例启用前显示同一首次配置检查单;任一成功写请求会立即让状态查询失效并刷新。壳是双层毛玻璃顶栏:上层品牌、面包屑、⌘K 搜索入口与头像菜单,下层 underline 导航(激活项字重 650 + 3px 蓝色圆头指示条,指示条左右各内缩 12px)。导航项右侧只剩一个告警点:模型服务的琥珀点取 `/setup-status` 的 `hasRunnableModelService`(`useNavAlert`)。计数徽章一个都不剩——它此前只做仓库数,而仓库项随 issue #195 离开了导航;评审记录没有总数端点(`/stages` 按 `offset` 翻页,不给总数),不拿第一页条数冒充总数。窄视口收起导航层,改成底部毛玻璃 Tab 栏——设计稿画的是固定五项,实现取前四个有权限的页面加一个「我的」,因为导航项随权限增减,固定五项会让低权限用户看到空位、高权限用户丢掉入口。
-- `src/session.ts` — 当前身份与权限的唯一查询,缓存 `GET <前缀>/api/session`,并从中取 Forge 的 web 基址(`giteaUrl`)。`pullRequestUrl()` 是拼 pull request 地址的唯一出口:处置只发生在 Forge 上,面板里每一处「还有多少条没处置」都要能凭它点过去,拿不到基址时调用方不渲染链接。未认证的 401 再由壳送去 `/login`,必须改密时统一送 `/password`,页面组件不各自探测。
+- `src/main.tsx` — 路由与壳:`/login` 同一屏按 session 探测结果在登录与 bootstrap 注册间切换;`/password` 是必须改密页;`shell` 下挂五页(`/` 评审记录 / `/stats` / `/credentials` / `/settings` / `/access`),外加不进导航的阶段详情 `/stages/$stageId`(issue #175:它是从评审记录点进去的一个阶段,不是一张并列的页;路径参数就是 `GET /stages` 行上的阶段标识,里面的斜杠由 TanStack Router 自己编码成一段;顶栏面包屑在这个地址上显示「评审记录」,与页顶那个唯一的返回一致,issue #189、#194——两者都指首页)。登录就落首页,首页就是评审记录(issue #194,`homeFor` 只在还没改过密码时改判 `/password`):评审记录与处置率登录即可进,读得到多少由仓库分配决定(ADR 0018),因此没有按权限分流,也没有零权限说明页。仓库页与 `/repos` 路由已经没了(issue #195):管仓库是首页左栏上的行操作,首页因此还收 `canWrite` 与 `canReadModels` 两格。首页把会话的 `repoIds` 折成一个 `unassigned` 传给 `RunsPage`——一个仓库都没分到的普通用户看到的是一段说明,不是一份空的两栏。`/credentials` 是模型服务总入口;`/credentials/:provider`、`/credentials/:provider/maintenance`、`/credentials/:provider/models` 分别是服务概览、维护与模型的稳定地址。配置流以 `/credentials/add` 为父地址:内置 provider 用 `builtin/:provider/discover|verify`,自定义创建用 `custom/discover|verify`,自定义修改用 `custom/:provider/discover|verify`;自定义子路由同时要求模型写与凭据写。页面组件使用 `React.lazy + Suspense` 按路由分块，模型服务的七个路由入口共用同一个 `credentials.tsx` 动态模块。Router 不设 `basepath`,面板挂在根路径下。壳按 `GET /session` 回来的有效权限先过滤导航再渲染:导航项不写 `permission` 即登录就看得见(评审记录、处置率、修改密码),写了的按它过滤(模型服务、审查策略),访问控制只对系统管理员出现;页面按写权限决定是否渲染保存、刷新、凭据、删除与重跑控件。所有业务页在实例启用前显示同一首次配置检查单;任一成功写请求会立即让状态查询失效并刷新。壳是双层毛玻璃顶栏:上层品牌、面包屑、⌘K 搜索入口与头像菜单,下层 underline 导航(激活项字重 650 + 3px 蓝色圆头指示条,指示条左右各内缩 12px)。导航项右侧只剩一个告警点:模型服务的琥珀点取 `/setup-status` 的 `hasRunnableModelService`(`useNavAlert`)。计数徽章一个都不剩——它此前只做仓库数,而仓库项随 issue #195 离开了导航;评审记录没有总数端点(`/stages` 按 `offset` 翻页,不给总数),不拿第一页条数冒充总数。窄视口收起导航层,改成底部毛玻璃 Tab 栏——设计稿画的是固定五项,实现取前四个有权限的页面加一个「我的」,因为导航项随权限增减,固定五项会让低权限用户看到空位、高权限用户丢掉入口。
+- `src/session.ts` — 当前身份与权限的唯一查询,缓存 `GET /api/session`,并从中取 Forge 的 web 基址(`giteaUrl`)。`pullRequestUrl()` 是拼 pull request 地址的唯一出口:处置只发生在 Forge 上,面板里每一处「还有多少条没处置」都要能凭它点过去,拿不到基址时调用方不渲染链接。未认证的 401 再由壳送去 `/login`,必须改密时统一送 `/password`,页面组件不各自探测。
 - `src/setup-checklist.tsx` — 首次配置状态与检查单的唯一实现。它读取认证的 `GET /setup-status`,始终显示三步完成状态,只把当前未完成步骤做成入口;入口再按当前会话的有效写权限裁剪。实例启用后整块隐藏。
 - `src/login.tsx` — 登录与首次注册共用的一屏。普通档是用户名加密码;零用户档多 bootstrap 口令与确认密码,注册成功后回账号登录。所有字段使用 Themes `Text as="label"` 的可见标签,不靠 placeholder 当标签。
 - `src/password.tsx` — 用户自改密码页,走 `PUT /session/password`;必须改密的人完成后回到自己有权访问的第一页。改密保留当前会话、作废其余会话。
@@ -56,10 +55,9 @@
 
 ## 模块规范
 
-- 前端只读注入的 `window.__MULTIREVIEWER__`,不设 `import.meta.env` 回落——分叉点只留「谁注入」一个,「本地好好的、进镜像白屏」不该存在。注入形状必须与服务端(`src/webhook/server.ts` 的 `servePage`)逐字一致。
-- Vite 保持默认绝对 base(`/`):静态资源不进前缀,构建产物与前缀无关。**注入插件永远不参与 build**——前缀烤进产物即事故。
+- Vite 保持默认绝对 base(`/`):面板页面、静态资源与 API 都挂在根路径下,Router 不设 basepath。
 - 构建产物是纯静态文件:服务端的运行时第三方依赖仍只有 Pi,react 全家只活在构建阶段。
-- 当前身份与权限只从 `GET <前缀>/api/session` 读取,由 `src/session.ts` 缓存一份;未认证的 401 由壳统一送去 `/login`,必须改密统一送 `/password`,页面组件不各自判。导航按权限隐藏而不是摆禁用项,但服务端 403 仍是最终授权边界。
+- 当前身份与权限只从 `GET /api/session` 读取,由 `src/session.ts` 缓存一份;未认证的 401 由壳统一送去 `/login`,必须改密统一送 `/password`,页面组件不各自判。导航按权限隐藏而不是摆禁用项,但服务端 403 仍是最终授权边界。
 - **模型组合编辑器只有一份且只负责选择。**审查策略与仓库覆盖都挂 `components/model-composer.tsx`;配置模型服务、凭据、发现、刷新与补录一律回模型服务页,组合编辑器不得再长出第二条写链。
 - **失效的已选模型不静默消失。**`GET /model-services` 给稳定原因与处理入口,编辑器原样显示并允许移除;调用页只门禁这一次组合保存。批次上限等无关设置仍可独立提交,最终门禁以服务端同一模型服务投影为准。
 - **模型服务字段与动作按权限裁剪。**`model:read` 才看目标、目录、模型、来源和可用性,`credential:read` 才看凭据审计字段;候选与错误响应不得含明文、密文或主密钥材料。前端只依据返回字段展示,不复制服务端 provider、引用或版本竞争判据。
@@ -82,7 +80,7 @@
 
 ## 依赖关系
 
-不依赖仓库里任何服务端代码;与服务端的契约只有两条:注入全局变量的形状、`<前缀>/api` 的 JSON 端点。
+不依赖仓库里任何服务端代码;与服务端的契约只有一条:`/api` 下的 JSON 端点。
 
 当前构建期依赖是 `@radix-ui/themes`、`@radix-ui/react-icons`、Tailwind v4、`radix-ui` 单包、cmdk、react-day-picker、clsx 与 tailwind-merge。业务图标只从 `@radix-ui/react-icons` 导入；产品标记与 favicon 保留自绘 SVG。cmdk 与 react-day-picker 只在统一产品组件仍需要对应行为时保留。`@/` 别名在 `tsconfig.json` 的 `paths` 与 `vite.config.ts` 的 `resolve.alias` 各配一次,两处要一起改。
 
@@ -119,6 +117,8 @@
 - 选中态三分类语义保留，颜色改为：当前位置 = 蓝下划线 / 加粗；主从列表当前项 = 蓝色 tint 底 + 3px 蓝色左条（替代深色实底反白）；编辑中选择不变（浅底 / 描边 / Checkbox）。弹窗关闭恢复底层项与 tab 等交互约束全部沿用。`aria-current="page"` 只给导航用(顶栏导航项、详情 TabNav);主从列表的当前项用 `aria-current="true"`——它是列表里的当前项,不是当前页面,写成 `page` 会让模型服务这类页面同时报出三个「当前页面」。
 
 ## 变更日志
+
+- 2026-08-31: 随机面板前缀移除(团队决定)。**面板挂根路径**:`src/injected.ts` 删除,Router 不再设 `basepath`,`api.ts` 的基址直接是 `/api`;`vite.config.ts` 的注入插件删掉,dev proxy 从 `<前缀>/api` 改成 `/api`。`index.html` 由服务原样返回,与服务端的契约只剩 `/api` 下的 JSON 端点。理由:随机前缀只防扫描器枚举,门禁一直是账号与会话 cookie;内部部署下这层隐匿带来的运维摩擦大于收益。
 
 - 2026-08-31: 层标签退役(团队决定),已裁决提案行改说裁决短语。**层标签**:`repo-rules.tsx` 的 `ReviewRule` / `RuleProposal` / `RuleFormState` 各去掉 `layer`,`RuleForm` 删掉「层标签」那一格(连 `isRule` 分支整块)与它那一道 ready 校验,生效区、已废止区与草案区三处层徽章删除,`rule-trace.tsx` 的 `rule_proposed` 层徽章一并删。层标签不注入模型也不参与判定,留着只剩录入负担与徽章噪音;库列保留免迁移,详见 `src/AGENTS.md`。**裁决短语**:已裁决那一段的 `StatusBadge` 从「已采纳 / 已驳回」换成 `DECISION_LABEL` 按裁决 × 变更类型合成的一句话(如「驳回了废止提案,条目保留」),同行的 `CHANGE_LABEL` 徽章删除。原因是裁决的对象是提案而不是条目:「已驳回」加一枚「废止」徽章并排,人会读成「这条规则被驳回」,而被驳回的其实是废止它的那个提案。`CHANGE_LABEL` 待裁决那一段仍在用,保留。沿惯例无程序化测试,视觉由部署实例验收。
 

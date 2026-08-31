@@ -324,7 +324,7 @@ remove_env() {
 }
 OLD_SECRET=$(_existing MULTIREVIEWER_WEBHOOK_SECRET || true)
 for OLD_ENV in MULTIREVIEWER_ADMIN_TOKEN MULTIREVIEWER_WEBHOOK_SECRET MULTIREVIEWER_PUBLIC_URL \
-  MULTIREVIEWER_GITEA_REPO DEEPSEEK_API_KEY OPENROUTER_API_KEY \
+  MULTIREVIEWER_GITEA_REPO MULTIREVIEWER_PANEL_PREFIX DEEPSEEK_API_KEY OPENROUTER_API_KEY \
   MULTIREVIEWER_DEEPSEEK_MODEL MULTIREVIEWER_OPENROUTER_MODEL; do
   if grep -qE "^${OLD_ENV}=" "$ENV_FILE" 2>/dev/null; then
     backup_env
@@ -335,6 +335,7 @@ remove_env MULTIREVIEWER_ADMIN_TOKEN "面板门禁已改为本地用户账号与
 remove_env MULTIREVIEWER_WEBHOOK_SECRET "全局 webhook secret 已废除:准入改为每仓库一把 Key,由面板在注册时生成并写进 hook。"
 remove_env MULTIREVIEWER_PUBLIC_URL "公网地址改为基地址,存 MULTIREVIEWER_BASE_URL(下面会问)。"
 remove_env MULTIREVIEWER_GITEA_REPO "webhook 不再手工登记:仓库改在面板上注册。"
+remove_env MULTIREVIEWER_PANEL_PREFIX "随机面板前缀已废除:面板直接挂根路径,API 挂 /api。门禁一直是账号与会话 cookie,前缀只挡扫描器。旧地址不再重定向,书签要改成基地址。"
 remove_env DEEPSEEK_API_KEY "模型凭据改由面板的凭据页管,加密存库(ADR 0008)。服务只从库里取,环境变量这一路已经断开。"
 remove_env OPENROUTER_API_KEY "同上:模型凭据只在面板里配。"
 remove_env MULTIREVIEWER_DEEPSEEK_MODEL "模型组合改由面板的设置页管,存库。服务不再读这个变量。"
@@ -355,18 +356,6 @@ else
 fi
 
 say ""
-say "面板挂在一段不可猜的路径前缀下(如 /panel-3f2a),webhook 与它互不相扰。"
-EXISTING_PREFIX=$(_existing MULTIREVIEWER_PANEL_PREFIX || true)
-if [[ -n "$EXISTING_PREFIX" ]] && ! confirm "已经有前缀 /$EXISTING_PREFIX 了,重新生成?(重新生成后旧地址失效,书签要更新)"; then
-  MULTIREVIEWER_PANEL_PREFIX="$EXISTING_PREFIX"
-  note "沿用现有前缀"
-else
-  MULTIREVIEWER_PANEL_PREFIX="panel-$(openssl rand -hex 4)"
-  note "已生成前缀 /$MULTIREVIEWER_PANEL_PREFIX"
-fi
-write_env MULTIREVIEWER_PANEL_PREFIX "$MULTIREVIEWER_PANEL_PREFIX"
-
-say ""
 say "容器内固定监听 3000,对外映射哪个端口单独设。"
 note "反代到 443 时这里填反代回源的那个端口。"
 ask MULTIREVIEWER_HOST_PORT "宿主机端口 [3000]:"
@@ -374,8 +363,8 @@ ask MULTIREVIEWER_HOST_PORT "宿主机端口 [3000]:"
 write_env MULTIREVIEWER_HOST_PORT "$MULTIREVIEWER_HOST_PORT"
 
 say ""
-say "服务对外的基地址:Gitea 的投递、浏览器里的面板都走它。不带路径,"
-say "hook 地址与面板地址都由服务自己在它后面拼。"
+say "服务对外的基地址:Gitea 的投递、浏览器里的面板都走它。不带路径——面板就是这个"
+say "地址本身,hook 地址由服务自己在它后面拼。"
 ask MULTIREVIEWER_BASE_URL "基地址(如 https://reviewer.example.com):"
 MULTIREVIEWER_BASE_URL="${MULTIREVIEWER_BASE_URL%/}"
 # 旧流程的习惯是填 <地址>/webhook,现在只要基地址,顺手剥掉。
@@ -425,8 +414,7 @@ if [[ -z "$BOOTED" ]]; then
 fi
 printf '  %s✓%s 服务已监听\n' "$GREEN" "$RESET"
 
-PANEL_PATH="/${MULTIREVIEWER_PANEL_PREFIX}/"
-LOCAL_PANEL="http://127.0.0.1:${MULTIREVIEWER_HOST_PORT}${PANEL_PATH}"
+LOCAL_PANEL="http://127.0.0.1:${MULTIREVIEWER_HOST_PORT}/"
 
 say ""
 say "自检收在「面板能用」:先从本机打登录页,期望 200——这验容器、端口映射与前端产物。"
@@ -436,7 +424,7 @@ if [[ "$LOCAL_PROBE" == "200" ]]; then
   printf '  %s✓%s 本机登录页 200\n' "$GREEN" "$RESET"
 else
   printf '  %s✗ 本机登录页回了 %s,预期 200%s\n' "$RED" "$LOCAL_PROBE" "$RESET"
-  say "503 是镜像里缺前端产物(dist),404 是前缀对不上,连不上是端口映射。"
+  say "503 是镜像里缺前端产物(dist),连不上是端口映射。"
   say "都属于容器与镜像的问题,先解决这个再谈公网。"
   exit 1
 fi
@@ -503,19 +491,19 @@ esac
 
 say "再从基地址打一次登录页——这验反代与防火墙。"
 PROBE=$(curl -sS -o /dev/null -w '%{http_code}' -m 15 \
-  "${MULTIREVIEWER_BASE_URL}${PANEL_PATH}login" 2>/dev/null) || PROBE="connect-failed"
+  "${MULTIREVIEWER_BASE_URL}/login" 2>/dev/null) || PROBE="connect-failed"
 case "$PROBE" in
   200)
     printf '  %s✓%s 本机经基地址到面板是通的\n' "$GREEN" "$RESET"
     note "这只说明本机可达。你的浏览器到不到得了,交付清单里让你真开一次。"
     ;;
   connect-failed)
-    printf '  %s✗ 连不上 %s%s\n' "$RED" "${MULTIREVIEWER_BASE_URL}${PANEL_PATH}" "$RESET"
+    printf '  %s✗ 连不上 %s%s\n' "$RED" "${MULTIREVIEWER_BASE_URL}/login" "$RESET"
     say "容器是好的,问题在反代或防火墙。"
     SKIPPED+=("公网自检没通过,浏览器与 Gitea 多半也到不了这个地址") ;;
   *)
     printf '  %s⚠ 基地址回了 %s,预期 200%s\n' "$YELLOW" "$PROBE" "$RESET"
-    say "这个地址后面接的可能不是 MultiReviewer,或反代吃掉了 /${MULTIREVIEWER_PANEL_PREFIX} 路径。"
+    say "这个地址后面接的可能不是 MultiReviewer,或反代把请求转去了别处。"
     SKIPPED+=("公网自检回了 $PROBE 而非 200") ;;
 esac
 pause
@@ -525,7 +513,7 @@ stage "交付清单"
 say "部署边界到「面板能用」为止。仓库接入、Key 轮转、模型覆盖都在面板上做。"
 say ""
 say "面板地址(在你自己的浏览器上开):"
-printf '\n      %s%s%s%s\n\n' "$BOLD" "$MULTIREVIEWER_BASE_URL" "$PANEL_PATH" "$RESET"
+printf '\n      %s%s/%s\n\n' "$BOLD" "$MULTIREVIEWER_BASE_URL" "$RESET"
 if [[ "$FRESH_INSTANCE" == "yes" ]]; then
   say "一次性 bootstrap 口令(注册第一个管理员时粘贴):"
   printf '\n      %s%s%s\n\n' "$BOLD" "$BOOTSTRAP_SECRET" "$RESET"
@@ -558,7 +546,7 @@ note "换模型在面板的设置页改,轮转模型凭据在面板的凭据页�
 note "更新版本:开发机上跑 scripts/build-push.sh,这里 docker compose pull && docker compose up -d"
 printf '\n'
 say "服务器侧排障速查:"
-note "  面板打不开 → docker compose logs multireviewer;503 是镜像缺前端产物,404 查前缀。"
+note "  面板打不开 → docker compose logs multireviewer;503 是镜像缺前端产物。"
 note "  登录 401 → 核对用户名与密码;忘记密码或怀疑 cookie 泄露时,请系统管理员在访问控制页重置该账号密码。"
 note "  仓库注册 403 → bot 不是该仓库 admin。"
 note "  投递没反应 → Gitea 仓库 设置 → Web 钩子 → 最近投递的响应码;401 时:仓库没注册就先注册,注册过的到面板点「轮转推平」。"

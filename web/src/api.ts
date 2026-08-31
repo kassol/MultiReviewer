@@ -1,15 +1,13 @@
-import { injected } from "./injected.ts";
-
 /**
- * 面板 API 的唯一入口。基址从注入的前缀来,cookie 同源自动携带;带 body 的请求
+ * 面板 API 的唯一入口。API 挂在 `/api` 下,cookie 同源自动携带;带 body 的请求
  * 默认按 JSON 发。
  */
 /**
  * 面板 API 的绝对路径。`EventSource` 只收一个 URL,进不了 `api()` 的封装,由这里给出
- * 同一份基址——「API 装在哪个前缀下」仍然只写一次。
+ * 同一份基址。
  */
 export function apiUrl(path: string): string {
-  return `/${injected().prefix}/api${path}`;
+  return `/api${path}`;
 }
 
 export function api(path: string, init?: RequestInit): Promise<Response> {

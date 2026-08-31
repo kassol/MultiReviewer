@@ -18,7 +18,6 @@ import { openStore, type Store } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
-  PANEL_PREFIX,
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -553,7 +552,7 @@ test("阶段汇总的入参:两条链路只能选一条,范围审查不存在时
 test("阶段汇总登录即可读:未登录 401,一格权限都没有的人分到仓库就读得到", async () => {
   const h = await startPanelHarness(cleanups);
   const { rangeReviewId } = seedStage(h.db.path);
-  const path = `/${PANEL_PREFIX}/api/stage-summary?rangeReviewId=${rangeReviewId}`;
+  const path = `/api/stage-summary?rangeReviewId=${rangeReviewId}`;
 
   assert.equal((await fetch(`${h.serverUrl}${path}`)).status, 401);
 
@@ -587,7 +586,7 @@ async function userCookie(
   } finally {
     store.close();
   }
-  const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+  const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password: PASSWORD }),

@@ -16,7 +16,6 @@ import { scriptedReviewer } from "./support/memory-forge.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
-  PANEL_PREFIX as PREFIX,
   startReadyPanelHarness,
   type PanelHarness,
   type PanelHarnessOptions,
@@ -184,7 +183,7 @@ test("一次基点探索留下一条轨迹:说的话、调的工具与提出的�
 
   // 跑完之后连流:回放完直接收到结束信号,不挂着等。
   const stream = await fetch(
-    `${h.serverUrl}/${PREFIX}/api/repos/${GITEA_REPO.id}/rule-traces/${taskId}/stream?after=4`,
+    `${h.serverUrl}/api/repos/${GITEA_REPO.id}/rule-traces/${taskId}/stream?after=4`,
     { headers: { cookie: h.cookie } },
   );
   assert.equal(stream.status, 200);
@@ -261,7 +260,7 @@ test("知识轨迹的可见性与知识集读侧一致:分配外 404,别的仓�
   } finally {
     store.close();
   }
-  const login = await fetch(`${h.serverUrl}/${PREFIX}/api/session`, {
+  const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: "outsider", password: PASSWORD }),
@@ -270,7 +269,7 @@ test("知识轨迹的可见性与知识集读侧一致:分配外 404,别的仓�
   const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
 
   const denied = await fetch(
-    `${h.serverUrl}/${PREFIX}/api/repos/${GITEA_REPO.id}/rule-traces/${taskId}`,
+    `${h.serverUrl}/api/repos/${GITEA_REPO.id}/rule-traces/${taskId}`,
     { headers: { cookie } },
   );
   assert.equal(denied.status, 404);

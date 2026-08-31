@@ -16,7 +16,6 @@ import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
 import { makeDbPath } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
-  PANEL_PREFIX as PREFIX,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -101,7 +100,7 @@ async function scopedUser(
   } finally {
     store.close();
   }
-  const response = await fetch(`${h.serverUrl}/${PREFIX}/api/session`, {
+  const response = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password: PASSWORD }),
@@ -111,7 +110,7 @@ async function scopedUser(
 }
 
 function get(h: PanelHarness, cookie: string, path: string): Promise<Response> {
-  return fetch(`${h.serverUrl}/${PREFIX}/api${path}`, { headers: { cookie } });
+  return fetch(`${h.serverUrl}/api${path}`, { headers: { cookie } });
 }
 
 function send(
@@ -121,7 +120,7 @@ function send(
   path: string,
   body?: unknown,
 ): Promise<Response> {
-  return fetch(`${h.serverUrl}/${PREFIX}/api${path}`, {
+  return fetch(`${h.serverUrl}/api${path}`, {
     method,
     headers: { cookie, "content-type": "application/json" },
     body: JSON.stringify(body ?? {}),

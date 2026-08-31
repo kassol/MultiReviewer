@@ -12,7 +12,6 @@ import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
-  PANEL_PREFIX,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -185,7 +184,7 @@ test("没有 review:rerun 的用户发不出带指令的重审", async () => {
   store.setPanelUserAssignment("directive-denied", [GITEA_REPO.id]);
   store.close();
 
-  const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+  const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: "directive-denied", password: PASSWORD }),
@@ -193,7 +192,7 @@ test("没有 review:rerun 的用户发不出带指令的重审", async () => {
   assert.equal(login.status, 204);
   const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
 
-  const denied = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/rerun`, {
+  const denied = await fetch(`${h.serverUrl}/api/rerun`, {
     method: "POST",
     headers: { cookie, "content-type": "application/json" },
     body: JSON.stringify({

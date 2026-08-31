@@ -14,7 +14,6 @@ import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
-  PANEL_PREFIX,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -182,7 +181,7 @@ test("diff API:一格权限都没有的用户,只要仓库分给了他就读得�
   store.setPanelUserAssignment("diff-reader", [GITEA_REPO.id]);
   store.close();
 
-  const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+  const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: "diff-reader", password: PASSWORD }),
@@ -190,7 +189,7 @@ test("diff API:一格权限都没有的用户,只要仓库分给了他就读得�
   assert.equal(login.status, 204);
   const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
 
-  const response = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/runs/${runId}/diff`, {
+  const response = await fetch(`${h.serverUrl}/api/runs/${runId}/diff`, {
     headers: { cookie },
   });
   assert.equal(response.status, 200);

@@ -15,7 +15,6 @@ import {
   HARNESS_PR,
   HARNESS_SPEC,
   PANEL_ADMIN_USERNAME,
-  PANEL_PREFIX,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -250,7 +249,7 @@ test("没有 finding:dispose 的用户处置被拒,新权限格不落到已有�
   });
   store.close();
 
-  const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+  const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: "finding-reader", password: PASSWORD }),
@@ -259,11 +258,11 @@ test("没有 finding:dispose 的用户处置被拒,新权限格不落到已有�
   const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
 
   const session = (await (
-    await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, { headers: { cookie } })
+    await fetch(`${h.serverUrl}/api/session`, { headers: { cookie } })
   ).json()) as { permissions: string[] };
   assert.deepEqual(session.permissions, ["review:rerun", "review:create"]);
 
-  const denied = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/findings/${target.id}/resolve`, {
+  const denied = await fetch(`${h.serverUrl}/api/findings/${target.id}/resolve`, {
     method: "POST",
     headers: { cookie, "content-type": "application/json" },
     body: "{}",

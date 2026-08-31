@@ -168,7 +168,6 @@ async function startHarness(options: HarnessOptions = {}) {
     cacheDir: cache.dir,
     dbPath: db.path,
     bootstrapSecret: "webhook-bootstrap",
-    panelPrefix: "webhook-test-prefix",
     baseUrl: "https://reviewer.example.test",
     panelDist: `${cache.dir}/no-dist`,
     ...(options.loggedOnceMax === undefined ? {} : { loggedOnceMax: options.loggedOnceMax }),
@@ -636,11 +635,11 @@ test("路由:签名正确但路径不对的投递一律 404,不触发也不留�
   assert.deepEqual(h.deliveries, []);
 });
 
-test("路由:非 POST 方法一律 404,不重定向", async () => {
+test("路由:投递入口只认 POST,静态产物不走页面兜底", async () => {
   const h = await startHarness();
 
-  // `GET /webhook` 与 `/` 也是 404,不重定向。
-  for (const path of ["/webhook", "/", "/assets/app.js"]) {
+  // `GET /webhook` 是 404 而不是面板页面——那是投递入口;`/assets` 下取不到的文件同理。
+  for (const path of ["/webhook", "/assets/app.js"]) {
     const response = await fetch(`${h.baseUrl}${path}`, { redirect: "manual" });
     assert.equal(response.status, 404, path);
   }

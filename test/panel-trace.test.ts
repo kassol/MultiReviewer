@@ -12,7 +12,6 @@ import type { TraceEvent, TraceKind } from "../src/review/trace.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
-  PANEL_PREFIX,
   seedHistoricalRepo,
   startPanelHarness,
   startReadyPanelHarness,
@@ -77,7 +76,7 @@ function sse(
   options: { headers?: Record<string, string>; query?: string } = {},
 ): Promise<Response> {
   const query = options.query === undefined ? "" : `?${options.query}`;
-  return fetch(`${harness.serverUrl}/${PANEL_PREFIX}/api/runs/${runId}/trace/stream${query}`, {
+  return fetch(`${harness.serverUrl}/api/runs/${runId}/trace/stream${query}`, {
     headers: { cookie: harness.cookie, ...options.headers },
   });
 }
@@ -184,7 +183,7 @@ test("轨迹的可见范围与轮次详情一致:一格权限都没有的人,分
   store.setPanelUserAssignment("no-permission", [GITEA_REPO.id]);
   store.close();
 
-  const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+  const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: "no-permission", password }),
@@ -192,7 +191,7 @@ test("轨迹的可见范围与轮次详情一致:一格权限都没有的人,分
   const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
 
   for (const path of [`/runs/${runId}/trace`, `/runs/${runId}/trace/stream`]) {
-    const response = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api${path}`, {
+    const response = await fetch(`${h.serverUrl}/api${path}`, {
       headers: { cookie },
     });
     assert.equal(response.status, 200, `${path} 登录即可读`);

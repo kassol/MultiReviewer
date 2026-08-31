@@ -14,7 +14,6 @@ import { openStore } from "../src/review/store.ts";
 import { makeDbPath } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
-  PANEL_PREFIX as PREFIX,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -124,7 +123,7 @@ async function scopedUser(
   } finally {
     store.close();
   }
-  const response = await fetch(`${h.serverUrl}/${PREFIX}/api/session`, {
+  const response = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password: PASSWORD }),
@@ -134,7 +133,7 @@ async function scopedUser(
 }
 
 function get(h: PanelHarness, cookie: string, path: string): Promise<Response> {
-  return fetch(`${h.serverUrl}/${PREFIX}/api${path}`, { headers: { cookie } });
+  return fetch(`${h.serverUrl}/api${path}`, { headers: { cookie } });
 }
 
 function send(
@@ -144,7 +143,7 @@ function send(
   path: string,
   body?: unknown,
 ): Promise<Response> {
-  return fetch(`${h.serverUrl}/${PREFIX}/api${path}`, {
+  return fetch(`${h.serverUrl}/api${path}`, {
     method,
     headers: { cookie, "content-type": "application/json" },
     body: JSON.stringify(body ?? {}),
@@ -301,7 +300,7 @@ test("分配外的仓库与没注册的 id 读知识集同形 404", async () => 
   );
 
   // 不登录读不到,也不能借 404 与 401 的差别探仓库。
-  const anonymous = await fetch(`${h.serverUrl}/${PREFIX}/api/repos/${alpha}/rules`);
+  const anonymous = await fetch(`${h.serverUrl}/api/repos/${alpha}/rules`);
   assert.equal(anonymous.status, 401);
 });
 

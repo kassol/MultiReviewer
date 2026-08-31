@@ -28,7 +28,7 @@ MultiReviewer 对 pull request 做多模型并行代码审查。审查挂在 Git
 ## Operating Context
 
 - 目标平台是公司内部 self-host 的 Gitea；开发阶段用 GitHub 作适配层测试，面板准入只有 Gitea。
-- 部署形态是 Docker。面板与 JSON API 同进程,路径挂在随机的面板前缀下；真正的门禁是本地用户账号、角色权限与会话 cookie。
+- 部署形态是 Docker。面板与 JSON API 同进程,面板挂根路径、API 挂 `/api`；门禁是本地用户账号、角色权限与会话 cookie。
 - 界面语言是中文。领域术语以仓库根 `CONTEXT.md` 为准，代码、文案、沟通用同一套词。
 - 日常场景是内网桌面浏览器；窄视口要可用，但不是主要工作面。
 
@@ -46,7 +46,7 @@ MultiReviewer 对 pull request 做多模型并行代码审查。审查挂在 Git
 
 技术约束：
 
-- 现有栈：Vite + React 19 + TanStack Router/Query + Radix Themes / Primitives / Icons + Tailwind v4。cmdk 与 react-day-picker 分别保留搜索组合框和日期范围行为。构建产物经 `/assets` 提供，产物不得含面板前缀。
+- 现有栈：Vite + React 19 + TanStack Router/Query + Radix Themes / Primitives / Icons + Tailwind v4。cmdk 与 react-day-picker 分别保留搜索组合框和日期范围行为。构建产物经 `/assets` 提供。
 - 只做亮色一套（issue #46）。
 - 前端不做程序化测试（issue #26）；逻辑压在服务端契约上。
 - 通用组件外观由 Radix Themes props 与 token 提供；Tailwind utility 负责页面布局和产品结构；`styles.css` 只放 token 映射与浏览器原生表面规则。

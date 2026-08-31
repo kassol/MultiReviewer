@@ -15,7 +15,6 @@ import {
   GITEA_REPO,
   HARNESS_PR,
   PANEL_ADMIN_USERNAME,
-  PANEL_PREFIX,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -257,7 +256,7 @@ test("没有 finding:dispose 的用户标记不了审查完成", async () => {
   });
   store.close();
 
-  const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+  const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: "range-starter", password: PASSWORD }),
@@ -266,7 +265,7 @@ test("没有 finding:dispose 的用户标记不了审查完成", async () => {
   const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
 
   const denied = await fetch(
-    `${h.serverUrl}/${PANEL_PREFIX}/api/range-reviews/${rangeReview.id}/complete`,
+    `${h.serverUrl}/api/range-reviews/${rangeReview.id}/complete`,
     { method: "POST", headers: { cookie } },
   );
   assert.equal(denied.status, 403);

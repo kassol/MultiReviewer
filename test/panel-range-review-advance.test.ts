@@ -17,7 +17,6 @@ import {
   GITEA_REPO,
   HARNESS_PR,
   PANEL_ADMIN_USERNAME,
-  PANEL_PREFIX,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -276,7 +275,7 @@ test("没有 review:create 的用户推进被拒,分支不动", async () => {
   });
   store.close();
 
-  const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+  const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: "range-reader", password: PASSWORD }),
@@ -286,7 +285,7 @@ test("没有 review:create 的用户推进被拒,分支不动", async () => {
 
   const next = h.repo.pushToHead({ "src/answer.ts": "export const answer = 9;\n" });
   const denied = await fetch(
-    `${h.serverUrl}/${PANEL_PREFIX}/api/range-reviews/${rangeReview.id}/advance`,
+    `${h.serverUrl}/api/range-reviews/${rangeReview.id}/advance`,
     {
       method: "POST",
       headers: { cookie, "content-type": "application/json" },

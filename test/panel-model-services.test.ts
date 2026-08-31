@@ -15,7 +15,6 @@ import {
 } from "../src/review/store.ts";
 import {
   PANEL_CREDENTIAL_MASTER_KEY,
-  PANEL_PREFIX,
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -296,7 +295,7 @@ async function cookieFor(
     roleId: role.id,
   });
   store.close();
-  const response = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+  const response = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username, password: PASSWORD }),
@@ -306,7 +305,7 @@ async function cookieFor(
 }
 
 function request(h: PanelHarness, cookie: string, path: string): Promise<Response> {
-  return fetch(`${h.serverUrl}/${PANEL_PREFIX}/api${path}`, { headers: { cookie } });
+  return fetch(`${h.serverUrl}/api${path}`, { headers: { cookie } });
 }
 
 function mutation(
@@ -316,7 +315,7 @@ function mutation(
   path: string,
   body: unknown,
 ): Promise<Response> {
-  return fetch(`${h.serverUrl}/${PANEL_PREFIX}/api${path}`, {
+  return fetch(`${h.serverUrl}/api${path}`, {
     method,
     headers: { cookie, "content-type": "application/json" },
     body: JSON.stringify(body),

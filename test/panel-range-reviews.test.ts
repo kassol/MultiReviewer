@@ -16,7 +16,6 @@ import {
   HARNESS_PR,
   HARNESS_PR_TITLE,
   PANEL_ADMIN_USERNAME,
-  PANEL_PREFIX,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -117,7 +116,7 @@ test("发起范围审查:建两条分支与容器 PR,第一轮 Review Run 归属
     `[MultiReviewer] 范围审查 ${h.repo.baseSha.slice(0, 7)}..${h.repo.headSha.slice(0, 7)}`,
   );
   // 正文里的面板地址指这个阶段的详情页:范围审查没有自己的页面(issue #180)。
-  assert.match(container.body, new RegExp(`/${PANEL_PREFIX}/stages/range:${rangeReview.id}`));
+  assert.match(container.body, new RegExp(`/stages/range:${rangeReview.id}`));
 
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
@@ -388,7 +387,7 @@ test("没有 review:create 的用户发起被拒,新权限格不落到已有角�
   });
   store.close();
 
-  const login = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, {
+  const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: "range-reader", password: PASSWORD }),
@@ -397,11 +396,11 @@ test("没有 review:create 的用户发起被拒,新权限格不落到已有角�
   const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
 
   const session = (await (
-    await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/session`, { headers: { cookie } })
+    await fetch(`${h.serverUrl}/api/session`, { headers: { cookie } })
   ).json()) as { permissions: string[] };
   assert.deepEqual(session.permissions, ["review:rerun"]);
 
-  const denied = await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/range-reviews`, {
+  const denied = await fetch(`${h.serverUrl}/api/range-reviews`, {
     method: "POST",
     headers: { cookie, "content-type": "application/json" },
     body: JSON.stringify({
@@ -416,7 +415,7 @@ test("没有 review:create 的用户发起被拒,新权限格不落到已有角�
 
   // 只读那一格仍然读得到评审记录。
   assert.equal(
-    (await fetch(`${h.serverUrl}/${PANEL_PREFIX}/api/stages`, { headers: { cookie } })).status,
+    (await fetch(`${h.serverUrl}/api/stages`, { headers: { cookie } })).status,
     200,
   );
 });
