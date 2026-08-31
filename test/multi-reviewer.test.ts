@@ -131,6 +131,41 @@ test("行号相差在阈值内视为同一处,超出阈值分开", async () => {
   assert.deepEqual(separate.attributions.map((a) => a.model), ["model-b"]);
 });
 
+test("同一个模型分开报的两条相邻 Finding 不合并,标题共享套话也不合并", async () => {
+  const { cache, db, forge, event } = setup();
+
+  // PR #21 的实况:opus 分开报了余额校验(P0)与类型校验(P1)两个问题,标题共享
+  // 「删除…校验」套话,相似度过了弱阈值,P1 被吞进 P0 组、评论里痕迹全无。同一个
+  // 模型分开报即是「两个问题」的最强信号,距离档不对同模型开放。
+  const result = await runReview(event, {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [
+        {
+          ...AT_LINE_2,
+          title: "删除余额校验导致可透支为负",
+          description: "余额不足时仍然扣减。",
+        },
+        {
+          ...AT_LINE_2,
+          line: 4,
+          severity: "P1" as const,
+          title: "删除类型校验导致非数字入账",
+          description: "非数字金额不再被拦截。",
+        },
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  assert.equal(result.findings.length, 2);
+  assert.deepEqual(
+    result.findings.map((f) => f.title).sort(),
+    ["删除余额校验导致可透支为负", "删除类型校验导致非数字入账"],
+  );
+});
+
 test("相距 3 行但内容明显不同的两条 Finding 不合并", async () => {
   const { cache, db, forge, event } = setup();
 

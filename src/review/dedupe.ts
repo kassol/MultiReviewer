@@ -162,6 +162,11 @@ function sameSpot(a: Finding, b: Finding): MergeCriterion | undefined {
   const distance = Math.abs(a.line - b.line);
   if (distance > LINE_TOLERANCE) return undefined;
   if (distance === 0) return { kind: "same_line" };
+  // 距离档只对跨模型开放。跨模型去重的前提是两个模型无法协调,同处近说法即同一条;
+  // 同一个模型自己分开按了两次 report_finding,分开本身就是「这是两个问题」的最强
+  // 信号,相似度这道弱信号不该盖过它——PR #21 实测它把一条独立的 P1 吞进了隔壁的
+  // P0 组,评论里连痕迹都不剩。
+  if (a.model === b.model) return undefined;
   const similarity = contentSimilarity(comparable(a), comparable(b));
   if (similarity < SIMILARITY_THRESHOLD) return undefined;
   return { kind: "distance", distance, similarity };
@@ -196,7 +201,7 @@ const SEVERITY_RANK: Record<Severity, number> = { P0: 3, P1: 2, P2: 1 };
 /**
  * 跨模型去重:同一文件里指向同一处的 Finding 合并为一条。
  *
- * 同一个模型自己报的两条也会被合并——它们同样指向同一处。
+ * 同一个模型自己报的两条只在行号完全相同时合并;距离档不对同模型开放,见 `sameSpot`。
  */
 export function dedupeFindings(findings: readonly Finding[]): MergedFinding[] {
   const byFile = new Map<string, Finding[]>();
