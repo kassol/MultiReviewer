@@ -71,6 +71,7 @@ test("不可用的计划不抛,Reviewer 一跑就留下该项的稳定失败", a
   const outcome = await reviewer.review({
     range: { baseSha: "base", headSha: "head", files: [] },
     worktreePath: "/nonexistent-worktree",
+    commentable: {},
     history: [],
   });
   assert.equal(outcome.failure, failure);
@@ -83,6 +84,7 @@ test("一个模型都没配时建出的 Reviewer 一跑就报失败,而不是零
   const outcome = await reviewers[0]!.review({
     range: { baseSha: "base", headSha: "head", files: [] },
     worktreePath: "/nonexistent-worktree",
+    commentable: {},
     history: [],
   });
   assert.match(outcome.failure ?? "", /还没有配置模型组合/);
@@ -98,6 +100,7 @@ test("运行计划意外缺字段时也只失败自身,不掀掉可用同伴", a
   const outcome = await reviewers[0]!.review({
     range: { baseSha: "base", headSha: "head", files: [] },
     worktreePath: "/nonexistent-worktree",
+    commentable: {},
     history: [],
   });
   assert.match(outcome.failure ?? "", /不可变运行计划不完整/);

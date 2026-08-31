@@ -91,11 +91,16 @@ export type RepoRow = {
   worktree: WorktreeStatus;
 };
 
-/** 手动重新运行。首页右栏头部与阶段页共用这一个请求。 */
+/**
+ * 手动重新运行。首页右栏头部与阶段页共用这一个请求。
+ *
+ * `directive` 是本轮指令(issue #225),非必填:留空即不带这一格,只作用于这一轮。
+ */
 export async function rerunRequest(run: {
   owner: string;
   repo: string;
   pullNumber: number;
+  directive?: string;
 }): Promise<string> {
   const response = await api("/rerun", {
     method: "POST",
@@ -104,6 +109,9 @@ export async function rerunRequest(run: {
   if (!response.ok) throw new Error(await errorText(response));
   return `已触发 ${run.owner}/${run.repo} #${run.pullNumber} 的新一轮审查`;
 }
+
+/** 本轮指令输入框的共同措辞:三处重审入口挂同一句,人不必分别理解一遍。 */
+export const RUN_DIRECTIVE_PLACEHOLDER = "本轮指令(选填,如「只报 P0」「重点看并发」)";
 
 /**
  * 桌面左栏与窄视口那一行各挂一份注册入口,同一时刻只有一份真正占位——`display: none`
@@ -724,11 +732,14 @@ export function RerunPullRequest({
   onFeedback: (feedback: Feedback) => void;
 }) {
   const [pullNumber, setPullNumber] = useState("");
+  const [directive, setDirective] = useState("");
   const rerun = useMutation({
     mutationFn: rerunRequest,
     onSuccess: (text) => {
       onFeedback({ text, isError: false });
       setPullNumber("");
+      // 指令一并清空:它只属于刚发出去的那一轮,留在框里下次会被顺手带上。
+      setDirective("");
     },
     onError: (error: Error) => onFeedback({ text: error.message, isError: true }),
   });
@@ -740,7 +751,13 @@ export function RerunPullRequest({
       onFeedback({ text: "PR 编号必须是正整数。", isError: true });
       return;
     }
-    rerun.mutate({ owner: repo.owner, repo: repo.repo, pullNumber: number });
+    const trimmed = directive.trim();
+    rerun.mutate({
+      owner: repo.owner,
+      repo: repo.repo,
+      pullNumber: number,
+      ...(trimmed === "" ? {} : { directive: trimmed }),
+    });
   };
 
   return (
@@ -756,6 +773,18 @@ export function RerunPullRequest({
         className="w-[120px] min-w-0 max-sm:min-h-11"
         value={pullNumber}
         onChange={(event) => setPullNumber(event.target.value)}
+      />
+      <Text as="label" htmlFor="rerun-directive" className="sr-only">
+        本轮指令
+      </Text>
+      <TextField.Root
+        id="rerun-directive"
+        size={{ initial: "3", sm: "2" }}
+        placeholder={RUN_DIRECTIVE_PLACEHOLDER}
+        maxLength={500}
+        className="min-w-0 flex-1 basis-[220px] max-sm:min-h-11"
+        value={directive}
+        onChange={(event) => setDirective(event.target.value)}
       />
       <Button variant="soft" color="gray" size={{ initial: "4", sm: "2" }} type="submit" disabled={rerun.isPending}>
         {rerun.isPending ? "触发中…" : "重新运行"}

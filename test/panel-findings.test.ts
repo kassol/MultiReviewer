@@ -55,8 +55,8 @@ type RunRow = {
 };
 
 /**
- * 三条 Finding:两个文件各一条落在 diff 里(各自一条行级评论),第三条落在 diff 之外,
- * 只进 review 正文,没有评论 id。
+ * 两条 Finding:两个文件各一条落在 diff 里,各自一条行级评论。锚定收敛之后落库的每条
+ * Finding 都有行级评论承载(issue #224),没有载体的那一档只可能是升级前的历史行。
  */
 const reportingReviewers: NonNullable<
   NonNullable<Parameters<typeof startReadyPanelHarness>[1]>["buildReviewers"]
@@ -65,9 +65,56 @@ const reportingReviewers: NonNullable<
     scriptedReviewer(plan.spec.model, [
       { file: "src/answer.ts", line: 1, severity: "P1", category: "bug", description: "这里会越界" },
       { file: "src/other.ts", line: 1, severity: "P0", category: "security", description: "这里会注入" },
-      { file: "src/answer.ts", line: 99, severity: "P2", category: "design", description: "diff 之外的那条" },
     ]),
   );
+
+/**
+ * 一条升级前留下的历史行:只进过 review 正文,没有评论 id,因此没有可处置的载体。
+ * 锚定收敛之后这样的行不再新增,库里存量还在,处置端点仍要挡住它。
+ */
+function seedBodyFinding(dbPath: string): number {
+  const store = openStore(dbPath);
+  try {
+    const runId = store.startRun({
+      owner: HARNESS_PR.owner,
+      repo: HARNESS_PR.repo,
+      pullNumber: HARNESS_PR.number,
+      headSha: "legacy-head",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      changedFiles: 1,
+      changedLines: 1,
+      batchCount: 1,
+      reviewerPins: [],
+    });
+    store.finishRun(runId, {
+      finishedAt: "2026-08-01T00:00:01.000Z",
+      durationMs: 1,
+      failed: false,
+      outcomes: [],
+      findings: [
+        {
+          file: "src/answer.ts",
+          line: 99,
+          title: "diff 之外的那条",
+          severity: "P2",
+          category: "design",
+          description: "diff 之外的那条",
+          attributions: [
+            { model: HARNESS_SPEC.model, severity: "P2", category: "design", description: "diff 之外的那条" },
+          ],
+          groupIndex: 0,
+          disposition: "unknown",
+          placement: "body",
+          fingerprint: "legacy-fingerprint",
+        },
+      ],
+      verdicts: [],
+    });
+    return runId;
+  } finally {
+    store.close();
+  }
+}
 
 /** 一个已注册仓库,跑完一轮,并把三条 Finding 落库。 */
 async function harnessWithRun(): Promise<PanelHarness> {
@@ -117,11 +164,11 @@ test("详情投影列出 Finding 全部字段与 Forge 评论链接", async () =
   assert.equal(inline!.disposedAt, null);
   assert.equal(inline!.note, null);
 
-  // diff 之外的那条只进正文,没有可处置的载体。
-  const fallback = run!.findings.find((finding) => finding.line === 99);
-  assert.equal(fallback!.placement, "body");
-  assert.equal(fallback!.commentId, null);
-  assert.equal(fallback!.commentHtmlUrl, null);
+  // 本轮的每条都有行级评论承载:锚不进 diff 的在编排层就被丢弃了(issue #224)。
+  assert.deepEqual(
+    run!.findings.map((finding) => finding.placement),
+    run!.findings.map(() => "inline"),
+  );
 });
 
 test("面板 resolve:Forge 收到 resolve,库里记处置、操作人、时间与备注", async () => {
@@ -165,9 +212,12 @@ test("面板 unresolve:Forge 收到 unresolve,处置回未处置,备注保留", 
   assert.equal((await runs(h))[0]!.resolved, 0);
 });
 
-test("fallback Finding 没有行级评论:处置被拒,Forge 一个调用都不发", async () => {
+test("没有行级评论承载的历史 Finding:处置被拒,Forge 一个调用都不发", async () => {
   const h = await harnessWithRun();
-  const fallback = (await runs(h))[0]!.findings.find((finding) => finding.commentId === null)!;
+  seedBodyFinding(h.db.path);
+  const fallback = (await runs(h))
+    .flatMap((run) => run.findings)
+    .find((finding) => finding.commentId === null)!;
 
   const response = await h.api("POST", `/findings/${fallback.id}/resolve`, {});
   assert.equal(response.status, 409);

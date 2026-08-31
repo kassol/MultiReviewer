@@ -5,7 +5,13 @@
 
 export type LineRange = { start: number; end: number };
 
-export type DiffRanges = ReadonlyMap<string, readonly LineRange[]>;
+/**
+ * 每个文件在新文件一侧的可评论行区间,按仓库相对路径索引。
+ *
+ * 用普通对象而非 Map:它要随 Reviewer 请求跨进程传给子进程做锚定校验(issue #224),
+ * 而 IPC 走的是 JSON 序列化,Map 到那头会变成一个空对象。
+ */
+export type DiffRanges = Readonly<Record<string, readonly LineRange[]>>;
 
 const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/;
 
@@ -24,6 +30,8 @@ function unquotePath(raw: string): string {
 }
 
 export function parseDiffRanges(diff: string): DiffRanges {
+  // 先收在 Map 里:路径由 diff 给出,`ranges["__proto__"] = …` 这样的赋值在普通对象上
+  // 改的是原型而不是自己的成员,那个文件的区间会静默丢掉。
   const ranges = new Map<string, LineRange[]>();
   let current: LineRange[] | undefined;
   let inHunk = false;
@@ -63,7 +71,7 @@ export function parseDiffRanges(diff: string): DiffRanges {
     current.push({ start, end: start + count - 1 });
   }
 
-  return ranges;
+  return Object.fromEntries(ranges);
 }
 
 export function isInDiff(
@@ -71,9 +79,9 @@ export function isInDiff(
   file: string,
   line: number,
 ): boolean {
-  const fileRanges = ranges.get(file);
-  if (fileRanges === undefined) return false;
-  return fileRanges.some((r) => line >= r.start && line <= r.end);
+  // 经 IPC 传过来的那一份是 JSON.parse 出的普通对象,直接下标会读到原型上的成员。
+  if (!Object.hasOwn(ranges, file)) return false;
+  return ranges[file]!.some((r) => line >= r.start && line <= r.end);
 }
 
 /**

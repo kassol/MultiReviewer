@@ -82,7 +82,7 @@ test("Gitea 实现对真实 pull request 完成整条发布与处置链路", { s
   );
   // 位置算完就放掉这一份一次性工作树,下面的 runReview 自己再派生一份。
   await worktree.release();
-  const [file, fileRanges] = [...ranges].find(([, r]) => r.length > 0) ?? [];
+  const [file, fileRanges] = Object.entries(ranges).find(([, r]) => r.length > 0) ?? [];
   assert.ok(file !== undefined && fileRanges !== undefined, "PR 的 diff 中没有可评论的位置");
 
   const line = fileRanges[0]!.start;
@@ -103,7 +103,6 @@ test("Gitea 实现对真实 pull request 完成整条发布与处置链路", { s
     dbPath: join(cacheDir, "multireviewer.db"),
   });
   assert.equal(result.inlineCount, 1);
-  assert.equal(result.fallbackCount, 0);
 
   const posted = (await forge.listReviewComments(ref)).filter((c) =>
     c.body.includes(MARKER),

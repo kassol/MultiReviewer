@@ -75,20 +75,18 @@ function windowFingerprint(lines: readonly string[], line: number): string | und
  *
  * 两个平台的 markdown 渲染都会剥掉 HTML 注释,人看不见;API 读回的是正文原文,锚点还在。
  *
- * `file` 只有 review 正文里的锚点才带:匹配的键是「文件 + 指纹」,而行级评论的路径由
- * API 一并读回,review 正文没有这个来源,只能自己带上。
+ * 只埋在行级评论上:锚定收敛之后 Finding 一律是行级评论(issue #224),路径由 API 一并
+ * 读回,锚点自己不必带。历史 review 正文里那种另带路径的锚点仍要认得出,解析那一侧留着。
  */
-export function fingerprintAnchor(fingerprint: string, file?: string): string {
-  return file === undefined
-    ? `<!-- multireviewer:${fingerprint} -->`
-    : `<!-- multireviewer:${fingerprint}:${file} -->`;
+export function fingerprintAnchor(fingerprint: string): string {
+  return `<!-- multireviewer:${fingerprint} -->`;
 }
 
 /**
  * 读回正文里的全部锚点。没有锚点即那段正文不是本工具发的,不参与匹配。
  *
- * 取全部而不是第一个:一次 review 的正文里可能有多个 fallback 块,各带一个锚点,
- * 只认第一个会让其余的 Finding 每轮重发。
+ * 取全部而不是第一个:锚定收敛之前发出去的 review 正文里可能有多个 diff 外条目,各带
+ * 一个锚点,只认第一个会让其余的 Finding 每轮重发。
  */
 export function parseFingerprintAnchors(
   body: string,

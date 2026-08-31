@@ -200,7 +200,7 @@ test("回填以 Forge 最新状态为准:resolve 后又 unresolve,覆盖回 unre
   assert.deepEqual(placements, ["inline", "inline", "inline"]);
 });
 
-test("每条落库的 finding 都带来源类型:行级评论 inline,正文 fallback 是 body", async () => {
+test("锚不进 hunk 的那条被丢弃,落库的每条来源类型都是 inline", async () => {
   const { db, forge, deps } = setup();
 
   await runReview(EVENT, {
@@ -208,20 +208,18 @@ test("每条落库的 finding 都带来源类型:行级评论 inline,正文 fall
     reviewers: [
       scriptedReviewer("model-a", [
         FINDING,
-        // 行距超过跨模型去重容差,两条不会被合并;这条落在 diff 之外,退化进正文。
+        // 行距超过跨模型去重容差,两条不会被合并;这条落在 diff 之外,丢弃(issue #224)。
         { ...FINDING, line: OUT_OF_DIFF_LINE, description: "mul 的收尾没有校验" },
       ]),
     ],
   });
 
   assert.equal(forge.createdReviews[0]!.comments.length, 1);
+  assert.doesNotMatch(forge.createdReviews[0]!.body, /mul 的收尾没有校验/);
   const rows = query(db.path, "SELECT line, placement FROM finding ORDER BY id");
   assert.deepEqual(
     rows.map((row) => ({ line: Number(row["line"]), placement: String(row["placement"]) })),
-    [
-      { line: FINDING.line, placement: "inline" },
-      { line: OUT_OF_DIFF_LINE, placement: "body" },
-    ],
+    [{ line: FINDING.line, placement: "inline" }],
   );
 });
 
@@ -376,108 +374,100 @@ test("发布的行级评论正文带指纹锚点,锚点与落库的指纹一致"
   assert.equal(anchor[1], query(db.path, "SELECT fingerprint FROM finding")[0]!["fingerprint"]);
 });
 
-test("退化进 review 正文的 Finding 带指纹锚点,锚点里另有文件路径", async () => {
-  const { db, forge, deps } = setup();
+/**
+ * 锚定收敛之前发出去的那种 review 正文:diff 外的 Finding 只活在正文里,锚点自带文件
+ * 路径(issue #224 之后不再产生,存量 PR 上还挂着)。跨轮匹配仍要认得出它。
+ */
+function legacyBody(fingerprints: readonly string[]): string {
+  return [
+    "MultiReviewer",
+    "",
+    "以下 Finding 的行号落在本次 Review Range 的 diff 之外,无法作为行级评论呈现:",
+    ...fingerprints.map((fingerprint) => `\n<!-- multireviewer:${fingerprint}:src/calc.js -->`),
+  ].join("\n");
+}
 
-  await runReview(EVENT, {
-    ...deps,
-    reviewers: [scriptedReviewer("model-a", [{ ...FINDING, line: OUT_OF_DIFF_LINE }])],
-  });
+/** 这一轮落库的全部指纹,按落库顺序。 */
+function fingerprints(dbPath: string): string[] {
+  return query(dbPath, "SELECT fingerprint FROM finding ORDER BY id").map((row) =>
+    String(row["fingerprint"]),
+  );
+}
 
-  const review = forge.createdReviews[0]!;
-  assert.deepEqual(review.comments, [], "第 11 行本该落在 diff 之外");
-  const anchor = BODY_ANCHOR.exec(review.body);
-  assert.ok(anchor !== null, "正文里的 fallback 块没有指纹锚点");
-  assert.equal(anchor[2], "src/calc.js");
-  assert.equal(anchor[1], query(db.path, "SELECT fingerprint FROM finding")[0]!["fingerprint"]);
-});
-
-test("上一轮退化进正文的 Finding,本轮匹配成功后折叠,不再全文重发", async () => {
+test("上一轮只活在 review 正文里的 Finding,本轮匹配成功后折叠,不再全文重发", async () => {
   const { repo, db, forge, deps } = setup();
-  const reviewers = [
-    scriptedReviewer("model-a", [{ ...FINDING, line: OUT_OF_DIFF_LINE }]),
-  ];
 
-  await runReview(EVENT, { ...deps, reviewers });
-  // 把上一轮真的发布出去的正文,当成 Forge 上的既有 review 喂给下一轮。
-  forge.existingReviewBodies.push(forge.createdReviews[0]!.body);
-  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": DISTANT_CHANGE });
+  await runReview(EVENT, deps);
+  // 上一轮的记录只在正文里:锚点带路径,没有行级评论可读 resolve 状态。
+  forge.existingReviewBodies.push(legacyBody(fingerprints(db.path)));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
-  await runReview(EVENT, { ...deps, reviewers });
+  await runReview(EVENT, deps);
 
   const second = forge.createdReviews[1]!;
-  assert.deepEqual(second.comments, []);
-  assert.doesNotMatch(second.body, /diff 之外/, "diff 外的同一条 Finding 又被全文重发");
+  assert.deepEqual(second.comments, [], "同一条 Finding 又被当成新的报了一遍");
   // 正文里的锚点读不到 resolve 状态,匹配上一律按未处置折叠。
   assert.match(second.body, /尚未处置/);
-  assert.match(second.body, /src\/calc\.js:11/);
+  assert.match(second.body, /src\/calc\.js:6/);
   assert.match(second.body, /sub 多减了 1/);
 
   assert.deepEqual(latestDispositions(db.path), ["unknown", "unresolved"]);
 });
 
 test("折叠过一轮之后仍不重发:第三轮认的是第一轮正文里的锚点", async () => {
-  const { repo, forge, deps } = setup();
-  const reviewers = [
-    scriptedReviewer("model-a", [{ ...FINDING, line: OUT_OF_DIFF_LINE }]),
-  ];
+  const { repo, db, forge, deps } = setup();
 
   // 折叠段本身不埋锚点(`findingLine` 只写一行摘要),第二轮的正文里因此没有锚点。
   // 这条链靠的是 `listReviewBodies` 返回 PR 上全部历史 review 而非最新一条:第三轮
   // 认的是第一轮那条正文。改成只读最新一条,这个 Finding 会从第三轮起每轮重发。
-  await runReview(EVENT, { ...deps, reviewers });
-  forge.existingReviewBodies.push(forge.createdReviews[0]!.body);
+  await runReview(EVENT, deps);
+  forge.existingReviewBodies.push(legacyBody(fingerprints(db.path)));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+
+  await runReview(EVENT, deps);
+  forge.existingReviewBodies.push(forge.createdReviews[1]!.body);
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": DISTANT_CHANGE });
 
-  await runReview(EVENT, { ...deps, reviewers });
-  forge.existingReviewBodies.push(forge.createdReviews[1]!.body);
-  forge.pullRequest.headSha = repo.pushToHead({
-    "src/calc.js": HEAD.replace("return a + b;", "return a + b + 1;"),
-  });
-
-  await runReview(EVENT, { ...deps, reviewers });
+  await runReview(EVENT, deps);
 
   const third = forge.createdReviews[2]!;
-  assert.doesNotMatch(third.body, /diff 之外/, "折叠过一轮的 Finding 第三轮又被全文重发");
+  assert.deepEqual(third.comments, [], "折叠过一轮的 Finding 第三轮又被当成新的报出");
   assert.match(third.body, /尚未处置/);
 });
 
 test("一条正文里的多个锚点全部参与匹配", async () => {
-  const { repo, forge, deps } = setup();
+  const { repo, db, forge, deps } = setup();
   const reviewers = [
     scriptedReviewer("model-a", [
-      { ...FINDING, line: 1, description: "add 没有参数校验" },
-      { ...FINDING, line: OUT_OF_DIFF_LINE },
+      { ...FINDING, line: 3, description: "add 的收尾没有校验" },
+      FINDING,
     ]),
   ];
 
   await runReview(EVENT, { ...deps, reviewers });
-  forge.existingReviewBodies.push(forge.createdReviews[0]!.body);
-  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
+  forge.existingReviewBodies.push(legacyBody(fingerprints(db.path)));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
   await runReview(EVENT, { ...deps, reviewers });
 
   const second = forge.createdReviews[1]!;
-  assert.doesNotMatch(second.body, /diff 之外/, "一条正文里的两个锚点只认了第一个");
+  assert.deepEqual(second.comments, [], "一条正文里的两个锚点只认了第一个");
   assert.match(second.body, /尚未处置的 Finding\(2 条\)/);
 });
 
 test("人写的 review 正文不带锚点,不参与匹配", async () => {
   const { db, forge, deps } = setup();
-  forge.existingReviewBodies.push("这个 PR 我看过了,mul 那段没问题");
+  forge.existingReviewBodies.push("这个 PR 我看过了,sub 那段没问题");
 
-  await runReview(EVENT, {
-    ...deps,
-    reviewers: [scriptedReviewer("model-a", [{ ...FINDING, line: OUT_OF_DIFF_LINE }])],
-  });
+  await runReview(EVENT, deps);
 
   const review = forge.createdReviews[0]!;
-  assert.match(review.body, /diff 之外/, "人写的 review 正文把本轮 Finding 折叠掉了");
+  assert.equal(review.comments.length, 1, "人写的 review 正文把本轮 Finding 折叠掉了");
   assert.doesNotMatch(review.body, /<details>/);
   assert.deepEqual(latestDispositions(db.path), ["unknown"]);
 });
 
-test("行级 Finding 记下 Forge 的评论 id 与链接,正文 fallback 两项为空", async () => {
+test("行级 Finding 记下 Forge 的评论 id 与链接,丢弃的那条根本不落库", async () => {
   const { db, forge, deps } = setup();
 
   await runReview(EVENT, {
@@ -485,7 +475,7 @@ test("行级 Finding 记下 Forge 的评论 id 与链接,正文 fallback 两项�
     reviewers: [
       scriptedReviewer("model-a", [
         FINDING,
-        // 行距超过跨模型去重容差,两条不会被合并;这条落在 diff 之外,退化进正文。
+        // 行距超过跨模型去重容差,两条不会被合并;这条落在 diff 之外,丢弃(issue #224)。
         { ...FINDING, line: OUT_OF_DIFF_LINE, description: "mul 的收尾没有校验" },
       ]),
     ],
@@ -504,7 +494,6 @@ test("行级 Finding 记下 Forge 的评论 id 与链接,正文 fallback 两项�
   }));
   assert.deepEqual(rows, [
     { line: FINDING.line, commentId: published.id, commentHtmlUrl: published.htmlUrl },
-    { line: OUT_OF_DIFF_LINE, commentId: null, commentHtmlUrl: null },
   ]);
 });
 
@@ -887,15 +876,15 @@ test("本轮那条讲的不是同一回事:不承接,旧行不动", async () => 
   assert.doesNotMatch(forge.createdReviews[1]!.comments[0]!.body, /延续自/);
 });
 
-test("承接的新位置落在 diff 之外:不承接,旧行不动", async () => {
+test("承接的新位置落在 diff 之外:那条先被丢弃,不承接,旧行不动", async () => {
   const { repo, db, forge, deps } = setup();
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
 
-  // 判仍在、指纹也变了、内容也对得上,但本轮那条落在 diff 之外:它自己只能退化进
-  // review 正文,没有 resolve 载体。承接它等于旧评论被 resolve 掉、新位置却接不住。
+  // 判仍在、指纹也变了、内容也对得上,但本轮那条落在 diff 之外:锚定收敛把它丢掉了
+  // (issue #224),没有东西可以承接。承接一条接不住的位置等于旧评论白被 resolve。
   await runReview(EVENT, {
     ...deps,
     reviewers: [
@@ -906,10 +895,10 @@ test("承接的新位置落在 diff 之外:不承接,旧行不动", async () => 
   });
 
   assert.deepEqual(forge.resolvedIds, [], "diff 之外的那条却把旧评论 resolve 了");
-  assert.deepEqual(latestDispositions(db.path), ["unresolved", "unknown"]);
-  assert.deepEqual(continuedFrom(db.path), [null, null]);
-  assert.doesNotMatch(forge.createdReviews[1]!.body, /延续自/);
-  assert.deepEqual(forge.createdReviews[1]!.comments, [], "diff 之外的那条不该发行级评论");
+  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
+  assert.deepEqual(continuedFrom(db.path), [null]);
+  // 一条结论都没剩下,这一轮无话可说,连 review 都不发。
+  assert.equal(forge.createdReviews.length, 1);
 });
 
 /**
@@ -1018,10 +1007,17 @@ test("旧位置的代码没改动:复核给的新位置一并忽略,不产生延
   assert.equal(forge.createdReviews.length, 1, "没有该发的东西却又发了一轮 review");
 });
 
-/** 第一轮里退化进 review 正文的那条:它指的代码不会被本轮的改动碰到,下一轮照旧折叠。 */
+/**
+ * 两处改动的两端:sub 那处两轮之间又改了一次,mul 那处两轮都一样。第二轮的 diff 因此
+ * 覆盖 3..13 行,mul 那条既落在 hunk 内(有行级评论承载)、指纹又没变(照旧折叠)。
+ */
+const HEAD_TWO_SPOTS = HEAD.replace("return a * b;", "return a * b * 2;");
+const SECOND_HEAD_TWO_SPOTS = SAME_LINE_CHANGE.replace("return a * b;", "return a * b * 2;");
+
+/** mul 的收尾行。它靠 mul 那处改动进了 hunk,指纹又不被下一轮碰到,下一轮照旧折叠。 */
 const MUL_FINDING = {
   ...FINDING,
-  line: OUT_OF_DIFF_LINE,
+  line: 11,
   description: "mul 的结果没有做溢出保护",
 };
 
@@ -1034,15 +1030,15 @@ const UNRELATED_FINDINGS = [
 test("合成的那条与本轮多条新报并存:「延续自」只落在承接它的那条评论上", async () => {
   const { repo, db, forge, deps } = setup();
 
-  // 第一轮报两条:sub 那条在 diff 内发行级评论,mul 那条退化进 review 正文。
+  // 第一轮报两条,两条都在 diff 内,各发一条行级评论。
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": HEAD_TWO_SPOTS });
   await runReview(EVENT, {
     ...deps,
     reviewers: [scriptedReviewer("model-a", [FINDING, MUL_FINDING])],
   });
   const old = forge.publishedComments[0]!;
   forge.existingComments.push(...asPublished(forge, false));
-  forge.existingReviewBodies.push(forge.createdReviews[0]!.body);
-  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SECOND_HEAD_TWO_SPOTS });
 
   // 第二轮:mul 那条代码未改动照旧折叠,另报两条无关的新 Finding,sub 那条只回复核结论
   // 并带新位置——合成的那条接在本轮之后,合并组序号最大。
@@ -1085,7 +1081,8 @@ test("合成的那条与本轮多条新报并存:「延续自」只落在承接�
   assert.match(second.body, /尚未处置/);
   assert.deepEqual(latestDispositions(db.path), [
     "continued",
-    "unknown",
+    // 第一轮 mul 那条有行级评论承载,回填按 Forge 上的未 resolve 状态写回。
+    "unresolved",
     "unknown",
     "unknown",
     "unresolved",
@@ -1156,9 +1153,10 @@ const TWO_FINDINGS = [
   { ...FINDING, title: "减法多减一" },
   {
     ...FINDING,
-    line: OUT_OF_DIFF_LINE,
+    // -U3 的 hunk 覆盖 3..9 行,这一行同样锚得进去。
+    line: 9,
     title: "收尾没校验",
-    description: "mul 的收尾没有校验",
+    description: "mul 的函数头没有校验",
   },
 ];
 
@@ -1188,12 +1186,12 @@ test("下一轮把本阶段历史注入 Reviewer:未处置的带正文与备注,
     {
       id: 2,
       file: "src/calc.js",
-      line: OUT_OF_DIFF_LINE,
+      line: 9,
       title: "收尾没校验",
       disposition: "unknown",
       severity: "P0",
       category: "bug",
-      description: "mul 的收尾没有校验",
+      description: "mul 的函数头没有校验",
     },
   ]);
 });

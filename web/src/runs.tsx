@@ -48,6 +48,8 @@ export type RunItem = {
   triggeredBy: string | null;
   /** 这一轮归属的范围审查；null 即由 pull request 触发。 */
   rangeReviewId: number | null;
+  /** 发起这一轮时附的本轮指令(issue #225);null 即没有附。只属于这一轮。 */
+  directive: string | null;
   finishedAt: string | null;
   failed: boolean;
   /** 一行一个参与本轮的模型。`failure` 非 null 即这个模型这轮失败了(节选文本)。 */
@@ -189,10 +191,14 @@ export function StageCounts({ stage }: { stage: StageItem }) {
  * 范围审查阶段的重跑(issue #176):在这个阶段当前的比较项上再跑一轮,与 pull request
  * 那条走同一个端点,比较项由服务端从记录里取。
  */
-export async function rerunRangeReviewRequest(rangeReviewId: number): Promise<string> {
+export async function rerunRangeReviewRequest(
+  rangeReviewId: number,
+  /** 本轮指令(issue #225),非必填:留空即不带这一格。 */
+  directive?: string,
+): Promise<string> {
   const response = await api("/rerun", {
     method: "POST",
-    body: JSON.stringify({ rangeReviewId }),
+    body: JSON.stringify({ rangeReviewId, ...(directive === undefined ? {} : { directive }) }),
   });
   if (!response.ok) throw new Error(await errorText(response));
   return "已在当前比较项上触发新一轮审查";

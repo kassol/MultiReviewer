@@ -26,6 +26,8 @@ export type RunTraceKind =
   | "batch_started"
   | "batch_finished"
   | "finding_merged"
+  /** 落点锚不进本轮 diff、被丢弃的一条 Finding(issue #224)。 */
+  | "finding_discarded"
   | "review_posted"
   | "run_finished";
 

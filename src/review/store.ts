@@ -620,6 +620,8 @@ const ADD_COLUMNS = [
   "ALTER TABLE review_rule ADD COLUMN type TEXT NOT NULL DEFAULT 'rule'",
   "ALTER TABLE rule_draft_item ADD COLUMN type TEXT NOT NULL DEFAULT 'rule'",
   "ALTER TABLE rule_proposal ADD COLUMN type TEXT NOT NULL DEFAULT 'rule'",
+  // 本轮指令(CONTEXT.md,issue #225)。发起重审时附的一次性要求,只属于这一轮。
+  "ALTER TABLE review_run ADD COLUMN directive TEXT",
 ];
 
 /**
@@ -745,6 +747,11 @@ export type RunMeta = {
    * 没有规则注入,回看历史轮次时也就知道当时没有规则可依。
    */
   ruleSetVersion?: number | null;
+  /**
+   * 本轮指令(CONTEXT.md,issue #225)。发起重审时评审方附的一次性要求;省略或 null 即
+   * 这一轮没有指令。只落在这一行上,下一轮不继承——它就是「只作用于那一轮」的落点。
+   */
+  directive?: string | null;
 };
 
 export type OutcomeRecord = {
@@ -1321,6 +1328,8 @@ export type RunListItem = {
   triggeredBy: string | null;
   /** 这一轮归属的范围审查;null 即 PR 触发。时间流据此区分两类来源。 */
   rangeReviewId: number | null;
+  /** 发起这一轮时附的本轮指令(CONTEXT.md,issue #225);null 即没有附。 */
+  directive: string | null;
   failed: boolean;
   models: {
     model: string;
@@ -4233,8 +4242,8 @@ export function openStore(dbPath: string): Store {
             `INSERT INTO review_run
                (owner, repo, pull_number, head_sha, title, range_review_id, pr_state,
                 triggered_by, started_at, changed_files, changed_lines, batch_count,
-                rule_set_version)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                rule_set_version, directive)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             meta.owner,
@@ -4250,6 +4259,7 @@ export function openStore(dbPath: string): Store {
             meta.changedLines,
             meta.batchCount,
             meta.ruleSetVersion ?? null,
+            meta.directive ?? null,
           );
         const runId = Number(result.lastInsertRowid);
         const insertPin = db.prepare(
@@ -4978,7 +4988,7 @@ export function openStore(dbPath: string): Store {
       const runs = db
         .prepare(
           `SELECT id, owner, repo, pull_number, head_sha, title, range_review_id, triggered_by,
-                  started_at, finished_at, failed, input_tokens, output_tokens,
+                  directive, started_at, finished_at, failed, input_tokens, output_tokens,
                   cache_read_tokens, cache_write_tokens, total_tokens
              FROM review_run ${where}
             ORDER BY id DESC LIMIT ?`,
@@ -5183,6 +5193,7 @@ export function openStore(dbPath: string): Store {
             run["triggered_by"] === null ? null : String(run["triggered_by"]),
           rangeReviewId:
             run["range_review_id"] === null ? null : Number(run["range_review_id"]),
+          directive: run["directive"] === null ? null : String(run["directive"]),
           startedAt: String(run["started_at"]),
           finishedAt: run["finished_at"] === null ? null : String(run["finished_at"]),
           failed: Number(run["failed"]) === 1,

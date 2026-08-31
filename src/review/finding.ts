@@ -1,3 +1,5 @@
+import type { DiffRanges } from "./position.ts";
+
 /**
  * Finding 的优先级,P0 最高。
  *
@@ -289,6 +291,14 @@ export type ReviewerInput = {
   range: ReviewRange;
   worktreePath: string;
   /**
+   * 本轮 Review Range 的 diff 在新文件一侧的可评论行区间(issue #224)。Finding 与复核
+   * 的新位置都必须锚在其中,锚不进的当场打回让模型重锚。
+   *
+   * 给的是整个 Review Range 的那一份,不按批次裁剪:落点的判据是「这次改动碰过这一行」,
+   * 与这一批分到哪几个文件无关,裁剪只会让跨批次的合法落点被误拒。
+   */
+  commentable: DiffRanges;
+  /**
    * 本审查阶段已经报过的 Finding(ADR 0016),每一批都给同一份:它说的是这个阶段的
    * 历史,与本批审哪些文件无关。首轮为空数组。
    */
@@ -310,6 +320,12 @@ export type ReviewerInput = {
    * 事实段,与升级前逐字一致。
    */
   facts?: readonly ProjectFact[];
+  /**
+   * 本轮指令(CONTEXT.md,issue #225):发起重审时评审方附的一次性要求,每一批给同一份
+   * ——它说的是这一轮的要求,与本批审哪些文件无关。没有附即不传,prompt 因此不渲染
+   * 指令段,与没有这一票时逐字一致。
+   */
+  directive?: string;
   /**
    * 收这个 Reviewer 的过程事件(issue #171),编排层一定传,一条即写一条轨迹。
    * 声明成可选是给直接调 `review` 的调用方留的余地:不看过程的地方不必造一个空回调。

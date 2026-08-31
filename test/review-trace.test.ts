@@ -170,6 +170,41 @@ test("轮次级编排事件按顺序落库:工作副本、批次起止、评论�
   assert.deepEqual(runEvents[4]!.payload, { failed: false, findingCount: 1 });
 });
 
+test("锚不进 diff hunk 的 Finding 被丢弃,轨迹留下一条被拒记录", async () => {
+  const { cache, db, forge } = setup();
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [
+        AT_LINE_2,
+        // 改的是第 2 行,-U3 的 hunk 覆盖 1..5 行;mul 的收尾落在变更之外。
+        { ...AT_LINE_2, line: 7, title: "mul 没有溢出保护" },
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  const discarded = trace(db.path).filter((e) => e.kind === "finding_discarded");
+  assert.equal(discarded.length, 1);
+  assert.equal(discarded[0]!.scope, "run", "丢弃是编排层的事,挂在轮次上");
+  assert.deepEqual(discarded[0]!.payload, {
+    file: "src/m.js",
+    line: 7,
+    title: "mul 没有溢出保护",
+    reviewers: ["model-a"],
+  });
+
+  // 丢掉的那条不进 review:既不作行级评论,也不写进正文。
+  const review = forge.createdReviews[0]!;
+  assert.deepEqual(
+    review.comments.map((comment) => comment.line),
+    [2],
+  );
+  assert.doesNotMatch(review.body, /mul 没有溢出保护/);
+});
+
 test("两个模型报同一行:一条合并事件,成员齐全,判据是同一行", async () => {
   const { cache, db, forge } = setup();
 

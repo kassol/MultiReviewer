@@ -109,10 +109,13 @@ const PRIOR_LINES = [
   "}",
 ];
 
+/** 这几个用例只看 snippet 那一道,可评论行区间给到覆盖整段。 */
+const PRIOR_RANGES = { "src/history.ts": [{ start: 1, end: 3 }] };
+
 test("复核结论的新位置锚得上时不打回,给出校正后的行号", () => {
   // 模型报的行号偏了一行,snippet 抄得对,与 report_finding 同一道校正。
   assert.deepEqual(
-    anchorVerdict(PRIOR_LINES, {
+    anchorVerdict(PRIOR_LINES, PRIOR_RANGES, {
       file: "src/history.ts",
       line: 3,
       snippet: "return history.slice(-count);",
@@ -122,7 +125,7 @@ test("复核结论的新位置锚得上时不打回,给出校正后的行号", (
 });
 
 test("复核结论的新位置锚不上时打回,措辞点名文件并要求重给行号", () => {
-  const result = anchorVerdict(PRIOR_LINES, {
+  const result = anchorVerdict(PRIOR_LINES, PRIOR_RANGES, {
     file: "src/history.ts",
     line: 2,
     snippet: "return history.slice(count);",
@@ -135,7 +138,7 @@ test("复核结论的新位置锚不上时打回,措辞点名文件并要求重�
 });
 
 test("复核结论带位置但文件读不出来时同样打回", () => {
-  const result = anchorVerdict(undefined, {
+  const result = anchorVerdict(undefined, PRIOR_RANGES, {
     file: "src/gone.ts",
     line: 2,
     snippet: "return history.slice(-count);",
@@ -146,7 +149,7 @@ test("复核结论带位置但文件读不出来时同样打回", () => {
 });
 
 test("复核结论没抄 snippet 时打回,不拿裸行号当位置", () => {
-  const result = anchorVerdict(PRIOR_LINES, {
+  const result = anchorVerdict(PRIOR_LINES, PRIOR_RANGES, {
     file: "src/history.ts",
     line: 2,
     snippet: undefined,
@@ -299,4 +302,27 @@ test("模型自报的规则标识经服务端校验:本轮注入过的留下,对
 
   // 规则标识不参与 Finding 的取舍:对不上只置空,条目本身照收。
   assert.equal(normalizeFinding(RAW, "m", injected).ok, true);
+});
+
+test("不给本轮指令时不渲染指令段,prompt 与这一票之前逐字一致", () => {
+  const without = reviewPrompt({ range: PROMPT_RANGE, history: [] });
+  const empty = reviewPrompt({ range: PROMPT_RANGE, history: [], directive: "" });
+
+  assert.equal(empty, without);
+  assert.equal(/directive/i.test(without), false);
+});
+
+test("本轮指令自成一段,标明一次性、优先于常规范围、不改变证据标准", () => {
+  const prompt = reviewPrompt({
+    range: PROMPT_RANGE,
+    history: [],
+    directive: "这一轮只报 P0,重点看并发",
+  });
+
+  assert.match(prompt, /这一轮只报 P0,重点看并发/);
+  // 三样声明缺一不可:少了优先级,指令与常规范围冲突时模型不知道听谁的;少了证据标准
+  // 那一句,「重点看并发」会被读成「并发那块可以放宽取证」。
+  assert.match(prompt, /this review round/i);
+  assert.match(prompt, /takes priority/i);
+  assert.match(prompt, /evidence/i);
 });

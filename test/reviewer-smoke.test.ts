@@ -35,6 +35,15 @@ const skip =
 
 const FIXTURE = fileURLToPath(new URL("./fixture/reviewer-smoke", import.meta.url));
 
+/**
+ * 夹具不是一个真实的 diff,这里把两个文件整篇算作可评论行区间(issue #224):这几个用例
+ * 验的是工具契约本身,不是锚定收敛——收敛的口径由 `anchor.test.ts` 与编排层用例把关。
+ */
+const SMOKE_COMMENTABLE = {
+  "src/db.js": [{ start: 1, end: 19 }],
+  "src/pagination.js": [{ start: 1, end: 15 }],
+};
+
 const SEVERITIES = new Set(["P0", "P1", "P2"]);
 const CATEGORIES = new Set(["security", "bug", "maintainability", "design"]);
 
@@ -90,6 +99,7 @@ test("真实模型经 report_finding 产出结构完整的 Finding", { skip }, a
   const outcome = await reviewer.review({
     range: { baseSha: "HEAD~1", headSha: "HEAD", files: ["src/db.js", "src/pagination.js"] },
     worktreePath: FIXTURE,
+    commentable: SMOKE_COMMENTABLE,
     history: [],
     rules: [],
     onEvent: (event) => events.push(event),
@@ -148,6 +158,7 @@ test("真实模型经复核工具对已修好的历史 Finding 回已修", { ski
   const outcome = await reviewer.review({
     range: { baseSha: "HEAD~1", headSha: "HEAD", files: ["src/db.js"] },
     worktreePath: FIXTURE,
+    commentable: SMOKE_COMMENTABLE,
     history: [PRIOR],
   });
 

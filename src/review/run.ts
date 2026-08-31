@@ -129,6 +129,12 @@ export type ReviewRunDeps = {
   rules?: readonly ReviewRule[];
   /** 本轮冻结的那一版项目事实全体(issue #221)。不传即没有事实可依。 */
   facts?: readonly ProjectFact[];
+  /**
+   * 本轮指令(CONTEXT.md,issue #225):发起重审时评审方附的一次性要求。不传即没有。
+   * 它随这一轮落库、注入这一轮的每个 Reviewer,下一轮由调用方决定要不要再给一次——
+   * 编排层不从库里读上一轮的,那正是「只作用于那一轮」的实现。
+   */
+  directive?: string;
 };
 
 export type ReviewRunResult = {
@@ -141,8 +147,6 @@ export type ReviewRunResult = {
   failed: boolean;
   /** 发布为行级评论的 Finding 条数。 */
   inlineCount: number;
-  /** 行号落不到 diff 内、退化为 PR 级评论的 Finding 条数。 */
-  fallbackCount: number;
 };
 
 /** 上一轮已提出、本轮匹配上的 Finding。它不再发行级评论,折进 review 正文。 */
@@ -150,15 +154,6 @@ type CarriedFinding = {
   finding: MergedFinding;
   /** 上一轮那条评论是否已被 resolve。 */
   resolved: boolean;
-};
-
-/** 行号落在 diff 之外、退化进 review 正文的 Finding,连同它的指纹。 */
-type FallbackFinding = {
-  finding: MergedFinding;
-  /** 指纹算不出时正文里没有锚点可埋,这条下一轮匹配不上。 */
-  fingerprint: string | undefined;
-  /** 它承接的那条旧评论的地址(CONTEXT.md 已延续),没有承接即 undefined。 */
-  continuedFrom: string | undefined;
 };
 
 /**
@@ -212,26 +207,6 @@ function findingBody(
   return lines.join("\n");
 }
 
-/** diff 外的 Finding 没有行级评论承载,正文里的这一块就是它的完整呈现。 */
-function fallbackBlock({ finding, fingerprint, continuedFrom }: FallbackFinding): string[] {
-  const lines = [
-    "",
-    `\`${finding.file}:${finding.line}\` ${findingHeading(finding)}`,
-    ...findingSections(finding),
-  ];
-
-  // 延续的新位置也可能落在 diff 之外:那一档没有行级评论,这一句就写在这块里。
-  if (continuedFrom !== undefined) lines.push("", continuedNote(continuedFrom));
-
-  // 这一块同样是本工具的产出,同样要能被下一轮认出来:没有锚点它每轮都会全文重发。
-  // 锚点里带上文件路径——正文不像行级评论那样有一个由 API 给出的路径。
-  if (fingerprint !== undefined) {
-    lines.push("", fingerprintAnchor(fingerprint, finding.file));
-  }
-
-  return lines;
-}
-
 /** 折叠段里的一条。误匹配时人展开就能看到完整内容,不是只给个条数。 */
 function findingLine(finding: MergedFinding): string {
   const title = finding.title === "" ? "" : ` ${finding.title}`;
@@ -270,9 +245,9 @@ const SEVERITY_ORDER: readonly Severity[] = ["P0", "P1", "P2"];
 /**
  * 首行的概览:本轮 Finding 总数与分级计数,例如 `MultiReviewer:5 条 Finding(P0 3 / P2 2)`。
  *
- * 口径是「本轮结论总数」而非「本轮新增」——行级评论、diff 外的 fallback 与折叠的三类
- * 全算。折叠的那些是本轮仍然成立的问题,读者要判断的是这个 PR 眼下的轻重。三类恰好
- * 覆盖去重合并后的每一条,总数即 `findings.length`。
+ * 口径是「本轮结论总数」而非「本轮新增」——行级评论与折叠的两类全算。折叠的那些是本轮
+ * 仍然成立的问题,读者要判断的是这个 PR 眼下的轻重。两类恰好覆盖去重合并后的每一条,
+ * 总数即 `findings.length`。
  *
  * 零 Finding 只在有模型缺席或覆盖不全时才走到这里,写「0 条」会把「没审到」读成「没
  * 问题」,首行因此退回裸标题,缺席由下面那段自己说。
@@ -292,7 +267,6 @@ function overviewLine(findings: readonly MergedFinding[]): string {
 
 function reviewBody(
   findings: readonly MergedFinding[],
-  fallbacks: readonly FallbackFinding[],
   absent: readonly ReviewerOutcome[],
   partial: readonly ReviewerOutcome[],
   carried: readonly CarriedFinding[],
@@ -324,14 +298,6 @@ function reviewBody(
           .join("、");
         return `- ${o.model}:共 ${coverage.batchCount} 批,${failures}失败`;
       }),
-    );
-  }
-
-  if (fallbacks.length > 0) {
-    sections.push(
-      "",
-      "以下 Finding 的行号落在本次 Review Range 的 diff 之外,无法作为行级评论呈现:",
-      ...fallbacks.flatMap(fallbackBlock),
     );
   }
 
@@ -625,8 +591,8 @@ type Continuation = {
  * 「本轮在新位置报出」要同时满足四条:同一个文件、是本轮**新报**的(没有折叠到任何历史
  * 评论上——折叠上的那些自己就是另一条 Identity)、讲的是同一回事(`dedupe.ts` 的
  * `sameContent`,判据与阈值同跨模型去重那一道,不另立一套),且新位置落在 diff 之内。
- * diff 之外的那条自己只能退化进 review 正文,没有 resolve 载体:承接它等于旧评论被
- * resolve 掉、新位置却接不住,而两条都退出处置率分母,分母凭空少一条。内容这一道也不能
+ * diff 那一道在锚定收敛(issue #224)之后由 Reviewer 与编排层各把过一次,这里再判一次是
+ * 兜底:承接一条接不住的新位置等于旧评论被 resolve 掉、问题从此没有载体。内容这一道也不能
  * 省:少了它,
  * 同文件里任意一条无关的新 Finding 都会被拿来承接,旧评论就此 resolve,那条问题从此活在
  * 错的位置上——比不承接更糟。也不给「行号相同」留豁免:跨模型去重那边两个模型读的是同
@@ -1078,6 +1044,9 @@ export async function runReview(
       pullRequest.headSha,
     );
     const changedLines = changedLinesByFile(diff);
+    // 可评论行区间在 Reviewer 之前算好:它随请求交给每个 Reviewer 做锚定校验(issue #224),
+    // 编排层收结论时再用同一份判一次。
+    const diffRanges = parseDiffRanges(diff);
     const batches = splitIntoBatches(
       range.files,
       changedLines,
@@ -1105,6 +1074,8 @@ export async function runReview(
       // 知识集版本在这里定死(issue #204):这一轮之后的规则变更追不上已经开跑的它,
       // 回看历史轮次时也就知道当时按的是哪一版。
       ruleSetVersion: deps.ruleSetVersion ?? null,
+      // 本轮指令随这一轮落库(issue #225):轮次详情要能回答「那一轮是按什么要求跑的」。
+      directive: deps.directive ?? null,
     });
 
     // 一有 runId 就可以接受订阅(ADR 0017):面板打开进行中的轮次时要能接上实时推送,
@@ -1178,10 +1149,14 @@ export async function runReview(
               const outcome = await reviewer.review({
                 range: { ...range, files },
                 worktreePath: worktree.path,
+                // 可评论行区间给整个 Review Range 的那一份,不按批次裁剪(issue #224)。
+                commentable: diffRanges,
                 history,
                 intent,
                 rules,
                 facts,
+                // 本轮指令每批都给同一份:它说的是这一轮的要求,与本批审哪些文件无关。
+                ...(deps.directive === undefined ? {} : { directive: deps.directive }),
                 onEvent: (event) => {
                   const { kind, ...payload } = event;
                   trace.reviewer(reviewer.model, kind, payload);
@@ -1206,12 +1181,24 @@ export async function runReview(
 
       recordReviewerOutcomes(trace, outcomes);
 
+      // 锚定收敛的最后一道(issue #224):落点不在本轮 diff 里的丢弃,轨迹留一条被拒记录。
+      // Reviewer 那侧已经打回过一次并请模型重锚,到这里还在外面的就是重锚也没锚进的那些。
+      // 丢弃而不是退化进 review 正文:正文里的条目没有 resolve 载体,不进处置率,只会攒成
+      // 没人处置的暗债(ADR 0006 的 2026-08-31 修订附记)。
       const merged = dedupeFindings(
         outcomes.filter((o) => o.failure === undefined).flatMap((o) => o.findings),
-      );
+      ).filter((finding) => {
+        if (isInDiff(diffRanges, finding.file, finding.line)) return true;
+        trace.run("finding_discarded", {
+          file: finding.file,
+          line: finding.line,
+          title: finding.title,
+          reviewers: finding.attributions.map((said) => said.model),
+        });
+        return false;
+      });
       recordFindingMerges(trace, merged);
 
-      const diffRanges = parseDiffRanges(diff);
       const prior = priorDispositions(priorComments, priorBodies);
 
       // 顺手回写(ADR 0006):这批读回的 resolve 状态本来用完即弃,现在覆盖到这个 PR
@@ -1259,7 +1246,6 @@ export async function runReview(
       const comments: ReviewCommentDraft[] = [];
       // 与 `comments` 同序:每条草稿属于哪个合并组。发布之后按它把评论标识记回去。
       const commentGroups: number[] = [];
-      const fallbacks: FallbackFinding[] = [];
       const carried: CarriedFinding[] = [];
       // 按合并组下标记住处置结论与来源类型,落库时组内每条来源都取它。
       const dispositions: Disposition[] = [];
@@ -1280,19 +1266,14 @@ export async function runReview(
 
         dispositions.push("unknown");
         groupComments.push(undefined);
-        const continued = continuedFrom.get(groupIndex);
-        if (isInDiff(diffRanges, finding.file, finding.line)) {
-          placements.push("inline");
-          comments.push({
-            path: finding.file,
-            line: finding.line,
-            body: findingBody(finding, fingerprint, continued),
-          });
-          commentGroups.push(groupIndex);
-        } else {
-          placements.push("body");
-          fallbacks.push({ finding, fingerprint, continuedFrom: continued });
-        }
+        // 本轮新报的一律是行级评论:锚定收敛之后落点必在 diff 内(issue #224)。
+        placements.push("inline");
+        comments.push({
+          path: finding.file,
+          line: finding.line,
+          body: findingBody(finding, fingerprint, continuedFrom.get(groupIndex)),
+        });
+        commentGroups.push(groupIndex);
       }
 
       const outcomeRecords: OutcomeRecord[] = timed.map(({ outcome, durationMs }) => ({
@@ -1384,7 +1365,7 @@ export async function runReview(
         findings.length > 0 || absent.length > 0 || partial.length > 0;
       if (!failed && hasSomethingToSay) {
         const published = await forge.createReview(event, {
-          body: reviewBody(findings, fallbacks, absent, partial, carried),
+          body: reviewBody(findings, absent, partial, carried),
           commitSha: pullRequest.headSha,
           comments,
         });
@@ -1406,7 +1387,6 @@ export async function runReview(
         outcomes,
         failed,
         inlineCount: comments.length,
-        fallbackCount: fallbacks.length,
       };
     } finally {
       // 订阅者一定要收到结束信号:成功、失败、中途抛异常都要,否则页面会一直等下去。

@@ -97,7 +97,19 @@ test("行号落在 diff 内的 Finding 发布为行级评论", async () => {
   assert.match(review.comments[0]!.body, /sub\(\) 多减了 1/);
 });
 
-test("行号落不到 diff 内的 Finding 退化为 PR 级评论且内容不丢", async () => {
+test("Reviewer 请求带上本轮 diff 的可评论行区间", async () => {
+  const { cache, db, forge, reviewer } = setup(6);
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+  );
+
+  // -U3 的 hunk 覆盖新文件的 3..9 行,锚定校验在 Reviewer 那侧就靠这一份。
+  assert.deepEqual(reviewer.calls[0]!.commentable, { "src/calc.ts": [{ start: 3, end: 9 }] });
+});
+
+test("锚不进 diff hunk 的 Finding 被丢弃,不进 review 正文也不落库", async () => {
   const { cache, db, forge, reviewer } = setup(11);
 
   await runReview(
@@ -105,13 +117,15 @@ test("行号落不到 diff 内的 Finding 退化为 PR 级评论且内容不丢"
     { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
   );
 
-  assert.equal(forge.createdReviews.length, 1);
-  const review = forge.createdReviews[0]!;
-  assert.deepEqual(review.comments, []);
-  assert.match(review.body, /sub\(\) 多减了 1/);
-  assert.match(review.body, /src\/calc\.ts/);
-  assert.match(review.body, /11/);
+  // 一条 Finding 都没剩下,也没有缺席的模型,这一轮无话可说,只留一个赞。
+  assert.deepEqual(forge.createdReviews, []);
+  assert.equal(forge.reactions.has("+1"), true);
+  assert.deepEqual(
+    new DatabaseSync(db.path, { readOnly: true }).prepare("SELECT id FROM finding").all(),
+    [],
+  );
 });
+
 
 test("评论按 等级/标题 加逐模型的 问题/影响/建议 分段呈现", async () => {
   const { cache, db, forge } = setup(6);
@@ -181,7 +195,7 @@ test("正文首行写明本轮 Finding 总数与分级计数", async () => {
         scriptedReviewer("model-a", [
           at(3, "P0", "add 没有参数校验"),
           at(7, "P1", "sub 的返回值没有断言"),
-          at(11, "P2", "mul 缺少注释"),
+          at(9, "P2", "mul 缺少注释"),
         ]),
       ],
       cacheDir: cache.dir,
@@ -190,7 +204,6 @@ test("正文首行写明本轮 Finding 总数与分级计数", async () => {
   );
 
   const [heading] = forge.createdReviews[0]!.body.split("\n");
-  // 第 11 行退化进正文,同样计入:口径是本轮结论总数,不分呈现方式。
   assert.equal(heading, "MultiReviewer:3 条 Finding(P0 1 / P1 1 / P2 1)");
 });
 
@@ -813,5 +826,54 @@ test("空知识集时不注入规则,Review Run 不记知识集版本", async ()
     assert.equal(db2.prepare("SELECT rule_id FROM finding ORDER BY id").get()!["rule_id"], null);
   } finally {
     db2.close();
+  }
+});
+
+test("本轮指令随这一轮注入 Reviewer 并落库,不给指令时两处都是空", async () => {
+  const { cache, db, forge, reviewer } = setup(6);
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    {
+      forge: forge.forge,
+      reviewers: [reviewer],
+      cacheDir: cache.dir,
+      dbPath: db.path,
+      directive: "这一轮只报 P0",
+    },
+  );
+
+  assert.equal(reviewer.calls[0]!.directive, "这一轮只报 P0");
+
+  const withDirective = new DatabaseSync(db.path, { readOnly: true });
+  try {
+    assert.equal(
+      withDirective.prepare("SELECT directive FROM review_run").get()!["directive"],
+      "这一轮只报 P0",
+    );
+  } finally {
+    withDirective.close();
+  }
+
+  // 下一轮不带:本轮指令只作用于发起它的那一轮(CONTEXT.md 本轮指令)。
+  const next = scriptedReviewer("stub-model", []);
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    { forge: forge.forge, reviewers: [next], cacheDir: cache.dir, dbPath: db.path },
+  );
+
+  assert.equal(next.calls[0]!.directive, undefined);
+
+  const plain = new DatabaseSync(db.path, { readOnly: true });
+  try {
+    assert.deepEqual(
+      plain
+        .prepare("SELECT directive FROM review_run ORDER BY id")
+        .all()
+        .map((row) => row["directive"]),
+      ["这一轮只报 P0", null],
+    );
+  } finally {
+    plain.close();
   }
 });
