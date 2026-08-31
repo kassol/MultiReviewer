@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 import { Cross2Icon, CrossCircledIcon } from "@radix-ui/react-icons";
 import { Badge, Callout, Checkbox, Dialog, IconButton, Select, Skeleton, Text, TextField, Tooltip } from "@radix-ui/themes";
@@ -455,7 +455,7 @@ function RuleSetDialogContent({
             <section className="flex flex-col gap-2">
               <div className="flex items-center gap-1">
                 <h3 className="text-2xl font-bold tracking-[-0.015em]">{TYPE_LABEL.fact}</h3>
-                <HelpTooltip content="事实是 Reviewer 的判断依据,本身不产 Finding;与代码矛盾时以代码为准。" />
+                <HelpTooltip content="项目事实是 Reviewer 的判断依据,本身不产 Finding;与代码矛盾时以代码为准。" />
               </div>
               <ul className="overflow-hidden rounded-lg border border-card-line">
                 {ruleSet.data.rules
@@ -567,6 +567,9 @@ function RuleForm({
   onCancel: () => void;
   onSubmit: () => void;
 }) {
+  // 表单在生效条目、草案与提案三处各挂一份,可能同时渲染;写死的 id 会在 DOM 里
+  // 重复,标签指到别的表单上,所以按实例生成。
+  const typeSelectId = useId();
   const statement = draft.statement.trim();
   const isRule = draft.type === "rule";
   const overLimit = !isRule && statement.length > FACT_STATEMENT_LIMIT;
@@ -581,7 +584,7 @@ function RuleForm({
     >
       <div className="flex flex-col gap-1">
         <div className="flex items-center gap-1">
-          <Text as="label" htmlFor="knowledge-type" size="1" color="gray">类型</Text>
+          <Text as="label" htmlFor={typeSelectId} size="1" color="gray">类型</Text>
           <HelpTooltip content="评审规则说的是代码应当怎样,违反它即是一条 Finding;项目事实说的是这个仓库实际怎样,只作模型的判断依据,本身不产 Finding。" />
         </div>
         <Select.Root
@@ -589,7 +592,7 @@ function RuleForm({
           onValueChange={(next) => onChange({ ...draft, type: next as KnowledgeType })}
           size={{ initial: "3", sm: "2" }}
         >
-          <Select.Trigger id="knowledge-type" />
+          <Select.Trigger id={typeSelectId} />
           <Select.Content position="popper">
             <Select.Item value="rule">{TYPE_LABEL.rule}</Select.Item>
             <Select.Item value="fact">{TYPE_LABEL.fact}</Select.Item>
@@ -600,7 +603,7 @@ function RuleForm({
         <Text size="1" color={overLimit ? "red" : "gray"}>
           {isRule
             ? "规范陈述"
-            : `事实陈述(至多 ${FACT_STATEMENT_LIMIT} 字,已写 ${statement.length})`}
+            : `项目事实陈述(至多 ${FACT_STATEMENT_LIMIT} 字,已写 ${statement.length})`}
         </Text>
         <TextField.Root
           size={{ initial: "3", sm: "2" }}
@@ -711,7 +714,9 @@ function ProposalSection({
   const target = (proposal: RuleProposal): string | null => {
     if (proposal.targetRuleId === null) return null;
     const rule = ruleSet.rules.find((entry) => entry.id === proposal.targetRuleId);
-    return rule === undefined ? `条目 ${proposal.targetRuleId}(已不生效)` : rule.statement;
+    return rule === undefined
+      ? `知识条目 ${proposal.targetRuleId}(已不生效)`
+      : rule.statement;
   };
 
   return (
@@ -822,7 +827,7 @@ function ProposalSection({
               </span>
               {target(proposal) === null ? null : (
                 <Text as="p" size="1" color="gray" className="mt-1.5">
-                  目标条目:{target(proposal)}
+                  目标知识条目:{target(proposal)}
                 </Text>
               )}
               {proposal.sourceNote === null ? null : (

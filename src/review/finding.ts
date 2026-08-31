@@ -226,9 +226,10 @@ export type ReviewerOutcome = {
   /** 被 Pi 校验拒绝的工具调用次数。不为零而 findings 为零即契约失配。 */
   rejectedToolCalls: number;
   /**
-   * snippet 锚不上而被打回的 `report_finding` 次数(文件读不出来与内容对不上合记一个数)。
+   * 被打回的 `report_finding` 次数:snippet 锚不上(文件读不出来与内容对不上)、锚在
+   * 本轮 diff 的 hunk 外(issue #224)、拿事实当命中规则(issue #221)合记一个数。
    * 打回后模型不重报,那条 Finding 就静默消失了;打回多而 findings 少,是该换模型或
-   * 改 prompt 的信号。与 `rejectedToolCalls` 分列:一个是契约失配,一个是位置报不准。
+   * 改 prompt 的信号。与 `rejectedToolCalls` 分列:一个是契约失配,一个是报法不对。
    */
   anchorRejections: number;
   /** 有值即该 Reviewer 失败,其 findings 不代表"代码没问题"。 */

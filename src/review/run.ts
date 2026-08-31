@@ -984,12 +984,12 @@ function scopePattern(scope: string): RegExp {
  * 保持传入顺序,条目在各批之间的呈现次序因此稳定。
  */
 export function knowledgeForBatch<T extends { scope: string }>(
-  rules: readonly T[],
+  entries: readonly T[],
   files: readonly string[],
 ): readonly T[] {
-  return rules.filter((rule) => {
-    if (rule.scope === "") return true;
-    const pattern = scopePattern(rule.scope);
+  return entries.filter((entry) => {
+    if (entry.scope === "") return true;
+    const pattern = scopePattern(entry.scope);
     return files.some((file) => pattern.test(file));
   });
 }

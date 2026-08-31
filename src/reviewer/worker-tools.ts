@@ -31,7 +31,7 @@ import { numberedRead } from "./numbered-read.ts";
  * `read` 在清单里,但两个子进程实际注册的是下面那个带行号的自定义实现——customTools
  * 同名覆盖内建。取证子代理跑在另一个进程里,拿到的是 Pi 的内建 `read`。
  */
-export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
+export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
 
 /** worktree 内文件的行数组。路径出圈或读不出来返回 undefined,交给调用方措辞。 */
 export function fileLines(worktreePath: string, file: string): string[] | undefined {

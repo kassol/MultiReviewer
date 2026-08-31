@@ -7,6 +7,7 @@ import { AlertDialog, Badge, Dialog, Flex, IconButton, Text, TextArea } from "@r
 import { Button } from "@/components/theme-button";
 
 import { api, errorText } from "./api.ts";
+import { RUN_DIRECTIVE_PLACEHOLDER } from "./repo-actions.tsx";
 import {
   CommitPicker,
   commitSelectionLabel,
@@ -274,7 +275,7 @@ function AdvanceDialogContent({
               rows={2}
               maxLength={500}
               className="mt-1"
-              placeholder="如「只报 P0」「重点看并发」"
+              placeholder={RUN_DIRECTIVE_PLACEHOLDER}
               value={directive}
               onChange={(event) => setDirective(event.target.value)}
             />

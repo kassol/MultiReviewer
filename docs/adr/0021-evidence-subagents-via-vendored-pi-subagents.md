@@ -4,7 +4,7 @@
 
 Pi 本体不内建 subagent,官方注册表包 pi-subagents 以扩展形态提供完整能力(自定义 agent 锁工具面、递归防护、spawn 预算、后台运行、运行产物)。MultiReviewer 采用它而不自写:把包 vendor 进镜像,每次建 Reviewer 会话时与自定义取证 agent 定义一起铺进该会话的临时 agentDir。这对「空 agentDir 隔绝宿主扩展」的既有隔离模型开一个受控例外:铺进去的内容由镜像构建时固定,不来自宿主机运行环境,隔离所防的「宿主全局扩展与凭据渗入」仍然成立。
 
-取证子代理的约束:禁用 pi-subagents 全部内置 agent(worker 能写文件、researcher 要联网,审查环境不该有),只铺一个自定义取证 agent——只读四件套(read/grep/find/ls)、与 Reviewer 同模型同凭据同思考档位、工具面里没有取证工具本身(单层,天然不递归)、没有 report_finding(取证只交证据,报不报由 Reviewer 裁决)。`maxSubagentSpawnsPerRun` 收紧到 8:取证是针对存疑 Finding 的定向动作,单轮超过 8 次说明在滥派。子会话全量接入审查轨迹,嵌套呈现,面板可展开取证过程。
+取证子代理的约束:禁用 pi-subagents 全部内置 agent(worker 能写文件、researcher 要联网,审查环境不该有),只铺一个自定义取证 agent——只读四件套(read/grep/find/ls)、与 Reviewer 同模型同凭据同思考档位、工具面里没有取证工具本身(单层,天然不递归)、没有 report_finding(取证只交证据,报不报由 Reviewer 裁决)。`maxSubagentSpawnsPerRun` 收紧到 8,作用域是一个 Reviewer 子进程的一次会话(即一个批次):Reviewer 按批次各起一个进程,一轮 Review Run 的总取证上限因此是 8 × 批次数 × Reviewer 数——有界且与工作量成正比,预算防的是单会话滥派,不是跨批次的总量配额。子会话全量接入审查轨迹,嵌套呈现,面板可展开取证过程。
 
 ## Considered Options
 

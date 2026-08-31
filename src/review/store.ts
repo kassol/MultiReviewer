@@ -2641,6 +2641,11 @@ export function openStore(dbPath: string): Store {
     const target =
       queued.targetRuleId === null ? undefined : activeRule(repoId, queued.targetRuleId);
     if (queued.change !== "add" && target === undefined) return undefined;
+    // 修改不许翻型(评审复核):采纳一条 modify 把规则悄悄变成事实,那条从此不再产
+    // Finding,面板上只是换了个徽章。要改型走「废止 + 新增」两条,意图才看得见。
+    if (queued.change === "modify" && target !== undefined && content.type !== target.type) {
+      return undefined;
+    }
     return { queued, content, targetOrigin: target?.origin };
   };
 

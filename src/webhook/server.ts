@@ -6629,7 +6629,7 @@ async function handleAcceptRuleProposal(
   );
   if (version === undefined) {
     return sendJson(res, 404, {
-      error: `${NO_PENDING_PROPOSAL},或它要改的规则已经不再生效`,
+      error: `${NO_PENDING_PROPOSAL},或它要改的知识条目已经不再生效、要改的型别对不上`,
     });
   }
   return sendJson(res, 200, { version });
@@ -6648,14 +6648,21 @@ async function readProposalIds(
   const payload = await readJson<{ ids?: unknown } | null>(req, res);
   if (payload === undefined) return undefined;
   const ids = payload?.ids;
-  const bad = (): undefined => {
+  if (!isPositiveIdGroup(ids)) {
     sendJson(res, 400, { error: 'body 要是 {"ids": [提案标识, …]} 形状的 JSON,至少一条,不能重复' });
     return undefined;
-  };
-  if (!Array.isArray(ids) || ids.length === 0) return bad();
-  if (!ids.every((id) => Number.isInteger(id) && (id as number) > 0)) return bad();
-  if (new Set(ids as number[]).size !== ids.length) return bad();
-  return ids as number[];
+  }
+  return ids;
+}
+
+/** 「一组正整数标识,至少一条、不能重复」的共同判据:批量裁决与批量确认同一条口径。 */
+function isPositiveIdGroup(ids: unknown): ids is number[] {
+  return (
+    Array.isArray(ids) &&
+    ids.length > 0 &&
+    ids.every((id) => Number.isInteger(id) && (id as number) > 0) &&
+    new Set(ids as number[]).size === ids.length
+  );
 }
 
 /**
@@ -6683,7 +6690,7 @@ async function handleDecideRuleProposals(
   const version = withStore(deps.dbPath, (store) => store.acceptRuleProposals(repoId, ids));
   if (version === undefined) {
     return sendJson(res, 404, {
-      error: `这一组里有提案${NOT_ALL_PENDING},或它要改的条目已经不再生效`,
+      error: `这一组里有提案${NOT_ALL_PENDING},或它要改的知识条目已经不再生效、要改的型别对不上`,
     });
   }
   return sendJson(res, 200, { version });
@@ -6717,16 +6724,11 @@ async function handleConfirmRuleDraft(
   if (payload === undefined) return;
   const itemIds = payload?.itemIds;
   if (itemIds !== undefined) {
-    // 空数组当场拒(与 `readProposalIds` 同一条口径):`{"itemIds": []}` 落下去会确认出
-    // 一个空版本并把整份草案删掉,而人真正想说的「确认空知识集」是不给这一项。
-    if (
-      !Array.isArray(itemIds) ||
-      itemIds.length === 0 ||
-      !itemIds.every((id) => Number.isInteger(id) && (id as number) > 0) ||
-      new Set(itemIds as number[]).size !== itemIds.length
-    ) {
+    // 空数组当场拒(`isPositiveIdGroup`,与批量裁决同一条口径):`{"itemIds": []}` 落下去
+    // 会确认出一个空版本并把整份草案删掉,而人真正想说的「确认空知识集」是不给这一项。
+    if (!isPositiveIdGroup(itemIds)) {
       return sendJson(res, 400, {
-        error: 'itemIds 要是一组正整数的草案条目标识,至少一条、不能重复;整组确认时不给这一项',
+        error: 'itemIds 要是一组正整数的知识条目标识,至少一条、不能重复;整组确认时不给这一项',
       });
     }
   }
@@ -6737,7 +6739,7 @@ async function handleConfirmRuleDraft(
   );
   if (version === undefined) {
     return sendJson(res, 409, {
-      error: "这个仓库的知识集已经确认而这一次确认的是空的一组,或勾选里有条目已经不在草案里",
+      error: "这个仓库的知识集已经确认而这一次确认的是空的一组,或勾选里有知识条目已经不在草案里",
     });
   }
   return sendJson(res, 200, { version });

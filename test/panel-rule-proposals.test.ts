@@ -694,3 +694,40 @@ test("批量采纳里两条指向同一个目标:整组不做,不让一条规则
     store.close();
   }
 });
+
+test("modify 提案翻不了型:采纳一条把规则改成事实的提案落不下去", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  try {
+    store.registerRepo({ repoId: 88, owner: "acme", repo: "type-flip", generation: 1, key: "k" });
+    store.addReviewRule(88, { type: "rule", scope: "", statement: "边界要校验", layer: "架构" });
+    const rule = store.getRuleSet(88)!.rules[0]!;
+
+    // agent 提的 modify 自带 type=fact:采纳会把一条生效规则悄悄变成项目事实,从此
+    // 不再产 Finding。修改不许翻型,要改型走「废止 + 新增」两条,意图才看得见。
+    const flip = store.addRuleProposal(
+      88,
+      proposal({ type: "fact", change: "modify", targetRuleId: rule.id, statement: "边界已有校验", layer: "" }),
+    )!;
+    assert.equal(store.acceptRuleProposal(88, flip), undefined);
+    assert.equal(store.acceptRuleProposals(88, [flip]), undefined);
+    // 人「改后采纳」时把 type 改成 fact 同样落不下去:守卫按改后的内容判。
+    assert.equal(
+      store.acceptRuleProposal(88, flip, { type: "fact", scope: "", statement: "边界已有校验", layer: "" }),
+      undefined,
+    );
+    assert.equal(store.getRuleSet(88)!.version, 1);
+    assert.deepEqual(store.getRuleProposals(88).map((row) => row.state), ["pending"]);
+    assert.equal(store.getRuleSet(88)!.rules[0]!.type, "rule");
+
+    // 同型的 modify 不受影响,照常落下去。
+    const sameType = store.addRuleProposal(
+      88,
+      proposal({ change: "modify", targetRuleId: rule.id, statement: "边界要在入口校验" }),
+    )!;
+    assert.equal(store.acceptRuleProposals(88, [sameType]), 2);
+  } finally {
+    store.close();
+  }
+});

@@ -328,6 +328,9 @@ async function run(request: ReviewerRequest): Promise<void> {
       // Finding 的依据本身就不成立,打回并说明理由,由模型改报或不报。
       const factRejection = factRuleIdRejection(raw.ruleId, factIds);
       if (factRejection !== undefined) {
+        // 与锚定打回同一条口径记进被拒集合:不记的话,这次打回在轨迹上与一次正常
+        // 调用长得一模一样,模型不重报时那条 Finding 就无声消失了。
+        anchorRejectedCalls.add(id);
         return { content: [{ type: "text", text: factRejection }], details: {} };
       }
       const result = anchorReport(

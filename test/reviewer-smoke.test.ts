@@ -258,4 +258,10 @@ test("真实模型对跨文件存疑场景派出取证", { skip }, async () => {
     event.kind === "assistant_message" ? [event.text] : [],
   );
   assert.match(said.join("\n"), /[\w./-]+\.js:\d+/, "取证报告里没有 file:line 证据");
+
+  // 用量并入所属 Reviewer(issue #226 的验收面)。精确的并入语义靠 pi-subagents 的
+  // 统计口径(手工验证记录见 src/AGENTS.md);这里守的是「派了取证之后用量还在报」——
+  // 断报比错报更常见,也是回归时最先坏的那一档。
+  assert.ok(outcome.usage !== undefined, "派过取证的这一轮没有回报用量");
+  assert.ok(outcome.usage.totalTokens > 0, "派过取证的这一轮用量为零");
 });
