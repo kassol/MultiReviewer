@@ -188,6 +188,9 @@
 
 ## 变更日志
 
+- 2026-09-01: **子进程的超时闸从总时长改为连续静默**(`reviewer/subprocess.ts`)。原 20 分钟总时长上限两头都错:大 Review Range 认真跑几十分钟会被误杀整批产出,二十秒的合并 agent 卡死却要陪满上限才回退。健康会话的 IPC 常鸣(旁白与工具调用隔几秒一条),彻底沉默才是卡死的信号,因此每收到一条消息就重置计时,连续 5 分钟没有任何回传才判死——跑多久都行,哑火才杀。`ChildRun` 加测试注入口 `inactivityTimeoutMs`,生产不传。三条子进程链路(Reviewer / 规则 agent / 合并 agent)同一道闸,一处改三处生效。测试 `reviewer-subprocess.test.ts` 新增两条:纯静默判死;总时长两倍于静默上限但持续有回传的不被误杀。
+
+
 - 2026-09-01: **合并去重交给合并 agent**(ADR 0022,issue #228)。新增第四个注入边界 `MergeAgent`(定在 `review/dedupe.ts`,Pi 实现在 `reviewer/merge-agent.ts` 与 `merge-worker.ts`,与另两条链路共用 `subprocess.ts`、`prepareAgentRuntime` 与只读工具面):每轮汇齐全部成功 Reviewer 的 Finding 后跑一次,它读内容、必要时翻代码,给出「哪些条目是同一个问题」的分组方案与每组一句理由。`mergeByProposal` 验三条硬性质(不丢不重、组内同文件、组内每成员与至少一个其他成员行距不超过 `LINE_TOLERANCE`),任一违反或 agent 失败/超时/抛异常即整体回退 `dedupeFindings` 并记 `merge_fallback`——最坏情况恒等于这一票之前的行为。派生规则(行号取最小、严重度取最高、分类取首报、归属保留与逐字重复折叠)一律没动,`MergeCriterion` 只多一档 `agent`(带理由原文),算法两档留作回退档、阈值仍是 0.05。模型与凭据取配置序第一个 Reviewer 的快照,零新增配置;它的用量进 `review_run` 总量、不落 `reviewer_outcome`。轨迹多两档 Run 级事件,合并 agent 的会话事件以固定名字「合并 agent」进 Reviewer 级,面板对三处渲染同步支持。测试 `merge-agent` 十条打在 `runReview` 上(脚本化 MergeAgent 照 `scriptedReviewer` 的样子做),`reviewer-smoke` 加一条真实子进程的契约冒烟。
 
 - 2026-08-31: **`fileLines` 的圈内判定改按 realpath**(`worker-tools.ts`)。此前只做词法前缀检查,被审仓库提交一个指向圈外的符号链接,`read` 工具与锚定校验就会跟着链接读到 worktree 之外的文件(受控 git 工具没有这个问题,git 对 link blob 从不跟随)。现在根与目标都先 `realpathSync` 再做包含判定:根也要解析是因为 macOS 的 tmpdir 本身是符号链接,只解析一侧会把全部合法路径误拒;文件不存在时 realpath 抛错,与「读不出来」同档返回 undefined,被删文件的语义不变;圈内互指的合法链接照常放行。测试 `worker-tools.test.ts` 新增四条(普通文件、圈外链接拒、圈内链接放行、词法出圈与缺失文件)。

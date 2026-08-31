@@ -11,6 +11,7 @@ import { after, test } from "node:test";
 import type { ReviewerEvent, ReviewerInput } from "../src/review/finding.ts";
 import { runInChild } from "../src/reviewer/pi-reviewer.ts";
 import { runRuleAgentChild, type RuleAgentEvent } from "../src/reviewer/rule-agent.ts";
+import { runWorkerChild } from "../src/reviewer/subprocess.ts";
 import { sessionThinkingLevel } from "../src/reviewer/worker-tools.ts";
 
 const cleanups: (() => void)[] = [];
@@ -635,4 +636,42 @@ test("模型不声明推理能力时会话档位落回 off,配了档位也照常
   assert.equal(sessionThinkingLevel(true, "xhigh"), "xhigh");
   assert.equal(sessionThinkingLevel(true, undefined), "off");
   assert.equal(sessionThinkingLevel(false, "xhigh"), "off");
+});
+
+test("连续静默超过上限的子进程被判卡死", async () => {
+  const path = worker(`process.on("message", () => { setInterval(() => {}, 1000); });`);
+  const outcome = await runWorkerChild({
+    workerPath: path,
+    worktreePath: tmpdir(),
+    apiKey: "k",
+    timeoutSubject: "受控 worker",
+    payload: {},
+    onMessage: () => {},
+    inactivityTimeoutMs: 300,
+  });
+  assert.match(outcome.failure!, /卡死.*没有任何回传/);
+});
+
+test("总时长超过静默上限但持续有回传的子进程不被误杀", async () => {
+  // 六条消息各隔 100ms,总时长两倍于 300ms 的静默上限:按总时长计会死,按静默计不会。
+  const path = worker(`process.on("message", () => {
+    let n = 0;
+    const t = setInterval(() => {
+      n += 1;
+      process.send({ kind: "event", n });
+      if (n === 6) { clearInterval(t); process.send({ kind: "done" }); process.exit(0); }
+    }, 100);
+  });`);
+  const kinds: string[] = [];
+  const outcome = await runWorkerChild({
+    workerPath: path,
+    worktreePath: tmpdir(),
+    apiKey: "k",
+    timeoutSubject: "受控 worker",
+    payload: {},
+    onMessage: (message) => kinds.push(message.kind),
+    inactivityTimeoutMs: 300,
+  });
+  assert.equal(outcome.failure, undefined);
+  assert.equal(kinds.filter((kind) => kind === "event").length, 6);
 });

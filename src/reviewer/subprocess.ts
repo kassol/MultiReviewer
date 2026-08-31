@@ -11,9 +11,14 @@ import { MODEL_API_KEY_ENV, reviewerEnv } from "./env.ts";
 
 /**
  * 一个卡住的子进程不是失败,是永远不返回。没有这道闸,整次 Review Run 会被它拖住不
- * 结束。取值宽到足以容纳最慢的模型跑完一个大 Review Range。
+ * 结束,工作树也随之永不释放。
+ *
+ * 闸计的是**连续静默**,不是总时长(2026-09-01 取代总时长上限):健康的会话 IPC 常鸣
+ * ——旁白、工具调用隔几秒就一条,真正的卡死表现为彻底沉默。按总时长计两头都错:大
+ * Review Range 认真跑几十分钟会被误杀,二十秒的合并 agent 卡死却要陪满整个上限。
+ * 每收到一条消息就重置计时,跑多久都行,哑火五分钟即判死。
  */
-const TIMEOUT_MS = 20 * 60 * 1000;
+const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** 回报结果之后留给子进程收尾的时间。超过就当它退不掉,强杀并按已收到的结果结束。 */
 const EXIT_GRACE_MS = 5000;
@@ -39,6 +44,8 @@ export type ChildRun<M extends ChildMessage> = {
   payload: Serializable;
   /** 子进程回传的每一条消息,收尾那条也在内。 */
   onMessage: (message: M) => void;
+  /** 静默上限的测试注入口。生产不传,取默认的五分钟。 */
+  inactivityTimeoutMs?: number;
 };
 
 /**
@@ -85,17 +92,20 @@ export function runWorkerChild<M extends ChildMessage>(run: ChildRun<M>): Promis
       });
     };
 
-    const timer = setTimeout(
-      () => finish(`${run.timeoutSubject} 超时,超过 ${TIMEOUT_MS / 60_000} 分钟未结束`),
-      TIMEOUT_MS,
-    );
+    const silence = run.inactivityTimeoutMs ?? INACTIVITY_TIMEOUT_MS;
+    const silenceFailure = `${run.timeoutSubject} 卡死:连续 ${silence / 60_000} 分钟没有任何回传`;
+    let timer = setTimeout(() => finish(silenceFailure), silence);
 
     child.on("message", (message: M) => {
       run.onMessage(message);
-      if (message.kind !== "done") return;
-      done = message;
-      // 结果已经拿到,不该再为一个赖着不退出的子进程等满超时。
+      // 每一条消息都是活着的证据,静默计时从头再来。
       clearTimeout(timer);
+      if (message.kind !== "done") {
+        timer = setTimeout(() => finish(silenceFailure), silence);
+        return;
+      }
+      done = message;
+      // 结果已经拿到,不该再为一个赖着不退出的子进程等下去。
       graceTimer = setTimeout(() => finish(message.failure), EXIT_GRACE_MS);
     });
 
