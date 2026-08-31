@@ -32,7 +32,6 @@ type RuleResponse = {
   type: "rule" | "fact";
   scope: string;
   statement: string;
-  layer: string;
   origin: string;
 };
 
@@ -69,6 +68,9 @@ function seedRepo(h: PanelHarness, repoId: number, owner: string, repo: string):
  *
  * **INSERT 里没有 `type` 这一列**:升级前落的行就是这个样子,补列的 DEFAULT 因此就是
  * ADR 0020 的存量迁移本身——读出来的每一条都是规则型。
+ *
+ * **`layer` 写的是存量层标签的值**:层标签已经退役,新写的行一律空串,但库列还在、存量行
+ * 也还带着当初填的那个标签。这里照旧写一个非空值,读出来的条目因此证明旧行照常读得出。
  */
 function seedRule(
   dbPath: string,
@@ -76,7 +78,6 @@ function seedRule(
     repoId: number;
     scope: string;
     statement: string;
-    layer: string;
     origin?: string;
     retiredVersion?: number;
   },
@@ -94,7 +95,7 @@ function seedRule(
     rule.repoId,
     rule.scope,
     rule.statement,
-    rule.layer,
+    "架构",
     retired === null ? "active" : "retired",
     rule.origin ?? "baseline-exploration",
     retired,
@@ -209,18 +210,16 @@ test("知识集只给当前生效的规则,废止的那条不在集内", () => {
   );
   store.close();
 
-  seedRule(db.path, { repoId: 90, scope: "", statement: "公开函数要有类型标注", layer: "架构" });
+  seedRule(db.path, { repoId: 90, scope: "", statement: "公开函数要有类型标注" });
   seedRule(db.path, {
     repoId: 90,
     scope: "src/api/**",
     statement: "入参要在边界上校验",
-    layer: "安全",
   });
   seedRule(db.path, {
     repoId: 90,
     scope: "",
     statement: "已经不作数的老规则",
-    layer: "架构",
     retiredVersion: 2,
   });
 
@@ -229,8 +228,12 @@ test("知识集只给当前生效的规则,废止的那条不在集内", () => {
     const ruleSet = reopened.getRuleSet(90);
     assert.equal(ruleSet?.version, 1);
     assert.deepEqual(
-      ruleSet?.rules.map((rule) => [rule.scope, rule.layer]),
-      [["", "架构"], ["src/api/**", "安全"]],
+      // 存量行带着退役的层标签值,条目照常读得出,读投影里不再有它。
+      ruleSet?.rules.map((rule) => [rule.scope, rule.statement]),
+      [
+        ["", "公开函数要有类型标注"],
+        ["src/api/**", "入参要在边界上校验"],
+      ],
     );
   } finally {
     reopened.close();
@@ -257,7 +260,6 @@ test("面板按仓库读知识集:分配内可读,未确认的仓库版本为 nu
     repoId: alpha,
     scope: "src/api/**",
     statement: "入参要在边界上校验",
-    layer: "安全",
   });
   const filled = await get(h, cookie, `/repos/${alpha}/rules`);
   assert.equal(filled.status, 200);
@@ -271,7 +273,6 @@ test("面板按仓库读知识集:分配内可读,未确认的仓库版本为 nu
         type: "rule",
         scope: "src/api/**",
         statement: "入参要在边界上校验",
-        layer: "安全",
         origin: "baseline-exploration",
       },
     ],
@@ -315,7 +316,7 @@ test("手工新增、修改与废止各推进一版,历史版本的快照仍取�
     );
     // 注册不落版本(issue #206),第一次手工变更就是这个仓库的第一版。
     assert.equal(
-      store.addReviewRule(91, { type: "rule", scope: "", statement: "公开函数要有类型标注", layer: "架构" }),
+      store.addReviewRule(91, { type: "rule", scope: "", statement: "公开函数要有类型标注" }),
       1,
     );
     const added = store.getRuleSet(91)!;
@@ -330,7 +331,6 @@ test("手工新增、修改与废止各推进一版,历史版本的快照仍取�
         type: "rule",
         scope: "src/**",
         statement: "导出的函数要有类型标注",
-        layer: "架构",
       }),
       2,
     );
@@ -341,9 +341,9 @@ test("手工新增、修改与废止各推进一版,历史版本的快照仍取�
     ]);
 
     // 没注册的仓库、不在这个仓库里的规则与已废止的规则都写不动。
-    assert.equal(store.addReviewRule(999, { type: "rule", scope: "", statement: "x", layer: "y" }), undefined);
+    assert.equal(store.addReviewRule(999, { type: "rule", scope: "", statement: "x" }), undefined);
     assert.equal(
-      store.updateReviewRule(91, 4242, { type: "rule", scope: "", statement: "x", layer: "y" }),
+      store.updateReviewRule(91, 4242, { type: "rule", scope: "", statement: "x" }),
       undefined,
     );
     assert.equal(store.retireReviewRule(91, ruleId), undefined);
@@ -387,7 +387,6 @@ test("面板手工增删改规则:knowledge:write 放行,版本逐次推进,废�
   const created = await send(h, cookie, "POST", `/repos/${alpha}/rules`, {
     scope: "src/api/**",
     statement: "入参要在边界上校验",
-    layer: "安全",
   });
   assert.equal(created.status, 201);
   assert.deepEqual(await created.json(), { version: 1 });
@@ -400,7 +399,6 @@ test("面板手工增删改规则:knowledge:write 放行,版本逐次推进,废�
       type: "rule",
       scope: "src/api/**",
       statement: "入参要在边界上校验",
-      layer: "安全",
       origin: "manual",
     },
   ]);
@@ -409,7 +407,6 @@ test("面板手工增删改规则:knowledge:write 放行,版本逐次推进,废�
   const updated = await send(h, cookie, "PUT", `/repos/${alpha}/rules/${ruleId}`, {
     scope: "",
     statement: "入参要在边界上校验并给出错误原因",
-    layer: "安全",
   });
   assert.equal(updated.status, 200);
   assert.deepEqual(await updated.json(), { version: 2 });
@@ -443,23 +440,17 @@ test("面板手工增删改规则:knowledge:write 放行,版本逐次推进,废�
     (await send(h, cookie, "PUT", `/repos/${alpha}/rules/${editedId}`, {
       scope: "",
       statement: "再改一次",
-      layer: "安全",
     })).status,
     404,
   );
 });
 
-test("规范陈述与层标签不能为空,坏 body 一律 400 且不推进版本", async () => {
+test("陈述不能为空,坏 body 一律 400 且不推进版本", async () => {
   const h = await startReadyPanelHarness(cleanups);
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const cookie = await ruleWriterCookie(h, "rule-writer", [alpha]);
 
-  for (const payload of [
-    {},
-    { statement: "  ", layer: "安全" },
-    { statement: "入参要校验", layer: "" },
-    { statement: 42, layer: "安全" },
-  ]) {
+  for (const payload of [{}, { statement: "  " }, { statement: 42 }]) {
     const response = await send(h, cookie, "POST", `/repos/${alpha}/rules`, payload);
     assert.equal(response.status, 400, JSON.stringify(payload));
   }
@@ -475,7 +466,7 @@ test("没有 knowledge:write 的人写不动规则,分配外的仓库同形 404"
   // 读得到知识集的人不等于改得动:这个账号有仓库分配,没有权限格。
   const readerCookie = await scopedUser(h, "rules-reader", [alpha]);
   assert.equal((await get(h, readerCookie, `/repos/${alpha}/rules`)).status, 200);
-  const body = { scope: "", statement: "入参要校验", layer: "安全" };
+  const body = { scope: "", statement: "入参要校验" };
   assert.equal((await send(h, readerCookie, "POST", `/repos/${alpha}/rules`, body)).status, 403);
   assert.equal((await send(h, readerCookie, "PUT", `/repos/${alpha}/rules/1`, body)).status, 403);
   assert.equal((await send(h, readerCookie, "DELETE", `/repos/${alpha}/rules/1`)).status, 403);
@@ -500,7 +491,7 @@ test("Review Run 的启动快照冻结知识集版本与当时那组规则,之�
       true,
     );
     assert.equal(
-      store.addReviewRule(91, { type: "rule", scope: "src/**", statement: "src 下不写 any", layer: "工程" }),
+      store.addReviewRule(91, { type: "rule", scope: "src/**", statement: "src 下不写 any" }),
       1,
     );
 
@@ -512,7 +503,7 @@ test("Review Run 的启动快照冻结知识集版本与当时那组规则,之�
     );
 
     // 已开跑的那一轮拿着上面这份快照跑完,知识集在它跑的过程中变了也不跟。
-    assert.equal(store.addReviewRule(91, { type: "rule", scope: "", statement: "新规则", layer: "工程" }), 2);
+    assert.equal(store.addReviewRule(91, { type: "rule", scope: "", statement: "新规则" }), 2);
     assert.equal(snapshot.ruleSetVersion, 1);
     assert.equal(snapshot.rules.length, 1);
 
@@ -524,7 +515,7 @@ test("Review Run 的启动快照冻结知识集版本与当时那组规则,之�
   }
 });
 
-test("面板手填项目事实:与规则同一套端点,层标签留空,版本照样推进", async () => {
+test("面板手填项目事实:与规则同一套端点,版本照样推进", async () => {
   const h = await startReadyPanelHarness(cleanups);
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const cookie = await ruleWriterCookie(h, "rule-writer", [alpha]);
@@ -532,8 +523,6 @@ test("面板手填项目事实:与规则同一套端点,层标签留空,版本�
   const created = await send(h, cookie, "POST", `/repos/${alpha}/rules`, {
     type: "fact",
     scope: "src/api/**",
-    // 层标签属规则型:事实型给了也不收,库里那一行不会留着一个说不通的标签。
-    layer: "安全",
     statement: "全局拦截器覆盖 /api 下的全部路由",
   });
   assert.equal(created.status, 201);
@@ -546,7 +535,6 @@ test("面板手填项目事实:与规则同一套端点,层标签留空,版本�
       type: "fact",
       scope: "src/api/**",
       statement: "全局拦截器覆盖 /api 下的全部路由",
-      layer: "",
       origin: "manual",
     },
   ]);
@@ -602,7 +590,6 @@ test("事实型录入的两道校验:陈述超长与认不得的 type 各回 400
     const response = await send(h, cookie, "POST", `/repos/${alpha}/rules`, {
       type,
       statement: "随便一句",
-      layer: "架构",
     });
     assert.equal(response.status, 400, JSON.stringify(type));
   }
@@ -634,7 +621,6 @@ test("启动快照按 type 把两型分开,同一个知识集版本一起冻结"
         type: "rule",
         scope: "src/**",
         statement: "src 下不写 any",
-        layer: "工程",
       }),
       1,
     );
@@ -643,7 +629,6 @@ test("启动快照按 type 把两型分开,同一个知识集版本一起冻结"
         type: "fact",
         scope: "",
         statement: "全局拦截器覆盖全部路由",
-        layer: "",
       }),
       2,
     );

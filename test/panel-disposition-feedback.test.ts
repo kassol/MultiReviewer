@@ -38,7 +38,6 @@ type ProposalResponse = {
   targetRuleId: number | null;
   scope: string;
   statement: string;
-  layer: string;
   source: "baseline-exploration" | "disposition-feedback";
   sourceNote: string | null;
   state: "pending" | "accepted" | "rejected";
@@ -144,7 +143,6 @@ test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,
         type: "rule",
         scope: "",
         statement: "入参要在边界上校验",
-        layer: "安全",
       }),
       undefined,
     );
@@ -153,8 +151,8 @@ test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,
     store.close();
   }
   items = [
-    { type: "rule", scope: "src/**", statement: "边界上一次判空", layer: "架构" },
-    { type: "rule", scope: "", statement: "改写现集里的那一条", layer: "安全", targetRuleId: ruleId },
+    { type: "rule", scope: "src/**", statement: "边界上一次判空" },
+    { type: "rule", scope: "", statement: "改写现集里的那一条", targetRuleId: ruleId },
   ];
 
   const [target] = await inlineFindings(h);
@@ -199,7 +197,7 @@ test("描述性备注蒸馏为事实提案,采纳后进知识集并注入下一�
   // 让下一轮的 Reviewer 有这块地面可站,而不是又一条谁也判不了违反的规则。
   const note = "这里有全局拦截器兜底,/api 下的路由都过它";
   items = [
-    { type: "fact", scope: "src/api/**", statement: "全局拦截器覆盖 /api 下的全部路由", layer: "" },
+    { type: "fact", scope: "src/api/**", statement: "全局拦截器覆盖 /api 下的全部路由" },
   ];
 
   const [target] = await inlineFindings(h);
@@ -209,8 +207,8 @@ test("描述性备注蒸馏为事实提案,采纳后进知识集并注入下一�
 
   const queued = await proposals(h);
   assert.deepEqual(
-    queued.map((entry) => [entry.type, entry.change, entry.statement, entry.layer]),
-    [["fact", "add", "全局拦截器覆盖 /api 下的全部路由", ""]],
+    queued.map((entry) => [entry.type, entry.change, entry.statement]),
+    [["fact", "add", "全局拦截器覆盖 /api 下的全部路由"]],
   );
   assert.equal(queued[0]!.sourceNote, note);
 
@@ -253,7 +251,7 @@ test("反哺跑完即释放那一份一次性工作树", async () => {
 
 test("无备注的处置不触发任何解读", async () => {
   const agent = scriptedRuleAgent(() => ({
-    items: [{ type: "rule", scope: "", statement: "一条规范陈述", layer: "架构" }],
+    items: [{ type: "rule", scope: "", statement: "一条规范陈述" }],
   }));
   const h = await harnessWithFindings(agent);
   const findings = await inlineFindings(h);
@@ -305,7 +303,7 @@ test("反哺沿用最近一次基点探索所用的模型,没探索过就用全�
 
 test("从未探索过且全局组合为空:跳过解读留一行原因,零提案", async () => {
   const agent = scriptedRuleAgent(() => ({
-    items: [{ type: "rule", scope: "", statement: "一条规范陈述", layer: "架构" }],
+    items: [{ type: "rule", scope: "", statement: "一条规范陈述" }],
   }));
   const h = await harnessWithFindings(agent);
   const findings = await inlineFindings(h);

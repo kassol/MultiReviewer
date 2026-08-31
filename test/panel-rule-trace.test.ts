@@ -140,7 +140,7 @@ test("知识轨迹的任务分号、续读与级联", () => {
 
 test("一次基点探索留下一条轨迹:说的话、调的工具与提出的条目都在,知识集读得到它", async () => {
   const h = await startReadyPanelHarness(cleanups, {
-    ruleAgent: narratingRuleAgent([{ type: "rule", scope: "", statement: "公开函数要有类型标注", layer: "架构" }]),
+    ruleAgent: narratingRuleAgent([{ type: "rule", scope: "", statement: "公开函数要有类型标注" }]),
   });
   assert.equal(
     (await h.api("POST", "/repos", { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo })).status,
@@ -180,7 +180,6 @@ test("一次基点探索留下一条轨迹:说的话、调的工具与提出的�
     type: "rule",
     scope: "",
     statement: "公开函数要有类型标注",
-    layer: "架构",
   });
 
   // 跑完之后连流:回放完直接收到结束信号,不挂着等。
@@ -199,7 +198,7 @@ test("一次基点探索留下一条轨迹:说的话、调的工具与提出的�
 
 test("一次处置反哺留下一条轨迹,提案回溯得到它", async () => {
   const items: RuleAgentItem[] = [
-    { type: "rule", scope: "", statement: "边界上一次判掉越界", layer: "架构" },
+    { type: "rule", scope: "", statement: "边界上一次判掉越界" },
   ];
   const h = await startReadyPanelHarness(cleanups, {
     ruleAgent: narratingRuleAgent(items),

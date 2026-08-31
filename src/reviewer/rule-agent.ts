@@ -25,8 +25,6 @@ export type RuleAgentItem = {
   scope: string;
   /** 那一句陈述:规则型是规范陈述,事实型是可核查的现状陈述。 */
   statement: string;
-  /** 自由文本层标签。属规则型,事实型是空串。 */
-  layer: string;
   /**
    * 这一条针对的现有知识条目标识(issue #207)。知识集非空时 agent 提的是对照现有知识
    * 集的变更,认得出目标即修改或废止,认不出即新增;知识集为空时恒缺席。

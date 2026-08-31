@@ -532,9 +532,9 @@ test("规则 agent 的任务原样进子进程,产出的条目逐条回来", asy
 process.on("message", (request) => {
   process.send({
     kind: "rule",
-    item: { type: "rule", scope: request.baselineSha, statement: JSON.stringify(request.existingKnowledge), layer: "架构" },
+    item: { type: "rule", scope: request.baselineSha, statement: JSON.stringify(request.existingKnowledge) },
   });
-  process.send({ kind: "rule", item: { type: "rule", scope: "", statement: "第二条", layer: "安全" } });
+  process.send({ kind: "rule", item: { type: "rule", scope: "", statement: "第二条" } });
   process.send({ kind: "done" });
   process.exit(0);
 });
@@ -545,14 +545,14 @@ process.on("message", (request) => {
   assert.equal(result.items.length, 2);
   assert.equal(result.items[0]!.scope, RULE_REQUEST.baselineSha);
   assert.deepEqual(JSON.parse(result.items[0]!.statement), RULE_REQUEST.existingKnowledge);
-  assert.equal(result.items[1]!.layer, "安全");
+  assert.equal(result.items[1]!.statement, "第二条");
 });
 
 test("规则 agent 的会话事件与提出的条目按发生顺序回调给编排层", async () => {
   const path = worker(`
 process.on("message", () => {
   process.send({ kind: "event", event: { kind: "assistant_message", text: "先读文档" } });
-  process.send({ kind: "rule", item: { type: "rule", scope: "", statement: "第一条", layer: "架构" } });
+  process.send({ kind: "rule", item: { type: "rule", scope: "", statement: "第一条" } });
   process.send({ kind: "event", event: { kind: "tool_call", tool: "grep", args: { pattern: "x" }, durationMs: 3, isError: false, error: null, resultLength: 9 } });
   process.send({ kind: "done" });
   process.exit(0);
@@ -576,7 +576,7 @@ process.on("message", () => {
 test("规则 agent 的子进程未回报结果即退出时,失败原因带上退出码", async () => {
   const path = worker(`
 process.on("message", () => {
-  process.send({ kind: "rule", item: { type: "rule", scope: "", statement: "只报了一条就崩", layer: "架构" } });
+  process.send({ kind: "rule", item: { type: "rule", scope: "", statement: "只报了一条就崩" } });
   process.exit(3);
 });
 `);
@@ -617,7 +617,7 @@ test("规则 agent 的思考档位同样原样进子进程", async () => {
 process.on("message", (request) => {
   process.send({
     kind: "rule",
-    item: { type: "rule", scope: "", statement: String(request.thinkingLevel), layer: "架构" },
+    item: { type: "rule", scope: "", statement: String(request.thinkingLevel) },
   });
   process.send({ kind: "done" });
   process.exit(0);

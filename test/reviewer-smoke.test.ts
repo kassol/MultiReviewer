@@ -208,7 +208,6 @@ test("真实模型经 propose_rule 推导出规范性的评审规则", { skip },
   // 条数不再设上限(issue #223),这里只看两型的必填面对不对得上。
   for (const item of result.items) {
     assert.ok(item.statement.trim().length > 0);
-    if (item.type === "rule") assert.ok(item.layer.trim().length > 0);
   }
 });
 

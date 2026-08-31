@@ -289,7 +289,8 @@ CREATE TABLE IF NOT EXISTS rule_set_version (
 );
 
 -- 知识条目(CONTEXT.md)。scope 是 glob,空串即全仓库;statement 是那一句陈述;
--- layer 是自由文本层标签(层标签属规则型,事实型为空串);origin 是出处。
+-- origin 是出处。layer 列是退役的层标签:代码不再读也不再写新值,新行一律空串,存量行
+-- 原样留着——它 NOT NULL 且没人读,删列要重建整张表,不值当。
 --
 -- type 是封闭的两值枚举(ADR 0020):rule 是评审规则,违反即 Finding;fact 是项目
 -- 事实,注入后只作判断依据。两型同表是因为它们形状同构——作用范围、陈述、出处与两态
@@ -353,7 +354,7 @@ CREATE TABLE IF NOT EXISTS rule_draft_item (
 CREATE INDEX IF NOT EXISTS rule_draft_item_by_repo ON rule_draft_item(repo_id);
 
 -- 修订提案(CONTEXT.md,issue #207)。一条待裁决的知识集变更:change 是变更类型,
--- target_rule_id 是修改与废止指向的现有规则(新增没有目标),scope / statement / layer
+-- target_rule_id 是修改与废止指向的现有规则(新增没有目标),scope / statement
 -- 是提案内容(废止那一档是目标规则当时的原样,只为看得懂队列里这条要废止什么),
 -- source 是出处二元,source_note 放触发它的处置备注(只有处置反哺有,issue #208)。
 --
@@ -1187,20 +1188,19 @@ export type RepoSummary = {
   worktree: WorktreeStatus;
 };
 
-/** 知识集里的一条知识条目(CONTEXT.md)。`scope` 空串即全仓库;事实型的 `layer` 是空串。 */
+/** 知识集里的一条知识条目(CONTEXT.md)。`scope` 空串即全仓库。 */
 export type ReviewRuleRecord = {
   id: number;
   type: KnowledgeType;
   scope: string;
   statement: string;
-  layer: string;
   /** 出处。这一票只有读,写它的是基点探索、处置反哺与人手写三条链路。 */
   origin: string;
 };
 
 /**
- * 知识集里的一条 → 交给模型的那一份(issue #204)。只要标识、作用范围与那一句陈述;
- * 层标签是人给规则分组用的,不进模型输入。启动快照、基点探索与处置反哺三处同一份投影。
+ * 知识集里的一条 → 交给模型的那一份(issue #204)。只要标识、作用范围与那一句陈述。
+ * 启动快照、基点探索与处置反哺三处同一份投影。
  */
 export function toReviewRule(rule: ReviewRuleRecord): ReviewRule {
   return { id: rule.id, scope: rule.scope, statement: rule.statement };
@@ -1218,7 +1218,7 @@ export function toProjectFact(entry: ReviewRuleRecord): ProjectFact {
 /**
  * 知识集里的一条 → 交给规则 agent 的那一份(issue #222)。比注入那两份多一个 `type`:
  * agent 提的是对照现有知识集的变更,分不清哪条是哪型就分不清「改一条规则」与「废止一条
- * 过期事实」。层标签同样不给——它是人分组用的,对推导没有作用。
+ * 过期事实」。
  */
 export function toKnowledgeEntry(entry: ReviewRuleRecord): KnowledgeEntry {
   return { id: entry.id, type: entry.type, scope: entry.scope, statement: entry.statement };
@@ -1239,14 +1239,12 @@ export type RuleSet = {
 };
 
 /**
- * 一条知识条目里由人填的那几样:两型之一、作用范围(空串即全仓库)、那一句陈述与层标签。
- * 层标签属规则型,事实型一律空串(ADR 0020)。
+ * 一条知识条目里由人填的那几样:两型之一、作用范围(空串即全仓库)与那一句陈述。
  */
 export type ReviewRuleInput = {
   type: KnowledgeType;
   scope: string;
   statement: string;
-  layer: string;
 };
 
 /**
@@ -2571,11 +2569,12 @@ export function openStore(dbPath: string): Store {
     version: number,
     at: string,
   ): void => {
+    // layer 是退役的层标签,列还在(NOT NULL)但没人读:新行一律写空串。
     db.prepare(
       `INSERT INTO review_rule
          (repo_id, type, scope, statement, layer, state, origin, effective_version, retired_version, created_at)
-       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, NULL, ?)`,
-    ).run(repoId, input.type, input.scope, input.statement, input.layer, origin, version, at);
+       VALUES (?, ?, ?, ?, '', 'active', ?, ?, NULL, ?)`,
+    ).run(repoId, input.type, input.scope, input.statement, origin, version, at);
   };
 
   const completeRuleExploration = (repoId: number, at: string): void => {
@@ -2590,7 +2589,7 @@ export function openStore(dbPath: string): Store {
         `INSERT INTO rule_proposal
            (repo_id, type, change, target_rule_id, scope, statement, layer, source, source_note,
             trace_task_id, state, created_at, decided_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL)`,
+         VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, 'pending', ?, NULL)`,
       )
       .run(
         repoId,
@@ -2599,7 +2598,6 @@ export function openStore(dbPath: string): Store {
         input.targetRuleId,
         input.scope,
         input.statement,
-        input.layer,
         input.source,
         input.sourceNote,
         input.traceTaskId,
@@ -2635,7 +2633,6 @@ export function openStore(dbPath: string): Store {
       type: queued.type,
       scope: queued.scope,
       statement: queued.statement,
-      layer: queued.layer,
     };
     // 修改与废止都要目标条目此刻仍然生效:它已经被人废止掉时,这条提案落不下去。
     const target =
@@ -2668,9 +2665,9 @@ export function openStore(dbPath: string): Store {
     }
     db.prepare(
       `UPDATE rule_proposal
-          SET state = 'accepted', type = ?, scope = ?, statement = ?, layer = ?, decided_at = ?
+          SET state = 'accepted', type = ?, scope = ?, statement = ?, decided_at = ?
         WHERE id = ?`,
-    ).run(content.type, content.scope, content.statement, content.layer, at, queued.id);
+    ).run(content.type, content.scope, content.statement, at, queued.id);
   };
 
   const rejectProposalRow = (proposalId: number, at: string): void => {
@@ -3173,7 +3170,7 @@ export function openStore(dbPath: string): Store {
       const select = (where: string): ReviewRuleRecord[] =>
         db
           .prepare(
-            `SELECT id, type, scope, statement, layer, origin
+            `SELECT id, type, scope, statement, origin
                FROM review_rule
               WHERE repo_id = ? AND ${where}
               ORDER BY id`,
@@ -3184,7 +3181,6 @@ export function openStore(dbPath: string): Store {
             type: String(row["type"]) as KnowledgeType,
             scope: String(row["scope"]),
             statement: String(row["statement"]),
-            layer: String(row["layer"]),
             origin: String(row["origin"]),
           }));
       return {
@@ -3280,7 +3276,7 @@ export function openStore(dbPath: string): Store {
         db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
         const insert = db.prepare(
           `INSERT INTO rule_draft_item (repo_id, type, scope, statement, layer, origin, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, '', ?, ?)`,
         );
         for (const item of items) {
           insert.run(
@@ -3288,7 +3284,6 @@ export function openStore(dbPath: string): Store {
             item.type,
             item.scope,
             item.statement,
-            item.layer,
             BASELINE_EXPLORATION_RULE_ORIGIN,
             at,
           );
@@ -3331,7 +3326,7 @@ export function openStore(dbPath: string): Store {
     getRuleDraft(repoId) {
       return db
         .prepare(
-          `SELECT id, type, scope, statement, layer, origin
+          `SELECT id, type, scope, statement, origin
              FROM rule_draft_item WHERE repo_id = ? ORDER BY id`,
         )
         .all(repoId)
@@ -3340,7 +3335,6 @@ export function openStore(dbPath: string): Store {
           type: String(row["type"]) as KnowledgeType,
           scope: String(row["scope"]),
           statement: String(row["statement"]),
-          layer: String(row["layer"]),
           origin: String(row["origin"]),
         }));
     },
@@ -3350,14 +3344,13 @@ export function openStore(dbPath: string): Store {
       const inserted = db
         .prepare(
           `INSERT INTO rule_draft_item (repo_id, type, scope, statement, layer, origin, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, '', ?, ?)`,
         )
         .run(
           repoId,
           input.type,
           input.scope,
           input.statement,
-          input.layer,
           MANUAL_RULE_ORIGIN,
           new Date().toISOString(),
         );
@@ -3368,9 +3361,9 @@ export function openStore(dbPath: string): Store {
       // 出处沿用旧值,SQL 不碰 origin 这一列。
       const changed = db
         .prepare(
-          "UPDATE rule_draft_item SET type = ?, scope = ?, statement = ?, layer = ? WHERE id = ? AND repo_id = ?",
+          "UPDATE rule_draft_item SET type = ?, scope = ?, statement = ? WHERE id = ? AND repo_id = ?",
         )
-        .run(input.type, input.scope, input.statement, input.layer, itemId, repoId);
+        .run(input.type, input.scope, input.statement, itemId, repoId);
       return changed.changes > 0;
     },
 
@@ -3409,7 +3402,7 @@ export function openStore(dbPath: string): Store {
     getRuleProposals(repoId) {
       return db
         .prepare(
-          `SELECT id, type, change, target_rule_id, scope, statement, layer, source, source_note,
+          `SELECT id, type, change, target_rule_id, scope, statement, source, source_note,
                   trace_task_id, state, created_at, decided_at
              FROM rule_proposal WHERE repo_id = ? ORDER BY id`,
         )
@@ -3421,7 +3414,6 @@ export function openStore(dbPath: string): Store {
           targetRuleId: row["target_rule_id"] === null ? null : Number(row["target_rule_id"]),
           scope: String(row["scope"]),
           statement: String(row["statement"]),
-          layer: String(row["layer"]),
           source: String(row["source"]) as RuleProposalSource,
           sourceNote: row["source_note"] === null ? null : String(row["source_note"]),
           traceTaskId:

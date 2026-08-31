@@ -35,7 +35,6 @@ type ProposalResponse = {
   targetRuleId: number | null;
   scope: string;
   statement: string;
-  layer: string;
   source: "baseline-exploration" | "disposition-feedback";
   sourceNote: string | null;
   state: "pending" | "accepted" | "rejected";
@@ -46,7 +45,7 @@ type ProposalResponse = {
 type RuleSetResponse = {
   version: number | null;
   exploration: { state: "running" | "failed" | "completed" } | null;
-  rules: { id: number; scope: string; statement: string; layer: string; origin: string }[];
+  rules: { id: number; scope: string; statement: string; origin: string }[];
   retired: { id: number; statement: string }[];
   draft: { id: number; statement: string }[];
   proposals: ProposalResponse[];
@@ -60,7 +59,6 @@ function proposal(overrides: Partial<RuleProposalInput> = {}): RuleProposalInput
     traceTaskId: null,
     scope: "",
     statement: "新提的一条规范陈述",
-    layer: "架构",
     source: "baseline-exploration",
     sourceNote: null,
     ...overrides,
@@ -158,8 +156,8 @@ async function confirmedHarness(items: RuleAgentItem[]): Promise<{
   await h.worktreesPreparedAtLeast(1);
   const cookie = await scopedUser(h, "proposal-writer", [GITEA_REPO.id], ["knowledge:write"]);
   for (const rule of [
-    { type: "rule", scope: "", statement: "会被改的那条", layer: "架构" },
-    { type: "rule", scope: "", statement: "会被废止的那条", layer: "安全" },
+    { type: "rule", scope: "", statement: "会被改的那条" },
+    { type: "rule", scope: "", statement: "会被废止的那条" },
   ]) {
     assert.equal((await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rules`, rule)).status, 201);
   }
@@ -203,18 +201,18 @@ test("三种变更类型各自的落库形态:新增进集、修改留下旧那�
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 81, owner: "acme", repo: "decided", generation: 1, key: "k" });
-    store.addReviewRule(81, { type: "rule", scope: "", statement: "会被改的那条", layer: "架构" });
-    assert.equal(store.addReviewRule(81, { type: "rule", scope: "", statement: "会被废止的那条", layer: "安全" }), 2);
+    store.addReviewRule(81, { type: "rule", scope: "", statement: "会被改的那条" });
+    assert.equal(store.addReviewRule(81, { type: "rule", scope: "", statement: "会被废止的那条" }), 2);
     const [target, doomed] = store.getRuleSet(81)!.rules;
 
     const added = store.addRuleProposal(81, proposal({ statement: "探索提的新规则", scope: "src/**" }))!;
     const modified = store.addRuleProposal(
       81,
-      proposal({ change: "modify", targetRuleId: target!.id, statement: "改过的陈述", layer: "架构" }),
+      proposal({ change: "modify", targetRuleId: target!.id, statement: "改过的陈述" }),
     )!;
     const retired = store.addRuleProposal(
       81,
-      proposal({ change: "retire", targetRuleId: doomed!.id, statement: "会被废止的那条", layer: "安全" }),
+      proposal({ change: "retire", targetRuleId: doomed!.id, statement: "会被废止的那条" }),
     )!;
 
     // 新增:出处沿用提案的出处,不记人工。
@@ -261,16 +259,16 @@ test("采纳前改内容:落库的是改后的那一份,队列里也留改后的
     store.registerRepo({ repoId: 82, owner: "acme", repo: "edited", generation: 1, key: "k" });
     const id = store.addRuleProposal(82, proposal({ statement: "原样的陈述" }))!;
     assert.equal(
-      store.acceptRuleProposal(82, id, { type: "rule", scope: "src/**", statement: "改后的陈述", layer: "安全" }),
+      store.acceptRuleProposal(82, id, { type: "rule", scope: "src/**", statement: "改后的陈述" }),
       1,
     );
     assert.deepEqual(
-      store.getRuleSet(82)!.rules.map((rule) => [rule.scope, rule.statement, rule.layer]),
-      [["src/**", "改后的陈述", "安全"]],
+      store.getRuleSet(82)!.rules.map((rule) => [rule.scope, rule.statement]),
+      [["src/**", "改后的陈述"]],
     );
     const decided = store.getRuleProposals(82)[0]!;
     assert.equal(decided.statement, "改后的陈述");
-    assert.equal(decided.layer, "安全");
+    assert.equal(decided.scope, "src/**");
   } finally {
     store.close();
   }
@@ -282,7 +280,7 @@ test("目标规则已经不生效时采纳不了,一版都不推进;移除仓库
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 83, owner: "acme", repo: "stale", generation: 1, key: "k" });
-    store.addReviewRule(83, { type: "rule", scope: "", statement: "先有的那条", layer: "架构" });
+    store.addReviewRule(83, { type: "rule", scope: "", statement: "先有的那条" });
     const rule = store.getRuleSet(83)!.rules[0]!;
     const id = store.addRuleProposal(
       83,
@@ -308,11 +306,11 @@ test("知识集已确认时探索产出进提案队列,草案一行不动", asyn
   const { h, cookie, agent } = await confirmedHarness(items);
   const rules = (await ruleSet(h, cookie)).rules;
   items.push(
-    { type: "rule", scope: "", statement: "改过的陈述", layer: "架构", targetRuleId: rules[0]!.id },
-    { type: "rule", scope: "", statement: "会被废止的那条", layer: "安全", targetRuleId: rules[1]!.id, retire: true },
-    { type: "rule", scope: "src/**", statement: "全新的一条", layer: "测试" },
+    { type: "rule", scope: "", statement: "改过的陈述", targetRuleId: rules[0]!.id },
+    { type: "rule", scope: "", statement: "会被废止的那条", targetRuleId: rules[1]!.id, retire: true },
+    { type: "rule", scope: "src/**", statement: "全新的一条" },
     // 对不上现有规则的废止不成其为一条变更,丢掉。
-    { type: "rule", scope: "", statement: "对不上目标的废止", layer: "架构", targetRuleId: 4242, retire: true },
+    { type: "rule", scope: "", statement: "对不上目标的废止", targetRuleId: 4242, retire: true },
   );
 
   const started = await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-exploration`, {
@@ -347,9 +345,9 @@ test("逐条裁决:改后采纳、原样采纳与驳回,只有采纳推进知识
   const path = `/repos/${GITEA_REPO.id}`;
   const rules = (await ruleSet(h, cookie)).rules;
   items.push(
-    { type: "rule", scope: "", statement: "agent 提的改法", layer: "架构", targetRuleId: rules[0]!.id },
-    { type: "rule", scope: "", statement: "会被废止的那条", layer: "安全", targetRuleId: rules[1]!.id, retire: true },
-    { type: "rule", scope: "src/**", statement: "全新的一条", layer: "测试" },
+    { type: "rule", scope: "", statement: "agent 提的改法", targetRuleId: rules[0]!.id },
+    { type: "rule", scope: "", statement: "会被废止的那条", targetRuleId: rules[1]!.id, retire: true },
+    { type: "rule", scope: "src/**", statement: "全新的一条" },
   );
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
@@ -367,7 +365,6 @@ test("逐条裁决:改后采纳、原样采纳与驳回,只有采纳推进知识
   const edited = await send(h, cookie, "POST", `${path}/rule-proposals/${queued[0]!.id}/accept`, {
     scope: "src/**",
     statement: "人改过的那条",
-    layer: "架构",
   });
   assert.equal(edited.status, 200);
   assert.deepEqual(await edited.json(), { version: 3 });
@@ -402,7 +399,6 @@ test("逐条裁决:改后采纳、原样采纳与驳回,只有采纳推进知识
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-proposals/${queued[0]!.id}/accept`, {
       statement: " ",
-      layer: "架构",
     })).status,
     400,
   );
@@ -413,7 +409,7 @@ test("没有 knowledge:write 的人裁决不了,但读得到提案队列", async
   const { h, cookie } = await confirmedHarness(items);
   const path = `/repos/${GITEA_REPO.id}`;
   const rules = (await ruleSet(h, cookie)).rules;
-  items.push({ type: "rule", scope: "", statement: "改过的陈述", layer: "架构", targetRuleId: rules[0]!.id });
+  items.push({ type: "rule", scope: "", statement: "改过的陈述", targetRuleId: rules[0]!.id });
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
@@ -457,7 +453,7 @@ test("已确认的空知识集重探索:产出仍进提案队列,不回到草案
   assert.equal((await send(h, cookie, "POST", `${path}/rule-draft/confirm`)).status, 200);
   assert.equal((await ruleSet(h, cookie)).version, 1);
 
-  items.push({ type: "rule", scope: "", statement: "重探索提的那条", layer: "架构" });
+  items.push({ type: "rule", scope: "", statement: "重探索提的那条" });
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
@@ -485,12 +481,12 @@ test("批量采纳一次只推进一个知识集版本;有一条落不下去就�
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 84, owner: "acme", repo: "bulk", generation: 1, key: "k" });
-    store.addReviewRule(84, { type: "rule", scope: "", statement: "会被改的那条", layer: "架构" });
+    store.addReviewRule(84, { type: "rule", scope: "", statement: "会被改的那条" });
     const target = store.getRuleSet(84)!.rules[0]!;
 
     const ids = [
       store.addRuleProposal(84, proposal({ statement: "新提的第一条" }))!,
-      store.addRuleProposal(84, proposal({ type: "fact", statement: "一条事实", layer: "" }))!,
+      store.addRuleProposal(84, proposal({ type: "fact", statement: "一条事实" }))!,
       store.addRuleProposal(
         84,
         proposal({ change: "modify", targetRuleId: target.id, statement: "改过的陈述" }),
@@ -541,7 +537,7 @@ test("批量采纳里目标条目已经不生效:整组不做,一版都不推进
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 85, owner: "acme", repo: "stale-bulk", generation: 1, key: "k" });
-    store.addReviewRule(85, { type: "rule", scope: "", statement: "先有的那条", layer: "架构" });
+    store.addReviewRule(85, { type: "rule", scope: "", statement: "先有的那条" });
     const rule = store.getRuleSet(85)!.rules[0]!;
     const ids = [
       store.addRuleProposal(85, proposal({ statement: "本来能落的那条" }))!,
@@ -592,9 +588,9 @@ test("面板批量采纳与批量驳回:一次一版,坏 body 一律 400", async
   const { h, cookie } = await confirmedHarness(items);
   const path = `/repos/${GITEA_REPO.id}`;
   items.push(
-    { type: "rule", scope: "", statement: "批量提的第一条", layer: "架构" },
-    { type: "fact", scope: "", statement: "批量提的一条事实", layer: "" },
-    { type: "rule", scope: "", statement: "要被驳回的那条", layer: "测试" },
+    { type: "rule", scope: "", statement: "批量提的第一条" },
+    { type: "fact", scope: "", statement: "批量提的一条事实" },
+    { type: "rule", scope: "", statement: "要被驳回的那条" },
   );
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
@@ -656,7 +652,7 @@ test("批量采纳里两条指向同一个目标:整组不做,不让一条规则
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 87, owner: "acme", repo: "same-target", generation: 1, key: "k" });
-    store.addReviewRule(87, { type: "rule", scope: "", statement: "本来那条", layer: "架构" });
+    store.addReviewRule(87, { type: "rule", scope: "", statement: "本来那条" });
     const rule = store.getRuleSet(87)!.rules[0]!;
     // 同一次探索报两条 `rule_id` 相同的变更,或两次反哺各排一条,队列里就会并存。
     const twoModify = [
@@ -701,20 +697,20 @@ test("modify 提案翻不了型:采纳一条把规则改成事实的提案落不
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 88, owner: "acme", repo: "type-flip", generation: 1, key: "k" });
-    store.addReviewRule(88, { type: "rule", scope: "", statement: "边界要校验", layer: "架构" });
+    store.addReviewRule(88, { type: "rule", scope: "", statement: "边界要校验" });
     const rule = store.getRuleSet(88)!.rules[0]!;
 
     // agent 提的 modify 自带 type=fact:采纳会把一条生效规则悄悄变成项目事实,从此
     // 不再产 Finding。修改不许翻型,要改型走「废止 + 新增」两条,意图才看得见。
     const flip = store.addRuleProposal(
       88,
-      proposal({ type: "fact", change: "modify", targetRuleId: rule.id, statement: "边界已有校验", layer: "" }),
+      proposal({ type: "fact", change: "modify", targetRuleId: rule.id, statement: "边界已有校验" }),
     )!;
     assert.equal(store.acceptRuleProposal(88, flip), undefined);
     assert.equal(store.acceptRuleProposals(88, [flip]), undefined);
     // 人「改后采纳」时把 type 改成 fact 同样落不下去:守卫按改后的内容判。
     assert.equal(
-      store.acceptRuleProposal(88, flip, { type: "fact", scope: "", statement: "边界已有校验", layer: "" }),
+      store.acceptRuleProposal(88, flip, { type: "fact", scope: "", statement: "边界已有校验" }),
       undefined,
     );
     assert.equal(store.getRuleSet(88)!.version, 1);

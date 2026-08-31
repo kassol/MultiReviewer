@@ -91,9 +91,6 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
             <Badge color="gray" variant="soft" radius="full">
               {TYPE_LABEL[str(item, "type") === "fact" ? "fact" : "rule"]}
             </Badge>
-            {str(item, "layer") === null || str(item, "layer") === "" ? null : (
-              <Badge color="gray" variant="soft" radius="full">{str(item, "layer")}</Badge>
-            )}
             <Badge color="gray" variant="soft" radius="full">{scope ?? "全仓库"}</Badge>
             {item["retire"] === true ? (
               <Badge color="gray" variant="soft" radius="full">废止</Badge>

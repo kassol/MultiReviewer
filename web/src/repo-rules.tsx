@@ -18,16 +18,12 @@ import { THINKING_LEVEL_LABEL, type ThinkingLevel } from "./model-services.ts";
 /** 事实型陈述的字数上限,与服务端同一个数:超了服务端 400,表单先拦一道。 */
 const FACT_STATEMENT_LIMIT = 500;
 
-/**
- * `GET /repos/{id}/rules` 的一条知识条目(CONTEXT.md)。`scope` 空串即全仓库;`layer`
- * 属规则型,事实型是空串。
- */
+/** `GET /repos/{id}/rules` 的一条知识条目(CONTEXT.md)。`scope` 空串即全仓库。 */
 type ReviewRule = {
   id: number;
   type: KnowledgeType;
   scope: string;
   statement: string;
-  layer: string;
   origin: string;
 };
 
@@ -55,7 +51,6 @@ type RuleProposal = {
   targetRuleId: number | null;
   scope: string;
   statement: string;
-  layer: string;
   source: "baseline-exploration" | "disposition-feedback";
   sourceNote: string | null;
   /** 提出它的那一次知识轨迹(issue #214)。人据此回溯这条提案是怎么推出来的。 */
@@ -97,21 +92,16 @@ type RuleFormState = {
   type: KnowledgeType;
   scope: string;
   statement: string;
-  layer: string;
 };
 
-const BLANK_DRAFT: RuleFormState = { id: null, type: "rule", scope: "", statement: "", layer: "" };
+const BLANK_DRAFT: RuleFormState = { id: null, type: "rule", scope: "", statement: "" };
 
-/**
- * 一条知识条目的请求 body。三处写侧(生效条目、知识草案、提案的改后内容)同一个形状。
- * 层标签属规则型:事实型发空串,服务端同判。
- */
+/** 一条知识条目的请求 body。三处写侧(生效条目、知识草案、提案的改后内容)同一个形状。 */
 function ruleFieldsBody(form: RuleFormState): string {
   return JSON.stringify({
     type: form.type,
     scope: form.scope.trim(),
     statement: form.statement.trim(),
-    layer: form.type === "rule" ? form.layer.trim() : "",
   });
 }
 
@@ -397,8 +387,7 @@ function RuleSetDialogContent({
 
       {ruleSet.data === undefined ? null : (
         <div className="flex flex-col gap-3.5">
-          {/* 生效条目只按两型分段(ADR 0020),与修订提案区同一套语法:层标签是规则的
-              属性,降为条目上的徽章——把属性抬成分组,单条组会像「一条配一个标题」。 */}
+          {/* 生效条目只按两型分段(ADR 0020),与修订提案区同一套语法。 */}
           {ruleSet.data.rules.some((entry) => entry.type === "rule") ? (
             <section className="flex flex-col gap-2">
               <div className="flex items-center gap-1">
@@ -439,10 +428,7 @@ function RuleSetDialogContent({
                           </div>
                         ) : null}
                       </div>
-                      <span className="mt-1.5 inline-flex flex-wrap gap-1">
-                        {rule.layer === "" ? null : (
-                          <Badge color="gray" variant="soft">{rule.layer}</Badge>
-                        )}
+                      <span className="mt-1.5 inline-block">
                         <Badge color="gray" variant="soft">
                           {rule.scope === "" ? "全仓库" : rule.scope}
                         </Badge>
@@ -518,12 +504,9 @@ function RuleSetDialogContent({
                 <Text as="p" size="2" color="gray" className="line-through">
                   {rule.statement}
                 </Text>
-                <span className="mt-1.5 inline-flex flex-wrap gap-1.5">
-                  {/* 事实没有层标签,这里改用两型的名字:废止的那一条也要说得出它是哪一型。 */}
+                <span className="mt-1.5 inline-block">
+                  {/* 废止的那一条也要说得出它是哪一型。 */}
                   <Badge color="gray" variant="soft">{TYPE_LABEL[rule.type]}</Badge>
-                  {rule.layer === "" ? null : (
-                    <Badge color="gray" variant="soft">{rule.layer}</Badge>
-                  )}
                 </span>
               </li>
             ))}
@@ -553,11 +536,10 @@ function RuleSetDialogContent({
 
 /**
  * 新增与修改共用的一张表(issue #203、#221)。两型同一张表(ADR 0020),第一格就是选
- * 哪一型,后面几格跟着换:
+ * 哪一型,陈述那一格跟着换:
  *
- * - **评审规则**要规范陈述与层标签(空陈述不构成规范,空层标签在这个弹窗里分不了组);
- * - **项目事实**只要那一句可核查的陈述,层标签整格不出现——它属规则型,给了服务端也
- *   不收;陈述另有字数上限,事实是一句话不是一段说明。
+ * - **评审规则**要那一句规范陈述(空陈述不构成规范);
+ * - **项目事实**要那一句可核查的陈述,另有字数上限,事实是一句话不是一段说明。
  *
  * 作用范围两型都可以留空,空即全仓库。这里的必填判据与服务端逐条对应。
  */
@@ -583,7 +565,7 @@ function RuleForm({
   const statement = draft.statement.trim();
   const isRule = draft.type === "rule";
   const overLimit = !isRule && statement.length > FACT_STATEMENT_LIMIT;
-  const ready = statement !== "" && !overLimit && (!isRule || draft.layer.trim() !== "");
+  const ready = statement !== "" && !overLimit;
   return (
     <form
       className="mb-3 flex flex-col gap-2 rounded-lg border border-card-line p-3"
@@ -623,18 +605,6 @@ function RuleForm({
           autoFocus
         />
       </label>
-      {/* 层标签属规则型:事实型整格不出现,而不是摆一个填了也不收的空格。 */}
-      {isRule ? (
-        <label className="flex flex-col gap-1">
-          <Text size="1" color="gray">层标签</Text>
-          <TextField.Root
-            size={{ initial: "3", sm: "2" }}
-            className="max-sm:min-h-11"
-            value={draft.layer}
-            onChange={(event) => onChange({ ...draft, layer: event.target.value })}
-          />
-        </label>
-      ) : null}
       <label className="flex flex-col gap-1">
         <Text size="1" color="gray">作用范围(glob,留空即全仓库)</Text>
         <TextField.Root
@@ -688,6 +658,24 @@ function SelectAll({
 }
 
 const CHANGE_LABEL = { add: "新增", modify: "修改", retire: "废止" } as const;
+
+/**
+ * 一条已裁决提案的结论说法。裁决的对象是提案而不是条目:光写「已驳回」会被读成「这条
+ * 规则被驳回」,而被驳回的其实是「废止它的提案」——条目还在。因此按裁决 × 变更类型合成
+ * 一句话,把两件事一次说清。
+ */
+const DECISION_LABEL = {
+  accepted: {
+    add: "采纳了新增提案",
+    modify: "采纳了修改提案",
+    retire: "采纳了废止提案,条目已废止",
+  },
+  rejected: {
+    add: "驳回了新增提案",
+    modify: "驳回了修改提案,条目保持原样",
+    retire: "驳回了废止提案,条目保留",
+  },
+} as const satisfies Record<"accepted" | "rejected", Record<RuleProposal["change"], string>>;
 
 /**
  * 修订提案队列与裁决那一段(issue #207)。待裁决的排在前面,已裁决的留在后面供查。
@@ -795,7 +783,6 @@ function ProposalSection({
                           type: proposal.type,
                           scope: proposal.scope,
                           statement: proposal.statement,
-                          layer: proposal.layer,
                         })
                       }
                     >
@@ -872,11 +859,14 @@ function ProposalSection({
               <li key={proposal.id} className="border-t border-line px-4 py-3 first:border-t-0">
                 <Text as="p" size="2" color="gray">{proposal.statement}</Text>
                 <span className="mt-1.5 inline-flex flex-wrap items-center gap-1.5">
+                  {/* 短语已经带上变更类型,同行不再挂 CHANGE_LABEL 徽章:那枚徽章与
+                      短语说的是同一件事,并排只会把人读回「条目被驳回」那个误解。 */}
                   <StatusBadge tone={proposal.state === "accepted" ? "success" : "neutral"}>
-                    {proposal.state === "accepted" ? "已采纳" : "已驳回"}
+                    {proposal.state === "accepted"
+                      ? DECISION_LABEL.accepted[proposal.change]
+                      : DECISION_LABEL.rejected[proposal.change]}
                   </StatusBadge>
                   <Badge color="gray" variant="soft">{TYPE_LABEL[proposal.type]}</Badge>
-                  <Badge color="gray" variant="soft">{CHANGE_LABEL[proposal.change]}</Badge>
                   <Badge color="gray" variant="soft">{SOURCE_LABEL[proposal.source]}</Badge>
                   {proposal.traceTaskId === null ? null : (
                     <RuleTraceButton repoId={repoId} taskId={proposal.traceTaskId} />
@@ -1044,9 +1034,6 @@ function ExplorationSection({
               <span className="mt-1.5 inline-flex flex-wrap gap-1.5">
                 {/* 草案里两型并列(ADR 0020),确认时一起进知识集,徽章要分得出哪条是哪型。 */}
                 <Badge color="gray" variant="soft">{TYPE_LABEL[rule.type]}</Badge>
-                {rule.layer === "" ? null : (
-                  <Badge color="gray" variant="soft">{rule.layer}</Badge>
-                )}
                 <Badge color="gray" variant="soft">
                   {rule.scope === "" ? "全仓库" : rule.scope}
                 </Badge>

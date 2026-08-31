@@ -41,7 +41,7 @@ Report each entry by calling the propose_rule tool exactly once per entry. Do no
 
 Order the entries by importance, most important first. Importance means how much a reviewer's judgement improves by having it. Report as many as this repository genuinely warrants and no more: every entry is confirmed by hand, so one that is obvious, that a linter or the type checker already enforces, or that no reviewer would act on costs the reader time and earns nothing.
 
-Write the statement and layer fields in Chinese. The reviewers of this repository read Chinese. Keep identifiers, file paths and code fragments in their original form — do not translate them.
+Write the statement field in Chinese. The reviewers of this repository read Chinese. Keep identifiers, file paths and code fragments in their original form — do not translate them.
 
 The read tool prefixes every line with its line number, like \`12: code\`. The prefix is not part of the file content.`;
 
@@ -53,10 +53,6 @@ const ruleSchema = Type.Object({
   statement: Type.String({
     description:
       "One sentence in Chinese. For a rule: what code in this repository must or must not do. For a fact: what is actually the case in this repository, phrased so a reader can check it against the code.",
-  }),
-  layer: Type.String({
-    description:
-      "Only for a rule: a short Chinese free-text label grouping it with related rules, such as 架构 / 安全 / 数据 / 测试. Reuse the same label across rules that belong together. Leave it empty for a fact.",
   }),
   scope: Type.Optional(
     Type.String({
@@ -163,7 +159,6 @@ async function run(request: RuleWorkerRequest): Promise<void> {
       const raw = params as {
         type: string;
         statement: string;
-        layer: string;
         scope?: string;
         rule_id?: number;
         retire?: boolean;
@@ -172,11 +167,10 @@ async function run(request: RuleWorkerRequest): Promise<void> {
         kind: "rule",
         item: {
           // 两型是封闭枚举:认不得的取值当规则收(与升级前逐字一致),服务端仍会再校验
-          // 一次陈述与层标签。宽松字符串加归一化是与 report_finding 同一条口径(ADR 0004)。
+          // 一次陈述。宽松字符串加归一化是与 report_finding 同一条口径(ADR 0004)。
           type: raw.type === "fact" ? "fact" : "rule",
           scope: raw.scope ?? "",
           statement: raw.statement,
-          layer: raw.layer,
           ...(raw.rule_id === undefined ? {} : { targetRuleId: raw.rule_id }),
           ...(raw.retire === true ? { retire: true } : {}),
         },

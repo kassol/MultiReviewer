@@ -43,7 +43,6 @@ async function confirmRules(h: PanelHarness): Promise<void> {
     (await h.api("POST", path, {
       scope: "",
       statement: "公开函数要有类型标注",
-      layer: "架构",
     })).status,
     201,
   );
