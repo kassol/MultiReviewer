@@ -23,6 +23,7 @@ import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import {
   EVIDENCE_AGENT,
   EVIDENCE_TOOL,
+  evidenceTranscriptEvents,
   installEvidenceKit,
   vendoredSubagentsPath,
 } from "./evidence.ts";
@@ -451,6 +452,10 @@ async function run(request: ReviewerRequest): Promise<void> {
     (event) => send({ kind: "event", event }),
     Date.now,
     (toolCallId) => anchorRejectedCalls.has(toolCallId),
+    // 取证子会话的过程嵌进这一次调用(issue #227):子代理跑在另一个进程里,它说过的话与
+    // 调过的工具只有从它的 transcript 读回来才进得了审查轨迹。
+    (toolName, result) =>
+      toolName === EVIDENCE_TOOL ? evidenceTranscriptEvents(result) : [],
   );
 
   session.subscribe((event) => {

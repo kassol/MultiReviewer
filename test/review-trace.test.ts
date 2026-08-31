@@ -358,3 +358,47 @@ test("afterSeq 只回它之后的那些事件", async () => {
     store.close();
   }
 });
+
+/** 一次取证调用:子会话的事件嵌在它下面(issue #227)。 */
+const EVIDENCE: ReviewerEvent = {
+  kind: "tool_call",
+  tool: "subagent",
+  args: { agent: "evidence", task: "谁调用 sub" },
+  durationMs: 840,
+  isError: false,
+  error: null,
+  resultLength: 96,
+  nested: [
+    { kind: "assistant_message", text: "先 grep 一遍 sub 的调用方" },
+    {
+      kind: "tool_call",
+      tool: "grep",
+      args: { pattern: "sub\\(" },
+      durationMs: 9,
+      isError: false,
+      error: null,
+      resultLength: 21,
+    },
+    { kind: "assistant_message", text: "src/m.js:1 定义,仓库内没有别的调用方" },
+  ],
+};
+
+test("取证子会话的事件随那次调用一起落库,实时与回看是同一条路径(issue #227)", async () => {
+  const { cache, db, forge } = setup();
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [scriptedReviewer("model-a", [AT_LINE_2], { events: [SAID, EVIDENCE] })],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  // 实时广播与历史回看读的是同一批行(`createTraceRecorder` 把落库与广播合成一个动作),
+  // 因此库里读回来嵌套一格不少,即两条路径都拿得到它。
+  const calls = trace(db.path).filter((e) => e.kind === "tool_call");
+  assert.equal(calls.length, 1);
+  const payload = calls[0]!.payload;
+  assert.equal(calls[0]!.reviewer, "model-a", "嵌套事件与它所属的 Reviewer 关联");
+  assert.deepEqual(payload["args"], { agent: "evidence", task: "谁调用 sub" });
+  assert.deepEqual(payload["nested"], EVIDENCE.kind === "tool_call" ? EVIDENCE.nested : undefined);
+});

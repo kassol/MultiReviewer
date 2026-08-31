@@ -244,4 +244,18 @@ test("真实模型对跨文件存疑场景派出取证", { skip }, async () => {
     assert.equal(call.isError, false, `取证调用被拒: ${call.error}`);
     assert.ok(call.resultLength > 0, "取证没有带回任何内容");
   }
+
+  // 取证子会话的过程嵌在那一次调用下面(issue #227),报告里带 file:line。
+  const nested = evidence.flatMap((call) =>
+    call.kind === "tool_call" ? [...(call.nested ?? [])] : [],
+  );
+  assert.ok(nested.length > 0, "取证子会话一条事件都没嵌进来");
+  assert.ok(
+    nested.some((event) => event.kind === "tool_call"),
+    "取证子会话一次工具调用都没记下",
+  );
+  const said = nested.flatMap((event) =>
+    event.kind === "assistant_message" ? [event.text] : [],
+  );
+  assert.match(said.join("\n"), /[\w./-]+\.js:\d+/, "取证报告里没有 file:line 证据");
 });

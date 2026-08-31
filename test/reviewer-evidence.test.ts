@@ -6,7 +6,7 @@
  * 由 `reviewer-smoke.test.ts` 的 opt-in 用例守。
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -18,6 +18,7 @@ import {
   encodeEvidenceCeiling,
   evidenceAgentDefinition,
   evidenceCeiling,
+  evidenceTranscriptEvents,
   installEvidenceKit,
   vendoredSubagentsPath,
 } from "../src/reviewer/evidence.ts";
@@ -180,4 +181,83 @@ test("vendor 的 pi-subagents 在镜像里解析得到", () => {
   assert.equal(manifest.name, "pi-subagents");
   // 它是一个 pi 包,整个目录交给资源加载器即可发现其中的扩展。
   assert.ok(manifest.pi?.extensions);
+});
+
+/**
+ * 一份子会话 transcript(issue #227)。行的形状照 pi-subagents 写下来的那一份:每条消息
+ * 与每次工具调用各占一行,工具返回的正文由排在 `tool_end` **之后**的 `toolResult` 消息带。
+ */
+function transcript(lines: readonly Record<string, unknown>[]): string {
+  return lines.map((line) => JSON.stringify(line)).join("\n");
+}
+
+function writeTranscript(lines: readonly Record<string, unknown>[]): string {
+  const dir = mkdtempSync(join(tmpdir(), "multireviewer-transcript-test-"));
+  const path = join(dir, "evidence_0_transcript.jsonl");
+  writeFileSync(path, `${transcript(lines)}\n`);
+  return path;
+}
+
+/** 一次取证调用的工具返回,只保留读取用得到的那一格。 */
+function toolResult(...transcriptPaths: string[]): unknown {
+  return {
+    content: [{ type: "text", text: "证据已带回" }],
+    details: { results: transcriptPaths.map((path) => ({ transcriptPath: path })) },
+  };
+}
+
+test("子会话的话与工具调用转成与外层同形的事件", () => {
+  const path = writeTranscript([
+    { version: 1, recordType: "message", sourceEventType: "initial_prompt", role: "user", text: "谁调用 findOrdersByCustomer", ts: 100 },
+    { version: 1, recordType: "message", sourceEventType: "message_end", role: "assistant", text: "先 grep 一遍调用方", ts: 110 },
+    { version: 1, recordType: "tool_start", sourceEventType: "tool_execution_start", toolCallId: "k1", toolName: "grep", argsPayload: JSON.stringify({ pattern: "findOrdersByCustomer" }), ts: 120 },
+    { version: 1, recordType: "tool_end", sourceEventType: "tool_execution_end", toolCallId: "k1", toolName: "grep", isError: false, ts: 155 },
+    { version: 1, recordType: "message", sourceEventType: "tool_result_end", role: "toolResult", toolCallId: "k1", toolName: "grep", isError: false, text: "src/orders-api.js:8", ts: 156 },
+    { version: 1, recordType: "message", sourceEventType: "message_end", role: "assistant", text: "src/orders-api.js:8 直接把 req.query.customerId 交了过去", ts: 200 },
+  ]);
+
+  assert.deepEqual(evidenceTranscriptEvents(toolResult(path)), [
+    { kind: "assistant_message", text: "先 grep 一遍调用方" },
+    {
+      kind: "tool_call",
+      tool: "grep",
+      args: { pattern: "findOrdersByCustomer" },
+      durationMs: 35,
+      isError: false,
+      error: null,
+      // 工具返回的正文照旧不进轨迹,只记长度(ADR 0017)。
+      resultLength: "src/orders-api.js:8".length,
+    },
+    { kind: "assistant_message", text: "src/orders-api.js:8 直接把 req.query.customerId 交了过去" },
+  ]);
+});
+
+test("子会话里被拒的调用带上原因", () => {
+  const path = writeTranscript([
+    { version: 1, recordType: "tool_start", sourceEventType: "tool_execution_start", toolCallId: "k1", toolName: "read", argsPayload: JSON.stringify({ path: "/etc/passwd" }), ts: 10 },
+    { version: 1, recordType: "tool_end", sourceEventType: "tool_execution_end", toolCallId: "k1", toolName: "read", isError: true, ts: 12 },
+    { version: 1, recordType: "message", sourceEventType: "tool_result_end", role: "toolResult", toolCallId: "k1", isError: true, text: "cannot read outside the repository", ts: 13 },
+  ]);
+
+  const [call] = evidenceTranscriptEvents(toolResult(path));
+  assert.ok(call?.kind === "tool_call");
+  if (call?.kind !== "tool_call") return;
+  assert.equal(call.isError, true);
+  assert.equal(call.error, "cannot read outside the repository");
+});
+
+test("transcript 读不到或形状认不出时回空,取证本身照常", () => {
+  assert.deepEqual(evidenceTranscriptEvents(toolResult("/nowhere/does-not-exist.jsonl")), []);
+  assert.deepEqual(evidenceTranscriptEvents({ content: [], details: {} }), []);
+  assert.deepEqual(evidenceTranscriptEvents(null), []);
+  // 半行坏 JSON 只丢那一行,其余照转。
+  const dir = mkdtempSync(join(tmpdir(), "multireviewer-transcript-test-"));
+  const path = join(dir, "t.jsonl");
+  writeFileSync(
+    path,
+    `{"recordType":"message","role":"assistant","text":"读到一半就断了"}\n{"recordType":\n`,
+  );
+  assert.deepEqual(evidenceTranscriptEvents(toolResult(path)), [
+    { kind: "assistant_message", text: "读到一半就断了" },
+  ]);
 });

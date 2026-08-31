@@ -263,11 +263,42 @@ function RunMilestone({ event }: { event: TraceEvent }) {
   );
 }
 
+/**
+ * 一次调用派出的子会话事件(CONTEXT.md 取证,issue #227)。形状与外层同一套,因此这里
+ * 复用同一批渲染:它说过的话与它调过的每一个工具,原样嵌在派出它的那一次调用下面。
+ */
+function nestedEvents(payload: Record<string, unknown>): Record<string, unknown>[] {
+  const value = payload["nested"];
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is Record<string, unknown> =>
+      typeof item === "object" && item !== null && !Array.isArray(item),
+  );
+}
+
+/** 嵌套进来的一条子会话事件。只有说话与工具调用两档,认不出的按原样摊开。 */
+function NestedEvent({ event }: { event: Record<string, unknown> }) {
+  const kind = str(event, "kind");
+  if (kind === "assistant_message") {
+    return (
+      <p className="min-w-0 text-sm leading-relaxed break-words whitespace-pre-wrap text-text-secondary">
+        {str(event, "text") ?? "(空文本)"}
+      </p>
+    );
+  }
+  if (kind === "tool_call") return <ToolCall event={{ payload: event }} />;
+  return <UnknownEvent event={{ kind: kind ?? "(未命名事件)", payload: event }} />;
+}
+
 /** 一次工具调用:一行摘要,参数全文按需展开。返回内容只记长度,不入轨迹。 */
 export function ToolCall({ event }: { event: { payload: Record<string, unknown> } }) {
   const [open, setOpen] = useState(false);
+  // 取证过程默认折叠:一次审查里它比外层事件多得多,展开是「我要核这条证据链」时的动作。
+  const [nestedOpen, setNestedOpen] = useState(false);
   const argsId = useId();
+  const nestedId = useId();
   const payload = event.payload;
+  const nested = nestedEvents(payload);
   const tool = str(payload, "tool") ?? "(未命名工具)";
   const args = payload["args"];
   const duration = num(payload, "durationMs");
@@ -306,6 +337,30 @@ export function ToolCall({ event }: { event: { payload: Record<string, unknown> 
           {pretty(args)}
         </pre>
       ) : null}
+      {nested.length === 0 ? null : (
+        <div className="flex min-w-0 flex-col gap-1">
+          <button
+            type="button"
+            onClick={() => setNestedOpen(!nestedOpen)}
+            aria-expanded={nestedOpen}
+            aria-controls={nestedId}
+            className="flex min-h-11 items-center gap-1 self-start text-left text-xs text-text-secondary hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none sm:min-h-0"
+          >
+            {nestedOpen ? <ChevronDownIcon aria-hidden /> : <ChevronRightIcon aria-hidden />}
+            取证过程（{nested.length} 条）
+          </button>
+          {nestedOpen ? (
+            <ul id={nestedId} className="min-w-0 border-l border-overlay-line pl-3">
+              {nested.map((child, index) => (
+                // 子会话事件没有自己的序号:它们随派出它的那次调用一起落库,顺序即索引。
+                <li key={index} className="border-t border-overlay-line py-1.5 first:border-t-0">
+                  <NestedEvent event={child} />
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }

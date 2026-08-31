@@ -62,6 +62,13 @@ export function reviewerEventStream(
    * 长得一模一样。判断仍在 worker 那边,这一层只按名单标记。
    */
   anchorRejected: (toolCallId: string) => boolean = () => false,
+  /**
+   * 这次调用派出的子会话自己的事件(issue #227)。取证是唯一会有的一档:子代理跑在另一个
+   * 进程里,它的过程只有从这里嵌进来才进得了审查轨迹。取不到就回空数组,那次调用照常记。
+   *
+   * 与本层其余部分同律,这一层不做判断——从哪里读、怎么读由调用方给。
+   */
+  nested: (toolName: string, result: unknown) => readonly ReviewerEvent[] = () => [],
 ): (event: PiSessionEvent) => void {
   const pending = new Map<string, PendingCall>();
 
@@ -94,6 +101,8 @@ export function reviewerEventStream(
     const content = textBlocks((ended.result as { content?: unknown } | null)?.content);
     const resultLength = content.reduce((sum, text) => sum + text.length, 0);
     const isError = ended.isError || anchorRejected(ended.toolCallId);
+    // 嵌套事件与本层的正文同一道脱敏:子会话的失败原文同样可能回显请求头。
+    const children = nested(ended.toolName, ended.result);
     emit({
       kind: "tool_call",
       tool: ended.toolName,
@@ -102,6 +111,9 @@ export function reviewerEventStream(
       isError,
       error: isError ? redactModelCredential(content.join("\n"), credential) : null,
       resultLength,
+      ...(children.length === 0
+        ? {}
+        : { nested: redactedJson(children, credential) as readonly ReviewerEvent[] }),
     });
   };
 }

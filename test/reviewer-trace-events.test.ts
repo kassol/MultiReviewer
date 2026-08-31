@@ -17,6 +17,8 @@ function collector(
   credential: string | undefined = CREDENTIAL,
   /** 哪几次调用是锚定打回的,与 worker 里那份名单同一个语义(issue #187)。 */
   anchorRejected: (toolCallId: string) => boolean = () => false,
+  /** 这次调用派出的子会话事件,与 worker 交给它的那个取法同一个语义(issue #227)。 */
+  nested: (toolName: string, result: unknown) => readonly ReviewerEvent[] = () => [],
 ): {
   events: ReviewerEvent[];
   observe: ReturnType<typeof reviewerEventStream>;
@@ -31,6 +33,7 @@ function collector(
       (event) => events.push(event),
       () => clock,
       anchorRejected,
+      nested,
     ),
     tick: (ms) => {
       clock += ms;
@@ -225,4 +228,51 @@ test("凭据不出现在任何事件正文里:说的话、工具参数、被拒�
   const serialized = JSON.stringify(events);
   assert.equal(serialized.includes(CREDENTIAL), false, "事件正文里不该留下凭据");
   assert.equal(serialized.includes("[REDACTED]"), true);
+});
+
+test("取证调用带上子会话的事件,别的调用一条都不带(issue #227)", () => {
+  const child: ReviewerEvent[] = [
+    { kind: "tool_call", tool: "grep", args: { pattern: "listOrders" }, durationMs: 12, isError: false, error: null, resultLength: 88 },
+    { kind: "assistant_message", text: "src/orders-api.js:8 直接把 req.query.customerId 交给了 findOrdersByCustomer" },
+  ];
+  const { events, observe } = collector(CREDENTIAL, () => false, (toolName) =>
+    toolName === "subagent" ? child : [],
+  );
+
+  observe({ type: "tool_execution_start", toolCallId: "call-1", toolName: "read", args: { path: "src/orders-api.js" } });
+  observe({ type: "tool_execution_end", toolCallId: "call-1", toolName: "read", result: { content: [] }, isError: false });
+  observe({ type: "tool_execution_start", toolCallId: "call-2", toolName: "subagent", args: { agent: "evidence", task: "谁调用 findOrdersByCustomer" } });
+  observe({ type: "tool_execution_end", toolCallId: "call-2", toolName: "subagent", result: { content: [{ type: "text", text: "证据已带回" }] }, isError: false });
+
+  assert.equal(events.length, 2);
+  const [read, evidence] = events;
+  // 普通工具调用的形状与这一票之前逐字一致:没有子会话就不长出这一格。
+  assert.ok(read?.kind === "tool_call" && !("nested" in read));
+  assert.ok(evidence?.kind === "tool_call");
+  if (evidence?.kind !== "tool_call") return;
+  assert.deepEqual(evidence.nested, child);
+  // 嵌套事件与派出它的那次调用同一条记录:关联不靠另一套标识。
+  assert.deepEqual(evidence.args, { agent: "evidence", task: "谁调用 findOrdersByCustomer" });
+});
+
+test("子会话事件为空时不长出 nested 这一格", () => {
+  const { events, observe } = collector(CREDENTIAL, () => false, () => []);
+  observe({ type: "tool_execution_start", toolCallId: "call-1", toolName: "subagent", args: {} });
+  observe({ type: "tool_execution_end", toolCallId: "call-1", toolName: "subagent", result: { content: [] }, isError: false });
+
+  assert.equal(events.length, 1);
+  assert.ok(events[0]?.kind === "tool_call" && !("nested" in events[0]));
+});
+
+test("子会话事件与本层同一道脱敏", () => {
+  const leaked: ReviewerEvent[] = [
+    { kind: "assistant_message", text: `子会话把请求头回显了:Authorization Bearer ${CREDENTIAL}` },
+    { kind: "tool_call", tool: "read", args: { path: CREDENTIAL }, durationMs: 1, isError: true, error: `失败:${CREDENTIAL}`, resultLength: 0 },
+  ];
+  const { events, observe } = collector(CREDENTIAL, () => false, () => leaked);
+  observe({ type: "tool_execution_start", toolCallId: "call-1", toolName: "subagent", args: {} });
+  observe({ type: "tool_execution_end", toolCallId: "call-1", toolName: "subagent", result: { content: [] }, isError: false });
+
+  assert.equal(JSON.stringify(events).includes(CREDENTIAL), false, "嵌套事件里漏出了本轮凭据");
+  assert.equal(JSON.stringify(events).split("[REDACTED]").length - 1, 3);
 });

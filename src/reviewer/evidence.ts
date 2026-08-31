@@ -19,12 +19,12 @@
  * 里注册的那一项模型,因此把同一份运行模型另写一份 `models.json`;凭据写的是环境变量引用
  * 而非明文,子进程从继承来的环境里取。
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
 import type { ThinkingLevel } from "../config.ts";
-import type { ProjectFact, ReviewRule } from "../review/finding.ts";
+import type { ProjectFact, ReviewerEvent, ReviewRule } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV } from "./env.ts";
 import { ZERO_MODEL_COST } from "./model-runtime.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
@@ -209,4 +209,134 @@ export function installEvidenceKit(options: {
   );
   process.env[SPAWN_BUDGET_ENV] = String(EVIDENCE_SPAWN_BUDGET);
   process.env[CAPABILITY_CEILING_ENV] = encodeEvidenceCeiling();
+}
+
+/**
+ * 一次取证调用的结果里,子会话 transcript 的落点(issue #227)。
+ *
+ * pi-subagents 把子会话的每一条消息、每一次工具调用逐行写成 jsonl,路径放在工具返回的
+ * `details.results[].transcriptPath` 上。认不出形状就回空:轨迹记的是过程,读不到嵌套
+ * 事件不该让一次取证连带失败。
+ */
+function transcriptPaths(result: unknown): string[] {
+  const details = (result as { details?: unknown } | null)?.details;
+  const results = (details as { results?: unknown } | null)?.results;
+  if (!Array.isArray(results)) return [];
+  return results.flatMap((entry: unknown) => {
+    const path = (entry as { transcriptPath?: unknown } | null)?.transcriptPath;
+    return typeof path === "string" && path !== "" ? [path] : [];
+  });
+}
+
+/** transcript 里的一行。只认下面用到的那几个字段,其余一律不管。 */
+type TranscriptRecord = {
+  recordType?: unknown;
+  role?: unknown;
+  text?: unknown;
+  ts?: unknown;
+  toolCallId?: unknown;
+  toolName?: unknown;
+  argsPayload?: unknown;
+  isError?: unknown;
+};
+
+function text(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+/**
+ * 一份子会话 transcript 转成 Reviewer 事件序列。
+ *
+ * 形状与外层逐字相同,面板因此用同一个渲染器:模型说的话进 `assistant_message`,工具调用
+ * 按 `tool_start` / `tool_end` 配对进 `tool_call`。工具返回的正文照旧不进轨迹,只记长度
+ * (ADR 0017)——长度从那条 `toolResult` 消息取,被拒时那段文本才作 `error` 记下来。
+ * 派给子代理的那句任务不重复记:它已经原样躺在外层 `tool_call` 的参数里。
+ */
+function transcriptEvents(lines: readonly string[]): ReviewerEvent[] {
+  const events: ReviewerEvent[] = [];
+  /** 起了还没配对上的工具调用:参数与开始时刻只有 `tool_start` 那一行有。 */
+  const pending = new Map<string, { tool: string; args: unknown; startedAt: number }>();
+  /**
+   * 工具返回的长度与被拒原因。它由 `toolResult` 消息带来,而那一行**排在 `tool_end`
+   * 之后**——因此按 `toolCallId` 记住已经发出的那条事件,读到返回时再回填。
+   */
+  const emitted = new Map<string, Extract<ReviewerEvent, { kind: "tool_call" }>>();
+
+  for (const line of lines) {
+    if (line.trim() === "") continue;
+    let record: TranscriptRecord;
+    try {
+      record = JSON.parse(line) as TranscriptRecord;
+    } catch {
+      continue;
+    }
+    const at = typeof record.ts === "number" ? record.ts : 0;
+    const callId = typeof record.toolCallId === "string" ? record.toolCallId : undefined;
+
+    if (record.recordType === "message") {
+      if (record.role === "assistant") {
+        const said = text(record.text);
+        if (said !== undefined) events.push({ kind: "assistant_message", text: said });
+        continue;
+      }
+      if (record.role === "toolResult" && callId !== undefined) {
+        const call = emitted.get(callId);
+        if (call !== undefined) {
+          const body = typeof record.text === "string" ? record.text : "";
+          call.resultLength = body.length;
+          if (call.isError) call.error = body === "" ? null : body;
+        }
+      }
+      continue;
+    }
+
+    if (record.recordType === "tool_start" && callId !== undefined) {
+      let args: unknown = null;
+      if (typeof record.argsPayload === "string") {
+        try {
+          args = JSON.parse(record.argsPayload);
+        } catch {
+          args = record.argsPayload;
+        }
+      }
+      pending.set(callId, {
+        tool: typeof record.toolName === "string" ? record.toolName : "(未命名工具)",
+        args,
+        startedAt: at,
+      });
+      continue;
+    }
+
+    if (record.recordType !== "tool_end" || callId === undefined) continue;
+    const started = pending.get(callId);
+    pending.delete(callId);
+    const call: Extract<ReviewerEvent, { kind: "tool_call" }> = {
+      kind: "tool_call",
+      tool: started?.tool ?? (typeof record.toolName === "string" ? record.toolName : "(未命名工具)"),
+      args: started?.args ?? null,
+      durationMs: started === undefined || at === 0 ? 0 : Math.max(0, at - started.startedAt),
+      isError: record.isError === true,
+      error: null,
+      resultLength: 0,
+    };
+    emitted.set(callId, call);
+    events.push(call);
+  }
+  return events;
+}
+
+/**
+ * 一次取证调用的子会话事件(issue #227)。读不到 transcript 就回空数组:少一段嵌套过程
+ * 是小事,一次取证因此白跑不是。
+ */
+export function evidenceTranscriptEvents(result: unknown): ReviewerEvent[] {
+  return transcriptPaths(result).flatMap((path) => {
+    let content: string;
+    try {
+      content = readFileSync(path, "utf8");
+    } catch {
+      return [];
+    }
+    return transcriptEvents(content.split("\n"));
+  });
 }
