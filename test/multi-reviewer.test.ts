@@ -166,6 +166,49 @@ test("同一个模型分开报的两条相邻 Finding 不合并,标题共享套�
   );
 });
 
+test("同模型同一行的两条不同内容合并后归属全保留,重复内容折叠", async () => {
+  const { cache, db, forge, event } = setup();
+
+  // Run 47 的实况:小 hunk 把不同问题的锚点汇流到同一行,同行硬证据合组之后,旧折叠
+  // 规则(一个模型一条归属)把其中一条整条吞掉。修订 ADR 0015:内容不同的归属全留。
+  const result = await runReview(event, {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [
+        {
+          ...AT_LINE_2,
+          title: "除法缺少除零防护",
+          description: "除数为 0 时返回 Infinity。",
+        },
+        {
+          ...AT_LINE_2,
+          severity: "P1" as const,
+          title: "缺少数值类型校验",
+          description: "非数字入参不再被拦截。",
+        },
+        // 与第一条内容相同的重复报,应折叠进它,不另占一段。
+        {
+          ...AT_LINE_2,
+          severity: "P1" as const,
+          title: "除法缺少除零防护",
+          description: "除数为 0 时返回 Infinity。",
+        },
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  });
+
+  assert.equal(result.findings.length, 1);
+  const attributions = result.findings[0]!.attributions;
+  assert.deepEqual(
+    attributions.map((a) => a.title),
+    ["除法缺少除零防护", "缺少数值类型校验"],
+  );
+  // 重复报折叠时留严重度高的那条:P0 不被后到的 P1 顶掉。
+  assert.equal(attributions[0]!.severity, "P0");
+});
+
 test("相距 3 行但内容明显不同的两条 Finding 不合并", async () => {
   const { cache, db, forge, event } = setup();
 

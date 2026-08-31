@@ -159,6 +159,8 @@ CREATE INDEX IF NOT EXISTS finding_by_run ON finding(run_id);
 
 -- 一条 Finding 的归属:报出它的每个模型一行,带它自己的严重度、分类与表述(ADR 0015)。
 -- position 是首报先后,0 即首报——合并后的分类取它,统计矩阵的模型也取它。
+-- 同一条 Finding 允许同一模型的多条归属:模型对同一处报出内容不同的几条时全部保留
+-- (检出率优先,2026-08-31),不再有 (finding_id, model) 唯一约束。
 CREATE TABLE IF NOT EXISTS finding_attribution (
   finding_id INTEGER NOT NULL REFERENCES finding(id),
   position INTEGER NOT NULL,
@@ -166,8 +168,7 @@ CREATE TABLE IF NOT EXISTS finding_attribution (
   severity TEXT NOT NULL,
   category TEXT NOT NULL,
   description TEXT NOT NULL,
-  PRIMARY KEY (finding_id, position),
-  UNIQUE (finding_id, model)
+  PRIMARY KEY (finding_id, position)
 );
 CREATE INDEX IF NOT EXISTS finding_attribution_by_model ON finding_attribution(model);
 
@@ -2402,6 +2403,33 @@ export function openStore(dbPath: string): Store {
     }
   }
   for (const statement of ADD_INDEXES) db.exec(statement);
+
+  // 撤掉 finding_attribution 的 (finding_id, model) 唯一约束(2026-08-31):同一模型
+  // 内容不同的多条归属要全部落库。SQLite 去约束只能重建表;`CREATE TABLE IF NOT
+  // EXISTS` 不改已有表,存量库在这里换。判据看建表语句原文,重建过即不再命中,零影响。
+  const attributionSql = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'finding_attribution'")
+    .get()?.["sql"];
+  if (typeof attributionSql === "string" && attributionSql.includes("UNIQUE (finding_id, model)")) {
+    db.exec(`
+      BEGIN;
+      CREATE TABLE finding_attribution_rebuilt (
+        finding_id INTEGER NOT NULL REFERENCES finding(id),
+        position INTEGER NOT NULL,
+        model TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        category TEXT NOT NULL,
+        description TEXT NOT NULL,
+        PRIMARY KEY (finding_id, position)
+      );
+      INSERT INTO finding_attribution_rebuilt
+        SELECT finding_id, position, model, severity, category, description FROM finding_attribution;
+      DROP TABLE finding_attribution;
+      ALTER TABLE finding_attribution_rebuilt RENAME TO finding_attribution;
+      CREATE INDEX IF NOT EXISTS finding_attribution_by_model ON finding_attribution(model);
+      COMMIT;
+    `);
+  }
 
   // 权限格 `rule:write` 改名 `knowledge:write`(ADR 0020,issue #220):存量角色照旧持有
   // 同一格能力,只是字面量换了。`OR REPLACE` 让同一角色两格都有时旧行让位给新行;跑第

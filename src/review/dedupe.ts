@@ -4,8 +4,9 @@ import type { Category, Finding, Severity } from "./finding.ts";
  * 一条 Finding 的一个归属:某个 Reviewer 对这一处问题的说法(ADR 0015)。
  *
  * 归属保留每个模型自己的严重度、分类与表述:模型对同一个缺陷的表述常常不同,只留一条
- * 会丢掉另一个模型看到的角度。同一个模型在一个合并组里报了两条时只留严重度最高的那条
- * ——归属的单位是模型,不是它按了几次 `report_finding`。
+ * 会丢掉另一个模型看到的角度。同一个模型在一个合并组里的多条全部保留(2026-08-31,
+ * 修订 ADR 0015):合并管的是评论挂在哪,不该顺手把模型明确报出的内容吞掉;只有标题
+ * 与描述逐字相同的重复报才折叠成一条,留严重度高的。
  */
 export type FindingAttribution = {
   model: string;
@@ -263,8 +264,11 @@ function mergeGroup(
     (a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity],
   )[0]!;
 
-  // 一个模型一条归属,按首报先后。同一个模型报了两条时留严重度高的那条:归属的单位
-  // 是模型,不是它按了几次 report_finding。
+  // 按首报先后。同一个模型的多条只在标题与描述逐字相同(真正的重复报)时折叠成一条、
+  // 留严重度高的;其余全部保留——分组的拓扑(链式并入、小 hunk 把不同问题汇流到同一
+  // 行)不该决定模型报出的内容还在不在,PR #21 实测被折叠吞掉的 P1/P2 在评论上零痕迹。
+  // 不用 sameContent 当重复判据:0.05 的弱阈值把「除零防护」与「类型校验」都判成同一
+  // 回事,拿它折叠等于把吞条换个地方再吞一遍;检出优先,近似重复宁可多一段。
   const attributions: FindingAttribution[] = [];
   for (const finding of group) {
     const said: FindingAttribution = {
@@ -276,10 +280,15 @@ function mergeGroup(
       impact: finding.impact,
       suggestion: finding.suggestion,
     };
-    const index = attributions.findIndex((a) => a.model === said.model);
-    if (index === -1) attributions.push(said);
-    else if (SEVERITY_RANK[said.severity] > SEVERITY_RANK[attributions[index]!.severity]) {
-      attributions[index] = said;
+    const dup = attributions.findIndex(
+      (a) =>
+        a.model === said.model &&
+        a.title === said.title &&
+        a.description === said.description,
+    );
+    if (dup === -1) attributions.push(said);
+    else if (SEVERITY_RANK[said.severity] > SEVERITY_RANK[attributions[dup]!.severity]) {
+      attributions[dup] = said;
     }
   }
 
