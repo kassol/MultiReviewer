@@ -412,7 +412,11 @@ function RuleSetDialogContent({
               组,混进层分组里只会多出一个空标签的组。 */}
           {byLayer(ruleSet.data.rules.filter((entry) => entry.type === "rule")).map(([layer, rules]) => (
             <section key={layer} className="flex flex-col gap-2">
-              <h3 className="text-2xl font-bold tracking-[-0.015em]">{layer}</h3>
+              {/* 条目分组行,不是弹窗的区块标题:字级压到条目正文之下,视觉主体留给条目卡。 */}
+              <h3 className="text-xs font-semibold text-text-muted">
+                {layer}
+                <span className="ml-1.5 font-normal">{rules.length}</span>
+              </h3>
               <ul className="overflow-hidden rounded-lg border border-card-line">
                 {rules.map((rule) => (
                   <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
@@ -454,7 +458,12 @@ function RuleSetDialogContent({
           {ruleSet.data.rules.every((entry) => entry.type === "rule") ? null : (
             <section className="flex flex-col gap-2">
               <div className="flex items-center gap-1">
-                <h3 className="text-2xl font-bold tracking-[-0.015em]">{TYPE_LABEL.fact}</h3>
+                <h3 className="text-xs font-semibold text-text-muted">
+                  {TYPE_LABEL.fact}
+                  <span className="ml-1.5 font-normal">
+                    {ruleSet.data.rules.filter((entry) => entry.type === "fact").length}
+                  </span>
+                </h3>
                 <HelpTooltip content="项目事实是 Reviewer 的判断依据,本身不产 Finding;与代码矛盾时以代码为准。" />
               </div>
               <ul className="overflow-hidden rounded-lg border border-card-line">
@@ -501,7 +510,10 @@ function RuleSetDialogContent({
 
       {ruleSet.data === undefined || ruleSet.data.retired.length === 0 ? null : (
         <section className="mt-3.5 flex flex-col gap-2">
-          <h3 className="text-2xl font-bold tracking-[-0.015em]">已废止</h3>
+          <h3 className="text-xs font-semibold text-text-muted">
+            已废止
+            <span className="ml-1.5 font-normal">{ruleSet.data.retired.length}</span>
+          </h3>
           <ul className="overflow-hidden rounded-lg border border-card-line">
             {ruleSet.data.retired.map((rule) => (
               <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
