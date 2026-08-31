@@ -5,7 +5,7 @@
  * 模型。规则条目在 prompt 里的行格式同样共用一份——两边写的是同一个 `[id] (scope)`,
  * 分成两份只会让某一天其中一边悄悄改掉。会话跑起来之前那一套运行时同理。
  */
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
@@ -35,10 +35,23 @@ import { numberedRead } from "./numbered-read.ts";
  */
 export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
 
-/** worktree 内文件的行数组。路径出圈或读不出来返回 undefined,交给调用方措辞。 */
+/**
+ * worktree 内文件的行数组。路径出圈或读不出来返回 undefined,交给调用方措辞。
+ *
+ * 包含判定按 realpath 之后的真实位置做,不是词法路径:被审仓库可以提交一个指向圈外的
+ * 符号链接,词法上它就在 worktree 里,`readFileSync` 却会跟着链接读到圈外的文件。根也要
+ * realpath——macOS 的 tmpdir 本身就是符号链接,只解析一侧会把全部合法路径误拒。
+ */
 export function fileLines(worktreePath: string, file: string): string[] | undefined {
-  const root = resolve(worktreePath);
-  const abs = resolve(root, file);
+  let root: string;
+  let abs: string;
+  try {
+    root = realpathSync(resolve(worktreePath));
+    abs = realpathSync(resolve(root, file));
+  } catch {
+    // 文件不存在时 realpath 就抛:与"读不出来"同一档,被删的文件本来就该走 undefined。
+    return undefined;
+  }
   if (!abs.startsWith(root + sep)) return undefined;
   let content: string;
   try {

@@ -186,6 +186,8 @@
 
 ## 变更日志
 
+- 2026-08-31: **`fileLines` 的圈内判定改按 realpath**(`worker-tools.ts`)。此前只做词法前缀检查,被审仓库提交一个指向圈外的符号链接,`read` 工具与锚定校验就会跟着链接读到 worktree 之外的文件(受控 git 工具没有这个问题,git 对 link blob 从不跟随)。现在根与目标都先 `realpathSync` 再做包含判定:根也要解析是因为 macOS 的 tmpdir 本身是符号链接,只解析一侧会把全部合法路径误拒;文件不存在时 realpath 抛错,与「读不出来」同档返回 undefined,被删文件的语义不变;圈内互指的合法链接照常放行。测试 `worker-tools.test.ts` 新增四条(普通文件、圈外链接拒、圈内链接放行、词法出圈与缺失文件)。
+
 - 2026-08-31: **取证链路收口:默认前台、用量入账、徽章去重**(Run 49 轨迹审计的三项)。一、**异步派单关掉默认档**:模型省参调用时 pi-subagents 默认后台跑,只回任务 id,模型轮询不到就把同一主张重跑一遍(双倍花销),且后台那次的 transcript 不进返回、过程与用量都进不了轨迹。三道锁:`installEvidenceKit` 写 `<agentDir>/extensions/subagent/config.json` 的 `asyncByDefault: false`、agent frontmatter 加 `async: false`(两者都是默认档,显式 `async: true` 仍生效,接受)、系统提示明说「一次调用一个答案,不要 async 不要轮询」。二、**取证子会话的 token 用量并进 Reviewer 的 usage**:子代理在独立 pi 进程,主会话 `getSessionStats` 数不到,面板此前系统性少报;`evidence.ts` 新增 `evidenceUsageTotals` 从 transcript 逐消息累加,worker 在取证工具返回时累计、收尾并进同一份 usage——分开记要动协议、库与面板三层,读的人要的是「这轮花了多少」。异步强开的那档没有 transcript、数不到,已被第一项压到默认不发生。三、**同模型多段归属只出一枚模型徽章**:`models` 列表回答「哪些模型报出它」,store 两处组装(轮次列表与阶段汇总)各加一行去重;按归属行计数的「模型报出条数」统计不动——多段就是多条,新语义下按行数反而更准。测试 `reviewer-evidence.test.ts` 新增三条(asyncByDefault 与 frontmatter 落盘、用量累加同形、无 usage 回 undefined 不伪造零)。
 
 - 2026-08-31: **归属折叠不再吞内容**(修订 ADR 0015)。Run 47 实测残余吞条路径:小 hunk 把不同问题的锚点汇流到同一行,同行硬证据把同模型的两条并进一组、跨模型同行又把第三方链进来,`mergeGroup` 的「一个模型一条归属、留严重度最高」接着把 P2 整条吞掉。修法:同模型的多条归属全部保留、各自成段,只有标题与描述**逐字相同**的真重复报折叠(留严重度高的)。重复判据不用 `sameContent`——0.05 的弱阈值把「除零防护」与「类型校验」判成同一回事,拿它折叠等于把吞条换个地方再吞一遍;检出优先,近似重复宁可多一段。合并判据一字未动。`finding_attribution` 撤掉 `(finding_id, model)` 唯一约束:新库直接建成无约束形态,存量库开库时按建表语句原文检测并重建一次(SQLite 去约束只能重建表)。评论渲染无需改动:`attributionSection` 本来就逐归属出段。测试 `multi-reviewer.test.ts` 新增一条(同模型同行不同内容全保留、逐字重复折叠且 P0 不被 P1 顶掉)。
