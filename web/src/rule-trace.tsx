@@ -32,6 +32,12 @@ export type KnowledgeType = "rule" | "fact";
  */
 export const TYPE_LABEL: Record<KnowledgeType, string> = { rule: "评审规则", fact: "项目事实" };
 
+/**
+ * 行内动作的 v8 描边形态(DESIGN.md §9.1):白底 + 输入框描边 + 控件阴影,不是 Radix
+ * `outline` 默认的灰底块。与 DateRangePicker、commit-picker 的描边控件同一形态。
+ */
+export const OUTLINED_ACTION = "rounded-md border border-input bg-surface shadow-control";
+
 /** 知识轨迹与修订提案共用的出处文案。同一个二元只有这一份字面量。 */
 export const SOURCE_LABEL: Record<string, string> = {
   "baseline-exploration": "基点探索",
@@ -227,7 +233,13 @@ export function RuleTraceButton({
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Trigger>
-        <Button variant="outline" color="gray" highContrast size={{ initial: "3", sm: "1" }}>
+        <Button
+          variant="outline"
+          color="gray"
+          highContrast
+          size={{ initial: "3", sm: "1" }}
+          className={OUTLINED_ACTION}
+        >
           {label}
         </Button>
       </Dialog.Trigger>

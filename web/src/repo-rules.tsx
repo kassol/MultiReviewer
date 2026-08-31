@@ -12,7 +12,7 @@ import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { CommitPicker, type CommitSelection } from "./commit-picker.tsx";
-import { RuleTraceButton, SOURCE_LABEL, TYPE_LABEL, type KnowledgeType } from "./rule-trace.tsx";
+import { OUTLINED_ACTION, RuleTraceButton, SOURCE_LABEL, TYPE_LABEL, type KnowledgeType } from "./rule-trace.tsx";
 import { THINKING_LEVEL_LABEL, type ThinkingLevel } from "./model-services.ts";
 
 /** 事实型陈述的字数上限,与服务端同一个数:超了服务端 400,表单先拦一道。 */
@@ -413,6 +413,7 @@ function RuleSetDialogContent({
                               color="gray"
                               highContrast
                               size={{ initial: "3", sm: "1" }}
+                              className={OUTLINED_ACTION}
                               onClick={() => setDraft({ ...rule, id: rule.id })}
                             >
                               修改
@@ -422,6 +423,7 @@ function RuleSetDialogContent({
                               color="gray"
                               highContrast
                               size={{ initial: "3", sm: "1" }}
+                              className={OUTLINED_ACTION}
                               disabled={change.isPending}
                               onClick={() => change.mutate({ retire: rule.id })}
                             >
@@ -466,6 +468,7 @@ function RuleSetDialogContent({
                               color="gray"
                               highContrast
                               size={{ initial: "3", sm: "1" }}
+                              className={OUTLINED_ACTION}
                               onClick={() => setDraft({ ...fact, id: fact.id })}
                             >
                               修改
@@ -475,6 +478,7 @@ function RuleSetDialogContent({
                               color="gray"
                               highContrast
                               size={{ initial: "3", sm: "1" }}
+                              className={OUTLINED_ACTION}
                               disabled={change.isPending}
                               onClick={() => change.mutate({ retire: fact.id })}
                             >
@@ -740,7 +744,7 @@ function ProposalSection({
               onChange={pick.toggleAll}
             />
             <Button
-              variant="soft"
+              variant="solid"
               size={{ initial: "3", sm: "1" }}
               disabled={busy || pick.selected.length === 0}
               onClick={() => onDecideAll(pick.selected, true)}
@@ -752,6 +756,7 @@ function ProposalSection({
               color="gray"
               highContrast
               size={{ initial: "3", sm: "1" }}
+              className={OUTLINED_ACTION}
               disabled={busy || pick.selected.length === 0}
               onClick={() => onDecideAll(pick.selected, false)}
             >
@@ -786,6 +791,7 @@ function ProposalSection({
                       color="gray"
                       highContrast
                       size={{ initial: "3", sm: "1" }}
+                      className={OUTLINED_ACTION}
                       onClick={() =>
                         onEdit({
                           id: proposal.id,
@@ -798,7 +804,10 @@ function ProposalSection({
                       修改
                     </Button>
                     <Button
-                      variant="soft"
+                      variant="outline"
+                      color="gray"
+                      highContrast
+                      className={OUTLINED_ACTION}
                       size={{ initial: "3", sm: "1" }}
                       disabled={busy}
                       onClick={() => onDecide(proposal.id, true)}
@@ -810,6 +819,7 @@ function ProposalSection({
                       color="gray"
                       highContrast
                       size={{ initial: "3", sm: "1" }}
+                      className={OUTLINED_ACTION}
                       disabled={busy}
                       onClick={() => onDecide(proposal.id, false)}
                     >
@@ -1036,6 +1046,7 @@ function ExplorationSection({
                     color="gray"
                     highContrast
                     size={{ initial: "3", sm: "1" }}
+                    className={OUTLINED_ACTION}
                     onClick={() => onEdit({ ...rule, id: rule.id })}
                   >
                     修改
@@ -1045,6 +1056,7 @@ function ExplorationSection({
                     color="gray"
                     highContrast
                     size={{ initial: "3", sm: "1" }}
+                    className={OUTLINED_ACTION}
                     disabled={busy}
                     onClick={() => onDeleteDraft(rule.id)}
                   >
