@@ -51,6 +51,7 @@ export async function runInChild(
     commentable,
     history,
     intent,
+    directive,
     // 空知识集与不传等价。
     rules = [],
     // 子进程转发上来的过程事件的去处(issue #171)。不关心过程的调用方不传。
@@ -77,6 +78,8 @@ export async function runInChild(
     commentable,
     history,
     ...(intent === undefined ? {} : { intent }),
+    // 没有本轮指令时不带这一项:子进程据此不渲染指令段(issue #225)。
+    ...(directive === undefined || directive === "" ? {} : { directive }),
     // 空知识集不带这一项:子进程据此不渲染规则段,prompt 与没有知识集时逐字一致。
     ...(rules.length === 0 ? {} : { rules }),
   };

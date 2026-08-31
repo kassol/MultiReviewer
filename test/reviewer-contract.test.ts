@@ -244,3 +244,26 @@ test("模型自报的规则标识经服务端校验:本轮注入过的留下,对
   // 规则标识不参与 Finding 的取舍:对不上只置空,条目本身照收。
   assert.equal(normalizeFinding(RAW, "m", injected).ok, true);
 });
+
+test("不给本轮指令时不渲染指令段,prompt 与这一票之前逐字一致", () => {
+  const without = reviewPrompt({ range: PROMPT_RANGE, history: [] });
+  const empty = reviewPrompt({ range: PROMPT_RANGE, history: [], directive: "" });
+
+  assert.equal(empty, without);
+  assert.equal(/directive/i.test(without), false);
+});
+
+test("本轮指令自成一段,标明一次性、优先于常规范围、不改变证据标准", () => {
+  const prompt = reviewPrompt({
+    range: PROMPT_RANGE,
+    history: [],
+    directive: "这一轮只报 P0,重点看并发",
+  });
+
+  assert.match(prompt, /这一轮只报 P0,重点看并发/);
+  // 三样声明缺一不可:少了优先级,指令与常规范围冲突时模型不知道听谁的;少了证据标准
+  // 那一句,「重点看并发」会被读成「并发那块可以放宽取证」。
+  assert.match(prompt, /this review round/i);
+  assert.match(prompt, /takes priority/i);
+  assert.match(prompt, /evidence/i);
+});

@@ -116,6 +116,12 @@ export type ReviewRunDeps = {
   ruleSetVersion?: number | null;
   /** 本轮冻结的那一版规则全体。不传即空知识集,注入与这一票之前逐字一致。 */
   rules?: readonly ReviewRule[];
+  /**
+   * 本轮指令(CONTEXT.md,issue #225):发起重审时评审方附的一次性要求。不传即没有。
+   * 它随这一轮落库、注入这一轮的每个 Reviewer,下一轮由调用方决定要不要再给一次——
+   * 编排层不从库里读上一轮的,那正是「只作用于那一轮」的实现。
+   */
+  directive?: string;
 };
 
 export type ReviewRunResult = {
@@ -1054,6 +1060,8 @@ export async function runReview(
       // 知识集版本在这里定死(issue #204):这一轮之后的规则变更追不上已经开跑的它,
       // 回看历史轮次时也就知道当时按的是哪一版。
       ruleSetVersion: deps.ruleSetVersion ?? null,
+      // 本轮指令随这一轮落库(issue #225):轮次详情要能回答「那一轮是按什么要求跑的」。
+      directive: deps.directive ?? null,
     });
 
     // 一有 runId 就可以接受订阅(ADR 0017):面板打开进行中的轮次时要能接上实时推送,
@@ -1131,6 +1139,8 @@ export async function runReview(
                 history,
                 intent,
                 rules,
+                // 本轮指令每批都给同一份:它说的是这一轮的要求,与本批审哪些文件无关。
+                ...(deps.directive === undefined ? {} : { directive: deps.directive }),
                 onEvent: (event) => {
                   const { kind, ...payload } = event;
                   trace.reviewer(reviewer.model, kind, payload);

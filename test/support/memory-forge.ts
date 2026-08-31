@@ -169,13 +169,14 @@ type ScriptedCall = {
   history: readonly HistoryFinding[];
   intent: ReviewIntent | undefined;
   rules: readonly ReviewRule[];
+  directive: string | undefined;
 };
 
 /**
  * 返回预设 Finding 的 Reviewer 桩。
  *
- * `calls` 连注入的历史、意图上下文、本批的评审规则与可评论行区间一起记下来:这几份注入
- * 是这个桩唯一能观测的输入(ADR 0016、issue #201、issue #204、issue #224)。
+ * `calls` 连注入的历史、意图上下文、本批的评审规则、可评论行区间与本轮指令一起记下来:
+ * 这几份注入是这个桩唯一能观测的输入(ADR 0016、issue #201、#204、#224、#225)。
  * `verdicts` 给定这一轮的复核结论;不给即一条都没给,编排层按「无法判断」落库。
  * `events` 是这一轮按顺序发出的过程事件(issue #171),在返回结果之前逐条发出。
  */
@@ -193,8 +194,25 @@ export function scriptedReviewer(
   return {
     model,
     calls,
-    review: async ({ range, worktreePath, commentable, history, intent, rules, onEvent }) => {
-      calls.push({ range, worktreePath, commentable, history, intent, rules: rules ?? [] });
+    review: async ({
+      range,
+      worktreePath,
+      commentable,
+      history,
+      intent,
+      rules,
+      directive,
+      onEvent,
+    }) => {
+      calls.push({
+        range,
+        worktreePath,
+        commentable,
+        history,
+        intent,
+        rules: rules ?? [],
+        directive,
+      });
       for (const event of extra?.events ?? []) onEvent?.(event);
       return {
         model,

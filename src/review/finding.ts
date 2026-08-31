@@ -281,6 +281,12 @@ export type ReviewerInput = {
    */
   rules?: readonly ReviewRule[];
   /**
+   * 本轮指令(CONTEXT.md,issue #225):发起重审时评审方附的一次性要求,每一批给同一份
+   * ——它说的是这一轮的要求,与本批审哪些文件无关。没有附即不传,prompt 因此不渲染
+   * 指令段,与没有这一票时逐字一致。
+   */
+  directive?: string;
+  /**
    * 收这个 Reviewer 的过程事件(issue #171),编排层一定传,一条即写一条轨迹。
    * 声明成可选是给直接调 `review` 的调用方留的余地:不看过程的地方不必造一个空回调。
    */

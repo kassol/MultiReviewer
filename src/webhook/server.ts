@@ -775,6 +775,8 @@ async function startRun(
   plan: ReviewRunPlan,
   triggeredBy?: string,
   rangeReviewId?: number,
+  /** 本轮指令(CONTEXT.md,issue #225)。只有面板发起的那几条链路会带,投递不带。 */
+  directive?: string,
 ): Promise<void> {
   const settled = deps.onRunSettled ?? logFailure;
   try {
@@ -787,6 +789,7 @@ async function startRun(
         dbPath: deps.dbPath,
         ...(triggeredBy === undefined ? {} : { triggeredBy }),
         ...(rangeReviewId === undefined ? {} : { rangeReviewId }),
+        ...(directive === undefined ? {} : { directive }),
       },
     );
   } catch (error) {
@@ -4779,6 +4782,33 @@ function assignedRegisteredRepo(
   return registered;
 }
 
+/** 本轮指令的长度上限,与处置备注同一量级:它是一句要求,不是一份规范。 */
+const RUN_DIRECTIVE_MAX = 500;
+
+/**
+ * 三个发起重审的端点共用的本轮指令解析(CONTEXT.md 本轮指令,issue #225)。
+ *
+ * 非必填:不给、给空串、给一串空白都是「这一轮没有指令」,返回 undefined。类型不对或
+ * 超长回 400——静默截断会让人以为整句都进去了,而模型只看到半句。拒绝时响应已经发出去,
+ * 返回 `"rejected"` 让调用方直接返回。
+ */
+function readDirective(
+  res: ServerResponse,
+  raw: unknown,
+): string | undefined | "rejected" {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "string") {
+    sendJson(res, 400, { error: "directive 要是字符串" });
+    return "rejected";
+  }
+  const trimmed = raw.trim();
+  if (trimmed.length > RUN_DIRECTIVE_MAX) {
+    sendJson(res, 400, { error: `本轮指令最多 ${RUN_DIRECTIVE_MAX} 个字` });
+    return "rejected";
+  }
+  return trimmed === "" ? undefined : trimmed;
+}
+
 /**
  * 手动重跑:对一个阶段开新一轮 Review Run,走既有的跨轮次折叠。不走幂等 claim——
  * 同一 head commit 重复审在这里是合法诉求(spec 原话),claim 只属于 webhook 投递。
@@ -4799,14 +4829,18 @@ async function handleRerun(
     repo?: unknown;
     pullNumber?: unknown;
     rangeReviewId?: unknown;
+    directive?: unknown;
   } | null>(req, res);
   if (payload === undefined) return;
+  // 本轮指令两种来源共用一格,两条分支之前先解析(issue #225)。
+  const directive = readDirective(res, payload?.directive);
+  if (directive === "rejected") return;
   if (payload !== null && payload.rangeReviewId !== undefined) {
     const rangeReviewId = payload.rangeReviewId;
     if (typeof rangeReviewId !== "number" || !Number.isSafeInteger(rangeReviewId) || rangeReviewId <= 0) {
       return sendJson(res, 400, { error: "rangeReviewId 要是正整数" });
     }
-    return rerunRangeReview(res, deps, rangeReviewId, triggeredBy, assignment);
+    return rerunRangeReview(res, deps, rangeReviewId, triggeredBy, assignment, directive);
   }
   if (
     payload === null ||
@@ -4857,6 +4891,8 @@ async function handleRerun(
     { platform: "gitea", owner, repo, number: pullNumber, headSha, draft: false, action: "rerun" },
     plan,
     triggeredBy,
+    undefined,
+    directive,
   );
 }
 
@@ -4873,6 +4909,7 @@ async function rerunRangeReview(
   id: number,
   triggeredBy: string,
   assignment: RepoAssignment,
+  directive: string | undefined,
 ): Promise<void> {
   const record = withStore(deps.dbPath, (store) => store.getRangeReview(id));
   if (record === undefined || !assignment.allows(record.owner, record.repo)) {
@@ -4917,6 +4954,7 @@ async function rerunRangeReview(
     plan,
     triggeredBy,
     id,
+    directive,
   );
 }
 
@@ -5485,7 +5523,7 @@ async function handleAdvanceRangeReview(
   id: number,
   advancedBy: string,
 ): Promise<void> {
-  const payload = await readJson<{ comparison?: unknown } | null>(req, res);
+  const payload = await readJson<{ comparison?: unknown; directive?: unknown } | null>(req, res);
   if (payload === undefined) return;
   if (payload === null || typeof payload.comparison !== "string") {
     return sendJson(res, 400, { error: 'body 要是 {"comparison"} 形状的 JSON' });
@@ -5493,6 +5531,9 @@ async function handleAdvanceRangeReview(
   if (!COMMIT_SHA.test(payload.comparison)) {
     return sendJson(res, 400, { error: "比较项要是 7 到 40 位的 commit sha" });
   }
+  // 推进比较项也是一次重审,同样可以附本轮指令(issue #225)。
+  const directive = readDirective(res, payload.directive);
+  if (directive === "rejected") return;
 
   const record = withStore(deps.dbPath, (store) => store.getRangeReview(id));
   if (record === undefined) {
@@ -5593,6 +5634,7 @@ async function handleAdvanceRangeReview(
     plan,
     advancedBy,
     id,
+    directive,
   );
 }
 

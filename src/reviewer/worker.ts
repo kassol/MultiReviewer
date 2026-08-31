@@ -227,8 +227,25 @@ function rulesSection(rules: readonly ReviewRule[]): string {
   ].join("\n");
 }
 
+/**
+ * 本轮指令(CONTEXT.md,issue #225):发起重审的人对这一轮附的一次性要求。
+ *
+ * 三样声明缺一不可。**只作用于这一轮**:模型不该把它当成这个仓库的长期标准,那种要求
+ * 该沉淀成知识条目。**优先于常规范围**:「只报 P0」与「覆盖正确性、安全、可维护性、
+ * 设计」是直接冲突的,不说清听谁的,模型会各自发挥。**不改变证据标准**:「重点看并发」
+ * 很容易被读成「并发那块可以放宽取证」,而放宽取证正是误报的第一根因。
+ */
+function directiveSection(directive: string): string {
+  return [
+    "",
+    "The reviewer who started this review round asked for the following. It applies to this review round only — it is not a standing rule of this repository. Where it conflicts with the general scope above, it takes priority: follow it. It does not change the evidence standard — every finding still needs the same grounding in code you have actually read.",
+    "",
+    directive,
+  ].join("\n");
+}
+
 export function reviewPrompt(
-  request: Pick<ReviewerRequest, "range" | "history" | "intent" | "rules">,
+  request: Pick<ReviewerRequest, "range" | "history" | "intent" | "rules" | "directive">,
 ): string {
   const files = request.range.files.map((f) => `- ${f}`).join("\n");
   const history =
@@ -239,8 +256,13 @@ export function reviewPrompt(
     request.rules === undefined || request.rules.length === 0
       ? ""
       : `${rulesSection(request.rules)}\n`;
+  // 指令段排在规则之后、文件清单之前:它是这一轮的要求,读到文件清单之前就该知道。
+  const directive =
+    request.directive === undefined || request.directive === ""
+      ? ""
+      : `${directiveSection(request.directive)}\n`;
   return `Review the changes between commit ${request.range.baseSha} and commit ${request.range.headSha}.
-${intent}${rules}
+${intent}${rules}${directive}
 The following files changed. Review the changes in them, using the rest of the repository as context:
 
 ${files}

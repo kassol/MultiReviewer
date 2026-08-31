@@ -827,3 +827,52 @@ test("空知识集时不注入规则,Review Run 不记知识集版本", async ()
     db2.close();
   }
 });
+
+test("本轮指令随这一轮注入 Reviewer 并落库,不给指令时两处都是空", async () => {
+  const { cache, db, forge, reviewer } = setup(6);
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    {
+      forge: forge.forge,
+      reviewers: [reviewer],
+      cacheDir: cache.dir,
+      dbPath: db.path,
+      directive: "这一轮只报 P0",
+    },
+  );
+
+  assert.equal(reviewer.calls[0]!.directive, "这一轮只报 P0");
+
+  const withDirective = new DatabaseSync(db.path, { readOnly: true });
+  try {
+    assert.equal(
+      withDirective.prepare("SELECT directive FROM review_run").get()!["directive"],
+      "这一轮只报 P0",
+    );
+  } finally {
+    withDirective.close();
+  }
+
+  // 下一轮不带:本轮指令只作用于发起它的那一轮(CONTEXT.md 本轮指令)。
+  const next = scriptedReviewer("stub-model", []);
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    { forge: forge.forge, reviewers: [next], cacheDir: cache.dir, dbPath: db.path },
+  );
+
+  assert.equal(next.calls[0]!.directive, undefined);
+
+  const plain = new DatabaseSync(db.path, { readOnly: true });
+  try {
+    assert.deepEqual(
+      plain
+        .prepare("SELECT directive FROM review_run ORDER BY id")
+        .all()
+        .map((row) => row["directive"]),
+      ["这一轮只报 P0", null],
+    );
+  } finally {
+    plain.close();
+  }
+});

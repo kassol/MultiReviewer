@@ -2,7 +2,7 @@ import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-q
 import { useState } from "react";
 
 import { Cross2Icon } from "@radix-ui/react-icons";
-import { AlertDialog, Badge, Dialog, Flex, IconButton, Text } from "@radix-ui/themes";
+import { AlertDialog, Badge, Dialog, Flex, IconButton, Text, TextArea } from "@radix-ui/themes";
 
 import { Button } from "@/components/theme-button";
 
@@ -177,13 +177,19 @@ function AdvanceDialogContent({
 }) {
   const queryClient = useQueryClient();
   const [comparison, setComparison] = useState<CommitSelection | null>(null);
+  const [directive, setDirective] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const advance = useMutation({
     mutationFn: async () => {
+      // 本轮指令(issue #225)选填,留空即不带这一格,只作用于推进出来的这一轮。
+      const trimmed = directive.trim();
       const response = await api(`/range-reviews/${rangeReview.id}/advance`, {
         method: "POST",
-        body: JSON.stringify({ comparison: comparison?.sha ?? "" }),
+        body: JSON.stringify({
+          comparison: comparison?.sha ?? "",
+          ...(trimmed === "" ? {} : { directive: trimmed }),
+        }),
       });
       if (!response.ok) throw new Error(await errorText(response));
     },
@@ -257,6 +263,22 @@ function AdvanceDialogContent({
               setComparison(selection);
             }}
           />
+
+          <div className="shrink-0">
+            <Text as="label" htmlFor="advance-directive" size="1" color="gray">
+              本轮指令(选填,只作用于推进出来的这一轮)
+            </Text>
+            <TextArea
+              id="advance-directive"
+              size="2"
+              rows={2}
+              maxLength={500}
+              className="mt-1"
+              placeholder="如「只报 P0」「重点看并发」"
+              value={directive}
+              onChange={(event) => setDirective(event.target.value)}
+            />
+          </div>
         </div>
 
         <div className="shrink-0 border-t border-overlay-line bg-sunken px-4 py-3 sm:px-5">

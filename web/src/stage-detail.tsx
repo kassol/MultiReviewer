@@ -10,7 +10,15 @@ import {
   ExternalLinkIcon,
   ReaderIcon,
 } from "@radix-ui/react-icons";
-import { Callout, IconButton, Skeleton, Tooltip } from "@radix-ui/themes";
+import {
+  Callout,
+  Dialog as ThemedDialog,
+  IconButton,
+  Skeleton,
+  Text,
+  TextArea,
+  Tooltip,
+} from "@radix-ui/themes";
 import { Dialog } from "radix-ui";
 
 import { CommitChip } from "@/components/commit-chip";
@@ -27,7 +35,7 @@ import { localClock, localDay, localMinute } from "@/lib/time";
 
 import { fetchJson } from "./api.ts";
 import { AdvanceAction, CompleteAction, type RangeReview } from "./range-review-actions.tsx";
-import { rerunRequest } from "./repo-actions.tsx";
+import { rerunRequest, RUN_DIRECTIVE_PLACEHOLDER } from "./repo-actions.tsx";
 import { FilePatch } from "./run-diff.tsx";
 import { RunTrace } from "./run-trace.tsx";
 import {
@@ -324,19 +332,6 @@ function StageActions({
   /** 重跑或推进已被服务端接下:新一轮还要过一会才出现,外层据此续查。 */
   onTriggered: () => void;
 }) {
-  const queryClient = useQueryClient();
-  const rerun = useMutation({
-    mutationFn: () =>
-      stage.source === "range-review"
-        ? rerunRangeReviewRequest(stage.rangeReviewId!)
-        : rerunRequest({ owner: stage.owner, repo: stage.repo, pullNumber: stage.pullNumber! }),
-    onSuccess: (text) => {
-      onFeedback({ text, isError: false });
-      onTriggered();
-      void queryClient.invalidateQueries({ queryKey: ["stage-detail"] });
-    },
-    onError: (error: Error) => onFeedback({ text: error.message, isError: true }),
-  });
   /*
    * 已经审查完成的范围审查没有可动的容器 PR:比较项不再推进,也不再开新一轮。发起失败
    * 那一档同理。记录还没到手时先按不可用,免得点下去撞一个 409。
@@ -346,18 +341,12 @@ function StageActions({
   return (
     <>
       {canRerun ? (
-        <Button
-          variant="soft"
-          color="gray"
-          size={{ initial: "3", sm: "2" }}
-          disabled={frozen || rerun.isPending}
-          onClick={() => {
-            onFeedback(null);
-            rerun.mutate();
-          }}
-        >
-          {rerun.isPending ? "触发中…" : "重跑"}
-        </Button>
+        <RerunAction
+          stage={stage}
+          disabled={frozen}
+          onFeedback={onFeedback}
+          onTriggered={onTriggered}
+        />
       ) : null}
       {rangeReview === undefined ? null : (
         <>
@@ -368,6 +357,111 @@ function StageActions({
         </>
       )}
     </>
+  );
+}
+
+/**
+ * 重跑(issue #176)加本轮指令(issue #225)。
+ *
+ * 走弹窗而不是在动作行里常驻一个输入框:指令是选填的,大多数重跑不带它,常驻一个空框
+ * 会把「这一栏要填什么」的问题摆在每个人面前。与推进比较项同一形状——同一行上的两个
+ * 动作,一个点开弹窗一个直接跑,人得先记住哪个是哪个。
+ */
+function RerunAction({
+  stage,
+  disabled,
+  onFeedback,
+  onTriggered,
+}: {
+  stage: StageItem;
+  disabled: boolean;
+  onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
+  onTriggered: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [directive, setDirective] = useState("");
+  const rerun = useMutation({
+    mutationFn: (text: string | undefined) =>
+      stage.source === "range-review"
+        ? rerunRangeReviewRequest(stage.rangeReviewId!, text)
+        : rerunRequest({
+            owner: stage.owner,
+            repo: stage.repo,
+            pullNumber: stage.pullNumber!,
+            ...(text === undefined ? {} : { directive: text }),
+          }),
+    onSuccess: (text) => {
+      setOpen(false);
+      // 指令只属于刚发出去的那一轮,留在框里下次会被顺手带上。
+      setDirective("");
+      onFeedback({ text, isError: false });
+      onTriggered();
+      void queryClient.invalidateQueries({ queryKey: ["stage-detail"] });
+    },
+    onError: (error: Error) => onFeedback({ text: error.message, isError: true }),
+  });
+
+  return (
+    <ThemedDialog.Root open={open} onOpenChange={setOpen}>
+      <ThemedDialog.Trigger>
+        <Button variant="soft" color="gray" size={{ initial: "3", sm: "2" }} disabled={disabled}>
+          重跑
+        </Button>
+      </ThemedDialog.Trigger>
+      <ThemedDialog.Content maxWidth="520px" size={{ initial: "2", sm: "3" }}>
+        <ThemedDialog.Title size="4" mb="1">
+          再跑一轮
+        </ThemedDialog.Title>
+        <ThemedDialog.Description size="2" color="gray" mb="3">
+          本轮指令只作用于这一轮,下一轮不带。要长期生效的要求请录进知识集。
+        </ThemedDialog.Description>
+        <form
+          aria-busy={rerun.isPending}
+          onSubmit={(event) => {
+            event.preventDefault();
+            onFeedback(null);
+            const trimmed = directive.trim();
+            rerun.mutate(trimmed === "" ? undefined : trimmed);
+          }}
+        >
+          <Text as="label" htmlFor="stage-rerun-directive" className="sr-only">
+            本轮指令
+          </Text>
+          <TextArea
+            id="stage-rerun-directive"
+            size="2"
+            rows={3}
+            maxLength={500}
+            placeholder={RUN_DIRECTIVE_PLACEHOLDER}
+            value={directive}
+            onChange={(event) => setDirective(event.target.value)}
+          />
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+            <ThemedDialog.Close>
+              <Button
+                type="button"
+                variant="soft"
+                color="gray"
+                size={{ initial: "3", sm: "2" }}
+                className="min-h-11 w-full sm:min-h-0 sm:w-auto"
+              >
+                取消
+              </Button>
+            </ThemedDialog.Close>
+            <Button
+              type="submit"
+              variant="solid"
+              size={{ initial: "3", sm: "2" }}
+              className="min-h-11 w-full shadow-accent sm:min-h-0 sm:w-auto"
+              disabled={rerun.isPending}
+            >
+              {rerun.isPending ? "触发中…" : "重跑"}
+            </Button>
+          </div>
+        </form>
+      </ThemedDialog.Content>
+    </ThemedDialog.Root>
   );
 }
 
@@ -631,6 +725,16 @@ function RoundDrawer({
 
       {run.data === undefined ? null : (
         <div className="flex flex-col gap-3">
+          {/* 发起这一轮时附的本轮指令(issue #225):这一轮为什么这么跑,答案只在这里。 */}
+          {run.data.run.directive === null ? null : (
+            <section
+              aria-label="本轮指令"
+              className="rounded-lg bg-accent-tint px-3 py-2 text-base text-text"
+            >
+              <span className="text-sm text-primary">本轮指令</span>
+              <p className="mt-0.5 break-words whitespace-pre-wrap">{run.data.run.directive}</p>
+            </section>
+          )}
           {/* 失败原因决定要不要重跑(区域封禁重跑也没用,超时重跑就好),所以整段摊开。 */}
           {run.data.run.models
             .filter((entry) => entry.failure !== null)
