@@ -311,11 +311,11 @@ function RuleSetDialogContent({
     // 视口,标题和关闭全被推走(修复自部署实例的走查)。
     <Dialog.Content
       aria-describedby={undefined}
-      maxWidth="680px"
+      maxWidth="880px"
       size={{ initial: "2", sm: "3" }}
       // 高度定死而不是随内容:三个 tab 的内容量差得远,跟着内容缩放的话每次切 tab
       // 整个弹窗都在跳。
-      className="flex h-[min(680px,calc(100dvh-4.5rem))] flex-col overflow-hidden"
+      className="flex h-[min(820px,calc(100dvh-4.5rem))] flex-col overflow-hidden"
     >
       <Dialog.Title size="4" mb="1" className="shrink-0 pr-9 break-all">
         {repo.owner}/{repo.repo} 的知识集
