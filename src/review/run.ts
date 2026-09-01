@@ -22,17 +22,21 @@ import {
 } from "./batch.ts";
 import {
   dedupeFindings,
+  mergeByProposal,
   sameContent,
   type FindingAttribution,
+  type MergeAgent,
   type MergedFinding,
 } from "./dedupe.ts";
 import type {
   Category,
   Disposition,
+  Finding,
   HistoryFinding,
   ReviewIntent,
   Reviewer,
   ReviewerOutcome,
+  ReviewerUsage,
   ProjectFact,
   ReviewRule,
   Severity,
@@ -78,6 +82,11 @@ export type ReviewRunPlan = Readonly<{
   rules: readonly ReviewRule[];
   /** 那一版的生效项目事实全体(issue #221),同样是路由前的全集。 */
   facts: readonly ProjectFact[];
+  /**
+   * 本轮的合并 agent(issue #228)。取配置序第一个 Reviewer 的模型快照与凭据建出来,
+   * 那一项跑不了(缺凭据或缺运行模型)即缺席,这一轮的合并走算法档。
+   */
+  mergeAgent?: MergeAgent;
 }>;
 
 /** 从启动时的配置快照生成一次运行计划。复制 Reviewer 列表,使组合的后续改动只影响下一轮。 */
@@ -97,6 +106,8 @@ export function createReviewRunPlan(
     version: null,
     rules: [],
   },
+  /** 本轮的合并 agent(issue #228)。不给即这一轮只有算法合并。 */
+  mergeAgent?: MergeAgent,
 ): ReviewRunPlan {
   return Object.freeze({
     reviewers: Object.freeze([...reviewers]),
@@ -105,6 +116,7 @@ export function createReviewRunPlan(
     ruleSetVersion: ruleSet.version,
     rules: Object.freeze([...ruleSet.rules]),
     facts: Object.freeze([...(ruleSet.facts ?? [])]),
+    ...(mergeAgent === undefined ? {} : { mergeAgent }),
   });
 }
 
@@ -135,6 +147,11 @@ export type ReviewRunDeps = {
    * 编排层不从库里读上一轮的,那正是「只作用于那一轮」的实现。
    */
   directive?: string;
+  /**
+   * 本轮的合并 agent(issue #228)。不传即这一轮的合并只有算法档,与这一票之前逐字一致;
+   * 传了而它失败、超时或分组方案没过验收时同样退回算法档,并在轨迹记一条回退事件。
+   */
+  mergeAgent?: MergeAgent;
 };
 
 export type ReviewRunResult = {
@@ -872,6 +889,65 @@ function recordFindingMerges(
   }
 }
 
+/**
+ * 合并 agent 的会话事件在轨迹里占的名字(issue #228)。它不是 Reviewer,因此不用模型
+ * 标识——用模型标识会与配置序第一个 Reviewer 撞名,两边的过程就混进同一个块里。
+ */
+export const MERGE_AGENT_TRACE_NAME = "合并 agent";
+
+/**
+ * 本轮的去重合并(issue #228)。有合并 agent 时由它给分组方案,代码验收三条硬性质;
+ * 没有它、它失败、它超时或方案没过验收,一律整体退回 `dedupeFindings`——最坏情况恒等于
+ * 算法档的行为,一次辅助判断的故障不该让整轮审查白跑。
+ *
+ * 不足两条时不派:一条 Finding 分不出组,派出去只是白花一次子进程与一份 token。
+ */
+async function mergeFindings(
+  trace: TraceRecorder,
+  agent: MergeAgent | undefined,
+  findings: readonly Finding[],
+  worktreePath: string,
+): Promise<{ merged: MergedFinding[]; usage?: ReviewerUsage }> {
+  if (agent === undefined || findings.length < 2) return { merged: dedupeFindings(findings) };
+
+  const fallback = (reason: string, usage?: ReviewerUsage) => {
+    trace.run("merge_fallback", { reason });
+    return { merged: dedupeFindings(findings), ...(usage === undefined ? {} : { usage }) };
+  };
+
+  let result;
+  try {
+    result = await agent({
+      findings,
+      worktreePath,
+      onEvent: (event) => {
+        const { kind, ...payload } = event;
+        trace.reviewer(MERGE_AGENT_TRACE_NAME, kind, payload);
+      },
+    });
+  } catch (error) {
+    // 注入边界上的实现抛异常也只是这一次合并没跑成,不该掀掉整轮审查。
+    return fallback(error instanceof Error ? error.message : String(error));
+  }
+
+  trace.run("merge_agent_finished", {
+    groups: result.groups.length,
+    usage: result.usage ?? null,
+  });
+  if (result.failure !== undefined) return fallback(result.failure, result.usage);
+
+  // 验收自身抛异常也走回退:「最坏情况恒等于今天」这条承诺不允许任何一条路径把
+  // 整轮审查掀掉,哪怕是验收代码自己的缺陷。
+  let outcome;
+  try {
+    outcome = mergeByProposal(findings, result.groups);
+  } catch (error) {
+    return fallback(error instanceof Error ? error.message : String(error), result.usage);
+  }
+  if ("rejected" in outcome) return fallback(outcome.rejected, result.usage);
+  return { merged: outcome.merged, ...(result.usage === undefined ? {} : { usage: result.usage }) };
+}
+
 /** 一条行级评论的身份:同一轮里 `路径 + 行号 + 正文` 三者相同的草稿只有一条。 */
 function commentKey(comment: { path: string; line: number; body: string }): string {
   return `${comment.path}\n${comment.line}\n${comment.body}`;
@@ -1185,9 +1261,14 @@ export async function runReview(
       // Reviewer 那侧已经打回过一次并请模型重锚,到这里还在外面的就是重锚也没锚进的那些。
       // 丢弃而不是退化进 review 正文:正文里的条目没有 resolve 载体,不进处置率,只会攒成
       // 没人处置的暗债(ADR 0006 的 2026-08-31 修订附记)。
-      const merged = dedupeFindings(
+      // 合并每轮做一次,在全部批次跑完之后(issue #228);diff 终筛仍排在合并之后。
+      const { merged: allMerged, usage: mergeUsage } = await mergeFindings(
+        trace,
+        deps.mergeAgent,
         outcomes.filter((o) => o.failure === undefined).flatMap((o) => o.findings),
-      ).filter((finding) => {
+        worktree.path,
+      );
+      const merged = allMerged.filter((finding) => {
         if (isInDiff(diffRanges, finding.file, finding.line)) return true;
         trace.run("finding_discarded", {
           file: finding.file,
@@ -1341,6 +1422,8 @@ export async function runReview(
         outcomes: outcomeRecords,
         findings: findingRecords,
         verdicts,
+        // 合并 agent 的用量进本轮总量,不并进任何一个 Reviewer(issue #228)。
+        ...(mergeUsage === undefined ? {} : { mergeUsage }),
       });
 
       // 延续落库要等本轮的行插进去:旧行的备注、处置人与处置时刻随 Identity 抄到承接它的

@@ -5,3 +5,4 @@ node_modules/
 data/
 # 前端构建产物在 Docker 多阶段构建里生成,不进版本库。
 web/dist/
+.cindy-worktrees/

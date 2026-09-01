@@ -32,13 +32,14 @@ import { GIT_TOOL, gitTool } from "./git-tool.ts";
 import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
 import { reviewerEventStream } from "./trace-events.ts";
 import {
+  READ_ONLY_TOOLS,
   factBullet,
   factRuleIdRejection,
   fileLines,
   numberedReadTool,
   prepareAgentRuntime,
-  READ_ONLY_TOOLS,
   ruleBullet,
+  sessionFailure,
   sessionThinkingLevel,
 } from "./worker-tools.ts";
 
@@ -502,14 +503,7 @@ async function run(request: ReviewerRequest): Promise<void> {
 
   // `session.prompt()` 在模型调用失败时也正常返回,失败只在这两处可见。
   // 失败标在 assistant 消息上,而消息序列的末尾可能是一条 tool result,故反向找。
-  const lastAssistant = session.messages.findLast((m) => m.role === "assistant");
-  const stopReasonFailure =
-    lastAssistant?.stopReason === "error"
-      ? (lastAssistant.errorMessage ?? "stopReason=error")
-      : undefined;
-  const rawFailure = thrown ?? session.agent.state.errorMessage ?? stopReasonFailure;
-  const failure =
-    rawFailure === undefined ? undefined : redactModelCredential(rawFailure, apiKey);
+  const failure = sessionFailure(session, thrown, apiKey);
 
   // 用量必须在 dispose 之前读:会话销毁后统计随之消失。只取 token 明细,`stats.cost`
   // 是 Pi 按自带价目表折算的估算,产品不记账,读它没有意义。

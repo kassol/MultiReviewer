@@ -925,6 +925,12 @@ export type RunResult = {
   findings: readonly FindingRecord[];
   /** 本轮各 Reviewer 的复核结论。缺省即这一轮没有历史可复核。 */
   verdicts?: readonly VerdictRecord[];
+  /**
+   * 合并 agent 这一轮的用量(issue #228)。只进 `review_run` 的总量,不落 `reviewer_outcome`
+   * ——它不是 Reviewer,记成一行会让按模型的统计多出一个不存在的模型。缺省即这一轮没派
+   * 合并 agent,或它连会话都没建起来。
+   */
+  mergeUsage?: ReviewerUsage;
 };
 
 /**
@@ -4321,7 +4327,12 @@ export function openStore(dbPath: string): Store {
       // 会让事后的处置率统计算出偏低的分母。
       db.exec("BEGIN");
       try {
-        const runUsage = sumUsage(result.outcomes);
+        // 本轮总量含合并 agent(issue #228):面板的花费数字要覆盖这一轮真的花掉的全部
+        // token,而逐 Reviewer 那几行仍只有各自的会话——差额就是合并 agent。
+        const runUsage = sumUsage([
+          ...result.outcomes,
+          ...(result.mergeUsage === undefined ? [] : [{ usage: result.mergeUsage }]),
+        ]);
         db.prepare(
           `UPDATE review_run
               SET finished_at = ?, duration_ms = ?, failed = ?,

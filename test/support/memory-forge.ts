@@ -15,6 +15,7 @@ import type {
   Repository,
   ReviewDraft,
 } from "../../src/forge/forge.ts";
+import type { MergeAgent, MergeGroupProposal } from "../../src/review/dedupe.ts";
 import type {
   Finding,
   HistoryFinding,
@@ -25,6 +26,7 @@ import type {
   Reviewer,
   ReviewerEvent,
   ReviewerOutcome,
+  ReviewerUsage,
   ReviewVerdict,
 } from "../../src/review/finding.ts";
 import type { DiffRanges } from "../../src/review/position.ts";
@@ -285,4 +287,35 @@ export function verdictReviewer(
       })),
     }),
   };
+}
+
+/**
+ * 返回预设分组方案的合并 agent 桩(issue #228),形态照 `scriptedReviewer`。
+ *
+ * `groups` 是这一次要提出的分组,成员编号即它收到的那份 Finding 列表的下标;`calls`
+ * 记下每次收到的 Finding,用例据此断言编排层交下去的是哪一批。`extra.failure` 模拟
+ * 跑不成(失败与超时在注入边界上是同一个形状),`extra.throws` 模拟实现自己抛异常。
+ */
+export function scriptedMergeAgent(
+  groups: readonly MergeGroupProposal[],
+  extra?: {
+    failure?: string;
+    throws?: string;
+    usage?: ReviewerUsage;
+    events?: readonly ReviewerEvent[];
+  },
+): MergeAgent & { calls: (readonly Finding[])[] } {
+  const calls: (readonly Finding[])[] = [];
+  const agent: MergeAgent & { calls: (readonly Finding[])[] } = async (request) => {
+    calls.push(request.findings);
+    for (const event of extra?.events ?? []) request.onEvent?.(event);
+    if (extra?.throws !== undefined) throw new Error(extra.throws);
+    return {
+      groups: groups.map((group) => ({ ...group })),
+      ...(extra?.failure === undefined ? {} : { failure: extra.failure }),
+      ...(extra?.usage === undefined ? {} : { usage: extra.usage }),
+    };
+  };
+  agent.calls = calls;
+  return agent;
 }

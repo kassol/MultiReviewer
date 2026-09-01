@@ -79,13 +79,15 @@ function members(payload: Record<string, unknown>): MergedMember[] {
 }
 
 /**
- * 合并判据(ADR 0015):行号相同是硬证据,其余按行距加标题相似度。相似度是 0–1 的
- * Jaccard,按百分比读——阈值 0.05 在界面上就是 5%。
+ * 合并判据(ADR 0022):`agent` 档是合并 agent 给的那句理由,合并由它判时就是这一档。
+ * 另两档是回退到算法合并时的判据(ADR 0015):行号相同是硬证据,其余按行距加标题
+ * 相似度。相似度是 0–1 的 Jaccard,按百分比读——阈值 0.05 在界面上就是 5%。
  */
 function criteriaText(payload: Record<string, unknown>): string | null {
   const criteria = record(payload, "criteria");
   if (criteria === null) return null;
   const kind = str(criteria, "kind");
+  if (kind === "agent") return str(criteria, "reason") ?? "合并 agent 判定";
   if (kind === "same_line") return "同一行";
   if (kind !== "distance") return kind;
   const distance = num(criteria, "distance");
@@ -210,6 +212,34 @@ function RunMilestone({ event }: { event: TraceEvent }) {
           </div>
         );
       }
+      case "merge_agent_finished": {
+        const groups = num(payload, "groups");
+        const usage = record(payload, "usage");
+        const input = usage === null ? null : num(usage, "inputTokens");
+        const output = usage === null ? null : num(usage, "outputTokens");
+        return (
+          <span className="flex flex-wrap items-baseline gap-x-2 text-base text-text">
+            <span>
+              合并 agent 完成 · 分成 <span className="font-mono tabular-nums">{groups ?? 0}</span> 组
+            </span>
+            {input === null && output === null ? null : (
+              <span className="text-sm text-text-secondary">
+                用量 输入 <span className="font-mono tabular-nums">{input ?? 0}</span> · 输出{" "}
+                <span className="font-mono tabular-nums">{output ?? 0}</span> tokens
+              </span>
+            )}
+          </span>
+        );
+      }
+      case "merge_fallback":
+        return (
+          <span className="flex flex-wrap items-baseline gap-x-2 text-base text-text">
+            <span className="text-warning">本轮合并退回算法档</span>
+            <span className="min-w-0 text-sm break-words text-text-secondary">
+              {str(payload, "reason") ?? "未记录原因"}
+            </span>
+          </span>
+        );
       case "finding_discarded": {
         const file = str(payload, "file");
         const line = num(payload, "line");
