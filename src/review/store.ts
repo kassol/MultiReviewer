@@ -1748,7 +1748,8 @@ export type Store = {
   /** 探索完成:整组覆盖知识草案,那一行改写成已完成。调用方负责截断与去空。 */
   finishRuleExploration(repoId: number, items: readonly ReviewRuleInput[], at: string): void;
   /**
-   * 探索完成,产出排进修订提案队列(issue #207):知识集已经非空时走这一条,草案一行
+   * 探索完成,产出排进修订提案队列(issue #207):知识集已经确认过时走这一条,草案一行
+   * 不动。同源的待裁决旧提案被这一批取代(与草案同一条覆盖语义);已裁决的与处置反哺的
    * 不动。那一行同样改写成已完成。调用方负责截断、去空与变更类型的映射。
    */
   finishRuleExplorationAsProposals(
@@ -3333,7 +3334,13 @@ export function openStore(dbPath: string): Store {
     finishRuleExplorationAsProposals(repoId, proposals, at) {
       db.exec("BEGIN");
       try {
-        // 排进队列而不是覆盖:提案是已有知识集之上的一条变更,人裁决采纳才改变知识集。
+        // 与草案同一条覆盖语义:一次基点探索是对照当前知识集的完整推导,新一次的未裁决
+        // 产出取代上一次的,不是追加。只覆盖同源(基点探索)的待裁决行:已裁决的留作历史,
+        // 处置反哺的提案来自处置备注,探索重跑推不出它们,不参与覆盖。
+        db.prepare(
+          `DELETE FROM rule_proposal
+            WHERE repo_id = ? AND state = 'pending' AND source = 'baseline-exploration'`,
+        ).run(repoId);
         for (const item of proposals) insertRuleProposal(repoId, item, at);
         completeRuleExploration(repoId, at);
         db.exec("COMMIT");

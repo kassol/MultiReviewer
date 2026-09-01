@@ -474,6 +474,42 @@ test("已确认的空知识集重探索:产出仍进提案队列,不回到草案
   assert.deepEqual(body.rules, []);
 });
 
+test("重探索覆盖同源的待裁决旧提案:已裁决的与处置反哺的不动", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  try {
+    store.registerRepo({ repoId: 89, owner: "acme", repo: "overwritten", generation: 1, key: "k" });
+    const staleId = store.addRuleProposal(89, proposal({ statement: "上一轮探索提的" }))!;
+    const rejectedId = store.addRuleProposal(89, proposal({ statement: "早已驳回的" }))!;
+    assert.equal(store.rejectRuleProposal(89, rejectedId), true);
+    store.addRuleProposal(
+      89,
+      proposal({ source: "disposition-feedback", sourceNote: "处置备注", statement: "反哺提的" }),
+    );
+
+    store.finishRuleExplorationAsProposals(
+      89,
+      [proposal({ statement: "新一轮探索提的" })],
+      "2026-08-30T00:00:00.000Z",
+    );
+
+    // 上一轮探索的待裁决行被这一批取代;驳回历史与反哺提案原地不动。
+    const rows = store.getRuleProposals(89);
+    assert.equal(rows.find((row) => row.id === staleId), undefined);
+    assert.deepEqual(
+      rows.map((row) => [row.statement, row.source, row.state]),
+      [
+        ["早已驳回的", "baseline-exploration", "rejected"],
+        ["反哺提的", "disposition-feedback", "pending"],
+        ["新一轮探索提的", "baseline-exploration", "pending"],
+      ],
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test("批量采纳一次只推进一个知识集版本;有一条落不下去就整组不做", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
