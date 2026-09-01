@@ -448,8 +448,13 @@ function RuleSetDialogContent({
                   .filter((entry) => entry.type === "rule")
                   .map((rule) => (
                     <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
-                      <div className="flex items-start justify-between gap-2">
-                        <Text as="p" size="2">{rule.statement}</Text>
+                      {/* 陈述独占整行:长句不再被按钮挤着折行。元数据与操作合成底部
+                          一条收尾线,操作靠右,行与行之间有稳定的对齐锚。 */}
+                      <Text as="p" size="2">{rule.statement}</Text>
+                      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+                        <Badge color="gray" variant="soft">
+                          {rule.scope === "" ? "全仓库" : rule.scope}
+                        </Badge>
                         {canWrite ? (
                           <div className="flex shrink-0 gap-1">
                             <Button
@@ -476,11 +481,6 @@ function RuleSetDialogContent({
                           </div>
                         ) : null}
                       </div>
-                      <span className="mt-1.5 inline-block">
-                        <Badge color="gray" variant="soft">
-                          {rule.scope === "" ? "全仓库" : rule.scope}
-                        </Badge>
-                      </span>
                     </li>
                   ))}
               </ul>
@@ -503,8 +503,11 @@ function RuleSetDialogContent({
                   .filter((entry) => entry.type === "fact")
                   .map((fact) => (
                     <li key={fact.id} className="border-t border-line px-4 py-3 first:border-t-0">
-                      <div className="flex items-start justify-between gap-2">
-                        <Text as="p" size="2">{fact.statement}</Text>
+                      <Text as="p" size="2">{fact.statement}</Text>
+                      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+                        <Badge color="gray" variant="soft">
+                          {fact.scope === "" ? "全仓库" : fact.scope}
+                        </Badge>
                         {canWrite ? (
                           <div className="flex shrink-0 gap-1">
                             <Button
@@ -531,11 +534,6 @@ function RuleSetDialogContent({
                           </div>
                         ) : null}
                       </div>
-                      <span className="mt-1.5 inline-block">
-                        <Badge color="gray" variant="soft">
-                          {fact.scope === "" ? "全仓库" : fact.scope}
-                        </Badge>
-                      </span>
                     </li>
                   ))}
               </ul>
@@ -855,105 +853,117 @@ function ProposalSection({
       ) : (
         <ul className="overflow-hidden rounded-lg border border-card-line">
           {pending.map((proposal) => (
-            <li key={proposal.id} className="border-t border-line px-4 py-3 first:border-t-0">
-              <div className="flex items-start justify-between gap-2">
+            <li key={proposal.id} className="flex items-start gap-2 border-t border-line px-4 py-3 first:border-t-0">
+              {/* 勾选框独立成列,陈述、目标条目、备注与收尾线共用一条左边缘;陈述
+                  独占整行宽度,不再与按钮簇抢同一行。htmlFor 保住整句可点勾选。 */}
+              {canWrite ? (
+                <Checkbox
+                  id={`rule-proposal-${proposal.id}`}
+                  checked={pick.picked.has(proposal.id)}
+                  onCheckedChange={(next) => pick.toggle(proposal.id, next === true)}
+                  size={{ initial: "2", sm: "1" }}
+                  className="mt-0.5"
+                />
+              ) : null}
+              <div className="min-w-0 flex-1">
                 {canWrite ? (
-                  <Text as="label" size="2" className="flex min-w-0 items-start gap-2">
-                    <Checkbox
-                      checked={pick.picked.has(proposal.id)}
-                      onCheckedChange={(next) => pick.toggle(proposal.id, next === true)}
-                      size={{ initial: "2", sm: "1" }}
-                      className="mt-0.5"
-                    />
-                    <span className="min-w-0 break-words">{proposal.statement}</span>
+                  <Text
+                    as="label"
+                    htmlFor={`rule-proposal-${proposal.id}`}
+                    size="2"
+                    className="block break-words"
+                  >
+                    {proposal.statement}
                   </Text>
                 ) : (
                   <Text as="p" size="2">{proposal.statement}</Text>
                 )}
-                {canWrite && edit?.id !== proposal.id ? (
-                  <div className="flex shrink-0 gap-1">
-                    <Button
-                      variant="outline"
-                      color="gray"
-                      highContrast
-                      size={{ initial: "3", sm: "1" }}
-                      className={OUTLINED_ACTION}
-                      onClick={() =>
-                        onEdit({
-                          id: proposal.id,
-                          type: proposal.type,
-                          scope: proposal.scope,
-                          statement: proposal.statement,
-                        })
-                      }
-                    >
-                      修改
-                    </Button>
-                    <Button
-                      variant="outline"
-                      color="gray"
-                      highContrast
-                      className={OUTLINED_ACTION}
-                      size={{ initial: "3", sm: "1" }}
-                      disabled={busy}
-                      onClick={() => onDecide(proposal.id, true)}
-                    >
-                      采纳
-                    </Button>
-                    <Button
-                      variant="outline"
-                      color="gray"
-                      highContrast
-                      size={{ initial: "3", sm: "1" }}
-                      className={OUTLINED_ACTION}
-                      disabled={busy}
-                      onClick={() => onDecide(proposal.id, false)}
-                    >
-                      驳回
-                    </Button>
+                {target(proposal) === null ? null : (
+                  <Text as="p" size="1" color="gray" className="mt-1.5">
+                    目标知识条目:{target(proposal)}
+                  </Text>
+                )}
+                {proposal.sourceNote === null ? null : (
+                  <Text as="p" size="1" color="gray" className="mt-1.5">
+                    处置备注:{proposal.sourceNote}
+                  </Text>
+                )}
+                <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+                  <span className="inline-flex min-w-0 flex-wrap items-center gap-1.5">
+                    {/* 采纳的后果两型不同(issue #222):规则违反即 Finding,事实只作判断依据。 */}
+                    <Badge color="gray" variant="soft">{TYPE_LABEL[proposal.type]}</Badge>
+                    <Badge color="gray" variant="soft">{CHANGE_LABEL[proposal.change]}</Badge>
+                    <Badge color="gray" variant="soft">{SOURCE_LABEL[proposal.source]}</Badge>
+                    <Badge color="gray" variant="soft">
+                      {proposal.scope === "" ? "全仓库" : proposal.scope}
+                    </Badge>
+                    {/* 出处回溯(issue #214):这条提案是哪一次探索或反哺推出来的。 */}
+                    {proposal.traceTaskId === null ? null : (
+                      <RuleTraceButton
+                        repoId={repoId}
+                        taskId={proposal.traceTaskId}
+                        context={`来自提案:${proposal.statement}`}
+                        highlight={proposal.statement}
+                      />
+                    )}
+                  </span>
+                  {canWrite && edit?.id !== proposal.id ? (
+                    <div className="flex shrink-0 gap-1">
+                      <Button
+                        variant="outline"
+                        color="gray"
+                        highContrast
+                        size={{ initial: "3", sm: "1" }}
+                        className={OUTLINED_ACTION}
+                        onClick={() =>
+                          onEdit({
+                            id: proposal.id,
+                            type: proposal.type,
+                            scope: proposal.scope,
+                            statement: proposal.statement,
+                          })
+                        }
+                      >
+                        修改
+                      </Button>
+                      <Button
+                        variant="outline"
+                        color="gray"
+                        highContrast
+                        className={OUTLINED_ACTION}
+                        size={{ initial: "3", sm: "1" }}
+                        disabled={busy}
+                        onClick={() => onDecide(proposal.id, true)}
+                      >
+                        采纳
+                      </Button>
+                      <Button
+                        variant="outline"
+                        color="gray"
+                        highContrast
+                        size={{ initial: "3", sm: "1" }}
+                        className={OUTLINED_ACTION}
+                        disabled={busy}
+                        onClick={() => onDecide(proposal.id, false)}
+                      >
+                        驳回
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+                {edit?.id === proposal.id ? (
+                  <div className="mt-2">
+                    <RuleForm
+                      draft={edit}
+                      busy={busy}
+                      submitLabel="改后采纳"
+                      onChange={onEdit}
+                      onCancel={() => onEdit(null)}
+                      onSubmit={onSubmitEdit}
+                    />
                   </div>
                 ) : null}
               </div>
-              <span className="mt-1.5 inline-flex flex-wrap items-center gap-1.5">
-                {/* 采纳的后果两型不同(issue #222):规则违反即 Finding,事实只作判断依据。 */}
-                <Badge color="gray" variant="soft">{TYPE_LABEL[proposal.type]}</Badge>
-                <Badge color="gray" variant="soft">{CHANGE_LABEL[proposal.change]}</Badge>
-                <Badge color="gray" variant="soft">{SOURCE_LABEL[proposal.source]}</Badge>
-                <Badge color="gray" variant="soft">
-                  {proposal.scope === "" ? "全仓库" : proposal.scope}
-                </Badge>
-                {/* 出处回溯(issue #214):这条提案是哪一次探索或反哺推出来的。 */}
-                {proposal.traceTaskId === null ? null : (
-                  <RuleTraceButton
-                    repoId={repoId}
-                    taskId={proposal.traceTaskId}
-                    context={`来自提案:${proposal.statement}`}
-                    highlight={proposal.statement}
-                  />
-                )}
-              </span>
-              {target(proposal) === null ? null : (
-                <Text as="p" size="1" color="gray" className="mt-1.5">
-                  目标知识条目:{target(proposal)}
-                </Text>
-              )}
-              {proposal.sourceNote === null ? null : (
-                <Text as="p" size="1" color="gray" className="mt-1.5">
-                  处置备注:{proposal.sourceNote}
-                </Text>
-              )}
-              {edit?.id === proposal.id ? (
-                <div className="mt-2">
-                  <RuleForm
-                    draft={edit}
-                    busy={busy}
-                    submitLabel="改后采纳"
-                    onChange={onEdit}
-                    onCancel={() => onEdit(null)}
-                    onSubmit={onSubmitEdit}
-                  />
-                </div>
-              ) : null}
             </li>
           ))}
         </ul>
@@ -1114,49 +1124,58 @@ function ExplorationSection({
         />
         <ul className="overflow-hidden rounded-lg border border-card-line">
           {ruleSet.draft.map((rule) => (
-            <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
-              <div className="flex items-start justify-between gap-2">
-                <Text as="label" size="2" className="flex min-w-0 items-start gap-2">
-                  {/* 没勾的那些不进知识集,随草案一并丢弃(issue #223)。 */}
-                  <Checkbox
-                    checked={pick.picked.has(rule.id)}
-                    onCheckedChange={(next) => pick.toggle(rule.id, next === true)}
-                    size={{ initial: "2", sm: "1" }}
-                    className="mt-0.5"
-                  />
-                  <span className="min-w-0 break-words">{rule.statement}</span>
+            <li key={rule.id} className="flex items-start gap-2 border-t border-line px-4 py-3 first:border-t-0">
+              {/* 没勾的那些不进知识集,随草案一并丢弃(issue #223)。行结构与修订提案
+                  同一套:勾选框独立成列,陈述整行,元数据与操作合成底部收尾线。 */}
+              <Checkbox
+                id={`rule-draft-${rule.id}`}
+                checked={pick.picked.has(rule.id)}
+                onCheckedChange={(next) => pick.toggle(rule.id, next === true)}
+                size={{ initial: "2", sm: "1" }}
+                className="mt-0.5"
+              />
+              <div className="min-w-0 flex-1">
+                <Text
+                  as="label"
+                  htmlFor={`rule-draft-${rule.id}`}
+                  size="2"
+                  className="block break-words"
+                >
+                  {rule.statement}
                 </Text>
-                <div className="flex shrink-0 gap-1">
-                  <Button
-                    variant="outline"
-                    color="gray"
-                    highContrast
-                    size={{ initial: "3", sm: "1" }}
-                    className={OUTLINED_ACTION}
-                    onClick={() => onEdit({ ...rule, id: rule.id })}
-                  >
-                    修改
-                  </Button>
-                  <Button
-                    variant="outline"
-                    color="gray"
-                    highContrast
-                    size={{ initial: "3", sm: "1" }}
-                    className={OUTLINED_ACTION}
-                    disabled={busy}
-                    onClick={() => onDeleteDraft(rule.id)}
-                  >
-                    删除
-                  </Button>
+                <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+                  <span className="inline-flex flex-wrap items-center gap-1.5">
+                    {/* 草案里两型并列(ADR 0020),确认时一起进知识集,徽章要分得出哪条是哪型。 */}
+                    <Badge color="gray" variant="soft">{TYPE_LABEL[rule.type]}</Badge>
+                    <Badge color="gray" variant="soft">
+                      {rule.scope === "" ? "全仓库" : rule.scope}
+                    </Badge>
+                  </span>
+                  <div className="flex shrink-0 gap-1">
+                    <Button
+                      variant="outline"
+                      color="gray"
+                      highContrast
+                      size={{ initial: "3", sm: "1" }}
+                      className={OUTLINED_ACTION}
+                      onClick={() => onEdit({ ...rule, id: rule.id })}
+                    >
+                      修改
+                    </Button>
+                    <Button
+                      variant="outline"
+                      color="gray"
+                      highContrast
+                      size={{ initial: "3", sm: "1" }}
+                      className={OUTLINED_ACTION}
+                      disabled={busy}
+                      onClick={() => onDeleteDraft(rule.id)}
+                    >
+                      删除
+                    </Button>
+                  </div>
                 </div>
               </div>
-              <span className="mt-1.5 inline-flex flex-wrap gap-1.5">
-                {/* 草案里两型并列(ADR 0020),确认时一起进知识集,徽章要分得出哪条是哪型。 */}
-                <Badge color="gray" variant="soft">{TYPE_LABEL[rule.type]}</Badge>
-                <Badge color="gray" variant="soft">
-                  {rule.scope === "" ? "全仓库" : rule.scope}
-                </Badge>
-              </span>
             </li>
           ))}
         </ul>
