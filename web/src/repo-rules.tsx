@@ -450,7 +450,7 @@ function RuleSetDialogContent({
                     <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
                       {/* 陈述独占整行:长句不再被按钮挤着折行。元数据与操作合成底部
                           一条收尾线,操作靠右,行与行之间有稳定的对齐锚。 */}
-                      <Text as="p" size="2">{rule.statement}</Text>
+                      <Text as="p" size="2" className="wrap-anywhere">{rule.statement}</Text>
                       <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
                         <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
                           {rule.scope === "" ? "全仓库" : rule.scope}
@@ -503,7 +503,7 @@ function RuleSetDialogContent({
                   .filter((entry) => entry.type === "fact")
                   .map((fact) => (
                     <li key={fact.id} className="border-t border-line px-4 py-3 first:border-t-0">
-                      <Text as="p" size="2">{fact.statement}</Text>
+                      <Text as="p" size="2" className="wrap-anywhere">{fact.statement}</Text>
                       <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
                         <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
                           {fact.scope === "" ? "全仓库" : fact.scope}
@@ -549,7 +549,7 @@ function RuleSetDialogContent({
                     <ul className="mt-2 overflow-hidden rounded-lg border border-card-line">
                       {data.retired.map((rule) => (
                         <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
-                          <Text as="p" size="2" color="gray" className="line-through">
+                          <Text as="p" size="2" color="gray" className="line-through wrap-anywhere">
                             {rule.statement}
                           </Text>
                           <span className="mt-1.5 inline-block">
@@ -871,20 +871,20 @@ function ProposalSection({
                     as="label"
                     htmlFor={`rule-proposal-${proposal.id}`}
                     size="2"
-                    className="block break-words"
+                    className="block wrap-anywhere"
                   >
                     {proposal.statement}
                   </Text>
                 ) : (
-                  <Text as="p" size="2">{proposal.statement}</Text>
+                  <Text as="p" size="2" className="wrap-anywhere">{proposal.statement}</Text>
                 )}
                 {target(proposal) === null ? null : (
-                  <Text as="p" size="1" color="gray" className="mt-1.5">
+                  <Text as="p" size="1" color="gray" className="mt-1.5 wrap-anywhere">
                     目标知识条目:{target(proposal)}
                   </Text>
                 )}
                 {proposal.sourceNote === null ? null : (
-                  <Text as="p" size="1" color="gray" className="mt-1.5">
+                  <Text as="p" size="1" color="gray" className="mt-1.5 wrap-anywhere">
                     处置备注:{proposal.sourceNote}
                   </Text>
                 )}
@@ -977,7 +977,7 @@ function ProposalSection({
           <ul className="mt-2 overflow-hidden rounded-lg border border-card-line">
             {decided.map((proposal) => (
               <li key={proposal.id} className="border-t border-line px-4 py-3 first:border-t-0">
-                <Text as="p" size="2" color="gray">{proposal.statement}</Text>
+                <Text as="p" size="2" color="gray" className="wrap-anywhere">{proposal.statement}</Text>
                 <span className="mt-1.5 inline-flex flex-wrap items-center gap-1.5">
                   {/* 短语已经带上变更类型,同行不再挂 CHANGE_LABEL 徽章:那枚徽章与
                       短语说的是同一件事,并排只会把人读回「条目被驳回」那个误解。 */}
@@ -1139,7 +1139,7 @@ function ExplorationSection({
                   as="label"
                   htmlFor={`rule-draft-${rule.id}`}
                   size="2"
-                  className="block break-words"
+                  className="block wrap-anywhere"
                 >
                   {rule.statement}
                 </Text>
