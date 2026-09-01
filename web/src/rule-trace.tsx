@@ -98,7 +98,7 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
               {TYPE_LABEL[str(item, "type") === "fact" ? "fact" : "rule"]}
             </Badge>
             {/* 作用范围可能是长 glob:允许断行,不然徽章的最小宽度会把窄视口撑破。 */}
-            <Badge color="gray" variant="soft" radius="full" className="min-w-0 break-all whitespace-normal">
+            <Badge color="gray" variant="soft" radius="full" className="min-w-0 shrink break-all whitespace-normal">
               {scope ?? "全仓库"}
             </Badge>
             {item["retire"] === true ? (

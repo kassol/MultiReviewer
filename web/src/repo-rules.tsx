@@ -452,7 +452,7 @@ function RuleSetDialogContent({
                           一条收尾线,操作靠右,行与行之间有稳定的对齐锚。 */}
                       <Text as="p" size="2">{rule.statement}</Text>
                       <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-                        <Badge color="gray" variant="soft" className="min-w-0 break-all whitespace-normal">
+                        <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
                           {rule.scope === "" ? "全仓库" : rule.scope}
                         </Badge>
                         {canWrite ? (
@@ -505,7 +505,7 @@ function RuleSetDialogContent({
                     <li key={fact.id} className="border-t border-line px-4 py-3 first:border-t-0">
                       <Text as="p" size="2">{fact.statement}</Text>
                       <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-                        <Badge color="gray" variant="soft" className="min-w-0 break-all whitespace-normal">
+                        <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
                           {fact.scope === "" ? "全仓库" : fact.scope}
                         </Badge>
                         {canWrite ? (
@@ -894,7 +894,7 @@ function ProposalSection({
                     <Badge color="gray" variant="soft">{TYPE_LABEL[proposal.type]}</Badge>
                     <Badge color="gray" variant="soft">{CHANGE_LABEL[proposal.change]}</Badge>
                     <Badge color="gray" variant="soft">{SOURCE_LABEL[proposal.source]}</Badge>
-                    <Badge color="gray" variant="soft" className="min-w-0 break-all whitespace-normal">
+                    <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
                       {proposal.scope === "" ? "全仓库" : proposal.scope}
                     </Badge>
                     {/* 出处回溯(issue #214):这条提案是哪一次探索或反哺推出来的。 */}
@@ -1147,7 +1147,7 @@ function ExplorationSection({
                   <span className="inline-flex flex-wrap items-center gap-1.5">
                     {/* 草案里两型并列(ADR 0020),确认时一起进知识集,徽章要分得出哪条是哪型。 */}
                     <Badge color="gray" variant="soft">{TYPE_LABEL[rule.type]}</Badge>
-                    <Badge color="gray" variant="soft" className="min-w-0 break-all whitespace-normal">
+                    <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
                       {rule.scope === "" ? "全仓库" : rule.scope}
                     </Badge>
                   </span>
