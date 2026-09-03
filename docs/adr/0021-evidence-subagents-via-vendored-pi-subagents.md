@@ -19,3 +19,9 @@ Pi 本体不内建 subagent,官方注册表包 pi-subagents 以扩展形态提�
 - 取证半径与落点分离成为明文约束:子代理可读全仓库,`report_finding` 的锚点必须落在 diff hunk 内(锚定收敛,见 ADR 0006 修订附记),锚不进的打回重锚,仍不进则丢弃并记轨迹,原 body 降级路径退役。
 - 子会话 token 用量并入所属 Reviewer 的统计。
 - 审查轨迹的事件模型要容纳嵌套来源(取证子会话),面板轨迹视图相应扩展。
+
+## 修订(2026-09-03)
+
+上文「`maxSubagentSpawnsPerRun` 收紧到 8,作用域是一个 Reviewer 子进程的一次会话(即一个批次),一轮 Review Run 的总取证上限因此是 8 × 批次数 × Reviewer 数」不成立。pi-subagents 里 `maxSubagentSpawnsPerRun`(`PI_SUBAGENT_MAX_SPAWNS_PER_RUN`)限的是一次 `subagent` 调用内部的 fan-out——一个 run tree 的累计子任务数,每次调用重新计数;一个父会话的累计派单总量由 `maxSubagentSpawnsPerSession`(`PI_SUBAGENT_MAX_SPAWNS_PER_SESSION`)管,本项目此前未设,默认不限。线上 Review Run #54 因此每批每模型可无限次串行取证:`gpt-5.6-sol` 一轮派出 79 次,串行等待累计 151 分钟,占它总耗时的一半。
+
+两道上限自此分工明确(issue #231):会话级 `PI_SUBAGENT_MAX_SPAWNS_PER_SESSION = 3` 管总量,作用域是一个 Reviewer 子进程的一次会话,即每批每模型最多派 3 次取证,一轮 Review Run 的总取证上限是 3 × 批次数 × Reviewer 数;单次调用的 `PI_SUBAGENT_MAX_SPAWNS_PER_RUN = 8` 保留,管的是一次调用扇出多宽。名额稀缺是模型要知道的事,系统提示的取证段因此写明:名额有限,留给最高严重度、且不读对方代码就不能成立的主张。

@@ -12,8 +12,10 @@
  * - **能力天花板**:`PI_SUBAGENT_CAPABILITY_CEILING_V1` 环境变量,在派出之前判定。它挡的
  *   不是我们自己写的那份 agent 定义,而是被审仓库工作副本里可能存在的 `.pi/agents/*.md`
  *   ——那是半可信输入,agent 定义里写 `tools: bash` 就能把只读会话变成可写会话。
- * - **spawn 预算**:`PI_SUBAGENT_MAX_SPAWNS_PER_RUN`。取证是针对存疑 Finding 的定向动作,
- *   单轮超过 8 次说明在滥派。
+ * - **spawn 预算**:两道,作用域不同,不要互相顶替。`PI_SUBAGENT_MAX_SPAWNS_PER_SESSION`
+ *   限一个 Reviewer 子进程一次会话累计派几次取证(即每批每模型),取证是针对存疑 Finding
+ *   的定向动作,一批超过 3 次说明在滥派;`PI_SUBAGENT_MAX_SPAWNS_PER_RUN` 限的是单次
+ *   `subagent` 调用内部展开的子任务数,每次调用重新计数,挡的是一次调用扇出过宽。
  *
  * 子会话与 Reviewer 同模型同凭据同思考档位:子代理跑在另一个 pi 进程里,读不到本进程内存
  * 里注册的那一项模型,因此把同一份运行模型另写一份 `models.json`;凭据写的是环境变量引用
@@ -36,10 +38,14 @@ export const EVIDENCE_TOOL = "subagent";
 /** 唯一的自定义取证 agent。内置 agent 全部禁用,能力天花板也只放行这一个名字。 */
 export const EVIDENCE_AGENT = "evidence";
 
-/** 单轮取证次数上限(ADR 0021)。 */
-export const EVIDENCE_SPAWN_BUDGET = 8;
+/** 一个 Reviewer 子进程一次会话的取证次数上限,即每批每模型的总量(ADR 0021)。 */
+export const EVIDENCE_SESSION_BUDGET = 3;
 
-const SPAWN_BUDGET_ENV = "PI_SUBAGENT_MAX_SPAWNS_PER_RUN";
+/** 单次 `subagent` 调用内部的 fan-out 上限,每次调用重新计数(ADR 0021)。 */
+export const EVIDENCE_FANOUT_BUDGET = 8;
+
+const SESSION_BUDGET_ENV = "PI_SUBAGENT_MAX_SPAWNS_PER_SESSION";
+const FANOUT_BUDGET_ENV = "PI_SUBAGENT_MAX_SPAWNS_PER_RUN";
 const CAPABILITY_CEILING_ENV = "PI_SUBAGENT_CAPABILITY_CEILING_V1";
 
 /** 天花板的来源标签,打回文案里会带上它,让人看得出是谁挡的。 */
@@ -219,7 +225,8 @@ export function installEvidenceKit(options: {
       facts: options.facts,
     }),
   );
-  process.env[SPAWN_BUDGET_ENV] = String(EVIDENCE_SPAWN_BUDGET);
+  process.env[SESSION_BUDGET_ENV] = String(EVIDENCE_SESSION_BUDGET);
+  process.env[FANOUT_BUDGET_ENV] = String(EVIDENCE_FANOUT_BUDGET);
   process.env[CAPABILITY_CEILING_ENV] = encodeEvidenceCeiling();
 }
 

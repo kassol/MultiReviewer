@@ -14,7 +14,8 @@ import { test } from "node:test";
 import { MODEL_API_KEY_ENV } from "../src/reviewer/env.ts";
 import {
   EVIDENCE_AGENT,
-  EVIDENCE_SPAWN_BUDGET,
+  EVIDENCE_FANOUT_BUDGET,
+  EVIDENCE_SESSION_BUDGET,
   encodeEvidenceCeiling,
   evidenceAgentDefinition,
   evidenceCeiling,
@@ -24,6 +25,7 @@ import {
   vendoredSubagentsPath,
 } from "../src/reviewer/evidence.ts";
 import type { RuntimeModel } from "../src/reviewer/model-service-runtime.ts";
+import { SYSTEM_PROMPT } from "../src/reviewer/worker.ts";
 
 const MODEL: RuntimeModel = {
   provider: "openrouter",
@@ -146,10 +148,18 @@ test("能力天花板写死在代码里,不从会话工具面透传", () => {
   assert.ok(agentDir);
 });
 
-test("单轮取证次数受预算 8 约束", () => {
+test("取证受两道上限约束:一次会话 3 次,单次调用内 fan-out 8", () => {
   install();
-  assert.equal(EVIDENCE_SPAWN_BUDGET, 8);
+  // 会话上限管的是这个 Reviewer 子进程一共派几次取证,即每批每模型的总量。
+  assert.equal(EVIDENCE_SESSION_BUDGET, 3);
+  assert.equal(process.env["PI_SUBAGENT_MAX_SPAWNS_PER_SESSION"], "3");
+  // fan-out 上限管的是一次 subagent 调用内部展开几个子任务,每次调用重新计数。
+  assert.equal(EVIDENCE_FANOUT_BUDGET, 8);
   assert.equal(process.env["PI_SUBAGENT_MAX_SPAWNS_PER_RUN"], "8");
+});
+
+test("系统提示写明取证名额有限", () => {
+  assert.match(SYSTEM_PROMPT, /Evidence calls are limited/);
 });
 
 test("取证子会话收到与 Reviewer 同一份知识注入", () => {
