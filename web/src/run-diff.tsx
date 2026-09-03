@@ -72,11 +72,6 @@ function parseUnifiedDiff(patch: string): DiffHunk[] {
   return hunks;
 }
 
-/** 挑出包含某个新侧行号的那个 hunk,找不到时返回 undefined。 */
-function hunkContaining(hunks: readonly DiffHunk[], newLine: number): DiffHunk | undefined {
-  return hunks.find((hunk) => hunk.lines.some((line) => line.newLine === newLine));
-}
-
 /**
  * 面板处置一条 Finding。写 Forge 与落库都在服务端一次做完,备注为空即保留原有那条。
  */
@@ -375,10 +370,9 @@ function FindingCells({
  * 只在 review 正文里的那些由卡片自己说明,文件不在这次改动里与行号落在 diff 之外的收在
  * 最上面一段。历史轮次的工作副本被清掉时服务端回 409,那句话同样摊在这里。
  *
- * 请求仍拿整个文件的 diff,渲染按 hunk 裁剪:只展开当条 Finding(`focusFindingId`)
- * 所在的那个 hunk,其余折叠在「展开完整差异」按钮之后——大文件几十个 hunk 一次全渲染
- * 会卡顿。当条 Finding 锚不到任何 hunk(按新行号判断)时回退渲染全部,同文件其它
- * Finding 的行内标记逻辑(`byLine`)不受影响,只是折叠时其所在 hunk 未展开就看不到。
+ * 整个文件的 diff 一次全渲染,渲染成本按 hunk 隔离:每个 hunk 自成一张表,屏幕外的那些
+ * 由浏览器跳过布局与绘制(`content-visibility: auto`)。当条 Finding 所在的那一个不跳过,
+ * 它那一行滚到视野正中的落点才准确。
  */
 export function FilePatch({
   runId,
@@ -405,8 +399,6 @@ export function FilePatch({
   useEffect(() => {
     focusRow.current?.scrollIntoView({ block: "center" });
   }, [patch.data]);
-  // 「展开完整差异」的一次性开关:侧滑重新打开时组件随 key 一起重挂,天然回到折叠态。
-  const [expanded, setExpanded] = useState(false);
 
   const hunks = patch.data === undefined ? [] : parseUnifiedDiff(patch.data.patch);
   const rendered = new Set(
@@ -421,11 +413,6 @@ export function FilePatch({
   }
   const unanchored = findings.filter((finding) => !rendered.has(finding.line));
   const focusLine = findings.find((finding) => finding.id === focusFindingId)?.line;
-  // 裁剪:大文件的 diff 一次渲染全部 hunk 会卡顿,先只渲染当条 Finding 所在的那一个,
-  // 其余折叠。锚不到任何 hunk(按新行号判断)时回退渲染全部,与此前的行为一致。
-  const focusHunk = focusLine === undefined ? undefined : hunkContaining(hunks, focusLine);
-  const cropped = focusHunk !== undefined && !expanded && hunks.length > 1;
-  const displayHunks = cropped ? [focusHunk] : hunks;
 
   if (patch.isPending) {
     return (
@@ -463,75 +450,80 @@ export function FilePatch({
         </div>
       )}
       {hunks.length === 0 ? null : (
-        <div className="min-w-0">
-          {cropped ? (
-            <div className="flex items-center justify-between gap-2 border-b border-overlay-line px-3 py-1.5 text-sm text-text-secondary">
-              <span>只显示这条 Finding 所在的代码段</span>
-              <Button
-                variant="ghost"
-                color="gray"
-                highContrast
-                size="1"
-                onClick={() => setExpanded(true)}
+        <div className="min-w-0" role="group" aria-label={`${path} 的代码差异`}>
+          {hunks.map((hunk, hunkIndex) => {
+            const hasFocusLine =
+              focusLine !== undefined && hunk.lines.some((line) => line.newLine === focusLine);
+            return (
+              <div
+                key={hunkIndex}
+                // 屏幕外的 hunk 由浏览器跳过布局与绘制,滚到时再渲染;预留高度按行数乘一行
+                // 的近似高度(text-xs 一行约 20px)估,`auto` 让它渲染过一次后改用实测值。
+                // 当条 Finding 所在的这一个不跳过,`scrollIntoView` 的落点才准确。
+                style={
+                  hasFocusLine
+                    ? { contentVisibility: "visible" }
+                    : {
+                        contentVisibility: "auto",
+                        containIntrinsicSize: `auto ${(hunk.lines.length + 1) * 20}px`,
+                      }
+                }
               >
-                展开完整差异
-              </Button>
-            </div>
-          ) : null}
-          <table className="w-full table-fixed border-collapse font-mono text-xs" aria-label={`${path} 的代码差异`}>
-            <colgroup>
-              <col className="w-10" />
-              <col className="w-10" />
-              <col />
-            </colgroup>
-            <tbody>
-              {displayHunks.map((hunk, hunkIndex) => (
-                <Fragment key={hunkIndex}>
-                  <tr className="bg-sunken">
-                    <td colSpan={3} className="px-3 py-1 whitespace-pre-wrap break-words text-text-secondary">
-                      {hunk.header}
-                    </td>
-                  </tr>
-                  {hunk.lines.map((line, index) => (
-                    <Fragment key={index}>
-                      <tr
-                        {...(line.newLine !== null && line.newLine === focusLine
-                          ? { ref: focusRow }
-                          : {})}
-                        className={
-                          line.kind === "add"
-                            ? "bg-success-tint"
-                            : line.kind === "del"
-                              ? "bg-danger-tint"
-                              : ""
-                        }
-                      >
-                        <td className="w-10 px-1.5 text-right align-top tabular-nums text-text-secondary select-none">
-                          {line.oldLine ?? ""}
-                        </td>
-                        <td className="w-10 px-1.5 text-right align-top tabular-nums text-text-secondary select-none">
-                          {line.newLine ?? ""}
-                        </td>
-                        <td className="px-2 align-top whitespace-pre-wrap break-words text-text">
-                          <span className="select-none text-text-secondary">
-                            {line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}
-                          </span>
-                          {line.text}
-                        </td>
-                      </tr>
-                      {line.newLine === null ? null : (
-                        <FindingCells
-                          findings={byLine.get(line.newLine) ?? []}
-                          canDispose={canDispose}
-                          {...(focusFindingId === undefined ? {} : { focusFindingId })}
-                        />
-                      )}
-                    </Fragment>
-                  ))}
-                </Fragment>
-              ))}
-            </tbody>
-          </table>
+                {/* 每个 hunk 一张表:一张大表的布局要把全部行算一遍,分表之后跳过的那些
+                    不参与。各表共用同一份 colgroup 加 table-fixed,列宽因此对齐。 */}
+                <table className="w-full table-fixed border-collapse font-mono text-xs">
+                  <colgroup>
+                    <col className="w-10" />
+                    <col className="w-10" />
+                    <col />
+                  </colgroup>
+                  <tbody>
+                    <tr className="bg-sunken">
+                      <td colSpan={3} className="px-3 py-1 whitespace-pre-wrap break-words text-text-secondary">
+                        {hunk.header}
+                      </td>
+                    </tr>
+                    {hunk.lines.map((line, index) => (
+                      <Fragment key={index}>
+                        <tr
+                          {...(line.newLine !== null && line.newLine === focusLine
+                            ? { ref: focusRow }
+                            : {})}
+                          className={
+                            line.kind === "add"
+                              ? "bg-success-tint"
+                              : line.kind === "del"
+                                ? "bg-danger-tint"
+                                : ""
+                          }
+                        >
+                          <td className="w-10 px-1.5 text-right align-top tabular-nums text-text-secondary select-none">
+                            {line.oldLine ?? ""}
+                          </td>
+                          <td className="w-10 px-1.5 text-right align-top tabular-nums text-text-secondary select-none">
+                            {line.newLine ?? ""}
+                          </td>
+                          <td className="px-2 align-top whitespace-pre-wrap break-words text-text">
+                            <span className="select-none text-text-secondary">
+                              {line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}
+                            </span>
+                            {line.text}
+                          </td>
+                        </tr>
+                        {line.newLine === null ? null : (
+                          <FindingCells
+                            findings={byLine.get(line.newLine) ?? []}
+                            canDispose={canDispose}
+                            {...(focusFindingId === undefined ? {} : { focusFindingId })}
+                          />
+                        )}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
