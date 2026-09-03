@@ -912,7 +912,7 @@ async function handle(
     return send(res, 200);
   }
 
-  // 容器 PR 是本服务自己开的,它的事件一律丢弃(ADR 0012):推进比较项要推 head 分支,
+  // 容器 PR 是本服务自己开的,它的事件一律丢弃(ADR 0012):增量评审要推 head 分支,
   // 那一推会投一次 synchronized,受理它就是同一次推进跑两轮。也不走幂等 claim——
   // 幂等键留给真正由人发起的那一轮,让它仍然能重试。
   const containerBranch = containerBranchOf(payload);
@@ -1814,7 +1814,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   {
     method: "POST",
     pattern: /^\/range-reviews\/(\d+)\/advance$/,
-    access: "review:create",
+    access: "review:advance",
     assignment: { by: "range-review", group: 1 },
     handler: ({ req, res, deps, caller }, match) =>
       handleAdvanceRangeReview(req, res, deps, Number(match![1]), caller!.username),
@@ -1822,7 +1822,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   {
     method: "POST",
     pattern: /^\/range-reviews\/(\d+)\/complete$/,
-    access: "finding:dispose",
+    access: "review:complete",
     assignment: { by: "range-review", group: 1 },
     handler: ({ res, deps, caller }, match) =>
       handleCompleteRangeReview(res, deps, Number(match![1]), caller!.username),
@@ -4424,7 +4424,7 @@ function handleStages(
  * 一个审查阶段的详情(issue #175):评审记录里的那一行,加它按代码推进分组的时间线。
  * 两种来源的阶段用同一份形状,详情页因此只有一个。
  *
- * 范围审查阶段另带它自己那条记录(issue #176):详情页的推进比较项要 base 与当前比较
+ * 范围审查阶段另带它自己那条记录(issue #176):详情页的增量评审要 base 与当前比较
  * 项,审查完成与重跑要它此刻还是不是进行中。pull request 阶段没有这一格。
  *
  * 阶段标识是路径参数,里面的斜杠在地址里编码过,这里先解回来。解不开的与查不到的都是
@@ -5307,7 +5307,7 @@ async function handleRepoBranches(
  * 分支查不到就是 404:人手上那份分支列表可能已经过时,而调用方要知道的只是「这条分支
  * 没有了」。
  *
- * 可选的 `base`(issue #179)让每条提交多带一个「是不是 base 的后代」:推进比较项时
+ * 可选的 `base`(issue #179)让每条提交多带一个「是不是 base 的后代」:增量评审时
  * 选择器据此置灰非后代的行,人在提交之前就知道哪些选择不合法。它与两端一样只收 sha,
  * 这同时挡住以 `-` 开头的值被 git 当成选项;查不到这个 commit 与发起时填错 base 是
  * 同一回事,回同一句话。
@@ -5558,7 +5558,7 @@ async function handleCreateRangeReview(
 }
 
 /**
- * 推进比较项(issue #157)。
+ * 增量评审(issue #157)。
  *
  * 校验只要求新比较项是 base 的后代,不要求是上一个比较项的后代:作者 rebase 之后新的
  * 比较项对旧的就是旁支,要求后者会把人挡回去重开一个阶段(CONTEXT.md 比较项)。
@@ -5582,7 +5582,7 @@ async function handleAdvanceRangeReview(
   if (!COMMIT_SHA.test(payload.comparison)) {
     return sendJson(res, 400, { error: "比较项要是 7 到 40 位的 commit sha" });
   }
-  // 推进比较项也是一次重审,同样可以附本轮指令(issue #225)。
+  // 增量评审也是一次重审,同样可以附本轮指令(issue #225)。
   const directive = readDirective(res, payload.directive);
   if (directive === "rejected") return;
 

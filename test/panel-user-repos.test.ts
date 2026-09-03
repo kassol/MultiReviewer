@@ -293,6 +293,8 @@ const ALL_PERMISSIONS: readonly PanelPermission[] = [
   "repo:write",
   "review:rerun",
   "review:create",
+  "review:complete",
+  "review:advance",
   "finding:dispose",
 ];
 

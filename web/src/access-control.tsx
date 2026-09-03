@@ -56,6 +56,8 @@ const PERMISSION_INFO: readonly PermissionInfo[] = [
   { id: "repo:write", resource: "仓库", action: "管理", hint: "搜索、注册和移除仓库，修改模型组合和轮转 Key。" },
   { id: "review:rerun", resource: "评审", action: "重新运行", hint: "重新运行一次评审，会产生模型调用费用并在 PR 上发布评论。" },
   { id: "review:create", resource: "评审", action: "发起", hint: "发起范围审查，并立即启动首轮 Review Run。" },
+  { id: "review:advance", resource: "评审", action: "增量评审", hint: "为范围审查选择新的比较项并推进，启动新一轮 Review Run。" },
+  { id: "review:complete", resource: "评审", action: "审查完成", hint: "将范围审查标记为审查完成，关闭容器 pull request 并删除两条临时分支，比较项从此不再推进。" },
   { id: "finding:dispose", resource: "评审", action: "处置", hint: "在面板处置 Finding 并填写可选处置备注；Forge 评论的 Disposition 将同步更新。" },
   { id: "knowledge:write", resource: "评审", action: "知识治理", hint: "新增、修改和废止这个仓库的评审规则，每次变更推进一个知识集版本。" },
   { id: "model:read", resource: "模型", action: "查看", hint: "查看审查策略和模型服务。" },

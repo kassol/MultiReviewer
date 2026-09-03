@@ -499,7 +499,7 @@ export type RepoCommitsOptions = RepoReadOptions & {
   branch: string;
   offset: number;
   limit: number;
-  /** 推进比较项那一档给的阶段基准(issue #179);给了就为每条标出后代关系。 */
+  /** 增量评审那一档给的阶段基准(issue #179);给了就为每条标出后代关系。 */
   base?: string;
 } & PickerFilterOptions;
 
@@ -631,7 +631,7 @@ function filteredCommitRows(
  * 服务出错。这里不 fetch——选择器打开时列分支那一步刚取过,翻页再各来一次网络往返只是
  * 白等。
  *
- * 给了 `base` 就为这一页的每条标出它是不是 base 的后代(issue #179),推进比较项据此
+ * 给了 `base` 就为这一页的每条标出它是不是 base 的后代(issue #179),增量评审据此
  * 置灰。口径与推进接口的校验一致(`resolveRange`):base 自己不算后代,那个范围是空的。
  * 一条 `rev-list --ancestry-path` 一次算出整条分支上的后代集合,再逐条对照——逐条
  * `merge-base --is-ancestor` 要为一页拉起几十个 git 进程。`--ancestry-path` 是必需的:

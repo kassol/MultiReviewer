@@ -125,14 +125,17 @@ function listFilters(search: Record<string, unknown>): Record<string, string> {
 export function StageDetailPage({
   stageId,
   canDispose,
-  canCreate,
+  canComplete,
+  canAdvance,
   canRerun,
 }: {
   stageId: string;
-  /** 有 `finding:dispose` 权限时,列表与侧滑里都出现行内处置动作,页头出现审查完成。 */
+  /** 有 `finding:dispose` 权限时,列表与侧滑里都出现行内处置动作。 */
   canDispose: boolean;
-  /** 有 `review:create` 权限才出现推进比较项。 */
-  canCreate: boolean;
+  /** 有 `review:complete` 权限才出现审查完成。 */
+  canComplete: boolean;
+  /** 有 `review:advance` 权限才出现增量评审。 */
+  canAdvance: boolean;
   /** 有 `review:rerun` 权限才出现重跑。 */
   canRerun: boolean;
 }) {
@@ -239,8 +242,8 @@ export function StageDetailPage({
               <StageActions
                 stage={body.stage}
                 {...(body.rangeReview === undefined ? {} : { rangeReview: body.rangeReview })}
-                canDispose={canDispose}
-                canCreate={canCreate}
+                canComplete={canComplete}
+                canAdvance={canAdvance}
                 canRerun={canRerun}
                 onFeedback={setFeedback}
                 onTriggered={armPolling}
@@ -308,7 +311,7 @@ export function StageDetailPage({
 }
 
 /**
- * 一个阶段的动作(issue #176):推进比较项、审查完成与重跑,都在它自己的详情页做。
+ * 一个阶段的动作(issue #176):增量评审、审查完成与重跑,都在它自己的详情页做。
  *
  * 推进与审查完成只有范围审查阶段有,组件是 `range-review-actions.tsx`。重跑两种来源都
  * 有:pull request 阶段在最新 head 上再跑一轮,范围审查阶段在当前比较项上再跑一轮。
@@ -317,16 +320,16 @@ export function StageDetailPage({
 function StageActions({
   stage,
   rangeReview,
-  canDispose,
-  canCreate,
+  canComplete,
+  canAdvance,
   canRerun,
   onFeedback,
   onTriggered,
 }: {
   stage: StageItem;
   rangeReview?: RangeReview;
-  canDispose: boolean;
-  canCreate: boolean;
+  canComplete: boolean;
+  canAdvance: boolean;
   canRerun: boolean;
   onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
   /** 重跑或推进已被服务端接下:新一轮还要过一会才出现,外层据此续查。 */
@@ -350,8 +353,8 @@ function StageActions({
       ) : null}
       {rangeReview === undefined ? null : (
         <>
-          {canDispose ? <CompleteAction rangeReview={rangeReview} disabled={frozen} /> : null}
-          {canCreate ? (
+          {canComplete ? <CompleteAction rangeReview={rangeReview} disabled={frozen} /> : null}
+          {canAdvance ? (
             <AdvanceAction rangeReview={rangeReview} disabled={frozen} onAdvanced={onTriggered} />
           ) : null}
         </>
@@ -364,7 +367,7 @@ function StageActions({
  * 重跑(issue #176)加本轮指令(issue #225)。
  *
  * 走弹窗而不是在动作行里常驻一个输入框:指令是选填的,大多数重跑不带它,常驻一个空框
- * 会把「这一栏要填什么」的问题摆在每个人面前。与推进比较项同一形状——同一行上的两个
+ * 会把「这一栏要填什么」的问题摆在每个人面前。与增量评审同一形状——同一行上的两个
  * 动作,一个点开弹窗一个直接跑,人得先记住哪个是哪个。
  */
 function RerunAction({

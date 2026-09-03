@@ -121,7 +121,7 @@ export function CompleteAction({
 }
 
 /**
- * 推进比较项(issue #157)。入口在阶段详情页的页头(issue #176)。
+ * 增量评审(issue #157)。入口在阶段详情页的页头(issue #176)。
  */
 export function AdvanceAction({
   rangeReview,
@@ -144,7 +144,7 @@ export function AdvanceAction({
           size={{ initial: "3", sm: "2" }}
           disabled={disabled}
         >
-          推进比较项
+          增量评审
         </Button>
       </Dialog.Trigger>
       {open ? (
@@ -161,7 +161,7 @@ export function AdvanceAction({
 }
 
 /**
- * 推进比较项的表单(issue #157)。
+ * 增量评审的表单(issue #157)。
  *
  * 只收新的比较项:base 是这个阶段不变的基准,推进不改它,所以选择器走 `baseLocked`
  * 那一档(issue #179),base 只以短 sha 显示。手输框已删——人只记得分支与提交信息。
@@ -220,7 +220,7 @@ function AdvanceDialogContent({
         <div className="shrink-0 border-b border-overlay-line px-4 py-3 sm:px-5 sm:py-4">
           {/* 仓库名放在同一个标题里:Heading 与 Text 各带 leading-trim 伪元素,分成两个元素做 baseline 对齐会错位。 */}
           <Dialog.Title size="4" mb="0" className="pr-10">
-            推进比较项
+            增量评审
             <span className="ml-2 break-all text-md font-normal text-text-secondary">
               {rangeReview.owner}/{rangeReview.repo}
             </span>
@@ -316,7 +316,7 @@ function AdvanceDialogContent({
             color="gray"
             size="3"
             className="max-sm:min-h-11 max-sm:min-w-11"
-            aria-label="关闭推进比较项"
+            aria-label="关闭增量评审"
           >
             <Cross2Icon aria-hidden />
           </IconButton>

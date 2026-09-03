@@ -234,12 +234,12 @@ test("Forge 步骤失败:记下失败原因,状态不变,改好之后重试成�
   ]);
 });
 
-test("没有 finding:dispose 的用户标记不了审查完成", async () => {
+test("没有 review:complete 的用户标记不了审查完成", async () => {
   const h = await registeredHarness();
   const rangeReview = await startRangeReview(h);
 
   const store = openStore(h.db.path);
-  // 有发起权限、没有处置权限:两格互相独立。
+  // 有发起权限、没有完成权限:两格互相独立。
   const role = store.createPanelRole({
     name: "只发起的角色",
     permissions: ["review:create"],
@@ -276,4 +276,43 @@ test("没有 finding:dispose 的用户标记不了审查完成", async () => {
     (await h.api("POST", "/range-reviews/9999/complete")).status,
     404,
   );
+});
+
+test("持有旧格 finding:dispose 但没有 review:complete:标记不了审查完成", async () => {
+  const h = await registeredHarness();
+  const rangeReview = await startRangeReview(h);
+
+  const store = openStore(h.db.path);
+  // 拆格之后(issue #229)处置权限不再蕴含完成权限:两格互相独立。
+  const role = store.createPanelRole({
+    name: "只处置的角色",
+    permissions: ["finding:dispose"],
+    createdAt: "2026-08-20T00:00:00.000Z",
+  });
+  store.createPanelUser({
+    username: "finding-disposer",
+    displayName: null,
+    passwordHash: HASH,
+    mustChangePassword: false,
+    createdAt: "2026-08-20T00:00:00.000Z",
+    isSystemAdmin: false,
+    roleId: role.id,
+  });
+  store.close();
+
+  const login = await fetch(`${h.serverUrl}/api/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "finding-disposer", password: PASSWORD }),
+  });
+  assert.equal(login.status, 204);
+  const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
+
+  const denied = await fetch(
+    `${h.serverUrl}/api/range-reviews/${rangeReview.id}/complete`,
+    { method: "POST", headers: { cookie } },
+  );
+  assert.equal(denied.status, 403);
+  assert.deepEqual(h.memory.closedPullRequests, []);
+  assert.deepEqual(h.memory.deletedBranches, []);
 });
