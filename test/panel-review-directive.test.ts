@@ -120,7 +120,7 @@ test("PR 重跑附本轮指令:随这一轮存库,轮次详情读得到,下一�
   );
 });
 
-test("范围审查重跑与推进比较项都能附本轮指令,各自只作用于那一轮", async () => {
+test("范围审查重跑与增量评审都能附本轮指令,各自只作用于那一轮", async () => {
   const h = await registeredHarness();
   const rangeReview = await startRangeReview(h);
 

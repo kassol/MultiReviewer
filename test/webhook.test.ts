@@ -828,7 +828,7 @@ test("签名不过的投递不进日志——否则日志由外人写", async ()
 
 test("容器 PR 的事件按分支前缀丢弃,不触发审查也不进幂等表", async () => {
   const h = await startHarness();
-  // 容器 PR 的两条分支都带固定前缀(ADR 0012),推进比较项会投一次 synchronized。
+  // 容器 PR 的两条分支都带固定前缀(ADR 0012),增量评审会投一次 synchronized。
   const container = (action: string): Promise<Response> => {
     const body = JSON.stringify({
       action,

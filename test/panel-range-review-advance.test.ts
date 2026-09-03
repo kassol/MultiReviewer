@@ -1,5 +1,5 @@
 /**
- * 推进比较项(issue #157)。
+ * 增量评审(issue #157)。
  *
  * 打在面板 API 的真实 HTTP 缝上:夹具仓库同时是容器 PR 的远端,推进之后那条 head
  * 分支指向哪个 commit 是可以直接读出来的事实;脚本 Reviewer 让每一轮真的跑完,新一轮
@@ -92,7 +92,7 @@ async function startRangeReview(
   return rangeReview;
 }
 
-test("推进比较项:head 分支指向新 commit,新一轮归属同一范围审查且范围是 base..新比较项", async () => {
+test("增量评审:head 分支指向新 commit,新一轮归属同一范围审查且范围是 base..新比较项", async () => {
   const recorded: Recorded = { ranges: [] };
   const h = await startedHarness(recorded);
   const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
