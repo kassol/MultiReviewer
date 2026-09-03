@@ -10,7 +10,11 @@ import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
 import { buildReviewers } from "../src/config.ts";
-import { DEFAULT_MAX_CHANGED_LINES_PER_BATCH } from "../src/review/batch.ts";
+import {
+  DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+  DEFAULT_MAX_FILES_PER_BATCH,
+  DEFAULT_MAX_PARALLEL_BATCHES,
+} from "../src/review/batch.ts";
 import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
@@ -33,6 +37,22 @@ type SettingsBody = {
   maxChangedLinesPerBatch: number;
   maxChangedLinesPerBatchSource: "default" | "custom";
   maxChangedLinesPerBatchVersion: number;
+  maxParallelBatches: number;
+  maxParallelBatchesSource: "default" | "custom";
+  maxParallelBatchesVersion: number;
+  maxFilesPerBatch: number;
+  maxFilesPerBatchSource: "default" | "custom";
+  maxFilesPerBatchVersion: number;
+};
+
+/** 并发数与文件数上限在下面这些用例里一次都没被改过,读回来恒是这一份。 */
+const UNTOUCHED_BATCH_LIMITS = {
+  maxParallelBatches: DEFAULT_MAX_PARALLEL_BATCHES,
+  maxParallelBatchesSource: "default",
+  maxParallelBatchesVersion: 1,
+  maxFilesPerBatch: DEFAULT_MAX_FILES_PER_BATCH,
+  maxFilesPerBatchSource: "default",
+  maxFilesPerBatchVersion: 1,
 };
 
 async function readSettings(h: PanelHarness): Promise<SettingsBody> {
@@ -85,6 +105,7 @@ test("审查策略两项独立保存，陈旧写入只冲突目标项", async ()
     maxChangedLinesPerBatch: 800,
     maxChangedLinesPerBatchSource: "custom",
     maxChangedLinesPerBatchVersion: initial.maxChangedLinesPerBatchVersion + 1,
+    ...UNTOUCHED_BATCH_LIMITS,
   });
 
   const stale = await h.api("PUT", "/settings", {
@@ -98,6 +119,7 @@ test("审查策略两项独立保存，陈旧写入只冲突目标项", async ()
     maxChangedLinesPerBatch: 800,
     maxChangedLinesPerBatchSource: "custom",
     maxChangedLinesPerBatchVersion: initial.maxChangedLinesPerBatchVersion + 1,
+    ...UNTOUCHED_BATCH_LIMITS,
   });
 });
 
@@ -130,6 +152,7 @@ test("历史空组合可读但不能再次保存，批次上限可恢复系统�
     maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
     maxChangedLinesPerBatchSource: "default",
     maxChangedLinesPerBatchVersion: customBody.maxChangedLinesPerBatchVersion + 1,
+    ...UNTOUCHED_BATCH_LIMITS,
   });
 });
 
@@ -227,6 +250,7 @@ test("全局组合按模型服务候选校验，失效项可移除且批次上�
     maxChangedLinesPerBatch: 733,
     maxChangedLinesPerBatchSource: "custom",
     maxChangedLinesPerBatchVersion: 2,
+    ...UNTOUCHED_BATCH_LIMITS,
   });
   assert.deepEqual(serviceState(), beforeBlockedWrites, "组合与批次写入不应改服务或模型来源");
 
@@ -254,6 +278,7 @@ test("全局组合按模型服务候选校验，失效项可移除且批次上�
     maxChangedLinesPerBatch: 733,
     maxChangedLinesPerBatchSource: "custom",
     maxChangedLinesPerBatchVersion: 2,
+    ...UNTOUCHED_BATCH_LIMITS,
   });
   assert.deepEqual(serviceState(), beforeMissingRemoval);
 
@@ -267,6 +292,7 @@ test("全局组合按模型服务候选校验，失效项可移除且批次上�
     maxChangedLinesPerBatch: 733,
     maxChangedLinesPerBatchSource: "custom",
     maxChangedLinesPerBatchVersion: 2,
+    ...UNTOUCHED_BATCH_LIMITS,
   });
   assert.deepEqual(serviceState(), beforeUnavailableRemoval);
 });
@@ -280,6 +306,7 @@ test("批次上限自定义与恢复默认都不改模型组合", async () => {
     maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
     maxChangedLinesPerBatchSource: "default",
     maxChangedLinesPerBatchVersion: 1,
+    ...UNTOUCHED_BATCH_LIMITS,
   });
 
   const reviewers = [{ provider: "test", model: "global-model" }];
@@ -291,6 +318,7 @@ test("批次上限自定义与恢复默认都不改模型组合", async () => {
     maxChangedLinesPerBatch: 800,
     maxChangedLinesPerBatchSource: "custom",
     maxChangedLinesPerBatchVersion: 2,
+    ...UNTOUCHED_BATCH_LIMITS,
   });
   const cleared = await putLimit(h, null);
   assert.deepEqual(await cleared.json(), {
@@ -299,6 +327,7 @@ test("批次上限自定义与恢复默认都不改模型组合", async () => {
     maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
     maxChangedLinesPerBatchSource: "default",
     maxChangedLinesPerBatchVersion: 3,
+    ...UNTOUCHED_BATCH_LIMITS,
   });
 });
 
@@ -323,7 +352,110 @@ test("非法的 reviewers 被既有校验拒绝,报错标注来源是全局这�
     maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
     maxChangedLinesPerBatchSource: "default",
     maxChangedLinesPerBatchVersion: 1,
+    ...UNTOUCHED_BATCH_LIMITS,
   });
+});
+
+type LimitField = "maxParallelBatches" | "maxFilesPerBatch";
+
+async function putBatchLimit(
+  h: PanelHarness,
+  field: LimitField,
+  value: unknown,
+): Promise<Response> {
+  const settings = await readSettings(h);
+  return h.api("PUT", "/settings", {
+    [field]: value,
+    expectedVersion: settings[`${field}Version`],
+  });
+}
+
+test("批次并发数与文件数上限各自独立读写,版本各推各的", async () => {
+  const h = await startPanelHarness(cleanups);
+  const initial = await readSettings(h);
+  assert.equal(initial.maxParallelBatches, DEFAULT_MAX_PARALLEL_BATCHES);
+  assert.equal(initial.maxParallelBatchesSource, "default");
+  assert.equal(initial.maxFilesPerBatch, DEFAULT_MAX_FILES_PER_BATCH);
+  assert.equal(initial.maxFilesPerBatchSource, "default");
+
+  const parallel = await putBatchLimit(h, "maxParallelBatches", 5);
+  assert.equal(parallel.status, 200);
+  const files = await putBatchLimit(h, "maxFilesPerBatch", 12);
+  assert.equal(files.status, 200);
+  assert.deepEqual(await files.json(), {
+    reviewers: initial.reviewers,
+    reviewersVersion: initial.reviewersVersion,
+    maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+    maxChangedLinesPerBatchSource: "default",
+    maxChangedLinesPerBatchVersion: 1,
+    maxParallelBatches: 5,
+    maxParallelBatchesSource: "custom",
+    maxParallelBatchesVersion: 2,
+    maxFilesPerBatch: 12,
+    maxFilesPerBatchSource: "custom",
+    maxFilesPerBatchVersion: 2,
+  });
+
+  // 陈旧写只冲突目标项,另外两项一个都不动。
+  const stale = await h.api("PUT", "/settings", {
+    maxFilesPerBatch: 20,
+    expectedVersion: 1,
+  });
+  assert.equal(stale.status, 409);
+
+  const reset = await putBatchLimit(h, "maxParallelBatches", null);
+  assert.equal(reset.status, 200);
+  const afterReset = await readSettings(h);
+  assert.equal(afterReset.maxParallelBatches, DEFAULT_MAX_PARALLEL_BATCHES);
+  assert.equal(afterReset.maxParallelBatchesSource, "default");
+  assert.equal(afterReset.maxParallelBatchesVersion, 3);
+  assert.equal(afterReset.maxFilesPerBatch, 12);
+  assert.equal(afterReset.maxFilesPerBatchVersion, 2);
+});
+
+test("一个请求仍然只能改一项审查策略", async () => {
+  const h = await startPanelHarness(cleanups);
+  const coupled = await h.api("PUT", "/settings", {
+    maxParallelBatches: 2,
+    maxFilesPerBatch: 20,
+    expectedVersion: 1,
+  });
+  assert.equal(coupled.status, 400);
+  const settings = await readSettings(h);
+  assert.equal(settings.maxParallelBatchesSource, "default");
+  assert.equal(settings.maxFilesPerBatchSource, "default");
+});
+
+test("批次并发数与文件数上限不是正整数时拒绝", async () => {
+  const h = await startPanelHarness(cleanups);
+  for (const field of ["maxParallelBatches", "maxFilesPerBatch"] as const) {
+    for (const value of [0, -1, 1.5, "3"]) {
+      const response = await putBatchLimit(h, field, value);
+      assert.equal(response.status, 400, `${field} 的 ${String(value)} 应被拒绝`);
+      assert.match(((await response.json()) as { error: string }).error, new RegExp(field));
+    }
+  }
+});
+
+test("Run 快照冻结三项分批上限,开跑后改设置不影响本轮", async () => {
+  const h = await startPanelHarness(cleanups);
+  seedHistoricalRepo(h);
+  assert.equal((await putBatchLimit(h, "maxParallelBatches", 5)).status, 200);
+  assert.equal((await putBatchLimit(h, "maxFilesPerBatch", 12)).status, 200);
+
+  const store = openStore(h.db.path);
+  try {
+    const frozen = store.getReviewRunSnapshot(GITEA_REPO.id);
+    assert.equal(frozen.maxParallelBatches, 5);
+    assert.equal(frozen.maxFilesPerBatch, 12);
+
+    // 这一轮已经拿到快照;之后改设置只影响下一次取快照。
+    assert.equal((await putBatchLimit(h, "maxFilesPerBatch", 1)).status, 200);
+    assert.equal(frozen.maxFilesPerBatch, 12);
+    assert.equal(store.getReviewRunSnapshot(GITEA_REPO.id).maxFilesPerBatch, 1);
+  } finally {
+    store.close();
+  }
 });
 
 test("批次上限不是正整数时拒绝", async () => {

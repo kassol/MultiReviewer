@@ -71,7 +71,11 @@ import {
   type ResolvedRange,
   type Worktree,
 } from "../git/worktree.ts";
-import { DEFAULT_MAX_CHANGED_LINES_PER_BATCH } from "../review/batch.ts";
+import {
+  DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+  DEFAULT_MAX_FILES_PER_BATCH,
+  DEFAULT_MAX_PARALLEL_BATCHES,
+} from "../review/batch.ts";
 import type { MergeAgent } from "../review/dedupe.ts";
 import type { Reviewer } from "../review/finding.ts";
 import {
@@ -93,7 +97,9 @@ import {
   modelServiceTargetFingerprint,
   openStore,
   toKnowledgeEntry,
+  type BatchLimitField,
   type FindingDispositionTarget,
+  type GlobalSettings,
   type ModelReference,
   type ModelServiceRecord,
   type ModelServiceVersionCommit,
@@ -518,20 +524,12 @@ function withStore<T>(dbPath: string, fn: (store: Store) => T): T {
   }
 }
 
-/** 审查策略。模型组合与批次上限都在库里,用时读一次。 */
-function globalSettings(deps: WebhookServerDeps): {
+/** 审查策略。模型组合与三项分批上限都在库里,用时读一次。 */
+function globalSettings(deps: WebhookServerDeps): GlobalSettings & {
   reviewers: ReviewerSpec[];
-  reviewersVersion: number;
-  maxChangedLinesPerBatch: number | null;
-  maxChangedLinesPerBatchVersion: number;
 } {
   const row = withStore(deps.dbPath, (store) => store.getGlobalSettings());
-  return {
-    reviewers: parseGlobalReviewers(row.reviewersJson),
-    reviewersVersion: row.reviewersVersion,
-    maxChangedLinesPerBatch: row.maxChangedLinesPerBatch,
-    maxChangedLinesPerBatchVersion: row.maxChangedLinesPerBatchVersion,
-  };
+  return { ...row, reviewers: parseGlobalReviewers(row.reviewersJson) };
 }
 
 function frozenRuntimeModel(runtime: RuntimeModel): RuntimeModel {
@@ -735,7 +733,12 @@ async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<Re
   const plans = await materializeReviewerPlans(deps, snapshot.modelServices, snapshot.reviewers);
   return createReviewRunPlan(
     deps.buildReviewers(plans),
-    snapshot.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+    {
+      maxChangedLinesPerBatch:
+        snapshot.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+      maxFilesPerBatch: snapshot.maxFilesPerBatch ?? DEFAULT_MAX_FILES_PER_BATCH,
+      maxParallelBatches: snapshot.maxParallelBatches ?? DEFAULT_MAX_PARALLEL_BATCHES,
+    },
     plans.map(reviewerPin),
     // 知识集与模型服务版本在同一次读事务里冻结(issue #204),两型一体(issue #221)。
     { version: snapshot.ruleSetVersion, rules: snapshot.rules, facts: snapshot.facts },
@@ -2237,25 +2240,36 @@ async function handlePanelApi(
   );
 }
 
+/** 三项分批上限各自的系统默认值(issue #230)。缺自定义值时读接口回它。 */
+const BATCH_LIMIT_DEFAULTS: Record<BatchLimitField, number> = {
+  maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+  maxParallelBatches: DEFAULT_MAX_PARALLEL_BATCHES,
+  maxFilesPerBatch: DEFAULT_MAX_FILES_PER_BATCH,
+};
+
+const BATCH_LIMIT_FIELDS = Object.keys(BATCH_LIMIT_DEFAULTS) as BatchLimitField[];
+
 /**
- * 审查策略:模型组合与批次上限。仓库详情用它展示「跟随全局」跟的是什么。
- * 批次上限没配时回默认值,读回来的就是这次审查真会用的那个数。
+ * 审查策略:模型组合与三项分批上限。仓库详情用它展示「跟随全局」跟的是什么。
+ * 分批上限没配时回默认值,读回来的就是这次审查真会用的那个数。
  */
 function handleGetSettings(res: ServerResponse, deps: WebhookServerDeps): void {
   const settings = globalSettings(deps);
   return sendJson(res, 200, {
     reviewers: settings.reviewers,
     reviewersVersion: settings.reviewersVersion,
-    maxChangedLinesPerBatch:
-      settings.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
-    maxChangedLinesPerBatchSource:
-      settings.maxChangedLinesPerBatch === null ? "default" : "custom",
-    maxChangedLinesPerBatchVersion: settings.maxChangedLinesPerBatchVersion,
+    ...Object.fromEntries(
+      BATCH_LIMIT_FIELDS.flatMap((field) => [
+        [field, settings[field] ?? BATCH_LIMIT_DEFAULTS[field]],
+        [`${field}Source`, settings[field] === null ? "default" : "custom"],
+        [`${field}Version`, settings[`${field}Version`]],
+      ]),
+    ),
   });
 }
 
 /**
- * 全局模型组合与批次上限各自独立写入并带自己的 expected version。
+ * 全局模型组合与三项分批上限各自独立写入并带自己的 expected version。
  */
 async function handlePutSettings(
   req: IncomingMessage,
@@ -2267,16 +2281,12 @@ async function handlePutSettings(
   if (decoded === null || typeof decoded !== "object" || Array.isArray(decoded)) {
     return sendJson(res, 400, { error: "body 要是 JSON 对象" });
   }
-  const payload = decoded as {
-    reviewers?: unknown;
-    maxChangedLinesPerBatch?: unknown;
-    expectedVersion?: unknown;
-  };
+  const payload = decoded as Record<string, unknown>;
   const hasReviewers = Object.hasOwn(payload, "reviewers");
-  const hasLimit = Object.hasOwn(payload, "maxChangedLinesPerBatch");
-  if (hasReviewers === hasLimit) {
+  const limitFields = BATCH_LIMIT_FIELDS.filter((field) => Object.hasOwn(payload, field));
+  if (limitFields.length + (hasReviewers ? 1 : 0) !== 1) {
     return sendJson(res, 400, {
-      error: "body 必须且只能修改 reviewers 或 maxChangedLinesPerBatch 一项",
+      error: `body 必须且只能修改 reviewers 或 ${BATCH_LIMIT_FIELDS.join(" / ")} 中的一项`,
     });
   }
   if (
@@ -2299,24 +2309,25 @@ async function handlePutSettings(
     }
   }
 
-  let limit: number | null | undefined;
-  if (hasLimit) {
-    const candidate = payload.maxChangedLinesPerBatch;
+  const limitField = limitFields[0];
+  let limit: number | null = null;
+  if (limitField !== undefined) {
+    const candidate = payload[limitField];
     if (
       candidate !== null &&
       (typeof candidate !== "number" || !Number.isInteger(candidate) || candidate <= 0)
     ) {
       return sendJson(res, 400, {
-        error: "maxChangedLinesPerBatch 要是正整数，null 即取默认值",
+        error: `${limitField} 要是正整数，null 即取默认值`,
       });
     }
-    limit = candidate;
+    limit = candidate as number | null;
   }
 
   const saved = withStore(deps.dbPath, (store) =>
     reviewersJson !== undefined
       ? store.putGlobalReviewers(payload.expectedVersion as number, reviewersJson)
-      : store.putGlobalBatchLimit(payload.expectedVersion as number, limit ?? null)
+      : store.putGlobalBatchLimit(limitField!, payload.expectedVersion as number, limit)
   );
   if (!saved) {
     return sendJson(res, 409, { error: "这项审查策略已经被其他人修改，请重新加载后再保存" });

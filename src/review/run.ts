@@ -16,6 +16,7 @@ import {
 } from "../git/worktree.ts";
 import {
   DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+  DEFAULT_MAX_FILES_PER_BATCH,
   mergeBatchOutcomes,
   splitIntoBatches,
   type TimedOutcome,
@@ -75,6 +76,10 @@ export type PullRequestEvent = PullRequestRef;
 export type ReviewRunPlan = Readonly<{
   reviewers: readonly Reviewer[];
   maxChangedLinesPerBatch: number;
+  /** 一批最多多少个文件(issue #230)。与改动行上限双重装箱,任一超限即封箱。 */
+  maxFilesPerBatch: number;
+  /** 同时在跑的批次数上限(issue #230)。本轮只冻结这个数,批次循环仍然串行。 */
+  maxParallelBatches: number;
   reviewerPins: readonly ReviewRunReviewerPin[];
   /** 本轮冻结的知识集版本(issue #204)。仓库还没确认过知识集时为 null。 */
   ruleSetVersion: number | null;
@@ -92,7 +97,12 @@ export type ReviewRunPlan = Readonly<{
 /** 从启动时的配置快照生成一次运行计划。复制 Reviewer 列表,使组合的后续改动只影响下一轮。 */
 export function createReviewRunPlan(
   reviewers: readonly Reviewer[],
-  maxChangedLinesPerBatch: number,
+  /** 本轮冻结的三项分批上限(issue #230)。三项同形,一起取一起冻。 */
+  batchLimits: {
+    maxChangedLinesPerBatch: number;
+    maxFilesPerBatch: number;
+    maxParallelBatches: number;
+  },
   reviewerPins: readonly ReviewRunReviewerPin[],
   /**
    * 本轮冻结的知识集(issue #204)。两型一体冻结(issue #221):同一个版本、同一次读取,
@@ -111,7 +121,7 @@ export function createReviewRunPlan(
 ): ReviewRunPlan {
   return Object.freeze({
     reviewers: Object.freeze([...reviewers]),
-    maxChangedLinesPerBatch,
+    ...batchLimits,
     reviewerPins: Object.freeze([...reviewerPins]),
     ruleSetVersion: ruleSet.version,
     rules: Object.freeze([...ruleSet.rules]),
@@ -129,6 +139,13 @@ export type ReviewRunDeps = {
   dbPath: string;
   /** 一批最多多少改动行。不传取 `DEFAULT_MAX_CHANGED_LINES_PER_BATCH`。 */
   maxChangedLinesPerBatch?: number;
+  /** 一批最多多少个文件(issue #230)。不传取 `DEFAULT_MAX_FILES_PER_BATCH`。 */
+  maxFilesPerBatch?: number;
+  /**
+   * 同时在跑的批次数上限(issue #230)。运行计划带着它进来,批次循环这一票还没用上它——
+   * 受限并行是后续那一票的事。
+   */
+  maxParallelBatches?: number;
   /** 本轮固定的非秘密模型服务审计快照。 */
   reviewerPins?: readonly ReviewRunReviewerPin[];
   /** 手动重跑的调用者用户名快照;自动投递不传。 */
@@ -1127,6 +1144,7 @@ export async function runReview(
       range.files,
       changedLines,
       deps.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+      deps.maxFilesPerBatch ?? DEFAULT_MAX_FILES_PER_BATCH,
     );
 
     // 句柄的存活期覆盖整段审查(最长二十分钟),中途出错必须归还:webhook 服务是长跑

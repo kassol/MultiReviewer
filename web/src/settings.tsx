@@ -1,6 +1,6 @@
 /**
- * 审查策略页。模型组合与批次上限读取同一设置快照，但各自保存：失效模型只门禁组合写入，
- * 不连坐批次上限。组合候选与仓库覆盖共用 `ModelComposer` 的模型服务投影。
+ * 审查策略页。模型组合与三项分批上限读取同一设置快照，但各自保存：失效模型只门禁组合写入，
+ * 不连坐分批上限。组合候选与仓库覆盖共用 `ModelComposer` 的模型服务投影。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircledIcon, CrossCircledIcon } from "@radix-ui/react-icons";
@@ -30,7 +30,46 @@ type Settings = {
   maxChangedLinesPerBatch: number;
   maxChangedLinesPerBatchSource: "default" | "custom";
   maxChangedLinesPerBatchVersion: number;
+  maxParallelBatches: number;
+  maxParallelBatchesSource: "default" | "custom";
+  maxParallelBatchesVersion: number;
+  maxFilesPerBatch: number;
+  maxFilesPerBatchSource: "default" | "custom";
+  maxFilesPerBatchVersion: number;
 };
+
+/** 三项分批上限同形：各自一个正整数、各自一份来源与版本，各自保存。 */
+type LimitField = "maxChangedLinesPerBatch" | "maxParallelBatches" | "maxFilesPerBatch";
+
+const LIMITS: {
+  field: LimitField;
+  title: string;
+  help: string;
+  label: string;
+  inputId: string;
+}[] = [
+  {
+    field: "maxChangedLinesPerBatch",
+    title: "批次改动行上限",
+    help: "批次改动行上限只影响每轮审查如何拆分改动，不会改变模型组合。",
+    label: "每批最多改动行数",
+    inputId: "max-changed-lines",
+  },
+  {
+    field: "maxParallelBatches",
+    title: "批次并发数",
+    help: "一轮审查里同时开跑的批次数。调大缩短大改动的等待时间，也同时占用更多模型配额。",
+    label: "同时在跑的批次数",
+    inputId: "max-parallel-batches",
+  },
+  {
+    field: "maxFilesPerBatch",
+    title: "批次文件数上限",
+    help: "一批最多包含多少个文件。文件数与改动行数任一超限即另起一批。",
+    label: "每批最多文件数",
+    inputId: "max-files-per-batch",
+  },
+];
 
 class SettingsConflict extends Error {
   readonly latest: Settings;
@@ -101,11 +140,18 @@ function ReadOnlySettings({ settings }: { settings: Settings }) {
       <Card size="2" className="flex flex-col gap-3">
         <div>
           <h2 className="text-2xl font-bold tracking-[-0.015em]">批次上限</h2>
-          <p className="mt-0.5 text-text-muted">每批审查最多包含的改动行数。</p>
+          <p className="mt-0.5 text-text-muted">每轮审查如何拆分改动、同时跑几批。</p>
         </div>
-        <p className="font-mono text-lg font-semibold tabular-nums">
-          {settings.maxChangedLinesPerBatch}
-        </p>
+        <div className="space-y-2">
+          {LIMITS.map((limit) => (
+            <div key={limit.field} className="flex items-baseline justify-between gap-3">
+              <span className="text-text-muted">{limit.label}</span>
+              <span className="font-mono text-lg font-semibold tabular-nums">
+                {settings[limit.field]}
+              </span>
+            </div>
+          ))}
+        </div>
       </Card>
     </div>
   );
@@ -116,9 +162,6 @@ function SettingsForm({ settings }: { settings: Settings }) {
   const requestedProvider = new URLSearchParams(window.location.search).get("provider") ?? undefined;
   const [models, setModels] = useState(() => settings.reviewers.map(toModelRef));
   const [reviewersVersion, setReviewersVersion] = useState(settings.reviewersVersion);
-  const [limit, setLimit] = useState(String(settings.maxChangedLinesPerBatch));
-  const [limitSource, setLimitSource] = useState(settings.maxChangedLinesPerBatchSource);
-  const [limitVersion, setLimitVersion] = useState(settings.maxChangedLinesPerBatchVersion);
   const [modelValidity, setModelValidity] = useState<ModelComposerValidity>({
     ready: false,
     unavailable: [],
@@ -126,11 +169,6 @@ function SettingsForm({ settings }: { settings: Settings }) {
   const [modelFeedback, setModelFeedback] = useState<{
     text: string;
     isError: boolean;
-  } | null>(null);
-  const [limitFeedback, setLimitFeedback] = useState<{
-    text: string;
-    isError: boolean;
-    isField: boolean;
   } | null>(null);
 
   const saveModels = useMutation({
@@ -158,33 +196,6 @@ function SettingsForm({ settings }: { settings: Settings }) {
         queryClient.setQueryData(["settings"], error.latest);
       }
       setModelFeedback({ text: error.message, isError: true });
-    },
-  });
-  const saveLimit = useMutation({
-    mutationFn: async (maxChangedLinesPerBatch: number | null): Promise<Settings> => {
-      const response = await api("/settings", {
-        method: "PUT",
-        body: JSON.stringify({ maxChangedLinesPerBatch, expectedVersion: limitVersion }),
-      });
-      if (response.status === 409) throw new SettingsConflict(await fetchJson<Settings>("/settings"));
-      if (!response.ok) throw new Error(await errorText(response));
-      return (await response.json()) as Settings;
-    },
-    onSuccess: (saved) => {
-      setLimit(String(saved.maxChangedLinesPerBatch));
-      setLimitSource(saved.maxChangedLinesPerBatchSource);
-      setLimitVersion(saved.maxChangedLinesPerBatchVersion);
-      setLimitFeedback({ text: "批次上限已保存。", isError: false, isField: false });
-      queryClient.setQueryData(["settings"], saved);
-    },
-    onError: (error: Error) => {
-      if (error instanceof SettingsConflict) {
-        setLimit(String(error.latest.maxChangedLinesPerBatch));
-        setLimitSource(error.latest.maxChangedLinesPerBatchSource);
-        setLimitVersion(error.latest.maxChangedLinesPerBatchVersion);
-        queryClient.setQueryData(["settings"], error.latest);
-      }
-      setLimitFeedback({ text: error.message, isError: true, isField: false });
     },
   });
 
@@ -238,101 +249,150 @@ function SettingsForm({ settings }: { settings: Settings }) {
         )}
       </section>
 
-      <section className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
-        <div className="flex items-center gap-1.5 px-5 py-3.5">
-          <h2 className="text-2xl font-bold tracking-[-0.015em]">批次上限</h2>
-          <HelpTooltip label="批次上限说明" content="批次上限只影响每轮审查如何拆分改动，不会改变模型组合。" />
-        </div>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            setLimitFeedback(null);
-            const parsed = Number(limit.trim());
-            if (limit.trim() === "" || !Number.isInteger(parsed) || parsed <= 0) {
-              setLimitFeedback({
-                text: "请输入正整数。批次上限未保存。",
-                isError: true,
-                isField: true,
-              });
-              return;
-            }
-            saveLimit.mutate(parsed);
-          }}
-        >
-          <div className="space-y-3 border-t border-card-line px-5 py-4">
-            <p className="text-xs text-text-muted">
-              取值来源：{limitSource === "default" ? "系统默认" : "自定义"}
-            </p>
-            <div className="flex max-w-sm flex-col gap-1.5">
-              <Text as="label" htmlFor="max-changed-lines" size="2" weight="medium">每批最多改动行数</Text>
-              <TextField.Root
-                id="max-changed-lines"
-                size={{ initial: "3", sm: "2" }}
-                color={limitFeedback?.isField ? "red" : "gray"}
-                className="min-w-0 w-40 font-mono max-sm:min-h-11"
-                inputMode="numeric"
-                value={limit}
-                aria-invalid={limitFeedback?.isField || undefined}
-                aria-describedby={limitFeedback?.isField ? "max-changed-lines-error" : undefined}
-                onChange={(event) => {
-                  setLimit(event.target.value);
-                  setLimitFeedback(null);
-                }}
-              />
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-3 border-t border-card-line bg-sunken px-5 py-3">
-            <Button
-              type="submit"
-              variant="solid"
-              size={{ initial: "4", sm: "2" }}
-              className="shadow-accent"
-              disabled={saveLimit.isPending}
-            >
-              {saveLimit.isPending ? "保存中…" : "保存批次上限"}
-            </Button>
-            {limitSource === "custom" ? (
-              <Button
-                type="button"
-                variant="outline"
-                color="gray"
-                size={{ initial: "4", sm: "2" }}
-                disabled={saveLimit.isPending}
-                onClick={() => {
-                  setLimitFeedback(null);
-                  saveLimit.mutate(null);
-                }}
-              >
-                恢复系统默认
-              </Button>
-            ) : null}
-            {limitFeedback === null ? (
-              <span className="text-xs text-text-muted">单独保存，不受模型组合可用性影响。</span>
-            ) : limitFeedback.isField ? (
-              <span
-                id="max-changed-lines-error"
-                role="alert"
-                className="text-danger"
-              >
-                {limitFeedback.text}
-              </span>
-            ) : null}
-          </div>
-          {limitFeedback === null || limitFeedback.isField ? null : (
-            <Callout.Root
-              role={limitFeedback.isError ? "alert" : "status"}
-              color={limitFeedback.isError ? "red" : "green"}
-              size="1"
-              className="m-4 mt-0"
-            >
-              <Callout.Icon>
-                {limitFeedback.isError ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
-              </Callout.Icon>
-              <Callout.Text>{limitFeedback.text}</Callout.Text>
-            </Callout.Root>
-          )}
-        </form>
-      </section>
+      {LIMITS.map((limit) => (
+        <LimitSection key={limit.field} settings={settings} limit={limit} />
+      ))}
     </div>
+  );
+}
+
+/** 一项分批上限的编辑区。三项同形，各持自己的版本、来源与反馈，各自保存。 */
+function LimitSection({
+  settings,
+  limit: { field, title, help, label, inputId },
+}: {
+  settings: Settings;
+  limit: (typeof LIMITS)[number];
+}) {
+  const queryClient = useQueryClient();
+  const [value, setValue] = useState(String(settings[field]));
+  const [source, setSource] = useState(settings[`${field}Source`]);
+  const [version, setVersion] = useState(settings[`${field}Version`]);
+  const [feedback, setFeedback] = useState<{
+    text: string;
+    isError: boolean;
+    isField: boolean;
+  } | null>(null);
+
+  const save = useMutation({
+    mutationFn: async (next: number | null): Promise<Settings> => {
+      const response = await api("/settings", {
+        method: "PUT",
+        body: JSON.stringify({ [field]: next, expectedVersion: version }),
+      });
+      if (response.status === 409) throw new SettingsConflict(await fetchJson<Settings>("/settings"));
+      if (!response.ok) throw new Error(await errorText(response));
+      return (await response.json()) as Settings;
+    },
+    onSuccess: (saved) => {
+      setValue(String(saved[field]));
+      setSource(saved[`${field}Source`]);
+      setVersion(saved[`${field}Version`]);
+      setFeedback({ text: `${title}已保存。`, isError: false, isField: false });
+      queryClient.setQueryData(["settings"], saved);
+    },
+    onError: (error: Error) => {
+      if (error instanceof SettingsConflict) {
+        setValue(String(error.latest[field]));
+        setSource(error.latest[`${field}Source`]);
+        setVersion(error.latest[`${field}Version`]);
+        queryClient.setQueryData(["settings"], error.latest);
+      }
+      setFeedback({ text: error.message, isError: true, isField: false });
+    },
+  });
+
+  return (
+    <section className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
+      <div className="flex items-center gap-1.5 px-5 py-3.5">
+        <h2 className="text-2xl font-bold tracking-[-0.015em]">{title}</h2>
+        <HelpTooltip label={`${title}说明`} content={help} />
+      </div>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          setFeedback(null);
+          const parsed = Number(value.trim());
+          if (value.trim() === "" || !Number.isInteger(parsed) || parsed <= 0) {
+            setFeedback({
+              text: `请输入正整数。${title}未保存。`,
+              isError: true,
+              isField: true,
+            });
+            return;
+          }
+          save.mutate(parsed);
+        }}
+      >
+        <div className="space-y-3 border-t border-card-line px-5 py-4">
+          <p className="text-xs text-text-muted">
+            取值来源：{source === "default" ? "系统默认" : "自定义"}
+          </p>
+          <div className="flex max-w-sm flex-col gap-1.5">
+            <Text as="label" htmlFor={inputId} size="2" weight="medium">{label}</Text>
+            <TextField.Root
+              id={inputId}
+              size={{ initial: "3", sm: "2" }}
+              color={feedback?.isField ? "red" : "gray"}
+              className="min-w-0 w-40 font-mono max-sm:min-h-11"
+              inputMode="numeric"
+              value={value}
+              aria-invalid={feedback?.isField || undefined}
+              aria-describedby={feedback?.isField ? `${inputId}-error` : undefined}
+              onChange={(event) => {
+                setValue(event.target.value);
+                setFeedback(null);
+              }}
+            />
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 border-t border-card-line bg-sunken px-5 py-3">
+          <Button
+            type="submit"
+            variant="solid"
+            size={{ initial: "4", sm: "2" }}
+            className="shadow-accent"
+            disabled={save.isPending}
+          >
+            {save.isPending ? "保存中…" : `保存${title}`}
+          </Button>
+          {source === "custom" ? (
+            <Button
+              type="button"
+              variant="outline"
+              color="gray"
+              size={{ initial: "4", sm: "2" }}
+              disabled={save.isPending}
+              onClick={() => {
+                setFeedback(null);
+                save.mutate(null);
+              }}
+            >
+              恢复系统默认
+            </Button>
+          ) : null}
+          {feedback === null ? (
+            <span className="text-xs text-text-muted">单独保存，不受模型组合可用性影响。</span>
+          ) : feedback.isField ? (
+            <span id={`${inputId}-error`} role="alert" className="text-danger">
+              {feedback.text}
+            </span>
+          ) : null}
+        </div>
+        {feedback === null || feedback.isField ? null : (
+          <Callout.Root
+            role={feedback.isError ? "alert" : "status"}
+            color={feedback.isError ? "red" : "green"}
+            size="1"
+            className="m-4 mt-0"
+          >
+            <Callout.Icon>
+              {feedback.isError ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
+            </Callout.Icon>
+            <Callout.Text>{feedback.text}</Callout.Text>
+          </Callout.Root>
+        )}
+      </form>
+    </section>
   );
 }

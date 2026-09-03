@@ -12,16 +12,26 @@ import { sumUsage } from "./store.ts";
 export const DEFAULT_MAX_CHANGED_LINES_PER_BATCH = 2000;
 
 /**
- * 按每个文件的改动行数贪心装箱。同一文件的改动绝不跨批,跨批因此不会出现指向同一处
- * 的 Finding。
+ * 一批最多多少个文件(issue #230)。改动行数装得下不等于审得动:一批塞进上百个文件时
+ * 每个文件平均摊不到一次 read,模型只能扫过去。
+ */
+export const DEFAULT_MAX_FILES_PER_BATCH = 40;
+
+/** 一轮 Review Run 里同时在跑的批次数上限(issue #230)。 */
+export const DEFAULT_MAX_PARALLEL_BATCHES = 3;
+
+/**
+ * 按每个文件的改动行数与文件数双重装箱,任一超限即封箱。同一文件的改动绝不跨批,跨批
+ * 因此不会出现指向同一处的 Finding。
  *
- * 单个文件本身就超过阈值时它自成一批:超大 Review Range 要被完整审查,不因切不开
+ * 单个文件本身就超过改动行阈值时它自成一批:超大 Review Range 要被完整审查,不因切不开
  * 而拒审或截断。文件顺序保持原样,同一目录下的文件因此倾向于落在同一批。
  */
 export function splitIntoBatches(
   files: readonly string[],
   changedLines: ReadonlyMap<string, number>,
   maxChangedLines: number,
+  maxFiles: number,
 ): string[][] {
   const batches: string[][] = [];
   let current: string[] = [];
@@ -30,7 +40,10 @@ export function splitIntoBatches(
   for (const file of files) {
     // 二进制文件与纯重命名在 diff 里没有改动行,不占预算。
     const lines = changedLines.get(file) ?? 0;
-    if (current.length > 0 && currentLines + lines > maxChangedLines) {
+    if (
+      current.length > 0 &&
+      (currentLines + lines > maxChangedLines || current.length >= maxFiles)
+    ) {
       batches.push(current);
       current = [];
       currentLines = 0;
