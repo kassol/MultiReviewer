@@ -404,7 +404,11 @@ test("Review Run 在首批前固定一份运行计划,后续批次不跟随模�
   };
   const replacement = scriptedReviewer("replacement-model", []);
   const configuredReviewers: Reviewer[] = [planned];
-  const plan = createReviewRunPlan(configuredReviewers, 1, []);
+  const plan = createReviewRunPlan(
+    configuredReviewers,
+    { maxChangedLinesPerBatch: 1, maxFilesPerBatch: 40, maxParallelBatches: 3 },
+    [],
+  );
 
   const running = runReview(
     { owner: "acme", repo: "widgets", number: 7 },

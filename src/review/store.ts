@@ -405,8 +405,9 @@ CREATE INDEX IF NOT EXISTS rule_trace_by_repo ON rule_trace(repo_id);
 
 
 -- 审查策略,一项一行。reviewers 是全局模型组合,与 repo.reviewers 同构(ReviewerSpec
--- 的 JSON 数组);max_changed_lines_per_batch 是正整数的字符串形,缺行即取默认值。两项各有
--- 一个独立的 *_version 键;历史库没有版本键时按版本 1 读,首次写入再落版本键。
+-- 的 JSON 数组);max_changed_lines_per_batch、max_parallel_batches 与 max_files_per_batch
+-- 都是正整数的字符串形,缺行即取默认值。每一项各有一个独立的 *_version 键;历史库没有版本
+-- 键时按版本 1 读,首次写入再落版本键。
 -- 库是唯一的配置面(issue #66),没有配置文件与它竞争。
 CREATE TABLE IF NOT EXISTS global_setting (
   key TEXT PRIMARY KEY,
@@ -651,9 +652,17 @@ const ADD_INDEXES = [
 
 /** `global_setting` 的设置值与独立版本键。 */
 const GLOBAL_REVIEWERS_KEY = "reviewers";
-const GLOBAL_MAX_CHANGED_LINES_KEY = "max_changed_lines_per_batch";
 const GLOBAL_REVIEWERS_VERSION_KEY = "reviewers_version";
-const GLOBAL_MAX_CHANGED_LINES_VERSION_KEY = "max_changed_lines_per_batch_version";
+
+/** 三项分批上限各自的设置键与版本键(issue #230)。三项同形,读写只写一份。 */
+const BATCH_LIMIT_KEYS = {
+  maxChangedLinesPerBatch: ["max_changed_lines_per_batch", "max_changed_lines_per_batch_version"],
+  maxParallelBatches: ["max_parallel_batches", "max_parallel_batches_version"],
+  maxFilesPerBatch: ["max_files_per_batch", "max_files_per_batch_version"],
+} as const;
+
+/** 分批上限里的哪一项。 */
+export type BatchLimitField = keyof typeof BATCH_LIMIT_KEYS;
 
 /**
  * 等锁的上限。webhook 服务里 webhook 层与后台 Review Run 各持一个句柄写同一个文件,
@@ -1059,6 +1068,9 @@ export type ModelServiceRecord = {
 export type ReviewRunStoreSnapshot = Readonly<{
   reviewers: readonly ReviewerSpec[];
   maxChangedLinesPerBatch: number | null;
+  /** 本轮冻结的另外两项分批上限(issue #230)。null 即取编排层的默认值。 */
+  maxParallelBatches: number | null;
+  maxFilesPerBatch: number | null;
   modelServices: readonly ModelServiceRecord[];
   /**
    * 本轮要冻结的知识集版本(issue #204)。仓库还没确认过知识集时为 null。与模型服务
@@ -1149,6 +1161,12 @@ export type GlobalSettings = {
   /** 一批最多多少改动行,null 即取编排层的默认值。 */
   maxChangedLinesPerBatch: number | null;
   maxChangedLinesPerBatchVersion: number;
+  /** 同时在跑的批次数上限,null 即取编排层的默认值(issue #230)。 */
+  maxParallelBatches: number | null;
+  maxParallelBatchesVersion: number;
+  /** 一批最多多少个文件,null 即取编排层的默认值(issue #230)。 */
+  maxFilesPerBatch: number | null;
+  maxFilesPerBatchVersion: number;
 };
 
 /** 注册表里的一个仓库。`reviewersJson` 是模型覆盖的 JSON,null 即跟随全局。 */
@@ -1824,8 +1842,12 @@ export type Store = {
   getGlobalSettings(): GlobalSettings;
   /** 按独立版本改写全局模型组合；陈旧版本或模型服务状态变化返回 false。 */
   putGlobalReviewers(expectedVersion: number, reviewersJson: string): boolean;
-  /** 按独立版本设置批次上限；null 移除自定义值，陈旧版本返回 false。 */
-  putGlobalBatchLimit(expectedVersion: number, limit: number | null): boolean;
+  /** 按独立版本设置某一项分批上限；null 移除自定义值，陈旧版本返回 false。 */
+  putGlobalBatchLimit(
+    field: BatchLimitField,
+    expectedVersion: number,
+    limit: number | null,
+  ): boolean;
   /** 测试夹具和启动播种的兼容入口；面板写链不得使用。 */
   putGlobalSettings(settings: Pick<GlobalSettings, "reviewersJson" | "maxChangedLinesPerBatch">): boolean;
   /**
@@ -3531,14 +3553,26 @@ export function openStore(dbPath: string): Store {
     getGlobalSettings() {
       const rows = db.prepare("SELECT key, value FROM global_setting").all();
       const values = new Map(rows.map((row) => [String(row["key"]), String(row["value"])]));
-      const limit = values.get(GLOBAL_MAX_CHANGED_LINES_KEY);
+      const limit = (field: BatchLimitField): { value: number | null; version: number } => {
+        const [key, versionKey] = BATCH_LIMIT_KEYS[field];
+        const stored = values.get(key);
+        return {
+          value: stored === undefined ? null : Number(stored),
+          version: Number(values.get(versionKey) ?? 1),
+        };
+      };
+      const changedLines = limit("maxChangedLinesPerBatch");
+      const parallel = limit("maxParallelBatches");
+      const files = limit("maxFilesPerBatch");
       return {
         reviewersJson: values.get(GLOBAL_REVIEWERS_KEY) ?? null,
         reviewersVersion: Number(values.get(GLOBAL_REVIEWERS_VERSION_KEY) ?? 1),
-        maxChangedLinesPerBatch: limit === undefined ? null : Number(limit),
-        maxChangedLinesPerBatchVersion: Number(
-          values.get(GLOBAL_MAX_CHANGED_LINES_VERSION_KEY) ?? 1,
-        ),
+        maxChangedLinesPerBatch: changedLines.value,
+        maxChangedLinesPerBatchVersion: changedLines.version,
+        maxParallelBatches: parallel.value,
+        maxParallelBatchesVersion: parallel.version,
+        maxFilesPerBatch: files.value,
+        maxFilesPerBatchVersion: files.version,
       };
     },
 
@@ -3565,6 +3599,8 @@ export function openStore(dbPath: string): Store {
         return {
           reviewers: Object.freeze([...reviewers]),
           maxChangedLinesPerBatch: settings.maxChangedLinesPerBatch,
+          maxParallelBatches: settings.maxParallelBatches,
+          maxFilesPerBatch: settings.maxFilesPerBatch,
           modelServices: Object.freeze(modelServices),
           ruleSetVersion: ruleSet?.version ?? null,
           // 两型在同一份快照里按 type 分开(issue #221):注入时各走各的模板,冻结的
@@ -3611,29 +3647,29 @@ export function openStore(dbPath: string): Store {
       }
     },
 
-    putGlobalBatchLimit(expectedVersion, limit) {
+    putGlobalBatchLimit(field, expectedVersion, limit) {
+      const [key, versionKey] = BATCH_LIMIT_KEYS[field];
       db.exec("BEGIN IMMEDIATE");
       try {
         const versionRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
-          .get(GLOBAL_MAX_CHANGED_LINES_VERSION_KEY)?.["value"];
+          .get(versionKey)?.["value"];
         const version = versionRow === undefined ? 1 : Number(versionRow);
         if (version !== expectedVersion) {
           db.exec("ROLLBACK");
           return false;
         }
         if (limit === null) {
-          db.prepare("DELETE FROM global_setting WHERE key = ?")
-            .run(GLOBAL_MAX_CHANGED_LINES_KEY);
+          db.prepare("DELETE FROM global_setting WHERE key = ?").run(key);
         } else {
           db.prepare(
             `INSERT INTO global_setting (key, value) VALUES (?, ?)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-          ).run(GLOBAL_MAX_CHANGED_LINES_KEY, String(limit));
+          ).run(key, String(limit));
         }
         db.prepare(
           `INSERT INTO global_setting (key, value) VALUES (?, ?)
            ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-        ).run(GLOBAL_MAX_CHANGED_LINES_VERSION_KEY, String(version + 1));
+        ).run(versionKey, String(version + 1));
         db.exec("COMMIT");
         return true;
       } catch (error) {
@@ -3658,6 +3694,7 @@ export function openStore(dbPath: string): Store {
         ).run(GLOBAL_REVIEWERS_KEY, settings.reviewersJson);
       }
       return store.putGlobalBatchLimit(
+        "maxChangedLinesPerBatch",
         store.getGlobalSettings().maxChangedLinesPerBatchVersion,
         settings.maxChangedLinesPerBatch,
       );

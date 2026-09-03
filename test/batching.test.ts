@@ -5,7 +5,11 @@ import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
 import type { Finding, ReviewerUsage, ReviewRange, Reviewer } from "../src/review/finding.ts";
-import { mergeBatchOutcomes } from "../src/review/batch.ts";
+import {
+  DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
+  mergeBatchOutcomes,
+  splitIntoBatches,
+} from "../src/review/batch.ts";
 import { runReview } from "../src/review/run.ts";
 import type { FileTree } from "./support/git-fixture.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
@@ -148,6 +152,45 @@ test("规模超阈值时按文件分批,每个 Reviewer 每批各跑一次,批�
     assert.deepEqual([...all].sort(), ["src/a.ts", "src/b.ts", "src/c.ts"]);
   }
 
+  assert.equal(query(db.path, "SELECT batch_count FROM review_run")[0]!["batch_count"], 2);
+});
+
+test("文件数与改动行数任一超上限即封箱:40 个各 1 行的文件加 1 个是两批", () => {
+  const files = Array.from({ length: 41 }, (_, i) => `src/f${i}.ts`);
+  const changedLines = new Map(files.map((file) => [file, 1]));
+
+  const batches = splitIntoBatches(files, changedLines, DEFAULT_MAX_CHANGED_LINES_PER_BATCH, 40);
+
+  assert.deepEqual(batches.map((batch) => batch.length), [40, 1]);
+  assert.deepEqual(batches.flat(), files, "文件顺序与归属不该因为按文件数封箱而变");
+});
+
+test("单个文件超改动行上限时仍自成一批,不受文件数上限影响", () => {
+  const changedLines = new Map([["src/big.ts", 300], ["src/a.ts", 5], ["src/b.ts", 5]]);
+
+  assert.deepEqual(
+    splitIntoBatches(["src/big.ts", "src/a.ts", "src/b.ts"], changedLines, 100, 40),
+    [["src/big.ts"], ["src/a.ts", "src/b.ts"]],
+  );
+});
+
+test("文件数上限经 ReviewRunDeps 传到分批,改动行远没到上限也照样切", async () => {
+  const { cache, db, forge } = setup({ "src/a.ts": 10, "src/b.ts": 10, "src/c.ts": 10 });
+  const reviewer = scriptedReviewer("model-a", []);
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [reviewer],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    maxChangedLinesPerBatch: 100,
+    maxFilesPerBatch: 2,
+  });
+
+  assert.deepEqual(
+    reviewer.calls.map((c) => c.range.files),
+    [["src/a.ts", "src/b.ts"], ["src/c.ts"]],
+  );
   assert.equal(query(db.path, "SELECT batch_count FROM review_run")[0]!["batch_count"], 2);
 });
 
