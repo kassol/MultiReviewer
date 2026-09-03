@@ -2,11 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState, type MouseEventHandler } from "react";
 
-import { CrossCircledIcon, FileTextIcon } from "@radix-ui/react-icons";
-import { Callout, Select, Skeleton } from "@radix-ui/themes";
+import { CheckIcon, ChevronDownIcon, CrossCircledIcon, FileTextIcon } from "@radix-ui/react-icons";
+import { Callout, Popover, Select, Skeleton } from "@radix-ui/themes";
 
 import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
+import { Button } from "@/components/theme-button";
+import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { localMinute } from "@/lib/time";
 
 import { fetchJson } from "./api.ts";
@@ -112,11 +114,83 @@ const DISPOSITION_LABEL: Record<Exclude<DispositionFilter, "all">, string> = {
   fixed: "已修复",
 };
 
+type SeverityFilter = "all" | "P0" | "P1" | "P2";
+
+/** 行作者筛选里 `lineAuthor` 为 null 的那一档:与 `run-diff.tsx` 的「无法追溯」同一件事。 */
+const UNKNOWN_AUTHOR = "未知";
+
 /** 一条 Finding 现在落在三档里的哪一档。已延续不会出现在汇总里,那不是处置。 */
 function bucketOf(finding: StageFinding): Exclude<DispositionFilter, "all"> {
   if (finding.disposition === "fixed") return "fixed";
   if (finding.disposition === "resolved") return "resolved";
   return "pending";
+}
+
+/**
+ * 文件筛选:可搜索(输入过滤选项),结构照搬 `commit-picker.tsx` 的 `BranchCombobox`——
+ * Popover 里挂 `ui/command`,列表已经整份在内存里,cmdk 自带的过滤就够用,不必再自管
+ * 一份 search state。
+ */
+function FileFilterCombobox({
+  value,
+  files,
+  onChange,
+}: {
+  value: string;
+  files: string[];
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger>
+        <Button
+          type="button"
+          variant="surface"
+          color="gray"
+          highContrast
+          size="1"
+          className="max-w-56 justify-between gap-1 px-2"
+          aria-label="按文件筛选"
+        >
+          <span className="min-w-0 truncate font-mono">{value === "all" ? "全部文件" : value}</span>
+          <ChevronDownIcon aria-hidden className="shrink-0 text-text-muted" />
+        </Button>
+      </Popover.Trigger>
+      <Popover.Content sideOffset={6} align="start" className="w-[min(24rem,calc(100vw-2rem))] p-0">
+        <Command>
+          <CommandInput placeholder="搜索文件" aria-label="搜索文件" />
+          <CommandList>
+            <CommandEmpty>没有匹配的文件</CommandEmpty>
+            <CommandItem
+              value="all"
+              keywords={["全部文件"]}
+              onSelect={() => {
+                onChange("all");
+                setOpen(false);
+              }}
+            >
+              <CheckIcon aria-hidden className={value === "all" ? "opacity-100" : "opacity-0"} />
+              全部文件
+            </CommandItem>
+            {files.map((file) => (
+              <CommandItem
+                key={file}
+                value={file}
+                onSelect={() => {
+                  onChange(file);
+                  setOpen(false);
+                }}
+              >
+                <CheckIcon aria-hidden className={value === file ? "opacity-100" : "opacity-0"} />
+                <span className="min-w-0 truncate break-all font-mono">{file}</span>
+              </CommandItem>
+            ))}
+          </CommandList>
+        </Command>
+      </Popover.Content>
+    </Popover.Root>
+  );
 }
 
 /**
@@ -143,14 +217,21 @@ export function StageSummaryView({
   const summary = useStageSummary(scope);
   const [disposition, setDisposition] = useState<DispositionFilter>("all");
   const [filePath, setFilePath] = useState("all");
+  const [lineAuthor, setLineAuthor] = useState("all");
+  const [severity, setSeverity] = useState<SeverityFilter>("all");
 
   const findings = summary.data?.findings ?? [];
   const entries = summary.data?.timeline ?? [];
   const files = [...new Set(findings.map((finding) => finding.file))].sort();
+  const authors = [
+    ...new Set(findings.map((finding) => finding.lineAuthor?.name ?? UNKNOWN_AUTHOR)),
+  ].sort();
   const visible = findings.filter(
     (finding) =>
       (disposition === "all" || bucketOf(finding) === disposition) &&
-      (filePath === "all" || finding.file === filePath),
+      (filePath === "all" || finding.file === filePath) &&
+      (lineAuthor === "all" || (finding.lineAuthor?.name ?? UNKNOWN_AUTHOR) === lineAuthor) &&
+      (severity === "all" || finding.severity === severity),
   );
   // 轮次序号按这个阶段自己数:一条 Finding「第几轮首次报出」比一个库 id 有意义。
   const roundOf = new Map(entries.map((entry, index) => [entry.runId, index + 1]));
@@ -205,13 +286,23 @@ export function StageSummaryView({
             <Select.Item value="fixed">已修复</Select.Item>
           </Select.Content>
         </Select.Root>
-        <Select.Root value={filePath} onValueChange={setFilePath} size="1">
-          <Select.Trigger aria-label="按文件筛选" />
+        <FileFilterCombobox value={filePath} files={files} onChange={setFilePath} />
+        <Select.Root value={lineAuthor} onValueChange={setLineAuthor} size="1">
+          <Select.Trigger aria-label="按行作者筛选" />
           <Select.Content>
-            <Select.Item value="all">全部文件</Select.Item>
-            {files.map((file) => (
-              <Select.Item key={file} value={file}>{file}</Select.Item>
+            <Select.Item value="all">全部行作者</Select.Item>
+            {authors.map((name) => (
+              <Select.Item key={name} value={name}>{name}</Select.Item>
             ))}
+          </Select.Content>
+        </Select.Root>
+        <Select.Root value={severity} onValueChange={(next) => setSeverity(next as SeverityFilter)} size="1">
+          <Select.Trigger aria-label="按问题等级筛选" />
+          <Select.Content>
+            <Select.Item value="all">全部等级</Select.Item>
+            <Select.Item value="P0">P0</Select.Item>
+            <Select.Item value="P1">P1</Select.Item>
+            <Select.Item value="P2">P2</Select.Item>
           </Select.Content>
         </Select.Root>
         {summary.data === undefined ? null : (

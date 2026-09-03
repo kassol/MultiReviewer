@@ -89,6 +89,7 @@
 - `pnpm --filter @multireviewer/web dev` — dev 起 Vite(另开一个终端跑 `pnpm start` 起后端,双进程)
 - `pnpm --filter @multireviewer/web build` — 产出 `dist/`
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
+- `pnpm --filter @multireviewer/web test` — 前端纯函数单测(`node --test`,与根项目同一套跑法;不在根 `pnpm check` 里,目前只覆盖 `src/lib/` 下不含 JSX 的纯函数——JSX 文件里的裁剪 / 解析逻辑抽成 `src/lib/` 的纯函数才能被它跑到)
 
 ## 视觉规范
 
@@ -118,6 +119,7 @@
 
 ## 变更日志
 
+- 2026-09-03: 阶段详情的 Finding 列表筛选增强。`stage-summary.tsx` 的文件筛选从 `Select` 换成可搜索的 `FileFilterCombobox`(Popover + `ui/command`,结构照搬 `commit-picker.tsx` 的 `BranchCombobox`,列表已在内存里,靠 cmdk 自带过滤即可);新增行作者与问题等级两个 `Select`,选项分别来自当前 finding 集合的 `lineAuthor.name` 去重(为 null 归入「未知」)与 severity 枚举。四个筛选(处置状态、文件、行作者、问题等级)全部 AND 叠加,判据仍是内联在 `visible` 的一次 `filter` 里,不抽独立模块——沿用「前端不做程序化测试」的既有决定(issue #26)。
 - 2026-09-01: 知识集弹窗列表行版式统一(布局走查反馈)。`repo-rules.tsx` 的生效条目(两型两段)、待裁决提案与草案三处列表行改成同一套结构:陈述独占整行宽度,元数据徽章与逐条动作合成底部一条收尾线(徽章靠左、按钮靠右)。此前长陈述与按钮簇挤在同一行,按钮悬浮在各行不同高度,勾选行的徽章又与被勾选框缩进的正文左边缘错位,三种错位叠起来就是「乱」。勾选框从 label 包裹改为独立成列加 `htmlFor`(id 按 `rule-proposal-{id}` / `rule-draft-{id}` 生成),整句可点勾选不变,陈述、目标条目、备注与收尾线共用一条左边缘。提案行的目标条目与处置备注挪到徽章行之前——先读改什么、再读元数据。交互、端点、徽章集合与按钮集合逐字不变。部署实例 ego-browser 走查时另发现两处既有缺陷一并修掉:其一,作用范围徽章(`repo-rules.tsx` 四处与 `rule-trace.tsx` 一处)遇长 glob 不折行——Radix Badge 自带 `white-space: nowrap` 加 `flex-shrink: 0`,要 `min-w-0 shrink break-all whitespace-normal` 四件齐才折得动;其二,弹窗行正文的 `break-words`(`overflow-wrap: break-word`)受限时能折行、却不降低固有最小宽度,陈述里的长代码路径会经 `rt-DialogScrollPadding` 把弹窗固有宽度撑出窄视口(375px 下弹窗 425px),九处行正文换成 `wrap-anywhere`(`overflow-wrap: anywhere`,计入最小宽度)后弹窗收回 343px。窄屏与桌面两档经部署实例 ego-browser 复核:陈述点击切换勾选、收尾线折行、console 无错误。
 - 2026-09-01: 知识集弹窗整体加大(布局走查反馈):`maxWidth` 680→880px,定高 680→820px(仍以 `100dvh-4.5rem` 封顶,小屏不受影响)。长陈述折行更少,提案队列一屏多看两三条。
 - 2026-09-01: 知识集弹窗与访问控制页重设计(UI/UX 走查)。**知识集弹窗**:`repo-rules.tsx` 的 `RuleSetDialogContent` 从单页纵排改成三个 tab(知识条目 / 修订提案 / 基点探索,详见目录索引),弹窗高度定死消除切 tab 跳变,段内 `text-2xl` 大标题全部退役(层级压不过 Dialog.Title),已废止收进 `details` 折叠;交互、端点与权限判据逐字不变。**访问控制**:`access-control.tsx` 用户表行改垂直居中、显示名空串与 null 同显「—」、角色下拉换 ghost 形态、行操作收进「…」菜单;转置权限矩阵换成「角色权限」卡(顶部角色 Tabs + 单角色权限清单 + `Switch`),锁图标横幅与「尚未授予」汇总 Callout 删除,改为行内「未授予任何角色」徽章与一行系统管理员脚注;权限开关不再推成功提示。两页均经本地实例三宽度 ego-browser 走查。
