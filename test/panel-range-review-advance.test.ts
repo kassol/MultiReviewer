@@ -253,7 +253,7 @@ test("详情端点给出历次比较项,轮次按 head 对得上", async () => {
   }
 });
 
-test("没有 review:create 的用户推进被拒,分支不动", async () => {
+test("没有 review:advance 的用户推进被拒,分支不动", async () => {
   const recorded: Recorded = { ranges: [] };
   const h = await startedHarness(recorded);
   const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
@@ -284,6 +284,50 @@ test("没有 review:create 的用户推进被拒,分支不动", async () => {
   const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
 
   const next = h.repo.pushToHead({ "src/answer.ts": "export const answer = 9;\n" });
+  const denied = await fetch(
+    `${h.serverUrl}/api/range-reviews/${rangeReview.id}/advance`,
+    {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ comparison: next }),
+    },
+  );
+  assert.equal(denied.status, 403);
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), h.repo.headSha);
+});
+
+test("持有旧格 review:create 但没有 review:advance:推进被拒,分支不动", async () => {
+  const recorded: Recorded = { ranges: [] };
+  const h = await startedHarness(recorded);
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+
+  const store = openStore(h.db.path);
+  // 拆格之后(issue #229)发起权限不再蕴含推进权限:两格互相独立。
+  const role = store.createPanelRole({
+    name: "只发起的角色",
+    permissions: ["review:create"],
+    createdAt: "2026-08-20T00:00:00.000Z",
+  });
+  store.createPanelUser({
+    username: "range-creator",
+    displayName: null,
+    passwordHash: HASH,
+    mustChangePassword: false,
+    createdAt: "2026-08-20T00:00:00.000Z",
+    isSystemAdmin: false,
+    roleId: role.id,
+  });
+  store.close();
+
+  const login = await fetch(`${h.serverUrl}/api/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "range-creator", password: PASSWORD }),
+  });
+  assert.equal(login.status, 204);
+  const cookie = login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
+
+  const next = h.repo.pushToHead({ "src/answer.ts": "export const answer = 10;\n" });
   const denied = await fetch(
     `${h.serverUrl}/api/range-reviews/${rangeReview.id}/advance`,
     {

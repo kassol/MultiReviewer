@@ -1811,7 +1811,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   {
     method: "POST",
     pattern: /^\/range-reviews\/(\d+)\/advance$/,
-    access: "review:create",
+    access: "review:advance",
     assignment: { by: "range-review", group: 1 },
     handler: ({ req, res, deps, caller }, match) =>
       handleAdvanceRangeReview(req, res, deps, Number(match![1]), caller!.username),
@@ -1819,7 +1819,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   {
     method: "POST",
     pattern: /^\/range-reviews\/(\d+)\/complete$/,
-    access: "finding:dispose",
+    access: "review:complete",
     assignment: { by: "range-review", group: 1 },
     handler: ({ res, deps, caller }, match) =>
       handleCompleteRangeReview(res, deps, Number(match![1]), caller!.username),

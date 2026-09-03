@@ -6,6 +6,8 @@ export const PANEL_PERMISSIONS = [
   "repo:write",
   "review:rerun",
   "review:create",
+  "review:complete",
+  "review:advance",
   "finding:dispose",
   "knowledge:write",
   "model:read",
