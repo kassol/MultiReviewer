@@ -1,5 +1,5 @@
 /**
- * 审查策略页。模型组合与三项分批上限读取同一设置快照，但各自保存：失效模型只门禁组合写入，
+ * 审查策略页。模型组合与分批上限与批次并发数读取同一设置快照，但各自保存：失效模型只门禁组合写入，
  * 不连坐分批上限。组合候选与仓库覆盖共用 `ModelComposer` 的模型服务投影。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -38,7 +38,7 @@ type Settings = {
   maxFilesPerBatchVersion: number;
 };
 
-/** 三项分批上限同形：各自一个正整数、各自一份来源与版本，各自保存。 */
+/** 分批上限与批次并发数同形：各自一个正整数、各自一份来源与版本，各自保存。 */
 type LimitField = "maxChangedLinesPerBatch" | "maxParallelBatches" | "maxFilesPerBatch";
 
 const LIMITS: {
@@ -139,7 +139,7 @@ function ReadOnlySettings({ settings }: { settings: Settings }) {
       </Card>
       <Card size="2" className="flex flex-col gap-3">
         <div>
-          <h2 className="text-2xl font-bold tracking-[-0.015em]">批次上限</h2>
+          <h2 className="text-2xl font-bold tracking-[-0.015em]">分批上限与批次并发数</h2>
           <p className="mt-0.5 text-text-muted">每轮审查如何拆分改动、同时跑几批。</p>
         </div>
         <div className="space-y-2">

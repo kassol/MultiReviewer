@@ -524,7 +524,7 @@ function withStore<T>(dbPath: string, fn: (store: Store) => T): T {
   }
 }
 
-/** 审查策略。模型组合与三项分批上限都在库里,用时读一次。 */
+/** 审查策略。模型组合与分批上限与批次并发数都在库里,用时读一次。 */
 function globalSettings(deps: WebhookServerDeps): GlobalSettings & {
   reviewers: ReviewerSpec[];
 } {
@@ -2240,7 +2240,7 @@ async function handlePanelApi(
   );
 }
 
-/** 三项分批上限各自的系统默认值(issue #230)。缺自定义值时读接口回它。 */
+/** 分批上限与批次并发数各自的系统默认值(issue #230)。缺自定义值时读接口回它。 */
 const BATCH_LIMIT_DEFAULTS: Record<BatchLimitField, number> = {
   maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
   maxParallelBatches: DEFAULT_MAX_PARALLEL_BATCHES,
@@ -2250,7 +2250,7 @@ const BATCH_LIMIT_DEFAULTS: Record<BatchLimitField, number> = {
 const BATCH_LIMIT_FIELDS = Object.keys(BATCH_LIMIT_DEFAULTS) as BatchLimitField[];
 
 /**
- * 审查策略:模型组合与三项分批上限。仓库详情用它展示「跟随全局」跟的是什么。
+ * 审查策略:模型组合与分批上限与批次并发数。仓库详情用它展示「跟随全局」跟的是什么。
  * 分批上限没配时回默认值,读回来的就是这次审查真会用的那个数。
  */
 function handleGetSettings(res: ServerResponse, deps: WebhookServerDeps): void {
@@ -2269,7 +2269,7 @@ function handleGetSettings(res: ServerResponse, deps: WebhookServerDeps): void {
 }
 
 /**
- * 全局模型组合与三项分批上限各自独立写入并带自己的 expected version。
+ * 全局模型组合与分批上限与批次并发数各自独立写入并带自己的 expected version。
  */
 async function handlePutSettings(
   req: IncomingMessage,

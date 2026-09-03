@@ -467,8 +467,10 @@ function groupKey(reviewer: string, batch: number | null): string {
 }
 
 /**
- * 这个模型出现过的批次序号,升序。旧轨迹的事件没有 `batch`,那一组的序号是 null;
- * 一条事件都没有的模型也给一组,否则它的分组块会整个消失。
+ * 这个模型出现过的批次序号,升序,不带序号的那一组排最后。旧轨迹的事件没有 `batch`,
+ * 只有那一组;新轨迹里模型级的收尾事件(`reviewer_finished` / `reviewer_failed`)也不带
+ * `batch`,它们是全部批次合并之后才记的,所以那一组是收尾,排在各批之后。一条事件都
+ * 没有的模型也给一组,否则它的分组块会整个消失。
  */
 function batchesOf(byGroup: ReadonlyMap<string, unknown>, reviewer: string): (number | null)[] {
   const prefix = `${reviewer}${GROUP_SEP}`;
@@ -476,7 +478,9 @@ function batchesOf(byGroup: ReadonlyMap<string, unknown>, reviewer: string): (nu
     .filter((key) => key.startsWith(prefix))
     .map((key) => key.slice(prefix.length))
     .map((rest) => (rest === "" ? null : Number(rest)));
-  return batches.length === 0 ? [null] : batches.sort((a, b) => (a ?? 0) - (b ?? 0));
+  return batches.length === 0
+    ? [null]
+    : batches.sort((a, b) => (a ?? Infinity) - (b ?? Infinity));
 }
 
 /**
@@ -488,14 +492,17 @@ function ReviewerTrace({
   reviewer,
   batch,
   batchTotal,
+  closing,
   events,
   failure,
   open,
   onToggle,
 }: {
   reviewer: string;
-  /** 这一组属于第几批(从 1 起);`null` 即事件不带批次序号的旧轨迹。 */
+  /** 这一组属于第几批(从 1 起);`null` 即事件不带批次序号:旧轨迹,或新轨迹的收尾组。 */
   batch: number | null;
+  /** 这一组是分批之外的收尾组(模型级的完成/失败事件),标题标「收尾」。 */
+  closing: boolean;
   /** 本轮一共几批;`null` 即轨迹里没有批次事件,标题只写第几批。 */
   batchTotal: number | null;
   events: readonly TraceEvent[];
@@ -526,6 +533,7 @@ function ReviewerTrace({
             {reviewer}
           </span>
           <span className="flex flex-wrap items-center gap-2 text-sm text-text-secondary">
+            {closing ? <span className="shrink-0">收尾</span> : null}
             {batch === null ? null : (
               <span className="shrink-0">
                 第 <span className="font-mono tabular-nums">{batch}</span>
@@ -704,14 +712,18 @@ export function RunTrace({ run }: { run: RunItem }) {
     (total, event) => num(event.payload, "total") ?? total,
     null,
   );
-  const sections = reviewers.flatMap((reviewer) =>
-    batchesOf(byGroup, reviewer.name).map((batch) => ({
+  const sections = reviewers.flatMap((reviewer) => {
+    const batches = batchesOf(byGroup, reviewer.name);
+    return batches.map((batch) => ({
       key: groupKey(reviewer.name, batch),
       reviewer: reviewer.name,
       batch,
-      failure: reviewer.failure,
-    })),
-  );
+      // 有分批时不带序号的那一组是收尾;只有一组时它就是整条轨迹,不另标。
+      closing: batch === null && batches.length > 1,
+      // 模型级失败记在收尾事件里,徽章只挂收尾那一组;逐批都挂会把没失败的批也标成失败。
+      failure: batch === null ? reviewer.failure : null,
+    }));
+  });
   const isOpen = (section: { key: string; failure: string | null }): boolean =>
     toggled[section.key] ?? (section.failure !== null || sections.length === 1);
 
@@ -753,6 +765,7 @@ export function RunTrace({ run }: { run: RunItem }) {
           reviewer={section.reviewer}
           batch={section.batch}
           batchTotal={batchTotal}
+          closing={section.closing}
           events={byGroup.get(section.key) ?? []}
           failure={section.failure}
           open={isOpen(section)}

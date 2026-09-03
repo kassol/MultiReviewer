@@ -654,7 +654,7 @@ const ADD_INDEXES = [
 const GLOBAL_REVIEWERS_KEY = "reviewers";
 const GLOBAL_REVIEWERS_VERSION_KEY = "reviewers_version";
 
-/** 三项分批上限各自的设置键与版本键(issue #230)。三项同形,读写只写一份。 */
+/** 分批上限与批次并发数各自的设置键与版本键(issue #230)。三项同形,读写只写一份。 */
 const BATCH_LIMIT_KEYS = {
   maxChangedLinesPerBatch: ["max_changed_lines_per_batch", "max_changed_lines_per_batch_version"],
   maxParallelBatches: ["max_parallel_batches", "max_parallel_batches_version"],

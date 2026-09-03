@@ -98,7 +98,7 @@ export type ReviewRunPlan = Readonly<{
 /** 从启动时的配置快照生成一次运行计划。复制 Reviewer 列表,使组合的后续改动只影响下一轮。 */
 export function createReviewRunPlan(
   reviewers: readonly Reviewer[],
-  /** 本轮冻结的三项分批上限(issue #230)。三项同形,一起取一起冻。 */
+  /** 本轮冻结的分批上限与批次并发数(issue #230)。三项同形,一起取一起冻。 */
   batchLimits: {
     maxChangedLinesPerBatch: number;
     maxFilesPerBatch: number;
