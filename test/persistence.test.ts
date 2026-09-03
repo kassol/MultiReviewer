@@ -840,3 +840,62 @@ const LEGACY_SCHEMA = `CREATE TABLE review_run (
     disposition TEXT NOT NULL DEFAULT 'unknown',
     placement TEXT NOT NULL DEFAULT 'inline'
   )`;
+
+test("升级前建的库没有比较项来源两列,打开后补出来,旧行读回 comparisonSource: null", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  // 升级前的 range_review 表:没有 comparison_source_kind / comparison_source_name。
+  // CREATE TABLE IF NOT EXISTS 对既有表不做任何事,少了补列这一步,来源就没地方落。
+  const old = new DatabaseSync(db.path);
+  old.exec(`CREATE TABLE range_review (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo_id INTEGER NOT NULL,
+    owner TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    title TEXT,
+    base_sha TEXT NOT NULL,
+    comparison_sha TEXT NOT NULL,
+    state TEXT NOT NULL,
+    container_pull_number INTEGER,
+    base_branch TEXT NOT NULL,
+    head_branch TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    completed_by TEXT,
+    completed_at TEXT,
+    last_forge_failure TEXT
+  )`);
+  const oldRow = old
+    .prepare(
+      `INSERT INTO range_review
+         (repo_id, owner, repo, title, base_sha, comparison_sha, state,
+          base_branch, head_branch, created_by, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'in-progress', ?, ?, ?, ?)`,
+    )
+    .run(
+      1,
+      "acme",
+      "widgets",
+      "示例范围审查",
+      "base-sha",
+      "cmp-sha",
+      "range/1/base",
+      "range/1/head",
+      "kassol",
+      "2026-08-01T00:00:00.000Z",
+    );
+  old.exec("PRAGMA user_version = 1");
+  old.close();
+
+  const store = openStore(db.path);
+  try {
+    const columns = query(db.path, "PRAGMA table_info(range_review)").map((row) => row["name"]);
+    assert.ok(columns.includes("comparison_source_kind"));
+    assert.ok(columns.includes("comparison_source_name"));
+
+    const record = store.getRangeReview(Number(oldRow.lastInsertRowid));
+    assert.equal(record?.comparisonSource, null);
+  } finally {
+    store.close();
+  }
+});

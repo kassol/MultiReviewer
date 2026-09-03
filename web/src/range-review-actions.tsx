@@ -23,6 +23,8 @@ export type RangeReview = {
   title: string | null;
   baseSha: string;
   comparisonSha: string;
+  /** 选定当前比较项时用的分支或 Tag(issue #234);旧记录与没带来源的都是 null。 */
+  comparisonSource: { kind: "branch" | "tag"; name: string } | null;
   state: "in-progress" | "completed" | "failed";
   /** 容器 PR 的序号;建出来之前是 null。 */
   containerPullNumber: number | null;
@@ -168,6 +170,9 @@ export function AdvanceAction({
  *
  * 不是 base 后代的提交在列表里置灰:服务端本来就会拒,人不该点下去才知道。作者 rebase
  * 之后的 commit 仍在另一条从 base 分出去的分支上,换条分支照样选得到(user story 33)。
+ *
+ * 选择器停在上次选比较项用的那条分支或 Tag 模式上,默认只列当前比较项之后的提交
+ * (issue #234):base 的后代里还有比当前比较项早的,人每次推进要的是作者这次推了什么。
  */
 function AdvanceDialogContent({
   rangeReview,
@@ -189,6 +194,8 @@ function AdvanceDialogContent({
         method: "POST",
         body: JSON.stringify({
           comparison: comparison?.sha ?? "",
+          // 这一次是从哪条分支或 Tag 选的(issue #234),下次开弹窗就停在这里。
+          ...(comparison?.source === undefined ? {} : { comparisonSource: comparison.source }),
           ...(trimmed === "" ? {} : { directive: trimmed }),
         }),
       });
@@ -259,6 +266,15 @@ function AdvanceDialogContent({
             base={{ sha: rangeReview.baseSha }}
             comparison={comparison}
             baseLocked
+            {...(rangeReview.comparisonSource === null
+              ? {}
+              : {
+                  initialMode: rangeReview.comparisonSource.kind,
+                  ...(rangeReview.comparisonSource.kind === "branch"
+                    ? { initialBranch: rangeReview.comparisonSource.name }
+                    : {}),
+                })}
+            current={{ sha: rangeReview.comparisonSha }}
             onPick={(_role, selection) => {
               setError(null);
               setComparison(selection);

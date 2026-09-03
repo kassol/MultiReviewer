@@ -482,3 +482,93 @@ test("列提交:base 不是 sha 或不在这个仓库里都被拒", async () => 
   assert.equal(missing.status, 400);
   assert.match(((await missing.json()) as { error: string }).error, /base/);
 });
+
+test("列提交带 after:只回它之后的提交,当前那一个自己也在(issue #234)", async () => {
+  const h = await registeredHarness();
+  const base = h.repo.mergeBaseSha;
+  // feature 上依次是 headSha、当前比较项、再新一个:base 的后代里有比当前比较项早的。
+  const current = h.repo.pushToHead({ "src/answer.ts": "export const answer = 3;\n" });
+  const next = h.repo.pushToHead({ "src/answer.ts": "export const answer = 4;\n" });
+  await branches(h);
+
+  const scoped = await commits(h, `branch=feature&base=${base}&legal=only&after=${current}`);
+  assert.deepEqual(scoped.commits.map((commit) => commit.sha), [next, current]);
+  assert.equal(scoped.commits.every((commit) => commit.descendsFromBase === true), true);
+
+  // 同一条分支不给 after 时,当前比较项之前的后代仍然在列。
+  const all = await commits(h, `branch=feature&base=${base}&legal=only`);
+  assert.deepEqual(all.commits.map((commit) => commit.sha), [next, current, h.repo.headSha]);
+});
+
+test("列提交带 after:当前比较项不在这条分支上时只剩它自己之外的空列表(issue #234)", async () => {
+  const h = await registeredHarness();
+  const base = h.repo.mergeBaseSha;
+  // 作者 rebase 之后当前比较项落在另一条分支上,它对 feature 就是旁支。
+  const rebased = h.repo.branchFrom("rebased", base, {
+    "src/answer.ts": "export const answer = 5;\n",
+  });
+  await branches(h);
+
+  const page = await commits(h, `branch=feature&base=${base}&legal=only&after=${rebased}`);
+  assert.deepEqual(page.commits, []);
+  // 取消勾选就回到这条分支的全部提交。
+  const relaxed = await commits(h, `branch=feature&base=${base}&legal=all`);
+  assert.deepEqual(
+    relaxed.commits.map((commit) => commit.sha),
+    [h.repo.headSha, h.repo.mergeBaseSha],
+  );
+});
+
+test("列提交带 after:要同时只看合法后代,查不到的 after 也被拒(issue #234)", async () => {
+  const h = await registeredHarness();
+  const base = h.repo.mergeBaseSha;
+
+  const relaxed = await h.api(
+    "GET",
+    `/repo-commits?${REPO_QUERY}&branch=feature&base=${base}&legal=all&after=${h.repo.headSha}`,
+  );
+  assert.equal(relaxed.status, 400);
+  assert.match(((await relaxed.json()) as { error: string }).error, /after/);
+
+  assert.equal(
+    (await h.api(
+      "GET",
+      `/repo-commits?${REPO_QUERY}&branch=feature&base=${base}&legal=only&after=nope`,
+    )).status,
+    400,
+  );
+  await branches(h);
+  const missing = await h.api(
+    "GET",
+    `/repo-commits?${REPO_QUERY}&branch=feature&base=${base}&legal=only`
+    + "&after=0123456789abcdef0123456789abcdef01234567",
+  );
+  assert.equal(missing.status, 400);
+});
+
+test("列 Tag 带 after:按当前比较项筛选,后代标记仍按 base(issue #234)", async () => {
+  const h = await registeredHarness();
+  // base 取 feature 尖端;当前比较项在另一条从 mergeBase 分出去的分支上,不是 base 的后代。
+  const base = h.repo.headSha;
+  const current = h.repo.branchFrom("rebased", h.repo.mergeBaseSha, {
+    "src/answer.ts": "export const answer = 6;\n",
+  });
+  const afterCurrent = h.repo.commitToBranch("rebased", {
+    "src/answer.ts": "export const answer = 7;\n",
+  });
+  const advanced = h.repo.pushToHead({ "src/answer.ts": "export const answer = 8;\n" });
+  h.repo.setLightweightTag("v-current", current);
+  h.repo.setLightweightTag("v-after", afterCurrent);
+  h.repo.setLightweightTag("v-advanced", advanced);
+  h.repo.setLightweightTag("v-merge-base", h.repo.mergeBaseSha);
+  await branches(h);
+
+  const page = await tags(h, `base=${base}&legal=only&after=${current}`);
+  // 筛选按当前比较项:base 的后代 v-advanced 不在,当前比较项自己与它之后的在。
+  assert.deepEqual(
+    page.tags.map((tag) => tag.name).sort(),
+    ["v-after", "v-current"],
+  );
+  // 后代标记仍按 base 算:这两个都不是 base 的后代。
+  assert.equal(page.tags.every((tag) => tag.descendsFromBase === false), true);
+});

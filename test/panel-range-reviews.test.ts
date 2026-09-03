@@ -46,6 +46,8 @@ type RangeReview = {
   completedBy: string | null;
   completedAt: string | null;
   lastForgeFailure: string | null;
+  /** 选定比较项时用的分支或 Tag(issue #234);不给时是 null。 */
+  comparisonSource: { kind: "branch" | "tag"; name: string } | null;
 };
 
 /** 每个用例都要一个已注册的仓库,发起才有对象。 */
@@ -477,4 +479,41 @@ test("范围审查只认得到自己仓库的 clone 地址,不依赖任何既有
     202,
   );
   assert.deepEqual(seen, [{ owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }]);
+});
+
+test("发起带来源:落库并回给面板,不带时是 null(issue #234)", async () => {
+  const h = await registeredHarness();
+  const range = {
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    base: h.repo.baseSha,
+    comparison: h.repo.headSha,
+  };
+
+  const withSource = await h.api("POST", "/range-reviews", {
+    ...range,
+    title: "带来源的范围审查",
+    comparisonSource: { kind: "tag", name: "v1.0.0" },
+  });
+  assert.equal(withSource.status, 202);
+  const sourced = ((await withSource.json()) as { rangeReview: RangeReview }).rangeReview;
+  assert.deepEqual(sourced.comparisonSource, { kind: "tag", name: "v1.0.0" });
+
+  // 同一个 base 上再发起要二次确认,来源不给时这一格是 null。
+  const withoutSource = await h.api("POST", "/range-reviews", {
+    ...range,
+    title: "不带来源的范围审查",
+    confirm: true,
+  });
+  assert.equal(withoutSource.status, 202);
+  const plain = ((await withoutSource.json()) as { rangeReview: RangeReview }).rangeReview;
+  assert.equal(plain.comparisonSource, null);
+
+  const store = openStore(h.db.path);
+  assert.deepEqual(store.getRangeReview(sourced.id)!.comparisonSource, {
+    kind: "tag",
+    name: "v1.0.0",
+  });
+  assert.equal(store.getRangeReview(plain.id)!.comparisonSource, null);
+  store.close();
 });

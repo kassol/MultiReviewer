@@ -105,6 +105,15 @@ type CommitPickerProps = {
   base: CommitSelection | null;
   comparison: CommitSelection | null;
   baseLocked?: boolean;
+  /** 打开时停在哪一种来源(issue #234);不给就是分支模式。 */
+  initialMode?: PickerMode;
+  /** 打开时浏览哪条分支(issue #234);不给就是仓库默认分支,分支没了走既有空态。 */
+  initialBranch?: string;
+  /**
+   * 当前比较项(issue #234)。在场时勾选「仅当前比较项之后」发 `after=<sha>`,当前
+   * 那一行标「当前」且不可选:它是这段的边界,再选一次只会跑一轮同样的 diff。
+   */
+  current?: { sha: string };
   /**
    * 只选一个 commit 的那一档(issue #205 的基点探索):固定停在 `base` 这一侧,不显示
    * 两格切换、选完也不跳到比较项。`singleLabel` 是这一侧在结果栏里的名字。
@@ -146,7 +155,13 @@ function dayFromInput(value: string): Date | undefined {
   return new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]));
 }
 
-function filterQuery(filters: FilterState, search: string, role: CommitRole, baseSha?: string): string {
+function filterQuery(
+  filters: FilterState,
+  search: string,
+  role: CommitRole,
+  baseSha?: string,
+  currentSha?: string,
+): string {
   const query = new URLSearchParams();
   if (search.trim() !== "") query.set("q", search.trim());
   if (filters.datePreset === "custom") {
@@ -171,6 +186,8 @@ function filterQuery(filters: FilterState, search: string, role: CommitRole, bas
   if (role === "comparison" && baseSha !== undefined) {
     query.set("base", baseSha);
     query.set("legal", filters.legalOnly ? "only" : "all");
+    // 服务端只在「只看合法后代」那一档收 after(issue #234)。
+    if (filters.legalOnly && currentSha !== undefined) query.set("after", currentSha);
   }
   return query.toString();
 }
@@ -339,10 +356,13 @@ function RoleCell({
 function PickerFilters({
   filters,
   legalContext,
+  legalLabel,
   onChange,
 }: {
   filters: FilterState;
   legalContext: boolean;
+  /** 勾选的口径:发起是「仅合法后代」,增量评审是「仅当前比较项之后」(issue #234)。 */
+  legalLabel: string;
   onChange: (patch: Partial<FilterState>) => void;
 }) {
   return (
@@ -379,7 +399,7 @@ function PickerFilters({
             checked={filters.legalOnly}
             onCheckedChange={(checked) => onChange({ legalOnly: checked === true })}
           />
-          仅合法后代
+          {legalLabel}
         </Text>
       ) : null}
     </>
@@ -442,11 +462,14 @@ export function CommitPicker({
   base,
   comparison,
   baseLocked = false,
+  initialMode,
+  initialBranch,
+  current,
   singleLabel,
   onPick,
 }: CommitPickerProps) {
   const { owner, repo } = repoRef;
-  const [mode, setMode] = useState<PickerMode>("branch");
+  const [mode, setMode] = useState<PickerMode>(initialMode ?? "branch");
   const single = singleLabel !== undefined;
   const [role, setRole] = useState<CommitRole>(
     !single && (baseLocked || base !== null) ? "comparison" : "base",
@@ -455,7 +478,8 @@ export function CommitPicker({
     branch: defaultFilters(),
     tag: defaultFilters(),
   });
-  const [browsedBranch, setBrowsedBranch] = useState<string | null | undefined>(undefined);
+  // undefined 表示「还没选过,跟着仓库默认分支」;上次选比较项用的那条分支取代它。
+  const [browsedBranch, setBrowsedBranch] = useState<string | null | undefined>(initialBranch);
   const [missingBranch, setMissingBranch] = useState<string>();
   const [branchSearch, setBranchSearch] = useState("");
   const [refreshGeneration, setRefreshGeneration] = useState(0);
@@ -518,8 +542,8 @@ export function CommitPicker({
   }, [branch, branchExists.data]);
 
   const pickerFilterQuery = useMemo(
-    () => filterQuery(activeFilters, debouncedSearch, role, base?.sha),
-    [activeFilters, base?.sha, debouncedSearch, role],
+    () => filterQuery(activeFilters, debouncedSearch, role, base?.sha, current?.sha),
+    [activeFilters, base?.sha, current?.sha, debouncedSearch, role],
   );
 
   const commits = useInfiniteQuery({
@@ -562,6 +586,8 @@ export function CommitPicker({
     ? syncedBranches.data?.truncated ?? false
     : branchMatches.data?.truncated ?? false;
   const legalContext = role === "comparison" && base !== null;
+  // 增量评审那一档的口径是「当前比较项之后」,发起时仍是「合法后代」(issue #234)。
+  const legalLabel = current === undefined ? "仅合法后代" : "仅当前比较项之后";
   const hasExplicitFilters = activeFilters.search.trim() !== ""
     || activeFilters.datePreset !== "all"
     || activeFilters.merge !== "all";
@@ -585,6 +611,8 @@ export function CommitPicker({
 
   function pick(sha: string, source: CommitSelection["source"], descendsFromBase?: boolean) {
     if (role === "comparison" && (base === null || descendsFromBase === false)) return;
+    // 当前比较项那一行只标边界,选它等于再跑一轮同样的 diff,服务端也会拒(issue #234)。
+    if (sha === current?.sha) return;
     onPick(role, { sha, ...(source === undefined ? {} : { source }) });
     if (role === "base" && !baseLocked && !single) setRole("comparison");
   }
@@ -702,6 +730,7 @@ export function CommitPicker({
             <PickerFilters
               filters={activeFilters}
               legalContext={legalContext}
+              legalLabel={legalLabel}
               onChange={updateFilters}
             />
           </div>
@@ -734,6 +763,7 @@ export function CommitPicker({
                   <PickerFilters
                     filters={activeFilters}
                     legalContext={legalContext}
+                    legalLabel={legalLabel}
                     onChange={updateFilters}
                   />
                   {activeFilters.datePreset === "custom" ? (
@@ -804,12 +834,14 @@ export function CommitPicker({
           && branch !== null && branchExists.data === true ? (
             <PickerEmpty
               title={legalOnlyIsSoleFilter
-                ? "没有合法后代"
+                ? current === undefined ? "没有合法后代" : "当前比较项之后没有新提交"
                 : hasFilters
                   ? "筛选后没有结果"
                   : "这条分支没有可选提交"}
               description={legalOnlyIsSoleFilter
-                ? "当前分支没有可选的合法后代；可查看全部提交以确认分支位置。"
+                ? current === undefined
+                  ? "当前分支没有可选的合法后代；可查看全部提交以确认分支位置。"
+                  : "作者可能把提交推到了别处；查看全部提交后仍只能选基准的后代。"
                 : hasFilters
                   ? "调整筛选条件，或恢复默认筛选。"
                   : "请改选其他分支。"}
@@ -835,9 +867,13 @@ export function CommitPicker({
             />
           ) : (
             <PickerEmpty
-              title={legalOnlyIsSoleFilter ? "没有合法后代" : "筛选后没有结果"}
+              title={legalOnlyIsSoleFilter
+                ? current === undefined ? "没有合法后代" : "当前比较项之后没有新 Tag"
+                : "筛选后没有结果"}
               description={legalOnlyIsSoleFilter
-                ? "没有 Tag 指向可选的合法后代；可查看全部 Tag 以确认范围。"
+                ? current === undefined
+                  ? "没有 Tag 指向可选的合法后代；可查看全部 Tag 以确认范围。"
+                  : "没有 Tag 指向当前比较项之后的提交；查看全部 Tag 后仍只能选基准的后代。"
                 : "调整筛选条件，或恢复默认筛选。"}
               action={legalOnlyIsSoleFilter
                 ? (
@@ -853,8 +889,10 @@ export function CommitPicker({
         {mode === "branch" && commitRows.length > 0 ? (
           <ul aria-label="提交列表">
             {commitRows.map((commit) => {
-              const blocked = role === "comparison"
-                && (base === null || commit.descendsFromBase === false);
+              // 当前比较项那一行是这段的边界:标出来但点不下去(issue #234)。
+              const isCurrent = commit.sha === current?.sha;
+              const blocked = isCurrent
+                || (role === "comparison" && (base === null || commit.descendsFromBase === false));
               return (
                 <PickerResultRow
                   key={commit.sha}
@@ -881,6 +919,7 @@ export function CommitPicker({
                       <CommitChip sha={commit.sha} />
                       <span className="break-all">{commit.author}</span>
                       <span className="tabular-nums">{localMinute(commit.authoredAt)}</span>
+                      {isCurrent ? <Badge color="gray" variant="soft">当前</Badge> : null}
                       {role === "comparison" && commit.descendsFromBase === false ? (
                         <Badge color="gray" variant="soft">不是基准的后代</Badge>
                       ) : null}
@@ -895,7 +934,9 @@ export function CommitPicker({
         {mode === "tag" && tagRows.length > 0 ? (
           <ul aria-label="Tag 列表">
             {tagRows.map((tag) => {
-              const blocked = role === "comparison" && (base === null || tag.descendsFromBase === false);
+              const isCurrent = tag.sha === current?.sha;
+              const blocked = isCurrent
+                || (role === "comparison" && (base === null || tag.descendsFromBase === false));
               return (
                 <PickerResultRow
                   key={tag.name}
@@ -933,6 +974,7 @@ export function CommitPicker({
                           {tag.tagger} 标记于 <span className="tabular-nums">{localMinute(tag.taggedAt)}</span>
                         </span>
                       ) : null}
+                      {isCurrent ? <Badge color="gray" variant="soft">当前</Badge> : null}
                       {role === "comparison" && tag.descendsFromBase === false ? (
                         <Badge color="gray" variant="soft">不是基准的后代</Badge>
                       ) : null}

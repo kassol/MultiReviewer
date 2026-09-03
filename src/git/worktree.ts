@@ -501,12 +501,17 @@ export type RepoCommitsOptions = RepoReadOptions & {
   limit: number;
   /** 增量评审那一档给的阶段基准(issue #179);给了就为每条标出后代关系。 */
   base?: string;
+  /**
+   * 增量评审那一档给的当前比较项(issue #234)。给了就把 `legalOnly` 的口径从「base 的
+   * 后代」换成「当前比较项之后」,当前比较项自己也在集合里,它是这段的边界。
+   */
+  after?: string;
 } & PickerFilterOptions;
 
-/** 列提交的结果。两种失败都是人给的东西查不到,不是服务出错,调用方各回一句话。 */
+/** 列提交的结果。三种失败都是人给的东西查不到,不是服务出错,调用方各回一句话。 */
 export type BranchCommits =
   | { ok: true; commits: RepoCommit[] }
-  | { ok: false; reason: "branch-unknown" | "base-unknown" };
+  | { ok: false; reason: "branch-unknown" | "base-unknown" | "after-unknown" };
 
 /**
  * 筛选用的内部提交形状。完整信息、邮箱与父提交只参与匹配，不直接放进面板响应。
@@ -593,10 +598,16 @@ function messageMatchExcerpt(record: CommitRecord, terms: readonly string[]): st
   return undefined;
 }
 
+/**
+ * 两个集合分工不同:`descendants` 只用来标 `descendsFromBase`,`selectable` 是
+ * `legalOnly` 真正筛的那一个。没有 `after` 时它们是同一个集合;有 `after` 时筛选按
+ * 「当前比较项之后」收窄,而后代标记仍按 base 算(issue #234)。
+ */
 function filteredCommitRows(
   records: readonly CommitRecord[],
   options: PickerFilterOptions & { offset: number; limit: number },
   descendants: ReadonlySet<string> | undefined,
+  selectable: ReadonlySet<string> | undefined,
 ): RepoCommit[] {
   const terms = pickerTerms(options.query);
   return records
@@ -607,7 +618,7 @@ function filteredCommitRows(
       if (options.authoredTo !== undefined && authored > options.authoredTo) return false;
       if (options.merge === "only" && record.parentCount < 2) return false;
       if (options.merge === "non" && record.parentCount >= 2) return false;
-      return options.legalOnly !== true || descendants?.has(record.sha) === true;
+      return options.legalOnly !== true || selectable?.has(record.sha) === true;
     })
     .slice(options.offset, options.offset + options.limit)
     .map((record) => {
@@ -636,6 +647,10 @@ function filteredCommitRows(
  * 一条 `rev-list --ancestry-path` 一次算出整条分支上的后代集合,再逐条对照——逐条
  * `merge-base --is-ancestor` 要为一页拉起几十个 git 进程。`--ancestry-path` 是必需的:
  * `base..分支` 还会带上从 base 之前分出去、并进这条分支的旁支,那些不是 base 的后代。
+ *
+ * 给了 `after` 就再算一条一样的集合(issue #234):增量评审默认只列当前比较项之后的
+ * 提交,而 base 的后代里还有比当前比较项早的。当前比较项自己进这个集合,它在默认列表
+ * 末端就是那条边界;它 rebase 到别处之后这条分支上一条都不剩,人取消勾选看全部。
  */
 export async function listBranchCommits(
   options: RepoCommitsOptions,
@@ -653,15 +668,17 @@ export async function listBranchCommits(
   }
 
   let descendants: Set<string> | undefined;
+  let selectable: Set<string> | undefined;
   if (options.base !== undefined) {
     const baseSha = await resolveCommit(path, options.base);
     if (baseSha === undefined) return { ok: false, reason: "base-unknown" };
-    const reachable = await git(path, [
-      "rev-list",
-      "--ancestry-path",
-      `${baseSha}..${ref}`,
-    ]);
-    descendants = new Set(reachable.split("\n").filter((line) => line !== ""));
+    descendants = await branchDescendants(path, baseSha, ref);
+    selectable = descendants;
+    if (options.after !== undefined) {
+      const afterSha = await resolveCommit(path, options.after);
+      if (afterSha === undefined) return { ok: false, reason: "after-unknown" };
+      selectable = new Set(await branchDescendants(path, afterSha, ref)).add(afterSha);
+    }
   }
 
   // 搜索、日期、merge 与合法后代必须先组合再分页，所以一次读出这条分支的历史并按 Git
@@ -671,8 +688,15 @@ export async function listBranchCommits(
     fixedNulRecords(output, COMMIT_FIELD_COUNT).map(parseCommitRecord),
     options,
     descendants,
+    selectable,
   );
   return { ok: true, commits };
+}
+
+/** 一条分支上 `from` 的后代。`from` 自己不在内,与 `resolveRange` 的后代口径一致。 */
+async function branchDescendants(path: string, from: string, ref: string): Promise<Set<string>> {
+  const reachable = await git(path, ["rev-list", "--ancestry-path", `${from}..${ref}`]);
+  return new Set(reachable.split("\n").filter((line) => line !== ""));
 }
 
 /** Tag 选择器里的一行。Tag 只负责定位，`sha` 始终是递归 peel 后的 commit。 */
@@ -694,11 +718,13 @@ export type RepoTagsOptions = RepoReadOptions & {
   offset: number;
   limit: number;
   base?: string;
+  /** 与 `RepoCommitsOptions.after` 同一格(issue #234)。 */
+  after?: string;
 } & PickerFilterOptions;
 
 export type RepoTags =
   | { ok: true; tags: RepoTag[]; hasUsableTags: boolean }
-  | { ok: false; reason: "base-unknown" };
+  | { ok: false; reason: "base-unknown" | "after-unknown" };
 
 /**
  * `for-each-ref` 的字段。常见的轻量与一层附注 Tag 一次读齐；附注 Tag 指向另一条 Tag
@@ -735,23 +761,30 @@ async function commitMetadata(path: string, revision: string): Promise<CommitRec
   return record === undefined ? undefined : parseCommitRecord(record);
 }
 
-/** 一次取出所有 refs 下 base 的后代，供 Tag 模式标记任意目标 commit。 */
-async function allDescendants(path: string, baseSha: string): Promise<Set<string>> {
+/**
+ * 一次取出所有 refs 下每个起点的后代，供 Tag 模式标记任意目标 commit。
+ *
+ * 起点收成一组走一遍(issue #234):base 与当前比较项各要一个集合,而全图那条
+ * `rev-list --all --children` 跑两次就是把整个提交图读两遍。
+ */
+async function allDescendants(path: string, roots: readonly string[]): Promise<Set<string>[]> {
   const output = await git(path, ["rev-list", "--all", "--children"]);
   const children = new Map<string, string[]>();
   for (const line of output.split("\n")) {
     const [parent, ...next] = line.split(" ");
     if (parent !== "") children.set(parent!, next);
   }
-  const descendants = new Set<string>();
-  const pending = [...(children.get(baseSha) ?? [])];
-  while (pending.length > 0) {
-    const sha = pending.pop()!;
-    if (descendants.has(sha)) continue;
-    descendants.add(sha);
-    pending.push(...(children.get(sha) ?? []));
-  }
-  return descendants;
+  return roots.map((root) => {
+    const descendants = new Set<string>();
+    const pending = [...(children.get(root) ?? [])];
+    while (pending.length > 0) {
+      const sha = pending.pop()!;
+      if (descendants.has(sha)) continue;
+      descendants.add(sha);
+      pending.push(...(children.get(sha) ?? []));
+    }
+    return descendants;
+  });
 }
 
 /**
@@ -768,10 +801,22 @@ export async function listTags(options: RepoTagsOptions): Promise<RepoTags> {
   }
 
   let descendants: Set<string> | undefined;
+  let selectable: Set<string> | undefined;
   if (options.base !== undefined) {
     const baseSha = await resolveCommit(path, options.base);
     if (baseSha === undefined) return { ok: false, reason: "base-unknown" };
-    descendants = await allDescendants(path, baseSha);
+    let afterSha: string | undefined;
+    if (options.after !== undefined) {
+      afterSha = await resolveCommit(path, options.after);
+      if (afterSha === undefined) return { ok: false, reason: "after-unknown" };
+    }
+    const [ofBase, ofAfter] = await allDescendants(
+      path,
+      afterSha === undefined ? [baseSha] : [baseSha, afterSha],
+    );
+    descendants = ofBase!;
+    // 当前比较项自己是这段的边界,与分支模式同一口径(issue #234)。
+    selectable = ofAfter === undefined ? ofBase : new Set(ofAfter).add(afterSha!);
   }
 
   const output = await git(path, [
@@ -866,7 +911,7 @@ export async function listTags(options: RepoTagsOptions): Promise<RepoTags> {
       if (options.authoredTo !== undefined && authored > options.authoredTo) return false;
       if (options.merge === "only" && commit.parentCount < 2) return false;
       if (options.merge === "non" && commit.parentCount >= 2) return false;
-      return options.legalOnly !== true || descendants?.has(commit.sha) === true;
+      return options.legalOnly !== true || selectable?.has(commit.sha) === true;
     })
     .slice(options.offset, options.offset + options.limit)
     .map(({ row, commit }) => {

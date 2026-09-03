@@ -40,6 +40,8 @@ type RangeReview = {
   baseBranch: string;
   headBranch: string;
   lastForgeFailure: string | null;
+  /** 选定当前比较项时用的分支或 Tag(issue #234);旧记录是 null。 */
+  comparisonSource: { kind: "branch" | "tag"; name: string } | null;
 };
 
 /** 每一轮的 Reviewer 都记下自己拿到的 Review Range,推进之后那一轮的范围要能读出来。 */
@@ -338,4 +340,72 @@ test("持有旧格 review:create 但没有 review:advance:推进被拒,分支不
   );
   assert.equal(denied.status, 403);
   assert.equal(h.repo.branchSha(rangeReview.headBranch), h.repo.headSha);
+});
+
+test("新比较项就是当前比较项:拒绝,比较项不动,不开新一轮(issue #234)", async () => {
+  const recorded: Recorded = { ranges: [] };
+  const h = await startedHarness(recorded);
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+
+  const response = await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+    comparison: h.repo.headSha,
+  });
+  assert.equal(response.status, 400);
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), h.repo.headSha);
+  assert.equal(h.settled.length, 1);
+
+  const store = openStore(h.db.path);
+  assert.equal(store.getRangeReview(rangeReview.id)!.comparisonSha, h.repo.headSha);
+  store.close();
+});
+
+test("推进带来源:阶段详情的 rangeReview 回得出这一格(issue #234)", async () => {
+  const recorded: Recorded = { ranges: [] };
+  const h = await startedHarness(recorded);
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+  assert.equal(rangeReview.comparisonSource, null);
+
+  const next = h.repo.pushToHead({ "src/answer.ts": "export const answer = 11;\n" });
+  const response = await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+    comparison: next,
+    comparisonSource: { kind: "branch", name: "feature" },
+  });
+  assert.equal(response.status, 202);
+  const advanced = ((await response.json()) as { rangeReview: RangeReview }).rangeReview;
+  assert.deepEqual(advanced.comparisonSource, { kind: "branch", name: "feature" });
+
+  const detail = (await (await h.api("GET", `/stages/range:${rangeReview.id}`)).json()) as {
+    rangeReview: RangeReview;
+  };
+  assert.deepEqual(detail.rangeReview.comparisonSource, { kind: "branch", name: "feature" });
+});
+
+test("发起带来源、推进不带来源:阶段详情的 rangeReview.comparisonSource 清成 null(issue #234)", async () => {
+  const recorded: Recorded = { ranges: [] };
+  const h = await startedHarness(recorded);
+  const created = await h.api("POST", "/range-reviews", {
+    title: "范围审查标题",
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    base: h.repo.baseSha,
+    comparison: h.repo.headSha,
+    comparisonSource: { kind: "branch", name: "feature" },
+  });
+  assert.equal(created.status, 202);
+  const rangeReview = ((await created.json()) as { rangeReview: RangeReview }).rangeReview;
+  await h.settledAtLeast(1);
+  assert.deepEqual(rangeReview.comparisonSource, { kind: "branch", name: "feature" });
+
+  const next = h.repo.pushToHead({ "src/answer.ts": "export const answer = 12;\n" });
+  const response = await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+    comparison: next,
+  });
+  assert.equal(response.status, 202);
+  const advanced = ((await response.json()) as { rangeReview: RangeReview }).rangeReview;
+  assert.equal(advanced.comparisonSource, null);
+
+  const detail = (await (await h.api("GET", `/stages/range:${rangeReview.id}`)).json()) as {
+    rangeReview: RangeReview;
+  };
+  assert.equal(detail.rangeReview.comparisonSource, null);
 });

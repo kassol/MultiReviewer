@@ -218,6 +218,10 @@ CREATE TABLE IF NOT EXISTS range_review (
   title TEXT,
   base_sha TEXT NOT NULL,
   comparison_sha TEXT NOT NULL,
+  -- 选定当前比较项时用的分支或 Tag(issue #234)。增量评审的选择器据它开在同一条分支
+  -- 上,不是历史事实——历次比较项在 range_review_comparison 上,那张表不记来源。
+  comparison_source_kind TEXT,
+  comparison_source_name TEXT,
   state TEXT NOT NULL,
   container_pull_number INTEGER,
   base_branch TEXT NOT NULL,
@@ -625,6 +629,9 @@ const ADD_COLUMNS = [
   "ALTER TABLE rule_proposal ADD COLUMN type TEXT NOT NULL DEFAULT 'rule'",
   // 本轮指令(CONTEXT.md,issue #225)。发起重审时附的一次性要求,只属于这一轮。
   "ALTER TABLE review_run ADD COLUMN directive TEXT",
+  // 选定比较项时用的分支或 Tag(issue #234)。旧行是 NULL:分支名从 sha 反推不出来。
+  "ALTER TABLE range_review ADD COLUMN comparison_source_kind TEXT",
+  "ALTER TABLE range_review ADD COLUMN comparison_source_name TEXT",
 ];
 
 /**
@@ -1552,6 +1559,12 @@ export type StageRunGroup = {
  */
 export type StageDetail = { stage: StageListItem; groups: StageRunGroup[] };
 
+/** 选定比较项时用的分支或 Tag(issue #234),只用于下次打开选择器。 */
+export type ComparisonSource = {
+  kind: "branch" | "tag";
+  name: string;
+};
+
 /**
  * 一个范围审查。分支名与容器 PR 序号是它在 Forge 上的全部痕迹;`lastForgeFailure`
  * 记最近一次 Forge 操作为什么没成,运维凭它分辨是权限还是分支保护。
@@ -1565,6 +1578,8 @@ export type RangeReviewRecord = {
   title: string | null;
   baseSha: string;
   comparisonSha: string;
+  /** 选定当前比较项时用的分支或 Tag(issue #234);没带来源与升级前的旧行都是 null。 */
+  comparisonSource: ComparisonSource | null;
   state: RangeReviewState;
   /** 容器 PR 的序号;建出来之前为 null。 */
   containerPullNumber: number | null;
@@ -1638,6 +1653,12 @@ function rangeReviewRecord(row: Record<string, unknown>): RangeReviewRecord {
     title: row["title"] === null ? null : String(row["title"]),
     baseSha: String(row["base_sha"]),
     comparisonSha: String(row["comparison_sha"]),
+    comparisonSource: row["comparison_source_kind"] === null || row["comparison_source_kind"] === undefined
+      ? null
+      : {
+          kind: String(row["comparison_source_kind"]) as ComparisonSource["kind"],
+          name: String(row["comparison_source_name"] ?? ""),
+        },
     state: String(row["state"]) as RangeReviewState,
     containerPullNumber:
       row["container_pull_number"] === null ? null : Number(row["container_pull_number"]),
@@ -2051,6 +2072,8 @@ export type Store = {
     title: string;
     baseSha: string;
     comparisonSha: string;
+    /** 选定比较项时用的分支或 Tag(issue #234);不给即不记来源。 */
+    comparisonSource?: ComparisonSource;
     createdBy: string;
     createdAt: string;
   }): number;
@@ -2068,10 +2091,14 @@ export type Store = {
   /**
    * 把当前比较项推到新的 commit,并把它记进历史(issue #157)。上一次的失败原因跟着
    * 清掉——这一次成了,那条原因说的是上一次的事。
+   *
+   * 来源跟着这一次的比较项走(issue #234):不给来源就清成 NULL,留着上一次那条说的是
+   * 另一个 commit 是从哪儿选的。
    */
   advanceRangeReview(record: {
     id: number;
     comparisonSha: string;
+    comparisonSource?: ComparisonSource;
     advancedBy: string;
     advancedAt: string;
   }): void;
@@ -5366,9 +5393,10 @@ export function openStore(dbPath: string): Store {
         const result = db
           .prepare(
             `INSERT INTO range_review
-               (repo_id, owner, repo, title, base_sha, comparison_sha, state,
+               (repo_id, owner, repo, title, base_sha, comparison_sha,
+                comparison_source_kind, comparison_source_name, state,
                 base_branch, head_branch, created_by, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, 'in-progress', '', '', ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'in-progress', '', '', ?, ?)`,
           )
           .run(
             record.repoId,
@@ -5377,6 +5405,8 @@ export function openStore(dbPath: string): Store {
             record.title,
             record.baseSha,
             record.comparisonSha,
+            record.comparisonSource?.kind ?? null,
+            record.comparisonSource?.name ?? null,
             record.createdBy,
             record.createdAt,
           );
@@ -5423,9 +5453,15 @@ export function openStore(dbPath: string): Store {
       try {
         db.prepare(
           `UPDATE range_review
-              SET comparison_sha = ?, last_forge_failure = NULL
+              SET comparison_sha = ?, comparison_source_kind = ?,
+                  comparison_source_name = ?, last_forge_failure = NULL
             WHERE id = ?`,
-        ).run(record.comparisonSha, record.id);
+        ).run(
+          record.comparisonSha,
+          record.comparisonSource?.kind ?? null,
+          record.comparisonSource?.name ?? null,
+          record.id,
+        );
         db.prepare(
           `INSERT INTO range_review_comparison (range_review_id, sha, recorded_by, recorded_at)
            VALUES (?, ?, ?, ?)`,

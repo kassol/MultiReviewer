@@ -120,6 +120,8 @@ function LaunchDialogContent({
           title: title.trim(),
           base: base?.sha ?? "",
           comparison: comparison?.sha ?? "",
+          // 选比较项时用的分支或 Tag(issue #234),推进时的选择器据它打开。
+          ...(comparison?.source === undefined ? {} : { comparisonSource: comparison.source }),
           ...(confirm ? { confirm: true } : {}),
           ...(trimmed === "" ? {} : { directive: trimmed }),
         }),

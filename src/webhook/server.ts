@@ -98,6 +98,7 @@ import {
   openStore,
   toKnowledgeEntry,
   type BatchLimitField,
+  type ComparisonSource,
   type FindingDispositionTarget,
   type GlobalSettings,
   type ModelReference,
@@ -4856,6 +4857,20 @@ function readDirective(
 }
 
 /**
+ * 发起与推进共用的比较项来源解析(issue #234)。
+ *
+ * 它只用来下次把选择器开在同一条分支或 Tag 模式上,不是历史事实,认不出的形状直接丢
+ * 掉而不是回 400:一次开不对弹窗远好过挡住一次审查。
+ */
+function readComparisonSource(raw: unknown): ComparisonSource | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const { kind, name } = raw as { kind?: unknown; name?: unknown };
+  if (kind !== "branch" && kind !== "tag") return undefined;
+  if (typeof name !== "string" || name === "") return undefined;
+  return { kind, name };
+}
+
+/**
  * 手动重跑:对一个阶段开新一轮 Review Run,走既有的跨轮次折叠。不走幂等 claim——
  * 同一 head commit 重复审在这里是合法诉求(spec 原话),claim 只属于 webhook 投递。
  *
@@ -5095,6 +5110,9 @@ const RANGE_REJECTION: Record<Extract<ResolvedRange, { ok: false }>["reason"], s
   "not-descendant": "比较项必须是 base 的后代,而且不能与 base 是同一个 commit",
 };
 
+/** commit/Tag 选择器里那个「当前比较项之后」的起点查不到(issue #234)。 */
+const AFTER_UNKNOWN = "当前比较项在这个仓库里找不到,取消勾选可以看全部";
+
 function failureText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -5138,6 +5156,7 @@ type PickerQuery = {
   offset: number;
   limit: number;
   base?: string;
+  after?: string;
   query?: string;
   authoredFrom?: number;
   authoredTo?: number;
@@ -5161,6 +5180,10 @@ function parsePickerQuery(query: URLSearchParams): { ok: true; value: PickerQuer
   if (base !== null && !COMMIT_SHA.test(base)) {
     return { ok: false, error: "base 要是 7 到 40 位的 commit sha" };
   }
+  const after = query.get("after");
+  if (after !== null && !COMMIT_SHA.test(after)) {
+    return { ok: false, error: "after 要是 7 到 40 位的 commit sha" };
+  }
   const merge = query.get("merge") ?? "all";
   if (merge !== "all" && merge !== "only" && merge !== "non") {
     return { ok: false, error: "merge 要是 all、only 或 non" };
@@ -5171,6 +5194,10 @@ function parsePickerQuery(query: URLSearchParams): { ok: true; value: PickerQuer
   }
   if (legal === "only" && base === null) {
     return { ok: false, error: "只看合法后代时要先给 base" };
+  }
+  // `after` 只收窄合法后代那一档的口径(issue #234),不看合法后代时它没有意义。
+  if (after !== null && legal !== "only") {
+    return { ok: false, error: "按 after 收窄时要同时只看合法后代" };
   }
   const fromRaw = query.get("from");
   const toRaw = query.get("to");
@@ -5192,6 +5219,7 @@ function parsePickerQuery(query: URLSearchParams): { ok: true; value: PickerQuer
       offset,
       limit,
       ...(base === null ? {} : { base }),
+      ...(after === null ? {} : { after }),
       ...(search === "" ? {} : { query: search }),
       ...(authoredFrom === undefined ? {} : { authoredFrom }),
       ...(authoredTo === undefined ? {} : { authoredTo }),
@@ -5311,6 +5339,9 @@ async function handleRepoBranches(
  * 选择器据此置灰非后代的行,人在提交之前就知道哪些选择不合法。它与两端一样只收 sha,
  * 这同时挡住以 `-` 开头的值被 git 当成选项;查不到这个 commit 与发起时填错 base 是
  * 同一回事,回同一句话。
+ *
+ * 再给 `after`(issue #234)就把「只看合法后代」的口径收成「当前比较项之后」:base 的
+ * 后代里还有比当前比较项早的,增量评审默认不列它们。后代标记仍按 base 算。
  */
 async function handleRepoCommits(
   req: IncomingMessage,
@@ -5340,9 +5371,12 @@ async function handleRepoCommits(
     return sendJson(res, 502, { error: `取不回这条分支的提交:${failureText(error)}` });
   }
   if (!listed.ok) {
-    return listed.reason === "branch-unknown"
-      ? sendJson(res, 404, { error: "这个仓库里没有这条分支" })
-      : sendJson(res, 400, { error: RANGE_REJECTION["base-unknown"] });
+    if (listed.reason === "branch-unknown") {
+      return sendJson(res, 404, { error: "这个仓库里没有这条分支" });
+    }
+    return sendJson(res, 400, {
+      error: listed.reason === "after-unknown" ? AFTER_UNKNOWN : RANGE_REJECTION["base-unknown"],
+    });
   }
   // 这一页取满就还有下一页:提交总数要数完整段历史,为一个翻页按钮不值当。
   const nextOffset = listed.commits.length === parsed.value.limit
@@ -5366,7 +5400,9 @@ async function handleRepoTags(
   try {
     const listed = await listTags({ cacheDir: deps.cacheDir, ...target, ...parsed.value });
     if (!listed.ok) {
-      return sendJson(res, 400, { error: RANGE_REJECTION["base-unknown"] });
+      return sendJson(res, 400, {
+        error: listed.reason === "after-unknown" ? AFTER_UNKNOWN : RANGE_REJECTION["base-unknown"],
+      });
     }
     const nextOffset = listed.tags.length === parsed.value.limit
       ? parsed.value.offset + parsed.value.limit
@@ -5401,6 +5437,7 @@ async function handleCreateRangeReview(
     title?: unknown;
     base?: unknown;
     comparison?: unknown;
+    comparisonSource?: unknown;
     confirm?: unknown;
     directive?: unknown;
   } | null>(req, res);
@@ -5425,6 +5462,8 @@ async function handleCreateRangeReview(
   if (!COMMIT_SHA.test(payload.base) || !COMMIT_SHA.test(payload.comparison)) {
     return sendJson(res, 400, { error: "base 与比较项都要是 7 到 40 位的 commit sha" });
   }
+  // 选比较项时用的分支或 Tag(issue #234),选填,只为下次开选择器。
+  const comparisonSource = readComparisonSource(payload.comparisonSource);
   // 发起也是一次开跑,同样可以附本轮指令(issue #225):它只进随发起触发的这一轮。
   const directive = readDirective(res, payload.directive);
   if (directive === "rejected") return;
@@ -5497,6 +5536,7 @@ async function handleCreateRangeReview(
       title,
       baseSha,
       comparisonSha,
+      ...(comparisonSource === undefined ? {} : { comparisonSource }),
       createdBy,
       createdAt,
     }),
@@ -5574,7 +5614,9 @@ async function handleAdvanceRangeReview(
   id: number,
   advancedBy: string,
 ): Promise<void> {
-  const payload = await readJson<{ comparison?: unknown; directive?: unknown } | null>(req, res);
+  const payload = await readJson<
+    { comparison?: unknown; comparisonSource?: unknown; directive?: unknown } | null
+  >(req, res);
   if (payload === undefined) return;
   if (payload === null || typeof payload.comparison !== "string") {
     return sendJson(res, 400, { error: 'body 要是 {"comparison"} 形状的 JSON' });
@@ -5582,6 +5624,7 @@ async function handleAdvanceRangeReview(
   if (!COMMIT_SHA.test(payload.comparison)) {
     return sendJson(res, 400, { error: "比较项要是 7 到 40 位的 commit sha" });
   }
+  const comparisonSource = readComparisonSource(payload.comparisonSource);
   // 增量评审也是一次重审,同样可以附本轮指令(issue #225)。
   const directive = readDirective(res, payload.directive);
   if (directive === "rejected") return;
@@ -5634,6 +5677,11 @@ async function handleAdvanceRangeReview(
     return sendJson(res, 400, { error: RANGE_REJECTION[resolved.reason] });
   }
   const { comparisonSha } = resolved;
+  // 新比较项就是当前那个时拒绝(issue #234):同一段 diff 再审一遍只是白跑一轮。与
+  // 「两端不能是同一个 commit」同一档,面板上那一行置灰只是引导,接口自己也要拦。
+  if (comparisonSha === record.comparisonSha) {
+    return sendJson(res, 400, { error: "新比较项与当前比较项是同一个 commit,选一个更新的" });
+  }
 
   // 计划先固定好,与投递、重跑、发起同一个启动器。
   let plan: ReviewRunPlan;
@@ -5665,7 +5713,13 @@ async function handleAdvanceRangeReview(
 
   const advancedAt = new Date((deps.now ?? Date.now)()).toISOString();
   const rangeReview = withStore(deps.dbPath, (store) => {
-    store.advanceRangeReview({ id, comparisonSha, advancedBy, advancedAt });
+    store.advanceRangeReview({
+      id,
+      comparisonSha,
+      ...(comparisonSource === undefined ? {} : { comparisonSource }),
+      advancedBy,
+      advancedAt,
+    });
     return store.getRangeReview(id)!;
   });
   // 与发起同一个回执:先回 202 再开跑,人等的是「已经在跑了」。
