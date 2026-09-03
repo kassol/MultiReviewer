@@ -72,6 +72,11 @@ function parseUnifiedDiff(patch: string): DiffHunk[] {
   return hunks;
 }
 
+/** 挑出包含某个新侧行号的那个 hunk,找不到时返回 undefined。 */
+function hunkContaining(hunks: readonly DiffHunk[], newLine: number): DiffHunk | undefined {
+  return hunks.find((hunk) => hunk.lines.some((line) => line.newLine === newLine));
+}
+
 /**
  * 面板处置一条 Finding。写 Forge 与落库都在服务端一次做完,备注为空即保留原有那条。
  */
@@ -369,6 +374,11 @@ function FindingCells({
  * 在这里没有用处。锚不上的写明原因——把卡片藏起来等于把一条真实的 Finding 从面板上抹掉:
  * 只在 review 正文里的那些由卡片自己说明,文件不在这次改动里与行号落在 diff 之外的收在
  * 最上面一段。历史轮次的工作副本被清掉时服务端回 409,那句话同样摊在这里。
+ *
+ * 请求仍拿整个文件的 diff,渲染按 hunk 裁剪:只展开当条 Finding(`focusFindingId`)
+ * 所在的那个 hunk,其余折叠在「展开完整差异」按钮之后——大文件几十个 hunk 一次全渲染
+ * 会卡顿。当条 Finding 锚不到任何 hunk(按新行号判断)时回退渲染全部,同文件其它
+ * Finding 的行内标记逻辑(`byLine`)不受影响,只是折叠时其所在 hunk 未展开就看不到。
  */
 export function FilePatch({
   runId,
@@ -395,6 +405,8 @@ export function FilePatch({
   useEffect(() => {
     focusRow.current?.scrollIntoView({ block: "center" });
   }, [patch.data]);
+  // 「展开完整差异」的一次性开关:侧滑重新打开时组件随 key 一起重挂,天然回到折叠态。
+  const [expanded, setExpanded] = useState(false);
 
   const hunks = patch.data === undefined ? [] : parseUnifiedDiff(patch.data.patch);
   const rendered = new Set(
@@ -409,6 +421,11 @@ export function FilePatch({
   }
   const unanchored = findings.filter((finding) => !rendered.has(finding.line));
   const focusLine = findings.find((finding) => finding.id === focusFindingId)?.line;
+  // 裁剪:大文件的 diff 一次渲染全部 hunk 会卡顿,先只渲染当条 Finding 所在的那一个,
+  // 其余折叠。锚不到任何 hunk(按新行号判断)时回退渲染全部,与此前的行为一致。
+  const focusHunk = focusLine === undefined ? undefined : hunkContaining(hunks, focusLine);
+  const cropped = focusHunk !== undefined && !expanded && hunks.length > 1;
+  const displayHunks = cropped ? [focusHunk] : hunks;
 
   if (patch.isPending) {
     return (
@@ -447,6 +464,20 @@ export function FilePatch({
       )}
       {hunks.length === 0 ? null : (
         <div className="min-w-0">
+          {cropped ? (
+            <div className="flex items-center justify-between gap-2 border-b border-overlay-line px-3 py-1.5 text-sm text-text-secondary">
+              <span>只显示这条 Finding 所在的代码段</span>
+              <Button
+                variant="ghost"
+                color="gray"
+                highContrast
+                size="1"
+                onClick={() => setExpanded(true)}
+              >
+                展开完整差异
+              </Button>
+            </div>
+          ) : null}
           <table className="w-full table-fixed border-collapse font-mono text-xs" aria-label={`${path} 的代码差异`}>
             <colgroup>
               <col className="w-10" />
@@ -454,7 +485,7 @@ export function FilePatch({
               <col />
             </colgroup>
             <tbody>
-              {hunks.map((hunk, hunkIndex) => (
+              {displayHunks.map((hunk, hunkIndex) => (
                 <Fragment key={hunkIndex}>
                   <tr className="bg-sunken">
                     <td colSpan={3} className="px-3 py-1 whitespace-pre-wrap break-words text-text-secondary">
