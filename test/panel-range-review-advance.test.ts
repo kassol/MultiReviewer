@@ -302,7 +302,7 @@ test("持有旧格 review:create 但没有 review:advance:推进被拒,分支不
   const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
 
   const store = openStore(h.db.path);
-  // 拆格之后(issue #229)发起权限不再蕴含推进权限:两格互相独立。
+  // 拆格之后(ADR 0023)发起权限不再蕴含推进权限:两格互相独立。
   const role = store.createPanelRole({
     name: "只发起的角色",
     permissions: ["review:create"],

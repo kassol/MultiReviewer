@@ -283,7 +283,7 @@ test("持有旧格 finding:dispose 但没有 review:complete:标记不了审查�
   const rangeReview = await startRangeReview(h);
 
   const store = openStore(h.db.path);
-  // 拆格之后(issue #229)处置权限不再蕴含完成权限:两格互相独立。
+  // 拆格之后(ADR 0023)处置权限不再蕴含完成权限:两格互相独立。
   const role = store.createPanelRole({
     name: "只处置的角色",
     permissions: ["finding:dispose"],
