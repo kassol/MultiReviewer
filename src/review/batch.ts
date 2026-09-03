@@ -57,11 +57,15 @@ export function splitIntoBatches(
   return batches;
 }
 
-/** 一个 Reviewer 跑一批的结果与耗时。 */
-export type TimedOutcome = { outcome: ReviewerOutcome; durationMs: number };
+/**
+ * 一个 Reviewer 跑一批的结果、这一批的开始时刻与耗时。批次受限并行之后各批的时间区间
+ * 会重叠(issue #232),合并要算墙上时间,只有耗时算不出来。
+ */
+export type TimedOutcome = { outcome: ReviewerOutcome; startedAt: number; durationMs: number };
 
 /**
- * 把同一个模型在各批次的结果合并成一个。
+ * 把同一个模型在各批次的结果合并成一个。入参按批次序号排,与各批的完成顺序无关
+ * (issue #232):失败记的第几批、复核结论谁作数都按这个序。
  *
  * 全部批次都失败才算该模型缺席,其 Finding 一并丢弃;部分批次失败时保留成功批次的
  * Finding——每批是独立的文件集合,成功批次的结果自身是完整的,丢掉等于白花已付出的
@@ -88,7 +92,7 @@ export function mergeBatchOutcomes(results: readonly TimedOutcome[]): TimedOutco
     rejectedToolCalls: results.reduce((n, r) => n + r.outcome.rejectedToolCalls, 0),
     anchorRejections: results.reduce((n, r) => n + r.outcome.anchorRejections, 0),
     // 复核的对象是本阶段的历史,与本批审哪些文件无关:每批都拿到同一份历史,
-    // 任一批给出的结论都作数。同一条被两批复核到时后一批作数,与单批内改口同一口径。
+    // 任一批给出的结论都作数。同一条被两批复核到时序号大的那批作数,与单批内改口同一口径。
     verdicts: [
       ...new Map(
         results.flatMap((r) => r.outcome.verdicts ?? []).map((v) => [v.findingId, v]),
@@ -106,6 +110,9 @@ export function mergeBatchOutcomes(results: readonly TimedOutcome[]): TimedOutco
     outcome.incompleteCoverage = { batchCount: results.length, failures };
   }
 
-  // 批次串行,各批耗时相加即该模型的实际墙上时间。
-  return { outcome, durationMs: results.reduce((n, r) => n + r.durationMs, 0) };
+  // 批次受限并行(issue #232),各批的时间区间会重叠:该模型的墙上时间是首批开始到
+  // 末批结束这一段,相加会把重叠的那部分数两遍。
+  const startedAt = Math.min(...results.map((r) => r.startedAt));
+  const finishedAt = Math.max(...results.map((r) => r.startedAt + r.durationMs));
+  return { outcome, startedAt, durationMs: finishedAt - startedAt };
 }

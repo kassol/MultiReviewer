@@ -4,7 +4,14 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
-import type { Finding, ReviewerUsage, ReviewRange, Reviewer } from "../src/review/finding.ts";
+import type {
+  Finding,
+  ReviewerInput,
+  ReviewerOutcome,
+  ReviewerUsage,
+  ReviewRange,
+  Reviewer,
+} from "../src/review/finding.ts";
 import {
   DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
   mergeBatchOutcomes,
@@ -71,6 +78,8 @@ type BatchScript = {
   findings?: readonly Omit<Finding, "model">[];
   failure?: string;
   anchorRejections?: number;
+  /** 这一批跑多久才回。批次受限并行之后完成顺序由它决定(issue #232)。 */
+  delayMs?: number;
 };
 
 /** 按批次给出不同结果的 Reviewer 桩:第 n 次调用取 script[n]。 */
@@ -85,6 +94,9 @@ function batchedReviewer(
     review: async ({ range, worktreePath }) => {
       const step = script[calls.length] ?? {};
       calls.push({ range, worktreePath });
+      if (step.delayMs !== undefined) {
+        await new Promise((resolve) => setTimeout(resolve, step.delayMs));
+      }
       return {
         model,
         findings: (step.findings ?? []).map((f) => ({ ...f, model })),
@@ -378,6 +390,7 @@ test("跨批次的 token 用量按五列累加", () => {
     totalTokens,
   });
   const timed = (entry: ReviewerUsage) => ({
+    startedAt: 0,
     durationMs: 1,
     outcome: {
       model: "model-a",
@@ -504,6 +517,183 @@ test("每批只注入 glob 命中该批文件的知识条目,全仓库条目每�
     [
       [11, 12],
       [11],
+    ],
+  );
+});
+
+/**
+ * 记下同时在跑的批次数的 Reviewer 桩(issue #232)。每批睡一会儿才回,睡着的这段时间里
+ * 并发池若还有名额就会开下一批,`peak` 因此等于实测的并发峰值。
+ */
+function probingReviewer(model: string, delayMs = 5): Reviewer & {
+  peak: number;
+  started: string[][];
+} {
+  let active = 0;
+  const probe = {
+    model,
+    peak: 0,
+    started: [] as string[][],
+    review: async ({ range }: ReviewerInput): Promise<ReviewerOutcome> => {
+      probe.started.push([...range.files]);
+      active += 1;
+      probe.peak = Math.max(probe.peak, active);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      active -= 1;
+      return { model, findings: [], anomalies: [], rejectedToolCalls: 0, anchorRejections: 0 };
+    },
+  };
+  return probe;
+}
+
+/** 六个各改 5 行的文件,配上文件数上限 1 即六个批次。 */
+const SIX_FILES = Object.fromEntries(
+  Array.from({ length: 6 }, (_, i) => [`src/f${i}.ts`, 5]),
+) as Record<string, number>;
+
+test("批次受限并行:同时在跑的批次数不超过并发上限", async () => {
+  const { cache, db, forge } = setup(SIX_FILES);
+  const reviewer = probingReviewer("model-a");
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [reviewer],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    maxChangedLinesPerBatch: 100,
+    maxFilesPerBatch: 1,
+    maxParallelBatches: 3,
+  });
+
+  assert.equal(reviewer.started.length, 6);
+  assert.equal(reviewer.peak, 3);
+});
+
+test("并发上限为 1 时逐批跑完再开下一批,与分批以来的行为一致", async () => {
+  const { cache, db, forge } = setup(SIX_FILES);
+  const reviewer = probingReviewer("model-a");
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [reviewer],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    maxChangedLinesPerBatch: 100,
+    maxFilesPerBatch: 1,
+    maxParallelBatches: 1,
+  });
+
+  assert.equal(reviewer.peak, 1);
+  assert.deepEqual(reviewer.started, Object.keys(SIX_FILES).map((file) => [file]));
+});
+
+test("各批完成顺序打乱时,汇总仍按批次序号定序", async () => {
+  const { cache, db, forge } = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+
+  // 第 1 批最后才回,第 3 批最先回:按完成顺序记的话失败会被记成第 3 批。
+  const result = await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [
+      batchedReviewer("model-a", [
+        { failure: "context length exceeded", delayMs: 60 },
+        { findings: [findingAt("src/b.ts", "b 的问题")], delayMs: 30 },
+        { findings: [findingAt("src/c.ts", "c 的问题")], delayMs: 0 },
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    maxChangedLinesPerBatch: 100,
+    maxFilesPerBatch: 1,
+    maxParallelBatches: 3,
+  });
+
+  const outcome = result.outcomes[0]!;
+  assert.deepEqual(outcome.incompleteCoverage?.failures, [
+    { batchIndex: 1, failure: "context length exceeded" },
+  ]);
+  // 失败批之外的两批照常保留。
+  assert.deepEqual(result.findings.map((f) => f.file).sort(), ["src/b.ts", "src/c.ts"]);
+});
+
+test("单模型耗时是首批开始到末批结束的墙上时间,不是各批相加", () => {
+  const outcome = (): ReviewerOutcome => ({
+    model: "model-a",
+    findings: [],
+    anomalies: [],
+    rejectedToolCalls: 0,
+    anchorRejections: 0,
+  });
+
+  const merged = mergeBatchOutcomes([
+    { outcome: outcome(), startedAt: 1_000, durationMs: 100 },
+    { outcome: outcome(), startedAt: 1_050, durationMs: 100 },
+  ]);
+
+  assert.equal(merged.startedAt, 1_000);
+  assert.equal(merged.durationMs, 150);
+});
+
+test("同一条被两批复核到时序号大的那批作数", () => {
+  const timed = (verdict: "present" | "fixed") => ({
+    startedAt: 0,
+    durationMs: 1,
+    outcome: {
+      model: "model-a",
+      findings: [],
+      anomalies: [],
+      rejectedToolCalls: 0,
+      anchorRejections: 0,
+      verdicts: [{ findingId: 7, verdict }],
+    },
+  });
+
+  // 传入按批次序号排,后面那项即序号大的那批。
+  const merged = mergeBatchOutcomes([timed("present"), timed("fixed")]);
+  assert.deepEqual(merged.outcome.verdicts, [{ findingId: 7, verdict: "fixed" }]);
+});
+
+test("并行跑的三批落库的耗时是墙上时间,不是三批相加", async () => {
+  const { cache, db, forge } = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [probingReviewer("model-a", 100)],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    maxChangedLinesPerBatch: 100,
+    maxFilesPerBatch: 1,
+    maxParallelBatches: 3,
+  });
+
+  // 串行相加是 300 ms 起步,三批同时跑只用一批的时间。
+  const duration = Number(query(db.path, "SELECT duration_ms FROM reviewer_outcome")[0]!["duration_ms"]);
+  assert.ok(duration < 250, `耗时 ${duration} ms 看着像各批相加`);
+});
+
+test("Reviewer 作用域的轨迹事件带批次序号", async () => {
+  const { cache, db, forge } = setup({ "src/a.ts": 5, "src/b.ts": 5 });
+  const reviewer = scriptedReviewer("model-a", [], {
+    events: [{ kind: "assistant_message", text: "正在读文件" }],
+  });
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [reviewer],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    maxChangedLinesPerBatch: 100,
+    maxFilesPerBatch: 1,
+  });
+
+  const rows = query(
+    db.path,
+    "SELECT payload FROM review_trace WHERE scope = 'reviewer' AND kind = 'assistant_message' ORDER BY seq",
+  );
+  assert.deepEqual(
+    rows.map((row) => JSON.parse(String(row["payload"])) as { text: string; batch: number }),
+    [
+      { text: "正在读文件", batch: 1 },
+      { text: "正在读文件", batch: 2 },
     ],
   );
 });

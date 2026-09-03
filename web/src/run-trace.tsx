@@ -459,18 +459,45 @@ function ReviewerEvent({ event }: { event: TraceEvent }) {
   );
 }
 
+/** 一个模型 × 批的分组键。模型标识里不会有这个分隔符。 */
+const GROUP_SEP = "\u0000";
+
+function groupKey(reviewer: string, batch: number | null): string {
+  return `${reviewer}${GROUP_SEP}${batch ?? ""}`;
+}
+
 /**
- * 一个 Reviewer 的轨迹块。默认折叠:一轮里几个模型各自刷几十条事件,全摊开等于让人
- * 先滚过别人的过程才看到要查的那一个。失败的那个默认展开——它是来这一页的理由。
+ * 这个模型出现过的批次序号,升序。旧轨迹的事件没有 `batch`,那一组的序号是 null;
+ * 一条事件都没有的模型也给一组,否则它的分组块会整个消失。
+ */
+function batchesOf(byGroup: ReadonlyMap<string, unknown>, reviewer: string): (number | null)[] {
+  const prefix = `${reviewer}${GROUP_SEP}`;
+  const batches = [...byGroup.keys()]
+    .filter((key) => key.startsWith(prefix))
+    .map((key) => key.slice(prefix.length))
+    .map((rest) => (rest === "" ? null : Number(rest)));
+  return batches.length === 0 ? [null] : batches.sort((a, b) => (a ?? 0) - (b ?? 0));
+}
+
+/**
+ * 一个模型某一批的轨迹块(issue #232)。默认折叠:一轮里几个模型各自刷几十条事件,
+ * 全摊开等于让人先滚过别人的过程才看到要查的那一个。失败的那个默认展开——它是来这一页
+ * 的理由。
  */
 function ReviewerTrace({
   reviewer,
+  batch,
+  batchTotal,
   events,
   failure,
   open,
   onToggle,
 }: {
   reviewer: string;
+  /** 这一组属于第几批(从 1 起);`null` 即事件不带批次序号的旧轨迹。 */
+  batch: number | null;
+  /** 本轮一共几批;`null` 即轨迹里没有批次事件,标题只写第几批。 */
+  batchTotal: number | null;
   events: readonly TraceEvent[];
   /** 这一轮这个模型的失败文本;`null` 即没失败。取自轮次投影,不等轨迹里那条。 */
   failure: string | null;
@@ -499,6 +526,17 @@ function ReviewerTrace({
             {reviewer}
           </span>
           <span className="flex flex-wrap items-center gap-2 text-sm text-text-secondary">
+            {batch === null ? null : (
+              <span className="shrink-0">
+                第 <span className="font-mono tabular-nums">{batch}</span>
+                {batchTotal === null ? null : (
+                  <>
+                    /<span className="font-mono tabular-nums">{batchTotal}</span>
+                  </>
+                )}{" "}
+                批
+              </span>
+            )}
             {failure === null ? null : <Badge color="red" variant="soft" radius="full">失败</Badge>}
             <span className="shrink-0">
               <span className="font-mono tabular-nums">{messages}</span> 段文本 ·{" "}
@@ -639,25 +677,43 @@ export function RunTrace({ run }: { run: RunItem }) {
     live,
     invalidateOnEnd: [["stages"], ["stage-detail"], ["run"]],
   });
-  // 人手动开合过的 Reviewer 记在这里,其余按默认规则。
+  // 人手动开合过的分组记在这里,其余按默认规则。
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
 
   const milestones = events.filter((event) => event.scope === "run");
-  const byReviewer = new Map<string, TraceEvent[]>();
+  // Reviewer 事件按模型 × 批分组(issue #232):批次受限并行之后同一个模型几批的事件在
+  // 轨迹里交错到达,混在一块读不出哪条属于哪一批。旧轨迹的事件没有 `batch`,归到「无批次」
+  // 那一组,标题只写模型名,与批次并行之前的呈现一致。
+  const byGroup = new Map<string, TraceEvent[]>();
   for (const event of events) {
     if (event.scope !== "reviewer" || event.reviewer === undefined) continue;
-    byReviewer.set(event.reviewer, [...(byReviewer.get(event.reviewer) ?? []), event]);
+    const key = groupKey(event.reviewer, num(event.payload, "batch"));
+    byGroup.set(key, [...(byGroup.get(key) ?? []), event]);
   }
   // 参与本轮的 Reviewer 按轮次投影的顺序排;轨迹里出现而投影里没有的接在后面——
   // 那说明两处对不上,藏起来等于把它的事件从面板上抹掉。
+  const names = [...new Set([...byGroup.keys()].map((key) => key.split(GROUP_SEP)[0]!))];
   const reviewers = [
     ...run.models.map((entry) => ({ name: entry.model, failure: entry.failure })),
-    ...[...byReviewer.keys()]
+    ...names
       .filter((name) => !run.models.some((entry) => entry.model === name))
       .map((name) => ({ name, failure: null })),
   ];
-  const isOpen = (reviewer: { name: string; failure: string | null }): boolean =>
-    toggled[reviewer.name] ?? (reviewer.failure !== null || reviewers.length === 1);
+  // 本轮一共几批:轮次级的批次事件自己带,取不到就不写分母。
+  const batchTotal = milestones.reduce<number | null>(
+    (total, event) => num(event.payload, "total") ?? total,
+    null,
+  );
+  const sections = reviewers.flatMap((reviewer) =>
+    batchesOf(byGroup, reviewer.name).map((batch) => ({
+      key: groupKey(reviewer.name, batch),
+      reviewer: reviewer.name,
+      batch,
+      failure: reviewer.failure,
+    })),
+  );
+  const isOpen = (section: { key: string; failure: string | null }): boolean =>
+    toggled[section.key] ?? (section.failure !== null || sections.length === 1);
 
   return (
     <div className="flex flex-col gap-3">
@@ -691,20 +747,22 @@ export function RunTrace({ run }: { run: RunItem }) {
         </section>
       )}
 
-      {reviewers.map((reviewer) => (
+      {sections.map((section) => (
         <ReviewerTrace
-          key={reviewer.name}
-          reviewer={reviewer.name}
-          events={byReviewer.get(reviewer.name) ?? []}
-          failure={reviewer.failure}
-          open={isOpen(reviewer)}
+          key={section.key}
+          reviewer={section.reviewer}
+          batch={section.batch}
+          batchTotal={batchTotal}
+          events={byGroup.get(section.key) ?? []}
+          failure={section.failure}
+          open={isOpen(section)}
           onToggle={() =>
-            setToggled((prev) => ({ ...prev, [reviewer.name]: !isOpen(reviewer) }))
+            setToggled((prev) => ({ ...prev, [section.key]: !isOpen(section) }))
           }
         />
       ))}
 
-      {trace.data !== undefined && events.length === 0 && reviewers.length === 0 ? (
+      {trace.data !== undefined && events.length === 0 && sections.length === 0 ? (
         <EmptyState
           title="本轮无审查轨迹"
           description="该 Review Run 早于审查轨迹功能启用。"

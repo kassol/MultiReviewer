@@ -331,7 +331,8 @@ test("进行中的轮次:先回放已有事件,再收到新写入的那条,结�
   const liveEvent = JSON.parse(live.data) as TraceEvent;
   assert.equal(liveEvent.kind, "assistant_message");
   assert.equal(liveEvent.reviewer, "test:global-model");
-  assert.deepEqual(liveEvent.payload, { text: "正在读 src/answer.ts" });
+  // 载荷带本批的序号(issue #232):批次受限并行之后同一模型几批的事件在轨迹里交错。
+  assert.deepEqual(liveEvent.payload, { text: "正在读 src/answer.ts", batch: 1 });
 
   // 结束:轮次跑完,订阅者收到明确的结束信号。
   paused.release();

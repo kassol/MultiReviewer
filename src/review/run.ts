@@ -17,6 +17,7 @@ import {
 import {
   DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
   DEFAULT_MAX_FILES_PER_BATCH,
+  DEFAULT_MAX_PARALLEL_BATCHES,
   mergeBatchOutcomes,
   splitIntoBatches,
   type TimedOutcome,
@@ -78,7 +79,7 @@ export type ReviewRunPlan = Readonly<{
   maxChangedLinesPerBatch: number;
   /** 一批最多多少个文件(issue #230)。与改动行上限双重装箱,任一超限即封箱。 */
   maxFilesPerBatch: number;
-  /** 同时在跑的批次数上限(issue #230)。本轮只冻结这个数,批次循环仍然串行。 */
+  /** 同时在跑的批次数上限(issue #230)。批次受限并行按它开闸(issue #232)。 */
   maxParallelBatches: number;
   reviewerPins: readonly ReviewRunReviewerPin[];
   /** 本轮冻结的知识集版本(issue #204)。仓库还没确认过知识集时为 null。 */
@@ -141,10 +142,7 @@ export type ReviewRunDeps = {
   maxChangedLinesPerBatch?: number;
   /** 一批最多多少个文件(issue #230)。不传取 `DEFAULT_MAX_FILES_PER_BATCH`。 */
   maxFilesPerBatch?: number;
-  /**
-   * 同时在跑的批次数上限(issue #230)。运行计划带着它进来,批次循环这一票还没用上它——
-   * 受限并行是后续那一票的事。
-   */
+  /** 同时在跑的批次数上限。不传取 `DEFAULT_MAX_PARALLEL_BATCHES`。 */
   maxParallelBatches?: number;
   /** 本轮固定的非秘密模型服务审计快照。 */
   reviewerPins?: readonly ReviewRunReviewerPin[];
@@ -1147,8 +1145,9 @@ export async function runReview(
       deps.maxFilesPerBatch ?? DEFAULT_MAX_FILES_PER_BATCH,
     );
 
-    // 句柄的存活期覆盖整段审查(最长二十分钟),中途出错必须归还:webhook 服务是长跑
-    // 进程,泄漏的连接会一次次攒下来。
+    // 句柄的存活期覆盖整段审查(时长没有总上限,兜底的是子进程那道连续静默闸,
+    // 见 `reviewer/subprocess.ts`),中途出错必须归还:webhook 服务是长跑进程,
+    // 泄漏的连接会一次次攒下来。
     const store = openStore(deps.dbPath);
     const runId = store.startRun({
       owner: event.owner,
@@ -1223,9 +1222,9 @@ export async function runReview(
           : { title: rangeReview?.title ?? "" },
       );
 
-      // 批次串行,批内 Reviewer 并行:并行跑批会同时开「批数 × 模型数」个子进程。
-      const perBatch: TimedOutcome[][] = [];
-      for (const [index, files] of batches.entries()) {
+      // 跑一批:批内的 Reviewer 全部并行。
+      const runBatch = async (index: number): Promise<TimedOutcome[]> => {
+        const files = batches[index]!;
         // 批次序号从 1 起,直接呈现给看轨迹的人,与 `incompleteCoverage` 同一口径。
         const batch = { index: index + 1, total: batches.length, files };
         // 知识条目按作用范围路由到批次(issue #204):只管某个目录的条目不进不含那个
@@ -1233,35 +1232,55 @@ export async function runReview(
         const rules = knowledgeForBatch(deps.rules ?? [], files);
         const facts = knowledgeForBatch(deps.facts ?? [], files);
         trace.run("batch_started", batch);
-        perBatch.push(
-          await Promise.all(
-            deps.reviewers.map(async (reviewer) => {
-              const begin = Date.now();
-              // 工作副本每批都是同一份完整的 head commit:Reviewer 要能读到其他批次
-              // 改动后的代码,否则会报出"这个新函数没有调用者"这类因分批而来的误报。
-              // 历史每批都给同一份:它说的是这个阶段的历史,与本批审哪些文件无关。
-              const outcome = await reviewer.review({
-                range: { ...range, files },
-                worktreePath: worktree.path,
-                // 可评论行区间给整个 Review Range 的那一份,不按批次裁剪(issue #224)。
-                commentable: diffRanges,
-                history,
-                intent,
-                rules,
-                facts,
-                // 本轮指令每批都给同一份:它说的是这一轮的要求,与本批审哪些文件无关。
-                ...(deps.directive === undefined ? {} : { directive: deps.directive }),
-                onEvent: (event) => {
-                  const { kind, ...payload } = event;
-                  trace.reviewer(reviewer.model, kind, payload);
-                },
-              });
-              return { outcome, durationMs: Date.now() - begin };
-            }),
-          ),
+        const timedOutcomes = await Promise.all(
+          deps.reviewers.map(async (reviewer) => {
+            const startedAt = Date.now();
+            // 工作副本每批都是同一份完整的 head commit:Reviewer 要能读到其他批次
+            // 改动后的代码,否则会报出"这个新函数没有调用者"这类因分批而来的误报。
+            // 历史每批都给同一份:它说的是这个阶段的历史,与本批审哪些文件无关。
+            const outcome = await reviewer.review({
+              range: { ...range, files },
+              worktreePath: worktree.path,
+              // 可评论行区间给整个 Review Range 的那一份,不按批次裁剪(issue #224)。
+              commentable: diffRanges,
+              history,
+              intent,
+              rules,
+              facts,
+              // 本轮指令每批都给同一份:它说的是这一轮的要求,与本批审哪些文件无关。
+              ...(deps.directive === undefined ? {} : { directive: deps.directive }),
+              onEvent: (event) => {
+                const { kind, ...payload } = event;
+                // 事件带上批次序号(issue #232):批次并行之后同一个模型几批的事件在
+                // 轨迹里交错到达,不标批次就读不出哪条属于哪一批。
+                trace.reviewer(reviewer.model, kind, { ...payload, batch: batch.index });
+              },
+            });
+            return { outcome, startedAt, durationMs: Date.now() - startedAt };
+          }),
         );
         trace.run("batch_finished", batch);
-      }
+        return timedOutcomes;
+      };
+
+      // 批次受限并行(issue #232):开「并发上限」条取号线,每条取下一个还没跑的批次,
+      // 跑完再取下一个。不设闸会一次开满「批数 × 模型数」个子进程,对宿主机不友好。
+      // 结果按批次序号写回,与各批的完成顺序无关——汇总、失败记第几批与复核结论谁作数
+      // 都按序号,不按谁先回。
+      const perBatch: TimedOutcome[][] = [];
+      let nextBatch = 0;
+      const parallel = Math.min(
+        deps.maxParallelBatches ?? DEFAULT_MAX_PARALLEL_BATCHES,
+        batches.length,
+      );
+      await Promise.all(
+        Array.from({ length: parallel }, async () => {
+          while (nextBatch < batches.length) {
+            const index = nextBatch++;
+            perBatch[index] = await runBatch(index);
+          }
+        }),
+      );
       // 汇总在全部批次跑完之后做一次:一次 Review Run 只发一次 review。
       const timed = deps.reviewers.map((_, index) =>
         mergeBatchOutcomes(perBatch.map((batch) => batch[index]!)),

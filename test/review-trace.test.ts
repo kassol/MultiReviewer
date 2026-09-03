@@ -121,7 +121,8 @@ test("Reviewer 发出的事件按发生顺序落进这一轮的轨迹,带模型�
     reviewerEvents.every((e) => e.reviewer === "model-a"),
     "每条 Reviewer 级事件都要认得出是哪个模型的",
   );
-  assert.deepEqual(reviewerEvents[0]!.payload, { text: "先读一遍 src/m.js" });
+  // 载荷带这条事件出自第几批(issue #232);`reviewer_finished` 是整个模型的收尾,不带它。
+  assert.deepEqual(reviewerEvents[0]!.payload, { text: "先读一遍 src/m.js", batch: 1 });
   assert.deepEqual(reviewerEvents[1]!.payload, {
     tool: "read",
     args: { path: "src/m.js" },
@@ -129,6 +130,7 @@ test("Reviewer 发出的事件按发生顺序落进这一轮的轨迹,带模型�
     isError: false,
     error: null,
     resultLength: 64,
+    batch: 1,
   });
   // 被拒的那次带原因,返回正文只留长度(ADR 0017)。
   assert.equal(reviewerEvents[2]!.payload["isError"], true);
