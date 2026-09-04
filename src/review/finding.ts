@@ -305,12 +305,13 @@ export type ReviewerInput = {
    */
   commentable: DiffRanges;
   /**
-   * 本审查阶段已经报过的 Finding(ADR 0016),每一批都给同一份:它说的是这个阶段的
-   * 历史,与本批审哪些文件无关。首轮为空数组。
+   * 本审查阶段已经报过的 Finding 里、所在文件在这一批的那些(ADR 0016,issue #235):
+   * 一条历史只进一批,复核它的因此是真正审到那个文件的 Reviewer。批内每个 Reviewer
+   * 拿到的是同一份,不分批时是整份历史。首轮为空数组。
    */
   history: readonly HistoryFinding[];
   /**
-   * 这一轮声称要做的事(issue #201),每一批也都给同一份:它说的是整个 Review Range
+   * 这一轮声称要做的事(issue #201),每一批都给同一份:它说的是整个 Review Range
    * 的意图,与本批审哪些文件无关。取不到意图上下文的调用方不传。
    */
   intent?: ReviewIntent;
