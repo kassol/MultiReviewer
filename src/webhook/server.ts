@@ -90,6 +90,7 @@ import {
   findingLineAuthors,
   openHistory,
   priorDispositions,
+  RESUME_NOT_VIABLE,
   runReview,
   type ReviewRunPlan,
 } from "../review/run.ts";
@@ -103,6 +104,7 @@ import {
   type FindingDispositionTarget,
   type GlobalSettings,
   type InterruptedRun,
+  type InterruptedRunDetail,
   type ModelReference,
   type ModelServiceRecord,
   type ModelServiceVersionCommit,
@@ -250,6 +252,12 @@ export type WebhookServerDeps = {
    * 不传则把失败写进 stderr,成功不出声——与基点探索同一条口径。
    */
   onDispositionFeedbackSettled?: (findingId: number, failure?: string) => void;
+  /**
+   * 启动时续跑一轮被中断的 Review Run 结束时回调(issue #248),`failure` 有值即续跑
+   * 没成、那一轮已退回改判失败。不传则把失败写进 stderr,成功不出声——与工作副本准备
+   * 和基点探索同一条口径。
+   */
+  onRunResumed?: (runId: number, failure?: string) => void;
 };
 
 /** 两个平台标识 pull request 事件的头值相同。 */
@@ -7357,6 +7365,82 @@ function removeInterruptedReactions(
   })();
 }
 
+/**
+ * 续跑一轮被服务重启打断的 Review Run(issue #248)。重新准备工作副本、按同一 head 与
+ * 当前这份运行计划重新切批,只跑库里缺结果的批次,再走现有的合并、收尾与发评论。
+ *
+ * 冻结前提的核对在 `runReview` 里做(head、历史快照、批次与 Reviewer 组合),这里只
+ * 负责把它跑得起来所需的那几样凑齐:Forge、仓库注册与运行计划。任何一样不成立即抛,
+ * 由调用方退回 issue #247 的改判。
+ */
+async function resumeRun(deps: WebhookServerDeps, run: InterruptedRunDetail): Promise<void> {
+  const forge = deps.forges.gitea;
+  // GitHub 已封存(ADR 0014),被中断的轮次只可能来自 Gitea。
+  if (forge === undefined) throw new Error(`${RESUME_NOT_VIABLE}:没有配置 Gitea 的 Forge`);
+  const repoId = withStore(deps.dbPath, (store) =>
+    store.listRepos().find((repo) => repo.owner === run.owner && repo.repo === run.repo)?.repoId,
+  );
+  if (repoId === undefined) {
+    throw new Error(`${RESUME_NOT_VIABLE}:仓库 ${run.owner}/${run.repo} 已经不在注册表里`);
+  }
+  const plan = await buildRunPlan(deps, repoId);
+  await runReview(
+    { owner: run.owner, repo: run.repo, number: run.pullNumber },
+    {
+      forge,
+      ...plan,
+      cacheDir: deps.cacheDir,
+      dbPath: deps.dbPath,
+      resumeRunId: run.runId,
+      mode: run.mode,
+      ...(run.triggeredBy === null ? {} : { triggeredBy: run.triggeredBy }),
+      ...(run.rangeReviewId === null ? {} : { rangeReviewId: run.rangeReviewId }),
+      ...(run.directive === null ? {} : { directive: run.directive }),
+    },
+  );
+}
+
+/**
+ * 启动时对停在运行中的轮次先尝试续跑,续跑不成立才退回改判失败(issue #248 在 issue
+ * #247 前面插入的那一步)。
+ *
+ * 不 await:启动不等审查。逐轮串行——同时续跑几轮会一次开满「批数 × 模型数」个子进程,
+ * 与批次受限并行(issue #232)防的是同一件事。没有中断轮次时一步都不走。
+ */
+function resumeInterruptedRuns(
+  deps: WebhookServerDeps,
+  runs: readonly InterruptedRunDetail[],
+): void {
+  if (runs.length === 0) return;
+  const settled =
+    deps.onRunResumed ??
+    ((runId: number, failure?: string) => {
+      if (failure !== undefined) console.error(`[review] 第 ${runId} 轮续跑没成:${failure}`);
+    });
+  void (async () => {
+    for (const run of runs) {
+      let failure: string | undefined;
+      try {
+        await resumeRun(deps, run);
+      } catch (error) {
+        failure = error instanceof Error ? error.message : String(error);
+        // 退回 issue #247 的改判:这一轮标记失败并写上原因,下一次启动因此不会再看到它。
+        const interrupted = withStore(deps.dbPath, (store) =>
+          store.failInterruptedRuns(
+            `服务重启,上一轮没跑完;${failure}`,
+            new Date((deps.now ?? Date.now)()).toISOString(),
+            [run.runId],
+          ),
+        );
+        // 改判掉的这一轮在 PR 上还挂着 👀(续跑那一段自己挂的,或崩溃前留下的)。
+        removeInterruptedReactions(deps.forges.gitea, interrupted);
+      }
+      if (failure === undefined) settled(run.runId);
+      else settled(run.runId, failure);
+    }
+  })();
+}
+
 export function createWebhookServer(deps: WebhookServerDeps): Server {
   // 已经记过首次的无关事件类型与 action,整个服务共用一份。
   const loggedOnce = new Set<string>();
@@ -7386,16 +7470,13 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
       "服务重启,上一次探索没跑完",
       new Date((deps.now ?? Date.now)()).toISOString(),
     );
-    // 正在跑的 Review Run 同理(issue #247):Reviewer 子进程随进程一起消失,本轮的
-    // Finding 压在收尾事务里一并丢失,面板会一直显示进行中并持续轮询。
-    return store.failInterruptedRuns(
-      "服务重启,上一轮没跑完",
-      new Date((deps.now ?? Date.now)()).toISOString(),
-    );
+    // 正在跑的 Review Run 停在运行中时先尝试续跑(issue #248):已跑完的批次结果已经
+    // 落库,只补缺的那些,已经花掉的 token 因此保得住。续跑不成立才退回 issue #247 的
+    // 改判——标记失败、写上原因、撤掉 PR 上残留的 👀。
+    return store.interruptedRuns();
   });
-  // 被改判的那些轮次在 PR 上还挂着 👀,留着看起来像审查卡死了。撤反应不阻塞启动:
-  // 失败只记日志,改判在上面那个事务里已经落库(issue #247)。
-  removeInterruptedReactions(deps.forges.gitea, interrupted);
+  // 没有中断轮次时启动路径零改动:不查 Forge,也不多发一个写。
+  resumeInterruptedRuns(deps, interrupted);
   const hookManager =
     deps.gitea === undefined ? undefined : createGiteaHookManager(deps.gitea);
   return createServer((req, res) => {

@@ -71,6 +71,7 @@ import {
   type HistoryPlacement,
   type OutcomeRecord,
   type RecordedLineAuthor,
+  type ResumeState,
   type VerdictRecord,
 } from "./store.ts";
 import {
@@ -186,6 +187,19 @@ export type ReviewRunDeps = {
    * 复核结论。
    */
   mode?: ReviewRunMode;
+  /**
+   * 续跑一轮被服务重启打断的 Review Run(issue #248)。给了它就不开新一轮:沿用这个
+   * run id、开跑时落库的历史快照与已落库的批次结果,只跑缺结果的那些批次,再走同一段
+   * 合并、收尾与发评论。轨迹接着这一轮追加,面板上不换编号。
+   *
+   * 续跑的前提在这里当场核对(head 还是不是同一个、历史快照在不在、重新切批与已落库的
+   * 批次对不对得上、Reviewer 还是不是那几个),不成立即抛,由调用方退回改判失败
+   * (issue #247)。
+   *
+   * 落库的耗时只算续跑这一段:崩溃前跑了多久、进程停机多久都没人知道,拿结束时间减
+   * 开跑时间会把停机时长也算成审查耗时。
+   */
+  resumeRunId?: number;
 };
 
 export type ReviewRunResult = {
@@ -1308,6 +1322,60 @@ export const VERDICT_ONLY_NO_HISTORY =
   "只复核:这个阶段没有未处置的历史 Finding,这一轮不开跑";
 
 /**
+ * 续跑不成立时的失败原因前缀(issue #248)。措辞固定,调用方据它把这一轮退回 issue #247
+ * 的改判——续跑不成立不是审查失败,是「这一轮的冻结前提已经不在了」。
+ */
+export const RESUME_NOT_VIABLE = "续跑不成立";
+
+/**
+ * 续跑之前核对冻结前提(issue #248):重新切出的批次要与开跑那次逐字相同,已落库的
+ * 每一批也要正好是这一轮的这几个 Reviewer 按同一顺序跑出来的。
+ *
+ * 对不上就说明前提已经不在——head 上的 diff 变了、分批上限被改了、模型组合被换了。
+ * 那时接着跑,已落库的批次与新切出的批次会指向不同的文件集,合并出来的覆盖是错的。
+ * 返回不成立的那句原因;都对得上时返回 undefined。
+ */
+function resumeMismatch(
+  resume: ResumeState,
+  headSha: string,
+  ruleSetVersion: number | null,
+  batches: readonly (readonly string[])[],
+  reviewers: readonly Reviewer[],
+): string | undefined {
+  // head 先核对:PR 上推了新 commit 之后审的就不是这一轮那段代码了,已落库的批次结果
+  // 与新 head 上的 diff 无关,接着跑等于把上一版的结论安到新版头上。
+  if (resume.headSha !== headSha) {
+    return `这个 pull request 的 head 已经从 ${resume.headSha} 变成 ${headSha}`;
+  }
+  // 知识集版本同律(issue #204):版本变了就说明规则或事实已经改过,续跑的批次会依着
+  // 另一版规则给结论,与原轮各批对不上。分批上限那两项不必单独核对——上限一变,下面
+  // 逐批的文件清单就对不上了。
+  if (resume.ruleSetVersion !== ruleSetVersion) {
+    return `冻结的知识集版本已经从 ${resume.ruleSetVersion ?? "无"} 变成 ${ruleSetVersion ?? "无"}`;
+  }
+  if (resume.batchCount !== batches.length) {
+    return `重新切批切出 ${batches.length} 批,开跑时是 ${resume.batchCount} 批`;
+  }
+  for (const [index, batch] of resume.batches) {
+    const files = batches[index];
+    if (
+      files === undefined ||
+      files.length !== batch.files.length ||
+      batch.files.some((file, position) => file !== files[position])
+    ) {
+      return `第 ${index + 1} 批的文件清单与开跑时不同`;
+    }
+    if (
+      batch.outcomes.length !== reviewers.length ||
+      batch.outcomes.some((timed, position) => timed.outcome.model !== reviewers[position]?.model)
+    ) {
+      return `第 ${index + 1} 批已落库的 Reviewer 与这一轮的模型组合对不上`;
+    }
+  }
+  return undefined;
+}
+
+/**
  * 一次 Review Run:解析 Review Range、准备工作副本、运行 Reviewer、发布 review 评论。
  */
 export async function runReview(
@@ -1378,16 +1446,32 @@ export async function runReview(
       }
     };
 
+    // 续跑那一轮的已落库状态(issue #248)。读在最前:历史与分批都要按它来。
+    const resumeRunId = deps.resumeRunId;
+    const resume =
+      resumeRunId === undefined ? undefined : opened(() => store.resumeState(resumeRunId));
+    if (resumeRunId !== undefined && resume?.history === undefined) {
+      // 快照不在(轮次已不在库里,或它是升级前落的旧行)就没有「与原轮各批一致的历史」
+      // 可给,续跑到此为止。
+      opened(() => {
+        throw new Error(`${RESUME_NOT_VIABLE}:第 ${resumeRunId} 轮没有开跑时的历史快照`);
+      });
+    }
+
     // 本阶段已经报过的 Finding,注入给这一轮的每个 Reviewer(ADR 0016)。读在开跑之前:
     // 本轮自己的 Finding 还没落库,这份历史因此正是「上一轮为止」的那些。
     // 它也是只复核那一轮过滤文件集的依据(issue #242),两处同一份读取,口径不会分叉。
-    const history = opened(() =>
-      store.stageHistory(
-        deps.rangeReviewId === undefined
-          ? { owner: event.owner, repo: event.repo, pullNumber: event.number }
-          : { rangeReviewId: deps.rangeReviewId },
-      ),
-    );
+    // 续跑读开跑时的那份快照(issue #248):重启期间有人处置了一条历史时,续跑批次
+    // 拿到的历史仍与原轮各批一致。
+    const history =
+      resume?.history ??
+      opened(() =>
+        store.stageHistory(
+          deps.rangeReviewId === undefined
+            ? { owner: event.owner, repo: event.repo, pullNumber: event.number }
+            : { rangeReviewId: deps.rangeReviewId },
+        ),
+      );
 
     const verdictOnly = deps.mode === "verdict-only";
     if (verdictOnly) {
@@ -1405,7 +1489,25 @@ export async function runReview(
       deps.maxFilesPerBatch ?? DEFAULT_MAX_FILES_PER_BATCH,
     );
 
-    const runId = opened(() => store.startRun({
+    // 续跑核对重新切批的结果(issue #248):批数与每个已落库批次的文件清单都要逐字
+    // 相同,Reviewer 也要还是那几个、还是那个顺序。对不上就说明冻结的前提已经不在
+    // (diff 变了、分批上限改了、模型组合换了),这时接着跑只会跑出一份错位的覆盖。
+    if (resume !== undefined) {
+      const reason = resumeMismatch(
+        resume,
+        pullRequest.headSha,
+        deps.ruleSetVersion ?? null,
+        batches,
+        deps.reviewers,
+      );
+      if (reason !== undefined) {
+        opened(() => {
+          throw new Error(`${RESUME_NOT_VIABLE}:${reason}`);
+        });
+      }
+    }
+
+    const runId = resumeRunId ?? opened(() => store.startRun({
       owner: event.owner,
       repo: event.repo,
       pullNumber: event.number,
@@ -1431,6 +1533,8 @@ export async function runReview(
       directive: deps.directive ?? null,
       // 模式同律(issue #242):时间线上要分得出哪一轮是只复核,「新报 0」才读得对。
       mode: deps.mode ?? "full",
+      // 历史快照随这一轮落库(issue #248):它是续跑批次读历史的唯一来源。
+      history,
     }));
 
     // 一有 runId 就可以接受订阅(ADR 0017):面板打开进行中的轮次时要能接上实时推送,
@@ -1519,6 +1623,10 @@ export async function runReview(
           }),
         );
         trace.run("batch_finished", batch);
+        // 这一批立即落库(issue #248):内存里的结果随进程一起消失,已经花掉的 token
+        // 只有落了库才保得住。收尾仍只做一次合并与发评论,这里落的是中间态,不进
+        // reviewer_outcome、不进 finding,因此也不进任何事后统计的分母。
+        store.recordBatchOutcomes(runId, index, files, timedOutcomes);
         return timedOutcomes;
       };
 
@@ -1527,6 +1635,9 @@ export async function runReview(
       // 结果按批次序号写回,与各批的完成顺序无关——汇总、失败记第几批与复核结论谁作数
       // 都按序号,不按谁先回。
       const perBatch: TimedOutcome[][] = [];
+      // 续跑先把已落库的批次填回来(issue #248),那些批次不再调用 Reviewer:恢复粒度
+      // 是批次,批内的会话在内存里,中途续不了。
+      for (const [index, batch] of resume?.batches ?? []) perBatch[index] = batch.outcomes;
       let nextBatch = 0;
       const parallel = Math.min(
         deps.maxParallelBatches ?? DEFAULT_MAX_PARALLEL_BATCHES,
@@ -1536,7 +1647,7 @@ export async function runReview(
         Array.from({ length: parallel }, async () => {
           while (nextBatch < batches.length) {
             const index = nextBatch++;
-            perBatch[index] = await runBatch(index);
+            if (perBatch[index] === undefined) perBatch[index] = await runBatch(index);
           }
         }),
       );

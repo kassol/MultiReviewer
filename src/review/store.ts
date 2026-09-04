@@ -36,6 +36,8 @@ import type {
   ReviewVerdict,
   Severity,
 } from "./finding.ts";
+// 只取类型:`batch.ts` 反过来引用本模块的 `sumUsage`,类型导入在运行时被抹掉,不成环。
+import type { TimedOutcome } from "./batch.ts";
 import { containerBranches, type RangeReviewState } from "./range-review.ts";
 import type {
   RuleTraceEvent,
@@ -93,6 +95,23 @@ CREATE TABLE IF NOT EXISTS review_run_reviewer_pin (
   thinking_level TEXT,
   PRIMARY KEY (run_id, position),
   UNIQUE (run_id, identity)
+);
+
+-- 一批跑完就落一行(issue #248)。服务重启会让内存里的各批结果一并消失,已经花掉的
+-- token 保不住;这张表是恢复粒度的落点——续跑按它知道哪些批次已经有结果。
+--
+-- 中间态刻意与 reviewer_outcome / finding 分表:事后统计只认已结束的轮次,这里的行不
+-- 进任何分母。收尾仍走 finishRun 那一个事务,一轮只发一次 review 不变。
+--
+-- files_json 是这一批的文件清单。续跑要重新切批,切出来的结果与已落库的对不上就说明
+-- 冻结的前提已经不成立(diff 变了、分批上限改了),那时退回改判失败而不是接着跑。
+-- outcomes_json 是这一批各 Reviewer 的结果、开始时刻与耗时,按 Reviewer 配置序。
+CREATE TABLE IF NOT EXISTS review_run_batch (
+  run_id INTEGER NOT NULL REFERENCES review_run(id),
+  batch_index INTEGER NOT NULL,
+  files_json TEXT NOT NULL,
+  outcomes_json TEXT NOT NULL,
+  PRIMARY KEY (run_id, batch_index)
 );
 
 CREATE TABLE IF NOT EXISTS reviewer_outcome (
@@ -643,6 +662,10 @@ const ADD_COLUMNS = [
   // 行作者取自相邻改动的标记(issue #241)。存量不回填:升级前落的行是 NULL,读回按
   // 没有标记——那几条当初判的就是落点自己那一行。
   "ALTER TABLE finding ADD COLUMN line_author_adjacent INTEGER",
+  // 开跑时的历史 Finding 快照(issue #248)。续跑的批次读它,不重读库里当前的历史:
+  // 重启期间有人处置了一条历史时,续跑批次拿到的仍要与原轮各批一致。旧行是 NULL,
+  // 读回即「这一轮没有快照」,续跑因此不成立,退回改判失败。
+  "ALTER TABLE review_run ADD COLUMN history_json TEXT",
 ];
 
 /**
@@ -786,6 +809,11 @@ export type RunMeta = {
    * 读法。轮次列表与轮次详情据它回答「这一轮为什么只有复核」。
    */
   mode?: ReviewRunMode;
+  /**
+   * 开跑时读到的历史 Finding 快照(issue #248)。续跑的批次读它而不是重读当前历史,
+   * 各批拿到的因此始终是同一份。省略即不落快照,那一轮不可续跑。
+   */
+  history?: readonly HistoryFinding[];
 };
 
 /** 一条被启动改判掉的 Review Run(issue #247)。坐标够撤掉那个 PR 上的 👀。 */
@@ -794,6 +822,42 @@ export type InterruptedRun = {
   owner: string;
   repo: string;
   pullNumber: number;
+};
+
+/**
+ * 一条停在运行中的 Review Run,带够续跑要的那些冻结事实(issue #248)。head 与模式
+ * 决定重新切批切出什么,范围审查标识决定读哪个阶段,本轮指令要原样再给一遍。
+ */
+export type InterruptedRunDetail = InterruptedRun & {
+  headSha: string;
+  rangeReviewId: number | null;
+  directive: string | null;
+  mode: ReviewRunMode;
+  triggeredBy: string | null;
+};
+
+/** 一批跑完落库的一个 Reviewer 结果(issue #248)。与 `batch.ts` 的 `TimedOutcome` 同形。 */
+export type BatchOutcomes = {
+  /** 这一批的文件清单,按切批时的顺序。 */
+  files: string[];
+  /** 各 Reviewer 的结果,按 Reviewer 配置序。 */
+  outcomes: TimedOutcome[];
+};
+
+/**
+ * 续跑一轮要的全部已落库状态(issue #248)。一次读取取齐:批数用来核对重新切批的结果,
+ * 历史快照给续跑的批次,已落库的批次不再重跑。
+ */
+export type ResumeState = {
+  /** 开跑时审的那个 head。续跑必须审同一个,PR 上推了新 commit 就不再是同一轮。 */
+  headSha: string;
+  /** 开跑时冻结的知识集版本(issue #204)。续跑要注入同一版,否则各批依的规则会分叉。 */
+  ruleSetVersion: number | null;
+  batchCount: number;
+  /** 开跑时的历史快照;升级前落的旧行没有,为 undefined。 */
+  history: HistoryFinding[] | undefined;
+  /** 已经有结果的批次,键是从 0 起的批次下标。 */
+  batches: Map<number, BatchOutcomes>;
 };
 
 export type OutcomeRecord = {
@@ -1974,8 +2038,32 @@ export type Store = {
    * `review_run` 没有失败原因的列,原因落在这一轮已固定的 Reviewer 指定各自的
    * `reviewer_outcome` 行上——面板的逐模型失败展示本来就读那里,与其他失败一轮同一
    * 条路径。
+   *
+   * `runIds` 给了就只改判这几轮(issue #248:续跑不成立的那些);省略即全部停在运行中
+   * 的轮次。
    */
-  failInterruptedRuns(failure: string, at: string): InterruptedRun[];
+  failInterruptedRuns(
+    failure: string,
+    at: string,
+    runIds?: readonly number[],
+  ): InterruptedRun[];
+  /**
+   * 停在运行中的那些轮次,带够续跑要的冻结事实(issue #248)。启动时先问它:一行都没有
+   * 就什么都不做,启动路径因此零改动。
+   */
+  interruptedRuns(): InterruptedRunDetail[];
+  /**
+   * 一批跑完立即落库(issue #248)。同一批重复落库时覆盖——续跑本身不会走到这里,
+   * 但重复写也不该攒出第二份结果。
+   */
+  recordBatchOutcomes(
+    runId: number,
+    batchIndex: number,
+    files: readonly string[],
+    outcomes: readonly TimedOutcome[],
+  ): void;
+  /** 续跑一轮要的已落库状态(issue #248)。那一轮不存在时为 undefined。 */
+  resumeState(runId: number): ResumeState | undefined;
   /**
    * 本审查阶段已经报过的 Finding,注入给这一轮的每个 Reviewer(ADR 0016)。
    *
@@ -4410,8 +4498,8 @@ export function openStore(dbPath: string): Store {
             `INSERT INTO review_run
                (owner, repo, pull_number, head_sha, title, range_review_id, pr_state,
                 triggered_by, started_at, changed_files, changed_lines, batch_count,
-                rule_set_version, directive, mode)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                rule_set_version, directive, mode, history_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             meta.owner,
@@ -4429,6 +4517,9 @@ export function openStore(dbPath: string): Store {
             meta.ruleSetVersion ?? null,
             meta.directive ?? null,
             meta.mode ?? "full",
+            // 历史快照随开跑落库(issue #248):续跑的批次读它,重启期间的处置不改变
+            // 这一轮各批看到的历史。
+            meta.history === undefined ? null : JSON.stringify(meta.history),
           );
         const runId = Number(result.lastInsertRowid);
         const insertPin = db.prepare(
@@ -4460,12 +4551,20 @@ export function openStore(dbPath: string): Store {
       }
     },
 
-    failInterruptedRuns(failure, at) {
+    failInterruptedRuns(failure, at, runIds) {
+      // `runIds` 缺省即全部停在运行中的轮次;给了就只认这几个 id,其余照旧不动
+      // (issue #248:续跑不成立的那些逐轮改判,正在续跑的那些不能被一并扫掉)。
+      const scope =
+        runIds === undefined
+          ? ""
+          : ` AND id IN (${runIds.map(() => "?").join(", ") || "NULL"})`;
+      const params = runIds === undefined ? [] : [...runIds];
       const rows = db
         .prepare(
-          "SELECT id, owner, repo, pull_number FROM review_run WHERE finished_at IS NULL",
+          `SELECT id, owner, repo, pull_number FROM review_run
+            WHERE finished_at IS NULL${scope}`,
         )
-        .all();
+        .all(...params);
       // 没有中断轮次时一个写都不发:启动路径因此零改动,调用方也不去问 Forge。
       if (rows.length === 0) return [];
       db.exec("BEGIN");
@@ -4489,8 +4588,12 @@ export function openStore(dbPath: string): Store {
         // 结束时间取启动时刻。耗时留空:进程什么时候落地的没人知道,写一个算出来的
         // 数字就是编。
         db.prepare(
-          "UPDATE review_run SET finished_at = ?, failed = 1 WHERE finished_at IS NULL",
-        ).run(at);
+          `UPDATE review_run SET finished_at = ?, failed = 1
+            WHERE finished_at IS NULL${scope}`,
+        ).run(at, ...params);
+        // 改判掉的那些轮次不会再被续跑,中间态的批次结果一并清掉(issue #248)。
+        const deleteBatches = db.prepare("DELETE FROM review_run_batch WHERE run_id = ?");
+        for (const row of rows) deleteBatches.run(row["id"] as number);
         db.exec("COMMIT");
       } catch (error) {
         db.exec("ROLLBACK");
@@ -4502,6 +4605,72 @@ export function openStore(dbPath: string): Store {
         repo: String(row["repo"]),
         pullNumber: Number(row["pull_number"]),
       }));
+    },
+
+    interruptedRuns() {
+      return db
+        .prepare(
+          `SELECT id, owner, repo, pull_number, head_sha, range_review_id, directive,
+                  mode, triggered_by
+             FROM review_run WHERE finished_at IS NULL ORDER BY id`,
+        )
+        .all()
+        .map((row) => ({
+          runId: Number(row["id"]),
+          owner: String(row["owner"]),
+          repo: String(row["repo"]),
+          pullNumber: Number(row["pull_number"]),
+          headSha: String(row["head_sha"]),
+          rangeReviewId: row["range_review_id"] === null ? null : Number(row["range_review_id"]),
+          directive: row["directive"] === null ? null : String(row["directive"]),
+          // 升级前的旧行没有这一列,读回按完整审查算,与 `listRuns` 同一读法。
+          mode: (row["mode"] === null ? "full" : String(row["mode"])) as ReviewRunMode,
+          triggeredBy: row["triggered_by"] === null ? null : String(row["triggered_by"]),
+        }));
+    },
+
+    recordBatchOutcomes(runId, batchIndex, files, outcomes) {
+      db.prepare(
+        `INSERT INTO review_run_batch (run_id, batch_index, files_json, outcomes_json)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (run_id, batch_index)
+         DO UPDATE SET files_json = excluded.files_json, outcomes_json = excluded.outcomes_json`,
+      ).run(runId, batchIndex, JSON.stringify(files), JSON.stringify(outcomes));
+    },
+
+    resumeState(runId) {
+      const run = db
+        .prepare(
+          `SELECT head_sha, rule_set_version, batch_count, history_json
+             FROM review_run WHERE id = ?`,
+        )
+        .get(runId);
+      if (run === undefined) return undefined;
+      const rows = db
+        .prepare(
+          `SELECT batch_index, files_json, outcomes_json FROM review_run_batch
+            WHERE run_id = ? ORDER BY batch_index`,
+        )
+        .all(runId);
+      return {
+        headSha: String(run["head_sha"]),
+        ruleSetVersion:
+          run["rule_set_version"] === null ? null : Number(run["rule_set_version"]),
+        batchCount: Number(run["batch_count"]),
+        history:
+          run["history_json"] === null
+            ? undefined
+            : (JSON.parse(String(run["history_json"])) as HistoryFinding[]),
+        batches: new Map(
+          rows.map((row) => [
+            Number(row["batch_index"]),
+            {
+              files: JSON.parse(String(row["files_json"])) as string[],
+              outcomes: JSON.parse(String(row["outcomes_json"])) as TimedOutcome[],
+            },
+          ]),
+        ),
+      };
     },
 
     finishRun(runId, result) {
@@ -4528,6 +4697,10 @@ export function openStore(dbPath: string): Store {
           ...usageColumns(runUsage),
           runId,
         );
+
+        // 中间态的批次结果到这里就没用了(issue #248):收尾已经把合并后的结果落进
+        // reviewer_outcome 与 finding,这张表只服务「还没收尾的那一轮」。
+        db.prepare("DELETE FROM review_run_batch WHERE run_id = ?").run(runId);
 
         const insertOutcome = db.prepare(
           `INSERT INTO reviewer_outcome
