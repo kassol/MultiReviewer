@@ -77,7 +77,7 @@ import {
   DEFAULT_MAX_PARALLEL_BATCHES,
 } from "../review/batch.ts";
 import type { MergeAgent } from "../review/dedupe.ts";
-import type { Reviewer } from "../review/finding.ts";
+import type { Reviewer, ReviewRunMode } from "../review/finding.ts";
 import {
   containerBranches,
   containerPullRequestBody,
@@ -88,6 +88,7 @@ import {
   backfillUpdates,
   createReviewRunPlan,
   findingLineAuthors,
+  openHistory,
   priorDispositions,
   runReview,
   type ReviewRunPlan,
@@ -798,6 +799,11 @@ async function startRun(
   rangeReviewId?: number,
   /** 本轮指令(CONTEXT.md,issue #225)。只有面板发起的那几条链路会带,投递不带。 */
   directive?: string,
+  /**
+   * 这一轮的模式(CONTEXT.md 只复核,issue #242)。只有重跑那两种入参会带,其余入口
+   * 永远是完整审查。
+   */
+  mode?: ReviewRunMode,
 ): Promise<void> {
   const settled = deps.onRunSettled ?? logFailure;
   try {
@@ -811,6 +817,7 @@ async function startRun(
         ...(triggeredBy === undefined ? {} : { triggeredBy }),
         ...(rangeReviewId === undefined ? {} : { rangeReviewId }),
         ...(directive === undefined ? {} : { directive }),
+        ...(mode === undefined ? {} : { mode }),
       },
     );
   } catch (error) {
@@ -4857,6 +4864,29 @@ function readDirective(
 }
 
 /**
+ * 重跑两种入参共用的模式解析(CONTEXT.md 只复核,issue #242)。
+ *
+ * 非必填,不给即只复核:清历史是重跑的常态,整段范围再审一遍不是。认不出的取值当场 400
+ * ——悄悄按默认跑会开出一轮不是人要的审查。增量评审与发起范围审查不收这一格,它们永远
+ * 是完整审查。
+ */
+function readMode(res: ServerResponse, raw: unknown): ReviewRunMode | "rejected" {
+  if (raw === undefined || raw === null) return "verdict-only";
+  if (raw === "full" || raw === "verdict-only") return raw;
+  sendJson(res, 400, { error: 'mode 只能是 "verdict-only" 或 "full"' });
+  return "rejected";
+}
+
+/** 这个阶段还有没有未处置的历史 Finding:只复核那一轮开不开得起来,判据就是它。 */
+function hasOpenHistory(dbPath: string, scope: StageScope): boolean {
+  return withStore(dbPath, (store) => openHistory(store.stageHistory(scope)).length > 0);
+}
+
+/** 只复核在一个没有未处置历史的阶段上被拒的那句话。两种入参共用,措辞一致。 */
+const VERDICT_ONLY_NOTHING_TO_DO =
+  "这个阶段没有未处置的历史 Finding,只复核跑不出任何结果;要找新问题请勾上完整审查";
+
+/**
  * 发起与推进共用的比较项来源解析(issue #234)。
  *
  * 它只用来下次把选择器开在同一条分支或 Tag 模式上,不是历史事实,认不出的形状直接丢
@@ -4891,17 +4921,20 @@ async function handleRerun(
     pullNumber?: unknown;
     rangeReviewId?: unknown;
     directive?: unknown;
+    mode?: unknown;
   } | null>(req, res);
   if (payload === undefined) return;
-  // 本轮指令两种来源共用一格,两条分支之前先解析(issue #225)。
+  // 本轮指令两种来源共用一格,两条分支之前先解析(issue #225)。模式同律(issue #242)。
   const directive = readDirective(res, payload?.directive);
   if (directive === "rejected") return;
+  const mode = readMode(res, payload?.mode);
+  if (mode === "rejected") return;
   if (payload !== null && payload.rangeReviewId !== undefined) {
     const rangeReviewId = payload.rangeReviewId;
     if (typeof rangeReviewId !== "number" || !Number.isSafeInteger(rangeReviewId) || rangeReviewId <= 0) {
       return sendJson(res, 400, { error: "rangeReviewId 要是正整数" });
     }
-    return rerunRangeReview(res, deps, rangeReviewId, triggeredBy, assignment, directive);
+    return rerunRangeReview(res, deps, rangeReviewId, triggeredBy, assignment, directive, mode);
   }
   if (
     payload === null ||
@@ -4936,6 +4969,12 @@ async function handleRerun(
   } catch {
     return sendJson(res, 404, { error: "PR 读不到:号不对,或 bot 无权限" });
   }
+  // 只复核那一轮开跑之前先问一句这个阶段还有没有可复核的东西:一轮什么都不做的
+  // Review Run 不该被开出来(issue #242)。判据与编排层过滤文件集的是同一个。
+  // 排在读 PR 之后:PR 根本不存在时该说的是那件事,不是这个阶段没有历史。
+  if (mode === "verdict-only" && !hasOpenHistory(deps.dbPath, { owner, repo, pullNumber })) {
+    return sendJson(res, 409, { error: VERDICT_ONLY_NOTHING_TO_DO });
+  }
   // 与自动投递调用同一个启动器；快照在 202 响应和后台首批之前已经完整物化。
   let plan: ReviewRunPlan;
   try {
@@ -4954,6 +4993,7 @@ async function handleRerun(
     triggeredBy,
     undefined,
     directive,
+    mode,
   );
 }
 
@@ -4971,6 +5011,7 @@ async function rerunRangeReview(
   triggeredBy: string,
   assignment: RepoAssignment,
   directive: string | undefined,
+  mode: ReviewRunMode,
 ): Promise<void> {
   const record = withStore(deps.dbPath, (store) => store.getRangeReview(id));
   if (record === undefined || !assignment.allows(record.owner, record.repo)) {
@@ -4986,6 +5027,10 @@ async function rerunRangeReview(
   }
   if (ruleSetUnconfirmed(deps.dbPath, record.repoId)) {
     return sendJson(res, 409, { error: RULE_SET_UNCONFIRMED });
+  }
+  // 与 pull request 那条入参同一道闸(issue #242):只复核跑不出结果时不开这一轮。
+  if (mode === "verdict-only" && !hasOpenHistory(deps.dbPath, { rangeReviewId: id })) {
+    return sendJson(res, 409, { error: VERDICT_ONLY_NOTHING_TO_DO });
   }
   const forge = deps.forges.gitea;
   if (forge === undefined) {
@@ -5016,6 +5061,7 @@ async function rerunRangeReview(
     triggeredBy,
     id,
     directive,
+    mode,
   );
 }
 

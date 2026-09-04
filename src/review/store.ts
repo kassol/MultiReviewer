@@ -32,6 +32,7 @@ import type {
   ProjectFact,
   ReviewerUsage,
   ReviewRule,
+  ReviewRunMode,
   ReviewVerdict,
   Severity,
 } from "./finding.ts";
@@ -629,6 +630,9 @@ const ADD_COLUMNS = [
   "ALTER TABLE rule_proposal ADD COLUMN type TEXT NOT NULL DEFAULT 'rule'",
   // 本轮指令(CONTEXT.md,issue #225)。发起重审时附的一次性要求,只属于这一轮。
   "ALTER TABLE review_run ADD COLUMN directive TEXT",
+  // 这一轮的模式(CONTEXT.md 只复核,issue #242)。旧行是 NULL,读回来按完整审查算
+  // ——升级前每一轮都是完整审查,这一列补出来不改变它们的事实。
+  "ALTER TABLE review_run ADD COLUMN mode TEXT",
   // 选定比较项时用的分支或 Tag(issue #234)。旧行是 NULL:分支名从 sha 反推不出来。
   "ALTER TABLE range_review ADD COLUMN comparison_source_kind TEXT",
   "ALTER TABLE range_review ADD COLUMN comparison_source_name TEXT",
@@ -770,6 +774,11 @@ export type RunMeta = {
    * 这一轮没有指令。只落在这一行上,下一轮不继承——它就是「只作用于那一轮」的落点。
    */
   directive?: string | null;
+  /**
+   * 这一轮的模式(CONTEXT.md 只复核,issue #242)。省略即完整审查,与升级前的旧行同一
+   * 读法。轮次列表与轮次详情据它回答「这一轮为什么只有复核」。
+   */
+  mode?: ReviewRunMode;
 };
 
 export type OutcomeRecord = {
@@ -1360,6 +1369,8 @@ export type RunListItem = {
   rangeReviewId: number | null;
   /** 发起这一轮时附的本轮指令(CONTEXT.md,issue #225);null 即没有附。 */
   directive: string | null;
+  /** 这一轮的模式(CONTEXT.md 只复核,issue #242)。升级前的旧行是完整审查。 */
+  mode: ReviewRunMode;
   failed: boolean;
   models: {
     model: string;
@@ -1483,6 +1494,8 @@ export type StageTimelineEntry = {
   startedAt: string;
   finishedAt: string | null;
   failed: boolean;
+  /** 这一轮的模式(CONTEXT.md 只复核,issue #242)。升级前的旧行是完整审查。 */
+  mode: ReviewRunMode;
   reported: number;
   folded: number;
   fixed: number;
@@ -4344,8 +4357,8 @@ export function openStore(dbPath: string): Store {
             `INSERT INTO review_run
                (owner, repo, pull_number, head_sha, title, range_review_id, pr_state,
                 triggered_by, started_at, changed_files, changed_lines, batch_count,
-                rule_set_version, directive)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                rule_set_version, directive, mode)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             meta.owner,
@@ -4362,6 +4375,7 @@ export function openStore(dbPath: string): Store {
             meta.batchCount,
             meta.ruleSetVersion ?? null,
             meta.directive ?? null,
+            meta.mode ?? "full",
           );
         const runId = Number(result.lastInsertRowid);
         const insertPin = db.prepare(
@@ -4586,7 +4600,7 @@ export function openStore(dbPath: string): Store {
       const runRows = db
         .prepare(
           `SELECT run.id AS id, run.head_sha AS head_sha, run.started_at AS started_at,
-                  run.finished_at AS finished_at, run.failed AS failed
+                  run.finished_at AS finished_at, run.failed AS failed, run.mode AS mode
              FROM review_run run
             WHERE ${where}
             ORDER BY run.id`,
@@ -4770,6 +4784,8 @@ export function openStore(dbPath: string): Store {
             startedAt: String(run["started_at"]),
             finishedAt: run["finished_at"] === null ? null : String(run["finished_at"]),
             failed: Number(run["failed"] ?? 0) === 1,
+            // 时间线上要分得出哪一轮是只复核:看到「新报 0」时那不是审查空跑。
+            mode: run["mode"] === "verdict-only" ? "verdict-only" : "full",
             reported: 0,
             folded: 0,
             fixed: 0,
@@ -5099,7 +5115,7 @@ export function openStore(dbPath: string): Store {
       const runs = db
         .prepare(
           `SELECT id, owner, repo, pull_number, head_sha, title, range_review_id, triggered_by,
-                  directive, started_at, finished_at, failed, input_tokens, output_tokens,
+                  directive, mode, started_at, finished_at, failed, input_tokens, output_tokens,
                   cache_read_tokens, cache_write_tokens, total_tokens
              FROM review_run ${where}
             ORDER BY id DESC LIMIT ?`,
@@ -5308,6 +5324,8 @@ export function openStore(dbPath: string): Store {
           rangeReviewId:
             run["range_review_id"] === null ? null : Number(run["range_review_id"]),
           directive: run["directive"] === null ? null : String(run["directive"]),
+          // 升级前的旧行没有这一列:它们都是完整审查,读回来照实说。
+          mode: run["mode"] === "verdict-only" ? "verdict-only" : "full",
           startedAt: String(run["started_at"]),
           finishedAt: run["finished_at"] === null ? null : String(run["finished_at"]),
           failed: Number(run["failed"]) === 1,

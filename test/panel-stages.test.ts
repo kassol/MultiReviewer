@@ -289,6 +289,8 @@ test("阶段列表:已关闭 pull request 手动重跑后仍是已结束,重开�
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     pullNumber: HARNESS_PR.number,
+    // 这条用例看的是阶段状态,与模式无关;完整审查那一档不依赖阶段有没有历史。
+    mode: "full",
   });
   assert.equal(rerun.status, 202);
   await h.settledAtLeast(3);

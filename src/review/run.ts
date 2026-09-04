@@ -1238,6 +1238,8 @@ export async function runReview(
       ruleSetVersion: deps.ruleSetVersion ?? null,
       // 本轮指令随这一轮落库(issue #225):轮次详情要能回答「那一轮是按什么要求跑的」。
       directive: deps.directive ?? null,
+      // 模式同律(issue #242):时间线上要分得出哪一轮是只复核,「新报 0」才读得对。
+      mode: deps.mode ?? "full",
     });
 
     // 一有 runId 就可以接受订阅(ADR 0017):面板打开进行中的轮次时要能接上实时推送,

@@ -17,6 +17,7 @@ import {
   type PanelHarness,
 } from "./support/panel-harness.ts";
 import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
+import { scriptedReviewer } from "./support/memory-forge.ts";
 
 const cleanups: (() => void)[] = [];
 after(() => {
@@ -109,7 +110,11 @@ test("范围审查重跑:在当前比较项上多跑一轮,归入同一个阶段
   const h = await registeredHarness();
   const rangeReview = await startRangeReview(h);
 
-  const response = await h.api("POST", "/rerun", { rangeReviewId: rangeReview.id });
+  // 这条用例看的是重跑本身,与模式无关;完整审查那一档不依赖阶段有没有历史。
+  const response = await h.api("POST", "/rerun", {
+    rangeReviewId: rangeReview.id,
+    mode: "full",
+  });
   assert.equal(response.status, 202);
   assert.deepEqual(await response.json(), {
     rangeReviewId: rangeReview.id,
@@ -184,7 +189,7 @@ test("范围审查重跑要 review:rerun:有它的用户跑得动,没有的被�
   const allowed = await fetch(`${h.serverUrl}/api/rerun`, {
     method: "POST",
     headers: { cookie: rerunnerCookie, "content-type": "application/json" },
-    body: JSON.stringify({ rangeReviewId: rangeReview.id }),
+    body: JSON.stringify({ rangeReviewId: rangeReview.id, mode: "full" }),
   });
   assert.equal(allowed.status, 202);
   await h.settledAtLeast(2);
@@ -195,4 +200,73 @@ test("范围审查重跑要 review:rerun:有它的用户跑得动,没有的被�
   assert.equal(runs.length, 2);
   // 触发人记的是点重跑的那个账号。
   assert.equal(runs[0]!.triggeredBy, "range-rerunner");
+});
+
+/** 报一条 Finding 的 Reviewer:只复核那一轮要有未处置历史才开得起来。 */
+const reportingReviewers: NonNullable<
+  NonNullable<Parameters<typeof startReadyPanelHarness>[1]>["buildReviewers"]
+> = (plans) =>
+  plans.map((plan) =>
+    scriptedReviewer(plan.spec.model, [
+      { file: "src/answer.ts", line: 1, severity: "P1", category: "bug", description: "这里会越界" },
+    ]),
+  );
+
+/** 库里每一轮的模式,按开跑先后。 */
+function modes(h: PanelHarness, rangeReviewId: number): string[] {
+  const store = openStore(h.db.path);
+  try {
+    return store
+      .listRuns({ limit: 30, rangeReviewId })
+      .map((run) => run.mode)
+      .reverse();
+  } finally {
+    store.close();
+  }
+}
+
+test("范围审查重跑默认只复核,`full` 才是完整审查,非法取值 400", async () => {
+  const h = await registeredHarness({ buildReviewers: reportingReviewers });
+  const rangeReview = await startRangeReview(h);
+
+  // 不带 mode:清历史是重跑的常态,整段范围再审一遍不是。
+  assert.equal((await h.api("POST", "/rerun", { rangeReviewId: rangeReview.id })).status, 202);
+  await h.settledAtLeast(2);
+  assert.equal(
+    (await h.api("POST", "/rerun", { rangeReviewId: rangeReview.id, mode: "full" })).status,
+    202,
+  );
+  await h.settledAtLeast(3);
+
+  // 认不出的取值当场拒:悄悄按默认跑会开出一轮不是人要的审查。
+  assert.equal(
+    (await h.api("POST", "/rerun", { rangeReviewId: rangeReview.id, mode: "only" })).status,
+    400,
+  );
+  assert.equal(
+    (await h.api("POST", "/rerun", { rangeReviewId: rangeReview.id, mode: 7 })).status,
+    400,
+  );
+  assert.equal(h.settled.length, 3);
+
+  // 发起触发的首轮永远是完整审查。
+  assert.deepEqual(modes(h, rangeReview.id), ["full", "verdict-only", "full"]);
+});
+
+test("没有未处置历史的阶段:只复核重跑 409 并说明,一轮不开", async () => {
+  const h = await registeredHarness();
+  const rangeReview = await startRangeReview(h);
+
+  const denied = await h.api("POST", "/rerun", { rangeReviewId: rangeReview.id });
+  assert.equal(denied.status, 409);
+  assert.match(((await denied.json()) as { error: string }).error, /未处置/);
+  assert.equal(h.settled.length, 1);
+
+  // 完整审查这一档不受影响:它本来就不依赖历史。
+  assert.equal(
+    (await h.api("POST", "/rerun", { rangeReviewId: rangeReview.id, mode: "full" })).status,
+    202,
+  );
+  await h.settledAtLeast(2);
+  assert.deepEqual(modes(h, rangeReview.id), ["full", "full"]);
 });

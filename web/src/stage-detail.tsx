@@ -11,7 +11,9 @@ import {
   ReaderIcon,
 } from "@radix-ui/react-icons";
 import {
+  Badge,
   Callout,
+  Checkbox,
   Dialog as ThemedDialog,
   IconButton,
   Skeleton,
@@ -35,7 +37,12 @@ import { localClock, localDay, localMinute } from "@/lib/time";
 
 import { fetchJson } from "./api.ts";
 import { AdvanceAction, CompleteAction, type RangeReview } from "./range-review-actions.tsx";
-import { rerunRequest, RUN_DIRECTIVE_PLACEHOLDER } from "./repo-actions.tsx";
+import {
+  FULL_REVIEW_HINT,
+  rerunRequest,
+  RUN_DIRECTIVE_PLACEHOLDER,
+  type RerunMode,
+} from "./repo-actions.tsx";
 import { FilePatch } from "./run-diff.tsx";
 import { RunTrace } from "./run-trace.tsx";
 import {
@@ -400,11 +407,14 @@ function StageActions({
 }
 
 /**
- * 重跑(issue #176)加本轮指令(issue #225)。
+ * 重跑(issue #176)加本轮指令(issue #225)与模式(issue #242)。
  *
  * 走弹窗而不是在动作行里常驻一个输入框:指令是选填的,大多数重跑不带它,常驻一个空框
  * 会把「这一栏要填什么」的问题摆在每个人面前。与增量评审同一形状——同一行上的两个
  * 动作,一个点开弹窗一个直接跑,人得先记住哪个是哪个。
+ *
+ * 「完整审查」默认不勾:重跑要的多半是把修完的历史清掉,再审一遍整段范围会又多出几十
+ * 条待处置。两种来源(pull request 阶段与范围审查阶段)同一个弹窗、同一套默认。
  */
 function RerunAction({
   stage,
@@ -420,20 +430,24 @@ function RerunAction({
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [directive, setDirective] = useState("");
+  const [fullReview, setFullReview] = useState(false);
   const rerun = useMutation({
-    mutationFn: (text: string | undefined) =>
+    mutationFn: ({ text, mode }: { text: string | undefined; mode: RerunMode }) =>
       stage.source === "range-review"
-        ? rerunRangeReviewRequest(stage.rangeReviewId!, text)
+        ? rerunRangeReviewRequest(stage.rangeReviewId!, text, mode)
         : rerunRequest({
             owner: stage.owner,
             repo: stage.repo,
             pullNumber: stage.pullNumber!,
             ...(text === undefined ? {} : { directive: text }),
+            mode,
           }),
     onSuccess: (text) => {
       setOpen(false);
       // 指令只属于刚发出去的那一轮,留在框里下次会被顺手带上。
       setDirective("");
+      // 模式同律:下一次重跑仍从「只复核」起步。
+      setFullReview(false);
       onFeedback({ text, isError: false });
       onTriggered();
       void queryClient.invalidateQueries({ queryKey: ["stage-detail"] });
@@ -461,7 +475,10 @@ function RerunAction({
             event.preventDefault();
             onFeedback(null);
             const trimmed = directive.trim();
-            rerun.mutate(trimmed === "" ? undefined : trimmed);
+            rerun.mutate({
+              text: trimmed === "" ? undefined : trimmed,
+              mode: fullReview ? "full" : "verdict-only",
+            });
           }}
         >
           <Text as="label" htmlFor="stage-rerun-directive" className="sr-only">
@@ -476,6 +493,21 @@ function RerunAction({
             value={directive}
             onChange={(event) => setDirective(event.target.value)}
           />
+          {/* 默认不勾:清历史是重跑的常态,整段范围再审一遍不是(issue #242)。 */}
+          <Text
+            as="label"
+            size="2"
+            className="mt-3 flex cursor-pointer items-center gap-2 max-sm:min-h-11"
+          >
+            <Checkbox
+              checked={fullReview}
+              onCheckedChange={(checked) => setFullReview(checked === true)}
+            />
+            完整审查
+            <Text size="1" color="gray">
+              {FULL_REVIEW_HINT}
+            </Text>
+          </Text>
           <div className="mt-4 grid grid-cols-2 gap-2 sm:flex sm:justify-end">
             <ThemedDialog.Close>
               <Button
@@ -766,6 +798,17 @@ function RoundDrawer({
 
       {run.data === undefined ? null : (
         <div className="flex flex-col gap-3">
+          {/* 这一轮的模式(issue #242):与本轮指令并列,一起回答「这一轮为什么这么跑」。
+              完整审查是常态,只在只复核那一档写出来。 */}
+          {run.data.run.mode !== "verdict-only" ? null : (
+            <section
+              aria-label="本轮模式"
+              className="rounded-lg bg-sunken px-3 py-2 text-base text-text"
+            >
+              <span className="text-sm text-text-secondary">本轮模式</span>
+              <p className="mt-0.5">只复核:只复核历史 Finding,这一轮不新报</p>
+            </section>
+          )}
           {/* 发起这一轮时附的本轮指令(issue #225):这一轮为什么这么跑,答案只在这里。 */}
           {run.data.run.directive === null ? null : (
             <section

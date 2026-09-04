@@ -43,6 +43,8 @@ type RunRow = {
   missedVerdicts: number;
   resolved: number;
   total: number;
+  /** 这一轮的模式(issue #242);升级前的旧行读回来是完整审查。 */
+  mode: string;
 };
 
 function seedRun(
@@ -277,10 +279,12 @@ test("重跑:注册仓库触发新 Review Run,同一 head commit 重复审合法
   );
   confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
 
+  // 这几条用例看的是重跑本身,与模式无关;完整审查那一档不依赖阶段有没有历史。
   const rerun = await h.api("POST", "/rerun", {
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     pullNumber: HARNESS_PR.number,
+    mode: "full",
   });
   assert.equal(rerun.status, 202);
   await h.settledAtLeast(1);
@@ -291,6 +295,7 @@ test("重跑:注册仓库触发新 Review Run,同一 head commit 重复审合法
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     pullNumber: HARNESS_PR.number,
+    mode: "full",
   });
   assert.equal(again.status, 202);
   await h.settledAtLeast(2);
@@ -413,6 +418,7 @@ test("重跑:模型覆盖生效,经 buildReviewers 构建", async () => {
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     pullNumber: HARNESS_PR.number,
+    mode: "full",
   });
   assert.equal(rerun.status, 202);
   await h.settledAtLeast(1);
@@ -448,4 +454,34 @@ test("时间流 API:每轮带漏复核条数,没有历史可复核的那轮是�
   assert.equal(body.runs[0]!.missedVerdicts, 1);
   assert.equal(body.runs[1]!.id, runId);
   assert.equal(body.runs[1]!.missedVerdicts, 0);
+});
+
+test("轮次列表与轮次详情都带这一轮的模式,升级前的旧行按完整审查算", async () => {
+  const h = await startReadyPanelHarness(cleanups);
+  assert.equal(
+    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
+    201,
+  );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+
+  // 投递触发的一轮永远是完整审查:模式只有重跑那两种入参给得出。
+  assert.equal((await h.deliverViaHook("delivery-head")).status, 200);
+  await h.settledAtLeast(1);
+  // 这一列是这一票才加的,升级前落的行读回来同样是完整审查。
+  seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
+    [],
+  );
+
+  const body = (await (await h.api("GET", "/runs")).json()) as { runs: RunRow[] };
+  assert.deepEqual(
+    body.runs.map((run) => run.mode),
+    ["full", "full"],
+  );
+
+  const detail = (await (await h.api("GET", `/runs/${body.runs[0]!.id}`)).json()) as {
+    run: RunRow;
+  };
+  assert.equal(detail.run.mode, "full");
 });
