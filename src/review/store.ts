@@ -788,6 +788,14 @@ export type RunMeta = {
   mode?: ReviewRunMode;
 };
 
+/** 一条被启动改判掉的 Review Run(issue #247)。坐标够撤掉那个 PR 上的 👀。 */
+export type InterruptedRun = {
+  runId: number;
+  owner: string;
+  repo: string;
+  pullNumber: number;
+};
+
 export type OutcomeRecord = {
   model: string;
   failure?: string;
@@ -1958,6 +1966,16 @@ export type Store = {
   listModelSupplements(provider?: string): ModelSupplementRecord[];
   startRun(meta: RunMeta): number;
   finishRun(runId: number, result: RunResult): void;
+  /**
+   * 把停在运行中的 Review Run 改判失败(issue #247,与 `failInterruptedWorktrees` 同一个
+   * 理由):进程重启会连着 Reviewer 子进程一起中断,那些行没有谁再去改它,面板会一直
+   * 显示进行中并持续轮询。返回被改判的那些轮次,调用方据它去撤 PR 上残留的 👀。
+   *
+   * `review_run` 没有失败原因的列,原因落在这一轮已固定的 Reviewer 指定各自的
+   * `reviewer_outcome` 行上——面板的逐模型失败展示本来就读那里,与其他失败一轮同一
+   * 条路径。
+   */
+  failInterruptedRuns(failure: string, at: string): InterruptedRun[];
   /**
    * 本审查阶段已经报过的 Finding,注入给这一轮的每个 Reviewer(ADR 0016)。
    *
@@ -4440,6 +4458,50 @@ export function openStore(dbPath: string): Store {
         db.exec("ROLLBACK");
         throw error;
       }
+    },
+
+    failInterruptedRuns(failure, at) {
+      const rows = db
+        .prepare(
+          "SELECT id, owner, repo, pull_number FROM review_run WHERE finished_at IS NULL",
+        )
+        .all();
+      // 没有中断轮次时一个写都不发:启动路径因此零改动,调用方也不去问 Forge。
+      if (rows.length === 0) return [];
+      db.exec("BEGIN");
+      try {
+        // 失败原因借 Reviewer 指定各写一行 outcome:计数与耗时都归零,这一轮它们
+        // 什么都没跑完。
+        const insertOutcome = db.prepare(
+          `INSERT INTO reviewer_outcome
+             (run_id, model, failure, finding_count, anomaly_count,
+              rejected_tool_calls, anchor_rejections, duration_ms)
+           VALUES (?, ?, ?, 0, 0, 0, 0, 0)`,
+        );
+        const pins = db.prepare(
+          "SELECT identity FROM review_run_reviewer_pin WHERE run_id = ? ORDER BY position",
+        );
+        for (const row of rows) {
+          for (const pin of pins.all(row["id"] as number)) {
+            insertOutcome.run(row["id"] as number, String(pin["identity"]), failure);
+          }
+        }
+        // 结束时间取启动时刻。耗时留空:进程什么时候落地的没人知道,写一个算出来的
+        // 数字就是编。
+        db.prepare(
+          "UPDATE review_run SET finished_at = ?, failed = 1 WHERE finished_at IS NULL",
+        ).run(at);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return rows.map((row) => ({
+        runId: Number(row["id"]),
+        owner: String(row["owner"]),
+        repo: String(row["repo"]),
+        pullNumber: Number(row["pull_number"]),
+      }));
     },
 
     finishRun(runId, result) {
