@@ -39,6 +39,7 @@ import type {
   Reviewer,
   ReviewerOutcome,
   ReviewerUsage,
+  ReviewRunMode,
   ProjectFact,
   ReviewRule,
   Severity,
@@ -167,6 +168,12 @@ export type ReviewRunDeps = {
    * 传了而它失败、超时或分组方案没过验收时同样退回算法档,并在轨迹记一条回退事件。
    */
   mergeAgent?: MergeAgent;
+  /**
+   * 这一轮的模式(CONTEXT.md 只复核,issue #242)。不传即完整审查,行为与这一票之前
+   * 逐字一致。`verdict-only` 时变更文件集先过滤成有未处置历史的那些,Reviewer 只能给
+   * 复核结论。
+   */
+  mode?: ReviewRunMode;
 };
 
 export type ReviewRunResult = {
@@ -1105,6 +1112,26 @@ function historyForBatch(
 }
 
 /**
+ * 未处置的历史条目(ADR 0016 的 `unresolved` / `unknown` 两档)。只复核那一轮据它过滤
+ * 变更文件集,接口层据它判「这个阶段有没有可复核的东西」——两处同一个判据,只复核开不
+ * 开跑因此不会在两层给出不同答案。
+ */
+export function openHistory(
+  history: readonly HistoryFinding[],
+): readonly HistoryFinding[] {
+  return history.filter(
+    (entry) => entry.disposition === "unresolved" || entry.disposition === "unknown",
+  );
+}
+
+/**
+ * 只复核那一轮过滤完一个文件都不剩时的失败原因(issue #242)。一轮什么都不做的 Review
+ * Run 不该被开出来,所以在落库之前就抛;措辞固定,接口层据它转 409。
+ */
+export const VERDICT_ONLY_NO_HISTORY =
+  "只复核:这个阶段没有未处置的历史 Finding,这一轮不开跑";
+
+/**
  * 一次 Review Run:解析 Review Range、准备工作副本、运行 Reviewer、发布 review 评论。
  */
 export async function runReview(
@@ -1157,6 +1184,33 @@ export async function runReview(
     // 可评论行区间在 Reviewer 之前算好:它随请求交给每个 Reviewer 做锚定校验(issue #224),
     // 编排层收结论时再用同一份判一次。
     const diffRanges = parseDiffRanges(diff);
+
+    // 句柄的存活期覆盖整段审查(时长没有总上限,兜底的是子进程那道连续静默闸,
+    // 见 `reviewer/subprocess.ts`),中途出错必须归还:webhook 服务是长跑进程,
+    // 泄漏的连接会一次次攒下来。
+    const store = openStore(deps.dbPath);
+
+    // 本阶段已经报过的 Finding,注入给这一轮的每个 Reviewer(ADR 0016)。读在开跑之前:
+    // 本轮自己的 Finding 还没落库,这份历史因此正是「上一轮为止」的那些。
+    // 它也是只复核那一轮过滤文件集的依据(issue #242),两处同一份读取,口径不会分叉。
+    const history = store.stageHistory(
+      deps.rangeReviewId === undefined
+        ? { owner: event.owner, repo: event.repo, pullNumber: event.number }
+        : { rangeReviewId: deps.rangeReviewId },
+    );
+
+    const verdictOnly = deps.mode === "verdict-only";
+    if (verdictOnly) {
+      // 只复核那一轮只读有未处置历史的文件:花费按历史所在文件数计,不按整段范围计。
+      const withOpenHistory = new Set(openHistory(history).map((entry) => entry.file));
+      range.files = range.files.filter((file) => withOpenHistory.has(file));
+      if (range.files.length === 0) {
+        // 一轮什么都不做的 Review Run 不该被开出来:落库之前抛,接口层据这句话转 409。
+        store.close();
+        throw new Error(VERDICT_ONLY_NO_HISTORY);
+      }
+    }
+
     const batches = splitIntoBatches(
       range.files,
       changedLines,
@@ -1164,10 +1218,6 @@ export async function runReview(
       deps.maxFilesPerBatch ?? DEFAULT_MAX_FILES_PER_BATCH,
     );
 
-    // 句柄的存活期覆盖整段审查(时长没有总上限,兜底的是子进程那道连续静默闸,
-    // 见 `reviewer/subprocess.ts`),中途出错必须归还:webhook 服务是长跑进程,
-    // 泄漏的连接会一次次攒下来。
-    const store = openStore(deps.dbPath);
     const runId = store.startRun({
       owner: event.owner,
       repo: event.repo,
@@ -1218,14 +1268,6 @@ export async function runReview(
         );
       }
 
-      // 本阶段已经报过的 Finding,注入给这一轮的每个 Reviewer(ADR 0016)。读在开跑之前:
-      // 本轮自己的 Finding 还没落库,这份历史因此正是「上一轮为止」的那些。
-      const history = store.stageHistory(
-        deps.rangeReviewId === undefined
-          ? { owner: event.owner, repo: event.repo, pullNumber: event.number }
-          : { rangeReviewId: deps.rangeReviewId },
-      );
-
       // 这一轮声称要做的事(issue #201)。范围审查的标题来自它自己,不是容器 PR 的标题
       // ——那个标题与正文都由本工具拼出(`range-review.ts`),不含任何作者意图。
       const rangeReview =
@@ -1270,6 +1312,9 @@ export async function runReview(
               facts,
               // 本轮指令每批都给同一份:它说的是这一轮的要求,与本批审哪些文件无关。
               ...(deps.directive === undefined ? {} : { directive: deps.directive }),
+              // 完整审查不带这一项(issue #242):Reviewer 收到的请求形状与这一票之前
+              // 逐字一致,只复核那一轮才多出模式。
+              ...(verdictOnly ? { mode: "verdict-only" as const } : {}),
               onEvent: (event) => {
                 const { kind, ...payload } = event;
                 // 事件带上批次序号(issue #232):批次并行之后同一个模型几批的事件在
@@ -1502,8 +1547,16 @@ export async function runReview(
 
       // 有缺席或覆盖不全的模型时即便零 Finding 也要发:读者需要知道这次审查覆盖面
       // 打了折扣。
+      // 只复核那一轮零新报时不发 review(issue #242):这一轮的产出是复核结论、自动处置
+      // 与旧评论的 resolve,它们都不经 review 落地,发出去的只会是一条内容为空的 review。
+      // 承接旧位置合成出来的那些不算「零新报」:它们要发一条新的行级评论才承接得住。
+      const verdictOnlySilent = verdictOnly && findings.length === 0;
       const hasSomethingToSay =
-        findings.length > 0 || absent.length > 0 || partial.length > 0;
+        !verdictOnlySilent &&
+        (findings.length > 0 || absent.length > 0 || partial.length > 0);
+      if (verdictOnlySilent) {
+        trace.run("review_skipped", { reason: "本轮只复核,未发 review" });
+      }
       if (!failed && hasSomethingToSay) {
         const published = await forge.createReview(event, {
           body: reviewBody(findings, absent, partial, carried),
@@ -1516,7 +1569,8 @@ export async function runReview(
 
       // 跑成功却什么都没发现时,这次审查在 PR 上本来一点痕迹都不会留,与「审查根本
       // 没跑」无从区分。这个赞就是那条痕迹。
-      if (!failed && !hasSomethingToSay) {
+      // 只复核那一轮不点这个赞:它没有审过整段改动,那个赞会被读成「这一版审查通过」。
+      if (!failed && !hasSomethingToSay && !verdictOnlySilent) {
         await tryReaction(() => forge.addReaction(event, "+1"));
       }
 

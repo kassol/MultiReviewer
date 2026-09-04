@@ -822,3 +822,76 @@ test("历史所在文件不在本轮任何批次:记无法判断并标漏给,不
   ]);
   assert.deepEqual(forge.resolvedIds, [], "谁都没复核过的这条被自动处置了");
 });
+
+test("只复核时批次只含有未处置历史的文件,每批的 Reviewer 都收到模式项", async () => {
+  const fixture = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+  const deps = routingDeps(fixture);
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [
+      scriptedReviewer("model-a", [
+        findingAt("src/a.ts", "a 的问题"),
+        findingAt("src/c.ts", "c 的问题"),
+      ]),
+    ],
+  });
+
+  // b.ts 一条历史都没有:只复核那一轮它不进任何批次,花费按历史所在文件数计。
+  const second = verdictReviewer("model-b", "present");
+  await runReview(EVENT, { ...deps, reviewers: [second], mode: "verdict-only" });
+
+  assert.deepEqual(
+    batchesOf(second).map((batch) => batch.files),
+    [["src/a.ts"], ["src/c.ts"]],
+  );
+  assert.deepEqual(
+    second.calls.map((call) => call.mode),
+    ["verdict-only", "verdict-only"],
+  );
+});
+
+test("不给模式即完整审查:全部变更文件照旧分批,Reviewer 收到的输入不带模式项", async () => {
+  const fixture = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+  const deps = routingDeps(fixture);
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [scriptedReviewer("model-a", [findingAt("src/a.ts", "a 的问题")])],
+  });
+
+  const second = scriptedReviewer("model-b", []);
+  await runReview(EVENT, { ...deps, reviewers: [second] });
+
+  assert.deepEqual(
+    batchesOf(second).map((batch) => batch.files),
+    [["src/a.ts"], ["src/b.ts"], ["src/c.ts"]],
+  );
+  assert.deepEqual(
+    second.calls.map((call) => call.mode),
+    [undefined, undefined, undefined],
+  );
+});
+
+test("只复核时判已修的历史照常自动处置为「已修复」", async () => {
+  const fixture = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+  const { db, forge } = fixture;
+  const deps = routingDeps(fixture);
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [scriptedReviewer("model-a", [findingAt("src/b.ts", "b 的问题")])],
+  });
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [verdictReviewer("model-a", "fixed")],
+    mode: "verdict-only",
+  });
+
+  assert.deepEqual(forge.resolvedIds, [forge.publishedComments[0]!.id]);
+  assert.deepEqual(
+    query(db.path, "SELECT disposition FROM finding ORDER BY id").map((row) => row["disposition"]),
+    ["fixed"],
+  );
+});
