@@ -1,4 +1,5 @@
 import type { ReviewRunReviewerPin } from "../config.ts";
+import type { Drain } from "../drain.ts";
 import type {
   ExistingReviewComment,
   Forge,
@@ -200,6 +201,12 @@ export type ReviewRunDeps = {
    * 开跑时间会把停机时长也算成审查耗时。
    */
   resumeRunId?: number;
+  /**
+   * 排空状态(issue #249)。给了它,排空一开始取号线就不再取新批:正在跑的那批照常
+   * 跑完并落库,这一轮随后停下——不合并、不发评论、不写结束时间,留在续跑得回来的
+   * 状态(issue #248)。不传即不受排空影响,行为与这一票之前逐字一致。
+   */
+  drain?: Drain;
 };
 
 export type ReviewRunResult = {
@@ -212,6 +219,11 @@ export type ReviewRunResult = {
   failed: boolean;
   /** 发布为行级评论的 Finding 条数。 */
   inlineCount: number;
+  /**
+   * 这一轮因排空停在批次边界(issue #249),没有收尾。此时上面几项都是空的:合并、
+   * 发评论与落结束时间都没做,缺的批次交给下一次启动续跑。
+   */
+  aborted?: true;
 };
 
 /** 上一轮已提出、本轮匹配上的 Finding。它不再发行级评论,折进 review 正文。 */
@@ -1645,12 +1657,31 @@ export async function runReview(
       );
       await Promise.all(
         Array.from({ length: parallel }, async () => {
-          while (nextBatch < batches.length) {
+          // 排空一开始就不再取新批(issue #249):正在跑的那批照常跑完并落库,这条
+          // 取号线随后自然停下。批次是恢复粒度(ADR 0024),批内的会话续不了。
+          while (nextBatch < batches.length && deps.drain?.draining() !== true) {
             const index = nextBatch++;
             if (perBatch[index] === undefined) perBatch[index] = await runBatch(index);
           }
         }),
       );
+      // 排空中止(issue #249):还有批次没跑,这一轮就到此为止——不合并、不发评论、
+      // 也不写结束时间,停在下一次启动续跑得回来的状态(issue #248)。
+      const unrun = batches.findIndex((_, index) => perBatch[index] === undefined);
+      if (unrun >= 0) {
+        trace.run("run_aborted", { batch: unrun + 1, total: batches.length });
+        console.log(
+          `[drain] 第 ${runId} 轮停在第 ${unrun + 1} 批,共 ${batches.length} 批,等下一次启动续跑`,
+        );
+        return {
+          headSha: pullRequest.headSha,
+          findings: [],
+          outcomes: [],
+          failed: false,
+          inlineCount: 0,
+          aborted: true,
+        };
+      }
       // 汇总在全部批次跑完之后做一次:一次 Review Run 只发一次 review。
       const timed = deps.reviewers.map((_, index) =>
         mergeBatchOutcomes(perBatch.map((batch) => batch[index]!)),

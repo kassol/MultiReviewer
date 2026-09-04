@@ -11,6 +11,7 @@ import type { AddressInfo } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 
 import type { ReviewerRuntimePlan, ReviewerSpec } from "../../src/config.ts";
+import type { Drain } from "../../src/drain.ts";
 import type { Forge, PullRequestRef } from "../../src/forge/forge.ts";
 import {
   createWebhookServer,
@@ -163,6 +164,8 @@ export type PanelHarnessOptions = {
   traceHeartbeatMs?: number;
   /** 规则 agent(issue #205)。省略即用真实的 Pi 子进程实现,用例注入脚本化实现。 */
   ruleAgent?: WebhookServerDeps["ruleAgent"];
+  /** 排空状态(issue #249)。用例自己 `begin()` 之后再调端点,验排空期间的回绝。 */
+  drain?: Drain;
 };
 
 export async function startPanelHarness(
@@ -280,6 +283,7 @@ export async function startPanelHarness(
 
   const server = createWebhookServer({
     forges: { gitea: forge },
+    ...(options.drain === undefined ? {} : { drain: options.drain }),
     buildReviewers: (plans) => {
       runtimePlans.push(plans);
       factoryCalls.push(plans.map((plan) => plan.spec));

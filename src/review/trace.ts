@@ -39,6 +39,8 @@ export type RunTraceKind =
   | "review_posted"
   /** 只复核那一轮零新报,这一轮不向 Forge 发 review(issue #242)。 */
   | "review_skipped"
+  /** 服务正在排空,这一轮停在批次边界、没有收尾,由下一次启动续跑(issue #249)。 */
+  | "run_aborted"
   | "run_finished";
 
 export type TraceKind = ReviewerTraceKind | RunTraceKind;

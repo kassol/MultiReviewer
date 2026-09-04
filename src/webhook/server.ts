@@ -29,6 +29,7 @@ import {
   THINKING_LEVELS,
   type ThinkingLevel,
 } from "../config.ts";
+import type { Drain } from "../drain.ts";
 import type { CloneCredentials, Forge, PullRequestRef, RepoRef } from "../forge/forge.ts";
 import {
   createGiteaHookManager,
@@ -258,6 +259,11 @@ export type WebhookServerDeps = {
    * 和基点探索同一条口径。
    */
   onRunResumed?: (runId: number, failure?: string) => void;
+  /**
+   * 排空状态(issue #249)。给了它,排空期间的投递与重跑一律回 503 且不开跑,已开跑
+   * 的每一轮在这里登记,`main.ts` 据此知道退出前还要等谁。不传即不受排空影响。
+   */
+  drain?: Drain;
 };
 
 /** 两个平台标识 pull request 事件的头值相同。 */
@@ -815,6 +821,8 @@ async function startRun(
   mode?: ReviewRunMode,
 ): Promise<void> {
   const settled = deps.onRunSettled ?? logFailure;
+  // 排空要等的就是这一段(issue #249):这一轮到达可退出点之前进程不退出。
+  const reachedExitPoint = drainTracked(deps, describe(event));
   try {
     await runReview(
       { owner: event.owner, repo: event.repo, number: event.number },
@@ -827,13 +835,28 @@ async function startRun(
         ...(rangeReviewId === undefined ? {} : { rangeReviewId }),
         ...(directive === undefined ? {} : { directive }),
         ...(mode === undefined ? {} : { mode }),
+        ...(deps.drain === undefined ? {} : { drain: deps.drain }),
       },
     );
   } catch (error) {
     settled(event, error);
     return;
+  } finally {
+    reachedExitPoint();
   }
   settled(event);
+}
+
+/**
+ * 在排空状态里登记一轮(issue #249),返回它到达可退出点时调用的句柄。没配排空状态时
+ * 是个空动作。排空期间每一轮到达可退出点各记一行:退出前在等谁,只有这些行说得出。
+ */
+function drainTracked(deps: WebhookServerDeps, label: string): () => void {
+  const done = deps.drain?.enter(label);
+  return () => {
+    done?.();
+    if (deps.drain?.draining() === true) console.log(`[drain] ${label} — 已到可退出点`);
+  };
 }
 
 /**
@@ -869,6 +892,13 @@ async function handle(
   if (body === undefined) return;
 
   const log = deps.onDelivery ?? ((message: string) => console.log(`[webhook] ${message}`));
+
+  // 正在排空(issue #249):这次投递不受理,也不占幂等键——占了的话这个 head commit
+  // 之后再也不会自动审。503 让平台把它记成一次失败投递,人重投或下一次 push 即可。
+  if (deps.drain?.draining() === true) {
+    log("服务正在排空,这次投递没有受理");
+    return send(res, 503);
+  }
 
   /**
    * 按 `key` 只记首次的行。两处在用:与本服务无关的投递(webhook 订阅通常宽于本服务
@@ -4936,6 +4966,10 @@ async function handleRerun(
   triggeredBy: string,
   assignment: RepoAssignment,
 ): Promise<void> {
+  // 正在排空(issue #249):两种入参都挡在这里,重跑开出来的轮次一样跑不完。
+  if (deps.drain?.draining() === true) {
+    return sendJson(res, 503, { error: "服务正在退出,等它起回来再重跑" });
+  }
   const payload = await readJson<{
     owner?: unknown;
     repo?: unknown;
@@ -7393,6 +7427,8 @@ async function resumeRun(deps: WebhookServerDeps, run: InterruptedRunDetail): Pr
       dbPath: deps.dbPath,
       resumeRunId: run.runId,
       mode: run.mode,
+      // 续跑同样停在批次边界(issue #249):排空开始后它跑完当前批次就停,不再收尾。
+      ...(deps.drain === undefined ? {} : { drain: deps.drain }),
       ...(run.triggeredBy === null ? {} : { triggeredBy: run.triggeredBy }),
       ...(run.rangeReviewId === null ? {} : { rangeReviewId: run.rangeReviewId }),
       ...(run.directive === null ? {} : { directive: run.directive }),
@@ -7419,7 +7455,10 @@ function resumeInterruptedRuns(
     });
   void (async () => {
     for (const run of runs) {
+      // 排空开始后不再续下一轮(issue #249):这一批本来就是「等下次启动再说」的那些。
+      if (deps.drain?.draining() === true) return;
       let failure: string | undefined;
+      const reachedExitPoint = drainTracked(deps, `第 ${run.runId} 轮续跑`);
       try {
         await resumeRun(deps, run);
       } catch (error) {
@@ -7434,6 +7473,8 @@ function resumeInterruptedRuns(
         );
         // 改判掉的这一轮在 PR 上还挂着 👀(续跑那一段自己挂的,或崩溃前留下的)。
         removeInterruptedReactions(deps.forges.gitea, interrupted);
+      } finally {
+        reachedExitPoint();
       }
       if (failure === undefined) settled(run.runId);
       else settled(run.runId, failure);

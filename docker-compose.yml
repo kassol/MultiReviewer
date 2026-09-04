@@ -16,6 +16,12 @@ services:
     # 凭据与配置全部经环境变量进入容器。这个文件不含任何凭据值。
     env_file: .env
 
+    # 换容器时先发 SIGTERM,服务进入排空:不再接新投递,在跑的轮次跑完当前批次并落库
+    # 后退出(issue #249)。这个宽限期与应用的默认排空上限
+    # `MULTIREVIEWER_DRAIN_TIMEOUT_SECONDS`(300 秒)是同一个数,改一处必须改另一处
+    # ——宽限期更短的话,进程会在等批次的途中被 SIGKILL,那一批白跑。
+    stop_grace_period: 300s
+
     # 容器内固定监听 3000。对外端口另用一个变量,与应用读的 MULTIREVIEWER_PORT 分开
     # ——同名会让应用改成监听宿主端口号,映射当场对不上。
     ports:

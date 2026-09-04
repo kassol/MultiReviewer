@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
+import { createDrain, type Drain } from "../src/drain.ts";
 import type { Forge, PullRequestRef } from "../src/forge/forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 import {
@@ -88,6 +89,8 @@ type HarnessOptions = {
   loggedOnceMax?: number;
   /** 把被审仓库留在「知识集未确认」那一侧(issue #206),验门禁。 */
   ruleSetUnconfirmed?: boolean;
+  /** 排空状态(issue #249)。用例自己 `begin()` 之后再投递,验排空期间的回绝。 */
+  drain?: Drain;
 };
 
 async function startHarness(options: HarnessOptions = {}) {
@@ -160,6 +163,7 @@ async function startHarness(options: HarnessOptions = {}) {
 
   const server = createWebhookServer({
     forges: options.omitGiteaForge ? { github: forge } : { github: forge, gitea: forge },
+    ...(options.drain === undefined ? {} : { drain: options.drain }),
     // 组装桩:本文件测的是投递链路,不起真的 Pi 子进程,凭据快照也不看。
     buildReviewers: (plans) =>
       options.reviewer === undefined
@@ -854,4 +858,30 @@ test("容器 PR 的事件按分支前缀丢弃,不触发审查也不进幂等表
   const rows = sqlite.prepare("SELECT COUNT(*) AS n FROM webhook_delivery").all();
   sqlite.close();
   assert.equal(Number(rows[0]!["n"]), 0);
+});
+
+test("服务正在排空:投递回 503、不开跑,幂等键也不被占走", async () => {
+  const drain = createDrain();
+  const h = await startHarness({ drain });
+
+  // 先证明这条投递本来是跑得起来的,再进排空。
+  assert.equal((await h.deliver("gitea", "opened", { headSha: "sha-1" })).status, 200);
+  await h.settledAtLeast(1);
+  const before = h.dispatched.length;
+
+  drain.begin();
+  const response = await h.deliver("gitea", "synchronized", { headSha: "sha-2" });
+
+  assert.equal(response.status, 503);
+  assert.equal(h.dispatched.length, before);
+  assert.ok(h.deliveries.some((line) => line.includes("排空")));
+
+  // 排空期间那个 head commit 的幂等键没被占走:起回来之后它仍然审得了。
+  const sqlite = new DatabaseSync(h.db.path);
+  const claimed = sqlite
+    .prepare("SELECT head_sha FROM webhook_delivery")
+    .all()
+    .map((row) => String((row as Record<string, unknown>)["head_sha"]));
+  sqlite.close();
+  assert.deepEqual(claimed, ["sha-1"]);
 });
