@@ -15,7 +15,12 @@ import type {
   MergeAgentResult,
   MergeGroupProposal,
 } from "../review/dedupe.ts";
-import type { Finding, ReviewerEvent, ReviewerUsage } from "../review/finding.ts";
+import type {
+  Finding,
+  HistoryFinding,
+  ReviewerEvent,
+  ReviewerUsage,
+} from "../review/finding.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 import { runWorkerChild } from "./subprocess.ts";
 
@@ -33,6 +38,8 @@ export type PiMergeAgentConfig = {
 /** 子进程收到的任务。凭据走环境变量,不进 IPC 消息(与另两条链路同一条口径)。 */
 export type MergeWorkerRequest = {
   findings: readonly Finding[];
+  /** 同文件的历史 Finding(issue #240)。一条都没有时是空数组,prompt 因此不渲染那一段。 */
+  history: readonly HistoryFinding[];
   worktreePath: string;
   runtimeModel: RuntimeModel;
   thinkingLevel?: ThinkingLevel;
@@ -63,6 +70,7 @@ export async function runMergeAgentChild(
 
   const payload: MergeWorkerRequest = {
     findings: request.findings,
+    history: request.history ?? [],
     worktreePath: request.worktreePath,
     runtimeModel: config.runtimeModel,
     ...(config.thinkingLevel === undefined ? {} : { thinkingLevel: config.thinkingLevel }),
