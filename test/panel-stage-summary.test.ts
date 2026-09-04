@@ -47,7 +47,13 @@ type SummaryFinding = {
   disposedAt: string | null;
   note: string | null;
   continuedFrom: string | null;
-  lineAuthor: { sha: string; name: string; email: string; authoredAt: string } | null;
+  lineAuthor: {
+    sha: string;
+    name: string;
+    email: string;
+    authoredAt: string;
+    adjacent: boolean;
+  } | null;
   firstRunId: number;
   firstReportedAt: string;
   lastRunId: number;
@@ -81,7 +87,7 @@ type SeedFinding = {
   placement?: "inline" | "body";
   models?: string[];
   commentId?: string;
-  lineAuthor?: { sha: string; name: string; email: string; authoredAt: string };
+  lineAuthor?: { sha: string; name: string; email: string; authoredAt: string; adjacent: boolean };
 };
 
 /** 落一轮 Review Run:一条 Finding 一个合并组,归属按传入的模型逐条落。 */
@@ -396,6 +402,8 @@ test("阶段汇总每条 Finding 带行作者,未判定的那条是 null", async
             name: "Alice Lin",
             email: "alice@example.invalid",
             authoredAt: "2026-08-21T00:30:00.000Z",
+            // 相邻改动标记随行作者一起投影出去(issue #241)。
+            adjacent: true,
           },
         },
         // 四列同 NULL 即未判定:侧滑显示「无法追溯」,读路径按 null 给。
@@ -416,6 +424,7 @@ test("阶段汇总每条 Finding 带行作者,未判定的那条是 null", async
     name: "Alice Lin",
     email: "alice@example.invalid",
     authoredAt: "2026-08-21T00:30:00.000Z",
+    adjacent: true,
   });
   const unknown = body.findings.find((finding) => finding.description === "正文 fp-unknown")!;
   assert.equal(unknown.lineAuthor, null);

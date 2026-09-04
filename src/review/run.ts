@@ -12,7 +12,6 @@ import {
   readLineAuthors,
   readRangeCommits,
   readRangeDiff,
-  type LineAuthor,
 } from "../git/worktree.ts";
 import {
   DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
@@ -49,7 +48,15 @@ import {
   fingerprintAnchor,
   parseFingerprintAnchors,
 } from "./fingerprint.ts";
-import { changedLinesByFile, isInDiff, parseDiffRanges, type DiffRanges } from "./position.ts";
+import {
+  changedLinesByFile,
+  isInDiff,
+  parseDiffHunks,
+  parseDiffRanges,
+  type DiffHunks,
+  type DiffRanges,
+  type HunkChange,
+} from "./position.ts";
 import {
   openStore,
   type ContinuationCandidate,
@@ -58,6 +65,7 @@ import {
   type FindingPlacement,
   type FindingRecord,
   type OutcomeRecord,
+  type RecordedLineAuthor,
   type VerdictRecord,
 } from "./store.ts";
 import {
@@ -742,7 +750,36 @@ export type LineAuthorQuery = {
 };
 
 /**
+ * 落点那一行要 blame 的位置:落点是本轮的改动行时就是它自己,是 hunk 内的上下文行时
+ * 是同一个 hunk 内离它最近的那处改动(issue #241)。
+ *
+ * 同距取上方:`changes` 按行号升序,严格小于因此让上面那一处留下。没有 hunk 结构、
+ * 落点不在任何 hunk 里(补录路径就是这样)时按落点自己判,与今天一致。
+ */
+function authorLineFor(hunks: DiffHunks, file: string, line: number): { line: number; adjacent: boolean } {
+  // 经 IPC 传过来的那一份是 JSON.parse 出的普通对象,直接下标会读到原型上的成员。
+  if (!Object.hasOwn(hunks, file)) return { line, adjacent: false };
+  const hunk = hunks[file]!.find((h) => line >= h.start && line <= h.end);
+  if (hunk === undefined) return { line, adjacent: false };
+  if (hunk.changes.some((change) => change.line === line)) return { line, adjacent: false };
+
+  let nearest: HunkChange | undefined;
+  for (const change of hunk.changes) {
+    if (nearest === undefined || Math.abs(change.line - line) < Math.abs(nearest.line - line)) {
+      nearest = change;
+    }
+  }
+  if (nearest === undefined) return { line, adjacent: false };
+  return { line: nearest.line, adjacent: true };
+}
+
+/**
  * 逐条判行作者(CONTEXT.md),与传入的顺序一一对应,判不出来的那些是 undefined。
+ *
+ * 落点是本轮 diff 的改动行时取它自己在 head 上的 blame;是 hunk 内的上下文行时取同
+ * hunk 内最近的那处改动,结果带「相邻改动」标记(issue #241)——那一行本身没改,拿它
+ * 的 blame 只会把几个月前的提交当成这次改动的责任人。`hunks` 不给即退回按落点自己判,
+ * 读取时的补录走的就是这条(issue #199 的口径不变)。
  *
  * 每轮按自己的 head 判,不沿用上一轮:延续过来的 Finding 行号已经漂移,抄上一轮的
  * 结果会把这一行记到别人头上。因此按「revision + 文件」分组,一组合成一次
@@ -754,7 +791,9 @@ export type LineAuthorQuery = {
 export async function findingLineAuthors(
   repoPath: string,
   queries: readonly LineAuthorQuery[],
-): Promise<(LineAuthor | undefined)[]> {
+  hunks: DiffHunks = {},
+): Promise<(RecordedLineAuthor | undefined)[]> {
+  const targets = queries.map((query) => authorLineFor(hunks, query.file, query.line));
   const byRevisionAndFile = new Map<string, number[]>();
   for (const [index, query] of queries.entries()) {
     const key = `${query.revision}\n${query.file}`;
@@ -762,7 +801,7 @@ export async function findingLineAuthors(
     if (indexes === undefined) byRevisionAndFile.set(key, [index]);
     else indexes.push(index);
   }
-  const authors: (LineAuthor | undefined)[] = queries.map(() => undefined);
+  const authors: (RecordedLineAuthor | undefined)[] = queries.map(() => undefined);
   for (const indexes of byRevisionAndFile.values()) {
     const first = queries[indexes[0]!]!;
     try {
@@ -770,9 +809,12 @@ export async function findingLineAuthors(
         repoPath,
         first.revision,
         first.file,
-        indexes.map((index) => queries[index]!.line),
+        indexes.map((index) => targets[index]!.line),
       );
-      for (const index of indexes) authors[index] = found.get(queries[index]!.line);
+      for (const index of indexes) {
+        const author = found.get(targets[index]!.line);
+        if (author !== undefined) authors[index] = { ...author, adjacent: targets[index]!.adjacent };
+      }
     } catch (error) {
       console.error(
         `[review] ${first.file} 在 ${first.revision} 上的行作者判定失败,这几条留空:`,
@@ -1157,6 +1199,8 @@ export async function runReview(
     // 可评论行区间在 Reviewer 之前算好:它随请求交给每个 Reviewer 做锚定校验(issue #224),
     // 编排层收结论时再用同一份判一次。
     const diffRanges = parseDiffRanges(diff);
+    // 行作者判定还要 hunk 内的改动位置(issue #241):落点是上下文行时取最近的那一处。
+    const diffHunks = parseDiffHunks(diff);
     const batches = splitIntoBatches(
       range.files,
       changedLines,
@@ -1435,6 +1479,7 @@ export async function runReview(
           file: group.finding.file,
           line: group.finding.line,
         })),
+        diffHunks,
       );
 
       // 一条 Finding 一行,报出它的每个模型一条归属(ADR 0015):Finding Identity 不含

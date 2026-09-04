@@ -152,7 +152,11 @@ CREATE TABLE IF NOT EXISTS finding (
   line_author_sha TEXT,
   line_author_name TEXT,
   line_author_email TEXT,
-  line_author_at TEXT
+  line_author_at TEXT,
+  -- 行作者取自相邻改动(issue #241):落点是 hunk 内的上下文行,作者来自同 hunk 内最近
+  -- 的那处改动而不是这一行本身。1 即是,0 即落点自己就是本轮的改动行;NULL 是升级前
+  -- 落的行与补录路径写的那些,读回按 0。
+  line_author_adjacent INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS finding_by_run ON finding(run_id);
@@ -632,6 +636,9 @@ const ADD_COLUMNS = [
   // 选定比较项时用的分支或 Tag(issue #234)。旧行是 NULL:分支名从 sha 反推不出来。
   "ALTER TABLE range_review ADD COLUMN comparison_source_kind TEXT",
   "ALTER TABLE range_review ADD COLUMN comparison_source_name TEXT",
+  // 行作者取自相邻改动的标记(issue #241)。存量不回填:升级前落的行是 NULL,读回按
+  // 没有标记——那几条当初判的就是落点自己那一行。
+  "ALTER TABLE finding ADD COLUMN line_author_adjacent INTEGER",
 ];
 
 /**
@@ -787,6 +794,18 @@ export type OutcomeRecord = {
 /** Finding 的来源类型:进了行级评论,还是只进了 review 正文(fallback 与正文匹配)。 */
 export type FindingPlacement = "inline" | "body";
 
+/**
+ * 落到一条 Finding 上的行作者(CONTEXT.md):git 作者与那次提交,外加相邻改动标记
+ * (issue #241)。
+ */
+export type RecordedLineAuthor = LineAuthor & {
+  /**
+   * 落点是 hunk 内的上下文行、作者取自同 hunk 内最近的那处改动时为 true。面板据此在
+   * 行作者之后写「相邻改动」:这一行本身这一轮没改。
+   */
+  adjacent: boolean;
+};
+
 /** 一条 Finding 的一个归属:报出它的那个模型自己的说法(ADR 0015)。 */
 export type FindingAttributionRecord = {
   model: string;
@@ -821,8 +840,8 @@ export type FindingRecord = {
   commentId?: string;
   /** 那条评论在 Forge 页面上的地址。 */
   commentHtmlUrl?: string;
-  /** 行作者(CONTEXT.md),按本轮 head 判定;判不出来时不给,四列留 NULL。 */
-  lineAuthor?: LineAuthor;
+  /** 行作者(CONTEXT.md),按本轮 head 判定;判不出来时不给,几列留 NULL。 */
+  lineAuthor?: RecordedLineAuthor;
   /**
    * 模型自报、已经过校验的命中规则(issue #204)。只落库:本期不展示、不进指纹,
    * 也不参与 Finding Identity 与合并去重。
@@ -1442,7 +1461,7 @@ export type StageSummaryFinding = {
   /** 承接来的那条旧评论的地址(CONTEXT.md 已延续);不是延续来的为 null。 */
   continuedFrom: string | null;
   /** 行作者(CONTEXT.md),取最新那一轮判定的结果;未判定为 null,面板显示「无法追溯」。 */
-  lineAuthor: LineAuthor | null;
+  lineAuthor: RecordedLineAuthor | null;
   firstRunId: number;
   firstReportedAt: string;
   lastRunId: number;
@@ -4446,8 +4465,8 @@ export function openStore(dbPath: string): Store {
               fingerprint, group_index, disposition, placement,
               comment_id, comment_html_url,
               line_author_sha, line_author_name, line_author_email, line_author_at,
-              rule_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              line_author_adjacent, rule_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         const insertAttribution = db.prepare(
           `INSERT INTO finding_attribution
@@ -4473,6 +4492,7 @@ export function openStore(dbPath: string): Store {
             finding.lineAuthor?.name ?? null,
             finding.lineAuthor?.email ?? null,
             finding.lineAuthor?.authoredAt ?? null,
+            finding.lineAuthor === undefined ? null : Number(finding.lineAuthor.adjacent),
             finding.ruleId ?? null,
           );
           const findingId = Number(inserted.lastInsertRowid);
@@ -4608,6 +4628,7 @@ export function openStore(dbPath: string): Store {
                   f.continued_from AS continued_from,
                   f.line_author_sha AS line_author_sha, f.line_author_name AS line_author_name,
                   f.line_author_email AS line_author_email, f.line_author_at AS line_author_at,
+                  f.line_author_adjacent AS line_author_adjacent,
                   COALESCE(f.fingerprint, 'row:' || f.id) AS fp
              FROM finding f
              JOIN review_run run ON f.run_id = run.id
@@ -4733,6 +4754,8 @@ export function openStore(dbPath: string): Store {
                     name: String(row["line_author_name"]),
                     email: String(row["line_author_email"]),
                     authoredAt: String(row["line_author_at"]),
+                    // 升级前的行与补录路径写的那些是 NULL:那时判的就是落点自己那一行。
+                    adjacent: row["line_author_adjacent"] === 1,
                   },
             firstRunId: identity.firstRow.runId,
             firstReportedAt: startedAt.get(identity.firstRow.runId)!,

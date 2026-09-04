@@ -806,6 +806,87 @@ test("升级前落的 finding 行读得出来,评论 id 与链接为空", () => 
   ]);
 });
 
+test("升级前的 finding 补相邻改动列,历史行的标记为空", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  // 升级前的 finding 表:行作者四列已经有了,没有 line_author_adjacent(issue #241)。
+  const old = new DatabaseSync(db.path);
+  old.exec(`CREATE TABLE review_run (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    pull_number INTEGER NOT NULL,
+    head_sha TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    duration_ms INTEGER,
+    changed_files INTEGER NOT NULL,
+    changed_lines INTEGER NOT NULL,
+    batch_count INTEGER NOT NULL,
+    failed INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    total_tokens INTEGER,
+    cost_usd REAL
+  );
+  CREATE TABLE finding (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES review_run(id),
+    file TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    severity TEXT NOT NULL,
+    category TEXT NOT NULL,
+    description TEXT NOT NULL,
+    fingerprint TEXT,
+    group_index INTEGER NOT NULL,
+    disposition TEXT NOT NULL DEFAULT 'unknown',
+    placement TEXT NOT NULL DEFAULT 'inline',
+    line_author_sha TEXT,
+    line_author_name TEXT,
+    line_author_email TEXT,
+    line_author_at TEXT
+  )`);
+  const oldRun = old.prepare(
+    `INSERT INTO review_run
+       (owner, repo, pull_number, head_sha, started_at, changed_files, changed_lines, batch_count)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run("acme", "widgets", 7, "old-sha", "2026-08-01T00:00:00.000Z", 1, 2, 1);
+  old.prepare(
+    `INSERT INTO finding
+       (run_id, file, line, severity, category, description, group_index,
+        line_author_sha, line_author_name, line_author_email, line_author_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    Number(oldRun.lastInsertRowid),
+    "src/calc.js",
+    6,
+    "P0",
+    "bug",
+    "旧行",
+    0,
+    "old-author-sha",
+    "Old Author",
+    "old@example.invalid",
+    "2026-07-01T00:00:00.000Z",
+  );
+  old.exec("PRAGMA user_version = 1");
+  old.close();
+
+  const store = openStore(db.path);
+  const summary = store.stageSummary({ owner: "acme", repo: "widgets", pullNumber: 7 });
+  store.close();
+  // 存量不回填:升级前落的那一行仍是它当时的判定,补出来的这一列是空,读回不带标记。
+  assert.deepEqual(summary.findings[0]!.lineAuthor, {
+    sha: "old-author-sha",
+    name: "Old Author",
+    email: "old@example.invalid",
+    authoredAt: "2026-07-01T00:00:00.000Z",
+    adjacent: false,
+  });
+});
+
 /** 升级前的一份库结构:`review_trace` 那张表还不存在。 */
 const LEGACY_SCHEMA = `CREATE TABLE review_run (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

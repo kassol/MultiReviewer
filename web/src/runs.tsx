@@ -105,8 +105,17 @@ export type RunFinding = {
   /**
    * 行作者(CONTEXT.md):这条 Finding 所在行在它那一轮的 head 上最后一次改动的 git
    * author 与那次提交。判不出来为 null,面板显示「无法追溯」。
+   *
+   * `adjacent` 即相邻改动(issue #241):落点这一行本身这一轮没改,作者取自同一个 hunk
+   * 内离它最近的那处改动。
    */
-  lineAuthor: { sha: string; name: string; email: string; authoredAt: string } | null;
+  lineAuthor: {
+    sha: string;
+    name: string;
+    email: string;
+    authoredAt: string;
+    adjacent: boolean;
+  } | null;
 };
 
 /**
