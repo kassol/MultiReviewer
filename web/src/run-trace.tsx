@@ -6,6 +6,7 @@ import { Badge, Callout, Skeleton } from "@radix-ui/themes";
 
 import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
+import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { num, str } from "@/lib/payload";
 import { localSecond } from "@/lib/time";
 
@@ -142,6 +143,38 @@ export function UnknownEvent({ event }: { event: { kind: string; payload: Record
   );
 }
 
+/**
+ * 批次行的文件列表(issue #246)。默认只给个数:大批次把整批文件平铺会把里程碑撑成一屏,
+ * 而多数时候读者只想知道这一批有多大。折叠交互与「取证过程(N 条)」同一套。
+ */
+function BatchFiles({ files }: { files: readonly string[] }) {
+  const [open, setOpen] = useState(false);
+  const listId = useId();
+  if (files.length === 0) return null;
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-controls={listId}
+        className="flex min-h-11 items-center gap-1 self-start text-left text-xs text-text-secondary hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none sm:min-h-0"
+      >
+        {open ? <ChevronDownIcon aria-hidden /> : <ChevronRightIcon aria-hidden />}
+        <span className="font-mono tabular-nums">{files.length}</span> 个文件
+      </button>
+      {open ? (
+        <span
+          id={listId}
+          className="flex flex-wrap gap-x-2 gap-y-0.5 font-mono text-xs break-all text-text-secondary"
+        >
+          {files.map((file) => <span key={file}>{file}</span>)}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 /** 轮次级的一条编排里程碑。 */
 function RunMilestone({ event }: { event: TraceEvent }) {
   const payload = event.payload;
@@ -171,11 +204,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
               第 <span className="font-mono tabular-nums">{index ?? "?"}</span>/
               <span className="font-mono tabular-nums">{total ?? "?"}</span> 批{label}
             </span>
-            {files.length === 0 ? null : (
-              <span className="flex flex-wrap gap-x-2 gap-y-0.5 font-mono text-xs break-all text-text-secondary">
-                {files.map((file) => <span key={file}>{file}</span>)}
-              </span>
-            )}
+            <BatchFiles files={files} />
           </div>
         );
       }
@@ -524,6 +553,36 @@ function batchesOf(byGroup: ReadonlyMap<string, unknown>, reviewer: string): (nu
     : batches.sort((a, b) => (a ?? Infinity) - (b ?? Infinity));
 }
 
+/** 一个轨迹块的三档状态(issue #246)。键就是 `StatusBadge` 的色档。 */
+const SECTION_STATUS = { running: "进行中", success: "完成", error: "失败" } as const;
+
+type SectionStatus = keyof typeof SECTION_STATUS & StatusTone;
+
+/**
+ * 一个轨迹块该显示哪一档(issue #246)。只从已有事件推,不改后端事件形状:该批的轮次级
+ * 「批次结束」已到、或该 Reviewer 的收尾事件已到即「完成」,失败事件或轮次投影里的
+ * `failure` 即「失败」,其余且本轮还在跑才是「进行中」。本轮已结束却仍推不出结果的按
+ * 「完成」——不设第四档,一个读者读不出下一步动作的状态等于没有状态。
+ */
+function sectionStatus(input: {
+  batch: number | null;
+  events: readonly TraceEvent[];
+  failure: string | null;
+  /** 轮次级「批次结束」已到的那几批。 */
+  finishedBatches: ReadonlySet<number>;
+  live: boolean;
+}): SectionStatus {
+  if (input.failure !== null || input.events.some((event) => event.kind === "reviewer_failed")) {
+    return "error";
+  }
+  // 收尾组没有批次序号,它的完成信号是模型级的那条收尾事件。
+  const done =
+    input.batch === null
+      ? input.events.some((event) => event.kind === "reviewer_finished")
+      : input.finishedBatches.has(input.batch);
+  return done || !input.live ? "success" : "running";
+}
+
 /**
  * 一个模型某一批的轨迹块(issue #232)。默认折叠:一轮里几个模型各自刷几十条事件,
  * 全摊开等于让人先滚过别人的过程才看到要查的那一个。失败的那个默认展开——它是来这一页
@@ -536,6 +595,7 @@ function ReviewerTrace({
   closing,
   events,
   failure,
+  status,
   open,
   onToggle,
 }: {
@@ -549,6 +609,8 @@ function ReviewerTrace({
   events: readonly TraceEvent[];
   /** 这一轮这个模型的失败文本;`null` 即没失败。取自轮次投影,不等轨迹里那条。 */
   failure: string | null;
+  /** 这一块的三档状态(issue #246)。 */
+  status: SectionStatus;
   open: boolean;
   onToggle: () => void;
 }) {
@@ -586,7 +648,7 @@ function ReviewerTrace({
                 批
               </span>
             )}
-            {failure === null ? null : <Badge color="red" variant="soft" radius="full">失败</Badge>}
+            <StatusBadge tone={status}>{SECTION_STATUS[status]}</StatusBadge>
             <span className="shrink-0">
               <span className="font-mono tabular-nums">{messages}</span> 段文本 ·{" "}
               <span className="font-mono tabular-nums">{toolCalls}</span> 次工具
@@ -753,17 +815,36 @@ export function RunTrace({ run }: { run: RunItem }) {
     (total, event) => num(event.payload, "total") ?? total,
     null,
   );
+  // 轮次级「批次结束」已到的那几批:一个批次块的完成信号就是它(issue #246)。
+  const finishedBatches = new Set(
+    milestones.flatMap((event) => {
+      if (event.kind !== "batch_finished") return [];
+      const index = num(event.payload, "index");
+      return index === null ? [] : [index];
+    }),
+  );
   const sections = reviewers.flatMap((reviewer) => {
     const batches = batchesOf(byGroup, reviewer.name);
-    return batches.map((batch) => ({
-      key: groupKey(reviewer.name, batch),
-      reviewer: reviewer.name,
-      batch,
-      // 有分批时不带序号的那一组是收尾;只有一组时它就是整条轨迹,不另标。
-      closing: batch === null && batches.length > 1,
+    return batches.map((batch) => {
+      const key = groupKey(reviewer.name, batch);
       // 模型级失败记在收尾事件里,徽章只挂收尾那一组;逐批都挂会把没失败的批也标成失败。
-      failure: batch === null ? reviewer.failure : null,
-    }));
+      const failure = batch === null ? reviewer.failure : null;
+      return {
+        key,
+        reviewer: reviewer.name,
+        batch,
+        // 有分批时不带序号的那一组是收尾;只有一组时它就是整条轨迹,不另标。
+        closing: batch === null && batches.length > 1,
+        failure,
+        status: sectionStatus({
+          batch,
+          events: byGroup.get(key) ?? [],
+          failure,
+          finishedBatches,
+          live,
+        }),
+      };
+    });
   });
   const isOpen = (section: { key: string; failure: string | null }): boolean =>
     toggled[section.key] ?? (section.failure !== null || sections.length === 1);
@@ -809,6 +890,7 @@ export function RunTrace({ run }: { run: RunItem }) {
           closing={section.closing}
           events={byGroup.get(section.key) ?? []}
           failure={section.failure}
+          status={section.status}
           open={isOpen(section)}
           onToggle={() =>
             setToggled((prev) => ({ ...prev, [section.key]: !isOpen(section) }))
