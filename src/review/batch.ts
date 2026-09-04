@@ -91,13 +91,9 @@ export function mergeBatchOutcomes(results: readonly TimedOutcome[]): TimedOutco
     anomalies: results.flatMap((r) => r.outcome.anomalies),
     rejectedToolCalls: results.reduce((n, r) => n + r.outcome.rejectedToolCalls, 0),
     anchorRejections: results.reduce((n, r) => n + r.outcome.anchorRejections, 0),
-    // 复核的对象是本阶段的历史,与本批审哪些文件无关:每批都拿到同一份历史,
-    // 任一批给出的结论都作数。同一条被两批复核到时序号大的那批作数,与单批内改口同一口径。
-    verdicts: [
-      ...new Map(
-        results.flatMap((r) => r.outcome.verdicts ?? []).map((v) => [v.findingId, v]),
-      ).values(),
-    ],
+    // 历史按所在文件路由到批次(issue #235):一条历史只进一批,也就只有一批给得出它的
+    // 结论,合并因此只做拼接——没有「哪一批作数」这回事。
+    verdicts: results.flatMap((r) => r.outcome.verdicts ?? []),
     // 一批都没回报用量时保持"取不到",不伪造出一行零用量。
     ...(usage === undefined ? {} : { usage }),
   };

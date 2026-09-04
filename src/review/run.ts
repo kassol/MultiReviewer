@@ -822,6 +822,10 @@ async function autoDispose(
  * 只对未处置的历史条目要结论——已处置的注入只是背景。漏给结论的按「无法判断」照样
  * 落一行并标 `missing`:沉默不是证据,而「这个模型压根没复核」得数得出来。失败的
  * Reviewer 不记:那不是漏复核,是它根本没跑。这批记录同时是自动处置的裁决输入。
+ *
+ * 全集是本阶段全部未处置的历史,而不是注入过的那些(issue #235):所在文件不在本轮任何
+ * 批次里的那条谁都没复核过,按漏给结论落,与「注入了但没给结论」同形——面板上因此分得出
+ * 「没人复核」与「复核判仍在」,也不需要一档新状态。
  */
 function verdictRecords(
   history: readonly HistoryFinding[],
@@ -1086,6 +1090,41 @@ export function knowledgeForBatch<T extends { scope: string }>(
 }
 
 /**
+ * 这一批要注入的历史条目(issue #235):所在文件在本批文件清单里的那些,未处置与已处置
+ * 同一条规则。历史条目的文件与批次文件清单都是仓库相对路径,按精确相等匹配。
+ *
+ * 一条历史因此只进一批,只被真正审到那个文件的 Reviewer 复核一次:每批复核全部历史时
+ * 复核量随批数线性放大,而没看过那个文件的批次给的结论不构成证据。
+ */
+export function historyForBatch(
+  history: readonly HistoryFinding[],
+  files: readonly string[],
+): readonly HistoryFinding[] {
+  const inBatch = new Set(files);
+  return history.filter((entry) => inBatch.has(entry.file));
+}
+
+/**
+ * 本批没注入的历史 id 上的结论不收(issue #235):它没有证据——给结论的 Reviewer 这一批
+ * 压根没看过那个文件。子进程那侧已经按同一条口径打回,这里是编排层收结论时的同一道判定,
+ * 丢掉的计进「被拒」,轨迹上因此看得出来。
+ */
+function keepInjectedVerdicts(
+  outcome: ReviewerOutcome,
+  history: readonly HistoryFinding[],
+): ReviewerOutcome {
+  const injected = new Set(history.map((entry) => entry.id));
+  const verdicts = outcome.verdicts ?? [];
+  const kept = verdicts.filter((verdict) => injected.has(verdict.findingId));
+  if (kept.length === verdicts.length) return outcome;
+  return {
+    ...outcome,
+    verdicts: kept,
+    anchorRejections: outcome.anchorRejections + verdicts.length - kept.length,
+  };
+}
+
+/**
  * 一次 Review Run:解析 Review Range、准备工作副本、运行 Reviewer、发布 review 评论。
  */
 export async function runReview(
@@ -1231,19 +1270,21 @@ export async function runReview(
         // 目录的批次,批内每个 Reviewer 拿到的是同一份。两型同一条口径(issue #221)。
         const rules = knowledgeForBatch(deps.rules ?? [], files);
         const facts = knowledgeForBatch(deps.facts ?? [], files);
+        // 历史按所在文件路由到批次(issue #235)。不分批时全部历史进这一批:只有一批
+        // 时「所在文件不在本批」这件事本身不成立,行为与升级前逐字一致。
+        const batchHistory = batches.length === 1 ? history : historyForBatch(history, files);
         trace.run("batch_started", batch);
         const timedOutcomes = await Promise.all(
           deps.reviewers.map(async (reviewer) => {
             const startedAt = Date.now();
             // 工作副本每批都是同一份完整的 head commit:Reviewer 要能读到其他批次
             // 改动后的代码,否则会报出"这个新函数没有调用者"这类因分批而来的误报。
-            // 历史每批都给同一份:它说的是这个阶段的历史,与本批审哪些文件无关。
             const outcome = await reviewer.review({
               range: { ...range, files },
               worktreePath: worktree.path,
               // 可评论行区间给整个 Review Range 的那一份,不按批次裁剪(issue #224)。
               commentable: diffRanges,
-              history,
+              history: batchHistory,
               intent,
               rules,
               facts,
@@ -1256,7 +1297,11 @@ export async function runReview(
                 trace.reviewer(reviewer.model, kind, { ...payload, batch: batch.index });
               },
             });
-            return { outcome, startedAt, durationMs: Date.now() - startedAt };
+            return {
+              outcome: keepInjectedVerdicts(outcome, batchHistory),
+              startedAt,
+              durationMs: Date.now() - startedAt,
+            };
           }),
         );
         trace.run("batch_finished", batch);

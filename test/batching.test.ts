@@ -6,6 +6,7 @@ import { after, test } from "node:test";
 
 import type {
   Finding,
+  HistoryFinding,
   ReviewerInput,
   ReviewerOutcome,
   ReviewerUsage,
@@ -18,9 +19,15 @@ import {
   splitIntoBatches,
 } from "../src/review/batch.ts";
 import { runReview } from "../src/review/run.ts";
+import { openStore } from "../src/review/store.ts";
 import type { FileTree } from "./support/git-fixture.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
-import { memoryForge, readingReviewer, scriptedReviewer } from "./support/memory-forge.ts";
+import {
+  memoryForge,
+  readingReviewer,
+  scriptedReviewer,
+  verdictReviewer,
+} from "./support/memory-forge.ts";
 
 const EVENT = { owner: "acme", repo: "widgets", number: 7 };
 
@@ -50,6 +57,8 @@ function setup(sizes: Record<string, number>) {
   const db = makeDbPath();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
+  // 内存 Forge 直接返回这个数组,改它即改下一轮的变更文件清单。
+  const changedFiles = Object.keys(sizes).map((path) => ({ path, status: "modified" as const }));
   const forge = memoryForge({
     pullRequest: {
       number: 7,
@@ -59,10 +68,10 @@ function setup(sizes: Record<string, number>) {
       headSha: repo.headSha,
       cloneUrl: repo.dir,
     },
-    changedFiles: Object.keys(sizes).map((path) => ({ path, status: "modified" as const })),
+    changedFiles,
   });
 
-  return { repo, cache, db, forge, head };
+  return { repo, cache, db, forge, head, changedFiles };
 }
 
 function query(dbPath: string, sql: string): Record<string, unknown>[] {
@@ -633,25 +642,6 @@ test("单模型耗时是首批开始到末批结束的墙上时间,不是各批�
   assert.equal(merged.durationMs, 150);
 });
 
-test("同一条被两批复核到时序号大的那批作数", () => {
-  const timed = (verdict: "present" | "fixed") => ({
-    startedAt: 0,
-    durationMs: 1,
-    outcome: {
-      model: "model-a",
-      findings: [],
-      anomalies: [],
-      rejectedToolCalls: 0,
-      anchorRejections: 0,
-      verdicts: [{ findingId: 7, verdict }],
-    },
-  });
-
-  // 传入按批次序号排,后面那项即序号大的那批。
-  const merged = mergeBatchOutcomes([timed("present"), timed("fixed")]);
-  assert.deepEqual(merged.outcome.verdicts, [{ findingId: 7, verdict: "fixed" }]);
-});
-
 test("并行跑的三批落库的耗时是墙上时间,不是三批相加", async () => {
   const { cache, db, forge } = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
 
@@ -696,4 +686,173 @@ test("Reviewer 作用域的轨迹事件带批次序号", async () => {
       { text: "正在读文件", batch: 2 },
     ],
   );
+});
+
+/**
+ * 历史按所在文件路由到批次(issue #235)。一条未处置的历史只进包含它所在文件的那一批,
+ * 只被真正审到那个文件的 Reviewer 复核一次;已处置的历史同一条规则,只作背景。
+ */
+
+/** 本轮落库的复核结论,按落库顺序。 */
+function verdictRows(dbPath: string): Record<string, unknown>[] {
+  return query(
+    dbPath,
+    "SELECT model, finding_id, verdict, missing FROM finding_verdict ORDER BY rowid",
+  ).map((row) => ({
+    model: row["model"],
+    findingId: row["finding_id"],
+    verdict: row["verdict"],
+    missing: row["missing"],
+  }));
+}
+
+/** 每批收到的文件清单与历史,按首个文件排序:批次并行之后调用顺序不定。 */
+function batchesOf(reviewer: {
+  calls: readonly { range: ReviewRange; history: readonly HistoryFinding[] }[];
+}) {
+  return reviewer.calls
+    .map((call) => ({ files: call.range.files, history: call.history }))
+    .sort((a, b) => a.files[0]!.localeCompare(b.files[0]!));
+}
+
+/** 人在面板上处置一条 Finding:落库这一步与面板 API 走同一段代码。 */
+function disposeInPanel(dbPath: string, commentId: string): void {
+  const store = openStore(dbPath);
+  try {
+    store.recordDisposition({
+      owner: EVENT.owner,
+      repo: EVENT.repo,
+      commentId,
+      disposition: "resolved",
+      disposedBy: "kassol",
+      disposedAt: "2026-09-04T00:00:00.000Z",
+    });
+  } finally {
+    store.close();
+  }
+}
+
+/** 三批各一个文件的一轮:分批用例的历史路由都按这一份跑。 */
+function routingDeps(setUp: ReturnType<typeof setup>) {
+  return {
+    forge: setUp.forge.forge,
+    cacheDir: setUp.cache.dir,
+    dbPath: setUp.db.path,
+    maxChangedLinesPerBatch: 100,
+    maxFilesPerBatch: 1,
+  };
+}
+
+test("三批时历史按所在文件路由:每条只进它所在文件的那一批,已处置的同样", async () => {
+  const fixture = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+  const { db, forge } = fixture;
+  const deps = routingDeps(fixture);
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [
+      scriptedReviewer("model-a", [
+        findingAt("src/a.ts", "a 的问题"),
+        findingAt("src/b.ts", "b 的问题"),
+        findingAt("src/c.ts", "c 的问题"),
+      ]),
+    ],
+  });
+  // 人处置了 c 那条:已处置的只作背景,路由与未处置的同一条规则。
+  disposeInPanel(db.path, forge.publishedComments.find((c) => c.path === "src/c.ts")!.id);
+
+  const second = scriptedReviewer("model-b", []);
+  await runReview(EVENT, { ...deps, reviewers: [second] });
+
+  assert.deepEqual(
+    batchesOf(second).map((batch) => ({
+      files: batch.files,
+      history: batch.history.map((entry) => ({ file: entry.file, disposition: entry.disposition })),
+    })),
+    [
+      { files: ["src/a.ts"], history: [{ file: "src/a.ts", disposition: "unknown" }] },
+      { files: ["src/b.ts"], history: [{ file: "src/b.ts", disposition: "unknown" }] },
+      { files: ["src/c.ts"], history: [{ file: "src/c.ts", disposition: "resolved" }] },
+    ],
+  );
+});
+
+test("所在批判已修、别的批没收到这条:落库一条 fixed,自动处置发生", async () => {
+  const fixture = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+  const { db, forge } = fixture;
+  const deps = routingDeps(fixture);
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [scriptedReviewer("model-a", [findingAt("src/b.ts", "b 的问题")])],
+  });
+
+  await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "fixed")] });
+
+  // 三批只落一条结论:另外两批压根没拿到这条历史,不构成「漏给结论」。
+  assert.deepEqual(verdictRows(db.path), [
+    { model: "model-a", findingId: 1, verdict: "fixed", missing: 0 },
+  ]);
+  assert.deepEqual(forge.resolvedIds, [forge.publishedComments[0]!.id]);
+  assert.deepEqual(
+    query(db.path, "SELECT disposition FROM finding ORDER BY id").map((row) => row["disposition"]),
+    ["fixed"],
+  );
+});
+
+test("历史所在文件不在本轮任何批次:记无法判断并标漏给,不自动处置", async () => {
+  const fixture = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+  const { db, forge, changedFiles } = fixture;
+  const deps = routingDeps(fixture);
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [scriptedReviewer("model-a", [findingAt("src/c.ts", "c 的问题")])],
+  });
+  // 下一轮 c.ts 不在变更文件里:这条历史所在的文件没有任何一批看得到。
+  changedFiles.splice(
+    changedFiles.findIndex((file) => file.path === "src/c.ts"),
+    1,
+  );
+
+  await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "fixed")] });
+
+  assert.deepEqual(verdictRows(db.path), [
+    { model: "model-a", findingId: 1, verdict: "unclear", missing: 1 },
+  ]);
+  assert.deepEqual(forge.resolvedIds, [], "谁都没复核过的这条被自动处置了");
+});
+
+test("Reviewer 对本批没注入的 id 回结论:不落库,计进被拒次数", async () => {
+  const fixture = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+  const { db, forge } = fixture;
+  const deps = routingDeps(fixture);
+
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [scriptedReviewer("model-a", [findingAt("src/b.ts", "b 的问题")])],
+  });
+
+  // 只对没注入这条历史的批次回结论:模型顺手看到别处的 id 就是这个形状。
+  const stray: Reviewer = {
+    model: "model-a",
+    review: async ({ history }) => ({
+      model: "model-a",
+      findings: [],
+      anomalies: [],
+      rejectedToolCalls: 0,
+      anchorRejections: 0,
+      verdicts: history.some((entry) => entry.id === 1)
+        ? []
+        : [{ findingId: 1, verdict: "fixed" as const }],
+    }),
+  };
+  const result = await runReview(EVENT, { ...deps, reviewers: [stray] });
+
+  assert.deepEqual(verdictRows(db.path), [
+    { model: "model-a", findingId: 1, verdict: "unclear", missing: 1 },
+  ]);
+  assert.deepEqual(forge.resolvedIds, []);
+  // 三批里有两批没拿到这条历史,两次结论各记一次被拒。
+  assert.equal(result.outcomes[0]!.anchorRejections, 2);
 });

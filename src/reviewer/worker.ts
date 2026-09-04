@@ -38,6 +38,7 @@ import {
   fileLines,
   numberedReadTool,
   prepareAgentRuntime,
+  priorFindingRejection,
   ruleBullet,
   sessionFailure,
   sessionThinkingLevel,
@@ -364,20 +365,15 @@ async function run(request: ReviewerRequest): Promise<void> {
     parameters: verdictSchema,
     execute: async (id, params) => {
       const raw = params as { id: number; verdict: string; line?: number; snippet?: string };
-      // 编出来的 id 对不到任何历史条目,打回让模型改用列表里的那个:静默收下会让
-      // 一条真实的历史 Finding 少一个结论,而模型自己不会知道。
-      const entry = historyById.get(raw.id);
-      if (entry === undefined) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `no prior finding with id ${raw.id}; use one of the ids listed in the prompt`,
-            },
-          ],
-          details: {},
-        };
+      // 编出来的 id、以及落在别的批次里的 id,都对不到这一次注入的历史条目,打回让模型
+      // 改用列表里的那个(issue #235)。与锚定打回同一条口径记进被拒集合:不记的话,这次
+      // 打回在轨迹上与一次正常调用长得一模一样。
+      const rejection = priorFindingRejection(raw.id, historyById);
+      if (rejection !== undefined) {
+        anchorRejectedCalls.add(id);
+        return { content: [{ type: "text", text: rejection }], details: {} };
       }
+      const entry = historyById.get(raw.id)!;
       if (raw.line === undefined) {
         send({ kind: "verdict", raw: { id: raw.id, verdict: raw.verdict } });
         return { content: [{ type: "text", text: "recorded" }], details: {} };

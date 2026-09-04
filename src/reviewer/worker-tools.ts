@@ -131,6 +131,21 @@ export function factRuleIdRejection(
 }
 
 /**
+ * 复核工具收到一个本次没注入过的历史 id 时的打回理由(issue #235)。编出来的 id 与
+ * 落在别的批次里的 id 同一口径:这一次注入的清单是它唯一的合法取值——静默收下会让一条
+ * 真实的历史 Finding 少一个结论,而这个模型这一批压根没看过那条历史所在的文件。
+ *
+ * 与 `factRuleIdRejection` 同一条口径:返回一句话交给模型,工具本身不抛错。
+ */
+export function priorFindingRejection(
+  id: number,
+  historyById: ReadonlyMap<number, unknown>,
+): string | undefined {
+  if (historyById.has(id)) return undefined;
+  return `no prior finding with id ${id}; use one of the ids listed in the prompt`;
+}
+
+/**
  * 这次会话实际用的思考档位。模型不声明推理能力时落回 `off` 照常跑:档位挂在模型引用处,
  * 而同一处引用可能在模型信息更新后不再声明推理能力——那时该跑的仍然要跑,不是配置错误。
  */

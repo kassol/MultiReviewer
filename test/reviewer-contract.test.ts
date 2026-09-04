@@ -5,7 +5,7 @@ import { anchorVerdict } from "../src/reviewer/anchor.ts";
 import { normalizeFinding, normalizeVerdict } from "../src/reviewer/normalize.ts";
 import { redactModelCredential, reviewerEnv } from "../src/reviewer/env.ts";
 import { reviewPrompt } from "../src/reviewer/worker.ts";
-import { factRuleIdRejection } from "../src/reviewer/worker-tools.ts";
+import { factRuleIdRejection, priorFindingRejection } from "../src/reviewer/worker-tools.ts";
 
 const RAW = {
   file: "src/db.js",
@@ -281,6 +281,20 @@ test("模型拿事实标识当 ruleId 报出时被打回,理由回给模型", ()
   assert.equal(factRuleIdRejection(undefined, facts), undefined);
   // 一条事实都没注入时任何标识都拦不住。
   assert.equal(factRuleIdRejection(41, new Set()), undefined);
+});
+
+test("复核工具收到本批没注入的历史 id 时被打回,与编出来的 id 同一口径", () => {
+  // 本批注入的这一份就是合法取值的全体:别的批次拿到的那条历史不在里面。
+  const injected = new Map([[7, { file: "src/a.ts" }]]);
+
+  const rejected = priorFindingRejection(9, injected);
+  assert.notEqual(rejected, undefined);
+  assert.match(rejected!, /no prior finding with id 9/);
+  assert.match(rejected!, /listed in the prompt/);
+
+  assert.equal(priorFindingRejection(7, injected), undefined);
+  // 一条历史都没注入时任何 id 都对不上。
+  assert.notEqual(priorFindingRejection(7, new Map()), undefined);
 });
 
 test("模型自报的规则标识经服务端校验:本轮注入过的留下,对不上的置空", () => {
