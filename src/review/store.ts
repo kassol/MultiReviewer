@@ -886,6 +886,17 @@ export type ContinuationCandidate = {
 };
 
 /**
+ * 合并 agent 命中的那条历史 Finding 在库里的位置与载体(issue #240)。与
+ * `ContinuationCandidate` 是同一批列,差别只在两处:不筛处置状态,并把处置状态带出来。
+ *
+ * 两处差别都是本票要的:命中已处置的旧条要折叠后沉默,因此不能在这里就把它筛掉;
+ * 折叠到已处置还是未处置,本轮那条落库的处置值不同,因此要知道它此刻是哪一档。
+ * 没有指纹、没有评论载体或链接的行仍不在里面——那样的行既判不了代码有没有改写,也
+ * 没有可折叠上去的评论。
+ */
+export type HistoryPlacement = ContinuationCandidate & { disposition: Disposition };
+
+/**
  * 面板处置一条 Finding 要用的那几项。处置写在承载它的那条 Forge 评论上,因此这里
  * 带上评论 id 与它所属仓库;`commentId` 为 null 即 fallback,没有可处置的载体。
  *
@@ -2186,6 +2197,11 @@ export type Store = {
    * `ContinuationCandidate`;顺序与传入的 id 同序,调用方据此得到确定的配对结果。
    */
   continuationCandidates(findingIds: readonly number[]): ContinuationCandidate[];
+  /**
+   * 这些历史 Finding 在库里的位置与载体(issue #240),判据见 `HistoryPlacement`。
+   * 合并 agent 命中一条历史之后,折叠与延续两条收口都读它;顺序与传入的 id 同序。
+   */
+  historyPlacements(findingIds: readonly number[]): HistoryPlacement[];
   /**
    * 记一次延续:旧行改记「已延续」,处置备注、处置人与处置时刻随 Identity 落到本轮
    * 新行上,新行同时记下旧评论的链接。
@@ -5645,13 +5661,12 @@ export function openStore(dbPath: string): Store {
       );
     },
 
-    continuationCandidates(findingIds) {
+    historyPlacements(findingIds) {
       const probe = db.prepare(
         `SELECT file, line, title, description, fingerprint,
-                comment_id, comment_html_url FROM finding
+                comment_id, comment_html_url, disposition FROM finding
           WHERE id = ? AND fingerprint IS NOT NULL
-            AND comment_id IS NOT NULL AND comment_html_url IS NOT NULL
-            AND disposition IN ('unknown', 'unresolved')`,
+            AND comment_id IS NOT NULL AND comment_html_url IS NOT NULL`,
       );
       return findingIds.flatMap((findingId) => {
         const row = probe.get(findingId);
@@ -5666,9 +5681,21 @@ export function openStore(dbPath: string): Store {
             fingerprint: String(row["fingerprint"]),
             commentId: String(row["comment_id"]),
             commentHtmlUrl: String(row["comment_html_url"]),
+            disposition: String(row["disposition"]) as Disposition,
           },
         ];
       });
+    },
+
+    continuationCandidates(findingIds) {
+      // 与 `historyPlacements` 同一批列同一道筛,只多一条:已经处置过的不再交接位置。
+      return store
+        .historyPlacements(findingIds)
+        .filter(
+          (placement) =>
+            placement.disposition === "unknown" || placement.disposition === "unresolved",
+        )
+        .map(({ disposition: _disposition, ...candidate }) => candidate);
     },
 
     recordContinuation({ owner, repo, pullNumber, runId, groupIndex, candidate }) {

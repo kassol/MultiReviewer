@@ -3,7 +3,8 @@
  *
  * 与另外两个子进程同构:一个进程只有它自己那一家厂商的凭据(见 `env.ts`),工具集只读,
  * 产出经一个自定义工具逐条回传主进程。任务本身只有一件——把本轮全部 Finding 分成组,
- * 每组是同一个问题。行号、严重度、分类与归属的派生规则不在这里,它们留在编排层。
+ * 每组是同一个问题;同文件的历史 Finding 一并给它,判成同一回事的可以进组(issue #240)。
+ * 行号、严重度、分类与归属的派生规则不在这里,折叠还是延续也不在,它们都留在编排层。
  */
 import {
   createAgentSession,
@@ -12,7 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import type { Finding } from "../review/finding.ts";
+import type { Finding, HistoryFinding } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import type { MergeWorkerMessage, MergeWorkerRequest } from "./merge-agent.ts";
 import { reviewerEventStream } from "./trace-events.ts";
@@ -34,11 +35,14 @@ Judge by what the finding says, not by how many words the two share. "Removes th
 
 Read the code when the wording alone does not settle it. You have read-only tools over the repository at the reviewed commit.
 
-Report every group by calling ${PROPOSE_GROUP_TOOL} exactly once per group, including the groups that hold a single finding. Three rules are checked by code, and one broken rule discards your whole grouping:
+Some groups also get a prior finding. Prior findings were reported on this same code in an earlier round and are listed separately, with an id of their own. Put a prior finding in a group when this round says the same problem it said. The platform then folds this round's report into the old comment, or carries the old finding over to the new position; it never posts the same problem twice. Leave a prior finding out of every group when nothing this round is the same problem — a prior finding does not have to be used.
 
-- every finding appears in exactly one group — none left out, none in two groups;
-- all members of a group are in the same file;
-- every member of a group is within 3 lines of at least one other member of that group.
+Report every group by calling ${PROPOSE_GROUP_TOOL} exactly once per group, including the groups that hold a single finding. These rules are checked by code, and one broken rule discards your whole grouping:
+
+- every finding of this round appears in exactly one group — none left out, none in two groups;
+- a prior finding appears in at most one group;
+- all members of a group are in the same file, prior findings included;
+- every member of a group is within 3 lines of at least one other member of that group. This rule is dropped for a group that holds a prior finding: rewritten code moves a problem far from where it used to be.
 
 Write the reason field in Chinese, one sentence: why these findings are the same problem. A single-member group still needs a reason field; one short clause is enough.
 
@@ -51,6 +55,12 @@ const groupSchema = Type.Object({
     description:
       "The numbers of the findings in this group, taken from the numbered list. A group with one member is a finding that stands on its own.",
   }),
+  history: Type.Optional(
+    Type.Array(Type.Number(), {
+      description:
+        "The ids of the prior findings in this group, taken from the prior findings list. Leave it out when this group is only about findings from this round.",
+    }),
+  ),
   reason: Type.String({
     description:
       "One sentence in Chinese: why these findings are the same problem, or why this one stands alone.",
@@ -80,12 +90,38 @@ function findingBullet(finding: Finding, index: number, worktreePath: string): s
   ].join("\n");
 }
 
+/**
+ * 一条历史 Finding 交给 agent 看的样子(issue #240):它自己的 id、旧位置、处置状态与
+ * 两段文本。旧位置的代码可能已经改写,因此不给代码片段——那一行此刻的内容说明不了它。
+ * 已处置的历史只有标题(注入侧的体积控制,ADR 0016),正文那一格自会空着。
+ */
+function historyBullet(entry: HistoryFinding): string {
+  const disposed = entry.disposition === "resolved" || entry.disposition === "fixed";
+  return [
+    `[prior ${entry.id}] ${entry.file}:${entry.line} (${disposed ? "already disposed" : "open"})`,
+    `    title: ${oneLine(entry.title === "" ? "(none)" : entry.title)}`,
+    ...(entry.description === undefined
+      ? []
+      : [`    description: ${oneLine(entry.description)}`]),
+  ].join("\n");
+}
+
 function mergePrompt(request: MergeWorkerRequest): string {
-  return `Group the following ${request.findings.length} findings. They come from several reviewers looking at the same change, so the same problem may be reported more than once.
-
-${request.findings.map((finding, index) => findingBullet(finding, index, request.worktreePath)).join("\n\n")}
-
-Report each group through ${PROPOSE_GROUP_TOOL}. When every finding is in exactly one reported group, stop.`;
+  const priors =
+    request.history.length === 0
+      ? []
+      : [
+          `These ${request.history.length} findings were reported on the same files in earlier rounds. Add one to a group when this round reports the same problem again.`,
+          request.history.map(historyBullet).join("\n\n"),
+        ];
+  return [
+    `Group the following ${request.findings.length} findings. They come from several reviewers looking at the same change, so the same problem may be reported more than once.`,
+    request.findings
+      .map((finding, index) => findingBullet(finding, index, request.worktreePath))
+      .join("\n\n"),
+    ...priors,
+    `Report each group through ${PROPOSE_GROUP_TOOL}. When every finding of this round is in exactly one reported group, stop.`,
+  ].join("\n\n");
 }
 
 async function run(request: MergeWorkerRequest): Promise<void> {
@@ -95,8 +131,15 @@ async function run(request: MergeWorkerRequest): Promise<void> {
     description: "Report one group of findings that are the same problem.",
     parameters: groupSchema,
     execute: async (_id, params) => {
-      const raw = params as { members: number[]; reason: string };
-      send({ kind: "group", group: { members: raw.members, reason: raw.reason } });
+      const raw = params as { members: number[]; history?: number[]; reason: string };
+      send({
+        kind: "group",
+        group: {
+          members: raw.members,
+          ...(raw.history === undefined ? {} : { history: raw.history }),
+          reason: raw.reason,
+        },
+      });
       return { content: [{ type: "text", text: "recorded" }], details: {} };
     },
   });

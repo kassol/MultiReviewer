@@ -26,6 +26,7 @@ import {
   dedupeFindings,
   mergeByProposal,
   sameContent,
+  type CarryCriterion,
   type FindingAttribution,
   type MergeAgent,
   type MergedFinding,
@@ -57,6 +58,7 @@ import {
   type FindingCommentRef,
   type FindingPlacement,
   type FindingRecord,
+  type HistoryPlacement,
   type OutcomeRecord,
   type VerdictRecord,
 } from "./store.ts";
@@ -603,8 +605,59 @@ function continuedFinding(
 type ReviewGroup = {
   finding: MergedFinding;
   fingerprint: string | undefined;
-  match: PriorDisposition | undefined;
+  /**
+   * 这一条折叠到的那条历史评论,连同折叠凭的判据(issue #240)。没折叠即 undefined。
+   *
+   * 判据与评论放在同一项里,理由与上面那三样同一个:轨迹上要分得清一次折叠是指纹
+   * 算出来的还是合并 agent 判出来的,两者散成两格迟早对不上号。
+   */
+  match: { prior: PriorDisposition; criterion: CarryCriterion } | undefined;
 };
+
+/**
+ * 旧指纹在本轮 head 上还算不算得出:算得出即那处代码原样还在,不论它被上下挪了多少行
+ * (`fileFingerprints`)。
+ *
+ * 按文件缓存(issue #240):算一个文件的全部指纹要通读整份文件再逐行 hash,而折叠与
+ * 延续问的是同一批文件,一轮里同一个文件因此只算一次。
+ */
+function stillOnHead(
+  cache: Map<string, Set<string>>,
+  worktreePath: string,
+  file: string,
+  fingerprint: string,
+): boolean {
+  let fingerprints = cache.get(file);
+  if (fingerprints === undefined) {
+    fingerprints = fileFingerprints(worktreePath, file);
+    cache.set(file, fingerprints);
+  }
+  return fingerprints.has(fingerprint);
+}
+
+/**
+ * 合并 agent 命中的那条历史该不该折叠(issue #240)。折叠即给出本轮那条要挂上去的那条
+ * 历史评论,不折叠即 undefined。
+ *
+ * 两档折叠:那条历史已经处置过(人工处置与「已修复」都是终点,同一处再被报出来就该
+ * 沉默),或者它的旧指纹在本轮 head 上仍算得出(那处代码原样还在,本轮这条是同一处的
+ * 重报)。两档都不成立即那处代码已被改写,那是延续要接的,不在这里收口。
+ */
+function agentFold(
+  hit: HistoryPlacement,
+  cache: Map<string, Set<string>>,
+  worktreePath: string,
+): PriorDisposition | undefined {
+  const disposed = hit.disposition === "resolved" || hit.disposition === "fixed";
+  if (!disposed && !stillOnHead(cache, worktreePath, hit.file, hit.fingerprint)) return undefined;
+  return {
+    resolved: disposed,
+    // 能进 `historyPlacements` 的行都带评论载体,resolve 状态因此读得到(ADR 0006)。
+    fromInline: true,
+    commentId: hit.commentId,
+    commentHtmlUrl: hit.commentHtmlUrl,
+  };
+}
 
 /** 一次延续:旧 Finding 与本轮承接它的那个合并组。 */
 type Continuation = {
@@ -648,19 +701,14 @@ function planContinuations(
   diffRanges: DiffRanges,
   worktreePath: string,
   positions: ReadonlyMap<number, PresentPosition>,
+  fingerprintCache: Map<string, Set<string>>,
 ): { plans: Continuation[]; synthesized: ReviewGroup[] } {
-  const byFile = new Map<string, Set<string>>();
   const claimed = new Set<number>();
   const plans: Continuation[] = [];
   const synthesized: ReviewGroup[] = [];
 
   for (const candidate of candidates) {
-    let fingerprints = byFile.get(candidate.file);
-    if (fingerprints === undefined) {
-      fingerprints = fileFingerprints(worktreePath, candidate.file);
-      byFile.set(candidate.file, fingerprints);
-    }
-    if (fingerprints.has(candidate.fingerprint)) continue;
+    if (stillOnHead(fingerprintCache, worktreePath, candidate.file, candidate.fingerprint)) continue;
 
     const pick = groups
       .flatMap(({ finding, match }, groupIndex) =>
@@ -919,15 +967,24 @@ export const MERGE_AGENT_TRACE_NAME = "合并 agent";
  * 没有它、它失败、它超时或方案没过验收,一律整体退回 `dedupeFindings`——最坏情况恒等于
  * 算法档的行为,一次辅助判断的故障不该让整轮审查白跑。
  *
- * 不足两条时不派:一条 Finding 分不出组,派出去只是白花一次子进程与一份 token。
+ * 历史一并交给它(issue #240):只取所在文件在本轮有 Finding 报出的那些,未处置与已处置
+ * 都给。路由与 Reviewer 侧的按批路由同一条口径(`historyForBatch`),阶段很长时一次合并
+ * 因此不会把整份历史都背上;不设条数上限。
+ *
+ * 不足两条时不派:分不出组,派出去只是白花一次子进程与一份 token。「两条」算的是本轮
+ * Finding 加路由到的历史——本轮只报出一条而同文件有历史时,正是本票要判的那一种。
  */
 async function mergeFindings(
   trace: TraceRecorder,
   agent: MergeAgent | undefined,
   findings: readonly Finding[],
+  history: readonly HistoryFinding[],
   worktreePath: string,
 ): Promise<{ merged: MergedFinding[]; usage?: ReviewerUsage }> {
-  if (agent === undefined || findings.length < 2) return { merged: dedupeFindings(findings) };
+  const routed = historyForBatch(history, [...new Set(findings.map((f) => f.file))]);
+  if (agent === undefined || findings.length + routed.length < 2) {
+    return { merged: dedupeFindings(findings) };
+  }
 
   const fallback = (reason: string, usage?: ReviewerUsage) => {
     trace.run("merge_fallback", { reason });
@@ -938,6 +995,7 @@ async function mergeFindings(
   try {
     result = await agent({
       findings,
+      history: routed,
       worktreePath,
       onEvent: (event) => {
         const { kind, ...payload } = event;
@@ -959,7 +1017,7 @@ async function mergeFindings(
   // 整轮审查掀掉,哪怕是验收代码自己的缺陷。
   let outcome;
   try {
-    outcome = mergeByProposal(findings, result.groups);
+    outcome = mergeByProposal(findings, result.groups, routed);
   } catch (error) {
     return fallback(error instanceof Error ? error.message : String(error), result.usage);
   }
@@ -1324,6 +1382,7 @@ export async function runReview(
         trace,
         deps.mergeAgent,
         outcomes.filter((o) => o.failure === undefined).flatMap((o) => o.findings),
+        history,
         worktree.path,
       );
       const merged = allMerged.filter((finding) => {
@@ -1344,14 +1403,43 @@ export async function runReview(
       // 名下全部历史 finding 上。以 Forge 最新状态为准——resolve 后又 unresolve,跟着改。
       store.backfillDispositions(event.owner, event.repo, event.number, backfillUpdates(prior));
 
+      // 合并 agent 命中的那些历史(issue #240):按落库 id 取回它此刻的位置与载体。读在
+      // 回填之后——折叠到已处置还是未处置,认的是刚从 Forge 读回的那一份状态。
+      const hits = new Map(
+        store
+          .historyPlacements([
+            ...new Set(merged.flatMap((f) => (f.history === undefined ? [] : [f.history.id]))),
+          ])
+          .map((placement) => [placement.findingId, placement]),
+      );
+      // 「旧指纹在本轮 head 上算不算得出」这一问,折叠与延续问的是同一批文件,共用一份
+      // 指纹表(issue #240)。
+      const fingerprintCache = new Map<string, Set<string>>();
+
       // 本轮的合并组:Finding、它的指纹与它折叠到的历史评论同属一项(issue #186)。指纹在
       // 新 head commit 的工作副本下重算,代码没变则与上一轮的锚点相同;跨轮匹配整批先算出
       // 来——延续要在建评论正文之前知道哪些是本轮新报的。
-      const groups: ReviewGroup[] = merged.map((finding) => ({
-        finding,
-        fingerprint: contentFingerprint(worktree.path, finding.file, finding.line),
-        match: priorMatch(prior, worktree.path, finding),
-      }));
+      const groups: ReviewGroup[] = merged.map((finding) => {
+        // 指纹命中优先(issue #240):它是「同一处」的硬证据,合并 agent 那一档补的是
+        // 指纹够不着的那些——增量在指纹窗口里插了几行,或者模型换个说法报在了别处。
+        let match: ReviewGroup["match"];
+        const byFingerprint = priorMatch(prior, worktree.path, finding);
+        if (byFingerprint !== undefined) {
+          match = { prior: byFingerprint, criterion: { kind: "fingerprint" } };
+        } else if (finding.history !== undefined) {
+          const hit = hits.get(finding.history.id);
+          const folded =
+            hit === undefined ? undefined : agentFold(hit, fingerprintCache, worktree.path);
+          if (folded !== undefined) {
+            match = { prior: folded, criterion: { kind: "agent", reason: finding.history.reason } };
+          }
+        }
+        return {
+          finding,
+          fingerprint: contentFingerprint(worktree.path, finding.file, finding.line),
+          match,
+        };
+      });
 
       // 本轮的复核结论。裁决与落库用同一批记录,面板上看到的与自动处置依据的是同一件事。
       const verdicts = verdictRecords(history, outcomes);
@@ -1375,6 +1463,7 @@ export async function runReview(
             diffRanges,
             worktree.path,
             presentPositions(history, outcomes),
+            fingerprintCache,
           );
       groups.push(...plan.synthesized);
       const continuations = failed ? [] : await applyContinuations(forge, event, plan.plans);
@@ -1394,12 +1483,20 @@ export async function runReview(
 
       for (const [groupIndex, { finding, fingerprint, match }] of groups.entries()) {
         if (match !== undefined) {
-          carried.push({ finding, resolved: match.resolved });
-          dispositions.push(match.resolved ? "resolved" : "unresolved");
+          // 判据一并记进轨迹(issue #240):追查一次折叠时,要分得清它是指纹算出来的
+          // 还是合并 agent 判出来的,后者带它给的那句理由原文。
+          trace.run("finding_folded", {
+            file: finding.file,
+            line: finding.line,
+            title: finding.title,
+            criteria: match.criterion,
+          });
+          carried.push({ finding, resolved: match.prior.resolved });
+          dispositions.push(match.prior.resolved ? "resolved" : "unresolved");
           // 折叠的这条沿用它历史上的载体:有行级评论即有 resolve 载体,进统计;只活在
           // 正文里的没有,排除(ADR 0006)。
-          placements.push(match.fromInline ? "inline" : "body");
-          groupComments.push(match);
+          placements.push(match.prior.fromInline ? "inline" : "body");
+          groupComments.push(match.prior);
           continue;
         }
 

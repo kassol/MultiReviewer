@@ -32,6 +32,8 @@ export type RunTraceKind =
   | "merge_fallback"
   /** 落点锚不进本轮 diff、被丢弃的一条 Finding(issue #224)。 */
   | "finding_discarded"
+  /** 本轮一条 Finding 折叠到了历史评论上,带这一次折叠的判据(issue #240)。 */
+  | "finding_folded"
   | "review_posted"
   | "run_finished";
 

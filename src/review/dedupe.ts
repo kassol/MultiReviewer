@@ -1,4 +1,11 @@
-import type { Category, Finding, ReviewerEvent, ReviewerUsage, Severity } from "./finding.ts";
+import type {
+  Category,
+  Finding,
+  HistoryFinding,
+  ReviewerEvent,
+  ReviewerUsage,
+  Severity,
+} from "./finding.ts";
 
 /**
  * 一条 Finding 的一个归属:某个 Reviewer 对这一处问题的说法(ADR 0015)。
@@ -28,6 +35,24 @@ export type FindingAttribution = {
 export type MergeCriterion =
   | { kind: "same_line" }
   | { kind: "distance"; distance: number; similarity: number }
+  | { kind: "agent"; reason: string };
+
+/**
+ * 一次跨轮次收口(折叠或延续)凭的是什么(issue #240)。轨迹上与 `MergeCriterion` 占
+ * 同一格 `criteria`,里面同样是做出这个决定的东西本身,不是一句转述。
+ *
+ * 判据另立一个联合而不是复用 `MergeCriterion`:同一轮内的「同一行」与「行距加相似度」
+ * 在跨轮次上不成立(旧位置的代码可能已经改写,行号证明不了什么),跨轮次这三档在同一轮
+ * 内也不成立。共用一个联合会让两边各自多出一半永远取不到的取值。
+ */
+export type CarryCriterion =
+  /** 旧指纹按 ±3 行滑动在本轮 head 上仍算得出(`priorMatch`),只用于折叠。 */
+  | { kind: "fingerprint" }
+  /** 复核判仍在,本轮新报的一条内容对得上(`sameContent`),只用于延续。 */
+  | { kind: "content" }
+  /** 复核结论自带新位置,本轮据它合成一条(issue #170),只用于延续。 */
+  | { kind: "verdict" }
+  /** 合并 agent 把本轮这条与那条历史分进了同一组,带它给的那句理由原文。 */
   | { kind: "agent"; reason: string };
 
 /** 合并组里的一个成员:哪个 Reviewer 在哪一行说了什么。 */
@@ -75,6 +100,14 @@ export type MergedFinding = {
   ruleId?: number;
   /** 这一组为什么被合并(issue #171)。只有一个成员即没有合并过,这一项缺省。 */
   merge?: MergeEvidence;
+  /**
+   * 合并 agent 判定与这一组讲的是同一回事的那条历史 Finding(issue #240):它的落库 id,
+   * 加 agent 给的那句理由原文。一组命中多条历史时取 id 最小的那条,其余历史不动。
+   *
+   * 折叠还是延续由编排层按「旧指纹在本轮 head 上算不算得出」定,这里只记「命中了谁」
+   * ——位置语义不交给模型,与三条硬性质同律。
+   */
+  history?: { id: number; reason: string };
 };
 
 /**
@@ -265,6 +298,12 @@ export function dedupeFindings(findings: readonly Finding[]): MergedFinding[] {
  */
 export type MergeGroupProposal = {
   members: readonly number[];
+  /**
+   * 这一组里的历史成员,值是历史 Finding 的落库 id(issue #240)。历史用自己的 id 作
+   * 标识,与本轮 Finding 的下标分在两格里:混在一格里,`3` 到底指第 3 条本轮 Finding
+   * 还是 id 为 3 的历史就说不清了。没有历史成员时缺省。
+   */
+  history?: readonly number[];
   reason: string;
 };
 
@@ -282,6 +321,12 @@ export type MergeAgentRequest = {
    * 分组方案与验收都按它对齐。
    */
   findings: readonly Finding[];
+  /**
+   * 本审查阶段的历史 Finding,只取所在文件在本轮有 Finding 报出的那些(issue #240)。
+   * 未处置与已处置都给,来源与注入 Reviewer 的那一份相同(`store.stageHistory`),
+   * 不带操作人。跨轮次的重报要能被判成同一回事,agent 就得看得见历史。
+   */
+  history?: readonly HistoryFinding[];
   /** 本轮的一次性工作副本。agent 需要翻代码时读的就是它。 */
   worktreePath: string;
   /** 过程事件的回调。逐条给,调用方落成审查轨迹。 */
@@ -312,17 +357,27 @@ export type MergeProposalOutcome =
  * 这一半不交出去。任一条不成立即整份方案作废,调用方退回 `dedupeFindings`——半份采纳
  * 会让检出率悄悄少一块,而检出率是代码要守住的那个量。
  *
+ * 带上同文件历史之后验收分两档(issue #240):不含历史成员的组照上面三条验;含历史成员
+ * 的组只验第一、二条,行距那一条免验——代码改写之后同一个问题会漂到离旧位置很远的地方,
+ * 拿行距去挡等于把本票要接住的那一类全挡掉。历史成员的旧行号一并不参与行距计算。
+ * 历史那一侧另有两条:编号必须是这次给出的历史里的一条,且不得出现在两组里。历史可以
+ * 不出现在任何一组里——它只是候选,不是必须被认领的输入。
+ *
  * 行号、严重度、分类、归属折叠与代表段的派生规则全部沿用算法档那一套(`mergeGroup`),
  * 呈现语义因此与升级前逐字一致。
  */
 export function mergeByProposal(
   findings: readonly Finding[],
   groups: readonly MergeGroupProposal[],
+  history: readonly HistoryFinding[] = [],
 ): MergeProposalOutcome {
+  const historyById = new Map(history.map((entry) => [entry.id, entry]));
   const claimed = new Set<number>();
+  const claimedHistory = new Set<number>();
   for (const group of groups) {
     // 空组不是合法方案:它分不到任何条目,后面取代表时还会当场崩——验收的职责正是
-    // 把一切不成立的方案挡成回退,而不是让它变成异常。
+    // 把一切不成立的方案挡成回退,而不是让它变成异常。只有历史成员的组同样不成立:
+    // 一组的产出是本轮的一条 Finding,没有本轮成员就没有东西可产出。
     if (group.members.length === 0) return { rejected: "方案里有一组没有任何成员" };
     for (const member of group.members) {
       if (!Number.isInteger(member) || member < 0 || member >= findings.length) {
@@ -330,6 +385,11 @@ export function mergeByProposal(
       }
       if (claimed.has(member)) return { rejected: `第 ${member} 条被分进了两组` };
       claimed.add(member);
+    }
+    for (const id of group.history ?? []) {
+      if (!historyById.has(id)) return { rejected: `分组里的历史条目 ${id} 不在这次给出的历史里` };
+      if (claimedHistory.has(id)) return { rejected: `历史条目 ${id} 被分进了两组` };
+      claimedHistory.add(id);
     }
   }
   if (claimed.size !== findings.length) {
@@ -340,11 +400,16 @@ export function mergeByProposal(
   for (const group of groups) {
     // 成员编号即首报先后:输入按 Reviewer 的配置顺序拼(`run.ts`),下标就是报出的次序。
     const members = [...group.members].sort((a, b) => a - b).map((index) => findings[index]!);
+    // 一组含多条历史时取 id 最小的那条作数:先来的那条拿走这次交接,与延续那边
+    //「一条新 Finding 至多承接一条旧 Identity、id 小的先拿」同一条口径。
+    const hits = [...(group.history ?? [])].sort((a, b) => a - b).map((id) => historyById.get(id)!);
     const file = members[0]!.file;
-    if (members.some((member) => member.file !== file)) {
-      return { rejected: `一组里混了不同文件:${[...new Set(members.map((m) => m.file))].join("、")}` };
+    const files = new Set([...members, ...hits].map((entry) => entry.file));
+    if (files.size > 1) {
+      return { rejected: `一组里混了不同文件:${[...files].join("、")}` };
     }
     if (
+      hits.length === 0 &&
       members.length > 1 &&
       members.some((member) =>
         members.every(
@@ -356,7 +421,14 @@ export function mergeByProposal(
         rejected: `${file} 的一组里有成员与组内任何其他成员都相距超过 ${LINE_TOLERANCE} 行`,
       };
     }
-    merged.push(mergeGroup(file, members, { kind: "agent", reason: group.reason }));
+    merged.push(
+      mergeGroup(
+        file,
+        members,
+        { kind: "agent", reason: group.reason },
+        hits[0] === undefined ? undefined : { id: hits[0].id, reason: group.reason },
+      ),
+    );
   }
 
   // 与算法档同序:文件按首次出现的先后,组内按代表行号升序。呈现次序不因换了分组方式而变。
@@ -375,6 +447,7 @@ function mergeGroup(
   file: string,
   group: readonly Finding[],
   criterion: MergeCriterion,
+  history?: { id: number; reason: string },
 ): MergedFinding {
   const leading = [...group].sort(
     (a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity],
@@ -426,6 +499,7 @@ function mergeGroup(
     suggestion: leading.suggestion,
     attributions,
     ...(ruleId === undefined ? {} : { ruleId }),
+    ...(history === undefined ? {} : { history }),
     // 只有一个成员的组没有合并过,不产生合并事件(issue #171 的用户故事 10)。
     ...(group.length === 1
       ? {}
