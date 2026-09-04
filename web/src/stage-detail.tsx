@@ -197,7 +197,14 @@ export function StageDetailPage({
     void navigate({
       to: "/stages/$stageId",
       params: { stageId },
-      search: (prev: Record<string, unknown>) => ({ ...prev, finding: undefined, trace: undefined }),
+      search: (prev: Record<string, unknown>) => ({
+        ...prev,
+        finding: undefined,
+        trace: undefined,
+        // 裸 `?trace=` 深链接进来时 tab 只由 trace 兜底判出;清掉 trace 之前把它写实,
+        // 否则关掉侧滑背景就翻回 Finding 页。
+        tab: prev.tab ?? (positiveId(prev.trace) === null ? undefined : "timeline"),
+      }),
       replace: true,
     });
   };

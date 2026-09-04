@@ -226,7 +226,8 @@ export type ReviewerOutcome = {
   rejectedToolCalls: number;
   /**
    * 被打回的 `report_finding` 次数:snippet 锚不上(文件读不出来与内容对不上)、锚在
-   * 本轮 diff 的 hunk 外(issue #224)、拿事实当命中规则(issue #221)合记一个数。
+   * 本轮 diff 的 hunk 外(issue #224)、拿事实当命中规则(issue #221)、复核工具收到本批
+   * 没注入的历史 id(issue #235)合记一个数。
    * 打回后模型不重报,那条 Finding 就静默消失了;打回多而 findings 少,是该换模型或
    * 改 prompt 的信号。与 `rejectedToolCalls` 分列:一个是契约失配,一个是报法不对。
    */

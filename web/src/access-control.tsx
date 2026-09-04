@@ -12,6 +12,7 @@ import { Button } from "@/components/theme-button";
 import { useDialogReturnFocus } from "@/components/use-dialog-return-focus";
 import { localMinute } from "@/lib/time";
 import { api, errorText, fetchJson } from "./api.ts";
+import { TAB_TRIGGER } from "@/components/tab-trigger";
 import {
   PANEL_PERMISSIONS,
   permissionImpliedBy,
@@ -67,14 +68,6 @@ const PERMISSION_INFO: readonly PermissionInfo[] = [
 ];
 
 const RESOURCES = ["仓库", "评审", "模型", "凭据"] as const;
-
-/**
- * Tabs 激活指示条与模型服务详情的 TabNav 同一形态:3px 圆头、左右各缩 14px。限定在
- * data-[state=active] 是必须的——不限定的话 Tailwind 会给未激活项也生成一个空的
- * ::before 盒子,把 tab 的高度顶开。
- */
-const TAB_TRIGGER =
-  "data-[state=active]:before:inset-x-3.5 data-[state=active]:before:h-[3px] data-[state=active]:before:rounded-t-[3px]";
 
 function toggleRepoId(repoIds: readonly number[], repoId: number): number[] {
   return repoIds.includes(repoId)

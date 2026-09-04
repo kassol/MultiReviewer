@@ -28,6 +28,7 @@
 - `src/components/editable-model-combobox.tsx` — 可搜索且可手填 model id 的唯一产品入口。内部组合 Themes TextField/Popover 与 `ui/command`,自动发现候选可选，目录外裸 model id 始终可输入。
 - `src/components/empty-state.tsx` — 资源为空与筛选无结果的统一实现。保留原有 `h1` / `h2` / `h3` / 正文层级，不使用装饰性大图标。
 - `src/components/use-dialog-return-focus.ts` — 受控 Dialog / AlertDialog 的焦点返回工具。触发事件发生时记录真实元素与链接地址，关闭时优先恢复当前 DOM 中的同地址链接；触发元素卸载且没有同地址链接时使用调用方提供的稳定入口，不在弹窗打开后的 effect 中推断焦点来源。
+- `src/components/tab-trigger.ts` — Themes `Tabs.Trigger` 的激活指示条类名(3px 圆头、左右各缩 14px,限定 `data-[state=active]`),知识集弹窗、角色页与阶段详情页三处共用(issue #236)。
 - `src/components/theme-button.ts` — Radix Themes `Button` 的集中类型适配出口。`@radix-ui/themes` 3.3.0 在 `exactOptionalPropertyTypes` 下把 `highContrast` 推成 `never`;这里仅把它修正为可选 boolean,导出的仍是原始 Button,不增加组件、行为或 DOM。业务 Button 从此处导入,IconButton 继续直接使用 Themes。主要动作固定为 accent 的 `solid`,**不开 `highContrast`**——三族语义色与 accent 的目标值都落在各自的 11 档上,highContrast 会把颜色推到 12 档,那是 Radix 的默认深色,主按钮会从蓝变回近黑。次要动作使用 `soft` / `outline` / `ghost` 配 `color="gray"`,灰色按钮**保留** `highContrast`(文字才是 `#1d1d1f` 而不是 `#6e6e73`);删除和丢弃使用 `red`;纯图标动作使用 `IconButton` 并提供 `aria-label`。
 - `src/components/page-body.tsx` — 业务页正文容器。`wide` 与 `form` 两档统一最大宽度、窄屏内边距和页尾留白;主从页只在详情栏复用,不改变分栏结构。
 - `src/components/card-shell.tsx` — 卡壳的唯一实现。圆角随视口在 14 / 12 之间换档:Themes 的 `Card` 把圆角画在伪元素上,只改根元素会让边框与底色的圆角错开,所以壳走 utility + 令牌,壳里的通用件仍是 Themes 组件。模型凭据页与访问控制页共用这一份。
@@ -74,7 +75,7 @@
 - **等宽字体只包数字,不包中文。** `font-mono` 会把汉字撑成等宽格,「3 轮」因此读成断开的两块;写法是 `<span className="font-mono tabular-nums">{n}</span> 轮`。
 - 时间一律「年-月-日 时:分」本地时区,不用 `toLocaleString()`——它给的是 `8/14/2026, 6:25:21 PM`,与全站的 ISO 风格对不上。
 - 读取中给骨架块,不给「读取中…」那行字:骨架保住它替代的那块内容的尺寸,数据到了不跳版。
-- **一个审查阶段只有一份列表、一个入口、一个返回**(issue #189)。评审记录是 `/` 这一份——它就是首页(issue #194),左栏的仓库只是它的过滤条件,也是管仓库的地方(issue #195:注册、配置与移除都在左栏的行操作里做,不另开一页);阶段页是 `/stages/<阶段标识>` 这一张,只有一种视图;下钻只有侧滑,开在同一路由的查询参数上。不再开第二份列表、第二种阶段视图或第二个返回——同一个阶段有两个入口时,页顶那个返回必然把一半人送错地方。
+- **一个审查阶段只有一份列表、一个入口、一个返回**(issue #189)。评审记录是 `/` 这一份——它就是首页(issue #194),左栏的仓库只是它的过滤条件,也是管仓库的地方(issue #195:注册、配置与移除都在左栏的行操作里做,不另开一页);阶段页是 `/stages/<阶段标识>` 这一张,只有一种视图(正文分「Finding」与「时间线」两个 tab,issue #236,那是同一张页的两页,不是第二种视图);下钻只有侧滑,开在同一路由的查询参数上。不再开第二份列表、第二种阶段视图或第二个返回——同一个阶段有两个入口时,页顶那个返回必然把一半人送错地方。
 - 前端不做程序化测试(issue #26 的测试决策):逻辑压在服务端可测的注入变量与 API 契约上(`test/panel-pages.test.ts`);视觉与交互由部署实例的端到端验收覆盖。
 - **端到端验收固定在部署实例使用 ego-browser,不在本机 dev 双进程上做**(根 `AGENTS.md` 的全局规范)。本机没有真 Gitea、没有已注册的仓库、没有模型凭据,面板上大半的屏在那里是空的;dev 双进程只用于实现时的即时反馈,不作为验收依据。
 
@@ -119,7 +120,7 @@
 
 ## 变更日志
 
-- 2026-09-04: 落地 issue #236。**阶段详情页正文拆成「Finding」「时间线」两个 tab,当前 tab 写进地址**。`stage-summary.tsx` 的 `StageSummaryView` 在三个计数下面挂一组 Themes `Tabs`(`TAB_TRIGGER` 与知识集弹窗、角色页同一形态的 3px 圆头指示条):Finding 页是四个筛选、计数行与 Finding 列表,时间线页是原来的 `timeline` 渲染入口,时间线那颗 tab 上挂一枚轮次数徽章(原先列表底下那个「时间线 n」标题因此删掉)。组件多 `tab` / `onTabChange` 两个 prop,筛选仍是组件内状态,切 tab 只换 `Tabs.Content`、筛选值不丢。`stage-detail.tsx` 加 `tabOf`(显式 `tab=` 优先,没写时 `trace=` 判时间线、其余判 Finding)与 `selectTab`(`replace`,缺省的 `findings` 不写进地址;地址上带着 `trace=` 时缺省判的是时间线,这时才把 `findings` 显式写上),`useRouterState` 的选择器多返回一格 `tab`;`StageTimeline` 里那条打开轨迹侧滑的链接多写一个 `tab: "timeline"`。三个计数、页头动作(重跑 / 增量评审 / 审查完成)、页顶返回与两个侧滑都在 tab 之外,关侧滑不改 tab。路由不声明 search 校验,`tab=` 与既有的 `finding=` / `trace=` 一样原样流过;服务端与 API 契约无改动。前端无程序化测试(issue #26),交互走部署实例验收。
+- 2026-09-04: 落地 issue #236。**阶段详情页正文拆成「Finding」「时间线」两个 tab,当前 tab 写进地址**。`stage-summary.tsx` 的 `StageSummaryView` 在三个计数下面挂一组 Themes `Tabs`(`TAB_TRIGGER` 与知识集弹窗、角色页同一形态的 3px 圆头指示条):Finding 页是四个筛选、计数行与 Finding 列表,时间线页是原来的 `timeline` 渲染入口,时间线那颗 tab 上挂一枚轮次数徽章(原先列表底下那个「时间线 n」标题因此删掉)。组件多 `tab` / `onTabChange` 两个 prop,筛选仍是组件内状态,切 tab 只换 `Tabs.Content`、筛选值不丢。`stage-detail.tsx` 加 `tabOf`(显式 `tab=` 优先,没写时 `trace=` 判时间线、其余判 Finding)与 `selectTab`(`replace`,缺省的 `findings` 不写进地址;地址上带着 `trace=` 时缺省判的是时间线,这时才把 `findings` 显式写上),`useRouterState` 的选择器多返回一格 `tab`;`StageTimeline` 里那条打开轨迹侧滑的链接多写一个 `tab: "timeline"`。三个计数、页头动作(重跑 / 增量评审 / 审查完成)、页顶返回与两个侧滑都在 tab 之外,关侧滑不改 tab(`closeDrawer` 清 `trace=` 之前把兜底判出的 `timeline` 写实,裸 `?trace=` 深链接关掉侧滑后仍停在时间线页)。三个计数兼任处置状态筛选,而筛选只在 Finding 页可见:停在时间线页时点计数先切回 Finding 页,否则改的是一个看不见的筛选。`TAB_TRIGGER` 抽成 `components/tab-trigger.ts`,知识集弹窗与角色页那两份改为引用它。路由不声明 search 校验,`tab=` 与既有的 `finding=` / `trace=` 一样原样流过;服务端与 API 契约无改动。前端无程序化测试(issue #26),交互走部署实例验收。
 
 - 2026-09-03: 落地 issue #234。**增量评审弹窗按上次的来源打开,默认只列当前比较项之后的提交**。`commit-picker.tsx` 加 `initialMode` / `initialBranch` / `current` 三个 prop:前两个决定弹窗停在哪条分支或哪种来源(分支消失走既有空态),`current` 在场时勾选发 `after=<sha>`、复选框文案变「仅当前比较项之后」、空态换成「当前比较项之后没有新提交」加「查看全部提交」,当前那一行灰 Badge「当前」且 `pick` 对它 return。`range-review-actions.tsx` 按 `rangeReview.comparisonSource` 传前两个 prop,并把选中的 `selection.source` 作为 `comparisonSource` 放进推进请求体;`range-review-launch.tsx` 发起时同样带上。`RangeReview` 类型多 `comparisonSource` 一格。发起弹窗的默认列表与文案一字不动。
 

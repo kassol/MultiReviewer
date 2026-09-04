@@ -822,37 +822,3 @@ test("历史所在文件不在本轮任何批次:记无法判断并标漏给,不
   ]);
   assert.deepEqual(forge.resolvedIds, [], "谁都没复核过的这条被自动处置了");
 });
-
-test("Reviewer 对本批没注入的 id 回结论:不落库,计进被拒次数", async () => {
-  const fixture = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
-  const { db, forge } = fixture;
-  const deps = routingDeps(fixture);
-
-  await runReview(EVENT, {
-    ...deps,
-    reviewers: [scriptedReviewer("model-a", [findingAt("src/b.ts", "b 的问题")])],
-  });
-
-  // 只对没注入这条历史的批次回结论:模型顺手看到别处的 id 就是这个形状。
-  const stray: Reviewer = {
-    model: "model-a",
-    review: async ({ history }) => ({
-      model: "model-a",
-      findings: [],
-      anomalies: [],
-      rejectedToolCalls: 0,
-      anchorRejections: 0,
-      verdicts: history.some((entry) => entry.id === 1)
-        ? []
-        : [{ findingId: 1, verdict: "fixed" as const }],
-    }),
-  };
-  const result = await runReview(EVENT, { ...deps, reviewers: [stray] });
-
-  assert.deepEqual(verdictRows(db.path), [
-    { model: "model-a", findingId: 1, verdict: "unclear", missing: 1 },
-  ]);
-  assert.deepEqual(forge.resolvedIds, []);
-  // 三批里有两批没拿到这条历史,两次结论各记一次被拒。
-  assert.equal(result.outcomes[0]!.anchorRejections, 2);
-});

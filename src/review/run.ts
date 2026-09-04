@@ -1096,32 +1096,12 @@ export function knowledgeForBatch<T extends { scope: string }>(
  * 一条历史因此只进一批,只被真正审到那个文件的 Reviewer 复核一次:每批复核全部历史时
  * 复核量随批数线性放大,而没看过那个文件的批次给的结论不构成证据。
  */
-export function historyForBatch(
+function historyForBatch(
   history: readonly HistoryFinding[],
   files: readonly string[],
 ): readonly HistoryFinding[] {
   const inBatch = new Set(files);
   return history.filter((entry) => inBatch.has(entry.file));
-}
-
-/**
- * 本批没注入的历史 id 上的结论不收(issue #235):它没有证据——给结论的 Reviewer 这一批
- * 压根没看过那个文件。子进程那侧已经按同一条口径打回,这里是编排层收结论时的同一道判定,
- * 丢掉的计进「被拒」,轨迹上因此看得出来。
- */
-function keepInjectedVerdicts(
-  outcome: ReviewerOutcome,
-  history: readonly HistoryFinding[],
-): ReviewerOutcome {
-  const injected = new Set(history.map((entry) => entry.id));
-  const verdicts = outcome.verdicts ?? [];
-  const kept = verdicts.filter((verdict) => injected.has(verdict.findingId));
-  if (kept.length === verdicts.length) return outcome;
-  return {
-    ...outcome,
-    verdicts: kept,
-    anchorRejections: outcome.anchorRejections + verdicts.length - kept.length,
-  };
 }
 
 /**
@@ -1297,11 +1277,7 @@ export async function runReview(
                 trace.reviewer(reviewer.model, kind, { ...payload, batch: batch.index });
               },
             });
-            return {
-              outcome: keepInjectedVerdicts(outcome, batchHistory),
-              startedAt,
-              durationMs: Date.now() - startedAt,
-            };
+            return { outcome, startedAt, durationMs: Date.now() - startedAt };
           }),
         );
         trace.run("batch_finished", batch);
