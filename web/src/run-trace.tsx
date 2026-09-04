@@ -89,6 +89,10 @@ function criteriaText(payload: Record<string, unknown>): string | null {
   const kind = str(criteria, "kind");
   if (kind === "agent") return str(criteria, "reason") ?? "合并 agent 判定";
   if (kind === "same_line") return "同一行";
+  // 跨轮次收口的三档判据(issue #240、#243):折叠凭指纹,延续凭标题相似或复核结论给的位置。
+  if (kind === "fingerprint") return "指纹仍在";
+  if (kind === "content") return "内容相近";
+  if (kind === "verdict") return "复核结论给的位置";
   if (kind !== "distance") return kind;
   const distance = num(criteria, "distance");
   const similarity = num(criteria, "similarity");
@@ -257,6 +261,36 @@ function RunMilestone({ event }: { event: TraceEvent }) {
               )}
               {list.length === 0 ? null : (
                 <Badge color="gray" variant="soft" radius="full">{list.join(" / ")}</Badge>
+              )}
+            </span>
+            {title === null || title === "" ? null : (
+              <span className="min-w-0 break-words text-sm text-text-secondary">{title}</span>
+            )}
+          </div>
+        );
+      }
+      // 跨轮次的折叠与延续(issue #240、#243):判据是指纹算出来的还是合并 agent 判的,
+      // 追查一次误判时要在这里分得清,agent 那一档带它给的那句理由。
+      case "finding_folded":
+      case "finding_continued": {
+        const file = str(payload, "file");
+        const line = num(payload, "line");
+        const title = str(payload, "title");
+        const criteria = criteriaText(payload);
+        return (
+          <div className="flex min-w-0 flex-col gap-1">
+            <span className="flex flex-wrap items-center gap-1.5">
+              <span className="text-base text-text">
+                {event.kind === "finding_folded" ? "折叠到历史评论" : "延续自历史 Finding"}
+              </span>
+              {file === null ? null : (
+                <span className="font-mono text-xs break-all text-text-secondary">
+                  {file}
+                  {line === null ? "" : `:${line}`}
+                </span>
+              )}
+              {criteria === null ? null : (
+                <Badge color="gray" variant="soft" radius="full">{criteria}</Badge>
               )}
             </span>
             {title === null || title === "" ? null : (

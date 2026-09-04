@@ -41,7 +41,10 @@ export type HunkChange = {
   deleted?: readonly string[];
 };
 
-/** 一个 hunk 在新文件一侧覆盖的行区间,连同区间内的改动位置,按行号升序。 */
+/**
+ * 一个 hunk 在新文件一侧覆盖的行区间,连同它的改动位置,按行号升序。hunk 末尾的删除点记在
+ * `end + 1` 上,落在区间之外——它在新侧本就不占行,只是位置在最后一行之后。
+ */
 export type DiffHunk = LineRange & { changes: readonly HunkChange[] };
 
 /**

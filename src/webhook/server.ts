@@ -4877,9 +4877,21 @@ function readMode(res: ServerResponse, raw: unknown): ReviewRunMode | "rejected"
   return "rejected";
 }
 
-/** 这个阶段还有没有未处置的历史 Finding:只复核那一轮开不开得起来,判据就是它。 */
-function hasOpenHistory(dbPath: string, scope: StageScope): boolean {
-  return withStore(dbPath, (store) => openHistory(store.stageHistory(scope)).length > 0);
+/**
+ * 这个阶段的未处置历史 Finding 有没有落在本轮变更文件里:只复核那一轮开不开得起来,判据
+ * 就是它。与编排层过滤文件集的是同一道(`openHistory` 加变更文件集求交):历史全落在本轮
+ * 没改的文件上时,编排层同样一个文件都不剩,那该在这里就回 409,不该先答「已触发」。
+ */
+async function hasOpenHistory(
+  dbPath: string,
+  scope: StageScope,
+  forge: Forge,
+  ref: PullRequestRef,
+): Promise<boolean> {
+  const changed = new Set((await forge.listChangedFiles(ref)).map((file) => file.path));
+  return withStore(dbPath, (store) =>
+    openHistory(store.stageHistory(scope)).some((entry) => changed.has(entry.file)),
+  );
 }
 
 /** 只复核在一个没有未处置历史的阶段上被拒的那句话。两种入参共用,措辞一致。 */
@@ -4972,7 +4984,10 @@ async function handleRerun(
   // 只复核那一轮开跑之前先问一句这个阶段还有没有可复核的东西:一轮什么都不做的
   // Review Run 不该被开出来(issue #242)。判据与编排层过滤文件集的是同一个。
   // 排在读 PR 之后:PR 根本不存在时该说的是那件事,不是这个阶段没有历史。
-  if (mode === "verdict-only" && !hasOpenHistory(deps.dbPath, { owner, repo, pullNumber })) {
+  if (
+    mode === "verdict-only" &&
+    !(await hasOpenHistory(deps.dbPath, { owner, repo, pullNumber }, forge, ref))
+  ) {
     return sendJson(res, 409, { error: VERDICT_ONLY_NOTHING_TO_DO });
   }
   // 与自动投递调用同一个启动器；快照在 202 响应和后台首批之前已经完整物化。
@@ -5028,13 +5043,21 @@ async function rerunRangeReview(
   if (ruleSetUnconfirmed(deps.dbPath, record.repoId)) {
     return sendJson(res, 409, { error: RULE_SET_UNCONFIRMED });
   }
-  // 与 pull request 那条入参同一道闸(issue #242):只复核跑不出结果时不开这一轮。
-  if (mode === "verdict-only" && !hasOpenHistory(deps.dbPath, { rangeReviewId: id })) {
-    return sendJson(res, 409, { error: VERDICT_ONLY_NOTHING_TO_DO });
-  }
   const forge = deps.forges.gitea;
   if (forge === undefined) {
     return sendJson(res, 503, { error: "gitea 没有配置 Forge,重跑不了" });
+  }
+  // 与 pull request 那条入参同一道闸(issue #242):只复核跑不出结果时不开这一轮。
+  if (
+    mode === "verdict-only" &&
+    !(await hasOpenHistory(
+      deps.dbPath,
+      { rangeReviewId: id },
+      forge,
+      { owner: record.owner, repo: record.repo, number: record.containerPullNumber },
+    ))
+  ) {
+    return sendJson(res, 409, { error: VERDICT_ONLY_NOTHING_TO_DO });
   }
   let plan: ReviewRunPlan;
   try {

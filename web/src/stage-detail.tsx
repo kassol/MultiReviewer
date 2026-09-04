@@ -11,7 +11,6 @@ import {
   ReaderIcon,
 } from "@radix-ui/react-icons";
 import {
-  Badge,
   Callout,
   Checkbox,
   Dialog as ThemedDialog,

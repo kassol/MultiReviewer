@@ -849,6 +849,16 @@ test("只复核时批次只含有未处置历史的文件,每批的 Reviewer 都
     second.calls.map((call) => call.mode),
     ["verdict-only", "verdict-only"],
   );
+  // 改动行数与文件数同一口径:只复核那一轮记的是过滤后那两个文件的行数,不是整段范围的。
+  const runsDb = new DatabaseSync(fixture.db.path);
+  const runs = runsDb
+    .prepare("SELECT changed_files, changed_lines FROM review_run ORDER BY id")
+    .all() as { changed_files: number; changed_lines: number }[];
+  runsDb.close();
+  assert.deepEqual(runs.map((run) => ({ ...run })), [
+    { changed_files: 3, changed_lines: 15 },
+    { changed_files: 2, changed_lines: 10 },
+  ]);
 });
 
 test("不给模式即完整审查:全部变更文件照旧分批,Reviewer 收到的输入不带模式项", async () => {

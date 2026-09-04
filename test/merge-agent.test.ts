@@ -464,6 +464,13 @@ test("agent 把本轮一条与旧指纹仍在的历史分成一组:不发评论,
     kind: "agent",
     reason: "换了说法的同一处余额校验",
   });
+
+  // 折叠进旧条的那一行带旧条的指纹:阶段汇总按「文件 + 指纹」归并,同一处问题只占一行,
+  // 未处置计数不因换了说法再报一次而多一条。
+  const store = openStore(ctx.db.path);
+  const summary = store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: EVENT.number });
+  store.close();
+  assert.equal(summary.findings.length, 1);
 });
 
 test("命中已处置的历史:本轮那条沉默,落库折叠到已处置", async () => {

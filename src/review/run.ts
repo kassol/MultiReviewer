@@ -1367,14 +1367,26 @@ export async function runReview(
     // 见 `reviewer/subprocess.ts`),中途出错必须归还:webhook 服务是长跑进程,
     // 泄漏的连接会一次次攒下来。
     const store = openStore(deps.dbPath);
+    // 从这里到 `startRun` 之间的每一处抛(读历史、只复核过滤成空、分批、落库)都在下面
+    // 那个 `finally` 盖不到的地方,句柄在这一段里统一归还。
+    const opened = <T>(step: () => T): T => {
+      try {
+        return step();
+      } catch (error) {
+        store.close();
+        throw error;
+      }
+    };
 
     // 本阶段已经报过的 Finding,注入给这一轮的每个 Reviewer(ADR 0016)。读在开跑之前:
     // 本轮自己的 Finding 还没落库,这份历史因此正是「上一轮为止」的那些。
     // 它也是只复核那一轮过滤文件集的依据(issue #242),两处同一份读取,口径不会分叉。
-    const history = store.stageHistory(
-      deps.rangeReviewId === undefined
-        ? { owner: event.owner, repo: event.repo, pullNumber: event.number }
-        : { rangeReviewId: deps.rangeReviewId },
+    const history = opened(() =>
+      store.stageHistory(
+        deps.rangeReviewId === undefined
+          ? { owner: event.owner, repo: event.repo, pullNumber: event.number }
+          : { rangeReviewId: deps.rangeReviewId },
+      ),
     );
 
     const verdictOnly = deps.mode === "verdict-only";
@@ -1382,11 +1394,8 @@ export async function runReview(
       // 只复核那一轮只读有未处置历史的文件:花费按历史所在文件数计,不按整段范围计。
       const withOpenHistory = new Set(openHistory(history).map((entry) => entry.file));
       range.files = range.files.filter((file) => withOpenHistory.has(file));
-      if (range.files.length === 0) {
-        // 一轮什么都不做的 Review Run 不该被开出来:落库之前抛,接口层据这句话转 409。
-        store.close();
-        throw new Error(VERDICT_ONLY_NO_HISTORY);
-      }
+      // 一轮什么都不做的 Review Run 不该被开出来:落库之前抛,接口层据这句话转 409。
+      if (range.files.length === 0) opened(() => { throw new Error(VERDICT_ONLY_NO_HISTORY); });
     }
 
     const batches = splitIntoBatches(
@@ -1396,7 +1405,7 @@ export async function runReview(
       deps.maxFilesPerBatch ?? DEFAULT_MAX_FILES_PER_BATCH,
     );
 
-    const runId = store.startRun({
+    const runId = opened(() => store.startRun({
       owner: event.owner,
       repo: event.repo,
       pullNumber: event.number,
@@ -1408,7 +1417,11 @@ export async function runReview(
       triggeredBy: deps.triggeredBy ?? null,
       rangeReviewId: deps.rangeReviewId ?? null,
       changedFiles: range.files.length,
-      changedLines: [...changedLines.values()].reduce((sum, n) => sum + n, 0),
+      // 只复核那一轮的文件集已经过滤过,改动行数按同一批文件计,两个数才是同一口径。
+      changedLines: (verdictOnly ? range.files : [...changedLines.keys()]).reduce(
+        (sum, file) => sum + (changedLines.get(file) ?? 0),
+        0,
+      ),
       batchCount: batches.length,
       reviewerPins: deps.reviewerPins ?? [],
       // 知识集版本在这里定死(issue #204):这一轮之后的规则变更追不上已经开跑的它,
@@ -1418,7 +1431,7 @@ export async function runReview(
       directive: deps.directive ?? null,
       // 模式同律(issue #242):时间线上要分得出哪一轮是只复核,「新报 0」才读得对。
       mode: deps.mode ?? "full",
-    });
+    }));
 
     // 一有 runId 就可以接受订阅(ADR 0017):面板打开进行中的轮次时要能接上实时推送,
     // 而第一条编排事件紧接着就发出来了。
@@ -1591,6 +1604,7 @@ export async function runReview(
         // 指纹够不着的那些——增量在指纹窗口里插了几行,或者模型换个说法报在了别处。
         let match: ReviewGroup["match"];
         let carry: ReviewGroup["carry"];
+        let fingerprint = contentFingerprint(worktree.path, finding.file, finding.line);
         const byFingerprint = priorMatch(prior, worktree.path, finding);
         if (byFingerprint !== undefined) {
           match = { prior: byFingerprint, criterion: { kind: "fingerprint" } };
@@ -1600,6 +1614,9 @@ export async function runReview(
             hit === undefined ? undefined : agentFold(hit, fingerprintCache, worktree.path);
           if (folded !== undefined) {
             match = { prior: folded, criterion: { kind: "agent", reason: finding.history.reason } };
+            // 折叠到的那条历史的指纹就是这一条的指纹:Finding Identity 按「文件 + 指纹」
+            // 归并(`stageSummary`),按本轮落点重算会让同一处问题在阶段汇总里占两行。
+            fingerprint = hit!.fingerprint;
           } else if (hit !== undefined) {
             // 折叠两档都不成立即那处代码已被改写,这一条要承接它的 Identity(issue #243)。
             carry = { candidate: hit, reason: finding.history.reason };
@@ -1607,7 +1624,7 @@ export async function runReview(
         }
         return {
           finding,
-          fingerprint: contentFingerprint(worktree.path, finding.file, finding.line),
+          fingerprint,
           match,
           ...(carry === undefined ? {} : { carry }),
         };

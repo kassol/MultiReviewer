@@ -253,6 +253,30 @@ test("范围审查重跑默认只复核,`full` 才是完整审查,非法取值 4
   assert.deepEqual(modes(h, rangeReview.id), ["full", "verdict-only", "full"]);
 });
 
+test("未处置历史全落在本轮没改的文件上:只复核重跑同样 409,不先答已触发", async () => {
+  // 首轮在 src/answer.ts 报出一条;随后 Forge 上这个 PR 的变更文件里不再有它——编排层
+  // 过滤完一个文件都不剩,那该在接口上就拒掉,不该先回 202 再在后台空跑一轮。
+  let narrowed = false;
+  const h = await registeredHarness({
+    buildReviewers: reportingReviewers,
+    wrapForge: (forge) => ({
+      ...forge,
+      listChangedFiles: async (ref) =>
+        (await forge.listChangedFiles(ref)).filter(
+          (file) => !narrowed || file.path !== "src/answer.ts",
+        ),
+    }),
+  });
+  const rangeReview = await startRangeReview(h);
+  narrowed = true;
+
+  const denied = await h.api("POST", "/rerun", { rangeReviewId: rangeReview.id });
+  assert.equal(denied.status, 409);
+  assert.match(((await denied.json()) as { error: string }).error, /未处置/);
+  assert.equal(h.settled.length, 1);
+  assert.deepEqual(modes(h, rangeReview.id), ["full"]);
+});
+
 test("没有未处置历史的阶段:只复核重跑 409 并说明,一轮不开", async () => {
   const h = await registeredHarness();
   const rangeReview = await startRangeReview(h);

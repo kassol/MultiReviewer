@@ -13,6 +13,7 @@ import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@
 import { localMinute } from "@/lib/time";
 
 import { fetchJson } from "./api.ts";
+import { type RerunMode } from "./repo-actions.tsx";
 import { FindingRow } from "./run-diff.tsx";
 import type { RunFinding } from "./runs.tsx";
 
@@ -45,7 +46,7 @@ export type StageTimelineEntry = {
   finishedAt: string | null;
   failed: boolean;
   /** 这一轮的模式(issue #242)。只复核那一轮在时间线上带标记。 */
-  mode: "full" | "verdict-only";
+  mode: RerunMode;
   /** 本轮新报出。 */
   reported: number;
   /** 折叠到本阶段已有的那条上。 */
