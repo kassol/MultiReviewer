@@ -107,6 +107,15 @@ export type Finding = {
   ruleId?: number;
 };
 
+/**
+ * 一轮 Review Run 的模式(CONTEXT.md 只复核,issue #242)。
+ *
+ * `full` 是完整审查:照常报出新问题,顺带复核历史。`verdict-only` 是只复核:这一轮只对
+ * 有未处置历史的文件跑,Reviewer 不注册报出工具,只能给复核结论——清历史与找新问题是
+ * 两个目标,整段范围每重跑一轮就多几十条新报,一次重跑不该被迫两件事一起做。
+ */
+export type ReviewRunMode = "full" | "verdict-only";
+
 /** 一次 Review Run 覆盖的代码范围。`baseSha` 是 merge-base,不是 base 分支尖端。 */
 export type ReviewRange = {
   baseSha: string;
@@ -334,6 +343,11 @@ export type ReviewerInput = {
    * 指令段,与没有这一票时逐字一致。
    */
   directive?: string;
+  /**
+   * 这一轮的模式(issue #242)。不传即完整审查,请求形状与这一票之前逐字一致;
+   * `verdict-only` 时子进程不注册报出工具,模型只能给复核结论。
+   */
+  mode?: ReviewRunMode;
   /**
    * 收这个 Reviewer 的过程事件(issue #171),编排层一定传,一条即写一条轨迹。
    * 声明成可选是给直接调 `review` 的调用方留的余地:不看过程的地方不必造一个空回调。

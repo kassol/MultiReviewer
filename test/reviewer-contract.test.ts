@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { anchorVerdict } from "../src/reviewer/anchor.ts";
 import { normalizeFinding, normalizeVerdict } from "../src/reviewer/normalize.ts";
 import { redactModelCredential, reviewerEnv } from "../src/reviewer/env.ts";
-import { reviewPrompt } from "../src/reviewer/worker.ts";
+import { reviewPrompt, sessionTools } from "../src/reviewer/worker.ts";
 import { factRuleIdRejection, priorFindingRejection } from "../src/reviewer/worker-tools.ts";
 
 const RAW = {
@@ -339,4 +339,36 @@ test("本轮指令自成一段,标明一次性、优先于常规范围、不改�
   assert.match(prompt, /this review round/i);
   assert.match(prompt, /takes priority/i);
   assert.match(prompt, /evidence/i);
+});
+
+test("只复核那一轮的工具清单不含报出工具,复核工具仍在", () => {
+  const tools = sessionTools({ mode: "verdict-only", hasHistory: true });
+  assert.ok(!tools.includes("report_finding"), "只复核那一轮仍然注册了报出工具");
+  assert.ok(tools.includes("review_prior_finding"));
+  // 取证子代理与受控 git 工具照常:复核同样要读代码才给得出结论。
+  assert.ok(tools.includes("git"));
+  assert.ok(tools.includes("subagent"));
+});
+
+test("完整审查那一轮的工具清单与这一票之前逐字一致", () => {
+  assert.deepEqual(sessionTools({ hasHistory: true }), [
+    "read",
+    "grep",
+    "find",
+    "ls",
+    "git",
+    "report_finding",
+    "subagent",
+    "review_prior_finding",
+  ]);
+  // 本阶段没有历史时不注册复核工具:一个无事可复核的工具只会让模型多绕一圈。
+  assert.deepEqual(sessionTools({ hasHistory: false }), [
+    "read",
+    "grep",
+    "find",
+    "ls",
+    "git",
+    "report_finding",
+    "subagent",
+  ]);
 });

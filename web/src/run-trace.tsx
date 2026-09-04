@@ -278,6 +278,13 @@ function RunMilestone({ event }: { event: TraceEvent }) {
           </span>
         );
       }
+      // 只复核那一轮零新报(issue #242):Forge 上没有这一轮的痕迹,轨迹里要有。
+      case "review_skipped":
+        return (
+          <span className="text-base text-text-secondary">
+            {str(payload, "reason") ?? "本轮未发 review"}
+          </span>
+        );
       case "run_finished":
         return <span className="text-base font-semibold text-text">本轮结束</span>;
       default:

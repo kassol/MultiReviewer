@@ -33,6 +33,8 @@ export type RunTraceKind =
   /** 落点锚不进本轮 diff、被丢弃的一条 Finding(issue #224)。 */
   | "finding_discarded"
   | "review_posted"
+  /** 只复核那一轮零新报,这一轮不向 Forge 发 review(issue #242)。 */
+  | "review_skipped"
   | "run_finished";
 
 export type TraceKind = ReviewerTraceKind | RunTraceKind;

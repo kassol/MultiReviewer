@@ -21,6 +21,7 @@ import {
   RepoRowMenu,
   RerunPullRequest,
   type RepoRow,
+  type RerunMode,
 } from "./repo-actions.tsx";
 import { RepoRules } from "./repo-rules.tsx";
 import { clearPanelSession } from "./session.ts";
@@ -50,6 +51,8 @@ export type RunItem = {
   rangeReviewId: number | null;
   /** 发起这一轮时附的本轮指令(issue #225);null 即没有附。只属于这一轮。 */
   directive: string | null;
+  /** 这一轮的模式(issue #242)。升级前的旧行读回来是完整审查。 */
+  mode: RerunMode;
   finishedAt: string | null;
   failed: boolean;
   /** 一行一个参与本轮的模型。`failure` 非 null 即这个模型这轮失败了(节选文本)。 */
@@ -204,10 +207,16 @@ export async function rerunRangeReviewRequest(
   rangeReviewId: number,
   /** 本轮指令(issue #225),非必填:留空即不带这一格。 */
   directive?: string,
+  /** 这一轮的模式(issue #242),不给即只复核历史 Finding。 */
+  mode?: RerunMode,
 ): Promise<string> {
   const response = await api("/rerun", {
     method: "POST",
-    body: JSON.stringify({ rangeReviewId, ...(directive === undefined ? {} : { directive }) }),
+    body: JSON.stringify({
+      rangeReviewId,
+      ...(directive === undefined ? {} : { directive }),
+      ...(mode === undefined ? {} : { mode }),
+    }),
   });
   if (!response.ok) throw new Error(await errorText(response));
   return "已在当前比较项上触发新一轮审查";

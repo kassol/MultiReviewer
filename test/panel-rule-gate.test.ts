@@ -77,6 +77,8 @@ test("知识集未确认时手动重跑回 409,知识确认后同一个入口放
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     pullNumber: HARNESS_PR.number,
+    // 这几条用例看的是知识集门禁,与模式无关;完整审查那一档不依赖阶段有没有历史。
+    mode: "full",
   });
   assert.equal(allowed.status, 202);
   await h.settledAtLeast(1);
@@ -130,6 +132,8 @@ test("零条目的知识确认:未确认的仓库确认空知识集之后,同一
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     pullNumber: HARNESS_PR.number,
+    // 这几条用例看的是知识集门禁,与模式无关;完整审查那一档不依赖阶段有没有历史。
+    mode: "full",
   });
   assert.equal(allowed.status, 202);
   await h.settledAtLeast(1);

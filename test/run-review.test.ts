@@ -11,6 +11,7 @@ import {
   INTENT_COMMIT_LIMIT,
   knowledgeForBatch,
   runReview,
+  VERDICT_ONLY_NO_HISTORY,
 } from "../src/review/run.ts";
 import {
   containerPullRequestBody,
@@ -1192,4 +1193,117 @@ test("本轮指令随这一轮注入 Reviewer 并落库,不给指令时两处都
   } finally {
     plain.close();
   }
+});
+
+/** 最新一轮的轮次级轨迹事件类型,按落库先后。 */
+function runTraceKinds(dbPath: string): string[] {
+  const store = openStore(dbPath);
+  try {
+    const runId = store.listRuns({ limit: 1 })[0]!.id;
+    return store
+      .listTrace(runId)
+      .filter((event) => event.scope === "run")
+      .map((event) => event.kind);
+  } finally {
+    store.close();
+  }
+}
+
+test("只复核且零新报:不向 Forge 发 review,旧评论 resolve 照常,轨迹记下未发 review", async () => {
+  const { cache, db, forge, reviewer } = setup(6);
+  const event = { owner: "acme", repo: "widgets", number: 7 };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
+
+  await runReview(event, { ...deps, reviewers: [reviewer] });
+  forge.existingComments.push(
+    ...forge.publishedComments.map((comment) => ({ ...comment, resolved: false })),
+  );
+
+  await runReview(event, {
+    ...deps,
+    reviewers: [verdictReviewer("stub-model", "fixed")],
+    mode: "verdict-only",
+  });
+
+  // 第一轮那条 review 之后再没有新的:Forge 上不该多出一条内容为空的 review。
+  assert.equal(forge.createdReviews.length, 1);
+  // 判已修的那条照常自动处置,旧评论照常 resolve。
+  assert.deepEqual(forge.resolvedIds, [forge.publishedComments[0]!.id]);
+  assert.ok(
+    runTraceKinds(db.path).includes("review_skipped"),
+    "只复核那一轮没有在轨迹里说清自己为什么没发 review",
+  );
+  assert.ok(!runTraceKinds(db.path).includes("review_posted"));
+});
+
+test("只复核时复核结论自带位置的延续照常发生", async () => {
+  const repo = makeRepo({
+    base: { "src/calc.ts": BASE_CALC },
+    head: { "src/calc.ts": HEAD_CALC },
+  });
+  const cache = makeCacheDir();
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
+
+  const forge = memoryForge({
+    pullRequest: {
+      number: 7,
+      title: "示例 PR",
+      draft: false,
+      baseSha: repo.baseSha,
+      headSha: repo.headSha,
+      cloneUrl: repo.dir,
+    },
+    changedFiles: [{ path: "src/calc.ts", status: "modified" }],
+  });
+  const event = { owner: "acme", repo: "widgets", number: 7 };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
+
+  await runReview(event, {
+    ...deps,
+    reviewers: [scriptedReviewer("model-a", [at(6, "P0", "sub 多减了 1")])],
+  });
+  forge.existingComments.push(
+    ...forge.publishedComments.map((comment) => ({ ...comment, resolved: false })),
+  );
+  // 那一行被改写:旧指纹在新 head 上算不出,复核判仍在并自带新位置即触发延续。
+  forge.pullRequest.headSha = repo.commitToBranch("feature", {
+    "src/calc.ts": HEAD_CALC.replace("return a - b - 1;", "return a - b - 2;"),
+  });
+
+  await runReview(event, {
+    ...deps,
+    reviewers: [verdictReviewer("model-a", "present", [], 6)],
+    mode: "verdict-only",
+  });
+
+  const [first, second] = continuedFrom(db.path);
+  assert.equal(first, null);
+  assert.notEqual(second, null, "只复核那一轮没有承接旧位置的那条 Finding");
+});
+
+test("没有未处置历史时只复核不开跑,失败原因认得出来", async () => {
+  const { cache, db, forge } = setup(6);
+
+  await assert.rejects(
+    runReview(
+      { owner: "acme", repo: "widgets", number: 7 },
+      {
+        forge: forge.forge,
+        reviewers: [verdictReviewer("stub-model", "fixed")],
+        cacheDir: cache.dir,
+        dbPath: db.path,
+        mode: "verdict-only",
+      },
+    ),
+    (error: Error) => error.message === VERDICT_ONLY_NO_HISTORY,
+  );
+
+  const empty = new DatabaseSync(db.path, { readOnly: true });
+  try {
+    assert.equal(empty.prepare("SELECT count(*) AS n FROM review_run").get()!["n"], 0);
+  } finally {
+    empty.close();
+  }
+  assert.deepEqual(forge.createdReviews, []);
 });

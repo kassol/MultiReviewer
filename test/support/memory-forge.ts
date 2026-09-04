@@ -23,6 +23,7 @@ import type {
   ReviewIntent,
   ReviewRange,
   ReviewRule,
+  ReviewRunMode,
   Reviewer,
   ReviewerEvent,
   ReviewerOutcome,
@@ -174,6 +175,8 @@ type ScriptedCall = {
   rules: readonly ReviewRule[];
   facts: readonly ProjectFact[];
   directive: string | undefined;
+  /** 这一轮的模式(issue #242);完整审查那一档不带,与注入边界一致。 */
+  mode: ReviewRunMode | undefined;
 };
 
 /**
@@ -208,6 +211,7 @@ export function scriptedReviewer(
       rules,
       facts,
       directive,
+      mode,
       onEvent,
     }) => {
       calls.push({
@@ -219,6 +223,7 @@ export function scriptedReviewer(
         rules: rules ?? [],
         facts: facts ?? [],
         directive,
+        mode,
       });
       for (const event of extra?.events ?? []) onEvent?.(event);
       return {

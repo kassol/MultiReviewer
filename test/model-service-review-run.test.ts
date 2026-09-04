@@ -352,6 +352,8 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     pullNumber: HARNESS_PR.number,
+    // 这条用例看的是本轮固定的模型服务版本,与模式无关。
+    mode: "full",
   });
   assert.equal(rerun.status, 202);
   await h.settledAtLeast(2);

@@ -336,6 +336,8 @@ test("时间流区分 PR 触发与范围审查", async () => {
         owner: HARNESS_PR.owner,
         repo: HARNESS_PR.repo,
         pullNumber: HARNESS_PR.number,
+        // 这条用例看的是时间流的来源区分,与模式无关。
+        mode: "full",
       })
     ).status,
     202,

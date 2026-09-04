@@ -11,6 +11,7 @@ import {
 import {
   AlertDialog,
   Callout,
+  Checkbox,
   Dialog,
   DropdownMenu,
   Flex,
@@ -96,12 +97,14 @@ export type RepoRow = {
  * 手动重新运行。首页右栏头部与阶段页共用这一个请求。
  *
  * `directive` 是本轮指令(issue #225),非必填:留空即不带这一格,只作用于这一轮。
+ * `mode` 是这一轮的模式(issue #242),同样非必填:不带即只复核历史 Finding。
  */
 export async function rerunRequest(run: {
   owner: string;
   repo: string;
   pullNumber: number;
   directive?: string;
+  mode?: RerunMode;
 }): Promise<string> {
   const response = await api("/rerun", {
     method: "POST",
@@ -116,6 +119,15 @@ export async function rerunRequest(run: {
  * 字段名义与一次性语义由各处可见的 label 与提示承担,placeholder 只举例。
  */
 export const RUN_DIRECTIVE_PLACEHOLDER = "如:只报 P0";
+
+/**
+ * 一次重跑的模式(CONTEXT.md 只复核,issue #242)。两处重跑入口共用一个类型与一句
+ * 措辞:同一个勾选在两个地方读起来必须是同一件事。
+ */
+export type RerunMode = "verdict-only" | "full";
+
+/** 「完整审查」勾选的说明。默认不勾,勾了才会新报。 */
+export const FULL_REVIEW_HINT = "不勾即只复核历史 Finding,不新报";
 
 /**
  * 桌面左栏与窄视口那一行各挂一份注册入口,同一时刻只有一份真正占位——`display: none`
@@ -738,6 +750,7 @@ export function RerunPullRequest({
   const [open, setOpen] = useState(false);
   const [pullNumber, setPullNumber] = useState("");
   const [directive, setDirective] = useState("");
+  const [fullReview, setFullReview] = useState(false);
   const rerun = useMutation({
     mutationFn: rerunRequest,
     onSuccess: (text) => {
@@ -746,6 +759,8 @@ export function RerunPullRequest({
       setPullNumber("");
       // 指令一并清空:它只属于刚发出去的那一轮,留在框里下次会被顺手带上。
       setDirective("");
+      // 模式同律:下一次重跑仍从「只复核」起步。
+      setFullReview(false);
     },
     onError: (error: Error) => onFeedback({ text: error.message, isError: true }),
   });
@@ -763,6 +778,7 @@ export function RerunPullRequest({
       repo: repo.repo,
       pullNumber: number,
       ...(trimmed === "" ? {} : { directive: trimmed }),
+      mode: fullReview ? "full" : "verdict-only",
     });
   };
 
@@ -803,8 +819,20 @@ export function RerunPullRequest({
               onChange={(event) => setDirective(event.target.value)}
             />
           </label>
+          {/* 默认只复核历史(issue #242):清历史是重跑的常态,整段范围再审一遍不是。 */}
+          <Text
+            as="label"
+            size="2"
+            className="flex cursor-pointer items-center gap-2 max-sm:min-h-11"
+          >
+            <Checkbox
+              checked={fullReview}
+              onCheckedChange={(checked) => setFullReview(checked === true)}
+            />
+            完整审查
+          </Text>
           <Text size="1" color="gray">
-            指令只作用于这一轮;要长期生效的要求请录进知识集。
+            {FULL_REVIEW_HINT}。指令只作用于这一轮;要长期生效的要求请录进知识集。
           </Text>
           <Flex justify="end" mt="1">
             <Button size={{ initial: "3", sm: "2" }} type="submit" disabled={rerun.isPending}>

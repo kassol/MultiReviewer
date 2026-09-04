@@ -44,6 +44,8 @@ export type StageTimelineEntry = {
   startedAt: string;
   finishedAt: string | null;
   failed: boolean;
+  /** 这一轮的模式(issue #242)。只复核那一轮在时间线上带标记。 */
+  mode: "full" | "verdict-only";
   /** 本轮新报出。 */
   reported: number;
   /** 折叠到本阶段已有的那条上。 */
@@ -452,6 +454,12 @@ export function StageRound({ entry }: { entry: StageTimelineEntry }) {
   ).filter(([, value]) => value > 0);
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-overlay-line bg-surface px-4 py-2.5 text-base shadow-control">
+      {/* 只复核那一轮标出来(issue #242):看到「新报 0」时那不是审查空跑。 */}
+      {entry.mode !== "verdict-only" ? null : (
+        <Badge color="gray" variant="soft" radius="full">
+          只复核
+        </Badge>
+      )}
       {entry.finishedAt === null && !entry.failed ? (
         <span className="text-text-secondary">运行中…</span>
       ) : entry.failed ? (

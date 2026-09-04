@@ -17,6 +17,7 @@ import type {
   RawFinding,
   ReviewIntent,
   ReviewRule,
+  ReviewRunMode,
 } from "../review/finding.ts";
 import { anchorReport, anchorVerdict } from "./anchor.ts";
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
@@ -48,6 +49,26 @@ const REPORT_FINDING_TOOL = "report_finding";
 
 /** 复核工具,与 report_finding 并列(ADR 0016)。只在本阶段有历史时注册。 */
 const REVIEW_PRIOR_FINDING_TOOL = "review_prior_finding";
+
+/**
+ * 这一次会话注册的工具清单(issue #242)。只复核那一轮不注册报出工具:模型只能给复核
+ * 结论,新问题一条都报不出来——那正是「只清历史、不新增待处置」的实现。读工具、受控
+ * git 工具与取证子代理两档都在:不读代码就给不出复核结论。
+ */
+export function sessionTools(options: {
+  /** 不给即完整审查,清单与这一票之前逐字一致。 */
+  mode?: ReviewRunMode;
+  /** 本阶段有没有历史。没有时不注册复核工具:无事可复核的工具只会让模型多绕一圈。 */
+  hasHistory: boolean;
+}): string[] {
+  return [
+    ...READ_ONLY_TOOLS,
+    GIT_TOOL,
+    ...(options.mode === "verdict-only" ? [] : [REPORT_FINDING_TOOL]),
+    EVIDENCE_TOOL,
+    ...(options.hasHistory ? [REVIEW_PRIOR_FINDING_TOOL] : []),
+  ];
+}
 
 export const SYSTEM_PROMPT = `You are a code reviewer. Explore the repository with your read tools, then report every problem you find.
 
@@ -432,16 +453,14 @@ async function run(request: ReviewerRequest): Promise<void> {
     model,
     thinkingLevel,
     modelRuntime,
-    // 本阶段没有历史时不注册复核工具:一个无事可复核的工具只会让模型多绕一圈。
-    tools: [
-      ...READ_ONLY_TOOLS,
-      GIT_TOOL,
-      REPORT_FINDING_TOOL,
-      EVIDENCE_TOOL,
-      ...(request.history.length === 0 ? [] : [REVIEW_PRIOR_FINDING_TOOL]),
-    ],
+    tools: sessionTools({
+      ...(request.mode === undefined ? {} : { mode: request.mode }),
+      hasHistory: request.history.length > 0,
+    }),
     customTools: [
-      reportFinding,
+      // 只复核那一轮连实现都不铺:留着它,Pi 的 customTools 同名覆盖会把一个没在清单里
+      // 的工具重新暴露出来(issue #242)。
+      ...(request.mode === "verdict-only" ? [] : [reportFinding]),
       numberedReadTool(request.worktreePath),
       gitTool(request.worktreePath),
       ...(request.history.length === 0 ? [] : [reviewPriorFinding]),
