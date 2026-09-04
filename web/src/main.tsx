@@ -491,23 +491,25 @@ const stageDetailRoute = createRoute({
   beforeLoad: ({ context }) => {
     if (context.session.mustChangePassword) throw redirect({ to: "/password" });
   },
-  component: () => {
-    const { session } = shellRoute.useRouteContext();
-    return (
-      <BusinessPage
-        Page={() => (
-          <StageDetailPage
-            stageId={stageDetailRoute.useParams().stageId}
-            canDispose={hasPermission(session, "finding:dispose")}
-            canComplete={hasPermission(session, "review:complete")}
-            canAdvance={hasPermission(session, "review:advance")}
-            canRerun={hasPermission(session, "review:rerun")}
-          />
-        )}
-      />
-    );
-  },
+  component: () => <BusinessPage Page={StageDetailRoutePage} />,
 });
+/**
+ * 模块级组件,不在路由 `component` 里内联:内联的箭头函数每次渲染都是一个新类型,地址上
+ * 的查询参数一变(开关侧滑、切 tab)整棵 `StageDetailPage` 就被卸了重挂,筛选值与焦点
+ * 全丢(issue #236 的手测才暴露出来)。与 `ModelServicesRoutePage` 同一写法。
+ */
+function StageDetailRoutePage() {
+  const { session } = shellRoute.useRouteContext();
+  return (
+    <StageDetailPage
+      stageId={stageDetailRoute.useParams().stageId}
+      canDispose={hasPermission(session, "finding:dispose")}
+      canComplete={hasPermission(session, "review:complete")}
+      canAdvance={hasPermission(session, "review:advance")}
+      canRerun={hasPermission(session, "review:rerun")}
+    />
+  );
+}
 const statsRoute = protectedPage("/stats", undefined, () => <StatsPage />);
 function ModelServicesRoutePage({
   provider,
