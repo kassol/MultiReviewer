@@ -275,7 +275,12 @@ export function StageSummaryView({
             key={id}
             type="button"
             aria-pressed={disposition === id}
-            onClick={() => setDisposition(disposition === id ? "all" : id)}
+            // 计数兼任处置状态筛选,筛选只在 Finding 页可见:停在时间线页时点它先切回去,
+            // 否则改的是一个看不见的筛选(issue #236)。
+            onClick={() => {
+              setDisposition(disposition === id ? "all" : id);
+              if (tab !== "findings") onTabChange("findings");
+            }}
             className={`flex flex-col items-start gap-0.5 rounded-lg border px-3 py-2 text-left ${
               disposition === id
                 ? "border-primary bg-accent-tint"
