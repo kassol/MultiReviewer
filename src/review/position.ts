@@ -29,17 +29,47 @@ function unquotePath(raw: string): string {
   }
 }
 
-export function parseDiffRanges(diff: string): DiffRanges {
-  // 先收在 Map 里:路径由 diff 给出,`ranges["__proto__"] = …` 这样的赋值在普通对象上
-  // 改的是原型而不是自己的成员,那个文件的区间会静默丢掉。
-  const ranges = new Map<string, LineRange[]>();
-  let current: LineRange[] | undefined;
+/**
+ * hunk 里的一处改动在新文件一侧的位置(issue #241)。
+ *
+ * 新增行就是它自己那一行。删除点(issue #244)在新侧不占行,记在紧随其后那一行上——
+ * 被删的内容原本在这一行之前,对落点而言它算在上方。
+ */
+export type HunkChange = {
+  line: number;
+  /** 这一处是删除点时,旧侧被删掉的那几行原文,按顺序,不含行首的 `-`。 */
+  deleted?: readonly string[];
+};
+
+/** 一个 hunk 在新文件一侧覆盖的行区间,连同区间内的改动位置,按行号升序。 */
+export type DiffHunk = LineRange & { changes: readonly HunkChange[] };
+
+/**
+ * 每个文件在新文件一侧的 hunk,按仓库相对路径索引(issue #241)。
+ *
+ * 行作者判定要的比可评论区间多一层:落点是上下文行时,得知道同一个 hunk 内最近的那处
+ * 改动在哪一行。用普通对象而非 Map 的理由与 `DiffRanges` 相同。
+ */
+export type DiffHunks = Readonly<Record<string, readonly DiffHunk[]>>;
+
+export function parseDiffHunks(diff: string): DiffHunks {
+  // 先收在 Map 里:路径由 diff 给出,`files["__proto__"] = …` 这样的赋值在普通对象上
+  // 改的是原型而不是自己的成员,那个文件的 hunk 会静默丢掉。
+  const files = new Map<string, DiffHunk[]>();
+  let current: DiffHunk[] | undefined;
+  let hunk: (LineRange & { changes: HunkChange[] }) | undefined;
+  // 正文读到新文件一侧的哪一行了。上下文行与新增行各占一行,删除行只占旧侧。
+  let newLine = 0;
+  // 正在读的这一段连续删除行。连着的几行是同一处删除点,不是几处。
+  let removing: { line: number; deleted: string[] } | undefined;
   let inHunk = false;
 
   for (const line of diff.split("\n")) {
     if (line.startsWith("diff --git ")) {
       inHunk = false;
       current = undefined;
+      hunk = undefined;
+      removing = undefined;
       continue;
     }
     // 文件头只出现在 `diff --git` 与第一个 hunk 之间。进了 hunk 之后,`+++ ` 开头的
@@ -49,6 +79,8 @@ export function parseDiffRanges(diff: string): DiffRanges {
 
     if (!inHunk && line.startsWith("+++ ")) {
       const target = line.slice(4).trim();
+      hunk = undefined;
+      removing = undefined;
       if (target === "/dev/null") {
         // 文件被删除,新侧没有可评论的位置。
         current = undefined;
@@ -56,22 +88,58 @@ export function parseDiffRanges(diff: string): DiffRanges {
       }
       const path = unquotePath(target).replace(/^b\//, "");
       current = [];
-      ranges.set(path, current);
+      files.set(path, current);
       continue;
     }
 
     if (current === undefined) continue;
 
-    const hunk = HUNK_HEADER.exec(line);
-    if (hunk === null) continue;
+    const header = HUNK_HEADER.exec(line);
+    if (header !== null) {
+      const start = Number(header[1]);
+      const count = header[2] === undefined ? 1 : Number(header[2]);
+      // 纯删除的 hunk 在新侧不占行,落点不可能在里面。
+      hunk = count === 0 ? undefined : { start, end: start + count - 1, changes: [] };
+      if (hunk !== undefined) current.push(hunk);
+      newLine = start;
+      removing = undefined;
+      continue;
+    }
 
-    const start = Number(hunk[1]);
-    const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
-    if (count === 0) continue; // 纯删除的 hunk 在新侧不占行。
-    current.push({ start, end: start + count - 1 });
+    if (hunk === undefined) continue;
+    if (line.startsWith("-")) {
+      if (removing === undefined) {
+        removing = { line: newLine, deleted: [] };
+        hunk.changes.push(removing);
+      }
+      removing.deleted.push(line.slice(1));
+      continue;
+    }
+    removing = undefined;
+    if (line.startsWith("+")) {
+      hunk.changes.push({ line: newLine });
+      newLine += 1;
+      continue;
+    }
+    // 上下文行只认开头那个空格。`\ No newline at end of file` 与按换行切出来的末尾
+    // 空串都不是正文,不推进行号。
+    if (line.startsWith(" ")) newLine += 1;
   }
 
-  return Object.fromEntries(ranges);
+  return Object.fromEntries(files);
+}
+
+/**
+ * 可评论行区间由 hunk 的新侧区间直接得出:两者判的是同一件事,分两套解析只会让它们
+ * 各自漂移。
+ */
+export function parseDiffRanges(diff: string): DiffRanges {
+  return Object.fromEntries(
+    Object.entries(parseDiffHunks(diff)).map(([file, hunks]) => [
+      file,
+      hunks.map(({ start, end }) => ({ start, end })),
+    ]),
+  );
 }
 
 export function isInDiff(

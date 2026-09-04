@@ -99,6 +99,9 @@ function findingDisposed(finding: RunFinding): boolean {
  * 行作者(CONTEXT.md):这一行最后一次改动的 git author 与那次提交,「姓名 · 短 sha ·
  * 日期」一行。同名作者靠邮箱区分,邮箱放 Tooltip;判不出来时写明「无法追溯」,免得空
  * 白被读成页面坏了。短 sha 不做链接:本票不引入 Forge 的 commit 页地址。
+ *
+ * 作者取自相邻改动时在末尾补一句「相邻改动」(issue #241):落点这一行本身这一轮没改,
+ * 不说明这一点,读的人会以为责任人指的是这一行。
  */
 function LineAuthorLine({ lineAuthor }: { lineAuthor: RunFinding["lineAuthor"] }) {
   if (lineAuthor === null) {
@@ -116,6 +119,12 @@ function LineAuthorLine({ lineAuthor }: { lineAuthor: RunFinding["lineAuthor"] }
       <CommitChip sha={lineAuthor.sha} />
       <span aria-hidden>·</span>
       <span className="tabular-nums">{localDay(lineAuthor.authoredAt)}</span>
+      {lineAuthor.adjacent ? (
+        <>
+          <span aria-hidden>·</span>
+          <span>相邻改动</span>
+        </>
+      ) : null}
     </p>
   );
 }
