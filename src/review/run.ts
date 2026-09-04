@@ -612,6 +612,18 @@ type ReviewGroup = {
    * 算出来的还是合并 agent 判出来的,两者散成两格迟早对不上号。
    */
   match: { prior: PriorDisposition; criterion: CarryCriterion } | undefined;
+  /**
+   * 合并 agent 命中、而那条历史所指的代码已经改写的那一条(issue #243):这一组要承接
+   * 它的 Finding Identity。折叠掉的与没命中的都没有这一项。
+   */
+  carry?: { candidate: ContinuationCandidate; reason: string };
+};
+
+/** 一次延续:旧 Finding、本轮承接它的那个合并组,以及这一次延续凭的判据。 */
+type Continuation = {
+  candidate: ContinuationCandidate;
+  groupIndex: number;
+  criterion: CarryCriterion;
 };
 
 /**
@@ -659,12 +671,6 @@ function agentFold(
   };
 }
 
-/** 一次延续:旧 Finding 与本轮承接它的那个合并组。 */
-type Continuation = {
-  candidate: ContinuationCandidate;
-  groupIndex: number;
-};
-
 /**
  * 配对延续(CONTEXT.md 已延续,issue #167):复核判仍在、旧指纹在本轮 head 上算不出的
  * 那些历史 Finding,交给本轮在新位置报出的一条承接同一个 Identity。
@@ -702,8 +708,11 @@ function planContinuations(
   worktreePath: string,
   positions: ReadonlyMap<number, PresentPosition>,
   fingerprintCache: Map<string, Set<string>>,
+  claimedGroups: ReadonlySet<number>,
 ): { plans: Continuation[]; synthesized: ReviewGroup[] } {
-  const claimed = new Set<number>();
+  // 合并 agent 已经认领的那几组不再参与词法配对(issue #243):它们承接的是 agent
+  // 判定的那条历史,再被这一道挑中就成了一组承接两条 Identity。
+  const claimed = new Set(claimedGroups);
   const plans: Continuation[] = [];
   const synthesized: ReviewGroup[] = [];
 
@@ -735,6 +744,7 @@ function planContinuations(
       plans.push({
         candidate,
         groupIndex: groups.length + synthesized.length,
+        criterion: { kind: "verdict" },
       });
       synthesized.push({
         finding,
@@ -746,7 +756,7 @@ function planContinuations(
     }
 
     claimed.add(pick.groupIndex);
-    plans.push({ candidate, groupIndex: pick.groupIndex });
+    plans.push({ candidate, groupIndex: pick.groupIndex, criterion: { kind: "content" } });
   }
 
   return { plans, synthesized };
@@ -1423,6 +1433,7 @@ export async function runReview(
         // 指纹命中优先(issue #240):它是「同一处」的硬证据,合并 agent 那一档补的是
         // 指纹够不着的那些——增量在指纹窗口里插了几行,或者模型换个说法报在了别处。
         let match: ReviewGroup["match"];
+        let carry: ReviewGroup["carry"];
         const byFingerprint = priorMatch(prior, worktree.path, finding);
         if (byFingerprint !== undefined) {
           match = { prior: byFingerprint, criterion: { kind: "fingerprint" } };
@@ -1432,12 +1443,16 @@ export async function runReview(
             hit === undefined ? undefined : agentFold(hit, fingerprintCache, worktree.path);
           if (folded !== undefined) {
             match = { prior: folded, criterion: { kind: "agent", reason: finding.history.reason } };
+          } else if (hit !== undefined) {
+            // 折叠两档都不成立即那处代码已被改写,这一条要承接它的 Identity(issue #243)。
+            carry = { candidate: hit, reason: finding.history.reason };
           }
         }
         return {
           finding,
           fingerprint: contentFingerprint(worktree.path, finding.file, finding.line),
           match,
+          ...(carry === undefined ? {} : { carry }),
         };
       });
 
@@ -1455,21 +1470,54 @@ export async function runReview(
       // 新评论的正文随后带上它的链接;落库要等本轮的行插进去之后。
       // 模型只回了复核结论、没有重报的那些,按它给出的新位置合成本轮的一条(issue #170)。
       // 合成的连指纹与跨轮匹配一起作一个合并组,接在本轮之后——只追加这一处。
+      // 合并 agent 命中、而那处代码已经改写的那些先配好(issue #243):**agent 命中优先于
+      // 词法配对与复核结论自带位置的合成**——它是语义判断,那两道是机械判定,同一条历史
+      // 两边都想要时以语义那一份为准。认领掉的候选与合并组都不再进下面那一道。
+      const carries: Continuation[] = failed
+        ? []
+        : groups.flatMap((group, groupIndex) =>
+            group.carry === undefined
+              ? []
+              : [
+                  {
+                    candidate: group.carry.candidate,
+                    groupIndex,
+                    criterion: { kind: "agent" as const, reason: group.carry.reason },
+                  },
+                ],
+          );
+      const carriedIds = new Set(carries.map((carry) => carry.candidate.findingId));
       const plan = failed
         ? { plans: [], synthesized: [] }
         : planContinuations(
-            store.continuationCandidates(presentFindingIds(verdicts)),
+            store
+              .continuationCandidates(presentFindingIds(verdicts))
+              .filter((candidate) => !carriedIds.has(candidate.findingId)),
             groups,
             diffRanges,
             worktree.path,
             presentPositions(history, outcomes),
             fingerprintCache,
+            new Set(carries.map((carry) => carry.groupIndex)),
           );
       groups.push(...plan.synthesized);
-      const continuations = failed ? [] : await applyContinuations(forge, event, plan.plans);
+      const continuations = failed
+        ? []
+        : await applyContinuations(forge, event, [...carries, ...plan.plans]);
       const continuedFrom = new Map(
         continuations.map((plan) => [plan.groupIndex, plan.candidate.commentHtmlUrl]),
       );
+      for (const applied of continuations) {
+        const carried = groups[applied.groupIndex]!.finding;
+        // 判据一并记进轨迹(issue #243):一次延续是词法配对、复核结论给的位置,还是
+        // 合并 agent 判出来的,追查误判时要分得清。
+        trace.run("finding_continued", {
+          file: carried.file,
+          line: carried.line,
+          title: carried.title,
+          criteria: applied.criterion,
+        });
+      }
 
       const comments: ReviewCommentDraft[] = [];
       // 与 `comments` 同序:每条草稿属于哪个合并组。发布之后按它把评论标识记回去。

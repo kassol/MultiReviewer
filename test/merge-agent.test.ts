@@ -16,6 +16,7 @@ import {
   memoryForge,
   scriptedMergeAgent,
   scriptedReviewer,
+  verdictReviewer,
   type MemoryForge,
 } from "./support/memory-forge.ts";
 
@@ -79,7 +80,15 @@ function setup() {
     ],
   });
 
-  return { cache, db, forge };
+  return { repo, cache, db, forge };
+}
+
+/**
+ * 改写工作分支上的 `src/m.js` 并把 PR 的 head 移过去:旧位置的指纹窗口因此在下一轮
+ * 算不出来,同一条 Finding 只能靠延续交接位置(CONTEXT.md 已延续)。
+ */
+function rewriteHead(ctx: ReturnType<typeof setup>, source: string): void {
+  ctx.forge.pullRequest.headSha = ctx.repo.commitToBranch("feature", { "src/m.js": source });
 }
 
 /** 一条 Finding 的模板。用例只改位置与那两段文本。 */
@@ -369,15 +378,24 @@ async function firstRun(
   );
 }
 
-/** 落库的每条 Finding:处置状态与它挂着的那条评论。 */
-function findingRows(dbPath: string): { disposition: string; commentId: unknown }[] {
+/** 落库的每条 Finding:标题、处置状态、它挂着的那条评论,以及「延续自」的那条链接。 */
+function findingRows(
+  dbPath: string,
+): { title: unknown; disposition: string; commentId: unknown; continuedFrom: unknown }[] {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
     return (
       db
-        .prepare("SELECT disposition, comment_id FROM finding ORDER BY id")
+        .prepare(
+          "SELECT title, disposition, comment_id, continued_from FROM finding ORDER BY id",
+        )
         .all() as unknown as Record<string, unknown>[]
-    ).map((row) => ({ disposition: String(row["disposition"]), commentId: row["comment_id"] }));
+    ).map((row) => ({
+      title: row["title"],
+      disposition: String(row["disposition"]),
+      commentId: row["comment_id"],
+      continuedFrom: row["continued_from"],
+    }));
   } finally {
     db.close();
   }
@@ -434,8 +452,10 @@ test("agent 把本轮一条与旧指纹仍在的历史分成一组:不发评论,
   assert.equal(result.inlineCount, 0, "折叠到旧评论的那条不再发新评论");
   assert.deepEqual(ctx.forge.createdReviews[1]!.comments, []);
   assert.deepEqual(findingRows(ctx.db.path)[1], {
+    title: "余额没有被校验",
     disposition: "unresolved",
     commentId: "comment-1",
+    continuedFrom: null,
   });
 
   const folded = trace(ctx.db.path).filter((event) => event.kind === "finding_folded");
@@ -464,8 +484,10 @@ test("命中已处置的历史:本轮那条沉默,落库折叠到已处置", asy
 
   assert.deepEqual(ctx.forge.createdReviews[1]!.comments, [], "已处置过的那处不再打扰");
   assert.deepEqual(findingRows(ctx.db.path)[1], {
+    title: "余额没有被校验",
     disposition: "resolved",
     commentId: "comment-1",
+    continuedFrom: null,
   });
 });
 
@@ -548,4 +570,102 @@ test("带上历史之后回退档的结果仍与没有合并 agent 时逐字一�
     withoutAgent.forge.createdReviews[1]!.comments,
   );
   assert.deepEqual(findingRows(withAgent.db.path), findingRows(withoutAgent.db.path));
+});
+
+/**
+ * 收口的另一半:命中的历史所指代码已经改写时走延续(issue #243)。旧评论 resolve 并记
+ *「已延续」,本轮那条承接同一条 Finding Identity,新评论正文带「延续自」——与词法配对
+ * 那一档落库同形,差别只在判据是 agent。
+ */
+
+/** 第 2 行被改写:旧那处的指纹窗口在下一轮算不出来。 */
+const REWRITTEN_M = HEAD_M.replace("return a - b - 1;", "return a - b - 9;");
+
+test("命中的历史所指代码已改写:走延续,旧评论 resolve,新评论带「延续自」", async () => {
+  const ctx = setup();
+  await firstRun(ctx, [AT(2, "余额校验被删掉")]);
+  rewriteHead(ctx, REWRITTEN_M);
+
+  const merge = scriptedMergeAgent((request) => [
+    { members: [0], history: [request.history![0]!.id], reason: "代码改写了,同一个问题还在" },
+  ]);
+  await runReview(EVENT, {
+    forge: ctx.forge.forge,
+    reviewers: [scriptedReviewer("model-a", [AT(14, "余额没有被校验")])],
+    cacheDir: ctx.cache.dir,
+    dbPath: ctx.db.path,
+    mergeAgent: merge,
+  });
+
+  assert.deepEqual(ctx.forge.resolvedIds, ["comment-1"], "旧评论要被 resolve 掉");
+  const rows = findingRows(ctx.db.path);
+  assert.equal(rows[0]!.disposition, "continued", "旧那一行记「已延续」");
+  assert.equal(
+    rows[1]!.continuedFrom,
+    "https://forge.invalid/pulls/7/files#comment-1",
+    "本轮那一行承接旧 Identity,记下旧评论的地址",
+  );
+  assert.match(ctx.forge.createdReviews[1]!.comments[0]!.body, /延续自 \[上一处评论\]/);
+
+  const continued = trace(ctx.db.path).filter((event) => event.kind === "finding_continued");
+  assert.equal(continued.length, 1);
+  assert.deepEqual(continued[0]!.payload["criteria"], {
+    kind: "agent",
+    reason: "代码改写了,同一个问题还在",
+  });
+});
+
+test("同一条历史同时被 agent 命中与复核结论自带位置:以 agent 命中的那条承接,不合成", async () => {
+  const ctx = setup();
+  await firstRun(ctx, [AT(2, "余额校验被删掉")]);
+  rewriteHead(ctx, REWRITTEN_M);
+
+  // 本轮这条与历史一个 token 都不共享,词法配对配不上;复核判仍在并给出第 14 行,
+  // 没有 agent 时编排层会按历史正文在那里合成一条。
+  const merge = scriptedMergeAgent((request) => [
+    { members: [0], history: [request.history![0]!.id], reason: "换了个说法的同一处" },
+  ]);
+  await runReview(EVENT, {
+    forge: ctx.forge.forge,
+    reviewers: [verdictReviewer("model-a", "present", [AT(14, "取模的结果偏了")], 14)],
+    cacheDir: ctx.cache.dir,
+    dbPath: ctx.db.path,
+    mergeAgent: merge,
+  });
+
+  const rows = findingRows(ctx.db.path);
+  assert.equal(rows.length, 2, "不该再合成一条:那条 Identity 已经被 agent 命中的那条承接了");
+  assert.equal(rows[1]!.title, "取模的结果偏了", "承接的是本轮报出的那条,不是抄旧正文的合成条");
+  assert.notEqual(rows[1]!.continuedFrom, null);
+});
+
+test("一组含两条历史:id 小的延续,另一条保持原状", async () => {
+  const ctx = setup();
+  await firstRun(ctx, [AT(2, "余额校验被删掉"), AT(14, "mod 加了 0")]);
+  // 两处的指纹窗口都被改写:两条历史都够得上延续,平台只能挑一条。
+  rewriteHead(ctx, REWRITTEN_M.replace("return a % b + 0;", "return a % b + 9;"));
+
+  const merge = scriptedMergeAgent((request) => [
+    {
+      members: [0],
+      history: request.history!.map((entry) => entry.id),
+      reason: "这两处讲的是同一个问题",
+    },
+  ]);
+  await runReview(EVENT, {
+    forge: ctx.forge.forge,
+    reviewers: [scriptedReviewer("model-a", [AT(11, "除法没有防零")])],
+    cacheDir: ctx.cache.dir,
+    dbPath: ctx.db.path,
+    mergeAgent: merge,
+  });
+
+  assert.deepEqual(ctx.forge.resolvedIds, ["comment-1"], "只 resolve id 小的那条");
+  const rows = findingRows(ctx.db.path);
+  assert.equal(rows[0]!.disposition, "continued");
+  assert.equal(rows[1]!.disposition, "unresolved", "另一条历史保持原状");
+  assert.equal(
+    rows[2]!.continuedFrom,
+    "https://forge.invalid/pulls/7/files#comment-1",
+  );
 });

@@ -593,6 +593,56 @@ test("延续到新一轮的 Finding 按新 head 重算行作者,不沿用上一�
   );
 });
 
+test("合并 agent 跑不成时,词法配对的延续照常发生", async () => {
+  const repo = makeRepo({
+    base: { "src/calc.ts": BASE_CALC },
+    head: { "src/calc.ts": HEAD_CALC },
+  });
+  const cache = makeCacheDir();
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
+
+  const forge = memoryForge({
+    pullRequest: {
+      number: 7,
+      title: "示例 PR",
+      draft: false,
+      baseSha: repo.baseSha,
+      headSha: repo.headSha,
+      cloneUrl: repo.dir,
+    },
+    changedFiles: [{ path: "src/calc.ts", status: "modified" }],
+  });
+  const event = { owner: "acme", repo: "widgets", number: 7 };
+  const deps = {
+    forge: forge.forge,
+    reviewers: [scriptedReviewer("model-a", [at(6, "P0", "sub 多减了 1")])],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  };
+
+  await runReview(event, deps);
+  forge.existingComments.push(
+    ...forge.publishedComments.map((comment) => ({ ...comment, resolved: false })),
+  );
+  // 那一行被改写:旧指纹在新 head 上算不出,复核判仍在即触发延续。
+  forge.pullRequest.headSha = repo.commitToBranch("feature", {
+    "src/calc.ts": HEAD_CALC.replace("return a - b - 1;", "return a - b - 2;"),
+  });
+
+  await runReview(event, {
+    ...deps,
+    reviewers: [verdictReviewer("model-a", "present", [at(6, "P0", "sub 仍然多减了")])],
+    // 合并 agent 报失败:分组退回算法档,延续退回词法配对(ADR 0022 的回退承诺)。
+    mergeAgent: async () => ({ groups: [], failure: "模型调用超时" }),
+  });
+
+  const [first, second] = continuedFrom(db.path);
+  assert.equal(first, null);
+  assert.notEqual(second, null, "回退档的词法延续没有发生");
+  assert.deepEqual(forge.resolvedIds, ["comment-1"]);
+});
+
 test("PR 触发的轮次把 pull request 标题、正文与 commit 列表交给 Reviewer", async () => {
   const repo = makeRepo({
     base: { "src/calc.ts": BASE_CALC },
