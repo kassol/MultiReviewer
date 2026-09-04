@@ -54,6 +54,7 @@ import {
   StageSummaryView,
   useStageSummary,
   type StageScope,
+  type StageTab,
   type StageTimelineEntry,
 } from "./stage-summary.tsx";
 
@@ -101,6 +102,16 @@ function positiveId(value: unknown): number | null {
 }
 
 /**
+ * 正文停在哪一页(issue #236)。显式的 `tab=` 说了算;没写时看侧滑参数——`trace=` 是
+ * 时间线上的一次下钻,关掉它背景该是那条时间线,其余一律 Finding 页。
+ */
+function tabOf(search: Record<string, unknown>, trace: number | null): StageTab {
+  if (search.tab === "timeline") return "timeline";
+  if (search.tab === "findings") return "findings";
+  return trace === null ? "findings" : "timeline";
+}
+
+/**
  * 来时那份评审记录列表的过滤(issue #189)。阶段页自己不读它们,只原样带在地址上再交
  * 还给返回链接:人回到的是自己来的那一片列表,而不是一份无过滤的全量。
  */
@@ -116,8 +127,9 @@ function listFilters(search: Record<string, unknown>): Record<string, string> {
 }
 
 /**
- * 审查阶段的详情页(issue #175、#189)。一个阶段有自己的地址,两种来源共用这一页,
- * 而且只有一种视图:上半是这个阶段当前状态下仍存在的 Finding,下半是时间线,一轮一行。
+ * 审查阶段的详情页(issue #175、#189)。一个阶段有自己的地址,两种来源共用这一页。
+ * 正文分成 Finding 与时间线两页(issue #236),当前停在哪一页记在地址的 `tab=` 上;
+ * 三个计数与页头的动作在两页之外,切 tab 不动它们。
  *
  * 下钻只有侧滑一种,在同一路由上由查询参数驱动:`finding=` 是那条 Finding 所在文件的
  * diff,`trace=` 是那一轮的审查轨迹。页顶只有一个返回,回到来时的那份列表。
@@ -177,7 +189,7 @@ export function StageDetailPage({
           : trace !== null
             ? { kind: "trace", id: trace }
             : null;
-      return { drawer, filters: listFilters(search) };
+      return { drawer, filters: listFilters(search), tab: tabOf(search, trace) };
     },
   });
   // 开关侧滑都走 replace:它是这一页里的一次下钻,不该往浏览器历史里塞一条。
@@ -186,6 +198,21 @@ export function StageDetailPage({
       to: "/stages/$stageId",
       params: { stageId },
       search: (prev: Record<string, unknown>) => ({ ...prev, finding: undefined, trace: undefined }),
+      replace: true,
+    });
+  };
+  /*
+   * 切 tab 也走 replace:它与筛选、侧滑同一个口径,连点两下不该把返回键堵住。缺省的
+   * Finding 页不写进地址;地址上带着 `trace=` 时缺省判的是时间线,这时才显式写上。
+   */
+  const selectTab = (next: StageTab): void => {
+    void navigate({
+      to: "/stages/$stageId",
+      params: { stageId },
+      search: (prev: Record<string, unknown>) => ({
+        ...prev,
+        tab: next === "findings" && positiveId(prev.trace) === null ? undefined : next,
+      }),
       replace: true,
     });
   };
@@ -274,6 +301,8 @@ export function StageDetailPage({
             <StageSummaryView
               scope={scopeOf(body.stage)}
               canDispose={canDispose}
+              tab={location.tab}
+              onTabChange={selectTab}
               onDrawerTrigger={returnFocus.captureTrigger}
               timeline={() => (
                 <StageTimeline
@@ -508,6 +537,7 @@ function StageTimeline({
             </p>
           ) : (
             group.runs.map((entry) => (
+              // 轨迹侧滑属于时间线页:链接发出去,对方关掉侧滑落回同一条时间线。
               <Link
                 key={entry.runId}
                 to="/stages/$stageId"
@@ -516,6 +546,7 @@ function StageTimeline({
                   ...prev,
                   trace: entry.runId,
                   finding: undefined,
+                  tab: "timeline",
                 })}
                 replace
                 onClick={onDrawerTrigger}

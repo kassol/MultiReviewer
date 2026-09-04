@@ -151,6 +151,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-04: 落地 issue #236。**阶段详情页的正文拆成「Finding」与「时间线」两个 tab**:三个进度计数与页头动作留在 tab 之外两页都看得见,四个筛选只属于 Finding 页;当前 tab 记在地址的 `?tab=` 上(缺省 `findings`,缺省不写进地址,切换走 `replace`),`?trace=` 的深链接落在时间线页、`?finding=` 落在 Finding 页。一个阶段几百条待处置时不用滚到底才看得到轮次。服务端与 API 契约无改动。细节见 `web/AGENTS.md`。
+
 - 2026-09-03: 落地 issue #234。**增量评审的选择器按上次的来源打开,默认只列当前比较项之后的提交**:范围审查记下选比较项时用的分支或 Tag(`range_review` 两列),弹窗据它停在同一条分支或 Tag 模式上;默认列表按 `after=<当前比较项>` 收窄,当前那一行标「当前」且不可选,服务端同时拒掉「新比较项就是当前比较项」。发起弹窗行为不变。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 
 - 2026-09-03: 落地 issue #233。**Finding 侧滑的代码差异恢复整文件全量渲染**:去掉当天早些时候加的按 hunk 裁剪与「展开完整差异」按钮,大文件的渲染成本改由每个 hunk 一张表加 `content-visibility: auto` 让浏览器跳过屏幕外的布局与绘制来压,当条 Finding 所在行仍居中并高亮。细节见 `web/AGENTS.md`。

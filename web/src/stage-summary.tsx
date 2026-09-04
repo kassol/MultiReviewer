@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { useState, type MouseEventHandler } from "react";
 
 import { CheckIcon, ChevronDownIcon, CrossCircledIcon, FileTextIcon } from "@radix-ui/react-icons";
-import { Callout, Popover, Select, Skeleton } from "@radix-ui/themes";
+import { Badge, Callout, Popover, Select, Skeleton, Tabs } from "@radix-ui/themes";
 
 import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
@@ -106,6 +106,17 @@ export function useStageSummary(scope: StageScope) {
   });
 }
 
+/** 阶段详情正文的两页(issue #236):Finding 列表与时间线。 */
+export type StageTab = "findings" | "timeline";
+
+/**
+ * Tabs 激活指示条与模型服务详情的 TabNav 同一形态:3px 圆头、左右各缩 14px。限定在
+ * data-[state=active] 是必须的——不限定的话 Tailwind 会给未激活项也生成一个空的
+ * ::before 盒子,把 tab 的高度顶开。
+ */
+const TAB_TRIGGER =
+  "data-[state=active]:before:inset-x-3.5 data-[state=active]:before:h-[3px] data-[state=active]:before:rounded-t-[3px]";
+
 type DispositionFilter = "all" | "pending" | "resolved" | "fixed";
 
 const DISPOSITION_LABEL: Record<Exclude<DispositionFilter, "all">, string> = {
@@ -194,8 +205,8 @@ function FileFilterCombobox({
 }
 
 /**
- * 一个审查阶段的主视图(issue #168):按 Finding Identity 汇总的列表、顶部三个计数,
- * 加这个阶段的时间线。
+ * 一个审查阶段的主视图(issue #168):顶部三个计数,正文分成 Finding 与时间线两页
+ * (issue #236)——一个阶段跑到几百条待处置之后,时间线不该被压在列表底下。
  *
  * 范围审查阶段与 pull request 阶段共用这一份——「这个阶段还剩什么没处置」是同一个
  * 问题,两条链路不该显示成两个样子。
@@ -203,12 +214,17 @@ function FileFilterCombobox({
 export function StageSummaryView({
   scope,
   canDispose,
+  tab,
+  onTabChange,
   timeline,
   onDrawerTrigger,
 }: {
   scope: StageScope;
   /** 有 `finding:dispose` 权限时行内出现处置动作。 */
   canDispose: boolean;
+  /** 当前在哪一页。tab 记在地址上,由阶段页读写(issue #236)。 */
+  tab: StageTab;
+  onTabChange: (tab: StageTab) => void;
   /** 时间线怎么摆由页面定:范围审查按比较项分组,PR 那条直接一列。 */
   timeline?: (entries: StageTimelineEntry[]) => React.ReactNode;
   /** 侧滑打开前记录触发链接,关闭后恢复焦点。 */
@@ -272,129 +288,149 @@ export function StageSummaryView({
         ))}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Select.Root
-          value={disposition}
-          onValueChange={(next) => setDisposition(next as DispositionFilter)}
-          size="1"
-        >
-          <Select.Trigger aria-label="按处置状态筛选" />
-          <Select.Content>
-            <Select.Item value="all">全部处置状态</Select.Item>
-            <Select.Item value="pending">待处置</Select.Item>
-            <Select.Item value="resolved">人工已处置</Select.Item>
-            <Select.Item value="fixed">已修复</Select.Item>
-          </Select.Content>
-        </Select.Root>
-        <FileFilterCombobox value={filePath} files={files} onChange={setFilePath} />
-        <Select.Root value={lineAuthor} onValueChange={setLineAuthor} size="1">
-          <Select.Trigger aria-label="按行作者筛选" />
-          <Select.Content>
-            <Select.Item value="all">全部行作者</Select.Item>
-            {authors.map((name) => (
-              <Select.Item key={name} value={name}>{name}</Select.Item>
-            ))}
-          </Select.Content>
-        </Select.Root>
-        <Select.Root value={severity} onValueChange={(next) => setSeverity(next as SeverityFilter)} size="1">
-          <Select.Trigger aria-label="按问题等级筛选" />
-          <Select.Content>
-            <Select.Item value="all">全部等级</Select.Item>
-            <Select.Item value="P0">P0</Select.Item>
-            <Select.Item value="P1">P1</Select.Item>
-            <Select.Item value="P2">P2</Select.Item>
-          </Select.Content>
-        </Select.Root>
-        {summary.data === undefined ? null : (
-          <span className="text-sm text-text-secondary">
-            <span className="font-mono tabular-nums">{visible.length}</span> / {findings.length} 条
-          </span>
-        )}
-      </div>
+      <Tabs.Root value={tab} onValueChange={(next) => onTabChange(next as StageTab)}>
+        {/* 与知识集弹窗同一套 tab 语法:3px 圆头指示条,底线通栏。 */}
+        <Tabs.List size="2" className="shadow-[inset_0_-1px_0_0_var(--v8-border-chrome)]">
+          <Tabs.Trigger value="findings" className={TAB_TRIGGER}>Finding</Tabs.Trigger>
+          <Tabs.Trigger value="timeline" className={TAB_TRIGGER}>
+            时间线
+            <Badge
+              color={tab === "timeline" ? "blue" : "gray"}
+              variant="soft"
+              radius="full"
+              size="1"
+              className="ml-1.5 tabular-nums"
+            >
+              {entries.length}
+            </Badge>
+          </Tabs.Trigger>
+        </Tabs.List>
 
-      {summary.isPending ? (
-        <div className="flex flex-col gap-2" role="status" aria-live="polite">
-          <span className="sr-only">正在加载审查阶段汇总</span>
-          {[0, 1, 2].map((slot) => <Skeleton key={slot} className="h-16" />)}
-        </div>
-      ) : null}
-
-      {summary.data !== undefined && findings.length === 0 ? (
-        <EmptyState title="当前审查阶段暂无 Finding" className="py-2" />
-      ) : null}
-      {summary.data !== undefined && findings.length > 0 && visible.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-card-line px-4 py-6 text-center text-text-secondary">
-          没有符合筛选条件的 Finding。
-        </p>
-      ) : null}
-
-      {visible.map((finding) => (
-        <section
-          key={finding.id}
-          className="overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control"
-        >
-          {/*
-            点一条 Finding 就在侧滑里看它的 diff(issue #189):卡头整块是那个入口,
-            地址上多一个 `finding=`,关掉侧滑就回到这一页本身。
-          */}
-          <Link
-            to="/stages/$stageId"
-            params={{ stageId: stageIdOf(scope) }}
-            search={(prev: Record<string, unknown>) => ({
-              ...prev,
-              finding: finding.id,
-              trace: undefined,
-            })}
-            replace
-            onClick={onDrawerTrigger}
-            aria-label={`查看 ${finding.file}:${finding.line} 对应的代码差异`}
-            className="group block px-4 pt-2.5 outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40"
-          >
-            <span className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-              <span className="min-w-0 font-mono text-sm break-all text-text-secondary">
-                {finding.file}:{finding.line}
+        {/* 四个筛选只属于 Finding 页;筛选值是组件内状态,切到时间线再切回来仍在。 */}
+        <Tabs.Content value="findings" className="flex flex-col gap-3 pt-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Select.Root
+              value={disposition}
+              onValueChange={(next) => setDisposition(next as DispositionFilter)}
+              size="1"
+            >
+              <Select.Trigger aria-label="按处置状态筛选" />
+              <Select.Content>
+                <Select.Item value="all">全部处置状态</Select.Item>
+                <Select.Item value="pending">待处置</Select.Item>
+                <Select.Item value="resolved">人工已处置</Select.Item>
+                <Select.Item value="fixed">已修复</Select.Item>
+              </Select.Content>
+            </Select.Root>
+            <FileFilterCombobox value={filePath} files={files} onChange={setFilePath} />
+            <Select.Root value={lineAuthor} onValueChange={setLineAuthor} size="1">
+              <Select.Trigger aria-label="按行作者筛选" />
+              <Select.Content>
+                <Select.Item value="all">全部行作者</Select.Item>
+                {authors.map((name) => (
+                  <Select.Item key={name} value={name}>{name}</Select.Item>
+                ))}
+              </Select.Content>
+            </Select.Root>
+            <Select.Root value={severity} onValueChange={(next) => setSeverity(next as SeverityFilter)} size="1">
+              <Select.Trigger aria-label="按问题等级筛选" />
+              <Select.Content>
+                <Select.Item value="all">全部等级</Select.Item>
+                <Select.Item value="P0">P0</Select.Item>
+                <Select.Item value="P1">P1</Select.Item>
+                <Select.Item value="P2">P2</Select.Item>
+              </Select.Content>
+            </Select.Root>
+            {summary.data === undefined ? null : (
+              <span className="text-sm text-text-secondary">
+                <span className="font-mono tabular-nums">{visible.length}</span> / {findings.length} 条
               </span>
-              <span
-                className="inline-flex size-7 shrink-0 items-center justify-center rounded-md bg-accent-tint-strong text-primary transition-colors group-hover:bg-accent-track"
-                aria-hidden
-              >
-                <FileTextIcon />
-              </span>
-            </span>
-            {finding.title === "" ? null : (
-              <span className="block pt-1 text-lg font-semibold break-words">{finding.title}</span>
             )}
-            <span className="block pt-1 text-sm text-text-secondary tabular-nums">
-              第 {roundOf.get(finding.firstRunId) ?? "?"} 轮首次报出 · 第{" "}
-              {roundOf.get(finding.lastRunId) ?? "?"} 轮最近一次 ·{" "}
-              {localMinute(finding.lastReportedAt)}
-            </span>
-          </Link>
-          <FindingRow finding={finding} canDispose={canDispose} />
-        </section>
-      ))}
+          </div>
 
-      <h3 className="pt-1 text-2xl font-semibold">
-        时间线
-        <span className="ml-1.5 font-mono tabular-nums text-text-secondary">{entries.length}</span>
-      </h3>
-      {timeline === undefined ? (
-        entries.length === 0 ? (
-          <EmptyState title="该审查阶段尚无 Review Run" className="py-2" />
-        ) : (
-          [...entries].reverse().map((entry) => (
-            <div key={entry.runId} className="flex flex-col gap-1.5">
-              <div className="flex flex-wrap items-center gap-x-1.5 text-base text-text-secondary">
-                <CommitChip sha={entry.headSha} />
-                <span className="tabular-nums">{localMinute(entry.startedAt)}</span>
-              </div>
-              <StageRound entry={entry} />
+          {summary.isPending ? (
+            <div className="flex flex-col gap-2" role="status" aria-live="polite">
+              <span className="sr-only">正在加载审查阶段汇总</span>
+              {[0, 1, 2].map((slot) => <Skeleton key={slot} className="h-16" />)}
             </div>
-          ))
-        )
-      ) : (
-        timeline(entries)
-      )}
+          ) : null}
+
+          {summary.data !== undefined && findings.length === 0 ? (
+            <EmptyState title="当前审查阶段暂无 Finding" className="py-2" />
+          ) : null}
+          {summary.data !== undefined && findings.length > 0 && visible.length === 0 ? (
+            <p className="rounded-lg border border-dashed border-card-line px-4 py-6 text-center text-text-secondary">
+              没有符合筛选条件的 Finding。
+            </p>
+          ) : null}
+
+          {visible.map((finding) => (
+            <section
+              key={finding.id}
+              className="overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control"
+            >
+              {/*
+                点一条 Finding 就在侧滑里看它的 diff(issue #189):卡头整块是那个入口,
+                地址上多一个 `finding=`,关掉侧滑就回到这一页本身。
+              */}
+              <Link
+                to="/stages/$stageId"
+                params={{ stageId: stageIdOf(scope) }}
+                search={(prev: Record<string, unknown>) => ({
+                  ...prev,
+                  finding: finding.id,
+                  trace: undefined,
+                })}
+                replace
+                onClick={onDrawerTrigger}
+                aria-label={`查看 ${finding.file}:${finding.line} 对应的代码差异`}
+                className="group block px-4 pt-2.5 outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40"
+              >
+                <span className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                  <span className="min-w-0 font-mono text-sm break-all text-text-secondary">
+                    {finding.file}:{finding.line}
+                  </span>
+                  <span
+                    className="inline-flex size-7 shrink-0 items-center justify-center rounded-md bg-accent-tint-strong text-primary transition-colors group-hover:bg-accent-track"
+                    aria-hidden
+                  >
+                    <FileTextIcon />
+                  </span>
+                </span>
+                {finding.title === "" ? null : (
+                  <span className="block pt-1 text-lg font-semibold break-words">{finding.title}</span>
+                )}
+                <span className="block pt-1 text-sm text-text-secondary tabular-nums">
+                  第 {roundOf.get(finding.firstRunId) ?? "?"} 轮首次报出 · 第{" "}
+                  {roundOf.get(finding.lastRunId) ?? "?"} 轮最近一次 ·{" "}
+                  {localMinute(finding.lastReportedAt)}
+                </span>
+              </Link>
+              <FindingRow finding={finding} canDispose={canDispose} />
+            </section>
+          ))}
+        </Tabs.Content>
+
+        <Tabs.Content value="timeline" className="flex flex-col gap-3 pt-3">
+          {timeline === undefined ? (
+            entries.length === 0 ? (
+              <EmptyState title="该审查阶段尚无 Review Run" className="py-2" />
+            ) : (
+              [...entries].reverse().map((entry) => (
+                <div key={entry.runId} className="flex flex-col gap-1.5">
+                  <div className="flex flex-wrap items-center gap-x-1.5 text-base text-text-secondary">
+                    <CommitChip sha={entry.headSha} />
+                    <span className="tabular-nums">{localMinute(entry.startedAt)}</span>
+                  </div>
+                  <StageRound entry={entry} />
+                </div>
+              ))
+            )
+          ) : (
+            timeline(entries)
+          )}
+        </Tabs.Content>
+      </Tabs.Root>
     </div>
   );
 }
