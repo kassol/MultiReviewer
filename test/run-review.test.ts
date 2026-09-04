@@ -749,6 +749,162 @@ test("行作者判定失败的那一组留空,其余照常", async () => {
   assert.equal(authors[1], undefined);
 });
 
+/** 删除点(issue #244)判定用的一份代码:行号一目了然,落点与改动的距离好算。 */
+const BASE_STEPS = `${Array.from(
+  { length: 24 },
+  (_, index) => `export const step${index + 1} = ${index + 1};`,
+).join("\n")}\n`;
+
+/** 甲之后 fixture 改了第 1 行:它自成一个 hunk,不与下面删除那一处相邻。 */
+const HEAD_STEPS = BASE_STEPS.replace("export const step1 = 1;", "export const step1 = 0;");
+
+/**
+ * 乙删掉甲写的第 12、13 两行。删掉之后新侧第 12 行是原来的 step14,删除点就落在它上面
+ * ——被删的内容原本在这一行之前。
+ */
+const BOB_STEPS = HEAD_STEPS.replace(
+  "export const step12 = 12;\nexport const step13 = 13;\n",
+  "",
+);
+
+/** 乙删完之后可再追一个提交,用来在同一个 hunk 里摆一处新增。 */
+function stepsSetup(after?: { content: string; author: { name: string; email: string } }) {
+  const repo = makeRepo({
+    base: { "src/steps.ts": BASE_STEPS },
+    head: { "src/steps.ts": HEAD_STEPS },
+  });
+  const cache = makeCacheDir();
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
+
+  const bobSha = repo.commitToBranch(
+    "feature",
+    { "src/steps.ts": BOB_STEPS },
+    { authorName: BOB.name, authorEmail: BOB.email },
+  );
+  const headSha =
+    after === undefined
+      ? bobSha
+      : repo.commitToBranch(
+          "feature",
+          { "src/steps.ts": after.content },
+          { authorName: after.author.name, authorEmail: after.author.email },
+        );
+
+  const forge = memoryForge({
+    pullRequest: {
+      number: 7,
+      title: "示例 PR",
+      draft: false,
+      baseSha: repo.baseSha,
+      headSha,
+      cloneUrl: repo.dir,
+    },
+    changedFiles: [{ path: "src/steps.ts", status: "modified" }],
+  });
+
+  return { repo, cache, db, forge, bobSha };
+}
+
+function step(line: number, description: string) {
+  return { file: "src/steps.ts", line, severity: "P0" as const, category: "bug" as const, description };
+}
+
+test("落在删除点旁上下文行的 Finding,行作者是删掉那几行的提交,带相邻改动标记", async () => {
+  const { cache, db, forge, bobSha } = stepsSetup();
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    {
+      forge: forge.forge,
+      reviewers: [scriptedReviewer("stub-model", [step(12, "这里少了被删掉的那一步")])],
+      cacheDir: cache.dir,
+      dbPath: db.path,
+    },
+  );
+
+  const rows = lineAuthors(db.path);
+  assert.deepEqual(
+    rows.map((row) => ({
+      line: row.line,
+      sha: row.sha,
+      name: row.name,
+      email: row.email,
+      adjacent: row.adjacent,
+    })),
+    [{ line: 12, sha: bobSha, name: BOB.name, email: BOB.email, adjacent: 1 }],
+  );
+});
+
+test("删除点在上、新增行在下时按距离取删除提交,等距同样取上方", async () => {
+  // 丙在 step16 之前插一行:新侧第 14 行是新增,删除点仍在第 12 行。
+  const carolSteps = BOB_STEPS.replace(
+    "export const step16 = 16;\n",
+    "export const step15b = 15;\nexport const step16 = 16;\n",
+  );
+  const { cache, db, forge, bobSha } = stepsSetup({ content: carolSteps, author: CAROL });
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    {
+      forge: forge.forge,
+      reviewers: [
+        scriptedReviewer("stub-model", [
+          // 删除点在上(距 0)、新增行在下(距 2)。
+          step(12, "这里少了被删掉的那一步"),
+          // 删除点在上(距 1)、新增行在下(距 1):等距取上方。
+          step(13, "这一步的顺序不对"),
+        ]),
+      ],
+      cacheDir: cache.dir,
+      dbPath: db.path,
+    },
+  );
+
+  const rows = [...lineAuthors(db.path)].sort((a, b) => a.line - b.line);
+  assert.deepEqual(
+    rows.map((row) => ({ line: row.line, sha: row.sha, name: row.name, adjacent: row.adjacent })),
+    [
+      { line: 12, sha: bobSha, name: BOB.name, adjacent: 1 },
+      { line: 13, sha: bobSha, name: BOB.name, adjacent: 1 },
+    ],
+  );
+});
+
+test("删除那几行的提交找不到时这一条留空,其余照常", async () => {
+  const repo = makeRepo({
+    base: { "src/steps.ts": BASE_STEPS },
+    head: { "src/steps.ts": HEAD_STEPS },
+  });
+  cleanups.push(repo.cleanup);
+
+  const authors = await findingLineAuthors(
+    repo.dir,
+    [
+      { revision: repo.headSha, file: "src/steps.ts", line: 12 },
+      { revision: repo.headSha, file: "src/steps.ts", line: 20 },
+    ],
+    {
+      baseSha: repo.mergeBaseSha,
+      hunks: {
+        "src/steps.ts": [
+          {
+            start: 9,
+            end: 14,
+            // 这几行在 base..head 里从来没被删过,删除提交因此找不到。
+            changes: [{ line: 12, deleted: ["export const nothing = 0;"] }],
+          },
+          { start: 18, end: 22, changes: [{ line: 21 }] },
+        ],
+      },
+    },
+  );
+
+  assert.equal(authors[0], undefined);
+  assert.equal(authors[1]!.name, "fixture");
+  assert.equal(authors[1]!.adjacent, true);
+});
+
 test("PR 触发的轮次把 pull request 标题、正文与 commit 列表交给 Reviewer", async () => {
   const repo = makeRepo({
     base: { "src/calc.ts": BASE_CALC },

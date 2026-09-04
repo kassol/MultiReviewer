@@ -10,8 +10,10 @@ import {
   pinRunCommits,
   prepareWorktree,
   readLineAuthors,
+  readDeletingCommit,
   readRangeCommits,
   readRangeDiff,
+  type LineAuthor,
 } from "../git/worktree.ts";
 import {
   DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
@@ -741,6 +743,15 @@ async function applyContinuations(
   return applied;
 }
 
+/**
+ * 相邻改动判定要的本轮 diff:hunk 结构(issue #241),加上判删除提交的区间基准
+ * (issue #244)——被删的那几行在新侧没有位置,只能沿 base..head 去找谁删的。
+ */
+export type LineAuthorDiff = {
+  baseSha: string;
+  hunks: DiffHunks;
+};
+
 /** 要判行作者的一处位置:在哪个 revision 上、哪个文件的哪一行。 */
 export type LineAuthorQuery = {
   /** 判定所依据的 commit,即这条 Finding 所属那一轮的 head。 */
@@ -750,18 +761,32 @@ export type LineAuthorQuery = {
 };
 
 /**
- * 落点那一行要 blame 的位置:落点是本轮的改动行时就是它自己,是 hunk 内的上下文行时
- * 是同一个 hunk 内离它最近的那处改动(issue #241)。
- *
- * 同距取上方:`changes` 按行号升序,严格小于因此让上面那一处留下。没有 hunk 结构、
- * 落点不在任何 hunk 里(补录路径就是这样)时按落点自己判,与今天一致。
+ * 一条 Finding 的行作者从哪里取:blame 某一行,还是找删掉某几行的那个提交。
  */
-function authorLineFor(hunks: DiffHunks, file: string, line: number): { line: number; adjacent: boolean } {
+type AuthorSource =
+  | { kind: "blame"; line: number; adjacent: boolean }
+  | { kind: "deleted"; deleted: readonly string[] };
+
+/**
+ * 落点是本轮的改动行时 blame 它自己;是 hunk 内的上下文行时取同一个 hunk 内离它最近
+ * 的那处改动(issue #241)——那一处是新增行就 blame 那一行,是删除点就去找删掉它的那个
+ * 提交(issue #244)。
+ *
+ * 同距取上方:`changes` 按行号升序,严格小于因此让上面那一处留下。删除点记在紧随其后
+ * 那一行上,落点正好是它时距离为零——被删的内容就在这一行之前,没有比它更近的改动。
+ *
+ * 没有 hunk 结构、落点不在任何 hunk 里(补录路径就是这样)时按落点自己判,与今天一致。
+ */
+function authorSourceFor(hunks: DiffHunks, file: string, line: number): AuthorSource {
+  const own = { kind: "blame", line, adjacent: false } as const;
   // 经 IPC 传过来的那一份是 JSON.parse 出的普通对象,直接下标会读到原型上的成员。
-  if (!Object.hasOwn(hunks, file)) return { line, adjacent: false };
+  if (!Object.hasOwn(hunks, file)) return own;
   const hunk = hunks[file]!.find((h) => line >= h.start && line <= h.end);
-  if (hunk === undefined) return { line, adjacent: false };
-  if (hunk.changes.some((change) => change.line === line)) return { line, adjacent: false };
+  if (hunk === undefined) return own;
+  // 删除点在新侧不占行,落点与它同号也仍是上下文行,只有新增行算落点自己改过。
+  if (hunk.changes.some((change) => change.deleted === undefined && change.line === line)) {
+    return own;
+  }
 
   let nearest: HunkChange | undefined;
   for (const change of hunk.changes) {
@@ -769,8 +794,9 @@ function authorLineFor(hunks: DiffHunks, file: string, line: number): { line: nu
       nearest = change;
     }
   }
-  if (nearest === undefined) return { line, adjacent: false };
-  return { line: nearest.line, adjacent: true };
+  if (nearest === undefined) return own;
+  if (nearest.deleted !== undefined) return { kind: "deleted", deleted: nearest.deleted };
+  return { kind: "blame", line: nearest.line, adjacent: true };
 }
 
 /**
@@ -778,30 +804,37 @@ function authorLineFor(hunks: DiffHunks, file: string, line: number): { line: nu
  *
  * 落点是本轮 diff 的改动行时取它自己在 head 上的 blame;是 hunk 内的上下文行时取同
  * hunk 内最近的那处改动,结果带「相邻改动」标记(issue #241)——那一行本身没改,拿它
- * 的 blame 只会把几个月前的提交当成这次改动的责任人。`hunks` 不给即退回按落点自己判,
- * 读取时的补录走的就是这条(issue #199 的口径不变)。
+ * 的 blame 只会把几个月前的提交当成这次改动的责任人。最近的那一处是删除点时改找删掉
+ * 它的那个提交(issue #244),同一段原文在一轮里只找一次。`diff` 不给即退回按落点自己
+ * 判,读取时的补录走的就是这条(issue #199 的口径不变)。
  *
  * 每轮按自己的 head 判,不沿用上一轮:延续过来的 Finding 行号已经漂移,抄上一轮的
  * 结果会把这一行记到别人头上。因此按「revision + 文件」分组,一组合成一次
  * `git blame`——逐条起一个 git 进程的话,一轮几十条 Finding 就是几十次进程启动。
  *
- * 判定失败只记日志、留空:行作者是给人看的归属信息,取不到不该让整轮审查白跑。失败以
- * 组为单位,那一组的这几条一起留空,下次读取时在阶段汇总里再补(issue #199)。
+ * 判定失败只记日志、留空:行作者是给人看的归属信息,取不到不该让整轮审查白跑。blame
+ * 的失败以组为单位,那一组的这几条一起留空,下次读取时在阶段汇总里再补(issue #199);
+ * 删除提交找不到只影响它自己那一条。
  */
 export async function findingLineAuthors(
   repoPath: string,
   queries: readonly LineAuthorQuery[],
-  hunks: DiffHunks = {},
+  diff?: LineAuthorDiff,
 ): Promise<(RecordedLineAuthor | undefined)[]> {
-  const targets = queries.map((query) => authorLineFor(hunks, query.file, query.line));
+  const sources = queries.map((query) =>
+    authorSourceFor(diff?.hunks ?? {}, query.file, query.line),
+  );
+  const blames = sources.map((source) => (source.kind === "blame" ? source : undefined));
+  const authors: (RecordedLineAuthor | undefined)[] = queries.map(() => undefined);
+
   const byRevisionAndFile = new Map<string, number[]>();
   for (const [index, query] of queries.entries()) {
+    if (blames[index] === undefined) continue;
     const key = `${query.revision}\n${query.file}`;
     const indexes = byRevisionAndFile.get(key);
     if (indexes === undefined) byRevisionAndFile.set(key, [index]);
     else indexes.push(index);
   }
-  const authors: (RecordedLineAuthor | undefined)[] = queries.map(() => undefined);
   for (const indexes of byRevisionAndFile.values()) {
     const first = queries[indexes[0]!]!;
     try {
@@ -809,11 +842,12 @@ export async function findingLineAuthors(
         repoPath,
         first.revision,
         first.file,
-        indexes.map((index) => targets[index]!.line),
+        indexes.map((index) => blames[index]!.line),
       );
       for (const index of indexes) {
-        const author = found.get(targets[index]!.line);
-        if (author !== undefined) authors[index] = { ...author, adjacent: targets[index]!.adjacent };
+        const blame = blames[index]!;
+        const author = found.get(blame.line);
+        if (author !== undefined) authors[index] = { ...author, adjacent: blame.adjacent };
       }
     } catch (error) {
       console.error(
@@ -821,6 +855,38 @@ export async function findingLineAuthors(
         error instanceof Error ? error.message : String(error),
       );
     }
+  }
+
+  // 删除点(issue #244):同一段原文只找一次,一个 hunk 的删除点常是好几条 Finding 的
+  // 最近改动。
+  const deletingCommits = new Map<string, LineAuthor | undefined>();
+  for (const [index, source] of sources.entries()) {
+    if (source.kind !== "deleted" || diff === undefined) continue;
+    const query = queries[index]!;
+    const key = `${query.revision}\n${query.file}\n${source.deleted.join("\n")}`;
+    if (!deletingCommits.has(key)) {
+      const range = `${diff.baseSha}..${query.revision}`;
+      let author: LineAuthor | undefined;
+      try {
+        author = await readDeletingCommit(
+          repoPath,
+          { baseSha: diff.baseSha, headSha: query.revision },
+          query.file,
+          source.deleted,
+        );
+        if (author === undefined) {
+          console.error(`[review] ${query.file} 在 ${range} 上找不到删掉那几行的提交,这一条留空`);
+        }
+      } catch (error) {
+        console.error(
+          `[review] ${query.file} 在 ${range} 上的删除提交判定失败,这一条留空:`,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      deletingCommits.set(key, author);
+    }
+    const found = deletingCommits.get(key);
+    if (found !== undefined) authors[index] = { ...found, adjacent: true };
   }
   return authors;
 }
@@ -1479,7 +1545,7 @@ export async function runReview(
           file: group.finding.file,
           line: group.finding.line,
         })),
-        diffHunks,
+        { baseSha: worktree.mergeBaseSha, hunks: diffHunks },
       );
 
       // 一条 Finding 一行,报出它的每个模型一条归属(ADR 0015):Finding Identity 不含

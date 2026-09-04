@@ -311,6 +311,41 @@ export async function readLineAuthors(
   return parseLineAuthors(output);
 }
 
+/**
+ * `base..head` 里删掉这几行的那个提交(issue #244),找不到时 undefined。
+ *
+ * 被删的内容在新文件一侧没有行,blame 无从下手。改问「这几行是在哪个提交上消失的」:
+ * `git log -S` 数的是这段原文在提交前后的出现次数,次数变了的最后一个提交就是删掉它
+ * 的那个——沿 base..head 逐个提交去看谁最后还留着这几行,答案是同一个,但那要为每个
+ * 提交起一次 git 进程,这里一次就够。
+ *
+ * 原文取自本轮 diff 的删除行,即那几行在 base 上的样子。同一段原文在别处也出现、或者
+ * 删它的那个提交同时又在别处添了回去时,次数没变,这里就找不到——调用方按判不出来处理。
+ */
+export async function readDeletingCommit(
+  worktreePath: string,
+  range: { baseSha: string; headSha: string },
+  file: string,
+  removed: readonly string[],
+): Promise<LineAuthor | undefined> {
+  if (removed.length === 0) return undefined;
+  const output = await git(worktreePath, [
+    "log",
+    "-1",
+    "--format=%H%x00%an%x00%ae%x00%at",
+    "-S",
+    removed.join("\n"),
+    `${range.baseSha}..${range.headSha}`,
+    "--",
+    file,
+  ]);
+  const [sha, name, email, time] = output.trim().split("\0");
+  if (sha === undefined || sha === "" || name === undefined || email === undefined) {
+    return undefined;
+  }
+  return { sha, name, email, authoredAt: new Date(Number(time) * 1000).toISOString() };
+}
+
 export type PushBranchOptions = {
   cacheDir: string;
   ref: RepoRef;

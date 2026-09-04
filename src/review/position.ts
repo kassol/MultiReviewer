@@ -29,8 +29,17 @@ function unquotePath(raw: string): string {
   }
 }
 
-/** hunk 里的一处改动在新文件一侧的位置(issue #241):本轮新增的那一行。 */
-export type HunkChange = { line: number };
+/**
+ * hunk 里的一处改动在新文件一侧的位置(issue #241)。
+ *
+ * 新增行就是它自己那一行。删除点(issue #244)在新侧不占行,记在紧随其后那一行上——
+ * 被删的内容原本在这一行之前,对落点而言它算在上方。
+ */
+export type HunkChange = {
+  line: number;
+  /** 这一处是删除点时,旧侧被删掉的那几行原文,按顺序,不含行首的 `-`。 */
+  deleted?: readonly string[];
+};
 
 /** 一个 hunk 在新文件一侧覆盖的行区间,连同区间内的改动位置,按行号升序。 */
 export type DiffHunk = LineRange & { changes: readonly HunkChange[] };
@@ -51,6 +60,8 @@ export function parseDiffHunks(diff: string): DiffHunks {
   let hunk: (LineRange & { changes: HunkChange[] }) | undefined;
   // 正文读到新文件一侧的哪一行了。上下文行与新增行各占一行,删除行只占旧侧。
   let newLine = 0;
+  // 正在读的这一段连续删除行。连着的几行是同一处删除点,不是几处。
+  let removing: { line: number; deleted: string[] } | undefined;
   let inHunk = false;
 
   for (const line of diff.split("\n")) {
@@ -58,6 +69,7 @@ export function parseDiffHunks(diff: string): DiffHunks {
       inHunk = false;
       current = undefined;
       hunk = undefined;
+      removing = undefined;
       continue;
     }
     // 文件头只出现在 `diff --git` 与第一个 hunk 之间。进了 hunk 之后,`+++ ` 开头的
@@ -68,6 +80,7 @@ export function parseDiffHunks(diff: string): DiffHunks {
     if (!inHunk && line.startsWith("+++ ")) {
       const target = line.slice(4).trim();
       hunk = undefined;
+      removing = undefined;
       if (target === "/dev/null") {
         // 文件被删除,新侧没有可评论的位置。
         current = undefined;
@@ -89,17 +102,27 @@ export function parseDiffHunks(diff: string): DiffHunks {
       hunk = count === 0 ? undefined : { start, end: start + count - 1, changes: [] };
       if (hunk !== undefined) current.push(hunk);
       newLine = start;
+      removing = undefined;
       continue;
     }
 
     if (hunk === undefined) continue;
+    if (line.startsWith("-")) {
+      if (removing === undefined) {
+        removing = { line: newLine, deleted: [] };
+        hunk.changes.push(removing);
+      }
+      removing.deleted.push(line.slice(1));
+      continue;
+    }
+    removing = undefined;
     if (line.startsWith("+")) {
       hunk.changes.push({ line: newLine });
       newLine += 1;
       continue;
     }
-    // 上下文行只认开头那个空格。删除行不占新侧,`\ No newline at end of file` 与按换行
-    // 切出来的末尾空串都不是正文,一律不推进行号。
+    // 上下文行只认开头那个空格。`\ No newline at end of file` 与按换行切出来的末尾
+    // 空串都不是正文,不推进行号。
     if (line.startsWith(" ")) newLine += 1;
   }
 
