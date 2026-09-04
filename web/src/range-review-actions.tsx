@@ -2,12 +2,21 @@ import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-q
 import { useState } from "react";
 
 import { Cross2Icon } from "@radix-ui/react-icons";
-import { AlertDialog, Badge, Dialog, Flex, IconButton, Text, TextArea } from "@radix-ui/themes";
+import {
+  AlertDialog,
+  Badge,
+  Checkbox,
+  Dialog,
+  Flex,
+  IconButton,
+  Text,
+  TextArea,
+} from "@radix-ui/themes";
 
 import { Button } from "@/components/theme-button";
 
 import { api, errorText } from "./api.ts";
-import { RUN_DIRECTIVE_PLACEHOLDER } from "./repo-actions.tsx";
+import { FULL_REVIEW_HINT, RUN_DIRECTIVE_PLACEHOLDER, type RerunMode } from "./repo-actions.tsx";
 import {
   CommitPicker,
   commitSelectionLabel,
@@ -173,6 +182,9 @@ export function AdvanceAction({
  *
  * 选择器停在上次选比较项用的那条分支或 Tag 模式上,默认只列当前比较项之后的提交
  * (issue #234):base 的后代里还有比当前比较项早的,人每次推进要的是作者这次推了什么。
+ *
+ * 「完整审查」默认勾上(issue #250):推进的常态是作者推了新代码,要审新代码;取消勾选
+ * 那一轮只复核这个阶段未处置的历史。勾选与指令一样随弹窗关闭卸载,下次打开回到默认。
  */
 function AdvanceDialogContent({
   rangeReview,
@@ -184,12 +196,15 @@ function AdvanceDialogContent({
   const queryClient = useQueryClient();
   const [comparison, setComparison] = useState<CommitSelection | null>(null);
   const [directive, setDirective] = useState("");
+  const [fullReview, setFullReview] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const advance = useMutation({
     mutationFn: async () => {
       // 本轮指令(issue #225)选填,留空即不带这一格,只作用于推进出来的这一轮。
       const trimmed = directive.trim();
+      // 只在只复核那一档带上模式(issue #250):不带即完整审查,与接口的约定对上。
+      const mode: RerunMode = fullReview ? "full" : "verdict-only";
       const response = await api(`/range-reviews/${rangeReview.id}/advance`, {
         method: "POST",
         body: JSON.stringify({
@@ -197,6 +212,7 @@ function AdvanceDialogContent({
           // 这一次是从哪条分支或 Tag 选的(issue #234),下次开弹窗就停在这里。
           ...(comparison?.source === undefined ? {} : { comparisonSource: comparison.source }),
           ...(trimmed === "" ? {} : { directive: trimmed }),
+          ...(mode === "full" ? {} : { mode }),
         }),
       });
       if (!response.ok) throw new Error(await errorText(response));
@@ -295,6 +311,20 @@ function AdvanceDialogContent({
               value={directive}
               onChange={(event) => setDirective(event.target.value)}
             />
+            <Text
+              as="label"
+              size="2"
+              className="mt-3 flex cursor-pointer items-center gap-2 max-sm:min-h-11"
+            >
+              <Checkbox
+                checked={fullReview}
+                onCheckedChange={(checked) => setFullReview(checked === true)}
+              />
+              完整审查
+              <Text size="1" color="gray">
+                {FULL_REVIEW_HINT}
+              </Text>
+            </Text>
           </div>
         </div>
 

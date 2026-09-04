@@ -126,7 +126,7 @@ export const RUN_DIRECTIVE_PLACEHOLDER = "如:只报 P0";
  */
 export type RerunMode = "verdict-only" | "full";
 
-/** 「完整审查」勾选的说明。默认不勾,勾了才会新报。 */
+/** 「完整审查」勾选的说明。勾上才会新报;重跑默认不勾,增量评审默认勾上(issue #250)。 */
 export const FULL_REVIEW_HINT = "不勾即只复核历史 Finding,不新报";
 
 /**

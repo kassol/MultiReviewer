@@ -815,8 +815,8 @@ async function startRun(
   /** 本轮指令(CONTEXT.md,issue #225)。只有面板发起的那几条链路会带,投递不带。 */
   directive?: string,
   /**
-   * 这一轮的模式(CONTEXT.md 只复核,issue #242)。只有重跑那两种入参会带,其余入口
-   * 永远是完整审查。
+   * 这一轮的模式(CONTEXT.md 只复核,issue #242、#250)。重跑那两种入参与增量评审会带,
+   * 其余入口永远是完整审查。
    */
   mode?: ReviewRunMode,
 ): Promise<void> {
@@ -4903,14 +4903,18 @@ function readDirective(
 }
 
 /**
- * 重跑两种入参共用的模式解析(CONTEXT.md 只复核,issue #242)。
+ * 重跑与增量评审共用的模式解析(CONTEXT.md 只复核,issue #242、#250)。
  *
- * 非必填,不给即只复核:清历史是重跑的常态,整段范围再审一遍不是。认不出的取值当场 400
- * ——悄悄按默认跑会开出一轮不是人要的审查。增量评审与发起范围审查不收这一格,它们永远
- * 是完整审查。
+ * 非必填,不给即调用方给的那一档:重跑不给是只复核,清历史是它的常态;增量评审不给是
+ * 完整审查,推进的常态是作者推了新代码。认不出的取值当场 400——悄悄按默认跑会开出一轮
+ * 不是人要的审查。发起范围审查不收这一格,它永远是完整审查。
  */
-function readMode(res: ServerResponse, raw: unknown): ReviewRunMode | "rejected" {
-  if (raw === undefined || raw === null) return "verdict-only";
+function readMode(
+  res: ServerResponse,
+  raw: unknown,
+  fallback: ReviewRunMode,
+): ReviewRunMode | "rejected" {
+  if (raw === undefined || raw === null) return fallback;
   if (raw === "full" || raw === "verdict-only") return raw;
   sendJson(res, 400, { error: 'mode 只能是 "verdict-only" 或 "full"' });
   return "rejected";
@@ -4920,17 +4924,23 @@ function readMode(res: ServerResponse, raw: unknown): ReviewRunMode | "rejected"
  * 这个阶段的未处置历史 Finding 有没有落在本轮变更文件里:只复核那一轮开不开得起来,判据
  * 就是它。与编排层过滤文件集的是同一道(`openHistory` 加变更文件集求交):历史全落在本轮
  * 没改的文件上时,编排层同样一个文件都不剩,那该在这里就回 409,不该先答「已触发」。
+ *
+ * 变更文件集由调用方给:重跑审的就是容器 PR 此刻的 head,从 Forge 取;增量评审要审的是
+ * 还没推上去的新比较项,Forge 上那份说的是上一个比较项的事,只能从本地副本算(issue #250)。
  */
-async function hasOpenHistory(
+function hasOpenHistory(
   dbPath: string,
   scope: StageScope,
-  forge: Forge,
-  ref: PullRequestRef,
-): Promise<boolean> {
-  const changed = new Set((await forge.listChangedFiles(ref)).map((file) => file.path));
+  changed: ReadonlySet<string>,
+): boolean {
   return withStore(dbPath, (store) =>
     openHistory(store.stageHistory(scope)).some((entry) => changed.has(entry.file)),
   );
+}
+
+/** Forge 上这个 pull request 此刻的变更文件路径集。 */
+async function forgeChangedFiles(forge: Forge, ref: PullRequestRef): Promise<Set<string>> {
+  return new Set((await forge.listChangedFiles(ref)).map((file) => file.path));
 }
 
 /** 只复核在一个没有未处置历史的阶段上被拒的那句话。两种入参共用,措辞一致。 */
@@ -4982,7 +4992,7 @@ async function handleRerun(
   // 本轮指令两种来源共用一格,两条分支之前先解析(issue #225)。模式同律(issue #242)。
   const directive = readDirective(res, payload?.directive);
   if (directive === "rejected") return;
-  const mode = readMode(res, payload?.mode);
+  const mode = readMode(res, payload?.mode, "verdict-only");
   if (mode === "rejected") return;
   if (payload !== null && payload.rangeReviewId !== undefined) {
     const rangeReviewId = payload.rangeReviewId;
@@ -5029,7 +5039,7 @@ async function handleRerun(
   // 排在读 PR 之后:PR 根本不存在时该说的是那件事,不是这个阶段没有历史。
   if (
     mode === "verdict-only" &&
-    !(await hasOpenHistory(deps.dbPath, { owner, repo, pullNumber }, forge, ref))
+    !hasOpenHistory(deps.dbPath, { owner, repo, pullNumber }, await forgeChangedFiles(forge, ref))
   ) {
     return sendJson(res, 409, { error: VERDICT_ONLY_NOTHING_TO_DO });
   }
@@ -5093,12 +5103,15 @@ async function rerunRangeReview(
   // 与 pull request 那条入参同一道闸(issue #242):只复核跑不出结果时不开这一轮。
   if (
     mode === "verdict-only" &&
-    !(await hasOpenHistory(
+    !hasOpenHistory(
       deps.dbPath,
       { rangeReviewId: id },
-      forge,
-      { owner: record.owner, repo: record.repo, number: record.containerPullNumber },
-    ))
+      await forgeChangedFiles(forge, {
+        owner: record.owner,
+        repo: record.repo,
+        number: record.containerPullNumber,
+      }),
+    )
   ) {
     return sendJson(res, 409, { error: VERDICT_ONLY_NOTHING_TO_DO });
   }
@@ -5727,7 +5740,7 @@ async function handleAdvanceRangeReview(
   advancedBy: string,
 ): Promise<void> {
   const payload = await readJson<
-    { comparison?: unknown; comparisonSource?: unknown; directive?: unknown } | null
+    { comparison?: unknown; comparisonSource?: unknown; directive?: unknown; mode?: unknown } | null
   >(req, res);
   if (payload === undefined) return;
   if (payload === null || typeof payload.comparison !== "string") {
@@ -5737,9 +5750,11 @@ async function handleAdvanceRangeReview(
     return sendJson(res, 400, { error: "比较项要是 7 到 40 位的 commit sha" });
   }
   const comparisonSource = readComparisonSource(payload.comparisonSource);
-  // 增量评审也是一次重审,同样可以附本轮指令(issue #225)。
+  // 增量评审也是一次重审,同样可以附本轮指令(issue #225)与模式(issue #250)。
   const directive = readDirective(res, payload.directive);
   if (directive === "rejected") return;
+  const mode = readMode(res, payload.mode, "full");
+  if (mode === "rejected") return;
 
   const record = withStore(deps.dbPath, (store) => store.getRangeReview(id));
   if (record === undefined) {
@@ -5793,6 +5808,34 @@ async function handleAdvanceRangeReview(
   // 「两端不能是同一个 commit」同一档,面板上那一行置灰只是引导,接口自己也要拦。
   if (comparisonSha === record.comparisonSha) {
     return sendJson(res, 400, { error: "新比较项与当前比较项是同一个 commit,选一个更新的" });
+  }
+
+  // 只复核那一轮开跑之前先问一句这个阶段还有没有可复核的东西(issue #250),判据与重跑
+  // 那一档同一个。闸排在全部校验之后、推分支与落库之前:被拒时比较项、来源、推进人与
+  // 容器 PR 全部保持原样,人勾回完整审查再推就是拒绝之前那个状态。
+  // 变更文件集从本地副本算:此刻容器 PR 的 head 分支还指着旧比较项,Forge 上那份说的是
+  // 上一轮的事,拿它判会把该拒的放过去。
+  if (mode === "verdict-only") {
+    let changed: Set<string>;
+    try {
+      const prepared = await prepareRangeDiff({
+        cacheDir: deps.cacheDir,
+        ref,
+        cloneUrl,
+        credentials,
+        baseSha: record.baseSha,
+        headSha: comparisonSha,
+      });
+      // 两端刚在 resolveRange 里解析过、后代关系也判过,这里拿不到范围只能是本地副本
+      // 出了岔子,与 git 报错同一档:人读到的是「推进时取不回变更文件」,不是「看不了 diff」。
+      if (!prepared.ok) throw new Error(RANGE_DIFF_REJECTION[prepared.reason]);
+      changed = new Set((await readRangeDiffFiles(prepared)).map((file) => file.path));
+    } catch (error) {
+      return sendJson(res, 502, { error: `取不回新比较项的变更文件:${failureText(error)}` });
+    }
+    if (!hasOpenHistory(deps.dbPath, { rangeReviewId: id }, changed)) {
+      return sendJson(res, 409, { error: VERDICT_ONLY_NOTHING_TO_DO });
+    }
   }
 
   // 计划先固定好,与投递、重跑、发起同一个启动器。
@@ -5852,6 +5895,7 @@ async function handleAdvanceRangeReview(
     advancedBy,
     id,
     directive,
+    mode,
   );
 }
 

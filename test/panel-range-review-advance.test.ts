@@ -47,15 +47,21 @@ type RangeReview = {
 /** 每一轮的 Reviewer 都记下自己拿到的 Review Range,推进之后那一轮的范围要能读出来。 */
 type Recorded = { ranges: ReviewRange[] };
 
+/** 只复核那一轮要有未处置历史才开得起来:要它的用例让每个 Reviewer 都报一条。 */
+const REPORTED_FINDINGS: Parameters<typeof scriptedReviewer>[1] = [
+  { file: "src/answer.ts", line: 1, severity: "P1", category: "bug", description: "这里会越界" },
+];
+
 async function startedHarness(
   recorded: Recorded,
   options: Parameters<typeof startReadyPanelHarness>[1] = {},
+  findings: Parameters<typeof scriptedReviewer>[1] = [],
 ): Promise<PanelHarness> {
   const harness = await startReadyPanelHarness(cleanups, {
     ...options,
     buildReviewers: (plans) =>
       plans.map((plan) => {
-        const reviewer = scriptedReviewer(plan.spec.model, []);
+        const reviewer = scriptedReviewer(plan.spec.model, findings);
         return {
           ...reviewer,
           review: async (input) => {
@@ -73,6 +79,19 @@ async function startedHarness(
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
   confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   return harness;
+}
+
+/** 库里每一轮的模式,按开跑先后。 */
+function modes(h: PanelHarness, rangeReviewId: number): string[] {
+  const store = openStore(h.db.path);
+  try {
+    return store
+      .listRuns({ limit: 30, rangeReviewId })
+      .map((run) => run.mode)
+      .reverse();
+  } finally {
+    store.close();
+  }
 }
 
 /** 发起一个范围审查并等第一轮跑完。 */
@@ -408,4 +427,145 @@ test("发起带来源、推进不带来源:阶段详情的 rangeReview.compariso
     rangeReview: RangeReview;
   };
   assert.equal(detail.rangeReview.comparisonSource, null);
+});
+
+test("增量评审默认完整审查,`full` 同档,非法取值 400(issue #250)", async () => {
+  const recorded: Recorded = { ranges: [] };
+  const h = await startedHarness(recorded);
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+
+  // 不带 mode:推进的常态是作者推了新代码,要审新代码。
+  const next = h.repo.pushToHead({ "src/answer.ts": "export const answer = 13;\n" });
+  assert.equal(
+    (await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, { comparison: next })).status,
+    202,
+  );
+  await h.settledAtLeast(2);
+
+  const later = h.repo.pushToHead({ "src/answer.ts": "export const answer = 14;\n" });
+  assert.equal(
+    (
+      await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+        comparison: later,
+        mode: "full",
+      })
+    ).status,
+    202,
+  );
+  await h.settledAtLeast(3);
+
+  // 认不出的取值当场拒:悄悄按默认跑会开出一轮不是人要的审查。
+  const rejected = h.repo.pushToHead({ "src/answer.ts": "export const answer = 15;\n" });
+  assert.equal(
+    (
+      await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+        comparison: rejected,
+        mode: "only",
+      })
+    ).status,
+    400,
+  );
+  assert.equal(
+    (
+      await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+        comparison: rejected,
+        mode: 7,
+      })
+    ).status,
+    400,
+  );
+  assert.equal(h.settled.length, 3);
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), later);
+
+  const store = openStore(h.db.path);
+  assert.equal(store.getRangeReview(rangeReview.id)!.comparisonSha, later);
+  store.close();
+  assert.deepEqual(modes(h, rangeReview.id), ["full", "full", "full"]);
+});
+
+test("没有未处置历史的阶段:只复核推进 409,比较项与 head 分支都不动(issue #250)", async () => {
+  const recorded: Recorded = { ranges: [] };
+  const h = await startedHarness(recorded);
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+
+  const next = h.repo.pushToHead({ "src/answer.ts": "export const answer = 16;\n" });
+  const denied = await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+    comparison: next,
+    mode: "verdict-only",
+  });
+  assert.equal(denied.status, 409);
+  assert.match(((await denied.json()) as { error: string }).error, /未处置/);
+  // 闸在一切副作用之前:比较项、head 分支与轮次数都停在推进之前那一刻。
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), h.repo.headSha);
+  assert.equal(h.settled.length, 1);
+  const store = openStore(h.db.path);
+  assert.equal(store.getRangeReview(rangeReview.id)!.comparisonSha, h.repo.headSha);
+  store.close();
+
+  // 勾回完整审查:同一个比较项推得动。
+  assert.equal(
+    (
+      await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+        comparison: next,
+        mode: "full",
+      })
+    ).status,
+    202,
+  );
+  await h.settledAtLeast(2);
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), next);
+  assert.deepEqual(modes(h, rangeReview.id), ["full", "full"]);
+});
+
+test("有未处置历史:只复核推进 202,head 跟着走,范围仍是 base..新比较项(issue #250)", async () => {
+  const recorded: Recorded = { ranges: [] };
+  const h = await startedHarness(recorded, {}, REPORTED_FINDINGS);
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+
+  const next = h.repo.pushToHead({ "src/answer.ts": "export const answer = 17;\n" });
+  const response = await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+    comparison: next,
+    mode: "verdict-only",
+  });
+  assert.equal(response.status, 202);
+  const advanced = ((await response.json()) as { rangeReview: RangeReview }).rangeReview;
+  assert.equal(advanced.comparisonSha, next);
+  // 复核在作者最新的代码上做,head 分支照样跟到新比较项。
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), next);
+
+  await h.settledAtLeast(2);
+  assert.equal(h.settled[1]!.error, undefined);
+
+  const store = openStore(h.db.path);
+  const runs = store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
+  store.close();
+  assert.equal(runs.length, 2);
+  assert.equal(runs[0]!.pullNumber, rangeReview.containerPullNumber);
+  assert.deepEqual(modes(h, rangeReview.id), ["full", "verdict-only"]);
+
+  // 模式变了不换范围:复核口径与完整审查一致。
+  const latest = recorded.ranges.at(-1)!;
+  assert.equal(latest.baseSha, h.repo.baseSha);
+  assert.equal(latest.headSha, next);
+});
+
+test("未处置历史全落在这次没改到的文件上:只复核推进 409,不先答已触发(issue #250)", async () => {
+  const recorded: Recorded = { ranges: [] };
+  const h = await startedHarness(recorded, {}, REPORTED_FINDINGS);
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+
+  // 从 base 另拉一条只改 src/other.ts 的旁支:base..它的变更文件里没有 src/answer.ts,
+  // 而未处置历史全在那个文件上,编排层过滤完一个文件都不剩。
+  const hotfix = h.repo.branchFrom("hotfix", h.repo.baseSha, {
+    "src/other.ts": "export const other = 3;\n",
+  });
+  const denied = await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+    comparison: hotfix,
+    mode: "verdict-only",
+  });
+  assert.equal(denied.status, 409);
+  assert.match(((await denied.json()) as { error: string }).error, /未处置/);
+  assert.equal(h.settled.length, 1);
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), h.repo.headSha);
+  assert.deepEqual(modes(h, rangeReview.id), ["full"]);
 });
