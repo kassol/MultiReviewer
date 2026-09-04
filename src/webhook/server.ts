@@ -102,6 +102,7 @@ import {
   type ComparisonSource,
   type FindingDispositionTarget,
   type GlobalSettings,
+  type InterruptedRun,
   type ModelReference,
   type ModelServiceRecord,
   type ModelServiceVersionCommit,
@@ -7328,6 +7329,34 @@ async function servePage(res: ServerResponse, deps: WebhookServerDeps): Promise<
   res.end(html);
 }
 
+/**
+ * 撤掉被启动改判掉的那些轮次在 PR 上残留的 👀(issue #247)。
+ *
+ * 不 await:启动不等 Forge。逐个撤,失败只记日志——改判已经落库,撤不掉一只眼睛不该
+ * 让服务起不来。没有中断轮次时一次 Forge 都不问。
+ */
+function removeInterruptedReactions(
+  forge: Forge | undefined,
+  runs: readonly InterruptedRun[],
+): void {
+  if (forge === undefined || runs.length === 0) return;
+  void (async () => {
+    for (const run of runs) {
+      try {
+        await forge.removeReaction(
+          { owner: run.owner, repo: run.repo, number: run.pullNumber },
+          "eyes",
+        );
+      } catch (error) {
+        console.warn(
+          `撤 👀 失败:${run.owner}/${run.repo}#${run.pullNumber}`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+  })();
+}
+
 export function createWebhookServer(deps: WebhookServerDeps): Server {
   // 已经记过首次的无关事件类型与 action,整个服务共用一份。
   const loggedOnce = new Set<string>();
@@ -7347,7 +7376,7 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
   };
   // 进程重启会中断后台的工作副本准备(issue #184),那些行没有谁再去改它。启动时改判
   // 失败,面板因此显示得出结果、也给得出重试入口。
-  withStore(deps.dbPath, (store) => {
+  const interrupted = withStore(deps.dbPath, (store) => {
     store.failInterruptedWorktrees(
       "服务重启,上一次准备没跑完",
       new Date((deps.now ?? Date.now)()).toISOString(),
@@ -7357,7 +7386,16 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
       "服务重启,上一次探索没跑完",
       new Date((deps.now ?? Date.now)()).toISOString(),
     );
+    // 正在跑的 Review Run 同理(issue #247):Reviewer 子进程随进程一起消失,本轮的
+    // Finding 压在收尾事务里一并丢失,面板会一直显示进行中并持续轮询。
+    return store.failInterruptedRuns(
+      "服务重启,上一轮没跑完",
+      new Date((deps.now ?? Date.now)()).toISOString(),
+    );
   });
+  // 被改判的那些轮次在 PR 上还挂着 👀,留着看起来像审查卡死了。撤反应不阻塞启动:
+  // 失败只记日志,改判在上面那个事务里已经落库(issue #247)。
+  removeInterruptedReactions(deps.forges.gitea, interrupted);
   const hookManager =
     deps.gitea === undefined ? undefined : createGiteaHookManager(deps.gitea);
   return createServer((req, res) => {
