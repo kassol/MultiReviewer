@@ -2,109 +2,35 @@
  * 优雅退出(issue #249)。
  *
  * 收到 SIGTERM / SIGINT 后进程进入排空:不再接新投递与重跑,已开跑的轮次跑完当前批次、
- * 落库,再停在续跑得回来的状态(issue #248)。排空有上限,超时不再等,日志记下放弃的轮次。
+ * 落库,再停在续跑得回来的状态(issue #248)。排空期间面板 API 照常可读。排空有上限,
+ * 超时不再等,日志记下放弃的轮次。
  */
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 
 import { createDrain } from "../src/drain.ts";
-import type { Finding, Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
-import type { FileTree } from "./support/git-fixture.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
-import { memoryForge } from "./support/memory-forge.ts";
+import { EVENT, FILES, batchReviewer, query, setup } from "./support/batch-run.ts";
+import { LISTENING, spawnMain } from "./support/main-process.ts";
 import { HARNESS_PR, startPanelHarness } from "./support/panel-harness.ts";
-
-const EVENT = { owner: "acme", repo: "widgets", number: 7 };
-const FILES = ["src/a.ts", "src/b.ts", "src/c.ts"];
-const STUB = "const a = 1;\nconst b = 2;\nconst c = 3;\n";
 
 const cleanups: (() => void)[] = [];
 after(() => {
   for (const cleanup of cleanups) cleanup();
 });
 
-/** base 三行,head 追加两行:第 4 行是每个文件的首个新增行,Finding 锚在那里。 */
-function setup() {
-  const base: FileTree = {};
-  const head: FileTree = {};
-  for (const path of FILES) {
-    base[path] = STUB;
-    head[path] = `${STUB}const x = 0;\n`;
-  }
-  const repo = makeRepo({ base, head });
-  const cache = makeCacheDir();
-  const db = makeDbPath();
-  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
-  const forge = memoryForge({
-    pullRequest: {
-      number: EVENT.number,
-      title: "示例 PR",
-      draft: false,
-      baseSha: repo.baseSha,
-      headSha: repo.headSha,
-      cloneUrl: repo.dir,
-    },
-    changedFiles: FILES.map((path) => ({ path, status: "modified" as const })),
-  });
-  return { repo, cache, db, forge };
-}
-
-function query(dbPath: string, sql: string): Record<string, unknown>[] {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
-  try {
-    return db.prepare(sql).all() as unknown as Record<string, unknown>[];
-  } finally {
-    db.close();
-  }
-}
-
-function findingAt(file: string, model: string): Finding {
-  return {
-    file,
-    line: 4,
-    severity: "P0",
-    category: "bug",
-    title: `${file} 有问题`,
-    description: `${file} 的第一处新增行有问题`,
-    impact: "",
-    suggestion: "",
-    model,
-  };
-}
-
-/** 每批报一条 Finding;`onBatch` 在跑这一批时执行,用它模拟批次跑到一半收到信号。 */
-function batchReviewer(model: string, onBatch?: (call: number) => void): Reviewer {
-  let calls = 0;
-  return {
-    model,
-    review: async ({ range }) => {
-      calls += 1;
-      onBatch?.(calls);
-      return {
-        model,
-        findings: range.files.map((file) => findingAt(file, model)),
-        anomalies: [],
-        rejectedToolCalls: 0,
-        anchorRejections: 0,
-      };
-    },
-  };
-}
-
 test("排空开始后不再取新批:当前批次落库,这一轮不收尾,轨迹记下中止在第几批", async () => {
-  const fixture = setup();
+  const fixture = setup(cleanups);
   const drain = createDrain();
   // 第一批跑到一半时收到信号。取号线跑完这一批就不该再取第二批。
-  const reviewer = batchReviewer("model-a", (call) => {
-    if (call === 1) drain.begin();
+  const reviewer = batchReviewer("model-a", {
+    onBatch: (call) => {
+      if (call === 1) drain.begin();
+    },
   });
 
   const result = await runReview(EVENT, {
@@ -147,7 +73,7 @@ test("排空开始后不再取新批:当前批次落库,这一轮不收尾,轨�
 });
 
 test("排空中止的那一轮,下一次启动续跑得回来", async () => {
-  const fixture = setup();
+  const fixture = setup(cleanups);
   const drain = createDrain();
   const deps = {
     forge: fixture.forge.forge,
@@ -159,7 +85,7 @@ test("排空中止的那一轮,下一次启动续跑得回来", async () => {
   };
   await runReview(EVENT, {
     ...deps,
-    reviewers: [batchReviewer("model-a", (call) => { if (call === 1) drain.begin(); })],
+    reviewers: [batchReviewer("model-a", { onBatch: (call) => { if (call === 1) drain.begin(); } })],
     drain,
   });
   const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
@@ -201,10 +127,10 @@ test("服务正在排空:面板重跑回 503,不开新一轮", async () => {
   assert.deepEqual(h.dispatched, []);
   // 范围审查那种入参走同一道闸。
   assert.equal((await h.api("POST", "/rerun", { rangeReviewId: 1 })).status, 503);
+  // 挡的只有新活:排空期间面板 API 照常可读,人要看得见谁还在跑(issue #249 的评审复核)。
+  assert.equal((await h.api("GET", "/runs")).status, 200);
+  assert.equal((await h.api("GET", "/stages")).status, 200);
 });
-
-const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
-const LISTENING = "MultiReviewer webhook 监听";
 
 test("没有进行中轮次时 SIGTERM 立即退出,退出码 0", async () => {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-drain-"));
@@ -212,36 +138,27 @@ test("没有进行中轮次时 SIGTERM 立即退出,退出码 0", async () => {
   const seed = openStore(join(dir, "multireviewer.db"));
   seed.close();
 
-  const child = spawn(process.execPath, [MAIN], {
-    cwd: dir,
-    env: {
-      ...process.env,
-      MULTIREVIEWER_DB: join(dir, "multireviewer.db"),
-      MULTIREVIEWER_CACHE_DIR: join(dir, "worktrees"),
-      MULTIREVIEWER_BASE_URL: "http://localhost:3000",
-      // 0 让内核挑一个空闲端口,并发跑测试时不会撞上。
-      MULTIREVIEWER_PORT: "0",
-      // 只要有一个 Forge 就起得来;GitHub 那一格不做启动时的实例版本检查。
-      GITHUB_TOKEN: "drain-test-token",
-      MULTIREVIEWER_GITEA_URL: "",
-      MULTIREVIEWER_GITEA_TOKEN: "",
-    },
+  const { child, output, listening } = spawnMain(dir, {
+    ...process.env,
+    MULTIREVIEWER_DB: join(dir, "multireviewer.db"),
+    MULTIREVIEWER_CACHE_DIR: join(dir, "worktrees"),
+    MULTIREVIEWER_BASE_URL: "http://localhost:3000",
+    // 0 让内核挑一个空闲端口,并发跑测试时不会撞上。
+    MULTIREVIEWER_PORT: "0",
+    // 只要有一个 Forge 就起得来;GitHub 那一格不做启动时的实例版本检查。
+    GITHUB_TOKEN: "drain-test-token",
+    MULTIREVIEWER_GITEA_URL: "",
+    MULTIREVIEWER_GITEA_TOKEN: "",
   });
+  void listening.then(() => child.kill("SIGTERM"));
 
-  const exited = new Promise<{ code: number | null; output: string }>((resolve) => {
-    let output = "";
-    const collect = (chunk: Buffer): void => {
-      output += chunk.toString();
-      if (output.includes(LISTENING)) child.kill("SIGTERM");
-    };
-    child.stdout.on("data", collect);
-    child.stderr.on("data", collect);
-    child.on("exit", (code) => resolve({ code, output }));
+  const code = await new Promise<number | null>((resolve) => {
+    child.on("exit", resolve);
     // 排空卡住时不该让整个测试文件挂在这里等。
     setTimeout(() => child.kill("SIGKILL"), 30_000).unref();
   });
 
-  const { code, output } = await exited;
-  assert.equal(code, 0, output);
-  assert.match(output, /排空/);
+  assert.equal(code, 0, output());
+  assert.ok(output().includes(LISTENING), output());
+  assert.match(output(), /排空/);
 });

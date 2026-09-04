@@ -854,6 +854,12 @@ export type ResumeState = {
   /** 开跑时冻结的知识集版本(issue #204)。续跑要注入同一版,否则各批依的规则会分叉。 */
   ruleSetVersion: number | null;
   batchCount: number;
+  /**
+   * 开跑时钉下的 Reviewer 身份,按 `position` 升序(issue #248 的评审复核)。零批次落库
+   * 时它是核对模型组合的唯一依据——那种轮次没有已落库的批次可比。没有钉下 pin 的轮次
+   * (升级前的旧行、一个模型都没配的那一轮)读回空数组,那时无从比对。
+   */
+  reviewers: string[];
   /** 开跑时的历史快照;升级前落的旧行没有,为 undefined。 */
   history: HistoryFinding[] | undefined;
   /** 已经有结果的批次,键是从 0 起的批次下标。 */
@@ -4652,11 +4658,19 @@ export function openStore(dbPath: string): Store {
             WHERE run_id = ? ORDER BY batch_index`,
         )
         .all(runId);
+      // pin 与已落库的批次一起取(issue #248 的评审复核):第一批就崩的那种轮次一个批次
+      // 都没有,模型组合换没换只有这几行说得出。
+      const pins = db
+        .prepare(
+          "SELECT identity FROM review_run_reviewer_pin WHERE run_id = ? ORDER BY position",
+        )
+        .all(runId);
       return {
         headSha: String(run["head_sha"]),
         ruleSetVersion:
           run["rule_set_version"] === null ? null : Number(run["rule_set_version"]),
         batchCount: Number(run["batch_count"]),
+        reviewers: pins.map((pin) => String(pin["identity"])),
         history:
           run["history_json"] === null
             ? undefined

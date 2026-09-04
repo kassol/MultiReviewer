@@ -348,6 +348,18 @@ function RunMilestone({ event }: { event: TraceEvent }) {
             {str(payload, "reason") ?? "本轮未发 review"}
           </span>
         );
+      // 服务排空停在批次边界(issue #249):这一轮没有结束事件,轨迹里只有这一条说得出
+      // 它停在第几批、为什么没收尾。
+      case "run_aborted": {
+        const batch = num(payload, "batch");
+        const total = num(payload, "total");
+        return (
+          <span className="text-base text-warning">
+            本轮因服务排空停在第 <span className="font-mono tabular-nums">{batch ?? "?"}</span>/
+            <span className="font-mono tabular-nums">{total ?? "?"}</span> 批,等下一次启动续跑
+          </span>
+        );
+      }
       case "run_finished":
         return <span className="text-base font-semibold text-text">本轮结束</span>;
       default:

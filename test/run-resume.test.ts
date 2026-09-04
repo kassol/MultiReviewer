@@ -8,121 +8,29 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
-import type {
-  Finding,
-  HistoryFinding,
-  ReviewRange,
-  Reviewer,
-  ReviewerUsage,
-} from "../src/review/finding.ts";
+import type { ReviewRunReviewerPin } from "../src/config.ts";
+import type { Reviewer } from "../src/review/finding.ts";
 import { RESUME_NOT_VIABLE, runReview } from "../src/review/run.ts";
-import type { FileTree } from "./support/git-fixture.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
-import { memoryForge } from "./support/memory-forge.ts";
-
-const EVENT = { owner: "acme", repo: "widgets", number: 7 };
-const FILES = ["src/a.ts", "src/b.ts", "src/c.ts"];
-const STUB = "const a = 1;\nconst b = 2;\nconst c = 3;\n";
-/** 每批都回同一份用量。三批合起来的总量因此是它的三倍,续跑前后必须一致。 */
-const USAGE: ReviewerUsage = {
-  inputTokens: 10,
-  outputTokens: 3,
-  cacheReadTokens: 1,
-  cacheWriteTokens: 2,
-  totalTokens: 16,
-};
+import {
+  EVENT,
+  FILES,
+  STUB,
+  USAGE,
+  batchReviewer,
+  query,
+  setup,
+} from "./support/batch-run.ts";
 
 const cleanups: (() => void)[] = [];
 after(() => {
   for (const cleanup of cleanups) cleanup();
 });
 
-/** base 是三行的桩,head 追加两行,第 4 行因此是每个文件的首个新增行。 */
-function trees(): { base: FileTree; head: FileTree } {
-  const base: FileTree = {};
-  const head: FileTree = {};
-  for (const path of FILES) {
-    base[path] = STUB;
-    head[path] = `${STUB}const x = 0;\nconst y = 1;\n`;
-  }
-  return { base, head };
-}
-
-function setup() {
-  const { base, head } = trees();
-  const repo = makeRepo({ base, head });
-  const cache = makeCacheDir();
-  const db = makeDbPath();
-  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
-  const forge = memoryForge({
-    pullRequest: {
-      number: 7,
-      title: "示例 PR",
-      draft: false,
-      baseSha: repo.baseSha,
-      headSha: repo.headSha,
-      cloneUrl: repo.dir,
-    },
-    changedFiles: FILES.map((path) => ({ path, status: "modified" as const })),
-  });
-  return { repo, cache, db, forge };
-}
-
-function query(dbPath: string, sql: string): Record<string, unknown>[] {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
-  try {
-    return db.prepare(sql).all() as unknown as Record<string, unknown>[];
-  } finally {
-    db.close();
-  }
-}
-
-function findingAt(file: string): Omit<Finding, "model"> {
-  return {
-    file,
-    line: 4,
-    severity: "P0",
-    category: "bug",
-    title: `${file} 有问题`,
-    description: `${file} 的第一处新增行有问题`,
-    impact: "",
-    suggestion: "",
-  };
-}
-
-/**
- * 一批报一条 Finding 的 Reviewer 桩。`throwOnCall` 给了就在第几次调用时抛——用它模拟
- * 服务在那一批上被重启:前面的批次已经落库,这一轮停在没有结束时间的状态。
- */
-function batchReviewer(
-  model: string,
-  options: { throwOnCall?: number } = {},
-): Reviewer & { calls: { range: ReviewRange; history: readonly HistoryFinding[] }[] } {
-  const calls: { range: ReviewRange; history: readonly HistoryFinding[] }[] = [];
-  return {
-    model,
-    calls,
-    review: async ({ range, history }) => {
-      calls.push({ range, history });
-      if (options.throwOnCall === calls.length) throw new Error("进程被重启了");
-      return {
-        model,
-        findings: range.files.map((file) => ({ ...findingAt(file), model })),
-        anomalies: [],
-        rejectedToolCalls: 0,
-        anchorRejections: 0,
-        usage: USAGE,
-        verdicts: history.map((entry) => ({ findingId: entry.id, verdict: "present" as const })),
-      };
-    },
-  };
-}
-
 /** 一批一个文件、一次只跑一批:批次序号与文件一一对应,断言因此读得懂。 */
 function deps(
   fixture: ReturnType<typeof setup>,
   reviewers: readonly Reviewer[],
-  extra: { resumeRunId?: number } = {},
+  extra: { resumeRunId?: number; reviewerPins?: readonly ReviewRunReviewerPin[] } = {},
 ) {
   return {
     forge: fixture.forge.forge,
@@ -136,7 +44,7 @@ function deps(
 }
 
 test("三批跑到第二批后被打断,续跑只调第三批,结果与不中断时一致", async () => {
-  const fixture = setup();
+  const fixture = setup(cleanups);
   const crashed = batchReviewer("model-a", { throwOnCall: 3 });
 
   await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
@@ -203,7 +111,7 @@ test("三批跑到第二批后被打断,续跑只调第三批,结果与不中断
 });
 
 test("不中断跑完的一轮与续跑完成的一轮,Finding、用量与评论逐字相同", async () => {
-  const fixture = setup();
+  const fixture = setup(cleanups);
   const straight = batchReviewer("model-a");
 
   const result = await runReview(EVENT, deps(fixture, [straight]));
@@ -223,7 +131,7 @@ test("不中断跑完的一轮与续跑完成的一轮,Finding、用量与评论
 });
 
 test("中断期间处置了一条历史,续跑批次收到的仍是开跑时的快照", async () => {
-  const fixture = setup();
+  const fixture = setup(cleanups);
 
   // 第一轮不分批,在 src/c.ts 上留下一条历史 Finding。
   await runReview(EVENT, {
@@ -267,7 +175,7 @@ test("中断期间处置了一条历史,续跑批次收到的仍是开跑时的�
 });
 
 test("head 变了就不续跑:抛续跑不成立,原因说得出变成了哪个 head", async () => {
-  const fixture = setup();
+  const fixture = setup(cleanups);
   const crashed = batchReviewer("model-a", { throwOnCall: 3 });
   await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
   const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
@@ -284,7 +192,7 @@ test("head 变了就不续跑:抛续跑不成立,原因说得出变成了哪个 
 });
 
 test("模型组合换了就不续跑:已落库的批次与这一轮的 Reviewer 对不上", async () => {
-  const fixture = setup();
+  const fixture = setup(cleanups);
   const crashed = batchReviewer("model-a", { throwOnCall: 3 });
   await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
   const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
@@ -293,6 +201,41 @@ test("模型组合换了就不续跑:已落库的批次与这一轮的 Reviewer 
   await assert.rejects(
     () => runReview(EVENT, deps(fixture, [other], { resumeRunId: Number(run?.["id"]) })),
     new RegExp(`${RESUME_NOT_VIABLE}:第 1 批已落库的 Reviewer`),
+  );
+  assert.deepEqual(other.calls, []);
+});
+
+/**
+ * 第一批就崩的那种轮次一个批次都没落库,逐批那道核对因此看不见任何东西——模型组合换没
+ * 换只有开跑时钉下的 pin 说得出(issue #248 的评审复核)。
+ */
+test("零批次落库时模型组合换了同样不续跑:核对开跑时钉下的 Reviewer", async () => {
+  const fixture = setup(cleanups);
+  const pins: ReviewRunReviewerPin[] = [
+    {
+      identity: "model-a",
+      provider: "test",
+      model: "a",
+      thinkingLevel: null,
+      modelServiceVersion: 1,
+      target: null,
+      runtimeModel: null,
+      failure: null,
+    },
+  ];
+  const crashed = batchReviewer("model-a", { throwOnCall: 1 });
+  await assert.rejects(
+    () => runReview(EVENT, deps(fixture, [crashed], { reviewerPins: pins })),
+    /进程被重启了/,
+  );
+  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  // 一个批次都没落库:逐批核对无从下手。
+  assert.equal(query(fixture.db.path, "SELECT run_id FROM review_run_batch").length, 0);
+
+  const other = batchReviewer("model-b");
+  await assert.rejects(
+    () => runReview(EVENT, deps(fixture, [other], { resumeRunId: Number(run?.["id"]) })),
+    new RegExp(`${RESUME_NOT_VIABLE}:开跑时的模型组合是 model-a,现在是 model-b`),
   );
   assert.deepEqual(other.calls, []);
 });

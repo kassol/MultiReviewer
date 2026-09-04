@@ -4968,7 +4968,7 @@ async function handleRerun(
 ): Promise<void> {
   // 正在排空(issue #249):两种入参都挡在这里,重跑开出来的轮次一样跑不完。
   if (deps.drain?.draining() === true) {
-    return sendJson(res, 503, { error: "服务正在退出,等它起回来再重跑" });
+    return sendJson(res, 503, { error: "服务正在排空,等它起回来再重跑" });
   }
   const payload = await readJson<{
     owner?: unknown;

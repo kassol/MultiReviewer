@@ -6,18 +6,15 @@
  * 只配 Gitea 的那一档要连真实实例做版本检查,留给 `gitea-live.test.ts`。
  */
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 
 import type { ReviewerSpec } from "../src/config.ts";
 import { openStore } from "../src/review/store.ts";
+import { LISTENING, spawnMain } from "./support/main-process.ts";
 
-const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
-const LISTENING = "MultiReviewer webhook 监听";
 const BOOT_TIMEOUT_MS = 30_000;
 
 /** 宿主机上导出过的凭据会让「没配」这一档根本测不出来,逐个剥掉。 */
@@ -67,23 +64,16 @@ async function boot(
     ...overrides,
   });
 
-  const child = spawn(process.execPath, [MAIN], { cwd: dir, env });
+  const { child, output, listening } = spawnMain(dir, env);
   return await new Promise<Boot>((resolve) => {
-    let output = "";
-    const settle = (listening: boolean): void => {
+    const settle = (started: boolean): void => {
       clearTimeout(timer);
       child.kill("SIGKILL");
-      resolve({ listening, output, dir });
+      resolve({ listening: started, output: output(), dir });
     };
     const timer = setTimeout(() => settle(false), BOOT_TIMEOUT_MS);
-
-    const collect = (chunk: Buffer): void => {
-      output += chunk.toString("utf8");
-      if (output.includes(LISTENING)) settle(true);
-    };
-    child.stdout.on("data", collect);
-    child.stderr.on("data", collect);
-    child.on("exit", () => settle(output.includes(LISTENING)));
+    void listening.then(() => settle(true));
+    child.on("exit", () => settle(output().includes(LISTENING)));
   });
 }
 

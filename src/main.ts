@@ -145,8 +145,12 @@ server.listen(port, () => {
 });
 
 /**
- * 优雅退出(issue #249)。发版换容器时 Docker 先发 SIGTERM:停止接受新连接与新投递,
+ * 优雅退出(issue #249)。发版换容器时 Docker 先发 SIGTERM:新投递与新重跑当场回 503,
  * 已开跑的轮次跑完当前批次并落库后停下,再退出。缺的批次由下一次启动续跑(issue #248)。
+ *
+ * HTTP 服务留到排空结束才关(issue #249 的评审复核):排空期间面板 API 照常可读,人要
+ * 看得见「谁还在跑、跑到第几批」。回绝新活由 `drain.draining()` 那三个读取点负责,不靠
+ * 关掉端口——关了端口连正在看面板的人也一起断掉。
  *
  * 超过上限仍没停下的轮次不再等:它们停在哪一批已经落了库,下一次启动照样续得回来。
  * 退出码一律 0——这是一次预期之内的停机,不是失败。
@@ -157,15 +161,15 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   exiting = true;
   console.log(`[drain] 收到 ${signal},停止接受新投递,等在跑的轮次跑完当前批次`);
   drain.begin();
-  server.close();
-  // 长连接不会自己断开(面板的 SSE 就是),不主动关掉的话 close 永远等不到。
-  server.closeIdleConnections();
   const abandoned = await drain.settle(drainTimeoutMs);
   if (abandoned.length > 0) {
     console.warn(
       `[drain] 等了 ${drainTimeoutMs / 1000} 秒仍没停下,放弃这些轮次:${abandoned.join("、")}`,
     );
   }
+  server.close();
+  // 长连接不会自己断开(面板的 SSE 就是),不主动关掉的话 close 永远等不到。
+  server.closeIdleConnections();
   console.log("[drain] 排空结束,退出");
   process.exit(0);
 }

@@ -54,7 +54,7 @@ docker compose pull && docker compose up -d
 
 向导的边界收在「面板能用」:生成凭据主密钥、问基地址,起服务后打登录页并探测 `GET /api/session`。零用户时该端点回 401 加 `bootstrap: true`,向导再从容器日志抽出一次性 bootstrap 口令;已有账号时 401 不带这一位,正常提示用已有账号登录。bootstrap 只在库里零用户时打印,注册第一个用户成功即失效,服务重启换一枚,不进 `.env` 也不落库;第一个注册的人就是系统管理员,注册入口随后关闭。仓库接入、用户与角色、模型服务、模型组合与覆盖都在面板上做;首次进入业务页会显示「可运行模型服务 → 审查配置就绪 → 注册仓库」检查单,实例启用后隐藏。仓库注册要求审查配置先就绪,未就绪时服务端在访问 Gitea、生成 Key 与写库之前回 409。系统不预置角色,给同事建号时先把仓库分给他:不授角色的账号读得到分到的仓库,要写或做动作时才建角色并勾权限格(ADR 0018)。向导不问模型凭据也不问模型标识,不生成全局 webhook secret,也不指导手工配 hook;检出已废除的变量(`MULTIREVIEWER_ADMIN_TOKEN` / `MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` / `MULTIREVIEWER_GITEA_REPO` / `MULTIREVIEWER_PANEL_PREFIX` / `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` / `MULTIREVIEWER_DEEPSEEK_MODEL` / `MULTIREVIEWER_OPENROUTER_MODEL`)会清掉并说明原因。清理之前先把 `.env` 复制成 `.env.bak-<YYYYMMDD>`,同一天重跑不覆盖已有副本——被清掉的旧值只在这份副本里,模型服务配好后自行删除。
 
-**发版会等评审跑完当前批次。**`docker compose up -d` 换容器时 Docker 先发 SIGTERM,服务进入排空:HTTP 停止接受新连接,新的 webhook 投递与面板重跑一律回 503 且不占幂等键,已开跑的轮次跑完手上那一批、把结果落库之后才停(issue #249)。因此一次发版最长要等 `stop_grace_period`(默认 300 秒,与 `MULTIREVIEWER_DRAIN_TIMEOUT_SECONDS` 同值)——没有在跑的轮次时立即退出,不必等。被排空停下的轮次没有结束时间,新容器起来时按批次续跑(issue #248),已经花掉的 token 保得住;排空期间被回绝的那次投递不占幂等键,人重投或下一次 push 照常触发。
+**发版会等评审跑完当前批次。**`docker compose up -d` 换容器时 Docker 先发 SIGTERM,服务进入排空:新的 webhook 投递与面板重跑一律回 503 且不占幂等键,已开跑的轮次跑完手上那一批、把结果落库之后才停(issue #249)。排空期间 HTTP 照常收连接,面板 API 读得动——发版时人要看得见「谁还在跑、跑到第几批」;端口到全部轮次停下之后才关。因此一次发版最长要等 `stop_grace_period`(默认 300 秒,与 `MULTIREVIEWER_DRAIN_TIMEOUT_SECONDS` 同值)——没有在跑的轮次时立即退出,不必等。被排空停下的轮次没有结束时间,新容器起来时按批次续跑(issue #248),已经花掉的 token 保得住;排空期间被回绝的那次投递不占幂等键,人重投或下一次 push 照常触发。
 
 两处容易踩的地方:
 
@@ -153,6 +153,8 @@ Issue 与 spec 存放于本仓库的 GitHub Issues,通过 `gh` CLI 读写。见 
 Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.md`。
 
 ## 变更日志
+
+- 2026-09-04: 落地 issue #246–#249 之后的评审复核修复。**排空期间面板 API 照常可读**:`main.ts` 的 `server.close()` 与 `closeIdleConnections()` 从排空一开始挪到 `drain.settle` 返回之后,发版时人看得见「谁还在跑、跑到第几批」;回绝新活仍由投递、重跑与批次取号线那三道闸负责。**续跑核对模型组合不再漏掉零批次那一档**:第一批就崩的轮次一个批次都没落库,改按开跑时钉下的 Reviewer 比对。**续跑状态提前到准备工作副本之前读**:续不了的旧行不再白克隆一次工作副本、也不再在 PR 上挂一只随后要撤的眼睛。`CONTEXT.md` 新增「排空」词条,面板轨迹认得出 `run_aborted`。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 
 - 2026-09-04: 落地 issue #248。**Review Run 以批次为恢复粒度,服务重启后续跑没跑完的批次**:每一批跑完立即把该批各 Reviewer 的结果落库(带轮次与批次序号),开跑时把本轮用到的历史 Finding 快照一并落库;服务启动时对没有结束时间的轮次先尝试续跑——重新准备工作副本,按同一 head、同一版知识集与已落库的批次重新切批,只跑缺结果的那些,再走现有的合并、收尾与发评论。轨迹接着原轮次追加,面板上这一轮不换编号也不换结论口径。收尾仍只做一次,「一轮只发一次 review」不变;中间态的批次结果单独存放,事后统计只认已结束的轮次,不进任何分母。续跑不成立时(工作副本准备失败、仓库已不在注册表、head 变了、知识集版本推进了、重新切批与已落库的批次对不上)退回 issue #247 的改判:标记失败并把原因写在轮次详情的模型行上,下一次启动因此不会再碰它。没有中断轮次时启动路径零改动。决策见 `docs/adr/0024-batch-is-the-recovery-grain-of-a-review-run.md`,细节见 `src/AGENTS.md`。
 

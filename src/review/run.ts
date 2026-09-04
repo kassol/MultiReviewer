@@ -1365,6 +1365,19 @@ function resumeMismatch(
   if (resume.ruleSetVersion !== ruleSetVersion) {
     return `冻结的知识集版本已经从 ${resume.ruleSetVersion ?? "无"} 变成 ${ruleSetVersion ?? "无"}`;
   }
+  // 模型组合按开跑时钉下的 pin 核对(issue #248 的评审复核)。逐批那道只看得见已落库的
+  // 批次,第一批就崩的轮次因此漏检;pin 是开跑那一刻就落库的,零批次也比得了。pin 的
+  // `identity` 与 `Reviewer.model` 是同一个值(都是 `modelIdentity`),口径不会分叉。
+  // 一个 pin 都没有的轮次(升级前的旧行、一个模型都没配的那一轮)没有可比的东西,跳过。
+  if (resume.reviewers.length > 0) {
+    const current = reviewers.map((reviewer) => reviewer.model);
+    if (
+      current.length !== resume.reviewers.length ||
+      resume.reviewers.some((identity, position) => identity !== current[position])
+    ) {
+      return `开跑时的模型组合是 ${resume.reviewers.join("、")},现在是 ${current.join("、")}`;
+    }
+  }
   if (resume.batchCount !== batches.length) {
     return `重新切批切出 ${batches.length} 批,开跑时是 ${resume.batchCount} 批`;
   }
@@ -1397,6 +1410,25 @@ export async function runReview(
   const { forge } = deps;
   const startedAt = new Date();
   const pullRequest = await forge.getPullRequest(event);
+
+  // 续跑那一轮的已落库状态(issue #248)。读在准备工作副本与加 👀 之前(issue #248 的
+  // 评审复核):续不了的旧行到这里就退回改判,不必先白克隆一份工作副本、也不必在 PR
+  // 上挂一只随后要撤掉的眼睛。句柄用完即还——真正的编排还在下面另开一份。
+  const resumeRunId = deps.resumeRunId;
+  let resume: ResumeState | undefined;
+  if (resumeRunId !== undefined) {
+    const resumeStore = openStore(deps.dbPath);
+    try {
+      resume = resumeStore.resumeState(resumeRunId);
+    } finally {
+      resumeStore.close();
+    }
+    // 快照不在(轮次已不在库里,或它是升级前落的旧行)就没有「与原轮各批一致的历史」
+    // 可给,续跑到此为止。
+    if (resume?.history === undefined) {
+      throw new Error(`${RESUME_NOT_VIABLE}:第 ${resumeRunId} 轮没有开跑时的历史快照`);
+    }
+  }
 
   // 挂上「正在审查」。同一个 PR 推了新 commit 会再跑一次,上一轮的结论先作废——
   // 否则新代码还没看,PR 上却还挂着上一版的通过标记。
@@ -1457,18 +1489,6 @@ export async function runReview(
         throw error;
       }
     };
-
-    // 续跑那一轮的已落库状态(issue #248)。读在最前:历史与分批都要按它来。
-    const resumeRunId = deps.resumeRunId;
-    const resume =
-      resumeRunId === undefined ? undefined : opened(() => store.resumeState(resumeRunId));
-    if (resumeRunId !== undefined && resume?.history === undefined) {
-      // 快照不在(轮次已不在库里,或它是升级前落的旧行)就没有「与原轮各批一致的历史」
-      // 可给,续跑到此为止。
-      opened(() => {
-        throw new Error(`${RESUME_NOT_VIABLE}:第 ${resumeRunId} 轮没有开跑时的历史快照`);
-      });
-    }
 
     // 本阶段已经报过的 Finding,注入给这一轮的每个 Reviewer(ADR 0016)。读在开跑之前:
     // 本轮自己的 Finding 还没落库,这份历史因此正是「上一轮为止」的那些。
