@@ -1,12 +1,13 @@
 import type { ReviewRunReviewerPin } from "../config.ts";
 import type { Drain } from "../drain.ts";
-import type {
-  ChangedFileStatus,
-  ExistingReviewComment,
-  Forge,
-  PublishedReviewComment,
-  PullRequestRef,
-  ReviewCommentDraft,
+import {
+  PublishUncertainError,
+  type ChangedFileStatus,
+  type ExistingReviewComment,
+  type Forge,
+  type PublishedReviewComment,
+  type PullRequestRef,
+  type ReviewCommentDraft,
 } from "../forge/forge.ts";
 import {
   pinRunCommits,
@@ -807,18 +808,33 @@ function planContinuations(
   return { plans, synthesized };
 }
 
+/** 一条写过 Forge 的延续:旧评论 resolve 成了没有。 */
+type AppliedContinuation = {
+  plan: Continuation;
+  /** 交接未完成(ADR 0025):旧评论的 resolve 没成,它还留在 Forge 上待关闭。 */
+  handoffPending: boolean;
+};
+
 /**
- * 把配好的延续写到 Forge 上:旧评论 resolve。写在建评论正文之前——新评论里那句「延续
- * 自」得是真的,resolve 没成就不该说这话。单条失败只记日志并放弃这一条延续:旧行留在
- * 未处置,本轮那条按新 Finding 正常提出,少一次位置交接不该让整轮审查白跑。
+ * 把配好的延续写到 Forge 上:旧评论 resolve。在新评论发布并读回评论标识之后做
+ * (ADR 0025):交接以新评论的载体确认为准。先关旧评论再发新评论,发布一失败就留下一条
+ * 在 Forge 上没有载体的未处置问题,而轮次已经结束、续跑也不会再选中它。新评论正文里那
+ * 句「延续自」不等 resolve 才写:延续关系在发布之前已由本地判定(词法配对、复核结论自带
+ * 位置、合并 agent 命中三档之一),那句话描述的是谱系,旧评论关闭只是交接的收尾动作。
+ *
+ * 单条 resolve 失败只记日志,延续照记、带「交接未完成」:旧评论留在 Forge 上仍可处置,
+ * 由下一轮 Review Run 收尾时重试(`retryPendingHandoffs`)。放弃这一条延续反而更糟——
+ * 新评论正文已经写了「延续自」,同一处问题会在 Forge 上留两条打开的评论、本地却当两条
+ * Identity。
  */
 async function applyContinuations(
   forge: Forge,
   event: PullRequestEvent,
   plans: readonly Continuation[],
-): Promise<Continuation[]> {
-  const applied: Continuation[] = [];
+): Promise<AppliedContinuation[]> {
+  const applied: AppliedContinuation[] = [];
   for (const plan of plans) {
+    let handoffPending = false;
     try {
       await forge.resolveComment(
         { owner: event.owner, repo: event.repo },
@@ -826,14 +842,50 @@ async function applyContinuations(
       );
     } catch (error) {
       console.error(
-        "[review] 「已延续」的旧评论 resolve 失败,这一条不延续:",
+        "[review] 「已延续」的旧评论 resolve 失败,记为交接未完成、下一轮重试:",
+        error instanceof Error ? error.message : String(error),
+      );
+      handoffPending = true;
+    }
+    applied.push({ plan, handoffPending });
+  }
+  return applied;
+}
+
+/**
+ * 上一轮交接未完成的旧评论,在这一轮收尾时重试 resolve(ADR 0025)。成功即清掉标记;
+ * 再失败只记日志,标记留着等下一轮。在发布之前做:这一轮自己新记的「交接未完成」不该
+ * 在同一轮里立刻再试一次。
+ */
+async function retryPendingHandoffs(
+  forge: Forge,
+  event: PullRequestEvent,
+  store: ReturnType<typeof openStore>,
+): Promise<void> {
+  for (const pending of store.pendingHandoffs(event.owner, event.repo, event.number)) {
+    try {
+      await forge.resolveComment({ owner: event.owner, repo: event.repo }, pending.commentId);
+    } catch (error) {
+      console.error(
+        "[review] 交接未完成的旧评论重试 resolve 失败,留到下一轮:",
         error instanceof Error ? error.message : String(error),
       );
       continue;
     }
-    applied.push(plan);
+    store.completeHandoff(event.owner, event.repo, event.number, pending.findingId);
   }
-  return applied;
+}
+
+/**
+ * 发布 review 失败时写在轮次上的那句原因(ADR 0025、ADR 0026)。结果不确定的那一档
+ * 点明不自动重发:review 可能已经在 Forge 上,已取得的 review id 在适配层的信息里,
+ * 留给人核对。
+ */
+function publishFailureReason(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  return error instanceof PublishUncertainError
+    ? `发布 review 失败,结果不确定、不自动重发:${detail}`
+    : `发布 review 失败:${detail}`;
 }
 
 /**
@@ -1819,8 +1871,8 @@ export async function runReview(
       }
 
       // 复核判仍在、旧指纹在本轮 head 上算不出的那些,由本轮在新位置报出的一条承接同一条
-      // Finding Identity(CONTEXT.md 已延续,issue #167)。旧评论在这里就被 resolve 掉,
-      // 新评论的正文随后带上它的链接;落库要等本轮的行插进去之后。
+      // Finding Identity(CONTEXT.md 已延续,issue #167)。这里只配对;旧评论的 resolve 与
+      // 延续落库都等新评论发布确认之后(ADR 0025),新评论的正文先带上旧评论的链接。
       // 模型只回了复核结论、没有重报的那些,按它给出的新位置合成本轮的一条(issue #170)。
       // 合成的连指纹与跨轮匹配一起作一个合并组,接在本轮之后——只追加这一处。
       // 合并 agent 命中、而那处代码已经改写的那些先配好(issue #243):**agent 命中优先于
@@ -1854,23 +1906,13 @@ export async function runReview(
             new Set(carries.map((carry) => carry.groupIndex)),
           );
       groups.push(...plan.synthesized);
-      const continuations = failed
-        ? []
-        : await applyContinuations(forge, event, [...carries, ...plan.plans]);
+      // 到这里延续只是配好了,Forge 上一笔都没写(ADR 0025):旧评论的 resolve 与延续
+      // 落库都等新评论发布并读回标识之后。正文里的「延续自」按配对结果先写上——延续关系
+      // 已由本地判定,那句话描述的是谱系,与旧评论关没关无关。
+      const continuations: Continuation[] = failed ? [] : [...carries, ...plan.plans];
       const continuedFrom = new Map(
         continuations.map((plan) => [plan.groupIndex, plan.candidate.commentHtmlUrl]),
       );
-      for (const applied of continuations) {
-        const carried = groups[applied.groupIndex]!.finding;
-        // 判据一并记进轨迹(issue #243):一次延续是词法配对、复核结论给的位置,还是
-        // 合并 agent 判出来的,追查误判时要分得清。
-        trace.run("finding_continued", {
-          file: carried.file,
-          line: carried.line,
-          title: carried.title,
-          criteria: applied.criterion,
-        });
-      }
 
       const comments: ReviewCommentDraft[] = [];
       // 与 `comments` 同序:每条草稿属于哪个合并组。发布之后按它把评论标识记回去。
@@ -1983,18 +2025,8 @@ export async function runReview(
         ...(mergeUsage === undefined ? {} : { mergeUsage }),
       });
 
-      // 延续落库要等本轮的行插进去:旧行的备注、处置人与处置时刻随 Identity 抄到承接它的
-      // 那一行上,旧行改记「已延续」。
-      for (const plan of continuations) {
-        store.recordContinuation({
-          owner: event.owner,
-          repo: event.repo,
-          pullNumber: event.number,
-          runId,
-          groupIndex: plan.groupIndex,
-          candidate: plan.candidate,
-        });
-      }
+      // 上一轮交接未完成的旧评论在这里重试(ADR 0025),与本轮发布成不成无关。
+      await retryPendingHandoffs(forge, event, store);
 
       // review 正文、计数与返回值只关心每个合并组的那条 Finding。
       const findings = groups.map((group) => group.finding);
@@ -2011,14 +2043,72 @@ export async function runReview(
       if (verdictOnlySilent) {
         trace.run("review_skipped", { reason: "本轮只复核,未发 review" });
       }
+      // 发布失败与否决定这一轮怎么收场(ADR 0025):Reviewer 结果与 Finding 已经落库,
+      // `failed` 按 Reviewer 结果算,发布没成只写轮次级的失败原因(ADR 0026)。
+      let publishFailure: string | undefined;
       if (!failed && hasSomethingToSay) {
-        const published = await forge.createReview(event, {
-          body: reviewBody(findings, absent, partial, carried),
-          commitSha: pullRequest.headSha,
-          comments,
-        });
-        store.recordFindingComments(runId, commentRefs(comments, commentGroups, published));
-        trace.run("review_posted", { findingCount: findings.length });
+        let published: PublishedReviewComment[] | undefined;
+        try {
+          published = await forge.createReview(event, {
+            body: reviewBody(findings, absent, partial, carried),
+            commitSha: pullRequest.headSha,
+            comments,
+          });
+        } catch (error) {
+          // 明确失败与结果不确定同一条路:不 resolve、不记延续,旧行留在未处置。不确定
+          // 那一档禁止重发——review 可能已经在 Forge 上;轮次有结束时间,启动续跑也不会
+          // 再选中它。
+          publishFailure = publishFailureReason(error);
+          console.error("[review] 发布 review 失败,本轮结果已落库:", publishFailure);
+          store.recordRunFailure(runId, publishFailure);
+          trace.run("run_failed", { reason: publishFailure });
+        }
+        if (published !== undefined) {
+          const refs = commentRefs(comments, commentGroups, published);
+          store.recordFindingComments(runId, refs);
+          trace.run("review_posted", { findingCount: findings.length });
+
+          // 新评论的标识与链接读回来了,交接才开始:resolve 旧评论,再落库延续。承接那条
+          // 的评论没在读回的清单里就不算确认,这一条不交接——旧行留在未处置,本轮那条按
+          // 新 Finding 落库。
+          const confirmed = new Set(refs.map((ref) => ref.groupIndex));
+          for (const plan of continuations) {
+            if (confirmed.has(plan.groupIndex)) continue;
+            const carried = groups[plan.groupIndex]!.finding;
+            console.error(
+              `[review] 承接 ${carried.file}:${carried.line} 的新评论没有读回标识,这一条不延续`,
+            );
+          }
+          const applied = await applyContinuations(
+            forge,
+            event,
+            continuations.filter((plan) => confirmed.has(plan.groupIndex)),
+          );
+          // 延续落库要等本轮的行插进去:旧行的备注、处置人与处置时刻随 Identity 抄到承接
+          // 它的那一行上,旧行改记「已延续」,resolve 没成的带上「交接未完成」。
+          for (const { plan, handoffPending } of applied) {
+            store.recordContinuation({
+              owner: event.owner,
+              repo: event.repo,
+              pullNumber: event.number,
+              runId,
+              groupIndex: plan.groupIndex,
+              candidate: plan.candidate,
+              handoffPending,
+            });
+            const carried = groups[plan.groupIndex]!.finding;
+            // 判据一并记进轨迹(issue #243):一次延续是词法配对、复核结论给的位置,还是
+            // 合并 agent 判出来的,追查误判时要分得清。交接结果同记(ADR 0025):轨迹不
+            // 声称一次没做完的交接已完成。
+            trace.run("finding_continued", {
+              file: carried.file,
+              line: carried.line,
+              title: carried.title,
+              criteria: plan.criterion,
+              handoff: handoffPending ? "pending" : "complete",
+            });
+          }
+        }
       }
 
       // 跑成功却什么都没发现时,这次审查在 PR 上本来一点痕迹都不会留,与「审查根本
@@ -2028,14 +2118,17 @@ export async function runReview(
         await tryReaction(() => forge.addReaction(event, "+1"));
       }
 
-      trace.run("run_finished", { failed, findingCount: findings.length });
+      // 发布失败的那一轮没有正常收尾,轨迹上以 `run_failed` 收束,不再补一条「结束」。
+      if (publishFailure === undefined) {
+        trace.run("run_finished", { failed, findingCount: findings.length });
+      }
 
       return {
         headSha: pullRequest.headSha,
         findings,
         outcomes,
         failed,
-        inlineCount: comments.length,
+        inlineCount: publishFailure === undefined ? comments.length : 0,
       };
     } finally {
       // 订阅者一定要收到结束信号:成功、失败、中途抛异常都要,否则页面会一直等下去。

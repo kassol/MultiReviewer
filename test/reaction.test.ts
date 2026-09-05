@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
 import type { Forge } from "../src/forge/forge.ts";
+import type { Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
@@ -87,6 +88,26 @@ test("零 Finding 时:眼睛换成赞,这是 PR 上唯一的痕迹", async () =>
 
 test("审查中途抛异常时眼睛照样撤掉,不会永远挂着", async () => {
   const h = harness();
+  // Reviewer 自己抛出来(不是回一个失败结果)即审查中途的异常。发布失败不再是异常
+  // (ADR 0025):它在轮次上记原因、照常收尾,眼睛由正常路径撤掉。
+  const throwing: Reviewer = {
+    model: "model-a",
+    review: async () => {
+      throw new Error("模型进程崩了");
+    },
+  };
+
+  await assert.rejects(
+    runReview(EVENT, { forge: h.forge.forge, reviewers: [throwing], ...h.deps }),
+    /模型进程崩了/,
+  );
+
+  assert.ok(h.forge.reactionLog.includes("remove:eyes"), "眼睛没被撤掉");
+  assert.deepEqual([...h.forge.reactions], []);
+});
+
+test("发布 review 失败:眼睛撤掉、不点赞,轮次照常结束", async () => {
+  const h = harness();
   const failing: Forge = {
     ...h.forge.forge,
     createReview: async () => {
@@ -94,16 +115,14 @@ test("审查中途抛异常时眼睛照样撤掉,不会永远挂着", async () =
     },
   };
 
-  await assert.rejects(
-    runReview(EVENT, {
-      forge: failing,
-      reviewers: [scriptedReviewer("model-a", [FINDING])],
-      ...h.deps,
-    }),
-    /发布失败/,
-  );
+  await runReview(EVENT, {
+    forge: failing,
+    reviewers: [scriptedReviewer("model-a", [FINDING])],
+    ...h.deps,
+  });
 
   assert.ok(h.forge.reactionLog.includes("remove:eyes"), "眼睛没被撤掉");
+  assert.ok(!h.forge.reactionLog.includes("add:+1"), "发布失败却点了赞");
   assert.deepEqual([...h.forge.reactions], []);
 });
 

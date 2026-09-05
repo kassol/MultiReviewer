@@ -1,17 +1,18 @@
-import type {
-  ChangedFile,
-  ChangedFileStatus,
-  CloneCredentials,
-  ExistingReviewComment,
-  Forge,
-  NewPullRequest,
-  PublishedReviewComment,
-  PullRequest,
-  PullRequestRef,
-  Reaction,
-  RepoRef,
-  Repository,
-  ReviewDraft,
+import {
+  PublishUncertainError,
+  type ChangedFile,
+  type ChangedFileStatus,
+  type CloneCredentials,
+  type ExistingReviewComment,
+  type Forge,
+  type NewPullRequest,
+  type PublishedReviewComment,
+  type PullRequest,
+  type PullRequestRef,
+  type Reaction,
+  type RepoRef,
+  type Repository,
+  type ReviewDraft,
 } from "./forge.ts";
 
 /**
@@ -49,6 +50,17 @@ function apiRoot(baseUrl: string): string {
 }
 
 /**
+ * Gitea 明确回了错误状态。与 `fetch` 自己抛出来的那一类(没有响应)分开:发布 review
+ * 时前者说明 review 未创建,后者无从判定(ADR 0025)。
+ */
+class GiteaResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GiteaResponseError";
+  }
+}
+
+/**
  * 发一次 Gitea API 请求。`gitea-hooks.ts` 的 hook 管理模块也用它,因此导出。
  *
  * `allow` 里的状态码不当失败抛出,原样返回给调用方判读——「删 hook 回 404 算成功」
@@ -79,7 +91,7 @@ export async function request(
     // 只带方法、路径与响应体。凭据在请求头里,不会出现在这三者中的任何一个。
     // 响应体截断:一次 review 的全部评论正文被回显会把日志淹掉。
     const detail = await response.text();
-    throw new Error(
+    throw new GiteaResponseError(
       `Gitea ${method} ${path} failed: ${response.status} ${detail.slice(0, 500)}`,
     );
   }
@@ -198,11 +210,10 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
       // `CreatePullReviewOptions` 与 `CreatePullReviewComment`,见
       // `modules/structs/pull_review.go`。`event` 的合法取值是同文件里的
       // `ReviewStateType` 常量,COMMENT 不阻断合并。
-      const created = await requestJson<{ id: number }>(
-        options,
-        "POST",
-        `${repoPath(ref)}/pulls/${ref.number}/reviews`,
-        {
+      const reviewsPath = `${repoPath(ref)}/pulls/${ref.number}/reviews`;
+      let created: { id: number };
+      try {
+        created = await requestJson<{ id: number }>(options, "POST", reviewsPath, {
           commit_id: draft.commitSha,
           body: draft.body,
           event: "COMMENT",
@@ -216,18 +227,38 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
             // commit,因此从不填 `old_position`。
             new_position: c.line,
           })),
-        },
-      );
+        });
+      } catch (error) {
+        // Gitea 回了错误状态即 review 未创建,原样抛;没有响应(网络中断、超时)时
+        // 无从判定有没有创建,标成不确定,调用方据此不自动重发(ADR 0025)。
+        if (error instanceof GiteaResponseError) throw error;
+        throw new PublishUncertainError(
+          `Gitea POST ${reviewsPath} 没有响应,无法判定 review 是否已创建: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
 
       // 创建端点回的是 `PullReview`(`modules/structs/pull_review.go`),里头只有
       // `comments_count`,没有评论本身,评论 id 与链接因此要按 review id 再取一次。
       // 零行级评论的那一轮不必发这个请求:回来必然是空数组。
       if (draft.comments.length === 0) return [];
-      const published = await requestJson<GiteaReviewComment[]>(
-        options,
-        "GET",
-        `${repoPath(ref)}/pulls/${ref.number}/reviews/${created.id}/comments`,
-      );
+      let published: GiteaReviewComment[];
+      try {
+        published = await requestJson<GiteaReviewComment[]>(
+          options,
+          "GET",
+          `${reviewsPath}/${created.id}/comments`,
+        );
+      } catch (error) {
+        // review 已经在 Forge 上了,只是评论标识没读回来:带上 review id 供人核对。
+        throw new PublishUncertainError(
+          `Gitea review ${created.id} 已创建,但读回评论失败: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          String(created.id),
+        );
+      }
       return published
         // 与 `listReviewComments` 同一道过滤:挂在旧文件一侧的评论对应不到 head
         // commit 里的行。本工具只发 `new_position`,这里正常不会命中。

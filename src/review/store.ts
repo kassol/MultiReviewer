@@ -165,6 +165,10 @@ CREATE TABLE IF NOT EXISTS finding (
   -- 这一行承接的那条旧评论在 Forge 页面上的地址(CONTEXT.md 已延续,issue #167)。
   -- 只有延续过来的新行有它,面板据此显示「延续自」;其余行为 NULL。
   continued_from TEXT,
+  -- 交接未完成(ADR 0025,issue #252):延续落库时旧评论的 resolve 没成,1 即旧评论
+  -- 还留在 Forge 上待关闭。只挂在「已延续」的旧行上,是处置值之上的一个待办标记,
+  -- 不是处置;下一轮收尾重试 resolve 成功、或回填读到旧评论已 resolve 时清回 NULL。
+  handoff_pending INTEGER,
   -- 行作者(CONTEXT.md):这条 Finding 所在行在本轮 head 上最后一次改动的 git author
   -- 与那次提交。评审落库时一并写入,四列要么一起有值、要么一起是 NULL。
   -- 四列同 NULL 即「未判定」:升级前落的行,以及判定失败留空的那些。读路径会在阶段
@@ -671,6 +675,9 @@ const ADD_COLUMNS = [
   // 不做自动处置),发布 review 失败那一类 Reviewer 结果有效的轮次只写这一列。旧行是
   // NULL,读回即「无失败记录」。
   "ALTER TABLE review_run ADD COLUMN failure TEXT",
+  // 交接未完成的标记(ADR 0025,issue #252)。旧行是 NULL:升级前的延续都在 resolve
+  // 成功之后才落库,没有交接没做完的。
+  "ALTER TABLE finding ADD COLUMN handoff_pending INTEGER",
 ];
 
 /**
@@ -1528,6 +1535,11 @@ export type RunListItem = {
      * 不是延续来的行为 null。
      */
     continuedFrom: string | null;
+    /**
+     * 交接未完成(ADR 0025):这条「已延续」的旧行,它的旧评论还没在 Forge 上关掉。
+     * 只有旧行会为 true;它是处置值之上的待办标记,不是处置。
+     */
+    handoffPending: boolean;
   }[];
   /**
    * 本轮漏复核的条数(ADR 0016):注入了历史却没给结论的「Reviewer × 历史 Finding」
@@ -1570,6 +1582,11 @@ export type StageSummaryFinding = {
   note: string | null;
   /** 承接来的那条旧评论的地址(CONTEXT.md 已延续);不是延续来的为 null。 */
   continuedFrom: string | null;
+  /**
+   * 交接未完成(ADR 0025):这条 Identity 承接过来的那条旧评论还没在 Forge 上关掉。
+   * 旧行自己不在汇总里,标记因此挂在承接它的这一条上,面板据此标「旧评论待关闭」。
+   */
+  handoffPending: boolean;
   /** 行作者(CONTEXT.md),取最新那一轮判定的结果;未判定为 null,面板显示「无法追溯」。 */
   lineAuthor: RecordedLineAuthor | null;
   firstRunId: number;
@@ -2371,6 +2388,9 @@ export type Store = {
    * 旧那一侧落的是整条 Finding Identity(同「文件 + 指纹」的历史行一并改写),口径与
    * 「已修复」自动处置和回填一致。元数据继承与 issue #152 同一个理由:处置的载体换了
    * 位置,人的备注、署名与「已经显式处置过」这个标记要跟着走,否则自动规则会再碰一次。
+   *
+   * `handoffPending` 即旧评论的 resolve 没成(ADR 0025):延续照记,旧行多一个待办
+   * 标记,由下一轮收尾重试或回填清掉。
    */
   recordContinuation(input: {
     owner: string;
@@ -2380,13 +2400,29 @@ export type Store = {
     runId: number;
     groupIndex: number;
     candidate: ContinuationCandidate;
+    handoffPending: boolean;
   }): void;
+  /**
+   * 这个 pull request 名下交接未完成的旧评论(ADR 0025):每条待关闭的评论一项,带它
+   * 最新那一行的 id。下一轮 Review Run 收尾时按它重试 resolve。
+   */
+  pendingHandoffs(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+  ): { findingId: number; commentId: string }[];
+  /**
+   * 交接完成:旧评论已在 Forge 上关掉,清掉这条 Finding Identity 上的待办标记。
+   * 键与 `recordContinuation` 同源(文件 + 指纹),整条 Identity 一起清。
+   */
+  completeHandoff(owner: string, repo: string, pullNumber: number, findingId: number): void;
   /**
    * 回填 disposition(ADR 0006):对这个 pull request 名下、文件与指纹都对上的全部
    * 历史 finding,以 Forge 的最新状态覆盖已有值——人 resolve 后又 unresolve,库里跟着改。
    *
    * 「已修复」不被读回的 resolved 降级成人工处置那一档;「已延续」两个方向都不被覆盖
-   * ——那条评论的 resolve 状态说的已经不是这条 Finding 的处置。
+   * ——那条评论的 resolve 状态说的已经不是这条 Finding 的处置。只放开一格(ADR 0025):
+   * 读到旧评论已 resolve 时把「交接未完成」清掉,那正是交接要等的那个结果。
    */
   backfillDispositions(
     owner: string,
@@ -4928,7 +4964,7 @@ export function openStore(dbPath: string): Store {
                   f.placement AS placement, f.comment_id AS comment_id,
                   f.comment_html_url AS comment_html_url, f.disposed_by AS disposed_by,
                   f.disposed_at AS disposed_at, f.disposition_note AS note,
-                  f.continued_from AS continued_from,
+                  f.continued_from AS continued_from, f.handoff_pending AS handoff_pending,
                   f.line_author_sha AS line_author_sha, f.line_author_name AS line_author_name,
                   f.line_author_email AS line_author_email, f.line_author_at AS line_author_at,
                   f.line_author_adjacent AS line_author_adjacent,
@@ -4977,6 +5013,7 @@ export function openStore(dbPath: string): Store {
         disposition: Disposition;
         commentHtmlUrl: string | null;
         continuedFrom: string | null;
+        handoffPending: boolean;
         row: Record<string, unknown>;
       };
       type Identity = { rows: StageRow[]; firstRow: StageRow };
@@ -4993,6 +5030,7 @@ export function openStore(dbPath: string): Store {
           commentHtmlUrl:
             row["comment_html_url"] === null ? null : String(row["comment_html_url"]),
           continuedFrom: row["continued_from"] === null ? null : String(row["continued_from"]),
+          handoffPending: row["handoff_pending"] === 1,
           row,
         };
         const key = `${entry.file}\n${entry.fp}`;
@@ -5012,12 +5050,18 @@ export function openStore(dbPath: string): Store {
         }
       }
       const latestOf = (identity: Identity): StageRow => identity.rows[identity.rows.length - 1]!;
+      // 交接未完成(ADR 0025)同样跟着链条走:旧行不在汇总里,标记要落到承接它的那条
+      // 上;链上更早那一段没关掉的旧评论,一路传到最后可见的那条。
+      const pendingHandoff = new Set<Identity>();
       for (const identity of [...identities].sort((a, b) => latestOf(a).id - latestOf(b).id)) {
         const latest = latestOf(identity);
         if (latest.disposition !== "continued" || latest.commentHtmlUrl === null) continue;
         const successor = successors.get(latest.commentHtmlUrl);
         if (successor === undefined) continue;
         if (identity.firstRow.id < successor.firstRow.id) successor.firstRow = identity.firstRow;
+        if (pendingHandoff.has(identity) || identity.rows.some((row) => row.handoffPending)) {
+          pendingHandoff.add(successor);
+        }
       }
 
       const startedAt = new Map(
@@ -5048,6 +5092,7 @@ export function openStore(dbPath: string): Store {
             // 轮次折叠出来的新行不再带它,取整条上第一条带着它的那一行。
             continuedFrom:
               identity.rows.find((entry) => entry.continuedFrom !== null)?.continuedFrom ?? null,
+            handoffPending: pendingHandoff.has(identity),
             // 四列同 NULL 即未判定:取最新那一轮的判定结果,每轮各算各的。
             lineAuthor:
               row["line_author_sha"] === null
@@ -5488,7 +5533,8 @@ export function openStore(dbPath: string): Store {
         .prepare(
           `SELECT id, run_id, file, line, severity, category, description,
                   disposition, placement, comment_id, comment_html_url,
-                  disposed_by, disposed_at, disposition_note, continued_from
+                  disposed_by, disposed_at, disposition_note, continued_from,
+                  handoff_pending
              FROM finding
             WHERE run_id IN (${marks}) ORDER BY id`,
         )
@@ -5619,6 +5665,7 @@ export function openStore(dbPath: string): Store {
           note: row["disposition_note"] === null ? null : String(row["disposition_note"]),
           continuedFrom:
             row["continued_from"] === null ? null : String(row["continued_from"]),
+          handoffPending: row["handoff_pending"] === 1,
         });
         findings.set(runId, list);
       }
@@ -6014,7 +6061,7 @@ export function openStore(dbPath: string): Store {
         .map(({ disposition: _disposition, ...candidate }) => candidate);
     },
 
-    recordContinuation({ owner, repo, pullNumber, runId, groupIndex, candidate }) {
+    recordContinuation({ owner, repo, pullNumber, runId, groupIndex, candidate, handoffPending }) {
       db.exec("BEGIN");
       try {
         // 先把旧行的三列抄到新行上,再改旧行的处置值:两条语句都只碰自己那一侧,
@@ -6028,19 +6075,52 @@ export function openStore(dbPath: string): Store {
         ).run(candidate.commentHtmlUrl, candidate.findingId, runId, groupIndex);
         // 折叠键与 `stageHistory`、自动处置同源:文件 + 指纹。本轮新行的指纹必然与它
         // 不同——旧指纹在本轮 head 上算不出正是延续的前提,不会被这一笔一起改掉。
+        // 交接未完成的标记与处置值同一笔写(ADR 0025):整条 Identity 一起带上。
         db.prepare(
-          `UPDATE finding SET disposition = 'continued'
+          `UPDATE finding SET disposition = 'continued', handoff_pending = ?
             WHERE file = (SELECT file FROM finding WHERE id = ?)
               AND COALESCE(fingerprint, 'row:' || id) =
                   (SELECT COALESCE(fingerprint, 'row:' || id) FROM finding WHERE id = ?)
               AND disposition IN ('unknown', 'unresolved')
               AND ${PULL_REQUEST_SCOPE}`,
-        ).run(candidate.findingId, candidate.findingId, owner, repo, pullNumber);
+        ).run(
+          handoffPending ? 1 : null,
+          candidate.findingId,
+          candidate.findingId,
+          owner,
+          repo,
+          pullNumber,
+        );
         db.exec("COMMIT");
       } catch (error) {
         db.exec("ROLLBACK");
         throw error;
       }
+    },
+
+    pendingHandoffs(owner, repo, pullNumber) {
+      // 同一条评论在 Identity 的几行上都带着标记,按评论去重、取最新那一行的 id。
+      const rows = db
+        .prepare(
+          `SELECT id, comment_id FROM finding
+            WHERE handoff_pending = 1 AND comment_id IS NOT NULL AND ${PULL_REQUEST_SCOPE}
+            ORDER BY id`,
+        )
+        .all(owner, repo, pullNumber);
+      const byComment = new Map<string, number>();
+      for (const row of rows) byComment.set(String(row["comment_id"]), Number(row["id"]));
+      return [...byComment].map(([commentId, findingId]) => ({ findingId, commentId }));
+    },
+
+    completeHandoff(owner, repo, pullNumber, findingId) {
+      db.prepare(
+        `UPDATE finding SET handoff_pending = NULL
+          WHERE file = (SELECT file FROM finding WHERE id = ?)
+            AND COALESCE(fingerprint, 'row:' || id) =
+                (SELECT COALESCE(fingerprint, 'row:' || id) FROM finding WHERE id = ?)
+            AND handoff_pending = 1
+            AND ${PULL_REQUEST_SCOPE}`,
+      ).run(findingId, findingId, owner, repo, pullNumber);
     },
 
     backfillDispositions(owner, repo, pullNumber, updates) {
@@ -6066,6 +6146,13 @@ export function openStore(dbPath: string): Store {
         `UPDATE finding SET placement = ?
           WHERE file = ? AND fingerprint = ? AND ${PULL_REQUEST_SCOPE}`,
       );
+      // 「已延续」只放开这一格(ADR 0025):旧评论读回已 resolve,交接要等的就是这个
+      // 结果,待办标记清掉;处置值仍不动。
+      const handoffDone = db.prepare(
+        `UPDATE finding SET handoff_pending = NULL
+          WHERE file = ? AND fingerprint = ? AND disposition = 'continued'
+            AND handoff_pending = 1 AND ${PULL_REQUEST_SCOPE}`,
+      );
       db.exec("BEGIN");
       try {
         for (const entry of updates) {
@@ -6083,6 +6170,9 @@ export function openStore(dbPath: string): Store {
               repo,
               pullNumber,
             );
+            if (entry.disposition === "resolved") {
+              handoffDone.run(entry.file, entry.fingerprint, owner, repo, pullNumber);
+            }
           }
         }
         db.exec("COMMIT");

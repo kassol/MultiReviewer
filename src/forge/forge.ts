@@ -89,6 +89,22 @@ export type PublishedReviewComment = {
   htmlUrl: string;
 };
 
+/**
+ * 发布 review 的结果不确定(ADR 0025):review 可能已经在 Forge 上,评论标识却没读回来
+ * (`reviewId` 即已取得的那个 id),或者创建请求连响应都没有、无从判定有没有创建
+ * (`reviewId` 缺)。与「Forge 回错、review 未创建」那一档分开:两档都按发布失败处理,
+ * 但这一档的调用方禁止自动重发——重发会在 PR 上留下两份同样的 review。
+ */
+export class PublishUncertainError extends Error {
+  readonly reviewId: string | undefined;
+
+  constructor(message: string, reviewId?: string) {
+    super(message);
+    this.name = "PublishUncertainError";
+    this.reviewId = reviewId;
+  }
+}
+
 /** clone 用的凭据。两个平台都以 basic auth 的形式使用。 */
 export type CloneCredentials = {
   username: string;
