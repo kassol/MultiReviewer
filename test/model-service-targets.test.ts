@@ -218,7 +218,7 @@ test("混合协议目录:预览、验证、版本提交、投影与运行计划�
     });
     assert.equal(first.status, 200, await first.text());
     assert.equal(stub.calls.length, 1);
-    assert.equal(stub.calls[0]!.url, "https://openrouter.ai/api/v1/messages");
+    assert.equal(stub.calls[0]!.url, "https://openrouter.ai/api/v1/messages?beta=true");
     assert.equal(stub.calls[0]!.apiKey, credential);
     assert.equal(stub.calls[0]!.body?.["model"], ANTHROPIC_MODEL);
 
@@ -424,7 +424,7 @@ test("真实目标变化后:目录刷新不改绑,新目标的模型待验证;�
     });
     assert.equal(reverify.status, 200, await reverify.text());
     assert.equal(stub.calls.length, 1);
-    assert.equal(stub.calls[0]!.url, "https://openrouter.ai/api/v1/messages");
+    assert.equal(stub.calls[0]!.url, "https://openrouter.ai/api/v1/messages?beta=true");
     assert.equal(stub.calls[0]!.apiKey, credential);
     const rebound = await projectedService(h);
     assert.equal(rebound.version, 3);
@@ -467,7 +467,7 @@ test("模型补录:优先该模型可确认的目标,单目标可沿用,混合�
       expectedVersion: 1,
     });
     assert.equal(own.status, 200, await own.text());
-    assert.equal(stub.calls[0]!.url, "https://openrouter.ai/api/v1/messages");
+    assert.equal(stub.calls[0]!.url, "https://openrouter.ai/api/v1/messages?beta=true");
     store = openStore(mixed.db.path);
     let record = store.getModelService(PROVIDER)!;
     store.close();
@@ -580,7 +580,7 @@ test("运行中重新验证换了目标,已开跑的轮次沿用原快照,下一
       expectedVersion: 1,
     });
     assert.equal(reverify.status, 200, await reverify.text());
-    assert.equal(stub.calls[0]!.url, "https://openrouter.ai/api/v1/messages");
+    assert.equal(stub.calls[0]!.url, "https://openrouter.ai/api/v1/messages?beta=true");
     release.resolve();
     await h.settledAtLeast(1);
 

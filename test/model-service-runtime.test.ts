@@ -759,7 +759,7 @@ test("anthropic 最小真实推理打到剥掉 /v1 后的 /v1/messages,凭据走
     const result = await validateMinimalInference(candidate, discovered);
     assert.deepEqual(result, { ok: true });
     assert.equal(calls.length, 1, "真实推理之外又发了别的请求");
-    assert.equal(calls[0]!.url, "https://gateway.example.test/v1/messages");
+    assert.equal(calls[0]!.url, "https://gateway.example.test/v1/messages?beta=true");
     assert.equal(calls[0]!.apiKey, credential);
     assert.equal(calls[0]!.body["model"], "claude-fable-5");
     // adaptive thinking 模型对这两个字段直接 400:off: null 压掉 thinking,验证不带 temperature。
