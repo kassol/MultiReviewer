@@ -19,6 +19,7 @@ import type {
   ReviewRule,
   ReviewRunMode,
 } from "../review/finding.ts";
+import type { DiffRanges } from "../review/position.ts";
 import { anchorReport, anchorVerdict } from "./anchor.ts";
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import {
@@ -86,7 +87,7 @@ Write the title, description, impact and suggestion fields in Chinese. The revie
 
 Narrate in Chinese too: everything you say between tool calls goes into a review trace read by the same people, so write those sentences in Chinese — one short line on what you are about to check and why, before each group of tool calls.
 
-When the prompt lists findings reported earlier in this review stage, call review_prior_finding exactly once for every one of them that is still open, and never report one of them again through report_finding. When one of them is still there but its code was rewritten or moved, give the verdict present with the line and snippet of the place it sits now.`;
+When the prompt lists findings reported earlier in this review stage, call review_prior_finding exactly once for every one of them that is still open, and never report one of them again through report_finding. When one of them is still there but its code was rewritten or moved, give the verdict present together with position: the line it sits on now and the snippet of that line, copied verbatim from the read output. Give position only in that case, and when you give it, give both line and snippet — a position with either one missing or an empty snippet is an invalid call.`;
 
 /**
  * 枚举字段必须在自身的 `description` 里写明允许值。prototype 实测:仅用字面量联合
@@ -141,26 +142,43 @@ const findingWithRuleSchema = Type.Object({
   ),
 });
 
-/** 复核结论的枚举同样写在字段自己的 description 里,理由同 findingSchema。 */
-const verdictSchema = Type.Object({
+/**
+ * 复核结论的枚举同样写在字段自己的 description 里,理由同 findingSchema。
+ *
+ * 新位置是一个整体(issue #257):给就必须同时给行号与非空 snippet,缺一个或 snippet
+ * 空白的调用在 Pi 的 schema 校验那一道就被拒回,不进执行、不落库、不计锚定被拒。线上
+ * Run #67 里 sol 的 332 次复核调用有 110 次带行号但 snippet 空白,打回文案说「结论已
+ * 记录」之后几乎不重试;约束前移到契约上,模型在执行前拿到的是「调用无效」。
+ * `minLength` 只挡空串,纯空白靠 `pattern: \S`——Pi 校验用的是 typebox 的 `Compile`,
+ * 两条都认。
+ */
+export const verdictSchema = Type.Object({
   id: Type.Integer({
     description: "The id of the prior finding, copied from the list in the prompt",
   }),
   verdict: Type.String({
     description:
-      "One of exactly: present, fixed, unclear. present means the problem is still in the code — and if its lines were rewritten or moved, also give line and snippet of the place it sits now. fixed means the code has been changed and the problem is gone. unclear means you cannot tell.",
+      "One of exactly: present, fixed, unclear. present means the problem is still in the code — and if its lines were rewritten or moved, also give position. fixed means the code has been changed and the problem is gone. unclear means you cannot tell.",
   }),
-  line: Type.Optional(
-    Type.Integer({
-      description:
-        "Only with present, and only when the problem moved: the 1-indexed line it sits on now, copied from the read tool's line number prefix",
-    }),
-  ),
-  snippet: Type.Optional(
-    Type.String({
-      description:
-        "The exact text of that line, copied from the file without the line number prefix. Give it whenever you give line — a line without a matching snippet is dropped.",
-    }),
+  position: Type.Optional(
+    Type.Object(
+      {
+        line: Type.Integer({
+          description:
+            "The 1-indexed line the problem sits on now, copied from the read tool's line number prefix",
+        }),
+        snippet: Type.String({
+          minLength: 1,
+          pattern: "\\S",
+          description:
+            "The exact text of that line, copied verbatim from the file without the line number prefix. Must not be empty.",
+        }),
+      },
+      {
+        description:
+          "Only with present, and only when the problem's code was rewritten or moved: where it sits now. Give both line and snippet, or leave position out.",
+      },
+    ),
   ),
 });
 
@@ -199,7 +217,7 @@ function historySection(history: readonly HistoryFinding[]): string {
   const sections = [
     "",
     "The following findings were already reported in this review stage. Do not report any of them again through report_finding while the lines they point at are unchanged.",
-    "One exception: when the code of a still-open finding was rewritten or moved so that its original lines no longer exist but the problem is still there, give the verdict present and add the line it sits on now together with the snippet of that line. That is how a finding follows the code; without the new line it stays pinned to a line that is gone. The new position in the verdict is enough — you do not have to report it again through report_finding.",
+    "One exception: when the code of a still-open finding was rewritten or moved so that its original lines no longer exist but the problem is still there, give the verdict present and add position: the line it sits on now together with the snippet of that line, copied verbatim from the read output. Give position only in that case — leave it out while the original lines are unchanged — and when you give it, give both line and snippet; a position with either one missing or an empty snippet is an invalid call. That is how a finding follows the code; without the new position it stays pinned to a line that is gone. The position in the verdict is enough — you do not have to report it again through report_finding.",
   ];
   if (open.length > 0) {
     sections.push(
@@ -332,6 +350,69 @@ Start with the git tool: \`diff ${request.range.baseSha}..${request.range.headSh
 ${history}`;
 }
 
+/**
+ * 复核工具(ADR 0016)。契约形状 `{ id, verdict, position?: { line, snippet } }`,校验
+ * 由 Pi 按 `verdictSchema` 做在执行之前;这里只剩两道判定——id 对不对得上本批注入的
+ * 历史,以及 `position` 锚不锚得上。单独成函数是为了契约测试能不起 Pi 会话就打在
+ * `execute` 上(issue #257)。
+ */
+export function reviewPriorFindingTool(options: {
+  history: readonly HistoryFinding[];
+  worktreePath: string;
+  commentable: DiffRanges;
+  send: (message: WorkerMessage) => void;
+  /** 锚定打回的调用集合,与 `report_finding` 共用一份(issue #187)。 */
+  anchorRejectedCalls: Set<string>;
+}) {
+  const { send, anchorRejectedCalls } = options;
+  const historyById = new Map(options.history.map((entry) => [entry.id, entry]));
+  return defineTool({
+    name: REVIEW_PRIOR_FINDING_TOOL,
+    label: "Review Prior Finding",
+    description:
+      "Give your verdict on one finding reported earlier in this review stage: is it still present, fixed, or can you not tell? Give position only when the finding is still present and its code was rewritten or moved: the line it sits on now and the snippet of that line, copied verbatim from the read output. When you give position, give both line and snippet — a position with either one missing or an empty snippet is an invalid call. Leave position out otherwise; never report the finding again instead.",
+    parameters: verdictSchema,
+    execute: async (id, params) => {
+      const raw = params as {
+        id: number;
+        verdict: string;
+        position?: { line: number; snippet: string };
+      };
+      // 编出来的 id、以及落在别的批次里的 id,都对不到这一次注入的历史条目,打回让模型
+      // 改用列表里的那个(issue #235)。与锚定打回同一条口径记进被拒集合:不记的话,这次
+      // 打回在轨迹上与一次正常调用长得一模一样。
+      const rejection = priorFindingRejection(raw.id, historyById);
+      if (rejection !== undefined) {
+        anchorRejectedCalls.add(id);
+        return { content: [{ type: "text", text: rejection }], details: {} };
+      }
+      const entry = historyById.get(raw.id)!;
+      if (raw.position === undefined) {
+        send({ kind: "verdict", raw: { id: raw.id, verdict: raw.verdict } });
+        return { content: [{ type: "text", text: "recorded" }], details: {} };
+      }
+      // 新位置与 report_finding 的行号同一道核对(issue #170):模型数行会数偏,抄下来的
+      // 代码不会。锚不上只丢这个位置,结论本身照收——「这个问题还在」是模型给的证据,
+      // 不该因为它把行号抄错而一起作废。
+      const anchored = anchorVerdict(
+        fileLines(options.worktreePath, entry.file),
+        options.commentable,
+        { file: entry.file, line: raw.position.line, snippet: raw.position.snippet },
+      );
+      if (!anchored.ok) {
+        send({ kind: "verdict", raw: { id: raw.id, verdict: raw.verdict } });
+        // 与 report_finding 的锚定失败同一口径(issue #187):记进「锚定被拒」,轨迹里
+        // 留一条被拒记录。不记的话模型一直把新位置抄错时,延续一直触发不了,而线上
+        // 看起来像模型根本没给过位置。
+        anchorRejectedCalls.add(id);
+        return { content: [{ type: "text", text: anchored.message }], details: {} };
+      }
+      send({ kind: "verdict", raw: { id: raw.id, verdict: raw.verdict, line: anchored.line } });
+      return { content: [{ type: "text", text: "recorded" }], details: {} };
+    },
+  });
+}
+
 async function run(request: ReviewerRequest): Promise<void> {
   const hasRules = request.rules !== undefined && request.rules.length > 0;
   /** 本批注入的事实标识(issue #221)。模型拿它们当 `ruleId` 报出时这次调用被打回。 */
@@ -377,47 +458,12 @@ async function run(request: ReviewerRequest): Promise<void> {
     },
   });
 
-  const historyById = new Map(request.history.map((entry) => [entry.id, entry]));
-  const reviewPriorFinding = defineTool({
-    name: REVIEW_PRIOR_FINDING_TOOL,
-    label: "Review Prior Finding",
-    description:
-      "Give your verdict on one finding reported earlier in this review stage: is it still present, fixed, or can you not tell? When it is still present but its code was rewritten or moved, give the line and snippet of the place it sits now instead of reporting it again.",
-    parameters: verdictSchema,
-    execute: async (id, params) => {
-      const raw = params as { id: number; verdict: string; line?: number; snippet?: string };
-      // 编出来的 id、以及落在别的批次里的 id,都对不到这一次注入的历史条目,打回让模型
-      // 改用列表里的那个(issue #235)。与锚定打回同一条口径记进被拒集合:不记的话,这次
-      // 打回在轨迹上与一次正常调用长得一模一样。
-      const rejection = priorFindingRejection(raw.id, historyById);
-      if (rejection !== undefined) {
-        anchorRejectedCalls.add(id);
-        return { content: [{ type: "text", text: rejection }], details: {} };
-      }
-      const entry = historyById.get(raw.id)!;
-      if (raw.line === undefined) {
-        send({ kind: "verdict", raw: { id: raw.id, verdict: raw.verdict } });
-        return { content: [{ type: "text", text: "recorded" }], details: {} };
-      }
-      // 新位置与 report_finding 的行号同一道核对(issue #170):模型数行会数偏,抄下来的
-      // 代码不会。锚不上只丢这个位置,结论本身照收——「这个问题还在」是模型给的证据,
-      // 不该因为它把行号抄错而一起作废。
-      const anchored = anchorVerdict(
-        fileLines(request.worktreePath, entry.file),
-        request.commentable,
-        { file: entry.file, line: raw.line, snippet: raw.snippet },
-      );
-      if (!anchored.ok) {
-        send({ kind: "verdict", raw: { id: raw.id, verdict: raw.verdict } });
-        // 与 report_finding 的锚定失败同一口径(issue #187):记进「锚定被拒」,轨迹里
-        // 留一条被拒记录。不记的话模型一直把新位置抄错时,延续一直触发不了,而线上
-        // 看起来像模型根本没给过位置。
-        anchorRejectedCalls.add(id);
-        return { content: [{ type: "text", text: anchored.message }], details: {} };
-      }
-      send({ kind: "verdict", raw: { id: raw.id, verdict: raw.verdict, line: anchored.line } });
-      return { content: [{ type: "text", text: "recorded" }], details: {} };
-    },
+  const reviewPriorFinding = reviewPriorFindingTool({
+    history: request.history,
+    worktreePath: request.worktreePath,
+    commentable: request.commentable,
+    send,
+    anchorRejectedCalls,
   });
 
   const thinkingLevel = sessionThinkingLevel(

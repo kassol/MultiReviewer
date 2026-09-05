@@ -105,12 +105,12 @@ export function anchorReport(
 export function anchorVerdict(
   lines: string[] | undefined,
   ranges: DiffRanges,
-  raw: { file: string; line: number; snippet: string | undefined },
+  raw: { file: string; line: number; snippet: string },
 ): ReportResult {
   const anchored =
     lines === undefined
       ? { ok: false as const, reason: `读不出 ${raw.file}。` }
-      : anchorFinding(lines, raw.line, raw.snippet ?? "");
+      : anchorFinding(lines, raw.line, raw.snippet);
   if (!anchored.ok) {
     return {
       ok: false,

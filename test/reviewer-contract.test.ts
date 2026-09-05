@@ -1,11 +1,29 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, test } from "node:test";
+
+import { Compile } from "typebox/compile";
+import { Value } from "typebox/value";
 
 import { anchorVerdict } from "../src/reviewer/anchor.ts";
 import { normalizeFinding, normalizeVerdict } from "../src/reviewer/normalize.ts";
 import { redactModelCredential, reviewerEnv } from "../src/reviewer/env.ts";
-import { reviewPrompt, sessionTools } from "../src/reviewer/worker.ts";
+import type { WorkerMessage } from "../src/reviewer/protocol.ts";
+import {
+  SYSTEM_PROMPT,
+  reviewPriorFindingTool,
+  reviewPrompt,
+  sessionTools,
+  verdictSchema,
+} from "../src/reviewer/worker.ts";
 import { factRuleIdRejection, priorFindingRejection } from "../src/reviewer/worker-tools.ts";
+
+const cleanups: (() => void)[] = [];
+after(() => {
+  for (const cleanup of cleanups) cleanup();
+});
 
 const RAW = {
   file: "src/db.js",
@@ -148,13 +166,168 @@ test("复核结论带位置但文件读不出来时同样打回", () => {
   assert.match(result.message, /src\/gone\.ts/);
 });
 
-test("复核结论没抄 snippet 时打回,不拿裸行号当位置", () => {
-  const result = anchorVerdict(PRIOR_LINES, PRIOR_RANGES, {
+/**
+ * Pi 执行工具之前那一道校验(pi-ai 的 `validateToolArguments`):先 `Value.Convert`
+ * 再 `Compile(schema).Check`,校验不过的调用不进 `execute`。这里照它的顺序复刻,契约
+ * 测试因此打在模型真正会撞上的那一道上(issue #257)。
+ */
+const verdictValidator = Compile(verdictSchema);
+function verdictCallErrors(args: unknown): string[] {
+  const converted = structuredClone(args);
+  Value.Convert(verdictSchema, converted);
+  if (verdictValidator.Check(converted)) return [];
+  return verdictValidator.Errors(converted).map((e) => `${e.instancePath}: ${e.message}`);
+}
+
+const PRIOR_HISTORY = [
+  {
+    id: 7,
     file: "src/history.ts",
     line: 2,
-    snippet: undefined,
+    title: "负数 count 取到整段历史",
+    disposition: "unresolved" as const,
+    severity: "P1" as const,
+    category: "bug" as const,
+    description: "slice(-count) 在 count 为负时取到开头",
+  },
+];
+
+/** 复核工具连同它写出去的两样东西:回传主进程的消息,以及锚定被拒的调用集合。 */
+function verdictHarness() {
+  const dir = mkdtempSync(join(tmpdir(), "multireviewer-verdict-"));
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "src"));
+  writeFileSync(join(dir, "src/history.ts"), `${PRIOR_LINES.join("\n")}\n`);
+  const sent: WorkerMessage[] = [];
+  const anchorRejectedCalls = new Set<string>();
+  const tool = reviewPriorFindingTool({
+    history: PRIOR_HISTORY,
+    worktreePath: dir,
+    commentable: PRIOR_RANGES,
+    send: (message) => sent.push(message),
+    anchorRejectedCalls,
   });
-  assert.equal(result.ok, false);
+  return { tool, sent, anchorRejectedCalls };
+}
+
+/** 与 Pi 同一个顺序:校验不过就到此为止,过了才执行。 */
+async function invokeVerdict(
+  harness: ReturnType<typeof verdictHarness>,
+  toolCallId: string,
+  args: unknown,
+): Promise<{ rejected: string[] } | { text: string }> {
+  const rejected = verdictCallErrors(args);
+  if (rejected.length > 0) return { rejected };
+  // Pi 执行时另带 signal、onUpdate 与扩展上下文,这三样复核工具都不读。
+  const result = await harness.tool.execute(
+    toolCallId,
+    args as never,
+    undefined,
+    undefined,
+    undefined as never,
+  );
+  const first = result.content[0];
+  return { text: first?.type === "text" ? first.text : "" };
+}
+
+test("复核工具的参数 schema:position 可选,给了就 line 与 snippet 成对必填", () => {
+  // 不带 position 的调用形状与本票之前逐字一致:顶层只有 id 与 verdict 两个必填项。
+  assert.deepEqual(verdictSchema.required, ["id", "verdict"]);
+  assert.deepEqual(Object.keys(verdictSchema.properties), ["id", "verdict", "position"]);
+  const position = verdictSchema.properties.position;
+  assert.deepEqual(position.required, ["line", "snippet"]);
+  // typebox 的类型不摊出这两个约束,按 JSON Schema 的字面读。
+  const snippet = position.properties.snippet as { minLength?: number; pattern?: string };
+  assert.equal(snippet.minLength, 1);
+  assert.equal(snippet.pattern, "\\S");
+
+  assert.deepEqual(verdictCallErrors({ id: 7, verdict: "fixed" }), []);
+  assert.deepEqual(
+    verdictCallErrors({
+      id: 7,
+      verdict: "present",
+      position: { line: 2, snippet: "return history.slice(-count);" },
+    }),
+    [],
+  );
+  // 缺一个就是无效调用:「结论已记录、新位置没记」这一档不再存在。
+  const lineOnly = verdictCallErrors({ id: 7, verdict: "present", position: { line: 2 } });
+  assert.ok(lineOnly.some((e) => /position.*snippet/.test(e)), lineOnly.join("\n"));
+  const snippetOnly = verdictCallErrors({
+    id: 7,
+    verdict: "present",
+    position: { snippet: "return history.slice(-count);" },
+  });
+  assert.ok(snippetOnly.some((e) => /position.*line/.test(e)), snippetOnly.join("\n"));
+});
+
+test("position.snippet 空串或纯空白在 schema 层被拒:不进入执行,结论不落库,不计锚定被拒", async () => {
+  const harness = verdictHarness();
+  for (const snippet of ["", "   ", "\t\n"]) {
+    const outcome = await invokeVerdict(harness, `call-${snippet.length}`, {
+      id: 7,
+      verdict: "present",
+      position: { line: 2, snippet },
+    });
+    assert.ok("rejected" in outcome, `snippet ${JSON.stringify(snippet)} 应当被 schema 拒绝`);
+    assert.ok(
+      outcome.rejected.some((e) => e.startsWith("/position/snippet")),
+      outcome.rejected.join("\n"),
+    );
+  }
+  assert.deepEqual(harness.sent, []);
+  assert.equal(harness.anchorRejectedCalls.size, 0);
+});
+
+test("不带 position 的复核调用只落结论,回 recorded", async () => {
+  const harness = verdictHarness();
+  const outcome = await invokeVerdict(harness, "call-1", { id: 7, verdict: "fixed" });
+  assert.deepEqual(outcome, { text: "recorded" });
+  assert.deepEqual(harness.sent, [{ kind: "verdict", raw: { id: 7, verdict: "fixed" } }]);
+  assert.equal(harness.anchorRejectedCalls.size, 0);
+});
+
+test("带合法 position 且锚得上的复核调用落库结论与校正后的新行", async () => {
+  const harness = verdictHarness();
+  // 行号抄偏了一行,snippet 抄得对:与 report_finding 同一道校正。
+  const outcome = await invokeVerdict(harness, "call-1", {
+    id: 7,
+    verdict: "present",
+    position: { line: 3, snippet: "return history.slice(-count);" },
+  });
+  assert.deepEqual(outcome, { text: "recorded" });
+  assert.deepEqual(harness.sent, [
+    { kind: "verdict", raw: { id: 7, verdict: "present", line: 2 } },
+  ]);
+  assert.equal(harness.anchorRejectedCalls.size, 0);
+});
+
+test("带 position 而锚不上的复核调用只落结论,计入锚定被拒,文案与今天同形", async () => {
+  const harness = verdictHarness();
+  const outcome = await invokeVerdict(harness, "call-9", {
+    id: 7,
+    verdict: "present",
+    position: { line: 2, snippet: "return history.slice(count);" },
+  });
+  assert.ok("text" in outcome);
+  assert.match(outcome.text, /^verdict recorded, new line NOT recorded: /);
+  assert.match(outcome.text, /src\/history\.ts/);
+  assert.deepEqual(harness.sent, [{ kind: "verdict", raw: { id: 7, verdict: "present" } }]);
+  assert.deepEqual([...harness.anchorRejectedCalls], ["call-9"]);
+});
+
+test("系统提示、历史段与工具说明写明:只在改写或挪动时给 position,给了就两项都要", () => {
+  const harness = verdictHarness();
+  const withHistory = reviewPrompt({ range: PROMPT_RANGE, history: PRIOR_HISTORY });
+  for (const text of [SYSTEM_PROMPT, withHistory, harness.tool.description]) {
+    assert.match(text, /position/);
+    assert.match(text, /rewritten or moved/);
+    assert.match(text, /both line and snippet/);
+  }
+  // snippet 抄该行原文:三处说的是同一件事,措辞与 report_finding 那一句同源。
+  assert.match(harness.tool.description, /copied verbatim/);
+  // 顶层再没有裸的 line / snippet 可填:旧措辞「a line without a matching snippet is dropped」随之消失。
+  assert.equal(/without a matching snippet/.test(JSON.stringify(verdictSchema)), false);
 });
 
 test("子进程只拿到自家厂商的凭据,拿不到 forge 凭据与其他厂商凭据", () => {
