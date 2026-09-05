@@ -111,6 +111,12 @@ export type RunFinding = {
   /** 承接来的那条旧评论的地址(CONTEXT.md 已延续);不是延续来的为 null。 */
   continuedFrom: string | null;
   /**
+   * 交接未完成(ADR 0025,issue #252):延续时旧评论的 resolve 没成,它还留在 Forge 上
+   * 待关闭。轮次投影上挂在「已延续」的旧行上,阶段汇总里挂在承接它的那条上;下一轮
+   * Review Run 收尾时重试,成功即清掉。
+   */
+  handoffPending: boolean;
+  /**
    * 行作者(CONTEXT.md):这条 Finding 所在行在它那一轮的 head 上最后一次改动的 git
    * author 与那次提交。判不出来为 null,面板显示「无法追溯」。
    *

@@ -121,6 +121,8 @@
 
 ## 变更日志
 
+- 2026-09-05: 落地 issue #252 的面板部分。**Finding 行呈现「交接未完成」,轨迹上的延续事件带交接结果**:`runs.tsx` 的 `RunFinding` 多一格 `handoffPending: boolean`(与服务端投影同名;轮次投影上挂在「已延续」的旧行上,阶段汇总里挂在承接它的那条上),`run-diff.tsx` 的 `FindingRow` 在「延续自上一处评论」之后、处置署名之前多一行 `text-warning` 的「交接未完成 · 旧评论尚未关闭,仍可在 Forge 上处置;下一轮 Review Run 收尾时重试关闭」。`run-trace.tsx` 的 `finding_continued` 读 payload 的 `handoff`,为 `pending` 时在事件名旁挂一枚 amber 徽章「交接未完成」。发布失败的轮次沿用 issue #256 的呈现:`failure` 列写「发布 review 失败:…」,轮次列表标「收尾失败」,详情 Callout 与时间线摊出整句,轨迹以 `run_failed` 收束。前端无程序化测试(issue #26 的测试决策),文案由部署实例手测覆盖。
+
 - 2026-09-05: 落地 issue #256 的面板部分。**轮次列表与轮次详情呈现轮次级失败原因,三态分开**:`runs.tsx` 的 `RunItem` 与 `stage-summary.tsx` 的 `StageTimelineEntry` 各多一格 `failure: string | null`(与服务端投影同名);`runStatus` 在「运行失败」(`failed`,全部 Reviewer 失败)之后、「部分失败」之前多判一档「收尾失败」(`failure` 非空而 `failed` 为假),`live` 的判据 `finishedAt === null && !failed` 不变。`StageRound` 在 Reviewer 失败那一档之外给收尾失败挂一句「本轮收尾失败」并照常列五个数(Reviewer 结果是真的),`failure` 非空时整句原因另起一行摊在卡片里——改判的中断轮次与收尾失败的轮次同一个位置。`stage-detail.tsx` 的 `RoundDrawer` 在逐模型的失败 Callout 之前加一条红色 Callout「本轮未正常收尾:原因」。`run-trace.tsx` 认 `run_failed` 一档(payload 的 `reason`),写「本轮失败:原因」,不再落到未知事件的兜底渲染。前端无程序化测试(issue #26 的测试决策),三态徽章与原因文案由部署实例手测覆盖。
 
 - 2026-09-05: 落地 issue #250 的面板部分。**增量评审弹窗多一个默认勾上的「完整审查」**:`range-review-actions.tsx` 的 `AdvanceDialogContent` 在本轮指令下方挂一个 `Checkbox`,类型 `RerunMode` 与说明 `FULL_REVIEW_HINT` 从 `repo-actions.tsx` 导入,同一个勾选在重跑与推进两处读起来是同一件事;请求体只在取消勾选时带 `mode: "verdict-only"`,勾上不带——与「不带即完整审查」的接口约定对上。勾选状态住在弹窗内容组件里,关弹窗即卸载,下次打开回到默认勾上;错误照旧显示在弹窗底部,弹窗不关。前端无程序化测试(issue #26 的测试决策),弹窗的默认勾选、取消勾选后的 409 文案留在弹窗里、成功后复位由部署实例手测覆盖。
