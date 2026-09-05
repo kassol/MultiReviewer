@@ -20,6 +20,10 @@
  * 子会话与 Reviewer 同模型同凭据同思考档位:子代理跑在另一个 pi 进程里,读不到本进程内存
  * 里注册的那一项模型,因此把同一份运行模型另写一份 `models.json`;凭据写的是环境变量引用
  * 而非明文,子进程从继承来的环境里取。
+ *
+ * 子会话的 token 用量不在这里读(issue #260):pi-subagents 把子会话的汇总 Usage 挂在
+ * `subagent` 工具返回上,Pi 父会话的 `getSessionStats` 按 toolResult 消息一并累加,
+ * Reviewer 的 usage 因此已经含它。本文件只把 transcript 转成审查轨迹的嵌套事件。
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -257,65 +261,7 @@ type TranscriptRecord = {
   toolName?: unknown;
   argsPayload?: unknown;
   isError?: unknown;
-  /** pi-subagents 归一化后的用量:{ input, output, cacheRead, cacheWrite, cost }。 */
-  usage?: unknown;
 };
-
-/** 取证子会话的 token 用量,字段与 Reviewer 的 usage 同名同义。 */
-export type EvidenceUsage = {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  totalTokens: number;
-};
-
-/**
- * 一次取证调用花掉的子会话用量(从 transcript 的逐消息 usage 累加)。
- *
- * 子代理跑在另一个 pi 进程里,主会话的 `getSessionStats` 数不到它——不补的话面板的
- * Token 用量系统性少报,取证用得越多失真越大。一行 usage 都读不到时回 undefined,
- * 与「取不到就不伪造」同一口径。
- */
-export function evidenceUsageTotals(result: unknown): EvidenceUsage | undefined {
-  let found = false;
-  const total = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-  for (const path of transcriptPaths(result)) {
-    let content: string;
-    try {
-      content = readFileSync(path, "utf8");
-    } catch {
-      continue;
-    }
-    for (const line of content.split("\n")) {
-      if (line.trim() === "") continue;
-      let record: TranscriptRecord;
-      try {
-        record = JSON.parse(line) as TranscriptRecord;
-      } catch {
-        continue;
-      }
-      const usage = record.usage as
-        | { input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown }
-        | null
-        | undefined;
-      if (usage === null || typeof usage !== "object") continue;
-      found = true;
-      total.input += typeof usage.input === "number" ? usage.input : 0;
-      total.output += typeof usage.output === "number" ? usage.output : 0;
-      total.cacheRead += typeof usage.cacheRead === "number" ? usage.cacheRead : 0;
-      total.cacheWrite += typeof usage.cacheWrite === "number" ? usage.cacheWrite : 0;
-    }
-  }
-  if (!found) return undefined;
-  return {
-    inputTokens: total.input,
-    outputTokens: total.output,
-    cacheReadTokens: total.cacheRead,
-    cacheWriteTokens: total.cacheWrite,
-    totalTokens: total.input + total.output + total.cacheRead + total.cacheWrite,
-  };
-}
 
 function text(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;

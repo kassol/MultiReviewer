@@ -15,7 +15,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `CONTEXT.md` — 领域术语表,代码与沟通的统一语言以此为准。
 - `src/` — 编排服务源码,结构约定见 `src/AGENTS.md`。进程入口是 `src/main.ts`。
 - `web/` — 管理面板前端(Vite + TanStack Router/Query),结构约定见 `web/AGENTS.md`。产物在 Docker 多阶段构建里生成,不进版本库。
-- `test/` — 测试,打在三条验收边界上(HTTP 端点 / 假 Gitea / SQLite 临时库)。`test/support/` 是内存 Forge、脚本化 Reviewer、git fixture、假 Gitea 与面板 harness。
+- `test/` — 测试,打在三条验收边界上(HTTP 端点 / 假 Gitea / SQLite 临时库)。`test/support/` 是内存 Forge、脚本化 Reviewer、git fixture、假 Gitea、假模型服务(本机 SSE,给真实 SDK 链路用)与面板 harness。
 - `Dockerfile` / `.dockerignore` — 运行镜像。`node:24-slim` 加 git、ripgrep 与 fd-find,依赖在镜像内重装(宿主机的 `node_modules` 含平台专属产物,不进镜像)。装 ripgrep 与 fd-find 是给 Reviewer 的 `grep` / `find` 工具用:缺二进制时 Pi 会去 GitHub 下载,容器里下不动就各卡满 120 秒超时,一轮 Review Run 白等约 4 分钟。
 - `docker-compose.yml` — 服务器上的编排定义。与 `.env` 两个文件即可运行,不需要源码。
 - `scripts/build-push.sh` — 在开发机构建镜像并推到 registry,默认目标架构 `linux/amd64`。
@@ -153,6 +153,8 @@ Issue 与 spec 存放于本仓库的 GitHub Issues,通过 `gh` CLI 读写。见 
 Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.md`。
 
 ## 变更日志
+
+- 2026-09-05: 落地 issue #260。**取证 token 用量只计一次**:pi-subagents 已把子会话用量并进 Pi 父会话统计,项目此前又从 transcript 累加了一遍,派过取证的 Reviewer 与本轮总量因此虚高;撤掉重复补算,取证 transcript 到审查轨迹的转换不变。只修新产生的统计,历史轮次不回填。回归改用真实 SDK 加本机假模型服务跑完整取证链路。细节见 `src/AGENTS.md`。
 
 - 2026-09-05: 落地 issue #263(线上验证 #251–#256 时发现)。**本轮已判「已修」的历史不再被合并 agent 配成延续**:自动处置成「已修复」的那条 Identity 不进 agent 命中那一档的延续,本轮那条按新 Finding 落库;此前旧行记已修、新行又「延续自」它,阶段汇总把同一条数两次。细节见 `src/AGENTS.md`。
 
