@@ -162,6 +162,43 @@ test("OpenAI-compatible 发现保留服务接口名称并按厂商用 Pi 目录�
   }
 });
 
+test("自定义服务不继承 supportsMidConvoEffort：兼容网关不认 output_config，内置服务照常", () => {
+  // Pi 0.85.0 给 claude-opus-5 打上 supportsMidConvoEffort,anthropic-messages 据此往 messages
+  // 里插 output_config 并加 beta 头;走自定义地址的兼容网关(sub2 代理)回 400。目录里的
+  // 这一位只对官方 Anthropic 地址成立,自定义服务抄 compat 时剥掉它(issue #262 验收)。
+  const discovery = {
+    identity: "sub2anthropic:claude-opus-5",
+    provider: "sub2anthropic",
+    id: "claude-opus-5",
+    fields: {
+      api: "anthropic-messages",
+      baseUrl: "https://gateway.example.test/v1",
+      compat: { supportsMidConvoEffort: true, forceAdaptiveThinking: true },
+    },
+    fieldSources: { api: "service-target" as const, baseUrl: "service-target" as const, compat: "pi-catalog" as const },
+  };
+  const custom = synthesizeRuntimeModel({
+    kind: "custom",
+    provider: "sub2anthropic",
+    baseUrl: "https://gateway.example.test/v1",
+    api: "anthropic-messages",
+    credential: "candidate-secret-must-not-leak",
+  }, discovery);
+  assert.equal(custom.ok, true);
+  if (custom.ok) {
+    assert.deepEqual(custom.value.runtime.compat, { forceAdaptiveThinking: true }, "剥掉 supportsMidConvoEffort,其余 compat 保留");
+  }
+  const builtin = synthesizeRuntimeModel(
+    { kind: "builtin", provider: "anthropic", credential: "candidate-secret-must-not-leak" },
+    { ...discovery, identity: "anthropic:claude-opus-5", provider: "anthropic", fields: { ...discovery.fields, baseUrl: "https://api.anthropic.com/v1" } },
+    { api: "anthropic-messages", baseUrl: "https://api.anthropic.com/v1" },
+  );
+  assert.equal(builtin.ok, true);
+  if (builtin.ok) {
+    assert.equal((builtin.value.runtime.compat as { supportsMidConvoEffort?: boolean })?.supportsMidConvoEffort, true, "内置官方地址照常");
+  }
+});
+
 test("未知型号保留服务接口名称与目标，运行信息回退基线", async () => {
   const candidate = {
     kind: "custom" as const,

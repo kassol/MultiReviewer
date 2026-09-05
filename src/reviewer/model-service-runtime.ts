@@ -283,6 +283,20 @@ async function piModelsForCustomCatalog(
   return models;
 }
 
+/**
+ * 自定义服务能用的那部分 compat(issue #262 验收)。Pi 0.85.0 的目录给 Claude 新型号打上
+ * `supportsMidConvoEffort`,`anthropic-messages` 据此往 messages 里插 `output_config` 并加
+ * beta 头——这一位只对官方 Anthropic 地址成立,自定义地址后面的兼容网关不认它,整轮请求
+ * 400。目录里其余 compat(adaptive thinking 等)照抄;剥完一项不剩就当没有。
+ */
+function gatewayCompat(compat: RuntimeModelCompat | undefined): RuntimeModelCompat | undefined {
+  if (compat === undefined) return undefined;
+  const { supportsMidConvoEffort: _dropped, ...rest } = compat as RuntimeModelCompat & {
+    supportsMidConvoEffort?: boolean;
+  };
+  return Object.keys(rest).length === 0 ? undefined : (rest as RuntimeModelCompat);
+}
+
 export function synthesizeRuntimeModel(
   candidate: ModelServiceCandidate,
   modelOrId: DiscoveredModel | string,
@@ -329,7 +343,9 @@ export function synthesizeRuntimeModel(
     : MODEL_RUNTIME_BASELINE.contextWindow;
   const maxTokens = positiveInteger(fields.maxTokens) ? fields.maxTokens : MODEL_RUNTIME_BASELINE.maxTokens;
   const thinkingLevelMap = fields.thinkingLevelMap;
-  const compat = fields.compat;
+  // 已存快照里可能带着目录抄来的 supportsMidConvoEffort(0.85.0 升级前后各一版),注册
+  // 运行时对自定义服务再剥一次,老快照不必重新验证。
+  const compat = candidate.kind === "custom" ? gatewayCompat(fields.compat) : fields.compat;
 
   return {
     ok: true,
@@ -506,6 +522,8 @@ export async function discoverModels(
     const models = rows.map(({ id, name }): DiscoveredModel => {
       const vendor = customModelVendor(id);
       const piModel = vendor === undefined ? undefined : piModels.get(`${vendor}:${id}`);
+      // 自定义地址后面是兼容网关:目录的 compat 剥掉只对官方地址成立的那一位(issue #262)。
+      const piCompat = gatewayCompat(piModel?.compat);
       const fields: TrustedModelFields = {
         ...(name === undefined
           ? piModel === undefined || piModel.name.trim() === "" ? {} : { name: piModel.name }
@@ -521,7 +539,7 @@ export async function discoverModels(
           ? {}
           : { maxTokens: piModel.maxTokens }),
         ...(piModel?.thinkingLevelMap === undefined ? {} : { thinkingLevelMap: piModel.thinkingLevelMap }),
-        ...(piModel?.compat === undefined ? {} : { compat: piModel.compat }),
+        ...(piCompat === undefined ? {} : { compat: piCompat }),
       };
       const fieldSources: TrustedModelFieldSources = {
         ...(fields.name === undefined ? {} : { name: name === undefined ? "pi-catalog" : "service-interface" }),

@@ -154,6 +154,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-05: issue #262 的线上验收修复。**自定义模型服务不继承 `supportsMidConvoEffort`**:Pi 0.85.0 目录给 Claude 新型号打上这一位,`anthropic-messages` 据此往请求里插 `output_config`,自定义地址后面的兼容网关(如 sub2 代理)回 400、整轮失败;发现与注册运行时两处对自定义服务剥掉它,目录其余 compat 照抄,内置官方地址不受影响。细节见 `src/AGENTS.md`。
+
 - 2026-09-05: 落地 issue #262(ADR 0021 附记)。**Pi 升到 0.85.0、pi-subagents 升到 0.65.1,取证契约在新执行体上验收**:前台取证子会话改跑在 Reviewer 子进程内(此前另起 pi 进程),子会话的工具面仍恰是只读四件套、唯一 agent 仍是 `evidence`,模型、凭据、思考档位与知识注入照旧沿用 Reviewer 的;新版默认会给子会话加一个父子通话工具,并且不再读旧的能力天花板环境变量,两处都按新版的方式重新铺装并用真实 SDK 回归钉住(显式覆盖也加不回来,仓库自带的 agent 定义派不出去,超时的子会话停下后不再发请求)。顺带关掉一处升级前就有的隐患:子会话一次瞬时的模型失败会被 pi-subagents 记进宿主 tmp 下全机共用的 24 小时排除表,之后每一次取证都被拒;现在排除表关在会话自己的 agentDir 里,失败只影响这一批。Anthropic 协议的请求 URL 多了 `?beta=true`(SDK 升级所致),部署验收时确认网关接受。`pnpm-workspace.yaml` 为这批刚发布的版本加了 pnpm 的发布年龄豁免,否则镜像装不进。细节见 `src/AGENTS.md`。
 
 - 2026-09-05: 落地 issue #255。**清理无用代码并复用 Node 原生能力,启用未使用符号检查**:后端与前端 `tsconfig.json` 都开 `noUnusedLocals` / `noUnusedParameters`,清掉它报出的七个未使用符号(`RuleExploration`、两处 `readFileSync`、`join`、`BODY_ANCHOR`、`ExclamationTriangleIcon`,以及 #252 落地时带进来的 `MemoryForge` 类型导入)与只解释它们的注释;产品标记 `Mark` 只留无框形态,三个调用去掉 `framed={false}`,图形与外层样式不变;Argon2 回调改用 `node:util` 的 `promisify` 接 Promise,派生参数、随机盐、PHC 格式与恒定时间比较不变,既有密码记录照常验证;Gitea hook 回显事件集合改用 `Set.prototype.symmetricDifference` 判精确匹配(顺序与重复不影响,缺少、空集与多余事件都不匹配),后端 `tsconfig.json` 的 `lib` 因此加 `esnext.collection`。`test/gitea-hooks.test.ts` 补一条集合判据的回归。
