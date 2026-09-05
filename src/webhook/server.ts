@@ -98,7 +98,10 @@ import {
 } from "../review/run.ts";
 import {
   CUSTOM_PROVIDER_NAME_PATTERN,
+  boundTargetForModel,
   modelServiceTargetFingerprint,
+  modelServiceTargetSetFingerprint,
+  normalizeModelServiceTargets,
   openStore,
   toKnowledgeEntry,
   type BatchLimitField,
@@ -108,6 +111,7 @@ import {
   type InterruptedRun,
   type InterruptedRunDetail,
   type ModelReference,
+  type ModelServiceBoundTarget,
   type ModelServiceRecord,
   type ModelServiceVersionCommit,
   type ModelSupplementSource,
@@ -134,11 +138,13 @@ import {
 import {
   conflictingBuiltinProviderNames,
   listPiBuiltinProviders,
-  resolvePiBuiltinProviderTarget,
+  piBuiltinProviderTargets,
   type PiBuiltinProviderTarget,
 } from "../reviewer/catalog.ts";
 import {
   discoverModels,
+  distinctBuiltinTargets,
+  resolveBuiltinModelTarget,
   validateMinimalInference,
   MODEL_RUNTIME_BASELINE,
   normalizeModelServiceBaseUrl,
@@ -560,6 +566,118 @@ function frozenRuntimeModel(runtime: RuntimeModel): RuntimeModel {
   });
 }
 
+/**
+ * 一家模型服务此刻的目标绑定(ADR 0027)。自定义服务是它配置的那一个目标;绑了目标集合的
+ * 内置版本就是那份集合;升级前的内置版本(没有集合)只能证明:当初的指纹是首项模型的单目标
+ * 指纹,拿这一版自动目录各行与 Pi 当前内置表的目标逐个算指纹,恰好对上一个就是当初绑的
+ * 那一个,整版延续用它;对不上或对上多个都不猜,标成需重新验证,凭据在模型调用前不解密。
+ *
+ * 这是所有消费者共用的一份判据:Review Run、规则 agent、合并 agent、基点探索与面板投影都从
+ * 这里取目标,不各自看 Pi 的首项。
+ */
+type ServiceTargetBinding =
+  | { kind: "bound"; targets: readonly ModelServiceBoundTarget[] }
+  | { kind: "single"; target: ModelServiceBoundTarget }
+  | { kind: "unverified"; reason: string };
+
+function serviceTargetBinding(
+  service: ModelServiceRecord,
+  piTargets: ReadonlyMap<string, PiBuiltinProviderTarget> | undefined,
+): ServiceTargetBinding {
+  if (service.type === "custom") {
+    if (
+      service.baseUrl === null ||
+      service.api === null ||
+      !CUSTOM_PROVIDER_APIS.includes(service.api as (typeof CUSTOM_PROVIDER_APIS)[number])
+    ) {
+      return { kind: "unverified", reason: `${service.provider} 缺少可用的地址或接口协议` };
+    }
+    const fingerprint = modelServiceTargetFingerprint(service.baseUrl, service.api);
+    if (service.targetFingerprint !== fingerprint) {
+      return { kind: "unverified", reason: `${service.provider} 的目标绑定不一致` };
+    }
+    return { kind: "single", target: { api: service.api, baseUrl: service.baseUrl, fingerprint } };
+  }
+  if (service.targets !== null) return { kind: "bound", targets: service.targets };
+  const candidates = normalizeModelServiceTargets([
+    ...service.automaticModels.flatMap((model) =>
+      typeof model.fields.api === "string" && typeof model.fields.baseUrl === "string"
+        ? [{ api: model.fields.api, baseUrl: model.fields.baseUrl }]
+        : [],
+    ),
+    ...(piTargets?.values() ?? []),
+  ]);
+  const proven = candidates.filter((target) => target.fingerprint === service.targetFingerprint);
+  if (proven.length === 1) return { kind: "single", target: proven[0]! };
+  return {
+    kind: "unverified",
+    reason: `${service.provider} 的调用目标无法确认（需重新验证）`,
+  };
+}
+
+/** 绑定里的目标全体:面板展示、刷新时延续、补录时判「是否只有一个已确认目标」都读它。 */
+function bindingTargets(binding: ServiceTargetBinding): readonly ModelServiceBoundTarget[] {
+  return binding.kind === "bound"
+    ? binding.targets
+    : binding.kind === "single"
+      ? [binding.target]
+      : [];
+}
+
+/** 旧格式的内置版本只在这一版目录里没带目标时才要问 Pi 当前内置表;其余一律不问。 */
+async function piTargetsForBinding(
+  service: ModelServiceRecord,
+): Promise<ReadonlyMap<string, PiBuiltinProviderTarget> | undefined> {
+  return service.type === "builtin" && service.targets === null
+    ? piBuiltinProviderTargets(service.provider)
+    : undefined;
+}
+
+type ServiceModelSource =
+  | { ok: true; target: ModelServiceBoundTarget; targetSource: "pi-catalog" | "service-target" }
+  | { ok: false; reason: "model-source-missing" | "target-unresolved" };
+
+/**
+ * 一个模型在这家服务里的来源与调用目标(ADR 0027)。单目标绑定(自定义、旧版内置)沿用
+ * 原判据:自动目录、迁移保留或指纹相符的补录即有来源,目标就是那一个;目标集合绑定按
+ * `boundTargetForModel` 逐模型解——解不到的来源是「目标未经验证」,与「来源消失」分开报。
+ */
+function resolveServiceModelSource(
+  binding: ServiceTargetBinding,
+  automatic: DiscoveredModel | undefined,
+  supplement: ModelServiceRecord["supplements"][number] | undefined,
+): ServiceModelSource {
+  if (binding.kind === "unverified") return { ok: false, reason: "target-unresolved" };
+  if (binding.kind === "single") {
+    const hasSource =
+      automatic !== undefined ||
+      supplement?.source === "migration-retention" ||
+      (supplement?.source === "manual" &&
+        supplement.targetFingerprint === binding.target.fingerprint);
+    return hasSource
+      ? { ok: true, target: binding.target, targetSource: "service-target" }
+      : { ok: false, reason: "model-source-missing" };
+  }
+  if (automatic === undefined && supplement === undefined) {
+    return { ok: false, reason: "model-source-missing" };
+  }
+  const bound = boundTargetForModel(binding.targets, automatic, supplement);
+  return bound === undefined
+    ? { ok: false, reason: "target-unresolved" }
+    : { ok: true, target: bound.target, targetSource: bound.source };
+}
+
+/** 发现结果里各行自带的调用目标,去重排序后就是内置候选这次要绑定的集合。 */
+function discoveredTargets(models: readonly DiscoveredModel[]): PiBuiltinProviderTarget[] {
+  return distinctBuiltinTargets(
+    models.flatMap((model) =>
+      typeof model.fields.api === "string" && typeof model.fields.baseUrl === "string"
+        ? [{ api: model.fields.api, baseUrl: model.fields.baseUrl }]
+        : [],
+    ),
+  );
+}
+
 function synthesisForRun(
   service: ModelServiceRecord,
   discovery: DiscoveredModel,
@@ -605,12 +723,12 @@ function synthesisForRun(
 function materializedReviewerPlan(
   spec: ReviewerSpec,
   service: ModelServiceRecord | undefined,
-  target: ModelServiceTarget | undefined,
+  binding: ServiceTargetBinding | undefined,
   conflictingProviders: ReadonlySet<string>,
   credential: string | undefined,
 ): ReviewerRuntimePlan {
   const identity = modelIdentity(spec);
-  if (service === undefined) {
+  if (service === undefined || binding === undefined) {
     return Object.freeze({
       spec: Object.freeze({ ...spec }),
       modelServiceVersion: null,
@@ -623,15 +741,10 @@ function materializedReviewerPlan(
 
   const automatic = service.automaticModels.find((model) => model.id === spec.model);
   const supplement = service.supplements.find((entry) => entry.model === spec.model);
-  const targetFingerprint =
-    target === undefined ? undefined : modelServiceTargetFingerprint(target.baseUrl, target.api);
-  const targetMatchesCommittedVersion =
-    targetFingerprint !== undefined && service.targetFingerprint === targetFingerprint;
-  const hasCurrentSource =
-    targetMatchesCommittedVersion &&
-    (automatic !== undefined ||
-      supplement?.source === "migration-retention" ||
-      (supplement?.source === "manual" && supplement.targetFingerprint === targetFingerprint));
+  const source = resolveServiceModelSource(binding, automatic, supplement);
+  const target: ModelServiceTarget | undefined = source.ok
+    ? { baseUrl: source.target.baseUrl, api: source.target.api }
+    : undefined;
   const discovery: DiscoveredModel = automatic ?? {
     identity,
     provider: spec.provider,
@@ -646,10 +759,8 @@ function materializedReviewerPlan(
     failure =
       `自定义 provider ${spec.provider} 的名字与 Pi 内置的同名 provider 撞上了,` +
       `${identity} 这次没跑。去模型服务页原子改名或删除它。`;
-  } else if (!targetMatchesCommittedVersion) {
-    failure = service.type === "builtin"
-      ? `Pi 内置目标已经变化，${identity} 这次没跑。请粘贴凭据重新配置模型服务。`
-      : `${service.provider} 的目标绑定不一致，${identity} 这次没跑。请重新配置模型服务。`;
+  } else if (binding.kind === "unverified") {
+    failure = `${binding.reason}，${identity} 这次没跑。去模型服务页重新验证后重跑。`;
   } else if (service.credential.state === "unconfigured") {
     failure =
       `没有配置 ${spec.provider} 的模型凭据,${identity} 这次没跑。` +
@@ -658,8 +769,10 @@ function materializedReviewerPlan(
     failure = `${spec.provider} 的模型凭据待重新验证,${identity} 这次没跑。`;
   } else if (credential === undefined || credential === "") {
     failure = `${spec.provider} 的模型凭据不可用,${identity} 这次没跑。`;
-  } else if (!hasCurrentSource) {
-    failure = `模型来源不存在: ${identity},这次没跑。去模型服务页恢复来源后重跑。`;
+  } else if (!source.ok) {
+    failure = source.reason === "model-source-missing"
+      ? `模型来源不存在: ${identity},这次没跑。去模型服务页恢复来源后重跑。`
+      : `${identity} 的调用目标未经验证,这次没跑。去模型服务页重新验证或补录后重跑。`;
   } else if (!synthesis.ok) {
     failure = `${synthesis.failure.message},${identity} 这次没跑。`;
   }
@@ -688,40 +801,30 @@ async function materializeReviewerPlans(
   const customProviders = modelServices
     .filter((service) => service.type === "custom")
     .map((service) => service.provider);
-  const [conflictingProviders, builtinTargets] = await Promise.all([
+  // 目标绑定随版本固定(ADR 0027):绑了集合的内置版本与自定义服务一概不问 Pi 当前内置表,
+  // 只有旧格式的内置版本要拿它来证明当初的指纹。
+  const [conflictingProviders, bindingEntries] = await Promise.all([
     conflictingBuiltinProviderNames(customProviders),
     Promise.all(
-      modelServices
-        .filter((service) => service.type === "builtin")
-        .map(async (service) =>
-          [service.provider, await resolvePiBuiltinProviderTarget(service.provider)] as const,
-        ),
+      modelServices.map(async (service) =>
+        [service.provider, serviceTargetBinding(service, await piTargetsForBinding(service))] as const,
+      ),
     ),
   ]);
 
   const services = new Map(modelServices.map((service) => [service.provider, service]));
-  const targets = new Map<string, ModelServiceTarget>();
-  for (const service of modelServices) {
-    if (service.type === "custom" && service.baseUrl !== null && service.api !== null) {
-      targets.set(service.provider, { baseUrl: service.baseUrl, api: service.api });
-    }
-  }
-  for (const [provider, target] of builtinTargets) {
-    if (target !== undefined) targets.set(provider, target);
-  }
+  const bindings = new Map(bindingEntries);
 
   const credentials = new Map<string, string>();
   const masterKey = deps.credentialMasterKey;
   if (masterKey !== undefined && masterKey !== "") {
     for (const service of modelServices) {
-      const target = targets.get(service.provider);
-      const targetFingerprint =
-        target === undefined ? undefined : modelServiceTargetFingerprint(target.baseUrl, target.api);
+      // 目标证明不了的版本在模型调用前就拒绝使用凭据:密文连解都不解。
       if (
-        targetFingerprint === undefined ||
-        service.targetFingerprint !== targetFingerprint ||
-        conflictingProviders.has(service.provider)
+        bindings.get(service.provider)?.kind !== "single" &&
+        bindings.get(service.provider)?.kind !== "bound"
       ) continue;
+      if (conflictingProviders.has(service.provider)) continue;
       const ciphertext = service.credential.apiKeyEncrypted;
       if (service.credential.state !== "verified" || ciphertext === null) continue;
       const credential = decryptCredential(masterKey, ciphertext);
@@ -736,7 +839,7 @@ async function materializeReviewerPlans(
       materializedReviewerPlan(
         spec,
         services.get(spec.provider),
-        targets.get(spec.provider),
+        bindings.get(spec.provider),
         conflictingProviders,
         credentials.get(spec.provider),
       ),
@@ -2406,12 +2509,16 @@ type ModelUnavailableReason =
   | "provider-name-conflict"
   | "credential-unavailable"
   | "model-source-missing"
+  | "target-unresolved"
   | "model-disabled";
 
 const MODEL_UNAVAILABLE_REASON_TEXT: Record<ModelUnavailableReason, string> = {
   "provider-name-conflict": "provider 名字冲突，已停用",
   "credential-unavailable": "模型凭据不可用",
   "model-source-missing": "模型来源消失",
+  // 这一版绑定的目标集合里没有这个模型的调用目标(ADR 0027):目录刷新拉进来的新协议、
+  // 或绑在旧目标上的补录。重新验证或补录之后才可用。
+  "target-unresolved": "调用目标未经验证",
   "model-disabled": "模型已停用",
 };
 
@@ -2521,17 +2628,19 @@ function modelRuntimeProjection(
 function modelDiscoverySources(
   service: ModelServiceRecord,
   automatic: ModelServiceRecord["automaticModels"][number] | undefined,
-  serviceTarget: PiBuiltinProviderTarget | undefined,
+  source: ServiceModelSource,
 ): ProjectedServiceModel["discovery"]["sources"] {
   const inferred = (field: keyof DiscoveredModel["fields"]): TrustedModelFieldSource | null => {
     if (automatic?.fields[field] === undefined) return null;
     return automatic.fieldSources?.[field] ??
       (service.type === "builtin" ? "pi-catalog" : "service-interface");
   };
+  // 解出目标的模型,地址与协议的来源就是解出它的那一层(自己那一行的 Pi 目录,或服务目标);
+  // 解不出的只剩目录行自带的那两项可看。
   return {
     name: inferred("name"),
-    api: serviceTarget === undefined ? null : "service-target",
-    baseUrl: serviceTarget === undefined ? null : "service-target",
+    api: source.ok ? source.targetSource : inferred("api"),
+    baseUrl: source.ok ? source.targetSource : inferred("baseUrl"),
     input: inferred("input"),
     reasoning: inferred("reasoning"),
     contextWindow: inferred("contextWindow"),
@@ -2560,67 +2669,44 @@ function projectServiceModel(
   sources: readonly ModelReadSource[],
   automatic: ModelServiceRecord["automaticModels"][number] | undefined,
   supplement: ModelServiceRecord["supplements"][number] | undefined,
-  serviceTarget: PiBuiltinProviderTarget | undefined,
+  binding: ServiceTargetBinding,
   credentialState: ModelServiceRecord["credential"]["state"],
   enabled: boolean,
 ): ProjectedServiceModel {
   const discovery = automatic?.fields ?? {};
-  const discoverySources = modelDiscoverySources(service, automatic, serviceTarget);
-  let synthesis: RuntimeSynthesisResult | undefined;
-  if (service.type === "builtin" && serviceTarget !== undefined) {
-    synthesis = synthesizeRuntimeModel(
-      { kind: "builtin", provider: service.provider, credential: "" },
-      {
-        identity: modelIdentity({ provider: service.provider, model: id }),
-        provider: service.provider,
-        id,
-        fields: discovery,
-      },
-      serviceTarget,
-    );
-  } else if (
-    service.type === "custom" &&
-    serviceTarget !== undefined &&
-    CUSTOM_PROVIDER_APIS.includes(serviceTarget.api as (typeof CUSTOM_PROVIDER_APIS)[number])
-  ) {
-    synthesis = synthesizeRuntimeModel(
-      {
-        kind: "custom",
-        provider: service.provider,
-        baseUrl: serviceTarget.baseUrl,
-        api: serviceTarget.api as (typeof CUSTOM_PROVIDER_APIS)[number],
-        credential: "",
-      },
-      {
-        identity: modelIdentity({ provider: service.provider, model: id }),
-        provider: service.provider,
-        id,
-        fields: discovery,
-      },
-    );
-  }
+  // 与 Review Run 的运行计划同一条解析(ADR 0027):这个模型在这一版里解到哪个目标。
+  const source = resolveServiceModelSource(binding, automatic, supplement);
+  const target: ModelServiceTarget | undefined = source.ok
+    ? { baseUrl: source.target.baseUrl, api: source.target.api }
+    : undefined;
+  const discoverySources = modelDiscoverySources(service, automatic, source);
+  // 运行规格(输入、推理、上下文)不依赖目标;目标解不出的模型仍按目录行自带的地址与协议
+  // 合成一次,只为把这几项投影出来——可用性由上面的 `source` 单独判,不受这一步影响。
+  const projectionTarget: ModelServiceTarget | undefined = target ??
+    (typeof discovery.api === "string" && typeof discovery.baseUrl === "string"
+      ? { baseUrl: discovery.baseUrl, api: discovery.api }
+      : undefined);
+  const synthesis = synthesisForRun(
+    service,
+    {
+      identity: modelIdentity({ provider: service.provider, model: id }),
+      provider: service.provider,
+      id,
+      fields: discovery,
+    },
+    projectionTarget,
+  );
 
-  const currentTargetFingerprint =
-    serviceTarget === undefined
-      ? undefined
-      : modelServiceTargetFingerprint(serviceTarget.baseUrl, serviceTarget.api);
-  const targetMatchesCommittedVersion =
-    currentTargetFingerprint !== undefined &&
-    service.targetFingerprint === currentTargetFingerprint;
-  const hasCurrentSource =
-    targetMatchesCommittedVersion &&
-    (automatic !== undefined ||
-      supplement?.source === "migration-retention" ||
-      (supplement?.source === "manual" &&
-        supplement.targetFingerprint === currentTargetFingerprint));
   const unavailableReason: ModelUnavailableReason | null =
     service.disabledReason === "name-conflict"
       ? "provider-name-conflict"
       : credentialState !== "verified"
         ? "credential-unavailable"
-        : !hasCurrentSource || synthesis?.ok !== true
-          ? "model-source-missing"
-          : enabled ? null : "model-disabled";
+        : !source.ok
+          ? source.reason
+          : !synthesis.ok
+            ? "model-source-missing"
+            : enabled ? null : "model-disabled";
   return {
     provider: service.provider,
     id,
@@ -2630,8 +2716,8 @@ function projectServiceModel(
     ...modelAvailabilityProjection(unavailableReason),
     discovery: {
       name: discovery.name ?? null,
-      api: serviceTarget?.api ?? null,
-      baseUrl: serviceTarget?.baseUrl ?? null,
+      api: target?.api ?? discovery.api ?? null,
+      baseUrl: target?.baseUrl ?? discovery.baseUrl ?? null,
       input: discovery.input ?? null,
       reasoning: discovery.reasoning ?? null,
       contextWindow: discovery.contextWindow ?? null,
@@ -2719,20 +2805,8 @@ async function projectCurrentModelServices(
           : stored.disabledReason,
       supplements: supplementByProvider.get(stored.provider) ?? [],
     };
-    const serviceTarget: PiBuiltinProviderTarget | undefined =
-      service.type === "builtin"
-        ? await resolvePiBuiltinProviderTarget(service.provider)
-        : service.baseUrl !== null &&
-            service.api !== null &&
-            CUSTOM_PROVIDER_APIS.includes(service.api as (typeof CUSTOM_PROVIDER_APIS)[number])
-          ? { baseUrl: service.baseUrl, api: service.api }
-          : undefined;
-    const currentTargetFingerprint = serviceTarget === undefined
-      ? undefined
-      : modelServiceTargetFingerprint(serviceTarget.baseUrl, serviceTarget.api);
-    const targetMatchesCommittedVersion =
-      currentTargetFingerprint !== undefined &&
-      service.targetFingerprint === currentTargetFingerprint;
+    const binding = serviceTargetBinding(service, await piTargetsForBinding(service));
+    const targetMatchesCommittedVersion = binding.kind !== "unverified";
     const masterKey = deps.credentialMasterKey;
     const plaintext =
       !targetMatchesCommittedVersion ||
@@ -2776,14 +2850,17 @@ async function projectCurrentModelServices(
           sources,
           automaticById.get(id),
           supplementById.get(id),
-          serviceTarget,
+          binding,
           credentialState,
           stateByIdentity.get(modelIdentity({ provider: service.provider, model: id })) ?? true,
         ),
       );
+    // 自定义服务的单一目标留在 `target`(面板的修改流程按它预填);两类服务都以 `targets`
+    // 给出这一版绑定的全部目标,内置服务可以不止一个(ADR 0027)。
     const target = service.type === "custom"
       ? { baseUrl: service.baseUrl, api: service.api }
-      : { baseUrl: serviceTarget?.baseUrl ?? null, api: serviceTarget?.api ?? null };
+      : { baseUrl: null, api: null };
+    const targets = bindingTargets(binding).map(({ api, baseUrl }) => ({ api, baseUrl }));
     const runnable = models.some((model) => model.available);
     const reason: ModelUnavailableReason | null = runnable
       ? null
@@ -2820,6 +2897,7 @@ async function projectCurrentModelServices(
       },
       references: references.filter((reference) => reference.provider === service.provider),
       target,
+      targets,
       credential: {
         state: credentialState,
         last4: plaintext === undefined ? null : credentialTail(plaintext),
@@ -2966,6 +3044,7 @@ async function handleListModelServices(
       ...common,
       providerState: service.providerState,
       target: service.target ?? { baseUrl: null, api: null },
+      targets: service.targets ?? [],
       credential,
       directory: service.directory,
       references: service.references,
@@ -3063,7 +3142,8 @@ function occupiedOrStale(
 
 /**
  * 预览两条路径(内置 / 自定义)共有的收尾:按候选发现目录,失败只回安全摘要,成功把
- * 目标与目录原样交给面板。目标从哪来是两条路径唯一的差别。
+ * 目标与目录原样交给面板。目标从哪来是两条路径唯一的差别:自定义是候选里填的那一个;
+ * 内置是发现结果各行自带目标去重排序后的集合,也就是提交时要绑定的那一份(ADR 0027)。
  */
 async function sendModelServicePreview(
   res: ServerResponse,
@@ -3071,7 +3151,7 @@ async function sendModelServicePreview(
   input: {
     candidate: ModelServiceCandidate;
     expectedVersion: number | null;
-    target: ModelServiceTarget;
+    target?: ModelServiceTarget;
   },
 ): Promise<void> {
   const discovered = await discoverServiceModels(deps, input.candidate);
@@ -3081,7 +3161,9 @@ async function sendModelServicePreview(
   return sendJson(res, 200, {
     provider: input.candidate.provider,
     expectedVersion: input.expectedVersion,
-    target: input.target,
+    ...(input.candidate.kind === "custom"
+      ? { target: input.target }
+      : { targets: discoveredTargets(discovered.models) }),
     models: discovered.models,
     ignoredModelCount: discovered.ignoredCount,
   });
@@ -3191,14 +3273,12 @@ async function handlePreviewBuiltinModelService(
   const expectedVersion = payload.expectedVersion as number | null;
   const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
   if (occupiedOrStale(res, provider, "builtin", current, expectedVersion)) return;
-  const target = await resolvePiBuiltinProviderTarget(provider);
-  if (target === undefined) {
+  if ((await piBuiltinProviderTargets(provider)) === undefined) {
     return sendJson(res, 400, { error: `Pi 没有内置 provider ${provider}` });
   }
   return sendModelServicePreview(res, deps, {
     candidate: { kind: "builtin", provider, credential: payload.credential },
     expectedVersion,
-    target,
   });
 }
 
@@ -3219,8 +3299,8 @@ async function commitVerifiedBuiltinModelService(
   }
   const current = withStore(deps.dbPath, (store) => store.getModelService(input.provider));
   if (occupiedOrStale(res, input.provider, "builtin", current, input.expectedVersion)) return;
-  const target = await resolvePiBuiltinProviderTarget(input.provider);
-  if (target === undefined) {
+  const piTargets = await piBuiltinProviderTargets(input.provider);
+  if (piTargets === undefined) {
     return sendJson(res, 400, { error: `Pi 没有内置 provider ${input.provider}` });
   }
   const candidate = {
@@ -3232,16 +3312,42 @@ async function commitVerifiedBuiltinModelService(
   const validationDiscovery = discovered.ok
     ? discovered.models.find((model) => model.id === input.validationModel)
     : undefined;
+  // 验证模型用它自己可确认的目标:最终目录里它那一行,否则 Pi 内置表里它那一行;都没有
+  // 时只有整份已确认目标恰好一个才沿用(ADR 0027)。已确认目标是这次发现到的集合,发现
+  // 失败时退到 Pi 内置表的集合——那是发现结果至少会含的那一份。
+  const previousTargets =
+    current === undefined ? [] : bindingTargets(serviceTargetBinding(current, piTargets));
+  const confirmedTargets = discovered.ok
+    ? discoveredTargets(discovered.models)
+    : previousTargets.length > 0
+      ? previousTargets
+      : distinctBuiltinTargets(piTargets.values());
+  const own =
+    validationDiscovery !== undefined &&
+    typeof validationDiscovery.fields.api === "string" &&
+    typeof validationDiscovery.fields.baseUrl === "string"
+      ? { api: validationDiscovery.fields.api, baseUrl: validationDiscovery.fields.baseUrl }
+      : piTargets.get(input.validationModel);
+  const resolved = resolveBuiltinModelTarget(
+    input.provider,
+    input.validationModel,
+    own,
+    confirmedTargets,
+  );
+  if (!resolved.ok) return sendJson(res, 422, { error: resolved.failure.message });
   const validation = await validateMinimalInference(
     candidate,
     validationDiscovery ?? input.validationModel,
+    { builtinTarget: resolved.target },
   );
   if (!validation.ok) {
     return sendCandidateFailure(res, validation.failure, [input.credential, masterKey], "validation");
   }
 
   const committedAt = new Date((deps.now ?? Date.now)()).toISOString();
-  const targetFingerprint = modelServiceTargetFingerprint(target.baseUrl, target.api);
+  // 这一版绑定的目标:发现到的集合加上验证模型实际用的那一个;指纹从集合算出。
+  const targets = normalizeModelServiceTargets([...confirmedTargets, resolved.target]);
+  const targetFingerprint = modelServiceTargetSetFingerprint(targets)!;
   const supplements: CommittedSupplement[] = (current?.supplements ?? []).map((entry) => ({
     model: entry.model,
     source: entry.source,
@@ -3252,7 +3358,7 @@ async function commitVerifiedBuiltinModelService(
     upsertSupplement(supplements, {
       model: input.validationModel,
       source: "manual",
-      targetFingerprint,
+      targetFingerprint: modelServiceTargetFingerprint(resolved.target.baseUrl, resolved.target.api),
       createdAt:
         supplements.find((entry) => entry.model === input.validationModel)?.createdAt ?? committedAt,
     });
@@ -3270,6 +3376,7 @@ async function commitVerifiedBuiltinModelService(
     baseUrl: null,
     api: null,
     targetFingerprint,
+    targets,
     disabledReason: null,
     createdAt: current?.createdAt ?? committedAt,
     updatedAt: committedAt,
@@ -3358,15 +3465,12 @@ async function handleReverifyModelService(
   }
 
   let candidate: ModelServiceCandidate;
-  let targetFingerprint: string;
+  let targetFingerprint: string | undefined;
   if (current.type === "builtin") {
-    const target = await resolvePiBuiltinProviderTarget(provider);
-    if (target === undefined) {
+    // 重新验证正是给内置服务重新绑定目标的路径(ADR 0027):旧版本证明不了目标、Pi 升级
+    // 换了目标,都从这里经显式验证进入新版本,所以这里不拿当前 Pi 的目标做闸。
+    if ((await piBuiltinProviderTargets(provider)) === undefined) {
       return sendJson(res, 409, { error: `Pi 已没有内置 provider ${provider}` });
-    }
-    targetFingerprint = modelServiceTargetFingerprint(target.baseUrl, target.api);
-    if (current.targetFingerprint !== targetFingerprint) {
-      return sendJson(res, 409, { error: "Pi 内置目标已经变化，请粘贴凭据重新配置" });
     }
   } else {
     if ((await conflictingBuiltinProviderNames([provider])).has(provider)) {
@@ -3405,6 +3509,8 @@ async function handleReverifyModelService(
     });
   }
 
+  // 只剩自定义服务这一条路,上面的分支已经算好它的目标指纹。
+  const customTargetFingerprint = targetFingerprint!;
   candidate = {
     kind: "custom",
     provider,
@@ -3434,7 +3540,7 @@ async function handleReverifyModelService(
     upsertSupplement(supplements, {
       model: validationModel,
       source: "manual",
-      targetFingerprint,
+      targetFingerprint: customTargetFingerprint,
       createdAt:
         current.supplements.find((entry) => entry.model === validationModel)?.createdAt ??
         committedAt,
@@ -3453,7 +3559,7 @@ async function handleReverifyModelService(
     type: "custom",
     baseUrl: current.baseUrl,
     api: current.api,
-    targetFingerprint,
+    targetFingerprint: customTargetFingerprint,
     disabledReason: null,
     createdAt: current.createdAt,
     updatedAt: committedAt,
@@ -3510,6 +3616,7 @@ async function handleDeleteModelServiceCredential(
     baseUrl: current.baseUrl,
     api: current.api,
     targetFingerprint: current.targetFingerprint,
+    targets: current.targets,
     disabledReason: current.disabledReason,
     createdAt: current.createdAt,
     updatedAt: new Date((deps.now ?? Date.now)()).toISOString(),
@@ -3550,7 +3657,8 @@ type StoredModelServiceRuntime =
   | {
       ok: true;
       candidate: ModelServiceCandidate;
-      targetFingerprint: string;
+      /** 这一版的目标绑定;证明不了目标的版本在这里就回绝,不会带着 unverified 出去。 */
+      binding: Extract<ServiceTargetBinding, { kind: "bound" | "single" }>;
       secrets: readonly string[];
     }
   | { ok: false; error: string };
@@ -3574,40 +3682,14 @@ async function storedModelServiceRuntime(
     return { ok: false, error: `${provider} 没有已验证的模型凭据` };
   }
 
-  let targetFingerprint: string;
-  let target:
-    | { kind: "builtin" }
-    | {
-        kind: "custom";
-        baseUrl: string;
-        api: (typeof CUSTOM_PROVIDER_APIS)[number];
-      };
-  if (current.type === "builtin") {
-    const builtinTarget = await resolvePiBuiltinProviderTarget(provider);
-    if (builtinTarget === undefined) {
-      return { ok: false, error: `Pi 已没有内置 provider ${provider}` };
-    }
-    targetFingerprint = modelServiceTargetFingerprint(builtinTarget.baseUrl, builtinTarget.api);
-    if (current.targetFingerprint !== targetFingerprint) {
-      return { ok: false, error: "Pi 内置目标已经变化，请粘贴凭据重新配置" };
-    }
-    target = { kind: "builtin" };
-  } else {
-    if (
-      current.baseUrl === null ||
-      current.api === null ||
-      !CUSTOM_PROVIDER_APIS.includes(current.api as (typeof CUSTOM_PROVIDER_APIS)[number])
-    ) {
-      return { ok: false, error: `${provider} 缺少可用的地址或接口协议` };
-    }
-    targetFingerprint = modelServiceTargetFingerprint(current.baseUrl, current.api);
-    if (current.targetFingerprint !== targetFingerprint) {
-      return { ok: false, error: `${provider} 的目标绑定不一致，请重新配置` };
-    }
-    target = {
-      kind: "custom",
-      baseUrl: current.baseUrl,
-      api: current.api as (typeof CUSTOM_PROVIDER_APIS)[number],
+  if (current.type === "builtin" && (await piBuiltinProviderTargets(provider)) === undefined) {
+    return { ok: false, error: `Pi 已没有内置 provider ${provider}` };
+  }
+  const binding = serviceTargetBinding(current, await piTargetsForBinding(current));
+  if (binding.kind === "unverified") {
+    return {
+      ok: false,
+      error: current.type === "builtin" ? `${binding.reason}，请重新验证模型服务` : `${binding.reason}，请重新配置`,
     };
   }
   const credential = decryptCredential(masterKey, current.credential.apiKeyEncrypted);
@@ -3616,16 +3698,16 @@ async function storedModelServiceRuntime(
   }
   return {
     ok: true,
-    candidate: target.kind === "builtin"
+    candidate: current.type === "builtin"
       ? { kind: "builtin", provider, credential }
       : {
           kind: "custom",
           provider,
-          baseUrl: target.baseUrl,
-          api: target.api,
+          baseUrl: current.baseUrl!,
+          api: current.api as (typeof CUSTOM_PROVIDER_APIS)[number],
           credential,
         },
-    targetFingerprint,
+    binding,
     secrets: [credential, current.credential.apiKeyEncrypted, masterKey],
   };
 }
@@ -3754,7 +3836,13 @@ async function handleRefreshModelService(
   }
   const runtime = await storedModelServiceRuntime(current, masterKey);
   if (!runtime.ok) return sendJson(res, 409, { error: `${runtime.error}，不能刷新目录` });
-  const { candidate, targetFingerprint } = runtime;
+  const { candidate } = runtime;
+  // 刷新只换目录,不换目标绑定(ADR 0027):目录里新出现的协议或地址在这一版里
+  // 「调用目标未经验证」,要经重新验证或补录才绑进来。旧格式版本经此写成集合。
+  const targets = current.type === "builtin" ? bindingTargets(runtime.binding) : null;
+  const targetFingerprint = targets === null
+    ? current.targetFingerprint
+    : modelServiceTargetSetFingerprint(targets);
 
   const discovered = await discoverServiceModels(deps, candidate);
   const attemptedAt = new Date((deps.now ?? Date.now)()).toISOString();
@@ -3782,6 +3870,7 @@ async function handleRefreshModelService(
     baseUrl: current.baseUrl,
     api: current.api,
     targetFingerprint,
+    targets,
     disabledReason: current.type === "custom" ? null : current.disabledReason,
     createdAt: current.createdAt,
     updatedAt: attemptedAt,
@@ -3848,7 +3937,33 @@ async function handleAddModelSupplement(
   const runtime = await storedModelServiceRuntime(current, masterKey);
   if (!runtime.ok) return sendJson(res, 409, { error: `${runtime.error}，不能补录模型` });
 
-  const validation = await validateMinimalInference(runtime.candidate, input.model);
+  // 补录绑定的是该模型实际验证用的那一个目标(ADR 0027)。内置服务优先用它可确认的目标
+  // (目录里它那一行,否则 Pi 内置表里它那一行),没有时只有已确认目标恰好一个才沿用;
+  // 混合协议下定不了就拒绝并指向自定义模型服务,不猜第一项。
+  let target: PiBuiltinProviderTarget;
+  if (current.type === "builtin") {
+    const automatic = current.automaticModels.find((model) => model.id === input.model);
+    const own =
+      automatic !== undefined &&
+      typeof automatic.fields.api === "string" &&
+      typeof automatic.fields.baseUrl === "string"
+        ? { api: automatic.fields.api, baseUrl: automatic.fields.baseUrl }
+        : (await piBuiltinProviderTargets(provider))?.get(input.model);
+    const resolved = resolveBuiltinModelTarget(
+      provider,
+      input.model,
+      own,
+      bindingTargets(runtime.binding),
+    );
+    if (!resolved.ok) return sendJson(res, 409, { error: resolved.failure.message });
+    target = resolved.target;
+  } else {
+    const [customTarget] = bindingTargets(runtime.binding);
+    target = { api: customTarget!.api, baseUrl: customTarget!.baseUrl };
+  }
+  const validation = await validateMinimalInference(runtime.candidate, input.model, {
+    builtinTarget: target,
+  });
   if (!validation.ok) {
     return sendCandidateFailure(res, validation.failure, runtime.secrets);
   }
@@ -3862,19 +3977,26 @@ async function handleAddModelSupplement(
   const supplement = {
     model: input.model,
     source: "manual" as const,
-    targetFingerprint: runtime.targetFingerprint,
+    targetFingerprint: modelServiceTargetFingerprint(target.baseUrl, target.api),
     createdAt:
       current.supplements.find((entry) => entry.model === input.model)?.createdAt ?? committedAt,
   };
   const existing = supplements.findIndex((entry) => entry.model === input.model);
   if (existing === -1) supplements.push(supplement);
   else supplements[existing] = supplement;
+  // 内置服务:验证过的目标进这一版的绑定集合,指纹随集合重算;自定义服务的目标不变。
+  const targets = current.type === "builtin"
+    ? normalizeModelServiceTargets([...bindingTargets(runtime.binding), target])
+    : null;
   const record: ModelServiceVersionCommit = {
     provider,
     type: current.type,
     baseUrl: current.baseUrl,
     api: current.api,
-    targetFingerprint: runtime.targetFingerprint,
+    targetFingerprint: targets === null
+      ? supplement.targetFingerprint
+      : modelServiceTargetSetFingerprint(targets),
+    targets,
     disabledReason: current.type === "custom" ? null : current.disabledReason,
     createdAt: current.createdAt,
     updatedAt: committedAt,
@@ -3949,6 +4071,7 @@ async function handleDeleteModelSupplement(
     baseUrl: current.baseUrl,
     api: current.api,
     targetFingerprint: current.targetFingerprint,
+    targets: current.targets,
     disabledReason: current.disabledReason,
     createdAt: current.createdAt,
     updatedAt: committedAt,

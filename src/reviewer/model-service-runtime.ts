@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { modelIdentity } from "../config.ts";
 import {
   loadPiProviderCatalog,
-  resolvePiBuiltinProviderTarget,
+  piBuiltinProviderTargets,
   type LoadOptions,
   type PiBuiltinProviderTarget,
   type PiProviderCatalog,
 } from "./catalog.ts";
 import {
   CUSTOM_PROVIDER_APIS,
-  isolatedModelRuntime,
+  isolatedPinnedModelRuntime,
   ZERO_MODEL_COST,
   type RuntimeApi,
   type RuntimeModelCompat,
@@ -71,6 +71,7 @@ export type ModelOperationFailure = {
     | "request-error"
     | "provider-not-found"
     | "model-unconstructable"
+    | "target-ambiguous"
     | "inference-failed";
   message: string;
   status?: number;
@@ -132,7 +133,65 @@ export type InferenceValidationResult =
 export type InferenceValidationOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
+  /**
+   * 内置候选这次验证用的调用目标(ADR 0027)。编排层按模型服务版本的目标绑定解好再传;
+   * 不传时按 Pi 当前内置表用 `resolveBuiltinModelTarget` 解:该模型自己那一行的目标,
+   * 否则整家只有一个目标时沿用它,否则拒绝。自定义候选忽略这一项。
+   */
+  builtinTarget?: PiBuiltinProviderTarget;
 };
+
+/** 一家内置 provider 的调用目标去重(按协议与规范化地址)并稳定排序。 */
+export function distinctBuiltinTargets(
+  targets: Iterable<PiBuiltinProviderTarget>,
+): PiBuiltinProviderTarget[] {
+  const byKey = new Map<string, PiBuiltinProviderTarget>();
+  for (const target of targets) {
+    const baseUrl = normalizeModelServiceBaseUrl(target.baseUrl);
+    if (baseUrl === undefined || target.api.trim() === "") continue;
+    const key = `${target.api}\0${baseUrl}`;
+    if (!byKey.has(key)) byKey.set(key, { api: target.api, baseUrl });
+  }
+  return [...byKey.values()].sort((left, right) =>
+    left.api < right.api ? -1 : left.api > right.api ? 1 : left.baseUrl < right.baseUrl ? -1 : left.baseUrl > right.baseUrl ? 1 : 0,
+  );
+}
+
+export type BuiltinTargetResolution =
+  | { ok: true; target: PiBuiltinProviderTarget; source: "pi-catalog" | "service-target" }
+  | { ok: false; failure: ModelOperationFailure };
+
+/**
+ * 一个内置模型该用哪个调用目标(ADR 0027)。优先该模型自己可确认的可信目标(自动目录或
+ * Pi 内置表里它那一行的 api/baseUrl);没有时,已确认的目标只有一个就沿用;混合协议下
+ * 唯一确定不了就明确拒绝——不猜第一项,也不开任意地址的口子,这种模型走自定义模型服务。
+ */
+export function resolveBuiltinModelTarget(
+  provider: string,
+  modelId: string,
+  own: PiBuiltinProviderTarget | undefined,
+  confirmed: readonly PiBuiltinProviderTarget[],
+): BuiltinTargetResolution {
+  if (own !== undefined) {
+    const baseUrl = normalizeModelServiceBaseUrl(own.baseUrl);
+    if (baseUrl !== undefined && own.api.trim() !== "") {
+      return { ok: true, target: { api: own.api, baseUrl }, source: "pi-catalog" };
+    }
+  }
+  const targets = distinctBuiltinTargets(confirmed);
+  if (targets.length === 1) return { ok: true, target: targets[0]!, source: "service-target" };
+  const identity = modelIdentity({ provider, model: modelId });
+  return {
+    ok: false,
+    failure: {
+      code: "target-ambiguous",
+      message:
+        targets.length === 0
+          ? `${identity} 没有可确认的调用目标：${provider} 当前没有已确认的地址与接口协议。请改用自定义模型服务，明确指定地址与接口协议。`
+          : `${identity} 的调用目标无法唯一确定：${provider} 当前绑定 ${targets.length} 个调用目标（${targets.map((target) => `${target.api} ${target.baseUrl}`).join("；")}），而目录里没有它自己的目标。请改用自定义模型服务，明确指定地址与接口协议。`,
+    },
+  };
+}
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 10_000;
 
@@ -502,13 +561,31 @@ export async function validateMinimalInference(
 ): Promise<InferenceValidationResult> {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-inference-"));
   try {
-    const builtinTarget =
-      candidate.kind === "builtin"
-        ? await resolvePiBuiltinProviderTarget(candidate.provider)
-        : undefined;
+    let builtinTarget = options.builtinTarget;
+    if (candidate.kind === "builtin" && builtinTarget === undefined) {
+      // 没给目标时按 Pi 当前内置表解:该模型自己那一行,或整家唯一的目标(ADR 0027)。
+      const piTargets = await piBuiltinProviderTargets(candidate.provider);
+      const discovery = discoveredModel(candidate, modelOrId);
+      const own =
+        typeof discovery.fields.api === "string" && typeof discovery.fields.baseUrl === "string"
+          ? { api: discovery.fields.api, baseUrl: discovery.fields.baseUrl }
+          : piTargets?.get(discovery.id);
+      const resolved = resolveBuiltinModelTarget(
+        candidate.provider,
+        discovery.id,
+        own,
+        [...(piTargets?.values() ?? [])],
+      );
+      if (!resolved.ok && piTargets !== undefined) return resolved;
+      if (resolved.ok) builtinTarget = resolved.target;
+    }
     const synthesized = synthesizeRuntimeModel(candidate, modelOrId, builtinTarget);
     if (!synthesized.ok) return synthesized;
-    const modelRuntime = await isolatedModelRuntime(dir, undefined);
+    // 与 Review Run 同一种注册(`isolatedPinnedModelRuntime`):只注册这一个模型,协议按它
+    // 自己的 api 走。Pi 内置的 provider 对象是单协议派发(0.84.4 的 OpenRouter 只认 Chat
+    // Completions),直接拿它验证会把 Anthropic Messages 的模型也发成 Chat Completions,
+    // 验证通过的东西与真实运行就不是同一条路(ADR 0027)。
+    const modelRuntime = await isolatedPinnedModelRuntime(dir, synthesized.value.runtime);
     if (candidate.credential === "") {
       return {
         ok: false,
@@ -533,14 +610,6 @@ export async function validateMinimalInference(
       ...(target.thinkingLevelMap === undefined ? {} : { thinkingLevelMap: target.thinkingLevelMap }),
       ...(target.compat === undefined ? {} : { compat: target.compat }),
     };
-    if (candidate.kind === "custom") {
-      modelRuntime.registerProvider(candidate.provider, {
-        name: candidate.provider,
-        api: candidate.api,
-        baseUrl: target.baseUrl,
-        models: [model],
-      });
-    }
 
     const timeoutMs = options.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS;
     const timeout = AbortSignal.timeout(timeoutMs);

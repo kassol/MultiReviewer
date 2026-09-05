@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-import { resolvePiBuiltinProviderTarget } from "../src/reviewer/catalog.ts";
+import { piBuiltinProviderTargets } from "../src/reviewer/catalog.ts";
 import {
   MODEL_RUNTIME_BASELINE,
   discoverModels,
+  distinctBuiltinTargets,
+  resolveBuiltinModelTarget,
   synthesizeRuntimeModel,
   validateMinimalInference,
   type DiscoveredModel,
@@ -412,14 +414,48 @@ test("最小真实推理使用候选地址、协议、凭据与验证模型,且�
   }
 });
 
-test("内置 provider 目标解析只返回当前 Pi 的 api 与 baseUrl", async () => {
-  const target = await resolvePiBuiltinProviderTarget("deepseek");
-  assert.deepEqual(target, {
-    api: "openai-completions",
-    baseUrl: "https://api.deepseek.com",
-  });
-  assert.equal(await resolvePiBuiltinProviderTarget("not-a-pi-provider"), undefined);
+test("内置 provider 目标按模型解析,只返回当前 Pi 每一行自己的 api 与 baseUrl", async () => {
+  const targets = await piBuiltinProviderTargets("deepseek");
+  assert.ok(targets !== undefined && targets.size > 0);
+  for (const target of targets.values()) {
+    assert.deepEqual(target, { api: "openai-completions", baseUrl: "https://api.deepseek.com" });
+  }
+  assert.deepEqual(distinctBuiltinTargets(targets.values()), [
+    { api: "openai-completions", baseUrl: "https://api.deepseek.com" },
+  ]);
+  assert.equal(await piBuiltinProviderTargets("not-a-pi-provider"), undefined);
 
+  // 目录里没有的 model id:整家只有一个已确认目标时沿用它;混合协议下不猜第一项,明确拒绝。
+  const sole = resolveBuiltinModelTarget("deepseek", "deepseek-v4-flash", undefined, [...targets.values()]);
+  assert.deepEqual(sole, {
+    ok: true,
+    target: { api: "openai-completions", baseUrl: "https://api.deepseek.com" },
+    source: "service-target",
+  });
+  const mixed = resolveBuiltinModelTarget("openrouter", "unknown/model", undefined, [
+    { api: "openai-completions", baseUrl: "https://openrouter.ai/api/v1" },
+    { api: "anthropic-messages", baseUrl: "https://openrouter.ai/api" },
+  ]);
+  assert.equal(mixed.ok, false);
+  if (!mixed.ok) {
+    assert.equal(mixed.failure.code, "target-ambiguous");
+    assert.match(mixed.failure.message, /openrouter:unknown\/model 的调用目标无法唯一确定/);
+    assert.match(mixed.failure.message, /自定义模型服务/);
+  }
+  // 模型自己那一行的目标优先于整家的集合,与目录排序无关。
+  const own = resolveBuiltinModelTarget(
+    "openrouter",
+    "anthropic/claude",
+    { api: "anthropic-messages", baseUrl: "https://openrouter.ai/api/" },
+    [{ api: "openai-completions", baseUrl: "https://openrouter.ai/api/v1" }],
+  );
+  assert.deepEqual(own, {
+    ok: true,
+    target: { api: "anthropic-messages", baseUrl: "https://openrouter.ai/api" },
+    source: "pi-catalog",
+  });
+
+  const target = sole.ok ? sole.target : undefined;
   const synthesized = synthesizeRuntimeModel(
     { kind: "builtin", provider: "deepseek", credential: "unused" },
     "deepseek-v4-flash",
@@ -491,7 +527,7 @@ test("内置候选用当前 Pi provider 目标验证只存在于模型补录的 
   }
 });
 
-test("内置候选用当前 Pi provider 目标验证最终发现快照里的模型", async () => {
+test("内置候选按最终发现快照里该模型自己的目标验证,不取整家首项", async () => {
   const credential = "builtin-inference-secret-must-not-leak";
   const modelId = "multireviewer-vendor-only-validation-133";
   const discovery: DiscoveredModel = {
@@ -534,7 +570,7 @@ test("内置候选用当前 Pi provider 目标验证最终发现快照里的模�
     );
     assert.deepEqual(result, { ok: true });
     assert.equal(calls.length, 1, "真实推理之外又发了别的请求");
-    assert.equal(calls[0]!.url, "https://openrouter.ai/api/v1/chat/completions");
+    assert.equal(calls[0]!.url, "https://vendor-only.example.test/v1/chat/completions");
     assert.equal(calls[0]!.auth, `Bearer ${credential}`);
     assert.equal(calls[0]!.body["model"], modelId);
     assert.equal(calls[0]!.body["stream"], true);

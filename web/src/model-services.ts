@@ -18,6 +18,7 @@ export type ModelUnavailableReason =
   | "provider-name-conflict"
   | "credential-unavailable"
   | "model-source-missing"
+  | "target-unresolved"
   | "model-disabled";
 export type ModelServiceNextAction =
   | "recover-service"
@@ -95,7 +96,10 @@ export type ModelService = {
     nextAction: ModelServiceNextAction | null;
   };
   providerState?: "normal" | "name-conflict";
+  /** 自定义服务配置的那一个目标;内置服务两项都是 null,看 `targets`。 */
   target?: { baseUrl: string | null; api: string | null };
+  /** 这一版绑定的全部调用目标:内置服务可含多种协议,自定义服务恰好一项,证明不了目标的旧版本为空。 */
+  targets?: { api: string; baseUrl: string }[];
   credential: {
     state: ModelCredentialState;
     last4?: string | null;

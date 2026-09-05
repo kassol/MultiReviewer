@@ -51,7 +51,8 @@ type BuiltinProvider = {
 type BuiltinPreview = {
   provider: string;
   expectedVersion: number | null;
-  target: { baseUrl: string; api: string };
+  /** 提交时要绑定的调用目标集合:发现结果各行自带的 api/baseUrl 去重排序后的那一份。 */
+  targets: { api: string; baseUrl: string }[];
   models: {
     identity: string;
     provider: string;
@@ -972,6 +973,38 @@ function DiscoveredModels({
   );
 }
 
+function protocolLabel(api: string): string {
+  return api === "openai-completions" || api === "openai-responses" || api === "anthropic-messages"
+    ? CUSTOM_PROTOCOL_LABEL[api]
+    : api;
+}
+
+/**
+ * 这一次要绑定的调用目标(ADR 0027)。同一家内置服务可以按模型走不同协议与地址,预览
+ * 与服务概览都按集合列出,每行一个「地址 + 协议」;每个模型用的是目录里它自己那一行的目标。
+ */
+function BoundTargets({ targets }: { targets: readonly { api: string; baseUrl: string }[] }) {
+  if (targets.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-1">
+      <Text as="p" size="2" weight="medium" color="gray">
+        本次绑定的调用目标（{targets.length}）
+      </Text>
+      <ul className="flex flex-col gap-1 rounded-lg border border-overlay-line px-4 py-2">
+        {targets.map((target) => (
+          <li key={`${target.api} ${target.baseUrl}`} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-base">
+            <MonoValue value={target.baseUrl} />
+            <span className="text-sm text-text-muted">{protocolLabel(target.api)}</span>
+          </li>
+        ))}
+      </ul>
+      {targets.length > 1 ? (
+        <p className="text-base text-text-muted">目录里没有、手填的 model id 无法在多个目标之间确定协议与地址，请改用自定义模型服务。</p>
+      ) : null}
+    </div>
+  );
+}
+
 export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -1022,6 +1055,7 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
             预览发现 <span className="font-mono tabular-nums">{activePreview.models.length}</span> 个模型；最终提交会重新发现并执行最小真实推理。
           </p>
         </div>
+        <BoundTargets targets={activePreview.targets} />
         <DiscoveredModels models={activePreview.models} selected={activeCandidate.validationModel} />
         <div className="flex flex-col gap-1.5">
           <EditableModelCombobox
@@ -1442,17 +1476,30 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
           action={<StatusBadge tone={providerTone}>{providerLabel}</StatusBadge>}
         />
         <CardSection>
-          {service.target === undefined ? (
+          {service.target === undefined || service.targets === undefined ? (
             <p className="text-base text-text-muted">地址与接口协议按模型读权限隐藏。</p>
-          ) : (
+          ) : service.type === "custom" ? (
             <InfoGrid>
               <InfoField label="调用目标"><MonoValue value={service.target.baseUrl} /></InfoField>
               <InfoField label="接口协议">
-                {service.type === "custom" && (
+                {(
                   service.target.api === "openai-completions" || service.target.api === "openai-responses" ||
                   service.target.api === "anthropic-messages"
                 ) ? CUSTOM_PROTOCOL_LABEL[service.target.api] : <MonoValue value={service.target.api} />}
               </InfoField>
+            </InfoGrid>
+          ) : service.targets.length === 0 ? (
+            <p className="text-base text-warning">这一版的调用目标无法确认，需要重新验证后才能使用模型凭据。</p>
+          ) : (
+            <InfoGrid>
+              {service.targets.map((target) => (
+                <InfoField key={`${target.api} ${target.baseUrl}`} label="调用目标">
+                  <span className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                    <MonoValue value={target.baseUrl} />
+                    <span className="text-sm text-text-muted"><MonoValue value={target.api} /></span>
+                  </span>
+                </InfoField>
+              ))}
             </InfoGrid>
           )}
         </CardSection>

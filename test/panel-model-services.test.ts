@@ -431,13 +431,12 @@ test("内置候选预览只凭凭据写权限发现并脱敏，且不创建服�
     const body = JSON.parse(text) as {
       provider: string;
       expectedVersion: number | null;
-      target: { baseUrl: string; api: string };
+      targets: { baseUrl: string; api: string }[];
       models: { identity: string; provider: string; id: string }[];
     };
     assert.equal(body.provider, "deepseek");
     assert.equal(body.expectedVersion, null);
-    assert.equal(body.target.baseUrl, "https://api.deepseek.com");
-    assert.equal(body.target.api, "openai-completions");
+    assert.deepEqual(body.targets, [{ api: "openai-completions", baseUrl: "https://api.deepseek.com" }]);
     assert.ok(body.models.length > 0);
     assert.ok(body.models.every((model) => model.provider === "deepseek"));
 
@@ -1182,6 +1181,7 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
     "references",
     "runCapability",
     "target",
+    "targets",
     "type",
     "version",
   ]);
@@ -1285,10 +1285,11 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
     },
   });
   const builtin = modelBody.services.find((entry) => entry["provider"] === "deepseek")!;
-  assert.deepEqual(builtin["target"], {
-    baseUrl: "https://api.deepseek.com",
-    api: "openai-completions",
-  });
+  // 升级前的内置版本:指纹与 Pi 内置表里 deepseek 唯一的目标对得上,这一版延续那个目标。
+  assert.deepEqual(builtin["target"], { baseUrl: null, api: null });
+  assert.deepEqual(builtin["targets"], [
+    { api: "openai-completions", baseUrl: "https://api.deepseek.com" },
+  ]);
   assert.deepEqual(builtin["directory"], {
     state: "discovery-failed",
     lastAttemptAt: "2026-08-20T02:00:00.000Z",
@@ -1347,10 +1348,9 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
   assert.equal(staleSupplement.unavailableReason, "model-source-missing");
   const pending = modelBody.services.find((entry) => entry["provider"] === "openrouter")!;
   assert.deepEqual(pending["credential"], { state: "pending-reverification" });
-  assert.deepEqual(pending["target"], {
-    baseUrl: "https://openrouter.ai/api/v1",
-    api: "openai-completions",
-  });
+  // 指纹 `target:openrouter` 与目录行、Pi 内置表的任何目标都对不上:证明不了就没有目标,不猜首项。
+  assert.deepEqual(pending["target"], { baseUrl: null, api: null });
+  assert.deepEqual(pending["targets"], []);
   const pendingModels = pending["models"] as {
     id: string;
     available: boolean;
@@ -1359,18 +1359,19 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
     runtime: Record<string, unknown>;
   }[];
   const pendingAutomatic = pendingModels.find((model) => model.id === "auto")!;
+  // 目标证明不了的版本只能看目录行自带的地址与协议(来源 Pi 目录),不拿 Pi 当前首项顶替。
   assert.deepEqual(pendingAutomatic.discovery, {
     name: "Committed Snapshot, Not Pi Cache",
     api: "openai-completions",
-    baseUrl: "https://openrouter.ai/api/v1",
+    baseUrl: "https://committed-snapshot.example/v1",
     input: ["image"],
     reasoning: false,
     contextWindow: 7777,
     maxOutput: 333,
     sources: {
       name: "pi-catalog",
-      api: "service-target",
-      baseUrl: "service-target",
+      api: "pi-catalog",
+      baseUrl: "pi-catalog",
       input: "pi-catalog",
       reasoning: "pi-catalog",
       contextWindow: "pi-catalog",
