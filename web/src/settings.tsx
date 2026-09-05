@@ -1,6 +1,6 @@
 /**
- * 审查策略页。模型组合与分批上限与批次并发数读取同一设置快照，但各自保存：失效模型只门禁组合写入，
- * 不连坐分批上限。组合候选与仓库覆盖共用 `ModelComposer` 的模型服务投影。
+ * 审查策略页。模型组合、分批上限、批次并发数与每批每模型取证上限读取同一设置快照，但各自保存：
+ * 失效模型只门禁组合写入，不连坐其余各项。组合候选与仓库覆盖共用 `ModelComposer` 的模型服务投影。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircledIcon, CrossCircledIcon } from "@radix-ui/react-icons";
@@ -36,10 +36,17 @@ type Settings = {
   maxFilesPerBatch: number;
   maxFilesPerBatchSource: "default" | "custom";
   maxFilesPerBatchVersion: number;
+  maxEvidenceCallsPerBatch: number;
+  maxEvidenceCallsPerBatchSource: "default" | "custom";
+  maxEvidenceCallsPerBatchVersion: number;
 };
 
-/** 分批上限与批次并发数同形：各自一个正整数、各自一份来源与版本，各自保存。 */
-type LimitField = "maxChangedLinesPerBatch" | "maxParallelBatches" | "maxFilesPerBatch";
+/** 分批上限、批次并发数与取证上限同形：各自一个正整数、各自一份来源与版本，各自保存。 */
+type LimitField =
+  | "maxChangedLinesPerBatch"
+  | "maxParallelBatches"
+  | "maxFilesPerBatch"
+  | "maxEvidenceCallsPerBatch";
 
 const LIMITS: {
   field: LimitField;
@@ -68,6 +75,13 @@ const LIMITS: {
     help: "一批最多包含多少个文件。文件数与改动行数任一超限即另起一批。",
     label: "每批最多文件数",
     inputId: "max-files-per-batch",
+  },
+  {
+    field: "maxEvidenceCallsPerBatch",
+    title: "每批每模型取证上限",
+    help: "一个模型在一批里最多派几次取证子代理。改了之后下一轮审查生效，已开跑的轮次沿用开跑时的值；单次取证内部的扇出上限不受它影响。",
+    label: "每批每模型最多取证次数",
+    inputId: "max-evidence-calls-per-batch",
   },
 ];
 
@@ -139,8 +153,8 @@ function ReadOnlySettings({ settings }: { settings: Settings }) {
       </Card>
       <Card size="2" className="flex flex-col gap-3">
         <div>
-          <h2 className="text-2xl font-bold tracking-[-0.015em]">分批上限与批次并发数</h2>
-          <p className="mt-0.5 text-text-muted">每轮审查如何拆分改动、同时跑几批。</p>
+          <h2 className="text-2xl font-bold tracking-[-0.015em]">分批上限、批次并发数与取证上限</h2>
+          <p className="mt-0.5 text-text-muted">每轮审查如何拆分改动、同时跑几批、每批每模型最多取证几次。</p>
         </div>
         <div className="space-y-2">
           {LIMITS.map((limit) => (
@@ -256,7 +270,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
   );
 }
 
-/** 一项分批上限的编辑区。三项同形，各持自己的版本、来源与反馈，各自保存。 */
+/** 一项正整数上限的编辑区。四项同形，各持自己的版本、来源与反馈，各自保存。 */
 function LimitSection({
   settings,
   limit: { field, title, help, label, inputId },

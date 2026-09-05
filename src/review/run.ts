@@ -99,6 +99,8 @@ export type ReviewRunPlan = Readonly<{
   maxFilesPerBatch: number;
   /** 同时在跑的批次数上限(issue #230)。批次受限并行按它开闸(issue #232)。 */
   maxParallelBatches: number;
+  /** 每批每模型的取证次数上限(issue #258)。Reviewer 子进程按它设取证会话上限。 */
+  maxEvidenceCallsPerBatch: number;
   reviewerPins: readonly ReviewRunReviewerPin[];
   /** 本轮冻结的知识集版本(issue #204)。仓库还没确认过知识集时为 null。 */
   ruleSetVersion: number | null;
@@ -116,11 +118,15 @@ export type ReviewRunPlan = Readonly<{
 /** 从启动时的配置快照生成一次运行计划。复制 Reviewer 列表,使组合的后续改动只影响下一轮。 */
 export function createReviewRunPlan(
   reviewers: readonly Reviewer[],
-  /** 本轮冻结的分批上限与批次并发数(issue #230)。三项同形,一起取一起冻。 */
+  /**
+   * 本轮冻结的分批上限、批次并发数(issue #230)与每批每模型取证上限(issue #258)。
+   * 四项同形,一起取一起冻。
+   */
   batchLimits: {
     maxChangedLinesPerBatch: number;
     maxFilesPerBatch: number;
     maxParallelBatches: number;
+    maxEvidenceCallsPerBatch: number;
   },
   reviewerPins: readonly ReviewRunReviewerPin[],
   /**
@@ -162,6 +168,11 @@ export type ReviewRunDeps = {
   maxFilesPerBatch?: number;
   /** 同时在跑的批次数上限。不传取 `DEFAULT_MAX_PARALLEL_BATCHES`。 */
   maxParallelBatches?: number;
+  /**
+   * 每批每模型的取证次数上限(issue #258)。不传即不交给 Reviewer,由它的实现取系统
+   * 默认——编排层不知道取证的默认值,那是 `reviewer/` 的事。
+   */
+  maxEvidenceCallsPerBatch?: number;
   /** 本轮固定的非秘密模型服务审计快照。 */
   reviewerPins?: readonly ReviewRunReviewerPin[];
   /** 手动重跑的调用者用户名快照;自动投递不传。 */
@@ -1734,6 +1745,10 @@ export async function runReview(
               // 完整审查不带这一项(issue #242):Reviewer 收到的请求形状与这一票之前
               // 逐字一致,只复核那一轮才多出模式。
               ...(verdictOnly ? { mode: "verdict-only" as const } : {}),
+              // 取证上限每批同一份(issue #258):它是开跑时冻结的策略值,与本批无关。
+              ...(deps.maxEvidenceCallsPerBatch === undefined
+                ? {}
+                : { maxEvidenceCallsPerBatch: deps.maxEvidenceCallsPerBatch }),
               onEvent: (event) => {
                 const { kind, ...payload } = event;
                 // 事件带上批次序号(issue #232):批次并行之后同一个模型几批的事件在

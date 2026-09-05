@@ -99,7 +99,10 @@ function worktree(): string {
   return dir;
 }
 
-async function reviewWithStub(turns: readonly StubTurn[]) {
+async function reviewWithStub(
+  turns: readonly StubTurn[],
+  extra: { maxEvidenceCallsPerBatch?: number } = {},
+) {
   const stub = await startModelStub(turns);
   const events: ReviewerEvent[] = [];
   try {
@@ -110,6 +113,7 @@ async function reviewWithStub(turns: readonly StubTurn[]) {
       commentable: { "src.ts": [{ start: 1, end: 1 }] },
       history: [],
       onEvent: (event) => events.push(event),
+      ...extra,
     });
     return { outcome, events, requests: stub.requests };
   } finally {
@@ -270,4 +274,60 @@ test("经 runReview 落库后,用量进所属 Reviewer 那一行与本轮总量"
   } finally {
     store.close();
   }
+});
+
+/** 同一批里连派两次取证:第一次的四段响应,第二次只多父会话再派与子会话两段,最后父会话收尾。 */
+function twoEvidenceTurns(): StubTurn[] {
+  const [first, childRead, childReport] = evidenceTurns(PLAIN_USAGE);
+  return [
+    first!,
+    childRead!,
+    childReport!,
+    {
+      text: "再派一次核对另一个调用方",
+      toolCall: {
+        name: EVIDENCE_TOOL,
+        args: { agent: EVIDENCE_AGENT, task: `再读一遍 ${TARGET_FILE}` },
+      },
+      usage: { input: 5, output: 2 },
+    },
+    childRead!,
+    childReport!,
+    { text: "两次证据都核对完毕", usage: { input: 6, output: 3 } },
+  ];
+}
+
+function evidenceCalls(events: readonly ReviewerEvent[]) {
+  return events.filter(
+    (event): event is Extract<ReviewerEvent, { kind: "tool_call" }> =>
+      event.kind === "tool_call" && event.tool === EVIDENCE_TOOL,
+  );
+}
+
+test("上限设 1 时同一批第 2 次取证被拒,文案说明配额用尽(issue #258)", async () => {
+  const turns = twoEvidenceTurns();
+  // 第二次被拒,子会话不再起来:去掉第二组子会话的两段,父会话直接收到拒绝再收尾。
+  const { outcome, events, requests } = await reviewWithStub(
+    [turns[0]!, turns[1]!, turns[2]!, turns[3]!, turns[6]!],
+    { maxEvidenceCallsPerBatch: 1 },
+  );
+
+  assert.equal(outcome.failure, undefined, `Reviewer 失败: ${outcome.failure}`);
+  assert.equal(requests.length, 5, "被拒的第二次不该再起子会话");
+  const calls = evidenceCalls(events);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0]!.isError, false, `第一次取证被拒: ${calls[0]!.error}`);
+  assert.equal(calls[1]!.isError, true, "第二次取证该被会话上限拒掉");
+  assert.match(calls[1]!.error ?? "", /spawn limit reached for this session/i);
+  assert.match(calls[1]!.error ?? "", /1\/1 used/);
+});
+
+test("不给上限时沿用默认 3,同一批第 2 次取证照常派出", async () => {
+  const { outcome, events, requests } = await reviewWithStub(twoEvidenceTurns());
+
+  assert.equal(outcome.failure, undefined, `Reviewer 失败: ${outcome.failure}`);
+  assert.equal(requests.length, 7);
+  const calls = evidenceCalls(events);
+  assert.equal(calls.length, 2);
+  for (const call of calls) assert.equal(call.isError, false, `取证被拒: ${call.error}`);
 });

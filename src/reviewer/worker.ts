@@ -437,13 +437,17 @@ async function run(request: ReviewerRequest): Promise<void> {
   }
   const { agentDir, apiKey, model, modelRuntime, settingsManager, resourceLoader } = prepared;
 
-  // 取证子代理的铺装(issue #226)。知识注入与 Reviewer 拿到的是同一批条目。
+  // 取证子代理的铺装(issue #226)。知识注入与 Reviewer 拿到的是同一批条目;会话上限是
+  // 本轮运行计划冻结的那一格(issue #258),不带即系统默认。
   installEvidenceKit({
     agentDir,
     runtimeModel: request.runtimeModel,
     thinkingLevel,
     rules: request.rules ?? [],
     facts: request.facts ?? [],
+    ...(request.maxEvidenceCallsPerBatch === undefined
+      ? {}
+      : { sessionBudget: request.maxEvidenceCallsPerBatch }),
   });
 
   const { session } = await createAgentSession({

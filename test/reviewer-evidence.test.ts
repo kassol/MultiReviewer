@@ -147,7 +147,7 @@ test("能力天花板写死在代码里,不从会话工具面透传", () => {
   assert.ok(agentDir);
 });
 
-test("取证受两道上限约束:一次会话 3 次,单次调用内 fan-out 8", () => {
+test("取证受两道上限约束:一次会话默认 3 次,单次调用内 fan-out 8", () => {
   install();
   // 会话上限管的是这个 Reviewer 子进程一共派几次取证,即每批每模型的总量。
   assert.equal(EVIDENCE_SESSION_BUDGET, 3);
@@ -155,6 +155,26 @@ test("取证受两道上限约束:一次会话 3 次,单次调用内 fan-out 8",
   // fan-out 上限管的是一次 subagent 调用内部展开几个子任务,每次调用重新计数。
   assert.equal(EVIDENCE_FANOUT_BUDGET, 8);
   assert.equal(process.env["PI_SUBAGENT_MAX_SPAWNS_PER_RUN"], "8");
+});
+
+test("会话上限按运行计划冻结的那一格设,只动这一个环境变量(issue #258)", () => {
+  const byDefault = install();
+  const defaults = ["settings.json", "extensions/subagent/config.json", "models.json", `agents/${EVIDENCE_AGENT}.md`]
+    .map((file) => read(byDefault, ...file.split("/")));
+
+  const tuned = install({ sessionBudget: 1 });
+  assert.equal(process.env["PI_SUBAGENT_MAX_SPAWNS_PER_SESSION"], "1");
+  // 扇出上限与铺进 agentDir 的每个文件都与默认铺装逐字相同:策略只改会话总量。
+  assert.equal(process.env["PI_SUBAGENT_MAX_SPAWNS_PER_RUN"], "8");
+  assert.deepEqual(
+    ["settings.json", "extensions/subagent/config.json", "models.json", `agents/${EVIDENCE_AGENT}.md`]
+      .map((file) => read(tuned, ...file.split("/"))),
+    defaults,
+  );
+
+  // 显式给 3 与不给一个样。
+  install({ sessionBudget: 3 });
+  assert.equal(process.env["PI_SUBAGENT_MAX_SPAWNS_PER_SESSION"], "3");
 });
 
 test("系统提示写明取证名额有限", () => {

@@ -349,6 +349,12 @@ export type ReviewerInput = {
    */
   mode?: ReviewRunMode;
   /**
+   * 每批每模型的取证次数上限(CONTEXT.md 审查策略,issue #258):本轮运行计划开跑时
+   * 冻结的那一格,每一批给同一份。不传即 Reviewer 实现自己的系统默认,请求形状与这一票
+   * 之前逐字一致。
+   */
+  maxEvidenceCallsPerBatch?: number;
+  /**
    * 收这个 Reviewer 的过程事件(issue #171),编排层一定传,一条即写一条轨迹。
    * 声明成可选是给直接调 `review` 的调用方留的余地:不看过程的地方不必造一个空回调。
    */

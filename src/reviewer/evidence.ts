@@ -14,8 +14,10 @@
  *   ——那是半可信输入,agent 定义里写 `tools: bash` 就能把只读会话变成可写会话。
  * - **spawn 预算**:两道,作用域不同,不要互相顶替。`PI_SUBAGENT_MAX_SPAWNS_PER_SESSION`
  *   限一个 Reviewer 子进程一次会话累计派几次取证(即每批每模型),取证是针对存疑 Finding
- *   的定向动作,一批超过 3 次说明在滥派;`PI_SUBAGENT_MAX_SPAWNS_PER_RUN` 限的是单次
- *   `subagent` 调用内部展开的子任务数,每次调用重新计数,挡的是一次调用扇出过宽。
+ *   的定向动作,一批派太多次就是在滥派;它的值是审查策略的一格(issue #258),默认 3,
+ *   随运行计划在开跑时冻结、经 `ReviewerRequest.maxEvidenceCallsPerBatch` 进到这里;
+ *   `PI_SUBAGENT_MAX_SPAWNS_PER_RUN` 限的是单次 `subagent` 调用内部展开的子任务数,
+ *   每次调用重新计数,挡的是一次调用扇出过宽,写死不进策略。
  *
  * 子会话与 Reviewer 同模型同凭据同思考档位:子代理跑在另一个 pi 进程里,读不到本进程内存
  * 里注册的那一项模型,因此把同一份运行模型另写一份 `models.json`;凭据写的是环境变量引用
@@ -42,7 +44,10 @@ export const EVIDENCE_TOOL = "subagent";
 /** 唯一的自定义取证 agent。内置 agent 全部禁用,能力天花板也只放行这一个名字。 */
 export const EVIDENCE_AGENT = "evidence";
 
-/** 一个 Reviewer 子进程一次会话的取证次数上限,即每批每模型的总量(ADR 0021)。 */
+/**
+ * 一个 Reviewer 子进程一次会话的取证次数上限,即每批每模型的总量(ADR 0021)。这是系统
+ * 默认值:审查策略里「每批每模型取证上限」没配自定义值时用它(issue #258)。
+ */
 export const EVIDENCE_SESSION_BUDGET = 3;
 
 /** 单次 `subagent` 调用内部的 fan-out 上限,每次调用重新计数(ADR 0021)。 */
@@ -189,7 +194,8 @@ ${knowledge}`;
 }
 
 /**
- * 把取证子代理铺进这个会话的临时 agentDir,并设好它的两个环境闸。
+ * 把取证子代理铺进这个会话的临时 agentDir,并设好它的两个环境闸。会话上限取本轮运行计划
+ * 冻结的那个数,不给即系统默认(issue #258);扇出上限写死。
  *
  * 调用点在 `prepareAgentRuntime` 之后、`createAgentSession` 之前:`models.json` 要在主进程
  * 的模型运行时建好之后再写,免得它反过来盖掉内存里已经注册好的那一项模型;而 agent 定义
@@ -201,6 +207,8 @@ export function installEvidenceKit(options: {
   thinkingLevel: ThinkingLevel;
   rules: readonly ReviewRule[];
   facts: readonly ProjectFact[];
+  /** 每批每模型的取证次数上限。不给即 `EVIDENCE_SESSION_BUDGET`。 */
+  sessionBudget?: number;
 }): void {
   const { agentDir } = options;
   writeFileSync(
@@ -229,7 +237,7 @@ export function installEvidenceKit(options: {
       facts: options.facts,
     }),
   );
-  process.env[SESSION_BUDGET_ENV] = String(EVIDENCE_SESSION_BUDGET);
+  process.env[SESSION_BUDGET_ENV] = String(options.sessionBudget ?? EVIDENCE_SESSION_BUDGET);
   process.env[FANOUT_BUDGET_ENV] = String(EVIDENCE_FANOUT_BUDGET);
   process.env[CAPABILITY_CEILING_ENV] = encodeEvidenceCeiling();
 }

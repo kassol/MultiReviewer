@@ -437,9 +437,9 @@ CREATE INDEX IF NOT EXISTS rule_trace_by_repo ON rule_trace(repo_id);
 
 
 -- 审查策略,一项一行。reviewers 是全局模型组合,与 repo.reviewers 同构(ReviewerSpec
--- 的 JSON 数组);max_changed_lines_per_batch、max_parallel_batches 与 max_files_per_batch
--- 都是正整数的字符串形,缺行即取默认值。每一项各有一个独立的 *_version 键;历史库没有版本
--- 键时按版本 1 读,首次写入再落版本键。
+-- 的 JSON 数组);max_changed_lines_per_batch、max_parallel_batches、max_files_per_batch
+-- 与 max_evidence_calls_per_batch 都是正整数的字符串形,缺行即取默认值。每一项各有一个
+-- 独立的 *_version 键;历史库没有版本键时按版本 1 读,首次写入再落版本键。
 -- 库是唯一的配置面(issue #66),没有配置文件与它竞争。
 CREATE TABLE IF NOT EXISTS global_setting (
   key TEXT PRIMARY KEY,
@@ -712,14 +712,18 @@ const ADD_INDEXES = [
 const GLOBAL_REVIEWERS_KEY = "reviewers";
 const GLOBAL_REVIEWERS_VERSION_KEY = "reviewers_version";
 
-/** 分批上限与批次并发数各自的设置键与版本键(issue #230)。三项同形,读写只写一份。 */
+/**
+ * 分批上限、批次并发数(issue #230)与每批每模型取证上限(issue #258)各自的设置键与
+ * 版本键。四项同形,读写只写一份。
+ */
 const BATCH_LIMIT_KEYS = {
   maxChangedLinesPerBatch: ["max_changed_lines_per_batch", "max_changed_lines_per_batch_version"],
   maxParallelBatches: ["max_parallel_batches", "max_parallel_batches_version"],
   maxFilesPerBatch: ["max_files_per_batch", "max_files_per_batch_version"],
+  maxEvidenceCallsPerBatch: ["max_evidence_calls_per_batch", "max_evidence_calls_per_batch_version"],
 } as const;
 
-/** 分批上限里的哪一项。 */
+/** 审查策略里按正整数各自保存的哪一项。 */
 export type BatchLimitField = keyof typeof BATCH_LIMIT_KEYS;
 
 /**
@@ -1222,6 +1226,8 @@ export type ReviewRunStoreSnapshot = Readonly<{
   /** 本轮冻结的另外两项分批上限(issue #230)。null 即取编排层的默认值。 */
   maxParallelBatches: number | null;
   maxFilesPerBatch: number | null;
+  /** 本轮冻结的每批每模型取证上限(issue #258)。null 即取 Reviewer 的系统默认。 */
+  maxEvidenceCallsPerBatch: number | null;
   modelServices: readonly ModelServiceRecord[];
   /**
    * 本轮要冻结的知识集版本(issue #204)。仓库还没确认过知识集时为 null。与模型服务
@@ -1318,6 +1324,9 @@ export type GlobalSettings = {
   /** 一批最多多少个文件,null 即取编排层的默认值(issue #230)。 */
   maxFilesPerBatch: number | null;
   maxFilesPerBatchVersion: number;
+  /** 每批每模型的取证次数上限,null 即取 Reviewer 的系统默认(issue #258)。 */
+  maxEvidenceCallsPerBatch: number | null;
+  maxEvidenceCallsPerBatchVersion: number;
 };
 
 /** 注册表里的一个仓库。`reviewersJson` 是模型覆盖的 JSON,null 即跟随全局。 */
@@ -3820,6 +3829,7 @@ export function openStore(dbPath: string): Store {
       const changedLines = limit("maxChangedLinesPerBatch");
       const parallel = limit("maxParallelBatches");
       const files = limit("maxFilesPerBatch");
+      const evidence = limit("maxEvidenceCallsPerBatch");
       return {
         reviewersJson: values.get(GLOBAL_REVIEWERS_KEY) ?? null,
         reviewersVersion: Number(values.get(GLOBAL_REVIEWERS_VERSION_KEY) ?? 1),
@@ -3829,6 +3839,8 @@ export function openStore(dbPath: string): Store {
         maxParallelBatchesVersion: parallel.version,
         maxFilesPerBatch: files.value,
         maxFilesPerBatchVersion: files.version,
+        maxEvidenceCallsPerBatch: evidence.value,
+        maxEvidenceCallsPerBatchVersion: evidence.version,
       };
     },
 
@@ -3857,6 +3869,7 @@ export function openStore(dbPath: string): Store {
           maxChangedLinesPerBatch: settings.maxChangedLinesPerBatch,
           maxParallelBatches: settings.maxParallelBatches,
           maxFilesPerBatch: settings.maxFilesPerBatch,
+          maxEvidenceCallsPerBatch: settings.maxEvidenceCallsPerBatch,
           modelServices: Object.freeze(modelServices),
           ruleSetVersion: ruleSet?.version ?? null,
           // 两型在同一份快照里按 type 分开(issue #221):注入时各走各的模板,冻结的

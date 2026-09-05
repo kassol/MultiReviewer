@@ -16,6 +16,7 @@ import {
   DEFAULT_MAX_PARALLEL_BATCHES,
 } from "../src/review/batch.ts";
 import { openStore } from "../src/review/store.ts";
+import { EVIDENCE_SESSION_BUDGET } from "../src/reviewer/evidence.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
@@ -43,9 +44,12 @@ type SettingsBody = {
   maxFilesPerBatch: number;
   maxFilesPerBatchSource: "default" | "custom";
   maxFilesPerBatchVersion: number;
+  maxEvidenceCallsPerBatch: number;
+  maxEvidenceCallsPerBatchSource: "default" | "custom";
+  maxEvidenceCallsPerBatchVersion: number;
 };
 
-/** 并发数与文件数上限在下面这些用例里一次都没被改过,读回来恒是这一份。 */
+/** 并发数、文件数上限与取证上限在下面这些用例里一次都没被改过,读回来恒是这一份。 */
 const UNTOUCHED_BATCH_LIMITS = {
   maxParallelBatches: DEFAULT_MAX_PARALLEL_BATCHES,
   maxParallelBatchesSource: "default",
@@ -53,6 +57,9 @@ const UNTOUCHED_BATCH_LIMITS = {
   maxFilesPerBatch: DEFAULT_MAX_FILES_PER_BATCH,
   maxFilesPerBatchSource: "default",
   maxFilesPerBatchVersion: 1,
+  maxEvidenceCallsPerBatch: EVIDENCE_SESSION_BUDGET,
+  maxEvidenceCallsPerBatchSource: "default",
+  maxEvidenceCallsPerBatchVersion: 1,
 };
 
 async function readSettings(h: PanelHarness): Promise<SettingsBody> {
@@ -356,7 +363,7 @@ test("非法的 reviewers 被既有校验拒绝,报错标注来源是全局这�
   });
 });
 
-type LimitField = "maxParallelBatches" | "maxFilesPerBatch";
+type LimitField = "maxParallelBatches" | "maxFilesPerBatch" | "maxEvidenceCallsPerBatch";
 
 async function putBatchLimit(
   h: PanelHarness,
@@ -394,6 +401,9 @@ test("批次并发数与文件数上限各自独立读写,版本各推各的", a
     maxFilesPerBatch: 12,
     maxFilesPerBatchSource: "custom",
     maxFilesPerBatchVersion: 2,
+    maxEvidenceCallsPerBatch: EVIDENCE_SESSION_BUDGET,
+    maxEvidenceCallsPerBatchSource: "default",
+    maxEvidenceCallsPerBatchVersion: 1,
   });
 
   // 陈旧写只冲突目标项,另外两项一个都不动。
@@ -426,9 +436,9 @@ test("一个请求仍然只能改一项审查策略", async () => {
   assert.equal(settings.maxFilesPerBatchSource, "default");
 });
 
-test("批次并发数与文件数上限不是正整数时拒绝", async () => {
+test("批次并发数、文件数上限与取证上限不是正整数时拒绝", async () => {
   const h = await startPanelHarness(cleanups);
-  for (const field of ["maxParallelBatches", "maxFilesPerBatch"] as const) {
+  for (const field of ["maxParallelBatches", "maxFilesPerBatch", "maxEvidenceCallsPerBatch"] as const) {
     for (const value of [0, -1, 1.5, "3"]) {
       const response = await putBatchLimit(h, field, value);
       assert.equal(response.status, 400, `${field} 的 ${String(value)} 应被拒绝`);
@@ -437,17 +447,24 @@ test("批次并发数与文件数上限不是正整数时拒绝", async () => {
   }
 });
 
-test("Run 快照冻结三项分批上限,开跑后改设置不影响本轮", async () => {
+test("Run 快照冻结分批上限、并发数与取证上限,开跑后改设置不影响本轮", async () => {
   const h = await startPanelHarness(cleanups);
   seedHistoricalRepo(h);
   assert.equal((await putBatchLimit(h, "maxParallelBatches", 5)).status, 200);
   assert.equal((await putBatchLimit(h, "maxFilesPerBatch", 12)).status, 200);
+  assert.equal((await putBatchLimit(h, "maxEvidenceCallsPerBatch", 4)).status, 200);
 
   const store = openStore(h.db.path);
   try {
     const frozen = store.getReviewRunSnapshot(GITEA_REPO.id);
     assert.equal(frozen.maxParallelBatches, 5);
     assert.equal(frozen.maxFilesPerBatch, 12);
+    assert.equal(frozen.maxEvidenceCallsPerBatch, 4);
+
+    // 取证上限也是这一轮的:快照取出之后再改,已经开跑的这一轮读到的还是 4。
+    assert.equal((await putBatchLimit(h, "maxEvidenceCallsPerBatch", 1)).status, 200);
+    assert.equal(frozen.maxEvidenceCallsPerBatch, 4);
+    assert.equal(store.getReviewRunSnapshot(GITEA_REPO.id).maxEvidenceCallsPerBatch, 1);
 
     // 这一轮已经拿到快照;之后改设置只影响下一次取快照。
     assert.equal((await putBatchLimit(h, "maxFilesPerBatch", 1)).status, 200);
@@ -670,4 +687,42 @@ test("思考档位随模型组合与仓库覆盖一起读写,取值不认得或�
     ])).status,
     200,
   );
+});
+
+test("每批每模型取证上限独立读写,升级前的库读出默认 3", async () => {
+  const h = await startPanelHarness(cleanups);
+  // harness 的库从没写过这一格,与升级前的库同一形态:读出来是系统默认、版本 1。
+  const initial = await readSettings(h);
+  assert.equal(initial.maxEvidenceCallsPerBatch, 3);
+  assert.equal(initial.maxEvidenceCallsPerBatch, EVIDENCE_SESSION_BUDGET);
+  assert.equal(initial.maxEvidenceCallsPerBatchSource, "default");
+  assert.equal(initial.maxEvidenceCallsPerBatchVersion, 1);
+  // 库里确实没有这一行,不是写了一个 3 进去。
+  const store = openStore(h.db.path);
+  try {
+    assert.equal(store.getGlobalSettings().maxEvidenceCallsPerBatch, null);
+  } finally {
+    store.close();
+  }
+
+  const raised = await putBatchLimit(h, "maxEvidenceCallsPerBatch", 4);
+  assert.equal(raised.status, 200);
+  const after = (await raised.json()) as SettingsBody;
+  assert.equal(after.maxEvidenceCallsPerBatch, 4);
+  assert.equal(after.maxEvidenceCallsPerBatchSource, "custom");
+  assert.equal(after.maxEvidenceCallsPerBatchVersion, 2);
+  // 只推自己的版本,另外三项一个都不动。
+  assert.equal(after.maxParallelBatchesVersion, 1);
+  assert.equal(after.maxFilesPerBatchVersion, 1);
+  assert.equal(after.maxChangedLinesPerBatchVersion, 1);
+
+  const stale = await h.api("PUT", "/settings", { maxEvidenceCallsPerBatch: 5, expectedVersion: 1 });
+  assert.equal(stale.status, 409);
+
+  const reset = await putBatchLimit(h, "maxEvidenceCallsPerBatch", null);
+  assert.equal(reset.status, 200);
+  const restored = await readSettings(h);
+  assert.equal(restored.maxEvidenceCallsPerBatch, EVIDENCE_SESSION_BUDGET);
+  assert.equal(restored.maxEvidenceCallsPerBatchSource, "default");
+  assert.equal(restored.maxEvidenceCallsPerBatchVersion, 3);
 });
