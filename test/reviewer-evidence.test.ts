@@ -1,9 +1,10 @@
 /**
- * 取证子代理的铺装内容与它的两道闸(issue #226,ADR 0021)。
+ * 取证子代理的铺装内容与它的几道闸(issue #226,ADR 0021)。
  *
- * 断言的是铺进 agentDir 的那几个文件与两个环境变量——它们就是「子代理能做什么」的全部
- * 依据,pi-subagents 在派出之前读的正是这几处。会不会真的派、报告长什么样是模型契约,
- * 由 `reviewer-smoke.test.ts` 的 opt-in 用例守。
+ * 断言的是铺进 agentDir 的那几个文件、两个环境变量与工具边界那道钩子——它们就是「子代理
+ * 能做什么」的全部依据,pi-subagents 在派出之前读的正是这几处。会不会真的派、报告长什么样
+ * 是模型契约,由 `reviewer-smoke.test.ts` 的 opt-in 用例守;这几道闸在真实 SDK 上是否生效
+ * 由 `reviewer-evidence-session.test.ts` 守。
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -16,11 +17,13 @@ import {
   EVIDENCE_AGENT,
   EVIDENCE_FANOUT_BUDGET,
   EVIDENCE_SESSION_BUDGET,
-  encodeEvidenceCeiling,
+  EVIDENCE_TOOL,
   evidenceAgentDefinition,
   evidenceCeiling,
+  evidenceContractExtension,
   evidenceTranscriptEvents,
   installEvidenceKit,
+  registerEvidenceCeiling,
   vendoredSubagentsPath,
 } from "../src/reviewer/evidence.ts";
 import type { RuntimeModel } from "../src/reviewer/model-service-runtime.ts";
@@ -128,23 +131,93 @@ test("取证 agent 与 Reviewer 同模型同凭据同思考档位", () => {
 test("能力天花板写死在代码里,不从会话工具面透传", () => {
   // 白名单是常量:Reviewer 那一面多一个工具,子代理的工具面不该跟着长。
   assert.deepEqual(evidenceCeiling(), {
-    version: 1,
     allowedTools: ["find", "grep", "ls", "read"],
     allowedAgents: [EVIDENCE_AGENT],
     denyExtensions: true,
-    sources: ["multireviewer"],
+  });
+  // 工作副本是半可信输入:被审仓库自带的 agent 定义即使被读到,也不在放行名单里。
+  assert.ok(!evidenceCeiling().allowedTools.includes("subagent"));
+  assert.ok(!evidenceCeiling().allowedTools.includes("report_finding"));
+});
+
+/** pi-subagents 派出前查的那张表(`capability-ceiling.ts` 的 `registry()`),按会话 id 取。 */
+function ceilingRegistrations(sessionId: string): { source: string; ceiling: unknown }[] {
+  const store = globalThis as typeof globalThis & { [key: symbol]: unknown };
+  const registry = store[Symbol.for("pi-subagents.capability-ceiling.v1")];
+  assert.ok(registry instanceof Map, "登记表不在 globalThis 上");
+  const session = (registry as Map<string, Map<symbol, { source: string; ceiling: unknown }>>).get(sessionId);
+  return session === undefined ? [] : [...session.values()];
+}
+
+test("天花板登记到父会话名下,形状与 pi-subagents 自己写下的同形,重复登记只留一条(issue #262)", () => {
+  registerEvidenceCeiling("session-262");
+  registerEvidenceCeiling("session-262");
+  assert.deepEqual(ceilingRegistrations("session-262"), [
+    {
+      source: "multireviewer",
+      ceiling: {
+        version: 1,
+        allowedTools: ["find", "grep", "ls", "read"],
+        allowedAgents: [EVIDENCE_AGENT],
+        denyExtensions: true,
+        sources: ["multireviewer"],
+      },
+    },
+  ]);
+  assert.deepEqual(ceilingRegistrations("session-other"), []);
+});
+
+/** 一个只收 `tool_call` 钩子的假 ExtensionAPI,足够驱动契约扩展。 */
+function toolCallHook(): (event: { toolName: string; input: Record<string, unknown> }, ctx: unknown) => unknown {
+  let handler: ((event: unknown, ctx: unknown) => unknown) | undefined;
+  const pi = {
+    on: (name: string, fn: (event: unknown, ctx: unknown) => unknown) => {
+      if (name === "tool_call") handler = fn;
+    },
+  };
+  const extension = evidenceContractExtension();
+  assert.ok(typeof extension === "object" && "factory" in extension, "契约扩展要带名字");
+  extension.factory(pi as never);
+  assert.ok(handler, "契约扩展没有挂 tool_call 钩子");
+  return (event, ctx) => handler!(event, ctx);
+}
+
+test("工具边界钉死取证契约:intercomBridge 与 async 按契约改写,天花板按会话登记,别的工具不动(issue #262)", () => {
+  const hook = toolCallHook();
+  const ctx = { sessionManager: { getSessionFile: () => undefined, getSessionId: () => "session-hook" } };
+
+  // 模型显式要求开桥、走后台:两项都被改回契约值,任务本身原样保留。
+  const evidence = {
+    toolName: EVIDENCE_TOOL,
+    input: { agent: EVIDENCE_AGENT, task: "查调用方", intercomBridge: { mode: "always" }, async: true },
+  };
+  assert.equal(hook(evidence, ctx), undefined, "不拒调用,只改参数");
+  assert.deepEqual(evidence.input, {
+    agent: EVIDENCE_AGENT,
+    task: "查调用方",
+    intercomBridge: { mode: "off" },
+    async: false,
+  });
+  assert.equal(ceilingRegistrations("session-hook").length, 1);
+
+  // 没写这两项的调用同样钉上:省参调用的默认也不留给 pi-subagents 的 config 去猜。
+  const plain = { toolName: EVIDENCE_TOOL, input: { agent: EVIDENCE_AGENT, task: "查调用方" } };
+  hook(plain, ctx);
+  assert.deepEqual(plain.input, {
+    agent: EVIDENCE_AGENT,
+    task: "查调用方",
+    intercomBridge: { mode: "off" },
+    async: false,
   });
 
-  const agentDir = install();
-  const encoded = process.env["PI_SUBAGENT_CAPABILITY_CEILING_V1"];
-  assert.equal(encoded, encodeEvidenceCeiling());
-  const decoded = JSON.parse(Buffer.from(encoded!, "base64url").toString("utf8"));
-  assert.deepEqual(decoded, evidenceCeiling());
-  // 工作副本是半可信输入:被审仓库自带的 agent 定义即使被读到,也不在放行名单里。
-  assert.deepEqual(decoded.allowedAgents, [EVIDENCE_AGENT]);
-  assert.ok(!decoded.allowedTools.includes("subagent"));
-  assert.ok(!decoded.allowedTools.includes("report_finding"));
-  assert.ok(agentDir);
+  // 有会话文件时登记在文件路径名下:pi-subagents 查表用的就是它。
+  hook(plain, { sessionManager: { getSessionFile: () => "/tmp/s.jsonl", getSessionId: () => "id" } });
+  assert.equal(ceilingRegistrations("/tmp/s.jsonl").length, 1);
+
+  // 别的工具的参数原样通过。
+  const read = { toolName: "read", input: { path: "a.ts", async: true } };
+  hook(read, ctx);
+  assert.deepEqual(read.input, { path: "a.ts", async: true });
 });
 
 test("取证受两道上限约束:一次会话默认 3 次,单次调用内 fan-out 8", () => {
@@ -155,6 +228,11 @@ test("取证受两道上限约束:一次会话默认 3 次,单次调用内 fan-o
   // fan-out 上限管的是一次 subagent 调用内部展开几个子任务,每次调用重新计数。
   assert.equal(EVIDENCE_FANOUT_BUDGET, 8);
   assert.equal(process.env["PI_SUBAGENT_MAX_SPAWNS_PER_RUN"], "8");
+});
+
+test("模型排除表指进这次会话的 agentDir,不落宿主 tmp(issue #262)", () => {
+  const agentDir = install();
+  assert.equal(process.env["PI_MODEL_EXCLUSIONS_PATH"], join(agentDir, "model-exclusions.json"));
 });
 
 test("会话上限按运行计划冻结的那一格设,只动这一个环境变量(issue #258)", () => {
@@ -292,12 +370,14 @@ test("transcript 读不到或形状认不出时回空,取证本身照常", () =>
   ]);
 });
 
-test("铺装写下 asyncByDefault=false,agent 定义带 async:false——取证默认前台", () => {
+test("铺装写下 asyncByDefault=false 与 intercomBridge=off,agent 定义带 async:false——取证默认前台、不开桥", () => {
   const agentDir = install();
   const config = JSON.parse(
     readFileSync(join(agentDir, "extensions", "subagent", "config.json"), "utf8"),
   );
   assert.equal(config.asyncByDefault, false);
+  // 桥开着子会话会多一个 contact_supervisor,超出只读四件套(issue #262)。
+  assert.deepEqual(config.intercomBridge, { mode: "off" });
   const definition = readFileSync(join(agentDir, "agents", `${EVIDENCE_AGENT}.md`), "utf8");
   assert.match(definition, /^async: false$/m);
 });

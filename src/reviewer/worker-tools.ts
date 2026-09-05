@@ -12,6 +12,7 @@ import { join, resolve, sep } from "node:path";
 import {
   DefaultResourceLoader,
   defineTool,
+  type InlineExtension,
   type ModelRuntime,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -28,10 +29,10 @@ import { numberedRead } from "./numbered-read.ts";
  * 只读靠允许清单强制:未列出的工具 Pi 不会注册,模型没有写入的调用路径。两个子进程与
  * 取证子代理的工具面同以这四样为基础,分成三份只会让某一天其中一处悄悄多出一个能写的
  * 工具。Reviewer 在此之上另有受控 git 工具(`git-tool.ts`),它是自定义工具,进不了
- * 取证子代理那个独立进程的工具面。
+ * 取证子代理的工具面——那是 pi-subagents 另建的一个会话,只认自己 agent 定义里的清单。
  *
  * `read` 在清单里,但两个子进程实际注册的是下面那个带行号的自定义实现——customTools
- * 同名覆盖内建。取证子代理跑在另一个进程里,拿到的是 Pi 的内建 `read`。
+ * 同名覆盖内建。取证子会话没有这份 customTools,拿到的是 Pi 的内建 `read`。
  */
 export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
 
@@ -207,6 +208,18 @@ export async function prepareAgentRuntime(options: {
    * 调用方给出、指向镜像里 vendor 好的包,不来自宿主机的全局扩展目录。
    */
   extensionPaths?: readonly string[];
+  /**
+   * 与上面那些扩展一起装进会话的进程内扩展(issue #262):由本项目代码构造,不读任何
+   * 目录。取证契约在工具边界的那一道钩子从这里进。
+   */
+  extensionFactories?: readonly InlineExtension[];
+  /**
+   * 往 agentDir 里铺东西的时机(issue #262):模型运行时已建好、扩展还没加载。pi-subagents
+   * 在扩展注册时读一次自己的 config 并捕获,之后不再读——要生效的配置必须在
+   * `resourceLoader.reload()` 之前就位;而 `models.json` 又要在运行时建好之后再写,免得
+   * 反过来盖掉内存里注册的那一项模型。两条约束只有这一个窗口同时满足。
+   */
+  installKit?: (agentDir: string) => void;
 }): Promise<AgentRuntime | { failure: string }> {
   // 空的 agentDir:不让宿主机上的全局扩展、skill、设置与凭据渗进会话。
   const agentDir = mkdtempSync(join(tmpdir(), options.agentDirPrefix));
@@ -224,6 +237,8 @@ export async function prepareAgentRuntime(options: {
   const model = modelRuntime.getModel(runtime.provider, runtime.id);
   if (!model) return { failure: `固定运行模型无法加载: ${runtime.provider}/${runtime.id}` };
 
+  options.installKit?.(agentDir);
+
   const settingsManager = SettingsManager.inMemory({
     compaction: { enabled: false },
     retry: { enabled: true, maxRetries: 1 },
@@ -235,6 +250,9 @@ export async function prepareAgentRuntime(options: {
     ...(options.extensionPaths === undefined || options.extensionPaths.length === 0
       ? {}
       : { additionalExtensionPaths: [...options.extensionPaths] }),
+    ...(options.extensionFactories === undefined || options.extensionFactories.length === 0
+      ? {}
+      : { extensionFactories: [...options.extensionFactories] }),
     systemPromptOverride: () => options.systemPrompt,
   });
   await resourceLoader.reload();

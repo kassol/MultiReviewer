@@ -29,3 +29,16 @@ Pi 本体不内建 subagent,官方注册表包 pi-subagents 以扩展形态提�
 ## 修订(2026-09-05)
 
 会话级上限改为审查策略的一项(issue #258):「每批每模型取证上限」与分批上限、批次并发数并列,正整数、各自保存各自版本,系统默认仍是 3——上文的 `PI_SUBAGENT_MAX_SPAWNS_PER_SESSION = 3` 从此读作「默认 3」。Review Run 开跑时把它与其余上限在同一次读事务里冻进运行计划,Reviewer 子进程按计划里的值设会话上限;中途改设置只影响下一轮。单次调用的 `PI_SUBAGENT_MAX_SPAWNS_PER_RUN = 8` 不进策略,保持写死。改成可调的理由:合理值只能实测——线上 Run #66 / #67 里 sol 每批固定想派 4 次,第 4 次撞上限,opus 一轮只派 1 次,写死的 3 无从验证是紧是松。
+
+## 修订(2026-09-05,issue #262)
+
+Pi 升到 0.85.0、pi-subagents 升到 0.65.1。pi-subagents 0.65 起前台子代理的执行体从「另起一个 `pi` 进程」改成「父进程内的原生 `AgentSession`」:取证子会话跑在 Reviewer 子进程里,与父会话同进程、同环境、同一份 `process.env`;它自己按 agentDir 建一份模型运行时(仍读 `<agentDir>/models.json`,凭据仍是环境变量引用),完成、取消、超时后由 pi-subagents 先发 `session_shutdown` 再 `dispose`,Reviewer 子进程收尾时显式退出,活动会话不会活过那次 Review 调用。上文「子代理跑在另一个 pi 进程里」的表述自此作废;Reviewer 与服务主进程之间的子进程隔离不变,取证子会话不越过它。
+
+同进程带来三处要在 pi-subagents 路线内重新铺装的地方,取证契约本身(只读四件套、唯一 agent `evidence`、单层不递归、无 `report_finding`)一字未改:
+
+- **intercom 桥默认开着,会给子会话追加 `contact_supervisor`。**它是父子会话通话用的,不在契约里。桥的开关在 `<agentDir>/extensions/subagent/config.json`,而这份 config 在扩展注册时读一次并捕获——铺装因此必须在扩展首次加载之前完成(`prepareAgentRuntime` 的 `installKit`,在模型运行时建好之后、`resourceLoader.reload()` 之前)。调用参数又能整份覆盖这份 config,所以工具边界另有一道:与 pi-subagents 同一批装进会话的进程内扩展在 `subagent` 的 `tool_call` 钩子里把 `intercomBridge` 钉成 `off`、`async` 钉成 `false`。
+- **能力天花板不再走环境变量。**0.65.1 不读 `PI_SUBAGENT_CAPABILITY_CEILING_V1`,天花板改按父会话 id 登记进 pi-subagents 的进程内登记表(`globalThis[Symbol.for("pi-subagents.capability-ceiling.v1")]`),同一道 `tool_call` 钩子在派出之前登记。不登记的话,被审仓库自带的 `.pi/agents/*.md` 就派得出去——这一条由真实 SDK 回归钉住。
+- **模型排除表关进会话的 agentDir。**子会话的模型调用以可重试原因失败(连接错误、429、5xx、额度)时,pi-subagents 把该模型记进一份默认 24 小时的排除表,默认落在 `os.tmpdir()/pi-subagents-uid-<uid>/`,全机同 uid 共用——一批里的一次瞬时失败会让之后每一轮的每一次取证都被拒到过期。`PI_MODEL_EXCLUSIONS_PATH` 指到这次会话的 agentDir,失败只影响这一批。这一条在 0.59.0 就成立,升级时的回归实测暴露出来。
+
+三道锁的每一道都有反向验证:去掉任一道,对应的真实 SDK 用例失败。
+

@@ -9,7 +9,7 @@
  * 三道约束各有各的落点,不要合并:
  * - **禁用内置 agent**:`settings.json` 的 `subagents.disableBuiltins`。worker 能写文件、
  *   researcher 要联网,审查环境不该有它们。
- * - **能力天花板**:`PI_SUBAGENT_CAPABILITY_CEILING_V1` 环境变量,在派出之前判定。它挡的
+ * - **能力天花板**:按父会话注册进 pi-subagents 的进程内登记表,在派出之前判定。它挡的
  *   不是我们自己写的那份 agent 定义,而是被审仓库工作副本里可能存在的 `.pi/agents/*.md`
  *   ——那是半可信输入,agent 定义里写 `tools: bash` 就能把只读会话变成可写会话。
  * - **spawn 预算**:两道,作用域不同,不要互相顶替。`PI_SUBAGENT_MAX_SPAWNS_PER_SESSION`
@@ -18,10 +18,25 @@
  *   随运行计划在开跑时冻结、经 `ReviewerRequest.maxEvidenceCallsPerBatch` 进到这里;
  *   `PI_SUBAGENT_MAX_SPAWNS_PER_RUN` 限的是单次 `subagent` 调用内部展开的子任务数,
  *   每次调用重新计数,挡的是一次调用扇出过宽,写死不进策略。
+ * - **模型排除表关进 agentDir**:`PI_MODEL_EXCLUSIONS_PATH`(issue #262)。子会话的模型调用
+ *   一旦以可重试的原因失败(连接错误、429、5xx),pi-subagents 会把这个模型记进一份排除表,
+ *   默认 24 小时内不再派给它;这份表默认落在 `os.tmpdir()/pi-subagents-uid-<uid>/` 下,
+ *   全机同 uid 的 Reviewer 子进程共用——一批里的一次瞬时失败会让之后每一轮的每一次取证
+ *   都以「No usable subagent models remain」被拒,直到过期。指到这次会话的 agentDir 里,
+ *   排除表就与会话同生同灭,失败只影响这一批。
  *
- * 子会话与 Reviewer 同模型同凭据同思考档位:子代理跑在另一个 pi 进程里,读不到本进程内存
- * 里注册的那一项模型,因此把同一份运行模型另写一份 `models.json`;凭据写的是环境变量引用
- * 而非明文,子进程从继承来的环境里取。
+ * 子会话与 Reviewer 同模型同凭据同思考档位。pi-subagents 0.65 起前台子代理是 Reviewer
+ * 子进程内的原生 `AgentSession`(issue #262,ADR 0021 附记),不再另起 pi 进程;但它的模型
+ * 运行时是 pi-subagents 自己按 agentDir 建的一份,读不到本进程 `isolatedPinnedModelRuntime`
+ * 里注册的那一项模型,因此仍把同一份运行模型另写一份 `models.json`;凭据写的是环境变量
+ * 引用而非明文,子会话与 Reviewer 同一个进程,从同一份环境里取。
+ *
+ * 前台子会话与父会话同进程带来一道新的扩权口子:pi-subagents 的 intercom 桥默认开着
+ * (`intercomBridge.mode: "always"`),会给子会话追加 `contact_supervisor` 工具——它是父子
+ * 会话通话用的,不在只读四件套里,能力天花板也拦不住它(它由子会话的运行时钩子注册,
+ * 不走 `tools` 允许清单)。两处一起关:`config.json` 把桥关掉,而这份 config 只在扩展注册时
+ * 读一次,所以铺装必须在扩展首次加载之前;调用参数又能整份覆盖这份 config,因此
+ * `evidenceContractExtension` 在工具边界把覆盖钉死。
  *
  * 子会话的 token 用量不在这里读(issue #260):pi-subagents 把子会话的汇总 Usage 挂在
  * `subagent` 工具返回上,Pi 父会话的 `getSessionStats` 按 toolResult 消息一并累加,
@@ -30,6 +45,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+
+import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 
 import type { ThinkingLevel } from "../config.ts";
 import type { ProjectFact, ReviewerEvent, ReviewRule } from "../review/finding.ts";
@@ -55,10 +72,33 @@ export const EVIDENCE_FANOUT_BUDGET = 8;
 
 const SESSION_BUDGET_ENV = "PI_SUBAGENT_MAX_SPAWNS_PER_SESSION";
 const FANOUT_BUDGET_ENV = "PI_SUBAGENT_MAX_SPAWNS_PER_RUN";
-const CAPABILITY_CEILING_ENV = "PI_SUBAGENT_CAPABILITY_CEILING_V1";
+const MODEL_EXCLUSIONS_PATH_ENV = "PI_MODEL_EXCLUSIONS_PATH";
 
 /** 天花板的来源标签,打回文案里会带上它,让人看得出是谁挡的。 */
 const CEILING_SOURCE = "multireviewer";
+
+/**
+ * pi-subagents 能力天花板的进程内登记表(`src/runs/shared/capability-ceiling.ts`):挂在
+ * `globalThis[Symbol.for(key)]` 上的 `Map<会话 id, Map<symbol, { source, ceiling }>>`,
+ * 键名里带版本号。它设计成全局符号表,就是为了让不同模块实例共用一份——pi-subagents 由
+ * Pi 经 jiti 加载,本项目的代码由 Node 原生加载,两边各有一份模块,而 Node 不给
+ * node_modules 里的 `.ts` 剥类型,`pi-subagents/capability-ceiling` 这个入口在本进程里
+ * 导入不了,只能直接写这张表。0.65 之前走 `PI_SUBAGENT_CAPABILITY_CEILING_V1` 环境变量,
+ * 0.65.1 已不读它(issue #262)。
+ */
+const CEILING_REGISTRY_KEY = "pi-subagents.capability-ceiling.v1";
+
+/** 登记表里的一条:与 pi-subagents `registerSubagentCapabilityCeiling` 写下的逐字同形。 */
+type CeilingRegistration = {
+  source: string;
+  ceiling: {
+    version: 1;
+    allowedTools: string[];
+    allowedAgents: string[];
+    denyExtensions: boolean;
+    sources: string[];
+  };
+};
 
 /**
  * 取证子会话的能力天花板。**白名单写死在这里,不从会话的工具面透传**:透传意味着
@@ -67,24 +107,34 @@ const CEILING_SOURCE = "multireviewer";
  * 的工具面,单层因此是构造出来的,不靠深度计数。
  */
 export function evidenceCeiling(): {
-  version: 1;
   allowedTools: string[];
   allowedAgents: string[];
   denyExtensions: boolean;
-  sources: string[];
 } {
   return {
-    version: 1,
     allowedTools: [...READ_ONLY_TOOLS].sort(),
     allowedAgents: [EVIDENCE_AGENT],
     denyExtensions: true,
-    sources: [CEILING_SOURCE],
   };
 }
 
-/** 天花板的传递形态:base64url 的 JSON,pi-subagents 从环境变量里解出来。 */
-export function encodeEvidenceCeiling(): string {
-  return Buffer.from(JSON.stringify(evidenceCeiling()), "utf8").toString("base64url");
+/**
+ * 把取证天花板登记到这个父会话名下。pi-subagents 派出之前按会话 id 查表,把查到的各条
+ * 取交集;同一个来源只留一条,重复调用不会叠出第二份。
+ */
+export function registerEvidenceCeiling(sessionId: string): void {
+  const key = Symbol.for(CEILING_REGISTRY_KEY);
+  const store = globalThis as typeof globalThis & { [key: symbol]: unknown };
+  const existing = store[key];
+  const registry: Map<string, Map<symbol, CeilingRegistration>> =
+    existing instanceof Map ? existing : new Map();
+  if (!(existing instanceof Map)) store[key] = registry;
+  const session = registry.get(sessionId) ?? new Map<symbol, CeilingRegistration>();
+  registry.set(sessionId, session);
+  session.set(Symbol.for(CEILING_SOURCE), {
+    source: CEILING_SOURCE,
+    ceiling: { version: 1, ...evidenceCeiling(), sources: [CEILING_SOURCE] },
+  });
 }
 
 /** vendor 进镜像的 pi-subagents 包根目录。它是一个 pi 包,整个目录交给资源加载器。 */
@@ -194,12 +244,14 @@ ${knowledge}`;
 }
 
 /**
- * 把取证子代理铺进这个会话的临时 agentDir,并设好它的两个环境闸。会话上限取本轮运行计划
- * 冻结的那个数,不给即系统默认(issue #258);扇出上限写死。
+ * 把取证子代理铺进这个会话的临时 agentDir,并设好它的几个环境变量。会话上限取本轮运行
+ * 计划冻结的那个数,不给即系统默认(issue #258);扇出上限写死;模型排除表指进 agentDir。
  *
- * 调用点在 `prepareAgentRuntime` 之后、`createAgentSession` 之前:`models.json` 要在主进程
- * 的模型运行时建好之后再写,免得它反过来盖掉内存里已经注册好的那一项模型;而 agent 定义
- * 与设置要在会话起来之前就位,派出取证时 pi-subagents 现读这两处。
+ * 调用点是 `prepareAgentRuntime` 的 `installKit`:在主进程的模型运行时建好之后、扩展首次
+ * 加载(`resourceLoader.reload()`)之前。前者是 `models.json` 的约束——先写它会反过来盖掉
+ * 内存里已经注册好的那一项模型;后者是 `config.json` 的约束(issue #262)——pi-subagents
+ * 在扩展注册时读一次 config 并捕获,之后不再读,写晚了 intercom 桥就照默认开着。agent
+ * 定义与 `settings.json` 派出取证时现读,放在这里只是同一处铺装。
  */
 export function installEvidenceKit(options: {
   agentDir: string;
@@ -218,11 +270,13 @@ export function installEvidenceKit(options: {
   // 取证一律前台跑(Run 49 实测):异步派单只回一个任务 id,模型轮询不到结果就把同一
   // 主张重跑一遍——双倍花销,而且异步那次的 transcript 不在返回里,过程与用量都进不了
   // 轨迹。三道锁:这份 config 把省参调用的默认改成前台,agent frontmatter 的
-  // `async: false` 同义,系统提示再叮嘱一句。显式传 `async: true` 仍拦不住,接受。
+  // `async: false` 同义,系统提示再叮嘱一句;显式传 `async: true` 由
+  // `evidenceContractExtension` 在工具边界改回来。intercom 桥关掉(issue #262):开着时
+  // 子会话会多一个 `contact_supervisor` 工具,超出只读四件套的契约。
   mkdirSync(join(agentDir, "extensions", "subagent"), { recursive: true });
   writeFileSync(
     join(agentDir, "extensions", "subagent", "config.json"),
-    JSON.stringify({ asyncByDefault: false }, null, 2),
+    JSON.stringify({ asyncByDefault: false, intercomBridge: { mode: "off" } }, null, 2),
   );
   writeFileSync(
     join(agentDir, "models.json"),
@@ -239,7 +293,42 @@ export function installEvidenceKit(options: {
   );
   process.env[SESSION_BUDGET_ENV] = String(options.sessionBudget ?? EVIDENCE_SESSION_BUDGET);
   process.env[FANOUT_BUDGET_ENV] = String(EVIDENCE_FANOUT_BUDGET);
-  process.env[CAPABILITY_CEILING_ENV] = encodeEvidenceCeiling();
+  process.env[MODEL_EXCLUSIONS_PATH_ENV] = join(agentDir, "model-exclusions.json");
+}
+
+/**
+ * 取证调用参数里不归模型定的两项(issue #262)。`intercomBridge` 是 pi-subagents 的
+ * 逐次覆盖:给了就整份替换 config 里的桥配置,`mode: "always"` 会把 `contact_supervisor`
+ * 加回子会话;`async` 决定前台还是后台,后台那次的过程与用量进不了轨迹。
+ */
+const EVIDENCE_PINNED_PARAMS = { intercomBridge: { mode: "off" }, async: false } as const;
+
+/**
+ * 取证契约在工具边界的那一道(issue #262):与 pi-subagents 一起装进 Reviewer 会话的进程内
+ * 扩展,在 `subagent` 工具执行之前做两件事——把能力天花板登记到这个会话名下,把调用参数
+ * 里的 `intercomBridge` 与 `async` 钉成契约值。改参数而不拒调用:模型要的是证据,给它
+ * 证据,只是不按它写的方式派。Pi 的 `tool_call` 钩子对扩展注册的工具同样生效,
+ * `event.input` 就地改写后进入执行,这一层不再校验。
+ *
+ * 天花板挂在这里而不是会话启动时:pi-subagents 派出前按「当前会话 id」查表,而这个 id
+ * 在 `tool_call` 的 ctx 里就是它查表用的那一个(有会话文件用文件路径,内存会话用 id),
+ * 在派出之前登记就一定查得到。能力天花板管不到另外两项:天花板筛的是 `tools` 允许清单
+ * 与 agent 名,而 `contact_supervisor` 由子会话的运行时钩子按桥的开关注册,不经允许清单。
+ */
+export function evidenceContractExtension(): InlineExtension {
+  return {
+    name: "multireviewer:evidence-contract",
+    factory: (pi) => {
+      pi.on("tool_call", (event, ctx) => {
+        if (event.toolName !== EVIDENCE_TOOL) return undefined;
+        registerEvidenceCeiling(
+          ctx.sessionManager.getSessionFile() ?? ctx.sessionManager.getSessionId(),
+        );
+        Object.assign(event.input, EVIDENCE_PINNED_PARAMS);
+        return undefined;
+      });
+    },
+  };
 }
 
 /**

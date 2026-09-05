@@ -8,7 +8,7 @@ MultiReviewer:基于真实 Coding Agent 的多模型并行 PR 智能审查工具
 
 ## 技术栈
 
-TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内置的 `node:test`。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004。取证子代理用 Pi 官方注册表包 `pi-subagents`(MIT,ADR 0021):它以普通运行时依赖的形态 vendor 进镜像(`pnpm install --prod` 那一层就装好了,运行时不联网装包),由 Reviewer 子进程铺进会话的临时 agentDir。运行时第三方依赖只有这两个。持久化用 SQLite。管理面板用 React 19、Radix Themes 与 Tailwind v4 构建。包管理用 pnpm。
+TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内置的 `node:test`。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004。取证子代理用 Pi 官方注册表包 `pi-subagents`(MIT,ADR 0021):它以普通运行时依赖的形态 vendor 进镜像(`pnpm install --prod` 那一层就装好了,运行时不联网装包),由 Reviewer 子进程铺进会话的临时 agentDir;前台取证子会话跑在 Reviewer 子进程内(pi-subagents 0.65 起,ADR 0021 附记),不另起进程。当前钉在 Pi 0.85.0 与 pi-subagents 0.65.1(issue #262),两者要一起升:Pi 0.85.0 的根入口引用 `@earendil-works/pi-server` 却没声明它,由 pi-subagents 0.65.1 的依赖闭包补齐。运行时第三方依赖只有这两个。持久化用 SQLite。管理面板用 React 19、Radix Themes 与 Tailwind v4 构建。包管理用 pnpm。
 
 ## 目录索引
 
@@ -153,6 +153,8 @@ Issue 与 spec 存放于本仓库的 GitHub Issues,通过 `gh` CLI 读写。见 
 Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.md`。
 
 ## 变更日志
+
+- 2026-09-05: 落地 issue #262(ADR 0021 附记)。**Pi 升到 0.85.0、pi-subagents 升到 0.65.1,取证契约在新执行体上验收**:前台取证子会话改跑在 Reviewer 子进程内(此前另起 pi 进程),子会话的工具面仍恰是只读四件套、唯一 agent 仍是 `evidence`,模型、凭据、思考档位与知识注入照旧沿用 Reviewer 的;新版默认会给子会话加一个父子通话工具,并且不再读旧的能力天花板环境变量,两处都按新版的方式重新铺装并用真实 SDK 回归钉住(显式覆盖也加不回来,仓库自带的 agent 定义派不出去,超时的子会话停下后不再发请求)。顺带关掉一处升级前就有的隐患:子会话一次瞬时的模型失败会被 pi-subagents 记进宿主 tmp 下全机共用的 24 小时排除表,之后每一次取证都被拒;现在排除表关在会话自己的 agentDir 里,失败只影响这一批。Anthropic 协议的请求 URL 多了 `?beta=true`(SDK 升级所致),部署验收时确认网关接受。`pnpm-workspace.yaml` 为这批刚发布的版本加了 pnpm 的发布年龄豁免,否则镜像装不进。细节见 `src/AGENTS.md`。
 
 - 2026-09-05: 落地 issue #264(线上验证范围审查 #13 时发现)。**指纹折叠命中的 Finding 落库沿用历史行的指纹**:指纹在 ±3 偏移处命中时,本轮那行此前落着按自己落点算的指纹,阶段汇总按「文件 + 指纹」归并把它判成新报,时间线「折叠」少于轨迹的 `finding_folded`;现在两档折叠(指纹、合并 agent)都沿用被折叠到的历史行的指纹,同一处问题跨轮次只占一个 Identity。口径记在 `CONTEXT.md`「同一处 Finding」,细节见 `src/AGENTS.md`。
 
