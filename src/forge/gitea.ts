@@ -229,11 +229,12 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
           })),
         });
       } catch (error) {
-        // Gitea 回了错误状态即 review 未创建,原样抛;没有响应(网络中断、超时)时
-        // 无从判定有没有创建,标成不确定,调用方据此不自动重发(ADR 0025)。
+        // Gitea 回了错误状态即 review 未创建,原样抛;拿不到可解析的响应(网络中断、
+        // 超时、响应体坏了)时无从判定有没有创建,标成不确定,调用方据此不自动重发
+        // (ADR 0025)。
         if (error instanceof GiteaResponseError) throw error;
         throw new PublishUncertainError(
-          `Gitea POST ${reviewsPath} 没有响应,无法判定 review 是否已创建: ${
+          `Gitea POST ${reviewsPath} 没有拿到可解析的响应,无法判定 review 是否已创建: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );

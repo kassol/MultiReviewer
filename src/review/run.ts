@@ -1419,6 +1419,11 @@ export const RESUME_NOT_VIABLE = "续跑不成立";
  * 那时接着跑,已落库的批次与新切出的批次会指向不同的文件集,合并出来的覆盖是错的。
  * 返回不成立的那句原因;都对得上时返回 undefined。
  */
+/** 两个序列逐项相等。续跑核对里模型组合、冻结计划与已落库批次三处都是这一个判断。 */
+function sameSequence(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((item, position) => item === b[position]);
+}
+
 function resumeMismatch(
   resume: ResumeState & { plan: readonly (readonly string[])[] },
   headSha: string,
@@ -1443,10 +1448,7 @@ function resumeMismatch(
   // 一个 pin 都没有的轮次(升级前的旧行、一个模型都没配的那一轮)没有可比的东西,跳过。
   if (resume.reviewers.length > 0) {
     const current = reviewers.map((reviewer) => reviewer.model);
-    if (
-      current.length !== resume.reviewers.length ||
-      resume.reviewers.some((identity, position) => identity !== current[position])
-    ) {
+    if (!sameSequence(resume.reviewers, current)) {
       return `开跑时的模型组合是 ${resume.reviewers.join("、")},现在是 ${current.join("、")}`;
     }
   }
@@ -1459,21 +1461,13 @@ function resumeMismatch(
   // 这一轮的分组还是不是原来那份。
   for (const [index, planned] of resume.plan.entries()) {
     const files = batches[index];
-    if (
-      files === undefined ||
-      files.length !== planned.length ||
-      planned.some((file, position) => file !== files[position])
-    ) {
+    if (files === undefined || !sameSequence(planned, files)) {
       return `第 ${index + 1} 批的分组与冻结计划不符`;
     }
   }
   for (const [index, batch] of resume.batches) {
     const files = batches[index];
-    if (
-      files === undefined ||
-      files.length !== batch.files.length ||
-      batch.files.some((file, position) => file !== files[position])
-    ) {
+    if (files === undefined || !sameSequence(batch.files, files)) {
       return `第 ${index + 1} 批的文件清单与开跑时不同`;
     }
     if (
