@@ -2634,7 +2634,7 @@ function modelDiscoverySources(
     return automatic.fieldSources?.[field] ??
       (service.type === "builtin" ? "pi-catalog" : "service-interface");
   };
-  // 解出目标的模型,地址与协议的来源就是解出它的那一层(自己那一行的 Pi 目录,或服务目标);
+  // 解出目标的模型,地址与协议的来源就是解出它的那一层(自己那一行的 Pi 目录,或服务配置的调用目标);
   // 解不出的只剩目录行自带的那两项可看。
   return {
     name: inferred("name"),
@@ -3313,14 +3313,18 @@ async function commitVerifiedBuiltinModelService(
     : undefined;
   // 验证模型用它自己可确认的目标:最终目录里它那一行,否则 Pi 内置表里它那一行;都没有
   // 时只有整份已确认目标恰好一个才沿用(ADR 0027)。已确认目标是这次发现到的集合,发现
-  // 失败时退到 Pi 内置表的集合——那是发现结果至少会含的那一份。
+  // 失败时退到上一版可证明的绑定;两者都没有时,Pi 内置表去重后恰好一个目标(单协议
+  // 服务)才沿用它——混合协议的整份集合没经过验证,不进绑定(评审复核)。
   const previousTargets =
     current === undefined ? [] : bindingTargets(serviceTargetBinding(current, piTargets));
+  const piDistinct = distinctBuiltinTargets(piTargets.values());
   const confirmedTargets = discovered.ok
     ? discoveredTargets(discovered.models)
     : previousTargets.length > 0
       ? previousTargets
-      : distinctBuiltinTargets(piTargets.values());
+      : piDistinct.length === 1
+        ? piDistinct
+        : [];
   const own =
     validationDiscovery !== undefined &&
     typeof validationDiscovery.fields.api === "string" &&

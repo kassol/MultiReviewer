@@ -17,11 +17,12 @@ import {
 } from "../config.ts";
 import type { LineAuthor } from "../git/worktree.ts";
 import { isPanelPermission, type PanelPermission } from "../panel/permissions.ts";
-import type {
-  DiscoveredModel,
-  TrustedModelFields,
-  TrustedModelFieldSource,
-  TrustedModelFieldSources,
+import {
+  normalizeModelServiceBaseUrl,
+  type DiscoveredModel,
+  type TrustedModelFields,
+  type TrustedModelFieldSource,
+  type TrustedModelFieldSources,
 } from "../reviewer/model-service-runtime.ts";
 import type {
   Category,
@@ -519,8 +520,10 @@ export function normalizeModelServiceTargets(
   const byKey = new Map<string, ModelServiceBoundTarget>();
   for (const target of targets) {
     const api = target.api.trim();
-    const baseUrl = target.baseUrl.trim().replace(/\/+$/, "");
-    if (api === "" || baseUrl === "") continue;
+    // 地址按与 `distinctBuiltinTargets` 同一条规则归一(评审复核):两处规则不同时,同一个
+    // 目标会在集合指纹与逐模型解析里算出两个不同的键。
+    const baseUrl = normalizeModelServiceBaseUrl(target.baseUrl);
+    if (api === "" || baseUrl === undefined) continue;
     const key = `${api}\0${baseUrl}`;
     if (!byKey.has(key)) {
       byKey.set(key, { api, baseUrl, fingerprint: modelServiceTargetFingerprint(baseUrl, api) });

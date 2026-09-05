@@ -1482,10 +1482,7 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
             <InfoGrid>
               <InfoField label="调用目标"><MonoValue value={service.target.baseUrl} /></InfoField>
               <InfoField label="接口协议">
-                {(
-                  service.target.api === "openai-completions" || service.target.api === "openai-responses" ||
-                  service.target.api === "anthropic-messages"
-                ) ? CUSTOM_PROTOCOL_LABEL[service.target.api] : <MonoValue value={service.target.api} />}
+                {service.target.api === null ? <MonoValue value={service.target.api} /> : protocolLabel(service.target.api)}
               </InfoField>
             </InfoGrid>
           ) : service.targets.length === 0 ? (
@@ -1496,7 +1493,7 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
                 <InfoField key={`${target.api} ${target.baseUrl}`} label="调用目标">
                   <span className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
                     <MonoValue value={target.baseUrl} />
-                    <span className="text-sm text-text-muted"><MonoValue value={target.api} /></span>
+                    <span className="text-sm text-text-muted">{protocolLabel(target.api)}</span>
                   </span>
                 </InfoField>
               ))}

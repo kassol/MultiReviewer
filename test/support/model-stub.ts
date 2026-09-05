@@ -3,8 +3,8 @@
  * 协议的 SSE 响应。
  *
  * 与 `stub-fetch.ts` 不是一回事:那份打的是本进程的 `globalThis.fetch`,而 Reviewer 跑在
- * fork 出去的子进程里,取证子代理又在 pi-subagents 派出的第三个进程里——三个进程都要
- * 打到同一个模型地址,只有真起一个端口才够得着。用它跑的是真实 SDK 链路
+ * fork 出去的子进程里,取证子会话又是 pi-subagents 在那个子进程内另建的会话(issue #262)
+ * ——两边都要打到同一个模型地址,只有真起一个端口才够得着。用它跑的是真实 SDK 链路
  * (`createPiReviewer → worker → pi-subagents → read → transcript → ReviewerOutcome`),
  * 全程不碰收费模型。
  *
