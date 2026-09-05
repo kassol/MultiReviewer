@@ -327,6 +327,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 - 表头可粘性定位；横向滚动限制在表格自身容器内，页面不得产生水平滚动。
 - 长名称和模型标识单行截断，hover/focus 时通过 Tooltip 查看全文。
 - 地址、模型标识等可复制内容提供 Copy 按钮。
+- 阶段详情的时间线是一条竖向时间轴。左侧一根 1px `border-chrome-line` 竖线,每次代码推进(pull request 的 head commit、范围审查的比较项)是轴上一个 16px 圆点节点:最新那组实心 `--v8-accent`,其余 `--v8-neutral-dot` 2px 描边空心;节点右侧一行 `text-base` 元信息(commit chip、推进的人、发起 / 增量评审、时刻),节点下一张详情内嵌卡(`border-overlay-line` + `shadow-control`),组内每一轮是卡里的连续行。行是 `MasterListItem selected={false}` 套 Link,沿四条列轨排:16px 状态图标(运行中 `StopwatchIcon` 主色、失败 `CrossCircledIcon` 红、结束 `CheckCircledIcon` 中性灰)、「第 N 轮」(`text-lg font-semibold`)叠开跑时刻与耗时(`text-base text-text-muted`)、这一轮的五个数、行尾 `ReaderIcon` 加「审查轨迹」。`sm` 以下五个数落到第二行,行尾只留图标。竖线画在每组自己身上、最早那组不画,时间轴在最早的节点收住。
 
 ### 7.4 路由
 

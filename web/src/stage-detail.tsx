@@ -9,6 +9,7 @@ import {
   CrossCircledIcon,
   ExternalLinkIcon,
   ReaderIcon,
+  StopwatchIcon,
 } from "@radix-ui/react-icons";
 import {
   Callout,
@@ -24,6 +25,7 @@ import { Dialog } from "radix-ui";
 
 import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
+import { MasterListItem } from "@/components/master-list-item";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
@@ -317,10 +319,11 @@ export function StageDetailPage({
               tab={location.tab}
               onTabChange={selectTab}
               onDrawerTrigger={returnFocus.captureTrigger}
-              timeline={() => (
+              timeline={(entries) => (
                 <StageTimeline
                   stageId={stageId}
                   groups={body.groups}
+                  entries={entries}
                   stage={body.stage}
                   onDrawerTrigger={returnFocus.captureTrigger}
                 />
@@ -537,74 +540,134 @@ function RerunAction({
 
 /**
  * 阶段的时间线:全部轮次按时间排列,一次代码推进一组——pull request 是一个 head
- * commit,范围审查是一个比较项。点一轮在侧滑里看它的审查轨迹(issue #189)。
+ * commit,范围审查是一个比较项。左侧一根竖线把各组串成一条时间轴:一组是轴上的一个
+ * 节点(最新那组实心蓝点,它就是当前比较项 / 当前 head),节点下一张卡,组内每一轮是卡里
+ * 的一行——行首状态图标,然后是轮次序号与开跑时刻,再是这一轮做了什么,行尾是审查轨迹
+ * 入口。轮次序号按阶段汇总的时间线数,与 Finding 页的「第 N 轮」是同一个数。点一行在
+ * 侧滑里看它的审查轨迹(issue #189)。
  */
 function StageTimeline({
   stageId,
   stage,
   groups,
+  entries,
   onDrawerTrigger,
 }: {
   stageId: string;
   stage: StageItem;
   groups: StageRunGroup[];
+  /** 阶段汇总的时间线(升序),只用来给轮次编号:与 Finding 页写的「第 N 轮」同源。 */
+  entries: StageTimelineEntry[];
   onDrawerTrigger: MouseEventHandler<HTMLAnchorElement>;
 }) {
   if (groups.length === 0) {
     return <EmptyState title="该审查阶段尚无 Review Run" className="py-2" />;
   }
+  const roundOf = new Map(entries.map((entry, index) => [entry.runId, index + 1]));
+  // 范围审查最早那个比较项是发起时选定的,之后的每一个都是一次增量评审;组是新的在前。
+  const initialSha = groups.filter((group) => group.recordedBy !== null).at(-1)?.sha;
   return (
-    <>
-      {groups.map((group) => (
-        <section key={group.sha} className="flex flex-col gap-1.5">
-          <div className="flex flex-wrap items-center gap-x-1.5 text-base text-text-secondary">
+    <ol className="flex flex-col">
+      {groups.map((group, index) => (
+        // 竖线画在每一组自己身上、从节点下沿到本组底边,组与组之间靠 padding 接起来;最后
+        // 一组不画,时间轴在最早那个节点收住。
+        <li
+          key={group.sha}
+          className="relative pb-5 pl-7 before:absolute before:top-5 before:bottom-0 before:left-[7.5px] before:w-px before:bg-chrome-line last:pb-0 last:before:hidden"
+        >
+          <span
+            aria-hidden
+            className={`absolute top-0.5 left-0 size-4 rounded-full ${
+              index === 0 ? "bg-primary" : "border-2 border-neutral-dot bg-surface"
+            }`}
+          />
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-base text-text-secondary">
             <CommitChip sha={group.sha} />
             {group.recordedBy === null ? null : (
               <>
-                <span className="break-all">{group.recordedBy}</span>
-                <span aria-hidden>·</span>
+                <span className="break-all font-medium text-text">{group.recordedBy}</span>
+                <span>{group.sha === initialSha ? "发起" : "增量评审"}</span>
               </>
             )}
             {group.recordedAt === null ? null : (
-              <span className="tabular-nums">{localMinute(group.recordedAt)}</span>
+              <>
+                <span aria-hidden>·</span>
+                <span className="text-text-muted tabular-nums">{localMinute(group.recordedAt)}</span>
+              </>
             )}
           </div>
-          {group.runs.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-card-line px-4 py-3 text-base text-text-secondary">
-              {stage.source === "range-review" ? "该比较项尚未运行审查" : "该 commit 尚未运行审查"}
-            </p>
-          ) : (
-            group.runs.map((entry) => (
-              // 轨迹侧滑属于时间线页:链接发出去,对方关掉侧滑落回同一条时间线。
-              <Link
-                key={entry.runId}
-                to="/stages/$stageId"
-                params={{ stageId }}
-                search={(prev: Record<string, unknown>) => ({
-                  ...prev,
-                  trace: entry.runId,
-                  finding: undefined,
-                  tab: "timeline",
-                })}
-                replace
-                onClick={onDrawerTrigger}
-                aria-label={`查看 ${localMinute(entry.startedAt)} 的审查轨迹`}
-                className="group flex flex-col gap-1 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-              >
-                <span className="flex items-center justify-between gap-3 text-base text-text-secondary">
-                  <span className="tabular-nums">{localMinute(entry.startedAt)}</span>
-                  <span className="inline-flex items-center gap-1 font-medium text-primary">
-                    <ReaderIcon aria-hidden />
-                    审查轨迹
-                  </span>
-                </span>
-                <StageRound entry={entry} />
-              </Link>
-            ))
-          )}
-        </section>
+          <div className="mt-2 overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control">
+            {group.runs.length === 0 ? (
+              <p className="px-4 py-3 text-base text-text-secondary">
+                {stage.source === "range-review" ? "该比较项尚未运行审查" : "该 commit 尚未运行审查"}
+              </p>
+            ) : (
+              group.runs.map((entry) => {
+                const duration = runDuration(entry);
+                return (
+                  // 轨迹侧滑属于时间线页:链接发出去,对方关掉侧滑落回同一条时间线。
+                  <MasterListItem key={entry.runId} selected={false} asChild>
+                    <Link
+                      to="/stages/$stageId"
+                      params={{ stageId }}
+                      search={(prev: Record<string, unknown>) => ({
+                        ...prev,
+                        trace: entry.runId,
+                        finding: undefined,
+                        tab: "timeline",
+                      })}
+                      replace
+                      onClick={onDrawerTrigger}
+                      className="grid grid-cols-[16px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 border-t border-line px-4 py-2.5 first:border-t-0 sm:grid-cols-[16px_14rem_minmax(0,1fr)_auto]"
+                    >
+                      <RoundIcon entry={entry} />
+                      <span className="flex min-w-0 flex-col gap-0.5">
+                        <span className="text-lg font-semibold">
+                          第 <span className="font-mono tabular-nums">{roundOf.get(entry.runId) ?? "?"}</span> 轮
+                        </span>
+                        <span className="text-base text-text-muted tabular-nums">
+                          {localMinute(entry.startedAt)}
+                          {duration === null ? null : ` · 耗时 ${duration}`}
+                        </span>
+                      </span>
+                      {/* 窄屏五个数落到第二行,宽屏与序号同一行:同一个节点,只换格子。 */}
+                      <div className="col-start-2 row-start-2 min-w-0 sm:col-start-3 sm:row-start-1">
+                        <StageRound entry={entry} />
+                      </div>
+                      <span className="col-start-3 row-start-1 inline-flex items-center gap-1 text-md font-medium text-primary sm:col-start-4">
+                        <ReaderIcon aria-hidden />
+                        <span className="sr-only sm:not-sr-only">审查轨迹</span>
+                      </span>
+                    </Link>
+                  </MasterListItem>
+                );
+              })
+            )}
+          </div>
+        </li>
       ))}
-    </>
+    </ol>
+  );
+}
+
+/**
+ * 时间线行首的状态图标,与评审记录页 `runStatus` 的三档同一套词:运行中走主色,Reviewer
+ * 失败与收尾失败走红,收尾正常是一枚中性勾——它说的是「这一轮结束了」,不是「这一轮
+ * 没问题」,报出 90 条的一轮也是它。运行中与失败的文字在 `StageRound` 里,结束那一档
+ * 没有可见文字,给读屏软件补一句。
+ */
+function RoundIcon({ entry }: { entry: StageTimelineEntry }) {
+  if (entry.finishedAt === null && !entry.failed) {
+    return <StopwatchIcon aria-hidden className="size-4 text-primary" />;
+  }
+  if (entry.failed || entry.failure !== null) {
+    return <CrossCircledIcon aria-hidden className="size-4 text-danger" />;
+  }
+  return (
+    <span className="inline-flex">
+      <CheckCircledIcon aria-hidden className="size-4 text-text-muted" />
+      <span className="sr-only">已结束</span>
+    </span>
   );
 }
 
@@ -929,13 +992,18 @@ function triggerLabel(run: RunItem): string {
   return run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`;
 }
 
-/** 还没跑完的一轮没有耗时可言,返回 null 让调用点整段省掉,而不是显示一个 0。 */
-function runDuration(run: RunItem): string | null {
+/**
+ * 还没跑完的一轮没有耗时可言,返回 null 让调用点整段省掉,而不是显示一个 0。满一小时按
+ * 时分写,不满的带秒:「313m1s」没人换算得过来。
+ */
+function runDuration(run: { startedAt: string; finishedAt: string | null }): string | null {
   if (run.finishedAt === null) return null;
   const seconds = Math.round(
     (new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000,
   );
   if (!Number.isFinite(seconds) || seconds < 0) return null;
   const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  if (hours > 0) return `${hours}h${minutes % 60}m`;
   return minutes > 0 ? `${minutes}m${seconds % 60}s` : `${seconds}s`;
 }

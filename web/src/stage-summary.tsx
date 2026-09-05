@@ -425,7 +425,9 @@ export function StageSummaryView({
                     <CommitChip sha={entry.headSha} />
                     <span className="tabular-nums">{localMinute(entry.startedAt)}</span>
                   </div>
-                  <StageRound entry={entry} />
+                  <div className="rounded-lg border border-overlay-line bg-surface px-4 py-2.5 shadow-control">
+                    <StageRound entry={entry} />
+                  </div>
                 </div>
               ))
             )
@@ -444,6 +446,8 @@ export function StageSummaryView({
  *
  * 为零的不列——读者要的是这一轮做了什么,一排零只让人多数几个零。全零的那一轮
  * 显式写一句,免得看起来像还没渲染出来。
+ *
+ * 只画内容不画容器:阶段页把它嵌进时间线的行里,平铺那版自己包一张卡。
  */
 export function StageRound({ entry }: { entry: StageTimelineEntry }) {
   const cells = (
@@ -456,7 +460,7 @@ export function StageRound({ entry }: { entry: StageTimelineEntry }) {
     ] as const
   ).filter(([, value]) => value > 0);
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-overlay-line bg-surface px-4 py-2.5 text-base shadow-control">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-base">
       {/* 只复核那一轮标出来(issue #242):看到「新报 0」时那不是审查空跑。 */}
       {entry.mode !== "verdict-only" ? null : (
         <Badge color="gray" variant="soft" radius="full">
