@@ -121,6 +121,8 @@
 
 ## 变更日志
 
+- 2026-09-05: 落地 issue #256 的面板部分。**轮次列表与轮次详情呈现轮次级失败原因,三态分开**:`runs.tsx` 的 `RunItem` 与 `stage-summary.tsx` 的 `StageTimelineEntry` 各多一格 `failure: string | null`(与服务端投影同名);`runStatus` 在「运行失败」(`failed`,全部 Reviewer 失败)之后、「部分失败」之前多判一档「收尾失败」(`failure` 非空而 `failed` 为假),`live` 的判据 `finishedAt === null && !failed` 不变。`StageRound` 在 Reviewer 失败那一档之外给收尾失败挂一句「本轮收尾失败」并照常列五个数(Reviewer 结果是真的),`failure` 非空时整句原因另起一行摊在卡片里——改判的中断轮次与收尾失败的轮次同一个位置。`stage-detail.tsx` 的 `RoundDrawer` 在逐模型的失败 Callout 之前加一条红色 Callout「本轮未正常收尾:原因」。`run-trace.tsx` 认 `run_failed` 一档(payload 的 `reason`),写「本轮失败:原因」,不再落到未知事件的兜底渲染。前端无程序化测试(issue #26 的测试决策),三态徽章与原因文案由部署实例手测覆盖。
+
 - 2026-09-05: 落地 issue #250 的面板部分。**增量评审弹窗多一个默认勾上的「完整审查」**:`range-review-actions.tsx` 的 `AdvanceDialogContent` 在本轮指令下方挂一个 `Checkbox`,类型 `RerunMode` 与说明 `FULL_REVIEW_HINT` 从 `repo-actions.tsx` 导入,同一个勾选在重跑与推进两处读起来是同一件事;请求体只在取消勾选时带 `mode: "verdict-only"`,勾上不带——与「不带即完整审查」的接口约定对上。勾选状态住在弹窗内容组件里,关弹窗即卸载,下次打开回到默认勾上;错误照旧显示在弹窗底部,弹窗不关。前端无程序化测试(issue #26 的测试决策),弹窗的默认勾选、取消勾选后的 409 文案留在弹窗里、成功后复位由部署实例手测覆盖。
 
 - 2026-09-04: 落地 issue #246–#249 之后的评审复核修复(面板部分)。**`run-trace.tsx` 认 `run_aborted` 一档**:里程碑写「本轮因服务排空停在第 N/M 批,等下一次启动续跑」(payload 的 `batch` 与 `total`),不再落到未知事件的兜底渲染上——这一轮没有 `run_finished`,轨迹里只有这一条说得出它为什么没收尾。

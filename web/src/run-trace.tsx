@@ -360,6 +360,14 @@ function RunMilestone({ event }: { event: TraceEvent }) {
           </span>
         );
       }
+      // 这一轮没有正常收尾(issue #256):`reason` 与轮次投影上的失败原因是同一句,改判的
+      // 中断轮次没有 `run_finished`,轨迹里只有这一条说得出它为什么停了。
+      case "run_failed":
+        return (
+          <span className="text-base text-danger">
+            本轮失败:{str(payload, "reason") ?? "原因缺失"}
+          </span>
+        );
       case "run_finished":
         return <span className="text-base font-semibold text-text">本轮结束</span>;
       default:

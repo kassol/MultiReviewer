@@ -45,6 +45,8 @@ export type StageTimelineEntry = {
   startedAt: string;
   finishedAt: string | null;
   failed: boolean;
+  /** 轮次级的失败原因(issue #256),与 `RunItem.failure` 同一格;null 即收尾正常。 */
+  failure: string | null;
   /** 这一轮的模式(issue #242)。只复核那一轮在时间线上带标记。 */
   mode: RerunMode;
   /** 本轮新报出。 */
@@ -465,14 +467,25 @@ export function StageRound({ entry }: { entry: StageTimelineEntry }) {
         <span className="text-text-secondary">运行中…</span>
       ) : entry.failed ? (
         <span className="text-danger">本轮 Review Run 失败</span>
-      ) : cells.length === 0 ? (
-        <span className="text-text-secondary">本轮未产生 Finding 状态变化</span>
       ) : (
-        cells.map(([label, value, tone]) => (
-          <span key={label} className={tone}>
-            {label} <span className="font-mono font-bold tabular-nums">{value}</span>
-          </span>
-        ))
+        <>
+          {/* 收尾失败(issue #256):Reviewer 都跑通了,五个数是真的,只是这一轮没有正常
+              收场——与「Reviewer 失败」分开写,读的人才知道 Finding 还在不在。 */}
+          {entry.failure === null ? null : <span className="text-danger">本轮收尾失败</span>}
+          {cells.length === 0 ? (
+            <span className="text-text-secondary">本轮未产生 Finding 状态变化</span>
+          ) : (
+            cells.map(([label, value, tone]) => (
+              <span key={label} className={tone}>
+                {label} <span className="font-mono font-bold tabular-nums">{value}</span>
+              </span>
+            ))
+          )}
+        </>
+      )}
+      {/* 原因整句摊开,列表上就看得到为什么;改判的那一轮与收尾失败的那一轮同一个位置。 */}
+      {entry.failure === null ? null : (
+        <span className="basis-full break-words text-sm text-text-secondary">{entry.failure}</span>
       )}
     </div>
   );

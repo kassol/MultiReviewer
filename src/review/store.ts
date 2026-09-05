@@ -666,6 +666,11 @@ const ADD_COLUMNS = [
   // 重启期间有人处置了一条历史时,续跑批次拿到的仍要与原轮各批一致。旧行是 NULL,
   // 读回即「这一轮没有快照」,续跑因此不成立,退回改判失败。
   "ALTER TABLE review_run ADD COLUMN history_json TEXT",
+  // 轮次级的失败原因(ADR 0026,issue #256):这一轮为什么没有正常收尾。NULL 即收尾正常。
+  // 它与 `failed` 分开——`failed` 仍只回答「全部 Reviewer 失败」(ADR 0016 据它决定
+  // 不做自动处置),发布 review 失败那一类 Reviewer 结果有效的轮次只写这一列。旧行是
+  // NULL,读回即「无失败记录」。
+  "ALTER TABLE review_run ADD COLUMN failure TEXT",
 ];
 
 /**
@@ -1480,6 +1485,11 @@ export type RunListItem = {
   /** 这一轮的模式(CONTEXT.md 只复核,issue #242)。升级前的旧行是完整审查。 */
   mode: ReviewRunMode;
   failed: boolean;
+  /**
+   * 轮次级的失败原因(ADR 0026):这一轮为什么没有正常收尾。null 即收尾正常;与 `failed`
+   * 分开读——`failed` 说的是全部 Reviewer 失败,这一格说的是收尾。
+   */
+  failure: string | null;
   models: {
     model: string;
     findings: number;
@@ -1602,6 +1612,8 @@ export type StageTimelineEntry = {
   startedAt: string;
   finishedAt: string | null;
   failed: boolean;
+  /** 轮次级的失败原因(ADR 0026),与 `RunListItem.failure` 同一格;null 即收尾正常。 */
+  failure: string | null;
   /** 这一轮的模式(CONTEXT.md 只复核,issue #242)。升级前的旧行是完整审查。 */
   mode: ReviewRunMode;
   reported: number;
@@ -2041,9 +2053,9 @@ export type Store = {
    * 理由):进程重启会连着 Reviewer 子进程一起中断,那些行没有谁再去改它,面板会一直
    * 显示进行中并持续轮询。返回被改判的那些轮次,调用方据它去撤 PR 上残留的 👀。
    *
-   * `review_run` 没有失败原因的列,原因落在这一轮已固定的 Reviewer 指定各自的
-   * `reviewer_outcome` 行上——面板的逐模型失败展示本来就读那里,与其他失败一轮同一
-   * 条路径。
+   * 原因写两处(ADR 0026):`review_run.failure` 那一列(零 pin 的轮次也读得到),加这一轮
+   * 已固定的 Reviewer 指定各自的 `reviewer_outcome` 行——面板的逐模型失败展示读那里,
+   * 与其他失败一轮同一条路径。`failed` 照旧置 1。
    *
    * `runIds` 给了就只改判这几轮(issue #248:续跑不成立的那些);省略即全部停在运行中
    * 的轮次。
@@ -2053,6 +2065,12 @@ export type Store = {
     at: string,
     runIds?: readonly number[],
   ): InterruptedRun[];
+  /**
+   * 给一轮写轮次级的失败原因(ADR 0026):这一轮为什么没有正常收尾。只写这一列——
+   * `failed`、结束时间与 Reviewer 结果都不动,发布 review 失败那一类 Reviewer 结论有效
+   * 的收尾失败走这里。
+   */
+  recordRunFailure(runId: number, failure: string): void;
   /**
    * 停在运行中的那些轮次,带够续跑要的冻结事实(issue #248)。启动时先问它:一行都没有
    * 就什么都不做,启动路径因此零改动。
@@ -4592,11 +4610,12 @@ export function openStore(dbPath: string): Store {
           }
         }
         // 结束时间取启动时刻。耗时留空:进程什么时候落地的没人知道,写一个算出来的
-        // 数字就是编。
+        // 数字就是编。同一句原因也写进轮次级那一列(ADR 0026):零 pin 的轮次没有
+        // outcome 行可借,原因只在这里读得到。
         db.prepare(
-          `UPDATE review_run SET finished_at = ?, failed = 1
+          `UPDATE review_run SET finished_at = ?, failed = 1, failure = ?
             WHERE finished_at IS NULL${scope}`,
-        ).run(at, ...params);
+        ).run(at, failure, ...params);
         // 改判掉的那些轮次不会再被续跑,中间态的批次结果一并清掉(issue #248)。
         const deleteBatches = db.prepare("DELETE FROM review_run_batch WHERE run_id = ?");
         for (const row of rows) deleteBatches.run(row["id"] as number);
@@ -4611,6 +4630,10 @@ export function openStore(dbPath: string): Store {
         repo: String(row["repo"]),
         pullNumber: Number(row["pull_number"]),
       }));
+    },
+
+    recordRunFailure(runId, failure) {
+      db.prepare("UPDATE review_run SET failure = ? WHERE id = ?").run(failure, runId);
     },
 
     interruptedRuns() {
@@ -4885,7 +4908,8 @@ export function openStore(dbPath: string): Store {
       const runRows = db
         .prepare(
           `SELECT run.id AS id, run.head_sha AS head_sha, run.started_at AS started_at,
-                  run.finished_at AS finished_at, run.failed AS failed, run.mode AS mode
+                  run.finished_at AS finished_at, run.failed AS failed, run.failure AS failure,
+                  run.mode AS mode
              FROM review_run run
             WHERE ${where}
             ORDER BY run.id`,
@@ -5072,6 +5096,7 @@ export function openStore(dbPath: string): Store {
             startedAt: String(run["started_at"]),
             finishedAt: run["finished_at"] === null ? null : String(run["finished_at"]),
             failed: Number(run["failed"] ?? 0) === 1,
+            failure: run["failure"] === null ? null : String(run["failure"]),
             // 时间线上要分得出哪一轮是只复核:看到「新报 0」时那不是审查空跑。
             mode: run["mode"] === "verdict-only" ? "verdict-only" : "full",
             reported: 0,
@@ -5403,8 +5428,8 @@ export function openStore(dbPath: string): Store {
       const runs = db
         .prepare(
           `SELECT id, owner, repo, pull_number, head_sha, title, range_review_id, triggered_by,
-                  directive, mode, started_at, finished_at, failed, input_tokens, output_tokens,
-                  cache_read_tokens, cache_write_tokens, total_tokens
+                  directive, mode, started_at, finished_at, failed, failure, input_tokens,
+                  output_tokens, cache_read_tokens, cache_write_tokens, total_tokens
              FROM review_run ${where}
             ORDER BY id DESC LIMIT ?`,
         )
@@ -5617,6 +5642,7 @@ export function openStore(dbPath: string): Store {
           startedAt: String(run["started_at"]),
           finishedAt: run["finished_at"] === null ? null : String(run["finished_at"]),
           failed: Number(run["failed"]) === 1,
+          failure: run["failure"] === null ? null : String(run["failure"]),
           models: models.get(id) ?? [],
           ...(usage === undefined ? {} : { usage }),
           reviewerPins: reviewerPins.get(id) ?? [],

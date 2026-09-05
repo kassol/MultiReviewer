@@ -273,6 +273,83 @@ test("改判后的轮次在面板上是失败带原因,轨迹流连上即结束"
   );
 });
 
+test("改判写轮次级失败原因并记 run_failed 事件,零 pin 的轮次也读得到原因", { timeout: WAIT_MS }, async () => {
+  // ADR 0026:原因落在 `review_run` 自己的那一列上,不再只借 Reviewer 的 outcome 行——
+  // 一个 pin 都没有的轮次此前改判后原因不落任何行。
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const pinned = startRunning(db.path, 11);
+  const bare = startRunning(db.path, 12, []);
+  const gitea = recordingForge();
+
+  boot(db.path, gitea.forge);
+  await gitea.removedAtLeast(2);
+
+  const store = openStore(db.path);
+  try {
+    for (const runId of [pinned, bare]) {
+      const [run] = store.listRuns({ limit: 10, id: runId });
+      assert.equal(run?.failed, true);
+      assert.equal(run?.failure, UNREGISTERED);
+      // 轨迹上多一条 Run 级事件,带与列内相同的一句原因。
+      assert.deepEqual(
+        store
+          .listTrace(runId)
+          .filter((event) => event.kind === "run_failed")
+          .map((event) => [event.scope, event.payload]),
+        [["run", { reason: UNREGISTERED }]],
+      );
+    }
+    // 逐 pin 的 outcome 行照旧:有 pin 的那一轮仍每个 Reviewer 一行,零 pin 的一行都没有。
+    assert.deepEqual(
+      store.listRuns({ limit: 10, id: pinned })[0]?.models.map((entry) => entry.failure),
+      [UNREGISTERED, UNREGISTERED],
+    );
+    assert.deepEqual(store.listRuns({ limit: 10, id: bare })[0]?.models, []);
+  } finally {
+    store.close();
+  }
+});
+
+test("改判后列表、详情与阶段时间线都读得到轮次级失败原因", async () => {
+  const h = await startPanelHarness(cleanups);
+  const pinned = startRunning(h.db.path, 7);
+  const bare = startRunning(h.db.path, 8, []);
+  const store = openStore(h.db.path);
+  try {
+    store.failInterruptedRuns(INTERRUPTED, AT);
+  } finally {
+    store.close();
+  }
+
+  const list = (await (await h.api("GET", "/runs")).json()) as {
+    runs: { id: number; failed: boolean; failure: string | null; models: unknown[] }[];
+  };
+  assert.deepEqual(
+    [pinned, bare].map((id) => {
+      const row = list.runs.find((entry) => entry.id === id);
+      return [row?.failed, row?.failure, row?.models.length];
+    }),
+    [
+      [true, INTERRUPTED, 2],
+      [true, INTERRUPTED, 0],
+    ],
+  );
+
+  const detail = (await (await h.api("GET", `/runs/${bare}`)).json()) as {
+    run: { failed: boolean; failure: string | null };
+  };
+  assert.deepEqual([detail.run.failed, detail.run.failure], [true, INTERRUPTED]);
+
+  const summary = (await (
+    await h.api("GET", "/stage-summary?owner=acme&repo=widgets&pullNumber=8")
+  ).json()) as { timeline: { runId: number; failed: boolean; failure: string | null }[] };
+  assert.deepEqual(
+    summary.timeline.map((entry) => [entry.runId, entry.failed, entry.failure]),
+    [[bare, true, INTERRUPTED]],
+  );
+});
+
 /**
  * 续跑那条链路要真的跑起来:注册表里的仓库、一份真实工作副本、一个脚本化 Reviewer
  * (issue #248)。这里的断言覆盖启动侧的接线——找仓库、组运行计划、调 `runReview`
@@ -366,7 +443,8 @@ async function interruptedAtThirdBatch(): Promise<{
           reviewers: [resumeReviewer({ throwOnCall: 3 })],
           cacheDir: cache.dir,
           dbPath: db.path,
-          // 失败原因落在 Reviewer 指定的那几行上,没有指定就没有地方写原因(issue #247)。
+          // 失败原因逐 Reviewer 各记一份,给了指定才有那几行(issue #247);轮次级那一份
+          // 不靠它(issue #256)。
           reviewerPins: [pin("a")],
           maxFilesPerBatch: 1,
           maxParallelBatches: 1,
