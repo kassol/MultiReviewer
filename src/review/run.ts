@@ -1359,15 +1359,16 @@ export const VERDICT_ONLY_NO_HISTORY =
 export const RESUME_NOT_VIABLE = "续跑不成立";
 
 /**
- * 续跑之前核对冻结前提(issue #248):重新切出的批次要与开跑那次逐字相同,已落库的
- * 每一批也要正好是这一轮的这几个 Reviewer 按同一顺序跑出来的。
+ * 续跑之前核对冻结前提(issue #248):重新切出的批次要与开跑时冻结的完整计划逐字相同
+ * (issue #253,已完成与未完成的批次都在内),已落库的每一批也要正好是这一轮的这几个
+ * Reviewer 按同一顺序跑出来的。
  *
  * 对不上就说明前提已经不在——head 上的 diff 变了、分批上限被改了、模型组合被换了。
  * 那时接着跑,已落库的批次与新切出的批次会指向不同的文件集,合并出来的覆盖是错的。
  * 返回不成立的那句原因;都对得上时返回 undefined。
  */
 function resumeMismatch(
-  resume: ResumeState,
+  resume: ResumeState & { plan: readonly (readonly string[])[] },
   headSha: string,
   ruleSetVersion: number | null,
   batches: readonly (readonly string[])[],
@@ -1399,6 +1400,20 @@ function resumeMismatch(
   }
   if (resume.batchCount !== batches.length) {
     return `重新切批切出 ${batches.length} 批,开跑时是 ${resume.batchCount} 批`;
+  }
+  // 逐批对照开跑时冻结的完整计划(issue #253):还没跑的批次也在核对之内。只核对已落库
+  // 的那几批看不出「总批数相同、已完成的首批相同、未完成部分的分组变了」——那时剩余
+  // 文件的并集不变,变的是分组与按文件路由的知识条目和历史,已落库的批次因此答不出
+  // 这一轮的分组还是不是原来那份。
+  for (const [index, planned] of resume.plan.entries()) {
+    const files = batches[index];
+    if (
+      files === undefined ||
+      files.length !== planned.length ||
+      planned.some((file, position) => file !== files[position])
+    ) {
+      return `第 ${index + 1} 批的分组与冻结计划不符`;
+    }
   }
   for (const [index, batch] of resume.batches) {
     const files = batches[index];
@@ -1434,19 +1449,27 @@ export async function runReview(
   // 评审复核):续不了的旧行到这里就退回改判,不必先白克隆一份工作副本、也不必在 PR
   // 上挂一只随后要撤掉的眼睛。句柄用完即还——真正的编排还在下面另开一份。
   const resumeRunId = deps.resumeRunId;
-  let resume: ResumeState | undefined;
+  // 走到核对那一步的续跑状态,计划一定在(issue #253):没有计划的轮次在这里就退回改判。
+  let resume: (ResumeState & { plan: string[][] }) | undefined;
   if (resumeRunId !== undefined) {
     const resumeStore = openStore(deps.dbPath);
+    let stored: ResumeState | undefined;
     try {
-      resume = resumeStore.resumeState(resumeRunId);
+      stored = resumeStore.resumeState(resumeRunId);
     } finally {
       resumeStore.close();
     }
     // 快照不在(轮次已不在库里,或它是升级前落的旧行)就没有「与原轮各批一致的历史」
     // 可给,续跑到此为止。
-    if (resume?.history === undefined) {
+    if (stored?.history === undefined) {
       throw new Error(`${RESUME_NOT_VIABLE}:第 ${resumeRunId} 轮没有开跑时的历史快照`);
     }
+    // 计划不在同律(issue #253):没有开跑时冻结的完整批次计划,未完成批次的分组变没变
+    // 无从核对,续跑不成立。
+    if (stored.plan === undefined) {
+      throw new Error(`${RESUME_NOT_VIABLE}:第 ${resumeRunId} 轮没有开跑时的批次计划`);
+    }
+    resume = { ...stored, plan: stored.plan };
   }
 
   // 挂上「正在审查」。同一个 PR 推了新 commit 会再跑一次,上一轮的结论先作废——
@@ -1538,9 +1561,10 @@ export async function runReview(
       deps.maxFilesPerBatch ?? DEFAULT_MAX_FILES_PER_BATCH,
     );
 
-    // 续跑核对重新切批的结果(issue #248):批数与每个已落库批次的文件清单都要逐字
-    // 相同,Reviewer 也要还是那几个、还是那个顺序。对不上就说明冻结的前提已经不在
-    // (diff 变了、分批上限改了、模型组合换了),这时接着跑只会跑出一份错位的覆盖。
+    // 续跑核对重新切批的结果(issue #248):批数、每一批与开跑时冻结的完整计划
+    // (issue #253)、每个已落库批次的文件清单都要逐字相同,Reviewer 也要还是那几个、
+    // 还是那个顺序。对不上就说明冻结的前提已经不在(diff 变了、分批上限改了、模型
+    // 组合换了),这时接着跑只会跑出一份错位的覆盖。
     if (resume !== undefined) {
       const reason = resumeMismatch(
         resume,
@@ -1574,6 +1598,9 @@ export async function runReview(
         0,
       ),
       batchCount: batches.length,
+      // 完整批次计划随这一轮落库(issue #253):任何批次完成之前它就在,续跑据它核对
+      // 已完成与未完成的每一批。
+      batches,
       reviewerPins: deps.reviewerPins ?? [],
       // 知识集版本在这里定死(issue #204):这一轮之后的规则变更追不上已经开跑的它,
       // 回看历史轮次时也就知道当时按的是哪一版。
