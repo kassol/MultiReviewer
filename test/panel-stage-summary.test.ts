@@ -241,6 +241,7 @@ function seedStage(dbPath: string): { rangeReviewId: number; runs: number[] } {
       // fp-c2 是这一轮的第二个合并组。
       groupIndex: 1,
       candidate: continuation!,
+      handoffPending: false,
     });
 
     // 第三轮:三条都折叠,a 被人在面板上处置。

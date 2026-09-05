@@ -306,12 +306,18 @@ function RunMilestone({ event }: { event: TraceEvent }) {
         const line = num(payload, "line");
         const title = str(payload, "title");
         const criteria = criteriaText(payload);
+        // 交接结果(ADR 0025):旧评论没关上的那次延续,轨迹不声称交接完成。
+        const handoffPending =
+          event.kind === "finding_continued" && str(payload, "handoff") === "pending";
         return (
           <div className="flex min-w-0 flex-col gap-1">
             <span className="flex flex-wrap items-center gap-1.5">
               <span className="text-base text-text">
                 {event.kind === "finding_folded" ? "折叠到历史评论" : "延续自历史 Finding"}
               </span>
+              {handoffPending ? (
+                <Badge color="amber" variant="soft" radius="full">交接未完成</Badge>
+              ) : null}
               {file === null ? null : (
                 <span className="font-mono text-xs break-all text-text-secondary">
                   {file}

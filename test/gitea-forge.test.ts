@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { PublishUncertainError } from "../src/forge/forge.ts";
 import { assertSupportedVersion, createGiteaForge } from "../src/forge/gitea.ts";
 import { stubFetch, type Route } from "./support/stub-fetch.ts";
 
@@ -188,6 +189,99 @@ test("零行级评论的一轮不再多发一次取评论的请求", async (t) =
     !stub.calls.some((c) => c.url.includes("/reviews/99/comments")),
     "本来就没有行级评论,不该再取一次",
   );
+});
+
+/**
+ * 发布结果的三档(ADR 0025,issue #252):创建端点回错即明确失败;创建成了而读回评论
+ * 失败,review 已经在 Forge 上,错误带 review id 供人核对;创建请求连响应都没有,无从
+ * 判定有没有创建。后两档都是「结果不确定」,调用方据此不自动重发。
+ */
+test("创建 review 回错:明确失败,错误不带 review id", async (t) => {
+  const stub = stubFetch(
+    routes({
+      "POST /api/v1/repos/acme/widget/pulls/7/reviews": {
+        status: 422,
+        body: { message: "line out of range" },
+      },
+    }),
+  );
+  t.after(stub.restore);
+
+  const error = await createGiteaForge(OPTIONS)
+    .createReview(REF, {
+      body: "MultiReviewer",
+      commitSha: HEAD_SHA,
+      comments: [{ path: "src/a.ts", line: 42, body: "这里会越界" }],
+    })
+    .then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+
+  assert.ok(error !== undefined);
+  assert.ok(!(error instanceof PublishUncertainError), "回错即明确未创建,不是不确定");
+  assert.match(error.message, /422/);
+});
+
+test("review 已创建但读回评论失败:错误带上 review id,不自动重发", async (t) => {
+  const stub = stubFetch(
+    routes({
+      "GET /api/v1/repos/acme/widget/pulls/7/reviews/99/comments": {
+        status: 500,
+        body: { message: "internal error" },
+      },
+    }),
+  );
+  t.after(stub.restore);
+
+  const error = await createGiteaForge(OPTIONS)
+    .createReview(REF, {
+      body: "MultiReviewer",
+      commitSha: HEAD_SHA,
+      comments: [{ path: "src/a.ts", line: 42, body: "这里会越界" }],
+    })
+    .then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+
+  assert.ok(error instanceof PublishUncertainError, "读回失败时 review 已创建,该是不确定");
+  assert.equal(error.reviewId, "99");
+  assert.match(error.message, /99/);
+  assert.match(error.message, /500/);
+  assert.equal(
+    stub.calls.filter((c) => c.method === "POST" && c.url.endsWith("/pulls/7/reviews")).length,
+    1,
+    "读回失败不该再创建一次",
+  );
+});
+
+test("创建 review 的请求没有响应:无法判定是否已创建,错误不带 review id", async (t) => {
+  const stub = stubFetch(
+    routes({
+      "POST /api/v1/repos/acme/widget/pulls/7/reviews": { status: 200, body: { id: 99 } },
+    }),
+  );
+  t.after(stub.restore);
+  // 打桩里拿掉创建端点:fetch 自己抛出来,与网络中断同形——没有响应就没有结论。
+  const noResponse = stubFetch({});
+  t.after(noResponse.restore);
+
+  const error = await createGiteaForge(OPTIONS)
+    .createReview(REF, {
+      body: "MultiReviewer",
+      commitSha: HEAD_SHA,
+      comments: [{ path: "src/a.ts", line: 42, body: "这里会越界" }],
+    })
+    .then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+
+  assert.ok(error instanceof PublishUncertainError, "没有响应即无法判定,该是不确定");
+  assert.equal(error.reviewId, undefined);
+  assert.match(error.message, /无法判定/);
+  assert.ok(!error.message.includes(TOKEN), "错误信息里带上了凭据");
 });
 
 test("变更文件的状态映射到 ChangedFileStatus 的四个取值", async (t) => {

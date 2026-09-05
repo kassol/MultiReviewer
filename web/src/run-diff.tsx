@@ -237,6 +237,14 @@ export function FindingRow({
         </p>
       )}
 
+      {/* 交接未完成(ADR 0025):旧评论还留在 Forge 上待关闭。摆在处置状态旁,读的人知道
+          这条在 Forge 上还有一条打开的旧评论,可以去处置;下一轮收尾会自动重试关闭。 */}
+      {finding.handoffPending ? (
+        <p className="text-sm text-warning">
+          交接未完成 · 旧评论尚未关闭，仍可在 Forge 上处置；下一轮 Review Run 收尾时重试关闭
+        </p>
+      ) : null}
+
       {autoDisposed ? (
         <p className="text-sm text-text-secondary">
           已修复 · 自动处置

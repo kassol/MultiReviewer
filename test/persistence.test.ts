@@ -611,6 +611,7 @@ test("时间流带上每条 Finding 的 Forge 评论 id 与链接", async () => 
       disposedAt: null,
       note: null,
       continuedFrom: null,
+      handoffPending: false,
     },
   ]);
 });
@@ -802,6 +803,7 @@ test("升级前落的 finding 行读得出来,评论 id 与链接为空", () => 
       disposedAt: null,
       note: null,
       continuedFrom: null,
+      handoffPending: false,
     },
   ]);
 });
