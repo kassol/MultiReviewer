@@ -154,7 +154,9 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
-- 2026-09-05: 评审复核 issue #251–#253 后的决策记录,尚未落地。**延续的交接改在新评论发布确认后完成**(`docs/adr/0025-continuation-handoff-follows-published-comment.md`):顺序改为发布 review 并读回评论标识 → resolve 旧评论 → 落库延续;发布明确失败不记延续,resolve 失败记「交接未完成」并由下一轮重试,发布结果不确定时禁止自动重发。**轮次级失败原因与 Reviewer 失败分开记**(`docs/adr/0026-run-level-failure-is-recorded-apart-from-reviewer-failure.md`):`review_run` 将加一列失败原因,`failed` 列含义不动。承载由 issue #256 落地,#252 与 #253 阻塞于它;#251 改为准入与执行共用同一个「可审文件」函数,文件集不跨 HTTP 边界传递。
+- 2026-09-05: 落地 issue #251。**只复核准入与执行共用同一个「可审文件」判据,拒绝无效推进**:变更文件按状态归一化后排除删除的文件、改名只认新路径,PR 重跑、范围审查重跑、增量评审推进三处只复核准入与 Review Run 执行阶段都用这一条规则。承载全部未处置历史的文件被删或改名之后再只复核推进,接口当场 409,比较项、来源、推进人、容器 PR 的 head 与轮次数都不动;此前会先答 202、把容器 PR 推到新比较项,再由执行阶段拒绝开跑。文件集不跨 HTTP 边界传递,推进那一处仍从本地副本算。切回完整审查后同一个比较项照常推得动。细节见 `src/AGENTS.md`。
+
+- 2026-09-05: 评审复核 issue #251–#253 后的决策记录,尚未落地。**延续的交接改在新评论发布确认后完成**(`docs/adr/0025-continuation-handoff-follows-published-comment.md`):顺序改为发布 review 并读回评论标识 → resolve 旧评论 → 落库延续;发布明确失败不记延续,resolve 失败记「交接未完成」并由下一轮重试,发布结果不确定时禁止自动重发。**轮次级失败原因与 Reviewer 失败分开记**(`docs/adr/0026-run-level-failure-is-recorded-apart-from-reviewer-failure.md`):`review_run` 将加一列失败原因,`failed` 列含义不动。承载由 issue #256 落地,#252 与 #253 阻塞于它;#251 改为准入与执行共用同一个「可审文件」函数,文件集不跨 HTTP 边界传递(#251 已于同日落地,见上一条)。
 
 - 2026-09-05: 落地 issue #250。**增量评审也能选模式,默认完整审查**:推进接口多一格非必填的 `mode`(不给即完整审查,行为与这一票之前一字不变,别的取值 400),弹窗在本轮指令下方多一个默认勾上的「完整审查」,与重跑弹窗同一个勾选、同一句说明。取消勾选推进出来的那一轮只复核这个阶段未处置的历史;这个阶段没有可复核的历史时回 409,比较项与容器 PR 的 head 都不动。权限格仍是 `review:advance`。CONTEXT.md 的「只复核」词条改口:重跑默认只复核、增量评审默认完整审查,发起范围审查永远是完整审查。详见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 

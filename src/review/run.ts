@@ -1,6 +1,7 @@
 import type { ReviewRunReviewerPin } from "../config.ts";
 import type { Drain } from "../drain.ts";
 import type {
+  ChangedFileStatus,
   ExistingReviewComment,
   Forge,
   PublishedReviewComment,
@@ -15,6 +16,7 @@ import {
   readRangeCommits,
   readRangeDiff,
   type LineAuthor,
+  type RangeDiffFile,
 } from "../git/worktree.ts";
 import {
   DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
@@ -1327,6 +1329,23 @@ export function openHistory(
 }
 
 /**
+ * 一份变更文件清单里能审的那些路径(issue #251)。两种来源归一到同一条规则:Forge 的
+ * `removed` 与本地 diff 的 `deleted` 都是删掉的文件,head 上已经没有它,审不了;改名的
+ * 文件只认新路径——Forge 的 `renamed` 条目本来就落在新路径上,本地 diff 关了重命名检测,
+ * 改名是旧路径删除加新路径新增,过滤掉删除那一半之后剩下的正是新路径。
+ *
+ * 只复核的准入(接口层三处)与执行阶段(`runReview`)都从它取文件集:历史落在被删或改名
+ * 前的路径上时,两层给出同一个答案——没有可复核的东西。
+ */
+export function reviewableFiles(
+  files: readonly { path: string; status: ChangedFileStatus | RangeDiffFile["status"] }[],
+): string[] {
+  return files
+    .filter((file) => file.status !== "removed" && file.status !== "deleted")
+    .map((file) => file.path);
+}
+
+/**
  * 只复核那一轮过滤完一个文件都不剩时的失败原因(issue #242)。一轮什么都不做的 Review
  * Run 不该被开出来,所以在落库之前就抛;措辞固定,接口层据它转 409。
  */
@@ -1457,9 +1476,7 @@ export async function runReview(
     const range = {
       baseSha: worktree.mergeBaseSha,
       headSha: pullRequest.headSha,
-      files: changedFiles
-        .filter((f) => f.status !== "removed")
-        .map((f) => f.path),
+      files: reviewableFiles(changedFiles),
     };
 
     // diff 在 Reviewer 之前读:Review Range 的规模要在开跑之前落库,分批也按它切。

@@ -328,6 +328,30 @@ test("删掉的两个只读接口与未知端点同一档 404", async () => {
   }
 });
 
+test("发起范围审查不收模式:带上只复核照样是完整审查(issue #251)", async () => {
+  const h = await registeredHarness();
+  const response = await h.api("POST", "/range-reviews", {
+    title: "范围审查标题",
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    base: h.repo.baseSha,
+    comparison: h.repo.headSha,
+    mode: "verdict-only",
+  });
+  assert.equal(response.status, 202);
+  const { rangeReview } = (await response.json()) as { rangeReview: RangeReview };
+  await h.settledAtLeast(1);
+  assert.equal(h.settled[0]!.error, undefined);
+
+  const store = openStore(h.db.path);
+  const runs = store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
+  store.close();
+  assert.deepEqual(
+    runs.map((run) => run.mode),
+    ["full"],
+  );
+});
+
 test("时间流区分 PR 触发与范围审查", async () => {
   const h = await registeredHarness();
   assert.equal(

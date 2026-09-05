@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { after, test } from "node:test";
 
-import type { Forge } from "../src/forge/forge.ts";
+import type { ChangedFile, Forge } from "../src/forge/forge.ts";
 import { hashPassword } from "../src/panel/password.ts";
 import type { ReviewRange } from "../src/review/finding.ts";
 import { openStore } from "../src/review/store.ts";
@@ -44,8 +44,11 @@ type RangeReview = {
   comparisonSource: { kind: "branch" | "tag"; name: string } | null;
 };
 
-/** 每一轮的 Reviewer 都记下自己拿到的 Review Range,推进之后那一轮的范围要能读出来。 */
-type Recorded = { ranges: ReviewRange[] };
+/**
+ * 每一轮的 Reviewer 都记下自己拿到的 Review Range,推进之后那一轮的范围要能读出来。
+ * 要看历史注入的用例再记每次收到的历史落在哪些文件上(issue #251)。
+ */
+type Recorded = { ranges: ReviewRange[]; historyFiles?: string[][] };
 
 /** 只复核那一轮要有未处置历史才开得起来:要它的用例让每个 Reviewer 都报一条。 */
 const REPORTED_FINDINGS: Parameters<typeof scriptedReviewer>[1] = [
@@ -66,6 +69,7 @@ async function startedHarness(
           ...reviewer,
           review: async (input) => {
             recorded.ranges.push(input.range);
+            recorded.historyFiles?.push(input.history.map((entry) => entry.file));
             return reviewer.review(input);
           },
         };
@@ -99,6 +103,7 @@ async function startRangeReview(
   h: PanelHarness,
   base: string,
   comparison: string,
+  comparisonSource?: RangeReview["comparisonSource"],
 ): Promise<RangeReview> {
   const response = await h.api("POST", "/range-reviews", {
     title: "范围审查标题",
@@ -106,6 +111,7 @@ async function startRangeReview(
     repo: HARNESS_PR.repo,
     base,
     comparison,
+    ...(comparisonSource === null || comparisonSource === undefined ? {} : { comparisonSource }),
   });
   assert.equal(response.status, 202);
   const { rangeReview } = (await response.json()) as { rangeReview: RangeReview };
@@ -568,4 +574,154 @@ test("未处置历史全落在这次没改到的文件上:只复核推进 409,�
   assert.equal(h.settled.length, 1);
   assert.equal(h.repo.branchSha(rangeReview.headBranch), h.repo.headSha);
   assert.deepEqual(modes(h, rangeReview.id), ["full"]);
+});
+
+/**
+ * 容器 PR 上的变更文件带状态(issue #251)。夹具 Forge 固定回两个 `modified`,用例在第一轮
+ * 跑完后换成真实 Gitea 在推进之后会说的那份——被删的文件是 `removed`,改名的只在新路径
+ * 上出现;推进的准入读的是本地副本,这份只喂给执行阶段。
+ */
+function replaceableChangedFiles(): {
+  options: Parameters<typeof startReadyPanelHarness>[1];
+  replace(files: ChangedFile[]): void;
+} {
+  let replaced: ChangedFile[] | undefined;
+  return {
+    options: {
+      wrapForge: (forge) => ({
+        ...forge,
+        listChangedFiles: async (ref) => replaced ?? forge.listChangedFiles(ref),
+      }),
+    },
+    replace(files) {
+      replaced = files;
+    },
+  };
+}
+
+/** 库里这个范围审查的比较项记录,按记录先后:发起那条永远在,推进被拒时不该多一条。 */
+function comparisons(h: PanelHarness, rangeReviewId: number): { sha: string; recordedBy: string }[] {
+  const store = openStore(h.db.path);
+  try {
+    return store
+      .listRangeReviewComparisons(rangeReviewId)
+      .map(({ sha, recordedBy }) => ({ sha, recordedBy }));
+  } finally {
+    store.close();
+  }
+}
+
+test("删掉承载全部未处置历史的文件:只复核推进 409,比较项、来源、推进人、容器 PR 的 head 与轮次数都不动(issue #251)", async () => {
+  const recorded: Recorded = { ranges: [] };
+  const changed = replaceableChangedFiles();
+  const h = await startedHarness(recorded, changed.options, REPORTED_FINDINGS);
+  const source = { kind: "branch", name: "feature" } as const;
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha, source);
+  assert.deepEqual(rangeReview.comparisonSource, source);
+  changed.replace([
+    { path: "src/answer.ts", status: "removed" },
+    { path: "src/other.ts", status: "modified" },
+  ]);
+
+  // 从 base 另拉一条把 src/answer.ts 删掉的旁支:未处置历史全在那个文件上,而删掉的文件
+  // 审不了——按路径看它在变更文件里,按可审文件看这一轮什么都复核不了。
+  const dropped = h.repo.branchFrom("dropped", h.repo.baseSha, { "src/answer.ts": null });
+  const denied = await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+    comparison: dropped,
+    comparisonSource: { kind: "branch", name: "dropped" },
+    mode: "verdict-only",
+  });
+  assert.equal(denied.status, 409);
+  assert.match(((await denied.json()) as { error: string }).error, /未处置/);
+
+  // 闸在一切副作用之前:比较项、来源、推进人、head 分支与轮次数都停在推进之前那一刻。
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), h.repo.headSha);
+  assert.equal(h.settled.length, 1);
+  assert.deepEqual(modes(h, rangeReview.id), ["full"]);
+  assert.deepEqual(comparisons(h, rangeReview.id), [
+    { sha: h.repo.headSha, recordedBy: PANEL_ADMIN_USERNAME },
+  ]);
+  const store = openStore(h.db.path);
+  const record = store.getRangeReview(rangeReview.id)!;
+  store.close();
+  assert.equal(record.comparisonSha, h.repo.headSha);
+  assert.deepEqual(record.comparisonSource, source);
+
+  // 切回完整审查:同一个比较项推得动,执行阶段照常开跑。
+  const accepted = await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+    comparison: dropped,
+    mode: "full",
+  });
+  assert.equal(accepted.status, 202);
+  await h.settledAtLeast(2);
+  assert.equal(h.settled[1]!.error, undefined);
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), dropped);
+  assert.deepEqual(modes(h, rangeReview.id), ["full", "full"]);
+});
+
+test("改名承载未处置历史的文件:旧路径上的历史不使只复核准入通过(issue #251)", async () => {
+  const recorded: Recorded = { ranges: [] };
+  const changed = replaceableChangedFiles();
+  const h = await startedHarness(recorded, changed.options, REPORTED_FINDINGS);
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+  changed.replace([
+    { path: "src/renamed.ts", status: "renamed" },
+    { path: "src/other.ts", status: "modified" },
+  ]);
+
+  // 本地 diff 不做重命名检测,改名是旧路径删除加新路径新增:历史挂在旧路径上,而旧路径
+  // 已经不是可审文件,新路径上又没有历史。
+  const moved = h.repo.branchFrom("moved", h.repo.baseSha, {
+    "src/answer.ts": null,
+    "src/renamed.ts": "export const answer = 1;\n",
+  });
+  const denied = await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+    comparison: moved,
+    mode: "verdict-only",
+  });
+  assert.equal(denied.status, 409);
+  assert.match(((await denied.json()) as { error: string }).error, /未处置/);
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), h.repo.headSha);
+  assert.equal(h.settled.length, 1);
+  assert.deepEqual(modes(h, rangeReview.id), ["full"]);
+  assert.deepEqual(comparisons(h, rangeReview.id), [
+    { sha: h.repo.headSha, recordedBy: PANEL_ADMIN_USERNAME },
+  ]);
+});
+
+test("准入通过的只复核推进执行阶段必定开跑:Reviewer 收到的范围与历史按同一规则过滤(issue #251)", async () => {
+  const recorded: Recorded = { ranges: [], historyFiles: [] };
+  const changed = replaceableChangedFiles();
+  const h = await startedHarness(recorded, changed.options, REPORTED_FINDINGS);
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+  changed.replace([
+    { path: "src/answer.ts", status: "modified" },
+    { path: "src/other.ts", status: "removed" },
+  ]);
+
+  // 改 src/answer.ts 并删掉 src/other.ts:历史所在的文件仍可审,准入放行之后执行阶段
+  // 按同一规则只剩它,不会先答 202 再因无可复核内容拒绝开跑。
+  const trimmed = h.repo.branchFrom("trimmed", h.repo.baseSha, {
+    "src/answer.ts": "export const answer = 18;\n",
+    "src/other.ts": null,
+  });
+  const response = await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+    comparison: trimmed,
+    mode: "verdict-only",
+  });
+  assert.equal(response.status, 202);
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), trimmed);
+
+  await h.settledAtLeast(2);
+  assert.equal(h.settled[1]!.error, undefined);
+  assert.deepEqual(modes(h, rangeReview.id), ["full", "verdict-only"]);
+  assert.deepEqual(comparisons(h, rangeReview.id), [
+    { sha: h.repo.headSha, recordedBy: PANEL_ADMIN_USERNAME },
+    { sha: trimmed, recordedBy: PANEL_ADMIN_USERNAME },
+  ]);
+  const latest = recorded.ranges.at(-1)!;
+  assert.equal(latest.baseSha, h.repo.baseSha);
+  assert.equal(latest.headSha, trimmed);
+  assert.deepEqual(latest.files, ["src/answer.ts"]);
+  assert.deepEqual(recorded.historyFiles!.at(-1), ["src/answer.ts"]);
 });

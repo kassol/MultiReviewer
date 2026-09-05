@@ -5,7 +5,8 @@ import { dirname, join } from "node:path";
 
 import { openStore } from "../../src/review/store.ts";
 
-export type FileTree = Record<string, string>;
+/** 一次提交要写的文件。值为 `null` 是删掉这个文件:重命名就是旧路径 `null` 加新路径的内容。 */
+export type FileTree = Record<string, string | null>;
 
 export type RepoFixtureOptions = {
   /** base 分支的初始提交。 */
@@ -79,6 +80,10 @@ function git(dir: string, ...args: string[]): string {
 function writeTree(dir: string, tree: FileTree): void {
   for (const [path, content] of Object.entries(tree)) {
     const full = join(dir, path);
+    if (content === null) {
+      rmSync(full, { force: true });
+      continue;
+    }
     mkdirSync(dirname(full), { recursive: true });
     writeFileSync(full, content);
   }
