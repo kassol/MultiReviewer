@@ -26,7 +26,6 @@ import {
   EVIDENCE_AGENT,
   EVIDENCE_TOOL,
   evidenceTranscriptEvents,
-  evidenceUsageTotals,
   installEvidenceKit,
   vendoredSubagentsPath,
 } from "./evidence.ts";
@@ -484,13 +483,17 @@ async function run(request: ReviewerRequest): Promise<void> {
   }
   const { agentDir, apiKey, model, modelRuntime, settingsManager, resourceLoader } = prepared;
 
-  // 取证子代理的铺装(issue #226)。知识注入与 Reviewer 拿到的是同一批条目。
+  // 取证子代理的铺装(issue #226)。知识注入与 Reviewer 拿到的是同一批条目;会话上限是
+  // 本轮运行计划冻结的那一格(issue #258),不带即系统默认。
   installEvidenceKit({
     agentDir,
     runtimeModel: request.runtimeModel,
     thinkingLevel,
     rules: request.rules ?? [],
     facts: request.facts ?? [],
+    ...(request.maxEvidenceCallsPerBatch === undefined
+      ? {}
+      : { sessionBudget: request.maxEvidenceCallsPerBatch }),
   });
 
   const { session } = await createAgentSession({
@@ -529,21 +532,8 @@ async function run(request: ReviewerRequest): Promise<void> {
       toolName === EVIDENCE_TOOL ? evidenceTranscriptEvents(result) : [],
   );
 
-  // 取证子会话的用量累计。子代理在另一个 pi 进程里,主会话的统计数不到它,从每次
-  // 调用返回的 transcript 累加。异步派单的返回没有 transcript,数不到——异步已在铺装
-  // 层默认关掉(`installEvidenceKit`),模型显式强开的那一档接受少计。
-  const evidenceTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   session.subscribe((event) => {
     forwardEvent(event);
-    if (event.type === "tool_execution_end" && !event.isError && event.toolName === EVIDENCE_TOOL) {
-      const spent = evidenceUsageTotals((event as { result?: unknown }).result);
-      if (spent !== undefined) {
-        evidenceTokens.input += spent.inputTokens;
-        evidenceTokens.output += spent.outputTokens;
-        evidenceTokens.cacheRead += spent.cacheReadTokens;
-        evidenceTokens.cacheWrite += spent.cacheWriteTokens;
-      }
-    }
     // 只数 report_finding 的失败。read 或 grep 出错是模型在探索仓库时的正常摩擦,
     // 把它们算进来会让"契约失配"这个信号失去意义。
     if (
@@ -568,20 +558,17 @@ async function run(request: ReviewerRequest): Promise<void> {
 
   // 用量必须在 dispose 之前读:会话销毁后统计随之消失。只取 token 明细,`stats.cost`
   // 是 Pi 按自带价目表折算的估算,产品不记账,读它没有意义。
+  //
+  // 取证子会话的用量已经在这份统计里(issue #260):pi-subagents 把子会话的汇总 Usage
+  // 挂在 `subagent` 工具返回上,Pi 把它记进那条 toolResult 消息,`getSessionStats`
+  // 按消息累加时一并算入。这里不再从 transcript 补算——补一次就是重复计一次。
   const stats = session.getSessionStats();
-  // 取证子会话的用量并进同一份:它们花在同一次审查、同一份凭据上,分开记要动协议、
-  // 库与面板三层,而读的人要的是「这轮花了多少」。
   const usage = {
-    inputTokens: stats.tokens.input + evidenceTokens.input,
-    outputTokens: stats.tokens.output + evidenceTokens.output,
-    cacheReadTokens: stats.tokens.cacheRead + evidenceTokens.cacheRead,
-    cacheWriteTokens: stats.tokens.cacheWrite + evidenceTokens.cacheWrite,
-    totalTokens:
-      stats.tokens.total +
-      evidenceTokens.input +
-      evidenceTokens.output +
-      evidenceTokens.cacheRead +
-      evidenceTokens.cacheWrite,
+    inputTokens: stats.tokens.input,
+    outputTokens: stats.tokens.output,
+    cacheReadTokens: stats.tokens.cacheRead,
+    cacheWriteTokens: stats.tokens.cacheWrite,
+    totalTokens: stats.tokens.total,
   };
 
   session.dispose();

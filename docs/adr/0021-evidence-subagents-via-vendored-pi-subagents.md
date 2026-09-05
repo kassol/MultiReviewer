@@ -25,3 +25,7 @@ Pi 本体不内建 subagent,官方注册表包 pi-subagents 以扩展形态提�
 上文「`maxSubagentSpawnsPerRun` 收紧到 8,作用域是一个 Reviewer 子进程的一次会话(即一个批次),一轮 Review Run 的总取证上限因此是 8 × 批次数 × Reviewer 数」不成立。pi-subagents 里 `maxSubagentSpawnsPerRun`(`PI_SUBAGENT_MAX_SPAWNS_PER_RUN`)限的是一次 `subagent` 调用内部的 fan-out——一个 run tree 的累计子任务数,每次调用重新计数;一个父会话的累计派单总量由 `maxSubagentSpawnsPerSession`(`PI_SUBAGENT_MAX_SPAWNS_PER_SESSION`)管,本项目此前未设,默认不限。线上 Review Run #54 因此每批每模型可无限次串行取证:`gpt-5.6-sol` 一轮派出 79 次,串行等待累计 151 分钟,占它总耗时的一半。
 
 两道上限自此分工明确(issue #231):会话级 `PI_SUBAGENT_MAX_SPAWNS_PER_SESSION = 3` 管总量,作用域是一个 Reviewer 子进程的一次会话,即每批每模型最多派 3 次取证,一轮 Review Run 的总取证上限是 3 × 批次数 × Reviewer 数;单次调用的 `PI_SUBAGENT_MAX_SPAWNS_PER_RUN = 8` 保留,管的是一次调用扇出多宽。名额稀缺是模型要知道的事,系统提示的取证段因此写明:名额有限,留给最高严重度、且不读对方代码就不能成立的主张。
+
+## 修订(2026-09-05)
+
+会话级上限改为审查策略的一项(issue #258):「每批每模型取证上限」与分批上限、批次并发数并列,正整数、各自保存各自版本,系统默认仍是 3——上文的 `PI_SUBAGENT_MAX_SPAWNS_PER_SESSION = 3` 从此读作「默认 3」。Review Run 开跑时把它与其余上限在同一次读事务里冻进运行计划,Reviewer 子进程按计划里的值设会话上限;中途改设置只影响下一轮。单次调用的 `PI_SUBAGENT_MAX_SPAWNS_PER_RUN = 8` 不进策略,保持写死。改成可调的理由:合理值只能实测——线上 Run #66 / #67 里 sol 每批固定想派 4 次,第 4 次撞上限,opus 一轮只派 1 次,写死的 3 无从验证是紧是松。

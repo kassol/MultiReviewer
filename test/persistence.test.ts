@@ -87,6 +87,8 @@ test("历史审查策略进入独立初始版本，写一项只推进该项版�
     maxParallelBatchesVersion: 1,
     maxFilesPerBatch: null,
     maxFilesPerBatchVersion: 1,
+    maxEvidenceCallsPerBatch: null,
+    maxEvidenceCallsPerBatchVersion: 1,
   });
   assert.equal(store.putGlobalReviewers(1, JSON.stringify([])), false, "新组合不能写成空值");
   assert.equal(store.putGlobalBatchLimit("maxChangedLinesPerBatch", 1, null), true);
@@ -99,6 +101,8 @@ test("历史审查策略进入独立初始版本，写一项只推进该项版�
     maxParallelBatchesVersion: 1,
     maxFilesPerBatch: null,
     maxFilesPerBatchVersion: 1,
+    maxEvidenceCallsPerBatch: null,
+    maxEvidenceCallsPerBatchVersion: 1,
   });
   assert.equal(store.putGlobalBatchLimit("maxChangedLinesPerBatch", 1, 900), false, "陈旧版本不得覆盖新值");
   assert.equal(store.getGlobalSettings().maxChangedLinesPerBatch, null);

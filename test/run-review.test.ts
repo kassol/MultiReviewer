@@ -458,7 +458,7 @@ test("Review Run 在首批前固定一份运行计划,后续批次不跟随模�
   const configuredReviewers: Reviewer[] = [planned];
   const plan = createReviewRunPlan(
     configuredReviewers,
-    { maxChangedLinesPerBatch: 1, maxFilesPerBatch: 40, maxParallelBatches: 3 },
+    { maxChangedLinesPerBatch: 1, maxFilesPerBatch: 40, maxParallelBatches: 3, maxEvidenceCallsPerBatch: 3 },
     [],
   );
 

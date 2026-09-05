@@ -613,6 +613,34 @@ process.on("message", (request) => {
   assert.equal(Object.hasOwn(JSON.parse(plain.findings[0]!.description), "thinkingLevel"), false);
 });
 
+test("每批每模型取证上限随任务进子进程,未给即不带这一项(issue #258)", async () => {
+  const path = worker(`
+process.on("message", (request) => {
+  process.send({
+    kind: "finding",
+    raw: {
+      file: "echo",
+      line: 1,
+      severity: "low",
+      category: "design",
+      description: JSON.stringify(request),
+    },
+  });
+  process.send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0 });
+  process.exit(0);
+});
+`);
+
+  const capped = await runInChild(path, CONFIG, input({ maxEvidenceCallsPerBatch: 1 }));
+  assert.equal(JSON.parse(capped.findings[0]!.description).maxEvidenceCallsPerBatch, 1);
+
+  const plain = await runInChild(path, CONFIG, input());
+  assert.equal(
+    Object.hasOwn(JSON.parse(plain.findings[0]!.description), "maxEvidenceCallsPerBatch"),
+    false,
+  );
+});
+
 test("规则 agent 的思考档位同样原样进子进程", async () => {
   const path = worker(`
 process.on("message", (request) => {

@@ -14,12 +14,18 @@
  *   ——那是半可信输入,agent 定义里写 `tools: bash` 就能把只读会话变成可写会话。
  * - **spawn 预算**:两道,作用域不同,不要互相顶替。`PI_SUBAGENT_MAX_SPAWNS_PER_SESSION`
  *   限一个 Reviewer 子进程一次会话累计派几次取证(即每批每模型),取证是针对存疑 Finding
- *   的定向动作,一批超过 3 次说明在滥派;`PI_SUBAGENT_MAX_SPAWNS_PER_RUN` 限的是单次
- *   `subagent` 调用内部展开的子任务数,每次调用重新计数,挡的是一次调用扇出过宽。
+ *   的定向动作,一批派太多次就是在滥派;它的值是审查策略的一格(issue #258),默认 3,
+ *   随运行计划在开跑时冻结、经 `ReviewerRequest.maxEvidenceCallsPerBatch` 进到这里;
+ *   `PI_SUBAGENT_MAX_SPAWNS_PER_RUN` 限的是单次 `subagent` 调用内部展开的子任务数,
+ *   每次调用重新计数,挡的是一次调用扇出过宽,写死不进策略。
  *
  * 子会话与 Reviewer 同模型同凭据同思考档位:子代理跑在另一个 pi 进程里,读不到本进程内存
  * 里注册的那一项模型,因此把同一份运行模型另写一份 `models.json`;凭据写的是环境变量引用
  * 而非明文,子进程从继承来的环境里取。
+ *
+ * 子会话的 token 用量不在这里读(issue #260):pi-subagents 把子会话的汇总 Usage 挂在
+ * `subagent` 工具返回上,Pi 父会话的 `getSessionStats` 按 toolResult 消息一并累加,
+ * Reviewer 的 usage 因此已经含它。本文件只把 transcript 转成审查轨迹的嵌套事件。
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -38,7 +44,10 @@ export const EVIDENCE_TOOL = "subagent";
 /** 唯一的自定义取证 agent。内置 agent 全部禁用,能力天花板也只放行这一个名字。 */
 export const EVIDENCE_AGENT = "evidence";
 
-/** 一个 Reviewer 子进程一次会话的取证次数上限,即每批每模型的总量(ADR 0021)。 */
+/**
+ * 一个 Reviewer 子进程一次会话的取证次数上限,即每批每模型的总量(ADR 0021)。这是系统
+ * 默认值:审查策略里「每批每模型取证上限」没配自定义值时用它(issue #258)。
+ */
 export const EVIDENCE_SESSION_BUDGET = 3;
 
 /** 单次 `subagent` 调用内部的 fan-out 上限,每次调用重新计数(ADR 0021)。 */
@@ -185,7 +194,8 @@ ${knowledge}`;
 }
 
 /**
- * 把取证子代理铺进这个会话的临时 agentDir,并设好它的两个环境闸。
+ * 把取证子代理铺进这个会话的临时 agentDir,并设好它的两个环境闸。会话上限取本轮运行计划
+ * 冻结的那个数,不给即系统默认(issue #258);扇出上限写死。
  *
  * 调用点在 `prepareAgentRuntime` 之后、`createAgentSession` 之前:`models.json` 要在主进程
  * 的模型运行时建好之后再写,免得它反过来盖掉内存里已经注册好的那一项模型;而 agent 定义
@@ -197,6 +207,8 @@ export function installEvidenceKit(options: {
   thinkingLevel: ThinkingLevel;
   rules: readonly ReviewRule[];
   facts: readonly ProjectFact[];
+  /** 每批每模型的取证次数上限。不给即 `EVIDENCE_SESSION_BUDGET`。 */
+  sessionBudget?: number;
 }): void {
   const { agentDir } = options;
   writeFileSync(
@@ -225,7 +237,7 @@ export function installEvidenceKit(options: {
       facts: options.facts,
     }),
   );
-  process.env[SESSION_BUDGET_ENV] = String(EVIDENCE_SESSION_BUDGET);
+  process.env[SESSION_BUDGET_ENV] = String(options.sessionBudget ?? EVIDENCE_SESSION_BUDGET);
   process.env[FANOUT_BUDGET_ENV] = String(EVIDENCE_FANOUT_BUDGET);
   process.env[CAPABILITY_CEILING_ENV] = encodeEvidenceCeiling();
 }
@@ -257,65 +269,7 @@ type TranscriptRecord = {
   toolName?: unknown;
   argsPayload?: unknown;
   isError?: unknown;
-  /** pi-subagents 归一化后的用量:{ input, output, cacheRead, cacheWrite, cost }。 */
-  usage?: unknown;
 };
-
-/** 取证子会话的 token 用量,字段与 Reviewer 的 usage 同名同义。 */
-export type EvidenceUsage = {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  totalTokens: number;
-};
-
-/**
- * 一次取证调用花掉的子会话用量(从 transcript 的逐消息 usage 累加)。
- *
- * 子代理跑在另一个 pi 进程里,主会话的 `getSessionStats` 数不到它——不补的话面板的
- * Token 用量系统性少报,取证用得越多失真越大。一行 usage 都读不到时回 undefined,
- * 与「取不到就不伪造」同一口径。
- */
-export function evidenceUsageTotals(result: unknown): EvidenceUsage | undefined {
-  let found = false;
-  const total = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-  for (const path of transcriptPaths(result)) {
-    let content: string;
-    try {
-      content = readFileSync(path, "utf8");
-    } catch {
-      continue;
-    }
-    for (const line of content.split("\n")) {
-      if (line.trim() === "") continue;
-      let record: TranscriptRecord;
-      try {
-        record = JSON.parse(line) as TranscriptRecord;
-      } catch {
-        continue;
-      }
-      const usage = record.usage as
-        | { input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown }
-        | null
-        | undefined;
-      if (usage === null || typeof usage !== "object") continue;
-      found = true;
-      total.input += typeof usage.input === "number" ? usage.input : 0;
-      total.output += typeof usage.output === "number" ? usage.output : 0;
-      total.cacheRead += typeof usage.cacheRead === "number" ? usage.cacheRead : 0;
-      total.cacheWrite += typeof usage.cacheWrite === "number" ? usage.cacheWrite : 0;
-    }
-  }
-  if (!found) return undefined;
-  return {
-    inputTokens: total.input,
-    outputTokens: total.output,
-    cacheReadTokens: total.cacheRead,
-    cacheWriteTokens: total.cacheWrite,
-    totalTokens: total.input + total.output + total.cacheRead + total.cacheWrite,
-  };
-}
 
 function text(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;

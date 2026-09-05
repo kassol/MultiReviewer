@@ -155,6 +155,7 @@ import {
   modelCatalogStorePath,
 } from "../reviewer/model-runtime.ts";
 import { createPiMergeAgent } from "../reviewer/merge-agent.ts";
+import { EVIDENCE_SESSION_BUDGET } from "../reviewer/evidence.ts";
 import {
   createPiRuleAgent,
   type RuleAgent,
@@ -757,6 +758,8 @@ async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<Re
         snapshot.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
       maxFilesPerBatch: snapshot.maxFilesPerBatch ?? DEFAULT_MAX_FILES_PER_BATCH,
       maxParallelBatches: snapshot.maxParallelBatches ?? DEFAULT_MAX_PARALLEL_BATCHES,
+      // 取证上限同一次读事务里冻结(issue #258):开跑后改设置追不上这一轮。
+      maxEvidenceCallsPerBatch: snapshot.maxEvidenceCallsPerBatch ?? EVIDENCE_SESSION_BUDGET,
     },
     plans.map(reviewerPin),
     // 知识集与模型服务版本在同一次读事务里冻结(issue #204),两型一体(issue #221)。
@@ -2289,18 +2292,22 @@ async function handlePanelApi(
   );
 }
 
-/** 分批上限与批次并发数各自的系统默认值(issue #230)。缺自定义值时读接口回它。 */
+/**
+ * 分批上限、批次并发数(issue #230)与每批每模型取证上限(issue #258)各自的系统默认值。
+ * 缺自定义值时读接口回它。
+ */
 const BATCH_LIMIT_DEFAULTS: Record<BatchLimitField, number> = {
   maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
   maxParallelBatches: DEFAULT_MAX_PARALLEL_BATCHES,
   maxFilesPerBatch: DEFAULT_MAX_FILES_PER_BATCH,
+  maxEvidenceCallsPerBatch: EVIDENCE_SESSION_BUDGET,
 };
 
 const BATCH_LIMIT_FIELDS = Object.keys(BATCH_LIMIT_DEFAULTS) as BatchLimitField[];
 
 /**
- * 审查策略:模型组合与分批上限与批次并发数。仓库详情用它展示「跟随全局」跟的是什么。
- * 分批上限没配时回默认值,读回来的就是这次审查真会用的那个数。
+ * 审查策略:模型组合、分批上限、批次并发数与每批每模型取证上限。仓库详情用它展示「跟随
+ * 全局」跟的是什么。上限没配时回默认值,读回来的就是这次审查真会用的那个数。
  */
 function handleGetSettings(res: ServerResponse, deps: WebhookServerDeps): void {
   const settings = globalSettings(deps);
@@ -2318,7 +2325,7 @@ function handleGetSettings(res: ServerResponse, deps: WebhookServerDeps): void {
 }
 
 /**
- * 全局模型组合与分批上限与批次并发数各自独立写入并带自己的 expected version。
+ * 全局模型组合与那几项正整数上限各自独立写入并带自己的 expected version。
  */
 async function handlePutSettings(
   req: IncomingMessage,
