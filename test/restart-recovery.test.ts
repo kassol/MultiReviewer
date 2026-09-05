@@ -10,6 +10,7 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -19,6 +20,7 @@ import type { Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
 import { createWebhookServer } from "../src/webhook/server.ts";
+import { query } from "./support/batch-run.ts";
 import type { FileTree } from "./support/git-fixture.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
 import { memoryForge } from "./support/memory-forge.ts";
@@ -390,17 +392,31 @@ function resumeReviewer(
   };
 }
 
-/** 注册好仓库、备好真实 head 的夹具,并留下一轮停在第三批的 Review Run。 */
-async function interruptedAtThirdBatch(): Promise<{
+/** 分批上限那两项,与 `ReviewRunDeps` 同名;全局设置与直接调 `runReview` 用同一份。 */
+type BatchLimits = { maxChangedLinesPerBatch?: number; maxFilesPerBatch: number };
+
+/**
+ * 注册好仓库、备好真实 head 的夹具,并留下一轮停在 `throwOnCall` 那一批的 Review Run。
+ * `added` 给每个文件在 head 上新增的行数,文件顺序即切批顺序。
+ */
+async function interruptedRun(options: {
+  added: Record<string, number>;
+  limits: BatchLimits;
+  throwOnCall: number;
+}): Promise<{
   db: { path: string };
   memory: ReturnType<typeof memoryForge>;
   runId: number;
 }> {
+  const files = Object.keys(options.added);
   const base: FileTree = {};
   const head: FileTree = {};
-  for (const path of RESUME_FILES) {
+  for (const path of files) {
     base[path] = RESUME_STUB;
-    head[path] = `${RESUME_STUB}const x = 0;\n`;
+    head[path] =
+      RESUME_STUB +
+      Array.from({ length: options.added[path]! }, (_, index) => `const x${index} = ${index};\n`)
+        .join("");
   }
   const repo = makeRepo({ base, head });
   const cache = makeCacheDir();
@@ -416,8 +432,10 @@ async function interruptedAtThirdBatch(): Promise<{
       generation: 1,
       key: "unused",
     });
-    // 分批上限是全局设置,重启前后是同一份:续跑重新切批要切出同样的三批。
-    store.putGlobalBatchLimit("maxFilesPerBatch", 1, 1);
+    // 分批上限是全局设置,重启后的续跑按它重新切批:与开跑那次相同才切得出同样的批次。
+    for (const [field, limit] of Object.entries(options.limits)) {
+      assert.equal(store.putGlobalBatchLimit(field as keyof BatchLimits, 1, limit), true);
+    }
   } finally {
     store.close();
   }
@@ -431,7 +449,7 @@ async function interruptedAtThirdBatch(): Promise<{
       headSha: repo.headSha,
       cloneUrl: repo.dir,
     },
-    changedFiles: RESUME_FILES.map((path) => ({ path, status: "modified" as const })),
+    changedFiles: files.map((path) => ({ path, status: "modified" as const })),
   });
 
   await assert.rejects(
@@ -440,13 +458,13 @@ async function interruptedAtThirdBatch(): Promise<{
         { owner: "acme", repo: "widgets", number: 7 },
         {
           forge: memory.forge,
-          reviewers: [resumeReviewer({ throwOnCall: 3 })],
+          reviewers: [resumeReviewer({ throwOnCall: options.throwOnCall })],
           cacheDir: cache.dir,
           dbPath: db.path,
           // 失败原因逐 Reviewer 各记一份,给了指定才有那几行(issue #247);轮次级那一份
           // 不靠它(issue #256)。
           reviewerPins: [pin("a")],
-          maxFilesPerBatch: 1,
+          ...options.limits,
           maxParallelBatches: 1,
         },
       ),
@@ -461,6 +479,15 @@ async function interruptedAtThirdBatch(): Promise<{
   } finally {
     seeded.close();
   }
+}
+
+/** 三个文件各一批,停在第三批。 */
+function interruptedAtThirdBatch(): ReturnType<typeof interruptedRun> {
+  return interruptedRun({
+    added: Object.fromEntries(RESUME_FILES.map((path) => [path, 1])),
+    limits: { maxFilesPerBatch: 1 },
+    throwOnCall: 3,
+  });
 }
 
 test("重启后只补缺的那一批,这一轮沿用原编号正常结束", { timeout: WAIT_MS }, async () => {
@@ -561,4 +588,126 @@ test("工作副本准备失败:改判失败、原因可见,下一次启动不再
   });
   await delay(50);
   assert.deepEqual(second, []);
+});
+
+/** 起一次服务并等启动续跑那一轮落定,返回回调收到的结果。 */
+function bootAndSettle(
+  db: { path: string },
+  memory: ReturnType<typeof memoryForge>,
+  reviewer: Reviewer,
+): Promise<{ runId: number; failure?: string }> {
+  const cache = makeCacheDir();
+  cleanups.push(cache.cleanup);
+  return new Promise((resolve) => {
+    createWebhookServer({
+      forges: { gitea: memory.forge },
+      cacheDir: cache.dir,
+      dbPath: db.path,
+      baseUrl: "https://reviewer.example.test",
+      panelDist: "web/dist",
+      buildReviewers: () => [reviewer],
+      now: () => Date.parse(AT),
+      onRunResumed: (id, failure) =>
+        resolve({ runId: id, ...(failure === undefined ? {} : { failure }) }),
+    });
+  });
+}
+
+/**
+ * issue #253 的反例:六个文件的改动行数依次 10、10、95、10、10、10。上限 999 行 / 2 文件
+ * 切成「ab、cd、ef」,停机期间管理员改成 100 行 / 3 文件,重新切批是「ab、c、def」——总批数
+ * 与已完成的首批都相同,只有未完成部分的分组变了。核对对照的是开跑时冻结的完整计划,
+ * 这种变化因此认得出来:改判失败、原因写在轮次级那一列,一个 Reviewer 都不调。
+ */
+test("总批数与已完成首批相同、未完成分组不同:续跑不成立,改判并写原因,不调 Reviewer", { timeout: WAIT_MS }, async () => {
+  const { db, memory, runId } = await interruptedRun({
+    added: {
+      "src/a.ts": 10,
+      "src/b.ts": 10,
+      "src/c.ts": 95,
+      "src/d.ts": 10,
+      "src/e.ts": 10,
+      "src/f.ts": 10,
+    },
+    limits: { maxChangedLinesPerBatch: 999, maxFilesPerBatch: 2 },
+    throwOnCall: 2,
+  });
+  const plan = [
+    ["src/a.ts", "src/b.ts"],
+    ["src/c.ts", "src/d.ts"],
+    ["src/e.ts", "src/f.ts"],
+  ];
+  assert.deepEqual(
+    query(db.path, "SELECT batch_plan_json FROM review_run").map((row) =>
+      JSON.parse(String(row["batch_plan_json"])),
+    ),
+    [plan],
+  );
+  // 停机期间改了分批上限。
+  const admin = openStore(db.path);
+  try {
+    assert.equal(admin.putGlobalBatchLimit("maxChangedLinesPerBatch", 2, 100), true);
+    assert.equal(admin.putGlobalBatchLimit("maxFilesPerBatch", 2, 3), true);
+  } finally {
+    admin.close();
+  }
+
+  const reviewer = resumeReviewer();
+  const settled = await bootAndSettle(db, memory, reviewer);
+
+  const reason = `${INTERRUPTED};续跑不成立:第 2 批的分组与冻结计划不符`;
+  assert.deepEqual(settled, { runId, failure: "续跑不成立:第 2 批的分组与冻结计划不符" });
+  assert.deepEqual(reviewer.files, []);
+  const store = openStore(db.path);
+  try {
+    const [run] = store.listRuns({ limit: 10, id: runId });
+    assert.equal(run?.failed, true);
+    assert.equal(run?.finishedAt, AT);
+    assert.equal(run?.failure, reason);
+    assert.deepEqual(
+      store
+        .listTrace(runId)
+        .filter((event) => event.kind === "run_failed")
+        .map((event) => event.payload),
+      [{ reason }],
+    );
+  } finally {
+    store.close();
+  }
+  // 改变后的分组没有混进原轮次:冻结的计划原样保留,中间态随改判清掉。
+  assert.deepEqual(
+    query(db.path, "SELECT batch_plan_json FROM review_run").map((row) =>
+      JSON.parse(String(row["batch_plan_json"])),
+    ),
+    [plan],
+  );
+  assert.equal(query(db.path, "SELECT run_id FROM review_run_batch").length, 0);
+  assert.equal(memory.createdReviews.length, 0);
+});
+
+test("升级前没有批次计划的中断轮次:启动改判并写原因,不调 Reviewer", { timeout: WAIT_MS }, async () => {
+  const { db, memory, runId } = await interruptedAtThirdBatch();
+  const legacy = new DatabaseSync(db.path);
+  try {
+    legacy.prepare("UPDATE review_run SET batch_plan_json = NULL WHERE id = ?").run(runId);
+  } finally {
+    legacy.close();
+  }
+
+  const reviewer = resumeReviewer();
+  const settled = await bootAndSettle(db, memory, reviewer);
+
+  const failure = `续跑不成立:第 ${runId} 轮没有开跑时的批次计划`;
+  assert.deepEqual(settled, { runId, failure });
+  assert.deepEqual(reviewer.files, []);
+  const store = openStore(db.path);
+  try {
+    const [run] = store.listRuns({ limit: 10, id: runId });
+    assert.equal(run?.failed, true);
+    assert.equal(run?.finishedAt, AT);
+    assert.equal(run?.failure, `${INTERRUPTED};${failure}`);
+  } finally {
+    store.close();
+  }
+  assert.equal(memory.createdReviews.length, 0);
 });

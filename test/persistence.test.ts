@@ -1057,3 +1057,45 @@ test("升级前的 review_run 补失败原因列,旧行读回无失败记录", (
     store.close();
   }
 });
+
+test("升级前的 review_run 补批次计划列,旧行读回没有计划,已结束的轮次一行不动", () => {
+  // issue #253:计划在开跑时写一次。升级前落的行没有它,续跑读回即「没有计划」,退回
+  // 改判;已经收尾的历史轮次只多一列 NULL,结束时间与结果都不变。
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const old = new DatabaseSync(db.path);
+  old.exec(LEGACY_SCHEMA);
+  old
+    .prepare(
+      `INSERT INTO review_run
+         (owner, repo, pull_number, head_sha, started_at, finished_at, changed_files,
+          changed_lines, batch_count, failed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      "acme",
+      "widgets",
+      7,
+      "old-sha",
+      "2026-08-01T00:00:00.000Z",
+      "2026-08-01T00:10:00.000Z",
+      2,
+      4,
+      2,
+      0,
+    );
+  old.exec("PRAGMA user_version = 1");
+  old.close();
+
+  const store = openStore(db.path);
+  try {
+    const columns = query(db.path, "PRAGMA table_info(review_run)").map((row) => row["name"]);
+    assert.ok(columns.includes("batch_plan_json"));
+    const [run] = store.listRuns({ limit: 10 });
+    assert.equal(run!.finishedAt, "2026-08-01T00:10:00.000Z");
+    assert.equal(run!.failed, false);
+    assert.equal(store.resumeState(run!.id)?.plan, undefined);
+  } finally {
+    store.close();
+  }
+});

@@ -239,3 +239,72 @@ test("零批次落库时模型组合换了同样不续跑:核对开跑时钉下�
   );
   assert.deepEqual(other.calls, []);
 });
+
+/**
+ * 全部批次的分组在开跑时冻结落库(issue #253):第一批就崩的轮次也有完整的核对依据,
+ * 续跑时已完成与未完成的批次都要与它相符。
+ */
+test("开跑时冻结全部批次的分组;零批次完成的轮次续跑跑全部三批并正常收尾", async () => {
+  const fixture = setup(cleanups);
+  const crashed = batchReviewer("model-a", { throwOnCall: 1 });
+  await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
+
+  // 一个批次都没落库,计划却已经在:它在任何批次完成之前就写下了。
+  const [run] = query(
+    fixture.db.path,
+    "SELECT id, batch_count, batch_plan_json FROM review_run WHERE finished_at IS NULL",
+  );
+  assert.equal(run?.["batch_count"], 3);
+  assert.deepEqual(JSON.parse(String(run?.["batch_plan_json"])), [
+    ["src/a.ts"],
+    ["src/b.ts"],
+    ["src/c.ts"],
+  ]);
+  assert.equal(query(fixture.db.path, "SELECT run_id FROM review_run_batch").length, 0);
+
+  const runId = Number(run?.["id"]);
+  const resumed = batchReviewer("model-a");
+  const result = await runReview(EVENT, deps(fixture, [resumed], { resumeRunId: runId }));
+
+  // 三批都缺结果,三批都跑;沿用原编号,收尾正常。
+  assert.deepEqual(
+    resumed.calls.map((call) => call.range.files),
+    [["src/a.ts"], ["src/b.ts"], ["src/c.ts"]],
+  );
+  const [after] = query(
+    fixture.db.path,
+    "SELECT id, failed, finished_at, total_tokens, batch_plan_json FROM review_run",
+  );
+  assert.equal(Number(after?.["id"]), runId);
+  assert.equal(after?.["failed"], 0);
+  assert.notEqual(after?.["finished_at"], null);
+  assert.equal(after?.["total_tokens"], USAGE.totalTokens * 3);
+  // 计划随轮次永久保留:回看一轮时「当时切成哪几批」答得出来。
+  assert.notEqual(after?.["batch_plan_json"], null);
+  assert.equal(result.failed, false);
+  assert.equal(fixture.forge.createdReviews.length, 1);
+  assert.equal(query(fixture.db.path, "SELECT run_id FROM review_run_batch").length, 0);
+});
+
+test("升级前没有批次计划的轮次不续跑:抛续跑不成立,不调用 Reviewer", async () => {
+  const fixture = setup(cleanups);
+  const crashed = batchReviewer("model-a", { throwOnCall: 3 });
+  await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
+  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const runId = Number(run?.["id"]);
+
+  // 升级前落的行:有历史快照(issue #248)却没有批次计划。
+  const db = new DatabaseSync(fixture.db.path);
+  try {
+    db.prepare("UPDATE review_run SET batch_plan_json = NULL WHERE id = ?").run(runId);
+  } finally {
+    db.close();
+  }
+
+  const resumed = batchReviewer("model-a");
+  await assert.rejects(
+    () => runReview(EVENT, deps(fixture, [resumed], { resumeRunId: runId })),
+    new RegExp(`${RESUME_NOT_VIABLE}:第 ${runId} 轮没有开跑时的批次计划`),
+  );
+  assert.deepEqual(resumed.calls, []);
+});

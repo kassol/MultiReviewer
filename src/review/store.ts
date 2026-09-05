@@ -671,6 +671,11 @@ const ADD_COLUMNS = [
   // 不做自动处置),发布 review 失败那一类 Reviewer 结果有效的轮次只写这一列。旧行是
   // NULL,读回即「无失败记录」。
   "ALTER TABLE review_run ADD COLUMN failure TEXT",
+  // 开跑时冻结的完整批次计划(issue #253):全部批次的文件清单,JSON 数组套数组,按批次
+  // 序号排。开跑时写一次、之后不改——它与 `review_run_batch` 分工:计划说这一轮要切成
+  // 哪几批,中间态表说哪几批已经有结果。续跑核对重新切批的每一批都与它相符,未完成
+  // 的批次因此也核对得到;旧行是 NULL,读回即「没有计划」,续跑不成立,退回改判失败。
+  "ALTER TABLE review_run ADD COLUMN batch_plan_json TEXT",
 ];
 
 /**
@@ -797,6 +802,11 @@ export type RunMeta = {
   changedLines: number;
   /** 预估规模:本次 Review Range 被切成几批。规模在阈值内时为 1。 */
   batchCount: number;
+  /**
+   * 开跑时冻结的完整批次计划(issue #253):每一批的文件清单,按批次序号排。续跑核对
+   * 重新切批的每一批都与它相符。省略即不落计划,那一轮不可续跑。
+   */
+  batches?: readonly (readonly string[])[];
   /** 本轮固定的非秘密模型服务审计快照；没有 Reviewer 时显式传空数组。 */
   reviewerPins: readonly ReviewRunReviewerPin[];
   /**
@@ -859,6 +869,11 @@ export type ResumeState = {
   /** 开跑时冻结的知识集版本(issue #204)。续跑要注入同一版,否则各批依的规则会分叉。 */
   ruleSetVersion: number | null;
   batchCount: number;
+  /**
+   * 开跑时冻结的完整批次计划(issue #253),按批次序号排。续跑核对重新切批的每一批都
+   * 与它相符——已落库的与还没跑的都在内。升级前落的旧行没有,为 undefined。
+   */
+  plan: string[][] | undefined;
   /**
    * 开跑时钉下的 Reviewer 身份,按 `position` 升序(issue #248 的评审复核)。零批次落库
    * 时它是核对模型组合的唯一依据——那种轮次没有已落库的批次可比。没有钉下 pin 的轮次
@@ -4522,8 +4537,8 @@ export function openStore(dbPath: string): Store {
             `INSERT INTO review_run
                (owner, repo, pull_number, head_sha, title, range_review_id, pr_state,
                 triggered_by, started_at, changed_files, changed_lines, batch_count,
-                rule_set_version, directive, mode, history_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                rule_set_version, directive, mode, history_json, batch_plan_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             meta.owner,
@@ -4544,6 +4559,9 @@ export function openStore(dbPath: string): Store {
             // 历史快照随开跑落库(issue #248):续跑的批次读它,重启期间的处置不改变
             // 这一轮各批看到的历史。
             meta.history === undefined ? null : JSON.stringify(meta.history),
+            // 完整批次计划同一次写下(issue #253):任何批次完成之前它就在,第一批就崩的
+            // 轮次续跑时也有完整的核对依据。
+            meta.batches === undefined ? null : JSON.stringify(meta.batches),
           );
         const runId = Number(result.lastInsertRowid);
         const insertPin = db.prepare(
@@ -4670,7 +4688,7 @@ export function openStore(dbPath: string): Store {
     resumeState(runId) {
       const run = db
         .prepare(
-          `SELECT head_sha, rule_set_version, batch_count, history_json
+          `SELECT head_sha, rule_set_version, batch_count, history_json, batch_plan_json
              FROM review_run WHERE id = ?`,
         )
         .get(runId);
@@ -4693,6 +4711,10 @@ export function openStore(dbPath: string): Store {
         ruleSetVersion:
           run["rule_set_version"] === null ? null : Number(run["rule_set_version"]),
         batchCount: Number(run["batch_count"]),
+        plan:
+          run["batch_plan_json"] === null
+            ? undefined
+            : (JSON.parse(String(run["batch_plan_json"])) as string[][]),
         reviewers: pins.map((pin) => String(pin["identity"])),
         history:
           run["history_json"] === null
