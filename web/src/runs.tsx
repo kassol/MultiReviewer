@@ -55,6 +55,11 @@ export type RunItem = {
   mode: RerunMode;
   finishedAt: string | null;
   failed: boolean;
+  /**
+   * 轮次级的失败原因(issue #256):这一轮为什么没有正常收尾。null 即收尾正常;与
+   * `failed` 分开读——`failed` 说的是全部 Reviewer 失败,这一格说的是收尾。
+   */
+  failure: string | null;
   /** 一行一个参与本轮的模型。`failure` 非 null 即这个模型这轮失败了(节选文本)。 */
   models: {
     model: string;
@@ -235,6 +240,8 @@ export function runStatus(run: RunItem): { tone: StatusTone; label: string } {
   // 未结束的一轮先判:否则它会因为「一条可处置项都还没有」而显示成「无可处置项」。
   if (run.finishedAt === null && !run.failed) return { tone: "running", label: "运行中" };
   if (run.failed) return { tone: "error", label: "运行失败" };
+  // Reviewer 都跑通了、收尾没成(issue #256):Finding 是真的,但没有正常发出去或收场。
+  if (run.failure !== null) return { tone: "error", label: "收尾失败" };
   if (run.models.some((entry) => entry.failure !== null)) return { tone: "warning", label: "部分失败" };
   if (run.total === 0) return { tone: "neutral", label: "无可处置项" };
   return disposedCount(run) === run.total

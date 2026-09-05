@@ -980,3 +980,80 @@ test("升级前建的库没有比较项来源两列,打开后补出来,旧行读
     store.close();
   }
 });
+
+test("正常收尾的轮次没有轮次级失败原因;recordRunFailure 只写原因,failed 与结束时间不动", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  try {
+    const runId = store.startRun({
+      owner: "acme",
+      repo: "widgets",
+      pullNumber: 7,
+      headSha: "deadbee",
+      startedAt: "2026-09-05T00:00:00.000Z",
+      changedFiles: 1,
+      changedLines: 2,
+      batchCount: 1,
+      reviewerPins: [],
+    });
+    store.finishRun(runId, {
+      finishedAt: "2026-09-05T00:10:00.000Z",
+      durationMs: 600_000,
+      failed: false,
+      outcomes: [],
+      findings: [],
+    });
+    assert.equal(store.listRuns({ limit: 10 })[0]!.failure, null);
+
+    // 收尾之后的失败(发布 review 失败那一类)只写这一列:Reviewer 结果是有效的,
+    // `failed` 不能因它置位(ADR 0026)。
+    store.recordRunFailure(runId, "发布 review 失败:Gitea 回 502");
+    const [run] = store.listRuns({ limit: 10 });
+    assert.equal(run!.failure, "发布 review 失败:Gitea 回 502");
+    assert.equal(run!.failed, false);
+    assert.equal(run!.finishedAt, "2026-09-05T00:10:00.000Z");
+  } finally {
+    store.close();
+  }
+});
+
+test("升级前的 review_run 补失败原因列,旧行读回无失败记录", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const old = new DatabaseSync(db.path);
+  old.exec(LEGACY_SCHEMA);
+  old
+    .prepare(
+      `INSERT INTO review_run
+         (owner, repo, pull_number, head_sha, started_at, finished_at, changed_files,
+          changed_lines, batch_count, failed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      "acme",
+      "widgets",
+      7,
+      "old-sha",
+      "2026-08-01T00:00:00.000Z",
+      "2026-08-01T00:10:00.000Z",
+      1,
+      2,
+      1,
+      1,
+    );
+  old.exec("PRAGMA user_version = 1");
+  old.close();
+
+  const store = openStore(db.path);
+  try {
+    const columns = query(db.path, "PRAGMA table_info(review_run)").map((row) => row["name"]);
+    assert.ok(columns.includes("failure"));
+    // 升级前只有 `failed` 一位:这一轮是 Reviewer 失败,轮次级的原因无从补,读回为空。
+    const [run] = store.listRuns({ limit: 10 });
+    assert.equal(run!.failed, true);
+    assert.equal(run!.failure, null);
+  } finally {
+    store.close();
+  }
+});

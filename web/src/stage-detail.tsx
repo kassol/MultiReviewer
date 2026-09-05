@@ -818,6 +818,14 @@ function RoundDrawer({
               <p className="mt-0.5 break-words whitespace-pre-wrap">{run.data.run.directive}</p>
             </section>
           )}
+          {/* 轮次级的失败原因(issue #256):这一轮为什么没有正常收尾。改判的中断轮次与
+              收尾失败的轮次都写在这里;逐模型那几条说的是 Reviewer 自己,分开列。 */}
+          {run.data.run.failure === null ? null : (
+            <Callout.Root role="alert" color="red" size="1">
+              <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+              <Callout.Text>本轮未正常收尾：{run.data.run.failure}</Callout.Text>
+            </Callout.Root>
+          )}
           {/* 失败原因决定要不要重跑(区域封禁重跑也没用,超时重跑就好),所以整段摊开。 */}
           {run.data.run.models
             .filter((entry) => entry.failure !== null)

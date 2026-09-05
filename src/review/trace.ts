@@ -41,6 +41,11 @@ export type RunTraceKind =
   | "review_skipped"
   /** 服务正在排空,这一轮停在批次边界、没有收尾,由下一次启动续跑(issue #249)。 */
   | "run_aborted"
+  /**
+   * 这一轮没有正常收尾(ADR 0026,issue #256):payload 的 `reason` 与 `review_run.failure`
+   * 是同一句原因。改判中断轮次走这一档;Reviewer 自己的失败仍是 `reviewer_failed`。
+   */
+  | "run_failed"
   | "run_finished";
 
 export type TraceKind = ReviewerTraceKind | RunTraceKind;

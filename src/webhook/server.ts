@@ -121,6 +121,7 @@ import {
   type Store,
 } from "../review/store.ts";
 import {
+  createTraceRecorder,
   ruleChannel,
   runChannel,
   startRuleTrace,
@@ -7508,13 +7509,18 @@ function resumeInterruptedRuns(
       } catch (error) {
         failure = error instanceof Error ? error.message : String(error);
         // 退回 issue #247 的改判:这一轮标记失败并写上原因,下一次启动因此不会再看到它。
-        const interrupted = withStore(deps.dbPath, (store) =>
-          store.failInterruptedRuns(
-            `服务重启,上一轮没跑完;${failure}`,
+        const reason = `服务重启,上一轮没跑完;${failure}`;
+        const interrupted = withStore(deps.dbPath, (store) => {
+          const runs = store.failInterruptedRuns(
+            reason,
             new Date((deps.now ?? Date.now)()).toISOString(),
             [run.runId],
-          ),
-        );
+          );
+          // 轨迹上补一条 Run 级的失败事件(ADR 0026),与列内是同一句原因:这一轮没有
+          // `run_finished`,轨迹里只有它说得出为什么没收尾。频道此刻已不在内存,只落库。
+          createTraceRecorder(store, run.runId).run("run_failed", { reason });
+          return runs;
+        });
         // 改判掉的这一轮在 PR 上还挂着 👀(续跑那一段自己挂的,或崩溃前留下的)。
         removeInterruptedReactions(deps.forges.gitea, interrupted);
       } finally {
