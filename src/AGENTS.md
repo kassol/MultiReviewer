@@ -202,6 +202,8 @@
 
 ## 变更日志
 
+- 2026-09-05: 落地 issue #264。**指纹折叠命中的行落库沿用历史行的指纹**:`run.ts` 的 `priorMatch` 改回 `{ entry, fingerprint }`,命中的指纹(偏移命中时与本行指纹不同)由合并组沿用,与 agent 命中那一档 `hit.fingerprint` 同一口径;此前偏移命中的行落着本行的指纹,`stageSummary` 按「文件 + 指纹」归并时把它判成新报,轨迹 `finding_folded` 条数与时间线「折叠」计数对不上。口径写进 CONTEXT.md「同一处 Finding」。测试:`cross-run.test.ts` 新增一条(±3 偏移命中:落库指纹与历史行相同、时间线折叠数等于轨迹折叠条数、阶段汇总只有一个 Identity)。
+
 - 2026-09-05: 落地 issue #263。**`carries` 排除本轮已判已修的历史**:`run.ts` 把 `fixedFindingIds(verdicts)` 收成一个集合,自动处置与 agent 命中那一档的延续共用;`group.carry` 指向已修 id 的组不再进 `carries`,与词法配对那一档 `continuationCandidates(presentFindingIds(verdicts))` 同一口径。测试在 `merge-agent.test.ts`。
 
 - 2026-09-05: 落地 issue #253(ADR 0024 修订)。**完整批次计划在开跑时冻结落库,续跑核对全部批次的分组**:`store.ts` 的 `ADD_COLUMNS` 补 `review_run.batch_plan_json TEXT`(全部批次的文件清单,JSON 数组套数组,按批次序号排;旧行 NULL),`RunMeta` 多一项 `batches`,`startRun` 与历史快照同一次写下它,`ResumeState` 多一项 `plan`(旧行读回 undefined),`resumeState` 带出它。`run.ts` 的 `runReview` 在读取 `resumeState` 之后、准备工作副本之前对没有计划的轮次抛 `续跑不成立:第 N 轮没有开跑时的批次计划`(与没有历史快照同律);`resumeMismatch` 在批数核对之后逐批对照冻结计划(已完成与未完成都在内),不符即 `续跑不成立:第 N 批的分组与冻结计划不符`,既有的 head、知识集版本、模型组合、批数、已落库批次清单与 Reviewer 顺序核对保留。改判路径不变:启动侧仍经 `failInterruptedRuns` 写 `review_run.failure` 并记 `run_failed`。原计划成立时行为逐字不变:只跑缺结果的批次,已完成批次不再调 Reviewer,编号、快照、序号、用量与单次发布照旧;排空行为不变。测试:`test/run-resume.test.ts` 加零批次完成的续跑与无计划轮次的改判,`test/restart-recovery.test.ts` 加 issue 反例(六文件 10/10/95/10/10/10 行,999 行 / 2 文件 → 100 行 / 3 文件)经启动恢复流程改判且不调 Reviewer、无计划轮次经启动流程改判,`test/persistence.test.ts` 加升级前库补列。

@@ -508,19 +508,22 @@ const MATCH_OFFSETS = [0, -1, 1, -2, 2, -3, 3];
  * 一轮指函数头,PR #4 实测差 3 行),指纹窗口随行号平移,精确相等就匹配不上,同一个
  * 问题每轮重发一条。因此按行号偏移 ±3 滑动重算指纹,任一命中即视为同一处——与跨
  * 模型去重的行号容差同一语义。偏移由近及远,先信最贴近模型所指的位置。
+ *
+ * 命中的那个指纹一并回给调用方(issue #264):偏移命中时它与本行的指纹不同,而折叠上的
+ * 这条落库要沿用它,Finding Identity 才在跨轮之间保持同一个「文件 + 指纹」键。
  */
 function priorMatch(
   prior: ReadonlyMap<string, PriorDisposition>,
   worktreePath: string,
   finding: MergedFinding,
-): PriorDisposition | undefined {
+): { entry: PriorDisposition; fingerprint: string } | undefined {
   for (const offset of MATCH_OFFSETS) {
     const line = finding.line + offset;
     if (line < 1) continue;
     const fingerprint = contentFingerprint(worktreePath, finding.file, line);
     if (fingerprint === undefined) continue;
     const entry = prior.get(`${finding.file}\n${fingerprint}`);
-    if (entry !== undefined) return entry;
+    if (entry !== undefined) return { entry, fingerprint };
   }
   return undefined;
 }
@@ -1858,16 +1861,18 @@ export async function runReview(
         let carry: ReviewGroup["carry"];
         let fingerprint = contentFingerprint(worktree.path, finding.file, finding.line);
         const byFingerprint = priorMatch(prior, worktree.path, finding);
+        // 折叠到的那条历史的指纹就是这一条的指纹(CONTEXT.md 同一处 Finding):Finding
+        // Identity 按「文件 + 指纹」归并(`stageSummary`),按本轮落点重算会让同一处问题在
+        // 阶段汇总里占两行——指纹在偏移处命中时正是这样(issue #264)。两档折叠同一口径。
         if (byFingerprint !== undefined) {
-          match = { prior: byFingerprint, criterion: { kind: "fingerprint" } };
+          match = { prior: byFingerprint.entry, criterion: { kind: "fingerprint" } };
+          fingerprint = byFingerprint.fingerprint;
         } else if (finding.history !== undefined) {
           const hit = hits.get(finding.history.id);
           const folded =
             hit === undefined ? undefined : agentFold(hit, fingerprintCache, worktree.path);
           if (folded !== undefined) {
             match = { prior: folded, criterion: { kind: "agent", reason: finding.history.reason } };
-            // 折叠到的那条历史的指纹就是这一条的指纹:Finding Identity 按「文件 + 指纹」
-            // 归并(`stageSummary`),按本轮落点重算会让同一处问题在阶段汇总里占两行。
             fingerprint = hit!.fingerprint;
           } else if (hit !== undefined) {
             // 折叠两档都不成立即那处代码已被改写,这一条要承接它的 Identity(issue #243)。
