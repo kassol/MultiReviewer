@@ -1887,8 +1887,9 @@ export async function runReview(
 
       // 「已修复」自动处置(ADR 0016),PR 触发与范围审查走的是同一段代码。全部 Reviewer
       // 都失败时不做:那一轮一条结论都没有,没有证据就不动。延续同理。
+      const fixedIds = new Set(fixedFindingIds(verdicts));
       if (!failed) {
-        await autoDispose(forge, event, store, fixedFindingIds(verdicts));
+        await autoDispose(forge, event, store, [...fixedIds]);
       }
 
       // 复核判仍在、旧指纹在本轮 head 上算不出的那些,由本轮在新位置报出的一条承接同一条
@@ -1899,10 +1900,13 @@ export async function runReview(
       // 合并 agent 命中、而那处代码已经改写的那些先配好(issue #243):**agent 命中优先于
       // 词法配对与复核结论自带位置的合成**——它是语义判断,那两道是机械判定,同一条历史
       // 两边都想要时以语义那一份为准。认领掉的候选与合并组都不再进下面那一道。
+      // 本轮已判已修的历史不再是延续候选(issue #263):它刚被自动处置成「已修复」,再让
+      // 本轮那条承接它,旧行记已修、新行又指向它,同一条 Identity 在阶段汇总里数两次;
+      // 与词法配对那一档只取复核判仍在的候选是同一口径。
       const carries: Continuation[] = failed
         ? []
         : groups.flatMap((group, groupIndex) =>
-            group.carry === undefined
+            group.carry === undefined || fixedIds.has(group.carry.candidate.findingId)
               ? []
               : [
                   {

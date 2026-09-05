@@ -622,6 +622,36 @@ test("命中的历史所指代码已改写:走延续,旧评论 resolve,新评论
   });
 });
 
+test("命中的历史本轮已被全部 Reviewer 判已修:不延续,旧行留「已修复」,本轮那条是新 Finding", async () => {
+  const ctx = setup();
+  await firstRun(ctx, [AT(2, "余额校验被删掉")]);
+  rewriteHead(ctx, REWRITTEN_M);
+
+  // 复核判已修、自动处置成「已修复」之后,合并 agent 仍把它配进本轮这一组(issue #263)。
+  // 已修的历史不再是延续候选:与词法配对那一档同一口径,否则旧行记「已修复」、新行又指
+  // 向它,阶段汇总把同一条 Identity 数两次。
+  const merge = scriptedMergeAgent((request) => [
+    { members: [0], history: [request.history![0]!.id], reason: "代码改写了,同一个问题还在" },
+  ]);
+  await runReview(EVENT, {
+    forge: ctx.forge.forge,
+    reviewers: [verdictReviewer("model-a", "fixed", [AT(14, "余额没有被校验")])],
+    cacheDir: ctx.cache.dir,
+    dbPath: ctx.db.path,
+    mergeAgent: merge,
+  });
+
+  const rows = findingRows(ctx.db.path);
+  assert.equal(rows[0]!.disposition, "fixed", "旧那一行保持「已修复」");
+  assert.equal(rows[1]!.continuedFrom, null, "本轮那条是新 Finding,不承接已修的 Identity");
+  assert.doesNotMatch(ctx.forge.createdReviews[1]!.comments[0]!.body, /延续自/);
+  assert.equal(
+    trace(ctx.db.path).filter((event) => event.kind === "finding_continued").length,
+    0,
+    "轨迹不记延续",
+  );
+});
+
 test("同一条历史同时被 agent 命中与复核结论自带位置:以 agent 命中的那条承接,不合成", async () => {
   const ctx = setup();
   await firstRun(ctx, [AT(2, "余额校验被删掉")]);
