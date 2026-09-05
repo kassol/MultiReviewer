@@ -220,7 +220,7 @@ function TopBar({
       <div className="flex items-center justify-between gap-3 px-4 pt-[11px] pb-2 sm:px-7">
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex size-[26px] shrink-0 items-center justify-center rounded-sm bg-[image:var(--v8-mark-gradient)] shadow-mark">
-            <Mark framed={false} className="size-4 text-white" />
+            <Mark className="size-4 text-white" />
           </span>
           <span className="shrink-0 text-xl font-bold tracking-[-0.015em]">MultiReviewer</span>
           {current === undefined ? null : (

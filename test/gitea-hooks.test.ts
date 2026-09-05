@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createGiteaHookManager, SUBSCRIBED_EVENTS } from "../src/forge/gitea-hooks.ts";
+import { createGiteaHookManager, hookConverged, SUBSCRIBED_EVENTS } from "../src/forge/gitea-hooks.ts";
 import { stubFetch, type Route } from "./support/stub-fetch.ts";
 
 const BASE_URL = "https://gitea.example.test";
@@ -82,6 +82,16 @@ test("重复注册:同 config.url 已存在且订阅正确时不再建", async (
     stub.calls.map((call) => call.method),
     ["GET", "GET"],
   );
+});
+
+test("订阅集按集合比:顺序与重复不影响,缺少、空集与多余事件都不算收敛", () => {
+  const converged = (events: string[]): boolean =>
+    hookConverged({ id: 5, url: HOOK_URL, contentType: "json", events, active: true });
+  assert.equal(converged(["pull_request_sync", "pull_request"]), true);
+  assert.equal(converged(["pull_request", "pull_request_sync", "pull_request"]), true);
+  assert.equal(converged(["pull_request"]), false);
+  assert.equal(converged([]), false);
+  assert.equal(converged(["pull_request", "pull_request_sync", "push"]), false);
 });
 
 test("同 URL 但订阅、激活或 content_type 被人改过:PATCH 收敛,不建第二条", async () => {

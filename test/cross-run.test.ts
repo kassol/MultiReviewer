@@ -50,8 +50,6 @@ const FINDING = {
 };
 
 const ANCHOR = /<!-- multireviewer:([0-9a-f]{64}) -->/;
-/** 正文里的锚点另带文件路径:正文没有行级评论那样一个由 API 给出的路径。 */
-const BODY_ANCHOR = /<!-- multireviewer:([0-9a-f]{64}):(\S+) -->/;
 
 const cleanups: (() => void)[] = [];
 after(() => {

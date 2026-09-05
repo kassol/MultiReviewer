@@ -70,7 +70,7 @@ export function LoginPage() {
       <div className="flex w-[360px] max-w-full flex-col items-center gap-[26px]">
         <div className="flex flex-col items-center gap-3">
           <span className="flex size-11 shrink-0 items-center justify-center rounded-lg bg-[image:var(--v8-mark-gradient)] shadow-mark">
-            <Mark framed={false} className="size-7 text-white" />
+            <Mark className="size-7 text-white" />
           </span>
           <h1 className="text-4xl font-extrabold tracking-[-0.02em]">MultiReviewer</h1>
         </div>
