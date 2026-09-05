@@ -328,6 +328,41 @@ test("模型换了代表行(相差 3 行以内)时仍匹配为同一处,不重�
   assert.deepEqual(latestDispositions(db.path), ["unresolved", "unresolved"]);
 });
 
+test("偏移命中折叠的那条落库沿用历史行的指纹:轨迹折叠数与阶段汇总一致", async () => {
+  const { repo, db, forge, deps } = setup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
+
+  // 指纹在 ±3 偏移处命中(issue #264):折叠这件事已经判定,落库的指纹要与被折叠到的
+  // 历史行相同,否则阶段汇总按「文件 + 指纹」归并时把它判成新报。
+  await runReview(EVENT, {
+    ...deps,
+    reviewers: [scriptedReviewer("model-a", [{ ...FINDING, line: 3 }])],
+  });
+
+  const fingerprints = query(db.path, "SELECT fingerprint FROM finding ORDER BY id").map(
+    (row) => row["fingerprint"],
+  );
+  assert.equal(fingerprints.length, 2);
+  assert.equal(fingerprints[1], fingerprints[0], "折叠命中的行落了与历史行不同的指纹");
+
+  const store = openStore(db.path);
+  try {
+    const runId = store.listRuns({ limit: 1 })[0]!.id;
+    const folded = store.listTrace(runId).filter((event) => event.kind === "finding_folded");
+    const summary = store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: 7 });
+    const latest = summary.timeline.find((entry) => entry.runId === runId)!;
+    assert.equal(folded.length, 1);
+    assert.equal(latest.folded, folded.length, "时间线的折叠数与轨迹 finding_folded 条数不一致");
+    assert.equal(latest.reported, 0);
+    assert.equal(summary.findings.length, 1, "折叠命中的行在阶段汇总里占了新的 Identity");
+  } finally {
+    store.close();
+  }
+});
+
 test("行号相差超过 3 行时不匹配,按新 Finding 提出", async () => {
   const { repo, forge, deps } = setup();
 

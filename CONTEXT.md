@@ -45,7 +45,7 @@ _Avoid_: agent、模型、worker
 _Avoid_: issue、问题、comment、告警
 
 **Finding Identity**:
-判断两条 Finding 是不是同一条的依据,中文叫「同一处 Finding」。同一个 pull request 里指向同一处未改动代码的 Finding 是同一条,不论由哪个或多少个 Reviewer 报出、在多少轮 Review Run 里被报出;同一轮内多个 Reviewer 报同一处合成一条,归属记全部报出它的 Reviewer。代码改动后经复核判定仍在的,由延续保持同一条;未经复核而在改动后的代码上再次报出的是新的一条。
+判断两条 Finding 是不是同一条的依据,中文叫「同一处 Finding」。同一个 pull request 里指向同一处未改动代码的 Finding 是同一条,不论由哪个或多少个 Reviewer 报出、在多少轮 Review Run 里被报出;同一轮内多个 Reviewer 报同一处合成一条,归属记全部报出它的 Reviewer。代码改动后经复核判定仍在的,由延续保持同一条;未经复核而在改动后的代码上再次报出的是新的一条。折叠到历史 Finding 上的那条落库时沿用历史行的指纹,同一条 Finding 在阶段汇总里因此跨轮次只占一个 Identity。
 _Avoid_: 去重、指纹、逻辑 Finding、按模型各算一条
 
 **参与条数**:
