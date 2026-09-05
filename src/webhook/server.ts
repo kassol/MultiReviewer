@@ -92,6 +92,7 @@ import {
   openHistory,
   priorDispositions,
   RESUME_NOT_VIABLE,
+  reviewableFiles,
   runReview,
   type ReviewRunPlan,
 } from "../review/run.ts";
@@ -4922,26 +4923,28 @@ function readMode(
 }
 
 /**
- * 这个阶段的未处置历史 Finding 有没有落在本轮变更文件里:只复核那一轮开不开得起来,判据
- * 就是它。与编排层过滤文件集的是同一道(`openHistory` 加变更文件集求交):历史全落在本轮
- * 没改的文件上时,编排层同样一个文件都不剩,那该在这里就回 409,不该先答「已触发」。
+ * 这个阶段的未处置历史 Finding 有没有落在本轮可审文件里:只复核那一轮开不开得起来,判据
+ * 就是它。与编排层过滤文件集的是同一道(`openHistory` 加可审文件集求交):历史全落在本轮
+ * 没改、删掉或改名前的文件上时,编排层同样一个文件都不剩,那该在这里就回 409,不该先答
+ * 「已触发」。
  *
- * 变更文件集由调用方给:重跑审的就是容器 PR 此刻的 head,从 Forge 取;增量评审要审的是
- * 还没推上去的新比较项,Forge 上那份说的是上一个比较项的事,只能从本地副本算(issue #250)。
+ * 可审文件集由调用方给,两处来源不同、规则相同(`reviewableFiles`,issue #251):重跑审的
+ * 就是容器 PR 此刻的 head,从 Forge 取;增量评审要审的是还没推上去的新比较项,Forge 上
+ * 那份说的是上一个比较项的事,只能从本地副本算(issue #250)。
  */
 function hasOpenHistory(
   dbPath: string,
   scope: StageScope,
-  changed: ReadonlySet<string>,
+  reviewable: ReadonlySet<string>,
 ): boolean {
   return withStore(dbPath, (store) =>
-    openHistory(store.stageHistory(scope)).some((entry) => changed.has(entry.file)),
+    openHistory(store.stageHistory(scope)).some((entry) => reviewable.has(entry.file)),
   );
 }
 
-/** Forge 上这个 pull request 此刻的变更文件路径集。 */
-async function forgeChangedFiles(forge: Forge, ref: PullRequestRef): Promise<Set<string>> {
-  return new Set((await forge.listChangedFiles(ref)).map((file) => file.path));
+/** Forge 上这个 pull request 此刻的可审文件路径集:变更文件去掉删除的,改名只认新路径。 */
+async function forgeReviewableFiles(forge: Forge, ref: PullRequestRef): Promise<Set<string>> {
+  return new Set(reviewableFiles(await forge.listChangedFiles(ref)));
 }
 
 /** 只复核在一个没有未处置历史的阶段上被拒的那句话。两种入参共用,措辞一致。 */
@@ -5040,7 +5043,7 @@ async function handleRerun(
   // 排在读 PR 之后:PR 根本不存在时该说的是那件事,不是这个阶段没有历史。
   if (
     mode === "verdict-only" &&
-    !hasOpenHistory(deps.dbPath, { owner, repo, pullNumber }, await forgeChangedFiles(forge, ref))
+    !hasOpenHistory(deps.dbPath, { owner, repo, pullNumber }, await forgeReviewableFiles(forge, ref))
   ) {
     return sendJson(res, 409, { error: VERDICT_ONLY_NOTHING_TO_DO });
   }
@@ -5107,7 +5110,7 @@ async function rerunRangeReview(
     !hasOpenHistory(
       deps.dbPath,
       { rangeReviewId: id },
-      await forgeChangedFiles(forge, {
+      await forgeReviewableFiles(forge, {
         owner: record.owner,
         repo: record.repo,
         number: record.containerPullNumber,
@@ -5814,10 +5817,10 @@ async function handleAdvanceRangeReview(
   // 只复核那一轮开跑之前先问一句这个阶段还有没有可复核的东西(issue #250),判据与重跑
   // 那一档同一个。闸排在全部校验之后、推分支与落库之前:被拒时比较项、来源、推进人与
   // 容器 PR 全部保持原样,人勾回完整审查再推就是拒绝之前那个状态。
-  // 变更文件集从本地副本算:此刻容器 PR 的 head 分支还指着旧比较项,Forge 上那份说的是
-  // 上一轮的事,拿它判会把该拒的放过去。
+  // 可审文件集从本地副本算:此刻容器 PR 的 head 分支还指着旧比较项,Forge 上那份说的是
+  // 上一轮的事,拿它判会把该拒的放过去。来源与重跑那两处不同,规则同一条(issue #251)。
   if (mode === "verdict-only") {
-    let changed: Set<string>;
+    let reviewable: Set<string>;
     try {
       const prepared = await prepareRangeDiff({
         cacheDir: deps.cacheDir,
@@ -5830,11 +5833,11 @@ async function handleAdvanceRangeReview(
       // 两端刚在 resolveRange 里解析过、后代关系也判过,这里拿不到范围只能是本地副本
       // 出了岔子,与 git 报错同一档:人读到的是「推进时取不回变更文件」,不是「看不了 diff」。
       if (!prepared.ok) throw new Error(RANGE_DIFF_REJECTION[prepared.reason]);
-      changed = new Set((await readRangeDiffFiles(prepared)).map((file) => file.path));
+      reviewable = new Set(reviewableFiles(await readRangeDiffFiles(prepared)));
     } catch (error) {
       return sendJson(res, 502, { error: `取不回新比较项的变更文件:${failureText(error)}` });
     }
-    if (!hasOpenHistory(deps.dbPath, { rangeReviewId: id }, changed)) {
+    if (!hasOpenHistory(deps.dbPath, { rangeReviewId: id }, reviewable)) {
       return sendJson(res, 409, { error: VERDICT_ONLY_NOTHING_TO_DO });
     }
   }

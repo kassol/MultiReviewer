@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
+import type { ChangedFile } from "../src/forge/forge.ts";
 import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
@@ -273,6 +274,39 @@ test("未处置历史全落在本轮没改的文件上:只复核重跑同样 409
   const denied = await h.api("POST", "/rerun", { rangeReviewId: rangeReview.id });
   assert.equal(denied.status, 409);
   assert.match(((await denied.json()) as { error: string }).error, /未处置/);
+  assert.equal(h.settled.length, 1);
+  assert.deepEqual(modes(h, rangeReview.id), ["full"]);
+});
+
+test("承载历史的文件在容器 PR 上是删除或改名:只复核重跑 409,不先答已触发(issue #251)", async () => {
+  // 首轮在 src/answer.ts 报出一条;随后 Forge 说这个文件删了,或者只剩改名后的新路径——
+  // 按路径看它还在变更文件里,按可审文件看这一轮什么都复核不了。
+  let files: ChangedFile[] | undefined;
+  const h = await registeredHarness({
+    buildReviewers: reportingReviewers,
+    wrapForge: (forge) => ({
+      ...forge,
+      listChangedFiles: async (ref) => files ?? forge.listChangedFiles(ref),
+    }),
+  });
+  const rangeReview = await startRangeReview(h);
+
+  files = [
+    { path: "src/answer.ts", status: "removed" },
+    { path: "src/other.ts", status: "modified" },
+  ];
+  const deleted = await h.api("POST", "/rerun", { rangeReviewId: rangeReview.id });
+  assert.equal(deleted.status, 409);
+  assert.match(((await deleted.json()) as { error: string }).error, /未处置/);
+
+  files = [
+    { path: "src/renamed.ts", status: "renamed" },
+    { path: "src/other.ts", status: "modified" },
+  ];
+  const renamed = await h.api("POST", "/rerun", { rangeReviewId: rangeReview.id });
+  assert.equal(renamed.status, 409);
+  assert.match(((await renamed.json()) as { error: string }).error, /未处置/);
+
   assert.equal(h.settled.length, 1);
   assert.deepEqual(modes(h, rangeReview.id), ["full"]);
 });
