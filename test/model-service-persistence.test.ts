@@ -251,6 +251,7 @@ test("模型服务当前版本把目标、凭据证据、目录与补录作为�
     baseUrl: "https://ai.corp.example/v1",
     api: "openai-completions",
     targetFingerprint: "target-fingerprint-v1",
+    targets: null,
     disabledReason: null,
     createdAt: "2026-08-20T00:00:00.000Z",
     updatedAt: "2026-08-20T00:01:00.000Z",

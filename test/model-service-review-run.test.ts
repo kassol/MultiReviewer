@@ -106,7 +106,7 @@ test("凭据未配置时只失败该 Reviewer 并留下固定服务版本审计"
   assert.equal(run.reviewerPins[0]!.target?.baseUrl, "https://missing-credential.example.test/v1");
 });
 
-test("Pi 内置目标漂移时不解密凭据，也不生成可执行 Reviewer 计划", async () => {
+test("旧版内置目标证明不了时不解密凭据，也不生成可执行 Reviewer 计划", async () => {
   const spec = { provider: "openai", model: "drift-model" };
   const h = await startPanelHarness(cleanups, {
     reviewers: [spec],
@@ -154,7 +154,7 @@ test("Pi 内置目标漂移时不解密凭据，也不生成可执行 Reviewer �
   const plan = h.runtimePlans[0]![0]!;
   assert.equal(plan.credential, null);
   assert.equal(h.snapshots[0]!.has(spec.provider), false);
-  assert.match(plan.failure ?? "", /Pi 内置目标已经变化/);
+  assert.match(plan.failure ?? "", /openai 的调用目标无法确认（需重新验证）/);
 });
 
 test("迁移遗留的冲突标记不阻止当前已无撞名的自定义服务运行", async () => {

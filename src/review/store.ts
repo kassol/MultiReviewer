@@ -503,6 +503,82 @@ export function modelServiceTargetFingerprint(baseUrl: string, api: string): str
 }
 
 /**
+ * 内置模型服务一个版本绑定的调用目标(ADR 0027):去重、稳定排序后的 api/baseUrl 集合,
+ * 每一项带自己的单目标指纹——模型补录绑的是其中一项,可用性判定按指纹对得上。
+ */
+export type ModelServiceBoundTarget = {
+  api: string;
+  baseUrl: string;
+  fingerprint: string;
+};
+
+/** 去重(按协议加去掉尾部斜杠的地址)并按协议、地址稳定排序,顺序不随目录排序变。 */
+export function normalizeModelServiceTargets(
+  targets: readonly { api: string; baseUrl: string }[],
+): ModelServiceBoundTarget[] {
+  const byKey = new Map<string, ModelServiceBoundTarget>();
+  for (const target of targets) {
+    const api = target.api.trim();
+    const baseUrl = target.baseUrl.trim().replace(/\/+$/, "");
+    if (api === "" || baseUrl === "") continue;
+    const key = `${api}\0${baseUrl}`;
+    if (!byKey.has(key)) {
+      byKey.set(key, { api, baseUrl, fingerprint: modelServiceTargetFingerprint(baseUrl, api) });
+    }
+  }
+  return [...byKey.values()].sort((left, right) =>
+    left.api < right.api ? -1 : left.api > right.api ? 1 : left.baseUrl < right.baseUrl ? -1 : left.baseUrl > right.baseUrl ? 1 : 0,
+  );
+}
+
+/**
+ * 目标集合的指纹:只有一项时就是那一项的单目标指纹——升级前只绑一个目标的内置版本
+ * 与升级后单协议 provider 的版本因此指纹一致,不会仅因为记法变化而被判成目标已变;
+ * 多项时对排序后的各项指纹再取一次摘要。空集合没有指纹。
+ */
+export function modelServiceTargetSetFingerprint(
+  targets: readonly { api: string; baseUrl: string }[],
+): string | null {
+  const normalized = normalizeModelServiceTargets(targets);
+  if (normalized.length === 0) return null;
+  if (normalized.length === 1) return normalized[0]!.fingerprint;
+  const hash = createHash("sha256");
+  for (const target of normalized) hash.update(target.fingerprint, "utf8").update("\n");
+  return hash.digest("hex");
+}
+
+/**
+ * 绑了目标集合的版本里,一个模型解析到集合里的哪一个目标(ADR 0027)。目录行按自己保存的
+ * api/baseUrl 对集合(来源即 Pi 目录);模型补录按指纹对集合;目录行没带目标、以及迁移保留
+ * 这两种不知道自己目标的来源,只在集合恰好一项时沿用它。目录行对不上时再看补录——补录是
+ * 显式验证过的。解析不到即这个模型的目标未经验证,不猜。`availableModel` 的 SQL 是同一条
+ * 规则的另一份写法,改一处要同时改另一处。
+ */
+export function boundTargetForModel(
+  targets: readonly ModelServiceBoundTarget[],
+  automatic: { fields: { api?: string; baseUrl?: string } } | undefined,
+  supplement: { source: ModelSupplementSource; targetFingerprint: string | null } | undefined,
+): { target: ModelServiceBoundTarget; source: "pi-catalog" | "service-target" } | undefined {
+  const sole = targets.length === 1 ? targets[0] : undefined;
+  if (automatic !== undefined) {
+    const api = automatic.fields.api?.trim() ?? "";
+    const baseUrl = automatic.fields.baseUrl?.trim().replace(/\/+$/, "") ?? "";
+    if (api !== "" && baseUrl !== "") {
+      const own = targets.find((target) => target.api === api && target.baseUrl === baseUrl);
+      if (own !== undefined) return { target: own, source: "pi-catalog" };
+    } else if (sole !== undefined) {
+      return { target: sole, source: "service-target" };
+    }
+  }
+  if (supplement === undefined) return undefined;
+  if (supplement.source === "migration-retention") {
+    return sole === undefined ? undefined : { target: sole, source: "service-target" };
+  }
+  const bound = targets.find((target) => target.fingerprint === supplement.targetFingerprint);
+  return bound === undefined ? undefined : { target: bound, source: "service-target" };
+}
+
+/**
  * 模型服务的当前态。只保留当前版本；运行中的 Review Run 在内存里持有旧版本，不为它建
  * 历史表。
  */
@@ -683,6 +759,11 @@ const ADD_COLUMNS = [
   // 交接未完成的标记(ADR 0025,issue #252)。旧行是 NULL:升级前的延续都在 resolve
   // 成功之后才落库,没有交接没做完的。
   "ALTER TABLE finding ADD COLUMN handoff_pending INTEGER",
+  // 内置模型服务版本绑定的调用目标集合(ADR 0027,issue #261):JSON 数组,每项
+  // `{api, baseUrl, fingerprint}`,去重并稳定排序。自定义服务是 NULL(目标在 base_url /
+  // api 两列上);升级前的内置版本也是 NULL,读回即「旧版本」,只有经指纹证明的那一个
+  // 目标可以延续,证明不了就待重新验证。
+  "ALTER TABLE model_service ADD COLUMN targets_json TEXT",
 ];
 
 /**
@@ -1198,11 +1279,16 @@ export type ModelServiceRecord = {
   provider: string;
   type: "builtin" | "custom";
   version: number;
-  /** 内置 provider 的目标来自 Pi，不复制进库。 */
+  /** 自定义服务的目标;内置服务的目标在 `targets` 上,这两列为空。 */
   baseUrl: string | null;
   api: string | null;
-  /** 自定义服务必有；内置服务可由 Pi 当前定义在使用时合成。 */
+  /** 自定义服务是单目标指纹;内置服务是 `targets` 集合的指纹,旧版本是当初首项模型的单目标指纹。 */
   targetFingerprint: string | null;
+  /**
+   * 内置服务这一版绑定的调用目标集合(ADR 0027)。自定义服务与升级前的内置版本是 null:
+   * 后者只能按 `targetFingerprint` 证明当初绑的是哪一个目标。
+   */
+  targets: ModelServiceBoundTarget[] | null;
   disabledReason: "name-conflict" | null;
   createdAt: string;
   updatedAt: string;
@@ -1263,9 +1349,18 @@ export type RenameConflictingCustomModelServiceResult =
  * 一次完整当前版本写入。版本号由库按 expectedVersion 生成，避免调用方拿旧候选覆盖新版本。
  * automaticModels 是本次成功发现的完整可信快照；supplements 是这家服务的新完整集合。
  */
-export type ModelServiceVersionCommit = Omit<ModelServiceRecord, "version" | "automaticModels" | "supplements"> & {
+export type ModelServiceVersionCommit = Omit<
+  ModelServiceRecord,
+  "version" | "automaticModels" | "supplements" | "targets"
+> & {
   automaticModels: readonly DiscoveredModel[];
   supplements: readonly Omit<ModelSupplementRecord, "provider">[];
+  /**
+   * 内置服务这一版要绑定的调用目标(ADR 0027);库负责去重、排序并算每项指纹。给了集合时
+   * `targetFingerprint` 必须是这个集合的指纹。省略或 null 即不记集合:自定义服务一律如此,
+   * 内置服务这样写出来的是旧格式版本。
+   */
+  targets?: readonly { api: string; baseUrl: string }[] | null;
 };
 
 const TRUSTED_MODEL_FIELD_KEYS = [
@@ -2763,15 +2858,37 @@ export function openStore(dbPath: string): Store {
             WHERE automatic.provider = service.provider
               AND automatic.model = ?
               AND automatic.service_version = service.version
+              -- 绑了目标集合的内置版本(ADR 0027):目录行按自己的 api/baseUrl 对集合,
+              -- 对不上的行(刷新拉进来、还没经验证的目标)不算可用。
+              AND (
+                service.targets_json IS NULL
+                OR (automatic.api IS NOT NULL AND automatic.base_url IS NOT NULL
+                    AND EXISTS (
+                      SELECT 1 FROM json_each(service.targets_json) bound
+                       WHERE json_extract(bound.value, '$.api') = automatic.api
+                         AND json_extract(bound.value, '$.baseUrl') = rtrim(automatic.base_url, '/')
+                    ))
+                OR ((automatic.api IS NULL OR automatic.base_url IS NULL)
+                    AND json_array_length(service.targets_json) = 1)
+              )
          )
          OR EXISTS (
            SELECT 1 FROM model_supplement supplement
             WHERE supplement.provider = service.provider
               AND supplement.model = ?
               AND (
-                supplement.source = 'migration-retention'
+                (supplement.source = 'migration-retention'
+                  AND (service.targets_json IS NULL
+                       OR json_array_length(service.targets_json) = 1))
                 OR (supplement.source = 'manual'
-                    AND supplement.target_fingerprint = service.target_fingerprint)
+                    AND (
+                      (service.targets_json IS NULL
+                        AND supplement.target_fingerprint = service.target_fingerprint)
+                      OR EXISTS (
+                        SELECT 1 FROM json_each(service.targets_json) bound
+                         WHERE json_extract(bound.value, '$.fingerprint') = supplement.target_fingerprint
+                      )
+                    ))
               )
          )
        )
@@ -2815,7 +2932,24 @@ export function openStore(dbPath: string): Store {
       record.credential.state !== "verified" ||
       record.credential.apiKeyEncrypted === null
     ) return false;
-    const models = new Set(record.automaticModels.map((model) => model.id));
+    const models = new Set<string>();
+    if (record.targets != null) {
+      // 绑了目标集合的版本按 `boundTargetForModel` 判,与 `availableModel` 同一条规则。
+      const targets = normalizeModelServiceTargets(record.targets);
+      const supplementByModel = new Map(record.supplements.map((entry) => [entry.model, entry]));
+      for (const model of record.automaticModels) {
+        if (boundTargetForModel(targets, model, supplementByModel.get(model.id)) !== undefined) {
+          models.add(model.id);
+        }
+      }
+      for (const supplement of record.supplements) {
+        if (boundTargetForModel(targets, undefined, supplement) !== undefined) {
+          models.add(supplement.model);
+        }
+      }
+      return [...references].every((model) => models.has(model));
+    }
+    for (const model of record.automaticModels) models.add(model.id);
     for (const supplement of record.supplements) {
       if (
         supplement.source === "migration-retention" ||
@@ -3983,6 +4117,18 @@ export function openStore(dbPath: string): Store {
           throw new Error(`${record.provider}:${supplement.model} 的来源与目标指纹不一致`);
         }
       }
+      // 目标集合(ADR 0027)只属于内置服务;指纹由集合算出,调用方给的必须与之一致,
+      // 否则集合与指纹各说各话,旧版本的证明规则就没了依据。
+      const targets = record.targets == null ? null : normalizeModelServiceTargets(record.targets);
+      if (targets !== null) {
+        if (record.type !== "builtin") {
+          throw new Error(`${record.provider} 是自定义模型服务,目标在地址与协议上,不记目标集合`);
+        }
+        if (record.targetFingerprint !== modelServiceTargetSetFingerprint(targets)) {
+          throw new Error(`${record.provider} 的目标指纹与目标集合不一致`);
+        }
+      }
+      const targetsJson = targets === null ? null : JSON.stringify(targets);
 
       db.exec("BEGIN IMMEDIATE");
       try {
@@ -4003,8 +4149,8 @@ export function openStore(dbPath: string): Store {
           db.prepare(
             `INSERT INTO model_service
                (provider, service_type, version, base_url, api, target_fingerprint,
-                disabled_reason, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                targets_json, disabled_reason, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           ).run(
             record.provider,
             record.type,
@@ -4012,6 +4158,7 @@ export function openStore(dbPath: string): Store {
             record.baseUrl,
             record.api,
             record.targetFingerprint,
+            targetsJson,
             record.disabledReason,
             record.createdAt,
             record.updatedAt,
@@ -4020,13 +4167,14 @@ export function openStore(dbPath: string): Store {
           const changed = db.prepare(
             `UPDATE model_service
                 SET service_type = ?, version = version + 1, base_url = ?, api = ?,
-                    target_fingerprint = ?, disabled_reason = ?, updated_at = ?
+                    target_fingerprint = ?, targets_json = ?, disabled_reason = ?, updated_at = ?
               WHERE provider = ? AND version = ?`,
           ).run(
             record.type,
             record.baseUrl,
             record.api,
             record.targetFingerprint,
+            targetsJson,
             record.disabledReason,
             record.updatedAt,
             record.provider,
@@ -4279,7 +4427,7 @@ export function openStore(dbPath: string): Store {
       const service = db
         .prepare(
           `SELECT provider, service_type, version, base_url, api, target_fingerprint,
-                  disabled_reason, created_at, updated_at
+                  targets_json, disabled_reason, created_at, updated_at
              FROM model_service WHERE provider = ?`,
         )
         .get(provider);
@@ -4358,6 +4506,10 @@ export function openStore(dbPath: string): Store {
           service["target_fingerprint"] === null
             ? null
             : String(service["target_fingerprint"]),
+        targets:
+          service["targets_json"] === null
+            ? null
+            : JSON.parse(String(service["targets_json"])) as ModelServiceBoundTarget[],
         disabledReason:
           service["disabled_reason"] === null ? null : "name-conflict" as const,
         createdAt: String(service["created_at"]),

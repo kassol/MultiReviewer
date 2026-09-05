@@ -16,18 +16,27 @@ import { test } from "node:test";
 import { mergeByProposal } from "../src/review/dedupe.ts";
 import type { Finding, HistoryFinding, ReviewerEvent } from "../src/review/finding.ts";
 import { EVIDENCE_SESSION_BUDGET, EVIDENCE_TOOL } from "../src/reviewer/evidence.ts";
-import { resolvePiBuiltinProviderTarget } from "../src/reviewer/catalog.ts";
+import { piBuiltinProviderTargets, type PiBuiltinProviderTarget } from "../src/reviewer/catalog.ts";
 import { createPiMergeAgent } from "../src/reviewer/merge-agent.ts";
 import { createPiReviewer } from "../src/reviewer/pi-reviewer.ts";
 import { createPiRuleAgent } from "../src/reviewer/rule-agent.ts";
 import {
   discoverModels,
+  resolveBuiltinModelTarget,
   validateMinimalInference,
   type BuiltinModelServiceCandidate,
 } from "../src/reviewer/model-service-runtime.ts";
 
 const provider = process.env["MULTIREVIEWER_SMOKE_PROVIDER"];
 const model = process.env["MULTIREVIEWER_SMOKE_MODEL"];
+
+/** 烟测模型的调用目标(ADR 0027):Pi 内置表里它自己那一行,否则整家唯一的目标。 */
+async function smokeTarget(): Promise<PiBuiltinProviderTarget | undefined> {
+  const targets = await piBuiltinProviderTargets(provider!);
+  if (targets === undefined) return undefined;
+  const resolved = resolveBuiltinModelTarget(provider!, model!, targets.get(model!), [...targets.values()]);
+  return resolved.ok ? resolved.target : undefined;
+}
 const envVar = process.env["MULTIREVIEWER_SMOKE_ENV"];
 const secret = envVar === undefined ? undefined : process.env[envVar];
 
@@ -67,7 +76,7 @@ test("真实 provider 完成一次模型发现与一次最小推理", { skip }, 
 });
 
 async function smokeReviewer(): Promise<ReturnType<typeof createPiReviewer>> {
-  const target = await resolvePiBuiltinProviderTarget(provider!);
+  const target = await smokeTarget();
   assert.ok(target, `Pi 内置 provider 不存在或没有运行目标: ${provider}`);
   return createPiReviewer({
     runtimeModel: {
@@ -176,7 +185,7 @@ test("真实模型经复核工具对已修好的历史 Finding 回已修", { ski
  * 「只收规范性陈述」这条要求以及 30 条上限,都要真模型跑一遍才知道立不立得住。
  */
 test("真实模型经 propose_rule 推导出规范性的评审规则", { skip }, async () => {
-  const target = await resolvePiBuiltinProviderTarget(provider!);
+  const target = await smokeTarget();
   assert.ok(target, `Pi 内置 provider 不存在或没有运行目标: ${provider}`);
   const result = await createPiRuleAgent()({
     worktreePath: FIXTURE,
@@ -275,7 +284,7 @@ test("真实模型对跨文件存疑场景派出取证", { skip }, async () => {
  * 就不确定,断言只守契约那一半——方案过得了编排层的三条硬性质验收。
  */
 test("真实模型经 propose_merge_group 给出过得了验收的分组方案", { skip }, async () => {
-  const target = await resolvePiBuiltinProviderTarget(provider!);
+  const target = await smokeTarget();
   assert.ok(target, `Pi 内置 provider 不存在或没有运行目标: ${provider}`);
   const findings: Finding[] = [
     {

@@ -288,24 +288,28 @@ export async function listPiBuiltinProviders(): Promise<PiBuiltinProvider[]> {
 }
 
 /**
- * Pi 当前内置 provider 的调用目标。只返回合成模型所需的 api/baseUrl，不把当前 Pi 的
- * name、能力或上下文混进数据库已提交的自动目录事实。Pi 给内置模型补录合成新行时
- * 继承该 provider 第一行模型的目标；这里沿用同一目标，确保面板判定与真实运行一致。
+ * Pi 当前内置 provider 逐模型的调用目标(ADR 0027):model id → 该行自己的 api/baseUrl。
+ * 同一家下的模型可以走不同协议与地址(OpenRouter 既有 Chat Completions 也有 Anthropic
+ * Messages),所以不再取第一行当整家的目标。只返回合成模型所需的两项,不把当前 Pi 的
+ * name、能力或上下文混进数据库已提交的自动目录事实;两项缺一的行不进结果。provider
+ * 不存在回 undefined。
  */
-export async function resolvePiBuiltinProviderTarget(
+export async function piBuiltinProviderTargets(
   providerId: string,
-): Promise<PiBuiltinProviderTarget | undefined> {
-  const model = (await piBuiltinRuntime()).getProvider(providerId)?.getModels()[0];
-  if (
-    model === undefined ||
-    typeof model.api !== "string" ||
-    model.api.trim() === "" ||
-    typeof model.baseUrl !== "string" ||
-    model.baseUrl.trim() === ""
-  ) {
-    return undefined;
+): Promise<ReadonlyMap<string, PiBuiltinProviderTarget> | undefined> {
+  const provider = (await piBuiltinRuntime()).getProvider(providerId);
+  if (provider === undefined) return undefined;
+  const targets = new Map<string, PiBuiltinProviderTarget>();
+  for (const model of provider.getModels()) {
+    if (
+      typeof model.api !== "string" ||
+      model.api.trim() === "" ||
+      typeof model.baseUrl !== "string" ||
+      model.baseUrl.trim() === ""
+    ) continue;
+    targets.set(model.id, { api: model.api, baseUrl: model.baseUrl });
   }
-  return { api: model.api, baseUrl: model.baseUrl };
+  return targets;
 }
 
 /** 自定义模型服务与当前 Pi 内置 provider 的动态名字冲突。 */
