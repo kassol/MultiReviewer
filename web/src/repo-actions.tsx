@@ -5,7 +5,6 @@ import {
   Cross2Icon,
   CrossCircledIcon,
   DotsHorizontalIcon,
-  ExclamationTriangleIcon,
   UpdateIcon,
 } from "@radix-ui/react-icons";
 import {

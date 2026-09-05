@@ -120,7 +120,6 @@ import {
   type RepoSummary,
   type ReviewRuleInput,
   type ReviewRuleRecord,
-  type RuleExploration,
   type RuleProposalInput,
   type StageScope,
   type Store,

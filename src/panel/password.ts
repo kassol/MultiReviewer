@@ -1,10 +1,13 @@
 import { argon2, randomBytes, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
 
 const MEMORY_KIB = 65_536;
 const PASSES = 3;
 const PARALLELISM = 4;
 const SALT_BYTES = 16;
 const TAG_BYTES = 32;
+
+const argon2Async = promisify(argon2);
 
 function derive(
   password: string,
@@ -15,20 +18,14 @@ function derive(
     parallelism: PARALLELISM,
   },
 ): Promise<Buffer> {
-  const { promise, resolve, reject } = Promise.withResolvers<Buffer>();
-  argon2(
-    "argon2id",
-    {
-      message: password,
-      nonce: salt,
-      parallelism: parameters.parallelism,
-      tagLength: TAG_BYTES,
-      memory: parameters.memory,
-      passes: parameters.passes,
-    },
-    (error, tag) => (error === null ? resolve(tag) : reject(error)),
-  );
-  return promise;
+  return argon2Async("argon2id", {
+    message: password,
+    nonce: salt,
+    parallelism: parameters.parallelism,
+    tagLength: TAG_BYTES,
+    memory: parameters.memory,
+    passes: parameters.passes,
+  });
 }
 
 /** RFC 9106 second-recommended Argon2id parameters, stored as one PHC string. */

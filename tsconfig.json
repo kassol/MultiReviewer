@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "es2024",
-    "lib": ["es2024"],
+    "lib": ["es2024", "esnext.collection"],
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "types": ["node"],
@@ -10,6 +10,8 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "exactOptionalPropertyTypes": true,
 
     "erasableSyntaxOnly": true,

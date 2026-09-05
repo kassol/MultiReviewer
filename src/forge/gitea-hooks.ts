@@ -119,12 +119,7 @@ type RawHook = {
 };
 
 function eventsMatch(events: readonly string[]): boolean {
-  const actual = new Set(events);
-  if (actual.size !== READBACK_EVENTS.size) return false;
-  for (const event of READBACK_EVENTS) {
-    if (!actual.has(event)) return false;
-  }
-  return true;
+  return new Set(events).symmetricDifference(READBACK_EVENTS).size === 0;
 }
 
 /**

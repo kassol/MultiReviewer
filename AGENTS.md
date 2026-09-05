@@ -156,6 +156,8 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 - 2026-09-05: 落地 issue #262(ADR 0021 附记)。**Pi 升到 0.85.0、pi-subagents 升到 0.65.1,取证契约在新执行体上验收**:前台取证子会话改跑在 Reviewer 子进程内(此前另起 pi 进程),子会话的工具面仍恰是只读四件套、唯一 agent 仍是 `evidence`,模型、凭据、思考档位与知识注入照旧沿用 Reviewer 的;新版默认会给子会话加一个父子通话工具,并且不再读旧的能力天花板环境变量,两处都按新版的方式重新铺装并用真实 SDK 回归钉住(显式覆盖也加不回来,仓库自带的 agent 定义派不出去,超时的子会话停下后不再发请求)。顺带关掉一处升级前就有的隐患:子会话一次瞬时的模型失败会被 pi-subagents 记进宿主 tmp 下全机共用的 24 小时排除表,之后每一次取证都被拒;现在排除表关在会话自己的 agentDir 里,失败只影响这一批。Anthropic 协议的请求 URL 多了 `?beta=true`(SDK 升级所致),部署验收时确认网关接受。`pnpm-workspace.yaml` 为这批刚发布的版本加了 pnpm 的发布年龄豁免,否则镜像装不进。细节见 `src/AGENTS.md`。
 
+- 2026-09-05: 落地 issue #255。**清理无用代码并复用 Node 原生能力,启用未使用符号检查**:后端与前端 `tsconfig.json` 都开 `noUnusedLocals` / `noUnusedParameters`,清掉它报出的七个未使用符号(`RuleExploration`、两处 `readFileSync`、`join`、`BODY_ANCHOR`、`ExclamationTriangleIcon`,以及 #252 落地时带进来的 `MemoryForge` 类型导入)与只解释它们的注释;产品标记 `Mark` 只留无框形态,三个调用去掉 `framed={false}`,图形与外层样式不变;Argon2 回调改用 `node:util` 的 `promisify` 接 Promise,派生参数、随机盐、PHC 格式与恒定时间比较不变,既有密码记录照常验证;Gitea hook 回显事件集合改用 `Set.prototype.symmetricDifference` 判精确匹配(顺序与重复不影响,缺少、空集与多余事件都不匹配),后端 `tsconfig.json` 的 `lib` 因此加 `esnext.collection`。`test/gitea-hooks.test.ts` 补一条集合判据的回归。
+
 - 2026-09-05: 落地 issue #264(线上验证范围审查 #13 时发现)。**指纹折叠命中的 Finding 落库沿用历史行的指纹**:指纹在 ±3 偏移处命中时,本轮那行此前落着按自己落点算的指纹,阶段汇总按「文件 + 指纹」归并把它判成新报,时间线「折叠」少于轨迹的 `finding_folded`;现在两档折叠(指纹、合并 agent)都沿用被折叠到的历史行的指纹,同一处问题跨轮次只占一个 Identity。口径记在 `CONTEXT.md`「同一处 Finding」,细节见 `src/AGENTS.md`。
 
 - 2026-09-05: 落地 issue #257。**复核工具的新位置成对必填,snippet 空白在契约层拒回**:`review_prior_finding` 的新位置改成一个整体 `position: { line, snippet }`,给就两项都要且 snippet 非空,缺一项或空白的调用在执行前就被 schema 拒回,不再出现「结论已记录、新位置没记」这一档;不带 `position` 的调用、两种模式的工具清单与打回文案都不变。细节见 `src/AGENTS.md`。

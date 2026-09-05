@@ -18,12 +18,7 @@ import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
 import type { TraceEvent } from "../src/review/trace.ts";
 import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
-import {
-  memoryForge,
-  scriptedReviewer,
-  verdictReviewer,
-  type MemoryForge,
-} from "./support/memory-forge.ts";
+import { memoryForge, scriptedReviewer, verdictReviewer } from "./support/memory-forge.ts";
 
 const BASE = `export function add(a, b) {
   return a + b;
