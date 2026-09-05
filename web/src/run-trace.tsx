@@ -610,6 +610,67 @@ function sectionStatus(input: {
 }
 
 /**
+ * 收尾块标题的摘要(issue #259):那一组只装模型级的那条结束事件,它既不是文本也不是工具
+ * 调用,写「N 段文本 · N 次工具」只会恒为 0。完成时写报出的条数、两种被拒次数(为 0 的
+ * 省略)与 token 总量,失败时写失败原因的第一行(截断);结束事件还没到就什么都不写,
+ * 标题只剩状态徽章。失败原因优先取轨迹里那条事件,没有时退回轮次投影上的那句。
+ */
+function ClosingSummary({
+  events,
+  failure,
+}: {
+  events: readonly TraceEvent[];
+  failure: string | null;
+}) {
+  const failed = events.find((event) => event.kind === "reviewer_failed");
+  const reason = failed === undefined ? failure : (str(failed.payload, "failure") ?? failure);
+  if (reason !== null) {
+    const line = reason.split("\n")[0] ?? "";
+    return line === "" ? null : (
+      <span className="min-w-0 break-words">{summarize(line, 80)}</span>
+    );
+  }
+  const finished = events.find((event) => event.kind === "reviewer_finished");
+  if (finished === undefined) return null;
+  const payload = finished.payload;
+  const findings = num(payload, "findings");
+  const rejected = num(payload, "rejectedToolCalls");
+  const anchorRejections = num(payload, "anchorRejections");
+  const usage = record(payload, "usage");
+  const total = usage === null ? null : num(usage, "totalTokens");
+  const items = [
+    <>
+      报出 <span className="font-mono tabular-nums">{findings ?? 0}</span> 条
+    </>,
+    rejected === null || rejected === 0 ? null : (
+      <>
+        契约拒绝 <span className="font-mono tabular-nums">{rejected}</span> 次
+      </>
+    ),
+    anchorRejections === null || anchorRejections === 0 ? null : (
+      <>
+        锚定被拒 <span className="font-mono tabular-nums">{anchorRejections}</span> 次
+      </>
+    ),
+    total === null ? null : (
+      <>
+        <span className="font-mono tabular-nums">{total}</span> tokens
+      </>
+    ),
+  ].filter((item): item is React.ReactElement => item !== null);
+  return (
+    <span className="shrink-0">
+      {items.map((item, index) => (
+        <span key={index}>
+          {index === 0 ? null : " · "}
+          {item}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/**
  * 一个模型某一批的轨迹块(issue #232)。默认折叠:一轮里几个模型各自刷几十条事件,
  * 全摊开等于让人先滚过别人的过程才看到要查的那一个。失败的那个默认展开——它是来这一页
  * 的理由。
@@ -675,10 +736,14 @@ function ReviewerTrace({
               </span>
             )}
             <StatusBadge tone={status}>{SECTION_STATUS[status]}</StatusBadge>
-            <span className="shrink-0">
-              <span className="font-mono tabular-nums">{messages}</span> 段文本 ·{" "}
-              <span className="font-mono tabular-nums">{toolCalls}</span> 次工具
-            </span>
+            {closing ? (
+              <ClosingSummary events={events} failure={failure} />
+            ) : (
+              <span className="shrink-0">
+                <span className="font-mono tabular-nums">{messages}</span> 段文本 ·{" "}
+                <span className="font-mono tabular-nums">{toolCalls}</span> 次工具
+              </span>
+            )}
           </span>
         </span>
       </button>
