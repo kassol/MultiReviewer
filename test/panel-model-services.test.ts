@@ -573,7 +573,14 @@ test("最终提交重新发现并真实推理后原子写入加密凭据、目�
     else process.env["PI_OFFLINE"] = priorOffline;
   }
 });
-test("预览与最终目录漂移时只提交最终快照，并用目标绑定补录保住验证模型", async () => {
+/**
+ * 预览与最终目录漂移,验证模型从最终目录里消失(issue #261、#262)。Pi 0.84.4 的内置表里
+ * OpenRouter 只有 Chat Completions 一种目标,消失的模型沿用整家唯一的目标补录进版本;
+ * Pi 0.85.0 起内置表里 OpenRouter 同时有 Anthropic Messages 与 Chat Completions 两行,
+ * 一个既不在最终目录、也不在内置表里的模型定不了目标——ADR 0027 定的是明确拒绝并指向
+ * 自定义模型服务,不猜第一项。拒绝发生在真实推理之前,库里零写入。
+ */
+test("预览与最终目录漂移后验证模型没有自己的目标：混合协议下明确拒绝，不推理、库里零写入", async () => {
   const h = await startPanelHarness(cleanups, { reviewers: [] });
   const cookie = await cookieFor(h, "builtin-drift-writer", ["credential:write"]);
   const credential = "drift-secret-never-returned";
@@ -606,39 +613,19 @@ test("预览与最终目录漂移时只提交最终快照，并用目标绑定�
       expectedVersion: null,
     });
     const text = await response.text();
-    assert.equal(response.status, 200, text);
+    assert.equal(response.status, 422, text);
     assert.equal(text.includes(credential), false);
-    assert.deepEqual(JSON.parse(text), {
-      provider: "openrouter",
-      version: 1,
-      credential: { state: "verified" },
-      directory: { state: "discovery-failed" },
-    });
+    assert.match(text, /调用目标无法唯一确定/);
+    assert.match(text, /anthropic-messages https:\/\/openrouter\.ai\/api/);
+    assert.match(text, /openai-completions https:\/\/openrouter\.ai\/api\/v1/);
+    assert.match(text, /自定义模型服务/);
     assert.equal(catalogCalls, 2, "最终提交必须重新发现，不能复用预览结果");
-
-    const store = openStore(h.db.path);
-    const record = store.getModelService("openrouter")!;
-    store.close();
-    assert.equal(record.automaticModels.some((model) => model.id === previewModel), false);
-    assert.equal(record.automaticModels.some((model) => model.id === finalModel), true);
-    assert.equal(record.directory.state, "discovery-failed");
-    assert.match(record.directory.failure!, /最终目录里已没有验证模型/);
-    assert.deepEqual(
-      record.supplements.find((entry) => entry.model === previewModel),
-      {
-        provider: "openrouter",
-        model: previewModel,
-        source: "manual",
-        targetFingerprint: modelServiceTargetFingerprint(
-          "https://openrouter.ai/api/v1",
-          "openai-completions",
-        ),
-        createdAt: record.supplements.find((entry) => entry.model === previewModel)!.createdAt,
-      },
-    );
+    // 目标定不了就不发真实推理,也不落任何版本。
     const inferenceCalls = stub.calls.filter((call) => call.auth === `Bearer ${credential}`);
-    assert.equal(inferenceCalls.length, 1);
-    assert.equal(inferenceCalls[0]!.body?.["model"], previewModel);
+    assert.equal(inferenceCalls.length, 0);
+    const store = openStore(h.db.path);
+    assert.equal(store.getModelService("openrouter"), undefined);
+    store.close();
   } finally {
     stub.restore();
     if (priorOffline === undefined) delete process.env["PI_OFFLINE"];

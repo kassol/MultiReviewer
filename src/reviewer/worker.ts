@@ -25,6 +25,7 @@ import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import {
   EVIDENCE_AGENT,
   EVIDENCE_TOOL,
+  evidenceContractExtension,
   evidenceTranscriptEvents,
   installEvidenceKit,
   vendoredSubagentsPath,
@@ -476,25 +477,28 @@ async function run(request: ReviewerRequest): Promise<void> {
     runtimeModel: request.runtimeModel,
     systemPrompt: SYSTEM_PROMPT,
     extensionPaths: [vendoredSubagentsPath()],
+    // 取证契约在工具边界的那一道(issue #262):与 pi-subagents 同一批装进会话。
+    extensionFactories: [evidenceContractExtension()],
+    // 取证子代理的铺装(issue #226)。知识注入与 Reviewer 拿到的是同一批条目;会话上限是
+    // 本轮运行计划冻结的那一格(issue #258),不带即系统默认。铺在扩展首次加载之前:
+    // pi-subagents 注册时读一次 config,写晚了 intercom 桥就照默认开着(issue #262)。
+    installKit: (agentDir) =>
+      installEvidenceKit({
+        agentDir,
+        runtimeModel: request.runtimeModel,
+        thinkingLevel,
+        rules: request.rules ?? [],
+        facts: request.facts ?? [],
+        ...(request.maxEvidenceCallsPerBatch === undefined
+          ? {}
+          : { sessionBudget: request.maxEvidenceCallsPerBatch }),
+      }),
   });
   if ("failure" in prepared) {
     send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0, failure: prepared.failure });
     return;
   }
   const { agentDir, apiKey, model, modelRuntime, settingsManager, resourceLoader } = prepared;
-
-  // 取证子代理的铺装(issue #226)。知识注入与 Reviewer 拿到的是同一批条目;会话上限是
-  // 本轮运行计划冻结的那一格(issue #258),不带即系统默认。
-  installEvidenceKit({
-    agentDir,
-    runtimeModel: request.runtimeModel,
-    thinkingLevel,
-    rules: request.rules ?? [],
-    facts: request.facts ?? [],
-    ...(request.maxEvidenceCallsPerBatch === undefined
-      ? {}
-      : { sessionBudget: request.maxEvidenceCallsPerBatch }),
-  });
 
   const { session } = await createAgentSession({
     cwd: request.worktreePath,
@@ -526,8 +530,8 @@ async function run(request: ReviewerRequest): Promise<void> {
     (event) => send({ kind: "event", event }),
     Date.now,
     (toolCallId) => anchorRejectedCalls.has(toolCallId),
-    // 取证子会话的过程嵌进这一次调用(issue #227):子代理跑在另一个进程里,它说过的话与
-    // 调过的工具只有从它的 transcript 读回来才进得了审查轨迹。
+    // 取证子会话的过程嵌进这一次调用(issue #227):子代理是 pi-subagents 另建的会话,它说过
+    // 的话与调过的工具只有从它的 transcript 读回来才进得了审查轨迹。
     (toolName, result) =>
       toolName === EVIDENCE_TOOL ? evidenceTranscriptEvents(result) : [],
   );

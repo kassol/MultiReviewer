@@ -290,7 +290,7 @@ export type ReviewerEvent =
       resultLength: number;
       /**
        * 这次调用派出的子会话自己的事件序列(CONTEXT.md 取证,issue #227)。取证是唯一
-       * 会带它的调用:子代理跑在另一个进程里,它说过的话、调过的工具与最后那份报告只有
+       * 会带它的调用:子代理是另一个会话,它说过的话、调过的工具与最后那份报告只有
        * 从这里嵌进来才进得了审查轨迹。事件形状与外层同一套,面板因此用同一个渲染器。
        */
       nested?: readonly ReviewerEvent[];

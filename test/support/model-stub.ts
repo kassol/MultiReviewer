@@ -29,6 +29,17 @@ export type StubTurn = {
   text?: string;
   toolCall?: { name: string; args: unknown };
   usage: StubUsage;
+  /**
+   * 收到请求后先等这么久再回(issue #262):用来让一次取证撞上它自己的超时。请求到达
+   * 那一刻就记进 `requests`,与回不回、回得多晚无关。
+   */
+  delayMs?: number;
+  /**
+   * 不回正文,回这个 HTTP 状态与一段 JSON 错误(issue #262),错误文案取 `text`:扮演一次
+   * 服务端失败。状态与文案决定 Pi 会不会重试——408/409/429/5xx 走 SDK 的重试,文案里带
+   * `insufficient_quota` 之类的额度字样则两层都不重试。
+   */
+  status?: number;
 };
 
 /** 一次请求里测试关心的几样:带了哪些工具、消息序列长什么样。 */
@@ -156,8 +167,21 @@ export async function startModelStub(turns: readonly StubTurn[]): Promise<ModelS
         res.end(JSON.stringify({ error: { message: `脚本只有 ${turns.length} 次响应,这是第 ${next} 次请求` } }));
         return;
       }
-      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-      res.end(sseBody(turn, next, parsed.model));
+      const respond = (): void => {
+        if (turn.status !== undefined) {
+          res.writeHead(turn.status, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              error: { message: turn.text ?? `脚本让第 ${next} 次请求回 ${turn.status}` },
+            }),
+          );
+          return;
+        }
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        res.end(sseBody(turn, next, parsed.model));
+      };
+      if (turn.delayMs === undefined) respond();
+      else setTimeout(respond, turn.delayMs);
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
