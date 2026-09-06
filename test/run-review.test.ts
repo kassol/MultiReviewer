@@ -1560,8 +1560,9 @@ test("合成延续完整沿用历史各归属的影响与建议并各记出处,�
 
   const body = stage.forge.createdReviews[1]!.comments[0]!.body;
   const sha = first!.headSha.slice(0, 7);
+  // 来源要能唯一定位到那一轮:同一 head 可以重跑出多轮,只写 head 认不出是哪一轮。
   const note = (model: string) =>
-    `**沿用 ${model} 在 ${sha} 上的说法,尚未针对新代码重新验证**`;
+    `**沿用 ${model} 在 Review Run #${first!.id} / ${sha} 上的说法,尚未针对新代码重新验证**`;
   assert.ok(
     body.includes(
       `**model-c**\n\n**问题**:sub 多减了 1\n\n${note("model-a")}\n\n**问题**:sub 多减了 1\n\n**影响**:所有调用方拿到的差值都错。\n\n**建议**:去掉多余的 - 1。`,

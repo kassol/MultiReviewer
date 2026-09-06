@@ -276,15 +276,16 @@ function hasText(value: string | null): boolean {
 }
 
 /**
- * 延续承接来的一段历史说法(issue #267):段首写明是谁在哪个 head 上说的,以及它还没对着
- * 现在的代码重新验证过——复核判「仍在」只说明问题还在,不说明修法仍然成立。不署给给出
+ * 延续承接来的一段历史说法(issue #267):段首写明是谁在哪一轮的哪个 head 上说的,以及它
+ * 还没对着现在的代码重新验证过——复核判「仍在」只说明问题还在,不说明修法仍然成立。轮次
+ * 写 Review Run 的 id:同一个 head 可以重跑出多轮,只写 head 定位不到那一轮。不署给给出
  * 新位置的那个模型;两段都没有内容的整段跳过。
  */
 function carriedSection(said: CarriedAttribution): string[] {
   if (!hasText(said.impact) && !hasText(said.suggestion)) return [];
   const lines = [
     "",
-    `**沿用 ${said.model} 在 ${said.headSha.slice(0, 7)} 上的说法,尚未针对新代码重新验证**`,
+    `**沿用 ${said.model} 在 Review Run #${said.runId} / ${said.headSha.slice(0, 7)} 上的说法,尚未针对新代码重新验证**`,
     "",
     `**问题**:${said.description}`,
   ];

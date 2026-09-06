@@ -126,8 +126,9 @@ function AttributionSaid({
 }
 
 /**
- * 延续承接来的一段历史说法(issue #267):头一行写明是哪个模型在哪个 head 上说的、尚未
- * 针对新代码重新验证,再是它自己的问题(与代表段不同时)、影响与建议。它不是本轮的归属,
+ * 延续承接来的一段历史说法(issue #267):头一行写明是哪个模型在哪一轮的哪个 head 上说的、
+ * 尚未针对新代码重新验证,再是它自己的问题(与代表段不同时)、影响与建议。轮次写 Review
+ * Run 的 id:同一个 head 可以重跑出多轮,只写 head 定位不到那一轮。它不是本轮的归属,
  * 不署给给出新位置的模型;两段都没有内容的整块不出现。
  */
 function CarriedSaid({
@@ -143,7 +144,7 @@ function CarriedSaid({
       <p className="flex flex-wrap items-center gap-1.5">
         <span>沿用</span>
         <span className="min-w-0 break-all font-mono">{said.model}</span>
-        <span>在</span>
+        <span>在 Review Run #{said.runId} /</span>
         <CommitChip sha={said.headSha} />
         <span>上的说法 · 尚未针对新代码重新验证</span>
       </p>
