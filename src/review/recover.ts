@@ -263,35 +263,51 @@ function boldOnly(paragraph: string): string | undefined {
   return /^\*\*([^*]+)\*\*$/.exec(paragraph)?.[1];
 }
 
+/** 这一段里有几行围栏(```` ``` ```` 或 `~~~`)起止。奇数即从这一段起进出围栏一次。 */
+function fenceLines(paragraph: string): number {
+  return paragraph.split("\n").filter((line) => /^\s*(```|~~~)/.test(line)).length;
+}
+
 /**
  * 一条评论正文里按模型分的段(`run.ts` 的 `attributionSection` 反过来读)。保守解析,不做
  * 完整 Markdown:标签行(`**问题**:` / `**影响**:` / `**建议**:`)先认;模型标题只认整段
- * 粗体、不含内嵌 `**` 且正好是 `models` 里某个模型标识的段落;段落正文可以跨多个空行分隔
- * 的段落,遇到下一个标签、模型标题、「沿用 …」段、延续说明或锚点为止,正文里的粗体行
- * (`**边界处理**`)与围栏代码照原样接上。解析完按同一格式拼回去与原文逐字比对,拼不回
- * 原文(正文里有像标签的行、段落挂不到任何段上)即返回 undefined——宁可不补,也不写进
+ * 粗体、不含内嵌 `**` 且正好是这条 Finding 某个归属模型标识的段落;段落正文可以跨多个空行
+ * 分隔的段落,遇到下一个标签、模型标题、「沿用 …」段、延续说明或锚点为止,正文里的粗体行
+ * (`**边界处理**`)照原样接上;围栏代码跨段落跟踪,围栏里的每一段不论长什么样都是正文,
+ * 围栏没闭合即不可靠。解析完两道核对:按同一格式拼回去与原文逐字比对;拆出的段与这条
+ * Finding 的归属(模型 + 问题表述,按首报先后)一一对应——正文里出现 `**模型**` 形状的
+ * 段落会多拆出一段,段数对不上就整条不给。任一道不过即返回 undefined——宁可不补,也不写进
  * 截断或错位的内容。
  */
 export function commentSections(
   body: string,
-  models: ReadonlySet<string>,
+  attributions: readonly { model: string; description: string }[],
 ): CommentSection[] | undefined {
   type Block = { kind: "verbatim"; text: string } | { kind: "section"; section: CommentSection };
+  const models = new Set(attributions.map((entry) => entry.model));
   const blocks: Block[] = [];
   let mode: "start" | "section" | "carried" | "tail" = "start";
   let section: CommentSection | undefined;
   let field: "description" | "impact" | "suggestion" | undefined;
+  let fenced = false;
   const verbatim = (paragraph: string): void => {
     blocks.push({ kind: "verbatim", text: paragraph });
     section = undefined;
     field = undefined;
   };
-  for (const [index, paragraph] of body.split("\n\n").entries()) {
+  /** 把一段放到它该在的位置;放不下即整条不可靠。 */
+  const place = (index: number, paragraph: string): boolean => {
+    if (fenced) {
+      // 围栏里的段落一律是正文,不管它长得像标签还是模型标题。
+      if (mode !== "section" || field === undefined) return false;
+      section![field] = `${section![field]}\n\n${paragraph}`;
+      return true;
+    }
     const label = /^\*\*(问题|影响|建议)\*\*:([\s\S]*)$/.exec(paragraph);
     if (label !== null && mode === "section") {
       field = label[1] === "问题" ? "description" : label[1] === "影响" ? "impact" : "suggestion";
       section![field] = label[2]!;
-      continue;
+      return true;
     }
     const heading = boldOnly(paragraph);
     if (heading !== undefined && models.has(heading)) {
@@ -299,45 +315,61 @@ export function commentSections(
       blocks.push({ kind: "section", section });
       mode = "section";
       field = undefined;
-      continue;
+      return true;
     }
     if (mode === "section" && field !== undefined) {
-      // 段落正文的续段:粗体行与围栏代码照原样接上;只有真正的结构标记才结束这一段。
+      // 段落正文的续段:粗体行照原样接上;只有真正的结构标记才结束这一段。
       const structural =
         (heading !== undefined && heading.startsWith("沿用 ")) ||
         paragraph.startsWith("<!--") ||
         paragraph.startsWith("延续自 ");
       if (!structural) {
         section![field] = `${section![field]}\n\n${paragraph}`;
-        continue;
+        return true;
       }
     }
     if (heading !== undefined && heading.startsWith("沿用 ")) {
       verbatim(paragraph);
       mode = "carried";
-      continue;
+      return true;
     }
     if (paragraph.startsWith("<!--") || paragraph.startsWith("延续自 ")) {
       verbatim(paragraph);
       mode = "tail";
-      continue;
+      return true;
     }
     if (index === 0 && heading !== undefined && heading.startsWith("[")) {
       verbatim(paragraph);
-      continue;
+      return true;
     }
     if (mode === "carried") {
       verbatim(paragraph);
-      continue;
+      return true;
     }
     // 挂不到任何段上的段落:模型标题后没有问题标签、结尾之后还有正文、开头不是等级标题。
-    return undefined;
+    return false;
+  };
+  for (const [index, paragraph] of body.split("\n\n").entries()) {
+    if (!place(index, paragraph)) return undefined;
+    if (fenceLines(paragraph) % 2 === 1) fenced = !fenced;
   }
+  if (fenced) return undefined;
   const rendered = blocks
     .map((block) => (block.kind === "verbatim" ? block.text : renderSection(block.section)))
     .join("\n\n");
   if (rendered !== body) return undefined;
-  return blocks.flatMap((block) => (block.kind === "section" ? [block.section] : []));
+  const sections = blocks.flatMap((block) => (block.kind === "section" ? [block.section] : []));
+  if (
+    sections.length !== attributions.length ||
+    sections.some(
+      (entry, index) =>
+        entry.model !== attributions[index]!.model ||
+        entry.description !== attributions[index]!.description,
+    )
+  ) {
+    return undefined;
+  }
+  return sections;
 }
 
 /** 两段都是空串的归属没有内容可带;NULL 的照实带(与 `historyPlacements` 同一条口径)。 */
@@ -527,10 +559,12 @@ export async function planRecovery(
     if (comments === undefined) return { kind: "unavailable", why: "没配 Forge 凭据读不到原评论" };
     const comment = await commentOf(finding.runId, finding.commentId);
     if (comment === undefined) return { kind: "unavailable", why: "Forge 上找不到它的原评论" };
-    const models = new Set((attributions.get(finding.id) ?? []).map((entry) => entry.model));
-    const sections = commentSections(comment.body, models);
+    const sections = commentSections(comment.body, attributions.get(finding.id) ?? []);
     if (sections === undefined) {
-      return { kind: "unavailable", why: "原评论正文拆不开(有像标签的行或挂不上的段落),不拿它当依据" };
+      return {
+        kind: "unavailable",
+        why: "原评论正文拆不开(有像标签或标题的行、围栏没闭合,或段落与归属对不上),不拿它当依据",
+      };
     }
     const matched = new Map<string, Said>();
     for (const section of sections) {

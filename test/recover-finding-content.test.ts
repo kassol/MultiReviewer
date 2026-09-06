@@ -620,8 +620,9 @@ test("有延续关系却没有延续事件的行不推断:归属跳过并说明,
 });
 
 test("评论正文保守解析:标签先认、模型标题只认已知模型,正文里的粗体行与围栏代码照原样,拆不开就不给", () => {
-  const models = new Set(["model-a"]);
-  const section = (body: string[]) => commentSections(body.join("\n\n"), models);
+  const a = { model: "model-a", description: "第一段。\n\n还有第二段。" };
+  const section = (body: string[], attributions: { model: string; description: string }[] = [a]) =>
+    commentSections(body.join("\n\n"), attributions);
   assert.deepEqual(
     section([
       "**[P0] sub 多减了 1**",
@@ -640,27 +641,58 @@ test("评论正文保守解析:标签先认、模型标题只认已知模型,正
     ]),
     [
       {
-        model: "model-a",
-        description: "第一段。\n\n还有第二段。",
+        ...a,
         impact: "差值都错。",
         suggestion: "改为 **必填**\n\n**边界处理**\n\n```\n**问题**:围栏里的标签不算\n```",
       },
     ],
   );
+  // 围栏里有空行隔开的模型标题与标签:跨段落跟踪围栏,整段建议原文读回,不多拆出一段。
+  const fenced = "参考格式：\n\n```md\n\n**model-a**\n\n**问题**:示例问题\n\n```";
+  const nan = { model: "model-a", description: "空数组得到 NaN。" };
+  assert.deepEqual(
+    section(["**[P1] 平均值**", "**model-a**", "**问题**:空数组得到 NaN。", `**建议**:${fenced}`], [nan]),
+    [{ ...nan, impact: "", suggestion: fenced }],
+  );
+  // 围栏没闭合:后面的锚点会被当成正文,整条不给。
+  assert.equal(
+    section(["**[P1] t**", "**model-a**", "**问题**:x", "**建议**:```md\n\n**问题**:y", "<!-- multireviewer:0 -->"], [
+      { model: "model-a", description: "x" },
+    ]),
+    undefined,
+  );
+  // 正文里出现 `**模型**` 形状的段落(不在围栏里):多拆出一段,与归属对不上,整条不给。
+  assert.equal(
+    section(["**[P1] t**", "**model-a**", "**问题**:x", "**建议**:见下", "**model-a**", "**问题**:y"], [
+      { model: "model-a", description: "x" },
+    ]),
+    undefined,
+  );
   // 正文里有一行像标签:拆出来的字段拼不回原文,整条不给。
   assert.equal(
-    section(["**[P0] t**", "**model-a**", "**问题**:x", "**建议**:先校验。", "**问题**:又一段"]),
+    section(["**[P0] t**", "**model-a**", "**问题**:x", "**建议**:先校验。", "**问题**:又一段"], [
+      { model: "model-a", description: "x" },
+    ]),
     undefined,
   );
   // 模型标题后不是问题标签、结尾之后还有正文:挂不上的段落,整条不给。
   assert.equal(section(["**[P0] t**", "**model-a**", "随便一段"]), undefined);
   assert.equal(
-    section(["**[P0] t**", "**model-a**", "**问题**:x", "<!-- multireviewer:0 -->", "多出来的"]),
+    section(["**[P0] t**", "**model-a**", "**问题**:x", "<!-- multireviewer:0 -->", "多出来的"], [
+      { model: "model-a", description: "x" },
+    ]),
     undefined,
   );
-  // 不在已知模型里的粗体行不是模型标题:它成了正文,后面那个问题标签就把字段盖掉了,拼不回原文,整条不给。
+  // 段数或表述与归属对不上(评论里少一段、多一段、问题表述不同)整条不给。
   assert.equal(
-    section(["**[P0] t**", "**model-a**", "**问题**:x", "**model-b**", "**问题**:y"]),
+    section(["**[P0] t**", "**model-a**", "**问题**:x"], [
+      { model: "model-a", description: "x" },
+      { model: "model-b", description: "y" },
+    ]),
+    undefined,
+  );
+  assert.equal(
+    section(["**[P0] t**", "**model-a**", "**问题**:x"], [{ model: "model-a", description: "改过的" }]),
     undefined,
   );
 });
