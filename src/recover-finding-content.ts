@@ -74,7 +74,7 @@ function render(plan: RecoveryPlan): string {
   );
   for (const fill of plan.fills) {
     lines.push(
-      `  补回 finding ${fill.findingId} #${fill.position} ${fill.model} ${fill.file}:${fill.line}(第 ${fill.runId} 轮)← ${SOURCE_LABEL[fill.source]}`,
+      `  补回 finding ${fill.findingId} #${fill.position} ${fill.model} ${fill.file}:${fill.line}(第 ${fill.runId} 轮)← ${SOURCE_LABEL[fill.source]}(${fill.evidence})`,
     );
   }
   for (const skip of plan.skips) {
@@ -84,14 +84,26 @@ function render(plan: RecoveryPlan): string {
   }
   const inserted = plan.carriedInserts.reduce((n, insert) => n + insert.rows.length, 0);
   lines.push(
-    `延续承接的历史说法:${plan.carriedInserts.length} 条 Finding 补进 ${inserted} 段,已有的补齐 ${plan.carriedFills.length} 段`,
+    `延续承接的历史说法:${plan.carriedInserts.length} 条 Finding 补进 ${inserted} 段,已有的补齐 ${plan.carriedFills.length} 段,跳过 ${plan.carriedSkips.length} 段`,
   );
   for (const insert of plan.carriedInserts) {
     lines.push(
-      `  finding ${insert.findingId}(第 ${insert.runId} 轮)← ${insert.rows
+      `  finding ${insert.findingId}(第 ${insert.runId} 轮)← 抄自 finding ${insert.predecessorId}:${insert.rows
         .map((row) => `${row.model}@第 ${row.runId} 轮`)
         .join("、")}`,
     );
+  }
+  for (const fill of plan.carriedFills) {
+    lines.push(`  补齐 finding ${fill.findingId} 第 ${fill.position} 段 ← 上一处 finding ${fill.predecessorId}`);
+  }
+  for (const skip of plan.carriedSkips) {
+    lines.push(
+      `  跳过 finding ${skip.findingId} 第 ${skip.position} 段 ${skip.model}@第 ${skip.runId} 轮:${skip.reason}`,
+    );
+  }
+  lines.push(`历史说法整份恢复不了的 Finding ${plan.carriedUnrecoverable.length} 条`);
+  for (const entry of plan.carriedUnrecoverable) {
+    lines.push(`  finding ${entry.findingId}(第 ${entry.runId} 轮):${entry.reason}`);
   }
   return lines.join("\n");
 }

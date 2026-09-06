@@ -282,8 +282,9 @@ export function verdictReviewer(
   verdict: ReviewVerdict,
   findings: readonly ScriptedFinding[] = [],
   line?: number,
+  extra?: Parameters<typeof scriptedReviewer>[2],
 ): ReturnType<typeof scriptedReviewer> {
-  const scripted = scriptedReviewer(model, findings);
+  const scripted = scriptedReviewer(model, findings, extra);
   return {
     model,
     calls: scripted.calls,
