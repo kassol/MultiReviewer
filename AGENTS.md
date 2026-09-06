@@ -8,7 +8,7 @@ MultiReviewer:基于真实 Coding Agent 的多模型并行 PR 智能审查工具
 
 ## 技术栈
 
-TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内置的 `node:test`。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004。取证子代理用 Pi 官方注册表包 `pi-subagents`(MIT,ADR 0021):它以普通运行时依赖的形态 vendor 进镜像(`pnpm install --prod` 那一层就装好了,运行时不联网装包),由 Reviewer 子进程铺进会话的临时 agentDir;前台取证子会话跑在 Reviewer 子进程内(pi-subagents 0.65 起,ADR 0021 附记),不另起进程。当前钉在 Pi 0.85.0 与 pi-subagents 0.65.1(issue #262),两者要一起升:Pi 0.85.0 的根入口引用 `@earendil-works/pi-server` 却没声明它,由 pi-subagents 0.65.1 的依赖闭包补齐。运行时第三方依赖只有这两个加上 Pi 工具 schema 用的 `typebox`,共三个。持久化用 SQLite。管理面板用 React 19、Radix Themes 与 Tailwind v4 构建。包管理用 pnpm。
+TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内置的 `node:test`。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004。取证子代理用 Pi 官方注册表包 `pi-subagents`(MIT,ADR 0021):它以普通运行时依赖的形态 vendor 进镜像(`pnpm install --prod` 那一层就装好了,运行时不联网装包),由 Reviewer 子进程铺进会话的临时 agentDir;前台取证子会话跑在 Reviewer 子进程内(pi-subagents 0.65 起,ADR 0021 附记),不另起进程。当前钉在 Pi 0.85.1 与 pi-subagents 0.65.1(issue #265):`@earendil-works/pi-server` 不是本项目的直接依赖,0.85.1 的根入口不引用它,它只随 pi-subagents 装进来。运行时第三方依赖只有这两个加上 Pi 工具 schema 用的 `typebox`,共三个。持久化用 SQLite。管理面板用 React 19、Radix Themes 与 Tailwind v4 构建。包管理用 pnpm。
 
 ## 目录索引
 
@@ -153,6 +153,8 @@ Issue 与 spec 存放于本仓库的 GitHub Issues,通过 `gh` CLI 读写。见 
 Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.md`。
 
 ## 变更日志
+
+- 2026-09-06: 落地 issue #265。**Pi 升到 0.85.1,自定义模型服务取得到 gpt-6-astra 的目录字段**:0.85.0 的内置目录与 pi.dev 远程目录都没有 GPT-6 Astra 这一行,sub2-openai 这类自定义服务发现它时可信字段整片回落到运行基线(不声明推理、上下文 128k、输出 16k,思考档位只剩 off),审查因此提前压缩、长报告被截断;0.85.1 收录之后,同一条 pi-catalog 路径取到推理 true、上下文 272,000、输出 128,000 与 low / medium / high / xhigh / max 五档,面板与模型组合选得到档位。pi-subagents 仍是 0.65.1,源码一行未改。0.85.1 另修掉了 0.85.0 根入口引用未声明 `@earendil-works/pi-server` 的问题,技术栈那段的说法随之改成事实。`pnpm-workspace.yaml` 的发布年龄豁免改钉这次实际装上的精确版本。细节见 `src/AGENTS.md`。
 
 - 2026-09-05: issue #262 的线上验收修复。**自定义模型服务不继承 `supportsMidConvoEffort`**:Pi 0.85.0 目录给 Claude 新型号打上这一位,`anthropic-messages` 据此往请求里插 `output_config`,自定义地址后面的兼容网关(如 sub2 代理)回 400、整轮失败;发现与注册运行时两处对自定义服务剥掉它,目录其余 compat 照抄,内置官方地址不受影响。细节见 `src/AGENTS.md`。
 

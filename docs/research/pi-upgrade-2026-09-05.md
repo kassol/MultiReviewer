@@ -2,6 +2,16 @@
 
 日期：2026-09-05。代码基线：`7c558f83e04b5c74a92373a5a7d7412e8e5d78cc`。范围是当前仓库实际使用的 SDK、模型目录和取证子代理链路。结论基于 npm Registry、上游 tag/changelog/源码及本仓库源码；未调用收费模型，也未操作部署实例。
 
+## 2026-09-06 附记：0.85.1
+
+Pi 0.85.1 发布于 2026-09-05 12:17:19 UTC，是当前 npm `latest`，本仓库已随 issue #265 升上去，pi-subagents 仍是 0.65.1。[Pi Registry](https://registry.npmjs.org/%40earendil-works%2Fpi-coding-agent)。两点与本篇正文相关。
+
+一、下文「只升级 Pi 会在 SDK 根导入阶段失败」只对 0.85.0 成立。0.85.1 修掉了根入口引用未声明的 `@earendil-works/pi-server`：本地解包已安装的 0.85.1，grep 其 `dist/index.js` 零命中该包名；同一份安装里 `node --input-type=module -e 'await import("@earendil-works/pi-coding-agent")'` 通过。`pi-server` 因此只是 pi-subagents 的依赖，不再是 Pi 根导入的前提。
+
+二、0.85.1 的 openai 目录收录了 GPT-6 Astra。字段读自本地安装的 0.85.1 内置目录（`loadPiProviderCatalog("openai", { allowNetwork: false })`），`gpt-6-astra` 一行：`reasoning` true、`input` text + image、`contextWindow` 272,000、`maxTokens` 128,000、`thinkingLevelMap` 为 `{ off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" }`、`compat` 是 `supportsStrictMode` / `supportsOpenAIGrammarTools` / `supportsAdditionalTools` / `supportsToolSearch` / `supportsExplicitPromptCacheMode` 五项全 true，不含 `supportsMidConvoEffort`。0.85.0 的目录里没有这一行，自定义模型服务发现它时可信字段整片回落到运行基线。升级后走既有的 pi-catalog 路径就能取到这些字段，支持的思考档位是 low / medium / high / xhigh / max。
+
+0.85.1 其余变更是 GPT-5.6+ Responses 模型的长缓存请求参数与 TUI 修复，不涉及本项目的 Reviewer API。[Pi 0.85.1 changelog](https://github.com/earendil-works/pi/blob/v0.85.1/packages/coding-agent/CHANGELOG.md)。升级后 `pnpm check` 全绿，既有断言一条未改。
+
 ## 结论
 
 可以跟进最新版，但当前不能把 `@earendil-works/pi-coding-agent` 直接从 0.84.4 升到 0.85.0。0.85.0 是 npm `latest` 指向的稳定版本，发布于 2026-09-04 10:18:05 UTC；`pi-subagents` 的稳定最新版是 0.65.1，发布于同日 23:07:53 UTC。两者都没有 prerelease dist-tag。[Pi Registry](https://registry.npmjs.org/%40earendil-works%2Fpi-coding-agent)；[pi-subagents Registry](https://registry.npmjs.org/pi-subagents)。当前仓库声明 Pi `^0.84.4`、pi-subagents 固定 `0.59.0`（`package.json:19-22`），锁文件仍固定在这两个旧版本。

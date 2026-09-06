@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
+import { supportedThinkingLevels } from "../src/config.ts";
 import { piBuiltinProviderTargets } from "../src/reviewer/catalog.ts";
 import {
   MODEL_RUNTIME_BASELINE,
@@ -157,6 +158,84 @@ test("OpenAI-compatible 发现保留服务接口名称并按厂商用 Pi 目录�
       assert.equal(synthesized.value.runtime.contextWindow, 272_000);
       assert.equal(synthesized.value.runtime.sources.contextWindow, "trusted");
     }
+  } finally {
+    stub.restore();
+  }
+});
+
+test("Pi 0.85.1 目录收录 gpt-6-astra:自定义服务取到 272k 上下文与五档思考", async () => {
+  // 0.85.0 的内置与远程目录都没有这一行,可信字段整片回落到运行基线(不推理、128k / 16k,
+  // 档位只剩 off);0.85.1 收录后走同一条 pi-catalog 路径补齐(issue #265)。夹具不给
+  // display_name,名字也从目录取。
+  const stub = stubFetch({
+    "GET /v1/models": {
+      body: {
+        object: "list",
+        data: [{ id: "gpt-6-astra", object: "model", owned_by: "openai", type: "model" }],
+      },
+    },
+  });
+  const candidate = {
+    kind: "custom",
+    provider: "sub2-openai",
+    baseUrl: "https://gateway.example.test/v1",
+    api: "openai-completions",
+    credential: "candidate-secret-must-not-leak",
+  } as const;
+  try {
+    const result = await discoverModels(candidate, { allowNetwork: false });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(result.models, [{
+      identity: "sub2-openai:gpt-6-astra",
+      provider: "sub2-openai",
+      id: "gpt-6-astra",
+      fields: {
+        name: "GPT-6 Astra",
+        api: "openai-completions",
+        baseUrl: "https://gateway.example.test/v1",
+        input: ["text", "image"],
+        reasoning: true,
+        contextWindow: 272_000,
+        maxTokens: 128_000,
+        thinkingLevelMap: { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
+        compat: {
+          supportsStrictMode: true,
+          supportsOpenAIGrammarTools: true,
+          supportsAdditionalTools: true,
+          supportsToolSearch: true,
+          supportsExplicitPromptCacheMode: true,
+        },
+      },
+      fieldSources: {
+        name: "pi-catalog",
+        api: "service-target",
+        baseUrl: "service-target",
+        input: "pi-catalog",
+        reasoning: "pi-catalog",
+        contextWindow: "pi-catalog",
+        maxTokens: "pi-catalog",
+        thinkingLevelMap: "pi-catalog",
+        compat: "pi-catalog",
+      },
+    }]);
+    assert.equal(
+      Object.hasOwn(result.models[0]!.fields.compat ?? {}, "supportsMidConvoEffort"),
+      false,
+      "自定义服务照旧不继承 supportsMidConvoEffort",
+    );
+    const synthesized = synthesizeRuntimeModel(candidate, result.models[0]!);
+    assert.equal(synthesized.ok, true);
+    if (!synthesized.ok) return;
+    assert.equal(synthesized.value.runtime.contextWindow, 272_000);
+    assert.equal(synthesized.value.runtime.sources.contextWindow, "trusted");
+    assert.equal(synthesized.value.runtime.maxTokens, 128_000);
+    assert.equal(synthesized.value.runtime.sources.maxTokens, "trusted");
+    assert.deepEqual(
+      supportedThinkingLevels(synthesized.value.runtime),
+      ["low", "medium", "high", "xhigh", "max"],
+      "off 与 minimal 映射为 null,两档都不出现",
+    );
   } finally {
     stub.restore();
   }
