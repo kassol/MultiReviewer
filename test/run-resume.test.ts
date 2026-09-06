@@ -130,6 +130,30 @@ test("不中断跑完的一轮与续跑完成的一轮,Finding、用量与评论
   );
 });
 
+test("续跑收尾落库的归属带着各批报出的影响与建议(issue #266)", async () => {
+  const fixture = setup(cleanups);
+  const said = { impact: "首个新增行会被跳过。", suggestion: "从第 0 行开始遍历。" };
+
+  await assert.rejects(
+    () => runReview(EVENT, deps(fixture, [batchReviewer("model-a", { throwOnCall: 3, said })])),
+    /进程被重启了/,
+  );
+  const [run] = query(fixture.db.path, "SELECT id FROM review_run");
+  await runReview(
+    EVENT,
+    deps(fixture, [batchReviewer("model-a", { said })], { resumeRunId: Number(run?.["id"]) }),
+  );
+
+  // 三批的归属都带着两段:前两批是重启前落的中间态,第三批是续跑报的。
+  assert.deepEqual(
+    query(
+      fixture.db.path,
+      "SELECT model, impact, suggestion FROM finding_attribution ORDER BY finding_id",
+    ).map((row) => [row["model"], row["impact"], row["suggestion"]]),
+    FILES.map(() => ["model-a", said.impact, said.suggestion]),
+  );
+});
+
 test("中断期间处置了一条历史,续跑批次收到的仍是开跑时的快照", async () => {
   const fixture = setup(cleanups);
 

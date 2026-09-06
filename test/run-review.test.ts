@@ -231,6 +231,101 @@ test("影响与建议为空时整段消失,不留空标签", async () => {
   assert.doesNotMatch(body, /\*\*影响\*\*|\*\*建议\*\*/);
 });
 
+test("新 Finding 的影响与建议按各模型归属落库,面板投影读得回(issue #266)", async () => {
+  const { cache, db, forge } = setup(6);
+  const finding = {
+    file: "src/calc.ts",
+    line: 6,
+    severity: "P0" as const,
+    category: "bug" as const,
+    title: "sub 多减了 1",
+    description: "sub() 的返回值比正确结果小 1。",
+    impact: "所有调用方拿到的差值都错。",
+    suggestion: "去掉多余的 - 1。",
+  };
+  // 另一个模型报同一处:影响留空、建议不同,两段各归各的,不被代表段盖掉。
+  const other = { ...finding, description: "减法结果不对。", impact: "", suggestion: "改成 a - b。" };
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    {
+      forge: forge.forge,
+      reviewers: [scriptedReviewer("model-a", [finding]), scriptedReviewer("model-b", [other])],
+      cacheDir: cache.dir,
+      dbPath: db.path,
+    },
+  );
+
+  const store = openStore(db.path);
+  const [run] = store.listRuns({ limit: 1 });
+  store.close();
+  assert.deepEqual(run!.findings[0]!.attributions, [
+    {
+      model: "model-a",
+      severity: "P0",
+      category: "bug",
+      description: "sub() 的返回值比正确结果小 1。",
+      impact: "所有调用方拿到的差值都错。",
+      suggestion: "去掉多余的 - 1。",
+    },
+    {
+      model: "model-b",
+      severity: "P0",
+      category: "bug",
+      description: "减法结果不对。",
+      impact: "",
+      suggestion: "改成 a - b。",
+    },
+  ]);
+});
+
+test("同一模型在同一合并组里的多条归属,影响与建议各对各的(issue #266)", async () => {
+  const { cache, db, forge } = setup(6);
+  const at6 = { file: "src/calc.ts", line: 6, category: "bug" as const };
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    {
+      forge: forge.forge,
+      reviewers: [
+        scriptedReviewer("model-a", [
+          {
+            ...at6,
+            severity: "P0",
+            title: "sub 多减了 1",
+            description: "sub() 的返回值比正确结果小 1。",
+            impact: "所有调用方拿到的差值都错。",
+            suggestion: "去掉多余的 - 1。",
+          },
+          // 同一行的另一个问题:同行硬证据把它并进同一组,归属仍各留各的两段。
+          {
+            ...at6,
+            severity: "P1",
+            title: "缺少参数校验",
+            description: "非数字入参不被拦截。",
+            impact: "",
+            suggestion: "入口加 typeof 校验。",
+          },
+        ]),
+      ],
+      cacheDir: cache.dir,
+      dbPath: db.path,
+    },
+  );
+
+  const store = openStore(db.path);
+  const [run] = store.listRuns({ limit: 1 });
+  store.close();
+  assert.equal(run!.findings.length, 1);
+  assert.deepEqual(
+    run!.findings[0]!.attributions.map((said) => [said.description, said.impact, said.suggestion]),
+    [
+      ["sub() 的返回值比正确结果小 1。", "所有调用方拿到的差值都错。", "去掉多余的 - 1。"],
+      ["非数字入参不被拦截。", "", "入口加 typeof 校验。"],
+    ],
+  );
+});
+
 /** 行号相差 4 行,超出去重的行距容差,三条各自成一条。第 11 行落在 diff 之外。 */
 function at(line: number, severity: "P0" | "P1" | "P2", description: string) {
   return { file: "src/calc.ts", line, severity, category: "bug" as const, description };

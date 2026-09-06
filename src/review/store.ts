@@ -197,6 +197,10 @@ CREATE TABLE IF NOT EXISTS finding_attribution (
   severity TEXT NOT NULL,
   category TEXT NOT NULL,
   description TEXT NOT NULL,
+  -- 这个模型自己给的影响与建议(issue #266)。空串即模型没给;NULL 只出现在升级前落的
+  -- 行上,意思是「当时没存」,恢复操作据此认出缺失的那些。
+  impact TEXT,
+  suggestion TEXT,
   PRIMARY KEY (finding_id, position)
 );
 CREATE INDEX IF NOT EXISTS finding_attribution_by_model ON finding_attribution(model);
@@ -767,6 +771,10 @@ const ADD_COLUMNS = [
   // api 两列上);升级前的内置版本也是 NULL,读回即「旧版本」,只有经指纹证明的那一个
   // 目标可以延续,证明不了就待重新验证。
   "ALTER TABLE model_service ADD COLUMN targets_json TEXT",
+  // 逐归属的影响与建议(issue #266)。旧行是 NULL,与新落的空串分开:NULL 是「升级前
+  // 没存」,恢复操作只补这一档;空串是「模型没给」,照原样呈现为没有这一段。
+  "ALTER TABLE finding_attribution ADD COLUMN impact TEXT",
+  "ALTER TABLE finding_attribution ADD COLUMN suggestion TEXT",
 ];
 
 /**
@@ -1014,6 +1022,22 @@ export type FindingAttributionRecord = {
   severity: Severity;
   category: Category;
   description: string;
+  /** 这个模型自己给的影响与建议(issue #266)。模型没给即空串,照样落库。 */
+  impact: string;
+  suggestion: string;
+};
+
+/**
+ * 读回来的一个归属(issue #266):面板按它逐模型展示问题、影响与建议。`impact` 与
+ * `suggestion` 为 null 即升级前落的行,当时没存;空串是模型没给。
+ */
+export type RecordedFindingAttribution = {
+  model: string;
+  severity: Severity;
+  category: Category;
+  description: string;
+  impact: string | null;
+  suggestion: string | null;
 };
 
 /**
@@ -1638,6 +1662,8 @@ export type RunListItem = {
     id: number;
     /** 报出它的全部模型,按首报先后(ADR 0015)。 */
     models: string[];
+    /** 每个归属自己的说法,按首报先后(issue #266);同一模型的多条各占一项。 */
+    attributions: RecordedFindingAttribution[];
     file: string;
     line: number;
     severity: Severity;
@@ -1695,6 +1721,8 @@ export type StageSummaryFinding = {
   description: string;
   /** 报出它的全部模型,按首报先后(ADR 0015)。 */
   models: string[];
+  /** 每个归属自己的说法,按首报先后(issue #266),取最新那一轮落的那几条。 */
+  attributions: RecordedFindingAttribution[];
   disposition: Exclude<Disposition, "continued">;
   placement: FindingPlacement;
   commentId: string | null;
@@ -2576,6 +2604,18 @@ function usageColumns(usage: ReviewerUsage | undefined): (number | null)[] {
   ];
 }
 
+/** 一行 finding_attribution 读成面板要的归属(issue #266)。两段的 NULL 原样透出。 */
+function recordedAttribution(row: Record<string, unknown>): RecordedFindingAttribution {
+  return {
+    model: String(row["model"]),
+    severity: String(row["severity"]) as Severity,
+    category: String(row["category"]) as Category,
+    description: String(row["description"]),
+    impact: row["impact"] === null ? null : String(row["impact"]),
+    suggestion: row["suggestion"] === null ? null : String(row["suggestion"]),
+  };
+}
+
 function recordedUsage(row: Record<string, unknown>): ReviewerUsage | undefined {
   if (row["total_tokens"] === null || row["total_tokens"] === undefined) return undefined;
   return {
@@ -2812,10 +2852,13 @@ export function openStore(dbPath: string): Store {
         severity TEXT NOT NULL,
         category TEXT NOT NULL,
         description TEXT NOT NULL,
+        impact TEXT,
+        suggestion TEXT,
         PRIMARY KEY (finding_id, position)
       );
       INSERT INTO finding_attribution_rebuilt
-        SELECT finding_id, position, model, severity, category, description FROM finding_attribution;
+        SELECT finding_id, position, model, severity, category, description, impact, suggestion
+          FROM finding_attribution;
       DROP TABLE finding_attribution;
       ALTER TABLE finding_attribution_rebuilt RENAME TO finding_attribution;
       CREATE INDEX IF NOT EXISTS finding_attribution_by_model ON finding_attribution(model);
@@ -4998,8 +5041,8 @@ export function openStore(dbPath: string): Store {
         );
         const insertAttribution = db.prepare(
           `INSERT INTO finding_attribution
-             (finding_id, position, model, severity, category, description)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+             (finding_id, position, model, severity, category, description, impact, suggestion)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const finding of result.findings) {
           const inserted = insertFinding.run(
@@ -5032,6 +5075,8 @@ export function openStore(dbPath: string): Store {
               said.severity,
               said.category,
               said.description,
+              said.impact,
+              said.suggestion,
             );
           }
         }
@@ -5167,7 +5212,9 @@ export function openStore(dbPath: string): Store {
         .all(...params);
       const attributionRows = db
         .prepare(
-          `SELECT a.finding_id AS finding_id, a.model AS model
+          `SELECT a.finding_id AS finding_id, a.model AS model, a.severity AS severity,
+                  a.category AS category, a.description AS description,
+                  a.impact AS impact, a.suggestion AS suggestion
              FROM finding_attribution a
              JOIN finding f ON f.id = a.finding_id
              JOIN review_run run ON f.run_id = run.id
@@ -5186,6 +5233,7 @@ export function openStore(dbPath: string): Store {
         .all(...params);
 
       const models = new Map<number, string[]>();
+      const attributions = new Map<number, RecordedFindingAttribution[]>();
       for (const row of attributionRows) {
         const id = Number(row["finding_id"]);
         const list = models.get(id) ?? [];
@@ -5193,6 +5241,9 @@ export function openStore(dbPath: string): Store {
         // 同一模型的多条归属只算一枚(ADR 0015 修订),口径同轮次列表那份。
         if (!list.includes(model)) list.push(model);
         models.set(id, list);
+        const said = attributions.get(id) ?? [];
+        said.push(recordedAttribution(row));
+        attributions.set(id, said);
       }
 
       type StageRow = {
@@ -5271,6 +5322,7 @@ export function openStore(dbPath: string): Store {
             category: String(row["category"]) as Category,
             description: String(row["description"]),
             models: models.get(latest.id) ?? [],
+            attributions: attributions.get(latest.id) ?? [],
             disposition: latest.disposition as Exclude<Disposition, "continued">,
             placement: String(row["placement"]) as FindingPlacement,
             commentId: row["comment_id"] === null ? null : String(row["comment_id"]),
@@ -5731,7 +5783,9 @@ export function openStore(dbPath: string): Store {
         .all(...ids);
       const byAttribution = db
         .prepare(
-          `SELECT a.finding_id AS finding_id, a.model AS model
+          `SELECT a.finding_id AS finding_id, a.model AS model, a.severity AS severity,
+                  a.category AS category, a.description AS description,
+                  a.impact AS impact, a.suggestion AS suggestion
              FROM finding_attribution a
              JOIN finding f ON f.id = a.finding_id
             WHERE f.run_id IN (${marks}) ORDER BY a.finding_id, a.position`,
@@ -5824,6 +5878,7 @@ export function openStore(dbPath: string): Store {
         reviewerPins.set(runId, list);
       }
       const attributionModels = new Map<number, string[]>();
+      const attributions = new Map<number, RecordedFindingAttribution[]>();
       for (const row of byAttribution) {
         const findingId = Number(row["finding_id"]);
         const list = attributionModels.get(findingId) ?? [];
@@ -5832,6 +5887,9 @@ export function openStore(dbPath: string): Store {
         // 「哪些模型报出它」,不是有几段归属。
         if (!list.includes(model)) list.push(model);
         attributionModels.set(findingId, list);
+        const said = attributions.get(findingId) ?? [];
+        said.push(recordedAttribution(row));
+        attributions.set(findingId, said);
       }
       const findings = new Map<number, RunListItem["findings"]>();
       for (const row of byFinding) {
@@ -5840,6 +5898,7 @@ export function openStore(dbPath: string): Store {
         list.push({
           id: Number(row["id"]),
           models: attributionModels.get(Number(row["id"])) ?? [],
+          attributions: attributions.get(Number(row["id"])) ?? [],
           file: String(row["file"]),
           line: Number(row["line"]),
           severity: String(row["severity"]) as Severity,

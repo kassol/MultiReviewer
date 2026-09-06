@@ -91,7 +91,14 @@ function seedRun(
       category: "bug" as const,
       description: "示例",
       attributions: [
-        { model: "model-a", severity: "P1" as const, category: "bug" as const, description: "示例" },
+        {
+          model: "model-a",
+          severity: "P1" as const,
+          category: "bug" as const,
+          description: "示例",
+          impact: "",
+          suggestion: "",
+        },
       ],
       groupIndex: index,
       disposition: (finding.disposition ?? "unknown") as never,

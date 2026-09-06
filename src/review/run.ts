@@ -2041,6 +2041,8 @@ export async function runReview(
             severity: said.severity,
             category: said.category,
             description: said.description,
+            impact: said.impact,
+            suggestion: said.suggestion,
           })),
           groupIndex,
           disposition: dispositions[groupIndex]!,

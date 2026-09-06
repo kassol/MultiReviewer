@@ -42,6 +42,8 @@ function finding(
       severity: "P0" as const,
       category: "bug",
       description: "有毛病",
+      impact: "",
+      suggestion: "",
     })),
     groupIndex: 0,
     disposition: "unknown",

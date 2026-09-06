@@ -72,7 +72,7 @@ export function query(dbPath: string, sql: string): Record<string, unknown>[] {
   }
 }
 
-function findingAt(file: string): Omit<Finding, "model"> {
+function findingAt(file: string, said?: { impact: string; suggestion: string }): Omit<Finding, "model"> {
   return {
     file,
     line: 4,
@@ -80,19 +80,24 @@ function findingAt(file: string): Omit<Finding, "model"> {
     category: "bug",
     title: `${file} 有问题`,
     description: `${file} 的第一处新增行有问题`,
-    impact: "",
-    suggestion: "",
+    impact: said?.impact ?? "",
+    suggestion: said?.suggestion ?? "",
   };
 }
 
 /**
  * 一批报一条 Finding 的 Reviewer 桩。`throwOnCall` 给了就在第几次调用时抛——用它模拟
  * 服务在那一批上被重启:前面的批次已经落库,这一轮停在没有结束时间的状态。`onBatch`
- * 在每一批开跑时执行,用它模拟批次跑到一半收到停机信号。
+ * 在每一批开跑时执行,用它模拟批次跑到一半收到停机信号。`said` 给每条 Finding 的影响
+ * 与建议(issue #266),不给即两段为空。
  */
 export function batchReviewer(
   model: string,
-  options: { throwOnCall?: number; onBatch?: (call: number) => void } = {},
+  options: {
+    throwOnCall?: number;
+    onBatch?: (call: number) => void;
+    said?: { impact: string; suggestion: string };
+  } = {},
 ): Reviewer & { calls: { range: ReviewRange; history: readonly HistoryFinding[] }[] } {
   const calls: { range: ReviewRange; history: readonly HistoryFinding[] }[] = [];
   return {
@@ -104,7 +109,7 @@ export function batchReviewer(
       if (options.throwOnCall === calls.length) throw new Error("进程被重启了");
       return {
         model,
-        findings: range.files.map((file) => ({ ...findingAt(file), model })),
+        findings: range.files.map((file) => ({ ...findingAt(file, options.said), model })),
         anomalies: [],
         rejectedToolCalls: 0,
         anchorRejections: 0,

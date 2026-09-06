@@ -95,6 +95,36 @@ function findingDisposed(finding: RunFinding): boolean {
   return finding.disposition === "resolved" || finding.disposition === "fixed";
 }
 
+/** 影响或建议有内容:null(升级前没存)与空串(模型没给)都是没有这一段。 */
+function hasText(value: string | null): boolean {
+  return value !== null && value !== "";
+}
+
+/**
+ * 一个归属的影响与建议(issue #266):谁说的挂谁的名下,不并进代表段。那条归属自己的
+ * 问题表述与代表段不同时一并带出——同一处几个模型各说各的,影响与建议要对得上它自己
+ * 的那句问题。两段都没有的归属整块不出现。
+ */
+function AttributionSaid({
+  said,
+  representative,
+}: {
+  said: RunFinding["attributions"][number];
+  representative: string;
+}) {
+  if (!hasText(said.impact) && !hasText(said.suggestion)) return null;
+  return (
+    <div className="flex flex-col gap-0.5 text-sm text-text-secondary">
+      <span className="min-w-0 break-all font-mono">{said.model}</span>
+      {said.description === representative ? null : (
+        <p className="break-words">问题：{said.description}</p>
+      )}
+      {hasText(said.impact) ? <p className="break-words">影响：{said.impact}</p> : null}
+      {hasText(said.suggestion) ? <p className="break-words">建议：{said.suggestion}</p> : null}
+    </div>
+  );
+}
+
 /**
  * 行作者(CONTEXT.md):这一行最后一次改动的 git author 与那次提交,「姓名 · 短 sha ·
  * 日期」一行。同名作者靠邮箱区分,邮箱放 Tooltip;判不出来时写明「无法追溯」,免得空
@@ -220,6 +250,14 @@ export function FindingRow({
       >
         {finding.description}
       </p>
+
+      {finding.attributions.map((said, index) => (
+        <AttributionSaid
+          key={`${said.model}-${index}`}
+          said={said}
+          representative={finding.description}
+        />
+      ))}
 
       <LineAuthorLine lineAuthor={finding.lineAuthor} />
 

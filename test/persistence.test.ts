@@ -602,6 +602,16 @@ test("时间流带上每条 Finding 的 Forge 评论 id 与链接", async () => 
     {
       id: run.findings[0]!.id,
       models: ["model-a"],
+      attributions: [
+        {
+          model: "model-a",
+          severity: FINDING.severity,
+          category: FINDING.category,
+          description: FINDING.description,
+          impact: "",
+          suggestion: "",
+        },
+      ],
       file: FINDING.file,
       line: FINDING.line,
       severity: FINDING.severity,
@@ -794,6 +804,7 @@ test("升级前落的 finding 行读得出来,评论 id 与链接为空", () => 
     {
       id: run.findings[0]!.id,
       models: [],
+      attributions: [],
       file: "src/calc.js",
       line: 6,
       severity: "P0",

@@ -99,6 +99,8 @@ function seedRun(
           severity: "P1" as const,
           category: "bug" as const,
           description: "示例",
+          impact: "",
+          suggestion: "",
         })),
         groupIndex: group,
         disposition: (first.disposition ?? "unknown") as never,

@@ -89,6 +89,18 @@ export type RunFinding = {
   id: number;
   /** 报出它的全部模型,按首报先后(ADR 0015)。 */
   models: string[];
+  /**
+   * 每个归属自己的说法,按首报先后(issue #266);同一模型的多条各占一项。`impact` /
+   * `suggestion` 为 null 即升级前落的行,当时没存;空串是模型没给。两档都不展示那一段。
+   */
+  attributions: {
+    model: string;
+    severity: "P0" | "P1" | "P2";
+    category: string;
+    description: string;
+    impact: string | null;
+    suggestion: string | null;
+  }[];
   file: string;
   line: number;
   severity: "P0" | "P1" | "P2";

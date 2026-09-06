@@ -224,7 +224,9 @@ function seedRun(
         severity: "P1",
         category: "bug",
         description: "示例",
-        attributions: [{ model, severity: "P1", category: "bug", description: "示例" }],
+        attributions: [
+          { model, severity: "P1", category: "bug", description: "示例", impact: "", suggestion: "" },
+        ],
         groupIndex: 0,
         disposition: "resolved",
         placement: "inline",

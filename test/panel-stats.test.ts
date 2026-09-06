@@ -75,8 +75,22 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
         description: "有毛病",
         // 两个模型报同一处:分母只加一次,参与条数各加一(ADR 0015)。
         attributions: [
-          { model: "model-a", severity: "P0", category: "bug", description: "有毛病" },
-          { model: "model-b", severity: "P1", category: "bug", description: "这里也有毛病" },
+          {
+            model: "model-a",
+            severity: "P0",
+            category: "bug",
+            description: "有毛病",
+            impact: "",
+            suggestion: "",
+          },
+          {
+            model: "model-b",
+            severity: "P1",
+            category: "bug",
+            description: "这里也有毛病",
+            impact: "",
+            suggestion: "",
+          },
         ],
         groupIndex: 0,
         disposition: "resolved",
@@ -97,6 +111,8 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
             severity: "P1",
             category: "bug",
             description: "另一处已经改掉了",
+            impact: "",
+            suggestion: "",
           },
         ],
         groupIndex: 1,
