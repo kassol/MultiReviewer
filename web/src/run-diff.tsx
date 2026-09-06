@@ -126,6 +126,37 @@ function AttributionSaid({
 }
 
 /**
+ * 延续承接来的一段历史说法(issue #267):头一行写明是哪个模型在哪个 head 上说的、尚未
+ * 针对新代码重新验证,再是它自己的问题(与代表段不同时)、影响与建议。它不是本轮的归属,
+ * 不署给给出新位置的模型;两段都没有内容的整块不出现。
+ */
+function CarriedSaid({
+  said,
+  representative,
+}: {
+  said: RunFinding["carried"][number];
+  representative: string;
+}) {
+  if (!hasText(said.impact) && !hasText(said.suggestion)) return null;
+  return (
+    <div className="flex flex-col gap-0.5 text-sm text-text-secondary">
+      <p className="flex flex-wrap items-center gap-1.5">
+        <span>沿用</span>
+        <span className="min-w-0 break-all font-mono">{said.model}</span>
+        <span>在</span>
+        <CommitChip sha={said.headSha} />
+        <span>上的说法 · 尚未针对新代码重新验证</span>
+      </p>
+      {said.description === representative ? null : (
+        <p className="break-words">问题：{said.description}</p>
+      )}
+      {hasText(said.impact) ? <p className="break-words">影响：{said.impact}</p> : null}
+      {hasText(said.suggestion) ? <p className="break-words">建议：{said.suggestion}</p> : null}
+    </div>
+  );
+}
+
+/**
  * 行作者(CONTEXT.md):这一行最后一次改动的 git author 与那次提交,「姓名 · 短 sha ·
  * 日期」一行。同名作者靠邮箱区分,邮箱放 Tooltip;判不出来时写明「无法追溯」,免得空
  * 白被读成页面坏了。短 sha 不做链接:本票不引入 Forge 的 commit 页地址。
@@ -254,6 +285,13 @@ export function FindingRow({
       {finding.attributions.map((said, index) => (
         <AttributionSaid
           key={`${said.model}-${index}`}
+          said={said}
+          representative={finding.description}
+        />
+      ))}
+      {finding.carried.map((said, index) => (
+        <CarriedSaid
+          key={`carried-${said.runId}-${index}`}
           said={said}
           representative={finding.description}
         />

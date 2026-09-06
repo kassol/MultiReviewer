@@ -56,6 +56,23 @@ export type HistoryFinding = {
   description?: string;
 };
 
+/**
+ * 延续承接来的一段历史说法(issue #267):历史 Finding 经复核仍在、代码位置已变而本轮
+ * 没有重新报出时,合成的延续 Finding 把历史各归属的问题、影响与建议原样带过来,每段记
+ * 最初说出它的模型与那一轮(那一轮的 head 即这段建议适用的代码版本)。它不是本轮的归属
+ * ——本轮归属只有给出新位置的那个模型,统计与参与条数都不读它;连续多轮延续原样再带
+ * 一遍,出处仍是最初那一轮,不层层嵌套。`impact` / `suggestion` 为 null 即源头本身没存
+ * (升级前落的行),如实缺失,不凭空补。
+ */
+export type CarriedAttribution = {
+  model: string;
+  runId: number;
+  headSha: string;
+  description: string;
+  impact: string | null;
+  suggestion: string | null;
+};
+
 /** Reviewer 对一条历史 Finding 给出的复核结论。 */
 export type FindingVerdict = {
   /** 对应 `HistoryFinding.id`。 */

@@ -1,4 +1,5 @@
 import type {
+  CarriedAttribution,
   Category,
   Finding,
   HistoryFinding,
@@ -93,6 +94,11 @@ export type MergedFinding = {
   suggestion: string;
   /** 每个模型各自的说法,按首报先后。 */
   attributions: FindingAttribution[];
+  /**
+   * 延续承接来的历史说法(issue #267),只有按复核结论合成的延续才有。它们不是本轮的
+   * 归属,评论与面板另起一段标出处呈现。
+   */
+  carried?: CarriedAttribution[];
   /**
    * 组内首个自报了命中规则的成员给的那个标识(issue #204)。命中规则说的是「这一处问题
    * 违反了哪条规则」,与谁报出无关,因此不逐模型记,也不参与合并判定。

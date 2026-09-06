@@ -1427,6 +1427,253 @@ test("只复核时复核结论自带位置的延续照常发生", async () => {
   assert.notEqual(second, null, "只复核那一轮没有承接旧位置的那条 Finding");
 });
 
+/**
+ * 延续用例共用的夹具(issue #267):第一轮由给定的 Reviewer 在第 6 行报出,发出去的评论
+ * 喂回 Forge。`rewrite` 把 Finding 所指的那一行改写成新 head,并把上一轮新发的评论一并
+ * 喂回——延续要在它们上面发生。
+ */
+async function continuedStage(reviewers: readonly Reviewer[]) {
+  const repo = makeRepo({
+    base: { "src/calc.ts": BASE_CALC },
+    head: { "src/calc.ts": HEAD_CALC },
+  });
+  const cache = makeCacheDir();
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
+  const forge = memoryForge({
+    pullRequest: {
+      number: 7,
+      title: "示例 PR",
+      draft: false,
+      baseSha: repo.baseSha,
+      headSha: repo.headSha,
+      cloneUrl: repo.dir,
+    },
+    changedFiles: [{ path: "src/calc.ts", status: "modified" }],
+  });
+  const event = { owner: "acme", repo: "widgets", number: 7 };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
+  await runReview(event, { ...deps, reviewers });
+  let fedBack = 0;
+  let step = 1;
+  const rewrite = (): void => {
+    forge.existingComments.push(
+      ...forge.publishedComments.slice(fedBack).map((comment) => ({ ...comment, resolved: false })),
+    );
+    fedBack = forge.publishedComments.length;
+    step += 1;
+    forge.pullRequest.headSha = repo.commitToBranch("feature", {
+      "src/calc.ts": HEAD_CALC.replace("return a - b - 1;", `return a - b - ${step};`),
+    });
+  };
+  return { db, forge, event, deps, rewrite };
+}
+
+/** 库里的每一轮,按轮次先后。 */
+function runsInOrder(dbPath: string) {
+  const store = openStore(dbPath);
+  try {
+    return store.listRuns({ limit: 10 }).sort((a, b) => a.id - b.id);
+  } finally {
+    store.close();
+  }
+}
+
+const SAID_A1 = {
+  ...at(6, "P0", "sub 多减了 1"),
+  title: "sub 多减了 1",
+  impact: "所有调用方拿到的差值都错。",
+  suggestion: "去掉多余的 - 1。",
+};
+
+test("合成延续完整沿用历史各归属的影响与建议并各记出处,不改本轮归属(issue #267)", async () => {
+  // 第一轮三段归属合成一条:model-a 两段内容不同的说法,model-b 一段。
+  const stage = await continuedStage([
+    scriptedReviewer("model-a", [
+      SAID_A1,
+      {
+        ...at(6, "P1", "非数字入参不被拦截。"),
+        title: "缺少参数校验",
+        impact: "",
+        suggestion: "入口加 typeof 校验。",
+      },
+    ]),
+    scriptedReviewer("model-b", [
+      {
+        ...at(6, "P0", "减法结果不对。"),
+        title: "sub 算错",
+        impact: "余额会算错。",
+        suggestion: "改成 a - b。",
+      },
+    ]),
+  ]);
+  stage.rewrite();
+
+  // 给出新位置的是第三个模型,它自己什么都没报:合成的那条只归属它,历史三段原样带过来。
+  await runReview(stage.event, {
+    ...stage.deps,
+    reviewers: [verdictReviewer("model-c", "present", [], 6)],
+  });
+
+  const [first, second] = runsInOrder(stage.db.path);
+  assert.equal(second!.findings.length, 1);
+  const continued = second!.findings[0]!;
+  // 本轮归属只有位置复核者,两段为空:它没有对着新代码给过修法。参与统计因此不变。
+  assert.deepEqual(continued.attributions, [
+    {
+      model: "model-c",
+      severity: "P0",
+      category: "bug",
+      description: "sub 多减了 1",
+      impact: "",
+      suggestion: "",
+    },
+  ]);
+  assert.deepEqual(second!.models.map((entry) => entry.model), ["model-c"]);
+  // 历史三段各自带着原模型、来源轮次与那一轮的 head。
+  const from = { runId: first!.id, headSha: first!.headSha };
+  assert.deepEqual(continued.carried, [
+    {
+      ...from,
+      model: "model-a",
+      description: "sub 多减了 1",
+      impact: "所有调用方拿到的差值都错。",
+      suggestion: "去掉多余的 - 1。",
+    },
+    {
+      ...from,
+      model: "model-a",
+      description: "非数字入参不被拦截。",
+      impact: "",
+      suggestion: "入口加 typeof 校验。",
+    },
+    {
+      ...from,
+      model: "model-b",
+      description: "减法结果不对。",
+      impact: "余额会算错。",
+      suggestion: "改成 a - b。",
+    },
+  ]);
+  // 本轮自己报出的没有历史建议。
+  assert.deepEqual(first!.findings[0]!.carried, []);
+
+  const body = stage.forge.createdReviews[1]!.comments[0]!.body;
+  const sha = first!.headSha.slice(0, 7);
+  const note = (model: string) =>
+    `**沿用 ${model} 在 ${sha} 上的说法,尚未针对新代码重新验证**`;
+  assert.ok(
+    body.includes(
+      `**model-c**\n\n**问题**:sub 多减了 1\n\n${note("model-a")}\n\n**问题**:sub 多减了 1\n\n**影响**:所有调用方拿到的差值都错。\n\n**建议**:去掉多余的 - 1。`,
+    ),
+    body,
+  );
+  assert.ok(
+    body.includes(`${note("model-a")}\n\n**问题**:非数字入参不被拦截。\n\n**建议**:入口加 typeof 校验。`),
+    body,
+  );
+  assert.ok(
+    body.includes(
+      `${note("model-b")}\n\n**问题**:减法结果不对。\n\n**影响**:余额会算错。\n\n**建议**:改成 a - b。`,
+    ),
+    body,
+  );
+});
+
+test("连续两轮延续仍指向最初那一轮的出处,正文不层层嵌套(issue #267)", async () => {
+  const stage = await continuedStage([scriptedReviewer("model-a", [SAID_A1])]);
+  stage.rewrite();
+  await runReview(stage.event, {
+    ...stage.deps,
+    reviewers: [verdictReviewer("model-b", "present", [], 6)],
+  });
+  stage.rewrite();
+  await runReview(stage.event, {
+    ...stage.deps,
+    reviewers: [verdictReviewer("model-c", "present", [], 6)],
+  });
+
+  const [first, , third] = runsInOrder(stage.db.path);
+  const continued = third!.findings[0]!;
+  assert.deepEqual(continued.attributions.map((said) => said.model), ["model-c"]);
+  // 出处是最初说出它的那一轮;上一轮那个只给了位置的模型没有内容,不占一段。
+  assert.deepEqual(continued.carried, [
+    {
+      model: "model-a",
+      runId: first!.id,
+      headSha: first!.headSha,
+      description: "sub 多减了 1",
+      impact: "所有调用方拿到的差值都错。",
+      suggestion: "去掉多余的 - 1。",
+    },
+  ]);
+  const body = stage.forge.createdReviews[2]!.comments[0]!.body;
+  assert.equal(body.match(/沿用/g)?.length, 1, body);
+  assert.doesNotMatch(body, /model-b/);
+});
+
+test("本轮重报的那条用本轮自己的影响与建议,历史建议不覆盖它(issue #267)", async () => {
+  const stage = await continuedStage([scriptedReviewer("model-a", [SAID_A1])]);
+  stage.rewrite();
+  await runReview(stage.event, {
+    ...stage.deps,
+    reviewers: [
+      verdictReviewer("model-b", "present", [
+        { ...at(6, "P0", "sub 仍然多减了"), impact: "新影响。", suggestion: "新建议。" },
+      ]),
+    ],
+  });
+
+  // 词法配对承接了旧 Identity,内容却是本轮 model-b 自己说的:不带历史建议,不标沿用。
+  const [, continuedRow] = continuedFrom(stage.db.path);
+  assert.notEqual(continuedRow, null);
+  const [, second] = runsInOrder(stage.db.path);
+  assert.deepEqual(second!.findings[0]!.attributions, [
+    {
+      model: "model-b",
+      severity: "P0",
+      category: "bug",
+      description: "sub 仍然多减了",
+      impact: "新影响。",
+      suggestion: "新建议。",
+    },
+  ]);
+  assert.deepEqual(second!.findings[0]!.carried, []);
+  assert.doesNotMatch(stage.forge.createdReviews[1]!.comments[0]!.body, /沿用|去掉多余/);
+});
+
+test("历史没存影响与建议时延续如实缺失,不凭空生成(issue #267)", async () => {
+  const stage = await continuedStage([
+    scriptedReviewer("model-a", [{ ...SAID_A1, impact: "", suggestion: "" }]),
+  ]);
+  // 升级前落的归属:两列是 NULL。
+  const legacy = new DatabaseSync(stage.db.path);
+  legacy.exec("UPDATE finding_attribution SET impact = NULL, suggestion = NULL");
+  legacy.close();
+  stage.rewrite();
+  await runReview(stage.event, {
+    ...stage.deps,
+    reviewers: [verdictReviewer("model-b", "present", [], 6)],
+  });
+
+  const [first, second] = runsInOrder(stage.db.path);
+  // 历史那段照实带着 null 过来,不写成空串:恢复操作要认得出它还缺着。
+  assert.deepEqual(second!.findings[0]!.carried, [
+    {
+      model: "model-a",
+      runId: first!.id,
+      headSha: first!.headSha,
+      description: "sub 多减了 1",
+      impact: null,
+      suggestion: null,
+    },
+  ]);
+  assert.doesNotMatch(
+    stage.forge.createdReviews[1]!.comments[0]!.body,
+    /沿用|\*\*影响\*\*|\*\*建议\*\*/,
+  );
+});
+
 test("没有未处置历史时只复核不开跑,失败原因认得出来", async () => {
   const { cache, db, forge } = setup(6);
 

@@ -25,6 +25,7 @@ import {
   type TrustedModelFieldSources,
 } from "../reviewer/model-service-runtime.ts";
 import type {
+  CarriedAttribution,
   Category,
   Disposition,
   HistoryFinding,
@@ -204,6 +205,22 @@ CREATE TABLE IF NOT EXISTS finding_attribution (
   PRIMARY KEY (finding_id, position)
 );
 CREATE INDEX IF NOT EXISTS finding_attribution_by_model ON finding_attribution(model);
+
+-- 延续承接来的历史说法(issue #267):按复核结论合成的延续那一行,把历史 Finding 各归属的
+-- 问题、影响与建议原样带过来,每段记最初说出它的模型与那一轮(head 即建议适用的代码版本)。
+-- 它不是本轮的归属:本轮归属只有给出新位置的那个模型,参与条数与各处统计都不读这张表。
+-- 连续多轮延续原样再抄一遍,run_id 仍是最初那一轮,不层层嵌套。impact / suggestion 为
+-- NULL 即源头本身没存(升级前的行),恢复操作据此补;空串是模型当时没给。
+CREATE TABLE IF NOT EXISTS finding_carried_attribution (
+  finding_id INTEGER NOT NULL REFERENCES finding(id),
+  position INTEGER NOT NULL,
+  model TEXT NOT NULL,
+  run_id INTEGER NOT NULL REFERENCES review_run(id),
+  description TEXT NOT NULL,
+  impact TEXT,
+  suggestion TEXT,
+  PRIMARY KEY (finding_id, position)
+);
 
 -- 一轮里每个 Reviewer 对每条未处置历史 Finding 的复核结论(ADR 0016)。finding_id
 -- 指注入时该 Finding Identity 的最新一行。漏给结论的按「无法判断」照样落一行并标
@@ -1028,6 +1045,12 @@ export type FindingAttributionRecord = {
 };
 
 /**
+ * 落库的一段延续承接来的历史说法(issue #267),与 `CarriedAttribution` 同一形状去掉
+ * `headSha`——那是所属轮次的事实,读回时按 `runId` 取。
+ */
+export type CarriedAttributionRecord = Omit<CarriedAttribution, "headSha">;
+
+/**
  * 读回来的一个归属(issue #266):面板按它逐模型展示问题、影响与建议。`impact` 与
  * `suggestion` 为 null 即升级前落的行,当时没存;空串是模型没给。
  */
@@ -1057,6 +1080,8 @@ export type FindingRecord = {
   description: string;
   /** 报出它的每个模型一条,按首报先后。至少一条。 */
   attributions: readonly FindingAttributionRecord[];
+  /** 延续承接来的历史说法(issue #267),只有按复核结论合成的延续才带。 */
+  carried?: readonly CarriedAttributionRecord[];
   fingerprint?: string;
   groupIndex: number;
   /** 本轮读回的处置结论。 */
@@ -1118,6 +1143,11 @@ export type AutoDispositionCandidate = {
  *
  * `title` 与 `description` 供调用方判「本轮这条讲的是不是同一回事」;升级前的行没有
  * 标题,取空串,判据自会退回正文。
+ *
+ * `carried` 是合成延续时要带到新位置的历史说法(issue #267):这一行自己每个归属的问题、
+ * 影响与建议(出处即那个模型与这一行所在的轮次),加上这一行自己承接来的那些(出处原样
+ * 沿用,不层层嵌套)。两段都是空串的归属没有内容可带,不占一段;NULL 的照实带着,恢复
+ * 操作据此认出缺失。升级前没有归属行的,列表为空。
  */
 export type ContinuationCandidate = {
   findingId: number;
@@ -1128,6 +1158,7 @@ export type ContinuationCandidate = {
   fingerprint: string;
   commentId: string;
   commentHtmlUrl: string;
+  carried: CarriedAttribution[];
 };
 
 /**
@@ -1664,6 +1695,11 @@ export type RunListItem = {
     models: string[];
     /** 每个归属自己的说法,按首报先后(issue #266);同一模型的多条各占一项。 */
     attributions: RecordedFindingAttribution[];
+    /**
+     * 延续承接来的历史说法(issue #267):只有按复核结论合成的延续那一行才有,每段带
+     * 原模型、来源轮次与那一轮的 head。它们不是本轮的归属。
+     */
+    carried: CarriedAttribution[];
     file: string;
     line: number;
     severity: Severity;
@@ -1723,6 +1759,8 @@ export type StageSummaryFinding = {
   models: string[];
   /** 每个归属自己的说法,按首报先后(issue #266),取最新那一轮落的那几条。 */
   attributions: RecordedFindingAttribution[];
+  /** 延续承接来的历史说法(issue #267),取最新那一轮那一行带的;没有延续过即空。 */
+  carried: CarriedAttribution[];
   disposition: Exclude<Disposition, "continued">;
   placement: FindingPlacement;
   commentId: string | null;
@@ -2614,6 +2652,45 @@ function recordedAttribution(row: Record<string, unknown>): RecordedFindingAttri
     impact: row["impact"] === null ? null : String(row["impact"]),
     suggestion: row["suggestion"] === null ? null : String(row["suggestion"]),
   };
+}
+
+/** 一行 finding_carried_attribution 连同来源轮次的 head 读成一段历史说法(issue #267)。 */
+function carriedAttribution(row: Record<string, unknown>): CarriedAttribution {
+  return {
+    model: String(row["model"]),
+    runId: Number(row["run_id"]),
+    headSha: String(row["head_sha"]),
+    description: String(row["description"]),
+    impact: row["impact"] === null ? null : String(row["impact"]),
+    suggestion: row["suggestion"] === null ? null : String(row["suggestion"]),
+  };
+}
+
+/** 这些 Finding 各自承接来的历史说法(issue #267),按 finding id 归组、段内按落库顺序。 */
+function carriedByFinding(
+  db: DatabaseSync,
+  findingSql: string,
+  params: readonly (string | number)[],
+): Map<number, CarriedAttribution[]> {
+  const rows = db
+    .prepare(
+      `SELECT c.finding_id AS finding_id, c.model AS model, c.run_id AS run_id,
+              c.description AS description, c.impact AS impact, c.suggestion AS suggestion,
+              origin.head_sha AS head_sha
+         FROM finding_carried_attribution c
+         JOIN review_run origin ON origin.id = c.run_id
+        WHERE c.finding_id IN (${findingSql})
+        ORDER BY c.finding_id, c.position`,
+    )
+    .all(...params);
+  const byFinding = new Map<number, CarriedAttribution[]>();
+  for (const row of rows) {
+    const id = Number(row["finding_id"]);
+    const list = byFinding.get(id) ?? [];
+    list.push(carriedAttribution(row));
+    byFinding.set(id, list);
+  }
+  return byFinding;
 }
 
 function recordedUsage(row: Record<string, unknown>): ReviewerUsage | undefined {
@@ -5044,6 +5121,11 @@ export function openStore(dbPath: string): Store {
              (finding_id, position, model, severity, category, description, impact, suggestion)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         );
+        const insertCarried = db.prepare(
+          `INSERT INTO finding_carried_attribution
+             (finding_id, position, model, run_id, description, impact, suggestion)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        );
         for (const finding of result.findings) {
           const inserted = insertFinding.run(
             runId,
@@ -5074,6 +5156,17 @@ export function openStore(dbPath: string): Store {
               said.model,
               said.severity,
               said.category,
+              said.description,
+              said.impact,
+              said.suggestion,
+            );
+          }
+          for (const [position, said] of (finding.carried ?? []).entries()) {
+            insertCarried.run(
+              findingId,
+              position,
+              said.model,
+              said.runId,
               said.description,
               said.impact,
               said.suggestion,
@@ -5222,6 +5315,11 @@ export function openStore(dbPath: string): Store {
             ORDER BY a.finding_id, a.position`,
         )
         .all(...params);
+      const carried = carriedByFinding(
+        db,
+        `SELECT f.id FROM finding f JOIN review_run run ON f.run_id = run.id WHERE ${where}`,
+        params,
+      );
       const verdictRows = db
         .prepare(
           `SELECT v.run_id AS run_id, v.finding_id AS finding_id, v.verdict AS verdict,
@@ -5323,6 +5421,7 @@ export function openStore(dbPath: string): Store {
             description: String(row["description"]),
             models: models.get(latest.id) ?? [],
             attributions: attributions.get(latest.id) ?? [],
+            carried: carried.get(latest.id) ?? [],
             disposition: latest.disposition as Exclude<Disposition, "continued">,
             placement: String(row["placement"]) as FindingPlacement,
             commentId: row["comment_id"] === null ? null : String(row["comment_id"]),
@@ -5791,6 +5890,11 @@ export function openStore(dbPath: string): Store {
             WHERE f.run_id IN (${marks}) ORDER BY a.finding_id, a.position`,
         )
         .all(...ids);
+      const carried = carriedByFinding(
+        db,
+        `SELECT id FROM finding WHERE run_id IN (${marks})`,
+        ids,
+      );
 
       const byPin = db
         .prepare(
@@ -5899,6 +6003,7 @@ export function openStore(dbPath: string): Store {
           id: Number(row["id"]),
           models: attributionModels.get(Number(row["id"])) ?? [],
           attributions: attributions.get(Number(row["id"])) ?? [],
+          carried: carried.get(Number(row["id"])) ?? [],
           file: String(row["file"]),
           line: Number(row["line"]),
           severity: String(row["severity"]) as Severity,
@@ -6275,14 +6380,35 @@ export function openStore(dbPath: string): Store {
 
     historyPlacements(findingIds) {
       const probe = db.prepare(
-        `SELECT file, line, title, description, fingerprint,
-                comment_id, comment_html_url, disposition FROM finding
-          WHERE id = ? AND fingerprint IS NOT NULL
-            AND comment_id IS NOT NULL AND comment_html_url IS NOT NULL`,
+        `SELECT f.file AS file, f.line AS line, f.title AS title, f.description AS description,
+                f.fingerprint AS fingerprint, f.comment_id AS comment_id,
+                f.comment_html_url AS comment_html_url, f.disposition AS disposition,
+                run.id AS run_id, run.head_sha AS head_sha
+           FROM finding f
+           JOIN review_run run ON run.id = f.run_id
+          WHERE f.id = ? AND f.fingerprint IS NOT NULL
+            AND f.comment_id IS NOT NULL AND f.comment_html_url IS NOT NULL`,
+      );
+      // 这一行自己的归属(issue #267):两段都是空串的没有内容可带,不占一段;NULL 的照实带
+      // ——升级前落的行两列是 NULL,`NULL = ''` 在 SQL 里不是假,要显式放行。
+      const ownSaid = db.prepare(
+        `SELECT model, description, impact, suggestion FROM finding_attribution
+          WHERE finding_id = ?
+            AND (impact IS NULL OR suggestion IS NULL OR impact <> '' OR suggestion <> '')
+          ORDER BY position`,
       );
       return findingIds.flatMap((findingId) => {
         const row = probe.get(findingId);
         if (row === undefined) return [];
+        const from = { runId: Number(row["run_id"]), headSha: String(row["head_sha"]) };
+        const own = ownSaid.all(findingId).map((said) => ({
+          ...from,
+          model: String(said["model"]),
+          description: String(said["description"]),
+          impact: said["impact"] === null ? null : String(said["impact"]),
+          suggestion: said["suggestion"] === null ? null : String(said["suggestion"]),
+        }));
+        const inherited = carriedByFinding(db, "?", [findingId]).get(findingId) ?? [];
         return [
           {
             findingId,
@@ -6294,6 +6420,7 @@ export function openStore(dbPath: string): Store {
             commentId: String(row["comment_id"]),
             commentHtmlUrl: String(row["comment_html_url"]),
             disposition: String(row["disposition"]) as Disposition,
+            carried: [...own, ...inherited],
           },
         ];
       });

@@ -37,6 +37,7 @@ import {
   type MergedFinding,
 } from "./dedupe.ts";
 import type {
+  CarriedAttribution,
   Category,
   Disposition,
   Finding,
@@ -269,9 +270,35 @@ function attributionSection(said: FindingAttribution): string[] {
   return lines;
 }
 
-/** 全部归属按首报先后分段。 */
+/** 影响或建议有内容:空串(模型没给)与 null(源头没存)都是没有这一段。 */
+function hasText(value: string | null): boolean {
+  return value !== null && value !== "";
+}
+
+/**
+ * 延续承接来的一段历史说法(issue #267):段首写明是谁在哪个 head 上说的,以及它还没对着
+ * 现在的代码重新验证过——复核判「仍在」只说明问题还在,不说明修法仍然成立。不署给给出
+ * 新位置的那个模型;两段都没有内容的整段跳过。
+ */
+function carriedSection(said: CarriedAttribution): string[] {
+  if (!hasText(said.impact) && !hasText(said.suggestion)) return [];
+  const lines = [
+    "",
+    `**沿用 ${said.model} 在 ${said.headSha.slice(0, 7)} 上的说法,尚未针对新代码重新验证**`,
+    "",
+    `**问题**:${said.description}`,
+  ];
+  if (hasText(said.impact)) lines.push("", `**影响**:${said.impact}`);
+  if (hasText(said.suggestion)) lines.push("", `**建议**:${said.suggestion}`);
+  return lines;
+}
+
+/** 全部归属按首报先后分段,延续承接来的历史说法接在后面。 */
 function findingSections(finding: MergedFinding): string[] {
-  return finding.attributions.flatMap(attributionSection);
+  return [
+    ...finding.attributions.flatMap(attributionSection),
+    ...(finding.carried ?? []).flatMap(carriedSection),
+  ];
 }
 
 /**
@@ -626,13 +653,15 @@ function presentPositions(
  * 按历史条目的标题、正文、严重度与分类,在模型给出的新位置合成本轮的一条 Finding
  * (issue #170)。它归属给出这个位置的模型:那个模型确实说了「这个问题此刻在这一行」。
  *
- * 影响与建议留空——旧条目的这两段没有进注入,呈现层本来就跳过空段。
+ * 它自己的影响与建议为空:给出新位置的模型没有对着新代码给过修法。历史各归属的问题、
+ * 影响与建议随 `carried` 原样带到新位置(issue #267),每段记最初说出它的模型与那一轮,
+ * 不署给这个模型,也不算进它的归属;历史没存的那一档照实为 null,不凭空补一段。
  */
 function continuedFinding(
   candidate: ContinuationCandidate,
   position: PresentPosition,
 ): MergedFinding {
-  const said = {
+  const said: FindingAttribution = {
     model: position.model,
     severity: position.severity,
     category: position.category,
@@ -651,6 +680,7 @@ function continuedFinding(
     impact: "",
     suggestion: "",
     attributions: [said],
+    carried: candidate.carried,
   };
 }
 
@@ -2044,6 +2074,12 @@ export async function runReview(
             impact: said.impact,
             suggestion: said.suggestion,
           })),
+          // 延续承接来的历史说法(issue #267)只有合成的那一档才有,读回时按轮次补 head。
+          ...(finding.carried === undefined
+            ? {}
+            : {
+                carried: finding.carried.map(({ headSha: _headSha, ...said }) => said),
+              }),
           groupIndex,
           disposition: dispositions[groupIndex]!,
           placement: placements[groupIndex]!,

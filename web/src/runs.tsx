@@ -101,6 +101,19 @@ export type RunFinding = {
     impact: string | null;
     suggestion: string | null;
   }[];
+  /**
+   * 延续承接来的历史说法(issue #267):只有按复核结论合成的延续那一行才有,每段是历史
+   * 某个归属的问题、影响与建议,带原模型、来源轮次与那一轮的 head(建议适用的代码版本),
+   * 尚未针对新代码重新验证。它们不是本轮的归属,不在 `models` 里。
+   */
+  carried: {
+    model: string;
+    runId: number;
+    headSha: string;
+    description: string;
+    impact: string | null;
+    suggestion: string | null;
+  }[];
   file: string;
   line: number;
   severity: "P0" | "P1" | "P2";
