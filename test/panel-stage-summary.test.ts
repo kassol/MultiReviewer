@@ -47,6 +47,14 @@ type SummaryFinding = {
     impact: string | null;
     suggestion: string | null;
   }[];
+  carried: {
+    model: string;
+    runId: number;
+    headSha: string;
+    description: string;
+    impact: string | null;
+    suggestion: string | null;
+  }[];
   disposition: string;
   placement: string;
   commentId: string | null;
@@ -99,6 +107,14 @@ type SeedFinding = {
   /** 每个归属的影响与建议(issue #266),不给即空串。 */
   impact?: string;
   suggestion?: string;
+  /** 延续承接来的历史说法(issue #267),只有合成的延续那一行才带。 */
+  carried?: {
+    model: string;
+    runId: number;
+    description: string;
+    impact: string | null;
+    suggestion: string | null;
+  }[];
 };
 
 /** 落一轮 Review Run:一条 Finding 一个合并组,归属按传入的模型逐条落。 */
@@ -153,6 +169,7 @@ function seedRun(
             commentHtmlUrl: `https://gitea.example.test/comments/${finding.commentId}`,
           }),
       ...(finding.lineAuthor === undefined ? {} : { lineAuthor: finding.lineAuthor }),
+      ...(finding.carried === undefined ? {} : { carried: finding.carried }),
     })),
     verdicts: verdicts.map((entry) => ({
       model: entry.model,
@@ -393,6 +410,80 @@ test("阶段汇总逐归属带影响与建议,升级前落的行读回 null(issu
     legacy.attributions.map((entry) => [entry.model, entry.impact, entry.suggestion]),
     [["model-a", null, null]],
   );
+});
+
+test("阶段汇总带出延续承接来的历史说法,head 按来源轮次补(issue #267)", async () => {
+  const h = await startPanelHarness(cleanups);
+  const store = openStore(h.db.path);
+  let rangeReviewId: number;
+  let originRunId: number;
+  try {
+    store.registerRepo({
+      repoId: GITEA_REPO.id,
+      owner: HARNESS_PR.owner,
+      repo: HARNESS_PR.repo,
+      generation: 1,
+      key: "stage-summary-key",
+    });
+    rangeReviewId = store.createRangeReview({
+      repoId: GITEA_REPO.id,
+      owner: HARNESS_PR.owner,
+      repo: HARNESS_PR.repo,
+      title: "历史说法夹具",
+      baseSha: "base-sha",
+      comparisonSha: "sha-2",
+      createdBy: "operator",
+      createdAt: "2026-08-20T00:00:00.000Z",
+    });
+    const container = { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo, pullNumber: 901, rangeReviewId };
+    // 第一轮说出问题;第二轮合成的延续把那段说法带到新位置,出处是第一轮。
+    originRunId = seedRun(
+      store,
+      { ...container, headSha: "sha-1", startedAt: "2026-08-20T01:00:00.000Z" },
+      [{ file: "src/a.ts", line: 5, fingerprint: "fp-origin", commentId: "c1" }],
+    );
+    seedRun(
+      store,
+      { ...container, headSha: "sha-2", startedAt: "2026-08-21T01:00:00.000Z" },
+      [
+        {
+          file: "src/a.ts",
+          line: 9,
+          fingerprint: "fp-continued",
+          commentId: "c2",
+          models: ["model-c"],
+          carried: [
+            {
+              model: "model-a",
+              runId: originRunId,
+              description: "正文 fp-origin",
+              impact: "所有调用方拿到的差值都错",
+              suggestion: "去掉多余的 - 1",
+            },
+          ],
+        },
+      ],
+    );
+  } finally {
+    store.close();
+  }
+
+  const body = await summaryOf(h, `rangeReviewId=${rangeReviewId}`);
+
+  const continued = body.findings.find((finding) => finding.description === "正文 fp-continued")!;
+  assert.deepEqual(continued.carried, [
+    {
+      model: "model-a",
+      runId: originRunId,
+      headSha: "sha-1",
+      description: "正文 fp-origin",
+      impact: "所有调用方拿到的差值都错",
+      suggestion: "去掉多余的 - 1",
+    },
+  ]);
+  // 本轮自己报出的没有历史说法。
+  const origin = body.findings.find((finding) => finding.description === "正文 fp-origin")!;
+  assert.deepEqual(origin.carried, []);
 });
 
 test("阶段汇总的时间线:每轮的新报出 / 折叠 / 已修复 / 已延续 / 漏复核", async () => {

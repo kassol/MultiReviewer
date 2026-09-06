@@ -117,10 +117,10 @@ function AttributionSaid({
     <div className="flex flex-col gap-0.5 text-sm text-text-secondary">
       <span className="min-w-0 break-all font-mono">{said.model}</span>
       {said.description === representative ? null : (
-        <p className="break-words">问题：{said.description}</p>
+        <p className="text-base leading-relaxed break-words">问题：{said.description}</p>
       )}
-      {hasText(said.impact) ? <p className="break-words">影响：{said.impact}</p> : null}
-      {hasText(said.suggestion) ? <p className="break-words">建议：{said.suggestion}</p> : null}
+      {hasText(said.impact) ? <p className="text-base leading-relaxed break-words">影响：{said.impact}</p> : null}
+      {hasText(said.suggestion) ? <p className="text-base leading-relaxed break-words">建议：{said.suggestion}</p> : null}
     </div>
   );
 }
@@ -149,10 +149,10 @@ function CarriedSaid({
         <span>上的说法 · 尚未针对新代码重新验证</span>
       </p>
       {said.description === representative ? null : (
-        <p className="break-words">问题：{said.description}</p>
+        <p className="text-base leading-relaxed break-words">问题：{said.description}</p>
       )}
-      {hasText(said.impact) ? <p className="break-words">影响：{said.impact}</p> : null}
-      {hasText(said.suggestion) ? <p className="break-words">建议：{said.suggestion}</p> : null}
+      {hasText(said.impact) ? <p className="text-base leading-relaxed break-words">影响：{said.impact}</p> : null}
+      {hasText(said.suggestion) ? <p className="text-base leading-relaxed break-words">建议：{said.suggestion}</p> : null}
     </div>
   );
 }
