@@ -10,21 +10,16 @@ allowBuilds:
 
 # pnpm 11 默认拒装发布不满 24 小时的版本(minimumReleaseAge),镜像里的
 # `pnpm install --frozen-lockfile` 也按锁文件逐项核验。Pi 0.85.1 发布于 2026-09-05
-# (issue #265),pi-subagents 0.65.1 与它带进来的 0.85.0 那一组发布于 2026-09-04
+# (issue #265),pi-subagents 0.65.1 与它钉住的 pi-server 0.85.0 发布于 2026-09-04
 # (issue #262),升级当天不豁免就装不进镜像。豁免只钉树里实际装上的这几个精确版本,
 # 过了窗口它们自然失效,留着不影响之后的升级。
 minimumReleaseAgeExclude:
-  - "@earendil-works/chord@0.85.0"
   - "@earendil-works/chord@0.85.1"
-  - "@earendil-works/pi-agent-core@0.85.0"
   - "@earendil-works/pi-agent-core@0.85.1"
-  - "@earendil-works/pi-ai@0.85.0"
   - "@earendil-works/pi-ai@0.85.1"
   - "@earendil-works/pi-coding-agent@0.85.1"
   - "@earendil-works/pi-protocol@0.85.0"
   - "@earendil-works/pi-server@0.85.0"
-  - "@earendil-works/pi-telemetry@0.85.0"
   - "@earendil-works/pi-telemetry@0.85.1"
-  - "@earendil-works/pi-tui@0.85.0"
   - "@earendil-works/pi-tui@0.85.1"
   - "pi-subagents@0.65.1"
