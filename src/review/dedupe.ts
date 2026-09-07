@@ -458,7 +458,7 @@ export function mergeByProposal(
 
   const merged: MergedFinding[] = [];
   const fallbacks: SynthesisFallback[] = [];
-  for (const [index, group] of groups.entries()) {
+  for (const [groupIndex, group] of groups.entries()) {
     // 成员编号即首报先后:输入按 Reviewer 的配置顺序拼(`run.ts`),下标就是报出的次序。
     const members = [...group.members].sort((a, b) => a - b).map((index) => findings[index]!);
     // 一组含多条历史时取 id 最小的那条作数:先来的那条拿走这次交接,与延续那边
@@ -492,7 +492,7 @@ export function mergeByProposal(
     // 归属只有一条的组不要求综合,缺了也不是回退;多归属的组缺了才记一条(issue #279)。
     if (finding.attributions.length > 1) {
       const reason = synthesisRejection(group.synthesis);
-      if (reason !== undefined) fallbacks.push({ group: index, reason });
+      if (reason !== undefined) fallbacks.push({ group: groupIndex, reason });
     }
     merged.push(finding);
   }

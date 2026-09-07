@@ -5,6 +5,8 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 
+import { DatabaseSync } from "node:sqlite";
+
 import { openStore } from "../src/review/store.ts";
 import type { ReviewerUsage } from "../src/review/finding.ts";
 import {
@@ -56,7 +58,14 @@ function seedRun(
     startedAt: string;
     triggeredBy?: string;
   },
-  findings: { model: string; disposition?: string; placement?: string; group?: number }[],
+  findings: {
+    model: string;
+    disposition?: string;
+    placement?: string;
+    group?: number;
+    /** 这个归属自己的说法;省略即统一的「示例」加两段空串。 */
+    said?: { description: string; impact: string; suggestion: string };
+  }[],
   outcomes: { model: string; failure?: string; usage?: ReviewerUsage }[] = [],
   verdicts: { model: string; findingId: number; missing?: boolean }[] = [],
 ): number {
@@ -93,16 +102,16 @@ function seedRun(
         title: "示例",
         severity: "P1" as const,
         category: "bug" as const,
-        description: "示例",
-        impact: "",
-        suggestion: "",
+        description: first.said?.description ?? "示例",
+        impact: first.said?.impact ?? "",
+        suggestion: first.said?.suggestion ?? "",
         attributions: members.map((f) => ({
           model: f.model,
           severity: "P1" as const,
           category: "bug" as const,
-          description: "示例",
-          impact: "",
-          suggestion: "",
+          description: f.said?.description ?? "示例",
+          impact: f.said?.impact ?? "",
+          suggestion: f.said?.suggestion ?? "",
         })),
         groupIndex: group,
         disposition: (first.disposition ?? "unknown") as never,
@@ -488,4 +497,48 @@ test("轮次列表与轮次详情都带这一轮的模式,升级前的旧行按�
     run: RunRow;
   };
   assert.equal(detail.run.mode, "full");
+});
+
+test("轮次列表的代表段:升级前落的行按规则从归属现算(issue #278)", async () => {
+  const h = await startPanelHarness(cleanups);
+  // 同一处的两条归属:一条说得长、一条说得短,代表段该取长的那条。
+  const runId = seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
+    [
+      {
+        model: "model-a",
+        group: 0,
+        said: { description: "正文", impact: "余额会算错", suggestion: "改成 a - b" },
+      },
+      {
+        model: "model-b",
+        group: 0,
+        said: {
+          description: "正文,少减一次导致返回值偏小",
+          impact: "所有调用方拿到的差值都错",
+          suggestion: "去掉多余的 - 1",
+        },
+      },
+    ],
+  );
+  // 升级前落的行:后两段是 NULL,前两段还是按旧规则(严重度最高那条)存下来的那份。
+  const sqlite = new DatabaseSync(h.db.path);
+  sqlite.prepare("UPDATE finding SET impact = NULL, suggestion = NULL WHERE run_id = ?").run(runId);
+  sqlite.close();
+
+  const body = (await (await h.api("GET", "/runs")).json()) as {
+    runs: {
+      findings: { description: string; impact: string | null; suggestion: string | null }[];
+    }[];
+  };
+  // 四段同出描述最长的那条归属,不拼两条归属的说法。
+  assert.deepEqual(
+    body.runs[0]!.findings.map((finding) => [
+      finding.description,
+      finding.impact,
+      finding.suggestion,
+    ]),
+    [["正文,少减一次导致返回值偏小", "所有调用方拿到的差值都错", "去掉多余的 - 1"]],
+  );
 });

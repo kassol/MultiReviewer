@@ -2760,6 +2760,9 @@ function recordedAttribution(row: Record<string, unknown>): RecordedFindingAttri
  * 取的是严重度最高那条归属,与现在的规则不同。这一档按现在的规则从归属现算:取描述最长
  * 的那条,四段同出一条归属。四段一起换,不只补后两段:混着两条归属的说法会拼出一份没人
  * 说过的正文。没有归属可算的(升级前连归属行都没有)照原样透出前两段,后两段为 null。
+ *
+ * 归属表不存标题,所以存量 NULL 行的标题只能沿用 finding 行上按旧规则落的那一份:标题
+ * 与其余三段因此可能来自两条归属。这是升级前数据的已知局限,不回填。
  */
 function representativeSegment(
   row: Record<string, unknown>,
@@ -6067,7 +6070,7 @@ export function openStore(dbPath: string): Store {
 
       const byFinding = db
         .prepare(
-          `SELECT id, run_id, file, line, title, severity, category, description,
+          `SELECT id, run_id, file, line, severity, category, description,
                   impact, suggestion,
                   disposition, placement, comment_id, comment_html_url,
                   disposed_by, disposed_at, disposition_note, continued_from,

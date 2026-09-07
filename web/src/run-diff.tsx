@@ -119,12 +119,12 @@ function AttributionSaid({ said }: { said: RunFinding["attributions"][number] })
 
 /**
  * 延续承接来的一段历史说法(issue #267):头一行写明是哪个模型在哪一轮的哪个 head 上说的、
- * 尚未针对新代码重新验证,再是它自己的问题(与代表段不同时)、影响与建议。轮次写 Review
- * Run 的 id:同一个 head 可以重跑出多轮,只写 head 定位不到那一轮。它不是本轮的归属,
- * 不署给给出新位置的模型;两段都没有内容的整块不出现。
+ * 尚未针对新代码重新验证,再是它自己的问题、影响与建议。轮次写 Review Run 的 id:同一个
+ * head 可以重跑出多轮,只写 head 定位不到那一轮。它不是本轮的归属,不署给给出新位置的
+ * 模型。与 `AttributionSaid` 同一条规则:问题那一段照原样列出,影响与建议两段都没有内容
+ * 也照样出块——正文是综合文本时,承接段的问题说法在这里是唯一能核对的原话。
  */
 function CarriedSaid({ said }: { said: RunFinding["carried"][number] }) {
-  if (!hasText(said.impact) && !hasText(said.suggestion)) return null;
   return (
     <div className="flex flex-col gap-0.5 text-sm text-text-secondary">
       <p className="flex flex-wrap items-center gap-1.5">
