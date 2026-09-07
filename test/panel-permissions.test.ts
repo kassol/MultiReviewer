@@ -45,6 +45,12 @@ const ROUTE_EXPECTATIONS = [
   ["POST", "/rerun", "review:rerun", "-"],
   ["POST", "/^\\/findings\\/(\\d+)\\/resolve$/", "finding:dispose", "finding:1"],
   ["POST", "/^\\/findings\\/(\\d+)\\/unresolve$/", "finding:dispose", "finding:1"],
+  [
+    "POST",
+    "/^\\/stages\\/(.+)\\/findings\\/dispose-below-threshold$/",
+    "finding:dispose-batch",
+    "-",
+  ],
   ["POST", "/range-reviews", "review:create", "-"],
   ["GET", "/range-reviews/prefill", "review:create", "query"],
   ["POST", "/^\\/range-reviews\\/(\\d+)\\/advance$/", "review:advance", "range-review:1"],

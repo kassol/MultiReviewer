@@ -88,7 +88,9 @@ import {
 import {
   backfillUpdates,
   createReviewRunPlan,
+  effectiveMinReportSeverity,
   findingLineAuthors,
+  meetsMinReportSeverity,
   openHistory,
   priorDispositions,
   RESUME_NOT_VIABLE,
@@ -1958,6 +1960,14 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     assignment: { by: "finding", group: 1 },
     handler: ({ req, res, deps, caller }, match) =>
       handleDispose(req, res, deps, Number(match![1]), "unresolved", caller!.username),
+  },
+  {
+    // 阶段标识里有斜杠,在地址里编码成一段;可见范围与阶段详情一致,在处理里按分配判。
+    method: "POST",
+    pattern: /^\/stages\/(.+)\/findings\/dispose-below-threshold$/,
+    access: "finding:dispose-batch",
+    handler: ({ req, res, deps, caller, assignment }, match) =>
+      handleDisposeBelowThreshold(req, res, deps, match![1]!, caller!.username, assignment!),
   },
   {
     method: "POST",
@@ -4645,6 +4655,28 @@ function handleStages(
 }
 
 /**
+ * 一个阶段落在注册表里的哪个仓库。按 owner/repo 找:阶段行上只有这两格,评审记录不引用
+ * 注册表(仓库移除之后阶段照样看得见)。找不到即回 undefined,取生效阈值时就只剩全局
+ * 那一档——仓库都不在了,不该让这个阶段的读与处置跟着一起报错。
+ */
+function stageRepoId(store: Store, stage: { owner: string; repo: string }): number | undefined {
+  return store.listRepos().find((row) => row.owner === stage.owner && row.repo === stage.repo)
+    ?.repoId;
+}
+
+/** 阶段行上的两个键还原成 `stageSummary` 的入参:一行只带自己那一个,另一个必为 null。 */
+function stageScopeOf(stage: {
+  owner: string;
+  repo: string;
+  pullNumber: number | null;
+  rangeReviewId: number | null;
+}): StageScope {
+  return stage.rangeReviewId === null
+    ? { owner: stage.owner, repo: stage.repo, pullNumber: stage.pullNumber! }
+    : { rangeReviewId: stage.rangeReviewId };
+}
+
+/**
  * 一个审查阶段的详情(issue #175):评审记录里的那一行,加它按代码推进分组的时间线。
  * 两种来源的阶段用同一份形状,详情页因此只有一个。
  *
@@ -4670,9 +4702,12 @@ function handleStageDetail(
     const found = store.stageDetail(stageId);
     if (found === undefined) return undefined;
     const rangeReviewId = found.stage.rangeReviewId;
+    // 生效最低报告等级跟着详情一起给(issue #274):批量处置的按钮凭它决定露不露面,
+    // 而看得到阶段的人不一定读得到审查策略,让面板自己再请求一次会撞权限。
+    const minReportSeverity = effectiveMinReportSeverity(store, stageRepoId(store, found.stage));
     return rangeReviewId === null
-      ? found
-      : { ...found, rangeReview: store.getRangeReview(rangeReviewId) };
+      ? { ...found, minReportSeverity }
+      : { ...found, minReportSeverity, rangeReview: store.getRangeReview(rangeReviewId) };
   });
   if (detail === undefined || !assignment.allows(detail.stage.owner, detail.stage.repo)) {
     return sendJson(res, 404, { error: "没有这个审查阶段" });
@@ -5327,12 +5362,71 @@ async function rerunRangeReview(
 const DISPOSITION_NOTE_MAX = 500;
 
 /**
+ * 处置备注的解析,逐条与批量共用:body 可以为空,`note` 给了就得是字符串且不超上限。
+ * 返回 undefined 即错误响应已经发出去了,调用方直接返回。
+ */
+async function readDispositionNote(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<{ note: string | undefined } | undefined> {
+  const body = await readBody(req, res);
+  if (body === undefined) return undefined;
+  const payload = body.length === 0 ? {} : safeParse(body);
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    sendJson(res, 400, { error: "body 要是 JSON 对象" });
+    return undefined;
+  }
+  const rawNote = (payload as { note?: unknown }).note;
+  if (rawNote !== undefined && typeof rawNote !== "string") {
+    sendJson(res, 400, { error: "note 要是字符串" });
+    return undefined;
+  }
+  const trimmed = rawNote === undefined ? "" : rawNote.trim();
+  if (trimmed.length > DISPOSITION_NOTE_MAX) {
+    sendJson(res, 400, { error: `处置备注最多 ${DISPOSITION_NOTE_MAX} 个字` });
+    return undefined;
+  }
+  // 空备注不清掉已有的那条:unresolve 与再次 resolve 都不带备注,备注要留着。
+  return { note: trimmed === "" ? undefined : trimmed };
+}
+
+/**
+ * 处置一条的两步,逐条与批量共用:先写 Forge 再落库。
+ *
+ * Disposition 的权威状态在 Forge 上(ADR 0006),库里那一行只是缓存;反过来先落库,
+ * Forge 那一步失败就留下「面板说已处置、Gitea 上没有」的假象,而下一轮回填还会把它
+ * 改回去。Forge 那一步抛出即整条没成,库不动。
+ */
+async function disposeOnForge(
+  deps: WebhookServerDeps,
+  forge: Forge,
+  finding: { owner: string; repo: string; commentId: string },
+  disposition: "resolved" | "unresolved",
+  disposedBy: string,
+  note: string | undefined,
+): Promise<string> {
+  const ref = { owner: finding.owner, repo: finding.repo };
+  if (disposition === "resolved") await forge.resolveComment(ref, finding.commentId);
+  else await forge.unresolveComment(ref, finding.commentId);
+  const disposedAt = new Date((deps.now ?? Date.now)()).toISOString();
+  withStore(deps.dbPath, (store) =>
+    store.recordDisposition({
+      owner: finding.owner,
+      repo: finding.repo,
+      commentId: finding.commentId,
+      disposition,
+      disposedBy,
+      disposedAt,
+      ...(note === undefined ? {} : { note }),
+    }),
+  );
+  return disposedAt;
+}
+
+/**
  * 面板处置一条 Finding:resolve / unresolve,可选附一条只存面板的处置备注。
  *
- * 先写 Forge 再落库。Disposition 的权威状态在 Forge 上(ADR 0006),库里那一行只是
- * 缓存;反过来先落库,Forge 那一步失败就留下「面板说已处置、Gitea 上没有」的假象,
- * 而下一轮回填还会把它改回去。Forge 上的 resolver 是服务凭据那个机器人账号,操作人
- * 只记在库里(ADR 0012)。
+ * Forge 上的 resolver 是服务凭据那个机器人账号,操作人只记在库里(ADR 0012)。
  */
 async function handleDispose(
   req: IncomingMessage,
@@ -5342,22 +5436,9 @@ async function handleDispose(
   disposition: "resolved" | "unresolved",
   disposedBy: string,
 ): Promise<void> {
-  const body = await readBody(req, res);
-  if (body === undefined) return;
-  const payload = body.length === 0 ? {} : safeParse(body);
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
-    return sendJson(res, 400, { error: "body 要是 JSON 对象" });
-  }
-  const rawNote = (payload as { note?: unknown }).note;
-  if (rawNote !== undefined && typeof rawNote !== "string") {
-    return sendJson(res, 400, { error: "note 要是字符串" });
-  }
-  const trimmed = rawNote === undefined ? "" : rawNote.trim();
-  if (trimmed.length > DISPOSITION_NOTE_MAX) {
-    return sendJson(res, 400, { error: `处置备注最多 ${DISPOSITION_NOTE_MAX} 个字` });
-  }
-  // 空备注不清掉已有的那条:unresolve 与再次 resolve 都不带备注,备注要留着。
-  const note = trimmed === "" ? undefined : trimmed;
+  const parsed = await readDispositionNote(req, res);
+  if (parsed === undefined) return;
+  const { note } = parsed;
 
   const finding = withStore(deps.dbPath, (store) => store.getFinding(findingId));
   if (finding === undefined) return sendJson(res, 404, { error: "没有这条 Finding" });
@@ -5370,27 +5451,21 @@ async function handleDispose(
   if (forge === undefined) {
     return sendJson(res, 503, { error: "gitea 没有配置 Forge,处置不了" });
   }
-  const ref = { owner: finding.owner, repo: finding.repo };
+  let disposedAt: string;
   try {
-    if (disposition === "resolved") await forge.resolveComment(ref, finding.commentId);
-    else await forge.unresolveComment(ref, finding.commentId);
+    disposedAt = await disposeOnForge(
+      deps,
+      forge,
+      { owner: finding.owner, repo: finding.repo, commentId: finding.commentId },
+      disposition,
+      disposedBy,
+      note,
+    );
   } catch (error) {
     return sendJson(res, 502, {
       error: `Forge 上${disposition === "resolved" ? "处置" : "撤回处置"}失败:${failureText(error)}`,
     });
   }
-  const disposedAt = new Date((deps.now ?? Date.now)()).toISOString();
-  withStore(deps.dbPath, (store) =>
-    store.recordDisposition({
-      owner: finding.owner,
-      repo: finding.repo,
-      commentId: finding.commentId!,
-      disposition,
-      disposedBy,
-      disposedAt,
-      ...(note === undefined ? {} : { note }),
-    }),
-  );
   sendJson(res, 200, {
     finding: {
       id: finding.id,
@@ -5402,6 +5477,88 @@ async function handleDispose(
   });
   // 处置备注落库即排一次处置反哺(issue #208)。没有备注的处置不构成反哺输入,零触发。
   if (note !== undefined) void runDispositionFeedbackInBackground(deps, finding, note);
+}
+
+/**
+ * 一次处置这个阶段里低于生效最低报告等级的未处置项(issue #274)。
+ *
+ * 阈值抬高之后,阶段里还留着一批当初按旧阈值报出来的低等级条目;它们不该逐条点过去。
+ * 选条目的口径与阶段汇总完全一致——`stageSummary` 已经把每条 Finding Identity 折叠到
+ * 最新那一行,这里只在它的产物上再筛三道:未处置、有行级评论承载(正文里的历史行本来
+ * 就处置不了,逐条那条路同样挡)、严重度低于阈值。
+ *
+ * 逐条执行,一条失败不中断:Forge 那一步没成的进 `failed`,人看到失败条数再点一次,
+ * 已经处置过的那些这时已经不在选中范围里。备注逐条落同一句,反哺不排——那是逐条处置
+ * 时人对一条 Finding 的判断(issue #208),批量按阈值清场不构成反哺输入。
+ */
+async function handleDisposeBelowThreshold(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  rawStageId: string,
+  disposedBy: string,
+  assignment: RepoAssignment,
+): Promise<void> {
+  const parsed = await readDispositionNote(req, res);
+  if (parsed === undefined) return;
+  const { note } = parsed;
+  let stageId: string;
+  try {
+    stageId = decodeURIComponent(rawStageId);
+  } catch {
+    return sendJson(res, 404, { error: "没有这个审查阶段" });
+  }
+  const stage = withStore(deps.dbPath, (store) => {
+    const found = store.stageDetail(stageId);
+    if (found === undefined) return undefined;
+    return {
+      owner: found.stage.owner,
+      repo: found.stage.repo,
+      minReportSeverity: effectiveMinReportSeverity(store, stageRepoId(store, found.stage)),
+      findings: store.stageSummary(stageScopeOf(found.stage)).findings,
+    };
+  });
+  if (stage === undefined || !assignment.allows(stage.owner, stage.repo)) {
+    return sendJson(res, 404, { error: "没有这个审查阶段" });
+  }
+  // P2 就是最低那一档,没有比它更低的等级可选,这个动作在这里不成立。
+  if (stage.minReportSeverity === "P2") {
+    return sendJson(res, 409, {
+      error: "这个阶段的最低报告等级是 P2,没有低于它的 Finding 可以处置",
+    });
+  }
+  const forge = deps.forges.gitea;
+  if (forge === undefined) {
+    return sendJson(res, 503, { error: "gitea 没有配置 Forge,处置不了" });
+  }
+  const targets = stage.findings.filter(
+    (finding) =>
+      (finding.disposition === "unknown" || finding.disposition === "unresolved") &&
+      finding.commentId !== null &&
+      !meetsMinReportSeverity(finding.severity, stage.minReportSeverity),
+  );
+  const disposed: number[] = [];
+  const failed: number[] = [];
+  for (const finding of targets) {
+    try {
+      await disposeOnForge(
+        deps,
+        forge,
+        { owner: stage.owner, repo: stage.repo, commentId: finding.commentId! },
+        "resolved",
+        disposedBy,
+        note,
+      );
+      disposed.push(finding.id);
+    } catch (error) {
+      console.error(
+        `[panel] 批量处置 Finding ${finding.id} 失败,其余照常:`,
+        error instanceof Error ? error.message : String(error),
+      );
+      failed.push(finding.id);
+    }
+  }
+  return sendJson(res, 200, { disposed, failed });
 }
 
 /** 范围审查发起时人填的两端。只收 sha:它同时挡住以 `-` 开头的值被 git 当成选项。 */

@@ -389,8 +389,12 @@ export function effectiveMinReportSeverity(store: Store, repoId?: number): Sever
   return override ?? store.getGlobalSettings().minReportSeverity ?? DEFAULT_MIN_REPORT_SEVERITY;
 }
 
-/** `severity` 够不够本轮的阈值。P0 最高,排在 `SEVERITY_ORDER` 前面的即更高。 */
-function meetsMinReportSeverity(severity: Severity, threshold: Severity): boolean {
+/**
+ * `severity` 够不够本轮的阈值。P0 最高,排在 `SEVERITY_ORDER` 前面的即更高。
+ *
+ * 合并前的保底过滤与面板的批量处置(issue #274)按它判同一件事:哪些低于阈值。
+ */
+export function meetsMinReportSeverity(severity: Severity, threshold: Severity): boolean {
   return SEVERITY_ORDER.indexOf(severity) <= SEVERITY_ORDER.indexOf(threshold);
 }
 

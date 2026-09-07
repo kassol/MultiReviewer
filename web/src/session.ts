@@ -7,6 +7,7 @@ export const PANEL_PERMISSIONS = [
   "review:complete",
   "review:advance",
   "finding:dispose",
+  "finding:dispose-batch",
   "knowledge:write",
   "model:read",
   "model:write",

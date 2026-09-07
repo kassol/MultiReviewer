@@ -60,6 +60,7 @@ const PERMISSION_INFO: readonly PermissionInfo[] = [
   { id: "review:advance", resource: "评审", action: "增量评审", hint: "为范围审查选择新的比较项并推进，启动新一轮 Review Run。" },
   { id: "review:complete", resource: "评审", action: "审查完成", hint: "将范围审查标记为审查完成，关闭容器 pull request 并删除两条临时分支，比较项从此不再推进。" },
   { id: "finding:dispose", resource: "评审", action: "处置", hint: "在面板处置 Finding 并填写可选处置备注；Forge 评论的 Disposition 将同步更新。" },
+  { id: "finding:dispose-batch", resource: "评审", action: "批量处置", hint: "在阶段详情一次处置低于该仓库最低报告等级的全部未处置项；逐条处置权限不包含它。" },
   { id: "knowledge:write", resource: "评审", action: "知识治理", hint: "新增、修改和废止这个仓库的评审规则，每次变更推进一个知识集版本。" },
   { id: "model:read", resource: "模型", action: "查看", hint: "查看审查策略和模型服务。" },
   { id: "model:write", resource: "模型", action: "管理", hint: "修改模型组合、手动添加模型和管理自定义模型服务。" },
