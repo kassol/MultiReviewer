@@ -2,6 +2,7 @@ import type { ReviewRunReviewerPin } from "../config.ts";
 import type { Drain } from "../drain.ts";
 import {
   PublishUncertainError,
+  type ChangedFile,
   type ChangedFileStatus,
   type ExistingReviewComment,
   type Forge,
@@ -68,6 +69,7 @@ import {
 } from "./position.ts";
 import {
   openStore,
+  type AutoDispositionCandidate,
   type ContinuationCandidate,
   type DispositionUpdate,
   type FindingCommentRef,
@@ -1086,20 +1088,25 @@ export async function findingLineAuthors(
  * 反过来会留下「库里说已处置、Gitea 上没有」,而下一轮回填还会把它改回去。
  *
  * 单条失败只记日志:少一条自动处置是小事,一次审查因此白跑不是。
+ *
+ * `note` 是这一次处置的备注:复核判已修那一档不带它,「文件已回退 / 已删除」那一档
+ * (issue #272)带上一句。返回真正处置成功的那些条目,调用方据它答得出关了哪几条。
  */
 async function autoDispose(
   forge: Forge,
   event: PullRequestEvent,
   store: ReturnType<typeof openStore>,
   findingIds: readonly number[],
-): Promise<void> {
+  note?: string,
+): Promise<AutoDispositionCandidate[]> {
   const pending = store.pendingAutoDispositions(findingIds);
+  const disposed: AutoDispositionCandidate[] = [];
   for (const candidate of pending) {
     try {
       await forge.resolveComment({ owner: event.owner, repo: event.repo }, candidate.commentId);
     } catch (error) {
       console.error(
-        "[review] 「已修复」自动处置写 Forge 失败,这一条留给人处置:",
+        "[review] 自动处置写 Forge 失败,这一条留给人处置:",
         error instanceof Error ? error.message : String(error),
       );
       continue;
@@ -1110,8 +1117,43 @@ async function autoDispose(
       event.number,
       candidate,
       new Date().toISOString(),
+      note,
     );
+    disposed.push(candidate);
   }
+  return disposed;
+}
+
+/** 开跑时自动处置的原因(issue #272):文件在本轮 diff 里被删,或根本不在 diff 里。 */
+type AbsenceReason = "deleted" | "reverted";
+
+/** 两种原因各自的处置备注。面板与阶段列表上看到的就是这一句。 */
+const ABSENCE_NOTES: Record<AbsenceReason, string> = {
+  deleted: "文件已删除,自动处置",
+  reverted: "文件已回退,自动处置",
+};
+
+/**
+ * 所在文件不在这一轮可审文件集里的未处置历史(issue #272)。这些条目谁都复核不到:
+ * 完整审查按 diff 切批,只复核按同一份可审文件集过滤,两种模式都读不到那个文件,
+ * 不处置就永远悬在未处置列表里。
+ *
+ * 原因看它还在不在本轮的变更文件清单里:在,那它只能是被这一轮删掉的(改名的条目
+ * 落在新路径上,`reviewableFiles` 不会把新路径滤掉);不在,即代码已经回到 base 状态。
+ */
+function absentHistory(
+  history: readonly HistoryFinding[],
+  reviewable: readonly string[],
+  changedFiles: readonly ChangedFile[],
+): { findingId: number; reason: AbsenceReason }[] {
+  const inRange = new Set(reviewable);
+  const changed = new Set(changedFiles.map((file) => file.path));
+  return openHistory(history)
+    .filter((entry) => !inRange.has(entry.file))
+    .map((entry) => ({
+      findingId: entry.id,
+      reason: changed.has(entry.file) ? ("deleted" as const) : ("reverted" as const),
+    }));
 }
 
 /**
@@ -1123,7 +1165,9 @@ async function autoDispose(
  *
  * 全集是本阶段全部未处置的历史,而不是注入过的那些(issue #235):所在文件不在本轮任何
  * 批次里的那条谁都没复核过,按漏给结论落,与「注入了但没给结论」同形——面板上因此分得出
- * 「没人复核」与「复核判仍在」,也不需要一档新状态。
+ * 「没人复核」与「复核判仍在」,也不需要一档新状态。开跑时按「文件已回退 / 已删除」处置掉的
+ * 那些已经不在这份历史里(issue #272),落在这里的是处置不掉的那些:没有评论载体的,以及
+ * 写 Forge 失败留给人的。
  */
 function verdictRecords(
   history: readonly HistoryFinding[],
@@ -1415,7 +1459,7 @@ function historyForBatch(
 /**
  * 未处置的历史条目(ADR 0016 的 `unresolved` / `unknown` 两档)。只复核那一轮据它过滤
  * 变更文件集,接口层据它判「这个阶段有没有可复核的东西」——两处同一个判据,只复核开不
- * 开跑因此不会在两层给出不同答案。
+ * 开跑因此不会在两层给出不同答案。开跑时的回退自动处置(issue #272)同样从它取。
  */
 export function openHistory(
   history: readonly HistoryFinding[],
@@ -1626,7 +1670,7 @@ export async function runReview(
     // 它也是只复核那一轮过滤文件集的依据(issue #242),两处同一份读取,口径不会分叉。
     // 续跑读开跑时的那份快照(issue #248):重启期间有人处置了一条历史时,续跑批次
     // 拿到的历史仍与原轮各批一致。
-    const history =
+    let history: readonly HistoryFinding[] =
       resume?.history ??
       opened(() =>
         store.stageHistory(
@@ -1635,6 +1679,33 @@ export async function runReview(
             : { rangeReviewId: deps.rangeReviewId },
         ),
       );
+
+    // 所在文件不在本轮可审文件集里的未处置历史,开跑就地自动处置(issue #272):它们
+    // 谁都复核不到,不处置就永远悬在未处置列表里。判据用的是过滤之前的那份可审文件集,
+    // 与只复核那道过滤、与接口层的 409 判据同一个口径。完整审查与只复核同律。
+    const absent = absentHistory(history, range.files, changedFiles);
+    const disposedByAbsence: Record<AbsenceReason, number[]> = { deleted: [], reverted: [] };
+    // 本轮 resolve 掉的那些评论。回填读的是开跑时那份评论状态,不修正就会把刚落的
+    // 「已修复」按过期的 unresolved 降级回未处置。
+    const resolvedByAbsence = new Set<string>();
+    if (absent.length > 0) {
+      try {
+        for (const reason of ["deleted", "reverted"] as const) {
+          const ids = absent.filter((item) => item.reason === reason).map((item) => item.findingId);
+          if (ids.length === 0) continue;
+          const done = await autoDispose(forge, event, store, ids, ABSENCE_NOTES[reason]);
+          disposedByAbsence[reason] = done.map((candidate) => candidate.findingId);
+          for (const candidate of done) resolvedByAbsence.add(candidate.commentId);
+        }
+      } catch (error) {
+        store.close();
+        throw error;
+      }
+      // 处置成功的不再是未处置历史:它不进快照、不注入、也不再被要结论。写 Forge 失败的
+      // 照现有规则原样留下,由人处置。
+      const closed = new Set([...disposedByAbsence.deleted, ...disposedByAbsence.reverted]);
+      if (closed.size > 0) history = history.filter((entry) => !closed.has(entry.id));
+    }
 
     const verdictOnly = deps.mode === "verdict-only";
     if (verdictOnly) {
@@ -1716,6 +1787,12 @@ export async function runReview(
         baseSha: worktree.mergeBaseSha,
         headSha: pullRequest.headSha,
       });
+
+      // 开跑就地处置掉的那些历史(issue #272):Forge 上只看得到几条 resolve,这一轮
+      // 为什么关了它们、关的是哪几条,只有轨迹说得出。
+      if (disposedByAbsence.deleted.length + disposedByAbsence.reverted.length > 0) {
+        trace.run("history_auto_disposed", disposedByAbsence);
+      }
 
       // 两端一有 runId 就钉在本地 clone 上(issue #161):这一轮结束后远端的分支会被删,
       // 不钉住的话 gc 一跑,这一轮的 diff 就再也打不开。
@@ -1878,7 +1955,16 @@ export async function runReview(
       });
       recordFindingMerges(trace, merged);
 
-      const prior = priorDispositions(priorComments, priorBodies);
+      // 开跑时按「文件已回退 / 已删除」resolve 掉的那几条(issue #272):这份评论清单读在
+      // 那次 resolve 之前,里面的 false 已经过期,照写会把刚落的「已修复」降级回未处置。
+      const prior = priorDispositions(
+        resolvedByAbsence.size === 0
+          ? priorComments
+          : priorComments.map((comment) =>
+              resolvedByAbsence.has(comment.id) ? { ...comment, resolved: true } : comment,
+            ),
+        priorBodies,
+      );
 
       // 顺手回写(ADR 0006):这批读回的 resolve 状态本来用完即弃,现在覆盖到这个 PR
       // 名下全部历史 finding 上。以 Forge 最新状态为准——resolve 后又 unresolve,跟着改。

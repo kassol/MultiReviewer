@@ -798,7 +798,7 @@ test("所在批判已修、别的批没收到这条:落库一条 fixed,自动处
   );
 });
 
-test("历史所在文件不在本轮任何批次:记无法判断并标漏给,不自动处置", async () => {
+test("历史所在文件不在本轮任何批次:开跑就按「文件已回退」处置掉,不再要结论", async () => {
   const fixture = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
   const { db, forge, changedFiles } = fixture;
   const deps = routingDeps(fixture);
@@ -815,10 +815,16 @@ test("历史所在文件不在本轮任何批次:记无法判断并标漏给,不
 
   await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "fixed")] });
 
-  assert.deepEqual(verdictRows(db.path), [
-    { model: "model-a", findingId: 1, verdict: "unclear", missing: 1 },
-  ]);
-  assert.deepEqual(forge.resolvedIds, [], "谁都没复核过的这条被自动处置了");
+  // 开跑就处置掉了(issue #272):它不进这一轮的历史,谁都不必对它给结论。
+  assert.deepEqual(verdictRows(db.path), []);
+  assert.deepEqual(forge.resolvedIds, [forge.publishedComments[0]!.id]);
+  assert.deepEqual(
+    query(db.path, "SELECT disposition, disposition_note FROM finding").map((row) => [
+      row["disposition"],
+      row["disposition_note"],
+    ]),
+    [["fixed", "文件已回退,自动处置"]],
+  );
 });
 
 test("只复核时批次只含有未处置历史的文件,每批的 Reviewer 都收到模式项", async () => {

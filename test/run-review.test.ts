@@ -25,6 +25,7 @@ import {
   scriptedReviewer,
   verdictReviewer,
 } from "./support/memory-forge.ts";
+import type { ChangedFile } from "../src/forge/forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 
 const BASE_CALC = `export function add(a: number, b: number) {
@@ -1699,4 +1700,218 @@ test("没有未处置历史时只复核不开跑,失败原因认得出来", asyn
     empty.close();
   }
   assert.deepEqual(forge.createdReviews, []);
+});
+
+const BASE_GONE = `export function gone(a: number) {
+  return a;
+}
+
+export function stay(a: number) {
+  return a * 2;
+}
+`;
+
+// 只改第 2 行,与 calc.ts 同形:上一轮在这一行报出的 Finding 落成一条行级评论。
+const HEAD_GONE = BASE_GONE.replace("return a;", "return a + 1;");
+
+/**
+ * 造一个「上一轮在 src/gone.ts 上报过一条」的阶段(issue #272)。第二轮把那个文件
+ * 回退或删掉,它就落在本轮可审文件集之外。
+ */
+function absenceFixture(pullNumber: number) {
+  const repo = makeRepo({
+    base: { "src/calc.ts": BASE_CALC, "src/gone.ts": BASE_GONE },
+    head: { "src/calc.ts": HEAD_CALC, "src/gone.ts": HEAD_GONE },
+  });
+  const cache = makeCacheDir();
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
+
+  // 同一个数组交给内存 Forge,第二轮改写它即改写本轮的变更文件清单。
+  const changedFiles: ChangedFile[] = [
+    { path: "src/calc.ts", status: "modified" },
+    { path: "src/gone.ts", status: "modified" },
+  ];
+  const forge = memoryForge({
+    pullRequest: {
+      number: pullNumber,
+      title: "示例 PR",
+      draft: false,
+      baseSha: repo.baseSha,
+      headSha: repo.headSha,
+      cloneUrl: repo.dir,
+    },
+    changedFiles,
+  });
+
+  const firstRound = scriptedReviewer("stub-model", [
+    { file: "src/calc.ts", line: 6, severity: "P0", category: "bug", description: "sub() 多减了 1" },
+    { file: "src/gone.ts", line: 2, severity: "P1", category: "bug", description: "gone() 原样返回" },
+  ]);
+
+  return { repo, cache, db, forge, changedFiles, firstRound };
+}
+
+/** 上一轮发出去的行级评论,按未处置预置回 Forge,第二轮的回填才读得到它们。 */
+function carryComments(forge: ReturnType<typeof memoryForge>): void {
+  forge.existingComments.push(
+    ...forge.publishedComments.map((comment) => ({ ...comment, resolved: false })),
+  );
+}
+
+/** 某个文件上最新那一行 Finding 的落库 id、处置值与处置备注。 */
+function latestFinding(
+  dbPath: string,
+  file: string,
+): { id: number; disposition: string; note: string | null } {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const row = db
+      .prepare(
+        `SELECT id, disposition, disposition_note FROM finding
+          WHERE file = ? ORDER BY id DESC LIMIT 1`,
+      )
+      .get(file)!;
+    return {
+      id: Number(row["id"]),
+      disposition: String(row["disposition"]),
+      note: row["disposition_note"] === null ? null : String(row["disposition_note"]),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+/** 最近那一轮的轮次级轨迹,连 payload 一起。 */
+function lastRunTrace(dbPath: string): { kind: string; payload: unknown }[] {
+  const store = openStore(dbPath);
+  try {
+    const runId = store.listRuns({ limit: 1 })[0]!.id;
+    return store
+      .listTrace(runId)
+      .filter((event) => event.scope === "run")
+      .map((event) => ({ kind: event.kind, payload: event.payload }));
+  } finally {
+    store.close();
+  }
+}
+
+test("所在文件已回退到 base 的未处置历史,完整审查开跑即自动处置(issue #272)", async () => {
+  const { repo, cache, db, forge, changedFiles, firstRound } = absenceFixture(7);
+  const event = { owner: "acme", repo: "widgets", number: 7 };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
+
+  await runReview(event, { ...deps, reviewers: [firstRound] });
+  carryComments(forge);
+  const history = latestFinding(db.path, "src/gone.ts");
+  const carried = forge.publishedComments.find((comment) => comment.path === "src/gone.ts")!;
+
+  // 第二轮把 src/gone.ts 改回 base 的内容:它因此根本不在 base..head 的 diff 里。
+  forge.pullRequest.headSha = repo.pushToHead({ "src/gone.ts": BASE_GONE });
+  changedFiles.splice(1, 1);
+
+  await runReview(event, { ...deps, reviewers: [scriptedReviewer("stub-model", [])] });
+
+  assert.deepEqual(forge.resolvedIds, [carried.id]);
+  assert.deepEqual(latestFinding(db.path, "src/gone.ts"), {
+    id: history.id,
+    disposition: "fixed",
+    note: "文件已回退,自动处置",
+  });
+  const traced = lastRunTrace(db.path).find((event) => event.kind === "history_auto_disposed");
+  assert.deepEqual(traced?.payload, { deleted: [], reverted: [history.id] });
+  // 还在可审文件集里的那条不受影响。
+  assert.equal(latestFinding(db.path, "src/calc.ts").disposition, "unresolved");
+});
+
+test("所在文件被这一轮删掉的未处置历史,备注写「文件已删除」(issue #272)", async () => {
+  const { repo, cache, db, forge, changedFiles, firstRound } = absenceFixture(7);
+  const event = { owner: "acme", repo: "widgets", number: 7 };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
+
+  await runReview(event, { ...deps, reviewers: [firstRound] });
+  carryComments(forge);
+  const history = latestFinding(db.path, "src/gone.ts");
+
+  forge.pullRequest.headSha = repo.pushToHead({ "src/gone.ts": null });
+  changedFiles[1] = { path: "src/gone.ts", status: "removed" };
+
+  await runReview(event, { ...deps, reviewers: [scriptedReviewer("stub-model", [])] });
+
+  assert.deepEqual(latestFinding(db.path, "src/gone.ts"), {
+    id: history.id,
+    disposition: "fixed",
+    note: "文件已删除,自动处置",
+  });
+  const traced = lastRunTrace(db.path).find((event) => event.kind === "history_auto_disposed");
+  assert.deepEqual(traced?.payload, { deleted: [history.id], reverted: [] });
+});
+
+test("范围审查阶段的只复核轮次同律:回退文件上的历史开跑即自动处置(issue #272)", async () => {
+  const { repo, cache, db, forge, changedFiles, firstRound } = absenceFixture(101);
+  const event = { owner: "acme", repo: "widgets", number: 101 };
+
+  const seed = openStore(db.path);
+  const rangeReviewId = seed.createRangeReview({
+    repoId: 1,
+    owner: "acme",
+    repo: "widgets",
+    title: "上线前复核 v2.3",
+    baseSha: repo.mergeBaseSha,
+    comparisonSha: repo.headSha,
+    createdBy: "kassol",
+    createdAt: new Date().toISOString(),
+  });
+  seed.close();
+  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path, rangeReviewId };
+
+  await runReview(event, { ...deps, reviewers: [firstRound] });
+  carryComments(forge);
+  const history = latestFinding(db.path, "src/gone.ts");
+
+  forge.pullRequest.headSha = repo.pushToHead({ "src/gone.ts": BASE_GONE });
+  changedFiles.splice(1, 1);
+
+  const second = verdictReviewer("stub-model", "present");
+  await runReview(event, { ...deps, reviewers: [second], mode: "verdict-only" });
+
+  assert.deepEqual(latestFinding(db.path, "src/gone.ts"), {
+    id: history.id,
+    disposition: "fixed",
+    note: "文件已回退,自动处置",
+  });
+  // 处置掉的那条不再注入:只复核那一轮只剩 src/calc.ts 上的历史要复核。
+  assert.deepEqual(
+    second.calls.flatMap((call) => call.history.map((entry) => entry.file)),
+    ["src/calc.ts"],
+  );
+  const traced = lastRunTrace(db.path).find((event) => event.kind === "history_auto_disposed");
+  assert.deepEqual(traced?.payload, { deleted: [], reverted: [history.id] });
+});
+
+test("回退处置写 Forge 失败时那一条保持未处置,这一轮照常跑完(issue #272)", async () => {
+  const { repo, cache, db, forge, changedFiles, firstRound } = absenceFixture(7);
+  const event = { owner: "acme", repo: "widgets", number: 7 };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
+
+  await runReview(event, { ...deps, reviewers: [firstRound] });
+  carryComments(forge);
+  const history = latestFinding(db.path, "src/gone.ts");
+
+  forge.pullRequest.headSha = repo.pushToHead({ "src/gone.ts": BASE_GONE });
+  changedFiles.splice(1, 1);
+  forge.forge.resolveComment = async () => {
+    throw new Error("resolve 挂了");
+  };
+
+  await runReview(event, { ...deps, reviewers: [scriptedReviewer("stub-model", [])] });
+
+  assert.deepEqual(latestFinding(db.path, "src/gone.ts"), {
+    id: history.id,
+    disposition: "unresolved",
+    note: null,
+  });
+  const kinds = lastRunTrace(db.path).map((event) => event.kind);
+  assert.ok(!kinds.includes("history_auto_disposed"));
+  assert.ok(kinds.includes("run_finished"), "写 Forge 失败不该让这一轮跑不完");
 });
