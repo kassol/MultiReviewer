@@ -1796,6 +1796,19 @@ function lastRunTrace(dbPath: string): { kind: string; payload: unknown }[] {
   }
 }
 
+/** 把全局最低报告等级(issue #271)写成这一档;不写即缺行,读回默认 P2。 */
+function setMinReportSeverity(dbPath: string, severity: "P0" | "P1" | "P2" | null): void {
+  const store = openStore(dbPath);
+  try {
+    assert.equal(
+      store.putGlobalMinReportSeverity(store.getGlobalSettings().minReportSeverityVersion, severity),
+      true,
+    );
+  } finally {
+    store.close();
+  }
+}
+
 test("所在文件已回退到 base 的未处置历史,完整审查开跑即自动处置(issue #272)", async () => {
   const { repo, cache, db, forge, changedFiles, firstRound } = absenceFixture(7);
   const event = { owner: "acme", repo: "widgets", number: 7 };
@@ -1914,4 +1927,144 @@ test("回退处置写 Forge 失败时那一条保持未处置,这一轮照常跑
   const kinds = lastRunTrace(db.path).map((event) => event.kind);
   assert.ok(!kinds.includes("history_auto_disposed"));
   assert.ok(kinds.includes("run_finished"), "写 Forge 失败不该让这一轮跑不完");
+});
+
+/** 那一轮落库的最低报告等级。轮次列表不带它,直接读列。 */
+function runMinReportSeverity(dbPath: string): string[] {
+  const sqlite = new DatabaseSync(dbPath);
+  try {
+    return sqlite
+      .prepare("SELECT min_report_severity FROM review_run ORDER BY id")
+      .all()
+      .map((row) => String(row["min_report_severity"]));
+  } finally {
+    sqlite.close();
+  }
+}
+
+test("阈值 P1 时模型报的 P2 不发出也不落库,轨迹记下丢弃条数", async () => {
+  const { cache, db, forge } = setup(6);
+  setMinReportSeverity(db.path, "P1");
+
+  // 四条各占一行:同一行的会被合并成一条评论,数不出挡掉了几条。
+  const reviewer = scriptedReviewer("model-a", [
+    at(6, "P0", "sub 多减了 1"),
+    at(5, "P1", "边界值没覆盖"),
+    at(7, "P2", "这里可以改成 const"),
+    at(8, "P2", "命名再直白一点"),
+  ]);
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+  );
+
+  // 发出去的只有够阈值的那两条。
+  const review = forge.createdReviews[0]!;
+  assert.equal(review.comments.length, 2);
+  assert.equal(review.comments.some((comment) => /const/.test(comment.body)), false);
+
+  const store = openStore(db.path);
+  try {
+    const runId = store.listRuns({ limit: 1 })[0]!.id;
+    assert.deepEqual(
+      store.listRuns({ limit: 1 })[0]!.findings.map((finding) => finding.severity).sort(),
+      ["P0", "P1"],
+    );
+    const filtered = store.listTrace(runId).filter((event) => event.kind === "findings_filtered");
+    assert.equal(filtered.length, 1);
+    assert.equal(filtered[0]!.scope, "run");
+    assert.deepEqual(filtered[0]!.payload, { discarded: 2, minReportSeverity: "P1" });
+  } finally {
+    store.close();
+  }
+
+  // prompt 那侧也知道阈值:注入边界带上它。
+  assert.equal(reviewer.calls[0]!.minReportSeverity, "P1");
+});
+
+test("阈值全报时一条都不丢,注入边界不带阈值,轨迹里没有过滤事件", async () => {
+  const { cache, db, forge } = setup(6);
+
+  const reviewer = scriptedReviewer("model-a", [at(6, "P2", "这里可以改成 const")]);
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+  );
+
+  assert.equal(forge.createdReviews[0]!.comments.length, 1);
+  assert.equal(reviewer.calls[0]!.minReportSeverity, undefined);
+  const store = openStore(db.path);
+  try {
+    const runId = store.listRuns({ limit: 1 })[0]!.id;
+    assert.equal(
+      store.listTrace(runId).some((event) => event.kind === "findings_filtered"),
+      false,
+    );
+  } finally {
+    store.close();
+  }
+  assert.deepEqual(runMinReportSeverity(db.path), ["P2"]);
+});
+
+test("阈值随轮次落库,开跑后改设置不影响本轮", async () => {
+  const { cache, db, forge } = setup(6);
+  setMinReportSeverity(db.path, "P1");
+
+  const reviewer = scriptedReviewer("model-a", [at(6, "P2", "这里可以改成 const")]);
+  // 这一轮已经开跑并读过阈值;改设置只影响下一轮。
+  const running = runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+  );
+  await running;
+  setMinReportSeverity(db.path, "P2");
+
+  assert.deepEqual(runMinReportSeverity(db.path), ["P1"]);
+  assert.equal(reviewer.calls[0]!.minReportSeverity, "P1");
+  // 那一条 P2 按开跑时的 P1 挡掉,改回全报救不了已经跑完的这一轮。
+  assert.equal(forge.publishedComments.length, 0);
+
+  const next = scriptedReviewer("model-b", [at(6, "P2", "这里可以改成 const")]);
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    { forge: forge.forge, reviewers: [next], cacheDir: cache.dir, dbPath: db.path },
+  );
+  assert.deepEqual(runMinReportSeverity(db.path), ["P1", "P2"]);
+  assert.equal(next.calls[0]!.minReportSeverity, undefined);
+});
+
+test("低于阈值的未处置历史照旧注入并要结论", async () => {
+  const { cache, db, forge } = setup(6);
+  const event = { owner: "acme", repo: "widgets", number: 7 };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
+
+  // 第一轮全报,落下一条 P2 历史。
+  await runReview(event, {
+    ...deps,
+    reviewers: [scriptedReviewer("model-a", [at(6, "P2", "这里可以改成 const")])],
+  });
+  forge.existingComments.push(
+    ...forge.publishedComments.map((comment) => ({ ...comment, resolved: false })),
+  );
+
+  // 第二轮把阈值提到 P1:新报的 P2 发不出去,历史那条 P2 仍要注入、仍要结论。
+  setMinReportSeverity(db.path, "P1");
+  const second = verdictReviewer("model-a", "present", [at(6, "P2", "这里还是可以改成 const")]);
+  await runReview(event, { ...deps, reviewers: [second] });
+
+  const injected = second.calls[0]!.history;
+  assert.equal(injected.length, 1);
+  assert.equal(injected[0]!.severity, "P2");
+
+  const store = openStore(db.path);
+  try {
+    const [, latest] = store.listRuns({ limit: 10 }).sort((a, b) => a.id - b.id);
+    // 复核结论照常落库:阈值只管新报,不改变历史的口径。
+    assert.equal(latest!.findings.length, 0, "新报的 P2 不该落库");
+    const runId = latest!.id;
+    const filtered = store.listTrace(runId).filter((e) => e.kind === "findings_filtered");
+    assert.deepEqual(filtered[0]!.payload, { discarded: 1, minReportSeverity: "P1" });
+  } finally {
+    store.close();
+  }
 });

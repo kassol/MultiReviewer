@@ -33,6 +33,7 @@ import type {
   ReviewerOutcome,
   ReviewerUsage,
   ReviewVerdict,
+  Severity,
 } from "../../src/review/finding.ts";
 import type { DiffRanges } from "../../src/review/position.ts";
 
@@ -181,6 +182,8 @@ type ScriptedCall = {
   directive: string | undefined;
   /** 这一轮的模式(issue #242);完整审查那一档不带,与注入边界一致。 */
   mode: ReviewRunMode | undefined;
+  /** 本轮的最低报告等级(issue #271);全报那一档不带,与注入边界一致。 */
+  minReportSeverity: Severity | undefined;
 };
 
 /**
@@ -216,6 +219,7 @@ export function scriptedReviewer(
       facts,
       directive,
       mode,
+      minReportSeverity,
       onEvent,
     }) => {
       calls.push({
@@ -228,6 +232,7 @@ export function scriptedReviewer(
         facts: facts ?? [],
         directive,
         mode,
+        minReportSeverity,
       });
       for (const event of extra?.events ?? []) onEvent?.(event);
       return {

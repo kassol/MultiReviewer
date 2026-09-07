@@ -1,10 +1,11 @@
 /**
- * 审查策略页。模型组合、分批上限、批次并发数与每批每模型取证上限读取同一设置快照，但各自保存：
- * 失效模型只门禁组合写入，不连坐其余各项。组合候选与仓库覆盖共用 `ModelComposer` 的模型服务投影。
+ * 审查策略页。模型组合、分批上限、批次并发数、每批每模型取证上限与最低报告等级读取同一设置快照，
+ * 但各自保存：失效模型只门禁组合写入，不连坐其余各项。组合候选与仓库覆盖共用 `ModelComposer`
+ * 的模型服务投影。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircledIcon, CrossCircledIcon } from "@radix-ui/react-icons";
-import { Callout, Card, Skeleton, Text, TextField } from "@radix-ui/themes";
+import { Callout, Card, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
 import { useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -39,6 +40,18 @@ type Settings = {
   maxEvidenceCallsPerBatch: number;
   maxEvidenceCallsPerBatchSource: "default" | "custom";
   maxEvidenceCallsPerBatchVersion: number;
+  minReportSeverity: MinReportSeverity;
+  minReportSeveritySource: "default" | "custom";
+  minReportSeverityVersion: number;
+};
+
+/** 最低报告等级的三档。P0 最高，P2 即全报，是系统默认。 */
+type MinReportSeverity = "P0" | "P1" | "P2";
+
+const MIN_REPORT_SEVERITY_LABEL: Record<MinReportSeverity, string> = {
+  P0: "只报 P0",
+  P1: "P1 及以上",
+  P2: "全部报出（P2 及以上）",
 };
 
 /** 分批上限、批次并发数与取证上限同形：各自一个正整数、各自一份来源与版本，各自保存。 */
@@ -165,6 +178,12 @@ function ReadOnlySettings({ settings }: { settings: Settings }) {
               </span>
             </div>
           ))}
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="text-text-muted">最低报告等级</span>
+            <span className="text-lg font-semibold">
+              {MIN_REPORT_SEVERITY_LABEL[settings.minReportSeverity]}
+            </span>
+          </div>
         </div>
       </Card>
     </div>
@@ -266,7 +285,142 @@ function SettingsForm({ settings }: { settings: Settings }) {
       {LIMITS.map((limit) => (
         <LimitSection key={limit.field} settings={settings} limit={limit} />
       ))}
+      <MinReportSeveritySection settings={settings} />
     </div>
+  );
+}
+
+/**
+ * 最低报告等级的编辑区。与四项上限同形：自己的版本、来源与反馈，自己保存，冲突时重载
+ * 最新值。取值是三档而不是数字，因此用 Select 而不是输入框。
+ */
+function MinReportSeveritySection({ settings }: { settings: Settings }) {
+  const queryClient = useQueryClient();
+  const [value, setValue] = useState<MinReportSeverity>(settings.minReportSeverity);
+  const [source, setSource] = useState(settings.minReportSeveritySource);
+  const [version, setVersion] = useState(settings.minReportSeverityVersion);
+  const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
+
+  const save = useMutation({
+    mutationFn: async (next: MinReportSeverity | null): Promise<Settings> => {
+      const response = await api("/settings", {
+        method: "PUT",
+        body: JSON.stringify({ minReportSeverity: next, expectedVersion: version }),
+      });
+      if (response.status === 409) throw new SettingsConflict(await fetchJson<Settings>("/settings"));
+      if (!response.ok) throw new Error(await errorText(response));
+      return (await response.json()) as Settings;
+    },
+    onSuccess: (saved) => {
+      setValue(saved.minReportSeverity);
+      setSource(saved.minReportSeveritySource);
+      setVersion(saved.minReportSeverityVersion);
+      setFeedback({ text: "最低报告等级已保存。", isError: false });
+      queryClient.setQueryData(["settings"], saved);
+    },
+    onError: (error: Error) => {
+      if (error instanceof SettingsConflict) {
+        setValue(error.latest.minReportSeverity);
+        setSource(error.latest.minReportSeveritySource);
+        setVersion(error.latest.minReportSeverityVersion);
+        queryClient.setQueryData(["settings"], error.latest);
+      }
+      setFeedback({ text: error.message, isError: true });
+    },
+  });
+
+  return (
+    <section className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
+      <div className="flex items-center gap-1.5 px-5 py-3.5">
+        <h2 className="text-2xl font-bold tracking-[-0.015em]">最低报告等级</h2>
+        <HelpTooltip
+          label="最低报告等级说明"
+          content="低于它的 Finding 不发出。它只管新报的问题：未处置的历史 Finding 照旧注入并复核，等级再低也一样。改了之后下一轮审查生效，已开跑的轮次沿用开跑时的值。"
+        />
+      </div>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          setFeedback(null);
+          save.mutate(value);
+        }}
+      >
+        <div className="space-y-3 border-t border-card-line px-5 py-4">
+          <p className="text-xs text-text-muted">
+            取值来源：{source === "default" ? "系统默认" : "自定义"}
+          </p>
+          <div className="flex max-w-sm flex-col gap-1.5">
+            <Text as="label" htmlFor="min-report-severity" size="2" weight="medium">
+              报出的最低等级
+            </Text>
+            <Select.Root
+              value={value}
+              onValueChange={(next) => {
+                setValue(next as MinReportSeverity);
+                setFeedback(null);
+              }}
+            >
+              <Select.Trigger
+                id="min-report-severity"
+                className="w-full max-sm:min-h-11 sm:w-auto"
+              />
+              <Select.Content>
+                {(["P0", "P1", "P2"] as const).map((severity) => (
+                  <Select.Item key={severity} value={severity}>
+                    {MIN_REPORT_SEVERITY_LABEL[severity]}
+                  </Select.Item>
+                ))}
+              </Select.Content>
+            </Select.Root>
+            <p className="text-xs text-text-muted">
+              低于它的 Finding 不发出；只管新报，未处置历史照旧复核；下一轮生效。
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 border-t border-card-line bg-sunken px-5 py-3">
+          <Button
+            type="submit"
+            variant="solid"
+            size={{ initial: "4", sm: "2" }}
+            className="shadow-accent"
+            disabled={save.isPending}
+          >
+            {save.isPending ? "保存中…" : "保存最低报告等级"}
+          </Button>
+          {source === "custom" ? (
+            <Button
+              type="button"
+              variant="outline"
+              color="gray"
+              size={{ initial: "4", sm: "2" }}
+              disabled={save.isPending}
+              onClick={() => {
+                setFeedback(null);
+                save.mutate(null);
+              }}
+            >
+              恢复系统默认
+            </Button>
+          ) : null}
+          {feedback === null ? (
+            <span className="text-xs text-text-muted">单独保存，不受模型组合可用性影响。</span>
+          ) : null}
+        </div>
+        {feedback === null ? null : (
+          <Callout.Root
+            role={feedback.isError ? "alert" : "status"}
+            color={feedback.isError ? "red" : "green"}
+            size="1"
+            className="m-4 mt-0"
+          >
+            <Callout.Icon>
+              {feedback.isError ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
+            </Callout.Icon>
+            <Callout.Text>{feedback.text}</Callout.Text>
+          </Callout.Root>
+        )}
+      </form>
+    </section>
   );
 }
 

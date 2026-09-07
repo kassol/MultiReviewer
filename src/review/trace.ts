@@ -32,6 +32,11 @@ export type RunTraceKind =
   | "merge_fallback"
   /** 落点锚不进本轮 diff、被丢弃的一条 Finding(issue #224)。 */
   | "finding_discarded"
+  /**
+   * 低于本轮最低报告等级、被合并前那道保底挡掉的 Finding(issue #271):payload 记
+   * 丢弃条数与本轮阈值。一条都没挡掉时不发。
+   */
+  | "findings_filtered"
   /** 本轮一条 Finding 折叠到了历史评论上,带这一次折叠的判据(issue #240)。 */
   | "finding_folded"
   /**

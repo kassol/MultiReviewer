@@ -597,3 +597,27 @@ test("完整审查那一轮的工具清单与这一票之前逐字一致", () =>
     "subagent",
   ]);
 });
+
+test("全报那一档不渲染阈值段,prompt 与这一票之前逐字一致", () => {
+  const without = reviewPrompt({ range: PROMPT_RANGE, history: [] });
+  const full = reviewPrompt({ range: PROMPT_RANGE, history: [], minReportSeverity: "P2" });
+
+  assert.equal(full, without);
+  assert.equal(/threshold/i.test(without), false);
+});
+
+test("阈值段写明不报低于它的,历史仍逐条要结论,排在指令段之前", () => {
+  const prompt = reviewPrompt({
+    range: PROMPT_RANGE,
+    history: [],
+    minReportSeverity: "P1",
+    directive: "这一轮重点看并发",
+  });
+
+  assert.match(prompt, /P1 or higher/);
+  assert.match(prompt, /Do not report anything below that threshold/);
+  // 阈值只管新报:注入的历史一条不少地照旧要结论,不然阈值会顺手改掉历史的口径。
+  assert.match(prompt, /verdict on every prior finding/);
+  // 阈值段是指令生效的底盘,读到指令之前就该知道这一轮报什么。
+  assert.ok(prompt.indexOf("or higher") < prompt.indexOf("这一轮重点看并发"));
+});

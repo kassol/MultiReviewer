@@ -47,9 +47,12 @@ type SettingsBody = {
   maxEvidenceCallsPerBatch: number;
   maxEvidenceCallsPerBatchSource: "default" | "custom";
   maxEvidenceCallsPerBatchVersion: number;
+  minReportSeverity: "P0" | "P1" | "P2";
+  minReportSeveritySource: "default" | "custom";
+  minReportSeverityVersion: number;
 };
 
-/** 并发数、文件数上限与取证上限在下面这些用例里一次都没被改过,读回来恒是这一份。 */
+/** 并发数、文件数上限、取证上限与最低报告等级在下面这些用例里一次都没被改过,读回来恒是这一份。 */
 const UNTOUCHED_BATCH_LIMITS = {
   maxParallelBatches: DEFAULT_MAX_PARALLEL_BATCHES,
   maxParallelBatchesSource: "default",
@@ -60,6 +63,9 @@ const UNTOUCHED_BATCH_LIMITS = {
   maxEvidenceCallsPerBatch: EVIDENCE_SESSION_BUDGET,
   maxEvidenceCallsPerBatchSource: "default",
   maxEvidenceCallsPerBatchVersion: 1,
+  minReportSeverity: "P2",
+  minReportSeveritySource: "default",
+  minReportSeverityVersion: 1,
 };
 
 async function readSettings(h: PanelHarness): Promise<SettingsBody> {
@@ -404,6 +410,9 @@ test("批次并发数与文件数上限各自独立读写,版本各推各的", a
     maxEvidenceCallsPerBatch: EVIDENCE_SESSION_BUDGET,
     maxEvidenceCallsPerBatchSource: "default",
     maxEvidenceCallsPerBatchVersion: 1,
+    minReportSeverity: "P2",
+    minReportSeveritySource: "default",
+    minReportSeverityVersion: 1,
   });
 
   // 陈旧写只冲突目标项,另外两项一个都不动。
@@ -725,4 +734,58 @@ test("每批每模型取证上限独立读写,升级前的库读出默认 3", as
   assert.equal(restored.maxEvidenceCallsPerBatch, EVIDENCE_SESSION_BUDGET);
   assert.equal(restored.maxEvidenceCallsPerBatchSource, "default");
   assert.equal(restored.maxEvidenceCallsPerBatchVersion, 3);
+});
+
+test("最低报告等级独立读写,取值受限,缺行即 P2", async () => {
+  const h = await startPanelHarness(cleanups);
+  // harness 的库从没写过这一格,与升级前的库同一形态:读出来是全报、版本 1。
+  const initial = await readSettings(h);
+  assert.equal(initial.minReportSeverity, "P2");
+  assert.equal(initial.minReportSeveritySource, "default");
+  assert.equal(initial.minReportSeverityVersion, 1);
+  const store = openStore(h.db.path);
+  try {
+    assert.equal(store.getGlobalSettings().minReportSeverity, null);
+  } finally {
+    store.close();
+  }
+
+  for (const value of ["P3", "p1", "high", 1, ""]) {
+    const rejected = await h.api("PUT", "/settings", {
+      minReportSeverity: value,
+      expectedVersion: 1,
+    });
+    assert.equal(rejected.status, 400, `${String(value)} 应被拒绝`);
+    assert.match(((await rejected.json()) as { error: string }).error, /minReportSeverity/);
+  }
+
+  const raised = await h.api("PUT", "/settings", { minReportSeverity: "P1", expectedVersion: 1 });
+  assert.equal(raised.status, 200);
+  const after = (await raised.json()) as SettingsBody;
+  assert.equal(after.minReportSeverity, "P1");
+  assert.equal(after.minReportSeveritySource, "custom");
+  assert.equal(after.minReportSeverityVersion, 2);
+  // 只推自己的版本,四项上限一个都不动。
+  assert.equal(after.maxChangedLinesPerBatchVersion, 1);
+  assert.equal(after.maxParallelBatchesVersion, 1);
+  assert.equal(after.maxFilesPerBatchVersion, 1);
+  assert.equal(after.maxEvidenceCallsPerBatchVersion, 1);
+
+  const stale = await h.api("PUT", "/settings", { minReportSeverity: "P0", expectedVersion: 1 });
+  assert.equal(stale.status, 409);
+
+  // 一个请求仍然只能改一项。
+  const coupled = await h.api("PUT", "/settings", {
+    minReportSeverity: "P0",
+    maxFilesPerBatch: 20,
+    expectedVersion: 2,
+  });
+  assert.equal(coupled.status, 400);
+
+  const reset = await h.api("PUT", "/settings", { minReportSeverity: null, expectedVersion: 2 });
+  assert.equal(reset.status, 200);
+  const restored = await readSettings(h);
+  assert.equal(restored.minReportSeverity, "P2");
+  assert.equal(restored.minReportSeveritySource, "default");
+  assert.equal(restored.minReportSeverityVersion, 3);
 });

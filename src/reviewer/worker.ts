@@ -18,6 +18,7 @@ import type {
   ReviewIntent,
   ReviewRule,
   ReviewRunMode,
+  Severity,
 } from "../review/finding.ts";
 import type { DiffRanges } from "../review/position.ts";
 import { anchorReport, anchorVerdict } from "./anchor.ts";
@@ -363,10 +364,30 @@ function directiveSection(directive: string): string {
   ].join("\n");
 }
 
+/**
+ * 本轮的最低报告等级(CONTEXT.md,issue #271)。写明两件事:低于它的不要报出;历史的
+ * 复核义务不受它影响——阈值只管新报,注入的历史一条不少地照旧要结论。
+ *
+ * 阈值是 P2(全报)时不渲染:那一档不改变要报什么,多一段话只会让模型自行收窄。
+ */
+function minReportSeveritySection(minReportSeverity: Severity): string {
+  return [
+    "",
+    `This review round only reports findings of severity ${minReportSeverity} or higher (P0 is the highest, then P1, then P2). Do not report anything below that threshold — leave it out entirely rather than raising its severity to fit. This threshold applies to new findings only: still give a verdict on every prior finding listed below, whatever its severity.`,
+  ].join("\n");
+}
+
 export function reviewPrompt(
   request: Pick<
     ReviewerRequest,
-    "range" | "history" | "intent" | "rules" | "facts" | "directive" | "mode"
+    | "range"
+    | "history"
+    | "intent"
+    | "rules"
+    | "facts"
+    | "directive"
+    | "mode"
+    | "minReportSeverity"
   >,
 ): string {
   // 只复核那一轮的意图段与规则段换措辞(issue #270):这一轮没有报出工具,两段里要求
@@ -387,13 +408,19 @@ export function reviewPrompt(
     request.facts === undefined || request.facts.length === 0
       ? ""
       : `${factsSection(request.facts)}\n`;
+  // 阈值段紧跟知识两段、排在指令段之前(issue #271):它说的是这一轮报什么,是指令
+  // 生效的底盘。全报那一档不渲染,prompt 与这一票之前逐字一致。
+  const minReportSeverity =
+    request.minReportSeverity === undefined || request.minReportSeverity === "P2"
+      ? ""
+      : `${minReportSeveritySection(request.minReportSeverity)}\n`;
   // 指令段排在知识两段之后、文件清单之前:它是这一轮的要求,读到文件清单之前就该知道。
   const directive =
     request.directive === undefined || request.directive === ""
       ? ""
       : `${directiveSection(request.directive)}\n`;
   return `Review the changes between commit ${request.range.baseSha} and commit ${request.range.headSha}.
-${intent}${rules}${facts}${directive}
+${intent}${rules}${facts}${minReportSeverity}${directive}
 The following files changed. Review the changes in them, using the rest of the repository as context:
 
 ${files}

@@ -792,6 +792,9 @@ const ADD_COLUMNS = [
   // 没存」,恢复操作只补这一档;空串是「模型没给」,照原样呈现为没有这一段。
   "ALTER TABLE finding_attribution ADD COLUMN impact TEXT",
   "ALTER TABLE finding_attribution ADD COLUMN suggestion TEXT",
+  // 开跑时生效的最低报告等级(CONTEXT.md 最低报告等级,issue #271)。旧行是 NULL,读回
+  // 按 P2 算——升级前每一轮都是全报,这一列补出来不改变它们的事实,与 `mode` 同律。
+  "ALTER TABLE review_run ADD COLUMN min_report_severity TEXT",
 ];
 
 /**
@@ -820,6 +823,24 @@ const ADD_INDEXES = [
 /** `global_setting` 的设置值与独立版本键。 */
 const GLOBAL_REVIEWERS_KEY = "reviewers";
 const GLOBAL_REVIEWERS_VERSION_KEY = "reviewers_version";
+
+/**
+ * 最低报告等级(CONTEXT.md,issue #271)的设置键与版本键。与四项上限同形,只是取值是
+ * 严重度枚举而不是正整数;缺行即默认 P2(全报)。
+ */
+const GLOBAL_MIN_REPORT_SEVERITY_KEY = "min_report_severity";
+const GLOBAL_MIN_REPORT_SEVERITY_VERSION_KEY = "min_report_severity_version";
+
+/** 最低报告等级的系统默认:全报。缺行、旧轮次的空列都读成它。 */
+export const DEFAULT_MIN_REPORT_SEVERITY: Severity = "P2";
+
+/** 最低报告等级的合法取值。设置端点的校验与库里读回认同一份。 */
+export const MIN_REPORT_SEVERITIES: readonly Severity[] = ["P0", "P1", "P2"];
+
+/** 库里读回的一格最低报告等级。认不出即当作没配。 */
+function readMinReportSeverity(stored: string | undefined): Severity | null {
+  return MIN_REPORT_SEVERITIES.includes(stored as Severity) ? (stored as Severity) : null;
+}
 
 /**
  * 分批上限、批次并发数(issue #230)与每批每模型取证上限(issue #258)各自的设置键与
@@ -949,6 +970,11 @@ export type RunMeta = {
    * 各批拿到的因此始终是同一份。省略即不落快照,那一轮不可续跑。
    */
   history?: readonly HistoryFinding[];
+  /**
+   * 开跑时生效的最低报告等级(CONTEXT.md,issue #271)。省略即默认 P2,与升级前的旧行
+   * 同一读法。轮次要答得出「那一轮按什么阈值跑的」,续跑据它核对阈值有没有改过。
+   */
+  minReportSeverity?: Severity;
 };
 
 /** 一条被启动改判掉的 Review Run(issue #247)。坐标够撤掉那个 PR 上的 👀。 */
@@ -988,6 +1014,11 @@ export type ResumeState = {
   headSha: string;
   /** 开跑时冻结的知识集版本(issue #204)。续跑要注入同一版,否则各批依的规则会分叉。 */
   ruleSetVersion: number | null;
+  /**
+   * 开跑时生效的最低报告等级(issue #271)。续跑核对它:阈值改过就说明后跑的批次会按
+   * 另一条口径报,与原轮各批对不上。升级前的旧行读回默认 P2。
+   */
+  minReportSeverity: Severity;
   batchCount: number;
   /**
    * 开跑时冻结的完整批次计划(issue #253),按批次序号排。续跑核对重新切批的每一批都
@@ -1480,6 +1511,9 @@ export type GlobalSettings = {
   /** 每批每模型的取证次数上限,null 即取 Reviewer 的系统默认(issue #258)。 */
   maxEvidenceCallsPerBatch: number | null;
   maxEvidenceCallsPerBatchVersion: number;
+  /** 最低报告等级,null 即取系统默认 P2(全报,issue #271)。 */
+  minReportSeverity: Severity | null;
+  minReportSeverityVersion: number;
 };
 
 /** 注册表里的一个仓库。`reviewersJson` 是模型覆盖的 JSON,null 即跟随全局。 */
@@ -2207,6 +2241,11 @@ export type Store = {
     expectedVersion: number,
     limit: number | null,
   ): boolean;
+  /**
+   * 按独立版本设置最低报告等级(issue #271)；null 移除自定义值即回到默认 P2，陈旧
+   * 版本返回 false。与分批上限同形，只是取值是严重度而不是正整数。
+   */
+  putGlobalMinReportSeverity(expectedVersion: number, severity: Severity | null): boolean;
   /** 测试夹具和启动播种的兼容入口；面板写链不得使用。 */
   putGlobalSettings(settings: Pick<GlobalSettings, "reviewersJson" | "maxChangedLinesPerBatch">): boolean;
   /**
@@ -3290,6 +3329,46 @@ export function openStore(dbPath: string): Store {
     }
   };
 
+  /**
+   * 按独立版本改写 `global_setting` 里的一项设置:版本相等才写,写完把版本推进一版。
+   * `value` 为 null 即移除自定义值,那一项从此读回系统默认。四项批次上限与最低报告
+   * 等级(issue #271)共用这一份写法,取值形态由各自的入口负责。
+   */
+  const putVersionedSetting = (
+    key: string,
+    versionKey: string,
+    expectedVersion: number,
+    value: string | null,
+  ): boolean => {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const versionRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
+        .get(versionKey)?.["value"];
+      const version = versionRow === undefined ? 1 : Number(versionRow);
+      if (version !== expectedVersion) {
+        db.exec("ROLLBACK");
+        return false;
+      }
+      if (value === null) {
+        db.prepare("DELETE FROM global_setting WHERE key = ?").run(key);
+      } else {
+        db.prepare(
+          `INSERT INTO global_setting (key, value) VALUES (?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        ).run(key, value);
+      }
+      db.prepare(
+        `INSERT INTO global_setting (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      ).run(versionKey, String(version + 1));
+      db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  };
+
   const store: Store = {
     listPanelRoles() {
       const rows = db
@@ -4102,6 +4181,10 @@ export function openStore(dbPath: string): Store {
         maxFilesPerBatchVersion: files.version,
         maxEvidenceCallsPerBatch: evidence.value,
         maxEvidenceCallsPerBatchVersion: evidence.version,
+        minReportSeverity: readMinReportSeverity(values.get(GLOBAL_MIN_REPORT_SEVERITY_KEY)),
+        minReportSeverityVersion: Number(
+          values.get(GLOBAL_MIN_REPORT_SEVERITY_VERSION_KEY) ?? 1,
+        ),
       };
     },
 
@@ -4179,33 +4262,16 @@ export function openStore(dbPath: string): Store {
 
     putGlobalBatchLimit(field, expectedVersion, limit) {
       const [key, versionKey] = BATCH_LIMIT_KEYS[field];
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        const versionRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
-          .get(versionKey)?.["value"];
-        const version = versionRow === undefined ? 1 : Number(versionRow);
-        if (version !== expectedVersion) {
-          db.exec("ROLLBACK");
-          return false;
-        }
-        if (limit === null) {
-          db.prepare("DELETE FROM global_setting WHERE key = ?").run(key);
-        } else {
-          db.prepare(
-            `INSERT INTO global_setting (key, value) VALUES (?, ?)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-          ).run(key, String(limit));
-        }
-        db.prepare(
-          `INSERT INTO global_setting (key, value) VALUES (?, ?)
-           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-        ).run(versionKey, String(version + 1));
-        db.exec("COMMIT");
-        return true;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      return putVersionedSetting(key, versionKey, expectedVersion, limit === null ? null : String(limit));
+    },
+
+    putGlobalMinReportSeverity(expectedVersion, severity) {
+      return putVersionedSetting(
+        GLOBAL_MIN_REPORT_SEVERITY_KEY,
+        GLOBAL_MIN_REPORT_SEVERITY_VERSION_KEY,
+        expectedVersion,
+        severity,
+      );
     },
 
     putGlobalSettings(settings) {
@@ -4865,8 +4931,9 @@ export function openStore(dbPath: string): Store {
             `INSERT INTO review_run
                (owner, repo, pull_number, head_sha, title, range_review_id, pr_state,
                 triggered_by, started_at, changed_files, changed_lines, batch_count,
-                rule_set_version, directive, mode, history_json, batch_plan_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                rule_set_version, directive, mode, history_json, batch_plan_json,
+                min_report_severity)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             meta.owner,
@@ -4890,6 +4957,8 @@ export function openStore(dbPath: string): Store {
             // 完整批次计划同一次写下(issue #253):任何批次完成之前它就在,第一批就崩的
             // 轮次续跑时也有完整的核对依据。
             meta.batches === undefined ? null : JSON.stringify(meta.batches),
+            // 开跑时的阈值随这一轮落库(issue #271):之后改设置追不上已经开跑的它。
+            meta.minReportSeverity ?? DEFAULT_MIN_REPORT_SEVERITY,
           );
         const runId = Number(result.lastInsertRowid);
         const insertPin = db.prepare(
@@ -5016,7 +5085,8 @@ export function openStore(dbPath: string): Store {
     resumeState(runId) {
       const run = db
         .prepare(
-          `SELECT head_sha, rule_set_version, batch_count, history_json, batch_plan_json
+          `SELECT head_sha, rule_set_version, batch_count, history_json, batch_plan_json,
+                  min_report_severity
              FROM review_run WHERE id = ?`,
         )
         .get(runId);
@@ -5038,6 +5108,11 @@ export function openStore(dbPath: string): Store {
         headSha: String(run["head_sha"]),
         ruleSetVersion:
           run["rule_set_version"] === null ? null : Number(run["rule_set_version"]),
+        // 升级前的旧行没有这一列,读回按全报算,与 `mode` 同律。
+        minReportSeverity:
+          readMinReportSeverity(
+            run["min_report_severity"] === null ? undefined : String(run["min_report_severity"]),
+          ) ?? DEFAULT_MIN_REPORT_SEVERITY,
         batchCount: Number(run["batch_count"]),
         plan:
           run["batch_plan_json"] === null

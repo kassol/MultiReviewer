@@ -334,6 +334,23 @@ function RunMilestone({ event }: { event: TraceEvent }) {
           </div>
         );
       }
+      // 低于本轮最低报告等级、合并前被挡掉的那些(issue #271)。逐条不列:挡掉的是模型
+      // 报了却不该发的,读者要的是「这一轮按什么阈值挡掉了几条」。
+      case "findings_filtered": {
+        const discarded = num(payload, "discarded");
+        const threshold = str(payload, "minReportSeverity");
+        return (
+          <span className="flex flex-wrap items-baseline gap-x-2 text-base text-text">
+            <span>
+              低于最低报告等级,已丢弃{" "}
+              <span className="font-mono tabular-nums">{discarded ?? 0}</span> 条
+            </span>
+            {threshold === null ? null : (
+              <Badge color="gray" variant="soft" radius="full">{threshold} 及以上</Badge>
+            )}
+          </span>
+        );
+      }
       case "review_posted": {
         const count = num(payload, "findingCount");
         return (
