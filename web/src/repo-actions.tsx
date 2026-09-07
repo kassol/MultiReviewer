@@ -16,6 +16,7 @@ import {
   Flex,
   IconButton,
   Popover,
+  Select,
   Skeleton,
   Text,
   TextField,
@@ -49,6 +50,7 @@ import {
   type ModelRef,
   type ThinkingLevel,
 } from "./model-services.ts";
+import { MIN_REPORT_SEVERITY_LABEL, type MinReportSeverity } from "./settings.tsx";
 import { useSetupStatus } from "./setup-checklist.tsx";
 
 /**
@@ -86,6 +88,10 @@ export type RepoRow = {
   owner: string;
   repo: string;
   reviewers: ReviewerSpec[] | null;
+  /** 最低报告等级的仓库覆盖(issue #273),null 即跟随全局。 */
+  minReportSeverity: MinReportSeverity | null;
+  /** 眼下的全局最低报告等级。「跟随全局」跟的就是它,列表每行都带一份。 */
+  globalMinReportSeverity: MinReportSeverity;
   runCount: number;
   findingCount: number;
   lastActivity: string | null;
@@ -552,6 +558,8 @@ function ConfigureDialogContent({
           )}
         </Section>
 
+        <MinReportSeveritySection repo={repo} onFeedback={setFeedback} onSaved={refresh} />
+
         <Section
           title={
             <>
@@ -652,6 +660,114 @@ function ConfigureDialogContent({
  * 自定义态从当前生效组合起步，并复用审查策略的同一个 `ModelComposer`。已落库但失效的
  * 标识原样留在编辑态里，移除不受阻；只有再次保存仍含不可用项时才门禁。
  */
+/**
+ * 仓库的最低报告等级(CONTEXT.md,issue #273)。与模型组合那一块同形的两态:「跟随全局」
+ * 是一个动作,直接把覆盖清掉;「自定义」写下当前生效值,随后那个 Select 每选一档存一次。
+ * 库里的覆盖在不在就是这两态的唯一判据,界面不另存一份编辑态。
+ */
+function MinReportSeveritySection({
+  repo,
+  onFeedback,
+  onSaved,
+}: {
+  repo: RepoRow;
+  onFeedback: (feedback: Feedback) => void;
+  onSaved: () => void;
+}) {
+  const following = repo.minReportSeverity === null;
+  const effective = repo.minReportSeverity ?? repo.globalMinReportSeverity;
+
+  const save = useMutation({
+    mutationFn: async (next: MinReportSeverity | null) => {
+      const response = await api(`/repos/${repo.repoId}/min-report-severity`, {
+        method: "PUT",
+        body: JSON.stringify({ minReportSeverity: next }),
+      });
+      if (!response.ok) throw new Error(await errorText(response));
+      return next;
+    },
+    onSuccess: (next) => {
+      onFeedback({
+        text:
+          next === null
+            ? "覆盖已清除，本仓库将跟随全局最低报告等级；下一次审查时生效。"
+            : `最低报告等级已设为${MIN_REPORT_SEVERITY_LABEL[next]}，下一次审查时生效。`,
+        isError: false,
+      });
+      onSaved();
+    },
+    onError: (error: Error) => onFeedback({ text: error.message, isError: true }),
+  });
+
+  return (
+    <Section
+      title={
+        <>
+          最低报告等级
+          <HelpTooltip
+            label="最低报告等级说明"
+            content="低于它的 Finding 不发出。它只管新报的问题：未处置的历史 Finding 照旧注入并复核，等级再低也一样。改了之后下一轮审查生效，已开跑的轮次沿用开跑时的值。"
+          />
+        </>
+      }
+      action={
+        <div
+          className="flex shrink-0 rounded-sm bg-fill p-0.5 text-base"
+          role="group"
+          aria-label="最低报告等级来源"
+        >
+          <SegmentButton
+            active={following}
+            disabled={save.isPending}
+            onClick={() => {
+              if (!following) save.mutate(null);
+            }}
+          >
+            跟随全局
+          </SegmentButton>
+          <SegmentButton
+            active={!following}
+            disabled={save.isPending}
+            onClick={() => {
+              if (following) save.mutate(effective);
+            }}
+          >
+            自定义
+          </SegmentButton>
+        </div>
+      }
+    >
+      <Kv label={following ? "跟随全局默认" : "本仓库覆盖"}>
+        {MIN_REPORT_SEVERITY_LABEL[effective]}
+      </Kv>
+      {following ? null : (
+        <Select.Root
+          value={effective}
+          disabled={save.isPending}
+          onValueChange={(next) => save.mutate(next as MinReportSeverity)}
+        >
+          <Select.Trigger
+            aria-label="本仓库的最低报告等级"
+            className="w-full max-sm:min-h-11 sm:w-auto"
+          />
+          <Select.Content>
+            {(["P0", "P1", "P2"] as const).map((severity) => (
+              <Select.Item key={severity} value={severity}>
+                {MIN_REPORT_SEVERITY_LABEL[severity]}
+              </Select.Item>
+            ))}
+          </Select.Content>
+        </Select.Root>
+      )}
+      <p className="text-base text-text-muted">
+        {following
+          ? "审查策略更新后，本仓库将同步使用新的最低报告等级。"
+          : "该等级仅对本仓库生效，不随审查策略变化。"}
+      </p>
+    </Section>
+  );
+}
+
 function ReviewersEditor({
   repo,
   globalModels,

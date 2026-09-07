@@ -59,6 +59,12 @@ function record(payload: Record<string, unknown>, key: string): Record<string, u
     : null;
 }
 
+/** `history_auto_disposed` 的一组 Finding id。只数条数,坏形状按空组算。 */
+function ids(payload: Record<string, unknown>, key: string): number[] {
+  const value = payload[key];
+  return Array.isArray(value) ? value.filter((item): item is number => typeof item === "number") : [];
+}
+
 function strings(payload: Record<string, unknown>, key: string): string[] {
   const value = payload[key];
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
@@ -347,6 +353,30 @@ function RunMilestone({ event }: { event: TraceEvent }) {
             </span>
             {threshold === null ? null : (
               <Badge color="gray" variant="soft" radius="full">{threshold} 及以上</Badge>
+            )}
+          </span>
+        );
+      }
+      // 所在文件已回退或已删除,开跑就自动处置掉的那些未处置历史(issue #272)。逐条不列:
+      // 读者要的是「这一轮开跑关掉了几条、为什么关」,条目本身在 Finding 列表里还看得到。
+      case "history_auto_disposed": {
+        const reverted = ids(payload, "reverted").length;
+        const deleted = ids(payload, "deleted").length;
+        return (
+          <span className="flex flex-wrap items-baseline gap-x-2 text-base text-text">
+            <span>
+              开跑时自动处置{" "}
+              <span className="font-mono tabular-nums">{reverted + deleted}</span> 条历史
+            </span>
+            {reverted === 0 ? null : (
+              <Badge color="gray" variant="soft" radius="full">
+                文件已回退 {reverted} 条
+              </Badge>
+            )}
+            {deleted === 0 ? null : (
+              <Badge color="gray" variant="soft" radius="full">
+                文件已删除 {deleted} 条
+              </Badge>
             )}
           </span>
         );

@@ -856,6 +856,7 @@ async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<Re
   const snapshot = withStore(deps.dbPath, (store) => store.getReviewRunSnapshot(repoId));
   const plans = await materializeReviewerPlans(deps, snapshot.modelServices, snapshot.reviewers);
   return createReviewRunPlan(
+    repoId,
     deps.buildReviewers(plans),
     {
       maxChangedLinesPerBatch:
@@ -1401,9 +1402,11 @@ function panelPermissionGranted(
 const CUSTOM_PROVIDER_NAME = CUSTOM_PROVIDER_NAME_PATTERN;
 
 function listRepos(res: ServerResponse, deps: WebhookServerDeps, assignment: RepoAssignment): void {
-  const rows = withStore(deps.dbPath, (store) => store.listRepos()).filter((row) =>
-    assignment.allowsId(row.repoId),
-  );
+  const { repos, global } = withStore(deps.dbPath, (store) => ({
+    repos: store.listRepos(),
+    global: store.getGlobalSettings().minReportSeverity ?? DEFAULT_MIN_REPORT_SEVERITY,
+  }));
+  const rows = repos.filter((row) => assignment.allowsId(row.repoId));
   return sendJson(
     res,
     200,
@@ -1412,6 +1415,9 @@ function listRepos(res: ServerResponse, deps: WebhookServerDeps, assignment: Rep
       // 覆盖以解析后的形状交给前端,编辑时原样回传 PUT。坏 JSON(直接写库的遗留)
       // 按 null 透出——一行坏数据不该把整个列表拖成 500,投递链对同一列也是这个态度。
       reviewers: reviewersJson === null ? null : safeParse(reviewersJson),
+      // 全局那一档跟着每一行一起给(issue #273):配置弹窗要显示「跟随全局」跟的是什么,
+      // 而看得到仓库的人不一定读得到审查策略,让它自己再请求一次会撞权限。
+      globalMinReportSeverity: global,
     })),
   );
 }
@@ -2049,6 +2055,14 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     assignment: { by: "repo", group: 1 },
     handler: ({ req, res, deps }, match) =>
       handleSetReviewers(req, res, deps, Number(match![1])),
+  },
+  {
+    method: "PUT",
+    pattern: /^\/repos\/(\d+)\/min-report-severity$/,
+    access: "repo:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ req, res, deps }, match) =>
+      handleSetMinReportSeverity(req, res, deps, Number(match![1])),
   },
   {
     method: "POST",
@@ -7349,6 +7363,33 @@ async function handleSetReviewers(
   if (!saved) {
     return sendJson(res, 409, { error: "模型服务状态已经变化，请重新选择仓库模型覆盖" });
   }
+  return send(res, 204);
+}
+
+/**
+ * 改写这个仓库的最低报告等级覆盖(CONTEXT.md 最低报告等级,issue #273)。与模型覆盖同形:
+ * 全量替换,null 即清除并跟随全局。取值只认 P0 / P1 / P2 与 null,别的 400。
+ */
+async function handleSetMinReportSeverity(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+): Promise<void> {
+  if (withStore(deps.dbPath, (store) => store.getRepo(repoId)) === undefined) {
+    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+  }
+  const payload = await readJson<{ minReportSeverity?: unknown } | null>(req, res);
+  if (payload === undefined) return;
+  const severity = payload === null ? undefined : payload[MIN_REPORT_SEVERITY_FIELD];
+  if (severity !== null && !MIN_REPORT_SEVERITIES.includes(severity as Severity)) {
+    return sendJson(res, 400, {
+      error: `${MIN_REPORT_SEVERITY_FIELD} 要是 ${MIN_REPORT_SEVERITIES.join(" / ")} 之一,或 null(跟随全局)`,
+    });
+  }
+  withStore(deps.dbPath, (store) =>
+    store.setRepoMinReportSeverity(repoId, severity as Severity | null),
+  );
   return send(res, 204);
 }
 

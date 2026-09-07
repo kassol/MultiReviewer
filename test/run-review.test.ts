@@ -553,6 +553,7 @@ test("Review Run 在首批前固定一份运行计划,后续批次不跟随模�
   const replacement = scriptedReviewer("replacement-model", []);
   const configuredReviewers: Reviewer[] = [planned];
   const plan = createReviewRunPlan(
+    1,
     configuredReviewers,
     { maxChangedLinesPerBatch: 1, maxFilesPerBatch: 40, maxParallelBatches: 3, maxEvidenceCallsPerBatch: 3 },
     [],
@@ -2031,6 +2032,71 @@ test("阈值随轮次落库,开跑后改设置不影响本轮", async () => {
   );
   assert.deepEqual(runMinReportSeverity(db.path), ["P1", "P2"]);
   assert.equal(next.calls[0]!.minReportSeverity, undefined);
+});
+
+/** 把这个仓库注册进注册表,好挂仓库级的覆盖(issue #273)。 */
+function registerRepoRow(dbPath: string, repoId: number): void {
+  const store = openStore(dbPath);
+  try {
+    assert.equal(
+      store.registerRepo({
+        repoId,
+        owner: "acme",
+        repo: "widgets",
+        generation: 1,
+        key: "k".repeat(64),
+      }),
+      true,
+    );
+  } finally {
+    store.close();
+  }
+}
+
+/** 给这个仓库写一档最低报告等级覆盖(issue #273);null 即清掉,跟随全局。 */
+function setRepoMinReportSeverity(
+  dbPath: string,
+  repoId: number,
+  severity: "P0" | "P1" | "P2" | null,
+): void {
+  const store = openStore(dbPath);
+  try {
+    store.setRepoMinReportSeverity(repoId, severity);
+  } finally {
+    store.close();
+  }
+}
+
+test("仓库覆盖优先于全局阈值,清掉覆盖就回到全局(issue #273)", async () => {
+  const { cache, db, forge } = setup(6);
+  const event = { owner: "acme", repo: "widgets", number: 7 };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
+  registerRepoRow(db.path, 101);
+  registerRepoRow(db.path, 102);
+  // 全局仍是默认的全报;只有 101 这个仓库自定义到 P1。
+  setRepoMinReportSeverity(db.path, 101, "P1");
+
+  const covered = scriptedReviewer("model-a", [at(6, "P2", "这里可以改成 const")]);
+  await runReview(event, { ...deps, repoId: 101, reviewers: [covered] });
+
+  assert.equal(forge.publishedComments.length, 0, "覆盖到 P1 的仓库不该发出 P2");
+  assert.equal(covered.calls[0]!.minReportSeverity, "P1");
+
+  // 没有覆盖的另一个仓库照全局跑:P2 照发。
+  const other = scriptedReviewer("model-b", [at(6, "P2", "这里可以改成 const")]);
+  await runReview(event, { ...deps, repoId: 102, reviewers: [other] });
+
+  assert.equal(forge.publishedComments.length, 1);
+  assert.equal(other.calls[0]!.minReportSeverity, undefined);
+
+  // 清掉覆盖,101 也回到全局的全报。
+  setRepoMinReportSeverity(db.path, 101, null);
+  const cleared = scriptedReviewer("model-c", [at(11, "P2", "命名再直白一点")]);
+  await runReview(event, { ...deps, repoId: 101, reviewers: [cleared] });
+
+  assert.equal(cleared.calls[0]!.minReportSeverity, undefined);
+  // 三轮各自落下开跑时的生效阈值。
+  assert.deepEqual(runMinReportSeverity(db.path), ["P1", "P2", "P2"]);
 });
 
 test("低于阈值的未处置历史照旧注入并要结论", async () => {

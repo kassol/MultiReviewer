@@ -224,6 +224,46 @@ test("模型覆盖可编辑:PUT 全量替换、null 清除,坏覆盖 400", async
   );
 });
 
+test("最低报告等级的仓库覆盖:设、清与非法取值 400(issue #273)", async () => {
+  const h = await startPanelHarness(cleanups);
+  seedAvailableModelService(h, "test", ["global-model"]);
+  assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
+
+  type Row = { minReportSeverity: unknown; globalMinReportSeverity: unknown };
+  const rows = async (): Promise<Row[]> =>
+    ((await (await h.api("GET", "/repos")).json()) as Row[]).map(
+      ({ minReportSeverity, globalMinReportSeverity }) => ({
+        minReportSeverity,
+        globalMinReportSeverity,
+      }),
+    );
+
+  // 刚注册即跟随全局:覆盖为 null,全局那一档跟着行一起给出来。
+  assert.deepEqual(await rows(), [{ minReportSeverity: null, globalMinReportSeverity: "P2" }]);
+
+  const put = (body: unknown): Promise<Response> =>
+    h.api("PUT", `/repos/${GITEA_REPO.id}/min-report-severity`, body);
+
+  assert.equal((await put({ minReportSeverity: "P1" })).status, 204);
+  assert.equal((await rows())[0]!.minReportSeverity, "P1");
+
+  // 非法取值 400,且不落库——覆盖仍是刚才那一档。
+  for (const value of ["P3", "p1", 1, "", undefined]) {
+    const rejected = await put({ minReportSeverity: value });
+    assert.equal(rejected.status, 400, `${String(value)} 应该被拒`);
+    assert.match(((await rejected.json()) as { error: string }).error, /minReportSeverity/);
+  }
+  assert.equal((await rows())[0]!.minReportSeverity, "P1");
+
+  // null 清除覆盖,回到跟随全局;未注册仓库 404。
+  assert.equal((await put({ minReportSeverity: null })).status, 204);
+  assert.equal((await rows())[0]!.minReportSeverity, null);
+  assert.equal(
+    (await h.api("PUT", "/repos/999/min-report-severity", { minReportSeverity: null })).status,
+    404,
+  );
+});
+
 test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为跟随全局", async () => {
   const h = await startHarness();
   seedAvailableModelService(h, "repo-healthy", ["keep"]);

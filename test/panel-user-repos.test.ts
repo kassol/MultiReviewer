@@ -519,6 +519,7 @@ test("分配外的处置、重跑、发起、推进、完成、配置与移除�
     ["GET", "/repo-branches?owner=acme&repo=beta"],
     ["GET", "/repo-commits?owner=acme&repo=beta&branch=main"],
     ["PUT", `/repos/${beta}/reviewers`, { reviewers: null }],
+    ["PUT", `/repos/${beta}/min-report-severity`, { minReportSeverity: null }],
     ["POST", `/repos/${beta}/rotate`],
     ["POST", `/repos/${beta}/worktree`],
     ["GET", `/repos/${beta}/hooks`],
