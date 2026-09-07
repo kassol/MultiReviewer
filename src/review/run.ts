@@ -98,6 +98,11 @@ export type PullRequestEvent = PullRequestRef;
  * provider 的凭据;批次只复用这份列表与同一个分批上限,不再接触可变配置。
  */
 export type ReviewRunPlan = Readonly<{
+  /**
+   * 这一轮的注册表仓库 id(issue #273)。仓库级配置只认它:payload 里的 owner/repo 在
+   * 仓库改名后指不回注册表行,而最低报告等级的仓库覆盖挂在那一行上。
+   */
+  repoId: number;
   reviewers: readonly Reviewer[];
   maxChangedLinesPerBatch: number;
   /** 一批最多多少个文件(issue #230)。与改动行上限双重装箱,任一超限即封箱。 */
@@ -122,6 +127,8 @@ export type ReviewRunPlan = Readonly<{
 
 /** 从启动时的配置快照生成一次运行计划。复制 Reviewer 列表,使组合的后续改动只影响下一轮。 */
 export function createReviewRunPlan(
+  /** 这一轮的注册表仓库 id(issue #273)。仓库级配置按它取。 */
+  repoId: number,
   reviewers: readonly Reviewer[],
   /**
    * 本轮冻结的分批上限、批次并发数(issue #230)与每批每模型取证上限(issue #258)。
@@ -150,6 +157,7 @@ export function createReviewRunPlan(
   mergeAgent?: MergeAgent,
 ): ReviewRunPlan {
   return Object.freeze({
+    repoId,
     reviewers: Object.freeze([...reviewers]),
     ...batchLimits,
     reviewerPins: Object.freeze([...reviewerPins]),
@@ -167,6 +175,11 @@ export type ReviewRunDeps = {
   cacheDir: string;
   /** SQLite 数据库文件的位置。 */
   dbPath: string;
+  /**
+   * 这一轮的注册表仓库 id(issue #273)。给了它才取得到仓库级的最低报告等级覆盖;
+   * 不传即只按全局阈值跑。
+   */
+  repoId?: number;
   /** 一批最多多少改动行。不传取 `DEFAULT_MAX_CHANGED_LINES_PER_BATCH`。 */
   maxChangedLinesPerBatch?: number;
   /** 一批最多多少个文件(issue #230)。不传取 `DEFAULT_MAX_FILES_PER_BATCH`。 */
@@ -366,11 +379,14 @@ async function tryReaction(action: () => Promise<void>): Promise<void> {
 const SEVERITY_ORDER: readonly Severity[] = ["P0", "P1", "P2"];
 
 /**
- * 这一轮的生效最低报告等级(CONTEXT.md,issue #271)。取值的唯一入口:本票只读全局
- * 设置,缺行即默认 P2(全报);仓库覆盖(issue #273)加在这里,别处不重复判。
+ * 这一轮的生效最低报告等级(CONTEXT.md,issue #271、#273)。取值的唯一入口:仓库覆盖优先,
+ * 缺则全局设置,再缺即默认 P2(全报)。别处不重复判。
+ *
+ * 不给 `repoId` 就只有全局这一档:注册表行认不出来时按跟随全局跑,而不是把这一轮拦下来。
  */
-export function effectiveMinReportSeverity(store: Store): Severity {
-  return store.getGlobalSettings().minReportSeverity ?? DEFAULT_MIN_REPORT_SEVERITY;
+export function effectiveMinReportSeverity(store: Store, repoId?: number): Severity {
+  const override = repoId === undefined ? null : store.getRepo(repoId)?.minReportSeverity ?? null;
+  return override ?? store.getGlobalSettings().minReportSeverity ?? DEFAULT_MIN_REPORT_SEVERITY;
 }
 
 /** `severity` 够不够本轮的阈值。P0 最高,排在 `SEVERITY_ORDER` 前面的即更高。 */
@@ -1729,7 +1745,7 @@ export async function runReview(
     }
     // 本轮的最低报告等级(issue #271)在开跑这一刻读一次:之后改设置追不上已经开跑的
     // 这一轮,与分批上限那几项同律。它随轮次落库,续跑据它核对阈值有没有改过。
-    const minReportSeverity = opened(() => effectiveMinReportSeverity(store));
+    const minReportSeverity = opened(() => effectiveMinReportSeverity(store, deps.repoId));
 
     const verdictOnly = deps.mode === "verdict-only";
     if (verdictOnly) {

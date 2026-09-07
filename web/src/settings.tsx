@@ -46,9 +46,10 @@ type Settings = {
 };
 
 /** 最低报告等级的三档。P0 最高，P2 即全报，是系统默认。 */
-type MinReportSeverity = "P0" | "P1" | "P2";
+export type MinReportSeverity = "P0" | "P1" | "P2";
 
-const MIN_REPORT_SEVERITY_LABEL: Record<MinReportSeverity, string> = {
+/** 三档的文案。审查策略页与仓库配置弹窗共用这一份，两处措辞不各写一遍。 */
+export const MIN_REPORT_SEVERITY_LABEL: Record<MinReportSeverity, string> = {
   P0: "只报 P0",
   P1: "P1 及以上",
   P2: "全部报出（P2 及以上）",

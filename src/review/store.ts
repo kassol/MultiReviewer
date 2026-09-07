@@ -309,7 +309,8 @@ CREATE TABLE IF NOT EXISTS webhook_delivery (
 
 -- 仓库注册表。主键是 Forge 的数值 repo id:改名与转移 owner 后凭 payload 里的 id
 -- 仍能匹配,owner/repo 只是注册时的名字,不参与准入。reviewers 是模型覆盖
--- (ReviewerSpec 的 JSON 数组),NULL 即跟随 global_setting 里的全局模型组合。
+-- (ReviewerSpec 的 JSON 数组),NULL 即跟随 global_setting 里的全局模型组合;
+-- min_report_severity 是最低报告等级的覆盖(issue #273),NULL 同样即跟随全局。
 -- worktree_* 三列是工作副本的准备状态(issue #184):state 取 preparing / ready /
 -- failed,升级前注册的那些行是 NULL,按 unknown 读;worktree_failure 只在 failed 时
 -- 有值,worktree_checked_at 是这个结果的时刻。
@@ -795,6 +796,9 @@ const ADD_COLUMNS = [
   // 开跑时生效的最低报告等级(CONTEXT.md 最低报告等级,issue #271)。旧行是 NULL,读回
   // 按 P2 算——升级前每一轮都是全报,这一列补出来不改变它们的事实,与 `mode` 同律。
   "ALTER TABLE review_run ADD COLUMN min_report_severity TEXT",
+  // 仓库自己的最低报告等级覆盖(CONTEXT.md 最低报告等级,issue #273)。NULL 即跟随全局,
+  // 升级前注册的仓库全部是 NULL——它们本来就跟着全局跑,补这一列不改变它们的事实。
+  "ALTER TABLE repo ADD COLUMN min_report_severity TEXT",
 ];
 
 /**
@@ -1516,12 +1520,16 @@ export type GlobalSettings = {
   minReportSeverityVersion: number;
 };
 
-/** 注册表里的一个仓库。`reviewersJson` 是模型覆盖的 JSON,null 即跟随全局。 */
+/**
+ * 注册表里的一个仓库。`reviewersJson` 是模型覆盖的 JSON,`minReportSeverity` 是最低报告
+ * 等级的覆盖(issue #273),两者都是 null 即跟随全局。
+ */
 export type RepoRecord = {
   repoId: number;
   owner: string;
   repo: string;
   reviewersJson: string | null;
+  minReportSeverity: Severity | null;
 };
 
 /**
@@ -1550,6 +1558,8 @@ export type RepoSummary = {
   repo: string;
   /** 模型覆盖的 JSON,null 即跟随全局。面板的仓库详情要显示与编辑它。 */
   reviewersJson: string | null;
+  /** 最低报告等级的覆盖(issue #273),null 即跟随全局。 */
+  minReportSeverity: Severity | null;
   /** 累计 Review Run 数。按注册时的 owner/repo 匹配评审记录。 */
   runCount: number;
   /** 累计 Finding 数(落库行数,同一处的多个模型只算一条)。 */
@@ -2107,6 +2117,11 @@ export type Store = {
   getRepo(repoId: number): RepoRecord | undefined;
   /** 改写模型覆盖；与当前模型服务原子校验，状态变化返回 false。null 即跟随全局。 */
   setRepoReviewers(repoId: number, reviewersJson: string | null): boolean;
+  /**
+   * 改写这个仓库的最低报告等级覆盖(issue #273)。null 即清掉覆盖、跟随全局。没有这一行
+   * 时静默通过——仓库刚被移除,目标状态已达成,与 `setRepoWorktree` 同律。
+   */
+  setRepoMinReportSeverity(repoId: number, severity: Severity | null): void;
   /** 摘掉注册表行、它的 Key 与它的仓库分配。评审记录一行不动:模型选型的历史不因下线而断。 */
   removeRepo(repoId: number): void;
   /** 记下工作副本的准备状态(issue #184)。仓库已被移除时没有行可写,静默通过。 */
@@ -3716,7 +3731,7 @@ export function openStore(dbPath: string): Store {
 
     getRepo(repoId) {
       const row = db
-        .prepare("SELECT id, owner, repo, reviewers FROM repo WHERE id = ?")
+        .prepare("SELECT id, owner, repo, reviewers, min_report_severity FROM repo WHERE id = ?")
         .get(repoId);
       if (row === undefined) return undefined;
       return {
@@ -3724,6 +3739,9 @@ export function openStore(dbPath: string): Store {
         owner: String(row["owner"]),
         repo: String(row["repo"]),
         reviewersJson: row["reviewers"] === null ? null : String(row["reviewers"]),
+        minReportSeverity: readMinReportSeverity(
+          row["min_report_severity"] === null ? undefined : String(row["min_report_severity"]),
+        ),
       };
     },
 
@@ -3751,6 +3769,10 @@ export function openStore(dbPath: string): Store {
         db.exec("ROLLBACK");
         throw error;
       }
+    },
+
+    setRepoMinReportSeverity(repoId, severity) {
+      db.prepare("UPDATE repo SET min_report_severity = ? WHERE id = ?").run(severity, repoId);
     },
 
     removeRepo(repoId) {
@@ -3795,7 +3817,7 @@ export function openStore(dbPath: string): Store {
       // started_at 是 ISO 字符串,MAX 按字典序即时间序。
       const rows = db
         .prepare(
-          `SELECT r.id, r.owner, r.repo, r.reviewers,
+          `SELECT r.id, r.owner, r.repo, r.reviewers, r.min_report_severity,
                   r.worktree_state, r.worktree_failure, r.worktree_checked_at,
                   (SELECT COUNT(*) FROM review_run run
                     WHERE run.owner = r.owner AND run.repo = r.repo) AS run_count,
@@ -3812,6 +3834,9 @@ export function openStore(dbPath: string): Store {
         owner: String(row["owner"]),
         repo: String(row["repo"]),
         reviewersJson: row["reviewers"] === null ? null : String(row["reviewers"]),
+        minReportSeverity: readMinReportSeverity(
+          row["min_report_severity"] === null ? undefined : String(row["min_report_severity"]),
+        ),
         runCount: Number(row["run_count"]),
         findingCount: Number(row["finding_count"]),
         lastActivity: row["last_activity"] === null ? null : String(row["last_activity"]),
