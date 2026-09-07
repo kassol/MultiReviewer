@@ -13,6 +13,7 @@ import { redactModelCredential, reviewerEnv } from "../src/reviewer/env.ts";
 import type { WorkerMessage } from "../src/reviewer/protocol.ts";
 import {
   SYSTEM_PROMPT,
+  VERDICT_ONLY_SYSTEM_PROMPT,
   reviewPriorFindingTool,
   reviewPrompt,
   sessionTools,
@@ -512,6 +513,57 @@ test("本轮指令自成一段,标明一次性、优先于常规范围、不改�
   assert.match(prompt, /this review round/i);
   assert.match(prompt, /takes priority/i);
   assert.match(prompt, /evidence/i);
+});
+
+/** 只复核那一轮的 prompt 与完整审查那一轮共用的入参,只差一格 `mode`。 */
+const PROMPT_CONTEXT = {
+  range: PROMPT_RANGE,
+  history: PRIOR_HISTORY,
+  intent: { title: "修负数 count", commits: [], omittedCommits: 0 },
+  rules: [{ id: 7, scope: "", statement: "对外接口的入参一律在边界处校验" }],
+};
+
+test("只复核加本轮指令:指令段声明不触发处置,意图段与规则段不再要求报出新 Finding", () => {
+  const prompt = reviewPrompt({
+    ...PROMPT_CONTEXT,
+    mode: "verdict-only",
+    directive: "P2 可以都关闭。再复核一下待处置的 P0 和 P1",
+  });
+
+  assert.match(prompt, /P2 可以都关闭。再复核一下待处置的 P0 和 P1/);
+  // 指令不触发处置:它既不减免每条未处置历史的复核义务,也不改变结论标准。线上 Run #81
+  // 的「P2 可以都关闭」正是被读成了「不看代码直接判已修复」。
+  assert.match(prompt, /never disposes of a finding/);
+  assert.match(prompt, /does not excuse you from a verdict/);
+  // 只复核那一轮报不出新问题,三段里要求报出的句子一句都不该出现。
+  assert.equal(prompt.includes("report them through report_finding"), false);
+  assert.equal(prompt.includes("report problems they do not cover"), false);
+  assert.equal(prompt.includes("pass that rule's id as ruleId in report_finding"), false);
+  // 复核义务照旧:历史段仍逐条要结论。
+  assert.match(prompt, /review_prior_finding exactly once/);
+});
+
+test("只复核那一轮的系统提示只讲复核,不要求报出新 Finding", () => {
+  assert.equal(VERDICT_ONLY_SYSTEM_PROMPT.includes("report_finding"), false);
+  assert.equal(VERDICT_ONLY_SYSTEM_PROMPT.includes("report every problem you find"), false);
+  assert.match(VERDICT_ONLY_SYSTEM_PROMPT, /re-check/);
+  assert.match(VERDICT_ONLY_SYSTEM_PROMPT, /review_prior_finding exactly once/);
+  // 取证口径与中文叙述两种模式同一份:复核同样只能对读过的代码下结论。
+  assert.match(VERDICT_ONLY_SYSTEM_PROMPT, /Evidence calls are limited/);
+  assert.match(VERDICT_ONLY_SYSTEM_PROMPT, /Narrate in Chinese/);
+  // 完整审查那份照旧要求报出。
+  assert.match(SYSTEM_PROMPT, /Report each problem by calling the report_finding tool/);
+});
+
+test("完整审查的 prompt 不受只复核措辞影响:不给 mode 与 mode: full 逐字一致", () => {
+  const full = reviewPrompt(PROMPT_CONTEXT);
+
+  assert.equal(reviewPrompt({ ...PROMPT_CONTEXT, mode: "full" }), full);
+  // 完整审查那三句原样保留:这一票只换只复核那一轮的措辞。
+  assert.match(full, /report them through report_finding like any other\./);
+  assert.match(full, /report problems they do not cover as usual\./);
+  assert.match(full, /pass that rule's id as ruleId in report_finding/);
+  assert.notEqual(reviewPrompt({ ...PROMPT_CONTEXT, mode: "verdict-only" }), full);
 });
 
 test("只复核那一轮的工具清单不含报出工具,复核工具仍在", () => {

@@ -71,6 +71,15 @@ export function sessionTools(options: {
   ];
 }
 
+/**
+ * 取证的口径与机制(issue #226)。两种模式共用一份:只复核同样只能对读过的代码下
+ * 结论,取证的调用方式与名额也是同一套。
+ */
+const EVIDENCE_PARAGRAPH = `Never assert anything about code you have not read. A finding that depends on how another file behaves — that a caller passes an unchecked value, that no middleware already handles this, that an annotation is missing, that this value never reaches the database — is only reportable once you have read the code it depends on. Before you report a claim like that, call the ${EVIDENCE_TOOL} tool with agent set to "${EVIDENCE_AGENT}" — that is the only agent available: state the single claim you want checked, and the call waits and returns file:line evidence directly. Never pass async and never poll for status — one call, one answer. Read the evidence and decide yourself whether the problem holds; the investigator does not decide, and it never reports findings. Investigate the claims that carry a finding, not every passing thought. Evidence calls are limited: spend them on your highest-severity claims, the ones that cannot stand without reading the other side's code.`;
+
+/** 叙述用中文(issue #171)。两种模式共用:审查轨迹的读者是同一批人。 */
+const NARRATION_PARAGRAPH = `Narrate in Chinese too: everything you say between tool calls goes into a review trace read by the same people, so write those sentences in Chinese — one short line on what you are about to check and why, before each group of tool calls.`;
+
 export const SYSTEM_PROMPT = `You are a code reviewer. Explore the repository with your read tools, then report every problem you find.
 
 Cover correctness, security, maintainability and design. You may open any file in the repository, not only the changed ones — check callers, other branches of a changed function, and the conventions already established in the same module.
@@ -79,15 +88,36 @@ Report each problem by calling the report_finding tool exactly once per problem.
 
 The read tool prefixes every line with its line number, like \`12: code\`. These numbers are the only valid source for the line field of report_finding — copy the number, never count lines yourself. The prefix is not part of the file content. In the snippet field, copy the exact text of the line the problem starts on, without the line number prefix. Pick the most distinctive line of the problem, not a bare brace. A finding whose snippet does not match the file at the reported line is rejected back to you.
 
-Never assert anything about code you have not read. A finding that depends on how another file behaves — that a caller passes an unchecked value, that no middleware already handles this, that an annotation is missing, that this value never reaches the database — is only reportable once you have read the code it depends on. Before you report a claim like that, call the ${EVIDENCE_TOOL} tool with agent set to "${EVIDENCE_AGENT}" — that is the only agent available: state the single claim you want checked, and the call waits and returns file:line evidence directly. Never pass async and never poll for status — one call, one answer. Read the evidence and decide yourself whether the problem holds; the investigator does not decide, and it never reports findings. Investigate the claims that carry a finding, not every passing thought. Evidence calls are limited: spend them on your highest-severity claims, the ones that cannot stand without reading the other side's code.
+${EVIDENCE_PARAGRAPH}
 
 Every finding must be anchored on a line this change actually touches. Read as widely as you need — callers, other branches, unchanged files — but report the problem at the end of its causal chain on the changed side: the changed line that is wrong, or the changed line that depends on the unchanged code you object to. A finding anchored outside the diff is rejected back to you, and a finding you never re-anchor is lost.
 
 Write the title, description, impact and suggestion fields in Chinese. The reviewers of this repository read Chinese. Keep identifiers, file paths, and code fragments in their original form — do not translate them. The severity and category fields stay in the exact English values listed for them.
 
-Narrate in Chinese too: everything you say between tool calls goes into a review trace read by the same people, so write those sentences in Chinese — one short line on what you are about to check and why, before each group of tool calls.
+${NARRATION_PARAGRAPH}
 
 When the prompt lists findings reported earlier in this review stage, call review_prior_finding exactly once for every one of them that is still open, and never report one of them again through report_finding. When one of them is still there but its code was rewritten or moved, give the verdict present together with position: the line it sits on now and the snippet of that line, copied verbatim from the read output. Give position only in that case, and when you give it, give both line and snippet — a position with either one missing or an empty snippet is an invalid call.`;
+
+/**
+ * 只复核那一轮的系统提示(issue #270)。与完整审查那份的差别只有一处语义:这一轮没有
+ * 报出工具,提示里因此一句都不要求报出新问题。
+ *
+ * 上一票(issue #242)靠工具面单独收口,提示仍写着「report every problem you find」与
+ * 「call the report_finding tool」;线上 Run #81 的模型收到的是一份自相矛盾的说明,附带
+ * 的本轮指令因此被读成了放宽复核取证的许可。取证段与叙述段两种模式共用;复核结论的位置
+ * 规则写在最后一段——锚不上只丢位置,结论照收。
+ */
+export const VERDICT_ONLY_SYSTEM_PROMPT = `You are a code reviewer. This round is a re-check: the findings reported earlier in this review stage are listed in the prompt, and your only job is to give a verdict on each one that is still open. Explore the repository with your read tools, then judge each of them against the code as it is now.
+
+You may open any file in the repository, not only the changed ones — check callers, other branches of a changed function, and the conventions already established in the same module. Do not go looking for new problems: this round has no tool to report one, and a problem written in prose does not exist. When you have given a verdict on every listed finding, stop.
+
+The read tool prefixes every line with its line number, like \`12: code\`. These numbers are the only valid source for the line field of a verdict position — copy the number, never count lines yourself. The prefix is not part of the file content. In the snippet field, copy the exact text of that line, without the line number prefix.
+
+${EVIDENCE_PARAGRAPH}
+
+${NARRATION_PARAGRAPH}
+
+Call review_prior_finding exactly once for every finding the prompt lists as still open — those verdicts are the whole output of this round. Judge each one from the code you have read: present when the problem is still there, fixed when the change removed it, unclear when you cannot tell. When one of them is still there but its code was rewritten or moved, give the verdict present together with position: the line it sits on now and the snippet of that line, copied verbatim from the read output. Give position only in that case, and when you give it, give both line and snippet — a position with either one missing or an empty snippet is an invalid call. A position on a line this change does not touch is dropped and the finding stays on the line it has now; the verdict itself is kept.`;
 
 /**
  * 枚举字段必须在自身的 `description` 里写明允许值。prototype 实测:仅用字面量联合
@@ -246,11 +276,16 @@ function commitBullet(message: string): string {
 /**
  * 这一轮声称要做的事(issue #201)。它是作者的主张,不是代码的事实——模型要拿它当
  * 判据去对照代码,而不是当成代码已经做到的描述。
+ *
+ * 只复核那一轮换一句措辞(issue #270):这一轮报不出新问题,「claimed but missing 也报
+ * 出来」是一句执行不了的要求;意图在那一轮的用处是解释历史条目为什么被改动。
  */
-function intentSection(intent: ReviewIntent): string {
+function intentSection(intent: ReviewIntent, verdictOnly: boolean): string {
   const lines = [
     "",
-    "The author claims this change does the following. This is intent, not a description of what the code actually does. Judge the code against it: behaviour that is claimed but missing, and behaviour that is present but never claimed, are both problems — report them through report_finding like any other.",
+    verdictOnly
+      ? "The author claims this change does the following. This is intent, not a description of what the code actually does. Use it as context for your verdicts: it says what this change set out to do, which is often why a finding below was fixed or left alone. Judge each finding against the code itself, not against this claim."
+      : "The author claims this change does the following. This is intent, not a description of what the code actually does. Judge the code against it: behaviour that is claimed but missing, and behaviour that is present but never claimed, are both problems — report them through report_finding like any other.",
   ];
   if (intent.title !== "") lines.push("", `Title: ${intent.title}`);
   if (intent.body !== undefined) lines.push("", "Description:", "", intent.body);
@@ -269,11 +304,20 @@ function intentSection(intent: ReviewIntent): string {
  * 这个仓库既定的评审规则(issue #204)。它是团队定下的标准,不是模型的临场判断:
  * 违反规则的地方优先按规则判,规则没覆盖到的照常自行判断。
  */
-function rulesSection(rules: readonly ReviewRule[]): string {
+function rulesSection(rules: readonly ReviewRule[], verdictOnly: boolean): string {
   return [
     "",
-    "This repository has an agreed set of review rules. Judge the code against them first: code that violates one of them is a finding, whatever you would have thought of it otherwise. They do not narrow your review — report problems they do not cover as usual.",
-    "Each rule is listed with its id in brackets and the paths it applies to in parentheses. When a finding violates one of these rules, pass that rule's id as ruleId in report_finding. Never invent an id, and leave the field out when no rule applies.",
+    ...(verdictOnly
+      ? [
+          // 只复核那一轮的规则是复核的判据,不是报出的判据(issue #270):这一轮报不出新
+          // 问题,规则标识也无处可带。
+          "This repository has an agreed set of review rules. The findings you are re-checking were judged against them — read them as the standard those findings hold to, and use them when you decide whether a problem is really gone.",
+          "Each rule is listed with its id in brackets and the paths it applies to in parentheses.",
+        ]
+      : [
+          "This repository has an agreed set of review rules. Judge the code against them first: code that violates one of them is a finding, whatever you would have thought of it otherwise. They do not narrow your review — report problems they do not cover as usual.",
+          "Each rule is listed with its id in brackets and the paths it applies to in parentheses. When a finding violates one of these rules, pass that rule's id as ruleId in report_finding. Never invent an id, and leave the field out when no rule applies.",
+        ]),
     "",
     ...rules.map(ruleBullet),
   ].join("\n");
@@ -305,11 +349,15 @@ function factsSection(facts: readonly ProjectFact[]): string {
  * 该沉淀成知识条目。**优先于常规范围**:「只报 P0」与「覆盖正确性、安全、可维护性、
  * 设计」是直接冲突的,不说清听谁的,模型会各自发挥。**不改变证据标准**:「重点看并发」
  * 很容易被读成「并发那块可以放宽取证」,而放宽取证正是误报的第一根因。
+ *
+ * 第四样是**不触发处置**(issue #270)。线上 Run #81 附的「P2 可以都关闭」被读成「不看
+ * 代码直接判已修复」,91 条 P2 因此拿到单边的 fixed;指令能改的只有这一轮看什么、报
+ * 什么,一条历史该给什么结论仍然只看代码。
  */
 function directiveSection(directive: string): string {
   return [
     "",
-    "The reviewer who started this review round asked for the following. It applies to this review round only — it is not a standing rule of this repository. Where it conflicts with the general scope above, it takes priority: follow it. It does not change the evidence standard — every finding still needs the same grounding in code you have actually read.",
+    "The reviewer who started this review round asked for the following. It applies to this review round only — it is not a standing rule of this repository. Where it conflicts with the general scope above, it takes priority: follow it. It does not change the evidence standard — every finding still needs the same grounding in code you have actually read. It never disposes of a finding: it does not excuse you from a verdict on every open finding this prompt lists, and it does not change what those verdicts mean — a finding is fixed only when you have read the code and the problem is gone.",
     "",
     directive,
   ].join("\n");
@@ -318,19 +366,23 @@ function directiveSection(directive: string): string {
 export function reviewPrompt(
   request: Pick<
     ReviewerRequest,
-    "range" | "history" | "intent" | "rules" | "facts" | "directive"
+    "range" | "history" | "intent" | "rules" | "facts" | "directive" | "mode"
   >,
 ): string {
+  // 只复核那一轮的意图段与规则段换措辞(issue #270):这一轮没有报出工具,两段里要求
+  // 报出新问题的句子一句都执行不了。不给 mode 即完整审查,prompt 逐字不变。
+  const verdictOnly = request.mode === "verdict-only";
   const files = request.range.files.map((f) => `- ${f}`).join("\n");
   const history =
     request.history.length === 0 ? "" : `\n${historySection(request.history)}\n`;
-  const intent = request.intent === undefined ? "" : `${intentSection(request.intent)}\n`;
+  const intent =
+    request.intent === undefined ? "" : `${intentSection(request.intent, verdictOnly)}\n`;
   // 空知识集与没有知识集同一条路径:两者都不渲染规则段。事实段同律,两型各判各的——
   // 只有事实没有规则的知识集同样成立。
   const rules =
     request.rules === undefined || request.rules.length === 0
       ? ""
-      : `${rulesSection(request.rules)}\n`;
+      : `${rulesSection(request.rules, verdictOnly)}\n`;
   const facts =
     request.facts === undefined || request.facts.length === 0
       ? ""
@@ -475,7 +527,9 @@ async function run(request: ReviewerRequest): Promise<void> {
     agentDirPrefix: "multireviewer-agent-",
     worktreePath: request.worktreePath,
     runtimeModel: request.runtimeModel,
-    systemPrompt: SYSTEM_PROMPT,
+    // 只复核那一轮换一份系统提示(issue #270):报出工具不注册,提示也不该要求报出。
+    systemPrompt:
+      request.mode === "verdict-only" ? VERDICT_ONLY_SYSTEM_PROMPT : SYSTEM_PROMPT,
     extensionPaths: [vendoredSubagentsPath()],
     // 取证契约在工具边界的那一道(issue #262):与 pi-subagents 同一批装进会话。
     extensionFactories: [evidenceContractExtension()],

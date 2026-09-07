@@ -16,7 +16,12 @@ import {
 import { Button } from "@/components/theme-button";
 
 import { api, errorText } from "./api.ts";
-import { FULL_REVIEW_HINT, RUN_DIRECTIVE_PLACEHOLDER, type RerunMode } from "./repo-actions.tsx";
+import {
+  FULL_REVIEW_HINT,
+  RUN_DIRECTIVE_HINT,
+  RUN_DIRECTIVE_PLACEHOLDER,
+  type RerunMode,
+} from "./repo-actions.tsx";
 import {
   CommitPicker,
   commitSelectionLabel,
@@ -311,6 +316,9 @@ function AdvanceDialogContent({
               value={directive}
               onChange={(event) => setDirective(event.target.value)}
             />
+            <Text as="p" size="1" color="gray" className="mt-1">
+              {RUN_DIRECTIVE_HINT}
+            </Text>
             <Text
               as="label"
               size="2"

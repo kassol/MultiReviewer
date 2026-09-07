@@ -7,7 +7,7 @@ import { Dialog, IconButton, Text, TextArea, TextField } from "@radix-ui/themes"
 import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
-import { RUN_DIRECTIVE_PLACEHOLDER } from "./repo-actions.tsx";
+import { RUN_DIRECTIVE_HINT, RUN_DIRECTIVE_PLACEHOLDER } from "./repo-actions.tsx";
 import {
   CommitPicker,
   type CommitSelection,
@@ -225,7 +225,7 @@ function LaunchDialogContent({
               onChange={(event) => setDirective(event.target.value)}
             />
             <Text id="range-review-directive-help" as="p" size="1" color="gray" className="mt-1">
-              指令只作用于发起出来的这一轮;要长期生效的要求请录进知识集。
+              指令只作用于发起出来的这一轮;要长期生效的要求请录进知识集。{RUN_DIRECTIVE_HINT}
             </Text>
           </div>
         </div>
