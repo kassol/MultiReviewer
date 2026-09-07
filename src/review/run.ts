@@ -2,7 +2,6 @@ import type { ReviewRunReviewerPin } from "../config.ts";
 import type { Drain } from "../drain.ts";
 import {
   PublishUncertainError,
-  type ChangedFile,
   type ChangedFileStatus,
   type ExistingReviewComment,
   type Forge,
@@ -1180,8 +1179,8 @@ async function autoDispose(
   return { findingIds: disposed, commentIds: [...resolved] };
 }
 
-/** 开跑时自动处置的原因(issue #272):文件在本轮 diff 里被删,或根本不在 diff 里。 */
-type AbsenceReason = "deleted" | "reverted";
+/** 自动处置的原因(issue #272):文件在这一次的 diff 里被删,或根本不在 diff 里。 */
+export type AbsenceReason = "deleted" | "reverted";
 
 /** 两种原因各自的处置备注。面板与阶段列表上看到的就是这一句。 */
 const ABSENCE_NOTES: Record<AbsenceReason, string> = {
@@ -1190,17 +1189,19 @@ const ABSENCE_NOTES: Record<AbsenceReason, string> = {
 };
 
 /**
- * 所在文件不在这一轮可审文件集里的未处置历史(issue #272)。这些条目谁都复核不到:
+ * 所在文件不在这一份可审文件集里的未处置历史(issue #272)。这些条目谁都复核不到:
  * 完整审查按 diff 切批,只复核按同一份可审文件集过滤,两种模式都读不到那个文件,
  * 不处置就永远悬在未处置列表里。
  *
- * 原因看它还在不在本轮的变更文件清单里:在,那它只能是被这一轮删掉的(改名的条目
+ * 原因看它还在不在这一次的变更文件清单里:在,那它只能是被这一次删掉的(改名的条目
  * 落在新路径上,`reviewableFiles` 不会把新路径滤掉);不在,即代码已经回到 base 状态。
+ *
+ * 开跑那一步与只复核的三处准入闸共用它(issue #276):两层的判据因此是同一份。
  */
-function absentHistory(
+export function absentHistory(
   history: readonly HistoryFinding[],
-  reviewable: readonly string[],
-  changedFiles: readonly ChangedFile[],
+  reviewable: Iterable<string>,
+  changedFiles: readonly { path: string }[],
 ): { findingId: number; reason: AbsenceReason }[] {
   const inRange = new Set(reviewable);
   const changed = new Set(changedFiles.map((file) => file.path));
@@ -1210,6 +1211,33 @@ function absentHistory(
       findingId: entry.id,
       reason: changed.has(entry.file) ? ("deleted" as const) : ("reverted" as const),
     }));
+}
+
+/**
+ * 把 `absentHistory` 算出来的那些条目按原因逐组处置(issue #272)。两种原因各带自己那句
+ * 备注走同一个 `autoDispose`,不新增处置档;写 Forge 失败的照 `autoDispose` 现有规则只记
+ * 日志、留给人。
+ *
+ * 开跑那一步与只复核的三处准入闸共用它(issue #276):备注、处置档与失败规则因此不会分叉。
+ * 返回各原因处置成功的 finding id(开跑那一步据它记轨迹、把条目从这一轮的历史里去掉;
+ * 准入闸只数条数)与这一趟真正 resolve 掉的评论(回填据它修正开跑时那份过期的评论状态)。
+ */
+export async function disposeAbsentHistory(
+  forge: Forge,
+  event: PullRequestEvent,
+  store: ReturnType<typeof openStore>,
+  absent: readonly { findingId: number; reason: AbsenceReason }[],
+): Promise<{ disposed: Record<AbsenceReason, number[]>; commentIds: string[] }> {
+  const disposed: Record<AbsenceReason, number[]> = { deleted: [], reverted: [] };
+  const commentIds = new Set<string>();
+  for (const reason of ["deleted", "reverted"] as const) {
+    const ids = absent.filter((item) => item.reason === reason).map((item) => item.findingId);
+    if (ids.length === 0) continue;
+    const done = await autoDispose(forge, event, store, ids, ABSENCE_NOTES[reason]);
+    disposed[reason] = done.findingIds;
+    for (const commentId of done.commentIds) commentIds.add(commentId);
+  }
+  return { disposed, commentIds: [...commentIds] };
 }
 
 /**
@@ -1746,19 +1774,15 @@ export async function runReview(
     // 谁都复核不到,不处置就永远悬在未处置列表里。判据用的是过滤之前的那份可审文件集,
     // 与只复核那道过滤、与接口层的 409 判据同一个口径。完整审查与只复核同律。
     const absent = absentHistory(history, range.files, changedFiles);
-    const disposedByAbsence: Record<AbsenceReason, number[]> = { deleted: [], reverted: [] };
+    let disposedByAbsence: Record<AbsenceReason, number[]> = { deleted: [], reverted: [] };
     // 本轮 resolve 掉的那些评论。回填读的是开跑时那份评论状态,不修正就会把刚落的
     // 「已修复」按过期的 unresolved 降级回未处置。
     const resolvedByAbsence = new Set<string>();
     if (absent.length > 0) {
       try {
-        for (const reason of ["deleted", "reverted"] as const) {
-          const ids = absent.filter((item) => item.reason === reason).map((item) => item.findingId);
-          if (ids.length === 0) continue;
-          const done = await autoDispose(forge, event, store, ids, ABSENCE_NOTES[reason]);
-          disposedByAbsence[reason] = done.findingIds;
-          for (const commentId of done.commentIds) resolvedByAbsence.add(commentId);
-        }
+        const done = await disposeAbsentHistory(forge, event, store, absent);
+        disposedByAbsence = done.disposed;
+        for (const commentId of done.commentIds) resolvedByAbsence.add(commentId);
       } catch (error) {
         store.close();
         throw error;

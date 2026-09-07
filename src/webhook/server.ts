@@ -30,7 +30,13 @@ import {
   type ThinkingLevel,
 } from "../config.ts";
 import type { Drain } from "../drain.ts";
-import type { CloneCredentials, Forge, PullRequestRef, RepoRef } from "../forge/forge.ts";
+import type {
+  ChangedFile,
+  CloneCredentials,
+  Forge,
+  PullRequestRef,
+  RepoRef,
+} from "../forge/forge.ts";
 import {
   createGiteaHookManager,
   hookConverged,
@@ -67,6 +73,7 @@ import {
   resolveRange,
   type BranchCommits,
   type PreparedRange,
+  type RangeDiffFile,
   type RangeDiffOptions,
   type RangeDiffRejection,
   type ResolvedRange,
@@ -86,8 +93,10 @@ import {
   isContainerBranch,
 } from "../review/range-review.ts";
 import {
+  absentHistory,
   backfillUpdates,
   createReviewRunPlan,
+  disposeAbsentHistory,
   effectiveMinReportSeverity,
   findingLineAuthors,
   meetsMinReportSeverity,
@@ -5132,28 +5141,57 @@ function readMode(
 }
 
 /**
- * 这个阶段的未处置历史 Finding 有没有落在本轮可审文件里:只复核那一轮开不开得起来,判据
- * 就是它。与编排层过滤文件集的是同一道(`openHistory` 加可审文件集求交):历史全落在本轮
- * 没改、删掉或改名前的文件上时,编排层同样一个文件都不剩,那该在这里就回 409,不该先答
- * 「已触发」。
+ * 只复核的准入(issue #242、#250、#251、#276)。三处入口共用:同一个阶段从哪里推都是同一
+ * 个结果。
  *
- * 可审文件集由调用方给,两处来源不同、规则相同(`reviewableFiles`,issue #251):重跑审的
- * 就是容器 PR 此刻的 head,从 Forge 取;增量评审要审的是还没推上去的新比较项,Forge 上
- * 那份说的是上一个比较项的事,只能从本地副本算(issue #250)。
+ * 先把落在回退或删除文件上的未处置历史自动处置掉(issue #276):它们所在的文件不在这一次
+ * 的可审文件集里,谁都复核不到,不在这里清就只有等一次完整审查才清得掉,而这一闸又恰恰
+ * 会拦下那一轮只复核。判据、备注与写 Forge 失败的规则与开跑那一步同一份。
+ *
+ * 再判这个阶段还有没有可复核的东西:与编排层过滤文件集的是同一道(`openHistory` 加可审
+ * 文件集求交)。刚处置掉的那些本来就不落在可审文件里,它们进不了这个交集,判据因此不受
+ * 上一步影响,历史读一次就够。
+ *
+ * 可审文件集与变更文件清单由调用方给,两处来源不同、规则相同(`reviewableFiles`,
+ * issue #251):重跑审的就是容器 PR 此刻的 head,从 Forge 取;增量评审要审的是还没推上去
+ * 的新比较项,Forge 上那份说的是上一个比较项的事,只能从本地副本算(issue #250)。
+ *
+ * 返回 undefined 即放行;返回一句话即 409 的文案——刚处置掉几条也写进去,人因此知道被拒
+ * 之前发生了什么,不用再去阶段列表里找。
  */
-function hasOpenHistory(
+async function verdictOnlyRejection(
   dbPath: string,
+  forge: Forge,
+  ref: PullRequestRef,
   scope: StageScope,
   reviewable: ReadonlySet<string>,
-): boolean {
-  return withStore(dbPath, (store) =>
-    openHistory(store.stageHistory(scope)).some((entry) => reviewable.has(entry.file)),
-  );
+  changedFiles: readonly { path: string }[],
+): Promise<string | undefined> {
+  const store = openStore(dbPath);
+  let count = 0;
+  try {
+    const history = store.stageHistory(scope);
+    const absent = absentHistory(history, reviewable, changedFiles);
+    if (absent.length > 0) {
+      const done = await disposeAbsentHistory(forge, ref, store, absent);
+      count = done.disposed.deleted.length + done.disposed.reverted.length;
+    }
+    if (openHistory(history).some((entry) => reviewable.has(entry.file))) return undefined;
+  } finally {
+    store.close();
+  }
+  return count === 0
+    ? VERDICT_ONLY_NOTHING_TO_DO
+    : `已自动处置 ${count} 条回退或删除文件上的历史,${VERDICT_ONLY_NOTHING_TO_DO}`;
 }
 
-/** Forge 上这个 pull request 此刻的可审文件路径集:变更文件去掉删除的,改名只认新路径。 */
-async function forgeReviewableFiles(forge: Forge, ref: PullRequestRef): Promise<Set<string>> {
-  return new Set(reviewableFiles(await forge.listChangedFiles(ref)));
+/** Forge 上这个 pull request 此刻的变更文件,连其中可审的那些路径(改名只认新路径)。 */
+async function forgeChangedFiles(
+  forge: Forge,
+  ref: PullRequestRef,
+): Promise<{ changedFiles: ChangedFile[]; reviewable: Set<string> }> {
+  const changedFiles = await forge.listChangedFiles(ref);
+  return { changedFiles, reviewable: new Set(reviewableFiles(changedFiles)) };
 }
 
 /** 只复核在一个没有未处置历史的阶段上被拒的那句话。两种入参共用,措辞一致。 */
@@ -5250,11 +5288,17 @@ async function handleRerun(
   // 只复核那一轮开跑之前先问一句这个阶段还有没有可复核的东西:一轮什么都不做的
   // Review Run 不该被开出来(issue #242)。判据与编排层过滤文件集的是同一个。
   // 排在读 PR 之后:PR 根本不存在时该说的是那件事,不是这个阶段没有历史。
-  if (
-    mode === "verdict-only" &&
-    !hasOpenHistory(deps.dbPath, { owner, repo, pullNumber }, await forgeReviewableFiles(forge, ref))
-  ) {
-    return sendJson(res, 409, { error: VERDICT_ONLY_NOTHING_TO_DO });
+  if (mode === "verdict-only") {
+    const { changedFiles, reviewable } = await forgeChangedFiles(forge, ref);
+    const rejection = await verdictOnlyRejection(
+      deps.dbPath,
+      forge,
+      ref,
+      { owner, repo, pullNumber },
+      reviewable,
+      changedFiles,
+    );
+    if (rejection !== undefined) return sendJson(res, 409, { error: rejection });
   }
   // 与自动投递调用同一个启动器；快照在 202 响应和后台首批之前已经完整物化。
   let plan: ReviewRunPlan;
@@ -5314,19 +5358,22 @@ async function rerunRangeReview(
     return sendJson(res, 503, { error: "gitea 没有配置 Forge,重跑不了" });
   }
   // 与 pull request 那条入参同一道闸(issue #242):只复核跑不出结果时不开这一轮。
-  if (
-    mode === "verdict-only" &&
-    !hasOpenHistory(
+  if (mode === "verdict-only") {
+    const container: PullRequestRef = {
+      owner: record.owner,
+      repo: record.repo,
+      number: record.containerPullNumber,
+    };
+    const { changedFiles, reviewable } = await forgeChangedFiles(forge, container);
+    const rejection = await verdictOnlyRejection(
       deps.dbPath,
+      forge,
+      container,
       { rangeReviewId: id },
-      await forgeReviewableFiles(forge, {
-        owner: record.owner,
-        repo: record.repo,
-        number: record.containerPullNumber,
-      }),
-    )
-  ) {
-    return sendJson(res, 409, { error: VERDICT_ONLY_NOTHING_TO_DO });
+      reviewable,
+      changedFiles,
+    );
+    if (rejection !== undefined) return sendJson(res, 409, { error: rejection });
   }
   let plan: ReviewRunPlan;
   try {
@@ -6151,6 +6198,7 @@ async function handleAdvanceRangeReview(
   // 可审文件集从本地副本算:此刻容器 PR 的 head 分支还指着旧比较项,Forge 上那份说的是
   // 上一轮的事,拿它判会把该拒的放过去。来源与重跑那两处不同,规则同一条(issue #251)。
   if (mode === "verdict-only") {
+    let changedFiles: RangeDiffFile[];
     let reviewable: Set<string>;
     try {
       const prepared = await prepareRangeDiff({
@@ -6164,13 +6212,21 @@ async function handleAdvanceRangeReview(
       // 两端刚在 resolveRange 里解析过、后代关系也判过,这里拿不到范围只能是本地副本
       // 出了岔子,与 git 报错同一档:人读到的是「推进时取不回变更文件」,不是「看不了 diff」。
       if (!prepared.ok) throw new Error(RANGE_DIFF_REJECTION[prepared.reason]);
-      reviewable = new Set(reviewableFiles(await readRangeDiffFiles(prepared)));
+      changedFiles = await readRangeDiffFiles(prepared);
+      reviewable = new Set(reviewableFiles(changedFiles));
     } catch (error) {
       return sendJson(res, 502, { error: `取不回新比较项的变更文件:${failureText(error)}` });
     }
-    if (!hasOpenHistory(deps.dbPath, { rangeReviewId: id }, reviewable)) {
-      return sendJson(res, 409, { error: VERDICT_ONLY_NOTHING_TO_DO });
-    }
+    // 自动处置写回的是容器 PR 上那些评论:阶段的 Finding 都挂在它上面(issue #276)。
+    const rejection = await verdictOnlyRejection(
+      deps.dbPath,
+      forge,
+      { ...ref, number: record.containerPullNumber },
+      { rangeReviewId: id },
+      reviewable,
+      changedFiles,
+    );
+    if (rejection !== undefined) return sendJson(res, 409, { error: rejection });
   }
 
   // 计划先固定好,与投递、重跑、发起同一个启动器。
