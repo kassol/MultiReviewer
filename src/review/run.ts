@@ -67,6 +67,7 @@ import {
   type HunkChange,
 } from "./position.ts";
 import {
+  DEFAULT_MIN_REPORT_SEVERITY,
   openStore,
   type ContinuationCandidate,
   type DispositionUpdate,
@@ -77,6 +78,7 @@ import {
   type OutcomeRecord,
   type RecordedLineAuthor,
   type ResumeState,
+  type Store,
   type VerdictRecord,
 } from "./store.ts";
 import {
@@ -360,6 +362,19 @@ async function tryReaction(action: () => Promise<void>): Promise<void> {
 
 /** 高的先列,与 `dedupe.ts` 的 SEVERITY_RANK 同序。 */
 const SEVERITY_ORDER: readonly Severity[] = ["P0", "P1", "P2"];
+
+/**
+ * 这一轮的生效最低报告等级(CONTEXT.md,issue #271)。取值的唯一入口:本票只读全局
+ * 设置,缺行即默认 P2(全报);仓库覆盖(issue #273)加在这里,别处不重复判。
+ */
+export function effectiveMinReportSeverity(store: Store): Severity {
+  return store.getGlobalSettings().minReportSeverity ?? DEFAULT_MIN_REPORT_SEVERITY;
+}
+
+/** `severity` 够不够本轮的阈值。P0 最高,排在 `SEVERITY_ORDER` 前面的即更高。 */
+function meetsMinReportSeverity(severity: Severity, threshold: Severity): boolean {
+  return SEVERITY_ORDER.indexOf(severity) <= SEVERITY_ORDER.indexOf(threshold);
+}
 
 /**
  * 首行的概览:本轮 Finding 总数与分级计数,例如 `MultiReviewer:5 条 Finding(P0 3 / P2 2)`。
@@ -1473,6 +1488,7 @@ function resumeMismatch(
   resume: ResumeState & { plan: readonly (readonly string[])[] },
   headSha: string,
   ruleSetVersion: number | null,
+  minReportSeverity: Severity,
   batches: readonly (readonly string[])[],
   reviewers: readonly Reviewer[],
 ): string | undefined {
@@ -1486,6 +1502,11 @@ function resumeMismatch(
   // 逐批的文件清单就对不上了。
   if (resume.ruleSetVersion !== ruleSetVersion) {
     return `冻结的知识集版本已经从 ${resume.ruleSetVersion ?? "无"} 变成 ${ruleSetVersion ?? "无"}`;
+  }
+  // 最低报告等级同律(issue #271):阈值改过之后续跑的批次按另一条口径报,与已落库的
+  // 那几批对不上,合出来的这一轮会一半按旧阈值、一半按新阈值。
+  if (resume.minReportSeverity !== minReportSeverity) {
+    return `最低报告等级已经从 ${resume.minReportSeverity} 变成 ${minReportSeverity}`;
   }
   // 模型组合按开跑时钉下的 pin 核对(issue #248 的评审复核)。逐批那道只看得见已落库的
   // 批次,第一批就崩的轮次因此漏检;pin 是开跑那一刻就落库的,零批次也比得了。pin 的
@@ -1636,6 +1657,10 @@ export async function runReview(
         ),
       );
 
+    // 本轮的最低报告等级(issue #271)在开跑这一刻读一次:之后改设置追不上已经开跑的
+    // 这一轮,与分批上限那几项同律。它随轮次落库,续跑据它核对阈值有没有改过。
+    const minReportSeverity = opened(() => effectiveMinReportSeverity(store));
+
     const verdictOnly = deps.mode === "verdict-only";
     if (verdictOnly) {
       // 只复核那一轮只读有未处置历史的文件:花费按历史所在文件数计,不按整段范围计。
@@ -1661,6 +1686,7 @@ export async function runReview(
         resume,
         pullRequest.headSha,
         deps.ruleSetVersion ?? null,
+        minReportSeverity,
         batches,
         deps.reviewers,
       );
@@ -1700,6 +1726,8 @@ export async function runReview(
       directive: deps.directive ?? null,
       // 模式同律(issue #242):时间线上要分得出哪一轮是只复核,「新报 0」才读得对。
       mode: deps.mode ?? "full",
+      // 阈值随这一轮落库(issue #271):回看时要答得出那一轮按什么阈值跑的。
+      minReportSeverity,
       // 历史快照随这一轮落库(issue #248):它是续跑批次读历史的唯一来源。
       history,
     }));
@@ -1783,6 +1811,8 @@ export async function runReview(
               ...(deps.maxEvidenceCallsPerBatch === undefined
                 ? {}
                 : { maxEvidenceCallsPerBatch: deps.maxEvidenceCallsPerBatch }),
+              // 全报那一档不带(issue #271):注入边界与这一票之前逐字一致。
+              ...(minReportSeverity === DEFAULT_MIN_REPORT_SEVERITY ? {} : { minReportSeverity }),
               onEvent: (event) => {
                 const { kind, ...payload } = event;
                 // 事件带上批次序号(issue #232):批次并行之后同一个模型几批的事件在
@@ -1859,10 +1889,24 @@ export async function runReview(
       // 丢弃而不是退化进 review 正文:正文里的条目没有 resolve 载体,不进处置率,只会攒成
       // 没人处置的暗债(ADR 0006 的 2026-08-31 修订附记)。
       // 合并每轮做一次,在全部批次跑完之后(issue #228);diff 终筛仍排在合并之后。
+      // 最低报告等级的保底过滤(issue #271):prompt 已经告知过,这一道挡的是模型没照办
+      // 的那些。按归一之后的 severity 判,排在去重合并之前——被丢的不参与指纹折叠,
+      // 也就不会把一条要丢的 Finding 折进历史里。历史的复核不受它影响。
+      const reported = outcomes
+        .filter((o) => o.failure === undefined)
+        .flatMap((o) => o.findings);
+      const admitted = reported.filter((f) => meetsMinReportSeverity(f.severity, minReportSeverity));
+      if (admitted.length < reported.length) {
+        trace.run("findings_filtered", {
+          discarded: reported.length - admitted.length,
+          minReportSeverity,
+        });
+      }
+
       const { merged: allMerged, usage: mergeUsage } = await mergeFindings(
         trace,
         deps.mergeAgent,
-        outcomes.filter((o) => o.failure === undefined).flatMap((o) => o.findings),
+        admitted,
         history,
         worktree.path,
       );

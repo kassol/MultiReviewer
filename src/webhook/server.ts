@@ -78,7 +78,7 @@ import {
   DEFAULT_MAX_PARALLEL_BATCHES,
 } from "../review/batch.ts";
 import type { MergeAgent } from "../review/dedupe.ts";
-import type { Reviewer, ReviewRunMode } from "../review/finding.ts";
+import type { Reviewer, ReviewRunMode, Severity } from "../review/finding.ts";
 import {
   containerBranches,
   containerPullRequestBody,
@@ -98,6 +98,8 @@ import {
 } from "../review/run.ts";
 import {
   CUSTOM_PROVIDER_NAME_PATTERN,
+  DEFAULT_MIN_REPORT_SEVERITY,
+  MIN_REPORT_SEVERITIES,
   boundTargetForModel,
   modelServiceTargetFingerprint,
   modelServiceTargetSetFingerprint,
@@ -2407,6 +2409,9 @@ const BATCH_LIMIT_DEFAULTS: Record<BatchLimitField, number> = {
 
 const BATCH_LIMIT_FIELDS = Object.keys(BATCH_LIMIT_DEFAULTS) as BatchLimitField[];
 
+/** 最低报告等级那一格(issue #271)。与四项上限并列独立读写,取值是严重度。 */
+const MIN_REPORT_SEVERITY_FIELD = "minReportSeverity";
+
 /**
  * 审查策略:模型组合、分批上限、批次并发数与每批每模型取证上限。仓库详情用它展示「跟随
  * 全局」跟的是什么。上限没配时回默认值,读回来的就是这次审查真会用的那个数。
@@ -2423,6 +2428,10 @@ function handleGetSettings(res: ServerResponse, deps: WebhookServerDeps): void {
         [`${field}Version`, settings[`${field}Version`]],
       ]),
     ),
+    // 最低报告等级同形(issue #271):没配时回系统默认 P2,读回来的就是下一轮真会用的。
+    minReportSeverity: settings.minReportSeverity ?? DEFAULT_MIN_REPORT_SEVERITY,
+    minReportSeveritySource: settings.minReportSeverity === null ? "default" : "custom",
+    minReportSeverityVersion: settings.minReportSeverityVersion,
   });
 }
 
@@ -2441,10 +2450,13 @@ async function handlePutSettings(
   }
   const payload = decoded as Record<string, unknown>;
   const hasReviewers = Object.hasOwn(payload, "reviewers");
+  const hasMinReportSeverity = Object.hasOwn(payload, MIN_REPORT_SEVERITY_FIELD);
   const limitFields = BATCH_LIMIT_FIELDS.filter((field) => Object.hasOwn(payload, field));
-  if (limitFields.length + (hasReviewers ? 1 : 0) !== 1) {
+  if (limitFields.length + (hasReviewers ? 1 : 0) + (hasMinReportSeverity ? 1 : 0) !== 1) {
     return sendJson(res, 400, {
-      error: `body 必须且只能修改 reviewers 或 ${BATCH_LIMIT_FIELDS.join(" / ")} 中的一项`,
+      error: `body 必须且只能修改 reviewers 或 ${
+        [...BATCH_LIMIT_FIELDS, MIN_REPORT_SEVERITY_FIELD].join(" / ")
+      } 中的一项`,
     });
   }
   if (
@@ -2482,10 +2494,26 @@ async function handlePutSettings(
     limit = candidate as number | null;
   }
 
+  let minReportSeverity: Severity | null = null;
+  if (hasMinReportSeverity) {
+    const candidate = payload[MIN_REPORT_SEVERITY_FIELD];
+    if (candidate !== null && !MIN_REPORT_SEVERITIES.includes(candidate as Severity)) {
+      return sendJson(res, 400, {
+        error: `${MIN_REPORT_SEVERITY_FIELD} 要是 ${
+          MIN_REPORT_SEVERITIES.join(" / ")
+        } 之一，null 即取默认值`,
+      });
+    }
+    minReportSeverity = candidate as Severity | null;
+  }
+
+  const expectedVersion = payload.expectedVersion as number;
   const saved = withStore(deps.dbPath, (store) =>
     reviewersJson !== undefined
-      ? store.putGlobalReviewers(payload.expectedVersion as number, reviewersJson)
-      : store.putGlobalBatchLimit(limitField!, payload.expectedVersion as number, limit)
+      ? store.putGlobalReviewers(expectedVersion, reviewersJson)
+      : hasMinReportSeverity
+        ? store.putGlobalMinReportSeverity(expectedVersion, minReportSeverity)
+        : store.putGlobalBatchLimit(limitField!, expectedVersion, limit)
   );
   if (!saved) {
     return sendJson(res, 409, { error: "这项审查策略已经被其他人修改，请重新加载后再保存" });

@@ -54,6 +54,7 @@ export async function runInChild(
     directive,
     mode,
     maxEvidenceCallsPerBatch,
+    minReportSeverity,
     // 空知识集与不传等价。两型各判各的:只有事实没有规则的知识集同样成立。
     rules = [],
     facts = [],
@@ -87,6 +88,10 @@ export async function runInChild(
     ...(mode === undefined || mode === "full" ? {} : { mode }),
     // 取证上限不给即不带(issue #258):子进程落回系统默认,任务形状与这一票之前逐字一致。
     ...(maxEvidenceCallsPerBatch === undefined ? {} : { maxEvidenceCallsPerBatch }),
+    // 全报那一档不带这一项(issue #271):子进程据此不渲染阈值段,prompt 逐字不变。
+    ...(minReportSeverity === undefined || minReportSeverity === "P2"
+      ? {}
+      : { minReportSeverity }),
     // 空知识集不带这一项:子进程据此不渲染规则段,prompt 与没有知识集时逐字一致。
     ...(rules.length === 0 ? {} : { rules }),
     // 事实段同律(issue #221):一条事实都没有时不带,prompt 与升级前逐字一致。

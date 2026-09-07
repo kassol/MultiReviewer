@@ -372,6 +372,11 @@ export type ReviewerInput = {
    */
   maxEvidenceCallsPerBatch?: number;
   /**
+   * 本轮的最低报告等级(CONTEXT.md 最低报告等级,issue #271):低于它的问题不要报出。
+   * 阈值是 P2(全报)时不传,prompt 因此不渲染阈值段,请求形状与这一票之前逐字一致。
+   */
+  minReportSeverity?: Severity;
+  /**
    * 收这个 Reviewer 的过程事件(issue #171),编排层一定传,一条即写一条轨迹。
    * 声明成可选是给直接调 `review` 的调用方留的余地:不看过程的地方不必造一个空回调。
    */
