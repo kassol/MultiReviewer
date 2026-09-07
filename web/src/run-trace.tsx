@@ -279,6 +279,22 @@ function RunMilestone({ event }: { event: TraceEvent }) {
             </span>
           </span>
         );
+      // 某一组的综合说明没写或写空了,那一组的正文退回原文最完整的一段(issue #279)。
+      // 组下标从 0 起,读的人按「第几组」数,因此显示加一。
+      case "synthesis_fallback": {
+        const group = num(payload, "group");
+        return (
+          <span className="flex flex-wrap items-baseline gap-x-2 text-base text-text">
+            <span className="text-warning">
+              第 <span className="font-mono tabular-nums">{group === null ? "?" : group + 1}</span>{" "}
+              组没有综合说明,正文取原文最完整的一段
+            </span>
+            <span className="min-w-0 text-sm break-words text-text-secondary">
+              {str(payload, "reason") ?? "未记录原因"}
+            </span>
+          </span>
+        );
+      }
       case "finding_discarded": {
         const file = str(payload, "file");
         const line = num(payload, "line");

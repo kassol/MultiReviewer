@@ -333,6 +333,235 @@ test("回退之后的结果与没有合并 agent 时逐字一致", async () => {
 });
 
 /**
+ * 多归属组的正文由合并 agent 综合(issue #279,ADR 0022 的 2026-09-07 修订附记)。
+ *
+ * 断言的仍只有外部行为:落库的四段、归属有没有被动过、Forge 评论正文,以及缺综合那一组
+ * 的轨迹事件。综合本身怎么写是模型的事,用例只给脚本化的一份。
+ */
+
+/** 四段齐全的一条 Finding。综合要合的就是这四段。 */
+const SAID = (
+  line: number,
+  title: string,
+  description: string,
+  impact: string,
+  suggestion: string,
+) => ({ ...AT(line, title, description), impact, suggestion });
+
+const SYNTHESIS = {
+  title: "sub 的减法多减了 1",
+  description: "sub 在返回时又减了一次 1,两个模型报的是同一处越界。",
+  impact: "所有调用方拿到的差都少 1,账目会逐笔偏。",
+  suggestion: "去掉多出来的那次减 1。",
+};
+
+test("多归属组的综合说明成为正文,归属保留各模型原话", async () => {
+  const { cache, db, forge } = setup();
+
+  const result = await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [
+        SAID(2, "减法越界", "sub 多减了 1", "结果偏小", "改回 a - b"),
+      ]),
+      scriptedReviewer("model-b", [
+        SAID(3, "off-by-one", "返回值比正确结果少 1", "调用方算错", "去掉那个 -1"),
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    mergeAgent: scriptedMergeAgent([
+      { members: [0, 1], reason: "两条说的是同一个减法越界", synthesis: SYNTHESIS },
+    ]),
+  });
+
+  assert.equal(result.findings.length, 1);
+  const finding = result.findings[0]!;
+  assert.equal(finding.title, SYNTHESIS.title);
+  assert.equal(finding.description, SYNTHESIS.description);
+  assert.equal(finding.impact, SYNTHESIS.impact);
+  assert.equal(finding.suggestion, SYNTHESIS.suggestion);
+  // 归属逐字不变:综合只改正文,各模型的原话仍在可展开区里。
+  assert.deepEqual(
+    finding.attributions.map((said) => [said.model, said.title, said.description]),
+    [
+      ["model-a", "减法越界", "sub 多减了 1"],
+      ["model-b", "off-by-one", "返回值比正确结果少 1"],
+    ],
+  );
+
+  const body = forge.createdReviews[0]!.comments[0]!.body;
+  assert.match(body, /\*\*\[P1\] sub 的减法多减了 1\*\*/);
+  assert.ok(body.includes(`**问题**:${SYNTHESIS.description}`));
+  assert.ok(body.includes(`**影响**:${SYNTHESIS.impact}`));
+  assert.ok(body.includes(`**建议**:${SYNTHESIS.suggestion}`));
+  assert.ok(body.includes("由 2 个模型报出:model-a、model-b"));
+  // 评论正文不带各模型原话(issue #278 的口径,综合之后同样成立)。
+  assert.ok(!body.includes("sub 多减了 1"), "正文不该混进 model-a 的原话");
+  assert.ok(!body.includes("返回值比正确结果少 1"), "正文不该混进 model-b 的原话");
+
+  assert.equal(trace(db.path).filter((e) => e.kind === "synthesis_fallback").length, 0);
+});
+
+test("缺综合的那一组退回代表段,其余组照用综合,轨迹记一条 synthesis_fallback", async () => {
+  const { cache, db, forge } = setup();
+
+  const result = await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [
+        SAID(2, "减法越界", "sub 多减了 1", "结果偏小", "改回 a - b"),
+        { ...SAID(2, "加错了", "inc 加了 2", "计数偏大", "改回 n + 1"), file: "src/n.js" },
+      ]),
+      scriptedReviewer("model-b", [
+        SAID(3, "off-by-one", "返回值比正确结果少 1", "调用方算错", "去掉那个 -1"),
+        {
+          ...SAID(2, "自增步长不对", "inc 每次加了 2,步长本该是 1", "计数翻倍", "步长改回 1"),
+          file: "src/n.js",
+        },
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    mergeAgent: scriptedMergeAgent([
+      { members: [0, 2], reason: "同一个减法越界", synthesis: SYNTHESIS },
+      { members: [1, 3], reason: "同一个自增步长问题" },
+    ]),
+  });
+
+  assert.equal(result.findings.length, 2);
+  assert.equal(result.findings[0]!.title, SYNTHESIS.title, "有综合的那一组用综合");
+  // 没综合的那一组取描述最长的那条归属,四段同出 model-b(issue #278 的代表段规则)。
+  const fallen = result.findings[1]!;
+  assert.equal(fallen.title, "自增步长不对");
+  assert.equal(fallen.description, "inc 每次加了 2,步长本该是 1");
+  assert.equal(fallen.impact, "计数翻倍");
+  assert.equal(fallen.suggestion, "步长改回 1");
+  assert.equal(fallen.attributions.length, 2, "分组照收,归属不因缺综合而少");
+
+  const events = trace(db.path).filter((e) => e.kind === "synthesis_fallback");
+  assert.equal(events.length, 1);
+  assert.equal(events[0]!.payload["group"], 1, "组下标即方案里的次序");
+  assert.match(String(events[0]!.payload["reason"]), /没有综合说明/);
+  // 整轮的合并没有退回算法档:回退只落在那一组上。
+  assert.equal(trace(db.path).filter((e) => e.kind === "merge_fallback").length, 0);
+});
+
+test("综合的标题或问题说明空白的那一组同样退回代表段", async () => {
+  const { cache, db, forge } = setup();
+
+  const result = await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [SAID(2, "减法越界", "sub 多减了 1", "结果偏小", "改回 a - b")]),
+      scriptedReviewer("model-b", [
+        SAID(3, "off-by-one", "返回值比正确结果少 1", "调用方算错", "去掉那个 -1"),
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    mergeAgent: scriptedMergeAgent([
+      {
+        members: [0, 1],
+        reason: "同一个减法越界",
+        synthesis: { ...SYNTHESIS, description: "   " },
+      },
+    ]),
+  });
+
+  assert.equal(result.findings[0]!.title, "off-by-one");
+  assert.equal(result.findings[0]!.description, "返回值比正确结果少 1");
+  const events = trace(db.path).filter((e) => e.kind === "synthesis_fallback");
+  assert.equal(events.length, 1);
+  assert.match(String(events[0]!.payload["reason"]), /问题说明是空的/);
+});
+
+test("单归属组落库为原文,agent 给了综合也不用", async () => {
+  const { cache, db, forge } = setup();
+
+  const result = await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [SAID(2, "减法越界", "sub 多减了 1", "结果偏小", "改回 a - b")]),
+      scriptedReviewer("model-b", [SAID(14, "mod 加了 0", "取模之后又加 0", "白算一次", "删掉")]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    mergeAgent: scriptedMergeAgent([
+      { members: [0], reason: "只有它报了", synthesis: SYNTHESIS },
+      { members: [1], reason: "另一个问题" },
+    ]),
+  });
+
+  assert.equal(result.findings.length, 2);
+  assert.equal(result.findings[0]!.title, "减法越界");
+  assert.equal(result.findings[0]!.description, "sub 多减了 1");
+  // 归属只有一条的组不要求综合,缺不缺都不记回退。
+  assert.equal(trace(db.path).filter((e) => e.kind === "synthesis_fallback").length, 0);
+});
+
+test("agent 随综合给的严重度与分类不采用", async () => {
+  const { cache, db, forge } = setup();
+
+  const result = await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [
+        { ...SAID(2, "减法越界", "sub 多减了 1", "结果偏小", "改回 a - b"), category: "design" },
+      ]),
+      scriptedReviewer("model-b", [
+        {
+          ...SAID(3, "off-by-one", "返回值比正确结果少 1", "调用方算错", "去掉那个 -1"),
+          severity: "P0",
+        },
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    mergeAgent: scriptedMergeAgent([
+      {
+        members: [0, 1],
+        reason: "同一个减法越界",
+        // 契约里没有这两格,模型硬塞也只是被忽略:严重度取最高、分类取首报仍由代码定。
+        synthesis: { ...SYNTHESIS, severity: "P3", category: "security" } as typeof SYNTHESIS,
+      },
+    ]),
+  });
+
+  assert.equal(result.findings[0]!.severity, "P0");
+  assert.equal(result.findings[0]!.category, "design");
+  assert.equal(result.findings[0]!.title, SYNTHESIS.title);
+});
+
+test("整轮退回算法合并时综合不生效,正文取代表段", async () => {
+  const { cache, db, forge } = setup();
+
+  const result = await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [
+      // 同一行:算法档凭「同一行」这道判据就把两条合成一组,与词面相似度无关。
+      scriptedReviewer("model-a", [SAID(2, "减法越界", "sub 多减了 1", "结果偏小", "改回 a - b")]),
+      scriptedReviewer("model-b", [
+        SAID(2, "off-by-one", "返回值比正确结果少 1", "调用方算错", "去掉那个 -1"),
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    mergeAgent: scriptedMergeAgent(
+      [{ members: [0, 1], reason: "同一个减法越界", synthesis: SYNTHESIS }],
+      { failure: "模型调用超时" },
+    ),
+  });
+
+  assert.equal(result.findings.length, 1);
+  assert.equal(result.findings[0]!.title, "off-by-one", "算法档只认代表段");
+  assert.equal(result.findings[0]!.description, "返回值比正确结果少 1");
+  const events = trace(db.path);
+  assert.equal(events.filter((e) => e.kind === "merge_fallback").length, 1);
+  assert.equal(events.filter((e) => e.kind === "synthesis_fallback").length, 0);
+});
+
+/**
  * 合并 agent 的输入扩到同文件历史(issue #240,ADR 0022 的 2026-09-04 修订附记)。
  *
  * 两轮同一份代码:第一轮报出的那条留在 Forge 上当既有评论,第二轮换个说法在别处重报,
