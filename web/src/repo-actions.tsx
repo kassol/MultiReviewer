@@ -120,6 +120,14 @@ export async function rerunRequest(run: {
 export const RUN_DIRECTIVE_PLACEHOLDER = "如:只报 P0";
 
 /**
+ * 本轮指令的能力边界(issue #270)。四处指令输入框挂同一句:指令进的是 Reviewer 的
+ * prompt,它改的只有这一轮看什么、报什么,处置一条 Finding 是面板动作,写在指令里不会
+ * 发生。线上有过一句「P2 可以都关闭」的指令,评审方等来的是「指令没生效」。
+ */
+export const RUN_DIRECTIVE_HINT =
+  "指令只影响本轮审查看什么、报什么,不会处置任何 Finding;处置请用面板动作。";
+
+/**
  * 一次重跑的模式(CONTEXT.md 只复核,issue #242)。两处重跑入口共用一个类型与一句
  * 措辞:同一个勾选在两个地方读起来必须是同一件事。
  */
@@ -818,6 +826,9 @@ export function RerunPullRequest({
               onChange={(event) => setDirective(event.target.value)}
             />
           </label>
+          <Text size="1" color="gray">
+            {RUN_DIRECTIVE_HINT}
+          </Text>
           {/* 默认只复核历史(issue #242):清历史是重跑的常态,整段范围再审一遍不是。 */}
           <Text
             as="label"

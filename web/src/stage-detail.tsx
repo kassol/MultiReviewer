@@ -41,6 +41,7 @@ import { AdvanceAction, CompleteAction, type RangeReview } from "./range-review-
 import {
   FULL_REVIEW_HINT,
   rerunRequest,
+  RUN_DIRECTIVE_HINT,
   RUN_DIRECTIVE_PLACEHOLDER,
   type RerunMode,
 } from "./repo-actions.tsx";
@@ -495,6 +496,9 @@ function RerunAction({
             value={directive}
             onChange={(event) => setDirective(event.target.value)}
           />
+          <Text as="p" size="1" color="gray" className="mt-1">
+            {RUN_DIRECTIVE_HINT}
+          </Text>
           {/* 默认不勾:清历史是重跑的常态,整段范围再审一遍不是(issue #242)。 */}
           <Text
             as="label"

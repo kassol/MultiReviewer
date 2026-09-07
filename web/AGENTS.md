@@ -121,6 +121,8 @@
 
 ## 变更日志
 
+- 2026-09-07: 落地 issue #270 的面板部分。**四处指令输入框写明指令不处置 Finding**:`repo-actions.tsx` 多导出一句 `RUN_DIRECTIVE_HINT`(手法同 `RUN_DIRECTIVE_PLACEHOLDER`,一句措辞四处共用)——「指令只影响本轮审查看什么、报什么,不会处置任何 Finding;处置请用面板动作。」,挂在首页右栏 PR 重跑 Popover、阶段页重跑弹窗(`stage-detail.tsx`)、增量评审弹窗(`range-review-actions.tsx`)与发起范围审查表单(`range-review-launch.tsx`)的指令输入框下面。PR 重跑那处放在 `<label>` 之外——`<label>` 里的文字会并进输入框的可访问名;发起范围审查那处接在已有的 `aria-describedby` 段落里,不另起第二个说明块。前端无程序化测试(issue #26),文案走部署实例手测。
+
 - 2026-09-06: issue #266 / #267 面板的评审复核修正。**归属块与历史说法块里的「问题：」「影响：」「建议：」段落改 `text-base leading-relaxed`**,与代表段同一档;模型标识行与「沿用」那一行保留 `text-sm`。依据 `web/DESIGN.md` 5.2 字号表:`text-sm` 只给计数徽章、表头、日期分组标题与卡片副标题,多句的修法正文不落在这一档。
 
 - 2026-09-06: 落地 issue #267 的面板部分。**Finding 卡片呈现延续承接来的历史说法并标出处**:`runs.tsx` 的 `RunFinding` 多一格 `carried`(与服务端投影同名同形:model / runId / headSha / description / impact / suggestion),`run-diff.tsx` 新增 `CarriedSaid`,接在归属块之后逐段渲染——头一行写明是哪个模型在哪一轮(Review Run id)的哪个 head(`CommitChip`)上说的、尚未针对新代码重新验证,再是与代表段不同时的「问题：」、「影响：」、「建议：」;两段皆无内容的整块不出现。归属块本身不变:合成延续那一行的归属只有给出新位置的模型,两段为空,不出块。前端无程序化测试(issue #26),文案走部署实例手测。
