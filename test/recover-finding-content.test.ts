@@ -223,6 +223,7 @@ async function seedLegacy(options: SeedOptions = {}) {
     feedBack();
   }
 
+  legacyComments(db.path, forge.existingComments);
   exec(db.path, "UPDATE finding_attribution SET impact = NULL, suggestion = NULL");
   exec(
     db.path,
@@ -231,6 +232,57 @@ async function seedLegacy(options: SeedOptions = {}) {
       : "DELETE FROM finding_carried_attribution",
   );
   return { db, forge };
+}
+
+/**
+ * 把评论正文改写回逐归属分段的老形状(issue #278 之前的格式):标题行,每个归属一段带
+ * 模型标识,再是承接段与锚点。恢复操作要认的原评论就是那时发出去的——现在的正文只有一份
+ * 代表段,里面没有各模型原文可读,夹具因此要还原成它面对的那种正文。
+ */
+function legacyComments(
+  dbPath: string,
+  comments: { id: string; body: string }[],
+): void {
+  const saids = sql<{
+    comment_id: string;
+    model: string;
+    description: string;
+    impact: string | null;
+    suggestion: string | null;
+  }>(
+    dbPath,
+    `SELECT f.comment_id AS comment_id, a.model AS model, a.description AS description,
+            a.impact AS impact, a.suggestion AS suggestion
+       FROM finding f JOIN finding_attribution a ON a.finding_id = f.id
+      WHERE f.comment_id IS NOT NULL
+      ORDER BY f.id, a.position`,
+  );
+  const byComment = new Map<string, typeof saids>();
+  for (const said of saids) {
+    const list = byComment.get(said.comment_id) ?? [];
+    list.push(said);
+    byComment.set(said.comment_id, list);
+  }
+  for (const comment of comments) {
+    const list = byComment.get(comment.id);
+    if (list === undefined) continue;
+    const blocks = comment.body.split("\n\n");
+    const rest = blocks.slice(1);
+    // 代表段那几段换成逐归属的段;承接段之后的部分(延续说明、锚点)原样留着,归属那一行去掉。
+    const cut = rest.findIndex(
+      (block) => block.startsWith("**沿用 ") || block.startsWith("延续自 ") || block.startsWith("由 "),
+    );
+    const tail = rest.slice(cut).filter((block) => !block.startsWith("由 "));
+    const sections = list.flatMap((said) => {
+      const parts = [`**${said.model}**`, `**问题**:${said.description}`];
+      if (said.impact !== null && said.impact !== "") parts.push(`**影响**:${said.impact}`);
+      if (said.suggestion !== null && said.suggestion !== "") {
+        parts.push(`**建议**:${said.suggestion}`);
+      }
+      return parts;
+    });
+    comment.body = [blocks[0]!, ...sections, ...tail].join("\n\n");
+  }
 }
 
 type Row = { id: number; run_id: number; file: string; title: string; model: string; position: number };

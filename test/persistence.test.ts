@@ -622,6 +622,8 @@ test("时间流带上每条 Finding 的 Forge 评论 id 与链接", async () => 
       severity: FINDING.severity,
       category: FINDING.category,
       description: FINDING.description,
+      impact: "",
+      suggestion: "",
       disposition: "unknown",
       placement: "inline",
       commentId: published.id,
@@ -816,6 +818,9 @@ test("升级前落的 finding 行读得出来,评论 id 与链接为空", () => 
       severity: "P0",
       category: "bug",
       description: "旧行",
+      // 代表段那两列升级前没有,归属表那时也还没有,现算不出来:两段照实为 null。
+      impact: null,
+      suggestion: null,
       disposition: "unknown",
       placement: "inline",
       commentId: null,

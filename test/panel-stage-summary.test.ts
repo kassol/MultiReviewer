@@ -38,6 +38,8 @@ type SummaryFinding = {
   severity: string;
   category: string;
   description: string;
+  impact: string | null;
+  suggestion: string | null;
   models: string[];
   attributions: {
     model: string;
@@ -150,6 +152,8 @@ function seedRun(
       severity: "P1" as const,
       category: "bug" as const,
       description: `正文 ${finding.fingerprint}`,
+      impact: finding.impact ?? "",
+      suggestion: finding.suggestion ?? "",
       attributions: (finding.models ?? ["model-a"]).map((model) => ({
         model,
         severity: "P1" as const,
@@ -410,6 +414,130 @@ test("阶段汇总逐归属带影响与建议,升级前落的行读回 null(issu
     legacy.attributions.map((entry) => [entry.model, entry.impact, entry.suggestion]),
     [["model-a", null, null]],
   );
+});
+
+test("阶段汇总带代表段的影响与建议,升级前落的行按规则现算(issue #278)", async () => {
+  const h = await startPanelHarness(cleanups);
+  const store = openStore(h.db.path);
+  let rangeReviewId: number;
+  let legacyId: number;
+  /** 一条 Finding 的两条归属:一条说得长、一条说得短,代表段该取长的那条。 */
+  const attributions = (fingerprint: string) => [
+    {
+      model: "model-a",
+      severity: "P1" as const,
+      category: "bug" as const,
+      description: `正文 ${fingerprint}`,
+      impact: "余额会算错",
+      suggestion: "改成 a - b",
+    },
+    {
+      model: "model-b",
+      severity: "P1" as const,
+      category: "bug" as const,
+      description: `正文 ${fingerprint},少减一次导致返回值偏小`,
+      impact: "所有调用方拿到的差值都错",
+      suggestion: "去掉多余的 - 1",
+    },
+  ];
+  try {
+    store.registerRepo({
+      repoId: GITEA_REPO.id,
+      owner: HARNESS_PR.owner,
+      repo: HARNESS_PR.repo,
+      generation: 1,
+      key: "stage-summary-representative-key",
+    });
+    rangeReviewId = store.createRangeReview({
+      repoId: GITEA_REPO.id,
+      owner: HARNESS_PR.owner,
+      repo: HARNESS_PR.repo,
+      title: "代表段夹具",
+      baseSha: "base-sha",
+      comparisonSha: "sha-1",
+      createdBy: "operator",
+      createdAt: "2026-08-20T00:00:00.000Z",
+    });
+    const runId = store.startRun({
+      owner: HARNESS_PR.owner,
+      repo: HARNESS_PR.repo,
+      pullNumber: 901,
+      headSha: "sha-1",
+      startedAt: "2026-08-20T01:00:00.000Z",
+      rangeReviewId,
+      changedFiles: 1,
+      changedLines: 1,
+      batchCount: 1,
+      reviewerPins: [],
+    });
+    store.finishRun(runId, {
+      finishedAt: "2026-08-20T01:10:00.000Z",
+      durationMs: 1,
+      failed: false,
+      outcomes: [],
+      findings: [
+        {
+          file: "src/a.ts",
+          line: 5,
+          title: "sub 多减了 1",
+          severity: "P1",
+          category: "bug",
+          // 落库的代表段就是描述最长那条归属的四段(issue #278)。
+          description: "正文 fp-new,少减一次导致返回值偏小",
+          impact: "所有调用方拿到的差值都错",
+          suggestion: "去掉多余的 - 1",
+          attributions: attributions("fp-new"),
+          fingerprint: "fp-new",
+          groupIndex: 0,
+          disposition: "unknown",
+          placement: "inline",
+          commentId: "c1",
+          commentHtmlUrl: "https://gitea.example.test/comments/c1",
+        },
+        {
+          file: "src/b.ts",
+          line: 9,
+          title: "sub 多减了 1",
+          severity: "P1",
+          category: "bug",
+          description: "正文 fp-legacy",
+          impact: "余额会算错",
+          suggestion: "改成 a - b",
+          attributions: attributions("fp-legacy"),
+          fingerprint: "fp-legacy",
+          groupIndex: 1,
+          disposition: "unknown",
+          placement: "inline",
+          commentId: "c2",
+          commentHtmlUrl: "https://gitea.example.test/comments/c2",
+        },
+      ],
+      verdicts: [],
+    });
+    legacyId = findingId(store, runId, "fp-legacy");
+  } finally {
+    store.close();
+  }
+  // 升级前落的行:两列是 NULL,前两段还是按旧规则(严重度最高那条)存下来的那份。
+  const sqlite = new DatabaseSync(h.db.path);
+  sqlite
+    .prepare("UPDATE finding SET impact = NULL, suggestion = NULL WHERE id = ?")
+    .run(legacyId);
+  sqlite.close();
+
+  const body = await summaryOf(h, `rangeReviewId=${rangeReviewId}`);
+
+  const fresh = body.findings.find((finding) => finding.file === "src/a.ts")!;
+  assert.equal(fresh.description, "正文 fp-new,少减一次导致返回值偏小");
+  assert.equal(fresh.impact, "所有调用方拿到的差值都错");
+  assert.equal(fresh.suggestion, "去掉多余的 - 1");
+  assert.deepEqual(fresh.models, ["model-a", "model-b"]);
+
+  // 存量行按同一规则从归属现算:四段同出描述最长的那条,不拼两条归属的说法。
+  const legacy = body.findings.find((finding) => finding.file === "src/b.ts")!;
+  assert.equal(legacy.description, "正文 fp-legacy,少减一次导致返回值偏小");
+  assert.equal(legacy.impact, "所有调用方拿到的差值都错");
+  assert.equal(legacy.suggestion, "去掉多余的 - 1");
 });
 
 test("阶段汇总带出延续承接来的历史说法,head 按来源轮次补(issue #267)", async () => {

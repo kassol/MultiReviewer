@@ -180,9 +180,9 @@ test("合并 agent 跑不成时,词法配对的延续照常发生", async () => 
 });
 
 
-test("评论按 等级/标题 加逐模型的 问题/影响/建议 分段呈现", async () => {
+test("评论按 等级/标题 加一份代表段的 问题/影响/建议,末尾一行归属(issue #278)", async () => {
   const { cache, db, forge } = setup(6);
-  // 两个模型报同一处:合并后也只呈现一份内容,另一个模型的表述不进评论。
+  // 两个模型报同一处:正文只有描述最长那份,另一个模型的原文不进评论。
   const finding = {
     file: "src/calc.ts",
     line: 6,
@@ -193,7 +193,13 @@ test("评论按 等级/标题 加逐模型的 问题/影响/建议 分段呈现"
     impact: "所有调用方拿到的差值都错。",
     suggestion: "去掉多余的 - 1。",
   };
-  const other = { ...finding, description: "减法结果不对。" };
+  const other = {
+    ...finding,
+    title: "减法有问题",
+    description: "减法结果不对。",
+    impact: "余额会算错。",
+    suggestion: "改成 a - b。",
+  };
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
@@ -211,12 +217,103 @@ test("评论按 等级/标题 加逐模型的 问题/影响/建议 分段呈现"
   const body = forge.createdReviews[0]!.comments[0]!.body;
   const [heading] = body.split("\n");
   assert.equal(heading, "**[P0] sub 多减了 1**");
-  assert.match(body, /\n\n\*\*model-a\*\*\n/);
   assert.match(body, /\n\n\*\*问题\*\*:sub\(\) 的返回值比正确结果小 1。/);
   assert.match(body, /\n\n\*\*影响\*\*:所有调用方拿到的差值都错。/);
   assert.match(body, /\n\n\*\*建议\*\*:去掉多余的 - 1。/);
-  // 另一个模型的表述同样留着,自成一段(ADR 0015)。
-  assert.match(body, /\n\n\*\*model-b\*\*\n\n\*\*问题\*\*:减法结果不对。/);
+  // 模型名退到末尾那一行,各模型原文一段都不进评论。
+  assert.doesNotMatch(body, /\*\*model-[ab]\*\*|减法结果不对。|余额会算错。|改成 a - b。/);
+  assert.match(body, /\n\n由 2 个模型报出:model-a、model-b\n/);
+});
+
+test("代表段取描述最长的那条归属,归属仍逐条落库(issue #278)", async () => {
+  const { cache, db, forge } = setup(6);
+  const at6 = {
+    file: "src/calc.ts",
+    line: 6,
+    category: "bug" as const,
+    title: "sub 多减了 1",
+  };
+  // 严重度更高的那条说得短:代表段仍取说得最全的 model-b,严重度与分类各按各的口径。
+  const short = {
+    ...at6,
+    severity: "P0" as const,
+    description: "减法结果不对。",
+    impact: "余额会算错。",
+    suggestion: "改成 a - b。",
+  };
+  const long = {
+    ...at6,
+    severity: "P1" as const,
+    title: "sub 的返回值小 1",
+    description: "sub() 少减一次,返回值比正确结果小 1。",
+    impact: "所有调用方拿到的差值都错。",
+    suggestion: "去掉多余的 - 1。",
+  };
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    {
+      forge: forge.forge,
+      reviewers: [scriptedReviewer("model-a", [short]), scriptedReviewer("model-b", [long])],
+      cacheDir: cache.dir,
+      dbPath: db.path,
+    },
+  );
+
+  const store = openStore(db.path);
+  const [run] = store.listRuns({ limit: 1 });
+  store.close();
+  const recorded = run!.findings[0]!;
+  assert.equal(recorded.description, "sub() 少减一次,返回值比正确结果小 1。");
+  assert.equal(recorded.impact, "所有调用方拿到的差值都错。");
+  assert.equal(recorded.suggestion, "去掉多余的 - 1。");
+  // 严重度仍取最高、分类仍取首报,不随代表段的选择变。
+  assert.equal(recorded.severity, "P0");
+  assert.equal(recorded.category, "bug");
+  assert.deepEqual(recorded.models, ["model-a", "model-b"]);
+  assert.equal(recorded.attributions.length, 2, "归属仍逐条留着");
+});
+
+test("同一个模型的多份归属只落一份代表段,归属一行仍只算一个模型(issue #278)", async () => {
+  const { cache, db, forge } = setup(6);
+  const at6 = { file: "src/calc.ts", line: 6, category: "bug" as const, severity: "P1" as const };
+  // 同一个模型跨批次重复报出同一处的形状:同行硬证据并成一组,归属三条。
+  const said = (description: string, suggestion: string) => ({
+    ...at6,
+    title: "sub 多减了 1",
+    description,
+    impact: "调用方拿到的差值都错。",
+    suggestion,
+  });
+
+  await runReview(
+    { owner: "acme", repo: "widgets", number: 7 },
+    {
+      forge: forge.forge,
+      reviewers: [
+        scriptedReviewer("model-a", [
+          said("减法结果不对。", "改成 a - b。"),
+          said("sub() 少减一次,返回值比正确结果小 1。", "去掉多余的 - 1。"),
+          said("返回值偏小。", "核对减法。"),
+        ]),
+      ],
+      cacheDir: cache.dir,
+      dbPath: db.path,
+    },
+  );
+
+  const store = openStore(db.path);
+  const [run] = store.listRuns({ limit: 1 });
+  store.close();
+  const recorded = run!.findings[0]!;
+  assert.equal(recorded.attributions.length, 3, "三条归属都该留着");
+  assert.equal(recorded.description, "sub() 少减一次,返回值比正确结果小 1。");
+  assert.equal(recorded.suggestion, "去掉多余的 - 1。");
+
+  const body = forge.createdReviews[0]!.comments[0]!.body;
+  assert.match(body, /\n\n\*\*问题\*\*:sub\(\) 少减一次,返回值比正确结果小 1。/);
+  assert.doesNotMatch(body, /减法结果不对。|返回值偏小。/, "其余归属的原文不进评论");
+  assert.match(body, /\n\n由 1 个模型报出:model-a\n/);
 });
 
 test("影响与建议为空时整段消失,不留空标签", async () => {
@@ -1521,12 +1618,13 @@ test("合成延续完整沿用历史各归属的影响与建议并各记出处,�
   assert.equal(second!.findings.length, 1);
   const continued = second!.findings[0]!;
   // 本轮归属只有位置复核者,两段为空:它没有对着新代码给过修法。参与统计因此不变。
+  // 它承接的是上一轮那条的代表段(issue #278):三段归属里描述最长的那一份。
   assert.deepEqual(continued.attributions, [
     {
       model: "model-c",
       severity: "P0",
       category: "bug",
-      description: "sub 多减了 1",
+      description: "非数字入参不被拦截。",
       impact: "",
       suggestion: "",
     },
@@ -1565,9 +1663,10 @@ test("合成延续完整沿用历史各归属的影响与建议并各记出处,�
   // 来源要能唯一定位到那一轮:同一 head 可以重跑出多轮,只写 head 认不出是哪一轮。
   const note = (model: string) =>
     `**沿用 ${model} 在 Review Run #${first!.id} / ${sha} 上的说法,尚未针对新代码重新验证**`;
+  // 代表段是合成那条自己的一段问题(issue #278),承接段接在它后面,位置不变。
   assert.ok(
     body.includes(
-      `**model-c**\n\n**问题**:sub 多减了 1\n\n${note("model-a")}\n\n**问题**:sub 多减了 1\n\n**影响**:所有调用方拿到的差值都错。\n\n**建议**:去掉多余的 - 1。`,
+      `**问题**:非数字入参不被拦截。\n\n${note("model-a")}\n\n**问题**:sub 多减了 1\n\n**影响**:所有调用方拿到的差值都错。\n\n**建议**:去掉多余的 - 1。`,
     ),
     body,
   );
@@ -1577,7 +1676,7 @@ test("合成延续完整沿用历史各归属的影响与建议并各记出处,�
   );
   assert.ok(
     body.includes(
-      `${note("model-b")}\n\n**问题**:减法结果不对。\n\n**影响**:余额会算错。\n\n**建议**:改成 a - b。`,
+      `${note("model-b")}\n\n**问题**:减法结果不对。\n\n**影响**:余额会算错。\n\n**建议**:改成 a - b。\n\n由 1 个模型报出:model-c`,
     ),
     body,
   );

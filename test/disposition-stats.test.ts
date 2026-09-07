@@ -37,6 +37,8 @@ function finding(
     severity: "P0",
     category: "bug",
     description: "有毛病",
+    impact: "",
+    suggestion: "",
     attributions: (models ?? ["model-a"]).map((model) => ({
       model,
       severity: "P0" as const,

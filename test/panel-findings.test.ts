@@ -98,6 +98,8 @@ function seedBodyFinding(dbPath: string): number {
           severity: "P2",
           category: "design",
           description: "diff 之外的那条",
+          impact: "",
+          suggestion: "",
           attributions: [
             {
               model: HARNESS_SPEC.model,

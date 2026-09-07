@@ -94,6 +94,8 @@ function seedRun(
         severity: "P1" as const,
         category: "bug" as const,
         description: "示例",
+        impact: "",
+        suggestion: "",
         attributions: members.map((f) => ({
           model: f.model,
           severity: "P1" as const,

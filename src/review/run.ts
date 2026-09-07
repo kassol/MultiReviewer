@@ -264,10 +264,12 @@ type CarriedFinding = {
 };
 
 /**
- * 评论是给开发者看的最终结果:等级、标题,然后按模型分段的问题、影响、建议。
+ * 评论是给开发者看的最终结果:等级、标题,然后是一份问题、影响、建议,末尾一行写明由
+ * 哪几个模型报出。
  *
- * 一条评论承载的是同一处问题的全部说法(ADR 0015):同一轮里几个 Reviewer 报同一处
- * 合成一条,正文每个模型一段并带模型标识,谁都不被丢掉。只有一个模型报出时同样带标识
+ * 正文只有代表段那一份(issue #278):几个模型报同一处时,人要读的是一份说清楚的问题、
+ * 影响与建议,谁报的只是归属信息。逐归属分段的老形状把模型名放在正文最显眼的位置,归属
+ * 越多越难读;各模型的原文留在面板的可展开区,评论不带。只有一个模型报出时同样带那一行
  * ——同一条 Finding 的评论不该因为这一轮有几个模型认同而换个形状。
  */
 /** `**[P0] 标题**`。标题空缺时只留等级,不留空尾巴。 */
@@ -277,12 +279,21 @@ function findingHeading(finding: MergedFinding): string {
     : `**[${finding.severity}] ${finding.title}**`;
 }
 
-/** 一个模型的一段:模型标识,加它自己的问题 / 影响 / 建议。空段整段跳过。 */
-function attributionSection(said: FindingAttribution): string[] {
-  const lines = ["", `**${said.model}**`, "", `**问题**:${said.description}`];
-  if (said.impact !== "") lines.push("", `**影响**:${said.impact}`);
-  if (said.suggestion !== "") lines.push("", `**建议**:${said.suggestion}`);
+/** 代表段的三段:问题 / 影响 / 建议。空段整段跳过,不留空标签。 */
+function representativeSection(finding: MergedFinding): string[] {
+  const lines = ["", `**问题**:${finding.description}`];
+  if (finding.impact !== "") lines.push("", `**影响**:${finding.impact}`);
+  if (finding.suggestion !== "") lines.push("", `**建议**:${finding.suggestion}`);
   return lines;
+}
+
+/**
+ * 末尾的归属一行(issue #278):由哪几个模型报出。模型名去重并按首报先后——同一个模型
+ * 跨批次重复报出同一处会留下几条归属,它在这一行上仍然只算一个。
+ */
+function attributionLine(finding: MergedFinding): string[] {
+  const models = [...new Set(finding.attributions.map((said) => said.model))];
+  return ["", `由 ${models.length} 个模型报出:${models.join("、")}`];
 }
 
 /** 影响或建议有内容:空串(模型没给)与 null(源头没存)都是没有这一段。 */
@@ -309,11 +320,12 @@ function carriedSection(said: CarriedAttribution): string[] {
   return lines;
 }
 
-/** 全部归属按首报先后分段,延续承接来的历史说法接在后面。 */
+/** 代表段三段,延续承接来的历史说法接在后面,末尾是归属那一行。 */
 function findingSections(finding: MergedFinding): string[] {
   return [
-    ...finding.attributions.flatMap(attributionSection),
+    ...representativeSection(finding),
     ...(finding.carried ?? []).flatMap(carriedSection),
+    ...attributionLine(finding),
   ];
 }
 
@@ -2263,6 +2275,10 @@ export async function runReview(
           severity: finding.severity,
           category: finding.category,
           description: finding.description,
+          // 代表段的影响与建议随 Finding 落库(issue #278):面板与阶段汇总读它,不再
+          // 由读侧从归属里现算。
+          impact: finding.impact,
+          suggestion: finding.suggestion,
           attributions: finding.attributions.map((said) => ({
             model: said.model,
             severity: said.severity,

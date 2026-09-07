@@ -250,7 +250,7 @@ export type CommentSection = {
   suggestion: string;
 };
 
-/** 一段的正文按 `run.ts` 的 `attributionSection` 同一格式拼回去,回写校验用。 */
+/** 一段的正文按逐归属分段那种正文的同一格式拼回去,回写校验用。 */
 function renderSection(section: CommentSection): string {
   const parts = [`**${section.model}**`, `**问题**:${section.description}`];
   if (section.impact !== "") parts.push(`**影响**:${section.impact}`);
@@ -269,7 +269,8 @@ function fenceLines(paragraph: string): number {
 }
 
 /**
- * 一条评论正文里按模型分的段(`run.ts` 的 `attributionSection` 反过来读)。保守解析,不做
+ * 一条评论正文里按模型分的段(逐归属分段那种正文反过来读,issue #278 之前发出去的都是
+ * 这个形状;之后的正文只有一份代表段,拆不出各模型原文,整条不给)。保守解析,不做
  * 完整 Markdown:标签行(`**问题**:` / `**影响**:` / `**建议**:`)先认;模型标题只认整段
  * 粗体、不含内嵌 `**` 且正好是这条 Finding 某个归属模型标识的段落;段落正文可以跨多个空行
  * 分隔的段落,遇到下一个标签、模型标题、「沿用 …」段、延续说明或锚点为止,正文里的粗体行
