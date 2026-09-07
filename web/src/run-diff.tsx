@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fragment, useEffect, useRef, useState } from "react";
 
-import { CheckCircledIcon, ExternalLinkIcon } from "@radix-ui/react-icons";
+import { CheckCircledIcon, ChevronDownIcon, ExternalLinkIcon } from "@radix-ui/react-icons";
 import { Badge, IconButton, Skeleton, TextField, Tooltip } from "@radix-ui/themes";
+import { Collapsible } from "radix-ui";
 
 import { CommitChip } from "@/components/commit-chip";
 import { Button } from "@/components/theme-button";
@@ -101,24 +102,15 @@ function hasText(value: string | null): boolean {
 }
 
 /**
- * 一个归属的影响与建议(issue #266):谁说的挂谁的名下,不并进代表段。那条归属自己的
- * 问题表述与代表段不同时一并带出——同一处几个模型各说各的,影响与建议要对得上它自己
- * 的那句问题。两段都没有的归属整块不出现。
+ * 一个归属的原文(issue #278):谁说的挂谁的名下,整段留在「各模型原文」折叠区里。
+ * 正文只呈现代表段那一份,这里是核对某个模型原话的地方,因此问题那一段照原样列出,
+ * 不因为与代表段相同就省掉——省掉会让人以为这个模型没说过问题本身。
  */
-function AttributionSaid({
-  said,
-  representative,
-}: {
-  said: RunFinding["attributions"][number];
-  representative: string;
-}) {
-  if (!hasText(said.impact) && !hasText(said.suggestion)) return null;
+function AttributionSaid({ said }: { said: RunFinding["attributions"][number] }) {
   return (
     <div className="flex flex-col gap-0.5 text-sm text-text-secondary">
       <span className="min-w-0 break-all font-mono">{said.model}</span>
-      {said.description === representative ? null : (
-        <p className="text-base leading-relaxed break-words">问题：{said.description}</p>
-      )}
+      <p className="text-base leading-relaxed break-words">问题：{said.description}</p>
       {hasText(said.impact) ? <p className="text-base leading-relaxed break-words">影响：{said.impact}</p> : null}
       {hasText(said.suggestion) ? <p className="text-base leading-relaxed break-words">建议：{said.suggestion}</p> : null}
     </div>
@@ -131,13 +123,7 @@ function AttributionSaid({
  * Run 的 id:同一个 head 可以重跑出多轮,只写 head 定位不到那一轮。它不是本轮的归属,
  * 不署给给出新位置的模型;两段都没有内容的整块不出现。
  */
-function CarriedSaid({
-  said,
-  representative,
-}: {
-  said: RunFinding["carried"][number];
-  representative: string;
-}) {
+function CarriedSaid({ said }: { said: RunFinding["carried"][number] }) {
   if (!hasText(said.impact) && !hasText(said.suggestion)) return null;
   return (
     <div className="flex flex-col gap-0.5 text-sm text-text-secondary">
@@ -148,12 +134,41 @@ function CarriedSaid({
         <CommitChip sha={said.headSha} />
         <span>上的说法 · 尚未针对新代码重新验证</span>
       </p>
-      {said.description === representative ? null : (
-        <p className="text-base leading-relaxed break-words">问题：{said.description}</p>
-      )}
+      <p className="text-base leading-relaxed break-words">问题：{said.description}</p>
       {hasText(said.impact) ? <p className="text-base leading-relaxed break-words">影响：{said.impact}</p> : null}
       {hasText(said.suggestion) ? <p className="text-base leading-relaxed break-words">建议：{said.suggestion}</p> : null}
     </div>
+  );
+}
+
+/**
+ * 各模型原文(issue #278):全部归属与延续承接来的历史说法,默认折叠。正文只有一份
+ * 代表段,要核对某个模型的原话在这里展开。只有一条归属又没有承接段时不给这个入口
+ * ——展开与正文逐字相同,是白按一下。
+ */
+function OriginalSaid({ finding }: { finding: RunFinding }) {
+  if (finding.attributions.length <= 1 && finding.carried.length === 0) return null;
+  return (
+    <Collapsible.Root className="group/said flex flex-col gap-1.5">
+      <Collapsible.Trigger
+        type="button"
+        className="flex min-h-11 cursor-pointer items-center gap-1.5 self-start text-sm text-text-secondary outline-none hover:text-text focus-visible:ring-2 focus-visible:ring-ring/50 sm:min-h-0"
+      >
+        <span>各模型原文</span>
+        <ChevronDownIcon
+          aria-hidden
+          className="size-4 shrink-0 transition-transform group-data-[state=open]/said:rotate-180"
+        />
+      </Collapsible.Trigger>
+      <Collapsible.Content className="flex flex-col gap-1.5">
+        {finding.attributions.map((said, index) => (
+          <AttributionSaid key={`${said.model}-${index}`} said={said} />
+        ))}
+        {finding.carried.map((said, index) => (
+          <CarriedSaid key={`carried-${said.runId}-${index}`} said={said} />
+        ))}
+      </Collapsible.Content>
+    </Collapsible.Root>
   );
 }
 
@@ -242,15 +257,6 @@ export function FindingRow({
             </Badge>
           )}
           <Badge color="gray" variant="soft" radius="full">{finding.category}</Badge>
-          {/* 一条 Finding 可以由几个模型报出(ADR 0015):归属逐个列出,一个都不藏。 */}
-          {finding.models.map((model) => (
-            <span
-              key={model}
-              className="min-w-0 break-all font-mono text-sm text-text-secondary"
-            >
-              {model}
-            </span>
-          ))}
         </div>
         {finding.commentHtmlUrl === null ? null : (
           <Tooltip content="在 Forge 查看原始评论">
@@ -275,6 +281,8 @@ export function FindingRow({
         )}
       </div>
 
+      {/* 正文是代表段那一份问题 / 影响 / 建议(issue #278):几个模型报同一处时人要读的
+          是一份说清楚的说法,谁报的退到下面那一行。 */}
       <p
         className={`text-base leading-relaxed break-words ${
           resolved ? "text-text-secondary line-through" : "text-text-secondary"
@@ -282,21 +290,28 @@ export function FindingRow({
       >
         {finding.description}
       </p>
+      {hasText(finding.impact) ? (
+        <p className="text-base leading-relaxed break-words text-text-secondary">
+          影响：{finding.impact}
+        </p>
+      ) : null}
+      {hasText(finding.suggestion) ? (
+        <p className="text-base leading-relaxed break-words text-text-secondary">
+          建议：{finding.suggestion}
+        </p>
+      ) : null}
 
-      {finding.attributions.map((said, index) => (
-        <AttributionSaid
-          key={`${said.model}-${index}`}
-          said={said}
-          representative={finding.description}
-        />
-      ))}
-      {finding.carried.map((said, index) => (
-        <CarriedSaid
-          key={`carried-${said.runId}-${index}`}
-          said={said}
-          representative={finding.description}
-        />
-      ))}
+      {/* 归属一行(ADR 0015):报出它的模型全列出来,一个都不藏,但不再抢正文。 */}
+      <p className="flex flex-wrap items-center gap-1.5 text-sm text-text-secondary">
+        <span>由 {finding.models.length} 个模型报出：</span>
+        {finding.models.map((model) => (
+          <span key={model} className="min-w-0 break-all font-mono">
+            {model}
+          </span>
+        ))}
+      </p>
+
+      <OriginalSaid finding={finding} />
 
       <LineAuthorLine lineAuthor={finding.lineAuthor} />
 

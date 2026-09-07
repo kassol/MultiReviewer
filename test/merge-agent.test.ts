@@ -151,7 +151,8 @@ test("分组方案过验收即生效:同一行的两个问题被拆开,相邻的
   ]);
   assert.equal(result.findings.length, 2);
   assert.deepEqual(result.findings[0]!.attributions.map((a) => a.model), ["model-a", "model-b"]);
-  assert.equal(result.findings[0]!.title, "删除了余额校验");
+  // 代表段取描述最长的那条归属(issue #278):这一组里是 model-b 那份。
+  assert.equal(result.findings[0]!.title, "余额校验被删掉了");
   assert.deepEqual(result.findings[1]!.attributions.map((a) => a.model), ["model-b"]);
   assert.equal(result.findings[1]!.title, "删除了类型校验");
   assert.equal(forge.createdReviews[0]!.comments.length, 2);

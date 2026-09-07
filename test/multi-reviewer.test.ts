@@ -64,7 +64,7 @@ const AT_LINE_2 = {
   description: "sub 多减了 1",
 };
 
-test("同一轮两个模型报同一处:一条评论、两段各带模型标识、严重度取最高、分类取首报", async () => {
+test("同一轮两个模型报同一处:一条评论、一份代表段加归属一行、严重度取最高、分类取首报", async () => {
   const { cache, db, forge, event } = setup();
 
   const result = await runReview(event, {
@@ -87,12 +87,12 @@ test("同一轮两个模型报同一处:一条评论、两段各带模型标识�
 
   const review = forge.createdReviews[0]!;
   assert.equal(review.comments.length, 1, "同一处该只有一条评论");
-  // 正文按模型分段(ADR 0015):谁说了什么都留着,一个模型也不丢。
+  // 正文只有代表段那一份(issue #278):描述最长的那条归属,模型名退到末尾那一行。
   const body = review.comments[0]!.body;
   assert.equal(body.split("\n")[0], "**[P0]**");
-  assert.match(body, /\*\*model-a\*\*\n\n\*\*问题\*\*:sub 多减了 1/);
-  assert.match(body, /\*\*model-b\*\*\n\n\*\*问题\*\*:减法结果偏移/);
-  assert.ok(body.indexOf("model-a") < body.indexOf("model-b"), "分段该按首报先后");
+  assert.match(body, /\n\n\*\*问题\*\*:sub 多减了 1\n/);
+  assert.doesNotMatch(body, /\*\*model-a\*\*|减法结果偏移/, "各模型原文不进评论");
+  assert.match(body, /\n\n由 2 个模型报出:model-a、model-b/);
 
   // 库里是一条 Finding 加两条归属,各带自己的严重度、分类与表述。
   const store = openStore(db.path);

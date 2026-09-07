@@ -118,7 +118,14 @@ export type RunFinding = {
   line: number;
   severity: "P0" | "P1" | "P2";
   category: string;
+  /** 代表段(issue #278):描述最长的那条归属的问题、影响与建议,三段同出一条。 */
   description: string;
+  /**
+   * 代表段的影响与建议。null 即升级前落的行连归属上也没存,整段不展示;空串是模型
+   * 没给,同样不展示。
+   */
+  impact: string | null;
+  suggestion: string | null;
   /**
    * `fixed` 是「已修复」自动处置,处置人为空;`continued` 是「已延续」——这处代码已改写,
    * 同一条 Finding 由新一轮在新位置那条承接,这一行只剩交接的记录,不是处置。

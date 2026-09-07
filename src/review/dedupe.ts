@@ -87,7 +87,12 @@ export type MergedFinding = {
   severity: Severity;
   /** 取首报那个 Reviewer 的分类:跨模型改口不挪格,与统计里的首轮归属同一取向。 */
   category: Category;
-  /** 以下四段取严重度最高的那条归属,作为这一条的代表段。 */
+  /**
+   * 以下四段是这一条的代表段(issue #278):取描述最长的那条归属的标题、问题、影响与
+   * 建议,四段同出一条归属——影响与建议要对得上同一句问题表述,拆开取会拼出没人说过的
+   * 一份说法。描述最长即说得最完整,不取严重度最高那条:严重度是处置口径,与哪一份文本
+   * 读起来最全无关。同长取首报那条,同一份输入永远给同一个答案。
+   */
   title: string;
   description: string;
   impact: string;
@@ -455,9 +460,9 @@ function mergeGroup(
   criterion: MergeCriterion,
   history?: { id: number; reason: string },
 ): MergedFinding {
-  const leading = [...group].sort(
+  const severity = [...group].sort(
     (a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity],
-  )[0]!;
+  )[0]!.severity;
 
   // 按首报先后。同一个模型的多条只在标题与描述逐字相同(真正的重复报)时折叠成一条、
   // 留严重度高的;其余全部保留——分组的拓扑(链式并入、小 hunk 把不同问题汇流到同一
@@ -487,6 +492,12 @@ function mergeGroup(
     }
   }
 
+  // 代表段取描述最长的那条归属(issue #278):它说得最完整。四段同出一条,不逐段各取
+  // 各的最长——影响与建议要对得上同一句问题表述。
+  const representative = attributions.reduce((best, said) =>
+    said.description.length > best.description.length ? said : best,
+  );
+
   // 按首报先后取第一个给出命中规则的成员:模型自报是稀疏的,取代表段那条会让一组里
   // 唯一报出规则的那个模型的自报白丢。
   const ruleId = group.find((finding) => finding.ruleId !== undefined)?.ruleId;
@@ -495,14 +506,14 @@ function mergeGroup(
     file,
     // 取组内最小行号:偏保守,评论落在问题起始处而非中段。
     line: Math.min(...group.map((f) => f.line)),
-    severity: leading.severity,
+    severity,
     // 分类取首报(ADR 0015)。严重度取最高是为了不漏,分类没有高低之分,只能定一个
     // 稳定的取值口径,取首报与统计里「首轮报出的 category 为准」同一取向。
     category: group[0]!.category,
-    title: leading.title,
-    description: leading.description,
-    impact: leading.impact,
-    suggestion: leading.suggestion,
+    title: representative.title,
+    description: representative.description,
+    impact: representative.impact,
+    suggestion: representative.suggestion,
     attributions,
     ...(ruleId === undefined ? {} : { ruleId }),
     ...(history === undefined ? {} : { history }),

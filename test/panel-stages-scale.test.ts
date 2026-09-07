@@ -116,6 +116,8 @@ function seedFinishedRun(
               severity: "P1" as const,
               category: "bug" as const,
               description: "示例",
+              impact: "",
+              suggestion: "",
               attributions: [
                 {
                   model: "model-a",

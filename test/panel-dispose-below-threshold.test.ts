@@ -82,6 +82,8 @@ function seedStage(
         severity: finding.severity,
         category: "bug" as const,
         description: `${finding.file}:${finding.line}`,
+        impact: "",
+        suggestion: "",
         attributions: [
           {
             model: HARNESS_SPEC.model,

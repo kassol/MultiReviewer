@@ -147,6 +147,10 @@ CREATE TABLE IF NOT EXISTS finding (
   -- 合并后的标题。历史注入要拿它给已处置的条目占那一行(ADR 0016),升级前的行为 NULL。
   title TEXT,
   description TEXT NOT NULL,
+  -- 代表段的影响与建议(issue #278):与 title / description 同出一条归属,面板与 Forge
+  -- 评论的正文读的就是这一份。两列同为 NULL 即升级前落的行,读侧按同一规则从归属现算。
+  impact TEXT,
+  suggestion TEXT,
   fingerprint TEXT,
   group_index INTEGER NOT NULL,
   disposition TEXT NOT NULL DEFAULT 'unknown',
@@ -800,6 +804,10 @@ const ADD_COLUMNS = [
   // 仓库自己的最低报告等级覆盖(CONTEXT.md 最低报告等级,issue #273)。NULL 即跟随全局,
   // 升级前注册的仓库全部是 NULL——它们本来就跟着全局跑,补这一列不改变它们的事实。
   "ALTER TABLE repo ADD COLUMN min_report_severity TEXT",
+  // 代表段的影响与建议(issue #278)。旧行两列是 NULL:升级前只有 title / description
+  // 两段落库,读侧据此认出它们并按同一规则从归属现算,不回填。
+  "ALTER TABLE finding ADD COLUMN impact TEXT",
+  "ALTER TABLE finding ADD COLUMN suggestion TEXT",
 ];
 
 /**
@@ -1112,8 +1120,11 @@ export type FindingRecord = {
   severity: Severity;
   /** 首报那个模型的分类。 */
   category: Category;
-  /** 代表段:严重度最高的那条归属的表述。逐模型的表述在 `attributions` 里。 */
+  /** 代表段:描述最长的那条归属的表述(issue #278)。逐模型的表述在 `attributions` 里。 */
   description: string;
+  /** 代表段的影响与建议:与 `title` / `description` 同出一条归属。模型没给即空串。 */
+  impact: string;
+  suggestion: string;
   /** 报出它的每个模型一条,按首报先后。至少一条。 */
   attributions: readonly FindingAttributionRecord[];
   /** 延续承接来的历史说法(issue #267),只有按复核结论合成的延续才带。 */
@@ -1750,7 +1761,14 @@ export type RunListItem = {
     line: number;
     severity: Severity;
     category: Category;
+    /** 代表段(issue #278):描述最长的那条归属的问题、影响与建议,三段同出一条。 */
     description: string;
+    /**
+     * 升级前落的行没有存代表段的这两段,读回是按同一规则从归属现算的;归属本身也没存
+     * 的那一档为 null,面板整段不展示。
+     */
+    impact: string | null;
+    suggestion: string | null;
     disposition: Disposition;
     placement: FindingPlacement;
     commentId: string | null;
@@ -1800,7 +1818,14 @@ export type StageSummaryFinding = {
   title: string;
   severity: Severity;
   category: Category;
+  /** 代表段(issue #278):描述最长的那条归属的问题、影响与建议,三段同出一条。 */
   description: string;
+  /**
+   * 升级前落的行没有存代表段的这两段,读回是按同一规则从归属现算的;归属本身也没存
+   * 的那一档为 null,面板整段不展示。
+   */
+  impact: string | null;
+  suggestion: string | null;
   /** 报出它的全部模型,按首报先后(ADR 0015)。 */
   models: string[];
   /** 每个归属自己的说法,按首报先后(issue #266),取最新那一轮落的那几条。 */
@@ -2725,6 +2750,40 @@ function recordedAttribution(row: Record<string, unknown>): RecordedFindingAttri
     description: String(row["description"]),
     impact: row["impact"] === null ? null : String(row["impact"]),
     suggestion: row["suggestion"] === null ? null : String(row["suggestion"]),
+  };
+}
+
+/**
+ * 一条 Finding 的代表段(issue #278):正文那一份标题、问题、影响与建议。
+ *
+ * `impact` 与 `suggestion` 两列同为 NULL 即升级前落的行——那时只有前两段落库,而它们
+ * 取的是严重度最高那条归属,与现在的规则不同。这一档按现在的规则从归属现算:取描述最长
+ * 的那条,四段同出一条归属。四段一起换,不只补后两段:混着两条归属的说法会拼出一份没人
+ * 说过的正文。没有归属可算的(升级前连归属行都没有)照原样透出前两段,后两段为 null。
+ */
+function representativeSegment(
+  row: Record<string, unknown>,
+  attributions: readonly RecordedFindingAttribution[],
+): { title: string; description: string; impact: string | null; suggestion: string | null } {
+  const stored = {
+    title: row["title"] === null || row["title"] === undefined ? "" : String(row["title"]),
+    description: String(row["description"]),
+    impact: row["impact"] === null ? null : String(row["impact"]),
+    suggestion: row["suggestion"] === null ? null : String(row["suggestion"]),
+  };
+  if (stored.impact !== null || stored.suggestion !== null) return stored;
+  const longest = attributions.reduce<RecordedFindingAttribution | undefined>(
+    (best, said) =>
+      best === undefined || said.description.length > best.description.length ? said : best,
+    undefined,
+  );
+  if (longest === undefined) return stored;
+  return {
+    // 升级前的归属行不存标题,标题只在 finding 行上:那一份沿用。
+    title: stored.title,
+    description: longest.description,
+    impact: longest.impact,
+    suggestion: longest.suggestion,
   };
 }
 
@@ -5237,11 +5296,12 @@ export function openStore(dbPath: string): Store {
         const insertFinding = db.prepare(
           `INSERT INTO finding
              (run_id, file, line, title, severity, category, description,
+              impact, suggestion,
               fingerprint, group_index, disposition, placement,
               comment_id, comment_html_url,
               line_author_sha, line_author_name, line_author_email, line_author_at,
               line_author_adjacent, rule_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         const insertAttribution = db.prepare(
           `INSERT INTO finding_attribution
@@ -5262,6 +5322,8 @@ export function openStore(dbPath: string): Store {
             finding.severity,
             finding.category,
             finding.description,
+            finding.impact,
+            finding.suggestion,
             finding.fingerprint ?? null,
             finding.groupIndex,
             finding.disposition,
@@ -5415,7 +5477,8 @@ export function openStore(dbPath: string): Store {
         .prepare(
           `SELECT f.id AS id, f.run_id AS run_id, f.file AS file, f.line AS line,
                   f.title AS title, f.severity AS severity, f.category AS category,
-                  f.description AS description, f.disposition AS disposition,
+                  f.description AS description, f.impact AS impact,
+                  f.suggestion AS suggestion, f.disposition AS disposition,
                   f.placement AS placement, f.comment_id AS comment_id,
                   f.comment_html_url AS comment_html_url, f.disposed_by AS disposed_by,
                   f.disposed_at AS disposed_at, f.disposition_note AS note,
@@ -5538,16 +5601,21 @@ export function openStore(dbPath: string): Store {
         .map((identity) => {
           const latest = latestOf(identity);
           const row = latest.row;
+          const said = attributions.get(latest.id) ?? [];
+          // 代表段(issue #278):升级前落的行两列为 NULL,按同一规则从归属现算。
+          const representative = representativeSegment(row, said);
           return {
             id: latest.id,
             file: latest.file,
             line: Number(row["line"]),
-            title: row["title"] === null ? "" : String(row["title"]),
+            title: representative.title,
             severity: String(row["severity"]) as Severity,
             category: String(row["category"]) as Category,
-            description: String(row["description"]),
+            description: representative.description,
+            impact: representative.impact,
+            suggestion: representative.suggestion,
             models: models.get(latest.id) ?? [],
-            attributions: attributions.get(latest.id) ?? [],
+            attributions: said,
             carried: carried.get(latest.id) ?? [],
             disposition: latest.disposition as Exclude<Disposition, "continued">,
             placement: String(row["placement"]) as FindingPlacement,
@@ -5999,7 +6067,8 @@ export function openStore(dbPath: string): Store {
 
       const byFinding = db
         .prepare(
-          `SELECT id, run_id, file, line, severity, category, description,
+          `SELECT id, run_id, file, line, title, severity, category, description,
+                  impact, suggestion,
                   disposition, placement, comment_id, comment_html_url,
                   disposed_by, disposed_at, disposition_note, continued_from,
                   handoff_pending
@@ -6126,16 +6195,21 @@ export function openStore(dbPath: string): Store {
       for (const row of byFinding) {
         const runId = Number(row["run_id"]);
         const list = findings.get(runId) ?? [];
+        const said = attributions.get(Number(row["id"])) ?? [];
+        // 代表段(issue #278):升级前落的行两列为 NULL,按同一规则从归属现算。
+        const representative = representativeSegment(row, said);
         list.push({
           id: Number(row["id"]),
           models: attributionModels.get(Number(row["id"])) ?? [],
-          attributions: attributions.get(Number(row["id"])) ?? [],
+          attributions: said,
           carried: carried.get(Number(row["id"])) ?? [],
           file: String(row["file"]),
           line: Number(row["line"]),
           severity: String(row["severity"]) as Severity,
           category: String(row["category"]) as Category,
-          description: String(row["description"]),
+          description: representative.description,
+          impact: representative.impact,
+          suggestion: representative.suggestion,
           disposition: String(row["disposition"]) as Disposition,
           placement: String(row["placement"]) as FindingPlacement,
           commentId: row["comment_id"] === null ? null : String(row["comment_id"]),
