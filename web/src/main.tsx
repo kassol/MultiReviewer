@@ -504,6 +504,7 @@ function StageDetailRoutePage() {
     <StageDetailPage
       stageId={stageDetailRoute.useParams().stageId}
       canDispose={hasPermission(session, "finding:dispose")}
+      canDisposeBatch={hasPermission(session, "finding:dispose-batch")}
       canComplete={hasPermission(session, "review:complete")}
       canAdvance={hasPermission(session, "review:advance")}
       canRerun={hasPermission(session, "review:rerun")}

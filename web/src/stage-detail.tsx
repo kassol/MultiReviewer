@@ -12,9 +12,11 @@ import {
   StopwatchIcon,
 } from "@radix-ui/react-icons";
 import {
+  AlertDialog,
   Callout,
   Checkbox,
   Dialog as ThemedDialog,
+  Flex,
   IconButton,
   Skeleton,
   Text,
@@ -36,7 +38,7 @@ import {
 } from "@/components/use-dialog-return-focus";
 import { localClock, localDay, localMinute } from "@/lib/time";
 
-import { fetchJson } from "./api.ts";
+import { api, errorText, fetchJson } from "./api.ts";
 import { AdvanceAction, CompleteAction, type RangeReview } from "./range-review-actions.tsx";
 import {
   FULL_REVIEW_HINT,
@@ -58,10 +60,12 @@ import {
   type StageItem,
 } from "./runs.tsx";
 import { loadPanelSession, pullRequestUrl } from "./session.ts";
+import { type MinReportSeverity } from "./settings.tsx";
 import {
   StageRound,
   StageSummaryView,
   useStageSummary,
+  type StageFinding,
   type StageScope,
   type StageTab,
   type StageTimelineEntry,
@@ -85,6 +89,8 @@ type StageDetailBody = {
   groups: StageRunGroup[];
   /** 范围审查阶段自己那条记录;pull request 阶段没有这一格(issue #176)。 */
   rangeReview?: RangeReview;
+  /** 这个阶段所属仓库的生效最低报告等级(issue #274):仓库覆盖优先,缺则全局。 */
+  minReportSeverity: MinReportSeverity;
 };
 
 /**
@@ -146,6 +152,7 @@ function listFilters(search: Record<string, unknown>): Record<string, string> {
 export function StageDetailPage({
   stageId,
   canDispose,
+  canDisposeBatch,
   canComplete,
   canAdvance,
   canRerun,
@@ -153,6 +160,8 @@ export function StageDetailPage({
   stageId: string;
   /** 有 `finding:dispose` 权限时,列表与侧滑里都出现行内处置动作。 */
   canDispose: boolean;
+  /** 有 `finding:dispose-batch` 权限时,工具行出现按阈值批量处置(issue #274)。 */
+  canDisposeBatch: boolean;
   /** 有 `review:complete` 权限才出现审查完成。 */
   canComplete: boolean;
   /** 有 `review:advance` 权限才出现增量评审。 */
@@ -285,9 +294,11 @@ export function StageDetailPage({
               <StageActions
                 stage={body.stage}
                 {...(body.rangeReview === undefined ? {} : { rangeReview: body.rangeReview })}
+                minReportSeverity={body.minReportSeverity}
                 canComplete={canComplete}
                 canAdvance={canAdvance}
                 canRerun={canRerun}
+                canDisposeBatch={canDisposeBatch}
                 onFeedback={setFeedback}
                 onTriggered={armPolling}
               />
@@ -366,17 +377,22 @@ export function StageDetailPage({
 function StageActions({
   stage,
   rangeReview,
+  minReportSeverity,
   canComplete,
   canAdvance,
   canRerun,
+  canDisposeBatch,
   onFeedback,
   onTriggered,
 }: {
   stage: StageItem;
   rangeReview?: RangeReview;
+  /** 这个阶段所属仓库的生效最低报告等级:P2 即全报,批量处置这时无从谈起。 */
+  minReportSeverity: MinReportSeverity;
   canComplete: boolean;
   canAdvance: boolean;
   canRerun: boolean;
+  canDisposeBatch: boolean;
   onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
   /** 重跑或推进已被服务端接下:新一轮还要过一会才出现,外层据此续查。 */
   onTriggered: () => void;
@@ -389,6 +405,13 @@ function StageActions({
 
   return (
     <>
+      {canDisposeBatch && minReportSeverity !== "P2" ? (
+        <DisposeBelowThresholdAction
+          stage={stage}
+          minReportSeverity={minReportSeverity}
+          onFeedback={onFeedback}
+        />
+      ) : null}
       {canRerun ? (
         <RerunAction
           stage={stage}
@@ -406,6 +429,130 @@ function StageActions({
         </>
       )}
     </>
+  );
+}
+
+/** 三档由高到低,与服务端 `SEVERITY_ORDER` 同序:排在阈值后面的即低于阈值。 */
+const SEVERITY_ORDER: readonly MinReportSeverity[] = ["P0", "P1", "P2"];
+
+/**
+ * 这个阶段里低于生效最低报告等级的未处置项(issue #274)。判据与服务端逐字一致:未处置、
+ * 有行级评论承载(只在 review 正文里的历史行处置不了)、严重度排在阈值之后。
+ */
+function belowThreshold(
+  findings: readonly StageFinding[],
+  threshold: MinReportSeverity,
+): StageFinding[] {
+  return findings.filter(
+    (finding) =>
+      (finding.disposition === "unknown" || finding.disposition === "unresolved") &&
+      finding.commentId !== null &&
+      SEVERITY_ORDER.indexOf(finding.severity) > SEVERITY_ORDER.indexOf(threshold),
+  );
+}
+
+/**
+ * 一键处置低于最低报告等级的未处置项(issue #274)。阈值抬高之后,阶段里还留着一批当初
+ * 按旧阈值报出来的低等级条目,它们不该逐条点过去。
+ *
+ * 只在仓库的生效阈值不是 P2 时出现:P2 就是最低那一档,没有低于它的条目可谈。条数按这
+ * 一页此刻的 Finding 集合算——与正文读的是同一份阶段汇总查询,弹窗里的数与列表里看到的
+ * 是同一批行。走 AlertDialog:一次点下去改的是几十条 Finding 的处置状态。
+ */
+function DisposeBelowThresholdAction({
+  stage,
+  minReportSeverity,
+  onFeedback,
+}: {
+  stage: StageItem;
+  minReportSeverity: MinReportSeverity;
+  onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const summary = useStageSummary(scopeOf(stage));
+  const targets = belowThreshold(summary.data?.findings ?? [], minReportSeverity);
+
+  const dispose = useMutation({
+    mutationFn: async (text: string | undefined) => {
+      const response = await api(
+        `/stages/${encodeURIComponent(stage.stageId)}/findings/dispose-below-threshold`,
+        { method: "POST", body: JSON.stringify(text === undefined ? {} : { note: text }) },
+      );
+      if (!response.ok) throw new Error(await errorText(response));
+      return (await response.json()) as { disposed: number[]; failed: number[] };
+    },
+    onSuccess: (result) => {
+      setOpen(false);
+      // 备注只属于刚发出去的这一批,留在框里下次会被顺手带上。
+      setNote("");
+      onFeedback({
+        text:
+          result.failed.length === 0
+            ? `已处置 ${result.disposed.length} 条。`
+            : `已处置 ${result.disposed.length} 条，${result.failed.length} 条失败，可以再点一次重试。`,
+        isError: result.failed.length > 0,
+      });
+      // 处置完的那些立刻从待处置里退出去:计数在详情上,列表在汇总里,两份都失效。
+      void queryClient.invalidateQueries({ queryKey: ["stage-detail"] });
+      void queryClient.invalidateQueries({ queryKey: ["stage-summary"] });
+    },
+    onError: (error: Error) => onFeedback({ text: error.message, isError: true }),
+  });
+
+  return (
+    <AlertDialog.Root open={open} onOpenChange={setOpen}>
+      <AlertDialog.Trigger>
+        <Button
+          variant="soft"
+          color="gray"
+          size={{ initial: "3", sm: "2" }}
+          disabled={targets.length === 0 || dispose.isPending}
+        >
+          处置低于最低报告等级的未处置项
+        </Button>
+      </AlertDialog.Trigger>
+      <AlertDialog.Content maxWidth="480px" size={{ initial: "2", sm: "3" }}>
+        <AlertDialog.Title size="4" mb="2">
+          处置这个阶段里 {targets.length} 条低于最低报告等级的未处置项？
+        </AlertDialog.Title>
+        <AlertDialog.Description size="2" color="gray">
+          这个仓库的最低报告等级是 {minReportSeverity}，低于它的未处置 Finding
+          将逐条标记为人工已处置，Forge 上对应的评论同步 resolve。已处置的与不低于该等级的都不动。
+        </AlertDialog.Description>
+        <Text as="label" htmlFor="stage-dispose-batch-note" className="sr-only">
+          处置备注
+        </Text>
+        <TextArea
+          id="stage-dispose-batch-note"
+          size="2"
+          rows={2}
+          maxLength={500}
+          className="mt-3"
+          placeholder="处置备注（可选，只存面板）"
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+        />
+        <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
+          <AlertDialog.Cancel>
+            <Button variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>取消</Button>
+          </AlertDialog.Cancel>
+          <Button
+            variant="solid"
+            size={{ initial: "4", sm: "2" }}
+            disabled={dispose.isPending}
+            onClick={() => {
+              onFeedback(null);
+              const trimmed = note.trim();
+              dispose.mutate(trimmed === "" ? undefined : trimmed);
+            }}
+          >
+            {dispose.isPending ? "处置中…" : "处置"}
+          </Button>
+        </Flex>
+      </AlertDialog.Content>
+    </AlertDialog.Root>
   );
 }
 
