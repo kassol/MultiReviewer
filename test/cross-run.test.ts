@@ -605,6 +605,114 @@ test("两个 Reviewer 都判已修:Forge 收到 resolve,库里记「已修复」
   );
 });
 
+/**
+ * 同一条 Finding Identity 上的两条 Finding(issue #275)。第 6、7 行的指纹窗口去掉空行
+ * 之后逐字相同,两条因此同文件同指纹;同一个模型报的相邻两条不合并(行距那道判据只
+ * 对跨模型开放),各发一条行级评论。
+ */
+const TWIN_BASE = [
+  "export const rate = 1;",
+  "",
+  "",
+  "export function fee(amount) {",
+  "  const base = amount * rate;",
+  "  const net = base - 1;",
+  "  return net;",
+  "}",
+  "",
+  "",
+  "export const tail = 0;",
+  "",
+].join("\n");
+
+/** 第一轮的 head:改第 5 行,-U3 的 hunk 覆盖 2..8 行,两条 Finding 都落在 diff 里。 */
+const TWIN_HEAD = TWIN_BASE.replace("amount * rate;", "amount * rate * 2;");
+
+/** 第二轮的 head:改文件开头,第 6、7 行那扇窗口原样不动。 */
+const TWIN_NEXT = TWIN_HEAD.replace("export const rate = 1;", "export const rate = 3;");
+
+function twinSetup() {
+  const repo = makeRepo({ base: { "src/fee.js": TWIN_BASE }, head: { "src/fee.js": TWIN_HEAD } });
+  const cache = makeCacheDir();
+  const db = makeDbPath();
+  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
+
+  const forge = memoryForge({
+    pullRequest: {
+      number: 7,
+      title: "示例 PR",
+      draft: false,
+      baseSha: repo.baseSha,
+      headSha: repo.headSha,
+      cloneUrl: repo.dir,
+    },
+    changedFiles: [{ path: "src/fee.js", status: "modified" }],
+  });
+
+  const deps = {
+    forge: forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [
+        { file: "src/fee.js", line: 6, severity: "P0" as const, category: "bug" as const, description: "net 少算了 1" },
+        { file: "src/fee.js", line: 7, severity: "P1" as const, category: "bug" as const, description: "返回值没有按分取整" },
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+  };
+
+  return { repo, db, forge, deps };
+}
+
+/** 跑第一轮、把两条评论按未处置喂回 Forge,并推进 head。返回第二轮开跑前的现场。 */
+async function twinFirstRound(): Promise<{
+  db: { path: string };
+  forge: MemoryForge;
+  deps: ReturnType<typeof twinSetup>["deps"];
+  rows: Record<string, unknown>[];
+}> {
+  const { repo, db, forge, deps } = twinSetup();
+
+  await runReview(EVENT, deps);
+  forge.existingComments.push(...asPublished(forge, false));
+
+  const rows = query(db.path, "SELECT id, line, fingerprint, comment_id FROM finding ORDER BY id");
+  assert.equal(rows.length, 2, "两条 Finding 该各落一行");
+  assert.equal(rows[0]!["fingerprint"], rows[1]!["fingerprint"], "夹具没造出同指纹的两条");
+  assert.notEqual(rows[0]!["comment_id"], rows[1]!["comment_id"], "两条该各带一条评论");
+
+  forge.pullRequest.headSha = repo.pushToHead({ "src/fee.js": TWIN_NEXT });
+  return { db, forge, deps, rows };
+}
+
+test("同一条 Identity 上的两条 Finding 各带一条评论:判已修时两条评论都 resolve、两行都记已修复", async () => {
+  const { db, forge, deps, rows } = await twinFirstRound();
+
+  await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "fixed")] });
+
+  assert.deepEqual(
+    [...forge.resolvedIds].sort(),
+    rows.map((row) => String(row["comment_id"])).sort(),
+    "只 resolve 了折叠出来的代表条,另一条评论留在了 Forge 上",
+  );
+  assert.deepEqual(latestDispositions(db.path), ["fixed", "fixed"]);
+});
+
+test("同一条 Identity 里一条写 Forge 失败:只有写成的那一行记已修复,另一行保持未处置", async () => {
+  const { db, forge, deps, rows } = await twinFirstRound();
+  const stuck = String(rows[0]!["comment_id"]);
+  const resolveComment = forge.forge.resolveComment;
+  forge.forge.resolveComment = async (ref, commentId) => {
+    if (commentId === stuck) throw new Error("resolve 挂了");
+    await resolveComment(ref, commentId);
+  };
+
+  await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "fixed")] });
+
+  assert.deepEqual(forge.resolvedIds, [String(rows[1]!["comment_id"])]);
+  assert.deepEqual(latestDispositions(db.path), ["unresolved", "fixed"]);
+});
+
 test("一个判已修、一个判仍在:仍在优先,不自动处置", async () => {
   const { db, forge } = await judgeSecondRound([
     verdictReviewer("model-a", "fixed"),

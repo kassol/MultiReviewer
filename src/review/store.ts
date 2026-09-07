@@ -1156,9 +1156,10 @@ export type DispositionUpdate = {
 };
 
 /**
- * 复核判已修、且还能自动处置的一条历史 Finding(ADR 0016)。`findingId` 是该 Finding
- * Identity 最新一行的落库 id,也就是注入 Reviewer 时给它的那个;`commentId` 是承载它的
- * 那条 Forge 评论——自动处置写回 Forge 的仍是同一个 resolve,载体与人工处置是同一条。
+ * 复核判已修、且还能自动处置的一行(ADR 0016)。`findingId` 是这一行自己的落库 id,不是
+ * 注入 Reviewer 时给的那个代表条 id:一条 Finding Identity 在库里可能有好几行、各带自己
+ * 的行级评论(issue #275),候选按行展开,一行一条评论;`commentId` 是承载它的那条 Forge
+ * 评论——自动处置写回 Forge 的仍是同一个 resolve,载体与人工处置是同一条。
  */
 export type AutoDispositionCandidate = {
   findingId: number;
@@ -2605,14 +2606,21 @@ export type Store = {
    * 先问库再写 Forge:已经自动处置过的、以及人在面板上处置过的都在这里被挡掉,
    * Forge 那一步因此不会一轮轮重复 resolve 同一条评论,也不会与在 Forge 上撤回处置
    * 的人对着干。
+   *
+   * 传入的是折叠出来的代表条 id,返回的按 Finding Identity 展开(issue #275):同文件、
+   * 同折叠键、同 PR 范围、仍能自动处置且带评论的每一行各出一条候选,按落库 id 升序、
+   * 跨传入 id 去重。同一条 Identity 在一轮里可能有两条 Finding 各带一条评论,跨轮折叠
+   * 又会多出旧行;只把代表条交给 Forge 会把其余评论留在那里未 resolve。
    */
   pendingAutoDispositions(findingIds: readonly number[]): AutoDispositionCandidate[];
   /**
    * 记一次「已修复」自动处置(ADR 0016)。处置人留空——这一档不是人做的;处置时刻
    * 照记,它同时是「这一行已被显式处置过」的标记,自动规则据此至多碰一行一次。
    *
-   * 落的是整条 Finding Identity:这个 pull request 名下与它同「文件 + 指纹」的历史行
-   * 一并改写,口径与回填一致。
+   * 落的只有 `candidate.findingId` 那一行(issue #275):写 Forge 与落库一一对应,候选
+   * 那一侧已经按 Finding Identity 展开,整条 Identity 因此仍会被逐行改写。没有评论载体
+   * 的行(正文 fallback)进不了候选,也就保持原样——它在 Forge 上没有 resolve 可写,
+   * 库里先记已修复只会与 Forge 对不上,下一轮回填还会把它改回去。
    *
    * `note` 是这一次自动处置的备注(issue #272):复核判已修那一档不带它,原备注保持
    * 原样;按「文件已回退 / 已删除」处置的带上一句,面板据它答得出这一条为什么关了。
@@ -6467,36 +6475,47 @@ export function openStore(dbPath: string): Store {
     },
 
     pendingAutoDispositions(findingIds) {
-      const probe = db.prepare(
-        `SELECT comment_id FROM finding
-          WHERE id = ? AND comment_id IS NOT NULL AND ${AUTO_DISPOSABLE}`,
+      // 折叠键与 `stageHistory`、`recordAutoDisposition` 同源:文件 + 指纹,算不出指纹的
+      // 行只有它自己一条。PR 范围与 `PULL_REQUEST_SCOPE` 同一句话,只是从传入那一行所在
+      // 的轮次上取,不另要参数。
+      const identity = db.prepare(
+        `WITH seed AS (
+           SELECT f.file AS file, COALESCE(f.fingerprint, 'row:' || f.id) AS fp,
+                  run.owner AS owner, run.repo AS repo, run.pull_number AS pull_number
+             FROM finding f JOIN review_run run ON run.id = f.run_id
+            WHERE f.id = ?
+         )
+         SELECT finding.id AS id, finding.comment_id AS comment_id
+           FROM finding, seed
+          WHERE finding.file = seed.file
+            AND COALESCE(finding.fingerprint, 'row:' || finding.id) = seed.fp
+            AND finding.comment_id IS NOT NULL
+            AND ${AUTO_DISPOSABLE}
+            AND finding.run_id IN (SELECT id FROM review_run
+                                    WHERE owner = seed.owner AND repo = seed.repo
+                                      AND pull_number = seed.pull_number)
+          ORDER BY finding.id`,
       );
-      return findingIds.flatMap((findingId) => {
-        const row = probe.get(findingId);
-        if (row === undefined) return [];
-        return [{ findingId, commentId: String(row["comment_id"]) }];
-      });
+      const seen = new Set<number>();
+      return findingIds.flatMap((findingId) =>
+        identity.all(findingId).flatMap((row) => {
+          const id = Number(row["id"]);
+          if (seen.has(id)) return [];
+          seen.add(id);
+          return [{ findingId: id, commentId: String(row["comment_id"]) }];
+        }),
+      );
     },
 
     recordAutoDisposition(owner, repo, pullNumber, candidate, disposedAt, note) {
-      // 折叠键与 `stageHistory` 同源:文件 + 指纹,算不出指纹的行只有它自己一条。
+      // 只改候选那一行(issue #275):Identity 的展开在 `pendingAutoDispositions` 那一侧,
+      // 每一行都各自先写过 Forge 才走到这里。按折叠键扫整条 Identity 会把没写 Forge 的
+      // 那些行也记成已修复,而 Disposition 的权威状态在 Forge 上(ADR 0006)。
       db.prepare(
         `UPDATE finding SET disposition = 'fixed', disposed_at = ?,
                 disposition_note = COALESCE(?, disposition_note)
-          WHERE file = (SELECT file FROM finding WHERE id = ?)
-            AND COALESCE(fingerprint, 'row:' || id) =
-                (SELECT COALESCE(fingerprint, 'row:' || id) FROM finding WHERE id = ?)
-            AND ${AUTO_DISPOSABLE}
-            AND ${PULL_REQUEST_SCOPE}`,
-      ).run(
-        disposedAt,
-        note ?? null,
-        candidate.findingId,
-        candidate.findingId,
-        owner,
-        repo,
-        pullNumber,
-      );
+          WHERE id = ? AND ${AUTO_DISPOSABLE} AND ${PULL_REQUEST_SCOPE}`,
+      ).run(disposedAt, note ?? null, candidate.findingId, owner, repo, pullNumber);
     },
 
     historyPlacements(findingIds) {
