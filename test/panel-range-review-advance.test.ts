@@ -46,9 +46,10 @@ type RangeReview = {
 
 /**
  * 每一轮的 Reviewer 都记下自己拿到的 Review Range,推进之后那一轮的范围要能读出来。
- * 要看历史注入的用例再记每次收到的历史落在哪些文件上(issue #251)。
+ * 要看历史注入的用例再记每次收到的历史,每条记成 `文件:处置档`(issue #251):自动处置
+ * 之后注入的那份要分得出「已处置的背景」与「等复核的未处置」(issue #276)。
  */
-type Recorded = { ranges: ReviewRange[]; historyFiles?: string[][] };
+type Recorded = { ranges: ReviewRange[]; historyEntries?: string[][] };
 
 /** 只复核那一轮要有未处置历史才开得起来:要它的用例让每个 Reviewer 都报一条。 */
 const REPORTED_FINDINGS: Parameters<typeof scriptedReviewer>[1] = [
@@ -69,7 +70,9 @@ async function startedHarness(
           ...reviewer,
           review: async (input) => {
             recorded.ranges.push(input.range);
-            recorded.historyFiles?.push(input.history.map((entry) => entry.file));
+            recorded.historyEntries?.push(
+              input.history.map((entry) => `${entry.file}:${entry.disposition}`),
+            );
             return reviewer.review(input);
           },
         };
@@ -690,7 +693,7 @@ test("改名承载未处置历史的文件:旧路径上的历史不使只复核�
 });
 
 test("准入通过的只复核推进执行阶段必定开跑:Reviewer 收到的范围与历史按同一规则过滤(issue #251)", async () => {
-  const recorded: Recorded = { ranges: [], historyFiles: [] };
+  const recorded: Recorded = { ranges: [], historyEntries: [] };
   const changed = replaceableChangedFiles();
   const h = await startedHarness(recorded, changed.options, REPORTED_FINDINGS);
   const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
@@ -723,7 +726,7 @@ test("准入通过的只复核推进执行阶段必定开跑:Reviewer 收到的�
   assert.equal(latest.baseSha, h.repo.baseSha);
   assert.equal(latest.headSha, trimmed);
   assert.deepEqual(latest.files, ["src/answer.ts"]);
-  assert.deepEqual(recorded.historyFiles!.at(-1), ["src/answer.ts"]);
+  assert.deepEqual(recorded.historyEntries!.at(-1), ["src/answer.ts:unknown"]);
 });
 
 /** 两个文件各报一条:一部分历史落在回退文件上、一部分仍可审时要它。 */
@@ -799,7 +802,7 @@ test("未处置历史全落在回退文件上:只复核推进先自动处置再 
 });
 
 test("一部分历史落在回退文件上:只复核推进 202,开跑那一步不再重复处置(issue #276)", async () => {
-  const recorded: Recorded = { ranges: [] };
+  const recorded: Recorded = { ranges: [], historyEntries: [] };
   const h = await startedHarness(recorded, {}, TWO_FILE_FINDINGS);
   const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
   const reverted = h.memory.publishedComments.find((comment) => comment.path === "src/answer.ts")!;
@@ -836,8 +839,12 @@ test("一部分历史落在回退文件上:只复核推进 202,开跑那一步�
 
   // 准入那一步已经处置过,开跑那一步没有可处置的了,轨迹里因此没有这一档。
   assert.equal(lastRunTraceKinds(h, rangeReview.id).includes("history_auto_disposed"), false);
-  // 只复核那一轮只读剩下的那个文件:处置掉的那条不再要它的文件。
-  assert.deepEqual(recorded.ranges.at(-1)!.files, ["src/other.ts"]);
+  // 注入给 Reviewer 的那份历史里,src/answer.ts 那条已经是已处置形态,等复核的只剩
+  // src/other.ts 上那条:开跑那一步确实没有再处置一遍,也没有把已处置的当未处置要结论。
+  assert.deepEqual(recorded.historyEntries!.at(-1)!.slice().sort(), [
+    "src/answer.ts:fixed",
+    "src/other.ts:unknown",
+  ]);
 });
 
 test("自动处置写 Forge 失败:那一条保持未处置,只复核推进仍 409 且文案不带条数(issue #276)", async () => {

@@ -190,7 +190,9 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
       // (默认 50)会把 limit 钳下去,恰好钳制值一页时「不满一页」会提前停,
       // 后续文件静默丢失。下面两处 review 列表同理。
       for (let page = 1; ; page += 1) {
-        const batch = await requestJson<{ filename: string; status: string }[]>(
+        const batch = await requestJson<
+          { filename: string; status: string; previous_filename?: string | null }[]
+        >(
           options,
           "GET",
           `${repoPath(ref)}/pulls/${ref.number}/files?page=${page}&limit=${PAGE_SIZE}`,
@@ -198,6 +200,16 @@ export function createGiteaForge(options: GiteaForgeOptions): Forge {
         if (batch.length === 0) break;
         for (const file of batch) {
           files.push({ path: file.filename, status: normalizeStatus(file.status) });
+          // 改名的旧路径也要进清单(issue #276):Gitea 的 `renamed` 条目只落新路径,
+          // 旧路径按 CONTEXT.md 的定义就是删除(base 里有、比较项里没有),漏了它,
+          // 落在旧路径上的历史 Finding 会被判成「文件已回退」。`ChangedFile.PreviousFilename`
+          // 见 `modules/structs/repo_file.go`。
+          // 本地 diff 那一侧关了重命名检测,改名本来就是删除加新增两条,这里补出来的正是
+          // 缺的那一条,两条来源因此同形。可审文件集与分批不受影响:`reviewableFiles`
+          // 滤掉 removed;落库的 `changed_files` 数也取过滤之后的那份。
+          if (file.status === "renamed" && file.previous_filename) {
+            files.push({ path: file.previous_filename, status: "removed" });
+          }
         }
       }
       return files;

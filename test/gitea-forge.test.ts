@@ -315,6 +315,29 @@ test("变更文件的状态映射到 ChangedFileStatus 的四个取值", async (
   ]);
 });
 
+test("改名条目额外落一条旧路径的删除,落在旧路径上的历史因此判得出「文件已删除」", async (t) => {
+  const stub = stubFetch(
+    routes({
+      "GET /api/v1/repos/acme/widget/pulls/7/files?page=1&limit=100": {
+        body: [
+          { filename: "moved.ts", status: "renamed", previous_filename: "old.ts" },
+          // 真实 Gitea 只在改名条目上给 `previous_filename`,其余条目没有这一项。
+          { filename: "edit.ts", status: "changed" },
+        ],
+      },
+    }),
+  );
+  t.after(stub.restore);
+
+  const files = await createGiteaForge(OPTIONS).listChangedFiles(REF);
+
+  assert.deepEqual(files, [
+    { path: "moved.ts", status: "renamed" },
+    { path: "old.ts", status: "removed" },
+    { path: "edit.ts", status: "modified" },
+  ]);
+});
+
 test("读回 review 评论:position 是文件行号,resolver 非空即已处置", async (t) => {
   const stub = stubFetch(
     routes({

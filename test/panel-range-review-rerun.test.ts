@@ -311,6 +311,47 @@ test("承载历史的文件在容器 PR 上是删除或改名:只复核重跑 40
   assert.deepEqual(modes(h, rangeReview.id), ["full"]);
 });
 
+test("未处置历史全落在回退文件上:只复核重跑先自动处置再 409,文案带条数(issue #276)", async () => {
+  // 与推进那一档同一份判据:所在文件不在容器 PR 此刻的可审文件集里,那条谁都复核不到,
+  // 判「这一轮跑不出结果」之前先把它处置掉,人因此不用再等一次完整审查才清得掉。
+  let narrowed = false;
+  const h = await registeredHarness({
+    buildReviewers: reportingReviewers,
+    wrapForge: (forge) => ({
+      ...forge,
+      listChangedFiles: async (ref) =>
+        (await forge.listChangedFiles(ref)).filter(
+          (file) => !narrowed || file.path !== "src/answer.ts",
+        ),
+    }),
+  });
+  const rangeReview = await startRangeReview(h);
+  const carried = h.memory.publishedComments.find((comment) => comment.path === "src/answer.ts")!;
+  narrowed = true;
+
+  const denied = await h.api("POST", "/rerun", { rangeReviewId: rangeReview.id });
+  assert.equal(denied.status, 409);
+  assert.match(
+    ((await denied.json()) as { error: string }).error,
+    /^已自动处置 1 条回退或删除文件上的历史,/,
+  );
+
+  // 处置写回了容器 PR 上那条评论,库里那一条记「已修复」并带上回退那句备注。
+  assert.deepEqual(h.memory.resolvedIds, [carried.id]);
+  const store = openStore(h.db.path);
+  const history = store
+    .stageHistory({ rangeReviewId: rangeReview.id })
+    .map(({ file, disposition, note }) => ({ file, disposition, note: note ?? null }));
+  store.close();
+  assert.deepEqual(history, [
+    { file: "src/answer.ts", disposition: "fixed", note: "文件已回退,自动处置" },
+  ]);
+
+  // 被拒的那一次不开轮次:重跑本来就不动比较项与分支,这里只需确认没有多出一轮。
+  assert.equal(h.settled.length, 1);
+  assert.deepEqual(modes(h, rangeReview.id), ["full"]);
+});
+
 test("没有未处置历史的阶段:只复核重跑 409 并说明,一轮不开", async () => {
   const h = await registeredHarness();
   const rangeReview = await startRangeReview(h);
