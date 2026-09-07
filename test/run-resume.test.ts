@@ -215,6 +215,28 @@ test("head 变了就不续跑:抛续跑不成立,原因说得出变成了哪个 
   assert.deepEqual(resumed.calls, []);
 });
 
+test("最低报告等级改了就不续跑:一轮里报出的口径不能一半旧一半新", async () => {
+  const fixture = setup(cleanups);
+  const crashed = batchReviewer("model-a", { throwOnCall: 3 });
+  await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
+  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+
+  // 重启期间有人把审查策略的最低报告等级从全报改成了 P1。
+  const db = new DatabaseSync(fixture.db.path);
+  try {
+    db.prepare("INSERT INTO global_setting (key, value) VALUES ('min_report_severity', 'P1')").run();
+  } finally {
+    db.close();
+  }
+
+  const resumed = batchReviewer("model-a");
+  await assert.rejects(
+    () => runReview(EVENT, deps(fixture, [resumed], { resumeRunId: Number(run?.["id"]) })),
+    new RegExp(`${RESUME_NOT_VIABLE}:最低报告等级已经从 P2 变成 P1`),
+  );
+  assert.deepEqual(resumed.calls, []);
+});
+
 test("模型组合换了就不续跑:已落库的批次与这一轮的 Reviewer 对不上", async () => {
   const fixture = setup(cleanups);
   const crashed = batchReviewer("model-a", { throwOnCall: 3 });

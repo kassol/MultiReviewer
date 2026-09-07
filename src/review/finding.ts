@@ -8,6 +8,15 @@ import type { DiffRanges } from "./position.ts";
  */
 export type Severity = "P0" | "P1" | "P2";
 
+/**
+ * 最低报告等级的系统默认:全报。缺行、旧轮次的空列都读成它,「P2 即全报」这一句判据
+ * 因此只写在这里。
+ *
+ * 住在 `Severity` 旁边而不在 `store.ts`:判据的读者除了库,还有编排层与 Reviewer 子
+ * 进程,后两者不能引 `store.ts`——那会把 `node:sqlite` 拖进 Reviewer 进程。
+ */
+export const DEFAULT_MIN_REPORT_SEVERITY: Severity = "P2";
+
 export type Category = "security" | "bug" | "maintainability" | "design";
 
 /**

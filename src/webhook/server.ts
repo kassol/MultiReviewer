@@ -4660,8 +4660,7 @@ function handleStages(
  * 那一档——仓库都不在了,不该让这个阶段的读与处置跟着一起报错。
  */
 function stageRepoId(store: Store, stage: { owner: string; repo: string }): number | undefined {
-  return store.listRepos().find((row) => row.owner === stage.owner && row.repo === stage.repo)
-    ?.repoId;
+  return store.findRepoId(stage.owner, stage.repo);
 }
 
 /** 阶段行上的两个键还原成 `stageSummary` 的入参:一行只带自己那一个,另一个必为 null。 */
@@ -5522,7 +5521,7 @@ async function handleDisposeBelowThreshold(
     return sendJson(res, 404, { error: "没有这个审查阶段" });
   }
   // P2 就是最低那一档,没有比它更低的等级可选,这个动作在这里不成立。
-  if (stage.minReportSeverity === "P2") {
+  if (stage.minReportSeverity === DEFAULT_MIN_REPORT_SEVERITY) {
     return sendJson(res, 409, {
       error: "这个阶段的最低报告等级是 P2,没有低于它的 Finding 可以处置",
     });
@@ -7818,9 +7817,7 @@ async function resumeRun(deps: WebhookServerDeps, run: InterruptedRunDetail): Pr
   const forge = deps.forges.gitea;
   // GitHub 已封存(ADR 0014),被中断的轮次只可能来自 Gitea。
   if (forge === undefined) throw new Error(`${RESUME_NOT_VIABLE}:没有配置 Gitea 的 Forge`);
-  const repoId = withStore(deps.dbPath, (store) =>
-    store.listRepos().find((repo) => repo.owner === run.owner && repo.repo === run.repo)?.repoId,
-  );
+  const repoId = withStore(deps.dbPath, (store) => store.findRepoId(run.owner, run.repo));
   if (repoId === undefined) {
     throw new Error(`${RESUME_NOT_VIABLE}:仓库 ${run.owner}/${run.repo} 已经不在注册表里`);
   }

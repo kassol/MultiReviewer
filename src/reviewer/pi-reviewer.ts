@@ -9,6 +9,7 @@ import type {
   ReviewerOutcome,
   ReviewerUsage,
 } from "../review/finding.ts";
+import { DEFAULT_MIN_REPORT_SEVERITY } from "../review/finding.ts";
 import { modelIdentity, type ThinkingLevel } from "../config.ts";
 import { normalizeFinding, normalizeVerdict } from "./normalize.ts";
 import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
@@ -89,7 +90,7 @@ export async function runInChild(
     // 取证上限不给即不带(issue #258):子进程落回系统默认,任务形状与这一票之前逐字一致。
     ...(maxEvidenceCallsPerBatch === undefined ? {} : { maxEvidenceCallsPerBatch }),
     // 全报那一档不带这一项(issue #271):子进程据此不渲染阈值段,prompt 逐字不变。
-    ...(minReportSeverity === undefined || minReportSeverity === "P2"
+    ...(minReportSeverity === undefined || minReportSeverity === DEFAULT_MIN_REPORT_SEVERITY
       ? {}
       : { minReportSeverity }),
     // 空知识集不带这一项:子进程据此不渲染规则段,prompt 与没有知识集时逐字一致。

@@ -20,6 +20,7 @@ import type {
   ReviewRunMode,
   Severity,
 } from "../review/finding.ts";
+import { DEFAULT_MIN_REPORT_SEVERITY } from "../review/finding.ts";
 import type { DiffRanges } from "../review/position.ts";
 import { anchorReport, anchorVerdict } from "./anchor.ts";
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
@@ -237,8 +238,11 @@ function openBlock(entry: HistoryFinding): string {
 
 /**
  * 本阶段的历史。未处置的逐条复核,已处置的只是背景——同类误报不必再犯,但不必回结论。
+ *
+ * 只复核那一轮换一句措辞(issue #270):那一轮不注册报出工具,提这个工具的名字等于给
+ * 模型一件它手上没有的东西。意思不变——旧条目不要重报,位置写进复核结论就够了。
  */
-function historySection(history: readonly HistoryFinding[]): string {
+function historySection(history: readonly HistoryFinding[], verdictOnly: boolean): string {
   const open = history.filter(
     (entry) => entry.disposition === "unresolved" || entry.disposition === "unknown",
   );
@@ -247,8 +251,12 @@ function historySection(history: readonly HistoryFinding[]): string {
   );
   const sections = [
     "",
-    "The following findings were already reported in this review stage. Do not report any of them again through report_finding while the lines they point at are unchanged.",
-    "One exception: when the code of a still-open finding was rewritten or moved so that its original lines no longer exist but the problem is still there, give the verdict present and add position: the line it sits on now together with the snippet of that line, copied verbatim from the read output. Give position only in that case — leave it out while the original lines are unchanged — and when you give it, give both line and snippet; a position with either one missing or an empty snippet is an invalid call. That is how a finding follows the code; without the new position it stays pinned to a line that is gone. The position in the verdict is enough — you do not have to report it again through report_finding.",
+    verdictOnly
+      ? "The following findings were already reported in this review stage. Do not report any of them again while the lines they point at are unchanged."
+      : "The following findings were already reported in this review stage. Do not report any of them again through report_finding while the lines they point at are unchanged.",
+    `One exception: when the code of a still-open finding was rewritten or moved so that its original lines no longer exist but the problem is still there, give the verdict present and add position: the line it sits on now together with the snippet of that line, copied verbatim from the read output. Give position only in that case — leave it out while the original lines are unchanged — and when you give it, give both line and snippet; a position with either one missing or an empty snippet is an invalid call. That is how a finding follows the code; without the new position it stays pinned to a line that is gone. The position in the verdict is enough${
+      verdictOnly ? "." : " — you do not have to report it again through report_finding."
+    }`,
   ];
   if (open.length > 0) {
     sections.push(
@@ -390,12 +398,12 @@ export function reviewPrompt(
     | "minReportSeverity"
   >,
 ): string {
-  // 只复核那一轮的意图段与规则段换措辞(issue #270):这一轮没有报出工具,两段里要求
-  // 报出新问题的句子一句都执行不了。不给 mode 即完整审查,prompt 逐字不变。
+  // 只复核那一轮的历史段、意图段与规则段换措辞(issue #270):这一轮没有报出工具,三段
+  // 里提到它的句子一句都执行不了。不给 mode 即完整审查,prompt 逐字不变。
   const verdictOnly = request.mode === "verdict-only";
   const files = request.range.files.map((f) => `- ${f}`).join("\n");
   const history =
-    request.history.length === 0 ? "" : `\n${historySection(request.history)}\n`;
+    request.history.length === 0 ? "" : `\n${historySection(request.history, verdictOnly)}\n`;
   const intent =
     request.intent === undefined ? "" : `${intentSection(request.intent, verdictOnly)}\n`;
   // 空知识集与没有知识集同一条路径:两者都不渲染规则段。事实段同律,两型各判各的——
@@ -411,7 +419,8 @@ export function reviewPrompt(
   // 阈值段紧跟知识两段、排在指令段之前(issue #271):它说的是这一轮报什么,是指令
   // 生效的底盘。全报那一档不渲染,prompt 与这一票之前逐字一致。
   const minReportSeverity =
-    request.minReportSeverity === undefined || request.minReportSeverity === "P2"
+    request.minReportSeverity === undefined ||
+    request.minReportSeverity === DEFAULT_MIN_REPORT_SEVERITY
       ? ""
       : `${minReportSeveritySection(request.minReportSeverity)}\n`;
   // 指令段排在知识两段之后、文件清单之前:它是这一轮的要求,读到文件清单之前就该知道。

@@ -38,6 +38,7 @@ import type {
   ReviewVerdict,
   Severity,
 } from "./finding.ts";
+import { DEFAULT_MIN_REPORT_SEVERITY } from "./finding.ts";
 // 只取类型:`batch.ts` 反过来引用本模块的 `sumUsage`,类型导入在运行时被抹掉,不成环。
 import type { TimedOutcome } from "./batch.ts";
 import { containerBranches, type RangeReviewState } from "./range-review.ts";
@@ -835,8 +836,8 @@ const GLOBAL_REVIEWERS_VERSION_KEY = "reviewers_version";
 const GLOBAL_MIN_REPORT_SEVERITY_KEY = "min_report_severity";
 const GLOBAL_MIN_REPORT_SEVERITY_VERSION_KEY = "min_report_severity_version";
 
-/** 最低报告等级的系统默认:全报。缺行、旧轮次的空列都读成它。 */
-export const DEFAULT_MIN_REPORT_SEVERITY: Severity = "P2";
+/** 最低报告等级的系统默认住在 `finding.ts`,这里转出:既有的引用方不必改到那边去。 */
+export { DEFAULT_MIN_REPORT_SEVERITY };
 
 /** 最低报告等级的合法取值。设置端点的校验与库里读回认同一份。 */
 export const MIN_REPORT_SEVERITIES: readonly Severity[] = ["P0", "P1", "P2"];
@@ -2133,6 +2134,13 @@ export type Store = {
   failInterruptedWorktrees(failure: string, at: string): void;
   /** 全部已注册仓库,按最近活动排序,没跑过的按注册时间排在后面。 */
   listRepos(): RepoSummary[];
+  /**
+   * 按 owner/repo 找注册表行的 id。评审记录不引用注册表(仓库移除之后记录照样看得见),
+   * 拿着记录上的两个名字回头找注册表行只能这么找。仓库改名或已被移除即回 undefined。
+   *
+   * 与 `listRepos` 分开:那一份每行带三条聚合子查询,只为取一个 id 的调用付不起。
+   */
+  findRepoId(owner: string, repo: string): number | undefined;
   /**
    * 这个仓库当前生效的知识集与它的知识集版本。未注册的仓库回 undefined——知识集挂在
    * 注册表行上,没有那一行就没有知识集可谈。
@@ -3847,6 +3855,13 @@ export function openStore(dbPath: string): Store {
             row["worktree_checked_at"] === null ? null : String(row["worktree_checked_at"]),
         },
       }));
+    },
+
+    findRepoId(owner, repo) {
+      const row = db
+        .prepare("SELECT id FROM repo WHERE owner = ? AND repo = ? ORDER BY id")
+        .get(owner, repo);
+      return row === undefined ? undefined : Number(row["id"]);
     },
 
     getRuleSet(repoId) {

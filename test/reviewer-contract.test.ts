@@ -523,7 +523,7 @@ const PROMPT_CONTEXT = {
   rules: [{ id: 7, scope: "", statement: "对外接口的入参一律在边界处校验" }],
 };
 
-test("只复核加本轮指令:指令段声明不触发处置,意图段与规则段不再要求报出新 Finding", () => {
+test("只复核加本轮指令:指令段声明不触发处置,整份 prompt 不提报出工具", () => {
   const prompt = reviewPrompt({
     ...PROMPT_CONTEXT,
     mode: "verdict-only",
@@ -535,10 +535,10 @@ test("只复核加本轮指令:指令段声明不触发处置,意图段与规则
   // 的「P2 可以都关闭」正是被读成了「不看代码直接判已修复」。
   assert.match(prompt, /never disposes of a finding/);
   assert.match(prompt, /does not excuse you from a verdict/);
-  // 只复核那一轮报不出新问题,三段里要求报出的句子一句都不该出现。
-  assert.equal(prompt.includes("report them through report_finding"), false);
+  // 只复核那一轮不注册报出工具,整份 prompt 与系统提示都不该提到它的名字。
+  assert.equal(prompt.includes("report_finding"), false);
+  assert.equal(VERDICT_ONLY_SYSTEM_PROMPT.includes("report_finding"), false);
   assert.equal(prompt.includes("report problems they do not cover"), false);
-  assert.equal(prompt.includes("pass that rule's id as ruleId in report_finding"), false);
   // 复核义务照旧:历史段仍逐条要结论。
   assert.match(prompt, /review_prior_finding exactly once/);
 });
