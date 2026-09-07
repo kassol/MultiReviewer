@@ -70,7 +70,6 @@ import {
 import {
   DEFAULT_MIN_REPORT_SEVERITY,
   openStore,
-  type AutoDispositionCandidate,
   type ContinuationCandidate,
   type DispositionUpdate,
   type FindingCommentRef,
@@ -1122,10 +1121,17 @@ export async function findingLineAuthors(
  * 逐条自动处置:先写 Forge 再落库。Disposition 的权威状态在 Forge 上(ADR 0006),
  * 反过来会留下「库里说已处置、Gitea 上没有」,而下一轮回填还会把它改回去。
  *
- * 单条失败只记日志:少一条自动处置是小事,一次审查因此白跑不是。
+ * 传进来的是折叠出来的代表条 id,`store.pendingAutoDispositions` 按 Finding Identity 把它
+ * 展开(issue #275):同一条 Identity 在库里可能有好几行、各带自己的行级评论(一轮里同
+ * 文件同指纹的两条 Finding,以及跨轮折叠留下的旧行),每一行都各写一次 Forge 再落它自己
+ * 那一行。同一条评论在几行上重复出现时只 resolve 一次:那是同一个 resolve。
+ *
+ * 单条失败只记日志:少一条自动处置是小事,一次审查因此白跑不是。同一条评论失败之后,
+ * 挂在它上面的其余行一并留着——库里记已修复而 Forge 上没有 resolve 才是要躲开的那一种。
  *
  * `note` 是这一次处置的备注:复核判已修那一档不带它,「文件已回退 / 已删除」那一档
- * (issue #272)带上一句。返回真正处置成功的那些条目,调用方据它答得出关了哪几条。
+ * (issue #272)带上一句。返回整条 Identity 都处置成功的那些代表条 id,与这一趟真正
+ * resolve 掉的评论:前者答得出关了哪几条,后者供回填修正过期的评论状态。
  */
 async function autoDispose(
   forge: Forge,
@@ -1133,30 +1139,45 @@ async function autoDispose(
   store: ReturnType<typeof openStore>,
   findingIds: readonly number[],
   note?: string,
-): Promise<AutoDispositionCandidate[]> {
-  const pending = store.pendingAutoDispositions(findingIds);
-  const disposed: AutoDispositionCandidate[] = [];
-  for (const candidate of pending) {
-    try {
-      await forge.resolveComment({ owner: event.owner, repo: event.repo }, candidate.commentId);
-    } catch (error) {
-      console.error(
-        "[review] 自动处置写 Forge 失败,这一条留给人处置:",
-        error instanceof Error ? error.message : String(error),
+): Promise<{ findingIds: number[]; commentIds: string[] }> {
+  const disposed: number[] = [];
+  const resolved = new Set<string>();
+  const failed = new Set<string>();
+  for (const findingId of findingIds) {
+    const candidates = store.pendingAutoDispositions([findingId]);
+    // 一条候选都没有即这条 Identity 已经处置过、或没有评论载体:两种都不算这一趟关掉的。
+    let whole = candidates.length > 0;
+    for (const candidate of candidates) {
+      if (failed.has(candidate.commentId)) {
+        whole = false;
+        continue;
+      }
+      if (!resolved.has(candidate.commentId)) {
+        try {
+          await forge.resolveComment({ owner: event.owner, repo: event.repo }, candidate.commentId);
+        } catch (error) {
+          console.error(
+            "[review] 自动处置写 Forge 失败,这一条留给人处置:",
+            error instanceof Error ? error.message : String(error),
+          );
+          failed.add(candidate.commentId);
+          whole = false;
+          continue;
+        }
+        resolved.add(candidate.commentId);
+      }
+      store.recordAutoDisposition(
+        event.owner,
+        event.repo,
+        event.number,
+        candidate,
+        new Date().toISOString(),
+        note,
       );
-      continue;
     }
-    store.recordAutoDisposition(
-      event.owner,
-      event.repo,
-      event.number,
-      candidate,
-      new Date().toISOString(),
-      note,
-    );
-    disposed.push(candidate);
+    if (whole) disposed.push(findingId);
   }
-  return disposed;
+  return { findingIds: disposed, commentIds: [...resolved] };
 }
 
 /** 开跑时自动处置的原因(issue #272):文件在本轮 diff 里被删,或根本不在 diff 里。 */
@@ -1735,8 +1756,8 @@ export async function runReview(
           const ids = absent.filter((item) => item.reason === reason).map((item) => item.findingId);
           if (ids.length === 0) continue;
           const done = await autoDispose(forge, event, store, ids, ABSENCE_NOTES[reason]);
-          disposedByAbsence[reason] = done.map((candidate) => candidate.findingId);
-          for (const candidate of done) resolvedByAbsence.add(candidate.commentId);
+          disposedByAbsence[reason] = done.findingIds;
+          for (const commentId of done.commentIds) resolvedByAbsence.add(commentId);
         }
       } catch (error) {
         store.close();
