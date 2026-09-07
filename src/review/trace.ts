@@ -30,6 +30,12 @@ export type RunTraceKind =
   | "merge_agent_finished"
   /** 合并 agent 失败或分组方案没过验收,这一轮的合并退回算法档(issue #228)。 */
   | "merge_fallback"
+  /**
+   * 某一组的综合说明缺失或标题 / 问题说明空白,那一组的正文退回代表段(issue #279):
+   * payload 的 `group` 是组下标(agent 提出这一组的次序),`reason` 是那一句原因。分组
+   * 本身照收,整轮退回算法合并走的仍是 `merge_fallback`。
+   */
+  | "synthesis_fallback"
   /** 落点锚不进本轮 diff、被丢弃的一条 Finding(issue #224)。 */
   | "finding_discarded"
   /**

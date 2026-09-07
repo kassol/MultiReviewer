@@ -4,6 +4,7 @@
  * 与另外两个子进程同构:一个进程只有它自己那一家厂商的凭据(见 `env.ts`),工具集只读,
  * 产出经一个自定义工具逐条回传主进程。任务本身只有一件——把本轮全部 Finding 分成组,
  * 每组是同一个问题;同文件的历史 Finding 一并给它,判成同一回事的可以进组(issue #240)。
+ * 多于一个成员的组另写一份综合说明(issue #279):把成员的说法合成一份正文。
  * 行号、严重度、分类与归属的派生规则不在这里,折叠还是延续也不在,它们都留在编排层。
  */
 import {
@@ -13,6 +14,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import type { GroupSynthesis } from "../review/dedupe.ts";
 import type { Finding, HistoryFinding } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import type { MergeWorkerMessage, MergeWorkerRequest } from "./merge-agent.ts";
@@ -46,6 +48,8 @@ Report every group by calling ${PROPOSE_GROUP_TOOL} exactly once per group, incl
 
 Write the reason field in Chinese, one sentence: why these findings are the same problem. A single-member group still needs a reason field; one short clause is enough.
 
+A group that holds more than one finding also needs a synthesis: one Chinese write-up that says the problem once, for the people who read the review. Merge what the members say into a title, a problem statement, an impact and a suggestion. Keep every claim that a member made and drop none of them; add no claim that no member made, and state nothing the members left unsaid. Leave impact or suggestion out when no member said anything about it. A group with a single finding needs no synthesis: its own words are already the body. Do not send a severity or a category; the platform sets both.
+
 Narrate in Chinese too: everything you say between tool calls goes into a trace read by this repository's maintainers.
 
 The read tool prefixes every line with its line number, like \`12: code\`. The prefix is not part of the file content.`;
@@ -61,6 +65,31 @@ const groupSchema = Type.Object({
         "The ids of the prior findings in this group, taken from the prior findings list. Leave it out when this group is only about findings from this round.",
     }),
   ),
+  synthesis: Type.Optional(
+    Type.Object(
+      {
+        title: Type.String({ description: "The problem in one short Chinese line." }),
+        description: Type.String({
+          description: "The problem itself in Chinese, merged from what the members say.",
+        }),
+        impact: Type.Optional(
+          Type.String({
+            description:
+              "What it costs the users or the system, in Chinese. Leave it out when no member said.",
+          }),
+        ),
+        suggestion: Type.Optional(
+          Type.String({
+            description: "How to fix it, in Chinese. Leave it out when no member said.",
+          }),
+        ),
+      },
+      {
+        description:
+          "One write-up for a group that holds more than one finding. Leave it out for a group with a single finding.",
+      },
+    ),
+  ),
   reason: Type.String({
     description:
       "One sentence in Chinese: why these findings are the same problem, or why this one stands alone.",
@@ -72,7 +101,9 @@ function send(message: MergeWorkerMessage): void {
 }
 
 /**
- * 一条 Finding 交给 agent 看的样子:编号、位置、等级与两段文本,加上那一行的原文。
+ * 一条 Finding 交给 agent 看的样子:编号、位置、等级与四段文本,加上那一行的原文。
+ * 影响与建议一并给出(issue #279):综合说明要写这两段,看不到成员怎么说就只能自己编。
+ * 模型没给的那一段空着,空段不渲染。
  *
  * 代码片段从工作副本现读,不从 Finding 上取——归一化之后的 Finding 不留 snippet,而
  * 行号已经过锚定核对,这一行就是模型当初抄下来的那一行。读不出来就不给这一格,agent
@@ -86,6 +117,8 @@ function findingBullet(finding: Finding, index: number, worktreePath: string): s
     head,
     `    title: ${oneLine(finding.title === "" ? "(none)" : finding.title)}`,
     `    description: ${oneLine(finding.description)}`,
+    ...(finding.impact === "" ? [] : [`    impact: ${oneLine(finding.impact)}`]),
+    ...(finding.suggestion === "" ? [] : [`    suggestion: ${oneLine(finding.suggestion)}`]),
     ...(snippet === undefined ? [] : [`    code: ${oneLine(snippet)}`]),
   ].join("\n");
 }
@@ -131,12 +164,18 @@ async function run(request: MergeWorkerRequest): Promise<void> {
     description: "Report one group of findings that are the same problem.",
     parameters: groupSchema,
     execute: async (_id, params) => {
-      const raw = params as { members: number[]; history?: number[]; reason: string };
+      const raw = params as {
+        members: number[];
+        history?: number[];
+        synthesis?: GroupSynthesis;
+        reason: string;
+      };
       send({
         kind: "group",
         group: {
           members: raw.members,
           ...(raw.history === undefined ? {} : { history: raw.history }),
+          ...(raw.synthesis === undefined ? {} : { synthesis: raw.synthesis }),
           reason: raw.reason,
         },
       });

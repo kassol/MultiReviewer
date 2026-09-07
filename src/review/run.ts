@@ -1413,6 +1413,11 @@ async function mergeFindings(
     return fallback(error instanceof Error ? error.message : String(error), result.usage);
   }
   if ("rejected" in outcome) return fallback(outcome.rejected, result.usage);
+  // 综合说明缺一组只让那一组回到代表段(issue #279),分组照收。逐组记一条,组下标即
+  // agent 提出这一组的次序——面板要读的是「哪一组没写、为什么」。
+  for (const miss of outcome.fallbacks) {
+    trace.run("synthesis_fallback", { group: miss.group, reason: miss.reason });
+  }
   return { merged: outcome.merged, ...(result.usage === undefined ? {} : { usage: result.usage }) };
 }
 

@@ -88,10 +88,11 @@ export type MergedFinding = {
   /** 取首报那个 Reviewer 的分类:跨模型改口不挪格,与统计里的首轮归属同一取向。 */
   category: Category;
   /**
-   * 以下四段是这一条的代表段(issue #278):取描述最长的那条归属的标题、问题、影响与
-   * 建议,四段同出一条归属——影响与建议要对得上同一句问题表述,拆开取会拼出没人说过的
-   * 一份说法。描述最长即说得最完整,不取严重度最高那条:严重度是处置口径,与哪一份文本
-   * 读起来最全无关。同长取首报那条,同一份输入永远给同一个答案。
+   * 以下四段是这一条的正文(CONTEXT.md 综合说明)。多归属且合并 agent 给了可用的综合
+   * 说明时是那一份(issue #279);否则是代表段(issue #278):取描述最长的那条归属的
+   * 标题、问题、影响与建议,四段同出一条归属——影响与建议要对得上同一句问题表述,拆开
+   * 取会拼出没人说过的一份说法。描述最长即说得最完整,不取严重度最高那条:严重度是处置
+   * 口径,与哪一份文本读起来最全无关。同长取首报那条,同一份输入永远给同一个答案。
    */
   title: string;
   description: string;
@@ -315,8 +316,48 @@ export type MergeGroupProposal = {
    * 还是 id 为 3 的历史就说不清了。没有历史成员时缺省。
    */
   history?: readonly number[];
+  /**
+   * 这一组的综合说明(issue #279)。只对多归属的组要求:归属只有一条时正文就是那份
+   * 原文,不为它多写一遍。缺这一格、标题或问题说明空白,那一组按代表段规则回退,
+   * 分组本身照收——综合只影响正文读起来的样子,不影响哪些条目归成一条。
+   */
+  synthesis?: GroupSynthesis;
   reason: string;
 };
+
+/**
+ * 合并 agent 为一个多归属组写的一份正文(issue #279):综合各归属的说法,不引入成员
+ * 没说过的主张。四段与 `MergedFinding` 的代表段一一对应,采纳时整份取代,不与原文
+ * 拼段——拼出来的是没人说过的一份说法。
+ *
+ * 影响与建议可以空着(成员本来就没说):它们不参与验收,空段在评论与面板上整段跳过。
+ * 严重度与分类不在这里,它们由代码定(最高 / 首报),模型写文本时改不了处置口径。
+ */
+export type GroupSynthesis = {
+  title: string;
+  description: string;
+  impact?: string;
+  suggestion?: string;
+};
+
+/** 某一组的综合没被采纳:组下标(方案里的次序)与那一条原因。 */
+export type SynthesisFallback = {
+  group: number;
+  reason: string;
+};
+
+/**
+ * 综合说明能不能用作正文:不能用时给出那一句原因,能用时给 `undefined`。
+ *
+ * 只验标题与问题说明:这两段是评论与列表的正文本身,空着就等于没有正文。影响与建议
+ * 空着是模型没话说,不构成回退。
+ */
+function synthesisRejection(synthesis: GroupSynthesis | undefined): string | undefined {
+  if (synthesis === undefined) return "这一组没有综合说明";
+  if (synthesis.title.trim() === "") return "综合说明的标题是空的";
+  if (synthesis.description.trim() === "") return "综合说明的问题说明是空的";
+  return undefined;
+}
 
 /**
  * 合并 agent 的注入边界(issue #228,ADR 0022)。与 `Reviewer`、`RuleAgent` 同构:编排层
@@ -354,7 +395,14 @@ export type MergeAgentResult = {
 
 /** 分组方案的验收结果:过了给合并结果,没过给一句拒绝理由,调用方据此回退并记轨迹。 */
 export type MergeProposalOutcome =
-  | { merged: MergedFinding[] }
+  | {
+      merged: MergedFinding[];
+      /**
+       * 综合说明没被采纳的那些组(issue #279)。分组照收,调用方按这一份逐条记
+       * `synthesis_fallback` 轨迹事件。全组都有综合时是空数组。
+       */
+      fallbacks: SynthesisFallback[];
+    }
   | { rejected: string };
 
 /**
@@ -374,8 +422,9 @@ export type MergeProposalOutcome =
  * 历史那一侧另有两条:编号必须是这次给出的历史里的一条,且不得出现在两组里。历史可以
  * 不出现在任何一组里——它只是候选,不是必须被认领的输入。
  *
- * 行号、严重度、分类、归属折叠与代表段的派生规则全部沿用算法档那一套(`mergeGroup`),
- * 呈现语义因此与升级前逐字一致。
+ * 行号、严重度、分类与归属折叠的派生规则全部沿用算法档那一套(`mergeGroup`)。正文多一档
+ * (issue #279):多归属的组带了可用的综合说明就用它,否则回到代表段,那一组记进
+ * `fallbacks`。综合缺失不作废方案——它只改正文读起来的样子,不改检出率。
  */
 export function mergeByProposal(
   findings: readonly Finding[],
@@ -408,7 +457,8 @@ export function mergeByProposal(
   }
 
   const merged: MergedFinding[] = [];
-  for (const group of groups) {
+  const fallbacks: SynthesisFallback[] = [];
+  for (const [index, group] of groups.entries()) {
     // 成员编号即首报先后:输入按 Reviewer 的配置顺序拼(`run.ts`),下标就是报出的次序。
     const members = [...group.members].sort((a, b) => a - b).map((index) => findings[index]!);
     // 一组含多条历史时取 id 最小的那条作数:先来的那条拿走这次交接,与延续那边
@@ -432,14 +482,19 @@ export function mergeByProposal(
         rejected: `${file} 的一组里有成员与组内任何其他成员都相距超过 ${LINE_TOLERANCE} 行`,
       };
     }
-    merged.push(
-      mergeGroup(
-        file,
-        members,
-        { kind: "agent", reason: group.reason },
-        hits[0] === undefined ? undefined : { id: hits[0].id, reason: group.reason },
-      ),
+    const finding = mergeGroup(
+      file,
+      members,
+      { kind: "agent", reason: group.reason },
+      hits[0] === undefined ? undefined : { id: hits[0].id, reason: group.reason },
+      group.synthesis,
     );
+    // 归属只有一条的组不要求综合,缺了也不是回退;多归属的组缺了才记一条(issue #279)。
+    if (finding.attributions.length > 1) {
+      const reason = synthesisRejection(group.synthesis);
+      if (reason !== undefined) fallbacks.push({ group: index, reason });
+    }
+    merged.push(finding);
   }
 
   // 与算法档同序:文件按首次出现的先后,组内按代表行号升序。呈现次序不因换了分组方式而变。
@@ -450,7 +505,7 @@ export function mergeByProposal(
   merged.sort(
     (a, b) => fileOrder.get(a.file)! - fileOrder.get(b.file)! || a.line - b.line,
   );
-  return { merged };
+  return { merged, fallbacks };
 }
 
 /** 按首报先后排好的一组 Finding 合成一条。 */
@@ -459,6 +514,7 @@ function mergeGroup(
   group: readonly Finding[],
   criterion: MergeCriterion,
   history?: { id: number; reason: string },
+  synthesis?: GroupSynthesis,
 ): MergedFinding {
   const severity = [...group].sort(
     (a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity],
@@ -498,6 +554,23 @@ function mergeGroup(
     said.description.length > best.description.length ? said : best,
   );
 
+  // 有可用的综合说明就整份取代代表段(issue #279)。只对多归属的组:归属只有一条时
+  // 正文就是那份原文。算法档从不带综合,因此整轮退回算法合并时全部走代表段。
+  const body =
+    attributions.length > 1 && synthesisRejection(synthesis) === undefined
+      ? {
+          title: synthesis!.title,
+          description: synthesis!.description,
+          impact: synthesis!.impact ?? "",
+          suggestion: synthesis!.suggestion ?? "",
+        }
+      : {
+          title: representative.title,
+          description: representative.description,
+          impact: representative.impact,
+          suggestion: representative.suggestion,
+        };
+
   // 按首报先后取第一个给出命中规则的成员:模型自报是稀疏的,取代表段那条会让一组里
   // 唯一报出规则的那个模型的自报白丢。
   const ruleId = group.find((finding) => finding.ruleId !== undefined)?.ruleId;
@@ -510,10 +583,10 @@ function mergeGroup(
     // 分类取首报(ADR 0015)。严重度取最高是为了不漏,分类没有高低之分,只能定一个
     // 稳定的取值口径,取首报与统计里「首轮报出的 category 为准」同一取向。
     category: group[0]!.category,
-    title: representative.title,
-    description: representative.description,
-    impact: representative.impact,
-    suggestion: representative.suggestion,
+    title: body.title,
+    description: body.description,
+    impact: body.impact,
+    suggestion: body.suggestion,
     attributions,
     ...(ruleId === undefined ? {} : { ruleId }),
     ...(history === undefined ? {} : { history }),
