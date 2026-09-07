@@ -725,3 +725,179 @@ test("准入通过的只复核推进执行阶段必定开跑:Reviewer 收到的�
   assert.deepEqual(latest.files, ["src/answer.ts"]);
   assert.deepEqual(recorded.historyFiles!.at(-1), ["src/answer.ts"]);
 });
+
+/** 两个文件各报一条:一部分历史落在回退文件上、一部分仍可审时要它。 */
+const TWO_FILE_FINDINGS: Parameters<typeof scriptedReviewer>[1] = [
+  { file: "src/answer.ts", line: 1, severity: "P1", category: "bug", description: "这里会越界" },
+  { file: "src/other.ts", line: 1, severity: "P1", category: "bug", description: "这里也会越界" },
+];
+
+/** 这个阶段的历史条目,按文件排序:处置档与处置备注一起读出来。 */
+function stageFindings(
+  h: PanelHarness,
+  rangeReviewId: number,
+): { file: string; disposition: string; note: string | null }[] {
+  const store = openStore(h.db.path);
+  try {
+    return store
+      .stageHistory({ rangeReviewId })
+      .map(({ file, disposition, note }) => ({ file, disposition, note: note ?? null }))
+      .sort((left, right) => left.file.localeCompare(right.file));
+  } finally {
+    store.close();
+  }
+}
+
+/** 这个范围审查最近那一轮的轮次级轨迹档位。 */
+function lastRunTraceKinds(h: PanelHarness, rangeReviewId: number): string[] {
+  const store = openStore(h.db.path);
+  try {
+    const runId = store.listRuns({ limit: 1, rangeReviewId })[0]!.id;
+    return store
+      .listTrace(runId)
+      .filter((event) => event.scope === "run")
+      .map((event) => event.kind);
+  } finally {
+    store.close();
+  }
+}
+
+test("未处置历史全落在回退文件上:只复核推进先自动处置再 409,文案带条数(issue #276)", async () => {
+  const recorded: Recorded = { ranges: [] };
+  const h = await startedHarness(recorded, {}, REPORTED_FINDINGS);
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+  const carried = h.memory.publishedComments.find((comment) => comment.path === "src/answer.ts")!;
+
+  // 从 base 另拉一条只改 src/other.ts 的旁支:src/answer.ts 回到了 base,挂在它上面的
+  // 历史谁都复核不到——判之前先把它处置掉,再答「没有剩下可复核的」。
+  const hotfix = h.repo.branchFrom("absent-hotfix", h.repo.baseSha, {
+    "src/other.ts": "export const other = 3;\n",
+  });
+  const denied = await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+    comparison: hotfix,
+    mode: "verdict-only",
+  });
+  assert.equal(denied.status, 409);
+  assert.match(
+    ((await denied.json()) as { error: string }).error,
+    /^已自动处置 1 条回退或删除文件上的历史,/,
+  );
+
+  // 处置写回了 Forge,库里那一条记「已修复」并带上回退那句备注。
+  assert.deepEqual(h.memory.resolvedIds, [carried.id]);
+  assert.deepEqual(stageFindings(h, rangeReview.id), [
+    { file: "src/answer.ts", disposition: "fixed", note: "文件已回退,自动处置" },
+  ]);
+
+  // 准入约定不变:比较项、head 分支与轮次数都停在推进之前那一刻。
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), h.repo.headSha);
+  assert.equal(h.settled.length, 1);
+  assert.deepEqual(modes(h, rangeReview.id), ["full"]);
+  const store = openStore(h.db.path);
+  assert.equal(store.getRangeReview(rangeReview.id)!.comparisonSha, h.repo.headSha);
+  store.close();
+});
+
+test("一部分历史落在回退文件上:只复核推进 202,开跑那一步不再重复处置(issue #276)", async () => {
+  const recorded: Recorded = { ranges: [] };
+  const h = await startedHarness(recorded, {}, TWO_FILE_FINDINGS);
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+  const reverted = h.memory.publishedComments.find((comment) => comment.path === "src/answer.ts")!;
+
+  // 新比较项只改 src/other.ts:src/answer.ts 上那条被处置掉,src/other.ts 上那条仍可复核。
+  const partial = h.repo.branchFrom("absent-partial", h.repo.baseSha, {
+    "src/other.ts": "export const other = 4;\n",
+  });
+  const response = await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+    comparison: partial,
+    mode: "verdict-only",
+  });
+  assert.equal(response.status, 202);
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), partial);
+
+  await h.settledAtLeast(2);
+  assert.equal(h.settled[1]!.error, undefined);
+  assert.deepEqual(modes(h, rangeReview.id), ["full", "verdict-only"]);
+  assert.deepEqual(h.memory.resolvedIds, [reverted.id]);
+  const findings = stageFindings(h, rangeReview.id);
+  assert.deepEqual(
+    findings.filter((entry) => entry.file === "src/answer.ts"),
+    [{ file: "src/answer.ts", disposition: "fixed", note: "文件已回退,自动处置" }],
+  );
+  // src/other.ts 落在可审文件里,它上面的历史一条都不该被处置。
+  assert.deepEqual(
+    [
+      ...new Set(
+        findings.filter((entry) => entry.file === "src/other.ts").map((entry) => entry.disposition),
+      ),
+    ],
+    ["unknown"],
+  );
+
+  // 准入那一步已经处置过,开跑那一步没有可处置的了,轨迹里因此没有这一档。
+  assert.equal(lastRunTraceKinds(h, rangeReview.id).includes("history_auto_disposed"), false);
+  // 只复核那一轮只读剩下的那个文件:处置掉的那条不再要它的文件。
+  assert.deepEqual(recorded.ranges.at(-1)!.files, ["src/other.ts"]);
+});
+
+test("自动处置写 Forge 失败:那一条保持未处置,只复核推进仍 409 且文案不带条数(issue #276)", async () => {
+  const recorded: Recorded = { ranges: [] };
+  const h = await startedHarness(
+    recorded,
+    {
+      wrapForge: (forge: Forge) => ({
+        ...forge,
+        resolveComment: async () => {
+          throw new Error("resolve 挂了");
+        },
+      }),
+    },
+    REPORTED_FINDINGS,
+  );
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+
+  const hotfix = h.repo.branchFrom("absent-failing", h.repo.baseSha, {
+    "src/other.ts": "export const other = 5;\n",
+  });
+  const denied = await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+    comparison: hotfix,
+    mode: "verdict-only",
+  });
+  assert.equal(denied.status, 409);
+  // 一条都没处置成:文案不带条数,那一条留给人处置。
+  const { error } = (await denied.json()) as { error: string };
+  assert.equal(error.startsWith("已自动处置"), false);
+  assert.match(error, /未处置/);
+  assert.deepEqual(stageFindings(h, rangeReview.id), [
+    { file: "src/answer.ts", disposition: "unknown", note: null },
+  ]);
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), h.repo.headSha);
+  assert.equal(h.settled.length, 1);
+});
+
+test("完整审查推进:准入不处置回退文件上的历史,开跑那一步照常处置(issue #276)", async () => {
+  const recorded: Recorded = { ranges: [] };
+  const changed = replaceableChangedFiles();
+  const h = await startedHarness(recorded, changed.options, REPORTED_FINDINGS);
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+  // 推进之后容器 PR 上只剩 src/other.ts:执行阶段的可审文件集从 Forge 取,src/answer.ts
+  // 在它眼里也已经回到 base。
+  changed.replace([{ path: "src/other.ts", status: "modified" }]);
+
+  const hotfix = h.repo.branchFrom("absent-full", h.repo.baseSha, {
+    "src/other.ts": "export const other = 6;\n",
+  });
+  const response = await h.api("POST", `/range-reviews/${rangeReview.id}/advance`, {
+    comparison: hotfix,
+    mode: "full",
+  });
+  assert.equal(response.status, 202);
+
+  await h.settledAtLeast(2);
+  assert.equal(h.settled[1]!.error, undefined);
+  // 处置发生在开跑那一步:轨迹里有这一档(issue #272)。
+  assert.equal(lastRunTraceKinds(h, rangeReview.id).includes("history_auto_disposed"), true);
+  assert.deepEqual(stageFindings(h, rangeReview.id), [
+    { file: "src/answer.ts", disposition: "fixed", note: "文件已回退,自动处置" },
+  ]);
+});

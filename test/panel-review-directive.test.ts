@@ -363,3 +363,49 @@ test("只复核不新增权限格:没有 review:rerun 的用户照样被拒", as
   }
   assert.equal(h.settled.length, 1);
 });
+
+test("PR 重跑:未处置历史全落在回退文件上时先自动处置再 409,文案带条数(issue #276)", async () => {
+  // 首轮在 src/answer.ts 报出一条;随后 Forge 上这个 PR 的变更文件里不再有它——代码已经
+  // 回到 base,那条历史谁都复核不到,判之前先把它处置掉。
+  let narrowed = false;
+  const h = await registeredHarness({
+    buildReviewers: reportingReviewers,
+    wrapForge: (forge) => ({
+      ...forge,
+      listChangedFiles: async (ref) =>
+        (await forge.listChangedFiles(ref)).filter(
+          (file) => !narrowed || file.path !== "src/answer.ts",
+        ),
+    }),
+  });
+  assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
+  await h.settledAtLeast(1);
+  const carried = h.memory.publishedComments.find((comment) => comment.path === "src/answer.ts")!;
+  narrowed = true;
+
+  const denied = await h.api("POST", "/rerun", {
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    pullNumber: HARNESS_PR.number,
+  });
+  assert.equal(denied.status, 409);
+  assert.match(
+    ((await denied.json()) as { error: string }).error,
+    /^已自动处置 1 条回退或删除文件上的历史,/,
+  );
+  assert.deepEqual(h.memory.resolvedIds, [carried.id]);
+
+  const store = openStore(h.db.path);
+  const history = store.stageHistory({
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    pullNumber: HARNESS_PR.number,
+  });
+  store.close();
+  assert.deepEqual(
+    history.map(({ file, disposition, note }) => ({ file, disposition, note: note ?? null })),
+    [{ file: "src/answer.ts", disposition: "fixed", note: "文件已回退,自动处置" }],
+  );
+  // 一轮都没开:准入闸只处置,不开跑。
+  assert.equal(h.settled.length, 1);
+});
