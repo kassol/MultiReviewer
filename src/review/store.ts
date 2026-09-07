@@ -2551,6 +2551,9 @@ export type Store = {
    *
    * 落的是整条 Finding Identity:这个 pull request 名下与它同「文件 + 指纹」的历史行
    * 一并改写,口径与回填一致。
+   *
+   * `note` 是这一次自动处置的备注(issue #272):复核判已修那一档不带它,原备注保持
+   * 原样;按「文件已回退 / 已删除」处置的带上一句,面板据它答得出这一条为什么关了。
    */
   recordAutoDisposition(
     owner: string,
@@ -2558,6 +2561,7 @@ export type Store = {
     pullNumber: number,
     candidate: AutoDispositionCandidate,
     disposedAt: string,
+    note?: string,
   ): void;
   /**
    * 这些历史 Finding 里还能被延续的那些(CONTEXT.md 已延续,issue #167)。判据见
@@ -6359,10 +6363,11 @@ export function openStore(dbPath: string): Store {
       });
     },
 
-    recordAutoDisposition(owner, repo, pullNumber, candidate, disposedAt) {
+    recordAutoDisposition(owner, repo, pullNumber, candidate, disposedAt, note) {
       // 折叠键与 `stageHistory` 同源:文件 + 指纹,算不出指纹的行只有它自己一条。
       db.prepare(
-        `UPDATE finding SET disposition = 'fixed', disposed_at = ?
+        `UPDATE finding SET disposition = 'fixed', disposed_at = ?,
+                disposition_note = COALESCE(?, disposition_note)
           WHERE file = (SELECT file FROM finding WHERE id = ?)
             AND COALESCE(fingerprint, 'row:' || id) =
                 (SELECT COALESCE(fingerprint, 'row:' || id) FROM finding WHERE id = ?)
@@ -6370,6 +6375,7 @@ export function openStore(dbPath: string): Store {
             AND ${PULL_REQUEST_SCOPE}`,
       ).run(
         disposedAt,
+        note ?? null,
         candidate.findingId,
         candidate.findingId,
         owner,

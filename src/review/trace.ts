@@ -39,6 +39,11 @@ export type RunTraceKind =
    * 交接结果 `handoff`(ADR 0025):`complete` 即旧评论已 resolve,`pending` 即交接未完成。
    */
   | "finding_continued"
+  /**
+   * 开跑时按「所在文件不在本轮可审文件集」自动处置掉的历史(issue #272)。payload 的
+   * `reverted` 与 `deleted` 各是一批 finding id:文件回到 base 状态的一批,文件被删的一批。
+   */
+  | "history_auto_disposed"
   | "review_posted"
   /** 只复核那一轮零新报,这一轮不向 Forge 发 review(issue #242)。 */
   | "review_skipped"
