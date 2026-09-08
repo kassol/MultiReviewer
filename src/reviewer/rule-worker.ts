@@ -19,6 +19,7 @@ import type {
   ConsolidationProposal,
   DispositionFeedback,
   RuleIntentInput,
+  RuleIntentTargetProposal,
   RuleWorkerMessage,
   RuleWorkerRequest,
 } from "./rule-agent.ts";
@@ -291,6 +292,10 @@ export function intentPrompt(
     intent: RuleIntentInput;
   },
 ): string {
+  const target = request.intent.target;
+  if (target.kind === "proposal") {
+    return rewritePrompt(request.intent.text, target.proposal);
+  }
   const existing =
     request.existingKnowledge.length === 0
       ? ""
@@ -310,6 +315,54 @@ Check what is already there before you report. When the knowledge in force alrea
 Read the code before you settle the scope. The request is written in prose and rarely names paths; open the directories it points at and find out how far the invariant actually reaches, then put that glob in the scope field. What you read goes in the reason field, not in the statement.
 
 Report each change through ${PROPOSE_RULE_TOOL}. When you have reported what they asked for, stop.`;
+}
+
+/**
+ * 目标为一条待裁决提案的修订意图的提示(CONTEXT.md 人工提议,issue #295)。现集与队列
+ * 那两段不渲染:人指着这一条说「改成这样」,别的条目与队列里的别的提案都不是他说的那
+ * 件事,给了只会让 agent 顺手再提几条,而落地只收指向目标的那一条。
+ *
+ * 目标的**全部出处附注**在这一段里:附注即修订对话,上一次意图说了什么、agent 当时凭
+ * 什么这么写,第二次要看得到,否则每一轮都要人从头解释一遍。
+ */
+function rewritePrompt(text: string, proposal: RuleIntentTargetProposal): string {
+  const scope = proposal.scope === "" ? "whole repository" : proposal.scope;
+  const targets =
+    proposal.targets.length === 0
+      ? "This proposal has no target entry: it adds a new one."
+      : [
+          "The knowledge entries this proposal targets:",
+          "",
+          ...proposal.targets.map((entry) => knowledgeBullet(entry)),
+        ].join("\n");
+  const provenance = proposal.sources
+    .map((source) => {
+      const note = source.note === null ? "" : ` note: ${oneLine(source.note)};`;
+      const grounds = source.evidence === null ? " no grounds recorded" : ` grounds: ${oneLine(source.evidence)}`;
+      return `- ${source.origin};${note}${grounds}`;
+    })
+    .join("\n");
+  return `A maintainer of this repository is looking at one proposal waiting for a decision and wrote down how they want it to read instead. Rewrite that one proposal.
+
+Revision intent: ${text}
+
+The proposal as it stands in the queue:
+
+- id: ${proposal.id}
+- change kind: ${proposal.change}
+- entry kind: ${proposal.type}
+- scope: ${scope}
+- statement: ${oneLine(proposal.statement)}
+
+${targets}
+
+Its provenance, oldest first. Each note is what a person asked for at that point and what the grounds were, so read them as the conversation that got this proposal to its present wording:
+
+${provenance === "" ? "- none recorded" : provenance}
+
+Change this one proposal and nothing else. Call ${PROPOSE_RULE_TOOL} exactly once, with proposal_id set to ${proposal.id} and the full new statement — it replaces the statement in the queue. Give a new scope when the request narrows or widens where the entry applies, and give the kind the new statement really is: the server keeps this proposal's targets and works out its change kind from the kind you give. Report no other entry — anything you report without that proposal_id is dropped, and reporting nothing at all is the right outcome when the proposal already says what they asked for.
+
+Read the code before you settle the wording and the scope. The request is written in prose and rarely names paths; open the directories it points at and find out how far the invariant actually reaches. What you read goes in the reason field, not in the statement: it becomes the next note in the provenance above.`;
 }
 
 /**

@@ -1892,10 +1892,21 @@ export type RuleProposal = Omit<RuleProposalInput, "sources"> & {
 
 /**
  * 一次并入带来的东西(CONTEXT.md 处置反哺,issue #283):合成后的那一句新陈述,与记下
- * 这一次来源的那条出处附注。只有这两样——作用范围、型、变更类型与目标都不随并入改。
+ * 这一次来源的那条出处附注。目标不随并入改。
+ *
+ * `scope` 与 `type` 只有目标为这条提案的修订意图给(CONTEXT.md 人工提议,issue #295):
+ * 改写换的是这一条本身,陈述、作用范围与型都可能换。两格缺席即不动,处置反哺那条并入
+ * 路径因此一行未变。
  */
 export type RuleProposalMerge = {
   statement: string;
+  /** 换新的作用范围。缺席即保持原样。 */
+  scope?: string;
+  /**
+   * 换新的型。缺席即保持原样;给了即按型规则落(CONTEXT.md 修订提案):新增型直接换,
+   * 修改型要换型即成单目标合并(目标不变),合并型的型本来就由新陈述定。
+   */
+  type?: KnowledgeType;
   source: RuleProposalSourceInput;
 };
 
@@ -2461,6 +2472,11 @@ export type Store = {
   listRuleIntents(repoId: number, now: string, completedWindowMs: number): RuleIntent[];
   /** 一条修订意图。不在这个仓库里回 null。 */
   getRuleIntent(repoId: number, intentId: number): RuleIntent | null;
+  /**
+   * 这个目标上还有没有跑着的意图(CONTEXT.md 人工提议,issue #295)。同一目标同时只跑
+   * 一条:两条改写并发只会互相覆盖。无目标的不限,因此不问这一句。
+   */
+  hasRunningRuleIntent(repoId: number, targetKind: RuleIntentTargetKind, targetId: number): boolean;
   /**
    * 提交一条修订意图:落一行运行中的。返回新行;仓库不在注册表里回 undefined。
    * 与探索、整理不同,这里不判互斥——意图不受它们的互斥限制(ADR 0028)。
@@ -4782,6 +4798,17 @@ export function openStore(dbPath: string): Store {
       return row === undefined ? null : toRuleIntent(row);
     },
 
+    hasRunningRuleIntent(repoId, targetKind, targetId) {
+      const row = db
+        .prepare(
+          `SELECT 1 FROM rule_intent
+            WHERE repo_id = ? AND state = 'running' AND target_kind = ? AND target_id = ?
+            LIMIT 1`,
+        )
+        .get(repoId, targetKind, targetId);
+      return row !== undefined;
+    },
+
     startRuleIntent(repoId, intent) {
       if (!repoExists(repoId)) return undefined;
       const inserted = db
@@ -5047,14 +5074,27 @@ export function openStore(dbPath: string): Store {
 
     mergeIntoRuleProposal(repoId, proposalId, merge) {
       // 已裁决的、不在这个仓库的、根本不存在的都并不进去:那一条退回按新增处理。
-      if (pendingProposal(repoId, proposalId) === undefined) return false;
+      const queued = pendingProposal(repoId, proposalId);
+      if (queued === undefined) return false;
       const at = new Date().toISOString();
+      // 型规则(CONTEXT.md 修订提案,issue #295):修改型要换型即改成指向同一条目标的
+      // 单目标合并——修改那一档不许翻型,而改型正是这一次改写的意图。新增型与合并型的
+      // 变更类型不动,型直接换。
+      const change =
+        merge.type !== undefined && merge.type !== queued.type && queued.change === "modify"
+          ? "merge"
+          : queued.change;
       db.exec("BEGIN");
       try {
         // 陈述与附注必须一起落:换了陈述没留下附注,队列里那一条就说不出它是被哪两次
         // 备注合起来的。
-        db.prepare("UPDATE rule_proposal SET statement = ? WHERE id = ?").run(
+        db.prepare(
+          "UPDATE rule_proposal SET statement = ?, scope = ?, type = ?, change = ? WHERE id = ?",
+        ).run(
           merge.statement,
+          merge.scope ?? queued.scope,
+          merge.type ?? queued.type,
+          change,
           proposalId,
         );
         insertRuleProposalSource(proposalId, merge.source, at);

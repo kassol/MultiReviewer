@@ -100,14 +100,36 @@ export type DispositionFeedback = {
 };
 
 /**
+ * 一条修订意图指向的那条待裁决提案(CONTEXT.md 人工提议,issue #295)。改写要看清它现在
+ * 是什么样:变更类型、型、陈述、作用范围与它指向的现有条目,加上**全部出处附注**——附注
+ * 即修订对话,连续两次意图时第二次看得到第一次留下的那一条。
+ */
+export type RuleIntentTargetProposal = {
+  id: number;
+  change: RuleProposalChange;
+  type: KnowledgeType;
+  scope: string;
+  statement: string;
+  /** 它指向的现有知识条目:新增没有,修改与废止一条,合并一条以上(issue #282)。 */
+  targets: readonly KnowledgeEntry[];
+  /** 它的全部出处附注,按落库先后。 */
+  sources: readonly {
+    origin: RuleProposalOrigin;
+    note: string | null;
+    evidence: string | null;
+    findingId: number | null;
+  }[];
+};
+
+/**
  * 触发一次人工提议的那条修订意图(CONTEXT.md 修订意图,ADR 0028,issue #294)。原文是
- * 解读的输入本身;`target` 说这条意图指向什么,本票只有无目标那一档,目标型三档由后续
- * 票填(spec #293)。
+ * 解读的输入本身;`target` 说这条意图指向什么:无目标那一档产新增,目标为一条待裁决
+ * 提案那一档原地改写它(issue #295),另两档由后续票填(spec #293)。
  */
 export type RuleIntentInput = {
   /** 人写下的那段话,去掉首尾空白。 */
   text: string;
-  target: { kind: "none" };
+  target: { kind: "none" } | { kind: "proposal"; proposal: RuleIntentTargetProposal };
 };
 
 /**

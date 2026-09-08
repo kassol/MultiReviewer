@@ -596,3 +596,397 @@ test("三个来源字面量的旧库打开后写得进第四个", () => {
     again.close();
   }
 });
+
+/**
+ * 目标为一条待裁决提案的修订意图(issue #295)。改写在原地发生:陈述与作用范围换新,
+ * 附注追加一条,队列条数不变;型沿既有映射,废止型没有改写入口。
+ */
+
+/** 现集里加一条,回它的标识。 */
+function seedRule(
+  h: PanelHarness,
+  rule: { type: "rule" | "fact"; scope: string; statement: string },
+): number {
+  const store = openStore(h.db.path);
+  try {
+    assert.notEqual(store.addReviewRule(GITEA_REPO.id, rule), undefined);
+    // `addReviewRule` 回的是新的知识集版本,条目标识要从现集里读。
+    return store.getRuleSet(GITEA_REPO.id)!.rules.at(-1)!.id;
+  } finally {
+    store.close();
+  }
+}
+
+/** 队列里排一条待裁决提案,回它的标识。 */
+function seedProposal(
+  h: PanelHarness,
+  input: {
+    type: "rule" | "fact";
+    change: "add" | "modify" | "retire" | "merge";
+    targetRuleIds: number[];
+    scope: string;
+    statement: string;
+  },
+): number {
+  const store = openStore(h.db.path);
+  try {
+    return store.addRuleProposal(GITEA_REPO.id, {
+      ...input,
+      sources: [
+        {
+          origin: "baseline-exploration",
+          note: null,
+          evidence: "第一次是探索提的",
+          findingId: null,
+          traceTaskId: null,
+        },
+      ],
+    })!;
+  } finally {
+    store.close();
+  }
+}
+
+/** 提交一条目标为提案的意图并等它跑完。 */
+async function rewriteAndSettle(
+  h: PanelHarness,
+  proposalId: number,
+  settled = 1,
+  text = INTENT,
+): Promise<IntentRow> {
+  const response = await submit(h, { text, target: { kind: "proposal", id: proposalId } });
+  assert.equal(response.status, 202);
+  const intent = (await response.json()) as IntentRow;
+  await h.revisionIntentsAtLeast(settled);
+  return intent;
+}
+
+test("目标为待裁决提案:agent 拿到它的全部内容与附注,改写换陈述与作用范围并追加附注", async () => {
+  let items: RuleAgentItem[] = [];
+  const agent = scriptedRuleAgent(() => ({ items }), "已把范围收到导出函数上");
+  const h = await harnessWithRepo(agent);
+
+  const ruleId = seedRule(h, { type: "rule", scope: "", statement: "入参要在边界上校验" });
+  const proposalId = seedProposal(h, {
+    type: "rule",
+    change: "modify",
+    targetRuleIds: [ruleId],
+    scope: "src/**",
+    statement: "处理器都要校验入参",
+  });
+  items = [
+    {
+      type: "rule",
+      scope: "src/api/**",
+      statement: "api 目录下的导出处理器先校验入参再执行",
+      proposalId,
+      reason: "只有导出的那几个是入口",
+    },
+  ];
+
+  const submitted = await rewriteAndSettle(h, proposalId);
+  assert.equal(h.revisionIntents[0]!.failure, undefined);
+  assert.equal(submitted.targetKind, "proposal");
+  assert.equal(submitted.targetId, proposalId);
+
+  // agent 拿到的是目标提案的全部内容:变更类型、型、陈述、作用范围、目标条目与全部附注。
+  const request = agent.calls[0]!;
+  assert.equal(request.intent?.text, INTENT);
+  assert.deepEqual(request.intent?.target, {
+    kind: "proposal",
+    proposal: {
+      id: proposalId,
+      change: "modify",
+      type: "rule",
+      scope: "src/**",
+      statement: "处理器都要校验入参",
+      targets: [{ id: ruleId, type: "rule", scope: "", statement: "入参要在边界上校验" }],
+      sources: [
+        {
+          origin: "baseline-exploration",
+          note: null,
+          evidence: "第一次是探索提的",
+          findingId: null,
+        },
+      ],
+    },
+  });
+
+  const view = await ruleSet(h);
+  // 队列条数不变:改写在原地发生。
+  assert.equal(view.proposals.length, 1);
+  const proposal = view.proposals[0]!;
+  assert.equal(proposal.id, proposalId);
+  assert.equal(proposal.statement, "api 目录下的导出处理器先校验入参再执行");
+  assert.equal(proposal.scope, "src/api/**");
+  // 型与目标不换,变更类型仍是修改。
+  assert.equal(proposal.type, "rule");
+  assert.equal(proposal.change, "modify");
+  assert.deepEqual(proposal.targetRuleIds, [ruleId]);
+  assert.deepEqual(
+    proposal.sources.map((source) => [source.origin, source.note, source.evidence]),
+    [
+      ["baseline-exploration", null, "第一次是探索提的"],
+      ["manual-proposal", INTENT, "只有导出的那几个是入口"],
+    ],
+  );
+
+  const intent = view.intents.find((row) => row.id === submitted.id)!;
+  assert.equal(intent.state, "completed");
+  assert.deepEqual(intent.produced, { proposalIds: [proposalId], draftItemIds: [] });
+});
+
+test("型规则:新增型提案换型成立", async () => {
+  let items: RuleAgentItem[] = [];
+  const agent = scriptedRuleAgent(() => ({ items }));
+  const h = await harnessWithRepo(agent);
+  const proposalId = seedProposal(h, {
+    type: "rule",
+    change: "add",
+    targetRuleIds: [],
+    scope: "",
+    statement: "这一层要自己校验",
+  });
+  items = [{ type: "fact", scope: "", statement: "全局拦截器已经覆盖了这一层", proposalId }];
+
+  await rewriteAndSettle(h, proposalId);
+  assert.equal(h.revisionIntents[0]!.failure, undefined);
+
+  const [proposal] = (await ruleSet(h)).proposals;
+  assert.equal(proposal!.type, "fact");
+  assert.equal(proposal!.change, "add");
+  assert.deepEqual(proposal!.targetRuleIds, []);
+});
+
+test("型规则:修改型提案要换型即变成单目标合并型,目标不变", async () => {
+  let items: RuleAgentItem[] = [];
+  const agent = scriptedRuleAgent(() => ({ items }));
+  const h = await harnessWithRepo(agent);
+  const ruleId = seedRule(h, { type: "fact", scope: "", statement: "这一层由全局拦截器覆盖" });
+  const proposalId = seedProposal(h, {
+    type: "fact",
+    change: "modify",
+    targetRuleIds: [ruleId],
+    scope: "",
+    statement: "这一层由全局拦截器覆盖入参校验",
+  });
+  items = [{ type: "rule", scope: "src/api/**", statement: "api 目录下的处理器先校验入参", proposalId }];
+
+  await rewriteAndSettle(h, proposalId);
+  assert.equal(h.revisionIntents[0]!.failure, undefined);
+
+  const [proposal] = (await ruleSet(h)).proposals;
+  assert.equal(proposal!.type, "rule");
+  assert.equal(proposal!.change, "merge");
+  assert.deepEqual(proposal!.targetRuleIds, [ruleId]);
+  assert.equal(proposal!.scope, "src/api/**");
+});
+
+test("型规则:合并型提案的型由新陈述定", async () => {
+  let items: RuleAgentItem[] = [];
+  const agent = scriptedRuleAgent(() => ({ items }));
+  const h = await harnessWithRepo(agent);
+  const first = seedRule(h, { type: "rule", scope: "", statement: "处理器要校验入参" });
+  const second = seedRule(h, { type: "rule", scope: "", statement: "处理器要校验查询串" });
+  const proposalId = seedProposal(h, {
+    type: "rule",
+    change: "merge",
+    targetRuleIds: [first, second],
+    scope: "",
+    statement: "处理器要校验全部入参",
+  });
+  items = [{ type: "fact", scope: "", statement: "处理器的入参由一层中间件统一校验", proposalId }];
+
+  await rewriteAndSettle(h, proposalId);
+  assert.equal(h.revisionIntents[0]!.failure, undefined);
+
+  const [proposal] = (await ruleSet(h)).proposals;
+  assert.equal(proposal!.type, "fact");
+  assert.equal(proposal!.change, "merge");
+  assert.deepEqual(proposal!.targetRuleIds, [first, second]);
+});
+
+test("没有指向目标的产出:全部丢弃并记轨迹,意图零产出完成", async () => {
+  let items: RuleAgentItem[] = [];
+  const agent = scriptedRuleAgent(() => ({ items }));
+  const h = await harnessWithRepo(agent);
+  const proposalId = seedProposal(h, {
+    type: "rule",
+    change: "add",
+    targetRuleIds: [],
+    scope: "",
+    statement: "队列里原来那一句",
+  });
+  items = [
+    { type: "rule", scope: "", statement: "顺手提的另一条" },
+    { type: "rule", scope: "", statement: "改写那一条", proposalId },
+    { type: "rule", scope: "", statement: "同一次里的第二条改写", proposalId },
+  ];
+
+  const submitted = await rewriteAndSettle(h, proposalId);
+  assert.equal(h.revisionIntents[0]!.failure, undefined);
+
+  const view = await ruleSet(h);
+  // 只落地那一条改写,别的一条都不排进队列。
+  assert.equal(view.proposals.length, 1);
+  assert.equal(view.proposals[0]!.statement, "改写那一条");
+  assert.deepEqual(view.intents.find((row) => row.id === submitted.id)!.produced, {
+    proposalIds: [proposalId],
+    draftItemIds: [],
+  });
+  const dropped = ruleTraceRows(h).filter((row) => row.kind === "rule_proposal_dropped");
+  assert.equal(dropped.length, 2);
+});
+
+test("一条指向目标的产出都没有:意图零产出完成,提案一字不动", async () => {
+  const h = await harnessWithRepo(
+    scriptedRuleAgent(() => ({ items: [{ type: "rule", scope: "", statement: "别的那一条" }] })),
+  );
+  const proposalId = seedProposal(h, {
+    type: "rule",
+    change: "add",
+    targetRuleIds: [],
+    scope: "src/**",
+    statement: "队列里原来那一句",
+  });
+
+  const submitted = await rewriteAndSettle(h, proposalId);
+  assert.equal(h.revisionIntents[0]!.failure, undefined);
+
+  const view = await ruleSet(h);
+  assert.equal(view.proposals.length, 1);
+  assert.equal(view.proposals[0]!.statement, "队列里原来那一句");
+  const intent = view.intents.find((row) => row.id === submitted.id)!;
+  assert.equal(intent.state, "completed");
+  assert.deepEqual(intent.produced, { proposalIds: [], draftItemIds: [] });
+});
+
+test("目标在运行中被驳回:意图失败并留原因,提案一字不动", async () => {
+  let harness: PanelHarness | undefined;
+  let proposalId = 0;
+  const h = await harnessWithRepo(async () => {
+    // 解读到一半有人裁决了它:落地那一刻它已经不在待裁决队列里。
+    assert.equal(
+      (
+        await harness!.api(
+          "POST",
+          `/repos/${GITEA_REPO.id}/rule-proposals/${proposalId}/reject`,
+        )
+      ).status,
+      200,
+    );
+    return { items: [{ type: "rule", scope: "src/api/**", statement: "改写那一条", proposalId }] };
+  });
+  harness = h;
+  proposalId = seedProposal(h, {
+    type: "rule",
+    change: "add",
+    targetRuleIds: [],
+    scope: "src/**",
+    statement: "队列里原来那一句",
+  });
+
+  const submitted = await rewriteAndSettle(h, proposalId);
+  assert.notEqual(h.revisionIntents[0]!.failure, undefined);
+
+  const view = await ruleSet(h);
+  const proposal = view.proposals.find((row) => row.id === proposalId)!;
+  assert.equal(proposal.state, "rejected");
+  assert.equal(proposal.statement, "队列里原来那一句");
+  assert.equal(proposal.scope, "src/**");
+  assert.equal(proposal.sources.length, 1);
+  const intent = view.intents.find((row) => row.id === submitted.id)!;
+  assert.equal(intent.state, "failed");
+  assert.match(intent.failure ?? "", /待裁决/);
+});
+
+test("连续两次意图:第二次的 agent 输入含第一次留下的那条附注", async () => {
+  let items: RuleAgentItem[] = [];
+  const agent = scriptedRuleAgent(() => ({ items }));
+  const h = await harnessWithRepo(agent);
+  const proposalId = seedProposal(h, {
+    type: "rule",
+    change: "add",
+    targetRuleIds: [],
+    scope: "",
+    statement: "队列里原来那一句",
+  });
+
+  items = [{ type: "rule", scope: "src/**", statement: "第一次改成的那一句", proposalId, reason: "第一次的依据" }];
+  await rewriteAndSettle(h, proposalId);
+  items = [{ type: "rule", scope: "src/api/**", statement: "第二次改成的那一句", proposalId, reason: "第二次的依据" }];
+  await rewriteAndSettle(h, proposalId, 2, "再收窄一点");
+
+  assert.equal(agent.calls.length, 2);
+  const target = agent.calls[1]!.intent!.target;
+  assert.equal(target.kind, "proposal");
+  assert.equal(target.kind === "proposal" ? target.proposal.statement : "", "第一次改成的那一句");
+  assert.deepEqual(
+    target.kind === "proposal"
+      ? target.proposal.sources.map((source) => [source.origin, source.note, source.evidence])
+      : [],
+    [
+      ["baseline-exploration", null, "第一次是探索提的"],
+      ["manual-proposal", INTENT, "第一次的依据"],
+    ],
+  );
+
+  const [proposal] = (await ruleSet(h)).proposals;
+  assert.equal(proposal!.statement, "第二次改成的那一句");
+  assert.equal(proposal!.sources.length, 3);
+});
+
+test("目标校验:不存在与已裁决 404,废止型 400,同目标运行中 409", async () => {
+  // agent 停在这里,第一条意图因此停在运行中,直到用例放行。
+  let release = (): void => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const h = await harnessWithRepo(async () => {
+    await held;
+    return { items: [] };
+  });
+
+  const target = (id: number): unknown => ({ text: INTENT, target: { kind: "proposal", id } });
+  assert.equal((await submit(h, target(999999))).status, 404);
+
+  const ruleId = seedRule(h, { type: "rule", scope: "", statement: "现集里的那一条" });
+  const retire = seedProposal(h, {
+    type: "rule",
+    change: "retire",
+    targetRuleIds: [ruleId],
+    scope: "",
+    statement: "现集里的那一条",
+  });
+  // 废止型提案没有改写入口。
+  assert.equal((await submit(h, target(retire))).status, 400);
+
+  const rejected = seedProposal(h, {
+    type: "rule",
+    change: "add",
+    targetRuleIds: [],
+    scope: "",
+    statement: "已经被驳回的那一条",
+  });
+  assert.equal(
+    (await h.api("POST", `/repos/${GITEA_REPO.id}/rule-proposals/${rejected}/reject`)).status,
+    200,
+  );
+  assert.equal((await submit(h, target(rejected))).status, 404);
+
+  const proposalId = seedProposal(h, {
+    type: "rule",
+    change: "add",
+    targetRuleIds: [],
+    scope: "",
+    statement: "队列里原来那一句",
+  });
+  assert.equal((await submit(h, target(proposalId))).status, 202);
+  // 同一目标同时只跑一条。
+  assert.equal((await submit(h, target(proposalId))).status, 409);
+  // 目标形状不对的照旧 400。
+  assert.equal((await submit(h, { text: INTENT, target: { kind: "proposal" } })).status, 400);
+
+  release();
+  await h.revisionIntentsAtLeast(1);
+});
