@@ -399,6 +399,23 @@ test("注入的评审规则进 prompt,每条带标识与作用范围", () => {
   assert.match(prompt, /ruleId/);
 });
 
+test("两档的规则段都说清规则分两类,不再声称规则不缩小审查范围", () => {
+  const rules = [
+    { id: 7, scope: "", statement: "对外接口的入参一律在边界处校验" },
+    { id: 9, scope: "src/test/**", statement: "测试代码只审功能正确性,不报可维护性问题" },
+  ];
+
+  for (const mode of ["full", "verdict-only"] as const) {
+    const prompt = reviewPrompt({ range: PROMPT_RANGE, history: PRIOR_HISTORY, rules, mode });
+
+    // 限定类规则收窄这个范围里报什么,「规则不缩小你的审查范围」因此不再成立。
+    assert.doesNotMatch(prompt, /do not narrow/);
+    // 两类各自的语义:对代码的要求可被违反,对评审的限定不产 Finding。
+    assert.match(prompt, /two kinds/);
+    assert.match(prompt, /limits the review/);
+  }
+});
+
 test("空事实集不渲染事实段,prompt 与升级前逐字一致", () => {
   const rules = [{ id: 7, scope: "", statement: "对外接口的入参一律在边界处校验" }];
   const withoutFacts = reviewPrompt({ range: PROMPT_RANGE, history: [], rules });
@@ -561,7 +578,7 @@ test("完整审查的 prompt 不受只复核措辞影响:不给 mode 与 mode: f
   assert.equal(reviewPrompt({ ...PROMPT_CONTEXT, mode: "full" }), full);
   // 完整审查那三句原样保留:这一票只换只复核那一轮的措辞。
   assert.match(full, /report them through report_finding like any other\./);
-  assert.match(full, /report problems they do not cover as usual\./);
+  assert.match(full, /Report problems the rules do not cover as usual\./);
   assert.match(full, /pass that rule's id as ruleId in report_finding/);
   assert.notEqual(reviewPrompt({ ...PROMPT_CONTEXT, mode: "verdict-only" }), full);
 });
