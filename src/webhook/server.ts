@@ -7013,7 +7013,8 @@ function toConsolidationProposal(proposal: RuleProposal): ConsolidationProposal 
  * 条,别的照落。判据全在 store 的两个方法里,这里只数数。
  *
  * 摘要的两个数说的是队列因此少了几行、改了几条:`merged` 数被并掉的提案(合并三条成
- * 一条即 2),`retargeted` 数改写成功的条数。
+ * 一条即 2),`retargeted` 数改写成功的条数。整理对现集提出的那几条不在这里(它们排队
+ * 而不是直改),由 `enqueueConsolidationProposals` 数(issue #285)。
  */
 function applyConsolidation(
   deps: WebhookServerDeps,
@@ -7045,8 +7046,56 @@ function applyConsolidation(
 }
 
 /**
- * 一次知识整理的后台执行(CONTEXT.md 知识整理,issue #284)。把当前生效的知识集与待裁决
- * 队列交给规则 agent,产出的两个直改动作逐条落地,摘要落进 `rule_consolidation`。
+ * 整理对现集提出的那一条在附注上的备注(issue #285)。人在队列里读的就是这一句:agent
+ * 给的理由,加上它自己说涉及了哪几条条目——附注要说得出「凭什么提的、动的是哪几条」。
+ * 两样都没有时为 null,与基点探索那一档同形。
+ */
+function consolidationNote(item: RuleAgentItem): string | null {
+  const reason = (item.reason ?? "").trim();
+  const targets = item.targetRuleIds ?? [];
+  const involved = targets.length === 0 ? "" : `(涉及条目 ${targets.join("、")})`;
+  const note = `${reason}${involved}`;
+  return note === "" ? null : note;
+}
+
+/**
+ * 整理对现集提出的变更排进修订提案队列(issue #285)。映射与另两条链路同一套
+ * `proposalsFromItems`,只是逐条调用——出处附注的备注一条一句(agent 的理由各不相同),
+ * 而那个函数一次只收一条出处。目标条目在这一刻重读:整理期间人照常裁决,开跑时生效的
+ * 条目这会儿可能已经废止了。
+ *
+ * **认不出目标的那一条丢掉**:整理不读代码,提不出没有目标的新增——映射把「一个目标都
+ * 认不出」读成新增,那一档在这条链路上只可能是目标已经不生效,丢掉它。
+ */
+function enqueueConsolidationProposals(
+  deps: WebhookServerDeps,
+  repoId: number,
+  items: readonly RuleAgentItem[],
+  traceTaskId: number | null,
+): number {
+  if (items.length === 0) return 0;
+  return withStore(deps.dbPath, (store) => {
+    const activeRules = store.getRuleSet(repoId)?.rules ?? [];
+    let proposed = 0;
+    for (const item of items) {
+      const [mapped] = proposalsFromItems([item], activeRules, {
+        origin: "knowledge-consolidation",
+        note: consolidationNote(item),
+        findingId: null,
+        traceTaskId,
+      });
+      if (mapped === undefined || mapped.change === "add") continue;
+      if (store.addRuleProposal(repoId, mapped) === undefined) continue;
+      proposed += 1;
+    }
+    return proposed;
+  });
+}
+
+/**
+ * 一次知识整理的后台执行(CONTEXT.md 知识整理,issue #284、#285)。把当前生效的知识集与
+ * 待裁决队列交给规则 agent,产出的两个直改动作逐条落地、对现集提出的变更排进队列,摘要
+ * 落进 `rule_consolidation`。
  *
  * **不派生工作树**:整理的对象是队列里的文本,不读代码;agent 只需要一个空目录当会话的
  * 工作目录,跑完即删。
@@ -7084,18 +7133,34 @@ async function runRuleConsolidationInBackground(
         .filter((proposal) => proposal.state === "pending")
         .map(toConsolidationProposal),
     }));
-    const agent = deps.ruleAgent ?? createPiRuleAgent();
-    const result = await agent({
-      worktreePath: workDir,
-      runtimeModel: plan.runtimeModel,
-      apiKey: plan.credential,
-      existingKnowledge: input.rules.map(toKnowledgeEntry),
-      consolidation: { proposals: input.proposals },
-      ...(plan.spec.thinkingLevel === undefined ? {} : { thinkingLevel: plan.spec.thinkingLevel }),
-      onEvent: (event) => recordRuleAgentEvent(trace, event),
-    });
-    if (result.failure !== undefined) throw new Error(result.failure);
-    const summary = applyConsolidation(deps, repoId, result.actions ?? [], trace);
+    // 队列与现集都空即什么都整理不了:两个直改的对象是队列、提案的对象是现集,跑一次
+    // agent 只会烧一次模型调用(issue #285)。
+    let summary = { merged: 0, retargeted: 0, proposed: 0 };
+    if (input.rules.length > 0 || input.proposals.length > 0) {
+      const agent = deps.ruleAgent ?? createPiRuleAgent();
+      const result = await agent({
+        worktreePath: workDir,
+        runtimeModel: plan.runtimeModel,
+        apiKey: plan.credential,
+        existingKnowledge: input.rules.map(toKnowledgeEntry),
+        consolidation: { proposals: input.proposals },
+        ...(plan.spec.thinkingLevel === undefined
+          ? {}
+          : { thinkingLevel: plan.spec.thinkingLevel }),
+        onEvent: (event) => recordRuleAgentEvent(trace, event),
+      });
+      if (result.failure !== undefined) throw new Error(result.failure);
+      summary = {
+        ...applyConsolidation(deps, repoId, result.actions ?? [], trace),
+        // 提案与直改同一批产出,条目那一半照另两条链路的收窄先过一遍(issue #285)。
+        proposed: enqueueConsolidationProposals(
+          deps,
+          repoId,
+          usableRuleItems(result.items),
+          trace.taskId,
+        ),
+      };
+    }
     withStore(deps.dbPath, (store) =>
       store.finishRuleConsolidation(
         repoId,

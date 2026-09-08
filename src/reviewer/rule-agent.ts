@@ -3,8 +3,9 @@
  *
  * 三条链路共用这一个接口:基点探索与处置反哺输入一份工作副本、它停在的那个 commit、
  * 本次要用的模型运行参数与该仓库现有的知识集,输出一批结构化的知识条目;知识整理
- * (issue #284)输入现集与待裁决队列,输出对队列的直改动作。测试注入脚本化实现(对齐
- * 脚本化 Reviewer 先例),真实实现走与 Reviewer 同一套 Pi 子进程基建。
+ * (issue #284)输入现集与待裁决队列,输出对队列的直改动作,外加对现集提出的知识条目
+ * (issue #285)。测试注入脚本化实现(对齐脚本化 Reviewer 先例),真实实现走与 Reviewer
+ * 同一套 Pi 子进程基建。
  */
 import { fileURLToPath } from "node:url";
 
@@ -24,7 +25,7 @@ const WORKER_PATH = fileURLToPath(new URL("./rule-worker.ts", import.meta.url));
 
 /**
  * agent 推导出的一条知识条目,形状与人手填的那几样相同(CONTEXT.md 知识条目)。
- * 探索与反哺两条链路共用它,`type` 两值由 agent 自己判(issue #222)。
+ * 三条链路共用它,`type` 两值由 agent 自己判(issue #222)。
  */
 export type RuleAgentItem = {
   /** 这一条是评审规则还是项目事实(ADR 0020)。 */
@@ -47,6 +48,12 @@ export type RuleAgentItem = {
    * 或不存在时这一条退回按新增处理;缺陈述的并入整条丢掉。
    */
   proposalId?: number;
+  /**
+   * 提这一条的理由(issue #285)。只有知识整理那一档要它:它提的是对现集的变更,入队时
+   * 那条知识整理附注的备注就是这句话加上它涉及的条目。另两条链路的附注备注各有来源
+   * (探索没有话要说、反哺放处置备注原文),缺席。
+   */
+  reason?: string;
 };
 
 /**
@@ -130,7 +137,7 @@ export type RuleAgentRequest = {
   apiKey: string;
   /**
    * 知识整理的输入(CONTEXT.md 知识整理,issue #284)。有值即这一次整理的是这份待裁决
-   * 队列,产出是对它的直改动作而不是知识条目。
+   * 队列,产出是对它的直改动作,加上对现集提出的知识条目(issue #285)。
    */
   consolidation?: { proposals: readonly ConsolidationProposal[] };
   /**
@@ -153,6 +160,7 @@ export type RuleAgentRequest = {
 
 /** 一次探索的产出。`failure` 有值即这一次没跑成,条目按空处理。 */
 export type RuleAgentResult = {
+  /** 提出的知识条目。整理那一档提的是对现集的变更,与另两条链路同一个形状。 */
   items: RuleAgentItem[];
   /** 知识整理那一档对队列的直改动作,按 agent 报出的先后。别的链路缺席。 */
   actions?: RuleConsolidationAction[];

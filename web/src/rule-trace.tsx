@@ -159,7 +159,8 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
         <span className="text-base text-text">
           完成 · 合并{" "}
           <span className="font-mono tabular-nums">{num(payload, "merged") ?? 0}</span> 条提案、改写{" "}
-          <span className="font-mono tabular-nums">{num(payload, "retargeted") ?? 0}</span> 条
+          <span className="font-mono tabular-nums">{num(payload, "retargeted") ?? 0}</span> 条、提出{" "}
+          <span className="font-mono tabular-nums">{num(payload, "proposed") ?? 0}</span> 条
         </span>
       ) : (
         <span className="text-base text-text">

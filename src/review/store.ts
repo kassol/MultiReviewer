@@ -400,8 +400,8 @@ CREATE TABLE IF NOT EXISTS rule_exploration (
 );
 
 -- 知识整理(CONTEXT.md,issue #284)。与基点探索同形:每仓库至多一行,三态加失败原因,
--- 加这一次的模型、思考档位与知识轨迹;merged / retargeted 是完成后的摘要(合并掉的提案
--- 条数与改写的条数),没跑完即 NULL。
+-- 加这一次的模型、思考档位与知识轨迹;merged / retargeted / proposed 是完成后的摘要(合并
+-- 掉的提案条数、改写的条数与对现集提出的提案条数,issue #285),没跑完即 NULL。
 --
 -- 与 rule_exploration 分表而不是在那一行上加一个 kind:那张表的 baseline_sha 是探索独有的
 -- 输入(整理不读代码,没有基点),而它的 model 同时是「这个仓库最近一次探索用的是什么
@@ -416,6 +416,7 @@ CREATE TABLE IF NOT EXISTS rule_consolidation (
   failure TEXT,
   merged INTEGER,
   retargeted INTEGER,
+  proposed INTEGER,
   started_at TEXT NOT NULL,
   finished_at TEXT
 );
@@ -856,6 +857,9 @@ const ADD_COLUMNS = [
   // 两段落库,读侧据此认出它们并按同一规则从归属现算,不回填。
   "ALTER TABLE finding ADD COLUMN impact TEXT",
   "ALTER TABLE finding ADD COLUMN suggestion TEXT",
+  // 一次知识整理对现集提出了几条提案(issue #285)。旧行是 NULL,与没跑完那一档同形:
+  // 升级前完成的整理只改队列,提案数无从补出来,面板按 0 显示。
+  "ALTER TABLE rule_consolidation ADD COLUMN proposed INTEGER",
 ];
 
 /**
@@ -1724,8 +1728,9 @@ export type RuleExploration = {
 
 /**
  * 一个仓库最近一次知识整理(CONTEXT.md 知识整理,issue #284)。每仓库至多一次,重新
- * 整理覆盖它。三态与失败原因和基点探索同形;`merged` / `retargeted` 是完成后的摘要
- * ——合并掉的提案条数与改写成修改型的条数,没跑完即 null。
+ * 整理覆盖它。三态与失败原因和基点探索同形;`merged` / `retargeted` / `proposed` 是完成
+ * 后的摘要——合并掉的提案条数、改写成修改型的条数与对现集提出的提案条数(issue #285),
+ * 没跑完即 null。
  */
 export type RuleConsolidation = {
   state: "running" | "failed" | "completed";
@@ -1735,6 +1740,7 @@ export type RuleConsolidation = {
   failure: string | null;
   merged: number | null;
   retargeted: number | null;
+  proposed: number | null;
   startedAt: string;
   finishedAt: string | null;
 };
@@ -2365,7 +2371,7 @@ export type Store = {
   /** 整理完成:落下这一次的摘要,那一行改写成已完成。队列的改动由两个落地方法各自写。 */
   finishRuleConsolidation(
     repoId: number,
-    summary: { merged: number; retargeted: number },
+    summary: { merged: number; retargeted: number; proposed: number },
     at: string,
   ): void;
   /** 整理失败:留下原因,已经落地的队列改动保持原样。 */
@@ -4450,7 +4456,7 @@ export function openStore(dbPath: string): Store {
       const row = db
         .prepare(
           `SELECT model, thinking_level, trace_task_id, state, failure, merged, retargeted,
-                  started_at, finished_at
+                  proposed, started_at, finished_at
              FROM rule_consolidation WHERE repo_id = ?`,
         )
         .get(repoId);
@@ -4471,6 +4477,7 @@ export function openStore(dbPath: string): Store {
         failure: failure === null || failure === undefined ? null : String(failure),
         merged: nullable(row["merged"]),
         retargeted: nullable(row["retargeted"]),
+        proposed: nullable(row["proposed"]),
         startedAt: String(row["started_at"]),
         finishedAt: finishedAt === null || finishedAt === undefined ? null : String(finishedAt),
       };
@@ -4481,8 +4488,8 @@ export function openStore(dbPath: string): Store {
       db.prepare(
         `INSERT INTO rule_consolidation
            (repo_id, model, thinking_level, trace_task_id, state, failure, merged, retargeted,
-            started_at, finished_at)
-         VALUES (?, ?, ?, NULL, 'running', NULL, NULL, NULL, ?, NULL)
+            proposed, started_at, finished_at)
+         VALUES (?, ?, ?, NULL, 'running', NULL, NULL, NULL, NULL, ?, NULL)
          ON CONFLICT(repo_id) DO UPDATE SET
            model = excluded.model,
            thinking_level = excluded.thinking_level,
@@ -4491,6 +4498,7 @@ export function openStore(dbPath: string): Store {
            failure = NULL,
            merged = NULL,
            retargeted = NULL,
+           proposed = NULL,
            started_at = excluded.started_at,
            finished_at = NULL`,
       ).run(repoId, run.model, run.thinkingLevel ?? null, run.startedAt);
@@ -4500,9 +4508,10 @@ export function openStore(dbPath: string): Store {
     finishRuleConsolidation(repoId, summary, at) {
       db.prepare(
         `UPDATE rule_consolidation
-            SET state = 'completed', failure = NULL, merged = ?, retargeted = ?, finished_at = ?
+            SET state = 'completed', failure = NULL, merged = ?, retargeted = ?, proposed = ?,
+                finished_at = ?
           WHERE repo_id = ?`,
-      ).run(summary.merged, summary.retargeted, at, repoId);
+      ).run(summary.merged, summary.retargeted, summary.proposed, at, repoId);
     },
 
     failRuleConsolidation(repoId, failure, at) {
