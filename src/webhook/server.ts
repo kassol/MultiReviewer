@@ -6825,7 +6825,7 @@ async function handleRuleModels(res: ServerResponse, deps: WebhookServerDeps): P
 }
 
 /**
- * agent 产出到知识草案与修订提案之间的那道收窄(ADR 0019、ADR 0020)。三条链路共用它,
+ * agent 产出到知识草案与修订提案之间的那道收窄(ADR 0019、ADR 0020)。四条链路共用它,
  * 两型同一套判据:陈述去掉首尾空白后非空,且不超过 `AGENT_STATEMENT_LIMIT`。
  *
  * 长度那一道从事实型的 500 字换成两型统一的 100 字(CONTEXT.md 陈述形状,spec #286):
@@ -6871,7 +6871,7 @@ function usableRuleItems(
 
 /**
  * 这一条的依据(CONTEXT.md 出处附注,issue #287):agent 为它给出的理由与代码证据,去掉
- * 首尾空白。三条链路共用这一处——依据落在附注上,与陈述分开,陈述因此只留那一句结论。
+ * 首尾空白。四条链路共用这一处——依据落在附注上,与陈述分开,陈述因此只留那一句结论。
  * agent 没给或只给了空白的为 null,面板那一格随之不显示。
  */
 function itemEvidence(item: RuleAgentItem): string | null {
@@ -6882,7 +6882,7 @@ function itemEvidence(item: RuleAgentItem): string | null {
 /**
  * 探索产出到修订提案的映射(issue #207、#282)。知识集非空时 agent 提的是对照现有规则
  * 的变更,服务端只按目标条目认得出认不出分派,映射从简。**认不出的目标先逐个丢掉**,
- * 剩下几个决定这一条是什么(三条链路共用这一套):
+ * 剩下几个决定这一条是什么(四条链路共用这一套):
  *
  * - 一个都不剩即新增(与不给目标同义);
  * - 剩一个即按有没有废止标记成为废止或修改;型与目标不同的一个即单目标合并,亦即改型

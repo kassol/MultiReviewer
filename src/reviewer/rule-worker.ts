@@ -38,8 +38,8 @@ const MERGE_PROPOSALS_TOOL = "merge_proposals";
 const RETARGET_PROPOSAL_TOOL = "retarget_proposal";
 
 /**
- * 陈述形状(CONTEXT.md 陈述形状,spec #286)。三条链路共用这一段,定义只此一处——三份
- * 系统提示各抄一份,改一次上限就会剩下两份说旧数。四条约束里只有长度由服务端拦
+ * 陈述形状(CONTEXT.md 陈述形状,spec #286)。四条链路共用这一段,定义只此一处——几份
+ * 系统提示各抄一份,改一次上限就会剩下几份说旧数。四条约束里只有长度由服务端拦
  * (`AGENT_STATEMENT_LIMIT`),另外三条靠这一段说清:正向、不带证据、不带结论句都判不出
  * 程序化判据,写死判据只会误伤正常的陈述。
  */

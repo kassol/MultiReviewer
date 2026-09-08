@@ -1677,7 +1677,7 @@ export type ReviewRuleRecord = {
   type: KnowledgeType;
   scope: string;
   statement: string;
-  /** 出处。这一票只有读,写它的是基点探索、处置反哺与人手写三条链路。 */
+  /** 出处。这一票只有读,写它的是基点探索、人工提议(issue #294)与人手写三条链路。 */
   origin: string;
 };
 
@@ -1839,7 +1839,7 @@ export type RuleProposalSourceInput = {
   /** 备注原文。只有处置反哺有;基点探索与知识整理没有备注原文,为 null。 */
   note: string | null;
   /**
-   * agent 为这一条给出的理由与代码证据(issue #287)。三条链路的 `reason` 都落在这里,
+   * agent 为这一条给出的理由与代码证据(issue #287)。四条链路的 `reason` 都落在这里,
    * agent 没给的为 null。陈述只留那一句结论,凭什么成立看这一格。
    */
   evidence: string | null;

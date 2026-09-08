@@ -1,10 +1,10 @@
 /**
  * 规则 agent 的注入边界(issue #205,ADR 0019)。
  *
- * 三条链路共用这一个接口:基点探索与处置反哺输入一份工作副本、它停在的那个 commit、
- * 本次要用的模型运行参数与该仓库现有的知识集,输出一批结构化的知识条目;知识整理
- * (issue #284)输入现集与待裁决队列,输出对队列的直改动作,外加对现集提出的知识条目
- * (issue #285)。测试注入脚本化实现(对齐脚本化 Reviewer 先例),真实实现走与 Reviewer
+ * 四条链路共用这一个接口:基点探索、处置反哺与人工提议(issue #294)输入一份工作副本、
+ * 它停在的那个 commit、本次要用的模型运行参数与该仓库现有的知识集,输出一批结构化的
+ * 知识条目;知识整理(issue #284)输入现集与待裁决队列,输出对队列的直改动作,外加对
+ * 现集提出的知识条目(issue #285)。测试注入脚本化实现(对齐脚本化 Reviewer 先例),真实实现走与 Reviewer
  * 同一套 Pi 子进程基建。
  */
 import { fileURLToPath } from "node:url";
@@ -24,7 +24,7 @@ import { runWorkerChild } from "./subprocess.ts";
 const WORKER_PATH = fileURLToPath(new URL("./rule-worker.ts", import.meta.url));
 
 /**
- * agent 产出的一条陈述最多多少字(CONTEXT.md 陈述形状,spec #286)。三条链路同一个数:
+ * agent 产出的一条陈述最多多少字(CONTEXT.md 陈述形状,spec #286)。四条链路同一个数:
  * 提示里写它,服务端按它拦——写在这里是因为提示与那道闸分住两个文件,抄第二遍就会在
  * 其中一处改漏。人手填那一道另有 `FACT_STATEMENT_LIMIT`(ADR 0020,只管事实型),两者
  * 是不同入口:人录的是一条自己写的事实,agent 产的是要被 Reviewer 反复注入的那一句。
@@ -52,7 +52,7 @@ export function readProposalType(
 
 /**
  * agent 推导出的一条知识条目,形状与人手填的那几样相同(CONTEXT.md 知识条目)。
- * 三条链路共用它,`type` 两值由 agent 自己判(issue #222)。
+ * 四条链路共用它,`type` 两值由 agent 自己判(issue #222)。
  */
 export type RuleAgentItem = {
   /** 这一条是评审规则还是项目事实(ADR 0020)。 */
@@ -76,7 +76,7 @@ export type RuleAgentItem = {
    */
   proposalId?: number;
   /**
-   * 提这一条的理由与代码证据(issue #285、#287)。三条链路都给:去掉首尾空白后落进出处
+   * 提这一条的理由与代码证据(issue #285、#287)。四条链路都给:去掉首尾空白后落进出处
    * 附注的依据那一格,人裁决时展开附注就读得到它凭什么成立。缺席即那一格为 null。
    */
   reason?: string;
