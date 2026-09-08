@@ -797,6 +797,55 @@ test("整理提的修改与废止照既有映射入队,目标一条都不生效�
   );
 });
 
+test("整理产出超过 100 字的陈述:合并直改跳过、提案丢弃,两处各记一条轨迹", async () => {
+  let ids: number[] = [];
+  const agent = scriptedRuleAgent(() => ({
+    // 直改给出的新陈述会覆盖队列里那条的陈述,过同一道形状闸(CONTEXT.md 陈述形状)。
+    actions: [{ kind: "merge", keepId: ids[0]!, mergedIds: [ids[0]!, ids[1]!], statement: "长".repeat(101) }],
+    items: [
+      item({ statement: "长".repeat(100), targetRuleIds: [1] }),
+      item({ statement: "长".repeat(101), targetRuleIds: [1], reason: "把证据写进了陈述" }),
+    ],
+  }));
+  const { h, cookie } = await consolidatingHarness(agent);
+  const rule = (await ruleSet(h, cookie)).rules[0]!.id;
+  ids = seedProposals(h.db.path, [
+    proposal({ statement: "第一条" }),
+    proposal({ statement: "第二条" }),
+  ]);
+  // 现集只有一条,整理提的两条都指向它:边界那一条正好 101 字。
+  assert.equal(rule, 1);
+
+  assert.equal((await launch(h, cookie)).status, 202);
+  await h.consolidationsAtLeast(1);
+
+  const after = await ruleSet(h, cookie);
+  // 那一次合并整个跳过:两条提案原样留着,陈述一个字没改。
+  assert.equal(after.consolidation?.merged, 0);
+  assert.equal(after.consolidation?.proposed, 1);
+  assert.deepEqual(
+    after.proposals.map((row) => [row.change, row.statement]),
+    [
+      ["add", "第一条"],
+      ["add", "第二条"],
+      ["modify", "长".repeat(100)],
+    ],
+  );
+
+  const taskId = after.consolidation!.traceTaskId!;
+  const trace = await get(h, cookie, `/repos/${GITEA_REPO.id}/rule-traces/${taskId}`);
+  assert.equal(trace.status, 200);
+  const events = ((await trace.json()) as { events: { kind: string; payload: unknown }[] }).events;
+  // 丢掉的两件事各一条:被跳过的那次直改指名它本来要留的那条提案,被丢的提案没有目标。
+  assert.deepEqual(
+    events.filter((event) => event.kind === "rule_proposal_dropped").map((event) => event.payload),
+    [
+      { proposalId: ids[0], reason: "陈述超过 100 字" },
+      { reason: "陈述超过 100 字" },
+    ],
+  );
+});
+
 test("空队列且现集为空时整理不跑 agent,摘要是三个零", async () => {
   const agent = scriptedRuleAgent(() => ({ actions: [] }));
   const h = await startReadyPanelHarness(cleanups, { ruleAgent: agent });

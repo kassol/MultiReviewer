@@ -133,6 +133,21 @@ function ruleTraceKinds(h: PanelHarness): string[] {
   }
 }
 
+/** 这个仓库知识轨迹上每一条丢弃事件的 payload,按落库顺序。 */
+function ruleTraceDrops(h: PanelHarness): unknown[] {
+  const db = new DatabaseSync(h.db.path, { readOnly: true });
+  try {
+    return db
+      .prepare(
+        "SELECT payload FROM rule_trace WHERE repo_id = ? AND kind = 'rule_proposal_dropped' ORDER BY task_id, seq",
+      )
+      .all(GITEA_REPO.id)
+      .map((row) => JSON.parse(String(row["payload"])) as unknown);
+  } finally {
+    db.close();
+  }
+}
+
 function dispose(h: PanelHarness, findingId: number, note?: string): Promise<Response> {
   return h.api("POST", `/findings/${findingId}/resolve`, note === undefined ? {} : { note });
 }
@@ -581,4 +596,43 @@ test("并入缺陈述:那一条丢掉,轨迹里留原因", async () => {
     ruleTraceKinds(h).filter((kind) => kind === "rule_proposal_dropped"),
     ["rule_proposal_dropped"],
   );
+});
+
+test("反哺产出超过 100 字的陈述:新增那条不入队,并入那条不覆盖原陈述", async () => {
+  let items: RuleAgentItem[] = [];
+  const agent = scriptedRuleAgent(() => ({ items }));
+  const h = await harnessWithFindings(agent);
+  const findings = await inlineFindings(h);
+
+  // 边界那一条正好 101 字:100 字的留下,101 字的丢掉(CONTEXT.md 陈述形状)。
+  items = [
+    { type: "rule", scope: "", statement: "长".repeat(100) },
+    { type: "rule", scope: "", statement: "长".repeat(101), reason: "整段论证写进了陈述" },
+  ];
+  assert.equal((await dispose(h, findings[0]!.id, NOTE)).status, 200);
+  await h.dispositionFeedbackAtLeast(1);
+  assert.equal(h.dispositionFeedbacks[0]!.failure, undefined);
+
+  const queuedId = (await proposals(h))[0]!.id;
+  assert.deepEqual(
+    (await proposals(h)).map((entry) => entry.statement),
+    ["长".repeat(100)],
+  );
+  assert.deepEqual(ruleTraceDrops(h), [{ reason: "陈述超过 100 字" }]);
+
+  // 并入给出的新陈述超长同样丢掉:它会覆盖队列里那条的陈述,超长的一句盖上去等于绕开
+  // 这道闸。原提案的陈述与附注因此一行不动。
+  items = [{ type: "rule", scope: "", statement: "长".repeat(101), proposalId: queuedId }];
+  assert.equal((await dispose(h, findings[1]!.id, "又一条备注")).status, 200);
+  await h.dispositionFeedbackAtLeast(2);
+  assert.equal(h.dispositionFeedbacks[1]!.failure, undefined);
+
+  const queued = await proposals(h);
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]!.statement, "长".repeat(100));
+  assert.equal(queued[0]!.sources.length, 1);
+  assert.deepEqual(ruleTraceDrops(h), [
+    { reason: "陈述超过 100 字" },
+    { proposalId: queuedId, reason: "陈述超过 100 字" },
+  ]);
 });

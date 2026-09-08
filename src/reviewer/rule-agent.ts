@@ -24,6 +24,14 @@ import { runWorkerChild } from "./subprocess.ts";
 const WORKER_PATH = fileURLToPath(new URL("./rule-worker.ts", import.meta.url));
 
 /**
+ * agent 产出的一条陈述最多多少字(CONTEXT.md 陈述形状,spec #286)。三条链路同一个数:
+ * 提示里写它,服务端按它拦——写在这里是因为提示与那道闸分住两个文件,抄第二遍就会在
+ * 其中一处改漏。人手填那一道另有 `FACT_STATEMENT_LIMIT`(ADR 0020,只管事实型),两者
+ * 是不同入口:人录的是一条自己写的事实,agent 产的是要被 Reviewer 反复注入的那一句。
+ */
+export const AGENT_STATEMENT_LIMIT = 100;
+
+/**
  * agent 推导出的一条知识条目,形状与人手填的那几样相同(CONTEXT.md 知识条目)。
  * 三条链路共用它,`type` 两值由 agent 自己判(issue #222)。
  */

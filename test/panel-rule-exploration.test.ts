@@ -39,6 +39,8 @@ type ExplorationResponse = {
   failure: string | null;
   startedAt: string;
   finishedAt: string | null;
+  /** 这一次探索的知识轨迹(issue #214):被丢掉的产出只在这条轨迹上看得见。 */
+  traceTaskId: number | null;
 };
 
 type DraftItemResponse = {
@@ -610,6 +612,48 @@ test("知识集非空时不再走草案:产出排进修订提案队列(issue #20
   assert.deepEqual(
     after.proposals.map((row) => [row.statement, row.sources.map((entry) => entry.evidence)]),
     [["探索提的一条", ["src/answer.ts 上三处都这样"]]],
+  );
+});
+
+test("探索产出超过 100 字的陈述:那一条不入队,轨迹里留下超长这个原因", async () => {
+  // 边界那一条正好 101 字:100 字的留下,101 字的丢掉(CONTEXT.md 陈述形状)。
+  const agent = scriptedRuleAgent({
+    items: [
+      item("长".repeat(100)),
+      { ...item("长".repeat(101)), reason: "这一条把整段论证写进了陈述" },
+    ],
+  });
+  const { h, cookie } = await registeredHarness({ ruleAgent: agent });
+  const path = `/repos/${GITEA_REPO.id}`;
+  assert.equal(
+    (await send(h, cookie, "POST", `${path}/rules`, {
+      scope: "",
+      statement: "已经生效的规则",
+    })).status,
+    201,
+  );
+
+  assert.equal(
+    (await send(h, cookie, "POST", `${path}/rule-exploration`, {
+      baseline: h.repo.baseSha,
+      provider: "test",
+      model: "global-model",
+    })).status,
+    202,
+  );
+  await h.explorationsAtLeast(1);
+
+  const after = await ruleSet(h, cookie);
+  assert.deepEqual(after.proposals.map((row) => row.statement), ["长".repeat(100)]);
+
+  // 队列里看不见被丢的那一条,轨迹上看得见,连它被哪一道判据拦下也说得出。
+  const taskId = after.exploration!.traceTaskId!;
+  const trace = await get(h, cookie, `/repos/${GITEA_REPO.id}/rule-traces/${taskId}`);
+  assert.equal(trace.status, 200);
+  const events = ((await trace.json()) as { events: { kind: string; payload: unknown }[] }).events;
+  assert.deepEqual(
+    events.filter((event) => event.kind === "rule_proposal_dropped").map((event) => event.payload),
+    [{ reason: "陈述超过 100 字" }],
   );
 });
 
