@@ -50,7 +50,7 @@ test("有超限条目时提示多一段:每条都要出现在至少一条提案�
   assert.match(prompt, /must appear in at least one proposal/);
 });
 
-test("超限条目为零时不出现必须处理那一段,也没有一条带标记", () => {
+test("超限条目为零时不出现必须处理那一段,队列也没有超限时整份提示不出现标记词", () => {
   const prompt = consolidationPrompt([proposal(7, "短陈述")], [entry(1, "雪花 id 全库唯一")]);
   assert.doesNotMatch(prompt, /must appear in at least one proposal/);
   assert.doesNotMatch(prompt, /over limit/);
@@ -59,7 +59,7 @@ test("超限条目为零时不出现必须处理那一段,也没有一条带标�
 test("队列里的提案同样标字数,超限的由裁决的人手改", () => {
   const prompt = consolidationPrompt([proposal(7, OVERLONG)], [entry(1, "雪花 id 全库唯一")]);
   assert.match(prompt, mark(7, OVERLONG, true));
-  assert.match(prompt, /shortened by the person who rules on it/);
+  assert.match(prompt, /A proposal marked over limit is shortened by the person who rules on it/);
 });
 
 test("反哺提示分型里有限定类规则那一档", () => {

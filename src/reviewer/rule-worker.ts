@@ -178,7 +178,7 @@ function existingSection(entries: readonly KnowledgeEntry[]): string {
     "",
     "This repository already agreed on the following knowledge, each entry with its id and its kind:",
     "",
-    ...entries.map(knowledgeBullet),
+    ...entries.map((entry) => knowledgeBullet(entry)),
     "",
     "Report changes against that list, not the list itself. Do not restate an entry that still holds as it stands — an entry you do not report stays in force. For each change, call propose_rule once:",
     "- to reword or narrow an agreed entry, pass its id in rule_ids and the full new statement;",
@@ -193,9 +193,9 @@ function existingSection(entries: readonly KnowledgeEntry[]): string {
  * 那侧的 `ruleBullet` 分开:那边按型分两段渲染、事实不给标识,这边是一份要被指名修改的
  * 清单,两型必须在同一份里各自认得出来。
  */
-function knowledgeBullet(entry: KnowledgeEntry): string {
+function knowledgeBullet(entry: KnowledgeEntry, mark = ""): string {
   const scope = entry.scope === "" ? "whole repository" : entry.scope;
-  return `- [${entry.id}] (${entry.type}) (${scope}) ${oneLine(entry.statement)}`;
+  return `- [${entry.id}] (${entry.type}) (${scope}) ${mark}${oneLine(entry.statement)}`;
 }
 
 /**
@@ -283,8 +283,9 @@ Report each change through ${PROPOSE_RULE_TOOL}. When you have nothing more to r
  * 就宣布完成。计数与服务端那道闸(`usableRuleItems`)同一口径,免得标着合规却被丢掉。
  */
 function lengthMark(statement: string): string {
-  const over = statement.length > AGENT_STATEMENT_LIMIT ? ", over limit" : "";
-  return `(${statement.length} characters${over})`;
+  const length = statement.trim().length;
+  const over = length > AGENT_STATEMENT_LIMIT ? ", over limit" : "";
+  return `(${length} characters${over})`;
 }
 
 /** 待裁决队列里的一条给整理 agent 看的样子:标识、变更类型、目标、作用范围、字数与陈述,加它的出处。 */
@@ -314,15 +315,20 @@ export function consolidationPrompt(
     entries.length === 0
       ? "This repository has no knowledge entries in force yet, so nothing can be retargeted and nothing can be proposed against."
       : [
-          "The knowledge entries in force, each with its id, kind, scope and statement length:",
+          "The knowledge entries in force, each with its id, kind, scope, statement length and statement:",
           "",
-          ...entries.map((entry) => `${knowledgeBullet(entry)} ${lengthMark(entry.statement)}`),
+          ...entries.map((entry) => knowledgeBullet(entry, `${lengthMark(entry.statement)} `)),
         ].join("\n");
-  const over = entries.filter((entry) => entry.statement.length > AGENT_STATEMENT_LIMIT).length;
+  const over = entries.filter((entry) => entry.statement.trim().length > AGENT_STATEMENT_LIMIT).length;
   const mustHandle =
     over === 0
       ? ""
       : `\n${over} of those entries are marked over limit, and a statement that long is the shape problem you can see without reading any code. Every entry marked over limit must appear in at least one proposal — shortened to the invariant it rests on, merged with the entries carrying that same invariant, or changed in kind. When one of them genuinely needs no change, name it in your narration and say why.\n`;
+  // 队列那一半只标不改:整理没有改写单条提案陈述的动作。这句与现集那段同律,队列里没有
+  // 超限的那一条时不出现——标记词只在真有标记时出现。
+  const queueOver = proposals.some((proposal) => proposal.statement.trim().length > AGENT_STATEMENT_LIMIT)
+    ? "\nA proposal marked over limit is shortened by the person who rules on it: you have no action that rewrites the statement of one proposal, so leave those statements as they stand.\n"
+    : "";
   return `Tidy the revision proposal queue of this repository.
 
 ${agreed}
@@ -330,9 +336,7 @@ ${mustHandle}
 The proposals waiting for adjudication, each with its id, change kind, entry kind, target entry, scope, statement length, statement and provenance:
 
 ${proposals.map(proposalBullet).join("\n")}
-
-A proposal whose statement runs past ${AGENT_STATEMENT_LIMIT} characters is shortened by the person who rules on it: you have no action that rewrites the statement of one proposal, so leave those statements as they stand.
-
+${queueOver}
 Report every duplicate proposal through ${MERGE_PROPOSALS_TOOL} and ${RETARGET_PROPOSAL_TOOL}. Report every change the entries in force need through ${PROPOSE_RULE_TOOL}, always with rule_ids and a reason. When you have nothing more to report, stop.`;
 }
 
