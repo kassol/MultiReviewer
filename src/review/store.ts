@@ -424,8 +424,9 @@ CREATE TABLE IF NOT EXISTS rule_consolidation (
 -- 修订意图(CONTEXT.md,ADR 0028,issue #294)。与探索、整理不同,它每仓库多行:一个人
 -- 写下一段话即一行,自带三态与自己的知识轨迹,行永久保留供轨迹回溯。
 --
--- target_kind 五值,target_id 是那一条的标识('none' 时为 NULL)。本票只写 'none',
--- 目标型那几档由后续票填(spec #293);枚举与列一次落定,免得每加一档就重建一次表。
+-- target_kind 五值,target_id 是那一条的标识('none' 时为 NULL)。'none' 与 'proposal'
+-- 两档已经写得进(issue #294、#295),另三档由后续票填(spec #293);枚举与列一次落定,
+-- 免得每加一档就重建一次表。
 --
 -- produced 是这一次产出的提案与草案条目标识(JSON),summary 是 agent 的一句收尾,
 -- 两者都要跑完才有;model 与 thinking_level 是这一次沿反哺规则选出的那一组。
