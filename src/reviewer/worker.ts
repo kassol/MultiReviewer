@@ -310,8 +310,16 @@ function intentSection(intent: ReviewIntent, verdictOnly: boolean): string {
 }
 
 /**
- * 这个仓库既定的评审规则(issue #204)。它是团队定下的标准,不是模型的临场判断:
+ * 这个仓库既定的评审规则(issue #204、#288)。它是团队定下的标准,不是模型的临场判断:
  * 违反规则的地方优先按规则判,规则没覆盖到的照常自行判断。
+ *
+ * 规则分两类(CONTEXT.md 评审规则,spec #286):对代码的要求,违反即 Finding、命中要带
+ * `ruleId`;对评审的限定,在它的作用范围内不报它限定的那类问题,它本身不产 Finding,
+ * 标识也无处可带。「这些规则不缩小你的审查范围」那句因此删掉——限定类正是要收窄那个
+ * 范围里报什么;「规则没覆盖的照常报」保留,它管的是规则之外的地方。
+ *
+ * 两类不分段:注入的形状仍是一条一个 bullet,靠陈述本身的祈使句区分,分段等于要求人
+ * 在写下一条时先给它归类。
  */
 function rulesSection(rules: readonly ReviewRule[], verdictOnly: boolean): string {
   return [
@@ -320,12 +328,12 @@ function rulesSection(rules: readonly ReviewRule[], verdictOnly: boolean): strin
       ? [
           // 只复核那一轮的规则是复核的判据,不是报出的判据(issue #270):这一轮报不出新
           // 问题,规则标识也无处可带。
-          "This repository has an agreed set of review rules. The findings you are re-checking were judged against them — read them as the standard those findings hold to, and use them when you decide whether a problem is really gone.",
+          "This repository has an agreed set of review rules. The findings you are re-checking were judged against them — read them as the standard those findings hold to, and use them when you decide whether a problem is really gone. They come in two kinds: a rule that states a requirement on the code, which code can violate; and a rule that limits the review, which rules out a kind of problem inside the paths it applies to and is never violated itself.",
           "Each rule is listed with its id in brackets and the paths it applies to in parentheses.",
         ]
       : [
-          "This repository has an agreed set of review rules. Judge the code against them first: code that violates one of them is a finding, whatever you would have thought of it otherwise. They do not narrow your review — report problems they do not cover as usual.",
-          "Each rule is listed with its id in brackets and the paths it applies to in parentheses. When a finding violates one of these rules, pass that rule's id as ruleId in report_finding. Never invent an id, and leave the field out when no rule applies.",
+          "This repository has an agreed set of review rules. They come in two kinds. A rule that states a requirement on the code: judge the code against it first — code that violates it is a finding, whatever you would have thought of it otherwise. A rule that limits the review: inside the paths it applies to, do not report the kind of problem it rules out — such a rule is never a finding itself, however the code looks. Report problems the rules do not cover as usual.",
+          "Each rule is listed with its id in brackets and the paths it applies to in parentheses. When a finding violates a rule that states a requirement on the code, pass that rule's id as ruleId in report_finding. A rule that limits the review produces no finding, so never pass its id. Never invent an id, and leave the field out when no rule applies.",
         ]),
     "",
     ...rules.map(ruleBullet),
