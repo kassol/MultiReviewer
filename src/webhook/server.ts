@@ -179,6 +179,7 @@ import {
 import { createPiMergeAgent } from "../reviewer/merge-agent.ts";
 import { EVIDENCE_SESSION_BUDGET } from "../reviewer/evidence.ts";
 import {
+  AGENT_STATEMENT_LIMIT,
   createPiRuleAgent,
   type ConsolidationProposal,
   type RuleAgent,
@@ -6635,9 +6636,13 @@ function handleRuleTraceStream(
 }
 
 /**
- * 一条事实型陈述最多多少字(ADR 0020)。事实是一句可核查的陈述,不是一段说明:全量注入
- * 的体积靠治理而不是靠服务端截断,但录入这一道要拦住把整篇架构文档粘进来的那种写法。
- * 服务端只拒收,不截断——截断出来的半句事实比没有更糟。
+ * 人手填的一条事实型陈述最多多少字(ADR 0020)。事实是一句可核查的陈述,不是一段说明:
+ * 全量注入的体积靠治理而不是靠服务端截断,但录入这一道要拦住把整篇架构文档粘进来的
+ * 那种写法。服务端只拒收,不截断——截断出来的半句事实比没有更糟。
+ *
+ * 与 agent 产出那道闸(`AGENT_STATEMENT_LIMIT`,100 字)是两个入口两个数:这一道拦的是
+ * 人自己写下并当场看得见的一次录入,那一道拦的是 agent 反复产出、由别人裁决的陈述,
+ * 形状约束严得多(CONTEXT.md 陈述形状)。
  */
 const FACT_STATEMENT_LIMIT = 500;
 
@@ -6780,28 +6785,48 @@ async function handleRuleModels(res: ServerResponse, deps: WebhookServerDeps): P
 }
 
 /**
- * agent 产出到知识草案与修订提案之间的那道收窄(ADR 0019、ADR 0020)。两型分档判,与
- * 人手填走同一套判据(`readRuleFields`):
+ * agent 产出到知识草案与修订提案之间的那道收窄(ADR 0019、ADR 0020)。三条链路共用它,
+ * 两型同一套判据:陈述去掉首尾空白后非空,且不超过 `AGENT_STATEMENT_LIMIT`。
  *
- * - 规则只要陈述非空;
- * - 事实同样要陈述非空,另加一道:超过 `FACT_STATEMENT_LIMIT` 的整条丢掉——**丢掉而不是
- *   截断**,截断出来的半句事实比没有更糟。
+ * 长度那一道从事实型的 500 字换成两型统一的 100 字(CONTEXT.md 陈述形状,spec #286):
+ * 上限拦的不再是「粘进来一整篇文档」,而是「把一条 Finding 的完整论证写成陈述」——那种
+ * 条目带着行号与调用点,代码一改就作废,而且规则型写成论证一样读不动。**丢掉而不是
+ * 截断**:截断出来的半句陈述比没有更糟。人手填那一道 `FACT_STATEMENT_LIMIT` 不受影响,
+ * 两者是不同入口(见那处注释)。
+ *
+ * 丢掉的每一条记一条知识轨迹:人在队列里看不见它,只有轨迹说得出 agent 提过什么、
+ * 被拦在哪一条判据上。
  *
  * **不再有条数上限**(issue #223,ADR 0020):原来那道 30 条截断的前提是人逐条确认,
  * 确认页改成批量裁决之后前提不再成立,而截断会让大仓库的知识起步一开始就残缺。
  */
-function usableRuleItems(items: readonly RuleAgentItem[]): RuleAgentItem[] {
-  return items
-    .map((item) => ({
-      ...item,
-      scope: item.scope.trim(),
-      statement: item.statement.trim(),
-    }))
-    .filter((item) =>
-      item.type === "rule"
-        ? item.statement !== ""
-        : item.statement !== "" && item.statement.length <= FACT_STATEMENT_LIMIT,
-    );
+function usableRuleItems(
+  items: readonly RuleAgentItem[],
+  trace: RuleTraceRecorder,
+): RuleAgentItem[] {
+  const usable: RuleAgentItem[] = [];
+  for (const raw of items) {
+    const item = { ...raw, scope: raw.scope.trim(), statement: raw.statement.trim() };
+    // 并入缺陈述另有一句原因(issue #283):并入要覆盖队列里那条的陈述,而「陈述是空的」
+    // 说不出丢掉的是一次并入。
+    const reason =
+      item.statement === ""
+        ? item.proposalId === undefined
+          ? "陈述是空的"
+          : "并入没有给出合成后的陈述"
+        : item.statement.length > AGENT_STATEMENT_LIMIT
+          ? `陈述超过 ${AGENT_STATEMENT_LIMIT} 字`
+          : null;
+    if (reason === null) {
+      usable.push(item);
+      continue;
+    }
+    trace.record("rule_proposal_dropped", {
+      ...(item.proposalId === undefined ? {} : { proposalId: item.proposalId }),
+      reason,
+    });
+  }
+  return usable;
 }
 
 /**
@@ -6955,7 +6980,7 @@ async function runRuleExplorationInBackground(
       onEvent: (event) => recordRuleAgentEvent(trace, event),
     });
     if (result.failure !== undefined) throw new Error(result.failure);
-    const items = usableRuleItems(result.items);
+    const items = usableRuleItems(result.items, trace);
     const at = new Date((deps.now ?? Date.now)()).toISOString();
     // 知识集未确认即这一次产出知识草案,已确认(含空集)即产出修订提案(CONTEXT.md
     // 基点探索,issue #207)。判据读的是交给 agent 的那一份知识集:同一次探索里两处不该
@@ -7040,6 +7065,16 @@ function applyConsolidation(
   let merged = 0;
   let retargeted = 0;
   for (const action of actions) {
+    // 直改给出的新陈述过同一道形状闸(CONTEXT.md 陈述形状,spec #286):它覆盖队列里那
+    // 条的陈述,超长的一句直接盖上去等于绕开产出那一道闸。跳过这一次直改,队列里原来
+    // 那条原样留着,轨迹说得出为什么。改写为修改型没有新陈述,不经这道闸。
+    if (action.kind === "merge" && action.statement.trim().length > AGENT_STATEMENT_LIMIT) {
+      trace.record("rule_proposal_dropped", {
+        proposalId: action.keepId,
+        reason: `陈述超过 ${AGENT_STATEMENT_LIMIT} 字`,
+      });
+      continue;
+    }
     // 一条一次库:整理跑完这一刻别人可能正在裁决,一次事务把全部动作圈起来只会把
     // 裁决挡在外面,而这正是「整理期间裁决不受影响」不允许的。
     const applied = withStore(deps.dbPath, (store) => {
@@ -7158,7 +7193,7 @@ async function runRuleConsolidationInBackground(
         proposed: enqueueConsolidationProposals(
           deps,
           repoId,
-          usableRuleItems(result.items),
+          usableRuleItems(result.items, trace),
           trace.taskId,
         ),
       };
@@ -7326,17 +7361,9 @@ async function runDispositionFeedbackInBackground(
       onEvent: (event) => recordRuleAgentEvent(trace!, event),
     });
     if (result.failure !== undefined) throw new Error(result.failure);
-    // 并入缺陈述即丢弃那一条(issue #283):并入要覆盖队列里那条的陈述,没有新陈述可写
-    // 的并入不成其为一次并入。它在 `usableRuleItems` 那道收窄里本来也会被丢掉,轨迹里
-    // 另留一行原因——那道收窄只知道「陈述是空的」,说不出丢掉的是一次并入。
-    for (const item of result.items) {
-      if (item.proposalId !== undefined && item.statement.trim() === "") {
-        trace.record("rule_proposal_dropped", {
-          proposalId: item.proposalId,
-          reason: "并入没有给出合成后的陈述",
-        });
-      }
-    }
+    // 收窄在开库之前跑完:它自己要写知识轨迹,而轨迹的每一次落库另开一次库
+    // (`startRuleTrace`),套在下面那次 `withStore` 里就成了嵌套开库。
+    const usable = usableRuleItems(result.items, trace);
     const source: Omit<RuleProposalSourceInput, "evidence"> = {
       origin: "disposition-feedback",
       note,
@@ -7349,7 +7376,7 @@ async function runDispositionFeedbackInBackground(
       // 并入不成,那一条退回与其余条目同一套映射,按新增或对照现集的变更入队。
       const added: RuleAgentItem[] = [];
       let merged = 0;
-      for (const item of usableRuleItems(result.items)) {
+      for (const item of usable) {
         if (
           item.proposalId !== undefined &&
           store.mergeIntoRuleProposal(context.repoId, item.proposalId, {

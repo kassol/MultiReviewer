@@ -14,6 +14,7 @@ import { Type } from "typebox";
 
 import type { KnowledgeEntry, PendingProposal } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
+import { AGENT_STATEMENT_LIMIT } from "./rule-agent.ts";
 import type {
   ConsolidationProposal,
   DispositionFeedback,
@@ -34,6 +35,14 @@ const PROPOSE_RULE_TOOL = "propose_rule";
 const MERGE_PROPOSALS_TOOL = "merge_proposals";
 const RETARGET_PROPOSAL_TOOL = "retarget_proposal";
 
+/**
+ * 陈述形状(CONTEXT.md 陈述形状,spec #286)。三条链路共用这一段,定义只此一处——三份
+ * 系统提示各抄一份,改一次上限就会剩下两份说旧数。四条约束里只有长度由服务端拦
+ * (`AGENT_STATEMENT_LIMIT`),另外三条靠这一段说清:正向、不带证据、不带结论句都判不出
+ * 程序化判据,写死判据只会误伤正常的陈述。
+ */
+const STATEMENT_SHAPE = `**Shape of a statement.** Every statement you write is one sentence of Chinese, at most ${AGENT_STATEMENT_LIMIT} characters. State the invariant that holds, positively — what this repository requires or what is the case, not what a reader should not conclude. Leave out line numbers, call site inventories and file listings: they stop being true as soon as the code moves, and the whole entry goes with them. Leave out verdicts on one finding, such as "因此不作为缺陷". The grounds — the code you read, the reasoning that got you there — belong in the reason field, which is kept beside the statement and shown to the person who rules on it. A statement over ${AGENT_STATEMENT_LIMIT} characters is dropped by the server, so say the one thing and stop.`;
+
 const SYSTEM_PROMPT = `You are deriving the knowledge a code reviewer needs about one repository. Explore it with your read tools, then report that knowledge as entries of two kinds.
 
 A **rule** is a normative statement — what the code ought to do. "Handlers must validate request bodies at the boundary" is a rule. Violating a rule is a finding, so a rule has to be something a reviewer would genuinely flag.
@@ -45,6 +54,8 @@ Give every entry the kind it really is. Do not dress a fact up as an obligation 
 Report each entry by calling the propose_rule tool exactly once per entry. Do not describe entries in prose — an entry that is not reported through the tool does not exist.
 
 Order the entries by importance, most important first. Importance means how much a reviewer's judgement improves by having it. Report as many as this repository genuinely warrants and no more: every entry is confirmed by hand, so one that is obvious, that a linter or the type checker already enforces, or that no reviewer would act on costs the reader time and earns nothing.
+
+${STATEMENT_SHAPE}
 
 Write the statement field in Chinese. The reviewers of this repository read Chinese. Keep identifiers, file paths and code fragments in their original form — do not translate them.
 
@@ -74,6 +85,8 @@ Those three differ in what they touch. Merging and retargeting change the queue,
 
 Leave alone every proposal that is not a duplicate, and every entry that still holds as it stands. Changing nothing is an expected outcome for a queue and a knowledge set that have no duplicates in them.
 
+${STATEMENT_SHAPE}
+
 Write statements in Chinese, and narrate in Chinese: everything you say between tool calls goes into a trace read by this repository's maintainers. Say one short line on what you found before each action.`;
 
 const ruleSchema = Type.Object({
@@ -83,7 +96,7 @@ const ruleSchema = Type.Object({
   }),
   statement: Type.String({
     description:
-      "One sentence in Chinese. For a rule: what code in this repository must or must not do. For a fact: what is actually the case in this repository, phrased so a reader can check it against the code.",
+      `One sentence in Chinese of at most ${AGENT_STATEMENT_LIMIT} characters — a longer one is dropped by the server. For a rule: what code in this repository must or must not do. For a fact: what is actually the case in this repository, phrased so a reader can check it against the code. State the invariant positively; leave out line numbers and call site inventories, which go stale with the code; leave out verdicts on one finding, such as "因此不作为缺陷"; put the evidence in the reason field, not here.`,
   }),
   scope: Type.Optional(
     Type.String({
@@ -218,7 +231,9 @@ Report each entry through ${PROPOSE_RULE_TOOL}. When you have reported everythin
  * 它处置掉的那条 Finding:要的是「这条意见该不该成为长期标准」,不是重新推导整套规则。
  *
  * 明写「报不出变更是预期结果」:一条只了结眼前那一条 Finding 的备注不构成规则,而 agent
- * 手里有个报告工具时倾向于用它。
+ * 手里有个报告工具时倾向于用它。粒度门槛把这一句说到底(spec #286):只免得掉同一处代码
+ * 复报的备注连提都不用提——同一处未改动代码再报会折叠到已处置的那条历史 Finding,那样
+ * 一条条目免不掉任何东西,只是让人多裁决一次。
  */
 function feedbackPrompt(
   request: Pick<RuleWorkerRequest, "existingKnowledge" | "pendingProposals"> & {
@@ -243,7 +258,9 @@ Disposition note: ${note}
 ${existing}${pending}
 Distil the note by what it says, not by how it is phrased. A note that says this repository should or should not do something is a **rule**. A note that explains why the finding was wrong by pointing at how this repository already is — a shared layer that already covers it, a constraint of the deployment, a property of the data — is a **fact**: report it as one, so the next review has that ground instead of guessing again.
 
-Report only what the note itself justifies. A note that settles this one finding and nothing more justifies no change at all — reporting nothing is an expected outcome. Read the code around the finding when you need it to tell a one-off from a standing rule, or to check a fact before stating it.
+Report only what the note itself justifies. A note that settles this one finding and nothing more justifies no change at all — reporting nothing is an expected outcome. Read the code around the finding when you need it to tell a one-off from a standing rule, or to check a fact before stating it; the evidence you read goes in the reason field, not in the statement.
+
+A note whose only effect is to keep this one place in the code from being reported again buys nothing, and is not worth an entry. The same finding on the same unchanged code folds into the one already disposed of, so it never reaches a person again on its own. Report a change only when what the note says holds beyond this one place — in other files, in other methods, or wherever this repository does the same thing.
 
 Report each change through ${PROPOSE_RULE_TOOL}. When you have nothing more to report, stop.`;
 }

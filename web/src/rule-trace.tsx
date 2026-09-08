@@ -137,15 +137,23 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
         </div>
       );
     }
-    case "rule_proposal_dropped":
-      // 并入落不下去的那一条(issue #283)。它没有进队列,人只在这条轨迹上看得到它。
+    case "rule_proposal_dropped": {
+      // 落不下去的那一条产出:陈述超长、缺陈述,或并入没给合成后的陈述(issue #283、
+      // #290)。它没有进队列,人只在这条轨迹上看得到它。指名了要并入哪一条提案的带上
+      // 那个标识,别的没有目标可指。
+      const proposalId = num(payload, "proposalId");
       return (
         <span className="min-w-0 text-base break-words text-text-secondary">
-          丢弃一条并入（提案{" "}
-          <span className="font-mono tabular-nums">{num(payload, "proposalId") ?? "?"}</span>）：
-          {str(payload, "reason") ?? "未记录原因"}
+          丢弃一条产出
+          {proposalId === null ? null : (
+            <>
+              （提案 <span className="font-mono tabular-nums">{proposalId}</span>）
+            </>
+          )}
+          ：{str(payload, "reason") ?? "未记录原因"}
         </span>
       );
+    }
     case "rule_agent_failed":
       return (
         <Callout.Root role="alert" color="red" size="1">
