@@ -415,9 +415,14 @@ CREATE TABLE IF NOT EXISTS rule_draft_item (
 CREATE INDEX IF NOT EXISTS rule_draft_item_by_repo ON rule_draft_item(repo_id);
 
 -- 修订提案(CONTEXT.md,issue #207)。一条待裁决的知识集变更:change 是变更类型,
--- target_rule_id 是修改与废止指向的现有规则(新增没有目标),scope / statement
--- 是提案内容(废止那一档是目标规则当时的原样,只为看得懂队列里这条要废止什么)。
+-- target_rule_ids 是这条变更指向的现有条目(新增没有目标,修改与废止一条,合并两条
+-- 以上,issue #282),scope / statement 是提案内容(废止那一档是目标规则当时的原样,
+-- 只为看得懂队列里这条要废止什么)。
 -- 出处不在这张表上,一条提案的出处是它名下的那一列出处附注(issue #281)。
+--
+-- 目标存成一个 JSON 数组而不是子表:目标只随提案整条读写,没有一处按目标反查提案;
+-- 子表换来的是每条投影多一次连接、每处摘除提案的地方多一次删除,而这张表已经带着
+-- 一张附注子表了。
 --
 -- 与知识草案分表:草案是「还没有知识集时的那一整份」,提案是「已有知识集之上的一条
 -- 变更」,它多出变更类型、目标规则、出处与状态机四样,共用一张表就要给草案留四列空值。
@@ -425,8 +430,8 @@ CREATE TABLE IF NOT EXISTS rule_proposal (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   repo_id INTEGER NOT NULL REFERENCES repo(id),
   type TEXT NOT NULL DEFAULT 'rule' CHECK (type IN ('rule', 'fact')),
-  change TEXT NOT NULL CHECK (change IN ('add', 'modify', 'retire')),
-  target_rule_id INTEGER,
+  change TEXT NOT NULL CHECK (change IN ('add', 'modify', 'retire', 'merge')),
+  target_rule_ids TEXT NOT NULL DEFAULT '[]',
   scope TEXT NOT NULL,
   statement TEXT NOT NULL,
   layer TEXT NOT NULL,
@@ -434,7 +439,7 @@ CREATE TABLE IF NOT EXISTS rule_proposal (
   created_at TEXT NOT NULL,
   decided_at TEXT,
   CHECK ((state = 'pending') = (decided_at IS NULL)),
-  CHECK ((change = 'add') = (target_rule_id IS NULL))
+  CHECK ((change = 'add') = (target_rule_ids = '[]'))
 );
 CREATE INDEX IF NOT EXISTS rule_proposal_by_repo ON rule_proposal(repo_id);
 
@@ -1685,8 +1690,11 @@ export type RuleDraftItem = ReviewRuleInput & {
   origin: string;
 };
 
-/** 一条修订提案的变更类型(CONTEXT.md 修订提案):新增、修改或废止。 */
-export type RuleProposalChange = "add" | "modify" | "retire";
+/**
+ * 一条修订提案的变更类型(CONTEXT.md 修订提案):新增、修改、废止或合并。合并是多条
+ * 目标条目换一条新陈述(issue #282),目标因此不止一条。
+ */
+export type RuleProposalChange = "add" | "modify" | "retire" | "merge";
 
 /**
  * 一条出处附注的来源(CONTEXT.md 出处附注)。三元:基点探索、处置反哺与知识整理。
@@ -1731,8 +1739,11 @@ export type RuleProposalSource = RuleProposalSourceInput & {
 /** 排进队列的一条修订提案。内容三样与评审规则同形,采纳前人可以改。 */
 export type RuleProposalInput = ReviewRuleInput & {
   change: RuleProposalChange;
-  /** 修改与废止指向的现有规则;新增没有目标,为 null。 */
-  targetRuleId: number | null;
+  /**
+   * 这条变更指向的现有条目(issue #282):新增没有目标,为空;修改与废止一条;合并
+   * 两条以上。存成一个 JSON 数组:目标只随提案整条读写,没有一处按目标反查提案。
+   */
+  targetRuleIds: readonly number[];
   /**
    * 它的出处(CONTEXT.md 出处附注)。至少一条:一条提案总是由某一次任务提出来的,
    * 之后每被一次来源提到就追加一条。第一条的来源即采纳时落进知识条目的那个出处。
@@ -2304,10 +2315,11 @@ export type Store = {
   /**
    * 采纳一条待裁决的提案(CONTEXT.md 裁决):推进一版知识集版本,按变更类型落库——
    * 新增写一行新规则(出处沿用提案的出处)、修改是旧行废止于新版加新内容作为新行、
-   * 废止只让目标那一行停止生效。`input` 有值即人在采纳前改过内容,改后的那一份既落进
-   * 知识集也覆盖队列里这一条(裁决历史要说得出实际采纳的是什么)。
+   * 废止只让目标那一行停止生效、合并是几条目标全部废止于新版加合成的那一条作为新行
+   * (出处与新增同一条口径,issue #282)。`input` 有值即人在采纳前改过内容,改后的那
+   * 一份既落进知识集也覆盖队列里这一条(裁决历史要说得出实际采纳的是什么)。
    *
-   * 返回新的知识集版本。提案不在待裁决队列里、或修改与废止的目标规则已经不生效时回
+   * 返回新的知识集版本。提案不在待裁决队列里、或它的目标条目有一条已经不生效时回
    * undefined,一版都不推进。
    */
   acceptRuleProposal(
@@ -3180,6 +3192,50 @@ export function openStore(dbPath: string): Store {
     }
   }
 
+  // 合并变更类型(issue #282):`change` 的枚举多一档 `merge`,单值的 `target_rule_id`
+  // 换成 JSON 数组 `target_rule_ids`(新增是空数组,修改与废止是一元,合并两条以上)。
+  // 两样都改不动现表——`ALTER TABLE` 改不了 CHECK,也去不掉列,只能重建。判据看建表
+  // 语句里有没有 `merge`,重建过即不再命中。重建顺序与上面那一次同律(先关外键)。
+  const mergeSql = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'rule_proposal'")
+    .get()?.["sql"];
+  if (typeof mergeSql === "string" && !mergeSql.includes("'merge'")) {
+    db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      db.exec(`
+        BEGIN;
+        CREATE TABLE rule_proposal_rebuilt (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          repo_id INTEGER NOT NULL REFERENCES repo(id),
+          type TEXT NOT NULL DEFAULT 'rule' CHECK (type IN ('rule', 'fact')),
+          change TEXT NOT NULL CHECK (change IN ('add', 'modify', 'retire', 'merge')),
+          target_rule_ids TEXT NOT NULL DEFAULT '[]',
+          scope TEXT NOT NULL,
+          statement TEXT NOT NULL,
+          layer TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('pending', 'accepted', 'rejected')),
+          created_at TEXT NOT NULL,
+          decided_at TEXT,
+          CHECK ((state = 'pending') = (decided_at IS NULL)),
+          CHECK ((change = 'add') = (target_rule_ids = '[]'))
+        );
+        INSERT INTO rule_proposal_rebuilt
+            (id, repo_id, type, change, target_rule_ids, scope, statement, layer, state,
+             created_at, decided_at)
+          SELECT id, repo_id, type, change,
+                 CASE WHEN target_rule_id IS NULL THEN '[]' ELSE '[' || target_rule_id || ']' END,
+                 scope, statement, layer, state, created_at, decided_at
+            FROM rule_proposal;
+        DROP TABLE rule_proposal;
+        ALTER TABLE rule_proposal_rebuilt RENAME TO rule_proposal;
+        CREATE INDEX IF NOT EXISTS rule_proposal_by_repo ON rule_proposal(repo_id);
+        COMMIT;
+      `);
+    } finally {
+      db.exec("PRAGMA foreign_keys = ON");
+    }
+  }
+
   // 权限格 `rule:write` 改名 `knowledge:write`(ADR 0020,issue #220):存量角色照旧持有
   // 同一格能力,只是字面量换了。`OR REPLACE` 让同一角色两格都有时旧行让位给新行;跑第
   // 二遍已经没有旧行,零影响。
@@ -3416,7 +3472,7 @@ export function openStore(dbPath: string): Store {
     const inserted = db
       .prepare(
         `INSERT INTO rule_proposal
-           (repo_id, type, change, target_rule_id, scope, statement, layer, state, created_at,
+           (repo_id, type, change, target_rule_ids, scope, statement, layer, state, created_at,
             decided_at)
          VALUES (?, ?, ?, ?, ?, ?, '', 'pending', ?, NULL)`,
       )
@@ -3424,7 +3480,7 @@ export function openStore(dbPath: string): Store {
         repoId,
         input.type,
         input.change,
-        input.targetRuleId,
+        JSON.stringify(input.targetRuleIds),
         input.scope,
         input.statement,
         at,
@@ -3462,12 +3518,16 @@ export function openStore(dbPath: string): Store {
       scope: queued.scope,
       statement: queued.statement,
     };
-    // 修改与废止都要目标条目此刻仍然生效:它已经被人废止掉时,这条提案落不下去。
-    const target =
-      queued.targetRuleId === null ? undefined : activeRule(repoId, queued.targetRuleId);
-    if (queued.change !== "add" && target === undefined) return undefined;
+    // 修改、废止与合并都要目标条目此刻仍然生效:其中一条已经被人废止掉时,这条提案
+    // 落不下去(合并那一档同一条判据,只是要逐条都还生效,issue #282)。
+    const targets = queued.targetRuleIds.map((id) => activeRule(repoId, id));
+    if (queued.change !== "add" && targets.some((target) => target === undefined)) {
+      return undefined;
+    }
+    const target = targets[0];
     // 修改不许翻型(评审复核):采纳一条 modify 把规则悄悄变成事实,那条从此不再产
     // Finding,面板上只是换了个徽章。要改型走「废止 + 新增」两条,意图才看得见。
+    // 合并不设这道闸:几条目标本来就可能两型混杂,合成的那一条是哪一型由人裁决时看。
     if (queued.change === "modify" && target !== undefined && content.type !== target.type) {
       return undefined;
     }
@@ -3487,10 +3547,15 @@ export function openStore(dbPath: string): Store {
       // 的附注说的是「同一件事又被提了一遍」,不改变它当初从哪来。附注至少有一条。
       insertReviewRule(repoId, content, queued.sources[0]!.origin, version, at);
     } else {
-      retireRuleRow(queued.targetRuleId!, version);
+      for (const targetId of queued.targetRuleIds) retireRuleRow(targetId, version);
       // 修改沿用旧行的出处:改文字不改变这条条目当初从哪来(issue #203 同一条口径)。
       if (queued.change === "modify") {
         insertReviewRule(repoId, content, targetOrigin!, version, at);
+      }
+      // 合并的那一条是新写的一句,不是哪一条目标的延续:出处与新增同一条口径,取提案
+      // 第一条附注的来源(issue #282)。几条目标的出处各不相同时也没有一份可沿用。
+      if (queued.change === "merge") {
+        insertReviewRule(repoId, content, queued.sources[0]!.origin, version, at);
       }
     }
     db.prepare(
@@ -4338,7 +4403,8 @@ export function openStore(dbPath: string): Store {
       }
       return db
         .prepare(
-          `SELECT id, type, change, target_rule_id, scope, statement, state, created_at, decided_at
+          `SELECT id, type, change, target_rule_ids, scope, statement, state, created_at,
+                  decided_at
              FROM rule_proposal WHERE repo_id = ? ORDER BY id`,
         )
         .all(repoId)
@@ -4346,7 +4412,7 @@ export function openStore(dbPath: string): Store {
           id: Number(row["id"]),
           type: String(row["type"]) as KnowledgeType,
           change: String(row["change"]) as RuleProposalChange,
-          targetRuleId: row["target_rule_id"] === null ? null : Number(row["target_rule_id"]),
+          targetRuleIds: JSON.parse(String(row["target_rule_ids"])) as number[],
           scope: String(row["scope"]),
           statement: String(row["statement"]),
           sources: sources.get(Number(row["id"])) ?? [],
@@ -4383,7 +4449,7 @@ export function openStore(dbPath: string): Store {
       // 一次:两条 modify 会把旧行废止一次、新行插两遍,一条规则就此裂成两条;modify 与
       // retire 撞上,废止的意图会被修改插回的新行抵消。逐条采纳没有这个洞——第一条落完
       // 目标就废止了,第二条自然裁不了;批量要人自己挑一条,而不是替他挑。
-      const targets = planned.map((entry) => entry!.queued.targetRuleId).filter((id) => id !== null);
+      const targets = planned.flatMap((entry) => [...entry!.queued.targetRuleIds]);
       if (new Set(targets).size !== targets.length) return undefined;
       return inRuleSetVersion(repoId, (version, at) => {
         // 全组共用同一个版本号(issue #223):逐条各推一版会让一次裁决在版本轴上散成上百格。

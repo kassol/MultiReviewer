@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 
 import { Cross2Icon, CrossCircledIcon } from "@radix-ui/react-icons";
 import { Badge, Callout, Checkbox, Dialog, IconButton, Select, Skeleton, Tabs, Text, TextArea, TextField, Tooltip } from "@radix-ui/themes";
@@ -58,14 +58,15 @@ type RuleProposalSource = {
 };
 
 /**
- * 一条修订提案(CONTEXT.md,issue #207)。`change` 是变更类型,`targetRuleId` 是修改与
- * 废止指向的现有规则,`sources` 是它的出处附注列表(issue #281)。
+ * 一条修订提案(CONTEXT.md,issue #207)。`change` 是变更类型,`targetRuleIds` 是这条
+ * 变更指向的现有条目(新增没有目标,修改与废止一条,合并两条以上,issue #282),
+ * `sources` 是它的出处附注列表(issue #281)。
  */
 type RuleProposal = {
   id: number;
   type: KnowledgeType;
-  change: "add" | "modify" | "retire";
-  targetRuleId: number | null;
+  change: "add" | "modify" | "retire" | "merge";
+  targetRuleIds: number[];
   scope: string;
   statement: string;
   sources: RuleProposalSource[];
@@ -752,7 +753,7 @@ function SelectAll({
   );
 }
 
-const CHANGE_LABEL = { add: "新增", modify: "修改", retire: "废止" } as const;
+const CHANGE_LABEL = { add: "新增", modify: "修改", retire: "废止", merge: "合并" } as const;
 
 /**
  * 一条已裁决提案的结论说法。裁决的对象是提案而不是条目:光写「已驳回」会被读成「这条
@@ -764,11 +765,13 @@ const DECISION_LABEL = {
     add: "采纳了新增提案",
     modify: "采纳了修改提案",
     retire: "采纳了废止提案,条目已废止",
+    merge: "采纳了合并提案,几条目标已合成一条",
   },
   rejected: {
     add: "驳回了新增提案",
     modify: "驳回了修改提案,条目保持原样",
     retire: "驳回了废止提案,条目保留",
+    merge: "驳回了合并提案,几条目标各自保留",
   },
 } as const satisfies Record<"accepted" | "rejected", Record<RuleProposal["change"], string>>;
 
@@ -867,13 +870,43 @@ function ProposalSection({
   const decided = ruleSet.proposals.filter((row) => row.state !== "pending");
   // 提案默认一条不勾:采纳是改变知识集的动作,该由人一条条挑,不该默认全中。
   const pick = useSelection(pending.map((row) => row.id), false);
-  /** 修改与废止指向的那条现有规则。已经不在生效规则里时只显示标识。 */
-  const target = (proposal: RuleProposal): string | null => {
-    if (proposal.targetRuleId === null) return null;
-    const rule = ruleSet.rules.find((entry) => entry.id === proposal.targetRuleId);
-    return rule === undefined
-      ? `知识条目 ${proposal.targetRuleId}(已不生效)`
-      : rule.statement;
+  /**
+   * 这条提案指向的现有条目那一段:新增没有,修改与废止一条,合并几条(issue #282)。
+   * 合并逐条给陈述与作用范围——人要看清被合掉的是哪几条。已经不在生效条目里的只显示
+   * 标识,采纳那时它落不下去,人要先看得出是哪一条没了。
+   */
+  const targets = (proposal: RuleProposal): ReactNode => {
+    const rows = proposal.targetRuleIds.map((id) => {
+      const rule = ruleSet.rules.find((entry) => entry.id === id);
+      return rule === undefined
+        ? { id, label: `知识条目 ${id}(已不生效)`, scope: "" }
+        : { id, label: rule.statement, scope: rule.scope === "" ? "全仓库" : rule.scope };
+    });
+    if (rows.length === 0) return null;
+    if (rows.length === 1) {
+      return (
+        <Text as="p" size="1" color="gray" className="mt-1.5 wrap-anywhere">
+          目标知识条目:{rows[0]!.label}
+        </Text>
+      );
+    }
+    return (
+      <div className="mt-1.5">
+        <Text as="p" size="1" color="gray">
+          目标知识条目({rows.length} 条):
+        </Text>
+        <ul className="mt-0.5 list-disc pl-4">
+          {rows.map((row) => (
+            <li key={row.id}>
+              <Text as="span" size="1" color="gray" className="wrap-anywhere">
+                {row.label}
+                {row.scope === "" ? null : `(${row.scope})`}
+              </Text>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
   };
 
   return (
@@ -948,11 +981,7 @@ function ProposalSection({
                 ) : (
                   <Text as="p" size="2" className="wrap-anywhere">{proposal.statement}</Text>
                 )}
-                {target(proposal) === null ? null : (
-                  <Text as="p" size="1" color="gray" className="mt-1.5 wrap-anywhere">
-                    目标知识条目:{target(proposal)}
-                  </Text>
-                )}
+                {targets(proposal)}
                 <ProposalSources repoId={repoId} proposal={proposal} />
                 <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
                   <span className="inline-flex min-w-0 flex-wrap items-center gap-1.5">
