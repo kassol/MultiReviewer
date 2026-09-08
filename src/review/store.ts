@@ -468,8 +468,9 @@ CREATE TABLE IF NOT EXISTS rule_proposal (
 CREATE INDEX IF NOT EXISTS rule_proposal_by_repo ON rule_proposal(repo_id);
 
 -- 出处附注(CONTEXT.md,issue #281)。一条提案的出处是一列附注,一行一条:origin 是
--- 这一次的来源,note 是备注原文或整理理由,finding_id 是引发它的那条 Finding(只有
--- 处置反哺有),trace_task_id 是提出它的那一次任务的知识轨迹。
+-- 这一次的来源,note 是备注原文(只有处置反哺有),evidence 是 agent 为这一条给出的理由
+-- 与代码证据(issue #287),finding_id 是引发它的那条 Finding(只有处置反哺有),
+-- trace_task_id 是提出它的那一次任务的知识轨迹。
 --
 -- 与提案分表而不是三列写在提案上:一条提案会被多次来源提到(反哺并入、知识整理合并,
 -- issue #280),单值列只留得下最后一次,而人要看的正是「它被哪几件事提过」。
@@ -479,6 +480,7 @@ CREATE TABLE IF NOT EXISTS rule_proposal_source (
   origin TEXT NOT NULL
     CHECK (origin IN ('baseline-exploration', 'disposition-feedback', 'knowledge-consolidation')),
   note TEXT,
+  evidence TEXT,
   finding_id INTEGER,
   trace_task_id INTEGER,
   created_at TEXT NOT NULL
@@ -860,6 +862,9 @@ const ADD_COLUMNS = [
   // 一次知识整理对现集提出了几条提案(issue #285)。旧行是 NULL,与没跑完那一档同形:
   // 升级前完成的整理只改队列,提案数无从补出来,面板按 0 显示。
   "ALTER TABLE rule_consolidation ADD COLUMN proposed INTEGER",
+  // 出处附注的依据(CONTEXT.md 出处附注,issue #287):agent 为这一条给出的理由与代码
+  // 证据。旧行是 NULL——升级前三条链路的理由都没落库,补不出来,面板按没有这一格显示。
+  "ALTER TABLE rule_proposal_source ADD COLUMN evidence TEXT",
 ];
 
 /**
@@ -1769,8 +1774,13 @@ export type RuleTraceSource = RuleProposalOrigin;
 /** 排进队列的一条出处附注(CONTEXT.md 出处附注,issue #281)。 */
 export type RuleProposalSourceInput = {
   origin: RuleProposalOrigin;
-  /** 备注原文或整理理由。基点探索没有话要说,为 null。 */
+  /** 备注原文。只有处置反哺有;基点探索与知识整理没有备注原文,为 null。 */
   note: string | null;
+  /**
+   * agent 为这一条给出的理由与代码证据(issue #287)。三条链路的 `reason` 都落在这里,
+   * agent 没给的为 null。陈述只留那一句结论,凭什么成立看这一格。
+   */
+  evidence: string | null;
   /** 引发这一次的那条 Finding(只有处置反哺有)。人据此回到那条 Finding 上。 */
   findingId: number | null;
   /**
@@ -3628,9 +3638,17 @@ export function openStore(dbPath: string): Store {
   ): void => {
     db.prepare(
       `INSERT INTO rule_proposal_source
-         (proposal_id, origin, note, finding_id, trace_task_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(proposalId, source.origin, source.note, source.findingId, source.traceTaskId, at);
+         (proposal_id, origin, note, evidence, finding_id, trace_task_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      proposalId,
+      source.origin,
+      source.note,
+      source.evidence,
+      source.findingId,
+      source.traceTaskId,
+      at,
+    );
   };
 
   const insertRuleProposal = (repoId: number, input: RuleProposalInput, at: string): number => {
@@ -4660,8 +4678,8 @@ export function openStore(dbPath: string): Store {
       const sources = new Map<number, RuleProposalSource[]>();
       for (const row of db
         .prepare(
-          `SELECT s.id, s.proposal_id, s.origin, s.note, s.finding_id, s.trace_task_id,
-                  s.created_at,
+          `SELECT s.id, s.proposal_id, s.origin, s.note, s.evidence, s.finding_id,
+                  s.trace_task_id, s.created_at,
                   CASE
                     WHEN run.id IS NULL THEN NULL
                     WHEN run.range_review_id IS NOT NULL THEN 'range:' || run.range_review_id
@@ -4680,6 +4698,7 @@ export function openStore(dbPath: string): Store {
           id: Number(row["id"]),
           origin: String(row["origin"]) as RuleProposalOrigin,
           note: row["note"] === null ? null : String(row["note"]),
+          evidence: row["evidence"] === null ? null : String(row["evidence"]),
           findingId: row["finding_id"] === null ? null : Number(row["finding_id"]),
           findingStageId:
             row["finding_stage_id"] === null ? null : String(row["finding_stage_id"]),

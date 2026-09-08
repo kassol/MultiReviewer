@@ -44,6 +44,7 @@ type ProposalResponse = {
   sources: {
     origin: "baseline-exploration" | "disposition-feedback" | "knowledge-consolidation";
     note: string | null;
+    evidence: string | null;
     findingId: number | null;
     findingStageId: string | null;
     traceTaskId: number | null;
@@ -81,6 +82,7 @@ function source(
   return {
     origin: "baseline-exploration",
     note: null,
+    evidence: null,
     findingId: null,
     traceTaskId: null,
     ...overrides,
@@ -1203,5 +1205,35 @@ test("存量提案迁移:三列各合成一条出处附注,来源、备注与轨
     assert.equal(columns.includes("target_rule_ids"), true);
   } finally {
     again.close();
+  }
+});
+
+test("存量出处附注迁移:升级前落的附注行读回依据为 null,投影照常", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const first = openStore(db.path);
+  try {
+    first.registerRepo({ repoId: 91, owner: "acme", repo: "sources", generation: 1, key: "k" });
+    assert.notEqual(first.addRuleProposal(91, proposal({ statement: "升级前排的那条" })), undefined);
+  } finally {
+    first.close();
+  }
+  // 升级前的形状:附注表没有依据那一列(issue #287)。去掉它,再开一次即走补列那一路。
+  const raw = new DatabaseSync(db.path);
+  try {
+    raw.exec("ALTER TABLE rule_proposal_source DROP COLUMN evidence");
+  } finally {
+    raw.close();
+  }
+
+  const store = openStore(db.path);
+  try {
+    // 补列没跑成的话这一句就查不出 `evidence`,直接抛「no such column」。
+    assert.deepEqual(
+      store.getRuleProposals(91).map((row) => [row.statement, row.sources.map((e) => e.evidence)]),
+      [["升级前排的那条", [null]]],
+    );
+  } finally {
+    store.close();
   }
 });

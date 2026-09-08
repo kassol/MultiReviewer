@@ -6818,14 +6818,26 @@ function usableRuleItems(items: readonly RuleAgentItem[]): RuleAgentItem[] {
  * 一次只废止一条,把它读成合并会凭空添一条新陈述)。废止那一档的内容取目标条目的原样:
  * 队列里那条要说得出它废止的是什么。
  */
+/**
+ * 这一条的依据(CONTEXT.md 出处附注,issue #287):agent 为它给出的理由与代码证据,去掉
+ * 首尾空白。三条链路共用这一处——依据落在附注上,与陈述分开,陈述因此只留那一句结论。
+ * agent 没给或只给了空白的为 null,面板那一格随之不显示。
+ */
+function itemEvidence(item: RuleAgentItem): string | null {
+  const reason = (item.reason ?? "").trim();
+  return reason === "" ? null : reason;
+}
+
 function proposalsFromItems(
   items: readonly RuleAgentItem[],
   activeRules: readonly ReviewRuleRecord[],
-  source: RuleProposalSourceInput,
+  source: Omit<RuleProposalSourceInput, "evidence">,
 ): RuleProposalInput[] {
   const byId = new Map(activeRules.map((rule) => [rule.id, rule]));
   const proposals: RuleProposalInput[] = [];
   for (const item of items) {
+    // 依据逐条不同(它是 agent 为这一条给出的理由),来源的其余几样一次任务之内相同。
+    const sources: [RuleProposalSourceInput] = [{ ...source, evidence: itemEvidence(item) }];
     const targets = (item.targetRuleIds ?? [])
       .map((id) => byId.get(id))
       .filter((rule) => rule !== undefined);
@@ -6837,7 +6849,7 @@ function proposalsFromItems(
         targetRuleIds: [],
         scope: item.scope,
         statement: item.statement,
-        sources: [source],
+        sources,
       });
       continue;
     }
@@ -6850,7 +6862,7 @@ function proposalsFromItems(
         targetRuleIds: targets.map((rule) => rule.id),
         scope: item.scope,
         statement: item.statement,
-        sources: [source],
+        sources,
       });
       continue;
     }
@@ -6864,7 +6876,7 @@ function proposalsFromItems(
       targetRuleIds: [target.id],
       scope: content.scope,
       statement: content.statement,
-      sources: [source],
+      sources,
     });
   }
   return proposals;
@@ -7048,23 +7060,10 @@ function applyConsolidation(
 }
 
 /**
- * 整理对现集提出的那一条在附注上的备注(issue #285)。人在队列里读的就是这一句:agent
- * 给的理由,加上它自己说涉及了哪几条条目——附注要说得出「凭什么提的、动的是哪几条」。
- * 两样都没有时为 null,与基点探索那一档同形。
- */
-function consolidationNote(item: RuleAgentItem): string | null {
-  const reason = (item.reason ?? "").trim();
-  const targets = item.targetRuleIds ?? [];
-  const involved = targets.length === 0 ? "" : `(涉及条目 ${targets.join("、")})`;
-  const note = `${reason}${involved}`;
-  return note === "" ? null : note;
-}
-
-/**
  * 整理对现集提出的变更排进修订提案队列(issue #285)。映射与另两条链路同一套
- * `proposalsFromItems`,只是逐条调用——出处附注的备注一条一句(agent 的理由各不相同),
- * 而那个函数一次只收一条出处。目标条目在这一刻重读:整理期间人照常裁决,开跑时生效的
- * 条目这会儿可能已经废止了。
+ * `proposalsFromItems`;备注原文这一格为 null——整理读的是队列里的文本,没有谁的备注
+ * 可留,它的理由与另两条链路一样落进依据(issue #287)。目标条目在这一刻重读:整理期间
+ * 人照常裁决,开跑时生效的条目这会儿可能已经废止了。
  *
  * **认不出目标的那一条丢掉**:整理不读代码,提不出没有目标的新增——映射把「一个目标都
  * 认不出」读成新增,那一档在这条链路上只可能是目标已经不生效,丢掉它。
@@ -7082,7 +7081,7 @@ function enqueueConsolidationProposals(
     for (const item of items) {
       const [mapped] = proposalsFromItems([item], activeRules, {
         origin: "knowledge-consolidation",
-        note: consolidationNote(item),
+        note: null,
         findingId: null,
         traceTaskId,
       });
@@ -7337,7 +7336,7 @@ async function runDispositionFeedbackInBackground(
         });
       }
     }
-    const source: RuleProposalSourceInput = {
+    const source: Omit<RuleProposalSourceInput, "evidence"> = {
       origin: "disposition-feedback",
       note,
       findingId: finding.id,
@@ -7354,7 +7353,7 @@ async function runDispositionFeedbackInBackground(
           item.proposalId !== undefined &&
           store.mergeIntoRuleProposal(context.repoId, item.proposalId, {
             statement: item.statement,
-            source,
+            source: { ...source, evidence: itemEvidence(item) },
           })
         ) {
           merged += 1;

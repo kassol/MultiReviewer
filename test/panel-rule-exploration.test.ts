@@ -62,6 +62,11 @@ type RuleSetResponse = {
   retired: { id: number; statement: string }[];
   exploration: ExplorationResponse | null;
   draft: DraftItemResponse[];
+  /** 修订提案队列(issue #207)。这里只看附注,队列的形态由 `panel-rule-proposals` 验。 */
+  proposals: {
+    statement: string;
+    sources: { origin: string; note: string | null; evidence: string | null }[];
+  }[];
 };
 
 /**
@@ -577,7 +582,9 @@ test("探索失败原因可见并可重试,运行中不接第二次发起", asyn
 });
 
 test("知识集非空时不再走草案:产出排进修订提案队列(issue #207 的分界)", async () => {
-  const agent = scriptedRuleAgent({ items: [item("探索提的一条")] });
+  const agent = scriptedRuleAgent({
+    items: [{ ...item("探索提的一条"), reason: "  src/answer.ts 上三处都这样  " }],
+  });
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
   const path = `/repos/${GITEA_REPO.id}`;
   assert.equal(
@@ -597,7 +604,13 @@ test("知识集非空时不再走草案:产出排进修订提案队列(issue #20
   await h.explorationsAtLeast(1);
   assert.equal(agent.calls.length, 1);
   // 草案一行不动:裁决与队列的形态由 `panel-rule-proposals.test.ts` 验。
-  assert.deepEqual((await ruleSet(h, cookie)).draft, []);
+  const after = await ruleSet(h, cookie);
+  assert.deepEqual(after.draft, []);
+  // 附注的依据格是 agent 给这一条的理由,去掉首尾空白(issue #287)。
+  assert.deepEqual(
+    after.proposals.map((row) => [row.statement, row.sources.map((entry) => entry.evidence)]),
+    [["探索提的一条", ["src/answer.ts 上三处都这样"]]],
+  );
 });
 
 test("没有 knowledge:write 的人发起不了探索也确认不了,分配外的仓库同形 404", async () => {
