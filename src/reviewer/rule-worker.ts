@@ -304,6 +304,9 @@ export function intentPrompt(
     request.pendingProposals === undefined || request.pendingProposals.length === 0
       ? ""
       : `${pendingSection(request.pendingProposals)}\n`;
+  if (target.kind === "rule") {
+    return entryPrompt(request.intent.text, target.rule, target.proposals, existing, pending);
+  }
   return `A maintainer of this repository wrote down what they want the review knowledge to say. Turn that one request into knowledge entries of the shape below.
 
 Revision intent: ${request.intent.text}
@@ -335,13 +338,6 @@ function rewritePrompt(text: string, proposal: RuleIntentTargetProposal): string
           "",
           ...proposal.targets.map((entry) => knowledgeBullet(entry)),
         ].join("\n");
-  const provenance = proposal.sources
-    .map((source) => {
-      const note = source.note === null ? "" : ` note: ${oneLine(source.note)};`;
-      const grounds = source.evidence === null ? " no grounds recorded" : ` grounds: ${oneLine(source.evidence)}`;
-      return `- ${source.origin};${note}${grounds}`;
-    })
-    .join("\n");
   return `A maintainer of this repository is looking at one proposal waiting for a decision and wrote down how they want it to read instead. Rewrite that one proposal.
 
 Revision intent: ${text}
@@ -358,11 +354,91 @@ ${targets}
 
 Its provenance, oldest first. Each note is what a person asked for at that point and what the grounds were, so read them as the conversation that got this proposal to its present wording:
 
-${provenance === "" ? "- none recorded" : provenance}
+${provenanceLines(proposal.sources)}
 
 Change this one proposal and nothing else. Call ${PROPOSE_RULE_TOOL} exactly once, with proposal_id set to ${proposal.id} and the full new statement — it replaces the statement in the queue. Give a new scope when the request narrows or widens where the entry applies, and give the kind the new statement really is: the server keeps this proposal's targets and works out its change kind from the kind you give. Report no other entry — anything you report without that proposal_id is dropped, and reporting nothing at all is the right outcome when the proposal already says what they asked for.
 
-Read the code before you settle the wording and the scope. The request is written in prose and rarely names paths; open the directories it points at and find out how far the invariant actually reaches. What you read goes in the reason field, not in the statement: it becomes the next note in the provenance above.`;
+${CODE_READING}`;
+}
+
+/**
+ * 一条提案的全部出处附注给 agent 看的样子(issue #295、#297)。附注即修订对话:上一次
+ * 意图说了什么、agent 当时凭什么这么写,下一次要看得到,否则每一轮都要人从头解释一遍。
+ */
+function provenanceLines(sources: RuleIntentTargetProposal["sources"]): string {
+  const lines = sources
+    .map((source) => {
+      const note = source.note === null ? "" : ` note: ${oneLine(source.note)};`;
+      const grounds =
+        source.evidence === null ? " no grounds recorded" : ` grounds: ${oneLine(source.evidence)}`;
+      return `- ${source.origin};${note}${grounds}`;
+    })
+    .join("\n");
+  return lines === "" ? "- none recorded" : lines;
+}
+
+/**
+ * 目标型意图共用的那一段(issue #295、#297)。人写的是一段话而不是一个 glob,作用范围
+ * 因此要 agent 自己去代码里量出来;读到的东西进依据格,不进陈述。
+ */
+const CODE_READING = `Read the code before you settle the wording and the scope. The request is written in prose and rarely names paths; open the directories it points at and find out how far the invariant actually reaches. What you read goes in the reason field, not in the statement: it becomes the provenance note of this change.`;
+
+/**
+ * 队列里指向目标条目的一条给 agent 看的样子(issue #297):标识、变更类型、型、作用范围、
+ * 陈述与它的全部附注。比 `pendingBullet` 多出型、作用范围与附注——要判断该不该并进这一条,
+ * 光看陈述不够。
+ */
+function targetProposalBullet(proposal: RuleIntentTargetProposal): string {
+  const scope = proposal.scope === "" ? "whole repository" : proposal.scope;
+  return [
+    `- [${proposal.id}] (${proposal.change}) (${proposal.type}) (${scope}) ${oneLine(proposal.statement)}`,
+    ...provenanceLines(proposal.sources)
+      .split("\n")
+      .map((line) => `  ${line}`),
+  ].join("\n");
+}
+
+/**
+ * 目标为一条生效知识条目的修订意图的提示(CONTEXT.md 人工提议,issue #297)。与改写提案
+ * 那一档分开的地方是**现集与队列照常渲染**:人指的是一条已经生效的条目,agent 要判得出
+ * 这件事现集里别处有没有说过、队列里排没排过,才不会再排一条重复的。
+ *
+ * 落地只收一条指向这条条目的变更,提示因此把三种写法与「优先并入队列里已有的那一条」
+ * 一并点住:队列里已经有一条在等人裁决时另排一条,人就要裁决两次。
+ */
+function entryPrompt(
+  text: string,
+  entry: KnowledgeEntry,
+  proposals: readonly RuleIntentTargetProposal[],
+  existing: string,
+  pending: string,
+): string {
+  const queued =
+    proposals.length === 0
+      ? "No proposal waiting for a decision targets that entry yet."
+      : [
+          "Proposals already waiting for a decision that target that entry, each with its provenance:",
+          "",
+          ...proposals.map(targetProposalBullet),
+        ].join("\n");
+  return `A maintainer of this repository is looking at one knowledge entry in force and wrote down how they want it to read instead. Change that one entry.
+
+Revision intent: ${text}
+
+The entry as it stands:
+
+${knowledgeBullet(entry)}
+
+${queued}
+${existing}${pending}
+Change that one entry and nothing else. Call ${PROPOSE_RULE_TOOL} exactly once, in one of these ways:
+- to reword or narrow it, pass rule_ids = [${entry.id}] with the full new statement and the kind it still is;
+- to retire it because the code no longer justifies it or has outgrown it, pass rule_ids = [${entry.id}], retire=true and restate it;
+- to change its kind, pass rule_ids = [${entry.id}] with the other kind in type — the server records that as a merge of that one entry into the statement you give.
+
+When a proposal above already targets that entry, merge into it instead of queuing a second one: pass its id in proposal_id with one statement covering what that proposal and this request both say. Report nothing else — anything you report that neither carries rule_ids = [${entry.id}] nor merges into one of those proposals is dropped, and reporting nothing at all is the right outcome when the entry already says what they asked for.
+
+${CODE_READING}`;
 }
 
 /**

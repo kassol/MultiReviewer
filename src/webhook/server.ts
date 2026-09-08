@@ -189,6 +189,7 @@ import {
   type RuleAgentEvent,
   type RuleAgentItem,
   type RuleConsolidationAction,
+  type RuleIntentInput,
   type RuleIntentTargetProposal,
 } from "../reviewer/rule-agent.ts";
 
@@ -7320,7 +7321,7 @@ const NO_RULE_TASK_MODEL = "这个仓库没有基点探索记录、全局模型�
  * 一条,队列因此仍只有一条,人裁决一次。指名的那条已裁决或不存在时并不进去,那一条退回
  * 与其余条目同一套映射,按新增或对照现集的变更入队。
  *
- * `rewrite` 有值即这一次是目标为一条待裁决提案的意图(issue #295),落地换成改写那一档。
+ * `target` 有值即这一次是目标型意图(issue #295、#297),落地换成只收指向目标那一条的那档。
  *
  * 回落地的提案标识:并入的是被并那一条的标识,新排的是新行的。意图行的产出记它。
  */
@@ -7330,9 +7331,12 @@ function landRuleItems(
   items: readonly RuleAgentItem[],
   activeRules: readonly ReviewRuleRecord[],
   source: Omit<RuleProposalSourceInput, "evidence">,
-  rewrite?: { proposalId: number; trace: RuleTraceRecorder },
+  target?: IntentLanding,
 ): number[] {
-  if (rewrite !== undefined) return rewriteTargetProposal(store, repoId, items, source, rewrite);
+  if (target?.kind === "proposal") {
+    return rewriteTargetProposal(store, repoId, items, source, target);
+  }
+  if (target?.kind === "rule") return landRuleTargetEntry(store, repoId, items, source, target);
   const landed: number[] = [];
   const added: RuleAgentItem[] = [];
   for (const item of items) {
@@ -7355,8 +7359,26 @@ function landRuleItems(
   return landed;
 }
 
+/**
+ * 目标型意图落地要的那一份(issue #295、#297)。目标为提案即原地改写它;目标为知识条目即
+ * 只收一条指向它的变更,`mergeable` 是开跑时队列里指向它的那几条——并进这几条之外的一条
+ * 不算指向目标,而并进这几条里已经被裁决掉的一条要让意图失败,两者分得开。
+ */
+type IntentLanding =
+  | { kind: "proposal"; proposalId: number; trace: RuleTraceRecorder }
+  | { kind: "rule"; ruleId: number; mergeable: readonly number[]; trace: RuleTraceRecorder };
+
 /** 目标型意图落地时,产出里不指向目标的那些被丢掉的原因。 */
 const REWRITE_OFF_TARGET = "目标为一条提案的意图只落地指向它的那一条改写";
+
+/** 目标为知识条目时同一道闸的那句话(issue #297)。 */
+const ENTRY_OFF_TARGET = "目标为一条知识条目的意图只落地指向它的那一条变更";
+
+/**
+ * 落地那一刻目标条目已经不生效(issue #297)。人在解读期间直接废止了它:指向它的提案排下去
+ * 也裁不了(采纳时目标不生效即裁不动),改判失败并留原因比排一条裁不了的诚实。
+ */
+const ENTRY_TARGET_GONE = "落地时这条知识条目已经不在生效条目里,这次意图没有落下";
 
 /**
  * 落地那一刻目标已经不在待裁决队列里。与知识整理「被并的提案不再待裁决即跳过那一次
@@ -7401,6 +7423,68 @@ function rewriteTargetProposal(
   // 原因——提案不动,人看得出该重新写一次意图还是就此作罢。
   if (!merged) throw new Error(REWRITE_TARGET_GONE);
   return [rewrite.proposalId];
+}
+
+/**
+ * 目标为一条生效知识条目的意图落地(CONTEXT.md 人工提议,issue #297)。**只收一条指向它的
+ * 变更**:`rule_ids` 恰好是它(经既有映射成为修改、废止或单目标合并改型),或者并入开跑时
+ * 队列里指向它的某一条提案——队列里已经有一条在等人裁决时另排一条,人就要裁决两次。其余
+ * 产出逐条丢掉并记轨迹,一条都没有即零产出、意图照常完成。
+ */
+function landRuleTargetEntry(
+  store: Store,
+  repoId: number,
+  items: readonly RuleAgentItem[],
+  source: Omit<RuleProposalSourceInput, "evidence">,
+  target: { ruleId: number; mergeable: readonly number[]; trace: RuleTraceRecorder },
+): number[] {
+  // 落地那一刻它还生效吗:开跑前查过一次,解读那几分钟里人照样可以直接废止它。
+  const rules = store.getRuleSet(repoId)?.rules ?? [];
+  if (!rules.some((rule) => rule.id === target.ruleId)) throw new Error(ENTRY_TARGET_GONE);
+  let chosen: RuleAgentItem | undefined;
+  for (const item of items) {
+    if (chosen === undefined && targetsRuleEntry(item, target)) {
+      chosen = item;
+      continue;
+    }
+    target.trace.record("rule_proposal_dropped", {
+      ...(item.proposalId === undefined ? {} : { proposalId: item.proposalId }),
+      reason: ENTRY_OFF_TARGET,
+    });
+  }
+  if (chosen === undefined) return [];
+  // 并入指向它的那一条走与改写一条提案同一条路径(issue #295):陈述、作用范围与型换新,
+  // 附注追加一条,型规则在 `mergeIntoRuleProposal` 里。
+  if (chosen.proposalId !== undefined) {
+    const merged = store.mergeIntoRuleProposal(repoId, chosen.proposalId, {
+      statement: chosen.statement,
+      scope: chosen.scope,
+      type: chosen.type,
+      source: { ...source, evidence: itemEvidence(chosen) },
+    });
+    if (!merged) throw new Error(REWRITE_TARGET_GONE);
+    return [chosen.proposalId];
+  }
+  const landed: number[] = [];
+  for (const proposal of proposalsFromItems([chosen], rules, source)) {
+    const id = store.addRuleProposal(repoId, proposal);
+    if (id !== undefined) landed.push(id);
+  }
+  return landed;
+}
+
+/**
+ * 这一条产出算不算「指向目标条目的那一条变更」(issue #297)。并入优先:提示里点名让 agent
+ * 先并入队列里已有的那一条,给了 `proposal_id` 即按并入读。`rule_ids` 要**恰好**是目标——
+ * 多带一条别的条目就成了合并两条,那不是人指着这一条说的那件事。
+ */
+function targetsRuleEntry(
+  item: RuleAgentItem,
+  target: { ruleId: number; mergeable: readonly number[] },
+): boolean {
+  if (item.proposalId !== undefined) return target.mergeable.includes(item.proposalId);
+  const targets = item.targetRuleIds ?? [];
+  return targets.length === 1 && targets[0] === target.ruleId;
 }
 
 /**
@@ -7466,7 +7550,7 @@ const INTENT_EMPTY_SUMMARY = "未产出变更";
 const NO_RETIRE_REWRITE = "废止型提案没有改写入口:它说的就是废止哪一条,改不出别的内容";
 
 /** 同一目标同时只跑一条意图(ADR 0028):两条改写并发只会互相覆盖。 */
-const INTENT_TARGET_BUSY = "这条提案已经有一条修订意图在跑,等它结束再提";
+const INTENT_TARGET_BUSY = "这个目标已经有一条修订意图在跑,等它结束再提";
 
 /**
  * 队列里的一条 → 交给意图 agent 的目标那一份(CONTEXT.md 人工提议,issue #295)。比
@@ -7496,6 +7580,58 @@ function toIntentTargetProposal(
       findingId: source.findingId,
     })),
   };
+}
+
+/**
+ * 目标那一份交给 agent 的输入(CONTEXT.md 人工提议,issue #295、#297)。回 undefined 即
+ * 目标已经不在了——提案被裁决掉、条目被直接废止,调用方据此早一步失败。无目标与处置反哺
+ * 那两档恒是 `none`:反哺的目标是那条 Finding,它走 `feedback` 那一段。
+ *
+ * 目标为知识条目时另给队列里指向它的那几条:提示据此点名让 agent 优先并入,落地也只认它们。
+ */
+function intentTarget(
+  intent: RuleIntent,
+  rules: readonly ReviewRuleRecord[],
+  pending: readonly RuleProposal[],
+): RuleIntentInput["target"] | undefined {
+  if (intent.targetKind === "proposal") {
+    const targeted = pending.find((proposal) => proposal.id === intent.targetId);
+    return targeted === undefined
+      ? undefined
+      : { kind: "proposal", proposal: toIntentTargetProposal(targeted, rules) };
+  }
+  if (intent.targetKind === "rule") {
+    const entry = rules.find((rule) => rule.id === intent.targetId);
+    return entry === undefined
+      ? undefined
+      : {
+          kind: "rule",
+          rule: toKnowledgeEntry(entry),
+          proposals: pending
+            .filter((proposal) => proposal.targetRuleIds.includes(entry.id))
+            .map((proposal) => toIntentTargetProposal(proposal, rules)),
+        };
+  }
+  return { kind: "none" };
+}
+
+/** 目标那一份落地要的样子(issue #295、#297)。无目标即缺席,产出按无目标那两档入队。 */
+function intentLanding(
+  target: RuleIntentInput["target"],
+  trace: RuleTraceRecorder,
+): IntentLanding | undefined {
+  if (target.kind === "proposal") {
+    return { kind: "proposal", proposalId: target.proposal.id, trace };
+  }
+  if (target.kind === "rule") {
+    return {
+      kind: "rule",
+      ruleId: target.rule.id,
+      mergeable: target.proposals.map((proposal) => proposal.id),
+      trace,
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -7580,23 +7716,17 @@ async function runRevisionIntentInBackground(
       const pending = store
         .getRuleProposals(repoId)
         .filter((entry) => entry.state === "pending");
-      const targeted = pending.find((entry) => entry.id === intent.targetId);
       return {
         version: ruleSet?.version ?? null,
         rules,
         pending: pending.map(toPendingProposal),
-        // 目标在解读开跑前就被裁决掉的话这一次改不成任何东西:早一步失败,不必先烧一次
+        // 目标在解读开跑前就没了的话这一次改不成任何东西:早一步失败,不必先烧一次
         // 模型调用再在落地那一步说同一句话。
-        target:
-          intent.targetKind !== "proposal"
-            ? undefined
-            : targeted === undefined
-              ? undefined
-              : toIntentTargetProposal(targeted, rules),
+        target: intentTarget(intent, rules, pending),
       };
     });
-    if (intent.targetKind === "proposal" && input.target === undefined) {
-      throw new Error(REWRITE_TARGET_GONE);
+    if (input.target === undefined) {
+      throw new Error(intent.targetKind === "rule" ? ENTRY_TARGET_GONE : REWRITE_TARGET_GONE);
     }
     const agent = deps.ruleAgent ?? createPiRuleAgent();
     const result = await agent({
@@ -7608,15 +7738,7 @@ async function runRevisionIntentInBackground(
       pendingProposals: input.pending,
       ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
       ...(finding === undefined
-        ? {
-            intent: {
-              text: intent.text,
-              target:
-                input.target === undefined
-                  ? { kind: "none" as const }
-                  : { kind: "proposal" as const, proposal: input.target },
-            },
-          }
+        ? { intent: { text: intent.text, target: input.target } }
         : {
             feedback: {
               note: intent.text,
@@ -7649,16 +7771,13 @@ async function runRevisionIntentInBackground(
       findingId: finding?.id ?? null,
       traceTaskId: trace.taskId,
     };
-    const rewrite = input.target;
+    const landing = intentLanding(input.target, trace);
     const produced = withStore(deps.dbPath, (store) =>
-      // 目标为一条待裁决提案即原地改写它(issue #295),与无目标那两档分道:改写不排新行,
-      // 也不看知识集确不确认——队列里有它就说明这个仓库已经确认过。
-      rewrite !== undefined
+      // 目标型意图只落地指向目标的那一条(issue #295、#297),与无目标那两档分道:它不看
+      // 知识集确不确认——队列里与现集里有它就说明这个仓库已经确认过。
+      landing !== undefined
         ? {
-            proposalIds: landRuleItems(store, repoId, usable, input.rules, source, {
-              proposalId: rewrite.id,
-              trace,
-            }),
+            proposalIds: landRuleItems(store, repoId, usable, input.rules, source, landing),
             draftItemIds: [],
           }
         : input.version === null
@@ -7740,12 +7859,13 @@ async function defaultBranchHead(
 }
 
 /**
- * 提交正文里的那个目标(CONTEXT.md 修订意图,issue #295)。缺席与 `none` 都是无目标;
+ * 提交正文里的那个目标(CONTEXT.md 修订意图,issue #295、#297)。缺席与 `none` 都是无目标;
  * 目标为一条待裁决提案的三道校验在这里:提案要在这个仓库的待裁决队列里(404)、不能是
- * 废止型(400,它没有改写入口)、这个目标上不能已经跑着一条意图(409)。
+ * 废止型(400,它没有改写入口)、这个目标上不能已经跑着一条意图(409)。目标为一条知识
+ * 条目要它此刻还生效(404,不存在与已废止同一句话),同目标互斥那一道两档共用。
  *
- * `rule` / `draft` / `finding` 三档仍 400,由后续票放开(spec #293)。回 undefined 即
- * 这里已经回过响应,调用方直接返回。
+ * `draft` / `finding` 两档仍 400,由后续票放开(spec #293)。回 undefined 即这里已经回过
+ * 响应,调用方直接返回。
  */
 function readIntentTarget(
   res: ServerResponse,
@@ -7754,32 +7874,44 @@ function readIntentTarget(
   raw: unknown,
 ): { targetKind: RuleIntentTargetKind; targetId: number | null } | undefined {
   const target = (raw ?? { kind: "none" }) as { kind?: unknown; id?: unknown };
-  if (target.kind === "none" || target.kind === undefined) {
+  const kind = target.kind;
+  if (kind === "none" || kind === undefined) {
     return { targetKind: "none", targetId: null };
   }
-  if (target.kind !== "proposal" || typeof target.id !== "number") {
+  if ((kind !== "proposal" && kind !== "rule") || typeof target.id !== "number") {
     sendJson(res, 400, {
-      error: '目标要是 {"kind": "proposal", "id": …} 形状的 JSON,别的目标类型还没放开',
+      error:
+        '目标要是 {"kind": "rule" | "proposal", "id": …} 形状的 JSON,别的目标类型还没放开',
     });
     return undefined;
   }
-  const proposalId = target.id;
-  const proposal = withStore(deps.dbPath, (store) =>
-    store.getRuleProposals(repoId).find((row) => row.id === proposalId && row.state === "pending"),
-  );
-  if (proposal === undefined) {
-    sendJson(res, 404, { error: NO_PENDING_PROPOSAL });
+  const targetId = target.id;
+  if (kind === "proposal") {
+    const proposal = withStore(deps.dbPath, (store) =>
+      store.getRuleProposals(repoId).find((row) => row.id === targetId && row.state === "pending"),
+    );
+    if (proposal === undefined) {
+      sendJson(res, 404, { error: NO_PENDING_PROPOSAL });
+      return undefined;
+    }
+    if (proposal.change === "retire") {
+      sendJson(res, 400, { error: NO_RETIRE_REWRITE });
+      return undefined;
+    }
+  } else if (
+    !withStore(deps.dbPath, (store) =>
+      (store.getRuleSet(repoId)?.rules ?? []).some((rule) => rule.id === targetId),
+    )
+  ) {
+    // 不存在与已废止是同一句话:两者对提交方是同一件事——这条条目现在改不了。
+    sendJson(res, 404, { error: NO_ACTIVE_RULE });
     return undefined;
   }
-  if (proposal.change === "retire") {
-    sendJson(res, 400, { error: NO_RETIRE_REWRITE });
-    return undefined;
-  }
-  if (withStore(deps.dbPath, (store) => store.hasRunningRuleIntent(repoId, "proposal", proposalId))) {
+  if (withStore(deps.dbPath, (store) => store.hasRunningRuleIntent(repoId, kind, targetId))) {
     sendJson(res, 409, { error: INTENT_TARGET_BUSY });
     return undefined;
   }
-  return { targetKind: "proposal", targetId: proposalId };
+  return { targetKind: kind, targetId };
 }
 
 /**
