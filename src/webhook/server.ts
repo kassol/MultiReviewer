@@ -134,6 +134,7 @@ import {
   type ReviewRuleInput,
   type ReviewRuleRecord,
   type RuleProposalInput,
+  type RuleProposalSourceInput,
   type StageScope,
   type Store,
 } from "../review/store.ts";
@@ -6792,7 +6793,7 @@ function usableRuleItems(items: readonly RuleAgentItem[]): RuleAgentItem[] {
 function proposalsFromItems(
   items: readonly RuleAgentItem[],
   activeRules: readonly ReviewRuleRecord[],
-  origin: Pick<RuleProposalInput, "source" | "sourceNote" | "traceTaskId">,
+  source: RuleProposalSourceInput,
 ): RuleProposalInput[] {
   const byId = new Map(activeRules.map((rule) => [rule.id, rule]));
   const proposals: RuleProposalInput[] = [];
@@ -6806,7 +6807,7 @@ function proposalsFromItems(
         targetRuleId: null,
         scope: item.scope,
         statement: item.statement,
-        ...origin,
+        sources: [source],
       });
       continue;
     }
@@ -6819,7 +6820,7 @@ function proposalsFromItems(
       targetRuleId: target.id,
       scope: content.scope,
       statement: content.statement,
-      ...origin,
+      sources: [source],
     });
   }
   return proposals;
@@ -6908,8 +6909,9 @@ async function runRuleExplorationInBackground(
         : store.finishRuleExplorationAsProposals(
             repoId,
             proposalsFromItems(items, existingRules, {
-              source: "baseline-exploration",
-              sourceNote: null,
+              origin: "baseline-exploration",
+              note: null,
+              findingId: null,
               traceTaskId: trace.taskId,
             }),
             at,
@@ -7065,8 +7067,9 @@ async function runDispositionFeedbackInBackground(
     });
     if (result.failure !== undefined) throw new Error(result.failure);
     const proposals = proposalsFromItems(usableRuleItems(result.items), context.rules, {
-      source: "disposition-feedback",
-      sourceNote: note,
+      origin: "disposition-feedback",
+      note,
+      findingId: finding.id,
       traceTaskId: trace.taskId,
     });
     withStore(deps.dbPath, (store) => {

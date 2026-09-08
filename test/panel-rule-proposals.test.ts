@@ -7,11 +7,16 @@
  * issue #205 同一个位置。
  */
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
 import { hashPassword } from "../src/panel/password.ts";
-import { openStore, type RuleProposalInput } from "../src/review/store.ts";
+import {
+  openStore,
+  type RuleProposalInput,
+  type RuleProposalSourceInput,
+} from "../src/review/store.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
 import { makeDbPath } from "./support/git-fixture.ts";
 import {
@@ -34,8 +39,14 @@ type ProposalResponse = {
   targetRuleId: number | null;
   scope: string;
   statement: string;
-  source: "baseline-exploration" | "disposition-feedback";
-  sourceNote: string | null;
+  /** 出处附注列表(issue #281)。一行一条,至少一条。 */
+  sources: {
+    origin: "baseline-exploration" | "disposition-feedback" | "knowledge-consolidation";
+    note: string | null;
+    findingId: number | null;
+    findingStageId: string | null;
+    traceTaskId: number | null;
+  }[];
   state: "pending" | "accepted" | "rejected";
   createdAt: string;
   decidedAt: string | null;
@@ -55,13 +66,44 @@ function proposal(overrides: Partial<RuleProposalInput> = {}): RuleProposalInput
     type: "rule",
     change: "add",
     targetRuleId: null,
-    traceTaskId: null,
     scope: "",
     statement: "新提的一条规范陈述",
-    source: "baseline-exploration",
-    sourceNote: null,
+    sources: [source()],
     ...overrides,
   };
+}
+
+/** 一条出处附注(CONTEXT.md 出处附注,issue #281)。不给即一条基点探索的。 */
+function source(
+  overrides: Partial<RuleProposalSourceInput> = {},
+): RuleProposalSourceInput {
+  return {
+    origin: "baseline-exploration",
+    note: null,
+    findingId: null,
+    traceTaskId: null,
+    ...overrides,
+  };
+}
+
+/** 库里现存的出处附注行数。取代与级联要看得出「附注跟着提案走」。 */
+function proposalSourceRows(dbPath: string): number {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    return Number(db.prepare("SELECT COUNT(*) AS rows FROM rule_proposal_source").get()!["rows"]);
+  } finally {
+    db.close();
+  }
+}
+
+/** `rule_proposal` 现在有哪几列。迁移后的形状要看得见。 */
+function columnNames(dbPath: string): string[] {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    return db.prepare("PRAGMA table_info(rule_proposal)").all().map((row) => String(row["name"]));
+  } finally {
+    db.close();
+  }
 }
 
 async function scopedUser(
@@ -178,8 +220,10 @@ test("提案状态机:待裁决只裁一次,驳回不动知识集", () => {
     assert.equal(queued.length, 1);
     assert.equal(queued[0]!.state, "pending");
     assert.equal(queued[0]!.decidedAt, null);
-    assert.equal(queued[0]!.source, "baseline-exploration");
-    assert.equal(queued[0]!.sourceNote, null);
+    assert.deepEqual(
+      queued[0]!.sources.map((row) => [row.origin, row.note, row.findingId, row.traceTaskId]),
+      [["baseline-exploration", null, null, null]],
+    );
 
     assert.equal(store.rejectRuleProposal(80, id), true);
     assert.equal(store.getRuleProposals(80)[0]!.state, "rejected");
@@ -326,13 +370,22 @@ test("知识集已确认时探索产出进提案队列,草案一行不动", asyn
   // 草案是「还没有知识集时那一整份」,这条链路不碰它。
   assert.deepEqual(body.draft, []);
   assert.deepEqual(
-    body.proposals.map((row) => [row.change, row.targetRuleId, row.statement, row.source, row.state]),
+    body.proposals.map((row) => [row.change, row.targetRuleId, row.statement, row.state]),
     [
-      ["modify", rules[0]!.id, "改过的陈述", "baseline-exploration", "pending"],
-      ["retire", rules[1]!.id, "会被废止的那条", "baseline-exploration", "pending"],
-      ["add", null, "全新的一条", "baseline-exploration", "pending"],
+      ["modify", rules[0]!.id, "改过的陈述", "pending"],
+      ["retire", rules[1]!.id, "会被废止的那条", "pending"],
+      ["add", null, "全新的一条", "pending"],
     ],
   );
+  // 探索产出各带一条基点探索附注:没有备注、没有 Finding,轨迹是这一次探索那条。
+  for (const row of body.proposals) {
+    assert.equal(row.sources.length, 1);
+    assert.equal(row.sources[0]!.origin, "baseline-exploration");
+    assert.equal(row.sources[0]!.note, null);
+    assert.equal(row.sources[0]!.findingId, null);
+    assert.equal(row.sources[0]!.findingStageId, null);
+    assert.equal(typeof row.sources[0]!.traceTaskId, "number");
+  }
   // 知识集本身还没动:提案要人裁决才落。
   assert.equal(body.version, 2);
   assert.equal(body.rules.length, 2);
@@ -474,7 +527,7 @@ test("已确认的空知识集重探索:产出仍进提案队列,不回到草案
   assert.deepEqual(body.rules, []);
 });
 
-test("重探索覆盖同源的待裁决旧提案:已裁决的与处置反哺的不动", () => {
+test("重探索只取代附注全部为基点探索的待裁决提案:带反哺附注的与已裁决的留下", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -485,8 +538,20 @@ test("重探索覆盖同源的待裁决旧提案:已裁决的与处置反哺的�
     assert.equal(store.rejectRuleProposal(89, rejectedId), true);
     store.addRuleProposal(
       89,
-      proposal({ source: "disposition-feedback", sourceNote: "处置备注", statement: "反哺提的" }),
+      proposal({
+        statement: "反哺提的",
+        sources: [source({ origin: "disposition-feedback", note: "处置备注" })],
+      }),
     );
+    // 探索提出、之后被一次反哺再提到的那一条:附注不全是基点探索,取代不了它——人写
+    // 的意见在这一条上,一次重探索不该把它抹掉。
+    const mixedId = store.addRuleProposal(
+      89,
+      proposal({
+        statement: "探索提的、反哺又提了一遍的",
+        sources: [source(), source({ origin: "disposition-feedback", note: "又一条处置备注" })],
+      }),
+    )!;
 
     store.finishRuleExplorationAsProposals(
       89,
@@ -494,17 +559,28 @@ test("重探索覆盖同源的待裁决旧提案:已裁决的与处置反哺的�
       "2026-08-30T00:00:00.000Z",
     );
 
-    // 上一轮探索的待裁决行被这一批取代;驳回历史与反哺提案原地不动。
+    // 上一轮纯探索出处的待裁决行被这一批取代;驳回历史、反哺提案与混合出处的原地不动。
     const rows = store.getRuleProposals(89);
     assert.equal(rows.find((row) => row.id === staleId), undefined);
     assert.deepEqual(
-      rows.map((row) => [row.statement, row.source, row.state]),
+      rows.map((row) => [row.statement, row.sources.map((entry) => entry.origin), row.state]),
       [
-        ["早已驳回的", "baseline-exploration", "rejected"],
-        ["反哺提的", "disposition-feedback", "pending"],
-        ["新一轮探索提的", "baseline-exploration", "pending"],
+        ["早已驳回的", ["baseline-exploration"], "rejected"],
+        ["反哺提的", ["disposition-feedback"], "pending"],
+        [
+          "探索提的、反哺又提了一遍的",
+          ["baseline-exploration", "disposition-feedback"],
+          "pending",
+        ],
+        ["新一轮探索提的", ["baseline-exploration"], "pending"],
       ],
     );
+    // 取代掉的那条连它的附注一起走,不留孤儿行。
+    assert.deepEqual(
+      rows.find((row) => row.id === mixedId)!.sources.map((entry) => entry.note),
+      [null, "又一条处置备注"],
+    );
+    assert.equal(proposalSourceRows(db.path), 5);
   } finally {
     store.close();
   }
@@ -760,5 +836,101 @@ test("modify 提案翻不了型:采纳一条把规则改成事实的提案落不
     assert.equal(store.acceptRuleProposals(88, [sameType]), 2);
   } finally {
     store.close();
+  }
+});
+
+test("存量提案迁移:三列各合成一条出处附注,来源、备注与轨迹逐字回读", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  // 升级前的形状:出处三列写在提案上,一条提案至多说得出一次来源。先建一份这样的库。
+  const first = openStore(db.path);
+  try {
+    first.registerRepo({ repoId: 90, owner: "acme", repo: "legacy", generation: 1, key: "k" });
+  } finally {
+    first.close();
+  }
+  const raw = new DatabaseSync(db.path);
+  try {
+    raw.exec(`
+      DROP TABLE rule_proposal;
+      CREATE TABLE rule_proposal (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        repo_id INTEGER NOT NULL REFERENCES repo(id),
+        type TEXT NOT NULL DEFAULT 'rule' CHECK (type IN ('rule', 'fact')),
+        change TEXT NOT NULL CHECK (change IN ('add', 'modify', 'retire')),
+        target_rule_id INTEGER,
+        scope TEXT NOT NULL,
+        statement TEXT NOT NULL,
+        layer TEXT NOT NULL,
+        source TEXT NOT NULL CHECK (source IN ('baseline-exploration', 'disposition-feedback')),
+        source_note TEXT,
+        trace_task_id INTEGER,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'accepted', 'rejected')),
+        created_at TEXT NOT NULL,
+        decided_at TEXT,
+        CHECK ((state = 'pending') = (decided_at IS NULL)),
+        CHECK ((change = 'add') = (target_rule_id IS NULL))
+      );
+      INSERT INTO rule_proposal
+          (id, repo_id, type, change, target_rule_id, scope, statement, layer, source,
+           source_note, trace_task_id, state, created_at, decided_at)
+        VALUES
+          (7, 90, 'rule', 'add', NULL, 'src/**', '探索提的那条', '', 'baseline-exploration',
+           NULL, 3, 'pending', '2026-08-29T00:00:00.000Z', NULL),
+          (8, 90, 'fact', 'add', NULL, '', '反哺提的那条', '', 'disposition-feedback',
+           '这类越界在边界上判', NULL, 'accepted', '2026-08-30T00:00:00.000Z',
+           '2026-08-31T00:00:00.000Z');
+    `);
+  } finally {
+    raw.close();
+  }
+
+  const store = openStore(db.path);
+  try {
+    // 每行恰有一条附注,来源、备注原文与轨迹与迁移前一致;提案本身连状态一起原样。
+    assert.deepEqual(
+      store.getRuleProposals(90).map((row) => [
+        row.id,
+        row.type,
+        row.statement,
+        row.state,
+        row.createdAt,
+        row.sources.map((entry) => [entry.origin, entry.note, entry.traceTaskId, entry.findingId]),
+      ]),
+      [
+        [
+          7,
+          "rule",
+          "探索提的那条",
+          "pending",
+          "2026-08-29T00:00:00.000Z",
+          [["baseline-exploration", null, 3, null]],
+        ],
+        [
+          8,
+          "fact",
+          "反哺提的那条",
+          "accepted",
+          "2026-08-30T00:00:00.000Z",
+          [["disposition-feedback", "这类越界在边界上判", null, null]],
+        ],
+      ],
+    );
+  } finally {
+    store.close();
+  }
+
+  // 迁移完的库再开一次不重复搬:判据看建表语句原文,搬过即不再命中。
+  const again = openStore(db.path);
+  try {
+    assert.equal(proposalSourceRows(db.path), 2);
+    assert.equal(again.getRuleProposals(90).length, 2);
+    // 那三列已经不在表上,契约里也就没有它们。
+    const columns = columnNames(db.path);
+    assert.equal(columns.includes("source"), false);
+    assert.equal(columns.includes("source_note"), false);
+    assert.equal(columns.includes("trace_task_id"), false);
+  } finally {
+    again.close();
   }
 });

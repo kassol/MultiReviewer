@@ -32,7 +32,12 @@ const PASSWORD = "rule-trace-test-password";
 type TraceEventResponse = { seq: number; taskId: number; at: string; kind: string; payload: Record<string, unknown> };
 
 type ExplorationResponse = { state: string; traceTaskId: number | null };
-type ProposalResponse = { id: number; statement: string; source: string; traceTaskId: number | null };
+/** 提案的出处是一列附注(issue #281):轨迹回溯走附注上的 `traceTaskId`。 */
+type ProposalResponse = {
+  id: number;
+  statement: string;
+  sources: { origin: string; traceTaskId: number | null }[];
+};
 type RuleSetResponse = { exploration: ExplorationResponse | null; proposals: ProposalResponse[] };
 
 /** 一个走完探索或反哺全程的脚本化 agent:说一段话、调一次工具、提一条规则。 */
@@ -224,11 +229,14 @@ test("一次处置反哺留下一条轨迹,提案回溯得到它", async () => {
   await h.dispositionFeedbackAtLeast(1);
 
   const view = await ruleSet(h);
-  const proposal = view.proposals.find((row) => row.source === "disposition-feedback");
+  const proposal = view.proposals.find((row) =>
+    row.sources.some((source) => source.origin === "disposition-feedback"),
+  );
   assert.notEqual(proposal, undefined);
-  assert.notEqual(proposal!.traceTaskId, null);
+  const traceTaskId = proposal!.sources[0]!.traceTaskId;
+  assert.notEqual(traceTaskId, null);
 
-  const events = await traceEvents(h, proposal!.traceTaskId!);
+  const events = await traceEvents(h, traceTaskId!);
   assert.equal(events[0]!.kind, "rule_agent_started");
   assert.equal(events[0]!.payload["source"], "disposition-feedback");
   assert.equal(events[0]!.payload["note"], "这类越界要在边界上判");
