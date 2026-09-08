@@ -915,24 +915,30 @@ function ProposalSection({
         : { id, label: rule.statement, scope: rule.scope === "" ? "全仓库" : rule.scope, type: rule.type };
     });
     if (rows.length === 0) return null;
+    // 合并的型由新陈述定(CONTEXT.md 修订提案,issue #289):有一条目标的型与提案不同就
+    // 多一句说清换的是哪一型——「合并」这个词本身看不出这一次改的是型。单目标的合并即
+    // 改型,多目标的合并(两条事实合成一条规则)同样改型,验收时正是后一种被漏掉。目标
+    // 两型混杂时说不出「从哪一型」,只写合成后是哪一型。
+    const fromTypes = [...new Set(rows.flatMap((row) => (row.type === null ? [] : [row.type])))];
+    const retyped =
+      proposal.change === "merge" && fromTypes.some((type) => type !== proposal.type)
+        ? fromTypes.length === 1
+          ? `改型:${TYPE_LABEL[fromTypes[0]!]} → ${TYPE_LABEL[proposal.type]}`
+          : `改型:合成后为${TYPE_LABEL[proposal.type]}`
+        : null;
+    const retypedLine =
+      retyped === null ? null : (
+        <Text as="p" size="1" color="gray">
+          {retyped}
+        </Text>
+      );
     if (rows.length === 1) {
-      // 单目标的合并即改型(CONTEXT.md 修订提案,issue #289):卡片上多一句说清换的是
-      // 哪一型——「合并」这个词本身看不出这一次改的是型。
-      const targetType = rows[0]!.type;
-      const retyped =
-        proposal.change === "merge" && targetType !== null && targetType !== proposal.type
-          ? `改型:${TYPE_LABEL[targetType]} → ${TYPE_LABEL[proposal.type]}`
-          : null;
       return (
         <>
           <Text as="p" size="1" color="gray" className="mt-1.5 wrap-anywhere">
             目标知识条目:{rows[0]!.label}
           </Text>
-          {retyped === null ? null : (
-            <Text as="p" size="1" color="gray">
-              {retyped}
-            </Text>
-          )}
+          {retypedLine}
         </>
       );
     }
@@ -951,6 +957,7 @@ function ProposalSection({
             </li>
           ))}
         </ul>
+        {retypedLine}
       </div>
     );
   };
