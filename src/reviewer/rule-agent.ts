@@ -125,10 +125,11 @@ export type RuleIntentTargetProposal = {
  * 触发一次人工提议的那条修订意图(CONTEXT.md 修订意图,ADR 0028,issue #294)。原文是
  * 解读的输入本身;`target` 说这条意图指向什么:无目标那一档产新增,目标为一条生效知识
  * 条目那一档产指向它的变更(issue #297),目标为一条待裁决提案那一档原地改写它
- * (issue #295),草案条目那一档由后续票填(spec #293)。
+ * (issue #295),目标为一条草案条目那一档原地改写草案里那一行(issue #298)。
  *
  * 目标为知识条目时另给**队列里指向它的待裁决提案**:已经有一条在等人裁决时并进那一条,
- * 队列里才始终只有一条、人只裁决一次。
+ * 队列里才始终只有一条、人只裁决一次。目标为草案条目时另给**其余草案条目**:改写那一条
+ * 不该产出一条与草案里别处重复的陈述。
  */
 export type RuleIntentInput = {
   /** 人写下的那段话,去掉首尾空白。 */
@@ -140,7 +141,17 @@ export type RuleIntentInput = {
         rule: KnowledgeEntry;
         proposals: readonly RuleIntentTargetProposal[];
       }
-    | { kind: "proposal"; proposal: RuleIntentTargetProposal };
+    | { kind: "proposal"; proposal: RuleIntentTargetProposal }
+    | {
+        kind: "draft";
+        /**
+         * 目标草案条目。`id` 是**草案条目的标识**,不是知识条目的标识——草案还没确认,
+         * 它的条目与生效条目各有自己的一套标识(issue #298)。
+         */
+        item: KnowledgeEntry;
+        /** 这份草案里其余的条目,让 agent 避免产出与它们重复的一条。 */
+        others: readonly KnowledgeEntry[];
+      };
 };
 
 /**
