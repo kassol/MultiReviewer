@@ -9,8 +9,14 @@
 import { fileURLToPath } from "node:url";
 
 import type { ThinkingLevel } from "../config.ts";
-import type { KnowledgeEntry, KnowledgeType, ReviewerEvent } from "../review/finding.ts";
-import type { RuleProposalChange, RuleProposalOrigin } from "../review/store.ts";
+import type {
+  KnowledgeEntry,
+  KnowledgeType,
+  PendingProposal,
+  ReviewerEvent,
+  RuleProposalChange,
+} from "../review/finding.ts";
+import type { RuleProposalOrigin } from "../review/store.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 import { runWorkerChild } from "./subprocess.ts";
 
@@ -35,6 +41,12 @@ export type RuleAgentItem = {
   targetRuleIds?: number[];
   /** 这一条要废止那条目标条目。没有目标、或目标不止一条的废止不成其为一条变更。 */
   retire?: boolean;
+  /**
+   * 这一条要并入的那条待裁决提案的标识(issue #283)。agent 认出这次备注说的是队列里
+   * 已有的一件事时给它,`statement` 那时是合成两次说法之后的新陈述。指向的提案已裁决
+   * 或不存在时这一条退回按新增处理;缺陈述的并入整条丢掉。
+   */
+  proposalId?: number;
 };
 
 /**
@@ -127,6 +139,12 @@ export type RuleAgentRequest = {
    */
   existingKnowledge: readonly KnowledgeEntry[];
   /**
+   * 这个仓库此刻的待裁决队列(CONTEXT.md 修订提案,issue #283)。只有处置反哺给:认出
+   * 新备注说的是队列里已有的一件事就并入那一条,而不是再排一条说同一件事的提案。基点
+   * 探索缺席——它的产出整批取代上一次的,重复本来就不会在队列里堆起来。
+   */
+  pendingProposals?: readonly PendingProposal[];
+  /**
    * 过程事件的回调(issue #214)。逐条给,调用方落成知识轨迹。不进 IPC 消息:它是一个
    * 函数,跨不了进程边界,子进程那边由 `RuleWorkerMessage` 回传。
    */
@@ -178,6 +196,9 @@ export async function runRuleAgentChild(
     ...(request.thinkingLevel === undefined ? {} : { thinkingLevel: request.thinkingLevel }),
     ...(request.feedback === undefined ? {} : { feedback: request.feedback }),
     ...(request.consolidation === undefined ? {} : { consolidation: request.consolidation }),
+    ...(request.pendingProposals === undefined
+      ? {}
+      : { pendingProposals: request.pendingProposals }),
   };
 
   const { failure } = await runWorkerChild<RuleWorkerMessage>({

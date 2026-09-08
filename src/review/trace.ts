@@ -81,6 +81,8 @@ export type RuleTraceKind =
   | "tool_call"
   | "rule_proposed"
   | "rule_consolidated"
+  /** 一条并入落不下去,那一条被丢掉(issue #283)。payload 说清是哪条提案、为什么。 */
+  | "rule_proposal_dropped"
   | "rule_agent_failed"
   | "rule_agent_finished";
 

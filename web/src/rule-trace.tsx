@@ -137,6 +137,15 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
         </div>
       );
     }
+    case "rule_proposal_dropped":
+      // 并入落不下去的那一条(issue #283)。它没有进队列,人只在这条轨迹上看得到它。
+      return (
+        <span className="min-w-0 text-base break-words text-text-secondary">
+          丢弃一条并入（提案{" "}
+          <span className="font-mono tabular-nums">{num(payload, "proposalId") ?? "?"}</span>）：
+          {str(payload, "reason") ?? "未记录原因"}
+        </span>
+      );
     case "rule_agent_failed":
       return (
         <Callout.Root role="alert" color="red" size="1">
