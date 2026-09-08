@@ -42,6 +42,8 @@ type ProposalResponse = {
   sources: {
     origin: "baseline-exploration" | "disposition-feedback" | "knowledge-consolidation";
     note: string | null;
+    /** agent 为这一条给出的理由与代码证据(issue #287)。 */
+    evidence: string | null;
     findingId: number | null;
     findingStageId: string | null;
     traceTaskId: number | null;
@@ -157,8 +159,14 @@ test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,
     store.close();
   }
   items = [
-    { type: "rule", scope: "src/**", statement: "边界上一次判空" },
-    { type: "rule", scope: "", statement: "改写现集里的那一条", targetRuleIds: [ruleId] },
+    { type: "rule", scope: "src/**", statement: "边界上一次判空", reason: "  越界在三处都有  " },
+    {
+      type: "rule",
+      scope: "",
+      statement: "改写现集里的那一条",
+      targetRuleIds: [ruleId],
+      reason: "现集那条只说了入参",
+    },
   ];
 
   const [target] = await inlineFindings(h);
@@ -194,6 +202,11 @@ test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,
     );
     assert.equal(typeof entry.sources[0]!.traceTaskId, "number");
   }
+  // 依据是 agent 给这一条的理由,去掉首尾空白(issue #287):陈述只留结论,证据在这一格。
+  assert.deepEqual(
+    queued.map((entry) => entry.sources[0]!.evidence),
+    ["越界在三处都有", "现集那条只说了入参"],
+  );
   assert.deepEqual(
     queued.map((entry) => [entry.change, entry.targetRuleIds, entry.statement]),
     [
@@ -414,7 +427,9 @@ test("认出队列里已有的一件事即并入那一条:队列仍一条,陈述
   assert.ok(findings.length >= 2);
 
   // 第一条备注排进一条新增提案。
-  items = [{ type: "rule", scope: "src/**", statement: "边界上一次判空" }];
+  items = [
+    { type: "rule", scope: "src/**", statement: "边界上一次判空", reason: "第一次的依据" },
+  ];
   assert.equal((await dispose(h, findings[0]!.id, NOTE)).status, 200);
   await h.dispositionFeedbackAtLeast(1);
   assert.equal(h.dispositionFeedbacks[0]!.failure, undefined);
@@ -428,6 +443,7 @@ test("认出队列里已有的一件事即并入那一条:队列仍一条,陈述
       scope: "src/api/**",
       statement: "越界与判空都在边界上一次判掉",
       proposalId: queuedId,
+      reason: "并入这一次的依据",
     },
   ];
   assert.equal((await dispose(h, findings[1]!.id, second)).status, 200);
@@ -457,6 +473,11 @@ test("认出队列里已有的一件事即并入那一条:队列仍一条,陈述
       ["disposition-feedback", second, findings[1]!.id],
     ],
   );
+  // 并入追加的那条附注同样带自己的依据(issue #287):两次各凭什么提的都留得下来。
+  assert.deepEqual(
+    queued[0]!.sources.map((entry) => entry.evidence),
+    ["第一次的依据", "并入这一次的依据"],
+  );
   for (const entry of queued[0]!.sources) {
     assert.equal(
       entry.findingStageId,
@@ -477,7 +498,15 @@ test("认出队列里已有的一件事即并入那一条:队列仍一条,陈述
           targetRuleIds: [],
           scope: "",
           statement: "新一轮探索提的",
-          sources: [{ origin: "baseline-exploration", note: null, findingId: null, traceTaskId: null }],
+          sources: [
+            {
+              origin: "baseline-exploration",
+              note: null,
+              evidence: null,
+              findingId: null,
+              traceTaskId: null,
+            },
+          ],
         },
       ],
       "2026-09-08T00:00:00.000Z",

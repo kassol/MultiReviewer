@@ -50,6 +50,8 @@ type ProposalResponse = {
   sources: {
     origin: "baseline-exploration" | "disposition-feedback" | "knowledge-consolidation";
     note: string | null;
+    /** agent 为这一条给出的理由与代码证据(issue #287)。 */
+    evidence: string | null;
   }[];
   state: "pending" | "accepted" | "rejected";
 };
@@ -74,7 +76,14 @@ type RuleSetResponse = {
 };
 
 function source(overrides: Partial<RuleProposalSourceInput> = {}): RuleProposalSourceInput {
-  return { origin: "disposition-feedback", note: null, findingId: null, traceTaskId: null, ...overrides };
+  return {
+    origin: "disposition-feedback",
+    note: null,
+    evidence: null,
+    findingId: null,
+    traceTaskId: null,
+    ...overrides,
+  };
 }
 
 function proposal(overrides: Partial<RuleProposalInput> = {}): RuleProposalInput {
@@ -721,10 +730,11 @@ test("整理对现集提出合并提案:入队带知识整理附注,采纳即目
     queued.proposals.map((row) => [row.change, row.targetRuleIds, row.statement, row.state]),
     [["merge", targets, "入参一律在边界上校验一次", "pending"]],
   );
-  // 附注:来源是知识整理,备注里有 agent 的理由与它涉及的条目。
+  // 附注:来源是知识整理,理由落在依据格上;备注原文那一格整理没有,为 null(issue #287)。
   const sources = queued.proposals[0]!.sources;
   assert.deepEqual(sources.map((row) => row.origin), ["knowledge-consolidation"]);
-  assert.equal(sources[0]!.note, `这两条说的是同一件事(涉及条目 ${targets.join("、")})`);
+  assert.equal(sources[0]!.note, null);
+  assert.equal(sources[0]!.evidence, "这两条说的是同一件事");
 
   const accepted = await send(
     h,
@@ -776,12 +786,13 @@ test("整理提的修改与废止照既有映射入队,目标一条都不生效�
       ["modify", [rule], "只认得出一个目标的那条"],
     ],
   );
+  // 理由落依据格,备注原文那一格为 null(issue #287);涉及了哪几条看提案自己的目标列表。
   assert.deepEqual(
-    queued.proposals.map((row) => row.sources[0]!.note),
+    queued.proposals.map((row) => [row.sources[0]!.note, row.sources[0]!.evidence]),
     [
-      `这一条该收窄(涉及条目 ${rule})`,
-      `代码已经不这样了(涉及条目 ${rule})`,
-      `退化成修改(涉及条目 ${rule}、4242)`,
+      [null, "这一条该收窄"],
+      [null, "代码已经不这样了"],
+      [null, "退化成修改"],
     ],
   );
 });

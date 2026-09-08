@@ -58,14 +58,16 @@ type RuleConsolidation = {
 };
 
 /**
- * 一条出处附注(CONTEXT.md,issue #281)。`origin` 是这一次的来源,`note` 是备注原文或
- * 整理理由,`findingId` 是引发它的那条 Finding(只有处置反哺有),`traceTaskId` 是提出
- * 它的那一次知识轨迹。`findingStageId` 是那条 Finding 所在的审查阶段,面板据此开侧滑。
+ * 一条出处附注(CONTEXT.md,issue #281)。`origin` 是这一次的来源,`note` 是备注原文
+ * (只有处置反哺有),`evidence` 是 agent 为这一条给出的理由与代码证据(issue #287),
+ * `findingId` 是引发它的那条 Finding(只有处置反哺有),`traceTaskId` 是提出它的那一次
+ * 知识轨迹。`findingStageId` 是那条 Finding 所在的审查阶段,面板据此开侧滑。
  */
 type RuleProposalSource = {
   id: number;
   origin: "baseline-exploration" | "disposition-feedback" | "knowledge-consolidation";
   note: string | null;
+  evidence: string | null;
   findingId: number | null;
   findingStageId: string | null;
   traceTaskId: number | null;
@@ -854,6 +856,12 @@ function ProposalSources({ repoId, proposal }: { repoId: number; proposal: RuleP
             {entry.note === null ? null : (
               <Text as="p" size="1" color="gray" className="wrap-anywhere">
                 备注:{entry.note}
+              </Text>
+            )}
+            {/* 依据(issue #287):陈述只留那一句结论,凭什么成立在这里。为空即不显示。 */}
+            {entry.evidence === null ? null : (
+              <Text as="p" size="1" color="gray" className="wrap-anywhere">
+                依据:{entry.evidence}
               </Text>
             )}
           </li>

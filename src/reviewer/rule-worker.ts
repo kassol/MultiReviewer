@@ -112,7 +112,7 @@ const ruleSchema = Type.Object({
   reason: Type.Optional(
     Type.String({
       description:
-        "One sentence in Chinese saying why you propose this change. Read only when you are tidying the queue: it is shown to the human who rules on the proposal, next to the entries it involves.",
+        "One sentence in Chinese saying why you propose this change, with the code evidence for it. It is kept on the proposal as its evidence and is shown to the human who rules on it.",
     }),
   ),
 });
