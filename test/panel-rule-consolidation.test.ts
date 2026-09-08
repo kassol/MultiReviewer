@@ -13,6 +13,7 @@ import type { PanelPermission } from "../src/panel/permissions.ts";
 import { hashPassword } from "../src/panel/password.ts";
 import {
   openStore,
+  type ReviewRuleInput,
   type RuleProposalInput,
   type RuleProposalSourceInput,
 } from "../src/review/store.ts";
@@ -187,6 +188,20 @@ function scriptedRuleAgent(
 }
 
 /** 已注册、已确认一条生效条目的仓库,外加一个有 `knowledge:write` 的人。 */
+/**
+ * 落几条生效条目。写入口只剩裁决与草案确认(issue #299),用例要的现集条目因此直接落库。
+ */
+function seedActiveEntries(h: PanelHarness, entries: readonly ReviewRuleInput[]): void {
+  const store = openStore(h.db.path);
+  try {
+    for (const entry of entries) {
+      assert.notEqual(store.addReviewRule(GITEA_REPO.id, entry), undefined);
+    }
+  } finally {
+    store.close();
+  }
+}
+
 async function consolidatingHarness(
   agent: RuleAgent,
 ): Promise<{ h: PanelHarness; cookie: string }> {
@@ -197,14 +212,7 @@ async function consolidatingHarness(
   );
   await h.worktreesPreparedAtLeast(1);
   const cookie = await scopedUser(h, "consolidation-writer", [GITEA_REPO.id], ["knowledge:write"]);
-  assert.equal(
-    (await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rules`, {
-      type: "rule",
-      scope: "",
-      statement: "入参要在边界上校验",
-    })).status,
-    201,
-  );
+  seedActiveEntries(h, [{ type: "rule", scope: "", statement: "入参要在边界上校验" }]);
   return { h, cookie };
 }
 
@@ -253,14 +261,7 @@ async function consolidatingHarnessWithFindings(
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
   const cookie = await scopedUser(h, "consolidation-disposer", [GITEA_REPO.id], ["knowledge:write"]);
-  assert.equal(
-    (await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rules`, {
-      type: "rule",
-      scope: "",
-      statement: "入参要在边界上校验",
-    })).status,
-    201,
-  );
+  seedActiveEntries(h, [{ type: "rule", scope: "", statement: "入参要在边界上校验" }]);
   return { h, cookie };
 }
 
@@ -708,14 +709,7 @@ test("整理对现集提出合并提案:入队带知识整理附注,采纳即目
     ],
   }));
   const { h, cookie } = await consolidatingHarness(agent);
-  assert.equal(
-    (await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rules`, {
-      type: "rule",
-      scope: "",
-      statement: "边界上要校验入参",
-    })).status,
-    201,
-  );
+  seedActiveEntries(h, [{ type: "rule", scope: "", statement: "边界上要校验入参" }]);
   const before = await ruleSet(h, cookie);
   const targets = before.rules.map((rule) => rule.id);
   assert.equal(targets.length, 2);
@@ -886,14 +880,7 @@ test("整理对写成事实的范围排除提单目标合并:队列里是改型,
     ],
   }));
   const { h, cookie } = await consolidatingHarness(agent);
-  assert.equal(
-    (await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rules`, {
-      type: "fact",
-      scope: "",
-      statement: "`test/**` 下不按生产标准审",
-    })).status,
-    201,
-  );
+  seedActiveEntries(h, [{ type: "fact", scope: "", statement: "`test/**` 下不按生产标准审" }]);
   const exclusion = (await ruleSet(h, cookie)).rules.find((rule) => rule.type === "fact")!.id;
 
   assert.equal((await launch(h, cookie)).status, 202);

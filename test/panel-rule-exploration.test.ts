@@ -2,8 +2,11 @@
  * 基点探索与知识确认(issue #205)。
  *
  * 两条缝:SQLite 临时库验探索状态机、草案覆盖与知识确认推进版本,面板 API 走真实 HTTP
- * 验发起、状态可见、草案逐条增删改、整组确认与 `knowledge:write` 拦截。规则 agent 用脚本化
+ * 验发起、状态可见、草案逐条删除、整组确认与 `knowledge:write` 拦截。规则 agent 用脚本化
  * 实现注入,对齐脚本化 Reviewer 先例;真模型链路由 smoke 覆盖。
+ *
+ * 草案的手填新增与逐条修改已经撤掉(issue #299,ADR 0028):草案由探索产出、由修订意图
+ * 改写,人只勾选与删除。
  */
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -195,6 +198,20 @@ async function ruleSet(h: PanelHarness, cookie: string): Promise<RuleSetResponse
   return (await response.json()) as RuleSetResponse;
 }
 
+/**
+ * 落几条生效条目。写入口只剩裁决与草案确认(issue #299),用例要的现集条目因此直接落库。
+ */
+function seedActiveEntries(h: PanelHarness, entries: readonly ReviewRuleInput[]): void {
+  const store = openStore(h.db.path);
+  try {
+    for (const entry of entries) {
+      assert.notEqual(store.addReviewRule(GITEA_REPO.id, entry), undefined);
+    }
+  } finally {
+    store.close();
+  }
+}
+
 test("探索状态机:运行中不重入,失败留原因可重试,完成落草案", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
@@ -246,7 +263,7 @@ test("探索状态机:运行中不重入,失败留原因可重试,完成落草�
   }
 });
 
-test("重探索覆盖未确认的旧草案,人手工加的那条一并被覆盖", () => {
+test("重探索覆盖未确认的旧草案,意图补进来的那条一并被覆盖", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -254,7 +271,7 @@ test("重探索覆盖未确认的旧草案,人手工加的那条一并被覆盖"
     store.registerRepo({ repoId: 71, owner: "acme", repo: "redone", generation: 1, key: "k" });
     store.startRuleExploration(71, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
     store.finishRuleExploration(71, [item("第一次探索的规则")], AT);
-    assert.notEqual(store.addRuleDraftItem(71, item("人手写的一条")), undefined);
+    assert.equal(store.appendRuleDraftItems(71, [item("意图补进来的一条")], AT).length, 1);
     assert.equal(store.getRuleDraft(71).length, 2);
 
     store.startRuleExploration(71, { baselineSha: "def5678", model: "test:m", startedAt: AT });
@@ -281,8 +298,9 @@ test("知识确认整组生效:草案成为生效规则、推进一版、草案�
 
     store.startRuleExploration(72, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
     store.finishRuleExploration(72, [item("公开函数要有类型标注", "src/**")], AT);
-    const manual = store.addRuleDraftItem(72, item("入参要在边界上校验"))!;
-    assert.equal(store.updateRuleDraftItem(72, manual, item("入参要在边界上校验并给原因")), true);
+    const [appended] = store.appendRuleDraftItems(72, [item("入参要在边界上校验")], AT);
+    // 意图改写那一条(issue #298):型、陈述与作用范围原地换,出处沿旧值。
+    assert.equal(store.updateRuleDraftItem(72, appended!, item("入参要在边界上校验并给原因")), true);
 
     // 知识确认产生这个仓库的第一个知识集版本(issue #206:注册不再落版本)。
     assert.equal(store.confirmRuleDraft(72), 1);
@@ -292,7 +310,7 @@ test("知识确认整组生效:草案成为生效规则、推进一版、草案�
       confirmed.rules.map((rule) => [rule.scope, rule.statement, rule.origin]),
       [
         ["src/**", "公开函数要有类型标注", "baseline-exploration"],
-        ["", "入参要在边界上校验并给原因", "manual"],
+        ["", "入参要在边界上校验并给原因", "manual-proposal"],
       ],
     );
     assert.deepEqual(store.getRuleDraft(72), []);
@@ -431,12 +449,10 @@ test("重探索交给 agent 的现有知识集两型都在,各带标识与自己
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
   const path = `/repos/${GITEA_REPO.id}`;
 
-  for (const entry of [
+  seedActiveEntries(h, [
     { type: "rule", scope: "", statement: "改动要带测试" },
     { type: "fact", scope: "", statement: "这个服务只跑在内网" },
-  ]) {
-    assert.equal((await send(h, cookie, "POST", `${path}/rules`, entry)).status, 201);
-  }
+  ]);
 
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
@@ -480,8 +496,10 @@ test("探索跑完即释放那一份一次性工作树", async () => {
   assert.equal(existsSync(agent.calls[0]!.worktreePath), false);
 });
 
-test("面板逐条增删改草案后整组确认,生成第一个知识集版本", async () => {
-  const agent = scriptedRuleAgent({ items: [item("探索出来的一条", "src/**")] });
+test("面板逐条删除草案后整组确认,生成第一个知识集版本", async () => {
+  const agent = scriptedRuleAgent({
+    items: [item("探索出来的一条", "src/**"), item("要删掉的那一条")],
+  });
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
   const path = `/repos/${GITEA_REPO.id}`;
 
@@ -495,34 +513,10 @@ test("面板逐条增删改草案后整组确认,生成第一个知识集版本"
   );
   await h.explorationsAtLeast(1);
 
-  const added = await send(h, cookie, "POST", `${path}/rule-draft`, {
-    scope: "",
-    statement: "人手写的一条",
-  });
-  assert.equal(added.status, 201);
-  const addedId = ((await added.json()) as { id: number }).id;
-
-  const explored = (await ruleSet(h, cookie)).draft[0]!;
-  assert.equal(
-    (await send(h, cookie, "PUT", `${path}/rule-draft/${explored.id}`, {
-      scope: "src/**",
-      statement: "改过的那一条",
-    })).status,
-    200,
-  );
-  assert.equal((await send(h, cookie, "DELETE", `${path}/rule-draft/${addedId}`)).status, 200);
-  // 删掉的那条不再回来,坏 body 一律 400。
-  assert.equal((await send(h, cookie, "DELETE", `${path}/rule-draft/${addedId}`)).status, 404);
-  assert.equal(
-    (await send(h, cookie, "POST", `${path}/rule-draft`, { statement: " " })).status,
-    400,
-  );
-
-  const kept = await send(h, cookie, "POST", `${path}/rule-draft`, {
-    scope: "",
-    statement: "保留下来的手写规则",
-  });
-  assert.equal(kept.status, 201);
+  const [explored, doomed] = (await ruleSet(h, cookie)).draft;
+  assert.equal((await send(h, cookie, "DELETE", `${path}/rule-draft/${doomed!.id}`)).status, 200);
+  // 删掉的那条不再回来。
+  assert.equal((await send(h, cookie, "DELETE", `${path}/rule-draft/${doomed!.id}`)).status, 404);
 
   const confirmed = await send(h, cookie, "POST", `${path}/rule-draft/confirm`);
   assert.equal(confirmed.status, 200);
@@ -532,10 +526,7 @@ test("面板逐条增删改草案后整组确认,生成第一个知识集版本"
   assert.equal(after.version, 1);
   assert.deepEqual(
     after.rules.map((rule) => [rule.scope, rule.statement, rule.origin]),
-    [
-      ["src/**", "改过的那一条", "baseline-exploration"],
-      ["", "保留下来的手写规则", "manual"],
-    ],
+    [[explored!.scope, explored!.statement, "baseline-exploration"]],
   );
   assert.deepEqual(after.draft, []);
   // 草案已经清空,再确认一次没有东西可确认。
@@ -589,13 +580,7 @@ test("知识集非空时不再走草案:产出排进修订提案队列(issue #20
   });
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
   const path = `/repos/${GITEA_REPO.id}`;
-  assert.equal(
-    (await send(h, cookie, "POST", `${path}/rules`, {
-      scope: "",
-      statement: "已经生效的规则",
-    })).status,
-    201,
-  );
+  seedActiveEntries(h, [{ type: "rule", scope: "", statement: "已经生效的规则" }]);
 
   const started = await send(h, cookie, "POST", `${path}/rule-exploration`, {
     baseline: h.repo.baseSha,
@@ -625,13 +610,7 @@ test("探索产出超过 100 字的陈述:那一条不入队,轨迹里留下超�
   });
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
   const path = `/repos/${GITEA_REPO.id}`;
-  assert.equal(
-    (await send(h, cookie, "POST", `${path}/rules`, {
-      scope: "",
-      statement: "已经生效的规则",
-    })).status,
-    201,
-  );
+  seedActiveEntries(h, [{ type: "rule", scope: "", statement: "已经生效的规则" }]);
 
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
@@ -667,7 +646,6 @@ test("没有 knowledge:write 的人发起不了探索也确认不了,分配外�
   // 读得到知识集与草案的人不等于发起得了探索。
   assert.equal((await get(h, reader, `${path}/rules`)).status, 200);
   assert.equal((await send(h, reader, "POST", `${path}/rule-exploration`, launch)).status, 403);
-  assert.equal((await send(h, reader, "POST", `${path}/rule-draft`, {})).status, 403);
   assert.equal((await send(h, reader, "POST", `${path}/rule-draft/confirm`)).status, 403);
 
   const outsider = await scopedUser(h, "other-writer", [], ["knowledge:write"]);

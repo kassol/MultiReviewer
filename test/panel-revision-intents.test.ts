@@ -289,9 +289,11 @@ test("知识集未确认:产出追加进草案,原有草案条目留着", async 
 
   const store = openStore(h.db.path);
   try {
-    assert.notEqual(
-      store.addRuleDraftItem(GITEA_REPO.id, { type: "rule", scope: "", statement: "草案里原有的" }),
-      undefined,
+    // 探索产出的那一条:草案手填已经撤掉(issue #299),原有条目只会是探索或意图落的。
+    store.finishRuleExploration(
+      GITEA_REPO.id,
+      [{ type: "rule", scope: "", statement: "草案里原有的" }],
+      "2026-09-08T00:00:00.000Z",
     );
   } finally {
     store.close();
@@ -305,7 +307,7 @@ test("知识集未确认:产出追加进草案,原有草案条目留着", async 
   assert.deepEqual(
     view.draft.map((item) => [item.statement, item.origin]),
     [
-      ["草案里原有的", "manual"],
+      ["草案里原有的", "baseline-exploration"],
       ["全局拦截器覆盖了这一层", "manual-proposal"],
     ],
   );
@@ -1324,7 +1326,7 @@ function seedDraftItem(
 ): number {
   const store = openStore(h.db.path);
   try {
-    const id = store.addRuleDraftItem(GITEA_REPO.id, item);
+    const [id] = store.appendRuleDraftItems(GITEA_REPO.id, [item], "2026-09-08T00:00:00.000Z");
     assert.notEqual(id, undefined);
     return id!;
   } finally {

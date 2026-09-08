@@ -70,8 +70,6 @@ const ROUTE_EXPECTATIONS = [
   ["GET", "/^\\/repos\\/(\\d+)\\/rules$/", "authenticated-only", "repo:1"],
   ["GET", "/^\\/repos\\/(\\d+)\\/rule-traces\\/(\\d+)$/", "authenticated-only", "repo:1"],
   ["GET", "/^\\/repos\\/(\\d+)\\/rule-traces\\/(\\d+)\\/stream$/", "authenticated-only", "repo:1"],
-  ["POST", "/^\\/repos\\/(\\d+)\\/rules$/", "knowledge:write", "repo:1"],
-  ["PUT", "/^\\/repos\\/(\\d+)\\/rules\\/(\\d+)$/", "knowledge:write", "repo:1"],
   ["DELETE", "/^\\/repos\\/(\\d+)\\/rules\\/(\\d+)$/", "knowledge:write", "repo:1"],
   ["POST", "/^\\/repos\\/(\\d+)\\/rule-exploration$/", "knowledge:write", "repo:1"],
   // 知识整理与基点探索同一格(issue #284)。
@@ -79,9 +77,7 @@ const ROUTE_EXPECTATIONS = [
   // 修订意图的提交与删除与裁决同一格(ADR 0028,issue #294)。
   ["POST", "/^\\/repos\\/(\\d+)\\/revision-intents$/", "knowledge:write", "repo:1"],
   ["DELETE", "/^\\/repos\\/(\\d+)\\/revision-intents\\/(\\d+)$/", "knowledge:write", "repo:1"],
-  ["POST", "/^\\/repos\\/(\\d+)\\/rule-draft$/", "knowledge:write", "repo:1"],
   ["POST", "/^\\/repos\\/(\\d+)\\/rule-draft\\/confirm$/", "knowledge:write", "repo:1"],
-  ["PUT", "/^\\/repos\\/(\\d+)\\/rule-draft\\/(\\d+)$/", "knowledge:write", "repo:1"],
   ["DELETE", "/^\\/repos\\/(\\d+)\\/rule-draft\\/(\\d+)$/", "knowledge:write", "repo:1"],
   ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/(\\d+)\\/accept$/", "knowledge:write", "repo:1"],
   ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/(\\d+)\\/reject$/", "knowledge:write", "repo:1"],

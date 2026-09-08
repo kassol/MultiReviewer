@@ -269,13 +269,13 @@ test("知识集还没确认的仓库:投递照常受理但不跑 Run,知识确�
   // 知识确认:草案整组生效,这个仓库有了第一个知识集版本。
   const store = openStore(h.db.path);
   try {
-    assert.notEqual(
-      store.addRuleDraftItem(REPO_ID, {
-        type: "rule",
-        scope: "",
-        statement: "公开函数要有类型标注",
-      }),
-      undefined,
+    assert.equal(
+      store.appendRuleDraftItems(
+        REPO_ID,
+        [{ type: "rule", scope: "", statement: "公开函数要有类型标注" }],
+        "2026-08-28T00:00:00.000Z",
+      ).length,
+      1,
     );
     assert.equal(store.confirmRuleDraft(REPO_ID), 1);
   } finally {

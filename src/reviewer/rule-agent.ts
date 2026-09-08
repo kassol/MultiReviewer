@@ -26,8 +26,8 @@ const WORKER_PATH = fileURLToPath(new URL("./rule-worker.ts", import.meta.url));
 /**
  * agent 产出的一条陈述最多多少字(CONTEXT.md 陈述形状,spec #286)。四条链路同一个数:
  * 提示里写它,服务端按它拦——写在这里是因为提示与那道闸分住两个文件,抄第二遍就会在
- * 其中一处改漏。人手填那一道另有 `FACT_STATEMENT_LIMIT`(ADR 0020,只管事实型),两者
- * 是不同入口:人录的是一条自己写的事实,agent 产的是要被 Reviewer 反复注入的那一句。
+ * 其中一处改漏。**这是陈述长度唯一的那道闸**:人手填事实那道 500 字随手写条目的入口一起
+ * 撤掉了(issue #299,ADR 0028),人从此不写陈述。
  */
 export const AGENT_STATEMENT_LIMIT = 100;
 

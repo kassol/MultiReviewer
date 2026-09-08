@@ -36,17 +36,26 @@ async function freshlyRegistered(): Promise<PanelHarness> {
   return harness;
 }
 
-/** 走面板自己的知识确认:草案加一条,整组确认,生成第一个知识集版本。 */
+/**
+ * 走面板自己的知识确认:草案里落一条,整组确认,生成第一个知识集版本。草案手填那条端点
+ * 已经撤掉(issue #299),这一条因此直接落库——门禁验的是「有没有知识集版本」,草案怎么
+ * 来的与它无关。
+ */
 async function confirmRules(h: PanelHarness): Promise<void> {
-  const path = `/repos/${GITEA_REPO.id}/rule-draft`;
-  assert.equal(
-    (await h.api("POST", path, {
-      scope: "",
-      statement: "公开函数要有类型标注",
-    })).status,
-    201,
-  );
-  const confirmed = await h.api("POST", `${path}/confirm`);
+  const store = openStore(h.db.path);
+  try {
+    assert.equal(
+      store.appendRuleDraftItems(
+        GITEA_REPO.id,
+        [{ type: "rule", scope: "", statement: "公开函数要有类型标注" }],
+        "2026-09-08T00:00:00.000Z",
+      ).length,
+      1,
+    );
+  } finally {
+    store.close();
+  }
+  const confirmed = await h.api("POST", `/repos/${GITEA_REPO.id}/rule-draft/confirm`);
   assert.equal(confirmed.status, 200);
   assert.deepEqual(await confirmed.json(), { version: 1 });
 }

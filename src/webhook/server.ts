@@ -133,7 +133,6 @@ import {
   type RangeReviewRecord,
   type RepoKey,
   type RepoSummary,
-  type ReviewRuleInput,
   type ReviewRuleRecord,
   type RuleDraftItem,
   type RuleIntent,
@@ -2148,22 +2147,8 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
       handleRuleTraceStream(req, res, deps, Number(match![1]), Number(match![2])),
   },
   {
-    // 规则的手工增删改(issue #203)由 `knowledge:write` 这一格拦下,读侧不受它影响。
-    method: "POST",
-    pattern: /^\/repos\/(\d+)\/rules$/,
-    access: "knowledge:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ req, res, deps }, match) => handleAddRule(req, res, deps, Number(match![1])),
-  },
-  {
-    method: "PUT",
-    pattern: /^\/repos\/(\d+)\/rules\/(\d+)$/,
-    access: "knowledge:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ req, res, deps }, match) =>
-      handleUpdateRule(req, res, deps, Number(match![1]), Number(match![2])),
-  },
-  {
+    // 直接废止一条条目(issue #203)由 `knowledge:write` 这一格拦下,读侧不受它影响。
+    // 手写条目那两条端点已经撤掉(issue #299,ADR 0028):写内容一律经修订意图。
     method: "DELETE",
     pattern: /^\/repos\/(\d+)\/rules\/(\d+)$/,
     access: "knowledge:write",
@@ -2208,27 +2193,13 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
       handleDeleteRevisionIntent(res, deps, Number(match![1]), Number(match![2])),
   },
   {
-    method: "POST",
-    pattern: /^\/repos\/(\d+)\/rule-draft$/,
-    access: "knowledge:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ req, res, deps }, match) =>
-      handleAddDraftItem(req, res, deps, Number(match![1])),
-  },
-  {
+    // 草案的手填新增与逐条修改已经撤掉(issue #299):草案由探索产出、由修订意图改写,
+    // 人只勾选、确认与删除。
     method: "POST",
     pattern: /^\/repos\/(\d+)\/rule-draft\/confirm$/,
     access: "knowledge:write",
     assignment: { by: "repo", group: 1 },
     handler: ({ req, res, deps }, match) => handleConfirmRuleDraft(req, res, deps, Number(match![1])),
-  },
-  {
-    method: "PUT",
-    pattern: /^\/repos\/(\d+)\/rule-draft\/(\d+)$/,
-    access: "knowledge:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ req, res, deps }, match) =>
-      handleUpdateDraftItem(req, res, deps, Number(match![1]), Number(match![2])),
   },
   {
     method: "DELETE",
@@ -2244,8 +2215,8 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     pattern: /^\/repos\/(\d+)\/rule-proposals\/(\d+)\/accept$/,
     access: "knowledge:write",
     assignment: { by: "repo", group: 1 },
-    handler: ({ req, res, deps }, match) =>
-      handleAcceptRuleProposal(req, res, deps, Number(match![1]), Number(match![2])),
+    handler: ({ res, deps }, match) =>
+      handleAcceptRuleProposal(res, deps, Number(match![1]), Number(match![2])),
   },
   {
     method: "POST",
@@ -2256,8 +2227,8 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
       handleRejectRuleProposal(res, deps, Number(match![1]), Number(match![2])),
   },
   {
-    // 批量裁决(issue #223)。与逐条那两条并列而不是取代它们:逐条采纳还带「改后采纳」
-    // 的改后内容,批量采纳按队列里那份原样采纳,两者要的 body 不是一回事。
+    // 批量裁决(issue #223)。与逐条那两条并列而不是取代它们:一次采纳一组只推进一个
+    // 知识集版本,而逐条采纳一次推一版。
     method: "POST",
     pattern: /^\/repos\/(\d+)\/rule-proposals\/accept$/,
     access: "knowledge:write",
@@ -6678,120 +6649,10 @@ function handleRuleTraceStream(
   );
 }
 
-/**
- * 人手填的一条事实型陈述最多多少字(ADR 0020)。事实是一句可核查的陈述,不是一段说明:
- * 全量注入的体积靠治理而不是靠服务端截断,但录入这一道要拦住把整篇架构文档粘进来的
- * 那种写法。服务端只拒收,不截断——截断出来的半句事实比没有更糟。
- *
- * 与 agent 产出那道闸(`AGENT_STATEMENT_LIMIT`,100 字)是两个入口两个数:这一道拦的是
- * 人自己写下并当场看得见的一次录入,那一道拦的是 agent 反复产出、由别人裁决的陈述,
- * 形状约束严得多(CONTEXT.md 陈述形状)。
- */
-const FACT_STATEMENT_LIMIT = 500;
-
-/** body 里那个 `type` 认不得时回的话。两型是封闭枚举(ADR 0020)。 */
-const BAD_KNOWLEDGE_TYPE = 'type 只收 "rule"(评审规则)或 "fact"(项目事实)';
-
-/** 事实型陈述超长时回的话。 */
-const FACT_TOO_LONG = `项目事实的陈述不能超过 ${FACT_STATEMENT_LIMIT} 字`;
-
 /** agent 产出的陈述超过 `AGENT_STATEMENT_LIMIT` 时写进知识轨迹的原因(spec #286)。 */
 const STATEMENT_TOO_LONG = `陈述超过 ${AGENT_STATEMENT_LIMIT} 字`;
 
-/**
- * 一条知识条目由人填的那几样(issue #203、#221)。`type` 是两型之一,缺省即评审规则——
- * 升级前的面板只写得出规则,缺省因此与它逐字等价。
- *
- * 两型的必填面只差一处:两型都要那一句陈述非空,**事实**的陈述另有长度上限。作用范围
- * 两型都可以不给,空值即全仓库。
- *
- * 手写条目、草案增改与提案的改后内容读的是同一个形状,因此同一个解析:`noneMeansUnchanged`
- * 为 true 时几样一个都没给回 `null`(采纳提案的「按队列里那份原样采纳」),否则按缺失校验。
- * 返回 `undefined` 即已经回过 400。
- */
-async function readRuleFields(
-  req: IncomingMessage,
-  res: ServerResponse,
-  options: { error: string; noneMeansUnchanged: boolean },
-): Promise<ReviewRuleInput | null | undefined> {
-  const payload = await readJson<
-    { type?: unknown; scope?: unknown; statement?: unknown } | null
-  >(req, res);
-  if (payload === undefined) return undefined;
-  if (
-    options.noneMeansUnchanged &&
-    (payload === null ||
-      (payload.type === undefined &&
-        payload.scope === undefined &&
-        payload.statement === undefined))
-  ) {
-    return null;
-  }
-  const rawType = payload?.type ?? "rule";
-  if (rawType !== "rule" && rawType !== "fact") {
-    sendJson(res, 400, { error: BAD_KNOWLEDGE_TYPE });
-    return undefined;
-  }
-  const text = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
-  const input: ReviewRuleInput = {
-    type: rawType,
-    scope: text(payload?.scope),
-    statement: text(payload?.statement),
-  };
-  if (input.statement === "") {
-    sendJson(res, 400, { error: options.error });
-    return undefined;
-  }
-  if (rawType === "fact" && input.statement.length > FACT_STATEMENT_LIMIT) {
-    sendJson(res, 400, { error: FACT_TOO_LONG });
-    return undefined;
-  }
-  return input;
-}
-
-async function readRuleInput(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<ReviewRuleInput | undefined> {
-  const input = await readRuleFields(req, res, {
-    error: 'body 要是 {"type": "rule" | "fact", "scope": "…", "statement": "…"} 形状的 JSON,陈述不能为空',
-    noneMeansUnchanged: false,
-  });
-  return input ?? undefined;
-}
-
 const NO_ACTIVE_RULE = "这条规则不在这个仓库的生效规则里";
-
-async function handleAddRule(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: WebhookServerDeps,
-  repoId: number,
-): Promise<void> {
-  const input = await readRuleInput(req, res);
-  if (input === undefined) return;
-  const version = withStore(deps.dbPath, (store) => store.addReviewRule(repoId, input));
-  if (version === undefined) {
-    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
-  }
-  return sendJson(res, 201, { version });
-}
-
-async function handleUpdateRule(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: WebhookServerDeps,
-  repoId: number,
-  ruleId: number,
-): Promise<void> {
-  const input = await readRuleInput(req, res);
-  if (input === undefined) return;
-  const version = withStore(deps.dbPath, (store) =>
-    store.updateReviewRule(repoId, ruleId, input),
-  );
-  if (version === undefined) return sendJson(res, 404, { error: NO_ACTIVE_RULE });
-  return sendJson(res, 200, { version });
-}
 
 /**
  * 废止一条规则(issue #203)。DELETE 是「让它不再生效」而不是删行:废止的规则不再进
@@ -6837,8 +6698,8 @@ async function handleRuleModels(res: ServerResponse, deps: WebhookServerDeps): P
  * 长度那一道从事实型的 500 字换成两型统一的 100 字(CONTEXT.md 陈述形状,spec #286):
  * 上限拦的不再是「粘进来一整篇文档」,而是「把一条 Finding 的完整论证写成陈述」——那种
  * 条目带着行号与调用点,代码一改就作废,而且规则型写成论证一样读不动。**丢掉而不是
- * 截断**:截断出来的半句陈述比没有更糟。人手填那一道 `FACT_STATEMENT_LIMIT` 不受影响,
- * 两者是不同入口(见那处注释)。
+ * 截断**:截断出来的半句陈述比没有更糟。撤直改之后(issue #299,ADR 0028)这是陈述
+ * 长度唯一的那道闸:人手填那一道 500 字随手写条目的入口一起消失。
  *
  * 丢掉的每一条记一条知识轨迹:人在队列里看不见它,只有轨迹说得出 agent 提过什么、
  * 被拦在哪一条判据上。
@@ -8262,37 +8123,6 @@ async function handleStartRuleConsolidation(
   void runRuleConsolidationInBackground(deps, repoId, plan);
 }
 
-async function handleAddDraftItem(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: WebhookServerDeps,
-  repoId: number,
-): Promise<void> {
-  const input = await readRuleInput(req, res);
-  if (input === undefined) return;
-  const id = withStore(deps.dbPath, (store) => store.addRuleDraftItem(repoId, input));
-  if (id === undefined) {
-    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
-  }
-  return sendJson(res, 201, { id });
-}
-
-async function handleUpdateDraftItem(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: WebhookServerDeps,
-  repoId: number,
-  itemId: number,
-): Promise<void> {
-  const input = await readRuleInput(req, res);
-  if (input === undefined) return;
-  const updated = withStore(deps.dbPath, (store) =>
-    store.updateRuleDraftItem(repoId, itemId, input),
-  );
-  if (!updated) return sendJson(res, 404, { error: NO_DRAFT_ITEM });
-  return sendJson(res, 200, { id: itemId });
-}
-
 /** 删草案里的一条。草案未确认,删就是删掉——没有历史版本的快照要为它保留。 */
 function handleDeleteDraftItem(
   res: ServerResponse,
@@ -8311,36 +8141,18 @@ const NO_PENDING_PROPOSAL = "这条提案不在这个仓库的待裁决队列里
 const NOT_ALL_PENDING = "不在这个仓库的待裁决队列里";
 
 /**
- * 采纳时可选的改后内容(issue #207)。三样一个都没给即按队列里那份原样采纳;给了就与
- * 手写规则同一道校验(陈述不能为空)。返回 `undefined` 即已经回过 400。
+ * 采纳一条修订提案(CONTEXT.md 裁决):按变更类型落库并生成新的知识集版本。**正文一律
+ * 不读**(issue #299,ADR 0028):采纳的就是队列里那一份,人要改内容先写一条修订意图让
+ * agent 改写这条提案,改完再采纳——采纳的与被裁决的因此始终是同一份。
  */
-function readProposalEdit(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<ReviewRuleInput | null | undefined> {
-  return readRuleFields(req, res, {
-    error: '改后的内容要是 {"type": "rule" | "fact", "scope": "…", "statement": "…"} 形状的 JSON,陈述不能为空',
-    noneMeansUnchanged: true,
-  });
-}
-
-/**
- * 采纳一条修订提案(CONTEXT.md 裁决):按变更类型落库并生成新的知识集版本。body 可以
- * 带改后的内容——采纳前人改得动这一条,改后的那一份既进知识集也覆盖队列里的记录。
- */
-async function handleAcceptRuleProposal(
-  req: IncomingMessage,
+function handleAcceptRuleProposal(
   res: ServerResponse,
   deps: WebhookServerDeps,
   repoId: number,
   proposalId: number,
-): Promise<void> {
-  const edit = await readProposalEdit(req, res);
-  if (edit === undefined) return;
+): void {
   const version = withStore(deps.dbPath, (store) =>
-    edit === null
-      ? store.acceptRuleProposal(repoId, proposalId)
-      : store.acceptRuleProposal(repoId, proposalId, edit),
+    store.acceptRuleProposal(repoId, proposalId),
   );
   if (version === undefined) {
     return sendJson(res, 404, {
@@ -8386,7 +8198,6 @@ function isPositiveIdGroup(ids: unknown): ids is number[] {
  * 拼不回来。全成或全不成——其中一条已经被裁决过、或它要改的条目已经不生效,整次 404,
  * 面板重读队列即可看到当前状态。
  *
- * 批量采纳不收改后的内容:改一条要看着它改,那是逐条那条路径的事。
  */
 async function handleDecideRuleProposals(
   req: IncomingMessage,

@@ -2,9 +2,11 @@
  * 修订提案队列与裁决(issue #207)。
  *
  * 两条缝:SQLite 临时库验提案状态机与三种变更类型各自的落库形态,面板 API 走真实 HTTP
- * 验知识集已确认时探索产出入队(含已确认的空知识集)、逐条裁决(原样采纳 / 改后采纳 /
- * 驳回)、采纳推进知识集版本与 `knowledge:write` 拦截。规则 agent 仍用脚本化实现注入,与
- * issue #205 同一个位置。
+ * 验知识集已确认时探索产出入队(含已确认的空知识集)、逐条裁决(采纳 / 驳回)、采纳推进
+ * 知识集版本与 `knowledge:write` 拦截。规则 agent 仍用脚本化实现注入,与 issue #205 同一个
+ * 位置。
+ *
+ * 采纳只按队列里那份落(issue #299,ADR 0028):改后采纳已经撤掉,采纳端点连正文都不读。
  */
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -14,6 +16,7 @@ import type { PanelPermission } from "../src/panel/permissions.ts";
 import { hashPassword } from "../src/panel/password.ts";
 import {
   openStore,
+  type ReviewRuleInput,
   type RuleProposalInput,
   type RuleProposalSourceInput,
 } from "../src/review/store.ts";
@@ -196,6 +199,20 @@ async function ruleSet(h: PanelHarness, cookie: string): Promise<RuleSetResponse
 }
 
 /**
+ * 落几条生效条目。写入口只剩裁决与草案确认(issue #299),用例要的现集条目因此直接落库。
+ */
+function seedActiveEntries(h: PanelHarness, entries: readonly ReviewRuleInput[]): void {
+  const store = openStore(h.db.path);
+  try {
+    for (const entry of entries) {
+      assert.notEqual(store.addReviewRule(GITEA_REPO.id, entry), undefined);
+    }
+  } finally {
+    store.close();
+  }
+}
+
+/**
  * 注册 harness 那个真仓库、确认一组生效规则,再把探索交给一份可后填的脚本化产出——
  * agent 要提「对照现有规则的变更」,而目标规则的标识只有建完规则才知道。
  */
@@ -216,12 +233,10 @@ async function confirmedHarness(items: RuleAgentItem[]): Promise<{
   );
   await h.worktreesPreparedAtLeast(1);
   const cookie = await scopedUser(h, "proposal-writer", [GITEA_REPO.id], ["knowledge:write"]);
-  for (const rule of [
+  seedActiveEntries(h, [
     { type: "rule", scope: "", statement: "会被改的那条" },
     { type: "rule", scope: "", statement: "会被废止的那条" },
-  ]) {
-    assert.equal((await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rules`, rule)).status, 201);
-  }
+  ]);
   return { h, cookie, agent: state };
 }
 
@@ -314,29 +329,6 @@ test("三种变更类型各自的落库形态:新增进集、修改留下旧那�
   }
 });
 
-test("采纳前改内容:落库的是改后的那一份,队列里也留改后的", () => {
-  const db = makeDbPath();
-  cleanups.push(db.cleanup);
-  const store = openStore(db.path);
-  try {
-    store.registerRepo({ repoId: 82, owner: "acme", repo: "edited", generation: 1, key: "k" });
-    const id = store.addRuleProposal(82, proposal({ statement: "原样的陈述" }))!;
-    assert.equal(
-      store.acceptRuleProposal(82, id, { type: "rule", scope: "src/**", statement: "改后的陈述" }),
-      1,
-    );
-    assert.deepEqual(
-      store.getRuleSet(82)!.rules.map((rule) => [rule.scope, rule.statement]),
-      [["src/**", "改后的陈述"]],
-    );
-    const decided = store.getRuleProposals(82)[0]!;
-    assert.equal(decided.statement, "改后的陈述");
-    assert.equal(decided.scope, "src/**");
-  } finally {
-    store.close();
-  }
-});
-
 test("目标规则已经不生效时采纳不了,一版都不推进;移除仓库摘掉整条队列", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
@@ -411,7 +403,7 @@ test("合并型采纳:目标全部废止于新版、合成的那条生效于新�
   }
 });
 
-test("合并型:任一目标已不生效即采纳不了,驳回照常;改后采纳同样成立", () => {
+test("合并型:任一目标已不生效即采纳不了,驳回照常", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -438,21 +430,14 @@ test("合并型:任一目标已不生效即采纳不了,驳回照常;改后采�
     // 目标没了仍然驳得回,与修改型同一条口径。
     assert.equal(store.rejectRuleProposal(85, stale), true);
 
-    // 改后采纳:落进知识集与留在队列里的都是人改过的那一份。
-    assert.equal(
-      store.acceptRuleProposal(85, edited, {
-        type: "rule",
-        scope: "src/**",
-        statement: "人改过的合并陈述",
-      }),
-      6,
-    );
+    // 目标都还生效的那一条照常采纳:落进知识集的就是队列里那一份。
+    assert.equal(store.acceptRuleProposal(85, edited), 6);
     const after = store.getRuleSet(85)!;
     assert.deepEqual(
       after.rules.map((rule) => rule.statement),
-      ["甲", "人改过的合并陈述"],
+      ["甲", "合丙丁"],
     );
-    assert.equal(store.getRuleProposals(85)[1]!.statement, "人改过的合并陈述");
+    assert.equal(store.getRuleProposals(85)[1]!.statement, "合丙丁");
   } finally {
     store.close();
   }
@@ -510,14 +495,7 @@ test("多目标映射为合并型:认不出的目标丢掉,只剩一个即退化
   const { h, cookie } = await confirmedHarness(items);
   const path = `/repos/${GITEA_REPO.id}`;
   // 合并要两条目标,退化那一档另要一条:确认好的那两条之外再加一条。
-  assert.equal(
-    (await send(h, cookie, "POST", `${path}/rules`, {
-      type: "rule",
-      scope: "",
-      statement: "第三条",
-    })).status,
-    201,
-  );
+  seedActiveEntries(h, [{ type: "rule", scope: "", statement: "第三条" }]);
   const rules = (await ruleSet(h, cookie)).rules;
   items.push(
     // 认得出两条目标即合并型。
@@ -636,7 +614,7 @@ test("单目标合并即改型:同型仍是修改,采纳把目标换成新型的
   );
 });
 
-test("逐条裁决:改后采纳、原样采纳与驳回,只有采纳推进知识集版本", async () => {
+test("逐条裁决:采纳按队列里那份落、驳回不落,带正文也不改内容", async () => {
   const items: RuleAgentItem[] = [];
   const { h, cookie } = await confirmedHarness(items);
   const path = `/repos/${GITEA_REPO.id}`;
@@ -658,15 +636,16 @@ test("逐条裁决:改后采纳、原样采纳与驳回,只有采纳推进知识
   const queued = (await ruleSet(h, cookie)).proposals;
   assert.equal(queued.length, 3);
 
-  // 改后采纳:落库的是人改过的那一份。
-  const edited = await send(h, cookie, "POST", `${path}/rule-proposals/${queued[0]!.id}/accept`, {
+  // 采纳端点不再读正文(issue #299):带着一份改后的内容照样按队列里那份落——采纳的与被
+  // 裁决的必须是同一份。
+  const withBody = await send(h, cookie, "POST", `${path}/rule-proposals/${queued[0]!.id}/accept`, {
     scope: "src/**",
     statement: "人改过的那条",
   });
-  assert.equal(edited.status, 200);
-  assert.deepEqual(await edited.json(), { version: 3 });
+  assert.equal(withBody.status, 200);
+  assert.deepEqual(await withBody.json(), { version: 3 });
 
-  // 原样采纳:不带 body 就按队列里那份落。
+  // 不带 body 同样按队列里那份落。
   const asIs = await send(h, cookie, "POST", `${path}/rule-proposals/${queued[1]!.id}/accept`);
   assert.equal(asIs.status, 200);
   assert.deepEqual(await asIs.json(), { version: 4 });
@@ -677,14 +656,15 @@ test("逐条裁决:改后采纳、原样采纳与驳回,只有采纳推进知识
 
   const after = await ruleSet(h, cookie);
   assert.equal(after.version, 4);
+  // 落进知识集的是 agent 提的那一句,不是正文里那一句。
   assert.deepEqual(
     after.rules.map((rule) => [rule.scope, rule.statement]),
-    [["src/**", "人改过的那条"]],
+    [["", "agent 提的改法"]],
   );
   assert.deepEqual(
     after.proposals.map((row) => [row.state, row.statement]),
     [
-      ["accepted", "人改过的那条"],
+      ["accepted", "agent 提的改法"],
       ["accepted", "会被废止的那条"],
       ["rejected", "全新的一条"],
     ],
@@ -692,13 +672,6 @@ test("逐条裁决:改后采纳、原样采纳与驳回,只有采纳推进知识
   // 裁决过的裁不了第二次,不存在的提案同形 404。
   assert.equal((await send(h, cookie, "POST", `${path}/rule-proposals/${queued[2]!.id}/accept`)).status, 404);
   assert.equal((await send(h, cookie, "POST", `${path}/rule-proposals/4242/reject`)).status, 404);
-  // 改后采纳的 body 与手写规则同一道校验。
-  assert.equal(
-    (await send(h, cookie, "POST", `${path}/rule-proposals/${queued[0]!.id}/accept`, {
-      statement: " ",
-    })).status,
-    400,
-  );
 });
 
 test("没有 knowledge:write 的人裁决不了,但读得到提案队列", async () => {
@@ -1075,11 +1048,6 @@ test("modify 提案翻不了型:采纳一条把规则改成事实的提案落不
     )!;
     assert.equal(store.acceptRuleProposal(88, flip), undefined);
     assert.equal(store.acceptRuleProposals(88, [flip]), undefined);
-    // 人「改后采纳」时把 type 改成 fact 同样落不下去:守卫按改后的内容判。
-    assert.equal(
-      store.acceptRuleProposal(88, flip, { type: "fact", scope: "", statement: "边界已有校验" }),
-      undefined,
-    );
     assert.equal(store.getRuleSet(88)!.version, 1);
     assert.deepEqual(store.getRuleProposals(88).map((row) => row.state), ["pending"]);
     assert.equal(store.getRuleSet(88)!.rules[0]!.type, "rule");
