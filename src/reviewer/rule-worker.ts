@@ -247,7 +247,7 @@ Report each entry through ${PROPOSE_RULE_TOOL}. When you have reported everythin
  * 复报的备注连提都不用提——同一处未改动代码再报会折叠到已处置的那条历史 Finding,那样
  * 一条条目免不掉任何东西,只是让人多裁决一次。
  */
-function feedbackPrompt(
+export function feedbackPrompt(
   request: Pick<RuleWorkerRequest, "existingKnowledge" | "pendingProposals"> & {
     feedback: DispositionFeedback;
   },
@@ -268,7 +268,7 @@ Location: ${finding.file}:${finding.line}
 Description: ${finding.description}
 Disposition note: ${note}
 ${existing}${pending}
-Distil the note by what it says, not by how it is phrased. A note that says this repository should or should not do something is a **rule**. A note that explains why the finding was wrong by pointing at how this repository already is — a shared layer that already covers it, a constraint of the deployment, a property of the data — is a **fact**: report it as one, so the next review has that ground instead of guessing again.
+Distil the note by what it says, not by how it is phrased. A note that says this repository should or should not do something is a **rule**. A note that explains why the finding was wrong by pointing at how this repository already is — a shared layer that already covers it, a constraint of the deployment, a property of the data — is a **fact**: report it as one, so the next review has that ground instead of guessing again. A note whose whole content is that some class of problem is not worth reporting in some part of this repository is a **rule** as well, one addressed to the review instead of to the code: write its statement as an imperative to the review, such as "评审 \`x/**\` 时只报功能正确性问题", and put the paths it governs in the scope field. Do not write that one as a statement of how this repository is, and do not tack a verdict such as "因此不上报" onto the end of a fact.
 
 Report only what the note itself justifies. A note that settles this one finding and nothing more justifies no change at all — reporting nothing is an expected outcome. Read the code around the finding when you need it to tell a one-off from a standing rule, or to check a fact before stating it; the evidence you read goes in the reason field, not in the statement.
 
@@ -277,7 +277,17 @@ A note whose only effect is to keep this one place in the code from being report
 Report each change through ${PROPOSE_RULE_TOOL}. When you have nothing more to report, stop.`;
 }
 
-/** 待裁决队列里的一条给整理 agent 看的样子:标识、变更类型、目标、作用范围与陈述,加它的出处。 */
+/**
+ * 一句陈述的长度给整理 agent 看的样子(issue #292)。陈述形状那四条里只有长度判得出程序,
+ * 标出来整理才知道该先动哪几条——AI-API 首轮整理的现集 75 条里 72 条超限,它只碰了 20 条
+ * 就宣布完成。计数与服务端那道闸(`usableRuleItems`)同一口径,免得标着合规却被丢掉。
+ */
+function lengthMark(statement: string): string {
+  const over = statement.length > AGENT_STATEMENT_LIMIT ? ", over limit" : "";
+  return `(${statement.length} characters${over})`;
+}
+
+/** 待裁决队列里的一条给整理 agent 看的样子:标识、变更类型、目标、作用范围、字数与陈述,加它的出处。 */
 function proposalBullet(proposal: ConsolidationProposal): string {
   const scope = proposal.scope === "" ? "whole repository" : proposal.scope;
   const target =
@@ -286,7 +296,7 @@ function proposalBullet(proposal: ConsolidationProposal): string {
     .map((source) => (source.note === null ? source.origin : `${source.origin}: ${oneLine(source.note)}`))
     .join(" | ");
   return [
-    `- [${proposal.id}] (${proposal.change}) (${proposal.type})${target} (${scope}) ${oneLine(proposal.statement)}`,
+    `- [${proposal.id}] (${proposal.change}) (${proposal.type})${target} (${scope}) ${lengthMark(proposal.statement)} ${oneLine(proposal.statement)}`,
     `  provenance: ${sources === "" ? "none recorded" : sources}`,
   ].join("\n");
 }
@@ -296,21 +306,32 @@ function proposalBullet(proposal: ConsolidationProposal): string {
  * 清单形状会带上「一个都认不出即新增」那一句,而整理提不出新增(它不读代码);这里
  * 因此自己渲染现集,既是「改写为修改型时指向哪一条」的目标清单,也是提案的目标清单。
  */
-function consolidationPrompt(
+export function consolidationPrompt(
   proposals: readonly ConsolidationProposal[],
   entries: readonly KnowledgeEntry[],
 ): string {
   const agreed =
     entries.length === 0
       ? "This repository has no knowledge entries in force yet, so nothing can be retargeted and nothing can be proposed against."
-      : ["The knowledge entries in force, each with its id and kind:", "", ...entries.map(knowledgeBullet)].join("\n");
+      : [
+          "The knowledge entries in force, each with its id, kind, scope and statement length:",
+          "",
+          ...entries.map((entry) => `${knowledgeBullet(entry)} ${lengthMark(entry.statement)}`),
+        ].join("\n");
+  const over = entries.filter((entry) => entry.statement.length > AGENT_STATEMENT_LIMIT).length;
+  const mustHandle =
+    over === 0
+      ? ""
+      : `\n${over} of those entries are marked over limit, and a statement that long is the shape problem you can see without reading any code. Every entry marked over limit must appear in at least one proposal — shortened to the invariant it rests on, merged with the entries carrying that same invariant, or changed in kind. When one of them genuinely needs no change, name it in your narration and say why.\n`;
   return `Tidy the revision proposal queue of this repository.
 
 ${agreed}
-
-The proposals waiting for adjudication, each with its id, change kind, entry kind, target entry, scope, statement and provenance:
+${mustHandle}
+The proposals waiting for adjudication, each with its id, change kind, entry kind, target entry, scope, statement length, statement and provenance:
 
 ${proposals.map(proposalBullet).join("\n")}
+
+A proposal whose statement runs past ${AGENT_STATEMENT_LIMIT} characters is shortened by the person who rules on it: you have no action that rewrites the statement of one proposal, so leave those statements as they stand.
 
 Report every duplicate proposal through ${MERGE_PROPOSALS_TOOL} and ${RETARGET_PROPOSAL_TOOL}. Report every change the entries in force need through ${PROPOSE_RULE_TOOL}, always with rule_ids and a reason. When you have nothing more to report, stop.`;
 }
