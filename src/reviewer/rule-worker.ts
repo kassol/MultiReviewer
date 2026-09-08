@@ -94,7 +94,7 @@ const ruleSchema = Type.Object({
   rule_ids: Type.Optional(
     Type.Array(Type.Number(), {
       description:
-        "The ids of the agreed entries this change targets, taken from the list of agreed knowledge. Pass one id to reword or retire that entry. Pass two or more ids to merge those entries into the single statement you give here. Leave it out when you propose an entry that is not in that list.",
+        "The ids of the agreed entries this change targets, taken from the list of agreed knowledge. Pass one id to reword or retire that entry; pass that one id together with the other kind in `type` to change its kind — the statement you give here replaces it. Pass two or more ids to merge those entries into the single statement you give here. Leave it out when you propose an entry that is not in that list.",
     }),
   ),
   retire: Type.Optional(

@@ -6841,7 +6841,9 @@ function proposalsFromItems(
       });
       continue;
     }
-    if (targets.length > 1) {
+    // 合并指向一条以上现有条目,型由新陈述定(CONTEXT.md 修订提案,spec #286):一条
+    // 目标而型与它不同即改型,走合并而不是修改——修改那一档不许翻型。
+    if (targets.length > 1 || (item.retire !== true && item.type !== targets[0]!.type)) {
       proposals.push({
         type: item.type,
         change: "merge",

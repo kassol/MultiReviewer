@@ -1796,7 +1796,8 @@ export type RuleProposalInput = ReviewRuleInput & {
   change: RuleProposalChange;
   /**
    * 这条变更指向的现有条目(issue #282):新增没有目标,为空;修改与废止一条;合并
-   * 两条以上。存成一个 JSON 数组:目标只随提案整条读写,没有一处按目标反查提案。
+   * 一条以上(单目标的合并即改型,issue #289)。存成一个 JSON 数组:目标只随提案整条
+   * 读写,没有一处按目标反查提案。
    */
   targetRuleIds: readonly number[];
   /**

@@ -81,7 +81,7 @@ export type ConsolidationProposal = {
   id: number;
   type: KnowledgeType;
   change: RuleProposalChange;
-  /** 修改与废止指向的现有条目,合并指向两条以上;新增没有目标,为空数组(issue #282)。 */
+  /** 修改与废止指向的现有条目,合并指向一条以上;新增没有目标,为空数组(issue #282)。 */
   targetRuleIds: readonly number[];
   scope: string;
   statement: string;
