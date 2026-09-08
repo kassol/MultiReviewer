@@ -64,16 +64,16 @@ const ruleSchema = Type.Object({
         "A glob limiting the paths this rule applies to, such as `src/api/**`. Leave it out when the rule applies to the whole repository.",
     }),
   ),
-  rule_id: Type.Optional(
-    Type.Number({
+  rule_ids: Type.Optional(
+    Type.Array(Type.Number(), {
       description:
-        "The id of the agreed entry this change targets, taken from the list of agreed knowledge. Leave it out when you propose an entry that is not in that list.",
+        "The ids of the agreed entries this change targets, taken from the list of agreed knowledge. Pass one id to reword or retire that entry. Pass two or more ids to merge those entries into the single statement you give here. Leave it out when you propose an entry that is not in that list.",
     }),
   ),
   retire: Type.Optional(
     Type.Boolean({
       description:
-        "Set to true together with rule_id to retire that agreed entry instead of restating it. Restate the entry you want retired in the statement field. Use it for a rule the code no longer justifies, and for a fact the code has outgrown.",
+        "Set to true together with exactly one id in rule_ids to retire that agreed entry instead of restating it. Restate the entry you want retired in the statement field. Use it for a rule the code no longer justifies, and for a fact the code has outgrown.",
     }),
   ),
 });
@@ -96,9 +96,10 @@ function existingSection(entries: readonly KnowledgeEntry[]): string {
     ...entries.map(knowledgeBullet),
     "",
     "Report changes against that list, not the list itself. Do not restate an entry that still holds as it stands — an entry you do not report stays in force. For each change, call propose_rule once:",
-    "- to reword or narrow an agreed entry, pass its rule_id and the full new statement;",
-    "- to retire an agreed entry the code no longer justifies or has outgrown, pass its rule_id, retire=true and restate that entry;",
-    "- to add a standard or a fact the list does not cover, leave rule_id out.",
+    "- to reword or narrow an agreed entry, pass its id in rule_ids and the full new statement;",
+    "- to retire an agreed entry the code no longer justifies or has outgrown, pass its id in rule_ids, retire=true and restate that entry;",
+    "- to merge agreed entries that say the same thing, pass all of their ids in rule_ids and one statement that covers what they all say. Merge only entries a reader would take for one another; entries that differ in what they require stay separate.",
+    "- to add a standard or a fact the list does not cover, leave rule_ids out.",
   ].join("\n");
 }
 
@@ -164,7 +165,7 @@ async function run(request: RuleWorkerRequest): Promise<void> {
         type: string;
         statement: string;
         scope?: string;
-        rule_id?: number;
+        rule_ids?: number[];
         retire?: boolean;
       };
       send({
@@ -175,7 +176,7 @@ async function run(request: RuleWorkerRequest): Promise<void> {
           type: raw.type === "fact" ? "fact" : "rule",
           scope: raw.scope ?? "",
           statement: raw.statement,
-          ...(raw.rule_id === undefined ? {} : { targetRuleId: raw.rule_id }),
+          ...(raw.rule_ids === undefined ? {} : { targetRuleIds: raw.rule_ids }),
           ...(raw.retire === true ? { retire: true } : {}),
         },
       });

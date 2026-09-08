@@ -36,7 +36,7 @@ const AT = "2026-08-29T00:00:00.000Z";
 type ProposalResponse = {
   id: number;
   change: "add" | "modify" | "retire";
-  targetRuleId: number | null;
+  targetRuleIds: number[];
   scope: string;
   statement: string;
   /** 出处附注列表(issue #281)。一行一条,至少一条。 */
@@ -65,7 +65,7 @@ function proposal(overrides: Partial<RuleProposalInput> = {}): RuleProposalInput
   return {
     type: "rule",
     change: "add",
-    targetRuleId: null,
+    targetRuleIds: [],
     scope: "",
     statement: "新提的一条规范陈述",
     sources: [source()],
@@ -91,6 +91,23 @@ function proposalSourceRows(dbPath: string): number {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
     return Number(db.prepare("SELECT COUNT(*) AS rows FROM rule_proposal_source").get()!["rows"]);
+  } finally {
+    db.close();
+  }
+}
+
+/** 每条知识条目的生效版本与废止版本。合并要看得出「一起废止于新版、新行生效于同一版」。 */
+function ruleVersions(dbPath: string): (number | null)[][] {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    return db
+      .prepare("SELECT id, effective_version, retired_version FROM review_rule ORDER BY id")
+      .all()
+      .map((row) => [
+        Number(row["id"]),
+        Number(row["effective_version"]),
+        row["retired_version"] === null ? null : Number(row["retired_version"]),
+      ]);
   } finally {
     db.close();
   }
@@ -251,11 +268,11 @@ test("三种变更类型各自的落库形态:新增进集、修改留下旧那�
     const added = store.addRuleProposal(81, proposal({ statement: "探索提的新规则", scope: "src/**" }))!;
     const modified = store.addRuleProposal(
       81,
-      proposal({ change: "modify", targetRuleId: target!.id, statement: "改过的陈述" }),
+      proposal({ change: "modify", targetRuleIds: [target!.id], statement: "改过的陈述" }),
     )!;
     const retired = store.addRuleProposal(
       81,
-      proposal({ change: "retire", targetRuleId: doomed!.id, statement: "会被废止的那条" }),
+      proposal({ change: "retire", targetRuleIds: [doomed!.id], statement: "会被废止的那条" }),
     )!;
 
     // 新增:出处沿用提案的出处,不记人工。
@@ -327,7 +344,7 @@ test("目标规则已经不生效时采纳不了,一版都不推进;移除仓库
     const rule = store.getRuleSet(83)!.rules[0]!;
     const id = store.addRuleProposal(
       83,
-      proposal({ change: "modify", targetRuleId: rule.id, statement: "改过的陈述" }),
+      proposal({ change: "modify", targetRuleIds: [rule.id], statement: "改过的陈述" }),
     )!;
     assert.equal(store.retireReviewRule(83, rule.id), 2);
 
@@ -344,16 +361,110 @@ test("目标规则已经不生效时采纳不了,一版都不推进;移除仓库
   }
 });
 
+test("合并型采纳:目标全部废止于新版、合成的那条生效于新版,出处记提案自己的", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  try {
+    store.registerRepo({ repoId: 84, owner: "acme", repo: "merged", generation: 1, key: "k" });
+    for (const statement of ["重复的甲", "重复的乙", "不相干的那条"]) {
+      store.addReviewRule(84, { type: "rule", scope: "", statement });
+    }
+    const [first, second, other] = store.getRuleSet(84)!.rules;
+    const id = store.addRuleProposal(
+      84,
+      proposal({
+        change: "merge",
+        targetRuleIds: [first!.id, second!.id],
+        scope: "src/**",
+        statement: "合起来的那一句",
+        sources: [source({ origin: "disposition-feedback", note: "两条说的是同一件事" })],
+      }),
+    )!;
+
+    assert.equal(store.acceptRuleProposal(84, id), 4);
+    const after = store.getRuleSet(84)!;
+    // 两条目标一起停止生效,合成的那一条以提案自己的出处进集(不沿用目标的 manual)。
+    assert.deepEqual(
+      after.rules.map((rule) => [rule.statement, rule.scope, rule.origin]),
+      [
+        ["不相干的那条", "", "manual"],
+        ["合起来的那一句", "src/**", "disposition-feedback"],
+      ],
+    );
+    assert.deepEqual(
+      after.retired.map((rule) => rule.id).sort(),
+      [first!.id, second!.id].sort(),
+    );
+    // 两条目标废止于新版,合成的那一条生效于同一版:合并在版本轴上是一格。
+    assert.deepEqual(ruleVersions(db.path), [
+      [first!.id, 1, 4],
+      [second!.id, 2, 4],
+      [other!.id, 3, null],
+      [after.rules[1]!.id, 4, null],
+    ]);
+  } finally {
+    store.close();
+  }
+});
+
+test("合并型:任一目标已不生效即采纳不了,驳回照常;改后采纳同样成立", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  try {
+    store.registerRepo({ repoId: 85, owner: "acme", repo: "merge-stale", generation: 1, key: "k" });
+    for (const statement of ["甲", "乙", "丙", "丁"]) {
+      store.addReviewRule(85, { type: "rule", scope: "", statement });
+    }
+    const [a, b, c, d] = store.getRuleSet(85)!.rules;
+    const stale = store.addRuleProposal(
+      85,
+      proposal({ change: "merge", targetRuleIds: [a!.id, b!.id], statement: "合甲乙" }),
+    )!;
+    const edited = store.addRuleProposal(
+      85,
+      proposal({ change: "merge", targetRuleIds: [c!.id, d!.id], statement: "合丙丁" }),
+    )!;
+    // 一条目标被人先手工废止:那一条合并落下去会凭空复活它。
+    assert.equal(store.retireReviewRule(85, b!.id), 5);
+
+    assert.equal(store.acceptRuleProposal(85, stale), undefined);
+    assert.equal(store.getRuleSet(85)!.version, 5);
+    assert.equal(store.getRuleProposals(85)[0]!.state, "pending");
+    // 目标没了仍然驳得回,与修改型同一条口径。
+    assert.equal(store.rejectRuleProposal(85, stale), true);
+
+    // 改后采纳:落进知识集与留在队列里的都是人改过的那一份。
+    assert.equal(
+      store.acceptRuleProposal(85, edited, {
+        type: "rule",
+        scope: "src/**",
+        statement: "人改过的合并陈述",
+      }),
+      6,
+    );
+    const after = store.getRuleSet(85)!;
+    assert.deepEqual(
+      after.rules.map((rule) => rule.statement),
+      ["甲", "人改过的合并陈述"],
+    );
+    assert.equal(store.getRuleProposals(85)[1]!.statement, "人改过的合并陈述");
+  } finally {
+    store.close();
+  }
+});
+
 test("知识集已确认时探索产出进提案队列,草案一行不动", async () => {
   const items: RuleAgentItem[] = [];
   const { h, cookie, agent } = await confirmedHarness(items);
   const rules = (await ruleSet(h, cookie)).rules;
   items.push(
-    { type: "rule", scope: "", statement: "改过的陈述", targetRuleId: rules[0]!.id },
-    { type: "rule", scope: "", statement: "会被废止的那条", targetRuleId: rules[1]!.id, retire: true },
+    { type: "rule", scope: "", statement: "改过的陈述", targetRuleIds: [rules[0]!.id] },
+    { type: "rule", scope: "", statement: "会被废止的那条", targetRuleIds: [rules[1]!.id], retire: true },
     { type: "rule", scope: "src/**", statement: "全新的一条" },
     // 对不上现有规则的废止不成其为一条变更,丢掉。
-    { type: "rule", scope: "", statement: "对不上目标的废止", targetRuleId: 4242, retire: true },
+    { type: "rule", scope: "", statement: "对不上目标的废止", targetRuleIds: [4242], retire: true },
   );
 
   const started = await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-exploration`, {
@@ -370,11 +481,11 @@ test("知识集已确认时探索产出进提案队列,草案一行不动", asyn
   // 草案是「还没有知识集时那一整份」,这条链路不碰它。
   assert.deepEqual(body.draft, []);
   assert.deepEqual(
-    body.proposals.map((row) => [row.change, row.targetRuleId, row.statement, row.state]),
+    body.proposals.map((row) => [row.change, row.targetRuleIds, row.statement, row.state]),
     [
-      ["modify", rules[0]!.id, "改过的陈述", "pending"],
-      ["retire", rules[1]!.id, "会被废止的那条", "pending"],
-      ["add", null, "全新的一条", "pending"],
+      ["modify", [rules[0]!.id], "改过的陈述", "pending"],
+      ["retire", [rules[1]!.id], "会被废止的那条", "pending"],
+      ["add", [], "全新的一条", "pending"],
     ],
   );
   // 探索产出各带一条基点探索附注:没有备注、没有 Finding,轨迹是这一次探索那条。
@@ -391,14 +502,87 @@ test("知识集已确认时探索产出进提案队列,草案一行不动", asyn
   assert.equal(body.rules.length, 2);
 });
 
+test("多目标映射为合并型:认不出的目标丢掉,只剩一个即退化为修改,带废止标记的整条丢掉", async () => {
+  const items: RuleAgentItem[] = [];
+  const { h, cookie } = await confirmedHarness(items);
+  const path = `/repos/${GITEA_REPO.id}`;
+  // 合并要两条目标,退化那一档另要一条:确认好的那两条之外再加一条。
+  assert.equal(
+    (await send(h, cookie, "POST", `${path}/rules`, {
+      type: "rule",
+      scope: "",
+      statement: "第三条",
+    })).status,
+    201,
+  );
+  const rules = (await ruleSet(h, cookie)).rules;
+  items.push(
+    // 认得出两条目标即合并型。
+    {
+      type: "rule",
+      scope: "src/**",
+      statement: "合起来的那一句",
+      targetRuleIds: [rules[0]!.id, rules[1]!.id],
+    },
+    // 认得出的只剩一条:退化为修改。
+    { type: "rule", scope: "", statement: "只认得出一个", targetRuleIds: [rules[2]!.id, 4242] },
+    // 一条都认不出:与不给目标同义,成为新增。
+    { type: "rule", scope: "", statement: "目标全认不出", targetRuleIds: [4242, 4243] },
+    // 废止只认单目标:认得出的目标不止一条,整条丢掉。
+    {
+      type: "rule",
+      scope: "",
+      statement: "废止两条",
+      targetRuleIds: [rules[0]!.id, rules[2]!.id],
+      retire: true,
+    },
+  );
+  assert.equal(
+    (await send(h, cookie, "POST", `${path}/rule-exploration`, {
+      baseline: h.repo.baseSha,
+      provider: "test",
+      model: "global-model",
+    })).status,
+    202,
+  );
+  await h.explorationsAtLeast(1);
+
+  const queued = (await ruleSet(h, cookie)).proposals;
+  assert.deepEqual(
+    queued.map((row) => [row.change, row.targetRuleIds, row.statement]),
+    [
+      ["merge", [rules[0]!.id, rules[1]!.id], "合起来的那一句"],
+      ["modify", [rules[2]!.id], "只认得出一个"],
+      ["add", [], "目标全认不出"],
+    ],
+  );
+
+  // 目标先被人手工废止:这一条合并采纳不了,404 那句话与修改型逐字相同。
+  assert.equal(
+    (await send(h, cookie, "DELETE", `${path}/rules/${rules[1]!.id}`)).status,
+    200,
+  );
+  const stale = await send(h, cookie, "POST", `${path}/rule-proposals/${queued[0]!.id}/accept`);
+  assert.equal(stale.status, 404);
+  assert.match(
+    ((await stale.json()) as { error: string }).error,
+    /已经不再生效/,
+  );
+  // 驳回照常:队列不该留下裁不掉的条目。
+  assert.equal(
+    (await send(h, cookie, "POST", `${path}/rule-proposals/${queued[0]!.id}/reject`)).status,
+    200,
+  );
+});
+
 test("逐条裁决:改后采纳、原样采纳与驳回,只有采纳推进知识集版本", async () => {
   const items: RuleAgentItem[] = [];
   const { h, cookie } = await confirmedHarness(items);
   const path = `/repos/${GITEA_REPO.id}`;
   const rules = (await ruleSet(h, cookie)).rules;
   items.push(
-    { type: "rule", scope: "", statement: "agent 提的改法", targetRuleId: rules[0]!.id },
-    { type: "rule", scope: "", statement: "会被废止的那条", targetRuleId: rules[1]!.id, retire: true },
+    { type: "rule", scope: "", statement: "agent 提的改法", targetRuleIds: [rules[0]!.id] },
+    { type: "rule", scope: "", statement: "会被废止的那条", targetRuleIds: [rules[1]!.id], retire: true },
     { type: "rule", scope: "src/**", statement: "全新的一条" },
   );
   assert.equal(
@@ -461,7 +645,7 @@ test("没有 knowledge:write 的人裁决不了,但读得到提案队列", async
   const { h, cookie } = await confirmedHarness(items);
   const path = `/repos/${GITEA_REPO.id}`;
   const rules = (await ruleSet(h, cookie)).rules;
-  items.push({ type: "rule", scope: "", statement: "改过的陈述", targetRuleId: rules[0]!.id });
+  items.push({ type: "rule", scope: "", statement: "改过的陈述", targetRuleIds: [rules[0]!.id] });
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
@@ -520,8 +704,8 @@ test("已确认的空知识集重探索:产出仍进提案队列,不回到草案
   const body = await ruleSet(h, cookie);
   assert.deepEqual(body.draft, []);
   assert.deepEqual(
-    body.proposals.map((row) => [row.change, row.targetRuleId, row.statement, row.state]),
-    [["add", null, "重探索提的那条", "pending"]],
+    body.proposals.map((row) => [row.change, row.targetRuleIds, row.statement, row.state]),
+    [["add", [], "重探索提的那条", "pending"]],
   );
   assert.equal(body.version, 1);
   assert.deepEqual(body.rules, []);
@@ -600,7 +784,7 @@ test("批量采纳一次只推进一个知识集版本;有一条落不下去就�
       store.addRuleProposal(84, proposal({ type: "fact", statement: "一条事实" }))!,
       store.addRuleProposal(
         84,
-        proposal({ change: "modify", targetRuleId: target.id, statement: "改过的陈述" }),
+        proposal({ change: "modify", targetRuleIds: [target.id], statement: "改过的陈述" }),
       )!,
     ];
 
@@ -654,7 +838,7 @@ test("批量采纳里目标条目已经不生效:整组不做,一版都不推进
       store.addRuleProposal(85, proposal({ statement: "本来能落的那条" }))!,
       store.addRuleProposal(
         85,
-        proposal({ change: "modify", targetRuleId: rule.id, statement: "改过的陈述" }),
+        proposal({ change: "modify", targetRuleIds: [rule.id], statement: "改过的陈述" }),
       )!,
     ];
     assert.equal(store.retireReviewRule(85, rule.id), 2);
@@ -769,11 +953,11 @@ test("批量采纳里两条指向同一个目标:整组不做,不让一条规则
     const twoModify = [
       store.addRuleProposal(
         87,
-        proposal({ change: "modify", targetRuleId: rule.id, statement: "改法甲" }),
+        proposal({ change: "modify", targetRuleIds: [rule.id], statement: "改法甲" }),
       )!,
       store.addRuleProposal(
         87,
-        proposal({ change: "modify", targetRuleId: rule.id, statement: "改法乙" }),
+        proposal({ change: "modify", targetRuleIds: [rule.id], statement: "改法乙" }),
       )!,
     ];
 
@@ -788,7 +972,7 @@ test("批量采纳里两条指向同一个目标:整组不做,不让一条规则
       twoModify[0]!,
       store.addRuleProposal(
         87,
-        proposal({ change: "retire", targetRuleId: rule.id, statement: "本来那条" }),
+        proposal({ change: "retire", targetRuleIds: [rule.id], statement: "本来那条" }),
       )!,
     ];
     assert.equal(store.acceptRuleProposals(87, mixed), undefined);
@@ -815,7 +999,7 @@ test("modify 提案翻不了型:采纳一条把规则改成事实的提案落不
     // 不再产 Finding。修改不许翻型,要改型走「废止 + 新增」两条,意图才看得见。
     const flip = store.addRuleProposal(
       88,
-      proposal({ type: "fact", change: "modify", targetRuleId: rule.id, statement: "边界已有校验" }),
+      proposal({ type: "fact", change: "modify", targetRuleIds: [rule.id], statement: "边界已有校验" }),
     )!;
     assert.equal(store.acceptRuleProposal(88, flip), undefined);
     assert.equal(store.acceptRuleProposals(88, [flip]), undefined);
@@ -831,7 +1015,7 @@ test("modify 提案翻不了型:采纳一条把规则改成事实的提案落不
     // 同型的 modify 不受影响,照常落下去。
     const sameType = store.addRuleProposal(
       88,
-      proposal({ change: "modify", targetRuleId: rule.id, statement: "边界要在入口校验" }),
+      proposal({ change: "modify", targetRuleIds: [rule.id], statement: "边界要在入口校验" }),
     )!;
     assert.equal(store.acceptRuleProposals(88, [sameType]), 2);
   } finally {
@@ -879,7 +1063,9 @@ test("存量提案迁移:三列各合成一条出处附注,来源、备注与轨
            NULL, 3, 'pending', '2026-08-29T00:00:00.000Z', NULL),
           (8, 90, 'fact', 'add', NULL, '', '反哺提的那条', '', 'disposition-feedback',
            '这类越界在边界上判', NULL, 'accepted', '2026-08-30T00:00:00.000Z',
-           '2026-08-31T00:00:00.000Z');
+           '2026-08-31T00:00:00.000Z'),
+          (9, 90, 'rule', 'modify', 5, '', '改现集里那条', '', 'baseline-exploration',
+           NULL, NULL, 'pending', '2026-08-30T00:00:00.000Z', NULL);
     `);
   } finally {
     raw.close();
@@ -914,7 +1100,20 @@ test("存量提案迁移:三列各合成一条出处附注,来源、备注与轨
           "2026-08-30T00:00:00.000Z",
           [["disposition-feedback", "这类越界在边界上判", null, null]],
         ],
+        [
+          9,
+          "rule",
+          "改现集里那条",
+          "pending",
+          "2026-08-30T00:00:00.000Z",
+          [["baseline-exploration", null, null, null]],
+        ],
       ],
+    );
+    // 单值的目标列迁移成一元的目标列表(issue #282),新增那两条是空列表。
+    assert.deepEqual(
+      store.getRuleProposals(90).map((row) => row.targetRuleIds),
+      [[], [], [5]],
     );
   } finally {
     store.close();
@@ -923,13 +1122,15 @@ test("存量提案迁移:三列各合成一条出处附注,来源、备注与轨
   // 迁移完的库再开一次不重复搬:判据看建表语句原文,搬过即不再命中。
   const again = openStore(db.path);
   try {
-    assert.equal(proposalSourceRows(db.path), 2);
-    assert.equal(again.getRuleProposals(90).length, 2);
-    // 那三列已经不在表上,契约里也就没有它们。
+    assert.equal(proposalSourceRows(db.path), 3);
+    assert.equal(again.getRuleProposals(90).length, 3);
+    // 那三列已经不在表上,契约里也就没有它们;单值的目标列同样换成了目标列表。
     const columns = columnNames(db.path);
     assert.equal(columns.includes("source"), false);
     assert.equal(columns.includes("source_note"), false);
     assert.equal(columns.includes("trace_task_id"), false);
+    assert.equal(columns.includes("target_rule_id"), false);
+    assert.equal(columns.includes("target_rule_ids"), true);
   } finally {
     again.close();
   }

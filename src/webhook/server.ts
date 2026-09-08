@@ -6784,10 +6784,17 @@ function usableRuleItems(items: readonly RuleAgentItem[]): RuleAgentItem[] {
 }
 
 /**
- * 探索产出到修订提案的映射(issue #207)。知识集非空时 agent 提的是对照现有规则的变更,
- * 服务端只按目标规则认得出认不出分派,映射从简:目标规则仍生效时按有没有废止标记成为
- * 废止或修改,认不出目标的成为新增。**带废止标记却认不出目标的丢掉**——没有目标的废止
- * 不成其为一条变更,当成新增会把要删的规则又加一遍。废止那一档的内容取目标规则的原样:
+ * 探索产出到修订提案的映射(issue #207、#282)。知识集非空时 agent 提的是对照现有规则
+ * 的变更,服务端只按目标条目认得出认不出分派,映射从简。**认不出的目标先逐个丢掉**,
+ * 剩下几个决定这一条是什么(三条链路共用这一套):
+ *
+ * - 一个都不剩即新增(与不给目标同义);
+ * - 剩一个即按有没有废止标记成为废止或修改;
+ * - 剩两个以上即合并,内容是 agent 给的那一句新陈述。
+ *
+ * 两处丢掉整条:**带废止标记而一个目标都认不出的**(没有目标的废止不成其为一条变更,
+ * 当成新增会把要删的规则又加一遍),以及**带废止标记而认得出的目标不止一个的**(废止
+ * 一次只废止一条,把它读成合并会凭空添一条新陈述)。废止那一档的内容取目标条目的原样:
  * 队列里那条要说得出它废止的是什么。
  */
 function proposalsFromItems(
@@ -6798,13 +6805,26 @@ function proposalsFromItems(
   const byId = new Map(activeRules.map((rule) => [rule.id, rule]));
   const proposals: RuleProposalInput[] = [];
   for (const item of items) {
-    const target = item.targetRuleId === undefined ? undefined : byId.get(item.targetRuleId);
-    if (target === undefined) {
-      if (item.retire === true) continue;
+    const targets = (item.targetRuleIds ?? [])
+      .map((id) => byId.get(id))
+      .filter((rule) => rule !== undefined);
+    if (item.retire === true && targets.length !== 1) continue;
+    if (targets.length === 0) {
       proposals.push({
         type: item.type,
         change: "add",
-        targetRuleId: null,
+        targetRuleIds: [],
+        scope: item.scope,
+        statement: item.statement,
+        sources: [source],
+      });
+      continue;
+    }
+    if (targets.length > 1) {
+      proposals.push({
+        type: item.type,
+        change: "merge",
+        targetRuleIds: targets.map((rule) => rule.id),
         scope: item.scope,
         statement: item.statement,
         sources: [source],
@@ -6813,11 +6833,12 @@ function proposalsFromItems(
     }
     // 废止那一档的内容取目标条目的原样,连它是规则还是事实一起:队列里那条要说得出
     // 它废止的是什么。
+    const target = targets[0]!;
     const content = item.retire === true ? target : item;
     proposals.push({
       type: content.type,
       change: item.retire === true ? "retire" : "modify",
-      targetRuleId: target.id,
+      targetRuleIds: [target.id],
       scope: content.scope,
       statement: content.statement,
       sources: [source],

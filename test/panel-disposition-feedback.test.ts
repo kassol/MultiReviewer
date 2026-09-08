@@ -35,7 +35,7 @@ type ProposalResponse = {
   /** 两型之一(ADR 0020,issue #222)。规范性结论提为规则,描述性结论提为事实。 */
   type: "rule" | "fact";
   change: "add" | "modify" | "retire";
-  targetRuleId: number | null;
+  targetRuleIds: number[];
   scope: string;
   statement: string;
   /** 出处附注列表(issue #281)。反哺产出的各带一条处置反哺附注。 */
@@ -158,7 +158,7 @@ test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,
   }
   items = [
     { type: "rule", scope: "src/**", statement: "边界上一次判空" },
-    { type: "rule", scope: "", statement: "改写现集里的那一条", targetRuleId: ruleId },
+    { type: "rule", scope: "", statement: "改写现集里的那一条", targetRuleIds: [ruleId] },
   ];
 
   const [target] = await inlineFindings(h);
@@ -195,10 +195,10 @@ test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,
     assert.equal(typeof entry.sources[0]!.traceTaskId, "number");
   }
   assert.deepEqual(
-    queued.map((entry) => [entry.change, entry.targetRuleId, entry.statement]),
+    queued.map((entry) => [entry.change, entry.targetRuleIds, entry.statement]),
     [
-      ["add", null, "边界上一次判空"],
-      ["modify", ruleId, "改写现集里的那一条"],
+      ["add", [], "边界上一次判空"],
+      ["modify", [ruleId], "改写现集里的那一条"],
     ],
   );
 });
