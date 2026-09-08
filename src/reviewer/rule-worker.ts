@@ -12,7 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import type { KnowledgeEntry } from "../review/finding.ts";
+import type { KnowledgeEntry, PendingProposal } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import type {
   DispositionFeedback,
@@ -76,6 +76,12 @@ const ruleSchema = Type.Object({
         "Set to true together with exactly one id in rule_ids to retire that agreed entry instead of restating it. Restate the entry you want retired in the statement field. Use it for a rule the code no longer justifies, and for a fact the code has outgrown.",
     }),
   ),
+  proposal_id: Type.Optional(
+    Type.Number({
+      description:
+        "The id of the proposal already waiting for a decision that says the same thing as this note, taken from the list of proposals awaiting a decision. Pass it together with one statement that covers what that proposal and this note both say: your statement replaces the one on that proposal, and the proposal keeps its own change kind and targets. Leave it out when no waiting proposal says the same thing.",
+    }),
+  ),
 });
 
 function send(message: RuleWorkerMessage): void {
@@ -113,6 +119,32 @@ function knowledgeBullet(entry: KnowledgeEntry): string {
   return `- [${entry.id}] (${entry.type}) (${scope}) ${oneLine(entry.statement)}`;
 }
 
+/**
+ * 待裁决队列(issue #283)。队列为空时这一段不渲染;非空即这一次要先看它——同一件事已经
+ * 有人提过一条,再排一条只会让人裁两次。并入必须给合成后的新陈述:它覆盖队列里那一条的
+ * 陈述,而队列里留下的要是「这两次备注合起来说的那一句」,不是其中一次的原话。
+ */
+function pendingSection(proposals: readonly PendingProposal[]): string {
+  return [
+    "",
+    "This repository already has the following proposals waiting for a human decision, each with its id:",
+    "",
+    ...proposals.map(pendingBullet),
+    "",
+    "Read that queue before you report anything. When this note says the same thing as one of those proposals, merge into it instead of queuing a second one: pass its id in proposal_id together with one statement that covers what that proposal and this note both say. Merge only a proposal a reader would take for the same matter as this note; a proposal that asks for something else stays as it is. When no waiting proposal says the same thing, leave proposal_id out and report the change as usual.",
+  ].join("\n");
+}
+
+/**
+ * 待裁决队列里的一条给 agent 看的样子:标识、变更类型、它指向的现有条目与那一句陈述。
+ * 「废止条目 7」与「新增一条」说的不是同一件事,变更类型与目标因此都要给出来。
+ */
+function pendingBullet(proposal: PendingProposal): string {
+  const targets =
+    proposal.targetRuleIds.length === 0 ? "" : ` of ${proposal.targetRuleIds.join(", ")}`;
+  return `- [${proposal.id}] (${proposal.change}${targets}) ${oneLine(proposal.statement)}`;
+}
+
 function rulePrompt(request: Pick<RuleWorkerRequest, "baselineSha" | "existingKnowledge">): string {
   const existing =
     request.existingKnowledge.length === 0 ? "" : `${existingSection(request.existingKnowledge)}\n`;
@@ -133,20 +165,26 @@ Report each entry through ${PROPOSE_RULE_TOOL}. When you have reported everythin
  * 手里有个报告工具时倾向于用它。
  */
 function feedbackPrompt(
-  request: Pick<RuleWorkerRequest, "existingKnowledge"> & { feedback: DispositionFeedback },
+  request: Pick<RuleWorkerRequest, "existingKnowledge" | "pendingProposals"> & {
+    feedback: DispositionFeedback;
+  },
 ): string {
   const { note, finding } = request.feedback;
   const existing =
     request.existingKnowledge.length === 0
       ? ""
       : `${existingSection(request.existingKnowledge)}\n`;
+  const pending =
+    request.pendingProposals === undefined || request.pendingProposals.length === 0
+      ? ""
+      : `${pendingSection(request.pendingProposals)}\n`;
   return `A reviewer of this repository just disposed of one finding and left a note explaining the decision. Judge what that note says about the standards this repository should be reviewed by.
 
 Finding: ${finding.title ?? finding.description}
 Location: ${finding.file}:${finding.line}
 Description: ${finding.description}
 Disposition note: ${note}
-${existing}
+${existing}${pending}
 Distil the note by what it says, not by how it is phrased. A note that says this repository should or should not do something is a **rule**. A note that explains why the finding was wrong by pointing at how this repository already is — a shared layer that already covers it, a constraint of the deployment, a property of the data — is a **fact**: report it as one, so the next review has that ground instead of guessing again.
 
 Report only what the note itself justifies. A note that settles this one finding and nothing more justifies no change at all — reporting nothing is an expected outcome. Read the code around the finding when you need it to tell a one-off from a standing rule, or to check a fact before stating it.
@@ -167,6 +205,7 @@ async function run(request: RuleWorkerRequest): Promise<void> {
         scope?: string;
         rule_ids?: number[];
         retire?: boolean;
+        proposal_id?: number;
       };
       send({
         kind: "rule",
@@ -178,6 +217,7 @@ async function run(request: RuleWorkerRequest): Promise<void> {
           statement: raw.statement,
           ...(raw.rule_ids === undefined ? {} : { targetRuleIds: raw.rule_ids }),
           ...(raw.retire === true ? { retire: true } : {}),
+          ...(raw.proposal_id === undefined ? {} : { proposalId: raw.proposal_id }),
         },
       });
       return { content: [{ type: "text", text: "recorded" }], details: {} };
@@ -221,6 +261,9 @@ async function run(request: RuleWorkerRequest): Promise<void> {
         ? rulePrompt(request)
         : feedbackPrompt({
             existingKnowledge: request.existingKnowledge,
+            ...(request.pendingProposals === undefined
+              ? {}
+              : { pendingProposals: request.pendingProposals }),
             feedback: request.feedback,
           }),
     );

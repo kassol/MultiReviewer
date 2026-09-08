@@ -31,11 +31,13 @@ import type {
   HistoryFinding,
   KnowledgeEntry,
   KnowledgeType,
+  PendingProposal,
   ProjectFact,
   ReviewerUsage,
   ReviewRule,
   ReviewRunMode,
   ReviewVerdict,
+  RuleProposalChange,
   Severity,
 } from "./finding.ts";
 import { DEFAULT_MIN_REPORT_SEVERITY } from "./finding.ts";
@@ -1644,6 +1646,20 @@ export function toKnowledgeEntry(entry: ReviewRuleRecord): KnowledgeEntry {
 }
 
 /**
+ * 队列里的一条 → 交给反哺 agent 的那一份(issue #283)。只给它认出「这是不是队列里已有
+ * 的一件事」要的那几样:标识、变更类型、目标与陈述。出处附注不给——agent 判的是这条
+ * 提案说的是什么,不是它被谁提过。
+ */
+export function toPendingProposal(proposal: RuleProposal): PendingProposal {
+  return {
+    id: proposal.id,
+    change: proposal.change,
+    targetRuleIds: proposal.targetRuleIds,
+    statement: proposal.statement,
+  };
+}
+
+/**
  * 一个仓库当前生效的知识集与它的知识集版本(CONTEXT.md)。`version` 为 null 即这个
  * 仓库还没确认过知识集;已确认的空知识集是版本有值、规则为空。
  *
@@ -1689,12 +1705,6 @@ export type RuleDraftItem = ReviewRuleInput & {
   id: number;
   origin: string;
 };
-
-/**
- * 一条修订提案的变更类型(CONTEXT.md 修订提案):新增、修改、废止或合并。合并是多条
- * 目标条目换一条新陈述(issue #282),目标因此不止一条。
- */
-export type RuleProposalChange = "add" | "modify" | "retire" | "merge";
 
 /**
  * 一条出处附注的来源(CONTEXT.md 出处附注)。三元:基点探索、处置反哺与知识整理。
@@ -1760,6 +1770,15 @@ export type RuleProposal = Omit<RuleProposalInput, "sources"> & {
   createdAt: string;
   /** 裁决时刻,待裁决时为 null。 */
   decidedAt: string | null;
+};
+
+/**
+ * 一次并入带来的东西(CONTEXT.md 处置反哺,issue #283):合成后的那一句新陈述,与记下
+ * 这一次来源的那条出处附注。只有这两样——作用范围、型、变更类型与目标都不随并入改。
+ */
+export type RuleProposalMerge = {
+  statement: string;
+  source: RuleProposalSourceInput;
 };
 
 /** 一个时间窗里的用量聚合:落了用量的 Review Run 数,加它们的 token 之和。 */
@@ -2312,6 +2331,20 @@ export type Store = {
   getRuleProposals(repoId: number): RuleProposal[];
   /** 排一条修订提案进队列。返回它的 id;仓库不在注册表里回 undefined。 */
   addRuleProposal(repoId: number, input: RuleProposalInput): number | undefined;
+  /**
+   * 把一次新来源并进一条待裁决提案(CONTEXT.md 处置反哺,issue #283):陈述换成合成后
+   * 的那一句,出处附注追加一条。两条说同一件事的处置备注因此只在队列里留一条提案。
+   *
+   * **只覆盖陈述**。作用范围与型不动:并入的输入里没有它们(交给 agent 的队列只给标识、
+   * 变更类型、目标与陈述),拿一份只看新备注写出的作用范围去覆盖,会把这条提案缩到说不
+   * 上话的范围里;型不动另与 `modify` 那道翻型闸同一条口径——并入不是人的裁决,不该悄悄
+   * 把一条规则变成事实。变更类型与目标同样不动:并入说的是「同一件事又被提了一遍」,不是
+   * 对这条提案是什么变更的重判。
+   *
+   * 提案不在这个仓库的待裁决队列里(已裁决或根本不存在)时回 false,一行不改;调用方
+   * 据此把那一条退回按新增处理。
+   */
+  mergeIntoRuleProposal(repoId: number, proposalId: number, merge: RuleProposalMerge): boolean;
   /**
    * 采纳一条待裁决的提案(CONTEXT.md 裁决):推进一版知识集版本,按变更类型落库——
    * 新增写一行新规则(出处沿用提案的出处)、修改是旧行废止于新版加新内容作为新行、
@@ -4425,6 +4458,27 @@ export function openStore(dbPath: string): Store {
     addRuleProposal(repoId, input) {
       if (!repoExists(repoId)) return undefined;
       return insertRuleProposal(repoId, input, new Date().toISOString());
+    },
+
+    mergeIntoRuleProposal(repoId, proposalId, merge) {
+      // 已裁决的、不在这个仓库的、根本不存在的都并不进去:那一条退回按新增处理。
+      if (pendingProposal(repoId, proposalId) === undefined) return false;
+      const at = new Date().toISOString();
+      db.exec("BEGIN");
+      try {
+        // 陈述与附注必须一起落:换了陈述没留下附注,队列里那一条就说不出它是被哪两次
+        // 备注合起来的。
+        db.prepare("UPDATE rule_proposal SET statement = ? WHERE id = ?").run(
+          merge.statement,
+          proposalId,
+        );
+        insertRuleProposalSource(proposalId, merge.source, at);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return true;
     },
 
     acceptRuleProposal(repoId, proposalId, input) {

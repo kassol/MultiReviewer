@@ -405,3 +405,151 @@ test("反哺沿用最近一次探索的思考档位,探索没选档位时反哺�
   assert.equal(h.dispositionFeedbacks[1]!.failure, undefined);
   assert.equal(agent.calls[1]!.thinkingLevel, undefined);
 });
+
+test("认出队列里已有的一件事即并入那一条:队列仍一条,陈述被覆盖,附注两条", async () => {
+  let items: RuleAgentItem[] = [];
+  const agent = scriptedRuleAgent(() => ({ items }));
+  const h = await harnessWithFindings(agent);
+  const findings = await inlineFindings(h);
+  assert.ok(findings.length >= 2);
+
+  // 第一条备注排进一条新增提案。
+  items = [{ type: "rule", scope: "src/**", statement: "边界上一次判空" }];
+  assert.equal((await dispose(h, findings[0]!.id, NOTE)).status, 200);
+  await h.dispositionFeedbackAtLeast(1);
+  assert.equal(h.dispositionFeedbacks[0]!.failure, undefined);
+  const queuedId = (await proposals(h))[0]!.id;
+
+  // 第二条备注说的是同一件事:agent 指名并入那一条,并给出合成后的新陈述。
+  const second = "边界那一处也一样,别每个 handler 再判一遍";
+  items = [
+    {
+      type: "rule",
+      scope: "src/api/**",
+      statement: "越界与判空都在边界上一次判掉",
+      proposalId: queuedId,
+    },
+  ];
+  assert.equal((await dispose(h, findings[1]!.id, second)).status, 200);
+  await h.dispositionFeedbackAtLeast(2);
+  assert.equal(h.dispositionFeedbacks[1]!.failure, undefined);
+
+  // 反哺 agent 在现集之外拿到了待裁决队列,连标识、变更类型、目标与陈述。
+  assert.deepEqual(agent.calls[1]!.pendingProposals, [
+    { id: queuedId, change: "add", targetRuleIds: [], statement: "边界上一次判空" },
+  ]);
+
+  // 队列仍一条:两条说同一件事的备注只留一条提案,人裁决一次。
+  const queued = await proposals(h);
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]!.id, queuedId);
+  assert.equal(queued[0]!.state, "pending");
+  assert.equal(queued[0]!.statement, "越界与判空都在边界上一次判掉");
+  // 作用范围与型不随并入覆盖:并入的输入里没有它们(队列只给标识、变更类型、目标与
+  // 陈述),拿一份只看新备注写出的作用范围去覆盖会把这条提案缩到说不上话的范围。
+  assert.equal(queued[0]!.scope, "src/**");
+  assert.equal(queued[0]!.type, "rule");
+  // 附注由一条变两条,新那条带备注原文与这一次的 Finding。
+  assert.deepEqual(
+    queued[0]!.sources.map((entry) => [entry.origin, entry.note, entry.findingId]),
+    [
+      ["disposition-feedback", NOTE, findings[0]!.id],
+      ["disposition-feedback", second, findings[1]!.id],
+    ],
+  );
+  for (const entry of queued[0]!.sources) {
+    assert.equal(
+      entry.findingStageId,
+      `pr:${HARNESS_PR.owner}/${HARNESS_PR.repo}/${HARNESS_PR.number}`,
+    );
+    assert.equal(typeof entry.traceTaskId, "number");
+  }
+
+  // 并入后的提案在下一次重探索中留下:它的附注不全是基点探索(issue #281)。
+  const store = openStore(h.db.path);
+  try {
+    store.finishRuleExplorationAsProposals(
+      GITEA_REPO.id,
+      [
+        {
+          type: "rule",
+          change: "add",
+          targetRuleIds: [],
+          scope: "",
+          statement: "新一轮探索提的",
+          sources: [{ origin: "baseline-exploration", note: null, findingId: null, traceTaskId: null }],
+        },
+      ],
+      "2026-09-08T00:00:00.000Z",
+    );
+  } finally {
+    store.close();
+  }
+  assert.deepEqual(
+    (await proposals(h)).map((entry) => entry.statement),
+    ["越界与判空都在边界上一次判掉", "新一轮探索提的"],
+  );
+});
+
+test("并入指向已裁决或不存在的提案:那一条退回按新增处理", async () => {
+  let items: RuleAgentItem[] = [];
+  const agent = scriptedRuleAgent(() => ({ items }));
+  const h = await harnessWithFindings(agent);
+  const findings = await inlineFindings(h);
+
+  items = [{ type: "rule", scope: "", statement: "边界上一次判空" }];
+  assert.equal((await dispose(h, findings[0]!.id, NOTE)).status, 200);
+  await h.dispositionFeedbackAtLeast(1);
+  const queuedId = (await proposals(h))[0]!.id;
+  assert.equal(
+    (await h.api("POST", `/repos/${GITEA_REPO.id}/rule-proposals/${queuedId}/reject`)).status,
+    200,
+  );
+
+  // 一条指向那条已驳回的提案,一条指向根本不存在的:两条都按新增排进队列。
+  items = [
+    { type: "rule", scope: "", statement: "指向已裁决的那一条", proposalId: queuedId },
+    { type: "rule", scope: "", statement: "指向不存在的那一条", proposalId: queuedId + 9999 },
+  ];
+  assert.equal((await dispose(h, findings[1]!.id, "又一条备注")).status, 200);
+  await h.dispositionFeedbackAtLeast(2);
+  assert.equal(h.dispositionFeedbacks[1]!.failure, undefined);
+
+  const queued = await proposals(h);
+  assert.deepEqual(
+    queued.map((entry) => [entry.change, entry.statement, entry.state, entry.sources.length]),
+    [
+      ["add", "边界上一次判空", "rejected", 1],
+      ["add", "指向已裁决的那一条", "pending", 1],
+      ["add", "指向不存在的那一条", "pending", 1],
+    ],
+  );
+});
+
+test("并入缺陈述:那一条丢掉,轨迹里留原因", async () => {
+  let items: RuleAgentItem[] = [];
+  const agent = scriptedRuleAgent(() => ({ items }));
+  const h = await harnessWithFindings(agent);
+  const findings = await inlineFindings(h);
+
+  items = [{ type: "rule", scope: "", statement: "边界上一次判空" }];
+  assert.equal((await dispose(h, findings[0]!.id, NOTE)).status, 200);
+  await h.dispositionFeedbackAtLeast(1);
+  const queuedId = (await proposals(h))[0]!.id;
+
+  // 并入要覆盖队列里那条的陈述,没有新陈述可写的并入不成其为一次并入:整条丢掉。
+  items = [{ type: "rule", scope: "", statement: "   ", proposalId: queuedId }];
+  assert.equal((await dispose(h, findings[1]!.id, "又一条备注")).status, 200);
+  await h.dispositionFeedbackAtLeast(2);
+  assert.equal(h.dispositionFeedbacks[1]!.failure, undefined);
+
+  const queued = await proposals(h);
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0]!.statement, "边界上一次判空");
+  assert.equal(queued[0]!.sources.length, 1);
+  // 轨迹里说得出丢掉的是一次并入,以及为什么:那道按型收窄只会静默丢掉空陈述。
+  assert.deepEqual(
+    ruleTraceKinds(h).filter((kind) => kind === "rule_proposal_dropped"),
+    ["rule_proposal_dropped"],
+  );
+});

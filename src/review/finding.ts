@@ -203,6 +203,26 @@ export type KnowledgeEntry = {
 };
 
 /**
+ * 一条修订提案的变更类型(CONTEXT.md 修订提案):新增、修改、废止或合并。合并是多条
+ * 目标条目换一条新陈述(issue #282),目标因此不止一条。落库那一侧与规则 agent 那一侧
+ * 共用这一个字面量(issue #283:反哺 agent 也看得到待裁决队列里每一条是什么变更)。
+ */
+export type RuleProposalChange = "add" | "modify" | "retire" | "merge";
+
+/**
+ * 交给反哺 agent 的一条待裁决提案(CONTEXT.md 修订提案,issue #283)。**带标识**:agent
+ * 认出新备注说的是队列里已有的一件事时,要指名并入那一条。变更类型与目标一起给——
+ * 「废止某条」与「新增一条」说的不是同一件事,少了它 agent 分不出该不该并。
+ */
+export type PendingProposal = {
+  id: number;
+  change: RuleProposalChange;
+  /** 这条变更指向的现有条目。新增没有目标,为空。 */
+  targetRuleIds: readonly number[];
+  statement: string;
+};
+
+/**
  * 注入 Reviewer 的一条项目事实(CONTEXT.md 项目事实,issue #221)。与评审规则取自同一个
  * 知识集版本、按同一条作用范围路由,注入时另起一段:它是判断依据,本身不构成 Finding。
  *

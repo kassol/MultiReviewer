@@ -117,6 +117,7 @@ import {
   normalizeModelServiceTargets,
   openStore,
   toKnowledgeEntry,
+  toPendingProposal,
   type BatchLimitField,
   type ComparisonSource,
   type FindingDispositionTarget,
@@ -7018,6 +7019,12 @@ async function runDispositionFeedbackInBackground(
       return {
         repoId: row.repoId,
         rules: store.getRuleSet(row.repoId)?.rules ?? [],
+        // 现集之外还给它待裁决队列(issue #283):认出这条备注说的是队列里已有的一件事
+        // 就并入那一条,而不是再排一条说同一件事的提案。
+        pending: store
+          .getRuleProposals(row.repoId)
+          .filter((entry) => entry.state === "pending")
+          .map(toPendingProposal),
         explored:
           exploration === null
             ? undefined
@@ -7074,6 +7081,7 @@ async function runDispositionFeedbackInBackground(
       runtimeModel: plan.runtimeModel,
       apiKey: plan.credential,
       existingKnowledge: context.rules.map(toKnowledgeEntry),
+      pendingProposals: context.pending,
       ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
       feedback: {
         note,
@@ -7087,16 +7095,47 @@ async function runDispositionFeedbackInBackground(
       onEvent: (event) => recordRuleAgentEvent(trace!, event),
     });
     if (result.failure !== undefined) throw new Error(result.failure);
-    const proposals = proposalsFromItems(usableRuleItems(result.items), context.rules, {
+    // 并入缺陈述即丢弃那一条(issue #283):并入要覆盖队列里那条的陈述,没有新陈述可写
+    // 的并入不成其为一次并入。它在 `usableRuleItems` 那道收窄里本来也会被丢掉,轨迹里
+    // 另留一行原因——那道收窄只知道「陈述是空的」,说不出丢掉的是一次并入。
+    for (const item of result.items) {
+      if (item.proposalId !== undefined && item.statement.trim() === "") {
+        trace.record("rule_proposal_dropped", {
+          proposalId: item.proposalId,
+          reason: "并入没有给出合成后的陈述",
+        });
+      }
+    }
+    const source: RuleProposalSourceInput = {
       origin: "disposition-feedback",
       note,
       findingId: finding.id,
       traceTaskId: trace.taskId,
-    });
-    withStore(deps.dbPath, (store) => {
+    };
+    const landed = withStore(deps.dbPath, (store) => {
+      // 认出队列里已有同一件事即并入那一条(CONTEXT.md 处置反哺):陈述换成合成后的那
+      // 一句、附注追加一条,队列因此仍只有一条,人裁决一次。指名的那条已裁决或不存在时
+      // 并入不成,那一条退回与其余条目同一套映射,按新增或对照现集的变更入队。
+      const added: RuleAgentItem[] = [];
+      let merged = 0;
+      for (const item of usableRuleItems(result.items)) {
+        if (
+          item.proposalId !== undefined &&
+          store.mergeIntoRuleProposal(context.repoId, item.proposalId, {
+            statement: item.statement,
+            source,
+          })
+        ) {
+          merged += 1;
+          continue;
+        }
+        added.push(item);
+      }
+      const proposals = proposalsFromItems(added, context.rules, source);
       for (const proposal of proposals) store.addRuleProposal(context.repoId, proposal);
+      return merged + proposals.length;
     });
-    trace.record("rule_agent_finished", { items: proposals.length });
+    trace.record("rule_agent_finished", { items: landed });
   } catch (error) {
     failure = failureText(error);
     trace?.record("rule_agent_failed", { failure });
