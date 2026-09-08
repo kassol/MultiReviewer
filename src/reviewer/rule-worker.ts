@@ -53,19 +53,26 @@ Narrate in Chinese too: everything you say between tool calls goes into a trace 
 The read tool prefixes every line with its line number, like \`12: code\`. The prefix is not part of the file content.`;
 
 /**
- * 知识整理的系统提示(CONTEXT.md 知识整理,issue #284)。整理的对象是文本,不是代码:
- * 它手里没有读工具,只有对队列的两个直改动作。明写「什么都不改是预期结果」——agent
- * 手里有工具时倾向于用它,而一份没有重复的队列本来就不需要动。
+ * 知识整理的系统提示(CONTEXT.md 知识整理,issue #284、#285)。整理的对象是文本,不是
+ * 代码:它手里没有读工具,只有对队列的两个直改动作与一个提案工具。明写「什么都不改是
+ * 预期结果」——agent 手里有工具时倾向于用它,而一份没有重复的队列本来就不需要动。
+ *
+ * 三个动作分两类,提示因此要说清界线:队列直改立刻生效(它改的是还没人裁决的东西),
+ * 对现集的变更只能排队等人裁决——知识集仍然只由裁决改动。
  */
 const CONSOLIDATION_SYSTEM_PROMPT = `You are tidying the revision proposal queue of one repository's review knowledge.
 
-You get two lists: the knowledge entries currently in force, and the proposals waiting for a human to accept or reject. You change only the queue, never the knowledge itself, and you do it with exactly two actions.
+You get two lists: the knowledge entries currently in force, and the proposals waiting for a human to accept or reject. You change the queue directly, and you propose changes to the knowledge itself. You have three actions.
 
 **Merge** proposals that say the same thing. Two proposals raised from two different disposition notes often carry one idea. Call merge_proposals once per group, with every proposal id in that group and one statement that says what the whole group says — the reviewer reads that one sentence instead of two. Merge only real duplicates: proposals that would have the same effect on the knowledge set. Proposals of different change kinds, or aimed at different entries, are not duplicates.
 
 **Retarget** a proposal that adds something the knowledge set already has. Call retarget_proposal with that proposal's id and the id of the entry it duplicates: it becomes a change to that entry, so the reviewer sees the difference against what is in force and rejects it when there is none. Retarget only proposals whose change kind is add.
 
-Do not judge the proposals — accepting and rejecting stays with people. Leave alone every proposal that is not a duplicate. Changing nothing is an expected outcome for a queue that has no duplicates in it.
+**Propose** a change to the entries in force. The knowledge set itself accumulates duplicates and contradictions, and you are the one reading all of it at once. Call propose_rule when two entries in force say one thing (pass both ids in rule_ids and one statement that covers them — a merge), when one entry is worded so a reviewer would misread it (pass its id and the new statement — a change), or when an entry contradicts another and cannot stand (pass its id with retire=true — a retirement). Always give rule_ids: you are not exploring the code, so you have no grounds for an entry the list does not already carry. Give a reason on every proposal — the human reading the queue sees it and decides.
+
+Those three differ in what they touch. Merging and retargeting change the queue, which nobody has ruled on yet, so they take effect at once. A proposal changes the knowledge set, so it joins the queue and waits for a person: accepting and rejecting stays with people, and you never judge the proposals already in the queue.
+
+Leave alone every proposal that is not a duplicate, and every entry that still holds as it stands. Changing nothing is an expected outcome for a queue and a knowledge set that have no duplicates in them.
 
 Write statements in Chinese, and narrate in Chinese: everything you say between tool calls goes into a trace read by this repository's maintainers. Say one short line on what you found before each action.`;
 
@@ -94,6 +101,12 @@ const ruleSchema = Type.Object({
     Type.Boolean({
       description:
         "Set to true together with exactly one id in rule_ids to retire that agreed entry instead of restating it. Restate the entry you want retired in the statement field. Use it for a rule the code no longer justifies, and for a fact the code has outgrown.",
+    }),
+  ),
+  reason: Type.Optional(
+    Type.String({
+      description:
+        "One sentence in Chinese saying why you propose this change. Read only when you are tidying the queue: it is shown to the human who rules on the proposal, next to the entries it involves.",
     }),
   ),
 });
@@ -212,9 +225,9 @@ function proposalBullet(proposal: ConsolidationProposal): string {
 }
 
 /**
- * 知识整理的提示(issue #284)。现集那一段与探索、反哺共用 `existingSection` 的清单形状
- * 会带上「提对照它的变更」那几句,而整理提不了变更;这里因此自己渲染现集,只作为
- * 「改写为修改型时指向哪一条」的目标清单。
+ * 知识整理的提示(issue #284、#285)。现集那一段与探索、反哺共用 `existingSection` 的
+ * 清单形状会带上「一个都认不出即新增」那一句,而整理提不出新增(它不读代码);这里
+ * 因此自己渲染现集,既是「改写为修改型时指向哪一条」的目标清单,也是提案的目标清单。
  */
 function consolidationPrompt(
   proposals: readonly ConsolidationProposal[],
@@ -222,7 +235,7 @@ function consolidationPrompt(
 ): string {
   const agreed =
     entries.length === 0
-      ? "This repository has no knowledge entries in force yet, so nothing can be retargeted."
+      ? "This repository has no knowledge entries in force yet, so nothing can be retargeted and nothing can be proposed against."
       : ["The knowledge entries in force, each with its id and kind:", "", ...entries.map(knowledgeBullet)].join("\n");
   return `Tidy the revision proposal queue of this repository.
 
@@ -232,7 +245,7 @@ The proposals waiting for adjudication, each with its id, change kind, entry kin
 
 ${proposals.map(proposalBullet).join("\n")}
 
-Report every duplicate you find through ${MERGE_PROPOSALS_TOOL} and ${RETARGET_PROPOSAL_TOOL}. When you have nothing more to report, stop.`;
+Report every duplicate proposal through ${MERGE_PROPOSALS_TOOL} and ${RETARGET_PROPOSAL_TOOL}. Report every change the entries in force need through ${PROPOSE_RULE_TOOL}, always with rule_ids and a reason. When you have nothing more to report, stop.`;
 }
 
 /** 这一次任务的提示。三条链路各一份,由输入里带的那一半认出来。 */
@@ -262,6 +275,7 @@ async function run(request: RuleWorkerRequest): Promise<void> {
         scope?: string;
         rule_ids?: number[];
         retire?: boolean;
+        reason?: string;
       };
       send({
         kind: "rule",
@@ -273,6 +287,7 @@ async function run(request: RuleWorkerRequest): Promise<void> {
           statement: raw.statement,
           ...(raw.rule_ids === undefined ? {} : { targetRuleIds: raw.rule_ids }),
           ...(raw.retire === true ? { retire: true } : {}),
+          ...(raw.reason === undefined ? {} : { reason: raw.reason }),
         },
       });
       return { content: [{ type: "text", text: "recorded" }], details: {} };
@@ -317,8 +332,8 @@ async function run(request: RuleWorkerRequest): Promise<void> {
     },
   });
 
-  // 知识整理不读代码(issue #284):它手里只有对队列的两个动作,没有读工具,系统提示
-  // 也换成整理那一份。
+  // 知识整理不读代码(issue #284):它手里只有对队列的两个动作与提案那一个(issue
+  // #285),没有读工具,系统提示也换成整理那一份。
   const consolidating = request.consolidation !== undefined;
   const prepared = await prepareAgentRuntime({
     agentDirPrefix: "multireviewer-rule-agent-",
@@ -339,10 +354,10 @@ async function run(request: RuleWorkerRequest): Promise<void> {
     thinkingLevel: sessionThinkingLevel(request.runtimeModel.reasoning, request.thinkingLevel),
     modelRuntime,
     tools: consolidating
-      ? [MERGE_PROPOSALS_TOOL, RETARGET_PROPOSAL_TOOL]
+      ? [MERGE_PROPOSALS_TOOL, RETARGET_PROPOSAL_TOOL, PROPOSE_RULE_TOOL]
       : [...READ_ONLY_TOOLS, PROPOSE_RULE_TOOL],
     customTools: consolidating
-      ? [mergeProposals, retargetProposal]
+      ? [mergeProposals, retargetProposal, proposeRule]
       : [proposeRule, numberedReadTool(request.worktreePath)],
     resourceLoader,
     sessionManager: SessionManager.inMemory(request.worktreePath),

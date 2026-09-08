@@ -44,7 +44,7 @@ type RuleExploration = {
 
 /**
  * 这个仓库最近一次知识整理(CONTEXT.md 知识整理,issue #284)。从没整理过为 null;
- * `merged` / `retargeted` 是完成后的摘要,没跑完即 null。
+ * `merged` / `retargeted` / `proposed` 是完成后的摘要(issue #285),没跑完即 null。
  */
 type RuleConsolidation = {
   state: "running" | "failed" | "completed";
@@ -54,6 +54,7 @@ type RuleConsolidation = {
   failure: string | null;
   merged: number | null;
   retargeted: number | null;
+  proposed: number | null;
 };
 
 /**
@@ -1595,7 +1596,7 @@ function ConsolidationRow({
                   ? "正在整理"
                   : consolidation.state === "failed"
                     ? "上次整理失败"
-                    : `已完成整理 · 合并 ${consolidation.merged ?? 0} 条提案、改写 ${consolidation.retargeted ?? 0} 条`}
+                    : `已完成整理 · 合并 ${consolidation.merged ?? 0} 条提案、改写 ${consolidation.retargeted ?? 0} 条、提出 ${consolidation.proposed ?? 0} 条`}
                 {" · "}模型 {consolidation.model}
                 {consolidation.thinkingLevel === null
                   ? null

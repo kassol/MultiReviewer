@@ -1,10 +1,10 @@
 /**
- * 知识整理(issue #284,父 spec #280)。
+ * 知识整理(issue #284、#285,父 spec #280)。
  *
  * 两条缝:SQLite 临时库验两个直改动作的落地判据、与基点探索共用的互斥、重启改判与移除
- * 仓库的级联;面板 API 走真实 HTTP 验发起、agent 拿到的输入、动作落地、摘要与轨迹可见、
- * 整理期间照常裁决、409 与 `knowledge:write` 拦截。规则 agent 仍用脚本化实现注入,与
- * issue #205 / #207 / #208 同一个位置。
+ * 仓库的级联;面板 API 走真实 HTTP 验发起、agent 拿到的输入、动作落地、对现集提出的
+ * 提案入队与采纳、摘要与轨迹可见、整理期间照常裁决、409 与 `knowledge:write` 拦截。
+ * 规则 agent 仍用脚本化实现注入,与 issue #205 / #207 / #208 同一个位置。
  */
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
@@ -19,6 +19,7 @@ import {
 import type {
   ConsolidationProposal,
   RuleAgent,
+  RuleAgentItem,
   RuleAgentRequest,
   RuleConsolidationAction,
 } from "../src/reviewer/rule-agent.ts";
@@ -59,11 +60,13 @@ type ConsolidationResponse = {
   failure: string | null;
   merged: number | null;
   retargeted: number | null;
+  proposed: number | null;
 };
 
 type RuleSetResponse = {
   version: number | null;
-  rules: { id: number; type: "rule" | "fact"; statement: string }[];
+  rules: { id: number; type: "rule" | "fact"; statement: string; origin: string }[];
+  retired: { statement: string }[];
   consolidation: ConsolidationResponse | null;
   proposals: ProposalResponse[];
 };
@@ -153,12 +156,16 @@ async function ruleSet(h: PanelHarness, cookie: string): Promise<RuleSetResponse
   return (await response.json()) as RuleSetResponse;
 }
 
+/** 脚本化整理 agent 的一次产出:对队列的直改、对现集提出的条目,或一次失败。 */
+type ScriptedResult = {
+  actions?: RuleConsolidationAction[];
+  items?: RuleAgentItem[];
+  failure?: string;
+};
+
 /** 脚本化整理 agent:记下每次收到的任务,产出由回调给出(提案标识建库之后才知道)。 */
 function scriptedRuleAgent(
-  produce: () => { actions?: RuleConsolidationAction[]; failure?: string } | Promise<{
-    actions?: RuleConsolidationAction[];
-    failure?: string;
-  }>,
+  produce: () => ScriptedResult | Promise<ScriptedResult>,
 ): RuleAgent & { calls: RuleAgentRequest[] } {
   const calls: RuleAgentRequest[] = [];
   const agent = async (request: RuleAgentRequest) => {
@@ -325,11 +332,12 @@ test("整理与探索共用同仓库同时只跑一个,重启改判失败,移除
       false,
     );
 
-    store.finishRuleConsolidation(93, { merged: 2, retargeted: 1 }, AT);
+    store.finishRuleConsolidation(93, { merged: 2, retargeted: 1, proposed: 3 }, AT);
     const done = store.getRuleConsolidation(93)!;
     assert.equal(done.state, "completed");
     assert.equal(done.merged, 2);
     assert.equal(done.retargeted, 1);
+    assert.equal(done.proposed, 3);
 
     // 反过来也拦:探索在跑时整理发起不了。
     assert.equal(
@@ -345,6 +353,7 @@ test("整理与探索共用同仓库同时只跑一个,重启改判失败,移除
       true,
     );
     assert.equal(store.getRuleConsolidation(93)?.merged, null);
+    assert.equal(store.getRuleConsolidation(93)?.proposed, null);
     store.failInterruptedRuleConsolidations("服务重启,上一次整理没跑完", AT);
     const failed = store.getRuleConsolidation(93)!;
     assert.equal(failed.state, "failed");
@@ -404,9 +413,10 @@ test("面板发起知识整理:agent 拿到现集与待裁决队列,合并与改
   const after = await ruleSet(h, cookie);
   assert.equal(after.consolidation?.state, "completed");
   assert.equal(after.consolidation?.model, "test:global-model");
-  // 摘要:队列因此少了 1 行、改写了 1 条。
+  // 摘要:队列因此少了 1 行、改写了 1 条,没有对现集提出新的提案。
   assert.equal(after.consolidation?.merged, 1);
   assert.equal(after.consolidation?.retargeted, 1);
+  assert.equal(after.consolidation?.proposed, 0);
   assert.deepEqual(
     after.proposals.map((row) => [row.id, row.change, row.targetRuleIds, row.statement]),
     [
@@ -476,7 +486,7 @@ test("整理期间的裁决照常:那一次合并跳过,别的动作照落,轨�
     events.map((event) => event.kind),
     ["rule_agent_started", "rule_consolidated", "rule_consolidated", "rule_agent_finished"],
   );
-  assert.deepEqual(events.at(-1)!.payload, { merged: 0, retargeted: 1 });
+  assert.deepEqual(events.at(-1)!.payload, { merged: 0, retargeted: 1, proposed: 0 });
 });
 
 test("整理失败留原因,与探索互斥回 409", async () => {
@@ -499,6 +509,7 @@ test("整理失败留原因,与探索互斥回 409", async () => {
   assert.equal(failed.consolidation?.state, "failed");
   assert.equal(failed.consolidation?.failure, "模型没有回结果");
   assert.equal(failed.consolidation?.merged, null);
+  assert.equal(failed.consolidation?.proposed, null);
 
   // 重试:第二次卡在 gate 上,这期间整理与探索都发起不了。
   assert.equal((await launch(h, cookie)).status, 202);
@@ -540,5 +551,129 @@ test("没有 knowledge:write 的人发起不了整理,分配外 404,坏 body 400
   ]) {
     assert.equal((await send(h, cookie, "POST", path, body)).status, 400, JSON.stringify(body));
   }
+  assert.equal(agent.calls.length, 0);
+});
+
+/** 一条整理 agent 提出的对现集的变更。 */
+function item(overrides: Partial<RuleAgentItem> = {}): RuleAgentItem {
+  return { type: "rule", scope: "", statement: "合成后的那一条", ...overrides };
+}
+
+test("整理对现集提出合并提案:入队带知识整理附注,采纳即目标全部废止、新条目生效", async () => {
+  const agent = scriptedRuleAgent(() => ({
+    items: [
+      item({
+        statement: "入参一律在边界上校验一次",
+        targetRuleIds: [1, 2],
+        reason: "这两条说的是同一件事",
+      }),
+    ],
+  }));
+  const { h, cookie } = await consolidatingHarness(agent);
+  assert.equal(
+    (await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rules`, {
+      type: "rule",
+      scope: "",
+      statement: "边界上要校验入参",
+    })).status,
+    201,
+  );
+  const before = await ruleSet(h, cookie);
+  const targets = before.rules.map((rule) => rule.id);
+  assert.equal(targets.length, 2);
+
+  assert.equal((await launch(h, cookie)).status, 202);
+  await h.consolidationsAtLeast(1);
+
+  const queued = await ruleSet(h, cookie);
+  // 摘要多一项:这一次对现集提出了 1 条。
+  assert.equal(queued.consolidation?.proposed, 1);
+  assert.deepEqual(
+    queued.proposals.map((row) => [row.change, row.targetRuleIds, row.statement, row.state]),
+    [["merge", targets, "入参一律在边界上校验一次", "pending"]],
+  );
+  // 附注:来源是知识整理,备注里有 agent 的理由与它涉及的条目。
+  const sources = queued.proposals[0]!.sources;
+  assert.deepEqual(sources.map((row) => row.origin), ["knowledge-consolidation"]);
+  assert.equal(sources[0]!.note, `这两条说的是同一件事(涉及条目 ${targets.join("、")})`);
+
+  const accepted = await send(
+    h,
+    cookie,
+    "POST",
+    `/repos/${GITEA_REPO.id}/rule-proposals/${queued.proposals[0]!.id}/accept`,
+  );
+  assert.equal(accepted.status, 200);
+  const after = await ruleSet(h, cookie);
+  // 两条目标一起废止,合成的那一条生效,出处记知识整理。
+  assert.deepEqual(
+    after.rules.map((rule) => [rule.statement, rule.origin]),
+    [["入参一律在边界上校验一次", "knowledge-consolidation"]],
+  );
+  assert.deepEqual(
+    after.retired.map((rule) => rule.statement).sort(),
+    ["入参要在边界上校验", "边界上要校验入参"],
+  );
+});
+
+test("整理提的修改与废止照既有映射入队,目标一条都不生效的那一条丢弃", async () => {
+  const agent = scriptedRuleAgent(() => ({
+    items: [
+      item({ statement: "改写后的那一句", targetRuleIds: [1], reason: "这一条该收窄" }),
+      item({
+        statement: "过期的那一条",
+        targetRuleIds: [1],
+        retire: true,
+        reason: "代码已经不这样了",
+      }),
+      item({ statement: "目标早没了的那条", targetRuleIds: [4242], reason: "认错了标识" }),
+      item({ statement: "只认得出一个目标的那条", targetRuleIds: [1, 4242], reason: "退化成修改" }),
+    ],
+  }));
+  const { h, cookie } = await consolidatingHarness(agent);
+  const rule = (await ruleSet(h, cookie)).rules[0]!.id;
+
+  assert.equal((await launch(h, cookie)).status, 202);
+  await h.consolidationsAtLeast(1);
+
+  const queued = await ruleSet(h, cookie);
+  // 目标一个都认不出的那条丢掉:整理提不出没有目标的新增。
+  assert.equal(queued.consolidation?.proposed, 3);
+  assert.deepEqual(
+    queued.proposals.map((row) => [row.change, row.targetRuleIds, row.statement]),
+    [
+      ["modify", [rule], "改写后的那一句"],
+      ["retire", [rule], "入参要在边界上校验"],
+      ["modify", [rule], "只认得出一个目标的那条"],
+    ],
+  );
+  assert.deepEqual(
+    queued.proposals.map((row) => row.sources[0]!.note),
+    [
+      `这一条该收窄(涉及条目 ${rule})`,
+      `代码已经不这样了(涉及条目 ${rule})`,
+      `退化成修改(涉及条目 ${rule}、4242)`,
+    ],
+  );
+});
+
+test("空队列且现集为空时整理不跑 agent,摘要是三个零", async () => {
+  const agent = scriptedRuleAgent(() => ({ actions: [] }));
+  const h = await startReadyPanelHarness(cleanups, { ruleAgent: agent });
+  assert.equal(
+    (await h.api("POST", "/repos", { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo })).status,
+    201,
+  );
+  await h.worktreesPreparedAtLeast(1);
+  const cookie = await scopedUser(h, "consolidation-empty", [GITEA_REPO.id], ["knowledge:write"]);
+
+  assert.equal((await launch(h, cookie)).status, 202);
+  await h.consolidationsAtLeast(1);
+  const after = await ruleSet(h, cookie);
+  assert.equal(after.consolidation?.state, "completed");
+  assert.deepEqual(
+    [after.consolidation?.merged, after.consolidation?.retargeted, after.consolidation?.proposed],
+    [0, 0, 0],
+  );
   assert.equal(agent.calls.length, 0);
 });

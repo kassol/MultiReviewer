@@ -711,7 +711,7 @@ test("已确认的空知识集重探索:产出仍进提案队列,不回到草案
   assert.deepEqual(body.rules, []);
 });
 
-test("重探索只取代附注全部为基点探索的待裁决提案:带反哺附注的与已裁决的留下", () => {
+test("重探索只取代附注全部为基点探索的待裁决提案:带反哺与整理附注的、已裁决的留下", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -736,6 +736,16 @@ test("重探索只取代附注全部为基点探索的待裁决提案:带反哺�
         sources: [source(), source({ origin: "disposition-feedback", note: "又一条处置备注" })],
       }),
     )!;
+    // 知识整理对现集提的那条同理(issue #285):它认出的重复不是一次重探索推得出来的。
+    store.addRuleProposal(
+      89,
+      proposal({
+        change: "retire",
+        targetRuleIds: [7],
+        statement: "整理提的废止",
+        sources: [source({ origin: "knowledge-consolidation", note: "这一条现集已经过期" })],
+      }),
+    );
 
     store.finishRuleExplorationAsProposals(
       89,
@@ -756,6 +766,7 @@ test("重探索只取代附注全部为基点探索的待裁决提案:带反哺�
           ["baseline-exploration", "disposition-feedback"],
           "pending",
         ],
+        ["整理提的废止", ["knowledge-consolidation"], "pending"],
         ["新一轮探索提的", ["baseline-exploration"], "pending"],
       ],
     );
@@ -764,7 +775,7 @@ test("重探索只取代附注全部为基点探索的待裁决提案:带反哺�
       rows.find((row) => row.id === mixedId)!.sources.map((entry) => entry.note),
       [null, "又一条处置备注"],
     );
-    assert.equal(proposalSourceRows(db.path), 5);
+    assert.equal(proposalSourceRows(db.path), 6);
   } finally {
     store.close();
   }
