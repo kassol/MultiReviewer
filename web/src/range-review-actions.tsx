@@ -188,8 +188,8 @@ export function AdvanceAction({
  * 选择器停在上次选比较项用的那条分支或 Tag 模式上,默认只列当前比较项之后的提交
  * (issue #234):base 的后代里还有比当前比较项早的,人每次推进要的是作者这次推了什么。
  *
- * 「完整审查」默认勾上(issue #250):推进的常态是作者推了新代码,要审新代码;取消勾选
- * 那一轮只复核这个阶段未处置的历史。勾选与指令一样随弹窗关闭卸载,下次打开回到默认。
+ * 「完整审查」默认不勾,与重跑弹窗同一个默认:不勾那一轮只复核这个阶段未处置的历史,
+ * 要审作者新推的代码时勾上。勾选与指令一样随弹窗关闭卸载,下次打开回到默认。
  */
 function AdvanceDialogContent({
   rangeReview,
@@ -201,14 +201,14 @@ function AdvanceDialogContent({
   const queryClient = useQueryClient();
   const [comparison, setComparison] = useState<CommitSelection | null>(null);
   const [directive, setDirective] = useState("");
-  const [fullReview, setFullReview] = useState(true);
+  const [fullReview, setFullReview] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const advance = useMutation({
     mutationFn: async () => {
       // 本轮指令(issue #225)选填,留空即不带这一格,只作用于推进出来的这一轮。
       const trimmed = directive.trim();
-      // 只在只复核那一档带上模式(issue #250):不带即完整审查,与接口的约定对上。
+      // 只在只复核那一档带上模式(issue #250):接口不带即完整审查,弹窗默认因此要显式带上。
       const mode: RerunMode = fullReview ? "full" : "verdict-only";
       const response = await api(`/range-reviews/${rangeReview.id}/advance`, {
         method: "POST",

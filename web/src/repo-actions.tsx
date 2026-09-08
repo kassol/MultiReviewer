@@ -139,7 +139,7 @@ export const RUN_DIRECTIVE_HINT =
  */
 export type RerunMode = "verdict-only" | "full";
 
-/** 「完整审查」勾选的说明。勾上才会新报;重跑默认不勾,增量评审默认勾上(issue #250)。 */
+/** 「完整审查」勾选的说明。勾上才会新报;重跑与增量评审两处默认都不勾。 */
 export const FULL_REVIEW_HINT = "不勾即只复核历史 Finding,不新报";
 
 /**
