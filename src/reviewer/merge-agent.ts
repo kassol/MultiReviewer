@@ -49,6 +49,10 @@ export type MergeWorkerRequest = {
 export type MergeWorkerMessage =
   | { kind: "group"; group: MergeGroupProposal }
   | { kind: "event"; event: ReviewerEvent }
+  /**
+   * 会话还活着,别的什么都不说明(`streamHeartbeat`)。父进程只用它重置静默闸,不读内容。
+   */
+  | { kind: "heartbeat" }
   | { kind: "done"; failure?: string; usage?: ReviewerUsage };
 
 /** 基于 Pi SDK 的合并 agent。每轮 fork 一个子进程,环境只含那一家厂商的凭据。 */
@@ -87,6 +91,8 @@ export async function runMergeAgentChild(
         request.onEvent?.(message.event);
         return;
       }
+      // 心跳只为重置静默闸(`subprocess.ts` 已在收到消息时重置),这里不读它。
+      if (message.kind === "heartbeat") return;
       if (message.kind === "group") {
         groups.push(message.group);
         return;

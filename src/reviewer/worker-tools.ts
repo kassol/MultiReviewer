@@ -159,6 +159,38 @@ export function sessionThinkingLevel(
 }
 
 /**
+ * 心跳的最小间隔。子进程的静默闸计的是连续静默(`subprocess.ts`),心跳只要密到闸合不上
+ * 就够,再密就只是往 IPC 里灌噪音。
+ */
+const HEARTBEAT_INTERVAL_MS = 30_000;
+
+/**
+ * 会话还活着的心跳。三个子进程共用这一个。
+ *
+ * 静默闸每收到一条 IPC 消息就重置,而回传的消息只来自 `message_end` 与两个
+ * `tool_execution_*`(见 `trace-events.ts`)。高思考档位下,模型可以流式吐几分钟思考而
+ * 一条完整消息、一次工具调用都还没产生——2026-09-08 线上的知识整理就是这样在五分钟整
+ * 被判卡死,而网关侧那次请求跑了 7 分 14 秒、输出 37k token。`message_update` 是流式
+ * delta,每个 token 一次,拿它当活着的证据;按间隔节流,不然一次思考就是几千条 IPC。
+ *
+ * 第一条立即发:上一次真消息之后可能已经沉默了一会儿,等满一个间隔才发会白丢那段时间。
+ */
+export function streamHeartbeat(
+  send: (message: { kind: "heartbeat" }) => void,
+  intervalMs: number = HEARTBEAT_INTERVAL_MS,
+  now: () => number = Date.now,
+): (event: { type: string }) => void {
+  let lastSentAt: number | undefined;
+  return (event) => {
+    if (event.type !== "message_update") return;
+    const at = now();
+    if (lastSentAt !== undefined && at - lastSentAt < intervalMs) return;
+    lastSentAt = at;
+    send({ kind: "heartbeat" });
+  };
+}
+
+/**
  * 会话收尾时的失败原因:先取跑 prompt 时抛出的异常,再取 agent 状态里的错误,最后取
  * 末条 assistant 消息上的 `stopReason=error`;凭据一律先抹掉。三个子进程收尾同一句话,
  * 分三份只会让某一天其中一处悄悄改掉。

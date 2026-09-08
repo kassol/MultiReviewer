@@ -203,6 +203,10 @@ export type RuleWorkerMessage =
   | { kind: "rule"; item: RuleAgentItem }
   | { kind: "action"; action: RuleConsolidationAction }
   | { kind: "event"; event: ReviewerEvent }
+  /**
+   * 会话还活着,别的什么都不说明(`streamHeartbeat`)。父进程只用它重置静默闸,不读内容。
+   */
+  | { kind: "heartbeat" }
   | { kind: "done"; failure?: string };
 
 /** 基于 Pi SDK 的规则 agent。每次探索 fork 一个子进程,环境只含自家厂商凭据。 */
@@ -246,6 +250,8 @@ export async function runRuleAgentChild(
         request.onEvent?.(message.event);
         return;
       }
+      // 心跳只为重置静默闸(`subprocess.ts` 已在收到消息时重置),这里不读它。
+      if (message.kind === "heartbeat") return;
       // 整理动作不进事件流:它落没落地要到落地那一步才知道,轨迹里那一条由编排层写
       // (issue #284),一个动作只留一条事件。
       if (message.kind === "action") {
