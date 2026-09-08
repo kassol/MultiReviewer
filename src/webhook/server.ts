@@ -7915,10 +7915,11 @@ function readIntentTarget(
 }
 
 /**
- * 提交一条修订意图(CONTEXT.md 修订意图,ADR 0028,issue #294、#295)。原文即时落一行
+ * 提交一条修订意图(CONTEXT.md 修订意图,ADR 0028,issue #294、#295、#297)。原文即时落一行
  * 运行中的,解读排到后台——人提交完就走,不在这个请求里等一次 agent 运行。
  *
- * 目标两档:无目标产新增,目标为一条待裁决提案即原地改写它。另三档由后续票填(spec #293)。
+ * 目标三档:无目标产新增,目标为一条待裁决提案即原地改写它,目标为一条生效知识条目即产
+ * 一条指向它的变更(issue #297)。草案条目那一档由后续票填(spec #293)。
  */
 async function handleSubmitRevisionIntent(
   req: IncomingMessage,
