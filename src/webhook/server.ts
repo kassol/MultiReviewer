@@ -7571,7 +7571,8 @@ async function runRevisionIntentInBackground(
     };
     // 默认分支当前 head:与 commit 选择器读的是同一份缓存 clone、同一条读取路径。反哺
     // 停在那条 Finding 报出时的 head——备注说的是那时的代码。
-    const head = finding !== undefined ? finding.headSha : await defaultBranchHead(target, repository);
+    const head =
+      finding !== undefined ? finding.headSha : await defaultBranchHead(target, repository);
     worktree = await prepareWorktree({ ...target, headSha: head, baseSha: head });
     const input = withStore(deps.dbPath, (store) => {
       const ruleSet = store.getRuleSet(repoId);

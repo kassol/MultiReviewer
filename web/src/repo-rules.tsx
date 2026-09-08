@@ -1100,7 +1100,9 @@ function IntentSection({
                 {/* 来源徽章(issue #296):处置备注那一行与人在弹窗里写的那一行同形,人要
                     一眼分得出这段话是谁在哪写下的。 */}
                 <Badge color="gray" variant="soft" radius="full" size="1">
-                  {intent.targetKind === "finding" ? SOURCE_LABEL["disposition-feedback"] : SOURCE_LABEL["manual-proposal"]}
+                  {intent.targetKind === "finding"
+                    ? SOURCE_LABEL["disposition-feedback"]
+                    : SOURCE_LABEL["manual-proposal"]}
                 </Badge>
                 <Badge
                   color={
