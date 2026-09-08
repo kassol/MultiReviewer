@@ -529,7 +529,7 @@ export function RunsPage({
   canCreate: boolean;
   /** 「仓库 · 写入」才看得见左栏顶部的注册按钮与每行的行操作菜单(issue #195)。 */
   canWrite: boolean;
-  /** 「评审 · 知识治理」才在知识集弹窗里看得见手工增删改(issue #203)。 */
+  /** 「评审 · 知识治理」才在知识集弹窗里看得见意图框、「改写」与裁决(issue #203)。 */
   canWriteRules: boolean;
   /** 配置弹窗里「跟随全局」跟的是审查策略,读它要「模型 · 读取」。 */
   canReadModels: boolean;
@@ -800,7 +800,7 @@ export function RunsPage({
                 {selected !== null && (selectedRow !== undefined || canCreate || canRerun) ? (
                   <div className="flex flex-wrap items-center gap-2 lg:ml-auto">
                     {/* 知识集登录加仓库分配即可看(ADR 0019),按钮不跟着写权限出现;
-                        弹窗里手工增删改那三个入口按 `knowledge:write` 出现(issue #203)。 */}
+                        弹窗里的写动作按 `knowledge:write` 出现(issue #203)。 */}
                     {selectedRow === undefined ? null : (
                       <RepoRules repo={selectedRow} canWrite={canWriteRules} />
                     )}

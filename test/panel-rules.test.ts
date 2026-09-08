@@ -1,9 +1,12 @@
 /**
- * 知识集落库与面板可见(issue #202),规则的手工增删改(issue #203)。
+ * 知识集落库与面板可见(issue #202),直接废止一条条目(issue #203、#299)。
  *
  * 两条缝:SQLite 临时库验存量迁移、知识集版本推进与快照回溯,面板 API 走真实 HTTP 验
  * 读取、`knowledge:write` 拦截与仓库分配收窄。基点探索走 `panel-rule-exploration.test.ts`,
  * 这里的基点探索出处规则行由用例直接落进临时库;裁决那条写入链路是后续票的事。
+ *
+ * 直改那四个端点已经撤掉(issue #299,ADR 0028):人不再手写陈述、型与作用范围,写入口
+ * 只剩修订意图(`panel-revision-intents.test.ts`)与这里的直接废止,四条旧路径回 404。
  */
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -101,6 +104,24 @@ function seedRule(
     "2026-08-28T00:00:00.000Z",
   );
   db.close();
+}
+
+/**
+ * 落一条生效条目并回它的标识。写入口只剩裁决与草案确认(issue #299),用例要的现集条目
+ * 因此直接落库。
+ */
+function seedActiveRule(
+  h: PanelHarness,
+  repoId: number,
+  entry: { type: "rule" | "fact"; scope: string; statement: string },
+): number {
+  const store = openStore(h.db.path);
+  try {
+    assert.notEqual(store.addReviewRule(repoId, entry), undefined);
+    return store.getRuleSet(repoId)!.rules.at(-1)!.id;
+  } finally {
+    store.close();
+  }
 }
 
 async function scopedUser(
@@ -308,7 +329,7 @@ test("分配外的仓库与没注册的 id 读知识集同形 404", async () => 
   assert.equal(anonymous.status, 401);
 });
 
-test("手工新增、修改与废止各推进一版,历史版本的快照仍取到旧内容", () => {
+test("直接废止推进一版,历史版本的快照仍取到废止前那一组", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -317,49 +338,26 @@ test("手工新增、修改与废止各推进一版,历史版本的快照仍取�
       store.registerRepo({ repoId: 91, owner: "acme", repo: "edited", generation: 1, key: "k" }),
       true,
     );
-    // 注册不落版本(issue #206),第一次手工变更就是这个仓库的第一版。
+    // 注册不落版本(issue #206),第一条条目落库就是这个仓库的第一版。
     assert.equal(
       store.addReviewRule(91, { type: "rule", scope: "", statement: "公开函数要有类型标注" }),
       1,
     );
     const added = store.getRuleSet(91)!;
     assert.equal(added.version, 1);
-    assert.deepEqual(added.rules.map((rule) => [rule.statement, rule.origin]), [
-      ["公开函数要有类型标注", "manual"],
-    ]);
-
     const ruleId = added.rules[0]!.id;
-    assert.equal(
-      store.updateReviewRule(91, ruleId, {
-        type: "rule",
-        scope: "src/**",
-        statement: "导出的函数要有类型标注",
-      }),
-      2,
-    );
-    const edited = store.getRuleSet(91)!;
-    assert.equal(edited.version, 2);
-    assert.deepEqual(edited.rules.map((rule) => [rule.scope, rule.statement, rule.origin]), [
-      ["src/**", "导出的函数要有类型标注", "manual"],
-    ]);
 
-    // 没注册的仓库、不在这个仓库里的规则与已废止的规则都写不动。
-    assert.equal(store.addReviewRule(999, { type: "rule", scope: "", statement: "x" }), undefined);
-    assert.equal(
-      store.updateReviewRule(91, 4242, { type: "rule", scope: "", statement: "x" }),
-      undefined,
-    );
-    assert.equal(store.retireReviewRule(91, ruleId), undefined);
+    // 不在这个仓库生效规则里的标识废止不动,一版都不推进。
+    assert.equal(store.retireReviewRule(91, 4242), undefined);
 
-    assert.equal(store.retireReviewRule(91, edited.rules[0]!.id), 3);
+    assert.equal(store.retireReviewRule(91, ruleId), 2);
     const retired = store.getRuleSet(91)!;
-    assert.equal(retired.version, 3);
+    assert.equal(retired.version, 2);
     assert.deepEqual(retired.rules, []);
-    // 废止的不再生效但可查:改之前那一版与刚废止的那条都在。
-    assert.deepEqual(retired.retired.map((rule) => rule.statement), [
-      "公开函数要有类型标注",
-      "导出的函数要有类型标注",
-    ]);
+    // 废止的不再生效但可查。
+    assert.deepEqual(retired.retired.map((rule) => rule.statement), ["公开函数要有类型标注"]);
+    // 废止不了第二次。
+    assert.equal(store.retireReviewRule(91, ruleId), undefined);
   } finally {
     store.close();
   }
@@ -377,106 +375,66 @@ test("手工新增、修改与废止各推进一版,历史版本的快照仍取�
       .all(version, version)
       .map((row) => String(row["statement"]));
   assert.deepEqual(snapshot(1), ["公开函数要有类型标注"]);
-  assert.deepEqual(snapshot(2), ["导出的函数要有类型标注"]);
-  assert.deepEqual(snapshot(3), []);
+  assert.deepEqual(snapshot(2), []);
   raw.close();
 });
 
-test("面板手工增删改规则:knowledge:write 放行,版本逐次推进,废止的仍读得到", async () => {
+test("面板直接废止一条条目:knowledge:write 放行,版本推进,废止的仍读得到", async () => {
   const h = await startReadyPanelHarness(cleanups);
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const cookie = await ruleWriterCookie(h, "rule-writer", [alpha]);
-
-  const created = await send(h, cookie, "POST", `/repos/${alpha}/rules`, {
+  const ruleId = seedActiveRule(h, alpha, {
+    type: "rule",
     scope: "src/api/**",
     statement: "入参要在边界上校验",
   });
-  assert.equal(created.status, 201);
-  assert.deepEqual(await created.json(), { version: 1 });
 
-  const afterCreate = (await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as
-    RuleSetResponse;
-  assert.equal(afterCreate.version, 1);
-  assert.deepEqual(afterCreate.rules.map(({ id, ...rule }) => rule), [
-    {
-      type: "rule",
-      scope: "src/api/**",
-      statement: "入参要在边界上校验",
-      origin: "manual",
-    },
-  ]);
-  const ruleId = afterCreate.rules[0]!.id;
-
-  const updated = await send(h, cookie, "PUT", `/repos/${alpha}/rules/${ruleId}`, {
-    scope: "",
-    statement: "入参要在边界上校验并给出错误原因",
-  });
-  assert.equal(updated.status, 200);
-  assert.deepEqual(await updated.json(), { version: 2 });
-
-  const afterUpdate = (await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as
-    RuleSetResponse;
-  assert.deepEqual(afterUpdate.rules.map((rule) => rule.statement), [
-    "入参要在边界上校验并给出错误原因",
-  ]);
-  const editedId = afterUpdate.rules[0]!.id;
-
-  const retired = await send(h, cookie, "DELETE", `/repos/${alpha}/rules/${editedId}`);
+  const retired = await send(h, cookie, "DELETE", `/repos/${alpha}/rules/${ruleId}`);
   assert.equal(retired.status, 200);
-  assert.deepEqual(await retired.json(), { version: 3 });
+  assert.deepEqual(await retired.json(), { version: 2 });
 
   const afterRetire = (await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as
     RuleSetResponse;
-  assert.equal(afterRetire.version, 3);
+  assert.equal(afterRetire.version, 2);
   assert.deepEqual(afterRetire.rules, []);
-  assert.deepEqual(afterRetire.retired.map((rule) => rule.statement), [
-    "入参要在边界上校验",
-    "入参要在边界上校验并给出错误原因",
-  ]);
+  assert.deepEqual(afterRetire.retired.map((rule) => rule.statement), ["入参要在边界上校验"]);
 
-  // 已废止的那条改不动、也废止不了第二次。
-  assert.equal(
-    (await send(h, cookie, "DELETE", `/repos/${alpha}/rules/${editedId}`)).status,
-    404,
-  );
-  assert.equal(
-    (await send(h, cookie, "PUT", `/repos/${alpha}/rules/${editedId}`, {
-      scope: "",
-      statement: "再改一次",
-    })).status,
-    404,
-  );
+  // 已废止的那条废止不了第二次。
+  assert.equal((await send(h, cookie, "DELETE", `/repos/${alpha}/rules/${ruleId}`)).status, 404);
 });
 
-test("陈述不能为空,坏 body 一律 400 且不推进版本", async () => {
+test("直改那四个端点已经撤掉:手写条目与草案手填一律回 404", async () => {
   const h = await startReadyPanelHarness(cleanups);
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const cookie = await ruleWriterCookie(h, "rule-writer", [alpha]);
-
-  for (const payload of [{}, { statement: "  " }, { statement: 42 }]) {
-    const response = await send(h, cookie, "POST", `/repos/${alpha}/rules`, payload);
-    assert.equal(response.status, 400, JSON.stringify(payload));
+  // 有 `knowledge:write` 也没有这四条路径了(issue #299,ADR 0028):人写的是修订意图,
+  // 陈述、型与作用范围由 agent 产出。
+  const body = { type: "rule", scope: "", statement: "入参要校验" };
+  const gone: [string, string][] = [
+    ["POST", `/repos/${alpha}/rules`],
+    ["PUT", `/repos/${alpha}/rules/1`],
+    ["POST", `/repos/${alpha}/rule-draft`],
+    ["PUT", `/repos/${alpha}/rule-draft/1`],
+  ];
+  for (const [method, path] of gone) {
+    const response = await send(h, cookie, method, path, body);
+    assert.equal(response.status, 404, `${method} ${path}`);
+    assert.equal(((await response.json()) as { error: string }).error, "没有这个端点");
   }
-  const ruleSet = (await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as RuleSetResponse;
-  assert.equal(ruleSet.version, null);
-  assert.deepEqual(ruleSet.rules, []);
 });
 
-test("没有 knowledge:write 的人写不动规则,分配外的仓库同形 404", async () => {
+test("没有 knowledge:write 的人废止不动条目,分配外的仓库同形 404", async () => {
   const h = await startReadyPanelHarness(cleanups);
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const beta = seedRepo(h, 102, "acme", "beta");
   // 读得到知识集的人不等于改得动:这个账号有仓库分配,没有权限格。
   const readerCookie = await scopedUser(h, "rules-reader", [alpha]);
   assert.equal((await get(h, readerCookie, `/repos/${alpha}/rules`)).status, 200);
-  const body = { scope: "", statement: "入参要校验" };
-  assert.equal((await send(h, readerCookie, "POST", `/repos/${alpha}/rules`, body)).status, 403);
-  assert.equal((await send(h, readerCookie, "PUT", `/repos/${alpha}/rules/1`, body)).status, 403);
   assert.equal((await send(h, readerCookie, "DELETE", `/repos/${alpha}/rules/1`)).status, 403);
 
   // 有格但没分到那个仓库,与没注册同形 404。
   const writerCookie = await ruleWriterCookie(h, "rule-writer", [alpha]);
-  const outside = await send(h, writerCookie, "POST", `/repos/${beta}/rules`, body);
+  const outside = await send(h, writerCookie, "DELETE", `/repos/${beta}/rules/1`);
   assert.equal(outside.status, 404);
   assert.equal(
     ((await outside.json()) as { error: string }).error,
@@ -516,98 +474,6 @@ test("Review Run 的启动快照冻结知识集版本与当时那组规则,之�
   } finally {
     store.close();
   }
-});
-
-test("面板手填项目事实:与规则同一套端点,版本照样推进", async () => {
-  const h = await startReadyPanelHarness(cleanups);
-  const alpha = seedRepo(h, 101, "acme", "alpha");
-  const cookie = await ruleWriterCookie(h, "rule-writer", [alpha]);
-
-  const created = await send(h, cookie, "POST", `/repos/${alpha}/rules`, {
-    type: "fact",
-    scope: "src/api/**",
-    statement: "全局拦截器覆盖 /api 下的全部路由",
-  });
-  assert.equal(created.status, 201);
-  assert.deepEqual(await created.json(), { version: 1 });
-
-  const afterCreate = (await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as
-    RuleSetResponse;
-  assert.deepEqual(afterCreate.rules.map(({ id, ...entry }) => entry), [
-    {
-      type: "fact",
-      scope: "src/api/**",
-      statement: "全局拦截器覆盖 /api 下的全部路由",
-      origin: "manual",
-    },
-  ]);
-  const factId = afterCreate.rules[0]!.id;
-
-  // 改与废止走的是同一条路径:两型不各有一套端点(ADR 0020)。
-  const updated = await send(h, cookie, "PUT", `/repos/${alpha}/rules/${factId}`, {
-    type: "fact",
-    scope: "",
-    statement: "全局拦截器覆盖全部路由",
-  });
-  assert.equal(updated.status, 200);
-  assert.deepEqual(await updated.json(), { version: 2 });
-
-  const retired = await send(h, cookie, "DELETE", `/repos/${alpha}/rules/${
-    ((await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as RuleSetResponse).rules[0]!.id
-  }`);
-  assert.equal(retired.status, 200);
-  assert.deepEqual(await retired.json(), { version: 3 });
-
-  const afterRetire = (await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as
-    RuleSetResponse;
-  assert.deepEqual(afterRetire.rules, []);
-  assert.deepEqual(afterRetire.retired.map((entry) => [entry.type, entry.statement]), [
-    ["fact", "全局拦截器覆盖 /api 下的全部路由"],
-    ["fact", "全局拦截器覆盖全部路由"],
-  ]);
-});
-
-test("事实型录入的两道校验:陈述超长与认不得的 type 各回 400,一版都不推进", async () => {
-  const h = await startReadyPanelHarness(cleanups);
-  const alpha = seedRepo(h, 101, "acme", "alpha");
-  const cookie = await ruleWriterCookie(h, "rule-writer", [alpha]);
-
-  // 事实是一句可核查的陈述,不是一段说明:服务端只拒收,不截断——截断出来的半句事实
-  // 比没有更糟。
-  const tooLong = await send(h, cookie, "POST", `/repos/${alpha}/rules`, {
-    type: "fact",
-    statement: "长".repeat(501),
-  });
-  assert.equal(tooLong.status, 400);
-  assert.match(((await tooLong.json()) as { error: string }).error, /500/);
-
-  // 恰好到上限的收得下:上限是 500 字,不是 499。
-  const atLimit = await send(h, cookie, "POST", `/repos/${alpha}/rules`, {
-    type: "fact",
-    statement: "长".repeat(500),
-  });
-  assert.equal(atLimit.status, 201);
-
-  // 两型是封闭枚举:第三个取值要新开一份 ADR,端点这里先拦下。
-  for (const type of ["knowledge", "", 7]) {
-    const response = await send(h, cookie, "POST", `/repos/${alpha}/rules`, {
-      type,
-      statement: "随便一句",
-    });
-    assert.equal(response.status, 400, JSON.stringify(type));
-  }
-
-  // 空陈述两型同判:事实同样不能是空的。
-  assert.equal(
-    (await send(h, cookie, "POST", `/repos/${alpha}/rules`, { type: "fact", statement: " " }))
-      .status,
-    400,
-  );
-
-  const ruleSet = (await (await get(h, cookie, `/repos/${alpha}/rules`)).json()) as RuleSetResponse;
-  // 只有那一条合法的落了下去,四次被拒的一版都没推进。
-  assert.equal(ruleSet.version, 1);
-  assert.equal(ruleSet.rules.length, 1);
 });
 
 test("启动快照按 type 把两型分开,同一个知识集版本一起冻结", () => {

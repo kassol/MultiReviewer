@@ -2390,19 +2390,17 @@ export type Store = {
    */
   getRuleSet(repoId: number): RuleSet | undefined;
   /**
-   * 手工新增一条评审规则(issue #203):推进一版知识集版本,新规则从那一版起生效,出处
-   * 记人工。返回新的知识集版本;仓库不在注册表里回 undefined。
+   * 落一条知识条目:推进一版知识集版本,它从那一版起生效,出处记 `manual`。返回新的知识
+   * 集版本;仓库不在注册表里回 undefined。
+   *
+   * **没有端点走它**(issue #299,ADR 0028):人不再手写陈述,生效条目只由裁决采纳与知识
+   * 确认写入。留着它是因为用例要落「现集里先有一条」这个前提,而那两条路径各要先造一份
+   * 提案或一份草案。别把它重新接到端点上。
    */
   addReviewRule(repoId: number, input: ReviewRuleInput): number | undefined;
   /**
-   * 手工修改一条生效中的规则:推进一版,旧行废止于那一版、新内容作为新行生效于那一版。
-   * 历史版本的快照因此仍取到旧内容。出处沿用旧行——改文字不改变这条规则当初从哪来。
-   * 规则不在这个仓库的生效规则里时回 undefined,一版都不推进。
-   */
-  updateReviewRule(repoId: number, ruleId: number, input: ReviewRuleInput): number | undefined;
-  /**
-   * 手工废止一条生效中的规则:推进一版,那一行废止于那一版,之后可查不可用。规则不在
-   * 这个仓库的生效规则里时回 undefined。
+   * 直接废止一条生效中的条目:推进一版,那一行废止于那一版,之后可查不可用。条目不在
+   * 这个仓库的生效条目里时回 undefined。
    */
   retireReviewRule(repoId: number, ruleId: number): number | undefined;
   /** 这个仓库最近一次基点探索(issue #205)。从没探索过或仓库不在注册表里回 null。 */
@@ -2534,8 +2532,6 @@ export type Store = {
   retargetRuleProposal(repoId: number, proposalId: number, targetRuleId: number): boolean;
   /** 这个仓库当前的知识草案,按 id 排序。没有草案即空数组。 */
   getRuleDraft(repoId: number): RuleDraftItem[];
-  /** 往草案里手工加一条,出处记人工。返回新条目的 id;仓库不在注册表里回 undefined。 */
-  addRuleDraftItem(repoId: number, input: ReviewRuleInput): number | undefined;
   /**
    * 把一次人工提议的产出追加进草案(CONTEXT.md 人工提议,issue #294),出处记人工提议。
    * **追加而不是覆盖**:草案的整组覆盖只属于重新探索,一条意图补的是这份草案里缺的那
@@ -2584,17 +2580,13 @@ export type Store = {
    * 采纳一条待裁决的提案(CONTEXT.md 裁决):推进一版知识集版本,按变更类型落库——
    * 新增写一行新规则(出处沿用提案的出处)、修改是旧行废止于新版加新内容作为新行、
    * 废止只让目标那一行停止生效、合并是几条目标全部废止于新版加合成的那一条作为新行
-   * (出处与新增同一条口径,issue #282)。`input` 有值即人在采纳前改过内容,改后的那
-   * 一份既落进知识集也覆盖队列里这一条(裁决历史要说得出实际采纳的是什么)。
+   * (出处与新增同一条口径,issue #282)。**落的就是队列里那一份**:采纳前改内容那一档
+   * 已经撤掉(issue #299,ADR 0028),要改内容先写一条修订意图让 agent 改写这条提案。
    *
    * 返回新的知识集版本。提案不在待裁决队列里、或它的目标条目有一条已经不生效时回
    * undefined,一版都不推进。
    */
-  acceptRuleProposal(
-    repoId: number,
-    proposalId: number,
-    input?: ReviewRuleInput,
-  ): number | undefined;
+  acceptRuleProposal(repoId: number, proposalId: number): number | undefined;
   /**
    * 批量采纳一组待裁决的提案(issue #223):在同一个写事务里按排队先后逐条落库,
    * **一次只推进一个知识集版本**——逐条各推一版会让一次裁决在版本轴上散成上百格,
@@ -3339,8 +3331,8 @@ function stageScope(scope: StageScope): [string, (string | number)[]] {
 }
 
 /**
- * 人手工写下的规则在 `review_rule.origin` 上的出处(issue #203)。人往知识草案里手写
- * 的那些同样记它(issue #205);处置反哺另写自己的字面量,那条链路是后续票的范围。
+ * 人手工写下的条目在 `review_rule.origin` 上的出处(issue #203)。撤直改之后不再有端点
+ * 产生新的这一类行(issue #299,ADR 0028),存量条目原样保留,`addReviewRule` 也照旧写它。
  */
 const MANUAL_RULE_ORIGIN = "manual";
 
@@ -3946,11 +3938,10 @@ export function openStore(dbPath: string): Store {
   const plannedAcceptance = (
     repoId: number,
     proposalId: number,
-    input?: ReviewRuleInput,
   ): PlannedAcceptance | undefined => {
     const queued = pendingProposal(repoId, proposalId);
     if (queued === undefined) return undefined;
-    const content = input ?? {
+    const content = {
       type: queued.type,
       scope: queued.scope,
       statement: queued.statement,
@@ -4592,16 +4583,6 @@ export function openStore(dbPath: string): Store {
       });
     },
 
-    updateReviewRule(repoId, ruleId, input) {
-      const existing = activeRule(repoId, ruleId);
-      if (existing === undefined) return undefined;
-      return inRuleSetVersion(repoId, (version, at) => {
-        retireRuleRow(ruleId, version);
-        insertReviewRule(repoId, input, existing.origin, version, at);
-        return version;
-      });
-    },
-
     retireReviewRule(repoId, ruleId) {
       if (activeRule(repoId, ruleId) === undefined) return undefined;
       return inRuleSetVersion(repoId, (version) => {
@@ -4954,24 +4935,6 @@ export function openStore(dbPath: string): Store {
         }));
     },
 
-    addRuleDraftItem(repoId, input) {
-      if (!repoExists(repoId)) return undefined;
-      const inserted = db
-        .prepare(
-          `INSERT INTO rule_draft_item (repo_id, type, scope, statement, layer, origin, created_at)
-           VALUES (?, ?, ?, ?, '', ?, ?)`,
-        )
-        .run(
-          repoId,
-          input.type,
-          input.scope,
-          input.statement,
-          MANUAL_RULE_ORIGIN,
-          new Date().toISOString(),
-        );
-      return Number(inserted.lastInsertRowid);
-    },
-
     appendRuleDraftItems(repoId, items, at) {
       if (!repoExists(repoId)) return [];
       const insert = db.prepare(
@@ -5129,8 +5092,8 @@ export function openStore(dbPath: string): Store {
       return true;
     },
 
-    acceptRuleProposal(repoId, proposalId, input) {
-      const planned = plannedAcceptance(repoId, proposalId, input);
+    acceptRuleProposal(repoId, proposalId) {
+      const planned = plannedAcceptance(repoId, proposalId);
       if (planned === undefined) return undefined;
       return inRuleSetVersion(repoId, (version, at) => {
         applyAcceptance(repoId, planned, version, at);

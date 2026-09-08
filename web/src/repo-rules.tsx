@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { useEffect, useId, useState, type ReactNode } from "react";
 
 import { Cross2Icon, CrossCircledIcon } from "@radix-ui/react-icons";
-import { Badge, Callout, Checkbox, Dialog, IconButton, Select, Skeleton, Tabs, Text, TextArea, TextField, Tooltip } from "@radix-ui/themes";
+import { Badge, Callout, Checkbox, Dialog, IconButton, Select, Skeleton, Tabs, Text, TextArea, Tooltip } from "@radix-ui/themes";
 
 import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
@@ -16,9 +16,6 @@ import { api, errorText, fetchJson } from "./api.ts";
 import { CommitPicker, type CommitSelection } from "./commit-picker.tsx";
 import { OUTLINED_ACTION, RuleTraceButton, SOURCE_LABEL, TYPE_LABEL, type KnowledgeType } from "./rule-trace.tsx";
 import { THINKING_LEVEL_LABEL, type ThinkingLevel } from "./model-services.ts";
-
-/** 事实型陈述的字数上限,与服务端同一个数:超了服务端 400,表单先拦一道。 */
-const FACT_STATEMENT_LIMIT = 500;
 
 /** `GET /repos/{id}/rules` 的一条知识条目(CONTEXT.md)。`scope` 空串即全仓库。 */
 type ReviewRule = {
@@ -144,50 +141,17 @@ type RuleModel = {
 };
 
 /**
- * 表单里编辑中的那条规则:`id` 为 null 即新增,有值即改这一条。生效规则、知识草案与修订
- * 提案三张表单共用它。它与 CONTEXT.md 的「知识草案」(`ruleSet.draft`)不是一回事,因此
- * 不叫 `RuleDraft`。
- */
-type RuleFormState = {
-  id: number | null;
-  type: KnowledgeType;
-  scope: string;
-  statement: string;
-};
-
-const BLANK_DRAFT: RuleFormState = { id: null, type: "rule", scope: "", statement: "" };
-
-/** 一条知识条目的请求 body。三处写侧(生效条目、知识草案、提案的改后内容)同一个形状。 */
-function ruleFieldsBody(form: RuleFormState): string {
-  return JSON.stringify({
-    type: form.type,
-    scope: form.scope.trim(),
-    statement: form.statement.trim(),
-  });
-}
-
-/**
- * 一组规则表单的增删改。生效规则与知识草案各有一组端点,写法却是同一套:`id` 为 null 即
- * POST 新增、有值即 PUT 改这一条,`{ retire }` 与 `{ deleteDraft }` 即 DELETE 那一条。
- * 两者的差别只有端点前缀与成功后清空哪一份表单,由入参给。
+ * 删掉一条:生效条目与知识草案各有一组端点,写法却是同一套 `DELETE {basePath}/{id}`,
+ * 差别只有端点前缀,由入参给。
  *
- * 删那一档分成两个名字:生效规则的那一次是**废止**(CONTEXT.md 的两态之一,那条规则
- * 仍要查得到),知识草案的那一次是**删除**(还没确认,删了就不剩什么)。请求形状相同,
- * 说的却是两件事,同名会让读代码的人以为它们是一回事。
+ * 两处说的不是一件事:生效条目的那一次是**废止**(CONTEXT.md 的两态之一,那条条目仍要
+ * 查得到),知识草案的那一次是**删除**(还没确认,删了就不剩什么)。写内容的入口只剩
+ * 修订意图(ADR 0028,issue #299),不写内容的这两个动作照旧一键。
  */
 function useRuleEdits(basePath: string, onSuccess: () => void) {
   return useMutation({
-    mutationFn: async (
-      action: RuleFormState | { retire: number } | { deleteDraft: number },
-    ): Promise<void> => {
-      const response = "retire" in action
-        ? await api(`${basePath}/${action.retire}`, { method: "DELETE" })
-        : "deleteDraft" in action
-        ? await api(`${basePath}/${action.deleteDraft}`, { method: "DELETE" })
-        : await api(action.id === null ? basePath : `${basePath}/${action.id}`, {
-            method: action.id === null ? "POST" : "PUT",
-            body: ruleFieldsBody(action),
-          });
+    mutationFn: async (id: number): Promise<void> => {
+      const response = await api(`${basePath}/${id}`, { method: "DELETE" });
       if (!response.ok) throw new Error(await errorText(response));
     },
     onSuccess,
@@ -235,10 +199,11 @@ function useSelection(ids: readonly number[], defaultAll: boolean) {
  * 知识集入口(issue #202):首页右栏头部选中一个仓库时的一个按钮加它的弹窗。
  *
  * 读侧不挂权限格(ADR 0019),登录加仓库分配即可读,因此这个按钮与「发起范围审查」
- * 「重跑」并排却不跟着写权限出现;手工增删改那三个入口按 `knowledge:write` 出现
- * (issue #203)。规则怎么来是同一个弹窗里的基点探索与知识确认(issue #205,见
- * `ExplorationSection`),之后怎么改是修订提案队列与逐条裁决(issue #207,见
- * `ProposalSection`)。
+ * 「重跑」并排却不跟着写权限出现;意图框、「改写」、裁决、直接废止与删除草案按
+ * `knowledge:write` 出现。规则怎么来是同一个弹窗里的基点探索与知识确认(issue #205,见
+ * `ExplorationSection`),之后怎么改是修订意图(ADR 0028,见 `IntentSection`)与修订提案
+ * 队列的逐条裁决(issue #207,见 `ProposalSection`)。**手写陈述、型与作用范围那张三字段
+ * 表已经整个撤掉**(issue #299):写内容一律经修订意图。
  */
 export function RepoRules({
   repo,
@@ -271,9 +236,6 @@ function RuleSetDialogContent({
   canWrite: boolean;
 }) {
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<RuleFormState | null>(null);
-  const [draftEdit, setDraftEdit] = useState<RuleFormState | null>(null);
-  const [proposalEdit, setProposalEdit] = useState<RuleFormState | null>(null);
   /** 人点过的 tab。null 即还没点过,按数据推默认落点。 */
   const [pickedTab, setPickedTab] = useState<DialogTab | null>(null);
   /** 从意图行点过来要看的那条提案(issue #295)。null 即没有要高亮的。 */
@@ -309,31 +271,24 @@ function RuleSetDialogContent({
       ?.scrollIntoView({ block: "center" });
   }, [highlightRule]);
 
-  // 三个写动作走同一次改动:每一次都推进一个知识集版本,回来重读这一份知识集。
-  const change = useRuleEdits(`/repos/${repo.repoId}/rules`, () => {
-    setDraft(null);
-    reload();
-  });
+  // 直接废止一条条目:推进一个知识集版本,回来重读这一份知识集。
+  const change = useRuleEdits(`/repos/${repo.repoId}/rules`, reload);
 
-  // 草案的增删改与生效规则各走各的端点:草案还没确认,改它不推进知识集版本。
-  const changeDraft = useRuleEdits(`/repos/${repo.repoId}/rule-draft`, () => {
-    setDraftEdit(null);
-    reload();
-  });
+  // 删草案里的一条与废止生效条目各走各的端点:草案还没确认,删它不推进知识集版本。
+  const changeDraft = useRuleEdits(`/repos/${repo.repoId}/rule-draft`, reload);
 
   /**
-   * 裁决一条修订提案(CONTEXT.md,issue #207)。采纳可以带改后的内容,不带即按队列里
-   * 那份原样采纳;采纳推进一个知识集版本,驳回只改状态。
+   * 裁决一条修订提案(CONTEXT.md,issue #207)。采纳按队列里那份落——采纳前改内容那一档
+   * 已经撤掉(ADR 0028,issue #299),要改内容在这条提案上写一句意图让 agent 改写它。
+   * 采纳推进一个知识集版本,驳回只改状态。
    */
   const decide = useMutation({
     mutationFn: async (
-      action:
-        | { id: number; accept: boolean; edit?: RuleFormState }
-        | { ids: readonly number[]; accept: boolean },
+      action: { id: number; accept: boolean } | { ids: readonly number[]; accept: boolean },
     ): Promise<void> => {
       const base = `/repos/${repo.repoId}/rule-proposals`;
-      // 批量裁决走另一对端点(issue #223):采纳一整组只推进一个知识集版本,而逐条采纳
-      // 还带「改后采纳」的改后内容,两者要的 body 不是一回事。
+      // 批量裁决走另一对端点(issue #223):采纳一整组只推进一个知识集版本,body 是那一组
+      // 标识,逐条那两条不带 body。
       const response =
         "ids" in action
           ? await api(`${base}/${action.accept ? "accept" : "reject"}`, {
@@ -342,14 +297,10 @@ function RuleSetDialogContent({
             })
           : await api(`${base}/${action.id}/${action.accept ? "accept" : "reject"}`, {
               method: "POST",
-              ...(action.edit === undefined ? {} : { body: ruleFieldsBody(action.edit) }),
             });
       if (!response.ok) throw new Error(await errorText(response));
     },
-    onSuccess: () => {
-      setProposalEdit(null);
-      reload();
-    },
+    onSuccess: reload,
   });
 
   /**
@@ -502,28 +453,6 @@ function RuleSetDialogContent({
 
           <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1 pt-3">
             <Tabs.Content value="entries">
-              {canWrite && data.draft.length === 0 ? (
-                draft === null ? (
-                  <div className="mb-3">
-                    <Button
-                      variant="soft"
-                      size={{ initial: "3", sm: "2" }}
-                      onClick={() => setDraft(BLANK_DRAFT)}
-                    >
-                      新增知识条目
-                    </Button>
-                  </div>
-                ) : (
-                  <RuleForm
-                    draft={draft}
-                    busy={change.isPending}
-                    onChange={setDraft}
-                    onCancel={() => setDraft(null)}
-                    onSubmit={() => change.mutate(draft)}
-                  />
-                )
-              ) : null}
-
               {data.rules.length === 0 ? (
                 <EmptyState
                   title="这个仓库还没有知识条目"
@@ -561,8 +490,7 @@ function RuleSetDialogContent({
                       onRewrite={() =>
                         setRewritingRule((open) => (open === entry.id ? null : entry.id))
                       }
-                      onEdit={() => setDraft({ ...entry, id: entry.id })}
-                      onRetire={() => change.mutate({ retire: entry.id })}
+                      onRetire={() => change.mutate(entry.id)}
                       onRewritten={() => {
                         setRewritingRule(null);
                         reload();
@@ -600,8 +528,7 @@ function RuleSetDialogContent({
                       onRewrite={() =>
                         setRewritingRule((open) => (open === entry.id ? null : entry.id))
                       }
-                      onEdit={() => setDraft({ ...entry, id: entry.id })}
-                      onRetire={() => change.mutate({ retire: entry.id })}
+                      onRetire={() => change.mutate(entry.id)}
                       onRewritten={() => {
                         setRewritingRule(null);
                         reload();
@@ -642,16 +569,11 @@ function RuleSetDialogContent({
                   repo={repo}
                   ruleSet={data}
                   canWrite={canWrite}
-                  edit={proposalEdit}
                   busy={decide.isPending}
                   highlight={highlightProposal}
-                  onEdit={setProposalEdit}
                   onChanged={reload}
                   onDecide={(id, accept) => decide.mutate({ id, accept })}
                   onDecideAll={(ids, accept) => decide.mutate({ ids, accept })}
-                  onSubmitEdit={() =>
-                    decide.mutate({ id: proposalEdit!.id!, accept: true, edit: proposalEdit! })
-                  }
                 />
               </Tabs.Content>
             ) : null}
@@ -661,14 +583,11 @@ function RuleSetDialogContent({
                 <ExplorationSection
                   repo={repo}
                   ruleSet={data}
-                  draft={draftEdit}
                   busy={changeDraft.isPending || confirm.isPending}
                   highlight={highlightDraft}
                   onLaunched={reload}
                   onChanged={reload}
-                  onEdit={setDraftEdit}
-                  onSubmitEdit={() => changeDraft.mutate(draftEdit!)}
-                  onDeleteDraft={(id) => changeDraft.mutate({ deleteDraft: id })}
+                  onDeleteDraft={(id) => changeDraft.mutate(id)}
                   onConfirm={(itemIds) => confirm.mutate(itemIds)}
                 />
               </Tabs.Content>
@@ -693,107 +612,6 @@ function RuleSetDialogContent({
         </Tooltip>
       </div>
     </Dialog.Content>
-  );
-}
-
-/**
- * 新增与修改共用的一张表(issue #203、#221)。两型同一张表(ADR 0020),第一格就是选
- * 哪一型,陈述那一格跟着换:
- *
- * - **评审规则**要那一句规范陈述(空陈述不构成规范);
- * - **项目事实**要那一句可核查的陈述,另有字数上限,事实是一句话不是一段说明。
- *
- * 作用范围两型都可以留空,空即全仓库。这里的必填判据与服务端逐条对应。
- */
-function RuleForm({
-  draft,
-  busy,
-  submitLabel,
-  onChange,
-  onCancel,
-  onSubmit,
-}: {
-  draft: RuleFormState;
-  busy: boolean;
-  /** 提交那一颗的字。省略即按新增 / 保存,裁决那一段给「改后采纳」。 */
-  submitLabel?: string;
-  onChange: (draft: RuleFormState) => void;
-  onCancel: () => void;
-  onSubmit: () => void;
-}) {
-  // 表单在生效条目、草案与提案三处各挂一份,可能同时渲染;写死的 id 会在 DOM 里
-  // 重复,标签指到别的表单上,所以按实例生成。
-  const typeSelectId = useId();
-  const statement = draft.statement.trim();
-  const isRule = draft.type === "rule";
-  const overLimit = !isRule && statement.length > FACT_STATEMENT_LIMIT;
-  const ready = statement !== "" && !overLimit;
-  return (
-    <form
-      className="mb-3 flex flex-col gap-2 rounded-lg border border-card-line p-3"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (ready && !busy) onSubmit();
-      }}
-    >
-      <div className="flex flex-col gap-1">
-        <div className="flex items-center gap-1">
-          <Text as="label" htmlFor={typeSelectId} size="1" color="gray">类型</Text>
-          <HelpTooltip content="评审规则说的是代码应当怎样,违反它即是一条 Finding;项目事实说的是这个仓库实际怎样,只作模型的判断依据,本身不产 Finding。" />
-        </div>
-        <Select.Root
-          value={draft.type}
-          onValueChange={(next) => onChange({ ...draft, type: next as KnowledgeType })}
-          size={{ initial: "3", sm: "2" }}
-        >
-          <Select.Trigger id={typeSelectId} />
-          <Select.Content position="popper">
-            <Select.Item value="rule">{TYPE_LABEL.rule}</Select.Item>
-            <Select.Item value="fact">{TYPE_LABEL.fact}</Select.Item>
-          </Select.Content>
-        </Select.Root>
-      </div>
-      <label className="flex flex-col gap-1">
-        <Text size="1" color={overLimit ? "red" : "gray"}>
-          {isRule
-            ? "规范陈述"
-            : `项目事实陈述(至多 ${FACT_STATEMENT_LIMIT} 字,已写 ${statement.length})`}
-        </Text>
-        {/* 多行输入:陈述常常一句写不下,单行框在长句上没法回看。换行在注入侧压成
-            单行(worker-tools 的 oneLine),prompt 的列表结构不受影响。 */}
-        <TextArea
-          size={{ initial: "3", sm: "2" }}
-          rows={3}
-          resize="vertical"
-          value={draft.statement}
-          onChange={(event) => onChange({ ...draft, statement: event.target.value })}
-          autoFocus
-        />
-      </label>
-      <label className="flex flex-col gap-1">
-        <Text size="1" color="gray">作用范围(glob,留空即全仓库)</Text>
-        <TextField.Root
-          size={{ initial: "3", sm: "2" }}
-          className="max-sm:min-h-11"
-          value={draft.scope}
-          onChange={(event) => onChange({ ...draft, scope: event.target.value })}
-        />
-      </label>
-      <div className="flex gap-2">
-        <Button type="submit" size={{ initial: "3", sm: "2" }} disabled={!ready || busy}>
-          {submitLabel ?? (draft.id === null ? "新增" : "保存")}
-        </Button>
-        <Button
-          type="button"
-          variant="soft"
-          color="gray"
-          size={{ initial: "3", sm: "2" }}
-          onClick={onCancel}
-        >
-          取消
-        </Button>
-      </div>
-    </form>
   );
 }
 
@@ -919,8 +737,8 @@ function ProposalSources({ repoId, proposal }: { repoId: number; proposal: RuleP
  * 元数据与操作合成底部一条收尾线。
  *
  * 「改写」就地展开与顶部同一个意图框(ADR 0028,issue #297):人写一句话说要改成什么样,
- * agent 读代码产出一条指向这一条的修订提案,人裁决。「修改」与「废止」不动(撤直改是
- * issue #299,直接废止保留——它写不进内容)。
+ * agent 读代码产出一条指向这一条的修订提案,人裁决。手写那张表已经撤掉(issue #299),
+ * 「废止」照旧一键——它写不进内容。
  */
 function EntryCard({
   entry,
@@ -931,7 +749,6 @@ function EntryCard({
   highlighted,
   rewriting,
   onRewrite,
-  onEdit,
   onRetire,
   onRewritten,
 }: {
@@ -944,7 +761,6 @@ function EntryCard({
   highlighted: boolean;
   rewriting: boolean;
   onRewrite: () => void;
-  onEdit: () => void;
   onRetire: () => void;
   onRewritten: () => void;
 }) {
@@ -971,16 +787,6 @@ function EntryCard({
               onClick={onRewrite}
             >
               改写
-            </Button>
-            <Button
-              variant="outline"
-              color="gray"
-              highContrast
-              size={{ initial: "3", sm: "1" }}
-              className={OUTLINED_ACTION}
-              onClick={onEdit}
-            >
-              修改
             </Button>
             <Button
               variant="outline"
@@ -1320,26 +1126,20 @@ function ProposalSection({
   repo,
   ruleSet,
   canWrite,
-  edit,
   busy,
   highlight,
-  onEdit,
   onDecide,
   onDecideAll,
-  onSubmitEdit,
   onChanged,
 }: {
   repo: { repoId: number; owner: string; repo: string };
   ruleSet: RuleSet;
   canWrite: boolean;
-  edit: RuleFormState | null;
   busy: boolean;
   /** 从意图行点过来的那条提案(issue #295):滚到它并高亮。 */
   highlight: number | null;
-  onEdit: (draft: RuleFormState | null) => void;
   onDecide: (id: number, accept: boolean) => void;
   onDecideAll: (ids: readonly number[], accept: boolean) => void;
-  onSubmitEdit: () => void;
   onChanged: () => void;
 }) {
   // 就地展开意图框的那条提案(issue #295)。一次只展开一条:两张框同时开着人分不清写的
@@ -1518,7 +1318,7 @@ function ProposalSection({
                       <Badge color="amber" variant="soft">刚由意图产出</Badge>
                     ) : null}
                   </span>
-                  {canWrite && edit?.id !== proposal.id ? (
+                  {canWrite ? (
                     <div className="flex shrink-0 gap-1">
                       {/* 「改写」就地展开与顶部同一个意图框(ADR 0028,issue #295):人写
                           一句话,agent 换陈述与作用范围并追加一条附注。废止型没有这一颗
@@ -1537,23 +1337,6 @@ function ProposalSection({
                           改写
                         </Button>
                       )}
-                      <Button
-                        variant="outline"
-                        color="gray"
-                        highContrast
-                        size={{ initial: "3", sm: "1" }}
-                        className={OUTLINED_ACTION}
-                        onClick={() =>
-                          onEdit({
-                            id: proposal.id,
-                            type: proposal.type,
-                            scope: proposal.scope,
-                            statement: proposal.statement,
-                          })
-                        }
-                      >
-                        修改
-                      </Button>
                       <Button
                         variant="outline"
                         color="gray"
@@ -1591,18 +1374,6 @@ function ProposalSection({
                         onChanged();
                       }}
                       onCancel={() => setRewriting(null)}
-                    />
-                  </div>
-                ) : null}
-                {edit?.id === proposal.id ? (
-                  <div className="mt-2">
-                    <RuleForm
-                      draft={edit}
-                      busy={busy}
-                      submitLabel="改后采纳"
-                      onChange={onEdit}
-                      onCancel={() => onEdit(null)}
-                      onSubmit={onSubmitEdit}
                     />
                   </div>
                 ) : null}
@@ -1652,26 +1423,20 @@ function ProposalSection({
 function ExplorationSection({
   repo,
   ruleSet,
-  draft,
   busy,
   highlight,
   onLaunched,
   onChanged,
-  onEdit,
-  onSubmitEdit,
   onDeleteDraft,
   onConfirm,
 }: {
   repo: { repoId: number; owner: string; repo: string };
   ruleSet: RuleSet;
-  draft: RuleFormState | null;
   busy: boolean;
   /** 从意图行点过来的那条草案条目(issue #298):滚到它并高亮。 */
   highlight: number | null;
   onLaunched: () => void;
   onChanged: () => void;
-  onEdit: (draft: RuleFormState | null) => void;
-  onSubmitEdit: () => void;
   onDeleteDraft: (id: number) => void;
   onConfirm: (itemIds: readonly number[]) => void;
 }) {
@@ -1737,16 +1502,8 @@ function ExplorationSection({
         </Callout.Root>
       ) : null}
 
-      {confirmed ? null : draft === null ? (
+      {confirmed ? null : (
         <div className="flex flex-wrap gap-2">
-          <Button
-            variant="soft"
-            color="gray"
-            size={{ initial: "3", sm: "2" }}
-            onClick={() => onEdit(BLANK_DRAFT)}
-          >
-            向草案新增
-          </Button>
           <Button
             size={{ initial: "3", sm: "2" }}
             disabled={busy || (ruleSet.draft.length > 0 && pick.selected.length === 0)}
@@ -1760,14 +1517,6 @@ function ExplorationSection({
             <HelpTooltip content="确认空知识集即宣布这个仓库没有规则:审查随之放行,评审不注入任何规则。之后再探索,产出排进修订提案队列。" />
           ) : null}
         </div>
-      ) : (
-        <RuleForm
-          draft={draft}
-          busy={busy}
-          onChange={onEdit}
-          onCancel={() => onEdit(null)}
-          onSubmit={onSubmitEdit}
-        />
       )}
 
       {ruleSet.draft.length === 0 ? null : (
@@ -1819,7 +1568,7 @@ function ExplorationSection({
                   <div className="flex shrink-0 gap-1">
                     {/* 「改写」就地展开与顶部同一个意图框(ADR 0028,issue #298):人写一句话
                         说要改成什么样,agent 读代码并把这一行原地换掉。首次确认前从此也不用
-                        手写陈述。「修改」与「删除」不动(撤直改是 issue #299)。 */}
+                        手写陈述——手填与逐条修改那张表已经撤掉(issue #299),「删除」照旧。 */}
                     <Button
                       variant="outline"
                       color="gray"
@@ -1829,16 +1578,6 @@ function ExplorationSection({
                       onClick={() => setRewriting((open) => (open === rule.id ? null : rule.id))}
                     >
                       改写
-                    </Button>
-                    <Button
-                      variant="outline"
-                      color="gray"
-                      highContrast
-                      size={{ initial: "3", sm: "1" }}
-                      className={OUTLINED_ACTION}
-                      onClick={() => onEdit({ ...rule, id: rule.id })}
-                    >
-                      修改
                     </Button>
                     <Button
                       variant="outline"
