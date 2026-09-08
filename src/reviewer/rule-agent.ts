@@ -1,14 +1,16 @@
 /**
  * 规则 agent 的注入边界(issue #205,ADR 0019)。
  *
- * 基点探索与日后的处置反哺共用这一个接口:输入一份工作副本、它停在的那个基点 commit、
- * 本次要用的模型运行参数与该仓库现有的知识集,输出一批结构化的评审规则条目。测试注入
- * 脚本化实现(对齐脚本化 Reviewer 先例),真实实现走与 Reviewer 同一套 Pi 子进程基建。
+ * 三条链路共用这一个接口:基点探索与处置反哺输入一份工作副本、它停在的那个 commit、
+ * 本次要用的模型运行参数与该仓库现有的知识集,输出一批结构化的知识条目;知识整理
+ * (issue #284)输入现集与待裁决队列,输出对队列的直改动作。测试注入脚本化实现(对齐
+ * 脚本化 Reviewer 先例),真实实现走与 Reviewer 同一套 Pi 子进程基建。
  */
 import { fileURLToPath } from "node:url";
 
 import type { ThinkingLevel } from "../config.ts";
 import type { KnowledgeEntry, KnowledgeType, ReviewerEvent } from "../review/finding.ts";
+import type { RuleProposalChange, RuleProposalOrigin } from "../review/store.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 import { runWorkerChild } from "./subprocess.ts";
 
@@ -53,6 +55,37 @@ export type DispositionFeedback = {
 };
 
 /**
+ * 交给整理 agent 的一条待裁决提案(CONTEXT.md 知识整理,issue #284)。它要认得出队列里
+ * 哪两条说的是同一件事,因此标识、变更类型、目标条目、陈述与出处附注都在。
+ */
+export type ConsolidationProposal = {
+  id: number;
+  type: KnowledgeType;
+  change: RuleProposalChange;
+  /** 修改与废止指向的现有条目,合并指向两条以上;新增没有目标,为空数组(issue #282)。 */
+  targetRuleIds: readonly number[];
+  scope: string;
+  statement: string;
+  /** 它的出处附注:每条说的是这一条被哪一次任务、凭什么提出来的。 */
+  sources: readonly { origin: RuleProposalOrigin; note: string | null }[];
+};
+
+/**
+ * 整理 agent 对待裁决队列的一次直改(CONTEXT.md 知识整理,issue #284)。两个动作:
+ * 把几条重复的提案合成一条,或把一条与现集重复的新增型提案改写成指向那条条目的修改型。
+ */
+export type RuleConsolidationAction =
+  | {
+      kind: "merge";
+      /** agent 挑的保留行。落地按 id 最小的那一行保留,这一项与被并的一并去重。 */
+      keepId: number;
+      mergedIds: number[];
+      /** 合成后的那一句,覆盖保留行的陈述。 */
+      statement: string;
+    }
+  | { kind: "retarget"; proposalId: number; targetRuleId: number };
+
+/**
  * 规则 agent 跑的过程里逐条冒出来的事件(CONTEXT.md 知识轨迹,issue #214)。前两档是
  * Pi 的会话事件,与 Reviewer 那侧同一个转换的产物;`rule_proposed` 是它经 `propose_rule`
  * 提出的一条规则,与最终产出的那一条是同一个对象——事件流回答「什么时候提的」,产出
@@ -62,10 +95,13 @@ export type RuleAgentEvent = ReviewerEvent | { kind: "rule_proposed"; item: Rule
 
 /** 交给规则 agent 的一次任务。 */
 export type RuleAgentRequest = {
-  /** 已经 checkout 到基点 commit 的工作副本。 */
+  /**
+   * 会话的工作目录。基点探索与处置反哺给的是已经 checkout 好的工作副本;知识整理给的是
+   * 一个空临时目录——它整理的是队列里的文本,不读代码(issue #284)。
+   */
   worktreePath: string;
-  /** 基点 commit(CONTEXT.md 基点探索)。 */
-  baselineSha: string;
+  /** 基点 commit(CONTEXT.md 基点探索)。知识整理没有基点,缺席。 */
+  baselineSha?: string;
   /**
    * 处置反哺的输入(issue #208)。缺席即这一次是基点探索;有值即解读这条处置备注,
    * `baselineSha` 那时是这条 Finding 报出时的那个 head commit,工作副本停在它上面。
@@ -81,6 +117,11 @@ export type RuleAgentRequest = {
   /** 该模型绑定厂商的模型凭据。子进程的环境里只会有这一份。 */
   apiKey: string;
   /**
+   * 知识整理的输入(CONTEXT.md 知识整理,issue #284)。有值即这一次整理的是这份待裁决
+   * 队列,产出是对它的直改动作而不是知识条目。
+   */
+  consolidation?: { proposals: readonly ConsolidationProposal[] };
+  /**
    * 这个仓库现有的知识集,两型都在、各带标识与自己的 type(issue #222)。首次基点探索时
    * 是空的;反哺与重探索要它才知道哪些标准与事实已经在集里(issue #207、#208)。
    */
@@ -95,6 +136,8 @@ export type RuleAgentRequest = {
 /** 一次探索的产出。`failure` 有值即这一次没跑成,条目按空处理。 */
 export type RuleAgentResult = {
   items: RuleAgentItem[];
+  /** 知识整理那一档对队列的直改动作,按 agent 报出的先后。别的链路缺席。 */
+  actions?: RuleConsolidationAction[];
   failure?: string;
 };
 
@@ -103,9 +146,10 @@ export type RuleAgent = (request: RuleAgentRequest) => Promise<RuleAgentResult>;
 /** 子进程收到的任务。凭据走环境变量,不进 IPC 消息(与 Reviewer 同一条口径)。 */
 export type RuleWorkerRequest = Omit<RuleAgentRequest, "apiKey" | "onEvent">;
 
-/** 子进程回传的消息:每条规则一发,过程事件一条一发,收尾一发。 */
+/** 子进程回传的消息:每条规则、每个整理动作与每条过程事件各一发,收尾一发。 */
 export type RuleWorkerMessage =
   | { kind: "rule"; item: RuleAgentItem }
+  | { kind: "action"; action: RuleConsolidationAction }
   | { kind: "event"; event: ReviewerEvent }
   | { kind: "done"; failure?: string };
 
@@ -124,14 +168,16 @@ export async function runRuleAgentChild(
   request: RuleAgentRequest,
 ): Promise<RuleAgentResult> {
   const items: RuleAgentItem[] = [];
+  const actions: RuleConsolidationAction[] = [];
 
   const payload: RuleWorkerRequest = {
     worktreePath: request.worktreePath,
-    baselineSha: request.baselineSha,
     runtimeModel: request.runtimeModel,
     existingKnowledge: request.existingKnowledge,
+    ...(request.baselineSha === undefined ? {} : { baselineSha: request.baselineSha }),
     ...(request.thinkingLevel === undefined ? {} : { thinkingLevel: request.thinkingLevel }),
     ...(request.feedback === undefined ? {} : { feedback: request.feedback }),
+    ...(request.consolidation === undefined ? {} : { consolidation: request.consolidation }),
   };
 
   const { failure } = await runWorkerChild<RuleWorkerMessage>({
@@ -145,6 +191,12 @@ export async function runRuleAgentChild(
         request.onEvent?.(message.event);
         return;
       }
+      // 整理动作不进事件流:它落没落地要到落地那一步才知道,轨迹里那一条由编排层写
+      // (issue #284),一个动作只留一条事件。
+      if (message.kind === "action") {
+        actions.push(message.action);
+        return;
+      }
       if (message.kind !== "rule") return;
       items.push(message.item);
       // 条目与事件一起给:轨迹要按发生顺序记下这一条是在哪两次工具调用之间提出来的。
@@ -152,5 +204,5 @@ export async function runRuleAgentChild(
     },
   });
 
-  return { items, ...(failure === undefined ? {} : { failure }) };
+  return { items, actions, ...(failure === undefined ? {} : { failure }) };
 }

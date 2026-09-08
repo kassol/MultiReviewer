@@ -397,6 +397,27 @@ CREATE TABLE IF NOT EXISTS rule_exploration (
   finished_at TEXT
 );
 
+-- 知识整理(CONTEXT.md,issue #284)。与基点探索同形:每仓库至多一行,三态加失败原因,
+-- 加这一次的模型、思考档位与知识轨迹;merged / retargeted 是完成后的摘要(合并掉的提案
+-- 条数与改写的条数),没跑完即 NULL。
+--
+-- 与 rule_exploration 分表而不是在那一行上加一个 kind:那张表的 baseline_sha 是探索独有的
+-- 输入(整理不读代码,没有基点),而它的 model 同时是「这个仓库最近一次探索用的是什么
+-- 模型」那份记录,处置反哺沿用它——同一行两用,一次整理就会把那份记录顶掉。互斥不靠同
+-- 一行:「同仓库同时只跑一个」判的是两张表里有没有 running,判据写在 startRule* 两处。
+CREATE TABLE IF NOT EXISTS rule_consolidation (
+  repo_id INTEGER PRIMARY KEY REFERENCES repo(id),
+  model TEXT NOT NULL,
+  thinking_level TEXT,
+  trace_task_id INTEGER,
+  state TEXT NOT NULL CHECK (state IN ('running', 'failed', 'completed')),
+  failure TEXT,
+  merged INTEGER,
+  retargeted INTEGER,
+  started_at TEXT NOT NULL,
+  finished_at TEXT
+);
+
 -- 知识草案(CONTEXT.md,issue #205)。每仓库至多一份,重新探索覆盖未确认的旧草案;
 -- 知识确认把这里的条目整组搬进 review_rule 之后清空。
 --
@@ -476,7 +497,8 @@ CREATE INDEX IF NOT EXISTS rule_proposal_source_by_proposal
 CREATE TABLE IF NOT EXISTS rule_trace (
   task_id INTEGER NOT NULL,
   repo_id INTEGER NOT NULL REFERENCES repo(id),
-  source TEXT NOT NULL CHECK (source IN ('baseline-exploration', 'disposition-feedback')),
+  source TEXT NOT NULL
+    CHECK (source IN ('baseline-exploration', 'disposition-feedback', 'knowledge-consolidation')),
   seq INTEGER NOT NULL,
   at TEXT NOT NULL,
   kind TEXT NOT NULL,
@@ -1684,6 +1706,23 @@ export type RuleExploration = {
   finishedAt: string | null;
 };
 
+/**
+ * 一个仓库最近一次知识整理(CONTEXT.md 知识整理,issue #284)。每仓库至多一次,重新
+ * 整理覆盖它。三态与失败原因和基点探索同形;`merged` / `retargeted` 是完成后的摘要
+ * ——合并掉的提案条数与改写成修改型的条数,没跑完即 null。
+ */
+export type RuleConsolidation = {
+  state: "running" | "failed" | "completed";
+  model: string;
+  thinkingLevel: ThinkingLevel | null;
+  traceTaskId: number | null;
+  failure: string | null;
+  merged: number | null;
+  retargeted: number | null;
+  startedAt: string;
+  finishedAt: string | null;
+};
+
 /** 知识草案里的一条(CONTEXT.md)。`origin` 与生效规则同一套字面量。 */
 export type RuleDraftItem = ReviewRuleInput & {
   id: number;
@@ -1706,10 +1745,10 @@ export type RuleProposalOrigin =
   | "knowledge-consolidation";
 
 /**
- * 一次知识轨迹的来源(CONTEXT.md 知识轨迹)。二元:基点探索与处置反哺——知识整理还
- * 没有自己的链路(issue #283),轨迹表上的取值因此仍是这两个。
+ * 一次知识轨迹的来源(CONTEXT.md 知识轨迹)。三元,与出处附注的来源同一套词:基点探索、
+ * 处置反哺与知识整理(issue #284)。
  */
-export type RuleTraceSource = "baseline-exploration" | "disposition-feedback";
+export type RuleTraceSource = RuleProposalOrigin;
 
 /** 排进队列的一条出处附注(CONTEXT.md 出处附注,issue #281)。 */
 export type RuleProposalSourceInput = {
@@ -2288,6 +2327,47 @@ export type Store = {
    * 中断后台的探索,那些行没有谁再去改它,面板会一直显示运行中而且给不出重试入口。
    */
   failInterruptedRuleExplorations(failure: string, at: string): void;
+  /** 这个仓库最近一次知识整理(issue #284)。从没整理过或仓库不在注册表里回 null。 */
+  getRuleConsolidation(repoId: number): RuleConsolidation | null;
+  /**
+   * 发起一次知识整理:那一行改写成运行中,失败原因、摘要与结束时刻清掉。**与基点探索
+   * 共用「同仓库同时只跑一个」**:两张表里任一行是运行中即回 false;仓库不在注册表里
+   * 同样回 false。
+   */
+  startRuleConsolidation(
+    repoId: number,
+    run: {
+      model: string;
+      /** 这一次选的思考档位(CONTEXT.md)。缺席即没选,等同 off。 */
+      thinkingLevel?: ThinkingLevel;
+      startedAt: string;
+    },
+  ): boolean;
+  /** 整理完成:落下这一次的摘要,那一行改写成已完成。队列的改动由两个落地方法各自写。 */
+  finishRuleConsolidation(
+    repoId: number,
+    summary: { merged: number; retargeted: number },
+    at: string,
+  ): void;
+  /** 整理失败:留下原因,已经落地的队列改动保持原样。 */
+  failRuleConsolidation(repoId: number, failure: string, at: string): void;
+  /** 把停在运行中的整理改判失败,与 `failInterruptedRuleExplorations` 同一个理由。 */
+  failInterruptedRuleConsolidations(failure: string, at: string): void;
+  /**
+   * 合并几条待裁决提案(CONTEXT.md 知识整理,issue #284):**保留 id 最小的那一行**,
+   * 其余行删除,附注全部并入保留行,陈述换成合成后的这一句。
+   *
+   * 落地这一刻逐条校验,一条不合即整次跳过回 false:少于两条、陈述为空、有一条已经不
+   * 在待裁决队列里(整理期间人照常裁决),或者几条的变更类型、目标条目与知识型不是同一
+   * 个——那不是重复,合并会把一条意思不同的变更连同它的出处一起删掉。
+   */
+  mergeRuleProposals(repoId: number, proposalIds: readonly number[], statement: string): boolean;
+  /**
+   * 把一条新增型提案改写成指向某条生效条目的修改型(issue #284)。提案不在待裁决队列里、
+   * 不是新增型、目标条目此刻不生效、或者两者不同型时回 false,那一条改写丢掉——不同型
+   * 的修改采纳不了,改出来只会在队列里留一条裁不掉的。
+   */
+  retargetRuleProposal(repoId: number, proposalId: number, targetRuleId: number): boolean;
   /** 这个仓库当前的知识草案,按 id 排序。没有草案即空数组。 */
   getRuleDraft(repoId: number): RuleDraftItem[];
   /** 往草案里手工加一条,出处记人工。返回新条目的 id;仓库不在注册表里回 undefined。 */
@@ -2519,6 +2599,8 @@ export type Store = {
    * 上一次探索的过程挂到这一行上,人点进去看到的是另一次任务。
    */
   setRuleExplorationTrace(repoId: number, taskId: number): void;
+  /** 把这一次知识整理与它的知识轨迹关联起来(issue #284),判据与上面那条同律。 */
+  setRuleConsolidationTrace(repoId: number, taskId: number): void;
   /**
    * 处置率统计(ADR 0006,主维度见 ADR 0015):按 Finding Identity 折叠,fallback
    * (body)排除,unknown 按 PR 状态分流,时间窗按同一处 Finding 首次报出那轮的开始
@@ -3236,6 +3318,35 @@ export function openStore(dbPath: string): Store {
     }
   }
 
+  // 知识整理也留一条知识轨迹(issue #284):`rule_trace.source` 的 CHECK 多一个取值。
+  // SQLite 改不了 CHECK,同样只能重建表;判据与上面两次同律,重建过即不再命中。这张表
+  // 没有任何表引用它,重建不必关外键。
+  const traceSql = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'rule_trace'")
+    .get()?.["sql"];
+  if (typeof traceSql === "string" && !traceSql.includes("knowledge-consolidation")) {
+    db.exec(`
+      BEGIN;
+      CREATE TABLE rule_trace_rebuilt (
+        task_id INTEGER NOT NULL,
+        repo_id INTEGER NOT NULL REFERENCES repo(id),
+        source TEXT NOT NULL
+          CHECK (source IN ('baseline-exploration', 'disposition-feedback', 'knowledge-consolidation')),
+        seq INTEGER NOT NULL,
+        at TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        PRIMARY KEY (task_id, seq)
+      );
+      INSERT INTO rule_trace_rebuilt
+        SELECT task_id, repo_id, source, seq, at, kind, payload FROM rule_trace;
+      DROP TABLE rule_trace;
+      ALTER TABLE rule_trace_rebuilt RENAME TO rule_trace;
+      CREATE INDEX IF NOT EXISTS rule_trace_by_repo ON rule_trace(repo_id);
+      COMMIT;
+    `);
+  }
+
   // 权限格 `rule:write` 改名 `knowledge:write`(ADR 0020,issue #220):存量角色照旧持有
   // 同一格能力,只是字面量换了。`OR REPLACE` 让同一角色两格都有时旧行让位给新行;跑第
   // 二遍已经没有旧行,零影响。
@@ -3448,6 +3559,20 @@ export function openStore(dbPath: string): Store {
        VALUES (?, ?, ?, ?, '', 'active', ?, ?, NULL, ?)`,
     ).run(repoId, input.type, input.scope, input.statement, origin, version, at);
   };
+
+  /**
+   * 这个仓库此刻有没有规则 agent 任务在跑(issue #284)。「同仓库同时只跑一个」跨基点
+   * 探索与知识整理两张表:两者都要读这个仓库的知识集与队列,同时跑会互相看着对方的
+   * 中间态。判据只有这一份,两个发起口共用。
+   */
+  const ruleTaskRunning = (repoId: number): boolean =>
+    db
+      .prepare(
+        `SELECT 1 FROM rule_exploration WHERE repo_id = ? AND state = 'running'
+         UNION ALL
+         SELECT 1 FROM rule_consolidation WHERE repo_id = ? AND state = 'running'`,
+      )
+      .get(repoId, repoId) !== undefined;
 
   const completeRuleExploration = (repoId: number, at: string): void => {
     db.prepare(
@@ -4043,6 +4168,7 @@ export function openStore(dbPath: string): Store {
         db.prepare("DELETE FROM rule_set_version WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM rule_exploration WHERE repo_id = ?").run(repoId);
+        db.prepare("DELETE FROM rule_consolidation WHERE repo_id = ?").run(repoId);
         db.prepare(
           `DELETE FROM rule_proposal_source
             WHERE proposal_id IN (SELECT id FROM rule_proposal WHERE repo_id = ?)`,
@@ -4202,11 +4328,7 @@ export function openStore(dbPath: string): Store {
     },
 
     startRuleExploration(repoId, run) {
-      if (!repoExists(repoId)) return false;
-      const running = db
-        .prepare("SELECT 1 FROM rule_exploration WHERE repo_id = ? AND state = 'running'")
-        .get(repoId);
-      if (running !== undefined) return false;
+      if (!repoExists(repoId) || ruleTaskRunning(repoId)) return false;
       db.prepare(
         `INSERT INTO rule_exploration
            (repo_id, baseline_sha, model, thinking_level, trace_task_id,
@@ -4289,6 +4411,128 @@ export function openStore(dbPath: string): Store {
             SET state = 'failed', failure = ?, finished_at = ?
           WHERE state = 'running'`,
       ).run(failure, at);
+    },
+
+    getRuleConsolidation(repoId) {
+      const row = db
+        .prepare(
+          `SELECT model, thinking_level, trace_task_id, state, failure, merged, retargeted,
+                  started_at, finished_at
+             FROM rule_consolidation WHERE repo_id = ?`,
+        )
+        .get(repoId);
+      if (row === undefined) return null;
+      const nullable = (value: unknown): number | null =>
+        value === null || value === undefined ? null : Number(value);
+      const thinkingLevel = row["thinking_level"];
+      const failure = row["failure"];
+      const finishedAt = row["finished_at"];
+      return {
+        state: String(row["state"]) as RuleConsolidation["state"],
+        model: String(row["model"]),
+        thinkingLevel:
+          thinkingLevel === null || thinkingLevel === undefined
+            ? null
+            : (String(thinkingLevel) as ThinkingLevel),
+        traceTaskId: nullable(row["trace_task_id"]),
+        failure: failure === null || failure === undefined ? null : String(failure),
+        merged: nullable(row["merged"]),
+        retargeted: nullable(row["retargeted"]),
+        startedAt: String(row["started_at"]),
+        finishedAt: finishedAt === null || finishedAt === undefined ? null : String(finishedAt),
+      };
+    },
+
+    startRuleConsolidation(repoId, run) {
+      if (!repoExists(repoId) || ruleTaskRunning(repoId)) return false;
+      db.prepare(
+        `INSERT INTO rule_consolidation
+           (repo_id, model, thinking_level, trace_task_id, state, failure, merged, retargeted,
+            started_at, finished_at)
+         VALUES (?, ?, ?, NULL, 'running', NULL, NULL, NULL, ?, NULL)
+         ON CONFLICT(repo_id) DO UPDATE SET
+           model = excluded.model,
+           thinking_level = excluded.thinking_level,
+           trace_task_id = NULL,
+           state = 'running',
+           failure = NULL,
+           merged = NULL,
+           retargeted = NULL,
+           started_at = excluded.started_at,
+           finished_at = NULL`,
+      ).run(repoId, run.model, run.thinkingLevel ?? null, run.startedAt);
+      return true;
+    },
+
+    finishRuleConsolidation(repoId, summary, at) {
+      db.prepare(
+        `UPDATE rule_consolidation
+            SET state = 'completed', failure = NULL, merged = ?, retargeted = ?, finished_at = ?
+          WHERE repo_id = ?`,
+      ).run(summary.merged, summary.retargeted, at, repoId);
+    },
+
+    failRuleConsolidation(repoId, failure, at) {
+      db.prepare(
+        "UPDATE rule_consolidation SET state = 'failed', failure = ?, finished_at = ? WHERE repo_id = ?",
+      ).run(failure, at, repoId);
+    },
+
+    failInterruptedRuleConsolidations(failure, at) {
+      db.prepare(
+        `UPDATE rule_consolidation
+            SET state = 'failed', failure = ?, finished_at = ?
+          WHERE state = 'running'`,
+      ).run(failure, at);
+    },
+
+    mergeRuleProposals(repoId, proposalIds, statement) {
+      const unique = [...new Set(proposalIds)];
+      const merged = statement.trim();
+      if (unique.length < 2 || merged === "") return false;
+      const pending = store.getRuleProposals(repoId).filter((row) => row.state === "pending");
+      const rows = unique.map((id) => pending.find((row) => row.id === id));
+      if (rows.some((row) => row === undefined)) return false;
+      // 合并的对象是重复:变更类型、目标条目与知识型三样都一样才算同一件事。
+      const first = rows[0]!;
+      if (
+        rows.some(
+          (row) =>
+            row!.change !== first.change ||
+            JSON.stringify(row!.targetRuleIds) !== JSON.stringify(first.targetRuleIds) ||
+            row!.type !== first.type,
+        )
+      ) {
+        return false;
+      }
+      const keep = Math.min(...unique);
+      const dropped = unique.filter((id) => id !== keep);
+      const holes = dropped.map(() => "?").join(", ");
+      db.exec("BEGIN");
+      try {
+        // 附注并入保留行:一条提案的出处是它被哪几件事提过,合并不该把其中几件丢掉。
+        db.prepare(
+          `UPDATE rule_proposal_source SET proposal_id = ? WHERE proposal_id IN (${holes})`,
+        ).run(keep, ...dropped);
+        db.prepare(`DELETE FROM rule_proposal WHERE id IN (${holes})`).run(...dropped);
+        db.prepare("UPDATE rule_proposal SET statement = ? WHERE id = ?").run(merged, keep);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return true;
+    },
+
+    retargetRuleProposal(repoId, proposalId, targetRuleId) {
+      const queued = pendingProposal(repoId, proposalId);
+      if (queued === undefined || queued.change !== "add") return false;
+      const target = activeRule(repoId, targetRuleId);
+      if (target === undefined || target.type !== queued.type) return false;
+      db.prepare(
+        "UPDATE rule_proposal SET change = 'modify', target_rule_ids = ? WHERE id = ?",
+      ).run(JSON.stringify([targetRuleId]), proposalId);
+      return true;
     },
 
     getRuleDraft(repoId) {
@@ -6102,6 +6346,11 @@ export function openStore(dbPath: string): Store {
 
     setRuleExplorationTrace(repoId, taskId) {
       db.prepare("UPDATE rule_exploration SET trace_task_id = ? WHERE repo_id = ?")
+        .run(taskId, repoId);
+    },
+
+    setRuleConsolidationTrace(repoId, taskId) {
+      db.prepare("UPDATE rule_consolidation SET trace_task_id = ? WHERE repo_id = ?")
         .run(taskId, repoId);
     },
 

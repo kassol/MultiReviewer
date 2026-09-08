@@ -71,14 +71,16 @@ export type TraceKind = ReviewerTraceKind | RunTraceKind;
 
 /**
  * 知识轨迹的事件类型(CONTEXT.md 知识轨迹,issue #214)。前三档与 Reviewer 那侧同形,
- * 因为它们来自同一个转换(`reviewer/trace-events.ts`);另外三档由编排层在这次任务开始、
- * 提出条目与收尾时补。
+ * 因为它们来自同一个转换(`reviewer/trace-events.ts`);其余几档由编排层在这次任务开始、
+ * 提出条目、整理队列与收尾时补。`rule_consolidated` 是知识整理对队列的一次直改
+ * (合并或改写,issue #284)。
  */
 export type RuleTraceKind =
   | "rule_agent_started"
   | "assistant_message"
   | "tool_call"
   | "rule_proposed"
+  | "rule_consolidated"
   | "rule_agent_failed"
   | "rule_agent_finished";
 

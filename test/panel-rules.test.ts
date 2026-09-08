@@ -251,6 +251,7 @@ test("面板按仓库读知识集:分配内可读,未确认的仓库版本为 nu
     rules: [],
     retired: [],
     exploration: null,
+    consolidation: null,
     draft: [],
     proposals: [],
   });

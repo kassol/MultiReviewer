@@ -43,6 +43,20 @@ type RuleExploration = {
 };
 
 /**
+ * 这个仓库最近一次知识整理(CONTEXT.md 知识整理,issue #284)。从没整理过为 null;
+ * `merged` / `retargeted` 是完成后的摘要,没跑完即 null。
+ */
+type RuleConsolidation = {
+  state: "running" | "failed" | "completed";
+  model: string;
+  thinkingLevel: ThinkingLevel | null;
+  traceTaskId: number | null;
+  failure: string | null;
+  merged: number | null;
+  retargeted: number | null;
+};
+
+/**
  * 一条出处附注(CONTEXT.md,issue #281)。`origin` 是这一次的来源,`note` 是备注原文或
  * 整理理由,`findingId` 是引发它的那条 Finding(只有处置反哺有),`traceTaskId` 是提出
  * 它的那一次知识轨迹。`findingStageId` 是那条 Finding 所在的审查阶段,面板据此开侧滑。
@@ -84,11 +98,13 @@ type RuleSet = {
   rules: ReviewRule[];
   retired: ReviewRule[];
   exploration: RuleExploration | null;
+  /** 最近一次知识整理(issue #284)。与探索同一份读取。 */
+  consolidation: RuleConsolidation | null;
   draft: ReviewRule[];
   proposals: RuleProposal[];
 };
 
-/** `GET /rule-models` 的一项:发起基点探索时可选的模型。 */
+/** `GET /rule-models` 的一项:发起基点探索与知识整理时可选的模型。 */
 type RuleModel = {
   identity: string;
   provider: string;
@@ -233,9 +249,12 @@ function RuleSetDialogContent({
   const ruleSet = useQuery({
     queryKey: ["repo-rules", repo.repoId],
     queryFn: () => fetchJson<RuleSet>(`/repos/${repo.repoId}/rules`),
-    // 探索在服务端后台跑,结束时没人推给面板,弹窗开着就每 5 秒问一次,跑完即停。
+    // 探索与整理都在服务端后台跑,结束时没人推给面板,弹窗开着就每 5 秒问一次,跑完即停。
     refetchInterval: (query) =>
-      query.state.data?.exploration?.state === "running" ? 5000 : false,
+      query.state.data?.exploration?.state === "running" ||
+      query.state.data?.consolidation?.state === "running"
+        ? 5000
+        : false,
   });
   const reload = (): void => {
     void queryClient.invalidateQueries({ queryKey: ["repo-rules", repo.repoId] });
@@ -574,7 +593,7 @@ function RuleSetDialogContent({
             {showProposals ? (
               <Tabs.Content value="proposals">
                 <ProposalSection
-                  repoId={repo.repoId}
+                  repo={repo}
                   ruleSet={data}
                   canWrite={canWrite}
                   edit={proposalEdit}
@@ -846,7 +865,7 @@ function ProposalSources({ repoId, proposal }: { repoId: number; proposal: RuleP
  * 是同一个问题的两半;采纳与驳回按 `knowledge:write` 出现。
  */
 function ProposalSection({
-  repoId,
+  repo,
   ruleSet,
   canWrite,
   edit,
@@ -856,7 +875,7 @@ function ProposalSection({
   onDecideAll,
   onSubmitEdit,
 }: {
-  repoId: number;
+  repo: { repoId: number; owner: string; repo: string };
   ruleSet: RuleSet;
   canWrite: boolean;
   edit: RuleFormState | null;
@@ -912,6 +931,8 @@ function ProposalSection({
   return (
     // tab 本身已经叫「修订提案」,这里不再立一层大标题,头行直接是队列状态与批量动作。
     <section className="flex flex-col gap-2" aria-label="修订提案">
+      {/* 知识整理改的就是这份队列(issue #284),入口因此挨着它,不另开一个 tab。 */}
+      {canWrite ? <ConsolidationRow repo={repo} consolidation={ruleSet.consolidation} /> : null}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-1">
           <h3 className="text-xs font-semibold text-text-muted">
@@ -982,7 +1003,7 @@ function ProposalSection({
                   <Text as="p" size="2" className="wrap-anywhere">{proposal.statement}</Text>
                 )}
                 {targets(proposal)}
-                <ProposalSources repoId={repoId} proposal={proposal} />
+                <ProposalSources repoId={repo.repoId} proposal={proposal} />
                 <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
                   <span className="inline-flex min-w-0 flex-wrap items-center gap-1.5">
                     {/* 采纳的后果两型不同(issue #222):规则违反即 Finding,事实只作判断依据。 */}
@@ -1074,7 +1095,7 @@ function ProposalSection({
                   <Badge color="gray" variant="soft">{TYPE_LABEL[proposal.type]}</Badge>
                 </span>
                 {/* 裁决过的那些同样看得到出处:队列历史要说得出它当初被哪几件事提过。 */}
-                <ProposalSources repoId={repoId} proposal={proposal} />
+                <ProposalSources repoId={repo.repoId} proposal={proposal} />
               </li>
             ))}
           </ul>
@@ -1301,6 +1322,111 @@ function ExplorationLaunch({
   );
 }
 
+/**
+ * 发起表单里的模型与思考档位那两格(issue #284)。基点探索与知识整理共用:两者选的是同
+ * 一份可用模型,档位判据也只有一套——各写一份就会在其中一处漏掉「只列这个模型支持的档位」。
+ */
+function useRuleModelChoice(): {
+  available: RuleModel[];
+  model: string;
+  setModel: (next: string) => void;
+  setThinkingLevel: (next: ThinkingLevel) => void;
+  levels: ThinkingLevel[];
+  /** 实际会发出去的那一档:所选模型不支持人选的那一档时落回它自己的第一档。 */
+  level: ThinkingLevel;
+  /** 只有「关闭」一档即这个模型不支持思考档位。 */
+  picking: boolean;
+} {
+  const [model, setModel] = useState<string>("");
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>("off");
+  const models = useQuery({
+    queryKey: ["rule-models"],
+    queryFn: () => fetchJson<{ models: RuleModel[] }>("/rule-models"),
+  });
+  const available = models.data?.models ?? [];
+  useEffect(() => {
+    if (model !== "" || available.length === 0) return;
+    setModel(available[0]!.identity);
+  }, [available, model]);
+  // 档位只在所选模型支持的那几档里取:换了模型而旧档位它不支持时落回它自己的第一档,
+  // 免得发起时被服务端拒。选中的那一档不另存一份状态,由这里推出来。
+  const levels = available.find((entry) => entry.identity === model)?.thinkingLevels ?? [];
+  const level = levels.includes(thinkingLevel) ? thinkingLevel : levels[0] ?? "off";
+  return { available, model, setModel, setThinkingLevel, levels, level, picking: levels.length > 1 };
+}
+
+/** 上面那份选择的两格控件。`id` 是这份表单的前缀,同一页开两个弹窗时标签各指各的。 */
+function RuleModelFields({
+  id,
+  choice,
+  hint,
+}: {
+  id: string;
+  choice: ReturnType<typeof useRuleModelChoice>;
+  /** 思考档位那一格的说明,两条链路各说各的那一句。 */
+  hint: string;
+}) {
+  const { available, model, setModel, setThinkingLevel, levels, level, picking } = choice;
+  return (
+    <div className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
+      <Text as="label" htmlFor={`${id}-model`} size="2" weight="medium">模型</Text>
+      <Select.Root value={model} onValueChange={setModel} size={{ initial: "3", sm: "2" }}>
+        <Select.Trigger id={`${id}-model`} placeholder="选择一个可用模型" />
+        <Select.Content position="popper">
+          {available.map((entry) => (
+            <Select.Item key={entry.identity} value={entry.identity}>
+              {entry.identity}
+            </Select.Item>
+          ))}
+        </Select.Content>
+      </Select.Root>
+      <div className="flex items-center gap-1">
+        <Text
+          as="label"
+          {...(picking ? { htmlFor: `${id}-thinking` } : {})}
+          size="2"
+          weight="medium"
+        >
+          思考档位
+        </Text>
+        <HelpTooltip content={hint} />
+      </div>
+      {picking ? (
+        // 只列这个模型支持的档位:列出它不支持的那些,运行侧会 clamp 成相邻可用档,
+        // 跑的就不是人选的那一档。
+        <div className="flex items-center gap-1">
+          <Select.Root
+            value={level}
+            onValueChange={(next) => setThinkingLevel(next as ThinkingLevel)}
+            size={{ initial: "3", sm: "2" }}
+          >
+            <Select.Trigger id={`${id}-thinking`} />
+            <Select.Content position="popper">
+              {levels.map((entry) => (
+                <Select.Item key={entry} value={entry}>
+                  {THINKING_LEVEL_LABEL[entry]}
+                </Select.Item>
+              ))}
+            </Select.Content>
+          </Select.Root>
+          {levels.includes("off") ? null : (
+            <HelpTooltip
+              label="这个模型始终思考"
+              content="这个模型关不掉思考,只能选它投入多少。"
+            />
+          )}
+        </div>
+      ) : model === "" ? (
+        <Text size="2" color="gray">先选模型</Text>
+      ) : (
+        <div>
+          <Badge color="gray" variant="outline">不支持思考档位</Badge>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ExplorationLaunchContent({
   repo,
   onLaunched,
@@ -1310,15 +1436,10 @@ function ExplorationLaunchContent({
 }) {
   const [baseline, setBaseline] = useState<CommitSelection | null>(null);
   const [touched, setTouched] = useState(false);
-  const [model, setModel] = useState<string>("");
-  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>("off");
   const [error, setError] = useState<string | null>(null);
+  const choice = useRuleModelChoice();
+  const { available, model, level } = choice;
   const query = `owner=${encodeURIComponent(repo.owner)}&repo=${encodeURIComponent(repo.repo)}`;
-
-  const models = useQuery({
-    queryKey: ["rule-models"],
-    queryFn: () => fetchJson<{ models: RuleModel[] }>("/rule-models"),
-  });
 
   // 默认基点是默认分支的 HEAD:先认出哪条是默认分支,再取它最新的那个 commit。
   const defaultHead = useQuery({
@@ -1341,19 +1462,6 @@ function ExplorationLaunchContent({
     if (suggested === null || touched) return;
     setBaseline({ sha: suggested });
   }, [suggested, touched]);
-
-  const available = models.data?.models ?? [];
-  useEffect(() => {
-    if (model !== "" || available.length === 0) return;
-    setModel(available[0]!.identity);
-  }, [available, model]);
-
-  // 档位只在所选模型支持的那几档里取:换了模型而旧档位它不支持时落回它自己的第一档,
-  // 免得发起时被服务端拒。选中的那一档不另存一份状态,由这里推出来。
-  const levels = available.find((entry) => entry.identity === model)?.thinkingLevels ?? [];
-  const level = levels.includes(thinkingLevel) ? thinkingLevel : levels[0] ?? "off";
-  // 只有「关闭」一档即这个模型不支持思考档位。
-  const picking = levels.length > 1;
 
   const start = useMutation({
     mutationFn: async (): Promise<void> => {
@@ -1403,62 +1511,11 @@ function ExplorationLaunchContent({
               content="产出知识草案(评审规则与项目事实两型),条数不设上限,由你勾选后整组确认。"
             />
           </Dialog.Title>
-          <div className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
-            <Text as="label" htmlFor="rule-exploration-model" size="2" weight="medium">模型</Text>
-            <Select.Root value={model} onValueChange={setModel} size={{ initial: "3", sm: "2" }}>
-              <Select.Trigger id="rule-exploration-model" placeholder="选择一个可用模型" />
-              <Select.Content position="popper">
-                {available.map((entry) => (
-                  <Select.Item key={entry.identity} value={entry.identity}>
-                    {entry.identity}
-                  </Select.Item>
-                ))}
-              </Select.Content>
-            </Select.Root>
-            <div className="flex items-center gap-1">
-              <Text
-                as="label"
-                {...(picking ? { htmlFor: "rule-exploration-thinking" } : {})}
-                size="2"
-                weight="medium"
-              >
-                思考档位
-              </Text>
-              <HelpTooltip content="档位越高,agent 推导规则前想得越久,这一次探索也越慢越贵。" />
-            </div>
-            {picking ? (
-              // 只列这个模型支持的档位:列出它不支持的那些,运行侧会 clamp 成相邻可用档,
-              // 跑的就不是人选的那一档。
-              <div className="flex items-center gap-1">
-                <Select.Root
-                  value={level}
-                  onValueChange={(next) => setThinkingLevel(next as ThinkingLevel)}
-                  size={{ initial: "3", sm: "2" }}
-                >
-                  <Select.Trigger id="rule-exploration-thinking" />
-                  <Select.Content position="popper">
-                    {levels.map((entry) => (
-                      <Select.Item key={entry} value={entry}>
-                        {THINKING_LEVEL_LABEL[entry]}
-                      </Select.Item>
-                    ))}
-                  </Select.Content>
-                </Select.Root>
-                {levels.includes("off") ? null : (
-                  <HelpTooltip
-                    label="这个模型始终思考"
-                    content="这个模型关不掉思考,只能选它投入多少。"
-                  />
-                )}
-              </div>
-            ) : model === "" ? (
-              <Text size="2" color="gray">先选模型</Text>
-            ) : (
-              <div>
-                <Badge color="gray" variant="outline">不支持思考档位</Badge>
-              </div>
-            )}
-          </div>
+          <RuleModelFields
+            id="rule-exploration"
+            choice={choice}
+            hint="档位越高,agent 推导规则前想得越久,这一次探索也越慢越贵。"
+          />
         </div>
 
         <div className="flex min-h-0 flex-1 px-3 py-3 sm:px-5 sm:py-4">
@@ -1502,6 +1559,175 @@ function ExplorationLaunchContent({
             size="3"
             className="max-sm:min-h-11 max-sm:min-w-11"
             aria-label="关闭发起基点探索"
+          >
+            <Cross2Icon aria-hidden />
+          </IconButton>
+        </Dialog.Close>
+      </div>
+    </Dialog.Content>
+  );
+}
+
+/**
+ * 知识整理的状态行与发起入口(CONTEXT.md 知识整理,issue #284)。三态、失败原因、轨迹
+ * 入口与摘要都与基点探索同形;摘要那一句说的是这一次把队列改成了什么样。
+ *
+ * 它挂在修订提案队列的头上而不是探索那一段:整理改的就是这份队列。
+ */
+function ConsolidationRow({
+  repo,
+  consolidation,
+}: {
+  repo: { repoId: number; owner: string; repo: string };
+  consolidation: RuleConsolidation | null;
+}) {
+  const running = consolidation?.state === "running";
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          {consolidation === null ? (
+            <Text as="span" size="1" color="gray">还没整理过这个队列</Text>
+          ) : (
+            <>
+              <Text as="span" size="1" color="gray">
+                {running
+                  ? "正在整理"
+                  : consolidation.state === "failed"
+                    ? "上次整理失败"
+                    : `已完成整理 · 合并 ${consolidation.merged ?? 0} 条提案、改写 ${consolidation.retargeted ?? 0} 条`}
+                {" · "}模型 {consolidation.model}
+                {consolidation.thinkingLevel === null
+                  ? null
+                  : ` · 思考 ${THINKING_LEVEL_LABEL[consolidation.thinkingLevel]}`}
+              </Text>
+              {consolidation.traceTaskId === null ? null : (
+                <RuleTraceButton repoId={repo.repoId} taskId={consolidation.traceTaskId} />
+              )}
+            </>
+          )}
+          <HelpTooltip content="知识整理让 agent 读这份队列与当前生效的知识集:说同一件事的提案合成一条,现集已经有的新增改成指向那条的修改。它不替你裁决。" />
+        </div>
+        <ConsolidationLaunch repo={repo} busy={running} />
+      </div>
+
+      {consolidation?.state === "failed" && consolidation.failure !== null ? (
+        <Callout.Root role="alert" color="red" size="1">
+          <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+          <Callout.Text>{consolidation.failure}</Callout.Text>
+        </Callout.Root>
+      ) : null}
+    </div>
+  );
+}
+
+/** 发起知识整理:只选模型——整理读的是队列与现集,没有基点可选。 */
+function ConsolidationLaunch({
+  repo,
+  busy,
+}: {
+  repo: { repoId: number; owner: string; repo: string };
+  busy: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  return (
+    <Dialog.Root open={open} onOpenChange={setOpen}>
+      <Dialog.Trigger>
+        <Button variant="soft" size={{ initial: "3", sm: "2" }} disabled={busy}>
+          {busy ? "正在整理…" : "知识整理"}
+        </Button>
+      </Dialog.Trigger>
+      {open ? (
+        <ConsolidationLaunchContent
+          key={`${repo.owner}/${repo.repo}`}
+          repo={repo}
+          onLaunched={() => {
+            void queryClient.invalidateQueries({ queryKey: ["repo-rules", repo.repoId] });
+            setOpen(false);
+          }}
+        />
+      ) : null}
+    </Dialog.Root>
+  );
+}
+
+function ConsolidationLaunchContent({
+  repo,
+  onLaunched,
+}: {
+  repo: { repoId: number; owner: string; repo: string };
+  onLaunched: () => void;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const choice = useRuleModelChoice();
+  const { available, model, level } = choice;
+
+  const start = useMutation({
+    mutationFn: async (): Promise<void> => {
+      const picked = available.find((entry) => entry.identity === model);
+      if (picked === undefined) throw new Error("先选一个可用模型");
+      const response = await api(`/repos/${repo.repoId}/rule-consolidation`, {
+        method: "POST",
+        body: JSON.stringify({
+          provider: picked.provider,
+          model: picked.model,
+          // 「关闭」不带这一项:缺席即关闭,与发起探索同一条口径。
+          ...(level === "off" ? {} : { thinkingLevel: level }),
+        }),
+      });
+      if (!response.ok) throw new Error(await errorText(response));
+    },
+    onSuccess: onLaunched,
+    onError: (failure: Error) => setError(failure.message),
+  });
+
+  return (
+    <Dialog.Content aria-describedby={undefined} maxWidth="520px" size={{ initial: "2", sm: "3" }}>
+      <form
+        aria-busy={start.isPending}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (model !== "" && !start.isPending) start.mutate();
+        }}
+      >
+        <Dialog.Title size="4" mb="0" className="pr-10">
+          发起知识整理
+          <span className="ml-2 break-all text-md font-normal text-text-secondary">
+            {repo.owner}/{repo.repo}
+          </span>
+        </Dialog.Title>
+        <RuleModelFields
+          id="rule-consolidation"
+          choice={choice}
+          hint="档位越高,agent 判断两条提案是不是同一件事时想得越久,这一次整理也越慢越贵。"
+        />
+        {error === null ? null : (
+          <p role="alert" className="mt-3 break-words text-sm text-danger">{error}</p>
+        )}
+        <div className="mt-4 flex justify-end gap-2">
+          <Dialog.Close>
+            <Button type="button" variant="soft" color="gray" size={{ initial: "3", sm: "2" }}>
+              取消
+            </Button>
+          </Dialog.Close>
+          <Button
+            type="submit"
+            size={{ initial: "3", sm: "2" }}
+            disabled={model === "" || start.isPending}
+          >
+            {start.isPending ? "发起中…" : "开始整理"}
+          </Button>
+        </div>
+      </form>
+      <div className="absolute top-2.5 right-2.5 sm:top-3.5 sm:right-3.5">
+        <Dialog.Close>
+          <IconButton
+            variant="ghost"
+            color="gray"
+            size="3"
+            className="max-sm:min-h-11 max-sm:min-w-11"
+            aria-label="关闭发起知识整理"
           >
             <Cross2Icon aria-hidden />
           </IconButton>

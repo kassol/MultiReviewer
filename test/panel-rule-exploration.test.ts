@@ -78,7 +78,7 @@ function scriptedRuleAgent(
 ): RuleAgent & {
   calls: {
     worktreePath: string;
-    baselineSha: string;
+    baselineSha: string | undefined;
     model: string;
     thinkingLevel: string | undefined;
     existingKnowledge: readonly KnowledgeEntry[];
@@ -86,7 +86,7 @@ function scriptedRuleAgent(
 } {
   const calls: {
     worktreePath: string;
-    baselineSha: string;
+    baselineSha: string | undefined;
     model: string;
     thinkingLevel: string | undefined;
     existingKnowledge: readonly KnowledgeEntry[];

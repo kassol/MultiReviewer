@@ -109,6 +109,34 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
         </div>
       );
     }
+    case "rule_consolidated": {
+      // 知识整理对队列的一次直改(issue #284)。落没落地由编排层写进 payload:丢掉的那
+      // 一条要说得出它想做什么。
+      const action =
+        typeof payload["action"] === "object" && payload["action"] !== null
+          ? (payload["action"] as Record<string, unknown>)
+          : {};
+      const applied = payload["applied"] === true;
+      const merged = action["kind"] === "merge";
+      const ids = Array.isArray(action["mergedIds"]) ? (action["mergedIds"] as unknown[]) : [];
+      return (
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="min-w-0 text-base break-words text-text">
+            {merged
+              ? (str(action, "statement") ?? "(空陈述)")
+              : `提案 ${num(action, "proposalId") ?? "?"} 改为修改知识条目 ${num(action, "targetRuleId") ?? "?"}`}
+          </span>
+          <span className="flex flex-wrap gap-1.5">
+            <Badge color="gray" variant="soft" radius="full">
+              {merged ? `合并 ${ids.length} 条提案` : "改写为修改型"}
+            </Badge>
+            <Badge color={applied ? "gray" : "amber"} variant="soft" radius="full">
+              {applied ? "已落地" : "已跳过"}
+            </Badge>
+          </span>
+        </div>
+      );
+    }
     case "rule_agent_failed":
       return (
         <Callout.Root role="alert" color="red" size="1">
@@ -117,7 +145,14 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
         </Callout.Root>
       );
     case "rule_agent_finished":
-      return (
+      // 收尾那一条按链路说各自的结果:探索与反哺说留下几条,整理说队列改成了什么样。
+      return num(payload, "items") === null ? (
+        <span className="text-base text-text">
+          完成 · 合并{" "}
+          <span className="font-mono tabular-nums">{num(payload, "merged") ?? 0}</span> 条提案、改写{" "}
+          <span className="font-mono tabular-nums">{num(payload, "retargeted") ?? 0}</span> 条
+        </span>
+      ) : (
         <span className="text-base text-text">
           完成 · 留下 <span className="font-mono tabular-nums">{num(payload, "items") ?? 0}</span> 条
         </span>
