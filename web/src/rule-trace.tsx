@@ -170,10 +170,10 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
       // 收尾那一条按链路说各自的结果:探索与反哺说留下几条,整理说队列改成了什么样。
       return num(payload, "items") === null ? (
         <span className="text-base text-text">
-          完成 · 合并{" "}
+          完成 · 队列:并掉{" "}
           <span className="font-mono tabular-nums">{num(payload, "merged") ?? 0}</span> 条提案、改写{" "}
-          <span className="font-mono tabular-nums">{num(payload, "retargeted") ?? 0}</span> 条、提出{" "}
-          <span className="font-mono tabular-nums">{num(payload, "proposed") ?? 0}</span> 条
+          <span className="font-mono tabular-nums">{num(payload, "retargeted") ?? 0}</span> 条为修改型 · 现集:提出{" "}
+          <span className="font-mono tabular-nums">{num(payload, "proposed") ?? 0}</span> 条提案
         </span>
       ) : (
         <span className="text-base text-text">

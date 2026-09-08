@@ -1629,7 +1629,9 @@ function ConsolidationRow({
                   ? "正在整理"
                   : consolidation.state === "failed"
                     ? "上次整理失败"
-                    : `已完成整理 · 合并 ${consolidation.merged ?? 0} 条提案、改写 ${consolidation.retargeted ?? 0} 条、提出 ${consolidation.proposed ?? 0} 条`}
+                    : // 两半分开说:前两个数是对队列的直改,后一个是对现集提出的提案——提案自己
+                      // 也可以是合并型,与「并掉几条提案」不是一回事,并排写成三个数会读串。
+                      `已完成整理 · 队列:并掉 ${consolidation.merged ?? 0} 条提案、改写 ${consolidation.retargeted ?? 0} 条为修改型 · 现集:提出 ${consolidation.proposed ?? 0} 条提案`}
                 {" · "}模型 {consolidation.model}
                 {consolidation.thinkingLevel === null
                   ? null
