@@ -17,6 +17,7 @@ import { scriptedReviewer } from "./support/memory-forge.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
+  PANEL_ADMIN_USERNAME,
   seedAvailableModelService,
   startReadyPanelHarness,
   type PanelHarness,
@@ -52,6 +53,23 @@ type ProposalResponse = {
 };
 
 type RunFinding = { id: number; file: string; line: number; commentId: string | null };
+
+/** 知识集读取里的一条修订意图(issue #296)。反哺产生的那一行目标为 Finding。 */
+type RevisionIntent = {
+  id: number;
+  text: string;
+  submittedBy: string;
+  targetKind: "none" | "rule" | "proposal" | "draft" | "finding";
+  targetId: number | null;
+  /** 目标 Finding 所在的阶段标识,面板据此开 `?finding=` 侧滑。 */
+  targetStageId: string | null;
+  state: "running" | "failed" | "completed";
+  failure: string | null;
+  /** 这一次沿反哺规则选出的模型标识。选不出来即 null。 */
+  model: string | null;
+  traceTaskId: number | null;
+  produced: { proposalIds: number[]; draftItemIds: number[] };
+};
 
 /** 两条落在 diff 里的 Finding,各自一条行级评论:处置要有可处置的载体。 */
 const reportingReviewers: NonNullable<PanelHarnessOptions["buildReviewers"]> = (plans) =>
@@ -118,6 +136,13 @@ async function proposals(h: PanelHarness): Promise<ProposalResponse[]> {
   const response = await h.api("GET", `/repos/${GITEA_REPO.id}/rules`);
   assert.equal(response.status, 200);
   return ((await response.json()) as { proposals: ProposalResponse[] }).proposals;
+}
+
+/** 这个仓库此刻列出的修订意图(issue #296):反哺与人工提议同一份读取。 */
+async function intents(h: PanelHarness): Promise<RevisionIntent[]> {
+  const response = await h.api("GET", `/repos/${GITEA_REPO.id}/rules`);
+  assert.equal(response.status, 200);
+  return ((await response.json()) as { intents: RevisionIntent[] }).intents;
 }
 
 /** 这个仓库留下的知识轨迹事件,按落库顺序。没有列表端点,直接读库。 */
@@ -312,6 +337,10 @@ test("无备注的处置不触发任何解读", async () => {
   assert.equal(agent.calls.length, 1);
   assert.equal(agent.calls[0]!.feedback?.note, NOTE);
   assert.equal((await proposals(h)).length, 1);
+  // 意图行同样零触发:没有备注的处置写不出意图原文(issue #296)。
+  const listed = await intents(h);
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0]!.targetId, findings[1]!.id);
 });
 
 test("反哺沿用最近一次基点探索所用的模型,没探索过就用全局组合第一个", async () => {
@@ -370,6 +399,11 @@ test("从未探索过且全局组合为空:跳过解读留一行原因,零提案
   // 轨迹从任务开始就起(issue #214):选不出模型也是反哺之内的失败,人来这条轨迹就是要
   // 看它卡在哪一步,而不是一片空白。
   assert.deepEqual(ruleTraceKinds(h), ["rule_agent_started", "rule_agent_failed"]);
+  // 选不出模型不再静默:意图行照样落一条,失败带原因,人在弹窗顶部看得到(issue #296)。
+  const [intent] = await intents(h);
+  assert.equal(intent!.state, "failed");
+  assert.match(intent!.failure ?? "", /模型/);
+  assert.equal(intent!.model, null);
 });
 
 test("解读失败留原因、不重排,产出为空不产生提案", async () => {
@@ -635,4 +669,53 @@ test("反哺产出超过 100 字的陈述:新增那条不入队,并入那条不�
     { reason: "陈述超过 100 字" },
     { proposalId: queuedId, reason: "陈述超过 100 字" },
   ]);
+});
+
+test("带备注的处置建一条以那条 Finding 为锚的意图行:原文即备注、提交人即处置人", async () => {
+  let items: RuleAgentItem[] = [];
+  const agent = scriptedRuleAgent(() => ({ items }));
+  const h = await harnessWithFindings(agent);
+  const [target] = await inlineFindings(h);
+  assert.notEqual(target, undefined);
+
+  items = [{ type: "rule", scope: "src/**", statement: "边界上一次判空", reason: "越界在三处都有" }];
+  assert.equal((await dispose(h, target!.id, NOTE)).status, 200);
+  await h.dispositionFeedbackAtLeast(1);
+  assert.equal(h.dispositionFeedbacks[0]!.failure, undefined);
+
+  const [intent] = await intents(h);
+  assert.notEqual(intent, undefined);
+  assert.equal(intent!.text, NOTE);
+  assert.equal(intent!.submittedBy, PANEL_ADMIN_USERNAME);
+  assert.equal(intent!.targetKind, "finding");
+  assert.equal(intent!.targetId, target!.id);
+  // Finding 引用走既有的 `?finding=` 侧滑:阶段标识与提案附注上那一格同一个字面形状。
+  assert.equal(
+    intent!.targetStageId,
+    `pr:${HARNESS_PR.owner}/${HARNESS_PR.repo}/${HARNESS_PR.number}`,
+  );
+  assert.equal(intent!.state, "completed");
+  assert.equal(intent!.failure, null);
+  assert.equal(typeof intent!.traceTaskId, "number");
+
+  // 产出记在意图行上,附注的来源仍是处置反哺:并入修订意图改的是运行状态,不是来源。
+  const queued = await proposals(h);
+  assert.equal(queued.length, 1);
+  assert.deepEqual(intent!.produced, { proposalIds: [queued[0]!.id], draftItemIds: [] });
+  assert.equal(queued[0]!.sources[0]!.origin, "disposition-feedback");
+  assert.equal(queued[0]!.sources[0]!.note, NOTE);
+});
+
+test("反哺解读失败:意图行失败带原因,处置本身照旧成功", async () => {
+  const agent = scriptedRuleAgent(() => ({ items: [], failure: "厂商拒了这次调用" }));
+  const h = await harnessWithFindings(agent);
+  const [target] = await inlineFindings(h);
+
+  assert.equal((await dispose(h, target!.id, NOTE)).status, 200);
+  await h.dispositionFeedbackAtLeast(1);
+
+  const [intent] = await intents(h);
+  assert.equal(intent!.state, "failed");
+  assert.match(intent!.failure ?? "", /厂商拒了这次调用/);
+  assert.equal(intent!.targetKind, "finding");
 });

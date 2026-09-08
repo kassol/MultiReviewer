@@ -1821,6 +1821,11 @@ export type RuleIntent = {
   submittedBy: string;
   targetKind: RuleIntentTargetKind;
   targetId: number | null;
+  /**
+   * 目标 Finding 所在的阶段标识(issue #296)。只有目标为 Finding 的那一档有值,面板据此
+   * 开既有的 `?finding=` 侧滑;那条 Finding 的轮次已经不在时同样为 null。
+   */
+  targetStageId: string | null;
   state: "running" | "failed" | "completed";
   failure: string | null;
   summary: string | null;
@@ -2489,7 +2494,8 @@ export type Store = {
       submittedBy: string;
       targetKind: RuleIntentTargetKind;
       targetId: number | null;
-      model: string;
+      /** 选不出模型时为 null:那一行落下来就是失败的,人在列表里看得到(issue #296)。 */
+      model: string | null;
       thinkingLevel?: ThinkingLevel;
       startedAt: string;
     },
@@ -3344,10 +3350,25 @@ const BASELINE_EXPLORATION_RULE_ORIGIN = "baseline-exploration";
 /** 一条人工提议产出的草案条目在 `origin` 上的出处(issue #294)。与来源字面量同一个词。 */
 const MANUAL_PROPOSAL_RULE_ORIGIN = "manual-proposal";
 
-/** 读一条修订意图要的那几列(issue #294)。三处查询共用,列名只写一遍。 */
+/**
+ * 读一条修订意图要的那几列(issue #294)。三处查询共用,列名只写一遍。
+ *
+ * 目标 Finding 的阶段标识在这一句里算出来(issue #296,与出处附注那一格同一个字面形状):
+ * 面板手上只有 Finding 标识,拼不出阶段地址,而 `?finding=` 侧滑要的就是它。
+ */
 const RULE_INTENT_COLUMNS = `SELECT id, text, submitted_by, target_kind, target_id, state,
                                     failure, summary, model, thinking_level, trace_task_id,
-                                    produced_json, started_at, finished_at
+                                    produced_json, started_at, finished_at,
+                                    (SELECT CASE
+                                              WHEN run.range_review_id IS NOT NULL
+                                                THEN 'range:' || run.range_review_id
+                                              ELSE 'pr:' || run.owner || '/' || run.repo
+                                                   || '/' || run.pull_number
+                                            END
+                                       FROM finding f
+                                       JOIN review_run run ON run.id = f.run_id
+                                      WHERE rule_intent.target_kind = 'finding'
+                                        AND f.id = rule_intent.target_id) AS target_stage_id
                                FROM rule_intent`;
 
 /** 一行 `rule_intent` 读成一条修订意图。 */
@@ -3361,6 +3382,7 @@ function toRuleIntent(row: Record<string, unknown>): RuleIntent {
     submittedBy: String(row["submitted_by"]),
     targetKind: String(row["target_kind"]) as RuleIntentTargetKind,
     targetId: row["target_id"] === null ? null : Number(row["target_id"]),
+    targetStageId: text(row["target_stage_id"]),
     state: String(row["state"]) as RuleIntent["state"],
     failure: text(row["failure"]),
     summary: text(row["summary"]),

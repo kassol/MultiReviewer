@@ -139,6 +139,7 @@ import {
   type RuleIntentTargetKind,
   type RuleProposal,
   type RuleProposalInput,
+  type RuleProposalOrigin,
   type RuleProposalSourceInput,
   type StageScope,
   type Store,
@@ -5568,8 +5569,9 @@ async function handleDispose(
       note: note ?? finding.note,
     },
   });
-  // 处置备注落库即排一次处置反哺(issue #208)。没有备注的处置不构成反哺输入,零触发。
-  if (note !== undefined) void runDispositionFeedbackInBackground(deps, finding, note);
+  // 处置备注落库即建一条以那条 Finding 为锚的修订意图(issue #208、#296)。没有备注的
+  // 处置不构成反哺输入,零触发:不建行,也不排任务。
+  if (note !== undefined) startDispositionFeedback(deps, finding, note, disposedBy);
 }
 
 /**
@@ -7402,131 +7404,46 @@ function rewriteTargetProposal(
 }
 
 /**
- * 一次处置反哺的后台执行(CONTEXT.md 处置反哺,issue #208)。处置备注落库之后即时排一次,
- * 不绑 Review Run:把备注、被处置的那条 Finding 与该仓库当前生效的知识集交给规则 agent,
- * 产出经与基点探索同一套映射排进修订提案队列,出处标处置反哺、附注放备注原文。产出为空
- * 是合法结果,那时一条提案都不留。
+ * 处置备注即一条以那条 Finding 为锚的修订意图(CONTEXT.md 处置反哺,ADR 0028,issue #296)。
+ * 处置落库之后先建那一行(原文即备注、提交人即处置人、目标即这条 Finding),再走与人工
+ * 提议同一条后台运行——反哺由此有了运行状态:跑着的看得见,失败的带原因、可删。
  *
- * 失败留一行日志就停,不自动重试:反哺是旁路,重试只会在模型持续不可用时变成风暴,而人
- * 下一次写备注本来就会再排一次。整件事与处置写入解耦,解读失败不影响处置本身。
+ * 模型选不出来时那一行照样落下,后台起完轨迹再失败:静默跳过的话人写完备注就再也见不到
+ * 它去了哪里。仓库不在注册表里那一档没有落处,只留一行日志。
  */
-async function runDispositionFeedbackInBackground(
+function startDispositionFeedback(
   deps: WebhookServerDeps,
   finding: FindingDispositionTarget,
   note: string,
-): Promise<void> {
+  disposedBy: string,
+): void {
+  const repoId = withStore(deps.dbPath, (store) =>
+    store
+      .listRepos()
+      .find((row) => row.owner === finding.owner && row.repo === finding.repo)?.repoId);
+  if (repoId === undefined) {
+    console.error(`处置反哺没有落处:${finding.owner}/${finding.repo} 不在注册表里`);
+    return;
+  }
+  const spec = ruleTaskSpec(deps, repoId);
+  const intent = withStore(deps.dbPath, (store) =>
+    store.startRuleIntent(repoId, {
+      text: note,
+      submittedBy: disposedBy,
+      targetKind: "finding",
+      targetId: finding.id,
+      model: spec === undefined ? null : modelIdentity(spec),
+      ...(spec?.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
+      startedAt: new Date((deps.now ?? Date.now)()).toISOString(),
+    }),
+  );
+  if (intent === undefined) return;
   const ref: RepoRef = { owner: finding.owner, repo: finding.repo };
-  let failure: string | undefined;
-  let worktree: Worktree | undefined;
-  // 轨迹从任务开始就起,与基点探索同一条口径(CONTEXT.md 知识轨迹):Forge 没配、模型
-  // 用不了都是反哺之内的失败,人来这条轨迹就是要看它究竟卡在哪一步。仓库不在注册表里那
-  // 一档仍然没有轨迹——那时连挂在哪个仓库上都说不出来,只留一行日志。
-  let trace: RuleTraceRecorder | undefined;
-  try {
-    const context = withStore(deps.dbPath, (store) => {
-      const row = store
-        .listRepos()
-        .find((entry) => entry.owner === ref.owner && entry.repo === ref.repo);
-      if (row === undefined) return undefined;
-      return {
-        repoId: row.repoId,
-        rules: store.getRuleSet(row.repoId)?.rules ?? [],
-        // 现集之外还给它待裁决队列(issue #283):认出这条备注说的是队列里已有的一件事
-        // 就并入那一条,而不是再排一条说同一件事的提案。
-        pending: store
-          .getRuleProposals(row.repoId)
-          .filter((entry) => entry.state === "pending")
-          .map(toPendingProposal),
-      };
-    });
-    if (context === undefined) throw new Error("这个仓库不在注册表里");
-    // 沿用该仓库最近一次基点探索所用的模型;从未探索过就用全局模型组合的第一个。
-    const spec = ruleTaskSpec(deps, context.repoId);
-    trace = startRuleTrace(
-      (use) => withStore(deps.dbPath, use),
-      context.repoId,
-      "disposition-feedback",
-      {
-        source: "disposition-feedback",
-        note,
-        finding: { id: finding.id, file: finding.file, line: finding.line },
-        baselineSha: finding.headSha,
-        // 一个模型都选不出来时这一次就是失败,轨迹照样留下它卡在哪一步。
-        model: spec === undefined ? null : modelIdentity(spec),
-        thinkingLevel: spec?.thinkingLevel ?? null,
-      },
-    );
-    const forge = deps.forges.gitea;
-    if (forge === undefined) throw new Error("gitea 没有配置 Forge,取不回代码");
-    if (spec === undefined) throw new Error(NO_RULE_TASK_MODEL);
-    const [plan] = await materializeReviewerPlans(
-      deps,
-      withStore(deps.dbPath, (store) => store.listModelServices()),
-      [spec],
-    );
-    if (plan === undefined || plan.runtimeModel === null || plan.credential === null) {
-      throw new Error(plan?.failure ?? `模型 ${modelIdentity(spec)} 不可用`);
-    }
-    const [repository, credentials] = await Promise.all([
-      forge.getRepository(ref),
-      forge.cloneCredentials(ref),
-    ]);
-    // 工作副本停在这条 Finding 报出时的那个 head commit 上:备注说的是那时的代码。
-    worktree = await prepareWorktree({
-      cacheDir: deps.cacheDir,
-      ref,
-      cloneUrl: repository.cloneUrl,
-      credentials,
-      headSha: finding.headSha,
-      baseSha: finding.headSha,
-    });
-    const agent = deps.ruleAgent ?? createPiRuleAgent();
-    const result = await agent({
-      worktreePath: worktree.path,
-      baselineSha: finding.headSha,
-      runtimeModel: plan.runtimeModel,
-      apiKey: plan.credential,
-      existingKnowledge: context.rules.map(toKnowledgeEntry),
-      pendingProposals: context.pending,
-      ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
-      feedback: {
-        note,
-        finding: {
-          file: finding.file,
-          line: finding.line,
-          title: finding.title,
-          description: finding.description,
-        },
-      },
-      onEvent: (event) => recordRuleAgentEvent(trace!, event),
-    });
-    if (result.failure !== undefined) throw new Error(result.failure);
-    // 收窄在开库之前跑完:它自己要写知识轨迹,而轨迹的每一次落库另开一次库
-    // (`startRuleTrace`),套在下面那次 `withStore` 里就成了嵌套开库。
-    const usable = usableRuleItems(result.items, trace);
-    const source: Omit<RuleProposalSourceInput, "evidence"> = {
-      origin: "disposition-feedback",
-      note,
-      findingId: finding.id,
-      traceTaskId: trace.taskId,
-    };
-    const landed = withStore(deps.dbPath, (store) =>
-      landRuleItems(store, context.repoId, usable, context.rules, source),
-    );
-    trace.record("rule_agent_finished", { items: landed.length });
-  } catch (error) {
-    failure = failureText(error);
-    trace?.record("rule_agent_failed", { failure });
-  } finally {
-    trace?.end();
-    await worktree?.release();
-  }
-
-  if (deps.onDispositionFeedbackSettled !== undefined) {
-    deps.onDispositionFeedbackSettled(finding.id, failure);
-  } else if (failure !== undefined) {
-    console.error(`处置反哺失败:${ref.owner}/${ref.repo} 的 Finding ${finding.id}:${failure}`);
-  }
+  void runRevisionIntentInBackground(deps, repoId, ref, intent, spec, finding).catch(
+    (error: unknown) => {
+      console.error(`处置反哺未处理的失败:intent ${intent.id}:${failureText(error)}`);
+    },
+  );
 }
 
 /**
@@ -7582,32 +7499,46 @@ function toIntentTargetProposal(
 }
 
 /**
- * 一次人工提议的后台执行(CONTEXT.md 人工提议,ADR 0028,issue #294)。与处置反哺同一条
- * agent 管线:意图原文、这个仓库当前生效的知识集与待裁决队列交给规则 agent,产出经同一套
- * 映射入队;知识集未确认时产出追加进草案。零产出是完成,异常即失败、写进意图行、不重试。
+ * 一条修订意图的后台执行(CONTEXT.md 人工提议、处置反哺,ADR 0028,issue #294、#296)。
+ * 人工提议与处置反哺共用它:意图原文、这个仓库当前生效的知识集与待裁决队列交给规则
+ * agent,产出经同一套映射入队;知识集未确认时产出追加进草案。零产出是完成,异常即失败、
+ * 写进意图行、不重试。
  *
- * 工作副本停默认分支当前 head:意图说的是这个仓库现在的样子,不是某一次 Finding 报出时
- * 的那个 commit。
+ * `finding` 有值即这一次是处置反哺(目标为那条 Finding),两条链路只在三处分叉:工作副本
+ * 停那条 Finding 报出时的 head(备注说的是那时的代码)而不是默认分支当前 head(意图说的
+ * 是这个仓库现在的样子);agent 请求给 `feedback` 段而不是 `intent` 段;附注与轨迹的来源
+ * 记处置反哺而不是人工提议。粒度门槛、并入、超长丢弃与模型规则两条链路逐字相同。
+ *
+ * `spec` 可以缺席:反哺那一侧选不出模型时那一行照样落下,轨迹起完再失败(issue #296);
+ * 人工提议那一侧提交时就拦住了,到不了这里。
  */
 async function runRevisionIntentInBackground(
   deps: WebhookServerDeps,
   repoId: number,
   ref: RepoRef,
   intent: RuleIntent,
-  spec: ReviewerSpec,
+  spec: ReviewerSpec | undefined,
+  finding?: FindingDispositionTarget,
 ): Promise<void> {
   let failure: string | undefined;
   let worktree: Worktree | undefined;
   const now = (): string => new Date((deps.now ?? Date.now)()).toISOString();
-  // 轨迹从任务开始就起,与另三条链路同一条口径:取不回代码、模型用不了都是这一次提议
+  const origin: RuleProposalOrigin =
+    finding === undefined ? "manual-proposal" : "disposition-feedback";
+  // 轨迹从任务开始就起,与另三条链路同一条口径:取不回代码、模型用不了都是这一次运行
   // 之内的失败,人来这条轨迹就是要看它究竟卡在哪一步。
-  const trace = startRuleTrace((use) => withStore(deps.dbPath, use), repoId, "manual-proposal", {
-    source: "manual-proposal",
+  const trace = startRuleTrace((use) => withStore(deps.dbPath, use), repoId, origin, {
+    source: origin,
     intentId: intent.id,
-    text: intent.text,
-    target: { kind: intent.targetKind },
-    model: modelIdentity(spec),
-    thinkingLevel: spec.thinkingLevel ?? null,
+    ...(finding === undefined
+      ? { text: intent.text, target: { kind: intent.targetKind } }
+      : {
+          note: intent.text,
+          finding: { id: finding.id, file: finding.file, line: finding.line },
+          baselineSha: finding.headSha,
+        }),
+    model: spec === undefined ? null : modelIdentity(spec),
+    thinkingLevel: spec?.thinkingLevel ?? null,
   });
   const traceTaskId = trace.taskId;
   if (traceTaskId !== null) {
@@ -7619,6 +7550,7 @@ async function runRevisionIntentInBackground(
   try {
     const forge = deps.forges.gitea;
     if (forge === undefined) throw new Error("gitea 没有配置 Forge,取不回代码");
+    if (spec === undefined) throw new Error(NO_RULE_TASK_MODEL);
     const [plan] = await materializeReviewerPlans(
       deps,
       withStore(deps.dbPath, (store) => store.listModelServices()),
@@ -7637,17 +7569,9 @@ async function runRevisionIntentInBackground(
       cloneUrl: repository.cloneUrl,
       credentials,
     };
-    // 默认分支当前 head:与 commit 选择器读的是同一份缓存 clone、同一条读取路径。
-    const listed = await listBranchCommits({
-      ...target,
-      branch: repository.defaultBranch,
-      offset: 0,
-      limit: 1,
-    });
-    const head = listed.ok ? listed.commits[0]?.sha : undefined;
-    if (head === undefined) {
-      throw new Error(`读不到默认分支 ${repository.defaultBranch} 的当前 head`);
-    }
+    // 默认分支当前 head:与 commit 选择器读的是同一份缓存 clone、同一条读取路径。反哺
+    // 停在那条 Finding 报出时的 head——备注说的是那时的代码。
+    const head = finding !== undefined ? finding.headSha : await defaultBranchHead(target, repository);
     worktree = await prepareWorktree({ ...target, headSha: head, baseSha: head });
     const input = withStore(deps.dbPath, (store) => {
       const ruleSet = store.getRuleSet(repoId);
@@ -7682,13 +7606,27 @@ async function runRevisionIntentInBackground(
       existingKnowledge: input.rules.map(toKnowledgeEntry),
       pendingProposals: input.pending,
       ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
-      intent: {
-        text: intent.text,
-        target:
-          input.target === undefined
-            ? { kind: "none" }
-            : { kind: "proposal", proposal: input.target },
-      },
+      ...(finding === undefined
+        ? {
+            intent: {
+              text: intent.text,
+              target:
+                input.target === undefined
+                  ? { kind: "none" as const }
+                  : { kind: "proposal" as const, proposal: input.target },
+            },
+          }
+        : {
+            feedback: {
+              note: intent.text,
+              finding: {
+                file: finding.file,
+                line: finding.line,
+                title: finding.title,
+                description: finding.description,
+              },
+            },
+          }),
       onEvent: (event) => {
         if (event.kind === "assistant_message" && event.text.trim() !== "") {
           lastMessage = event.text.trim();
@@ -7704,10 +7642,10 @@ async function runRevisionIntentInBackground(
     // 同一条(CONTEXT.md 人工提议)。**追加而不是覆盖**:一条意图补的是这份草案里缺的
     // 那几条,重新探索才整组取代。
     // 备注原文记意图,依据记 agent 的理由(CONTEXT.md 出处附注)。
-    const source = {
-      origin: "manual-proposal" as const,
+    const source: Omit<RuleProposalSourceInput, "evidence"> = {
+      origin,
       note: intent.text,
-      findingId: null,
+      findingId: finding?.id ?? null,
       traceTaskId: trace.taskId,
     };
     const rewrite = input.target;
@@ -7767,11 +7705,37 @@ async function runRevisionIntentInBackground(
     console.error(`修订意图状态落库失败:intent ${intent.id}:${failureText(error)}`);
   }
 
+  // 反哺的结算回调由意图结算统一触发(issue #296):它与人工提议本来就是同一次运行。
+  if (finding !== undefined && deps.onDispositionFeedbackSettled !== undefined) {
+    deps.onDispositionFeedbackSettled(finding.id, failure);
+  }
   if (deps.onRevisionIntentSettled !== undefined) {
     deps.onRevisionIntentSettled(intent.id, failure);
   } else if (failure !== undefined) {
-    console.error(`人工提议失败:${ref.owner}/${ref.repo} 的意图 ${intent.id}:${failure}`);
+    console.error(
+      `${origin === "manual-proposal" ? "人工提议" : "处置反哺"}失败:${ref.owner}/${ref.repo} 的意图 ${intent.id}:${failure}`,
+    );
   }
+}
+
+/**
+ * 默认分支当前 head(issue #294)。与 commit 选择器读的是同一份缓存 clone、同一条读取路径。
+ */
+async function defaultBranchHead(
+  target: { cacheDir: string; ref: RepoRef; cloneUrl: string; credentials: CloneCredentials },
+  repository: { defaultBranch: string },
+): Promise<string> {
+  const listed = await listBranchCommits({
+    ...target,
+    branch: repository.defaultBranch,
+    offset: 0,
+    limit: 1,
+  });
+  const head = listed.ok ? listed.commits[0]?.sha : undefined;
+  if (head === undefined) {
+    throw new Error(`读不到默认分支 ${repository.defaultBranch} 的当前 head`);
+  }
+  return head;
 }
 
 /**

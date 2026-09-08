@@ -121,6 +121,8 @@ type RevisionIntent = {
   submittedBy: string;
   targetKind: "none" | "rule" | "proposal" | "draft" | "finding";
   targetId: number | null;
+  /** 目标 Finding 所在的阶段标识(issue #296)。有它才开得了 `?finding=` 侧滑。 */
+  targetStageId: string | null;
   state: "running" | "failed" | "completed";
   failure: string | null;
   summary: string | null;
@@ -1095,6 +1097,11 @@ function IntentSection({
             >
               <Text as="p" size="2" className="wrap-anywhere">{intent.text}</Text>
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                {/* 来源徽章(issue #296):处置备注那一行与人在弹窗里写的那一行同形,人要
+                    一眼分得出这段话是谁在哪写下的。 */}
+                <Badge color="gray" variant="soft" radius="full" size="1">
+                  {intent.targetKind === "finding" ? SOURCE_LABEL["disposition-feedback"] : SOURCE_LABEL["manual-proposal"]}
+                </Badge>
                 <Badge
                   color={
                     intent.state === "running" ? "blue" : intent.state === "failed" ? "red" : "gray"
@@ -1125,6 +1132,20 @@ function IntentSection({
                   >
                     改写提案 #{intent.targetId}
                   </Button>
+                ) : null}
+                {/* 反哺那一行的 Finding 引用(issue #296):走提案出处上那个既有的
+                    `?finding=` 侧滑,人点进去就是那条 Finding 的 diff。 */}
+                {intent.targetKind === "finding" &&
+                intent.targetId !== null &&
+                intent.targetStageId !== null ? (
+                  <Link
+                    to="/stages/$stageId"
+                    params={{ stageId: intent.targetStageId }}
+                    search={{ finding: intent.targetId }}
+                    className={`${OUTLINED_ACTION} px-2 py-1 text-sm text-text-secondary hover:bg-sunken`}
+                  >
+                    查看 Finding
+                  </Link>
                 ) : null}
                 {intent.traceTaskId === null ? null : (
                   <RuleTraceButton
