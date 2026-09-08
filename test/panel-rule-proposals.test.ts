@@ -35,7 +35,8 @@ const AT = "2026-08-29T00:00:00.000Z";
 
 type ProposalResponse = {
   id: number;
-  change: "add" | "modify" | "retire";
+  type: "rule" | "fact";
+  change: "add" | "modify" | "retire" | "merge";
   targetRuleIds: number[];
   scope: string;
   statement: string;
@@ -55,7 +56,7 @@ type ProposalResponse = {
 type RuleSetResponse = {
   version: number | null;
   exploration: { state: "running" | "failed" | "completed" } | null;
-  rules: { id: number; scope: string; statement: string; origin: string }[];
+  rules: { id: number; type: "rule" | "fact"; scope: string; statement: string; origin: string }[];
   retired: { id: number; statement: string }[];
   draft: { id: number; statement: string }[];
   proposals: ProposalResponse[];
@@ -571,6 +572,64 @@ test("多目标映射为合并型:认不出的目标丢掉,只剩一个即退化
   // 驳回照常:队列不该留下裁不掉的条目。
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-proposals/${queued[0]!.id}/reject`)).status,
+    200,
+  );
+});
+
+test("单目标合并即改型:同型仍是修改,采纳把目标换成新型的那一条", async () => {
+  const items: RuleAgentItem[] = [];
+  const { h, cookie } = await confirmedHarness(items);
+  const path = `/repos/${GITEA_REPO.id}`;
+  const rules = (await ruleSet(h, cookie)).rules;
+  items.push(
+    // 一条目标而型与它不同:合并型,型由新陈述定(spec #286)。
+    { type: "fact", scope: "src/**", statement: "写成事实的那一句", targetRuleIds: [rules[0]!.id] },
+    // 同型仍是修改:改的只是措辞。
+    { type: "rule", scope: "", statement: "同型只是改写", targetRuleIds: [rules[1]!.id] },
+    // 同一个目标的第二条改型:第一条采纳后它的目标就不生效了。
+    { type: "fact", scope: "", statement: "同一个目标的第二条", targetRuleIds: [rules[0]!.id] },
+  );
+  assert.equal(
+    (await send(h, cookie, "POST", `${path}/rule-exploration`, {
+      baseline: h.repo.baseSha,
+      provider: "test",
+      model: "global-model",
+    })).status,
+    202,
+  );
+  await h.explorationsAtLeast(1);
+
+  const queued = (await ruleSet(h, cookie)).proposals;
+  assert.deepEqual(
+    queued.map((row) => [row.change, row.type, row.targetRuleIds, row.statement]),
+    [
+      ["merge", "fact", [rules[0]!.id], "写成事实的那一句"],
+      ["modify", "rule", [rules[1]!.id], "同型只是改写"],
+      ["merge", "fact", [rules[0]!.id], "同一个目标的第二条"],
+    ],
+  );
+
+  // 采纳:目标废止于新版,新陈述以新的型生效于同一版,版本加一。
+  const accepted = await send(h, cookie, "POST", `${path}/rule-proposals/${queued[0]!.id}/accept`);
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(await accepted.json(), { version: 3 });
+  const after = await ruleSet(h, cookie);
+  assert.equal(after.version, 3);
+  assert.equal(after.rules.some((row) => row.id === rules[0]!.id), false);
+  assert.equal(after.retired.some((row) => row.id === rules[0]!.id), true);
+  assert.deepEqual(
+    after.rules
+      .filter((row) => row.statement === "写成事实的那一句")
+      .map((row) => [row.type, row.scope]),
+    [["fact", "src/**"]],
+  );
+
+  // 目标已经不生效:同一目标的第二条采纳不了,与多目标合并同一句话;驳回照常。
+  const stale = await send(h, cookie, "POST", `${path}/rule-proposals/${queued[2]!.id}/accept`);
+  assert.equal(stale.status, 404);
+  assert.match(((await stale.json()) as { error: string }).error, /已经不再生效/);
+  assert.equal(
+    (await send(h, cookie, "POST", `${path}/rule-proposals/${queued[2]!.id}/reject`)).status,
     200,
   );
 });

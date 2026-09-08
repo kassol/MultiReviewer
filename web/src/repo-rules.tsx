@@ -74,7 +74,7 @@ type RuleProposalSource = {
 
 /**
  * 一条修订提案(CONTEXT.md,issue #207)。`change` 是变更类型,`targetRuleIds` 是这条
- * 变更指向的现有条目(新增没有目标,修改与废止一条,合并两条以上,issue #282),
+ * 变更指向的现有条目(新增没有目标,修改与废止一条,合并一条以上,issue #282、#289),
  * `sources` 是它的出处附注列表(issue #281)。
  */
 type RuleProposal = {
@@ -789,13 +789,13 @@ const DECISION_LABEL = {
     add: "采纳了新增提案",
     modify: "采纳了修改提案",
     retire: "采纳了废止提案,条目已废止",
-    merge: "采纳了合并提案,几条目标已合成一条",
+    merge: "采纳了合并提案,目标已换成合成的那一条",
   },
   rejected: {
     add: "驳回了新增提案",
     modify: "驳回了修改提案,条目保持原样",
     retire: "驳回了废止提案,条目保留",
-    merge: "驳回了合并提案,几条目标各自保留",
+    merge: "驳回了合并提案,目标条目保持原样",
   },
 } as const satisfies Record<"accepted" | "rejected", Record<RuleProposal["change"], string>>;
 
@@ -908,10 +908,24 @@ function ProposalSection({
     });
     if (rows.length === 0) return null;
     if (rows.length === 1) {
+      // 单目标的合并即改型(CONTEXT.md 修订提案,issue #289):卡片上多一句说清换的是
+      // 哪一型——「合并」这个词本身看不出这一次改的是型。
+      const target = ruleSet.rules.find((entry) => entry.id === rows[0]!.id);
+      const retyped =
+        proposal.change === "merge" && target !== undefined && target.type !== proposal.type
+          ? `改型:${TYPE_LABEL[target.type]} → ${TYPE_LABEL[proposal.type]}`
+          : null;
       return (
-        <Text as="p" size="1" color="gray" className="mt-1.5 wrap-anywhere">
-          目标知识条目:{rows[0]!.label}
-        </Text>
+        <>
+          <Text as="p" size="1" color="gray" className="mt-1.5 wrap-anywhere">
+            目标知识条目:{rows[0]!.label}
+          </Text>
+          {retyped === null ? null : (
+            <Text as="p" size="1" color="gray">
+              {retyped}
+            </Text>
+          )}
+        </>
       );
     }
     return (
