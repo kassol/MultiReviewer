@@ -18,6 +18,7 @@ import { AGENT_STATEMENT_LIMIT, readProposalType } from "./rule-agent.ts";
 import type {
   ConsolidationProposal,
   DispositionFeedback,
+  RuleIntentInput,
   RuleWorkerMessage,
   RuleWorkerRequest,
 } from "./rule-agent.ts";
@@ -279,6 +280,39 @@ Report each change through ${PROPOSE_RULE_TOOL}. When you have nothing more to r
 }
 
 /**
+ * 无目标修订意图的提示(CONTEXT.md 人工提议,ADR 0028,issue #294)。与反哺共用现集与
+ * 队列那两段渲染:它们回答的是同一个问题——「这件事现集里有没有、队列里排没排过」。
+ *
+ * 明写「只产人说的那件事」:同一个系统提示在基点探索那条链路上要求推导整套知识,不点住
+ * 边界的话 agent 会顺手把读到的别的东西一并提出来,而人写的是一段话、等的是那一条。
+ */
+export function intentPrompt(
+  request: Pick<RuleWorkerRequest, "existingKnowledge" | "pendingProposals"> & {
+    intent: RuleIntentInput;
+  },
+): string {
+  const existing =
+    request.existingKnowledge.length === 0
+      ? ""
+      : `${existingSection(request.existingKnowledge)}\n`;
+  const pending =
+    request.pendingProposals === undefined || request.pendingProposals.length === 0
+      ? ""
+      : `${pendingSection(request.pendingProposals)}\n`;
+  return `A maintainer of this repository wrote down what they want the review knowledge to say. Turn that one request into knowledge entries of the shape below.
+
+Revision intent: ${request.intent.text}
+${existing}${pending}
+Report only what they asked for. You are not deriving the knowledge of this whole repository — everything you report has to be the thing they wrote down, stated as a rule or as a fact.
+
+Check what is already there before you report. When the knowledge in force already covers what they said, report a change to that entry instead of a second entry saying the same thing: pass its id in rule_ids with the full new statement. When a proposal already waiting for a decision says it, merge into that one: pass its id in proposal_id with one statement covering what that proposal and this request both say. Report a new entry only when neither list has it.
+
+Read the code before you settle the scope. The request is written in prose and rarely names paths; open the directories it points at and find out how far the invariant actually reaches, then put that glob in the scope field. What you read goes in the reason field, not in the statement.
+
+Report each change through ${PROPOSE_RULE_TOOL}. When you have reported what they asked for, stop.`;
+}
+
+/**
  * 一句陈述的长度给整理 agent 看的样子(issue #292)。陈述形状那四条里只有长度判得出程序,
  * 标出来整理才知道该先动哪几条——AI-API 首轮整理的现集 75 条里 72 条超限,它只碰了 20 条
  * 就宣布完成。计数与服务端那道闸(`usableRuleItems`)同一口径,免得标着合规却被丢掉。
@@ -341,10 +375,19 @@ ${queueOver}
 Report every duplicate proposal through ${MERGE_PROPOSALS_TOOL} and ${RETARGET_PROPOSAL_TOOL}. Report every change the entries in force need through ${PROPOSE_RULE_TOOL}, always with rule_ids and a reason. When you have nothing more to report, stop.`;
 }
 
-/** 这一次任务的提示。三条链路各一份,由输入里带的那一半认出来。 */
+/** 这一次任务的提示。四条链路各一份,由输入里带的那一半认出来。 */
 function promptFor(request: RuleWorkerRequest): string {
   if (request.consolidation !== undefined) {
     return consolidationPrompt(request.consolidation.proposals, request.existingKnowledge);
+  }
+  if (request.intent !== undefined) {
+    return intentPrompt({
+      existingKnowledge: request.existingKnowledge,
+      ...(request.pendingProposals === undefined
+        ? {}
+        : { pendingProposals: request.pendingProposals }),
+      intent: request.intent,
+    });
   }
   if (request.feedback !== undefined) {
     return feedbackPrompt({

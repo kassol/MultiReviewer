@@ -100,6 +100,17 @@ export type DispositionFeedback = {
 };
 
 /**
+ * 触发一次人工提议的那条修订意图(CONTEXT.md 修订意图,ADR 0028,issue #294)。原文是
+ * 解读的输入本身;`target` 说这条意图指向什么,本票只有无目标那一档,目标型三档由后续
+ * 票填(spec #293)。
+ */
+export type RuleIntentInput = {
+  /** 人写下的那段话,去掉首尾空白。 */
+  text: string;
+  target: { kind: "none" };
+};
+
+/**
  * 交给整理 agent 的一条待裁决提案(CONTEXT.md 知识整理,issue #284)。它要认得出队列里
  * 哪两条说的是同一件事,因此标识、变更类型、目标条目、陈述与出处附注都在。
  */
@@ -152,6 +163,12 @@ export type RuleAgentRequest = {
    * `baselineSha` 那时是这条 Finding 报出时的那个 head commit,工作副本停在它上面。
    */
   feedback?: DispositionFeedback;
+  /**
+   * 人工提议的输入(CONTEXT.md 人工提议,issue #294)。有值即这一次解读的是这条修订
+   * 意图,工作副本停在默认分支当前 head。与 `feedback`、`consolidation` 三者互斥,
+   * `promptFor` 按这三个可选字段判别这一次是哪条链路。
+   */
+  intent?: RuleIntentInput;
   /** 本次固定的完整运行模型;不含凭据。 */
   runtimeModel: RuntimeModel;
   /**
@@ -233,6 +250,7 @@ export async function runRuleAgentChild(
     ...(request.baselineSha === undefined ? {} : { baselineSha: request.baselineSha }),
     ...(request.thinkingLevel === undefined ? {} : { thinkingLevel: request.thinkingLevel }),
     ...(request.feedback === undefined ? {} : { feedback: request.feedback }),
+    ...(request.intent === undefined ? {} : { intent: request.intent }),
     ...(request.consolidation === undefined ? {} : { consolidation: request.consolidation }),
     ...(request.pendingProposals === undefined
       ? {}
