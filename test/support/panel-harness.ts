@@ -67,6 +67,8 @@ export type PanelHarness = {
   explorations: { repoId: number; failure?: string }[];
   /** 后台跑完的处置反哺解读(issue #208),按结束先后。 */
   dispositionFeedbacks: { findingId: number; failure?: string }[];
+  /** 后台跑完的知识整理(issue #284),按结束先后。 */
+  consolidations: { repoId: number; failure?: string }[];
   factoryCalls: (readonly ReviewerSpec[])[];
   /** 每次组装 Reviewer 时拿到的完整本轮运行计划。 */
   runtimePlans: (readonly ReviewerRuntimePlan[])[];
@@ -84,6 +86,8 @@ export type PanelHarness = {
   explorationsAtLeast(count: number): Promise<void>;
   /** 等到至少这么多次处置反哺解读已经结束(issue #208)。 */
   dispositionFeedbackAtLeast(count: number): Promise<void>;
+  /** 等到至少这么多次知识整理已经结束(issue #284)。 */
+  consolidationsAtLeast(count: number): Promise<void>;
 };
 
 /** 凭据测试用的主密钥。缺主密钥那一档传 `credentialMasterKey: undefined` 起 harness。 */
@@ -280,6 +284,8 @@ export async function startPanelHarness(
   let explorationWaiting: { count: number; resolve: () => void }[] = [];
   const dispositionFeedbacks: { findingId: number; failure?: string }[] = [];
   let feedbackWaiting: { count: number; resolve: () => void }[] = [];
+  const consolidations: { repoId: number; failure?: string }[] = [];
+  let consolidationWaiting: { count: number; resolve: () => void }[] = [];
 
   const server = createWebhookServer({
     forges: { gitea: forge },
@@ -316,6 +322,14 @@ export async function startPanelHarness(
       explorations.push({ repoId, ...(failure === undefined ? {} : { failure }) });
       explorationWaiting = explorationWaiting.filter((w) => {
         if (explorations.length < w.count) return true;
+        w.resolve();
+        return false;
+      });
+    },
+    onRuleConsolidationSettled: (repoId, failure) => {
+      consolidations.push({ repoId, ...(failure === undefined ? {} : { failure }) });
+      consolidationWaiting = consolidationWaiting.filter((w) => {
+        if (consolidations.length < w.count) return true;
         w.resolve();
         return false;
       });
@@ -426,6 +440,7 @@ export async function startPanelHarness(
     worktrees,
     explorations,
     dispositionFeedbacks,
+    consolidations,
     factoryCalls,
     snapshots,
     runtimePlans,
@@ -453,6 +468,12 @@ export async function startPanelHarness(
       if (dispositionFeedbacks.length >= count) return Promise.resolve();
       return new Promise<void>((resolve) => {
         feedbackWaiting.push({ count, resolve });
+      });
+    },
+    consolidationsAtLeast(count: number): Promise<void> {
+      if (consolidations.length >= count) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        consolidationWaiting.push({ count, resolve });
       });
     },
   };

@@ -6,7 +6,8 @@
  * `Forge` 接口里也没有这类方法:审查是建议,不是门禁,人保留最终判断权。
  */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { readFile } from "node:fs/promises";
 import {
   createServer,
@@ -133,6 +134,7 @@ import {
   type RepoSummary,
   type ReviewRuleInput,
   type ReviewRuleRecord,
+  type RuleProposal,
   type RuleProposalInput,
   type RuleProposalSourceInput,
   type StageScope,
@@ -177,9 +179,11 @@ import { createPiMergeAgent } from "../reviewer/merge-agent.ts";
 import { EVIDENCE_SESSION_BUDGET } from "../reviewer/evidence.ts";
 import {
   createPiRuleAgent,
+  type ConsolidationProposal,
   type RuleAgent,
   type RuleAgentEvent,
   type RuleAgentItem,
+  type RuleConsolidationAction,
 } from "../reviewer/rule-agent.ts";
 
 export type Platform = "github" | "gitea";
@@ -261,8 +265,8 @@ export type WebhookServerDeps = {
    */
   onWorktreePrepared?: (repoId: number, failure?: string) => void;
   /**
-   * 规则 agent 的注入边界(issue #205,ADR 0019)。基点探索与日后的处置反哺共用它;
-   * 不传即用 Pi 子进程的真实实现,测试注入脚本化实现。
+   * 规则 agent 的注入边界(issue #205,ADR 0019)。基点探索、处置反哺与知识整理三条
+   * 链路共用它;不传即用 Pi 子进程的真实实现,测试注入脚本化实现。
    */
   ruleAgent?: RuleAgent;
   /**
@@ -270,6 +274,11 @@ export type WebhookServerDeps = {
    * 成功不出声——与工作副本准备同一条口径。
    */
   onRuleExplorationSettled?: (repoId: number, failure?: string) => void;
+  /**
+   * 后台跑完一次知识整理时回调(issue #284),`failure` 有值即这一次没跑成。与基点探索
+   * 同一条口径。
+   */
+  onRuleConsolidationSettled?: (repoId: number, failure?: string) => void;
   /**
    * 后台跑完一次处置反哺解读时回调(issue #208),`failure` 有值即这一次没解读成。
    * 不传则把失败写进 stderr,成功不出声——与基点探索同一条口径。
@@ -2157,6 +2166,15 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     assignment: { by: "repo", group: 1 },
     handler: ({ req, res, deps }, match) =>
       handleStartRuleExploration(req, res, deps, Number(match![1])),
+  },
+  {
+    // 知识整理的发起(issue #284)。与基点探索同一格:两者都改这个仓库要人裁决的那一份。
+    method: "POST",
+    pattern: /^\/repos\/(\d+)\/rule-consolidation$/,
+    access: "knowledge:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ req, res, deps }, match) =>
+      handleStartRuleConsolidation(req, res, deps, Number(match![1])),
   },
   {
     method: "POST",
@@ -6563,6 +6581,8 @@ function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: num
       ...ruleSet,
       // 轨迹标识由 `rule_exploration.trace_task_id` 显式给(issue #214)。
       exploration: store.getRuleExploration(repoId),
+      // 知识整理与探索同形地回(issue #284):同一个弹窗一次读取拿全两条链路的状态。
+      consolidation: store.getRuleConsolidation(repoId),
       draft: store.getRuleDraft(repoId),
       proposals: store.getRuleProposals(repoId),
     };
@@ -6949,6 +6969,150 @@ async function runRuleExplorationInBackground(
 }
 
 /**
+ * 待裁决队列里的一条交给整理 agent 的样子(issue #284):标识、变更类型、目标条目、
+ * 内容与出处附注。附注只给来源与备注原文——Finding 标识与轨迹标识对「这两条说的是不是
+ * 同一件事」没有作用,交给 agent 的输入不带它们。
+ */
+function toConsolidationProposal(proposal: RuleProposal): ConsolidationProposal {
+  return {
+    id: proposal.id,
+    type: proposal.type,
+    change: proposal.change,
+    targetRuleId: proposal.targetRuleId,
+    scope: proposal.scope,
+    statement: proposal.statement,
+    sources: proposal.sources.map((source) => ({ origin: source.origin, note: source.note })),
+  };
+}
+
+/**
+ * 整理产出到队列的落地(CONTEXT.md 知识整理,issue #284)。**逐条校验、逐条落**:整理
+ * 期间人照常裁决与处置,一条动作的对象在这期间被裁掉、目标条目被废止,丢掉的只是那一
+ * 条,别的照落。判据全在 store 的两个方法里,这里只数数。
+ *
+ * 摘要的两个数说的是队列因此少了几行、改了几条:`merged` 数被并掉的提案(合并三条成
+ * 一条即 2),`retargeted` 数改写成功的条数。
+ */
+function applyConsolidation(
+  deps: WebhookServerDeps,
+  repoId: number,
+  actions: readonly RuleConsolidationAction[],
+  trace: RuleTraceRecorder,
+): { merged: number; retargeted: number } {
+  let merged = 0;
+  let retargeted = 0;
+  for (const action of actions) {
+    // 一条一次库:整理跑完这一刻别人可能正在裁决,一次事务把全部动作圈起来只会把
+    // 裁决挡在外面,而这正是「整理期间裁决不受影响」不允许的。
+    const applied = withStore(deps.dbPath, (store) => {
+      if (action.kind === "merge") {
+        const ids = [...new Set([action.keepId, ...action.mergedIds])];
+        if (!store.mergeRuleProposals(repoId, ids, action.statement)) return false;
+        merged += ids.length - 1;
+        return true;
+      }
+      if (!store.retargetRuleProposal(repoId, action.proposalId, action.targetRuleId)) return false;
+      retargeted += 1;
+      return true;
+    });
+    // 一个动作一条轨迹事件,连它落没落地一起:丢掉的那一条要说得出「它想做什么、为什么
+    // 没做成」,而这只有落地这一步知道。
+    trace.record("rule_consolidated", { action, applied });
+  }
+  return { merged, retargeted };
+}
+
+/**
+ * 一次知识整理的后台执行(CONTEXT.md 知识整理,issue #284)。把当前生效的知识集与待裁决
+ * 队列交给规则 agent,产出的两个直改动作逐条落地,摘要落进 `rule_consolidation`。
+ *
+ * **不派生工作树**:整理的对象是队列里的文本,不读代码;agent 只需要一个空目录当会话的
+ * 工作目录,跑完即删。
+ */
+async function runRuleConsolidationInBackground(
+  deps: WebhookServerDeps,
+  repoId: number,
+  plan: ReviewerRuntimePlan,
+): Promise<void> {
+  let failure: string | undefined;
+  const workDir = mkdtempSync(join(tmpdir(), "multireviewer-rule-consolidation-"));
+  // 轨迹从发起这一刻起,与基点探索同一条口径:模型用不了也是这一次整理之内的失败。
+  const trace = startRuleTrace(
+    (use) => withStore(deps.dbPath, use),
+    repoId,
+    "knowledge-consolidation",
+    {
+      source: "knowledge-consolidation",
+      model: modelIdentity(plan.spec),
+      thinkingLevel: plan.spec.thinkingLevel ?? null,
+    },
+  );
+  const traceTaskId = trace.taskId;
+  if (traceTaskId !== null) {
+    withStore(deps.dbPath, (store) => store.setRuleConsolidationTrace(repoId, traceTaskId));
+  }
+  try {
+    if (plan.runtimeModel === null || plan.credential === null) {
+      throw new Error(plan.failure ?? `模型 ${modelIdentity(plan.spec)} 不可用`);
+    }
+    const input = withStore(deps.dbPath, (store) => ({
+      rules: store.getRuleSet(repoId)?.rules ?? [],
+      proposals: store
+        .getRuleProposals(repoId)
+        .filter((proposal) => proposal.state === "pending")
+        .map(toConsolidationProposal),
+    }));
+    const agent = deps.ruleAgent ?? createPiRuleAgent();
+    const result = await agent({
+      worktreePath: workDir,
+      runtimeModel: plan.runtimeModel,
+      apiKey: plan.credential,
+      existingKnowledge: input.rules.map(toKnowledgeEntry),
+      consolidation: { proposals: input.proposals },
+      ...(plan.spec.thinkingLevel === undefined ? {} : { thinkingLevel: plan.spec.thinkingLevel }),
+      onEvent: (event) => recordRuleAgentEvent(trace, event),
+    });
+    if (result.failure !== undefined) throw new Error(result.failure);
+    const summary = applyConsolidation(deps, repoId, result.actions ?? [], trace);
+    withStore(deps.dbPath, (store) =>
+      store.finishRuleConsolidation(
+        repoId,
+        summary,
+        new Date((deps.now ?? Date.now)()).toISOString(),
+      ),
+    );
+    trace.record("rule_agent_finished", summary);
+  } catch (error) {
+    failure = failureText(error);
+    trace.record("rule_agent_failed", { failure });
+  } finally {
+    trace.end();
+    rmSync(workDir, { recursive: true, force: true });
+  }
+
+  try {
+    if (failure !== undefined) {
+      withStore(deps.dbPath, (store) =>
+        store.failRuleConsolidation(
+          repoId,
+          failure!,
+          new Date((deps.now ?? Date.now)()).toISOString(),
+        ),
+      );
+    }
+  } catch (error) {
+    // 后台任务:未处理的拒绝会带走整个进程。
+    console.error(`知识整理状态落库失败:repo ${repoId}:${failureText(error)}`);
+  }
+
+  if (deps.onRuleConsolidationSettled !== undefined) {
+    deps.onRuleConsolidationSettled(repoId, failure);
+  } else if (failure !== undefined) {
+    console.error(`知识整理失败:repo ${repoId}:${failure}`);
+  }
+}
+
+/**
  * 模型标识回到 spec。`modelIdentity` 以首次出现的冒号为界(部分 model id 自带斜杠),
  * 这里按同一条口径切回去:基点探索只记下标识,反哺沿用它时要还原成运行计划的输入。
  */
@@ -7176,6 +7340,81 @@ async function handleStartRuleExploration(
   // 先回 202 再开跑:探索要跑上几分钟,人等的是「已经在跑了」这个回执。
   sendJson(res, 202, { exploration });
   void runRuleExplorationInBackground(deps, repoId, repo, payload.baseline, plan);
+}
+
+/**
+ * 发起一次知识整理(CONTEXT.md 知识整理,issue #284)。人手动发起,只选模型——整理读的
+ * 是队列与现集,没有基点可选。模型的可用性与思考档位判据与基点探索逐字相同,同一套
+ * `materializeReviewerPlans` 物化。
+ *
+ * 与基点探索共用「同仓库同时只跑一个」:另一条在跑时 409,那句话说得出在跑的是哪一个。
+ */
+async function handleStartRuleConsolidation(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+): Promise<void> {
+  const payload = await readJson<
+    { provider?: unknown; model?: unknown; thinkingLevel?: unknown } | null
+  >(req, res);
+  if (payload === undefined) return;
+  if (
+    payload === null ||
+    typeof payload.provider !== "string" ||
+    typeof payload.model !== "string"
+  ) {
+    return sendJson(res, 400, { error: 'body 要是 {"provider", "model"} 形状的 JSON' });
+  }
+  const level = payload.thinkingLevel;
+  if (level !== undefined && !THINKING_LEVELS.includes(level as ThinkingLevel)) {
+    return sendJson(res, 400, {
+      error: `思考档位不认得:${String(level)},只收 ${THINKING_LEVELS.join(" / ")}。`,
+    });
+  }
+  const spec: ReviewerSpec = {
+    provider: payload.provider,
+    model: payload.model,
+    ...(level === undefined ? {} : { thinkingLevel: level as ThinkingLevel }),
+  };
+
+  if (withStore(deps.dbPath, (store) => store.getRepo(repoId)) === undefined) {
+    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+  }
+
+  const [plan] = await materializeReviewerPlans(
+    deps,
+    withStore(deps.dbPath, (store) => store.listModelServices()),
+    [spec],
+  );
+  if (plan === undefined || plan.failure !== null || plan.runtimeModel === null) {
+    return sendJson(res, 400, { error: plan?.failure ?? `模型 ${modelIdentity(spec)} 不可用` });
+  }
+  const levels = supportedThinkingLevels(plan.runtimeModel);
+  const picked = spec.thinkingLevel ?? "off";
+  if (!levels.includes(picked)) {
+    return sendJson(res, 400, {
+      error: `${modelIdentity(spec)} 不支持思考档位 ${picked}，它支持的是 ${levels.join(" / ")}。`,
+    });
+  }
+
+  const started = withStore(deps.dbPath, (store) =>
+    store.startRuleConsolidation(repoId, {
+      model: modelIdentity(spec),
+      ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
+      startedAt: new Date((deps.now ?? Date.now)()).toISOString(),
+    }),
+  );
+  if (!started) {
+    return sendJson(res, 409, {
+      error: "这个仓库已经有一次基点探索或知识整理在跑,等它结束再发起",
+    });
+  }
+
+  const consolidation = withStore(deps.dbPath, (store) => store.getRuleConsolidation(repoId));
+  // 先回 202 再开跑,与基点探索同一条口径:人等的是「已经在跑了」这个回执。
+  sendJson(res, 202, { consolidation });
+  void runRuleConsolidationInBackground(deps, repoId, plan);
 }
 
 async function handleAddDraftItem(
@@ -7977,6 +8216,11 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
     // 后台跑的基点探索同理(issue #205):停在运行中的那一行没有谁再去改它。
     store.failInterruptedRuleExplorations(
       "服务重启,上一次探索没跑完",
+      new Date((deps.now ?? Date.now)()).toISOString(),
+    );
+    // 知识整理与探索同律(issue #284)。
+    store.failInterruptedRuleConsolidations(
+      "服务重启,上一次整理没跑完",
       new Date((deps.now ?? Date.now)()).toISOString(),
     );
     // 正在跑的 Review Run 停在运行中时先尝试续跑(issue #248):已跑完的批次结果已经
