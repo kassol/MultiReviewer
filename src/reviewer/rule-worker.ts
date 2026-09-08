@@ -15,6 +15,7 @@ import { Type } from "typebox";
 import type { KnowledgeEntry } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import type {
+  ConsolidationProposal,
   DispositionFeedback,
   RuleWorkerMessage,
   RuleWorkerRequest,
@@ -30,6 +31,8 @@ import {
 } from "./worker-tools.ts";
 
 const PROPOSE_RULE_TOOL = "propose_rule";
+const MERGE_PROPOSALS_TOOL = "merge_proposals";
+const RETARGET_PROPOSAL_TOOL = "retarget_proposal";
 
 const SYSTEM_PROMPT = `You are deriving the knowledge a code reviewer needs about one repository. Explore it with your read tools, then report that knowledge as entries of two kinds.
 
@@ -48,6 +51,23 @@ Write the statement field in Chinese. The reviewers of this repository read Chin
 Narrate in Chinese too: everything you say between tool calls goes into a trace read by this repository's maintainers, so write those sentences in Chinese — one short line on what you are about to look at and what you are trying to establish, before each group of tool calls.
 
 The read tool prefixes every line with its line number, like \`12: code\`. The prefix is not part of the file content.`;
+
+/**
+ * 知识整理的系统提示(CONTEXT.md 知识整理,issue #284)。整理的对象是文本,不是代码:
+ * 它手里没有读工具,只有对队列的两个直改动作。明写「什么都不改是预期结果」——agent
+ * 手里有工具时倾向于用它,而一份没有重复的队列本来就不需要动。
+ */
+const CONSOLIDATION_SYSTEM_PROMPT = `You are tidying the revision proposal queue of one repository's review knowledge.
+
+You get two lists: the knowledge entries currently in force, and the proposals waiting for a human to accept or reject. You change only the queue, never the knowledge itself, and you do it with exactly two actions.
+
+**Merge** proposals that say the same thing. Two proposals raised from two different disposition notes often carry one idea. Call merge_proposals once per group, with every proposal id in that group and one statement that says what the whole group says — the reviewer reads that one sentence instead of two. Merge only real duplicates: proposals that would have the same effect on the knowledge set. Proposals of different change kinds, or aimed at different entries, are not duplicates.
+
+**Retarget** a proposal that adds something the knowledge set already has. Call retarget_proposal with that proposal's id and the id of the entry it duplicates: it becomes a change to that entry, so the reviewer sees the difference against what is in force and rejects it when there is none. Retarget only proposals whose change kind is add.
+
+Do not judge the proposals — accepting and rejecting stays with people. Leave alone every proposal that is not a duplicate. Changing nothing is an expected outcome for a queue that has no duplicates in it.
+
+Write statements in Chinese, and narrate in Chinese: everything you say between tool calls goes into a trace read by this repository's maintainers. Say one short line on what you found before each action.`;
 
 const ruleSchema = Type.Object({
   type: Type.String({
@@ -76,6 +96,27 @@ const ruleSchema = Type.Object({
         "Set to true together with exactly one id in rule_ids to retire that agreed entry instead of restating it. Restate the entry you want retired in the statement field. Use it for a rule the code no longer justifies, and for a fact the code has outgrown.",
     }),
   ),
+});
+
+const mergeSchema = Type.Object({
+  proposal_ids: Type.Array(Type.Number(), {
+    description:
+      "The ids of the pending proposals that say the same thing, at least two of them. The one with the smallest id is kept; the others are removed and their provenance is folded into the kept one.",
+  }),
+  statement: Type.String({
+    description:
+      "One sentence in Chinese saying what the whole group says. It replaces the statement of the kept proposal.",
+  }),
+});
+
+const retargetSchema = Type.Object({
+  proposal_id: Type.Number({
+    description: "The id of a pending proposal whose change kind is add.",
+  }),
+  rule_id: Type.Number({
+    description:
+      "The id of the agreed entry that proposal duplicates, taken from the list of agreed knowledge. The proposal becomes a change to that entry.",
+  }),
 });
 
 function send(message: RuleWorkerMessage): void {
@@ -116,7 +157,9 @@ function knowledgeBullet(entry: KnowledgeEntry): string {
 function rulePrompt(request: Pick<RuleWorkerRequest, "baselineSha" | "existingKnowledge">): string {
   const existing =
     request.existingKnowledge.length === 0 ? "" : `${existingSection(request.existingKnowledge)}\n`;
-  return `Derive the review knowledge of the repository as it stands at commit ${request.baselineSha}.
+  // 基点只有探索与反哺两条链路给得出来(整理那一档没有代码可看,也不会走到这里)。
+  const at = request.baselineSha === undefined ? "" : ` at commit ${request.baselineSha}`;
+  return `Derive the review knowledge of the repository as it stands${at}.
 ${existing}
 Start from the repository's own documentation and configuration, then read the code that matters most: the entry points, the modules everything else depends on, and the places where mistakes would be expensive.
 
@@ -154,6 +197,58 @@ Report only what the note itself justifies. A note that settles this one finding
 Report each change through ${PROPOSE_RULE_TOOL}. When you have nothing more to report, stop.`;
 }
 
+/** 待裁决队列里的一条给整理 agent 看的样子:标识、变更类型、目标、作用范围与陈述,加它的出处。 */
+function proposalBullet(proposal: ConsolidationProposal): string {
+  const scope = proposal.scope === "" ? "whole repository" : proposal.scope;
+  const target =
+    proposal.targetRuleIds.length === 0 ? "" : ` (targets entries ${proposal.targetRuleIds.join(", ")})`;
+  const sources = proposal.sources
+    .map((source) => (source.note === null ? source.origin : `${source.origin}: ${oneLine(source.note)}`))
+    .join(" | ");
+  return [
+    `- [${proposal.id}] (${proposal.change}) (${proposal.type})${target} (${scope}) ${oneLine(proposal.statement)}`,
+    `  provenance: ${sources === "" ? "none recorded" : sources}`,
+  ].join("\n");
+}
+
+/**
+ * 知识整理的提示(issue #284)。现集那一段与探索、反哺共用 `existingSection` 的清单形状
+ * 会带上「提对照它的变更」那几句,而整理提不了变更;这里因此自己渲染现集,只作为
+ * 「改写为修改型时指向哪一条」的目标清单。
+ */
+function consolidationPrompt(
+  proposals: readonly ConsolidationProposal[],
+  entries: readonly KnowledgeEntry[],
+): string {
+  const agreed =
+    entries.length === 0
+      ? "This repository has no knowledge entries in force yet, so nothing can be retargeted."
+      : ["The knowledge entries in force, each with its id and kind:", "", ...entries.map(knowledgeBullet)].join("\n");
+  return `Tidy the revision proposal queue of this repository.
+
+${agreed}
+
+The proposals waiting for adjudication, each with its id, change kind, entry kind, target entry, scope, statement and provenance:
+
+${proposals.map(proposalBullet).join("\n")}
+
+Report every duplicate you find through ${MERGE_PROPOSALS_TOOL} and ${RETARGET_PROPOSAL_TOOL}. When you have nothing more to report, stop.`;
+}
+
+/** 这一次任务的提示。三条链路各一份,由输入里带的那一半认出来。 */
+function promptFor(request: RuleWorkerRequest): string {
+  if (request.consolidation !== undefined) {
+    return consolidationPrompt(request.consolidation.proposals, request.existingKnowledge);
+  }
+  if (request.feedback !== undefined) {
+    return feedbackPrompt({
+      existingKnowledge: request.existingKnowledge,
+      feedback: request.feedback,
+    });
+  }
+  return rulePrompt(request);
+}
+
 async function run(request: RuleWorkerRequest): Promise<void> {
   const proposeRule = defineTool({
     name: PROPOSE_RULE_TOOL,
@@ -184,11 +279,52 @@ async function run(request: RuleWorkerRequest): Promise<void> {
     },
   });
 
+  const mergeProposals = defineTool({
+    name: MERGE_PROPOSALS_TOOL,
+    label: "Merge Proposals",
+    description: "Fold several pending proposals that say the same thing into one.",
+    parameters: mergeSchema,
+    execute: async (_id, params) => {
+      const raw = params as { proposal_ids: number[]; statement: string };
+      const ids = raw.proposal_ids ?? [];
+      send({
+        kind: "action",
+        // 保留哪一行不由 agent 定:落地一律留 id 最小的那一条,协议上的 keepId 因此
+        // 就是这一组里最小的那个,其余是被并的。
+        action: {
+          kind: "merge",
+          keepId: Math.min(...ids),
+          mergedIds: ids,
+          statement: raw.statement,
+        },
+      });
+      return { content: [{ type: "text", text: "merged" }], details: {} };
+    },
+  });
+
+  const retargetProposal = defineTool({
+    name: RETARGET_PROPOSAL_TOOL,
+    label: "Retarget Proposal",
+    description: "Turn a proposal that adds an entry the knowledge set already has into a change to that entry.",
+    parameters: retargetSchema,
+    execute: async (_id, params) => {
+      const raw = params as { proposal_id: number; rule_id: number };
+      send({
+        kind: "action",
+        action: { kind: "retarget", proposalId: raw.proposal_id, targetRuleId: raw.rule_id },
+      });
+      return { content: [{ type: "text", text: "retargeted" }], details: {} };
+    },
+  });
+
+  // 知识整理不读代码(issue #284):它手里只有对队列的两个动作,没有读工具,系统提示
+  // 也换成整理那一份。
+  const consolidating = request.consolidation !== undefined;
   const prepared = await prepareAgentRuntime({
     agentDirPrefix: "multireviewer-rule-agent-",
     worktreePath: request.worktreePath,
     runtimeModel: request.runtimeModel,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: consolidating ? CONSOLIDATION_SYSTEM_PROMPT : SYSTEM_PROMPT,
   });
   if ("failure" in prepared) {
     send({ kind: "done", failure: prepared.failure });
@@ -202,8 +338,12 @@ async function run(request: RuleWorkerRequest): Promise<void> {
     model,
     thinkingLevel: sessionThinkingLevel(request.runtimeModel.reasoning, request.thinkingLevel),
     modelRuntime,
-    tools: [...READ_ONLY_TOOLS, PROPOSE_RULE_TOOL],
-    customTools: [proposeRule, numberedReadTool(request.worktreePath)],
+    tools: consolidating
+      ? [MERGE_PROPOSALS_TOOL, RETARGET_PROPOSAL_TOOL]
+      : [...READ_ONLY_TOOLS, PROPOSE_RULE_TOOL],
+    customTools: consolidating
+      ? [mergeProposals, retargetProposal]
+      : [proposeRule, numberedReadTool(request.worktreePath)],
     resourceLoader,
     sessionManager: SessionManager.inMemory(request.worktreePath),
     settingsManager,
@@ -216,14 +356,7 @@ async function run(request: RuleWorkerRequest): Promise<void> {
 
   let thrown: string | undefined;
   try {
-    await session.prompt(
-      request.feedback === undefined
-        ? rulePrompt(request)
-        : feedbackPrompt({
-            existingKnowledge: request.existingKnowledge,
-            feedback: request.feedback,
-          }),
-    );
+    await session.prompt(promptFor(request));
   } catch (error) {
     thrown = String(error instanceof Error ? error.message : error);
   }
