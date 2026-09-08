@@ -123,13 +123,24 @@ export type RuleIntentTargetProposal = {
 
 /**
  * 触发一次人工提议的那条修订意图(CONTEXT.md 修订意图,ADR 0028,issue #294)。原文是
- * 解读的输入本身;`target` 说这条意图指向什么:无目标那一档产新增,目标为一条待裁决
- * 提案那一档原地改写它(issue #295),另两档由后续票填(spec #293)。
+ * 解读的输入本身;`target` 说这条意图指向什么:无目标那一档产新增,目标为一条生效知识
+ * 条目那一档产指向它的变更(issue #297),目标为一条待裁决提案那一档原地改写它
+ * (issue #295),草案条目那一档由后续票填(spec #293)。
+ *
+ * 目标为知识条目时另给**队列里指向它的待裁决提案**:已经有一条在等人裁决时并进那一条,
+ * 队列里才始终只有一条、人只裁决一次。
  */
 export type RuleIntentInput = {
   /** 人写下的那段话,去掉首尾空白。 */
   text: string;
-  target: { kind: "none" } | { kind: "proposal"; proposal: RuleIntentTargetProposal };
+  target:
+    | { kind: "none" }
+    | {
+        kind: "rule";
+        rule: KnowledgeEntry;
+        proposals: readonly RuleIntentTargetProposal[];
+      }
+    | { kind: "proposal"; proposal: RuleIntentTargetProposal };
 };
 
 /**
