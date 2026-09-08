@@ -866,3 +866,98 @@ test("空队列且现集为空时整理不跑 agent,摘要是三个零", async (
   );
   assert.equal(agent.calls.length, 0);
 });
+
+test("整理对写成事实的范围排除提单目标合并:队列里是改型,采纳后目标废止、新条目以规则型生效", async () => {
+  const agent = scriptedRuleAgent(() => ({
+    items: [
+      item({
+        type: "rule",
+        statement: "评审 `test/**` 时只报功能正确性问题",
+        targetRuleIds: [2],
+        reason: "这一条是给评审的限定,写成了事实",
+      }),
+    ],
+  }));
+  const { h, cookie } = await consolidatingHarness(agent);
+  assert.equal(
+    (await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rules`, {
+      type: "fact",
+      scope: "",
+      statement: "`test/**` 下不按生产标准审",
+    })).status,
+    201,
+  );
+  const exclusion = (await ruleSet(h, cookie)).rules.find((rule) => rule.type === "fact")!.id;
+
+  assert.equal((await launch(h, cookie)).status, 202);
+  await h.consolidationsAtLeast(1);
+
+  const queued = await ruleSet(h, cookie);
+  // 改型计入摘要的「提出」那一格:它排队等裁决,不是直改。
+  assert.equal(queued.consolidation?.proposed, 1);
+  // 一条目标而型与它不同即合并(改型),不是修改——修改那一档不许翻型。
+  assert.deepEqual(
+    queued.proposals.map((row) => [row.change, row.type, row.targetRuleIds, row.statement]),
+    [["merge", "rule", [exclusion], "评审 `test/**` 时只报功能正确性问题"]],
+  );
+
+  assert.equal(
+    (await send(
+      h,
+      cookie,
+      "POST",
+      `/repos/${GITEA_REPO.id}/rule-proposals/${queued.proposals[0]!.id}/accept`,
+    )).status,
+    200,
+  );
+  const after = await ruleSet(h, cookie);
+  // 那条事实废止于新版,新陈述以规则型生效于同一版:一次裁决完成改型。
+  assert.deepEqual(after.retired.map((rule) => rule.statement), ["`test/**` 下不按生产标准审"]);
+  assert.deepEqual(
+    after.rules.map((rule) => [rule.type, rule.statement]).sort(),
+    [
+      ["rule", "入参要在边界上校验"],
+      ["rule", "评审 `test/**` 时只报功能正确性问题"],
+    ].sort(),
+  );
+});
+
+test("整理对同型的一条给出新陈述:队列里是修改型,采纳后那一条的陈述换新", async () => {
+  const agent = scriptedRuleAgent(() => ({
+    items: [
+      item({
+        type: "rule",
+        statement: "入参一律在边界上校验一次",
+        targetRuleIds: [1],
+        reason: "原来那一句带了调用点清单",
+      }),
+    ],
+  }));
+  const { h, cookie } = await consolidatingHarness(agent);
+  const rule = (await ruleSet(h, cookie)).rules[0]!.id;
+
+  assert.equal((await launch(h, cookie)).status, 202);
+  await h.consolidationsAtLeast(1);
+
+  const queued = await ruleSet(h, cookie);
+  assert.equal(queued.consolidation?.proposed, 1);
+  assert.deepEqual(
+    queued.proposals.map((row) => [row.change, row.type, row.targetRuleIds]),
+    [["modify", "rule", [rule]]],
+  );
+
+  assert.equal(
+    (await send(
+      h,
+      cookie,
+      "POST",
+      `/repos/${GITEA_REPO.id}/rule-proposals/${queued.proposals[0]!.id}/accept`,
+    )).status,
+    200,
+  );
+  const after = await ruleSet(h, cookie);
+  assert.deepEqual(
+    after.rules.map((row) => [row.type, row.statement]),
+    [["rule", "入参一律在边界上校验一次"]],
+  );
+});

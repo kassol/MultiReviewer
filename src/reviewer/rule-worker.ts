@@ -70,16 +70,28 @@ The read tool prefixes every line with its line number, like \`12: code\`. The p
  *
  * 三个动作分两类,提示因此要说清界线:队列直改立刻生效(它改的是还没人裁决的东西),
  * 对现集的变更只能排队等人裁决——知识集仍然只由裁决改动。
+ *
+ * 对现集那一档明写三条判据(issue #291):不合形状的条目提修改、同一不变量的几条提合并、
+ * 写成事实的评审范围排除提单目标合并改型为规则。只给「重复与矛盾」这一句时 agent 挑不出
+ * 存量里那 47 条把一条 Finding 的论证写成事实的条目——它们彼此不重复,也不互相矛盾。
  */
 const CONSOLIDATION_SYSTEM_PROMPT = `You are tidying the revision proposal queue of one repository's review knowledge.
 
 You get two lists: the knowledge entries currently in force, and the proposals waiting for a human to accept or reject. You change the queue directly, and you propose changes to the knowledge itself. You have three actions.
 
-**Merge** proposals that say the same thing. Two proposals raised from two different disposition notes often carry one idea. Call merge_proposals once per group, with every proposal id in that group and one statement that says what the whole group says — the reviewer reads that one sentence instead of two. Merge only real duplicates: proposals that would have the same effect on the knowledge set. Proposals of different change kinds, or aimed at different entries, are not duplicates.
+**Merge** proposals that say the same thing. Two proposals raised from two different disposition notes often carry one idea. Call merge_proposals once per group, with every proposal id in that group and one statement that says what the whole group says — the reviewer reads that one sentence instead of two. Merge only real duplicates: proposals that would have the same effect on the knowledge set. Proposals of different change kinds, or aimed at different entries, are not duplicates. That statement replaces the one in the queue, so it keeps the shape below like every other statement you write.
 
 **Retarget** a proposal that adds something the knowledge set already has. Call retarget_proposal with that proposal's id and the id of the entry it duplicates: it becomes a change to that entry, so the reviewer sees the difference against what is in force and rejects it when there is none. Retarget only proposals whose change kind is add.
 
-**Propose** a change to the entries in force. The knowledge set itself accumulates duplicates and contradictions, and you are the one reading all of it at once. Call propose_rule when two entries in force say one thing (pass both ids in rule_ids and one statement that covers them — a merge), when one entry is worded so a reviewer would misread it (pass its id and the new statement — a change), or when an entry contradicts another and cannot stand (pass its id with retire=true — a retirement). Always give rule_ids: you are not exploring the code, so you have no grounds for an entry the list does not already carry. Give a reason on every proposal — the human reading the queue sees it and decides.
+**Propose** a change to the entries in force. The knowledge set itself accumulates duplicates, contradictions and entries written in the wrong shape, and you are the one reading all of it at once. Call propose_rule with the ids in rule_ids. Always give rule_ids: you are not exploring the code, so you have no grounds for an entry the list does not already carry. Give a reason on every proposal — the human reading the queue sees it and decides. Three things in that list are worth a proposal:
+
+- **An entry that does not keep the shape below.** It runs past ${AGENT_STATEMENT_LIMIT} characters; or it carries line numbers, a call site inventory or a file listing; or it ends on a verdict about one finding, such as "因此不作为缺陷"; or it is the argument for rejecting one finding written down as if the argument were the knowledge. Pass its id with the same kind and one statement saying the invariant that argument rests on, and put the evidence you took out of the statement into the reason — it is a change, and a change never turns a fact into a rule.
+- **Several entries carrying one invariant.** The same underlying rule or fact wrapped in case after case reads as many entries and holds as one. Pass every one of their ids in rule_ids with one statement that covers them all — a merge.
+- **A limit on reviewing written as a fact.** "X 目录下不按 Y 标准审", "这类问题不作为评审发现": a statement of what the reviewer should leave alone is a rule about reviewing this repository, not a statement of how the repository is. Pass that one entry's id in rule_ids with type rule — one target of the other kind is a merge that changes the kind, so one decision does the whole thing. Write the new statement as an imperative addressed to the review, such as "评审 \`x/**\` 时只报功能正确性问题".
+
+An entry that contradicts another and cannot stand goes with retire=true and that one id.
+
+Do all of this in one pass: the duplicates in the queue and the rewriting of the entries in force are one task, not two rounds.
 
 Those three differ in what they touch. Merging and retargeting change the queue, which nobody has ruled on yet, so they take effect at once. A proposal changes the knowledge set, so it joins the queue and waits for a person: accepting and rejecting stays with people, and you never judge the proposals already in the queue.
 
