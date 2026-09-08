@@ -121,6 +121,7 @@
 
 ## 变更日志
 
+- 2026-09-08: **Callout 图标不再贴顶**(`styles.css`)。Radix 的 `.rt-CalloutIcon` 靠 `height: var(--callout-icon-height)` 撑出一行正文的高度再居中,而本项目把 `--line-height-1..9` 覆写成了无单位倍数,`height: 1.5` 不是合法长度,盒子失高,图标落到第一行的顶上。新增一条覆写把 size 1 与 2 的 `--callout-icon-height` 算成 `calc(var(--font-size-2) * var(--line-height-2))`——两档正文都是 Text size 2(`mapCalloutSizeToTextSize`),size 3 项目没用到。只补这一处:Radix 里把 line-height 变量当长度用的只有 callout 图标这一个地方。前端无程序化测试(issue #26),`pnpm --filter @multireviewer/web typecheck` 通过。
 - 2026-09-08: spec #286 验收修正。**改型那一行不再只认单目标合并**。`repo-rules.tsx` 的 `targets()` 原来只在一条目标时判型,验收时整理把两条事实合成一条规则(多目标合并同时改型),卡片上没有任何一句说型变了。现在合并型只要有目标的型与提案不同就写「改型:事实 → 规则」,目标两型混杂时写「改型:合成后为规则」;单目标与多目标共用同一句。前端无程序化测试(issue #26),`pnpm --filter @multireviewer/web typecheck` 通过,部署实例复验。
 - 2026-09-08: 落地 issue #291(父 spec #286)。**面板零改动**:整理按陈述形状提出的改写与改型提案走的是 #282、#289 已有的修改型与单目标合并型卡片,出处徽章「知识整理」由 #281 已有。记这一条只为说明本票在面板侧没有遗漏。评审修复顺带两处:`rule-trace.tsx` 的 `rule_consolidated` 没落地时多显示一句原因(整理直改的新陈述超长那档,payload 带 `reason`);`repo-rules.tsx` 的 `targets()` 把型带进那一行,单目标改型那句不再对同一个 id 找第二遍。
 - 2026-09-08: 落地 issue #290 的面板部分(父 spec #286)。**知识轨迹那一档丢弃事件认得出三种原因**。`rule-trace.tsx` 的 `rule_proposal_dropped` 从「丢弃一条并入(提案 N)」改成「丢弃一条产出」,提案标识改为有才显示:这一档现在收的不只是并入——探索、反哺与整理的产出陈述超长或为空同样落它,而那几条没有提案可指,原来的写法会在每一行都印一个「提案 ?」。原因由服务端逐条给(超长 / 空陈述 / 并入缺陈述),面板原样显示。前端无程序化测试(issue #26),`pnpm --filter @multireviewer/web typecheck` 通过,交互走部署实例验收。服务端部分见 `src/AGENTS.md`。

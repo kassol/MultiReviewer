@@ -449,6 +449,19 @@
 }
 
 /*
+ * Callout 图标的行高。Radix 用 `height: var(--callout-icon-height)` 把图标盒子撑到
+ * 一行正文的高度,再靠 `align-items: center` 让图标居中;而上面那套 `--line-height-*`
+ * 是无单位的倍数,`height: 1.5` 不是合法长度,盒子因此失高,图标贴到第一行的顶上。
+ *
+ * 只补这一处:Radix 里把 line-height 变量当长度用的只有 callout 图标这一个地方,
+ * 其余都是 `line-height` 属性本身,无单位正是那里要的写法。size 1 与 2 的正文都是
+ * Text size 2(`mapCalloutSizeToTextSize`),两档因此同一个算式;size 3 项目没用到。
+ */
+.radix-themes :where(.rt-CalloutRoot):where(.rt-r-size-1, .rt-r-size-2) {
+  --callout-icon-height: calc(var(--font-size-2) * var(--line-height-2));
+}
+
+/*
  * 组件的响应式 size 负责视觉密度，输入方式负责命中面积。触屏设备即使宽于 640px
  * （平板横屏、触屏笔记本），小号控件也保持 44px；鼠标桌面仍沿用紧凑尺寸。
  */
