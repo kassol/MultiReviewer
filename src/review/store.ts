@@ -1678,7 +1678,12 @@ export type ReviewRuleRecord = {
   type: KnowledgeType;
   scope: string;
   statement: string;
-  /** 出处。这一票只有读,写它的是基点探索、人工提议(issue #294)与人手写三条链路。 */
+  /**
+   * 出处。这一票只有读。写这一列的是落条目的那两条路径:知识确认时草案条目带着自己那一列
+   * 成为条目(基点探索留 `baseline-exploration`、意图补进草案的留 `manual-proposal`),裁决
+   * 采纳时新增与合并取提案第一条附注的来源、修改沿用被改那一行的。`addReviewRule` 的
+   * `manual` 只剩用例走它——撤直改之后没有端点再产生这一类行(issue #299)。
+   */
   origin: string;
 };
 
@@ -3343,6 +3348,18 @@ const BASELINE_EXPLORATION_RULE_ORIGIN = "baseline-exploration";
 const MANUAL_PROPOSAL_RULE_ORIGIN = "manual-proposal";
 
 /**
+ * 一行轮次 → 它所在阶段的标识(issue #296)。`run` 这个别名下的一行,`range:` 与 `pr:` 两个
+ * 字面形状与评审记录那一侧逐字相同;两处查询共用,抄第二遍就会在其中一处漂移。轮次是
+ * LEFT JOIN 进来的那一档回 NULL。
+ */
+const STAGE_ID_FROM_RUN = `CASE
+                             WHEN run.id IS NULL THEN NULL
+                             WHEN run.range_review_id IS NOT NULL
+                               THEN 'range:' || run.range_review_id
+                             ELSE 'pr:' || run.owner || '/' || run.repo || '/' || run.pull_number
+                           END`;
+
+/**
  * 读一条修订意图要的那几列(issue #294)。三处查询共用,列名只写一遍。
  *
  * 目标 Finding 的阶段标识在这一句里算出来(issue #296,与出处附注那一格同一个字面形状):
@@ -3351,12 +3368,7 @@ const MANUAL_PROPOSAL_RULE_ORIGIN = "manual-proposal";
 const RULE_INTENT_COLUMNS = `SELECT id, text, submitted_by, target_kind, target_id, state,
                                     failure, summary, model, thinking_level, trace_task_id,
                                     produced_json, started_at, finished_at,
-                                    (SELECT CASE
-                                              WHEN run.range_review_id IS NOT NULL
-                                                THEN 'range:' || run.range_review_id
-                                              ELSE 'pr:' || run.owner || '/' || run.repo
-                                                   || '/' || run.pull_number
-                                            END
+                                    (SELECT ${STAGE_ID_FROM_RUN}
                                        FROM finding f
                                        JOIN review_run run ON run.id = f.run_id
                                       WHERE rule_intent.target_kind = 'finding'
@@ -3365,7 +3377,7 @@ const RULE_INTENT_COLUMNS = `SELECT id, text, submitted_by, target_kind, target_
 
 /** 一行 `rule_intent` 读成一条修订意图。 */
 function toRuleIntent(row: Record<string, unknown>): RuleIntent {
-  const text = (value: unknown): string | null =>
+  const nullableText = (value: unknown): string | null =>
     value === null || value === undefined ? null : String(value);
   const produced = row["produced_json"];
   return {
@@ -3374,19 +3386,19 @@ function toRuleIntent(row: Record<string, unknown>): RuleIntent {
     submittedBy: String(row["submitted_by"]),
     targetKind: String(row["target_kind"]) as RuleIntentTargetKind,
     targetId: row["target_id"] === null ? null : Number(row["target_id"]),
-    targetStageId: text(row["target_stage_id"]),
+    targetStageId: nullableText(row["target_stage_id"]),
     state: String(row["state"]) as RuleIntent["state"],
-    failure: text(row["failure"]),
-    summary: text(row["summary"]),
-    model: text(row["model"]),
-    thinkingLevel: text(row["thinking_level"]) as ThinkingLevel | null,
+    failure: nullableText(row["failure"]),
+    summary: nullableText(row["summary"]),
+    model: nullableText(row["model"]),
+    thinkingLevel: nullableText(row["thinking_level"]) as ThinkingLevel | null,
     traceTaskId: row["trace_task_id"] === null ? null : Number(row["trace_task_id"]),
     produced:
       produced === null || produced === undefined
         ? { proposalIds: [], draftItemIds: [] }
         : (JSON.parse(String(produced)) as RuleIntent["produced"]),
     startedAt: String(row["started_at"]),
-    finishedAt: text(row["finished_at"]),
+    finishedAt: nullableText(row["finished_at"]),
   };
 }
 
@@ -5005,11 +5017,7 @@ export function openStore(dbPath: string): Store {
         .prepare(
           `SELECT s.id, s.proposal_id, s.origin, s.note, s.evidence, s.finding_id,
                   s.trace_task_id, s.created_at,
-                  CASE
-                    WHEN run.id IS NULL THEN NULL
-                    WHEN run.range_review_id IS NOT NULL THEN 'range:' || run.range_review_id
-                    ELSE 'pr:' || run.owner || '/' || run.repo || '/' || run.pull_number
-                  END AS finding_stage_id
+                  ${STAGE_ID_FROM_RUN} AS finding_stage_id
              FROM rule_proposal_source s
              JOIN rule_proposal p ON p.id = s.proposal_id
              LEFT JOIN finding f ON f.id = s.finding_id

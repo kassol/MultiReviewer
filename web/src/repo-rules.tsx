@@ -228,6 +228,23 @@ export function RepoRules({
 /** 弹窗的三个 tab:生效条目、修订提案队列、基点探索(未确认时叫知识草案)。 */
 type DialogTab = "entries" | "proposals" | "exploration";
 
+/** 意图行点得到的那三样(issue #295、#297、#298):目标类型加它的标识。 */
+type KnowledgeRef = { kind: "proposal" | "rule" | "draft"; id: number };
+
+/** 这三样各在哪个 tab 上。 */
+const REF_TAB: Record<KnowledgeRef["kind"], DialogTab> = {
+  proposal: "proposals",
+  rule: "entries",
+  draft: "exploration",
+};
+
+/** 这三样的卡片 id 前缀,滚过去要用。 */
+const CARD_ID_PREFIX: Record<KnowledgeRef["kind"], string> = {
+  proposal: "rule-proposal-card-",
+  rule: "rule-entry-card-",
+  draft: "rule-draft-card-",
+};
+
 function RuleSetDialogContent({
   repo,
   canWrite,
@@ -238,12 +255,12 @@ function RuleSetDialogContent({
   const queryClient = useQueryClient();
   /** 人点过的 tab。null 即还没点过,按数据推默认落点。 */
   const [pickedTab, setPickedTab] = useState<DialogTab | null>(null);
-  /** 从意图行点过来要看的那条提案(issue #295)。null 即没有要高亮的。 */
-  const [highlightProposal, setHighlightProposal] = useState<number | null>(null);
-  /** 从意图行点过来要看的那条生效条目(issue #297)。 */
-  const [highlightRule, setHighlightRule] = useState<number | null>(null);
-  /** 从意图行点过来要看的那条草案条目(issue #298)。 */
-  const [highlightDraft, setHighlightDraft] = useState<number | null>(null);
+  /**
+   * 从意图行点过来要看的那一条(issue #295、#297、#298)。三档合一格:目标类型说得出它在
+   * 哪个 tab、卡片的 id 前缀是哪一个,分成三格只会让三段同形的滚动逻辑各自漂移。null 即
+   * 没有要高亮的。
+   */
+  const [shown, setShown] = useState<KnowledgeRef | null>(null);
   /** 就地展开意图框的那条生效条目(issue #297)。一次只展开一条:两张框同时开着人分不清
       写的是哪一条。 */
   const [rewritingRule, setRewritingRule] = useState<number | null>(null);
@@ -262,14 +279,15 @@ function RuleSetDialogContent({
   const reload = (): void => {
     void queryClient.invalidateQueries({ queryKey: ["repo-rules", repo.repoId] });
   };
-  // 从意图行点过来时滚到那张条目卡片(issue #297)。按 `highlightRule` 变化滚而不按渲染滚
-  // ——有意图在跑时这个弹窗每五秒重读一次,每次都滚会把人拽走。
+  // 从意图行点过来时滚到那张卡片,三档同一段:切 tab 与记下目标在同一次渲染里,那一段
+  // 内容因此已经挂上。按 `shown` 变化滚而不按渲染滚——有意图在跑时这个弹窗每五秒重读
+  // 一次,每次都滚会把人拽走。
   useEffect(() => {
-    if (highlightRule === null) return;
+    if (shown === null) return;
     document
-      .getElementById(`rule-entry-card-${highlightRule}`)
+      .getElementById(`${CARD_ID_PREFIX[shown.kind]}${shown.id}`)
       ?.scrollIntoView({ block: "center" });
-  }, [highlightRule]);
+  }, [shown]);
 
   // 直接废止一条条目:推进一个知识集版本,回来重读这一份知识集。
   const change = useRuleEdits(`/repos/${repo.repoId}/rules`, reload);
@@ -366,21 +384,13 @@ function RuleSetDialogContent({
           现在唯一的写入口,它不属于其中任何一个 tab。 */}
       {data === undefined ? null : (
         <IntentSection
-          repo={repo}
+          repoId={repo.repoId}
           canWrite={canWrite}
           ruleSet={data}
           onChanged={reload}
-          onShowProposal={(proposalId) => {
-            setPickedTab("proposals");
-            setHighlightProposal(proposalId);
-          }}
-          onShowRule={(ruleId) => {
-            setPickedTab("entries");
-            setHighlightRule(ruleId);
-          }}
-          onShowDraftItem={(itemId) => {
-            setPickedTab("exploration");
-            setHighlightDraft(itemId);
+          onShow={(ref) => {
+            setPickedTab(REF_TAB[ref.kind]);
+            setShown(ref);
           }}
         />
       )}
@@ -485,7 +495,7 @@ function RuleSetDialogContent({
                       canWrite={canWrite}
                       busy={change.isPending}
                       intentModel={data.intentModel}
-                      highlighted={highlightRule === entry.id}
+                      highlighted={shown?.kind === "rule" && shown.id === entry.id}
                       rewriting={rewritingRule === entry.id}
                       onRewrite={() =>
                         setRewritingRule((open) => (open === entry.id ? null : entry.id))
@@ -523,7 +533,7 @@ function RuleSetDialogContent({
                       canWrite={canWrite}
                       busy={change.isPending}
                       intentModel={data.intentModel}
-                      highlighted={highlightRule === entry.id}
+                      highlighted={shown?.kind === "rule" && shown.id === entry.id}
                       rewriting={rewritingRule === entry.id}
                       onRewrite={() =>
                         setRewritingRule((open) => (open === entry.id ? null : entry.id))
@@ -570,7 +580,7 @@ function RuleSetDialogContent({
                   ruleSet={data}
                   canWrite={canWrite}
                   busy={decide.isPending}
-                  highlight={highlightProposal}
+                  highlight={shown?.kind === "proposal" ? shown.id : null}
                   onChanged={reload}
                   onDecide={(id, accept) => decide.mutate({ id, accept })}
                   onDecideAll={(ids, accept) => decide.mutate({ ids, accept })}
@@ -584,8 +594,7 @@ function RuleSetDialogContent({
                   repo={repo}
                   ruleSet={data}
                   busy={changeDraft.isPending || confirm.isPending}
-                  highlight={highlightDraft}
-                  onLaunched={reload}
+                  highlight={shown?.kind === "draft" ? shown.id : null}
                   onChanged={reload}
                   onDeleteDraft={(id) => changeDraft.mutate(id)}
                   onConfirm={(itemIds) => confirm.mutate(itemIds)}
@@ -827,6 +836,14 @@ function EntryCard({
 /** 一条修订意图的原文上限,与服务端同一个数:超了服务端 400,表单先拦一道。 */
 const INTENT_TEXT_LIMIT = 500;
 
+/** 一条完成的意图动过的那几样(issue #294、#298):提案与草案条目各带自己那一档。 */
+function producedRefs(intent: RuleSet["intents"][number]): KnowledgeRef[] {
+  return [
+    ...intent.produced.proposalIds.map((id): KnowledgeRef => ({ kind: "proposal", id })),
+    ...intent.produced.draftItemIds.map((id): KnowledgeRef => ({ kind: "draft", id })),
+  ];
+}
+
 const INTENT_STATE_LABEL = {
   running: "运行中",
   failed: "失败",
@@ -888,6 +905,11 @@ function IntentForm({
           if (trimmed !== "" && !tooLong && !noModel && !submit.isPending) submit.mutate();
         }}
       >
+        {/* 框里那句话是 placeholder,读屏拿不到它作标签:补一个视觉隐藏的真标签,与撤掉
+            前的三字段表同一写法。 */}
+        <Text as="label" htmlFor={fieldId} className="sr-only">
+          {placeholder}
+        </Text>
         <TextArea
           id={fieldId}
           value={text}
@@ -895,7 +917,7 @@ function IntentForm({
           onChange={(event) => setText(event.target.value)}
           placeholder={placeholder}
           rows={2}
-          size="2"
+          size={{ initial: "3", sm: "2" }}
         />
         <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
           <Text as="span" size="1" color={tooLong ? "red" : "gray"} className="tabular-nums">
@@ -945,28 +967,26 @@ function IntentForm({
  * 知识集怎么变的对能看这个仓库的人都透明。
  */
 function IntentSection({
-  repo,
+  repoId,
   canWrite,
   ruleSet,
   onChanged,
-  onShowProposal,
-  onShowRule,
-  onShowDraftItem,
+  onShow,
 }: {
-  repo: { repoId: number; owner: string; repo: string };
+  /** 这一段只按仓库标识调端点,owner 与仓库名它用不上。 */
+  repoId: number;
   canWrite: boolean;
   ruleSet: RuleSet;
   onChanged: () => void;
-  /** 点意图行上的目标引用:切到队列 tab 并高亮那张卡片(issue #295)。 */
-  onShowProposal: (proposalId: number) => void;
-  /** 同一颗按钮的条目那一档:切到知识条目 tab 并高亮那张卡片(issue #297)。 */
-  onShowRule: (ruleId: number) => void;
-  /** 同一颗按钮的草案条目那一档:切到知识草案 tab 并高亮那张卡片(issue #298)。 */
-  onShowDraftItem: (itemId: number) => void;
+  /**
+   * 点意图行上的目标引用或产出引用:切到那一档所在的 tab 并高亮那张卡片(issue #295、
+   * #297、#298)。
+   */
+  onShow: (ref: KnowledgeRef) => void;
 }) {
   const remove = useMutation({
     mutationFn: async (intentId: number): Promise<void> => {
-      const response = await api(`/repos/${repo.repoId}/revision-intents/${intentId}`, {
+      const response = await api(`/repos/${repoId}/revision-intents/${intentId}`, {
         method: "DELETE",
       });
       if (!response.ok) throw new Error(await errorText(response));
@@ -980,7 +1000,7 @@ function IntentSection({
     <div className="mb-3 shrink-0 flex flex-col gap-2">
       {canWrite ? (
         <IntentForm
-          repoId={repo.repoId}
+          repoId={repoId}
           intentModel={ruleSet.intentModel}
           placeholder="写下要新增或改成什么样，agent 会读代码并按陈述形状提出一条修订提案"
           onSubmitted={onChanged}
@@ -1036,7 +1056,7 @@ function IntentSection({
                     highContrast
                     size={{ initial: "3", sm: "1" }}
                     className={OUTLINED_ACTION}
-                    onClick={() => onShowProposal(intent.targetId!)}
+                    onClick={() => onShow({ kind: "proposal", id: intent.targetId! })}
                   >
                     改写提案 #{intent.targetId}
                   </Button>
@@ -1047,7 +1067,7 @@ function IntentSection({
                     highContrast
                     size={{ initial: "3", sm: "1" }}
                     className={OUTLINED_ACTION}
-                    onClick={() => onShowRule(intent.targetId!)}
+                    onClick={() => onShow({ kind: "rule", id: intent.targetId! })}
                   >
                     改写条目 #{intent.targetId}
                   </Button>
@@ -1058,7 +1078,7 @@ function IntentSection({
                     highContrast
                     size={{ initial: "3", sm: "1" }}
                     className={OUTLINED_ACTION}
-                    onClick={() => onShowDraftItem(intent.targetId!)}
+                    onClick={() => onShow({ kind: "draft", id: intent.targetId! })}
                   >
                     改写草案 #{intent.targetId}
                   </Button>
@@ -1068,18 +1088,26 @@ function IntentSection({
                 {intent.targetKind === "finding" &&
                 intent.targetId !== null &&
                 intent.targetStageId !== null ? (
-                  <Link
-                    to="/stages/$stageId"
-                    params={{ stageId: intent.targetStageId }}
-                    search={{ finding: intent.targetId }}
-                    className={`${OUTLINED_ACTION} px-2 py-1 text-sm text-text-secondary hover:bg-sunken`}
+                  <Button
+                    asChild
+                    variant="outline"
+                    color="gray"
+                    highContrast
+                    size={{ initial: "3", sm: "1" }}
+                    className={OUTLINED_ACTION}
                   >
-                    查看 Finding
-                  </Link>
+                    <Link
+                      to="/stages/$stageId"
+                      params={{ stageId: intent.targetStageId }}
+                      search={{ finding: intent.targetId }}
+                    >
+                      查看 Finding
+                    </Link>
+                  </Button>
                 ) : null}
                 {intent.traceTaskId === null ? null : (
                   <RuleTraceButton
-                    repoId={repo.repoId}
+                    repoId={repoId}
                     taskId={intent.traceTaskId}
                     context={intent.text}
                   />
@@ -1101,12 +1129,32 @@ function IntentSection({
               {intent.state === "completed" && intent.summary !== null ? (
                 <Text as="p" size="1" color="gray" className="wrap-anywhere">
                   {intent.summary}
-                  {intent.produced.proposalIds.length > 0
-                    ? ` · 产出 ${intent.produced.proposalIds.length} 条修订提案`
-                    : intent.produced.draftItemIds.length > 0
-                      ? ` · 产出 ${intent.produced.draftItemIds.length} 条草案条目`
-                      : ""}
                 </Text>
+              ) : null}
+              {/* 产出逐条可点(issue #294、#298):数一句「产出 N 条」之后人还得自己去队列里
+                  找哪几条是刚才那一次,而目标引用那一颗本来就把人送到卡片上——同一个机制。
+                  改写那两档说「改写了」,它动的是原地那一条。 */}
+              {intent.state === "completed" && producedRefs(intent).length > 0 ? (
+                <div className="flex flex-wrap items-center gap-1">
+                  <Text as="span" size="1" color="gray">
+                    {intent.targetKind === "proposal" || intent.targetKind === "draft"
+                      ? "改写了"
+                      : "产出"}
+                  </Text>
+                  {producedRefs(intent).map((ref) => (
+                    <Button
+                      key={`${ref.kind}-${ref.id}`}
+                      variant="outline"
+                      color="gray"
+                      highContrast
+                      size={{ initial: "3", sm: "1" }}
+                      className={OUTLINED_ACTION}
+                      onClick={() => onShow(ref)}
+                    >
+                      {ref.kind === "draft" ? "草案" : "提案"} #{ref.id}
+                    </Button>
+                  ))}
+                </div>
               ) : null}
               {intent.state === "failed" && intent.failure !== null ? (
                 <Callout.Root role="alert" color="red" size="1">
@@ -1136,7 +1184,7 @@ function ProposalSection({
   ruleSet: RuleSet;
   canWrite: boolean;
   busy: boolean;
-  /** 从意图行点过来的那条提案(issue #295):滚到它并高亮。 */
+  /** 从意图行点过来的那条提案(issue #295):底色标出来。滚过去由弹窗那一段负责。 */
   highlight: number | null;
   onDecide: (id: number, accept: boolean) => void;
   onDecideAll: (ids: readonly number[], accept: boolean) => void;
@@ -1145,12 +1193,6 @@ function ProposalSection({
   // 就地展开意图框的那条提案(issue #295)。一次只展开一条:两张框同时开着人分不清写的
   // 是哪一条。
   const [rewriting, setRewriting] = useState<number | null>(null);
-  // 从意图行点过来时滚到那张卡片。切 tab 那一下这一段才挂上,因此按 `highlight` 变化滚,
-  // 不按渲染滚——渲染每五秒一次(队列在轮询),每次都滚会把人拽走。
-  useEffect(() => {
-    if (highlight === null) return;
-    document.getElementById(`rule-proposal-card-${highlight}`)?.scrollIntoView({ block: "center" });
-  }, [highlight]);
   const pending = ruleSet.proposals.filter((row) => row.state === "pending");
   const decided = ruleSet.proposals.filter((row) => row.state !== "pending");
   // 提案默认一条不勾:采纳是改变知识集的动作,该由人一条条挑,不该默认全中。
@@ -1425,7 +1467,6 @@ function ExplorationSection({
   ruleSet,
   busy,
   highlight,
-  onLaunched,
   onChanged,
   onDeleteDraft,
   onConfirm,
@@ -1433,9 +1474,9 @@ function ExplorationSection({
   repo: { repoId: number; owner: string; repo: string };
   ruleSet: RuleSet;
   busy: boolean;
-  /** 从意图行点过来的那条草案条目(issue #298):滚到它并高亮。 */
+  /** 从意图行点过来的那条草案条目(issue #298):底色标出来。滚过去由弹窗那一段负责。 */
   highlight: number | null;
-  onLaunched: () => void;
+  /** 发起一次探索、或一条草案改写落地:两者都是「重读这一份知识集」,同一个回调。 */
   onChanged: () => void;
   onDeleteDraft: (id: number) => void;
   onConfirm: (itemIds: readonly number[]) => void;
@@ -1448,12 +1489,6 @@ function ExplorationSection({
   const pick = useSelection(ruleSet.draft.map((row) => row.id), true);
   // 就地展开意图框的那条草案条目(issue #298)。一次只展开一条,与另两处同一条口径。
   const [rewriting, setRewriting] = useState<number | null>(null);
-  // 从意图行点过来时滚到那张卡片。切 tab 那一下这一段才挂上,因此按 `highlight` 变化滚,
-  // 不按渲染滚——有意图在跑时这个弹窗每五秒重读一次,每次都滚会把人拽走。
-  useEffect(() => {
-    if (highlight === null) return;
-    document.getElementById(`rule-draft-card-${highlight}`)?.scrollIntoView({ block: "center" });
-  }, [highlight]);
   // 刚完成的意图产出的草案条目(issue #294、#298):改写过的那一条与意图补进来的那几条
   // 同一枚徽章,人回到草案要认出的都是「刚才那一次动的是哪几条」。
   const fromIntent = new Set(
@@ -1492,7 +1527,7 @@ function ExplorationSection({
             }
           />
         </div>
-        <ExplorationLaunch repo={repo} busy={running} onLaunched={onLaunched} />
+        <ExplorationLaunch repo={repo} busy={running} onLaunched={onChanged} />
       </div>
 
       {exploration?.state === "failed" && exploration.failure !== null ? (

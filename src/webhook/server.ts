@@ -7269,9 +7269,34 @@ const ENTRY_TARGET_GONE = "落地时这条知识条目已经不在生效条目�
 const REWRITE_TARGET_GONE = "落地时这条提案已经不在这个仓库的待裁决队列里,改写没有落下";
 
 /**
+ * 目标型意图落地共用的那一道闸(issue #295、#297、#298)。三档都是「挑恰好一条指向目标的
+ * 产出,其余逐条丢掉并记轨迹」,只在「什么算指向目标」与丢弃原因上不同:人指着一条说
+ * 「改成这样」,agent 顺手提的别的条目不在他说的那件事里。回 undefined 即一条都没有。
+ */
+function chooseTargetItem(
+  items: readonly RuleAgentItem[],
+  targets: (item: RuleAgentItem) => boolean,
+  reason: string,
+  trace: RuleTraceRecorder,
+): RuleAgentItem | undefined {
+  let chosen: RuleAgentItem | undefined;
+  for (const item of items) {
+    if (chosen === undefined && targets(item)) {
+      chosen = item;
+      continue;
+    }
+    trace.record("rule_proposal_dropped", {
+      ...(item.proposalId === undefined ? {} : { proposalId: item.proposalId }),
+      reason,
+    });
+  }
+  return chosen;
+}
+
+/**
  * 目标为一条待裁决提案的意图落地(CONTEXT.md 人工提议,issue #295)。**只收恰好一条
  * 指向目标的改写**:人指着这一条说「改成这样」,agent 顺手提的别的条目不在他说的那件
- * 事里,逐条丢掉并记轨迹。一条都没有即零产出,意图照常完成。
+ * 事里,逐条丢掉并记轨迹。目标还待裁决而一条都没有即零产出,意图照常完成。
  *
  * 落进去的是陈述、作用范围与型三样(`mergeIntoRuleProposal` 按型规则定变更类型),外加
  * 一条人工提议附注——附注即修订对话的下一句。
@@ -7283,17 +7308,21 @@ function rewriteTargetProposal(
   source: Omit<RuleProposalSourceInput, "evidence">,
   rewrite: { proposalId: number; trace: RuleTraceRecorder },
 ): number[] {
-  let chosen: RuleAgentItem | undefined;
-  for (const item of items) {
-    if (chosen === undefined && item.proposalId === rewrite.proposalId) {
-      chosen = item;
-      continue;
-    }
-    rewrite.trace.record("rule_proposal_dropped", {
-      ...(item.proposalId === undefined ? {} : { proposalId: item.proposalId }),
-      reason: REWRITE_OFF_TARGET,
-    });
+  // 落地那一刻它还待裁决吗:与条目、草案两档同一口径先查一次。零产出也要照查——目标已经
+  // 被裁决掉时这一次意图本来就没有落处,报成零产出完成会让人以为「agent 认为不用改」。
+  if (
+    !store
+      .getRuleProposals(repoId)
+      .some((row) => row.id === rewrite.proposalId && row.state === "pending")
+  ) {
+    throw new Error(REWRITE_TARGET_GONE);
   }
+  const chosen = chooseTargetItem(
+    items,
+    (item) => item.proposalId === rewrite.proposalId,
+    REWRITE_OFF_TARGET,
+    rewrite.trace,
+  );
   if (chosen === undefined) return [];
   const merged = store.mergeIntoRuleProposal(repoId, rewrite.proposalId, {
     statement: chosen.statement,
@@ -7323,17 +7352,12 @@ function landRuleTargetEntry(
   // 落地那一刻它还生效吗:开跑前查过一次,解读那几分钟里人照样可以直接废止它。
   const rules = store.getRuleSet(repoId)?.rules ?? [];
   if (!rules.some((rule) => rule.id === target.ruleId)) throw new Error(ENTRY_TARGET_GONE);
-  let chosen: RuleAgentItem | undefined;
-  for (const item of items) {
-    if (chosen === undefined && targetsRuleEntry(item, target)) {
-      chosen = item;
-      continue;
-    }
-    target.trace.record("rule_proposal_dropped", {
-      ...(item.proposalId === undefined ? {} : { proposalId: item.proposalId }),
-      reason: ENTRY_OFF_TARGET,
-    });
-  }
+  const chosen = chooseTargetItem(
+    items,
+    (item) => targetsRuleEntry(item, target),
+    ENTRY_OFF_TARGET,
+    target.trace,
+  );
   if (chosen === undefined) return [];
   // 并入指向它的那一条走与改写一条提案同一条路径(issue #295):陈述、作用范围与型换新,
   // 附注追加一条,型规则在 `mergeIntoRuleProposal` 里。
@@ -7388,15 +7412,15 @@ function landRuleDraftItem(
   if (!store.getRuleDraft(repoId).some((item) => item.id === target.itemId)) {
     throw new Error(DRAFT_TARGET_GONE);
   }
-  let chosen: RuleAgentItem | undefined;
-  for (const item of items) {
-    const targets = item.targetRuleIds ?? [];
-    if (chosen === undefined && targets.length === 1 && targets[0] === target.itemId) {
-      chosen = item;
-      continue;
-    }
-    target.trace.record("rule_proposal_dropped", { reason: DRAFT_OFF_TARGET });
-  }
+  const chosen = chooseTargetItem(
+    items,
+    (item) => {
+      const targets = item.targetRuleIds ?? [];
+      return targets.length === 1 && targets[0] === target.itemId;
+    },
+    DRAFT_OFF_TARGET,
+    target.trace,
+  );
   if (chosen === undefined) return [];
   if (
     !store.updateRuleDraftItem(repoId, target.itemId, {
@@ -7417,6 +7441,10 @@ function landRuleDraftItem(
  *
  * 模型选不出来时那一行照样落下,后台起完轨迹再失败:静默跳过的话人写完备注就再也见不到
  * 它去了哪里。仓库不在注册表里那一档没有落处,只留一行日志。
+ *
+ * **反哺不查同目标互斥**(ADR 0028 的例外,见 `src/AGENTS.md`):同一条 Finding 上两条备注
+ * 各产各的,靠并入队列里已有的那一条去重,没有互相覆盖的风险;拦下第二条只会让写备注的
+ * 人白写一次。目标型意图那三档才要互斥——两条改写同一条东西会互相覆盖。
  */
 function startDispositionFeedback(
   deps: WebhookServerDeps,
@@ -7425,9 +7453,8 @@ function startDispositionFeedback(
   disposedBy: string,
 ): void {
   const repoId = withStore(deps.dbPath, (store) =>
-    store
-      .listRepos()
-      .find((row) => row.owner === finding.owner && row.repo === finding.repo)?.repoId);
+    store.findRepoId(finding.owner, finding.repo),
+  );
   if (repoId === undefined) {
     console.error(`处置反哺没有落处:${finding.owner}/${finding.repo} 不在注册表里`);
     return;
@@ -7532,8 +7559,13 @@ function intentTarget(
       : {
           kind: "rule",
           rule: toKnowledgeEntry(entry),
+          // 废止型不作并入候选:它说的就是废止哪一条,并进去等于把它改成别的意思——与
+          // 「废止型提案没有改写入口」同一口径(issue #295 的提交校验)。
           proposals: pending
-            .filter((proposal) => proposal.targetRuleIds.includes(entry.id))
+            .filter(
+              (proposal) =>
+                proposal.change !== "retire" && proposal.targetRuleIds.includes(entry.id),
+            )
             .map((proposal) => toIntentTargetProposal(proposal, rules)),
         };
   }
@@ -7643,7 +7675,9 @@ async function runRevisionIntentInBackground(
       forge.getRepository(ref),
       forge.cloneCredentials(ref),
     ]);
-    const target = {
+    // 缓存 clone 的位置。`target` 这个名字在这个函数里指意图的目标,派生工作副本要的那
+    // 一份因此叫 `clone`。
+    const clone = {
       cacheDir: deps.cacheDir,
       ref,
       cloneUrl: repository.cloneUrl,
@@ -7652,8 +7686,8 @@ async function runRevisionIntentInBackground(
     // 默认分支当前 head:与 commit 选择器读的是同一份缓存 clone、同一条读取路径。反哺
     // 停在那条 Finding 报出时的 head——备注说的是那时的代码。
     const head =
-      finding !== undefined ? finding.headSha : await defaultBranchHead(target, repository);
-    worktree = await prepareWorktree({ ...target, headSha: head, baseSha: head });
+      finding !== undefined ? finding.headSha : await defaultBranchHead(clone, repository);
+    worktree = await prepareWorktree({ ...clone, headSha: head, baseSha: head });
     const input = withStore(deps.dbPath, (store) => {
       const ruleSet = store.getRuleSet(repoId);
       const rules = ruleSet?.rules ?? [];
@@ -7709,9 +7743,9 @@ async function runRevisionIntentInBackground(
     // 收窄在开库之前跑完:它自己要写知识轨迹,而轨迹的每一次落库另开一次库。
     const usable = usableRuleItems(result.items, trace);
     const at = now();
-    // 知识集未确认即产出追加进草案,已确认(含空集)即排进修订提案队列——分界与基点探索
-    // 同一条(CONTEXT.md 人工提议)。**追加而不是覆盖**:一条意图补的是这份草案里缺的
-    // 那几条,重新探索才整组取代。
+    // 无目标的意图在知识集未确认时产出追加进草案,已确认(含空集)即排进修订提案队列
+    // ——分界与基点探索同一条(CONTEXT.md 人工提议)。**追加而不是覆盖**:一条意图补的是
+    // 这份草案里缺的那几条,重新探索才整组取代。
     // 备注原文记意图,依据记 agent 的理由(CONTEXT.md 出处附注)。
     const source: Omit<RuleProposalSourceInput, "evidence"> = {
       origin,
@@ -7730,7 +7764,9 @@ async function runRevisionIntentInBackground(
           ? { proposalIds: [], draftItemIds: landed }
           : { proposalIds: landed, draftItemIds: [] };
       }
-      if (input.version === null) {
+      // 草案那条路径只对无目标的意图成立:草案条目的出处恒是人工提议,反哺的产出落进去
+      // 就把来源记成了人写的那一档,而它本来带得出处置反哺的附注——反哺始终排队列。
+      if (intent.targetKind === "none" && input.version === null) {
         return {
           proposalIds: [],
           draftItemIds: store.appendRuleDraftItems(
@@ -7783,8 +7819,9 @@ async function runRevisionIntentInBackground(
   if (deps.onRevisionIntentSettled !== undefined) {
     deps.onRevisionIntentSettled(intent.id, failure);
   } else if (failure !== undefined) {
+    const label = origin === "manual-proposal" ? "人工提议" : "处置反哺";
     console.error(
-      `${origin === "manual-proposal" ? "人工提议" : "处置反哺"}失败:${ref.owner}/${ref.repo} 的意图 ${intent.id}:${failure}`,
+      `${label}失败:${ref.owner}/${ref.repo} 的意图 ${intent.id}:${failure}`,
     );
   }
 }
@@ -7815,8 +7852,8 @@ async function defaultBranchHead(
  * 废止型(400,它没有改写入口)、这个目标上不能已经跑着一条意图(409)。目标为一条知识
  * 条目要它此刻还生效(404,不存在与已废止同一句话),同目标互斥那一道两档共用。
  *
- * 目标为一条草案条目要它此刻还在这个仓库的草案里(404 那句就是草案改删两个端点用的
- * `NO_DRAFT_ITEM`,issue #298):知识集已确认的仓库没有草案,那一档因此自然 404。`finding`
+ * 目标为一条草案条目要它此刻还在这个仓库的草案里(404 那句就是草案删除端点与这一道校验
+ * 共用的 `NO_DRAFT_ITEM`,issue #298):知识集已确认的仓库没有草案,那一档因此自然 404。`finding`
  * 那一档仍 400——它由处置那一侧自己建行,不由人在这里提。回
  * undefined 即这里已经回过响应,调用方直接返回。
  */
@@ -8197,7 +8234,6 @@ function isPositiveIdGroup(ids: unknown): ids is number[] {
  * 逐条各推一版会让一次裁决在版本轴上散成上百格,之后回看「那一次采纳的是哪一组」再也
  * 拼不回来。全成或全不成——其中一条已经被裁决过、或它要改的条目已经不生效,整次 404,
  * 面板重读队列即可看到当前状态。
- *
  */
 async function handleDecideRuleProposals(
   req: IncomingMessage,

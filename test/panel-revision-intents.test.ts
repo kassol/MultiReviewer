@@ -13,6 +13,7 @@ import { after, test } from "node:test";
 import { openStore } from "../src/review/store.ts";
 import type { RuleAgent, RuleAgentItem, RuleAgentRequest } from "../src/reviewer/rule-agent.ts";
 import { confirmEmptyRuleSet, makeDbPath } from "./support/git-fixture.ts";
+import { scriptedReviewer } from "./support/memory-forge.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
@@ -318,6 +319,80 @@ test("知识集未确认:产出追加进草案,原有草案条目留着", async 
     proposalIds: [],
     draftItemIds: [view.draft[1]!.id],
   });
+});
+
+test("未确认仓库上的处置反哺:产出排进提案队列,草案一字不动", async () => {
+  let items: RuleAgentItem[] = [];
+  const agent = scriptedRuleAgent(() => ({ items }));
+  const h = await startReadyPanelHarness(cleanups, {
+    ruleAgent: agent,
+    buildReviewers: (plans) =>
+      plans.map((plan) =>
+        scriptedReviewer(plan.spec.model, [
+          { file: "src/answer.ts", line: 1, severity: "P1", category: "bug", description: "这里会越界" },
+        ]),
+      ),
+  });
+  assert.equal(
+    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
+    201,
+  );
+  // 门禁挡的是没确认过知识集的仓库(issue #206),要有一条可处置的 Finding 就得先确认、
+  // 跑一轮。这条用例要的是「有 Finding 而知识集未确认」那一档,因此跑完再把那一版删掉。
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
+  await h.settledAtLeast(1);
+  assert.equal(h.settled[0]!.error, undefined);
+  const db = new DatabaseSync(h.db.path);
+  try {
+    db.prepare("DELETE FROM rule_set_version WHERE repo_id = ?").run(GITEA_REPO.id);
+  } finally {
+    db.close();
+  }
+
+  const store = openStore(h.db.path);
+  try {
+    // 草案里先有一条探索产出的:反哺不该动它。
+    store.finishRuleExploration(
+      GITEA_REPO.id,
+      [{ type: "rule", scope: "", statement: "草案里原有的" }],
+      "2026-09-08T00:00:00.000Z",
+    );
+  } finally {
+    store.close();
+  }
+
+  const runs = (await (await h.api("GET", "/runs")).json()) as {
+    runs: { findings: { id: number; commentId: string | null }[] }[];
+  };
+  const finding = runs.runs
+    .flatMap((run) => run.findings)
+    .find((row) => row.commentId !== null)!;
+  assert.notEqual(finding, undefined);
+
+  const note = "这类越界要在边界上一次判掉,不要每处再判";
+  items = [{ type: "rule", scope: "src/**", statement: "边界上一次判空", reason: "越界在三处都有" }];
+  assert.equal((await h.api("POST", `/findings/${finding.id}/resolve`, { note })).status, 200);
+  await h.dispositionFeedbackAtLeast(1);
+  assert.equal(h.dispositionFeedbacks[0]!.failure, undefined);
+
+  const view = await ruleSet(h);
+  assert.equal(view.version, null);
+  // 反哺的产出排进队列并标处置反哺,草案还是探索留下的那一条。
+  assert.equal(view.proposals.length, 1);
+  const proposal = view.proposals[0]!;
+  assert.equal(proposal.statement, "边界上一次判空");
+  assert.deepEqual(
+    proposal.sources.map((source) => [source.origin, source.note]),
+    [["disposition-feedback", note]],
+  );
+  assert.deepEqual(
+    view.draft.map((item) => [item.statement, item.origin]),
+    [["草案里原有的", "baseline-exploration"]],
+  );
+  const intent = view.intents.find((row) => row.targetKind === "finding")!;
+  assert.equal(intent.state, "completed");
+  assert.deepEqual(intent.produced, { proposalIds: [proposal.id], draftItemIds: [] });
 });
 
 test("陈述超过 100 字的产出被丢弃并记轨迹,意图仍完成", async () => {
@@ -918,6 +993,48 @@ test("目标在运行中被驳回:意图失败并留原因,提案一字不动", 
   assert.match(intent.failure ?? "", /待裁决/);
 });
 
+test("目标在运行中被驳回而一条产出都不指向它:意图仍失败并留原因", async () => {
+  let harness: PanelHarness | undefined;
+  let proposalId = 0;
+  const h = await harnessWithRepo(async () => {
+    // 解读到一半有人裁决了它,而这一次 agent 一条指向它的产出都没给:零产出不等于
+    // 「什么都没发生」——目标已经没了,这一次意图本来就落不下去。
+    assert.equal(
+      (
+        await harness!.api(
+          "POST",
+          `/repos/${GITEA_REPO.id}/rule-proposals/${proposalId}/reject`,
+        )
+      ).status,
+      200,
+    );
+    return { items: [{ type: "rule", scope: "", statement: "顺手提的另一条" }] };
+  });
+  harness = h;
+  proposalId = seedProposal(h, {
+    type: "rule",
+    change: "add",
+    targetRuleIds: [],
+    scope: "src/**",
+    statement: "队列里原来那一句",
+  });
+
+  const submitted = await rewriteAndSettle(h, proposalId);
+  assert.notEqual(h.revisionIntents[0]!.failure, undefined);
+
+  const view = await ruleSet(h);
+  // 提案一字不动,顺手提的那一条也没排进队列。
+  assert.equal(view.proposals.length, 1);
+  const proposal = view.proposals[0]!;
+  assert.equal(proposal.id, proposalId);
+  assert.equal(proposal.statement, "队列里原来那一句");
+  assert.equal(proposal.sources.length, 1);
+  const intent = view.intents.find((row) => row.id === submitted.id)!;
+  assert.equal(intent.state, "failed");
+  assert.match(intent.failure ?? "", /待裁决/);
+  assert.deepEqual(intent.produced, { proposalIds: [], draftItemIds: [] });
+});
+
 test("连续两次意图:第二次的 agent 输入含第一次留下的那条附注", async () => {
   let items: RuleAgentItem[] = [];
   const agent = scriptedRuleAgent(() => ({ items }));
@@ -1208,6 +1325,53 @@ test("目标为知识条目:agent 指名并入指向它的那一条,队列仍一
     proposalIds: [queued],
     draftItemIds: [],
   });
+});
+
+test("目标为知识条目:指向它的废止型提案不作并入候选,指名它的产出被丢掉", async () => {
+  let items: RuleAgentItem[] = [];
+  const agent = scriptedRuleAgent(() => ({ items }));
+  const h = await harnessWithRepo(agent);
+  const ruleId = seedRule(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
+  // 队列里指向它的那一条是废止型:它说的就是废止哪一条,并进去只会把它改成别的意思
+  // ——提交时那一档本来就 400,并入这条路径同一口径。
+  const retire = seedProposal(h, {
+    type: "rule",
+    change: "retire",
+    targetRuleIds: [ruleId],
+    scope: "",
+    statement: "代码已经不这么写了,废止它",
+  });
+  items = [
+    {
+      type: "rule",
+      scope: "src/api/**",
+      statement: "api 目录下的处理器先校验入参再执行",
+      proposalId: retire,
+      reason: "并进队列里那一条",
+    },
+  ];
+
+  const submitted = await rewriteEntryAndSettle(h, ruleId);
+  assert.equal(h.revisionIntents[0]!.failure, undefined);
+
+  // 给 agent 的「指向它的待裁决提案」里没有废止型那一条。
+  const target = agent.calls[0]!.intent!.target;
+  assert.deepEqual(target.kind === "rule" ? target.proposals : undefined, []);
+
+  const view = await ruleSet(h);
+  // 那一条废止型一字不动:陈述与附注都是排它进来时那一份。
+  assert.equal(view.proposals.length, 1);
+  const proposal = view.proposals[0]!;
+  assert.equal(proposal.id, retire);
+  assert.equal(proposal.change, "retire");
+  assert.equal(proposal.statement, "代码已经不这么写了,废止它");
+  assert.equal(proposal.sources.length, 1);
+  const intent = view.intents.find((row) => row.id === submitted.id)!;
+  assert.equal(intent.state, "completed");
+  assert.deepEqual(intent.produced, { proposalIds: [], draftItemIds: [] });
+  const dropped = ruleTraceRows(h).filter((row) => row.kind === "rule_proposal_dropped");
+  assert.equal(dropped.length, 1);
+  assert.match(dropped[0]!.payload, /知识条目/);
 });
 
 test("目标为知识条目:不指向它的产出丢弃并记轨迹,意图仍完成", async () => {
