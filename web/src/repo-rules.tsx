@@ -278,6 +278,11 @@ function RuleSetDialogContent({
   const [pickedTab, setPickedTab] = useState<DialogTab | null>(null);
   /** 从意图行点过来要看的那条提案(issue #295)。null 即没有要高亮的。 */
   const [highlightProposal, setHighlightProposal] = useState<number | null>(null);
+  /** 从意图行点过来要看的那条生效条目(issue #297)。 */
+  const [highlightRule, setHighlightRule] = useState<number | null>(null);
+  /** 就地展开意图框的那条生效条目(issue #297)。一次只展开一条:两张框同时开着人分不清
+      写的是哪一条。 */
+  const [rewritingRule, setRewritingRule] = useState<number | null>(null);
   const ruleSet = useQuery({
     queryKey: ["repo-rules", repo.repoId],
     queryFn: () => fetchJson<RuleSet>(`/repos/${repo.repoId}/rules`),
@@ -293,6 +298,14 @@ function RuleSetDialogContent({
   const reload = (): void => {
     void queryClient.invalidateQueries({ queryKey: ["repo-rules", repo.repoId] });
   };
+  // 从意图行点过来时滚到那张条目卡片(issue #297)。按 `highlightRule` 变化滚而不按渲染滚
+  // ——有意图在跑时这个弹窗每五秒重读一次,每次都滚会把人拽走。
+  useEffect(() => {
+    if (highlightRule === null) return;
+    document
+      .getElementById(`rule-entry-card-${highlightRule}`)
+      ?.scrollIntoView({ block: "center" });
+  }, [highlightRule]);
 
   // 三个写动作走同一次改动:每一次都推进一个知识集版本,回来重读这一份知识集。
   const change = useRuleEdits(`/repos/${repo.repoId}/rules`, () => {
@@ -407,6 +420,10 @@ function RuleSetDialogContent({
           onShowProposal={(proposalId) => {
             setPickedTab("proposals");
             setHighlightProposal(proposalId);
+          }}
+          onShowRule={(ruleId) => {
+            setPickedTab("entries");
+            setHighlightRule(ruleId);
           }}
         />
       )}
@@ -525,42 +542,26 @@ function RuleSetDialogContent({
               <ul className="overflow-hidden rounded-lg border border-card-line">
                 {data.rules
                   .filter((entry) => entry.type === "rule")
-                  .map((rule) => (
-                    <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
-                      {/* 陈述独占整行:长句不再被按钮挤着折行。元数据与操作合成底部
-                          一条收尾线,操作靠右,行与行之间有稳定的对齐锚。 */}
-                      <Text as="p" size="2" className="wrap-anywhere">{rule.statement}</Text>
-                      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-                        <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
-                          {rule.scope === "" ? "全仓库" : rule.scope}
-                        </Badge>
-                        {canWrite ? (
-                          <div className="flex shrink-0 gap-1">
-                            <Button
-                              variant="outline"
-                              color="gray"
-                              highContrast
-                              size={{ initial: "3", sm: "1" }}
-                              className={OUTLINED_ACTION}
-                              onClick={() => setDraft({ ...rule, id: rule.id })}
-                            >
-                              修改
-                            </Button>
-                            <Button
-                              variant="outline"
-                              color="gray"
-                              highContrast
-                              size={{ initial: "3", sm: "1" }}
-                              className={OUTLINED_ACTION}
-                              disabled={change.isPending}
-                              onClick={() => change.mutate({ retire: rule.id })}
-                            >
-                              废止
-                            </Button>
-                          </div>
-                        ) : null}
-                      </div>
-                    </li>
+                  .map((entry) => (
+                    <EntryCard
+                      key={entry.id}
+                      entry={entry}
+                      repoId={repo.repoId}
+                      canWrite={canWrite}
+                      busy={change.isPending}
+                      intentModel={data.intentModel}
+                      highlighted={highlightRule === entry.id}
+                      rewriting={rewritingRule === entry.id}
+                      onRewrite={() =>
+                        setRewritingRule((open) => (open === entry.id ? null : entry.id))
+                      }
+                      onEdit={() => setDraft({ ...entry, id: entry.id })}
+                      onRetire={() => change.mutate({ retire: entry.id })}
+                      onRewritten={() => {
+                        setRewritingRule(null);
+                        reload();
+                      }}
+                    />
                   ))}
               </ul>
             </section>
@@ -580,40 +581,26 @@ function RuleSetDialogContent({
               <ul className="overflow-hidden rounded-lg border border-card-line">
                 {data.rules
                   .filter((entry) => entry.type === "fact")
-                  .map((fact) => (
-                    <li key={fact.id} className="border-t border-line px-4 py-3 first:border-t-0">
-                      <Text as="p" size="2" className="wrap-anywhere">{fact.statement}</Text>
-                      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-                        <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
-                          {fact.scope === "" ? "全仓库" : fact.scope}
-                        </Badge>
-                        {canWrite ? (
-                          <div className="flex shrink-0 gap-1">
-                            <Button
-                              variant="outline"
-                              color="gray"
-                              highContrast
-                              size={{ initial: "3", sm: "1" }}
-                              className={OUTLINED_ACTION}
-                              onClick={() => setDraft({ ...fact, id: fact.id })}
-                            >
-                              修改
-                            </Button>
-                            <Button
-                              variant="outline"
-                              color="gray"
-                              highContrast
-                              size={{ initial: "3", sm: "1" }}
-                              className={OUTLINED_ACTION}
-                              disabled={change.isPending}
-                              onClick={() => change.mutate({ retire: fact.id })}
-                            >
-                              废止
-                            </Button>
-                          </div>
-                        ) : null}
-                      </div>
-                    </li>
+                  .map((entry) => (
+                    <EntryCard
+                      key={entry.id}
+                      entry={entry}
+                      repoId={repo.repoId}
+                      canWrite={canWrite}
+                      busy={change.isPending}
+                      intentModel={data.intentModel}
+                      highlighted={highlightRule === entry.id}
+                      rewriting={rewritingRule === entry.id}
+                      onRewrite={() =>
+                        setRewritingRule((open) => (open === entry.id ? null : entry.id))
+                      }
+                      onEdit={() => setDraft({ ...entry, id: entry.id })}
+                      onRetire={() => change.mutate({ retire: entry.id })}
+                      onRewritten={() => {
+                        setRewritingRule(null);
+                        reload();
+                      }}
+                    />
                   ))}
               </ul>
             </section>
@@ -920,6 +907,104 @@ function ProposalSources({ repoId, proposal }: { repoId: number; proposal: RuleP
 }
 
 /**
+ * 一条生效知识条目的卡片(issue #203、#297)。两型各一段,卡片本身两段共用。陈述独占整行,
+ * 元数据与操作合成底部一条收尾线。
+ *
+ * 「改写」就地展开与顶部同一个意图框(ADR 0028,issue #297):人写一句话说要改成什么样,
+ * agent 读代码产出一条指向这一条的修订提案,人裁决。「修改」与「废止」不动(撤直改是
+ * issue #299,直接废止保留——它写不进内容)。
+ */
+function EntryCard({
+  entry,
+  repoId,
+  canWrite,
+  busy,
+  intentModel,
+  highlighted,
+  rewriting,
+  onRewrite,
+  onEdit,
+  onRetire,
+  onRewritten,
+}: {
+  entry: ReviewRule;
+  repoId: number;
+  canWrite: boolean;
+  busy: boolean;
+  intentModel: string | null;
+  /** 从意图行点过来的那一条:底色标出来,人才认得出滚到的是哪一张。 */
+  highlighted: boolean;
+  rewriting: boolean;
+  onRewrite: () => void;
+  onEdit: () => void;
+  onRetire: () => void;
+  onRewritten: () => void;
+}) {
+  return (
+    <li
+      id={`rule-entry-card-${entry.id}`}
+      className={`border-t border-line px-4 py-3 first:border-t-0 ${
+        highlighted ? "bg-accent-tint" : ""
+      }`}
+    >
+      <Text as="p" size="2" className="wrap-anywhere">{entry.statement}</Text>
+      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+        <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
+          {entry.scope === "" ? "全仓库" : entry.scope}
+        </Badge>
+        {canWrite ? (
+          <div className="flex shrink-0 gap-1">
+            <Button
+              variant="outline"
+              color="gray"
+              highContrast
+              size={{ initial: "3", sm: "1" }}
+              className={OUTLINED_ACTION}
+              onClick={onRewrite}
+            >
+              改写
+            </Button>
+            <Button
+              variant="outline"
+              color="gray"
+              highContrast
+              size={{ initial: "3", sm: "1" }}
+              className={OUTLINED_ACTION}
+              onClick={onEdit}
+            >
+              修改
+            </Button>
+            <Button
+              variant="outline"
+              color="gray"
+              highContrast
+              size={{ initial: "3", sm: "1" }}
+              className={OUTLINED_ACTION}
+              disabled={busy}
+              onClick={onRetire}
+            >
+              废止
+            </Button>
+          </div>
+        ) : null}
+      </div>
+      {rewriting ? (
+        <div className="mt-2">
+          <IntentForm
+            repoId={repoId}
+            intentModel={intentModel}
+            placeholder="写下这一条要改成什么样，agent 会读代码并提出一条指向它的修订提案"
+            target={{ kind: "rule", id: entry.id }}
+            onSubmitted={onRewritten}
+            onCancel={onRewrite}
+          />
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+/**
  * 修订提案队列与裁决那一段(issue #207)。待裁决的排在前面,已裁决的留在后面供查。
  *
  * 队列本身对所有读得到知识集的人可见——「还有什么在等人裁决」与「现在按什么标准评审」
@@ -935,9 +1020,9 @@ const INTENT_STATE_LABEL = {
 } as const;
 
 /**
- * 意图框(CONTEXT.md 修订意图,ADR 0028,issue #294、#295)。弹窗顶部那一个与待裁决提案
- * 卡片上「改写」展开的那一个是同一个组件,**目标由调用方给**:目标决定的只有提交时带不
- * 带 `target` 与框里那句提示语,字数、置灰与提交那几道判据两处必须一样。
+ * 意图框(CONTEXT.md 修订意图,ADR 0028,issue #294、#295、#297)。弹窗顶部那一个与生效
+ * 条目、待裁决提案卡片上「改写」展开的那一个是同一个组件,**目标由调用方给**:目标决定的
+ * 只有提交时带不带 `target` 与框里那句提示语,字数、置灰与提交那几道判据三处必须一样。
  */
 function IntentForm({
   repoId,
@@ -951,7 +1036,7 @@ function IntentForm({
   intentModel: string | null;
   placeholder: string;
   /** 这条意图指向什么。缺席即无目标(产新增)。 */
-  target?: { kind: "proposal"; id: number };
+  target?: { kind: "rule" | "proposal"; id: number };
   onSubmitted: () => void;
   /** 就地展开的那一个给一颗取消;顶部那一个常驻,不给。 */
   onCancel?: () => void;
@@ -1050,6 +1135,7 @@ function IntentSection({
   ruleSet,
   onChanged,
   onShowProposal,
+  onShowRule,
 }: {
   repo: { repoId: number; owner: string; repo: string };
   canWrite: boolean;
@@ -1057,6 +1143,8 @@ function IntentSection({
   onChanged: () => void;
   /** 点意图行上的目标引用:切到队列 tab 并高亮那张卡片(issue #295)。 */
   onShowProposal: (proposalId: number) => void;
+  /** 同一颗按钮的条目那一档:切到知识条目 tab 并高亮那张卡片(issue #297)。 */
+  onShowRule: (ruleId: number) => void;
 }) {
   const remove = useMutation({
     mutationFn: async (intentId: number): Promise<void> => {
@@ -1121,9 +1209,9 @@ function IntentSection({
                     ? null
                     : ` · 思考 ${THINKING_LEVEL_LABEL[intent.thinkingLevel]}`}
                 </Text>
-                {/* 目标引用(issue #295):点它切到队列 tab 并滚到那张卡片,不另开一页
-                    ——改写与被改写的那一条本来就在同一个弹窗里。 */}
-                {intent.targetKind === "proposal" && intent.targetId !== null ? (
+                {/* 目标引用(issue #295、#297):点它切到目标所在的 tab 并滚到那张卡片,
+                    不另开一页——改写与被改写的那一条本来就在同一个弹窗里。 */}
+                {intent.targetId === null ? null : intent.targetKind === "proposal" ? (
                   <Button
                     variant="outline"
                     color="gray"
@@ -1133,6 +1221,17 @@ function IntentSection({
                     onClick={() => onShowProposal(intent.targetId!)}
                   >
                     改写提案 #{intent.targetId}
+                  </Button>
+                ) : intent.targetKind === "rule" ? (
+                  <Button
+                    variant="outline"
+                    color="gray"
+                    highContrast
+                    size={{ initial: "3", sm: "1" }}
+                    className={OUTLINED_ACTION}
+                    onClick={() => onShowRule(intent.targetId!)}
+                  >
+                    改写条目 #{intent.targetId}
                   </Button>
                 ) : null}
                 {/* 反哺那一行的 Finding 引用(issue #296):走提案出处上那个既有的
