@@ -32,6 +32,25 @@ const WORKER_PATH = fileURLToPath(new URL("./rule-worker.ts", import.meta.url));
 export const AGENT_STATEMENT_LIMIT = 100;
 
 /**
+ * 把 agent 在 `propose_rule` 里给的 `type` 读成两型之一。认得的照收;认不得的(拼错、
+ * 漏给)看它指向哪一条:单目标时取目标条目的型——单目标的合并即改型(issue #289),一个
+ * 写错的取值在这条路径上会把一条事实一次裁决改成规则;没有目标或目标不止一条时当规则收
+ * (与升级前逐字一致),服务端仍会再校验一次陈述。
+ */
+export function readProposalType(
+  raw: string,
+  ruleIds: readonly number[] | undefined,
+  existing: readonly KnowledgeEntry[],
+): KnowledgeType {
+  if (raw === "fact" || raw === "rule") return raw;
+  if (ruleIds !== undefined && ruleIds.length === 1) {
+    const target = existing.find((entry) => entry.id === ruleIds[0]);
+    if (target !== undefined) return target.type;
+  }
+  return "rule";
+}
+
+/**
  * agent 推导出的一条知识条目,形状与人手填的那几样相同(CONTEXT.md 知识条目)。
  * 三条链路共用它,`type` 两值由 agent 自己判(issue #222)。
  */

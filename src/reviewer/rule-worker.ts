@@ -14,7 +14,7 @@ import { Type } from "typebox";
 
 import type { KnowledgeEntry, PendingProposal } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
-import { AGENT_STATEMENT_LIMIT } from "./rule-agent.ts";
+import { AGENT_STATEMENT_LIMIT, readProposalType } from "./rule-agent.ts";
 import type {
   ConsolidationProposal,
   DispositionFeedback,
@@ -351,9 +351,9 @@ async function run(request: RuleWorkerRequest): Promise<void> {
       send({
         kind: "rule",
         item: {
-          // 两型是封闭枚举:认不得的取值当规则收(与升级前逐字一致),服务端仍会再校验
-          // 一次陈述。宽松字符串加归一化是与 report_finding 同一条口径(ADR 0004)。
-          type: raw.type === "fact" ? "fact" : "rule",
+          // 两型是封闭枚举,宽松字符串加归一化是与 report_finding 同一条口径(ADR 0004);
+          // 认不得的取值怎么收见 `readProposalType`。
+          type: readProposalType(raw.type, raw.rule_ids, request.existingKnowledge),
           scope: raw.scope ?? "",
           statement: raw.statement,
           ...(raw.rule_ids === undefined ? {} : { targetRuleIds: raw.rule_ids }),

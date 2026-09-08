@@ -6652,6 +6652,9 @@ const BAD_KNOWLEDGE_TYPE = 'type 只收 "rule"(评审规则)或 "fact"(项目事
 /** 事实型陈述超长时回的话。 */
 const FACT_TOO_LONG = `项目事实的陈述不能超过 ${FACT_STATEMENT_LIMIT} 字`;
 
+/** agent 产出的陈述超过 `AGENT_STATEMENT_LIMIT` 时写进知识轨迹的原因(spec #286)。 */
+const STATEMENT_TOO_LONG = `陈述超过 ${AGENT_STATEMENT_LIMIT} 字`;
+
 /**
  * 一条知识条目由人填的那几样(issue #203、#221)。`type` 是两型之一,缺省即评审规则——
  * 升级前的面板只写得出规则,缺省因此与它逐字等价。
@@ -6815,7 +6818,7 @@ function usableRuleItems(
           ? "陈述是空的"
           : "并入没有给出合成后的陈述"
         : item.statement.length > AGENT_STATEMENT_LIMIT
-          ? `陈述超过 ${AGENT_STATEMENT_LIMIT} 字`
+          ? STATEMENT_TOO_LONG
           : null;
     if (reason === null) {
       usable.push(item);
@@ -7067,12 +7070,11 @@ function applyConsolidation(
   for (const action of actions) {
     // 直改给出的新陈述过同一道形状闸(CONTEXT.md 陈述形状,spec #286):它覆盖队列里那
     // 条的陈述,超长的一句直接盖上去等于绕开产出那一道闸。跳过这一次直改,队列里原来
-    // 那条原样留着,轨迹说得出为什么。改写为修改型没有新陈述,不经这道闸。
+    // 那条原样留着;它仍是一个动作,轨迹上仍是那一条 `rule_consolidated`,只是没落地并
+    // 带上原因——队列里没有东西被丢掉,记成「丢弃一条产出」会让人去找一条不存在的提案。
+    // 改写为修改型没有新陈述,不经这道闸。
     if (action.kind === "merge" && action.statement.trim().length > AGENT_STATEMENT_LIMIT) {
-      trace.record("rule_proposal_dropped", {
-        proposalId: action.keepId,
-        reason: `陈述超过 ${AGENT_STATEMENT_LIMIT} 字`,
-      });
+      trace.record("rule_consolidated", { action, applied: false, reason: STATEMENT_TOO_LONG });
       continue;
     }
     // 一条一次库:整理跑完这一刻别人可能正在裁决,一次事务把全部动作圈起来只会把

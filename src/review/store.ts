@@ -3325,7 +3325,8 @@ export function openStore(dbPath: string): Store {
   }
 
   // 合并变更类型(issue #282):`change` 的枚举多一档 `merge`,单值的 `target_rule_id`
-  // 换成 JSON 数组 `target_rule_ids`(新增是空数组,修改与废止是一元,合并两条以上)。
+  // 换成 JSON 数组 `target_rule_ids`(新增是空数组,修改与废止是一元,合并一条以上——
+  // 单目标的合并即改型,issue #289)。
   // 两样都改不动现表——`ALTER TABLE` 改不了 CHECK,也去不掉列,只能重建。判据看建表
   // 语句里有没有 `merge`,重建过即不再命中。重建顺序与上面那一次同律(先关外键)。
   const mergeSql = db

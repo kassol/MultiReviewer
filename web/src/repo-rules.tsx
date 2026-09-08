@@ -911,17 +911,17 @@ function ProposalSection({
     const rows = proposal.targetRuleIds.map((id) => {
       const rule = ruleSet.rules.find((entry) => entry.id === id);
       return rule === undefined
-        ? { id, label: `知识条目 ${id}(已不生效)`, scope: "" }
-        : { id, label: rule.statement, scope: rule.scope === "" ? "全仓库" : rule.scope };
+        ? { id, label: `知识条目 ${id}(已不生效)`, scope: "", type: null }
+        : { id, label: rule.statement, scope: rule.scope === "" ? "全仓库" : rule.scope, type: rule.type };
     });
     if (rows.length === 0) return null;
     if (rows.length === 1) {
       // 单目标的合并即改型(CONTEXT.md 修订提案,issue #289):卡片上多一句说清换的是
       // 哪一型——「合并」这个词本身看不出这一次改的是型。
-      const target = ruleSet.rules.find((entry) => entry.id === rows[0]!.id);
+      const targetType = rows[0]!.type;
       const retyped =
-        proposal.change === "merge" && target !== undefined && target.type !== proposal.type
-          ? `改型:${TYPE_LABEL[target.type]} → ${TYPE_LABEL[proposal.type]}`
+        proposal.change === "merge" && targetType !== null && targetType !== proposal.type
+          ? `改型:${TYPE_LABEL[targetType]} → ${TYPE_LABEL[proposal.type]}`
           : null;
       return (
         <>

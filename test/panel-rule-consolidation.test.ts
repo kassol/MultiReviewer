@@ -836,13 +836,20 @@ test("整理产出超过 100 字的陈述:合并直改跳过、提案丢弃,两�
   const trace = await get(h, cookie, `/repos/${GITEA_REPO.id}/rule-traces/${taskId}`);
   assert.equal(trace.status, 200);
   const events = ((await trace.json()) as { events: { kind: string; payload: unknown }[] }).events;
-  // 丢掉的两件事各一条:被跳过的那次直改指名它本来要留的那条提案,被丢的提案没有目标。
+  // 两件事各记各的:被跳过的那次直改仍是一条 `rule_consolidated`(没落地、带原因,队列里
+  // 没有东西被丢),被丢的那条提案才是 `rule_proposal_dropped`,它没有目标可指。
+  assert.deepEqual(
+    events
+      .filter((event) => event.kind === "rule_consolidated")
+      .map((event) => {
+        const { action, ...rest } = event.payload as { action: { kind: string; keepId: number } };
+        return [action.kind, action.keepId, rest];
+      }),
+    [["merge", ids[0], { applied: false, reason: "陈述超过 100 字" }]],
+  );
   assert.deepEqual(
     events.filter((event) => event.kind === "rule_proposal_dropped").map((event) => event.payload),
-    [
-      { proposalId: ids[0], reason: "陈述超过 100 字" },
-      { reason: "陈述超过 100 字" },
-    ],
+    [{ reason: "陈述超过 100 字" }],
   );
 });
 

@@ -133,6 +133,11 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
             <Badge color={applied ? "gray" : "amber"} variant="soft" radius="full">
               {applied ? "已落地" : "已跳过"}
             </Badge>
+            {/* 没落地的原因(issue #290):直改给的新陈述超长时编排层连试都没试,原因只有
+                这里说得出;目标已不待裁决那一档没有原因,落地那一步自己知道。 */}
+            {!applied && str(payload, "reason") !== null ? (
+              <span className="text-xs text-text-secondary">{str(payload, "reason")}</span>
+            ) : null}
           </span>
         </div>
       );
