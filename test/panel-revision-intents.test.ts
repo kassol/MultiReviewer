@@ -460,6 +460,18 @@ test("重启:停在运行中的意图改判失败", async () => {
       }),
       undefined,
     );
+    // 反哺那一行同样是意图行,改判因此一并覆盖它(issue #296)。
+    assert.notEqual(
+      store.startRuleIntent(71, {
+        text: "处置备注也跑了一半",
+        submittedBy: "someone",
+        targetKind: "finding",
+        targetId: 9,
+        model: "test:global-model",
+        startedAt: "2026-09-08T00:00:30.000Z",
+      }),
+      undefined,
+    );
   } finally {
     store.close();
   }
@@ -467,10 +479,14 @@ test("重启:停在运行中的意图改判失败", async () => {
   const restarted = openStore(db.path);
   try {
     restarted.failInterruptedRuleIntents("服务重启,上一次提议没跑完", "2026-09-08T01:00:00.000Z");
-    const [intent] = restarted.listRuleIntents(71, "2026-09-08T01:00:00.000Z", 600_000);
-    assert.equal(intent?.state, "failed");
-    assert.equal(intent?.failure, "服务重启,上一次提议没跑完");
-    assert.equal(intent?.finishedAt, "2026-09-08T01:00:00.000Z");
+    const listed = restarted.listRuleIntents(71, "2026-09-08T01:00:00.000Z", 600_000);
+    assert.deepEqual(
+      listed.map((row) => [row.targetKind, row.state, row.failure, row.finishedAt]),
+      [
+        ["finding", "failed", "服务重启,上一次提议没跑完", "2026-09-08T01:00:00.000Z"],
+        ["none", "failed", "服务重启,上一次提议没跑完", "2026-09-08T01:00:00.000Z"],
+      ],
+    );
   } finally {
     restarted.close();
   }
