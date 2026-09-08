@@ -280,6 +280,8 @@ function RuleSetDialogContent({
   const [highlightProposal, setHighlightProposal] = useState<number | null>(null);
   /** 从意图行点过来要看的那条生效条目(issue #297)。 */
   const [highlightRule, setHighlightRule] = useState<number | null>(null);
+  /** 从意图行点过来要看的那条草案条目(issue #298)。 */
+  const [highlightDraft, setHighlightDraft] = useState<number | null>(null);
   /** 就地展开意图框的那条生效条目(issue #297)。一次只展开一条:两张框同时开着人分不清
       写的是哪一条。 */
   const [rewritingRule, setRewritingRule] = useState<number | null>(null);
@@ -424,6 +426,10 @@ function RuleSetDialogContent({
           onShowRule={(ruleId) => {
             setPickedTab("entries");
             setHighlightRule(ruleId);
+          }}
+          onShowDraftItem={(itemId) => {
+            setPickedTab("exploration");
+            setHighlightDraft(itemId);
           }}
         />
       )}
@@ -657,7 +663,9 @@ function RuleSetDialogContent({
                   ruleSet={data}
                   draft={draftEdit}
                   busy={changeDraft.isPending || confirm.isPending}
+                  highlight={highlightDraft}
                   onLaunched={reload}
+                  onChanged={reload}
                   onEdit={setDraftEdit}
                   onSubmitEdit={() => changeDraft.mutate(draftEdit!)}
                   onDeleteDraft={(id) => changeDraft.mutate({ deleteDraft: id })}
@@ -1020,9 +1028,10 @@ const INTENT_STATE_LABEL = {
 } as const;
 
 /**
- * 意图框(CONTEXT.md 修订意图,ADR 0028,issue #294、#295、#297)。弹窗顶部那一个与生效
- * 条目、待裁决提案卡片上「改写」展开的那一个是同一个组件,**目标由调用方给**:目标决定的
- * 只有提交时带不带 `target` 与框里那句提示语,字数、置灰与提交那几道判据三处必须一样。
+ * 意图框(CONTEXT.md 修订意图,ADR 0028,issue #294、#295、#297、#298)。弹窗顶部那一个与
+ * 生效条目、待裁决提案与草案条目卡片上「改写」展开的那一个是同一个组件,**目标由调用方
+ * 给**:目标决定的只有提交时带不带 `target` 与框里那句提示语,字数、置灰与提交那几道判据
+ * 四处必须一样。
  */
 function IntentForm({
   repoId,
@@ -1036,7 +1045,7 @@ function IntentForm({
   intentModel: string | null;
   placeholder: string;
   /** 这条意图指向什么。缺席即无目标(产新增)。 */
-  target?: { kind: "rule" | "proposal"; id: number };
+  target?: { kind: "rule" | "proposal" | "draft"; id: number };
   onSubmitted: () => void;
   /** 就地展开的那一个给一颗取消;顶部那一个常驻,不给。 */
   onCancel?: () => void;
@@ -1136,6 +1145,7 @@ function IntentSection({
   onChanged,
   onShowProposal,
   onShowRule,
+  onShowDraftItem,
 }: {
   repo: { repoId: number; owner: string; repo: string };
   canWrite: boolean;
@@ -1145,6 +1155,8 @@ function IntentSection({
   onShowProposal: (proposalId: number) => void;
   /** 同一颗按钮的条目那一档:切到知识条目 tab 并高亮那张卡片(issue #297)。 */
   onShowRule: (ruleId: number) => void;
+  /** 同一颗按钮的草案条目那一档:切到知识草案 tab 并高亮那张卡片(issue #298)。 */
+  onShowDraftItem: (itemId: number) => void;
 }) {
   const remove = useMutation({
     mutationFn: async (intentId: number): Promise<void> => {
@@ -1209,7 +1221,7 @@ function IntentSection({
                     ? null
                     : ` · 思考 ${THINKING_LEVEL_LABEL[intent.thinkingLevel]}`}
                 </Text>
-                {/* 目标引用(issue #295、#297):点它切到目标所在的 tab 并滚到那张卡片,
+                {/* 目标引用(issue #295、#297、#298):点它切到目标所在的 tab 并滚到那张卡片,
                     不另开一页——改写与被改写的那一条本来就在同一个弹窗里。 */}
                 {intent.targetId === null ? null : intent.targetKind === "proposal" ? (
                   <Button
@@ -1232,6 +1244,17 @@ function IntentSection({
                     onClick={() => onShowRule(intent.targetId!)}
                   >
                     改写条目 #{intent.targetId}
+                  </Button>
+                ) : intent.targetKind === "draft" ? (
+                  <Button
+                    variant="outline"
+                    color="gray"
+                    highContrast
+                    size={{ initial: "3", sm: "1" }}
+                    className={OUTLINED_ACTION}
+                    onClick={() => onShowDraftItem(intent.targetId!)}
+                  >
+                    改写草案 #{intent.targetId}
                   </Button>
                 ) : null}
                 {/* 反哺那一行的 Finding 引用(issue #296):走提案出处上那个既有的
@@ -1631,7 +1654,9 @@ function ExplorationSection({
   ruleSet,
   draft,
   busy,
+  highlight,
   onLaunched,
+  onChanged,
   onEdit,
   onSubmitEdit,
   onDeleteDraft,
@@ -1641,7 +1666,10 @@ function ExplorationSection({
   ruleSet: RuleSet;
   draft: RuleFormState | null;
   busy: boolean;
+  /** 从意图行点过来的那条草案条目(issue #298):滚到它并高亮。 */
+  highlight: number | null;
   onLaunched: () => void;
+  onChanged: () => void;
   onEdit: (draft: RuleFormState | null) => void;
   onSubmitEdit: () => void;
   onDeleteDraft: (id: number) => void;
@@ -1653,6 +1681,21 @@ function ExplorationSection({
   const confirmed = ruleSet.version !== null;
   // 草案默认全勾:确认这一整组是常规动作,取消勾选是例外(issue #223)。
   const pick = useSelection(ruleSet.draft.map((row) => row.id), true);
+  // 就地展开意图框的那条草案条目(issue #298)。一次只展开一条,与另两处同一条口径。
+  const [rewriting, setRewriting] = useState<number | null>(null);
+  // 从意图行点过来时滚到那张卡片。切 tab 那一下这一段才挂上,因此按 `highlight` 变化滚,
+  // 不按渲染滚——有意图在跑时这个弹窗每五秒重读一次,每次都滚会把人拽走。
+  useEffect(() => {
+    if (highlight === null) return;
+    document.getElementById(`rule-draft-card-${highlight}`)?.scrollIntoView({ block: "center" });
+  }, [highlight]);
+  // 刚完成的意图产出的草案条目(issue #294、#298):改写过的那一条与意图补进来的那几条
+  // 同一枚徽章,人回到草案要认出的都是「刚才那一次动的是哪几条」。
+  const fromIntent = new Set(
+    ruleSet.intents.flatMap((intent) =>
+      intent.state === "completed" ? intent.produced.draftItemIds : [],
+    ),
+  );
 
   return (
     // tab 本身已经命名这一段,头行直接是探索状态与发起按钮,不再立一层大标题。
@@ -1737,7 +1780,13 @@ function ExplorationSection({
         />
         <ul className="overflow-hidden rounded-lg border border-card-line">
           {ruleSet.draft.map((rule) => (
-            <li key={rule.id} className="flex items-start gap-2 border-t border-line px-4 py-3 first:border-t-0">
+            <li
+              key={rule.id}
+              id={`rule-draft-card-${rule.id}`}
+              className={`flex items-start gap-2 border-t border-line px-4 py-3 first:border-t-0 ${
+                highlight === rule.id ? "bg-accent-tint" : ""
+              }`}
+            >
               {/* 没勾的那些不进知识集,随草案一并丢弃(issue #223)。行结构与修订提案
                   同一套:勾选框独立成列,陈述整行,元数据与操作合成底部收尾线。 */}
               <Checkbox
@@ -1763,8 +1812,24 @@ function ExplorationSection({
                     <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
                       {rule.scope === "" ? "全仓库" : rule.scope}
                     </Badge>
+                    {fromIntent.has(rule.id) ? (
+                      <Badge color="amber" variant="soft">刚由意图产出</Badge>
+                    ) : null}
                   </span>
                   <div className="flex shrink-0 gap-1">
+                    {/* 「改写」就地展开与顶部同一个意图框(ADR 0028,issue #298):人写一句话
+                        说要改成什么样,agent 读代码并把这一行原地换掉。首次确认前从此也不用
+                        手写陈述。「修改」与「删除」不动(撤直改是 issue #299)。 */}
+                    <Button
+                      variant="outline"
+                      color="gray"
+                      highContrast
+                      size={{ initial: "3", sm: "1" }}
+                      className={OUTLINED_ACTION}
+                      onClick={() => setRewriting((open) => (open === rule.id ? null : rule.id))}
+                    >
+                      改写
+                    </Button>
                     <Button
                       variant="outline"
                       color="gray"
@@ -1788,6 +1853,21 @@ function ExplorationSection({
                     </Button>
                   </div>
                 </div>
+                {rewriting === rule.id ? (
+                  <div className="mt-2">
+                    <IntentForm
+                      repoId={repo.repoId}
+                      intentModel={ruleSet.intentModel}
+                      placeholder="写下这一条要改成什么样，agent 会读代码并原地改写这条草案条目"
+                      target={{ kind: "draft", id: rule.id }}
+                      onSubmitted={() => {
+                        setRewriting(null);
+                        onChanged();
+                      }}
+                      onCancel={() => setRewriting(null)}
+                    />
+                  </div>
+                ) : null}
               </div>
             </li>
           ))}

@@ -296,6 +296,9 @@ export function intentPrompt(
   if (target.kind === "proposal") {
     return rewritePrompt(request.intent.text, target.proposal);
   }
+  if (target.kind === "draft") {
+    return draftPrompt(request.intent.text, target.item, target.others);
+  }
   const existing =
     request.existingKnowledge.length === 0
       ? ""
@@ -437,6 +440,42 @@ Change that one entry and nothing else. Call ${PROPOSE_RULE_TOOL} exactly once, 
 - to change its kind, pass rule_ids = [${entry.id}] with the other kind in type — the server records that as a merge of that one entry into the statement you give.
 
 When a proposal above already targets that entry, merge into it instead of queuing a second one: pass its id in proposal_id with one statement covering what that proposal and this request both say. Report nothing else — anything you report that neither carries rule_ids = [${entry.id}] nor merges into one of those proposals is dropped, and reporting nothing at all is the right outcome when the entry already says what they asked for.
+
+${CODE_READING}`;
+}
+
+/**
+ * 目标为一条草案条目的修订意图的提示(CONTEXT.md 人工提议,issue #298)。现集与队列那两段
+ * 不渲染:草案只存在于知识集确认之前,那时现集是空的、队列里一条也没有,给出来只是两段空话。
+ * 其余草案条目照给——改写这一条不该产出一条与草案里别处重复的陈述。
+ *
+ * `rule_ids` 在这一档里指的是**草案条目的标识**:草案还没确认,它的条目与生效条目各有
+ * 自己的一套标识,说清楚 agent 才不会去找一个不存在的生效条目。
+ */
+function draftPrompt(
+  text: string,
+  item: KnowledgeEntry,
+  others: readonly KnowledgeEntry[],
+): string {
+  const rest =
+    others.length === 0
+      ? "That draft holds no other item."
+      : [
+          "The other items in that draft, so that you do not repeat what one of them already says:",
+          "",
+          ...others.map((entry) => knowledgeBullet(entry)),
+        ].join("\n");
+  return `A maintainer of this repository is looking at one item of the knowledge draft — the draft is not confirmed yet, so nothing in it is in force — and wrote down how they want it to read instead. Change that one item.
+
+Revision intent: ${text}
+
+The item as it stands, with its draft item id:
+
+${knowledgeBullet(item)}
+
+${rest}
+
+Change that one item and nothing else. Call ${PROPOSE_RULE_TOOL} exactly once, with rule_ids = [${item.id}], the full new statement, the scope it really has and the kind it really is — all three replace what the draft holds now. The ids here are draft item ids, not ids of entries in force: this repository has no knowledge in force yet. Report nothing else — anything you report without rule_ids = [${item.id}] is dropped, and reporting nothing at all is the right outcome when the item already says what they asked for.
 
 ${CODE_READING}`;
 }

@@ -86,7 +86,7 @@ import {
   DEFAULT_MAX_PARALLEL_BATCHES,
 } from "../review/batch.ts";
 import type { MergeAgent } from "../review/dedupe.ts";
-import type { Reviewer, ReviewRunMode, Severity } from "../review/finding.ts";
+import type { KnowledgeEntry, Reviewer, ReviewRunMode, Severity } from "../review/finding.ts";
 import {
   containerBranches,
   containerPullRequestBody,
@@ -135,6 +135,7 @@ import {
   type RepoSummary,
   type ReviewRuleInput,
   type ReviewRuleRecord,
+  type RuleDraftItem,
   type RuleIntent,
   type RuleIntentTargetKind,
   type RuleProposal,
@@ -7321,9 +7322,11 @@ const NO_RULE_TASK_MODEL = "这个仓库没有基点探索记录、全局模型�
  * 一条,队列因此仍只有一条,人裁决一次。指名的那条已裁决或不存在时并不进去,那一条退回
  * 与其余条目同一套映射,按新增或对照现集的变更入队。
  *
- * `target` 有值即这一次是目标型意图(issue #295、#297),落地换成只收指向目标那一条的那档。
+ * `target` 有值即这一次是目标型意图(issue #295、#297、#298),落地换成只收指向目标那一条
+ * 的那档。
  *
- * 回落地的提案标识:并入的是被并那一条的标识,新排的是新行的。意图行的产出记它。
+ * 回落地的提案标识:并入的是被并那一条的标识,新排的是新行的。意图行的产出记它。目标为
+ * 草案条目那一档回的是草案条目标识——那一档改的是草案里那一行,不排提案(issue #298)。
  */
 function landRuleItems(
   store: Store,
@@ -7337,6 +7340,7 @@ function landRuleItems(
     return rewriteTargetProposal(store, repoId, items, source, target);
   }
   if (target?.kind === "rule") return landRuleTargetEntry(store, repoId, items, source, target);
+  if (target?.kind === "draft") return landRuleDraftItem(store, repoId, items, target);
   const landed: number[] = [];
   const added: RuleAgentItem[] = [];
   for (const item of items) {
@@ -7360,19 +7364,36 @@ function landRuleItems(
 }
 
 /**
- * 目标型意图落地要的那一份(issue #295、#297)。目标为提案即原地改写它;目标为知识条目即
- * 只收一条指向它的变更,`mergeable` 是开跑时队列里指向它的那几条——并进这几条之外的一条
- * 不算指向目标,而并进这几条里已经被裁决掉的一条要让意图失败,两者分得开。
+ * 目标型意图落地要的那一份(issue #295、#297、#298)。目标为提案即原地改写它;目标为知识
+ * 条目即只收一条指向它的变更,`mergeable` 是开跑时队列里指向它的那几条——并进这几条之外
+ * 的一条不算指向目标,而并进这几条里已经被裁决掉的一条要让意图失败,两者分得开;目标为
+ * 草案条目即原地改写草案里那一行。
  */
 type IntentLanding =
   | { kind: "proposal"; proposalId: number; trace: RuleTraceRecorder }
-  | { kind: "rule"; ruleId: number; mergeable: readonly number[]; trace: RuleTraceRecorder };
+  | { kind: "rule"; ruleId: number; mergeable: readonly number[]; trace: RuleTraceRecorder }
+  | { kind: "draft"; itemId: number; trace: RuleTraceRecorder };
 
 /** 目标型意图落地时,产出里不指向目标的那些被丢掉的原因。 */
 const REWRITE_OFF_TARGET = "目标为一条提案的意图只落地指向它的那一条改写";
 
 /** 目标为知识条目时同一道闸的那句话(issue #297)。 */
 const ENTRY_OFF_TARGET = "目标为一条知识条目的意图只落地指向它的那一条变更";
+
+/** 目标为草案条目时同一道闸的那句话(issue #298)。 */
+const DRAFT_OFF_TARGET = "目标为一条草案条目的意图只落地指向它的那一条改写";
+
+/**
+ * 落地那一刻目标草案条目已经不在草案里(issue #298)。人在解读期间把它删了,或者重新探索
+ * 整组覆盖了这份草案、这个标识不再存在:两者都让这一次改写没有落处,改判失败并留原因。
+ */
+const DRAFT_TARGET_GONE = "落地时这条草案条目已经不在这个仓库的知识草案里,改写没有落下";
+
+/** 开跑前读输入时目标就没了的那句话,按目标类型选(issue #295、#297、#298)。 */
+function targetGone(kind: RuleIntentTargetKind): string {
+  if (kind === "rule") return ENTRY_TARGET_GONE;
+  return kind === "draft" ? DRAFT_TARGET_GONE : REWRITE_TARGET_GONE;
+}
 
 /**
  * 落地那一刻目标条目已经不生效(issue #297)。人在解读期间直接废止了它:指向它的提案排下去
@@ -7488,6 +7509,47 @@ function targetsRuleEntry(
 }
 
 /**
+ * 目标为一条草案条目的意图落地(CONTEXT.md 人工提议,issue #298)。**只收恰好一条指向它的
+ * 改写**:`rule_ids` 恰好是这条草案条目的标识(草案还没确认,这里的标识是草案条目自己那
+ * 一套)。型、陈述与作用范围在那一行上原地换,标识不变、其余行不动;草案条目没有出处附注
+ * 那张子表,这一次的来龙去脉只记在知识轨迹上。
+ *
+ * 其余产出逐条丢掉并记轨迹,一条都没有即零产出、意图照常完成。落地那一刻它已经不在草案
+ * 里(被删,或者重新探索整组覆盖了这份草案)即抛 `DRAFT_TARGET_GONE`,意图失败留原因。
+ */
+function landRuleDraftItem(
+  store: Store,
+  repoId: number,
+  items: readonly RuleAgentItem[],
+  target: { itemId: number; trace: RuleTraceRecorder },
+): number[] {
+  // 落地那一刻它还在草案里吗:开跑前查过一次,解读那几分钟里人照样可以删掉它。
+  if (!store.getRuleDraft(repoId).some((item) => item.id === target.itemId)) {
+    throw new Error(DRAFT_TARGET_GONE);
+  }
+  let chosen: RuleAgentItem | undefined;
+  for (const item of items) {
+    const targets = item.targetRuleIds ?? [];
+    if (chosen === undefined && targets.length === 1 && targets[0] === target.itemId) {
+      chosen = item;
+      continue;
+    }
+    target.trace.record("rule_proposal_dropped", { reason: DRAFT_OFF_TARGET });
+  }
+  if (chosen === undefined) return [];
+  if (
+    !store.updateRuleDraftItem(repoId, target.itemId, {
+      type: chosen.type,
+      scope: chosen.scope,
+      statement: chosen.statement,
+    })
+  ) {
+    throw new Error(DRAFT_TARGET_GONE);
+  }
+  return [target.itemId];
+}
+
+/**
  * 处置备注即一条以那条 Finding 为锚的修订意图(CONTEXT.md 处置反哺,ADR 0028,issue #296)。
  * 处置落库之后先建那一行(原文即备注、提交人即处置人、目标即这条 Finding),再走与人工
  * 提议同一条后台运行——反哺由此有了运行状态:跑着的看得见,失败的带原因、可删。
@@ -7588,11 +7650,13 @@ function toIntentTargetProposal(
  * 那两档恒是 `none`:反哺的目标是那条 Finding,它走 `feedback` 那一段。
  *
  * 目标为知识条目时另给队列里指向它的那几条:提示据此点名让 agent 优先并入,落地也只认它们。
+ * 目标为草案条目时另给其余草案条目:改写这一条不该产出一条与草案里别处重复的陈述。
  */
 function intentTarget(
   intent: RuleIntent,
   rules: readonly ReviewRuleRecord[],
   pending: readonly RuleProposal[],
+  draft: readonly RuleDraftItem[],
 ): RuleIntentInput["target"] | undefined {
   if (intent.targetKind === "proposal") {
     const targeted = pending.find((proposal) => proposal.id === intent.targetId);
@@ -7612,10 +7676,28 @@ function intentTarget(
             .map((proposal) => toIntentTargetProposal(proposal, rules)),
         };
   }
+  if (intent.targetKind === "draft") {
+    const item = draft.find((row) => row.id === intent.targetId);
+    return item === undefined
+      ? undefined
+      : {
+          kind: "draft",
+          item: toDraftEntry(item),
+          others: draft.filter((row) => row.id !== item.id).map(toDraftEntry),
+        };
+  }
   return { kind: "none" };
 }
 
-/** 目标那一份落地要的样子(issue #295、#297)。无目标即缺席,产出按无目标那两档入队。 */
+/**
+ * 草案里的一条 → 交给 agent 的那一份(issue #298)。与生效条目那一份(`toKnowledgeEntry`)
+ * 同形:标识、型、作用范围与陈述。`origin` 与 `layer` 不给——改写要的是这一条现在说什么。
+ */
+function toDraftEntry(item: RuleDraftItem): KnowledgeEntry {
+  return { id: item.id, type: item.type, scope: item.scope, statement: item.statement };
+}
+
+/** 目标那一份落地要的样子(issue #295、#297、#298)。无目标即缺席,产出按无目标那两档入队。 */
 function intentLanding(
   target: RuleIntentInput["target"],
   trace: RuleTraceRecorder,
@@ -7623,6 +7705,7 @@ function intentLanding(
   if (target.kind === "proposal") {
     return { kind: "proposal", proposalId: target.proposal.id, trace };
   }
+  if (target.kind === "draft") return { kind: "draft", itemId: target.item.id, trace };
   if (target.kind === "rule") {
     return {
       kind: "rule",
@@ -7722,12 +7805,16 @@ async function runRevisionIntentInBackground(
         pending: pending.map(toPendingProposal),
         // 目标在解读开跑前就没了的话这一次改不成任何东西:早一步失败,不必先烧一次
         // 模型调用再在落地那一步说同一句话。
-        target: intentTarget(intent, rules, pending),
+        target: intentTarget(
+          intent,
+          rules,
+          pending,
+          // 草案那一份只有目标为草案条目时用得上:别的三档读它是一次白跑的查询。
+          intent.targetKind === "draft" ? store.getRuleDraft(repoId) : [],
+        ),
       };
     });
-    if (input.target === undefined) {
-      throw new Error(intent.targetKind === "rule" ? ENTRY_TARGET_GONE : REWRITE_TARGET_GONE);
-    }
+    if (input.target === undefined) throw new Error(targetGone(intent.targetKind));
     const agent = deps.ruleAgent ?? createPiRuleAgent();
     const result = await agent({
       worktreePath: worktree.path,
@@ -7772,32 +7859,35 @@ async function runRevisionIntentInBackground(
       traceTaskId: trace.taskId,
     };
     const landing = intentLanding(input.target, trace);
-    const produced = withStore(deps.dbPath, (store) =>
-      // 目标型意图只落地指向目标的那一条(issue #295、#297),与无目标那两档分道:它不看
-      // 知识集确不确认——队列里与现集里有它就说明这个仓库已经确认过。
-      landing !== undefined
-        ? {
-            proposalIds: landRuleItems(store, repoId, usable, input.rules, source, landing),
-            draftItemIds: [],
-          }
-        : input.version === null
-          ? {
-              proposalIds: [],
-              draftItemIds: store.appendRuleDraftItems(
-                repoId,
-                usable.map((item) => ({
-                  type: item.type,
-                  scope: item.scope,
-                  statement: item.statement,
-                })),
-                at,
-              ),
-            }
-          : {
-              proposalIds: landRuleItems(store, repoId, usable, input.rules, source),
-              draftItemIds: [],
-            },
-    );
+    const produced = withStore(deps.dbPath, (store) => {
+      // 目标型意图只落地指向目标的那一条(issue #295、#297、#298),与无目标那两档分道:
+      // 它不看知识集确不确认——目标本身就说得出这个仓库在哪一边。
+      if (landing !== undefined) {
+        const landed = landRuleItems(store, repoId, usable, input.rules, source, landing);
+        // 目标为草案条目那一档改的是草案里那一行,产出因此记在草案那一格(issue #298)。
+        return landing.kind === "draft"
+          ? { proposalIds: [], draftItemIds: landed }
+          : { proposalIds: landed, draftItemIds: [] };
+      }
+      if (input.version === null) {
+        return {
+          proposalIds: [],
+          draftItemIds: store.appendRuleDraftItems(
+            repoId,
+            usable.map((item) => ({
+              type: item.type,
+              scope: item.scope,
+              statement: item.statement,
+            })),
+            at,
+          ),
+        };
+      }
+      return {
+        proposalIds: landRuleItems(store, repoId, usable, input.rules, source),
+        draftItemIds: [],
+      };
+    });
     withStore(deps.dbPath, (store) =>
       store.finishRuleIntent(
         intent.id,
@@ -7864,8 +7954,10 @@ async function defaultBranchHead(
  * 废止型(400,它没有改写入口)、这个目标上不能已经跑着一条意图(409)。目标为一条知识
  * 条目要它此刻还生效(404,不存在与已废止同一句话),同目标互斥那一道两档共用。
  *
- * `draft` / `finding` 两档仍 400,由后续票放开(spec #293)。回 undefined 即这里已经回过
- * 响应,调用方直接返回。
+ * 目标为一条草案条目要它此刻还在这个仓库的草案里(404 那句就是草案改删两个端点用的
+ * `NO_DRAFT_ITEM`,issue #298):知识集已确认的仓库没有草案,那一档因此自然 404。`finding`
+ * 那一档仍 400——它由处置那一侧自己建行,不由人在这里提。回
+ * undefined 即这里已经回过响应,调用方直接返回。
  */
 function readIntentTarget(
   res: ServerResponse,
@@ -7878,10 +7970,13 @@ function readIntentTarget(
   if (kind === "none" || kind === undefined) {
     return { targetKind: "none", targetId: null };
   }
-  if ((kind !== "proposal" && kind !== "rule") || typeof target.id !== "number") {
+  if (
+    (kind !== "proposal" && kind !== "rule" && kind !== "draft") ||
+    typeof target.id !== "number"
+  ) {
     sendJson(res, 400, {
       error:
-        '目标要是 {"kind": "rule" | "proposal", "id": …} 形状的 JSON,别的目标类型还没放开',
+        '目标要是 {"kind": "rule" | "proposal" | "draft", "id": …} 形状的 JSON,别的目标类型还没放开',
     });
     return undefined;
   }
@@ -7896,6 +7991,15 @@ function readIntentTarget(
     }
     if (proposal.change === "retire") {
       sendJson(res, 400, { error: NO_RETIRE_REWRITE });
+      return undefined;
+    }
+  } else if (kind === "draft") {
+    if (
+      !withStore(deps.dbPath, (store) =>
+        store.getRuleDraft(repoId).some((item) => item.id === targetId),
+      )
+    ) {
+      sendJson(res, 404, { error: NO_DRAFT_ITEM });
       return undefined;
     }
   } else if (
@@ -7915,11 +8019,11 @@ function readIntentTarget(
 }
 
 /**
- * 提交一条修订意图(CONTEXT.md 修订意图,ADR 0028,issue #294、#295、#297)。原文即时落一行
- * 运行中的,解读排到后台——人提交完就走,不在这个请求里等一次 agent 运行。
+ * 提交一条修订意图(CONTEXT.md 修订意图,ADR 0028,issue #294、#295、#297、#298)。原文即时
+ * 落一行运行中的,解读排到后台——人提交完就走,不在这个请求里等一次 agent 运行。
  *
- * 目标三档:无目标产新增,目标为一条待裁决提案即原地改写它,目标为一条生效知识条目即产
- * 一条指向它的变更(issue #297)。草案条目那一档由后续票填(spec #293)。
+ * 目标四档:无目标产新增,目标为一条待裁决提案即原地改写它,目标为一条生效知识条目即产
+ * 一条指向它的变更(issue #297),目标为一条草案条目即原地改写草案里那一行(issue #298)。
  */
 async function handleSubmitRevisionIntent(
   req: IncomingMessage,
