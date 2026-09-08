@@ -117,6 +117,8 @@ export async function runInChild(
         onEvent(message.event);
         return;
       }
+      // 心跳只为重置静默闸(`subprocess.ts` 已在收到消息时重置),这里不读它。
+      if (message.kind === "heartbeat") return;
       if (message.kind === "verdict") {
         // 同一条历史被复核两次时后一条作数:模型改口时最后那句才是它的结论。
         const verdict = normalizeVerdict(message.raw);

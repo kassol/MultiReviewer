@@ -29,6 +29,7 @@ import {
   prepareAgentRuntime,
   sessionFailure,
   sessionThinkingLevel,
+  streamHeartbeat,
 } from "./worker-tools.ts";
 
 const PROPOSE_RULE_TOOL = "propose_rule";
@@ -464,7 +465,13 @@ async function run(request: RuleWorkerRequest): Promise<void> {
   // 知识轨迹只订阅并转发,不做判断(ADR 0017、issue #214):转换与 Reviewer 那侧共用
   // 同一个,凭据在转换那一步就抹掉。
   const forwardEvent = reviewerEventStream(apiKey, (event) => send({ kind: "event", event }));
-  session.subscribe(forwardEvent);
+  // 长思考档位下,几分钟内可能一条完整消息、一次工具调用都没有,静默闸会把它当卡死;
+  // 流式 delta 因此另发一路节流过的心跳(`streamHeartbeat`)。
+  const heartbeat = streamHeartbeat(send);
+  session.subscribe((event) => {
+    forwardEvent(event);
+    heartbeat(event);
+  });
 
   let thrown: string | undefined;
   try {

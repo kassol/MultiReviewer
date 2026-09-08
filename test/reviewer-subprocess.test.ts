@@ -703,3 +703,28 @@ test("总时长超过静默上限但持续有回传的子进程不被误杀", as
   assert.equal(outcome.failure, undefined);
   assert.equal(kinds.filter((kind) => kind === "event").length, 6);
 });
+
+test("只发心跳的子进程不被判卡死:长思考期间它是唯一的活着证据", async () => {
+  // 六条心跳各隔 100ms,总时长两倍于 300ms 的静默上限,期间一条完整消息、一次工具调用
+  // 都没有——高思考档位下真实的样子。
+  const path = worker(`process.on("message", () => {
+    let n = 0;
+    const t = setInterval(() => {
+      n += 1;
+      process.send({ kind: "heartbeat" });
+      if (n === 6) { clearInterval(t); process.send({ kind: "done" }); process.exit(0); }
+    }, 100);
+  });`);
+  const kinds: string[] = [];
+  const outcome = await runWorkerChild({
+    workerPath: path,
+    worktreePath: tmpdir(),
+    apiKey: "k",
+    timeoutSubject: "受控 worker",
+    payload: {},
+    onMessage: (message) => kinds.push(message.kind),
+    inactivityTimeoutMs: 300,
+  });
+  assert.equal(outcome.failure, undefined);
+  assert.equal(kinds.filter((kind) => kind === "heartbeat").length, 6);
+});

@@ -46,6 +46,7 @@ import {
   ruleBullet,
   sessionFailure,
   sessionThinkingLevel,
+  streamHeartbeat,
 } from "./worker-tools.ts";
 
 const REPORT_FINDING_TOOL = "report_finding";
@@ -634,8 +635,13 @@ async function run(request: ReviewerRequest): Promise<void> {
       toolName === EVIDENCE_TOOL ? evidenceTranscriptEvents(result) : [],
   );
 
+  // 长思考档位下,几分钟内可能一条完整消息、一次工具调用都没有,静默闸会把它当卡死;
+  // 流式 delta 因此另发一路节流过的心跳(`streamHeartbeat`)。
+  const heartbeat = streamHeartbeat(send);
+
   session.subscribe((event) => {
     forwardEvent(event);
+    heartbeat(event);
     // 只数 report_finding 的失败。read 或 grep 出错是模型在探索仓库时的正常摩擦,
     // 把它们算进来会让"契约失配"这个信号失去意义。
     if (

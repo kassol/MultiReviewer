@@ -27,6 +27,10 @@ export type WorkerMessage =
   | { kind: "verdict"; raw: RawVerdict }
   /** 一条过程事件,与 Finding 回传并列(issue #171)。子进程只转发,不做判断。 */
   | { kind: "event"; event: ReviewerEvent }
+  /**
+   * 会话还活着,别的什么都不说明(`streamHeartbeat`)。父进程只用它重置静默闸,不读内容。
+   */
+  | { kind: "heartbeat" }
   | {
       kind: "done";
       /** 被 Pi 校验拒绝的工具调用次数。不为零而 Finding 为零即契约失配。 */

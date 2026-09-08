@@ -27,6 +27,7 @@ import {
   prepareAgentRuntime,
   sessionFailure,
   sessionThinkingLevel,
+  streamHeartbeat,
 } from "./worker-tools.ts";
 
 const PROPOSE_GROUP_TOOL = "propose_merge_group";
@@ -209,7 +210,14 @@ async function run(request: MergeWorkerRequest): Promise<void> {
   });
 
   // 审查轨迹只订阅并转发,不做判断(ADR 0017):转换与另两条链路共用同一个。
-  session.subscribe(reviewerEventStream(apiKey, (event) => send({ kind: "event", event })));
+  const forwardEvent = reviewerEventStream(apiKey, (event) => send({ kind: "event", event }));
+  // 长思考档位下,几分钟内可能一条完整消息、一次工具调用都没有,静默闸会把它当卡死;
+  // 流式 delta 因此另发一路节流过的心跳(`streamHeartbeat`)。
+  const heartbeat = streamHeartbeat(send);
+  session.subscribe((event) => {
+    forwardEvent(event);
+    heartbeat(event);
+  });
 
   let thrown: string | undefined;
   try {
