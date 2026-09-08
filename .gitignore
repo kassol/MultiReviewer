@@ -6,5 +6,6 @@ data/
 # 前端构建产物在 Docker 多阶段构建里生成,不进版本库。
 web/dist/
 .cindy-worktrees/
+.claude/worktrees/
 # 模型服务发现的远程目录缓存是可重建的派生输入,不进版本库(issue #254)。
 .cache/worktrees/pi-models/models-store.json
