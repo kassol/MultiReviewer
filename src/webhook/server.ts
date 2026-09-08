@@ -136,6 +136,7 @@ import {
   type ReviewRuleInput,
   type ReviewRuleRecord,
   type RuleIntent,
+  type RuleIntentTargetKind,
   type RuleProposal,
   type RuleProposalInput,
   type RuleProposalSourceInput,
@@ -187,6 +188,7 @@ import {
   type RuleAgentEvent,
   type RuleAgentItem,
   type RuleConsolidationAction,
+  type RuleIntentTargetProposal,
 } from "../reviewer/rule-agent.ts";
 
 export type Platform = "github" | "gitea";
@@ -7311,10 +7313,12 @@ function ruleTaskSpec(deps: WebhookServerDeps, repoId: number): ReviewerSpec | u
 const NO_RULE_TASK_MODEL = "这个仓库没有基点探索记录、全局模型组合也是空的,解读用不了模型";
 
 /**
- * 产出落进修订提案队列(CONTEXT.md 处置反哺、人工提议,issue #283、#294)。反哺与人工
- * 提议共用:认出队列里已有同一件事即并入那一条——陈述换成合成后的那一句、附注追加一条,
- * 队列因此仍只有一条,人裁决一次。指名的那条已裁决或不存在时并不进去,那一条退回与其余
- * 条目同一套映射,按新增或对照现集的变更入队。
+ * 产出落进修订提案队列(CONTEXT.md 处置反哺、人工提议,issue #283、#294、#295)。反哺
+ * 与人工提议共用:认出队列里已有同一件事即并入那一条——陈述换成合成后的那一句、附注追加
+ * 一条,队列因此仍只有一条,人裁决一次。指名的那条已裁决或不存在时并不进去,那一条退回
+ * 与其余条目同一套映射,按新增或对照现集的变更入队。
+ *
+ * `rewrite` 有值即这一次是目标为一条待裁决提案的意图(issue #295),落地换成改写那一档。
  *
  * 回落地的提案标识:并入的是被并那一条的标识,新排的是新行的。意图行的产出记它。
  */
@@ -7324,7 +7328,9 @@ function landRuleItems(
   items: readonly RuleAgentItem[],
   activeRules: readonly ReviewRuleRecord[],
   source: Omit<RuleProposalSourceInput, "evidence">,
+  rewrite?: { proposalId: number; trace: RuleTraceRecorder },
 ): number[] {
+  if (rewrite !== undefined) return rewriteTargetProposal(store, repoId, items, source, rewrite);
   const landed: number[] = [];
   const added: RuleAgentItem[] = [];
   for (const item of items) {
@@ -7345,6 +7351,54 @@ function landRuleItems(
     if (id !== undefined) landed.push(id);
   }
   return landed;
+}
+
+/** 目标型意图落地时,产出里不指向目标的那些被丢掉的原因。 */
+const REWRITE_OFF_TARGET = "目标为一条提案的意图只落地指向它的那一条改写";
+
+/**
+ * 落地那一刻目标已经不在待裁决队列里。与知识整理「被并的提案不再待裁决即跳过那一次
+ * 合并」同一口径,区别是意图只有这一条产出,跳过它即这一次意图什么都没做成。
+ */
+const REWRITE_TARGET_GONE = "落地时这条提案已经不在这个仓库的待裁决队列里,改写没有落下";
+
+/**
+ * 目标为一条待裁决提案的意图落地(CONTEXT.md 人工提议,issue #295)。**只收恰好一条
+ * 指向目标的改写**:人指着这一条说「改成这样」,agent 顺手提的别的条目不在他说的那件
+ * 事里,逐条丢掉并记轨迹。一条都没有即零产出,意图照常完成。
+ *
+ * 落进去的是陈述、作用范围与型三样(`mergeIntoRuleProposal` 按型规则定变更类型),外加
+ * 一条人工提议附注——附注即修订对话的下一句。
+ */
+function rewriteTargetProposal(
+  store: Store,
+  repoId: number,
+  items: readonly RuleAgentItem[],
+  source: Omit<RuleProposalSourceInput, "evidence">,
+  rewrite: { proposalId: number; trace: RuleTraceRecorder },
+): number[] {
+  let chosen: RuleAgentItem | undefined;
+  for (const item of items) {
+    if (chosen === undefined && item.proposalId === rewrite.proposalId) {
+      chosen = item;
+      continue;
+    }
+    rewrite.trace.record("rule_proposal_dropped", {
+      ...(item.proposalId === undefined ? {} : { proposalId: item.proposalId }),
+      reason: REWRITE_OFF_TARGET,
+    });
+  }
+  if (chosen === undefined) return [];
+  const merged = store.mergeIntoRuleProposal(repoId, rewrite.proposalId, {
+    statement: chosen.statement,
+    scope: chosen.scope,
+    type: chosen.type,
+    source: { ...source, evidence: itemEvidence(chosen) },
+  });
+  // 落不进去只有一个原因:这条提案在解读期间被裁决了。改写没有退路,意图因此失败并留
+  // 原因——提案不动,人看得出该重新写一次意图还是就此作罢。
+  if (!merged) throw new Error(REWRITE_TARGET_GONE);
+  return [rewrite.proposalId];
 }
 
 /**
@@ -7491,6 +7545,42 @@ const INTENT_COMPLETED_WINDOW_MS = 10 * 60 * 1000;
 /** agent 一句话都没说时的收尾(CONTEXT.md 修订意图)。零产出是完成,不是失败。 */
 const INTENT_EMPTY_SUMMARY = "未产出变更";
 
+/** 废止型提案没有改写入口(CONTEXT.md 人工提议):它要说的就是废止哪一条。 */
+const NO_RETIRE_REWRITE = "废止型提案没有改写入口:它说的就是废止哪一条,改不出别的内容";
+
+/** 同一目标同时只跑一条意图(ADR 0028):两条改写并发只会互相覆盖。 */
+const INTENT_TARGET_BUSY = "这条提案已经有一条修订意图在跑,等它结束再提";
+
+/**
+ * 队列里的一条 → 交给意图 agent 的目标那一份(CONTEXT.md 人工提议,issue #295)。比
+ * `toPendingProposal` 多出型、作用范围、目标条目的内容与**全部出处附注**:改写要看清
+ * 它现在是什么样,而附注即之前几次意图留下的修订对话。已经不生效的目标条目不给——那
+ * 一条的内容读不出来,给一个光秃秃的标识对改写没有作用。
+ */
+function toIntentTargetProposal(
+  proposal: RuleProposal,
+  activeRules: readonly ReviewRuleRecord[],
+): RuleIntentTargetProposal {
+  const byId = new Map(activeRules.map((rule) => [rule.id, rule]));
+  return {
+    id: proposal.id,
+    change: proposal.change,
+    type: proposal.type,
+    scope: proposal.scope,
+    statement: proposal.statement,
+    targets: proposal.targetRuleIds.flatMap((id) => {
+      const rule = byId.get(id);
+      return rule === undefined ? [] : [toKnowledgeEntry(rule)];
+    }),
+    sources: proposal.sources.map((source) => ({
+      origin: source.origin,
+      note: source.note,
+      evidence: source.evidence,
+      findingId: source.findingId,
+    })),
+  };
+}
+
 /**
  * 一次人工提议的后台执行(CONTEXT.md 人工提议,ADR 0028,issue #294)。与处置反哺同一条
  * agent 管线:意图原文、这个仓库当前生效的知识集与待裁决队列交给规则 agent,产出经同一套
@@ -7561,15 +7651,28 @@ async function runRevisionIntentInBackground(
     worktree = await prepareWorktree({ ...target, headSha: head, baseSha: head });
     const input = withStore(deps.dbPath, (store) => {
       const ruleSet = store.getRuleSet(repoId);
+      const rules = ruleSet?.rules ?? [];
+      const pending = store
+        .getRuleProposals(repoId)
+        .filter((entry) => entry.state === "pending");
+      const targeted = pending.find((entry) => entry.id === intent.targetId);
       return {
         version: ruleSet?.version ?? null,
-        rules: ruleSet?.rules ?? [],
-        pending: store
-          .getRuleProposals(repoId)
-          .filter((entry) => entry.state === "pending")
-          .map(toPendingProposal),
+        rules,
+        pending: pending.map(toPendingProposal),
+        // 目标在解读开跑前就被裁决掉的话这一次改不成任何东西:早一步失败,不必先烧一次
+        // 模型调用再在落地那一步说同一句话。
+        target:
+          intent.targetKind !== "proposal"
+            ? undefined
+            : targeted === undefined
+              ? undefined
+              : toIntentTargetProposal(targeted, rules),
       };
     });
+    if (intent.targetKind === "proposal" && input.target === undefined) {
+      throw new Error(REWRITE_TARGET_GONE);
+    }
     const agent = deps.ruleAgent ?? createPiRuleAgent();
     const result = await agent({
       worktreePath: worktree.path,
@@ -7579,7 +7682,13 @@ async function runRevisionIntentInBackground(
       existingKnowledge: input.rules.map(toKnowledgeEntry),
       pendingProposals: input.pending,
       ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
-      intent: { text: intent.text, target: { kind: "none" } },
+      intent: {
+        text: intent.text,
+        target:
+          input.target === undefined
+            ? { kind: "none" }
+            : { kind: "proposal", proposal: input.target },
+      },
       onEvent: (event) => {
         if (event.kind === "assistant_message" && event.text.trim() !== "") {
           lastMessage = event.text.trim();
@@ -7594,30 +7703,42 @@ async function runRevisionIntentInBackground(
     // 知识集未确认即产出追加进草案,已确认(含空集)即排进修订提案队列——分界与基点探索
     // 同一条(CONTEXT.md 人工提议)。**追加而不是覆盖**:一条意图补的是这份草案里缺的
     // 那几条,重新探索才整组取代。
+    // 备注原文记意图,依据记 agent 的理由(CONTEXT.md 出处附注)。
+    const source = {
+      origin: "manual-proposal" as const,
+      note: intent.text,
+      findingId: null,
+      traceTaskId: trace.taskId,
+    };
+    const rewrite = input.target;
     const produced = withStore(deps.dbPath, (store) =>
-      input.version === null
+      // 目标为一条待裁决提案即原地改写它(issue #295),与无目标那两档分道:改写不排新行,
+      // 也不看知识集确不确认——队列里有它就说明这个仓库已经确认过。
+      rewrite !== undefined
         ? {
-            proposalIds: [],
-            draftItemIds: store.appendRuleDraftItems(
-              repoId,
-              usable.map((item) => ({
-                type: item.type,
-                scope: item.scope,
-                statement: item.statement,
-              })),
-              at,
-            ),
-          }
-        : {
-            proposalIds: landRuleItems(store, repoId, usable, input.rules, {
-              origin: "manual-proposal",
-              // 备注原文记意图,依据记 agent 的理由(CONTEXT.md 出处附注)。
-              note: intent.text,
-              findingId: null,
-              traceTaskId: trace.taskId,
+            proposalIds: landRuleItems(store, repoId, usable, input.rules, source, {
+              proposalId: rewrite.id,
+              trace,
             }),
             draftItemIds: [],
-          },
+          }
+        : input.version === null
+          ? {
+              proposalIds: [],
+              draftItemIds: store.appendRuleDraftItems(
+                repoId,
+                usable.map((item) => ({
+                  type: item.type,
+                  scope: item.scope,
+                  statement: item.statement,
+                })),
+                at,
+              ),
+            }
+          : {
+              proposalIds: landRuleItems(store, repoId, usable, input.rules, source),
+              draftItemIds: [],
+            },
     );
     withStore(deps.dbPath, (store) =>
       store.finishRuleIntent(
@@ -7654,10 +7775,53 @@ async function runRevisionIntentInBackground(
 }
 
 /**
- * 提交一条修订意图(CONTEXT.md 修订意图,ADR 0028,issue #294)。原文即时落一行运行中的,
- * 解读排到后台——人提交完就走,不在这个请求里等一次 agent 运行。
+ * 提交正文里的那个目标(CONTEXT.md 修订意图,issue #295)。缺席与 `none` 都是无目标;
+ * 目标为一条待裁决提案的三道校验在这里:提案要在这个仓库的待裁决队列里(404)、不能是
+ * 废止型(400,它没有改写入口)、这个目标上不能已经跑着一条意图(409)。
  *
- * 本票只收无目标的意图,目标型三档由后续票填(spec #293)。
+ * `rule` / `draft` / `finding` 三档仍 400,由后续票放开(spec #293)。回 undefined 即
+ * 这里已经回过响应,调用方直接返回。
+ */
+function readIntentTarget(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+  raw: unknown,
+): { targetKind: RuleIntentTargetKind; targetId: number | null } | undefined {
+  const target = (raw ?? { kind: "none" }) as { kind?: unknown; id?: unknown };
+  if (target.kind === "none" || target.kind === undefined) {
+    return { targetKind: "none", targetId: null };
+  }
+  if (target.kind !== "proposal" || typeof target.id !== "number") {
+    sendJson(res, 400, {
+      error: '目标要是 {"kind": "proposal", "id": …} 形状的 JSON,别的目标类型还没放开',
+    });
+    return undefined;
+  }
+  const proposalId = target.id;
+  const proposal = withStore(deps.dbPath, (store) =>
+    store.getRuleProposals(repoId).find((row) => row.id === proposalId && row.state === "pending"),
+  );
+  if (proposal === undefined) {
+    sendJson(res, 404, { error: NO_PENDING_PROPOSAL });
+    return undefined;
+  }
+  if (proposal.change === "retire") {
+    sendJson(res, 400, { error: NO_RETIRE_REWRITE });
+    return undefined;
+  }
+  if (withStore(deps.dbPath, (store) => store.hasRunningRuleIntent(repoId, "proposal", proposalId))) {
+    sendJson(res, 409, { error: INTENT_TARGET_BUSY });
+    return undefined;
+  }
+  return { targetKind: "proposal", targetId: proposalId };
+}
+
+/**
+ * 提交一条修订意图(CONTEXT.md 修订意图,ADR 0028,issue #294、#295)。原文即时落一行
+ * 运行中的,解读排到后台——人提交完就走,不在这个请求里等一次 agent 运行。
+ *
+ * 目标两档:无目标产新增,目标为一条待裁决提案即原地改写它。另三档由后续票填(spec #293)。
  */
 async function handleSubmitRevisionIntent(
   req: IncomingMessage,
@@ -7675,14 +7839,12 @@ async function handleSubmitRevisionIntent(
   if (text.length > INTENT_TEXT_LIMIT) {
     return sendJson(res, 400, { error: `修订意图不能超过 ${INTENT_TEXT_LIMIT} 字` });
   }
-  const target = payload?.target;
-  if (target !== undefined && (target as { kind?: unknown } | null)?.kind !== "none") {
-    return sendJson(res, 400, { error: "目前只收无目标的修订意图" });
-  }
   const repo = withStore(deps.dbPath, (store) => store.getRepo(repoId));
   if (repo === undefined) {
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
+  const target = readIntentTarget(res, deps, repoId, payload?.target);
+  if (target === undefined) return;
   // 模型在提交这一刻就要选得出来:选不出来的话这条意图落地即失败,不如当场说清楚。
   const spec = ruleTaskSpec(deps, repoId);
   if (spec === undefined) return sendJson(res, 409, { error: NO_RULE_TASK_MODEL });
@@ -7690,8 +7852,7 @@ async function handleSubmitRevisionIntent(
     store.startRuleIntent(repoId, {
       text,
       submittedBy,
-      targetKind: "none",
-      targetId: null,
+      ...target,
       model: modelIdentity(spec),
       ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
       startedAt: new Date((deps.now ?? Date.now)()).toISOString(),

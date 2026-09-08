@@ -274,6 +274,8 @@ function RuleSetDialogContent({
   const [proposalEdit, setProposalEdit] = useState<RuleFormState | null>(null);
   /** 人点过的 tab。null 即还没点过,按数据推默认落点。 */
   const [pickedTab, setPickedTab] = useState<DialogTab | null>(null);
+  /** 从意图行点过来要看的那条提案(issue #295)。null 即没有要高亮的。 */
+  const [highlightProposal, setHighlightProposal] = useState<number | null>(null);
   const ruleSet = useQuery({
     queryKey: ["repo-rules", repo.repoId],
     queryFn: () => fetchJson<RuleSet>(`/repos/${repo.repoId}/rules`),
@@ -395,7 +397,16 @@ function RuleSetDialogContent({
       {/* 意图框与意图列表在弹窗顶部,三个 tab 之上(ADR 0028):写下一段话是这个弹窗
           现在唯一的写入口,它不属于其中任何一个 tab。 */}
       {data === undefined ? null : (
-        <IntentSection repo={repo} canWrite={canWrite} ruleSet={data} onChanged={reload} />
+        <IntentSection
+          repo={repo}
+          canWrite={canWrite}
+          ruleSet={data}
+          onChanged={reload}
+          onShowProposal={(proposalId) => {
+            setPickedTab("proposals");
+            setHighlightProposal(proposalId);
+          }}
+        />
       )}
 
       {ruleSet.isPending ? (
@@ -638,7 +649,9 @@ function RuleSetDialogContent({
                   canWrite={canWrite}
                   edit={proposalEdit}
                   busy={decide.isPending}
+                  highlight={highlightProposal}
                   onEdit={setProposalEdit}
+                  onChanged={reload}
                   onDecide={(id, accept) => decide.mutate({ id, accept })}
                   onDecideAll={(ids, accept) => decide.mutate({ ids, accept })}
                   onSubmitEdit={() =>
@@ -920,6 +933,110 @@ const INTENT_STATE_LABEL = {
 } as const;
 
 /**
+ * 意图框(CONTEXT.md 修订意图,ADR 0028,issue #294、#295)。弹窗顶部那一个与待裁决提案
+ * 卡片上「改写」展开的那一个是同一个组件,**目标由调用方给**:目标决定的只有提交时带不
+ * 带 `target` 与框里那句提示语,字数、置灰与提交那几道判据两处必须一样。
+ */
+function IntentForm({
+  repoId,
+  intentModel,
+  placeholder,
+  target,
+  onSubmitted,
+  onCancel,
+}: {
+  repoId: number;
+  intentModel: string | null;
+  placeholder: string;
+  /** 这条意图指向什么。缺席即无目标(产新增)。 */
+  target?: { kind: "proposal"; id: number };
+  onSubmitted: () => void;
+  /** 就地展开的那一个给一颗取消;顶部那一个常驻,不给。 */
+  onCancel?: () => void;
+}) {
+  const [text, setText] = useState("");
+  const fieldId = useId();
+  const noModel = intentModel === null;
+
+  const submit = useMutation({
+    mutationFn: async (): Promise<void> => {
+      const response = await api(`/repos/${repoId}/revision-intents`, {
+        method: "POST",
+        body: JSON.stringify({
+          text: text.trim(),
+          ...(target === undefined ? {} : { target }),
+        }),
+      });
+      if (!response.ok) throw new Error(await errorText(response));
+    },
+    onSuccess: () => {
+      setText("");
+      onSubmitted();
+    },
+  });
+
+  const trimmed = text.trim();
+  const tooLong = trimmed.length > INTENT_TEXT_LIMIT;
+
+  return (
+    <>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (trimmed !== "" && !tooLong && !noModel && !submit.isPending) submit.mutate();
+        }}
+      >
+        <TextArea
+          id={fieldId}
+          value={text}
+          disabled={noModel}
+          onChange={(event) => setText(event.target.value)}
+          placeholder={placeholder}
+          rows={2}
+          size="2"
+        />
+        <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+          <Text as="span" size="1" color={tooLong ? "red" : "gray"} className="tabular-nums">
+            {noModel
+              ? "还没有可用的模型：先配一个模型凭据，或为这个仓库跑一次基点探索。"
+              : `${trimmed.length} / ${INTENT_TEXT_LIMIT} 字`}
+          </Text>
+          <div className="flex flex-wrap items-center gap-2">
+            {onCancel === undefined ? null : (
+              <Button
+                type="button"
+                variant="outline"
+                color="gray"
+                highContrast
+                size={{ initial: "3", sm: "1" }}
+                className={OUTLINED_ACTION}
+                onClick={onCancel}
+              >
+                取消
+              </Button>
+            )}
+            <Button
+              type="submit"
+              size={{ initial: "3", sm: "1" }}
+              disabled={trimmed === "" || tooLong || noModel || submit.isPending}
+            >
+              {submit.isPending ? "提交中…" : "提交意图"}
+            </Button>
+          </div>
+        </div>
+      </form>
+
+      {submit.isError ? (
+        <Callout.Root role="alert" color="red" size="1" mt="2">
+          <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+          <Callout.Text>{(submit.error as Error).message}</Callout.Text>
+        </Callout.Root>
+      ) : null}
+    </>
+  );
+}
+
+/**
  * 修订意图那一块(CONTEXT.md 修订意图,ADR 0028,issue #294):一个意图框加一列意图行。
  *
  * 框只对有 `knowledge:write` 的人出现——没有这一格的人提不了意图。列表所有人都看得到:
@@ -930,30 +1047,15 @@ function IntentSection({
   canWrite,
   ruleSet,
   onChanged,
+  onShowProposal,
 }: {
   repo: { repoId: number; owner: string; repo: string };
   canWrite: boolean;
   ruleSet: RuleSet;
   onChanged: () => void;
+  /** 点意图行上的目标引用:切到队列 tab 并高亮那张卡片(issue #295)。 */
+  onShowProposal: (proposalId: number) => void;
 }) {
-  const [text, setText] = useState("");
-  const fieldId = useId();
-  const noModel = ruleSet.intentModel === null;
-
-  const submit = useMutation({
-    mutationFn: async (): Promise<void> => {
-      const response = await api(`/repos/${repo.repoId}/revision-intents`, {
-        method: "POST",
-        body: JSON.stringify({ text: text.trim() }),
-      });
-      if (!response.ok) throw new Error(await errorText(response));
-    },
-    onSuccess: () => {
-      setText("");
-      onChanged();
-    },
-  });
-
   const remove = useMutation({
     mutationFn: async (intentId: number): Promise<void> => {
       const response = await api(`/repos/${repo.repoId}/revision-intents/${intentId}`, {
@@ -964,49 +1066,23 @@ function IntentSection({
     onSuccess: onChanged,
   });
 
-  const trimmed = text.trim();
-  const tooLong = trimmed.length > INTENT_TEXT_LIMIT;
   if (!canWrite && ruleSet.intents.length === 0) return null;
 
   return (
     <div className="mb-3 shrink-0 flex flex-col gap-2">
       {canWrite ? (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (trimmed !== "" && !tooLong && !noModel && !submit.isPending) submit.mutate();
-          }}
-        >
-          <TextArea
-            id={fieldId}
-            value={text}
-            disabled={noModel}
-            onChange={(event) => setText(event.target.value)}
-            placeholder="写下要新增或改成什么样，agent 会读代码并按陈述形状提出一条修订提案"
-            rows={2}
-            size="2"
-          />
-          <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-            <Text as="span" size="1" color={tooLong ? "red" : "gray"} className="tabular-nums">
-              {noModel
-                ? "还没有可用的模型：先配一个模型凭据，或为这个仓库跑一次基点探索。"
-                : `${trimmed.length} / ${INTENT_TEXT_LIMIT} 字`}
-            </Text>
-            <Button
-              type="submit"
-              size={{ initial: "3", sm: "1" }}
-              disabled={trimmed === "" || tooLong || noModel || submit.isPending}
-            >
-              {submit.isPending ? "提交中…" : "提交意图"}
-            </Button>
-          </div>
-        </form>
+        <IntentForm
+          repoId={repo.repoId}
+          intentModel={ruleSet.intentModel}
+          placeholder="写下要新增或改成什么样，agent 会读代码并按陈述形状提出一条修订提案"
+          onSubmitted={onChanged}
+        />
       ) : null}
 
-      {submit.isError || remove.isError ? (
+      {remove.isError ? (
         <Callout.Root role="alert" color="red" size="1">
           <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-          <Callout.Text>{((submit.error ?? remove.error) as Error).message}</Callout.Text>
+          <Callout.Text>{(remove.error as Error).message}</Callout.Text>
         </Callout.Root>
       ) : null}
 
@@ -1036,6 +1112,20 @@ function IntentSection({
                     ? null
                     : ` · 思考 ${THINKING_LEVEL_LABEL[intent.thinkingLevel]}`}
                 </Text>
+                {/* 目标引用(issue #295):点它切到队列 tab 并滚到那张卡片,不另开一页
+                    ——改写与被改写的那一条本来就在同一个弹窗里。 */}
+                {intent.targetKind === "proposal" && intent.targetId !== null ? (
+                  <Button
+                    variant="outline"
+                    color="gray"
+                    highContrast
+                    size={{ initial: "3", sm: "1" }}
+                    className={OUTLINED_ACTION}
+                    onClick={() => onShowProposal(intent.targetId!)}
+                  >
+                    改写提案 #{intent.targetId}
+                  </Button>
+                ) : null}
                 {intent.traceTaskId === null ? null : (
                   <RuleTraceButton
                     repoId={repo.repoId}
@@ -1087,21 +1177,35 @@ function ProposalSection({
   canWrite,
   edit,
   busy,
+  highlight,
   onEdit,
   onDecide,
   onDecideAll,
   onSubmitEdit,
+  onChanged,
 }: {
   repo: { repoId: number; owner: string; repo: string };
   ruleSet: RuleSet;
   canWrite: boolean;
   edit: RuleFormState | null;
   busy: boolean;
+  /** 从意图行点过来的那条提案(issue #295):滚到它并高亮。 */
+  highlight: number | null;
   onEdit: (draft: RuleFormState | null) => void;
   onDecide: (id: number, accept: boolean) => void;
   onDecideAll: (ids: readonly number[], accept: boolean) => void;
   onSubmitEdit: () => void;
+  onChanged: () => void;
 }) {
+  // 就地展开意图框的那条提案(issue #295)。一次只展开一条:两张框同时开着人分不清写的
+  // 是哪一条。
+  const [rewriting, setRewriting] = useState<number | null>(null);
+  // 从意图行点过来时滚到那张卡片。切 tab 那一下这一段才挂上,因此按 `highlight` 变化滚,
+  // 不按渲染滚——渲染每五秒一次(队列在轮询),每次都滚会把人拽走。
+  useEffect(() => {
+    if (highlight === null) return;
+    document.getElementById(`rule-proposal-card-${highlight}`)?.scrollIntoView({ block: "center" });
+  }, [highlight]);
   const pending = ruleSet.proposals.filter((row) => row.state === "pending");
   const decided = ruleSet.proposals.filter((row) => row.state !== "pending");
   // 提案默认一条不勾:采纳是改变知识集的动作,该由人一条条挑,不该默认全中。
@@ -1222,7 +1326,13 @@ function ProposalSection({
       ) : (
         <ul className="overflow-hidden rounded-lg border border-card-line">
           {pending.map((proposal) => (
-            <li key={proposal.id} className="flex items-start gap-2 border-t border-line px-4 py-3 first:border-t-0">
+            <li
+              key={proposal.id}
+              id={`rule-proposal-card-${proposal.id}`}
+              className={`flex items-start gap-2 border-t border-line px-4 py-3 first:border-t-0 ${
+                highlight === proposal.id ? "bg-accent-tint" : ""
+              }`}
+            >
               {/* 勾选框独立成列,陈述、目标条目、备注与收尾线共用一条左边缘;陈述
                   独占整行宽度,不再与按钮簇抢同一行。htmlFor 保住整句可点勾选。 */}
               {canWrite ? (
@@ -1265,6 +1375,23 @@ function ProposalSection({
                   </span>
                   {canWrite && edit?.id !== proposal.id ? (
                     <div className="flex shrink-0 gap-1">
+                      {/* 「改写」就地展开与顶部同一个意图框(ADR 0028,issue #295):人写
+                          一句话,agent 换陈述与作用范围并追加一条附注。废止型没有这一颗
+                          ——它说的就是废止哪一条,改不出别的内容。 */}
+                      {proposal.change === "retire" ? null : (
+                        <Button
+                          variant="outline"
+                          color="gray"
+                          highContrast
+                          size={{ initial: "3", sm: "1" }}
+                          className={OUTLINED_ACTION}
+                          onClick={() =>
+                            setRewriting((open) => (open === proposal.id ? null : proposal.id))
+                          }
+                        >
+                          改写
+                        </Button>
+                      )}
                       <Button
                         variant="outline"
                         color="gray"
@@ -1307,6 +1434,21 @@ function ProposalSection({
                     </div>
                   ) : null}
                 </div>
+                {rewriting === proposal.id ? (
+                  <div className="mt-2">
+                    <IntentForm
+                      repoId={repo.repoId}
+                      intentModel={ruleSet.intentModel}
+                      placeholder="写下这一条要改成什么样，agent 会读代码并原地改写它，追加一条出处附注"
+                      target={{ kind: "proposal", id: proposal.id }}
+                      onSubmitted={() => {
+                        setRewriting(null);
+                        onChanged();
+                      }}
+                      onCancel={() => setRewriting(null)}
+                    />
+                  </div>
+                ) : null}
                 {edit?.id === proposal.id ? (
                   <div className="mt-2">
                     <RuleForm
