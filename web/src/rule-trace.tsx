@@ -28,7 +28,7 @@ export type KnowledgeType = "rule" | "fact";
 
 /**
  * 两型在面板上的名字。知识轨迹、知识集弹窗与修订提案队列共用这一份——与 `SOURCE_LABEL`
- * 同一条口径,同一个二元只有这一份字面量。
+ * 同一条口径,同一个枚举只有这一份字面量。
  */
 export const TYPE_LABEL: Record<KnowledgeType, string> = { rule: "评审规则", fact: "项目事实" };
 
@@ -38,10 +38,11 @@ export const TYPE_LABEL: Record<KnowledgeType, string> = { rule: "评审规则",
  */
 export const OUTLINED_ACTION = "rounded-md border border-input bg-surface shadow-control";
 
-/** 知识轨迹与修订提案共用的出处文案。同一个二元只有这一份字面量。 */
+/** 知识轨迹与出处附注共用的来源文案。同一套字面量只有这一份。 */
 export const SOURCE_LABEL: Record<string, string> = {
   "baseline-exploration": "基点探索",
   "disposition-feedback": "处置反哺",
+  "knowledge-consolidation": "知识整理",
 };
 
 /** 一条事件的正文。工具调用与认不出的那两档直接用审查轨迹的构件。 */

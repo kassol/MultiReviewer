@@ -38,8 +38,14 @@ type ProposalResponse = {
   targetRuleId: number | null;
   scope: string;
   statement: string;
-  source: "baseline-exploration" | "disposition-feedback";
-  sourceNote: string | null;
+  /** 出处附注列表(issue #281)。反哺产出的各带一条处置反哺附注。 */
+  sources: {
+    origin: "baseline-exploration" | "disposition-feedback" | "knowledge-consolidation";
+    note: string | null;
+    findingId: number | null;
+    findingStageId: string | null;
+    traceTaskId: number | null;
+  }[];
   state: "pending" | "accepted" | "rejected";
 };
 
@@ -175,9 +181,18 @@ test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,
   const queued = await proposals(h);
   assert.equal(queued.length, 2);
   for (const entry of queued) {
-    assert.equal(entry.source, "disposition-feedback");
-    assert.equal(entry.sourceNote, NOTE);
     assert.equal(entry.state, "pending");
+    // 一条处置反哺附注:备注原文、引发它的那条 Finding 与这一次反哺的轨迹都在上面,
+    // 面板据此把人送回那条 Finding 的侧滑(issue #281)。
+    assert.equal(entry.sources.length, 1);
+    assert.equal(entry.sources[0]!.origin, "disposition-feedback");
+    assert.equal(entry.sources[0]!.note, NOTE);
+    assert.equal(entry.sources[0]!.findingId, target!.id);
+    assert.equal(
+      entry.sources[0]!.findingStageId,
+      `pr:${HARNESS_PR.owner}/${HARNESS_PR.repo}/${HARNESS_PR.number}`,
+    );
+    assert.equal(typeof entry.sources[0]!.traceTaskId, "number");
   }
   assert.deepEqual(
     queued.map((entry) => [entry.change, entry.targetRuleId, entry.statement]),
@@ -210,7 +225,10 @@ test("描述性备注蒸馏为事实提案,采纳后进知识集并注入下一�
     queued.map((entry) => [entry.type, entry.change, entry.statement]),
     [["fact", "add", "全局拦截器覆盖 /api 下的全部路由"]],
   );
-  assert.equal(queued[0]!.sourceNote, note);
+  assert.deepEqual(
+    queued[0]!.sources.map((entry) => [entry.origin, entry.note]),
+    [["disposition-feedback", note]],
+  );
 
   // 裁决采纳:事实进知识集,并成为启动快照里注入 Reviewer 的那一份。
   assert.equal(

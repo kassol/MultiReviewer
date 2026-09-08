@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useEffect, useId, useState } from "react";
 
 import { Cross2Icon, CrossCircledIcon } from "@radix-ui/react-icons";
@@ -42,8 +43,23 @@ type RuleExploration = {
 };
 
 /**
+ * 一条出处附注(CONTEXT.md,issue #281)。`origin` 是这一次的来源,`note` 是备注原文或
+ * 整理理由,`findingId` 是引发它的那条 Finding(只有处置反哺有),`traceTaskId` 是提出
+ * 它的那一次知识轨迹。`findingStageId` 是那条 Finding 所在的审查阶段,面板据此开侧滑。
+ */
+type RuleProposalSource = {
+  id: number;
+  origin: "baseline-exploration" | "disposition-feedback" | "knowledge-consolidation";
+  note: string | null;
+  findingId: number | null;
+  findingStageId: string | null;
+  traceTaskId: number | null;
+  createdAt: string;
+};
+
+/**
  * 一条修订提案(CONTEXT.md,issue #207)。`change` 是变更类型,`targetRuleId` 是修改与
- * 废止指向的现有规则,`source` 是出处二元,`sourceNote` 是反哺时触发它的处置备注。
+ * 废止指向的现有规则,`sources` 是它的出处附注列表(issue #281)。
  */
 type RuleProposal = {
   id: number;
@@ -52,10 +68,7 @@ type RuleProposal = {
   targetRuleId: number | null;
   scope: string;
   statement: string;
-  source: "baseline-exploration" | "disposition-feedback";
-  sourceNote: string | null;
-  /** 提出它的那一次知识轨迹(issue #214)。人据此回溯这条提案是怎么推出来的。 */
-  traceTaskId: number | null;
+  sources: RuleProposalSource[];
   state: "pending" | "accepted" | "rejected";
   decidedAt: string | null;
 };
@@ -760,6 +773,70 @@ const DECISION_LABEL = {
 } as const satisfies Record<"accepted" | "rejected", Record<RuleProposal["change"], string>>;
 
 /**
+ * 一条提案的出处一行汇总(issue #281):同一个来源出现多次即带次数。人先看见「它被
+ * 哪几件事提过」,要逐条读再展开。
+ */
+function sourceSummary(sources: readonly RuleProposalSource[]): string {
+  const counts = new Map<string, number>();
+  for (const entry of sources) counts.set(entry.origin, (counts.get(entry.origin) ?? 0) + 1);
+  return [...counts]
+    .map(([origin, count]) => `${SOURCE_LABEL[origin] ?? origin}${count > 1 ? ` ×${count}` : ""}`)
+    .join(" · ");
+}
+
+/**
+ * 提案卡片上的出处那一段(CONTEXT.md 出处附注,issue #281)。收起时是一行汇总,展开
+ * 逐条:来源、备注原文、那条 Finding 与提出它的那一次知识轨迹。
+ *
+ * Finding 走既有的 `?finding=` 侧滑:点进去就是那条 Finding 的 diff,人看得出这条提案
+ * 是从哪条 Finding 的处置备注来的。
+ */
+function ProposalSources({ repoId, proposal }: { repoId: number; proposal: RuleProposal }) {
+  if (proposal.sources.length === 0) return null;
+  return (
+    <details className="mt-1.5">
+      <summary className="cursor-pointer text-xs text-text-secondary">
+        出处:{sourceSummary(proposal.sources)}
+      </summary>
+      <ul className="mt-1.5 flex flex-col gap-2 border-l border-line pl-3">
+        {proposal.sources.map((entry) => (
+          <li key={entry.id} className="flex min-w-0 flex-col gap-1">
+            <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <Badge color="gray" variant="soft">
+                {SOURCE_LABEL[entry.origin] ?? entry.origin}
+              </Badge>
+              {entry.findingId === null || entry.findingStageId === null ? null : (
+                <Link
+                  to="/stages/$stageId"
+                  params={{ stageId: entry.findingStageId }}
+                  search={{ finding: entry.findingId }}
+                  className={`${OUTLINED_ACTION} px-2 py-1 text-sm text-text-secondary hover:bg-sunken`}
+                >
+                  查看 Finding
+                </Link>
+              )}
+              {entry.traceTaskId === null ? null : (
+                <RuleTraceButton
+                  repoId={repoId}
+                  taskId={entry.traceTaskId}
+                  context={`来自提案:${proposal.statement}`}
+                  highlight={proposal.statement}
+                />
+              )}
+            </span>
+            {entry.note === null ? null : (
+              <Text as="p" size="1" color="gray" className="wrap-anywhere">
+                备注:{entry.note}
+              </Text>
+            )}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+/**
  * 修订提案队列与裁决那一段(issue #207)。待裁决的排在前面,已裁决的留在后面供查。
  *
  * 队列本身对所有读得到知识集的人可见——「还有什么在等人裁决」与「现在按什么标准评审」
@@ -876,29 +953,15 @@ function ProposalSection({
                     目标知识条目:{target(proposal)}
                   </Text>
                 )}
-                {proposal.sourceNote === null ? null : (
-                  <Text as="p" size="1" color="gray" className="mt-1.5 wrap-anywhere">
-                    处置备注:{proposal.sourceNote}
-                  </Text>
-                )}
+                <ProposalSources repoId={repoId} proposal={proposal} />
                 <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
                   <span className="inline-flex min-w-0 flex-wrap items-center gap-1.5">
                     {/* 采纳的后果两型不同(issue #222):规则违反即 Finding,事实只作判断依据。 */}
                     <Badge color="gray" variant="soft">{TYPE_LABEL[proposal.type]}</Badge>
                     <Badge color="gray" variant="soft">{CHANGE_LABEL[proposal.change]}</Badge>
-                    <Badge color="gray" variant="soft">{SOURCE_LABEL[proposal.source]}</Badge>
                     <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
                       {proposal.scope === "" ? "全仓库" : proposal.scope}
                     </Badge>
-                    {/* 出处回溯(issue #214):这条提案是哪一次探索或反哺推出来的。 */}
-                    {proposal.traceTaskId === null ? null : (
-                      <RuleTraceButton
-                        repoId={repoId}
-                        taskId={proposal.traceTaskId}
-                        context={`来自提案:${proposal.statement}`}
-                        highlight={proposal.statement}
-                      />
-                    )}
                   </span>
                   {canWrite && edit?.id !== proposal.id ? (
                     <div className="flex shrink-0 gap-1">
@@ -980,16 +1043,9 @@ function ProposalSection({
                       : DECISION_LABEL.rejected[proposal.change]}
                   </StatusBadge>
                   <Badge color="gray" variant="soft">{TYPE_LABEL[proposal.type]}</Badge>
-                  <Badge color="gray" variant="soft">{SOURCE_LABEL[proposal.source]}</Badge>
-                  {proposal.traceTaskId === null ? null : (
-                    <RuleTraceButton
-                      repoId={repoId}
-                      taskId={proposal.traceTaskId}
-                      context={`来自提案:${proposal.statement}`}
-                      highlight={proposal.statement}
-                    />
-                  )}
                 </span>
+                {/* 裁决过的那些同样看得到出处:队列历史要说得出它当初被哪几件事提过。 */}
+                <ProposalSources repoId={repoId} proposal={proposal} />
               </li>
             ))}
           </ul>

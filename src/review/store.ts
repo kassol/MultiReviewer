@@ -416,8 +416,8 @@ CREATE INDEX IF NOT EXISTS rule_draft_item_by_repo ON rule_draft_item(repo_id);
 
 -- 修订提案(CONTEXT.md,issue #207)。一条待裁决的知识集变更:change 是变更类型,
 -- target_rule_id 是修改与废止指向的现有规则(新增没有目标),scope / statement
--- 是提案内容(废止那一档是目标规则当时的原样,只为看得懂队列里这条要废止什么),
--- source 是出处二元,source_note 放触发它的处置备注(只有处置反哺有,issue #208)。
+-- 是提案内容(废止那一档是目标规则当时的原样,只为看得懂队列里这条要废止什么)。
+-- 出处不在这张表上,一条提案的出处是它名下的那一列出处附注(issue #281)。
 --
 -- 与知识草案分表:草案是「还没有知识集时的那一整份」,提案是「已有知识集之上的一条
 -- 变更」,它多出变更类型、目标规则、出处与状态机四样,共用一张表就要给草案留四列空值。
@@ -430,8 +430,6 @@ CREATE TABLE IF NOT EXISTS rule_proposal (
   scope TEXT NOT NULL,
   statement TEXT NOT NULL,
   layer TEXT NOT NULL,
-  source TEXT NOT NULL CHECK (source IN ('baseline-exploration', 'disposition-feedback')),
-  source_note TEXT,
   state TEXT NOT NULL CHECK (state IN ('pending', 'accepted', 'rejected')),
   created_at TEXT NOT NULL,
   decided_at TEXT,
@@ -439,6 +437,25 @@ CREATE TABLE IF NOT EXISTS rule_proposal (
   CHECK ((change = 'add') = (target_rule_id IS NULL))
 );
 CREATE INDEX IF NOT EXISTS rule_proposal_by_repo ON rule_proposal(repo_id);
+
+-- 出处附注(CONTEXT.md,issue #281)。一条提案的出处是一列附注,一行一条:origin 是
+-- 这一次的来源,note 是备注原文或整理理由,finding_id 是引发它的那条 Finding(只有
+-- 处置反哺有),trace_task_id 是提出它的那一次任务的知识轨迹。
+--
+-- 与提案分表而不是三列写在提案上:一条提案会被多次来源提到(反哺并入、知识整理合并,
+-- issue #280),单值列只留得下最后一次,而人要看的正是「它被哪几件事提过」。
+CREATE TABLE IF NOT EXISTS rule_proposal_source (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  proposal_id INTEGER NOT NULL REFERENCES rule_proposal(id),
+  origin TEXT NOT NULL
+    CHECK (origin IN ('baseline-exploration', 'disposition-feedback', 'knowledge-consolidation')),
+  note TEXT,
+  finding_id INTEGER,
+  trace_task_id INTEGER,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS rule_proposal_source_by_proposal
+  ON rule_proposal_source(proposal_id);
 
 -- 知识轨迹(CONTEXT.md,issue #214)。一次基点探索或一次处置反哺是一条轨迹,task_id
 -- 标识它,seq 在一条轨迹之内自增。事件行的形状与 review_trace 同源(ADR 0017):按时间
@@ -752,7 +769,9 @@ const ADD_COLUMNS = [
   "ALTER TABLE model_directory_model ADD COLUMN thinking_level_map_json TEXT",
   "ALTER TABLE model_directory_model ADD COLUMN compat_json TEXT",
   "ALTER TABLE rule_exploration ADD COLUMN thinking_level TEXT",
-  "ALTER TABLE rule_proposal ADD COLUMN trace_task_id INTEGER",
+  // `rule_proposal` 的 `trace_task_id` 不在这里补:那一列随出处下沉为附注列表退役
+  // (issue #281),下面那一次重建把它连同 `source` / `source_note` 一起搬进
+  // `rule_proposal_source`。补出来只会让新库多一列没人读的。
   "ALTER TABLE rule_exploration ADD COLUMN trace_task_id INTEGER",
   "ALTER TABLE review_run_reviewer_pin ADD COLUMN thinking_level TEXT",
   // 知识条目的两值枚举(ADR 0020,issue #221)。DEFAULT 就是存量迁移本身:升级前落的
@@ -1670,19 +1689,27 @@ export type RuleDraftItem = ReviewRuleInput & {
 export type RuleProposalChange = "add" | "modify" | "retire";
 
 /**
- * 一条修订提案的出处(CONTEXT.md 修订提案)。二元:基点探索与处置反哺。反哺那一档由
- * issue #208 产生,字面量在这里先定好——两条链路要用同一套词。
+ * 一条出处附注的来源(CONTEXT.md 出处附注)。三元:基点探索、处置反哺与知识整理。
+ * 三条链路要用同一套词,字面量因此只有这一份。
  */
-export type RuleProposalSource = "baseline-exploration" | "disposition-feedback";
+export type RuleProposalOrigin =
+  | "baseline-exploration"
+  | "disposition-feedback"
+  | "knowledge-consolidation";
 
-/** 排进队列的一条修订提案。内容三样与评审规则同形,采纳前人可以改。 */
-export type RuleProposalInput = ReviewRuleInput & {
-  change: RuleProposalChange;
-  /** 修改与废止指向的现有规则;新增没有目标,为 null。 */
-  targetRuleId: number | null;
-  source: RuleProposalSource;
-  /** 出处附注:处置反哺放触发它的处置备注,基点探索没有。 */
-  sourceNote: string | null;
+/**
+ * 一次知识轨迹的来源(CONTEXT.md 知识轨迹)。二元:基点探索与处置反哺——知识整理还
+ * 没有自己的链路(issue #283),轨迹表上的取值因此仍是这两个。
+ */
+export type RuleTraceSource = "baseline-exploration" | "disposition-feedback";
+
+/** 排进队列的一条出处附注(CONTEXT.md 出处附注,issue #281)。 */
+export type RuleProposalSourceInput = {
+  origin: RuleProposalOrigin;
+  /** 备注原文或整理理由。基点探索没有话要说,为 null。 */
+  note: string | null;
+  /** 引发这一次的那条 Finding(只有处置反哺有)。人据此回到那条 Finding 上。 */
+  findingId: number | null;
   /**
    * 提出它的那一次规则 agent 任务的轨迹标识(CONTEXT.md 知识轨迹,issue #214)。人据此
    * 回溯到「这条提案是怎么推出来的」。轨迹没起来时为 null,升级前入队的旧提案同理。
@@ -1690,9 +1717,34 @@ export type RuleProposalInput = ReviewRuleInput & {
   traceTaskId: number | null;
 };
 
-/** 队列里的一条修订提案。`state` 是裁决状态机,裁决过的仍留在队列里供查。 */
-export type RuleProposal = RuleProposalInput & {
+/** 队列里的一条出处附注。 */
+export type RuleProposalSource = RuleProposalSourceInput & {
   id: number;
+  /**
+   * 这条 Finding 所在的审查阶段标识,面板据此开它的侧滑。Finding 已经不在库里(仓库
+   * 摘掉过)时为 null。
+   */
+  findingStageId: string | null;
+  createdAt: string;
+};
+
+/** 排进队列的一条修订提案。内容三样与评审规则同形,采纳前人可以改。 */
+export type RuleProposalInput = ReviewRuleInput & {
+  change: RuleProposalChange;
+  /** 修改与废止指向的现有规则;新增没有目标,为 null。 */
+  targetRuleId: number | null;
+  /**
+   * 它的出处(CONTEXT.md 出处附注)。至少一条:一条提案总是由某一次任务提出来的,
+   * 之后每被一次来源提到就追加一条。第一条的来源即采纳时落进知识条目的那个出处。
+   */
+  sources: readonly [RuleProposalSourceInput, ...RuleProposalSourceInput[]];
+};
+
+/** 队列里的一条修订提案。`state` 是裁决状态机,裁决过的仍留在队列里供查。 */
+export type RuleProposal = Omit<RuleProposalInput, "sources"> & {
+  id: number;
+  /** 它的出处附注,按落库先后。 */
+  sources: RuleProposalSource[];
   state: "pending" | "accepted" | "rejected";
   createdAt: string;
   /** 裁决时刻,待裁决时为 null。 */
@@ -2209,8 +2261,9 @@ export type Store = {
   finishRuleExploration(repoId: number, items: readonly ReviewRuleInput[], at: string): void;
   /**
    * 探索完成,产出排进修订提案队列(issue #207):知识集已经确认过时走这一条,草案一行
-   * 不动。同源的待裁决旧提案被这一批取代(与草案同一条覆盖语义);已裁决的与处置反哺的
-   * 不动。那一行同样改写成已完成。调用方负责截断、去空与变更类型的映射。
+   * 不动。**待裁决且出处附注全部来自基点探索**的旧提案被这一批取代(与草案同一条覆盖
+   * 语义,issue #281);已裁决的、以及带别的来源附注的不动——人写的意见不该被一次重探索
+   * 覆盖。那一行同样改写成已完成。调用方负责截断、去空与变更类型的映射。
    */
   finishRuleExplorationAsProposals(
     repoId: number,
@@ -2439,7 +2492,7 @@ export type Store = {
    * 标识与序号都由这一句 INSERT 自己算,口径与 `appendTrace` 相同;写下的第一条事件
    * 是 `rule_agent_started`,`payload` 是这一次任务的入参。
    */
-  startRuleTrace(repoId: number, source: RuleProposalSource, payload: unknown): number;
+  startRuleTrace(repoId: number, source: RuleTraceSource, payload: unknown): number;
   /** 追加一条知识轨迹事件,返回落库后的那条(带序号与时刻)。 */
   appendRuleTrace(taskId: number, event: RuleTraceEventInput): RuleTraceEvent;
   /** 一条知识轨迹,按 `seq` 升序。`afterSeq` 给了就只回它之后的那些,断线续传用。 */
@@ -3079,6 +3132,54 @@ export function openStore(dbPath: string): Store {
     `);
   }
 
+  // 出处下沉为附注列表(issue #281):`rule_proposal` 的 `source` / `source_note` /
+  // `trace_task_id` 三列各合成一条出处附注,那三列随之从表上去掉。SQLite 去列只能重建
+  // 表,判据与上面那一次同律:看建表语句原文,重建过即不再命中,零影响。
+  //
+  // 重建期间关外键:`rule_proposal_source` 引用 `rule_proposal(id)`,先搬附注再 DROP
+  // 父表会当场撞上外键;这是 SQLite 官方给的重建顺序(先关、重建完再开)。
+  const proposalSql = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'rule_proposal'")
+    .get()?.["sql"];
+  if (typeof proposalSql === "string" && proposalSql.includes("source_note")) {
+    db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      db.exec(`
+        BEGIN;
+        INSERT INTO rule_proposal_source
+            (proposal_id, origin, note, finding_id, trace_task_id, created_at)
+          SELECT id, source, source_note, NULL, trace_task_id, created_at FROM rule_proposal;
+        CREATE TABLE rule_proposal_rebuilt (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          repo_id INTEGER NOT NULL REFERENCES repo(id),
+          type TEXT NOT NULL DEFAULT 'rule' CHECK (type IN ('rule', 'fact')),
+          change TEXT NOT NULL CHECK (change IN ('add', 'modify', 'retire')),
+          target_rule_id INTEGER,
+          scope TEXT NOT NULL,
+          statement TEXT NOT NULL,
+          layer TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('pending', 'accepted', 'rejected')),
+          created_at TEXT NOT NULL,
+          decided_at TEXT,
+          CHECK ((state = 'pending') = (decided_at IS NULL)),
+          CHECK ((change = 'add') = (target_rule_id IS NULL))
+        );
+        INSERT INTO rule_proposal_rebuilt
+            (id, repo_id, type, change, target_rule_id, scope, statement, layer, state,
+             created_at, decided_at)
+          SELECT id, repo_id, type, change, target_rule_id, scope, statement, layer, state,
+                 created_at, decided_at
+            FROM rule_proposal;
+        DROP TABLE rule_proposal;
+        ALTER TABLE rule_proposal_rebuilt RENAME TO rule_proposal;
+        CREATE INDEX IF NOT EXISTS rule_proposal_by_repo ON rule_proposal(repo_id);
+        COMMIT;
+      `);
+    } finally {
+      db.exec("PRAGMA foreign_keys = ON");
+    }
+  }
+
   // 权限格 `rule:write` 改名 `knowledge:write`(ADR 0020,issue #220):存量角色照旧持有
   // 同一格能力,只是字面量换了。`OR REPLACE` 让同一角色两格都有时旧行让位给新行;跑第
   // 二遍已经没有旧行,零影响。
@@ -3298,13 +3399,26 @@ export function openStore(dbPath: string): Store {
     ).run(at, repoId);
   };
 
+  /** 往一条提案上追加一条出处附注(issue #281)。入队与之后的每一次来源共用它。 */
+  const insertRuleProposalSource = (
+    proposalId: number,
+    source: RuleProposalSourceInput,
+    at: string,
+  ): void => {
+    db.prepare(
+      `INSERT INTO rule_proposal_source
+         (proposal_id, origin, note, finding_id, trace_task_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(proposalId, source.origin, source.note, source.findingId, source.traceTaskId, at);
+  };
+
   const insertRuleProposal = (repoId: number, input: RuleProposalInput, at: string): number => {
     const inserted = db
       .prepare(
         `INSERT INTO rule_proposal
-           (repo_id, type, change, target_rule_id, scope, statement, layer, source, source_note,
-            trace_task_id, state, created_at, decided_at)
-         VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, 'pending', ?, NULL)`,
+           (repo_id, type, change, target_rule_id, scope, statement, layer, state, created_at,
+            decided_at)
+         VALUES (?, ?, ?, ?, ?, ?, '', 'pending', ?, NULL)`,
       )
       .run(
         repoId,
@@ -3313,12 +3427,11 @@ export function openStore(dbPath: string): Store {
         input.targetRuleId,
         input.scope,
         input.statement,
-        input.source,
-        input.sourceNote,
-        input.traceTaskId,
         at,
       );
-    return Number(inserted.lastInsertRowid);
+    const proposalId = Number(inserted.lastInsertRowid);
+    for (const source of input.sources) insertRuleProposalSource(proposalId, source, at);
+    return proposalId;
   };
 
   /** 这条提案还等着裁决吗:是即回它自己,否则回 undefined(裁决过的裁不了第二次)。 */
@@ -3370,7 +3483,9 @@ export function openStore(dbPath: string): Store {
   ): void => {
     const { queued, content, targetOrigin } = planned;
     if (queued.change === "add") {
-      insertReviewRule(repoId, content, queued.source, version, at);
+      // 新条目的出处取第一条附注的来源(issue #281):那一次是提出它的那一次,之后追加
+      // 的附注说的是「同一件事又被提了一遍」,不改变它当初从哪来。附注至少有一条。
+      insertReviewRule(repoId, content, queued.sources[0]!.origin, version, at);
     } else {
       retireRuleRow(queued.targetRuleId!, version);
       // 修改沿用旧行的出处:改文字不改变这条条目当初从哪来(issue #203 同一条口径)。
@@ -3863,6 +3978,10 @@ export function openStore(dbPath: string): Store {
         db.prepare("DELETE FROM rule_set_version WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM rule_exploration WHERE repo_id = ?").run(repoId);
+        db.prepare(
+          `DELETE FROM rule_proposal_source
+            WHERE proposal_id IN (SELECT id FROM rule_proposal WHERE repo_id = ?)`,
+        ).run(repoId);
         db.prepare("DELETE FROM rule_proposal WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM rule_trace WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM repo WHERE id = ?").run(repoId);
@@ -4072,12 +4191,18 @@ export function openStore(dbPath: string): Store {
       db.exec("BEGIN");
       try {
         // 与草案同一条覆盖语义:一次基点探索是对照当前知识集的完整推导,新一次的未裁决
-        // 产出取代上一次的,不是追加。只覆盖同源(基点探索)的待裁决行:已裁决的留作历史,
-        // 处置反哺的提案来自处置备注,探索重跑推不出它们,不参与覆盖。
+        // 产出取代上一次的,不是追加。只覆盖出处附注全部来自基点探索的待裁决行(issue
+        // #281):已裁决的留作历史;带处置反哺或知识整理附注的那些里有人写下的意见,
+        // 探索重跑推不出它们,一次重探索不该把它们抹掉。
+        const replaced = `SELECT id FROM rule_proposal
+                           WHERE repo_id = ? AND state = 'pending'
+                             AND NOT EXISTS (SELECT 1 FROM rule_proposal_source s
+                                              WHERE s.proposal_id = rule_proposal.id
+                                                AND s.origin <> 'baseline-exploration')`;
         db.prepare(
-          `DELETE FROM rule_proposal
-            WHERE repo_id = ? AND state = 'pending' AND source = 'baseline-exploration'`,
+          `DELETE FROM rule_proposal_source WHERE proposal_id IN (${replaced})`,
         ).run(repoId);
+        db.prepare(`DELETE FROM rule_proposal WHERE id IN (${replaced})`).run(repoId);
         for (const item of proposals) insertRuleProposal(repoId, item, at);
         completeRuleExploration(repoId, at);
         db.exec("COMMIT");
@@ -4178,10 +4303,42 @@ export function openStore(dbPath: string): Store {
     },
 
     getRuleProposals(repoId) {
+      // 附注一次查完再按提案分组:队列一屏几十条,逐条再查一次附注就是几十次往返。
+      // Finding 的阶段标识在这一句里算出来(与评审记录同一个字面形状),面板据此开侧滑。
+      const sources = new Map<number, RuleProposalSource[]>();
+      for (const row of db
+        .prepare(
+          `SELECT s.id, s.proposal_id, s.origin, s.note, s.finding_id, s.trace_task_id,
+                  s.created_at,
+                  CASE
+                    WHEN run.id IS NULL THEN NULL
+                    WHEN run.range_review_id IS NOT NULL THEN 'range:' || run.range_review_id
+                    ELSE 'pr:' || run.owner || '/' || run.repo || '/' || run.pull_number
+                  END AS finding_stage_id
+             FROM rule_proposal_source s
+             JOIN rule_proposal p ON p.id = s.proposal_id
+             LEFT JOIN finding f ON f.id = s.finding_id
+             LEFT JOIN review_run run ON run.id = f.run_id
+            WHERE p.repo_id = ? ORDER BY s.id`,
+        )
+        .all(repoId)) {
+        const proposalId = Number(row["proposal_id"]);
+        const list = sources.get(proposalId) ?? [];
+        list.push({
+          id: Number(row["id"]),
+          origin: String(row["origin"]) as RuleProposalOrigin,
+          note: row["note"] === null ? null : String(row["note"]),
+          findingId: row["finding_id"] === null ? null : Number(row["finding_id"]),
+          findingStageId:
+            row["finding_stage_id"] === null ? null : String(row["finding_stage_id"]),
+          traceTaskId: row["trace_task_id"] === null ? null : Number(row["trace_task_id"]),
+          createdAt: String(row["created_at"]),
+        });
+        sources.set(proposalId, list);
+      }
       return db
         .prepare(
-          `SELECT id, type, change, target_rule_id, scope, statement, source, source_note,
-                  trace_task_id, state, created_at, decided_at
+          `SELECT id, type, change, target_rule_id, scope, statement, state, created_at, decided_at
              FROM rule_proposal WHERE repo_id = ? ORDER BY id`,
         )
         .all(repoId)
@@ -4192,12 +4349,7 @@ export function openStore(dbPath: string): Store {
           targetRuleId: row["target_rule_id"] === null ? null : Number(row["target_rule_id"]),
           scope: String(row["scope"]),
           statement: String(row["statement"]),
-          source: String(row["source"]) as RuleProposalSource,
-          sourceNote: row["source_note"] === null ? null : String(row["source_note"]),
-          traceTaskId:
-            row["trace_task_id"] === null || row["trace_task_id"] === undefined
-              ? null
-              : Number(row["trace_task_id"]),
+          sources: sources.get(Number(row["id"])) ?? [],
           state: String(row["state"]) as RuleProposal["state"],
           createdAt: String(row["created_at"]),
           decidedAt: row["decided_at"] === null ? null : String(row["decided_at"]),

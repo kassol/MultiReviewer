@@ -8,7 +8,7 @@
  *
  * 订阅者只在进程内:服务是单进程单实例(Docker),不引入外部消息通道。
  */
-import type { RuleProposalSource, Store } from "./store.ts";
+import type { RuleTraceSource, Store } from "./store.ts";
 
 /** 事件挂在轮次上还是挂在某个 Reviewer 上。 */
 export type TraceScope = "run" | "reviewer";
@@ -233,7 +233,7 @@ export function startRuleTrace(
   /** 开一次库做一件事。规则 agent 的两条链路都跑在后台,没有一份长活的 `Store`。 */
   withStore: <T>(use: (store: Store) => T) => T,
   repoId: number,
-  source: RuleProposalSource,
+  source: RuleTraceSource,
   startedPayload: unknown,
 ): RuleTraceRecorder {
   const failed = (error: unknown): void => {
