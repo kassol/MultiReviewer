@@ -135,6 +135,7 @@ import {
   type RepoSummary,
   type ReviewRuleInput,
   type ReviewRuleRecord,
+  type RuleIntent,
   type RuleProposal,
   type RuleProposalInput,
   type RuleProposalSourceInput,
@@ -286,6 +287,11 @@ export type WebhookServerDeps = {
    * 不传则把失败写进 stderr,成功不出声——与基点探索同一条口径。
    */
   onDispositionFeedbackSettled?: (findingId: number, failure?: string) => void;
+  /**
+   * 后台跑完一次人工提议时回调(ADR 0028,issue #294),`failure` 有值即这一次没跑成。
+   * 与基点探索同一条口径。
+   */
+  onRevisionIntentSettled?: (intentId: number, failure?: string) => void;
   /**
    * 启动时续跑一轮被中断的 Review Run 结束时回调(issue #248),`failure` 有值即续跑
    * 没成、那一轮已退回改判失败。不传则把失败写进 stderr,成功不出声——与工作副本准备
@@ -2177,6 +2183,24 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     assignment: { by: "repo", group: 1 },
     handler: ({ req, res, deps }, match) =>
       handleStartRuleConsolidation(req, res, deps, Number(match![1])),
+  },
+  {
+    // 提交与删除修订意图(ADR 0028,issue #294)。与裁决同一格:意图是「谁定这个仓库的
+    // 标准」的入口,只是由 agent 代笔。
+    method: "POST",
+    pattern: /^\/repos\/(\d+)\/revision-intents$/,
+    access: "knowledge:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ req, res, deps, caller }, match) =>
+      handleSubmitRevisionIntent(req, res, deps, Number(match![1]), caller!.username),
+  },
+  {
+    method: "DELETE",
+    pattern: /^\/repos\/(\d+)\/revision-intents\/(\d+)$/,
+    access: "knowledge:write",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ res, deps }, match) =>
+      handleDeleteRevisionIntent(res, deps, Number(match![1]), Number(match![2])),
   },
   {
     method: "POST",
@@ -6587,12 +6611,25 @@ function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: num
       consolidation: store.getRuleConsolidation(repoId),
       draft: store.getRuleDraft(repoId),
       proposals: store.getRuleProposals(repoId),
+      // 修订意图与它将用的模型(ADR 0028,issue #294):意图框与意图列表读的是同一份
+      // 读取,面板不必为弹窗顶部那一块再开一个端点。
+      intents: store.listRuleIntents(
+        repoId,
+        new Date((deps.now ?? Date.now)()).toISOString(),
+        INTENT_COMPLETED_WINDOW_MS,
+      ),
     };
   });
   if (view === undefined) {
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
-  return sendJson(res, 200, view);
+  // 意图将使用的模型:与提交那一刻选的是同一条规则(反哺的模型规则),选不出来即 null,
+  // 面板据此把意图框置灰并说明。
+  const spec = ruleTaskSpec(deps, repoId);
+  return sendJson(res, 200, {
+    ...view,
+    intentModel: spec === undefined ? null : modelIdentity(spec),
+  });
 }
 
 const NO_RULE_TRACE = "这个仓库没有这条知识轨迹";
@@ -6788,7 +6825,7 @@ async function handleRuleModels(res: ServerResponse, deps: WebhookServerDeps): P
 }
 
 /**
- * agent 产出到知识草案与修订提案之间的那道收窄(ADR 0019、ADR 0020)。三条链路共用它,
+ * agent 产出到知识草案与修订提案之间的那道收窄(ADR 0019、ADR 0020)。四条链路共用它,
  * 两型同一套判据:陈述去掉首尾空白后非空,且不超过 `AGENT_STATEMENT_LIMIT`。
  *
  * 长度那一道从事实型的 500 字换成两型统一的 100 字(CONTEXT.md 陈述形状,spec #286):
@@ -6834,7 +6871,7 @@ function usableRuleItems(
 
 /**
  * 这一条的依据(CONTEXT.md 出处附注,issue #287):agent 为它给出的理由与代码证据,去掉
- * 首尾空白。三条链路共用这一处——依据落在附注上,与陈述分开,陈述因此只留那一句结论。
+ * 首尾空白。四条链路共用这一处——依据落在附注上,与陈述分开,陈述因此只留那一句结论。
  * agent 没给或只给了空白的为 null,面板那一格随之不显示。
  */
 function itemEvidence(item: RuleAgentItem): string | null {
@@ -6845,7 +6882,7 @@ function itemEvidence(item: RuleAgentItem): string | null {
 /**
  * 探索产出到修订提案的映射(issue #207、#282)。知识集非空时 agent 提的是对照现有规则
  * 的变更,服务端只按目标条目认得出认不出分派,映射从简。**认不出的目标先逐个丢掉**,
- * 剩下几个决定这一条是什么(三条链路共用这一套):
+ * 剩下几个决定这一条是什么(四条链路共用这一套):
  *
  * - 一个都不剩即新增(与不给目标同义);
  * - 剩一个即按有没有废止标记成为废止或修改;型与目标不同的一个即单目标合并,亦即改型
@@ -7257,6 +7294,60 @@ function specFromIdentity(
 }
 
 /**
+ * 处置反哺与人工提议共用的模型规则(CONTEXT.md 处置反哺、人工提议):该仓库最近一次
+ * 基点探索的模型与思考档位,从未探索过就取全局模型组合的第一个。两者都没有时回
+ * undefined——那时这条链路跑不了,提交与后台各自回自己那句话。
+ */
+function ruleTaskSpec(deps: WebhookServerDeps, repoId: number): ReviewerSpec | undefined {
+  const exploration = withStore(deps.dbPath, (store) => store.getRuleExploration(repoId));
+  const explored =
+    exploration === null
+      ? undefined
+      : specFromIdentity(exploration.model, exploration.thinkingLevel);
+  return explored ?? globalSettings(deps).reviewers[0];
+}
+
+/** 选不出模型时两处共用的那句话:提交意图回它,反哺的后台也抛它。 */
+const NO_RULE_TASK_MODEL = "这个仓库没有基点探索记录、全局模型组合也是空的,解读用不了模型";
+
+/**
+ * 产出落进修订提案队列(CONTEXT.md 处置反哺、人工提议,issue #283、#294)。反哺与人工
+ * 提议共用:认出队列里已有同一件事即并入那一条——陈述换成合成后的那一句、附注追加一条,
+ * 队列因此仍只有一条,人裁决一次。指名的那条已裁决或不存在时并不进去,那一条退回与其余
+ * 条目同一套映射,按新增或对照现集的变更入队。
+ *
+ * 回落地的提案标识:并入的是被并那一条的标识,新排的是新行的。意图行的产出记它。
+ */
+function landRuleItems(
+  store: Store,
+  repoId: number,
+  items: readonly RuleAgentItem[],
+  activeRules: readonly ReviewRuleRecord[],
+  source: Omit<RuleProposalSourceInput, "evidence">,
+): number[] {
+  const landed: number[] = [];
+  const added: RuleAgentItem[] = [];
+  for (const item of items) {
+    if (
+      item.proposalId !== undefined &&
+      store.mergeIntoRuleProposal(repoId, item.proposalId, {
+        statement: item.statement,
+        source: { ...source, evidence: itemEvidence(item) },
+      })
+    ) {
+      landed.push(item.proposalId);
+      continue;
+    }
+    added.push(item);
+  }
+  for (const proposal of proposalsFromItems(added, activeRules, source)) {
+    const id = store.addRuleProposal(repoId, proposal);
+    if (id !== undefined) landed.push(id);
+  }
+  return landed;
+}
+
+/**
  * 一次处置反哺的后台执行(CONTEXT.md 处置反哺,issue #208)。处置备注落库之后即时排一次,
  * 不绑 Review Run:把备注、被处置的那条 Finding 与该仓库当前生效的知识集交给规则 agent,
  * 产出经与基点探索同一套映射排进修订提案队列,出处标处置反哺、附注放备注原文。产出为空
@@ -7283,7 +7374,6 @@ async function runDispositionFeedbackInBackground(
         .listRepos()
         .find((entry) => entry.owner === ref.owner && entry.repo === ref.repo);
       if (row === undefined) return undefined;
-      const exploration = store.getRuleExploration(row.repoId);
       return {
         repoId: row.repoId,
         rules: store.getRuleSet(row.repoId)?.rules ?? [],
@@ -7293,15 +7383,11 @@ async function runDispositionFeedbackInBackground(
           .getRuleProposals(row.repoId)
           .filter((entry) => entry.state === "pending")
           .map(toPendingProposal),
-        explored:
-          exploration === null
-            ? undefined
-            : specFromIdentity(exploration.model, exploration.thinkingLevel),
       };
     });
     if (context === undefined) throw new Error("这个仓库不在注册表里");
     // 沿用该仓库最近一次基点探索所用的模型;从未探索过就用全局模型组合的第一个。
-    const spec = context.explored ?? globalSettings(deps).reviewers[0];
+    const spec = ruleTaskSpec(deps, context.repoId);
     trace = startRuleTrace(
       (use) => withStore(deps.dbPath, use),
       context.repoId,
@@ -7318,9 +7404,7 @@ async function runDispositionFeedbackInBackground(
     );
     const forge = deps.forges.gitea;
     if (forge === undefined) throw new Error("gitea 没有配置 Forge,取不回代码");
-    if (spec === undefined) {
-      throw new Error("这个仓库没有基点探索记录、全局模型组合也是空的,解读用不了模型");
-    }
+    if (spec === undefined) throw new Error(NO_RULE_TASK_MODEL);
     const [plan] = await materializeReviewerPlans(
       deps,
       withStore(deps.dbPath, (store) => store.listModelServices()),
@@ -7372,30 +7456,10 @@ async function runDispositionFeedbackInBackground(
       findingId: finding.id,
       traceTaskId: trace.taskId,
     };
-    const landed = withStore(deps.dbPath, (store) => {
-      // 认出队列里已有同一件事即并入那一条(CONTEXT.md 处置反哺):陈述换成合成后的那
-      // 一句、附注追加一条,队列因此仍只有一条,人裁决一次。指名的那条已裁决或不存在时
-      // 并入不成,那一条退回与其余条目同一套映射,按新增或对照现集的变更入队。
-      const added: RuleAgentItem[] = [];
-      let merged = 0;
-      for (const item of usable) {
-        if (
-          item.proposalId !== undefined &&
-          store.mergeIntoRuleProposal(context.repoId, item.proposalId, {
-            statement: item.statement,
-            source: { ...source, evidence: itemEvidence(item) },
-          })
-        ) {
-          merged += 1;
-          continue;
-        }
-        added.push(item);
-      }
-      const proposals = proposalsFromItems(added, context.rules, source);
-      for (const proposal of proposals) store.addRuleProposal(context.repoId, proposal);
-      return merged + proposals.length;
-    });
-    trace.record("rule_agent_finished", { items: landed });
+    const landed = withStore(deps.dbPath, (store) =>
+      landRuleItems(store, context.repoId, usable, context.rules, source),
+    );
+    trace.record("rule_agent_finished", { items: landed.length });
   } catch (error) {
     failure = failureText(error);
     trace?.record("rule_agent_failed", { failure });
@@ -7409,6 +7473,259 @@ async function runDispositionFeedbackInBackground(
   } else if (failure !== undefined) {
     console.error(`处置反哺失败:${ref.owner}/${ref.repo} 的 Finding ${finding.id}:${failure}`);
   }
+}
+
+/**
+ * 一条修订意图的原文最多多少字(CONTEXT.md 修订意图,ADR 0028)。人写的是一段话而不是
+ * 一句陈述,因此比 `AGENT_STATEMENT_LIMIT` 宽得多:形状那道闸拦的是 agent 的产出,这一道
+ * 只拦住把整篇文档粘进来的那种写法。服务端只拒收,不截断。
+ */
+const INTENT_TEXT_LIMIT = 500;
+
+/**
+ * 完成的意图在知识集读取里还列多久(ADR 0028)。库里的行永久保留供轨迹回溯,窗口只管
+ * 列不列——裁决完的一条留在弹窗顶部只会挡住后面的事。
+ */
+const INTENT_COMPLETED_WINDOW_MS = 10 * 60 * 1000;
+
+/** agent 一句话都没说时的收尾(CONTEXT.md 修订意图)。零产出是完成,不是失败。 */
+const INTENT_EMPTY_SUMMARY = "未产出变更";
+
+/**
+ * 一次人工提议的后台执行(CONTEXT.md 人工提议,ADR 0028,issue #294)。与处置反哺同一条
+ * agent 管线:意图原文、这个仓库当前生效的知识集与待裁决队列交给规则 agent,产出经同一套
+ * 映射入队;知识集未确认时产出追加进草案。零产出是完成,异常即失败、写进意图行、不重试。
+ *
+ * 工作副本停默认分支当前 head:意图说的是这个仓库现在的样子,不是某一次 Finding 报出时
+ * 的那个 commit。
+ */
+async function runRevisionIntentInBackground(
+  deps: WebhookServerDeps,
+  repoId: number,
+  ref: RepoRef,
+  intent: RuleIntent,
+  spec: ReviewerSpec,
+): Promise<void> {
+  let failure: string | undefined;
+  let worktree: Worktree | undefined;
+  const now = (): string => new Date((deps.now ?? Date.now)()).toISOString();
+  // 轨迹从任务开始就起,与另三条链路同一条口径:取不回代码、模型用不了都是这一次提议
+  // 之内的失败,人来这条轨迹就是要看它究竟卡在哪一步。
+  const trace = startRuleTrace((use) => withStore(deps.dbPath, use), repoId, "manual-proposal", {
+    source: "manual-proposal",
+    intentId: intent.id,
+    text: intent.text,
+    target: { kind: intent.targetKind },
+    model: modelIdentity(spec),
+    thinkingLevel: spec.thinkingLevel ?? null,
+  });
+  const traceTaskId = trace.taskId;
+  if (traceTaskId !== null) {
+    withStore(deps.dbPath, (store) => store.setRuleIntentTrace(intent.id, traceTaskId));
+  }
+  // 收尾一句取 agent 的最后一段话。它已经在轨迹里,这里只是顺手留住最后那一条——从轨迹
+  // 倒查一遍要另开一次库,而这一句是意图行自己的内容。
+  let lastMessage = "";
+  try {
+    const forge = deps.forges.gitea;
+    if (forge === undefined) throw new Error("gitea 没有配置 Forge,取不回代码");
+    const [plan] = await materializeReviewerPlans(
+      deps,
+      withStore(deps.dbPath, (store) => store.listModelServices()),
+      [spec],
+    );
+    if (plan === undefined || plan.runtimeModel === null || plan.credential === null) {
+      throw new Error(plan?.failure ?? `模型 ${modelIdentity(spec)} 不可用`);
+    }
+    const [repository, credentials] = await Promise.all([
+      forge.getRepository(ref),
+      forge.cloneCredentials(ref),
+    ]);
+    const target = {
+      cacheDir: deps.cacheDir,
+      ref,
+      cloneUrl: repository.cloneUrl,
+      credentials,
+    };
+    // 默认分支当前 head:与 commit 选择器读的是同一份缓存 clone、同一条读取路径。
+    const listed = await listBranchCommits({
+      ...target,
+      branch: repository.defaultBranch,
+      offset: 0,
+      limit: 1,
+    });
+    const head = listed.ok ? listed.commits[0]?.sha : undefined;
+    if (head === undefined) {
+      throw new Error(`读不到默认分支 ${repository.defaultBranch} 的当前 head`);
+    }
+    worktree = await prepareWorktree({ ...target, headSha: head, baseSha: head });
+    const input = withStore(deps.dbPath, (store) => {
+      const ruleSet = store.getRuleSet(repoId);
+      return {
+        version: ruleSet?.version ?? null,
+        rules: ruleSet?.rules ?? [],
+        pending: store
+          .getRuleProposals(repoId)
+          .filter((entry) => entry.state === "pending")
+          .map(toPendingProposal),
+      };
+    });
+    const agent = deps.ruleAgent ?? createPiRuleAgent();
+    const result = await agent({
+      worktreePath: worktree.path,
+      baselineSha: head,
+      runtimeModel: plan.runtimeModel,
+      apiKey: plan.credential,
+      existingKnowledge: input.rules.map(toKnowledgeEntry),
+      pendingProposals: input.pending,
+      ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
+      intent: { text: intent.text, target: { kind: "none" } },
+      onEvent: (event) => {
+        if (event.kind === "assistant_message" && event.text.trim() !== "") {
+          lastMessage = event.text.trim();
+        }
+        recordRuleAgentEvent(trace, event);
+      },
+    });
+    if (result.failure !== undefined) throw new Error(result.failure);
+    // 收窄在开库之前跑完:它自己要写知识轨迹,而轨迹的每一次落库另开一次库。
+    const usable = usableRuleItems(result.items, trace);
+    const at = now();
+    // 知识集未确认即产出追加进草案,已确认(含空集)即排进修订提案队列——分界与基点探索
+    // 同一条(CONTEXT.md 人工提议)。**追加而不是覆盖**:一条意图补的是这份草案里缺的
+    // 那几条,重新探索才整组取代。
+    const produced = withStore(deps.dbPath, (store) =>
+      input.version === null
+        ? {
+            proposalIds: [],
+            draftItemIds: store.appendRuleDraftItems(
+              repoId,
+              usable.map((item) => ({
+                type: item.type,
+                scope: item.scope,
+                statement: item.statement,
+              })),
+              at,
+            ),
+          }
+        : {
+            proposalIds: landRuleItems(store, repoId, usable, input.rules, {
+              origin: "manual-proposal",
+              // 备注原文记意图,依据记 agent 的理由(CONTEXT.md 出处附注)。
+              note: intent.text,
+              findingId: null,
+              traceTaskId: trace.taskId,
+            }),
+            draftItemIds: [],
+          },
+    );
+    withStore(deps.dbPath, (store) =>
+      store.finishRuleIntent(
+        intent.id,
+        { summary: lastMessage === "" ? INTENT_EMPTY_SUMMARY : lastMessage, produced },
+        at,
+      ),
+    );
+    trace.record("rule_agent_finished", {
+      items: produced.proposalIds.length + produced.draftItemIds.length,
+    });
+  } catch (error) {
+    failure = failureText(error);
+    trace.record("rule_agent_failed", { failure });
+  } finally {
+    trace.end();
+    await worktree?.release();
+  }
+
+  try {
+    if (failure !== undefined) {
+      withStore(deps.dbPath, (store) => store.failRuleIntent(intent.id, failure!, now()));
+    }
+  } catch (error) {
+    // 后台任务:未处理的拒绝会带走整个进程。
+    console.error(`修订意图状态落库失败:intent ${intent.id}:${failureText(error)}`);
+  }
+
+  if (deps.onRevisionIntentSettled !== undefined) {
+    deps.onRevisionIntentSettled(intent.id, failure);
+  } else if (failure !== undefined) {
+    console.error(`人工提议失败:${ref.owner}/${ref.repo} 的意图 ${intent.id}:${failure}`);
+  }
+}
+
+/**
+ * 提交一条修订意图(CONTEXT.md 修订意图,ADR 0028,issue #294)。原文即时落一行运行中的,
+ * 解读排到后台——人提交完就走,不在这个请求里等一次 agent 运行。
+ *
+ * 本票只收无目标的意图,目标型三档由后续票填(spec #293)。
+ */
+async function handleSubmitRevisionIntent(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+  submittedBy: string,
+): Promise<void> {
+  const payload = await readJson<{ text?: unknown; target?: unknown } | null>(req, res);
+  if (payload === undefined) return;
+  const text = typeof payload?.text === "string" ? payload.text.trim() : "";
+  if (text === "") {
+    return sendJson(res, 400, { error: 'body 要是 {"text": "…"} 形状的 JSON,意图不能为空' });
+  }
+  if (text.length > INTENT_TEXT_LIMIT) {
+    return sendJson(res, 400, { error: `修订意图不能超过 ${INTENT_TEXT_LIMIT} 字` });
+  }
+  const target = payload?.target;
+  if (target !== undefined && (target as { kind?: unknown } | null)?.kind !== "none") {
+    return sendJson(res, 400, { error: "目前只收无目标的修订意图" });
+  }
+  const repo = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+  if (repo === undefined) {
+    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+  }
+  // 模型在提交这一刻就要选得出来:选不出来的话这条意图落地即失败,不如当场说清楚。
+  const spec = ruleTaskSpec(deps, repoId);
+  if (spec === undefined) return sendJson(res, 409, { error: NO_RULE_TASK_MODEL });
+  const intent = withStore(deps.dbPath, (store) =>
+    store.startRuleIntent(repoId, {
+      text,
+      submittedBy,
+      targetKind: "none",
+      targetId: null,
+      model: modelIdentity(spec),
+      ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
+      startedAt: new Date((deps.now ?? Date.now)()).toISOString(),
+    }),
+  );
+  if (intent === undefined) {
+    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+  }
+  void runRevisionIntentInBackground(deps, repoId, repo, intent, spec).catch(
+    (error: unknown) => {
+      console.error(`人工提议未处理的失败:intent ${intent.id}:${failureText(error)}`);
+    },
+  );
+  return sendJson(res, 202, intent);
+}
+
+/**
+ * 删掉一条修订意图(ADR 0028)。失败行与完成行删得掉;运行中的删不掉——那一次还在跑,
+ * 行删了它结算时就没有落处,而取消一次运行不在这一票的范围里。
+ */
+function handleDeleteRevisionIntent(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+  intentId: number,
+): void {
+  const outcome = withStore(deps.dbPath, (store) => store.deleteRuleIntent(repoId, intentId));
+  if (outcome === "missing") {
+    return sendJson(res, 404, { error: "这条修订意图不在这个仓库里" });
+  }
+  if (outcome === "running") {
+    return sendJson(res, 409, { error: "这条修订意图还在跑,等它结束再删" });
+  }
+  return sendJson(res, 200, { id: intentId });
 }
 
 /**
@@ -8386,6 +8703,11 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
     // 知识整理与探索同律(issue #284)。
     store.failInterruptedRuleConsolidations(
       "服务重启,上一次整理没跑完",
+      new Date((deps.now ?? Date.now)()).toISOString(),
+    );
+    // 修订意图同律(issue #294):停在运行中的那些行没有谁再去改它,人也删不掉。
+    store.failInterruptedRuleIntents(
+      "服务重启,上一次提议没跑完",
       new Date((deps.now ?? Date.now)()).toISOString(),
     );
     // 正在跑的 Review Run 停在运行中时先尝试续跑(issue #248):已跑完的批次结果已经

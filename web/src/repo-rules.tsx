@@ -105,6 +105,31 @@ type RuleSet = {
   consolidation: RuleConsolidation | null;
   draft: ReviewRule[];
   proposals: RuleProposal[];
+  /** 运行中、失败,以及刚完成不久的修订意图(issue #294)。与知识集同一份读取。 */
+  intents: RevisionIntent[];
+  /** 意图将使用的模型标识。为 null 即一个模型都选不出来,意图框置灰。 */
+  intentModel: string | null;
+};
+
+/**
+ * 一条修订意图(CONTEXT.md 修订意图,ADR 0028,issue #294)。`produced` 是它产出的提案
+ * 与草案条目标识,`summary` 是 agent 的一句收尾——两者都要跑完才有。
+ */
+type RevisionIntent = {
+  id: number;
+  text: string;
+  submittedBy: string;
+  targetKind: "none" | "rule" | "proposal" | "draft" | "finding";
+  targetId: number | null;
+  state: "running" | "failed" | "completed";
+  failure: string | null;
+  summary: string | null;
+  model: string | null;
+  thinkingLevel: ThinkingLevel | null;
+  traceTaskId: number | null;
+  produced: { proposalIds: number[]; draftItemIds: number[] };
+  startedAt: string;
+  finishedAt: string | null;
 };
 
 /** `GET /rule-models` 的一项:发起基点探索与知识整理时可选的模型。 */
@@ -252,10 +277,12 @@ function RuleSetDialogContent({
   const ruleSet = useQuery({
     queryKey: ["repo-rules", repo.repoId],
     queryFn: () => fetchJson<RuleSet>(`/repos/${repo.repoId}/rules`),
-    // 探索与整理都在服务端后台跑,结束时没人推给面板,弹窗开着就每 5 秒问一次,跑完即停。
+    // 探索、整理与修订意图都在服务端后台跑,结束时没人推给面板,弹窗开着就每 5 秒问
+    // 一次,跑完即停。
     refetchInterval: (query) =>
       query.state.data?.exploration?.state === "running" ||
-      query.state.data?.consolidation?.state === "running"
+      query.state.data?.consolidation?.state === "running" ||
+      (query.state.data?.intents ?? []).some((intent) => intent.state === "running")
         ? 5000
         : false,
   });
@@ -363,6 +390,12 @@ function RuleSetDialogContent({
         <Text as="p" size="1" color="orange" mb="2">
           知识集未确认:完成知识确认前,这个仓库的投递只记录不审,面板也发起不了审查。
         </Text>
+      )}
+
+      {/* 意图框与意图列表在弹窗顶部,三个 tab 之上(ADR 0028):写下一段话是这个弹窗
+          现在唯一的写入口,它不属于其中任何一个 tab。 */}
+      {data === undefined ? null : (
+        <IntentSection repo={repo} canWrite={canWrite} ruleSet={data} onChanged={reload} />
       )}
 
       {ruleSet.isPending ? (
@@ -877,6 +910,177 @@ function ProposalSources({ repoId, proposal }: { repoId: number; proposal: RuleP
  * 队列本身对所有读得到知识集的人可见——「还有什么在等人裁决」与「现在按什么标准评审」
  * 是同一个问题的两半;采纳与驳回按 `knowledge:write` 出现。
  */
+/** 一条修订意图的原文上限,与服务端同一个数:超了服务端 400,表单先拦一道。 */
+const INTENT_TEXT_LIMIT = 500;
+
+const INTENT_STATE_LABEL = {
+  running: "运行中",
+  failed: "失败",
+  completed: "已完成",
+} as const;
+
+/**
+ * 修订意图那一块(CONTEXT.md 修订意图,ADR 0028,issue #294):一个意图框加一列意图行。
+ *
+ * 框只对有 `knowledge:write` 的人出现——没有这一格的人提不了意图。列表所有人都看得到:
+ * 知识集怎么变的对能看这个仓库的人都透明。
+ */
+function IntentSection({
+  repo,
+  canWrite,
+  ruleSet,
+  onChanged,
+}: {
+  repo: { repoId: number; owner: string; repo: string };
+  canWrite: boolean;
+  ruleSet: RuleSet;
+  onChanged: () => void;
+}) {
+  const [text, setText] = useState("");
+  const fieldId = useId();
+  const noModel = ruleSet.intentModel === null;
+
+  const submit = useMutation({
+    mutationFn: async (): Promise<void> => {
+      const response = await api(`/repos/${repo.repoId}/revision-intents`, {
+        method: "POST",
+        body: JSON.stringify({ text: text.trim() }),
+      });
+      if (!response.ok) throw new Error(await errorText(response));
+    },
+    onSuccess: () => {
+      setText("");
+      onChanged();
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: async (intentId: number): Promise<void> => {
+      const response = await api(`/repos/${repo.repoId}/revision-intents/${intentId}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) throw new Error(await errorText(response));
+    },
+    onSuccess: onChanged,
+  });
+
+  const trimmed = text.trim();
+  const tooLong = trimmed.length > INTENT_TEXT_LIMIT;
+  if (!canWrite && ruleSet.intents.length === 0) return null;
+
+  return (
+    <div className="mb-3 shrink-0 flex flex-col gap-2">
+      {canWrite ? (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (trimmed !== "" && !tooLong && !noModel && !submit.isPending) submit.mutate();
+          }}
+        >
+          <TextArea
+            id={fieldId}
+            value={text}
+            disabled={noModel}
+            onChange={(event) => setText(event.target.value)}
+            placeholder="写下要新增或改成什么样，agent 会读代码并按陈述形状提出一条修订提案"
+            rows={2}
+            size="2"
+          />
+          <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+            <Text as="span" size="1" color={tooLong ? "red" : "gray"} className="tabular-nums">
+              {noModel
+                ? "还没有可用的模型：先配一个模型凭据，或为这个仓库跑一次基点探索。"
+                : `${trimmed.length} / ${INTENT_TEXT_LIMIT} 字`}
+            </Text>
+            <Button
+              type="submit"
+              size={{ initial: "3", sm: "1" }}
+              disabled={trimmed === "" || tooLong || noModel || submit.isPending}
+            >
+              {submit.isPending ? "提交中…" : "提交意图"}
+            </Button>
+          </div>
+        </form>
+      ) : null}
+
+      {submit.isError || remove.isError ? (
+        <Callout.Root role="alert" color="red" size="1">
+          <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+          <Callout.Text>{((submit.error ?? remove.error) as Error).message}</Callout.Text>
+        </Callout.Root>
+      ) : null}
+
+      {ruleSet.intents.length === 0 ? null : (
+        <ul className="overflow-hidden rounded-lg border border-card-line">
+          {ruleSet.intents.map((intent) => (
+            <li
+              key={intent.id}
+              className="flex flex-col gap-1 border-t border-line px-3 py-2 first:border-t-0"
+            >
+              <Text as="p" size="2" className="wrap-anywhere">{intent.text}</Text>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <Badge
+                  color={
+                    intent.state === "running" ? "blue" : intent.state === "failed" ? "red" : "gray"
+                  }
+                  variant="soft"
+                  radius="full"
+                  size="1"
+                >
+                  {INTENT_STATE_LABEL[intent.state]}
+                </Badge>
+                <Text as="span" size="1" color="gray">
+                  {intent.submittedBy}
+                  {intent.model === null ? null : ` · 模型 ${intent.model}`}
+                  {intent.thinkingLevel === null
+                    ? null
+                    : ` · 思考 ${THINKING_LEVEL_LABEL[intent.thinkingLevel]}`}
+                </Text>
+                {intent.traceTaskId === null ? null : (
+                  <RuleTraceButton
+                    repoId={repo.repoId}
+                    taskId={intent.traceTaskId}
+                    context={intent.text}
+                  />
+                )}
+                {canWrite && intent.state !== "running" ? (
+                  <Button
+                    variant="outline"
+                    color="gray"
+                    highContrast
+                    size={{ initial: "3", sm: "1" }}
+                    className={OUTLINED_ACTION}
+                    disabled={remove.isPending}
+                    onClick={() => remove.mutate(intent.id)}
+                  >
+                    删除
+                  </Button>
+                ) : null}
+              </div>
+              {intent.state === "completed" && intent.summary !== null ? (
+                <Text as="p" size="1" color="gray" className="wrap-anywhere">
+                  {intent.summary}
+                  {intent.produced.proposalIds.length > 0
+                    ? ` · 产出 ${intent.produced.proposalIds.length} 条修订提案`
+                    : intent.produced.draftItemIds.length > 0
+                      ? ` · 产出 ${intent.produced.draftItemIds.length} 条草案条目`
+                      : ""}
+                </Text>
+              ) : null}
+              {intent.state === "failed" && intent.failure !== null ? (
+                <Callout.Root role="alert" color="red" size="1">
+                  <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+                  <Callout.Text>{intent.failure}</Callout.Text>
+                </Callout.Root>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function ProposalSection({
   repo,
   ruleSet,
@@ -902,6 +1106,13 @@ function ProposalSection({
   const decided = ruleSet.proposals.filter((row) => row.state !== "pending");
   // 提案默认一条不勾:采纳是改变知识集的动作,该由人一条条挑,不该默认全中。
   const pick = useSelection(pending.map((row) => row.id), false);
+  // 刚完成的意图产出的提案(issue #294)。判据取意图行自己的产出列表:附注的来源说得出
+  // 「这条曾由人工提议提过」,说不出「是刚才那一次」,而人回到队列要找的是刚才那几条。
+  const fromIntent = new Set(
+    ruleSet.intents.flatMap((intent) =>
+      intent.state === "completed" ? intent.produced.proposalIds : [],
+    ),
+  );
   /**
    * 这条提案指向的现有条目那一段:新增没有,修改与废止一条,合并几条(issue #282)。
    * 合并逐条给陈述与作用范围——人要看清被合掉的是哪几条。已经不在生效条目里的只显示
@@ -1046,6 +1257,11 @@ function ProposalSection({
                     <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
                       {proposal.scope === "" ? "全仓库" : proposal.scope}
                     </Badge>
+                    {/* 刚完成的意图产出的那几条(issue #294):人写完意图回到队列,要一眼
+                        认出该去裁决哪一条。十分钟窗口过后意图不再列出,徽章跟着消失。 */}
+                    {fromIntent.has(proposal.id) ? (
+                      <Badge color="amber" variant="soft">刚由意图产出</Badge>
+                    ) : null}
                   </span>
                   {canWrite && edit?.id !== proposal.id ? (
                     <div className="flex shrink-0 gap-1">

@@ -421,6 +421,35 @@ CREATE TABLE IF NOT EXISTS rule_consolidation (
   finished_at TEXT
 );
 
+-- 修订意图(CONTEXT.md,ADR 0028,issue #294)。与探索、整理不同,它每仓库多行:一个人
+-- 写下一段话即一行,自带三态与自己的知识轨迹,行永久保留供轨迹回溯。
+--
+-- target_kind 五值,target_id 是那一条的标识('none' 时为 NULL)。本票只写 'none',
+-- 目标型那几档由后续票填(spec #293);枚举与列一次落定,免得每加一档就重建一次表。
+--
+-- produced 是这一次产出的提案与草案条目标识(JSON),summary 是 agent 的一句收尾,
+-- 两者都要跑完才有;model 与 thinking_level 是这一次沿反哺规则选出的那一组。
+CREATE TABLE IF NOT EXISTS rule_intent (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id INTEGER NOT NULL REFERENCES repo(id),
+  text TEXT NOT NULL,
+  submitted_by TEXT NOT NULL,
+  target_kind TEXT NOT NULL
+    CHECK (target_kind IN ('none', 'rule', 'proposal', 'draft', 'finding')),
+  target_id INTEGER,
+  state TEXT NOT NULL CHECK (state IN ('running', 'failed', 'completed')),
+  failure TEXT,
+  summary TEXT,
+  model TEXT,
+  thinking_level TEXT,
+  trace_task_id INTEGER,
+  produced_json TEXT,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  CHECK ((target_kind = 'none') = (target_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS rule_intent_by_repo ON rule_intent(repo_id);
+
 -- 知识草案(CONTEXT.md,issue #205)。每仓库至多一份,重新探索覆盖未确认的旧草案;
 -- 知识确认把这里的条目整组搬进 review_rule 之后清空。
 --
@@ -478,7 +507,8 @@ CREATE TABLE IF NOT EXISTS rule_proposal_source (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   proposal_id INTEGER NOT NULL REFERENCES rule_proposal(id),
   origin TEXT NOT NULL
-    CHECK (origin IN ('baseline-exploration', 'disposition-feedback', 'knowledge-consolidation')),
+    CHECK (origin IN ('baseline-exploration', 'disposition-feedback', 'knowledge-consolidation',
+                      'manual-proposal')),
   note TEXT,
   evidence TEXT,
   finding_id INTEGER,
@@ -503,7 +533,8 @@ CREATE TABLE IF NOT EXISTS rule_trace (
   task_id INTEGER NOT NULL,
   repo_id INTEGER NOT NULL REFERENCES repo(id),
   source TEXT NOT NULL
-    CHECK (source IN ('baseline-exploration', 'disposition-feedback', 'knowledge-consolidation')),
+    CHECK (source IN ('baseline-exploration', 'disposition-feedback', 'knowledge-consolidation',
+                      'manual-proposal')),
   seq INTEGER NOT NULL,
   at TEXT NOT NULL,
   kind TEXT NOT NULL,
@@ -1646,7 +1677,7 @@ export type ReviewRuleRecord = {
   type: KnowledgeType;
   scope: string;
   statement: string;
-  /** 出处。这一票只有读,写它的是基点探索、处置反哺与人手写三条链路。 */
+  /** 出处。这一票只有读,写它的是基点探索、人工提议(issue #294)与人手写三条链路。 */
   origin: string;
 };
 
@@ -1757,19 +1788,50 @@ export type RuleDraftItem = ReviewRuleInput & {
 };
 
 /**
- * 一条出处附注的来源(CONTEXT.md 出处附注)。三元:基点探索、处置反哺与知识整理。
- * 三条链路要用同一套词,字面量因此只有这一份。
+ * 一条出处附注的来源(CONTEXT.md 出处附注)。四元:基点探索、处置反哺、知识整理与
+ * 人工提议(ADR 0028,issue #294)。四条链路要用同一套词,字面量因此只有这一份。
  */
 export type RuleProposalOrigin =
   | "baseline-exploration"
   | "disposition-feedback"
-  | "knowledge-consolidation";
+  | "knowledge-consolidation"
+  | "manual-proposal";
 
 /**
- * 一次知识轨迹的来源(CONTEXT.md 知识轨迹)。三元,与出处附注的来源同一套词:基点探索、
- * 处置反哺与知识整理(issue #284)。
+ * 一次知识轨迹的来源(CONTEXT.md 知识轨迹)。四元,与出处附注的来源同一套词:基点探索、
+ * 处置反哺、知识整理(issue #284)与人工提议(issue #294)。
  */
 export type RuleTraceSource = RuleProposalOrigin;
+
+/**
+ * 一条修订意图指向什么(CONTEXT.md 修订意图,ADR 0028)。`none` 即无目标,产的是新增;
+ * 其余四档各指向一条知识条目、修订提案、草案条目或 Finding。
+ */
+export type RuleIntentTargetKind = "none" | "rule" | "proposal" | "draft" | "finding";
+
+/**
+ * 一条修订意图(CONTEXT.md 修订意图,issue #294)。与探索、整理两行同形地记状态、模型、
+ * 轨迹与失败原因,只是每仓库多行:`produced` 是这一次产出的提案与草案条目标识,
+ * `summary` 是 agent 的那一句收尾,两者都要跑完才有。
+ */
+export type RuleIntent = {
+  id: number;
+  text: string;
+  submittedBy: string;
+  targetKind: RuleIntentTargetKind;
+  targetId: number | null;
+  state: "running" | "failed" | "completed";
+  failure: string | null;
+  summary: string | null;
+  /** 这一次沿反哺规则选出的模型标识。选不出来时为 null。 */
+  model: string | null;
+  thinkingLevel: ThinkingLevel | null;
+  traceTaskId: number | null;
+  /** 产出的修订提案与草案条目标识。没跑完即两个空数组。 */
+  produced: { proposalIds: number[]; draftItemIds: number[] };
+  startedAt: string;
+  finishedAt: string | null;
+};
 
 /** 排进队列的一条出处附注(CONTEXT.md 出处附注,issue #281)。 */
 export type RuleProposalSourceInput = {
@@ -1777,7 +1839,7 @@ export type RuleProposalSourceInput = {
   /** 备注原文。只有处置反哺有;基点探索与知识整理没有备注原文,为 null。 */
   note: string | null;
   /**
-   * agent 为这一条给出的理由与代码证据(issue #287)。三条链路的 `reason` 都落在这里,
+   * agent 为这一条给出的理由与代码证据(issue #287)。四条链路的 `reason` 都落在这里,
    * agent 没给的为 null。陈述只留那一句结论,凭什么成立看这一格。
    */
   evidence: string | null;
@@ -2390,6 +2452,49 @@ export type Store = {
   /** 把停在运行中的整理改判失败,与 `failInterruptedRuleExplorations` 同一个理由。 */
   failInterruptedRuleConsolidations(failure: string, at: string): void;
   /**
+   * 这个仓库要在面板上列出的修订意图(CONTEXT.md 修订意图,issue #294):运行中、失败,
+   * 以及结束时刻距 `now` 不超过 `completedWindowMs` 的完成行,按开始时刻倒序。
+   *
+   * 库里的行永久保留供轨迹回溯,窗口只管列不列——一条裁决完的意图留在弹窗顶部只会挡住
+   * 后面的事。
+   */
+  listRuleIntents(repoId: number, now: string, completedWindowMs: number): RuleIntent[];
+  /** 一条修订意图。不在这个仓库里回 null。 */
+  getRuleIntent(repoId: number, intentId: number): RuleIntent | null;
+  /**
+   * 提交一条修订意图:落一行运行中的。返回新行;仓库不在注册表里回 undefined。
+   * 与探索、整理不同,这里不判互斥——意图不受它们的互斥限制(ADR 0028)。
+   */
+  startRuleIntent(
+    repoId: number,
+    intent: {
+      text: string;
+      submittedBy: string;
+      targetKind: RuleIntentTargetKind;
+      targetId: number | null;
+      model: string;
+      thinkingLevel?: ThinkingLevel;
+      startedAt: string;
+    },
+  ): RuleIntent | undefined;
+  /** 关联这一次的知识轨迹。轨迹起不来时不调,那一列保持 NULL。 */
+  setRuleIntentTrace(intentId: number, taskId: number): void;
+  /** 意图完成:落下收尾一句与产出标识。零产出同样是完成。 */
+  finishRuleIntent(
+    intentId: number,
+    outcome: { summary: string; produced: RuleIntent["produced"] },
+    at: string,
+  ): void;
+  /** 意图失败:留下原因。已经落地的产出保持原样。 */
+  failRuleIntent(intentId: number, failure: string, at: string): void;
+  /** 把停在运行中的意图改判失败,与 `failInterruptedRuleExplorations` 同一个理由。 */
+  failInterruptedRuleIntents(failure: string, at: string): void;
+  /**
+   * 删掉一条修订意图。失败行与完成行删得掉,运行中的删不掉——那一次还在跑,行删了它
+   * 结算时就没有落处。回 `missing` / `running` / `deleted` 三态,调用方各回一句话。
+   */
+  deleteRuleIntent(repoId: number, intentId: number): "missing" | "running" | "deleted";
+  /**
    * 合并几条待裁决提案(CONTEXT.md 知识整理,issue #284):**保留 id 最小的那一行**,
    * 其余行删除,附注全部并入保留行,陈述换成合成后的这一句。
    *
@@ -2408,6 +2513,16 @@ export type Store = {
   getRuleDraft(repoId: number): RuleDraftItem[];
   /** 往草案里手工加一条,出处记人工。返回新条目的 id;仓库不在注册表里回 undefined。 */
   addRuleDraftItem(repoId: number, input: ReviewRuleInput): number | undefined;
+  /**
+   * 把一次人工提议的产出追加进草案(CONTEXT.md 人工提议,issue #294),出处记人工提议。
+   * **追加而不是覆盖**:草案的整组覆盖只属于重新探索,一条意图补的是这份草案里缺的那
+   * 几条。返回新条目的标识,按给的先后。
+   */
+  appendRuleDraftItems(
+    repoId: number,
+    items: readonly ReviewRuleInput[],
+    at: string,
+  ): number[];
   /** 改草案里的一条。出处沿用旧值——改文字不改变这条当初从哪来。不在草案里回 false。 */
   updateRuleDraftItem(repoId: number, itemId: number, input: ReviewRuleInput): boolean;
   /** 删草案里的一条。草案未确认,删就是删掉,没有历史版本要为它保留。 */
@@ -3209,6 +3324,41 @@ const MANUAL_RULE_ORIGIN = "manual";
 /** 基点探索推导出的规则在 `origin` 上的出处(issue #205)。处置反哺另写自己的字面量。 */
 const BASELINE_EXPLORATION_RULE_ORIGIN = "baseline-exploration";
 
+/** 一条人工提议产出的草案条目在 `origin` 上的出处(issue #294)。与来源字面量同一个词。 */
+const MANUAL_PROPOSAL_RULE_ORIGIN = "manual-proposal";
+
+/** 读一条修订意图要的那几列(issue #294)。三处查询共用,列名只写一遍。 */
+const RULE_INTENT_COLUMNS = `SELECT id, text, submitted_by, target_kind, target_id, state,
+                                    failure, summary, model, thinking_level, trace_task_id,
+                                    produced_json, started_at, finished_at
+                               FROM rule_intent`;
+
+/** 一行 `rule_intent` 读成一条修订意图。 */
+function toRuleIntent(row: Record<string, unknown>): RuleIntent {
+  const text = (value: unknown): string | null =>
+    value === null || value === undefined ? null : String(value);
+  const produced = row["produced_json"];
+  return {
+    id: Number(row["id"]),
+    text: String(row["text"]),
+    submittedBy: String(row["submitted_by"]),
+    targetKind: String(row["target_kind"]) as RuleIntentTargetKind,
+    targetId: row["target_id"] === null ? null : Number(row["target_id"]),
+    state: String(row["state"]) as RuleIntent["state"],
+    failure: text(row["failure"]),
+    summary: text(row["summary"]),
+    model: text(row["model"]),
+    thinkingLevel: text(row["thinking_level"]) as ThinkingLevel | null,
+    traceTaskId: row["trace_task_id"] === null ? null : Number(row["trace_task_id"]),
+    produced:
+      produced === null || produced === undefined
+        ? { proposalIds: [], draftItemIds: [] }
+        : (JSON.parse(String(produced)) as RuleIntent["produced"]),
+    startedAt: String(row["started_at"]),
+    finishedAt: text(row["finished_at"]),
+  };
+}
+
 /** 打开当前 schema；schema-v0 数据库开不起来。 */
 export function openStore(dbPath: string): Store {
   const db = new DatabaseSync(dbPath, { timeout: BUSY_TIMEOUT_MS });
@@ -3383,6 +3533,70 @@ export function openStore(dbPath: string): Store {
         repo_id INTEGER NOT NULL REFERENCES repo(id),
         source TEXT NOT NULL
           CHECK (source IN ('baseline-exploration', 'disposition-feedback', 'knowledge-consolidation')),
+        seq INTEGER NOT NULL,
+        at TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        PRIMARY KEY (task_id, seq)
+      );
+      INSERT INTO rule_trace_rebuilt
+        SELECT task_id, repo_id, source, seq, at, kind, payload FROM rule_trace;
+      DROP TABLE rule_trace;
+      ALTER TABLE rule_trace_rebuilt RENAME TO rule_trace;
+      CREATE INDEX IF NOT EXISTS rule_trace_by_repo ON rule_trace(repo_id);
+      COMMIT;
+    `);
+  }
+
+  // 人工提议是第四个来源(CONTEXT.md 人工提议,ADR 0028,issue #294):出处附注与知识
+  // 轨迹两张表的来源 CHECK 各加这一个取值。SQLite 改不了 CHECK,同样只能重建表;判据与
+  // 上面几次同律,重建过即不再命中。存量条目的出处原样搬过去,一条都不改。
+  //
+  // 附注这一张引用 `rule_proposal(id)`,但重建的是子表自己:先把行搬进新表、再 DROP 旧
+  // 的,父表一行未动,外键因此不必关。
+  const sourceSql = db
+    .prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'rule_proposal_source'",
+    )
+    .get()?.["sql"];
+  if (typeof sourceSql === "string" && !sourceSql.includes("manual-proposal")) {
+    db.exec(`
+      BEGIN;
+      CREATE TABLE rule_proposal_source_rebuilt (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proposal_id INTEGER NOT NULL REFERENCES rule_proposal(id),
+        origin TEXT NOT NULL
+          CHECK (origin IN ('baseline-exploration', 'disposition-feedback',
+                            'knowledge-consolidation', 'manual-proposal')),
+        note TEXT,
+        evidence TEXT,
+        finding_id INTEGER,
+        trace_task_id INTEGER,
+        created_at TEXT NOT NULL
+      );
+      INSERT INTO rule_proposal_source_rebuilt
+          (id, proposal_id, origin, note, evidence, finding_id, trace_task_id, created_at)
+        SELECT id, proposal_id, origin, note, evidence, finding_id, trace_task_id, created_at
+          FROM rule_proposal_source;
+      DROP TABLE rule_proposal_source;
+      ALTER TABLE rule_proposal_source_rebuilt RENAME TO rule_proposal_source;
+      CREATE INDEX IF NOT EXISTS rule_proposal_source_by_proposal
+        ON rule_proposal_source(proposal_id);
+      COMMIT;
+    `);
+  }
+  const manualTraceSql = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'rule_trace'")
+    .get()?.["sql"];
+  if (typeof manualTraceSql === "string" && !manualTraceSql.includes("manual-proposal")) {
+    db.exec(`
+      BEGIN;
+      CREATE TABLE rule_trace_rebuilt (
+        task_id INTEGER NOT NULL,
+        repo_id INTEGER NOT NULL REFERENCES repo(id),
+        source TEXT NOT NULL
+          CHECK (source IN ('baseline-exploration', 'disposition-feedback',
+                            'knowledge-consolidation', 'manual-proposal')),
         seq INTEGER NOT NULL,
         at TEXT NOT NULL,
         kind TEXT NOT NULL,
@@ -4548,6 +4762,83 @@ export function openStore(dbPath: string): Store {
       ).run(failure, at);
     },
 
+    listRuleIntents(repoId, now, completedWindowMs) {
+      const cutoff = new Date(new Date(now).getTime() - completedWindowMs).toISOString();
+      return db
+        .prepare(
+          `${RULE_INTENT_COLUMNS}
+             WHERE repo_id = ?
+               AND (state <> 'completed' OR finished_at >= ?)
+             ORDER BY started_at DESC, id DESC`,
+        )
+        .all(repoId, cutoff)
+        .map(toRuleIntent);
+    },
+
+    getRuleIntent(repoId, intentId) {
+      const row = db
+        .prepare(`${RULE_INTENT_COLUMNS} WHERE id = ? AND repo_id = ?`)
+        .get(intentId, repoId);
+      return row === undefined ? null : toRuleIntent(row);
+    },
+
+    startRuleIntent(repoId, intent) {
+      if (!repoExists(repoId)) return undefined;
+      const inserted = db
+        .prepare(
+          `INSERT INTO rule_intent
+             (repo_id, text, submitted_by, target_kind, target_id, state, failure, summary,
+              model, thinking_level, trace_task_id, produced_json, started_at, finished_at)
+           VALUES (?, ?, ?, ?, ?, 'running', NULL, NULL, ?, ?, NULL, NULL, ?, NULL)`,
+        )
+        .run(
+          repoId,
+          intent.text,
+          intent.submittedBy,
+          intent.targetKind,
+          intent.targetId,
+          intent.model,
+          intent.thinkingLevel ?? null,
+          intent.startedAt,
+        );
+      return store.getRuleIntent(repoId, Number(inserted.lastInsertRowid)) ?? undefined;
+    },
+
+    setRuleIntentTrace(intentId, taskId) {
+      db.prepare("UPDATE rule_intent SET trace_task_id = ? WHERE id = ?").run(taskId, intentId);
+    },
+
+    finishRuleIntent(intentId, outcome, at) {
+      db.prepare(
+        `UPDATE rule_intent
+            SET state = 'completed', failure = NULL, summary = ?, produced_json = ?,
+                finished_at = ?
+          WHERE id = ?`,
+      ).run(outcome.summary, JSON.stringify(outcome.produced), at, intentId);
+    },
+
+    failRuleIntent(intentId, failure, at) {
+      db.prepare(
+        "UPDATE rule_intent SET state = 'failed', failure = ?, finished_at = ? WHERE id = ?",
+      ).run(failure, at, intentId);
+    },
+
+    failInterruptedRuleIntents(failure, at) {
+      db.prepare(
+        `UPDATE rule_intent
+            SET state = 'failed', failure = ?, finished_at = ?
+          WHERE state = 'running'`,
+      ).run(failure, at);
+    },
+
+    deleteRuleIntent(repoId, intentId) {
+      const intent = store.getRuleIntent(repoId, intentId);
+      if (intent === null) return "missing";
+      if (intent.state === "running") return "running";
+      db.prepare("DELETE FROM rule_intent WHERE id = ?").run(intentId);
+      return "deleted";
+    },
+
     mergeRuleProposals(repoId, proposalIds, statement) {
       const unique = [...new Set(proposalIds)];
       const merged = statement.trim();
@@ -4629,6 +4920,26 @@ export function openStore(dbPath: string): Store {
           new Date().toISOString(),
         );
       return Number(inserted.lastInsertRowid);
+    },
+
+    appendRuleDraftItems(repoId, items, at) {
+      if (!repoExists(repoId)) return [];
+      const insert = db.prepare(
+        `INSERT INTO rule_draft_item (repo_id, type, scope, statement, layer, origin, created_at)
+         VALUES (?, ?, ?, ?, '', ?, ?)`,
+      );
+      return items.map((item) =>
+        Number(
+          insert.run(
+            repoId,
+            item.type,
+            item.scope,
+            item.statement,
+            MANUAL_PROPOSAL_RULE_ORIGIN,
+            at,
+          ).lastInsertRowid,
+        ),
+      );
     },
 
     updateRuleDraftItem(repoId, itemId, input) {

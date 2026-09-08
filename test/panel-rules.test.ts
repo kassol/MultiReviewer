@@ -254,6 +254,9 @@ test("面板按仓库读知识集:分配内可读,未确认的仓库版本为 nu
     consolidation: null,
     draft: [],
     proposals: [],
+    // 修订意图与它将用的模型(issue #294)。没提过意图即空列表;模型来自全局模型组合。
+    intents: [],
+    intentModel: "test:global-model",
   });
 
   seedRule(h.db.path, {
