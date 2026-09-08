@@ -43,6 +43,7 @@ export const SOURCE_LABEL: Record<string, string> = {
   "baseline-exploration": "基点探索",
   "disposition-feedback": "处置反哺",
   "knowledge-consolidation": "知识整理",
+  "manual-proposal": "人工提议",
 };
 
 /** 一条事件的正文。工具调用与认不出的那两档直接用审查轨迹的构件。 */
@@ -68,6 +69,12 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
           </span>
           {note === null ? null : (
             <p className="min-w-0 text-sm break-words text-text-secondary">处置备注：{note}</p>
+          )}
+          {/* 人工提议那一档带的是意图原文(issue #294),与处置备注同一位置。 */}
+          {str(payload, "text") === null ? null : (
+            <p className="min-w-0 text-sm break-words text-text-secondary">
+              修订意图：{str(payload, "text")}
+            </p>
           )}
         </div>
       );
