@@ -7381,6 +7381,71 @@ async function runDispositionFeedbackInBackground(
 }
 
 /**
+ * 基点探索与知识整理两条发起链路共用的前置校验(issue #284):思考档位取值、仓库在不在
+ * 注册表、模型物化,以及这个模型支不支持人选的那一档。四样在两侧逐字相同,判据只此一处
+ * ——抄第二遍就会在其中一处漏掉一道。回 undefined 即这里已经回过响应,调用方直接返回。
+ */
+async function prepareRuleTaskLaunch(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+  payload: { provider: string; model: string; thinkingLevel?: unknown },
+): Promise<{ repo: RepoRef; spec: ReviewerSpec; plan: ReviewerRuntimePlan } | undefined> {
+  // 档位与模型组合那一侧同一套取值(CONTEXT.md 思考档位),不另起判据。
+  const level = payload.thinkingLevel;
+  if (level !== undefined && !THINKING_LEVELS.includes(level as ThinkingLevel)) {
+    sendJson(res, 400, {
+      error: `思考档位不认得:${String(level)},只收 ${THINKING_LEVELS.join(" / ")}。`,
+    });
+    return undefined;
+  }
+  const spec: ReviewerSpec = {
+    provider: payload.provider,
+    model: payload.model,
+    ...(level === undefined ? {} : { thinkingLevel: level as ThinkingLevel }),
+  };
+
+  const repo = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+  if (repo === undefined) {
+    sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+    return undefined;
+  }
+
+  const [plan] = await materializeReviewerPlans(
+    deps,
+    withStore(deps.dbPath, (store) => store.listModelServices()),
+    [spec],
+  );
+  if (plan === undefined || plan.failure !== null || plan.runtimeModel === null) {
+    sendJson(res, 400, { error: plan?.failure ?? `模型 ${modelIdentity(spec)} 不可用` });
+    return undefined;
+  }
+  // 档位与模型组合那侧同一个判据(CONTEXT.md 思考档位):选了模型不支持的那一档,Pi 会
+  // clamp 成相邻可用档,跑的就不是人选的那一档。
+  const levels = supportedThinkingLevels(plan.runtimeModel);
+  const picked = spec.thinkingLevel ?? "off";
+  if (!levels.includes(picked)) {
+    sendJson(res, 400, {
+      error: `${modelIdentity(spec)} 不支持思考档位 ${picked}，它支持的是 ${levels.join(" / ")}。`,
+    });
+    return undefined;
+  }
+  return { repo, spec, plan };
+}
+
+/**
+ * 互斥的那句 409 回执(issue #284):基点探索与知识整理同仓库同时只跑一个,这句话说得出
+ * 在跑的是哪一个——人下一步是等它还是去看它的轨迹,取决于跑的是哪一条链路。两条发起
+ * 链路共用它,回执形状因此对称。
+ */
+function runningRuleTaskError(deps: WebhookServerDeps, repoId: number): string {
+  const running = withStore(deps.dbPath, (store) =>
+    store.getRuleConsolidation(repoId)?.state === "running" ? "知识整理" : "基点探索",
+  );
+  return `这个仓库已经有一次${running}在跑,等它结束再发起`;
+}
+
+/**
  * 发起一次基点探索(issue #205)。基点 commit 与所用模型都由人给定;模型的可用性判据
  * 与开一轮 Review Run 完全相同——同一套运行计划物化,跑不起来的模型在这里就拦下。
  *
@@ -7411,43 +7476,13 @@ async function handleStartRuleExploration(
   if (!COMMIT_SHA.test(payload.baseline)) {
     return sendJson(res, 400, { error: "基点要是 7 到 40 位的 commit sha" });
   }
-  // 档位与模型组合那一侧同一套取值(CONTEXT.md 思考档位),不另起判据。
-  const level = payload.thinkingLevel;
-  if (level !== undefined && !THINKING_LEVELS.includes(level as ThinkingLevel)) {
-    return sendJson(res, 400, {
-      error: `思考档位不认得:${String(level)},只收 ${THINKING_LEVELS.join(" / ")}。`,
-    });
-  }
-  const spec: ReviewerSpec = {
+  const launch = await prepareRuleTaskLaunch(res, deps, repoId, {
     provider: payload.provider,
     model: payload.model,
-    ...(level === undefined ? {} : { thinkingLevel: level as ThinkingLevel }),
-  };
-
-  const repo = withStore(deps.dbPath, (store) => store.getRepo(repoId));
-  if (repo === undefined) {
-    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
-  }
-
-  const [plan] = await materializeReviewerPlans(
-    deps,
-    withStore(deps.dbPath, (store) => store.listModelServices()),
-    [spec],
-  );
-  if (plan === undefined || plan.failure !== null || plan.runtimeModel === null) {
-    return sendJson(res, 400, {
-      error: plan?.failure ?? `模型 ${modelIdentity(spec)} 不可用`,
-    });
-  }
-  // 档位与模型组合那侧同一个判据(CONTEXT.md 思考档位):选了模型不支持的那一档,Pi 会
-  // clamp 成相邻可用档,跑的就不是人选的那一档。
-  const levels = supportedThinkingLevels(plan.runtimeModel);
-  const picked = spec.thinkingLevel ?? "off";
-  if (!levels.includes(picked)) {
-    return sendJson(res, 400, {
-      error: `${modelIdentity(spec)} 不支持思考档位 ${picked}，它支持的是 ${levels.join(" / ")}。`,
-    });
-  }
+    thinkingLevel: payload.thinkingLevel,
+  });
+  if (launch === undefined) return;
+  const { repo, spec, plan } = launch;
 
   const started = withStore(deps.dbPath, (store) =>
     store.startRuleExploration(repoId, {
@@ -7458,7 +7493,7 @@ async function handleStartRuleExploration(
     }),
   );
   if (!started) {
-    return sendJson(res, 409, { error: "这个仓库已经有一次基点探索在跑,等它结束再发起" });
+    return sendJson(res, 409, { error: runningRuleTaskError(deps, repoId) });
   }
 
   const exploration = withStore(deps.dbPath, (store) => store.getRuleExploration(repoId));
@@ -7491,37 +7526,13 @@ async function handleStartRuleConsolidation(
   ) {
     return sendJson(res, 400, { error: 'body 要是 {"provider", "model"} 形状的 JSON' });
   }
-  const level = payload.thinkingLevel;
-  if (level !== undefined && !THINKING_LEVELS.includes(level as ThinkingLevel)) {
-    return sendJson(res, 400, {
-      error: `思考档位不认得:${String(level)},只收 ${THINKING_LEVELS.join(" / ")}。`,
-    });
-  }
-  const spec: ReviewerSpec = {
+  const launch = await prepareRuleTaskLaunch(res, deps, repoId, {
     provider: payload.provider,
     model: payload.model,
-    ...(level === undefined ? {} : { thinkingLevel: level as ThinkingLevel }),
-  };
-
-  if (withStore(deps.dbPath, (store) => store.getRepo(repoId)) === undefined) {
-    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
-  }
-
-  const [plan] = await materializeReviewerPlans(
-    deps,
-    withStore(deps.dbPath, (store) => store.listModelServices()),
-    [spec],
-  );
-  if (plan === undefined || plan.failure !== null || plan.runtimeModel === null) {
-    return sendJson(res, 400, { error: plan?.failure ?? `模型 ${modelIdentity(spec)} 不可用` });
-  }
-  const levels = supportedThinkingLevels(plan.runtimeModel);
-  const picked = spec.thinkingLevel ?? "off";
-  if (!levels.includes(picked)) {
-    return sendJson(res, 400, {
-      error: `${modelIdentity(spec)} 不支持思考档位 ${picked}，它支持的是 ${levels.join(" / ")}。`,
-    });
-  }
+    thinkingLevel: payload.thinkingLevel,
+  });
+  if (launch === undefined) return;
+  const { spec, plan } = launch;
 
   const started = withStore(deps.dbPath, (store) =>
     store.startRuleConsolidation(repoId, {
@@ -7531,9 +7542,7 @@ async function handleStartRuleConsolidation(
     }),
   );
   if (!started) {
-    return sendJson(res, 409, {
-      error: "这个仓库已经有一次基点探索或知识整理在跑,等它结束再发起",
-    });
+    return sendJson(res, 409, { error: runningRuleTaskError(deps, repoId) });
   }
 
   const consolidation = withStore(deps.dbPath, (store) => store.getRuleConsolidation(repoId));

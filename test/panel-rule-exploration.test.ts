@@ -567,6 +567,8 @@ test("探索失败原因可见并可重试,运行中不接第二次发起", asyn
   assert.equal((await launch()).status, 202);
   const busy = await launch();
   assert.equal(busy.status, 409);
+  // 那句回执说得出在跑的是哪一条链路(issue #284):这一刻跑的是探索。
+  assert.match(((await busy.json()) as { error: string }).error, /已经有一次基点探索在跑/);
   release!();
   await h.explorationsAtLeast(2);
   const done = await ruleSet(h, cookie);

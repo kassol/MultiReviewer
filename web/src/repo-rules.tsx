@@ -321,8 +321,12 @@ function RuleSetDialogContent({
 
   const data = ruleSet.data;
   const pendingCount = data?.proposals.filter((row) => row.state === "pending").length ?? 0;
-  // 队列 tab 的可见性与升级前一致:有过提案就一直在(已裁决的留在里面供查)。
-  const showProposals = data !== undefined && data.proposals.length > 0;
+  // 队列 tab 的可见性:有过提案就一直在(已裁决的留在里面供查),**现集非空时它同样出现**。
+  // 知识整理的入口挂在这颗 tab 上,而整理在「现集非空、队列为空」时照样跑得动(服务端只在
+  // 两样都空时短路,issue #285):跟着队列一起藏掉的话,那种局面下人根本发起不了整理。空队
+  // 列那一档只对有 `knowledge:write` 的人开——只读的人在空队列上无事可做。
+  const showProposals =
+    data !== undefined && (data.proposals.length > 0 || (canWrite && data.rules.length > 0));
   // 未确认时完成知识确认是当前唯一要紧的事(issue #206 的门禁),默认落在草案 tab;
   // 其余默认落生效条目——弹窗叫「知识集」,先回答「现在按什么标准评审」。
   const fallbackTab = data !== undefined && data.version === null && canWrite

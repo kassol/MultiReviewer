@@ -23,9 +23,11 @@ import type {
   RuleAgentRequest,
   RuleConsolidationAction,
 } from "../src/reviewer/rule-agent.ts";
-import { makeDbPath } from "./support/git-fixture.ts";
+import { confirmEmptyRuleSet, makeDbPath } from "./support/git-fixture.ts";
+import { scriptedReviewer } from "./support/memory-forge.ts";
 import {
   GITEA_REPO,
+  HARNESS_PR,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -186,6 +188,62 @@ async function consolidatingHarness(
   );
   await h.worktreesPreparedAtLeast(1);
   const cookie = await scopedUser(h, "consolidation-writer", [GITEA_REPO.id], ["knowledge:write"]);
+  assert.equal(
+    (await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rules`, {
+      type: "rule",
+      scope: "",
+      statement: "入参要在边界上校验",
+    })).status,
+    201,
+  );
+  return { h, cookie };
+}
+
+/** 处置备注:整理跑到一半时用它处置一条 Finding,反哺解读的输入就是这一句。 */
+const DISPOSITION_NOTE = "这类越界要在边界上一次判掉,不要每处再判";
+
+type RunFinding = { id: number; commentId: string | null };
+
+/** 这个仓库这一轮里落下的、带行级评论的 Finding。处置要有可处置的载体。 */
+async function inlineFindings(h: PanelHarness): Promise<RunFinding[]> {
+  const response = await h.api("GET", "/runs");
+  assert.equal(response.status, 200);
+  const runs = ((await response.json()) as { runs: { findings: RunFinding[] }[] }).runs;
+  return runs.flatMap((run) => run.findings).filter((finding) => finding.commentId !== null);
+}
+
+/**
+ * `consolidatingHarness` 那一套之上再跑一轮,落下一条带行级评论的 Finding:处置反哺与
+ * 整理并发那一条用例要有可处置的载体。知识集先确认成空的那一版(门禁,issue #206),
+ * 生效条目随后照常写进去。
+ */
+async function consolidatingHarnessWithFindings(
+  agent: RuleAgent,
+): Promise<{ h: PanelHarness; cookie: string }> {
+  const h = await startReadyPanelHarness(cleanups, {
+    ruleAgent: agent,
+    buildReviewers: (plans) =>
+      plans.map((plan) =>
+        scriptedReviewer(plan.spec.model, [
+          {
+            file: "src/answer.ts",
+            line: 1,
+            severity: "P1",
+            category: "bug",
+            description: "这里会越界",
+          },
+        ]),
+      ),
+  });
+  assert.equal(
+    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
+    201,
+  );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
+  await h.settledAtLeast(1);
+  assert.equal(h.settled[0]!.error, undefined);
+  const cookie = await scopedUser(h, "consolidation-disposer", [GITEA_REPO.id], ["knowledge:write"]);
   assert.equal(
     (await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rules`, {
       type: "rule",
@@ -489,6 +547,73 @@ test("整理期间的裁决照常:那一次合并跳过,别的动作照落,轨�
   assert.deepEqual(events.at(-1)!.payload, { merged: 0, retargeted: 1, proposed: 0 });
 });
 
+test("整理期间的处置照常反哺:反哺产出照旧入队,整理的直改与摘要不受影响", async () => {
+  let ids: number[] = [];
+  let harness: PanelHarness | undefined;
+  // 同一个规则 agent 两条链路都走:整理那一次按 `consolidation` 认出来,反哺那一次没有它。
+  const agent: RuleAgent = async (request) => {
+    if (request.consolidation === undefined) {
+      return { items: [{ type: "rule", scope: "", statement: "越界在边界上一次判掉" }] };
+    }
+    // 整理跑到一半:这期间有人带备注处置一条 Finding。反哺不与整理互斥,照常跑完。
+    const findings = await inlineFindings(harness!);
+    assert.notEqual(findings[0], undefined);
+    assert.equal(
+      (await harness!.api("POST", `/findings/${findings[0]!.id}/resolve`, {
+        note: DISPOSITION_NOTE,
+      })).status,
+      200,
+    );
+    await harness!.dispositionFeedbackAtLeast(1);
+    assert.equal(harness!.dispositionFeedbacks[0]!.failure, undefined);
+    return {
+      items: [],
+      actions: [
+        {
+          kind: "merge",
+          keepId: ids[0]!,
+          mergedIds: [ids[0]!, ids[1]!],
+          statement: "合成后的那一句",
+        },
+      ],
+    };
+  };
+  const { h, cookie } = await consolidatingHarnessWithFindings(agent);
+  harness = h;
+  ids = seedProposals(h.db.path, [
+    proposal({ statement: "第一条", sources: [source({ origin: "baseline-exploration" })] }),
+    proposal({ statement: "第二条", sources: [source({ origin: "baseline-exploration" })] }),
+  ]);
+
+  assert.equal((await launch(h, cookie)).status, 202);
+  await h.consolidationsAtLeast(1);
+  assert.equal(h.consolidations[0]!.failure, undefined);
+
+  const after = await ruleSet(h, cookie);
+  // 整理照常收尾:那一次合并落地,摘要说得出队列因此少了一行。
+  assert.equal(after.consolidation?.state, "completed");
+  assert.equal(after.consolidation?.merged, 1);
+  assert.equal(after.consolidation?.retargeted, 0);
+  assert.equal(after.consolidation?.proposed, 0);
+  // 两条链路的产出同在一份队列里,各带自己的出处:整理并出来的那条留着两条探索附注,
+  // 反哺那条是新增的一行,附注记处置反哺、备注是那句处置备注原文。
+  assert.deepEqual(
+    after.proposals.map((row) => [row.state, row.change, row.statement]),
+    [
+      ["pending", "add", "合成后的那一句"],
+      ["pending", "add", "越界在边界上一次判掉"],
+    ],
+  );
+  assert.deepEqual(
+    after.proposals[0]!.sources.map((row) => row.origin),
+    ["baseline-exploration", "baseline-exploration"],
+  );
+  assert.deepEqual(
+    after.proposals[1]!.sources.map((row) => [row.origin, row.note]),
+    [["disposition-feedback", DISPOSITION_NOTE]],
+  );
+});
+
 test("整理失败留原因,与探索互斥回 409", async () => {
   let release: (() => void) | undefined;
   const gate = new Promise<void>((resolve) => {
@@ -513,13 +638,17 @@ test("整理失败留原因,与探索互斥回 409", async () => {
 
   // 重试:第二次卡在 gate 上,这期间整理与探索都发起不了。
   assert.equal((await launch(h, cookie)).status, 202);
-  assert.equal((await launch(h, cookie)).status, 409);
+  const busy = await launch(h, cookie);
+  assert.equal(busy.status, 409);
+  // 两侧的回执说得出在跑的是哪一条链路(issue #284):这一刻跑的是整理。
+  assert.match(((await busy.json()) as { error: string }).error, /已经有一次知识整理在跑/);
   const exploration = await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-exploration`, {
     baseline: h.repo.baseSha,
     provider: "test",
     model: "global-model",
   });
   assert.equal(exploration.status, 409);
+  assert.match(((await exploration.json()) as { error: string }).error, /已经有一次知识整理在跑/);
   release!();
   await h.consolidationsAtLeast(2);
   assert.equal((await ruleSet(h, cookie)).consolidation?.state, "completed");
