@@ -6501,12 +6501,17 @@ export function openStore(dbPath: string): Store {
       };
       const rootCauseGroups: StageRootCauseGroup[] = [];
       const rootCauseOfRow = new Map<number, StageRootCauseRef>();
-      // 「最新一轮」要往前找到最近一轮完整审查且没失败的:只复核那一轮不报新的、从不提组
-      // (CONTEXT.md 只复核),失败那一轮压根没走到合并,拿它们当最新一轮会让整个阶段的组
-      // 凭空消失——重跑一次只复核不该把上一轮的组抹掉。找到的那一轮没有组(合并 agent 缺席)
-      // 就是没有组。
+      // 「最新一轮」要往前找到最近一轮完整审查、没失败、且落下过 Finding 行的:只复核那一
+      // 轮不报新的、从不提组(CONTEXT.md 只复核),失败那一轮压根没走到合并,一条都没报出
+      // 的那一轮走不到合并 agent、什么也没判过。拿它们当最新一轮会让整个阶段的组凭空消失
+      // ——头一轮之后的安静轮次是常态,组卡不该在作者正要组级处置时消失。找到的那一轮报出
+      // 过 Finding 却没有组(合并 agent 缺席)就是没有组。
+      const runsWithFindings = new Set(findingRows.map((row) => Number(row["run_id"])));
       const groupRun = runRows.findLast(
-        (run) => run["mode"] !== "verdict-only" && Number(run["failed"] ?? 0) !== 1,
+        (run) =>
+          run["mode"] !== "verdict-only" &&
+          Number(run["failed"] ?? 0) !== 1 &&
+          runsWithFindings.has(Number(run["id"])),
       );
       for (const group of groupRun === undefined
         ? []

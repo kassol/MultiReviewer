@@ -225,7 +225,33 @@ test("只复核与失败的那几轮:上一轮完整审查的组照旧在", asyn
   assert.equal(byFile(body, "src/a.ts").rootCause?.id, full.groupIds[0]!);
 });
 
-test("之后一轮完整审查没提组:组列表回空,每条的引用都是 null", async () => {
+test("之后一轮完整审查一条都没报出:上一轮的组照旧在,成员引用不变", async () => {
+  const h = await startReadyPanelHarness();
+  seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
+  const full = seedRun(
+    h,
+    HARNESS_PR.number,
+    [{ file: "src/a.ts" }, { file: "src/b.ts" }],
+    [{ reason: REASON, members: [0, 1] }],
+  );
+  // 两个 Reviewer 都认了历史、零新报:这一轮走不到合并 agent,什么也没判过。
+  seedRun(h, HARNESS_PR.number, [], [], "2026-09-02T00:00:00.000Z");
+
+  const body = await summary(h);
+  assert.deepEqual(body.rootCauseGroups, [
+    { id: full.groupIds[0]!, reason: REASON, findingIds: full.findingIds },
+  ]);
+  for (const [position, file] of ["src/a.ts", "src/b.ts"].entries()) {
+    assert.deepEqual(byFile(body, file).rootCause, {
+      id: full.groupIds[0]!,
+      reason: REASON,
+      memberCount: 2,
+      position,
+    });
+  }
+});
+
+test("之后一轮完整审查报出了新的却没提组:组列表回空,每条的引用都是 null", async () => {
   const h = await startReadyPanelHarness();
   seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
   seedRun(
