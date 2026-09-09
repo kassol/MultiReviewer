@@ -418,7 +418,13 @@ function RootCauseGroupCard({
       }`}
       asChild
     >
-      <section ref={card} aria-label={`同根因组：${group.reason}`}>
+      <section
+        ref={card}
+        aria-label={`同根因组：${group.reason}`}
+        // 顶栏是 sticky 叠在滚动容器上方的两行毛玻璃(main.tsx 的 TopBar),`block: "start"`
+        // 会把卡头贴到视口 y=0,正好钻进顶栏底下。scroll-mt 补出顶栏实际高度,贴顶落点让到它下面。
+        className="scroll-mt-[88px]"
+      >
         <div className="flex flex-wrap items-start justify-between gap-2 px-4 py-2.5">
           <Collapsible.Trigger
             type="button"
