@@ -324,7 +324,8 @@ test("某模型全部批次失败时按缺席处理,其 Finding 丢弃", async (
         { findings: [findingAt("src/a.ts", "失败批次里报出的 Finding")], failure: "timeout" },
         { failure: "timeout" },
       ]),
-      batchedReviewer("model-b", [{ findings: [findingAt("src/c.ts", "c 的问题")] }, {}]),
+      // src/c.ts 在第 2 批,报在第 2 批才算数(issue #306)。
+      batchedReviewer("model-b", [{}, { findings: [findingAt("src/c.ts", "c 的问题")] }]),
     ],
     cacheDir: cache.dir,
     dbPath: db.path,
@@ -885,4 +886,84 @@ test("只复核时判已修的历史照常自动处置为「已修复」", async
     query(db.path, "SELECT disposition FROM finding ORDER BY id").map((row) => row["disposition"]),
     ["fixed"],
   );
+});
+
+/** 这一轮落库的全部轨迹事件。 */
+function runTrace(dbPath: string): { scope: string; kind: string; payload: unknown }[] {
+  const store = openStore(dbPath);
+  try {
+    const runId = store.listRuns({ limit: 1 })[0]!.id;
+    return store.listTrace(runId).map((event) => ({
+      scope: event.scope,
+      kind: event.kind,
+      payload: event.payload,
+    }));
+  } finally {
+    store.close();
+  }
+}
+
+test("分批时批外文件的报出被丢弃:不落库、不发评论,轨迹一条带批次且与锚不进 diff 的丢弃可区分", async () => {
+  const { cache, db, forge } = setup({ "src/a.ts": 60, "src/c.ts": 60 });
+  const outOfBatchFinding = {
+    ...findingAt("src/c.ts", "c 的收尾没有防护"),
+    title: "c 的收尾没有防护",
+  };
+
+  const result = await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [
+      // 第 1 批只分到 src/a.ts,src/c.ts 只是它的阅读上下文,报在 c 上的那条越了批。
+      batchedReviewer("model-a", [
+        { findings: [findingAt("src/a.ts", "a 的问题"), outOfBatchFinding] },
+        { findings: [] },
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    maxChangedLinesPerBatch: 100,
+  });
+
+  assert.deepEqual(result.findings.map((finding) => finding.file), ["src/a.ts"]);
+  assert.deepEqual(
+    query(db.path, "SELECT file FROM finding ORDER BY id").map((row) => row["file"]),
+    ["src/a.ts"],
+  );
+  const review = forge.createdReviews[0]!;
+  assert.deepEqual(review.comments.map((comment) => comment.path), ["src/a.ts"]);
+  assert.doesNotMatch(review.body, /c 的收尾没有防护/);
+
+  const events = runTrace(db.path);
+  // 两种丢弃在轨迹里是不同类型:排查时要认得出是哪一道拦下的。
+  assert.equal(events.filter((event) => event.kind === "finding_discarded").length, 0);
+  const outOfBatch = events.filter((event) => event.kind === "finding_out_of_batch");
+  assert.equal(outOfBatch.length, 1);
+  assert.equal(outOfBatch[0]!.scope, "run", "丢弃是编排层的事,挂在轮次上");
+  assert.deepEqual(outOfBatch[0]!.payload, {
+    file: "src/c.ts",
+    line: 4,
+    title: "c 的收尾没有防护",
+    reviewers: ["model-a"],
+    batch: 1,
+  });
+});
+
+test("单批审查不过批外这一道:范围外文件的报出仍按锚不进 diff 丢弃", async () => {
+  const { cache, db, forge } = setup({ "src/a.ts": 10 });
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [
+      batchedReviewer("model-a", [
+        { findings: [{ ...findingAt("src/z.ts", "范围外的问题"), title: "范围外的问题" }] },
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    maxChangedLinesPerBatch: 100,
+  });
+
+  const kinds = runTrace(db.path).map((event) => event.kind);
+  assert.equal(kinds.filter((kind) => kind === "finding_discarded").length, 1);
+  assert.equal(kinds.includes("finding_out_of_batch"), false);
 });

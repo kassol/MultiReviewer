@@ -56,6 +56,7 @@ export async function runInChild(
     mode,
     maxEvidenceCallsPerBatch,
     minReportSeverity,
+    batched,
     // 空知识集与不传等价。两型各判各的:只有事实没有规则的知识集同样成立。
     rules = [],
     facts = [],
@@ -93,6 +94,9 @@ export async function runInChild(
     ...(minReportSeverity === undefined || minReportSeverity === DEFAULT_MIN_REPORT_SEVERITY
       ? {}
       : { minReportSeverity }),
+    // 分批那一档才带这一项(issue #306):子进程据此在文件清单后多一句「只报这些文件」,
+    // 单批时 prompt 逐字不变。
+    ...(batched === undefined ? {} : { batched }),
     // 空知识集不带这一项:子进程据此不渲染规则段,prompt 与没有知识集时逐字一致。
     ...(rules.length === 0 ? {} : { rules }),
     // 事实段同律(issue #221):一条事实都没有时不带,prompt 与升级前逐字一致。

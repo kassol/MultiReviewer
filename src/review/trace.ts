@@ -41,6 +41,12 @@ export type RunTraceKind =
   /** 落点锚不进本轮 diff、被丢弃的一条 Finding(issue #224)。 */
   | "finding_discarded"
   /**
+   * 报在本批之外的文件上、被丢弃的一条 Finding(issue #306):payload 记文件、行、标题、
+   * 报出它的模型与批次序号。与 `finding_discarded` 分成两档,是因为拦下它的是两条不同的
+   * 规则——那一条锚不进本轮 diff,这一条锚得进但没有本批的 diff 作依据。分批才有这一档。
+   */
+  | "finding_out_of_batch"
+  /**
    * 低于本轮最低报告等级、被合并前那道保底挡掉的 Finding(issue #271):payload 记
    * 丢弃条数与本轮阈值。一条都没挡掉时不发。
    */

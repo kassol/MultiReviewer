@@ -406,6 +406,12 @@ export type ReviewerInput = {
    */
   minReportSeverity?: Severity;
   /**
+   * 这一批是整个 Review Range 的一部分(issue #306):`range.files` 之外的文件只作阅读
+   * 上下文,报在它们上面的条目由编排层丢弃。分批时才传,任务提示词据此多一句说明;
+   * 单批(PR 触发)不传,prompt 与这一票之前逐字一致。
+   */
+  batched?: true;
+  /**
    * 收这个 Reviewer 的过程事件(issue #171),编排层一定传,一条即写一条轨迹。
    * 声明成可选是给直接调 `review` 的调用方留的余地:不看过程的地方不必造一个空回调。
    */

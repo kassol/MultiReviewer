@@ -295,15 +295,23 @@ function RunMilestone({ event }: { event: TraceEvent }) {
           </span>
         );
       }
-      case "finding_discarded": {
+      // 两种丢弃共用一套呈现,只有那句话不同(issue #306):被丢掉的 Finding 在 PR 上一点
+      // 痕迹都没有,轨迹这一条是人唯一看得到它的地方,拦下它的是哪一道也得在这里读得出。
+      case "finding_discarded":
+      case "finding_out_of_batch": {
         const file = str(payload, "file");
         const line = num(payload, "line");
         const title = str(payload, "title");
         const list = strings(payload, "reviewers");
+        const batch = num(payload, "batch");
         return (
           <div className="flex min-w-0 flex-col gap-1">
             <span className="flex flex-wrap items-center gap-1.5">
-              <span className="text-base text-text">锚不进本次改动,已丢弃</span>
+              <span className="text-base text-text">
+                {event.kind === "finding_discarded"
+                  ? "锚不进本次改动,已丢弃"
+                  : `报在第 ${batch ?? "?"} 批之外的文件上,已丢弃`}
+              </span>
               {file === null ? null : (
                 <span className="font-mono text-xs break-all text-text-secondary">
                   {file}

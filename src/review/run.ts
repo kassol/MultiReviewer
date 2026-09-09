@@ -1967,6 +1967,11 @@ export async function runReview(
         // 历史按所在文件路由到批次(issue #235)。不分批时全部历史进这一批:只有一批
         // 时「所在文件不在本批」这件事本身不成立,行为与升级前逐字一致。
         const batchHistory = batches.length === 1 ? history : historyForBatch(history, files);
+        // 分批时 Reviewer 只报本批文件(issue #306):批外文件在这一批里只是阅读上下文,
+        // 报在它们上面的条目没有本批的 diff 作依据,落点质量差。单批(PR 触发)时这一批
+        // 就是全部文件,「批外」这件事本身不成立,那条路径逐字不变。
+        const batched = batches.length > 1;
+        const inBatch = new Set(files);
         trace.run("batch_started", batch);
         const timedOutcomes = await Promise.all(
           deps.reviewers.map(async (reviewer) => {
@@ -1993,6 +1998,9 @@ export async function runReview(
                 : { maxEvidenceCallsPerBatch: deps.maxEvidenceCallsPerBatch }),
               // 全报那一档不带(issue #271):注入边界与这一票之前逐字一致。
               ...(minReportSeverity === DEFAULT_MIN_REPORT_SEVERITY ? {} : { minReportSeverity }),
+              // 分批那一档才带(issue #306):Reviewer 据此在任务提示词里加上「只对列出的
+              // 这些文件报出」那一句。单批时不带,prompt 与这一票之前逐字一致。
+              ...(batched ? { batched: true as const } : {}),
               onEvent: (event) => {
                 const { kind, ...payload } = event;
                 // 事件带上批次序号(issue #232):批次并行之后同一个模型几批的事件在
@@ -2000,7 +2008,28 @@ export async function runReview(
                 trace.reviewer(reviewer.model, kind, { ...payload, batch: batch.index });
               },
             });
-            return { outcome, startedAt, durationMs: Date.now() - startedAt };
+            // 批外报出在这里丢掉:排在锚定与合并之前,后面每一步读到的都已经是这一批
+            // 自己的结论。丢弃而不是交给合并 agent 归组,理由与轨迹事件那一档同源。
+            const findings = batched
+              ? outcome.findings.filter((finding) => {
+                  if (inBatch.has(finding.file)) return true;
+                  trace.run("finding_out_of_batch", {
+                    file: finding.file,
+                    line: finding.line,
+                    title: finding.title,
+                    reviewers: [reviewer.model],
+                    batch: batch.index,
+                  });
+                  return false;
+                })
+              : outcome.findings;
+            return {
+              // 一条都没丢时原样返回:批外报出是少数,多数批次的结论对象不必重建。
+              outcome:
+                findings.length === outcome.findings.length ? outcome : { ...outcome, findings },
+              startedAt,
+              durationMs: Date.now() - startedAt,
+            };
           }),
         );
         trace.run("batch_finished", batch);

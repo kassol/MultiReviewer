@@ -370,6 +370,26 @@ test("子进程失败文本回传前抹掉本轮模型凭据", () => {
 
 const PROMPT_RANGE = { baseSha: "aaa", headSha: "bbb", files: ["src/a.ts"] };
 
+test("分批那一档的任务提示词写明只报本批文件,单批时 prompt 逐字不变", () => {
+  const single = reviewPrompt({ range: PROMPT_RANGE, history: [] });
+  const batched = reviewPrompt({ range: PROMPT_RANGE, history: [], batched: true });
+
+  assert.equal(/only on the files listed/.test(single), false);
+  assert.match(batched, /Report findings only on the files listed above/);
+  // 其他文件仍可读,只是不在上面报出。
+  assert.match(batched, /Read anything else in the repository as context/);
+  // 那一句紧跟文件清单,余下部分逐字不变。
+  assert.equal(
+    batched.replace(/Report findings only on the files listed above[^\n]*\n\n/, ""),
+    single,
+  );
+  // 只复核那一轮没有报出工具,这句话执行不了,不渲染。
+  assert.equal(
+    reviewPrompt({ range: PROMPT_RANGE, history: PRIOR_HISTORY, batched: true, mode: "verdict-only" }),
+    reviewPrompt({ range: PROMPT_RANGE, history: PRIOR_HISTORY, mode: "verdict-only" }),
+  );
+});
+
 test("空知识集不渲染规则段,prompt 与没有知识集时逐字一致", () => {
   const withoutRules = reviewPrompt({ range: PROMPT_RANGE, history: [] });
   const withEmptyRules = reviewPrompt({ range: PROMPT_RANGE, history: [], rules: [] });

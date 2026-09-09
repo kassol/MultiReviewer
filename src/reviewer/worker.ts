@@ -400,6 +400,7 @@ export function reviewPrompt(
     | "directive"
     | "mode"
     | "minReportSeverity"
+    | "batched"
   >,
 ): string {
   // 只复核那一轮的历史段、意图段与规则段换措辞(issue #270):这一轮没有报出工具,三段
@@ -432,13 +433,19 @@ export function reviewPrompt(
     request.directive === undefined || request.directive === ""
       ? ""
       : `${directiveSection(request.directive)}\n`;
+  // 分批时紧跟文件清单的那一句(issue #306):批外文件是阅读上下文,报在它们上面的条目
+  // 由编排层丢弃。只复核那一轮不渲染——那一轮没有报出工具,这句话一个字都执行不了。
+  const onlyTheseFiles =
+    request.batched === true && !verdictOnly
+      ? "Report findings only on the files listed above. Read anything else in the repository as context, but a finding on a file outside this list is discarded — another batch reviews that file with its own diff.\n\n"
+      : "";
   return `Review the changes between commit ${request.range.baseSha} and commit ${request.range.headSha}.
 ${intent}${rules}${facts}${minReportSeverity}${directive}
 The following files changed. Review the changes in them, using the rest of the repository as context:
 
 ${files}
 
-Start with the git tool: \`diff ${request.range.baseSha}..${request.range.headSha} --stat\` for the shape of the change, then per-file diffs — that is the only way to see removed lines and deleted files. Then read the changed files and judge the current state of the code.
+${onlyTheseFiles}Start with the git tool: \`diff ${request.range.baseSha}..${request.range.headSha} --stat\` for the shape of the change, then per-file diffs — that is the only way to see removed lines and deleted files. Then read the changed files and judge the current state of the code.
 ${history}`;
 }
 
