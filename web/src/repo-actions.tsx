@@ -42,6 +42,7 @@ import {
   type ModelComposerValidity,
 } from "@/components/model-composer";
 import { localMinute } from "@/lib/time";
+import { sameModelRef, sameModelRefs } from "@/lib/model-ref";
 
 import { api, errorText, fetchJson } from "./api.ts";
 import { AUXILIARY_MODEL_SOURCE_LABEL, useAuxiliaryModel } from "./auxiliary-model.ts";
@@ -443,8 +444,11 @@ const draftOf = (snapshot: {
   minReportSeverity: snapshot.minReportSeverity,
 });
 
+/** 三项各按各的比:模型组合与辅助模型走与审查策略页同一份规则(`lib/model-ref.ts`)。 */
 const sameDraft = (a: RepoSettingsDraft, b: RepoSettingsDraft): boolean =>
-  JSON.stringify(a) === JSON.stringify(b);
+  sameModelRefs(a.models, b.models) &&
+  sameModelRef(a.auxiliary, b.auxiliary) &&
+  a.minReportSeverity === b.minReportSeverity;
 
 /** 一次保存的两种收场:写成了,或者被版本号拦下并带回服务端当前值。 */
 type SaveOutcome =

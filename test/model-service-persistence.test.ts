@@ -752,7 +752,14 @@ test("两个 Store handle 交错时组合写与服务来源删除互相原子阻
       generation: 1,
       key: "accepted-key",
     }), true);
-    assert.equal(first.setRepoReviewers(92, removedCombination), false);
+    assert.deepEqual(
+      first.putRepoSettings(92, 0, {
+        reviewersJson: removedCombination,
+        auxiliaryModelJson: null,
+        minReportSeverity: null,
+      }),
+      { ok: false, reason: "unavailable" },
+    );
     assert.equal(first.getRepo(92)!.reviewersJson, null);
 
     const keptCombination = JSON.stringify([{ provider: "race", model: "kept" }]);

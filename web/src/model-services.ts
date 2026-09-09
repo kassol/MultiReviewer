@@ -28,7 +28,10 @@ export type ModelServiceNextAction =
 export type ModelReferenceLocation =
   | { kind: "global" }
   | { kind: "following-global"; repositoryCount: number }
-  | { kind: "repository-override"; repoId: number; owner: string; repo: string };
+  | { kind: "repository-override"; repoId: number; owner: string; repo: string }
+  /** 辅助模型那两处与模型组合同等受引用保护(issue #303)。 */
+  | { kind: "global-auxiliary" }
+  | { kind: "repository-auxiliary"; repoId: number; owner: string; repo: string };
 export type ModelReference = {
   identity: string;
   provider: string;

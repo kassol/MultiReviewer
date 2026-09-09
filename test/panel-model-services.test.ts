@@ -12,6 +12,7 @@ import {
   type ModelReference,
   type ModelReferenceLocation,
   type ModelServiceVersionCommit,
+  type Store,
 } from "../src/review/store.ts";
 import {
   PANEL_CREDENTIAL_MASTER_KEY,
@@ -26,6 +27,19 @@ after(() => {
 
 const PASSWORD = "model-service-reader-password";
 const PASSWORD_HASH = await hashPassword(PASSWORD);
+
+/**
+ * 把这个仓库的模型覆盖换成这一份(null 即清成跟随全局)。写入口只有整块那一个
+ * (issue #302),这里读当前版本、别的两项原样带过去。
+ */
+function putRepoReviewers(store: Store, repoId: number, reviewersJson: string | null): boolean {
+  const repo = store.getRepo(repoId)!;
+  return store.putRepoSettings(repoId, repo.settingsVersion, {
+    reviewersJson,
+    auxiliaryModelJson: repo.auxiliaryModelJson,
+    minReportSeverity: repo.minReportSeverity,
+  }).ok;
+}
 
 function service(
   provider: string,
@@ -1102,6 +1116,77 @@ test("删除内置凭据列出全部引用位置，清空引用后才原子推�
     { expectedVersion: 1 },
   );
   assert.equal(stale.status, 409);
+});
+
+test("辅助模型与模型组合同等受引用保护:两处位置进引用清单,删凭据被阻止", async () => {
+  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const writerCookie = await cookieFor(h, "auxiliary-reference-writer", ["credential:write"]);
+  const seed = openStore(h.db.path);
+  assert.equal(seed.commitModelServiceVersion(null, service("aux-service")), 1);
+  assert.equal(seed.registerRepo({
+    repoId: 1361,
+    owner: "acme",
+    repo: "aux-repo",
+    generation: 1,
+    key: "aux-key",
+  }), true);
+  seed.close();
+  // 两处辅助模型,谁都不在任何模型组合里:引用保护认它们,与组合那两处同等(issue #303)。
+  const fixture = new DatabaseSync(h.db.path);
+  fixture.prepare("INSERT INTO global_setting (key, value) VALUES (?, ?)").run(
+    "auxiliary_model",
+    JSON.stringify({ provider: "aux-service", model: "global-auxiliary" }),
+  );
+  fixture.prepare("UPDATE repo SET auxiliary_model = ? WHERE id = ?").run(
+    JSON.stringify({ provider: "aux-service", model: "repo-auxiliary", thinkingLevel: "high" }),
+    1361,
+  );
+  fixture.close();
+
+  const blocked = await mutation(
+    h,
+    writerCookie,
+    "DELETE",
+    "/model-services/aux-service/credential",
+    { expectedVersion: 1 },
+  );
+  const blockedText = await blocked.text();
+  assert.equal(blocked.status, 409, blockedText);
+  const blockedBody = JSON.parse(blockedText) as {
+    references: { identity: string; locations: unknown[] }[];
+  };
+  assert.deepEqual(blockedBody.references.map((entry) => entry.identity), [
+    "aux-service:global-auxiliary",
+    "aux-service:repo-auxiliary",
+  ]);
+  assert.deepEqual(blockedBody.references[0]!.locations, [{ kind: "global-auxiliary" }]);
+  assert.deepEqual(blockedBody.references[1]!.locations, [
+    { kind: "repository-auxiliary", repoId: 1361, owner: "acme", repo: "aux-repo" },
+  ]);
+
+  // 模型服务概览的引用清单是同一份:面板据它说明「先去哪儿删」。
+  const overview = (await (await h.api("GET", "/model-services")).json()) as {
+    services: { provider: string; references?: { identity: string }[] }[];
+  };
+  assert.deepEqual(
+    overview.services.find((entry) => entry.provider === "aux-service")?.references
+      ?.map((entry) => entry.identity),
+    ["aux-service:global-auxiliary", "aux-service:repo-auxiliary"],
+  );
+
+  // 两处都清掉之后才删得动。
+  const clear = new DatabaseSync(h.db.path);
+  clear.prepare("DELETE FROM global_setting WHERE key = 'auxiliary_model'").run();
+  clear.prepare("UPDATE repo SET auxiliary_model = NULL WHERE id = ?").run(1361);
+  clear.close();
+  const deleted = await mutation(
+    h,
+    writerCookie,
+    "DELETE",
+    "/model-services/aux-service/credential",
+    { expectedVersion: 1 },
+  );
+  assert.equal(deleted.status, 200, await deleted.text());
 });
 
 test("凭据写用户可删除自定义模型服务凭据并保留目标与模型来源", async () => {
@@ -2484,10 +2569,10 @@ test("自定义目标切换只带入新发现与明确重录来源，并返回�
     const afterBlockedStore = openStore(h.db.path);
     assert.deepEqual(afterBlockedStore.getModelService(provider), before);
     assert.equal(afterBlockedStore.putGlobalSettings({
-      reviewersJson: JSON.stringify([]),
+      reviewersJson: null,
       maxChangedLinesPerBatch: null,
     }), true);
-    assert.equal(afterBlockedStore.setRepoReviewers(8102, null), true);
+    assert.equal(putRepoReviewers(afterBlockedStore, 8102, null), true);
     afterBlockedStore.close();
 
     const committedResponse = await mutation(
@@ -2510,10 +2595,7 @@ test("自定义目标切换只带入新发现与明确重录来源，并返回�
       maxChangedLinesPerBatch: null,
     }), true);
     assert.equal(
-      finalStore.setRepoReviewers(
-        8102,
-        JSON.stringify([{ provider, model: "newly-discovered" }]),
-      ),
+      putRepoReviewers(finalStore, 8102, JSON.stringify([{ provider, model: "newly-discovered" }])),
       true,
     );
     finalStore.close();
@@ -2720,6 +2802,78 @@ test("冲突自定义 provider 通过维护端点改名并立即刷新模型服�
   assert.equal(rejectedOrdinary.status, 409, await rejectedOrdinary.text());
 });
 
+test("冲突 provider 改名同事务重写辅助模型引用:全局与仓库覆盖的 provider 跟着换", async () => {
+  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const cookie = await cookieFor(h, "conflict-rename-auxiliary", [
+    "model:read",
+    "model:write",
+    "credential:write",
+  ]);
+  const seed = openStore(h.db.path);
+  assert.equal(seed.commitModelServiceVersion(null, service("openai", {
+    type: "custom",
+    baseUrl: "https://rename-auxiliary.example/v1",
+    api: "openai-completions",
+    targetFingerprint: modelServiceTargetFingerprint(
+      "https://rename-auxiliary.example/v1",
+      "openai-completions",
+    ),
+    disabledReason: "name-conflict",
+  })), 1);
+  assert.equal(seed.registerRepo({
+    repoId: 1371,
+    owner: "acme",
+    repo: "auxiliary-rename",
+    generation: 1,
+    key: "auxiliary-rename-key",
+  }), true);
+  seed.close();
+  // 两处辅助模型引用这家服务,模型组合一处都没有:改名要连它们一起换,不然引用指向一个
+  // 不存在的 provider(CONTEXT.md 自定义 provider)。
+  const fixture = new DatabaseSync(h.db.path);
+  fixture.prepare("INSERT INTO global_setting (key, value) VALUES ('auxiliary_model', ?)").run(
+    JSON.stringify({ provider: "openai", model: "automatic-model" }),
+  );
+  fixture.prepare("UPDATE repo SET auxiliary_model = ? WHERE id = ?").run(
+    JSON.stringify({ provider: "openai", model: "automatic-model", thinkingLevel: "high" }),
+    1371,
+  );
+  fixture.close();
+
+  const renamed = await mutation(
+    h,
+    cookie,
+    "POST",
+    "/model-services/custom/openai/rename",
+    { provider: "corp-openai", expectedVersion: 1 },
+  );
+  assert.equal(renamed.status, 200, await renamed.text());
+
+  const after = openStore(h.db.path);
+  try {
+    assert.equal(
+      after.getGlobalSettings().auxiliaryModelJson,
+      JSON.stringify({ provider: "corp-openai", model: "automatic-model" }),
+    );
+    assert.equal(
+      after.getRepo(1371)!.auxiliaryModelJson,
+      JSON.stringify({ provider: "corp-openai", model: "automatic-model", thinkingLevel: "high" }),
+    );
+    // 改名之后这两处仍是可用引用:解析得出的就是新名字下的同一个模型。
+    assert.deepEqual(after.resolveAuxiliaryModel(1371), {
+      spec: { provider: "corp-openai", model: "automatic-model", thinkingLevel: "high" },
+      source: "repo",
+    });
+    // 引用清单里不再有旧 provider。
+    assert.deepEqual(
+      after.listModelReferences().map((entry) => entry.identity),
+      ["corp-openai:automatic-model"],
+    );
+  } finally {
+    after.close();
+  }
+});
+
 test("冲突 provider 改名返回完整缺失引用并保持 HTTP 前后的数据库不变", async () => {
   const h = await startPanelHarness(cleanups, { reviewers: [] });
   const cookie = await cookieFor(h, "conflict-rename-blocked", [
@@ -2909,8 +3063,8 @@ test("自定义服务删除返回完整引用阻断，失败整笔回滚，成�
   ]);
 
   const unlink = openStore(h.db.path);
-  assert.equal(unlink.putGlobalSettings({ reviewersJson: JSON.stringify([]), maxChangedLinesPerBatch: null }), true);
-  assert.equal(unlink.setRepoReviewers(8202, null), true);
+  assert.equal(unlink.putGlobalSettings({ reviewersJson: null, maxChangedLinesPerBatch: null }), true);
+  assert.equal(putRepoReviewers(unlink, 8202, null), true);
   unlink.close();
   const sqlite = new DatabaseSync(h.db.path);
   sqlite.exec(`
@@ -3674,8 +3828,8 @@ test("删除补录在自动来源仍在时成功，仅唯一来源按完整标�
   assert.equal((await h.api("GET", "/model-services").then((response) => response.text())).includes("unreferenced"), false);
 
   const unlink = openStore(h.db.path);
-  assert.equal(unlink.putGlobalSettings({ reviewersJson: JSON.stringify([]), maxChangedLinesPerBatch: null }), true);
-  assert.equal(unlink.setRepoReviewers(8302, null), true);
+  assert.equal(unlink.putGlobalSettings({ reviewersJson: null, maxChangedLinesPerBatch: null }), true);
+  assert.equal(putRepoReviewers(unlink, 8302, null), true);
   unlink.close();
   const removedGlobal = await mutation(
     h,

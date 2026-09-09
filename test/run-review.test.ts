@@ -2157,7 +2157,16 @@ function setRepoMinReportSeverity(
 ): void {
   const store = openStore(dbPath);
   try {
-    store.setRepoMinReportSeverity(repoId, severity);
+    // 写入口只有整块那一个(issue #302):读当前版本,别的两项原样带过去。
+    const repo = store.getRepo(repoId)!;
+    assert.equal(
+      store.putRepoSettings(repoId, repo.settingsVersion, {
+        reviewersJson: repo.reviewersJson,
+        auxiliaryModelJson: repo.auxiliaryModelJson,
+        minReportSeverity: severity,
+      }).ok,
+      true,
+    );
   } finally {
     store.close();
   }

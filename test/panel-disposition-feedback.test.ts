@@ -385,8 +385,9 @@ test("从未探索过且全局组合为空:跳过解读留一行原因,零提案
 
   const store = openStore(h.db.path);
   try {
-    // 空组合走夹具入口:面板写链不收空组合,而「全局组合为空」是这条用例要的局面。
-    assert.equal(store.putGlobalSettings({ reviewersJson: "[]", maxChangedLinesPerBatch: null }), true);
+    // 清成没配走夹具入口:面板写链在配过非空之后不再收空组合(spec #300),而「全局组合
+    // 为空」是这条用例要的局面。
+    assert.equal(store.putGlobalSettings({ reviewersJson: null, maxChangedLinesPerBatch: null }), true);
   } finally {
     store.close();
   }

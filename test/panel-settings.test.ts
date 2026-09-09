@@ -261,6 +261,12 @@ test("带逐项版本键的旧库开起来:整页只剩一个版本,旧键消失
       [],
       "逐项版本键一个都不该留下",
     );
+    // 旧键换成整页那一个,值从 1 起:缺行也读作 1,但迁移把它显式建起来。
+    assert.equal(
+      remaining.prepare("SELECT value FROM global_setting WHERE key = 'settings_version'")
+        .get()?.["value"],
+      "1",
+    );
   } finally {
     remaining.close();
   }
@@ -275,7 +281,36 @@ test("带逐项版本键的旧库开起来:整页只剩一个版本,旧键消失
   });
 });
 
-test("历史空组合读得出来,但整页保存要求组合非空", async () => {
+test("整份对象缺任一项即 400:缺项不当作跟随默认", async () => {
+  const h = await startPanelHarness(cleanups);
+  const { version, defaults: _defaults, ...current } = await readSettings(h);
+  for (
+    const field of [
+      "reviewers",
+      "auxiliaryModel",
+      "maxChangedLinesPerBatch",
+      "maxParallelBatches",
+      "maxFilesPerBatch",
+      "maxEvidenceCallsPerBatch",
+      "minReportSeverity",
+    ]
+  ) {
+    const body: Record<string, unknown> = { ...current, expectedVersion: version };
+    delete body[field];
+    const response = await h.api("PUT", "/settings", body);
+    assert.equal(response.status, 400, `缺 ${field} 应被拒`);
+    assert.match(((await response.json()) as { error: string }).error, new RegExp(field));
+  }
+  // 一次都没写进去:版本与值原样。
+  assert.deepEqual(await readSettings(h), {
+    reviewers: SEEDED_REVIEWERS,
+    ...UNSET_SETTINGS,
+    version: 1,
+    defaults: DEFAULTS,
+  });
+});
+
+test("组合首次配置后非空:配过之前空组合照收,配过非空之后不再收空", async () => {
   const h = await startPanelHarness(cleanups, { reviewers: [] });
   assert.deepEqual(await readSettings(h), {
     reviewers: [],
@@ -284,16 +319,24 @@ test("历史空组合读得出来,但整页保存要求组合非空", async () =
     defaults: DEFAULTS,
   });
 
-  // 整页一起校验:组合是空的,别的项也保存不了——一次保存要么整份成立,要么一项不写。
+  // 库里现存的组合是空的:这一次照收空组合,上限与等级各自落库(spec #300)。
   const empty = await putSettings(h, { maxChangedLinesPerBatch: 800 });
-  assert.equal(empty.status, 400);
-  assert.match(await empty.text(), /至少要选一个模型/);
+  assert.equal(empty.status, 200, await empty.text());
   assert.deepEqual(await readSettings(h), {
     reviewers: [],
     ...UNSET_SETTINGS,
-    version: 1,
+    maxChangedLinesPerBatch: 800,
+    version: 2,
     defaults: DEFAULTS,
   });
+
+  // 配过一份非空的之后不再收空:要停掉审查不走这一格。
+  seedAvailableModelService(h, "test", ["global-model"]);
+  assert.equal((await putSettings(h, { reviewers: SEEDED_REVIEWERS })).status, 200);
+  const cleared = await putSettings(h, { reviewers: [] });
+  assert.equal(cleared.status, 400);
+  assert.match(await cleared.text(), /至少要选一个模型/);
+  assert.deepEqual((await readSettings(h)).reviewers, SEEDED_REVIEWERS);
 });
 
 test("全局组合按模型服务候选校验，失效模型只门禁组合本身的写入", async () => {

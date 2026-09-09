@@ -1848,6 +1848,10 @@ function ReferenceBlockers({ references }: { references: ModelReference[] }) {
                     </Link>
                   ) : location.kind === "following-global" ? (
                     <><span className="font-mono tabular-nums">{location.repositoryCount}</span> 个跟随全局的仓库</>
+                  ) : location.kind === "global-auxiliary" ? (
+                    <>全局辅助模型</>
+                  ) : location.kind === "repository-auxiliary" ? (
+                    <>仓库 <span className="font-mono">{location.owner}/{location.repo}</span> 的辅助模型</>
                   ) : (
                     <>仓库覆盖 <span className="font-mono">{location.owner}/{location.repo}</span></>
                   )}
@@ -2771,7 +2775,7 @@ function ReferenceOverview({ references }: { references: readonly ModelReference
       />
       <CardSection>
         {references.length === 0 ? (
-          <EmptyState title="全局模型组合与仓库覆盖均未引用该服务" className="py-0" />
+          <EmptyState title="模型组合、辅助模型与仓库覆盖均未引用该服务" className="py-0" />
         ) : (
           <ul className="flex flex-col overflow-hidden rounded-md border border-card-line">
             {references.map((reference) => (
@@ -2784,7 +2788,11 @@ function ReferenceOverview({ references }: { references: readonly ModelReference
                         ? "全局模型组合"
                         : location.kind === "following-global"
                           ? `${location.repositoryCount} 个跟随全局的仓库`
-                          : `仓库覆盖 ${location.owner}/${location.repo}`}
+                          : location.kind === "global-auxiliary"
+                            ? "全局辅助模型"
+                            : location.kind === "repository-auxiliary"
+                              ? `仓库 ${location.owner}/${location.repo} 的辅助模型`
+                              : `仓库覆盖 ${location.owner}/${location.repo}`}
                     </li>
                   ))}
                 </ul>

@@ -10,6 +10,7 @@
  */
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
@@ -758,10 +759,16 @@ test("生效的辅助模型跑不了时发起回 409,那句话指向审查策略
   // 审查策略里设一处辅助模型,再把那家服务的凭据拿掉:解析得出、却跑不起来。
   seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
   await setGlobalAuxiliaryModel(h, { provider: "think", model: "deep" });
-  assert.equal(
-    (await h.api("DELETE", "/model-services/think/credential", { expectedVersion: 1 })).status,
-    200,
-  );
+  // 让这一处跑不起来:凭据降级成待重验。**不走删凭据那条路**——辅助模型如今计入模型引用,
+  // 删凭据会被引用保护挡下(它正是被这一处引用着)。
+  const downgrade = new DatabaseSync(h.db.path);
+  downgrade.prepare(
+    `UPDATE model_service_credential
+        SET state = 'pending-reverification', verified_at = NULL,
+            validation_model = NULL, verification_source = NULL
+      WHERE provider = ?`,
+  ).run("think");
+  downgrade.close();
 
   const blocked = await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-exploration`, {
     baseline: h.repo.baseSha,
