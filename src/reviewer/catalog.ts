@@ -12,22 +12,11 @@ import {
   type RuntimeModelCompat,
   type RuntimeThinkingLevelMap,
 } from "./model-runtime.ts";
-import { openRouterCatalog, type VendorModel } from "./vendor-catalog.ts";
-
-/**
- * 远程目录那一层的结果。`ok` 是内置目录加上了 pi.dev 的增量;`unavailable` 是远程
- * 没拿到,给出的只有内置那一份;`off` 是按配置关掉了远程(`PI_OFFLINE`)。
- * 端点把它原样透出:选择器里少了几十个模型时,运维要能分清是关掉了还是拉失败了。
- */
-export type CatalogRemote = "ok" | "unavailable" | "off";
-
-/**
- * 厂商目录那一层的结果,按 provider 记一格。`ok` 是问过那一家、缺的都补上了;
- * `unavailable` 是没拉到,给出的只有内置目录加远程目录那一份;`off` 是关掉了(`PI_OFFLINE`)。
- * 与远程那一层分开记:两层都可能少掉一批模型,合成一个字段就分不清少在哪一层。
- */
-export type CatalogVendor = "ok" | "unavailable" | "off";
-
+import {
+  fetchOpenRouterModels,
+  OPENROUTER_PROVIDER,
+  type VendorModel,
+} from "./vendor-catalog.ts";
 
 /**
  * 远程刷新的时间上限。Pi 对 39 家 provider 各发一次请求,单次失败还会立即重试两轮,
@@ -65,8 +54,6 @@ export type PiProviderCatalog = {
   id: string;
   name: string;
   models: PiCatalogModel[];
-  remote: CatalogRemote;
-  vendors: Record<string, CatalogVendor>;
 };
 
 /** 显式目录发现串行，避免两次刷新并发覆盖同一份 Pi store。 */
@@ -90,14 +77,12 @@ export function loadPiProviderCatalog(
   options: LoadOptions = {},
 ): Promise<PiProviderCatalog | undefined> {
   return queueCatalogLoad(async () => {
-    const loaded = await loadPiRuntime(options);
-    const provider = loaded.runtime.getProvider(providerId);
+    const runtime = await loadPiRuntime(options);
+    const provider = runtime.getProvider(providerId);
     if (provider === undefined) return undefined;
     return {
       id: provider.id,
       name: provider.name,
-      remote: loaded.remote,
-      vendors: loaded.vendors,
       models: provider.getModels().map((model) => ({
         id: model.id,
         name: model.name,
@@ -115,22 +100,18 @@ export function loadPiProviderCatalog(
   });
 }
 
-async function loadPiRuntime(options: LoadOptions): Promise<{
-  runtime: ModelRuntime;
-  remote: CatalogRemote;
-  vendors: Record<string, CatalogVendor>;
-}> {
+async function loadPiRuntime(options: LoadOptions): Promise<ModelRuntime> {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-catalog-"));
   const catalogStore = options.catalogStorePath ?? modelCatalogStorePath();
   const runtime = await isolatedModelRuntime(dir, catalogStore);
 
   const allowNetwork = options.allowNetwork ?? remoteEnabled();
   const timeoutMs = options.timeoutMs ?? MODEL_REFRESH_TIMEOUT_MS;
-  const remote = allowNetwork ? await refreshRemote(runtime, timeoutMs) : "off";
-  const vendor = allowNetwork
-    ? await mergeVendorCatalog(runtime, openRouterCatalog, catalogStore, timeoutMs)
-    : "off";
-  return { runtime, remote, vendors: { [openRouterCatalog.provider]: vendor } };
+  if (allowNetwork) {
+    await refreshRemote(runtime, timeoutMs);
+    await mergeVendorCatalog(runtime, catalogStore, timeoutMs);
+  }
+  return runtime;
 }
 
 
@@ -152,15 +133,14 @@ async function loadPiRuntime(options: LoadOptions): Promise<{
  */
 async function mergeVendorCatalog(
   runtime: ModelRuntime,
-  vendor: typeof openRouterCatalog,
   storePath: string | undefined,
   timeoutMs: number,
-): Promise<CatalogVendor> {
-  const provider = runtime.getProviders().find((entry) => entry.id === vendor.provider);
-  if (storePath === undefined || provider === undefined) return "unavailable";
+): Promise<void> {
+  const provider = runtime.getProviders().find((entry) => entry.id === OPENROUTER_PROVIDER);
+  if (storePath === undefined || provider === undefined) return;
 
-  const models = await vendor.fetchModels(timeoutMs);
-  if (models === undefined) return "unavailable";
+  const models = await fetchOpenRouterModels(timeoutMs);
+  if (models === undefined) return;
 
   let store: Store = {};
   try {
@@ -168,15 +148,14 @@ async function mergeVendorCatalog(
   } catch {
     // 落盘还不在或者读坏了:当空的重建,反正它是可以从 pi.dev 与厂商目录重建的派生物。
   }
-  const previous = new Set(store[vendor.provider]?.[VENDOR_MODEL_IDS] ?? []);
+  const previous = new Set(store[OPENROUTER_PROVIDER]?.[VENDOR_MODEL_IDS] ?? []);
   const known = new Set(provider.getModels().map((model) => model.id));
   const additions = models.filter((model) => !known.has(model.id) || previous.has(model.id));
   if (additions.length > 0 || previous.size > 0) {
-    writeVendorModels(storePath, store, vendor.provider, additions);
+    writeVendorModels(storePath, store, OPENROUTER_PROVIDER, additions);
     // 不联网的这一次刷新只做一件事:把落盘里的条目恢复进内存。
     await runtime.refresh({ allowNetwork: false });
   }
-  return "ok";
 }
 
 /**
@@ -244,15 +223,11 @@ function writeVendorModels(
 /**
  * 拉远程目录。超时与单家失败都只降级到内置目录:选择器空白比少几十个模型严重得多。
  */
-async function refreshRemote(runtime: ModelRuntime, timeoutMs: number): Promise<CatalogRemote> {
+async function refreshRemote(runtime: ModelRuntime, timeoutMs: number): Promise<void> {
   try {
-    const result = await runtime.refresh({
-      allowNetwork: true,
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    return result.aborted || result.errors.size > 0 ? "unavailable" : "ok";
+    await runtime.refresh({ allowNetwork: true, signal: AbortSignal.timeout(timeoutMs) });
   } catch {
-    return "unavailable";
+    // 拉不到就是少几十个模型,内置那一份照常给出。
   }
 }
 

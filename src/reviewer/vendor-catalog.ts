@@ -5,12 +5,12 @@
  * (`docs/research/vendor-model-catalog-apis.md`):接一家要 key 的会让目录加载反过来依赖
  * 凭据表,「还没配凭据也能看见完整目录」随之失效。
  *
- * 一家一个实现,没有注册表、没有配置项、面板上没有开关。真要接第二家时,这里多一个对象、
- * `catalog.ts` 那边多问它一次,比先造一层注册表便宜。
+ * 一家一个实现,没有注册表、没有配置项、面板上没有开关。真要接第二家时,这里多一个
+ * 拉取函数、`catalog.ts` 那边多问它一次,比先造一层注册表便宜。
  */
 
 /** 模型标识 `provider:model` 的前半段,与 Pi 的 provider 登记 id 同名。 */
-const OPENROUTER_PROVIDER = "openrouter";
+export const OPENROUTER_PROVIDER = "openrouter";
 
 /** OpenRouter 的 v1,与远程目录落盘里那些 OpenRouter 行写的是同一个。 */
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
@@ -91,8 +91,10 @@ function toVendorModel(entry: OpenRouterEntry): VendorModel {
 /**
  * 拉 OpenRouter 的现货清单。不带 limit 与 offset:它默认就给全量(实测 414 个),带上分页
  * 参数反而要自己翻页。不带凭据:目录加载不读凭据表,读了就等于「还没配凭据就看不见目录」。
+ *
+ * 非 2xx、超时、响应不像目录都算没拉到,回 `undefined`。
  */
-async function fetchOpenRouterModels(timeoutMs: number): Promise<VendorModel[] | undefined> {
+export async function fetchOpenRouterModels(timeoutMs: number): Promise<VendorModel[] | undefined> {
   try {
     const response = await fetch(`${OPENROUTER_BASE_URL}/models`, {
       headers: { accept: "application/json" },
@@ -110,10 +112,3 @@ async function fetchOpenRouterModels(timeoutMs: number): Promise<VendorModel[] |
     return undefined;
   }
 }
-
-/** OpenRouter 的厂商目录。一家厂商一个实现,形状由这一份定。 */
-export const openRouterCatalog = {
-  provider: OPENROUTER_PROVIDER,
-  /** 拉一份现货清单。非 2xx、超时、响应不像目录都算没拉到,回 undefined。 */
-  fetchModels: fetchOpenRouterModels,
-};

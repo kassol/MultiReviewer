@@ -67,14 +67,6 @@ pause() {
   read -r _ || true
 }
 
-# confirm "question" — y/N gate; returns success on yes.
-confirm() {
-  local reply=""
-  printf '  %s? %s [y/N] ' "$YELLOW" "$1"
-  read -r reply || true
-  [[ "$reply" =~ ^[Yy] ]]
-}
-
 # _existing KEY — current value of KEY in ENV_FILE, if any.
 _existing() {
   [[ -f "$ENV_FILE" ]] || return 1
@@ -291,61 +283,6 @@ pause
 # ── 4. 面板密钥与基地址 ───────────────────────────────────────────────────
 stage "面板密钥与基地址"
 
-# 清理动作之前先留一份副本。要清的里面有两把厂商 key,厂商后台不会再给第二次明文,
-# 而人此刻还没机会在面板里重配。副本只是文件复制,不读值也不打印值。
-ENV_BACKUP_DONE=""
-backup_env() {
-  [[ -f "$ENV_FILE" ]] || return 0
-  [[ -z "$ENV_BACKUP_DONE" ]] || return 0
-  ENV_BACKUP_DONE="yes"
-  local dest; dest="${ENV_FILE}.bak-$(date +%Y%m%d)"
-  # 同一天重跑时不覆盖:那一份是清理之前的,覆盖会用已经清过的内容把旧值冲掉。
-  if [[ -e "$dest" ]]; then
-    note "当天的备份已在 $dest,不覆盖。"
-    return 0
-  fi
-  cp "$ENV_FILE" "$dest"
-  chmod 600 "$dest" 2>/dev/null || true
-  printf '  %s✓ 备份%s %s\n' "$GREEN" "$RESET" "$dest"
-  note "  清理之前的副本,旧值都在里面。面板配好之后自行删掉它。"
-}
-
-# 已经废除的变量,检出即清:服务已经不读它们,留着只会误导下一个看 .env 的人
-# 以为它们还在生效。
-remove_env() {
-  local key="$1" reason="$2"
-  [[ -f "$ENV_FILE" ]] || return 0
-  grep -qE "^${key}=" "$ENV_FILE" || return 0
-  local tmp; tmp=$(mktemp)
-  grep -vE "^${key}=" "$ENV_FILE" > "$tmp" || true
-  mv "$tmp" "$ENV_FILE"
-  printf '  %s✓ 清掉旧变量%s %s\n' "$GREEN" "$RESET" "$key"
-  note "  $reason"
-}
-OLD_SECRET=$(_existing MULTIREVIEWER_WEBHOOK_SECRET || true)
-for OLD_ENV in MULTIREVIEWER_ADMIN_TOKEN MULTIREVIEWER_WEBHOOK_SECRET MULTIREVIEWER_PUBLIC_URL \
-  MULTIREVIEWER_GITEA_REPO MULTIREVIEWER_PANEL_PREFIX DEEPSEEK_API_KEY OPENROUTER_API_KEY \
-  MULTIREVIEWER_DEEPSEEK_MODEL MULTIREVIEWER_OPENROUTER_MODEL; do
-  if grep -qE "^${OLD_ENV}=" "$ENV_FILE" 2>/dev/null; then
-    backup_env
-    break
-  fi
-done
-remove_env MULTIREVIEWER_ADMIN_TOKEN "面板门禁已改为本地用户账号与会话 cookie;服务不再读取 admin token。"
-remove_env MULTIREVIEWER_WEBHOOK_SECRET "全局 webhook secret 已废除:准入改为每仓库一把 Key,由面板在注册时生成并写进 hook。"
-remove_env MULTIREVIEWER_PUBLIC_URL "公网地址改为基地址,存 MULTIREVIEWER_BASE_URL(下面会问)。"
-remove_env MULTIREVIEWER_GITEA_REPO "webhook 不再手工登记:仓库改在面板上注册。"
-remove_env MULTIREVIEWER_PANEL_PREFIX "随机面板前缀已废除:面板直接挂根路径,API 挂 /api。门禁一直是账号与会话 cookie,前缀只挡扫描器。旧地址不再重定向,书签要改成基地址。"
-remove_env DEEPSEEK_API_KEY "模型凭据改由面板的凭据页管,加密存库(ADR 0008)。服务只从库里取,环境变量这一路已经断开。"
-remove_env OPENROUTER_API_KEY "同上:模型凭据只在面板里配。"
-remove_env MULTIREVIEWER_DEEPSEEK_MODEL "模型组合改由面板的设置页管,存库。服务不再读这个变量。"
-remove_env MULTIREVIEWER_OPENROUTER_MODEL "同上:模型标识只在面板的设置页里改。"
-if [[ -n "$OLD_SECRET" ]]; then
-  warn "Gitea 上手工建过的旧 webhook 用的是刚清掉的全局 secret,已经验不过签名。"
-  say "  到各仓库的 设置 → Web 钩子 删掉指向本服务的旧 hook,改由面板注册时自动创建。"
-fi
-
-say ""
 say "面板的凭据页用一枚主密钥加解密模型凭据(ADR 0008)。缺它时那一页整体不可用,"
 say "人就配不了模型凭据。这里随机生成一枚,值不上屏。"
 if [[ -n "$(_existing MULTIREVIEWER_CREDENTIAL_MASTER_KEY || true)" ]]; then

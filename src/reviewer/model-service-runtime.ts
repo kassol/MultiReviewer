@@ -379,6 +379,32 @@ export function synthesizeRuntimeModel(
   };
 }
 
+/**
+ * 两条发现路径共用的 id 收集:裸 id 去空白,空的算被忽略,同一个模型标识只留第一条。
+ * 剩下的字段两条路各取各的,因此把原行一起带出来。
+ */
+function collectIds<T>(
+  rows: readonly T[],
+  provider: string,
+  idOf: (row: T) => string,
+): { collected: { row: T; id: string; identity: string }[]; ignoredCount: number } {
+  const collected: { row: T; id: string; identity: string }[] = [];
+  const seen = new Set<string>();
+  let ignoredCount = 0;
+  for (const row of rows) {
+    const id = idOf(row).trim();
+    if (id === "") {
+      ignoredCount += 1;
+      continue;
+    }
+    const identity = modelIdentity({ provider, model: id });
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    collected.push({ row, id, identity });
+  }
+  return { collected, ignoredCount };
+}
+
 async function discoverBuiltinModels(
   candidate: BuiltinModelServiceCandidate,
   options: DiscoverModelsOptions,
@@ -389,18 +415,12 @@ async function discoverBuiltinModels(
       return failure("provider-not-found", `Pi 模型目录里没有 ${candidate.provider} 这一家`);
     }
 
-    const models: DiscoveredModel[] = [];
-    const seen = new Set<string>();
-    let ignoredCount = 0;
-    for (const model of catalog.models) {
-      const id = model.id.trim();
-      if (id === "") {
-        ignoredCount += 1;
-        continue;
-      }
-      const identity = modelIdentity({ provider: candidate.provider, model: id });
-      if (seen.has(identity)) continue;
-      seen.add(identity);
+    const { collected, ignoredCount } = collectIds(
+      catalog.models,
+      candidate.provider,
+      (model) => model.id,
+    );
+    const models: DiscoveredModel[] = collected.map(({ row: model, id, identity }) => {
       const fields: TrustedModelFields = {
         ...(model.name.trim() === "" ? {} : { name: model.name }),
         ...(model.api === "" ? {} : { api: model.api }),
@@ -412,8 +432,8 @@ async function discoverBuiltinModels(
         ...(model.thinkingLevelMap === undefined ? {} : { thinkingLevelMap: model.thinkingLevelMap }),
         ...(model.compat === undefined ? {} : { compat: model.compat }),
       };
-      models.push({ identity, provider: candidate.provider, id, fields });
-    }
+      return { identity, provider: candidate.provider, id, fields };
+    });
     if (models.length === 0) {
       return failure("empty-catalog", `Pi 模型目录里的 ${candidate.provider} 没有可用 model id`);
     }
@@ -496,25 +516,16 @@ export async function discoverModels(
       return failure("invalid-response", `模型服务 ${candidate.provider} 的 /models 响应不兼容`);
     }
 
-    const rows: { id: string; name?: string }[] = [];
-    const seen = new Set<string>();
-    let ignoredCount = 0;
-    for (const row of body.data) {
-      const id =
-        typeof row === "object" && row !== null && typeof (row as { id?: unknown }).id === "string"
-          ? (row as { id: string }).id.trim()
-          : "";
-      if (id === "") {
-        ignoredCount += 1;
-        continue;
-      }
-      const identity = modelIdentity({ provider: candidate.provider, model: id });
-      if (seen.has(identity)) continue;
-      seen.add(identity);
+    const { collected, ignoredCount } = collectIds(body.data, candidate.provider, (row) =>
+      typeof row === "object" && row !== null && typeof (row as { id?: unknown }).id === "string"
+        ? (row as { id: string }).id
+        : "",
+    );
+    const rows: { id: string; name?: string }[] = collected.map(({ row, id }) => {
       const record = row as { display_name?: unknown; name?: unknown };
       const name = nonEmptyString(record.display_name) ?? nonEmptyString(record.name);
-      rows.push(name === undefined ? { id } : { id, name });
-    }
+      return name === undefined ? { id } : { id, name };
+    });
     if (rows.length === 0) {
       return failure("empty-catalog", `模型服务 ${candidate.provider} 没有返回可用的 model id`);
     }

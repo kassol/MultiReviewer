@@ -1,29 +1,33 @@
 /**
- * Reviewer 与规则 agent 两个子进程共用的会话构件(issue #209)。
+ * Reviewer、规则 agent 与合并 agent 三个子进程共用的会话构件(issue #209)。
  *
- * 两条链路的会话形状不同,读文件这件事却是同一件:只认工作副本里的路径,每行带号交给
- * 模型。规则条目在 prompt 里的行格式同样共用一份——两边写的是同一个 `[id] (scope)`,
- * 分成两份只会让某一天其中一边悄悄改掉。会话跑起来之前那一套运行时同理。
+ * 三条链路的会话形状不同,读文件这件事却是同一件:只认工作副本里的路径,每行带号交给
+ * 模型。规则条目在 prompt 里的行格式同样共用一份——几边写的是同一个 `[id] (scope)`,
+ * 分成几份只会让某一天其中一边悄悄改掉。会话跑起来之前那一套运行时、以及从建会话到
+ * 进程退出的那一段同理。
  */
 import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
 import {
+  type AgentSessionEventListener,
+  createAgentSession,
   DefaultResourceLoader,
   defineTool,
   type InlineExtension,
   type ModelRuntime,
+  SessionManager,
   SettingsManager,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import type { ThinkingLevel } from "../config.ts";
-import type { ProjectFact, ReviewRule } from "../review/finding.ts";
+import type { ProjectFact, ReviewerUsage, ReviewRule } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, redactModelCredential } from "./env.ts";
 import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
-import { numberedRead } from "./numbered-read.ts";
 
 /**
  * 只读靠允许清单强制:未列出的工具 Pi 不会注册,模型没有写入的调用路径。两个子进程与
@@ -63,6 +67,55 @@ export function fileLines(worktreePath: string, file: string): string[] | undefi
   const lines = content.split("\n");
   if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
   return lines;
+}
+
+/** 与 Pi 内建 read 的默认截断同一量级,防止一次读取撑爆审查会话的上下文。 */
+const MAX_LINES = 1000;
+const MAX_BYTES = 48 * 1024;
+
+/**
+ * 把文件内容渲染成 `N: content` 的带号文本。`offset` 是 1-indexed 起始行。
+ *
+ * Pi 内建的 `read` 返回裸内容,模型报 Finding 时只能自己数行,实测在 55 行的文件上就会
+ * 数偏(PR #3 里 RCE 评论挂到了别的函数上)。成熟实现的共同做法是让行号可抄不可数:
+ * pr-agent 与 ai-pr-reviewer 在 diff 每行预打行号,claude-code-action 靠 Read 工具自带的
+ * cat -n 前缀。这里取后一种,worker 用它注册同名工具覆盖内建。
+ *
+ * 行号前缀不对齐、不补零:模型抄号不需要对齐,少一格是一格 token。
+ */
+export function numberedRead(content: string, offset?: number, limit?: number): string {
+  const lines = content.split("\n");
+  // 结尾换行符 split 出的尾部空串是幽灵行,cat -n 也不数它。
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+
+  const start = offset === undefined ? 1 : offset;
+  if (!Number.isInteger(start) || start < 1) {
+    throw new Error(`offset 必须是 1 起的整数: ${offset}`);
+  }
+  if (start > lines.length) {
+    throw new Error(`Offset ${start} is beyond end of file (${lines.length} lines total)`);
+  }
+
+  const requestedEnd =
+    limit === undefined ? lines.length : Math.min(start + limit - 1, lines.length);
+  const cappedEnd = Math.min(requestedEnd, start + MAX_LINES - 1);
+
+  const out: string[] = [];
+  let bytes = 0;
+  let end = start - 1;
+  for (let n = start; n <= cappedEnd; n += 1) {
+    const numbered = `${n}: ${lines[n - 1]}`;
+    bytes += Buffer.byteLength(numbered, "utf8") + 1;
+    if (bytes > MAX_BYTES && out.length > 0) break;
+    out.push(numbered);
+    end = n;
+  }
+
+  if (end < lines.length) {
+    // 措辞照 Pi 内建工具:模型见过这个提示,知道怎么续读。
+    out.push("", `[Showing lines ${start}-${end} of ${lines.length}. Use offset=${end + 1} to continue.]`);
+  }
+  return out.join("\n");
 }
 
 /**
@@ -195,7 +248,7 @@ export function streamHeartbeat(
  * 末条 assistant 消息上的 `stopReason=error`;凭据一律先抹掉。三个子进程收尾同一句话,
  * 分三份只会让某一天其中一处悄悄改掉。
  */
-export function sessionFailure(
+function sessionFailure(
   session: {
     messages: readonly { role: string; stopReason?: string; errorMessage?: string }[];
     agent: { state: { errorMessage?: string } };
@@ -290,4 +343,77 @@ export async function prepareAgentRuntime(options: {
   await resourceLoader.reload();
 
   return { agentDir, apiKey, model, modelRuntime, settingsManager, resourceLoader };
+}
+
+/**
+ * 三个子进程从建会话到退出的那一段:订阅、跑 prompt、读用量、销毁、回传收尾消息、
+ * 显式退出。三条链路的差别只有工具面、事件怎么转发与收尾消息的形状,它们由参数与回调
+ * 给出;各自的 IPC 消息序列与退出行为因此一格未动。
+ *
+ * `process.exit(0)` 是显式的:`dispose()` 之后 Pi 仍可能留着未关闭的 handle,加上 IPC
+ * 通道本身会让事件循环存活,进程不会自己结束,主进程就一直等不到 exit。
+ */
+export async function runAgentWorker(options: {
+  runtime: AgentRuntime;
+  worktreePath: string;
+  thinkingLevel: ThinkingLevel;
+  tools: string[];
+  customTools: ToolDefinition[];
+  prompt: string;
+  /** 会话事件的去处。心跳排在它之后,IPC 上仍是先转发事件、再发心跳。 */
+  onEvent: AgentSessionEventListener;
+  /** 心跳的出口,与调用方回传别的消息走同一条。 */
+  send: (message: { kind: "heartbeat" }) => void;
+  /** 收尾消息由调用方拼:三条协议的 `done` 形状各不相同,用量也不是三条都记。 */
+  done: (outcome: { usage: ReviewerUsage; failure?: string }) => void;
+}): Promise<void> {
+  const { session } = await createAgentSession({
+    cwd: options.worktreePath,
+    agentDir: options.runtime.agentDir,
+    model: options.runtime.model,
+    thinkingLevel: options.thinkingLevel,
+    modelRuntime: options.runtime.modelRuntime,
+    tools: options.tools,
+    customTools: options.customTools,
+    resourceLoader: options.runtime.resourceLoader,
+    sessionManager: SessionManager.inMemory(options.worktreePath),
+    settingsManager: options.runtime.settingsManager,
+  });
+
+  // 长思考档位下,几分钟内可能一条完整消息、一次工具调用都没有,静默闸会把它当卡死;
+  // 流式 delta 因此另发一路节流过的心跳(`streamHeartbeat`)。
+  const heartbeat = streamHeartbeat(options.send);
+  session.subscribe((event) => {
+    options.onEvent(event);
+    heartbeat(event);
+  });
+
+  let thrown: string | undefined;
+  try {
+    await session.prompt(options.prompt);
+  } catch (error) {
+    thrown = String(error instanceof Error ? error.message : error);
+  }
+
+  // `session.prompt()` 在模型调用失败时也正常返回,失败只在这两处可见。
+  const failure = sessionFailure(session, thrown, options.runtime.apiKey);
+
+  // 用量必须在 dispose 之前读:会话销毁后统计随之消失。只取 token 明细,`stats.cost`
+  // 是 Pi 按自带价目表折算的估算,产品不记账,读它没有意义。
+  //
+  // 取证子会话的用量已经在这份统计里(issue #260):pi-subagents 把子会话的汇总 Usage
+  // 挂在 `subagent` 工具返回上,Pi 把它记进那条 toolResult 消息,`getSessionStats`
+  // 按消息累加时一并算入。这里不再从 transcript 补算——补一次就是重复计一次。
+  const stats = session.getSessionStats();
+  const usage = {
+    inputTokens: stats.tokens.input,
+    outputTokens: stats.tokens.output,
+    cacheReadTokens: stats.tokens.cacheRead,
+    cacheWriteTokens: stats.tokens.cacheWrite,
+    totalTokens: stats.tokens.total,
+  };
+
+  session.dispose();
+  options.done({ usage, ...(failure === undefined ? {} : { failure }) });
+  process.exit(0);
 }

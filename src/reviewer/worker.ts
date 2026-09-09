@@ -4,11 +4,7 @@
  * 每个 Reviewer 一个进程,进程的环境里只有它自己那一家厂商的凭据(见 `env.ts`)。
  * 这里跑一个 Pi 会话,把模型经 `report_finding` 报出的每条原始条目立即回传主进程。
  */
-import {
-  createAgentSession,
-  defineTool,
-  SessionManager,
-} from "@earendil-works/pi-coding-agent";
+import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import type {
@@ -44,9 +40,8 @@ import {
   prepareAgentRuntime,
   priorFindingRejection,
   ruleBullet,
-  sessionFailure,
+  runAgentWorker,
   sessionThinkingLevel,
-  streamHeartbeat,
 } from "./worker-tools.ts";
 
 const REPORT_FINDING_TOOL = "report_finding";
@@ -597,14 +592,24 @@ async function run(request: ReviewerRequest): Promise<void> {
     send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0, failure: prepared.failure });
     return;
   }
-  const { agentDir, apiKey, model, modelRuntime, settingsManager, resourceLoader } = prepared;
 
-  const { session } = await createAgentSession({
-    cwd: request.worktreePath,
-    agentDir,
-    model,
+  // 审查轨迹只订阅并转发,不做判断(ADR 0017)。凭据在转换那一步就抹掉;锚不上是本进程
+  // 自己的判定,按 toolCallId 交下去,由转换那一层标成被拒(issue #187)。
+  const forwardEvent = reviewerEventStream(
+    prepared.apiKey,
+    (event) => send({ kind: "event", event }),
+    Date.now,
+    (toolCallId) => anchorRejectedCalls.has(toolCallId),
+    // 取证子会话的过程嵌进这一次调用(issue #227):子代理是 pi-subagents 另建的会话,它说过
+    // 的话与调过的工具只有从它的 transcript 读回来才进得了审查轨迹。
+    (toolName, result) =>
+      toolName === EVIDENCE_TOOL ? evidenceTranscriptEvents(result) : [],
+  );
+
+  await runAgentWorker({
+    runtime: prepared,
+    worktreePath: request.worktreePath,
     thinkingLevel,
-    modelRuntime,
     tools: sessionTools({
       ...(request.mode === undefined ? {} : { mode: request.mode }),
       hasHistory: request.history.length > 0,
@@ -617,79 +622,29 @@ async function run(request: ReviewerRequest): Promise<void> {
       gitTool(request.worktreePath),
       ...(request.history.length === 0 ? [] : [reviewPriorFinding]),
     ],
-    resourceLoader,
-    sessionManager: SessionManager.inMemory(request.worktreePath),
-    settingsManager,
+    prompt: reviewPrompt(request),
+    send,
+    onEvent: (event) => {
+      forwardEvent(event);
+      // 只数 report_finding 的失败。read 或 grep 出错是模型在探索仓库时的正常摩擦,
+      // 把它们算进来会让"契约失配"这个信号失去意义。
+      if (
+        event.type === "tool_execution_end" &&
+        event.isError &&
+        event.toolName === REPORT_FINDING_TOOL
+      ) {
+        rejectedToolCalls += 1;
+      }
+    },
+    done: ({ usage, failure }) =>
+      send({
+        kind: "done",
+        rejectedToolCalls,
+        anchorRejections: anchorRejectedCalls.size,
+        usage,
+        ...(failure === undefined ? {} : { failure }),
+      }),
   });
-
-  // 审查轨迹只订阅并转发,不做判断(ADR 0017)。凭据在转换那一步就抹掉;锚不上是本进程
-  // 自己的判定,按 toolCallId 交下去,由转换那一层标成被拒(issue #187)。
-  const forwardEvent = reviewerEventStream(
-    apiKey,
-    (event) => send({ kind: "event", event }),
-    Date.now,
-    (toolCallId) => anchorRejectedCalls.has(toolCallId),
-    // 取证子会话的过程嵌进这一次调用(issue #227):子代理是 pi-subagents 另建的会话,它说过
-    // 的话与调过的工具只有从它的 transcript 读回来才进得了审查轨迹。
-    (toolName, result) =>
-      toolName === EVIDENCE_TOOL ? evidenceTranscriptEvents(result) : [],
-  );
-
-  // 长思考档位下,几分钟内可能一条完整消息、一次工具调用都没有,静默闸会把它当卡死;
-  // 流式 delta 因此另发一路节流过的心跳(`streamHeartbeat`)。
-  const heartbeat = streamHeartbeat(send);
-
-  session.subscribe((event) => {
-    forwardEvent(event);
-    heartbeat(event);
-    // 只数 report_finding 的失败。read 或 grep 出错是模型在探索仓库时的正常摩擦,
-    // 把它们算进来会让"契约失配"这个信号失去意义。
-    if (
-      event.type === "tool_execution_end" &&
-      event.isError &&
-      event.toolName === REPORT_FINDING_TOOL
-    ) {
-      rejectedToolCalls += 1;
-    }
-  });
-
-  let thrown: string | undefined;
-  try {
-    await session.prompt(reviewPrompt(request));
-  } catch (error) {
-    thrown = String(error instanceof Error ? error.message : error);
-  }
-
-  // `session.prompt()` 在模型调用失败时也正常返回,失败只在这两处可见。
-  // 失败标在 assistant 消息上,而消息序列的末尾可能是一条 tool result,故反向找。
-  const failure = sessionFailure(session, thrown, apiKey);
-
-  // 用量必须在 dispose 之前读:会话销毁后统计随之消失。只取 token 明细,`stats.cost`
-  // 是 Pi 按自带价目表折算的估算,产品不记账,读它没有意义。
-  //
-  // 取证子会话的用量已经在这份统计里(issue #260):pi-subagents 把子会话的汇总 Usage
-  // 挂在 `subagent` 工具返回上,Pi 把它记进那条 toolResult 消息,`getSessionStats`
-  // 按消息累加时一并算入。这里不再从 transcript 补算——补一次就是重复计一次。
-  const stats = session.getSessionStats();
-  const usage = {
-    inputTokens: stats.tokens.input,
-    outputTokens: stats.tokens.output,
-    cacheReadTokens: stats.tokens.cacheRead,
-    cacheWriteTokens: stats.tokens.cacheWrite,
-    totalTokens: stats.tokens.total,
-  };
-
-  session.dispose();
-  send({
-    kind: "done",
-    rejectedToolCalls,
-    anchorRejections: anchorRejectedCalls.size,
-    usage,
-    ...(failure === undefined ? {} : { failure }),
-  });
-  // 显式退出。`dispose()` 之后 Pi 仍可能留着未关闭的 handle,加上 IPC 通道本身
-  // 会让事件循环存活,进程不会自己结束,主进程就一直等不到 exit。
-  process.exit(0);
 }
 
 process.on("message", (request: ReviewerRequest) => {

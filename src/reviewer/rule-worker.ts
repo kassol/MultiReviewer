@@ -5,11 +5,7 @@
  * 读不写,产出经一个自定义工具逐条回传主进程。区别只在任务本身——这里读的是基点 commit
  * 上的仓库全貌,产出的是规范性陈述,不是 Finding。
  */
-import {
-  createAgentSession,
-  defineTool,
-  SessionManager,
-} from "@earendil-works/pi-coding-agent";
+import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import type { KnowledgeEntry, PendingProposal } from "../review/finding.ts";
@@ -29,9 +25,8 @@ import {
   numberedReadTool,
   oneLine,
   prepareAgentRuntime,
-  sessionFailure,
+  runAgentWorker,
   sessionThinkingLevel,
-  streamHeartbeat,
 } from "./worker-tools.ts";
 
 const PROPOSE_RULE_TOOL = "propose_rule";
@@ -250,20 +245,32 @@ Report each entry through ${PROPOSE_RULE_TOOL}. When you have reported everythin
  * 复报的备注连提都不用提——同一处未改动代码再报会折叠到已处置的那条历史 Finding,那样
  * 一条条目免不掉任何东西,只是让人多裁决一次。
  */
+/**
+ * 现集与队列那两段的渲染。反哺与修订意图共用一份:两条链路问的是同一个问题——这件事
+ * 现集里有没有、队列里排没排过。空的那一段整段不渲染,提示与没有它时逐字一致。
+ */
+function contextSections(
+  request: Pick<RuleWorkerRequest, "existingKnowledge" | "pendingProposals">,
+): { existing: string; pending: string } {
+  return {
+    existing:
+      request.existingKnowledge.length === 0
+        ? ""
+        : `${existingSection(request.existingKnowledge)}\n`,
+    pending:
+      request.pendingProposals === undefined || request.pendingProposals.length === 0
+        ? ""
+        : `${pendingSection(request.pendingProposals)}\n`,
+  };
+}
+
 export function feedbackPrompt(
   request: Pick<RuleWorkerRequest, "existingKnowledge" | "pendingProposals"> & {
     feedback: DispositionFeedback;
   },
 ): string {
   const { note, finding } = request.feedback;
-  const existing =
-    request.existingKnowledge.length === 0
-      ? ""
-      : `${existingSection(request.existingKnowledge)}\n`;
-  const pending =
-    request.pendingProposals === undefined || request.pendingProposals.length === 0
-      ? ""
-      : `${pendingSection(request.pendingProposals)}\n`;
+  const { existing, pending } = contextSections(request);
   return `A reviewer of this repository just disposed of one finding and left a note explaining the decision. Judge what that note says about the standards this repository should be reviewed by.
 
 Finding: ${finding.title ?? finding.description}
@@ -299,14 +306,7 @@ export function intentPrompt(
   if (target.kind === "draft") {
     return draftPrompt(request.intent.text, target.item, target.others);
   }
-  const existing =
-    request.existingKnowledge.length === 0
-      ? ""
-      : `${existingSection(request.existingKnowledge)}\n`;
-  const pending =
-    request.pendingProposals === undefined || request.pendingProposals.length === 0
-      ? ""
-      : `${pendingSection(request.pendingProposals)}\n`;
+  const { existing, pending } = contextSections(request);
   if (target.kind === "rule") {
     return entryPrompt(request.intent.text, target.rule, target.proposals, existing, pending);
   }
@@ -654,50 +654,29 @@ async function run(request: RuleWorkerRequest): Promise<void> {
     send({ kind: "done", failure: prepared.failure });
     return;
   }
-  const { agentDir, apiKey, model, modelRuntime, settingsManager, resourceLoader } = prepared;
 
-  const { session } = await createAgentSession({
-    cwd: request.worktreePath,
-    agentDir,
-    model,
+  // 知识轨迹只订阅并转发,不做判断(ADR 0017、issue #214):转换与 Reviewer 那侧共用
+  // 同一个,凭据在转换那一步就抹掉。
+  const forwardEvent = reviewerEventStream(prepared.apiKey, (event) =>
+    send({ kind: "event", event }),
+  );
+
+  await runAgentWorker({
+    runtime: prepared,
+    worktreePath: request.worktreePath,
     thinkingLevel: sessionThinkingLevel(request.runtimeModel.reasoning, request.thinkingLevel),
-    modelRuntime,
     tools: consolidating
       ? [MERGE_PROPOSALS_TOOL, RETARGET_PROPOSAL_TOOL, PROPOSE_RULE_TOOL]
       : [...READ_ONLY_TOOLS, PROPOSE_RULE_TOOL],
     customTools: consolidating
       ? [mergeProposals, retargetProposal, proposeRule]
       : [proposeRule, numberedReadTool(request.worktreePath)],
-    resourceLoader,
-    sessionManager: SessionManager.inMemory(request.worktreePath),
-    settingsManager,
+    prompt: promptFor(request),
+    send,
+    onEvent: forwardEvent,
+    // 这条链路不记用量:知识整理不属于任何一轮 Review Run,没有落用量的那一格。
+    done: ({ failure }) => send({ kind: "done", ...(failure === undefined ? {} : { failure }) }),
   });
-
-  // 知识轨迹只订阅并转发,不做判断(ADR 0017、issue #214):转换与 Reviewer 那侧共用
-  // 同一个,凭据在转换那一步就抹掉。
-  const forwardEvent = reviewerEventStream(apiKey, (event) => send({ kind: "event", event }));
-  // 长思考档位下,几分钟内可能一条完整消息、一次工具调用都没有,静默闸会把它当卡死;
-  // 流式 delta 因此另发一路节流过的心跳(`streamHeartbeat`)。
-  const heartbeat = streamHeartbeat(send);
-  session.subscribe((event) => {
-    forwardEvent(event);
-    heartbeat(event);
-  });
-
-  let thrown: string | undefined;
-  try {
-    await session.prompt(promptFor(request));
-  } catch (error) {
-    thrown = String(error instanceof Error ? error.message : error);
-  }
-
-  // `session.prompt()` 在模型调用失败时也正常返回,失败只在这两处可见。
-  const failure = sessionFailure(session, thrown, apiKey);
-
-  session.dispose();
-  send({ kind: "done", ...(failure === undefined ? {} : { failure }) });
-  // 显式退出:`dispose()` 之后 Pi 仍可能留着未关闭的 handle,IPC 通道也让事件循环存活。
-  process.exit(0);
 }
 
 process.on("message", (request: RuleWorkerRequest) => {
