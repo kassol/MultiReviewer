@@ -10,20 +10,17 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { createWebhookServer } from "../src/webhook/server.ts";
-import { makeCacheDir, makeDbPath } from "./support/git-fixture.ts";
+import { makeCacheDir, makeDbPath, testCleanups } from "./support/git-fixture.ts";
 
 const INDEX_HTML = `<!doctype html>
 <html><head><title>MultiReviewer</title></head><body><div id="root"></div></body></html>
 `;
 const APP_JS = "console.log('panel');\n";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 async function startPages(options: { withDist?: boolean } = {}) {
   const cache = makeCacheDir();

@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { buildReviewers } from "../src/config.ts";
 import {
@@ -26,11 +26,6 @@ import {
   type PanelHarness,
 } from "./support/panel-harness.ts";
 import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 type SettingsBody = {
   reviewers: { provider: string; model: string; thinkingLevel?: string }[];
@@ -91,7 +86,7 @@ async function putSettings(
 }
 
 test("审查策略整页一次保存,版本加一;陈旧写入 409 并带回当前整份对象", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedAvailableModelService(h, "corp-deepseek", ["deepseek-v4-flash"]);
   assert.deepEqual(await readSettings(h), {
     reviewers: SEEDED_REVIEWERS,
@@ -127,7 +122,7 @@ test("审查策略整页一次保存,版本加一;陈旧写入 409 并带回当�
 });
 
 test("整份写入里任一项校验不过,整页一项都不写", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedAvailableModelService(h, "test", ["global-model"]);
 
   const badLimit = await putSettings(h, { maxParallelBatches: 5, maxFilesPerBatch: 0 });
@@ -151,7 +146,7 @@ test("整份写入里任一项校验不过,整页一项都不写", async () => {
 });
 
 test("四项上限与报告等级一次写全,留空即回系统默认", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   // 整页一起校验,保存要求组合里的模型当前可用:先把 harness 播种的那一个坐实。
   seedAvailableModelService(h, "test", ["global-model"]);
   // harness 的库这几格从没写过,与升级前的库同一形态:读出来全是 null。
@@ -210,7 +205,7 @@ test("四项上限与报告等级一次写全,留空即回系统默认", async (
 });
 
 test("带逐项版本键的旧库开起来:整页只剩一个版本,旧键消失,值一格不变", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const legacy = new DatabaseSync(h.db.path);
   try {
     const legacyRows: [string, string][] = [
@@ -282,7 +277,7 @@ test("带逐项版本键的旧库开起来:整页只剩一个版本,旧键消失
 });
 
 test("整份对象缺任一项即 400:缺项不当作跟随默认", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const { version, defaults: _defaults, ...current } = await readSettings(h);
   for (
     const field of [
@@ -311,7 +306,7 @@ test("整份对象缺任一项即 400:缺项不当作跟随默认", async () => 
 });
 
 test("组合首次配置后非空:配过之前空组合照收,配过非空之后不再收空", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   assert.deepEqual(await readSettings(h), {
     reviewers: [],
     ...UNSET_SETTINGS,
@@ -345,7 +340,7 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
     { provider: "recovering-service", model: "saved" },
     { provider: "vanished-service", model: "missing" },
   ];
-  const h = await startPanelHarness(cleanups, { reviewers: selected });
+  const h = await startPanelHarness({ reviewers: selected });
   seedAvailableModelService(h, "healthy-service", ["keep"]);
   seedAvailableModelService(h, "recovering-service", ["saved"]);
 
@@ -480,7 +475,7 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
 });
 
 test("非法的 reviewers 被既有校验拒绝,报错标注来源是全局这一层", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
 
   const missingField = await putSettings(h, { reviewers: [{ provider: "deepseek" }] });
   assert.equal(missingField.status, 400);
@@ -506,7 +501,7 @@ test("非法的 reviewers 被既有校验拒绝,报错标注来源是全局这�
 
 test("组合里的模型已经失效:只改上限照常保存,改组合仍被拒", async () => {
   const stale = [{ provider: "vanished-service", model: "missing" }];
-  const h = await startPanelHarness(cleanups, { reviewers: stale });
+  const h = await startPanelHarness({ reviewers: stale });
   seedAvailableModelService(h, "healthy-service", ["keep"]);
 
   // 失效模型门禁的是组合本身的写入:组合原样未动,上限不被连坐。
@@ -537,7 +532,7 @@ test("组合里的模型已经失效:只改上限照常保存,改组合仍被拒
 });
 
 test("四项上限与最低报告等级取值不合法时整份拒收", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   for (
     const field of [
       "maxChangedLinesPerBatch",
@@ -566,7 +561,7 @@ test("四项上限与最低报告等级取值不合法时整份拒收", async ()
 });
 
 test("Run 快照冻结分批上限、并发数与取证上限,开跑后改设置不影响本轮", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedAvailableModelService(h, "test", ["global-model"]);
   seedHistoricalRepo(h);
   assert.equal(
@@ -619,7 +614,7 @@ test("Run 快照冻结分批上限、并发数与取证上限,开跑后改设置
 });
 
 test("全局组合与每仓库覆盖都拒绝新的空组合", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedAvailableModelService(h, "test", ["global-model"]);
   const empty = await putSettings(h, { reviewers: [] });
   assert.equal(empty.status, 400);
@@ -643,7 +638,7 @@ test("全局组合与每仓库覆盖都拒绝新的空组合", async () => {
 });
 
 test("改过的全局组合下一次投递就生效", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
@@ -659,12 +654,14 @@ test("改过的全局组合下一次投递就生效", async () => {
 
   assert.equal((await h.deliverViaHook("sha-1")).status, 200);
   await h.settledAtLeast(1);
-  assert.deepEqual(h.factoryCalls.at(-1), [{ provider: "test", model: "swapped-model" }]);
+  assert.deepEqual(h.runtimePlans.at(-1)!.map((plan) => plan.spec), [
+    { provider: "test", model: "swapped-model" },
+  ]);
 });
 
 test("空库、没配模型组合时投递留下一条失败的 Review Run,原因可读", async () => {
   // 真组装:组合为空,零 Reviewer 的 Run 既不失败也不报错,人看到的会是「投了没反应」。
-  const h = await startPanelHarness(cleanups, { reviewers: [], buildReviewers });
+  const h = await startPanelHarness({ reviewers: [], buildReviewers });
   const historicalHook = seedHistoricalRepo(h);
 
   assert.equal((await h.deliverViaHook("sha-1", historicalHook)).status, 200);
@@ -702,7 +699,7 @@ test("空库、没配模型组合时投递留下一条失败的 Review Run,原�
 test("组合里有撞名的自定义 provider 时,那一个模型的失败原因写明是名字冲突", async () => {
   const collided = { provider: "openrouter", model: "corp-qwen3-max" };
   const fine = { provider: "corp-gateway", model: "corp-glm-5" };
-  const h = await startPanelHarness(cleanups, {
+  const h = await startPanelHarness({
     reviewers: [collided, fine],
     buildReviewers,
   });
@@ -756,7 +753,7 @@ test("组合里有撞名的自定义 provider 时,那一个模型的失败原因
 });
 
 test("思考档位随模型组合与仓库覆盖一起读写,取值不认得或模型不支持时整组拒收", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedAvailableModelService(h, "test", ["global-model", "second-model"], { reasoning: true });
   // adaptive 模型:`thinkingLevelMap.off` 为 null 即它关不掉思考,「关闭」不是它的一档。
   seedAvailableModelService(h, "always", ["adaptive-model"], {
@@ -833,7 +830,7 @@ test("思考档位随模型组合与仓库覆盖一起读写,取值不认得或�
 });
 
 test("辅助模型随整页读写:不可用模型与它不支持的档位被拒,整份一项都不写", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedAvailableModelService(h, "test", ["global-model"]);
   seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
 

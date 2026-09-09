@@ -5,21 +5,17 @@
  * 打在面板 API 的 HTTP 缝上:两种来源各取一次详情,只看响应里的分组、顺序与字段。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
+import { seedRun as seedRunRow } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   seedHistoricalRepo,
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 type StageRunEntry = {
   runId: number;
@@ -70,34 +66,18 @@ function seedRun(
   findings: { fingerprint: string; disposition?: "unknown" | "resolved" | "fixed" }[] = [],
 ): number {
   const store = openStore(dbPath);
-  const runId = store.startRun({
-    owner: meta.owner,
-    repo: meta.repo,
-    pullNumber: meta.pullNumber,
-    headSha: meta.headSha,
-    ...(meta.title === undefined ? {} : { title: meta.title }),
-    ...(meta.rangeReviewId === undefined ? {} : { rangeReviewId: meta.rangeReviewId }),
-    startedAt: meta.startedAt,
-    changedFiles: 1,
-    changedLines: 1,
-    batchCount: 1,
-    reviewerPins: [],
-  });
-  store.finishRun(runId, {
-    finishedAt: meta.startedAt,
-    durationMs: 1,
-    failed: false,
-    outcomes: [
-      {
-        model: "model-a",
-        findingCount: findings.length,
-        anomalyCount: 0,
-        rejectedToolCalls: 0,
-        anchorRejections: 0,
-        durationMs: 1,
-      },
-    ],
-    findings: findings.map((finding, index) => ({
+  const runId = seedRunRow(
+    store,
+    {
+      owner: meta.owner,
+      repo: meta.repo,
+      pullNumber: meta.pullNumber,
+      headSha: meta.headSha,
+      ...(meta.title === undefined ? {} : { title: meta.title }),
+      ...(meta.rangeReviewId === undefined ? {} : { rangeReviewId: meta.rangeReviewId }),
+      startedAt: meta.startedAt,
+    },
+    findings.map((finding, index) => ({
       file: "src/a.ts",
       line: 5,
       title: "示例",
@@ -121,8 +101,17 @@ function seedRun(
       placement: "inline" as never,
       fingerprint: finding.fingerprint,
     })),
-    verdicts: [],
-  });
+    [
+      {
+        model: "model-a",
+        findingCount: findings.length,
+        anomalyCount: 0,
+        rejectedToolCalls: 0,
+        anchorRejections: 0,
+        durationMs: 1,
+      },
+    ],
+  );
   store.close();
   return runId;
 }
@@ -134,7 +123,7 @@ async function detail(h: PanelHarness, stageId: string): Promise<StageDetailBody
 }
 
 test("阶段详情:pull request 阶段按 head commit 分组,最近一次推进在最前", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const first = seedRun(
     h.db.path,
     {
@@ -213,7 +202,7 @@ test("阶段详情:pull request 阶段按 head commit 分组,最近一次推进�
 });
 
 test("阶段详情:范围审查阶段按比较项分组,带推进的人与时刻,没跑过的比较项也在", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const store = openStore(h.db.path);
   const rangeReviewId = store.createRangeReview({
     repoId: GITEA_REPO.id,
@@ -293,7 +282,7 @@ test("阶段详情:范围审查阶段按比较项分组,带推进的人与时刻
 });
 
 test("阶段详情:标识认不出或阶段不存在都是 404", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedRun(h.db.path, {
     owner: "acme",
     repo: "widgets",
@@ -310,7 +299,7 @@ test("阶段详情:标识认不出或阶段不存在都是 404", async () => {
 });
 
 test("阶段详情:未认证 401,一格权限都没有的人分到仓库就读得到", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedRun(h.db.path, {
     owner: "acme",
     repo: "widgets",

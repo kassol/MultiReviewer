@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
@@ -18,11 +18,6 @@ import {
   type PanelHarness,
 } from "./support/panel-harness.ts";
 import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 const PASSWORD = "run-diff-test-password";
 const HASH = await hashPassword(PASSWORD);
@@ -40,7 +35,7 @@ type DiffPatch = { path: string; patch: string };
 
 /** 一个已注册仓库,跑完一轮 PR 触发的 Review Run。 */
 async function harnessWithRun(): Promise<PanelHarness> {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
@@ -128,7 +123,7 @@ test("diff API:head 已不在本地副本里时 409 说明原因,不是 500", as
 });
 
 test("diff API:范围审查的一轮按阶段基准取范围", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,

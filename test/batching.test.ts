@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type {
   Finding,
@@ -19,7 +19,8 @@ import {
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
 import type { FileTree } from "./support/git-fixture.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
+import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
+import { query, setup as setupRepo } from "./support/batch-run.ts";
 import {
   memoryForge,
   readingReviewer,
@@ -43,42 +44,18 @@ function trees(sizes: Record<string, number>): { base: FileTree; head: FileTree 
   return { base, head };
 }
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 function setup(sizes: Record<string, number>) {
   const { base, head } = trees(sizes);
-  const repo = makeRepo({ base, head });
-  const cache = makeCacheDir();
-  const db = makeDbPath();
-  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
-
   // 内存 Forge 直接返回这个数组,改它即改下一轮的变更文件清单。
   const changedFiles = Object.keys(sizes).map((path) => ({ path, status: "modified" as const }));
-  const forge = memoryForge({
-    pullRequest: {
-      number: 7,
-      title: "示例 PR",
-      draft: false,
-      baseSha: repo.baseSha,
-      headSha: repo.headSha,
-      cloneUrl: repo.dir,
-    },
+  const { repo, cache, db, forge } = setupRepo(cleanups, {
+    tree: { base, head },
     changedFiles,
   });
 
   return { repo, cache, db, forge, head, changedFiles };
-}
-
-function query(dbPath: string, sql: string): Record<string, unknown>[] {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
-  try {
-    return db.prepare(sql).all() as unknown as Record<string, unknown>[];
-  } finally {
-    db.close();
-  }
 }
 
 type BatchScript = {

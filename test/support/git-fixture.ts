@@ -2,8 +2,66 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { after } from "node:test";
 
-import { openStore } from "../../src/review/store.ts";
+import {
+  openStore,
+  type FindingRecord,
+  type OutcomeRecord,
+  type RunMeta,
+  type Store,
+  type VerdictRecord,
+} from "../../src/review/store.ts";
+
+/**
+ * 本测试文件共用的清理队列。每个测试文件是一个独立进程,所以这份模块级的队列就是
+ * 「本文件」的队列;`after` 钩子在模块加载时接好,整份队列在文件跑完时一次清完。
+ *
+ * 钩子必须挂在模块顶层:`after` 在某个用例体内调用会挂到那个用例上,清理就提前到
+ * 单个用例结束时执行,而后台任务(工作副本准备等)还在写缓存目录与临时库。
+ */
+const fileCleanups: (() => void)[] = [];
+after(() => {
+  for (const cleanup of fileCleanups) cleanup();
+});
+
+/**
+ * 取本测试文件共用的清理队列——调用方只管往返回的数组里 `push` 清理函数,不用各自
+ * 重复声明数组与收尾循环。多次调用拿到的是同一份队列。
+ */
+export function testCleanups(): (() => void)[] {
+  return fileCleanups;
+}
+
+/**
+ * 播种一轮 Review Run 的落库骨架:开跑定死「一批、一个文件、一行改动」的规模,
+ * 收尾定死耗时与未失败。findings/outcomes/verdicts 已经是落库形状,拼装它们是
+ * 各测试自己的事——这里只收拢 `startRun` 加 `finishRun` 那道手续。
+ */
+export function seedRun(
+  store: Store,
+  meta: Omit<RunMeta, "changedFiles" | "changedLines" | "batchCount" | "reviewerPins">,
+  findings: readonly FindingRecord[],
+  outcomes: readonly OutcomeRecord[] = [],
+  verdicts: readonly VerdictRecord[] = [],
+): number {
+  const runId = store.startRun({
+    ...meta,
+    changedFiles: 1,
+    changedLines: 1,
+    batchCount: 1,
+    reviewerPins: [],
+  });
+  store.finishRun(runId, {
+    finishedAt: meta.startedAt,
+    durationMs: 1,
+    failed: false,
+    outcomes,
+    findings,
+    verdicts,
+  });
+  return runId;
+}
 
 /** 一次提交要写的文件。值为 `null` 是删掉这个文件:重命名就是旧路径 `null` 加新路径的内容。 */
 export type FileTree = Record<string, string | null>;

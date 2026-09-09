@@ -8,12 +8,12 @@
  */
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { openStore } from "../src/review/store.ts";
 import type { RuleAgent, RuleAgentItem, RuleAgentRequest } from "../src/reviewer/rule-agent.ts";
-import { confirmEmptyRuleSet, makeDbPath } from "./support/git-fixture.ts";
-import { scriptedReviewer } from "./support/memory-forge.ts";
+import { confirmEmptyRuleSet, makeDbPath, testCleanups } from "./support/git-fixture.ts";
+import { scriptedReviewer, scriptedRuleAgent as scriptedRuleAgentRow } from "./support/memory-forge.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
@@ -21,10 +21,7 @@ import {
   type PanelHarness,
 } from "./support/panel-harness.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 const INTENT = "api 目录下的处理器都要先做入参校验";
 
@@ -76,19 +73,7 @@ function scriptedRuleAgent(
   produce: () => { items: RuleAgentItem[]; failure?: string },
   narrate?: string,
 ): RuleAgent & { calls: RuleAgentRequest[] } {
-  const calls: RuleAgentRequest[] = [];
-  const agent = async (request: RuleAgentRequest) => {
-    calls.push(request);
-    if (narrate !== undefined) {
-      request.onEvent?.({ kind: "assistant_message", text: narrate });
-    }
-    const result = produce();
-    // 真实实现每提一条就发一条事件(`runRuleAgentChild`),脚本化的照做:轨迹上那几条
-    // `rule_proposed` 是被测行为的一部分。
-    for (const item of result.items) request.onEvent?.({ kind: "rule_proposed", item });
-    return result;
-  };
-  return Object.assign(agent, { calls });
+  return scriptedRuleAgentRow(produce, { emitEvents: true, ...(narrate === undefined ? {} : { narrate }) });
 }
 
 /** 一个已注册的仓库。`confirmed` 为 true 即知识集已确认(空集)。 */
@@ -96,7 +81,7 @@ async function harnessWithRepo(
   ruleAgent: RuleAgent,
   confirmed = true,
 ): Promise<PanelHarness> {
-  const h = await startReadyPanelHarness(cleanups, { ruleAgent });
+  const h = await startReadyPanelHarness({ ruleAgent });
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
@@ -323,7 +308,7 @@ test("知识集未确认:产出追加进草案,原有草案条目留着", async 
 test("未确认仓库上的处置反哺:产出排进提案队列,草案一字不动", async () => {
   let items: RuleAgentItem[] = [];
   const agent = scriptedRuleAgent(() => ({ items }));
-  const h = await startReadyPanelHarness(cleanups, {
+  const h = await startReadyPanelHarness({
     ruleAgent: agent,
     buildReviewers: (plans) =>
       plans.map((plan) =>

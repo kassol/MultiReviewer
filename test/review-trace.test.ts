@@ -5,13 +5,14 @@
  * 事件,内存 Forge 跑一轮,断言库里落了哪些行。不断言子进程内部的订阅细节。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { ReviewerEvent } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
-import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
+import { testCleanups } from "./support/git-fixture.ts";
+import { setup as setupRepo } from "./support/batch-run.ts";
+import { scriptedReviewer } from "./support/memory-forge.ts";
 
 const BASE = `export function sub(a, b) {
   return a - b;
@@ -23,31 +24,16 @@ export function mul(a, b) {
 `;
 const HEAD = BASE.replace("return a - b;", "return a - b - 1;");
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 const EVENT = { owner: "acme", repo: "widgets", number: 1 };
 
 function setup() {
-  const repo = makeRepo({ base: { "src/m.js": BASE }, head: { "src/m.js": HEAD } });
-  const cache = makeCacheDir();
-  const db = makeDbPath();
-  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
-
-  const forge = memoryForge({
-    pullRequest: {
-      number: 1,
-      title: "示例 PR",
-      draft: false,
-      baseSha: repo.baseSha,
-      headSha: repo.headSha,
-      cloneUrl: repo.dir,
-    },
+  return setupRepo(cleanups, {
+    tree: { base: { "src/m.js": BASE }, head: { "src/m.js": HEAD } },
+    pullNumber: EVENT.number,
     changedFiles: [{ path: "src/m.js", status: "modified" }],
   });
-  return { repo, cache, db, forge };
 }
 
 const AT_LINE_2 = {

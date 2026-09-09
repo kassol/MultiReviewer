@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
 import type { PanelPermission } from "../src/panel/permissions.ts";
@@ -15,34 +15,18 @@ import {
   GITEA_REPO,
   PANEL_ADMIN_USERNAME,
   HARNESS_PR as PR,
+  seedRepo,
   startReadyPanelHarness,
+  userCookie as userCookieRow,
   type PanelHarness,
 } from "./support/panel-harness.ts";
-import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+import { confirmEmptyRuleSet, seedRun as seedRunRow } from "./support/git-fixture.ts";
 
 const PASSWORD = "user-repos-test-password";
 
 type UserRow = { username: string; repoIds: number[] };
 
 /** 直接落一行注册表:这几条用例要的是仓库存在,不是它的 hook。 */
-function seedRepo(h: PanelHarness, repoId: number, owner: string, repo: string): number {
-  const store = openStore(h.db.path);
-  try {
-    assert.equal(
-      store.registerRepo({ repoId, owner, repo, generation: 1, key: `key-${repoId}` }),
-      true,
-    );
-  } finally {
-    store.close();
-  }
-  return repoId;
-}
-
 async function createUser(
   h: PanelHarness,
   username: string,
@@ -68,18 +52,12 @@ async function assignedRepoIds(h: PanelHarness, username: string): Promise<numbe
   return user.repoIds;
 }
 
-async function userCookie(h: PanelHarness, username: string): Promise<string> {
-  const response = await fetch(`${h.serverUrl}/api/session`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username, password: PASSWORD }),
-  });
-  assert.equal(response.status, 204);
-  return response.headers.getSetCookie()[0]!.split(";", 1)[0]!;
+function userCookie(h: PanelHarness, username: string): Promise<string> {
+  return userCookieRow(h.serverUrl, username, PASSWORD);
 }
 
 test("创建用户带 repoIds 后列表回显同一集合", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const beta = seedRepo(h, 102, "acme", "beta");
 
@@ -92,7 +70,7 @@ test("创建用户带 repoIds 后列表回显同一集合", async () => {
 });
 
 test("更新用户不带 repoIds 时集合不变,带空数组时清空", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const beta = seedRepo(h, 102, "acme", "beta");
   await createUser(h, "reviewer", [alpha, beta]);
@@ -110,7 +88,7 @@ test("更新用户不带 repoIds 时集合不变,带空数组时清空", async (
 });
 
 test("repoIds 形状不对时创建与更新都回 400", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   await createUser(h, "reviewer");
 
   const created = await h.api("POST", "/users", {
@@ -131,7 +109,7 @@ test("repoIds 形状不对时创建与更新都回 400", async () => {
 });
 
 test("会话带上仓库分配:普通用户是自己的集合,系统管理员是 null", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   const alpha = seedRepo(h, 101, "acme", "alpha");
   seedRepo(h, 102, "acme", "beta");
   await createUser(h, "reviewer", [alpha]);
@@ -147,7 +125,7 @@ test("会话带上仓库分配:普通用户是自己的集合,系统管理员是
 });
 
 test("删除用户与移除仓库都不留分配行", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   const alpha = seedRepo(h, 101, "acme", "alpha");
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   await createUser(h, "reviewer", [alpha, GITEA_REPO.id]);
@@ -180,22 +158,36 @@ function seedRun(
 ): number {
   const model = meta.model ?? "model-a";
   const store = openStore(h.db.path);
-  const runId = store.startRun({
-    owner: meta.owner,
-    repo: meta.repo,
-    pullNumber: meta.pullNumber,
-    headSha: `sha-${meta.owner}-${meta.repo}-${meta.pullNumber}`,
-    startedAt: meta.startedAt,
-    changedFiles: 1,
-    changedLines: 1,
-    batchCount: 1,
-    reviewerPins: [],
-  });
-  store.finishRun(runId, {
-    finishedAt: meta.startedAt,
-    durationMs: 1,
-    failed: false,
-    outcomes: [
+  const runId = seedRunRow(
+    store,
+    {
+      owner: meta.owner,
+      repo: meta.repo,
+      pullNumber: meta.pullNumber,
+      headSha: `sha-${meta.owner}-${meta.repo}-${meta.pullNumber}`,
+      startedAt: meta.startedAt,
+    },
+    [
+      {
+        file: "src/a.ts",
+        line: 5,
+        title: "示例",
+        severity: "P1",
+        category: "bug",
+        description: "示例",
+        impact: "",
+        suggestion: "",
+        attributions: [
+          { model, severity: "P1", category: "bug", description: "示例", impact: "", suggestion: "" },
+        ],
+        groupIndex: 0,
+        disposition: "resolved",
+        placement: "inline",
+        commentId: `comment-${meta.owner}-${meta.repo}-${meta.pullNumber}`,
+        fingerprint: `fp-${meta.repo}-${meta.pullNumber}`,
+      },
+    ],
+    [
       {
         model,
         findingCount: 1,
@@ -216,28 +208,7 @@ function seedRun(
             }),
       },
     ],
-    findings: [
-      {
-        file: "src/a.ts",
-        line: 5,
-        title: "示例",
-        severity: "P1",
-        category: "bug",
-        description: "示例",
-        impact: "",
-        suggestion: "",
-        attributions: [
-          { model, severity: "P1", category: "bug", description: "示例", impact: "", suggestion: "" },
-        ],
-        groupIndex: 0,
-        disposition: "resolved",
-        placement: "inline",
-        commentId: `comment-${meta.owner}-${meta.repo}-${meta.pullNumber}`,
-        fingerprint: `fp-${meta.repo}-${meta.pullNumber}`,
-      },
-    ],
-    verdicts: [],
-  });
+  );
   store.close();
   return runId;
 }
@@ -327,7 +298,7 @@ async function twoRepoHarness(): Promise<{
   beta: number;
   cookie: string;
 }> {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const beta = seedRepo(h, 102, "acme", "beta");
   seedRun(h, { owner: "acme", repo: "alpha", pullNumber: 1, startedAt: "2026-08-10T00:00:00.000Z" });
@@ -356,7 +327,7 @@ test("普通用户的仓库、阶段与处置率只含分配到的仓库", async
 });
 
 test("模型参与条数与 token 用量与处置率矩阵同一口径,都只算分配到的仓库", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   const alpha = seedRepo(h, 101, "acme", "alpha");
   seedRepo(h, 102, "acme", "beta");
   seedRun(h, {
@@ -399,7 +370,7 @@ test("模型参与条数与 token 用量与处置率矩阵同一口径,都只算
 });
 
 test("时间流的收窄在 SQL 里做:分配外的一整页不会把自己那一行挤掉", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   const alpha = seedRepo(h, 101, "acme", "alpha");
   seedRepo(h, 102, "acme", "beta");
   // 自己的那一轮最旧,分配外的仓库在它上面压满一整页(时间流一页 30 行)。收窄要是回到
@@ -553,7 +524,7 @@ test("分配外的处置、重跑、发起、推进、完成、配置与移除�
 });
 
 test("非系统管理员注册仓库后它立刻在自己的列表里,管理员注册不写分配行", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   const cookie = await scopedUser(h, "maintainer", [], ALL_PERMISSIONS);
 
   assert.equal(
@@ -571,7 +542,7 @@ test("非系统管理员注册仓库后它立刻在自己的列表里,管理员�
 });
 
 test("webhook 投递不经过仓库分配", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   const cookie = await scopedUser(h, "maintainer", [], ALL_PERMISSIONS);
   assert.equal(
     (await post(h, cookie, "POST", "/repos", { owner: PR.owner, repo: PR.repo })).status,

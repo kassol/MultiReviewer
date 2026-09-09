@@ -6,12 +6,12 @@
  * 连流回放完就发结束信号。规则 agent 仍用脚本化实现注入,与 issue #205 / #208 同一个位置。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
-import { confirmEmptyRuleSet, makeDbPath } from "./support/git-fixture.ts";
+import { confirmEmptyRuleSet, makeDbPath, testCleanups } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
 import {
   GITEA_REPO,
@@ -21,10 +21,7 @@ import {
   type PanelHarnessOptions,
 } from "./support/panel-harness.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 const AT = "2026-08-29T00:00:00.000Z";
 const PASSWORD = "rule-trace-test-password";
@@ -143,7 +140,7 @@ test("知识轨迹的任务分号、续读与级联", () => {
 });
 
 test("一次基点探索留下一条轨迹:说的话、调的工具与提出的条目都在,知识集读得到它", async () => {
-  const h = await startReadyPanelHarness(cleanups, {
+  const h = await startReadyPanelHarness({
     ruleAgent: narratingRuleAgent([{ type: "rule", scope: "", statement: "公开函数要有类型标注" }]),
   });
   assert.equal(
@@ -202,7 +199,7 @@ test("一次处置反哺留下一条轨迹,提案回溯得到它", async () => {
   const items: RuleAgentItem[] = [
     { type: "rule", scope: "", statement: "边界上一次判掉越界" },
   ];
-  const h = await startReadyPanelHarness(cleanups, {
+  const h = await startReadyPanelHarness({
     ruleAgent: narratingRuleAgent(items),
     buildReviewers: reportingReviewers,
   });
@@ -242,7 +239,7 @@ test("一次处置反哺留下一条轨迹,提案回溯得到它", async () => {
 });
 
 test("知识轨迹的可见性与知识集读侧一致:分配外 404,别的仓库的任务也 404", async () => {
-  const h = await startReadyPanelHarness(cleanups, {
+  const h = await startReadyPanelHarness({
     ruleAgent: narratingRuleAgent([]),
   });
   assert.equal(

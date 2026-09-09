@@ -9,12 +9,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { createGitHubForge } from "../src/forge/github.ts";
 import { prepareWorktree, readRangeDiff } from "../src/git/worktree.ts";
 import { parseDiffRanges } from "../src/review/position.ts";
 import { runReview } from "../src/review/run.ts";
+import { testCleanups } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
 
 const target = process.env["MULTIREVIEWER_LIVE_PR"];
@@ -32,10 +33,7 @@ function parseTarget(value: string) {
   return { owner: match[1]!, repo: match[2]!, number: Number(match[3]) };
 }
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 test("GitHub 实现对真实 pull request 完成整条发布与处置链路", { skip }, async () => {
   const ref = parseTarget(target!);

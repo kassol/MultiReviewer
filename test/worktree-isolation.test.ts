@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import {
   pinRunCommits,
@@ -17,16 +17,13 @@ import {
   repoCachePath,
   type Worktree,
 } from "../src/git/worktree.ts";
-import { makeCacheDir, makeRepo } from "./support/git-fixture.ts";
+import { makeCacheDir, makeRepo, testCleanups } from "./support/git-fixture.ts";
 
 const REF = { owner: "acme", repo: "widgets" };
 const BASE_CALC = "export const answer = 1;\n";
 const HEAD_CALC = "export const answer = 2;\n";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 function setup() {
   const repo = makeRepo({ base: { "src/calc.ts": BASE_CALC }, head: { "src/calc.ts": HEAD_CALC } });

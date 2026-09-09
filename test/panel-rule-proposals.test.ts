@@ -10,10 +10,9 @@
  */
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
-import { hashPassword } from "../src/panel/password.ts";
 import {
   openStore,
   type ReviewRuleInput,
@@ -21,17 +20,15 @@ import {
   type RuleProposalSourceInput,
 } from "../src/review/store.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
-import { makeDbPath } from "./support/git-fixture.ts";
+import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
+  scopedUser as scopedUserRow,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 const PASSWORD = "proposal-test-password";
 const AT = "2026-08-29T00:00:00.000Z";
@@ -129,49 +126,13 @@ function columnNames(dbPath: string): string[] {
   }
 }
 
-async function scopedUser(
+function scopedUser(
   h: PanelHarness,
   username: string,
   repoIds: readonly number[],
   permissions: readonly PanelPermission[] = [],
 ): Promise<string> {
-  const store = openStore(h.db.path);
-  try {
-    store.createPanelUser({
-      username,
-      displayName: null,
-      passwordHash: await hashPassword(PASSWORD),
-      mustChangePassword: false,
-      createdAt: AT,
-      isSystemAdmin: false,
-      roleId: null,
-    });
-    store.setPanelUserAssignment(username, repoIds);
-    if (permissions.length > 0) {
-      const role = store.createPanelRole({
-        name: `role-${username}`,
-        permissions: [...permissions],
-        createdAt: AT,
-      });
-      assert.equal(
-        store.updatePanelUser(username, {
-          displayName: null,
-          roleId: role.id,
-          isSystemAdmin: false,
-        }),
-        "updated",
-      );
-    }
-  } finally {
-    store.close();
-  }
-  const response = await fetch(`${h.serverUrl}/api/session`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username, password: PASSWORD }),
-  });
-  assert.equal(response.status, 204);
-  return response.headers.getSetCookie()[0]!.split(";", 1)[0]!;
+  return scopedUserRow(h, username, PASSWORD, AT, repoIds, permissions);
 }
 
 function get(h: PanelHarness, cookie: string, path: string): Promise<Response> {
@@ -226,7 +187,7 @@ async function confirmedHarness(items: RuleAgentItem[]): Promise<{
     state.calls += 1;
     return { items };
   };
-  const h = await startReadyPanelHarness(cleanups, { ruleAgent: agent });
+  const h = await startReadyPanelHarness({ ruleAgent: agent });
   assert.equal(
     (await h.api("POST", "/repos", { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo })).status,
     201,
@@ -700,7 +661,7 @@ test("没有 knowledge:write 的人裁决不了,但读得到提案队列", async
 test("已确认的空知识集重探索:产出仍进提案队列,不回到草案", async () => {
   const items: RuleAgentItem[] = [];
   const agent: RuleAgent = async () => ({ items });
-  const h = await startReadyPanelHarness(cleanups, { ruleAgent: agent });
+  const h = await startReadyPanelHarness({ ruleAgent: agent });
   assert.equal(
     (await h.api("POST", "/repos", { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo })).status,
     201,

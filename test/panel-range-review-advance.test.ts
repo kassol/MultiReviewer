@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { ChangedFile, Forge } from "../src/forge/forge.ts";
 import { hashPassword } from "../src/panel/password.ts";
@@ -17,16 +17,12 @@ import {
   GITEA_REPO,
   HARNESS_PR,
   PANEL_ADMIN_USERNAME,
+  startRangeReview as startRangeReviewRow,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
 import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 const PASSWORD = "range-advance-test-password";
 const HASH = await hashPassword(PASSWORD);
@@ -58,10 +54,10 @@ const REPORTED_FINDINGS: Parameters<typeof scriptedReviewer>[1] = [
 
 async function startedHarness(
   recorded: Recorded,
-  options: Parameters<typeof startReadyPanelHarness>[1] = {},
+  options: Parameters<typeof startReadyPanelHarness>[0] = {},
   findings: Parameters<typeof scriptedReviewer>[1] = [],
 ): Promise<PanelHarness> {
-  const harness = await startReadyPanelHarness(cleanups, {
+  const harness = await startReadyPanelHarness({
     ...options,
     buildReviewers: (plans) =>
       plans.map((plan) => {
@@ -102,13 +98,13 @@ function modes(h: PanelHarness, rangeReviewId: number): string[] {
 }
 
 /** 发起一个范围审查并等第一轮跑完。 */
-async function startRangeReview(
+function startRangeReview(
   h: PanelHarness,
   base: string,
   comparison: string,
   comparisonSource?: RangeReview["comparisonSource"],
 ): Promise<RangeReview> {
-  const response = await h.api("POST", "/range-reviews", {
+  return startRangeReviewRow<RangeReview>(h, {
     title: "范围审查标题",
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
@@ -116,10 +112,6 @@ async function startRangeReview(
     comparison,
     ...(comparisonSource === null || comparisonSource === undefined ? {} : { comparisonSource }),
   });
-  assert.equal(response.status, 202);
-  const { rangeReview } = (await response.json()) as { rangeReview: RangeReview };
-  await h.settledAtLeast(1);
-  return rangeReview;
 }
 
 test("增量评审:head 分支指向新 commit,新一轮归属同一范围审查且范围是 base..新比较项", async () => {
@@ -585,7 +577,7 @@ test("未处置历史全落在这次没改到的文件上:只复核推进 409,�
  * 上出现;推进的准入读的是本地副本,这份只喂给执行阶段。
  */
 function replaceableChangedFiles(): {
-  options: Parameters<typeof startReadyPanelHarness>[1];
+  options: Parameters<typeof startReadyPanelHarness>[0];
   replace(files: ChangedFile[]): void;
 } {
   let replaced: ChangedFile[] | undefined;

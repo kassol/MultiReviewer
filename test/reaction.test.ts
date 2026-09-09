@@ -5,22 +5,19 @@
  * 不发任何 review,没有它 PR 上一点痕迹都没有。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { Forge } from "../src/forge/forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
+import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
 
 const EVENT = { owner: "acme", repo: "widgets", number: 7 };
 const BASE = "export const answer = 1;\n";
 const HEAD = "export const answer = 2;\n";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 function harness() {
   const repo = makeRepo({ base: { "src/a.ts": BASE }, head: { "src/a.ts": HEAD } });

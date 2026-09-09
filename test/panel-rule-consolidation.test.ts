@@ -8,37 +8,28 @@
  */
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
-import { hashPassword } from "../src/panel/password.ts";
 import {
   openStore,
   type ReviewRuleInput,
   type RuleProposalInput,
   type RuleProposalSourceInput,
 } from "../src/review/store.ts";
-import type {
-  ConsolidationProposal,
-  RuleAgent,
-  RuleAgentItem,
-  RuleAgentRequest,
-  RuleConsolidationAction,
-} from "../src/reviewer/rule-agent.ts";
-import { confirmEmptyRuleSet, makeDbPath } from "./support/git-fixture.ts";
-import { scriptedReviewer } from "./support/memory-forge.ts";
+import type { ConsolidationProposal, RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
+import { confirmEmptyRuleSet, makeDbPath, testCleanups } from "./support/git-fixture.ts";
+import { scriptedReviewer, scriptedRuleAgent } from "./support/memory-forge.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
+  scopedUser as scopedUserRow,
   seedAvailableModelService,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 const PASSWORD = "consolidation-test-password";
 const AT = "2026-09-08T00:00:00.000Z";
@@ -101,49 +92,13 @@ function proposal(overrides: Partial<RuleProposalInput> = {}): RuleProposalInput
   };
 }
 
-async function scopedUser(
+function scopedUser(
   h: PanelHarness,
   username: string,
   repoIds: readonly number[],
   permissions: readonly PanelPermission[] = [],
 ): Promise<string> {
-  const store = openStore(h.db.path);
-  try {
-    store.createPanelUser({
-      username,
-      displayName: null,
-      passwordHash: await hashPassword(PASSWORD),
-      mustChangePassword: false,
-      createdAt: AT,
-      isSystemAdmin: false,
-      roleId: null,
-    });
-    store.setPanelUserAssignment(username, repoIds);
-    if (permissions.length > 0) {
-      const role = store.createPanelRole({
-        name: `role-${username}`,
-        permissions: [...permissions],
-        createdAt: AT,
-      });
-      assert.equal(
-        store.updatePanelUser(username, {
-          displayName: null,
-          roleId: role.id,
-          isSystemAdmin: false,
-        }),
-        "updated",
-      );
-    }
-  } finally {
-    store.close();
-  }
-  const response = await fetch(`${h.serverUrl}/api/session`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username, password: PASSWORD }),
-  });
-  assert.equal(response.status, 204);
-  return response.headers.getSetCookie()[0]!.split(";", 1)[0]!;
+  return scopedUserRow(h, username, PASSWORD, AT, repoIds, permissions);
 }
 
 function get(h: PanelHarness, cookie: string, path: string): Promise<Response> {
@@ -170,25 +125,6 @@ async function ruleSet(h: PanelHarness, cookie: string): Promise<RuleSetResponse
   return (await response.json()) as RuleSetResponse;
 }
 
-/** 脚本化整理 agent 的一次产出:对队列的直改、对现集提出的条目,或一次失败。 */
-type ScriptedResult = {
-  actions?: RuleConsolidationAction[];
-  items?: RuleAgentItem[];
-  failure?: string;
-};
-
-/** 脚本化整理 agent:记下每次收到的任务,产出由回调给出(提案标识建库之后才知道)。 */
-function scriptedRuleAgent(
-  produce: () => ScriptedResult | Promise<ScriptedResult>,
-): RuleAgent & { calls: RuleAgentRequest[] } {
-  const calls: RuleAgentRequest[] = [];
-  const agent = async (request: RuleAgentRequest) => {
-    calls.push(request);
-    return { items: [], ...(await produce()) };
-  };
-  return Object.assign(agent, { calls });
-}
-
 /** 已注册、已确认一条生效条目的仓库,外加一个有 `knowledge:write` 的人。 */
 /**
  * 落几条生效条目。写入口只剩裁决与草案确认(issue #299),用例要的现集条目因此直接落库。
@@ -207,7 +143,7 @@ function seedActiveEntries(h: PanelHarness, entries: readonly ReviewRuleInput[])
 async function consolidatingHarness(
   agent: RuleAgent,
 ): Promise<{ h: PanelHarness; cookie: string }> {
-  const h = await startReadyPanelHarness(cleanups, { ruleAgent: agent });
+  const h = await startReadyPanelHarness({ ruleAgent: agent });
   assert.equal(
     (await h.api("POST", "/repos", { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo })).status,
     201,
@@ -239,7 +175,7 @@ async function inlineFindings(h: PanelHarness): Promise<RunFinding[]> {
 async function consolidatingHarnessWithFindings(
   agent: RuleAgent,
 ): Promise<{ h: PanelHarness; cookie: string }> {
-  const h = await startReadyPanelHarness(cleanups, {
+  const h = await startReadyPanelHarness({
     ruleAgent: agent,
     buildReviewers: (plans) =>
       plans.map((plan) =>
@@ -891,7 +827,7 @@ test("整理产出超过 100 字的陈述:合并直改跳过、提案丢弃,两�
 
 test("空队列且现集为空时整理不跑 agent,摘要是三个零", async () => {
   const agent = scriptedRuleAgent(() => ({ actions: [] }));
-  const h = await startReadyPanelHarness(cleanups, { ruleAgent: agent });
+  const h = await startReadyPanelHarness({ ruleAgent: agent });
   assert.equal(
     (await h.api("POST", "/repos", { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo })).status,
     201,

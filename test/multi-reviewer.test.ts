@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { buildReviewers } from "../src/config.ts";
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
+import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
+import { setup as setupRepo } from "./support/batch-run.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
 
 const BASE = `export function sub(a, b) {
@@ -30,26 +31,12 @@ const HEAD = BASE.replace("return a - b;", "return a - b - 1;").replace(
   "return a % b + 0;",
 );
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 function setup() {
-  const repo = makeRepo({ base: { "src/m.js": BASE }, head: { "src/m.js": HEAD } });
-  const cache = makeCacheDir();
-  const db = makeDbPath();
-  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
-
-  const forge = memoryForge({
-    pullRequest: {
-      number: 1,
-      title: "示例 PR",
-      draft: false,
-      baseSha: repo.baseSha,
-      headSha: repo.headSha,
-      cloneUrl: repo.dir,
-    },
+  const { cache, db, forge } = setupRepo(cleanups, {
+    tree: { base: { "src/m.js": BASE }, head: { "src/m.js": HEAD } },
+    pullNumber: 1,
     changedFiles: [{ path: "src/m.js", status: "modified" }],
   });
 

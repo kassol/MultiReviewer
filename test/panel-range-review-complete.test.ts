@@ -6,25 +6,20 @@
  * 断言:已 resolve 的同步过来,其余 unknown 进分母。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { Forge, PullRequestRef } from "../src/forge/forge.ts";
 import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
-  HARNESS_PR,
   PANEL_ADMIN_USERNAME,
+  startRangeReview as startRangeReviewRow,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
 import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 const PASSWORD = "range-complete-test-password";
 const HASH = await hashPassword(PASSWORD);
@@ -44,7 +39,7 @@ type RangeReview = {
 
 /** 两条 Finding 落在两个文件上,合并不到一起,回填因此分得出「同步过来」与「仍 unknown」。 */
 const reportingReviewers: NonNullable<
-  Parameters<typeof startReadyPanelHarness>[1]
+  Parameters<typeof startReadyPanelHarness>[0]
 >["buildReviewers"] = (plans) =>
   plans.map((plan) =>
     scriptedReviewer(plan.spec.model, [
@@ -66,32 +61,17 @@ const reportingReviewers: NonNullable<
   );
 
 async function registeredHarness(
-  options: Parameters<typeof startReadyPanelHarness>[1] = {},
+  options: Parameters<typeof startReadyPanelHarness>[0] = {},
 ): Promise<PanelHarness> {
-  const harness = await startReadyPanelHarness(cleanups, options);
-  assert.equal(
-    (await harness.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
-      .status,
-    201,
-  );
+  const harness = await startReadyPanelHarness({ ...options, registerRepo: true });
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
   confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   return harness;
 }
 
 /** 发起一个范围审查并等第一轮跑完。 */
-async function startRangeReview(h: PanelHarness): Promise<RangeReview> {
-  const response = await h.api("POST", "/range-reviews", {
-    title: "范围审查标题",
-    owner: HARNESS_PR.owner,
-    repo: HARNESS_PR.repo,
-    base: h.repo.baseSha,
-    comparison: h.repo.headSha,
-  });
-  assert.equal(response.status, 202);
-  const { rangeReview } = (await response.json()) as { rangeReview: RangeReview };
-  await h.settledAtLeast(1);
-  return rangeReview;
+function startRangeReview(h: PanelHarness): Promise<RangeReview> {
+  return startRangeReviewRow<RangeReview>(h);
 }
 
 test("审查完成:容器 PR 关闭、两条分支删除,记录进入终态", async () => {

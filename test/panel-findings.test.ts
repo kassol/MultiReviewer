@@ -6,7 +6,7 @@
  * 断言只看外部可观察的行为。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
@@ -20,11 +20,6 @@ import {
 } from "./support/panel-harness.ts";
 import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 const PASSWORD = "finding-dispose-test-password";
 const HASH = await hashPassword(PASSWORD);
@@ -58,7 +53,7 @@ type RunRow = {
  * Finding 都有行级评论承载(issue #224),没有载体的那一档只可能是升级前的历史行。
  */
 const reportingReviewers: NonNullable<
-  NonNullable<Parameters<typeof startReadyPanelHarness>[1]>["buildReviewers"]
+  NonNullable<Parameters<typeof startReadyPanelHarness>[0]>["buildReviewers"]
 > = (plans) =>
   plans.map((plan) =>
     scriptedReviewer(plan.spec.model, [
@@ -126,7 +121,7 @@ function seedBodyFinding(dbPath: string): number {
 
 /** 一个已注册仓库,跑完一轮,并把三条 Finding 落库。 */
 async function harnessWithRun(): Promise<PanelHarness> {
-  const h = await startReadyPanelHarness(cleanups, { buildReviewers: reportingReviewers });
+  const h = await startReadyPanelHarness({ buildReviewers: reportingReviewers });
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,

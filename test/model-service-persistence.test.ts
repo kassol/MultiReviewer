@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { reviewerPin, type ReviewerRuntimePlan } from "../src/config.ts";
 import {
@@ -8,12 +8,9 @@ import {
   openStore,
   type ModelServiceVersionCommit,
 } from "../src/review/store.ts";
-import { makeDbPath } from "./support/git-fixture.ts";
+import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 function availableService(
   provider: string,

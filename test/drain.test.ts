@@ -9,19 +9,17 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { createDrain } from "../src/drain.ts";
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
 import { EVENT, FILES, batchReviewer, query, setup } from "./support/batch-run.ts";
+import { testCleanups } from "./support/git-fixture.ts";
 import { LISTENING, spawnMain } from "./support/main-process.ts";
 import { HARNESS_PR, startPanelHarness } from "./support/panel-harness.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 test("排空开始后不再取新批:当前批次落库,这一轮不收尾,轨迹记下中止在第几批", async () => {
   const fixture = setup(cleanups);
@@ -114,7 +112,7 @@ test("没有在跑的轮次时排空立即结束;有跑不完的轮次时到上�
 
 test("服务正在排空:面板重跑回 503,不开新一轮", async () => {
   const drain = createDrain();
-  const h = await startPanelHarness(cleanups, { drain });
+  const h = await startPanelHarness({ drain });
 
   drain.begin();
   const response = await h.api("POST", "/rerun", {

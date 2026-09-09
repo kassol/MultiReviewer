@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { Reviewer, ReviewerUsage } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
-import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
+import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
+import { query, setup as setupRepo } from "./support/batch-run.ts";
+import { scriptedReviewer } from "./support/memory-forge.ts";
 
 const BASE = `export function add(a, b) {
   return a + b;
@@ -24,43 +25,18 @@ export function mul(a, b) {
 
 const HEAD = BASE.replace("return a - b;", "return a - b - 1;");
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 const EVENT = { owner: "acme", repo: "widgets", number: 7 };
 
 function setup(head: string = HEAD) {
-  const repo = makeRepo({ base: { "src/calc.js": BASE }, head: { "src/calc.js": head } });
-  const cache = makeCacheDir();
-  const db = makeDbPath();
-  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
-
-  const forge = memoryForge({
-    pullRequest: {
-      number: 7,
-      title: "示例 PR",
-      draft: false,
-      baseSha: repo.baseSha,
-      headSha: repo.headSha,
-      cloneUrl: repo.dir,
-    },
+  return setupRepo(cleanups, {
+    tree: { base: { "src/calc.js": BASE }, head: { "src/calc.js": head } },
+    pullNumber: EVENT.number,
     changedFiles: [{ path: "src/calc.js", status: "modified" }],
   });
-
-  return { repo, cache, db, forge };
 }
 
-/** 只读地查一次落库结果。测试断言的是外部可观察的行,不是实现。 */
-function query(dbPath: string, sql: string): Record<string, unknown>[] {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
-  try {
-    return db.prepare(sql).all() as unknown as Record<string, unknown>[];
-  } finally {
-    db.close();
-  }
-}
 
 test("历史审查策略读回整页初始版本，整份替换推一版，陈旧版本不得覆盖", () => {
   const db = makeDbPath();

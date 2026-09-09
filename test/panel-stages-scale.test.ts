@@ -9,15 +9,10 @@
  * 汇总与一次归并扫描组成,后者仍与阶段总数成正比(见 `src/AGENTS.md`)。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { openStore } from "../src/review/store.ts";
 import { startPanelHarness, type PanelHarness } from "./support/panel-harness.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 const OWNER = "scale-owner";
 const REPO = "scale-repo";
@@ -275,7 +270,7 @@ async function fastest(request: () => Promise<unknown>): Promise<number> {
 }
 
 test("几千个阶段:列表一页与详情一次的内容照旧,耗时不随阶段总数走", async () => {
-  const large = await startPanelHarness(cleanups);
+  const large = await startPanelHarness();
   const largeProgress: Progress = { minute: 0, stageIds: [] };
   seedOtherRepoStages(large.db.path, largeProgress);
   const oldestFillerStageId = `pr:${OWNER}/${REPO}/100000`;
@@ -348,7 +343,7 @@ test("几千个阶段:列表一页与详情一次的内容照旧,耗时不随阶
   assert.ok(scoped.stages.every((stage) => stage.owner === OTHER_OWNER));
 
   // 小库:只有那三十个完整的阶段,请求的活儿与大库第一页一模一样。
-  const small = await startPanelHarness(cleanups);
+  const small = await startPanelHarness();
   const smallProgress: Progress = { minute: 0, stageIds: [] };
   seedRichStages(small.db.path, smallProgress);
   const smallFirst = await page(small, "");

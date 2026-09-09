@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { ReviewRunReviewerPin } from "../src/config.ts";
 import type { Reviewer } from "../src/review/finding.ts";
@@ -20,11 +20,9 @@ import {
   query,
   setup,
 } from "./support/batch-run.ts";
+import { testCleanups } from "./support/git-fixture.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 /** 一批一个文件、一次只跑一批:批次序号与文件一一对应,断言因此读得懂。 */
 function deps(

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { ExistingReviewComment, ReviewDraft } from "../src/forge/forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
+import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
+import { query, setup as setupRepo } from "./support/batch-run.ts";
 import {
   memoryForge,
   scriptedReviewer,
@@ -51,26 +51,11 @@ const FINDING = {
 
 const ANCHOR = /<!-- multireviewer:([0-9a-f]{64}) -->/;
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 function setup() {
-  const repo = makeRepo({ base: { "src/calc.js": BASE }, head: { "src/calc.js": HEAD } });
-  const cache = makeCacheDir();
-  const db = makeDbPath();
-  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
-
-  const forge = memoryForge({
-    pullRequest: {
-      number: 7,
-      title: "示例 PR",
-      draft: false,
-      baseSha: repo.baseSha,
-      headSha: repo.headSha,
-      cloneUrl: repo.dir,
-    },
+  const { repo, cache, db, forge } = setupRepo(cleanups, {
+    tree: { base: { "src/calc.js": BASE }, head: { "src/calc.js": HEAD } },
     changedFiles: [{ path: "src/calc.js", status: "modified" }],
   });
 
@@ -107,14 +92,6 @@ function asPublished(forge: MemoryForge, resolved: boolean): ExistingReviewComme
   return forge.publishedComments.map((comment) => ({ ...comment, resolved }));
 }
 
-function query(dbPath: string, sql: string): Record<string, unknown>[] {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
-  try {
-    return db.prepare(sql).all() as unknown as Record<string, unknown>[];
-  } finally {
-    db.close();
-  }
-}
 
 /** 落库的处置人与处置时刻,按落库顺序。 */
 function dispositionMarks(dbPath: string): { by: unknown; at: unknown }[] {

@@ -6,18 +6,16 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { ReviewerEvent, ReviewerInput } from "../src/review/finding.ts";
 import { runInChild } from "../src/reviewer/pi-reviewer.ts";
 import { runRuleAgentChild, type RuleAgentEvent } from "../src/reviewer/rule-agent.ts";
 import { runWorkerChild } from "../src/reviewer/subprocess.ts";
 import { sessionThinkingLevel } from "../src/reviewer/worker-tools.ts";
+import { testCleanups } from "./support/git-fixture.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 const CONFIG = {
   runtimeModel: {

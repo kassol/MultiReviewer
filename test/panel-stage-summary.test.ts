@@ -10,22 +10,19 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
 import type { PanelPermission } from "../src/panel/permissions.ts";
 import { openStore, type Store } from "../src/review/store.ts";
+import { seedRun as seedRunRow } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
   startPanelHarness,
+  userCookie as userCookieRow,
   type PanelHarness,
 } from "./support/panel-harness.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 const PASSWORD = "stage-summary-test-password";
 const HASH = await hashPassword(PASSWORD);
@@ -133,19 +130,10 @@ function seedRun(
   findings: SeedFinding[],
   verdicts: { model: string; findingId: number; verdict: "present" | "fixed" | "unclear"; missing?: boolean }[] = [],
 ): number {
-  const runId = store.startRun({
-    ...meta,
-    changedFiles: 1,
-    changedLines: 1,
-    batchCount: 1,
-    reviewerPins: [],
-  });
-  store.finishRun(runId, {
-    finishedAt: meta.startedAt,
-    durationMs: 1,
-    failed: false,
-    outcomes: [],
-    findings: findings.map((finding, index) => ({
+  return seedRunRow(
+    store,
+    meta,
+    findings.map((finding, index) => ({
       file: finding.file,
       line: finding.line,
       title: `标题 ${finding.fingerprint}`,
@@ -175,14 +163,14 @@ function seedRun(
       ...(finding.lineAuthor === undefined ? {} : { lineAuthor: finding.lineAuthor }),
       ...(finding.carried === undefined ? {} : { carried: finding.carried }),
     })),
-    verdicts: verdicts.map((entry) => ({
+    [],
+    verdicts.map((entry) => ({
       model: entry.model,
       findingId: entry.findingId,
       verdict: entry.verdict,
       missing: entry.missing === true,
     })),
-  });
-  return runId;
+  );
 }
 
 /** 库里那条 Finding 行的 id:按轮次与指纹认。 */
@@ -308,7 +296,7 @@ async function summaryOf(h: PanelHarness, query: string): Promise<SummaryBody> {
 }
 
 test("阶段汇总:同一条只出现一次、状态取最新一轮,已延续不在待处置,计数与列表一致", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const { rangeReviewId, runs } = seedStage(h.db.path);
 
   const body = await summaryOf(h, `rangeReviewId=${rangeReviewId}`);
@@ -350,7 +338,7 @@ test("阶段汇总:同一条只出现一次、状态取最新一轮,已延续不
 });
 
 test("阶段汇总逐归属带影响与建议,升级前落的行读回 null(issue #266)", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const store = openStore(h.db.path);
   let rangeReviewId: number;
   let legacyId: number;
@@ -417,7 +405,7 @@ test("阶段汇总逐归属带影响与建议,升级前落的行读回 null(issu
 });
 
 test("阶段汇总带代表段的影响与建议,升级前落的行按规则现算(issue #278)", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const store = openStore(h.db.path);
   let rangeReviewId: number;
   let legacyId: number;
@@ -541,7 +529,7 @@ test("阶段汇总带代表段的影响与建议,升级前落的行按规则现�
 });
 
 test("阶段汇总带出延续承接来的历史说法,head 按来源轮次补(issue #267)", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const store = openStore(h.db.path);
   let rangeReviewId: number;
   let originRunId: number;
@@ -615,7 +603,7 @@ test("阶段汇总带出延续承接来的历史说法,head 按来源轮次补(i
 });
 
 test("阶段汇总的时间线:每轮的新报出 / 折叠 / 已修复 / 已延续 / 漏复核", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const { rangeReviewId, runs } = seedStage(h.db.path);
 
   const body = await summaryOf(h, `rangeReviewId=${rangeReviewId}`);
@@ -647,7 +635,7 @@ test("阶段汇总的时间线:每轮的新报出 / 折叠 / 已修复 / 已延�
 });
 
 test("阶段汇总按 pull request 取范围:容器 PR 的轮次不混进 PR 链路", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedStage(h.db.path);
   const store = openStore(h.db.path);
   try {
@@ -679,7 +667,7 @@ test("阶段汇总按 pull request 取范围:容器 PR 的轮次不混进 PR 链
 });
 
 test("阶段汇总每条 Finding 带行作者,未判定的那条是 null", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const store = openStore(h.db.path);
   try {
     seedRun(
@@ -766,7 +754,7 @@ function cloneRepoCache(h: PanelHarness): string {
 const PR_QUERY = `owner=${HARNESS_PR.owner}&repo=${HARNESS_PR.repo}&pullNumber=${HARNESS_PR.number}`;
 
 test("阶段汇总给升级前的 Finding 补录行作者并写回,之后不再重算", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   // 升级前那一轮的 head,由一个认得出的作者改出来。
   const headSha = h.repo.commitToBranch(
     "feature",
@@ -819,7 +807,7 @@ test("阶段汇总给升级前的 Finding 补录行作者并写回,之后不再�
 });
 
 test("阶段汇总补录不了行作者时照常 200,那几条留空等下次读取再试", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   cloneRepoCache(h);
 
   const store = openStore(h.db.path);
@@ -848,7 +836,7 @@ test("阶段汇总补录不了行作者时照常 200,那几条留空等下次读
 });
 
 test("阶段汇总的入参:两条链路只能选一条,范围审查不存在时 404", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   assert.equal((await h.api("GET", "/stage-summary")).status, 400);
   assert.equal(
     (await h.api("GET", `/stage-summary?owner=${HARNESS_PR.owner}&repo=${HARNESS_PR.repo}`)).status,
@@ -859,7 +847,7 @@ test("阶段汇总的入参:两条链路只能选一条,范围审查不存在时
 });
 
 test("阶段汇总登录即可读:未登录 401,一格权限都没有的人分到仓库就读得到", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const { rangeReviewId } = seedStage(h.db.path);
   const path = `/api/stage-summary?rangeReviewId=${rangeReviewId}`;
 
@@ -870,7 +858,7 @@ test("阶段汇总登录即可读:未登录 401,一格权限都没有的人分�
 });
 
 /** 建一个只挂指定权限的用户并登录,拿它的会话 cookie。仓库一并分给他:可见才能读。 */
-async function userCookie(
+function userCookie(
   h: PanelHarness,
   username: string,
   permissions: readonly PanelPermission[],
@@ -895,11 +883,5 @@ async function userCookie(
   } finally {
     store.close();
   }
-  const login = await fetch(`${h.serverUrl}/api/session`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username, password: PASSWORD }),
-  });
-  assert.equal(login.status, 204);
-  return login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
+  return userCookieRow(h.serverUrl, username, PASSWORD);
 }

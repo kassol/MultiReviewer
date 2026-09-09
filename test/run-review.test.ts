@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import {
   createReviewRunPlan,
@@ -18,7 +18,8 @@ import {
   containerPullRequestTitle,
 } from "../src/review/range-review.ts";
 import { openStore } from "../src/review/store.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
+import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
+import { setup as setupRepo } from "./support/batch-run.ts";
 import {
   memoryForge,
   readingReviewer,
@@ -44,29 +45,11 @@ export function mul(a: number, b: number) {
 // 只改第 6 行。-U3 的 hunk 因此覆盖新文件的 3..9 行,第 11 行落在 diff 之外。
 const HEAD_CALC = BASE_CALC.replace("return a - b;", "return a - b - 1;");
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 function setup(findingLine: number) {
-  const repo = makeRepo({
-    base: { "src/calc.ts": BASE_CALC },
-    head: { "src/calc.ts": HEAD_CALC },
-  });
-  const cache = makeCacheDir();
-  const db = makeDbPath();
-  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
-
-  const forge = memoryForge({
-    pullRequest: {
-      number: 7,
-      title: "示例 PR",
-      draft: false,
-      baseSha: repo.baseSha,
-      headSha: repo.headSha,
-      cloneUrl: repo.dir,
-    },
+  const { repo, cache, db, forge } = setupRepo(cleanups, {
+    tree: { base: { "src/calc.ts": BASE_CALC }, head: { "src/calc.ts": HEAD_CALC } },
     changedFiles: [{ path: "src/calc.ts", status: "modified" }],
   });
 

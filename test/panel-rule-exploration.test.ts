@@ -11,26 +11,23 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
-import { hashPassword } from "../src/panel/password.ts";
 import type { KnowledgeEntry } from "../src/review/finding.ts";
 import { openStore, type ReviewRuleInput } from "../src/review/store.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
-import { makeDbPath } from "./support/git-fixture.ts";
+import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
+  scopedUser as scopedUserRow,
   seedAvailableModelService,
   startReadyPanelHarness,
   type PanelHarness,
   type PanelHarnessOptions,
 } from "./support/panel-harness.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 const PASSWORD = "exploration-test-password";
 const AT = "2026-08-28T00:00:00.000Z";
@@ -115,49 +112,13 @@ function scriptedRuleAgent(
   return Object.assign(agent, { calls });
 }
 
-async function scopedUser(
+function scopedUser(
   h: PanelHarness,
   username: string,
   repoIds: readonly number[],
   permissions: readonly PanelPermission[] = [],
 ): Promise<string> {
-  const store = openStore(h.db.path);
-  try {
-    store.createPanelUser({
-      username,
-      displayName: null,
-      passwordHash: await hashPassword(PASSWORD),
-      mustChangePassword: false,
-      createdAt: AT,
-      isSystemAdmin: false,
-      roleId: null,
-    });
-    store.setPanelUserAssignment(username, repoIds);
-    if (permissions.length > 0) {
-      const role = store.createPanelRole({
-        name: `role-${username}`,
-        permissions: [...permissions],
-        createdAt: AT,
-      });
-      assert.equal(
-        store.updatePanelUser(username, {
-          displayName: null,
-          roleId: role.id,
-          isSystemAdmin: false,
-        }),
-        "updated",
-      );
-    }
-  } finally {
-    store.close();
-  }
-  const response = await fetch(`${h.serverUrl}/api/session`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username, password: PASSWORD }),
-  });
-  assert.equal(response.status, 204);
-  return response.headers.getSetCookie()[0]!.split(";", 1)[0]!;
+  return scopedUserRow(h, username, PASSWORD, AT, repoIds, permissions);
 }
 
 function get(h: PanelHarness, cookie: string, path: string): Promise<Response> {
@@ -182,12 +143,7 @@ function send(
 async function registeredHarness(
   options: PanelHarnessOptions = {},
 ): Promise<{ h: PanelHarness; cookie: string }> {
-  const h = await startReadyPanelHarness(cleanups, options);
-  const registered = await h.api("POST", "/repos", {
-    owner: GITEA_REPO.owner,
-    repo: GITEA_REPO.repo,
-  });
-  assert.equal(registered.status, 201);
+  const h = await startReadyPanelHarness({ ...options, registerRepo: true });
   await h.worktreesPreparedAtLeast(1);
   const cookie = await scopedUser(h, "rule-writer", [GITEA_REPO.id], ["knowledge:write"]);
   return { h, cookie };

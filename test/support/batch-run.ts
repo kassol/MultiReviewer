@@ -42,23 +42,37 @@ function trees(): { base: FileTree; head: FileTree } {
   return { base, head };
 }
 
-/** 仓库、缓存目录、临时库与内存 Forge。清理登记进调用方的 `cleanups`。 */
-export function setup(cleanups: (() => void)[]) {
-  const { base, head } = trees();
+/**
+ * 仓库、缓存目录、临时库与内存 Forge。清理登记进调用方的 `cleanups`。
+ *
+ * 省略 `tree` 即用本模块默认的三文件桩(`FILES`/`STUB`);`changedFiles` 省略即取
+ * head 树里的每个路径,状态都是 modified。
+ */
+export function setup(
+  cleanups: (() => void)[],
+  options: {
+    tree?: { base: FileTree; head: FileTree };
+    pullNumber?: number;
+    changedFiles?: { path: string; status: "modified" }[];
+  } = {},
+) {
+  const { base, head } = options.tree ?? trees();
   const repo = makeRepo({ base, head });
   const cache = makeCacheDir();
   const db = makeDbPath();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
   const forge = memoryForge({
     pullRequest: {
-      number: EVENT.number,
+      number: options.pullNumber ?? EVENT.number,
       title: "示例 PR",
       draft: false,
       baseSha: repo.baseSha,
       headSha: repo.headSha,
       cloneUrl: repo.dir,
     },
-    changedFiles: FILES.map((path) => ({ path, status: "modified" as const })),
+    changedFiles:
+      options.changedFiles ??
+      Object.keys(head).map((path) => ({ path, status: "modified" as const })),
   });
   return { repo, cache, db, forge };
 }

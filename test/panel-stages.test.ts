@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { openStore } from "../src/review/store.ts";
 import {
@@ -18,12 +18,7 @@ import {
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
-import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+import { confirmEmptyRuleSet, seedRun as seedRunRow } from "./support/git-fixture.ts";
 
 type StageRow = {
   stageId: string;
@@ -56,34 +51,18 @@ function seedRun(
   findings: { fingerprint: string; disposition?: "unknown" | "resolved" | "fixed" }[] = [],
 ): number {
   const store = openStore(dbPath);
-  const runId = store.startRun({
-    owner: meta.owner,
-    repo: meta.repo,
-    pullNumber: meta.pullNumber,
-    headSha: `sha-${meta.pullNumber}-${meta.startedAt}`,
-    ...(meta.title === undefined ? {} : { title: meta.title }),
-    ...(meta.rangeReviewId === undefined ? {} : { rangeReviewId: meta.rangeReviewId }),
-    startedAt: meta.startedAt,
-    changedFiles: 1,
-    changedLines: 1,
-    batchCount: 1,
-    reviewerPins: [],
-  });
-  store.finishRun(runId, {
-    finishedAt: meta.startedAt,
-    durationMs: 1,
-    failed: false,
-    outcomes: [
-      {
-        model: "model-a",
-        findingCount: findings.length,
-        anomalyCount: 0,
-        rejectedToolCalls: 0,
-        anchorRejections: 0,
-        durationMs: 1,
-      },
-    ],
-    findings: findings.map((finding, index) => ({
+  const runId = seedRunRow(
+    store,
+    {
+      owner: meta.owner,
+      repo: meta.repo,
+      pullNumber: meta.pullNumber,
+      headSha: `sha-${meta.pullNumber}-${meta.startedAt}`,
+      ...(meta.title === undefined ? {} : { title: meta.title }),
+      ...(meta.rangeReviewId === undefined ? {} : { rangeReviewId: meta.rangeReviewId }),
+      startedAt: meta.startedAt,
+    },
+    findings.map((finding, index) => ({
       file: "src/a.ts",
       line: 5,
       title: "示例",
@@ -107,8 +86,17 @@ function seedRun(
       placement: "inline" as never,
       fingerprint: finding.fingerprint,
     })),
-    verdicts: [],
-  });
+    [
+      {
+        model: "model-a",
+        findingCount: findings.length,
+        anomalyCount: 0,
+        rejectedToolCalls: 0,
+        anchorRejections: 0,
+        durationMs: 1,
+      },
+    ],
+  );
   store.close();
   return runId;
 }
@@ -144,7 +132,7 @@ async function stages(h: PanelHarness, query = ""): Promise<StagesPage> {
 }
 
 test("阶段列表:同一 pull request 三轮只占一行,带最新一轮与阶段汇总三个数", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedRun(
     h.db.path,
     {
@@ -204,7 +192,7 @@ test("阶段列表:同一 pull request 三轮只占一行,带最新一轮与阶�
 });
 
 test("阶段列表:升级前没有标题的旧行,列表里没有标题可用", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedRun(h.db.path, {
     owner: "ghost",
     repo: "gone",
@@ -219,7 +207,7 @@ test("阶段列表:升级前没有标题的旧行,列表里没有标题可用", 
 });
 
 test("阶段列表:全局与仓库过滤返回同一个阶段的同一条记录", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedRun(h.db.path, {
     owner: "acme",
     repo: "widgets",
@@ -252,7 +240,7 @@ test("阶段列表:全局与仓库过滤返回同一个阶段的同一条记录"
 });
 
 test("阶段列表:pull request 关闭后已结束,重开回到进行中且仍是同一行", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
@@ -281,7 +269,7 @@ test("阶段列表:pull request 关闭后已结束,重开回到进行中且仍�
 });
 
 test("阶段列表:已关闭 pull request 手动重跑后仍是已结束,重开后回到进行中", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
@@ -313,7 +301,7 @@ test("阶段列表:已关闭 pull request 手动重跑后仍是已结束,重开�
 });
 
 test("阶段列表:同一范围审查推进两次只占一行,审查完成后已结束", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
@@ -363,7 +351,7 @@ test("阶段列表:同一范围审查推进两次只占一行,审查完成后已
 });
 
 test("阶段列表:按状态、按来源筛选各自生效,组合筛选生效,默认全部", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   // 进行中的 pull request 阶段。
   seedRun(h.db.path, {
     owner: "acme",
@@ -444,7 +432,7 @@ test("阶段列表:按状态、按来源筛选各自生效,组合筛选生效,�
 });
 
 test("阶段列表:满页给 nextOffset,翻页不重不漏", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   for (let i = 1; i <= 32; i += 1) {
     seedRun(h.db.path, {
       owner: "acme",
@@ -468,7 +456,7 @@ test("阶段列表:满页给 nextOffset,翻页不重不漏", async () => {
 });
 
 test("单轮 API:按 id 取该阶段最新一轮,不存在的 id 是 404", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const runId = seedRun(
     h.db.path,
     {

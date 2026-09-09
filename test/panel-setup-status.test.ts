@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { openStore } from "../src/review/store.ts";
 import {
@@ -9,11 +9,6 @@ import {
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 type SetupStatus = {
   hasRunnableModelService: boolean;
@@ -29,7 +24,7 @@ async function setupStatus(h: PanelHarness): Promise<SetupStatus> {
 }
 
 test("首次配置状态从空实例推进到可运行服务、审查配置就绪和实例启用", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   assert.deepEqual(await setupStatus(h), {
     hasRunnableModelService: false,
     reviewConfigurationReady: false,
@@ -78,7 +73,7 @@ test("首次配置状态从空实例推进到可运行服务、审查配置就�
 });
 
 test("审查配置未就绪时注册在任何 Gitea 调用、Key 生成和落库前拒绝", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   h.gitea.requests.length = 0;
 
   const response = await h.api("POST", "/repos", {

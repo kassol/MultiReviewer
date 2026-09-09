@@ -6,7 +6,7 @@
  * 的评论 id,处置结果由 `GET /stage-summary` 读回。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { Forge } from "../src/forge/forge.ts";
 import { hashPassword } from "../src/panel/password.ts";
@@ -17,15 +17,11 @@ import {
   HARNESS_PR,
   HARNESS_SPEC,
   PANEL_ADMIN_USERNAME,
+  seedRepo,
   startReadyPanelHarness,
   type PanelHarness,
   type PanelHarnessOptions,
 } from "./support/panel-harness.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 const PASSWORD = "dispose-batch-test-password";
 const HASH = await hashPassword(PASSWORD);
@@ -113,17 +109,6 @@ function seedStage(
 }
 
 /** 直接落一行注册表:这几条用例要的是仓库存在,不是它的 hook。 */
-function seedRepo(h: PanelHarness, repoId: number, owner: string, repo: string): void {
-  const store = openStore(h.db.path);
-  try {
-    assert.equal(
-      store.registerRepo({ repoId, owner, repo, generation: 1, key: `key-${repoId}` }),
-      true,
-    );
-  } finally {
-    store.close();
-  }
-}
 
 const STAGE_ID = `pr:${HARNESS_PR.owner}/${HARNESS_PR.repo}/${HARNESS_PR.number}`;
 
@@ -160,7 +145,7 @@ const STAGE_FINDINGS: readonly SeedFinding[] = [
 ];
 
 async function harnessWithStage(options: PanelHarnessOptions = {}): Promise<PanelHarness> {
-  const h = await startReadyPanelHarness(cleanups, options);
+  const h = await startReadyPanelHarness(options);
   seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
   seedStage(h, { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo, pullNumber: HARNESS_PR.number }, STAGE_FINDINGS);
   return h;
