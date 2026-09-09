@@ -48,3 +48,19 @@ export function foldByRootCause<T extends { rootCause: RootCauseRef | null }>(
   }
   return rows;
 }
+
+/**
+ * 「处置整组」写得动的成员(issue #309):判据与服务端跳过的那一份同口径——组级处置只写
+ * 当前未处置、且有行级评论承载的成员(`server.ts` 的 `handleDisposeRootCauseGroup`)。
+ * 没有评论 id 的那条在 Forge 上没有可 resolve 的载体,逐条处置同样处置不了它;把它算成
+ * 待处置只会让按钮点得动而一条都写不进去。
+ */
+export function disposableInGroup(finding: {
+  disposition: string;
+  commentId: string | null;
+}): boolean {
+  return (
+    finding.commentId !== null &&
+    (finding.disposition === "unresolved" || finding.disposition === "unknown")
+  );
+}

@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { foldByRootCause, type RootCauseRef } from "./root-cause.ts";
+import { disposableInGroup, foldByRootCause, type RootCauseRef } from "./root-cause.ts";
 
 type Row = { id: number; rootCause: RootCauseRef | null };
 
@@ -53,6 +53,15 @@ test("筛掉一部分成员之后卡里只剩看得见的那几条,成员总数�
   const card = rows[0]!;
   assert.equal(card.kind === "group" ? card.members.length : -1, 1);
   assert.equal(card.kind === "group" ? card.memberCount : -1, 3);
+});
+
+test("写得动的成员:未处置且有评论载体才算,没有评论 id 的那条不算", () => {
+  assert.equal(disposableInGroup({ disposition: "unresolved", commentId: "c-1" }), true);
+  assert.equal(disposableInGroup({ disposition: "unknown", commentId: "c-1" }), true);
+  // 服务端会跳过的两类:已经处置过的,与没有行级评论承载的。
+  assert.equal(disposableInGroup({ disposition: "resolved", commentId: "c-1" }), false);
+  assert.equal(disposableInGroup({ disposition: "fixed", commentId: "c-1" }), false);
+  assert.equal(disposableInGroup({ disposition: "unresolved", commentId: null }), false);
 });
 
 test("一条都没入组时逐条列出,列表原样通过", () => {

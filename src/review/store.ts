@@ -6501,7 +6501,16 @@ export function openStore(dbPath: string): Store {
       };
       const rootCauseGroups: StageRootCauseGroup[] = [];
       const rootCauseOfRow = new Map<number, StageRootCauseRef>();
-      for (const group of store.rootCauseGroups(Number(runRows.at(-1)!["id"]))) {
+      // 「最新一轮」要往前找到最近一轮完整审查且没失败的:只复核那一轮不报新的、从不提组
+      // (CONTEXT.md 只复核),失败那一轮压根没走到合并,拿它们当最新一轮会让整个阶段的组
+      // 凭空消失——重跑一次只复核不该把上一轮的组抹掉。找到的那一轮没有组(合并 agent 缺席)
+      // 就是没有组。
+      const groupRun = runRows.findLast(
+        (run) => run["mode"] !== "verdict-only" && Number(run["failed"] ?? 0) !== 1,
+      );
+      for (const group of groupRun === undefined
+        ? []
+        : store.rootCauseGroups(Number(groupRun["id"]))) {
         const findingIds: number[] = [];
         for (const memberId of group.findingIds) {
           const current = currentRowOf(memberId);
@@ -6511,7 +6520,9 @@ export function openStore(dbPath: string): Store {
           }
           findingIds.push(current);
         }
-        if (findingIds.length === 0) continue;
+        // 映完不足两条的整组不出现:同根因组没有单成员这一档(ADR 0030),剩一条时它与
+        // 一条普通 Finding 没有分别,组卡只是白占一层。
+        if (findingIds.length < 2) continue;
         rootCauseGroups.push({ id: group.id, reason: group.reason, findingIds });
         for (const [position, findingId] of findingIds.entries()) {
           rootCauseOfRow.set(findingId, {

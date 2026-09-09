@@ -12,7 +12,7 @@ import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/theme-button";
 import { TAB_TRIGGER } from "@/components/tab-trigger";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { foldByRootCause, type RootCauseRef } from "@/lib/root-cause";
+import { disposableInGroup, foldByRootCause, type RootCauseRef } from "@/lib/root-cause";
 import { localMinute } from "@/lib/time";
 
 import { fetchJson, send } from "./api.ts";
@@ -331,7 +331,7 @@ function DisposeRootCauseGroupAction({
           处置整组
         </Button>
       }
-      title={`把这个同根因组里未处置的成员一次处置掉？`}
+      title="把这个同根因组里未处置的成员一次处置掉？"
       titleSize="4"
       titleMb="2"
       maxWidth="480px"
@@ -518,10 +518,11 @@ export function StageSummaryView({
   );
   // 轮次序号按这个阶段自己数:一条 Finding「第几轮首次报出」比一个库 id 有意义。
   const roundOf = new Map(entries.map((entry, index) => [entry.runId, index + 1]));
-  // 「处置整组」按整组算,不按筛选后看得见的那几条:筛掉的成员照样会被写进去。
+  // 「处置整组」按整组算,不按筛选后看得见的那几条:筛掉的成员照样会被写进去。判据用
+  // 服务端跳过的那一份,没有评论载体的成员不算待处置——否则按钮点得动而一条都写不进去。
   const pendingGroups = new Set(
     findings.flatMap((finding) =>
-      finding.rootCause !== null && bucketOf(finding) === "pending" ? [finding.rootCause.id] : [],
+      finding.rootCause !== null && disposableInGroup(finding) ? [finding.rootCause.id] : [],
     ),
   );
   const counts = summary.data?.counts ?? { pending: 0, resolved: 0, fixed: 0 };
