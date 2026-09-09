@@ -6,24 +6,20 @@
  * 行为,不碰 store 内部查询以外的东西。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { ChangedFile } from "../src/forge/forge.ts";
 import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
-  HARNESS_PR,
+  startRangeReview as startRangeReviewRow,
   startReadyPanelHarness,
+  userCookie as userCookieRow,
   type PanelHarness,
 } from "./support/panel-harness.ts";
 import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 const PASSWORD = "range-rerun-test-password";
 const HASH = await hashPassword(PASSWORD);
@@ -38,40 +34,21 @@ type RangeReview = {
 };
 
 async function registeredHarness(
-  options: Parameters<typeof startReadyPanelHarness>[1] = {},
+  options: Parameters<typeof startReadyPanelHarness>[0] = {},
 ): Promise<PanelHarness> {
-  const harness = await startReadyPanelHarness(cleanups, options);
-  assert.equal(
-    (await harness.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
-      .status,
-    201,
-  );
+  const harness = await startReadyPanelHarness({ ...options, registerRepo: true });
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
   confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   return harness;
 }
 
 /** 发起一个范围审查并等第一轮跑完。 */
-async function startRangeReview(h: PanelHarness): Promise<RangeReview> {
-  const response = await h.api("POST", "/range-reviews", {
-    title: "范围审查标题",
-    owner: HARNESS_PR.owner,
-    repo: HARNESS_PR.repo,
-    base: h.repo.baseSha,
-    comparison: h.repo.headSha,
-  });
-  assert.equal(response.status, 202);
-  const { rangeReview } = (await response.json()) as { rangeReview: RangeReview };
-  await h.settledAtLeast(1);
-  return rangeReview;
+function startRangeReview(h: PanelHarness): Promise<RangeReview> {
+  return startRangeReviewRow<RangeReview>(h);
 }
 
 /** 登录一个自定义权限的用户,拿它的会话 cookie。仓库一并分给他:可见才能操作。 */
-async function userCookie(
-  h: PanelHarness,
-  username: string,
-  permissions: string[],
-): Promise<string> {
+function userCookie(h: PanelHarness, username: string, permissions: string[]): Promise<string> {
   const store = openStore(h.db.path);
   const role = store.createPanelRole({
     name: `${username}-角色`,
@@ -89,14 +66,7 @@ async function userCookie(
   });
   store.setPanelUserAssignment(username, [GITEA_REPO.id]);
   store.close();
-
-  const login = await fetch(`${h.serverUrl}/api/session`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username, password: PASSWORD }),
-  });
-  assert.equal(login.status, 204);
-  return login.headers.getSetCookie()[0]!.split(";", 1)[0]!;
+  return userCookieRow(h.serverUrl, username, PASSWORD);
 }
 
 /** 阶段详情里那条范围审查记录的状态。 */
@@ -205,7 +175,7 @@ test("范围审查重跑要 review:rerun:有它的用户跑得动,没有的被�
 
 /** 报一条 Finding 的 Reviewer:只复核那一轮要有未处置历史才开得起来。 */
 const reportingReviewers: NonNullable<
-  NonNullable<Parameters<typeof startReadyPanelHarness>[1]>["buildReviewers"]
+  NonNullable<Parameters<typeof startReadyPanelHarness>[0]>["buildReviewers"]
 > = (plans) =>
   plans.map((plan) =>
     scriptedReviewer(plan.spec.model, [

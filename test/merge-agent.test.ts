@@ -7,13 +7,13 @@
  */
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { MERGE_AGENT_TRACE_NAME, runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
+import { testCleanups } from "./support/git-fixture.ts";
+import { setup as setupRepo } from "./support/batch-run.ts";
 import {
-  memoryForge,
   scriptedMergeAgent,
   scriptedReviewer,
   verdictReviewer,
@@ -56,38 +56,22 @@ const BASE_N = `export function inc(n) {
 `;
 const HEAD_N = BASE_N.replace("return n + 1;", "return n + 2;");
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 const EVENT = { owner: "acme", repo: "widgets", number: 1 };
 
 function setup() {
-  const repo = makeRepo({
-    base: { "src/m.js": BASE_M, "src/n.js": BASE_N },
-    head: { "src/m.js": HEAD_M, "src/n.js": HEAD_N },
-  });
-  const cache = makeCacheDir();
-  const db = makeDbPath();
-  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
-
-  const forge = memoryForge({
-    pullRequest: {
-      number: 1,
-      title: "示例 PR",
-      draft: false,
-      baseSha: repo.baseSha,
-      headSha: repo.headSha,
-      cloneUrl: repo.dir,
+  return setupRepo(cleanups, {
+    tree: {
+      base: { "src/m.js": BASE_M, "src/n.js": BASE_N },
+      head: { "src/m.js": HEAD_M, "src/n.js": HEAD_N },
     },
+    pullNumber: EVENT.number,
     changedFiles: [
       { path: "src/m.js", status: "modified" },
       { path: "src/n.js", status: "modified" },
     ],
   });
-
-  return { repo, cache, db, forge };
 }
 
 /**
@@ -1006,7 +990,7 @@ async function runOnceWithAuxiliary(
   auxiliary?: { provider: string; model: string; thinkingLevel?: string },
 ): Promise<{ builds: MergeBuild[]; frozen: unknown }> {
   const builds: MergeBuild[] = [];
-  const h = await startPanelHarness(cleanups, { buildMergeAgent: recordMergeBuilds(builds) });
+  const h = await startPanelHarness({ buildMergeAgent: recordMergeBuilds(builds) });
   seedAvailableModelService(h, HARNESS_SPEC.provider, [HARNESS_SPEC.model]);
   seedAvailableModelService(h, "second", ["other-model"], { reasoning: true });
   const hook = seedHistoricalRepo(h);
@@ -1041,7 +1025,7 @@ test("开跑后改辅助模型不影响本轮:轮次落的是开跑时解析出�
   const held = new Promise<void>((resolve) => {
     release = resolve;
   });
-  const h = await startPanelHarness(cleanups, {
+  const h = await startPanelHarness({
     buildMergeAgent: recordMergeBuilds(builds),
     // Reviewer 停在这里,用例趁这一轮还在跑的时候改配置。
     buildReviewers: (plans) =>

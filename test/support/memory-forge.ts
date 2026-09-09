@@ -36,6 +36,7 @@ import type {
   Severity,
 } from "../../src/review/finding.ts";
 import type { DiffRanges } from "../../src/review/position.ts";
+import type { RuleAgent, RuleAgentRequest, RuleAgentResult } from "../../src/reviewer/rule-agent.ts";
 
 export type MemoryForge = {
   forge: Forge;
@@ -348,4 +349,33 @@ export function scriptedMergeAgent(
   agent.calls = calls;
   agent.historyCalls = historyCalls;
   return agent;
+}
+
+/**
+ * 脚本化规则 agent(探索、整理、人工提议三条链路共用同一个契约)。`produce` 给每次
+ * 收到请求时的产出,省略 `items` 即空数组。`calls` 记下每次收到的完整请求。
+ *
+ * `extra.narrate` 给了就在产出前先发一条 `assistant_message`,模拟真实实现的叙述;
+ * `extra.emitEvents` 开了就照真实实现的样子给每条产出发一条 `rule_proposed`——两者都经
+ * 请求自带的 `onEvent` 送出,省略即不发任何事件。
+ */
+export function scriptedRuleAgent(
+  produce: () => (Partial<Pick<RuleAgentResult, "items">> & Omit<RuleAgentResult, "items">) | Promise<Partial<Pick<RuleAgentResult, "items">> & Omit<RuleAgentResult, "items">>,
+  extra?: { narrate?: string; emitEvents?: boolean },
+): RuleAgent & { calls: RuleAgentRequest[] } {
+  const calls: RuleAgentRequest[] = [];
+  const agent = async (request: RuleAgentRequest): Promise<RuleAgentResult> => {
+    calls.push(request);
+    if (extra?.narrate !== undefined) {
+      request.onEvent?.({ kind: "assistant_message", text: extra.narrate });
+    }
+    const result: RuleAgentResult = { items: [], ...(await produce()) };
+    if (extra?.emitEvents === true) {
+      // 真实实现每提一条就发一条事件(`runRuleAgentChild`),脚本化的照做:轨迹上那几条
+      // `rule_proposed` 是被测行为的一部分。
+      for (const item of result.items) request.onEvent?.({ kind: "rule_proposed", item });
+    }
+    return result;
+  };
+  return Object.assign(agent, { calls });
 }

@@ -9,10 +9,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { ReviewerSpec } from "../src/config.ts";
 import { openStore } from "../src/review/store.ts";
+import { testCleanups } from "./support/git-fixture.ts";
 import { LISTENING, spawnMain } from "./support/main-process.ts";
 
 const BOOT_TIMEOUT_MS = 30_000;
@@ -27,10 +28,7 @@ const CLEARED = [
   "MULTIREVIEWER_CREDENTIAL_MASTER_KEY",
 ];
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 type Boot = { listening: boolean; output: string; dir: string };
 

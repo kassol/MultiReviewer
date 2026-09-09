@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { createDrain, type Drain } from "../src/drain.ts";
 import type { Forge, PullRequestRef } from "../src/forge/forge.ts";
@@ -14,7 +14,7 @@ import {
   type Platform,
 } from "../src/webhook/server.ts";
 import { openStore } from "../src/review/store.ts";
-import { confirmEmptyRuleSet, makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
+import { confirmEmptyRuleSet, makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
 
 const BASE_FILE = "export const answer = 1;\n";
@@ -76,10 +76,7 @@ function gatedReviewer(model: string): Reviewer & {
 
 type Settle = { event: NormalizedEvent; error?: unknown };
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 type HarnessOptions = {
   reviewer?: Reviewer;

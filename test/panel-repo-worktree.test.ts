@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { Forge, RepoRef, Repository } from "../src/forge/forge.ts";
 import {
@@ -19,11 +19,6 @@ import {
   type PanelHarness,
 } from "./support/panel-harness.ts";
 import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 /** 工作副本的位置:缓存根下的 `<owner>/<repo>`。 */
 const worktreePath = (h: PanelHarness): string => join(h.cacheDir, PR.owner, PR.repo);
@@ -60,7 +55,7 @@ function gatedForge(forge: Forge): { forge: Forge; release: () => void } {
 
 test("注册立刻返回,工作副本在后台备好,状态从准备中走到就绪", async () => {
   let gate: { release: () => void } | undefined;
-  const h = await startReadyPanelHarness(cleanups, {
+  const h = await startReadyPanelHarness({
     wrapForge: (forge) => {
       const gated = gatedForge(forge);
       gate = gated;
@@ -91,7 +86,7 @@ test("注册立刻返回,工作副本在后台备好,状态从准备中走到就
 });
 
 test("副本已就绪之后,一次审查与一次分支列表都不再 clone", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   await h.worktreesPreparedAtLeast(1);
@@ -136,7 +131,7 @@ test("副本已就绪之后,一次审查与一次分支列表都不再 clone", a
 
 test("备副本失败时记下原因与时刻,重试能把它备好", async () => {
   let failing = true;
-  const h = await startReadyPanelHarness(cleanups, {
+  const h = await startReadyPanelHarness({
     wrapForge: (forge) => ({
       ...forge,
       getRepository: async (ref: RepoRef): Promise<Repository> => {
@@ -170,7 +165,7 @@ test("备副本失败时记下原因与时刻,重试能把它备好", async () =
 });
 
 test("移除仓库时工作副本一并删掉", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   await h.worktreesPreparedAtLeast(1);
   assert.equal(existsSync(worktreePath(h)), true);

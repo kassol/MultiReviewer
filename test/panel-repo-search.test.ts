@@ -6,7 +6,7 @@
  * 结果自带的权限字段。过滤掉会让人明知仓库存在却搜不到。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import {
   GITEA_REPO,
@@ -15,13 +15,8 @@ import {
   startReadyPanelHarness,
 } from "./support/panel-harness.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
-
 const startHarness = (): ReturnType<typeof startReadyPanelHarness> =>
-  startReadyPanelHarness(cleanups);
+  startReadyPanelHarness();
 
 type SearchResult = {
   repoId: number;

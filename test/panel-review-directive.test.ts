@@ -5,23 +5,19 @@
  * 指令,库里那一轮记下它,下一轮不带。断言只看外部可观察的行为。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
+  startRangeReview as startRangeReviewRow,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
 import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 const PASSWORD = "run-directive-test-password";
 const HASH = await hashPassword(PASSWORD);
@@ -29,14 +25,9 @@ const HASH = await hashPassword(PASSWORD);
 const DIRECTIVE = "这一轮只报 P0,重点看并发";
 
 async function registeredHarness(
-  options: Parameters<typeof startReadyPanelHarness>[1] = {},
+  options: Parameters<typeof startReadyPanelHarness>[0] = {},
 ): Promise<PanelHarness> {
-  const harness = await startReadyPanelHarness(cleanups, options);
-  assert.equal(
-    (await harness.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
-      .status,
-    201,
-  );
+  const harness = await startReadyPanelHarness({ ...options, registerRepo: true });
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
   confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   return harness;
@@ -68,15 +59,11 @@ function launchBody(h: PanelHarness): Record<string, unknown> {
   };
 }
 
-async function startRangeReview(h: PanelHarness, directive?: string): Promise<RangeReview> {
-  const response = await h.api("POST", "/range-reviews", {
+function startRangeReview(h: PanelHarness, directive?: string): Promise<RangeReview> {
+  return startRangeReviewRow<RangeReview>(h, {
     ...launchBody(h),
     ...(directive === undefined ? {} : { directive }),
   });
-  assert.equal(response.status, 202);
-  const { rangeReview } = (await response.json()) as { rangeReview: RangeReview };
-  await h.settledAtLeast(1);
-  return rangeReview;
 }
 
 test("PR 重跑附本轮指令:随这一轮存库,轮次详情读得到,下一轮不带", async () => {
@@ -271,7 +258,7 @@ test("没有 review:rerun 的用户发不出带指令的重审", async () => {
 
 /** 报一条 Finding 的 Reviewer:只复核那一轮要有未处置历史才开得起来。 */
 const reportingReviewers: NonNullable<
-  NonNullable<Parameters<typeof startReadyPanelHarness>[1]>["buildReviewers"]
+  NonNullable<Parameters<typeof startReadyPanelHarness>[0]>["buildReviewers"]
 > = (plans) =>
   plans.map((plan) =>
     scriptedReviewer(plan.spec.model, [

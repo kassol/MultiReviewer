@@ -4,20 +4,17 @@
  * 由内存 Forge 记录。Gitea 那四个端点的请求形状在 `gitea-forge.test.ts` 里。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { createGitHubForge } from "../src/forge/github.ts";
 import { pushBranch } from "../src/git/worktree.ts";
-import { makeBareRemote, makeCacheDir, makeRepo } from "./support/git-fixture.ts";
+import { makeBareRemote, makeCacheDir, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { memoryForge } from "./support/memory-forge.ts";
 
 const REF = { owner: "acme", repo: "widgets" };
 const BRANCH = "multireviewer/1-head";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 function setup() {
   const repo = makeRepo({

@@ -6,7 +6,7 @@
  * 断言只看外部可观察的行为:HTTP 响应、Forge 收到什么调用、库里落了什么行。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { Forge, RepoRef } from "../src/forge/forge.ts";
 import { hashPassword } from "../src/panel/password.ts";
@@ -21,11 +21,6 @@ import {
 } from "./support/panel-harness.ts";
 import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 const PASSWORD = "range-review-test-password";
 const HASH = await hashPassword(PASSWORD);
@@ -52,14 +47,9 @@ type RangeReview = {
 
 /** 每个用例都要一个已注册的仓库,发起才有对象。 */
 async function registeredHarness(
-  options: Parameters<typeof startReadyPanelHarness>[1] = {},
+  options: Parameters<typeof startReadyPanelHarness>[0] = {},
 ): Promise<PanelHarness> {
-  const harness = await startReadyPanelHarness(cleanups, options);
-  assert.equal(
-    (await harness.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
-      .status,
-    201,
-  );
+  const harness = await startReadyPanelHarness({ ...options, registerRepo: true });
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
   confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   // 注册后工作副本在后台备(issue #184)。等它跑完再开测:范围审查读的是这份已经在的
@@ -70,7 +60,7 @@ async function registeredHarness(
 
 /** 报一条 Finding 的 Reviewer:容器 PR 上要真的出现行级评论。 */
 const reportingReviewers: NonNullable<
-  Parameters<typeof startReadyPanelHarness>[1]
+  Parameters<typeof startReadyPanelHarness>[0]
 >["buildReviewers"] = (plans) =>
   plans.map((plan) =>
     scriptedReviewer(plan.spec.model, [
@@ -319,7 +309,7 @@ test("阶段详情返回 base、当前比较项与本范围审查的轮次", asy
 });
 
 test("删掉的两个只读接口与未知端点同一档 404", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
 
   for (const path of ["/range-reviews", "/range-reviews/1"]) {
     const response = await h.api("GET", path);

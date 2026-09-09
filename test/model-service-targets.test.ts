@@ -6,7 +6,7 @@
  * HTTP 端点与临时 SQLite,只把目录发现与模型端点打桩。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { modelIdentity } from "../src/config.ts";
 import { encryptCredential } from "../src/panel/credential-crypto.ts";
@@ -25,11 +25,6 @@ import {
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 const PROVIDER = "openrouter";
 const ANTHROPIC_TARGET = { api: "anthropic-messages", baseUrl: "https://openrouter.ai/api" };
@@ -182,7 +177,7 @@ async function projectedService(h: PanelHarness): Promise<ProjectedService> {
 
 test("混合协议目录:预览、验证、版本提交、投影与运行计划都按模型自己的目标,与目录排序无关", async () => {
   let reversed = false;
-  const h = await startPanelHarness(cleanups, {
+  const h = await startPanelHarness({
     reviewers: [
       { provider: PROVIDER, model: ANTHROPIC_MODEL },
       { provider: PROVIDER, model: OPENAI_MODEL },
@@ -297,7 +292,7 @@ test("混合协议目录:预览、验证、版本提交、投影与运行计划�
 test("旧格式内置版本只延续指纹能证明的那一个目标;证明不了就待重新验证且不解密凭据", async () => {
   const credential = "legacy-secret-never-decrypted-early";
   const provenFingerprint = modelServiceTargetFingerprint(OPENAI_TARGET.baseUrl, OPENAI_TARGET.api);
-  const proven = await startPanelHarness(cleanups, {
+  const proven = await startPanelHarness({
     reviewers: [{ provider: PROVIDER, model: OPENAI_MODEL }, { provider: PROVIDER, model: "manual/only" }],
     discoverModelServiceModels: async () => discovered([row(OPENAI_MODEL, OPENAI_TARGET), row(BARE_MODEL)]),
   });
@@ -327,7 +322,16 @@ test("旧格式内置版本只延续指纹能证明的那一个目标;证明不�
   }
   assert.equal((await proven.deliverViaHook("sha-legacy-proven", provenHook)).status, 200);
   await proven.settledAtLeast(1);
-  assert.deepEqual([...proven.snapshots[0]!], [[PROVIDER, credential]]);
+  assert.deepEqual(
+    [
+      ...new Map(
+        proven.runtimePlans[0]!.flatMap((p) =>
+          p.credential === null ? [] : [[p.spec.provider, p.credential] as const],
+        ),
+      ),
+    ],
+    [[PROVIDER, credential]],
+  );
   assert.deepEqual(
     proven.runtimePlans[0]!.map((plan) => [plan.target, plan.failure]),
     [
@@ -337,7 +341,7 @@ test("旧格式内置版本只延续指纹能证明的那一个目标;证明不�
   );
 
   // 指纹既不是目录行的目标,也不是 Pi 当前内置表里任何一行的目标:证明不了,不猜。
-  const blocked = await startPanelHarness(cleanups, {
+  const blocked = await startPanelHarness({
     reviewers: [],
     discoverModelServiceModels: async () => discovered([row(OPENAI_MODEL, OPENAI_TARGET)]),
   });
@@ -379,7 +383,7 @@ test("旧格式内置版本只延续指纹能证明的那一个目标;证明不�
 
 test("真实目标变化后:目录刷新不改绑,新目标的模型待验证;重新验证才把新目标绑进版本", async () => {
   const credential = "rebind-secret-never-returned";
-  const h = await startPanelHarness(cleanups, {
+  const h = await startPanelHarness({
     reviewers: [],
     // 发现结果已经变成混合协议:Claude 那一行改走 Anthropic Messages。
     discoverModelServiceModels: async () => discovered([row(ANTHROPIC_MODEL, ANTHROPIC_TARGET), row(OPENAI_MODEL, OPENAI_TARGET)]),
@@ -440,7 +444,7 @@ test("真实目标变化后:目录刷新不改绑,新目标的模型待验证;�
 
 test("模型补录:优先该模型可确认的目标,单目标可沿用,混合协议下定不了目标就明确拒绝", async () => {
   const credential = "supplement-secret-never-returned";
-  const mixed = await startPanelHarness(cleanups, { reviewers: [] });
+  const mixed = await startPanelHarness({ reviewers: [] });
   seedBuiltin(mixed, {
     credential,
     targetFingerprint: modelServiceTargetSetFingerprint([ANTHROPIC_TARGET, OPENAI_TARGET])!,
@@ -503,7 +507,7 @@ test("模型补录:优先该模型可确认的目标,单目标可沿用,混合�
   }
 
   // 只有一个已确认目标的内置服务:目录外的 model id 沿用它,行为与升级前一致。
-  const single = await startPanelHarness(cleanups, { reviewers: [] });
+  const single = await startPanelHarness({ reviewers: [] });
   seedBuiltin(single, {
     credential,
     targetFingerprint: modelServiceTargetSetFingerprint([OPENAI_TARGET])!,
@@ -540,7 +544,7 @@ test("运行中重新验证换了目标,已开跑的轮次沿用原快照,下一
   const observed: { run: number; version: number | null; api: string | undefined; baseUrl: string | undefined }[] = [];
   let buildCount = 0;
   let discoveryTarget = OPENAI_TARGET;
-  const h = await startPanelHarness(cleanups, {
+  const h = await startPanelHarness({
     reviewers: [{ provider: PROVIDER, model: ANTHROPIC_MODEL }],
     discoverModelServiceModels: async () => discovered([row(ANTHROPIC_MODEL, discoveryTarget)]),
     buildReviewers: (plans) => {

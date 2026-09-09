@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { ReviewerEvent, ReviewerUsage } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
@@ -22,14 +22,11 @@ import { openStore } from "../src/review/store.ts";
 import { EVIDENCE_AGENT, EVIDENCE_TOOL } from "../src/reviewer/evidence.ts";
 import type { RuntimeModel } from "../src/reviewer/model-service-runtime.ts";
 import { createPiReviewer } from "../src/reviewer/pi-reviewer.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
+import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { memoryForge } from "./support/memory-forge.ts";
 import { startModelStub, type StubTurn, type StubUsage } from "./support/model-stub.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 /** 工作副本里给子会话读的那个文件。内容故意独一无二,好在模型请求里认出来。 */
 const TARGET_FILE = "target.txt";

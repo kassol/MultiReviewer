@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { Compile } from "typebox/compile";
 import { Value } from "typebox/value";
@@ -20,11 +20,9 @@ import {
   verdictSchema,
 } from "../src/reviewer/worker.ts";
 import { factRuleIdRejection, priorFindingRejection } from "../src/reviewer/worker-tools.ts";
+import { testCleanups } from "./support/git-fixture.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 const RAW = {
   file: "src/db.js",

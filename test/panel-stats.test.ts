@@ -4,18 +4,13 @@
  */
 import assert from "node:assert/strict";
 import { statSync } from "node:fs";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { openStore } from "../src/review/store.ts";
 import { startPanelHarness } from "./support/panel-harness.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
-
 test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
 
   const seed = openStore(h.db.path);
   const runId = seed.startRun({

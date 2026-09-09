@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { ReviewRunReviewerPin } from "../src/config.ts";
@@ -22,7 +22,7 @@ import { openStore } from "../src/review/store.ts";
 import { createWebhookServer } from "../src/webhook/server.ts";
 import { query } from "./support/batch-run.ts";
 import type { FileTree } from "./support/git-fixture.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
+import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { memoryForge } from "./support/memory-forge.ts";
 import { startPanelHarness } from "./support/panel-harness.ts";
 
@@ -34,10 +34,7 @@ const UNREGISTERED = `${INTERRUPTED};续跑不成立:仓库 acme/widgets 已经�
 /** 等撤反应的上限。撤不动时这里要报超时,不是挂着。 */
 const WAIT_MS = 10_000;
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 function pin(model: string): ReviewRunReviewerPin {
   return {
@@ -237,7 +234,7 @@ test("改判后的轮次在面板上是失败带原因,轨迹流连上即结束"
   // 前端的 `live` 是 `finishedAt === null && !failed`(`web/src/run-trace.tsx`),
   // 停不停轮询由这两个字段决定,断言它们即可;轨迹流则要真的连一次——挂着不结束的
   // 流在浏览器那边就是「还在跑」。
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const runId = startRunning(h.db.path, 7);
   const store = openStore(h.db.path);
   try {
@@ -314,7 +311,7 @@ test("改判写轮次级失败原因并记 run_failed 事件,零 pin 的轮次�
 });
 
 test("改判后列表、详情与阶段时间线都读得到轮次级失败原因", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const pinned = startRunning(h.db.path, 7);
   const bare = startRunning(h.db.path, 8, []);
   const store = openStore(h.db.path);

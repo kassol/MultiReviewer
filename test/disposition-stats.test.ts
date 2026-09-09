@@ -13,7 +13,7 @@ import {
   type ModelParticipation,
   type Store,
 } from "../src/review/store.ts";
-import { makeDbPath } from "./support/git-fixture.ts";
+import { makeDbPath, seedRun as seedRunRow } from "./support/git-fixture.ts";
 
 const WIDE: [string, string] = ["2000-01-01T00:00:00.000Z", "2999-01-01T00:00:00.000Z"];
 
@@ -69,24 +69,17 @@ function seedRun(
     findings: FindingRecord[];
   },
 ): void {
-  const runId = store.startRun({
-    owner: opts.owner ?? "acme",
-    repo: opts.repo ?? "widgets",
-    pullNumber: opts.pr ?? 7,
-    headSha: `sha-${opts.startedAt}`,
-    startedAt: opts.startedAt,
-    changedFiles: 1,
-    changedLines: 1,
-    batchCount: 1,
-    reviewerPins: [],
-  });
-  store.finishRun(runId, {
-    finishedAt: opts.startedAt,
-    durationMs: 1,
-    failed: false,
-    outcomes: [],
-    findings: opts.findings,
-  });
+  seedRunRow(
+    store,
+    {
+      owner: opts.owner ?? "acme",
+      repo: opts.repo ?? "widgets",
+      pullNumber: opts.pr ?? 7,
+      headSha: `sha-${opts.startedAt}`,
+      startedAt: opts.startedAt,
+    },
+    opts.findings,
+  );
 }
 
 type Case = {

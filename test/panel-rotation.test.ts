@@ -5,17 +5,12 @@
  * 假 Gitea 的故障开关制造断点,再重入验证单调推进。核对只读。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { GITEA_REPO, HARNESS_PR as PR, startReadyPanelHarness } from "./support/panel-harness.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
-
 const startHarness = (): ReturnType<typeof startReadyPanelHarness> =>
-  startReadyPanelHarness(cleanups);
+  startReadyPanelHarness();
 
 /** 当前第一条 hook 的签名材料快照,hook 被删后用来证明旧凭据已失效。 */
 function snapshotHook(h: Awaited<ReturnType<typeof startHarness>>): {

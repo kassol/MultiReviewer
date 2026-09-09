@@ -11,7 +11,7 @@ import { execFile } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -19,7 +19,7 @@ import type { ReviewerEvent } from "../src/review/finding.ts";
 import { applyRecovery, commentSections, planRecovery } from "../src/review/recover.ts";
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
+import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer, verdictReviewer } from "./support/memory-forge.ts";
 
 const CLI = fileURLToPath(new URL("../src/recover-finding-content.ts", import.meta.url));
@@ -43,10 +43,7 @@ const HEAD_UTIL = BASE_UTIL.replace("return n;", "return Math.max(0, n);");
 const EVENT = { owner: "acme", repo: "widgets", number: 7 };
 const REPO = { kind: "repo", owner: "acme", repo: "widgets" } as const;
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 type Said = {
   file: string;

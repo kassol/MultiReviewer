@@ -3,7 +3,7 @@
  * 实时推送、断线续传与结束信号。打在真实 HTTP 缝上(先例 `panel-runs`、`panel-permissions`)。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
 import type { Reviewer, ReviewerEvent, ReviewerInput } from "../src/review/finding.ts";
@@ -18,11 +18,6 @@ import {
   type PanelHarness,
 } from "./support/panel-harness.ts";
 import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 /** 一条 SSE 帧,按空行切开之后的三行。 */
 type Frame = { id?: string; event: string; data: string };
@@ -122,7 +117,7 @@ function seedFinishedRun(
 }
 
 test("已结束的轮次:`/trace` 按 seq 升序回全部事件", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const runId = seedFinishedRun(h.db.path, [
     { kind: "assistant_message", text: "第一句" },
     { kind: "assistant_message", text: "第二句" },
@@ -147,7 +142,7 @@ test("已结束的轮次:`/trace` 按 seq 升序回全部事件", async () => {
 });
 
 test("升级前跑过的轮次:`/trace` 回空列表而不是报错", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const runId = seedFinishedRun(h.db.path, []);
 
   const body = (await (await h.api("GET", `/runs/${runId}/trace`)).json()) as {
@@ -157,7 +152,7 @@ test("升级前跑过的轮次:`/trace` 回空列表而不是报错", async () =
 });
 
 test("不存在的轮次:`/trace` 与 `/trace/stream` 都回 404", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   assert.equal((await h.api("GET", "/runs/4242/trace")).status, 404);
   const stream = await sse(h, 4242);
   assert.equal(stream.status, 404);
@@ -165,7 +160,7 @@ test("不存在的轮次:`/trace` 与 `/trace/stream` 都回 404", async () => {
 });
 
 test("轨迹的可见范围与轮次详情一致:一格权限都没有的人,分到仓库就读得到两个端点", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const runId = seedFinishedRun(h.db.path, [{ kind: "assistant_message", text: "第一句" }]);
   seedHistoricalRepo(h);
 
@@ -200,7 +195,7 @@ test("轨迹的可见范围与轮次详情一致:一格权限都没有的人,分
 });
 
 test("已结束的轮次:stream 回放完直接发 end 并关闭", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const runId = seedFinishedRun(h.db.path, [
     { kind: "assistant_message", text: "第一句" },
     { kind: "assistant_message", text: "第二句" },
@@ -222,7 +217,7 @@ test("已结束的轮次:stream 回放完直接发 end 并关闭", async () => {
 });
 
 test("带 Last-Event-ID:只收到它之后的事件", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const runId = seedFinishedRun(h.db.path, [
     { kind: "assistant_message", text: "第一句" },
     { kind: "assistant_message", text: "第二句" },
@@ -238,7 +233,7 @@ test("带 Last-Event-ID:只收到它之后的事件", async () => {
 });
 
 test("带 ?after=:与 Last-Event-ID 同义,两者都在时取大的那个", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const runId = seedFinishedRun(h.db.path, [
     { kind: "assistant_message", text: "第一句" },
     { kind: "assistant_message", text: "第二句" },
@@ -303,7 +298,7 @@ function pausedReviewer(model: string): Reviewer & {
 
 test("进行中的轮次:先回放已有事件,再收到新写入的那条,结束时收到 end", async () => {
   const paused = pausedReviewer("test:global-model");
-  const h = await startReadyPanelHarness(cleanups, {
+  const h = await startReadyPanelHarness({
     buildReviewers: () => [paused],
   });
   assert.equal(
@@ -344,7 +339,7 @@ test("进行中的轮次:先回放已有事件,再收到新写入的那条,结�
 
 test("进行中的轮次:没有可回放的事件时响应头也立刻发出,静默期间有心跳注释帧", async () => {
   const paused = pausedReviewer("test:global-model");
-  const h = await startReadyPanelHarness(cleanups, {
+  const h = await startReadyPanelHarness({
     buildReviewers: () => [paused],
     traceHeartbeatMs: 30,
   });

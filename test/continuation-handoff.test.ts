@@ -9,16 +9,16 @@
  * 观察评论写入、持久化状态与重启选择结果。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { PublishUncertainError } from "../src/forge/forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
 import type { TraceEvent } from "../src/review/trace.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./support/git-fixture.ts";
-import { memoryForge, scriptedReviewer, verdictReviewer } from "./support/memory-forge.ts";
+import { testCleanups } from "./support/git-fixture.ts";
+import { query, setup as setupRepo } from "./support/batch-run.ts";
+import { scriptedReviewer, verdictReviewer } from "./support/memory-forge.ts";
 
 const BASE = `export function add(a, b) {
   return a + b;
@@ -47,26 +47,11 @@ const FINDING = {
   description: "sub 多减了 1",
 };
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 function setup() {
-  const repo = makeRepo({ base: { "src/calc.js": BASE }, head: { "src/calc.js": HEAD } });
-  const cache = makeCacheDir();
-  const db = makeDbPath();
-  cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
-
-  const forge = memoryForge({
-    pullRequest: {
-      number: 7,
-      title: "示例 PR",
-      draft: false,
-      baseSha: repo.baseSha,
-      headSha: repo.headSha,
-      cloneUrl: repo.dir,
-    },
+  const { repo, cache, db, forge } = setupRepo(cleanups, {
+    tree: { base: { "src/calc.js": BASE }, head: { "src/calc.js": HEAD } },
     changedFiles: [{ path: "src/calc.js", status: "modified" }],
   });
 
@@ -87,14 +72,6 @@ function continuing(): Reviewer[] {
   ];
 }
 
-function query(dbPath: string, sql: string): Record<string, unknown>[] {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
-  try {
-    return db.prepare(sql).all() as unknown as Record<string, unknown>[];
-  } finally {
-    db.close();
-  }
-}
 
 function findingRows(dbPath: string): {
   disposition: string;

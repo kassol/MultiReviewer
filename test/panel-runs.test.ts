@@ -3,7 +3,7 @@
  * 已移除仓库的历史照常出现;重跑走真实 runReview 加内存 Forge,不新增注入边界。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { DatabaseSync } from "node:sqlite";
 
@@ -18,12 +18,7 @@ import {
   startPanelHarness,
   startReadyPanelHarness,
 } from "./support/panel-harness.ts";
-import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+import { confirmEmptyRuleSet, seedRun as seedRunRow } from "./support/git-fixture.ts";
 
 type RunRow = {
   id: number;
@@ -70,30 +65,11 @@ function seedRun(
   verdicts: { model: string; findingId: number; missing?: boolean }[] = [],
 ): number {
   const store = openStore(dbPath);
-  const runId = store.startRun({
-    ...meta,
-    headSha: `sha-${meta.pullNumber}-${meta.startedAt}`,
-    changedFiles: 1,
-    changedLines: 1,
-    batchCount: 1,
-    reviewerPins: [],
-  });
-  store.finishRun(runId, {
-    finishedAt: meta.startedAt,
-    durationMs: 1,
-    failed: false,
-    outcomes: outcomes.map((o) => ({
-      model: o.model,
-      ...(o.failure === undefined ? {} : { failure: o.failure }),
-      findingCount: findings.filter((f) => f.model === o.model).length,
-      anomalyCount: 0,
-      rejectedToolCalls: 0,
-      anchorRejections: 0,
-      durationMs: 1,
-      ...(o.usage === undefined ? {} : { usage: o.usage }),
-    })),
+  const runId = seedRunRow(
+    store,
+    { ...meta, headSha: `sha-${meta.pullNumber}-${meta.startedAt}` },
     // 同一个 group 的几条是同一处:落成一条 Finding 加几条归属(ADR 0015)。
-    findings: [...new Set(findings.map((f, i) => f.group ?? i))].map((group) => {
+    [...new Set(findings.map((f, i) => f.group ?? i))].map((group) => {
       const members = findings.filter((f, i) => (f.group ?? i) === group);
       const first = members[0]!;
       return {
@@ -119,20 +95,30 @@ function seedRun(
         fingerprint: `fp-${group}`,
       };
     }),
+    outcomes.map((o) => ({
+      model: o.model,
+      ...(o.failure === undefined ? {} : { failure: o.failure }),
+      findingCount: findings.filter((f) => f.model === o.model).length,
+      anomalyCount: 0,
+      rejectedToolCalls: 0,
+      anchorRejections: 0,
+      durationMs: 1,
+      ...(o.usage === undefined ? {} : { usage: o.usage }),
+    })),
     // 漏给结论的按无法判断落库并标 missing(ADR 0016),时间流数的就是它。
-    verdicts: verdicts.map((v) => ({
+    verdicts.map((v) => ({
       model: v.model,
       findingId: v.findingId,
       verdict: v.missing === true ? ("unclear" as const) : ("fixed" as const),
       missing: v.missing === true,
     })),
-  });
+  );
   store.close();
   return runId;
 }
 
 test("时间流 API:倒序分页、逐条计数、已移除仓库的历史照常出现", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
 
   // 一条“已移除仓库”的历史(注册表里没有 ghost/gone)加一条带计数的:
   // 两个模型各报了行级 Finding,其中一组被 resolve,另有一条正文行不进已处置口径。
@@ -186,7 +172,7 @@ test("时间流 API:倒序分页、逐条计数、已移除仓库的历史照常
 });
 
 test("时间流 API:失败的模型照样出现在 JSON 里,带失败原因", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
@@ -206,7 +192,7 @@ test("时间流 API:失败的模型照样出现在 JSON 里,带失败原因", as
 });
 
 test("时间流 API:整轮用量是各 Reviewer 的 token 之和", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const first: ReviewerUsage = {
     inputTokens: 8,
     outputTokens: 2,
@@ -244,7 +230,7 @@ test("时间流 API:整轮用量是各 Reviewer 的 token 之和", async () => {
 });
 
 test("时间流 API:满页给 nextBefore 游标,翻页不重不漏;owner/repo 过滤", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   for (let i = 1; i <= 32; i += 1) {
     seedRun(
       h.db.path,
@@ -284,7 +270,7 @@ test("时间流 API:满页给 nextBefore 游标,翻页不重不漏;owner/repo �
 });
 
 test("重跑:注册仓库触发新 Review Run,同一 head commit 重复审合法", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
       .status,
@@ -326,7 +312,7 @@ test("重跑:注册仓库触发新 Review Run,同一 head commit 重复审合法
 });
 
 test("投递触发的 Review Run 不写调用者快照", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
       .status,
@@ -345,7 +331,7 @@ test("投递触发的 Review Run 不写调用者快照", async () => {
 });
 
 test("评审记录带 pull request 标题:投递触发的行有标题,升级前的旧行为空", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
       .status,
@@ -370,7 +356,7 @@ test("评审记录带 pull request 标题:投递触发的行有标题,升级前�
 });
 
 test("重跑:未注册仓库 409,PR 号不是数字 400", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const rerun = await h.api("POST", "/rerun", {
     owner: "ghost",
     repo: "gone",
@@ -391,7 +377,7 @@ test("重跑:未注册仓库 409,PR 号不是数字 400", async () => {
 });
 
 test("重跑:PR 号读不到 404,不开跑", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
       .status,
@@ -410,7 +396,7 @@ test("重跑:PR 号读不到 404,不开跑", async () => {
 });
 
 test("重跑:模型覆盖生效,经 buildReviewers 构建", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   seedAvailableModelService(h, "rerun-provider", ["override-model"]);
   assert.equal(
     (
@@ -425,7 +411,7 @@ test("重跑:模型覆盖生效,经 buildReviewers 构建", async () => {
     201,
   );
   confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
-  h.factoryCalls.length = 0;
+  h.runtimePlans.length = 0;
 
   const rerun = await h.api("POST", "/rerun", {
     owner: HARNESS_PR.owner,
@@ -435,13 +421,13 @@ test("重跑:模型覆盖生效,经 buildReviewers 构建", async () => {
   });
   assert.equal(rerun.status, 202);
   await h.settledAtLeast(1);
-  assert.deepEqual(h.factoryCalls.at(-1), [
+  assert.deepEqual(h.runtimePlans.at(-1)!.map((plan) => plan.spec), [
     { provider: "rerun-provider", model: "override-model" },
   ]);
 });
 
 test("时间流 API:每轮带漏复核条数,没有历史可复核的那轮是零", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const runId = seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
@@ -470,7 +456,7 @@ test("时间流 API:每轮带漏复核条数,没有历史可复核的那轮是�
 });
 
 test("轮次列表与轮次详情都带这一轮的模式,升级前的旧行按完整审查算", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
@@ -500,7 +486,7 @@ test("轮次列表与轮次详情都带这一轮的模式,升级前的旧行按�
 });
 
 test("轮次列表的代表段:升级前落的行按规则从归属现算(issue #278)", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   // 同一处的两条归属:一条说得长、一条说得短,代表段该取长的那条。
   const runId = seedRun(
     h.db.path,

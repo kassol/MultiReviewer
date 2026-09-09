@@ -8,12 +8,12 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { openStore } from "../src/review/store.ts";
-import type { RuleAgent, RuleAgentItem, RuleAgentRequest } from "../src/reviewer/rule-agent.ts";
+import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
 import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
-import { scriptedReviewer } from "./support/memory-forge.ts";
+import { scriptedReviewer, scriptedRuleAgent } from "./support/memory-forge.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
@@ -23,11 +23,6 @@ import {
   type PanelHarness,
   type PanelHarnessOptions,
 } from "./support/panel-harness.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 const NOTE = "这类越界要在边界上一次判掉,不要每处再判";
 
@@ -96,20 +91,9 @@ const reportingReviewers: NonNullable<PanelHarnessOptions["buildReviewers"]> = (
  * 脚本化规则 agent,记下每次收到的任务。产出由回调给出:提案要指向的那条现有规则的
  * 标识建库之后才知道,固定值给不出来。
  */
-function scriptedRuleAgent(
-  produce: () => { items: RuleAgentItem[]; failure?: string },
-): RuleAgent & { calls: RuleAgentRequest[] } {
-  const calls: RuleAgentRequest[] = [];
-  const agent = async (request: RuleAgentRequest) => {
-    calls.push(request);
-    return produce();
-  };
-  return Object.assign(agent, { calls });
-}
-
 /** 一个已注册、已确认空知识集的仓库,跑完一轮并落下两条带行级评论的 Finding。 */
 async function harnessWithFindings(ruleAgent: RuleAgent): Promise<PanelHarness> {
-  const h = await startReadyPanelHarness(cleanups, {
+  const h = await startReadyPanelHarness({
     ruleAgent,
     buildReviewers: reportingReviewers,
   });

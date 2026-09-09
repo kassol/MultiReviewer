@@ -5,18 +5,13 @@
  * 往它上面推一个 commit 即模拟作者推代码。断言只看响应。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import {
   HARNESS_PR,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 type Branch = { name: string; isDefault: boolean };
 type Commit = {
@@ -44,14 +39,8 @@ type Tag = {
 
 const REPO_QUERY = `owner=${HARNESS_PR.owner}&repo=${HARNESS_PR.repo}`;
 
-async function registeredHarness(): Promise<PanelHarness> {
-  const harness = await startReadyPanelHarness(cleanups);
-  assert.equal(
-    (await harness.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
-      .status,
-    201,
-  );
-  return harness;
+function registeredHarness(): Promise<PanelHarness> {
+  return startReadyPanelHarness({ registerRepo: true });
 }
 
 async function branchPage(

@@ -10,21 +10,19 @@
  */
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
-import { makeDbPath } from "./support/git-fixture.ts";
+import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
+  seedRepo,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 const PASSWORD = "rules-test-password";
 
@@ -51,19 +49,6 @@ type RuleSetResponse = {
 };
 
 /** 直接落一行注册表:这几条用例要的是仓库存在,不是它的 hook。 */
-function seedRepo(h: PanelHarness, repoId: number, owner: string, repo: string): number {
-  const store = openStore(h.db.path);
-  try {
-    assert.equal(
-      store.registerRepo({ repoId, owner, repo, generation: 1, key: `key-${repoId}` }),
-      true,
-    );
-  } finally {
-    store.close();
-  }
-  return repoId;
-}
-
 /**
  * 落一条基点探索出处的评审规则。那条写入链路是后续票的范围,这里按 schema 直接写。
  * 顺带补上版本 1 那一行:有规则就说明这个仓库确认过知识集(issue #206 的门禁判据)。
@@ -261,7 +246,7 @@ test("知识集只给当前生效的规则,废止的那条不在集内", () => {
 });
 
 test("面板按仓库读知识集:分配内可读,未确认的仓库版本为 null", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const cookie = await scopedUser(h, "reader", [alpha]);
 
@@ -304,7 +289,7 @@ test("面板按仓库读知识集:分配内可读,未确认的仓库版本为 nu
 });
 
 test("分配外的仓库与没注册的 id 读知识集同形 404", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const beta = seedRepo(h, 102, "acme", "beta");
   const cookie = await scopedUser(h, "reader", [alpha]);
@@ -380,7 +365,7 @@ test("直接废止推进一版,历史版本的快照仍取到废止前那一组"
 });
 
 test("面板直接废止一条条目:knowledge:write 放行,版本推进,废止的仍读得到", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const cookie = await ruleWriterCookie(h, "rule-writer", [alpha]);
   const ruleId = seedActiveRule(h, alpha, {
@@ -404,7 +389,7 @@ test("面板直接废止一条条目:knowledge:write 放行,版本推进,废止�
 });
 
 test("直改那四个端点已经撤掉:手写条目与草案手填一律回 404", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const cookie = await ruleWriterCookie(h, "rule-writer", [alpha]);
   // 有 `knowledge:write` 也没有这四条路径了(issue #299,ADR 0028):人写的是修订意图,
@@ -424,7 +409,7 @@ test("直改那四个端点已经撤掉:手写条目与草案手填一律回 404
 });
 
 test("没有 knowledge:write 的人废止不动条目,分配外的仓库同形 404", async () => {
-  const h = await startReadyPanelHarness(cleanups);
+  const h = await startReadyPanelHarness();
   const alpha = seedRepo(h, 101, "acme", "alpha");
   const beta = seedRepo(h, 102, "acme", "beta");
   // 读得到知识集的人不等于改得动:这个账号有仓库分配,没有权限格。

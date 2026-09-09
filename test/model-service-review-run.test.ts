@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { buildReviewers, modelIdentity } from "../src/config.ts";
 import { encryptCredential } from "../src/panel/credential-crypto.ts";
@@ -15,10 +15,6 @@ import {
 } from "./support/panel-harness.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 function commitRunService(
   h: PanelHarness,
   expectedVersion: number | null,
@@ -80,9 +76,8 @@ function commitRunService(
   }
 }
 
-
 test("凭据未配置时只失败该 Reviewer 并留下固定服务版本审计", async () => {
-  const h = await startPanelHarness(cleanups, { buildReviewers });
+  const h = await startPanelHarness({ buildReviewers });
   const historicalHook = seedHistoricalRepo(h);
   assert.equal(
     commitRunService(h, null, {
@@ -108,7 +103,7 @@ test("凭据未配置时只失败该 Reviewer 并留下固定服务版本审计"
 
 test("旧版内置目标证明不了时不解密凭据，也不生成可执行 Reviewer 计划", async () => {
   const spec = { provider: "openai", model: "drift-model" };
-  const h = await startPanelHarness(cleanups, {
+  const h = await startPanelHarness({
     reviewers: [spec],
     buildReviewers: (plans) => plans.map((plan) => scriptedReviewer(plan.spec.model, [])),
   });
@@ -153,13 +148,16 @@ test("旧版内置目标证明不了时不解密凭据，也不生成可执行 R
   await h.settledAtLeast(1);
   const plan = h.runtimePlans[0]![0]!;
   assert.equal(plan.credential, null);
-  assert.equal(h.snapshots[0]!.has(spec.provider), false);
+  assert.equal(
+    h.runtimePlans[0]!.some((p) => p.spec.provider === spec.provider && p.credential !== null),
+    false,
+  );
   assert.match(plan.failure ?? "", /openai 的调用目标无法确认（需重新验证）/);
 });
 
 test("迁移遗留的冲突标记不阻止当前已无撞名的自定义服务运行", async () => {
   const spec = { provider: "recovered-custom", model: "recovered-model" };
-  const h = await startPanelHarness(cleanups, {
+  const h = await startPanelHarness({
     reviewers: [spec],
     buildReviewers: (plans) => plans.map((plan) => scriptedReviewer(plan.spec.model, [])),
   });
@@ -183,7 +181,7 @@ test("迁移遗留的冲突标记不阻止当前已无撞名的自定义服务�
 test("模型来源消失只失败该 Reviewer,同轮可用同伴照常完成", async () => {
   const available = { provider: "test", model: "global-model" };
   const vanished = { provider: "test", model: "vanished-model" };
-  const h = await startPanelHarness(cleanups, {
+  const h = await startPanelHarness({
     reviewers: [available, vanished],
     buildReviewers: (plans) =>
       plans.map((plan) => {
@@ -239,7 +237,7 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
   }[] = [];
   let buildCount = 0;
   let firstRunCalls = 0;
-  const h = await startPanelHarness(cleanups, {
+  const h = await startPanelHarness({
     buildReviewers: (plans) => {
       buildCount += 1;
       const run = buildCount;
@@ -328,7 +326,16 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
       [1, "https://service-v1.example.test/v1", "openai-completions", "Version One", "key-one"],
     ],
   );
-  assert.deepEqual([...h.snapshots[0]!], [["test", "key-one"]]);
+  assert.deepEqual(
+    [
+      ...new Map(
+        h.runtimePlans[0]!.flatMap((p) =>
+          p.credential === null ? [] : [[p.spec.provider, p.credential] as const],
+        ),
+      ),
+    ],
+    [["test", "key-one"]],
+  );
   assert.equal(JSON.stringify(h.runtimePlans[0]).includes("secret-never-selected"), false);
 
   const firstStored = openStore(h.db.path);

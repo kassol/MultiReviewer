@@ -8,12 +8,12 @@
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import type { ReviewerSpec } from "../src/config.ts";
 import { openStore } from "../src/review/store.ts";
 import { createWebhookServer } from "../src/webhook/server.ts";
-import { confirmEmptyRuleSet, makeCacheDir, makeDbPath } from "./support/git-fixture.ts";
+import { confirmEmptyRuleSet, makeCacheDir, makeDbPath, testCleanups } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   HARNESS_PR as PR,
@@ -27,13 +27,10 @@ import {
   startReadyPanelHarness,
 } from "./support/panel-harness.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 const startHarness = (): ReturnType<typeof startReadyPanelHarness> =>
-  startReadyPanelHarness(cleanups);
+  startReadyPanelHarness();
 
 test("注册建好 hook,种子 PR 的投递被受理并跑完审查", async () => {
   const h = await startHarness();
@@ -138,7 +135,7 @@ test("hook 删除失败时移除被阻止,注册保持原样", async () => {
 });
 
 test("配置了模型覆盖的仓库,Review Run 用覆盖后的组合", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedAvailableModelService(h, "test", ["global-model", "override-model"]);
   const override: ReviewerSpec[] = [
     { provider: "test", model: "override-model" },
@@ -156,7 +153,10 @@ test("配置了模型覆盖的仓库,Review Run 用覆盖后的组合", async ()
 
   // 组装只在 Review Run 开始时发生一次,用的是覆盖组合。落库的执行结果归属覆盖后的
   // 模型,不见全局模型。
-  assert.deepEqual(h.factoryCalls, [override]);
+  assert.deepEqual(
+    h.runtimePlans.map((plans) => plans.map((plan) => plan.spec)),
+    [override],
+  );
   const sqlite = new DatabaseSync(h.db.path);
   try {
     const rows = sqlite.prepare("SELECT model FROM reviewer_outcome").all() as {
@@ -212,7 +212,7 @@ const auxiliaryModelView = async (h: PanelHarness): Promise<AuxiliaryModelView> 
 };
 
 test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取值 400 一项都不写", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
@@ -316,7 +316,7 @@ test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取�
 });
 
 test("仓库配置的期望版本过期即 409,响应带当前值", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   const override: ReviewerSpec[] = [{ provider: "test", model: "swapped-model" }];
@@ -379,7 +379,7 @@ test("仓库配置的期望版本过期即 409,响应带当前值", async () => 
 });
 
 test("仓库覆盖里已有失效模型:只改等级与辅助模型照常保存,改组合仍被拒", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedAvailableModelService(h, "test", ["global-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   // 升级前留下的一份覆盖,里面的模型此刻已经失效(播种走库,与 harness 播种全局组合同律)。
@@ -439,7 +439,7 @@ test("仓库覆盖里已有失效模型:只改等级与辅助模型照常保存,
 });
 
 test("仓库辅助模型的档位判据与全局同一套:模型不支持的那一档整份拒收", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   // 播种的模型不声明推理能力,它只支持「关闭」。
   seedAvailableModelService(h, "test", ["global-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
@@ -471,7 +471,7 @@ test("仓库辅助模型的档位判据与全局同一套:模型不支持的那�
 });
 
 test("模型覆盖与最低报告等级的旧端点回没有这个端点", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedAvailableModelService(h, "test", ["global-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
 
@@ -488,7 +488,7 @@ test("模型覆盖与最低报告等级的旧端点回没有这个端点", async
 });
 
 test("辅助模型三级解析:仓库覆盖 ?? 全局 ?? 生效组合第一个,换了组合退路跟着变", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
   seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
@@ -571,7 +571,7 @@ test("辅助模型三级解析:仓库覆盖 ?? 全局 ?? 生效组合第一个,�
 });
 
 test("旧库的仓库读回整块版本号 0 与辅助模型 null,解析退回组合第一个", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   const override: ReviewerSpec[] = [{ provider: "test", model: "swapped-model" }];

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { decryptCredential, encryptCredential } from "../src/panel/credential-crypto.ts";
 import { hashPassword } from "../src/panel/password.ts";
@@ -19,11 +19,6 @@ import {
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
-
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
 
 const PASSWORD = "model-service-reader-password";
 const PASSWORD_HASH = await hashPassword(PASSWORD);
@@ -412,7 +407,7 @@ function openRouterRow(id: string): Record<string, unknown> {
 }
 
 test("内置候选预览只凭凭据写权限发现并脱敏，且不创建服务端草稿", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const writerCookie = await cookieFor(h, "builtin-writer", ["credential:write"]);
   const wrongCookie = await cookieFor(h, "model-only-writer", ["model:write"]);
   const plaintext = "preview-secret-never-returned";
@@ -468,7 +463,7 @@ test("内置预览失败只返回安全摘要与 request id，日志用同一 id
   const provider = "deepseek";
   const credential = "preview-failure-secret";
   const upstreamDetail = "upstream-body-marker /private/runtime/models.json";
-  const h = await startPanelHarness(cleanups, {
+  const h = await startPanelHarness({
     reviewers: [],
     discoverModelServiceModels: async () => ({
       ok: false,
@@ -508,7 +503,7 @@ test("内置预览失败只返回安全摘要与 request id，日志用同一 id
 });
 
 test("最终提交重新发现并真实推理后原子写入加密凭据、目录与版本", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const cookie = await cookieFor(h, "builtin-committer", ["credential:write"]);
   const credential = "commit-secret-never-returned";
   const priorOffline = process.env["PI_OFFLINE"];
@@ -595,7 +590,7 @@ test("最终提交重新发现并真实推理后原子写入加密凭据、目�
  * 自定义模型服务,不猜第一项。拒绝发生在真实推理之前,库里零写入。
  */
 test("预览与最终目录漂移后验证模型没有自己的目标：混合协议下明确拒绝，不推理、库里零写入", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const cookie = await cookieFor(h, "builtin-drift-writer", ["credential:write"]);
   const credential = "drift-secret-never-returned";
   const previewModel = "multireviewer/preview-only-135";
@@ -648,7 +643,7 @@ test("预览与最终目录漂移后验证模型没有自己的目标：混合�
 });
 
 test("最终目录失败后仍真实验证所选模型，成功则只提交失败状态与目标绑定补录", async () => {
-  const h = await startPanelHarness(cleanups, {
+  const h = await startPanelHarness({
     reviewers: [],
     discoverModelServiceModels: async () => ({
       ok: false,
@@ -697,8 +692,8 @@ test("最终目录失败后仍真实验证所选模型，成功则只提交失�
 });
 
 test("真实推理失败不创建新服务，凭据轮换失败也完整保留旧版本", async () => {
-  const newHarness = await startPanelHarness(cleanups, { reviewers: [] });
-  const existingHarness = await startPanelHarness(cleanups, { reviewers: [] });
+  const newHarness = await startPanelHarness({ reviewers: [] });
+  const existingHarness = await startPanelHarness({ reviewers: [] });
   const newCookie = await cookieFor(newHarness, "builtin-new-failure", ["credential:write"]);
   const existingCookie = await cookieFor(existingHarness, "builtin-rotation-failure", ["credential:write"]);
   const oldStore = openStore(existingHarness.db.path);
@@ -782,7 +777,7 @@ test("真实推理失败不创建新服务，凭据轮换失败也完整保留�
 });
 
 test("并发旧候选只有一个能推进版本，后到提交与旧预览都返回版本冲突", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const cookie = await cookieFor(h, "builtin-concurrent-writer", ["credential:write"]);
   const firstSecret = "concurrent-first-secret";
   const secondSecret = "concurrent-second-secret";
@@ -852,7 +847,7 @@ test("并发旧候选只有一个能推进版本，后到提交与旧预览都�
 });
 
 test("同目标重验解密已存待重验凭据，真实推理成功后原子推进为已验证", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const writerCookie = await cookieFor(h, "builtin-reverify-writer", ["credential:write"]);
   const wrongCookie = await cookieFor(h, "builtin-reverify-model-writer", ["model:write"]);
   const credential = "pending-stored-secret";
@@ -924,7 +919,7 @@ test("同目标重验解密已存待重验凭据，真实推理成功后原子�
 });
 
 test("凭据写用户可用自定义服务同目标的已存凭据重新验证", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const cookie = await cookieFor(h, "custom-reverify-writer", ["credential:write"]);
   const provider = "custom-reverify";
   const baseUrl = "https://custom-reverify.example/v1";
@@ -990,7 +985,7 @@ test("凭据写用户可用自定义服务同目标的已存凭据重新验证",
 });
 
 test("删除内置凭据列出全部引用位置，清空引用后才原子推进为未配置", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const writerCookie = await cookieFor(h, "builtin-delete-writer", ["credential:write"]);
   const wrongCookie = await cookieFor(h, "builtin-delete-model-writer", ["model:write"]);
   const seed = openStore(h.db.path);
@@ -1119,7 +1114,7 @@ test("删除内置凭据列出全部引用位置，清空引用后才原子推�
 });
 
 test("辅助模型与模型组合同等受引用保护:两处位置进引用清单,删凭据被阻止", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const writerCookie = await cookieFor(h, "auxiliary-reference-writer", ["credential:write"]);
   const seed = openStore(h.db.path);
   assert.equal(seed.commitModelServiceVersion(null, service("aux-service")), 1);
@@ -1190,7 +1185,7 @@ test("辅助模型与模型组合同等受引用保护:两处位置进引用清�
 });
 
 test("凭据写用户可删除自定义模型服务凭据并保留目标与模型来源", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const cookie = await cookieFor(h, "custom-delete-writer", ["credential:write"]);
   const provider = "custom-delete";
   const baseUrl = "https://custom-delete.example/v1";
@@ -1227,7 +1222,7 @@ test("凭据写用户可删除自定义模型服务凭据并保留目标与模�
 });
 
 test("模型服务读取按模型与凭据权限独立裁剪，合并来源并保留运行基线", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const secrets = seedServices(h);
   const modelCookie = await cookieFor(h, "model-reader", ["model:read"]);
   const credentialCookie = await cookieFor(h, "credential-reader", ["credential:read"]);
@@ -1595,7 +1590,7 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
 });
 
 test("模型目录支持批量停用与重新启用，并拒绝未知模型", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   seedServices(h);
   const modelWriter = await cookieFor(h, "model-state-writer", ["model:write"]);
 
@@ -1654,7 +1649,7 @@ test("模型目录支持批量停用与重新启用，并拒绝未知模型", as
 });
 
 test("自定义服务中与 Pi 同 model id 的信息来源按字段投影", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const provider = "sub2-openai";
   const baseUrl = "https://sub2.example/v1";
   const api = "openai-completions" as const;
@@ -1739,7 +1734,7 @@ test("自定义服务中与 Pi 同 model id 的信息来源按字段投影", asy
 });
 
 test("模型服务投影给出运行能力与引用位置，并隐藏没有管理事实的内置 provider", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const store = openStore(h.db.path);
   const baseUrl = "https://runtime-gateway.example/v1";
   const targetFingerprint = modelServiceTargetFingerprint(baseUrl, "openai-completions");
@@ -1838,7 +1833,7 @@ test("模型服务投影给出运行能力与引用位置，并隐藏没有管�
     }],
   });
 
-  const referencedHarness = await startPanelHarness(cleanups, {
+  const referencedHarness = await startPanelHarness({
     reviewers: [{ provider: "openrouter", model: "missing" }],
   });
   const referencedStore = openStore(referencedHarness.db.path);
@@ -1895,7 +1890,7 @@ test("组合候选只含可用模型与已选失效模型，内置目标漂移�
     { provider: "openai", model: "selected-drift" },
     { provider: "candidate-custom", model: "selected-missing" },
   ];
-  const h = await startPanelHarness(cleanups, { reviewers: selected });
+  const h = await startPanelHarness({ reviewers: selected });
   const store = openStore(h.db.path);
   assert.equal(store.commitModelServiceVersion(null, service("openai", {
     targetFingerprint: "stale-openai-target",
@@ -1945,7 +1940,7 @@ test("组合候选只含可用模型与已选失效模型，内置目标漂移�
 });
 
 test("Pi 内置 provider 搜索接受任一相关读写权限并标出已配置与名字冲突", async () => {
-  const h = await startPanelHarness(cleanups);
+  const h = await startPanelHarness();
   const secrets = seedServices(h);
   const permissions: PanelPermission[] = [
     "model:read",
@@ -1992,7 +1987,7 @@ test("Pi 内置 provider 搜索接受任一相关读写权限并标出已配置�
 });
 
 test("自定义候选预览无草稿，最终重新发现与真实推理后原子创建", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const combined = await cookieFor(h, "custom-create-writer", ["model:write", "credential:write"]);
   const modelOnly = await cookieFor(h, "custom-create-model-only", ["model:write"]);
   const credentialOnly = await cookieFor(h, "custom-create-credential-only", ["credential:write"]);
@@ -2104,7 +2099,7 @@ test("自定义候选预览无草稿，最终重新发现与真实推理后原�
 
 test("自定义模型发现失败无需验证模型，返回 request id 且候选保持数据库零写入", async () => {
   const credential = "custom-preview-failure-secret";
-  const h = await startPanelHarness(cleanups, {
+  const h = await startPanelHarness({
     reviewers: [],
     discoverModelServiceModels: async () => ({
       ok: false,
@@ -2148,7 +2143,7 @@ test("自定义模型发现失败无需验证模型，返回 request id 且候�
 
 test("未捕获的模型服务异常只返回安全摘要与 request id", async () => {
   const rawFailure = "upstream exploded at /private/provider.json";
-  const h = await startPanelHarness(cleanups, {
+  const h = await startPanelHarness({
     reviewers: [],
     discoverModelServiceModels: async () => {
       throw new Error(rawFailure);
@@ -2185,14 +2180,14 @@ test("自定义最终发现失败可由真实推理提交，推理失败不留�
   const injectedFailure =
     `目录失败 authorization: Bearer ${discoveryCredential}; ` +
     `master-key=${PANEL_CREDENTIAL_MASTER_KEY}`;
-  const successHarness = await startPanelHarness(cleanups, {
+  const successHarness = await startPanelHarness({
     reviewers: [],
     discoverModelServiceModels: async () => ({
       ok: false,
       failure: { code: "request-error", message: injectedFailure },
     }),
   });
-  const failureHarness = await startPanelHarness(cleanups, {
+  const failureHarness = await startPanelHarness({
     reviewers: [],
     discoverModelServiceModels: async () => ({
       ok: false,
@@ -2302,7 +2297,7 @@ test("自定义最终发现失败可由真实推理提交，推理失败不留�
 });
 
 test("自定义凭据轮换失败保留完整旧版本，同目标成功轮换保留全部来源", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const cookie = await cookieFor(h, "custom-rotation-writer", ["model:write", "credential:write"]);
   const provider = "corp-rotate";
   const baseUrl = "https://rotate.example/v1";
@@ -2418,7 +2413,7 @@ test("自定义凭据轮换失败保留完整旧版本，同目标成功轮换�
 });
 
 test("自定义目标切换只带入新发现与明确重录来源，并返回完整引用阻断位置", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const cookie = await cookieFor(h, "custom-target-writer", ["model:write", "credential:write"]);
   const provider = "corp-switch";
   const oldBaseUrl = "https://old-switch.example/v1";
@@ -2640,7 +2635,7 @@ test("自定义目标切换只带入新发现与明确重录来源，并返回�
 });
 
 test("Pi 内置名称后来冲突时自定义服务自动停用，冲突消失后自动恢复且不改写版本", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const collisionBaseUrl = "https://collision.example/v1";
   const recoveryBaseUrl = "https://recovered.example/v1";
   const api = "openai-completions";
@@ -2729,7 +2724,7 @@ test("Pi 内置名称后来冲突时自定义服务自动停用，冲突消失�
 });
 
 test("冲突自定义 provider 通过维护端点改名并立即刷新模型服务投影", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const cookie = await cookieFor(h, "conflict-rename-writer", [
     "model:read",
     "model:write",
@@ -2803,7 +2798,7 @@ test("冲突自定义 provider 通过维护端点改名并立即刷新模型服�
 });
 
 test("冲突 provider 改名同事务重写辅助模型引用:全局与仓库覆盖的 provider 跟着换", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const cookie = await cookieFor(h, "conflict-rename-auxiliary", [
     "model:read",
     "model:write",
@@ -2875,7 +2870,7 @@ test("冲突 provider 改名同事务重写辅助模型引用:全局与仓库覆
 });
 
 test("冲突 provider 改名返回完整缺失引用并保持 HTTP 前后的数据库不变", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const cookie = await cookieFor(h, "conflict-rename-blocked", [
     "model:write",
     "credential:write",
@@ -2947,7 +2942,7 @@ test("冲突 provider 改名返回完整缺失引用并保持 HTTP 前后的数�
 });
 
 test("自定义服务删除返回完整引用阻断，失败整笔回滚，成功后历史 Review Run 保留", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const cookie = await cookieFor(h, "custom-delete-writer", ["model:write", "credential:write"]);
   const provider = "corp-delete";
   const baseUrl = "https://delete.example/v1";
@@ -3131,7 +3126,7 @@ test("自定义服务删除返回完整引用阻断，失败整笔回滚，成�
 });
 
 test("并发同名创建与同版本修改都只有先提交者成功，旧版本预览不外发凭据", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const cookie = await cookieFor(h, "custom-concurrent-writer", ["model:write", "credential:write"]);
   const provider = "corp-concurrent";
   const firstCredential = "custom-concurrent-first-secret";
@@ -3234,7 +3229,7 @@ test("并发同名创建与同版本修改都只有先提交者成功，旧版�
 });
 
 test("新建自定义服务不能占用当前 Pi 内置名称且不会发候选网络请求", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const cookie = await cookieFor(h, "custom-name-collision-writer", [
     "model:write",
     "credential:write",
@@ -3277,7 +3272,7 @@ test("手动刷新成功整批替换自动快照，失败推进版本并保留�
   const ciphertext = encryptCredential(PANEL_CREDENTIAL_MASTER_KEY, credential);
   let discovery: "success" | "failure" = "success";
   const discoveryCredentials: string[] = [];
-  const h = await startPanelHarness(cleanups, {
+  const h = await startPanelHarness({
     reviewers: [],
     discoverModelServiceModels: async (candidate) => {
       discoveryCredentials.push(candidate.credential);
@@ -3422,7 +3417,7 @@ test("模型补录只做一次真实推理并绑定当前目标，失败与旧�
   const targetFingerprint = modelServiceTargetFingerprint(baseUrl, api);
   const credential = "supplement-secret-never-returned";
   const ciphertext = encryptCredential(PANEL_CREDENTIAL_MASTER_KEY, credential);
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  const h = await startPanelHarness({ reviewers: [] });
   const modelWriter = await cookieFor(h, "supplement-model-writer", ["model:write"]);
   const credentialWriter = await cookieFor(h, "supplement-credential-writer", ["credential:write"]);
   const seed = openStore(h.db.path);
@@ -3644,7 +3639,7 @@ test("删除补录在自动来源仍在时成功，仅唯一来源按完整标�
   const baseUrl = "https://supplement-delete.example/v1";
   const api = "openai-completions";
   const targetFingerprint = modelServiceTargetFingerprint(baseUrl, api);
-  const h = await startPanelHarness(cleanups, { reviewers: [], credentialMasterKey: undefined });
+  const h = await startPanelHarness({ reviewers: [], credentialMasterKey: undefined });
   const modelWriter = await cookieFor(h, "supplement-delete-model-writer", ["model:write"]);
   const credentialWriter = await cookieFor(
     h,

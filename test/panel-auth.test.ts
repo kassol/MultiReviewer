@@ -1,19 +1,16 @@
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import { createWebhookServer } from "../src/webhook/server.ts";
-import { makeCacheDir, makeDbPath } from "./support/git-fixture.ts";
+import { makeCacheDir, makeDbPath, testCleanups } from "./support/git-fixture.ts";
 
 const USERNAME = "admin";
 const PASSWORD = "test-password";
 const PASSWORD_HASH = await hashPassword(PASSWORD);
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
+const cleanups = testCleanups();
 
 async function startPanel(options: { empty?: boolean; now?: () => number } = {}) {
   const cache = makeCacheDir();

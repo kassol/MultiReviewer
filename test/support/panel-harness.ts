@@ -20,6 +20,7 @@ import {
 } from "../../src/webhook/server.ts";
 import { hashPassword } from "../../src/panel/password.ts";
 import { encryptCredential } from "../../src/panel/credential-crypto.ts";
+import type { PanelPermission } from "../../src/panel/permissions.ts";
 import type { DiscoveredModel } from "../../src/reviewer/model-service-runtime.ts";
 import { modelServiceTargetFingerprint, openStore } from "../../src/review/store.ts";
 import { startFakeGitea, type FakeGitea } from "./fake-gitea.ts";
@@ -28,6 +29,7 @@ import {
   makeCacheDir,
   makeDbPath,
   makeRepo,
+  testCleanups,
   type RepoFixture,
 } from "./git-fixture.ts";
 import { memoryForge, scriptedReviewer, type MemoryForge } from "./memory-forge.ts";
@@ -71,11 +73,8 @@ export type PanelHarness = {
   consolidations: { repoId: number; failure?: string }[];
   /** 后台跑完的人工提议(issue #294),按结束先后。 */
   revisionIntents: { intentId: number; failure?: string }[];
-  factoryCalls: (readonly ReviewerSpec[])[];
   /** 每次组装 Reviewer 时拿到的完整本轮运行计划。 */
   runtimePlans: (readonly ReviewerRuntimePlan[])[];
-  /** 兼容既有凭据边界断言的明文快照，仅由本轮计划投影。 */
-  snapshots: ReadonlyMap<string, string>[];
   api(method: string, path: string, body?: unknown): Promise<Response>;
   deliverViaHook(
     headSha: string,
@@ -179,12 +178,43 @@ export type PanelHarnessOptions = {
   ruleAgent?: WebhookServerDeps["ruleAgent"];
   /** 排空状态(issue #249)。用例自己 `begin()` 之后再调端点,验排空期间的回绝。 */
   drain?: Drain;
+  /**
+   * 仅 `startReadyPanelHarness` 认:起完就用 `GITEA_REPO` 的坐标注册这个仓库
+   * (`POST /repos`),断言 201。省略即不注册。
+   */
+  registerRepo?: boolean;
 };
 
+/**
+ * 「按结束先后记一条 + 等到至少 N 条已结束」这套三件套的工厂。harness 上六路后台
+ * 回调(审查轮次、工作副本准备、基点探索、处置反哺、知识整理、人工提议)各建一份。
+ */
+function counter<T>(): { entries: T[]; push(entry: T): void; atLeast(count: number): Promise<void> } {
+  const entries: T[] = [];
+  let waiting: { count: number; resolve: () => void }[] = [];
+  return {
+    entries,
+    push(entry: T): void {
+      entries.push(entry);
+      waiting = waiting.filter((w) => {
+        if (entries.length < w.count) return true;
+        w.resolve();
+        return false;
+      });
+    },
+    atLeast(count: number): Promise<void> {
+      if (entries.length >= count) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        waiting.push({ count, resolve });
+      });
+    },
+  };
+}
+
 export async function startPanelHarness(
-  cleanups: (() => void)[],
   options: PanelHarnessOptions = {},
 ): Promise<PanelHarness> {
+  const cleanups = testCleanups();
   const credentialMasterKey =
     "credentialMasterKey" in options
       ? options.credentialMasterKey
@@ -282,35 +312,19 @@ export async function startPanelHarness(
   };
   const forge = options.wrapForge === undefined ? recording : options.wrapForge(recording);
 
-  const factoryCalls: (readonly ReviewerSpec[])[] = [];
   const runtimePlans: (readonly ReviewerRuntimePlan[])[] = [];
-  const snapshots: ReadonlyMap<string, string>[] = [];
-  const settled: { event: NormalizedEvent; error?: unknown }[] = [];
-  let waiting: { count: number; resolve: () => void }[] = [];
-  const worktrees: { repoId: number; failure?: string }[] = [];
-  let worktreeWaiting: { count: number; resolve: () => void }[] = [];
-  const explorations: { repoId: number; failure?: string }[] = [];
-  let explorationWaiting: { count: number; resolve: () => void }[] = [];
-  const dispositionFeedbacks: { findingId: number; failure?: string }[] = [];
-  let feedbackWaiting: { count: number; resolve: () => void }[] = [];
-  const consolidations: { repoId: number; failure?: string }[] = [];
-  let consolidationWaiting: { count: number; resolve: () => void }[] = [];
-  const revisionIntents: { intentId: number; failure?: string }[] = [];
-  let intentWaiting: { count: number; resolve: () => void }[] = [];
+  const settled = counter<{ event: NormalizedEvent; error?: unknown }>();
+  const worktrees = counter<{ repoId: number; failure?: string }>();
+  const explorations = counter<{ repoId: number; failure?: string }>();
+  const dispositionFeedbacks = counter<{ findingId: number; failure?: string }>();
+  const consolidations = counter<{ repoId: number; failure?: string }>();
+  const revisionIntents = counter<{ intentId: number; failure?: string }>();
 
   const server = createWebhookServer({
     forges: { gitea: forge },
     ...(options.drain === undefined ? {} : { drain: options.drain }),
     buildReviewers: (plans) => {
       runtimePlans.push(plans);
-      factoryCalls.push(plans.map((plan) => plan.spec));
-      snapshots.push(
-        new Map(
-          plans.flatMap((plan) =>
-            plan.credential === null ? [] : [[plan.spec.provider, plan.credential] as const],
-          ),
-        ),
-      );
       if (options.buildReviewers !== undefined) return options.buildReviewers(plans);
       return plans.map((plan) => scriptedReviewer(plan.spec.model, []));
     },
@@ -334,51 +348,21 @@ export async function startPanelHarness(
     ruleAgent: options.ruleAgent ?? (async () => ({ items: [] })),
     onRuleExplorationSettled: (repoId, failure) => {
       explorations.push({ repoId, ...(failure === undefined ? {} : { failure }) });
-      explorationWaiting = explorationWaiting.filter((w) => {
-        if (explorations.length < w.count) return true;
-        w.resolve();
-        return false;
-      });
     },
     onRuleConsolidationSettled: (repoId, failure) => {
       consolidations.push({ repoId, ...(failure === undefined ? {} : { failure }) });
-      consolidationWaiting = consolidationWaiting.filter((w) => {
-        if (consolidations.length < w.count) return true;
-        w.resolve();
-        return false;
-      });
     },
     onRevisionIntentSettled: (intentId, failure) => {
       revisionIntents.push({ intentId, ...(failure === undefined ? {} : { failure }) });
-      intentWaiting = intentWaiting.filter((w) => {
-        if (revisionIntents.length < w.count) return true;
-        w.resolve();
-        return false;
-      });
     },
     onDispositionFeedbackSettled: (findingId, failure) => {
       dispositionFeedbacks.push({ findingId, ...(failure === undefined ? {} : { failure }) });
-      feedbackWaiting = feedbackWaiting.filter((w) => {
-        if (dispositionFeedbacks.length < w.count) return true;
-        w.resolve();
-        return false;
-      });
     },
     onWorktreePrepared: (repoId, failure) => {
       worktrees.push({ repoId, ...(failure === undefined ? {} : { failure }) });
-      worktreeWaiting = worktreeWaiting.filter((w) => {
-        if (worktrees.length < w.count) return true;
-        w.resolve();
-        return false;
-      });
     },
     onRunSettled: (event, error) => {
       settled.push({ event, ...(error === undefined ? {} : { error }) });
-      waiting = waiting.filter((w) => {
-        if (settled.length < w.count) return true;
-        w.resolve();
-        return false;
-      });
     },
   });
   await new Promise<void>((resolve) => {
@@ -458,63 +442,37 @@ export async function startPanelHarness(
     db,
     cacheDir: cache.dir,
     dispatched,
-    settled,
-    worktrees,
-    explorations,
-    dispositionFeedbacks,
-    consolidations,
-    revisionIntents,
-    factoryCalls,
-    snapshots,
+    settled: settled.entries,
+    worktrees: worktrees.entries,
+    explorations: explorations.entries,
+    dispositionFeedbacks: dispositionFeedbacks.entries,
+    consolidations: consolidations.entries,
+    revisionIntents: revisionIntents.entries,
     runtimePlans,
     api,
     deliverViaHook,
-    settledAtLeast(count: number): Promise<void> {
-      if (settled.length >= count) return Promise.resolve();
-      return new Promise<void>((resolve) => {
-        waiting.push({ count, resolve });
-      });
-    },
-    worktreesPreparedAtLeast(count: number): Promise<void> {
-      if (worktrees.length >= count) return Promise.resolve();
-      return new Promise<void>((resolve) => {
-        worktreeWaiting.push({ count, resolve });
-      });
-    },
-    explorationsAtLeast(count: number): Promise<void> {
-      if (explorations.length >= count) return Promise.resolve();
-      return new Promise<void>((resolve) => {
-        explorationWaiting.push({ count, resolve });
-      });
-    },
-    dispositionFeedbackAtLeast(count: number): Promise<void> {
-      if (dispositionFeedbacks.length >= count) return Promise.resolve();
-      return new Promise<void>((resolve) => {
-        feedbackWaiting.push({ count, resolve });
-      });
-    },
-    consolidationsAtLeast(count: number): Promise<void> {
-      if (consolidations.length >= count) return Promise.resolve();
-      return new Promise<void>((resolve) => {
-        consolidationWaiting.push({ count, resolve });
-      });
-    },
-    revisionIntentsAtLeast(count: number): Promise<void> {
-      if (revisionIntents.length >= count) return Promise.resolve();
-      return new Promise<void>((resolve) => {
-        intentWaiting.push({ count, resolve });
-      });
-    },
+    settledAtLeast: settled.atLeast,
+    worktreesPreparedAtLeast: worktrees.atLeast,
+    explorationsAtLeast: explorations.atLeast,
+    dispositionFeedbackAtLeast: dispositionFeedbacks.atLeast,
+    consolidationsAtLeast: consolidations.atLeast,
+    revisionIntentsAtLeast: revisionIntents.atLeast,
   };
 }
 
 /** 需要走仓库注册 API 的既有测试使用：让默认全局组合先达到审查配置就绪。 */
 export async function startReadyPanelHarness(
-  cleanups: (() => void)[],
   options: PanelHarnessOptions = {},
 ): Promise<PanelHarness> {
-  const harness = await startPanelHarness(cleanups, options);
+  const harness = await startPanelHarness(options);
   seedAvailableModelService(harness, HARNESS_SPEC.provider, [HARNESS_SPEC.model]);
+  if (options.registerRepo === true) {
+    const registered = await harness.api("POST", "/repos", {
+      owner: GITEA_REPO.owner,
+      repo: GITEA_REPO.repo,
+    });
+    assert.equal(registered.status, 201);
+  }
   return harness;
 }
 
@@ -538,4 +496,114 @@ export function seedHistoricalRepo(
   // 「升级前已经存在」的另一半:存量迁移把这些仓库写成已确认空知识集(issue #206)。
   confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   return { url: `${PANEL_BASE_URL}/webhook?k=1`, secret: key };
+}
+
+/**
+ * 建一个绑定到指定仓库的普通用户并登录拿 cookie。`permissions` 给了非空数组即建一个
+ * 同名角色套上去,省略或空数组即不建角色、留系统默认的无角色态。
+ */
+export async function scopedUser(
+  h: Pick<PanelHarness, "db" | "serverUrl">,
+  username: string,
+  password: string,
+  at: string,
+  repoIds: readonly number[],
+  permissions: readonly PanelPermission[] = [],
+): Promise<string> {
+  const store = openStore(h.db.path);
+  try {
+    store.createPanelUser({
+      username,
+      displayName: null,
+      passwordHash: await hashPassword(password),
+      mustChangePassword: false,
+      createdAt: at,
+      isSystemAdmin: false,
+      roleId: null,
+    });
+    store.setPanelUserAssignment(username, repoIds);
+    if (permissions.length > 0) {
+      const role = store.createPanelRole({
+        name: `role-${username}`,
+        permissions: [...permissions],
+        createdAt: at,
+      });
+      assert.equal(
+        store.updatePanelUser(username, {
+          displayName: null,
+          roleId: role.id,
+          isSystemAdmin: false,
+        }),
+        "updated",
+      );
+    }
+  } finally {
+    store.close();
+  }
+  const response = await fetch(`${h.serverUrl}/api/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  assert.equal(response.status, 204);
+  return response.headers.getSetCookie()[0]!.split(";", 1)[0]!;
+}
+
+/** 直接落一行注册表,不建 hook。返回 `repoId` 供调用方接着用。 */
+export function seedRepo(
+  h: Pick<PanelHarness, "db">,
+  repoId: number,
+  owner: string,
+  repo: string,
+): number {
+  const store = openStore(h.db.path);
+  try {
+    assert.equal(
+      store.registerRepo({ repoId, owner, repo, generation: 1, key: `key-${repoId}` }),
+      true,
+    );
+  } finally {
+    store.close();
+  }
+  return repoId;
+}
+
+/** 已经建好账号密码之后登录换 cookie。建账号是调用方自己的事。 */
+export async function userCookie(
+  serverUrl: string,
+  username: string,
+  password: string,
+): Promise<string> {
+  const response = await fetch(`${serverUrl}/api/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  assert.equal(response.status, 204);
+  return response.headers.getSetCookie()[0]!.split(";", 1)[0]!;
+}
+
+/**
+ * 发起一个范围审查并等第一轮跑完。`body` 省略即用当前仓库的 base..head 建一条最简请求;
+ * 要附指令、显式比较项等场景自己拼 body。
+ */
+export async function startRangeReview<T = unknown>(
+  h: PanelHarness,
+  body?: Record<string, unknown>,
+): Promise<T> {
+  const response = await h.api(
+    "POST",
+    "/range-reviews",
+    body ?? {
+      title: "范围审查标题",
+      owner: HARNESS_PR.owner,
+      repo: HARNESS_PR.repo,
+      base: h.repo.baseSha,
+      comparison: h.repo.headSha,
+    },
+  );
+  assert.equal(response.status, 202);
+  const { rangeReview } = (await response.json()) as { rangeReview: T };
+  await h.settledAtLeast(1);
+  return rangeReview;
 }

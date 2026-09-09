@@ -6,7 +6,7 @@
  * 投递日志),存量迁移与「注册不再落版本」在 `panel-rules.test.ts` 的临时库上。
  */
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
 import { openStore } from "../src/review/store.ts";
 import {
@@ -16,17 +16,12 @@ import {
   type PanelHarness,
 } from "./support/panel-harness.ts";
 
-const cleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of cleanups) cleanup();
-});
-
 /** 门禁那句话。三个发起入口共用同一份措辞。 */
 const UNCONFIRMED = "这个仓库还没确认知识集,先在知识集里探索并确认规则,再发起审查";
 
 /** 刚注册完的仓库:知识集未确认,门禁生效。 */
 async function freshlyRegistered(): Promise<PanelHarness> {
-  const harness = await startReadyPanelHarness(cleanups);
+  const harness = await startReadyPanelHarness();
   assert.equal(
     (await harness.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo }))
       .status,
