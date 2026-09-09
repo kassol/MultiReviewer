@@ -520,8 +520,11 @@ test("分配外的处置、重跑、发起、推进、完成、配置与移除�
     ["GET", "/range-reviews/prefill?owner=acme&repo=beta"],
     ["GET", "/repo-branches?owner=acme&repo=beta"],
     ["GET", "/repo-commits?owner=acme&repo=beta&branch=main"],
-    ["PUT", `/repos/${beta}/reviewers`, { reviewers: null }],
-    ["PUT", `/repos/${beta}/min-report-severity`, { minReportSeverity: null }],
+    [
+      "PUT",
+      `/repos/${beta}/settings`,
+      { reviewers: null, minReportSeverity: null, expectedVersion: 0 },
+    ],
     ["POST", `/repos/${beta}/rotate`],
     ["POST", `/repos/${beta}/worktree`],
     ["GET", `/repos/${beta}/hooks`],
@@ -533,7 +536,16 @@ test("分配外的处置、重跑、发起、推进、完成、配置与移除�
   }
 
   // 分配内的同一批动作照常走到 handler 自己的判断,不被过滤层挡掉。
-  assert.notEqual((await post(h, cookie, "PUT", `/repos/${alpha}/reviewers`, { reviewers: null })).status, 404);
+  assert.notEqual(
+    (
+      await post(h, cookie, "PUT", `/repos/${alpha}/settings`, {
+        reviewers: null,
+        minReportSeverity: null,
+        expectedVersion: 0,
+      })
+    ).status,
+    404,
+  );
   assert.notEqual((await get(h, cookie, `/range-reviews/prefill?owner=acme&repo=alpha`)).status, 404);
   // 分配内的这条没有容器 PR,重跑走到 handler 自己的 409,而不是被过滤层判成不存在。
   assert.equal((await post(h, cookie, "POST", "/rerun", { rangeReviewId: mineRange })).status, 409);

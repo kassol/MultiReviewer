@@ -510,7 +510,11 @@ test("全局组合与每仓库覆盖都拒绝新的空组合", async () => {
   });
   assert.equal(register.status, 201);
   const { repoId } = (await register.json()) as { repoId: number };
-  const override = await h.api("PUT", `/repos/${repoId}/reviewers`, { reviewers: [] });
+  const override = await h.api("PUT", `/repos/${repoId}/settings`, {
+    reviewers: [],
+    minReportSeverity: null,
+    expectedVersion: 0,
+  });
   assert.equal(override.status, 400);
   assert.match(((await override.json()) as { error: string }).error, /至少要选一个模型/);
 });
@@ -660,10 +664,12 @@ test("思考档位随模型组合与仓库覆盖一起读写,取值不认得或�
   assert.equal(register.status, 201);
   const { repoId } = (await register.json()) as { repoId: number };
   assert.equal(
-    (await h.api("PUT", `/repos/${repoId}/reviewers`, {
+    (await h.api("PUT", `/repos/${repoId}/settings`, {
       reviewers: [{ provider: "test", model: "second-model", thinkingLevel: "low" }],
+      minReportSeverity: null,
+      expectedVersion: 0,
     })).status,
-    204,
+    200,
   );
   const repos = (await (await h.api("GET", "/repos")).json()) as {
     repoId: number;

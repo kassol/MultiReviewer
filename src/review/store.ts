@@ -897,6 +897,9 @@ const ADD_COLUMNS = [
   // 出处附注的依据(CONTEXT.md 出处附注,issue #287):agent 为这一条给出的理由与代码
   // 证据。旧行是 NULL——升级前三条链路的理由都没落库,补不出来,面板按没有这一格显示。
   "ALTER TABLE rule_proposal_source ADD COLUMN evidence TEXT",
+  // 仓库配置的整块版本号(issue #302):模型覆盖与最低报告等级一次写完,版本随之加一。
+  // 从 0 起,升级前注册的仓库因此都是 0——它们的配置一次都没经这个端点写过。
+  "ALTER TABLE repo ADD COLUMN settings_version INTEGER NOT NULL DEFAULT 0",
 ];
 
 /**
@@ -1624,7 +1627,8 @@ export type GlobalSettings = {
 
 /**
  * 注册表里的一个仓库。`reviewersJson` 是模型覆盖的 JSON,`minReportSeverity` 是最低报告
- * 等级的覆盖(issue #273),两者都是 null 即跟随全局。
+ * 等级的覆盖(issue #273),两者都是 null 即跟随全局。`settingsVersion` 是这两项的整块
+ * 版本号(issue #302),每经 `putRepoSettings` 写一次加一。
  */
 export type RepoRecord = {
   repoId: number;
@@ -1632,7 +1636,16 @@ export type RepoRecord = {
   repo: string;
   reviewersJson: string | null;
   minReportSeverity: Severity | null;
+  settingsVersion: number;
 };
+
+/**
+ * 整块写仓库配置的结果(issue #302)。`stale` 是期望版本对不上,`unavailable` 是同一事务
+ * 里看到的模型服务已经跑不了这组覆盖,`missing` 是这一行不在了——三种都一项不写。
+ */
+export type RepoSettingsWrite =
+  | { ok: true; version: number }
+  | { ok: false; reason: "stale" | "unavailable" | "missing" };
 
 /**
  * 工作副本的准备状态(issue #184)。`unknown` 是升级前注册的仓库与从没备过副本的那些
@@ -1662,6 +1675,8 @@ export type RepoSummary = {
   reviewersJson: string | null;
   /** 最低报告等级的覆盖(issue #273),null 即跟随全局。 */
   minReportSeverity: Severity | null;
+  /** 这两项配置的整块版本号(issue #302)。面板保存时原样回传作期望版本。 */
+  settingsVersion: number;
   /** 累计 Review Run 数。按注册时的 owner/repo 匹配评审记录。 */
   runCount: number;
   /** 累计 Finding 数(落库行数,同一处的多个模型只算一条)。 */
@@ -2371,6 +2386,15 @@ export type Store = {
    * 时静默通过——仓库刚被移除,目标状态已达成,与 `setRepoWorktree` 同律。
    */
   setRepoMinReportSeverity(repoId: number, severity: Severity | null): void;
+  /**
+   * 整块改写这个仓库的配置(issue #302):模型覆盖与最低报告等级在一笔事务里全量替换,
+   * 期望版本对得上才写,写成即版本加一。两项都是 null 即跟随全局。
+   */
+  putRepoSettings(
+    repoId: number,
+    expectedVersion: number,
+    settings: { reviewersJson: string | null; minReportSeverity: Severity | null },
+  ): RepoSettingsWrite;
   /** 摘掉注册表行、它的 Key 与它的仓库分配。评审记录一行不动:模型选型的历史不因下线而断。 */
   removeRepo(repoId: number): void;
   /** 记下工作副本的准备状态(issue #184)。仓库已被移除时没有行可写,静默通过。 */
@@ -4429,7 +4453,10 @@ export function openStore(dbPath: string): Store {
 
     getRepo(repoId) {
       const row = db
-        .prepare("SELECT id, owner, repo, reviewers, min_report_severity FROM repo WHERE id = ?")
+        .prepare(
+          `SELECT id, owner, repo, reviewers, min_report_severity, settings_version
+             FROM repo WHERE id = ?`,
+        )
         .get(repoId);
       if (row === undefined) return undefined;
       return {
@@ -4440,6 +4467,7 @@ export function openStore(dbPath: string): Store {
         minReportSeverity: readMinReportSeverity(
           row["min_report_severity"] === null ? undefined : String(row["min_report_severity"]),
         ),
+        settingsVersion: Number(row["settings_version"]),
       };
     },
 
@@ -4471,6 +4499,43 @@ export function openStore(dbPath: string): Store {
 
     setRepoMinReportSeverity(repoId, severity) {
       db.prepare("UPDATE repo SET min_report_severity = ? WHERE id = ?").run(severity, repoId);
+    },
+
+    putRepoSettings(repoId, expectedVersion, settings) {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const row = db
+          .prepare("SELECT settings_version FROM repo WHERE id = ?")
+          .get(repoId);
+        if (row === undefined) {
+          db.exec("ROLLBACK");
+          return { ok: false, reason: "missing" };
+        }
+        if (Number(row["settings_version"]) !== expectedVersion) {
+          db.exec("ROLLBACK");
+          return { ok: false, reason: "stale" };
+        }
+        // 可用性在同一事务里再判一次:浏览器里的候选状态与落库那一刻之间,模型服务
+        // 可能已经变了。清成跟随全局永远可做。
+        if (
+          settings.reviewersJson !== null &&
+          !modelCombinationAvailable(settings.reviewersJson, `仓库 ${repoId} 的模型覆盖`)
+        ) {
+          db.exec("ROLLBACK");
+          return { ok: false, reason: "unavailable" };
+        }
+        const version = expectedVersion + 1;
+        db.prepare(
+          `UPDATE repo
+              SET reviewers = ?, min_report_severity = ?, settings_version = ?
+            WHERE id = ?`,
+        ).run(settings.reviewersJson, settings.minReportSeverity, version, repoId);
+        db.exec("COMMIT");
+        return { ok: true, version };
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     },
 
     removeRepo(repoId) {
@@ -4521,6 +4586,7 @@ export function openStore(dbPath: string): Store {
       const rows = db
         .prepare(
           `SELECT r.id, r.owner, r.repo, r.reviewers, r.min_report_severity,
+                  r.settings_version,
                   r.worktree_state, r.worktree_failure, r.worktree_checked_at,
                   (SELECT COUNT(*) FROM review_run run
                     WHERE run.owner = r.owner AND run.repo = r.repo) AS run_count,
@@ -4540,6 +4606,7 @@ export function openStore(dbPath: string): Store {
         minReportSeverity: readMinReportSeverity(
           row["min_report_severity"] === null ? undefined : String(row["min_report_severity"]),
         ),
+        settingsVersion: Number(row["settings_version"]),
         runCount: Number(row["run_count"]),
         findingCount: Number(row["finding_count"]),
         lastActivity: row["last_activity"] === null ? null : String(row["last_activity"]),

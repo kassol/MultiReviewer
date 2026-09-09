@@ -2091,19 +2091,11 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   },
   {
     method: "PUT",
-    pattern: /^\/repos\/(\d+)\/reviewers$/,
+    pattern: /^\/repos\/(\d+)\/settings$/,
     access: "repo:write",
     assignment: { by: "repo", group: 1 },
     handler: ({ req, res, deps }, match) =>
-      handleSetReviewers(req, res, deps, Number(match![1])),
-  },
-  {
-    method: "PUT",
-    pattern: /^\/repos\/(\d+)\/min-report-severity$/,
-    access: "repo:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ req, res, deps }, match) =>
-      handleSetMinReportSeverity(req, res, deps, Number(match![1])),
+      handleSetRepoSettings(req, res, deps, Number(match![1])),
   },
   {
     method: "POST",
@@ -8476,10 +8468,14 @@ async function handleRemove(
 }
 
 /**
- * 改写模型覆盖：全量替换 reviewers 列表，null 即清除并跟随全局。清除永远可做；非空组合
- * 在落库前按当前模型服务投影重新校验，不能只信浏览器里的候选状态。
+ * 整块改写这个仓库的配置(issue #302):模型覆盖与最低报告等级一次写完,带整块版本号。
+ * 两项都是全量替换,null 即清除并跟随全局;清除永远可做,非空组合在落库前按当前模型服务
+ * 投影重新校验,并在落库那一笔事务里再判一次——不能只信浏览器里的候选状态。
+ *
+ * 期望版本对不上即 409 并带上库里此刻的整份配置:面板据它换基线,人的草稿留在表单里。
+ * 辅助模型覆盖是这个 body 的第三项(issue #303),那一票落地时加在这里。
  */
-async function handleSetReviewers(
+async function handleSetRepoSettings(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
@@ -8489,12 +8485,26 @@ async function handleSetReviewers(
   if (record === undefined) {
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
-  const payload = await readJson<{ reviewers?: unknown } | null>(req, res);
-  if (payload === undefined) return;
-  if (payload === null || !("reviewers" in payload)) {
+  const decoded = await readJson(req, res);
+  if (decoded === undefined) return;
+  if (decoded === null || typeof decoded !== "object" || Array.isArray(decoded)) {
+    return sendJson(res, 400, { error: "body 要是 JSON 对象" });
+  }
+  const payload = decoded as Record<string, unknown>;
+  if (
+    !Object.hasOwn(payload, "reviewers") ||
+    !Object.hasOwn(payload, MIN_REPORT_SEVERITY_FIELD)
+  ) {
     return sendJson(res, 400, {
-      error: 'body 要是 {"reviewers": [...]} 或 {"reviewers": null} 形状的 JSON',
+      error: `body 要带 reviewers 与 ${MIN_REPORT_SEVERITY_FIELD} 两项,各是全量替换,null 即跟随全局`,
     });
+  }
+  if (
+    typeof payload.expectedVersion !== "number" ||
+    !Number.isInteger(payload.expectedVersion) ||
+    payload.expectedVersion < 0
+  ) {
+    return sendJson(res, 400, { error: "expectedVersion 要是非负整数" });
   }
 
   let reviewersJson: string | null = null;
@@ -8505,38 +8515,39 @@ async function handleSetReviewers(
     if (!await ensureModelCombinationAvailable(res, deps, parsed.reviewers, context)) return;
     reviewersJson = parsed.reviewersJson;
   }
-  const saved = withStore(deps.dbPath, (store) => store.setRepoReviewers(repoId, reviewersJson));
-  if (!saved) {
-    return sendJson(res, 409, { error: "模型服务状态已经变化，请重新选择仓库模型覆盖" });
-  }
-  return send(res, 204);
-}
 
-/**
- * 改写这个仓库的最低报告等级覆盖(CONTEXT.md 最低报告等级,issue #273)。与模型覆盖同形:
- * 全量替换,null 即清除并跟随全局。取值只认 P0 / P1 / P2 与 null,别的 400。
- */
-async function handleSetMinReportSeverity(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: WebhookServerDeps,
-  repoId: number,
-): Promise<void> {
-  if (withStore(deps.dbPath, (store) => store.getRepo(repoId)) === undefined) {
-    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
-  }
-  const payload = await readJson<{ minReportSeverity?: unknown } | null>(req, res);
-  if (payload === undefined) return;
-  const severity = payload === null ? undefined : payload[MIN_REPORT_SEVERITY_FIELD];
+  const severity = payload[MIN_REPORT_SEVERITY_FIELD];
   if (severity !== null && !MIN_REPORT_SEVERITIES.includes(severity as Severity)) {
     return sendJson(res, 400, {
       error: `${MIN_REPORT_SEVERITY_FIELD} 要是 ${MIN_REPORT_SEVERITIES.join(" / ")} 之一,或 null(跟随全局)`,
     });
   }
-  withStore(deps.dbPath, (store) =>
-    store.setRepoMinReportSeverity(repoId, severity as Severity | null),
+
+  const saved = withStore(deps.dbPath, (store) =>
+    store.putRepoSettings(repoId, payload.expectedVersion as number, {
+      reviewersJson,
+      minReportSeverity: severity as Severity | null,
+    }),
   );
-  return send(res, 204);
+  if (saved.ok) return sendJson(res, 200, { settingsVersion: saved.version });
+  if (saved.reason === "missing") {
+    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+  }
+  if (saved.reason === "unavailable") {
+    return sendJson(res, 409, { error: "模型服务状态已经变化，请重新选择仓库模型覆盖" });
+  }
+  const current = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+  return sendJson(res, 409, {
+    error: "这个仓库的配置已经被其他人修改，请核对后再保存",
+    current: {
+      reviewers:
+        current?.reviewersJson === undefined || current.reviewersJson === null
+          ? null
+          : safeParse(current.reviewersJson),
+      minReportSeverity: current?.minReportSeverity ?? null,
+      settingsVersion: current?.settingsVersion ?? 0,
+    },
+  });
 }
 
 /**

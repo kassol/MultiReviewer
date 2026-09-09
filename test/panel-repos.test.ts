@@ -21,6 +21,7 @@ import {
   PANEL_ADMIN_USERNAME as ADMIN_USERNAME,
   PANEL_BASE_URL as BASE_URL,
   PANEL_CREDENTIAL_MASTER_KEY,
+  type PanelHarness,
   seedAvailableModelService,
   startPanelHarness,
   startReadyPanelHarness,
@@ -170,23 +171,59 @@ test("配置了模型覆盖的仓库,Review Run 用覆盖后的组合", async ()
   }
 });
 
-test("模型覆盖可编辑:PUT 全量替换、null 清除,坏覆盖 400", async () => {
+/**
+ * 仓库配置整块保存(issue #302)。模型覆盖与最低报告等级在一个端点里一次写完,带整块
+ * 版本号;两项都是可空即跟随全局的全量替换。
+ */
+type RepoSettingsRow = {
+  repoId: number;
+  reviewers: unknown;
+  minReportSeverity: unknown;
+  globalMinReportSeverity: unknown;
+  settingsVersion: number;
+};
+
+const repoSettingsRow = async (h: PanelHarness): Promise<Omit<RepoSettingsRow, "repoId">> => {
+  const rows = (await (await h.api("GET", "/repos")).json()) as RepoSettingsRow[];
+  const row = rows.find((entry) => entry.repoId === GITEA_REPO.id)!;
+  return {
+    reviewers: row.reviewers,
+    minReportSeverity: row.minReportSeverity,
+    globalMinReportSeverity: row.globalMinReportSeverity,
+    settingsVersion: row.settingsVersion,
+  };
+};
+
+test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取值 400 一项都不写", async () => {
   const h = await startPanelHarness(cleanups);
   seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
-  const override: ReviewerSpec[] = [
-    { provider: "test", model: "swapped-model" },
-  ];
 
-  assert.equal(
-    (await h.api("PUT", `/repos/${GITEA_REPO.id}/reviewers`, { reviewers: override })).status,
-    204,
-  );
-  const rows = (await (await h.api("GET", "/repos")).json()) as { reviewers: unknown }[];
-  assert.deepEqual(rows[0]!.reviewers, override);
+  // 刚注册即两项都跟随全局,整块版本号从 0 起。
+  assert.deepEqual(await repoSettingsRow(h), {
+    reviewers: null,
+    minReportSeverity: null,
+    globalMinReportSeverity: "P2",
+    settingsVersion: 0,
+  });
 
-  // 注册后的下一次投递真实生效。
+  const put = (body: unknown): Promise<Response> =>
+    h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, body);
+  const override: ReviewerSpec[] = [{ provider: "test", model: "swapped-model" }];
+
+  const saved = await put({ reviewers: override, minReportSeverity: "P1", expectedVersion: 0 });
+  const savedBody = await saved.json();
+  assert.equal(saved.status, 200, JSON.stringify(savedBody));
+  assert.deepEqual(savedBody, { settingsVersion: 1 });
+  assert.deepEqual(await repoSettingsRow(h), {
+    reviewers: override,
+    minReportSeverity: "P1",
+    globalMinReportSeverity: "P2",
+    settingsVersion: 1,
+  });
+
+  // 注册后的下一次投递真实生效:用的是覆盖后的模型。
   assert.equal((await h.deliverViaHook("sha-1")).status, 200);
   await h.settledAtLeast(1);
   const sqlite = new DatabaseSync(h.db.path);
@@ -199,69 +236,124 @@ test("模型覆盖可编辑:PUT 全量替换、null 清除,坏覆盖 400", async
     sqlite.close();
   }
 
-  // null 清除覆盖,回到跟随全局。
-  assert.equal(
-    (await h.api("PUT", `/repos/${GITEA_REPO.id}/reviewers`, { reviewers: null })).status,
-    204,
-  );
-  const cleared = (await (await h.api("GET", "/repos")).json()) as { reviewers: unknown }[];
-  assert.equal(cleared[0]!.reviewers, null);
+  // 坏取值整次拒绝:版本与两项原样不动。
+  for (
+    const body of [
+      { reviewers: [{ provider: "x" }], minReportSeverity: null, expectedVersion: 1 },
+      { reviewers: null, minReportSeverity: "P3", expectedVersion: 1 },
+      { reviewers: null, minReportSeverity: null, expectedVersion: "1" },
+      { reviewers: null, expectedVersion: 1 },
+      { minReportSeverity: null, expectedVersion: 1 },
+    ]
+  ) {
+    const rejected = await put(body);
+    assert.equal(rejected.status, 400, `${JSON.stringify(body)} 应该被拒`);
+  }
+  assert.deepEqual(await repoSettingsRow(h), {
+    reviewers: override,
+    minReportSeverity: "P1",
+    globalMinReportSeverity: "P2",
+    settingsVersion: 1,
+  });
 
-  // 形状坏的覆盖 400,且不落库——覆盖仍是清除后的 null;未注册仓库 404。
+  // 两项一起清成 null,回到跟随全局。
+  const cleared = await put({ reviewers: null, minReportSeverity: null, expectedVersion: 1 });
+  assert.equal(cleared.status, 200);
+  assert.deepEqual(await repoSettingsRow(h), {
+    reviewers: null,
+    minReportSeverity: null,
+    globalMinReportSeverity: "P2",
+    settingsVersion: 2,
+  });
+
+  // 未注册仓库 404。
   assert.equal(
     (
-      await h.api("PUT", `/repos/${GITEA_REPO.id}/reviewers`, {
-        reviewers: [{ provider: "x" }],
+      await h.api("PUT", "/repos/999/settings", {
+        reviewers: null,
+        minReportSeverity: null,
+        expectedVersion: 0,
       })
     ).status,
-    400,
-  );
-  const afterBad = (await (await h.api("GET", "/repos")).json()) as { reviewers: unknown }[];
-  assert.equal(afterBad[0]!.reviewers, null);
-  assert.equal(
-    (await h.api("PUT", "/repos/999/reviewers", { reviewers: null })).status,
     404,
   );
 });
 
-test("最低报告等级的仓库覆盖:设、清与非法取值 400(issue #273)", async () => {
+test("仓库配置的期望版本过期即 409,响应带当前值", async () => {
+  const h = await startPanelHarness(cleanups);
+  seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
+  assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
+  const override: ReviewerSpec[] = [{ provider: "test", model: "swapped-model" }];
+  const put = (body: unknown): Promise<Response> =>
+    h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, body);
+
+  assert.equal(
+    (await put({ reviewers: override, minReportSeverity: "P0", expectedVersion: 0 })).status,
+    200,
+  );
+
+  // 另一个人拿着旧版本号再保存:整次拒绝,库里仍是先写成的那一份。
+  const stale = await put({ reviewers: null, minReportSeverity: "P2", expectedVersion: 0 });
+  assert.equal(stale.status, 409);
+  assert.deepEqual(await stale.json(), {
+    error: "这个仓库的配置已经被其他人修改，请核对后再保存",
+    current: { reviewers: override, minReportSeverity: "P0", settingsVersion: 1 },
+  });
+  assert.deepEqual(await repoSettingsRow(h), {
+    reviewers: override,
+    minReportSeverity: "P0",
+    globalMinReportSeverity: "P2",
+    settingsVersion: 1,
+  });
+});
+
+test("模型覆盖与最低报告等级的旧端点回没有这个端点", async () => {
   const h = await startPanelHarness(cleanups);
   seedAvailableModelService(h, "test", ["global-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
 
-  type Row = { minReportSeverity: unknown; globalMinReportSeverity: unknown };
-  const rows = async (): Promise<Row[]> =>
-    ((await (await h.api("GET", "/repos")).json()) as Row[]).map(
-      ({ minReportSeverity, globalMinReportSeverity }) => ({
-        minReportSeverity,
-        globalMinReportSeverity,
-      }),
-    );
-
-  // 刚注册即跟随全局:覆盖为 null,全局那一档跟着行一起给出来。
-  assert.deepEqual(await rows(), [{ minReportSeverity: null, globalMinReportSeverity: "P2" }]);
-
-  const put = (body: unknown): Promise<Response> =>
-    h.api("PUT", `/repos/${GITEA_REPO.id}/min-report-severity`, body);
-
-  assert.equal((await put({ minReportSeverity: "P1" })).status, 204);
-  assert.equal((await rows())[0]!.minReportSeverity, "P1");
-
-  // 非法取值 400,且不落库——覆盖仍是刚才那一档。
-  for (const value of ["P3", "p1", 1, "", undefined]) {
-    const rejected = await put({ minReportSeverity: value });
-    assert.equal(rejected.status, 400, `${String(value)} 应该被拒`);
-    assert.match(((await rejected.json()) as { error: string }).error, /minReportSeverity/);
+  for (
+    const [path, body] of [
+      [`/repos/${GITEA_REPO.id}/reviewers`, { reviewers: null }],
+      [`/repos/${GITEA_REPO.id}/min-report-severity`, { minReportSeverity: null }],
+    ] as const
+  ) {
+    const response = await h.api("PUT", path, body);
+    assert.equal(response.status, 404, path);
+    assert.deepEqual(await response.json(), { error: "没有这个端点" });
   }
-  assert.equal((await rows())[0]!.minReportSeverity, "P1");
+});
 
-  // null 清除覆盖,回到跟随全局;未注册仓库 404。
-  assert.equal((await put({ minReportSeverity: null })).status, 204);
-  assert.equal((await rows())[0]!.minReportSeverity, null);
+test("旧库的仓库读回整块版本号 0,两项覆盖原值不变", async () => {
+  const h = await startPanelHarness(cleanups);
+  seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
+  assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
+  const override: ReviewerSpec[] = [{ provider: "test", model: "swapped-model" }];
   assert.equal(
-    (await h.api("PUT", "/repos/999/min-report-severity", { minReportSeverity: null })).status,
-    404,
+    (
+      await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
+        reviewers: override,
+        minReportSeverity: "P1",
+        expectedVersion: 0,
+      })
+    ).status,
+    200,
   );
+
+  // 升级前的形状:`repo` 表没有整块版本号这一列。去掉它,下一次 openStore 即走补列那一路。
+  const sqlite = new DatabaseSync(h.db.path);
+  try {
+    sqlite.exec("ALTER TABLE repo DROP COLUMN settings_version");
+  } finally {
+    sqlite.close();
+  }
+
+  assert.deepEqual(await repoSettingsRow(h), {
+    reviewers: override,
+    minReportSeverity: "P1",
+    globalMinReportSeverity: "P2",
+    settingsVersion: 0,
+  });
 });
 
 test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为跟随全局", async () => {
@@ -313,16 +405,20 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
   };
   const before = serviceState();
 
-  const blocked = await h.api("PUT", `/repos/${GITEA_REPO.id}/reviewers`, {
+  const blocked = await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
     reviewers: selected,
+    minReportSeverity: null,
+    expectedVersion: 0,
   });
   assert.equal(blocked.status, 400);
   assert.match(await blocked.text(), /模型凭据不可用.*模型来源消失/);
 
-  const saved = await h.api("PUT", `/repos/${GITEA_REPO.id}/reviewers`, {
+  const saved = await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
     reviewers: [selected[0]],
+    minReportSeverity: null,
+    expectedVersion: 0,
   });
-  assert.equal(saved.status, 204);
+  assert.equal(saved.status, 200);
   const rowsAfterSave = (await (await h.api("GET", "/repos")).json()) as {
     repoId: number;
     reviewers: unknown;
@@ -336,8 +432,14 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
   reset.setRepoReviewers(GITEA_REPO.id, JSON.stringify(selected));
   reset.close();
   assert.equal(
-    (await h.api("PUT", `/repos/${GITEA_REPO.id}/reviewers`, { reviewers: null })).status,
-    204,
+    (
+      await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
+        reviewers: null,
+        minReportSeverity: null,
+        expectedVersion: 1,
+      })
+    ).status,
+    200,
   );
   const rowsAfterClear = (await (await h.api("GET", "/repos")).json()) as {
     repoId: number;
