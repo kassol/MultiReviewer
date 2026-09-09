@@ -28,6 +28,7 @@ import {
   type TimedOutcome,
 } from "./batch.ts";
 import {
+  acceptRootCauseGroups,
   dedupeFindings,
   mergeByProposal,
   sameContent,
@@ -202,6 +203,11 @@ export type ReviewRunDeps = {
   maxEvidenceCallsPerBatch?: number;
   /** 本轮固定的非秘密模型服务审计快照。 */
   reviewerPins?: readonly ReviewRunReviewerPin[];
+  /**
+   * 面板的对外地址(issue #308)。Forge 评论里「同根因另见 N 处」那一行链到它;不传即
+   * 这一轮的评论不带那一行,组照常落库——评论里放一个指不到面板的地址,比不放更糟。
+   */
+  panelBaseUrl?: string;
   /** 手动重跑的调用者用户名快照;自动投递不传。 */
   triggeredBy?: string;
   /** 这一轮归属的范围审查;PR 触发不传(ADR 0012)。 */
@@ -355,19 +361,40 @@ function continuedNote(commentHtmlUrl: string): string {
   return `延续自 [上一处评论](${commentHtmlUrl}):这处代码已改写,复核判定同一个问题仍在。`;
 }
 
+/**
+ * 同根因组的那一行(CONTEXT.md 同根因组,issue #308):这条 Finding 之外还有几处出自同一个
+ * 根因,链到面板该阶段详情并定位到组。作者在 Forge 上读到第 3 条时就该知道后面那些是同一
+ * 件事;组本身在面板上看,评论只留这一句入口。未入组的评论不加这一行。
+ */
+function rootCauseNote(others: number, url: string): string {
+  return `[同根因另见 ${others} 处](${url})`;
+}
+
 function findingBody(
   finding: MergedFinding,
   fingerprint: string | undefined,
   continuedFrom: string | undefined,
+  rootCause: { others: number; url: string } | undefined,
 ): string {
   const lines = [findingHeading(finding), ...findingSections(finding)];
 
   if (continuedFrom !== undefined) lines.push("", continuedNote(continuedFrom));
+  // 排在锚点之前:锚点是给下一轮认评论用的隐藏标记,人读到的最后一行是这一句。
+  if (rootCause !== undefined) lines.push("", rootCauseNote(rootCause.others, rootCause.url));
 
   // 锚点是下一轮认出这条评论的唯一凭据,指纹算不出时就没有跨轮次匹配可言。
   if (fingerprint !== undefined) lines.push("", fingerprintAnchor(fingerprint));
 
   return lines.join("\n");
+}
+
+/**
+ * 面板上这个阶段详情的地址,带定位到某个同根因组的那一格(issue #308)。阶段标识里有
+ * 斜杠(`pr:<owner>/<repo>/<number>`),按面板的写法整段编码成一段路径。
+ * `rootCause` 就是组的落库 id,面板据它把那一组展开(issue #309 读这一格)。
+ */
+function rootCauseUrl(panelBaseUrl: string, stageId: string, groupId: number): string {
+  return `${panelBaseUrl}/stages/${encodeURIComponent(stageId)}?rootCause=${groupId}`;
 }
 
 /** 折叠段里的一条。误匹配时人展开就能看到完整内容,不是只给个条数。 */
@@ -1410,10 +1437,16 @@ async function mergeFindings(
   history: readonly HistoryFinding[],
   anchors: readonly HistoryPlacement[],
   worktreePath: string,
-): Promise<{ merged: MergedFinding[]; usage?: ReviewerUsage; agentPlan: boolean }> {
+): Promise<{
+  merged: MergedFinding[];
+  usage?: ReviewerUsage;
+  agentPlan: boolean;
+  /** 过了验收的同根因组(issue #308),成员是本轮合并后的那几条。没有即空数组。 */
+  rootCauses: { members: MergedFinding[]; reason: string }[];
+}> {
   const routed = historyForBatch(history, [...new Set(findings.map((f) => f.file))]);
   if (agent === undefined || findings.length + routed.length < 2) {
-    return { merged: dedupeFindings(findings), agentPlan: false };
+    return { merged: dedupeFindings(findings), agentPlan: false, rootCauses: [] };
   }
 
   const fallback = (reason: string, usage?: ReviewerUsage) => {
@@ -1421,6 +1454,7 @@ async function mergeFindings(
     return {
       merged: dedupeFindings(findings),
       agentPlan: false,
+      rootCauses: [],
       ...(usage === undefined ? {} : { usage }),
     };
   };
@@ -1469,9 +1503,20 @@ async function mergeFindings(
   for (const miss of outcome.fallbacks) {
     trace.run("synthesis_fallback", { group: miss.group, reason: miss.reason });
   }
+  // 同根因组的验收独立于分组方案(ADR 0030,issue #308):坏提议只丢那一组并记一条轨迹,
+  // 分组照常生效。成员编号按 agent 报出合并组的次序,`order` 把它对回合并后的那几条。
+  const { accepted, rejected } = acceptRootCauseGroups(result.rootCauses ?? [], result.groups.length);
+  for (const drop of rejected) {
+    trace.run("root_cause_group_rejected", { groups: [...drop.groups], reason: drop.reason });
+  }
+  const byProposal = new Map(outcome.order.map((proposal, index) => [proposal, outcome.merged[index]!]));
   return {
     merged: outcome.merged,
     agentPlan: true,
+    rootCauses: accepted.map((group) => ({
+      members: group.groups.map((proposal) => byProposal.get(proposal)!),
+      reason: group.reason,
+    })),
     ...(result.usage === undefined ? {} : { usage: result.usage }),
   };
 }
@@ -2186,7 +2231,7 @@ export async function runReview(
       // 读在合并之前,只用位置与指纹两格;折叠要认的处置状态另在回填之后重读一次。
       const anchors = store.historyPlacements(history.map((entry) => entry.id));
 
-      const { merged: allMerged, usage: mergeUsage, agentPlan } = await mergeFindings(
+      const { merged: allMerged, usage: mergeUsage, agentPlan, rootCauses } = await mergeFindings(
         trace,
         deps.mergeAgent,
         admitted,
@@ -2205,6 +2250,24 @@ export async function runReview(
         return false;
       });
       recordFindingMerges(trace, merged);
+
+      // 同根因组落到本轮合并组的下标(ADR 0030,issue #308)。diff 终筛丢掉的成员跟着掉
+      // 出去,剩不到两条的整组丢弃并记一条轨迹:「同根因另见 0 处」不是一句能读的话。
+      const mergedIndexOf = new Map(merged.map((finding, index) => [finding, index]));
+      const rootCauseGroups = rootCauses.flatMap(({ members, reason }) => {
+        const indexes = members.flatMap((member) => {
+          const index = mergedIndexOf.get(member);
+          return index === undefined ? [] : [index];
+        });
+        if (indexes.length < 2) {
+          trace.run("root_cause_group_rejected", {
+            groups: indexes,
+            reason: "同根因组的成员在 diff 终筛之后不足两个合并组",
+          });
+          return [];
+        }
+        return [{ indexes, reason }];
+      });
 
       // 开跑时按「文件已回退 / 已删除」resolve 掉的那几条(issue #272):这份评论清单读在
       // 那次 resolve 之前,里面的 false 已经过期,照写会把刚落的「已修复」降级回未处置。
@@ -2356,8 +2419,9 @@ export async function runReview(
         continuations.map((plan) => [plan.groupIndex, plan.candidate.commentHtmlUrl]),
       );
 
-      const comments: ReviewCommentDraft[] = [];
-      // 与 `comments` 同序:每条草稿属于哪个合并组。发布之后按它把评论标识记回去。
+      // 要发新评论的那几个合并组,按发出的先后。正文等落库之后再拼(issue #308):
+      // 「同根因另见 N 处」那一行要带组的落库 id,而组要与 Finding 同一笔事务才落得下。
+      // 发布之后按它把评论标识记回去。
       const commentGroups: number[] = [];
       const carried: CarriedFinding[] = [];
       // 按合并组下标记住处置结论与来源类型,落库时组内每条来源都取它。
@@ -2366,7 +2430,7 @@ export async function runReview(
       // 折叠的那些记历史评论;本轮新发的要等发布之后才有 id,这里先留空。
       const groupComments: (PriorDisposition | undefined)[] = [];
 
-      for (const [groupIndex, { finding, fingerprint, match, differs }] of groups.entries()) {
+      for (const [groupIndex, { finding, match, differs }] of groups.entries()) {
         // 指纹命中了却没折叠(ADR 0030,issue #307):合并 agent 看过那条历史、没把它归进
         // 这一组,本轮这条因此照常发评论。记下是哪条历史与 agent 为这一组写的理由。
         if (differs !== undefined) {
@@ -2399,11 +2463,6 @@ export async function runReview(
         groupComments.push(undefined);
         // 本轮新报的一律是行级评论:锚定收敛之后落点必在 diff 内(issue #224)。
         placements.push("inline");
-        comments.push({
-          path: finding.file,
-          line: finding.line,
-          body: findingBody(finding, fingerprint, continuedFrom.get(groupIndex)),
-        });
         commentGroups.push(groupIndex);
       }
 
@@ -2477,8 +2536,23 @@ export async function runReview(
         };
       });
 
+      // 同根因组的成员用最终落库的那一行(issue #308):折叠到历史的那一组本轮不发新
+      // 评论,成员是它折叠到的那条历史行;其余(本轮新报的、延续承接的)都是本轮新落的
+      // 那一行,用合并组下标指,由收尾那一笔事务换成 id。
+      const rootCauseRecords = rootCauseGroups.map(({ indexes, reason }) => ({
+        reason,
+        members: indexes.map((index) => {
+          const group = groups[index]!;
+          const folded =
+            group.match?.criterion.kind === "agent" && group.finding.history !== undefined
+              ? hits.get(group.finding.history.id)?.findingId
+              : undefined;
+          return folded === undefined ? { groupIndex: index } : { findingId: folded };
+        }),
+      }));
+
       // 先落库再发布:发布失败不该把这次 Review Run 的过程记录一并丢掉。
-      store.finishRun(runId, {
+      const rootCauseGroupIds = store.finishRun(runId, {
         finishedAt: new Date().toISOString(),
         durationMs: Date.now() - startedAt.getTime(),
         failed,
@@ -2487,6 +2561,36 @@ export async function runReview(
         verdicts,
         // 合并 agent 的用量进本轮总量,不并进任何一个 Reviewer(issue #228)。
         ...(mergeUsage === undefined ? {} : { mergeUsage }),
+        ...(rootCauseRecords.length === 0 ? {} : { rootCauses: rootCauseRecords }),
+      });
+
+      // 每条新评论正文里那一行(issue #308):组已经落库,id 与链接到这里才凑齐。没配面板
+      // 地址的那一档不加这一行,组照常落库。
+      const rootCauseNotes = new Map<number, { others: number; url: string }>();
+      if (deps.panelBaseUrl !== undefined) {
+        const stageId =
+          deps.rangeReviewId === undefined
+            ? `pr:${event.owner}/${event.repo}/${event.number}`
+            : `range:${deps.rangeReviewId}`;
+        for (const [position, { indexes }] of rootCauseGroups.entries()) {
+          const url = rootCauseUrl(deps.panelBaseUrl, stageId, rootCauseGroupIds[position]!);
+          for (const index of indexes) {
+            rootCauseNotes.set(index, { others: indexes.length - 1, url });
+          }
+        }
+      }
+      const comments: ReviewCommentDraft[] = commentGroups.map((groupIndex) => {
+        const { finding, fingerprint } = groups[groupIndex]!;
+        return {
+          path: finding.file,
+          line: finding.line,
+          body: findingBody(
+            finding,
+            fingerprint,
+            continuedFrom.get(groupIndex),
+            rootCauseNotes.get(groupIndex),
+          ),
+        };
       });
 
       // 上一轮交接未完成的旧评论在这里重试(ADR 0025),与本轮发布成不成无关。

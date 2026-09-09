@@ -269,6 +269,28 @@ CREATE TABLE IF NOT EXISTS finding_verdict (
   PRIMARY KEY (run_id, model, finding_id)
 );
 
+-- 同根因组(CONTEXT.md,ADR 0030,issue #308):一轮里由合并 agent 指出的一组 Finding,
+-- 它们各自成立,却出自同一个根因。组属于轮次,每轮重新提,不跨轮次保持同一性——因此
+-- 没有阶段维度的键,也没有更新路径:一轮收尾时写一次,之后只读。
+-- 合并 agent 缺席、失败或方案没过验收的那一轮一行都没有。
+CREATE TABLE IF NOT EXISTS root_cause_group (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL REFERENCES review_run(id),
+  -- 根因说明:合并 agent 写的那一句中文。
+  reason TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS root_cause_group_by_run ON root_cause_group(run_id);
+
+-- 同根因组的成员:一条 Finding 一行,position 是组内次序(agent 报出这几个合并组的先后)。
+-- finding_id 是最终落库的那一行——本轮新报的、折叠到的历史行、延续承接后的新行。
+-- 一条 Finding 至多进一个同根因组,主键因此够用。
+CREATE TABLE IF NOT EXISTS root_cause_group_member (
+  group_id INTEGER NOT NULL REFERENCES root_cause_group(id),
+  finding_id INTEGER NOT NULL REFERENCES finding(id),
+  position INTEGER NOT NULL,
+  PRIMARY KEY (group_id, finding_id)
+);
+
 -- 一轮 Review Run 的审查轨迹(CONTEXT.md,ADR 0017):按时间顺序发生的事件,一行一条。
 -- seq 在一轮之内自增,断线续传按它续;reviewer 是模型标识,与 reviewer_outcome.model
 -- 同一个值,轮次级事件为 NULL。payload 是事件正文的 JSON 文本,不设长度上限。
@@ -1363,6 +1385,32 @@ export type RunResult = {
    * 合并 agent,或它连会话都没建起来。
    */
   mergeUsage?: ReviewerUsage;
+  /**
+   * 本轮的同根因组(ADR 0030,issue #308)。缺省即这一轮没有组——合并 agent 缺席、
+   * 没提,或提的都没过验收。成员用合并组下标引用本轮新落的那一行,折叠到历史的那些
+   * 直接给历史行的 id。
+   */
+  rootCauses?: readonly RootCauseGroupRecord[];
+};
+
+/**
+ * 同根因组的一个成员(issue #308):本轮第几个合并组,或直接指定的一条 Finding 行 id。
+ * 本轮新落的行在收尾插进去之前没有 id,只能用合并组下标说;折叠到历史的那一组本轮不发
+ * 新评论,成员是它折叠到的那条历史行,那一行的 id 早就有了。
+ */
+export type RootCauseMemberRecord = { groupIndex: number } | { findingId: number };
+
+/** 一个待落库的同根因组:根因说明与按组内次序排好的成员。 */
+export type RootCauseGroupRecord = {
+  reason: string;
+  members: readonly RootCauseMemberRecord[];
+};
+
+/** 一轮里落库的一个同根因组(issue #308):组 id、根因说明与成员的 Finding 行 id。 */
+export type RootCauseGroup = {
+  id: number;
+  reason: string;
+  findingIds: number[];
 };
 
 /**
@@ -2691,7 +2739,13 @@ export type Store = {
   /** provider 省略时也包含没有当前服务承载的迁移保留。 */
   listModelSupplements(provider?: string): ModelSupplementRecord[];
   startRun(meta: RunMeta): number;
-  finishRun(runId: number, result: RunResult): void;
+  /**
+   * 收尾一轮。返回本轮同根因组的落库 id,与 `result.rootCauses` 同序(issue #308):
+   * Forge 评论正文里那一行要链到组,而组的 id 要等这一笔事务插完才有。没有组即空数组。
+   */
+  finishRun(runId: number, result: RunResult): number[];
+  /** 一轮的同根因组与成员(issue #308),按落库先后。这一轮没有组即空数组。 */
+  rootCauseGroups(runId: number): RootCauseGroup[];
   /**
    * 把停在运行中的 Review Run 改判失败(issue #247,与 `failInterruptedWorktrees` 同一个
    * 理由):进程重启会连着 Reviewer 子进程一起中断,那些行没有谁再去改它,面板会一直
@@ -5979,6 +6033,7 @@ export function openStore(dbPath: string): Store {
     },
 
     finishRun(runId, result) {
+      const rootCauseGroupIds: number[] = [];
       // 一次 Review Run 的收尾要么整体可见,要么整体不可见:半张表的 Finding
       // 会让事后的处置率统计算出偏低的分母。
       db.exec("BEGIN");
@@ -6049,6 +6104,9 @@ export function openStore(dbPath: string): Store {
              (finding_id, position, model, run_id, description, impact, suggestion)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
         );
+        // 同根因组的成员用最终落库的那一行(issue #308):合并组下标在这里换成刚插进去
+        // 的 id。折叠到历史的那些成员直接给了历史行 id,不进这张表。
+        const findingIdByGroup = new Map<number, number>();
         for (const finding of result.findings) {
           const inserted = insertFinding.run(
             runId,
@@ -6074,6 +6132,7 @@ export function openStore(dbPath: string): Store {
             finding.ruleId ?? null,
           );
           const findingId = Number(inserted.lastInsertRowid);
+          findingIdByGroup.set(finding.groupIndex, findingId);
           for (const [position, said] of finding.attributions.entries()) {
             insertAttribution.run(
               findingId,
@@ -6115,6 +6174,26 @@ export function openStore(dbPath: string): Store {
           );
         }
 
+        // 同根因组(ADR 0030,issue #308):组与成员随这一笔事务一起落,组的 id 回给调用方
+        // ——Forge 评论正文里「同根因另见 N 处」那一行要链到它。成员指不到落库行的直接跳过
+        // (合并组被 diff 终筛丢掉之类):组只是多一层视图,少一个成员不该掀掉整轮收尾。
+        const insertRootCause = db.prepare(
+          "INSERT INTO root_cause_group (run_id, reason) VALUES (?, ?)",
+        );
+        const insertRootCauseMember = db.prepare(
+          "INSERT INTO root_cause_group_member (group_id, finding_id, position) VALUES (?, ?, ?)",
+        );
+        for (const group of result.rootCauses ?? []) {
+          const groupId = Number(insertRootCause.run(runId, group.reason).lastInsertRowid);
+          rootCauseGroupIds.push(groupId);
+          for (const [position, member] of group.members.entries()) {
+            const findingId =
+              "findingId" in member ? member.findingId : findingIdByGroup.get(member.groupIndex);
+            if (findingId === undefined) continue;
+            insertRootCauseMember.run(groupId, findingId, position);
+          }
+        }
+
         // 折叠到已有 Forge 评论的行继承那条评论上一次处置的元数据(issue #152)。处置
         // 的载体是评论(ADR 0006),同一条评论名下的历史行与本轮新行说的是同一次处置:
         // 不继承的话备注与署名活不过下一轮,`disposed_at` 这个「这一行被显式处置过」
@@ -6141,6 +6220,27 @@ export function openStore(dbPath: string): Store {
         db.exec("ROLLBACK");
         throw error;
       }
+      return rootCauseGroupIds;
+    },
+
+    rootCauseGroups(runId) {
+      const rows = db
+        .prepare(
+          `SELECT g.id AS id, g.reason AS reason, m.finding_id AS finding_id
+             FROM root_cause_group g
+             JOIN root_cause_group_member m ON m.group_id = g.id
+            WHERE g.run_id = ?
+            ORDER BY g.id, m.position`,
+        )
+        .all(runId) as unknown as Record<string, unknown>[];
+      const byId = new Map<number, RootCauseGroup>();
+      for (const row of rows) {
+        const id = Number(row["id"]);
+        const group = byId.get(id) ?? { id, reason: String(row["reason"]), findingIds: [] };
+        group.findingIds.push(Number(row["finding_id"]));
+        byId.set(id, group);
+      }
+      return [...byId.values()];
     },
 
     stageHistory(scope) {

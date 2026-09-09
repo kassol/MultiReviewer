@@ -410,10 +410,74 @@ export type MergeAgentRequest = {
 /** 一次合并的产出。`failure` 有值即这一次没跑成,调用方回退到算法合并。 */
 export type MergeAgentResult = {
   groups: MergeGroupProposal[];
+  /**
+   * 同根因组(ADR 0030,issue #308):归组全部完成之后 agent 顺带提出的那几组。缺省即
+   * 这一轮它一组都没提。验收独立于分组方案(`acceptRootCauseGroups`),坏提议只丢那一组。
+   */
+  rootCauses?: readonly RootCauseGroupProposal[];
   failure?: string;
   /** 这次会话的 token 用量。会话没建起来时取不到。 */
   usage?: ReviewerUsage;
 };
+
+/**
+ * 合并 agent 提出的一个同根因组(ADR 0030,issue #308):这几个合并组各自成立,却出自
+ * 同一个根因。成员用合并组在分组方案里的次序引用(agent 报出它们的先后),不是 Finding
+ * 的下标——组内成员自然全部入组,拿单条去指会说不清一个合并组是不是整个进了组。
+ */
+export type RootCauseGroupProposal = {
+  groups: readonly number[];
+  /** 根因说明:一句中文,这几组为什么是同一个根因。 */
+  reason: string;
+};
+
+/** 一个被丢弃的同根因组:它引用的那几个合并组,与丢弃它的那一条原因。 */
+export type RootCauseRejection = {
+  groups: readonly number[];
+  reason: string;
+};
+
+/**
+ * 同根因组的验收(ADR 0030,issue #308)。三条:成员至少两个合并组、编号都是本轮真实
+ * 存在的合并组、一个合并组至多进一个同根因组。任一条不满足即**只丢这一组**——分组方案
+ * 本身照常生效,一组坏提议不该作废整份分组,组也不参与检出率。
+ *
+ * 按提出的先后逐组验:先来的那组先占住它的成员,后面再引用同一个合并组的那组被丢掉。
+ */
+export function acceptRootCauseGroups(
+  proposals: readonly RootCauseGroupProposal[],
+  groupCount: number,
+): { accepted: RootCauseGroupProposal[]; rejected: RootCauseRejection[] } {
+  const accepted: RootCauseGroupProposal[] = [];
+  const rejected: RootCauseRejection[] = [];
+  const claimed = new Set<number>();
+  for (const proposal of proposals) {
+    const reject = (reason: string): void => {
+      rejected.push({ groups: [...proposal.groups], reason });
+    };
+    if (proposal.groups.length < 2) {
+      reject("同根因组的成员不足两个合并组");
+      continue;
+    }
+    const unknown = proposal.groups.find(
+      (index) => !Number.isInteger(index) || index < 0 || index >= groupCount,
+    );
+    if (unknown !== undefined) {
+      reject(`同根因组引用的合并组 ${unknown} 不在本轮的 0 到 ${groupCount - 1} 之间`);
+      continue;
+    }
+    const twice = proposal.groups.find(
+      (index, position) => claimed.has(index) || proposal.groups.indexOf(index) !== position,
+    );
+    if (twice !== undefined) {
+      reject(`合并组 ${twice} 被分进了两个同根因组`);
+      continue;
+    }
+    for (const index of proposal.groups) claimed.add(index);
+    accepted.push({ groups: [...proposal.groups], reason: proposal.reason });
+  }
+  return { accepted, rejected };
+}
 
 /** 分组方案的验收结果:过了给合并结果,没过给一句拒绝理由,调用方据此回退并记轨迹。 */
 export type MergeProposalOutcome =
@@ -424,6 +488,11 @@ export type MergeProposalOutcome =
        * `synthesis_fallback` 轨迹事件。全组都有综合时是空数组。
        */
       fallbacks: SynthesisFallback[];
+      /**
+       * 与 `merged` 同序:每一条出自方案里的第几组(issue #308)。`merged` 按文件与行号
+       * 排过,方案里的次序因此在结果里读不出来;同根因组的成员正是按那个次序引用的。
+       */
+      order: number[];
     }
   | { rejected: string };
 
@@ -480,6 +549,8 @@ export function mergeByProposal(
 
   const merged: MergedFinding[] = [];
   const fallbacks: SynthesisFallback[] = [];
+  // 每一条出自方案里的第几组(issue #308):同根因组按那个次序引用合并组,而下面要排序。
+  const proposalOf = new Map<MergedFinding, number>();
   for (const [groupIndex, group] of groups.entries()) {
     // 成员编号即首报先后:输入按 Reviewer 的配置顺序拼(`run.ts`),下标就是报出的次序。
     const members = [...group.members].sort((a, b) => a - b).map((index) => findings[index]!);
@@ -516,6 +587,7 @@ export function mergeByProposal(
       const reason = synthesisRejection(group.synthesis);
       if (reason !== undefined) fallbacks.push({ group: groupIndex, reason });
     }
+    proposalOf.set(finding, groupIndex);
     merged.push(finding);
   }
 
@@ -527,7 +599,7 @@ export function mergeByProposal(
   merged.sort(
     (a, b) => fileOrder.get(a.file)! - fileOrder.get(b.file)! || a.line - b.line,
   );
-  return { merged, fallbacks };
+  return { merged, fallbacks, order: merged.map((finding) => proposalOf.get(finding)!) };
 }
 
 /** 按首报先后排好的一组 Finding 合成一条。 */

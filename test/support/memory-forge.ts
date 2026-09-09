@@ -19,6 +19,7 @@ import type {
   MergeAgent,
   MergeAgentRequest,
   MergeGroupProposal,
+  RootCauseGroupProposal,
 } from "../../src/review/dedupe.ts";
 import type {
   Finding,
@@ -323,6 +324,8 @@ export function scriptedMergeAgent(
     throws?: string;
     usage?: ReviewerUsage;
     events?: readonly ReviewerEvent[];
+    /** 归组之后顺带提的同根因组(issue #308)。省略即这一轮一组都不提。 */
+    rootCauses?: readonly RootCauseGroupProposal[];
   },
 ): MergeAgent & {
   calls: (readonly Finding[])[];
@@ -346,6 +349,7 @@ export function scriptedMergeAgent(
       groups: (typeof groups === "function" ? groups(request) : groups).map((group) => ({
         ...group,
       })),
+      ...(extra?.rootCauses === undefined ? {} : { rootCauses: extra.rootCauses }),
       ...(extra?.failure === undefined ? {} : { failure: extra.failure }),
       ...(extra?.usage === undefined ? {} : { usage: extra.usage }),
     };

@@ -14,6 +14,7 @@ import type {
   MergeAgentRequest,
   MergeAgentResult,
   MergeGroupProposal,
+  RootCauseGroupProposal,
 } from "../review/dedupe.ts";
 import type {
   Finding,
@@ -53,6 +54,8 @@ export type MergeWorkerRequest = {
 /** 子进程回传的消息:每组一发,过程事件一条一发,收尾一发。 */
 export type MergeWorkerMessage =
   | { kind: "group"; group: MergeGroupProposal }
+  /** 一个同根因组(issue #308)。归组完成之后才会有,一组一发。 */
+  | { kind: "root_cause"; group: RootCauseGroupProposal }
   | { kind: "event"; event: ReviewerEvent }
   /**
    * 会话还活着,别的什么都不说明(`streamHeartbeat`)。父进程只用它重置静默闸,不读内容。
@@ -75,6 +78,7 @@ export async function runMergeAgentChild(
   request: MergeAgentRequest,
 ): Promise<MergeAgentResult> {
   const groups: MergeGroupProposal[] = [];
+  const rootCauses: RootCauseGroupProposal[] = [];
   let usage: ReviewerUsage | undefined;
 
   const payload: MergeWorkerRequest = {
@@ -103,12 +107,18 @@ export async function runMergeAgentChild(
         groups.push(message.group);
         return;
       }
+      if (message.kind === "root_cause") {
+        rootCauses.push(message.group);
+        return;
+      }
       usage = message.usage;
     },
   });
 
   return {
     groups,
+    // 一组都没提时不带这一格:注入边界上的形状与这一票之前逐字一致。
+    ...(rootCauses.length === 0 ? {} : { rootCauses }),
     ...(failure === undefined ? {} : { failure }),
     ...(usage === undefined ? {} : { usage }),
   };

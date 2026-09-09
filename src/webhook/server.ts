@@ -990,6 +990,8 @@ async function startRun(
         ...plan,
         cacheDir: deps.cacheDir,
         dbPath: deps.dbPath,
+        // 同根因组那一行链到面板(issue #308),地址与容器 PR 正文里那一句同源。
+        panelBaseUrl: deps.baseUrl,
         ...(triggeredBy === undefined ? {} : { triggeredBy }),
         ...(rangeReviewId === undefined ? {} : { rangeReviewId }),
         ...(directive === undefined ? {} : { directive }),
@@ -8557,6 +8559,7 @@ async function resumeRun(deps: WebhookServerDeps, run: InterruptedRunDetail): Pr
       ...plan,
       cacheDir: deps.cacheDir,
       dbPath: deps.dbPath,
+      panelBaseUrl: deps.baseUrl,
       resumeRunId: run.runId,
       mode: run.mode,
       // 续跑同样停在批次边界(issue #249):排空开始后它跑完当前批次就停,不再收尾。

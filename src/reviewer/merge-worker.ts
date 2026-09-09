@@ -4,7 +4,8 @@
  * 与另外两个子进程同构:一个进程只有它自己那一家厂商的凭据(见 `env.ts`),工具集只读,
  * 产出经一个自定义工具逐条回传主进程。任务本身只有一件——把本轮全部 Finding 分成组,
  * 每组是同一个问题;同文件的历史 Finding 一并给它,判成同一回事的可以进组(issue #240)。
- * 多于一个成员的组另写一份综合说明(issue #279):把成员的说法合成一份正文。
+ * 多于一个成员的组另写一份综合说明(issue #279):把成员的说法合成一份正文。归组完成后
+ * 顺带提出同根因组(ADR 0030,issue #308):各自成立、却出自同一个根因的那几个合并组。
  * 行号、严重度、分类与归属的派生规则不在这里,折叠还是延续也不在,它们都留在编排层。
  */
 import { defineTool } from "@earendil-works/pi-coding-agent";
@@ -26,6 +27,7 @@ import {
 } from "./worker-tools.ts";
 
 const PROPOSE_GROUP_TOOL = "propose_merge_group";
+const PROPOSE_ROOT_CAUSE_TOOL = "propose_root_cause_group";
 
 const SYSTEM_PROMPT = `You are grouping the findings that several code reviewers reported on one change. Two findings belong in the same group when they are the same problem said twice, in different words. They belong in different groups when they are different problems, even when they sit on the same line or share wording.
 
@@ -47,6 +49,10 @@ Report every group by calling ${PROPOSE_GROUP_TOOL} exactly once per group, incl
 Write the reason field in Chinese, one sentence: why these findings are the same problem. A single-member group still needs a reason field; one short clause is enough.
 
 A group that holds more than one finding also needs a synthesis: one Chinese write-up that says the problem once, for the people who read the review. Merge what the members say into a title, a problem statement, an impact and a suggestion. Keep every claim that a member made and drop none of them; add no claim that no member made, and state nothing the members left unsaid. Leave impact or suggestion out when no member said anything about it. A group with a single finding needs no synthesis: its own words are already the body. Do not send a severity or a category; the platform sets both.
+
+When you have reported every group, look once more for groups that share one root cause: separate problems, each one worth reporting on its own, that all follow from the same broken thing — one badly written function called from many places, one wrong constant read everywhere. Report each such set by calling ${PROPOSE_ROOT_CAUSE_TOOL} once, naming the merge groups by the order you reported them (0 for the first group you proposed, 1 for the second, and so on), with one Chinese sentence saying what the root cause is.
+
+A root-cause group is not a merge group. A merge group is the same problem at the same spot, said twice, and becomes one finding. A root-cause group holds findings that stay separate — each keeps its own comment and its own place — and may sit in any files, however far apart. These rules are checked by code, and a broken one discards only that root-cause group, never your grouping: a root-cause group names at least two merge groups, every number is a group you reported, and a merge group belongs to at most one root-cause group. Propose nothing for a root cause that only one merge group shows: a group of one says nothing the finding does not already say. Call ${PROPOSE_ROOT_CAUSE_TOOL} only after every merge group is reported.
 
 Narrate in Chinese too: everything you say between tool calls goes into a trace read by this repository's maintainers.
 
@@ -91,6 +97,16 @@ const groupSchema = Type.Object({
   reason: Type.String({
     description:
       "One sentence in Chinese: why these findings are the same problem, or why this one stands alone.",
+  }),
+});
+
+const rootCauseSchema = Type.Object({
+  groups: Type.Array(Type.Number(), {
+    description:
+      "The merge groups that share this root cause, numbered by the order you reported them: 0 is the first group you proposed. At least two.",
+  }),
+  reason: Type.String({
+    description: "One sentence in Chinese: what the shared root cause is.",
   }),
 });
 
@@ -159,7 +175,7 @@ function mergePrompt(request: MergeWorkerRequest): string {
       .map((finding, index) => findingBullet(finding, index, request.worktreePath))
       .join("\n\n"),
     ...priors,
-    `Report each group through ${PROPOSE_GROUP_TOOL}. When every finding of this round is in exactly one reported group, stop.`,
+    `Report each group through ${PROPOSE_GROUP_TOOL}. When every finding of this round is in exactly one reported group, report through ${PROPOSE_ROOT_CAUSE_TOOL} the sets of groups that share one root cause, if any, and stop.`,
   ].join("\n\n");
 }
 
@@ -189,6 +205,19 @@ async function run(request: MergeWorkerRequest): Promise<void> {
     },
   });
 
+  // 同根因组(issue #308):归组之后顺带提的另一层,验收独立于分组方案,坏提议只丢那一组。
+  const proposeRootCause = defineTool({
+    name: PROPOSE_ROOT_CAUSE_TOOL,
+    label: "Propose Root Cause Group",
+    description: "Report one set of merge groups that come from the same root cause.",
+    parameters: rootCauseSchema,
+    execute: async (_id, params) => {
+      const raw = params as { groups: number[]; reason: string };
+      send({ kind: "root_cause", group: { groups: raw.groups, reason: raw.reason } });
+      return { content: [{ type: "text", text: "recorded" }], details: {} };
+    },
+  });
+
   const prepared = await prepareAgentRuntime({
     agentDirPrefix: "multireviewer-merge-agent-",
     worktreePath: request.worktreePath,
@@ -209,8 +238,8 @@ async function run(request: MergeWorkerRequest): Promise<void> {
     runtime: prepared,
     worktreePath: request.worktreePath,
     thinkingLevel: sessionThinkingLevel(request.runtimeModel.reasoning, request.thinkingLevel),
-    tools: [...READ_ONLY_TOOLS, PROPOSE_GROUP_TOOL],
-    customTools: [proposeGroup, numberedReadTool(request.worktreePath)],
+    tools: [...READ_ONLY_TOOLS, PROPOSE_GROUP_TOOL, PROPOSE_ROOT_CAUSE_TOOL],
+    customTools: [proposeGroup, proposeRootCause, numberedReadTool(request.worktreePath)],
     prompt: mergePrompt(request),
     send,
     onEvent: forwardEvent,

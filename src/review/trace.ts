@@ -38,6 +38,12 @@ export type RunTraceKind =
    * 本身照收,整轮退回算法合并走的仍是 `merge_fallback`。
    */
   | "synthesis_fallback"
+  /**
+   * 一个同根因组没过验收、被丢弃(ADR 0030,issue #308):payload 的 `groups` 是它引用的
+   * 那几个合并组(agent 报出它们的次序),`reason` 是丢弃它的那一条原因。分组方案本身
+   * 照常生效——一组坏提议不作废整份分组,因此不走 `merge_fallback`。
+   */
+  | "root_cause_group_rejected"
   /** 落点锚不进本轮 diff、被丢弃的一条 Finding(issue #224)。 */
   | "finding_discarded"
   /**
