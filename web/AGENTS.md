@@ -80,7 +80,7 @@
 - 读取中给骨架块,不给「读取中…」那行字:骨架保住它替代的那块内容的尺寸,数据到了不跳版。
 - **一个审查阶段只有一份列表、一个入口、一个返回**(issue #189)。评审记录是 `/` 这一份——它就是首页(issue #194),左栏的仓库只是它的过滤条件,也是管仓库的地方(issue #195:注册、配置与移除都在左栏的行操作里做,不另开一页);阶段页是 `/stages/<阶段标识>` 这一张,只有一种视图(正文分「Finding」与「时间线」两个 tab,issue #236,那是同一张页的两页,不是第二种视图);下钻只有侧滑,开在同一路由的查询参数上。不再开第二份列表、第二种阶段视图或第二个返回——同一个阶段有两个入口时,页顶那个返回必然把一半人送错地方。
 - **重跑弹窗里的「完整审查」默认不勾**(CONTEXT.md 只复核,issue #245)。两处重跑入口(阶段页的 `RerunAction`、首页右栏的 `RerunPullRequest`)各挂一个 `Checkbox`,说明写「不勾即只复核历史 Finding,不新报」——措辞与类型出自 `repo-actions.tsx` 的 `FULL_REVIEW_HINT` 与 `RerunMode`,同一个勾选在两处读起来必须是同一件事。勾选状态提交后一并清空:模式只属于刚发出去的那一轮,与指令同律。增量评审弹窗共用这一个勾选与这一句说明,**默认也不勾**:推进出来的那一轮默认只复核,勾上才审新代码,请求体因此默认带 `mode: "verdict-only"`(接口上不带仍是完整审查);它的表单随弹窗关闭卸载,勾选因此自己回到默认,不必显式复位。发起范围审查不加这一格,它永远是完整审查。时间线上只复核的那一轮由 `StageRound` 挂一枚「只复核」灰徽章(看到「新报 0」时那不是审查空跑),轮次侧滑与本轮指令并列写出模式——**只在只复核那一档写**,完整审查是常态,每轮都写一句反而没人读。
-- 前端不做程序化测试(issue #26 的测试决策):逻辑压在服务端可测的注入变量与 API 契约上(`test/panel-pages.test.ts`);视觉与交互由部署实例的端到端验收覆盖。
+- 组件与交互不做程序化测试(issue #26 的测试决策):逻辑压在服务端可测的注入变量与 API 契约上(`test/panel-pages.test.ts`);视觉与交互由部署实例的端到端验收覆盖。**`src/lib/` 下不含 JSX 的纯函数走 `node --test`**(见「常用命令」的 `pnpm --filter @multireviewer/web test`,根 `pnpm check` 会跑它):两页共用一份判据的那种规则(草稿比较、引用带档位)判错一次就是一颗点不动的保存按钮,值得一条断言钉住;JSX 文件里的裁剪 / 解析逻辑要被它跑到,先抽成 `src/lib/` 的纯函数。
 - **端到端验收固定在部署实例使用 ego-browser,不在本机 dev 双进程上做**(根 `AGENTS.md` 的全局规范)。本机没有真 Gitea、没有已注册的仓库、没有模型凭据,面板上大半的屏在那里是空的;dev 双进程只用于实现时的即时反馈,不作为验收依据。
 
 ## 依赖关系
@@ -94,7 +94,7 @@
 - `pnpm --filter @multireviewer/web dev` — dev 起 Vite(另开一个终端跑 `pnpm start` 起后端,双进程)
 - `pnpm --filter @multireviewer/web build` — 产出 `dist/`
 - `pnpm --filter @multireviewer/web typecheck` — 前端类型检查(不在根 `pnpm check` 里,改前端后单独跑)
-- `pnpm --filter @multireviewer/web test` — 前端纯函数单测(`node --test`,与根项目同一套跑法;不在根 `pnpm check` 里,目前只覆盖 `src/lib/` 下不含 JSX 的纯函数——JSX 文件里的裁剪 / 解析逻辑抽成 `src/lib/` 的纯函数才能被它跑到)
+- `pnpm --filter @multireviewer/web test` — 前端纯函数单测(`node --test`,与根项目同一套跑法;根 `pnpm check` 的最后一步就是它,目前只覆盖 `src/lib/` 下不含 JSX 的纯函数——JSX 文件里的裁剪 / 解析逻辑抽成 `src/lib/` 的纯函数才能被它跑到)
 
 ## 视觉规范
 
@@ -124,6 +124,7 @@
 
 ## 变更日志
 
+- 2026-09-09: spec #300 第二批(#303-#304)两轴评审修复,面板部分。**档位控件只剩一份**:新增 `components/thinking-level-picker.tsx`,「只列这个模型支持的那几档、只剩一档时换 Badge、关不掉思考时挂一句说明」三条规则收在它里面,`ModelComposer` 与 `AuxiliaryModelPicker` 都用它,两处的尺寸、标签与占位符经 prop 给出,行为与文案一字未改;「新选进来的模型带它自己的第一档」与「选回关闭即去掉字段」也收成 `lib/model-ref.ts` 的 `modelRefWithLevel`,两处调它,单测跟着补一条。**`AuxiliaryModelLine` 只剩一份**:从 `repo-rules.tsx` 挪到 `components/auxiliary-model-line.tsx`,仓库配置弹窗里自写的那段来源与档位文案换成它,它下面那句说明因此不再重复写「来源：X」。**仓库辅助模型的「自定义」不再因为解析不出生效值而禁用**:弹窗多一格 `customAuxiliary` 分开两态(草稿里那一格仍是 null 时也认得出自定义),全局与模型组合都空时仓库管理员从空选择起步给自己这个仓库设一处;选空时草稿与基线相同,保存本来就点不动,写不出半份配置。`lib/model-ref.ts` 里两处裸 NUL 字符换成 `\0` 转义,版本库不再把这个文件当二进制。
 - 2026-09-09: 落地 issue #304 的面板部分(父 spec #300,ADR 0029)。**意图框上的只读模型展示改读生效辅助模型那一份投影**。`repo-rules.tsx` 的 `intentModel` 一带整个删掉——`RuleSet` 那一项、`EntryCard` 与另两处卡片的透传、`IntentForm` 的那个 prop 全部不留;`IntentForm` 自己调 `useAuxiliaryModel(repoId)`,置灰判据换成「投影还没回来或跑不了」,计数那一行挪到按钮那一侧,左边换成与发起探索、发起整理同一个 `AuxiliaryModelLine`。**三处显示的因此是同一个结论**:解析在服务端那一处函数里,面板一处都不自己算。`GET /repos/{id}/rules` 不再回 `intentModel`。
 - 2026-09-09: 落地 issue #303(父 spec #300,ADR 0029)。**辅助模型进两页,探索与整理不再选模型**。新增 `components/auxiliary-model-picker.tsx`(模型单选 + 档位 `Select`,候选与档位规则与 `ModelComposer` 同一份)与 `auxiliary-model.ts`(只读投影的形状、来源三档说法与 `useAuxiliaryModel` 查询)。审查策略页「模型」段多一块辅助模型,空态写「跟随模型组合第一个：<模型标识>」,随整页保存;只读态多一行。仓库配置弹窗多第三项「辅助模型」,与另两项同形的「跟随全局 / 自定义」,自定义从服务端解析出的生效值起步,随整块保存。`repo-rules.tsx` 删掉 `useRuleModelChoice` 与 `RuleModelFields` 两处模型选择:发起基点探索只剩基点选择,发起知识整理变成确认,两处头上是同一行只读「将使用：<模型标识> · 思考 X（来源：…）」,生效模型跑不了时按钮禁用并显示服务端给的原因。`GET /rule-models` 不再被读取(端点已删)。手测:两页各设一次辅助模型并保存、清空回跟随;探索与整理弹窗里没有模型选择、那一行说得出模型与来源;把生效模型的凭据拿掉后两处按钮禁用并指路。
 - 2026-09-09: 落地 issue #302 的面板部分(父 spec #300,ADR 0029)。**仓库配置弹窗从即改即写改成整块一个保存**。`repo-actions.tsx` 的 `ConfigureDialogContent` 里,模型组合与最低报告等级合成一张表单:一份 `RepoSettingsDraft`(`models: ModelRef[] | null` 与 `minReportSeverity`,null 即跟随全局)加一份同形的基线与一个 `settingsVersion`,`draftOf` 从行上取初值,`sameDraft` 比出「有未保存改动」。切「跟随全局」把那一项置 null,切「自定义」从当前生效值起步(组合取草稿 ?? 基线 ?? 全局那一份,等级取覆盖 ?? `globalMinReportSeverity`);`ModelComposer` 直接改草稿,不再有单独的编辑态与它自己的保存。底部动作条 `sticky bottom-0`,「保存」发一次 `PUT /repos/{id}/settings`(`{reviewers, minReportSeverity, expectedVersion}`,辅助模型覆盖随 issue #303 加在这里),回 200 即换基线与版本号并提示「配置已保存」,回 409 且带 `current` 即换基线、留草稿并提示核对后再保存。**关弹窗的三条路汇到一处**:`RepoRowMenu` 持 `dirty` 与 `confirmingDiscard` 两格状态,`Dialog.Root` 的 `onOpenChange` 关闭那一支、右上角关闭按钮与「取消」都走 `requestClose`,脏状态下弹 Themes `AlertDialog` 二次确认;右上角因此从 `Dialog.Close` 换成带 `onClick` 的 `IconButton`(`Dialog.Close` 绕不过这道确认)。`RepoRow` 多一格 `settingsVersion`;`followGlobal` 那个即时清覆盖的 mutation、独立的 `ReviewersEditor` 与 `MinReportSeveritySection` 两个组件一并删除。准入 Key 与工作副本两块的按钮与端点一字未动。前端无程序化测试(issue #26),`pnpm --filter @multireviewer/web typecheck` 通过,交互走部署实例手测。

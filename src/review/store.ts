@@ -3873,27 +3873,17 @@ export function openStore(dbPath: string): Store {
     const spec = parseAuxiliaryModel(auxiliaryModelJson);
     return spec !== null && specAvailable(spec);
   };
-  const referencedModels = (provider: string): Set<string> => {
-    const models = new Set<string>();
-    const globalJson = db
-      .prepare("SELECT value FROM global_setting WHERE key = ?")
-      .get(GLOBAL_REVIEWERS_KEY)?.["value"];
-    if (globalJson !== undefined) {
-      for (const reviewer of parseStoredReviewers(String(globalJson), GLOBAL_REVIEWERS_CONTEXT)) {
-        if (reviewer.provider === provider) models.add(reviewer.model);
-      }
-    }
-    const overrides = db.prepare("SELECT id, reviewers FROM repo WHERE reviewers IS NOT NULL").all();
-    for (const row of overrides) {
-      for (const reviewer of parseStoredReviewers(
-        String(row["reviewers"]),
-        `仓库 ${Number(row["id"])} 的模型覆盖`,
-      )) {
-        if (reviewer.provider === provider) models.add(reviewer.model);
-      }
-    }
-    return models;
-  };
+  /**
+   * 这一家服务此刻被引用着的模型。判据与 `listModelReferences` 是同一份收集逻辑——事务内
+   * 的兜底另写一遍就会漏掉位置(issue #303 的辅助模型两处当初就是这么漏的)。
+   */
+  const referencedModels = (provider: string): Set<string> =>
+    new Set(
+      store
+        .listModelReferences()
+        .filter((reference) => reference.provider === provider)
+        .map((reference) => reference.model),
+    );
   const recordSupportsCurrentReferences = (record: ModelServiceVersionCommit): boolean => {
     const references = new Set(
       [...referencedModels(record.provider)].filter((model) =>

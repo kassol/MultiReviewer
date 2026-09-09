@@ -27,6 +27,7 @@ import { HelpTooltip } from "@/components/help-tooltip";
 import { EmptyState } from "@/components/empty-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
+import { AuxiliaryModelLine } from "@/components/auxiliary-model-line";
 import { AuxiliaryModelPicker } from "@/components/auxiliary-model-picker";
 import { useDialogReturnFocus } from "@/components/use-dialog-return-focus";
 import {
@@ -45,7 +46,7 @@ import { localMinute } from "@/lib/time";
 import { sameModelRef, sameModelRefs } from "@/lib/model-ref";
 
 import { api, errorText, fetchJson } from "./api.ts";
-import { AUXILIARY_MODEL_SOURCE_LABEL, useAuxiliaryModel } from "./auxiliary-model.ts";
+import { useAuxiliaryModel } from "./auxiliary-model.ts";
 import {
   fromModelRef,
   THINKING_LEVEL_LABEL,
@@ -496,6 +497,9 @@ function ConfigureDialogContent({
   const [baseline, setBaseline] = useState<RepoSettingsDraft>(() => draftOf(repo));
   const [version, setVersion] = useState(repo.settingsVersion);
   const [draft, setDraft] = useState<RepoSettingsDraft>(() => draftOf(repo));
+  // 辅助模型「自定义」但还没选出一处时,草稿里那一格仍是 null(与跟随全局同值),两态因此
+  // 另用这一格分。全局与模型组合都空时,仓库管理员从空选择起步给自己这个仓库设一处。
+  const [customAuxiliary, setCustomAuxiliary] = useState(() => repo.auxiliaryModel !== null);
   const [validity, setValidity] = useState<ModelComposerValidity>({
     ready: false,
     unavailable: [],
@@ -591,7 +595,7 @@ function ConfigureDialogContent({
       };
   const issues = check.data?.issues ?? [];
   const followingModels = draft.models === null;
-  const followingAuxiliary = draft.auxiliary === null;
+  const followingAuxiliary = !customAuxiliary;
   const followingSeverity = draft.minReportSeverity === null;
   // 只读那一档展示的是生效值:跟随态即全局那一份。
   const shownModels = draft.models ?? globalModels;
@@ -744,19 +748,25 @@ function ConfigureDialogContent({
               <SegmentButton
                 active={followingAuxiliary}
                 disabled={save.isPending}
-                onClick={() => setDraft((current) => ({ ...current, auxiliary: null }))}
+                onClick={() => {
+                  setCustomAuxiliary(false);
+                  setDraft((current) => ({ ...current, auxiliary: null }));
+                }}
               >
                 跟随全局
               </SegmentButton>
               <SegmentButton
                 active={!followingAuxiliary}
-                disabled={save.isPending || effectiveAuxiliary.data?.identity == null}
-                onClick={() =>
+                disabled={save.isPending}
+                onClick={() => {
+                  setCustomAuxiliary(true);
                   setDraft((current) => ({
                     ...current,
-                    // 自定义从当前生效值起步:人从一处已知跑得起来的引用上改。
+                    // 自定义从当前生效值起步:人从一处已知跑得起来的引用上改。三处都给不出
+                    // 生效值时从空选择起步,那时这个仓库自己先设一处也是合法的下一步。
                     auxiliary: current.auxiliary ?? baseline.auxiliary ?? effectiveAuxiliaryRef,
-                  }))}
+                  }));
+                }}
               >
                 自定义
               </SegmentButton>
@@ -773,14 +783,8 @@ function ConfigureDialogContent({
                     {view?.source === "repo" ? "保存后跟随全局那一处" : "还没有可用的辅助模型"}
                   </span>
                 ) : (
-                  <span className="break-all font-mono">
-                    {view.identity}
-                    {view.thinkingLevel === null ? null : (
-                      <span className="ml-1.5 font-sans text-text-muted">
-                        思考 {THINKING_LEVEL_LABEL[view.thinkingLevel]}
-                      </span>
-                    )}
-                  </span>
+                  // 引用、档位与来源交给知识集弹窗那三处同一个组件,同一份只读投影。
+                  <AuxiliaryModelLine view={view} />
                 )}
               </Kv>
               <p className="text-base text-text-muted">
@@ -788,8 +792,7 @@ function ConfigureDialogContent({
                   ? "到审查策略设一处辅助模型或配好模型组合，这个仓库的知识任务才发起得了。"
                   : view.source === "repo"
                   ? "审查策略里那一处，或者这个仓库生效模型组合的第一个。"
-                  : `来源：${AUXILIARY_MODEL_SOURCE_LABEL[view.source]}。` +
-                    "审查策略更新后，本仓库将同步使用新的那一处。"}
+                  : "审查策略更新后，本仓库将同步使用新的那一处。"}
               </p>
             </>
           ) : (

@@ -1078,3 +1078,11 @@ test("解析出的辅助模型跑不了时不建合并 agent,这一轮的合并�
   // 落库的仍是开跑时解析出的那一处:续跑据它,不重新解析。
   assert.deepEqual(frozen, auxiliary);
 });
+
+test("辅助模型选了这个模型不支持的档位时不建合并 agent", async () => {
+  // 播种的模型不声明推理能力,它只支持「关闭」:选 high 即跑不了,与两条发起链路同一个判据。
+  const auxiliary = { ...HARNESS_SPEC, thinkingLevel: "high" };
+  const { builds, frozen } = await runOnceWithAuxiliary(auxiliary);
+  assert.deepEqual(builds, [], "档位不支持即缺席,不建合并 agent");
+  assert.deepEqual(frozen, auxiliary);
+});

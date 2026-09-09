@@ -438,6 +438,38 @@ test("仓库覆盖里已有失效模型:只改等级与辅助模型照常保存,
   });
 });
 
+test("仓库辅助模型的档位判据与全局同一套:模型不支持的那一档整份拒收", async () => {
+  const h = await startPanelHarness(cleanups);
+  // 播种的模型不声明推理能力,它只支持「关闭」。
+  seedAvailableModelService(h, "test", ["global-model"]);
+  assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
+
+  const level = await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
+    reviewers: null,
+    auxiliaryModel: { provider: "test", model: "global-model", thinkingLevel: "high" },
+    minReportSeverity: "P1",
+    expectedVersion: 0,
+  });
+  assert.equal(level.status, 400);
+  assert.match(await level.text(), /不支持思考档位 high/);
+  assert.deepEqual(await repoSettingsRow(h), {
+    reviewers: null,
+    auxiliaryModel: null,
+    minReportSeverity: null,
+    globalMinReportSeverity: "P2",
+    settingsVersion: 0,
+  }, "被拒的那一次一项都不写");
+
+  // 它支持的那一档收得下。
+  const off = await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
+    reviewers: null,
+    auxiliaryModel: { provider: "test", model: "global-model" },
+    minReportSeverity: null,
+    expectedVersion: 0,
+  });
+  assert.equal(off.status, 200, await off.text());
+});
+
 test("模型覆盖与最低报告等级的旧端点回没有这个端点", async () => {
   const h = await startPanelHarness(cleanups);
   seedAvailableModelService(h, "test", ["global-model"]);
