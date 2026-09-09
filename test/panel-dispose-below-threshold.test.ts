@@ -166,12 +166,20 @@ async function harnessWithStage(options: PanelHarnessOptions = {}): Promise<Pane
   return h;
 }
 
-/** 把这个仓库的最低报告等级覆盖成 P1(issue #273 的端点)。 */
+/** 把这个仓库的最低报告等级覆盖成 P1(issue #302 起与模型覆盖同一个整块端点)。 */
 async function setThreshold(h: PanelHarness, severity: "P0" | "P1" | "P2" | null): Promise<void> {
-  const response = await h.api("PUT", `/repos/${GITEA_REPO.id}/min-report-severity`, {
+  const rows = (await (await h.api("GET", "/repos")).json()) as {
+    repoId: number;
+    reviewers: unknown;
+    settingsVersion: number;
+  }[];
+  const row = rows.find((entry) => entry.repoId === GITEA_REPO.id)!;
+  const response = await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
+    reviewers: row.reviewers,
     minReportSeverity: severity,
+    expectedVersion: row.settingsVersion,
   });
-  assert.equal(response.status, 204, await response.text());
+  assert.equal(response.status, 200, await response.text());
 }
 
 async function scopedCookie(

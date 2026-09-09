@@ -63,8 +63,8 @@ const ROUTE_EXPECTATIONS = [
   ["POST", "/repos", "repo:write", "-"],
   ["DELETE", "/^\\/repos\\/(\\d+)$/", "repo:write", "repo:1"],
   ["POST", "/^\\/repos\\/(\\d+)\\/worktree$/", "repo:write", "repo:1"],
-  ["PUT", "/^\\/repos\\/(\\d+)\\/reviewers$/", "repo:write", "repo:1"],
-  ["PUT", "/^\\/repos\\/(\\d+)\\/min-report-severity$/", "repo:write", "repo:1"],
+  // 模型覆盖与最低报告等级一次写完(issue #302),两个旧端点已经删掉。
+  ["PUT", "/^\\/repos\\/(\\d+)\\/settings$/", "repo:write", "repo:1"],
   ["POST", "/^\\/repos\\/(\\d+)\\/rotate$/", "repo:write", "repo:1"],
   ["GET", "/^\\/repos\\/(\\d+)\\/hooks$/", "authenticated-only", "repo:1"],
   ["GET", "/^\\/repos\\/(\\d+)\\/rules$/", "authenticated-only", "repo:1"],
