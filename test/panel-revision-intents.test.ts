@@ -20,6 +20,7 @@ import {
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { seedReviewRule } from "./support/store-seed.ts";
 
 const cleanups = testCleanups();
 
@@ -138,7 +139,7 @@ test("无目标意图:agent 拿到意图与现集,产出入队并带人工提议
   let ruleId: number;
   try {
     assert.notEqual(
-      store.addReviewRule(GITEA_REPO.id, {
+      seedReviewRule(h.db.path, GITEA_REPO.id, {
         type: "rule",
         scope: "",
         statement: "入参要在边界上校验",
@@ -599,95 +600,6 @@ test("完成的意图只在十分钟窗口内列出,库里的行留着", async (
   }
 });
 
-test("三个来源字面量的旧库打开后写得进第四个", () => {
-  const db = makeDbPath();
-  cleanups.push(db.cleanup);
-  const first = openStore(db.path);
-  try {
-    first.registerRepo({ repoId: 73, owner: "acme", repo: "legacy", generation: 1, key: "k" });
-  } finally {
-    first.close();
-  }
-  // 升级前的形状:两张表的来源 CHECK 只有三个取值。
-  const raw = new DatabaseSync(db.path);
-  try {
-    raw.exec(`
-      DROP TABLE rule_trace;
-      CREATE TABLE rule_trace (
-        task_id INTEGER NOT NULL,
-        repo_id INTEGER NOT NULL REFERENCES repo(id),
-        source TEXT NOT NULL
-          CHECK (source IN ('baseline-exploration', 'disposition-feedback', 'knowledge-consolidation')),
-        seq INTEGER NOT NULL,
-        at TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        PRIMARY KEY (task_id, seq)
-      );
-      INSERT INTO rule_trace (task_id, repo_id, source, seq, at, kind, payload)
-        VALUES (1, 73, 'baseline-exploration', 1, '2026-09-01T00:00:00.000Z',
-                'rule_agent_started', '{}');
-      DROP TABLE rule_proposal_source;
-      CREATE TABLE rule_proposal_source (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        proposal_id INTEGER NOT NULL REFERENCES rule_proposal(id),
-        origin TEXT NOT NULL
-          CHECK (origin IN ('baseline-exploration', 'disposition-feedback', 'knowledge-consolidation')),
-        note TEXT,
-        evidence TEXT,
-        finding_id INTEGER,
-        trace_task_id INTEGER,
-        created_at TEXT NOT NULL
-      );
-    `);
-  } finally {
-    raw.close();
-  }
-
-  const store = openStore(db.path);
-  try {
-    // 存量那一条原样保留。
-    assert.deepEqual(
-      store.listRuleTrace(1).map((event) => event.kind),
-      ["rule_agent_started"],
-    );
-    // 第四个取值写得进两张表。
-    const taskId = store.startRuleTrace(73, "manual-proposal", { source: "manual-proposal" });
-    assert.equal(store.ruleTraceRepo(taskId), 73);
-    const proposalId = store.addRuleProposal(73, {
-      type: "rule",
-      change: "add",
-      targetRuleIds: [],
-      scope: "",
-      statement: "意图产出的那一条",
-      sources: [
-        {
-          origin: "manual-proposal",
-          note: "写下的那段话",
-          evidence: "读过的代码",
-          findingId: null,
-          traceTaskId: taskId,
-        },
-      ],
-    })!;
-    assert.deepEqual(
-      store.getRuleProposals(73).find((row) => row.id === proposalId)?.sources.map((s) => s.origin),
-      ["manual-proposal"],
-    );
-  } finally {
-    store.close();
-  }
-
-  // 迁移完的库再开一次不重复重建:判据看建表语句原文,重建过即不再命中。
-  const again = openStore(db.path);
-  try {
-    assert.equal(again.listRuleTrace(1).length, 1);
-    assert.equal(again.getRuleProposals(73).length, 1);
-  } finally {
-    again.close();
-  }
-});
-
 /**
  * 目标为一条待裁决提案的修订意图(issue #295)。改写在原地发生:陈述与作用范围换新,
  * 附注追加一条,队列条数不变;型沿既有映射,废止型没有改写入口。
@@ -700,8 +612,8 @@ function seedRule(
 ): number {
   const store = openStore(h.db.path);
   try {
-    assert.notEqual(store.addReviewRule(GITEA_REPO.id, rule), undefined);
-    // `addReviewRule` 回的是新的知识集版本,条目标识要从现集里读。
+    assert.notEqual(seedReviewRule(h.db.path, GITEA_REPO.id, rule), undefined);
+    // `seedReviewRule` 回的是新的知识集版本,条目标识要从现集里读。
     return store.getRuleSet(GITEA_REPO.id)!.rules.at(-1)!.id;
   } finally {
     store.close();

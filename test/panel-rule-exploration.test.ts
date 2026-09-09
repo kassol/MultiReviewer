@@ -26,6 +26,7 @@ import {
   type PanelHarness,
   type PanelHarnessOptions,
 } from "./support/panel-harness.ts";
+import { seedReviewRule } from "./support/store-seed.ts";
 
 const cleanups = testCleanups();
 
@@ -177,7 +178,7 @@ function seedActiveEntries(h: PanelHarness, entries: readonly ReviewRuleInput[])
   const store = openStore(h.db.path);
   try {
     for (const entry of entries) {
-      assert.notEqual(store.addReviewRule(GITEA_REPO.id, entry), undefined);
+      assert.notEqual(seedReviewRule(h.db.path, GITEA_REPO.id, entry), undefined);
     }
   } finally {
     store.close();

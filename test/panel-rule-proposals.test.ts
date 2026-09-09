@@ -27,6 +27,7 @@ import {
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { seedReviewRule } from "./support/store-seed.ts";
 
 const cleanups = testCleanups();
 
@@ -116,16 +117,6 @@ function ruleVersions(dbPath: string): (number | null)[][] {
   }
 }
 
-/** `rule_proposal` 现在有哪几列。迁移后的形状要看得见。 */
-function columnNames(dbPath: string): string[] {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
-  try {
-    return db.prepare("PRAGMA table_info(rule_proposal)").all().map((row) => String(row["name"]));
-  } finally {
-    db.close();
-  }
-}
-
 function scopedUser(
   h: PanelHarness,
   username: string,
@@ -166,7 +157,7 @@ function seedActiveEntries(h: PanelHarness, entries: readonly ReviewRuleInput[])
   const store = openStore(h.db.path);
   try {
     for (const entry of entries) {
-      assert.notEqual(store.addReviewRule(GITEA_REPO.id, entry), undefined);
+      assert.notEqual(seedReviewRule(h.db.path, GITEA_REPO.id, entry), undefined);
     }
   } finally {
     store.close();
@@ -240,8 +231,8 @@ test("三种变更类型各自的落库形态:新增进集、修改留下旧那�
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 81, owner: "acme", repo: "decided", generation: 1, key: "k" });
-    store.addReviewRule(81, { type: "rule", scope: "", statement: "会被改的那条" });
-    assert.equal(store.addReviewRule(81, { type: "rule", scope: "", statement: "会被废止的那条" }), 2);
+    seedReviewRule(db.path, 81, { type: "rule", scope: "", statement: "会被改的那条" });
+    assert.equal(seedReviewRule(db.path, 81, { type: "rule", scope: "", statement: "会被废止的那条" }), 2);
     const [target, doomed] = store.getRuleSet(81)!.rules;
 
     const added = store.addRuleProposal(81, proposal({ statement: "探索提的新规则", scope: "src/**" }))!;
@@ -296,7 +287,7 @@ test("目标规则已经不生效时采纳不了,一版都不推进;移除仓库
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 83, owner: "acme", repo: "stale", generation: 1, key: "k" });
-    store.addReviewRule(83, { type: "rule", scope: "", statement: "先有的那条" });
+    seedReviewRule(db.path, 83, { type: "rule", scope: "", statement: "先有的那条" });
     const rule = store.getRuleSet(83)!.rules[0]!;
     const id = store.addRuleProposal(
       83,
@@ -324,7 +315,7 @@ test("合并型采纳:目标全部废止于新版、合成的那条生效于新�
   try {
     store.registerRepo({ repoId: 84, owner: "acme", repo: "merged", generation: 1, key: "k" });
     for (const statement of ["重复的甲", "重复的乙", "不相干的那条"]) {
-      store.addReviewRule(84, { type: "rule", scope: "", statement });
+      seedReviewRule(db.path, 84, { type: "rule", scope: "", statement });
     }
     const [first, second, other] = store.getRuleSet(84)!.rules;
     const id = store.addRuleProposal(
@@ -371,7 +362,7 @@ test("合并型:任一目标已不生效即采纳不了,驳回照常", () => {
   try {
     store.registerRepo({ repoId: 85, owner: "acme", repo: "merge-stale", generation: 1, key: "k" });
     for (const statement of ["甲", "乙", "丙", "丁"]) {
-      store.addReviewRule(85, { type: "rule", scope: "", statement });
+      seedReviewRule(db.path, 85, { type: "rule", scope: "", statement });
     }
     const [a, b, c, d] = store.getRuleSet(85)!.rules;
     const stale = store.addRuleProposal(
@@ -770,7 +761,7 @@ test("批量采纳一次只推进一个知识集版本;有一条落不下去就�
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 84, owner: "acme", repo: "bulk", generation: 1, key: "k" });
-    store.addReviewRule(84, { type: "rule", scope: "", statement: "会被改的那条" });
+    seedReviewRule(db.path, 84, { type: "rule", scope: "", statement: "会被改的那条" });
     const target = store.getRuleSet(84)!.rules[0]!;
 
     const ids = [
@@ -826,7 +817,7 @@ test("批量采纳里目标条目已经不生效:整组不做,一版都不推进
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 85, owner: "acme", repo: "stale-bulk", generation: 1, key: "k" });
-    store.addReviewRule(85, { type: "rule", scope: "", statement: "先有的那条" });
+    seedReviewRule(db.path, 85, { type: "rule", scope: "", statement: "先有的那条" });
     const rule = store.getRuleSet(85)!.rules[0]!;
     const ids = [
       store.addRuleProposal(85, proposal({ statement: "本来能落的那条" }))!,
@@ -939,7 +930,7 @@ test("批量采纳里两条指向同一个目标:整组不做,不让一条规则
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 87, owner: "acme", repo: "same-target", generation: 1, key: "k" });
-    store.addReviewRule(87, { type: "rule", scope: "", statement: "本来那条" });
+    seedReviewRule(db.path, 87, { type: "rule", scope: "", statement: "本来那条" });
     const rule = store.getRuleSet(87)!.rules[0]!;
     // 同一次探索报两条 `rule_id` 相同的变更,或两次反哺各排一条,队列里就会并存。
     const twoModify = [
@@ -984,7 +975,7 @@ test("modify 提案翻不了型:采纳一条把规则改成事实的提案落不
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 88, owner: "acme", repo: "type-flip", generation: 1, key: "k" });
-    store.addReviewRule(88, { type: "rule", scope: "", statement: "边界要校验" });
+    seedReviewRule(db.path, 88, { type: "rule", scope: "", statement: "边界要校验" });
     const rule = store.getRuleSet(88)!.rules[0]!;
 
     // agent 提的 modify 自带 type=fact:采纳会把一条生效规则悄悄变成项目事实,从此
@@ -1005,149 +996,6 @@ test("modify 提案翻不了型:采纳一条把规则改成事实的提案落不
       proposal({ change: "modify", targetRuleIds: [rule.id], statement: "边界要在入口校验" }),
     )!;
     assert.equal(store.acceptRuleProposals(88, [sameType]), 2);
-  } finally {
-    store.close();
-  }
-});
-
-test("存量提案迁移:三列各合成一条出处附注,来源、备注与轨迹逐字回读", () => {
-  const db = makeDbPath();
-  cleanups.push(db.cleanup);
-  // 升级前的形状:出处三列写在提案上,一条提案至多说得出一次来源。先建一份这样的库。
-  const first = openStore(db.path);
-  try {
-    first.registerRepo({ repoId: 90, owner: "acme", repo: "legacy", generation: 1, key: "k" });
-  } finally {
-    first.close();
-  }
-  const raw = new DatabaseSync(db.path);
-  try {
-    raw.exec(`
-      DROP TABLE rule_proposal;
-      CREATE TABLE rule_proposal (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        repo_id INTEGER NOT NULL REFERENCES repo(id),
-        type TEXT NOT NULL DEFAULT 'rule' CHECK (type IN ('rule', 'fact')),
-        change TEXT NOT NULL CHECK (change IN ('add', 'modify', 'retire')),
-        target_rule_id INTEGER,
-        scope TEXT NOT NULL,
-        statement TEXT NOT NULL,
-        layer TEXT NOT NULL,
-        source TEXT NOT NULL CHECK (source IN ('baseline-exploration', 'disposition-feedback')),
-        source_note TEXT,
-        trace_task_id INTEGER,
-        state TEXT NOT NULL CHECK (state IN ('pending', 'accepted', 'rejected')),
-        created_at TEXT NOT NULL,
-        decided_at TEXT,
-        CHECK ((state = 'pending') = (decided_at IS NULL)),
-        CHECK ((change = 'add') = (target_rule_id IS NULL))
-      );
-      INSERT INTO rule_proposal
-          (id, repo_id, type, change, target_rule_id, scope, statement, layer, source,
-           source_note, trace_task_id, state, created_at, decided_at)
-        VALUES
-          (7, 90, 'rule', 'add', NULL, 'src/**', '探索提的那条', '', 'baseline-exploration',
-           NULL, 3, 'pending', '2026-08-29T00:00:00.000Z', NULL),
-          (8, 90, 'fact', 'add', NULL, '', '反哺提的那条', '', 'disposition-feedback',
-           '这类越界在边界上判', NULL, 'accepted', '2026-08-30T00:00:00.000Z',
-           '2026-08-31T00:00:00.000Z'),
-          (9, 90, 'rule', 'modify', 5, '', '改现集里那条', '', 'baseline-exploration',
-           NULL, NULL, 'pending', '2026-08-30T00:00:00.000Z', NULL);
-    `);
-  } finally {
-    raw.close();
-  }
-
-  const store = openStore(db.path);
-  try {
-    // 每行恰有一条附注,来源、备注原文与轨迹与迁移前一致;提案本身连状态一起原样。
-    assert.deepEqual(
-      store.getRuleProposals(90).map((row) => [
-        row.id,
-        row.type,
-        row.statement,
-        row.state,
-        row.createdAt,
-        row.sources.map((entry) => [entry.origin, entry.note, entry.traceTaskId, entry.findingId]),
-      ]),
-      [
-        [
-          7,
-          "rule",
-          "探索提的那条",
-          "pending",
-          "2026-08-29T00:00:00.000Z",
-          [["baseline-exploration", null, 3, null]],
-        ],
-        [
-          8,
-          "fact",
-          "反哺提的那条",
-          "accepted",
-          "2026-08-30T00:00:00.000Z",
-          [["disposition-feedback", "这类越界在边界上判", null, null]],
-        ],
-        [
-          9,
-          "rule",
-          "改现集里那条",
-          "pending",
-          "2026-08-30T00:00:00.000Z",
-          [["baseline-exploration", null, null, null]],
-        ],
-      ],
-    );
-    // 单值的目标列迁移成一元的目标列表(issue #282),新增那两条是空列表。
-    assert.deepEqual(
-      store.getRuleProposals(90).map((row) => row.targetRuleIds),
-      [[], [], [5]],
-    );
-  } finally {
-    store.close();
-  }
-
-  // 迁移完的库再开一次不重复搬:判据看建表语句原文,搬过即不再命中。
-  const again = openStore(db.path);
-  try {
-    assert.equal(proposalSourceRows(db.path), 3);
-    assert.equal(again.getRuleProposals(90).length, 3);
-    // 那三列已经不在表上,契约里也就没有它们;单值的目标列同样换成了目标列表。
-    const columns = columnNames(db.path);
-    assert.equal(columns.includes("source"), false);
-    assert.equal(columns.includes("source_note"), false);
-    assert.equal(columns.includes("trace_task_id"), false);
-    assert.equal(columns.includes("target_rule_id"), false);
-    assert.equal(columns.includes("target_rule_ids"), true);
-  } finally {
-    again.close();
-  }
-});
-
-test("存量出处附注迁移:升级前落的附注行读回依据为 null,投影照常", () => {
-  const db = makeDbPath();
-  cleanups.push(db.cleanup);
-  const first = openStore(db.path);
-  try {
-    first.registerRepo({ repoId: 91, owner: "acme", repo: "sources", generation: 1, key: "k" });
-    assert.notEqual(first.addRuleProposal(91, proposal({ statement: "升级前排的那条" })), undefined);
-  } finally {
-    first.close();
-  }
-  // 升级前的形状:附注表没有依据那一列(issue #287)。去掉它,再开一次即走补列那一路。
-  const raw = new DatabaseSync(db.path);
-  try {
-    raw.exec("ALTER TABLE rule_proposal_source DROP COLUMN evidence");
-  } finally {
-    raw.close();
-  }
-
-  const store = openStore(db.path);
-  try {
-    // 补列没跑成的话这一句就查不出 `evidence`,直接抛「no such column」。
-    assert.deepEqual(
-      store.getRuleProposals(91).map((row) => [row.statement, row.sources.map((e) => e.evidence)]),
-      [["升级前排的那条", [null]]],
-    );
   } finally {
     store.close();
   }

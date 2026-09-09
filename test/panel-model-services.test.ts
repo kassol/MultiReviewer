@@ -19,6 +19,7 @@ import {
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { putGlobalSettings } from "./support/store-seed.ts";
 
 const PASSWORD = "model-service-reader-password";
 const PASSWORD_HASH = await hashPassword(PASSWORD);
@@ -1068,7 +1069,7 @@ test("删除内置凭据列出全部引用位置，清空引用后才原子推�
   ]);
 
   const clear = openStore(h.db.path);
-  clear.putGlobalSettings({ reviewersJson: null, maxChangedLinesPerBatch: null });
+  putGlobalSettings(clear, { reviewersJson: null, maxChangedLinesPerBatch: null });
   clear.removeRepo(1351);
   clear.removeRepo(1352);
   clear.close();
@@ -1632,7 +1633,7 @@ test("模型目录支持批量停用与重新启用，并拒绝未知模型", as
   });
   assert.equal(reenabled.status, 200);
   const store = openStore(h.db.path);
-  assert.equal(store.putGlobalSettings({
+  assert.equal(putGlobalSettings(store, {
     reviewersJson: JSON.stringify([{ provider: "corp-gateway", model: "automatic-model" }]),
     maxChangedLinesPerBatch: null,
   }), true);
@@ -1777,7 +1778,7 @@ test("模型服务投影给出运行能力与引用位置，并隐藏没有管�
     automaticModels: [],
     supplements: [],
   })), 1);
-  store.putGlobalSettings({
+  putGlobalSettings(store, {
     reviewersJson: JSON.stringify([{ provider: "runtime-gateway", model: "manual-model" }]),
     maxChangedLinesPerBatch: null,
   });
@@ -2470,7 +2471,7 @@ test("自定义目标切换只带入新发现与明确重录来源，并返回�
       },
     ],
   })), 1);
-  assert.equal(seed.putGlobalSettings({
+  assert.equal(putGlobalSettings(seed, {
     reviewersJson: JSON.stringify([{ provider, model: "blocked-global" }]),
     maxChangedLinesPerBatch: null,
   }), true);
@@ -2563,7 +2564,7 @@ test("自定义目标切换只带入新发现与明确重录来源，并返回�
     ]);
     const afterBlockedStore = openStore(h.db.path);
     assert.deepEqual(afterBlockedStore.getModelService(provider), before);
-    assert.equal(afterBlockedStore.putGlobalSettings({
+    assert.equal(putGlobalSettings(afterBlockedStore, {
       reviewersJson: null,
       maxChangedLinesPerBatch: null,
     }), true);
@@ -2581,7 +2582,7 @@ test("自定义目标切换只带入新发现与明确重录来源，并返回�
     assert.equal(committedResponse.status, 200, committedText);
     const finalStore = openStore(h.db.path);
     const final = finalStore.getModelService(provider)!;
-    assert.equal(finalStore.putGlobalSettings({
+    assert.equal(putGlobalSettings(finalStore, {
       reviewersJson: JSON.stringify([
         { provider, model: "newly-discovered" },
         { provider, model: "manual-reconfirm" },
@@ -2975,7 +2976,7 @@ test("自定义服务删除返回完整引用阻断，失败整笔回滚，成�
       createdAt: "2026-08-20T01:59:30.000Z",
     }],
   })), 1);
-  seed.putGlobalSettings({
+  putGlobalSettings(seed, {
     reviewersJson: JSON.stringify([{ provider, model: "delete-global" }]),
     maxChangedLinesPerBatch: null,
   });
@@ -3058,7 +3059,7 @@ test("自定义服务删除返回完整引用阻断，失败整笔回滚，成�
   ]);
 
   const unlink = openStore(h.db.path);
-  assert.equal(unlink.putGlobalSettings({ reviewersJson: null, maxChangedLinesPerBatch: null }), true);
+  assert.equal(putGlobalSettings(unlink, { reviewersJson: null, maxChangedLinesPerBatch: null }), true);
   assert.equal(putRepoReviewers(unlink, 8202, null), true);
   unlink.close();
   const sqlite = new DatabaseSync(h.db.path);
@@ -3692,7 +3693,7 @@ test("删除补录在自动来源仍在时成功，仅唯一来源按完整标�
       },
     ],
   })), 1);
-  seed.putGlobalSettings({
+  putGlobalSettings(seed, {
     reviewersJson: JSON.stringify([
       { provider, model: "shared" },
       { provider, model: "blocked-global" },
@@ -3823,7 +3824,7 @@ test("删除补录在自动来源仍在时成功，仅唯一来源按完整标�
   assert.equal((await h.api("GET", "/model-services").then((response) => response.text())).includes("unreferenced"), false);
 
   const unlink = openStore(h.db.path);
-  assert.equal(unlink.putGlobalSettings({ reviewersJson: null, maxChangedLinesPerBatch: null }), true);
+  assert.equal(putGlobalSettings(unlink, { reviewersJson: null, maxChangedLinesPerBatch: null }), true);
   assert.equal(putRepoReviewers(unlink, 8302, null), true);
   unlink.close();
   const removedGlobal = await mutation(

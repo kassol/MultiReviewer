@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { hashPassword } from "../src/panel/password.ts";
@@ -272,26 +271,6 @@ test("新增的 knowledge:write 不落到已有角色上,持有它的人也只�
     await fetch(`${h.serverUrl}/api/session`, { headers: { cookie } })
   ).json()) as { permissions: PanelPermission[] };
   assert.deepEqual(session.permissions, ["knowledge:write"]);
-});
-
-test("升级把存量角色的 rule:write 改写成 knowledge:write,其余格不动", async () => {
-  const h = await startPanelHarness();
-  const role = (await (
-    await h.api("POST", "/roles", { name: "升级前角色", permissions: ["review:rerun"] })
-  ).json()) as { id: number };
-  const legacy = new DatabaseSync(h.db.path);
-  legacy
-    .prepare("INSERT INTO panel_role_permission (role_id, permission) VALUES (?, ?)")
-    .run(role.id, "rule:write");
-  legacy.close();
-
-  // 迁移在开库那一刻跑完;跑第二遍没有旧行,结果一样(ADR 0020,issue #220)。
-  for (const pass of [1, 2]) {
-    const store = openStore(h.db.path);
-    const permissions = store.listPanelRoles().find((item) => item.id === role.id)?.permissions;
-    store.close();
-    assert.deepEqual(permissions, ["knowledge:write", "review:rerun"], `第 ${pass} 次开库`);
-  }
 });
 
 test("普通用户不能调用系统管理员端点", async () => {

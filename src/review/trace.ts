@@ -8,6 +8,8 @@
  *
  * 订阅者只在进程内:服务是单进程单实例(Docker),不引入外部消息通道。
  */
+import { EventEmitter } from "node:events";
+
 import type { RuleTraceSource, Store } from "./store.ts";
 
 /** 事件挂在轮次上还是挂在某个 Reviewer 上。 */
@@ -135,7 +137,7 @@ type Subscriber = {
  *
  * 键是频道字符串而非数字:轮次与规则任务各有一套自增标识,同一张表里会撞号。
  */
-const live = new Map<string, Set<Subscriber>>();
+const live = new Map<string, EventEmitter>();
 
 /** 一轮 Review Run 的轨迹频道。 */
 export function runChannel(runId: number): string {
@@ -149,7 +151,8 @@ export function ruleChannel(taskId: number): string {
 
 /** 这条轨迹开跑,可以接受订阅。`runReview` 拿到 runId 之后立刻调。 */
 export function beginTrace(channel: string): void {
-  if (!live.has(channel)) live.set(channel, new Set());
+  // 订阅数没有上限:一条轨迹开着几十个面板就是几十个订阅者,默认那道 10 个的告警只是噪音。
+  if (!live.has(channel)) live.set(channel, new EventEmitter().setMaxListeners(0));
 }
 
 /**
@@ -160,17 +163,19 @@ export function subscribeTrace(
   channel: string,
   subscriber: Subscriber,
 ): (() => void) | undefined {
-  const subscribers = live.get(channel);
-  if (subscribers === undefined) return undefined;
-  subscribers.add(subscriber);
+  const emitter = live.get(channel);
+  if (emitter === undefined) return undefined;
+  emitter.on("event", subscriber.onEvent);
+  emitter.on("end", subscriber.onEnd);
   return () => {
-    live.get(channel)?.delete(subscriber);
+    emitter.off("event", subscriber.onEvent);
+    emitter.off("end", subscriber.onEnd);
   };
 }
 
 /** 把一条已落库的事件推给订阅者。 */
 function publishTrace(channel: string, event: TraceEvent | RuleTraceEvent): void {
-  for (const subscriber of [...(live.get(channel) ?? [])]) subscriber.onEvent(event);
+  live.get(channel)?.emit("event", event);
 }
 
 /**
@@ -178,10 +183,10 @@ function publishTrace(channel: string, event: TraceEvent | RuleTraceEvent): void
  * 异常都要走到这里,否则订阅者会一直等下去。
  */
 export function endTrace(channel: string): void {
-  const subscribers = live.get(channel);
-  if (subscribers === undefined) return;
+  const emitter = live.get(channel);
+  if (emitter === undefined) return;
   live.delete(channel);
-  for (const subscriber of [...subscribers]) subscriber.onEnd();
+  emitter.emit("end");
 }
 
 /** 一轮的轨迹写入口。落库与广播是同一个动作,不可能只做一半。 */

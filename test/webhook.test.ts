@@ -16,6 +16,7 @@ import {
 import { openStore } from "../src/review/store.ts";
 import { confirmEmptyRuleSet, makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
+import { putGlobalSettings } from "./support/store-seed.ts";
 
 const BASE_FILE = "export const answer = 1;\n";
 const HEAD_FILE = "export const answer = 2;\n";
@@ -109,7 +110,7 @@ async function startHarness(options: HarnessOptions = {}) {
     key: KEY,
   });
   // 全局模型组合在库里(issue #66)。
-  seed.putGlobalSettings({
+  putGlobalSettings(seed, {
     reviewersJson: JSON.stringify([{ provider: "test", model: "stub-model" }]),
     maxChangedLinesPerBatch: null,
   });

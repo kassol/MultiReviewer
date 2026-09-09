@@ -14,6 +14,7 @@ import {
   type PanelHarness,
 } from "./support/panel-harness.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
+import { putGlobalSettings } from "./support/store-seed.ts";
 
 function commitRunService(
   h: PanelHarness,
@@ -289,7 +290,7 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
     1,
   );
   const settings = openStore(h.db.path);
-  settings.putGlobalSettings({
+  putGlobalSettings(settings, {
     reviewersJson: JSON.stringify([{ provider: "test", model: "global-model" }]),
     maxChangedLinesPerBatch: 1,
   });
@@ -309,7 +310,7 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
     2,
   );
   const changedSettings = openStore(h.db.path);
-  changedSettings.putGlobalSettings({
+  putGlobalSettings(changedSettings, {
     reviewersJson: JSON.stringify([{ provider: "test", model: "global-model" }]),
     maxChangedLinesPerBatch: 999,
   });

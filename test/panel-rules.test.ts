@@ -21,6 +21,7 @@ import {
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { seedReviewRule } from "./support/store-seed.ts";
 
 const cleanups = testCleanups();
 
@@ -102,7 +103,7 @@ function seedActiveRule(
 ): number {
   const store = openStore(h.db.path);
   try {
-    assert.notEqual(store.addReviewRule(repoId, entry), undefined);
+    assert.notEqual(seedReviewRule(h.db.path, repoId, entry), undefined);
     return store.getRuleSet(repoId)!.rules.at(-1)!.id;
   } finally {
     store.close();
@@ -325,7 +326,7 @@ test("直接废止推进一版,历史版本的快照仍取到废止前那一组"
     );
     // 注册不落版本(issue #206),第一条条目落库就是这个仓库的第一版。
     assert.equal(
-      store.addReviewRule(91, { type: "rule", scope: "", statement: "公开函数要有类型标注" }),
+      seedReviewRule(db.path, 91, { type: "rule", scope: "", statement: "公开函数要有类型标注" }),
       1,
     );
     const added = store.getRuleSet(91)!;
@@ -437,7 +438,7 @@ test("Review Run 的启动快照冻结知识集版本与当时那组规则,之�
       true,
     );
     assert.equal(
-      store.addReviewRule(91, { type: "rule", scope: "src/**", statement: "src 下不写 any" }),
+      seedReviewRule(db.path, 91, { type: "rule", scope: "src/**", statement: "src 下不写 any" }),
       1,
     );
 
@@ -449,7 +450,7 @@ test("Review Run 的启动快照冻结知识集版本与当时那组规则,之�
     );
 
     // 已开跑的那一轮拿着上面这份快照跑完,知识集在它跑的过程中变了也不跟。
-    assert.equal(store.addReviewRule(91, { type: "rule", scope: "", statement: "新规则" }), 2);
+    assert.equal(seedReviewRule(db.path, 91, { type: "rule", scope: "", statement: "新规则" }), 2);
     assert.equal(snapshot.ruleSetVersion, 1);
     assert.equal(snapshot.rules.length, 1);
 
@@ -471,7 +472,7 @@ test("启动快照按 type 把两型分开,同一个知识集版本一起冻结"
       true,
     );
     assert.equal(
-      store.addReviewRule(92, {
+      seedReviewRule(db.path, 92, {
         type: "rule",
         scope: "src/**",
         statement: "src 下不写 any",
@@ -479,7 +480,7 @@ test("启动快照按 type 把两型分开,同一个知识集版本一起冻结"
       1,
     );
     assert.equal(
-      store.addReviewRule(92, {
+      seedReviewRule(db.path, 92, {
         type: "fact",
         scope: "",
         statement: "全局拦截器覆盖全部路由",
