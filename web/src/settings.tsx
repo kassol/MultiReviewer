@@ -483,7 +483,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
 
       {/* 动作条固定在页面底部:整页只有这一处保存,脏状态与失败原因都落在这里。 */}
       <div className="sticky bottom-0 z-10 -mx-1 px-1 pb-1">
-        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-card-line bg-sunken px-5 py-3 shadow-card">
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-card-line bg-surface px-5 py-3 shadow-card">
           <Button
             type="submit"
             variant="solid"

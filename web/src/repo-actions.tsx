@@ -362,7 +362,7 @@ export function RepoRowMenu({
         <AlertDialog.Content maxWidth="440px" size={{ initial: "2", sm: "3" }}>
           <AlertDialog.Title size="4">放弃未保存的改动？</AlertDialog.Title>
           <AlertDialog.Description size="2" color="gray">
-            这个仓库的模型组合与最低报告等级还没保存，关闭后改动会丢失。
+            这个仓库的配置还没保存，关闭后改动会丢失。
           </AlertDialog.Description>
           <Flex gap="3" mt="4" justify="end">
             <AlertDialog.Cancel>
@@ -735,7 +735,7 @@ function ConfigureDialogContent({
               辅助模型
               <HelpTooltip
                 label="辅助模型说明"
-                content="Reviewer 之外的全部 agent 工作用它：合并 agent、基点探索、知识整理、处置反哺与人工提议。跟随全局即用审查策略里的那一处；两处都没设时用这个仓库生效模型组合的第一个。"
+                content="Reviewer 之外的全部 agent 工作用它：合并 agent、基点探索、知识整理、处置反哺与人工提议。跟随全局即用审查策略里的辅助模型；两处都没设时用这个仓库生效模型组合的第一个。"
               />
             </>
           }
@@ -791,14 +791,14 @@ function ConfigureDialogContent({
                 {view === undefined || view.source === null
                   ? "到审查策略设一处辅助模型或配好模型组合，这个仓库的知识任务才发起得了。"
                   : view.source === "repo"
-                  ? "审查策略里那一处，或者这个仓库生效模型组合的第一个。"
-                  : "审查策略更新后，本仓库将同步使用新的那一处。"}
+                  ? "跟随全局后用审查策略里的辅助模型，没设时用这个仓库生效模型组合的第一个。"
+                  : "审查策略里的辅助模型改了，本仓库跟着换。"}
               </p>
             </>
           ) : (
             <>
               <p className="text-base text-text-muted">
-                本仓库覆盖会替换审查策略里的那一处，只对这个仓库生效。
+                本仓库的辅助模型替换审查策略里的辅助模型，只对这个仓库生效。
               </p>
               <AuxiliaryModelPicker
                 id={`repo-${repo.repoId}-auxiliary`}
