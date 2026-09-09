@@ -2459,30 +2459,33 @@ const BATCH_LIMIT_FIELDS = Object.keys(BATCH_LIMIT_DEFAULTS) as BatchLimitField[
 const MIN_REPORT_SEVERITY_FIELD = "minReportSeverity";
 
 /**
- * 审查策略:模型组合、分批上限、批次并发数与每批每模型取证上限。仓库详情用它展示「跟随
- * 全局」跟的是什么。上限没配时回默认值,读回来的就是这次审查真会用的那个数。
+ * 审查策略读回来的整份对象(issue #301):模型组合、四项上限、最低报告等级与整页那一个
+ * 版本号。上限与等级没配即回 null——「跟随系统默认」这件事由值是不是空来表达,不再另存
+ * 一份来源标记;默认值随 `defaults` 一起给,面板拿它当占位符。
  */
-function handleGetSettings(res: ServerResponse, deps: WebhookServerDeps): void {
+function settingsBody(deps: WebhookServerDeps): Record<string, unknown> {
   const settings = globalSettings(deps);
-  return sendJson(res, 200, {
+  return {
     reviewers: settings.reviewers,
-    reviewersVersion: settings.reviewersVersion,
-    ...Object.fromEntries(
-      BATCH_LIMIT_FIELDS.flatMap((field) => [
-        [field, settings[field] ?? BATCH_LIMIT_DEFAULTS[field]],
-        [`${field}Source`, settings[field] === null ? "default" : "custom"],
-        [`${field}Version`, settings[`${field}Version`]],
-      ]),
-    ),
-    // 最低报告等级同形(issue #271):没配时回系统默认 P2,读回来的就是下一轮真会用的。
-    minReportSeverity: settings.minReportSeverity ?? DEFAULT_MIN_REPORT_SEVERITY,
-    minReportSeveritySource: settings.minReportSeverity === null ? "default" : "custom",
-    minReportSeverityVersion: settings.minReportSeverityVersion,
-  });
+    ...Object.fromEntries(BATCH_LIMIT_FIELDS.map((field) => [field, settings[field]])),
+    minReportSeverity: settings.minReportSeverity,
+    version: settings.version,
+    defaults: {
+      ...BATCH_LIMIT_DEFAULTS,
+      [MIN_REPORT_SEVERITY_FIELD]: DEFAULT_MIN_REPORT_SEVERITY,
+    },
+  };
+}
+
+/** 审查策略。仓库详情用它展示「跟随全局」跟的是什么。 */
+function handleGetSettings(res: ServerResponse, deps: WebhookServerDeps): void {
+  return sendJson(res, 200, settingsBody(deps));
 }
 
 /**
- * 全局模型组合与那几项正整数上限各自独立写入并带自己的 expected version。
+ * 审查策略整页一次全量替换(issue #301)。body 收整份对象加 `expectedVersion`:上限四项与
+ * 最低报告等级缺席或为 null 都是「跟随系统默认」,任一项校验不过整份一项都不写,版本不符
+ * 回 409 并带上服务端当前的整份对象。
  */
 async function handlePutSettings(
   req: IncomingMessage,
@@ -2495,16 +2498,6 @@ async function handlePutSettings(
     return sendJson(res, 400, { error: "body 要是 JSON 对象" });
   }
   const payload = decoded as Record<string, unknown>;
-  const hasReviewers = Object.hasOwn(payload, "reviewers");
-  const hasMinReportSeverity = Object.hasOwn(payload, MIN_REPORT_SEVERITY_FIELD);
-  const limitFields = BATCH_LIMIT_FIELDS.filter((field) => Object.hasOwn(payload, field));
-  if (limitFields.length + (hasReviewers ? 1 : 0) + (hasMinReportSeverity ? 1 : 0) !== 1) {
-    return sendJson(res, 400, {
-      error: `body 必须且只能修改 reviewers 或 ${
-        [...BATCH_LIMIT_FIELDS, MIN_REPORT_SEVERITY_FIELD].join(" / ")
-      } 中的一项`,
-    });
-  }
   if (
     typeof payload.expectedVersion !== "number" ||
     !Number.isInteger(payload.expectedVersion) ||
@@ -2513,56 +2506,56 @@ async function handlePutSettings(
     return sendJson(res, 400, { error: "expectedVersion 要是正整数" });
   }
 
-  let reviewersJson: string | undefined;
-  let reviewers: ReviewerSpec[] | undefined;
-  if (hasReviewers) {
-    const parsed = parseReviewerSpecs(payload.reviewers, GLOBAL_REVIEWERS_CONTEXT);
-    if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
-    reviewersJson = parsed.reviewersJson;
-    reviewers = parsed.reviewers;
-    if (!await ensureModelCombinationAvailable(res, deps, reviewers, GLOBAL_REVIEWERS_CONTEXT)) {
-      return;
-    }
-  }
+  const parsed = parseReviewerSpecs(payload.reviewers, GLOBAL_REVIEWERS_CONTEXT);
+  if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
 
-  const limitField = limitFields[0];
-  let limit: number | null = null;
-  if (limitField !== undefined) {
-    const candidate = payload[limitField];
+  const limits: Record<BatchLimitField, number | null> = {
+    maxChangedLinesPerBatch: null,
+    maxParallelBatches: null,
+    maxFilesPerBatch: null,
+    maxEvidenceCallsPerBatch: null,
+  };
+  for (const field of BATCH_LIMIT_FIELDS) {
+    const candidate = payload[field] ?? null;
     if (
       candidate !== null &&
       (typeof candidate !== "number" || !Number.isInteger(candidate) || candidate <= 0)
     ) {
-      return sendJson(res, 400, {
-        error: `${limitField} 要是正整数，null 即取默认值`,
-      });
+      return sendJson(res, 400, { error: `${field} 要是正整数，留空即取默认值` });
     }
-    limit = candidate as number | null;
+    limits[field] = candidate as number | null;
   }
 
-  let minReportSeverity: Severity | null = null;
-  if (hasMinReportSeverity) {
-    const candidate = payload[MIN_REPORT_SEVERITY_FIELD];
-    if (candidate !== null && !MIN_REPORT_SEVERITIES.includes(candidate as Severity)) {
-      return sendJson(res, 400, {
-        error: `${MIN_REPORT_SEVERITY_FIELD} 要是 ${
-          MIN_REPORT_SEVERITIES.join(" / ")
-        } 之一，null 即取默认值`,
-      });
-    }
-    minReportSeverity = candidate as Severity | null;
+  const severity = payload[MIN_REPORT_SEVERITY_FIELD] ?? null;
+  if (severity !== null && !MIN_REPORT_SEVERITIES.includes(severity as Severity)) {
+    return sendJson(res, 400, {
+      error: `${MIN_REPORT_SEVERITY_FIELD} 要是 ${
+        MIN_REPORT_SEVERITIES.join(" / ")
+      } 之一，留空即取默认值`,
+    });
   }
 
-  const expectedVersion = payload.expectedVersion as number;
+  // 模型可用性是最后一道校验:它要打库,前面几项的形状先过完再问。**只在组合真的换了
+  // 时判**——失效模型门禁的是组合本身的写入,组合原样未动的那一次没有引入新的不可用
+  // 引用,不该连坐同一份提交里的上限与报告等级(判据与 `replaceGlobalSettings` 同一条)。
+  // 非空与去重那两道由 `parseReviewerSpecs` 每次都判。
+  if (
+    parsed.reviewersJson !== withStore(deps.dbPath, (store) => store.getGlobalSettings().reviewersJson) &&
+    !await ensureModelCombinationAvailable(res, deps, parsed.reviewers, GLOBAL_REVIEWERS_CONTEXT)
+  ) return;
+
   const saved = withStore(deps.dbPath, (store) =>
-    reviewersJson !== undefined
-      ? store.putGlobalReviewers(expectedVersion, reviewersJson)
-      : hasMinReportSeverity
-        ? store.putGlobalMinReportSeverity(expectedVersion, minReportSeverity)
-        : store.putGlobalBatchLimit(limitField!, expectedVersion, limit)
+    store.replaceGlobalSettings(payload.expectedVersion as number, {
+      reviewersJson: parsed.reviewersJson,
+      ...limits,
+      minReportSeverity: severity as Severity | null,
+    })
   );
   if (!saved) {
-    return sendJson(res, 409, { error: "这项审查策略已经被其他人修改，请重新加载后再保存" });
+    return sendJson(res, 409, {
+      error: "这一页刚被其他人改过，请核对服务端当前值后再保存",
+      settings: settingsBody(deps),
+    });
   }
   return handleGetSettings(res, deps);
 }

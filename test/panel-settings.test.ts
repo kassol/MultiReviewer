@@ -34,142 +34,260 @@ after(() => {
 
 type SettingsBody = {
   reviewers: { provider: string; model: string; thinkingLevel?: string }[];
-  reviewersVersion: number;
-  maxChangedLinesPerBatch: number;
-  maxChangedLinesPerBatchSource: "default" | "custom";
-  maxChangedLinesPerBatchVersion: number;
-  maxParallelBatches: number;
-  maxParallelBatchesSource: "default" | "custom";
-  maxParallelBatchesVersion: number;
-  maxFilesPerBatch: number;
-  maxFilesPerBatchSource: "default" | "custom";
-  maxFilesPerBatchVersion: number;
-  maxEvidenceCallsPerBatch: number;
-  maxEvidenceCallsPerBatchSource: "default" | "custom";
-  maxEvidenceCallsPerBatchVersion: number;
-  minReportSeverity: "P0" | "P1" | "P2";
-  minReportSeveritySource: "default" | "custom";
-  minReportSeverityVersion: number;
+  maxChangedLinesPerBatch: number | null;
+  maxParallelBatches: number | null;
+  maxFilesPerBatch: number | null;
+  maxEvidenceCallsPerBatch: number | null;
+  minReportSeverity: "P0" | "P1" | "P2" | null;
+  version: number;
+  defaults: Record<string, number | string>;
 };
 
-/** 并发数、文件数上限、取证上限与最低报告等级在下面这些用例里一次都没被改过,读回来恒是这一份。 */
-const UNTOUCHED_BATCH_LIMITS = {
+/** 读接口随每一份对象给出的系统默认值:上限项与报告等级留空时面板拿它当占位符。 */
+const DEFAULTS = {
+  maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
   maxParallelBatches: DEFAULT_MAX_PARALLEL_BATCHES,
-  maxParallelBatchesSource: "default",
-  maxParallelBatchesVersion: 1,
   maxFilesPerBatch: DEFAULT_MAX_FILES_PER_BATCH,
-  maxFilesPerBatchSource: "default",
-  maxFilesPerBatchVersion: 1,
   maxEvidenceCallsPerBatch: EVIDENCE_SESSION_BUDGET,
-  maxEvidenceCallsPerBatchSource: "default",
-  maxEvidenceCallsPerBatchVersion: 1,
   minReportSeverity: "P2",
-  minReportSeveritySource: "default",
-  minReportSeverityVersion: 1,
 };
+
+/** 四项上限与报告等级都没配的那一份:值是 null,即「跟随系统默认」。 */
+const UNSET_SETTINGS = {
+  maxChangedLinesPerBatch: null,
+  maxParallelBatches: null,
+  maxFilesPerBatch: null,
+  maxEvidenceCallsPerBatch: null,
+  minReportSeverity: null,
+};
+
+/** harness 播种的那一份全局模型组合。 */
+const SEEDED_REVIEWERS = [{ provider: "test", model: "global-model" }];
 
 async function readSettings(h: PanelHarness): Promise<SettingsBody> {
   return await (await h.api("GET", "/settings")).json() as SettingsBody;
 }
 
-async function putReviewers(h: PanelHarness, reviewers: unknown): Promise<Response> {
+/**
+ * 整页保存(issue #301):以服务端当前的整份对象为基线,只把 `patch` 里那几项换掉,连同
+ * 期望版本一次发出去。面板做的就是这件事。
+ */
+async function putSettings(
+  h: PanelHarness,
+  patch: Record<string, unknown>,
+  expectedVersion?: number,
+): Promise<Response> {
+  const { version, defaults: _defaults, ...current } = await readSettings(h);
   return h.api("PUT", "/settings", {
-    reviewers,
-    expectedVersion: (await readSettings(h)).reviewersVersion,
+    ...current,
+    ...patch,
+    expectedVersion: expectedVersion ?? version,
   });
 }
 
-async function putLimit(h: PanelHarness, maxChangedLinesPerBatch: unknown): Promise<Response> {
-  return h.api("PUT", "/settings", {
-    maxChangedLinesPerBatch,
-    expectedVersion: (await readSettings(h)).maxChangedLinesPerBatchVersion,
-  });
-}
-
-test("审查策略两项独立保存，陈旧写入只冲突目标项", async () => {
+test("审查策略整页一次保存,版本加一;陈旧写入 409 并带回当前整份对象", async () => {
   const h = await startPanelHarness(cleanups);
   seedAvailableModelService(h, "corp-deepseek", ["deepseek-v4-flash"]);
-  const initial = await (await h.api("GET", "/settings")).json() as {
-    reviewersVersion: number;
-    maxChangedLinesPerBatchVersion: number;
-  };
+  assert.deepEqual(await readSettings(h), {
+    reviewers: SEEDED_REVIEWERS,
+    ...UNSET_SETTINGS,
+    version: 1,
+    defaults: DEFAULTS,
+  });
+
+  // 模型组合、一项上限与报告等级一次写完,一个请求,版本只推一版。
   const reviewers = [{ provider: "corp-deepseek", model: "deepseek-v4-flash" }];
-
-  const coupledWrite = await h.api("PUT", "/settings", {
+  const saved = await putSettings(h, {
     reviewers,
     maxChangedLinesPerBatch: 800,
-    expectedVersion: initial.reviewersVersion,
+    minReportSeverity: "P1",
   });
-  assert.equal(coupledWrite.status, 400, "一个请求不得同时改两项");
-
-  const modelWrite = await h.api("PUT", "/settings", {
+  assert.equal(saved.status, 200);
+  const expected = {
     reviewers,
-    expectedVersion: initial.reviewersVersion,
-  });
-  assert.equal(modelWrite.status, 200);
-  const limitWrite = await h.api("PUT", "/settings", {
+    ...UNSET_SETTINGS,
     maxChangedLinesPerBatch: 800,
-    expectedVersion: initial.maxChangedLinesPerBatchVersion,
-  });
-  assert.equal(limitWrite.status, 200);
-  assert.deepEqual(await limitWrite.json(), {
-    reviewers,
-    reviewersVersion: initial.reviewersVersion + 1,
-    maxChangedLinesPerBatch: 800,
-    maxChangedLinesPerBatchSource: "custom",
-    maxChangedLinesPerBatchVersion: initial.maxChangedLinesPerBatchVersion + 1,
-    ...UNTOUCHED_BATCH_LIMITS,
-  });
+    minReportSeverity: "P1",
+    version: 2,
+    defaults: DEFAULTS,
+  };
+  assert.deepEqual(await saved.json(), expected);
 
-  const stale = await h.api("PUT", "/settings", {
-    maxChangedLinesPerBatch: 900,
-    expectedVersion: initial.maxChangedLinesPerBatchVersion,
-  });
+  // 别人先改过这一页:陈旧的期望版本被拦下,响应体带回服务端当前的整份对象。
+  const stale = await putSettings(h, { maxChangedLinesPerBatch: 900 }, 1);
   assert.equal(stale.status, 409);
-  assert.deepEqual(await (await h.api("GET", "/settings")).json(), {
-    reviewers,
-    reviewersVersion: initial.reviewersVersion + 1,
-    maxChangedLinesPerBatch: 800,
-    maxChangedLinesPerBatchSource: "custom",
-    maxChangedLinesPerBatchVersion: initial.maxChangedLinesPerBatchVersion + 1,
-    ...UNTOUCHED_BATCH_LIMITS,
+  const conflict = (await stale.json()) as { error: string; settings: SettingsBody };
+  assert.deepEqual(conflict.settings, expected);
+  assert.deepEqual(await readSettings(h), expected, "409 之后一项都没写进去");
+});
+
+test("整份写入里任一项校验不过,整页一项都不写", async () => {
+  const h = await startPanelHarness(cleanups);
+  seedAvailableModelService(h, "test", ["global-model"]);
+
+  const badLimit = await putSettings(h, { maxParallelBatches: 5, maxFilesPerBatch: 0 });
+  assert.equal(badLimit.status, 400);
+  assert.match(((await badLimit.json()) as { error: string }).error, /maxFilesPerBatch/);
+  const untouched = await readSettings(h);
+  assert.deepEqual(untouched, {
+    reviewers: SEEDED_REVIEWERS,
+    ...UNSET_SETTINGS,
+    version: 1,
+    defaults: DEFAULTS,
+  });
+
+  // 模型不可用同样整份拒收:合法的那几项不会先落一半进去。
+  const badModel = await putSettings(h, {
+    reviewers: [{ provider: "vanished-service", model: "missing" }],
+    maxParallelBatches: 5,
+  });
+  assert.equal(badModel.status, 400);
+  assert.deepEqual(await readSettings(h), untouched);
+});
+
+test("四项上限与报告等级一次写全,留空即回系统默认", async () => {
+  const h = await startPanelHarness(cleanups);
+  // 整页一起校验,保存要求组合里的模型当前可用:先把 harness 播种的那一个坐实。
+  seedAvailableModelService(h, "test", ["global-model"]);
+  // harness 的库这几格从没写过,与升级前的库同一形态:读出来全是 null。
+  const store = openStore(h.db.path);
+  try {
+    const stored = store.getGlobalSettings();
+    assert.deepEqual(
+      {
+        maxChangedLinesPerBatch: stored.maxChangedLinesPerBatch,
+        maxParallelBatches: stored.maxParallelBatches,
+        maxFilesPerBatch: stored.maxFilesPerBatch,
+        maxEvidenceCallsPerBatch: stored.maxEvidenceCallsPerBatch,
+        minReportSeverity: stored.minReportSeverity,
+      },
+      UNSET_SETTINGS,
+    );
+  } finally {
+    store.close();
+  }
+
+  const saved = await putSettings(h, {
+    maxChangedLinesPerBatch: 700,
+    maxParallelBatches: 5,
+    maxFilesPerBatch: 12,
+    maxEvidenceCallsPerBatch: 4,
+    minReportSeverity: "P1",
+  });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(await saved.json(), {
+    reviewers: SEEDED_REVIEWERS,
+    maxChangedLinesPerBatch: 700,
+    maxParallelBatches: 5,
+    maxFilesPerBatch: 12,
+    maxEvidenceCallsPerBatch: 4,
+    minReportSeverity: "P1",
+    version: 2,
+    defaults: DEFAULTS,
+  });
+
+  // 「恢复默认」就是把那一格写成 null,随整页一起提交;别的项原样留着。
+  const cleared = await putSettings(h, { maxParallelBatches: null, minReportSeverity: null });
+  assert.equal(cleared.status, 200);
+  assert.deepEqual(await cleared.json(), {
+    reviewers: SEEDED_REVIEWERS,
+    maxChangedLinesPerBatch: 700,
+    maxParallelBatches: null,
+    maxFilesPerBatch: 12,
+    maxEvidenceCallsPerBatch: 4,
+    minReportSeverity: null,
+    version: 3,
+    defaults: DEFAULTS,
   });
 });
 
-test("历史空组合可读但不能再次保存，批次上限可恢复系统默认", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
-  const initial = await (await h.api("GET", "/settings")).json() as {
-    reviewersVersion: number;
-    maxChangedLinesPerBatchVersion: number;
-  };
-  const empty = await h.api("PUT", "/settings", {
-    reviewers: [],
-    expectedVersion: initial.reviewersVersion,
+test("带逐项版本键的旧库开起来:整页只剩一个版本,旧键消失,值一格不变", async () => {
+  const h = await startPanelHarness(cleanups);
+  const legacy = new DatabaseSync(h.db.path);
+  try {
+    const legacyRows: [string, string][] = [
+      ["reviewers_version", "7"],
+      ["max_changed_lines_per_batch", "777"],
+      ["max_changed_lines_per_batch_version", "3"],
+      ["max_parallel_batches_version", "2"],
+      ["max_files_per_batch_version", "2"],
+      ["max_evidence_calls_per_batch_version", "2"],
+      ["min_report_severity", "P1"],
+      ["min_report_severity_version", "5"],
+    ];
+    for (const [key, value] of legacyRows) {
+      legacy.prepare(
+        `INSERT INTO global_setting (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      ).run(key, value);
+    }
+  } finally {
+    legacy.close();
+  }
+
+  // 开库即一次性合并。跑两遍是为了证明它幂等:第二遍旧键早没了,值仍不变。
+  for (const pass of [1, 2]) {
+    const store = openStore(h.db.path);
+    try {
+      assert.deepEqual(store.getGlobalSettings(), {
+        reviewersJson: JSON.stringify(SEEDED_REVIEWERS),
+        maxChangedLinesPerBatch: 777,
+        maxParallelBatches: null,
+        maxFilesPerBatch: null,
+        maxEvidenceCallsPerBatch: null,
+        minReportSeverity: "P1",
+        version: 1,
+      }, `第 ${pass} 遍`);
+    } finally {
+      store.close();
+    }
+  }
+
+  const remaining = new DatabaseSync(h.db.path);
+  try {
+    assert.deepEqual(
+      remaining.prepare(
+        "SELECT key FROM global_setting WHERE key LIKE '%_version' AND key <> 'settings_version'",
+      ).all(),
+      [],
+      "逐项版本键一个都不该留下",
+    );
+  } finally {
+    remaining.close();
+  }
+
+  assert.deepEqual(await readSettings(h), {
+    reviewers: SEEDED_REVIEWERS,
+    ...UNSET_SETTINGS,
+    maxChangedLinesPerBatch: 777,
+    minReportSeverity: "P1",
+    version: 1,
+    defaults: DEFAULTS,
   });
+});
+
+test("历史空组合读得出来,但整页保存要求组合非空", async () => {
+  const h = await startPanelHarness(cleanups, { reviewers: [] });
+  assert.deepEqual(await readSettings(h), {
+    reviewers: [],
+    ...UNSET_SETTINGS,
+    version: 1,
+    defaults: DEFAULTS,
+  });
+
+  // 整页一起校验:组合是空的,别的项也保存不了——一次保存要么整份成立,要么一项不写。
+  const empty = await putSettings(h, { maxChangedLinesPerBatch: 800 });
   assert.equal(empty.status, 400);
   assert.match(await empty.text(), /至少要选一个模型/);
-
-  const custom = await h.api("PUT", "/settings", {
-    maxChangedLinesPerBatch: 800,
-    expectedVersion: initial.maxChangedLinesPerBatchVersion,
-  });
-  const customBody = await custom.json() as { maxChangedLinesPerBatchVersion: number };
-  const reset = await h.api("PUT", "/settings", {
-    maxChangedLinesPerBatch: null,
-    expectedVersion: customBody.maxChangedLinesPerBatchVersion,
-  });
-  assert.equal(reset.status, 200);
-  assert.deepEqual(await reset.json(), {
+  assert.deepEqual(await readSettings(h), {
     reviewers: [],
-    reviewersVersion: initial.reviewersVersion,
-    maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
-    maxChangedLinesPerBatchSource: "default",
-    maxChangedLinesPerBatchVersion: customBody.maxChangedLinesPerBatchVersion + 1,
-    ...UNTOUCHED_BATCH_LIMITS,
+    ...UNSET_SETTINGS,
+    version: 1,
+    defaults: DEFAULTS,
   });
 });
 
-test("全局组合按模型服务候选校验，失效项可移除且批次上限独立保存", async () => {
+test("全局组合按模型服务候选校验，失效模型只门禁组合本身的写入", async () => {
   const selected = [
     { provider: "healthy-service", model: "keep" },
     { provider: "recovering-service", model: "saved" },
@@ -250,22 +368,25 @@ test("全局组合按模型服务候选校验，失效项可移除且批次上�
     ],
   );
 
+  // 往这份组合里再添一个模型即算改了组合:候选校验当场拒收,两类原因都写明。
   const beforeBlockedWrites = serviceState();
-  const blocked = await putReviewers(h, selected);
+  const blocked = await putSettings(h, {
+    reviewers: [...selected, { provider: "another-vanished-service", model: "gone" }],
+  });
   assert.equal(blocked.status, 400);
   assert.match((await blocked.text()), /模型凭据不可用.*模型来源消失/);
 
-  const limitOnly = await putLimit(h, 733);
+  // 失效模型门禁的是组合本身:组合原样未动的那一次照常保存得下,上限不被连坐。
+  const limitOnly = await putSettings(h, { maxChangedLinesPerBatch: 733 });
   assert.equal(limitOnly.status, 200);
   assert.deepEqual(await limitOnly.json(), {
     reviewers: selected,
-    reviewersVersion: 1,
+    ...UNSET_SETTINGS,
     maxChangedLinesPerBatch: 733,
-    maxChangedLinesPerBatchSource: "custom",
-    maxChangedLinesPerBatchVersion: 2,
-    ...UNTOUCHED_BATCH_LIMITS,
+    version: 2,
+    defaults: DEFAULTS,
   });
-  assert.deepEqual(serviceState(), beforeBlockedWrites, "组合与批次写入不应改服务或模型来源");
+  assert.deepEqual(serviceState(), beforeBlockedWrites, "组合与上限写入不应改服务或模型来源");
 
   setRecoveringCredential("verified");
   const recoveredResponse = await h.api("GET", "/model-services");
@@ -276,192 +397,134 @@ test("全局组合按模型服务候选校验，失效项可移除且批次上�
     recoveredBody.candidates.find((model) => model.identity === "recovering-service:saved")?.available,
     true,
   );
-  const recoveredSettings = (await (await h.api("GET", "/settings")).json()) as {
-    reviewers: unknown;
-  };
-  assert.deepEqual(recoveredSettings.reviewers, selected);
+  assert.deepEqual((await readSettings(h)).reviewers, selected);
 
+  // 去掉那个来源消失的,剩下两个都可用:组合与上限在同一次保存里一起落地。
   const beforeMissingRemoval = serviceState();
   const withoutMissing = selected.slice(0, 2);
-  const removedMissing = await putReviewers(h, withoutMissing);
+  const removedMissing = await putSettings(h, { reviewers: withoutMissing });
   assert.equal(removedMissing.status, 200);
   assert.deepEqual(await removedMissing.json(), {
     reviewers: withoutMissing,
-    reviewersVersion: 2,
+    ...UNSET_SETTINGS,
     maxChangedLinesPerBatch: 733,
-    maxChangedLinesPerBatchSource: "custom",
-    maxChangedLinesPerBatchVersion: 2,
-    ...UNTOUCHED_BATCH_LIMITS,
+    version: 3,
+    defaults: DEFAULTS,
   });
   assert.deepEqual(serviceState(), beforeMissingRemoval);
 
   setRecoveringCredential("pending-reverification");
   const beforeUnavailableRemoval = serviceState();
-  const removedUnavailable = await putReviewers(h, [selected[0]!]);
+  const removedUnavailable = await putSettings(h, { reviewers: [selected[0]!] });
   assert.equal(removedUnavailable.status, 200);
   assert.deepEqual(await removedUnavailable.json(), {
     reviewers: [selected[0]],
-    reviewersVersion: 3,
+    ...UNSET_SETTINGS,
     maxChangedLinesPerBatch: 733,
-    maxChangedLinesPerBatchSource: "custom",
-    maxChangedLinesPerBatchVersion: 2,
-    ...UNTOUCHED_BATCH_LIMITS,
+    version: 4,
+    defaults: DEFAULTS,
   });
   assert.deepEqual(serviceState(), beforeUnavailableRemoval);
-});
-
-test("批次上限自定义与恢复默认都不改模型组合", async () => {
-  const h = await startPanelHarness(cleanups, { reviewers: [] });
-  seedAvailableModelService(h, "test", ["global-model"]);
-  assert.deepEqual(await (await h.api("GET", "/settings")).json(), {
-    reviewers: [],
-    reviewersVersion: 1,
-    maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
-    maxChangedLinesPerBatchSource: "default",
-    maxChangedLinesPerBatchVersion: 1,
-    ...UNTOUCHED_BATCH_LIMITS,
-  });
-
-  const reviewers = [{ provider: "test", model: "global-model" }];
-  await putReviewers(h, reviewers);
-  const custom = await putLimit(h, 800);
-  assert.deepEqual(await custom.json(), {
-    reviewers,
-    reviewersVersion: 2,
-    maxChangedLinesPerBatch: 800,
-    maxChangedLinesPerBatchSource: "custom",
-    maxChangedLinesPerBatchVersion: 2,
-    ...UNTOUCHED_BATCH_LIMITS,
-  });
-  const cleared = await putLimit(h, null);
-  assert.deepEqual(await cleared.json(), {
-    reviewers,
-    reviewersVersion: 2,
-    maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
-    maxChangedLinesPerBatchSource: "default",
-    maxChangedLinesPerBatchVersion: 3,
-    ...UNTOUCHED_BATCH_LIMITS,
-  });
 });
 
 test("非法的 reviewers 被既有校验拒绝,报错标注来源是全局这一层", async () => {
   const h = await startPanelHarness(cleanups);
 
-  const missingField = await putReviewers(h, [{ provider: "deepseek" }]);
+  const missingField = await putSettings(h, { reviewers: [{ provider: "deepseek" }] });
   assert.equal(missingField.status, 400);
   assert.match(((await missingField.json()) as { error: string }).error, /全局模型组合.*model/);
 
-  const duplicate = await putReviewers(h, [
+  const duplicate = await putSettings(h, {
+    reviewers: [
       { provider: "a", model: "same" },
       { provider: "a", model: "same" },
-    ]);
+    ],
+  });
   assert.equal(duplicate.status, 400);
   assert.match(((await duplicate.json()) as { error: string }).error, /a:same 选了两次/);
 
   // 坏入参一条都不落库:组合还是 harness 播种的那一份。
-  assert.deepEqual(await (await h.api("GET", "/settings")).json(), {
-    reviewers: [{ provider: "test", model: "global-model" }],
-    reviewersVersion: 1,
-    maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
-    maxChangedLinesPerBatchSource: "default",
-    maxChangedLinesPerBatchVersion: 1,
-    ...UNTOUCHED_BATCH_LIMITS,
+  assert.deepEqual(await readSettings(h), {
+    reviewers: SEEDED_REVIEWERS,
+    ...UNSET_SETTINGS,
+    version: 1,
+    defaults: DEFAULTS,
   });
 });
 
-type LimitField = "maxParallelBatches" | "maxFilesPerBatch" | "maxEvidenceCallsPerBatch";
+test("组合里的模型已经失效:只改上限照常保存,改组合仍被拒", async () => {
+  const stale = [{ provider: "vanished-service", model: "missing" }];
+  const h = await startPanelHarness(cleanups, { reviewers: stale });
+  seedAvailableModelService(h, "healthy-service", ["keep"]);
 
-async function putBatchLimit(
-  h: PanelHarness,
-  field: LimitField,
-  value: unknown,
-): Promise<Response> {
-  const settings = await readSettings(h);
-  return h.api("PUT", "/settings", {
-    [field]: value,
-    expectedVersion: settings[`${field}Version`],
-  });
-}
-
-test("批次并发数与文件数上限各自独立读写,版本各推各的", async () => {
-  const h = await startPanelHarness(cleanups);
-  const initial = await readSettings(h);
-  assert.equal(initial.maxParallelBatches, DEFAULT_MAX_PARALLEL_BATCHES);
-  assert.equal(initial.maxParallelBatchesSource, "default");
-  assert.equal(initial.maxFilesPerBatch, DEFAULT_MAX_FILES_PER_BATCH);
-  assert.equal(initial.maxFilesPerBatchSource, "default");
-
-  const parallel = await putBatchLimit(h, "maxParallelBatches", 5);
-  assert.equal(parallel.status, 200);
-  const files = await putBatchLimit(h, "maxFilesPerBatch", 12);
-  assert.equal(files.status, 200);
-  assert.deepEqual(await files.json(), {
-    reviewers: initial.reviewers,
-    reviewersVersion: initial.reviewersVersion,
-    maxChangedLinesPerBatch: DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
-    maxChangedLinesPerBatchSource: "default",
-    maxChangedLinesPerBatchVersion: 1,
-    maxParallelBatches: 5,
-    maxParallelBatchesSource: "custom",
-    maxParallelBatchesVersion: 2,
-    maxFilesPerBatch: 12,
-    maxFilesPerBatchSource: "custom",
-    maxFilesPerBatchVersion: 2,
-    maxEvidenceCallsPerBatch: EVIDENCE_SESSION_BUDGET,
-    maxEvidenceCallsPerBatchSource: "default",
-    maxEvidenceCallsPerBatchVersion: 1,
-    minReportSeverity: "P2",
-    minReportSeveritySource: "default",
-    minReportSeverityVersion: 1,
+  // 失效模型门禁的是组合本身的写入:组合原样未动,上限不被连坐。
+  const limitOnly = await putSettings(h, { maxParallelBatches: 6 });
+  assert.equal(limitOnly.status, 200);
+  assert.deepEqual(await limitOnly.json(), {
+    reviewers: stale,
+    ...UNSET_SETTINGS,
+    maxParallelBatches: 6,
+    version: 2,
+    defaults: DEFAULTS,
   });
 
-  // 陈旧写只冲突目标项,另外两项一个都不动。
-  const stale = await h.api("PUT", "/settings", {
-    maxFilesPerBatch: 20,
-    expectedVersion: 1,
+  // 同一场景下动了组合:那一份里还有失效模型,整份仍被拒,上限一格不改。
+  const changed = await putSettings(h, {
+    reviewers: [...stale, { provider: "healthy-service", model: "keep" }],
+    maxParallelBatches: 7,
   });
-  assert.equal(stale.status, 409);
-
-  const reset = await putBatchLimit(h, "maxParallelBatches", null);
-  assert.equal(reset.status, 200);
-  const afterReset = await readSettings(h);
-  assert.equal(afterReset.maxParallelBatches, DEFAULT_MAX_PARALLEL_BATCHES);
-  assert.equal(afterReset.maxParallelBatchesSource, "default");
-  assert.equal(afterReset.maxParallelBatchesVersion, 3);
-  assert.equal(afterReset.maxFilesPerBatch, 12);
-  assert.equal(afterReset.maxFilesPerBatchVersion, 2);
+  assert.equal(changed.status, 400);
+  assert.match(await changed.text(), /模型来源消失/);
+  assert.deepEqual(await readSettings(h), {
+    reviewers: stale,
+    ...UNSET_SETTINGS,
+    maxParallelBatches: 6,
+    version: 2,
+    defaults: DEFAULTS,
+  });
 });
 
-test("一个请求仍然只能改一项审查策略", async () => {
+test("四项上限与最低报告等级取值不合法时整份拒收", async () => {
   const h = await startPanelHarness(cleanups);
-  const coupled = await h.api("PUT", "/settings", {
-    maxParallelBatches: 2,
-    maxFilesPerBatch: 20,
-    expectedVersion: 1,
-  });
-  assert.equal(coupled.status, 400);
-  const settings = await readSettings(h);
-  assert.equal(settings.maxParallelBatchesSource, "default");
-  assert.equal(settings.maxFilesPerBatchSource, "default");
-});
-
-test("批次并发数、文件数上限与取证上限不是正整数时拒绝", async () => {
-  const h = await startPanelHarness(cleanups);
-  for (const field of ["maxParallelBatches", "maxFilesPerBatch", "maxEvidenceCallsPerBatch"] as const) {
+  for (
+    const field of [
+      "maxChangedLinesPerBatch",
+      "maxParallelBatches",
+      "maxFilesPerBatch",
+      "maxEvidenceCallsPerBatch",
+    ] as const
+  ) {
     for (const value of [0, -1, 1.5, "3"]) {
-      const response = await putBatchLimit(h, field, value);
+      const response = await putSettings(h, { [field]: value });
       assert.equal(response.status, 400, `${field} 的 ${String(value)} 应被拒绝`);
       assert.match(((await response.json()) as { error: string }).error, new RegExp(field));
     }
   }
+  for (const value of ["P3", "p1", "high", 1, ""]) {
+    const response = await putSettings(h, { minReportSeverity: value });
+    assert.equal(response.status, 400, `${String(value)} 应被拒绝`);
+    assert.match(((await response.json()) as { error: string }).error, /minReportSeverity/);
+  }
+  assert.deepEqual(await readSettings(h), {
+    reviewers: SEEDED_REVIEWERS,
+    ...UNSET_SETTINGS,
+    version: 1,
+    defaults: DEFAULTS,
+  });
 });
 
 test("Run 快照冻结分批上限、并发数与取证上限,开跑后改设置不影响本轮", async () => {
   const h = await startPanelHarness(cleanups);
+  seedAvailableModelService(h, "test", ["global-model"]);
   seedHistoricalRepo(h);
-  assert.equal((await putBatchLimit(h, "maxParallelBatches", 5)).status, 200);
-  assert.equal((await putBatchLimit(h, "maxFilesPerBatch", 12)).status, 200);
-  assert.equal((await putBatchLimit(h, "maxEvidenceCallsPerBatch", 4)).status, 200);
+  assert.equal(
+    (await putSettings(h, {
+      maxParallelBatches: 5,
+      maxFilesPerBatch: 12,
+      maxEvidenceCallsPerBatch: 4,
+    })).status,
+    200,
+  );
 
   const store = openStore(h.db.path);
   try {
@@ -471,35 +534,42 @@ test("Run 快照冻结分批上限、并发数与取证上限,开跑后改设置
     assert.equal(frozen.maxEvidenceCallsPerBatch, 4);
 
     // 取证上限也是这一轮的:快照取出之后再改,已经开跑的这一轮读到的还是 4。
-    assert.equal((await putBatchLimit(h, "maxEvidenceCallsPerBatch", 1)).status, 200);
+    assert.equal((await putSettings(h, { maxEvidenceCallsPerBatch: 1 })).status, 200);
     assert.equal(frozen.maxEvidenceCallsPerBatch, 4);
     assert.equal(store.getReviewRunSnapshot(GITEA_REPO.id).maxEvidenceCallsPerBatch, 1);
 
     // 这一轮已经拿到快照;之后改设置只影响下一次取快照。
-    assert.equal((await putBatchLimit(h, "maxFilesPerBatch", 1)).status, 200);
+    assert.equal((await putSettings(h, { maxFilesPerBatch: 1 })).status, 200);
     assert.equal(frozen.maxFilesPerBatch, 12);
     assert.equal(store.getReviewRunSnapshot(GITEA_REPO.id).maxFilesPerBatch, 1);
+
+    // 留空即跟随系统默认(issue #301):快照里是 null,编排层照它自己的默认值开跑。
+    assert.equal(
+      (await putSettings(h, {
+        maxParallelBatches: null,
+        maxFilesPerBatch: null,
+        maxEvidenceCallsPerBatch: null,
+      })).status,
+      200,
+    );
+    const cleared = store.getReviewRunSnapshot(GITEA_REPO.id);
+    assert.deepEqual(
+      {
+        maxParallelBatches: cleared.maxParallelBatches,
+        maxFilesPerBatch: cleared.maxFilesPerBatch,
+        maxEvidenceCallsPerBatch: cleared.maxEvidenceCallsPerBatch,
+      },
+      { maxParallelBatches: null, maxFilesPerBatch: null, maxEvidenceCallsPerBatch: null },
+    );
   } finally {
     store.close();
-  }
-});
-
-test("批次上限不是正整数时拒绝", async () => {
-  const h = await startPanelHarness(cleanups);
-  for (const limit of [0, -1, 1.5, "800"]) {
-    const response = await putLimit(h, limit);
-    assert.equal(response.status, 400, `${String(limit)} 应被拒绝`);
-    assert.match(
-      ((await response.json()) as { error: string }).error,
-      /maxChangedLinesPerBatch/,
-    );
   }
 });
 
 test("全局组合与每仓库覆盖都拒绝新的空组合", async () => {
   const h = await startPanelHarness(cleanups);
   seedAvailableModelService(h, "test", ["global-model"]);
-  const empty = await putReviewers(h, []);
+  const empty = await putSettings(h, { reviewers: [] });
   assert.equal(empty.status, 400);
   assert.match(await empty.text(), /至少要选一个模型/);
 
@@ -529,7 +599,7 @@ test("改过的全局组合下一次投递就生效", async () => {
   confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal(
     (
-      await putReviewers(h, [{ provider: "test", model: "swapped-model" }])
+      await putSettings(h, { reviewers: [{ provider: "test", model: "swapped-model" }] })
     ).status,
     200,
   );
@@ -641,16 +711,18 @@ test("思考档位随模型组合与仓库覆盖一起读写,取值不认得或�
     thinkingLevelMap: { off: null },
   });
 
-  const bad = await putReviewers(h, [
-    { provider: "test", model: "global-model", thinkingLevel: "turbo" },
-  ]);
+  const bad = await putSettings(h, {
+    reviewers: [{ provider: "test", model: "global-model", thinkingLevel: "turbo" }],
+  });
   assert.equal(bad.status, 400);
   assert.match(((await bad.json()) as { error: string }).error, /全局模型组合.*思考档位/);
 
-  const saved = await putReviewers(h, [
-    { provider: "test", model: "global-model", thinkingLevel: "high" },
-    { provider: "test", model: "second-model" },
-  ]);
+  const saved = await putSettings(h, {
+    reviewers: [
+      { provider: "test", model: "global-model", thinkingLevel: "high" },
+      { provider: "test", model: "second-model" },
+    ],
+  });
   assert.equal(saved.status, 200);
   const settings = await readSettings(h);
   assert.equal(settings.reviewers[0]!.thinkingLevel, "high");
@@ -680,9 +752,9 @@ test("思考档位随模型组合与仓库覆盖一起读写,取值不认得或�
 
   // 取值认得、这个模型却不支持的那一档同样整组拒收:放过去只会被运行侧 clamp 成别的
   // 一档,人以为选的是这一档。
-  const tooHigh = await putReviewers(h, [
-    { provider: "test", model: "global-model", thinkingLevel: "max" },
-  ]);
+  const tooHigh = await putSettings(h, {
+    reviewers: [{ provider: "test", model: "global-model", thinkingLevel: "max" }],
+  });
   assert.equal(tooHigh.status, 400);
   assert.match(
     ((await tooHigh.json()) as { error: string }).error,
@@ -690,108 +762,18 @@ test("思考档位随模型组合与仓库覆盖一起读写,取值不认得或�
   );
 
   // 缺席即「关闭」,而 adaptive 模型连「关闭」都不支持:那一档也要显式选过。
-  const implicitOff = await putReviewers(h, [{ provider: "always", model: "adaptive-model" }]);
+  const implicitOff = await putSettings(h, {
+    reviewers: [{ provider: "always", model: "adaptive-model" }],
+  });
   assert.equal(implicitOff.status, 400);
   assert.match(
     ((await implicitOff.json()) as { error: string }).error,
     /always:adaptive-model 不支持思考档位 off/,
   );
   assert.equal(
-    (await putReviewers(h, [
-      { provider: "always", model: "adaptive-model", thinkingLevel: "medium" },
-    ])).status,
+    (await putSettings(h, {
+      reviewers: [{ provider: "always", model: "adaptive-model", thinkingLevel: "medium" }],
+    })).status,
     200,
   );
-});
-
-test("每批每模型取证上限独立读写,升级前的库读出默认 3", async () => {
-  const h = await startPanelHarness(cleanups);
-  // harness 的库从没写过这一格,与升级前的库同一形态:读出来是系统默认、版本 1。
-  const initial = await readSettings(h);
-  assert.equal(initial.maxEvidenceCallsPerBatch, 3);
-  assert.equal(initial.maxEvidenceCallsPerBatch, EVIDENCE_SESSION_BUDGET);
-  assert.equal(initial.maxEvidenceCallsPerBatchSource, "default");
-  assert.equal(initial.maxEvidenceCallsPerBatchVersion, 1);
-  // 库里确实没有这一行,不是写了一个 3 进去。
-  const store = openStore(h.db.path);
-  try {
-    assert.equal(store.getGlobalSettings().maxEvidenceCallsPerBatch, null);
-  } finally {
-    store.close();
-  }
-
-  const raised = await putBatchLimit(h, "maxEvidenceCallsPerBatch", 4);
-  assert.equal(raised.status, 200);
-  const after = (await raised.json()) as SettingsBody;
-  assert.equal(after.maxEvidenceCallsPerBatch, 4);
-  assert.equal(after.maxEvidenceCallsPerBatchSource, "custom");
-  assert.equal(after.maxEvidenceCallsPerBatchVersion, 2);
-  // 只推自己的版本,另外三项一个都不动。
-  assert.equal(after.maxParallelBatchesVersion, 1);
-  assert.equal(after.maxFilesPerBatchVersion, 1);
-  assert.equal(after.maxChangedLinesPerBatchVersion, 1);
-
-  const stale = await h.api("PUT", "/settings", { maxEvidenceCallsPerBatch: 5, expectedVersion: 1 });
-  assert.equal(stale.status, 409);
-
-  const reset = await putBatchLimit(h, "maxEvidenceCallsPerBatch", null);
-  assert.equal(reset.status, 200);
-  const restored = await readSettings(h);
-  assert.equal(restored.maxEvidenceCallsPerBatch, EVIDENCE_SESSION_BUDGET);
-  assert.equal(restored.maxEvidenceCallsPerBatchSource, "default");
-  assert.equal(restored.maxEvidenceCallsPerBatchVersion, 3);
-});
-
-test("最低报告等级独立读写,取值受限,缺行即 P2", async () => {
-  const h = await startPanelHarness(cleanups);
-  // harness 的库从没写过这一格,与升级前的库同一形态:读出来是全报、版本 1。
-  const initial = await readSettings(h);
-  assert.equal(initial.minReportSeverity, "P2");
-  assert.equal(initial.minReportSeveritySource, "default");
-  assert.equal(initial.minReportSeverityVersion, 1);
-  const store = openStore(h.db.path);
-  try {
-    assert.equal(store.getGlobalSettings().minReportSeverity, null);
-  } finally {
-    store.close();
-  }
-
-  for (const value of ["P3", "p1", "high", 1, ""]) {
-    const rejected = await h.api("PUT", "/settings", {
-      minReportSeverity: value,
-      expectedVersion: 1,
-    });
-    assert.equal(rejected.status, 400, `${String(value)} 应被拒绝`);
-    assert.match(((await rejected.json()) as { error: string }).error, /minReportSeverity/);
-  }
-
-  const raised = await h.api("PUT", "/settings", { minReportSeverity: "P1", expectedVersion: 1 });
-  assert.equal(raised.status, 200);
-  const after = (await raised.json()) as SettingsBody;
-  assert.equal(after.minReportSeverity, "P1");
-  assert.equal(after.minReportSeveritySource, "custom");
-  assert.equal(after.minReportSeverityVersion, 2);
-  // 只推自己的版本,四项上限一个都不动。
-  assert.equal(after.maxChangedLinesPerBatchVersion, 1);
-  assert.equal(after.maxParallelBatchesVersion, 1);
-  assert.equal(after.maxFilesPerBatchVersion, 1);
-  assert.equal(after.maxEvidenceCallsPerBatchVersion, 1);
-
-  const stale = await h.api("PUT", "/settings", { minReportSeverity: "P0", expectedVersion: 1 });
-  assert.equal(stale.status, 409);
-
-  // 一个请求仍然只能改一项。
-  const coupled = await h.api("PUT", "/settings", {
-    minReportSeverity: "P0",
-    maxFilesPerBatch: 20,
-    expectedVersion: 2,
-  });
-  assert.equal(coupled.status, 400);
-
-  const reset = await h.api("PUT", "/settings", { minReportSeverity: null, expectedVersion: 2 });
-  assert.equal(reset.status, 200);
-  const restored = await readSettings(h);
-  assert.equal(restored.minReportSeverity, "P2");
-  assert.equal(restored.minReportSeveritySource, "default");
-  assert.equal(restored.minReportSeverityVersion, 3);
 });

@@ -1,11 +1,13 @@
 /**
- * 审查策略页。模型组合、分批上限、批次并发数、每批每模型取证上限与最低报告等级读取同一设置快照，
- * 但各自保存：失效模型只门禁组合写入，不连坐其余各项。组合候选与仓库覆盖共用 `ModelComposer`
- * 的模型服务投影。
+ * 审查策略页。整页一张表单、一颗保存按钮、一个版本号(issue #301):模型、运行上限与报告
+ * 等级三段读同一份设置快照,改几项点一次保存,一次写入。上限项与报告等级留空即跟随系统
+ * 默认,占位符写着默认值。模型组合与后端之间的两次形状转换走 `model-services.ts` 的
+ * `toModelRef` / `fromModelRef`(仓库覆盖那侧同一对函数),思考档位因此只有这一处拆装。
  */
+import { useBlocker } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircledIcon, CrossCircledIcon } from "@radix-ui/react-icons";
-import { Callout, Card, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
+import { AlertDialog, Callout, Card, Flex, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
 import { useState } from "react";
 
 import { HelpTooltip } from "@/components/help-tooltip";
@@ -22,28 +24,9 @@ import {
   fromModelRef,
   modelIdentity,
   toModelRef,
+  type ModelRef,
   type ThinkingLevel,
 } from "./model-services.ts";
-
-type Settings = {
-  reviewers: { provider: string; model: string; thinkingLevel?: ThinkingLevel }[];
-  reviewersVersion: number;
-  maxChangedLinesPerBatch: number;
-  maxChangedLinesPerBatchSource: "default" | "custom";
-  maxChangedLinesPerBatchVersion: number;
-  maxParallelBatches: number;
-  maxParallelBatchesSource: "default" | "custom";
-  maxParallelBatchesVersion: number;
-  maxFilesPerBatch: number;
-  maxFilesPerBatchSource: "default" | "custom";
-  maxFilesPerBatchVersion: number;
-  maxEvidenceCallsPerBatch: number;
-  maxEvidenceCallsPerBatchSource: "default" | "custom";
-  maxEvidenceCallsPerBatchVersion: number;
-  minReportSeverity: MinReportSeverity;
-  minReportSeveritySource: "default" | "custom";
-  minReportSeverityVersion: number;
-};
 
 /** 最低报告等级的三档。P0 最高，P2 即全报，是系统默认。 */
 export type MinReportSeverity = "P0" | "P1" | "P2";
@@ -55,55 +38,99 @@ export const MIN_REPORT_SEVERITY_LABEL: Record<MinReportSeverity, string> = {
   P2: "全部报出（P2 及以上）",
 };
 
-/** 分批上限、批次并发数与取证上限同形：各自一个正整数、各自一份来源与版本，各自保存。 */
+/** 四项正整数上限同形：一个可空的数字、一颗「恢复默认」，随整页一起保存。 */
 type LimitField =
   | "maxChangedLinesPerBatch"
   | "maxParallelBatches"
   | "maxFilesPerBatch"
   | "maxEvidenceCallsPerBatch";
 
+/**
+ * 审查策略的整份对象。上限四项与报告等级为 null 即跟随系统默认，默认值随 `defaults`
+ * 一起回来，面板拿它当占位符——「取值来源」不再单独存一份，值空不空就是来源。
+ */
+type Settings = {
+  reviewers: { provider: string; model: string; thinkingLevel?: ThinkingLevel }[];
+  maxChangedLinesPerBatch: number | null;
+  maxParallelBatches: number | null;
+  maxFilesPerBatch: number | null;
+  maxEvidenceCallsPerBatch: number | null;
+  minReportSeverity: MinReportSeverity | null;
+  version: number;
+  defaults: Record<LimitField, number> & { minReportSeverity: MinReportSeverity };
+};
+
 const LIMITS: {
   field: LimitField;
   title: string;
   help: string;
-  label: string;
   inputId: string;
 }[] = [
   {
     field: "maxChangedLinesPerBatch",
-    title: "批次改动行上限",
+    title: "每批最多改动行数",
     help: "批次改动行上限只影响每轮审查如何拆分改动，不会改变模型组合。",
-    label: "每批最多改动行数",
     inputId: "max-changed-lines",
   },
   {
     field: "maxParallelBatches",
-    title: "批次并发数",
+    title: "同时在跑的批次数",
     help: "一轮审查里同时开跑的批次数。调大缩短大改动的等待时间，也同时占用更多模型配额。",
-    label: "同时在跑的批次数",
     inputId: "max-parallel-batches",
   },
   {
     field: "maxFilesPerBatch",
-    title: "批次文件数上限",
+    title: "每批最多文件数",
     help: "一批最多包含多少个文件。文件数与改动行数任一超限即另起一批。",
-    label: "每批最多文件数",
     inputId: "max-files-per-batch",
   },
   {
     field: "maxEvidenceCallsPerBatch",
-    title: "每批每模型取证上限",
+    title: "每批每模型最多取证次数",
     help: "一个模型在一批里最多派几次取证子代理。改了之后下一轮审查生效，已开跑的轮次沿用开跑时的值；单次取证内部的扇出上限不受它影响。",
-    label: "每批每模型最多取证次数",
     inputId: "max-evidence-calls-per-batch",
   },
 ];
 
+/** 报告等级下拉里「跟随系统默认」那一项的值。Radix `Select` 收不了空字符串。 */
+const FOLLOW_DEFAULT = "default";
+
+/** 表单里的一份草稿。上限是自由文本(空即跟随默认)，等级是三档或跟随默认。 */
+type Draft = {
+  models: ModelRef[];
+  limits: Record<LimitField, string>;
+  severity: MinReportSeverity | typeof FOLLOW_DEFAULT;
+};
+
+function draftOf(settings: Settings): Draft {
+  return {
+    models: settings.reviewers.map(toModelRef),
+    limits: {
+      maxChangedLinesPerBatch: limitText(settings.maxChangedLinesPerBatch),
+      maxParallelBatches: limitText(settings.maxParallelBatches),
+      maxFilesPerBatch: limitText(settings.maxFilesPerBatch),
+      maxEvidenceCallsPerBatch: limitText(settings.maxEvidenceCallsPerBatch),
+    },
+    severity: settings.minReportSeverity ?? FOLLOW_DEFAULT,
+  };
+}
+
+function limitText(limit: number | null): string {
+  return limit === null ? "" : String(limit);
+}
+
+/** 两份草稿是不是同一份。上限比字面量：留空与显式的默认值不是同一件事。 */
+function sameDraft(a: Draft, b: Draft): boolean {
+  return JSON.stringify([a.models.map(fromModelRef), a.limits, a.severity]) ===
+    JSON.stringify([b.models.map(fromModelRef), b.limits, b.severity]);
+}
+
+/** 服务端拒了这一次保存并带回它此刻的整份对象。 */
 class SettingsConflict extends Error {
   readonly latest: Settings;
 
   constructor(latest: Settings) {
-    super("当前审查策略已被其他用户修改。系统已重新加载最新版本，请确认后再次保存。");
+    super("这一页刚被改过，你的改动尚未保存，请核对后再保存。");
     this.latest = latest;
   }
 }
@@ -149,12 +176,13 @@ export function SettingsPage({ canWrite }: { canWrite: boolean }) {
   );
 }
 
+/** 只读态把三段以静态值铺开：看得到配置，改不了。 */
 function ReadOnlySettings({ settings }: { settings: Settings }) {
   return (
     <div className="grid gap-5 md:grid-cols-2">
       <Card size="2" className="flex flex-col gap-3">
         <div>
-          <h2 className="text-2xl font-bold tracking-[-0.015em]">模型组合</h2>
+          <h2 className="text-2xl font-bold tracking-[-0.015em]">模型</h2>
           <p className="mt-0.5 text-text-muted">所有未设置覆盖的仓库使用这组模型。</p>
         </div>
         <div className="space-y-1.5">
@@ -164,25 +192,32 @@ function ReadOnlySettings({ settings }: { settings: Settings }) {
             </div>
           ))}
         </div>
+        {/* 辅助模型一行在 #303 落到这里：Reviewer 之外的 agent 工作用哪一处模型。 */}
       </Card>
       <Card size="2" className="flex flex-col gap-3">
         <div>
-          <h2 className="text-2xl font-bold tracking-[-0.015em]">分批上限、批次并发数与取证上限</h2>
-          <p className="mt-0.5 text-text-muted">每轮审查如何拆分改动、同时跑几批、每批每模型最多取证几次。</p>
+          <h2 className="text-2xl font-bold tracking-[-0.015em]">运行上限与报告等级</h2>
+          <p className="mt-0.5 text-text-muted">每轮审查如何拆分改动、同时跑几批、每批每模型最多取证几次、报到哪一档。</p>
         </div>
         <div className="space-y-2">
           {LIMITS.map((limit) => (
             <div key={limit.field} className="flex items-baseline justify-between gap-3">
-              <span className="text-text-muted">{limit.label}</span>
+              <span className="text-text-muted">{limit.title}</span>
               <span className="font-mono text-lg font-semibold tabular-nums">
-                {settings[limit.field]}
+                {settings[limit.field] ?? settings.defaults[limit.field]}
+                {settings[limit.field] === null ? (
+                  <span className="ml-1.5 font-sans text-xs font-normal text-text-muted">系统默认</span>
+                ) : null}
               </span>
             </div>
           ))}
           <div className="flex items-baseline justify-between gap-3">
             <span className="text-text-muted">最低报告等级</span>
             <span className="text-lg font-semibold">
-              {MIN_REPORT_SEVERITY_LABEL[settings.minReportSeverity]}
+              {MIN_REPORT_SEVERITY_LABEL[settings.minReportSeverity ?? settings.defaults.minReportSeverity]}
+              {settings.minReportSeverity === null ? (
+                <span className="ml-1.5 text-xs font-normal text-text-muted">系统默认</span>
+              ) : null}
             </span>
           </div>
         </div>
@@ -194,374 +229,271 @@ function ReadOnlySettings({ settings }: { settings: Settings }) {
 function SettingsForm({ settings }: { settings: Settings }) {
   const queryClient = useQueryClient();
   const requestedProvider = new URLSearchParams(window.location.search).get("provider") ?? undefined;
-  const [models, setModels] = useState(() => settings.reviewers.map(toModelRef));
-  const [reviewersVersion, setReviewersVersion] = useState(settings.reviewersVersion);
+  // 基线是服务端此刻的那一份：脏状态、放弃改动与 409 之后的核对都对着它。
+  const [baseline, setBaseline] = useState(settings);
+  const [draft, setDraft] = useState(() => draftOf(settings));
   const [modelValidity, setModelValidity] = useState<ModelComposerValidity>({
     ready: false,
     unavailable: [],
   });
-  const [modelFeedback, setModelFeedback] = useState<{
-    text: string;
-    isError: boolean;
-  } | null>(null);
+  const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
+  const [invalidLimits, setInvalidLimits] = useState<LimitField[]>([]);
 
-  const saveModels = useMutation({
+  const dirty = !sameDraft(draft, draftOf(baseline));
+  const edit = (next: Partial<Draft>): void => {
+    setDraft((current) => ({ ...current, ...next }));
+    setFeedback(null);
+  };
+
+  const save = useMutation({
     mutationFn: async (): Promise<Settings> => {
       const response = await api("/settings", {
         method: "PUT",
         body: JSON.stringify({
-          reviewers: models.map(fromModelRef),
-          expectedVersion: reviewersVersion,
+          reviewers: draft.models.map(fromModelRef),
+          ...Object.fromEntries(
+            LIMITS.map(({ field }) => [
+              field,
+              draft.limits[field].trim() === "" ? null : Number(draft.limits[field].trim()),
+            ]),
+          ),
+          minReportSeverity: draft.severity === FOLLOW_DEFAULT ? null : draft.severity,
+          expectedVersion: baseline.version,
         }),
       });
-      if (response.status === 409) throw new SettingsConflict(await fetchJson<Settings>("/settings"));
-      if (!response.ok) throw new Error(await errorText(response));
-      return (await response.json()) as Settings;
-    },
-    onSuccess: (saved) => {
-      setReviewersVersion(saved.reviewersVersion);
-      setModelFeedback({ text: "模型组合已保存，下一次审查将使用新组合。", isError: false });
-      queryClient.setQueryData(["settings"], saved);
-    },
-    onError: (error: Error) => {
-      if (error instanceof SettingsConflict) {
-        setModels(error.latest.reviewers.map(toModelRef));
-        setReviewersVersion(error.latest.reviewersVersion);
-        queryClient.setQueryData(["settings"], error.latest);
+      if (response.status === 409) {
+        const body = (await response.json()) as { settings: Settings };
+        throw new SettingsConflict(body.settings);
       }
-      setModelFeedback({ text: error.message, isError: true });
-    },
-  });
-
-  const modelSaveBlocked = models.length === 0 || !modelValidity.ready || modelValidity.unavailable.length > 0;
-  return (
-    <div className="flex flex-col gap-6">
-      <section className="space-y-3" aria-label="模型组合保存区">
-        <ModelComposer
-          value={models}
-          provider={requestedProvider}
-          onChange={(next) => {
-            setModels(next);
-            setModelFeedback(null);
-          }}
-          onValidityChange={setModelValidity}
-        />
-        {/* 保存条(§7.16 操作脚同款次级面):ModelComposer 自成一张卡,这里是页面自己的动作条,不共用卡片边界。 */}
-        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-card-line bg-sunken px-5 py-3">
-          <Button
-            type="button"
-            variant="solid"
-            size={{ initial: "4", sm: "2" }}
-            className="shadow-accent"
-            disabled={saveModels.isPending || modelSaveBlocked}
-            onClick={() => {
-              setModelFeedback(null);
-              saveModels.mutate();
-            }}
-          >
-            {saveModels.isPending ? "保存中…" : "保存模型组合"}
-          </Button>
-          {modelValidity.unavailable.length > 0 ? (
-            <span className="text-danger">先恢复或移除不可用模型，再保存组合。</span>
-          ) : models.length === 0 ? (
-            <span className="text-danger">至少选择一个可用模型，审查配置才能就绪。</span>
-          ) : !modelValidity.ready ? (
-            <span className="text-text-muted">模型状态确认后即可保存组合。</span>
-          ) : null}
-        </div>
-        {modelFeedback === null ? null : (
-          <Callout.Root
-            role={modelFeedback.isError ? "alert" : "status"}
-            color={modelFeedback.isError ? "red" : "green"}
-            size="1"
-          >
-            <Callout.Icon>
-              {modelFeedback.isError ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
-            </Callout.Icon>
-            <Callout.Text>{modelFeedback.text}</Callout.Text>
-          </Callout.Root>
-        )}
-      </section>
-
-      {LIMITS.map((limit) => (
-        <LimitSection key={limit.field} settings={settings} limit={limit} />
-      ))}
-      <MinReportSeveritySection settings={settings} />
-    </div>
-  );
-}
-
-/**
- * 最低报告等级的编辑区。与四项上限同形：自己的版本、来源与反馈，自己保存，冲突时重载
- * 最新值。取值是三档而不是数字，因此用 Select 而不是输入框。
- */
-function MinReportSeveritySection({ settings }: { settings: Settings }) {
-  const queryClient = useQueryClient();
-  const [value, setValue] = useState<MinReportSeverity>(settings.minReportSeverity);
-  const [source, setSource] = useState(settings.minReportSeveritySource);
-  const [version, setVersion] = useState(settings.minReportSeverityVersion);
-  const [feedback, setFeedback] = useState<{ text: string; isError: boolean } | null>(null);
-
-  const save = useMutation({
-    mutationFn: async (next: MinReportSeverity | null): Promise<Settings> => {
-      const response = await api("/settings", {
-        method: "PUT",
-        body: JSON.stringify({ minReportSeverity: next, expectedVersion: version }),
-      });
-      if (response.status === 409) throw new SettingsConflict(await fetchJson<Settings>("/settings"));
       if (!response.ok) throw new Error(await errorText(response));
       return (await response.json()) as Settings;
     },
     onSuccess: (saved) => {
-      setValue(saved.minReportSeverity);
-      setSource(saved.minReportSeveritySource);
-      setVersion(saved.minReportSeverityVersion);
-      setFeedback({ text: "最低报告等级已保存。", isError: false });
+      setBaseline(saved);
+      setDraft(draftOf(saved));
+      setFeedback({ text: "审查策略已保存，下一轮审查开始生效。", isError: false });
       queryClient.setQueryData(["settings"], saved);
     },
     onError: (error: Error) => {
+      // 409:服务端当前值成为新基线并接受新版本号,草稿原样留着让人核对后再保存。
       if (error instanceof SettingsConflict) {
-        setValue(error.latest.minReportSeverity);
-        setSource(error.latest.minReportSeveritySource);
-        setVersion(error.latest.minReportSeverityVersion);
+        setBaseline(error.latest);
         queryClient.setQueryData(["settings"], error.latest);
       }
       setFeedback({ text: error.message, isError: true });
     },
   });
 
-  return (
-    <section className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
-      <div className="flex items-center gap-1.5 px-5 py-3.5">
-        <h2 className="text-2xl font-bold tracking-[-0.015em]">最低报告等级</h2>
-        <HelpTooltip
-          label="最低报告等级说明"
-          content="低于它的 Finding 不发出。它只管新报的问题：未处置的历史 Finding 照旧注入并复核，等级再低也一样。改了之后下一轮审查生效，已开跑的轮次沿用开跑时的值。"
-        />
-      </div>
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          setFeedback(null);
-          save.mutate(value);
-        }}
-      >
-        <div className="space-y-3 border-t border-card-line px-5 py-4">
-          <p className="text-xs text-text-muted">
-            取值来源：{source === "default" ? "系统默认" : "自定义"}
-          </p>
-          <div className="flex max-w-sm flex-col gap-1.5">
-            <Text as="label" htmlFor="min-report-severity" size="2" weight="medium">
-              报出的最低等级
-            </Text>
-            <Select.Root
-              value={value}
-              onValueChange={(next) => {
-                setValue(next as MinReportSeverity);
-                setFeedback(null);
-              }}
-            >
-              <Select.Trigger
-                id="min-report-severity"
-                className="w-full max-sm:min-h-11 sm:w-auto"
-              />
-              <Select.Content>
-                {(["P0", "P1", "P2"] as const).map((severity) => (
-                  <Select.Item key={severity} value={severity}>
-                    {MIN_REPORT_SEVERITY_LABEL[severity]}
-                  </Select.Item>
-                ))}
-              </Select.Content>
-            </Select.Root>
-            <p className="text-xs text-text-muted">
-              低于它的 Finding 不发出；只管新报，未处置历史照旧复核；下一轮生效。
-            </p>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-3 border-t border-card-line bg-sunken px-5 py-3">
-          <Button
-            type="submit"
-            variant="solid"
-            size={{ initial: "4", sm: "2" }}
-            className="shadow-accent"
-            disabled={save.isPending}
-          >
-            {save.isPending ? "保存中…" : "保存最低报告等级"}
-          </Button>
-          {source === "custom" ? (
-            <Button
-              type="button"
-              variant="outline"
-              color="gray"
-              size={{ initial: "4", sm: "2" }}
-              disabled={save.isPending}
-              onClick={() => {
-                setFeedback(null);
-                save.mutate(null);
-              }}
-            >
-              恢复系统默认
-            </Button>
-          ) : null}
-          {feedback === null ? (
-            <span className="text-xs text-text-muted">单独保存，不受模型组合可用性影响。</span>
-          ) : null}
-        </div>
-        {feedback === null ? null : (
-          <Callout.Root
-            role={feedback.isError ? "alert" : "status"}
-            color={feedback.isError ? "red" : "green"}
-            size="1"
-            className="m-4 mt-0"
-          >
-            <Callout.Icon>
-              {feedback.isError ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
-            </Callout.Icon>
-            <Callout.Text>{feedback.text}</Callout.Text>
-          </Callout.Root>
-        )}
-      </form>
-    </section>
-  );
-}
-
-/** 一项正整数上限的编辑区。四项同形，各持自己的版本、来源与反馈，各自保存。 */
-function LimitSection({
-  settings,
-  limit: { field, title, help, label, inputId },
-}: {
-  settings: Settings;
-  limit: (typeof LIMITS)[number];
-}) {
-  const queryClient = useQueryClient();
-  const [value, setValue] = useState(String(settings[field]));
-  const [source, setSource] = useState(settings[`${field}Source`]);
-  const [version, setVersion] = useState(settings[`${field}Version`]);
-  const [feedback, setFeedback] = useState<{
-    text: string;
-    isError: boolean;
-    isField: boolean;
-  } | null>(null);
-
-  const save = useMutation({
-    mutationFn: async (next: number | null): Promise<Settings> => {
-      const response = await api("/settings", {
-        method: "PUT",
-        body: JSON.stringify({ [field]: next, expectedVersion: version }),
-      });
-      if (response.status === 409) throw new SettingsConflict(await fetchJson<Settings>("/settings"));
-      if (!response.ok) throw new Error(await errorText(response));
-      return (await response.json()) as Settings;
-    },
-    onSuccess: (saved) => {
-      setValue(String(saved[field]));
-      setSource(saved[`${field}Source`]);
-      setVersion(saved[`${field}Version`]);
-      setFeedback({ text: `${title}已保存。`, isError: false, isField: false });
-      queryClient.setQueryData(["settings"], saved);
-    },
-    onError: (error: Error) => {
-      if (error instanceof SettingsConflict) {
-        setValue(String(error.latest[field]));
-        setSource(error.latest[`${field}Source`]);
-        setVersion(error.latest[`${field}Version`]);
-        queryClient.setQueryData(["settings"], error.latest);
-      }
-      setFeedback({ text: error.message, isError: true, isField: false });
-    },
+  // 有未保存改动时,站内切页先确认,关标签页走浏览器原生提示。
+  const blocker = useBlocker({
+    shouldBlockFn: () => dirty,
+    enableBeforeUnload: () => dirty,
+    withResolver: true,
   });
 
+  const modelsBlocked = draft.models.length === 0 || !modelValidity.ready ||
+    modelValidity.unavailable.length > 0;
+
   return (
-    <section className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
-      <div className="flex items-center gap-1.5 px-5 py-3.5">
-        <h2 className="text-2xl font-bold tracking-[-0.015em]">{title}</h2>
-        <HelpTooltip label={`${title}说明`} content={help} />
-      </div>
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          setFeedback(null);
-          const parsed = Number(value.trim());
-          if (value.trim() === "" || !Number.isInteger(parsed) || parsed <= 0) {
-            setFeedback({
-              text: `请输入正整数。${title}未保存。`,
-              isError: true,
-              isField: true,
-            });
-            return;
-          }
-          save.mutate(parsed);
-        }}
-      >
-        <div className="space-y-3 border-t border-card-line px-5 py-4">
-          <p className="text-xs text-text-muted">
-            取值来源：{source === "default" ? "系统默认" : "自定义"}
-          </p>
-          <div className="flex max-w-sm flex-col gap-1.5">
-            <Text as="label" htmlFor={inputId} size="2" weight="medium">{label}</Text>
-            <TextField.Root
-              id={inputId}
-              size={{ initial: "3", sm: "2" }}
-              color={feedback?.isField ? "red" : "gray"}
-              className="min-w-0 w-40 font-mono max-sm:min-h-11"
-              inputMode="numeric"
-              value={value}
-              aria-invalid={feedback?.isField || undefined}
-              aria-describedby={feedback?.isField ? `${inputId}-error` : undefined}
-              onChange={(event) => {
-                setValue(event.target.value);
-                setFeedback(null);
-              }}
-            />
-          </div>
+    <form
+      className="flex flex-col gap-6"
+      onSubmit={(event) => {
+        event.preventDefault();
+        setFeedback(null);
+        // 上限是自由文本:非正整数在这里就拦下,不发一个会被服务端整份拒收的请求。
+        const bad = LIMITS.map(({ field }) => field).filter((field) => {
+          const text = draft.limits[field].trim();
+          const parsed = Number(text);
+          return text !== "" && (!Number.isInteger(parsed) || parsed <= 0);
+        });
+        setInvalidLimits(bad);
+        if (bad.length > 0) {
+          setFeedback({ text: "运行上限要填正整数，留空即跟随系统默认。这次没有保存。", isError: true });
+          return;
+        }
+        save.mutate();
+      }}
+    >
+      <section className="space-y-3" aria-label="模型">
+        <ModelComposer
+          value={draft.models}
+          provider={requestedProvider}
+          onChange={(next) => edit({ models: next })}
+          onValidityChange={setModelValidity}
+        />
+        {/* 辅助模型那一行在 #303 落到这里：与模型组合同一段,共用同一份候选与档位规则。 */}
+      </section>
+
+      <section className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
+        <div className="flex items-center gap-1.5 px-5 py-3.5">
+          <h2 className="text-2xl font-bold tracking-[-0.015em]">运行上限</h2>
+          <HelpTooltip
+            label="运行上限说明"
+            content="每轮审查如何拆分改动、同时跑几批、每批每模型最多取证几次。留空即跟随系统默认，改了之后下一轮审查生效。"
+          />
         </div>
-        <div className="flex flex-wrap items-center gap-3 border-t border-card-line bg-sunken px-5 py-3">
+        <div className="space-y-4 border-t border-card-line px-5 py-4">
+          {LIMITS.map(({ field, title, help, inputId }) => {
+            const invalid = invalidLimits.includes(field);
+            return (
+              <div key={field} className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-1.5">
+                  <Text as="label" htmlFor={inputId} size="2" weight="medium">{title}</Text>
+                  <HelpTooltip label={`${title}说明`} content={help} />
+                </div>
+                <Flex align="center" gap="2" wrap="wrap">
+                  <TextField.Root
+                    id={inputId}
+                    size={{ initial: "3", sm: "2" }}
+                    color={invalid ? "red" : "gray"}
+                    className="min-w-0 w-40 font-mono max-sm:min-h-11"
+                    inputMode="numeric"
+                    placeholder={`系统默认 ${baseline.defaults[field]}`}
+                    value={draft.limits[field]}
+                    aria-invalid={invalid || undefined}
+                    onChange={(event) => {
+                      setInvalidLimits((current) => current.filter((entry) => entry !== field));
+                      edit({ limits: { ...draft.limits, [field]: event.target.value } });
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    color="gray"
+                    size={{ initial: "4", sm: "2" }}
+                    disabled={draft.limits[field].trim() === ""}
+                    onClick={() => {
+                      setInvalidLimits((current) => current.filter((entry) => entry !== field));
+                      edit({ limits: { ...draft.limits, [field]: "" } });
+                    }}
+                  >
+                    恢复默认
+                  </Button>
+                </Flex>
+              </div>
+            );
+          })}
+          <p className="text-xs text-text-muted">
+            留空即跟随系统默认（占位符里的那个数）；「恢复默认」只清空字段，随整页一起保存。
+          </p>
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
+        <div className="flex items-center gap-1.5 px-5 py-3.5">
+          <h2 className="text-2xl font-bold tracking-[-0.015em]">报告等级</h2>
+          <HelpTooltip
+            label="最低报告等级说明"
+            content="低于它的 Finding 不发出。它只管新报的问题：未处置的历史 Finding 照旧注入并复核，等级再低也一样。改了之后下一轮审查生效，已开跑的轮次沿用开跑时的值。"
+          />
+        </div>
+        <div className="flex max-w-sm flex-col gap-1.5 border-t border-card-line px-5 py-4">
+          <Text as="label" htmlFor="min-report-severity" size="2" weight="medium">
+            报出的最低等级
+          </Text>
+          <Select.Root
+            value={draft.severity}
+            onValueChange={(next) => edit({ severity: next as Draft["severity"] })}
+          >
+            <Select.Trigger id="min-report-severity" className="w-full max-sm:min-h-11 sm:w-auto" />
+            <Select.Content>
+              <Select.Item value={FOLLOW_DEFAULT}>
+                系统默认（{baseline.defaults.minReportSeverity}）
+              </Select.Item>
+              {(["P0", "P1", "P2"] as const).map((severity) => (
+                <Select.Item key={severity} value={severity}>
+                  {MIN_REPORT_SEVERITY_LABEL[severity]}
+                </Select.Item>
+              ))}
+            </Select.Content>
+          </Select.Root>
+          <p className="text-xs text-text-muted">
+            低于它的 Finding 不发出；只管新报，未处置历史照旧复核；下一轮生效。
+          </p>
+        </div>
+      </section>
+
+      {/* 动作条固定在页面底部:整页只有这一处保存,脏状态与失败原因都落在这里。 */}
+      <div className="sticky bottom-0 z-10 -mx-1 px-1 pb-1">
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-card-line bg-sunken px-5 py-3 shadow-card">
           <Button
             type="submit"
             variant="solid"
             size={{ initial: "4", sm: "2" }}
             className="shadow-accent"
-            disabled={save.isPending}
+            disabled={save.isPending || !dirty || modelsBlocked}
           >
-            {save.isPending ? "保存中…" : `保存${title}`}
+            {save.isPending ? "保存中…" : "保存"}
           </Button>
-          {source === "custom" ? (
+          <Button
+            type="button"
+            variant="outline"
+            color="gray"
+            size={{ initial: "4", sm: "2" }}
+            disabled={save.isPending || !dirty}
+            onClick={() => {
+              setInvalidLimits([]);
+              setFeedback(null);
+              setDraft(draftOf(baseline));
+            }}
+          >
+            放弃改动
+          </Button>
+          {modelValidity.unavailable.length > 0 ? (
+            <span className="text-danger">先恢复或移除不可用模型，再保存这一页。</span>
+          ) : draft.models.length === 0 ? (
+            <span className="text-danger">至少选择一个可用模型，审查配置才能就绪。</span>
+          ) : !modelValidity.ready ? (
+            <span className="text-text-muted">模型状态确认后即可保存。</span>
+          ) : dirty ? (
+            <span className="text-text-muted">有未保存改动</span>
+          ) : (
+            <span className="text-text-muted">与服务端当前值一致</span>
+          )}
+        </div>
+      </div>
+
+      {feedback === null ? null : (
+        <Callout.Root
+          role={feedback.isError ? "alert" : "status"}
+          color={feedback.isError ? "red" : "green"}
+          size="1"
+        >
+          <Callout.Icon>
+            {feedback.isError ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
+          </Callout.Icon>
+          <Callout.Text>{feedback.text}</Callout.Text>
+        </Callout.Root>
+      )}
+
+      <AlertDialog.Root open={blocker.status === "blocked"}>
+        <AlertDialog.Content maxWidth="440px" size={{ initial: "2", sm: "3" }}>
+          <AlertDialog.Title size="4" mb="2">离开审查策略？</AlertDialog.Title>
+          <AlertDialog.Description size="2" color="gray">
+            这一页有未保存的改动。离开会丢弃它们。
+          </AlertDialog.Description>
+          <Flex gap="3" mt="4" justify="end">
             <Button
               type="button"
               variant="outline"
               color="gray"
               size={{ initial: "4", sm: "2" }}
-              disabled={save.isPending}
-              onClick={() => {
-                setFeedback(null);
-                save.mutate(null);
-              }}
+              onClick={() => blocker.reset?.()}
             >
-              恢复系统默认
+              继续编辑
             </Button>
-          ) : null}
-          {feedback === null ? (
-            <span className="text-xs text-text-muted">单独保存，不受模型组合可用性影响。</span>
-          ) : feedback.isField ? (
-            <span id={`${inputId}-error`} role="alert" className="text-danger">
-              {feedback.text}
-            </span>
-          ) : null}
-        </div>
-        {feedback === null || feedback.isField ? null : (
-          <Callout.Root
-            role={feedback.isError ? "alert" : "status"}
-            color={feedback.isError ? "red" : "green"}
-            size="1"
-            className="m-4 mt-0"
-          >
-            <Callout.Icon>
-              {feedback.isError ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
-            </Callout.Icon>
-            <Callout.Text>{feedback.text}</Callout.Text>
-          </Callout.Root>
-        )}
-      </form>
-    </section>
+            <Button
+              type="button"
+              variant="solid"
+              color="red"
+              size={{ initial: "4", sm: "2" }}
+              onClick={() => blocker.proceed?.()}
+            >
+              丢弃改动
+            </Button>
+          </Flex>
+        </AlertDialog.Content>
+      </AlertDialog.Root>
+    </form>
   );
 }

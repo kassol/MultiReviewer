@@ -45,14 +45,12 @@ test("首次配置状态从空实例推进到可运行服务、审查配置就�
     instanceEnabled: false,
   });
 
-  const settings = (await (await h.api("GET", "/settings")).json()) as {
-    reviewersVersion: number;
-  };
+  const settings = (await (await h.api("GET", "/settings")).json()) as { version: number };
   assert.equal(
     (
       await h.api("PUT", "/settings", {
         reviewers: [{ provider: "setup-provider", model: "review-model" }],
-        expectedVersion: settings.reviewersVersion,
+        expectedVersion: settings.version,
       })
     ).status,
     200,
