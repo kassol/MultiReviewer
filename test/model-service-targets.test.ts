@@ -407,13 +407,16 @@ test("真实目标变化后:目录刷新不改绑,新目标的模型待验证;�
 
     // 组合写入的库内判据与投影同一口径:待验证目标的模型进不了组合,已绑目标的可以。
     const store = openStore(h.db.path);
-    const settingsVersion = store.getGlobalSettings().reviewersVersion;
     assert.equal(
-      store.putGlobalReviewers(settingsVersion, JSON.stringify([{ provider: PROVIDER, model: ANTHROPIC_MODEL }])),
+      store.putGlobalSettings({
+        reviewersJson: JSON.stringify([{ provider: PROVIDER, model: ANTHROPIC_MODEL }]),
+      }),
       false,
     );
     assert.equal(
-      store.putGlobalReviewers(settingsVersion, JSON.stringify([{ provider: PROVIDER, model: OPENAI_MODEL }])),
+      store.putGlobalSettings({
+        reviewersJson: JSON.stringify([{ provider: PROVIDER, model: OPENAI_MODEL }]),
+      }),
       true,
     );
     store.close();

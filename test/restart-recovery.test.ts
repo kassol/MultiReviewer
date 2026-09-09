@@ -433,9 +433,7 @@ async function interruptedRun(options: {
       key: "unused",
     });
     // 分批上限是全局设置,重启后的续跑按它重新切批:与开跑那次相同才切得出同样的批次。
-    for (const [field, limit] of Object.entries(options.limits)) {
-      assert.equal(store.putGlobalBatchLimit(field as keyof BatchLimits, 1, limit), true);
-    }
+    assert.equal(store.putGlobalSettings(options.limits), true);
   } finally {
     store.close();
   }
@@ -646,8 +644,10 @@ test("总批数与已完成首批相同、未完成分组不同:续跑不成立,
   // 停机期间改了分批上限。
   const admin = openStore(db.path);
   try {
-    assert.equal(admin.putGlobalBatchLimit("maxChangedLinesPerBatch", 2, 100), true);
-    assert.equal(admin.putGlobalBatchLimit("maxFilesPerBatch", 2, 3), true);
+    assert.equal(
+      admin.putGlobalSettings({ maxChangedLinesPerBatch: 100, maxFilesPerBatch: 3 }),
+      true,
+    );
   } finally {
     admin.close();
   }

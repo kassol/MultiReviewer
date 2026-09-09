@@ -922,16 +922,33 @@ const ADD_INDEXES = [
  * 错归厂商是不可逆的错数据,裂成两行只是看起来多一条,选后者。
  */
 
-/** `global_setting` 的设置值与独立版本键。 */
+/** `global_setting` 里各项设置值的键。 */
 const GLOBAL_REVIEWERS_KEY = "reviewers";
-const GLOBAL_REVIEWERS_VERSION_KEY = "reviewers_version";
 
 /**
- * 最低报告等级(CONTEXT.md,issue #271)的设置键与版本键。与四项上限同形,只是取值是
- * 严重度枚举而不是正整数;缺行即默认 P2(全报)。
+ * 最低报告等级(CONTEXT.md,issue #271)的设置键。与四项上限同形,只是取值是严重度枚举
+ * 而不是正整数;缺行即默认 P2(全报)。
  */
 const GLOBAL_MIN_REPORT_SEVERITY_KEY = "min_report_severity";
-const GLOBAL_MIN_REPORT_SEVERITY_VERSION_KEY = "min_report_severity_version";
+
+/**
+ * 审查策略整页共用的版本键(issue #301)。整页一次全量替换,版本因此只有一个;缺行读作
+ * 1,写成功推一版。
+ */
+const GLOBAL_SETTINGS_VERSION_KEY = "settings_version";
+
+/**
+ * 升级前每一项各持一个版本键(issue #301 之前)。开库时一次性删掉,整页版本从缺行的 1
+ * 起算;设置值本身一格不动。删过即不再命中,幂等。
+ */
+const LEGACY_SETTING_VERSION_KEYS = [
+  "reviewers_version",
+  "max_changed_lines_per_batch_version",
+  "max_parallel_batches_version",
+  "max_files_per_batch_version",
+  "max_evidence_calls_per_batch_version",
+  "min_report_severity_version",
+];
 
 /** 最低报告等级的系统默认住在 `finding.ts`,这里转出:既有的引用方不必改到那边去。 */
 export { DEFAULT_MIN_REPORT_SEVERITY };
@@ -945,14 +962,14 @@ function readMinReportSeverity(stored: string | undefined): Severity | null {
 }
 
 /**
- * 分批上限、批次并发数(issue #230)与每批每模型取证上限(issue #258)各自的设置键与
- * 版本键。四项同形,读写只写一份。
+ * 分批上限、批次并发数(issue #230)与每批每模型取证上限(issue #258)各自的设置键。四项
+ * 同形,读写只写一份;版本与整页共用一个(issue #301)。
  */
 const BATCH_LIMIT_KEYS = {
-  maxChangedLinesPerBatch: ["max_changed_lines_per_batch", "max_changed_lines_per_batch_version"],
-  maxParallelBatches: ["max_parallel_batches", "max_parallel_batches_version"],
-  maxFilesPerBatch: ["max_files_per_batch", "max_files_per_batch_version"],
-  maxEvidenceCallsPerBatch: ["max_evidence_calls_per_batch", "max_evidence_calls_per_batch_version"],
+  maxChangedLinesPerBatch: "max_changed_lines_per_batch",
+  maxParallelBatches: "max_parallel_batches",
+  maxFilesPerBatch: "max_files_per_batch",
+  maxEvidenceCallsPerBatch: "max_evidence_calls_per_batch",
 } as const;
 
 /** 审查策略里按正整数各自保存的哪一项。 */
@@ -1599,27 +1616,28 @@ function normalizedTrustedFieldSources(
 }
 
 /**
- * 审查策略。两项都可能没配:空库刚起来时就是这个样子,面板把它们配起来。
+ * 审查策略里可写的那几项。每一项都可能没配:空库刚起来时就是这个样子,面板把它们配
+ * 起来。整页一次全量替换(issue #301),因此没有逐项版本。
  */
-export type GlobalSettings = {
+export type GlobalSettingsValues = {
   /** 全局模型组合的 JSON(ReviewerSpec 数组),null 即还没配。 */
   reviewersJson: string | null;
-  reviewersVersion: number;
   /** 一批最多多少改动行,null 即取编排层的默认值。 */
   maxChangedLinesPerBatch: number | null;
-  maxChangedLinesPerBatchVersion: number;
   /** 同时在跑的批次数上限,null 即取编排层的默认值(issue #230)。 */
   maxParallelBatches: number | null;
-  maxParallelBatchesVersion: number;
   /** 一批最多多少个文件,null 即取编排层的默认值(issue #230)。 */
   maxFilesPerBatch: number | null;
-  maxFilesPerBatchVersion: number;
   /** 每批每模型的取证次数上限,null 即取 Reviewer 的系统默认(issue #258)。 */
   maxEvidenceCallsPerBatch: number | null;
-  maxEvidenceCallsPerBatchVersion: number;
   /** 最低报告等级,null 即取系统默认 P2(全报,issue #271)。 */
   minReportSeverity: Severity | null;
-  minReportSeverityVersion: number;
+};
+
+/** 审查策略读回来的整份对象:各项设置值加整页共用的那一个版本号(issue #301)。 */
+export type GlobalSettings = GlobalSettingsValues & {
+  /** 整页版本号,缺行即 1。写成功推一版。 */
+  version: number;
 };
 
 /**
@@ -2610,23 +2628,16 @@ export type Store = {
    * 推进。其中任意一条不在待裁决队列里即整次回 false,一条都不改。
    */
   rejectRuleProposals(repoId: number, proposalIds: readonly number[]): boolean;
-  /** 审查策略。历史值和未写过的项都从版本 1 开始。 */
+  /** 审查策略。历史值和未写过的项都读回 null，整页版本从 1 开始。 */
   getGlobalSettings(): GlobalSettings;
-  /** 按独立版本改写全局模型组合；陈旧版本或模型服务状态变化返回 false。 */
-  putGlobalReviewers(expectedVersion: number, reviewersJson: string): boolean;
-  /** 按独立版本设置某一项分批上限；null 移除自定义值，陈旧版本返回 false。 */
-  putGlobalBatchLimit(
-    field: BatchLimitField,
-    expectedVersion: number,
-    limit: number | null,
-  ): boolean;
   /**
-   * 按独立版本设置最低报告等级(issue #271)；null 移除自定义值即回到默认 P2，陈旧
-   * 版本返回 false。与分批上限同形，只是取值是严重度而不是正整数。
+   * 整页全量替换审查策略(issue #301)：版本相等才写，写完推一版。每一项都是 null 即
+   * 「跟随系统默认」，那一行随即从库里删掉。非空模型组合里有模型不可用即整次不写。
+   * 陈旧版本或组合不可用都返回 false，两种情形一行都不改。
    */
-  putGlobalMinReportSeverity(expectedVersion: number, severity: Severity | null): boolean;
-  /** 测试夹具和启动播种的兼容入口；面板写链不得使用。 */
-  putGlobalSettings(settings: Pick<GlobalSettings, "reviewersJson" | "maxChangedLinesPerBatch">): boolean;
+  replaceGlobalSettings(expectedVersion: number, next: GlobalSettingsValues): boolean;
+  /** 测试夹具和启动播种的兼容入口：按当前版本合并写入几项；面板写链不得使用。 */
+  putGlobalSettings(patch: Partial<GlobalSettingsValues>): boolean;
   /**
    * 在一个 SQLite 读事务里取得仓库生效组合、批次上限及其引用的当前模型服务版本。
    * 仓库不存在时抛错；坏配置沿用设置入口的校验错误。
@@ -3655,6 +3666,12 @@ export function openStore(dbPath: string): Store {
     `);
   }
 
+  // 审查策略整页一个版本(issue #301):升级前每一项各持一个版本键,这里一次性删掉,整页
+  // 版本从缺行的 1 起算。设置值本身一格不动,删过即不再命中,跑几遍都一样。
+  db.prepare(
+    `DELETE FROM global_setting WHERE key IN (${LEGACY_SETTING_VERSION_KEYS.map(() => "?").join(", ")})`,
+  ).run(...LEGACY_SETTING_VERSION_KEYS);
+
   // 权限格 `rule:write` 改名 `knowledge:write`(ADR 0020,issue #220):存量角色照旧持有
   // 同一格能力,只是字面量换了。`OR REPLACE` 让同一角色两格都有时旧行让位给新行;跑第
   // 二遍已经没有旧行,零影响。
@@ -4036,46 +4053,6 @@ export function openStore(dbPath: string): Store {
       const result = write(version, at);
       db.exec("COMMIT");
       return result;
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
-  };
-
-  /**
-   * 按独立版本改写 `global_setting` 里的一项设置:版本相等才写,写完把版本推进一版。
-   * `value` 为 null 即移除自定义值,那一项从此读回系统默认。四项批次上限与最低报告
-   * 等级(issue #271)共用这一份写法,取值形态由各自的入口负责。
-   */
-  const putVersionedSetting = (
-    key: string,
-    versionKey: string,
-    expectedVersion: number,
-    value: string | null,
-  ): boolean => {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const versionRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
-        .get(versionKey)?.["value"];
-      const version = versionRow === undefined ? 1 : Number(versionRow);
-      if (version !== expectedVersion) {
-        db.exec("ROLLBACK");
-        return false;
-      }
-      if (value === null) {
-        db.prepare("DELETE FROM global_setting WHERE key = ?").run(key);
-      } else {
-        db.prepare(
-          `INSERT INTO global_setting (key, value) VALUES (?, ?)
-           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-        ).run(key, value);
-      }
-      db.prepare(
-        `INSERT INTO global_setting (key, value) VALUES (?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-      ).run(versionKey, String(version + 1));
-      db.exec("COMMIT");
-      return true;
     } catch (error) {
       db.exec("ROLLBACK");
       throw error;
@@ -5159,33 +5136,18 @@ export function openStore(dbPath: string): Store {
     getGlobalSettings() {
       const rows = db.prepare("SELECT key, value FROM global_setting").all();
       const values = new Map(rows.map((row) => [String(row["key"]), String(row["value"])]));
-      const limit = (field: BatchLimitField): { value: number | null; version: number } => {
-        const [key, versionKey] = BATCH_LIMIT_KEYS[field];
-        const stored = values.get(key);
-        return {
-          value: stored === undefined ? null : Number(stored),
-          version: Number(values.get(versionKey) ?? 1),
-        };
+      const limit = (field: BatchLimitField): number | null => {
+        const stored = values.get(BATCH_LIMIT_KEYS[field]);
+        return stored === undefined ? null : Number(stored);
       };
-      const changedLines = limit("maxChangedLinesPerBatch");
-      const parallel = limit("maxParallelBatches");
-      const files = limit("maxFilesPerBatch");
-      const evidence = limit("maxEvidenceCallsPerBatch");
       return {
         reviewersJson: values.get(GLOBAL_REVIEWERS_KEY) ?? null,
-        reviewersVersion: Number(values.get(GLOBAL_REVIEWERS_VERSION_KEY) ?? 1),
-        maxChangedLinesPerBatch: changedLines.value,
-        maxChangedLinesPerBatchVersion: changedLines.version,
-        maxParallelBatches: parallel.value,
-        maxParallelBatchesVersion: parallel.version,
-        maxFilesPerBatch: files.value,
-        maxFilesPerBatchVersion: files.version,
-        maxEvidenceCallsPerBatch: evidence.value,
-        maxEvidenceCallsPerBatchVersion: evidence.version,
+        maxChangedLinesPerBatch: limit("maxChangedLinesPerBatch"),
+        maxParallelBatches: limit("maxParallelBatches"),
+        maxFilesPerBatch: limit("maxFilesPerBatch"),
+        maxEvidenceCallsPerBatch: limit("maxEvidenceCallsPerBatch"),
         minReportSeverity: readMinReportSeverity(values.get(GLOBAL_MIN_REPORT_SEVERITY_KEY)),
-        minReportSeverityVersion: Number(
-          values.get(GLOBAL_MIN_REPORT_SEVERITY_VERSION_KEY) ?? 1,
-        ),
+        version: Number(values.get(GLOBAL_SETTINGS_VERSION_KEY) ?? 1),
       };
     },
 
@@ -5232,8 +5194,12 @@ export function openStore(dbPath: string): Store {
       }
     },
 
-    putGlobalReviewers(expectedVersion, reviewersJson) {
-      const write = (key: string, value: string): void => {
+    replaceGlobalSettings(expectedVersion, next) {
+      const write = (key: string, value: string | null): void => {
+        if (value === null) {
+          db.prepare("DELETE FROM global_setting WHERE key = ?").run(key);
+          return;
+        }
         db.prepare(
           `INSERT INTO global_setting (key, value) VALUES (?, ?)
            ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -5242,17 +5208,28 @@ export function openStore(dbPath: string): Store {
       db.exec("BEGIN IMMEDIATE");
       try {
         const versionRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
-          .get(GLOBAL_REVIEWERS_VERSION_KEY)?.["value"];
+          .get(GLOBAL_SETTINGS_VERSION_KEY)?.["value"];
         const version = versionRow === undefined ? 1 : Number(versionRow);
-        if (
-          version !== expectedVersion ||
-          !modelCombinationAvailable(reviewersJson, GLOBAL_REVIEWERS_CONTEXT)
-        ) {
+        // 组合没换就不重判可用性:这一道是端点那次校验与这次写入之间的兜底(中间有人停用
+        // 了模型服务),换的是同一份值就没有引入新的不可用引用。空组合同样放行——首次配置
+        // 之前库里就是这个样子。
+        const storedReviewers = db.prepare("SELECT value FROM global_setting WHERE key = ?")
+          .get(GLOBAL_REVIEWERS_KEY)?.["value"];
+        const reviewersOk = next.reviewersJson === null ||
+          next.reviewersJson === storedReviewers ||
+          parseStoredReviewers(next.reviewersJson, GLOBAL_REVIEWERS_CONTEXT).length === 0 ||
+          modelCombinationAvailable(next.reviewersJson, GLOBAL_REVIEWERS_CONTEXT);
+        if (version !== expectedVersion || !reviewersOk) {
           db.exec("ROLLBACK");
           return false;
         }
-        write(GLOBAL_REVIEWERS_KEY, reviewersJson);
-        write(GLOBAL_REVIEWERS_VERSION_KEY, String(version + 1));
+        write(GLOBAL_REVIEWERS_KEY, next.reviewersJson);
+        for (const field of Object.keys(BATCH_LIMIT_KEYS) as BatchLimitField[]) {
+          const limit = next[field];
+          write(BATCH_LIMIT_KEYS[field], limit === null ? null : String(limit));
+        }
+        write(GLOBAL_MIN_REPORT_SEVERITY_KEY, next.minReportSeverity);
+        write(GLOBAL_SETTINGS_VERSION_KEY, String(version + 1));
         db.exec("COMMIT");
         return true;
       } catch (error) {
@@ -5261,40 +5238,9 @@ export function openStore(dbPath: string): Store {
       }
     },
 
-    putGlobalBatchLimit(field, expectedVersion, limit) {
-      const [key, versionKey] = BATCH_LIMIT_KEYS[field];
-      return putVersionedSetting(key, versionKey, expectedVersion, limit === null ? null : String(limit));
-    },
-
-    putGlobalMinReportSeverity(expectedVersion, severity) {
-      return putVersionedSetting(
-        GLOBAL_MIN_REPORT_SEVERITY_KEY,
-        GLOBAL_MIN_REPORT_SEVERITY_VERSION_KEY,
-        expectedVersion,
-        severity,
-      );
-    },
-
-    putGlobalSettings(settings) {
-      const current = store.getGlobalSettings();
-      if (
-        settings.reviewersJson !== null &&
-        parseStoredReviewers(settings.reviewersJson, GLOBAL_REVIEWERS_CONTEXT).length > 0 &&
-        !store.putGlobalReviewers(current.reviewersVersion, settings.reviewersJson)
-      ) return false;
-      if (settings.reviewersJson === null) {
-        db.prepare("DELETE FROM global_setting WHERE key = ?").run(GLOBAL_REVIEWERS_KEY);
-      } else if (parseStoredReviewers(settings.reviewersJson, GLOBAL_REVIEWERS_CONTEXT).length === 0) {
-        db.prepare(
-          `INSERT INTO global_setting (key, value) VALUES (?, ?)
-           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-        ).run(GLOBAL_REVIEWERS_KEY, settings.reviewersJson);
-      }
-      return store.putGlobalBatchLimit(
-        "maxChangedLinesPerBatch",
-        store.getGlobalSettings().maxChangedLinesPerBatchVersion,
-        settings.maxChangedLinesPerBatch,
-      );
+    putGlobalSettings(patch) {
+      const { version, ...current } = store.getGlobalSettings();
+      return store.replaceGlobalSettings(version, { ...current, ...patch });
     },
 
     commitModelServiceVersion(expectedVersion, record) {
@@ -5533,12 +5479,12 @@ export function openStore(dbPath: string): Store {
             db.prepare("UPDATE global_setting SET value = ? WHERE key = ?")
               .run(nextJson, GLOBAL_REVIEWERS_KEY);
             const versionRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
-              .get(GLOBAL_REVIEWERS_VERSION_KEY);
+              .get(GLOBAL_SETTINGS_VERSION_KEY);
             const version = versionRow === undefined ? 1 : Number(versionRow["value"]);
             db.prepare(
               `INSERT INTO global_setting (key, value) VALUES (?, ?)
                ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-            ).run(GLOBAL_REVIEWERS_VERSION_KEY, String(version + 1));
+            ).run(GLOBAL_SETTINGS_VERSION_KEY, String(version + 1));
           }
         }
         for (const row of db.prepare(

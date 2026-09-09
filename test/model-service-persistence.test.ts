@@ -568,7 +568,7 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
   assert.deepEqual(JSON.parse(reopened.getGlobalSettings().reviewersJson!), [
     { provider: "corp-openai", model: "global-model" },
   ]);
-  assert.equal(reopened.getGlobalSettings().reviewersVersion, 3);
+  assert.equal(reopened.getGlobalSettings().version, 3);
   assert.deepEqual(JSON.parse(reopened.getRepo(41)!.reviewersJson!), [
     { provider: "corp-openai", model: "repo-model" },
   ]);

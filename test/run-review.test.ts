@@ -1900,10 +1900,7 @@ function lastRunTrace(dbPath: string): { kind: string; payload: unknown }[] {
 function setMinReportSeverity(dbPath: string, severity: "P0" | "P1" | "P2" | null): void {
   const store = openStore(dbPath);
   try {
-    assert.equal(
-      store.putGlobalMinReportSeverity(store.getGlobalSettings().minReportSeverityVersion, severity),
-      true,
-    );
+    assert.equal(store.putGlobalSettings({ minReportSeverity: severity }), true);
   } finally {
     store.close();
   }

@@ -78,38 +78,53 @@ test("历史审查策略进入独立初始版本，写一项只推进该项版�
   seed.close();
 
   const store = openStore(db.path);
+  const legacyJson = JSON.stringify([{ provider: "test", model: "legacy" }]);
   assert.deepEqual(store.getGlobalSettings(), {
-    reviewersJson: JSON.stringify([{ provider: "test", model: "legacy" }]),
-    reviewersVersion: 1,
+    reviewersJson: legacyJson,
     maxChangedLinesPerBatch: 777,
-    maxChangedLinesPerBatchVersion: 1,
     maxParallelBatches: null,
-    maxParallelBatchesVersion: 1,
     maxFilesPerBatch: null,
-    maxFilesPerBatchVersion: 1,
     maxEvidenceCallsPerBatch: null,
-    maxEvidenceCallsPerBatchVersion: 1,
     minReportSeverity: null,
-    minReportSeverityVersion: 1,
+    version: 1,
   });
-  assert.equal(store.putGlobalReviewers(1, JSON.stringify([])), false, "新组合不能写成空值");
-  assert.equal(store.putGlobalBatchLimit("maxChangedLinesPerBatch", 1, null), true);
+  // 整页一次全量替换(issue #301):写成 null 的那几项从库里消失,整页版本推一版。
+  assert.equal(
+    store.replaceGlobalSettings(1, {
+      reviewersJson: legacyJson,
+      maxChangedLinesPerBatch: null,
+      maxParallelBatches: null,
+      maxFilesPerBatch: null,
+      maxEvidenceCallsPerBatch: null,
+      minReportSeverity: null,
+    }),
+    true,
+  );
   assert.deepEqual(store.getGlobalSettings(), {
-    reviewersJson: JSON.stringify([{ provider: "test", model: "legacy" }]),
-    reviewersVersion: 1,
+    reviewersJson: legacyJson,
     maxChangedLinesPerBatch: null,
-    maxChangedLinesPerBatchVersion: 2,
     maxParallelBatches: null,
-    maxParallelBatchesVersion: 1,
     maxFilesPerBatch: null,
-    maxFilesPerBatchVersion: 1,
     maxEvidenceCallsPerBatch: null,
-    maxEvidenceCallsPerBatchVersion: 1,
     minReportSeverity: null,
-    minReportSeverityVersion: 1,
+    version: 2,
   });
-  assert.equal(store.putGlobalBatchLimit("maxChangedLinesPerBatch", 1, 900), false, "陈旧版本不得覆盖新值");
-  assert.equal(store.getGlobalSettings().maxChangedLinesPerBatch, null);
+  assert.equal(
+    store.replaceGlobalSettings(1, {
+      reviewersJson: legacyJson,
+      maxChangedLinesPerBatch: 900,
+      maxParallelBatches: null,
+      maxFilesPerBatch: null,
+      maxEvidenceCallsPerBatch: null,
+      minReportSeverity: "P0",
+    }),
+    false,
+    "陈旧版本不得覆盖新值",
+  );
+  assert.deepEqual(
+    { limit: store.getGlobalSettings().maxChangedLinesPerBatch, version: store.getGlobalSettings().version },
+    { limit: null, version: 2 },
+  );
   store.close();
 });
 
