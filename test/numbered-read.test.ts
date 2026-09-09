@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { numberedRead } from "../src/reviewer/numbered-read.ts";
+import { numberedRead } from "../src/reviewer/worker-tools.ts";
 
 test("每行带 1-indexed 行号前缀", () => {
   assert.equal(numberedRead("a\nb\nc"), "1: a\n2: b\n3: c");

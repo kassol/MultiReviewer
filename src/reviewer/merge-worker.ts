@@ -7,11 +7,7 @@
  * 多于一个成员的组另写一份综合说明(issue #279):把成员的说法合成一份正文。
  * 行号、严重度、分类与归属的派生规则不在这里,折叠还是延续也不在,它们都留在编排层。
  */
-import {
-  createAgentSession,
-  defineTool,
-  SessionManager,
-} from "@earendil-works/pi-coding-agent";
+import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import type { GroupSynthesis } from "../review/dedupe.ts";
@@ -25,9 +21,8 @@ import {
   numberedReadTool,
   oneLine,
   prepareAgentRuntime,
-  sessionFailure,
+  runAgentWorker,
   sessionThinkingLevel,
-  streamHeartbeat,
 } from "./worker-tools.ts";
 
 const PROPOSE_GROUP_TOOL = "propose_merge_group";
@@ -194,55 +189,24 @@ async function run(request: MergeWorkerRequest): Promise<void> {
     send({ kind: "done", failure: prepared.failure });
     return;
   }
-  const { agentDir, apiKey, model, modelRuntime, settingsManager, resourceLoader } = prepared;
-
-  const { session } = await createAgentSession({
-    cwd: request.worktreePath,
-    agentDir,
-    model,
-    thinkingLevel: sessionThinkingLevel(request.runtimeModel.reasoning, request.thinkingLevel),
-    modelRuntime,
-    tools: [...READ_ONLY_TOOLS, PROPOSE_GROUP_TOOL],
-    customTools: [proposeGroup, numberedReadTool(request.worktreePath)],
-    resourceLoader,
-    sessionManager: SessionManager.inMemory(request.worktreePath),
-    settingsManager,
-  });
 
   // 审查轨迹只订阅并转发,不做判断(ADR 0017):转换与另两条链路共用同一个。
-  const forwardEvent = reviewerEventStream(apiKey, (event) => send({ kind: "event", event }));
-  // 长思考档位下,几分钟内可能一条完整消息、一次工具调用都没有,静默闸会把它当卡死;
-  // 流式 delta 因此另发一路节流过的心跳(`streamHeartbeat`)。
-  const heartbeat = streamHeartbeat(send);
-  session.subscribe((event) => {
-    forwardEvent(event);
-    heartbeat(event);
+  const forwardEvent = reviewerEventStream(prepared.apiKey, (event) =>
+    send({ kind: "event", event }),
+  );
+
+  await runAgentWorker({
+    runtime: prepared,
+    worktreePath: request.worktreePath,
+    thinkingLevel: sessionThinkingLevel(request.runtimeModel.reasoning, request.thinkingLevel),
+    tools: [...READ_ONLY_TOOLS, PROPOSE_GROUP_TOOL],
+    customTools: [proposeGroup, numberedReadTool(request.worktreePath)],
+    prompt: mergePrompt(request),
+    send,
+    onEvent: forwardEvent,
+    done: ({ usage, failure }) =>
+      send({ kind: "done", usage, ...(failure === undefined ? {} : { failure }) }),
   });
-
-  let thrown: string | undefined;
-  try {
-    await session.prompt(mergePrompt(request));
-  } catch (error) {
-    thrown = String(error instanceof Error ? error.message : error);
-  }
-
-  // `session.prompt()` 在模型调用失败时也正常返回,失败只在这两处可见。
-  const failure = sessionFailure(session, thrown, apiKey);
-
-  // 用量必须在 dispose 之前读:会话销毁后统计随之消失。
-  const stats = session.getSessionStats();
-  const usage = {
-    inputTokens: stats.tokens.input,
-    outputTokens: stats.tokens.output,
-    cacheReadTokens: stats.tokens.cacheRead,
-    cacheWriteTokens: stats.tokens.cacheWrite,
-    totalTokens: stats.tokens.total,
-  };
-
-  session.dispose();
-  send({ kind: "done", usage, ...(failure === undefined ? {} : { failure }) });
-  // 显式退出:`dispose()` 之后 Pi 仍可能留着未关闭的 handle,IPC 通道也让事件循环存活。
-  process.exit(0);
 }
 
 process.on("message", (request: MergeWorkerRequest) => {

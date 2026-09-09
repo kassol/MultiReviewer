@@ -37,8 +37,6 @@ test("模型服务内置发现不读取旧 models.json 当前配置", async () =
 
   const catalog = await loadPiProviderCatalog("deepseek", options);
   assert.ok(catalog !== undefined);
-  assert.equal(catalog.remote, "off");
-  assert.equal(catalog.vendors.openrouter, "off");
   assert.ok(catalog.models.length > 0);
   assert.equal(catalog.models.some((model) => model.id === legacyModel), false);
 

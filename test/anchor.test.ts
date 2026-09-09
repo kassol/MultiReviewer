@@ -24,29 +24,29 @@ const LINES = [
 
 test("行号与 snippet 对得上时原样放行", () => {
   const result = anchorFinding(LINES, 4, "return new Function(`return (${expr})`)();");
-  assert.deepEqual(result, { ok: true, line: 4, corrected: false });
+  assert.deepEqual(result, { ok: true, line: 4 });
 });
 
 test("首尾空白差异不影响匹配", () => {
   const result = anchorFinding(LINES, 4, "  return new Function(`return (${expr})`)();  ");
-  assert.deepEqual(result, { ok: true, line: 4, corrected: false });
+  assert.deepEqual(result, { ok: true, line: 4 });
 });
 
 test("行号报偏时按 snippet 校正到真实行", () => {
   // PR #3 的实况:RCE 在第 4 行,模型报了第 7 行。
   const result = anchorFinding(LINES, 7, "return new Function(`return (${expr})`)();");
-  assert.deepEqual(result, { ok: true, line: 4, corrected: true });
+  assert.deepEqual(result, { ok: true, line: 4 });
 });
 
 test("snippet 多处出现时取离报告行最近的一处", () => {
   const lines = ["}", "a();", "b();", "}", "c();"];
   const result = anchorFinding(lines, 3, "}");
-  assert.deepEqual(result, { ok: true, line: 4, corrected: true });
+  assert.deepEqual(result, { ok: true, line: 4 });
 });
 
 test("行号超出文件末尾但 snippet 找得到时照样校正", () => {
   const result = anchorFinding(LINES, 40, "return history.slice(-count);");
-  assert.deepEqual(result, { ok: true, line: 8, corrected: true });
+  assert.deepEqual(result, { ok: true, line: 8 });
 });
 
 test("snippet 在文件里不存在时打回,理由里带该行实际内容", () => {

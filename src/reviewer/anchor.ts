@@ -13,9 +13,7 @@
  */
 import { isInDiff, type DiffRanges } from "../review/position.ts";
 
-export type AnchorResult =
-  | { ok: true; line: number; corrected: boolean }
-  | { ok: false; reason: string };
+export type AnchorResult = { ok: true; line: number } | { ok: false; reason: string };
 
 /** `lines` 是文件按 `\n` 切开的行数组,`line` 是模型报的 1-indexed 行号。 */
 export function anchorFinding(lines: string[], line: number, snippet: string): AnchorResult {
@@ -25,7 +23,7 @@ export function anchorFinding(lines: string[], line: number, snippet: string): A
   }
 
   if (line >= 1 && line <= lines.length && lines[line - 1]!.trim() === wanted) {
-    return { ok: true, line, corrected: false };
+    return { ok: true, line };
   }
 
   // ponytail: 多个候选取离报告行最近的——`}` 这类低区分度行可能选错,靠 prompt
@@ -35,7 +33,7 @@ export function anchorFinding(lines: string[], line: number, snippet: string): A
     if (lines[n - 1]!.trim() !== wanted) continue;
     if (best === undefined || Math.abs(n - line) < Math.abs(best - line)) best = n;
   }
-  if (best !== undefined) return { ok: true, line: best, corrected: true };
+  if (best !== undefined) return { ok: true, line: best };
 
   const actual = line >= 1 && line <= lines.length ? lines[line - 1]! : undefined;
   return {
