@@ -404,14 +404,17 @@ function RootCauseGroupCard({
 }) {
   const card = useRef<HTMLElement>(null);
   useEffect(() => {
-    if (focused) card.current?.scrollIntoView({ block: "center" });
+    // 卡片比视口高,居中会把根因说明与「处置整组」滚出视野,落点要停在卡头。
+    if (focused) card.current?.scrollIntoView({ block: "start" });
   }, [focused]);
 
   return (
     <Collapsible.Root
       defaultOpen={defaultOpen}
-      className={`group/root-cause overflow-hidden rounded-lg border bg-surface shadow-control ${
-        focused ? "border-primary bg-accent-tint" : "border-overlay-line"
+      // 背景是模板字符串拼接、未经 cn/twMerge 去重:两个 bg-* 都写进类名时由编译后 CSS 的顺序决定胜负,
+      // 因此每种状态只留一个背景类,写法与下面 counts 按钮那处二选一分支一致。
+      className={`group/root-cause overflow-hidden rounded-lg border shadow-control ${
+        focused ? "border-primary bg-accent-tint" : "border-overlay-line bg-surface"
       }`}
       asChild
     >
