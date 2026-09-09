@@ -1888,6 +1888,8 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "POST", pattern: /^\/findings\/(\d+)\/unresolve$/, access: "finding:dispose", assignment: { by: "finding", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleDispose(req, res, deps, Number(match![1]), "unresolved", caller!.username) },
   // 阶段标识里有斜杠,在地址里编码成一段;可见范围与阶段详情一致,在处理里按分配判。
   { method: "POST", pattern: /^\/stages\/(.+)\/findings\/dispose-below-threshold$/, access: "finding:dispose-batch", handler: ({ req, res, deps, caller, assignment }, match) => handleDisposeBelowThreshold(req, res, deps, match![1]!, caller!.username, assignment!) },
+  // 组级处置沿用批量处置那一格(ADR 0030,issue #309):权限模型不为它多一格。
+  { method: "POST", pattern: /^\/stages\/(.+)\/root-cause-groups\/(\d+)\/dispose$/, access: "finding:dispose-batch", handler: ({ req, res, deps, caller, assignment }, match) => handleDisposeRootCauseGroup(req, res, deps, match![1]!, Number(match![2]), caller!.username, assignment!) },
   { method: "POST", pattern: "/range-reviews", access: "review:create", handler: ({ req, res, deps, caller, assignment }) => handleCreateRangeReview(req, res, deps, caller!.username, assignment!) },
   { method: "GET", pattern: "/range-reviews/prefill", access: "review:create", assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRangeReviewPrefill(req, res, deps) },
   { method: "POST", pattern: /^\/range-reviews\/(\d+)\/advance$/, access: "review:advance", assignment: { by: "range-review", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleAdvanceRangeReview(req, res, deps, Number(match![1]), caller!.username) },
@@ -5124,6 +5126,39 @@ async function disposeOnForge(
 }
 
 /**
+ * 处置一条 Finding 的完整一次:写 Forge、落库,备注非空时再排一次处置反哺。
+ *
+ * 逐条处置与组级处置(issue #309)走的是同一个函数:组处置对知识集的贡献要与逐条一致
+ * (ADR 0030),把这两步各写一遍迟早会只改到一边。
+ */
+async function disposeFinding(
+  deps: WebhookServerDeps,
+  forge: Forge,
+  finding: FindingDispositionTarget,
+  commentId: string,
+  disposition: "resolved" | "unresolved",
+  disposedBy: string,
+  note: string | undefined,
+): Promise<string> {
+  const disposedAt = await disposeOnForge(
+    deps,
+    forge,
+    { owner: finding.owner, repo: finding.repo, commentId },
+    disposition,
+    disposedBy,
+    note,
+  );
+  // 处置备注落库即建一条以那条 Finding 为锚的修订意图(issue #208、#296)。没有备注的
+  // 处置不构成反哺输入,零触发:不建行,也不排任务。
+  if (note !== undefined) {
+    void startDispositionFeedback(deps, finding, note, disposedBy).catch((error: unknown) => {
+      console.error(`处置反哺没有排上:finding ${finding.id}:${failureText(error)}`);
+    });
+  }
+  return disposedAt;
+}
+
+/**
  * 面板处置一条 Finding:resolve / unresolve,可选附一条只存面板的处置备注。
  *
  * Forge 上的 resolver 是服务凭据那个机器人账号,操作人只记在库里(ADR 0012)。
@@ -5153,10 +5188,11 @@ async function handleDispose(
   }
   let disposedAt: string;
   try {
-    disposedAt = await disposeOnForge(
+    disposedAt = await disposeFinding(
       deps,
       forge,
-      { owner: finding.owner, repo: finding.repo, commentId: finding.commentId },
+      finding,
+      finding.commentId,
       disposition,
       disposedBy,
       note,
@@ -5175,13 +5211,6 @@ async function handleDispose(
       note: note ?? finding.note,
     },
   });
-  // 处置备注落库即建一条以那条 Finding 为锚的修订意图(issue #208、#296)。没有备注的
-  // 处置不构成反哺输入,零触发:不建行,也不排任务。
-  if (note !== undefined) {
-    void startDispositionFeedback(deps, finding, note, disposedBy).catch((error: unknown) => {
-      console.error(`处置反哺没有排上:finding ${finding.id}:${failureText(error)}`);
-    });
-  }
 }
 
 /**
@@ -5264,6 +5293,91 @@ async function handleDisposeBelowThreshold(
     }
   }
   return sendJson(res, 200, { disposed, failed });
+}
+
+/**
+ * 一次处置同根因组里当前未处置的成员(CONTEXT.md 同根因组,ADR 0030,issue #309)。
+ *
+ * 同一个根因散在 N 处时,人要判的是这一件事而不是 N 条:组卡上按一次,组内未处置的成员
+ * 逐条走**与逐条处置完全相同的那一条路**(`disposeFinding`)——写 Forge、落库,备注非空
+ * 时各排一次处置反哺,组处置对知识集的贡献因此与逐条一致(US 18)。
+ *
+ * 已处置的成员跳过,不覆盖人已经做过的决定(US 17);只在 review 正文里、没有行级评论
+ * 承载的那些同样跳过——逐条那条路也处置不了它们。两类各自列在响应里,人看得出这一次
+ * 动了哪几条。Forge 那一步失败的进 `failed`,与按阈值批量处置同一口径:再点一次即可,
+ * 已经写成功的这时已经不在未处置里了。
+ *
+ * 权限格沿用 `finding:dispose-batch`(US 16),可见范围与阶段详情一致。组不在这个阶段的
+ * 最新一轮里就是 404:组属于轮次,上一轮的组这一页本来就读不到。
+ */
+async function handleDisposeRootCauseGroup(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  rawStageId: string,
+  groupId: number,
+  disposedBy: string,
+  assignment: RepoAssignment,
+): Promise<void> {
+  const parsed = await readDispositionNote(req, res);
+  if (parsed === undefined) return;
+  const { note } = parsed;
+  let stageId: string;
+  try {
+    stageId = decodeURIComponent(rawStageId);
+  } catch {
+    return sendJson(res, 404, { error: "没有这个审查阶段" });
+  }
+  const stage = withStore(deps.dbPath, (store) => {
+    const found = store.stageDetail(stageId);
+    if (found === undefined) return undefined;
+    // 组与成员都从阶段汇总取:成员在那里已经映到了当前那一行(被后面轮次折叠或延续掉
+    // 的跟着链走),面板看到的与这里处置的因此是同一批行。
+    const group = store
+      .stageSummary(stageScopeOf(found.stage))
+      .rootCauseGroups.find((entry) => entry.id === groupId);
+    return {
+      owner: found.stage.owner,
+      repo: found.stage.repo,
+      members: group?.findingIds.flatMap((id) => {
+        const finding = store.getFinding(id);
+        return finding === undefined ? [] : [finding];
+      }),
+    };
+  });
+  if (stage === undefined || !assignment.allows(stage.owner, stage.repo)) {
+    return sendJson(res, 404, { error: "没有这个审查阶段" });
+  }
+  if (stage.members === undefined) {
+    return sendJson(res, 404, { error: "这个审查阶段里没有这个同根因组" });
+  }
+  const forge = deps.forges.gitea;
+  if (forge === undefined) {
+    return sendJson(res, 503, { error: "gitea 没有配置 Forge,处置不了" });
+  }
+  const disposed: number[] = [];
+  const skipped: number[] = [];
+  const failed: number[] = [];
+  for (const finding of stage.members) {
+    if (
+      finding.commentId === null ||
+      (finding.disposition !== "unknown" && finding.disposition !== "unresolved")
+    ) {
+      skipped.push(finding.id);
+      continue;
+    }
+    try {
+      await disposeFinding(deps, forge, finding, finding.commentId, "resolved", disposedBy, note);
+      disposed.push(finding.id);
+    } catch (error) {
+      console.error(
+        `[panel] 组级处置 Finding ${finding.id} 失败,其余照常:`,
+        error instanceof Error ? error.message : String(error),
+      );
+      failed.push(finding.id);
+    }
+  }
+  return sendJson(res, 200, { disposed, skipped, failed });
 }
 
 /** 范围审查发起时人填的两端。只收 sha:它同时挡住以 `-` 开头的值被 git 当成选项。 */

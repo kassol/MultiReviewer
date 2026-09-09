@@ -50,6 +50,12 @@ const ROUTE_EXPECTATIONS = [
     "finding:dispose-batch",
     "-",
   ],
+  [
+    "POST",
+    "/^\\/stages\\/(.+)\\/root-cause-groups\\/(\\d+)\\/dispose$/",
+    "finding:dispose-batch",
+    "-",
+  ],
   ["POST", "/range-reviews", "review:create", "-"],
   ["GET", "/range-reviews/prefill", "review:create", "query"],
   ["POST", "/^\\/range-reviews\\/(\\d+)\\/advance$/", "review:advance", "range-review:1"],

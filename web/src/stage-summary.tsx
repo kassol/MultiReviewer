@@ -1,18 +1,21 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useState, type MouseEventHandler } from "react";
+import { useEffect, useRef, useState, type MouseEventHandler } from "react";
 
 import { CheckIcon, ChevronDownIcon, CrossCircledIcon, FileTextIcon } from "@radix-ui/react-icons";
-import { Badge, Callout, Popover, Select, Skeleton, Tabs } from "@radix-ui/themes";
+import { Badge, Callout, Popover, Select, Skeleton, Tabs, Text, TextArea } from "@radix-ui/themes";
+import { Collapsible } from "radix-ui";
 
 import { CommitChip } from "@/components/commit-chip";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/theme-button";
 import { TAB_TRIGGER } from "@/components/tab-trigger";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { foldByRootCause, type RootCauseRef } from "@/lib/root-cause";
 import { localMinute } from "@/lib/time";
 
-import { fetchJson } from "./api.ts";
+import { fetchJson, send } from "./api.ts";
 import { type RerunMode } from "./repo-actions.tsx";
 import { FindingRow } from "./run-diff.tsx";
 import type { RunFinding } from "./runs.tsx";
@@ -36,6 +39,8 @@ export type StageFinding = RunFinding & {
   firstReportedAt: string;
   lastRunId: number;
   lastReportedAt: string;
+  /** 这条属于哪个同根因组(issue #309);未入组即 null,列表照旧逐条列出。 */
+  rootCause: RootCauseRef | null;
 };
 
 /** 时间线里的一轮:这一轮对这个阶段做了什么。 */
@@ -203,6 +208,261 @@ function FileFilterCombobox({
 }
 
 /**
+ * 列表里的一条 Finding:卡头是侧滑入口,卡身是与轮次页共用的那张 Finding 卡。
+ * 组卡里的成员用的是同一个组件——入组不改变一条 Finding 的任何事实(ADR 0030)。
+ */
+function FindingCard({
+  finding,
+  scope,
+  canDispose,
+  roundOf,
+  onDrawerTrigger,
+}: {
+  finding: StageFinding;
+  scope: StageScope;
+  canDispose: boolean;
+  roundOf: Map<number, number>;
+  onDrawerTrigger?: MouseEventHandler<HTMLAnchorElement>;
+}) {
+  return (
+    <section className="overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control">
+      {/*
+        点一条 Finding 就在侧滑里看它的 diff(issue #189):卡头整块是那个入口,
+        地址上多一个 `finding=`,关掉侧滑就回到这一页本身。
+      */}
+      <Link
+        to="/stages/$stageId"
+        params={{ stageId: stageIdOf(scope) }}
+        search={(prev: Record<string, unknown>) => ({
+          ...prev,
+          finding: finding.id,
+          trace: undefined,
+        })}
+        replace
+        onClick={onDrawerTrigger}
+        aria-label={`查看 ${finding.file}:${finding.line} 对应的代码差异`}
+        className="group block px-4 pt-2.5 outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40"
+      >
+        <span className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <span className="min-w-0 font-mono text-sm break-all text-text-secondary">
+            {finding.file}:{finding.line}
+          </span>
+          <span
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded-md bg-accent-tint-strong text-primary transition-colors group-hover:bg-accent-track"
+            aria-hidden
+          >
+            <FileTextIcon />
+          </span>
+        </span>
+        {finding.title === "" ? null : (
+          <span className="block pt-1 text-lg font-semibold break-words">{finding.title}</span>
+        )}
+        <span className="block pt-1 text-sm text-text-secondary tabular-nums">
+          第 {roundOf.get(finding.firstRunId) ?? "?"} 轮首次报出 · 第{" "}
+          {roundOf.get(finding.lastRunId) ?? "?"} 轮最近一次 ·{" "}
+          {localMinute(finding.lastReportedAt)}
+        </span>
+      </Link>
+      <FindingRow finding={finding} canDispose={canDispose} />
+    </section>
+  );
+}
+
+/**
+ * 「处置整组」(CONTEXT.md 同根因组,issue #309):对组内当前未处置的成员写同一处置与
+ * 备注。走 AlertDialog 与按阈值批量处置同一套弹窗与输入——一次点下去改的是几十条
+ * Finding 的处置状态,而两处要人填的东西本来就是同一件(一句处置备注)。
+ *
+ * 已处置的成员由服务端跳过,不覆盖人已经做过的决定;组内一条未处置都没有时按钮点不动。
+ */
+function DisposeRootCauseGroupAction({
+  scope,
+  groupId,
+  memberCount,
+  pending,
+  onFeedback,
+}: {
+  scope: StageScope;
+  groupId: number;
+  memberCount: number;
+  /** 组内还有未处置成员时才点得动。 */
+  pending: boolean;
+  onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const dispose = useMutation({
+    mutationFn: async (text: string | undefined) =>
+      send<{ disposed: number[]; skipped: number[]; failed: number[] }>(
+        `/stages/${encodeURIComponent(stageIdOf(scope))}/root-cause-groups/${groupId}/dispose`,
+        "POST",
+        text === undefined ? {} : { note: text },
+      ),
+    onSuccess: (result) => {
+      setOpen(false);
+      // 备注只属于刚发出去的这一组,留在框里下次会被顺手带上。
+      setNote("");
+      onFeedback({
+        text:
+          result.failed.length === 0
+            ? `已处置 ${result.disposed.length} 条，跳过已处置的 ${result.skipped.length} 条。`
+            : `已处置 ${result.disposed.length} 条，${result.failed.length} 条失败，可以再点一次重试。`,
+        isError: result.failed.length > 0,
+      });
+      // 处置完的那些立刻从待处置里退出去:计数在详情上,列表在汇总里,两份都失效。
+      void queryClient.invalidateQueries({ queryKey: ["stage-detail"] });
+      void queryClient.invalidateQueries({ queryKey: ["stage-summary"] });
+    },
+    onError: (error: Error) => onFeedback({ text: error.message, isError: true }),
+  });
+
+  return (
+    <ConfirmDialog
+      open={open}
+      onOpenChange={setOpen}
+      trigger={
+        <Button
+          variant="soft"
+          color="gray"
+          size={{ initial: "3", sm: "2" }}
+          disabled={!pending || dispose.isPending}
+        >
+          处置整组
+        </Button>
+      }
+      title={`把这个同根因组里未处置的成员一次处置掉？`}
+      titleSize="4"
+      titleMb="2"
+      maxWidth="480px"
+      description={
+        <>
+          这一组有 {memberCount} 处。组内未处置的成员将逐条标记为人工已处置，Forge
+          上对应的评论同步 resolve；已处置的成员不动。
+        </>
+      }
+      direction={{ initial: "column-reverse", sm: "row" }}
+      cancelLabel="取消"
+      cancelVariant="soft"
+      confirm={{
+        label: dispose.isPending ? "处置中…" : "处置",
+        disabled: dispose.isPending,
+        onClick: () => {
+          onFeedback(null);
+          const trimmed = note.trim();
+          dispose.mutate(trimmed === "" ? undefined : trimmed);
+        },
+      }}
+    >
+      <Text as="label" htmlFor={`root-cause-note-${groupId}`} className="sr-only">
+        处置备注
+      </Text>
+      <TextArea
+        id={`root-cause-note-${groupId}`}
+        size="2"
+        rows={2}
+        maxLength={500}
+        className="mt-3"
+        placeholder="处置备注（可选，只存面板）"
+        value={note}
+        onChange={(event) => setNote(event.target.value)}
+      />
+    </ConfirmDialog>
+  );
+}
+
+/**
+ * 一个同根因组的卡片(CONTEXT.md 同根因组,issue #309):标题就是合并 agent 写的那句根因
+ * 说明,成员收在里面,默认折起——列表变短而信息不丢。展开之后成员用与组外条目完全相同
+ * 的那张卡,入组不改变一条 Finding 的任何呈现。
+ *
+ * Forge 评论尾行链进来时地址上带 `?rootCause=`(issue #308):那一组开着,并滚到视野正中。
+ */
+function RootCauseGroupCard({
+  scope,
+  group,
+  defaultOpen,
+  focused,
+  canDispose,
+  canDisposeBatch,
+  pending,
+  roundOf,
+  onFeedback,
+  onDrawerTrigger,
+}: {
+  scope: StageScope;
+  group: { id: number; reason: string; memberCount: number; members: StageFinding[] };
+  defaultOpen: boolean;
+  /** 地址指的正是这一组:首次渲染滚到它。 */
+  focused: boolean;
+  canDispose: boolean;
+  canDisposeBatch: boolean;
+  pending: boolean;
+  roundOf: Map<number, number>;
+  onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
+  onDrawerTrigger?: MouseEventHandler<HTMLAnchorElement>;
+}) {
+  const card = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (focused) card.current?.scrollIntoView({ block: "center" });
+  }, [focused]);
+
+  return (
+    <Collapsible.Root
+      defaultOpen={defaultOpen}
+      className={`group/root-cause overflow-hidden rounded-lg border bg-surface shadow-control ${
+        focused ? "border-primary bg-accent-tint" : "border-overlay-line"
+      }`}
+      asChild
+    >
+      <section ref={card} aria-label={`同根因组：${group.reason}`}>
+        <div className="flex flex-wrap items-start justify-between gap-2 px-4 py-2.5">
+          <Collapsible.Trigger
+            type="button"
+            className="flex min-w-0 flex-1 cursor-pointer items-start gap-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          >
+            <ChevronDownIcon
+              aria-hidden
+              className="mt-1 size-4 shrink-0 text-text-secondary transition-transform group-data-[state=open]/root-cause:rotate-180"
+            />
+            <span className="min-w-0">
+              <span className="block text-lg font-semibold break-words">{group.reason}</span>
+              <span className="block pt-1 text-sm text-text-secondary tabular-nums">
+                同一根因 {group.memberCount} 处
+                {group.members.length === group.memberCount
+                  ? null
+                  : ` · 当前筛选下 ${group.members.length} 处`}
+              </span>
+            </span>
+          </Collapsible.Trigger>
+          {canDisposeBatch ? (
+            <DisposeRootCauseGroupAction
+              scope={scope}
+              groupId={group.id}
+              memberCount={group.memberCount}
+              pending={pending}
+              onFeedback={onFeedback}
+            />
+          ) : null}
+        </div>
+        <Collapsible.Content className="flex flex-col gap-2 px-2 pb-2">
+          {group.members.map((finding) => (
+            <FindingCard
+              key={finding.id}
+              finding={finding}
+              scope={scope}
+              canDispose={canDispose}
+              roundOf={roundOf}
+              {...(onDrawerTrigger === undefined ? {} : { onDrawerTrigger })}
+            />
+          ))}
+        </Collapsible.Content>
+      </section>
+    </Collapsible.Root>
+  );
+}
+
+/**
  * 一个审查阶段的主视图(issue #168):顶部三个计数,正文分成 Finding 与时间线两页
  * (issue #236)——一个阶段跑到几百条待处置之后,时间线不该被压在列表底下。
  *
@@ -212,14 +472,23 @@ function FileFilterCombobox({
 export function StageSummaryView({
   scope,
   canDispose,
+  canDisposeBatch,
+  focusRootCause,
   tab,
   onTabChange,
   timeline,
+  onFeedback,
   onDrawerTrigger,
 }: {
   scope: StageScope;
   /** 有 `finding:dispose` 权限时行内出现处置动作。 */
   canDispose: boolean;
+  /** 有 `finding:dispose-batch` 权限时组卡上出现「处置整组」(issue #309)。 */
+  canDisposeBatch: boolean;
+  /** 地址上 `?rootCause=` 指的那个组:进来时展开并滚到它。没有即 null。 */
+  focusRootCause: number | null;
+  /** 组级处置的结果写到页头的那条提示上,与按阈值批量处置同一处。 */
+  onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
   /** 当前在哪一页。tab 记在地址上,由阶段页读写(issue #236)。 */
   tab: StageTab;
   onTabChange: (tab: StageTab) => void;
@@ -249,6 +518,12 @@ export function StageSummaryView({
   );
   // 轮次序号按这个阶段自己数:一条 Finding「第几轮首次报出」比一个库 id 有意义。
   const roundOf = new Map(entries.map((entry, index) => [entry.runId, index + 1]));
+  // 「处置整组」按整组算,不按筛选后看得见的那几条:筛掉的成员照样会被写进去。
+  const pendingGroups = new Set(
+    findings.flatMap((finding) =>
+      finding.rootCause !== null && bucketOf(finding) === "pending" ? [finding.rootCause.id] : [],
+    ),
+  );
   const counts = summary.data?.counts ?? { pending: 0, resolved: 0, fixed: 0 };
 
   return (
@@ -367,51 +642,32 @@ export function StageSummaryView({
             </p>
           ) : null}
 
-          {visible.map((finding) => (
-            <section
-              key={finding.id}
-              className="overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control"
-            >
-              {/*
-                点一条 Finding 就在侧滑里看它的 diff(issue #189):卡头整块是那个入口,
-                地址上多一个 `finding=`,关掉侧滑就回到这一页本身。
-              */}
-              <Link
-                to="/stages/$stageId"
-                params={{ stageId: stageIdOf(scope) }}
-                search={(prev: Record<string, unknown>) => ({
-                  ...prev,
-                  finding: finding.id,
-                  trace: undefined,
-                })}
-                replace
-                onClick={onDrawerTrigger}
-                aria-label={`查看 ${finding.file}:${finding.line} 对应的代码差异`}
-                className="group block px-4 pt-2.5 outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40"
-              >
-                <span className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-                  <span className="min-w-0 font-mono text-sm break-all text-text-secondary">
-                    {finding.file}:{finding.line}
-                  </span>
-                  <span
-                    className="inline-flex size-7 shrink-0 items-center justify-center rounded-md bg-accent-tint-strong text-primary transition-colors group-hover:bg-accent-track"
-                    aria-hidden
-                  >
-                    <FileTextIcon />
-                  </span>
-                </span>
-                {finding.title === "" ? null : (
-                  <span className="block pt-1 text-lg font-semibold break-words">{finding.title}</span>
-                )}
-                <span className="block pt-1 text-sm text-text-secondary tabular-nums">
-                  第 {roundOf.get(finding.firstRunId) ?? "?"} 轮首次报出 · 第{" "}
-                  {roundOf.get(finding.lastRunId) ?? "?"} 轮最近一次 ·{" "}
-                  {localMinute(finding.lastReportedAt)}
-                </span>
-              </Link>
-              <FindingRow finding={finding} canDispose={canDispose} />
-            </section>
-          ))}
+          {foldByRootCause(visible).map((row) =>
+            row.kind === "finding" ? (
+              <FindingCard
+                key={row.finding.id}
+                finding={row.finding}
+                scope={scope}
+                canDispose={canDispose}
+                roundOf={roundOf}
+                {...(onDrawerTrigger === undefined ? {} : { onDrawerTrigger })}
+              />
+            ) : (
+              <RootCauseGroupCard
+                key={`group-${row.id}`}
+                scope={scope}
+                group={row}
+                defaultOpen={row.id === focusRootCause}
+                focused={row.id === focusRootCause}
+                canDispose={canDispose}
+                canDisposeBatch={canDisposeBatch}
+                pending={pendingGroups.has(row.id)}
+                roundOf={roundOf}
+                onFeedback={onFeedback}
+                {...(onDrawerTrigger === undefined ? {} : { onDrawerTrigger })}
+              />
+            ),
+          )}
         </Tabs.Content>
 
         <Tabs.Content value="timeline" className="flex flex-col gap-3 pt-3">
