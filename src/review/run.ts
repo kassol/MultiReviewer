@@ -574,25 +574,45 @@ export function priorDispositions(
 }
 
 /**
- * 把上一轮读回的状态整理成回填更新(ADR 0006)。行级评论承载的条目带 resolve 状态;
+ * 把 Forge 上读回的状态整理成回填更新(ADR 0006)。行级评论承载的条目带 resolve 状态;
  * 正文锚点没有状态可读,不写 disposition——写了等于把「读不到」伪装成「未处置」。
  * 来源类型两类都带:它顺手把升级前被默认值标成 inline 的历史 fallback 行纠正回
  * body,让它们如 ADR 要求的那样被统计排除。
+ *
+ * 一条评论一条更新(issue #307):同一「文件 + 指纹」上可以有两条 Identity,各由自己那条
+ * 评论承载,按「文件 + 指纹」并成一条会把其中一条的 resolve 状态写到另一条的行上。读的是
+ * 评论本身而不是 `priorDispositions` 那份按处折叠的表,也是这个理由。
  */
 export function backfillUpdates(
-  prior: ReadonlyMap<string, PriorDisposition>,
+  comments: readonly ExistingReviewComment[],
+  bodies: readonly string[],
 ): DispositionUpdate[] {
-  return [...prior].map(([key, entry]) => {
-    const [file, fingerprint] = key.split("\n") as [string, string];
-    return {
-      file,
-      fingerprint,
-      placement: entry.fromInline ? "inline" : "body",
-      ...(entry.fromInline
-        ? { disposition: entry.resolved ? ("resolved" as const) : ("unresolved" as const) }
-        : {}),
-    };
-  });
+  const updates: DispositionUpdate[] = [];
+  const fromComments = new Set<string>();
+  for (const comment of comments) {
+    for (const anchor of parseFingerprintAnchors(comment.body)) {
+      // 路径以 API 读回的为准:行级评论的锚点里没有它,有也不该盖过评论自己挂的位置。
+      fromComments.add(`${comment.path}\n${anchor.fingerprint}`);
+      updates.push({
+        file: comment.path,
+        fingerprint: anchor.fingerprint,
+        commentId: comment.id,
+        placement: "inline",
+        disposition: comment.resolved ? "resolved" : "unresolved",
+      });
+    }
+  }
+  for (const body of bodies) {
+    for (const anchor of parseFingerprintAnchors(body)) {
+      // 正文里的锚点自带路径,没带的定不出「文件 + 指纹」这个键,只能放过。
+      if (anchor.file === undefined) continue;
+      // 同一处已经有行级评论承载:那一处的来源类型是 inline,正文这一条不再把没有评论
+      // 载体的行标回 body——口径与这一票之前的 `fromInline` 逐字一致。
+      if (fromComments.has(`${anchor.file}\n${anchor.fingerprint}`)) continue;
+      updates.push({ file: anchor.file, fingerprint: anchor.fingerprint, placement: "body" });
+    }
+  }
+  return updates;
 }
 
 /**
@@ -2208,18 +2228,22 @@ export async function runReview(
 
       // 开跑时按「文件已回退 / 已删除」resolve 掉的那几条(issue #272):这份评论清单读在
       // 那次 resolve 之前,里面的 false 已经过期,照写会把刚落的「已修复」降级回未处置。
-      const prior = priorDispositions(
+      const currentComments =
         resolvedByAbsence.size === 0
           ? priorComments
           : priorComments.map((comment) =>
               resolvedByAbsence.has(comment.id) ? { ...comment, resolved: true } : comment,
-            ),
-        priorBodies,
-      );
+            );
+      const prior = priorDispositions(currentComments, priorBodies);
 
       // 顺手回写(ADR 0006):这批读回的 resolve 状态本来用完即弃,现在覆盖到这个 PR
       // 名下全部历史 finding 上。以 Forge 最新状态为准——resolve 后又 unresolve,跟着改。
-      store.backfillDispositions(event.owner, event.repo, event.number, backfillUpdates(prior));
+      store.backfillDispositions(
+        event.owner,
+        event.repo,
+        event.number,
+        backfillUpdates(currentComments, priorBodies),
+      );
 
       // 合并 agent 命中的那些历史(issue #240):按落库 id 取回它此刻的位置与载体。读在
       // 回填之后——折叠到已处置还是未处置,认的是刚从 Forge 读回的那一份状态。

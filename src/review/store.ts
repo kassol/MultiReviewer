@@ -957,6 +957,17 @@ function identityKey(prefix: string): string {
 }
 
 /**
+ * 回填一条更新时它该落在哪些行上(issue #307)。绑三个参数:承载它的评论 id、文件、指纹。
+ *
+ * 先认评论:一条评论的 resolve 状态只说得了它自己承载的那条 Finding,同一处的另一条
+ * Identity 各有各的评论(ADR 0030)。没有评论载体的行才退回「文件 + 指纹」,与 `identityKey`
+ * 的兜底同一档——那些行本来就没有可分辨的载体。评论 id 传 NULL 时前一档恒不成立,整个
+ * 条件就只剩后一档,正文锚点那一档因此走同一句 SQL。
+ */
+const BACKFILL_TARGET =
+  "(comment_id = ? OR (comment_id IS NULL AND file = ? AND fingerprint = ?))";
+
+/**
  * 统计口径的共同前半段:`src` 把参与统计的 finding 行摊平(fallback 在最内层就排除),
  * `identity` 按 Finding Identity 折叠(键见 `identityKey`)。处置率与参与条数共用它,
  * 两个数才落在同一批 Identity 上;补的那半段各自接在后面。
@@ -1236,13 +1247,18 @@ export type FindingCommentRef = {
 };
 
 /**
- * 回填的一条更新:PR 里指纹与文件都对上的历史 finding 照它改写。行级评论承载的带
+ * 回填的一条更新:PR 里这条 Finding Identity 的历史 finding 照它改写。行级评论承载的带
  * disposition;正文锚点没有 resolve 状态可读,只带来源类型(顺手纠正升级前被默认值
  * 标成 inline 的历史 fallback 行)。
+ *
+ * `commentId` 是这一条读自哪条 Forge 评论(issue #307):同一「文件 + 指纹」上可以有两条
+ * Identity,各带各的评论,一条评论的 resolve 状态只能写到它自己承载的那些行上。正文锚点
+ * 那一档没有评论,只落在同一处没有评论载体的行上。
  */
 export type DispositionUpdate = {
   file: string;
   fingerprint: string;
+  commentId?: string;
   disposition?: Disposition;
   placement: FindingPlacement;
 };
@@ -2985,10 +3001,11 @@ export type Store = {
    * Forge 那一步因此不会一轮轮重复 resolve 同一条评论,也不会与在 Forge 上撤回处置
    * 的人对着干。
    *
-   * 传入的是折叠出来的代表条 id,返回的按 Finding Identity 展开(issue #275):同文件、
-   * 同折叠键、同 PR 范围、仍能自动处置且带评论的每一行各出一条候选,按落库 id 升序、
-   * 跨传入 id 去重。同一条 Identity 在一轮里可能有两条 Finding 各带一条评论,跨轮折叠
-   * 又会多出旧行;只把代表条交给 Forge 会把其余评论留在那里未 resolve。
+   * 传入的是折叠出来的代表条 id,返回的按 Finding Identity 展开(issue #275):折叠键
+   * (`identityKey`)与它相同、同 PR 范围、仍能自动处置且带评论的每一行各出一条候选,按
+   * 落库 id 升序、跨传入 id 去重。同一条 Identity 在一轮里可能有两条 Finding 各带一条
+   * 评论,跨轮折叠又会多出旧行;只把代表条交给 Forge 会把其余评论留在那里未 resolve。
+   * 同一处的另一条 Identity 不在其中(ADR 0030):它有自己的评论与自己的处置。
    */
   pendingAutoDispositions(findingIds: readonly number[]): AutoDispositionCandidate[];
   /**
@@ -3025,7 +3042,8 @@ export type Store = {
    * 记一次延续:旧行改记「已延续」,处置备注、处置人与处置时刻随 Identity 落到本轮
    * 新行上,新行同时记下旧评论的链接。
    *
-   * 旧那一侧落的是整条 Finding Identity(同「文件 + 指纹」的历史行一并改写),口径与
+   * 旧那一侧落的是整条 Finding Identity(键见 `identityKey`,承载它的那条评论名下的历史
+   * 行一并改写;同一处的另一条 Identity 不在其中),口径与
    * 「已修复」自动处置和回填一致。元数据继承与 issue #152 同一个理由:处置的载体换了
    * 位置,人的备注、署名与「已经显式处置过」这个标记要跟着走,否则自动规则会再碰一次。
    *
@@ -3053,12 +3071,13 @@ export type Store = {
   ): { findingId: number; commentId: string }[];
   /**
    * 交接完成:旧评论已在 Forge 上关掉,清掉这条 Finding Identity 上的待办标记。
-   * 键与 `recordContinuation` 同源(文件 + 指纹),整条 Identity 一起清。
+   * 键与 `recordContinuation` 同源(`identityKey`),整条 Identity 一起清。
    */
   completeHandoff(owner: string, repo: string, pullNumber: number, findingId: number): void;
   /**
-   * 回填 disposition(ADR 0006):对这个 pull request 名下、文件与指纹都对上的全部
-   * 历史 finding,以 Forge 的最新状态覆盖已有值——人 resolve 后又 unresolve,库里跟着改。
+   * 回填 disposition(ADR 0006):对这个 pull request 名下、这条更新所指的那条 Finding
+   * Identity 的全部历史 finding(键见 `BACKFILL_TARGET`),以 Forge 的最新状态覆盖已有值
+   * ——人 resolve 后又 unresolve,库里跟着改。
    *
    * 「已修复」不被读回的 resolved 降级成人工处置那一档;「已延续」两个方向都不被覆盖
    * ——那条评论的 resolve 状态说的已经不是这条 Finding 的处置。只放开一格(ADR 0025):
@@ -7293,20 +7312,20 @@ export function openStore(dbPath: string): Store {
     },
 
     pendingAutoDispositions(findingIds) {
-      // 折叠键与 `stageHistory`、`recordAutoDisposition` 同源:文件 + 指纹,算不出指纹的
-      // 行只有它自己一条。PR 范围与 `PULL_REQUEST_SCOPE` 同一句话,只是从传入那一行所在
-      // 的轮次上取,不另要参数。
+      // 折叠键与读侧同源:`identityKey`——承载它的那条 Forge 评论,没有载体的退回
+      // 「文件 + 指纹」。不按裸的「文件 + 指纹」扫:同一处可以有两条 Identity(ADR 0030),
+      // 那样会把另一条的评论也 resolve 掉、另一条的行也记成已修复。PR 范围与
+      // `PULL_REQUEST_SCOPE` 同一句话,只是从传入那一行所在的轮次上取,不另要参数。
       const identity = db.prepare(
         `WITH seed AS (
-           SELECT f.file AS file, COALESCE(f.fingerprint, 'row:' || f.id) AS fp,
+           SELECT ${identityKey("f.")} AS key,
                   run.owner AS owner, run.repo AS repo, run.pull_number AS pull_number
              FROM finding f JOIN review_run run ON run.id = f.run_id
             WHERE f.id = ?
          )
          SELECT finding.id AS id, finding.comment_id AS comment_id
            FROM finding, seed
-          WHERE finding.file = seed.file
-            AND COALESCE(finding.fingerprint, 'row:' || finding.id) = seed.fp
+          WHERE ${identityKey("finding.")} = seed.key
             AND finding.comment_id IS NOT NULL
             AND ${AUTO_DISPOSABLE}
             AND finding.run_id IN (SELECT id FROM review_run
@@ -7407,24 +7426,17 @@ export function openStore(dbPath: string): Store {
                        FROM finding prior WHERE prior.id = ?)
             WHERE run_id = ? AND group_index = ?`,
         ).run(candidate.commentHtmlUrl, candidate.findingId, runId, groupIndex);
-        // 折叠键与 `stageHistory`、自动处置同源:文件 + 指纹。本轮新行的指纹必然与它
-        // 不同——旧指纹在本轮 head 上算不出正是延续的前提,不会被这一笔一起改掉。
-        // 交接未完成的标记与处置值同一笔写(ADR 0025):整条 Identity 一起带上。
+        // 折叠键与读侧同源:`identityKey`——交接的是承载它的那条评论所指的那条 Finding,
+        // 同一处的另一条 Identity 各有各的评论,不跟着这一次交接走(ADR 0030)。本轮新行
+        // 的指纹必然与它不同——旧指纹在本轮 head 上算不出正是延续的前提,不会被这一笔一起
+        // 改掉。交接未完成的标记与处置值同一笔写(ADR 0025):整条 Identity 一起带上。
         db.prepare(
           `UPDATE finding SET disposition = 'continued', handoff_pending = ?
-            WHERE file = (SELECT file FROM finding WHERE id = ?)
-              AND COALESCE(fingerprint, 'row:' || id) =
-                  (SELECT COALESCE(fingerprint, 'row:' || id) FROM finding WHERE id = ?)
+            WHERE ${identityKey("")} =
+                  (SELECT ${identityKey("prior.")} FROM finding prior WHERE prior.id = ?)
               AND disposition IN ('unknown', 'unresolved')
               AND ${PULL_REQUEST_SCOPE}`,
-        ).run(
-          handoffPending ? 1 : null,
-          candidate.findingId,
-          candidate.findingId,
-          owner,
-          repo,
-          pullNumber,
-        );
+        ).run(handoffPending ? 1 : null, candidate.findingId, owner, repo, pullNumber);
         db.exec("COMMIT");
       } catch (error) {
         db.exec("ROLLBACK");
@@ -7449,12 +7461,11 @@ export function openStore(dbPath: string): Store {
     completeHandoff(owner, repo, pullNumber, findingId) {
       db.prepare(
         `UPDATE finding SET handoff_pending = NULL
-          WHERE file = (SELECT file FROM finding WHERE id = ?)
-            AND COALESCE(fingerprint, 'row:' || id) =
-                (SELECT COALESCE(fingerprint, 'row:' || id) FROM finding WHERE id = ?)
+          WHERE ${identityKey("")} =
+                (SELECT ${identityKey("prior.")} FROM finding prior WHERE prior.id = ?)
             AND handoff_pending = 1
             AND ${PULL_REQUEST_SCOPE}`,
-      ).run(findingId, findingId, owner, repo, pullNumber);
+      ).run(findingId, owner, repo, pullNumber);
     },
 
     backfillDispositions(owner, repo, pullNumber, updates) {
@@ -7464,7 +7475,7 @@ export function openStore(dbPath: string): Store {
       // 位置已经在新行上,旧行只剩「已经交接过」这一个事实。
       const withDisposition = db.prepare(
         `UPDATE finding SET disposition = ?, placement = ?
-          WHERE file = ? AND fingerprint = ? AND disposition <> 'continued'
+          WHERE ${BACKFILL_TARGET} AND disposition <> 'continued'
             AND ${PULL_REQUEST_SCOPE}`,
       );
       // 「已修复」在 Forge 上就是一个 resolve,读回的 resolved 因此不能把它降级成人工
@@ -7472,40 +7483,34 @@ export function openStore(dbPath: string): Store {
       // 撤回了处置,以 Forge 最新状态为准,照写。
       const keepAutoDisposed = db.prepare(
         `UPDATE finding SET disposition = ?, placement = ?
-          WHERE file = ? AND fingerprint = ?
+          WHERE ${BACKFILL_TARGET}
             AND disposition <> 'fixed' AND disposition <> 'continued'
             AND ${PULL_REQUEST_SCOPE}`,
       );
       const placementOnly = db.prepare(
         `UPDATE finding SET placement = ?
-          WHERE file = ? AND fingerprint = ? AND ${PULL_REQUEST_SCOPE}`,
+          WHERE ${BACKFILL_TARGET} AND ${PULL_REQUEST_SCOPE}`,
       );
       // 「已延续」只放开这一格(ADR 0025):旧评论读回已 resolve,交接要等的就是这个
       // 结果,待办标记清掉;处置值仍不动。
       const handoffDone = db.prepare(
         `UPDATE finding SET handoff_pending = NULL
-          WHERE file = ? AND fingerprint = ? AND disposition = 'continued'
+          WHERE ${BACKFILL_TARGET} AND disposition = 'continued'
             AND handoff_pending = 1 AND ${PULL_REQUEST_SCOPE}`,
       );
       db.exec("BEGIN");
       try {
         for (const entry of updates) {
+          // 三个参数一组,顺序与 `BACKFILL_TARGET` 里的三个 `?` 对齐。
+          const target = [entry.commentId ?? null, entry.file, entry.fingerprint] as const;
           if (entry.disposition === undefined) {
-            placementOnly.run(entry.placement, entry.file, entry.fingerprint, owner, repo, pullNumber);
+            placementOnly.run(entry.placement, ...target, owner, repo, pullNumber);
           } else {
             const update =
               entry.disposition === "resolved" ? keepAutoDisposed : withDisposition;
-            update.run(
-              entry.disposition,
-              entry.placement,
-              entry.file,
-              entry.fingerprint,
-              owner,
-              repo,
-              pullNumber,
-            );
+            update.run(entry.disposition, entry.placement, ...target, owner, repo, pullNumber);
             if (entry.disposition === "resolved") {
-              handoffDone.run(entry.file, entry.fingerprint, owner, repo, pullNumber);
+              handoffDone.run(...target, owner, repo, pullNumber);
             }
           }
         }

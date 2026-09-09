@@ -672,16 +672,10 @@ test("closed 投递触发全量回填并落 PR 状态,不跑审查", async () =>
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
 
-  // 人 resolve 了那条行级评论,然后 PR 被关闭。
-  const review = h.forge.createdReviews[0]!;
+  // 人 resolve 了那条行级评论,然后 PR 被关闭。喂回去的是发布时读回的那个评论 id:
+  // 它是 Finding Identity 的键(`store.identityKey`,ADR 0030),回填认的就是它。
   h.forge.existingComments.push(
-    ...review.comments.map((comment, index) => ({
-      id: `closed-${index}`,
-      path: comment.path,
-      line: comment.line,
-      body: comment.body,
-      resolved: true,
-    })),
+    ...h.forge.publishedComments.map((comment) => ({ ...comment, resolved: true })),
   );
   assert.equal((await h.deliver("gitea", "closed", { headSha: h.repo.headSha })).status, 200);
   await h.settledAtLeast(2);

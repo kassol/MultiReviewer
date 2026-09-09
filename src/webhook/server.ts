@@ -102,7 +102,6 @@ import {
   findingLineAuthors,
   meetsMinReportSeverity,
   openHistory,
-  priorDispositions,
   RESUME_NOT_VIABLE,
   reviewableFiles,
   runReview,
@@ -1034,7 +1033,7 @@ async function runClosedBackfill(
     forge.listReviewComments(event),
     forge.listReviewBodies(event),
   ]);
-  const updates = backfillUpdates(priorDispositions(comments, bodies));
+  const updates = backfillUpdates(comments, bodies);
   withStore(deps.dbPath, (store) => {
     store.backfillDispositions(event.owner, event.repo, event.number, updates);
     store.markPullRequestState(event.owner, event.repo, event.number, "closed");
