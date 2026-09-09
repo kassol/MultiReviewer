@@ -3,19 +3,18 @@ import { useState } from "react";
 
 import { Cross2Icon } from "@radix-ui/react-icons";
 import {
-  AlertDialog,
   Badge,
   Checkbox,
   Dialog,
-  Flex,
   IconButton,
   Text,
   TextArea,
 } from "@radix-ui/themes";
 
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/theme-button";
 
-import { api, errorText } from "./api.ts";
+import { send } from "./api.ts";
 import {
   FULL_REVIEW_HINT,
   RUN_DIRECTIVE_HINT,
@@ -80,8 +79,7 @@ export function CompleteAction({
 
   const complete = useMutation({
     mutationFn: async () => {
-      const response = await api(`/range-reviews/${rangeReview.id}/complete`, { method: "POST" });
-      if (!response.ok) throw new Error(await errorText(response));
+      await send(`/range-reviews/${rangeReview.id}/complete`, "POST");
     },
     onSuccess: () => refreshRangeReview(queryClient),
     onError: (failure: Error) => setError(failure.message),
@@ -92,8 +90,10 @@ export function CompleteAction({
       {error === null ? null : (
         <p role="alert" className="w-full text-danger">{error}</p>
       )}
-      <AlertDialog.Root open={open} onOpenChange={setOpen}>
-        <AlertDialog.Trigger>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        trigger={
           <Button
             variant="outline"
             color="gray"
@@ -103,35 +103,31 @@ export function CompleteAction({
           >
             {complete.isPending ? "正在标记完成…" : "审查完成"}
           </Button>
-        </AlertDialog.Trigger>
-        <AlertDialog.Content maxWidth="440px" size={{ initial: "2", sm: "3" }}>
-          <AlertDialog.Title size="4" mb="2">
-            将 {rangeReview.owner}/{rangeReview.repo} 的当前范围审查标记为审查完成？
-          </AlertDialog.Title>
-          <AlertDialog.Description size="2" color="gray">
+        }
+        title={`将 ${rangeReview.owner}/${rangeReview.repo} 的当前范围审查标记为审查完成？`}
+        titleSize="4"
+        titleMb="2"
+        maxWidth="440px"
+        description={
+          <>
             承载 Finding 的 Forge pull request 将关闭，两个临时分支将删除，比较项将无法继续推进。
             未处置 Finding 继续按未处置计入处置率；Finding、处置和备注均会保留。
             后续可使用相同 base 发起新的范围审查。
-          </AlertDialog.Description>
-          <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
-            <AlertDialog.Cancel>
-              <Button variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>取消</Button>
-            </AlertDialog.Cancel>
-            <Button
-              variant="solid"
-              color="red"
-              size={{ initial: "4", sm: "2" }}
-              onClick={() => {
-                setError(null);
-                setOpen(false);
-                complete.mutate();
-              }}
-            >
-              审查完成
-            </Button>
-          </Flex>
-        </AlertDialog.Content>
-      </AlertDialog.Root>
+          </>
+        }
+        direction={{ initial: "column-reverse", sm: "row" }}
+        cancelLabel="取消"
+        cancelVariant="soft"
+        confirm={{
+          label: "审查完成",
+          color: "red",
+          onClick: () => {
+            setError(null);
+            setOpen(false);
+            complete.mutate();
+          },
+        }}
+      />
     </>
   );
 }
@@ -210,17 +206,13 @@ function AdvanceDialogContent({
       const trimmed = directive.trim();
       // 只在只复核那一档带上模式(issue #250):接口不带即完整审查,弹窗默认因此要显式带上。
       const mode: RerunMode = fullReview ? "full" : "verdict-only";
-      const response = await api(`/range-reviews/${rangeReview.id}/advance`, {
-        method: "POST",
-        body: JSON.stringify({
-          comparison: comparison?.sha ?? "",
-          // 这一次是从哪条分支或 Tag 选的(issue #234),下次开弹窗就停在这里。
-          ...(comparison?.source === undefined ? {} : { comparisonSource: comparison.source }),
-          ...(trimmed === "" ? {} : { directive: trimmed }),
-          ...(mode === "full" ? {} : { mode }),
-        }),
+      await send(`/range-reviews/${rangeReview.id}/advance`, "POST", {
+        comparison: comparison?.sha ?? "",
+        // 这一次是从哪条分支或 Tag 选的(issue #234),下次开弹窗就停在这里。
+        ...(comparison?.source === undefined ? {} : { comparisonSource: comparison.source }),
+        ...(trimmed === "" ? {} : { directive: trimmed }),
+        ...(mode === "full" ? {} : { mode }),
       });
-      if (!response.ok) throw new Error(await errorText(response));
     },
     onSuccess: () => {
       refreshRangeReview(queryClient);

@@ -12,11 +12,9 @@ import {
   StopwatchIcon,
 } from "@radix-ui/react-icons";
 import {
-  AlertDialog,
   Callout,
   Checkbox,
   Dialog as ThemedDialog,
-  Flex,
   IconButton,
   Skeleton,
   Text,
@@ -26,6 +24,7 @@ import {
 import { Dialog } from "radix-ui";
 
 import { CommitChip } from "@/components/commit-chip";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { MasterListItem } from "@/components/master-list-item";
 import { PageBody } from "@/components/page-body";
@@ -38,7 +37,7 @@ import {
 } from "@/components/use-dialog-return-focus";
 import { localClock, localDay, localMinute } from "@/lib/time";
 
-import { api, errorText, fetchJson } from "./api.ts";
+import { fetchJson, send } from "./api.ts";
 import { AdvanceAction, CompleteAction, type RangeReview } from "./range-review-actions.tsx";
 import {
   FULL_REVIEW_HINT,
@@ -475,14 +474,12 @@ function DisposeBelowThresholdAction({
   const targets = belowThreshold(summary.data?.findings ?? [], minReportSeverity);
 
   const dispose = useMutation({
-    mutationFn: async (text: string | undefined) => {
-      const response = await api(
+    mutationFn: async (text: string | undefined) =>
+      send<{ disposed: number[]; failed: number[] }>(
         `/stages/${encodeURIComponent(stage.stageId)}/findings/dispose-below-threshold`,
-        { method: "POST", body: JSON.stringify(text === undefined ? {} : { note: text }) },
-      );
-      if (!response.ok) throw new Error(await errorText(response));
-      return (await response.json()) as { disposed: number[]; failed: number[] };
-    },
+        "POST",
+        text === undefined ? {} : { note: text },
+      ),
     onSuccess: (result) => {
       setOpen(false);
       // 备注只属于刚发出去的这一批,留在框里下次会被顺手带上。
@@ -502,8 +499,10 @@ function DisposeBelowThresholdAction({
   });
 
   return (
-    <AlertDialog.Root open={open} onOpenChange={setOpen}>
-      <AlertDialog.Trigger>
+    <ConfirmDialog
+      open={open}
+      onOpenChange={setOpen}
+      trigger={
         <Button
           variant="soft"
           color="gray"
@@ -512,47 +511,44 @@ function DisposeBelowThresholdAction({
         >
           处置低于最低报告等级的未处置项
         </Button>
-      </AlertDialog.Trigger>
-      <AlertDialog.Content maxWidth="480px" size={{ initial: "2", sm: "3" }}>
-        <AlertDialog.Title size="4" mb="2">
-          处置这个阶段里 {targets.length} 条低于最低报告等级的未处置项？
-        </AlertDialog.Title>
-        <AlertDialog.Description size="2" color="gray">
+      }
+      title={`处置这个阶段里 ${targets.length} 条低于最低报告等级的未处置项？`}
+      titleSize="4"
+      titleMb="2"
+      maxWidth="480px"
+      description={
+        <>
           这个仓库的最低报告等级是 {minReportSeverity}，低于它的未处置 Finding
           将逐条标记为人工已处置，Forge 上对应的评论同步 resolve。已处置的与不低于该等级的都不动。
-        </AlertDialog.Description>
-        <Text as="label" htmlFor="stage-dispose-batch-note" className="sr-only">
-          处置备注
-        </Text>
-        <TextArea
-          id="stage-dispose-batch-note"
-          size="2"
-          rows={2}
-          maxLength={500}
-          className="mt-3"
-          placeholder="处置备注（可选，只存面板）"
-          value={note}
-          onChange={(event) => setNote(event.target.value)}
-        />
-        <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
-          <AlertDialog.Cancel>
-            <Button variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>取消</Button>
-          </AlertDialog.Cancel>
-          <Button
-            variant="solid"
-            size={{ initial: "4", sm: "2" }}
-            disabled={dispose.isPending}
-            onClick={() => {
-              onFeedback(null);
-              const trimmed = note.trim();
-              dispose.mutate(trimmed === "" ? undefined : trimmed);
-            }}
-          >
-            {dispose.isPending ? "处置中…" : "处置"}
-          </Button>
-        </Flex>
-      </AlertDialog.Content>
-    </AlertDialog.Root>
+        </>
+      }
+      direction={{ initial: "column-reverse", sm: "row" }}
+      cancelLabel="取消"
+      cancelVariant="soft"
+      confirm={{
+        label: dispose.isPending ? "处置中…" : "处置",
+        disabled: dispose.isPending,
+        onClick: () => {
+          onFeedback(null);
+          const trimmed = note.trim();
+          dispose.mutate(trimmed === "" ? undefined : trimmed);
+        },
+      }}
+    >
+      <Text as="label" htmlFor="stage-dispose-batch-note" className="sr-only">
+        处置备注
+      </Text>
+      <TextArea
+        id="stage-dispose-batch-note"
+        size="2"
+        rows={2}
+        maxLength={500}
+        className="mt-3"
+        placeholder="处置备注（可选，只存面板）"
+        value={note}
+        onChange={(event) => setNote(event.target.value)}
+      />
+    </ConfirmDialog>
   );
 }
 

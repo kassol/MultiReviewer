@@ -7,10 +7,11 @@
 import { useBlocker } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircledIcon, CrossCircledIcon } from "@radix-ui/react-icons";
-import { AlertDialog, Callout, Card, Flex, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
+import { Callout, Card, Flex, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
 import { useState } from "react";
 
 import { AuxiliaryModelPicker } from "@/components/auxiliary-model-picker";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { HelpTooltip } from "@/components/help-tooltip";
 import {
   ModelComposer,
@@ -534,40 +535,21 @@ function SettingsForm({ settings }: { settings: Settings }) {
         </Callout.Root>
       )}
 
-      <AlertDialog.Root
+      <ConfirmDialog
         open={blocker.status === "blocked"}
         onOpenChange={(open) => {
           // Esc 与点开外面都走这里:关掉即「继续编辑」,拦截解除但不放行导航。
           if (!open) blocker.reset?.();
         }}
-      >
-        <AlertDialog.Content maxWidth="440px" size={{ initial: "2", sm: "3" }}>
-          <AlertDialog.Title size="4" mb="2">离开审查策略？</AlertDialog.Title>
-          <AlertDialog.Description size="2" color="gray">
-            这一页有未保存的改动。离开会丢弃它们。
-          </AlertDialog.Description>
-          <Flex gap="3" mt="4" justify="end">
-            <Button
-              type="button"
-              variant="outline"
-              color="gray"
-              size={{ initial: "4", sm: "2" }}
-              onClick={() => blocker.reset?.()}
-            >
-              继续编辑
-            </Button>
-            <Button
-              type="button"
-              variant="solid"
-              color="red"
-              size={{ initial: "4", sm: "2" }}
-              onClick={() => blocker.proceed?.()}
-            >
-              丢弃改动
-            </Button>
-          </Flex>
-        </AlertDialog.Content>
-      </AlertDialog.Root>
+        title="离开审查策略？"
+        titleSize="4"
+        titleMb="2"
+        maxWidth="440px"
+        description="这一页有未保存的改动。离开会丢弃它们。"
+        cancelLabel="继续编辑"
+        cancelVariant="outline"
+        confirm={{ label: "丢弃改动", color: "red", onClick: () => blocker.proceed?.() }}
+      />
     </form>
   );
 }

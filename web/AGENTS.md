@@ -8,7 +8,7 @@
 
 - `index.html` — Vite 入口。生产由服务原样返回,深层路由刷新也回它。
 - `vite.config.ts` — 后端端口从仓库根的 `.env` 读(`loadEnv`);dev proxy 把 `/api` 转本机后端。
-- `src/api.ts` — 面板 API 的唯一入口,基址是 `/api`。`apiUrl(path)` 给出同一份绝对路径,供 `EventSource` 这类只收 URL、进不了 `api()` 封装的调用点用。
+- `src/api.ts` — 面板 API 的唯一入口,基址是 `/api`。`apiUrl(path)` 给出同一份绝对路径,供 `EventSource` 这类只收 URL、进不了 `api()` 封装的调用点用。`send<T>(path, method, body?)` 是「发请求 → `!ok` 报错 → 有响应体就当 JSON 解析,204 或空响应体当没有返回值」这个最常见形状的唯一封装,写操作默认用它;需要在 `!response.ok` 判断之前先读一次响应体分支的调用点(比如 409 冲突要带出服务端当前值)不适用,仍手写 `api()` + 判断。
 - `src/model-services.ts` — `GET /model-services` 的共享查询与前端契约。模型服务页、全局模型组合和仓库覆盖只消费这一份按权限裁剪的投影;候选按完整 `provider:model` 标识合并来源并携带服务端可用性结论。模型发现事实逐字段带 `service-interface`、`pi-catalog` 或 `service-target` 来源；实际运行字段还可能来自 `runtime-baseline` 或为 `unknown`。模型页以实际运行规格为主并将字段来源去重成一条说明，发现值有差异时才展开显示。服务详情另读服务级运行能力与组合引用位置,前端不从目录状态重复推断。
 - `src/main.tsx` — 路由与壳:`/login` 同一屏按 session 探测结果在登录与 bootstrap 注册间切换;`/password` 是必须改密页;`shell` 下挂五页(`/` 评审记录 / `/stats` / `/credentials` / `/settings` / `/access`),外加不进导航的阶段详情 `/stages/$stageId`(issue #175:它是从评审记录点进去的一个阶段,不是一张并列的页;路径参数就是 `GET /stages` 行上的阶段标识,里面的斜杠由 TanStack Router 自己编码成一段;顶栏面包屑在这个地址上显示「评审记录」,与页顶那个唯一的返回一致,issue #189、#194——两者都指首页)。登录就落首页,首页就是评审记录(issue #194,`homeFor` 只在还没改过密码时改判 `/password`):评审记录与处置率登录即可进,读得到多少由仓库分配决定(ADR 0018),因此没有按权限分流,也没有零权限说明页。仓库页与 `/repos` 路由已经没了(issue #195):管仓库是首页左栏上的行操作,首页因此还收 `canWrite` 与 `canReadModels` 两格。首页把会话的 `repoIds` 折成一个 `unassigned` 传给 `RunsPage`——一个仓库都没分到的普通用户看到的是一段说明,不是一份空的两栏。`/credentials` 是模型服务总入口;`/credentials/:provider`、`/credentials/:provider/maintenance`、`/credentials/:provider/models` 分别是服务概览、维护与模型的稳定地址。配置流以 `/credentials/add` 为父地址:内置 provider 用 `builtin/:provider/discover|verify`,自定义创建用 `custom/discover|verify`,自定义修改用 `custom/:provider/discover|verify`;自定义子路由同时要求模型写与凭据写。页面组件使用 `React.lazy + Suspense` 按路由分块，模型服务的七个路由入口共用同一个 `credentials.tsx` 动态模块。Router 不设 `basepath`,面板挂在根路径下。壳按 `GET /session` 回来的有效权限先过滤导航再渲染:导航项不写 `permission` 即登录就看得见(评审记录、处置率、修改密码),写了的按它过滤(模型服务、审查策略),访问控制只对系统管理员出现;页面按写权限决定是否渲染保存、刷新、凭据、删除与重跑控件。所有业务页在实例启用前显示同一首次配置检查单;任一成功写请求会立即让状态查询失效并刷新。壳是双层毛玻璃顶栏:上层品牌、面包屑、⌘K 搜索入口与头像菜单,下层 underline 导航(激活项字重 650 + 3px 蓝色圆头指示条,指示条左右各内缩 12px)。导航项右侧只剩一个告警点:模型服务的琥珀点取 `/setup-status` 的 `hasRunnableModelService`(`useNavAlert`)。计数徽章一个都不剩——它此前只做仓库数,而仓库项随 issue #195 离开了导航;评审记录没有总数端点(`/stages` 按 `offset` 翻页,不给总数),不拿第一页条数冒充总数。窄视口收起导航层,改成底部毛玻璃 Tab 栏——设计稿画的是固定五项,实现取前四个有权限的页面加一个「我的」,因为导航项随权限增减,固定五项会让低权限用户看到空位、高权限用户丢掉入口。
 - `src/session.ts` — 当前身份与权限的唯一查询,缓存 `GET /api/session`,并从中取 Forge 的 web 基址(`giteaUrl`)。`pullRequestUrl()` 是拼 pull request 地址的唯一出口:处置只发生在 Forge 上,面板里每一处「还有多少条没处置」都要能凭它点过去,拿不到基址时调用方不渲染链接。未认证的 401 再由壳送去 `/login`,必须改密时统一送 `/password`,页面组件不各自探测。
@@ -30,6 +30,7 @@
 - `src/components/use-dialog-return-focus.ts` — 受控 Dialog / AlertDialog 的焦点返回工具。触发事件发生时记录真实元素与链接地址，关闭时优先恢复当前 DOM 中的同地址链接；触发元素卸载且没有同地址链接时使用调用方提供的稳定入口，不在弹窗打开后的 effect 中推断焦点来源。
 - `src/components/tab-trigger.ts` — Themes `Tabs.Trigger` 的激活指示条类名(3px 圆头、左右各缩 14px,限定 `data-[state=active]`),知识集弹窗、角色页与阶段详情页三处共用(issue #236)。
 - `src/components/theme-button.ts` — Radix Themes `Button` 的集中类型适配出口。`@radix-ui/themes` 3.3.0 在 `exactOptionalPropertyTypes` 下把 `highContrast` 推成 `never`;这里仅把它修正为可选 boolean,导出的仍是原始 Button,不增加组件、行为或 DOM。业务 Button 从此处导入,IconButton 继续直接使用 Themes。主要动作固定为 accent 的 `solid`,**不开 `highContrast`**——三族语义色与 accent 的目标值都落在各自的 11 档上,highContrast 会把颜色推到 12 档,那是 Radix 的默认深色,主按钮会从蓝变回近黑。次要动作使用 `soft` / `outline` / `ghost` 配 `color="gray"`,灰色按钮**保留** `highContrast`(文字才是 `#1d1d1f` 而不是 `#6e6e73`);删除和丢弃使用 `red`;纯图标动作使用 `IconButton` 并提供 `aria-label`。
+- `src/components/confirm-dialog.tsx` — 受控 `AlertDialog` 确认块的唯一实现,`credentials.tsx`、`repo-actions.tsx`、`access-control.tsx`、`settings.tsx`、`stage-detail.tsx`、`range-review-actions.tsx` 共十二处二次确认弹窗共用。标题、说明、正文与按钮外观各处差异很大,因此全部是显式 prop——未传的不出现在传给 Radix 的属性里(`exactOptionalPropertyTypes` 下,显式传 `undefined` 与不传是两回事),不替调用方猜一个默认值;`confirm` 传 `null` 即此刻只能取消(操作进行中不许关闭)。默认确认按钮不自动关闭弹窗,`closesDialog` 才包一层 `AlertDialog.Action`。
 - `src/components/page-body.tsx` — 业务页正文容器。`wide` 与 `form` 两档统一最大宽度、窄屏内边距和页尾留白;主从页只在详情栏复用,不改变分栏结构。
 - `src/components/card-shell.tsx` — 卡壳的唯一实现。圆角随视口在 14 / 12 之间换档:Themes 的 `Card` 把圆角画在伪元素上,只改根元素会让边框与底色的圆角错开,所以壳走 utility + 令牌,壳里的通用件仍是 Themes 组件。模型凭据页与访问控制页共用这一份。
 - `src/components/auxiliary-model-picker.tsx` — 辅助模型那一处引用的编辑控件(issue #303),审查策略页与仓库配置弹窗共用一份:一枚模型 `Select`(候选来自 `GET /model-services` 同一份投影,已选而此刻不可用的那一处照样列出并写明原因)加一枚思考档位 `Select`(只列这个模型支持的那几档,只有「关闭」一档的换一枚「不支持思考档位」Badge,口径与 `ModelComposer` 逐字相同)。`emptyLabel` 给了才多一项「不设」——审查策略页用它说清空着意味着什么,仓库那侧的「跟随全局」由段控件表达。**它只负责选择**,与模型组合编辑器同律,不长写链。
@@ -54,7 +55,7 @@
 - `src/lib/time.ts` — 本地时区时间格式化的唯一实现:`localDay`(年-月-日)、`localClock`(时:分)、拼起来的 `localMinute`,以及只给审查轨迹用的 `localSecond`(时:分:秒)——一轮里几十条事件都落在同一两分钟内,只到分钟会让整列时间戳读成一串相同的数。评审记录、范围审查、访问控制与 diff 视图共用,不各带一份 `padStart`。
 - `src/lib/payload.ts` — 轨迹事件 payload 的读取守卫 `str` / `num`,审查轨迹与知识轨迹共用:每个字段读之前先验一次形状,后端改了字段名或类型时那一格显示成缺失,而不是让整个面板白屏。
 - `src/lib/model-ref.ts` — 一处模型引用的比较规则 `sameModelRef` / `sameModelRefs`。审查策略页与仓库配置弹窗都用它判「表单与基线是不是同一份」:标识相同且思考档位相同才算同一份,组合还比长度与次序,`null` 是「没设 / 跟随全局」只与 `null` 相等。两页此前各写各的比法(一处先转回后端形状再 JSON 比、一处直接 JSON 比),同一份值能在两页得出不同结论;规则收在这里一份,模型组合与辅助模型都走它。单测在 `src/lib/model-ref.test.ts`。
-- `src/lib/utils.ts` — className 合并工具 `cn()`,由 clsx 与 tailwind-merge 实现。
+- `src/lib/utils.ts` — className 合并工具 `cn()`,直接转发给 `tailwind-merge` 的 `twMerge`(它自身已接受嵌套数组与假值,项目里也没有 `cn({a: cond})` 这种对象语法调用,不再经 clsx 一道)。
 - `src/styles.css` — 样式入口与 Radix Theme token 到产品语义 token、Tailwind token 的映射。cascade layer 顺序固定为 `theme < base < radix < components < utilities`;Tailwind 由自身 layer 输出,Radix Themes 样式统一导入 `radix` layer,保证响应式 display utility 能覆盖组件默认 display。其余只接管浏览器原生面,没有页面组件类。一套 `--v8-*` 原始令牌(表面、文字四档、边框、accent 蓝与四档 tint、iOS systemFill 叠加、语义色、毛玻璃材质、三层阴影、七档圆角、三套字体栈)是全站唯一的颜色事实来源;`.radix-themes` 块把 Radix 真正被组件消费的那些档位(gray 1–12、accent 1–12、green/amber/red 的 3/9/10/11、focus、radius 1–6、font-size 1–9、font-weight、shadow 1–6)拉到这些值上,组件因此不用逐个改样式;`@theme inline` 再把同一批令牌接进 Tailwind。字号阶梯十一档(xs 11 / sm 11.5 / base 12 / md 13 / lg 13.5 / xl 14 / 2xl 16 / 3xl 18 / 4xl 21 / 5xl 25 / 6xl 29,body 就是 lg 13.5)。本文件的声明不进任何 layer——未分层样式优先级高于所有 layer,天然盖过 `layer(radix)`,不需要 `!important`。其余只接管选区、光标、滚动条与表格数字这些浏览器原生面,没有页面组件类。
 
 ## 模块规范
@@ -87,7 +88,7 @@
 
 不依赖仓库里任何服务端代码;与服务端的契约只有一条:`/api` 下的 JSON 端点。
 
-当前构建期依赖是 `@radix-ui/themes`、`@radix-ui/react-icons`、Tailwind v4、`radix-ui` 单包、cmdk、react-day-picker、clsx 与 tailwind-merge。业务图标只从 `@radix-ui/react-icons` 导入；产品标记与 favicon 保留自绘 SVG。cmdk 与 react-day-picker 只在统一产品组件仍需要对应行为时保留。`@/` 别名在 `tsconfig.json` 的 `paths` 与 `vite.config.ts` 的 `resolve.alias` 各配一次,两处要一起改。
+当前构建期依赖是 `@radix-ui/themes`、`@radix-ui/react-icons`、Tailwind v4、`radix-ui` 单包、cmdk、react-day-picker 与 tailwind-merge。业务图标只从 `@radix-ui/react-icons` 导入；产品标记与 favicon 保留自绘 SVG。cmdk 与 react-day-picker 只在统一产品组件仍需要对应行为时保留。`@/` 别名在 `tsconfig.json` 的 `paths` 与 `vite.config.ts` 的 `resolve.alias` 各配一次,两处要一起改。
 
 ## 常用命令
 

@@ -137,28 +137,14 @@
   --radius: var(--v8-radius-control);
   --background: var(--v8-bg);
   --foreground: var(--v8-text);
-  --card: var(--v8-surface);
-  --card-foreground: var(--v8-text);
   --popover: var(--v8-surface);
-  --popover-foreground: var(--v8-text);
-  --muted: var(--v8-surface-sunken);
   --muted-foreground: var(--v8-text-muted);
-  --border: var(--v8-border-line);
   --input: var(--v8-border-input);
   --chrome: var(--v8-chrome-bg);
   --primary: var(--v8-accent);
-  --primary-foreground: #ffffff;
-  --secondary: var(--v8-fill);
-  --secondary-foreground: var(--v8-text);
-  --accent: var(--v8-accent-tint);
-  --accent-foreground: var(--v8-accent);
   --ring: var(--v8-accent);
-  --destructive: var(--v8-danger);
-  --destructive-foreground: #ffffff;
   --success: var(--v8-success);
-  --success-foreground: #ffffff;
   --warning: var(--v8-warning);
-  --warning-foreground: #ffffff;
 }
 
 /*
@@ -308,27 +294,13 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
-  --color-border: var(--border);
   --color-input: var(--input);
   --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
   --color-ring: var(--ring);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
   --color-success: var(--success);
-  --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
-  --color-warning-foreground: var(--warning-foreground);
   --color-chrome: var(--chrome);
 
   /* v8 令牌进 Tailwind:页面写 bg-surface / text-muted / border-line 即可,不再有字面值。 */
