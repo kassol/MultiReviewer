@@ -24,9 +24,11 @@ export function seedReviewRule(
   repoId: number,
   input: ReviewRuleInput,
   origin = "manual",
-): number {
+): number | undefined {
   const db = new DatabaseSync(dbPath);
   try {
+    // 仓库不存在回 undefined,与原 `Store.addReviewRule` 同律,用例里那几处 notEqual 断言才有意义。
+    if (db.prepare("SELECT 1 FROM repo WHERE id = ?").get(repoId) === undefined) return undefined;
     const current = db
       .prepare("SELECT MAX(version) AS version FROM rule_set_version WHERE repo_id = ?")
       .get(repoId)?.["version"];

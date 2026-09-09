@@ -979,7 +979,7 @@ function BoundTargets({ targets }: { targets: readonly { api: string; baseUrl: s
       </Text>
       <ul className="flex flex-col gap-1 rounded-lg border border-overlay-line px-4 py-2">
         {targets.map((target) => (
-          <li key={`${target.api} ${target.baseUrl}`} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-base">
+          <li key={`${target.api}\0${target.baseUrl}`} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-base">
             <MonoValue value={target.baseUrl} />
             <span className="text-sm text-text-muted">{protocolLabel(target.api)}</span>
           </li>
@@ -1474,7 +1474,7 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
           ) : (
             <InfoGrid>
               {service.targets.map((target) => (
-                <InfoField key={`${target.api} ${target.baseUrl}`} label="调用目标">
+                <InfoField key={`${target.api}\0${target.baseUrl}`} label="调用目标">
                   <span className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
                     <MonoValue value={target.baseUrl} />
                     <span className="text-sm text-text-muted">{protocolLabel(target.api)}</span>
