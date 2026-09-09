@@ -29,6 +29,7 @@ import { scriptedReviewer } from "./support/memory-forge.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
+  seedAvailableModelService,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -275,11 +276,9 @@ function seedProposals(dbPath: string, inputs: readonly RuleProposalInput[]): nu
   }
 }
 
+/** 发起一次整理。请求体是空对象:用哪个模型由服务端解析(issue #303)。 */
 function launch(h: PanelHarness, cookie: string): Promise<Response> {
-  return send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-consolidation`, {
-    provider: "test",
-    model: "global-model",
-  });
+  return send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-consolidation`, {});
 }
 
 test("合并落地:保留 id 最小的一行,其余删除、附注全部并入、陈述覆盖", () => {
@@ -654,8 +653,6 @@ test("整理失败留原因,与探索互斥回 409", async () => {
   assert.match(((await busy.json()) as { error: string }).error, /已经有一次知识整理在跑/);
   const exploration = await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-exploration`, {
     baseline: h.repo.baseSha,
-    provider: "test",
-    model: "global-model",
   });
   assert.equal(exploration.status, 409);
   assert.match(((await exploration.json()) as { error: string }).error, /已经有一次知识整理在跑/);
@@ -664,7 +661,42 @@ test("整理失败留原因,与探索互斥回 409", async () => {
   assert.equal((await ruleSet(h, cookie)).consolidation?.state, "completed");
 });
 
-test("没有 knowledge:write 的人发起不了整理,分配外 404,坏 body 400", async () => {
+test("整理用生效的辅助模型;它跑不了时发起回 409,指向审查策略与仓库配置", async () => {
+  const agent = scriptedRuleAgent(() => ({ actions: [] }));
+  const { h, cookie } = await consolidatingHarness(agent);
+  seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
+
+  // 审查策略里设一处辅助模型:发起体不带模型,服务端解析出来的就是它。
+  const settings = (await (await h.api("GET", "/settings")).json()) as Record<string, unknown>;
+  const { version, defaults: _defaults, ...rest } = settings;
+  assert.equal(
+    (await h.api("PUT", "/settings", {
+      ...rest,
+      auxiliaryModel: { provider: "think", model: "deep", thinkingLevel: "medium" },
+      expectedVersion: version,
+    })).status,
+    200,
+  );
+
+  assert.equal((await launch(h, cookie)).status, 202);
+  await h.consolidationsAtLeast(1);
+  const done = (await ruleSet(h, cookie)).consolidation;
+  assert.equal(done?.model, "think:deep");
+  assert.equal(done?.thinkingLevel, "medium");
+  assert.equal(agent.calls.length, 1);
+
+  // 这一处模型跑不起来之后再发起:整次不做,那句话说得出去哪里改。
+  assert.equal(
+    (await h.api("DELETE", "/model-services/think/credential", { expectedVersion: 1 })).status,
+    200,
+  );
+  const blocked = await launch(h, cookie);
+  assert.equal(blocked.status, 409);
+  assert.match(((await blocked.json()) as { error: string }).error, /审查策略/);
+  assert.equal(agent.calls.length, 1);
+});
+
+test("没有 knowledge:write 的人发起不了整理,分配外 404,带模型字段的 body 400", async () => {
   const agent = scriptedRuleAgent(() => ({ actions: [] }));
   const { h, cookie } = await consolidatingHarness(agent);
   const path = `/repos/${GITEA_REPO.id}/rule-consolidation`;
@@ -672,24 +704,27 @@ test("没有 knowledge:write 的人发起不了整理,分配外 404,坏 body 400
   const reader = await scopedUser(h, "consolidation-reader", [GITEA_REPO.id]);
   assert.equal((await get(h, reader, `/repos/${GITEA_REPO.id}/rules`)).status, 200);
   assert.equal(
-    (await send(h, reader, "POST", path, { provider: "test", model: "global-model" })).status,
+    (await send(h, reader, "POST", path, {})).status,
     403,
   );
 
   const outsider = await scopedUser(h, "consolidation-outsider", [], ["knowledge:write"]);
   assert.equal(
-    (await send(h, outsider, "POST", path, { provider: "test", model: "global-model" })).status,
+    (await send(h, outsider, "POST", path, {})).status,
     404,
   );
 
+  // 发起体不再带模型:带了哪一项都 400——模型由服务端按辅助模型解析(issue #303)。
   for (const body of [
-    {},
     { provider: "test" },
-    { provider: "nope", model: "missing-model" },
-    { provider: "test", model: "global-model", thinkingLevel: "turbo" },
+    { model: "global-model" },
+    { thinkingLevel: "medium" },
+    [],
   ]) {
     assert.equal((await send(h, cookie, "POST", path, body)).status, 400, JSON.stringify(body));
   }
+  // 列可选模型的那个端点一并删掉。
+  assert.equal((await get(h, cookie, "/rule-models")).status, 404);
   assert.equal(agent.calls.length, 0);
 });
 

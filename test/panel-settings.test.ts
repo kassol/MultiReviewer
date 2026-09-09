@@ -34,6 +34,7 @@ after(() => {
 
 type SettingsBody = {
   reviewers: { provider: string; model: string; thinkingLevel?: string }[];
+  auxiliaryModel: { provider: string; model: string; thinkingLevel?: string } | null;
   maxChangedLinesPerBatch: number | null;
   maxParallelBatches: number | null;
   maxFilesPerBatch: number | null;
@@ -52,8 +53,12 @@ const DEFAULTS = {
   minReportSeverity: "P2",
 };
 
-/** 四项上限与报告等级都没配的那一份:值是 null,即「跟随系统默认」。 */
+/**
+ * 辅助模型、四项上限与报告等级都没配的那一份:值是 null。上限与等级即「跟随系统默认」,
+ * 辅助模型即「退回生效模型组合的第一个」(issue #303)。
+ */
 const UNSET_SETTINGS = {
+  auxiliaryModel: null,
   maxChangedLinesPerBatch: null,
   maxParallelBatches: null,
   maxFilesPerBatch: null,
@@ -155,6 +160,7 @@ test("四项上限与报告等级一次写全,留空即回系统默认", async (
     const stored = store.getGlobalSettings();
     assert.deepEqual(
       {
+        auxiliaryModel: stored.auxiliaryModelJson,
         maxChangedLinesPerBatch: stored.maxChangedLinesPerBatch,
         maxParallelBatches: stored.maxParallelBatches,
         maxFilesPerBatch: stored.maxFilesPerBatch,
@@ -177,6 +183,7 @@ test("四项上限与报告等级一次写全,留空即回系统默认", async (
   assert.equal(saved.status, 200);
   assert.deepEqual(await saved.json(), {
     reviewers: SEEDED_REVIEWERS,
+    auxiliaryModel: null,
     maxChangedLinesPerBatch: 700,
     maxParallelBatches: 5,
     maxFilesPerBatch: 12,
@@ -191,6 +198,7 @@ test("四项上限与报告等级一次写全,留空即回系统默认", async (
   assert.equal(cleared.status, 200);
   assert.deepEqual(await cleared.json(), {
     reviewers: SEEDED_REVIEWERS,
+    auxiliaryModel: null,
     maxChangedLinesPerBatch: 700,
     maxParallelBatches: null,
     maxFilesPerBatch: 12,
@@ -231,6 +239,7 @@ test("带逐项版本键的旧库开起来:整页只剩一个版本,旧键消失
     try {
       assert.deepEqual(store.getGlobalSettings(), {
         reviewersJson: JSON.stringify(SEEDED_REVIEWERS),
+        auxiliaryModelJson: null,
         maxChangedLinesPerBatch: 777,
         maxParallelBatches: null,
         maxFilesPerBatch: null,
@@ -582,6 +591,7 @@ test("全局组合与每仓库覆盖都拒绝新的空组合", async () => {
   const { repoId } = (await register.json()) as { repoId: number };
   const override = await h.api("PUT", `/repos/${repoId}/settings`, {
     reviewers: [],
+    auxiliaryModel: null,
     minReportSeverity: null,
     expectedVersion: 0,
   });
@@ -738,6 +748,7 @@ test("思考档位随模型组合与仓库覆盖一起读写,取值不认得或�
   assert.equal(
     (await h.api("PUT", `/repos/${repoId}/settings`, {
       reviewers: [{ provider: "test", model: "second-model", thinkingLevel: "low" }],
+      auxiliaryModel: null,
       minReportSeverity: null,
       expectedVersion: 0,
     })).status,
@@ -776,4 +787,42 @@ test("思考档位随模型组合与仓库覆盖一起读写,取值不认得或�
     })).status,
     200,
   );
+});
+
+test("辅助模型随整页读写:不可用模型与它不支持的档位被拒,整份一项都不写", async () => {
+  const h = await startPanelHarness(cleanups);
+  seedAvailableModelService(h, "test", ["global-model"]);
+  seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
+
+  // 辅助模型与别的项一次写完:它是整份对象里的一项,没有自己的保存按钮。
+  const saved = await putSettings(h, {
+    auxiliaryModel: { provider: "think", model: "deep", thinkingLevel: "medium" },
+    maxParallelBatches: 5,
+  });
+  assert.equal(saved.status, 200);
+  const stored = { provider: "think", model: "deep", thinkingLevel: "medium" };
+  assert.deepEqual((await readSettings(h)).auxiliaryModel, stored);
+
+  // 不可用模型整份拒收:同一次提交里的上限也不落。
+  const gone = await putSettings(h, {
+    auxiliaryModel: { provider: "vanished-service", model: "missing" },
+    maxParallelBatches: 6,
+  });
+  assert.equal(gone.status, 400);
+  assert.match(((await gone.json()) as { error: string }).error, /辅助模型/);
+
+  // 档位判据与模型组合同一套:这个模型只支持「关闭」,别的档一律拒。
+  const level = await putSettings(h, {
+    auxiliaryModel: { provider: "test", model: "global-model", thinkingLevel: "high" },
+  });
+  assert.equal(level.status, 400);
+  assert.match(((await level.json()) as { error: string }).error, /不支持思考档位 high/);
+
+  const after = await readSettings(h);
+  assert.deepEqual(after.auxiliaryModel, stored, "两次拒收之后辅助模型原样");
+  assert.equal(after.maxParallelBatches, 5, "被拒的那一次上限也没落");
+
+  // 清空即回到「跟随生效模型组合的第一个」。
+  assert.equal((await putSettings(h, { auxiliaryModel: null })).status, 200);
+  assert.equal((await readSettings(h)).auxiliaryModel, null);
 });

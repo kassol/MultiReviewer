@@ -133,6 +133,7 @@ import {
   type RangeReviewRecord,
   type RepoKey,
   type RepoSummary,
+  type ResolvedAuxiliaryModel,
   type ReviewRuleRecord,
   type RuleDraftItem,
   type RuleIntent,
@@ -1443,11 +1444,13 @@ function listRepos(res: ServerResponse, deps: WebhookServerDeps, assignment: Rep
   return sendJson(
     res,
     200,
-    rows.map(({ reviewersJson, ...row }) => ({
+    rows.map(({ reviewersJson, auxiliaryModelJson, ...row }) => ({
       ...row,
       // 覆盖以解析后的形状交给前端,编辑时原样回传 PUT。坏 JSON(直接写库的遗留)
       // 按 null 透出——一行坏数据不该把整个列表拖成 500,投递链对同一列也是这个态度。
       reviewers: reviewersJson === null ? null : safeParse(reviewersJson),
+      // 辅助模型覆盖(issue #303)同形:null 即跟随全局。
+      auxiliaryModel: auxiliaryModelJson === null ? null : safeParse(auxiliaryModelJson),
       // 全局那一档跟着每一行一起给(issue #273):配置弹窗要显示「跟随全局」跟的是什么,
       // 而看得到仓库的人不一定读得到审查策略,让它自己再请求一次会撞权限。
       globalMinReportSeverity: global,
@@ -2122,6 +2125,15 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     handler: ({ res, deps }, match) => handleRuleSet(res, deps, Number(match![1])),
   },
   {
+    // 生效辅助模型的只读投影(issue #303)与知识集读侧同一格:看得到这个仓库知识任务的
+    // 人就该看得到它将用哪一处模型。
+    method: "GET",
+    pattern: /^\/repos\/(\d+)\/auxiliary-model$/,
+    access: "authenticated-only",
+    assignment: { by: "repo", group: 1 },
+    handler: ({ res, deps }, match) => handleAuxiliaryModel(res, deps, Number(match![1])),
+  },
+  {
     // 知识轨迹(issue #214)与知识集读侧同一格:能看这个仓库的知识集就能看它是怎么来的。
     method: "GET",
     pattern: /^\/repos\/(\d+)\/rule-traces\/(\d+)$/,
@@ -2235,13 +2247,6 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     assignment: { by: "repo", group: 1 },
     handler: ({ req, res, deps }, match) =>
       handleDecideRuleProposals(req, res, deps, Number(match![1]), false),
-  },
-  {
-    // 发起探索时可选的那些模型。可用性判据与全局模型组合读的是同一份投影。
-    method: "GET",
-    pattern: "/rule-models",
-    access: "knowledge:write",
-    handler: ({ res, deps }) => handleRuleModels(res, deps),
   },
   {
     method: "GET",
@@ -2459,14 +2464,17 @@ const BATCH_LIMIT_FIELDS = Object.keys(BATCH_LIMIT_DEFAULTS) as BatchLimitField[
 const MIN_REPORT_SEVERITY_FIELD = "minReportSeverity";
 
 /**
- * 审查策略读回来的整份对象(issue #301):模型组合、四项上限、最低报告等级与整页那一个
- * 版本号。上限与等级没配即回 null——「跟随系统默认」这件事由值是不是空来表达,不再另存
- * 一份来源标记;默认值随 `defaults` 一起给,面板拿它当占位符。
+ * 审查策略读回来的整份对象(issue #301):模型组合、辅助模型、四项上限、最低报告等级与
+ * 整页那一个版本号。上限与等级没配即回 null——「跟随系统默认」这件事由值是不是空来表达,
+ * 不再另存一份来源标记;默认值随 `defaults` 一起给,面板拿它当占位符。辅助模型没配同样
+ * 回 null,面板据此显示「跟随模型组合第一个」(issue #303)。
  */
 function settingsBody(deps: WebhookServerDeps): Record<string, unknown> {
   const settings = globalSettings(deps);
   return {
     reviewers: settings.reviewers,
+    auxiliaryModel:
+      settings.auxiliaryModelJson === null ? null : safeParse(settings.auxiliaryModelJson),
     ...Object.fromEntries(BATCH_LIMIT_FIELDS.map((field) => [field, settings[field]])),
     minReportSeverity: settings.minReportSeverity,
     version: settings.version,
@@ -2509,6 +2517,14 @@ async function handlePutSettings(
   const parsed = parseReviewerSpecs(payload.reviewers, GLOBAL_REVIEWERS_CONTEXT);
   if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
 
+  // 辅助模型是整份对象里的一项(issue #303):缺席或 null 即不设,那时解析退回生效组合
+  // 的第一个。
+  const auxiliary = parseAuxiliaryModel(
+    payload["auxiliaryModel"],
+    GLOBAL_AUXILIARY_MODEL_CONTEXT,
+  );
+  if (!auxiliary.ok) return sendJson(res, 400, { error: auxiliary.error });
+
   const limits: Record<BatchLimitField, number | null> = {
     maxChangedLinesPerBatch: null,
     maxParallelBatches: null,
@@ -2539,14 +2555,28 @@ async function handlePutSettings(
   // 时判**——失效模型门禁的是组合本身的写入,组合原样未动的那一次没有引入新的不可用
   // 引用,不该连坐同一份提交里的上限与报告等级(判据与 `replaceGlobalSettings` 同一条)。
   // 非空与去重那两道由 `parseReviewerSpecs` 每次都判。
+  const stored = withStore(deps.dbPath, (store) => store.getGlobalSettings());
   if (
-    parsed.reviewersJson !== withStore(deps.dbPath, (store) => store.getGlobalSettings().reviewersJson) &&
+    parsed.reviewersJson !== stored.reviewersJson &&
     !await ensureModelCombinationAvailable(res, deps, parsed.reviewers, GLOBAL_REVIEWERS_CONTEXT)
+  ) return;
+  // 辅助模型同一条口径:换了才判。判据与组合共用一份——可用性与「这个模型支持哪几档」
+  // 都在 `ensureModelCombinationAvailable` 里,不再另写一套。
+  if (
+    auxiliary.json !== stored.auxiliaryModelJson &&
+    auxiliary.spec !== null &&
+    !await ensureModelCombinationAvailable(
+      res,
+      deps,
+      [auxiliary.spec],
+      GLOBAL_AUXILIARY_MODEL_CONTEXT,
+    )
   ) return;
 
   const saved = withStore(deps.dbPath, (store) =>
     store.replaceGlobalSettings(payload.expectedVersion as number, {
       reviewersJson: parsed.reviewersJson,
+      auxiliaryModelJson: auxiliary.json,
       ...limits,
       minReportSeverity: severity as Severity | null,
     })
@@ -4580,6 +4610,46 @@ function parseReviewerSpecs(
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/** 审查策略里那一处辅助模型在报错里的名字。仓库那一处按 owner/repo 各说各的。 */
+const GLOBAL_AUXILIARY_MODEL_CONTEXT = "辅助模型";
+
+/**
+ * 解析并校验辅助模型那一项(issue #303)。形状是一处模型引用或 null,判据与模型组合里的
+ * 一项逐字相同(provider 与 model 非空、思考档位取值认得);当前可用性随后由
+ * `ensureModelCombinationAvailable` 与组合共用同一次投影判。
+ */
+function parseAuxiliaryModel(
+  value: unknown,
+  context: string,
+):
+  | { ok: true; spec: ReviewerSpec | null; json: string | null }
+  | { ok: false; error: string } {
+  if (value === null || value === undefined) return { ok: true, spec: null, json: null };
+  if (typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, error: `${context}要是一处模型引用,或 null(不设)。` };
+  }
+  const entry = value as Record<string, unknown>;
+  for (const field of ["provider", "model"] as const) {
+    if (typeof entry[field] !== "string" || entry[field] === "") {
+      return { ok: false, error: `${context}没有 ${field}。` };
+    }
+  }
+  const level = entry["thinkingLevel"];
+  if (level !== undefined && !THINKING_LEVELS.includes(level as ThinkingLevel)) {
+    return {
+      ok: false,
+      error:
+        `${context}的思考档位不认得:${String(level)},只收 ${THINKING_LEVELS.join(" / ")}。`,
+    };
+  }
+  const spec: ReviewerSpec = {
+    provider: entry["provider"] as string,
+    model: entry["model"] as string,
+    ...(level === undefined ? {} : { thinkingLevel: level as ThinkingLevel }),
+  };
+  return { ok: true, spec, json: JSON.stringify(spec) };
 }
 
 /** 时间流一页的条数。翻页用 id 游标,不用 offset——历史只增不删,游标不会漂。 */
@@ -6657,26 +6727,6 @@ function handleRetireRule(
 const NO_DRAFT_ITEM = "这条规则不在这个仓库的知识草案里";
 
 /**
- * 发起基点探索时可选的模型(issue #205)。可用性判据与全局模型组合、审查配置就绪读的
- * 是同一份投影,面板因此不必自己判「这个模型此刻能不能跑」。
- */
-async function handleRuleModels(res: ServerResponse, deps: WebhookServerDeps): Promise<void> {
-  const projection = await projectCurrentModelServices(deps);
-  return sendJson(res, 200, {
-    models: projection.candidates
-      .filter((candidate) => candidate.available)
-      .map((candidate) => ({
-        identity: candidate.identity,
-        provider: candidate.provider,
-        model: candidate.id,
-        // 发起表单只列这几档(CONTEXT.md 思考档位):列出模型不支持的档位,人选了之后
-        // Pi 会 clamp 成别的一档,跑的就不是他选的那一档。
-        thinkingLevels: candidate.runtime.thinkingLevels,
-      })),
-  });
-}
-
-/**
  * agent 产出到知识草案与修订提案之间的那道收窄(ADR 0019、ADR 0020)。四条链路共用它,
  * 两型同一套判据:陈述去掉首尾空白后非空,且不超过 `AGENT_STATEMENT_LIMIT`。
  *
@@ -7974,57 +8024,140 @@ function handleDeleteRevisionIntent(
   return sendJson(res, 200, { id: intentId });
 }
 
+/** 三处都给不出辅助模型时那句话(issue #303)。两处配置都指出来,人才知道去哪里设。 */
+const NO_AUXILIARY_MODEL =
+  "这个仓库还没有可用的辅助模型:审查策略里没有设,生效的模型组合也是空的。" +
+  "到审查策略设一处辅助模型或配好模型组合,也可以在仓库配置里给这个仓库单独设一处。";
+
+/** 解析得出、却跑不起来时那句话。前半截是运行侧给的原因,后半截说去哪里换。 */
+const auxiliaryModelBlocked = (reason: string): string =>
+  `${reason}到审查策略换一处辅助模型,或在仓库配置里给这个仓库单独设一处。`;
+
 /**
- * 基点探索与知识整理两条发起链路共用的前置校验(issue #284):思考档位取值、仓库在不在
- * 注册表、模型物化,以及这个模型支不支持人选的那一档。四样在两侧逐字相同,判据只此一处
- * ——抄第二遍就会在其中一处漏掉一道。回 undefined 即这里已经回过响应,调用方直接返回。
+ * 这个仓库生效的辅助模型此刻跑不跑得起来(CONTEXT.md 辅助模型,ADR 0029,issue #303)。
+ *
+ * 解析那一步只此一处(`store.resolveAuxiliaryModel`);跑不跑得起来与 Review Run 同一个
+ * 判据(`materializeReviewerPlans` 加 `supportedThinkingLevels`)——面板只读投影与两条
+ * 发起链路读的因此是同一份结论,面板说得动的那一次发起就一定收得下。
+ *
+ * 仓库不在注册表里回 undefined;选不出与跑不了各带一句 `reason`,`plan` 为 null。
+ */
+async function resolveAuxiliaryModelPlan(
+  deps: WebhookServerDeps,
+  repoId: number,
+): Promise<
+  | undefined
+  | {
+    spec: ReviewerSpec | null;
+    source: ResolvedAuxiliaryModel["source"] | null;
+    plan: ReviewerRuntimePlan | null;
+    reason: string | null;
+  }
+> {
+  const resolved = withStore(deps.dbPath, (store) =>
+    store.getRepo(repoId) === undefined ? undefined : store.resolveAuxiliaryModel(repoId),
+  );
+  if (resolved === undefined) return undefined;
+  if (resolved === null) {
+    return { spec: null, source: null, plan: null, reason: NO_AUXILIARY_MODEL };
+  }
+  const [plan] = await materializeReviewerPlans(
+    deps,
+    withStore(deps.dbPath, (store) => store.listModelServices()),
+    [resolved.spec],
+  );
+  const identity = modelIdentity(resolved.spec);
+  if (plan === undefined || plan.failure !== null || plan.runtimeModel === null) {
+    return {
+      spec: resolved.spec,
+      source: resolved.source,
+      plan: null,
+      reason: auxiliaryModelBlocked(plan?.failure ?? `辅助模型 ${identity} 不可用。`),
+    };
+  }
+  // 档位与模型组合那侧同一个判据(CONTEXT.md 思考档位):这个模型不支持的那一档,Pi 会
+  // clamp 成相邻可用档,跑的就不是人设的那一档。
+  const levels = supportedThinkingLevels(plan.runtimeModel);
+  const picked = resolved.spec.thinkingLevel ?? "off";
+  if (!levels.includes(picked)) {
+    return {
+      spec: resolved.spec,
+      source: resolved.source,
+      plan: null,
+      reason: auxiliaryModelBlocked(
+        `${identity} 不支持思考档位 ${picked},它支持的是 ${levels.join(" / ")}。`,
+      ),
+    };
+  }
+  return { spec: resolved.spec, source: resolved.source, plan, reason: null };
+}
+
+/**
+ * 生效辅助模型的只读投影(issue #303)。知识集弹窗拿它显示「将使用哪一处、来源是哪一档」,
+ * 跑不了时据它禁用发起按钮并说明去哪里改。**登录加仓库分配即可读**(与知识集读侧同一格,
+ * ADR 0019):看得到这个仓库的知识任务的人就该看得到它将用哪个模型。
+ */
+async function handleAuxiliaryModel(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+): Promise<void> {
+  const resolved = await resolveAuxiliaryModelPlan(deps, repoId);
+  if (resolved === undefined) {
+    return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+  }
+  return sendJson(res, 200, {
+    identity: resolved.spec === null ? null : modelIdentity(resolved.spec),
+    thinkingLevel: resolved.spec?.thinkingLevel ?? null,
+    source: resolved.source,
+    available: resolved.reason === null,
+    unavailableReason: resolved.reason,
+  });
+}
+
+/**
+ * 发起体不再带模型(issue #303):带了 provider / model / thinkingLevel 任一项即 400。
+ * **拦下而不是忽略**——静默吃掉的话,发起的人以为自己选了模型,跑的却是别的那一处。
+ * 回 true 即这里已经回过响应,调用方直接返回。
+ */
+function rejectRuleTaskModelFields(
+  res: ServerResponse,
+  payload: Record<string, unknown>,
+): boolean {
+  const carried = ["provider", "model", "thinkingLevel"].filter((field) =>
+    Object.hasOwn(payload, field),
+  );
+  if (carried.length === 0) return false;
+  sendJson(res, 400, {
+    error:
+      `发起时不再选模型,body 里不收 ${carried.join(" / ")};` +
+      "用的是这个仓库生效的辅助模型,到审查策略或仓库配置里改它。",
+  });
+  return true;
+}
+
+/**
+ * 基点探索与知识整理两条发起链路共用的前置校验(issue #284、#303):仓库在不在注册表,
+ * 以及这个仓库生效的辅助模型此刻跑不跑得起来。两侧逐字相同,判据只此一处——抄第二遍就会
+ * 在其中一处漏掉一道。回 undefined 即这里已经回过响应,调用方直接返回。
  */
 async function prepareRuleTaskLaunch(
   res: ServerResponse,
   deps: WebhookServerDeps,
   repoId: number,
-  payload: { provider: string; model: string; thinkingLevel?: unknown },
 ): Promise<{ repo: RepoRef; spec: ReviewerSpec; plan: ReviewerRuntimePlan } | undefined> {
-  // 档位与模型组合那一侧同一套取值(CONTEXT.md 思考档位),不另起判据。
-  const level = payload.thinkingLevel;
-  if (level !== undefined && !THINKING_LEVELS.includes(level as ThinkingLevel)) {
-    sendJson(res, 400, {
-      error: `思考档位不认得:${String(level)},只收 ${THINKING_LEVELS.join(" / ")}。`,
-    });
-    return undefined;
-  }
-  const spec: ReviewerSpec = {
-    provider: payload.provider,
-    model: payload.model,
-    ...(level === undefined ? {} : { thinkingLevel: level as ThinkingLevel }),
-  };
-
   const repo = withStore(deps.dbPath, (store) => store.getRepo(repoId));
   if (repo === undefined) {
     sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
     return undefined;
   }
-
-  const [plan] = await materializeReviewerPlans(
-    deps,
-    withStore(deps.dbPath, (store) => store.listModelServices()),
-    [spec],
-  );
-  if (plan === undefined || plan.failure !== null || plan.runtimeModel === null) {
-    sendJson(res, 400, { error: plan?.failure ?? `模型 ${modelIdentity(spec)} 不可用` });
+  const resolved = await resolveAuxiliaryModelPlan(deps, repoId);
+  if (resolved === undefined || resolved.plan === null) {
+    // 选不出与跑不了同一档回执:两种都是「这一次发起必然失败」,那句话说得出去哪里改。
+    sendJson(res, 409, { error: resolved?.reason ?? NO_AUXILIARY_MODEL });
     return undefined;
   }
-  // 档位与模型组合那侧同一个判据(CONTEXT.md 思考档位):选了模型不支持的那一档,Pi 会
-  // clamp 成相邻可用档,跑的就不是人选的那一档。
-  const levels = supportedThinkingLevels(plan.runtimeModel);
-  const picked = spec.thinkingLevel ?? "off";
-  if (!levels.includes(picked)) {
-    sendJson(res, 400, {
-      error: `${modelIdentity(spec)} 不支持思考档位 ${picked}，它支持的是 ${levels.join(" / ")}。`,
-    });
-    return undefined;
-  }
-  return { repo, spec, plan };
+  return { repo, spec: resolved.plan.spec, plan: resolved.plan };
 }
 
 /**
@@ -8053,34 +8186,23 @@ async function handleStartRuleExploration(
   deps: WebhookServerDeps,
   repoId: number,
 ): Promise<void> {
-  const payload = await readJson<
-    { baseline?: unknown; provider?: unknown; model?: unknown; thinkingLevel?: unknown } | null
-  >(req, res);
+  const payload = await readJson<Record<string, unknown> | null>(req, res);
   if (payload === undefined) return;
-  if (
-    payload === null ||
-    typeof payload.baseline !== "string" ||
-    typeof payload.provider !== "string" ||
-    typeof payload.model !== "string"
-  ) {
-    return sendJson(res, 400, {
-      error: 'body 要是 {"baseline", "provider", "model"} 形状的 JSON',
-    });
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    return sendJson(res, 400, { error: 'body 要是 {"baseline"} 形状的 JSON' });
   }
-  if (!COMMIT_SHA.test(payload.baseline)) {
+  const baseline = payload["baseline"];
+  if (typeof baseline !== "string" || !COMMIT_SHA.test(baseline)) {
     return sendJson(res, 400, { error: "基点要是 7 到 40 位的 commit sha" });
   }
-  const launch = await prepareRuleTaskLaunch(res, deps, repoId, {
-    provider: payload.provider,
-    model: payload.model,
-    thinkingLevel: payload.thinkingLevel,
-  });
+  if (rejectRuleTaskModelFields(res, payload)) return;
+  const launch = await prepareRuleTaskLaunch(res, deps, repoId);
   if (launch === undefined) return;
   const { repo, spec, plan } = launch;
 
   const started = withStore(deps.dbPath, (store) =>
     store.startRuleExploration(repoId, {
-      baselineSha: payload.baseline as string,
+      baselineSha: baseline,
       model: modelIdentity(spec),
       ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
       startedAt: new Date((deps.now ?? Date.now)()).toISOString(),
@@ -8093,13 +8215,13 @@ async function handleStartRuleExploration(
   const exploration = withStore(deps.dbPath, (store) => store.getRuleExploration(repoId));
   // 先回 202 再开跑:探索要跑上几分钟,人等的是「已经在跑了」这个回执。
   sendJson(res, 202, { exploration });
-  void runRuleExplorationInBackground(deps, repoId, repo, payload.baseline, plan);
+  void runRuleExplorationInBackground(deps, repoId, repo, baseline, plan);
 }
 
 /**
- * 发起一次知识整理(CONTEXT.md 知识整理,issue #284)。人手动发起,只选模型——整理读的
- * 是队列与现集,没有基点可选。模型的可用性与思考档位判据与基点探索逐字相同,同一套
- * `materializeReviewerPlans` 物化。
+ * 发起一次知识整理(CONTEXT.md 知识整理,issue #284)。人手动发起,请求体是空对象——整理
+ * 读的是队列与现集,没有基点可选,模型也不再由人选(issue #303):用的是这个仓库生效的
+ * 辅助模型,解析与可用性判据与基点探索逐字相同。
  *
  * 与基点探索共用「同仓库同时只跑一个」:另一条在跑时 409,那句话说得出在跑的是哪一个。
  */
@@ -8109,22 +8231,13 @@ async function handleStartRuleConsolidation(
   deps: WebhookServerDeps,
   repoId: number,
 ): Promise<void> {
-  const payload = await readJson<
-    { provider?: unknown; model?: unknown; thinkingLevel?: unknown } | null
-  >(req, res);
+  const payload = await readJson<Record<string, unknown> | null>(req, res);
   if (payload === undefined) return;
-  if (
-    payload === null ||
-    typeof payload.provider !== "string" ||
-    typeof payload.model !== "string"
-  ) {
-    return sendJson(res, 400, { error: 'body 要是 {"provider", "model"} 形状的 JSON' });
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    return sendJson(res, 400, { error: "body 要是一个空的 JSON 对象" });
   }
-  const launch = await prepareRuleTaskLaunch(res, deps, repoId, {
-    provider: payload.provider,
-    model: payload.model,
-    thinkingLevel: payload.thinkingLevel,
-  });
+  if (rejectRuleTaskModelFields(res, payload)) return;
+  const launch = await prepareRuleTaskLaunch(res, deps, repoId);
   if (launch === undefined) return;
   const { spec, plan } = launch;
 
@@ -8461,12 +8574,12 @@ async function handleRemove(
 }
 
 /**
- * 整块改写这个仓库的配置(issue #302):模型覆盖与最低报告等级一次写完,带整块版本号。
- * 两项都是全量替换,null 即清除并跟随全局;清除永远可做,非空组合在落库前按当前模型服务
- * 投影重新校验,并在落库那一笔事务里再判一次——不能只信浏览器里的候选状态。
+ * 整块改写这个仓库的配置(issue #302、#303):模型覆盖、辅助模型覆盖与最低报告等级一次
+ * 写完,带整块版本号。三项都必须给、都是全量替换,null 即清除并跟随全局;清除永远可做,
+ * 非空组合与辅助模型在落库前按当前模型服务投影重新校验,组合还在落库那一笔事务里再判
+ * 一次——不能只信浏览器里的候选状态。
  *
  * 期望版本对不上即 409 并带上库里此刻的整份配置:面板据它换基线,人的草稿留在表单里。
- * 辅助模型覆盖是这个 body 的第三项(issue #303),那一票落地时加在这里。
  */
 async function handleSetRepoSettings(
   req: IncomingMessage,
@@ -8486,10 +8599,13 @@ async function handleSetRepoSettings(
   const payload = decoded as Record<string, unknown>;
   if (
     !Object.hasOwn(payload, "reviewers") ||
+    !Object.hasOwn(payload, "auxiliaryModel") ||
     !Object.hasOwn(payload, MIN_REPORT_SEVERITY_FIELD)
   ) {
     return sendJson(res, 400, {
-      error: `body 要带 reviewers 与 ${MIN_REPORT_SEVERITY_FIELD} 两项,各是全量替换,null 即跟随全局`,
+      error:
+        `body 要带 reviewers、auxiliaryModel 与 ${MIN_REPORT_SEVERITY_FIELD} 三项,` +
+        "各是全量替换,null 即跟随全局",
     });
   }
   if (
@@ -8509,6 +8625,15 @@ async function handleSetRepoSettings(
     reviewersJson = parsed.reviewersJson;
   }
 
+  // 辅助模型覆盖(issue #303)与模型覆盖同形:null 即跟随全局,给了就与组合同一套判据。
+  const auxiliaryContext = `${record.owner}/${record.repo} 的辅助模型`;
+  const auxiliary = parseAuxiliaryModel(payload["auxiliaryModel"], auxiliaryContext);
+  if (!auxiliary.ok) return sendJson(res, 400, { error: auxiliary.error });
+  if (
+    auxiliary.spec !== null &&
+    !await ensureModelCombinationAvailable(res, deps, [auxiliary.spec], auxiliaryContext)
+  ) return;
+
   const severity = payload[MIN_REPORT_SEVERITY_FIELD];
   if (severity !== null && !MIN_REPORT_SEVERITIES.includes(severity as Severity)) {
     return sendJson(res, 400, {
@@ -8519,6 +8644,7 @@ async function handleSetRepoSettings(
   const saved = withStore(deps.dbPath, (store) =>
     store.putRepoSettings(repoId, payload.expectedVersion as number, {
       reviewersJson,
+      auxiliaryModelJson: auxiliary.json,
       minReportSeverity: severity as Severity | null,
     }),
   );
@@ -8537,6 +8663,10 @@ async function handleSetRepoSettings(
         current?.reviewersJson === undefined || current.reviewersJson === null
           ? null
           : safeParse(current.reviewersJson),
+      auxiliaryModel:
+        current?.auxiliaryModelJson === undefined || current.auxiliaryModelJson === null
+          ? null
+          : safeParse(current.auxiliaryModelJson),
       minReportSeverity: current?.minReportSeverity ?? null,
       settingsVersion: current?.settingsVersion ?? 0,
     },

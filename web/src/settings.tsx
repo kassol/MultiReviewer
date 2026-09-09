@@ -10,6 +10,7 @@ import { CheckCircledIcon, CrossCircledIcon } from "@radix-ui/react-icons";
 import { AlertDialog, Callout, Card, Flex, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
 import { useState } from "react";
 
+import { AuxiliaryModelPicker } from "@/components/auxiliary-model-picker";
 import { HelpTooltip } from "@/components/help-tooltip";
 import {
   ModelComposer,
@@ -23,6 +24,7 @@ import { api, errorText, fetchJson } from "./api.ts";
 import {
   fromModelRef,
   modelIdentity,
+  THINKING_LEVEL_LABEL,
   toModelRef,
   type ModelRef,
   type ThinkingLevel,
@@ -51,6 +53,8 @@ type LimitField =
  */
 type Settings = {
   reviewers: { provider: string; model: string; thinkingLevel?: ThinkingLevel }[];
+  /** 辅助模型:Reviewer 之外的 agent 工作用它,null 即跟随模型组合第一个(issue #303)。 */
+  auxiliaryModel: { provider: string; model: string; thinkingLevel?: ThinkingLevel } | null;
   maxChangedLinesPerBatch: number | null;
   maxParallelBatches: number | null;
   maxFilesPerBatch: number | null;
@@ -92,12 +96,21 @@ const LIMITS: {
   },
 ];
 
+/** 没设辅助模型时那句话:空着即用生效模型组合的第一个(ADR 0029)。 */
+function followFirstReviewer(models: readonly ModelRef[]): string {
+  const first = models[0];
+  return first === undefined
+    ? "跟随模型组合第一个"
+    : `跟随模型组合第一个：${first.identity}`;
+}
+
 /** 报告等级下拉里「跟随系统默认」那一项的值。Radix `Select` 收不了空字符串。 */
 const FOLLOW_DEFAULT = "default";
 
 /** 表单里的一份草稿。上限是自由文本(空即跟随默认)，等级是三档或跟随默认。 */
 type Draft = {
   models: ModelRef[];
+  auxiliary: ModelRef | null;
   limits: Record<LimitField, string>;
   severity: MinReportSeverity | typeof FOLLOW_DEFAULT;
 };
@@ -105,6 +118,7 @@ type Draft = {
 function draftOf(settings: Settings): Draft {
   return {
     models: settings.reviewers.map(toModelRef),
+    auxiliary: settings.auxiliaryModel === null ? null : toModelRef(settings.auxiliaryModel),
     limits: {
       maxChangedLinesPerBatch: limitText(settings.maxChangedLinesPerBatch),
       maxParallelBatches: limitText(settings.maxParallelBatches),
@@ -121,8 +135,8 @@ function limitText(limit: number | null): string {
 
 /** 两份草稿是不是同一份。上限比字面量：留空与显式的默认值不是同一件事。 */
 function sameDraft(a: Draft, b: Draft): boolean {
-  return JSON.stringify([a.models.map(fromModelRef), a.limits, a.severity]) ===
-    JSON.stringify([b.models.map(fromModelRef), b.limits, b.severity]);
+  return JSON.stringify([a.models.map(fromModelRef), a.auxiliary, a.limits, a.severity]) ===
+    JSON.stringify([b.models.map(fromModelRef), b.auxiliary, b.limits, b.severity]);
 }
 
 /** 服务端拒了这一次保存并带回它此刻的整份对象。 */
@@ -192,7 +206,28 @@ function ReadOnlySettings({ settings }: { settings: Settings }) {
             </div>
           ))}
         </div>
-        {/* 辅助模型一行在 #303 落到这里：Reviewer 之外的 agent 工作用哪一处模型。 */}
+        {/* Reviewer 之外的 agent 工作用哪一处模型(issue #303)。 */}
+        <div className="flex items-baseline justify-between gap-3 border-t border-card-line pt-3">
+          <span className="text-text-muted">辅助模型</span>
+          <span className="min-w-0 text-right">
+            {settings.auxiliaryModel === null ? (
+              <span className="text-text-muted">
+                {followFirstReviewer(settings.reviewers.map(toModelRef))}
+              </span>
+            ) : (
+              <>
+                <span className="break-all font-mono text-xs">
+                  {modelIdentity(settings.auxiliaryModel)}
+                </span>
+                {settings.auxiliaryModel.thinkingLevel === undefined ? null : (
+                  <span className="ml-1.5 text-xs text-text-muted">
+                    思考 {THINKING_LEVEL_LABEL[settings.auxiliaryModel.thinkingLevel]}
+                  </span>
+                )}
+              </>
+            )}
+          </span>
+        </div>
       </Card>
       <Card size="2" className="flex flex-col gap-3">
         <div>
@@ -251,6 +286,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
         method: "PUT",
         body: JSON.stringify({
           reviewers: draft.models.map(fromModelRef),
+          auxiliaryModel: draft.auxiliary === null ? null : fromModelRef(draft.auxiliary),
           ...Object.fromEntries(
             LIMITS.map(({ field }) => [
               field,
@@ -321,7 +357,27 @@ function SettingsForm({ settings }: { settings: Settings }) {
           onChange={(next) => edit({ models: next })}
           onValidityChange={setModelValidity}
         />
-        {/* 辅助模型那一行在 #303 落到这里：与模型组合同一段,共用同一份候选与档位规则。 */}
+        {/* 辅助模型与模型组合同一段(issue #303):共用同一份候选投影与档位规则。 */}
+        <div className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
+          <div className="flex items-center gap-1.5 px-5 py-3.5">
+            <h2 className="text-base font-semibold">辅助模型</h2>
+            <HelpTooltip
+              label="辅助模型说明"
+              content="Reviewer 之外的全部 agent 工作用它：合并 agent、基点探索、知识整理、处置反哺与人工提议。留空即用模型组合的第一个；仓库可以在自己的配置里替换它。"
+            />
+          </div>
+          <div className="border-t border-card-line px-5 py-4">
+            <AuxiliaryModelPicker
+              id="auxiliary-model"
+              value={draft.auxiliary}
+              emptyLabel={followFirstReviewer(draft.models)}
+              onChange={(next) => edit({ auxiliary: next })}
+            />
+            <p className="mt-3 text-xs text-text-muted">
+              留空即{followFirstReviewer(draft.models)}；改了之后下一轮 Review Run 与下一次知识任务生效。
+            </p>
+          </div>
+        </div>
       </section>
 
       <section className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">

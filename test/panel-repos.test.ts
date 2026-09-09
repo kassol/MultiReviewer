@@ -172,12 +172,13 @@ test("配置了模型覆盖的仓库,Review Run 用覆盖后的组合", async ()
 });
 
 /**
- * 仓库配置整块保存(issue #302)。模型覆盖与最低报告等级在一个端点里一次写完,带整块
- * 版本号;两项都是可空即跟随全局的全量替换。
+ * 仓库配置整块保存(issue #302、#303)。模型覆盖、辅助模型覆盖与最低报告等级在一个端点
+ * 里一次写完,带整块版本号;三项都是可空即跟随全局的全量替换。
  */
 type RepoSettingsRow = {
   repoId: number;
   reviewers: unknown;
+  auxiliaryModel: unknown;
   minReportSeverity: unknown;
   globalMinReportSeverity: unknown;
   settingsVersion: number;
@@ -188,10 +189,26 @@ const repoSettingsRow = async (h: PanelHarness): Promise<Omit<RepoSettingsRow, "
   const row = rows.find((entry) => entry.repoId === GITEA_REPO.id)!;
   return {
     reviewers: row.reviewers,
+    auxiliaryModel: row.auxiliaryModel,
     minReportSeverity: row.minReportSeverity,
     globalMinReportSeverity: row.globalMinReportSeverity,
     settingsVersion: row.settingsVersion,
   };
+};
+
+/** 生效辅助模型的只读投影(issue #303):面板拿它显示知识任务将用哪一处模型。 */
+type AuxiliaryModelView = {
+  identity: string | null;
+  thinkingLevel: string | null;
+  source: "repo" | "global" | "first-reviewer" | null;
+  available: boolean;
+  unavailableReason: string | null;
+};
+
+const auxiliaryModelView = async (h: PanelHarness): Promise<AuxiliaryModelView> => {
+  const response = await h.api("GET", `/repos/${GITEA_REPO.id}/auxiliary-model`);
+  assert.equal(response.status, 200);
+  return (await response.json()) as AuxiliaryModelView;
 };
 
 test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取值 400 一项都不写", async () => {
@@ -203,6 +220,7 @@ test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取�
   // 刚注册即两项都跟随全局,整块版本号从 0 起。
   assert.deepEqual(await repoSettingsRow(h), {
     reviewers: null,
+    auxiliaryModel: null,
     minReportSeverity: null,
     globalMinReportSeverity: "P2",
     settingsVersion: 0,
@@ -212,12 +230,18 @@ test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取�
     h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, body);
   const override: ReviewerSpec[] = [{ provider: "test", model: "swapped-model" }];
 
-  const saved = await put({ reviewers: override, minReportSeverity: "P1", expectedVersion: 0 });
+  const saved = await put({
+    reviewers: override,
+    auxiliaryModel: null,
+    minReportSeverity: "P1",
+    expectedVersion: 0,
+  });
   const savedBody = await saved.json();
   assert.equal(saved.status, 200, JSON.stringify(savedBody));
   assert.deepEqual(savedBody, { settingsVersion: 1 });
   assert.deepEqual(await repoSettingsRow(h), {
     reviewers: override,
+    auxiliaryModel: null,
     minReportSeverity: "P1",
     globalMinReportSeverity: "P2",
     settingsVersion: 1,
@@ -239,11 +263,15 @@ test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取�
   // 坏取值整次拒绝:版本与两项原样不动。
   for (
     const body of [
-      { reviewers: [{ provider: "x" }], minReportSeverity: null, expectedVersion: 1 },
-      { reviewers: null, minReportSeverity: "P3", expectedVersion: 1 },
-      { reviewers: null, minReportSeverity: null, expectedVersion: "1" },
-      { reviewers: null, expectedVersion: 1 },
-      { minReportSeverity: null, expectedVersion: 1 },
+      { reviewers: [{ provider: "x" }], auxiliaryModel: null, minReportSeverity: null, expectedVersion: 1 },
+      { reviewers: null, auxiliaryModel: null, minReportSeverity: "P3", expectedVersion: 1 },
+      { reviewers: null, auxiliaryModel: null, minReportSeverity: null, expectedVersion: "1" },
+      { reviewers: null, auxiliaryModel: null, expectedVersion: 1 },
+      { auxiliaryModel: null, minReportSeverity: null, expectedVersion: 1 },
+      // 三项必给:少了辅助模型那一项同样整次拒收。
+      { reviewers: null, minReportSeverity: null, expectedVersion: 1 },
+      // 辅助模型是一处模型引用,不是列表。
+      { reviewers: null, auxiliaryModel: [], minReportSeverity: null, expectedVersion: 1 },
     ]
   ) {
     const rejected = await put(body);
@@ -251,16 +279,23 @@ test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取�
   }
   assert.deepEqual(await repoSettingsRow(h), {
     reviewers: override,
+    auxiliaryModel: null,
     minReportSeverity: "P1",
     globalMinReportSeverity: "P2",
     settingsVersion: 1,
   });
 
   // 两项一起清成 null,回到跟随全局。
-  const cleared = await put({ reviewers: null, minReportSeverity: null, expectedVersion: 1 });
+  const cleared = await put({
+    reviewers: null,
+    auxiliaryModel: null,
+    minReportSeverity: null,
+    expectedVersion: 1,
+  });
   assert.equal(cleared.status, 200);
   assert.deepEqual(await repoSettingsRow(h), {
     reviewers: null,
+    auxiliaryModel: null,
     minReportSeverity: null,
     globalMinReportSeverity: "P2",
     settingsVersion: 2,
@@ -271,6 +306,7 @@ test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取�
     (
       await h.api("PUT", "/repos/999/settings", {
         reviewers: null,
+        auxiliaryModel: null,
         minReportSeverity: null,
         expectedVersion: 0,
       })
@@ -288,19 +324,35 @@ test("仓库配置的期望版本过期即 409,响应带当前值", async () => 
     h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, body);
 
   assert.equal(
-    (await put({ reviewers: override, minReportSeverity: "P0", expectedVersion: 0 })).status,
+    (await put({
+      reviewers: override,
+      auxiliaryModel: null,
+      minReportSeverity: "P0",
+      expectedVersion: 0,
+    })).status,
     200,
   );
 
   // 另一个人拿着旧版本号再保存:整次拒绝,库里仍是先写成的那一份。
-  const stale = await put({ reviewers: null, minReportSeverity: "P2", expectedVersion: 0 });
+  const stale = await put({
+    reviewers: null,
+    auxiliaryModel: null,
+    minReportSeverity: "P2",
+    expectedVersion: 0,
+  });
   assert.equal(stale.status, 409);
   assert.deepEqual(await stale.json(), {
     error: "这个仓库的配置已经被其他人修改，请核对后再保存",
-    current: { reviewers: override, minReportSeverity: "P0", settingsVersion: 1 },
+    current: {
+      reviewers: override,
+      auxiliaryModel: null,
+      minReportSeverity: "P0",
+      settingsVersion: 1,
+    },
   });
   assert.deepEqual(await repoSettingsRow(h), {
     reviewers: override,
+    auxiliaryModel: null,
     minReportSeverity: "P0",
     globalMinReportSeverity: "P2",
     settingsVersion: 1,
@@ -324,7 +376,90 @@ test("模型覆盖与最低报告等级的旧端点回没有这个端点", async
   }
 });
 
-test("旧库的仓库读回整块版本号 0,两项覆盖原值不变", async () => {
+test("辅助模型三级解析:仓库覆盖 ?? 全局 ?? 生效组合第一个,换了组合退路跟着变", async () => {
+  const h = await startPanelHarness(cleanups);
+  seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
+  seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
+  assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
+  const override: ReviewerSpec[] = [{ provider: "test", model: "swapped-model" }];
+
+  // 两处都没设:退回这个仓库生效模型组合的第一个,眼下即全局组合的第一个。
+  assert.deepEqual(await auxiliaryModelView(h), {
+    identity: "test:global-model",
+    thinkingLevel: null,
+    source: "first-reviewer",
+    available: true,
+    unavailableReason: null,
+  });
+
+  // 仓库换了模型覆盖、两处仍没设辅助模型:退路跟着换成覆盖组合的第一个。
+  assert.equal(
+    (await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
+      reviewers: override,
+      auxiliaryModel: null,
+      minReportSeverity: null,
+      expectedVersion: 0,
+    })).status,
+    200,
+  );
+  assert.deepEqual(await auxiliaryModelView(h), {
+    identity: "test:swapped-model",
+    thinkingLevel: null,
+    source: "first-reviewer",
+    available: true,
+    unavailableReason: null,
+  });
+
+  // 全局设了一处:它盖过组合第一个,档位跟着这一处走。
+  const settings = (await (await h.api("GET", "/settings")).json()) as {
+    reviewers: unknown;
+    version: number;
+  };
+  assert.equal(
+    (await h.api("PUT", "/settings", {
+      reviewers: settings.reviewers,
+      auxiliaryModel: { provider: "think", model: "deep", thinkingLevel: "medium" },
+      maxChangedLinesPerBatch: null,
+      maxParallelBatches: null,
+      maxFilesPerBatch: null,
+      maxEvidenceCallsPerBatch: null,
+      minReportSeverity: null,
+      expectedVersion: settings.version,
+    })).status,
+    200,
+  );
+  assert.deepEqual(await auxiliaryModelView(h), {
+    identity: "think:deep",
+    thinkingLevel: "medium",
+    source: "global",
+    available: true,
+    unavailableReason: null,
+  });
+
+  // 仓库自己设一处:它盖过全局。
+  assert.equal(
+    (await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
+      reviewers: override,
+      auxiliaryModel: { provider: "test", model: "swapped-model" },
+      minReportSeverity: null,
+      expectedVersion: 1,
+    })).status,
+    200,
+  );
+  assert.deepEqual(await auxiliaryModelView(h), {
+    identity: "test:swapped-model",
+    thinkingLevel: null,
+    source: "repo",
+    available: true,
+    unavailableReason: null,
+  });
+  assert.deepEqual((await repoSettingsRow(h)).auxiliaryModel, {
+    provider: "test",
+    model: "swapped-model",
+  });
+});
+
+test("旧库的仓库读回整块版本号 0 与辅助模型 null,解析退回组合第一个", async () => {
   const h = await startPanelHarness(cleanups);
   seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
@@ -333,6 +468,7 @@ test("旧库的仓库读回整块版本号 0,两项覆盖原值不变", async ()
     (
       await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
         reviewers: override,
+        auxiliaryModel: null,
         minReportSeverity: "P1",
         expectedVersion: 0,
       })
@@ -340,19 +476,30 @@ test("旧库的仓库读回整块版本号 0,两项覆盖原值不变", async ()
     200,
   );
 
-  // 升级前的形状:`repo` 表没有整块版本号这一列。去掉它,下一次 openStore 即走补列那一路。
+  // 升级前的形状:`repo` 表没有整块版本号与辅助模型覆盖这两列。去掉它们,下一次
+  // openStore 即走补列那一路。
   const sqlite = new DatabaseSync(h.db.path);
   try {
     sqlite.exec("ALTER TABLE repo DROP COLUMN settings_version");
+    sqlite.exec("ALTER TABLE repo DROP COLUMN auxiliary_model");
   } finally {
     sqlite.close();
   }
 
   assert.deepEqual(await repoSettingsRow(h), {
     reviewers: override,
+    auxiliaryModel: null,
     minReportSeverity: "P1",
     globalMinReportSeverity: "P2",
     settingsVersion: 0,
+  });
+  // 升级后行为与升级前一致:辅助模型未设,解析退回这个仓库生效组合的第一个。
+  assert.deepEqual(await auxiliaryModelView(h), {
+    identity: "test:swapped-model",
+    thinkingLevel: null,
+    source: "first-reviewer",
+    available: true,
+    unavailableReason: null,
   });
 });
 
@@ -407,6 +554,7 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
 
   const blocked = await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
     reviewers: selected,
+    auxiliaryModel: null,
     minReportSeverity: null,
     expectedVersion: 0,
   });
@@ -415,6 +563,7 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
 
   const saved = await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
     reviewers: [selected[0]],
+    auxiliaryModel: null,
     minReportSeverity: null,
     expectedVersion: 0,
   });
@@ -435,6 +584,7 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
     (
       await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
         reviewers: null,
+        auxiliaryModel: null,
         minReportSeverity: null,
         expectedVersion: 1,
       })

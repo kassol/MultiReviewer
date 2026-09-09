@@ -457,8 +457,6 @@ test("知识集已确认时探索产出进提案队列,草案一行不动", asyn
 
   const started = await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-exploration`, {
     baseline: h.repo.baseSha,
-    provider: "test",
-    model: "global-model",
   });
   assert.equal(started.status, 202);
   await h.explorationsAtLeast(1);
@@ -521,8 +519,6 @@ test("多目标映射为合并型:认不出的目标丢掉,只剩一个即退化
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
-      provider: "test",
-      model: "global-model",
     })).status,
     202,
   );
@@ -572,8 +568,6 @@ test("单目标合并即改型:同型仍是修改,采纳把目标换成新型的
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
-      provider: "test",
-      model: "global-model",
     })).status,
     202,
   );
@@ -627,8 +621,6 @@ test("逐条裁决:采纳按队列里那份落、驳回不落,带正文也不改
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
-      provider: "test",
-      model: "global-model",
     })).status,
     202,
   );
@@ -683,8 +675,6 @@ test("没有 knowledge:write 的人裁决不了,但读得到提案队列", async
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
-      provider: "test",
-      model: "global-model",
     })).status,
     202,
   );
@@ -727,8 +717,6 @@ test("已确认的空知识集重探索:产出仍进提案队列,不回到草案
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
-      provider: "test",
-      model: "global-model",
     })).status,
     202,
   );
@@ -935,8 +923,6 @@ test("面板批量采纳与批量驳回:一次一版,坏 body 一律 400", async
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
-      provider: "test",
-      model: "global-model",
     })).status,
     202,
   );

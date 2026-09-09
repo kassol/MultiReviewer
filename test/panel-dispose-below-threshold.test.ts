@@ -171,11 +171,13 @@ async function setThreshold(h: PanelHarness, severity: "P0" | "P1" | "P2" | null
   const rows = (await (await h.api("GET", "/repos")).json()) as {
     repoId: number;
     reviewers: unknown;
+    auxiliaryModel: unknown;
     settingsVersion: number;
   }[];
   const row = rows.find((entry) => entry.repoId === GITEA_REPO.id)!;
   const response = await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
     reviewers: row.reviewers,
+    auxiliaryModel: row.auxiliaryModel,
     minReportSeverity: severity,
     expectedVersion: row.settingsVersion,
   });

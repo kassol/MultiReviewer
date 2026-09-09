@@ -523,7 +523,7 @@ test("分配外的处置、重跑、发起、推进、完成、配置与移除�
     [
       "PUT",
       `/repos/${beta}/settings`,
-      { reviewers: null, minReportSeverity: null, expectedVersion: 0 },
+      { reviewers: null, auxiliaryModel: null, minReportSeverity: null, expectedVersion: 0 },
     ],
     ["POST", `/repos/${beta}/rotate`],
     ["POST", `/repos/${beta}/worktree`],
@@ -540,6 +540,7 @@ test("分配外的处置、重跑、发起、推进、完成、配置与移除�
     (
       await post(h, cookie, "PUT", `/repos/${alpha}/settings`, {
         reviewers: null,
+        auxiliaryModel: null,
         minReportSeverity: null,
         expectedVersion: 0,
       })
