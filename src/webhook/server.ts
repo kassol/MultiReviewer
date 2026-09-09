@@ -172,7 +172,6 @@ import {
   synthesizeRuntimeModel,
   type DiscoveredModel,
   type ModelOperationFailure,
-  type RuntimeModel,
   type RuntimeSynthesisResult,
   type ModelServiceCandidate,
   type TrustedModelFieldSource,
@@ -599,14 +598,6 @@ function globalSettings(deps: WebhookServerDeps): GlobalSettings & {
   return { ...row, reviewers: parseGlobalReviewers(row.reviewersJson) };
 }
 
-function frozenRuntimeModel(runtime: RuntimeModel): RuntimeModel {
-  return Object.freeze({
-    ...runtime,
-    input: Object.freeze([...runtime.input]),
-    sources: Object.freeze({ ...runtime.sources }),
-  });
-}
-
 /**
  * 一家模型服务此刻的目标绑定(ADR 0027)。自定义服务是它配置的那一个目标;绑了目标集合的
  * 内置版本就是那份集合;升级前的内置版本(没有集合)只能证明:当初的指纹是首项模型的单目标
@@ -770,14 +761,14 @@ function materializedReviewerPlan(
 ): ReviewerRuntimePlan {
   const identity = modelIdentity(spec);
   if (service === undefined || binding === undefined) {
-    return Object.freeze({
-      spec: Object.freeze({ ...spec }),
+    return {
+      spec,
       modelServiceVersion: null,
       target: null,
       runtimeModel: null,
       credential: null,
       failure: `模型服务 ${spec.provider} 不存在,${identity} 这次没跑。去模型服务页配置后重跑。`,
-    });
+    };
   }
 
   const automatic = service.automaticModels.find((model) => model.id === spec.model);
@@ -793,7 +784,7 @@ function materializedReviewerPlan(
     fields: {},
   };
   const synthesis = synthesisForRun(service, discovery, target);
-  const runtimeModel = synthesis.ok ? frozenRuntimeModel(synthesis.value.runtime) : null;
+  const runtimeModel = synthesis.ok ? synthesis.value.runtime : null;
 
   let failure: string | null = null;
   if (conflictingProviders.has(spec.provider)) {
@@ -818,14 +809,14 @@ function materializedReviewerPlan(
     failure = `${synthesis.failure.message},${identity} 这次没跑。`;
   }
 
-  return Object.freeze({
-    spec: Object.freeze({ ...spec }),
+  return {
+    spec,
     modelServiceVersion: service.version,
-    target: target === undefined ? null : Object.freeze({ ...target }),
+    target: target ?? null,
     runtimeModel,
     credential: failure === null ? credential ?? null : null,
     failure,
-  });
+  };
 }
 
 /**
@@ -875,15 +866,13 @@ async function materializeReviewerPlans(
     }
   }
 
-  return Object.freeze(
-    specs.map((spec) =>
-      materializedReviewerPlan(
-        spec,
-        services.get(spec.provider),
-        bindings.get(spec.provider),
-        conflictingProviders,
-        credentials.get(spec.provider),
-      ),
+  return specs.map((spec) =>
+    materializedReviewerPlan(
+      spec,
+      services.get(spec.provider),
+      bindings.get(spec.provider),
+      conflictingProviders,
+      credentials.get(spec.provider),
     ),
   );
 }
@@ -1254,6 +1243,24 @@ function versionConflict(
   sendJson(res, 409, { error, expectedVersion, actualVersion });
 }
 
+/**
+ * 写没成之后的版本冲突。写不进去只有一个原因:期间有人把这家服务的版本推进了,此时读一次
+ * 当前版本号一并回给面板。八条写路径(三条提交、模型状态、刷新、两处补录、删除与改名)
+ * 都在这里读那一次,措辞各自传入。
+ */
+function staleVersionConflict(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  provider: string,
+  expectedVersion: number | null,
+  error?: string,
+): void {
+  const actualVersion = withStore(deps.dbPath, (store) =>
+    store.getModelService(provider)?.version ?? null,
+  );
+  return versionConflict(res, expectedVersion, actualVersion, error);
+}
+
 /** Cookie 头里 `name` 的值。只认第一个匹配,面板只发这一个 cookie。 */
 function cookieValue(header: string | undefined, name: string): string | undefined {
   if (header === undefined) return undefined;
@@ -1510,7 +1517,7 @@ async function handleLogin(
   const username = payload.username;
   const password = payload.password;
   const user = withStore(deps.dbPath, (store) => store.getPanelUser(username));
-  const outcome = await auth.login(
+  const outcome = await auth(
     user === undefined ? { username } : { username: user.username, passwordHash: user.passwordHash },
     password,
     req.socket.remoteAddress ?? "",
@@ -1827,19 +1834,8 @@ function handleLogout(req: IncomingMessage, res: ServerResponse, deps: WebhookSe
 }
 
 export const PANEL_ROUTES: readonly PanelRoute[] = [
-  {
-    method: "POST",
-    pattern: "/session",
-    access: "public",
-    handler: ({ req, res, deps, auth }) => handleLogin(req, res, deps, auth),
-  },
-  {
-    method: "POST",
-    pattern: "/users/bootstrap",
-    access: "public",
-    handler: ({ req, res, deps, bootstrapSecret, clearBootstrap }) =>
-      handleBootstrapRegister(req, res, deps, bootstrapSecret, clearBootstrap),
-  },
+  { method: "POST", pattern: "/session", access: "public", handler: ({ req, res, deps, auth }) => handleLogin(req, res, deps, auth) },
+  { method: "POST", pattern: "/users/bootstrap", access: "public", handler: ({ req, res, deps, bootstrapSecret, clearBootstrap }) => handleBootstrapRegister(req, res, deps, bootstrapSecret, clearBootstrap) },
   {
     method: "GET",
     pattern: "/session",
@@ -1861,513 +1857,95 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
       });
     },
   },
-  {
-    method: "GET",
-    pattern: "/users",
-    access: "system-admin-only",
-    handler: ({ req, res, deps }) => handlePanelUsers(req, res, deps),
-  },
-  {
-    method: "POST",
-    pattern: "/users",
-    access: "system-admin-only",
-    handler: ({ req, res, deps }) => handlePanelUsers(req, res, deps),
-  },
-  {
-    method: "PUT",
-    pattern: /^\/users\/([a-z0-9._-]{1,32})$/,
-    access: "system-admin-only",
-    handler: ({ req, res, deps }, match) => handlePanelUser(req, res, deps, match![1]!),
-  },
-  {
-    method: "DELETE",
-    pattern: /^\/users\/([a-z0-9._-]{1,32})$/,
-    access: "system-admin-only",
-    handler: ({ req, res, deps }, match) => handlePanelUser(req, res, deps, match![1]!),
-  },
-  {
-    method: "POST",
-    pattern: /^\/users\/([a-z0-9._-]{1,32})\/reset-password$/,
-    access: "system-admin-only",
-    handler: ({ req, res, deps }, match) =>
-      handleResetPanelPassword(req, res, deps, match![1]!),
-  },
-  {
-    method: "PUT",
-    pattern: "/session/password",
-    access: "authenticated-only",
-    allowedWhilePasswordExpired: true,
-    handler: ({ req, res, deps, caller }) => handleSelfPassword(req, res, deps, caller!),
-  },
-  {
-    method: "GET",
-    pattern: "/roles",
-    access: "system-admin-only",
-    handler: ({ req, res, deps }) => handlePanelRoles(req, res, deps),
-  },
-  {
-    method: "POST",
-    pattern: "/roles",
-    access: "system-admin-only",
-    handler: ({ req, res, deps }) => handlePanelRoles(req, res, deps),
-  },
-  {
-    method: "PUT",
-    pattern: /^\/roles\/(\d+)$/,
-    access: "system-admin-only",
-    handler: ({ req, res, deps }, match) => handlePanelRole(req, res, deps, Number(match![1])),
-  },
-  {
-    method: "DELETE",
-    pattern: /^\/roles\/(\d+)$/,
-    access: "system-admin-only",
-    handler: ({ req, res, deps }, match) => handlePanelRole(req, res, deps, Number(match![1])),
-  },
-  {
-    method: "DELETE",
-    pattern: "/session",
-    allowedWhilePasswordExpired: true,
-    access: "authenticated-only",
-    handler: ({ req, res, deps }) => handleLogout(req, res, deps),
-  },
-  {
-    method: "GET",
-    pattern: "/setup-status",
-    access: "authenticated-only",
-    handler: async ({ res, deps }) => sendJson(res, 200, await setupStatus(deps)),
-  },
+  { method: "GET", pattern: "/users", access: "system-admin-only", handler: ({ req, res, deps }) => handlePanelUsers(req, res, deps) },
+  { method: "POST", pattern: "/users", access: "system-admin-only", handler: ({ req, res, deps }) => handlePanelUsers(req, res, deps) },
+  { method: "PUT", pattern: /^\/users\/([a-z0-9._-]{1,32})$/, access: "system-admin-only", handler: ({ req, res, deps }, match) => handlePanelUser(req, res, deps, match![1]!) },
+  { method: "DELETE", pattern: /^\/users\/([a-z0-9._-]{1,32})$/, access: "system-admin-only", handler: ({ req, res, deps }, match) => handlePanelUser(req, res, deps, match![1]!) },
+  { method: "POST", pattern: /^\/users\/([a-z0-9._-]{1,32})\/reset-password$/, access: "system-admin-only", handler: ({ req, res, deps }, match) => handleResetPanelPassword(req, res, deps, match![1]!) },
+  { method: "PUT", pattern: "/session/password", access: "authenticated-only", allowedWhilePasswordExpired: true, handler: ({ req, res, deps, caller }) => handleSelfPassword(req, res, deps, caller!) },
+  { method: "GET", pattern: "/roles", access: "system-admin-only", handler: ({ req, res, deps }) => handlePanelRoles(req, res, deps) },
+  { method: "POST", pattern: "/roles", access: "system-admin-only", handler: ({ req, res, deps }) => handlePanelRoles(req, res, deps) },
+  { method: "PUT", pattern: /^\/roles\/(\d+)$/, access: "system-admin-only", handler: ({ req, res, deps }, match) => handlePanelRole(req, res, deps, Number(match![1])) },
+  { method: "DELETE", pattern: /^\/roles\/(\d+)$/, access: "system-admin-only", handler: ({ req, res, deps }, match) => handlePanelRole(req, res, deps, Number(match![1])) },
+  { method: "DELETE", pattern: "/session", access: "authenticated-only", allowedWhilePasswordExpired: true, handler: ({ req, res, deps }) => handleLogout(req, res, deps) },
+  { method: "GET", pattern: "/setup-status", access: "authenticated-only", handler: async ({ res, deps }) => sendJson(res, 200, await setupStatus(deps)) },
   { method: "GET", pattern: "/settings", access: "model:read", handler: ({ res, deps }) => handleGetSettings(res, deps) },
   { method: "PUT", pattern: "/settings", access: "model:write", handler: ({ req, res, deps }) => handlePutSettings(req, res, deps) },
-  {
-    method: "GET",
-    pattern: "/stats",
-    access: "authenticated-only",
-    handler: ({ req, res, deps, assignment }) => handleStats(req, res, deps, assignment!),
-  },
-  {
-    method: "GET",
-    pattern: "/runs",
-    access: "authenticated-only",
-    handler: ({ req, res, deps, assignment }) => handleRuns(req, res, deps, assignment!),
-  },
-  {
-    method: "GET",
-    pattern: "/stages",
-    access: "authenticated-only",
-    handler: ({ req, res, deps, assignment }) => handleStages(req, res, deps, assignment!),
-  },
-  {
-    // 阶段标识里有斜杠(`pr:<owner>/<repo>/<number>`),在地址里编码成一段,这里整段收。
-    method: "GET",
-    pattern: /^\/stages\/(.+)$/,
-    access: "authenticated-only",
-    handler: ({ res, deps, assignment }, match) => handleStageDetail(res, deps, match![1]!, assignment!),
-  },
-  {
-    method: "GET",
-    pattern: /^\/runs\/(\d+)$/,
-    access: "authenticated-only",
-    assignment: { by: "run", group: 1 },
-    handler: ({ res, deps }, match) => handleRun(res, deps, Number(match![1])),
-  },
-  {
-    method: "GET",
-    pattern: /^\/runs\/(\d+)\/diff$/,
-    access: "authenticated-only",
-    assignment: { by: "run", group: 1 },
-    handler: ({ req, res, deps }, match) => handleRunDiff(req, res, deps, Number(match![1])),
-  },
-  {
-    method: "GET",
-    pattern: /^\/runs\/(\d+)\/trace$/,
-    access: "authenticated-only",
-    assignment: { by: "run", group: 1 },
-    handler: ({ res, deps }, match) => handleRunTrace(res, deps, Number(match![1])),
-  },
-  {
-    method: "GET",
-    pattern: /^\/runs\/(\d+)\/trace\/stream$/,
-    access: "authenticated-only",
-    assignment: { by: "run", group: 1 },
-    handler: ({ req, res, deps }, match) => handleRunTraceStream(req, res, deps, Number(match![1])),
-  },
-  {
-    method: "GET",
-    pattern: "/stage-summary",
-    access: "authenticated-only",
-    assignment: { by: "query" },
-    handler: ({ req, res, deps }) => handleStageSummary(req, res, deps),
-  },
-  {
-    method: "POST",
-    pattern: "/rerun",
-    access: "review:rerun",
-    handler: ({ req, res, deps, caller, assignment }) =>
-      handleRerun(req, res, deps, caller!.username, assignment!),
-  },
-  {
-    method: "POST",
-    pattern: /^\/findings\/(\d+)\/resolve$/,
-    access: "finding:dispose",
-    assignment: { by: "finding", group: 1 },
-    handler: ({ req, res, deps, caller }, match) =>
-      handleDispose(req, res, deps, Number(match![1]), "resolved", caller!.username),
-  },
-  {
-    method: "POST",
-    pattern: /^\/findings\/(\d+)\/unresolve$/,
-    access: "finding:dispose",
-    assignment: { by: "finding", group: 1 },
-    handler: ({ req, res, deps, caller }, match) =>
-      handleDispose(req, res, deps, Number(match![1]), "unresolved", caller!.username),
-  },
-  {
-    // 阶段标识里有斜杠,在地址里编码成一段;可见范围与阶段详情一致,在处理里按分配判。
-    method: "POST",
-    pattern: /^\/stages\/(.+)\/findings\/dispose-below-threshold$/,
-    access: "finding:dispose-batch",
-    handler: ({ req, res, deps, caller, assignment }, match) =>
-      handleDisposeBelowThreshold(req, res, deps, match![1]!, caller!.username, assignment!),
-  },
-  {
-    method: "POST",
-    pattern: "/range-reviews",
-    access: "review:create",
-    handler: ({ req, res, deps, caller, assignment }) =>
-      handleCreateRangeReview(req, res, deps, caller!.username, assignment!),
-  },
-  {
-    method: "GET",
-    pattern: "/range-reviews/prefill",
-    access: "review:create",
-    assignment: { by: "query" },
-    handler: ({ req, res, deps }) => handleRangeReviewPrefill(req, res, deps),
-  },
-  {
-    method: "POST",
-    pattern: /^\/range-reviews\/(\d+)\/advance$/,
-    access: "review:advance",
-    assignment: { by: "range-review", group: 1 },
-    handler: ({ req, res, deps, caller }, match) =>
-      handleAdvanceRangeReview(req, res, deps, Number(match![1]), caller!.username),
-  },
-  {
-    method: "POST",
-    pattern: /^\/range-reviews\/(\d+)\/complete$/,
-    access: "review:complete",
-    assignment: { by: "range-review", group: 1 },
-    handler: ({ res, deps, caller }, match) =>
-      handleCompleteRangeReview(res, deps, Number(match![1]), caller!.username),
-  },
-  {
-    method: "GET",
-    pattern: "/repo-branches",
-    // 发起范围审查与发起基点探索都从这里选 commit(issue #205),两格任一即可读。
-    access: { anyOf: ["review:create", "knowledge:write"] },
-    assignment: { by: "query" },
-    handler: ({ req, res, deps }) => handleRepoBranches(req, res, deps),
-  },
-  {
-    method: "GET",
-    pattern: "/repo-commits",
-    // 发起范围审查与发起基点探索都从这里选 commit(issue #205),两格任一即可读。
-    access: { anyOf: ["review:create", "knowledge:write"] },
-    assignment: { by: "query" },
-    handler: ({ req, res, deps }) => handleRepoCommits(req, res, deps),
-  },
-  {
-    method: "GET",
-    pattern: "/repo-tags",
-    // 发起范围审查与发起基点探索都从这里选 commit(issue #205),两格任一即可读。
-    access: { anyOf: ["review:create", "knowledge:write"] },
-    assignment: { by: "query" },
-    handler: ({ req, res, deps }) => handleRepoTags(req, res, deps),
-  },
-  {
-    method: "GET",
-    pattern: "/repos/search",
-    access: "repo:write",
-    handler: ({ req, res, deps, hookManager }) =>
-      handleRepoSearch(req, res, deps, hookManager),
-  },
-  {
-    method: "GET",
-    pattern: "/repos",
-    access: "authenticated-only",
-    handler: ({ res, deps, assignment }) => listRepos(res, deps, assignment!),
-  },
-  {
-    method: "POST",
-    pattern: "/repos",
-    access: "repo:write",
-    handler: ({ req, res, deps, hookManager, caller }) =>
-      handleRegister(req, res, deps, hookManager, caller!),
-  },
-  {
-    method: "DELETE",
-    pattern: /^\/repos\/(\d+)$/,
-    access: "repo:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ res, deps, hookManager }, match) =>
-      handleRemove(res, deps, hookManager, Number(match![1])),
-  },
-  {
-    method: "POST",
-    pattern: /^\/repos\/(\d+)\/worktree$/,
-    access: "repo:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ res, deps }, match) => handlePrepareWorktree(res, deps, Number(match![1])),
-  },
-  {
-    method: "PUT",
-    pattern: /^\/repos\/(\d+)\/settings$/,
-    access: "repo:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ req, res, deps }, match) =>
-      handleSetRepoSettings(req, res, deps, Number(match![1])),
-  },
-  {
-    method: "POST",
-    pattern: /^\/repos\/(\d+)\/rotate$/,
-    access: "repo:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ res, deps, hookManager }, match) =>
-      handleRotate(res, deps, hookManager, Number(match![1])),
-  },
-  {
-    method: "GET",
-    pattern: /^\/repos\/(\d+)\/hooks$/,
-    access: "authenticated-only",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ res, deps, hookManager }, match) =>
-      handleHookCheck(res, deps, hookManager, Number(match![1])),
-  },
-  {
-    // 知识集读侧不挂权限格(ADR 0019):登录加仓库分配即可读,分配外由过滤层判 404。
-    method: "GET",
-    pattern: /^\/repos\/(\d+)\/rules$/,
-    access: "authenticated-only",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ res, deps }, match) => handleRuleSet(res, deps, Number(match![1])),
-  },
-  {
-    // 生效辅助模型的只读投影(issue #303)与知识集读侧同一格:看得到这个仓库知识任务的
-    // 人就该看得到它将用哪一处模型。
-    method: "GET",
-    pattern: /^\/repos\/(\d+)\/auxiliary-model$/,
-    access: "authenticated-only",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ res, deps }, match) => handleAuxiliaryModel(res, deps, Number(match![1])),
-  },
-  {
-    // 知识轨迹(issue #214)与知识集读侧同一格:能看这个仓库的知识集就能看它是怎么来的。
-    method: "GET",
-    pattern: /^\/repos\/(\d+)\/rule-traces\/(\d+)$/,
-    access: "authenticated-only",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ res, deps }, match) =>
-      handleRuleTrace(res, deps, Number(match![1]), Number(match![2])),
-  },
-  {
-    method: "GET",
-    pattern: /^\/repos\/(\d+)\/rule-traces\/(\d+)\/stream$/,
-    access: "authenticated-only",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ req, res, deps }, match) =>
-      handleRuleTraceStream(req, res, deps, Number(match![1]), Number(match![2])),
-  },
-  {
-    // 直接废止一条条目(issue #203)由 `knowledge:write` 这一格拦下,读侧不受它影响。
-    // 手写条目那两条端点已经撤掉(issue #299,ADR 0028):写内容一律经修订意图。
-    method: "DELETE",
-    pattern: /^\/repos\/(\d+)\/rules\/(\d+)$/,
-    access: "knowledge:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ res, deps }, match) =>
-      handleRetireRule(res, deps, Number(match![1]), Number(match![2])),
-  },
-  {
-    // 基点探索的发起(issue #205)。与知识确认同一格:两者都是「谁定这个仓库的标准」。
-    method: "POST",
-    pattern: /^\/repos\/(\d+)\/rule-exploration$/,
-    access: "knowledge:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ req, res, deps }, match) =>
-      handleStartRuleExploration(req, res, deps, Number(match![1])),
-  },
-  {
-    // 知识整理的发起(issue #284)。与基点探索同一格:两者都改这个仓库要人裁决的那一份。
-    method: "POST",
-    pattern: /^\/repos\/(\d+)\/rule-consolidation$/,
-    access: "knowledge:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ req, res, deps }, match) =>
-      handleStartRuleConsolidation(req, res, deps, Number(match![1])),
-  },
-  {
-    // 提交与删除修订意图(ADR 0028,issue #294)。与裁决同一格:意图是「谁定这个仓库的
-    // 标准」的入口,只是由 agent 代笔。
-    method: "POST",
-    pattern: /^\/repos\/(\d+)\/revision-intents$/,
-    access: "knowledge:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ req, res, deps, caller }, match) =>
-      handleSubmitRevisionIntent(req, res, deps, Number(match![1]), caller!.username),
-  },
-  {
-    method: "DELETE",
-    pattern: /^\/repos\/(\d+)\/revision-intents\/(\d+)$/,
-    access: "knowledge:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ res, deps }, match) =>
-      handleDeleteRevisionIntent(res, deps, Number(match![1]), Number(match![2])),
-  },
-  {
-    // 草案的手填新增与逐条修改已经撤掉(issue #299):草案由探索产出、由修订意图改写,
-    // 人只勾选、确认与删除。
-    method: "POST",
-    pattern: /^\/repos\/(\d+)\/rule-draft\/confirm$/,
-    access: "knowledge:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ req, res, deps }, match) => handleConfirmRuleDraft(req, res, deps, Number(match![1])),
-  },
-  {
-    method: "DELETE",
-    pattern: /^\/repos\/(\d+)\/rule-draft\/(\d+)$/,
-    access: "knowledge:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ res, deps }, match) =>
-      handleDeleteDraftItem(res, deps, Number(match![1]), Number(match![2])),
-  },
-  {
-    // 裁决(issue #207)与知识确认同一格:两者都是「谁定这个仓库的标准」。
-    method: "POST",
-    pattern: /^\/repos\/(\d+)\/rule-proposals\/(\d+)\/accept$/,
-    access: "knowledge:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ res, deps }, match) =>
-      handleAcceptRuleProposal(res, deps, Number(match![1]), Number(match![2])),
-  },
-  {
-    method: "POST",
-    pattern: /^\/repos\/(\d+)\/rule-proposals\/(\d+)\/reject$/,
-    access: "knowledge:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ res, deps }, match) =>
-      handleRejectRuleProposal(res, deps, Number(match![1]), Number(match![2])),
-  },
-  {
-    // 批量裁决(issue #223)。与逐条那两条并列而不是取代它们:一次采纳一组只推进一个
-    // 知识集版本,而逐条采纳一次推一版。
-    method: "POST",
-    pattern: /^\/repos\/(\d+)\/rule-proposals\/accept$/,
-    access: "knowledge:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ req, res, deps }, match) =>
-      handleDecideRuleProposals(req, res, deps, Number(match![1]), true),
-  },
-  {
-    method: "POST",
-    pattern: /^\/repos\/(\d+)\/rule-proposals\/reject$/,
-    access: "knowledge:write",
-    assignment: { by: "repo", group: 1 },
-    handler: ({ req, res, deps }, match) =>
-      handleDecideRuleProposals(req, res, deps, Number(match![1]), false),
-  },
-  {
-    method: "GET",
-    pattern: "/model-services",
-    access: { anyOf: ["model:read", "credential:read"] },
-    handler: ({ res, deps, caller }) => handleListModelServices(res, deps, caller!),
-  },
-  {
-    method: "GET",
-    pattern: "/model-services/providers",
-    access: {
-      anyOf: ["model:read", "model:write", "credential:read", "credential:write"],
-    },
-    handler: ({ req, res, deps }) => handleBuiltinProviderSearch(req, res, deps),
-  },
-  {
-    method: "POST",
-    pattern: /^\/model-services\/builtin\/preview$/,
-    access: "credential:write",
-    handler: ({ req, res, deps }) => handlePreviewBuiltinModelService(req, res, deps),
-  },
-  {
-    method: "POST",
-    pattern: /^\/model-services\/builtin\/commit$/,
-    access: "credential:write",
-    handler: ({ req, res, deps }) => handleCommitBuiltinModelService(req, res, deps),
-  },
-  {
-    method: "POST",
-    pattern: /^\/model-services\/custom\/preview$/,
-    access: { allOf: ["model:write", "credential:write"] },
-    handler: ({ req, res, deps }) => handlePreviewCustomModelService(req, res, deps),
-  },
-  {
-    method: "POST",
-    pattern: /^\/model-services\/custom\/commit$/,
-    access: { allOf: ["model:write", "credential:write"] },
-    handler: ({ req, res, deps }) => handleCommitCustomModelService(req, res, deps),
-  },
-  {
-    method: "DELETE",
-    pattern: /^\/model-services\/custom\/([a-z0-9-]{1,64})$/,
-    access: { allOf: ["model:write", "credential:write"] },
-    handler: ({ req, res, deps }, match) =>
-      handleDeleteCustomModelService(req, res, deps, match![1]!),
-  },
-  {
-    method: "POST",
-    pattern: /^\/model-services\/custom\/([a-z0-9-]{1,64})\/rename$/,
-    access: { allOf: ["model:write", "credential:write"] },
-    handler: ({ req, res, deps }, match) =>
-      handleRenameConflictingCustomModelService(req, res, deps, match![1]!),
-  },
-  {
-    method: "POST",
-    pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/reverify$/,
-    access: "credential:write",
-    handler: ({ req, res, deps }, match) =>
-      handleReverifyModelService(req, res, deps, match![1]!),
-  },
-  {
-    method: "DELETE",
-    pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/credential$/,
-    access: "credential:write",
-    handler: ({ req, res, deps }, match) =>
-      handleDeleteModelServiceCredential(req, res, deps, match![1]!),
-  },
-  {
-    method: "POST",
-    pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/refresh$/,
-    access: "model:write",
-    handler: ({ req, res, deps }, match) =>
-      handleRefreshModelService(req, res, deps, match![1]!),
-  },
-  {
-    method: "PUT",
-    pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/model-states$/,
-    access: "model:write",
-    handler: ({ req, res, deps }, match) =>
-      handleUpdateModelServiceModelStates(req, res, deps, match![1]!),
-  },
-  {
-    method: "POST",
-    pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/supplements$/,
-    access: "model:write",
-    handler: ({ req, res, deps }, match) =>
-      handleAddModelSupplement(req, res, deps, match![1]!),
-  },
-  {
-    method: "DELETE",
-    pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/supplements$/,
-    access: "model:write",
-    handler: ({ req, res, deps }, match) =>
-      handleDeleteModelSupplement(req, res, deps, match![1]!),
-  },
+  { method: "GET", pattern: "/stats", access: "authenticated-only", handler: ({ req, res, deps, assignment }) => handleStats(req, res, deps, assignment!) },
+  { method: "GET", pattern: "/runs", access: "authenticated-only", handler: ({ req, res, deps, assignment }) => handleRuns(req, res, deps, assignment!) },
+  { method: "GET", pattern: "/stages", access: "authenticated-only", handler: ({ req, res, deps, assignment }) => handleStages(req, res, deps, assignment!) },
+  // 阶段标识里有斜杠(`pr:<owner>/<repo>/<number>`),在地址里编码成一段,这里整段收。
+  { method: "GET", pattern: /^\/stages\/(.+)$/, access: "authenticated-only", handler: ({ res, deps, assignment }, match) => handleStageDetail(res, deps, match![1]!, assignment!) },
+  { method: "GET", pattern: /^\/runs\/(\d+)$/, access: "authenticated-only", assignment: { by: "run", group: 1 }, handler: ({ res, deps }, match) => handleRun(res, deps, Number(match![1])) },
+  { method: "GET", pattern: /^\/runs\/(\d+)\/diff$/, access: "authenticated-only", assignment: { by: "run", group: 1 }, handler: ({ req, res, deps }, match) => handleRunDiff(req, res, deps, Number(match![1])) },
+  { method: "GET", pattern: /^\/runs\/(\d+)\/trace$/, access: "authenticated-only", assignment: { by: "run", group: 1 }, handler: ({ res, deps }, match) => handleRunTrace(res, deps, Number(match![1])) },
+  { method: "GET", pattern: /^\/runs\/(\d+)\/trace\/stream$/, access: "authenticated-only", assignment: { by: "run", group: 1 }, handler: ({ req, res, deps }, match) => handleRunTraceStream(req, res, deps, Number(match![1])) },
+  { method: "GET", pattern: "/stage-summary", access: "authenticated-only", assignment: { by: "query" }, handler: ({ req, res, deps }) => handleStageSummary(req, res, deps) },
+  { method: "POST", pattern: "/rerun", access: "review:rerun", handler: ({ req, res, deps, caller, assignment }) => handleRerun(req, res, deps, caller!.username, assignment!) },
+  { method: "POST", pattern: /^\/findings\/(\d+)\/resolve$/, access: "finding:dispose", assignment: { by: "finding", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleDispose(req, res, deps, Number(match![1]), "resolved", caller!.username) },
+  { method: "POST", pattern: /^\/findings\/(\d+)\/unresolve$/, access: "finding:dispose", assignment: { by: "finding", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleDispose(req, res, deps, Number(match![1]), "unresolved", caller!.username) },
+  // 阶段标识里有斜杠,在地址里编码成一段;可见范围与阶段详情一致,在处理里按分配判。
+  { method: "POST", pattern: /^\/stages\/(.+)\/findings\/dispose-below-threshold$/, access: "finding:dispose-batch", handler: ({ req, res, deps, caller, assignment }, match) => handleDisposeBelowThreshold(req, res, deps, match![1]!, caller!.username, assignment!) },
+  { method: "POST", pattern: "/range-reviews", access: "review:create", handler: ({ req, res, deps, caller, assignment }) => handleCreateRangeReview(req, res, deps, caller!.username, assignment!) },
+  { method: "GET", pattern: "/range-reviews/prefill", access: "review:create", assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRangeReviewPrefill(req, res, deps) },
+  { method: "POST", pattern: /^\/range-reviews\/(\d+)\/advance$/, access: "review:advance", assignment: { by: "range-review", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleAdvanceRangeReview(req, res, deps, Number(match![1]), caller!.username) },
+  { method: "POST", pattern: /^\/range-reviews\/(\d+)\/complete$/, access: "review:complete", assignment: { by: "range-review", group: 1 }, handler: ({ res, deps, caller }, match) => handleCompleteRangeReview(res, deps, Number(match![1]), caller!.username) },
+  // 发起范围审查与发起基点探索都从这里选 commit(issue #205),两格任一即可读。
+  { method: "GET", pattern: "/repo-branches", access: { anyOf: ["review:create", "knowledge:write"] }, assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRepoBranches(req, res, deps) },
+  { method: "GET", pattern: "/repo-commits", access: { anyOf: ["review:create", "knowledge:write"] }, assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRepoCommits(req, res, deps) },
+  { method: "GET", pattern: "/repo-tags", access: { anyOf: ["review:create", "knowledge:write"] }, assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRepoTags(req, res, deps) },
+  { method: "GET", pattern: "/repos/search", access: "repo:write", handler: ({ req, res, deps, hookManager }) => handleRepoSearch(req, res, deps, hookManager) },
+  { method: "GET", pattern: "/repos", access: "authenticated-only", handler: ({ res, deps, assignment }) => listRepos(res, deps, assignment!) },
+  { method: "POST", pattern: "/repos", access: "repo:write", handler: ({ req, res, deps, hookManager, caller }) => handleRegister(req, res, deps, hookManager, caller!) },
+  { method: "DELETE", pattern: /^\/repos\/(\d+)$/, access: "repo:write", assignment: { by: "repo", group: 1 }, handler: ({ res, deps, hookManager }, match) => handleRemove(res, deps, hookManager, Number(match![1])) },
+  { method: "POST", pattern: /^\/repos\/(\d+)\/worktree$/, access: "repo:write", assignment: { by: "repo", group: 1 }, handler: ({ res, deps }, match) => handlePrepareWorktree(res, deps, Number(match![1])) },
+  { method: "PUT", pattern: /^\/repos\/(\d+)\/settings$/, access: "repo:write", assignment: { by: "repo", group: 1 }, handler: ({ req, res, deps }, match) => handleSetRepoSettings(req, res, deps, Number(match![1])) },
+  { method: "POST", pattern: /^\/repos\/(\d+)\/rotate$/, access: "repo:write", assignment: { by: "repo", group: 1 }, handler: ({ res, deps, hookManager }, match) => handleRotate(res, deps, hookManager, Number(match![1])) },
+  { method: "GET", pattern: /^\/repos\/(\d+)\/hooks$/, access: "authenticated-only", assignment: { by: "repo", group: 1 }, handler: ({ res, deps, hookManager }, match) => handleHookCheck(res, deps, hookManager, Number(match![1])) },
+  // 知识集读侧不挂权限格(ADR 0019):登录加仓库分配即可读,分配外由过滤层判 404。
+  { method: "GET", pattern: /^\/repos\/(\d+)\/rules$/, access: "authenticated-only", assignment: { by: "repo", group: 1 }, handler: ({ res, deps }, match) => handleRuleSet(res, deps, Number(match![1])) },
+  // 生效辅助模型的只读投影(issue #303)与知识集读侧同一格:看得到这个仓库知识任务的
+  // 人就该看得到它将用哪一处模型。
+  { method: "GET", pattern: /^\/repos\/(\d+)\/auxiliary-model$/, access: "authenticated-only", assignment: { by: "repo", group: 1 }, handler: ({ res, deps }, match) => handleAuxiliaryModel(res, deps, Number(match![1])) },
+  // 知识轨迹(issue #214)与知识集读侧同一格:能看这个仓库的知识集就能看它是怎么来的。
+  { method: "GET", pattern: /^\/repos\/(\d+)\/rule-traces\/(\d+)$/, access: "authenticated-only", assignment: { by: "repo", group: 1 }, handler: ({ res, deps }, match) => handleRuleTrace(res, deps, Number(match![1]), Number(match![2])) },
+  { method: "GET", pattern: /^\/repos\/(\d+)\/rule-traces\/(\d+)\/stream$/, access: "authenticated-only", assignment: { by: "repo", group: 1 }, handler: ({ req, res, deps }, match) => handleRuleTraceStream(req, res, deps, Number(match![1]), Number(match![2])) },
+  // 直接废止一条条目(issue #203)由 `knowledge:write` 这一格拦下,读侧不受它影响。
+  // 手写条目那两条端点已经撤掉(issue #299,ADR 0028):写内容一律经修订意图。
+  { method: "DELETE", pattern: /^\/repos\/(\d+)\/rules\/(\d+)$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ res, deps }, match) => handleRetireRule(res, deps, Number(match![1]), Number(match![2])) },
+  // 基点探索的发起(issue #205)。与知识确认同一格:两者都是「谁定这个仓库的标准」。
+  { method: "POST", pattern: /^\/repos\/(\d+)\/rule-exploration$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ req, res, deps }, match) => handleStartRuleExploration(req, res, deps, Number(match![1])) },
+  // 知识整理的发起(issue #284)。与基点探索同一格:两者都改这个仓库要人裁决的那一份。
+  { method: "POST", pattern: /^\/repos\/(\d+)\/rule-consolidation$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ req, res, deps }, match) => handleStartRuleConsolidation(req, res, deps, Number(match![1])) },
+  // 提交与删除修订意图(ADR 0028,issue #294)。与裁决同一格:意图是「谁定这个仓库的
+  // 标准」的入口,只是由 agent 代笔。
+  { method: "POST", pattern: /^\/repos\/(\d+)\/revision-intents$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleSubmitRevisionIntent(req, res, deps, Number(match![1]), caller!.username) },
+  { method: "DELETE", pattern: /^\/repos\/(\d+)\/revision-intents\/(\d+)$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ res, deps }, match) => handleDeleteRevisionIntent(res, deps, Number(match![1]), Number(match![2])) },
+  // 草案的手填新增与逐条修改已经撤掉(issue #299):草案由探索产出、由修订意图改写,
+  // 人只勾选、确认与删除。
+  { method: "POST", pattern: /^\/repos\/(\d+)\/rule-draft\/confirm$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ req, res, deps }, match) => handleConfirmRuleDraft(req, res, deps, Number(match![1])) },
+  { method: "DELETE", pattern: /^\/repos\/(\d+)\/rule-draft\/(\d+)$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ res, deps }, match) => handleDeleteDraftItem(res, deps, Number(match![1]), Number(match![2])) },
+  // 裁决(issue #207)与知识确认同一格:两者都是「谁定这个仓库的标准」。
+  { method: "POST", pattern: /^\/repos\/(\d+)\/rule-proposals\/(\d+)\/accept$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ res, deps }, match) => handleAcceptRuleProposal(res, deps, Number(match![1]), Number(match![2])) },
+  { method: "POST", pattern: /^\/repos\/(\d+)\/rule-proposals\/(\d+)\/reject$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ res, deps }, match) => handleRejectRuleProposal(res, deps, Number(match![1]), Number(match![2])) },
+  // 批量裁决(issue #223)。与逐条那两条并列而不是取代它们:一次采纳一组只推进一个
+  // 知识集版本,而逐条采纳一次推一版。
+  { method: "POST", pattern: /^\/repos\/(\d+)\/rule-proposals\/accept$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ req, res, deps }, match) => handleDecideRuleProposals(req, res, deps, Number(match![1]), true) },
+  { method: "POST", pattern: /^\/repos\/(\d+)\/rule-proposals\/reject$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ req, res, deps }, match) => handleDecideRuleProposals(req, res, deps, Number(match![1]), false) },
+  { method: "GET", pattern: "/model-services", access: { anyOf: ["model:read", "credential:read"] }, handler: ({ res, deps, caller }) => handleListModelServices(res, deps, caller!) },
+  { method: "GET", pattern: "/model-services/providers", access: { anyOf: ["model:read", "model:write", "credential:read", "credential:write"] }, handler: ({ req, res, deps }) => handleBuiltinProviderSearch(req, res, deps) },
+  { method: "POST", pattern: /^\/model-services\/builtin\/preview$/, access: "credential:write", handler: ({ req, res, deps }) => handlePreviewBuiltinModelService(req, res, deps) },
+  { method: "POST", pattern: /^\/model-services\/builtin\/commit$/, access: "credential:write", handler: ({ req, res, deps }) => handleCommitBuiltinModelService(req, res, deps) },
+  { method: "POST", pattern: /^\/model-services\/custom\/preview$/, access: { allOf: ["model:write", "credential:write"] }, handler: ({ req, res, deps }) => handlePreviewCustomModelService(req, res, deps) },
+  { method: "POST", pattern: /^\/model-services\/custom\/commit$/, access: { allOf: ["model:write", "credential:write"] }, handler: ({ req, res, deps }) => handleCommitCustomModelService(req, res, deps) },
+  { method: "DELETE", pattern: /^\/model-services\/custom\/([a-z0-9-]{1,64})$/, access: { allOf: ["model:write", "credential:write"] }, handler: ({ req, res, deps }, match) => handleDeleteCustomModelService(req, res, deps, match![1]!) },
+  { method: "POST", pattern: /^\/model-services\/custom\/([a-z0-9-]{1,64})\/rename$/, access: { allOf: ["model:write", "credential:write"] }, handler: ({ req, res, deps }, match) => handleRenameConflictingCustomModelService(req, res, deps, match![1]!) },
+  { method: "POST", pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/reverify$/, access: "credential:write", handler: ({ req, res, deps }, match) => handleReverifyModelService(req, res, deps, match![1]!) },
+  { method: "DELETE", pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/credential$/, access: "credential:write", handler: ({ req, res, deps }, match) => handleDeleteModelServiceCredential(req, res, deps, match![1]!) },
+  { method: "POST", pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/refresh$/, access: "model:write", handler: ({ req, res, deps }, match) => handleRefreshModelService(req, res, deps, match![1]!) },
+  { method: "PUT", pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/model-states$/, access: "model:write", handler: ({ req, res, deps }, match) => handleUpdateModelServiceModelStates(req, res, deps, match![1]!) },
+  { method: "POST", pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/supplements$/, access: "model:write", handler: ({ req, res, deps }, match) => handleAddModelSupplement(req, res, deps, match![1]!) },
+  { method: "DELETE", pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/supplements$/, access: "model:write", handler: ({ req, res, deps }, match) => handleDeleteModelSupplement(req, res, deps, match![1]!) },
 ];
 
 function matchPanelRoute(
@@ -3372,10 +2950,7 @@ function commitAndRespond(
     store.commitModelServiceVersion(expectedVersion, record),
   );
   if (version === undefined) {
-    const actualVersion = withStore(deps.dbPath, (store) =>
-      store.getModelService(provider)?.version ?? null,
-    );
-    return versionConflict(res, expectedVersion, actualVersion);
+    return staleVersionConflict(res, deps, provider, expectedVersion);
   }
   return sendJson(res, 200, {
     provider,
@@ -3490,12 +3065,7 @@ async function commitVerifiedBuiltinModelService(
   // 这一版绑定的目标:发现到的集合加上验证模型实际用的那一个;指纹从集合算出。
   const targets = normalizeModelServiceTargets([...confirmedTargets, resolved.target]);
   const targetFingerprint = modelServiceTargetSetFingerprint(targets)!;
-  const supplements: CommittedSupplement[] = (current?.supplements ?? []).map((entry) => ({
-    model: entry.model,
-    source: entry.source,
-    targetFingerprint: entry.targetFingerprint,
-    createdAt: entry.createdAt,
-  }));
+  const supplements: CommittedSupplement[] = [...(current?.supplements ?? [])];
   if (!discovered.ok || validationDiscovery === undefined) {
     upsertSupplement(supplements, {
       model: input.validationModel,
@@ -3571,40 +3141,85 @@ async function handleCommitBuiltinModelService(
   });
 }
 
+/** 只带 `expectedVersion` 的写请求体。 */
+function parseExpectedVersion(value: unknown): { expectedVersion: number } | undefined {
+  const raw = (value as { expectedVersion?: unknown } | null)?.expectedVersion;
+  return Number.isInteger(raw) && Number(raw) > 0 ? { expectedVersion: Number(raw) } : undefined;
+}
+
+/** 重验请求体:一个验证模型加 `expectedVersion`。 */
+function parseReverifyRequest(
+  value: unknown,
+): { validationModel: string; expectedVersion: number } | undefined {
+  const payload = value as { validationModel?: unknown; expectedVersion?: unknown } | null;
+  const validationModel = payload?.validationModel;
+  if (
+    typeof validationModel !== "string" ||
+    validationModel.length === 0 ||
+    validationModel !== validationModel.trim() ||
+    !Number.isInteger(payload?.expectedVersion) ||
+    Number(payload?.expectedVersion) <= 0
+  ) {
+    return undefined;
+  }
+  return { validationModel, expectedVersion: Number(payload?.expectedVersion) };
+}
+
+/**
+ * 五条模型服务写端点的共同前奏:要主密钥的先要到主密钥、请求体形状认得、这家服务还在、
+ * 版本号对得上。任一不过就在这里答复,调用方拿到 undefined 直接返回;过了给出这一版记录、
+ * 解析好的入参与主密钥。答复的顺序与措辞逐条由调用方给,面板要照着它下一步做什么。
+ */
+async function loadVersionedService<T extends { expectedVersion: number }>(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  provider: string,
+  spec: {
+    masterKey: boolean;
+    parse: (payload: unknown) => T | undefined;
+    invalid: string;
+    conflict?: string;
+  },
+): Promise<{ current: ModelServiceRecord; input: T; masterKey: string } | undefined> {
+  const masterKey = deps.credentialMasterKey ?? "";
+  if (spec.masterKey && masterKey === "") {
+    sendJson(res, 503, { error: MASTER_KEY_MISSING });
+    return undefined;
+  }
+  const payload = await readJson(req, res);
+  if (payload === undefined) return undefined;
+  const input = spec.parse(payload);
+  if (input === undefined) {
+    sendJson(res, 400, { error: spec.invalid });
+    return undefined;
+  }
+  const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
+  if (current === undefined) {
+    sendJson(res, 404, { error: `没有模型服务 ${provider}` });
+    return undefined;
+  }
+  if (current.version !== input.expectedVersion) {
+    versionConflict(res, input.expectedVersion, current.version, spec.conflict);
+    return undefined;
+  }
+  return { current, input, masterKey };
+}
+
 async function handleReverifyModelService(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
   provider: string,
 ): Promise<void> {
-  const masterKey = deps.credentialMasterKey;
-  if (masterKey === undefined || masterKey === "") {
-    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
-  }
-  const payload = await readJson<{
-    validationModel?: unknown;
-    expectedVersion?: unknown;
-  } | null>(req, res);
-  if (payload === undefined) return;
-  if (
-    payload === null ||
-    typeof payload.validationModel !== "string" ||
-    payload.validationModel.length === 0 ||
-    payload.validationModel !== payload.validationModel.trim() ||
-    !Number.isInteger(payload.expectedVersion) ||
-    Number(payload.expectedVersion) <= 0
-  ) {
-    return sendJson(res, 400, { error: "模型服务重验参数形状不对" });
-  }
-  const validationModel = payload.validationModel;
-  const expectedVersion = Number(payload.expectedVersion);
-  const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
-  if (current === undefined) {
-    return sendJson(res, 404, { error: `没有模型服务 ${provider}` });
-  }
-  if (current.version !== expectedVersion) {
-    return versionConflict(res, expectedVersion, current.version);
-  }
+  const loaded = await loadVersionedService(req, res, deps, provider, {
+    masterKey: true,
+    parse: parseReverifyRequest,
+    invalid: "模型服务重验参数形状不对",
+  });
+  if (loaded === undefined) return;
+  const { current, masterKey } = loaded;
+  const { validationModel, expectedVersion } = loaded.input;
 
   let candidate: ModelServiceCandidate;
   let targetFingerprint: string | undefined;
@@ -3672,12 +3287,7 @@ async function handleReverifyModelService(
   if (!validation.ok) return sendCandidateFailure(res, validation.failure, secrets);
 
   const committedAt = new Date((deps.now ?? Date.now)()).toISOString();
-  const supplements: CommittedSupplement[] = current.supplements.map((entry) => ({
-    model: entry.model,
-    source: entry.source,
-    targetFingerprint: entry.targetFingerprint,
-    createdAt: entry.createdAt,
-  }));
+  const supplements: CommittedSupplement[] = [...current.supplements];
   if (!discovered.ok || validationDiscovery === undefined) {
     upsertSupplement(supplements, {
       model: validationModel,
@@ -3726,23 +3336,14 @@ async function handleDeleteModelServiceCredential(
   deps: WebhookServerDeps,
   provider: string,
 ): Promise<void> {
-  const payload = await readJson<{ expectedVersion?: unknown } | null>(req, res);
-  if (payload === undefined) return;
-  if (
-    payload === null ||
-    !Number.isInteger(payload.expectedVersion) ||
-    Number(payload.expectedVersion) <= 0
-  ) {
-    return sendJson(res, 400, { error: "删除模型凭据参数形状不对" });
-  }
-  const expectedVersion = Number(payload.expectedVersion);
-  const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
-  if (current === undefined) {
-    return sendJson(res, 404, { error: `没有模型服务 ${provider}` });
-  }
-  if (current.version !== expectedVersion) {
-    return versionConflict(res, expectedVersion, current.version);
-  }
+  const loaded = await loadVersionedService(req, res, deps, provider, {
+    masterKey: false,
+    parse: parseExpectedVersion,
+    invalid: "删除模型凭据参数形状不对",
+  });
+  if (loaded === undefined) return;
+  const { current } = loaded;
+  const expectedVersion = loaded.input.expectedVersion;
   const references = withStore(deps.dbPath, (store) =>
     store.listModelReferences().filter((reference) => reference.provider === provider),
   );
@@ -3772,21 +3373,13 @@ async function handleDeleteModelServiceCredential(
     },
     directory: current.directory,
     automaticModels: current.automaticModels,
-    supplements: current.supplements.map((entry) => ({
-      model: entry.model,
-      source: entry.source,
-      targetFingerprint: entry.targetFingerprint,
-      createdAt: entry.createdAt,
-    })),
+    supplements: current.supplements,
   };
   const version = withStore(deps.dbPath, (store) =>
     store.commitModelServiceVersion(expectedVersion, record),
   );
   if (version === undefined) {
-    const actualVersion = withStore(deps.dbPath, (store) =>
-      store.getModelService(provider)?.version ?? null,
-    );
-    return versionConflict(res, expectedVersion, actualVersion, "模型服务版本已变化或仍被模型组合或辅助模型引用，请重新打开配置");
+    return staleVersionConflict(res, deps, provider, expectedVersion, "模型服务版本已变化或仍被模型组合或辅助模型引用，请重新打开配置");
   }
   return sendJson(res, 200, {
     provider,
@@ -3920,10 +3513,7 @@ async function handleUpdateModelServiceModelStates(
     );
   });
   if (result.status === "version-conflict") {
-    const actualVersion = withStore(deps.dbPath, (store) =>
-      store.getModelService(provider)?.version ?? null,
-    );
-    return versionConflict(res, input.expectedVersion, actualVersion, "模型服务版本已变化，请重新载入后再更新模型状态");
+    return staleVersionConflict(res, deps, provider, input.expectedVersion, "模型服务版本已变化，请重新载入后再更新模型状态");
   }
   if (result.status === "unknown-models") {
     return sendJson(res, 400, {
@@ -3950,27 +3540,15 @@ async function handleRefreshModelService(
   deps: WebhookServerDeps,
   provider: string,
 ): Promise<void> {
-  const masterKey = deps.credentialMasterKey;
-  if (masterKey === undefined || masterKey === "") {
-    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
-  }
-  const payload = await readJson<{ expectedVersion?: unknown } | null>(req, res);
-  if (payload === undefined) return;
-  if (
-    payload === null ||
-    !Number.isInteger(payload.expectedVersion) ||
-    Number(payload.expectedVersion) <= 0
-  ) {
-    return sendJson(res, 400, { error: "刷新模型目录必须带正整数 expectedVersion" });
-  }
-  const expectedVersion = Number(payload.expectedVersion);
-  const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
-  if (current === undefined) {
-    return sendJson(res, 404, { error: `没有模型服务 ${provider}` });
-  }
-  if (current.version !== expectedVersion) {
-    return versionConflict(res, expectedVersion, current.version, "模型服务版本已变化，请重新载入后再刷新");
-  }
+  const loaded = await loadVersionedService(req, res, deps, provider, {
+    masterKey: true,
+    parse: parseExpectedVersion,
+    invalid: "刷新模型目录必须带正整数 expectedVersion",
+    conflict: "模型服务版本已变化，请重新载入后再刷新",
+  });
+  if (loaded === undefined) return;
+  const { current, masterKey } = loaded;
+  const expectedVersion = loaded.input.expectedVersion;
   if (await hasCurrentCustomProviderNameConflict(current)) {
     return sendJson(res, 409, {
       error: `${provider} 与当前 Pi 内置 provider 名字冲突，不能刷新目录`,
@@ -4019,21 +3597,13 @@ async function handleRefreshModelService(
     credential: current.credential,
     directory,
     automaticModels: discovered.ok ? discovered.models : current.automaticModels,
-    supplements: current.supplements.map((entry) => ({
-      model: entry.model,
-      source: entry.source,
-      targetFingerprint: entry.targetFingerprint,
-      createdAt: entry.createdAt,
-    })),
+    supplements: current.supplements,
   };
   const version = withStore(deps.dbPath, (store) =>
     store.commitModelServiceVersion(expectedVersion, record),
   );
   if (version === undefined) {
-    const actualVersion = withStore(deps.dbPath, (store) =>
-      store.getModelService(provider)?.version ?? null,
-    );
-    return versionConflict(res, expectedVersion, actualVersion, "模型服务版本已变化，请重新载入后再刷新");
+    return staleVersionConflict(res, deps, provider, expectedVersion, "模型服务版本已变化，请重新载入后再刷新");
   }
   return sendJson(res, 200, {
     provider,
@@ -4052,25 +3622,14 @@ async function handleAddModelSupplement(
   deps: WebhookServerDeps,
   provider: string,
 ): Promise<void> {
-  const masterKey = deps.credentialMasterKey;
-  if (masterKey === undefined || masterKey === "") {
-    return sendJson(res, 503, { error: MASTER_KEY_MISSING });
-  }
-  const payload = await readJson(req, res);
-  if (payload === undefined) return;
-  const input = parseModelSupplementMutation(payload);
-  if (input === undefined) {
-    return sendJson(res, 400, {
-      error: "模型补录只接受 model 与正整数 expectedVersion",
-    });
-  }
-  const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
-  if (current === undefined) {
-    return sendJson(res, 404, { error: `没有模型服务 ${provider}` });
-  }
-  if (current.version !== input.expectedVersion) {
-    return versionConflict(res, input.expectedVersion, current.version, "模型服务版本已变化，请重新载入后再补录");
-  }
+  const loaded = await loadVersionedService(req, res, deps, provider, {
+    masterKey: true,
+    parse: parseModelSupplementMutation,
+    invalid: "模型补录只接受 model 与正整数 expectedVersion",
+    conflict: "模型服务版本已变化，请重新载入后再补录",
+  });
+  if (loaded === undefined) return;
+  const { current, input, masterKey } = loaded;
   if (await hasCurrentCustomProviderNameConflict(current)) {
     return sendJson(res, 409, {
       error: `${provider} 与当前 Pi 内置 provider 名字冲突，不能补录模型`,
@@ -4110,12 +3669,7 @@ async function handleAddModelSupplement(
     return sendCandidateFailure(res, validation.failure, runtime.secrets);
   }
   const committedAt = new Date((deps.now ?? Date.now)()).toISOString();
-  const supplements = current.supplements.map((entry) => ({
-    model: entry.model,
-    source: entry.source,
-    targetFingerprint: entry.targetFingerprint,
-    createdAt: entry.createdAt,
-  }));
+  const supplements: CommittedSupplement[] = [...current.supplements];
   const supplement = {
     model: input.model,
     source: "manual" as const,
@@ -4151,10 +3705,7 @@ async function handleAddModelSupplement(
     store.commitModelServiceVersion(input.expectedVersion, record),
   );
   if (version === undefined) {
-    const actualVersion = withStore(deps.dbPath, (store) =>
-      store.getModelService(provider)?.version ?? null,
-    );
-    return versionConflict(res, input.expectedVersion, actualVersion, "模型服务版本已变化，请重新载入后再补录");
+    return staleVersionConflict(res, deps, provider, input.expectedVersion, "模型服务版本已变化，请重新载入后再补录");
   }
   return sendJson(res, 200, {
     provider,
@@ -4171,21 +3722,14 @@ async function handleDeleteModelSupplement(
   deps: WebhookServerDeps,
   provider: string,
 ): Promise<void> {
-  const payload = await readJson(req, res);
-  if (payload === undefined) return;
-  const input = parseModelSupplementMutation(payload);
-  if (input === undefined) {
-    return sendJson(res, 400, {
-      error: "删除模型补录只接受 model 与正整数 expectedVersion",
-    });
-  }
-  const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
-  if (current === undefined) {
-    return sendJson(res, 404, { error: `没有模型服务 ${provider}` });
-  }
-  if (current.version !== input.expectedVersion) {
-    return versionConflict(res, input.expectedVersion, current.version, "模型服务版本已变化，请重新载入后再删除补录");
-  }
+  const loaded = await loadVersionedService(req, res, deps, provider, {
+    masterKey: false,
+    parse: parseModelSupplementMutation,
+    invalid: "删除模型补录只接受 model 与正整数 expectedVersion",
+    conflict: "模型服务版本已变化，请重新载入后再删除补录",
+  });
+  if (loaded === undefined) return;
+  const { current, input } = loaded;
   const supplement = current.supplements.find((entry) => entry.model === input.model);
   if (supplement === undefined) {
     return sendJson(res, 404, {
@@ -4220,23 +3764,13 @@ async function handleDeleteModelSupplement(
     credential: current.credential,
     directory: current.directory,
     automaticModels: current.automaticModels,
-    supplements: current.supplements
-      .filter((entry) => entry.model !== input.model)
-      .map((entry) => ({
-        model: entry.model,
-        source: entry.source,
-        targetFingerprint: entry.targetFingerprint,
-        createdAt: entry.createdAt,
-      })),
+    supplements: current.supplements.filter((entry) => entry.model !== input.model),
   };
   const version = withStore(deps.dbPath, (store) =>
     store.commitModelServiceVersion(input.expectedVersion, record),
   );
   if (version === undefined) {
-    const actualVersion = withStore(deps.dbPath, (store) =>
-      store.getModelService(provider)?.version ?? null,
-    );
-    return versionConflict(res, input.expectedVersion, actualVersion, "模型服务版本已变化，请重新载入后再删除补录");
+    return staleVersionConflict(res, deps, provider, input.expectedVersion, "模型服务版本已变化，请重新载入后再删除补录");
   }
   return sendJson(res, 200, {
     provider,
@@ -4435,12 +3969,7 @@ async function handleCommitCustomModelService(
   const targetFingerprint = modelServiceTargetFingerprint(input.baseUrl, input.api);
   const sameTarget = current?.targetFingerprint === targetFingerprint;
   const supplements: CommittedSupplement[] = sameTarget
-    ? knownSupplements.map((entry) => ({
-        model: entry.model,
-        source: entry.source,
-        targetFingerprint: entry.targetFingerprint,
-        createdAt: entry.createdAt,
-      }))
+    ? [...knownSupplements]
     : input.reconfirmedSupplements.map((identity) => {
         const entry = supplementByIdentity.get(identity)!;
         return {
@@ -4556,10 +4085,7 @@ async function handleDeleteCustomModelService(
     store.removeCustomModelService(provider, expectedVersion),
   );
   if (!removed) {
-    const actualVersion = withStore(deps.dbPath, (store) =>
-      store.getModelService(provider)?.version ?? null,
-    );
-    return versionConflict(res, expectedVersion, actualVersion);
+    return staleVersionConflict(res, deps, provider, expectedVersion);
   }
   return sendJson(res, 200, { provider, deleted: true });
 }
@@ -4628,10 +4154,7 @@ async function handleRenameConflictingCustomModelService(
   if (result.status === "not-conflicting") {
     return sendJson(res, 409, { error: "只有因 provider 名称冲突而停用的自定义服务可以改名" });
   }
-  const actualVersion = withStore(deps.dbPath, (store) =>
-    store.getModelService(currentProvider)?.version ?? null,
-  );
-  return versionConflict(res, expectedVersion, actualVersion);
+  return staleVersionConflict(res, deps, currentProvider, expectedVersion);
 }
 
 
@@ -4694,6 +4217,25 @@ function parseAuxiliaryModel(
   return { ok: true, spec, json: JSON.stringify(spec) };
 }
 
+/**
+ * 查询串上的一个整数参数:没给这一项回 null,给了但不是范围内的安全整数回 `"invalid"`,
+ * 由调用方按自己的措辞回 400(与 `parseRepoIds` 同一个约定)。
+ */
+function intQuery(
+  query: URLSearchParams,
+  key: string,
+  bounds: { min?: number; max?: number } = {},
+): number | null | "invalid" {
+  const raw = query.get(key);
+  if (raw === null) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) &&
+    (bounds.min === undefined || value >= bounds.min) &&
+    (bounds.max === undefined || value <= bounds.max)
+    ? value
+    : "invalid";
+}
+
 /** 时间流一页的条数。翻页用 id 游标,不用 offset——历史只增不删,游标不会漂。 */
 const RUNS_PAGE = 30;
 
@@ -4705,11 +4247,8 @@ function handleRuns(
   assignment: RepoAssignment,
 ): void {
   const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
-  const beforeRaw = query.get("before");
-  const beforeId = beforeRaw === null ? undefined : Number(beforeRaw);
-  if (beforeId !== undefined && !Number.isSafeInteger(beforeId)) {
-    return sendJson(res, 400, { error: "before 要是整数游标" });
-  }
+  const beforeId = intQuery(query, "before");
+  if (beforeId === "invalid") return sendJson(res, 400, { error: "before 要是整数游标" });
   const owner = query.get("owner");
   const repo = query.get("repo");
   if ((owner === null) !== (repo === null)) {
@@ -4718,7 +4257,7 @@ function handleRuns(
   const runs = withStore(deps.dbPath, (store) =>
     store.listRuns({
       limit: RUNS_PAGE,
-      ...(beforeId === undefined ? {} : { beforeId }),
+      ...(beforeId === null ? {} : { beforeId }),
       // 收窄在 SQL 里做,与评审记录一页同一个理由:回到 JS 再滤会让这一页的行数与
       // 游标对不上——滤空的一页照样给出下一页游标,滤剩几行的一页却按满页算。
       ...(assignment.refs === undefined ? {} : { repos: assignment.refs }),
@@ -4748,11 +4287,8 @@ function handleStages(
   assignment: RepoAssignment,
 ): void {
   const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
-  const offsetRaw = query.get("offset");
-  const offset = offsetRaw === null ? 0 : Number(offsetRaw);
-  if (!Number.isSafeInteger(offset) || offset < 0) {
-    return sendJson(res, 400, { error: "offset 要是非负整数" });
-  }
+  const offset = intQuery(query, "offset", { min: 0 }) ?? 0;
+  if (offset === "invalid") return sendJson(res, 400, { error: "offset 要是非负整数" });
   const owner = query.get("owner");
   const repo = query.get("repo");
   if ((owner === null) !== (repo === null)) {
@@ -4910,19 +4446,18 @@ async function handleStageSummary(
   deps: WebhookServerDeps,
 ): Promise<void> {
   const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
-  const rangeReviewRaw = query.get("rangeReviewId");
+  const rangeReviewId = intQuery(query, "rangeReviewId", { min: 1 });
   const owner = query.get("owner");
   const repo = query.get("repo");
-  const pullRaw = query.get("pullNumber");
-  const byPullRequest = owner !== null || repo !== null || pullRaw !== null;
-  if ((rangeReviewRaw !== null) === byPullRequest) {
+  const pullNumber = intQuery(query, "pullNumber", { min: 1 });
+  const byPullRequest = owner !== null || repo !== null || pullNumber !== null;
+  if ((rangeReviewId !== null) === byPullRequest) {
     return sendJson(res, 400, {
       error: "要按 rangeReviewId 或 owner + repo + pullNumber 取一个阶段,两条只能给一条",
     });
   }
-  if (rangeReviewRaw !== null) {
-    const rangeReviewId = Number(rangeReviewRaw);
-    if (!Number.isSafeInteger(rangeReviewId) || rangeReviewId <= 0) {
+  if (rangeReviewId !== null) {
+    if (rangeReviewId === "invalid") {
       return sendJson(res, 400, { error: "rangeReviewId 要是正整数" });
     }
     const rangeReview = withStore(deps.dbPath, (store) => store.getRangeReview(rangeReviewId));
@@ -4932,11 +4467,10 @@ async function handleStageSummary(
     await backfillLineAuthors(deps, rangeReview, scope);
     return sendJson(res, 200, withStore(deps.dbPath, (store) => store.stageSummary(scope)));
   }
-  if (owner === null || repo === null || pullRaw === null) {
+  if (owner === null || repo === null || pullNumber === null) {
     return sendJson(res, 400, { error: "owner、repo 与 pullNumber 要一起给" });
   }
-  const pullNumber = Number(pullRaw);
-  if (!Number.isSafeInteger(pullNumber) || pullNumber <= 0) {
+  if (pullNumber === "invalid") {
     return sendJson(res, 400, { error: "pullNumber 要是正整数" });
   }
   const scope = { owner, repo, pullNumber };
@@ -5796,14 +5330,10 @@ type PickerQuery = {
 
 /** commit 与 Tag 共用的搜索、筛选和分页参数。日期是浏览器本地日界线换算后的 ISO 时刻。 */
 function parsePickerQuery(query: URLSearchParams): { ok: true; value: PickerQuery } | { ok: false; error: string } {
-  const offsetRaw = query.get("offset");
-  const offset = offsetRaw === null ? 0 : Number(offsetRaw);
-  if (!Number.isSafeInteger(offset) || offset < 0) {
-    return { ok: false, error: "offset 要是非负整数" };
-  }
-  const limitRaw = query.get("limit");
-  const limit = limitRaw === null ? COMMITS_PAGE : Number(limitRaw);
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > COMMITS_PAGE_MAX) {
+  const offset = intQuery(query, "offset", { min: 0 }) ?? 0;
+  if (offset === "invalid") return { ok: false, error: "offset 要是非负整数" };
+  const limit = intQuery(query, "limit", { min: 1, max: COMMITS_PAGE_MAX }) ?? COMMITS_PAGE;
+  if (limit === "invalid") {
     return { ok: false, error: `limit 要是 1 到 ${COMMITS_PAGE_MAX} 之间的整数` };
   }
   const base = query.get("base");
