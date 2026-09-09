@@ -163,6 +163,11 @@ export type PanelHarnessOptions = {
   credentialMasterKey?: string | undefined;
   /** Reviewer 的组装。省略即按 spec 建脚本 Reviewer;真组装那一档传 `buildReviewers`。 */
   buildReviewers?: WebhookServerDeps["buildReviewers"];
+  /**
+   * 本轮合并 agent 的组装(issue #304)。省略即用真实的 Pi 子进程实现;要断言这一轮的
+   * 合并用了哪一处模型的用例注入脚本化实现,收到的那份运行模型就是解析出的辅助模型。
+   */
+  buildMergeAgent?: WebhookServerDeps["buildMergeAgent"];
   /** 先写进库的全局模型组合。省略取 `[HARNESS_SPEC]`,给空数组即「还没配组合」。 */
   reviewers?: readonly ReviewerSpec[];
   discoverModelServiceModels?: WebhookServerDeps["discoverModelServiceModels"];
@@ -309,6 +314,9 @@ export async function startPanelHarness(
       if (options.buildReviewers !== undefined) return options.buildReviewers(plans);
       return plans.map((plan) => scriptedReviewer(plan.spec.model, []));
     },
+    ...(options.buildMergeAgent === undefined
+      ? {}
+      : { buildMergeAgent: options.buildMergeAgent }),
     cacheDir: cache.dir,
     dbPath: db.path,
     bootstrapSecret: "panel-harness-bootstrap",

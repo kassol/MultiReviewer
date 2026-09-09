@@ -19,6 +19,13 @@ import {
   verdictReviewer,
   type MemoryForge,
 } from "./support/memory-forge.ts";
+import {
+  HARNESS_SPEC,
+  seedAvailableModelService,
+  seedHistoricalRepo,
+  startPanelHarness,
+  type PanelHarnessOptions,
+} from "./support/panel-harness.ts";
 
 const BASE_M = `export function sub(a, b) {
   return a - b;
@@ -935,4 +942,134 @@ test("一组含两条历史:id 小的延续,另一条保持原状", async () => 
     rows[2]!.continuedFrom,
     "https://forge.invalid/pulls/7/files#comment-1",
   );
+});
+
+/*
+ * 本轮的合并 agent 用哪一处模型(issue #304,ADR 0029)。
+ *
+ * 这一段打在服务的注入边界上而不是 `runReview` 上:选哪一处模型是 `webhook/server.ts`
+ * 开跑时的解析,`buildMergeAgent` 收到的那份运行模型就是这一轮合并 agent 用的模型与
+ * 档位。断言只看它与轮次落库的那一处,不看合并本身怎么分组——那是上面几十条用例的事。
+ */
+
+/** 一次合并 agent 建出来时收到的模型快照。一条都没有即这一轮的合并走算法档。 */
+type MergeBuild = { provider: string; model: string; thinkingLevel?: string };
+
+function recordMergeBuilds(builds: MergeBuild[]): PanelHarnessOptions["buildMergeAgent"] {
+  return (config) => {
+    builds.push({
+      provider: config.runtimeModel.provider,
+      model: config.runtimeModel.id,
+      ...(config.thinkingLevel === undefined ? {} : { thinkingLevel: config.thinkingLevel }),
+    });
+    return scriptedMergeAgent([]);
+  };
+}
+
+/** 这一轮落库的辅助模型引用。列是 JSON,没有即 null。 */
+function runAuxiliaryModel(dbPath: string): unknown {
+  const raw = new DatabaseSync(dbPath);
+  try {
+    const row = raw
+      .prepare("SELECT auxiliary_model FROM review_run ORDER BY id DESC LIMIT 1")
+      .get();
+    const value = row?.["auxiliary_model"];
+    return value === null || value === undefined ? null : JSON.parse(String(value));
+  } finally {
+    raw.close();
+  }
+}
+
+/** 直接写审查策略里那一处辅助模型。面板写链只收当前可用的模型,夹具入口不设门。 */
+function setGlobalAuxiliaryModel(dbPath: string, spec: unknown): void {
+  const store = openStore(dbPath);
+  try {
+    assert.equal(
+      store.putGlobalSettings({ auxiliaryModelJson: JSON.stringify(spec) }),
+      true,
+    );
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * 起一份就绪的实例,按需设一处辅助模型,跑一轮,回这一轮建出来的合并 agent 与落库的
+ * 那一处。一轮一份实例:同一个 head 投递两次只跑得起来一轮。
+ */
+async function runOnceWithAuxiliary(
+  auxiliary?: { provider: string; model: string; thinkingLevel?: string },
+): Promise<{ builds: MergeBuild[]; frozen: unknown }> {
+  const builds: MergeBuild[] = [];
+  const h = await startPanelHarness(cleanups, { buildMergeAgent: recordMergeBuilds(builds) });
+  seedAvailableModelService(h, HARNESS_SPEC.provider, [HARNESS_SPEC.model]);
+  seedAvailableModelService(h, "second", ["other-model"], { reasoning: true });
+  const hook = seedHistoricalRepo(h);
+  if (auxiliary !== undefined) setGlobalAuxiliaryModel(h.db.path, auxiliary);
+
+  assert.equal((await h.deliverViaHook(h.repo.headSha, hook)).status, 200);
+  await h.settledAtLeast(1);
+  assert.equal(h.settled[0]!.error, undefined);
+  return { builds, frozen: runAuxiliaryModel(h.db.path) };
+}
+
+test("没设辅助模型时合并 agent 用生效组合的第一个", async () => {
+  const { builds, frozen } = await runOnceWithAuxiliary();
+  assert.deepEqual(builds[0], { provider: "test", model: "global-model" });
+  assert.deepEqual(frozen, HARNESS_SPEC);
+});
+
+test("显式设了辅助模型时合并 agent 用它,不再看组合的排列顺序", async () => {
+  const auxiliary = { provider: "second", model: "other-model", thinkingLevel: "high" };
+  const { builds, frozen } = await runOnceWithAuxiliary(auxiliary);
+  assert.deepEqual(builds[0], {
+    provider: "second",
+    model: "other-model",
+    thinkingLevel: "high",
+  });
+  assert.deepEqual(frozen, auxiliary);
+});
+
+test("开跑后改辅助模型不影响本轮:轮次落的是开跑时解析出的那一处", async () => {
+  const builds: MergeBuild[] = [];
+  let release = (): void => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const h = await startPanelHarness(cleanups, {
+    buildMergeAgent: recordMergeBuilds(builds),
+    // Reviewer 停在这里,用例趁这一轮还在跑的时候改配置。
+    buildReviewers: (plans) =>
+      plans.map((plan) => {
+        const scripted = scriptedReviewer(plan.spec.model, []);
+        return {
+          ...scripted,
+          review: async (task) => {
+            await held;
+            return scripted.review(task);
+          },
+        };
+      }),
+  });
+  seedAvailableModelService(h, HARNESS_SPEC.provider, [HARNESS_SPEC.model]);
+  seedAvailableModelService(h, "second", ["other-model"]);
+  const hook = seedHistoricalRepo(h);
+
+  assert.equal((await h.deliverViaHook(h.repo.headSha, hook)).status, 200);
+  setGlobalAuxiliaryModel(h.db.path, { provider: "second", model: "other-model" });
+  release();
+  await h.settledAtLeast(1);
+
+  // 这一轮的合并 agent 与落库的那一处都是开跑时的解析结果。
+  assert.deepEqual(builds[0], { provider: "test", model: "global-model" });
+  assert.deepEqual(runAuxiliaryModel(h.db.path), HARNESS_SPEC);
+});
+
+test("解析出的辅助模型跑不了时不建合并 agent,这一轮的合并走算法档", async () => {
+  // 没有这一家模型服务:解析得出这一处,却缺凭据与运行模型。
+  const auxiliary = { provider: "ghost", model: "missing-model" };
+  const { builds, frozen } = await runOnceWithAuxiliary(auxiliary);
+  assert.deepEqual(builds, [], "跑不了即缺席,不建合并 agent");
+  // 落库的仍是开跑时解析出的那一处:续跑据它,不重新解析。
+  assert.deepEqual(frozen, auxiliary);
 });

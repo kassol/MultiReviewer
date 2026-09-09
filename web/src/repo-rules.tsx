@@ -109,8 +109,6 @@ type RuleSet = {
   proposals: RuleProposal[];
   /** 运行中、失败,以及刚完成不久的修订意图(issue #294)。与知识集同一份读取。 */
   intents: RevisionIntent[];
-  /** 意图将使用的模型标识。为 null 即一个模型都选不出来,意图框置灰。 */
-  intentModel: string | null;
 };
 
 /**
@@ -490,7 +488,6 @@ function RuleSetDialogContent({
                       repoId={repo.repoId}
                       canWrite={canWrite}
                       busy={change.isPending}
-                      intentModel={data.intentModel}
                       highlighted={shown?.kind === "rule" && shown.id === entry.id}
                       rewriting={rewritingRule === entry.id}
                       onRewrite={() =>
@@ -528,7 +525,6 @@ function RuleSetDialogContent({
                       repoId={repo.repoId}
                       canWrite={canWrite}
                       busy={change.isPending}
-                      intentModel={data.intentModel}
                       highlighted={shown?.kind === "rule" && shown.id === entry.id}
                       rewriting={rewritingRule === entry.id}
                       onRewrite={() =>
@@ -750,7 +746,6 @@ function EntryCard({
   repoId,
   canWrite,
   busy,
-  intentModel,
   highlighted,
   rewriting,
   onRewrite,
@@ -761,7 +756,6 @@ function EntryCard({
   repoId: number;
   canWrite: boolean;
   busy: boolean;
-  intentModel: string | null;
   /** 从意图行点过来的那一条:底色标出来,人才认得出滚到的是哪一张。 */
   highlighted: boolean;
   rewriting: boolean;
@@ -811,7 +805,6 @@ function EntryCard({
         <div className="mt-2">
           <IntentForm
             repoId={repoId}
-            intentModel={intentModel}
             placeholder="写下这一条要改成什么样，agent 会读代码并提出一条指向它的修订提案"
             target={{ kind: "rule", id: entry.id }}
             onSubmitted={onRewritten}
@@ -854,14 +847,12 @@ const INTENT_STATE_LABEL = {
  */
 function IntentForm({
   repoId,
-  intentModel,
   placeholder,
   target,
   onSubmitted,
   onCancel,
 }: {
   repoId: number;
-  intentModel: string | null;
   placeholder: string;
   /** 这条意图指向什么。缺席即无目标(产新增)。 */
   target?: { kind: "rule" | "proposal" | "draft"; id: number };
@@ -871,7 +862,10 @@ function IntentForm({
 }) {
   const [text, setText] = useState("");
   const fieldId = useId();
-  const noModel = intentModel === null;
+  // 将用哪一处模型读的是同一份只读投影(issue #304),与探索、整理那一行同一个组件:
+  // 三处显示的因此一定是同一个结论,提交那一刻服务端认的也是它。
+  const auxiliary = useAuxiliaryModel(repoId);
+  const noModel = auxiliary.data === undefined || !auxiliary.data.available;
 
   const submit = useMutation({
     mutationFn: async (): Promise<void> => {
@@ -916,12 +910,13 @@ function IntentForm({
           size={{ initial: "3", sm: "2" }}
         />
         <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-          <Text as="span" size="1" color={tooLong ? "red" : "gray"} className="tabular-nums">
-            {noModel
-              ? "还没有可用的模型：先配一个模型凭据，或为这个仓库跑一次基点探索。"
-              : `${trimmed.length} / ${INTENT_TEXT_LIMIT} 字`}
-          </Text>
+          {/* 将使用哪一处模型:与探索、整理那一行同一个组件、同一份投影(issue #304)。
+              跑不了时它自己说得出原因与去哪里改,框与按钮同时置灰。 */}
+          <AuxiliaryModelLine view={auxiliary.data} />
           <div className="flex flex-wrap items-center gap-2">
+            <Text as="span" size="1" color={tooLong ? "red" : "gray"} className="tabular-nums">
+              {`${trimmed.length} / ${INTENT_TEXT_LIMIT} 字`}
+            </Text>
             {onCancel === undefined ? null : (
               <Button
                 type="button"
@@ -997,7 +992,6 @@ function IntentSection({
       {canWrite ? (
         <IntentForm
           repoId={repoId}
-          intentModel={ruleSet.intentModel}
           placeholder="写下要新增或改成什么样，agent 会读代码并按陈述形状提出一条修订提案"
           onSubmitted={onChanged}
         />
@@ -1404,7 +1398,6 @@ function ProposalSection({
                   <div className="mt-2">
                     <IntentForm
                       repoId={repo.repoId}
-                      intentModel={ruleSet.intentModel}
                       placeholder="写下这一条要改成什么样，agent 会读代码并原地改写它，追加一条出处附注"
                       target={{ kind: "proposal", id: proposal.id }}
                       onSubmitted={() => {
@@ -1627,7 +1620,6 @@ function ExplorationSection({
                   <div className="mt-2">
                     <IntentForm
                       repoId={repo.repoId}
-                      intentModel={ruleSet.intentModel}
                       placeholder="写下这一条要改成什么样，agent 会读代码并原地改写这条草案条目"
                       target={{ kind: "draft", id: rule.id }}
                       onSubmitted={() => {

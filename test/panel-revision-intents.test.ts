@@ -69,7 +69,6 @@ type RuleSetView = {
   draft: { id: number; type: string; scope: string; statement: string; origin: string }[];
   proposals: ProposalRow[];
   intents: IntentRow[];
-  intentModel: string | null;
 };
 
 /** 脚本化规则 agent,记下每次收到的任务。产出由回调给出:现集的标识建库之后才知道。 */
@@ -465,9 +464,9 @@ test("提交校验:空、超长、分配外仓库各回自己那一档", async (
   );
 });
 
-test("一个模型都选不出来时提交回 409,知识集读取的 intentModel 为 null", async () => {
-  // 没有全局模型组合、也没有基点探索记录:模型规则两头都取不到。注册要过「审查配置就绪」
-  // 那道门禁,组合因此在注册之后才清掉。
+test("选不出辅助模型时提交回 409,那句话指向两处配置", async () => {
+  // 没有辅助模型、也没有全局模型组合:解析三级都给不出。注册要过「审查配置就绪」那道
+  // 门禁,组合因此在注册之后才清掉。
   const h = await harnessWithRepo(scriptedRuleAgent(() => ({ items: [] })));
   const raw = new DatabaseSync(h.db.path);
   try {
@@ -478,15 +477,29 @@ test("一个模型都选不出来时提交回 409,知识集读取的 intentModel
 
   const response = await submit(h, { text: INTENT });
   assert.equal(response.status, 409);
-  assert.match(((await response.json()) as { error: string }).error, /模型/);
-  assert.equal((await ruleSet(h)).intentModel, null);
+  const error = ((await response.json()) as { error: string }).error;
+  assert.match(error, /审查策略/);
+  assert.match(error, /仓库配置/);
 });
 
-test("知识集读取:意图将使用的模型即反哺那条规则选出来的那个", async () => {
+test("意图用这个仓库生效的辅助模型:与只读投影说的是同一处", async () => {
   const h = await harnessWithRepo(scriptedRuleAgent(() => ({ items: [] })));
-  const view = await ruleSet(h);
-  assert.equal(view.intentModel, "test:global-model");
-  assert.deepEqual(view.intents, []);
+  // 意图框读的就是这一份投影(issue #304),知识集读取不再另回一格模型。
+  const view = await h.api("GET", `/repos/${GITEA_REPO.id}/auxiliary-model`);
+  assert.equal(view.status, 200);
+  assert.deepEqual(await view.json(), {
+    identity: "test:global-model",
+    thinkingLevel: null,
+    source: "first-reviewer",
+    available: true,
+    unavailableReason: null,
+  });
+  assert.deepEqual((await ruleSet(h)).intents, []);
+
+  assert.equal((await submit(h, { text: INTENT })).status, 202);
+  await h.revisionIntentsAtLeast(1);
+  const [intent] = (await ruleSet(h)).intents;
+  assert.equal(intent!.model, "test:global-model");
 });
 
 test("删除意图:完成行与失败行删得掉,运行中 409,不存在 404", async () => {
