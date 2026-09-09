@@ -62,7 +62,7 @@ function query(dbPath: string, sql: string): Record<string, unknown>[] {
   }
 }
 
-test("历史审查策略进入独立初始版本，写一项只推进该项版本", () => {
+test("历史审查策略读回整页初始版本，整份替换推一版，陈旧版本不得覆盖", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   openStore(db.path).close();

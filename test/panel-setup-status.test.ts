@@ -45,12 +45,15 @@ test("首次配置状态从空实例推进到可运行服务、审查配置就�
     instanceEnabled: false,
   });
 
-  const settings = (await (await h.api("GET", "/settings")).json()) as { version: number };
+  // 整份对象要给全(issue #301):读回来的那一份换掉组合再发回去,别的项原样。
+  const settings = (await (await h.api("GET", "/settings")).json()) as Record<string, unknown>;
+  const { version, defaults: _defaults, ...current } = settings;
   assert.equal(
     (
       await h.api("PUT", "/settings", {
+        ...current,
         reviewers: [{ provider: "setup-provider", model: "review-model" }],
-        expectedVersion: settings.version,
+        expectedVersion: version,
       })
     ).status,
     200,

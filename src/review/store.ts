@@ -970,6 +970,22 @@ export { DEFAULT_MIN_REPORT_SEVERITY };
 /** 最低报告等级的合法取值。设置端点的校验与库里读回认同一份。 */
 export const MIN_REPORT_SEVERITIES: readonly Severity[] = ["P0", "P1", "P2"];
 
+/**
+ * 一份模型组合的 JSON 是不是空的:没配过(null)或者配过一份空的。**「模型组合首次配置后
+ * 非空」那条(spec #300)由它表达**——库里现存的那一份是空的时,这一次照收空组合;配过
+ * 非空之后不再收空。`PUT /settings` 与 `replaceGlobalSettings` 认这同一条判据。读不动的
+ * 一行当作非空:一行坏数据不该反过来把空组合放行。
+ */
+export function storedReviewersEmpty(reviewersJson: string | null): boolean {
+  if (reviewersJson === null) return true;
+  try {
+    const parsed: unknown = JSON.parse(reviewersJson);
+    return Array.isArray(parsed) && parsed.length === 0;
+  } catch {
+    return false;
+  }
+}
+
 /** 库里读回的一格最低报告等级。认不出即当作没配。 */
 function readMinReportSeverity(stored: string | undefined): Severity | null {
   return MIN_REPORT_SEVERITIES.includes(stored as Severity) ? (stored as Severity) : null;
@@ -1567,7 +1583,11 @@ export type ReviewRunStoreSnapshot = Readonly<{
 export type ModelReferenceLocation =
   | { kind: "global" }
   | { kind: "following-global"; repositoryCount: number }
-  | { kind: "repository-override"; repoId: number; owner: string; repo: string };
+  | { kind: "repository-override"; repoId: number; owner: string; repo: string }
+  // 辅助模型那两处与模型组合同等(ADR 0029,issue #303):被它引用的模型一样删不掉、
+  // 切不走,唯一来源的补录一样摘不掉。
+  | { kind: "global-auxiliary" }
+  | { kind: "repository-auxiliary"; repoId: number; owner: string; repo: string };
 
 export type ModelReference = {
   identity: string;
@@ -2438,13 +2458,6 @@ export type Store = {
   /** 仓库持有的全部 key。未注册的仓库得到空数组——这就是「未注册」的判据。 */
   listRepoKeys(repoId: number): RepoKey[];
   getRepo(repoId: number): RepoRecord | undefined;
-  /** 改写模型覆盖；与当前模型服务原子校验，状态变化返回 false。null 即跟随全局。 */
-  setRepoReviewers(repoId: number, reviewersJson: string | null): boolean;
-  /**
-   * 改写这个仓库的最低报告等级覆盖(issue #273)。null 即清掉覆盖、跟随全局。没有这一行
-   * 时静默通过——仓库刚被移除,目标状态已达成,与 `setRepoWorktree` 同律。
-   */
-  setRepoMinReportSeverity(repoId: number, severity: Severity | null): void;
   /**
    * 整块改写这个仓库的配置(issue #302、#303):模型覆盖、辅助模型覆盖与最低报告等级在
    * 一笔事务里全量替换,期望版本对得上才写,写成即版本加一。三项都是 null 即跟随全局。
@@ -3741,11 +3754,17 @@ export function openStore(dbPath: string): Store {
     `);
   }
 
-  // 审查策略整页一个版本(issue #301):升级前每一项各持一个版本键,这里一次性删掉,整页
-  // 版本从缺行的 1 起算。设置值本身一格不动,删过即不再命中,跑几遍都一样。
-  db.prepare(
+  // 审查策略整页一个版本(issue #301):升级前每一项各持一个版本键,这里一次性删掉并建起
+  // 整页那一个(从 1 起)。设置值本身一格不动;删过就不再命中,已有的整页版本也不被覆盖,
+  // 跑几遍都一样。
+  const legacyVersionKeys = db.prepare(
     `DELETE FROM global_setting WHERE key IN (${LEGACY_SETTING_VERSION_KEYS.map(() => "?").join(", ")})`,
-  ).run(...LEGACY_SETTING_VERSION_KEYS);
+  ).run(...LEGACY_SETTING_VERSION_KEYS).changes;
+  if (Number(legacyVersionKeys) > 0) {
+    db.prepare(
+      "INSERT INTO global_setting (key, value) VALUES (?, '1') ON CONFLICT(key) DO NOTHING",
+    ).run(GLOBAL_SETTINGS_VERSION_KEY);
+  }
 
   // 权限格 `rule:write` 改名 `knowledge:write`(ADR 0020,issue #220):存量角色照旧持有
   // 同一格能力,只是字面量换了。`OR REPLACE` 让同一角色两格都有时旧行让位给新行;跑第
@@ -3843,11 +3862,16 @@ export function openStore(dbPath: string): Store {
          )
        )
   `);
+  const specAvailable = (spec: ReviewerSpec): boolean =>
+    availableModel.get(spec.provider, spec.model, spec.model, spec.model) !== undefined;
   const modelCombinationAvailable = (reviewersJson: string, context: string): boolean => {
     const reviewers = parseStoredReviewers(reviewersJson, context);
-    return reviewers.length > 0 && reviewers.every((reviewer) =>
-      availableModel.get(reviewer.provider, reviewer.model, reviewer.model, reviewer.model) !== undefined
-    );
+    return reviewers.length > 0 && reviewers.every(specAvailable);
+  };
+  /** 一处辅助模型引用当前跑不跑得动(issue #303)。判据与组合里的一项逐字相同。 */
+  const auxiliaryModelAvailable = (auxiliaryModelJson: string): boolean => {
+    const spec = parseAuxiliaryModel(auxiliaryModelJson);
+    return spec !== null && specAvailable(spec);
   };
   const referencedModels = (provider: string): Set<string> => {
     const models = new Set<string>();
@@ -4531,41 +4555,11 @@ export function openStore(dbPath: string): Store {
       return first === undefined ? null : { spec: first, source: "first-reviewer" };
     },
 
-    setRepoReviewers(repoId, reviewersJson) {
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        const row = db.prepare("SELECT reviewers FROM repo WHERE id = ?").get(repoId);
-        if (row === undefined) {
-          db.exec("COMMIT");
-          return true;
-        }
-        const current = row["reviewers"] === null ? null : String(row["reviewers"]);
-        if (
-          reviewersJson !== current &&
-          reviewersJson !== null &&
-          !modelCombinationAvailable(reviewersJson, `仓库 ${repoId} 的模型覆盖`)
-        ) {
-          db.exec("ROLLBACK");
-          return false;
-        }
-        db.prepare("UPDATE repo SET reviewers = ? WHERE id = ?").run(reviewersJson, repoId);
-        db.exec("COMMIT");
-        return true;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-    },
-
-    setRepoMinReportSeverity(repoId, severity) {
-      db.prepare("UPDATE repo SET min_report_severity = ? WHERE id = ?").run(severity, repoId);
-    },
-
     putRepoSettings(repoId, expectedVersion, settings) {
       db.exec("BEGIN IMMEDIATE");
       try {
         const row = db
-          .prepare("SELECT settings_version FROM repo WHERE id = ?")
+          .prepare("SELECT settings_version, reviewers, auxiliary_model FROM repo WHERE id = ?")
           .get(repoId);
         if (row === undefined) {
           db.exec("ROLLBACK");
@@ -4576,10 +4570,24 @@ export function openStore(dbPath: string): Store {
           return { ok: false, reason: "stale" };
         }
         // 可用性在同一事务里再判一次:浏览器里的候选状态与落库那一刻之间,模型服务
-        // 可能已经变了。清成跟随全局永远可做。
+        // 可能已经变了。清成跟随全局永远可做。**换了才判**(判据与 `replaceGlobalSettings`
+        // 同一条):覆盖里早就有失效模型时,只改等级或辅助模型的那一次不被它连坐。
+        const storedReviewers = row["reviewers"] === null ? null : String(row["reviewers"]);
         if (
           settings.reviewersJson !== null &&
+          settings.reviewersJson !== storedReviewers &&
           !modelCombinationAvailable(settings.reviewersJson, `仓库 ${repoId} 的模型覆盖`)
+        ) {
+          db.exec("ROLLBACK");
+          return { ok: false, reason: "unavailable" };
+        }
+        // 辅助模型覆盖与组合并列同一道兜底(issue #303),同样只在换了的时候判。
+        const storedAuxiliary =
+          row["auxiliary_model"] === null ? null : String(row["auxiliary_model"]);
+        if (
+          settings.auxiliaryModelJson !== null &&
+          settings.auxiliaryModelJson !== storedAuxiliary &&
+          !auxiliaryModelAvailable(settings.auxiliaryModelJson)
         ) {
           db.exec("ROLLBACK");
           return { ok: false, reason: "unavailable" };
@@ -5371,15 +5379,24 @@ export function openStore(dbPath: string): Store {
           .get(GLOBAL_SETTINGS_VERSION_KEY)?.["value"];
         const version = versionRow === undefined ? 1 : Number(versionRow);
         // 组合没换就不重判可用性:这一道是端点那次校验与这次写入之间的兜底(中间有人停用
-        // 了模型服务),换的是同一份值就没有引入新的不可用引用。空组合同样放行——首次配置
-        // 之前库里就是这个样子。
+        // 了模型服务),换的是同一份值就没有引入新的不可用引用。空组合只在库里现存的那一份
+        // 也是空的时候放行——首次配置之前库里就是这个样子,配过非空之后不再收空(spec #300,
+        // 判据与 `PUT /settings` 同一条)。清成没配(null)是播种与迁移的路,不走这一道。
         const storedReviewers = db.prepare("SELECT value FROM global_setting WHERE key = ?")
           .get(GLOBAL_REVIEWERS_KEY)?.["value"];
+        const stored = storedReviewers === undefined ? null : String(storedReviewers);
         const reviewersOk = next.reviewersJson === null ||
-          next.reviewersJson === storedReviewers ||
-          parseStoredReviewers(next.reviewersJson, GLOBAL_REVIEWERS_CONTEXT).length === 0 ||
-          modelCombinationAvailable(next.reviewersJson, GLOBAL_REVIEWERS_CONTEXT);
-        if (version !== expectedVersion || !reviewersOk) {
+          next.reviewersJson === stored ||
+          (storedReviewersEmpty(next.reviewersJson)
+            ? storedReviewersEmpty(stored)
+            : modelCombinationAvailable(next.reviewersJson, GLOBAL_REVIEWERS_CONTEXT));
+        // 辅助模型与组合并列同一道兜底(issue #303),同样只在换了的时候判。
+        const storedAuxiliary = db.prepare("SELECT value FROM global_setting WHERE key = ?")
+          .get(GLOBAL_AUXILIARY_MODEL_KEY)?.["value"];
+        const auxiliaryOk = next.auxiliaryModelJson === null ||
+          next.auxiliaryModelJson === (storedAuxiliary === undefined ? null : String(storedAuxiliary)) ||
+          auxiliaryModelAvailable(next.auxiliaryModelJson);
+        if (version !== expectedVersion || !reviewersOk || !auxiliaryOk) {
           db.exec("ROLLBACK");
           return false;
         }
@@ -5631,6 +5648,14 @@ export function openStore(dbPath: string): Store {
             reviewer.provider === provider ? { ...reviewer, provider: newProvider } : reviewer
           ));
         };
+        // 辅助模型那两处是同一类模型引用(CONTEXT.md 自定义 provider):它们也在这一笔
+        // 事务里改名,否则引用会指向一个不再存在的 provider。
+        const rewriteAuxiliary = (auxiliaryModelJson: string): string | undefined => {
+          const spec = parseAuxiliaryModel(auxiliaryModelJson);
+          if (spec === null || spec.provider !== provider) return undefined;
+          return JSON.stringify({ ...spec, provider: newProvider });
+        };
+        let globalChanged = false;
         const globalRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
           .get(GLOBAL_REVIEWERS_KEY);
         if (globalRow !== undefined) {
@@ -5639,27 +5664,49 @@ export function openStore(dbPath: string): Store {
           if (nextJson !== undefined) {
             db.prepare("UPDATE global_setting SET value = ? WHERE key = ?")
               .run(nextJson, GLOBAL_REVIEWERS_KEY);
-            const versionRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
-              .get(GLOBAL_SETTINGS_VERSION_KEY);
-            const version = versionRow === undefined ? 1 : Number(versionRow["value"]);
-            db.prepare(
-              `INSERT INTO global_setting (key, value) VALUES (?, ?)
-               ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-            ).run(GLOBAL_SETTINGS_VERSION_KEY, String(version + 1));
+            globalChanged = true;
           }
         }
+        const globalAuxiliaryRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
+          .get(GLOBAL_AUXILIARY_MODEL_KEY);
+        if (globalAuxiliaryRow !== undefined) {
+          const nextJson = rewriteAuxiliary(String(globalAuxiliaryRow["value"]));
+          if (nextJson !== undefined) {
+            db.prepare("UPDATE global_setting SET value = ? WHERE key = ?")
+              .run(nextJson, GLOBAL_AUXILIARY_MODEL_KEY);
+            globalChanged = true;
+          }
+        }
+        // 整页一个版本(issue #301):这一页里换了什么都只推一版。
+        if (globalChanged) {
+          const versionRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
+            .get(GLOBAL_SETTINGS_VERSION_KEY);
+          const version = versionRow === undefined ? 1 : Number(versionRow["value"]);
+          db.prepare(
+            `INSERT INTO global_setting (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+          ).run(GLOBAL_SETTINGS_VERSION_KEY, String(version + 1));
+        }
         for (const row of db.prepare(
-          "SELECT id, owner, repo, reviewers FROM repo WHERE reviewers IS NOT NULL",
+          `SELECT id, owner, repo, reviewers, auxiliary_model FROM repo
+            WHERE reviewers IS NOT NULL OR auxiliary_model IS NOT NULL`,
         ).all()) {
           const repoId = Number(row["id"]);
-          const oldJson = String(row["reviewers"]);
-          const nextJson = rewrite(
-            oldJson,
-            `仓库 ${String(row["owner"])}/${String(row["repo"])}（id ${repoId}）的模型覆盖`,
-            false,
-          );
-          if (nextJson !== undefined) {
-            db.prepare("UPDATE repo SET reviewers = ? WHERE id = ?").run(nextJson, repoId);
+          if (row["reviewers"] !== null) {
+            const nextJson = rewrite(
+              String(row["reviewers"]),
+              `仓库 ${String(row["owner"])}/${String(row["repo"])}（id ${repoId}）的模型覆盖`,
+              false,
+            );
+            if (nextJson !== undefined) {
+              db.prepare("UPDATE repo SET reviewers = ? WHERE id = ?").run(nextJson, repoId);
+            }
+          }
+          if (row["auxiliary_model"] !== null) {
+            const nextJson = rewriteAuxiliary(String(row["auxiliary_model"]));
+            if (nextJson !== undefined) {
+              db.prepare("UPDATE repo SET auxiliary_model = ? WHERE id = ?").run(nextJson, repoId);
+            }
           }
         }
 
@@ -5905,13 +5952,38 @@ export function openStore(dbPath: string): Store {
           reference.locations.push({ kind: "following-global", repositoryCount: followingGlobal });
         }
       }
+      // 全局那一处辅助模型与模型组合同等(issue #303):它引用的模型一样受这份清单保护。
+      const globalAuxiliaryJson = db
+        .prepare("SELECT value FROM global_setting WHERE key = ?")
+        .get(GLOBAL_AUXILIARY_MODEL_KEY)?.["value"];
+      const globalAuxiliary = parseAuxiliaryModel(
+        globalAuxiliaryJson === undefined ? null : String(globalAuxiliaryJson),
+      );
+      if (globalAuxiliary !== null) {
+        referenceFor(globalAuxiliary).locations.push({ kind: "global-auxiliary" });
+      }
       for (const row of db
-        .prepare("SELECT id, owner, repo, reviewers FROM repo WHERE reviewers IS NOT NULL ORDER BY id")
+        .prepare(
+          `SELECT id, owner, repo, reviewers, auxiliary_model FROM repo
+            WHERE reviewers IS NOT NULL OR auxiliary_model IS NOT NULL
+            ORDER BY id`,
+        )
         .all()) {
         const repoId = Number(row["id"]);
         const owner = String(row["owner"]);
         const repo = String(row["repo"]);
-        for (const spec of parse(
+        const auxiliary = parseAuxiliaryModel(
+          row["auxiliary_model"] === null ? null : String(row["auxiliary_model"]),
+        );
+        if (auxiliary !== null) {
+          referenceFor(auxiliary).locations.push({
+            kind: "repository-auxiliary",
+            repoId,
+            owner,
+            repo,
+          });
+        }
+        for (const spec of row["reviewers"] === null ? [] : parse(
           String(row["reviewers"]),
           `仓库 ${owner}/${repo}（id ${repoId}）的模型覆盖`,
           false,

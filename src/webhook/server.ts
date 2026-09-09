@@ -117,6 +117,7 @@ import {
   modelServiceTargetSetFingerprint,
   normalizeModelServiceTargets,
   openStore,
+  storedReviewersEmpty,
   toKnowledgeEntry,
   toPendingProposal,
   type BatchLimitField,
@@ -2523,9 +2524,10 @@ function handleGetSettings(res: ServerResponse, deps: WebhookServerDeps): void {
 }
 
 /**
- * 审查策略整页一次全量替换(issue #301)。body 收整份对象加 `expectedVersion`:上限四项与
- * 最低报告等级缺席或为 null 都是「跟随系统默认」,任一项校验不过整份一项都不写,版本不符
- * 回 409 并带上服务端当前的整份对象。
+ * 审查策略整页一次全量替换(issue #301)。body 收整份对象加 `expectedVersion`:整份对象的
+ * 每一项都要给,缺一项即 400——「缺席」不是「跟随默认」,那样一次半份提交会把没提到的项
+ * 悄悄清成默认。上限四项与最低报告等级为 null 才是「跟随系统默认」。任一项校验不过整份
+ * 一项都不写,版本不符回 409 并带上服务端当前的整份对象。
  */
 async function handlePutSettings(
   req: IncomingMessage,
@@ -2538,6 +2540,17 @@ async function handlePutSettings(
     return sendJson(res, 400, { error: "body 要是 JSON 对象" });
   }
   const payload = decoded as Record<string, unknown>;
+  const missing = [
+    "reviewers",
+    "auxiliaryModel",
+    ...BATCH_LIMIT_FIELDS,
+    MIN_REPORT_SEVERITY_FIELD,
+  ].filter((field) => !Object.hasOwn(payload, field));
+  if (missing.length > 0) {
+    return sendJson(res, 400, {
+      error: `body 要带整份对象,缺 ${missing.join("、")};上限与等级留空写 null`,
+    });
+  }
   if (
     typeof payload.expectedVersion !== "number" ||
     !Number.isInteger(payload.expectedVersion) ||
@@ -2546,11 +2559,16 @@ async function handlePutSettings(
     return sendJson(res, 400, { error: "expectedVersion 要是正整数" });
   }
 
-  const parsed = parseReviewerSpecs(payload.reviewers, GLOBAL_REVIEWERS_CONTEXT);
+  const stored = withStore(deps.dbPath, (store) => store.getGlobalSettings());
+  // 「首次配置后非空」(spec #300):库里现存的组合是空的或从没配过时,这一次照收空组合
+  // ——那时人来这一页多半是先把上限与等级填上。配过非空之后不再收空,要停掉审查走别处。
+  // 判据与 `replaceGlobalSettings` 同一条。
+  const parsed = parseReviewerSpecs(payload.reviewers, GLOBAL_REVIEWERS_CONTEXT, {
+    allowEmpty: storedReviewersEmpty(stored.reviewersJson),
+  });
   if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
 
-  // 辅助模型是整份对象里的一项(issue #303):缺席或 null 即不设,那时解析退回生效组合
-  // 的第一个。
+  // 辅助模型是整份对象里的一项(issue #303):null 即不设,那时解析退回生效组合的第一个。
   const auxiliary = parseAuxiliaryModel(
     payload["auxiliaryModel"],
     GLOBAL_AUXILIARY_MODEL_CONTEXT,
@@ -2564,7 +2582,7 @@ async function handlePutSettings(
     maxEvidenceCallsPerBatch: null,
   };
   for (const field of BATCH_LIMIT_FIELDS) {
-    const candidate = payload[field] ?? null;
+    const candidate = payload[field];
     if (
       candidate !== null &&
       (typeof candidate !== "number" || !Number.isInteger(candidate) || candidate <= 0)
@@ -2574,7 +2592,7 @@ async function handlePutSettings(
     limits[field] = candidate as number | null;
   }
 
-  const severity = payload[MIN_REPORT_SEVERITY_FIELD] ?? null;
+  const severity = payload[MIN_REPORT_SEVERITY_FIELD];
   if (severity !== null && !MIN_REPORT_SEVERITIES.includes(severity as Severity)) {
     return sendJson(res, 400, {
       error: `${MIN_REPORT_SEVERITY_FIELD} 要是 ${
@@ -2587,7 +2605,6 @@ async function handlePutSettings(
   // 时判**——失效模型门禁的是组合本身的写入,组合原样未动的那一次没有引入新的不可用
   // 引用,不该连坐同一份提交里的上限与报告等级(判据与 `replaceGlobalSettings` 同一条)。
   // 非空与去重那两道由 `parseReviewerSpecs` 每次都判。
-  const stored = withStore(deps.dbPath, (store) => store.getGlobalSettings());
   if (
     parsed.reviewersJson !== stored.reviewersJson &&
     !await ensureModelCombinationAvailable(res, deps, parsed.reviewers, GLOBAL_REVIEWERS_CONTEXT)
@@ -3738,7 +3755,7 @@ async function handleDeleteModelServiceCredential(
   );
   if (references.length > 0) {
     return sendJson(res, 409, {
-      error: `${provider} 仍被模型组合引用，不能删除模型凭据`,
+      error: `${provider} 仍被模型组合或辅助模型引用，不能删除模型凭据`,
       references,
     });
   }
@@ -3776,7 +3793,7 @@ async function handleDeleteModelServiceCredential(
     const actualVersion = withStore(deps.dbPath, (store) =>
       store.getModelService(provider)?.version ?? null,
     );
-    return versionConflict(res, expectedVersion, actualVersion, "模型服务版本已变化或仍被模型组合引用，请重新打开配置");
+    return versionConflict(res, expectedVersion, actualVersion, "模型服务版本已变化或仍被模型组合或辅助模型引用，请重新打开配置");
   }
   return sendJson(res, 200, {
     provider,
@@ -4190,7 +4207,7 @@ async function handleDeleteModelSupplement(
     );
     if (reference !== undefined) {
       return sendJson(res, 409, {
-        error: `${identity} 的补录是当前唯一来源，仍被模型组合引用`,
+        error: `${identity} 的补录是当前唯一来源，仍被模型组合或辅助模型引用`,
         references: [reference],
       });
     }
@@ -4463,7 +4480,7 @@ async function handleCommitCustomModelService(
     );
     if (unresolved.length > 0) {
       return sendJson(res, 409, {
-        error: "目标切换会移除仍被模型组合引用的模型来源",
+        error: "目标切换会移除仍被模型组合或辅助模型引用的模型来源",
         references: unresolved,
       });
     }
@@ -4538,7 +4555,7 @@ async function handleDeleteCustomModelService(
   }
   if (references.length > 0) {
     return sendJson(res, 409, {
-      error: "模型服务仍被模型组合引用，不能删除",
+      error: "模型服务仍被模型组合或辅助模型引用，不能删除",
       references,
     });
   }
@@ -4605,7 +4622,7 @@ async function handleRenameConflictingCustomModelService(
   }
   if (result.status === "missing-models") {
     return sendJson(res, 409, {
-      error: "当前模型服务缺少仍被模型组合引用的模型，改名未执行",
+      error: "当前模型服务缺少仍被模型组合或辅助模型引用的模型，改名未执行",
       references: result.references,
     });
   }
@@ -8621,21 +8638,33 @@ async function handleSetRepoSettings(
   ) {
     return sendJson(res, 400, { error: "expectedVersion 要是非负整数" });
   }
+  // 版本先核,再问模型可用性:表单已经过期时该回的是「这一页刚被改过」并带上当前值,
+  // 先报失效模型会让人对着一份过期的表单去改模型。
+  if (record.settingsVersion !== payload.expectedVersion) {
+    return repoSettingsConflict(res, record);
+  }
 
   let reviewersJson: string | null = null;
   if (payload.reviewers !== null) {
     const context = `${record.owner}/${record.repo} 的模型覆盖`;
     const parsed = parseReviewerSpecs(payload.reviewers, context);
     if (!parsed.ok) return sendJson(res, 400, { error: parsed.error });
-    if (!await ensureModelCombinationAvailable(res, deps, parsed.reviewers, context)) return;
+    // 换了才判可用性(判据与 `putRepoSettings` 同一条):覆盖里早就有失效模型时,只改
+    // 等级或辅助模型的那一次不被它连坐。
+    if (
+      parsed.reviewersJson !== record.reviewersJson &&
+      !await ensureModelCombinationAvailable(res, deps, parsed.reviewers, context)
+    ) return;
     reviewersJson = parsed.reviewersJson;
   }
 
-  // 辅助模型覆盖(issue #303)与模型覆盖同形:null 即跟随全局,给了就与组合同一套判据。
+  // 辅助模型覆盖(issue #303)与模型覆盖同形:null 即跟随全局,给了就与组合同一套判据,
+  // 也同样只在换了的时候判。
   const auxiliaryContext = `${record.owner}/${record.repo} 的辅助模型`;
   const auxiliary = parseAuxiliaryModel(payload["auxiliaryModel"], auxiliaryContext);
   if (!auxiliary.ok) return sendJson(res, 400, { error: auxiliary.error });
   if (
+    auxiliary.json !== record.auxiliaryModelJson &&
     auxiliary.spec !== null &&
     !await ensureModelCombinationAvailable(res, deps, [auxiliary.spec], auxiliaryContext)
   ) return;
@@ -8661,20 +8690,29 @@ async function handleSetRepoSettings(
   if (saved.reason === "unavailable") {
     return sendJson(res, 409, { error: "模型服务状态已经变化，请重新选择仓库模型覆盖" });
   }
-  const current = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+  // 读到这里那一行必然还在:`missing` 那一档上面已经回过 404。并发改写抢在中间的那一次
+  // 走这里,回的是库里此刻的值。
+  return repoSettingsConflict(res, withStore(deps.dbPath, (store) => store.getRepo(repoId))!);
+}
+
+/** 版本对不上时回的那一份:库里此刻的三项配置与整块版本号,面板据它换基线而不丢草稿。 */
+function repoSettingsConflict(
+  res: ServerResponse,
+  current: {
+    reviewersJson: string | null;
+    auxiliaryModelJson: string | null;
+    minReportSeverity: Severity | null;
+    settingsVersion: number;
+  },
+): void {
   return sendJson(res, 409, {
     error: "这个仓库的配置已经被其他人修改，请核对后再保存",
     current: {
-      reviewers:
-        current?.reviewersJson === undefined || current.reviewersJson === null
-          ? null
-          : safeParse(current.reviewersJson),
+      reviewers: current.reviewersJson === null ? null : safeParse(current.reviewersJson),
       auxiliaryModel:
-        current?.auxiliaryModelJson === undefined || current.auxiliaryModelJson === null
-          ? null
-          : safeParse(current.auxiliaryModelJson),
-      minReportSeverity: current?.minReportSeverity ?? null,
-      settingsVersion: current?.settingsVersion ?? 0,
+        current.auxiliaryModelJson === null ? null : safeParse(current.auxiliaryModelJson),
+      minReportSeverity: current.minReportSeverity,
+      settingsVersion: current.settingsVersion,
     },
   });
 }

@@ -1,5 +1,7 @@
 # Radix Themes 主导管理面板视觉系统
 
+> 2026-09-09 附记(spec #300):「模型组合与分批上限仍独立保存」这一句作废。审查策略从此整页一张表单、一颗保存按钮、一个版本号,仓库配置弹窗同样整块一个保存与一个版本号;运行上限四项与最低报告等级留空即跟随系统默认。其余视觉方向、领域不变量与迁移决策不变。
+
 ## 实施状态（2026-08-24）
 
 本 ADR 已实施。通用视觉组件已迁移到 Radix Themes，业务图标已迁移到 Radix Icons；专用行为保留 cmdk、react-day-picker 与 Radix Primitives。`class-variance-authority`、`tw-animate-css`、Lucide 和已替换的本地视觉 wrapper 已删除；clsx 与 tailwind-merge 继续为复杂布局组合 className。

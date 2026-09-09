@@ -21,6 +21,7 @@ import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/theme-button";
 
 import { api, errorText, fetchJson } from "./api.ts";
+import { sameModelRef, sameModelRefs } from "./lib/model-ref.ts";
 import {
   fromModelRef,
   modelIdentity,
@@ -133,10 +134,15 @@ function limitText(limit: number | null): string {
   return limit === null ? "" : String(limit);
 }
 
-/** 两份草稿是不是同一份。上限比字面量：留空与显式的默认值不是同一件事。 */
+/**
+ * 两份草稿是不是同一份。上限比字面量：留空与显式的默认值不是同一件事；模型组合与辅助
+ * 模型走 `lib/model-ref.ts` 那一份比较规则，与仓库配置弹窗同一条。
+ */
 function sameDraft(a: Draft, b: Draft): boolean {
-  return JSON.stringify([a.models.map(fromModelRef), a.auxiliary, a.limits, a.severity]) ===
-    JSON.stringify([b.models.map(fromModelRef), b.auxiliary, b.limits, b.severity]);
+  return sameModelRefs(a.models, b.models) &&
+    sameModelRef(a.auxiliary, b.auxiliary) &&
+    LIMITS.every(({ field }) => a.limits[field] === b.limits[field]) &&
+    a.severity === b.severity;
 }
 
 /** 服务端拒了这一次保存并带回它此刻的整份对象。 */
@@ -327,7 +333,10 @@ function SettingsForm({ settings }: { settings: Settings }) {
     withResolver: true,
   });
 
-  const modelsBlocked = draft.models.length === 0 || !modelValidity.ready ||
+  // 组合首次配置后非空(spec #300):基线组合还是空的时候,空组合服务端照收,这一页也
+  // 不因此禁用保存——那时人多半是先来把上限与等级填上。
+  const emptyModelsBlocked = draft.models.length === 0 && baseline.reviewers.length > 0;
+  const modelsBlocked = emptyModelsBlocked || !modelValidity.ready ||
     modelValidity.unavailable.length > 0;
 
   return (
@@ -407,6 +416,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
                     placeholder={`系统默认 ${baseline.defaults[field]}`}
                     value={draft.limits[field]}
                     aria-invalid={invalid || undefined}
+                    aria-describedby={invalid ? `${inputId}-error` : undefined}
                     onChange={(event) => {
                       setInvalidLimits((current) => current.filter((entry) => entry !== field));
                       edit({ limits: { ...draft.limits, [field]: event.target.value } });
@@ -426,12 +436,14 @@ function SettingsForm({ settings }: { settings: Settings }) {
                     恢复默认
                   </Button>
                 </Flex>
+                {invalid ? (
+                  <span id={`${inputId}-error`} role="alert" className="text-danger">
+                    要填正整数，留空即跟随系统默认。
+                  </span>
+                ) : null}
               </div>
             );
           })}
-          <p className="text-xs text-text-muted">
-            留空即跟随系统默认（占位符里的那个数）；「恢复默认」只清空字段，随整页一起保存。
-          </p>
         </div>
       </section>
 
@@ -497,7 +509,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
           </Button>
           {modelValidity.unavailable.length > 0 ? (
             <span className="text-danger">先恢复或移除不可用模型，再保存这一页。</span>
-          ) : draft.models.length === 0 ? (
+          ) : emptyModelsBlocked ? (
             <span className="text-danger">至少选择一个可用模型，审查配置才能就绪。</span>
           ) : !modelValidity.ready ? (
             <span className="text-text-muted">模型状态确认后即可保存。</span>
@@ -522,7 +534,13 @@ function SettingsForm({ settings }: { settings: Settings }) {
         </Callout.Root>
       )}
 
-      <AlertDialog.Root open={blocker.status === "blocked"}>
+      <AlertDialog.Root
+        open={blocker.status === "blocked"}
+        onOpenChange={(open) => {
+          // Esc 与点开外面都走这里:关掉即「继续编辑」,拦截解除但不放行导航。
+          if (!open) blocker.reset?.();
+        }}
+      >
         <AlertDialog.Content maxWidth="440px" size={{ initial: "2", sm: "3" }}>
           <AlertDialog.Title size="4" mb="2">离开审查策略？</AlertDialog.Title>
           <AlertDialog.Description size="2" color="gray">

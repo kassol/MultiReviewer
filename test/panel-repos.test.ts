@@ -357,6 +357,85 @@ test("仓库配置的期望版本过期即 409,响应带当前值", async () => 
     globalMinReportSeverity: "P2",
     settingsVersion: 1,
   });
+
+  // 版本先核、再问模型可用性:过期的那一份里即使还带着失效模型,回的也是带当前值的
+  // 409——先报失效模型会让人对着一份已经过期的表单去改模型。
+  const staleWithMissingModel = await put({
+    reviewers: [{ provider: "test", model: "ghost" }],
+    auxiliaryModel: null,
+    minReportSeverity: "P2",
+    expectedVersion: 0,
+  });
+  assert.equal(staleWithMissingModel.status, 409);
+  assert.deepEqual((await staleWithMissingModel.json()) as unknown, {
+    error: "这个仓库的配置已经被其他人修改，请核对后再保存",
+    current: {
+      reviewers: override,
+      auxiliaryModel: null,
+      minReportSeverity: "P0",
+      settingsVersion: 1,
+    },
+  });
+});
+
+test("仓库覆盖里已有失效模型:只改等级与辅助模型照常保存,改组合仍被拒", async () => {
+  const h = await startPanelHarness(cleanups);
+  seedAvailableModelService(h, "test", ["global-model"]);
+  assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
+  // 升级前留下的一份覆盖,里面的模型此刻已经失效(播种走库,与 harness 播种全局组合同律)。
+  const stale: ReviewerSpec[] = [{ provider: "vanished-service", model: "missing" }];
+  const fixture = new DatabaseSync(h.db.path);
+  fixture.prepare("UPDATE repo SET reviewers = ? WHERE id = ?").run(
+    JSON.stringify(stale),
+    GITEA_REPO.id,
+  );
+  fixture.close();
+  const put = (body: unknown): Promise<Response> =>
+    h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, body);
+  const auxiliary = { provider: "test", model: "global-model" };
+
+  // 组合原样回传:失效模型门禁的是组合本身的写入,同一份提交里的等级与辅助模型不被连坐。
+  const kept = await put({
+    reviewers: stale,
+    auxiliaryModel: auxiliary,
+    minReportSeverity: "P1",
+    expectedVersion: 0,
+  });
+  assert.equal(kept.status, 200, await kept.text());
+  assert.deepEqual(await repoSettingsRow(h), {
+    reviewers: stale,
+    auxiliaryModel: auxiliary,
+    minReportSeverity: "P1",
+    globalMinReportSeverity: "P2",
+    settingsVersion: 1,
+  });
+
+  // 动了组合:那一份里还有失效模型,整份仍被拒,一项都不写。
+  const changed = await put({
+    reviewers: [...stale, { provider: "test", model: "global-model" }],
+    auxiliaryModel: auxiliary,
+    minReportSeverity: "P0",
+    expectedVersion: 1,
+  });
+  assert.equal(changed.status, 400);
+  assert.match(await changed.text(), /模型来源消失/);
+
+  // 辅助模型换成失效的一处:与组合并列同一道,整份同样拒收。
+  const badAuxiliary = await put({
+    reviewers: stale,
+    auxiliaryModel: { provider: "vanished-service", model: "missing" },
+    minReportSeverity: "P1",
+    expectedVersion: 1,
+  });
+  assert.equal(badAuxiliary.status, 400);
+  assert.match(await badAuxiliary.text(), /模型来源消失/);
+  assert.deepEqual(await repoSettingsRow(h), {
+    reviewers: stale,
+    auxiliaryModel: auxiliary,
+    minReportSeverity: "P1",
+    globalMinReportSeverity: "P2",
+    settingsVersion: 1,
+  });
 });
 
 test("模型覆盖与最低报告等级的旧端点回没有这个端点", async () => {
@@ -535,10 +614,6 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
     { provider: "repo-broken", model: "saved" },
     { provider: "vanished-repo-service", model: "missing" },
   ];
-  const seed = openStore(h.db.path);
-  seed.setRepoReviewers(GITEA_REPO.id, JSON.stringify(selected));
-  seed.close();
-
   const serviceState = () => {
     const store = openStore(h.db.path);
     try {
@@ -577,9 +652,6 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
   ]);
   assert.deepEqual(serviceState(), before, "覆盖写入不得创建、删除或改写模型服务与来源");
 
-  const reset = openStore(h.db.path);
-  reset.setRepoReviewers(GITEA_REPO.id, JSON.stringify(selected));
-  reset.close();
   assert.equal(
     (
       await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
