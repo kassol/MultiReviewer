@@ -1,5 +1,7 @@
 # Finding 跨 Reviewer 合并,统计以审查阶段为主维度
 
+> 2026-09-09 附记(ADR 0030):「指向同一处未改动代码的 Finding 就是同一条」这一句作废。Finding Identity 从此是「同一处的同一问题」,是不是同一个问题由合并 agent 判定,跨轮次折叠不再以指纹命中为准、指纹只在合并 agent 不可用时兜底。其余决策不变。
+
 ADR 0006 把 Finding Identity 定为 pull request + Reviewer + 文件 + 内容指纹,并把「按模型分列处置率、给多模型选型提供依据」当作面板存在的理由。线上使用(2026-08-25)把这个前提推翻了:多个模型经常报出同一处问题,按模型各算一条意味着 Forge 上同一行挂多条评论、人要逐条处置,而模型之间的处置率对比在这种样本下没有可读的意义——多模型审查的目的是审得全,不是给模型打分。因此 Finding Identity 去掉 Reviewer:同一 pull request 里指向同一处未改动代码的 Finding 就是同一条,同一轮内多个 Reviewer 报同一处合成一条评论(严重度取最高、分类取首报、正文按模型分段),归属记全部报出它的 Reviewer;历史 Finding 对所有 Reviewer 共享。处置率的主维度改为审查阶段(范围审查或 pull request)× category × 时间窗,模型只保留「参与条数」一列辅助。
 
 ## Considered Options
