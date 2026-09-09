@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
+import type { MergeAgentRequest } from "../src/review/dedupe.ts";
+import type { Reviewer, ReviewVerdict } from "../src/review/finding.ts";
 import { MERGE_AGENT_TRACE_NAME, runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
 import { testCleanups } from "./support/git-fixture.ts";
@@ -61,17 +63,22 @@ const cleanups = testCleanups();
 const EVENT = { owner: "acme", repo: "widgets", number: 1 };
 
 function setup() {
-  return setupRepo(cleanups, {
-    tree: {
-      base: { "src/m.js": BASE_M, "src/n.js": BASE_N },
-      head: { "src/m.js": HEAD_M, "src/n.js": HEAD_N },
-    },
-    pullNumber: EVENT.number,
-    changedFiles: [
-      { path: "src/m.js", status: "modified" },
-      { path: "src/n.js", status: "modified" },
-    ],
-  });
+  // 同一个数组交给内存 Forge:改写它即改写本轮的变更文件清单(先例 `run-review`)。
+  const changedFiles: { path: string; status: "modified" }[] = [
+    { path: "src/m.js", status: "modified" },
+    { path: "src/n.js", status: "modified" },
+  ];
+  return {
+    ...setupRepo(cleanups, {
+      tree: {
+        base: { "src/m.js": BASE_M, "src/n.js": BASE_N },
+        head: { "src/m.js": HEAD_M, "src/n.js": HEAD_N },
+      },
+      pullNumber: EVENT.number,
+      changedFiles,
+    }),
+    changedFiles,
+  };
 }
 
 /**
@@ -594,8 +601,16 @@ async function firstRun(
     cacheDir: ctx.cache.dir,
     dbPath: ctx.db.path,
   });
+  carryComments(ctx);
+}
+
+/** 这一轮新发出去的行级评论按未处置预置回 Forge:下一轮的回填与折叠读的就是它们。 */
+function carryComments(ctx: ReturnType<typeof setup>): void {
+  const known = new Set(ctx.forge.existingComments.map((comment) => comment.id));
   ctx.forge.existingComments.push(
-    ...ctx.forge.publishedComments.map((comment) => ({ ...comment, resolved: false })),
+    ...ctx.forge.publishedComments
+      .filter((comment) => !known.has(comment.id))
+      .map((comment) => ({ ...comment, resolved: false })),
   );
 }
 
@@ -1056,6 +1071,275 @@ test("合并 agent 不可用的那一轮:同一处的新问题仍按指纹并进
   });
   store.close();
   assert.equal(summary.findings.length, 1, "回退档的 Identity 与这一票之前逐字一致");
+});
+
+/*
+ * 同一处两条 Identity 之后的写入侧(ADR 0030,issue #307 的续)。
+ *
+ * 回填、自动处置与延续都要按承载它的那条 Forge 评论写,与读侧的 `identityKey` 同一个键:
+ * 按「文件 + 指纹」扫会把 A 的状态写到 B 的行上,B 于是无声无息地被处置掉。
+ */
+
+/**
+ * 同一处的两条 Identity:第一轮报出 A,第二轮 agent 把同一行上的另一条判为不同问题,
+ * B 因此自己发一条评论(`comment-2`)。两轮的评论都留在 Forge 上当既有评论。
+ * `disposeA` 即第一轮那条先被人驳回。
+ */
+async function twoAtOneSpot(
+  ctx: ReturnType<typeof setup>,
+  options: { disposeA?: boolean } = {},
+): Promise<void> {
+  await firstRun(ctx, [AT(2, "余额校验被删掉")]);
+  if (options.disposeA === true) dispose(ctx.db.path, ctx.forge, "comment-1");
+  const merge = scriptedMergeAgent((request) => [
+    { members: [0], history: [request.history![0]!.id], reason: "还是那处余额校验" },
+    { members: [1], reason: "日志里打印密钥是另一个问题" },
+  ]);
+  await runReview(EVENT, {
+    forge: ctx.forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [AT(2, "余额校验被删掉"), AT(2, "日志里打印了密钥")]),
+    ],
+    cacheDir: ctx.cache.dir,
+    dbPath: ctx.db.path,
+    mergeAgent: merge,
+  });
+  carryComments(ctx);
+}
+
+/** 按历史条目的标题给不同的复核结论:同一处的两条要分别对待。 */
+function verdictByTitle(model: string, verdicts: Record<string, ReviewVerdict>): Reviewer {
+  const scripted = scriptedReviewer(model, []);
+  return {
+    model,
+    review: async (input) => ({
+      ...(await scripted.review(input)),
+      verdicts: input.history.map((entry) => ({
+        findingId: entry.id,
+        verdict: verdicts[entry.title] ?? ("unclear" as const),
+      })),
+    }),
+  };
+}
+
+/** 落库的每条 Finding:标题、处置、评论与「交接未完成」标记。 */
+function dispositionRows(
+  dbPath: string,
+): { title: unknown; disposition: string; commentId: unknown; handoffPending: unknown }[] {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    return (
+      db
+        .prepare("SELECT title, disposition, comment_id, handoff_pending FROM finding ORDER BY id")
+        .all() as unknown as Record<string, unknown>[]
+    ).map((row) => ({
+      title: row["title"],
+      disposition: String(row["disposition"]),
+      commentId: row["comment_id"],
+      handoffPending: row["handoff_pending"],
+    }));
+  } finally {
+    db.close();
+  }
+}
+
+test("第三轮回填:A 那条评论的已 resolve 不写到同一处 B 的行上", async () => {
+  const ctx = setup();
+  await twoAtOneSpot(ctx, { disposeA: true });
+
+  // 第三轮什么都不报:回填是这一轮唯一碰到那两行的写入。
+  await runReview(EVENT, {
+    forge: ctx.forge.forge,
+    reviewers: [verdictReviewer("model-a", "present")],
+    cacheDir: ctx.cache.dir,
+    dbPath: ctx.db.path,
+  });
+
+  assert.deepEqual(
+    dispositionRows(ctx.db.path).map((row) => [row.title, row.disposition, row.commentId]),
+    [
+      ["余额校验被删掉", "resolved", "comment-1"],
+      ["余额校验被删掉", "resolved", "comment-1"],
+      ["日志里打印了密钥", "unresolved", "comment-2"],
+    ],
+    "B 的评论还开着,它不该跟着 A 的驳回一起被记成已处置",
+  );
+
+  const store = openStore(ctx.db.path);
+  const summary = store.stageSummary({
+    owner: EVENT.owner,
+    repo: EVENT.repo,
+    pullNumber: EVENT.number,
+  });
+  store.close();
+  assert.deepEqual(
+    summary.findings.map((finding) => [finding.title, finding.disposition]),
+    [
+      ["日志里打印了密钥", "unresolved"],
+      ["余额校验被删掉", "resolved"],
+    ],
+  );
+});
+
+test("复核判已修只处置那一条:同一处另一条的评论不被 resolve", async () => {
+  const ctx = setup();
+  await twoAtOneSpot(ctx);
+
+  await runReview(EVENT, {
+    forge: ctx.forge.forge,
+    reviewers: [
+      verdictByTitle("model-a", { 余额校验被删掉: "fixed", 日志里打印了密钥: "present" }),
+    ],
+    cacheDir: ctx.cache.dir,
+    dbPath: ctx.db.path,
+  });
+
+  assert.deepEqual(ctx.forge.resolvedIds, ["comment-1"], "只该 resolve 判已修的那条评论");
+  assert.deepEqual(
+    dispositionRows(ctx.db.path).map((row) => [row.title, row.disposition, row.commentId]),
+    [
+      ["余额校验被删掉", "fixed", "comment-1"],
+      ["余额校验被删掉", "fixed", "comment-1"],
+      ["日志里打印了密钥", "unresolved", "comment-2"],
+    ],
+  );
+});
+
+test("所在文件回退:同一处的两条各自自动处置,两条评论都 resolve", async () => {
+  const ctx = setup();
+  await twoAtOneSpot(ctx);
+  // 第三轮把 src/m.js 改回 base 的内容:它不在 base..head 的 diff 里,两条历史谁都复核不到。
+  ctx.forge.pullRequest.headSha = ctx.repo.commitToBranch("feature", { "src/m.js": BASE_M });
+  ctx.changedFiles.splice(0, 1);
+
+  await runReview(EVENT, {
+    forge: ctx.forge.forge,
+    reviewers: [scriptedReviewer("model-a", [])],
+    cacheDir: ctx.cache.dir,
+    dbPath: ctx.db.path,
+  });
+
+  assert.deepEqual([...ctx.forge.resolvedIds].sort(), ["comment-1", "comment-2"]);
+  assert.deepEqual(
+    dispositionRows(ctx.db.path).map((row) => [row.title, row.disposition]),
+    [
+      ["余额校验被删掉", "fixed"],
+      ["余额校验被删掉", "fixed"],
+      ["日志里打印了密钥", "fixed"],
+    ],
+    "两条 Identity 都落在回退掉的文件上,各自被处置",
+  );
+  const traced = trace(ctx.db.path).find((event) => event.kind === "history_auto_disposed");
+  assert.equal((traced!.payload["deleted"] as number[]).length, 0);
+  assert.equal((traced!.payload["reverted"] as number[]).length, 2);
+});
+
+test("延续 B:只 resolve B 的旧评论,同一处的 A 留在未处置", async () => {
+  const ctx = setup();
+  await twoAtOneSpot(ctx);
+  // 那一行被改写:两条历史的旧指纹在本轮 head 上都算不出,承接谁只由 agent 说了算。
+  rewriteHead(ctx, HEAD_M.replace("return a - b - 1;", "return a - b - 3;"));
+
+  const merge = scriptedMergeAgent((request) => [
+    {
+      members: [0],
+      history: [request.history!.find((entry) => entry.title === "日志里打印了密钥")!.id],
+      reason: "打印密钥的那处挪到了这里",
+    },
+  ]);
+  await runReview(EVENT, {
+    forge: ctx.forge.forge,
+    reviewers: [scriptedReviewer("model-a", [AT(14, "日志里打印了密钥")])],
+    cacheDir: ctx.cache.dir,
+    dbPath: ctx.db.path,
+    mergeAgent: merge,
+  });
+
+  assert.deepEqual(ctx.forge.resolvedIds, ["comment-2"], "交接的是 B 的旧评论");
+  assert.deepEqual(
+    dispositionRows(ctx.db.path).map((row) => [row.title, row.disposition, row.commentId]),
+    [
+      ["余额校验被删掉", "unresolved", "comment-1"],
+      ["余额校验被删掉", "unresolved", "comment-1"],
+      ["日志里打印了密钥", "continued", "comment-2"],
+      ["日志里打印了密钥", "unknown", "comment-3"],
+    ],
+    "A 只是与 B 同处一行,它不该被这次交接带走",
+  );
+  assert.equal(findingRows(ctx.db.path)[3]!.continuedFrom, ctx.forge.publishedComments[1]!.htmlUrl);
+
+  const store = openStore(ctx.db.path);
+  const summary = store.stageSummary({
+    owner: EVENT.owner,
+    repo: EVENT.repo,
+    pullNumber: EVENT.number,
+  });
+  store.close();
+  assert.deepEqual(
+    summary.findings.map((finding) => [finding.title, finding.disposition]),
+    [
+      ["余额校验被删掉", "unresolved"],
+      ["日志里打印了密钥", "unknown"],
+    ],
+    "A 仍在阶段汇总里未处置,延续只带走 B 那一条",
+  );
+});
+
+test("交接未完成的标记只落在 B 那一条上,下一轮重试清掉它", async () => {
+  const ctx = setup();
+  await twoAtOneSpot(ctx);
+  rewriteHead(ctx, HEAD_M.replace("return a - b - 1;", "return a - b - 3;"));
+
+  const carry = (request: MergeAgentRequest) => [
+    {
+      members: [0],
+      history: [request.history!.find((entry) => entry.title === "日志里打印了密钥")!.id],
+      reason: "打印密钥的那处挪到了这里",
+    },
+  ];
+  const resolve = ctx.forge.forge.resolveComment;
+  ctx.forge.forge.resolveComment = async () => {
+    throw new Error("Gitea POST /pulls/comments/2/resolve failed: 502");
+  };
+  await runReview(EVENT, {
+    forge: ctx.forge.forge,
+    reviewers: [scriptedReviewer("model-a", [AT(14, "日志里打印了密钥")])],
+    cacheDir: ctx.cache.dir,
+    dbPath: ctx.db.path,
+    mergeAgent: scriptedMergeAgent(carry),
+  });
+
+  assert.deepEqual(
+    dispositionRows(ctx.db.path).map((row) => [row.title, row.handoffPending]),
+    [
+      ["余额校验被删掉", null],
+      ["余额校验被删掉", null],
+      ["日志里打印了密钥", 1],
+      ["日志里打印了密钥", null],
+    ],
+    "待办标记只属于交接中的那条 Identity",
+  );
+
+  // 下一轮收尾时重试成功:标记清掉,A 全程没被碰过。
+  ctx.forge.forge.resolveComment = resolve;
+  carryComments(ctx);
+  await runReview(EVENT, {
+    forge: ctx.forge.forge,
+    reviewers: [verdictReviewer("model-a", "present")],
+    cacheDir: ctx.cache.dir,
+    dbPath: ctx.db.path,
+  });
+
+  assert.deepEqual(ctx.forge.resolvedIds, ["comment-2"]);
+  assert.deepEqual(
+    dispositionRows(ctx.db.path).map((row) => [row.title, row.disposition, row.handoffPending]),
+    [
+      ["余额校验被删掉", "unresolved", null],
+      ["余额校验被删掉", "unresolved", null],
+      ["日志里打印了密钥", "continued", null],
+      ["日志里打印了密钥", "unresolved", null],
+    ],
+  );
 });
 
 /*

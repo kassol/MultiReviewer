@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { ExistingReviewComment, ReviewDraft } from "../src/forge/forge.ts";
+import type { ExistingReviewComment } from "../src/forge/forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
@@ -72,21 +72,11 @@ function setup() {
 /** 人在面板上处置的时刻。 */
 const DISPOSED_AT = "2026-08-25T00:00:00.000Z";
 
-/** 把上一轮真的发布出去的行级评论,当成 Forge 上的既有评论喂给下一轮。 */
-function asExisting(draft: ReviewDraft, resolved: boolean): ExistingReviewComment[] {
-  return draft.comments.map((comment, index) => ({
-    id: `thread-${index}`,
-    path: comment.path,
-    line: comment.line,
-    body: comment.body,
-    resolved,
-    htmlUrl: `https://forge.invalid/comments/thread-${index}`,
-  }));
-}
-
 /**
- * 同上,但连 Forge 给的评论 id 一起带过去。面板处置认的是那个 id,要让处置与下一轮
- * 的折叠落在同一条评论上,喂回去的就必须是它。
+ * 把上一轮真的发布出去的行级评论,连 Forge 给的评论 id 一起当成既有评论喂给下一轮。
+ *
+ * 评论 id 是 Finding Identity 的键(`store.identityKey`,ADR 0030):处置、折叠与回填
+ * 都落在它上面,喂回去的必须是落库的那一个。真实 Forge 读回的也正是它。
  */
 function asPublished(forge: MemoryForge, resolved: boolean): ExistingReviewComment[] {
   return forge.publishedComments.map((comment) => ({ ...comment, resolved }));
@@ -134,7 +124,7 @@ test("代码未变且上一轮已处置:本轮不发行级评论,折叠段里标
   const { repo, db, forge, deps } = setup();
 
   await runReview(EVENT, deps);
-  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, true));
+  forge.existingComments.push(...asPublished(forge, true));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
   await runReview(EVENT, deps);
@@ -157,7 +147,7 @@ test("回填以 Forge 最新状态为准:resolve 后又 unresolve,覆盖回 unre
   const { repo, db, forge, deps } = setup();
 
   await runReview(EVENT, deps);
-  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, true));
+  forge.existingComments.push(...asPublished(forge, true));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
   await runReview(EVENT, deps);
   assert.deepEqual(latestDispositions(db.path), ["resolved", "resolved"]);
@@ -202,7 +192,7 @@ test("折叠的 Finding 计入首行总数:口径是本轮结论,不是本轮新
   const { repo, forge, deps } = setup();
 
   await runReview(EVENT, deps);
-  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  forge.existingComments.push(...asPublished(forge, false));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
   await runReview(EVENT, deps);
@@ -248,7 +238,7 @@ test("上一轮已处置但代码已改动:本轮按新 Finding 正常提出", a
   const { repo, db, forge, deps } = setup();
 
   await runReview(EVENT, deps);
-  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, true));
+  forge.existingComments.push(...asPublished(forge, true));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
 
   await runReview(EVENT, deps);
@@ -268,7 +258,7 @@ test("代码未变且上一轮未处置:折叠并标注尚未处置", async () =
   const { repo, db, forge, deps } = setup();
 
   await runReview(EVENT, deps);
-  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  forge.existingComments.push(...asPublished(forge, false));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
   await runReview(EVENT, deps);
@@ -287,7 +277,7 @@ test("模型换了代表行(相差 3 行以内)时仍匹配为同一处,不重�
   const { repo, db, forge, deps } = setup();
 
   await runReview(EVENT, deps);
-  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  forge.existingComments.push(...asPublished(forge, false));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
   // 上一轮锚在第 6 行(缺陷行),这一轮模型把同一个问题指到第 3 行。
@@ -344,7 +334,7 @@ test("行号相差超过 3 行时不匹配,按新 Finding 提出", async () => {
   const { repo, forge, deps } = setup();
 
   await runReview(EVENT, deps);
-  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  forge.existingComments.push(...asPublished(forge, false));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
   // 相差 4 行:与跨模型去重同一条容差线,线外就是另一处问题。
@@ -513,7 +503,7 @@ test("跨轮匹配到历史评论的 Finding,记的是那条历史评论的 id",
   const { repo, db, forge, deps } = setup();
 
   await runReview(EVENT, deps);
-  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  forge.existingComments.push(...asPublished(forge, false));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
   await runReview(EVENT, deps);
@@ -524,8 +514,9 @@ test("跨轮匹配到历史评论的 Finding,记的是那条历史评论的 id",
     db.path,
     "SELECT comment_id, comment_html_url FROM finding ORDER BY id",
   ).at(-1)!;
-  assert.equal(latest["comment_id"], "thread-0");
-  assert.equal(latest["comment_html_url"], "https://forge.invalid/comments/thread-0");
+  const published = forge.publishedComments[0]!;
+  assert.equal(latest["comment_id"], published.id);
+  assert.equal(latest["comment_html_url"], published.htmlUrl);
 });
 
 /**
