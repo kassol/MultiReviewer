@@ -929,6 +929,136 @@ test("一组含两条历史:id 小的延续,另一条保持原状", async () => 
 });
 
 /*
+ * Finding Identity 是「同一处的同一问题」(ADR 0030,issue #307):跨轮次折叠以合并
+ * agent 的判定为准,指纹只在它不可用时兜底。断言的是本轮那条发不发评论、落库的处置与
+ * 指纹、阶段汇总里算几条 Identity,以及轨迹上的判据。
+ */
+
+test("同一处的另一个问题:agent 只把其中一条归给历史,另一条发新评论且未处置", async () => {
+  const ctx = setup();
+  await firstRun(ctx, [AT(2, "余额校验被删掉")]);
+  // 上一轮那条被人驳回:旧口径下它会把本轮同一行的新问题一并压掉,连评论都不发。
+  dispose(ctx.db.path, ctx.forge, "comment-1");
+
+  const merge = scriptedMergeAgent((request) => [
+    { members: [0], history: [request.history![0]!.id], reason: "还是那处余额校验" },
+    { members: [1], reason: "日志里打印密钥是另一个问题" },
+  ]);
+  const result = await runReview(EVENT, {
+    forge: ctx.forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [AT(2, "余额校验被删掉"), AT(2, "日志里打印了密钥")]),
+    ],
+    cacheDir: ctx.cache.dir,
+    dbPath: ctx.db.path,
+    mergeAgent: merge,
+  });
+
+  assert.equal(result.findings.length, 2, "同一行上的两个问题各成一条");
+  assert.deepEqual(
+    ctx.forge.createdReviews[1]!.comments.map((comment) => [comment.line, comment.body.split("\n")[0]]),
+    [[2, "**[P1] 日志里打印了密钥**"]],
+    "归给历史的那条沉默,同一处的新问题照常发行级评论",
+  );
+  assert.deepEqual(findingRows(ctx.db.path).slice(1), [
+    {
+      title: "余额校验被删掉",
+      disposition: "resolved",
+      commentId: "comment-1",
+      continuedFrom: null,
+    },
+    { title: "日志里打印了密钥", disposition: "unknown", commentId: "comment-2", continuedFrom: null },
+  ]);
+
+  // 判据落轨迹:哪条历史、agent 为这一组写的什么理由。
+  const notFolded = trace(ctx.db.path).filter((event) => event.kind === "finding_not_folded");
+  assert.equal(notFolded.length, 1);
+  assert.deepEqual(notFolded[0]!.payload["criteria"], {
+    kind: "agent_differs",
+    history: 1,
+    reason: "日志里打印密钥是另一个问题",
+  });
+
+  // 同一「文件 + 指纹」下两条 Identity:阶段汇总与参与条数都各算一条。
+  const store = openStore(ctx.db.path);
+  const summary = store.stageSummary({
+    owner: EVENT.owner,
+    repo: EVENT.repo,
+    pullNumber: EVENT.number,
+  });
+  const participation = store.modelParticipation(
+    "2000-01-01T00:00:00.000Z",
+    "2999-01-01T00:00:00.000Z",
+  );
+  store.close();
+  assert.deepEqual(
+    summary.findings.map((finding) => [finding.title, finding.disposition]),
+    [
+      ["日志里打印了密钥", "unknown"],
+      ["余额校验被删掉", "resolved"],
+    ],
+    "同一「文件 + 指纹」下两条 Identity 各算一条",
+  );
+  assert.deepEqual(participation, [{ model: "model-a", findings: 2 }]);
+});
+
+test("合并 agent 收到的位置提示只给指纹命中的那条历史", async () => {
+  const ctx = setup();
+  await firstRun(ctx, [AT(2, "余额校验被删掉"), AT(14, "mod 加了 0")]);
+
+  const merge = scriptedMergeAgent([
+    { members: [0], reason: "先各成一组" },
+    { members: [1], reason: "先各成一组" },
+  ]);
+  await runReview(EVENT, {
+    forge: ctx.forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [AT(2, "余额校验被删掉"), AT(2, "日志里打印了密钥")]),
+    ],
+    cacheDir: ctx.cache.dir,
+    dbPath: ctx.db.path,
+    mergeAgent: merge,
+  });
+
+  // 第 1 条历史在第 2 行,本轮两条都落在那一处;第 2 条历史在第 14 行,一条都够不着。
+  assert.deepEqual(merge.requests[0]!.sameSpot, { 1: [0, 1] });
+});
+
+test("合并 agent 不可用的那一轮:同一处的新问题仍按指纹并进旧条,轨迹记回退", async () => {
+  const ctx = setup();
+  await firstRun(ctx, [AT(2, "余额校验被删掉")]);
+  dispose(ctx.db.path, ctx.forge, "comment-1");
+
+  const merge = scriptedMergeAgent([], { failure: "合并 agent 跑挂了" });
+  await runReview(EVENT, {
+    forge: ctx.forge.forge,
+    reviewers: [
+      scriptedReviewer("model-a", [AT(2, "余额校验被删掉"), AT(2, "日志里打印了密钥")]),
+    ],
+    cacheDir: ctx.cache.dir,
+    dbPath: ctx.db.path,
+    mergeAgent: merge,
+  });
+
+  assert.deepEqual(ctx.forge.createdReviews[1]!.comments, [], "退回指纹折叠:那一处不再打扰");
+  const events = trace(ctx.db.path);
+  assert.equal(events.filter((event) => event.kind === "merge_fallback").length, 1);
+  assert.equal(events.filter((event) => event.kind === "finding_not_folded").length, 0);
+  assert.deepEqual(events.find((event) => event.kind === "finding_folded")!.payload["criteria"], {
+    kind: "fingerprint",
+  });
+
+  const store = openStore(ctx.db.path);
+  const summary = store.stageSummary({
+    owner: EVENT.owner,
+    repo: EVENT.repo,
+    pullNumber: EVENT.number,
+  });
+  store.close();
+  assert.equal(summary.findings.length, 1, "回退档的 Identity 与这一票之前逐字一致");
+});
+
+/*
  * 本轮的合并 agent 用哪一处模型(issue #304,ADR 0029)。
  *
  * 这一段打在服务的注入边界上而不是 `runReview` 上:选哪一处模型是 `webhook/server.ts`

@@ -307,7 +307,9 @@ test("偏移命中折叠的那条落库沿用历史行的指纹:轨迹折叠数�
   const { repo, db, forge, deps } = setup();
 
   await runReview(EVENT, deps);
-  forge.existingComments.push(...asExisting(forge.createdReviews[0]!, false));
+  // 喂回 Forge 给的那几个评论 id(`asPublished`):Finding Identity 的键是承载它的那条
+  // 评论(ADR 0030),折叠上去的那一行记的必须是同一个 id,汇总才把两轮算成一条。
+  forge.existingComments.push(...asPublished(forge, false));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
   // 指纹在 ±3 偏移处命中(issue #264):折叠这件事已经判定,落库的指纹要与被折叠到的

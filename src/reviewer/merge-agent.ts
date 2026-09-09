@@ -40,6 +40,11 @@ export type MergeWorkerRequest = {
   findings: readonly Finding[];
   /** 同文件的历史 Finding(issue #240)。一条都没有时是空数组,prompt 因此不渲染那一段。 */
   history: readonly HistoryFinding[];
+  /**
+   * 历史的位置提示(issue #307):历史的落库 id 对到本轮哪几条 Finding 的下标。一条都
+   * 没命中的历史不占键,prompt 那一行因此只在真有位置证据时出现。
+   */
+  sameSpot: Readonly<Record<number, readonly number[]>>;
   worktreePath: string;
   runtimeModel: RuntimeModel;
   thinkingLevel?: ThinkingLevel;
@@ -75,6 +80,7 @@ export async function runMergeAgentChild(
   const payload: MergeWorkerRequest = {
     findings: request.findings,
     history: request.history ?? [],
+    sameSpot: request.sameSpot ?? {},
     worktreePath: request.worktreePath,
     runtimeModel: config.runtimeModel,
     ...(config.thinkingLevel === undefined ? {} : { thinkingLevel: config.thinkingLevel }),

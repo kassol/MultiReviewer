@@ -54,7 +54,13 @@ export type CarryCriterion =
   /** 复核结论自带新位置,本轮据它合成一条(issue #170),只用于延续。 */
   | { kind: "verdict" }
   /** 合并 agent 把本轮这条与那条历史分进了同一组,带它给的那句理由原文。 */
-  | { kind: "agent"; reason: string };
+  | { kind: "agent"; reason: string }
+  /**
+   * 指纹命中了一条交给过合并 agent 的历史,而 agent 没把它归进这一组(ADR 0030,
+   * issue #307):同一处不等于同一问题,本轮这条因此是同一处的新 Finding,不折叠。
+   * 带那条历史的落库 id 与 agent 为这一组写的那句理由——追查时要看得出它判的是什么。
+   */
+  | { kind: "agent_differs"; history: number; reason: string };
 
 /** 合并组里的一个成员:哪个 Reviewer 在哪一行说了什么。 */
 export type MergeMember = {
@@ -120,6 +126,13 @@ export type MergedFinding = {
    * ——位置语义不交给模型,与三条硬性质同律。
    */
   history?: { id: number; reason: string };
+  /**
+   * 合并 agent 为这一组写的那句理由(issue #307)。整轮走 agent 档时每组都有,算法档没有。
+   *
+   * 不并进 `merge`:那一格只有真的合并过(成员多于一条)的组才有,而「agent 判为不同
+   * 问题」的轨迹要在单成员组上也记得出理由。
+   */
+  agentReason?: string;
 };
 
 /**
@@ -379,6 +392,15 @@ export type MergeAgentRequest = {
    * 不带操作人。跨轮次的重报要能被判成同一回事,agent 就得看得见历史。
    */
   history?: readonly HistoryFinding[];
+  /**
+   * 历史的位置提示(ADR 0030,issue #307):历史的落库 id 对到本轮哪几条 Finding 的下标
+   * ——那条历史的指纹在本轮 head 上按 ±3 行滑窗重算,命中了那几条的落点,即它们落在
+   * 同一处未改动代码上。一条都没命中的历史不占键。
+   *
+   * 它只是位置证据,不是结论:同一处不等于同一问题,归不归组仍由 agent 自己判
+   * (系统提示词写明这一点)。
+   */
+  sameSpot?: Readonly<Record<number, readonly number[]>>;
   /** 本轮的一次性工作副本。agent 需要翻代码时读的就是它。 */
   worktreePath: string;
   /** 过程事件的回调。逐条给,调用方落成审查轨迹。 */
@@ -590,6 +612,9 @@ function mergeGroup(
     attributions,
     ...(ruleId === undefined ? {} : { ruleId }),
     ...(history === undefined ? {} : { history }),
+    // agent 档每组都留下它那句理由(issue #307),单成员组也留:折叠不成立时轨迹要记
+    // 「agent 判为不同问题」,理由就是这一句。
+    ...(criterion.kind === "agent" ? { agentReason: criterion.reason } : {}),
     // 只有一个成员的组没有合并过,不产生合并事件(issue #171 的用户故事 10)。
     ...(group.length === 1
       ? {}

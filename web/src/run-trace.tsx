@@ -98,6 +98,8 @@ function criteriaText(payload: Record<string, unknown>): string | null {
   if (kind === "same_line") return "同一行";
   // 跨轮次收口的三档判据(issue #240、#243):折叠凭指纹,延续凭标题相似或复核结论给的位置。
   if (kind === "fingerprint") return "指纹仍在";
+  // 指纹命中了历史、合并 agent 判它不是同一个问题(ADR 0030,issue #307)。
+  if (kind === "agent_differs") return str(criteria, "reason") ?? "合并 agent 判为不同问题";
   if (kind === "content") return "内容相近";
   if (kind === "verdict") return "复核结论给的位置";
   if (kind !== "distance") return kind;
@@ -321,8 +323,10 @@ function RunMilestone({ event }: { event: TraceEvent }) {
         );
       }
       // 跨轮次的折叠与延续(issue #240、#243):判据是指纹算出来的还是合并 agent 判的,
-      // 追查一次误判时要在这里分得清,agent 那一档带它给的那句理由。
+      // 追查一次误判时要在这里分得清,agent 那一档带它给的那句理由。指纹命中了历史却
+      // 没折叠的那一档同形(issue #307):判据里带的是那条历史的 id 与 agent 的理由。
       case "finding_folded":
+      case "finding_not_folded":
       case "finding_continued": {
         const file = str(payload, "file");
         const line = num(payload, "line");
@@ -335,7 +339,11 @@ function RunMilestone({ event }: { event: TraceEvent }) {
           <div className="flex min-w-0 flex-col gap-1">
             <span className="flex flex-wrap items-center gap-1.5">
               <span className="text-base text-text">
-                {event.kind === "finding_folded" ? "折叠到历史评论" : "延续自历史 Finding"}
+                {event.kind === "finding_folded"
+                  ? "折叠到历史评论"
+                  : event.kind === "finding_not_folded"
+                    ? "同一处的新问题"
+                    : "延续自历史 Finding"}
               </span>
               {handoffPending ? (
                 <Badge color="amber" variant="soft" radius="full">交接未完成</Badge>
