@@ -28,6 +28,7 @@ import {
 } from "./support/memory-forge.ts";
 import type { ChangedFile } from "../src/forge/forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
+import { putGlobalSettings } from "./support/store-seed.ts";
 
 const BASE_CALC = `export function add(a: number, b: number) {
   return a + b;
@@ -1883,7 +1884,7 @@ function lastRunTrace(dbPath: string): { kind: string; payload: unknown }[] {
 function setMinReportSeverity(dbPath: string, severity: "P0" | "P1" | "P2" | null): void {
   const store = openStore(dbPath);
   try {
-    assert.equal(store.putGlobalSettings({ minReportSeverity: severity }), true);
+    assert.equal(putGlobalSettings(store, { minReportSeverity: severity }), true);
   } finally {
     store.close();
   }

@@ -83,7 +83,33 @@ CREATE TABLE IF NOT EXISTS review_run (
   output_tokens INTEGER,
   cache_read_tokens INTEGER,
   cache_write_tokens INTEGER,
-  total_tokens INTEGER
+  total_tokens INTEGER,
+  -- 开跑时生效的规则集版本,没有规则集时为 NULL。
+  rule_set_version INTEGER,
+  -- 本轮指令(CONTEXT.md,issue #225)。发起重审时附的一次性要求,只属于这一轮。
+  directive TEXT,
+  -- 这一轮的模式(CONTEXT.md 只复核,issue #242)。NULL 读作完整审查。
+  mode TEXT,
+  -- 开跑时的历史 Finding 快照(issue #248)。续跑的批次读它,不重读库里当前的历史:
+  -- 重启期间有人处置了一条历史时,续跑批次拿到的仍要与原轮各批一致。NULL 即「这一轮
+  -- 没有快照」,续跑因此不成立,退回改判失败。
+  history_json TEXT,
+  -- 轮次级的失败原因(ADR 0026,issue #256):这一轮为什么没有正常收尾。NULL 即收尾正常。
+  -- 它与 failed 分开——failed 仍只回答「全部 Reviewer 失败」(ADR 0016 据它决定
+  -- 不做自动处置),发布 review 失败那一类 Reviewer 结果有效的轮次只写这一列。
+  failure TEXT,
+  -- 开跑时冻结的完整批次计划(issue #253):全部批次的文件清单,JSON 数组套数组,按批次
+  -- 序号排。开跑时写一次、之后不改——它与 review_run_batch 分工:计划说这一轮要切成
+  -- 哪几批,中间态表说哪几批已经有结果。续跑核对重新切批的每一批都与它相符,未完成
+  -- 的批次因此也核对得到;NULL 即「没有计划」,续跑不成立,退回改判失败。
+  batch_plan_json TEXT,
+  -- 开跑时生效的最低报告等级(CONTEXT.md 最低报告等级,issue #271)。NULL 读作 P2。
+  min_report_severity TEXT,
+  -- 开跑时冻结的辅助模型(CONTEXT.md 辅助模型,ADR 0029,issue #304):这一轮的合并
+  -- agent 用哪一处模型与档位,一处 ReviewerSpec 的 JSON。开跑时解析一次写下,之后
+  -- 改配置追不上这一轮,续跑读它而不重新解析。NULL 即「没有冻结的那一处」,退回按
+  -- 配置序第一个 Reviewer 走。
+  auxiliary_model TEXT
 );
 
 CREATE TABLE IF NOT EXISTS review_run_reviewer_pin (
@@ -189,7 +215,9 @@ CREATE TABLE IF NOT EXISTS finding (
   -- 行作者取自相邻改动(issue #241):落点是 hunk 内的上下文行,作者来自同 hunk 内最近
   -- 的那处改动而不是这一行本身。1 即是,0 即落点自己就是本轮的改动行;NULL 是升级前
   -- 落的行与补录路径写的那些,读回按 0。
-  line_author_adjacent INTEGER
+  line_author_adjacent INTEGER,
+  -- 命中的那条评审规则,没有命中或升级前落的行为 NULL。
+  rule_id INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS finding_by_run ON finding(run_id);
@@ -260,6 +288,7 @@ CREATE TABLE IF NOT EXISTS review_trace (
 -- 聚合,时间窗过滤在聚合之后,建不出能用上的索引。
 CREATE INDEX IF NOT EXISTS finding_by_anchor ON finding(file, fingerprint);
 CREATE INDEX IF NOT EXISTS review_run_by_pr ON review_run(owner, repo, pull_number);
+CREATE INDEX IF NOT EXISTS review_run_by_range ON review_run(range_review_id);
 
 -- 范围审查(ADR 0012):人在面板发起的一个阶段性审查,不依赖任何既有 pull request。
 -- 不按 base 去重,每次发起都是新的一条;同一仓库同一 base 已有进行中的只提醒。
@@ -329,7 +358,14 @@ CREATE TABLE IF NOT EXISTS repo (
   worktree_state TEXT,
   worktree_failure TEXT,
   worktree_checked_at TEXT,
-  registered_at TEXT NOT NULL
+  registered_at TEXT NOT NULL,
+  -- 这个仓库自己的辅助模型覆盖,NULL 即跟随全局。
+  auxiliary_model TEXT,
+  -- 这个仓库自己的最低报告等级覆盖(CONTEXT.md 最低报告等级,issue #273)。NULL 即跟随全局。
+  min_report_severity TEXT,
+  -- 仓库配置的整块版本号(issue #302):模型覆盖与最低报告等级一次写完,版本随之加一。
+  -- 从 0 起,配置一次都没经这个端点写过的仓库因此是 0。
+  settings_version INTEGER NOT NULL DEFAULT 0
 );
 
 -- 仓库的 key。明文存库:HMAC 验签需要原始值,这是密码学约束,不是疏忽。代次单调
@@ -703,6 +739,11 @@ CREATE TABLE IF NOT EXISTS model_service (
   disabled_reason TEXT CHECK (disabled_reason IS NULL OR disabled_reason = 'name-conflict'),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  -- 这一版绑定的调用目标集合(ADR 0027,issue #261):JSON 数组,每项
+  -- {api, baseUrl, fingerprint},去重并稳定排序。自定义服务是 NULL(目标在 base_url /
+  -- api 两列上);升级前的内置版本也是 NULL,读回即「旧版本」,只有经指纹证明的那一个
+  -- 目标可以延续,证明不了就待重新验证。
+  targets_json TEXT,
   CHECK (
     (service_type = 'custom' AND base_url IS NOT NULL AND api IS NOT NULL
       AND target_fingerprint IS NOT NULL)
@@ -793,130 +834,6 @@ CREATE TABLE IF NOT EXISTS model_service_model_state (
   PRIMARY KEY (provider, model)
 );
 `;
-
-/**
- * 加在既有表上的列。`CREATE TABLE IF NOT EXISTS` 对已存在的表什么都不做,升级前建的
- * 数据库因此拿不到新列,第一次落库就写不进去。SQLite 的 ADD COLUMN 没有 IF NOT EXISTS,
- * 只能照跑一遍、把"列已存在"这一种错吞掉。NOT NULL 列带默认值;可空列的旧行自然是
- * NULL,不需要回填。
- *
- * placement 的默认值 'inline' 对升级前的历史 fallback 行是错标(它们本该是 body),
- * 迁移时无从分辨;回填链路会在该 PR 下一次被读到时按正文锚点把它们纠正回来。
- */
-const ADD_COLUMNS = [
-  "ALTER TABLE reviewer_outcome ADD COLUMN anchor_rejections INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE repo ADD COLUMN reviewers TEXT",
-  "ALTER TABLE repo ADD COLUMN auxiliary_model TEXT",
-  "ALTER TABLE review_run ADD COLUMN pr_state TEXT",
-  "ALTER TABLE review_run ADD COLUMN triggered_by TEXT",
-  "ALTER TABLE finding ADD COLUMN placement TEXT NOT NULL DEFAULT 'inline'",
-  "ALTER TABLE model_directory_model ADD COLUMN field_sources_json TEXT",
-  "ALTER TABLE finding ADD COLUMN comment_id TEXT",
-  "ALTER TABLE finding ADD COLUMN comment_html_url TEXT",
-  "ALTER TABLE review_run ADD COLUMN range_review_id INTEGER",
-  "ALTER TABLE finding ADD COLUMN disposed_by TEXT",
-  "ALTER TABLE finding ADD COLUMN disposed_at TEXT",
-  "ALTER TABLE finding ADD COLUMN disposition_note TEXT",
-  "ALTER TABLE finding ADD COLUMN title TEXT",
-  "ALTER TABLE finding ADD COLUMN continued_from TEXT",
-  "ALTER TABLE review_run ADD COLUMN title TEXT",
-  "ALTER TABLE range_review ADD COLUMN title TEXT",
-  "ALTER TABLE repo ADD COLUMN worktree_state TEXT",
-  "ALTER TABLE repo ADD COLUMN worktree_failure TEXT",
-  "ALTER TABLE repo ADD COLUMN worktree_checked_at TEXT",
-  "ALTER TABLE finding ADD COLUMN line_author_sha TEXT",
-  "ALTER TABLE finding ADD COLUMN line_author_name TEXT",
-  "ALTER TABLE finding ADD COLUMN line_author_email TEXT",
-  "ALTER TABLE finding ADD COLUMN line_author_at TEXT",
-  "ALTER TABLE review_run ADD COLUMN rule_set_version INTEGER",
-  "ALTER TABLE finding ADD COLUMN rule_id INTEGER",
-  "ALTER TABLE model_directory_model ADD COLUMN thinking_level_map_json TEXT",
-  "ALTER TABLE model_directory_model ADD COLUMN compat_json TEXT",
-  "ALTER TABLE rule_exploration ADD COLUMN thinking_level TEXT",
-  // `rule_proposal` 的 `trace_task_id` 不在这里补:那一列随出处下沉为附注列表退役
-  // (issue #281),下面那一次重建把它连同 `source` / `source_note` 一起搬进
-  // `rule_proposal_source`。补出来只会让新库多一列没人读的。
-  "ALTER TABLE rule_exploration ADD COLUMN trace_task_id INTEGER",
-  "ALTER TABLE review_run_reviewer_pin ADD COLUMN thinking_level TEXT",
-  // 知识条目的两值枚举(ADR 0020,issue #221)。DEFAULT 就是存量迁移本身:升级前落的
-  // 每一行都是评审规则,补出来的这一列把它们原样读成规则型。CHECK 只在新建的表上,
-  // `ALTER TABLE` 加不了约束;封闭枚举由 TypeScript 的联合类型与端点校验共同把住。
-  "ALTER TABLE review_rule ADD COLUMN type TEXT NOT NULL DEFAULT 'rule'",
-  "ALTER TABLE rule_draft_item ADD COLUMN type TEXT NOT NULL DEFAULT 'rule'",
-  "ALTER TABLE rule_proposal ADD COLUMN type TEXT NOT NULL DEFAULT 'rule'",
-  // 本轮指令(CONTEXT.md,issue #225)。发起重审时附的一次性要求,只属于这一轮。
-  "ALTER TABLE review_run ADD COLUMN directive TEXT",
-  // 这一轮的模式(CONTEXT.md 只复核,issue #242)。旧行是 NULL,读回来按完整审查算
-  // ——升级前每一轮都是完整审查,这一列补出来不改变它们的事实。
-  "ALTER TABLE review_run ADD COLUMN mode TEXT",
-  // 选定比较项时用的分支或 Tag(issue #234)。旧行是 NULL:分支名从 sha 反推不出来。
-  "ALTER TABLE range_review ADD COLUMN comparison_source_kind TEXT",
-  "ALTER TABLE range_review ADD COLUMN comparison_source_name TEXT",
-  // 行作者取自相邻改动的标记(issue #241)。存量不回填:升级前落的行是 NULL,读回按
-  // 没有标记——那几条当初判的就是落点自己那一行。
-  "ALTER TABLE finding ADD COLUMN line_author_adjacent INTEGER",
-  // 开跑时的历史 Finding 快照(issue #248)。续跑的批次读它,不重读库里当前的历史:
-  // 重启期间有人处置了一条历史时,续跑批次拿到的仍要与原轮各批一致。旧行是 NULL,
-  // 读回即「这一轮没有快照」,续跑因此不成立,退回改判失败。
-  "ALTER TABLE review_run ADD COLUMN history_json TEXT",
-  // 轮次级的失败原因(ADR 0026,issue #256):这一轮为什么没有正常收尾。NULL 即收尾正常。
-  // 它与 `failed` 分开——`failed` 仍只回答「全部 Reviewer 失败」(ADR 0016 据它决定
-  // 不做自动处置),发布 review 失败那一类 Reviewer 结果有效的轮次只写这一列。旧行是
-  // NULL,读回即「无失败记录」。
-  "ALTER TABLE review_run ADD COLUMN failure TEXT",
-  // 开跑时冻结的完整批次计划(issue #253):全部批次的文件清单,JSON 数组套数组,按批次
-  // 序号排。开跑时写一次、之后不改——它与 `review_run_batch` 分工:计划说这一轮要切成
-  // 哪几批,中间态表说哪几批已经有结果。续跑核对重新切批的每一批都与它相符,未完成
-  // 的批次因此也核对得到;旧行是 NULL,读回即「没有计划」,续跑不成立,退回改判失败。
-  "ALTER TABLE review_run ADD COLUMN batch_plan_json TEXT",
-  // 交接未完成的标记(ADR 0025,issue #252)。旧行是 NULL:升级前的延续都在 resolve
-  // 成功之后才落库,没有交接没做完的。
-  "ALTER TABLE finding ADD COLUMN handoff_pending INTEGER",
-  // 内置模型服务版本绑定的调用目标集合(ADR 0027,issue #261):JSON 数组,每项
-  // `{api, baseUrl, fingerprint}`,去重并稳定排序。自定义服务是 NULL(目标在 base_url /
-  // api 两列上);升级前的内置版本也是 NULL,读回即「旧版本」,只有经指纹证明的那一个
-  // 目标可以延续,证明不了就待重新验证。
-  "ALTER TABLE model_service ADD COLUMN targets_json TEXT",
-  // 逐归属的影响与建议(issue #266)。旧行是 NULL,与新落的空串分开:NULL 是「升级前
-  // 没存」,恢复操作只补这一档;空串是「模型没给」,照原样呈现为没有这一段。
-  "ALTER TABLE finding_attribution ADD COLUMN impact TEXT",
-  "ALTER TABLE finding_attribution ADD COLUMN suggestion TEXT",
-  // 开跑时生效的最低报告等级(CONTEXT.md 最低报告等级,issue #271)。旧行是 NULL,读回
-  // 按 P2 算——升级前每一轮都是全报,这一列补出来不改变它们的事实,与 `mode` 同律。
-  "ALTER TABLE review_run ADD COLUMN min_report_severity TEXT",
-  // 仓库自己的最低报告等级覆盖(CONTEXT.md 最低报告等级,issue #273)。NULL 即跟随全局,
-  // 升级前注册的仓库全部是 NULL——它们本来就跟着全局跑,补这一列不改变它们的事实。
-  "ALTER TABLE repo ADD COLUMN min_report_severity TEXT",
-  // 代表段的影响与建议(issue #278)。旧行两列是 NULL:升级前只有 title / description
-  // 两段落库,读侧据此认出它们并按同一规则从归属现算,不回填。
-  "ALTER TABLE finding ADD COLUMN impact TEXT",
-  "ALTER TABLE finding ADD COLUMN suggestion TEXT",
-  // 一次知识整理对现集提出了几条提案(issue #285)。旧行是 NULL,与没跑完那一档同形:
-  // 升级前完成的整理只改队列,提案数无从补出来,面板按 0 显示。
-  "ALTER TABLE rule_consolidation ADD COLUMN proposed INTEGER",
-  // 出处附注的依据(CONTEXT.md 出处附注,issue #287):agent 为这一条给出的理由与代码
-  // 证据。旧行是 NULL——升级前三条链路的理由都没落库,补不出来,面板按没有这一格显示。
-  "ALTER TABLE rule_proposal_source ADD COLUMN evidence TEXT",
-  // 仓库配置的整块版本号(issue #302):模型覆盖与最低报告等级一次写完,版本随之加一。
-  // 从 0 起,升级前注册的仓库因此都是 0——它们的配置一次都没经这个端点写过。
-  "ALTER TABLE repo ADD COLUMN settings_version INTEGER NOT NULL DEFAULT 0",
-  // 开跑时冻结的辅助模型(CONTEXT.md 辅助模型,ADR 0029,issue #304):这一轮的合并
-  // agent 用哪一处模型与档位,一处 `ReviewerSpec` 的 JSON。开跑时解析一次写下,之后
-  // 改配置追不上这一轮,续跑读它而不重新解析。旧行是 NULL,读回即「没有冻结的那一处」
-  // ——升级前合并 agent 取的是配置序第一个 Reviewer,那时没有这一列可写。
-  "ALTER TABLE review_run ADD COLUMN auxiliary_model TEXT",
-];
-
-/**
- * 建在 `ADD_COLUMNS` 补出来的列上的索引。
- *
- * 不能放进 `STORE_SCHEMA`:升级前建的表里那一列还不存在,而 `CREATE TABLE IF NOT
- * EXISTS` 不会补,建索引会当场报「no such column」。补列之后再建就都有了。
- */
-const ADD_INDEXES = [
-  "CREATE INDEX IF NOT EXISTS review_run_by_range ON review_run(range_review_id)",
-];
-
 
 /*
  * 历史的裸 model id 不回填(issue #73 的取舍)。升级前 `finding.model`(现已改为
@@ -1775,8 +1692,8 @@ export type ReviewRuleRecord = {
   /**
    * 出处。这一票只有读。写这一列的是落条目的那两条路径:知识确认时草案条目带着自己那一列
    * 成为条目(基点探索留 `baseline-exploration`、意图补进草案的留 `manual-proposal`),裁决
-   * 采纳时新增与合并取提案第一条附注的来源、修改沿用被改那一行的。`addReviewRule` 的
-   * `manual` 只剩用例走它——撤直改之后没有端点再产生这一类行(issue #299)。
+   * 采纳时新增与合并取提案第一条附注的来源、修改沿用被改那一行的。存量的 `manual` 只在
+   * 库里留着——撤直改之后没有端点再产生这一类行(issue #299)。
    */
   origin: string;
 };
@@ -2501,15 +2418,6 @@ export type Store = {
    */
   getRuleSet(repoId: number): RuleSet | undefined;
   /**
-   * 落一条知识条目:推进一版知识集版本,它从那一版起生效,出处记 `manual`。返回新的知识
-   * 集版本;仓库不在注册表里回 undefined。
-   *
-   * **没有端点走它**(issue #299,ADR 0028):人不再手写陈述,生效条目只由裁决采纳与知识
-   * 确认写入。留着它是因为用例要落「现集里先有一条」这个前提,而那两条路径各要先造一份
-   * 提案或一份草案。别把它重新接到端点上。
-   */
-  addReviewRule(repoId: number, input: ReviewRuleInput): number | undefined;
-  /**
    * 直接废止一条生效中的条目:推进一版,那一行废止于那一版,之后可查不可用。条目不在
    * 这个仓库的生效条目里时回 undefined。
    */
@@ -2724,8 +2632,6 @@ export type Store = {
    * 陈旧版本或组合不可用都返回 false，两种情形一行都不改。
    */
   replaceGlobalSettings(expectedVersion: number, next: GlobalSettingsValues): boolean;
-  /** 测试夹具和启动播种的兼容入口：按当前版本合并写入几项；面板写链不得使用。 */
-  putGlobalSettings(patch: Partial<GlobalSettingsValues>): boolean;
   /**
    * 在一个 SQLite 读事务里取得仓库生效组合、批次上限及其引用的当前模型服务版本。
    * 仓库不存在时抛错；坏配置沿用设置入口的校验错误。
@@ -3250,14 +3156,8 @@ function carriedByFinding(
         ORDER BY c.finding_id, c.position`,
     )
     .all(...params);
-  const byFinding = new Map<number, CarriedAttribution[]>();
-  for (const row of rows) {
-    const id = Number(row["finding_id"]);
-    const list = byFinding.get(id) ?? [];
-    list.push(carriedAttribution(row));
-    byFinding.set(id, list);
-  }
-  return byFinding;
+  const grouped = Map.groupBy(rows, (row) => Number(row["finding_id"]));
+  return new Map([...grouped].map(([id, group]) => [id, group.map(carriedAttribution)]));
 }
 
 function recordedUsage(row: Record<string, unknown>): ReviewerUsage | undefined {
@@ -3414,7 +3314,7 @@ function groupStageRuns(
     byHead.delete(comparison.sha);
   }
   const rest = [...byHead.entries()].sort(
-    (a, b) => a[1][a[1].length - 1]!.runId - b[1][b[1].length - 1]!.runId,
+    (a, b) => a[1].at(-1)!.runId - b[1].at(-1)!.runId,
   );
   for (const [sha, runs] of rest) {
     ascending.push({ sha, recordedBy: null, recordedAt: null, runs });
@@ -3433,12 +3333,6 @@ function stageScope(scope: StageScope): [string, (string | number)[]] {
         [scope.owner, scope.repo, scope.pullNumber],
       ];
 }
-
-/**
- * 人手工写下的条目在 `review_rule.origin` 上的出处(issue #203)。撤直改之后不再有端点
- * 产生新的这一类行(issue #299,ADR 0028),存量条目原样保留,`addReviewRule` 也照旧写它。
- */
-const MANUAL_RULE_ORIGIN = "manual";
 
 /** 基点探索推导出的规则在 `origin` 上的出处(issue #205)。处置反哺另写自己的字面量。 */
 const BASELINE_EXPLORATION_RULE_ORIGIN = "baseline-exploration";
@@ -3529,230 +3423,6 @@ export function openStore(dbPath: string): Store {
   }
   db.exec(STORE_SCHEMA);
   db.exec(MODEL_SERVICE_SCHEMA);
-  for (const statement of ADD_COLUMNS) {
-    try {
-      db.exec(statement);
-    } catch (error) {
-      if (!/duplicate column name/i.test(String(error))) throw error;
-    }
-  }
-  for (const statement of ADD_INDEXES) db.exec(statement);
-
-  // 撤掉 finding_attribution 的 (finding_id, model) 唯一约束(2026-08-31):同一模型
-  // 内容不同的多条归属要全部落库。SQLite 去约束只能重建表;`CREATE TABLE IF NOT
-  // EXISTS` 不改已有表,存量库在这里换。判据看建表语句原文,重建过即不再命中,零影响。
-  const attributionSql = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'finding_attribution'")
-    .get()?.["sql"];
-  if (typeof attributionSql === "string" && attributionSql.includes("UNIQUE (finding_id, model)")) {
-    db.exec(`
-      BEGIN;
-      CREATE TABLE finding_attribution_rebuilt (
-        finding_id INTEGER NOT NULL REFERENCES finding(id),
-        position INTEGER NOT NULL,
-        model TEXT NOT NULL,
-        severity TEXT NOT NULL,
-        category TEXT NOT NULL,
-        description TEXT NOT NULL,
-        impact TEXT,
-        suggestion TEXT,
-        PRIMARY KEY (finding_id, position)
-      );
-      INSERT INTO finding_attribution_rebuilt
-        SELECT finding_id, position, model, severity, category, description, impact, suggestion
-          FROM finding_attribution;
-      DROP TABLE finding_attribution;
-      ALTER TABLE finding_attribution_rebuilt RENAME TO finding_attribution;
-      CREATE INDEX IF NOT EXISTS finding_attribution_by_model ON finding_attribution(model);
-      COMMIT;
-    `);
-  }
-
-  // 出处下沉为附注列表(issue #281):`rule_proposal` 的 `source` / `source_note` /
-  // `trace_task_id` 三列各合成一条出处附注,那三列随之从表上去掉。SQLite 去列只能重建
-  // 表,判据与上面那一次同律:看建表语句原文,重建过即不再命中,零影响。
-  //
-  // 重建期间关外键:`rule_proposal_source` 引用 `rule_proposal(id)`,先搬附注再 DROP
-  // 父表会当场撞上外键;这是 SQLite 官方给的重建顺序(先关、重建完再开)。
-  const proposalSql = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'rule_proposal'")
-    .get()?.["sql"];
-  if (typeof proposalSql === "string" && proposalSql.includes("source_note")) {
-    db.exec("PRAGMA foreign_keys = OFF");
-    try {
-      db.exec(`
-        BEGIN;
-        INSERT INTO rule_proposal_source
-            (proposal_id, origin, note, finding_id, trace_task_id, created_at)
-          SELECT id, source, source_note, NULL, trace_task_id, created_at FROM rule_proposal;
-        CREATE TABLE rule_proposal_rebuilt (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          repo_id INTEGER NOT NULL REFERENCES repo(id),
-          type TEXT NOT NULL DEFAULT 'rule' CHECK (type IN ('rule', 'fact')),
-          change TEXT NOT NULL CHECK (change IN ('add', 'modify', 'retire')),
-          target_rule_id INTEGER,
-          scope TEXT NOT NULL,
-          statement TEXT NOT NULL,
-          layer TEXT NOT NULL,
-          state TEXT NOT NULL CHECK (state IN ('pending', 'accepted', 'rejected')),
-          created_at TEXT NOT NULL,
-          decided_at TEXT,
-          CHECK ((state = 'pending') = (decided_at IS NULL)),
-          CHECK ((change = 'add') = (target_rule_id IS NULL))
-        );
-        INSERT INTO rule_proposal_rebuilt
-            (id, repo_id, type, change, target_rule_id, scope, statement, layer, state,
-             created_at, decided_at)
-          SELECT id, repo_id, type, change, target_rule_id, scope, statement, layer, state,
-                 created_at, decided_at
-            FROM rule_proposal;
-        DROP TABLE rule_proposal;
-        ALTER TABLE rule_proposal_rebuilt RENAME TO rule_proposal;
-        CREATE INDEX IF NOT EXISTS rule_proposal_by_repo ON rule_proposal(repo_id);
-        COMMIT;
-      `);
-    } finally {
-      db.exec("PRAGMA foreign_keys = ON");
-    }
-  }
-
-  // 合并变更类型(issue #282):`change` 的枚举多一档 `merge`,单值的 `target_rule_id`
-  // 换成 JSON 数组 `target_rule_ids`(新增是空数组,修改与废止是一元,合并一条以上——
-  // 单目标的合并即改型,issue #289)。
-  // 两样都改不动现表——`ALTER TABLE` 改不了 CHECK,也去不掉列,只能重建。判据看建表
-  // 语句里有没有 `merge`,重建过即不再命中。重建顺序与上面那一次同律(先关外键)。
-  const mergeSql = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'rule_proposal'")
-    .get()?.["sql"];
-  if (typeof mergeSql === "string" && !mergeSql.includes("'merge'")) {
-    db.exec("PRAGMA foreign_keys = OFF");
-    try {
-      db.exec(`
-        BEGIN;
-        CREATE TABLE rule_proposal_rebuilt (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          repo_id INTEGER NOT NULL REFERENCES repo(id),
-          type TEXT NOT NULL DEFAULT 'rule' CHECK (type IN ('rule', 'fact')),
-          change TEXT NOT NULL CHECK (change IN ('add', 'modify', 'retire', 'merge')),
-          target_rule_ids TEXT NOT NULL DEFAULT '[]',
-          scope TEXT NOT NULL,
-          statement TEXT NOT NULL,
-          layer TEXT NOT NULL,
-          state TEXT NOT NULL CHECK (state IN ('pending', 'accepted', 'rejected')),
-          created_at TEXT NOT NULL,
-          decided_at TEXT,
-          CHECK ((state = 'pending') = (decided_at IS NULL)),
-          CHECK ((change = 'add') = (target_rule_ids = '[]'))
-        );
-        INSERT INTO rule_proposal_rebuilt
-            (id, repo_id, type, change, target_rule_ids, scope, statement, layer, state,
-             created_at, decided_at)
-          SELECT id, repo_id, type, change,
-                 CASE WHEN target_rule_id IS NULL THEN '[]' ELSE '[' || target_rule_id || ']' END,
-                 scope, statement, layer, state, created_at, decided_at
-            FROM rule_proposal;
-        DROP TABLE rule_proposal;
-        ALTER TABLE rule_proposal_rebuilt RENAME TO rule_proposal;
-        CREATE INDEX IF NOT EXISTS rule_proposal_by_repo ON rule_proposal(repo_id);
-        COMMIT;
-      `);
-    } finally {
-      db.exec("PRAGMA foreign_keys = ON");
-    }
-  }
-
-  // 知识整理也留一条知识轨迹(issue #284):`rule_trace.source` 的 CHECK 多一个取值。
-  // SQLite 改不了 CHECK,同样只能重建表;判据与上面两次同律,重建过即不再命中。这张表
-  // 没有任何表引用它,重建不必关外键。
-  const traceSql = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'rule_trace'")
-    .get()?.["sql"];
-  if (typeof traceSql === "string" && !traceSql.includes("knowledge-consolidation")) {
-    db.exec(`
-      BEGIN;
-      CREATE TABLE rule_trace_rebuilt (
-        task_id INTEGER NOT NULL,
-        repo_id INTEGER NOT NULL REFERENCES repo(id),
-        source TEXT NOT NULL
-          CHECK (source IN ('baseline-exploration', 'disposition-feedback', 'knowledge-consolidation')),
-        seq INTEGER NOT NULL,
-        at TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        PRIMARY KEY (task_id, seq)
-      );
-      INSERT INTO rule_trace_rebuilt
-        SELECT task_id, repo_id, source, seq, at, kind, payload FROM rule_trace;
-      DROP TABLE rule_trace;
-      ALTER TABLE rule_trace_rebuilt RENAME TO rule_trace;
-      CREATE INDEX IF NOT EXISTS rule_trace_by_repo ON rule_trace(repo_id);
-      COMMIT;
-    `);
-  }
-
-  // 人工提议是第四个来源(CONTEXT.md 人工提议,ADR 0028,issue #294):出处附注与知识
-  // 轨迹两张表的来源 CHECK 各加这一个取值。SQLite 改不了 CHECK,同样只能重建表;判据与
-  // 上面几次同律,重建过即不再命中。存量条目的出处原样搬过去,一条都不改。
-  //
-  // 附注这一张引用 `rule_proposal(id)`,但重建的是子表自己:先把行搬进新表、再 DROP 旧
-  // 的,父表一行未动,外键因此不必关。
-  const sourceSql = db
-    .prepare(
-      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'rule_proposal_source'",
-    )
-    .get()?.["sql"];
-  if (typeof sourceSql === "string" && !sourceSql.includes("manual-proposal")) {
-    db.exec(`
-      BEGIN;
-      CREATE TABLE rule_proposal_source_rebuilt (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        proposal_id INTEGER NOT NULL REFERENCES rule_proposal(id),
-        origin TEXT NOT NULL
-          CHECK (origin IN ('baseline-exploration', 'disposition-feedback',
-                            'knowledge-consolidation', 'manual-proposal')),
-        note TEXT,
-        evidence TEXT,
-        finding_id INTEGER,
-        trace_task_id INTEGER,
-        created_at TEXT NOT NULL
-      );
-      INSERT INTO rule_proposal_source_rebuilt
-          (id, proposal_id, origin, note, evidence, finding_id, trace_task_id, created_at)
-        SELECT id, proposal_id, origin, note, evidence, finding_id, trace_task_id, created_at
-          FROM rule_proposal_source;
-      DROP TABLE rule_proposal_source;
-      ALTER TABLE rule_proposal_source_rebuilt RENAME TO rule_proposal_source;
-      CREATE INDEX IF NOT EXISTS rule_proposal_source_by_proposal
-        ON rule_proposal_source(proposal_id);
-      COMMIT;
-    `);
-  }
-  const manualTraceSql = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'rule_trace'")
-    .get()?.["sql"];
-  if (typeof manualTraceSql === "string" && !manualTraceSql.includes("manual-proposal")) {
-    db.exec(`
-      BEGIN;
-      CREATE TABLE rule_trace_rebuilt (
-        task_id INTEGER NOT NULL,
-        repo_id INTEGER NOT NULL REFERENCES repo(id),
-        source TEXT NOT NULL
-          CHECK (source IN ('baseline-exploration', 'disposition-feedback',
-                            'knowledge-consolidation', 'manual-proposal')),
-        seq INTEGER NOT NULL,
-        at TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        PRIMARY KEY (task_id, seq)
-      );
-      INSERT INTO rule_trace_rebuilt
-        SELECT task_id, repo_id, source, seq, at, kind, payload FROM rule_trace;
-      DROP TABLE rule_trace;
-      ALTER TABLE rule_trace_rebuilt RENAME TO rule_trace;
-      CREATE INDEX IF NOT EXISTS rule_trace_by_repo ON rule_trace(repo_id);
-      COMMIT;
-    `);
-  }
 
   // 审查策略整页一个版本(issue #301):升级前每一项各持一个版本键,这里一次性删掉并建起
   // 整页那一个(从 1 起)。设置值本身一格不动;删过就不再命中,已有的整页版本也不被覆盖,
@@ -3765,13 +3435,6 @@ export function openStore(dbPath: string): Store {
       "INSERT INTO global_setting (key, value) VALUES (?, '1') ON CONFLICT(key) DO NOTHING",
     ).run(GLOBAL_SETTINGS_VERSION_KEY);
   }
-
-  // 权限格 `rule:write` 改名 `knowledge:write`(ADR 0020,issue #220):存量角色照旧持有
-  // 同一格能力,只是字面量换了。`OR REPLACE` 让同一角色两格都有时旧行让位给新行;跑第
-  // 二遍已经没有旧行,零影响。
-  db.exec(
-    "UPDATE OR REPLACE panel_role_permission SET permission = 'knowledge:write' WHERE permission = 'rule:write'",
-  );
 
   // 系统管理员 bootstrap 与普通创建共用同一条用户写入语义。
   const writePanelUser = (record: Omit<PanelUserRecord, "lastLoginAt">): void => {
@@ -4721,14 +4384,6 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    addReviewRule(repoId, input) {
-      if (!repoExists(repoId)) return undefined;
-      return inRuleSetVersion(repoId, (version, at) => {
-        insertReviewRule(repoId, input, MANUAL_RULE_ORIGIN, version, at);
-        return version;
-      });
-    },
-
     retireReviewRule(repoId, ruleId) {
       if (activeRule(repoId, ruleId) === undefined) return undefined;
       return inRuleSetVersion(repoId, (version) => {
@@ -5404,11 +5059,6 @@ export function openStore(dbPath: string): Store {
         db.exec("ROLLBACK");
         throw error;
       }
-    },
-
-    putGlobalSettings(patch) {
-      const { version, ...current } = store.getGlobalSettings();
-      return store.replaceGlobalSettings(version, { ...current, ...patch });
     },
 
     commitModelServiceVersion(expectedVersion, record) {
@@ -6648,7 +6298,7 @@ export function openStore(dbPath: string): Store {
           if (row.continuedFrom !== null) successors.set(row.continuedFrom, identity);
         }
       }
-      const latestOf = (identity: Identity): StageRow => identity.rows[identity.rows.length - 1]!;
+      const latestOf = (identity: Identity): StageRow => identity.rows.at(-1)!;
       // 交接未完成(ADR 0025)同样跟着链条走:旧行不在汇总里,标记要落到承接它的那条
       // 上;链上更早那一段没关掉的旧评论,一路传到最后可见的那条。
       const pendingHandoff = new Set<Identity>();

@@ -28,6 +28,7 @@ import {
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { seedReviewRule } from "./support/store-seed.ts";
 
 const cleanups = testCleanups();
 
@@ -133,7 +134,7 @@ function seedActiveEntries(h: PanelHarness, entries: readonly ReviewRuleInput[])
   const store = openStore(h.db.path);
   try {
     for (const entry of entries) {
-      assert.notEqual(store.addReviewRule(GITEA_REPO.id, entry), undefined);
+      assert.notEqual(seedReviewRule(h.db.path, GITEA_REPO.id, entry), undefined);
     }
   } finally {
     store.close();
@@ -257,7 +258,7 @@ test("合并的守门:少于两条、空陈述、已裁决的一条、以及不�
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 91, owner: "acme", repo: "guarded", generation: 1, key: "k" });
-    const rule = store.addReviewRule(91, { type: "rule", scope: "", statement: "已经生效的一条" })!;
+    const rule = seedReviewRule(db.path, 91, { type: "rule", scope: "", statement: "已经生效的一条" })!;
     const add = store.addRuleProposal(91, proposal({ statement: "新增一条" }))!;
     const other = store.addRuleProposal(91, proposal({ statement: "新增另一条" }))!;
     const retire = store.addRuleProposal(91, proposal({
@@ -291,8 +292,8 @@ test("改写为修改型:指向那条生效条目;目标不生效、不同型、
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 92, owner: "acme", repo: "retargeted", generation: 1, key: "k" });
-    const rule = store.addReviewRule(92, { type: "rule", scope: "", statement: "已经生效的规则" })!;
-    const fact = store.addReviewRule(92, { type: "fact", scope: "", statement: "已经生效的事实" })!;
+    const rule = seedReviewRule(db.path, 92, { type: "rule", scope: "", statement: "已经生效的规则" })!;
+    const fact = seedReviewRule(db.path, 92, { type: "fact", scope: "", statement: "已经生效的事实" })!;
     const add = store.addRuleProposal(92, proposal({ statement: "现集已经有的那条" }))!;
     const factAdd = store.addRuleProposal(92, proposal({ type: "fact", statement: "另一条事实" }))!;
 

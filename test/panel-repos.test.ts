@@ -26,6 +26,7 @@ import {
   startPanelHarness,
   startReadyPanelHarness,
 } from "./support/panel-harness.ts";
+import { putGlobalSettings } from "./support/store-seed.ts";
 
 const cleanups = testCleanups();
 
@@ -570,50 +571,6 @@ test("辅助模型三级解析:仓库覆盖 ?? 全局 ?? 生效组合第一个,�
   });
 });
 
-test("旧库的仓库读回整块版本号 0 与辅助模型 null,解析退回组合第一个", async () => {
-  const h = await startPanelHarness();
-  seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
-  assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
-  const override: ReviewerSpec[] = [{ provider: "test", model: "swapped-model" }];
-  assert.equal(
-    (
-      await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
-        reviewers: override,
-        auxiliaryModel: null,
-        minReportSeverity: "P1",
-        expectedVersion: 0,
-      })
-    ).status,
-    200,
-  );
-
-  // 升级前的形状:`repo` 表没有整块版本号与辅助模型覆盖这两列。去掉它们,下一次
-  // openStore 即走补列那一路。
-  const sqlite = new DatabaseSync(h.db.path);
-  try {
-    sqlite.exec("ALTER TABLE repo DROP COLUMN settings_version");
-    sqlite.exec("ALTER TABLE repo DROP COLUMN auxiliary_model");
-  } finally {
-    sqlite.close();
-  }
-
-  assert.deepEqual(await repoSettingsRow(h), {
-    reviewers: override,
-    auxiliaryModel: null,
-    minReportSeverity: "P1",
-    globalMinReportSeverity: "P2",
-    settingsVersion: 0,
-  });
-  // 升级后行为与升级前一致:辅助模型未设,解析退回这个仓库生效组合的第一个。
-  assert.deepEqual(await auxiliaryModelView(h), {
-    identity: "test:swapped-model",
-    thinkingLevel: null,
-    source: "first-reviewer",
-    available: true,
-    unavailableReason: null,
-  });
-});
-
 test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为跟随全局", async () => {
   const h = await startHarness();
   seedAvailableModelService(h, "repo-healthy", ["keep"]);
@@ -811,7 +768,7 @@ test("没配 Gitea 时注册与移除回 500,说明配置缺口", async () => {
   cleanups.push(cache.cleanup, db.cleanup);
   seedAvailableModelService({ db }, "test", ["global-model"]);
   const seed = openStore(db.path);
-  assert.equal(seed.putGlobalSettings({
+  assert.equal(putGlobalSettings(seed, {
     reviewersJson: JSON.stringify([{ provider: "test", model: "global-model" }]),
     maxChangedLinesPerBatch: null,
   }), true);

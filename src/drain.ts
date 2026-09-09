@@ -26,7 +26,8 @@ export function createDrain(): Drain {
   let draining = false;
   let nextId = 0;
   const active = new Map<number, string>();
-  const waiters = new Set<() => void>();
+  // 只有退出那一处等排空,因此至多一个等待者。
+  let wake: (() => void) | undefined;
   return {
     draining: () => draining,
     begin: () => {
@@ -38,19 +39,18 @@ export function createDrain(): Drain {
       return () => {
         if (!active.delete(id)) return;
         if (active.size > 0) return;
-        for (const wake of [...waiters]) wake();
+        wake?.();
       };
     },
     async settle(timeoutMs) {
       if (active.size > 0) {
         await new Promise<void>((resolve) => {
-          const wake = (): void => {
+          wake = (): void => {
             clearTimeout(timer);
-            waiters.delete(wake);
+            wake = undefined;
             resolve();
           };
           const timer = setTimeout(wake, timeoutMs);
-          waiters.add(wake);
         });
       }
       return [...active.values()];

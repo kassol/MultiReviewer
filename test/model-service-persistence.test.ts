@@ -9,6 +9,7 @@ import {
   type ModelServiceVersionCommit,
 } from "../src/review/store.ts";
 import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
+import { putGlobalSettings } from "./support/store-seed.ts";
 
 const cleanups = testCleanups();
 
@@ -409,7 +410,7 @@ test("模型引用按完整身份列出全局、显式覆盖与跟随全局位�
   const store = openStore(db.path);
   assert.equal(store.commitModelServiceVersion(null, availableService("alpha", ["global", "shared"])), 1);
   assert.equal(store.commitModelServiceVersion(null, availableService("beta", ["override"])), 1);
-  store.putGlobalSettings({
+  putGlobalSettings(store, {
     reviewersJson: JSON.stringify([
       { provider: "alpha", model: "global" },
       { provider: "alpha", model: "shared" },
@@ -506,12 +507,12 @@ test("只被辅助模型引用的模型照样拦下删服务与摘唯一来源�
   const auxiliary = JSON.stringify({ provider, model: "solo" });
 
   // 全局那一处辅助模型引用它:事务内的兜底与 `listModelReferences` 同一份判据(issue #303)。
-  assert.equal(store.putGlobalSettings({ auxiliaryModelJson: auxiliary }), true);
+  assert.equal(putGlobalSettings(store, { auxiliaryModelJson: auxiliary }), true);
   assert.equal(store.removeCustomModelService(provider, 1), false, "被全局辅助模型引用即删不动");
   assert.equal(store.commitModelServiceVersion(1, dropSupplement), undefined, "唯一来源摘不掉");
 
   // 换成仓库那一处引用它,全局清空:两种辅助模型位置同等受保护。
-  assert.equal(store.putGlobalSettings({ auxiliaryModelJson: null }), true);
+  assert.equal(putGlobalSettings(store, { auxiliaryModelJson: null }), true);
   assert.equal(store.registerRepo({
     repoId: 71,
     owner: "acme",
@@ -553,7 +554,7 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
     disabledReason: "name-conflict" as const,
   };
   assert.equal(store.commitModelServiceVersion(null, conflicted), 1);
-  assert.equal(store.putGlobalSettings({
+  assert.equal(putGlobalSettings(store, {
     reviewersJson: JSON.stringify([{ provider: "openai", model: "global-model" }]),
     maxChangedLinesPerBatch: 17,
   }), true);
@@ -726,7 +727,7 @@ test("Review Run 启动快照只读生效组合引用的服务密文,后续读�
     ),
     1,
   );
-  assert.equal(store.putGlobalSettings({
+  assert.equal(putGlobalSettings(store, {
     reviewersJson: JSON.stringify([{ provider: "used", model: "m1" }]),
     maxChangedLinesPerBatch: 17,
   }), true);
@@ -751,7 +752,7 @@ test("Review Run 启动快照只读生效组合引用的服务密文,后续读�
     ),
     2,
   );
-  store.putGlobalSettings({
+  putGlobalSettings(store, {
     reviewersJson: JSON.stringify([{ provider: "used", model: "m1" }]),
     maxChangedLinesPerBatch: 999,
   });
@@ -786,7 +787,7 @@ test("两个 Store handle 交错时组合写与服务来源删除互相原子阻
     );
 
     const removedCombination = JSON.stringify([{ provider: "race", model: "removed" }]);
-    assert.equal(first.putGlobalSettings({
+    assert.equal(putGlobalSettings(first, {
       reviewersJson: removedCombination,
       maxChangedLinesPerBatch: 17,
     }), false, "服务先切版后，旧候选不能写进全局组合");
@@ -819,7 +820,7 @@ test("两个 Store handle 交错时组合写与服务来源删除互相原子阻
     assert.equal(first.getRepo(92)!.reviewersJson, null);
 
     const keptCombination = JSON.stringify([{ provider: "race", model: "kept" }]);
-    assert.equal(first.putGlobalSettings({
+    assert.equal(putGlobalSettings(first, {
       reviewersJson: keptCombination,
       maxChangedLinesPerBatch: 17,
     }), true);

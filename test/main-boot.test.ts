@@ -15,6 +15,7 @@ import type { ReviewerSpec } from "../src/config.ts";
 import { openStore } from "../src/review/store.ts";
 import { testCleanups } from "./support/git-fixture.ts";
 import { LISTENING, spawnMain } from "./support/main-process.ts";
+import { putGlobalSettings } from "./support/store-seed.ts";
 
 const BOOT_TIMEOUT_MS = 30_000;
 
@@ -41,7 +42,7 @@ async function boot(
   const dbPath = join(dir, "multireviewer.db");
   const cacheDir = join(dir, "worktrees");
   const seed = openStore(dbPath);
-  seed.putGlobalSettings({
+  putGlobalSettings(seed, {
     reviewersJson: reviewers.length === 0 ? null : JSON.stringify(reviewers),
     maxChangedLinesPerBatch: null,
   });

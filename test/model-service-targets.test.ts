@@ -25,6 +25,7 @@ import {
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { putGlobalSettings } from "./support/store-seed.ts";
 
 const PROVIDER = "openrouter";
 const ANTHROPIC_TARGET = { api: "anthropic-messages", baseUrl: "https://openrouter.ai/api" };
@@ -412,13 +413,13 @@ test("真实目标变化后:目录刷新不改绑,新目标的模型待验证;�
     // 组合写入的库内判据与投影同一口径:待验证目标的模型进不了组合,已绑目标的可以。
     const store = openStore(h.db.path);
     assert.equal(
-      store.putGlobalSettings({
+      putGlobalSettings(store, {
         reviewersJson: JSON.stringify([{ provider: PROVIDER, model: ANTHROPIC_MODEL }]),
       }),
       false,
     );
     assert.equal(
-      store.putGlobalSettings({
+      putGlobalSettings(store, {
         reviewersJson: JSON.stringify([{ provider: PROVIDER, model: OPENAI_MODEL }]),
       }),
       true,

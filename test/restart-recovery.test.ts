@@ -25,6 +25,7 @@ import type { FileTree } from "./support/git-fixture.ts";
 import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { memoryForge } from "./support/memory-forge.ts";
 import { startPanelHarness } from "./support/panel-harness.ts";
+import { putGlobalSettings } from "./support/store-seed.ts";
 
 /** 启动时刻。被改判的轮次的结束时间就是它。 */
 const AT = "2026-09-04T00:00:00.000Z";
@@ -430,7 +431,7 @@ async function interruptedRun(options: {
       key: "unused",
     });
     // 分批上限是全局设置,重启后的续跑按它重新切批:与开跑那次相同才切得出同样的批次。
-    assert.equal(store.putGlobalSettings(options.limits), true);
+    assert.equal(putGlobalSettings(store, options.limits), true);
   } finally {
     store.close();
   }
@@ -642,7 +643,7 @@ test("总批数与已完成首批相同、未完成分组不同:续跑不成立,
   const admin = openStore(db.path);
   try {
     assert.equal(
-      admin.putGlobalSettings({ maxChangedLinesPerBatch: 100, maxFilesPerBatch: 3 }),
+      putGlobalSettings(admin, { maxChangedLinesPerBatch: 100, maxFilesPerBatch: 3 }),
       true,
     );
   } finally {
