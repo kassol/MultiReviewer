@@ -35,6 +35,8 @@ Read the code when the wording alone does not settle it. You have read-only tool
 
 Some groups also get a prior finding. Prior findings were reported on this same code in an earlier round and are listed separately, with an id of their own. Put a prior finding in a group when this round says the same problem it said. The platform then folds this round's report into the old comment, or carries the old finding over to the new position; it never posts the same problem twice. Leave a prior finding out of every group when nothing this round is the same problem — a prior finding does not have to be used.
 
+A prior finding may carry a \`same spot\` line naming the findings of this round that sit on the very code it was reported on, unchanged since. The same spot is not the same problem: a different problem can be reported on the line an earlier one was. Weigh the line as evidence and decide by what the findings say; it is not a verdict, and it does not oblige you to group anything.
+
 Report every group by calling ${PROPOSE_GROUP_TOOL} exactly once per group, including the groups that hold a single finding. These rules are checked by code, and one broken rule discards your whole grouping:
 
 - every finding of this round appears in exactly one group — none left out, none in two groups;
@@ -123,8 +125,11 @@ function findingBullet(finding: Finding, index: number, worktreePath: string): s
  * 一条历史 Finding 交给 agent 看的样子(issue #240):它自己的 id、旧位置、处置状态与
  * 两段文本。旧位置的代码可能已经改写,因此不给代码片段——那一行此刻的内容说明不了它。
  * 已处置的历史只有标题(注入侧的体积控制,ADR 0016),正文那一格自会空着。
+ *
+ * `same spot` 那一行是位置提示(issue #307):它的指纹在本轮 head 上命中了这几条本轮
+ * Finding 的落点。一条都没命中就不给这一行。
  */
-function historyBullet(entry: HistoryFinding): string {
+function historyBullet(entry: HistoryFinding, sameSpot: readonly number[] | undefined): string {
   const disposed = entry.disposition === "resolved" || entry.disposition === "fixed";
   return [
     `[prior ${entry.id}] ${entry.file}:${entry.line} (${disposed ? "already disposed" : "open"})`,
@@ -132,6 +137,9 @@ function historyBullet(entry: HistoryFinding): string {
     ...(entry.description === undefined
       ? []
       : [`    description: ${oneLine(entry.description)}`]),
+    ...(sameSpot === undefined || sameSpot.length === 0
+      ? []
+      : [`    same spot: ${sameSpot.map((index) => `[${index}]`).join(", ")}`]),
   ].join("\n");
 }
 
@@ -141,7 +149,9 @@ function mergePrompt(request: MergeWorkerRequest): string {
       ? []
       : [
           `These ${request.history.length} findings were reported on the same files in earlier rounds. Add one to a group when this round reports the same problem again.`,
-          request.history.map(historyBullet).join("\n\n"),
+          request.history
+            .map((entry) => historyBullet(entry, request.sameSpot[entry.id]))
+            .join("\n\n"),
         ];
   return [
     `Group the following ${request.findings.length} findings. They come from several reviewers looking at the same change, so the same problem may be reported more than once.`,

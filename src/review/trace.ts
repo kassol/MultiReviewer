@@ -54,6 +54,12 @@ export type RunTraceKind =
   /** 本轮一条 Finding 折叠到了历史评论上,带这一次折叠的判据(issue #240)。 */
   | "finding_folded"
   /**
+   * 指纹命中了一条历史、合并 agent 却判它不是同一个问题,本轮这条因此没有折叠
+   * (ADR 0030,issue #307)。`criteria` 是 `agent_differs` 那一档,带那条历史的落库 id
+   * 与 agent 为这一组写的理由。
+   */
+  | "finding_not_folded"
+  /**
    * 本轮一条 Finding 承接了一条历史 Finding Identity,带这一次延续的判据(issue #243)与
    * 交接结果 `handoff`(ADR 0025):`complete` 即旧评论已 resolve,`pending` 即交接未完成。
    */

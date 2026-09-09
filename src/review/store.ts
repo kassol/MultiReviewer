@@ -940,14 +940,30 @@ const PULL_REQUEST_SCOPE = `run_id IN (SELECT id FROM review_run
 const AUTO_DISPOSABLE = "disposition IN ('unknown', 'unresolved') AND disposed_at IS NULL";
 
 /**
+ * 一行 finding 属于哪条 Finding Identity(CONTEXT.md Finding Identity,ADR 0030)。
+ *
+ * 键是承载它的那条 Forge 评论:处置写在评论上(ADR 0006),折叠到历史评论的本轮报出
+ * 记的就是那条评论的 id,同一条评论名下的各轮次行因此正是同一条 Finding。不按「文件 +
+ * 指纹」:同一处未改动代码上可以有两个不同的问题(issue #307),它们指纹相同而各有各的
+ * 评论,按指纹归并会把两条压成一条,一条的驳回于是盖住另一条。
+ *
+ * 没有评论载体的行(review 正文那一档,以及平台读不回评论标识的那一轮)退回「文件 +
+ * 指纹」,指纹也算不出时用自己的 id 兜底成独立键——它们本来就没有可分辨的载体,口径
+ * 与这一票之前逐字一致。
+ */
+function identityKey(prefix: string): string {
+  return `COALESCE(${prefix}comment_id,
+                   ${prefix}file || char(10) || COALESCE(${prefix}fingerprint, 'row:' || ${prefix}id))`;
+}
+
+/**
  * 统计口径的共同前半段:`src` 把参与统计的 finding 行摊平(fallback 在最内层就排除),
- * `identity` 按 Finding Identity(PR + 文件 + 指纹)折叠——指纹为 NULL 的行用自己的 id
- * 兜底成独立键(算不出指纹就各算一条)。处置率与参与条数共用它,两个数才落在同一批
- * Identity 上;补的那半段各自接在后面。
+ * `identity` 按 Finding Identity 折叠(键见 `identityKey`)。处置率与参与条数共用它,
+ * 两个数才落在同一批 Identity 上;补的那半段各自接在后面。
  */
 const STATS_IDENTITY_CTE = `WITH src AS (
              SELECT f.id, f.category, f.file, f.disposition,
-                    COALESCE(f.fingerprint, 'row:' || f.id) AS fp,
+                    ${identityKey("f.")} AS fp,
                     run.owner, run.repo, run.pull_number, run.started_at,
                     CASE WHEN run.pr_state = 'closed' THEN 1 ELSE 0 END AS closed
                FROM finding f
@@ -6129,8 +6145,9 @@ export function openStore(dbPath: string): Store {
 
     stageHistory(scope) {
       const [where, params] = stageScope(scope);
-      // 折叠键与处置率同源(ADR 0015):文件 + 指纹,算不出指纹的行用自己的 id 兜底
-      // 成独立键。同一处取最新那一行——它才带着当前的处置状态、备注与最新表述。
+      // 折叠键与处置率同源(`identityKey`):承载它的那条评论,没有载体的退回文件 + 指纹。
+      // 每条 Identity 取最新那一行——它才带着当前的处置状态、备注与最新表述;同一处未
+      // 改动代码上的两个不同问题因此各注入一条(ADR 0030),不再被指纹压成一条。
       // 最新一行是「已延续」的整条不注入:这处 Finding 已经交接到新位置,新位置那条
       // 自己在历史里,再给一遍就是同一个问题让模型复核两次。
       const rows = db
@@ -6140,7 +6157,7 @@ export function openStore(dbPath: string): Store {
                     f.severity AS severity, f.category AS category,
                     f.description AS description, f.disposition AS disposition,
                     f.disposition_note AS note,
-                    COALESCE(f.fingerprint, 'row:' || f.id) AS fp
+                    ${identityKey("f.")} AS fp
                FROM finding f
                JOIN review_run run ON f.run_id = run.id
               WHERE ${where}
@@ -6206,7 +6223,7 @@ export function openStore(dbPath: string): Store {
                   f.line_author_sha AS line_author_sha, f.line_author_name AS line_author_name,
                   f.line_author_email AS line_author_email, f.line_author_at AS line_author_at,
                   f.line_author_adjacent AS line_author_adjacent,
-                  COALESCE(f.fingerprint, 'row:' || f.id) AS fp
+                  ${identityKey("f.")} AS fp
              FROM finding f
              JOIN review_run run ON f.run_id = run.id
             WHERE ${where}
@@ -6266,8 +6283,10 @@ export function openStore(dbPath: string): Store {
         row: Record<string, unknown>;
       };
       type Identity = { rows: StageRow[]; firstRow: StageRow };
-      // 折叠键与 `stageHistory`、自动处置、回填同源:文件 + 指纹,算不出指纹的行用
-      // 自己的 id 兜底成独立键。行按 id 升序,每组的最后一行就是最新那一轮的。
+      // 折叠键见 `identityKey`:承载它的那条 Forge 评论,没有载体的退回文件 + 指纹。
+      // 同一「文件 + 指纹」下因此可以有两条 Identity(ADR 0030):同一处未改动代码上
+      // 的两个不同问题各挂各的评论,各算一条。行按 id 升序,每组的最后一行就是最新那
+      // 一轮的。
       const byKey = new Map<string, Identity>();
       for (const row of findingRows) {
         const entry: StageRow = {

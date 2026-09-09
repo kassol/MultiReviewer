@@ -620,15 +620,26 @@ function priorMatch(
   worktreePath: string,
   finding: MergedFinding,
 ): { entry: PriorDisposition; fingerprint: string } | undefined {
-  for (const offset of MATCH_OFFSETS) {
-    const line = finding.line + offset;
-    if (line < 1) continue;
-    const fingerprint = contentFingerprint(worktreePath, finding.file, line);
-    if (fingerprint === undefined) continue;
+  for (const fingerprint of spotFingerprints(worktreePath, finding.file, finding.line)) {
     const entry = prior.get(`${finding.file}\n${fingerprint}`);
     if (entry !== undefined) return { entry, fingerprint };
   }
   return undefined;
+}
+
+/**
+ * 一个落点在本轮 head 上算得出的那几个指纹:按 ±3 行滑动各算一个,由近及远。
+ *
+ * 「这一处上一轮报过没有」全走它:折叠的 `priorMatch` 与交给合并 agent 的位置提示
+ * (issue #307)问的是同一件事,判据只能有一份——两处各写一遍迟早在容差上分家。
+ */
+function spotFingerprints(worktreePath: string, file: string, line: number): string[] {
+  return MATCH_OFFSETS.flatMap((offset) => {
+    const at = line + offset;
+    if (at < 1) return [];
+    const fingerprint = contentFingerprint(worktreePath, file, at);
+    return fingerprint === undefined ? [] : [fingerprint];
+  });
 }
 
 /**
@@ -772,6 +783,12 @@ type ReviewGroup = {
    * 它的 Finding Identity。折叠掉的与没命中的都没有这一项。
    */
   carry?: { candidate: ContinuationCandidate; reason: string };
+  /**
+   * 指纹命中了一条交给过合并 agent 的历史,而 agent 没把它归进这一组(ADR 0030,
+   * issue #307):本轮这条是同一处的新 Finding,照常发评论、进阶段统计,不继承那条
+   * 历史的处置、评论与状态。这一项只进轨迹,收口上它等同于「什么都没命中」。
+   */
+  differs?: { history: number; reason: string };
 };
 
 /** 一次延续:旧 Finding、本轮承接它的那个合并组,以及这一次延续凭的判据。 */
@@ -1381,29 +1398,46 @@ export const MERGE_AGENT_TRACE_NAME = "合并 agent";
  *
  * 不足两条时不派:分不出组,派出去只是白花一次子进程与一份 token。「两条」算的是本轮
  * Finding 加路由到的历史——本轮只报出一条而同文件有历史时,正是本票要判的那一种。
+ *
+ * 历史还带一份位置提示(ADR 0030,issue #307):哪几条本轮 Finding 与它落在同一处未改动
+ * 代码上。跨轮次折叠此后以 agent 的判定为准,它就得看得见指纹看见的那一半证据。
+ * `agentPlan` 说这一轮的分组是不是 agent 的方案——回退那一轮的收口仍按指纹优先。
  */
 async function mergeFindings(
   trace: TraceRecorder,
   agent: MergeAgent | undefined,
   findings: readonly Finding[],
   history: readonly HistoryFinding[],
+  anchors: readonly HistoryPlacement[],
   worktreePath: string,
-): Promise<{ merged: MergedFinding[]; usage?: ReviewerUsage }> {
+): Promise<{ merged: MergedFinding[]; usage?: ReviewerUsage; agentPlan: boolean }> {
   const routed = historyForBatch(history, [...new Set(findings.map((f) => f.file))]);
   if (agent === undefined || findings.length + routed.length < 2) {
-    return { merged: dedupeFindings(findings) };
+    return { merged: dedupeFindings(findings), agentPlan: false };
   }
 
   const fallback = (reason: string, usage?: ReviewerUsage) => {
     trace.run("merge_fallback", { reason });
-    return { merged: dedupeFindings(findings), ...(usage === undefined ? {} : { usage }) };
+    return {
+      merged: dedupeFindings(findings),
+      agentPlan: false,
+      ...(usage === undefined ? {} : { usage }),
+    };
   };
+
+  const routedIds = new Set(routed.map((entry) => entry.id));
+  const sameSpot = sameSpotHints(
+    findings,
+    anchors.filter((anchor) => routedIds.has(anchor.findingId)),
+    worktreePath,
+  );
 
   let result;
   try {
     result = await agent({
       findings,
       history: routed,
+      ...(Object.keys(sameSpot).length === 0 ? {} : { sameSpot }),
       worktreePath,
       onEvent: (event) => {
         const { kind, ...payload } = event;
@@ -1435,7 +1469,43 @@ async function mergeFindings(
   for (const miss of outcome.fallbacks) {
     trace.run("synthesis_fallback", { group: miss.group, reason: miss.reason });
   }
-  return { merged: outcome.merged, ...(result.usage === undefined ? {} : { usage: result.usage }) };
+  return {
+    merged: outcome.merged,
+    agentPlan: true,
+    ...(result.usage === undefined ? {} : { usage: result.usage }),
+  };
+}
+
+/**
+ * 交给合并 agent 的位置提示(ADR 0030,issue #307):每条历史的落库 id 对到本轮哪几条
+ * Finding 的下标——那条历史的指纹按 ±3 行滑窗在本轮 head 上重算,命中了这几条的落点。
+ *
+ * 判据与 `priorMatch` 同一道 `spotFingerprints`:提示说的正是「指纹会把这两条判成同一
+ * 处」,两处用不同的容差算,提示就描述不了后面那道兜底真正会做的事。一条都没命中的
+ * 历史不占键,agent 那边因此只在真有位置证据时才多看到一行。
+ */
+function sameSpotHints(
+  findings: readonly Finding[],
+  anchors: readonly HistoryPlacement[],
+  worktreePath: string,
+): Record<number, number[]> {
+  const owners = new Map<string, number[]>();
+  for (const anchor of anchors) {
+    const key = `${anchor.file}\n${anchor.fingerprint}`;
+    owners.set(key, [...(owners.get(key) ?? []), anchor.findingId]);
+  }
+  const hints: Record<number, number[]> = {};
+  if (owners.size === 0) return hints;
+  for (const [index, finding] of findings.entries()) {
+    for (const fingerprint of spotFingerprints(worktreePath, finding.file, finding.line)) {
+      for (const id of owners.get(`${finding.file}\n${fingerprint}`) ?? []) {
+        const hit = (hints[id] ??= []);
+        // 同一条 Finding 可能经两个偏移命中同一条历史(上下几行内容重复),只记一次。
+        if (!hit.includes(index)) hit.push(index);
+      }
+    }
+  }
+  return hints;
 }
 
 /** 一条行级评论的身份:同一轮里 `路径 + 行号 + 正文` 三者相同的草稿只有一条。 */
@@ -2112,11 +2182,16 @@ export async function runReview(
         });
       }
 
-      const { merged: allMerged, usage: mergeUsage } = await mergeFindings(
+      // 历史此刻的落点与指纹(issue #307):位置提示与「agent 判为不同问题」那一档都读它。
+      // 读在合并之前,只用位置与指纹两格;折叠要认的处置状态另在回填之后重读一次。
+      const anchors = store.historyPlacements(history.map((entry) => entry.id));
+
+      const { merged: allMerged, usage: mergeUsage, agentPlan } = await mergeFindings(
         trace,
         deps.mergeAgent,
         admitted,
         history,
+        anchors,
         worktree.path,
       );
       const merged = allMerged.filter((finding) => {
@@ -2162,29 +2237,57 @@ export async function runReview(
       // 本轮的合并组:Finding、它的指纹与它折叠到的历史评论同属一项(issue #186)。指纹在
       // 新 head commit 的工作副本下重算,代码没变则与上一轮的锚点相同;跨轮匹配整批先算出
       // 来——延续要在建评论正文之前知道哪些是本轮新报的。
+      // 一条历史的落点在本轮 head 上算出的指纹对回它自己(issue #307):指纹命中时要认出
+      // 命中的是哪一条历史——它交给过合并 agent,agent 没把它归进这一组即「同一处的新
+      // 问题」。同一处有多条历史时取 id 最小的那条作数,与合并那边「一组命中多条历史取
+      // id 最小」同一条口径。
+      const historyByAnchor = new Map<string, number>();
+      for (const anchor of anchors) {
+        const key = `${anchor.file}\n${anchor.fingerprint}`;
+        const claimed = historyByAnchor.get(key);
+        if (claimed === undefined || anchor.findingId < claimed) {
+          historyByAnchor.set(key, anchor.findingId);
+        }
+      }
+
       const groups: ReviewGroup[] = merged.map((finding) => {
-        // 指纹命中优先(issue #240):它是「同一处」的硬证据,合并 agent 那一档补的是
-        // 指纹够不着的那些——增量在指纹窗口里插了几行,或者模型换个说法报在了别处。
+        // 判据顺序(ADR 0030,issue #307):合并 agent 的判定在前,指纹在后兜底。
+        //「同一处」是硬证据,但它从来不等于「同一问题」——同一行上的两个问题被指纹压成
+        // 一条,旧条已驳回时新问题连评论都发不出去,这一票要接的正是这一类。
         let match: ReviewGroup["match"];
         let carry: ReviewGroup["carry"];
+        let differs: ReviewGroup["differs"];
         let fingerprint = contentFingerprint(worktree.path, finding.file, finding.line);
-        const byFingerprint = priorMatch(prior, worktree.path, finding);
-        // 折叠到的那条历史的指纹就是这一条的指纹(CONTEXT.md 同一处 Finding):Finding
-        // Identity 按「文件 + 指纹」归并(`stageSummary`),按本轮落点重算会让同一处问题在
-        // 阶段汇总里占两行——指纹在偏移处命中时正是这样(issue #264)。两档折叠同一口径。
-        if (byFingerprint !== undefined) {
-          match = { prior: byFingerprint.entry, criterion: { kind: "fingerprint" } };
-          fingerprint = byFingerprint.fingerprint;
-        } else if (finding.history !== undefined) {
+        if (finding.history !== undefined) {
           const hit = hits.get(finding.history.id);
           const folded =
             hit === undefined ? undefined : agentFold(hit, fingerprintCache, worktree.path);
           if (folded !== undefined) {
             match = { prior: folded, criterion: { kind: "agent", reason: finding.history.reason } };
+            // 折叠到的那条历史的指纹就是这一条的指纹(CONTEXT.md 同一处 Finding):按本轮
+            // 落点重算会让同一条 Finding 在阶段汇总里跨轮次占两条 Identity(issue #264)。
             fingerprint = hit!.fingerprint;
           } else if (hit !== undefined) {
             // 折叠两档都不成立即那处代码已被改写,这一条要承接它的 Identity(issue #243)。
             carry = { candidate: hit, reason: finding.history.reason };
+          }
+        }
+        // agent 那一档什么都没收口时才轮到指纹。命中的历史交给过 agent 而它没归进这一组,
+        // 本轮这条就是同一处的新 Finding:用本轮落点自己的指纹落库,不继承处置与评论。
+        // 整轮退回算法合并的那一轮没有 agent 的判定可认,一律照旧按指纹折叠。
+        if (match === undefined && carry === undefined) {
+          const byFingerprint = priorMatch(prior, worktree.path, finding);
+          const judged =
+            byFingerprint === undefined
+              ? undefined
+              : historyByAnchor.get(`${finding.file}\n${byFingerprint.fingerprint}`);
+          if (byFingerprint === undefined) {
+            // 这一处上一轮没有报出过:本轮新报。
+          } else if (agentPlan && judged !== undefined) {
+            differs = { history: judged, reason: finding.agentReason ?? "" };
+          } else {
+            match = { prior: byFingerprint.entry, criterion: { kind: "fingerprint" } };
+            fingerprint = byFingerprint.fingerprint;
           }
         }
         return {
@@ -2192,6 +2295,7 @@ export async function runReview(
           fingerprint,
           match,
           ...(carry === undefined ? {} : { carry }),
+          ...(differs === undefined ? {} : { differs }),
         };
       });
 
@@ -2262,7 +2366,17 @@ export async function runReview(
       // 折叠的那些记历史评论;本轮新发的要等发布之后才有 id,这里先留空。
       const groupComments: (PriorDisposition | undefined)[] = [];
 
-      for (const [groupIndex, { finding, fingerprint, match }] of groups.entries()) {
+      for (const [groupIndex, { finding, fingerprint, match, differs }] of groups.entries()) {
+        // 指纹命中了却没折叠(ADR 0030,issue #307):合并 agent 看过那条历史、没把它归进
+        // 这一组,本轮这条因此照常发评论。记下是哪条历史与 agent 为这一组写的理由。
+        if (differs !== undefined) {
+          trace.run("finding_not_folded", {
+            file: finding.file,
+            line: finding.line,
+            title: finding.title,
+            criteria: { kind: "agent_differs", ...differs },
+          });
+        }
         if (match !== undefined) {
           // 判据一并记进轨迹(issue #240):追查一次折叠时,要分得清它是指纹算出来的
           // 还是合并 agent 判出来的,后者带它给的那句理由原文。

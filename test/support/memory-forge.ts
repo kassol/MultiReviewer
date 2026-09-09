@@ -310,8 +310,8 @@ export function verdictReviewer(
  *
  * `groups` 是这一次要提出的分组,成员编号即它收到的那份 Finding 列表的下标;给成函数时
  * 由它按收到的这次请求现算,历史成员的落库 id 因此不必在用例里硬写(issue #240)。
- * `calls` 记下每次收到的 Finding、`historyCalls` 记下每次收到的历史,用例据此断言编排层
- * 交下去的是哪一批。`extra.failure` 模拟跑不成(失败与超时在注入边界上是同一个形状),
+ * `calls` 记下每次收到的 Finding、`historyCalls` 记下每次收到的历史,`requests` 记下整份
+ * 请求(位置提示这类新格子从它读,issue #307),用例据此断言编排层交下去的是哪一批。`extra.failure` 模拟跑不成(失败与超时在注入边界上是同一个形状),
  * `extra.throws` 模拟实现自己抛异常。
  */
 export function scriptedMergeAgent(
@@ -327,15 +327,19 @@ export function scriptedMergeAgent(
 ): MergeAgent & {
   calls: (readonly Finding[])[];
   historyCalls: (readonly HistoryFinding[])[];
+  requests: MergeAgentRequest[];
 } {
   const calls: (readonly Finding[])[] = [];
   const historyCalls: (readonly HistoryFinding[])[] = [];
+  const requests: MergeAgentRequest[] = [];
   const agent: MergeAgent & {
     calls: (readonly Finding[])[];
     historyCalls: (readonly HistoryFinding[])[];
+    requests: MergeAgentRequest[];
   } = async (request) => {
     calls.push(request.findings);
     historyCalls.push(request.history ?? []);
+    requests.push(request);
     for (const event of extra?.events ?? []) request.onEvent?.(event);
     if (extra?.throws !== undefined) throw new Error(extra.throws);
     return {
@@ -348,6 +352,7 @@ export function scriptedMergeAgent(
   };
   agent.calls = calls;
   agent.historyCalls = historyCalls;
+  agent.requests = requests;
   return agent;
 }
 
