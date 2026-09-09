@@ -5,11 +5,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useBlocker, useLocation, useNavigate } from "@tanstack/react-router";
 import { ArrowLeftIcon, CheckIcon, ChevronDownIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, InfoCircledIcon, MagnifyingGlassIcon, MinusCircledIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
-import { AlertDialog, Badge, Callout, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, TabNav, Text, TextField, Tooltip } from "@radix-ui/themes";
+import { Badge, Callout, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, TabNav, Text, TextField, Tooltip } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
 import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
 
 import { CardShell } from "@/components/card-shell";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { EditableModelCombobox } from "@/components/editable-model-combobox";
 import { EmptyState } from "@/components/empty-state";
@@ -25,7 +26,7 @@ import { useDialogReturnFocus, visibleNavCurrentItem } from "@/components/use-di
 import { cn } from "@/lib/utils";
 import { localMinute } from "@/lib/time";
 
-import { api, errorText, fetchJson } from "./api.ts";
+import { api, errorText, fetchJson, send } from "./api.ts";
 import {
   SOURCE_LABEL,
   useModelServices,
@@ -97,11 +98,6 @@ type CustomPreview = {
 
 type ModelServiceMutationError = Error & { references: ModelReference[] };
 type DeleteCredentialError = ModelServiceMutationError;
-
-async function responseJson<T>(response: Response): Promise<T> {
-  if (!response.ok) throw new Error(await errorText(response));
-  return (await response.json()) as T;
-}
 
 function parseModelReferences(value: unknown): ModelReference[] {
   if (!Array.isArray(value)) return [];
@@ -559,22 +555,15 @@ export function ModelServiceSetupLayout() {
     });
   };
   const navigateBack = async (): Promise<void> => {
-    if (returnProvider === undefined) {
-      await navigate({ to: "/credentials" });
-      restoreScroll();
-      return;
-    }
-    if (returnTab === "maintenance") {
-      await navigate({ to: "/credentials/$provider/maintenance", params: { provider: returnProvider } });
-      restoreScroll();
-      return;
-    }
-    if (returnTab === "models") {
-      await navigate({ to: "/credentials/$provider/models", params: { provider: returnProvider } });
-      restoreScroll();
-      return;
-    }
-    await navigate({ to: "/credentials/$provider", params: { provider: returnProvider } });
+    const to =
+      returnProvider === undefined
+        ? { to: "/credentials" as const }
+        : returnTab === "maintenance"
+          ? { to: "/credentials/$provider/maintenance" as const, params: { provider: returnProvider } }
+          : returnTab === "models"
+            ? { to: "/credentials/$provider/models" as const, params: { provider: returnProvider } }
+            : { to: "/credentials/$provider" as const, params: { provider: returnProvider } };
+    await navigate(to);
     restoreScroll();
   };
   const dirty = candidate !== null && (
@@ -665,60 +654,57 @@ export function ModelServiceSetupLayout() {
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto"><Outlet /></div>
         </Dialog.Content>
       </Dialog.Root>
-      <AlertDialog.Root open={closeRequested} onOpenChange={setCloseRequested}>
-        <AlertDialog.Content
-          maxWidth="440px"
-          maxHeight="calc(100dvh - 2rem)"
-          size={{ initial: "2", sm: "3" }}
-          className="rounded-2xl shadow-modal sm:rounded-3xl"
-          onCloseAutoFocus={confirmationFocus.onCloseAutoFocus}
-        >
-          <AlertDialog.Title size="6" mb="2" className="font-extrabold tracking-[-0.02em]">丢弃未保存的配置？</AlertDialog.Title>
-          <AlertDialog.Description size="2" color="gray">关闭会丢弃当前页面中的凭据、目录结果和验证模型。</AlertDialog.Description>
-          <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
-            <AlertDialog.Cancel><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>继续配置</Button></AlertDialog.Cancel>
-            <AlertDialog.Action><Button type="button" variant="solid" color="red" size={{ initial: "4", sm: "2" }} onClick={discardAndClose}>丢弃并关闭</Button></AlertDialog.Action>
-          </Flex>
-        </AlertDialog.Content>
-      </AlertDialog.Root>
-      <AlertDialog.Root open={blocker.status === "blocked"} onOpenChange={(open) => { if (!open) blocker.reset?.(); }}>
-        <AlertDialog.Content
-          maxWidth="440px"
-          maxHeight="calc(100dvh - 2rem)"
-          size={{ initial: "2", sm: "3" }}
-          className="rounded-2xl shadow-modal sm:rounded-3xl"
-          onCloseAutoFocus={confirmationFocus.onCloseAutoFocus}
-        >
-          <AlertDialog.Title size="6" mb="2" className="font-extrabold tracking-[-0.02em]">{phase === null ? "丢弃未保存的配置？" : "模型服务操作仍在进行"}</AlertDialog.Title>
-          <AlertDialog.Description size="2" color="gray">
-              {phase === null
-                ? "离开会丢弃当前页面中的凭据、目录结果和验证模型。"
-                : "请求结束前会锁定离开与丢弃动作，请等待当前阶段完成。"}
-          </AlertDialog.Description>
-          {phase === null ? (
-            <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
-              <AlertDialog.Cancel><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>继续配置</Button></AlertDialog.Cancel>
-              <AlertDialog.Action><Button
-                type="button"
-                variant="solid"
-                color="red"
-                size={{ initial: "4", sm: "2" }}
-                onClick={() => {
+      <ConfirmDialog
+        open={closeRequested}
+        onOpenChange={setCloseRequested}
+        maxWidth="440px"
+        maxHeight="calc(100dvh - 2rem)"
+        contentClassName="rounded-2xl shadow-modal sm:rounded-3xl"
+        onCloseAutoFocus={confirmationFocus.onCloseAutoFocus}
+        title="丢弃未保存的配置？"
+        titleSize="6"
+        titleMb="2"
+        titleClassName="font-extrabold tracking-[-0.02em]"
+        description="关闭会丢弃当前页面中的凭据、目录结果和验证模型。"
+        direction={{ initial: "column-reverse", sm: "row" }}
+        cancelLabel="继续配置"
+        cancelVariant="outline"
+        confirm={{ label: "丢弃并关闭", color: "red", onClick: discardAndClose, closesDialog: true }}
+      />
+      <ConfirmDialog
+        open={blocker.status === "blocked"}
+        onOpenChange={(open) => { if (!open) blocker.reset?.(); }}
+        maxWidth="440px"
+        maxHeight="calc(100dvh - 2rem)"
+        contentClassName="rounded-2xl shadow-modal sm:rounded-3xl"
+        onCloseAutoFocus={confirmationFocus.onCloseAutoFocus}
+        title={phase === null ? "丢弃未保存的配置？" : "模型服务操作仍在进行"}
+        titleSize="6"
+        titleMb="2"
+        titleClassName="font-extrabold tracking-[-0.02em]"
+        description={
+          phase === null
+            ? "离开会丢弃当前页面中的凭据、目录结果和验证模型。"
+            : "请求结束前会锁定离开与丢弃动作，请等待当前阶段完成。"
+        }
+        direction={{ initial: "column-reverse", sm: "row" }}
+        cancelLabel={phase === null ? "继续配置" : "返回配置"}
+        cancelVariant="outline"
+        confirm={
+          phase === null
+            ? {
+                label: "丢弃并离开",
+                color: "red",
+                closesDialog: true,
+                onClick: () => {
                   allowExit.current = true;
                   setCandidate(null);
                   blocker.proceed?.();
-                }}
-              >
-                丢弃并离开
-              </Button></AlertDialog.Action>
-            </Flex>
-          ) : (
-            <Flex mt="4" justify="end">
-              <AlertDialog.Cancel><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>返回配置</Button></AlertDialog.Cancel>
-            </Flex>
-          )}
-        </AlertDialog.Content>
-      </AlertDialog.Root>
+                },
+              }
+            : null
+        }
+      />
     </ModelServiceSetupContext.Provider>
   );
 }
@@ -840,10 +826,11 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
     mutationFn: async () => {
       const current = metadata.data;
       if (current === undefined) throw new Error(`未找到内置 provider ${provider}`);
-      return responseJson<BuiltinPreview>(await api("/model-services/builtin/preview", {
-        method: "POST",
-        body: JSON.stringify({ provider, credential, expectedVersion: current.version }),
-      }));
+      return send<BuiltinPreview>("/model-services/builtin/preview", "POST", {
+        provider,
+        credential,
+        expectedVersion: current.version,
+      });
     },
     onMutate: () => setPhase("discovering"),
     onSettled: () => setPhase(null),
@@ -1013,15 +1000,12 @@ export function BuiltinServiceVerifyPage({ provider }: { provider: string }) {
   const commit = useMutation({
     mutationFn: async () => {
       if (!ready) throw new Error("配置已过期，请重新配置模型服务。");
-      return responseJson<CredentialMutationResult>(await api("/model-services/builtin/commit", {
-        method: "POST",
-        body: JSON.stringify({
-          provider,
-          credential: candidate.credential,
-          validationModel: candidate.validationModel,
-          expectedVersion: candidate.version,
-        }),
-      }));
+      return send<CredentialMutationResult>("/model-services/builtin/commit", "POST", {
+        provider,
+        credential: candidate.credential,
+        validationModel: candidate.validationModel,
+        expectedVersion: candidate.version,
+      });
     },
     onMutate: () => setPhase("committing"),
     onSettled: () => setPhase(null),
@@ -1584,15 +1568,10 @@ function CredentialControls({
 
   const reverify = useMutation({
     mutationFn: async () =>
-      responseJson<CredentialMutationResult>(
-        await api(`/model-services/${encodeURIComponent(target.provider)}/reverify`, {
-          method: "POST",
-          body: JSON.stringify({
-            validationModel: validationModel.trim(),
-            expectedVersion,
-          }),
-        }),
-      ),
+      send<CredentialMutationResult>(`/model-services/${encodeURIComponent(target.provider)}/reverify`, "POST", {
+        validationModel: validationModel.trim(),
+        expectedVersion,
+      }),
     onSuccess: (result) => {
       setMutationVersion(result.version);
       setFeedback({ text: `${target.provider} 已用已存凭据重新验证。`, error: false });
@@ -1696,12 +1675,34 @@ function CredentialControls({
   );
 
   const deleteError = removeCredential.error;
-  const deleteConfirmation = (
-    <>
-      <AlertDialog.Title size="6" mb="2" className="break-words font-extrabold tracking-[-0.02em]">删除 {target.provider} 的模型凭据？</AlertDialog.Title>
-      <AlertDialog.Description size="2" color="gray">
-        模型目录会保留，但没有凭据时模型不能运行。若全局组合或仓库仍在引用这家 provider，服务会拒绝删除并列出位置。
-      </AlertDialog.Description>
+  const deleteConfirmDialog = (
+    <ConfirmDialog
+      open={confirmingDelete}
+      onOpenChange={(open) => {
+        setConfirmingDelete(open);
+        if (!open) removeCredential.reset();
+      }}
+      maxWidth="520px"
+      maxHeight="calc(100dvh - 2rem)"
+      contentClassName="flex min-h-0 flex-col overflow-hidden rounded-2xl shadow-modal sm:rounded-3xl"
+      onCloseAutoFocus={deleteFocus.onCloseAutoFocus}
+      title={`删除 ${target.provider} 的模型凭据？`}
+      titleSize="6"
+      titleMb="2"
+      titleClassName="break-words font-extrabold tracking-[-0.02em]"
+      description="模型目录会保留，但没有凭据时模型不能运行。若全局组合或仓库仍在引用这家 provider，服务会拒绝删除并列出位置。"
+      direction={{ initial: "column-reverse", sm: "row" }}
+      footerClassName="shrink-0"
+      cancelLabel="取消"
+      cancelVariant="outline"
+      cancelDisabled={removeCredential.isPending}
+      confirm={{
+        label: removeCredential.isPending ? "正在删除…" : "确认删除凭据",
+        color: "red",
+        disabled: removeCredential.isPending,
+        onClick: () => removeCredential.mutate(),
+      }}
+    >
       {deleteError === null ? null : (
         <div className="mt-4 flex min-h-0 flex-col gap-2 overflow-y-auto">
           <Callout.Root role="alert" color="red" size="1">
@@ -1711,28 +1712,7 @@ function CredentialControls({
           <ReferenceBlockers references={deleteError.references} />
         </div>
       )}
-      <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }} className="shrink-0">
-        <AlertDialog.Cancel><Button
-          type="button"
-          variant="outline"
-          color="gray"
-          size={{ initial: "4", sm: "2" }}
-          disabled={removeCredential.isPending}
-        >
-          取消
-        </Button></AlertDialog.Cancel>
-        <Button
-          type="button"
-          variant="solid"
-          color="red"
-          size={{ initial: "4", sm: "2" }}
-          disabled={removeCredential.isPending}
-          onClick={() => removeCredential.mutate()}
-        >
-          {removeCredential.isPending ? "正在删除…" : "确认删除凭据"}
-        </Button>
-      </Flex>
-    </>
+    </ConfirmDialog>
   );
 
   if (dialog) {
@@ -1769,23 +1749,7 @@ function CredentialControls({
             </div>
           </Dialog.Content>
         </Dialog.Root>
-        <AlertDialog.Root
-          open={confirmingDelete}
-          onOpenChange={(open) => {
-            setConfirmingDelete(open);
-            if (!open) removeCredential.reset();
-          }}
-        >
-          <AlertDialog.Content
-            maxWidth="520px"
-            maxHeight="calc(100dvh - 2rem)"
-            size={{ initial: "2", sm: "3" }}
-            className="flex min-h-0 flex-col overflow-hidden rounded-2xl shadow-modal sm:rounded-3xl"
-            onCloseAutoFocus={deleteFocus.onCloseAutoFocus}
-          >
-            {deleteConfirmation}
-          </AlertDialog.Content>
-        </AlertDialog.Root>
+        {deleteConfirmDialog}
       </>
     );
   }
@@ -1798,23 +1762,7 @@ function CredentialControls({
         help={<HelpTooltip label="凭据维护说明" content="重新验证会使用已保存的凭据，凭据不会回到浏览器。" />}
       />
       {maintenanceForm}
-      <AlertDialog.Root
-        open={confirmingDelete}
-        onOpenChange={(open) => {
-          setConfirmingDelete(open);
-          if (!open) removeCredential.reset();
-        }}
-      >
-        <AlertDialog.Content
-          maxWidth="520px"
-          maxHeight="calc(100dvh - 2rem)"
-          size={{ initial: "2", sm: "3" }}
-          className="flex min-h-0 flex-col overflow-hidden rounded-2xl shadow-modal sm:rounded-3xl"
-          onCloseAutoFocus={deleteFocus.onCloseAutoFocus}
-        >
-          {deleteConfirmation}
-        </AlertDialog.Content>
-      </AlertDialog.Root>
+      {deleteConfirmDialog}
     </CardShell>
   );
 }
@@ -2054,43 +2002,43 @@ function CustomServiceControls({
           </div>
         </Dialog.Content>
       </Dialog.Root>
-      <AlertDialog.Root
+      <ConfirmDialog
         open={confirmingDelete}
         onOpenChange={(open) => {
           setConfirmingDelete(open);
           if (!open) removeService.reset();
         }}
+        maxWidth="520px"
+        maxHeight="calc(100dvh - 2rem)"
+        contentClassName="flex min-h-0 flex-col overflow-hidden rounded-2xl shadow-modal sm:rounded-3xl"
+        onCloseAutoFocus={deleteFocus.onCloseAutoFocus}
+        title={`删除 ${service.provider}？`}
+        titleSize="6"
+        titleMb="2"
+        titleClassName="break-words font-extrabold tracking-[-0.02em]"
+        description="服务定义、加密凭据、当前目录与手动模型来源会在一个事务中删除；历史 Review Run 保留。仍被模型组合引用时不会删除。"
+        direction={{ initial: "column-reverse", sm: "row" }}
+        footerClassName="shrink-0"
+        cancelLabel="取消"
+        cancelVariant="outline"
+        cancelDisabled={removeService.isPending}
+        confirm={{
+          label: removeService.isPending ? "正在删除…" : "确认删除服务",
+          color: "red",
+          disabled: removeService.isPending,
+          onClick: () => removeService.mutate(),
+        }}
       >
-        <AlertDialog.Content
-          maxWidth="520px"
-          maxHeight="calc(100dvh - 2rem)"
-          size={{ initial: "2", sm: "3" }}
-          className="flex min-h-0 flex-col overflow-hidden rounded-2xl shadow-modal sm:rounded-3xl"
-          onCloseAutoFocus={deleteFocus.onCloseAutoFocus}
-        >
-          <AlertDialog.Title size="6" mb="2" className="break-words font-extrabold tracking-[-0.02em]">删除 {service.provider}？</AlertDialog.Title>
-          <AlertDialog.Description size="2" color="gray">
-            服务定义、加密凭据、当前目录与手动模型来源会在一个事务中删除；历史 Review Run 保留。仍被模型组合引用时不会删除。
-          </AlertDialog.Description>
-          {removeService.error === null ? null : (
-            <div className="mt-4 flex min-h-0 flex-col gap-2 overflow-y-auto">
-              <Callout.Root role="alert" color="red" size="1">
-                <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-                <Callout.Text>{removeService.error.message}</Callout.Text>
-              </Callout.Root>
-              <ReferenceBlockers references={removeService.error.references} />
-            </div>
-          )}
-          <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }} className="shrink-0">
-            <AlertDialog.Cancel><Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }} disabled={removeService.isPending}>
-              取消
-            </Button></AlertDialog.Cancel>
-            <Button type="button" variant="solid" color="red" size={{ initial: "4", sm: "2" }} disabled={removeService.isPending} onClick={() => removeService.mutate()}>
-              {removeService.isPending ? "正在删除…" : "确认删除服务"}
-            </Button>
-          </Flex>
-        </AlertDialog.Content>
-      </AlertDialog.Root>
+        {removeService.error === null ? null : (
+          <div className="mt-4 flex min-h-0 flex-col gap-2 overflow-y-auto">
+            <Callout.Root role="alert" color="red" size="1">
+              <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+              <Callout.Text>{removeService.error.message}</Callout.Text>
+            </Callout.Root>
+            <ReferenceBlockers references={removeService.error.references} />
+          </div>
+        )}
+      </ConfirmDialog>
     </CardShell>
   );
 }
@@ -2108,22 +2056,20 @@ function CatalogControls({
   const inputId = `supplement-model-${service.provider}`;
   const deleteFocus = useDialogReturnFocus(() => document.getElementById(inputId));
   const refresh = useMutation<{ version: number }, Error>({
-    mutationFn: async () => responseJson(
-      await api(`/model-services/${encodeURIComponent(service.provider)}/refresh`, {
-        method: "POST",
-        body: JSON.stringify({ expectedVersion: service.version }),
-      }),
+    mutationFn: async () => send<{ version: number }>(
+      `/model-services/${encodeURIComponent(service.provider)}/refresh`,
+      "POST",
+      { expectedVersion: service.version },
     ),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["model-services"] });
     },
   });
   const addSupplement = useMutation<{ version: number }, Error, string>({
-    mutationFn: async (submittedModel) => responseJson(
-      await api(`/model-services/${encodeURIComponent(service.provider)}/supplements`, {
-        method: "POST",
-        body: JSON.stringify({ model: submittedModel, expectedVersion: service.version }),
-      }),
+    mutationFn: async (submittedModel) => send<{ version: number }>(
+      `/model-services/${encodeURIComponent(service.provider)}/supplements`,
+      "POST",
+      { model: submittedModel, expectedVersion: service.version },
     ),
     onSuccess: () => {
       setModel("");
@@ -2277,61 +2223,52 @@ function CatalogControls({
         )}
       </CardSection>
 
-      <AlertDialog.Root
+      <ConfirmDialog
         open={deleting !== null}
         onOpenChange={(open) => {
           if (open) return;
           setDeleting(null);
           removeSupplement.reset();
         }}
+        maxWidth="520px"
+        maxHeight="calc(100dvh - 2rem)"
+        contentClassName="flex min-h-0 flex-col overflow-hidden rounded-2xl shadow-modal sm:rounded-3xl"
+        onCloseAutoFocus={deleteFocus.onCloseAutoFocus}
+        title={`删除 ${deleting?.identity} 的手动来源？`}
+        titleSize="6"
+        titleMb="2"
+        titleClassName="break-words font-extrabold tracking-[-0.02em]"
+        description={
+          deleting?.sources.includes("automatic")
+            ? "自动发现来源仍会保留，该模型不会从清单中移除。"
+            : "这是当前唯一来源；仍被模型组合引用时，服务端会阻止删除并列出位置。"
+        }
+        direction={{ initial: "column-reverse", sm: "row" }}
+        footerClassName="shrink-0"
+        cancelLabel="取消"
+        cancelVariant="outline"
+        cancelDisabled={removeSupplement.isPending}
+        confirm={{
+          label: <>
+            <TrashIcon />{removeSupplement.isPending ? "正在删除…" : "确认删除来源"}
+          </>,
+          color: "red",
+          disabled: removeSupplement.isPending || deleting === null,
+          onClick: () => {
+            if (deleting !== null) removeSupplement.mutate(deleting.id);
+          },
+        }}
       >
-        <AlertDialog.Content
-          maxWidth="520px"
-          maxHeight="calc(100dvh - 2rem)"
-          size={{ initial: "2", sm: "3" }}
-          className="flex min-h-0 flex-col overflow-hidden rounded-2xl shadow-modal sm:rounded-3xl"
-          onCloseAutoFocus={deleteFocus.onCloseAutoFocus}
-        >
-          <AlertDialog.Title size="6" mb="2" className="break-words font-extrabold tracking-[-0.02em]">删除 {deleting?.identity} 的手动来源？</AlertDialog.Title>
-          <AlertDialog.Description size="2" color="gray">
-            {deleting?.sources.includes("automatic")
-              ? "自动发现来源仍会保留，该模型不会从清单中移除。"
-              : "这是当前唯一来源；仍被模型组合引用时，服务端会阻止删除并列出位置。"}
-          </AlertDialog.Description>
-          {removeSupplement.error === null ? null : (
-            <div className="mt-4 flex min-h-0 flex-col gap-2 overflow-y-auto">
-              <Callout.Root role="alert" color="red" size="1">
-                <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-                <Callout.Text>{removeSupplement.error.message}</Callout.Text>
-              </Callout.Root>
-              <ReferenceBlockers references={removeSupplement.error.references} />
-            </div>
-          )}
-          <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }} className="shrink-0">
-            <AlertDialog.Cancel><Button
-              type="button"
-              variant="outline"
-              color="gray"
-              size={{ initial: "4", sm: "2" }}
-              disabled={removeSupplement.isPending}
-            >
-              取消
-            </Button></AlertDialog.Cancel>
-            <Button
-              type="button"
-              variant="solid"
-              color="red"
-              size={{ initial: "4", sm: "2" }}
-              disabled={removeSupplement.isPending || deleting === null}
-              onClick={() => {
-                if (deleting !== null) removeSupplement.mutate(deleting.id);
-              }}
-            >
-              <TrashIcon />{removeSupplement.isPending ? "正在删除…" : "确认删除来源"}
-            </Button>
-          </Flex>
-        </AlertDialog.Content>
-      </AlertDialog.Root></> : null}
+        {removeSupplement.error === null ? null : (
+          <div className="mt-4 flex min-h-0 flex-col gap-2 overflow-y-auto">
+            <Callout.Root role="alert" color="red" size="1">
+              <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+              <Callout.Text>{removeSupplement.error.message}</Callout.Text>
+            </Callout.Root>
+            <ReferenceBlockers references={removeSupplement.error.references} />
+          </div>
+        )}
+      </ConfirmDialog></> : null}
     </CardShell>
   );
 }

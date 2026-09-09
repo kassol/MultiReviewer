@@ -9,7 +9,7 @@ import { CommitChip } from "@/components/commit-chip";
 import { Button } from "@/components/theme-button";
 import { localClock, localDay } from "@/lib/time";
 
-import { api, errorText, fetchJson } from "./api.ts";
+import { fetchJson, send } from "./api.ts";
 import { type RunFinding } from "./runs.tsx";
 
 /** `GET /runs/{id}/diff?file=` 的一个文件的 unified diff。 */
@@ -82,11 +82,11 @@ async function disposeRequest(input: {
   note: string;
 }): Promise<void> {
   const note = input.note.trim();
-  const response = await api(
+  await send(
     `/findings/${input.id}/${input.disposition === "resolved" ? "resolve" : "unresolve"}`,
-    { method: "POST", body: JSON.stringify(note === "" ? {} : { note }) },
+    "POST",
+    note === "" ? {} : { note },
   );
-  if (!response.ok) throw new Error(await errorText(response));
 }
 
 const SEVERITY_COLOR = { P0: "red", P1: "amber", P2: "gray" } as const;

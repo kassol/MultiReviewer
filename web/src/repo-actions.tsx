@@ -8,7 +8,6 @@ import {
   UpdateIcon,
 } from "@radix-ui/react-icons";
 import {
-  AlertDialog,
   Callout,
   Checkbox,
   Dialog,
@@ -23,6 +22,7 @@ import {
   Tooltip,
 } from "@radix-ui/themes";
 
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { EmptyState } from "@/components/empty-state";
 import { StatusBadge } from "@/components/status-badge";
@@ -45,8 +45,9 @@ import {
 import { localMinute } from "@/lib/time";
 import { sameModelRef, sameModelRefs } from "@/lib/model-ref";
 
-import { api, errorText, fetchJson } from "./api.ts";
+import { api, errorText, fetchJson, send } from "./api.ts";
 import { useAuxiliaryModel } from "./auxiliary-model.ts";
+import { useDebounced } from "./commit-picker.tsx";
 import {
   fromModelRef,
   THINKING_LEVEL_LABEL,
@@ -119,11 +120,7 @@ export async function rerunRequest(run: {
   directive?: string;
   mode?: RerunMode;
 }): Promise<string> {
-  const response = await api("/rerun", {
-    method: "POST",
-    body: JSON.stringify(run),
-  });
-  if (!response.ok) throw new Error(await errorText(response));
+  await send("/rerun", "POST", run);
   return `已触发 ${run.owner}/${run.repo} #${run.pullNumber} 的新一轮审查`;
 }
 
@@ -305,8 +302,7 @@ export function RepoRowMenu({
 
   const remove = useMutation({
     mutationFn: async () => {
-      const response = await api(`/repos/${repo.repoId}`, { method: "DELETE" });
-      if (!response.ok) throw new Error(await errorText(response));
+      await send(`/repos/${repo.repoId}`, "DELETE");
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["repos"] });
@@ -358,64 +354,41 @@ export function RepoRowMenu({
         ) : null}
       </Dialog.Root>
 
-      <AlertDialog.Root open={confirmingDiscard} onOpenChange={setConfirmingDiscard}>
-        <AlertDialog.Content maxWidth="440px" size={{ initial: "2", sm: "3" }}>
-          <AlertDialog.Title size="4">放弃未保存的改动？</AlertDialog.Title>
-          <AlertDialog.Description size="2" color="gray">
-            这个仓库的配置还没保存，关闭后改动会丢失。
-          </AlertDialog.Description>
-          <Flex gap="3" mt="4" justify="end">
-            <AlertDialog.Cancel>
-              <Button variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>
-                继续编辑
-              </Button>
-            </AlertDialog.Cancel>
-            <Button
-              variant="solid"
-              color="red"
-              size={{ initial: "4", sm: "2" }}
-              onClick={closeConfigure}
-            >
-              放弃改动
-            </Button>
-          </Flex>
-        </AlertDialog.Content>
-      </AlertDialog.Root>
+      <ConfirmDialog
+        open={confirmingDiscard}
+        onOpenChange={setConfirmingDiscard}
+        title="放弃未保存的改动？"
+        titleSize="4"
+        maxWidth="440px"
+        description="这个仓库的配置还没保存，关闭后改动会丢失。"
+        cancelLabel="继续编辑"
+        cancelVariant="soft"
+        confirm={{ label: "放弃改动", color: "red", onClick: closeConfigure }}
+      />
 
-      <AlertDialog.Root open={confirmingRemoval} onOpenChange={setConfirmingRemoval}>
-        <AlertDialog.Content
-          maxWidth="440px"
-          maxHeight="calc(100dvh - 2rem)"
-          size={{ initial: "2", sm: "3" }}
-          onCloseAutoFocus={returnFocus.onCloseAutoFocus}
-        >
-          <AlertDialog.Title size="4" mb="2">
-            移除 {repo.owner}/{repo.repo}?
-          </AlertDialog.Title>
-          <AlertDialog.Description size="2" color="gray">
-            将删除 Gitea 中的 Hook；后续审查请求会因仓库未注册而被拒绝。评审记录和历史模型选择会保留。
-          </AlertDialog.Description>
-          <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
-            <AlertDialog.Cancel>
-              <Button variant="soft" color="gray" size={{ initial: "4", sm: "2" }}>
-                取消
-              </Button>
-            </AlertDialog.Cancel>
-            <Button
-              variant="solid"
-              color="red"
-              size={{ initial: "4", sm: "2" }}
-              disabled={remove.isPending}
-              onClick={() => {
-                setConfirmingRemoval(false);
-                remove.mutate();
-              }}
-            >
-              移除
-            </Button>
-          </Flex>
-        </AlertDialog.Content>
-      </AlertDialog.Root>
+      <ConfirmDialog
+        open={confirmingRemoval}
+        onOpenChange={setConfirmingRemoval}
+        title={`移除 ${repo.owner}/${repo.repo}?`}
+        titleSize="4"
+        titleMb="2"
+        maxWidth="440px"
+        maxHeight="calc(100dvh - 2rem)"
+        onCloseAutoFocus={returnFocus.onCloseAutoFocus}
+        description="将删除 Gitea 中的 Hook；后续审查请求会因仓库未注册而被拒绝。评审记录和历史模型选择会保留。"
+        direction={{ initial: "column-reverse", sm: "row" }}
+        cancelLabel="取消"
+        cancelVariant="soft"
+        confirm={{
+          label: "移除",
+          color: "red",
+          disabled: remove.isPending,
+          onClick: () => {
+            setConfirmingRemoval(false);
+            remove.mutate();
+          },
+        }}
+      />
     </>
   );
 }
@@ -515,11 +488,7 @@ function ConfigureDialogContent({
   };
 
   const rotate = useMutation({
-    mutationFn: async () => {
-      const response = await api(`/repos/${repo.repoId}/rotate`, { method: "POST" });
-      if (!response.ok) throw new Error(await errorText(response));
-      return (await response.json()) as { generation: number };
-    },
+    mutationFn: async () => send<{ generation: number }>(`/repos/${repo.repoId}/rotate`, "POST"),
     onSuccess: (data) => {
       setFeedback({ text: `已轮转到代次 ${data.generation}。`, isError: false });
       refresh();
@@ -530,8 +499,7 @@ function ConfigureDialogContent({
   // 备工作副本(issue #184)。注册时后台已经备过一次,这里是失败或从没备过时的入口。
   const prepareWorktree = useMutation({
     mutationFn: async () => {
-      const response = await api(`/repos/${repo.repoId}/worktree`, { method: "POST" });
-      if (!response.ok) throw new Error(await errorText(response));
+      await send(`/repos/${repo.repoId}/worktree`, "POST");
     },
     onSuccess: () => {
       setFeedback({ text: "工作副本正在后台准备，完成后状态将更新为“就绪”。", isError: false });
@@ -1148,15 +1116,10 @@ function RegisterDialogContent({
   onDone: (repo: { owner: string; repo: string }) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [debounced, setDebounced] = useState("");
+  const debounced = useDebounced(query, SEARCH_DEBOUNCE_MS);
   const [picked, setPicked] = useState<RepoSearchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setDebounced(query), SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
-  }, [query]);
 
   const search = useQuery({
     queryKey: ["repo-search", debounced],

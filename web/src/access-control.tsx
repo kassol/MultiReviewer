@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircledIcon, Cross2Icon, CrossCircledIcon, DotsHorizontalIcon, PlusIcon } from "@radix-ui/react-icons";
-import { AlertDialog, Badge, Callout, Checkbox, Dialog, DropdownMenu, Flex, IconButton, Select, Skeleton, Switch, Table, Tabs, Text, TextField, Tooltip } from "@radix-ui/themes";
+import { Badge, Callout, Checkbox, Dialog, DropdownMenu, Flex, IconButton, Select, Skeleton, Switch, Table, Tabs, Text, TextField, Tooltip } from "@radix-ui/themes";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 import { CardShell } from "@/components/card-shell";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
@@ -11,7 +12,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { useDialogReturnFocus } from "@/components/use-dialog-return-focus";
 import { localMinute } from "@/lib/time";
-import { api, errorText, fetchJson } from "./api.ts";
+import { fetchJson, send } from "./api.ts";
 import { TAB_TRIGGER } from "@/components/tab-trigger";
 import {
   PANEL_PERMISSIONS,
@@ -76,11 +77,6 @@ function toggleRepoId(repoIds: readonly number[], repoId: number): number[] {
     : [...repoIds, repoId];
 }
 
-async function responseJson<T>(response: Response): Promise<T> {
-  if (!response.ok) throw new Error(await errorText(response));
-  return (await response.json()) as T;
-}
-
 export function AccessControlPage() {
   const queryClient = useQueryClient();
   const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
@@ -118,7 +114,7 @@ export function AccessControlPage() {
 
   const createUser = useMutation({
     mutationFn: async (input: { username: string; displayName: string; password: string; repoIds: number[] }) =>
-      responseJson<{ username: string }>(await api("/users", { method: "POST", body: JSON.stringify(input) })),
+      send<{ username: string }>("/users", "POST", input),
     onSuccess: ({ username }) => {
       setCreateKind(null);
       setFeedback({ text: `已创建用户 ${username}；首次登录必须修改密码。`, error: false });
@@ -129,7 +125,7 @@ export function AccessControlPage() {
 
   const createRole = useMutation({
     mutationFn: async (name: string) =>
-      responseJson<Role>(await api("/roles", { method: "POST", body: JSON.stringify({ name, permissions: [] }) })),
+      send<Role>("/roles", "POST", { name, permissions: [] }),
     onSuccess: (role) => {
       setCreateKind(null);
       // 直接切到新角色的 tab:创建的下一步就是给它开权限,不让人再找一遍。
@@ -156,15 +152,11 @@ export function AccessControlPage() {
 
   const updateUser = useMutation({
     mutationFn: async (input: { user: User; roleId: number | null }) => {
-      const response = await api(`/users/${encodeURIComponent(input.user.username)}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          displayName: input.user.displayName,
-          roleId: input.roleId,
-          isSystemAdmin: false,
-        }),
+      await send(`/users/${encodeURIComponent(input.user.username)}`, "PUT", {
+        displayName: input.user.displayName,
+        roleId: input.roleId,
+        isSystemAdmin: false,
       });
-      if (!response.ok) throw new Error(await errorText(response));
     },
     onSuccess: () => {
       setFeedback({ text: "角色已更新，立即生效。", error: false });
@@ -178,16 +170,12 @@ export function AccessControlPage() {
 
   const assignRepos = useMutation({
     mutationFn: async (input: { user: User; repoIds: number[] }) => {
-      const response = await api(`/users/${encodeURIComponent(input.user.username)}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          displayName: input.user.displayName,
-          roleId: input.user.roleId,
-          isSystemAdmin: false,
-          repoIds: input.repoIds,
-        }),
+      await send(`/users/${encodeURIComponent(input.user.username)}`, "PUT", {
+        displayName: input.user.displayName,
+        roleId: input.user.roleId,
+        isSystemAdmin: false,
+        repoIds: input.repoIds,
       });
-      if (!response.ok) throw new Error(await errorText(response));
     },
     onSuccess: (_value, { user }) => {
       setAssign(null);
@@ -202,12 +190,7 @@ export function AccessControlPage() {
       const permissions = input.role.permissions.includes(input.permission)
         ? input.role.permissions.filter((item) => item !== input.permission)
         : [...input.role.permissions, input.permission];
-      return responseJson<Role>(
-        await api(`/roles/${input.role.id}`, {
-          method: "PUT",
-          body: JSON.stringify({ name: input.role.name, permissions }),
-        }),
-      );
+      return send<Role>(`/roles/${input.role.id}`, "PUT", { name: input.role.name, permissions });
     },
     // 开关翻转本身就是成功反馈,这里不再往页顶推一条提示;失败才需要说话。
     onSuccess: refresh,
@@ -222,11 +205,11 @@ export function AccessControlPage() {
         : target.kind === "delete-user"
           ? `/users/${encodeURIComponent(target.id)}`
           : `/roles/${target.id}`;
-      const response = await api(path, {
-        method: target.kind === "reset" ? "POST" : "DELETE",
-        ...(target.kind === "reset" ? { body: JSON.stringify({ password: input.password }) } : {}),
-      });
-      if (!response.ok) throw new Error(await errorText(response));
+      await send(
+        path,
+        target.kind === "reset" ? "POST" : "DELETE",
+        target.kind === "reset" ? { password: input.password } : undefined,
+      );
     },
     onSuccess: (_value, { target }) => {
       setConfirm(null);
@@ -576,49 +559,53 @@ export function AccessControlPage() {
           </Flex>
         </Dialog.Content>
       </Dialog.Root>
-      <AlertDialog.Root open={confirm !== null} onOpenChange={(open) => { if (!open) { setConfirm(null); setResetPassword(""); } }}>
-        <AlertDialog.Content onCloseAutoFocus={confirmFocus.onCloseAutoFocus} maxWidth="440px" maxHeight="calc(100dvh - 2rem)" size={{ initial: "2", sm: "3" }}>
-          <AlertDialog.Title size="4" mb="2">
-            {confirm?.kind === "reset"
+      <ConfirmDialog
+        open={confirm !== null}
+        onOpenChange={(open) => { if (!open) { setConfirm(null); setResetPassword(""); } }}
+        onCloseAutoFocus={confirmFocus.onCloseAutoFocus}
+        maxWidth="440px"
+        maxHeight="calc(100dvh - 2rem)"
+        title={
+          confirm?.kind === "reset"
+            ? "重置密码"
+            : confirm?.kind === "delete-role"
+              ? `删除角色 ${confirm.label}？`
+              : `删除用户 ${confirm?.label}？`
+        }
+        titleSize="4"
+        titleMb="2"
+        description={
+          confirm?.kind === "reset"
+            ? `为 ${confirm.label} 设置一枚临时密码。现有会话会全部作废，下次登录必须改密码。`
+            : confirm?.kind === "delete-role"
+              ? "仍有人使用时，服务会拒绝删除该角色。"
+              : "现有会话会一并作废；删除后无法恢复。"
+        }
+        descriptionClassName="break-words"
+        direction={{ initial: "column-reverse", sm: "row" }}
+        cancelLabel="取消"
+        cancelVariant="outline"
+        confirm={{
+          label: destructive.isPending
+            ? "处理中…"
+            : confirm?.kind === "reset"
               ? "重置密码"
               : confirm?.kind === "delete-role"
-                ? `删除角色 ${confirm.label}？`
-                : `删除用户 ${confirm?.label}？`}
-          </AlertDialog.Title>
-          <AlertDialog.Description size="2" color="gray" className="break-words">
-            {confirm?.kind === "reset"
-              ? `为 ${confirm.label} 设置一枚临时密码。现有会话会全部作废，下次登录必须改密码。`
-              : confirm?.kind === "delete-role"
-                ? "仍有人使用时，服务会拒绝删除该角色。"
-                : "现有会话会一并作废；删除后无法恢复。"}
-          </AlertDialog.Description>
-          {confirm?.kind === "reset" ? (
-            <div className="mt-4 flex flex-col gap-1.5">
-              <Text as="label" htmlFor="reset-password" size="2" weight="medium">临时密码</Text>
-              <TextField.Root id="reset-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} />
-            </div>
-          ) : null}
-          <Flex gap="3" mt="4" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
-            <AlertDialog.Cancel><Button variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>取消</Button></AlertDialog.Cancel>
-            <Button
-              variant="solid"
-              color={confirm?.kind === "reset" ? "gray" : "red"}
-              highContrast={confirm?.kind === "reset"}
-              size={{ initial: "4", sm: "2" }}
-              disabled={destructive.isPending || (confirm?.kind === "reset" && resetPassword === "")}
-              onClick={() => { if (confirm !== null) destructive.mutate({ target: confirm, password: resetPassword }); }}
-            >
-              {destructive.isPending
-                ? "处理中…"
-                : confirm?.kind === "reset"
-                  ? "重置密码"
-                  : confirm?.kind === "delete-role"
-                    ? "删除角色"
-                    : "删除用户"}
-            </Button>
-          </Flex>
-        </AlertDialog.Content>
-      </AlertDialog.Root>
+                ? "删除角色"
+                : "删除用户",
+          color: confirm?.kind === "reset" ? "gray" : "red",
+          highContrast: confirm?.kind === "reset",
+          disabled: destructive.isPending || (confirm?.kind === "reset" && resetPassword === ""),
+          onClick: () => { if (confirm !== null) destructive.mutate({ target: confirm, password: resetPassword }); },
+        }}
+      >
+        {confirm?.kind === "reset" ? (
+          <div className="mt-4 flex flex-col gap-1.5">
+            <Text as="label" htmlFor="reset-password" size="2" weight="medium">临时密码</Text>
+            <TextField.Root id="reset-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} />
+          </div>
+        ) : null}
+      </ConfirmDialog>
     </>
   );
 }

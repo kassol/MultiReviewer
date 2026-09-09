@@ -14,7 +14,7 @@ import { Button } from "@/components/theme-button";
 import { localClock, localDay } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
-import { api, errorText, fetchJson } from "./api.ts";
+import { fetchJson, send } from "./api.ts";
 import { RangeReviewLaunch } from "./range-review-launch.tsx";
 import {
   RegisterRepo,
@@ -253,15 +253,11 @@ export async function rerunRangeReviewRequest(
   /** 这一轮的模式(issue #242),不给即只复核历史 Finding。 */
   mode?: RerunMode,
 ): Promise<string> {
-  const response = await api("/rerun", {
-    method: "POST",
-    body: JSON.stringify({
-      rangeReviewId,
-      ...(directive === undefined ? {} : { directive }),
-      ...(mode === undefined ? {} : { mode }),
-    }),
+  await send("/rerun", "POST", {
+    rangeReviewId,
+    ...(directive === undefined ? {} : { directive }),
+    ...(mode === undefined ? {} : { mode }),
   });
-  if (!response.ok) throw new Error(await errorText(response));
   return "已在当前比较项上触发新一轮审查";
 }
 

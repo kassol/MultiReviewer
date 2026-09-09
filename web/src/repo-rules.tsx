@@ -13,7 +13,7 @@ import { Button } from "@/components/theme-button";
 import { TAB_TRIGGER } from "@/components/tab-trigger";
 import { AuxiliaryModelLine } from "@/components/auxiliary-model-line";
 
-import { api, errorText, fetchJson } from "./api.ts";
+import { fetchJson, send } from "./api.ts";
 import { useAuxiliaryModel } from "./auxiliary-model.ts";
 import { CommitPicker, type CommitSelection } from "./commit-picker.tsx";
 import { OUTLINED_ACTION, RuleTraceButton, SOURCE_LABEL, TYPE_LABEL, type KnowledgeType } from "./rule-trace.tsx";
@@ -142,8 +142,7 @@ type RevisionIntent = {
 function useRuleEdits(basePath: string, onSuccess: () => void) {
   return useMutation({
     mutationFn: async (id: number): Promise<void> => {
-      const response = await api(`${basePath}/${id}`, { method: "DELETE" });
-      if (!response.ok) throw new Error(await errorText(response));
+      await send(`${basePath}/${id}`, "DELETE");
     },
     onSuccess,
   });
@@ -298,16 +297,11 @@ function RuleSetDialogContent({
       const base = `/repos/${repo.repoId}/rule-proposals`;
       // 批量裁决走另一对端点(issue #223):采纳一整组只推进一个知识集版本,body 是那一组
       // 标识,逐条那两条不带 body。
-      const response =
-        "ids" in action
-          ? await api(`${base}/${action.accept ? "accept" : "reject"}`, {
-              method: "POST",
-              body: JSON.stringify({ ids: action.ids }),
-            })
-          : await api(`${base}/${action.id}/${action.accept ? "accept" : "reject"}`, {
-              method: "POST",
-            });
-      if (!response.ok) throw new Error(await errorText(response));
+      if ("ids" in action) {
+        await send(`${base}/${action.accept ? "accept" : "reject"}`, "POST", { ids: action.ids });
+      } else {
+        await send(`${base}/${action.id}/${action.accept ? "accept" : "reject"}`, "POST");
+      }
     },
     onSuccess: reload,
   });
@@ -318,11 +312,11 @@ function RuleSetDialogContent({
    */
   const confirm = useMutation({
     mutationFn: async (itemIds: readonly number[]): Promise<void> => {
-      const response = await api(`/repos/${repo.repoId}/rule-draft/confirm`, {
-        method: "POST",
-        ...(itemIds.length === 0 ? {} : { body: JSON.stringify({ itemIds }) }),
-      });
-      if (!response.ok) throw new Error(await errorText(response));
+      await send(
+        `/repos/${repo.repoId}/rule-draft/confirm`,
+        "POST",
+        itemIds.length === 0 ? undefined : { itemIds },
+      );
     },
     onSuccess: reload,
   });
@@ -866,14 +860,10 @@ function IntentForm({
 
   const submit = useMutation({
     mutationFn: async (): Promise<void> => {
-      const response = await api(`/repos/${repoId}/revision-intents`, {
-        method: "POST",
-        body: JSON.stringify({
-          text: text.trim(),
-          ...(target === undefined ? {} : { target }),
-        }),
+      await send(`/repos/${repoId}/revision-intents`, "POST", {
+        text: text.trim(),
+        ...(target === undefined ? {} : { target }),
       });
-      if (!response.ok) throw new Error(await errorText(response));
     },
     onSuccess: () => {
       setText("");
@@ -974,10 +964,7 @@ function IntentSection({
 }) {
   const remove = useMutation({
     mutationFn: async (intentId: number): Promise<void> => {
-      const response = await api(`/repos/${repoId}/revision-intents/${intentId}`, {
-        method: "DELETE",
-      });
-      if (!response.ok) throw new Error(await errorText(response));
+      await send(`/repos/${repoId}/revision-intents/${intentId}`, "DELETE");
     },
     onSuccess: onChanged,
   });
@@ -1713,11 +1700,7 @@ function ExplorationLaunchContent({
   const start = useMutation({
     mutationFn: async (): Promise<void> => {
       // 发起体只剩基点:用哪个模型由服务端按生效辅助模型解析(issue #303)。
-      const response = await api(`/repos/${repo.repoId}/rule-exploration`, {
-        method: "POST",
-        body: JSON.stringify({ baseline: baseline?.sha ?? "" }),
-      });
-      if (!response.ok) throw new Error(await errorText(response));
+      await send(`/repos/${repo.repoId}/rule-exploration`, "POST", { baseline: baseline?.sha ?? "" });
     },
     onSuccess: onLaunched,
     onError: (failure: Error) => setError(failure.message),
@@ -1906,11 +1889,7 @@ function ConsolidationLaunchContent({
   const start = useMutation({
     mutationFn: async (): Promise<void> => {
       // 整理没有基点也不选模型:发起体是一个空对象(issue #303)。
-      const response = await api(`/repos/${repo.repoId}/rule-consolidation`, {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      if (!response.ok) throw new Error(await errorText(response));
+      await send(`/repos/${repo.repoId}/rule-consolidation`, "POST", {});
     },
     onSuccess: onLaunched,
     onError: (failure: Error) => setError(failure.message),
