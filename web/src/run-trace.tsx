@@ -70,6 +70,11 @@ function strings(payload: Record<string, unknown>, key: string): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+function nums(payload: Record<string, unknown>, key: string): number[] {
+  const value = payload[key];
+  return Array.isArray(value) ? value.filter((item): item is number => typeof item === "number") : [];
+}
+
 /** `finding_merged` 的一个成员:哪个 Reviewer、报在哪一行、标题是什么。 */
 type MergedMember = { reviewer: string; line: number | null; title: string };
 
@@ -98,8 +103,9 @@ function criteriaText(payload: Record<string, unknown>): string | null {
   if (kind === "same_line") return "同一行";
   // 跨轮次收口的三档判据(issue #240、#243):折叠凭指纹,延续凭标题相似或复核结论给的位置。
   if (kind === "fingerprint") return "指纹仍在";
-  // 指纹命中了历史、合并 agent 判它不是同一个问题(ADR 0030,issue #307)。
-  if (kind === "agent_differs") return str(criteria, "reason") ?? "合并 agent 判为不同问题";
+  // 指纹命中了历史、合并 agent 没把这一条与那条历史归为同一个问题(ADR 0030,issue #307)。
+  // 这里不摆理由:组自己的合并理由说的是组内那几条为什么是一回事,它没解释过这一次不折叠。
+  if (kind === "agent_differs") return "合并 agent 未将它与那条历史归为同一问题";
   if (kind === "content") return "内容相近";
   if (kind === "verdict") return "复核结论给的位置";
   if (kind !== "distance") return kind;
@@ -293,6 +299,24 @@ function RunMilestone({ event }: { event: TraceEvent }) {
             </span>
             <span className="min-w-0 text-sm break-words text-text-secondary">
               {str(payload, "reason") ?? "未记录原因"}
+            </span>
+          </span>
+        );
+      }
+      // 同根因组的提议被丢掉那一条(ADR 0030,issue #308):组不落库,轨迹是它唯一的
+      // 去处。合并组编号按 agent 报出的次序,与 `synthesis_fallback` 同样从 0 起,读的人
+      // 按「第几组」数,因此显示加一。
+      case "root_cause_group_rejected": {
+        const groups = nums(payload, "groups");
+        return (
+          <span className="flex flex-wrap items-baseline gap-x-2 text-base text-text">
+            <span className="text-warning">
+              同根因组提议被丢弃:{str(payload, "reason") ?? "未记录原因"}
+            </span>
+            <span className="min-w-0 text-sm break-words text-text-secondary">
+              {groups.length === 0
+                ? "没有可读的合并组编号"
+                : `合并组 ${groups.map((group) => group + 1).join(" / ")}`}
             </span>
           </span>
         );

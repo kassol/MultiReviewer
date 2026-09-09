@@ -58,9 +58,10 @@ export type CarryCriterion =
   /**
    * 指纹命中了一条交给过合并 agent 的历史,而 agent 没把它归进这一组(ADR 0030,
    * issue #307):同一处不等于同一问题,本轮这条因此是同一处的新 Finding,不折叠。
-   * 带那条历史的落库 id 与 agent 为这一组写的那句理由——追查时要看得出它判的是什么。
+   * 只带那条历史的落库 id:这一组自己的合并理由说的是组内那几条为什么是一回事,
+   * 它不是对这条历史的判断,当判据摆出来会读成 agent 解释过为什么不折叠。
    */
-  | { kind: "agent_differs"; history: number; reason: string };
+  | { kind: "agent_differs"; history: number };
 
 /** 合并组里的一个成员:哪个 Reviewer 在哪一行说了什么。 */
 export type MergeMember = {
@@ -126,13 +127,6 @@ export type MergedFinding = {
    * ——位置语义不交给模型,与三条硬性质同律。
    */
   history?: { id: number; reason: string };
-  /**
-   * 合并 agent 为这一组写的那句理由(issue #307)。整轮走 agent 档时每组都有,算法档没有。
-   *
-   * 不并进 `merge`:那一格只有真的合并过(成员多于一条)的组才有,而「agent 判为不同
-   * 问题」的轨迹要在单成员组上也记得出理由。
-   */
-  agentReason?: string;
 };
 
 /**
@@ -466,11 +460,19 @@ export function acceptRootCauseGroups(
       reject(`同根因组引用的合并组 ${unknown} 不在本轮的 0 到 ${groupCount - 1} 之间`);
       continue;
     }
-    const twice = proposal.groups.find(
-      (index, position) => claimed.has(index) || proposal.groups.indexOf(index) !== position,
+    // 同一份提议里把一个合并组列两次,与两份提议抢同一个合并组,是两件不同的错(评审
+    // 复核 2026-09-09):前者是这一组自己写重了,后者是它来晚了。合成一句会让看轨迹的人
+    // 以为 agent 提了两个组。
+    const listedTwice = proposal.groups.find(
+      (index, position) => proposal.groups.indexOf(index) !== position,
     );
-    if (twice !== undefined) {
-      reject(`合并组 ${twice} 被分进了两个同根因组`);
+    if (listedTwice !== undefined) {
+      reject(`同根因组把合并组 ${listedTwice} 列了两次`);
+      continue;
+    }
+    const taken = proposal.groups.find((index) => claimed.has(index));
+    if (taken !== undefined) {
+      reject(`合并组 ${taken} 已经进了前面一个同根因组`);
       continue;
     }
     for (const index of proposal.groups) claimed.add(index);
@@ -684,9 +686,6 @@ function mergeGroup(
     attributions,
     ...(ruleId === undefined ? {} : { ruleId }),
     ...(history === undefined ? {} : { history }),
-    // agent 档每组都留下它那句理由(issue #307),单成员组也留:折叠不成立时轨迹要记
-    // 「agent 判为不同问题」,理由就是这一句。
-    ...(criterion.kind === "agent" ? { agentReason: criterion.reason } : {}),
     // 只有一个成员的组没有合并过,不产生合并事件(issue #171 的用户故事 10)。
     ...(group.length === 1
       ? {}

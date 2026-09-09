@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-import { openStore, type RootCauseMemberRecord } from "../src/review/store.ts";
+import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
@@ -46,6 +46,8 @@ type SeedFinding = {
   disposition?: "unknown" | "resolved";
   /** 没有行级评论承载的历史行给 false。 */
   carrier?: boolean;
+  /** 折叠到上一轮那条评论上的行给它的评论 id。省略即本轮自己新发的那一条。 */
+  commentId?: string;
 };
 
 /**
@@ -56,7 +58,7 @@ function seedRun(
   h: PanelHarness,
   pullNumber: number,
   findings: readonly SeedFinding[],
-  rootCauses: readonly { reason: string; members: readonly RootCauseMemberRecord[] }[] = [],
+  rootCauses: readonly { reason: string; members: readonly number[] }[] = [],
   startedAt = "2026-09-01T00:00:00.000Z",
 ): { runId: number; findingIds: number[]; groupIds: number[] } {
   const store = openStore(h.db.path);
@@ -103,7 +105,7 @@ function seedRun(
         ...(finding.carrier === false
           ? {}
           : {
-              commentId: `comment-${runId}-${index}`,
+              commentId: finding.commentId ?? `comment-${runId}-${index}`,
               commentHtmlUrl: `https://forge.invalid/pulls/${pullNumber}/files#c-${runId}-${index}`,
             }),
       })),
@@ -164,7 +166,7 @@ async function harnessWithGroup(): Promise<{
       { file: "src/c.ts", disposition: "resolved" },
       { file: "src/d.ts" },
     ],
-    [{ reason: REASON, members: [{ groupIndex: 0 }, { groupIndex: 1 }, { groupIndex: 2 }] }],
+    [{ reason: REASON, members: [0, 1, 2] }],
   );
   return { h, findingIds: seeded.findingIds, groupId: seeded.groupIds[0]! };
 }
@@ -200,31 +202,19 @@ test("合并 agent 缺席的阶段:组列表为空,每条的组引用都是 null
   );
 });
 
-test("成员已被延续掉:组引用落在承接它的那一行上", async () => {
+test("成员折叠到历史评论:组引用挂在本轮那一行上,阶段汇总里仍只有一条", async () => {
   const h = await startReadyPanelHarness();
   seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
   const first = seedRun(h, HARNESS_PR.number, [{ file: "src/a.ts" }]);
-  // 第二轮把 a 那条交接到新位置,并提一个同根因组:成员记的是交接前那一行(它是组落库
-  // 时最终的那一行),投影要顺着延续链指到承接它的新行上。
+  // 第二轮 a 那条折叠到上一轮的评论上:本轮同样落一行,它与那条历史在 `identityKey` 下
+  // 是同一条 Finding Identity。组成员记的是本轮这一行(评审复核 2026-09-09)。
   const second = seedRun(
     h,
     HARNESS_PR.number,
-    [{ file: "src/a2.ts" }, { file: "src/b.ts" }],
-    [{ reason: REASON, members: [{ findingId: first.findingIds[0]! }, { groupIndex: 1 }] }],
+    [{ file: "src/a.ts", commentId: `comment-${first.runId}-0` }, { file: "src/b.ts" }],
+    [{ reason: REASON, members: [0, 1] }],
     "2026-09-02T00:00:00.000Z",
   );
-  const db = new DatabaseSync(h.db.path);
-  try {
-    db.prepare("UPDATE finding SET disposition = 'continued' WHERE id = ?").run(
-      first.findingIds[0]!,
-    );
-    db.prepare("UPDATE finding SET continued_from = ? WHERE id = ?").run(
-      `https://forge.invalid/pulls/${HARNESS_PR.number}/files#c-${first.runId}-0`,
-      second.findingIds[0]!,
-    );
-  } finally {
-    db.close();
-  }
 
   const body = await summary(h);
   assert.deepEqual(body.rootCauseGroups, [
@@ -234,12 +224,12 @@ test("成员已被延续掉:组引用落在承接它的那一行上", async () =
       findingIds: [second.findingIds[0]!, second.findingIds[1]!],
     },
   ]);
-  // 交接掉的那一行不在汇总里,组引用因此挂在 a2 上。
-  assert.equal(
-    body.findings.some((finding) => finding.id === first.findingIds[0]!),
-    false,
+  // 同一条 Identity 只出一行,上一轮那一行不再单列。
+  assert.deepEqual(
+    body.findings.map((finding) => finding.id),
+    [second.findingIds[0]!, second.findingIds[1]!],
   );
-  assert.deepEqual(byFile(body, "src/a2.ts").rootCause, {
+  assert.deepEqual(byFile(body, "src/a.ts").rootCause, {
     id: second.groupIds[0]!,
     reason: REASON,
     memberCount: 2,
@@ -328,7 +318,7 @@ test("别的阶段的组:回 404,一条都不动", async () => {
     h,
     HARNESS_PR.number + 1,
     [{ file: "src/x.ts" }, { file: "src/y.ts" }],
-    [{ reason: "另一个阶段的根因", members: [{ groupIndex: 0 }, { groupIndex: 1 }] }],
+    [{ reason: "另一个阶段的根因", members: [0, 1] }],
   );
 
   const response = await h.api(

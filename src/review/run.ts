@@ -834,8 +834,10 @@ type ReviewGroup = {
    * 指纹命中了一条交给过合并 agent 的历史,而 agent 没把它归进这一组(ADR 0030,
    * issue #307):本轮这条是同一处的新 Finding,照常发评论、进阶段统计,不继承那条
    * 历史的处置、评论与状态。这一项只进轨迹,收口上它等同于「什么都没命中」。
+   * 只记那条历史的落库 id:组自己的合并理由说的是组内为什么是一回事,不是对这条
+   * 历史的判断,拿它当判据会把两件事混成一句。
    */
-  differs?: { history: number; reason: string };
+  differs?: { history: number };
 };
 
 /** 一次延续:旧 Finding、本轮承接它的那个合并组,以及这一次延续凭的判据。 */
@@ -1435,6 +1437,19 @@ function recordFindingMerges(
 export const MERGE_AGENT_TRACE_NAME = "合并 agent";
 
 /**
+ * 丢掉一个同根因组的提议并记一条轨迹(ADR 0030,issue #308)。验收那一道与 diff 终筛
+ * 之后那一道共用它:`groups` 一律是合并 agent 报出这几个合并组的次序——两处说的是同一
+ * 个提议,编号换一套口径就对不上了。
+ */
+function rejectRootCauseGroup(
+  trace: TraceRecorder,
+  groups: readonly number[],
+  reason: string,
+): void {
+  trace.run("root_cause_group_rejected", { groups: [...groups], reason });
+}
+
+/**
  * 本轮的去重合并(issue #228)。有合并 agent 时由它给分组方案,代码验收三条硬性质;
  * 没有它、它失败、它超时或方案没过验收,一律整体退回 `dedupeFindings`——最坏情况恒等于
  * 算法档的行为,一次辅助判断的故障不该让整轮审查白跑。
@@ -1461,8 +1476,12 @@ async function mergeFindings(
   merged: MergedFinding[];
   usage?: ReviewerUsage;
   agentPlan: boolean;
-  /** 过了验收的同根因组(issue #308),成员是本轮合并后的那几条。没有即空数组。 */
-  rootCauses: { members: MergedFinding[]; reason: string }[];
+  /**
+   * 过了验收的同根因组(issue #308),成员是本轮合并后的那几条。没有即空数组。
+   * `groups` 与 `members` 同序,是合并 agent 报出这几个合并组的次序:diff 终筛再丢掉
+   * 这一组时,轨迹上的编号要与验收那一道说的是同一套。
+   */
+  rootCauses: { groups: readonly number[]; members: MergedFinding[]; reason: string }[];
 }> {
   const routed = historyForBatch(history, [...new Set(findings.map((f) => f.file))]);
   if (agent === undefined || findings.length + routed.length < 2) {
@@ -1526,14 +1545,13 @@ async function mergeFindings(
   // 同根因组的验收独立于分组方案(ADR 0030,issue #308):坏提议只丢那一组并记一条轨迹,
   // 分组照常生效。成员编号按 agent 报出合并组的次序,`order` 把它对回合并后的那几条。
   const { accepted, rejected } = acceptRootCauseGroups(result.rootCauses ?? [], result.groups.length);
-  for (const drop of rejected) {
-    trace.run("root_cause_group_rejected", { groups: [...drop.groups], reason: drop.reason });
-  }
+  for (const drop of rejected) rejectRootCauseGroup(trace, drop.groups, drop.reason);
   const byProposal = new Map(outcome.order.map((proposal, index) => [proposal, outcome.merged[index]!]));
   return {
     merged: outcome.merged,
     agentPlan: true,
     rootCauses: accepted.map((group) => ({
+      groups: group.groups,
       members: group.groups.map((proposal) => byProposal.get(proposal)!),
       reason: group.reason,
     })),
@@ -1982,6 +2000,9 @@ export async function runReview(
       deps.maxChangedLinesPerBatch ?? DEFAULT_MAX_CHANGED_LINES_PER_BATCH,
       deps.maxFilesPerBatch ?? DEFAULT_MAX_FILES_PER_BATCH,
     );
+    // 本轮各批文件的并集:批外丢弃那一道拿它分辨「别的批次会审这个文件」与「这个文件
+    // 根本不在本轮的变更范围里」。
+    const inRange = new Set(range.files);
 
     // 续跑核对重新切批的结果(issue #248):批数、每一批与开跑时冻结的完整计划
     // (issue #253)、每个已落库批次的文件清单都要逐字相同,Reviewer 也要还是那几个、
@@ -2145,9 +2166,14 @@ export async function runReview(
             });
             // 批外报出在这里丢掉:排在锚定与合并之前,后面每一步读到的都已经是这一批
             // 自己的结论。丢弃而不是交给合并 agent 归组,理由与轨迹事件那一档同源。
-            const findings = batched
-              ? outcome.findings.filter((finding) => {
-                  if (inBatch.has(finding.file)) return true;
+            // 只丢「本轮别的批次拥有的文件」:报在整个 Review Range 之外的文件上的那些
+            // 不归任何一批,它们照旧往下走,由锚定那一道按「锚不进本次改动」丢并记
+            // `finding_discarded`——拦下它们的是那一条规则,轨迹上要认得出是哪一道。
+            let findings = outcome.findings;
+            if (batched) {
+              const kept: Finding[] = [];
+              for (const finding of outcome.findings) {
+                if (!inBatch.has(finding.file) && inRange.has(finding.file)) {
                   trace.run("finding_out_of_batch", {
                     file: finding.file,
                     line: finding.line,
@@ -2155,9 +2181,12 @@ export async function runReview(
                     reviewers: [reviewer.model],
                     batch: batch.index,
                   });
-                  return false;
-                })
-              : outcome.findings;
+                  continue;
+                }
+                kept.push(finding);
+              }
+              findings = kept;
+            }
             return {
               // 一条都没丢时原样返回:批外报出是少数,多数批次的结论对象不必重建。
               outcome:
@@ -2274,16 +2303,15 @@ export async function runReview(
       // 同根因组落到本轮合并组的下标(ADR 0030,issue #308)。diff 终筛丢掉的成员跟着掉
       // 出去,剩不到两条的整组丢弃并记一条轨迹:「同根因另见 0 处」不是一句能读的话。
       const mergedIndexOf = new Map(merged.map((finding, index) => [finding, index]));
-      const rootCauseGroups = rootCauses.flatMap(({ members, reason }) => {
+      const rootCauseGroups = rootCauses.flatMap(({ groups: proposed, members, reason }) => {
         const indexes = members.flatMap((member) => {
           const index = mergedIndexOf.get(member);
           return index === undefined ? [] : [index];
         });
         if (indexes.length < 2) {
-          trace.run("root_cause_group_rejected", {
-            groups: indexes,
-            reason: "同根因组的成员在 diff 终筛之后不足两个合并组",
-          });
+          // 报 agent 报出的那几个合并组编号,不报剩下的那几条在 `merged` 里的下标(评审
+          // 复核 2026-09-09):两处丢弃都是在说同一个提议,编号只能有一套口径。
+          rejectRootCauseGroup(trace, proposed, "同根因组的成员在 diff 终筛之后不足两个合并组");
           return [];
         }
         return [{ indexes, reason }];
@@ -2371,7 +2399,7 @@ export async function runReview(
           if (byFingerprint === undefined) {
             // 这一处上一轮没有报出过:本轮新报。
           } else if (agentPlan && judged !== undefined) {
-            differs = { history: judged, reason: finding.agentReason ?? "" };
+            differs = { history: judged };
           } else {
             match = { prior: byFingerprint.entry, criterion: { kind: "fingerprint" } };
             fingerprint = byFingerprint.fingerprint;
@@ -2456,7 +2484,7 @@ export async function runReview(
 
       for (const [groupIndex, { finding, match, differs }] of groups.entries()) {
         // 指纹命中了却没折叠(ADR 0030,issue #307):合并 agent 看过那条历史、没把它归进
-        // 这一组,本轮这条因此照常发评论。记下是哪条历史与 agent 为这一组写的理由。
+        // 这一组,本轮这条因此照常发评论。只记是哪条历史。
         if (differs !== undefined) {
           trace.run("finding_not_folded", {
             file: finding.file,
@@ -2560,19 +2588,14 @@ export async function runReview(
         };
       });
 
-      // 同根因组的成员用最终落库的那一行(issue #308):折叠到历史的那一组本轮不发新
-      // 评论,成员是它折叠到的那条历史行;其余(本轮新报的、延续承接的)都是本轮新落的
-      // 那一行,用合并组下标指,由收尾那一笔事务换成 id。
+      // 同根因组的成员一律记本轮那一行(issue #308,评审复核 2026-09-09):折叠到历史的
+      // 那一条本轮同样落一行,它与被折叠到的那条历史在 `identityKey` 下是同一条 Finding
+      // Identity,阶段投影(issue #309)又会把行映到该 Identity 当前的那一行。指历史行
+      // 因此只是绕远,还多一条只在折叠时才走的分支。用合并组下标指,由收尾那一笔事务
+      // 换成刚插进去的 id。
       const rootCauseRecords = rootCauseGroups.map(({ indexes, reason }) => ({
         reason,
-        members: indexes.map((index) => {
-          const group = groups[index]!;
-          const folded =
-            group.match?.criterion.kind === "agent" && group.finding.history !== undefined
-              ? hits.get(group.finding.history.id)?.findingId
-              : undefined;
-          return folded === undefined ? { groupIndex: index } : { findingId: folded };
-        }),
+        members: indexes,
       }));
 
       // 先落库再发布:发布失败不该把这次 Review Run 的过程记录一并丢掉。

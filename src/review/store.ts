@@ -1403,23 +1403,21 @@ export type RunResult = {
   mergeUsage?: ReviewerUsage;
   /**
    * 本轮的同根因组(ADR 0030,issue #308)。缺省即这一轮没有组——合并 agent 缺席、
-   * 没提,或提的都没过验收。成员用合并组下标引用本轮新落的那一行,折叠到历史的那些
-   * 直接给历史行的 id。
+   * 没提,或提的都没过验收。
    */
   rootCauses?: readonly RootCauseGroupRecord[];
 };
 
 /**
- * 同根因组的一个成员(issue #308):本轮第几个合并组,或直接指定的一条 Finding 行 id。
- * 本轮新落的行在收尾插进去之前没有 id,只能用合并组下标说;折叠到历史的那一组本轮不发
- * 新评论,成员是它折叠到的那条历史行,那一行的 id 早就有了。
+ * 一个待落库的同根因组:根因说明与按组内次序排好的成员。
+ *
+ * 成员是本轮第几个合并组(评审复核 2026-09-09):每个成员都有本轮自己落的那一行,折叠到
+ * 历史的那一条也不例外,那一行与被折叠到的历史在 `identityKey` 下是同一条 Finding
+ * Identity。行在收尾插进去之前没有 id,因此用合并组下标说,由这一笔事务换成 id。
  */
-export type RootCauseMemberRecord = { groupIndex: number } | { findingId: number };
-
-/** 一个待落库的同根因组:根因说明与按组内次序排好的成员。 */
 export type RootCauseGroupRecord = {
   reason: string;
-  members: readonly RootCauseMemberRecord[];
+  members: readonly number[];
 };
 
 /** 一轮里落库的一个同根因组(issue #308):组 id、根因说明与成员的 Finding 行 id。 */
@@ -6233,8 +6231,7 @@ export function openStore(dbPath: string): Store {
           const groupId = Number(insertRootCause.run(runId, group.reason).lastInsertRowid);
           rootCauseGroupIds.push(groupId);
           for (const [position, member] of group.members.entries()) {
-            const findingId =
-              "findingId" in member ? member.findingId : findingIdByGroup.get(member.groupIndex);
+            const findingId = findingIdByGroup.get(member);
             if (findingId === undefined) continue;
             insertRootCauseMember.run(groupId, findingId, position);
           }

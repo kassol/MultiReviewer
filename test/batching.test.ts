@@ -948,6 +948,40 @@ test("分批时批外文件的报出被丢弃:不落库、不发评论,轨迹一
   });
 });
 
+test("分批时报在本轮范围外的文件上:仍按锚不进 diff 丢弃,不记成批外", async () => {
+  const { cache, db, forge } = setup({ "src/a.ts": 60, "src/c.ts": 60 });
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [
+      // src/z.ts 不在本轮任何一批里:没有哪一批会去审它,「别的批次拥有它」这件事不成立。
+      batchedReviewer("model-a", [
+        {
+          findings: [
+            findingAt("src/a.ts", "a 的问题"),
+            { ...findingAt("src/z.ts", "范围外的问题"), title: "范围外的问题" },
+          ],
+        },
+        { findings: [] },
+      ]),
+    ],
+    cacheDir: cache.dir,
+    dbPath: db.path,
+    maxChangedLinesPerBatch: 100,
+  });
+
+  const events = runTrace(db.path);
+  assert.equal(events.filter((event) => event.kind === "finding_out_of_batch").length, 0);
+  const discarded = events.filter((event) => event.kind === "finding_discarded");
+  assert.equal(discarded.length, 1);
+  assert.deepEqual(discarded[0]!.payload, {
+    file: "src/z.ts",
+    line: 4,
+    title: "范围外的问题",
+    reviewers: ["model-a"],
+  });
+});
+
 test("单批审查不过批外这一道:范围外文件的报出仍按锚不进 diff 丢弃", async () => {
   const { cache, db, forge } = setup({ "src/a.ts": 10 });
 

@@ -985,14 +985,11 @@ test("同一处的另一个问题:agent 只把其中一条归给历史,另一条
     { title: "日志里打印了密钥", disposition: "unknown", commentId: "comment-2", continuedFrom: null },
   ]);
 
-  // 判据落轨迹:哪条历史、agent 为这一组写的什么理由。
+  // 判据落轨迹:只记是哪条历史。组自己的合并理由说的是组内那几条为什么是一回事,它没
+  // 解释过这一次为什么不折叠,摆进判据会读成 agent 给过这个说法(评审复核 2026-09-09)。
   const notFolded = trace(ctx.db.path).filter((event) => event.kind === "finding_not_folded");
   assert.equal(notFolded.length, 1);
-  assert.deepEqual(notFolded[0]!.payload["criteria"], {
-    kind: "agent_differs",
-    history: 1,
-    reason: "日志里打印密钥是另一个问题",
-  });
+  assert.deepEqual(notFolded[0]!.payload["criteria"], { kind: "agent_differs", history: 1 });
 
   // 同一「文件 + 指纹」下两条 Identity:阶段汇总与参与条数都各算一条。
   const store = openStore(ctx.db.path);
