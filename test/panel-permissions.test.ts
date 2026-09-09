@@ -68,6 +68,8 @@ const ROUTE_EXPECTATIONS = [
   ["POST", "/^\\/repos\\/(\\d+)\\/rotate$/", "repo:write", "repo:1"],
   ["GET", "/^\\/repos\\/(\\d+)\\/hooks$/", "authenticated-only", "repo:1"],
   ["GET", "/^\\/repos\\/(\\d+)\\/rules$/", "authenticated-only", "repo:1"],
+  // 生效辅助模型的只读投影(issue #303)与知识集读侧同一格:登录加仓库分配即可读。
+  ["GET", "/^\\/repos\\/(\\d+)\\/auxiliary-model$/", "authenticated-only", "repo:1"],
   ["GET", "/^\\/repos\\/(\\d+)\\/rule-traces\\/(\\d+)$/", "authenticated-only", "repo:1"],
   ["GET", "/^\\/repos\\/(\\d+)\\/rule-traces\\/(\\d+)\\/stream$/", "authenticated-only", "repo:1"],
   ["DELETE", "/^\\/repos\\/(\\d+)\\/rules\\/(\\d+)$/", "knowledge:write", "repo:1"],
@@ -84,7 +86,6 @@ const ROUTE_EXPECTATIONS = [
   // 批量裁决与逐条同一格(issue #223):都是「谁定这个仓库的标准」。
   ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/accept$/", "knowledge:write", "repo:1"],
   ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/reject$/", "knowledge:write", "repo:1"],
-  ["GET", "/rule-models", "knowledge:write", "-"],
   ["GET", "/model-services", "anyOf:model:read|credential:read", "-"],
   [
     "GET",

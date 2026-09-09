@@ -153,8 +153,6 @@ test("一次基点探索留下一条轨迹:说的话、调的工具与提出的�
   await h.worktreesPreparedAtLeast(1);
   const started = await h.api("POST", `/repos/${GITEA_REPO.id}/rule-exploration`, {
     baseline: h.repo.headSha,
-    provider: "test",
-    model: "global-model",
   });
   assert.equal(started.status, 202);
   await h.explorationsAtLeast(1);

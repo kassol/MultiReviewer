@@ -81,6 +81,7 @@ test("历史审查策略进入独立初始版本，写一项只推进该项版�
   const legacyJson = JSON.stringify([{ provider: "test", model: "legacy" }]);
   assert.deepEqual(store.getGlobalSettings(), {
     reviewersJson: legacyJson,
+    auxiliaryModelJson: null,
     maxChangedLinesPerBatch: 777,
     maxParallelBatches: null,
     maxFilesPerBatch: null,
@@ -92,6 +93,7 @@ test("历史审查策略进入独立初始版本，写一项只推进该项版�
   assert.equal(
     store.replaceGlobalSettings(1, {
       reviewersJson: legacyJson,
+      auxiliaryModelJson: null,
       maxChangedLinesPerBatch: null,
       maxParallelBatches: null,
       maxFilesPerBatch: null,
@@ -102,6 +104,7 @@ test("历史审查策略进入独立初始版本，写一项只推进该项版�
   );
   assert.deepEqual(store.getGlobalSettings(), {
     reviewersJson: legacyJson,
+    auxiliaryModelJson: null,
     maxChangedLinesPerBatch: null,
     maxParallelBatches: null,
     maxFilesPerBatch: null,
@@ -112,6 +115,7 @@ test("历史审查策略进入独立初始版本，写一项只推进该项版�
   assert.equal(
     store.replaceGlobalSettings(1, {
       reviewersJson: legacyJson,
+      auxiliaryModelJson: null,
       maxChangedLinesPerBatch: 900,
       maxParallelBatches: null,
       maxFilesPerBatch: null,

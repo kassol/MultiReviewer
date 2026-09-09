@@ -807,6 +807,7 @@ CREATE TABLE IF NOT EXISTS model_service_model_state (
 const ADD_COLUMNS = [
   "ALTER TABLE reviewer_outcome ADD COLUMN anchor_rejections INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE repo ADD COLUMN reviewers TEXT",
+  "ALTER TABLE repo ADD COLUMN auxiliary_model TEXT",
   "ALTER TABLE review_run ADD COLUMN pr_state TEXT",
   "ALTER TABLE review_run ADD COLUMN triggered_by TEXT",
   "ALTER TABLE finding ADD COLUMN placement TEXT NOT NULL DEFAULT 'inline'",
@@ -933,6 +934,12 @@ const GLOBAL_REVIEWERS_KEY = "reviewers";
  * 而不是正整数;缺行即默认 P2(全报)。
  */
 const GLOBAL_MIN_REPORT_SEVERITY_KEY = "min_report_severity";
+
+/**
+ * 辅助模型(CONTEXT.md 辅助模型,issue #303)的设置键。存的是一处模型引用的 JSON,缺行
+ * 即没设——那时解析退回这个仓库生效模型组合的第一个。
+ */
+const GLOBAL_AUXILIARY_MODEL_KEY = "auxiliary_model";
 
 /**
  * 审查策略整页共用的版本键(issue #301)。整页一次全量替换,版本因此只有一个;缺行读作
@@ -1625,6 +1632,11 @@ function normalizedTrustedFieldSources(
 export type GlobalSettingsValues = {
   /** 全局模型组合的 JSON(ReviewerSpec 数组),null 即还没配。 */
   reviewersJson: string | null;
+  /**
+   * 辅助模型的 JSON(一处 ReviewerSpec),null 即没设(issue #303)。Reviewer 之外的
+   * agent 工作用它;没设即退回这个仓库生效模型组合的第一个。
+   */
+  auxiliaryModelJson: string | null;
   /** 一批最多多少改动行,null 即取编排层的默认值。 */
   maxChangedLinesPerBatch: number | null;
   /** 同时在跑的批次数上限,null 即取编排层的默认值(issue #230)。 */
@@ -1644,17 +1656,28 @@ export type GlobalSettings = GlobalSettingsValues & {
 };
 
 /**
- * 注册表里的一个仓库。`reviewersJson` 是模型覆盖的 JSON,`minReportSeverity` 是最低报告
- * 等级的覆盖(issue #273),两者都是 null 即跟随全局。`settingsVersion` 是这两项的整块
- * 版本号(issue #302),每经 `putRepoSettings` 写一次加一。
+ * 注册表里的一个仓库。`reviewersJson` 是模型覆盖的 JSON,`auxiliaryModelJson` 是辅助模型
+ * 覆盖的 JSON(issue #303),`minReportSeverity` 是最低报告等级的覆盖(issue #273),三者
+ * 都是 null 即跟随全局。`settingsVersion` 是这三项的整块版本号(issue #302),每经
+ * `putRepoSettings` 写一次加一。
  */
 export type RepoRecord = {
   repoId: number;
   owner: string;
   repo: string;
   reviewersJson: string | null;
+  auxiliaryModelJson: string | null;
   minReportSeverity: Severity | null;
   settingsVersion: number;
+};
+
+/**
+ * 这个仓库生效的辅助模型与它的来源(CONTEXT.md 辅助模型,ADR 0029)。来源三档:仓库自己
+ * 的覆盖、审查策略里的那一处、生效模型组合的第一个。选不出即 null。
+ */
+export type ResolvedAuxiliaryModel = {
+  spec: ReviewerSpec;
+  source: "repo" | "global" | "first-reviewer";
 };
 
 /**
@@ -1691,9 +1714,11 @@ export type RepoSummary = {
   repo: string;
   /** 模型覆盖的 JSON,null 即跟随全局。面板的仓库详情要显示与编辑它。 */
   reviewersJson: string | null;
+  /** 辅助模型覆盖的 JSON(issue #303),null 即跟随全局。 */
+  auxiliaryModelJson: string | null;
   /** 最低报告等级的覆盖(issue #273),null 即跟随全局。 */
   minReportSeverity: Severity | null;
-  /** 这两项配置的整块版本号(issue #302)。面板保存时原样回传作期望版本。 */
+  /** 这三项配置的整块版本号(issue #302、#303)。面板保存时原样回传作期望版本。 */
   settingsVersion: number;
   /** 累计 Review Run 数。按注册时的 owner/repo 匹配评审记录。 */
   runCount: number;
@@ -2405,14 +2430,24 @@ export type Store = {
    */
   setRepoMinReportSeverity(repoId: number, severity: Severity | null): void;
   /**
-   * 整块改写这个仓库的配置(issue #302):模型覆盖与最低报告等级在一笔事务里全量替换,
-   * 期望版本对得上才写,写成即版本加一。两项都是 null 即跟随全局。
+   * 整块改写这个仓库的配置(issue #302、#303):模型覆盖、辅助模型覆盖与最低报告等级在
+   * 一笔事务里全量替换,期望版本对得上才写,写成即版本加一。三项都是 null 即跟随全局。
    */
   putRepoSettings(
     repoId: number,
     expectedVersion: number,
-    settings: { reviewersJson: string | null; minReportSeverity: Severity | null },
+    settings: {
+      reviewersJson: string | null;
+      auxiliaryModelJson: string | null;
+      minReportSeverity: Severity | null;
+    },
   ): RepoSettingsWrite;
+  /**
+   * 这个仓库生效的辅助模型(ADR 0029,issue #303):仓库覆盖 ?? 全局 ?? 这个仓库生效模型
+   * 组合(仓库模型覆盖 ?? 全局组合)的第一个,返回值带来源。**Reviewer 之外的每一件 agent
+   * 工作都调这一处**,不各自取。仓库不在注册表里、或三处都给不出模型时回 null。
+   */
+  resolveAuxiliaryModel(repoId: number): ResolvedAuxiliaryModel | null;
   /** 摘掉注册表行、它的 Key 与它的仓库分配。评审记录一行不动:模型选型的历史不因下线而断。 */
   removeRepo(repoId: number): void;
   /** 记下工作副本的准备状态(issue #184)。仓库已被移除时没有行可写,静默通过。 */
@@ -3723,6 +3758,20 @@ export function openStore(dbPath: string): Store {
   const parseStoredReviewers = (reviewersJson: string, context: string): ReviewerSpec[] =>
     assertReviewerSpecs(JSON.parse(reviewersJson), context, { allowEmpty: true });
 
+  /**
+   * 读库里存着的一处辅助模型引用(issue #303)。写入口已经校验过形状,读回认不出的一份
+   * 即当作没设——一行坏数据不该让知识任务与合并 agent 整个跑不起来,退路照旧走组合第一个。
+   */
+  const parseAuxiliaryModel = (json: string | null): ReviewerSpec | null => {
+    if (json === null) return null;
+    try {
+      const value = JSON.parse(json) as ReviewerSpec;
+      return typeof value?.provider === "string" && typeof value?.model === "string" ? value : null;
+    } catch {
+      return null;
+    }
+  };
+
   const availableModel = db.prepare(`
     SELECT 1
       FROM model_service service
@@ -4431,7 +4480,8 @@ export function openStore(dbPath: string): Store {
     getRepo(repoId) {
       const row = db
         .prepare(
-          `SELECT id, owner, repo, reviewers, min_report_severity, settings_version
+          `SELECT id, owner, repo, reviewers, auxiliary_model, min_report_severity,
+                  settings_version
              FROM repo WHERE id = ?`,
         )
         .get(repoId);
@@ -4441,11 +4491,28 @@ export function openStore(dbPath: string): Store {
         owner: String(row["owner"]),
         repo: String(row["repo"]),
         reviewersJson: row["reviewers"] === null ? null : String(row["reviewers"]),
+        auxiliaryModelJson:
+          row["auxiliary_model"] === null ? null : String(row["auxiliary_model"]),
         minReportSeverity: readMinReportSeverity(
           row["min_report_severity"] === null ? undefined : String(row["min_report_severity"]),
         ),
         settingsVersion: Number(row["settings_version"]),
       };
+    },
+
+    resolveAuxiliaryModel(repoId) {
+      const repo = store.getRepo(repoId);
+      if (repo === undefined) return null;
+      const settings = store.getGlobalSettings();
+      const repoOverride = parseAuxiliaryModel(repo.auxiliaryModelJson);
+      if (repoOverride !== null) return { spec: repoOverride, source: "repo" };
+      const global = parseAuxiliaryModel(settings.auxiliaryModelJson);
+      if (global !== null) return { spec: global, source: "global" };
+      // 退路取这个仓库生效组合的第一个:仓库改了模型覆盖,退路跟着换(ADR 0029)。
+      const reviewersJson = repo.reviewersJson ?? settings.reviewersJson;
+      if (reviewersJson === null) return null;
+      const first = parseStoredReviewers(reviewersJson, `仓库 ${repoId} 的生效模型组合`)[0];
+      return first === undefined ? null : { spec: first, source: "first-reviewer" };
     },
 
     setRepoReviewers(repoId, reviewersJson) {
@@ -4504,9 +4571,16 @@ export function openStore(dbPath: string): Store {
         const version = expectedVersion + 1;
         db.prepare(
           `UPDATE repo
-              SET reviewers = ?, min_report_severity = ?, settings_version = ?
+              SET reviewers = ?, auxiliary_model = ?, min_report_severity = ?,
+                  settings_version = ?
             WHERE id = ?`,
-        ).run(settings.reviewersJson, settings.minReportSeverity, version, repoId);
+        ).run(
+          settings.reviewersJson,
+          settings.auxiliaryModelJson,
+          settings.minReportSeverity,
+          version,
+          repoId,
+        );
         db.exec("COMMIT");
         return { ok: true, version };
       } catch (error) {
@@ -4562,8 +4636,8 @@ export function openStore(dbPath: string): Store {
       // started_at 是 ISO 字符串,MAX 按字典序即时间序。
       const rows = db
         .prepare(
-          `SELECT r.id, r.owner, r.repo, r.reviewers, r.min_report_severity,
-                  r.settings_version,
+          `SELECT r.id, r.owner, r.repo, r.reviewers, r.auxiliary_model,
+                  r.min_report_severity, r.settings_version,
                   r.worktree_state, r.worktree_failure, r.worktree_checked_at,
                   (SELECT COUNT(*) FROM review_run run
                     WHERE run.owner = r.owner AND run.repo = r.repo) AS run_count,
@@ -4580,6 +4654,8 @@ export function openStore(dbPath: string): Store {
         owner: String(row["owner"]),
         repo: String(row["repo"]),
         reviewersJson: row["reviewers"] === null ? null : String(row["reviewers"]),
+        auxiliaryModelJson:
+          row["auxiliary_model"] === null ? null : String(row["auxiliary_model"]),
         minReportSeverity: readMinReportSeverity(
           row["min_report_severity"] === null ? undefined : String(row["min_report_severity"]),
         ),
@@ -5209,6 +5285,7 @@ export function openStore(dbPath: string): Store {
       };
       return {
         reviewersJson: values.get(GLOBAL_REVIEWERS_KEY) ?? null,
+        auxiliaryModelJson: values.get(GLOBAL_AUXILIARY_MODEL_KEY) ?? null,
         maxChangedLinesPerBatch: limit("maxChangedLinesPerBatch"),
         maxParallelBatches: limit("maxParallelBatches"),
         maxFilesPerBatch: limit("maxFilesPerBatch"),
@@ -5291,6 +5368,7 @@ export function openStore(dbPath: string): Store {
           return false;
         }
         write(GLOBAL_REVIEWERS_KEY, next.reviewersJson);
+        write(GLOBAL_AUXILIARY_MODEL_KEY, next.auxiliaryModelJson);
         for (const field of Object.keys(BATCH_LIMIT_KEYS) as BatchLimitField[]) {
           const limit = next[field];
           write(BATCH_LIMIT_KEYS[field], limit === null ? null : String(limit));

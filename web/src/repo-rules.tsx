@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { useEffect, useId, useState, type ReactNode } from "react";
 
 import { Cross2Icon, CrossCircledIcon } from "@radix-ui/react-icons";
-import { Badge, Callout, Checkbox, Dialog, IconButton, Select, Skeleton, Tabs, Text, TextArea, Tooltip } from "@radix-ui/themes";
+import { Badge, Callout, Checkbox, Dialog, IconButton, Skeleton, Tabs, Text, TextArea, Tooltip } from "@radix-ui/themes";
 
 import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
@@ -13,6 +13,11 @@ import { Button } from "@/components/theme-button";
 import { TAB_TRIGGER } from "@/components/tab-trigger";
 
 import { api, errorText, fetchJson } from "./api.ts";
+import {
+  AUXILIARY_MODEL_SOURCE_LABEL,
+  useAuxiliaryModel,
+  type AuxiliaryModelView,
+} from "./auxiliary-model.ts";
 import { CommitPicker, type CommitSelection } from "./commit-picker.tsx";
 import { OUTLINED_ACTION, RuleTraceButton, SOURCE_LABEL, TYPE_LABEL, type KnowledgeType } from "./rule-trace.tsx";
 import { THINKING_LEVEL_LABEL, type ThinkingLevel } from "./model-services.ts";
@@ -129,15 +134,6 @@ type RevisionIntent = {
   produced: { proposalIds: number[]; draftItemIds: number[] };
   startedAt: string;
   finishedAt: string | null;
-};
-
-/** `GET /rule-models` 的一项:发起基点探索与知识整理时可选的模型。 */
-type RuleModel = {
-  identity: string;
-  provider: string;
-  model: string;
-  /** 这个模型支持的思考档位。表单只列这几档,服务端发起时也只收这几档。 */
-  thinkingLevels: ThinkingLevel[];
 };
 
 /**
@@ -1691,107 +1687,28 @@ function ExplorationLaunch({
 }
 
 /**
- * 发起表单里的模型与思考档位那两格(issue #284)。基点探索与知识整理共用:两者选的是同
- * 一份可用模型,档位判据也只有一套——各写一份就会在其中一处漏掉「只列这个模型支持的档位」。
+ * 「将使用：<模型标识> · <档位>（来源：…）」那一行(issue #303)。基点探索与知识整理共用:
+ * 两条链路用的是同一处生效辅助模型,读的也是同一个只读投影,发起时不再选模型。
  */
-function useRuleModelChoice(): {
-  available: RuleModel[];
-  model: string;
-  setModel: (next: string) => void;
-  setThinkingLevel: (next: ThinkingLevel) => void;
-  levels: ThinkingLevel[];
-  /** 实际会发出去的那一档:所选模型不支持人选的那一档时落回它自己的第一档。 */
-  level: ThinkingLevel;
-  /** 只有「关闭」一档即这个模型不支持思考档位。 */
-  picking: boolean;
-} {
-  const [model, setModel] = useState<string>("");
-  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>("off");
-  const models = useQuery({
-    queryKey: ["rule-models"],
-    queryFn: () => fetchJson<{ models: RuleModel[] }>("/rule-models"),
-  });
-  const available = models.data?.models ?? [];
-  useEffect(() => {
-    if (model !== "" || available.length === 0) return;
-    setModel(available[0]!.identity);
-  }, [available, model]);
-  // 档位只在所选模型支持的那几档里取:换了模型而旧档位它不支持时落回它自己的第一档,
-  // 免得发起时被服务端拒。选中的那一档不另存一份状态,由这里推出来。
-  const levels = available.find((entry) => entry.identity === model)?.thinkingLevels ?? [];
-  const level = levels.includes(thinkingLevel) ? thinkingLevel : levels[0] ?? "off";
-  return { available, model, setModel, setThinkingLevel, levels, level, picking: levels.length > 1 };
-}
-
-/** 上面那份选择的两格控件。`id` 是这份表单的前缀,同一页开两个弹窗时标签各指各的。 */
-function RuleModelFields({
-  id,
-  choice,
-  hint,
-}: {
-  id: string;
-  choice: ReturnType<typeof useRuleModelChoice>;
-  /** 思考档位那一格的说明,两条链路各说各的那一句。 */
-  hint: string;
-}) {
-  const { available, model, setModel, setThinkingLevel, levels, level, picking } = choice;
+function AuxiliaryModelLine({ view }: { view: AuxiliaryModelView | undefined }) {
+  if (view === undefined) {
+    return <Text size="2" color="gray">正在确认将使用哪个模型…</Text>;
+  }
+  if (view.identity === null || view.source === null || !view.available) {
+    return (
+      <Text size="2" color="red" role="alert">
+        {view.unavailableReason ?? "这个仓库生效的辅助模型跑不了。"}
+      </Text>
+    );
+  }
   return (
-    <div className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
-      <Text as="label" htmlFor={`${id}-model`} size="2" weight="medium">模型</Text>
-      <Select.Root value={model} onValueChange={setModel} size={{ initial: "3", sm: "2" }}>
-        <Select.Trigger id={`${id}-model`} placeholder="选择一个可用模型" />
-        <Select.Content position="popper">
-          {available.map((entry) => (
-            <Select.Item key={entry.identity} value={entry.identity}>
-              {entry.identity}
-            </Select.Item>
-          ))}
-        </Select.Content>
-      </Select.Root>
-      <div className="flex items-center gap-1">
-        <Text
-          as="label"
-          {...(picking ? { htmlFor: `${id}-thinking` } : {})}
-          size="2"
-          weight="medium"
-        >
-          思考档位
-        </Text>
-        <HelpTooltip content={hint} />
-      </div>
-      {picking ? (
-        // 只列这个模型支持的档位:列出它不支持的那些,运行侧会 clamp 成相邻可用档,
-        // 跑的就不是人选的那一档。
-        <div className="flex items-center gap-1">
-          <Select.Root
-            value={level}
-            onValueChange={(next) => setThinkingLevel(next as ThinkingLevel)}
-            size={{ initial: "3", sm: "2" }}
-          >
-            <Select.Trigger id={`${id}-thinking`} />
-            <Select.Content position="popper">
-              {levels.map((entry) => (
-                <Select.Item key={entry} value={entry}>
-                  {THINKING_LEVEL_LABEL[entry]}
-                </Select.Item>
-              ))}
-            </Select.Content>
-          </Select.Root>
-          {levels.includes("off") ? null : (
-            <HelpTooltip
-              label="这个模型始终思考"
-              content="这个模型关不掉思考,只能选它投入多少。"
-            />
-          )}
-        </div>
-      ) : model === "" ? (
-        <Text size="2" color="gray">先选模型</Text>
-      ) : (
-        <div>
-          <Badge color="gray" variant="outline">不支持思考档位</Badge>
-        </div>
-      )}
-    </div>
+    <Text size="2" color="gray">
+      将使用：<span className="font-mono">{view.identity}</span>
+      {view.thinkingLevel === null
+        ? null
+        : ` · 思考 ${THINKING_LEVEL_LABEL[view.thinkingLevel]}`}
+      （来源：{AUXILIARY_MODEL_SOURCE_LABEL[view.source]}）
+    </Text>
   );
 }
 
@@ -1805,8 +1722,7 @@ function ExplorationLaunchContent({
   const [baseline, setBaseline] = useState<CommitSelection | null>(null);
   const [touched, setTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const choice = useRuleModelChoice();
-  const { available, model, level } = choice;
+  const auxiliary = useAuxiliaryModel(repo.repoId);
   const query = `owner=${encodeURIComponent(repo.owner)}&repo=${encodeURIComponent(repo.repo)}`;
 
   // 默认基点是默认分支的 HEAD:先认出哪条是默认分支,再取它最新的那个 commit。
@@ -1833,17 +1749,10 @@ function ExplorationLaunchContent({
 
   const start = useMutation({
     mutationFn: async (): Promise<void> => {
-      const picked = available.find((entry) => entry.identity === model);
-      if (picked === undefined) throw new Error("先选一个可用模型");
+      // 发起体只剩基点:用哪个模型由服务端按生效辅助模型解析(issue #303)。
       const response = await api(`/repos/${repo.repoId}/rule-exploration`, {
         method: "POST",
-        body: JSON.stringify({
-          baseline: baseline?.sha ?? "",
-          provider: picked.provider,
-          model: picked.model,
-          // 「关闭」不带这一项:缺席即关闭,与从没选过等价。
-          ...(level === "off" ? {} : { thinkingLevel: level }),
-        }),
+        body: JSON.stringify({ baseline: baseline?.sha ?? "" }),
       });
       if (!response.ok) throw new Error(await errorText(response));
     },
@@ -1851,7 +1760,7 @@ function ExplorationLaunchContent({
     onError: (failure: Error) => setError(failure.message),
   });
 
-  const ready = baseline !== null && model !== "";
+  const ready = baseline !== null && auxiliary.data?.available === true;
 
   return (
     <Dialog.Content
@@ -1879,11 +1788,9 @@ function ExplorationLaunchContent({
               content="产出知识草案(评审规则与项目事实两型),条数不设上限,由你勾选后整组确认。"
             />
           </Dialog.Title>
-          <RuleModelFields
-            id="rule-exploration"
-            choice={choice}
-            hint="档位越高,agent 推导规则前想得越久,这一次探索也越慢越贵。"
-          />
+          <div className="mt-3">
+            <AuxiliaryModelLine view={auxiliary.data} />
+          </div>
         </div>
 
         <div className="flex min-h-0 flex-1 px-3 py-3 sm:px-5 sm:py-4">
@@ -2030,21 +1937,15 @@ function ConsolidationLaunchContent({
   onLaunched: () => void;
 }) {
   const [error, setError] = useState<string | null>(null);
-  const choice = useRuleModelChoice();
-  const { available, model, level } = choice;
+  const auxiliary = useAuxiliaryModel(repo.repoId);
+  const ready = auxiliary.data?.available === true;
 
   const start = useMutation({
     mutationFn: async (): Promise<void> => {
-      const picked = available.find((entry) => entry.identity === model);
-      if (picked === undefined) throw new Error("先选一个可用模型");
+      // 整理没有基点也不选模型:发起体是一个空对象(issue #303)。
       const response = await api(`/repos/${repo.repoId}/rule-consolidation`, {
         method: "POST",
-        body: JSON.stringify({
-          provider: picked.provider,
-          model: picked.model,
-          // 「关闭」不带这一项:缺席即关闭,与发起探索同一条口径。
-          ...(level === "off" ? {} : { thinkingLevel: level }),
-        }),
+        body: JSON.stringify({}),
       });
       if (!response.ok) throw new Error(await errorText(response));
     },
@@ -2058,7 +1959,7 @@ function ConsolidationLaunchContent({
         aria-busy={start.isPending}
         onSubmit={(event) => {
           event.preventDefault();
-          if (model !== "" && !start.isPending) start.mutate();
+          if (ready && !start.isPending) start.mutate();
         }}
       >
         <Dialog.Title size="4" mb="0" className="pr-10">
@@ -2067,11 +1968,12 @@ function ConsolidationLaunchContent({
             {repo.owner}/{repo.repo}
           </span>
         </Dialog.Title>
-        <RuleModelFields
-          id="rule-consolidation"
-          choice={choice}
-          hint="档位越高,agent 判断两条提案是不是同一件事时想得越久,这一次整理也越慢越贵。"
-        />
+        <div className="mt-3 space-y-1.5">
+          <Text as="p" size="2" color="gray">
+            整理读这个仓库的知识集与待裁决队列,把说同一件事的提案合成一条,并对现集提出变更提案。
+          </Text>
+          <AuxiliaryModelLine view={auxiliary.data} />
+        </div>
         {error === null ? null : (
           <p role="alert" className="mt-3 break-words text-sm text-danger">{error}</p>
         )}
@@ -2084,7 +1986,7 @@ function ConsolidationLaunchContent({
           <Button
             type="submit"
             size={{ initial: "3", sm: "2" }}
-            disabled={model === "" || start.isPending}
+            disabled={!ready || start.isPending}
           >
             {start.isPending ? "发起中…" : "开始整理"}
           </Button>

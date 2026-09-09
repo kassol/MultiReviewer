@@ -27,6 +27,7 @@ import { HelpTooltip } from "@/components/help-tooltip";
 import { EmptyState } from "@/components/empty-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
+import { AuxiliaryModelPicker } from "@/components/auxiliary-model-picker";
 import { useDialogReturnFocus } from "@/components/use-dialog-return-focus";
 import {
   Command,
@@ -43,6 +44,7 @@ import {
 import { localMinute } from "@/lib/time";
 
 import { api, errorText, fetchJson } from "./api.ts";
+import { AUXILIARY_MODEL_SOURCE_LABEL, useAuxiliaryModel } from "./auxiliary-model.ts";
 import {
   fromModelRef,
   THINKING_LEVEL_LABEL,
@@ -88,6 +90,8 @@ export type RepoRow = {
   owner: string;
   repo: string;
   reviewers: ReviewerSpec[] | null;
+  /** 辅助模型的仓库覆盖(issue #303),null 即跟随全局。 */
+  auxiliaryModel: ReviewerSpec | null;
   /** 最低报告等级的仓库覆盖(issue #273),null 即跟随全局。 */
   minReportSeverity: MinReportSeverity | null;
   /** 眼下的全局最低报告等级。「跟随全局」跟的就是它,列表每行都带一份。 */
@@ -414,24 +418,28 @@ export function RepoRowMenu({
   );
 }
 
-/** 弹窗里两项配置的草稿(issue #302)。两项都是 null 即跟随全局。 */
+/** 弹窗里三项配置的草稿(issue #302、#303)。三项都是 null 即跟随全局。 */
 type RepoSettingsDraft = {
   models: ModelRef[] | null;
+  auxiliary: ModelRef | null;
   minReportSeverity: MinReportSeverity | null;
 };
 
-/** 服务端此刻的这两项与它们的整块版本号:载入与 409 换基线都读它。 */
+/** 服务端此刻的这三项与它们的整块版本号:载入与 409 换基线都读它。 */
 type RepoSettingsSnapshot = {
   reviewers: ReviewerSpec[] | null;
+  auxiliaryModel: ReviewerSpec | null;
   minReportSeverity: MinReportSeverity | null;
   settingsVersion: number;
 };
 
 const draftOf = (snapshot: {
   reviewers: ReviewerSpec[] | null;
+  auxiliaryModel: ReviewerSpec | null;
   minReportSeverity: MinReportSeverity | null;
 }): RepoSettingsDraft => ({
   models: snapshot.reviewers === null ? null : snapshot.reviewers.map(toModelRef),
+  auxiliary: snapshot.auxiliaryModel === null ? null : toModelRef(snapshot.auxiliaryModel),
   minReportSeverity: snapshot.minReportSeverity,
 });
 
@@ -477,6 +485,8 @@ function ConfigureDialogContent({
     queryFn: () => fetchJson<{ reviewers: ReviewerSpec[] }>("/settings"),
     enabled: canReadModels,
   });
+  // 生效辅助模型的只读投影(issue #303):解析在服务端那一处,弹窗不自己算一遍。
+  const effectiveAuxiliary = useAuxiliaryModel(repo.repoId);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   // 基线是服务端此刻那一份,草稿是人在表单里改出来的那一份;两者不等即有未保存改动。
   const [baseline, setBaseline] = useState<RepoSettingsDraft>(() => draftOf(repo));
@@ -492,6 +502,7 @@ function ConfigureDialogContent({
 
   const refresh = (): void => {
     void queryClient.invalidateQueries({ queryKey: ["repos"] });
+    void queryClient.invalidateQueries({ queryKey: ["repo-auxiliary-model", repo.repoId] });
     void queryClient.invalidateQueries({ queryKey: ["repo-hooks", repo.repoId] });
   };
 
@@ -521,14 +532,14 @@ function ConfigureDialogContent({
     onError: (error: Error) => setFeedback({ text: error.message, isError: true }),
   });
 
-  // 整块保存(issue #302):两项与期望版本一起发出去,服务端全量替换。辅助模型覆盖是这个
-  // 请求体的第三项(issue #303),那一票落地时加在这里。
+  // 整块保存(issue #302、#303):三项与期望版本一起发出去,服务端全量替换。
   const save = useMutation({
     mutationFn: async (): Promise<SaveOutcome> => {
       const response = await api(`/repos/${repo.repoId}/settings`, {
         method: "PUT",
         body: JSON.stringify({
           reviewers: draft.models === null ? null : draft.models.map(fromModelRef),
+          auxiliaryModel: draft.auxiliary === null ? null : fromModelRef(draft.auxiliary),
           minReportSeverity: draft.minReportSeverity,
           expectedVersion: version,
         }),
@@ -566,8 +577,17 @@ function ConfigureDialogContent({
   });
 
   const globalModels = settings.data?.reviewers.map(toModelRef);
+  const view = effectiveAuxiliary.data;
+  const effectiveAuxiliaryRef: ModelRef | null =
+    view?.identity == null
+      ? null
+      : {
+        identity: view.identity,
+        ...(view.thinkingLevel === null ? {} : { thinkingLevel: view.thinkingLevel }),
+      };
   const issues = check.data?.issues ?? [];
   const followingModels = draft.models === null;
+  const followingAuxiliary = draft.auxiliary === null;
   const followingSeverity = draft.minReportSeverity === null;
   // 只读那一档展示的是生效值:跟随态即全局那一份。
   const shownModels = draft.models ?? globalModels;
@@ -695,6 +715,90 @@ function ConfigureDialogContent({
               ) : !validity.ready ? (
                 <span className="text-base text-text-muted">模型状态确认后即可保存。</span>
               ) : null}
+            </>
+          )}
+        </Section>
+
+        {/* 辅助模型(CONTEXT.md 辅助模型,issue #303)与模型组合同形的两态:Reviewer 之外的
+            agent 工作用它。自定义从生效值起步,生效值由服务端那一处解析给出。 */}
+        <Section
+          title={
+            <>
+              辅助模型
+              <HelpTooltip
+                label="辅助模型说明"
+                content="Reviewer 之外的全部 agent 工作用它：合并 agent、基点探索、知识整理、处置反哺与人工提议。跟随全局即用审查策略里的那一处；两处都没设时用这个仓库生效模型组合的第一个。"
+              />
+            </>
+          }
+          action={
+            <div
+              className="flex shrink-0 rounded-sm bg-fill p-0.5 text-base"
+              role="group"
+              aria-label="辅助模型来源"
+            >
+              <SegmentButton
+                active={followingAuxiliary}
+                disabled={save.isPending}
+                onClick={() => setDraft((current) => ({ ...current, auxiliary: null }))}
+              >
+                跟随全局
+              </SegmentButton>
+              <SegmentButton
+                active={!followingAuxiliary}
+                disabled={save.isPending || effectiveAuxiliary.data?.identity == null}
+                onClick={() =>
+                  setDraft((current) => ({
+                    ...current,
+                    // 自定义从当前生效值起步:人从一处已知跑得起来的引用上改。
+                    auxiliary: current.auxiliary ?? baseline.auxiliary ?? effectiveAuxiliaryRef,
+                  }))}
+              >
+                自定义
+              </SegmentButton>
+            </div>
+          }
+        >
+          {followingAuxiliary ? (
+            <>
+              <Kv label="跟随全局默认">
+                {/* 只读投影说的是库里此刻那一份。草稿刚把仓库覆盖清掉时它还指着那处覆盖,
+                    那时不冒充「跟随后会用哪一处」——保存之后再读它才是真的。 */}
+                {view?.source === "repo" || view?.identity == null ? (
+                  <span className="text-text-muted">
+                    {view?.source === "repo" ? "保存后跟随全局那一处" : "还没有可用的辅助模型"}
+                  </span>
+                ) : (
+                  <span className="break-all font-mono">
+                    {view.identity}
+                    {view.thinkingLevel === null ? null : (
+                      <span className="ml-1.5 font-sans text-text-muted">
+                        思考 {THINKING_LEVEL_LABEL[view.thinkingLevel]}
+                      </span>
+                    )}
+                  </span>
+                )}
+              </Kv>
+              <p className="text-base text-text-muted">
+                {view === undefined || view.source === null
+                  ? "到审查策略设一处辅助模型或配好模型组合，这个仓库的知识任务才发起得了。"
+                  : view.source === "repo"
+                  ? "审查策略里那一处，或者这个仓库生效模型组合的第一个。"
+                  : `来源：${AUXILIARY_MODEL_SOURCE_LABEL[view.source]}。` +
+                    "审查策略更新后，本仓库将同步使用新的那一处。"}
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-base text-text-muted">
+                本仓库覆盖会替换审查策略里的那一处，只对这个仓库生效。
+              </p>
+              <AuxiliaryModelPicker
+                id={`repo-${repo.repoId}-auxiliary`}
+                value={draft.auxiliary}
+                disabled={save.isPending}
+                onChange={(next) => setDraft((current) => ({ ...current, auxiliary: next }))}
+              />
             </>
           )}
         </Section>

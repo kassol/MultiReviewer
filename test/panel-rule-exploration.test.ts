@@ -192,6 +192,21 @@ async function registeredHarness(
   return { h, cookie };
 }
 
+/** 把审查策略里的辅助模型换成这一处。整页一次全量替换(issue #301),别的项原样回传。 */
+async function setGlobalAuxiliaryModel(
+  h: PanelHarness,
+  auxiliaryModel: { provider: string; model: string; thinkingLevel?: string } | null,
+): Promise<void> {
+  const current = (await (await h.api("GET", "/settings")).json()) as Record<string, unknown>;
+  const { version, defaults: _defaults, ...rest } = current;
+  const saved = await h.api("PUT", "/settings", {
+    ...rest,
+    auxiliaryModel,
+    expectedVersion: version,
+  });
+  assert.equal(saved.status, 200);
+}
+
 async function ruleSet(h: PanelHarness, cookie: string): Promise<RuleSetResponse> {
   const response = await get(h, cookie, `/repos/${GITEA_REPO.id}/rules`);
   assert.equal(response.status, 200);
@@ -369,8 +384,6 @@ test("面板发起基点探索:产出完整落草案,不再被条数上限截断
 
   const started = await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-exploration`, {
     baseline: h.repo.baseSha,
-    provider: "test",
-    model: "global-model",
   });
   assert.equal(started.status, 202);
   await h.explorationsAtLeast(1);
@@ -415,8 +428,6 @@ test("探索产出两型条目:草案各带自己的 type,确认后两型同入�
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
-      provider: "test",
-      model: "global-model",
     })).status,
     202,
   );
@@ -457,8 +468,6 @@ test("重探索交给 agent 的现有知识集两型都在,各带标识与自己
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
-      provider: "test",
-      model: "global-model",
     })).status,
     202,
   );
@@ -483,8 +492,6 @@ test("探索跑完即释放那一份一次性工作树", async () => {
   assert.equal(
     (await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-exploration`, {
       baseline: h.repo.baseSha,
-      provider: "test",
-      model: "global-model",
     })).status,
     202,
   );
@@ -506,8 +513,6 @@ test("面板逐条删除草案后整组确认,生成第一个知识集版本", a
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
-      provider: "test",
-      model: "global-model",
     })).status,
     202,
   );
@@ -550,8 +555,6 @@ test("探索失败原因可见并可重试,运行中不接第二次发起", asyn
   const launch = (): Promise<Response> =>
     send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
-      provider: "test",
-      model: "global-model",
     });
 
   assert.equal((await launch()).status, 202);
@@ -584,8 +587,6 @@ test("知识集非空时不再走草案:产出排进修订提案队列(issue #20
 
   const started = await send(h, cookie, "POST", `${path}/rule-exploration`, {
     baseline: h.repo.baseSha,
-    provider: "test",
-    model: "global-model",
   });
   assert.equal(started.status, 202);
   await h.explorationsAtLeast(1);
@@ -615,8 +616,6 @@ test("探索产出超过 100 字的陈述:那一条不入队,轨迹里留下超�
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
-      provider: "test",
-      model: "global-model",
     })).status,
     202,
   );
@@ -640,7 +639,7 @@ test("没有 knowledge:write 的人发起不了探索也确认不了,分配外�
   const agent = scriptedRuleAgent({ items: [] });
   const { h } = await registeredHarness({ ruleAgent: agent });
   const path = `/repos/${GITEA_REPO.id}`;
-  const launch = { baseline: h.repo.baseSha, provider: "test", model: "global-model" };
+  const launch = { baseline: h.repo.baseSha };
 
   const reader = await scopedUser(h, "rules-reader", [GITEA_REPO.id]);
   // 读得到知识集与草案的人不等于发起得了探索。
@@ -654,36 +653,28 @@ test("没有 knowledge:write 的人发起不了探索也确认不了,分配外�
   assert.equal(agent.calls.length, 0);
 });
 
-test("发起要一个可用模型与一个 commit sha,坏入参一律 400", async () => {
+test("发起只收基点:带模型字段一律 400,列可选模型的端点已经删掉", async () => {
   const agent = scriptedRuleAgent({ items: [] });
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
   const path = `/repos/${GITEA_REPO.id}/rule-exploration`;
 
+  // 发起体只剩基点(issue #303):模型由服务端按辅助模型解析,带哪一项都 400。
   for (const payload of [
     {},
-    { baseline: "not-a-sha", provider: "test", model: "global-model" },
+    { baseline: "not-a-sha" },
     { baseline: h.repo.baseSha, provider: "test" },
-    { baseline: h.repo.baseSha, provider: "nope", model: "missing-model" },
+    { baseline: h.repo.baseSha, model: "global-model" },
+    { baseline: h.repo.baseSha, thinkingLevel: "medium" },
   ]) {
     const response = await send(h, cookie, "POST", path, payload);
     assert.equal(response.status, 400, JSON.stringify(payload));
   }
   assert.equal(agent.calls.length, 0);
 
-  // 可用模型清单与全局模型组合读的是同一份可用性判据。
+  // 列可选模型的那个只读端点删掉了:路径不匹配即回「没有这个端点」。
   const models = await get(h, cookie, "/rule-models");
-  assert.equal(models.status, 200);
-  // 每项带的是这个模型支持的思考档位:发起表单只列这几档,不由 reasoning 一个布尔放全档。
-  assert.deepEqual((await models.json()) as { models: unknown[] }, {
-    models: [
-      {
-        identity: "test:global-model",
-        provider: "test",
-        model: "global-model",
-        thinkingLevels: ["off"],
-      },
-    ],
-  });
+  assert.equal(models.status, 404);
+  assert.deepEqual(await models.json(), { error: "没有这个端点" });
 });
 
 test("知识集未确认的仓库确认得了空知识集:生成第一版,草案一条都不需要", () => {
@@ -738,47 +729,46 @@ test("探索记下这一次选的思考档位,没选即留空", () => {
   }
 });
 
-test("发起探索可同时选思考档位:档位进 agent、落进探索记录,取值不认得或模型不支持时 400", async () => {
+test("发起用生效的辅助模型:模型与档位进 agent、落进探索记录", async () => {
   const agent = scriptedRuleAgent({ items: [item("探索出来的一条")] });
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
   // 思考得起来的那个模型另开一条服务:harness 自带的那个什么都不声明,只支持「关闭」。
   seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
-  const path = `/repos/${GITEA_REPO.id}/rule-exploration`;
+  await setGlobalAuxiliaryModel(h, { provider: "think", model: "deep", thinkingLevel: "medium" });
 
-  const bad = await send(h, cookie, "POST", path, {
+  const started = await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-exploration`, {
     baseline: h.repo.baseSha,
-    provider: "think",
-    model: "deep",
-    thinkingLevel: "turbo",
-  });
-  assert.equal(bad.status, 400);
-
-  // 取值认得、这个模型却不支持的那一档同样 400:放过去只会被运行侧 clamp 成别的一档。
-  const unsupported = await send(h, cookie, "POST", path, {
-    baseline: h.repo.baseSha,
-    provider: "think",
-    model: "deep",
-    thinkingLevel: "xhigh",
-  });
-  assert.equal(unsupported.status, 400);
-  assert.match(
-    ((await unsupported.json()) as { error: string }).error,
-    /不支持思考档位 xhigh/,
-  );
-  assert.equal(agent.calls.length, 0);
-
-  const started = await send(h, cookie, "POST", path, {
-    baseline: h.repo.baseSha,
-    provider: "think",
-    model: "deep",
-    thinkingLevel: "medium",
   });
   assert.equal(started.status, 202);
   await h.explorationsAtLeast(1);
 
   assert.equal(agent.calls.length, 1);
+  assert.equal(agent.calls[0]!.model, "think:deep");
   assert.equal(agent.calls[0]!.thinkingLevel, "medium");
-  assert.equal((await ruleSet(h, cookie)).exploration?.thinkingLevel, "medium");
+  // 探索记录里的模型列继续写实际所用的那一处,只作历史。
+  const exploration = (await ruleSet(h, cookie)).exploration;
+  assert.equal(exploration?.model, "think:deep");
+  assert.equal(exploration?.thinkingLevel, "medium");
+});
+
+test("生效的辅助模型跑不了时发起回 409,那句话指向审查策略与仓库配置", async () => {
+  const agent = scriptedRuleAgent({ items: [] });
+  const { h, cookie } = await registeredHarness({ ruleAgent: agent });
+
+  // 审查策略里设一处辅助模型,再把那家服务的凭据拿掉:解析得出、却跑不起来。
+  seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
+  await setGlobalAuxiliaryModel(h, { provider: "think", model: "deep" });
+  assert.equal(
+    (await h.api("DELETE", "/model-services/think/credential", { expectedVersion: 1 })).status,
+    200,
+  );
+
+  const blocked = await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-exploration`, {
+    baseline: h.repo.baseSha,
+  });
+  assert.equal(blocked.status, 409);
+  assert.match(((await blocked.json()) as { error: string }).error, /审查策略/);
+  assert.equal(agent.calls.length, 0);
 });
 
 test("批量确认只落勾选的那几条,没勾的随草案一并丢弃,一次推一版", () => {
@@ -826,8 +816,6 @@ test("面板批量确认草案:勾选的进知识集,坏 body 400,勾空的那�
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
       baseline: h.repo.baseSha,
-      provider: "test",
-      model: "global-model",
     })).status,
     202,
   );
