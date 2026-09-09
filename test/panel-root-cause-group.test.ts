@@ -212,7 +212,7 @@ test("只复核与失败的那几轮:上一轮完整审查的组照旧在", asyn
     h,
     HARNESS_PR.number,
     [{ file: "src/a.ts" }, { file: "src/b.ts" }],
-    [{ reason: REASON, members: [{ groupIndex: 0 }, { groupIndex: 1 }] }],
+    [{ reason: REASON, members: [0, 1] }],
   );
   // 只复核不报新的、从不提组;失败那一轮压根没走到合并。它们都不该被当成「最新一轮」。
   seedRun(h, HARNESS_PR.number, [], [], "2026-09-02T00:00:00.000Z", { mode: "verdict-only" });
@@ -232,7 +232,7 @@ test("之后一轮完整审查没提组:组列表回空,每条的引用都是 nu
     h,
     HARNESS_PR.number,
     [{ file: "src/a.ts" }, { file: "src/b.ts" }],
-    [{ reason: REASON, members: [{ groupIndex: 0 }, { groupIndex: 1 }] }],
+    [{ reason: REASON, members: [0, 1] }],
   );
   seedRun(h, HARNESS_PR.number, [{ file: "src/c.ts" }], [], "2026-09-02T00:00:00.000Z");
 
@@ -251,7 +251,7 @@ test("成员映完只剩一条:整组不出现,剩下那条按未入组列出", 
     h,
     HARNESS_PR.number,
     [{ file: "src/a.ts" }, { file: "src/b.ts" }],
-    [{ reason: REASON, members: [{ groupIndex: 0 }, { groupIndex: 1 }] }],
+    [{ reason: REASON, members: [0, 1] }],
   );
   // a 那条整条交接掉而没有承接者:它映不到当前列表里的任何一行,组只剩 b 一个成员。
   const db = new DatabaseSync(h.db.path);
