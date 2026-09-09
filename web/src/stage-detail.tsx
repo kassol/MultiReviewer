@@ -509,7 +509,8 @@ function DisposeBelowThresholdAction({
           size={{ initial: "3", sm: "2" }}
           disabled={targets.length === 0 || dispose.isPending}
         >
-          处置低于最低报告等级的未处置项
+          {/* 按钮只说动作与条数;「低于最低报告等级」这层规则留给弹窗标题与说明讲。 */}
+          {targets.length === 0 ? "处置低等级项" : `处置 ${targets.length} 条低等级项`}
         </Button>
       }
       title={`处置这个阶段里 ${targets.length} 条低于最低报告等级的未处置项？`}
