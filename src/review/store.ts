@@ -383,10 +383,9 @@ CREATE INDEX IF NOT EXISTS review_rule_by_repo ON review_rule(repo_id);
 -- 基点探索(CONTEXT.md,issue #205)。每仓库至多一行:重新探索覆盖上一次的那一行,
 -- 「同仓库同时只跑一个」因此就是这一行的 state 是不是 running。
 --
--- model 是这次探索所用的模型标识,它同时是「这个仓库最近一次探索用的是什么模型」那份
--- 记录:知识确认清空草案时不动这一行,处置反哺据它沿用同一个模型(issue #208)。
--- thinking_level 同理是那一次选的思考档位(NULL 即没选,等同 off),反哺一并沿用
--- (issue #213)。
+-- model 是这次探索所用的模型标识,thinking_level 是那一次的思考档位(NULL 即没选,
+-- 等同 off)。**两列只作历史**(issue #304):此后没有任何任务读它们选模型——发起时
+-- 用的是这个仓库生效的辅助模型(resolveAuxiliaryModel),处置反哺与人工提议同律。
 CREATE TABLE IF NOT EXISTS rule_exploration (
   repo_id INTEGER PRIMARY KEY REFERENCES repo(id),
   baseline_sha TEXT NOT NULL,
@@ -901,6 +900,11 @@ const ADD_COLUMNS = [
   // 仓库配置的整块版本号(issue #302):模型覆盖与最低报告等级一次写完,版本随之加一。
   // 从 0 起,升级前注册的仓库因此都是 0——它们的配置一次都没经这个端点写过。
   "ALTER TABLE repo ADD COLUMN settings_version INTEGER NOT NULL DEFAULT 0",
+  // 开跑时冻结的辅助模型(CONTEXT.md 辅助模型,ADR 0029,issue #304):这一轮的合并
+  // agent 用哪一处模型与档位,一处 `ReviewerSpec` 的 JSON。开跑时解析一次写下,之后
+  // 改配置追不上这一轮,续跑读它而不重新解析。旧行是 NULL,读回即「没有冻结的那一处」
+  // ——升级前合并 agent 取的是配置序第一个 Reviewer,那时没有这一列可写。
+  "ALTER TABLE review_run ADD COLUMN auxiliary_model TEXT",
 ];
 
 /**
@@ -1104,6 +1108,12 @@ export type RunMeta = {
    * 同一读法。轮次要答得出「那一轮按什么阈值跑的」,续跑据它核对阈值有没有改过。
    */
   minReportSeverity?: Severity;
+  /**
+   * 开跑时解析出的辅助模型(CONTEXT.md 辅助模型,issue #304)。这一轮的合并 agent 用
+   * 它,续跑沿用落库的这一处;省略或 null 即这一轮没有解析出辅助模型,合并走算法档。
+   * **它不是续跑判据**:改了它只影响下一轮,已开跑的这一轮读的始终是这一行。
+   */
+  auxiliaryModel?: ReviewerSpec | null;
 };
 
 /** 一条被启动改判掉的 Review Run(issue #247)。坐标够撤掉那个 PR 上的 👀。 */
@@ -1124,6 +1134,12 @@ export type InterruptedRunDetail = InterruptedRun & {
   directive: string | null;
   mode: ReviewRunMode;
   triggeredBy: string | null;
+  /**
+   * 开跑时冻结的辅助模型(issue #304)。续跑的合并 agent 按它建,不重新解析——中断期间
+   * 有人改了配置时,续跑的合并用的仍要是这一轮开跑时那一处。旧行与解析不出的那一轮是
+   * null,续跑的合并因此走算法档。
+   */
+  auxiliaryModel: ReviewerSpec | null;
 };
 
 /** 一批跑完落库的一个 Reviewer 结果(issue #248)。与 `batch.ts` 的 `TimedOutcome` 同形。 */
@@ -6024,8 +6040,8 @@ export function openStore(dbPath: string): Store {
                (owner, repo, pull_number, head_sha, title, range_review_id, pr_state,
                 triggered_by, started_at, changed_files, changed_lines, batch_count,
                 rule_set_version, directive, mode, history_json, batch_plan_json,
-                min_report_severity)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                min_report_severity, auxiliary_model)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             meta.owner,
@@ -6051,6 +6067,9 @@ export function openStore(dbPath: string): Store {
             meta.batches === undefined ? null : JSON.stringify(meta.batches),
             // 开跑时的阈值随这一轮落库(issue #271):之后改设置追不上已经开跑的它。
             meta.minReportSeverity ?? DEFAULT_MIN_REPORT_SEVERITY,
+            // 开跑时解析出的辅助模型同一次写下(issue #304):合并 agent 用哪一处模型
+            // 由这一行说了算,续跑读它。
+            meta.auxiliaryModel == null ? null : JSON.stringify(meta.auxiliaryModel),
           );
         const runId = Number(result.lastInsertRowid);
         const insertPin = db.prepare(
@@ -6147,7 +6166,7 @@ export function openStore(dbPath: string): Store {
       return db
         .prepare(
           `SELECT id, owner, repo, pull_number, head_sha, range_review_id, directive,
-                  mode, triggered_by
+                  mode, triggered_by, auxiliary_model
              FROM review_run WHERE finished_at IS NULL ORDER BY id`,
         )
         .all()
@@ -6162,6 +6181,10 @@ export function openStore(dbPath: string): Store {
           // 升级前的旧行没有这一列,读回按完整审查算,与 `listRuns` 同一读法。
           mode: (row["mode"] === null ? "full" : String(row["mode"])) as ReviewRunMode,
           triggeredBy: row["triggered_by"] === null ? null : String(row["triggered_by"]),
+          // 冻结的那一处辅助模型(issue #304):续跑的合并 agent 按它建,不重新解析。
+          auxiliaryModel: parseAuxiliaryModel(
+            row["auxiliary_model"] === null ? null : String(row["auxiliary_model"]),
+          ),
         }));
     },
 

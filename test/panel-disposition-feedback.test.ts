@@ -125,6 +125,22 @@ async function harnessWithFindings(ruleAgent: RuleAgent): Promise<PanelHarness> 
   return h;
 }
 
+/**
+ * 直接写审查策略里那一处辅助模型(issue #304)。夹具入口不设可用性门:面板写链只收当前
+ * 可用的模型,而这几条用例要的正是「设了它、反哺就用它」这一件事。
+ */
+function setGlobalAuxiliaryModel(
+  h: PanelHarness,
+  spec: { provider: string; model: string; thinkingLevel?: string },
+): void {
+  const store = openStore(h.db.path);
+  try {
+    assert.equal(store.putGlobalSettings({ auxiliaryModelJson: JSON.stringify(spec) }), true);
+  } finally {
+    store.close();
+  }
+}
+
 async function inlineFindings(h: PanelHarness): Promise<RunFinding[]> {
   const response = await h.api("GET", "/runs");
   assert.equal(response.status, 200);
@@ -343,18 +359,14 @@ test("无备注的处置不触发任何解读", async () => {
   assert.equal(listed[0]!.targetId, findings[1]!.id);
 });
 
-test("反哺沿用最近一次基点探索所用的模型,没探索过就用全局组合第一个", async () => {
+test("反哺用这个仓库生效的辅助模型,探索记录里的模型不再影响它", async () => {
   const agent = scriptedRuleAgent(() => ({ items: [] }));
   const h = await harnessWithFindings(agent);
   seedAvailableModelService(h, "second", ["other-model"]);
   const findings = await inlineFindings(h);
 
-  assert.equal((await dispose(h, findings[0]!.id, NOTE)).status, 200);
-  await h.dispositionFeedbackAtLeast(1);
-  assert.equal(h.dispositionFeedbacks[0]!.failure, undefined);
-  assert.equal(agent.calls[0]!.runtimeModel.provider, "test");
-  assert.equal(agent.calls[0]!.runtimeModel.id, "global-model");
-
+  // 探索记录里的模型只作历史(issue #304):最近一次探索用的是另一家,两处配置都没设的
+  // 反哺仍走解析的退路——这个仓库生效组合的第一个(ADR 0029)。
   const store = openStore(h.db.path);
   try {
     assert.equal(
@@ -365,10 +377,19 @@ test("反哺沿用最近一次基点探索所用的模型,没探索过就用全�
       }),
       true,
     );
+    store.finishRuleExploration(GITEA_REPO.id, [], "2026-08-29T00:00:00.000Z");
   } finally {
     store.close();
   }
 
+  assert.equal((await dispose(h, findings[0]!.id, NOTE)).status, 200);
+  await h.dispositionFeedbackAtLeast(1);
+  assert.equal(h.dispositionFeedbacks[0]!.failure, undefined);
+  assert.equal(agent.calls[0]!.runtimeModel.provider, "test");
+  assert.equal(agent.calls[0]!.runtimeModel.id, "global-model");
+
+  // 审查策略里设了辅助模型:这才换得了模型。
+  setGlobalAuxiliaryModel(h, { provider: "second", model: "other-model" });
   assert.equal((await dispose(h, findings[1]!.id, NOTE)).status, 200);
   await h.dispositionFeedbackAtLeast(2);
   assert.equal(h.dispositionFeedbacks[1]!.failure, undefined);
@@ -376,7 +397,7 @@ test("反哺沿用最近一次基点探索所用的模型,没探索过就用全�
   assert.equal(agent.calls[1]!.runtimeModel.id, "other-model");
 });
 
-test("从未探索过且全局组合为空:跳过解读留一行原因,零提案", async () => {
+test("选不出辅助模型时:跳过解读留一行原因,零提案", async () => {
   const agent = scriptedRuleAgent(() => ({
     items: [{ type: "rule", scope: "", statement: "一条规范陈述" }],
   }));
@@ -393,7 +414,9 @@ test("从未探索过且全局组合为空:跳过解读留一行原因,零提案
 
   assert.equal((await dispose(h, findings[0]!.id, NOTE)).status, 200);
   await h.dispositionFeedbackAtLeast(1);
-  assert.match(h.dispositionFeedbacks[0]!.failure ?? "", /模型/);
+  // 失败原因指向两处配置(issue #304):没有别的地方可以设模型了。
+  assert.match(h.dispositionFeedbacks[0]!.failure ?? "", /审查策略/);
+  assert.match(h.dispositionFeedbacks[0]!.failure ?? "", /仓库配置/);
   assert.equal(agent.calls.length, 0);
   assert.deepEqual(await proposals(h), []);
   // 轨迹从任务开始就起(issue #214):选不出模型也是反哺之内的失败,人来这条轨迹就是要
@@ -402,7 +425,7 @@ test("从未探索过且全局组合为空:跳过解读留一行原因,零提案
   // 选不出模型不再静默:意图行照样落一条,失败带原因,人在弹窗顶部看得到(issue #296)。
   const [intent] = await intents(h);
   assert.equal(intent!.state, "failed");
-  assert.match(intent!.failure ?? "", /模型/);
+  assert.match(intent!.failure ?? "", /审查策略/);
   assert.equal(intent!.model, null);
 });
 
@@ -431,37 +454,24 @@ test("解读失败留原因、不重排,产出为空不产生提案", async () =
   assert.deepEqual(await proposals(h), []);
 });
 
-test("反哺沿用最近一次探索的思考档位,探索没选档位时反哺也不带", async () => {
+test("反哺用辅助模型那一处的思考档位,没选档位时反哺也不带", async () => {
   const agent = scriptedRuleAgent(() => ({ items: [] }));
   const h = await harnessWithFindings(agent);
+  // 档位要这个模型自己支持得了才收得下(CONTEXT.md 思考档位)。
+  seedAvailableModelService(h, "second", ["other-model"], { reasoning: true });
   const findings = await inlineFindings(h);
 
-  const startExploration = (thinkingLevel?: "high"): void => {
-    const store = openStore(h.db.path);
-    try {
-      assert.equal(
-        store.startRuleExploration(GITEA_REPO.id, {
-          baselineSha: h.repo.baseSha,
-          model: "test:global-model",
-          ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
-          startedAt: "2026-08-29T00:00:00.000Z",
-        }),
-        true,
-      );
-      // 记录停在运行中就发起不了下一次,这里只关心档位有没有留下来。
-      store.finishRuleExploration(GITEA_REPO.id, [], "2026-08-29T00:00:00.000Z");
-    } finally {
-      store.close();
-    }
-  };
-
-  startExploration("high");
+  setGlobalAuxiliaryModel(h, {
+    provider: "second",
+    model: "other-model",
+    thinkingLevel: "high",
+  });
   assert.equal((await dispose(h, findings[0]!.id, NOTE)).status, 200);
   await h.dispositionFeedbackAtLeast(1);
   assert.equal(h.dispositionFeedbacks[0]!.failure, undefined);
   assert.equal(agent.calls[0]!.thinkingLevel, "high");
 
-  startExploration();
+  setGlobalAuxiliaryModel(h, { provider: "second", model: "other-model" });
   assert.equal((await dispose(h, findings[1]!.id, NOTE)).status, 200);
   await h.dispositionFeedbackAtLeast(2);
   assert.equal(h.dispositionFeedbacks[1]!.failure, undefined);

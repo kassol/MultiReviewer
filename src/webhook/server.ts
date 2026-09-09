@@ -259,6 +259,11 @@ export type WebhookServerDeps = {
    */
   buildReviewers: (plans: readonly ReviewerRuntimePlan[]) => readonly Reviewer[];
   /**
+   * 本轮合并 agent 的组装(issue #228、#304)。不传即用 Pi 子进程的真实实现,测试注入
+   * 脚本化实现——收到的那份运行模型就是这一轮解析出的辅助模型。
+   */
+  buildMergeAgent?: typeof createPiMergeAgent;
+  /**
    * 模型凭据的加密主密钥(ADR 0008),取自环境变量。缺失时凭据端点读写都拒绝并说明
    * 原因,服务其余部分照常——起不来就进不了面板,进不了面板就配不了凭据。
    */
@@ -886,9 +891,24 @@ async function materializeReviewerPlans(
  * 自动投递与手动重跑共用的唯一启动入口。一次 SQLite 读事务固定生效组合、批次上限、引用
  * 服务版本及其密文；事务外只解析这份快照并各解密一次，第一批开始后不再读当前配置。
  */
-async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<ReviewRunPlan> {
+async function buildRunPlan(
+  deps: WebhookServerDeps,
+  repoId: number,
+  /**
+   * 续跑那一轮开跑时冻结的辅助模型(issue #304)。给了它就不再解析:中断期间有人改了
+   * 配置时,续跑的合并用的仍要是这一轮开跑时那一处。`null` 是「那一轮就没有」,与
+   * 「这一次不是续跑」(省略)分开。
+   */
+  frozenAuxiliaryModel?: ReviewerSpec | null,
+): Promise<ReviewRunPlan> {
   const snapshot = withStore(deps.dbPath, (store) => store.getReviewRunSnapshot(repoId));
   const plans = await materializeReviewerPlans(deps, snapshot.modelServices, snapshot.reviewers);
+  // 辅助模型开跑时解析一次(CONTEXT.md 辅助模型,ADR 0029):仓库覆盖 ?? 全局 ?? 生效
+  // 组合第一个,最后那一档与这一票之前的 `plans[0]` 等价。
+  const auxiliaryModel =
+    frozenAuxiliaryModel === undefined
+      ? withStore(deps.dbPath, (store) => store.resolveAuxiliaryModel(repoId))?.spec ?? null
+      : frozenAuxiliaryModel;
   return createReviewRunPlan(
     repoId,
     deps.buildReviewers(plans),
@@ -903,24 +923,36 @@ async function buildRunPlan(deps: WebhookServerDeps, repoId: number): Promise<Re
     plans.map(reviewerPin),
     // 知识集与模型服务版本在同一次读事务里冻结(issue #204),两型一体(issue #221)。
     { version: snapshot.ruleSetVersion, rules: snapshot.rules, facts: snapshot.facts },
-    mergeAgentFor(plans),
+    await mergeAgentFor(deps, auxiliaryModel),
+    auxiliaryModel,
   );
 }
 
 /**
- * 本轮的合并 agent(issue #228):取配置序第一个 Reviewer 已经物化好的模型快照、凭据与
- * 思考档位,零新增配置面与凭据面。第一项跑不了(缺凭据或缺运行模型)时不建——这一轮的
- * 合并走算法档,与这一票之前逐字一致。
+ * 本轮的合并 agent(issue #228、#304):用这一轮冻结的辅助模型物化出模型快照、凭据与
+ * 思考档位。那一处跑不了(缺凭据或缺运行模型)时不建——这一轮的合并走算法档,与这一票
+ * 之前逐字一致。
+ *
+ * 物化读的是当前全部模型服务而不是 Reviewer 那份快照:辅助模型可以是组合之外的一家,
+ * 只带组合里那几家就会把它误判成不可用。
  */
-function mergeAgentFor(plans: readonly ReviewerRuntimePlan[]): MergeAgent | undefined {
-  const first = plans[0];
-  if (first === undefined || first.credential === null || first.runtimeModel === null) {
+async function mergeAgentFor(
+  deps: WebhookServerDeps,
+  spec: ReviewerSpec | null,
+): Promise<MergeAgent | undefined> {
+  if (spec === null) return undefined;
+  const [plan] = await materializeReviewerPlans(
+    deps,
+    withStore(deps.dbPath, (store) => store.listModelServices()),
+    [spec],
+  );
+  if (plan === undefined || plan.credential === null || plan.runtimeModel === null) {
     return undefined;
   }
-  return createPiMergeAgent({
-    runtimeModel: first.runtimeModel,
-    apiKey: first.credential,
-    ...(first.spec.thinkingLevel === undefined ? {} : { thinkingLevel: first.spec.thinkingLevel }),
+  return (deps.buildMergeAgent ?? createPiMergeAgent)({
+    runtimeModel: plan.runtimeModel,
+    apiKey: plan.credential,
+    ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
   });
 }
 
@@ -5599,7 +5631,11 @@ async function handleDispose(
   });
   // 处置备注落库即建一条以那条 Finding 为锚的修订意图(issue #208、#296)。没有备注的
   // 处置不构成反哺输入,零触发:不建行,也不排任务。
-  if (note !== undefined) startDispositionFeedback(deps, finding, note, disposedBy);
+  if (note !== undefined) {
+    void startDispositionFeedback(deps, finding, note, disposedBy).catch((error: unknown) => {
+      console.error(`处置反哺没有排上:finding ${finding.id}:${failureText(error)}`);
+    });
+  }
 }
 
 /**
@@ -6643,8 +6679,9 @@ function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: num
       consolidation: store.getRuleConsolidation(repoId),
       draft: store.getRuleDraft(repoId),
       proposals: store.getRuleProposals(repoId),
-      // 修订意图与它将用的模型(ADR 0028,issue #294):意图框与意图列表读的是同一份
-      // 读取,面板不必为弹窗顶部那一块再开一个端点。
+      // 修订意图(ADR 0028,issue #294)。它将用哪一处模型不在这里回:那是生效辅助模型
+      // 的只读投影(`GET /repos/{id}/auxiliary-model`,issue #304),意图框与探索、整理
+      // 两处读的因此是同一个结论。
       intents: store.listRuleIntents(
         repoId,
         new Date((deps.now ?? Date.now)()).toISOString(),
@@ -6655,13 +6692,7 @@ function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: num
   if (view === undefined) {
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
-  // 意图将使用的模型:与提交那一刻选的是同一条规则(反哺的模型规则),选不出来即 null,
-  // 面板据此把意图框置灰并说明。
-  const spec = ruleTaskSpec(deps, repoId);
-  return sendJson(res, 200, {
-    ...view,
-    intentModel: spec === undefined ? null : modelIdentity(spec),
-  });
+  return sendJson(res, 200, view);
 }
 
 const NO_RULE_TRACE = "这个仓库没有这条知识轨迹";
@@ -7178,41 +7209,6 @@ async function runRuleConsolidationInBackground(
 }
 
 /**
- * 模型标识回到 spec。`modelIdentity` 以首次出现的冒号为界(部分 model id 自带斜杠),
- * 这里按同一条口径切回去:基点探索只记下标识,反哺沿用它时要还原成运行计划的输入。
- */
-function specFromIdentity(
-  identity: string,
-  thinkingLevel: ThinkingLevel | null,
-): ReviewerSpec | undefined {
-  const colon = identity.indexOf(":");
-  if (colon <= 0 || colon === identity.length - 1) return undefined;
-  return {
-    provider: identity.slice(0, colon),
-    model: identity.slice(colon + 1),
-    // 沿用那一次探索选的思考档位:反哺解读的是同一个仓库的同一类判断。
-    ...(thinkingLevel === null ? {} : { thinkingLevel }),
-  };
-}
-
-/**
- * 处置反哺与人工提议共用的模型规则(CONTEXT.md 处置反哺、人工提议):该仓库最近一次
- * 基点探索的模型与思考档位,从未探索过就取全局模型组合的第一个。两者都没有时回
- * undefined——那时这条链路跑不了,提交与后台各自回自己那句话。
- */
-function ruleTaskSpec(deps: WebhookServerDeps, repoId: number): ReviewerSpec | undefined {
-  const exploration = withStore(deps.dbPath, (store) => store.getRuleExploration(repoId));
-  const explored =
-    exploration === null
-      ? undefined
-      : specFromIdentity(exploration.model, exploration.thinkingLevel);
-  return explored ?? globalSettings(deps).reviewers[0];
-}
-
-/** 选不出模型时两处共用的那句话:提交意图回它,反哺的后台也抛它。 */
-const NO_RULE_TASK_MODEL = "这个仓库没有基点探索记录、全局模型组合也是空的,解读用不了模型";
-
-/**
  * 产出落进修订提案队列(CONTEXT.md 处置反哺、人工提议,issue #283、#294、#295)。反哺
  * 与人工提议共用:认出队列里已有同一件事即并入那一条——陈述换成合成后的那一句、附注追加
  * 一条,队列因此仍只有一条,人裁决一次。指名的那条已裁决或不存在时并不进去,那一条退回
@@ -7481,12 +7477,12 @@ function landRuleDraftItem(
  * 各产各的,靠并入队列里已有的那一条去重,没有互相覆盖的风险;拦下第二条只会让写备注的
  * 人白写一次。目标型意图那三档才要互斥——两条改写同一条东西会互相覆盖。
  */
-function startDispositionFeedback(
+async function startDispositionFeedback(
   deps: WebhookServerDeps,
   finding: FindingDispositionTarget,
   note: string,
   disposedBy: string,
-): void {
+): Promise<void> {
   const repoId = withStore(deps.dbPath, (store) =>
     store.findRepoId(finding.owner, finding.repo),
   );
@@ -7494,21 +7490,24 @@ function startDispositionFeedback(
     console.error(`处置反哺没有落处:${finding.owner}/${finding.repo} 不在注册表里`);
     return;
   }
-  const spec = ruleTaskSpec(deps, repoId);
+  // 模型与另三条链路同一处解析(ADR 0029,issue #304)。跑不了的那一处照样记在意图行上
+  // ——那一行要答得出「这一次本来要用哪个模型」,失败原因由后台那一步写。
+  const resolved = await resolveAuxiliaryModelPlan(deps, repoId);
+  const spec = resolved?.spec ?? null;
   const intent = withStore(deps.dbPath, (store) =>
     store.startRuleIntent(repoId, {
       text: note,
       submittedBy: disposedBy,
       targetKind: "finding",
       targetId: finding.id,
-      model: spec === undefined ? null : modelIdentity(spec),
+      model: spec === null ? null : modelIdentity(spec),
       ...(spec?.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
       startedAt: new Date((deps.now ?? Date.now)()).toISOString(),
     }),
   );
   if (intent === undefined) return;
   const ref: RepoRef = { owner: finding.owner, repo: finding.repo };
-  void runRevisionIntentInBackground(deps, repoId, ref, intent, spec, finding).catch(
+  void runRevisionIntentInBackground(deps, repoId, ref, intent, resolved, finding).catch(
     (error: unknown) => {
       console.error(`处置反哺未处理的失败:intent ${intent.id}:${failureText(error)}`);
     },
@@ -7656,17 +7655,20 @@ function intentLanding(
  * 是这个仓库现在的样子);agent 请求给 `feedback` 段而不是 `intent` 段;附注与轨迹的来源
  * 记处置反哺而不是人工提议。粒度门槛、并入、超长丢弃与模型规则两条链路逐字相同。
  *
- * `spec` 可以缺席:反哺那一侧选不出模型时那一行照样落下,轨迹起完再失败(issue #296);
- * 人工提议那一侧提交时就拦住了,到不了这里。
+ * `auxiliary` 是这个仓库生效辅助模型的解析结果(issue #304)。它给不出可跑的计划时反哺
+ * 那一侧的行照样落下,轨迹起完再带着那句原因失败(issue #296);人工提议那一侧提交时就
+ * 拦住了,到不了这里。
  */
 async function runRevisionIntentInBackground(
   deps: WebhookServerDeps,
   repoId: number,
   ref: RepoRef,
   intent: RuleIntent,
-  spec: ReviewerSpec | undefined,
+  auxiliary: AuxiliaryModelResolution | undefined,
   finding?: FindingDispositionTarget,
 ): Promise<void> {
+  // 轨迹记的是解析出的那一处:跑不了的那一次也要答得出「本来要用哪个模型」。
+  const spec = auxiliary?.spec ?? undefined;
   let failure: string | undefined;
   let worktree: Worktree | undefined;
   const now = (): string => new Date((deps.now ?? Date.now)()).toISOString();
@@ -7697,14 +7699,11 @@ async function runRevisionIntentInBackground(
   try {
     const forge = deps.forges.gitea;
     if (forge === undefined) throw new Error("gitea 没有配置 Forge,取不回代码");
-    if (spec === undefined) throw new Error(NO_RULE_TASK_MODEL);
-    const [plan] = await materializeReviewerPlans(
-      deps,
-      withStore(deps.dbPath, (store) => store.listModelServices()),
-      [spec],
-    );
+    // 选模型与跑得动判定都在 `resolveAuxiliaryModelPlan` 那一处(ADR 0029,issue #304):
+    // 这里只认它的结论,两种不成立各带自己那句话,都指向审查策略与仓库配置。
+    const plan = auxiliary?.plan ?? undefined;
     if (plan === undefined || plan.runtimeModel === null || plan.credential === null) {
-      throw new Error(plan?.failure ?? `模型 ${modelIdentity(spec)} 不可用`);
+      throw new Error(auxiliary?.reason ?? NO_AUXILIARY_MODEL);
     }
     const [repository, credentials] = await Promise.all([
       forge.getRepository(ref),
@@ -7753,7 +7752,9 @@ async function runRevisionIntentInBackground(
       apiKey: plan.credential,
       existingKnowledge: input.rules.map(toKnowledgeEntry),
       pendingProposals: input.pending,
-      ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
+      ...(plan.spec.thinkingLevel === undefined
+        ? {}
+        : { thinkingLevel: plan.spec.thinkingLevel }),
       ...(finding === undefined
         ? { intent: { text: intent.text, target: input.target } }
         : {
@@ -7980,9 +7981,13 @@ async function handleSubmitRevisionIntent(
   }
   const target = readIntentTarget(res, deps, repoId, payload?.target);
   if (target === undefined) return;
-  // 模型在提交这一刻就要选得出来:选不出来的话这条意图落地即失败,不如当场说清楚。
-  const spec = ruleTaskSpec(deps, repoId);
-  if (spec === undefined) return sendJson(res, 409, { error: NO_RULE_TASK_MODEL });
+  // 模型在提交这一刻就要跑得起来(ADR 0029,issue #304):选不出与跑不了的话这条意图
+  // 落地即失败,不如当场说清楚去哪里改。判据与另三条链路同一处。
+  const auxiliary = await resolveAuxiliaryModelPlan(deps, repoId);
+  if (auxiliary === undefined || auxiliary.plan === null) {
+    return sendJson(res, 409, { error: auxiliary?.reason ?? NO_AUXILIARY_MODEL });
+  }
+  const spec = auxiliary.plan.spec;
   const intent = withStore(deps.dbPath, (store) =>
     store.startRuleIntent(repoId, {
       text,
@@ -7996,7 +8001,7 @@ async function handleSubmitRevisionIntent(
   if (intent === undefined) {
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
-  void runRevisionIntentInBackground(deps, repoId, repo, intent, spec).catch(
+  void runRevisionIntentInBackground(deps, repoId, repo, intent, auxiliary).catch(
     (error: unknown) => {
       console.error(`人工提议未处理的失败:intent ${intent.id}:${failureText(error)}`);
     },
@@ -8033,11 +8038,20 @@ const NO_AUXILIARY_MODEL =
 const auxiliaryModelBlocked = (reason: string): string =>
   `${reason}到审查策略换一处辅助模型,或在仓库配置里给这个仓库单独设一处。`;
 
+/** 一次解析的结论(issue #303、#304)。四条 agent 链路与合并 agent 读的是同一份形状。 */
+type AuxiliaryModelResolution = {
+  spec: ReviewerSpec | null;
+  source: ResolvedAuxiliaryModel["source"] | null;
+  /** 跑得起来的那份运行计划。选不出或跑不了即 null,`reason` 说得出是哪一种。 */
+  plan: ReviewerRuntimePlan | null;
+  reason: string | null;
+};
+
 /**
  * 这个仓库生效的辅助模型此刻跑不跑得起来(CONTEXT.md 辅助模型,ADR 0029,issue #303)。
  *
  * 解析那一步只此一处(`store.resolveAuxiliaryModel`);跑不跑得起来与 Review Run 同一个
- * 判据(`materializeReviewerPlans` 加 `supportedThinkingLevels`)——面板只读投影与两条
+ * 判据(`materializeReviewerPlans` 加 `supportedThinkingLevels`)——面板只读投影与四条
  * 发起链路读的因此是同一份结论,面板说得动的那一次发起就一定收得下。
  *
  * 仓库不在注册表里回 undefined;选不出与跑不了各带一句 `reason`,`plan` 为 null。
@@ -8045,15 +8059,7 @@ const auxiliaryModelBlocked = (reason: string): string =>
 async function resolveAuxiliaryModelPlan(
   deps: WebhookServerDeps,
   repoId: number,
-): Promise<
-  | undefined
-  | {
-    spec: ReviewerSpec | null;
-    source: ResolvedAuxiliaryModel["source"] | null;
-    plan: ReviewerRuntimePlan | null;
-    reason: string | null;
-  }
-> {
+): Promise<AuxiliaryModelResolution | undefined> {
   const resolved = withStore(deps.dbPath, (store) =>
     store.getRepo(repoId) === undefined ? undefined : store.resolveAuxiliaryModel(repoId),
   );
@@ -8945,7 +8951,9 @@ async function resumeRun(deps: WebhookServerDeps, run: InterruptedRunDetail): Pr
   if (repoId === undefined) {
     throw new Error(`${RESUME_NOT_VIABLE}:仓库 ${run.owner}/${run.repo} 已经不在注册表里`);
   }
-  const plan = await buildRunPlan(deps, repoId);
+  // 辅助模型沿用这一轮开跑时落库的那一处(issue #304):它不是续跑判据,改了也不让这
+  // 一轮续不成,但续跑的合并用的仍是开跑时那一处。
+  const plan = await buildRunPlan(deps, repoId, run.auxiliaryModel);
   await runReview(
     { owner: run.owner, repo: run.repo, number: run.pullNumber },
     {
