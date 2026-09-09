@@ -2165,6 +2165,31 @@ export type StageSummaryFinding = {
   firstReportedAt: string;
   lastRunId: number;
   lastReportedAt: string;
+  /** 这条属于哪个同根因组(issue #309);未入组即 null。 */
+  rootCause: StageRootCauseRef | null;
+};
+
+/**
+ * 阶段汇总里一条 Finding 的同根因组引用(CONTEXT.md 同根因组,ADR 0030,issue #309)。
+ * 面板按它把入组的条目折到组卡下面,`memberCount` 与 `position` 说的是折过去之后的那
+ * 一组:成员映到当前行、映不过去的丢掉之后才数,与组列表里那一组逐字对得上。
+ */
+export type StageRootCauseRef = {
+  id: number;
+  reason: string;
+  memberCount: number;
+  /** 组内次序,从 0 起,与落库的 `position` 同源。 */
+  position: number;
+};
+
+/**
+ * 阶段汇总里的一个同根因组(issue #309)。组属于轮次(ADR 0030),这里取的是这个阶段
+ * 最新一轮的那一批;成员是当前列表里的那几行,已被更后轮次延续掉的沿延续链指向新位置。
+ */
+export type StageRootCauseGroup = {
+  id: number;
+  reason: string;
+  findingIds: number[];
 };
 
 /**
@@ -2220,6 +2245,8 @@ export type StageSummary = {
   findings: StageSummaryFinding[];
   counts: { pending: number; resolved: number; fixed: number };
   timeline: StageTimelineEntry[];
+  /** 最新一轮的同根因组(issue #309)。合并 agent 缺席的那一轮没有组,这里就是空数组。 */
+  rootCauseGroups: StageRootCauseGroup[];
 };
 
 /** 一个审查阶段的来源(CONTEXT.md 审查阶段):pull request 或范围审查。 */
@@ -6325,7 +6352,12 @@ export function openStore(dbPath: string): Store {
         )
         .all(...params);
       if (runRows.length === 0) {
-        return { findings: [], counts: { pending: 0, resolved: 0, fixed: 0 }, timeline: [] };
+        return {
+          findings: [],
+          counts: { pending: 0, resolved: 0, fixed: 0 },
+          timeline: [],
+          rootCauseGroups: [],
+        };
       }
       // 一个阶段的行数有界(轮次 × 每轮的 Finding),折叠在这里用 JS 做:延续要把两个
       // 指纹接成同一条 Identity,写成 SQL 只会让这一步看不出在做什么。
@@ -6451,6 +6483,49 @@ export function openStore(dbPath: string): Store {
         }
       }
 
+      // 同根因组(CONTEXT.md 同根因组,ADR 0030,issue #309):组属于轮次、每轮重新提,
+      // 阶段详情因此只取最新一轮的那一批。成员记的是落库当时那一行,后面的轮次可能已经
+      // 把它折叠或延续到别的位置,所以逐个映到此刻列表里的那一条;映不过去的(整条已交接
+      // 而没有承接者)不进组——组是多一层视图,少一个成员不该让这一页读不出来。
+      const identityOfRow = new Map<number, Identity>();
+      for (const identity of identities) {
+        for (const row of identity.rows) identityOfRow.set(row.id, identity);
+      }
+      const currentRowOf = (findingId: number): number | undefined => {
+        let identity = identityOfRow.get(findingId);
+        // 链长以 Identity 数为界:交接一次只把一条并到后一条,走不完即数据成环,停住。
+        for (let hop = 0; identity !== undefined && hop <= identities.length; hop += 1) {
+          const latest = latestOf(identity);
+          if (latest.disposition !== "continued") return latest.id;
+          identity =
+            latest.commentHtmlUrl === null ? undefined : successors.get(latest.commentHtmlUrl);
+        }
+        return undefined;
+      };
+      const rootCauseGroups: StageRootCauseGroup[] = [];
+      const rootCauseOfRow = new Map<number, StageRootCauseRef>();
+      for (const group of store.rootCauseGroups(Number(runRows.at(-1)!["id"]))) {
+        const findingIds: number[] = [];
+        for (const memberId of group.findingIds) {
+          const current = currentRowOf(memberId);
+          // 一条 Finding 至多属于一个组(ADR 0030):两个成员折到同一行时只留头一份。
+          if (current === undefined || rootCauseOfRow.has(current) || findingIds.includes(current)) {
+            continue;
+          }
+          findingIds.push(current);
+        }
+        if (findingIds.length === 0) continue;
+        rootCauseGroups.push({ id: group.id, reason: group.reason, findingIds });
+        for (const [position, findingId] of findingIds.entries()) {
+          rootCauseOfRow.set(findingId, {
+            id: group.id,
+            reason: group.reason,
+            memberCount: findingIds.length,
+            position,
+          });
+        }
+      }
+
       const startedAt = new Map(
         runRows.map((run) => [Number(run["id"]), String(run["started_at"])] as const),
       );
@@ -6503,6 +6578,7 @@ export function openStore(dbPath: string): Store {
             firstReportedAt: startedAt.get(identity.firstRow.runId)!,
             lastRunId: latest.runId,
             lastReportedAt: startedAt.get(latest.runId)!,
+            rootCause: rootCauseOfRow.get(latest.id) ?? null,
           };
         });
       // 排序在服务端定一次:待处置在前(这一页要回答「还剩什么没处置」),再按严重度,
@@ -6580,7 +6656,7 @@ export function openStore(dbPath: string): Store {
         timeline.get(Number(runIdText))!.fixed += 1;
       }
 
-      return { findings, counts, timeline: [...timeline.values()] };
+      return { findings, counts, timeline: [...timeline.values()], rootCauseGroups };
     },
 
     pendingLineAuthors(scope) {

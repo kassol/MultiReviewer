@@ -206,7 +206,13 @@ export function StageDetailPage({
           : trace !== null
             ? { kind: "trace", id: trace }
             : null;
-      return { drawer, filters: listFilters(search), tab: tabOf(search, trace) };
+      return {
+        drawer,
+        filters: listFilters(search),
+        tab: tabOf(search, trace),
+        // Forge 评论尾行链进来的那个组(issue #308、#309):列表展开它并滚到它。
+        rootCause: positiveId(search.rootCause),
+      };
     },
   });
   // 开关侧滑都走 replace:它是这一页里的一次下钻,不该往浏览器历史里塞一条。
@@ -327,8 +333,11 @@ export function StageDetailPage({
             <StageSummaryView
               scope={scopeOf(body.stage)}
               canDispose={canDispose}
+              canDisposeBatch={canDisposeBatch}
+              focusRootCause={location.rootCause}
               tab={location.tab}
               onTabChange={selectTab}
+              onFeedback={setFeedback}
               onDrawerTrigger={returnFocus.captureTrigger}
               timeline={(entries) => (
                 <StageTimeline
