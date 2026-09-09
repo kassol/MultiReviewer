@@ -931,28 +931,21 @@ async function buildRunPlan(
 
 /**
  * 本轮的合并 agent(issue #228、#304):用这一轮冻结的辅助模型物化出模型快照、凭据与
- * 思考档位。那一处跑不了(缺凭据或缺运行模型)时不建——这一轮的合并走算法档,与这一票
- * 之前逐字一致。
+ * 思考档位。那一处跑不了时不建——这一轮的合并走算法档,与这一票之前逐字一致。
  *
- * 物化读的是当前全部模型服务而不是 Reviewer 那份快照:辅助模型可以是组合之外的一家,
- * 只带组合里那几家就会把它误判成不可用。
+ * 跑不跑得起来问的是 `auxiliaryModelRunnability` 那一份判据,与四条发起链路同一处:
+ * 合并这一侧另判一遍的话,档位不被支持的那一处会在这里悄悄跑成 Pi clamp 出来的邻档。
  */
 async function mergeAgentFor(
   deps: WebhookServerDeps,
   spec: ReviewerSpec | null,
 ): Promise<MergeAgent | undefined> {
   if (spec === null) return undefined;
-  const [plan] = await materializeReviewerPlans(
-    deps,
-    withStore(deps.dbPath, (store) => store.listModelServices()),
-    [spec],
-  );
-  if (plan === undefined || plan.credential === null || plan.runtimeModel === null) {
-    return undefined;
-  }
+  const runnable = await auxiliaryModelRunnability(deps, spec);
+  if (runnable.plan === null) return undefined;
   return (deps.buildMergeAgent ?? createPiMergeAgent)({
-    runtimeModel: plan.runtimeModel,
-    apiKey: plan.credential,
+    runtimeModel: runnable.runtimeModel,
+    apiKey: runnable.credential,
     ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
   });
 }
@@ -8064,12 +8057,69 @@ type AuxiliaryModelResolution = {
   reason: string | null;
 };
 
+/** 一处辅助模型引用跑得起来的那一份:运行计划、运行模型与解出来的凭据。 */
+type AuxiliaryModelRunnability =
+  | {
+    plan: ReviewerRuntimePlan;
+    runtimeModel: NonNullable<ReviewerRuntimePlan["runtimeModel"]>;
+    credential: string;
+    reason: null;
+  }
+  | { plan: null; runtimeModel: null; credential: null; reason: string };
+
+/**
+ * 一处辅助模型引用此刻跑不跑得起来(CONTEXT.md 辅助模型,ADR 0029,issue #303、#304)。
+ *
+ * **判据只此一份**:物化走 Review Run 同一套 `materializeReviewerPlans`(读的是当前全部
+ * 模型服务而不是 Reviewer 那份快照——辅助模型可以是模型组合之外的一家,只带组合里那几家
+ * 就会把它误判成不可用),再用 `supportedThinkingLevels` 判档位。合并 agent 与四条发起
+ * 链路同调它:判两遍就会在其中一处漏掉一道。
+ */
+async function auxiliaryModelRunnability(
+  deps: WebhookServerDeps,
+  spec: ReviewerSpec,
+): Promise<AuxiliaryModelRunnability> {
+  const [plan] = await materializeReviewerPlans(
+    deps,
+    withStore(deps.dbPath, (store) => store.listModelServices()),
+    [spec],
+  );
+  const identity = modelIdentity(spec);
+  const blocked = (reason: string): AuxiliaryModelRunnability => ({
+    plan: null,
+    runtimeModel: null,
+    credential: null,
+    reason: auxiliaryModelBlocked(reason),
+  });
+  if (
+    plan === undefined ||
+    plan.failure !== null ||
+    plan.runtimeModel === null ||
+    plan.credential === null
+  ) {
+    return blocked(plan?.failure ?? `辅助模型 ${identity} 不可用。`);
+  }
+  // 档位与模型组合那侧同一个判据(CONTEXT.md 思考档位):这个模型不支持的那一档,Pi 会
+  // clamp 成相邻可用档,跑的就不是人设的那一档。
+  const levels = supportedThinkingLevels(plan.runtimeModel);
+  const picked = spec.thinkingLevel ?? "off";
+  if (!levels.includes(picked)) {
+    return blocked(`${identity} 不支持思考档位 ${picked},它支持的是 ${levels.join(" / ")}。`);
+  }
+  return {
+    plan,
+    runtimeModel: plan.runtimeModel,
+    credential: plan.credential,
+    reason: null,
+  };
+}
+
 /**
  * 这个仓库生效的辅助模型此刻跑不跑得起来(CONTEXT.md 辅助模型,ADR 0029,issue #303)。
  *
- * 解析那一步只此一处(`store.resolveAuxiliaryModel`);跑不跑得起来与 Review Run 同一个
- * 判据(`materializeReviewerPlans` 加 `supportedThinkingLevels`)——面板只读投影与四条
- * 发起链路读的因此是同一份结论,面板说得动的那一次发起就一定收得下。
+ * 解析那一步只此一处(`store.resolveAuxiliaryModel`);跑不跑得起来问的是
+ * `auxiliaryModelRunnability` 那一份判据——面板只读投影、四条发起链路与合并 agent 读的
+ * 因此是同一份结论,面板说得动的那一次发起就一定收得下。
  *
  * 仓库不在注册表里回 undefined;选不出与跑不了各带一句 `reason`,`plan` 为 null。
  */
@@ -8084,35 +8134,13 @@ async function resolveAuxiliaryModelPlan(
   if (resolved === null) {
     return { spec: null, source: null, plan: null, reason: NO_AUXILIARY_MODEL };
   }
-  const [plan] = await materializeReviewerPlans(
-    deps,
-    withStore(deps.dbPath, (store) => store.listModelServices()),
-    [resolved.spec],
-  );
-  const identity = modelIdentity(resolved.spec);
-  if (plan === undefined || plan.failure !== null || plan.runtimeModel === null) {
-    return {
-      spec: resolved.spec,
-      source: resolved.source,
-      plan: null,
-      reason: auxiliaryModelBlocked(plan?.failure ?? `辅助模型 ${identity} 不可用。`),
-    };
-  }
-  // 档位与模型组合那侧同一个判据(CONTEXT.md 思考档位):这个模型不支持的那一档,Pi 会
-  // clamp 成相邻可用档,跑的就不是人设的那一档。
-  const levels = supportedThinkingLevels(plan.runtimeModel);
-  const picked = resolved.spec.thinkingLevel ?? "off";
-  if (!levels.includes(picked)) {
-    return {
-      spec: resolved.spec,
-      source: resolved.source,
-      plan: null,
-      reason: auxiliaryModelBlocked(
-        `${identity} 不支持思考档位 ${picked},它支持的是 ${levels.join(" / ")}。`,
-      ),
-    };
-  }
-  return { spec: resolved.spec, source: resolved.source, plan, reason: null };
+  const runnable = await auxiliaryModelRunnability(deps, resolved.spec);
+  return {
+    spec: resolved.spec,
+    source: resolved.source,
+    plan: runnable.plan,
+    reason: runnable.reason,
+  };
 }
 
 /**

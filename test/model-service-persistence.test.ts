@@ -488,6 +488,65 @@ test("模型引用按完整身份列出全局、显式覆盖与跟随全局位�
   store.close();
 });
 
+test("只被辅助模型引用的模型照样拦下删服务与摘唯一来源补录", () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  const provider = "aux-only";
+  const baseUrl = `https://${provider}.example.test/v1`;
+  // `solo` 只有补录这一个来源:摘掉它,这个模型就没了来源。
+  const withSupplement: ModelServiceVersionCommit = {
+    ...availableService(provider, ["kept"], `ciphertext-${provider}`, baseUrl),
+    supplements: [{
+      model: "solo",
+      source: "manual",
+      targetFingerprint: modelServiceTargetFingerprint(baseUrl, "openai-completions"),
+      createdAt: "2026-08-20T10:00:00.000Z",
+    }],
+  };
+  assert.equal(store.commitModelServiceVersion(null, withSupplement), 1);
+  const dropSupplement: ModelServiceVersionCommit = { ...withSupplement, supplements: [] };
+  const auxiliary = JSON.stringify({ provider, model: "solo" });
+
+  // 全局那一处辅助模型引用它:事务内的兜底与 `listModelReferences` 同一份判据(issue #303)。
+  assert.equal(store.putGlobalSettings({ auxiliaryModelJson: auxiliary }), true);
+  assert.equal(store.removeCustomModelService(provider, 1), false, "被全局辅助模型引用即删不动");
+  assert.equal(store.commitModelServiceVersion(1, dropSupplement), undefined, "唯一来源摘不掉");
+
+  // 换成仓库那一处引用它,全局清空:两种辅助模型位置同等受保护。
+  assert.equal(store.putGlobalSettings({ auxiliaryModelJson: null }), true);
+  assert.equal(store.registerRepo({
+    repoId: 71,
+    owner: "acme",
+    repo: "aux-override",
+    generation: 1,
+    key: "aux-override-key",
+  }), true);
+  assert.equal(
+    store.putRepoSettings(71, 0, {
+      reviewersJson: null,
+      auxiliaryModelJson: auxiliary,
+      minReportSeverity: null,
+    }).ok,
+    true,
+  );
+  assert.equal(store.removeCustomModelService(provider, 1), false, "被仓库辅助模型引用即删不动");
+  assert.equal(store.commitModelServiceVersion(1, dropSupplement), undefined, "唯一来源摘不掉");
+
+  // 两处都清掉之后才动得了。
+  assert.equal(
+    store.putRepoSettings(71, 1, {
+      reviewersJson: null,
+      auxiliaryModelJson: null,
+      minReportSeverity: null,
+    }).ok,
+    true,
+  );
+  assert.equal(store.commitModelServiceVersion(1, dropSupplement), 2);
+  assert.equal(store.removeCustomModelService(provider, 2), true);
+  store.close();
+});
+
 test("冲突自定义 provider 改名原子迁移服务、全局组合与全部仓库覆盖，历史记录不动", () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);

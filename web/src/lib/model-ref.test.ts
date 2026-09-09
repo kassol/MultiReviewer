@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { sameModelRef, sameModelRefs } from "./model-ref.ts";
+import { modelRefWithLevel, sameModelRef, sameModelRefs } from "./model-ref.ts";
 
 test("一处引用:标识与档位都相同才算同一份", () => {
   assert.equal(sameModelRef({ identity: "test:a" }, { identity: "test:a" }), true);
@@ -51,4 +51,18 @@ test("模型组合:长度、次序与每一处的档位都算数", () => {
     sameModelRefs(combination, [{ identity: "test:a" }, combination[1]!]),
     false,
   );
+});
+
+test("带档位落成引用:off 即不带这个字段,与从没设过等价", () => {
+  assert.deepEqual(modelRefWithLevel("test:a", "off"), { identity: "test:a" });
+  assert.equal(Object.hasOwn(modelRefWithLevel("test:a", "off"), "thinkingLevel"), false);
+  assert.deepEqual(modelRefWithLevel("test:a", "high"), {
+    identity: "test:a",
+    thinkingLevel: "high",
+  });
+  // 控件把「这个模型支持的第一档」交给它:adaptive 模型的第一档不是 off。
+  assert.deepEqual(modelRefWithLevel("test:a", "medium"), {
+    identity: "test:a",
+    thinkingLevel: "medium",
+  });
 });

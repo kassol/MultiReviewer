@@ -6,16 +6,13 @@
  * **它只负责选择**,与模型组合编辑器同律:模型服务、凭据与模型目录一律回模型服务页,
  * 这里不发任何写请求。
  */
-import { Badge, Select, Text } from "@radix-ui/themes";
+import { Select, Text } from "@radix-ui/themes";
 
 import { HelpTooltip } from "@/components/help-tooltip";
+import { ThinkingLevelPicker } from "@/components/thinking-level-picker";
+import { modelRefWithLevel } from "@/lib/model-ref";
 
-import {
-  THINKING_LEVEL_LABEL,
-  useModelServices,
-  type ModelRef,
-  type ThinkingLevel,
-} from "../model-services.ts";
+import { useModelServices, type ModelRef } from "../model-services.ts";
 
 /** 「不设」那一项的值。Radix `Select` 收不了空字符串。 */
 const UNSET = "__unset";
@@ -67,12 +64,11 @@ export function AuxiliaryModelPicker({
         size={{ initial: "3", sm: "2" }}
         onValueChange={(next) => {
           if (next === UNSET) return onChange(null);
-          // 新选进来的模型带它自己的第一档:adaptive 模型不支持「关闭」,不带就等于选了
-          // 一档它不支持的,保存时会被服务端拒。
+          // 新选进来的模型带它自己的第一档,与模型组合编辑器同一处规则。
           const first =
             candidates.find((candidate) => candidate.identity === next)?.runtime
               .thinkingLevels[0] ?? "off";
-          return onChange({ identity: next, ...(first === "off" ? {} : { thinkingLevel: first }) });
+          return onChange(modelRefWithLevel(next, first));
         }}
       >
         <Select.Trigger id={`${id}-model`} placeholder="选择一个可用模型" className="max-sm:min-h-11" />
@@ -99,40 +95,16 @@ export function AuxiliaryModelPicker({
       </div>
       {value === null ? (
         <Text size="2" color="gray">先选模型</Text>
-      ) : levels.length > 1 ? (
-        // 只列这个模型支持的档位:列出它不支持的那些,运行侧会 clamp 成相邻可用档,跑的
-        // 就不是人选的那一档。
-        <div className="flex items-center gap-1">
-          <Select.Root
-            value={value.thinkingLevel ?? "off"}
-            disabled={disabled === true}
-            size={{ initial: "3", sm: "2" }}
-            onValueChange={(next) =>
-              onChange({
-                identity: value.identity,
-                ...(next === "off" ? {} : { thinkingLevel: next as ThinkingLevel }),
-              })}
-          >
-            <Select.Trigger id={`${id}-thinking`} className="max-sm:min-h-11" />
-            <Select.Content position="popper">
-              {levels.map((level) => (
-                <Select.Item key={level} value={level}>
-                  思考 {THINKING_LEVEL_LABEL[level]}
-                </Select.Item>
-              ))}
-            </Select.Content>
-          </Select.Root>
-          {levels.includes("off") ? null : (
-            <HelpTooltip
-              label={`${value.identity} 始终思考`}
-              content="这个模型关不掉思考,只能选它投入多少。"
-            />
-          )}
-        </div>
       ) : (
-        <div>
-          <Badge color="gray" variant="outline">不支持思考档位</Badge>
-        </div>
+        <ThinkingLevelPicker
+          levels={levels}
+          value={value.thinkingLevel ?? "off"}
+          onChange={(next) => onChange(modelRefWithLevel(value.identity, next))}
+          identity={value.identity}
+          size={{ initial: "3", sm: "2" }}
+          triggerId={`${id}-thinking`}
+          disabled={disabled}
+        />
       )}
 
       {reason === null ? null : (

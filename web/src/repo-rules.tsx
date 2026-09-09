@@ -11,13 +11,10 @@ import { HelpTooltip } from "@/components/help-tooltip";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { TAB_TRIGGER } from "@/components/tab-trigger";
+import { AuxiliaryModelLine } from "@/components/auxiliary-model-line";
 
 import { api, errorText, fetchJson } from "./api.ts";
-import {
-  AUXILIARY_MODEL_SOURCE_LABEL,
-  useAuxiliaryModel,
-  type AuxiliaryModelView,
-} from "./auxiliary-model.ts";
+import { useAuxiliaryModel } from "./auxiliary-model.ts";
 import { CommitPicker, type CommitSelection } from "./commit-picker.tsx";
 import { OUTLINED_ACTION, RuleTraceButton, SOURCE_LABEL, TYPE_LABEL, type KnowledgeType } from "./rule-trace.tsx";
 import { THINKING_LEVEL_LABEL, type ThinkingLevel } from "./model-services.ts";
@@ -1675,32 +1672,6 @@ function ExplorationLaunch({
         />
       ) : null}
     </Dialog.Root>
-  );
-}
-
-/**
- * 「将使用：<模型标识> · <档位>（来源：…）」那一行(issue #303)。基点探索与知识整理共用:
- * 两条链路用的是同一处生效辅助模型,读的也是同一个只读投影,发起时不再选模型。
- */
-function AuxiliaryModelLine({ view }: { view: AuxiliaryModelView | undefined }) {
-  if (view === undefined) {
-    return <Text size="2" color="gray">正在确认将使用哪个模型…</Text>;
-  }
-  if (view.identity === null || view.source === null || !view.available) {
-    return (
-      <Text size="2" color="red" role="alert">
-        {view.unavailableReason ?? "这个仓库生效的辅助模型跑不了。"}
-      </Text>
-    );
-  }
-  return (
-    <Text size="2" color="gray">
-      将使用：<span className="font-mono">{view.identity}</span>
-      {view.thinkingLevel === null
-        ? null
-        : ` · 思考 ${THINKING_LEVEL_LABEL[view.thinkingLevel]}`}
-      （来源：{AUXILIARY_MODEL_SOURCE_LABEL[view.source]}）
-    </Text>
   );
 }
 
