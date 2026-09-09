@@ -58,6 +58,8 @@ function seedRun(
   findings: readonly SeedFinding[],
   rootCauses: readonly { reason: string; members: readonly RootCauseMemberRecord[] }[] = [],
   startedAt = "2026-09-01T00:00:00.000Z",
+  /** 这一轮的模式与收尾结果:只复核与失败那两档不提组,取「最新一轮」时要跳过它们。 */
+  run: { mode?: "verdict-only"; failed?: boolean } = {},
 ): { runId: number; findingIds: number[]; groupIds: number[] } {
   const store = openStore(h.db.path);
   try {
@@ -71,11 +73,12 @@ function seedRun(
       changedLines: 1,
       batchCount: 1,
       reviewerPins: [],
+      ...(run.mode === undefined ? {} : { mode: run.mode }),
     });
     const groupIds = store.finishRun(runId, {
       finishedAt: startedAt,
       durationMs: 1,
-      failed: false,
+      failed: run.failed ?? false,
       outcomes: [],
       findings: findings.map((finding, index) => ({
         file: finding.file,
@@ -200,6 +203,69 @@ test("合并 agent 缺席的阶段:组列表为空,每条的组引用都是 null
   );
 });
 
+test("只复核与失败的那几轮:上一轮完整审查的组照旧在", async () => {
+  const h = await startReadyPanelHarness();
+  seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
+  const full = seedRun(
+    h,
+    HARNESS_PR.number,
+    [{ file: "src/a.ts" }, { file: "src/b.ts" }],
+    [{ reason: REASON, members: [{ groupIndex: 0 }, { groupIndex: 1 }] }],
+  );
+  // 只复核不报新的、从不提组;失败那一轮压根没走到合并。它们都不该被当成「最新一轮」。
+  seedRun(h, HARNESS_PR.number, [], [], "2026-09-02T00:00:00.000Z", { mode: "verdict-only" });
+  seedRun(h, HARNESS_PR.number, [], [], "2026-09-03T00:00:00.000Z", { failed: true });
+
+  const body = await summary(h);
+  assert.deepEqual(body.rootCauseGroups, [
+    { id: full.groupIds[0]!, reason: REASON, findingIds: full.findingIds },
+  ]);
+  assert.equal(byFile(body, "src/a.ts").rootCause?.id, full.groupIds[0]!);
+});
+
+test("之后一轮完整审查没提组:组列表回空,每条的引用都是 null", async () => {
+  const h = await startReadyPanelHarness();
+  seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
+  seedRun(
+    h,
+    HARNESS_PR.number,
+    [{ file: "src/a.ts" }, { file: "src/b.ts" }],
+    [{ reason: REASON, members: [{ groupIndex: 0 }, { groupIndex: 1 }] }],
+  );
+  seedRun(h, HARNESS_PR.number, [{ file: "src/c.ts" }], [], "2026-09-02T00:00:00.000Z");
+
+  const body = await summary(h);
+  assert.deepEqual(body.rootCauseGroups, []);
+  assert.deepEqual(
+    body.findings.map((finding) => finding.rootCause),
+    [null, null, null],
+  );
+});
+
+test("成员映完只剩一条:整组不出现,剩下那条按未入组列出", async () => {
+  const h = await startReadyPanelHarness();
+  seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
+  const seeded = seedRun(
+    h,
+    HARNESS_PR.number,
+    [{ file: "src/a.ts" }, { file: "src/b.ts" }],
+    [{ reason: REASON, members: [{ groupIndex: 0 }, { groupIndex: 1 }] }],
+  );
+  // a 那条整条交接掉而没有承接者:它映不到当前列表里的任何一行,组只剩 b 一个成员。
+  const db = new DatabaseSync(h.db.path);
+  try {
+    db.prepare("UPDATE finding SET disposition = 'continued' WHERE id = ?").run(
+      seeded.findingIds[0]!,
+    );
+  } finally {
+    db.close();
+  }
+
+  const body = await summary(h);
+  assert.deepEqual(body.rootCauseGroups, []);
+  assert.equal(byFile(body, "src/b.ts").rootCause, null);
+});
+
 test("成员已被延续掉:组引用落在承接它的那一行上", async () => {
   const h = await startReadyPanelHarness();
   seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
@@ -318,6 +384,28 @@ test("没有 finding:dispose-batch 的用户被拒:一条都不动", async () =>
     body: "{}",
   });
   assert.equal(denied.status, 403);
+  assert.deepEqual(h.memory.resolvedIds, []);
+  assert.equal(byFile(await summary(h), "src/a.ts").disposition, "unknown");
+});
+
+test("仓库分配之外的阶段:有权限也回 404,一条都不动", async () => {
+  const { h, groupId } = await harnessWithGroup();
+  seedRepo(h, 4243, "acme", "gadgets");
+  const cookie = await scopedUser(
+    h,
+    "other-repo",
+    PASSWORD,
+    "2026-09-01T00:00:00.000Z",
+    [4243],
+    ["finding:dispose-batch"],
+  );
+
+  const denied = await fetch(`${h.serverUrl}/api${disposePath(HARNESS_PR.number, groupId)}`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(denied.status, 404);
   assert.deepEqual(h.memory.resolvedIds, []);
   assert.equal(byFile(await summary(h), "src/a.ts").disposition, "unknown");
 });
