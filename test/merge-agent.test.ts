@@ -980,16 +980,21 @@ function runAuxiliaryModel(dbPath: string): unknown {
   }
 }
 
-/** 直接写审查策略里那一处辅助模型。面板写链只收当前可用的模型,夹具入口不设门。 */
+/**
+ * 直接写审查策略里那一处辅助模型。面板写链与 store 的兜底都只收当前可用的模型,这里要造的
+ * 正是「解析得出、却跑不了」的那一处,所以绕过 store 直写那一行。
+ */
 function setGlobalAuxiliaryModel(dbPath: string, spec: unknown): void {
-  const store = openStore(dbPath);
+  const raw = new DatabaseSync(dbPath);
   try {
-    assert.equal(
-      store.putGlobalSettings({ auxiliaryModelJson: JSON.stringify(spec) }),
-      true,
-    );
+    raw
+      .prepare(
+        `INSERT INTO global_setting (key, value) VALUES ('auxiliary_model', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(JSON.stringify(spec));
   } finally {
-    store.close();
+    raw.close();
   }
 }
 
