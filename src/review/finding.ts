@@ -142,6 +142,16 @@ export type Finding = {
  */
 export type ReviewRunMode = "full" | "verdict-only";
 
+/**
+ * 一轮 Review Run 是被谁开出来的(issue #312)。
+ *
+ * `delivery` 是 Forge 投递,`panel` 是人在面板上的重跑、发起范围审查与推进比较项,
+ * `scheduled` 是每日增量的定时检查(spec #310;本票只定义这一档,写入由那张票做)。
+ * 它与调用者用户名快照分开:定时开出的那一轮没有调用者,「没有用户名」从此不再等于
+ * 「投递」。升级前的旧行按用户名回填(有即 `panel`,否则 `delivery`)。
+ */
+export type ReviewTriggerSource = "delivery" | "panel" | "scheduled";
+
 /** 一次 Review Run 覆盖的代码范围。`baseSha` 是 merge-base,不是 base 分支尖端。 */
 export type ReviewRange = {
   baseSha: string;
