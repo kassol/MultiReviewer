@@ -2702,13 +2702,13 @@ export type Store = {
   /** 把停在运行中的整理改判失败,与 `failInterruptedRuleExplorations` 同一个理由。 */
   failInterruptedRuleConsolidations(failure: string, at: string): void;
   /**
-   * 这个仓库要在面板上列出的修订意图(CONTEXT.md 修订意图,issue #294):运行中、失败,
-   * 以及结束时刻距 `now` 不超过 `completedWindowMs` 的完成行,按开始时刻倒序。
+   * 这个仓库的全部修订意图(CONTEXT.md 修订意图,issue #294、#317):运行中与失败的在前,
+   * 其余按开始时刻倒序。
    *
-   * 库里的行永久保留供轨迹回溯,窗口只管列不列——一条裁决完的意图留在弹窗顶部只会挡住
-   * 后面的事。
+   * 不再按完成时刻截窗(issue #317):意图列表挪进弹窗自己的 tab,不再挡知识条目;处置时
+   * 写的备注去了哪里,多久以后都要查得到。要人处理的(重试、删除)因此置顶。
    */
-  listRuleIntents(repoId: number, now: string, completedWindowMs: number): RuleIntent[];
+  listRuleIntents(repoId: number): RuleIntent[];
   /** 一条修订意图。不在这个仓库里回 null。 */
   getRuleIntent(repoId: number, intentId: number): RuleIntent | null;
   /**
@@ -4853,16 +4853,14 @@ export function openStore(dbPath: string): Store {
       ).run(failure, at);
     },
 
-    listRuleIntents(repoId, now, completedWindowMs) {
-      const cutoff = new Date(new Date(now).getTime() - completedWindowMs).toISOString();
+    listRuleIntents(repoId) {
       return db
         .prepare(
           `${RULE_INTENT_COLUMNS}
              WHERE repo_id = ?
-               AND (state <> 'completed' OR finished_at >= ?)
-             ORDER BY started_at DESC, id DESC`,
+             ORDER BY state = 'completed', started_at DESC, id DESC`,
         )
-        .all(repoId, cutoff)
+        .all(repoId)
         .map(toRuleIntent);
     },
 

@@ -408,7 +408,7 @@ test("选不出辅助模型时:跳过解读留一行原因,零提案", async () 
   // 轨迹从任务开始就起(issue #214):选不出模型也是反哺之内的失败,人来这条轨迹就是要
   // 看它卡在哪一步,而不是一片空白。
   assert.deepEqual(ruleTraceKinds(h), ["rule_agent_started", "rule_agent_failed"]);
-  // 选不出模型不再静默:意图行照样落一条,失败带原因,人在弹窗顶部看得到(issue #296)。
+  // 选不出模型不再静默:意图行照样落一条,失败带原因,人在修订意图 tab 看得到(issue #296、#317)。
   const [intent] = await intents(h);
   assert.equal(intent!.state, "failed");
   assert.match(intent!.failure ?? "", /审查策略/);

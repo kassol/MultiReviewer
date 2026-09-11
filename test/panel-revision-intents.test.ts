@@ -558,7 +558,7 @@ test("重启:停在运行中的意图改判失败", async () => {
   const restarted = openStore(db.path);
   try {
     restarted.failInterruptedRuleIntents("服务重启,上一次提议没跑完", "2026-09-08T01:00:00.000Z");
-    const listed = restarted.listRuleIntents(71, "2026-09-08T01:00:00.000Z", 600_000);
+    const listed = restarted.listRuleIntents(71);
     assert.deepEqual(
       listed.map((row) => [row.targetKind, row.state, row.failure, row.finishedAt]),
       [
@@ -571,33 +571,50 @@ test("重启:停在运行中的意图改判失败", async () => {
   }
 });
 
-test("完成的意图只在十分钟窗口内列出,库里的行留着", async () => {
+test("完成很久的意图仍列出,运行中与失败排在完成的前面", async () => {
+  // 列表是这个仓库的全部意图(issue #317):处置时写的备注去了哪里,多久以后都查得到。
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
     store.registerRepo({ repoId: 72, owner: "acme", repo: "legacy", generation: 1, key: "k" });
-    const intent = store.startRuleIntent(72, {
-      text: "早就跑完了",
-      submittedBy: "someone",
-      targetKind: "none",
-      targetId: null,
-      model: "test:global-model",
-      startedAt: "2026-09-08T00:00:00.000Z",
-    })!;
+    const start = (text: string, startedAt: string): number =>
+      store.startRuleIntent(72, {
+        text,
+        submittedBy: "someone",
+        targetKind: "none",
+        targetId: null,
+        model: "test:global-model",
+        startedAt,
+      })!.id;
+    const old = start("早就跑完了", "2026-09-01T00:00:00.000Z");
     store.finishRuleIntent(
-      intent.id,
+      old,
       { summary: "已产出一条", produced: { proposalIds: [3], draftItemIds: [] } },
+      "2026-09-01T00:01:00.000Z",
+    );
+    const failed = start("跑失败了", "2026-09-02T00:00:00.000Z");
+    store.failRuleIntent(failed, "模型调用被拒", "2026-09-02T00:01:00.000Z");
+    start("还在跑", "2026-09-03T00:00:00.000Z");
+    // 开始得最晚的这一条已经完成:它排在运行中与失败之后,而不是按开始时刻排到最前。
+    const recent = start("刚跑完", "2026-09-08T00:00:00.000Z");
+    store.finishRuleIntent(
+      recent,
+      { summary: "未产出变更", produced: { proposalIds: [], draftItemIds: [] } },
       "2026-09-08T00:01:00.000Z",
     );
-    assert.equal(store.listRuleIntents(72, "2026-09-08T00:05:00.000Z", 600_000).length, 1);
-    assert.equal(store.listRuleIntents(72, "2026-09-08T00:30:00.000Z", 600_000).length, 0);
-    // 行仍在库里:轨迹回溯读得到它。
-    assert.equal(store.getRuleIntent(72, intent.id)?.summary, "已产出一条");
-    assert.deepEqual(store.getRuleIntent(72, intent.id)?.produced, {
-      proposalIds: [3],
-      draftItemIds: [],
-    });
+
+    const listed = store.listRuleIntents(72);
+    assert.deepEqual(
+      listed.map((row) => [row.text, row.state]),
+      [
+        ["还在跑", "running"],
+        ["跑失败了", "failed"],
+        ["刚跑完", "completed"],
+        ["早就跑完了", "completed"],
+      ],
+    );
+    assert.deepEqual(listed.at(-1)!.produced, { proposalIds: [3], draftItemIds: [] });
   } finally {
     store.close();
   }

@@ -6754,11 +6754,8 @@ function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: num
       // 修订意图(ADR 0028,issue #294)。它将用哪一处模型不在这里回:那是生效辅助模型
       // 的只读投影(`GET /repos/{id}/auxiliary-model`,issue #304),意图框与探索、整理
       // 两处读的因此是同一个结论。
-      intents: store.listRuleIntents(
-        repoId,
-        new Date((deps.now ?? Date.now)()).toISOString(),
-        INTENT_COMPLETED_WINDOW_MS,
-      ),
+      // 全部历史,运行中与失败在前(issue #317)。
+      intents: store.listRuleIntents(repoId),
     };
   });
   if (view === undefined) {
@@ -7592,12 +7589,6 @@ async function startDispositionFeedback(
  * 只拦住把整篇文档粘进来的那种写法。服务端只拒收,不截断。
  */
 const INTENT_TEXT_LIMIT = 500;
-
-/**
- * 完成的意图在知识集读取里还列多久(ADR 0028)。库里的行永久保留供轨迹回溯,窗口只管
- * 列不列——裁决完的一条留在弹窗顶部只会挡住后面的事。
- */
-const INTENT_COMPLETED_WINDOW_MS = 10 * 60 * 1000;
 
 /** agent 一句话都没说时的收尾(CONTEXT.md 修订意图)。零产出是完成,不是失败。 */
 const INTENT_EMPTY_SUMMARY = "未产出变更";

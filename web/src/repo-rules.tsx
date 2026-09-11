@@ -215,8 +215,8 @@ export function RepoRules({
   );
 }
 
-/** 弹窗的三个 tab:生效条目、修订提案队列、基点探索(未确认时叫知识草案)。 */
-type DialogTab = "entries" | "proposals" | "exploration";
+/** 弹窗的四个 tab:生效条目、修订提案队列、修订意图(issue #317)、基点探索(未确认时叫知识草案)。 */
+type DialogTab = "entries" | "proposals" | "intents" | "exploration";
 
 /** 意图行点得到的那三样(issue #295、#297、#298):目标类型加它的标识。 */
 type KnowledgeRef = { kind: "proposal" | "rule" | "draft"; id: number };
@@ -323,6 +323,8 @@ function RuleSetDialogContent({
 
   const data = ruleSet.data;
   const pendingCount = data?.proposals.filter((row) => row.state === "pending").length ?? 0;
+  // 要人处理的意图(issue #317):运行中与失败。修订意图 tab 的徽章只数这些。
+  const openIntents = data?.intents.filter((intent) => intent.state !== "completed") ?? [];
   // 队列 tab 的可见性:有过提案就一直在(已裁决的留在里面供查),**现集非空时它同样出现**。
   // 知识整理的入口挂在这颗 tab 上,而整理在「现集非空、队列为空」时照样跑得动(服务端只在
   // 两样都空时短路,issue #285):跟着队列一起藏掉的话,那种局面下人根本发起不了整理。空队
@@ -346,7 +348,7 @@ function RuleSetDialogContent({
       aria-describedby={undefined}
       maxWidth="880px"
       size={{ initial: "2", sm: "3" }}
-      // 高度定死而不是随内容:三个 tab 的内容量差得远,跟着内容缩放的话每次切 tab
+      // 高度定死而不是随内容:四个 tab 的内容量差得远,跟着内容缩放的话每次切 tab
       // 整个弹窗都在跳。
       className="flex h-[min(820px,calc(100dvh-4.5rem))] flex-col overflow-hidden"
     >
@@ -363,21 +365,6 @@ function RuleSetDialogContent({
         <Text as="p" size="1" color="orange" mb="2">
           知识集未确认:完成知识确认前,这个仓库的投递只记录不审,面板也发起不了审查。
         </Text>
-      )}
-
-      {/* 意图框与意图列表在弹窗顶部,三个 tab 之上(ADR 0028):写下一段话是这个弹窗
-          现在唯一的写入口,它不属于其中任何一个 tab。 */}
-      {data === undefined ? null : (
-        <IntentSection
-          repoId={repo.repoId}
-          canWrite={canWrite}
-          ruleSet={data}
-          onChanged={reload}
-          onShow={(ref) => {
-            setPickedTab(REF_TAB[ref.kind]);
-            setShown(ref);
-          }}
-        />
       )}
 
       {ruleSet.isPending ? (
@@ -430,6 +417,22 @@ function RuleSetDialogContent({
                 ) : null}
               </Tabs.Trigger>
             ) : null}
+            {/* 对所有能看弹窗的人都在(issue #317):知识集怎么变的对能看这个仓库的人透明。
+                徽章是注意力信号而不是总数,有失败即红。 */}
+            <Tabs.Trigger value="intents" className={TAB_TRIGGER}>
+              修订意图
+              {openIntents.length > 0 ? (
+                <Badge
+                  color={openIntents.some((intent) => intent.state === "failed") ? "red" : "blue"}
+                  variant="soft"
+                  radius="full"
+                  size="1"
+                  className="ml-1.5 tabular-nums"
+                >
+                  {openIntents.length}
+                </Badge>
+              ) : null}
+            </Tabs.Trigger>
             {canWrite ? (
               <Tabs.Trigger value="exploration" className={TAB_TRIGGER}>
                 {data.version === null ? "知识草案" : "基点探索"}
@@ -570,6 +573,21 @@ function RuleSetDialogContent({
                 />
               </Tabs.Content>
             ) : null}
+
+            {/* 意图框与意图列表一起在这颗 tab 里(issue #317):钉在标题下时,几条完成行的
+                收尾与产出就把知识条目顶出视口。卡片上的「改写」仍就地展开。 */}
+            <Tabs.Content value="intents">
+              <IntentSection
+                repoId={repo.repoId}
+                canWrite={canWrite}
+                ruleSet={data}
+                onChanged={reload}
+                onShow={(ref) => {
+                  setPickedTab(REF_TAB[ref.kind]);
+                  setShown(ref);
+                }}
+              />
+            </Tabs.Content>
 
             {canWrite ? (
               <Tabs.Content value="exploration">
@@ -831,7 +849,7 @@ const INTENT_STATE_LABEL = {
 } as const;
 
 /**
- * 意图框(CONTEXT.md 修订意图,ADR 0028,issue #294、#295、#297、#298)。弹窗顶部那一个与
+ * 意图框(CONTEXT.md 修订意图,ADR 0028,issue #294、#295、#297、#298)。修订意图 tab 里那一个与
  * 生效条目、待裁决提案与草案条目卡片上「改写」展开的那一个是同一个组件,**目标由调用方
  * 给**:目标决定的只有提交时带不带 `target` 与框里那句提示语,字数、置灰与提交那几道判据
  * 四处必须一样。
@@ -939,7 +957,8 @@ function IntentForm({
 }
 
 /**
- * 修订意图那一块(CONTEXT.md 修订意图,ADR 0028,issue #294):一个意图框加一列意图行。
+ * 修订意图那一块(CONTEXT.md 修订意图,ADR 0028,issue #294):一个意图框加一列意图行,
+ * 整块是弹窗的「修订意图」tab(issue #317)。列表是这个仓库的全部意图,运行中与失败在前。
  *
  * 框只对有 `knowledge:write` 的人出现——没有这一格的人提不了意图。列表所有人都看得到:
  * 知识集怎么变的对能看这个仓库的人都透明。
@@ -976,10 +995,12 @@ function IntentSection({
     onSuccess: onChanged,
   });
 
-  if (!canWrite && ruleSet.intents.length === 0) return null;
+  if (!canWrite && ruleSet.intents.length === 0) {
+    return <EmptyState title="这个仓库还没有修订意图" titleAs="h3" />;
+  }
 
   return (
-    <div className="mb-3 shrink-0 flex flex-col gap-2">
+    <div className="flex flex-col gap-2">
       {canWrite ? (
         <IntentForm
           repoId={repoId}
@@ -1350,7 +1371,8 @@ function ProposalSection({
                       {proposal.scope === "" ? "全仓库" : proposal.scope}
                     </Badge>
                     {/* 刚完成的意图产出的那几条(issue #294):人写完意图回到队列,要一眼
-                        认出该去裁决哪一条。十分钟窗口过后意图不再列出,徽章跟着消失。 */}
+                        认出该去裁决哪一条。意图列全部历史之后(issue #317)徽章不再随时间
+                        消失,这条待裁决期间一直带着。 */}
                     {fromIntent.has(proposal.id) ? (
                       <Badge color="amber" variant="soft">刚由意图产出</Badge>
                     ) : null}
