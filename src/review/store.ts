@@ -7512,10 +7512,14 @@ export function openStore(dbPath: string): Store {
     },
 
     completeRangeReview(record) {
+      // 每日增量随阶段一起关掉(CONTEXT.md 每日增量):完成后的记录不该还写着「开着」。
       db.prepare(
         `UPDATE range_review
             SET state = 'completed', completed_by = ?, completed_at = ?,
-                last_forge_failure = NULL
+                last_forge_failure = NULL,
+                daily_increment_enabled = 0, daily_increment_branch = NULL,
+                daily_increment_enabled_at = NULL,
+                scheduled_check_time = '00:00', scheduled_check_mode = 'verdict-only'
           WHERE id = ?`,
       ).run(record.completedBy, record.completedAt, record.id);
     },

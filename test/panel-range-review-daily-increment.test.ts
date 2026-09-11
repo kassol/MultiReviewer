@@ -188,10 +188,24 @@ test("分支不在仓库的分支列表里:开启被拒,状态不动", async () 
   assert.equal((await detailRangeReview(h, rangeReview.id)).dailyIncrementEnabled, false);
 });
 
-test("审查完成之后不在进行中:开启被拒", async () => {
+test("审查完成之后不在进行中:每日增量随阶段关掉,再开启被拒", async () => {
   const h = await startedHarness();
   const rangeReview = await startRangeReview(h);
+  const opened = await h.api("PUT", `/range-reviews/${rangeReview.id}/daily-increment`, {
+    enabled: true,
+    branch: "feature",
+    time: "09:30",
+    mode: "full",
+  });
+  assert.equal(opened.status, 200);
   assert.equal((await h.api("POST", `/range-reviews/${rangeReview.id}/complete`)).status, 200);
+
+  const completed = await detailRangeReview(h, rangeReview.id);
+  assert.equal(completed.dailyIncrementEnabled, false);
+  assert.equal(completed.dailyIncrementBranch, null);
+  assert.equal(completed.dailyIncrementEnabledAt, null);
+  assert.equal(completed.scheduledCheckTime, "00:00");
+  assert.equal(completed.scheduledCheckMode, "verdict-only");
 
   const denied = await h.api("PUT", `/range-reviews/${rangeReview.id}/daily-increment`, {
     enabled: true,
