@@ -5873,14 +5873,8 @@ async function handleCreateRangeReview(
 }
 
 /**
- * 增量评审(issue #157)。
- *
- * 校验只要求新比较项是 base 的后代,不要求是上一个比较项的后代:作者 rebase 之后新的
- * 比较项对旧的就是旁支,要求后者会把人挡回去重开一个阶段(CONTEXT.md 比较项)。
- *
- * 先推分支再改记录:分支在 Forge 上,是这个阶段「当前在审什么」的对外事实,推不上去时
- * 记录跟着走就是在说一件没发生的事。推 head 分支会投一次 `synchronized`,那条投递按
- * 分支前缀丢掉(ADR 0012),一次推进只跑一轮。
+ * 增量评审的 HTTP 处理(issue #157)。这一层只做请求解析、取回范围审查与响应码映射,
+ * 准入与执行在 `advanceRangeReview` 里,与定时推进共用(issue #311)。
  */
 async function handleAdvanceRangeReview(
   req: IncomingMessage,
@@ -5910,22 +5904,105 @@ async function handleAdvanceRangeReview(
   if (record === undefined) {
     return sendJson(res, 404, { error: "没有这个范围审查" });
   }
+  const outcome = await advanceRangeReview(deps, record, {
+    comparison: payload.comparison,
+    ...(comparisonSource === undefined ? {} : { comparisonSource }),
+    mode,
+    operator: advancedBy,
+    ...(directive === undefined ? {} : { directive }),
+  });
+  if (!outcome.ok) {
+    return sendJson(res, ADVANCE_REJECTION_STATUS[outcome.reason], { error: outcome.message });
+  }
+  // 与发起同一个回执:先回 202 再开跑,人等的是「已经在跑了」。
+  return sendJson(res, 202, { rangeReview: outcome.rangeReview });
+}
+
+/**
+ * 推进比较项的准入拒绝(issue #311)。定时推进(spec #310)把它们映成自己那份结果枚举,
+ * HTTP 处理把它们映成状态码,两处各读同一组取值。范围解析那三档照搬 `ResolvedRange`
+ * 的原因名:定时推进要分得出「强推之后不再是 base 后代」与「取不到这个 commit」。
+ */
+type AdvanceRejectionReason =
+  | "not-advancable"
+  | "rule-set-unconfirmed"
+  | "forge-missing"
+  | "repo-unreachable"
+  | Extract<ResolvedRange, { ok: false }>["reason"]
+  | "same-comparison"
+  | "diff-unreadable"
+  | "nothing-to-verdict"
+  | "plan-broken"
+  | "push-failed";
+
+type AdvanceOutcome =
+  | { ok: true; rangeReview: RangeReviewRecord }
+  | { ok: false; reason: AdvanceRejectionReason; message: string };
+
+/** 拒绝原因到状态码,措辞由拒绝自己带着——文案与这一票之前逐字一致。 */
+const ADVANCE_REJECTION_STATUS: Record<AdvanceRejectionReason, number> = {
+  "not-advancable": 409,
+  "rule-set-unconfirmed": 409,
+  "forge-missing": 503,
+  "repo-unreachable": 502,
+  "base-unknown": 400,
+  "comparison-unknown": 400,
+  "not-descendant": 400,
+  "same-comparison": 400,
+  "diff-unreadable": 502,
+  "nothing-to-verdict": 409,
+  "plan-broken": 409,
+  "push-failed": 502,
+};
+
+function advanceRejected(reason: AdvanceRejectionReason, message: string): AdvanceOutcome {
+  return { ok: false, reason, message };
+}
+
+/**
+ * 推进比较项的准入与执行(issue #311,spec #310)。面板点推进与定时推进共用这一段:
+ * 后代判定、只复核准入、回退文件历史的自动处置、推容器 PR head、开轮次。
+ *
+ * 不认识 HTTP:入参是范围审查、新比较项、模式、操作者与本轮指令,出参是一组可枚举的
+ * 准入拒绝或已开轮次。操作者为空即没有人点这一次(定时推进),那一轮的 `triggered_by`
+ * 跟着为空。
+ *
+ * 校验只要求新比较项是 base 的后代,不要求是上一个比较项的后代:作者 rebase 之后新的
+ * 比较项对旧的就是旁支,要求后者会把人挡回去重开一个阶段(CONTEXT.md 比较项)。
+ *
+ * 先推分支再改记录:分支在 Forge 上,是这个阶段「当前在审什么」的对外事实,推不上去时
+ * 记录跟着走就是在说一件没发生的事。推 head 分支会投一次 `synchronized`,那条投递按
+ * 分支前缀丢掉(ADR 0012),一次推进只跑一轮。
+ */
+async function advanceRangeReview(
+  deps: WebhookServerDeps,
+  record: RangeReviewRecord,
+  input: {
+    comparison: string;
+    comparisonSource?: ComparisonSource;
+    mode: ReviewRunMode;
+    operator: string | null;
+    directive?: string;
+  },
+): Promise<AdvanceOutcome> {
+  const id = record.id;
+  const { mode, operator } = input;
   if (record.state !== "in-progress" || record.containerPullNumber === null) {
-    return sendJson(res, 409, {
-      error:
-        record.state === "completed"
-          ? "这个范围审查已经审查完成,比较项不再推进"
-          : "这个范围审查没有可用的容器 pull request,重新发起一个",
-    });
+    return advanceRejected(
+      "not-advancable",
+      record.state === "completed"
+        ? "这个范围审查已经审查完成,比较项不再推进"
+        : "这个范围审查没有可用的容器 pull request,重新发起一个",
+    );
   }
   // 四个发起入口同一道门禁(issue #206)。确认不可逆、范围审查又只能在确认之后发起,
   // 这个分支因此不可达;留着是为了「开跑之前必过门禁」不随入口数量漏掉一处。
   if (ruleSetUnconfirmed(deps.dbPath, record.repoId)) {
-    return sendJson(res, 409, { error: RULE_SET_UNCONFIRMED });
+    return advanceRejected("rule-set-unconfirmed", RULE_SET_UNCONFIRMED);
   }
   const forge = deps.forges.gitea;
   if (forge === undefined) {
-    return sendJson(res, 503, { error: "gitea 没有配置 Forge,推进不了比较项" });
+    return advanceRejected("forge-missing", "gitea 没有配置 Forge,推进不了比较项");
   }
 
   const ref: RepoRef = { owner: record.owner, repo: record.repo };
@@ -5945,19 +6022,22 @@ async function handleAdvanceRangeReview(
       cloneUrl,
       credentials,
       base: record.baseSha,
-      comparison: payload.comparison,
+      comparison: input.comparison,
     });
   } catch (error) {
-    return sendJson(res, 502, { error: `读不到仓库或取不回代码:${failureText(error)}` });
+    return advanceRejected("repo-unreachable", `读不到仓库或取不回代码:${failureText(error)}`);
   }
   if (!resolved.ok) {
-    return sendJson(res, 400, { error: RANGE_REJECTION[resolved.reason] });
+    return advanceRejected(resolved.reason, RANGE_REJECTION[resolved.reason]);
   }
   const { comparisonSha } = resolved;
   // 新比较项就是当前那个时拒绝(issue #234):同一段 diff 再审一遍只是白跑一轮。与
   // 「两端不能是同一个 commit」同一档,面板上那一行置灰只是引导,接口自己也要拦。
   if (comparisonSha === record.comparisonSha) {
-    return sendJson(res, 400, { error: "新比较项与当前比较项是同一个 commit,选一个更新的" });
+    return advanceRejected(
+      "same-comparison",
+      "新比较项与当前比较项是同一个 commit,选一个更新的",
+    );
   }
 
   // 只复核那一轮开跑之前先问一句这个阶段还有没有可复核的东西(issue #250),判据与重跑
@@ -5983,7 +6063,10 @@ async function handleAdvanceRangeReview(
       changedFiles = await readRangeDiffFiles(prepared);
       reviewable = new Set(reviewableFiles(changedFiles));
     } catch (error) {
-      return sendJson(res, 502, { error: `取不回新比较项的变更文件:${failureText(error)}` });
+      return advanceRejected(
+        "diff-unreadable",
+        `取不回新比较项的变更文件:${failureText(error)}`,
+      );
     }
     // 自动处置写回的是容器 PR 上那些评论:阶段的 Finding 都挂在它上面(issue #276)。
     const rejection = await verdictOnlyRejection(
@@ -5994,7 +6077,7 @@ async function handleAdvanceRangeReview(
       reviewable,
       changedFiles,
     );
-    if (rejection !== undefined) return sendJson(res, 409, { error: rejection });
+    if (rejection !== undefined) return advanceRejected("nothing-to-verdict", rejection);
   }
 
   // 计划先固定好,与投递、重跑、发起同一个启动器。
@@ -6002,9 +6085,7 @@ async function handleAdvanceRangeReview(
   try {
     plan = await buildRunPlan(deps, record.repoId);
   } catch (error) {
-    return sendJson(res, 409, {
-      error: `模型覆盖坏了,先改组合再推进:${failureText(error)}`,
-    });
+    return advanceRejected("plan-broken", `模型覆盖坏了,先改组合再推进:${failureText(error)}`);
   }
 
   try {
@@ -6020,9 +6101,7 @@ async function handleAdvanceRangeReview(
     const failure = failureText(error);
     // 状态不动:容器 PR 还在,人改完分支保护再点一次就该继续。
     withStore(deps.dbPath, (store) => store.recordRangeReviewForgeFailure(id, failure));
-    return sendJson(res, 502, {
-      error: `把容器 PR 的 head 分支推到新比较项失败:${failure}`,
-    });
+    return advanceRejected("push-failed", `把容器 PR 的 head 分支推到新比较项失败:${failure}`);
   }
 
   const advancedAt = new Date((deps.now ?? Date.now)()).toISOString();
@@ -6030,14 +6109,13 @@ async function handleAdvanceRangeReview(
     store.advanceRangeReview({
       id,
       comparisonSha,
-      ...(comparisonSource === undefined ? {} : { comparisonSource }),
-      advancedBy,
+      ...(input.comparisonSource === undefined ? {} : { comparisonSource: input.comparisonSource }),
+      // 历次比较项那张表不收空的记录人;定时推进记一行空串,面板那一行因此只是没有人名。
+      advancedBy: operator ?? "",
       advancedAt,
     });
     return store.getRangeReview(id)!;
   });
-  // 与发起同一个回执:先回 202 再开跑,人等的是「已经在跑了」。
-  sendJson(res, 202, { rangeReview });
   void startRun(
     deps,
     forge,
@@ -6051,11 +6129,12 @@ async function handleAdvanceRangeReview(
       action: "range-review",
     },
     plan,
-    advancedBy,
+    operator ?? undefined,
     id,
-    directive,
+    input.directive,
     mode,
   );
+  return { ok: true, rangeReview };
 }
 
 /**
