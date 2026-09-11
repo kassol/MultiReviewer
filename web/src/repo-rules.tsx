@@ -390,8 +390,9 @@ function RuleSetDialogContent({
           onValueChange={(next) => setPickedTab(next as DialogTab)}
           className="flex min-h-0 flex-1 flex-col"
         >
-          {/* 与模型服务详情同一套 tab 语法:3px 圆头指示条,底线通栏。 */}
-          <Tabs.List size="2" className="shrink-0 shadow-[inset_0_-1px_0_0_var(--v8-border-chrome)]">
+          {/* 与模型服务详情同一套 tab 语法:3px 圆头指示条,底线通栏。`w-0 min-w-full` 让四颗
+              tab 的固有宽度不再把弹窗撑出窄屏(issue #317):放不下时 tab 列自己横向滚。 */}
+          <Tabs.List size="2" className="w-0 min-w-full shrink-0 shadow-[inset_0_-1px_0_0_var(--v8-border-chrome)]">
             <Tabs.Trigger value="entries" className={TAB_TRIGGER}>
               知识条目
               {data.rules.length > 0 ? (
