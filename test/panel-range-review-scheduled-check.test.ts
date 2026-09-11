@@ -7,12 +7,15 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { createDrain } from "../src/drain.ts";
 import type { ReviewRange } from "../src/review/finding.ts";
-import { openStore, type DailyIncrementResult } from "../src/review/store.ts";
+import { openStore, type ScheduledCheckResult } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
@@ -40,8 +43,8 @@ type RangeReview = {
   dailyIncrementEnabled: boolean;
   dailyIncrementEnabledAt: string | null;
   dailyIncrementBranch: string | null;
-  dailyIncrementCheckedAt: string | null;
-  dailyIncrementResult: DailyIncrementResult | null;
+  scheduledCheckAt: string | null;
+  scheduledCheckResult: ScheduledCheckResult | null;
 };
 
 /** 只复核那一轮要有未处置历史才开得起来:要它的用例让每个 Reviewer 都报一条。 */
@@ -59,10 +62,12 @@ async function startedHarness(
   clock: Clock,
   findings: Parameters<typeof scriptedReviewer>[1] = [],
   options: Parameters<typeof startReadyPanelHarness>[0] = {},
+  /** Reviewer 开审之前停在这里:要让某一轮一直没有结束时间的用例用它。 */
+  hold?: (range: ReviewRange) => Promise<void>,
 ): Promise<PanelHarness> {
   const harness = await startReadyPanelHarness({
     ...options,
-    dailyIncrementTickMs: TICK_MS,
+    scheduledCheckTickMs: TICK_MS,
     now: () => clock.at,
     buildReviewers: (plans) =>
       plans.map((plan) => {
@@ -74,6 +79,7 @@ async function startedHarness(
             recorded.historyEntries.push(
               input.history.map((entry) => `${entry.file}:${entry.disposition}`),
             );
+            await hold?.(input.range);
             return reviewer.review(input);
           },
         };
@@ -192,7 +198,7 @@ test("到点推进:head 跟着分支走,那一轮来源是定时、范围是 bas
   assert.equal(latest.headSha, next);
   assert.deepEqual(recorded.historyEntries.at(-1), ["src/answer.ts:unknown"]);
 
-  // 历次比较项那一行没有记录人:面板据此显示「定时增量」。
+  // 历次比较项那一行没有记录人:面板据此显示「定时检查」。
   const store = openStore(h.db.path);
   const comparisons = store.listRangeReviewComparisons(rangeReview.id);
   store.close();
@@ -202,8 +208,8 @@ test("到点推进:head 跟着分支走,那一轮来源是定时、范围是 bas
   );
 
   const detail = await detailRangeReview(h, rangeReview.id);
-  assert.equal(detail.dailyIncrementResult, "advanced");
-  assert.notEqual(detail.dailyIncrementCheckedAt, null);
+  assert.equal(detail.scheduledCheckResult, "advanced");
+  assert.notEqual(detail.scheduledCheckAt, null);
   assert.equal(detail.dailyIncrementEnabled, true);
 });
 
@@ -259,7 +265,7 @@ test("分支上没有新提交:跳过并记原因,不开轮次", async () => {
   await h.scheduledChecksAtLeast(1);
   assert.equal(h.scheduledChecks[0]!.result, "no-new-commit");
   assert.equal(runsOf(h, rangeReview.id).length, 1);
-  assert.equal((await detailRangeReview(h, rangeReview.id)).dailyIncrementResult, "no-new-commit");
+  assert.equal((await detailRangeReview(h, rangeReview.id)).scheduledCheckResult, "no-new-commit");
 });
 
 test("这个范围审查有轮次在跑:跳过并记原因", async () => {
@@ -344,7 +350,7 @@ test("跟的分支被删掉:跳过并记原因,开关仍然开着", async () => 
   const detail = await detailRangeReview(h, rangeReview.id);
   assert.equal(detail.dailyIncrementEnabled, true);
   assert.equal(detail.dailyIncrementBranch, "short-lived");
-  assert.equal(detail.dailyIncrementResult, "branch-unknown");
+  assert.equal(detail.scheduledCheckResult, "branch-unknown");
 });
 
 test("排空期间:跳过并记「排空中」,不开轮次", async () => {
@@ -415,6 +421,89 @@ test("一条推分支失败不影响另一条:同一个仓库里另一个范围�
   assert.equal(runsOf(h, healthy.id).length, 2);
 });
 
+/** 轮询到条件成立。等的是 git 钩子落下的信号文件,没有回调可挂。 */
+async function until(check: () => boolean): Promise<void> {
+  while (!check()) await new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+test("tick 处理前一条期间人工推进了后一条:后一条开检查前重读,记「有轮次在跑」、不再开轮次", async () => {
+  const clock = makeClock();
+  const recorded: Recorded = { ranges: [], historyEntries: [] };
+  // 人工推进开出的那一轮停在 Reviewer 里,因此一直没有结束时间。
+  let manualSha = "";
+  let reachManual!: () => void;
+  const manualReached = new Promise<void>((resolve) => (reachManual = resolve));
+  let releaseManual!: () => void;
+  const manualReleased = new Promise<void>((resolve) => (releaseManual = resolve));
+  const h = await startedHarness(recorded, clock, REPORTED_FINDINGS, {}, async (range) => {
+    if (range.headSha !== manualSha) return;
+    reachManual();
+    await manualReleased;
+  });
+  // 列表按 id 倒序,tick 先检查后发起的那一条。
+  const checkedSecond = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+  const checkedFirst = await startRangeReview(h, h.repo.baseSha, h.repo.headSha, true);
+  await h.settledAtLeast(2);
+
+  manualSha = h.repo.pushToHead({ "src/answer.ts": "export const answer = 3;\n" });
+  const tip = h.repo.pushToHead({ "src/answer.ts": "export const answer = 4;\n" });
+  await enableDailyIncrement(h, checkedFirst.id, "feature");
+  await enableDailyIncrement(h, checkedSecond.id, "feature");
+
+  // 远端的 pre-receive 钩子把先检查的那一条卡在推容器 PR head 分支那一步,tick 停在它身上。
+  const signals = mkdtempSync(join(tmpdir(), "multireviewer-hold-"));
+  mkdirSync(join(signals, "hooks"));
+  const hook = join(signals, "hooks", "pre-receive");
+  writeFileSync(
+    hook,
+    [
+      "#!/bin/sh",
+      "while read old new ref; do",
+      `  if [ "$ref" = "refs/heads/${checkedFirst.headBranch}" ]; then`,
+      `    touch "${signals}/held"`,
+      // 信号目录被删掉也放行:用例半途失败时不留一个永远等着的 push。
+      `    while [ -d "${signals}" ] && [ ! -f "${signals}/release" ]; do sleep 0.05; done`,
+      "  fi",
+      "done",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(hook, 0o755);
+  execFileSync("git", ["-C", h.repo.dir, "config", "core.hooksPath", join(signals, "hooks")]);
+
+  try {
+    clock.set(clock.at + DAY_MS);
+    await until(() => existsSync(join(signals, "held")));
+
+    // tick 卡住的这段时间里,人把后一条推进到中间那个 commit,那一轮停在 Reviewer 里。
+    const advance = await h.api("POST", `/range-reviews/${checkedSecond.id}/advance`, {
+      comparison: manualSha,
+    });
+    assert.equal(advance.status, 202);
+    await manualReached;
+
+    writeFileSync(join(signals, "release"), "");
+    await h.scheduledChecksAtLeast(2);
+    const results = new Map(h.scheduledChecks.map((entry) => [entry.rangeReviewId, entry.result]));
+    assert.equal(results.get(checkedFirst.id), "advanced");
+    assert.equal(results.get(checkedSecond.id), "run-in-flight");
+
+    // 后一条停在人推的那个 commit 上,没有定时开出的轮次。
+    assert.equal(h.repo.branchSha(checkedFirst.headBranch), tip);
+    assert.equal(h.repo.branchSha(checkedSecond.headBranch), manualSha);
+    assert.deepEqual(
+      runsOf(h, checkedSecond.id).map((run) => run.triggerSource),
+      ["panel", "panel"],
+    );
+    releaseManual();
+    await h.settledAtLeast(4);
+  } finally {
+    releaseManual();
+    writeFileSync(join(signals, "release"), "");
+    rmSync(signals, { recursive: true, force: true });
+  }
+});
+
 test("升级前的旧库:开库补上每日增量那几列,开关照常能开", async () => {
   const clock = makeClock();
   const recorded: Recorded = { ranges: [], historyEntries: [] };
@@ -430,8 +519,8 @@ test("升级前的旧库:开库补上每日增量那几列,开关照常能开", 
     "daily_increment_enabled",
     "daily_increment_branch",
     "daily_increment_enabled_at",
-    "daily_increment_checked_at",
-    "daily_increment_result",
+    "scheduled_check_at",
+    "scheduled_check_result",
   ]) {
     db.exec(`ALTER TABLE range_review RENAME COLUMN ${column} TO before_upgrade_${column}`);
   }
@@ -442,8 +531,8 @@ test("升级前的旧库:开库补上每日增量那几列,开关照常能开", 
   assert.equal(detail.dailyIncrementEnabled, false);
   assert.equal(detail.dailyIncrementBranch, null);
   assert.equal(detail.dailyIncrementEnabledAt, null);
-  assert.equal(detail.dailyIncrementCheckedAt, null);
-  assert.equal(detail.dailyIncrementResult, null);
+  assert.equal(detail.scheduledCheckAt, null);
+  assert.equal(detail.scheduledCheckResult, null);
 
   await enableDailyIncrement(h, rangeReview.id, "feature");
   const opened = await detailRangeReview(h, rangeReview.id);

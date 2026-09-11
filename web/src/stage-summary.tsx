@@ -53,7 +53,7 @@ export type TriggerSource = "delivery" | "panel" | "scheduled";
 const TRIGGER_SOURCE_LABEL: Record<TriggerSource, string> = {
   delivery: "投递",
   panel: "面板",
-  scheduled: "定时增量",
+  scheduled: "定时检查",
 };
 
 /** 时间线里的一轮:这一轮对这个阶段做了什么。 */

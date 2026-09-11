@@ -353,8 +353,8 @@ CREATE TABLE IF NOT EXISTS range_review (
   daily_increment_enabled_at TEXT,
   -- 最近一次定时检查的时刻与结果(issue #314)。只留一条,新的覆盖旧的;开轮次的那
   -- 一次本身已在时间线里,不另记事件。任何结果都刷新时刻,一天因此至多检查一次。
-  daily_increment_checked_at TEXT,
-  daily_increment_result TEXT
+  scheduled_check_at TEXT,
+  scheduled_check_result TEXT
 );
 CREATE INDEX IF NOT EXISTS range_review_by_base ON range_review(owner, repo, base_sha);
 
@@ -906,16 +906,27 @@ const GLOBAL_AUXILIARY_MODEL_KEY = "auxiliary_model";
 const GLOBAL_SETTINGS_VERSION_KEY = "settings_version";
 
 /**
- * 每日增量那几列的建表片段(issue #313、#314)。与 `STORE_SCHEMA` 里 `range_review`
- * 的那几行逐字相同:`CREATE TABLE IF NOT EXISTS` 对既有表不生效,旧库靠 `openStore`
- * 逐列补上,两处写法漂了就会补出一张与新建的库不同构的表。
+ * 升级前的库里缺的列(issue #312、#313、#314)。建表片段与 `STORE_SCHEMA` 里对应那一行
+ * 逐字相同:`CREATE TABLE IF NOT EXISTS` 对既有表不生效,旧库靠 `openStore` 逐列补上,
+ * 两处写法漂了就会补出一张与新建的库不同构的表。`backfill` 只跟着补列那一次跑。
+ *
+ * 发版跑过之后即不再命中;下一次发版连同旧库用例一起删掉(src/AGENTS.md)。
  */
-const DAILY_INCREMENT_COLUMNS: readonly string[] = [
-  "daily_increment_enabled INTEGER NOT NULL DEFAULT 0",
-  "daily_increment_branch TEXT",
-  "daily_increment_enabled_at TEXT",
-  "daily_increment_checked_at TEXT",
-  "daily_increment_result TEXT",
+const ADDED_COLUMNS: readonly { table: string; column: string; backfill?: string }[] = [
+  {
+    table: "review_run",
+    column: "trigger_source TEXT",
+    // 按用户名快照推:有用户名的那一轮是人在面板上开的,其余是投递(定时那一档从 #312
+    // 之后才写得出来,旧行里没有)。
+    backfill: `UPDATE review_run
+                  SET trigger_source = CASE WHEN triggered_by IS NULL THEN 'delivery' ELSE 'panel' END`,
+  },
+  // 每日增量的五列全部可空或带默认值,补完即是「开关没开过、也没检查过」,不必回填。
+  { table: "range_review", column: "daily_increment_enabled INTEGER NOT NULL DEFAULT 0" },
+  { table: "range_review", column: "daily_increment_branch TEXT" },
+  { table: "range_review", column: "daily_increment_enabled_at TEXT" },
+  { table: "range_review", column: "scheduled_check_at TEXT" },
+  { table: "range_review", column: "scheduled_check_result TEXT" },
 ];
 
 /**
@@ -2358,10 +2369,11 @@ export type ComparisonSource = {
  * 一次定时检查的结果(issue #314,CONTEXT.md 定时检查)。推进成功是 `advanced`,其余
  * 八档各说明这一次为什么没开轮次;面板按同一组取值写标签。
  *
- * `check-failed` 收的是「这一次没检查成」的其余情形:容器 PR 还没建出来、模型覆盖坏
- * 了、知识集被退回未确认。把它们并进「分支不存在或取不到」会让人去查一件没发生的事。
+ * `check-failed` 收的是「这一次没检查成」的其余情形:没配 Forge、容器 PR 还没建出来、
+ * 模型覆盖坏了、知识集被退回未确认、本地副本算不出变更文件。把它们并进「分支不存在或
+ * 取不到」会让人去查一件没发生的事。
  */
-export type DailyIncrementResult =
+export type ScheduledCheckResult =
   | "advanced"
   | "no-new-commit"
   | "run-in-flight"
@@ -2404,9 +2416,9 @@ export type RangeReviewRecord = {
   /** 最近一次开启或改分支的时刻;关着时是 null。 */
   dailyIncrementEnabledAt: string | null;
   /** 最近一次定时检查的时刻(issue #314);一次都没检查过时是 null。 */
-  dailyIncrementCheckedAt: string | null;
+  scheduledCheckAt: string | null;
   /** 最近一次定时检查的结果;一次都没检查过时是 null。 */
-  dailyIncrementResult: DailyIncrementResult | null;
+  scheduledCheckResult: ScheduledCheckResult | null;
 };
 
 /** 一个范围审查审过的一个比较项。发起时那个也在内,按记录先后。 */
@@ -2496,14 +2508,14 @@ function rangeReviewRecord(row: Record<string, unknown>): RangeReviewRecord {
       row["daily_increment_enabled_at"] === null || row["daily_increment_enabled_at"] === undefined
         ? null
         : String(row["daily_increment_enabled_at"]),
-    dailyIncrementCheckedAt:
-      row["daily_increment_checked_at"] === null || row["daily_increment_checked_at"] === undefined
+    scheduledCheckAt:
+      row["scheduled_check_at"] === null || row["scheduled_check_at"] === undefined
         ? null
-        : String(row["daily_increment_checked_at"]),
-    dailyIncrementResult:
-      row["daily_increment_result"] === null || row["daily_increment_result"] === undefined
+        : String(row["scheduled_check_at"]),
+    scheduledCheckResult:
+      row["scheduled_check_result"] === null || row["scheduled_check_result"] === undefined
         ? null
-        : (String(row["daily_increment_result"]) as DailyIncrementResult),
+        : (String(row["scheduled_check_result"]) as ScheduledCheckResult),
   };
 }
 
@@ -3132,7 +3144,7 @@ export type Store = {
   recordRangeReviewScheduledCheck(record: {
     id: number;
     at: string;
-    result: DailyIncrementResult;
+    result: ScheduledCheckResult;
   }): void;
   getRangeReview(id: number): RangeReviewRecord | undefined;
   /** 按 id 倒序。四个过滤条件都可省,省掉即不过滤。 */
@@ -3643,36 +3655,17 @@ export function openStore(dbPath: string): Store {
   db.exec(STORE_SCHEMA);
   db.exec(MODEL_SERVICE_SCHEMA);
 
-  // 触发来源(issue #312):升级前的库里没有这一列,`CREATE TABLE IF NOT EXISTS` 对既有表
-  // 不生效,先补上再回填。回填按用户名快照推:有用户名的那一轮是人在面板上开的,其余是
-  // 投递(定时那一档从这一票之后才写得出来,旧行里没有)。补过就不再命中——`openStore`
-  // 每次请求都跑一遍,回填不该跟着每次请求扫一次这张只增不减的表。
-  const hasTriggerSource = Number(
-    db.prepare(
-      "SELECT COUNT(*) AS count FROM pragma_table_info('review_run') WHERE name = 'trigger_source'",
-    ).get()?.["count"] ?? 0,
-  );
-  if (hasTriggerSource === 0) {
-    db.exec("ALTER TABLE review_run ADD COLUMN trigger_source TEXT");
-    db.exec(
-      `UPDATE review_run
-          SET trigger_source = CASE WHEN triggered_by IS NULL THEN 'delivery' ELSE 'panel' END`,
-    );
-  }
-
-  // 每日增量的五列(issue #313、#314):同一个理由,升级前的库里没有它们。逐列判逐列补;
-  // 全部可空或带默认值,补完即是「开关没开过、也没检查过」,不必回填。
-  const rangeReviewColumns = new Set(
-    db
-      .prepare("SELECT name FROM pragma_table_info('range_review')")
-      .all()
-      .map((row) => String(row["name"])),
-  );
-  for (const column of DAILY_INCREMENT_COLUMNS) {
+  // 升级前的库缺的列(`ADDED_COLUMNS`):按 `pragma_table_info` 逐列判,缺了才补,补过即
+  // 不再命中。回填只跟着补列那一次跑——`openStore` 每次请求都跑一遍,回填不该跟着每次
+  // 请求扫一次只增不减的表。
+  for (const { table, column, backfill } of ADDED_COLUMNS) {
     const name = column.split(" ", 1)[0]!;
-    if (!rangeReviewColumns.has(name)) {
-      db.exec(`ALTER TABLE range_review ADD COLUMN ${column}`);
-    }
+    const present = db
+      .prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = ?")
+      .get(table, name);
+    if (present !== undefined) continue;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`);
+    if (backfill !== undefined) db.exec(backfill);
   }
 
   // 审查策略整页一个版本(issue #301):升级前每一项各持一个版本键,这里一次性删掉并建起
@@ -7524,7 +7517,7 @@ export function openStore(dbPath: string): Store {
     recordRangeReviewScheduledCheck({ id, at, result }) {
       db.prepare(
         `UPDATE range_review
-            SET daily_increment_checked_at = ?, daily_increment_result = ?
+            SET scheduled_check_at = ?, scheduled_check_result = ?
           WHERE id = ?`,
       ).run(at, result, id);
     },

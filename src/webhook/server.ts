@@ -127,7 +127,6 @@ import {
   toPendingProposal,
   type BatchLimitField,
   type ComparisonSource,
-  type DailyIncrementResult,
   type FindingDispositionTarget,
   type GlobalSettings,
   type InterruptedRun,
@@ -149,6 +148,7 @@ import {
   type RuleProposalInput,
   type RuleProposalOrigin,
   type RuleProposalSourceInput,
+  type ScheduledCheckResult,
   type StageScope,
   type Store,
 } from "../review/store.ts";
@@ -250,15 +250,15 @@ export type WebhookServerDeps = {
   /** 审查轨迹 SSE 的心跳间隔(毫秒),默认 `TRACE_HEARTBEAT_MS`。只该测试注入。 */
   traceHeartbeatMs?: number;
   /**
-   * 定时检查的 tick 间隔(毫秒,issue #314),默认 `DAILY_INCREMENT_TICK_MS`。写法与
+   * 定时检查的 tick 间隔(毫秒,issue #314),默认 `SCHEDULED_CHECK_TICK_MS`。写法与
    * 审查轨迹心跳同一档,只该测试注入——测试把它拨到毫秒级,再拨 `now` 驱动「今天」。
    */
-  dailyIncrementTickMs?: number;
+  scheduledCheckTickMs?: number;
   /**
    * 一个范围审查跑完一次定时检查(issue #314)。不传则写 stdout——凌晨发生了什么,
    * 第二天只有这行日志说得出。与工作副本准备同一条口径。
    */
-  onScheduledCheck?: (rangeReviewId: number, result: DailyIncrementResult) => void;
+  onScheduledCheck?: (rangeReviewId: number, result: ScheduledCheckResult) => void;
   /** 测试注入 bootstrap 口令;生产省略即在零用户时随机生成。 */
   bootstrapSecret?: string;
   /** 零用户启动时拿到 bootstrap 口令;生产打印,测试可观察或忽略。 */
@@ -347,7 +347,7 @@ const TRACE_HEARTBEAT_MS = 15_000;
  * 定时检查的 tick 间隔(issue #314)。凌晨 00:00 是「日期翻页」的自然结果,不做精确到
  * 秒的对时,一分钟一问因此够用:错过一整天的那种情形由「今天还没检查过」自己补上。
  */
-const DAILY_INCREMENT_TICK_MS = 60_000;
+const SCHEDULED_CHECK_TICK_MS = 60_000;
 
 /**
  * 「PR 新增 commit」两个平台拼写不同:GitHub 是 `synchronize`,Gitea 是 `synchronized`。
@@ -5537,6 +5537,22 @@ function parsePickerQuery(query: URLSearchParams): { ok: true; value: PickerQuer
   };
 }
 
+type RepoGitTarget = {
+  ref: RepoRef;
+  cloneUrl: string;
+  defaultBranch: string;
+  credentials: CloneCredentials;
+};
+
+/** 读仓库的 clone 地址、默认分支与凭据。读不到就抛,由调用方决定回什么。 */
+async function repoGitTarget(forge: Forge, ref: RepoRef): Promise<RepoGitTarget> {
+  const [repository, credentials] = await Promise.all([
+    forge.getRepository(ref),
+    forge.cloneCredentials(ref),
+  ]);
+  return { ref, cloneUrl: repository.cloneUrl, defaultBranch: repository.defaultBranch, credentials };
+}
+
 /**
  * commit 选择器三个接口的共同前半段:认出是哪个仓库,取到 clone 地址与凭据。
  *
@@ -5547,9 +5563,7 @@ async function resolveRepoGitTarget(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
-): Promise<
-  { ref: RepoRef; cloneUrl: string; defaultBranch: string; credentials: CloneCredentials } | undefined
-> {
+): Promise<RepoGitTarget | undefined> {
   const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
   const owner = query.get("owner");
   const repo = query.get("repo");
@@ -5569,18 +5583,8 @@ async function resolveRepoGitTarget(
     sendJson(res, 503, { error: "gitea 没有配置 Forge,读不到仓库的分支与提交" });
     return undefined;
   }
-  const ref: RepoRef = { owner, repo };
   try {
-    const [repository, credentials] = await Promise.all([
-      forge.getRepository(ref),
-      forge.cloneCredentials(ref),
-    ]);
-    return {
-      ref,
-      cloneUrl: repository.cloneUrl,
-      defaultBranch: repository.defaultBranch,
-      credentials,
-    };
+    return await repoGitTarget(forge, { owner, repo });
   } catch (error) {
     sendJson(res, 502, { error: `读不到仓库或取不回代码:${failureText(error)}` });
     return undefined;
@@ -6277,19 +6281,10 @@ async function handleSetDailyIncrement(
     if (forge === undefined) {
       return sendJson(res, 503, { error: "gitea 没有配置 Forge,读不到仓库的分支" });
     }
-    const ref: RepoRef = { owner: record.owner, repo: record.repo };
     let names: string[];
     try {
-      const [repository, credentials] = await Promise.all([
-        forge.getRepository(ref),
-        forge.cloneCredentials(ref),
-      ]);
-      names = await listBranches({
-        cacheDir: deps.cacheDir,
-        ref,
-        cloneUrl: repository.cloneUrl,
-        credentials,
-      });
+      const target = await repoGitTarget(forge, { owner: record.owner, repo: record.repo });
+      names = await listBranches({ cacheDir: deps.cacheDir, ...target });
     } catch (error) {
       return sendJson(res, 502, { error: `取不回仓库的分支:${failureText(error)}` });
     }
@@ -6320,24 +6315,39 @@ function localDayKey(ms: number): string {
  * 开关开在今天就算今天已经过了一次,刚开不会当场推进一轮(spec #310 user story 22)。
  */
 function checkedToday(record: RangeReviewRecord, today: string): boolean {
-  const marks = [record.dailyIncrementCheckedAt, record.dailyIncrementEnabledAt]
+  const marks = [record.scheduledCheckAt, record.dailyIncrementEnabledAt]
     .filter((at): at is string => at !== null)
     .map((at) => Date.parse(at))
     .filter((ms) => Number.isFinite(ms));
   return marks.length > 0 && localDayKey(Math.max(...marks)) === today;
 }
 
+/**
+ * 这个范围审查此刻该做定时检查:进行中、每日增量开着、今天还没检查过。排队与开检查前
+ * 重读都按这一条判。
+ */
+function scheduledCheckDue(record: RangeReviewRecord, today: string): boolean {
+  return (
+    record.state === "in-progress" &&
+    record.dailyIncrementEnabled &&
+    record.dailyIncrementBranch !== null &&
+    !checkedToday(record, today)
+  );
+}
+
 /** 推进比较项的准入拒绝 → 这一次定时检查的结果。两组取值各自独立,映射写全。 */
-const ADVANCE_CHECK_RESULT: Record<AdvanceRejectionReason, DailyIncrementResult> = {
+const ADVANCE_CHECK_RESULT: Record<AdvanceRejectionReason, ScheduledCheckResult> = {
+  // 没配 Forge、没有容器 PR、知识集未确认、模型覆盖坏了、本地副本算不出变更文件:都与
+  // 分支本身无关,落「检查失败」。
   "not-advancable": "check-failed",
   "rule-set-unconfirmed": "check-failed",
   "plan-broken": "check-failed",
-  // 读不到仓库、解析不出那个 commit、取不回变更文件都是「取不到」的同一档。
-  "forge-missing": "branch-unknown",
+  "forge-missing": "check-failed",
+  "diff-unreadable": "check-failed",
+  // 读不到仓库、解析不出那个 commit 是「取不到」的同一档。
   "repo-unreachable": "branch-unknown",
   "base-unknown": "branch-unknown",
   "comparison-unknown": "branch-unknown",
-  "diff-unreadable": "branch-unknown",
   "not-descendant": "not-descendant",
   // 分支最新 commit 就是当前比较项:这一步已经在 tick 里判过,这里是同一件事的兜底。
   "same-comparison": "no-new-commit",
@@ -6355,9 +6365,10 @@ const ADVANCE_CHECK_RESULT: Record<AdvanceRejectionReason, DailyIncrementResult>
 async function scheduledCheck(
   deps: WebhookServerDeps,
   record: RangeReviewRecord,
-  target: { ref: RepoRef; cloneUrl: string; credentials: CloneCredentials },
-  runningRangeReviews: ReadonlySet<number>,
-): Promise<DailyIncrementResult> {
+  target: RepoGitTarget,
+  /** 这个范围审查此刻有没有未结束的轮次,调用方开检查前刚读过。 */
+  runInFlight: boolean,
+): Promise<ScheduledCheckResult> {
   const branch = record.dailyIncrementBranch!;
   let listed: BranchCommits;
   try {
@@ -6370,7 +6381,7 @@ async function scheduledCheck(
     });
   } catch (error) {
     console.log(
-      `[daily-increment] 范围审查 ${record.id} 取不回分支 ${branch} 的提交:${failureText(error)}`,
+      `[scheduled-check] 范围审查 ${record.id} 取不回分支 ${branch} 的提交:${failureText(error)}`,
     );
     return "branch-unknown";
   }
@@ -6380,7 +6391,7 @@ async function scheduledCheck(
   if (tip === record.comparisonSha) return "no-new-commit";
   // 人工推进没有这道互斥(spec #310 Further Notes),只有定时检查判:它不该和人点的那
   // 一次或一轮续跑撞在一起。
-  if (runningRangeReviews.has(record.id)) return "run-in-flight";
+  if (runInFlight) return "run-in-flight";
 
   const outcome = await advanceRangeReview(deps, record, {
     comparison: tip,
@@ -6389,7 +6400,7 @@ async function scheduledCheck(
     triggerSource: "scheduled",
   });
   if (outcome.ok) return "advanced";
-  console.log(`[daily-increment] 范围审查 ${record.id} 没推进:${outcome.message}`);
+  console.log(`[scheduled-check] 范围审查 ${record.id} 没推进:${outcome.message}`);
   return ADVANCE_CHECK_RESULT[outcome.reason];
 }
 
@@ -6403,28 +6414,23 @@ async function scheduledCheck(
  * 各范围审查串行执行,单条失败记结果后继续下一条;一个仓库取不回工作副本时只有它名下
  * 那几个记结果,其余仓库照常检查(spec #310 user story 27)。
  */
-async function dailyIncrementTick(deps: WebhookServerDeps): Promise<void> {
+async function scheduledCheckTick(deps: WebhookServerDeps): Promise<void> {
   const nowMs = (deps.now ?? Date.now)();
   const today = localDayKey(nowMs);
   const due = withStore(deps.dbPath, (store) =>
     store
       .listRangeReviews({ state: "in-progress" })
-      .filter(
-        (record) =>
-          record.dailyIncrementEnabled &&
-          record.dailyIncrementBranch !== null &&
-          !checkedToday(record, today),
-      ),
+      .filter((record) => scheduledCheckDue(record, today)),
   );
   if (due.length === 0) return;
 
   const settled =
     deps.onScheduledCheck ??
-    ((rangeReviewId: number, result: DailyIncrementResult) => {
-      console.log(`[daily-increment] 范围审查 ${rangeReviewId} 检查结果:${result}`);
+    ((rangeReviewId: number, result: ScheduledCheckResult) => {
+      console.log(`[scheduled-check] 范围审查 ${rangeReviewId} 检查结果:${result}`);
     });
   const at = new Date(nowMs).toISOString();
-  const record = (id: number, result: DailyIncrementResult): void => {
+  const noteResult = (id: number, result: ScheduledCheckResult): void => {
     withStore(deps.dbPath, (store) =>
       store.recordRangeReviewScheduledCheck({ id, at, result }),
     );
@@ -6434,18 +6440,11 @@ async function dailyIncrementTick(deps: WebhookServerDeps): Promise<void> {
   // 排空期间不接新活(issue #249):当批直接记「排空中」并刷新时刻,由下一次启动按日期
   // 判定补上——同一天不再补,新的一天照常。
   if (deps.drain?.draining() === true) {
-    console.log(`[daily-increment] 排空中,跳过 ${due.length} 个范围审查`);
-    for (const item of due) record(item.id, "draining");
+    console.log(`[scheduled-check] 排空中,跳过 ${due.length} 个范围审查`);
+    for (const item of due) noteResult(item.id, "draining");
     return;
   }
-  console.log(`[daily-increment] 本次检查 ${due.length} 个范围审查`);
-
-  // 没有结束时间即还在跑,含等待续跑的那些(CONTEXT.md 定时检查)。一次读出全部,不逐个问。
-  const runningRangeReviews = new Set(
-    withStore(deps.dbPath, (store) => store.interruptedRuns())
-      .map((run) => run.rangeReviewId)
-      .filter((id): id is number => id !== null),
-  );
+  console.log(`[scheduled-check] 本次检查 ${due.length} 个范围审查`);
 
   const byRepo = new Map<string, RangeReviewRecord[]>();
   for (const item of due) {
@@ -6453,33 +6452,43 @@ async function dailyIncrementTick(deps: WebhookServerDeps): Promise<void> {
     byRepo.set(key, [...(byRepo.get(key) ?? []), item]);
   }
   for (const [key, items] of byRepo) {
-    const forge = deps.forges.gitea;
-    const ref: RepoRef = { owner: items[0]!.owner, repo: items[0]!.repo };
-    let target: { ref: RepoRef; cloneUrl: string; credentials: CloneCredentials };
+    let target: RepoGitTarget | undefined;
     try {
+      const forge = deps.forges.gitea;
       if (forge === undefined) throw new Error("gitea 没有配置 Forge");
-      const [repository, credentials] = await Promise.all([
-        forge.getRepository(ref),
-        forge.cloneCredentials(ref),
-      ]);
-      target = { ref, cloneUrl: repository.cloneUrl, credentials };
-      // 同一个仓库只取回这一次,之后各范围审查都在这份副本上读。
+      target = await repoGitTarget(forge, { owner: items[0]!.owner, repo: items[0]!.repo });
+      // 读分支 head 用的工作副本每个仓库只取回这一次;真正推进的那几条在推进段里照常
+      // 各自再 fetch 一次。
       await ensureWorktree({ cacheDir: deps.cacheDir, ...target });
     } catch (error) {
-      console.log(`[daily-increment] ${key} 取不回工作副本:${failureText(error)}`);
-      for (const item of items) record(item.id, "branch-unknown");
-      continue;
+      console.log(`[scheduled-check] ${key} 取不回工作副本:${failureText(error)}`);
+      target = undefined;
     }
     for (const item of items) {
-      let result: DailyIncrementResult;
-      try {
-        result = await scheduledCheck(deps, item, target, runningRangeReviews);
-      } catch (error) {
-        // 单条失败记结果后继续下一条:tick 内的异常不终止循环。
-        console.log(`[daily-increment] 范围审查 ${item.id} 检查失败:${failureText(error)}`);
-        result = "check-failed";
+      // 队是 tick 开头排的,前面几条串行跑的这段时间里人可能推进过、关了开关或标了完成:
+      // 开检查前重读记录与它名下的轮次。没有结束时间即还在跑,含等待续跑的那些(CONTEXT.md
+      // 定时检查)。
+      const current = withStore(deps.dbPath, (store) => {
+        const record = store.getRangeReview(item.id);
+        if (record === undefined || !scheduledCheckDue(record, today)) return undefined;
+        const runInFlight = store.interruptedRuns().some((run) => run.rangeReviewId === item.id);
+        return { record, runInFlight };
+      });
+      // 已经不该检查了:这一次检查没有发生,不记结果。
+      if (current === undefined) continue;
+      let result: ScheduledCheckResult;
+      if (target === undefined) {
+        result = "branch-unknown";
+      } else {
+        try {
+          result = await scheduledCheck(deps, current.record, target, current.runInFlight);
+        } catch (error) {
+          // 单条失败记结果后继续下一条:tick 内的异常不终止循环。
+          console.log(`[scheduled-check] 范围审查 ${item.id} 检查失败:${failureText(error)}`);
+          result = "check-failed";
+        }
       }
-      record(item.id, result);
+      noteResult(item.id, result);
     }
   }
 }
@@ -6490,19 +6499,19 @@ async function dailyIncrementTick(deps: WebhookServerDeps): Promise<void> {
  * 一次 tick 还没跑完就不开下一次:一轮推进要走 Forge 与本地副本,慢过一个间隔时重入会
  * 让同一个范围审查在同一天推两次。`unref` 让它不拖住进程退出,服务关闭时一并清掉。
  */
-function startDailyIncrementTicks(deps: WebhookServerDeps, server: Server): void {
+function startScheduledCheckTicks(deps: WebhookServerDeps, server: Server): void {
   let running = false;
   const timer = setInterval(() => {
     if (running) return;
     running = true;
-    void dailyIncrementTick(deps)
+    void scheduledCheckTick(deps)
       .catch((error: unknown) => {
-        console.error("[daily-increment] 本次 tick 失败:", failureText(error));
+        console.error("[scheduled-check] 本次 tick 失败:", failureText(error));
       })
       .finally(() => {
         running = false;
       });
-  }, deps.dailyIncrementTickMs ?? DAILY_INCREMENT_TICK_MS);
+  }, deps.scheduledCheckTickMs ?? SCHEDULED_CHECK_TICK_MS);
   timer.unref();
   server.on("close", () => clearInterval(timer));
 }
@@ -9224,6 +9233,6 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
     return send(res, 404);
   });
   // 每日增量的定时检查(issue #314)跟着服务起落:循环挂在这个 server 上,关掉即停。
-  startDailyIncrementTicks(deps, server);
+  startScheduledCheckTicks(deps, server);
   return server;
 }

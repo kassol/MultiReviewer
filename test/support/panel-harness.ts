@@ -25,7 +25,7 @@ import type { DiscoveredModel } from "../../src/reviewer/model-service-runtime.t
 import {
   modelServiceTargetFingerprint,
   openStore,
-  type DailyIncrementResult,
+  type ScheduledCheckResult,
 } from "../../src/review/store.ts";
 import { startFakeGitea, type FakeGitea } from "./fake-gitea.ts";
 import {
@@ -78,7 +78,7 @@ export type PanelHarness = {
   /** 后台跑完的人工提议(issue #294),按结束先后。 */
   revisionIntents: { intentId: number; failure?: string }[];
   /** 跑完的定时检查(issue #314),按先后。 */
-  scheduledChecks: { rangeReviewId: number; result: DailyIncrementResult }[];
+  scheduledChecks: { rangeReviewId: number; result: ScheduledCheckResult }[];
   /** 每次组装 Reviewer 时拿到的完整本轮运行计划。 */
   runtimePlans: (readonly ReviewerRuntimePlan[])[];
   api(method: string, path: string, body?: unknown): Promise<Response>;
@@ -183,7 +183,7 @@ export type PanelHarnessOptions = {
   /** 审查轨迹 SSE 的心跳间隔,省略取服务默认值。 */
   traceHeartbeatMs?: number;
   /** 定时检查的 tick 间隔(issue #314),省略取服务默认值。用例拨到毫秒级。 */
-  dailyIncrementTickMs?: number;
+  scheduledCheckTickMs?: number;
   /** 服务时钟,省略即真实时间。用例拨它驱动定时检查的「今天」。 */
   now?: () => number;
   /** 规则 agent(issue #205)。省略即用真实的 Pi 子进程实现,用例注入脚本化实现。 */
@@ -331,7 +331,7 @@ export async function startPanelHarness(
   const dispositionFeedbacks = counter<{ findingId: number; failure?: string }>();
   const consolidations = counter<{ repoId: number; failure?: string }>();
   const revisionIntents = counter<{ intentId: number; failure?: string }>();
-  const scheduledChecks = counter<{ rangeReviewId: number; result: DailyIncrementResult }>();
+  const scheduledChecks = counter<{ rangeReviewId: number; result: ScheduledCheckResult }>();
 
   const server = createWebhookServer({
     forges: { gitea: forge },
@@ -353,9 +353,9 @@ export async function startPanelHarness(
     ...(credentialMasterKey === undefined ? {} : { credentialMasterKey }),
     onDelivery: () => {},
     ...(options.traceHeartbeatMs === undefined ? {} : { traceHeartbeatMs: options.traceHeartbeatMs }),
-    ...(options.dailyIncrementTickMs === undefined
+    ...(options.scheduledCheckTickMs === undefined
       ? {}
-      : { dailyIncrementTickMs: options.dailyIncrementTickMs }),
+      : { scheduledCheckTickMs: options.scheduledCheckTickMs }),
     ...(options.now === undefined ? {} : { now: options.now }),
     onScheduledCheck: (rangeReviewId, result) => {
       scheduledChecks.push({ rangeReviewId, result });

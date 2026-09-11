@@ -13,6 +13,7 @@ import {
 } from "@radix-ui/themes";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { localMinute } from "@/lib/time";
 
@@ -57,13 +58,13 @@ export type RangeReview = {
   /** 每日增量跟的那条分支;关着时是 null。 */
   dailyIncrementBranch: string | null;
   /** 最近一次定时检查的时刻(issue #314);一次都没检查过时是 null。 */
-  dailyIncrementCheckedAt: string | null;
+  scheduledCheckAt: string | null;
   /** 最近一次定时检查的结果;一次都没检查过时是 null。 */
-  dailyIncrementResult: DailyIncrementResult | null;
+  scheduledCheckResult: ScheduledCheckResult | null;
 };
 
 /** 一次定时检查的结果(issue #314),与服务端那一格逐字对应。 */
-export type DailyIncrementResult =
+export type ScheduledCheckResult =
   | "advanced"
   | "no-new-commit"
   | "run-in-flight"
@@ -75,7 +76,7 @@ export type DailyIncrementResult =
   | "check-failed";
 
 /** 每一档的说法。九档都写出来:结果本身就是人要看的那句话,不另起解释。 */
-const DAILY_INCREMENT_RESULT_LABEL: Record<DailyIncrementResult, string> = {
+const SCHEDULED_CHECK_RESULT_LABEL: Record<ScheduledCheckResult, string> = {
   advanced: "已开轮次",
   "no-new-commit": "无新提交",
   "run-in-flight": "有轮次在跑",
@@ -87,21 +88,27 @@ const DAILY_INCREMENT_RESULT_LABEL: Record<DailyIncrementResult, string> = {
   "check-failed": "检查失败",
 };
 
-/** 要人去动手的那几档标红(DESIGN.md §4.3),其余是常规跳过。 */
-const DAILY_INCREMENT_RESULT_NEEDS_ATTENTION = new Set<DailyIncrementResult>([
-  "not-descendant",
-  "branch-unknown",
-  "push-failed",
-  "check-failed",
-]);
+/**
+ * 结果徽章的三档(DESIGN.md §4.3):开了轮次是成功,要人去动手的那几档是失败,其余是
+ * 常规跳过。
+ */
+function scheduledCheckTone(result: ScheduledCheckResult): StatusTone {
+  if (result === "advanced") return "success";
+  return result === "not-descendant" ||
+    result === "branch-unknown" ||
+    result === "push-failed" ||
+    result === "check-failed"
+    ? "error"
+    : "neutral";
+}
 
 /** 最近一次定时检查读成一句话。一次都没检查过时说明白,不留空。 */
 function lastScheduledCheck(rangeReview: RangeReview): string {
-  if (rangeReview.dailyIncrementResult === null || rangeReview.dailyIncrementCheckedAt === null) {
+  if (rangeReview.scheduledCheckResult === null || rangeReview.scheduledCheckAt === null) {
     return "最近一次定时检查:还没检查过";
   }
-  return `最近一次定时检查:${localMinute(rangeReview.dailyIncrementCheckedAt)} · ${
-    DAILY_INCREMENT_RESULT_LABEL[rangeReview.dailyIncrementResult]
+  return `最近一次定时检查:${localMinute(rangeReview.scheduledCheckAt)} · ${
+    SCHEDULED_CHECK_RESULT_LABEL[rangeReview.scheduledCheckResult]
   }`;
 }
 
@@ -208,25 +215,16 @@ export function DailyIncrementAction({ rangeReview }: { rangeReview: RangeReview
         >
           每日增量
           {/* 绿只承载运行状态(DESIGN.md §4.3):开着就是有人在替这个阶段盯着。 */}
-          <Badge
-            color={rangeReview.dailyIncrementEnabled ? "green" : "gray"}
-            variant="soft"
-            className="max-w-32 truncate"
-          >
-            {rangeReview.dailyIncrementEnabled ? rangeReview.dailyIncrementBranch : "关"}
-          </Badge>
+          <StatusBadge tone={rangeReview.dailyIncrementEnabled ? "success" : "neutral"}>
+            <span className="max-w-32 truncate">
+              {rangeReview.dailyIncrementEnabled ? rangeReview.dailyIncrementBranch : "关"}
+            </span>
+          </StatusBadge>
           {/* 最近一次的结果就在开关旁(issue #314):昨晚推没推进、为什么没推,一眼看得到。 */}
-          {rangeReview.dailyIncrementResult === null ? null : (
-            <Badge
-              color={
-                DAILY_INCREMENT_RESULT_NEEDS_ATTENTION.has(rangeReview.dailyIncrementResult)
-                  ? "red"
-                  : "gray"
-              }
-              variant="soft"
-            >
-              {DAILY_INCREMENT_RESULT_LABEL[rangeReview.dailyIncrementResult]}
-            </Badge>
+          {rangeReview.scheduledCheckResult === null ? null : (
+            <StatusBadge tone={scheduledCheckTone(rangeReview.scheduledCheckResult)}>
+              {SCHEDULED_CHECK_RESULT_LABEL[rangeReview.scheduledCheckResult]}
+            </StatusBadge>
           )}
         </Button>
       </Dialog.Trigger>
