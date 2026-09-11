@@ -38,7 +38,12 @@ import {
 import { localClock, localDay, localMinute } from "@/lib/time";
 
 import { fetchJson, send } from "./api.ts";
-import { AdvanceAction, CompleteAction, type RangeReview } from "./range-review-actions.tsx";
+import {
+  AdvanceAction,
+  CompleteAction,
+  DailyIncrementAction,
+  type RangeReview,
+} from "./range-review-actions.tsx";
 import {
   FULL_REVIEW_HINT,
   rerunRequest,
@@ -430,6 +435,8 @@ function StageActions({
       ) : null}
       {rangeReview === undefined ? null : (
         <>
+          {/* 每日增量跟着阶段走(issue #313):结束的阶段没有明天,开关整个不显示。 */}
+          {canAdvance && !frozen ? <DailyIncrementAction rangeReview={rangeReview} /> : null}
           {canComplete ? <CompleteAction rangeReview={rangeReview} disabled={frozen} /> : null}
           {canAdvance ? (
             <AdvanceAction rangeReview={rangeReview} disabled={frozen} onAdvanced={onTriggered} />

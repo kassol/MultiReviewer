@@ -199,7 +199,44 @@ export function commitSelectionLabel(selection: CommitSelection): string {
     : `经 ${selection.source.name} 选择 · ${shortSha}`;
 }
 
-function BranchCombobox({
+/**
+ * 分支列表的取法与刷新(issue #178):打开与点刷新时 `refresh=1` 同步一次远端,搜索时
+ * `refresh=0` 只搜本地 refs。`refreshGeneration` 每加一次就重取一遍,刷新按钮在调用方
+ * 手上——提交选择器把分支与 Tag 一起刷新。每日增量的分支弹窗(issue #313)读同一份。
+ */
+export function useBranchOptions(owner: string, repo: string, refreshGeneration: number) {
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebounced(search, 250);
+  const synced = useQuery({
+    queryKey: ["repo-picker-sync", owner, repo, refreshGeneration],
+    queryFn: () => fetchJson<BranchPage>(
+      `/repo-branches?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&refresh=1`,
+    ),
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+  const matches = useQuery({
+    queryKey: ["repo-branch-search", owner, repo, refreshGeneration, debouncedSearch],
+    queryFn: () => fetchJson<BranchPage>(
+      `/repo-branches?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`
+      + `&refresh=0&q=${encodeURIComponent(debouncedSearch)}`,
+    ),
+    enabled: synced.isSuccess && debouncedSearch.trim() !== "",
+  });
+  const searching = debouncedSearch.trim() !== "";
+  return {
+    /** 同步那一次的查询本身:默认分支、整体的加载与出错都读它。 */
+    synced,
+    search,
+    setSearch,
+    branches: (searching ? matches.data?.branches : synced.data?.branches) ?? [],
+    loading: searching ? matches.isPending : synced.isPending,
+    truncated: (searching ? matches.data?.truncated : synced.data?.truncated) ?? false,
+  };
+}
+
+export function BranchCombobox({
   branch,
   branches,
   search,
@@ -481,7 +518,6 @@ export function CommitPicker({
   // undefined 表示「还没选过,跟着仓库默认分支」;上次选比较项用的那条分支取代它。
   const [browsedBranch, setBrowsedBranch] = useState<string | null | undefined>(initialBranch);
   const [missingBranch, setMissingBranch] = useState<string>();
-  const [branchSearch, setBranchSearch] = useState("");
   const [refreshGeneration, setRefreshGeneration] = useState(0);
   const sourceLabelId = useId();
   const roleLabelId = useId();
@@ -490,7 +526,6 @@ export function CommitPicker({
   const debouncedBranchCommitSearch = useDebounced(filters.branch.search, 250);
   const debouncedTagSearch = useDebounced(filters.tag.search, 250);
   const debouncedSearch = mode === "branch" ? debouncedBranchCommitSearch : debouncedTagSearch;
-  const debouncedBranchSearch = useDebounced(branchSearch, 250);
 
   useEffect(() => {
     if (single) return;
@@ -498,29 +533,13 @@ export function CommitPicker({
     else setRole("base");
   }, [base?.sha, baseLocked, single]);
 
-  const syncedBranches = useQuery({
-    queryKey: ["repo-picker-sync", owner, repo, refreshGeneration],
-    queryFn: () => fetchJson<BranchPage>(
-      `/repo-branches?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&refresh=1`,
-    ),
-    refetchOnMount: "always",
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-  });
+  const branchOptions = useBranchOptions(owner, repo, refreshGeneration);
+  const syncedBranches = branchOptions.synced;
 
   const defaultBranch = syncedBranches.data?.branches.find((item) => item.isDefault)?.name
     ?? syncedBranches.data?.branches[0]?.name
     ?? null;
   const branch = browsedBranch === undefined ? defaultBranch : browsedBranch;
-
-  const branchMatches = useQuery({
-    queryKey: ["repo-branch-search", owner, repo, refreshGeneration, debouncedBranchSearch],
-    queryFn: () => fetchJson<BranchPage>(
-      `/repo-branches?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`
-      + `&refresh=0&q=${encodeURIComponent(debouncedBranchSearch)}`,
-    ),
-    enabled: syncedBranches.isSuccess && debouncedBranchSearch.trim() !== "",
-  });
 
   const branchExists = useQuery({
     queryKey: ["repo-branch-exists", owner, repo, refreshGeneration, branch],
@@ -576,15 +595,6 @@ export function CommitPicker({
 
   const commitRows = commits.data?.pages.flatMap((page) => page.commits) ?? [];
   const tagRows = tags.data?.pages.flatMap((page) => page.tags) ?? [];
-  const branches = debouncedBranchSearch.trim() === ""
-    ? syncedBranches.data?.branches ?? []
-    : branchMatches.data?.branches ?? [];
-  const branchOptionsLoading = debouncedBranchSearch.trim() === ""
-    ? syncedBranches.isPending
-    : branchMatches.isPending;
-  const branchesTruncated = debouncedBranchSearch.trim() === ""
-    ? syncedBranches.data?.truncated ?? false
-    : branchMatches.data?.truncated ?? false;
   const legalContext = role === "comparison" && base !== null;
   // 增量评审那一档的口径是「当前比较项之后」,发起时仍是「合法后代」(issue #234)。
   const legalLabel = current === undefined ? "仅合法后代" : "仅当前比较项之后";
@@ -679,11 +689,11 @@ export function CommitPicker({
             {mode === "branch" ? (
               <BranchCombobox
                 branch={branch}
-                branches={branches}
-                search={branchSearch}
-                loading={branchOptionsLoading}
-                truncated={branchesTruncated}
-                onSearch={setBranchSearch}
+                branches={branchOptions.branches}
+                search={branchOptions.search}
+                loading={branchOptions.loading}
+                truncated={branchOptions.truncated}
+                onSearch={branchOptions.setSearch}
                 onSelect={(value) => {
                   setBrowsedBranch(value);
                   setMissingBranch(undefined);
