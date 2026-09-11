@@ -48,6 +48,7 @@ import type {
   ReviewerOutcome,
   ReviewerUsage,
   ReviewRunMode,
+  ReviewTriggerSource,
   ProjectFact,
   ReviewRule,
   Severity,
@@ -210,6 +211,8 @@ export type ReviewRunDeps = {
   panelBaseUrl?: string;
   /** 手动重跑的调用者用户名快照;自动投递不传。 */
   triggeredBy?: string;
+  /** 这一轮是被谁开出来的(issue #312)。不传即投递,与这一票之前逐字一致。 */
+  triggerSource?: ReviewTriggerSource;
   /** 这一轮归属的范围审查;PR 触发不传(ADR 0012)。 */
   rangeReviewId?: number;
   /** 本轮冻结的知识集版本(issue #204)。不传即这一轮没有规则可依。 */
@@ -2034,6 +2037,8 @@ export async function runReview(
       title: deps.rangeReviewId === undefined ? pullRequest.title : null,
       startedAt: startedAt.toISOString(),
       triggeredBy: deps.triggeredBy ?? null,
+      // 触发来源随这一轮落库(issue #312):阶段时间线据它标出哪一轮是谁开的。
+      triggerSource: deps.triggerSource ?? "delivery",
       rangeReviewId: deps.rangeReviewId ?? null,
       changedFiles: range.files.length,
       // 只复核那一轮的文件集已经过滤过,改动行数按同一批文件计,两个数才是同一口径。

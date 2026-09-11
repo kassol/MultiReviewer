@@ -43,6 +43,19 @@ export type StageFinding = RunFinding & {
   rootCause: RootCauseRef | null;
 };
 
+/**
+ * 一轮 Review Run 是被谁开出来的(issue #312),与 `GET /stages/{stageId}` 那一格同名。
+ * `scheduled` 是每日增量的定时检查开出的那一轮(spec #310),标签先备着。
+ */
+export type TriggerSource = "delivery" | "panel" | "scheduled";
+
+/** 时间线上每一轮的来源标签。三档都标:只标其中一档,另外两档就得靠人猜。 */
+const TRIGGER_SOURCE_LABEL: Record<TriggerSource, string> = {
+  delivery: "投递",
+  panel: "面板",
+  scheduled: "定时增量",
+};
+
 /** 时间线里的一轮:这一轮对这个阶段做了什么。 */
 export type StageTimelineEntry = {
   runId: number;
@@ -54,6 +67,8 @@ export type StageTimelineEntry = {
   failure: string | null;
   /** 这一轮的模式(issue #242)。只复核那一轮在时间线上带标记。 */
   mode: RerunMode;
+  /** 这一轮是被谁开出来的(issue #312)。时间线上每一轮都标出来。 */
+  triggerSource: TriggerSource;
   /** 本轮新报出。 */
   reported: number;
   /** 折叠到本阶段已有的那条上。 */
@@ -727,6 +742,10 @@ export function StageRound({ entry }: { entry: StageTimelineEntry }) {
   ).filter(([, value]) => value > 0);
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-base">
+      {/* 来源(issue #312):这一轮是投递带来的、人点的,还是每日增量自己跑的。 */}
+      <Badge color="gray" variant="outline" radius="full">
+        {TRIGGER_SOURCE_LABEL[entry.triggerSource]}
+      </Badge>
       {/* 只复核那一轮标出来(issue #242):看到「新报 0」时那不是审查空跑。 */}
       {entry.mode !== "verdict-only" ? null : (
         <Badge color="gray" variant="soft" radius="full">

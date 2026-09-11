@@ -86,7 +86,13 @@ import {
   DEFAULT_MAX_PARALLEL_BATCHES,
 } from "../review/batch.ts";
 import type { MergeAgent } from "../review/dedupe.ts";
-import type { KnowledgeEntry, Reviewer, ReviewRunMode, Severity } from "../review/finding.ts";
+import type {
+  KnowledgeEntry,
+  Reviewer,
+  ReviewRunMode,
+  ReviewTriggerSource,
+  Severity,
+} from "../review/finding.ts";
 import {
   containerBranches,
   containerPullRequestBody,
@@ -977,6 +983,11 @@ async function startRun(
    * 其余入口永远是完整审查。
    */
   mode?: ReviewRunMode,
+  /**
+   * 这一轮是被谁开出来的(issue #312)。缺省是投递——只有 Forge 的那条投递链路不传它,
+   * 面板的四个入口各自写明 `panel`。不从 `triggeredBy` 推:定时那一档同样没有调用者。
+   */
+  triggerSource: ReviewTriggerSource = "delivery",
 ): Promise<void> {
   const settled = deps.onRunSettled ?? logFailure;
   // 排空要等的就是这一段(issue #249):这一轮到达可退出点之前进程不退出。
@@ -992,6 +1003,7 @@ async function startRun(
         // 同根因组那一行链到面板(issue #308),地址与容器 PR 正文里那一句同源。
         panelBaseUrl: deps.baseUrl,
         ...(triggeredBy === undefined ? {} : { triggeredBy }),
+        triggerSource,
         ...(rangeReviewId === undefined ? {} : { rangeReviewId }),
         ...(directive === undefined ? {} : { directive }),
         ...(mode === undefined ? {} : { mode }),
@@ -4974,6 +4986,7 @@ async function handleRerun(
     undefined,
     directive,
     mode,
+    "panel",
   );
 }
 
@@ -5056,6 +5069,7 @@ async function rerunRangeReview(
     id,
     directive,
     mode,
+    "panel",
   );
 }
 
@@ -5869,6 +5883,8 @@ async function handleCreateRangeReview(
     createdBy,
     id,
     directive,
+    undefined,
+    "panel",
   );
 }
 
@@ -6055,6 +6071,7 @@ async function handleAdvanceRangeReview(
     id,
     directive,
     mode,
+    "panel",
   );
 }
 

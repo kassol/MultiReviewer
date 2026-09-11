@@ -36,6 +36,7 @@ import type {
   ReviewerUsage,
   ReviewRule,
   ReviewRunMode,
+  ReviewTriggerSource,
   ReviewVerdict,
   RuleProposalChange,
   Severity,
@@ -72,6 +73,9 @@ CREATE TABLE IF NOT EXISTS review_run (
   pr_state TEXT,
   -- 手动重跑的调用者用户名快照,NULL 即投递。刻意不引用 panel_user:删号后历史保留。
   triggered_by TEXT,
+  -- 这一轮是被谁开出来的(issue #312):投递、面板,或定时检查。可空是为了让升级前
+  -- 的旧行补得进来(openStore 按 triggered_by 回填),回填之后不再有 NULL。
+  trigger_source TEXT,
   started_at TEXT NOT NULL,
   finished_at TEXT,
   duration_ms INTEGER,
@@ -931,6 +935,14 @@ function readMinReportSeverity(stored: string | undefined): Severity | null {
 }
 
 /**
+ * 一行 `review_run.trigger_source` 读成触发来源(issue #312)。`openStore` 已经把旧行回填
+ * 过,认不出的一格仍读作投递——一行坏数据不该让整张时间线读不出来。
+ */
+function readTriggerSource(stored: unknown): ReviewTriggerSource {
+  return stored === "panel" || stored === "scheduled" ? stored : "delivery";
+}
+
+/**
  * 分批上限、批次并发数(issue #230)与每批每模型取证上限(issue #258)各自的设置键。四项
  * 同形,读写只写一份;版本与整页共用一个(issue #301)。
  */
@@ -1049,6 +1061,8 @@ export type RunMeta = {
   title?: string | null;
   /** 手动重跑的调用者用户名快照;省略或 null 即投递触发。 */
   triggeredBy?: string | null;
+  /** 这一轮是被谁开出来的(issue #312);省略即投递,与升级前的旧行同一读法。 */
+  triggerSource?: ReviewTriggerSource;
   /** 这一轮归属的范围审查;省略或 null 即 PR 触发(ADR 0012)。 */
   rangeReviewId?: number | null;
   startedAt: string;
@@ -2030,6 +2044,8 @@ export type RunListItem = {
   finishedAt: string | null;
   /** 手动重跑的调用者用户名快照;null 即投递触发。 */
   triggeredBy: string | null;
+  /** 这一轮是被谁开出来的(issue #312)。升级前的旧行按用户名快照回填。 */
+  triggerSource: ReviewTriggerSource;
   /** 这一轮归属的范围审查;null 即 PR 触发。时间流据此区分两类来源。 */
   rangeReviewId: number | null;
   /** 发起这一轮时附的本轮指令(CONTEXT.md,issue #225);null 即没有附。 */
@@ -2228,6 +2244,8 @@ export type StageTimelineEntry = {
   failure: string | null;
   /** 这一轮的模式(CONTEXT.md 只复核,issue #242)。升级前的旧行是完整审查。 */
   mode: ReviewRunMode;
+  /** 这一轮是被谁开出来的(issue #312)。时间线据它标出每一轮的来源。 */
+  triggerSource: ReviewTriggerSource;
   reported: number;
   folded: number;
   fixed: number;
@@ -3537,6 +3555,23 @@ export function openStore(dbPath: string): Store {
   }
   db.exec(STORE_SCHEMA);
   db.exec(MODEL_SERVICE_SCHEMA);
+
+  // 触发来源(issue #312):升级前的库里没有这一列,`CREATE TABLE IF NOT EXISTS` 对既有表
+  // 不生效,先补上再回填。回填按用户名快照推:有用户名的那一轮是人在面板上开的,其余是
+  // 投递(定时那一档从这一票之后才写得出来,旧行里没有)。补过就不再命中——`openStore`
+  // 每次请求都跑一遍,回填不该跟着每次请求扫一次这张只增不减的表。
+  const hasTriggerSource = Number(
+    db.prepare(
+      "SELECT COUNT(*) AS count FROM pragma_table_info('review_run') WHERE name = 'trigger_source'",
+    ).get()?.["count"] ?? 0,
+  );
+  if (hasTriggerSource === 0) {
+    db.exec("ALTER TABLE review_run ADD COLUMN trigger_source TEXT");
+    db.exec(
+      `UPDATE review_run
+          SET trigger_source = CASE WHEN triggered_by IS NULL THEN 'delivery' ELSE 'panel' END`,
+    );
+  }
 
   // 审查策略整页一个版本(issue #301):升级前每一项各持一个版本键,这里一次性删掉并建起
   // 整页那一个(从 1 起)。设置值本身一格不动;删过就不再命中,已有的整页版本也不被覆盖,
@@ -5864,10 +5899,10 @@ export function openStore(dbPath: string): Store {
           .prepare(
             `INSERT INTO review_run
                (owner, repo, pull_number, head_sha, title, range_review_id, pr_state,
-                triggered_by, started_at, changed_files, changed_lines, batch_count,
-                rule_set_version, directive, mode, history_json, batch_plan_json,
+                triggered_by, trigger_source, started_at, changed_files, changed_lines,
+                batch_count, rule_set_version, directive, mode, history_json, batch_plan_json,
                 min_report_severity, auxiliary_model)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             meta.owner,
@@ -5878,6 +5913,9 @@ export function openStore(dbPath: string): Store {
             rangeReviewId,
             pullRequestState,
             meta.triggeredBy ?? null,
+            // 触发来源(issue #312):调用方说了算,不从用户名快照推——定时那一档也没有
+            // 用户名,推出来的会是投递。
+            meta.triggerSource ?? "delivery",
             meta.startedAt,
             meta.changedFiles,
             meta.changedLines,
@@ -6342,7 +6380,7 @@ export function openStore(dbPath: string): Store {
         .prepare(
           `SELECT run.id AS id, run.head_sha AS head_sha, run.started_at AS started_at,
                   run.finished_at AS finished_at, run.failed AS failed, run.failure AS failure,
-                  run.mode AS mode
+                  run.mode AS mode, run.trigger_source AS trigger_source
              FROM review_run run
             WHERE ${where}
             ORDER BY run.id`,
@@ -6627,6 +6665,8 @@ export function openStore(dbPath: string): Store {
             failure: run["failure"] === null ? null : String(run["failure"]),
             // 时间线上要分得出哪一轮是只复核:看到「新报 0」时那不是审查空跑。
             mode: run["mode"] === "verdict-only" ? "verdict-only" : "full",
+            // 时间线上要分得出哪一轮是自己跑起来的(issue #312)。
+            triggerSource: readTriggerSource(run["trigger_source"]),
             reported: 0,
             folded: 0,
             fixed: 0,
@@ -6961,8 +7001,9 @@ export function openStore(dbPath: string): Store {
       const runs = db
         .prepare(
           `SELECT id, owner, repo, pull_number, head_sha, title, range_review_id, triggered_by,
-                  directive, mode, started_at, finished_at, failed, failure, input_tokens,
-                  output_tokens, cache_read_tokens, cache_write_tokens, total_tokens
+                  trigger_source, directive, mode, started_at, finished_at, failed, failure,
+                  input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                  total_tokens
              FROM review_run ${where}
             ORDER BY id DESC LIMIT ?`,
         )
@@ -7188,6 +7229,7 @@ export function openStore(dbPath: string): Store {
           title: run["title"] === null ? null : String(run["title"]),
           triggeredBy:
             run["triggered_by"] === null ? null : String(run["triggered_by"]),
+          triggerSource: readTriggerSource(run["trigger_source"]),
           rangeReviewId:
             run["range_review_id"] === null ? null : Number(run["range_review_id"]),
           directive: run["directive"] === null ? null : String(run["directive"]),

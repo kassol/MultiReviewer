@@ -126,6 +126,7 @@
 
 ## 变更日志
 
+- 2026-09-11: 落地 issue #312(父 spec #310)的面板部分。阶段时间线每一轮标出来源:`stage-summary.tsx` 的 `StageTimelineEntry` 多一格 `triggerSource`(新类型 `TriggerSource`,与 `GET /stages/{stageId}` 同名),`StageRound` 在只复核徽章之前常驻一个描边徽章,文案取 `TRIGGER_SOURCE_LABEL`(投递 / 面板 / 定时增量)。三档都标,只标其中一档另外两档就得靠人猜;「定时增量」那一档的样式随这一票备好,开出这种轮次的定时检查是后面那张票的事。前端无程序化测试(issue #26 的测试决策)。
 - 2026-09-11: 处置备注框占位符改成「只写为什么不用改(可选,只存面板);代码已改的留给下一轮评审自动处置」,`run-diff.tsx` / `stage-summary.tsx` / `stage-detail.tsx` 三处同句。此前占位符只说「处置备注」,开发者改完代码就手动处置并填「已修改」,备注非空即触发处置反哺(见 `src/AGENTS.md` 同日条目)。纯文案,无测试。
 - 2026-09-10: issue #309 组卡的两处 e2e 修复。`stage-summary.tsx` 的 `RootCauseGroupCard` 背景类改成按 `focused` 二选一(与下方 counts 按钮同一写法)——原先 `bg-surface` 常驻、`bg-accent-tint` 只在聚焦时追加,两个背景类拼进同一个模板字符串未经 `cn` 去重,编译后 CSS 里 `bg-surface` 排在后面直接压过 `bg-accent-tint`,聚焦态因此从没显出过蓝底。聚焦滚动从 `scrollIntoView({ block: "center" })` 改成 `block: "start"`:组卡常常比视口高(观察到约 1449px vs 900px 视口),居中会把卡头的根因说明与「处置整组」滚出屏幕,停在成员正文中间;改成贴顶后卡头落进视野。贴顶后卡头又被顶栏(`main.tsx` 的 `TopBar`,两行毛玻璃,sticky 叠在滚动容器上方)盖住——`block: "start"` 落点是视口 y=0,顶栏实际渲染高度约 88px,卡头因此钻到顶栏底下;组卡的 `<section>` 补一个 `scroll-mt-[88px]`(顶栏没有现成的高度 token,这个数按 `TopBar` 两行的内边距、行高与边框逐项算出后与实测一致),贴顶落点让到顶栏下面。
 - 2026-09-09: issue #309 的评审复核修复(父 spec #305,ADR 0030)。「处置整组」点得动的判据改用新的纯函数 `lib/root-cause.ts` 的 `disposableInGroup`——与服务端跳过的口径同一份(未处置**且**有行级评论承载),原先只看处置状态,没有评论 id 的成员被算成待处置,那一组按钮点得动而一条都写不进去。`root-cause.test.ts` 补一条它的用例;组级处置弹窗的标题从模板串改成普通字符串。
