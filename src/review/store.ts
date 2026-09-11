@@ -354,7 +354,10 @@ CREATE TABLE IF NOT EXISTS range_review (
   -- 最近一次定时检查的时刻与结果(issue #314)。只留一条,新的覆盖旧的;开轮次的那
   -- 一次本身已在时间线里,不另记事件。任何结果都刷新时刻,一天因此至多检查一次。
   scheduled_check_at TEXT,
-  scheduled_check_result TEXT
+  scheduled_check_result TEXT,
+  -- 每天几点检查(本地时区 HH:mm)与检查模式(issue #315)。关着时回到默认值。
+  scheduled_check_time TEXT NOT NULL DEFAULT '00:00',
+  scheduled_check_mode TEXT NOT NULL DEFAULT 'verdict-only'
 );
 CREATE INDEX IF NOT EXISTS range_review_by_base ON range_review(owner, repo, base_sha);
 
@@ -927,6 +930,9 @@ const ADDED_COLUMNS: readonly { table: string; column: string; backfill?: string
   { table: "range_review", column: "daily_increment_enabled_at TEXT" },
   { table: "range_review", column: "scheduled_check_at TEXT" },
   { table: "range_review", column: "scheduled_check_result TEXT" },
+  // 检查时刻与模式(issue #315):带默认值,补完即 00:00 只复核,与此前的行为一致。
+  { table: "range_review", column: "scheduled_check_time TEXT NOT NULL DEFAULT '00:00'" },
+  { table: "range_review", column: "scheduled_check_mode TEXT NOT NULL DEFAULT 'verdict-only'" },
 ];
 
 /**
@@ -2419,6 +2425,10 @@ export type RangeReviewRecord = {
   scheduledCheckAt: string | null;
   /** 最近一次定时检查的结果;一次都没检查过时是 null。 */
   scheduledCheckResult: ScheduledCheckResult | null;
+  /** 每天几点检查(issue #315),本地时区 `HH:mm`;默认 `00:00`。 */
+  scheduledCheckTime: string;
+  /** 定时检查按哪种模式推进;默认只复核。 */
+  scheduledCheckMode: ReviewRunMode;
 };
 
 /** 一个范围审查审过的一个比较项。发起时那个也在内,按记录先后。 */
@@ -2516,6 +2526,8 @@ function rangeReviewRecord(row: Record<string, unknown>): RangeReviewRecord {
       row["scheduled_check_result"] === null || row["scheduled_check_result"] === undefined
         ? null
         : (String(row["scheduled_check_result"]) as ScheduledCheckResult),
+    scheduledCheckTime: String(row["scheduled_check_time"] ?? "00:00"),
+    scheduledCheckMode: row["scheduled_check_mode"] === "full" ? "full" : "verdict-only",
   };
 }
 
@@ -3129,12 +3141,15 @@ export type Store = {
     completedAt: string;
   }): void;
   /**
-   * 设置每日增量(CONTEXT.md 每日增量,issue #313)。`branch` 为 null 即关闭,开启与
-   * 改分支都刷新开启时刻——定时检查按它判「开启当天不算错过」。只改状态,不推进。
+   * 设置每日增量(CONTEXT.md 每日增量,issue #313、#315)。`branch` 为 null 即关闭,
+   * 时刻与模式回到默认;开启与改任一项都刷新开启时刻——定时检查按它判这个时刻点算不算
+   * 错过。只改状态,不推进。
    */
   setRangeReviewDailyIncrement(record: {
     id: number;
     branch: string | null;
+    time: string;
+    mode: ReviewRunMode;
     at: string;
   }): void;
   /**
@@ -7505,13 +7520,20 @@ export function openStore(dbPath: string): Store {
       ).run(record.completedBy, record.completedAt, record.id);
     },
 
-    setRangeReviewDailyIncrement({ id, branch, at }) {
+    setRangeReviewDailyIncrement({ id, branch, time, mode, at }) {
       db.prepare(
         `UPDATE range_review
             SET daily_increment_enabled = ?, daily_increment_branch = ?,
-                daily_increment_enabled_at = ?
+                daily_increment_enabled_at = ?, scheduled_check_time = ?, scheduled_check_mode = ?
           WHERE id = ?`,
-      ).run(branch === null ? 0 : 1, branch, branch === null ? null : at, id);
+      ).run(
+        branch === null ? 0 : 1,
+        branch,
+        branch === null ? null : at,
+        branch === null ? "00:00" : time,
+        branch === null ? "verdict-only" : mode,
+        id,
+      );
     },
 
     recordRangeReviewScheduledCheck({ id, at, result }) {

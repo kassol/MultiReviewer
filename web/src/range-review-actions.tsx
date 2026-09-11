@@ -9,6 +9,7 @@ import {
   IconButton,
   Text,
   TextArea,
+  TextField,
   Tooltip,
 } from "@radix-ui/themes";
 
@@ -61,6 +62,10 @@ export type RangeReview = {
   scheduledCheckAt: string | null;
   /** 最近一次定时检查的结果;一次都没检查过时是 null。 */
   scheduledCheckResult: ScheduledCheckResult | null;
+  /** 每天几点检查(issue #315),实例时区 `HH:mm`;默认 `00:00`。 */
+  scheduledCheckTime: string;
+  /** 定时检查按哪种模式推进;默认只复核。 */
+  scheduledCheckMode: RerunMode;
 };
 
 /** 一次定时检查的结果(issue #314),与服务端那一格逐字对应。 */
@@ -86,6 +91,12 @@ const SCHEDULED_CHECK_RESULT_LABEL: Record<ScheduledCheckResult, string> = {
   "push-failed": "推分支失败",
   draining: "排空中",
   "check-failed": "检查失败",
+};
+
+/** 检查模式的说法(issue #315),与推进弹窗「完整审查」勾选的两档同名。 */
+const SCHEDULED_CHECK_MODE_LABEL: Record<RerunMode, string> = {
+  "verdict-only": "只复核",
+  full: "完整审查",
 };
 
 /**
@@ -198,8 +209,8 @@ export function CompleteAction({
  * 每日增量的开关(issue #313)。入口在阶段详情页头,与推进、审查完成并列;阶段结束之后
  * 不显示——终态没有明天可跟。
  *
- * 开、关、改分支都只改状态:推进由定时检查在下一个凌晨做,点开关不等于现在跑一轮
- * (CONTEXT.md 每日增量)。开着时按钮上直接写它跟的那条分支。
+ * 开、关、改任一项都只改状态:推进由定时检查在配置的检查时刻做,点开关不等于现在跑一轮
+ * (CONTEXT.md 每日增量)。开着时按钮上直接写它跟的那条分支与「时刻 · 模式」(issue #315)。
  */
 export function DailyIncrementAction({ rangeReview }: { rangeReview: RangeReview }) {
   const [open, setOpen] = useState(false);
@@ -220,6 +231,11 @@ export function DailyIncrementAction({ rangeReview }: { rangeReview: RangeReview
               {rangeReview.dailyIncrementEnabled ? rangeReview.dailyIncrementBranch : "关"}
             </span>
           </StatusBadge>
+          {rangeReview.dailyIncrementEnabled ? (
+            <StatusBadge tone="neutral">
+              {rangeReview.scheduledCheckTime} · {SCHEDULED_CHECK_MODE_LABEL[rangeReview.scheduledCheckMode]}
+            </StatusBadge>
+          ) : null}
           {/* 最近一次的结果就在开关旁(issue #314):昨晚推没推进、为什么没推,一眼看得到。 */}
           {rangeReview.scheduledCheckResult === null ? null : (
             <StatusBadge tone={scheduledCheckTone(rangeReview.scheduledCheckResult)}>
@@ -236,7 +252,10 @@ export function DailyIncrementAction({ rangeReview }: { rangeReview: RangeReview
 }
 
 /**
- * 每日增量的分支弹窗(issue #313)。
+ * 每日增量的弹窗(issue #313、#315):分支、检查时刻与检查模式。
+ *
+ * 时刻用原生时间输入,值就是 24 小时制的 `HH:mm`,与接口同形;模式复用推进弹窗「完整
+ * 审查」那个勾选与文案,两处说的是同一件事。两项都从此刻的配置预填。
  *
  * 分支列表与刷新复用提交选择器那一份(`useBranchOptions`):两处读同一个接口,分支刚推
  * 上去时点一次刷新就同步得到。
@@ -260,6 +279,8 @@ function DailyIncrementDialogContent({
         ? rangeReview.comparisonSource.name
         : null),
   );
+  const [time, setTime] = useState(rangeReview.scheduledCheckTime);
+  const [fullReview, setFullReview] = useState(rangeReview.scheduledCheckMode === "full");
   const [error, setError] = useState<string | null>(null);
 
   const save = useMutation({
@@ -267,7 +288,14 @@ function DailyIncrementDialogContent({
       await send(
         `/range-reviews/${rangeReview.id}/daily-increment`,
         "PUT",
-        next === null ? { enabled: false } : { enabled: true, branch: next },
+        next === null
+          ? { enabled: false }
+          : {
+              enabled: true,
+              branch: next,
+              time,
+              mode: fullReview ? "full" : "verdict-only",
+            },
       );
     },
     onSuccess: () => {
@@ -286,8 +314,8 @@ function DailyIncrementDialogContent({
         </span>
       </Dialog.Title>
       <Text as="p" size="2" color="gray">
-        开着时每天凌晨由定时检查把这条分支的最新提交推成新比较项，只复核这个阶段未处置的历史。
-        开、关、改分支都不会立刻推进。
+        开着时每天到检查时刻由定时检查把这条分支的最新提交推成新比较项，按检查模式开一轮。
+        开、关、改任一项都不会立刻推进。
       </Text>
       {/* 最近一次定时检查的时间与结果(issue #314)。 */}
       <Text as="p" size="2" color="gray" mt="2">
@@ -326,6 +354,35 @@ function DailyIncrementDialogContent({
           </IconButton>
         </Tooltip>
       </div>
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <Text as="label" size="2" className="flex items-center gap-2">
+          检查时刻
+          <TextField.Root
+            type="time"
+            required
+            size={{ initial: "3", sm: "2" }}
+            className="max-sm:min-h-11"
+            value={time}
+            onChange={(event) => {
+              setError(null);
+              setTime(event.currentTarget.value);
+            }}
+          />
+        </Text>
+        <Text as="label" size="2" className="flex cursor-pointer items-center gap-2 max-sm:min-h-11">
+          <Checkbox
+            checked={fullReview}
+            onCheckedChange={(checked) => {
+              setError(null);
+              setFullReview(checked === true);
+            }}
+          />
+          完整审查
+          <Text size="1" color="gray">
+            {FULL_REVIEW_HINT}
+          </Text>
+        </Text>
+      </div>
       {error === null ? null : (
         <p role="alert" className="mt-2 break-words text-sm text-danger">{error}</p>
       )}
@@ -362,7 +419,7 @@ function DailyIncrementDialogContent({
           variant="solid"
           size={{ initial: "3", sm: "2" }}
           className="col-span-2 min-h-11 w-full shadow-accent sm:col-span-1 sm:min-h-0 sm:w-auto"
-          disabled={branch === null || save.isPending}
+          disabled={branch === null || time === "" || save.isPending}
           onClick={() => {
             setError(null);
             save.mutate(branch);

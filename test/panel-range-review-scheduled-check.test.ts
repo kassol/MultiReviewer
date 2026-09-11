@@ -45,6 +45,8 @@ type RangeReview = {
   dailyIncrementBranch: string | null;
   scheduledCheckAt: string | null;
   scheduledCheckResult: ScheduledCheckResult | null;
+  scheduledCheckTime: string;
+  scheduledCheckMode: string;
 };
 
 /** 只复核那一轮要有未处置历史才开得起来:要它的用例让每个 Reviewer 都报一条。 */
@@ -124,11 +126,19 @@ function startRangeReview(
   });
 }
 
-/** 开每日增量并跟上这条分支。开在「今天」,当天因此不算错过。 */
-async function enableDailyIncrement(h: PanelHarness, id: number, branch: string): Promise<void> {
+/**
+ * 开每日增量并跟上这条分支。时刻缺省 00:00:开在「今天」的 00:00 之后,当天因此不算错过。
+ */
+async function enableDailyIncrement(
+  h: PanelHarness,
+  id: number,
+  branch: string,
+  schedule: { time?: string; mode?: string } = {},
+): Promise<void> {
   const response = await h.api("PUT", `/range-reviews/${id}/daily-increment`, {
     enabled: true,
     branch,
+    ...schedule,
   });
   assert.equal(response.status, 200);
 }
@@ -252,6 +262,85 @@ test("开关开在今天不算错过:当天的 tick 不推进", async () => {
   assert.equal(h.scheduledChecks.length, 0);
   assert.equal(runsOf(h, rangeReview.id).length, 1);
   assert.equal(h.repo.branchSha(rangeReview.headBranch), h.repo.headSha);
+});
+
+/** 本地时区的某一刻:检查时刻按容器 TZ 算,用例跟着跑测试那台机器的时区拨。 */
+function localAt(day: number, hours: number, minutes: number): number {
+  return new Date(2026, 8, day, hours, minutes).getTime();
+}
+
+test("检查时刻 09:30:09:29 不跑、09:31 跑、同日不重跑、次日到点再跑", async () => {
+  const clock = makeClock(localAt(11, 8, 0));
+  const recorded: Recorded = { ranges: [], historyEntries: [] };
+  const h = await startedHarness(recorded, clock, REPORTED_FINDINGS);
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+
+  const next = h.repo.pushToHead({ "src/answer.ts": "export const answer = 3;\n" });
+  // 开在当天时刻点之前:当天就跑。
+  await enableDailyIncrement(h, rangeReview.id, "feature", { time: "09:30" });
+
+  clock.set(localAt(11, 9, 29));
+  await afterSomeTicks();
+  assert.equal(h.scheduledChecks.length, 0);
+
+  clock.set(localAt(11, 9, 31));
+  await h.scheduledChecksAtLeast(1);
+  assert.equal(h.scheduledChecks[0]!.result, "advanced");
+  await h.settledAtLeast(2);
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), next);
+
+  const again = h.repo.pushToHead({ "src/answer.ts": "export const answer = 4;\n" });
+  clock.set(localAt(11, 23, 59));
+  await afterSomeTicks();
+  // 次日跨过 00:00 但还没到 09:30:仍不跑。
+  clock.set(localAt(12, 9, 29));
+  await afterSomeTicks();
+  assert.equal(h.scheduledChecks.length, 1);
+
+  clock.set(localAt(12, 9, 31));
+  await h.scheduledChecksAtLeast(2);
+  assert.equal(h.scheduledChecks[1]!.result, "advanced");
+  await h.settledAtLeast(3);
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), again);
+});
+
+test("开在当天时刻点之后:当天不跑,次日到点才跑", async () => {
+  const clock = makeClock(localAt(11, 10, 0));
+  const recorded: Recorded = { ranges: [], historyEntries: [] };
+  const h = await startedHarness(recorded, clock, REPORTED_FINDINGS);
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+
+  h.repo.pushToHead({ "src/answer.ts": "export const answer = 3;\n" });
+  await enableDailyIncrement(h, rangeReview.id, "feature", { time: "09:30" });
+
+  clock.set(localAt(11, 23, 59));
+  await afterSomeTicks();
+  assert.equal(h.scheduledChecks.length, 0);
+
+  clock.set(localAt(12, 9, 31));
+  await h.scheduledChecksAtLeast(1);
+  assert.equal(h.scheduledChecks[0]!.result, "advanced");
+  await h.settledAtLeast(2);
+});
+
+test("完整审查模式:没有未处置历史也开轮次,那一轮模式是完整审查", async () => {
+  const clock = makeClock();
+  const recorded: Recorded = { ranges: [], historyEntries: [] };
+  const h = await startedHarness(recorded, clock);
+  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
+
+  const next = h.repo.pushToHead({ "src/answer.ts": "export const answer = 3;\n" });
+  await enableDailyIncrement(h, rangeReview.id, "feature", { mode: "full" });
+
+  clock.set(clock.at + DAY_MS);
+  await h.scheduledChecksAtLeast(1);
+  assert.equal(h.scheduledChecks[0]!.result, "advanced");
+  await h.settledAtLeast(2);
+  assert.equal(h.repo.branchSha(rangeReview.headBranch), next);
+  const runs = runsOf(h, rangeReview.id);
+  assert.equal(runs.length, 2);
+  assert.equal(runs[1]!.mode, "full");
+  assert.equal(runs[1]!.triggerSource, "scheduled");
 });
 
 test("分支上没有新提交:跳过并记原因,不开轮次", async () => {
@@ -521,6 +610,8 @@ test("升级前的旧库:开库补上每日增量那几列,开关照常能开", 
     "daily_increment_enabled_at",
     "scheduled_check_at",
     "scheduled_check_result",
+    "scheduled_check_time",
+    "scheduled_check_mode",
   ]) {
     db.exec(`ALTER TABLE range_review RENAME COLUMN ${column} TO before_upgrade_${column}`);
   }
@@ -533,6 +624,8 @@ test("升级前的旧库:开库补上每日增量那几列,开关照常能开", 
   assert.equal(detail.dailyIncrementEnabledAt, null);
   assert.equal(detail.scheduledCheckAt, null);
   assert.equal(detail.scheduledCheckResult, null);
+  assert.equal(detail.scheduledCheckTime, "00:00");
+  assert.equal(detail.scheduledCheckMode, "verdict-only");
 
   await enableDailyIncrement(h, rangeReview.id, "feature");
   const opened = await detailRangeReview(h, rangeReview.id);

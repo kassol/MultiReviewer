@@ -31,6 +31,8 @@ type RangeReview = {
   dailyIncrementEnabled: boolean;
   dailyIncrementBranch: string | null;
   dailyIncrementEnabledAt: string | null;
+  scheduledCheckTime: string;
+  scheduledCheckMode: string;
 };
 
 async function startedHarness(): Promise<PanelHarness> {
@@ -94,6 +96,61 @@ test("每日增量:开启、改分支、关闭各自读回正确", async () => {
   assert.equal(off.dailyIncrementEnabled, false);
   assert.equal(off.dailyIncrementBranch, null);
   assert.equal(off.dailyIncrementEnabledAt, null);
+});
+
+test("检查时刻与检查模式:缺省取 00:00 与只复核,带上即读回,改任一项刷新开启时刻", async () => {
+  let clock = Date.parse("2026-09-11T01:00:00.000Z");
+  const h = await startReadyPanelHarness({ registerRepo: true, now: () => clock });
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  const rangeReview = await startRangeReview(h);
+  const path = `/range-reviews/${rangeReview.id}/daily-increment`;
+
+  assert.equal((await h.api("PUT", path, { enabled: true, branch: "feature" })).status, 200);
+  const defaults = await detailRangeReview(h, rangeReview.id);
+  assert.equal(defaults.scheduledCheckTime, "00:00");
+  assert.equal(defaults.scheduledCheckMode, "verdict-only");
+
+  clock += 60_000;
+  assert.equal(
+    (await h.api("PUT", path, { enabled: true, branch: "feature", time: "09:30" })).status,
+    200,
+  );
+  const timed = await detailRangeReview(h, rangeReview.id);
+  assert.equal(timed.scheduledCheckTime, "09:30");
+  assert.equal(timed.scheduledCheckMode, "verdict-only");
+  assert.notEqual(timed.dailyIncrementEnabledAt, defaults.dailyIncrementEnabledAt);
+
+  clock += 60_000;
+  assert.equal(
+    (await h.api("PUT", path, { enabled: true, branch: "feature", time: "09:30", mode: "full" }))
+      .status,
+    200,
+  );
+  const full = await detailRangeReview(h, rangeReview.id);
+  assert.equal(full.scheduledCheckTime, "09:30");
+  assert.equal(full.scheduledCheckMode, "full");
+  assert.notEqual(full.dailyIncrementEnabledAt, timed.dailyIncrementEnabledAt);
+});
+
+test("检查时刻或检查模式不合法:400,状态不动", async () => {
+  const h = await startedHarness();
+  const rangeReview = await startRangeReview(h);
+  const path = `/range-reviews/${rangeReview.id}/daily-increment`;
+
+  for (const invalid of [
+    { time: "24:00" },
+    { time: "9:30" },
+    { time: "09:60" },
+    { time: 930 },
+    { mode: "quick" },
+  ]) {
+    const denied = await h.api("PUT", path, { enabled: true, branch: "feature", ...invalid });
+    assert.equal(denied.status, 400, JSON.stringify(invalid));
+  }
+  const after = await detailRangeReview(h, rangeReview.id);
+  assert.equal(after.dailyIncrementEnabled, false);
+  assert.equal(after.scheduledCheckTime, "00:00");
+  assert.equal(after.scheduledCheckMode, "verdict-only");
 });
 
 test("开启每日增量不推进:轮次数与容器 PR 的 head 分支都不动", async () => {

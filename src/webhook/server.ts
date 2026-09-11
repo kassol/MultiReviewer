@@ -6251,7 +6251,9 @@ async function handleSetDailyIncrement(
   deps: WebhookServerDeps,
   id: number,
 ): Promise<void> {
-  const payload = await readJson<{ enabled?: unknown; branch?: unknown } | null>(req, res);
+  const payload = await readJson<
+    { enabled?: unknown; branch?: unknown; time?: unknown; mode?: unknown } | null
+  >(req, res);
   if (payload === undefined) return;
   if (payload === null || typeof payload.enabled !== "boolean") {
     return sendJson(res, 400, { error: 'body 要是 {"enabled"} 形状的 JSON' });
@@ -6262,6 +6264,13 @@ async function handleSetDailyIncrement(
   if (branch === "") {
     return sendJson(res, 400, { error: "开启每日增量要带一条分支名" });
   }
+  // 检查时刻与模式(issue #315)只在开启时读,缺省即 00:00 只复核;关闭时回到默认。
+  const time = !payload.enabled || payload.time === undefined ? "00:00" : payload.time;
+  if (typeof time !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+    return sendJson(res, 400, { error: "检查时刻要是 24 小时制的 HH:mm" });
+  }
+  const mode = readMode(res, payload.enabled ? payload.mode : undefined, "verdict-only");
+  if (mode === "rejected") return;
 
   const record = withStore(deps.dbPath, (store) => store.getRangeReview(id));
   if (record === undefined) {
@@ -6295,43 +6304,47 @@ async function handleSetDailyIncrement(
 
   const at = new Date((deps.now ?? Date.now)()).toISOString();
   const rangeReview = withStore(deps.dbPath, (store) => {
-    store.setRangeReviewDailyIncrement({ id, branch, at });
+    store.setRangeReviewDailyIncrement({ id, branch, time, mode, at });
     return store.getRangeReview(id)!;
   });
   return sendJson(res, 200, { rangeReview });
 }
 
 /**
- * 一个时刻落在哪一天(issue #314)。按 Node 进程本地时区的日期分量算(容器的 `TZ` 决定),
- * 不引入时区库;只用来比较两个时刻是不是同一天,不对外显示。
+ * 这个时刻点已经到了、且还没检查过(issue #315)。时刻点是 now 所在那一天的检查时刻,按
+ * Node 进程本地时区的日期分量拼(容器的 `TZ` 决定),不引入时区库。
+ *
+ * 判据是 `max(开启时刻, 最近一次定时检查) < 时刻点 ≤ now`:开关在时刻点之前打开当天就跑,
+ * 之后打开明天跑,改时刻、模式或分支同样刷新开启时刻;任何结果都刷新检查时刻,一天因此
+ * 至多一次;服务错过时刻点后回来,第一个 tick 仍补上。
  */
-function localDayKey(ms: number): string {
-  const at = new Date(ms);
-  return `${at.getFullYear()}-${at.getMonth()}-${at.getDate()}`;
-}
-
-/**
- * 今天已经检查过了。判据取「最近一次定时检查」与「最近一次开启或改分支」中较晚的那个:
- * 开关开在今天就算今天已经过了一次,刚开不会当场推进一轮(spec #310 user story 22)。
- */
-function checkedToday(record: RangeReviewRecord, today: string): boolean {
+function scheduledCheckPointPassed(record: RangeReviewRecord, nowMs: number): boolean {
+  const [hours = 0, minutes = 0] = record.scheduledCheckTime.split(":").map(Number);
+  const today = new Date(nowMs);
+  const point = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+    hours,
+    minutes,
+  ).getTime();
   const marks = [record.scheduledCheckAt, record.dailyIncrementEnabledAt]
     .filter((at): at is string => at !== null)
     .map((at) => Date.parse(at))
     .filter((ms) => Number.isFinite(ms));
-  return marks.length > 0 && localDayKey(Math.max(...marks)) === today;
+  return point <= nowMs && Math.max(-Infinity, ...marks) < point;
 }
 
 /**
- * 这个范围审查此刻该做定时检查:进行中、每日增量开着、今天还没检查过。排队与开检查前
- * 重读都按这一条判。
+ * 这个范围审查此刻该做定时检查:进行中、每日增量开着、当天的时刻点已到且还没检查过。
+ * 排队与开检查前重读都按这一条判。
  */
-function scheduledCheckDue(record: RangeReviewRecord, today: string): boolean {
+function scheduledCheckDue(record: RangeReviewRecord, nowMs: number): boolean {
   return (
     record.state === "in-progress" &&
     record.dailyIncrementEnabled &&
     record.dailyIncrementBranch !== null &&
-    !checkedToday(record, today)
+    scheduledCheckPointPassed(record, nowMs)
   );
 }
 
@@ -6357,7 +6370,8 @@ const ADVANCE_CHECK_RESULT: Record<AdvanceRejectionReason, ScheduledCheckResult>
 
 /**
  * 跟一次分支:取分支最新 commit → 与当前比较项比对 → 判这个范围审查有没有未结束的轮次
- * → 走推进比较项的共用段(issue #311),模式固定只复核、不带本轮指令、操作者为空。
+ * → 走推进比较项的共用段(issue #311),模式取开关上配的检查模式(issue #315)、不带本轮
+ * 指令、操作者为空。完整审查那一档不做只复核准入,`nothing-to-verdict` 因此只在只复核出现。
  *
  * 工作副本这一轮已经由调用方取回过,这里只读:同一个仓库上的几个范围审查共享那一次
  * 取回,凌晨不对 Forge 与磁盘造成并发冲击(spec #310 user story 26)。
@@ -6395,7 +6409,7 @@ async function scheduledCheck(
 
   const outcome = await advanceRangeReview(deps, record, {
     comparison: tip,
-    mode: "verdict-only",
+    mode: record.scheduledCheckMode,
     operator: null,
     triggerSource: "scheduled",
   });
@@ -6406,21 +6420,20 @@ async function scheduledCheck(
 
 /**
  * 一次定时检查的 tick(issue #314,CONTEXT.md 定时检查)。找出进行中、每日增量开着、
- * 且今天还没检查过的范围审查,逐个跟一次分支。
+ * 且当天检查时刻点已到而还没检查过的范围审查,逐个跟一次分支。
  *
- * 00:00 是「日期翻页」的自然结果,不做对时:服务在 00:00 前后不在线时,回来后的第一个
- * tick 就是当天第一次检查,那一天因此补得上;任何结果都刷新时刻,一天至多一次。
+ * 不做对时:服务在时刻点前后不在线时,回来后的第一个 tick 就是这个时刻点的检查,那一天
+ * 因此补得上;任何结果都刷新时刻,一天至多一次。
  *
  * 各范围审查串行执行,单条失败记结果后继续下一条;一个仓库取不回工作副本时只有它名下
  * 那几个记结果,其余仓库照常检查(spec #310 user story 27)。
  */
 async function scheduledCheckTick(deps: WebhookServerDeps): Promise<void> {
   const nowMs = (deps.now ?? Date.now)();
-  const today = localDayKey(nowMs);
   const due = withStore(deps.dbPath, (store) =>
     store
       .listRangeReviews({ state: "in-progress" })
-      .filter((record) => scheduledCheckDue(record, today)),
+      .filter((record) => scheduledCheckDue(record, nowMs)),
   );
   if (due.length === 0) return;
 
@@ -6470,7 +6483,7 @@ async function scheduledCheckTick(deps: WebhookServerDeps): Promise<void> {
       // 定时检查)。
       const current = withStore(deps.dbPath, (store) => {
         const record = store.getRangeReview(item.id);
-        if (record === undefined || !scheduledCheckDue(record, today)) return undefined;
+        if (record === undefined || !scheduledCheckDue(record, nowMs)) return undefined;
         const runInFlight = store.interruptedRuns().some((run) => run.rangeReviewId === item.id);
         return { record, runInFlight };
       });
