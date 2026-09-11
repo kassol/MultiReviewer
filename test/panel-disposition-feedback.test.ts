@@ -715,3 +715,74 @@ test("反哺解读失败:意图行失败带原因,处置本身照旧成功", asy
   assert.match(intent!.failure ?? "", /厂商拒了这次调用/);
   assert.equal(intent!.targetKind, "finding");
 });
+
+test("重试失败的处置反哺:仍停在那条 Finding 报出时的 head,附注仍记处置反哺并挂那条 Finding", async () => {
+  let attempt = 0;
+  const agent = scriptedRuleAgent(() => {
+    attempt += 1;
+    return attempt === 1
+      ? { items: [], failure: "Connection error." }
+      : { items: [{ type: "rule", scope: "src/**", statement: "边界上一次判空", reason: "越界在三处都有" }] };
+  });
+  const h = await harnessWithFindings(agent);
+  const [target] = await inlineFindings(h);
+
+  assert.equal((await dispose(h, target!.id, NOTE)).status, 200);
+  await h.dispositionFeedbackAtLeast(1);
+  const [failed] = await intents(h);
+  assert.equal(failed!.state, "failed");
+
+  // 同一条 Finding 上另有一条在跑:finding 那一档不查互斥,与处置时同一个例外(issue #316)。
+  const store = openStore(h.db.path);
+  try {
+    assert.notEqual(
+      store.startRuleIntent(GITEA_REPO.id, {
+        text: "同一条 Finding 上的另一条备注",
+        submittedBy: PANEL_ADMIN_USERNAME,
+        targetKind: "finding",
+        targetId: target!.id,
+        model: "test:global-model",
+        startedAt: "2026-09-11T00:00:00.000Z",
+      }),
+      undefined,
+    );
+  } finally {
+    store.close();
+  }
+
+  const response = await h.api(
+    "POST",
+    `/repos/${GITEA_REPO.id}/revision-intents/${failed!.id}/retry`,
+  );
+  assert.equal(response.status, 202);
+  await h.dispositionFeedbackAtLeast(2);
+  assert.equal(h.dispositionFeedbacks[1]!.findingId, target!.id);
+  assert.equal(h.dispositionFeedbacks[1]!.failure, undefined);
+
+  // 两次拿到的是同一份 Finding 上下文、同一个 head,走的仍是反哺那一段。
+  assert.equal(agent.calls.length, 2);
+  assert.equal(agent.calls[1]!.baselineSha, h.repo.headSha);
+  assert.equal(agent.calls[1]!.baselineSha, agent.calls[0]!.baselineSha);
+  assert.deepEqual(agent.calls[1]!.feedback, agent.calls[0]!.feedback);
+  assert.equal(agent.calls[1]!.intent, undefined);
+
+  const intent = (await intents(h)).find((row) => row.id === failed!.id)!;
+  assert.equal(intent.state, "completed");
+  assert.equal(intent.text, NOTE);
+  assert.equal(intent.targetKind, "finding");
+  assert.equal(intent.targetId, target!.id);
+  assert.notEqual(intent.traceTaskId, null);
+  assert.notEqual(intent.traceTaskId, failed!.traceTaskId);
+  const queued = await proposals(h);
+  assert.equal(queued.length, 1);
+  assert.deepEqual(intent.produced, { proposalIds: [queued[0]!.id], draftItemIds: [] });
+  assert.deepEqual(
+    queued[0]!.sources.map((source) => [
+      source.origin,
+      source.note,
+      source.findingId,
+      source.traceTaskId,
+    ]),
+    [["disposition-feedback", NOTE, target!.id, intent.traceTaskId]],
+  );
+});

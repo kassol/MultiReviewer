@@ -1955,6 +1955,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   // 标准」的入口,只是由 agent 代笔。
   { method: "POST", pattern: /^\/repos\/(\d+)\/revision-intents$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleSubmitRevisionIntent(req, res, deps, Number(match![1]), caller!.username) },
   { method: "DELETE", pattern: /^\/repos\/(\d+)\/revision-intents\/(\d+)$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ res, deps }, match) => handleDeleteRevisionIntent(res, deps, Number(match![1]), Number(match![2])) },
+  { method: "POST", pattern: /^\/repos\/(\d+)\/revision-intents\/(\d+)\/retry$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ res, deps }, match) => handleRetryRevisionIntent(res, deps, Number(match![1]), Number(match![2])) },
   // 草案的手填新增与逐条修改已经撤掉(issue #299):草案由探索产出、由修订意图改写,
   // 人只勾选、确认与删除。
   { method: "POST", pattern: /^\/repos\/(\d+)\/rule-draft\/confirm$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ req, res, deps }, match) => handleConfirmRuleDraft(req, res, deps, Number(match![1])) },
@@ -8098,6 +8099,75 @@ function handleDeleteRevisionIntent(
     return sendJson(res, 409, { error: "这条修订意图还在跑,等它结束再删" });
   }
   return sendJson(res, 200, { id: intentId });
+}
+
+/** 只有失败态能重试(issue #316):运行中的还在跑,完成的再跑一次就是第二份产出。 */
+const INTENT_NOT_RETRYABLE = "只有失败的修订意图能重试:运行中的等它结束,完成的不再重跑";
+
+/**
+ * 重试一条失败的修订意图(CONTEXT.md 修订意图,issue #316)。同一行原地再跑一次:原文、目标
+ * 与提交人不变,模型按此刻生效的辅助模型重新解析。失败仍不自动重试,由人在失败行上点;
+ * 不记重试人与次数。
+ *
+ * 校验顺序与提交端点同一口径:目标复核(提案、条目、草案三档复用 `readIntentTarget` 的判据
+ * 与那几句话;Finding 那一档只要那一行还在、不查互斥,与处置时同一个例外)→ 同目标运行中
+ * 409 → 辅助模型跑不了 409。处置反哺那一档由 Finding 标识重新取上下文,与处置端点
+ * `getFinding` 同一次查询,工作树因此仍停那条 Finding 报出时的 head。
+ */
+async function handleRetryRevisionIntent(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  repoId: number,
+  intentId: number,
+): Promise<void> {
+  const { repo, failed } = withStore(deps.dbPath, (store) => ({
+    repo: store.getRepo(repoId),
+    failed: store.getRuleIntent(repoId, intentId),
+  }));
+  if (repo === undefined || failed === null) {
+    return sendJson(res, 404, { error: "这条修订意图不在这个仓库里" });
+  }
+  if (failed.state !== "failed") {
+    return sendJson(res, 409, { error: INTENT_NOT_RETRYABLE });
+  }
+  let finding: FindingDispositionTarget | undefined;
+  if (failed.targetKind === "finding") {
+    finding = withStore(deps.dbPath, (store) => store.getFinding(failed.targetId!));
+    if (finding === undefined) return sendJson(res, 404, { error: "没有这条 Finding" });
+  } else if (
+    readIntentTarget(
+      res,
+      deps,
+      repoId,
+      failed.targetKind === "none" ? undefined : { kind: failed.targetKind, id: failed.targetId },
+    ) === undefined
+  ) {
+    return;
+  }
+  const auxiliary = await resolveAuxiliaryModelPlan(deps, repoId);
+  if (auxiliary === undefined || auxiliary.plan === null) {
+    return sendJson(res, 409, { error: auxiliary?.reason ?? NO_AUXILIARY_MODEL });
+  }
+  const spec = auxiliary.plan.spec;
+  const intent = withStore(deps.dbPath, (store) =>
+    store.rerunRuleIntent(repoId, intentId, {
+      model: modelIdentity(spec),
+      ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
+      startedAt: new Date((deps.now ?? Date.now)()).toISOString(),
+    }),
+  );
+  // 校验与落库之间另一次重试先改动了这一行:以落库那一刻的判据为准。
+  if (intent === undefined) {
+    return sendJson(res, 409, { error: INTENT_NOT_RETRYABLE });
+  }
+  const ref: RepoRef =
+    finding === undefined ? repo : { owner: finding.owner, repo: finding.repo };
+  void runRevisionIntentInBackground(deps, repoId, ref, intent, auxiliary, finding).catch(
+    (error: unknown) => {
+      console.error(`修订意图重试未处理的失败:intent ${intent.id}:${failureText(error)}`);
+    },
+  );
+  return sendJson(res, 202, intent);
 }
 
 /** 三处都给不出辅助模型时那句话(issue #303)。两处配置都指出来,人才知道去哪里设。 */

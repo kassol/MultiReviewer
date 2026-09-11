@@ -86,6 +86,8 @@ const ROUTE_EXPECTATIONS = [
   // 修订意图的提交与删除与裁决同一格(ADR 0028,issue #294)。
   ["POST", "/^\\/repos\\/(\\d+)\\/revision-intents$/", "knowledge:write", "repo:1"],
   ["DELETE", "/^\\/repos\\/(\\d+)\\/revision-intents\\/(\\d+)$/", "knowledge:write", "repo:1"],
+  // 重试失败的意图与提交、删除同一格(issue #316)。
+  ["POST", "/^\\/repos\\/(\\d+)\\/revision-intents\\/(\\d+)\\/retry$/", "knowledge:write", "repo:1"],
   ["POST", "/^\\/repos\\/(\\d+)\\/rule-draft\\/confirm$/", "knowledge:write", "repo:1"],
   ["DELETE", "/^\\/repos\\/(\\d+)\\/rule-draft\\/(\\d+)$/", "knowledge:write", "repo:1"],
   ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/(\\d+)\\/accept$/", "knowledge:write", "repo:1"],

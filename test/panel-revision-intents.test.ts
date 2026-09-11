@@ -17,10 +17,12 @@ import { scriptedReviewer, scriptedRuleAgent as scriptedRuleAgentRow } from "./s
 import {
   GITEA_REPO,
   HARNESS_PR,
+  scopedUser,
+  seedAvailableModelService,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
-import { seedReviewRule } from "./support/store-seed.ts";
+import { putGlobalSettings, seedReviewRule } from "./support/store-seed.ts";
 
 const cleanups = testCleanups();
 
@@ -38,6 +40,7 @@ type IntentRow = {
   model: string | null;
   traceTaskId: number | null;
   produced: { proposalIds: number[]; draftItemIds: number[] };
+  finishedAt: string | null;
 };
 
 type ProposalRow = {
@@ -1587,4 +1590,310 @@ test("知识集已确认的仓库没有草案:目标为草案条目回 404", asy
   const h = await harnessWithRepo(scriptedRuleAgent(() => ({ items: [] })));
   const response = await submit(h, { text: INTENT, target: { kind: "draft", id: 1 } });
   assert.equal(response.status, 404);
+});
+
+/**
+ * 失败的修订意图可以重试(issue #316)。同一行原地再跑一次:原文、目标与提交人不变,上一次
+ * 的结算清空,模型按此刻生效的辅助模型重新解析;校验与提交端点同一口径。
+ */
+
+function retry(h: PanelHarness, intentId: number): Promise<Response> {
+  return h.api("POST", `/repos/${GITEA_REPO.id}/revision-intents/${intentId}/retry`);
+}
+
+/** 直接落一条失败的意图,回它的标识。拒绝面的用例不必先让 agent 真跑失败一次。 */
+function seedFailedIntent(
+  h: PanelHarness,
+  targetKind: IntentRow["targetKind"],
+  targetId: number | null,
+): number {
+  const store = openStore(h.db.path);
+  try {
+    const intent = store.startRuleIntent(GITEA_REPO.id, {
+      text: INTENT,
+      submittedBy: "someone",
+      targetKind,
+      targetId,
+      model: "test:global-model",
+      startedAt: "2026-09-11T00:00:00.000Z",
+    })!;
+    store.failRuleIntent(intent.id, "Connection error.", "2026-09-11T00:01:00.000Z");
+    return intent.id;
+  } finally {
+    store.close();
+  }
+}
+
+test("重试失败的意图:同一行原地变回运行中再完成,模型按此刻的辅助模型解析,轨迹换新", async () => {
+  let attempt = 0;
+  const agent = scriptedRuleAgent(() => {
+    attempt += 1;
+    return attempt === 1
+      ? { items: [], failure: "Connection error." }
+      : {
+          items: [
+            {
+              type: "rule",
+              scope: "src/api/**",
+              statement: "api 目录下的处理器先校验入参再执行",
+              reason: "三个处理器都在开头校验",
+            },
+          ],
+        };
+  }, "已按 api 目录的现状定下作用范围");
+  const h = await harnessWithRepo(agent);
+
+  const intentId = await submitAndSettle(h);
+  assert.equal(h.revisionIntents[0]!.failure, "Connection error.");
+  const failed = (await ruleSet(h)).intents.find((row) => row.id === intentId)!;
+  assert.equal(failed.state, "failed");
+  assert.equal(failed.model, "test:global-model");
+  assert.notEqual(failed.traceTaskId, null);
+
+  // 失败之后换了辅助模型:重试用此刻生效的那一处,不沿用第一次记下的那一处。
+  seedAvailableModelService(h, "second", ["other-model"]);
+  const store = openStore(h.db.path);
+  try {
+    assert.equal(
+      putGlobalSettings(store, {
+        auxiliaryModelJson: JSON.stringify({ provider: "second", model: "other-model" }),
+      }),
+      true,
+    );
+  } finally {
+    store.close();
+  }
+
+  const response = await retry(h, intentId);
+  assert.equal(response.status, 202);
+  const rerun = (await response.json()) as IntentRow;
+  // 同一行原地变回运行中:原文、目标与提交人不变,上一次的结算与轨迹清空。
+  assert.equal(rerun.id, intentId);
+  assert.equal(rerun.state, "running");
+  assert.equal(rerun.text, INTENT);
+  assert.equal(rerun.targetKind, "none");
+  assert.equal(rerun.targetId, null);
+  assert.equal(rerun.submittedBy, "panel-admin");
+  assert.equal(rerun.model, "second:other-model");
+  assert.equal(rerun.failure, null);
+  assert.equal(rerun.finishedAt, null);
+  assert.equal(rerun.summary, null);
+  assert.equal(rerun.traceTaskId, null);
+  assert.deepEqual(rerun.produced, { proposalIds: [], draftItemIds: [] });
+
+  await h.revisionIntentsAtLeast(2);
+  assert.equal(h.revisionIntents[1]!.intentId, intentId);
+  assert.equal(h.revisionIntents[1]!.failure, undefined);
+  assert.equal(agent.calls.length, 2);
+  assert.equal(agent.calls[1]!.runtimeModel.provider, "second");
+  assert.equal(agent.calls[1]!.intent?.text, INTENT);
+
+  const view = await ruleSet(h);
+  // 还是那一行,没有多出第二行。
+  assert.deepEqual(
+    view.intents.map((row) => row.id),
+    [intentId],
+  );
+  const intent = view.intents[0]!;
+  assert.equal(intent.state, "completed");
+  assert.equal(intent.failure, null);
+  assert.equal(intent.summary, "已按 api 目录的现状定下作用范围");
+  assert.equal(intent.model, "second:other-model");
+  assert.equal(view.proposals.length, 1);
+  const proposal = view.proposals[0]!;
+  assert.deepEqual(intent.produced, { proposalIds: [proposal.id], draftItemIds: [] });
+  // 附注来源沿用原来源,挂的是这一次的新轨迹。
+  assert.deepEqual(
+    proposal.sources.map((source) => [source.origin, source.note, source.findingId]),
+    [["manual-proposal", INTENT, null]],
+  );
+  assert.notEqual(intent.traceTaskId, null);
+  assert.notEqual(intent.traceTaskId, failed.traceTaskId);
+  assert.equal(proposal.sources[0]!.traceTaskId, intent.traceTaskId);
+});
+
+test("重试:不在这个仓库 404,运行中与完成的 409", async () => {
+  // agent 停在这里,意图因此停在运行中,直到用例放行。
+  let release = (): void => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const h = await harnessWithRepo(async () => {
+    await held;
+    return { items: [] };
+  });
+
+  assert.equal((await retry(h, 999999)).status, 404);
+  const running = (await (await submit(h, { text: INTENT })).json()) as IntentRow;
+  assert.equal(
+    (await h.api("POST", `/repos/999999/revision-intents/${running.id}/retry`)).status,
+    404,
+  );
+  assert.equal((await retry(h, running.id)).status, 409);
+
+  release();
+  await h.revisionIntentsAtLeast(1);
+  assert.equal((await ruleSet(h)).intents[0]!.state, "completed");
+  // 完成的不重跑:再跑一次就是第二份产出。
+  assert.equal((await retry(h, running.id)).status, 409);
+});
+
+test("重试:目标已裁决、已废止、草案条目或 Finding 不在 404,同目标运行中 409", async () => {
+  let release = (): void => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const h = await harnessWithRepo(async () => {
+    await held;
+    return { items: [] };
+  });
+
+  const retired = seedRule(h, { type: "rule", scope: "", statement: "已经废止的那一条" });
+  assert.equal((await h.api("DELETE", `/repos/${GITEA_REPO.id}/rules/${retired}`)).status, 200);
+  const rejected = seedProposal(h, {
+    type: "rule",
+    change: "add",
+    targetRuleIds: [],
+    scope: "",
+    statement: "已经被驳回的那一条",
+  });
+  assert.equal(
+    (await h.api("POST", `/repos/${GITEA_REPO.id}/rule-proposals/${rejected}/reject`)).status,
+    200,
+  );
+  const gone: [IntentRow["targetKind"], number][] = [
+    ["proposal", rejected],
+    ["rule", retired],
+    ["draft", 999999],
+    ["finding", 999999],
+  ];
+  for (const [kind, id] of gone) {
+    const failedId = seedFailedIntent(h, kind, id);
+    assert.equal((await retry(h, failedId)).status, 404, kind);
+  }
+  // 被拒的那几行仍是失败:没有被改回运行中。
+  assert.ok((await ruleSet(h)).intents.every((row) => row.state === "failed"));
+
+  // 同一目标已有一条在跑:重试与提交同一道互斥。
+  const proposalId = seedProposal(h, {
+    type: "rule",
+    change: "add",
+    targetRuleIds: [],
+    scope: "",
+    statement: "队列里原来那一句",
+  });
+  const failedId = seedFailedIntent(h, "proposal", proposalId);
+  assert.equal(
+    (await submit(h, { text: INTENT, target: { kind: "proposal", id: proposalId } })).status,
+    202,
+  );
+  assert.equal((await retry(h, failedId)).status, 409);
+
+  release();
+  await h.revisionIntentsAtLeast(1);
+});
+
+test("重试:辅助模型跑不了 409 且那一行仍失败,没有 knowledge:write 403", async () => {
+  const h = await harnessWithRepo(scriptedRuleAgent(() => ({ items: [] })));
+  const failedId = seedFailedIntent(h, "none", null);
+
+  const reader = await scopedUser(
+    h,
+    "intent-reader",
+    "intent-reader-password",
+    "2026-09-11T00:00:00.000Z",
+    [GITEA_REPO.id],
+  );
+  const forbidden = await fetch(
+    `${h.serverUrl}/api/repos/${GITEA_REPO.id}/revision-intents/${failedId}/retry`,
+    { method: "POST", headers: { cookie: reader } },
+  );
+  assert.equal(forbidden.status, 403);
+
+  const raw = new DatabaseSync(h.db.path);
+  try {
+    raw.prepare("DELETE FROM global_setting WHERE key = ?").run("reviewers");
+  } finally {
+    raw.close();
+  }
+  const response = await retry(h, failedId);
+  assert.equal(response.status, 409);
+  const error = ((await response.json()) as { error: string }).error;
+  assert.match(error, /审查策略/);
+  assert.match(error, /仓库配置/);
+  const [intent] = (await ruleSet(h)).intents;
+  assert.equal(intent!.state, "failed");
+  assert.equal(intent!.failure, "Connection error.");
+});
+
+test("重跑只认这个仓库的失败行:原地改回运行中,清掉上一次的结算,原文、目标与提交人不动", async () => {
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  try {
+    store.registerRepo({ repoId: 73, owner: "acme", repo: "legacy", generation: 1, key: "k" });
+    const intent = store.startRuleIntent(73, {
+      text: "跑过一次的那一段",
+      submittedBy: "someone",
+      targetKind: "proposal",
+      targetId: 11,
+      model: "test:global-model",
+      startedAt: "2026-09-11T00:00:00.000Z",
+    })!;
+    const run = {
+      model: "second:other-model",
+      thinkingLevel: "high" as const,
+      startedAt: "2026-09-11T01:00:00.000Z",
+    };
+    // 运行中与完成的都不重跑。
+    assert.equal(store.rerunRuleIntent(73, intent.id, run), undefined);
+    store.setRuleIntentTrace(intent.id, 5);
+    store.finishRuleIntent(
+      intent.id,
+      { summary: "已产出一条", produced: { proposalIds: [3], draftItemIds: [] } },
+      "2026-09-11T00:01:00.000Z",
+    );
+    assert.equal(store.rerunRuleIntent(73, intent.id, run), undefined);
+    store.failRuleIntent(intent.id, "Connection error.", "2026-09-11T00:02:00.000Z");
+    // 别的仓库认不出这一行。
+    assert.equal(store.rerunRuleIntent(74, intent.id, run), undefined);
+
+    const rerun = store.rerunRuleIntent(73, intent.id, run)!;
+    assert.deepEqual(
+      {
+        id: rerun.id,
+        text: rerun.text,
+        submittedBy: rerun.submittedBy,
+        targetKind: rerun.targetKind,
+        targetId: rerun.targetId,
+        state: rerun.state,
+        failure: rerun.failure,
+        summary: rerun.summary,
+        model: rerun.model,
+        thinkingLevel: rerun.thinkingLevel,
+        traceTaskId: rerun.traceTaskId,
+        produced: rerun.produced,
+        startedAt: rerun.startedAt,
+        finishedAt: rerun.finishedAt,
+      },
+      {
+        id: intent.id,
+        text: "跑过一次的那一段",
+        submittedBy: "someone",
+        targetKind: "proposal",
+        targetId: 11,
+        state: "running",
+        failure: null,
+        summary: null,
+        model: "second:other-model",
+        thinkingLevel: "high",
+        traceTaskId: null,
+        produced: { proposalIds: [], draftItemIds: [] },
+        startedAt: "2026-09-11T01:00:00.000Z",
+        finishedAt: null,
+      },
+    );
+  } finally {
+    store.close();
+  }
 });

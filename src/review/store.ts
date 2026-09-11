@@ -2751,6 +2751,17 @@ export type Store = {
    */
   deleteRuleIntent(repoId: number, intentId: number): "missing" | "running" | "deleted";
   /**
+   * 重跑一条失败的修订意图(CONTEXT.md 修订意图,issue #316):同一行原地改回运行中,清掉失败
+   * 原因、结束时刻、收尾、产出与轨迹标识,写这一次的开始时刻、模型与思考档位;原文、目标、
+   * 提交人与行的标识不动。不在这个仓库里或不是失败态回 undefined——判据与改写在同一句
+   * UPDATE 里,两次重试并发只有一次改得动。
+   */
+  rerunRuleIntent(
+    repoId: number,
+    intentId: number,
+    run: { model: string; thinkingLevel?: ThinkingLevel; startedAt: string },
+  ): RuleIntent | undefined;
+  /**
    * 合并几条待裁决提案(CONTEXT.md 知识整理,issue #284):**保留 id 最小的那一行**,
    * 其余行删除,附注全部并入保留行,陈述换成合成后的这一句。
    *
@@ -4928,6 +4939,20 @@ export function openStore(dbPath: string): Store {
       if (intent.state === "running") return "running";
       db.prepare("DELETE FROM rule_intent WHERE id = ?").run(intentId);
       return "deleted";
+    },
+
+    rerunRuleIntent(repoId, intentId, run) {
+      const result = db
+        .prepare(
+          `UPDATE rule_intent
+              SET state = 'running', failure = NULL, summary = NULL, produced_json = NULL,
+                  trace_task_id = NULL, finished_at = NULL,
+                  model = ?, thinking_level = ?, started_at = ?
+            WHERE id = ? AND repo_id = ? AND state = 'failed'`,
+        )
+        .run(run.model, run.thinkingLevel ?? null, run.startedAt, intentId, repoId);
+      if (Number(result.changes) === 0) return undefined;
+      return store.getRuleIntent(repoId, intentId) ?? undefined;
     },
 
     mergeRuleProposals(repoId, proposalIds, statement) {

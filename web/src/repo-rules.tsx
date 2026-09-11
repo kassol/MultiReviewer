@@ -968,6 +968,13 @@ function IntentSection({
     },
     onSuccess: onChanged,
   });
+  // 重试(issue #316):失败的那一行原地再跑一次,刷新后它变回运行中。
+  const retry = useMutation({
+    mutationFn: async (intentId: number): Promise<void> => {
+      await send(`/repos/${repoId}/revision-intents/${intentId}/retry`, "POST");
+    },
+    onSuccess: onChanged,
+  });
 
   if (!canWrite && ruleSet.intents.length === 0) return null;
 
@@ -981,10 +988,10 @@ function IntentSection({
         />
       ) : null}
 
-      {remove.isError ? (
+      {remove.isError || retry.isError ? (
         <Callout.Root role="alert" color="red" size="1">
           <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-          <Callout.Text>{(remove.error as Error).message}</Callout.Text>
+          <Callout.Text>{((remove.error ?? retry.error) as Error).message}</Callout.Text>
         </Callout.Root>
       ) : null}
 
@@ -1086,6 +1093,20 @@ function IntentSection({
                     context={intent.text}
                   />
                 )}
+                {/* 只给失败行(issue #316):运行中的还在跑,完成的再跑一次就是第二份产出。 */}
+                {canWrite && intent.state === "failed" ? (
+                  <Button
+                    variant="outline"
+                    color="gray"
+                    highContrast
+                    size={{ initial: "3", sm: "1" }}
+                    className={OUTLINED_ACTION}
+                    disabled={retry.isPending}
+                    onClick={() => retry.mutate(intent.id)}
+                  >
+                    重试
+                  </Button>
+                ) : null}
                 {canWrite && intent.state !== "running" ? (
                   <Button
                     variant="outline"
