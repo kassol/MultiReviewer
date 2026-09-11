@@ -60,6 +60,8 @@ const ROUTE_EXPECTATIONS = [
   ["GET", "/range-reviews/prefill", "review:create", "query"],
   ["POST", "/^\\/range-reviews\\/(\\d+)\\/advance$/", "review:advance", "range-review:1"],
   ["POST", "/^\\/range-reviews\\/(\\d+)\\/complete$/", "review:complete", "range-review:1"],
+  // 每日增量的开关与人工推进同一格(issue #313)。
+  ["PUT", "/^\\/range-reviews\\/(\\d+)\\/daily-increment$/", "review:advance", "range-review:1"],
   ["GET", "/repo-branches", "anyOf:review:create|knowledge:write", "query"],
   ["GET", "/repo-commits", "anyOf:review:create|knowledge:write", "query"],
   ["GET", "/repo-tags", "anyOf:review:create|knowledge:write", "query"],

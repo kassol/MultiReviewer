@@ -1893,6 +1893,8 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "GET", pattern: "/range-reviews/prefill", access: "review:create", assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRangeReviewPrefill(req, res, deps) },
   { method: "POST", pattern: /^\/range-reviews\/(\d+)\/advance$/, access: "review:advance", assignment: { by: "range-review", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleAdvanceRangeReview(req, res, deps, Number(match![1]), caller!.username) },
   { method: "POST", pattern: /^\/range-reviews\/(\d+)\/complete$/, access: "review:complete", assignment: { by: "range-review", group: 1 }, handler: ({ res, deps, caller }, match) => handleCompleteRangeReview(res, deps, Number(match![1]), caller!.username) },
+  // 每日增量的开关与人工推进同一格(issue #313):定时推进与人工推进的权限一致。
+  { method: "PUT", pattern: /^\/range-reviews\/(\d+)\/daily-increment$/, access: "review:advance", assignment: { by: "range-review", group: 1 }, handler: ({ req, res, deps }, match) => handleSetDailyIncrement(req, res, deps, Number(match![1])) },
   // 发起范围审查与发起基点探索都从这里选 commit(issue #205),两格任一即可读。
   { method: "GET", pattern: "/repo-branches", access: { anyOf: ["review:create", "knowledge:write"] }, assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRepoBranches(req, res, deps) },
   { method: "GET", pattern: "/repo-commits", access: { anyOf: ["review:create", "knowledge:write"] }, assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRepoCommits(req, res, deps) },
@@ -6189,6 +6191,79 @@ async function handleCompleteRangeReview(
   const completedAt = new Date((deps.now ?? Date.now)()).toISOString();
   const rangeReview = withStore(deps.dbPath, (store) => {
     store.completeRangeReview({ id, completedBy, completedAt });
+    return store.getRangeReview(id)!;
+  });
+  return sendJson(res, 200, { rangeReview });
+}
+
+/**
+ * 设置每日增量(issue #313)。开、关、改分支都只改状态:比较项要等下一次定时检查才
+ * 推进,打开开关不等于现在就跑一轮(CONTEXT.md 每日增量)。
+ *
+ * 分支要在仓库的分支列表里:定时检查跟不动一条不存在的分支,而人手上那份列表可能已经
+ * 过时,所以现取一份再判,取法与提交选择器同一个(`listBranches`,容器 PR 的两条分支
+ * 按前缀滤掉,ADR 0012)。
+ */
+async function handleSetDailyIncrement(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  id: number,
+): Promise<void> {
+  const payload = await readJson<{ enabled?: unknown; branch?: unknown } | null>(req, res);
+  if (payload === undefined) return;
+  if (payload === null || typeof payload.enabled !== "boolean") {
+    return sendJson(res, 400, { error: 'body 要是 {"enabled"} 形状的 JSON' });
+  }
+  const branch = payload.enabled
+    ? (typeof payload.branch === "string" ? payload.branch.trim() : "")
+    : null;
+  if (branch === "") {
+    return sendJson(res, 400, { error: "开启每日增量要带一条分支名" });
+  }
+
+  const record = withStore(deps.dbPath, (store) => store.getRangeReview(id));
+  if (record === undefined) {
+    return sendJson(res, 404, { error: "没有这个范围审查" });
+  }
+  if (record.state !== "in-progress") {
+    return sendJson(res, 409, {
+      error:
+        record.state === "completed"
+          ? "这个范围审查已经审查完成,每日增量不再设置"
+          : "这个范围审查不在进行中,每日增量设不了",
+    });
+  }
+
+  if (branch !== null) {
+    const forge = deps.forges.gitea;
+    if (forge === undefined) {
+      return sendJson(res, 503, { error: "gitea 没有配置 Forge,读不到仓库的分支" });
+    }
+    const ref: RepoRef = { owner: record.owner, repo: record.repo };
+    let names: string[];
+    try {
+      const [repository, credentials] = await Promise.all([
+        forge.getRepository(ref),
+        forge.cloneCredentials(ref),
+      ]);
+      names = await listBranches({
+        cacheDir: deps.cacheDir,
+        ref,
+        cloneUrl: repository.cloneUrl,
+        credentials,
+      });
+    } catch (error) {
+      return sendJson(res, 502, { error: `取不回仓库的分支:${failureText(error)}` });
+    }
+    if (!names.some((name) => name === branch && !isContainerBranch(name))) {
+      return sendJson(res, 400, { error: "这条分支不在仓库的分支列表里,刷新分支列表再选" });
+    }
+  }
+
+  const at = new Date((deps.now ?? Date.now)()).toISOString();
+  const rangeReview = withStore(deps.dbPath, (store) => {
+    store.setRangeReviewDailyIncrement({ id, branch, at });
     return store.getRangeReview(id)!;
   });
   return sendJson(res, 200, { rangeReview });

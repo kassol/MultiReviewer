@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { Cross2Icon } from "@radix-ui/react-icons";
+import { Cross2Icon, ReloadIcon } from "@radix-ui/react-icons";
 import {
   Badge,
   Checkbox,
@@ -9,6 +9,7 @@ import {
   IconButton,
   Text,
   TextArea,
+  Tooltip,
 } from "@radix-ui/themes";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -22,8 +23,10 @@ import {
   type RerunMode,
 } from "./repo-actions.tsx";
 import {
+  BranchCombobox,
   CommitPicker,
   commitSelectionLabel,
+  useBranchOptions,
   type CommitSelection,
 } from "./commit-picker.tsx";
 
@@ -48,6 +51,10 @@ export type RangeReview = {
   completedBy: string | null;
   completedAt: string | null;
   lastForgeFailure: string | null;
+  /** 每日增量(issue #313)开着没有。 */
+  dailyIncrementEnabled: boolean;
+  /** 每日增量跟的那条分支;关着时是 null。 */
+  dailyIncrementBranch: string | null;
 };
 
 /**
@@ -129,6 +136,174 @@ export function CompleteAction({
         }}
       />
     </>
+  );
+}
+
+/**
+ * 每日增量的开关(issue #313)。入口在阶段详情页头,与推进、审查完成并列;阶段结束之后
+ * 不显示——终态没有明天可跟。
+ *
+ * 开、关、改分支都只改状态:推进由定时检查在下一个凌晨做,点开关不等于现在跑一轮
+ * (CONTEXT.md 每日增量)。开着时按钮上直接写它跟的那条分支。
+ */
+export function DailyIncrementAction({ rangeReview }: { rangeReview: RangeReview }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Dialog.Root open={open} onOpenChange={setOpen}>
+      <Dialog.Trigger>
+        <Button variant="outline" color="gray" highContrast size={{ initial: "3", sm: "2" }}>
+          每日增量
+          {/* 绿只承载运行状态(DESIGN.md §4.3):开着就是有人在替这个阶段盯着。 */}
+          <Badge
+            color={rangeReview.dailyIncrementEnabled ? "green" : "gray"}
+            variant="soft"
+            className="max-w-32 truncate"
+          >
+            {rangeReview.dailyIncrementEnabled ? rangeReview.dailyIncrementBranch : "关"}
+          </Badge>
+        </Button>
+      </Dialog.Trigger>
+      {open ? (
+        <DailyIncrementDialogContent rangeReview={rangeReview} onDone={() => setOpen(false)} />
+      ) : null}
+    </Dialog.Root>
+  );
+}
+
+/**
+ * 每日增量的分支弹窗(issue #313)。
+ *
+ * 分支列表与刷新复用提交选择器那一份(`useBranchOptions`):两处读同一个接口,分支刚推
+ * 上去时点一次刷新就同步得到。
+ *
+ * 预填按这个顺序:已经开着就是它此刻跟的那条,否则取上次选比较项记下的分支;上次是从
+ * Tag 选的或没有来源时留空,必须自己选一条——定时检查永远要有一条明确的分支可跟。
+ */
+function DailyIncrementDialogContent({
+  rangeReview,
+  onDone,
+}: {
+  rangeReview: RangeReview;
+  onDone: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [refreshGeneration, setRefreshGeneration] = useState(0);
+  const branchOptions = useBranchOptions(rangeReview.owner, rangeReview.repo, refreshGeneration);
+  const [branch, setBranch] = useState<string | null>(
+    rangeReview.dailyIncrementBranch
+      ?? (rangeReview.comparisonSource?.kind === "branch"
+        ? rangeReview.comparisonSource.name
+        : null),
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const save = useMutation({
+    mutationFn: async (next: string | null) => {
+      await send(
+        `/range-reviews/${rangeReview.id}/daily-increment`,
+        "PUT",
+        next === null ? { enabled: false } : { enabled: true, branch: next },
+      );
+    },
+    onSuccess: () => {
+      refreshRangeReview(queryClient);
+      onDone();
+    },
+    onError: (failure: Error) => setError(failure.message),
+  });
+
+  return (
+    <Dialog.Content aria-describedby={undefined} maxWidth="460px" size={{ initial: "2", sm: "3" }}>
+      <Dialog.Title size="4" mb="2" className="pr-10">
+        每日增量
+        <span className="ml-2 break-all text-md font-normal text-text-secondary">
+          {rangeReview.owner}/{rangeReview.repo}
+        </span>
+      </Dialog.Title>
+      <Text as="p" size="2" color="gray">
+        开着时每天凌晨由定时检查把这条分支的最新提交推成新比较项，只复核这个阶段未处置的历史。
+        开、关、改分支都不会立刻推进。
+      </Text>
+      {/* 最近一次定时检查的时间与结果落在这里(issue #314)。 */}
+      <div className="mt-3 flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <BranchCombobox
+            branch={branch}
+            branches={branchOptions.branches}
+            search={branchOptions.search}
+            loading={branchOptions.loading}
+            truncated={branchOptions.truncated}
+            onSearch={branchOptions.setSearch}
+            onSelect={(value) => {
+              setError(null);
+              setBranch(value);
+            }}
+          />
+        </div>
+        <Tooltip content="同步并刷新分支">
+          <IconButton
+            type="button"
+            variant="ghost"
+            color="gray"
+            size={{ initial: "3", sm: "2" }}
+            className="shrink-0 max-sm:min-h-11 max-sm:min-w-11"
+            aria-label="刷新分支"
+            disabled={branchOptions.synced.isFetching}
+            onClick={() => setRefreshGeneration((current) => current + 1)}
+          >
+            <ReloadIcon
+              aria-hidden
+              className={branchOptions.synced.isFetching ? "animate-spin" : ""}
+            />
+          </IconButton>
+        </Tooltip>
+      </div>
+      {error === null ? null : (
+        <p role="alert" className="mt-2 break-words text-sm text-danger">{error}</p>
+      )}
+      <div className="mt-4 grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+        <Dialog.Close>
+          <Button
+            type="button"
+            variant="soft"
+            color="gray"
+            size={{ initial: "3", sm: "2" }}
+            className="min-h-11 w-full sm:min-h-0 sm:w-auto"
+          >
+            取消
+          </Button>
+        </Dialog.Close>
+        {rangeReview.dailyIncrementEnabled ? (
+          <Button
+            type="button"
+            variant="soft"
+            color="red"
+            size={{ initial: "3", sm: "2" }}
+            className="min-h-11 w-full sm:min-h-0 sm:w-auto"
+            disabled={save.isPending}
+            onClick={() => {
+              setError(null);
+              save.mutate(null);
+            }}
+          >
+            关闭每日增量
+          </Button>
+        ) : null}
+        <Button
+          type="button"
+          variant="solid"
+          size={{ initial: "3", sm: "2" }}
+          className="col-span-2 min-h-11 w-full shadow-accent sm:col-span-1 sm:min-h-0 sm:w-auto"
+          disabled={branch === null || save.isPending}
+          onClick={() => {
+            setError(null);
+            save.mutate(branch);
+          }}
+        >
+          {rangeReview.dailyIncrementEnabled ? "保存" : "开启"}
+        </Button>
+      </div>
+    </Dialog.Content>
   );
 }
 

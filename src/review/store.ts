@@ -339,7 +339,14 @@ CREATE TABLE IF NOT EXISTS range_review (
   completed_by TEXT,
   completed_at TEXT,
   -- 最近一次 Forge 操作的失败原因。是权限还是分支保护,只有这一行能说明。
-  last_forge_failure TEXT
+  last_forge_failure TEXT,
+  -- 每日增量(CONTEXT.md 每日增量,issue #313):开着时定时检查每天把这条分支的最新
+  -- commit 推成新比较项。关着时分支与开启时刻都是 NULL。
+  daily_increment_enabled INTEGER NOT NULL DEFAULT 0,
+  daily_increment_branch TEXT,
+  -- 最近一次开启或改分支的时刻。定时检查按它判「开启当天不算错过」——刚开就补跑一
+  -- 次不是人要的(CONTEXT.md 定时检查)。
+  daily_increment_enabled_at TEXT
 );
 CREATE INDEX IF NOT EXISTS range_review_by_base ON range_review(owner, repo, base_sha);
 
@@ -2337,6 +2344,12 @@ export type RangeReviewRecord = {
   completedBy: string | null;
   completedAt: string | null;
   lastForgeFailure: string | null;
+  /** 每日增量(issue #313)开着没有。 */
+  dailyIncrementEnabled: boolean;
+  /** 每日增量跟的那条分支;关着时是 null。 */
+  dailyIncrementBranch: string | null;
+  /** 最近一次开启或改分支的时刻;关着时是 null。 */
+  dailyIncrementEnabledAt: string | null;
 };
 
 /** 一个范围审查审过的一个比较项。发起时那个也在内,按记录先后。 */
@@ -2417,6 +2430,15 @@ function rangeReviewRecord(row: Record<string, unknown>): RangeReviewRecord {
     completedAt: row["completed_at"] === null ? null : String(row["completed_at"]),
     lastForgeFailure:
       row["last_forge_failure"] === null ? null : String(row["last_forge_failure"]),
+    dailyIncrementEnabled: Number(row["daily_increment_enabled"] ?? 0) === 1,
+    dailyIncrementBranch:
+      row["daily_increment_branch"] === null || row["daily_increment_branch"] === undefined
+        ? null
+        : String(row["daily_increment_branch"]),
+    dailyIncrementEnabledAt:
+      row["daily_increment_enabled_at"] === null || row["daily_increment_enabled_at"] === undefined
+        ? null
+        : String(row["daily_increment_enabled_at"]),
   };
 }
 
@@ -3028,6 +3050,15 @@ export type Store = {
     id: number;
     completedBy: string;
     completedAt: string;
+  }): void;
+  /**
+   * 设置每日增量(CONTEXT.md 每日增量,issue #313)。`branch` 为 null 即关闭,开启与
+   * 改分支都刷新开启时刻——定时检查按它判「开启当天不算错过」。只改状态,不推进。
+   */
+  setRangeReviewDailyIncrement(record: {
+    id: number;
+    branch: string | null;
+    at: string;
   }): void;
   getRangeReview(id: number): RangeReviewRecord | undefined;
   /** 按 id 倒序。四个过滤条件都可省,省掉即不过滤。 */
@@ -7366,6 +7397,15 @@ export function openStore(dbPath: string): Store {
                 last_forge_failure = NULL
           WHERE id = ?`,
       ).run(record.completedBy, record.completedAt, record.id);
+    },
+
+    setRangeReviewDailyIncrement({ id, branch, at }) {
+      db.prepare(
+        `UPDATE range_review
+            SET daily_increment_enabled = ?, daily_increment_branch = ?,
+                daily_increment_enabled_at = ?
+          WHERE id = ?`,
+      ).run(branch === null ? 0 : 1, branch, branch === null ? null : at, id);
     },
 
     listRangeReviewComparisons(rangeReviewId) {
