@@ -747,7 +747,10 @@ function StageTimeline({
           />
           <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-base text-text-secondary">
             <CommitChip sha={group.sha} />
-            {group.recordedBy === null ? null : (
+            {group.recordedBy === null ? null : group.recordedBy === "" ? (
+              // 记录人为空即这一次是定时检查推的(issue #314),没有人点它。
+              <span>定时增量</span>
+            ) : (
               <>
                 <span className="break-all font-medium text-text">{group.recordedBy}</span>
                 <span>{group.sha === initialSha ? "发起" : "增量评审"}</span>
@@ -1152,7 +1155,12 @@ function RunPill({ run }: { run: RunItem }) {
   );
 }
 
+/**
+ * 侧滑头部那一格:这一轮是谁开出来的。定时那一档没有调用者,按来源说「定时增量」——
+ * 说成「自动触发」会与投递带来的那一轮混在一起(issue #314)。
+ */
 function triggerLabel(run: RunItem): string {
+  if (run.triggerSource === "scheduled") return "定时增量";
   return run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`;
 }
 

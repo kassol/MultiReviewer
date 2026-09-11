@@ -25,6 +25,7 @@ import {
 } from "./repo-actions.tsx";
 import { RepoRules } from "./repo-rules.tsx";
 import { clearPanelSession } from "./session.ts";
+import type { TriggerSource } from "./stage-summary.tsx";
 import { SummaryRate } from "./stats.tsx";
 
 /** 一轮或一个 Reviewer 的 token 用量。运行诊断信息,不折算金额(issue #188)。 */
@@ -47,6 +48,8 @@ export type RunItem = {
   startedAt: string;
   /** 手动重新运行的调用者用户名快照；null 表示自动触发。 */
   triggeredBy: string | null;
+  /** 这一轮是被谁开出来的(issue #312)。定时那一档没有调用者,来源只在这一格上。 */
+  triggerSource: TriggerSource;
   /** 这一轮归属的范围审查；null 即由 pull request 触发。 */
   rangeReviewId: number | null;
   /** 发起这一轮时附的本轮指令(issue #225);null 即没有附。只属于这一轮。 */

@@ -14,6 +14,7 @@ import {
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/theme-button";
+import { localMinute } from "@/lib/time";
 
 import { send } from "./api.ts";
 import {
@@ -55,7 +56,54 @@ export type RangeReview = {
   dailyIncrementEnabled: boolean;
   /** 每日增量跟的那条分支;关着时是 null。 */
   dailyIncrementBranch: string | null;
+  /** 最近一次定时检查的时刻(issue #314);一次都没检查过时是 null。 */
+  dailyIncrementCheckedAt: string | null;
+  /** 最近一次定时检查的结果;一次都没检查过时是 null。 */
+  dailyIncrementResult: DailyIncrementResult | null;
 };
+
+/** 一次定时检查的结果(issue #314),与服务端那一格逐字对应。 */
+export type DailyIncrementResult =
+  | "advanced"
+  | "no-new-commit"
+  | "run-in-flight"
+  | "nothing-to-verdict"
+  | "not-descendant"
+  | "branch-unknown"
+  | "push-failed"
+  | "draining"
+  | "check-failed";
+
+/** 每一档的说法。九档都写出来:结果本身就是人要看的那句话,不另起解释。 */
+const DAILY_INCREMENT_RESULT_LABEL: Record<DailyIncrementResult, string> = {
+  advanced: "已开轮次",
+  "no-new-commit": "无新提交",
+  "run-in-flight": "有轮次在跑",
+  "nothing-to-verdict": "无未处置历史",
+  "not-descendant": "非 base 后代",
+  "branch-unknown": "分支不存在或取不到",
+  "push-failed": "推分支失败",
+  draining: "排空中",
+  "check-failed": "检查失败",
+};
+
+/** 要人去动手的那几档标红(DESIGN.md §4.3),其余是常规跳过。 */
+const DAILY_INCREMENT_RESULT_NEEDS_ATTENTION = new Set<DailyIncrementResult>([
+  "not-descendant",
+  "branch-unknown",
+  "push-failed",
+  "check-failed",
+]);
+
+/** 最近一次定时检查读成一句话。一次都没检查过时说明白,不留空。 */
+function lastScheduledCheck(rangeReview: RangeReview): string {
+  if (rangeReview.dailyIncrementResult === null || rangeReview.dailyIncrementCheckedAt === null) {
+    return "最近一次定时检查:还没检查过";
+  }
+  return `最近一次定时检查:${localMinute(rangeReview.dailyIncrementCheckedAt)} · ${
+    DAILY_INCREMENT_RESULT_LABEL[rangeReview.dailyIncrementResult]
+  }`;
+}
 
 /**
  * 推进与审查完成之后要重取的两处:阶段详情与阶段汇总。首段整片失效,不逐个拼键——
@@ -151,7 +199,13 @@ export function DailyIncrementAction({ rangeReview }: { rangeReview: RangeReview
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Trigger>
-        <Button variant="outline" color="gray" highContrast size={{ initial: "3", sm: "2" }}>
+        <Button
+          variant="outline"
+          color="gray"
+          highContrast
+          size={{ initial: "3", sm: "2" }}
+          title={lastScheduledCheck(rangeReview)}
+        >
           每日增量
           {/* 绿只承载运行状态(DESIGN.md §4.3):开着就是有人在替这个阶段盯着。 */}
           <Badge
@@ -161,6 +215,19 @@ export function DailyIncrementAction({ rangeReview }: { rangeReview: RangeReview
           >
             {rangeReview.dailyIncrementEnabled ? rangeReview.dailyIncrementBranch : "关"}
           </Badge>
+          {/* 最近一次的结果就在开关旁(issue #314):昨晚推没推进、为什么没推,一眼看得到。 */}
+          {rangeReview.dailyIncrementResult === null ? null : (
+            <Badge
+              color={
+                DAILY_INCREMENT_RESULT_NEEDS_ATTENTION.has(rangeReview.dailyIncrementResult)
+                  ? "red"
+                  : "gray"
+              }
+              variant="soft"
+            >
+              {DAILY_INCREMENT_RESULT_LABEL[rangeReview.dailyIncrementResult]}
+            </Badge>
+          )}
         </Button>
       </Dialog.Trigger>
       {open ? (
@@ -224,7 +291,10 @@ function DailyIncrementDialogContent({
         开着时每天凌晨由定时检查把这条分支的最新提交推成新比较项，只复核这个阶段未处置的历史。
         开、关、改分支都不会立刻推进。
       </Text>
-      {/* 最近一次定时检查的时间与结果落在这里(issue #314)。 */}
+      {/* 最近一次定时检查的时间与结果(issue #314)。 */}
+      <Text as="p" size="2" color="gray" mt="2">
+        {lastScheduledCheck(rangeReview)}
+      </Text>
       <div className="mt-3 flex items-center gap-2">
         <div className="min-w-0 flex-1">
           <BranchCombobox
