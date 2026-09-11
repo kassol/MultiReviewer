@@ -127,6 +127,7 @@ import {
   toPendingProposal,
   type BatchLimitField,
   type ComparisonSource,
+  type DailyIncrementResult,
   type FindingDispositionTarget,
   type GlobalSettings,
   type InterruptedRun,
@@ -248,6 +249,16 @@ export type WebhookServerDeps = {
   loggedOnceMax?: number;
   /** 审查轨迹 SSE 的心跳间隔(毫秒),默认 `TRACE_HEARTBEAT_MS`。只该测试注入。 */
   traceHeartbeatMs?: number;
+  /**
+   * 定时检查的 tick 间隔(毫秒,issue #314),默认 `DAILY_INCREMENT_TICK_MS`。写法与
+   * 审查轨迹心跳同一档,只该测试注入——测试把它拨到毫秒级,再拨 `now` 驱动「今天」。
+   */
+  dailyIncrementTickMs?: number;
+  /**
+   * 一个范围审查跑完一次定时检查(issue #314)。不传则写 stdout——凌晨发生了什么,
+   * 第二天只有这行日志说得出。与工作副本准备同一条口径。
+   */
+  onScheduledCheck?: (rangeReviewId: number, result: DailyIncrementResult) => void;
   /** 测试注入 bootstrap 口令;生产省略即在零用户时随机生成。 */
   bootstrapSecret?: string;
   /** 零用户启动时拿到 bootstrap 口令;生产打印,测试可观察或忽略。 */
@@ -331,6 +342,12 @@ const LOGGED_ONCE_MAX = 10_000;
 
 /** 审查轨迹 SSE 的心跳间隔。要短过反代常见的 60 秒读超时,并留出余量。 */
 const TRACE_HEARTBEAT_MS = 15_000;
+
+/**
+ * 定时检查的 tick 间隔(issue #314)。凌晨 00:00 是「日期翻页」的自然结果,不做精确到
+ * 秒的对时,一分钟一问因此够用:错过一整天的那种情形由「今天还没检查过」自己补上。
+ */
+const DAILY_INCREMENT_TICK_MS = 60_000;
 
 /**
  * 「PR 新增 commit」两个平台拼写不同:GitHub 是 `synchronize`,Gitea 是 `synchronized`。
@@ -5927,6 +5944,7 @@ async function handleAdvanceRangeReview(
     ...(comparisonSource === undefined ? {} : { comparisonSource }),
     mode,
     operator: advancedBy,
+    triggerSource: "panel",
     ...(directive === undefined ? {} : { directive }),
   });
   if (!outcome.ok) {
@@ -5981,9 +5999,9 @@ function advanceRejected(reason: AdvanceRejectionReason, message: string): Advan
  * 推进比较项的准入与执行(issue #311,spec #310)。面板点推进与定时推进共用这一段:
  * 后代判定、只复核准入、回退文件历史的自动处置、推容器 PR head、开轮次。
  *
- * 不认识 HTTP:入参是范围审查、新比较项、模式、操作者与本轮指令,出参是一组可枚举的
- * 准入拒绝或已开轮次。操作者为空即没有人点这一次(定时推进),那一轮的 `triggered_by`
- * 跟着为空。
+ * 不认识 HTTP:入参是范围审查、新比较项、模式、操作者、触发来源与本轮指令,出参是一组
+ * 可枚举的准入拒绝或已开轮次。操作者为空即没有人点这一次(定时检查),那一轮的
+ * `triggered_by` 跟着为空;来源由调用方给,不从操作者推——投递那一档同样没有调用者。
  *
  * 校验只要求新比较项是 base 的后代,不要求是上一个比较项的后代:作者 rebase 之后新的
  * 比较项对旧的就是旁支,要求后者会把人挡回去重开一个阶段(CONTEXT.md 比较项)。
@@ -6000,6 +6018,8 @@ async function advanceRangeReview(
     comparisonSource?: ComparisonSource;
     mode: ReviewRunMode;
     operator: string | null;
+    /** 这一轮是被谁开出来的(issue #312)。面板点推进是 `panel`,定时检查是 `scheduled`。 */
+    triggerSource: ReviewTriggerSource;
     directive?: string;
   },
 ): Promise<AdvanceOutcome> {
@@ -6151,7 +6171,7 @@ async function advanceRangeReview(
     id,
     input.directive,
     mode,
-    "panel",
+    input.triggerSource,
   );
   return { ok: true, rangeReview };
 }
@@ -6284,6 +6304,207 @@ async function handleSetDailyIncrement(
     return store.getRangeReview(id)!;
   });
   return sendJson(res, 200, { rangeReview });
+}
+
+/**
+ * 一个时刻落在哪一天(issue #314)。按 Node 进程本地时区的日期分量算(容器的 `TZ` 决定),
+ * 不引入时区库;只用来比较两个时刻是不是同一天,不对外显示。
+ */
+function localDayKey(ms: number): string {
+  const at = new Date(ms);
+  return `${at.getFullYear()}-${at.getMonth()}-${at.getDate()}`;
+}
+
+/**
+ * 今天已经检查过了。判据取「最近一次定时检查」与「最近一次开启或改分支」中较晚的那个:
+ * 开关开在今天就算今天已经过了一次,刚开不会当场推进一轮(spec #310 user story 22)。
+ */
+function checkedToday(record: RangeReviewRecord, today: string): boolean {
+  const marks = [record.dailyIncrementCheckedAt, record.dailyIncrementEnabledAt]
+    .filter((at): at is string => at !== null)
+    .map((at) => Date.parse(at))
+    .filter((ms) => Number.isFinite(ms));
+  return marks.length > 0 && localDayKey(Math.max(...marks)) === today;
+}
+
+/** 推进比较项的准入拒绝 → 这一次定时检查的结果。两组取值各自独立,映射写全。 */
+const ADVANCE_CHECK_RESULT: Record<AdvanceRejectionReason, DailyIncrementResult> = {
+  "not-advancable": "check-failed",
+  "rule-set-unconfirmed": "check-failed",
+  "plan-broken": "check-failed",
+  // 读不到仓库、解析不出那个 commit、取不回变更文件都是「取不到」的同一档。
+  "forge-missing": "branch-unknown",
+  "repo-unreachable": "branch-unknown",
+  "base-unknown": "branch-unknown",
+  "comparison-unknown": "branch-unknown",
+  "diff-unreadable": "branch-unknown",
+  "not-descendant": "not-descendant",
+  // 分支最新 commit 就是当前比较项:这一步已经在 tick 里判过,这里是同一件事的兜底。
+  "same-comparison": "no-new-commit",
+  "nothing-to-verdict": "nothing-to-verdict",
+  "push-failed": "push-failed",
+};
+
+/**
+ * 跟一次分支:取分支最新 commit → 与当前比较项比对 → 判这个范围审查有没有未结束的轮次
+ * → 走推进比较项的共用段(issue #311),模式固定只复核、不带本轮指令、操作者为空。
+ *
+ * 工作副本这一轮已经由调用方取回过,这里只读:同一个仓库上的几个范围审查共享那一次
+ * 取回,凌晨不对 Forge 与磁盘造成并发冲击(spec #310 user story 26)。
+ */
+async function scheduledCheck(
+  deps: WebhookServerDeps,
+  record: RangeReviewRecord,
+  target: { ref: RepoRef; cloneUrl: string; credentials: CloneCredentials },
+  runningRangeReviews: ReadonlySet<number>,
+): Promise<DailyIncrementResult> {
+  const branch = record.dailyIncrementBranch!;
+  let listed: BranchCommits;
+  try {
+    listed = await listBranchCommits({
+      cacheDir: deps.cacheDir,
+      ...target,
+      branch,
+      offset: 0,
+      limit: 1,
+    });
+  } catch (error) {
+    console.log(
+      `[daily-increment] 范围审查 ${record.id} 取不回分支 ${branch} 的提交:${failureText(error)}`,
+    );
+    return "branch-unknown";
+  }
+  // 分支被删掉或改了名都落这一档:开关不自动关,分支恢复后第二天自然接上。
+  if (!listed.ok || listed.commits.length === 0) return "branch-unknown";
+  const tip = listed.commits[0]!.sha;
+  if (tip === record.comparisonSha) return "no-new-commit";
+  // 人工推进没有这道互斥(spec #310 Further Notes),只有定时检查判:它不该和人点的那
+  // 一次或一轮续跑撞在一起。
+  if (runningRangeReviews.has(record.id)) return "run-in-flight";
+
+  const outcome = await advanceRangeReview(deps, record, {
+    comparison: tip,
+    mode: "verdict-only",
+    operator: null,
+    triggerSource: "scheduled",
+  });
+  if (outcome.ok) return "advanced";
+  console.log(`[daily-increment] 范围审查 ${record.id} 没推进:${outcome.message}`);
+  return ADVANCE_CHECK_RESULT[outcome.reason];
+}
+
+/**
+ * 一次定时检查的 tick(issue #314,CONTEXT.md 定时检查)。找出进行中、每日增量开着、
+ * 且今天还没检查过的范围审查,逐个跟一次分支。
+ *
+ * 00:00 是「日期翻页」的自然结果,不做对时:服务在 00:00 前后不在线时,回来后的第一个
+ * tick 就是当天第一次检查,那一天因此补得上;任何结果都刷新时刻,一天至多一次。
+ *
+ * 各范围审查串行执行,单条失败记结果后继续下一条;一个仓库取不回工作副本时只有它名下
+ * 那几个记结果,其余仓库照常检查(spec #310 user story 27)。
+ */
+async function dailyIncrementTick(deps: WebhookServerDeps): Promise<void> {
+  const nowMs = (deps.now ?? Date.now)();
+  const today = localDayKey(nowMs);
+  const due = withStore(deps.dbPath, (store) =>
+    store
+      .listRangeReviews({ state: "in-progress" })
+      .filter(
+        (record) =>
+          record.dailyIncrementEnabled &&
+          record.dailyIncrementBranch !== null &&
+          !checkedToday(record, today),
+      ),
+  );
+  if (due.length === 0) return;
+
+  const settled =
+    deps.onScheduledCheck ??
+    ((rangeReviewId: number, result: DailyIncrementResult) => {
+      console.log(`[daily-increment] 范围审查 ${rangeReviewId} 检查结果:${result}`);
+    });
+  const at = new Date(nowMs).toISOString();
+  const record = (id: number, result: DailyIncrementResult): void => {
+    withStore(deps.dbPath, (store) =>
+      store.recordRangeReviewScheduledCheck({ id, at, result }),
+    );
+    settled(id, result);
+  };
+
+  // 排空期间不接新活(issue #249):当批直接记「排空中」并刷新时刻,由下一次启动按日期
+  // 判定补上——同一天不再补,新的一天照常。
+  if (deps.drain?.draining() === true) {
+    console.log(`[daily-increment] 排空中,跳过 ${due.length} 个范围审查`);
+    for (const item of due) record(item.id, "draining");
+    return;
+  }
+  console.log(`[daily-increment] 本次检查 ${due.length} 个范围审查`);
+
+  // 没有结束时间即还在跑,含等待续跑的那些(CONTEXT.md 定时检查)。一次读出全部,不逐个问。
+  const runningRangeReviews = new Set(
+    withStore(deps.dbPath, (store) => store.interruptedRuns())
+      .map((run) => run.rangeReviewId)
+      .filter((id): id is number => id !== null),
+  );
+
+  const byRepo = new Map<string, RangeReviewRecord[]>();
+  for (const item of due) {
+    const key = `${item.owner}/${item.repo}`;
+    byRepo.set(key, [...(byRepo.get(key) ?? []), item]);
+  }
+  for (const [key, items] of byRepo) {
+    const forge = deps.forges.gitea;
+    const ref: RepoRef = { owner: items[0]!.owner, repo: items[0]!.repo };
+    let target: { ref: RepoRef; cloneUrl: string; credentials: CloneCredentials };
+    try {
+      if (forge === undefined) throw new Error("gitea 没有配置 Forge");
+      const [repository, credentials] = await Promise.all([
+        forge.getRepository(ref),
+        forge.cloneCredentials(ref),
+      ]);
+      target = { ref, cloneUrl: repository.cloneUrl, credentials };
+      // 同一个仓库只取回这一次,之后各范围审查都在这份副本上读。
+      await ensureWorktree({ cacheDir: deps.cacheDir, ...target });
+    } catch (error) {
+      console.log(`[daily-increment] ${key} 取不回工作副本:${failureText(error)}`);
+      for (const item of items) record(item.id, "branch-unknown");
+      continue;
+    }
+    for (const item of items) {
+      let result: DailyIncrementResult;
+      try {
+        result = await scheduledCheck(deps, item, target, runningRangeReviews);
+      } catch (error) {
+        // 单条失败记结果后继续下一条:tick 内的异常不终止循环。
+        console.log(`[daily-increment] 范围审查 ${item.id} 检查失败:${failureText(error)}`);
+        result = "check-failed";
+      }
+      record(item.id, result);
+    }
+  }
+}
+
+/**
+ * 起定时检查的循环(issue #314)。间隔可注入,写法与审查轨迹的 SSE 心跳同一档。
+ *
+ * 一次 tick 还没跑完就不开下一次:一轮推进要走 Forge 与本地副本,慢过一个间隔时重入会
+ * 让同一个范围审查在同一天推两次。`unref` 让它不拖住进程退出,服务关闭时一并清掉。
+ */
+function startDailyIncrementTicks(deps: WebhookServerDeps, server: Server): void {
+  let running = false;
+  const timer = setInterval(() => {
+    if (running) return;
+    running = true;
+    void dailyIncrementTick(deps)
+      .catch((error: unknown) => {
+        console.error("[daily-increment] 本次 tick 失败:", failureText(error));
+      })
+      .finally(() => {
+        running = false;
+      });
+  }, deps.dailyIncrementTickMs ?? DAILY_INCREMENT_TICK_MS);
+  timer.unref();
+  server.on("close", () => clearInterval(timer));
 }
 
 /** 一天的毫秒数,处置率页的默认时间窗取最近 30 天。 */
@@ -8954,7 +9175,7 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
   resumeInterruptedRuns(deps, interrupted);
   const hookManager =
     deps.gitea === undefined ? undefined : createGiteaHookManager(deps.gitea);
-  return createServer((req, res) => {
+  const server = createServer((req, res) => {
     // 路由表(issue #26):`POST /webhook` → 投递;`/api/*` → 面板 API;`/assets/*` →
     // 构建产物;其余的 GET → index.html,由客户端路由接管;非 GET 一律 404。
     // `/webhook` 上的其它方法也是 404:那是投递入口,不是面板页面。
@@ -9002,4 +9223,7 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
     }
     return send(res, 404);
   });
+  // 每日增量的定时检查(issue #314)跟着服务起落:循环挂在这个 server 上,关掉即停。
+  startDailyIncrementTicks(deps, server);
+  return server;
 }

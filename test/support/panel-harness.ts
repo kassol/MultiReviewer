@@ -22,7 +22,11 @@ import { hashPassword } from "../../src/panel/password.ts";
 import { encryptCredential } from "../../src/panel/credential-crypto.ts";
 import type { PanelPermission } from "../../src/panel/permissions.ts";
 import type { DiscoveredModel } from "../../src/reviewer/model-service-runtime.ts";
-import { modelServiceTargetFingerprint, openStore } from "../../src/review/store.ts";
+import {
+  modelServiceTargetFingerprint,
+  openStore,
+  type DailyIncrementResult,
+} from "../../src/review/store.ts";
 import { startFakeGitea, type FakeGitea } from "./fake-gitea.ts";
 import {
   confirmEmptyRuleSet,
@@ -73,6 +77,8 @@ export type PanelHarness = {
   consolidations: { repoId: number; failure?: string }[];
   /** 后台跑完的人工提议(issue #294),按结束先后。 */
   revisionIntents: { intentId: number; failure?: string }[];
+  /** 跑完的定时检查(issue #314),按先后。 */
+  scheduledChecks: { rangeReviewId: number; result: DailyIncrementResult }[];
   /** 每次组装 Reviewer 时拿到的完整本轮运行计划。 */
   runtimePlans: (readonly ReviewerRuntimePlan[])[];
   api(method: string, path: string, body?: unknown): Promise<Response>;
@@ -91,6 +97,8 @@ export type PanelHarness = {
   consolidationsAtLeast(count: number): Promise<void>;
   /** 等到至少这么多次人工提议已经结束(issue #294)。 */
   revisionIntentsAtLeast(count: number): Promise<void>;
+  /** 等到至少这么多次定时检查已经跑完(issue #314)。 */
+  scheduledChecksAtLeast(count: number): Promise<void>;
 };
 
 /** 凭据测试用的主密钥。缺主密钥那一档传 `credentialMasterKey: undefined` 起 harness。 */
@@ -174,6 +182,10 @@ export type PanelHarnessOptions = {
   wrapForge?: (forge: Forge) => Forge;
   /** 审查轨迹 SSE 的心跳间隔,省略取服务默认值。 */
   traceHeartbeatMs?: number;
+  /** 定时检查的 tick 间隔(issue #314),省略取服务默认值。用例拨到毫秒级。 */
+  dailyIncrementTickMs?: number;
+  /** 服务时钟,省略即真实时间。用例拨它驱动定时检查的「今天」。 */
+  now?: () => number;
   /** 规则 agent(issue #205)。省略即用真实的 Pi 子进程实现,用例注入脚本化实现。 */
   ruleAgent?: WebhookServerDeps["ruleAgent"];
   /** 排空状态(issue #249)。用例自己 `begin()` 之后再调端点,验排空期间的回绝。 */
@@ -319,6 +331,7 @@ export async function startPanelHarness(
   const dispositionFeedbacks = counter<{ findingId: number; failure?: string }>();
   const consolidations = counter<{ repoId: number; failure?: string }>();
   const revisionIntents = counter<{ intentId: number; failure?: string }>();
+  const scheduledChecks = counter<{ rangeReviewId: number; result: DailyIncrementResult }>();
 
   const server = createWebhookServer({
     forges: { gitea: forge },
@@ -340,6 +353,13 @@ export async function startPanelHarness(
     ...(credentialMasterKey === undefined ? {} : { credentialMasterKey }),
     onDelivery: () => {},
     ...(options.traceHeartbeatMs === undefined ? {} : { traceHeartbeatMs: options.traceHeartbeatMs }),
+    ...(options.dailyIncrementTickMs === undefined
+      ? {}
+      : { dailyIncrementTickMs: options.dailyIncrementTickMs }),
+    ...(options.now === undefined ? {} : { now: options.now }),
+    onScheduledCheck: (rangeReviewId, result) => {
+      scheduledChecks.push({ rangeReviewId, result });
+    },
     ...(options.discoverModelServiceModels === undefined
       ? {}
       : { discoverModelServiceModels: options.discoverModelServiceModels }),
@@ -448,6 +468,7 @@ export async function startPanelHarness(
     dispositionFeedbacks: dispositionFeedbacks.entries,
     consolidations: consolidations.entries,
     revisionIntents: revisionIntents.entries,
+    scheduledChecks: scheduledChecks.entries,
     runtimePlans,
     api,
     deliverViaHook,
@@ -457,6 +478,7 @@ export async function startPanelHarness(
     dispositionFeedbackAtLeast: dispositionFeedbacks.atLeast,
     consolidationsAtLeast: consolidations.atLeast,
     revisionIntentsAtLeast: revisionIntents.atLeast,
+    scheduledChecksAtLeast: scheduledChecks.atLeast,
   };
 }
 
