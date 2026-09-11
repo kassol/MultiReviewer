@@ -6409,6 +6409,8 @@ async function scheduledCheck(
 
   const outcome = await advanceRangeReview(deps, record, {
     comparison: tip,
+    // 记下是从哪条分支取的:下次人工推进,选择器仍预选这条分支(issue #234 的口径)。
+    comparisonSource: { kind: "branch", name: branch },
     mode: record.scheduledCheckMode,
     operator: null,
     triggerSource: "scheduled",

@@ -34,6 +34,7 @@ const TICK_MS = 25;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 type RangeReview = {
+  comparisonSource: { kind: "branch" | "tag"; name: string } | null;
   id: number;
   baseSha: string;
   comparisonSha: string;
@@ -221,6 +222,8 @@ test("到点推进:head 跟着分支走,那一轮来源是定时、范围是 bas
   assert.equal(detail.scheduledCheckResult, "advanced");
   assert.notEqual(detail.scheduledCheckAt, null);
   assert.equal(detail.dailyIncrementEnabled, true);
+  // 定时推进记下取自哪条分支,下次人工推进选择器仍预选它。
+  assert.deepEqual(detail.comparisonSource, { kind: "branch", name: "feature" });
 });
 
 test("同一天多次 tick 只跑一次;拨到第二天再跑一次", async () => {

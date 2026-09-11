@@ -231,10 +231,13 @@ export function DailyIncrementAction({ rangeReview }: { rangeReview: RangeReview
               {rangeReview.dailyIncrementEnabled ? rangeReview.dailyIncrementBranch : "关"}
             </span>
           </StatusBadge>
+          {/* 窄屏放不下第三枚徽章(issue #315 验收):时刻与模式只在 sm 以上露出,弹窗里始终有。 */}
           {rangeReview.dailyIncrementEnabled ? (
-            <StatusBadge tone="neutral">
-              {rangeReview.scheduledCheckTime} · {SCHEDULED_CHECK_MODE_LABEL[rangeReview.scheduledCheckMode]}
-            </StatusBadge>
+            <span className="hidden sm:inline-flex">
+              <StatusBadge tone="neutral">
+                {rangeReview.scheduledCheckTime} · {SCHEDULED_CHECK_MODE_LABEL[rangeReview.scheduledCheckMode]}
+              </StatusBadge>
+            </span>
           ) : null}
           {/* 最近一次的结果就在开关旁(issue #314):昨晚推没推进、为什么没推,一眼看得到。 */}
           {rangeReview.scheduledCheckResult === null ? null : (
