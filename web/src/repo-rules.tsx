@@ -1213,13 +1213,6 @@ function ProposalSection({
   const decided = ruleSet.proposals.filter((row) => row.state !== "pending");
   // 提案默认一条不勾:采纳是改变知识集的动作,该由人一条条挑,不该默认全中。
   const pick = useSelection(pending.map((row) => row.id), false);
-  // 刚完成的意图产出的提案(issue #294)。判据取意图行自己的产出列表:附注的来源说得出
-  // 「这条曾由人工提议提过」,说不出「是刚才那一次」,而人回到队列要找的是刚才那几条。
-  const fromIntent = new Set(
-    ruleSet.intents.flatMap((intent) =>
-      intent.state === "completed" ? intent.produced.proposalIds : [],
-    ),
-  );
   /**
    * 这条提案指向的现有条目那一段:新增没有,修改与废止一条,合并几条(issue #282)。
    * 合并逐条给陈述与作用范围——人要看清被合掉的是哪几条。已经不在生效条目里的只显示
@@ -1370,12 +1363,6 @@ function ProposalSection({
                     <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
                       {proposal.scope === "" ? "全仓库" : proposal.scope}
                     </Badge>
-                    {/* 刚完成的意图产出的那几条(issue #294):人写完意图回到队列,要一眼
-                        认出该去裁决哪一条。意图列全部历史之后(issue #317)徽章不再随时间
-                        消失,这条待裁决期间一直带着。 */}
-                    {fromIntent.has(proposal.id) ? (
-                      <Badge color="amber" variant="soft">刚由意图产出</Badge>
-                    ) : null}
                   </span>
                   {canWrite ? (
                     <div className="flex shrink-0 gap-1">
@@ -1505,13 +1492,6 @@ function ExplorationSection({
   const pick = useSelection(ruleSet.draft.map((row) => row.id), true);
   // 就地展开意图框的那条草案条目(issue #298)。一次只展开一条,与另两处同一条口径。
   const [rewriting, setRewriting] = useState<number | null>(null);
-  // 刚完成的意图产出的草案条目(issue #294、#298):改写过的那一条与意图补进来的那几条
-  // 同一枚徽章,人回到草案要认出的都是「刚才那一次动的是哪几条」。
-  const fromIntent = new Set(
-    ruleSet.intents.flatMap((intent) =>
-      intent.state === "completed" ? intent.produced.draftItemIds : [],
-    ),
-  );
 
   return (
     // tab 本身已经命名这一段,头行直接是探索状态与发起按钮,不再立一层大标题。
@@ -1612,9 +1592,6 @@ function ExplorationSection({
                     <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
                       {rule.scope === "" ? "全仓库" : rule.scope}
                     </Badge>
-                    {fromIntent.has(rule.id) ? (
-                      <Badge color="amber" variant="soft">刚由意图产出</Badge>
-                    ) : null}
                   </span>
                   <div className="flex shrink-0 gap-1">
                     {/* 「改写」就地展开与顶部同一个意图框(ADR 0028,issue #298):人写一句话
