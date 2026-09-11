@@ -126,6 +126,7 @@
 
 ## 变更日志
 
+- 2026-09-11: 处置备注框占位符改成「只写为什么不用改(可选,只存面板);代码已改的留给下一轮评审自动处置」,`run-diff.tsx` / `stage-summary.tsx` / `stage-detail.tsx` 三处同句。此前占位符只说「处置备注」,开发者改完代码就手动处置并填「已修改」,备注非空即触发处置反哺(见 `src/AGENTS.md` 同日条目)。纯文案,无测试。
 - 2026-09-10: issue #309 组卡的两处 e2e 修复。`stage-summary.tsx` 的 `RootCauseGroupCard` 背景类改成按 `focused` 二选一(与下方 counts 按钮同一写法)——原先 `bg-surface` 常驻、`bg-accent-tint` 只在聚焦时追加,两个背景类拼进同一个模板字符串未经 `cn` 去重,编译后 CSS 里 `bg-surface` 排在后面直接压过 `bg-accent-tint`,聚焦态因此从没显出过蓝底。聚焦滚动从 `scrollIntoView({ block: "center" })` 改成 `block: "start"`:组卡常常比视口高(观察到约 1449px vs 900px 视口),居中会把卡头的根因说明与「处置整组」滚出屏幕,停在成员正文中间;改成贴顶后卡头落进视野。贴顶后卡头又被顶栏(`main.tsx` 的 `TopBar`,两行毛玻璃,sticky 叠在滚动容器上方)盖住——`block: "start"` 落点是视口 y=0,顶栏实际渲染高度约 88px,卡头因此钻到顶栏底下;组卡的 `<section>` 补一个 `scroll-mt-[88px]`(顶栏没有现成的高度 token,这个数按 `TopBar` 两行的内边距、行高与边框逐项算出后与实测一致),贴顶落点让到顶栏下面。
 - 2026-09-09: issue #309 的评审复核修复(父 spec #305,ADR 0030)。「处置整组」点得动的判据改用新的纯函数 `lib/root-cause.ts` 的 `disposableInGroup`——与服务端跳过的口径同一份(未处置**且**有行级评论承载),原先只看处置状态,没有评论 id 的成员被算成待处置,那一组按钮点得动而一条都写不进去。`root-cause.test.ts` 补一条它的用例;组级处置弹窗的标题从模板串改成普通字符串。
 - 2026-09-09: spec #305 一批(#306–#309)的评审复核修正的面板部分。`run-trace.tsx` 多认一档 `root_cause_group_rejected`(与 `merge_fallback` / `synthesis_fallback` 同形:一句「同根因组提议被丢弃:<原因>」加它引用的那几个合并组编号,从 0 起显示加一),不再只摊出事件名;`criteriaText` 的 `agent_differs` 改成固定写「合并 agent 未将它与那条历史归为同一问题」——事件里不再带理由。新增 payload 读取守卫 `nums`。前端无程序化测试(issue #26 的测试决策)。

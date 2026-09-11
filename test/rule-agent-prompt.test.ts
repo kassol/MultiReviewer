@@ -72,3 +72,13 @@ test("反哺提示分型里有限定类规则那一档", () => {
   assert.match(prompt, /imperative/);
   assert.match(prompt, /scope/);
 });
+
+test("反哺提示点名「已修复」类备注报空", () => {
+  const feedback: DispositionFeedback = {
+    note: "已修改",
+    finding: { file: "src/x.ts", line: 3, title: null, description: "空指针" },
+  };
+  const prompt = feedbackPrompt({ existingKnowledge: [], feedback });
+  assert.match(prompt, /only says the code was changed or the finding was fixed/);
+  assert.match(prompt, /records a repair, not a standard/);
+});

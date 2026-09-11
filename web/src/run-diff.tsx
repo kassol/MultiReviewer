@@ -373,7 +373,7 @@ export function FindingRow({
               value={note}
               onChange={(event) => setNote(event.target.value)}
               maxLength={500}
-              placeholder="处置备注（可选，只存面板）"
+              placeholder="只写为什么不用改（可选，只存面板）；代码已改的留给下一轮评审自动处置"
               aria-label="处置备注"
             />
           ) : null}
