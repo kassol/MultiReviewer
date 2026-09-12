@@ -1365,7 +1365,7 @@ type RepoAssignment = {
 
 /** 端点的目标仓库怎么认:路径里第 `group` 个捕获组是哪种标识,或者从查询串上认。 */
 type PanelAssignmentTarget =
-  | { by: "repo" | "run" | "range-review" | "finding"; group: number }
+  | { by: "repo" | "run" | "range-review" | "finding" | "product"; group: number }
   | { by: "query" };
 
 const ASSIGNMENT_UNRESTRICTED: RepoAssignment = {
@@ -1409,6 +1409,12 @@ function rowAllowed(
 }
 
 /**
+ * 产品不存在,与产品里一个仓库都不在调用方分配内:两档同形回这一句 404(CONTEXT.md
+ * 产品)。过滤层与 handler 共用它,措辞不会漂。
+ */
+const NO_SUCH_PRODUCT = "没有这个产品";
+
+/**
  * 每种目标形式怎么认它的仓库、认不到时说哪一句。两件事写在同一条上:分开写就会有
  * 端点的 404 措辞与 handler 自己那句对不上,而分配外与不存在必须同形。
  */
@@ -1439,6 +1445,19 @@ const ASSIGNMENT_TARGETS: {
   finding: {
     allows: (deps, assignment, id) => rowAllowed(deps, assignment, (store) => store.getFinding(id)),
     missText: () => "没有这条 Finding",
+  },
+  // 产品的可见性:对产品内至少一个仓库有仓库分配即可读(CONTEXT.md 产品,与 ADR 0018
+  // 同律)。一个仓库都没分到的人因此读不到任何产品;产品本身不存在时照旧放行,那一档
+  // 由 handler 回它自己的 404。
+  product: {
+    allows: (deps, assignment, id) => {
+      const product = withStore(deps.dbPath, (store) => store.getProduct(id));
+      return (
+        product === undefined ||
+        product.repos.some((row) => assignment.allows(row.owner, row.repo))
+      );
+    },
+    missText: () => NO_SUCH_PRODUCT,
   },
   query: {
     // 查询串上的两种目标形式:成对的 owner + repo,或者一个范围审查标识。
@@ -1864,6 +1883,133 @@ function handleLogout(req: IncomingMessage, res: ServerResponse, deps: WebhookSe
   res.end();
 }
 
+/** 产品名的长度上限。左栏一行装得下,也挡住「把整段需求当名字」那种输入。 */
+const PRODUCT_NAME_MAX = 64;
+
+/** 请求体里的产品名。空白不算名字,两头的空白不进库。认不出即 undefined。 */
+function productName(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const name = value.trim();
+  return name.length === 0 || name.length > PRODUCT_NAME_MAX ? undefined : name;
+}
+
+/** 建与改名共用的两句回应:形状不对与重名。重名由 `product.name` 的 UNIQUE 判。 */
+const PRODUCT_NAME_SHAPE = `产品名要是 1 到 ${PRODUCT_NAME_MAX} 个字符`;
+const PRODUCT_NAME_TAKEN = "已经有同名产品";
+
+/**
+ * 产品列表(CONTEXT.md 产品)。按仓库分配收窄而不是拒绝:产品内至少有一个仓库在分配里
+ * 才出现在这一份里,一个仓库都没分到的人拿到的是空列表。系统管理员不受限。
+ */
+function handleListProducts(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  assignment: RepoAssignment,
+): void {
+  const products = withStore(deps.dbPath, (store) => store.listProducts());
+  return sendJson(res, 200, {
+    products: products.filter(
+      (product) =>
+        assignment.refs === undefined ||
+        product.repos.some((row) => assignment.allows(row.owner, row.repo)),
+    ),
+  });
+}
+
+/** 一个产品与它的仓库。分配外的产品已经被路由上的 `product` 目标判成 404。 */
+function handleProduct(res: ServerResponse, deps: WebhookServerDeps, productId: number): void {
+  const product = withStore(deps.dbPath, (store) => store.getProduct(productId));
+  return product === undefined
+    ? sendJson(res, 404, { error: NO_SUCH_PRODUCT })
+    : sendJson(res, 200, { product });
+}
+
+async function handleCreateProduct(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+): Promise<void> {
+  const payload = await readJson<{ name?: unknown } | null>(req, res);
+  if (payload === undefined) return;
+  const name = productName(payload?.name);
+  if (name === undefined) return sendJson(res, 400, { error: PRODUCT_NAME_SHAPE });
+  try {
+    const product = withStore(deps.dbPath, (store) =>
+      store.createProduct({ name, createdAt: new Date((deps.now ?? Date.now)()).toISOString() }),
+    );
+    return sendJson(res, 201, { product });
+  } catch {
+    return sendJson(res, 409, { error: PRODUCT_NAME_TAKEN });
+  }
+}
+
+async function handleRenameProduct(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+): Promise<void> {
+  const payload = await readJson<{ name?: unknown } | null>(req, res);
+  if (payload === undefined) return;
+  const name = productName(payload?.name);
+  if (name === undefined) return sendJson(res, 400, { error: PRODUCT_NAME_SHAPE });
+  try {
+    const renamed = withStore(deps.dbPath, (store) => store.renameProduct(productId, name));
+    return renamed ? send(res, 204) : sendJson(res, 404, { error: NO_SUCH_PRODUCT });
+  } catch {
+    return sendJson(res, 409, { error: PRODUCT_NAME_TAKEN });
+  }
+}
+
+/**
+ * 删产品。回应带级联条数:产品下的 Agent 会话连记录、产出与图片一并硬删(spec #329),
+ * 面板的确认框照这个字段写。会话实体还不存在(issue #332),因此这一版恒为 0——形状先
+ * 定下来,会话表建起来之后这里填真删掉的条数。
+ */
+function handleDeleteProduct(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+): void {
+  const removed = withStore(deps.dbPath, (store) => store.deleteProduct(productId));
+  return removed
+    ? sendJson(res, 200, { cascade: { sessions: 0 } })
+    : sendJson(res, 404, { error: NO_SUCH_PRODUCT });
+}
+
+/** 归入仓库。一个仓库归入第二个产品时回 409,判据是 `product_repo` 的主键。 */
+function handleAttachProductRepo(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+  repoId: number,
+): void {
+  const at = new Date((deps.now ?? Date.now)()).toISOString();
+  const result = withStore(deps.dbPath, (store) =>
+    store.attachProductRepo(productId, repoId, at),
+  );
+  switch (result) {
+    case "attached":
+      return send(res, 204);
+    case "missing-product":
+      return sendJson(res, 404, { error: NO_SUCH_PRODUCT });
+    case "missing-repo":
+      return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
+    case "other-product":
+      return sendJson(res, 409, { error: "这个仓库已经归在别的产品下" });
+  }
+}
+
+function handleDetachProductRepo(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+  repoId: number,
+): void {
+  const detached = withStore(deps.dbPath, (store) => store.detachProductRepo(productId, repoId));
+  return detached ? send(res, 204) : sendJson(res, 404, { error: "这个产品下没有这个仓库" });
+}
+
 export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "POST", pattern: "/session", access: "public", handler: ({ req, res, deps, auth }) => handleLogin(req, res, deps, auth) },
   { method: "POST", pattern: "/users/bootstrap", access: "public", handler: ({ req, res, deps, bootstrapSecret, clearBootstrap }) => handleBootstrapRegister(req, res, deps, bootstrapSecret, clearBootstrap) },
@@ -1968,6 +2114,16 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   // 知识集版本,而逐条采纳一次推一版。
   { method: "POST", pattern: /^\/repos\/(\d+)\/rule-proposals\/accept$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ req, res, deps }, match) => handleDecideRuleProposals(req, res, deps, Number(match![1]), true) },
   { method: "POST", pattern: /^\/repos\/(\d+)\/rule-proposals\/reject$/, access: "knowledge:write", assignment: { by: "repo", group: 1 }, handler: ({ req, res, deps }, match) => handleDecideRuleProposals(req, res, deps, Number(match![1]), false) },
+  // 产品(CONTEXT.md 产品,issue #331)。读按仓库分配:列表收窄,单个产品由 `product`
+  // 目标判分配外的 404。建、改名、归属与删都只按 `repo:write`——产品是注册表上的一层
+  // 结构,管它的人就是管仓库注册的人;归入与移出的那个仓库仍按分配判(`repo:2`)。
+  { method: "GET", pattern: "/products", access: "authenticated-only", handler: ({ res, deps, assignment }) => handleListProducts(res, deps, assignment!) },
+  { method: "POST", pattern: "/products", access: "repo:write", handler: ({ req, res, deps }) => handleCreateProduct(req, res, deps) },
+  { method: "GET", pattern: /^\/products\/(\d+)$/, access: "authenticated-only", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleProduct(res, deps, Number(match![1])) },
+  { method: "PUT", pattern: /^\/products\/(\d+)$/, access: "repo:write", handler: ({ req, res, deps }, match) => handleRenameProduct(req, res, deps, Number(match![1])) },
+  { method: "DELETE", pattern: /^\/products\/(\d+)$/, access: "repo:write", handler: ({ res, deps }, match) => handleDeleteProduct(res, deps, Number(match![1])) },
+  { method: "PUT", pattern: /^\/products\/(\d+)\/repos\/(\d+)$/, access: "repo:write", assignment: { by: "repo", group: 2 }, handler: ({ res, deps }, match) => handleAttachProductRepo(res, deps, Number(match![1]), Number(match![2])) },
+  { method: "DELETE", pattern: /^\/products\/(\d+)\/repos\/(\d+)$/, access: "repo:write", assignment: { by: "repo", group: 2 }, handler: ({ res, deps }, match) => handleDetachProductRepo(res, deps, Number(match![1]), Number(match![2])) },
   { method: "GET", pattern: "/model-services", access: { anyOf: ["model:read", "credential:read"] }, handler: ({ res, deps, caller }) => handleListModelServices(res, deps, caller!) },
   { method: "GET", pattern: "/model-services/providers", access: { anyOf: ["model:read", "model:write", "credential:read", "credential:write"] }, handler: ({ req, res, deps }) => handleBuiltinProviderSearch(req, res, deps) },
   { method: "POST", pattern: /^\/model-services\/builtin\/preview$/, access: "credential:write", handler: ({ req, res, deps }) => handlePreviewBuiltinModelService(req, res, deps) },

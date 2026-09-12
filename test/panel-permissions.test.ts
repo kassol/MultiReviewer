@@ -95,6 +95,15 @@ const ROUTE_EXPECTATIONS = [
   // 批量裁决与逐条同一格(issue #223):都是「谁定这个仓库的标准」。
   ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/accept$/", "knowledge:write", "repo:1"],
   ["POST", "/^\\/repos\\/(\\d+)\\/rule-proposals\\/reject$/", "knowledge:write", "repo:1"],
+  // 产品(issue #331):读登录即可,按仓库分配收窄或判 404;写全在 repo:write 一格,
+  // 归入与移出的那个仓库按分配判(第二个捕获组)。
+  ["GET", "/products", "authenticated-only", "-"],
+  ["POST", "/products", "repo:write", "-"],
+  ["GET", "/^\\/products\\/(\\d+)$/", "authenticated-only", "product:1"],
+  ["PUT", "/^\\/products\\/(\\d+)$/", "repo:write", "-"],
+  ["DELETE", "/^\\/products\\/(\\d+)$/", "repo:write", "-"],
+  ["PUT", "/^\\/products\\/(\\d+)\\/repos\\/(\\d+)$/", "repo:write", "repo:2"],
+  ["DELETE", "/^\\/products\\/(\\d+)\\/repos\\/(\\d+)$/", "repo:write", "repo:2"],
   ["GET", "/model-services", "anyOf:model:read|credential:read", "-"],
   [
     "GET",

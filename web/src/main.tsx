@@ -13,6 +13,7 @@ import {
 import {
   BarChartIcon,
   CounterClockwiseClockIcon,
+  CubeIcon,
   LightningBoltIcon,
   LockClosedIcon,
   MagnifyingGlassIcon,
@@ -43,6 +44,7 @@ import "./styles.css";
 const AccessControlPage = lazy(async () => ({ default: (await import("./access-control.tsx")).AccessControlPage }));
 const LoginPage = lazy(async () => ({ default: (await import("./login.tsx")).LoginPage }));
 const PasswordPage = lazy(async () => ({ default: (await import("./password.tsx")).PasswordPage }));
+const ProductsPage = lazy(async () => ({ default: (await import("./products.tsx")).ProductsPage }));
 const RunsPage = lazy(async () => ({ default: (await import("./runs.tsx")).RunsPage }));
 const StageDetailPage = lazy(async () => ({ default: (await import("./stage-detail.tsx")).StageDetailPage }));
 const SettingsPage = lazy(async () => ({ default: (await import("./settings.tsx")).SettingsPage }));
@@ -97,6 +99,7 @@ type PagePermission = PanelPermission | readonly PanelPermission[];
 type NavigationItem = {
   to:
     | "/"
+    | "/products"
     | "/stats"
     | "/credentials"
     | "/settings"
@@ -116,6 +119,8 @@ type NavigationItem = {
  */
 const NAV: readonly NavigationItem[] = [
   { to: "/", label: "评审记录", icon: CounterClockwiseClockIcon },
+  // 产品是 Agent 会话的入口(spec #329),不另加「会话」导航项。
+  { to: "/products", label: "产品", icon: CubeIcon },
   { to: "/stats", label: "处置率", icon: BarChartIcon },
   { to: "/credentials", label: "模型服务", icon: LightningBoltIcon, permission: ["model:read", "model:write", "credential:read", "credential:write"] },
   { to: "/settings", label: "审查策略", icon: MixerHorizontalIcon, permission: "model:read" },
@@ -454,7 +459,7 @@ const indexRoute = createRoute({
 
 /** `permission` 省略即登录就进得去,与导航项同一档判据。 */
 function protectedPage(
-  path: "/stats" | "/credentials" | "/settings",
+  path: "/products" | "/stats" | "/credentials" | "/settings",
   permission: PagePermission | undefined,
   component: () => React.JSX.Element,
 ) {
@@ -511,6 +516,10 @@ function StageDetailRoutePage() {
     />
   );
 }
+const productsRoute = protectedPage("/products", undefined, () => {
+  const { session } = shellRoute.useRouteContext();
+  return <ProductsPage canWrite={hasPermission(session, "repo:write")} />;
+});
 const statsRoute = protectedPage("/stats", undefined, () => <StatsPage />);
 function ModelServicesRoutePage({
   provider,
@@ -673,6 +682,7 @@ const routeTree = rootRoute.addChildren([
   shellRoute.addChildren([
     indexRoute,
     stageDetailRoute,
+    productsRoute,
     statsRoute,
     credentialsRoute,
     modelServiceRoute,
