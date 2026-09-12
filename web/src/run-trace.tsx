@@ -30,7 +30,11 @@ export type TraceEvent = {
 };
 
 /** `GET …/trace` 的全量事件,按 `seq` 升序。审查轨迹与知识轨迹同一个形状。 */
-type TraceList<E> = { events: E[] };
+/**
+ * 一份轨迹或会话记录的查询缓存。`hasMore` 只有分页端点给(会话记录,spec #329 的 US 12):
+ * 这一页之前还有没有更早的条目。两条审查轨迹不分页,那一格缺席。
+ */
+type TraceList<E> = { events: E[]; hasMore?: boolean };
 
 function traceKey(runId: number): [string, number] {
   return ["run-trace", runId];
@@ -45,11 +49,12 @@ function appendEvent<E extends { seq: number }>(
   event: E,
 ): TraceList<E> {
   const events = prev?.events ?? [];
-  if (events.some((known) => known.seq === event.seq)) return { events };
+  // `...prev` 不能丢:`hasMore` 说的是这一页之前还有没有更早的条目,追加一条新的不改变它。
+  if (events.some((known) => known.seq === event.seq)) return { ...prev, events };
   const at = events.findIndex((known) => known.seq > event.seq);
   return at === -1
-    ? { events: [...events, event] }
-    : { events: [...events.slice(0, at), event, ...events.slice(at)] };
+    ? { ...prev, events: [...events, event] }
+    : { ...prev, events: [...events.slice(0, at), event, ...events.slice(at)] };
 }
 
 function record(payload: Record<string, unknown>, key: string): Record<string, unknown> | null {
@@ -901,16 +906,26 @@ export function useTrace<E extends { seq: number }>(options: {
    * 不给就丢掉。
    */
   onTransient?: (frame: { kind: string; payload: unknown }) => void;
-}): { events: E[]; query: ReturnType<typeof useQuery<TraceList<E>>>; stream: StreamState } {
+}): {
+  events: E[];
+  /** 这一页之前还有没有更早的条目(分页端点才有,spec #329 的 US 12)。 */
+  hasMore: boolean;
+  query: ReturnType<typeof useQuery<TraceList<E>>>;
+  stream: StreamState;
+} {
   const { queryKey, path, live } = options;
   const field = options.field ?? "events";
   const streamPath = options.streamPath ?? `${path}/stream`;
   const queryClient = useQueryClient();
   const query = useQuery({
     queryKey,
-    queryFn: async () => ({
-      events: (await fetchJson<Record<string, E[]>>(path))[field] ?? [],
-    }),
+    queryFn: async () => {
+      const payload = await fetchJson<Record<string, unknown>>(path);
+      return {
+        events: (payload[field] as E[] | undefined) ?? [],
+        hasMore: payload["hasMore"] === true,
+      };
+    },
     // 事件只增不改,取回来的那一段永远不会变。不设这一条的话,窗口重新聚焦会用一份
     // 旧快照把 SSE 追加进来的增量整片盖掉。
     staleTime: Number.POSITIVE_INFINITY,
@@ -967,7 +982,12 @@ export function useTrace<E extends { seq: number }>(options: {
     // 一次就重来一遍。
   }, [live, loaded, streamPath, queryClient, JSON.stringify(queryKey)]);
 
-  return { events: query.data?.events ?? [], query, stream };
+  return {
+    events: query.data?.events ?? [],
+    hasMore: query.data?.hasMore ?? false,
+    query,
+    stream,
+  };
 }
 
 /** 实时状态那一行。轨迹还在跑时才出现。 */

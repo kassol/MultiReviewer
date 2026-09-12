@@ -25,11 +25,17 @@ import { test } from "node:test";
 import { piBuiltinProviderTargets } from "../src/reviewer/catalog.ts";
 import { MODEL_API_KEY_ENV, reviewerEnv } from "../src/reviewer/env.ts";
 import { resolveBuiltinModelTarget, type RuntimeModel } from "../src/reviewer/model-service-runtime.ts";
+import {
+  agentSessionImageRef,
+  storeAgentSessionImage,
+  type AgentSessionImageRef,
+} from "../src/reviewer/session-images.ts";
 import type {
   SessionCommand,
   SessionOutput,
   SessionWorkerMessage,
 } from "../src/reviewer/session-protocol.ts";
+import { pngBytes } from "./support/png.ts";
 
 const provider = process.env["MULTIREVIEWER_SMOKE_PROVIDER"];
 const model = process.env["MULTIREVIEWER_SMOKE_MODEL"];
@@ -93,7 +99,10 @@ type SessionRun = { outputs: SessionOutput[]; failure?: string };
  * 历史 Finding 查询在这里回一条固定结果:本用例没有库,而工具调用在等那条回应——少回一次
  * 它就永远等下去。
  */
-async function runSession(text: string): Promise<SessionRun> {
+async function runSession(
+  text: string,
+  images: readonly AgentSessionImageRef[] = [],
+): Promise<SessionRun> {
   const sessionRoot = mkdtempSync(join(tmpdir(), "multireviewer-session-smoke-"));
   cpSync(FIXTURE, join(sessionRoot, REPO.owner, REPO.repo), { recursive: true });
 
@@ -111,7 +120,12 @@ async function runSession(text: string): Promise<SessionRun> {
       switch (message.kind) {
         case "ready":
           opened = true;
-          child.send({ kind: "prompt", text, mode: "followUp" } satisfies SessionCommand);
+          child.send({
+            kind: "prompt",
+            text,
+            mode: "followUp",
+            ...(images.length === 0 ? {} : { images }),
+          } satisfies SessionCommand);
           return;
         case "output":
           outputs.push(message.output);
@@ -232,12 +246,36 @@ test("真实模型经 submit_requirement_breakdown 交出一份齐全的需求�
 });
 
 /**
- * 带一张图再交一次(spec #330 的真实模型契约那一半)。
+ * 带一张图再交一次(spec #330 的真实模型契约那一半,图片通道是 issue #336)。
  *
- * 此刻交不了:图片附件是 issue #336,会话的 IPC 上还没有图片通道——`prompt` 这一档只带
- * 文本,Pi 的 `prompt(text, { images })` 那个形状过不到子进程里。#336 落地后把这一条打开:
- * 发一条带图的消息,断言产出的文本提到图里的内容。
+ * 图的内容要模型说得出口,因此画的是「左半边纯红、右半边纯白」——没有字库就画不出文字,
+ * 而一块颜色是一张手写编码器画得出、模型又一定认得的内容。需求文本点名让它把这个颜色写进
+ * 对应条目,断言产出里出现「红」或 red:模型没看图就写不出这个词。
+ *
+ * 图走与面板同一条落盘路径(`storeAgentSessionImage`):缩放、扩展名与文件引用都按线上那一份
+ * 来,临时库文件只用来定图片目录的位置,不开库连接。
  */
-test("真实模型对带图的需求交出提到图里内容的拆分", { skip: "图片通道随 issue #336 落地" }, () => {
-  assert.fail("未实现");
+const SWATCH_REQUIREMENT = [
+  "订单列表要加一个状态筛选器。附图里左边那一块是筛选器选中时的高亮色。",
+  "把这个颜色的名字写进对应那条拆分条目的描述里,再按需求直接拆。",
+].join("\n");
+
+test("真实模型对带图的需求交出提到图里内容的拆分", { skip }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "multireviewer-session-smoke-image-"));
+  const stored = await storeAgentSessionImage(
+    join(dir, "panel.db"),
+    1,
+    pngBytes(240, 120, (x) => (x < 120 ? [220, 30, 30] : [255, 255, 255])),
+    "image/png",
+  );
+  assert.ok(stored, "那张图落不了盘");
+
+  const { outputs, failure } = await runSession(SWATCH_REQUIREMENT, [agentSessionImageRef(stored)]);
+  assert.equal(failure, undefined, `这一回合失败: ${failure}`);
+  assert.ok(outputs.length > 0, "一版拆分都没交");
+  assert.match(
+    JSON.stringify(outputs.at(-1)!.payload),
+    /红|red/i,
+    "拆分里没提到图里那块颜色",
+  );
 });

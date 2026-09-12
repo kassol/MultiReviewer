@@ -132,6 +132,9 @@ const DRAIN_EXIT_GRACE_MS = 5000;
 const SILENCE_ABORTED =
   "执行中静默超时,会话已中止。下次发消息时会从记录重建,接着这里续谈。";
 
+/** 子进程起不来那一条系统消息(评审复核)。后面接 boot 抛出来的原因。 */
+const BOOT_FAILED = "会话子进程启动失败:";
+
 /** 被排空中止那一条系统消息(spec #329 的部署人员那几条)。 */
 const DRAIN_ABORTED = "服务在发版排空,这一轮被中止。下次发消息时会从记录重建,接着这里续谈。";
 
@@ -194,11 +197,39 @@ export function agentSessionStatus(sessionId: number): AgentSessionStatus {
 }
 
 /**
- * 这个会话此刻排着哪几条消息(issue #334)。队列是进程内的事实,与「在跑」同律不落库:
- * 没有子进程即空队列。
+ * 这个会话此刻排着哪几条消息(issue #334)。
+ *
+ * 有子进程时队列是进程内的镜像。**没有子进程不等于没有排队消息**:回收与排空都把镜像落进
+ * `agent_session_pending_message`,下次发消息时一并投递(issue #335)——只读登记表的话面板
+ * 看不到它们,人也就清不掉,而它们照样会投出去。
  */
-export function agentSessionQueue(sessionId: number): readonly AgentSessionQueuedMessage[] {
-  return registry.get(sessionId)?.queue ?? [];
+export function agentSessionQueue(
+  dbPath: string,
+  sessionId: number,
+): readonly AgentSessionQueuedMessage[] {
+  const entry = registry.get(sessionId);
+  if (entry !== undefined) return entry.queue;
+  const store = openStore(dbPath);
+  try {
+    return store.listAgentSessionPendingMessages(sessionId).map(queuedMessage);
+  } finally {
+    store.close();
+  }
+}
+
+/** 库里那一行排队消息换成运行时的形状。模式那一格在库里是字符串,在这里收口。 */
+function queuedMessage(message: {
+  mode: string;
+  text: string;
+  images?: string;
+}): AgentSessionQueuedMessage {
+  return {
+    mode: message.mode === "steer" ? "steer" : "followUp",
+    text: message.text,
+    ...(message.images === undefined
+      ? {}
+      : { images: JSON.parse(message.images) as AgentSessionImageRef[] }),
+  };
 }
 
 /**
@@ -451,17 +482,13 @@ function persistQueue(sessionId: number, entry: RuntimeEntry): void {
 }
 
 /** 上一次回收或排空时落库的排队消息,取出即删(issue #335)。 */
-function takePendingQueue(deps: AgentSessionRuntimeDeps, sessionId: number): AgentSessionQueuedMessage[] {
+function takePendingQueue(
+  deps: AgentSessionRuntimeDeps,
+  sessionId: number,
+): AgentSessionQueuedMessage[] {
   const store = openStore(deps.dbPath);
   try {
-    return store.takeAgentSessionPendingMessages(sessionId).map((message) => ({
-      // 库里那一格是字符串(领域类型定在 `reviewer/`,那个目录依赖 `review/`),在这里收口。
-      mode: message.mode === "steer" ? ("steer" as const) : ("followUp" as const),
-      text: message.text,
-      ...(message.images === undefined
-        ? {}
-        : { images: JSON.parse(message.images) as AgentSessionImageRef[] }),
-    }));
+    return store.takeAgentSessionPendingMessages(sessionId).map(queuedMessage);
   } finally {
     store.close();
   }
@@ -481,12 +508,15 @@ async function letGo(entry: RuntimeEntry): Promise<void> {
  * 工作树与会话根。**回收不是终结**——会话的全部记录在库里,人下次发消息时从那里惰性重建。
  *
  * 释放磁盘那一段是异步的,不等它:调用方都在同步路径上(计时器、发消息、取名额)。
+ *
+ * `persist: false` 是删会话那一条路(`reclaimAgentSession`):那个会话的全部行正要被删掉,
+ * 把镜像落进一张马上清空的表没有意义。
  */
-function reclaim(sessionId: number, entry: RuntimeEntry): void {
+function reclaim(sessionId: number, entry: RuntimeEntry, persist = true): void {
   if (registry.get(sessionId) === entry) registry.delete(sessionId);
   entry.disposed = true;
   clearTimers(entry);
-  persistQueue(sessionId, entry);
+  if (persist) persistQueue(sessionId, entry);
   entry.child?.kill("SIGKILL");
   void letGo(entry).catch((error: unknown) => {
     console.error(
@@ -494,6 +524,18 @@ function reclaim(sessionId: number, entry: RuntimeEntry): void {
       error instanceof Error ? error.message : String(error),
     );
   });
+}
+
+/**
+ * 这个会话的子进程不要了(评审复核):删会话与删产品级联在删库里那一行之前调它。
+ *
+ * 常驻子进程不随库里那一行消失:留着它会挂着一棵没人要的工作树,静默闸与回收闸还会往一张
+ * 已经没有的会话上写系统消息。排队消息不落库——`agent_session_pending_message` 的行正要跟着
+ * 这个会话一起删掉。没有子进程的会话调它是空操作。
+ */
+export function reclaimAgentSession(sessionId: number): void {
+  const entry = registry.get(sessionId);
+  if (entry !== undefined) reclaim(sessionId, entry, false);
 }
 
 /** 空闲满门槛:回收。上下文在库里,下一条消息自然重建(issue #335)。 */
@@ -516,14 +558,18 @@ function silenceDeath(sessionId: number, entry: RuntimeEntry): void {
 
 /**
  * 这个会话此刻有没有常驻名额(issue #335)。已经常驻着的、以及还没满上限的都有;满了就回收
- * 最久空闲的那一个腾出来(它的上下文在库里),全都在跑时回 false——接口据此回 409。
+ * 最久空闲的那一个腾出来(它的上下文在库里),一个可回收的都没有时回 false——接口据此回 409。
+ *
+ * 空闲的定义与空闲回收闸同一份(spec #329):**没在跑、也没有排着的消息**。排着消息的那个
+ * 会话还等着人回来让它接着跑,把它回收掉就是把别人的下一步推到重建之后(`rearm` 因此也不为
+ * 它排回收闸)。
  */
 export function agentSessionSlot(sessionId: number): boolean {
   if (registry.has(sessionId)) return true;
   if (registry.size < MAX_RESIDENT_SESSIONS) return true;
   let idlest: { sessionId: number; entry: RuntimeEntry } | undefined;
   for (const [id, entry] of registry) {
-    if (entry.status !== "idle") continue;
+    if (entry.status !== "idle" || entry.queue.length > 0) continue;
     if (idlest === undefined || entry.lastActiveAt < idlest.entry.lastActiveAt) {
       idlest = { sessionId: id, entry };
     }
@@ -946,19 +992,20 @@ export function deliverAgentSessionMessage(
       for (const command of pending) child.send(command);
     })
     .catch((error: unknown) => {
-      // 起不来就把登记摘掉,下一条消息重试。不落系统消息:接口那一侧已经把失败原因回给人了,
-      // 而这一下连 Pi 会话都没建起来,记录里也就没有「这一轮」。已经备出来的工作树与会话根
-      // 照样要放掉——备到一半失败的那一次留下的目录没人再来收。
+      // 起不来就把登记摘掉,下一条消息重试。已经备出来的工作树与会话根照样要放掉——备到一半
+      // 失败的那一次留下的目录没人再来收。
       if (registry.get(session.id) === entry) registry.delete(session.id);
       clearTimers(entry);
       entry.child?.kill("SIGKILL");
       void letGo(entry).catch(() => {
         // 放不掉就留着:这一条路上已经有一个失败原因要报,再盖一层只会把它埋掉。
       });
-      console.error(
-        `[agent-session] 会话 ${session.id} 的子进程起不来:`,
-        error instanceof Error ? error.message : String(error),
-      );
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error(`[agent-session] 会话 ${session.id} 的子进程起不来:`, reason);
+      // 以系统消息记下这一条(与静默判死同一个写法):接口早在 202 那一刻就回了,失败原因
+      // 只进日志的话,人看到的是一条发出去却永远没有回音的消息。**排空那一路不记**:那一下
+      // 起不来是收拢本身,「被排空中止」已经说了同一件事。
+      if (!entry.disposed) recordSystemMessage(deps, session.id, `${BOOT_FAILED}${reason}`);
     });
 }
 
@@ -993,10 +1040,23 @@ export function queueAgentSessionMessage(
   entry.imageRefs.push(...images);
 }
 
-/** 整队清空(issue #334)。Pi 不支持单条撤回,因此只有这一个动作。 */
-export function clearAgentSessionQueue(sessionId: number): void {
+/**
+ * 整队清空(issue #334)。Pi 不支持单条撤回,因此只有这一个动作。
+ *
+ * 子进程已经被回收的那一档清的是落库的那一份(issue #335):不清它,下次发消息时这几条照样
+ * 投出去,而人刚刚明明点了清空。
+ */
+export function clearAgentSessionQueue(dbPath: string, sessionId: number): void {
   const entry = registry.get(sessionId);
-  if (entry === undefined) return;
+  if (entry === undefined) {
+    const store = openStore(dbPath);
+    try {
+      store.putAgentSessionPendingMessages(sessionId, []);
+    } finally {
+      store.close();
+    }
+    return;
+  }
   // 清掉的那几条带的图也不再等着被认领(issue #336):留着会被这一回合后面那条消息的图片块
   // 认走,对话里就配错了图。
   const dropped = new Set(entry.queue.flatMap((queued) => queued.images ?? []));

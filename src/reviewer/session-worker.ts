@@ -344,23 +344,31 @@ async function customMessage(text: string): Promise<void> {
 }
 
 /**
- * 停止:只中止当前这一步。
+ * 中止当前这一步。人点停止与服务排空共用:两处要做的事逐字相同。
  *
  * 先清 Pi 的队列再 abort,顺序要紧:abort 之后 Pi 会接着把队列排空(`continue()` 在末条是
- * assistant 时就从队列取),不清的话「停止」会立刻把排队的消息投出去。排队消息因此留在主
- * 进程的镜像里,下次开跑时一并投递。被中止的回复条目由 Pi 照常落下,人点停止另以 custom
- * 条目落同一张表(ADR 0031),不进模型上下文。
+ * assistant 时就从队列取),不清的话这一下会立刻把排队的消息投出去。排队消息因此留在主进程
+ * 的镜像里,下次开跑时一并投递。`stopping` 期间不回传 `queue_update`:清掉的那几条由主进程
+ * 留存,不该从镜像里消失。
  */
-async function stop(): Promise<void> {
-  if (session === undefined || !running) return;
+async function abortCurrentStep(live: AgentSession): Promise<void> {
   stopped = true;
   stopping = true;
   try {
-    session.clearQueue();
-    await session.abort();
+    live.clearQueue();
+    await live.abort();
   } finally {
     stopping = false;
   }
+}
+
+/**
+ * 停止:只中止当前这一步。被中止的回复条目由 Pi 照常落下,人点停止另以 custom 条目落同一
+ * 张表(ADR 0031),不进模型上下文。
+ */
+async function stop(): Promise<void> {
+  if (session === undefined || !running) return;
+  await abortCurrentStep(session);
   session.sessionManager.appendCustomEntry(SYSTEM_MESSAGE_ENTRY, { text: STOPPED_BY_PERSON });
   mirrorEntries();
 }
@@ -377,14 +385,7 @@ async function stop(): Promise<void> {
  */
 async function drain(): Promise<void> {
   if (session !== undefined && running) {
-    stopped = true;
-    stopping = true;
-    try {
-      session.clearQueue();
-      await session.abort();
-    } finally {
-      stopping = false;
-    }
+    await abortCurrentStep(session);
     mirrorEntries();
   }
   process.exit(0);
@@ -428,10 +429,15 @@ process.on("message", (command: SessionCommand) => {
       String(error instanceof Error ? error.message : error),
       process.env[MODEL_API_KEY_ENV],
     );
-    // 会话建不起来是这个子进程的终局;一个回合跑坏了只报这一回合。放自定义消息、停止与清空
-    // 队列不报回合结束:那会把一个还在跑的会话说成空闲,下一条消息就会与在跑的这一轮撞上。
+    // 会话建不起来是这个子进程的终局;一个回合跑坏了只报这一回合。别的指令不报回合结束:
+    // 那会把一个还在跑的会话说成空闲,下一条消息就会与在跑的这一轮撞上。
+    //
+    // `prompt` 同样只在**没在跑**时才报——那一档是真正开跑失败,这一回合从来没开始。执行中
+    // 的 `prompt` 是入队(`steer` / `followUp`),它抛错时有一个回合正跑着:报回合结束会把它
+    // 说成空闲。协议上没有「入队失败」这一档,这一条因此只记日志;它没进 Pi 的队列,下一次
+    // `queue_update` 就把镜像对齐回来,面板的排队块里不会留下一条投不出去的消息。
     if (command.kind === "open") send({ kind: "failed", failure });
-    else if (command.kind === "prompt") send({ kind: "turn-end", failure });
+    else if (command.kind === "prompt" && !running) send({ kind: "turn-end", failure });
     else console.error(`[agent-session] ${command.kind} 没做成:${failure}`);
   });
 });

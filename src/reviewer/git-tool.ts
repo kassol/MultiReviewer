@@ -146,6 +146,32 @@ export async function runGit(worktreePath: string, args: readonly string[]): Pro
 }
 
 /**
+ * 跑一次受控 git,把输出整成工具回应的正文。两个 git 工具共用:失败的措辞对模型是同一件事,
+ * 分两份写只会有一份带上可行动的那一句(会话那一份当初就少了 maxBuffer 触顶这一句)。
+ */
+async function runGitTool(cwd: string, args: readonly string[]): Promise<string> {
+  try {
+    return truncateOutput(await runGit(cwd, args));
+  } catch (error) {
+    // maxBuffer 触顶抛的是裸 Node 错误,先于 truncateOutput 的软截断。换成模型
+    // 能行动的一句话,与截断提示同一口径。
+    if ((error as { code?: unknown }).code === "ERR_CHILD_PROCESS_STDOUT_MAXBUFFER") {
+      throw new Error(
+        "output exceeded the hard limit — narrow the query with paths, -U0 or --stat",
+      );
+    }
+    const stderr = (error as { stderr?: unknown }).stderr;
+    throw new Error(
+      typeof stderr === "string" && stderr.trim() !== ""
+        ? stderr.trim()
+        : error instanceof Error
+          ? error.message
+          : String(error),
+    );
+  }
+}
+
+/**
  * 会话里的 git 工具。打回走正常返回而不是工具错误,与 `report_finding` 的锚定打回
  * 同一条口径:这是"请换个参数",不是"调用坏了"。git 自身的失败(坏 ref、不存在的
  * 路径)则如实抛出,stderr 里的原因模型看得懂。
@@ -166,27 +192,10 @@ export function gitTool(worktreePath: string) {
       if (rejection !== undefined) {
         return { content: [{ type: "text", text: rejection }], details: {} };
       }
-      let stdout: string;
-      try {
-        stdout = await runGit(worktreePath, args);
-      } catch (error) {
-        // maxBuffer 触顶抛的是裸 Node 错误,先于 truncateOutput 的软截断。换成模型
-        // 能行动的一句话,与截断提示同一口径。
-        if ((error as { code?: unknown }).code === "ERR_CHILD_PROCESS_STDOUT_MAXBUFFER") {
-          throw new Error(
-            "output exceeded the hard limit — narrow the query with paths, -U0 or --stat",
-          );
-        }
-        const stderr = (error as { stderr?: unknown }).stderr;
-        const reason =
-          typeof stderr === "string" && stderr.trim() !== ""
-            ? stderr.trim()
-            : error instanceof Error
-              ? error.message
-              : String(error);
-        throw new Error(reason);
-      }
-      return { content: [{ type: "text", text: truncateOutput(stdout) }], details: {} };
+      return {
+        content: [{ type: "text", text: await runGitTool(worktreePath, args) }],
+        details: {},
+      };
     },
   });
 }
@@ -296,20 +305,7 @@ export function sessionGitTool(sessionRoot: string, repos: readonly string[]) {
       }
       // 工作树在会话根下,前缀已经认过一遍,拼出来的路径圈在会话根内。
       const cwd = join(sessionRoot, ...picked.repo.split("/"));
-      let stdout: string;
-      try {
-        stdout = await runGit(cwd, picked.args);
-      } catch (error) {
-        const stderr = (error as { stderr?: unknown }).stderr;
-        throw new Error(
-          typeof stderr === "string" && stderr.trim() !== ""
-            ? stderr.trim()
-            : error instanceof Error
-              ? error.message
-              : String(error),
-        );
-      }
-      return { content: [{ type: "text", text: truncateOutput(stdout) }], details: {} };
+      return { content: [{ type: "text", text: await runGitTool(cwd, picked.args) }], details: {} };
     },
   });
 }

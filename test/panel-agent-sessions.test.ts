@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { effectivePanelPermissions, PANEL_PERMISSIONS } from "../src/panel/permissions.ts";
+import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   scopedUser,
@@ -255,4 +256,44 @@ test("删会话只删那一条,删产品级联删掉它下面的全部会话并�
   for (const id of [second.id, third.id]) {
     assert.equal((await as(h, owner, "GET", `/agent-sessions/${id}`)).status, 404);
   }
+});
+
+test("会话记录分页:缺省回最后一页,before 往前翻,hasMore 说还有没有更早的", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const productId = await productWithRepo(h, "报销系统");
+  const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+  const session = await createSession(h, owner, productId);
+
+  // 五条记录,正文各不相同:哪一页回了哪几条认得出来。
+  const store = openStore(h.db.path);
+  for (let index = 1; index <= 5; index += 1) {
+    store.appendAgentSessionEntry(session.id, {
+      type: "message",
+      at: AT,
+      entry: { id: `e${index}`, type: "message", message: { role: "user", content: `第 ${index} 条` } },
+      usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
+    });
+  }
+  store.close();
+
+  const page = async (
+    query: string,
+  ): Promise<{ seqs: number[]; hasMore: boolean }> => {
+    const response = await as(h, owner, "GET", `/agent-sessions/${session.id}/records${query}`);
+    const text = await response.text();
+    assert.equal(response.status, 200, text);
+    const body = JSON.parse(text) as { records: { seq: number }[]; hasMore: boolean };
+    return { seqs: body.records.map((record) => record.seq), hasMore: body.hasMore };
+  };
+
+  // 缺省回最后一页(一共五条,一页装得下),没有更早的。
+  assert.deepEqual(await page(""), { seqs: [1, 2, 3, 4, 5], hasMore: false });
+  // 一页两条:最后一页是 4、5,它之前还有。
+  assert.deepEqual(await page("?limit=2"), { seqs: [4, 5], hasMore: true });
+  // 往前翻一页:seq 升序,仍然还有更早的。
+  assert.deepEqual(await page("?limit=2&before=4"), { seqs: [2, 3], hasMore: true });
+  // 翻到头:最后这一页之前没有了。
+  assert.deepEqual(await page("?limit=2&before=2"), { seqs: [1], hasMore: false });
+  // 认不出的参数回落到缺省:一页全回,不报错。
+  assert.deepEqual(await page("?limit=abc&before=-3"), { seqs: [1, 2, 3, 4, 5], hasMore: false });
 });

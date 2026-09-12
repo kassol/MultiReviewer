@@ -201,7 +201,7 @@ _Avoid_: 操作员、成员、账户
 _Avoid_: 用户组、权限模板、管理员角色
 
 **权限格**:
-面板 API 对一类资源的一档写或动作能力,字面量形如 `repo:write`。读评审记录、仓库与处置率不由权限格决定:登录即可读,读得到哪些由仓库分配决定(ADR 0018)。角色是权限格的子集;新增权限格不会自动落到已有角色上。十一格是 `repo:write`、`review:rerun`、`review:create`、`review:complete`、`review:advance`、`finding:dispose`、`knowledge:write`、`model:read`、`model:write`、`credential:read`、`credential:write`;`model:write` 与 `credential:write` 各自包含同资源的读权限,隐含关系只剩这两对,`knowledge:write`、`review:complete`、`review:advance` 均不隐含任何其他权限。
+面板 API 对一类资源的一档写或动作能力,字面量形如 `repo:write`。读评审记录、仓库与处置率不由权限格决定:登录即可读,读得到哪些由仓库分配决定(ADR 0018)。角色是权限格的子集;新增权限格不会自动落到已有角色上。十三格是 `repo:write`、`review:rerun`、`review:create`、`review:complete`、`review:advance`、`finding:dispose`、`finding:dispose-batch`、`knowledge:write`、`agent:chat`、`model:read`、`model:write`、`credential:read`、`credential:write`;`model:write` 与 `credential:write` 各自包含同资源的读权限,隐含关系只剩这两对,`knowledge:write`、`review:complete`、`review:advance` 均不隐含任何其他权限。
 _Avoid_: scope、能力、权限点
 
 **系统管理员**:
@@ -221,7 +221,7 @@ _Avoid_: 项目、仓库组、产品线
 _Avoid_: 聊天、chat、对话框、Agent 任务
 
 **会话记录**:
-一个 Agent 会话里按时间顺序落库的条目序列:人的消息、agent 的回复与工具调用、压缩点与系统消息各是一条。一行一条 Pi 的会话条目原样 JSON(ADR 0031),带会话内自增的序号、类型、时间与用量;面板打开时读它补历史,之后经实时流收新增的行,重建子进程时把整段喂回 Pi。**图片是唯一的例外**:人带的图片存在 data 目录的文件里,条目里那一块只是文件引用,喂回 Pi 时读文件填回 base64(issue #336)。
+一个 Agent 会话里按时间顺序落库的条目序列:人的消息、agent 的回复与工具调用、压缩点与系统消息各是一条。每条带会话内自增的序号、类型、时间与用量;面板打开时读它补历史,之后经实时流收新增的条目。**图片是唯一的例外**:人带的图片存在 data 目录的文件里,条目里那一块只是文件引用。
 _Avoid_: 消息表、聊天记录、transcript、历史
 
 **会话用途**:

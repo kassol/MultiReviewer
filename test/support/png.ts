@@ -6,7 +6,7 @@
  * `node:zlib`、校验用它的 `crc32`,三十行够了,而本项目的依赖只有三个,不为测试加第四个。
  *
  * 像素按坐标取值,不是一片纯色:纯色图压下来只有几百字节,缩放那几条用例要的是「真的超过
- * 阈值」。
+ * 阈值」。给了 `pixel` 就画它说的那张图——真实模型那条用例要一张说得出内容的图。
  */
 import { crc32, deflateSync } from "node:zlib";
 
@@ -20,17 +20,30 @@ function chunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([head, data, crc]);
 }
 
-/** 一张 8 位 RGB 的 PNG。每行前面那个 0 是 PNG 的「不过滤」行首字节。 */
-export function pngBytes(width: number, height: number): Buffer {
+/**
+ * 一张 8 位 RGB 的 PNG。每行前面那个 0 是 PNG 的「不过滤」行首字节。
+ *
+ * `pixel` 给每个坐标的 RGB 三格;省略即那道渐变。
+ */
+export function pngBytes(
+  width: number,
+  height: number,
+  pixel: (x: number, y: number) => readonly [number, number, number] = (x, y) => [
+    (x * 7 + y * 13) % 256,
+    (x * 3) % 256,
+    (y * 5) % 256,
+  ],
+): Buffer {
   const stride = width * 3 + 1;
   const raw = Buffer.alloc(stride * height);
   for (let y = 0; y < height; y += 1) {
     const row = y * stride;
     for (let x = 0; x < width; x += 1) {
       const at = row + 1 + x * 3;
-      raw[at] = (x * 7 + y * 13) % 256;
-      raw[at + 1] = (x * 3) % 256;
-      raw[at + 2] = (y * 5) % 256;
+      const [red, green, blue] = pixel(x, y);
+      raw[at] = red;
+      raw[at + 1] = green;
+      raw[at + 2] = blue;
     }
   }
   const ihdr = Buffer.alloc(13);

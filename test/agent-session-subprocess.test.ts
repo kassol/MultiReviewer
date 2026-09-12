@@ -26,7 +26,7 @@ import { test } from "node:test";
 import type { ReviewerUsage } from "../src/review/finding.ts";
 import { openStore } from "../src/review/store.ts";
 import { MISSING_IMAGE_TEXT } from "../src/reviewer/session-images.ts";
-import { disposeAgentSessions } from "../src/webhook/agent-session.ts";
+import { agentSessionStatus, disposeAgentSessions } from "../src/webhook/agent-session.ts";
 import {
   GITEA_REPO,
   HARNESS_SPEC,
@@ -34,6 +34,7 @@ import {
   seedAvailableModelService,
   startPanelHarness,
   type PanelHarness,
+  type PanelHarnessOptions,
 } from "./support/panel-harness.ts";
 import { pngBytes, pngSize } from "./support/png.ts";
 import { putGlobalSettings, seedReviewRule } from "./support/store-seed.ts";
@@ -71,6 +72,8 @@ type SessionHarnessOptions = {
   extraSessions?: number;
   /** 模型目录声明的输入能力(issue #336)。省略即只有文本,图片用例传含 image 的那一份。 */
   input?: readonly ("text" | "image")[];
+  /** 换一份 Forge(评审复核):备会话根要经它取仓库,造「子进程起不来」用它。 */
+  wrapForge?: PanelHarnessOptions["wrapForge"];
 };
 
 /**
@@ -99,6 +102,7 @@ async function startSessionHarness(
     ...(options.silenceTimeoutMs === undefined
       ? {}
       : { agentSessionSilenceTimeoutMs: options.silenceTimeoutMs }),
+    ...(options.wrapForge === undefined ? {} : { wrapForge: options.wrapForge }),
   });
   seedAvailableModelService(
     h,
@@ -1352,6 +1356,161 @@ test("自动 compaction 开着:压缩条目落库,重建后用量连续", async 
       cacheWriteTokens: 0,
       totalTokens: 6165,
     });
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+/** 停止这个会话当前的这一步。 */
+async function stop(h: PanelHarness, cookie: string, sessionId: number): Promise<void> {
+  const stopped = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/stop`, {
+    method: "POST",
+    headers: { cookie },
+  });
+  assert.equal(stopped.status, 200);
+}
+
+test("删会话与删产品都把常驻子进程收掉:登记表里不再有它", async () => {
+  // 两个会话各挂在一次模型调用上:删的时候它们都还在跑。
+  const slow: StubTurn = { text: "慢慢回", usage: { input: 10, output: 2 }, delayMs: 60_000 };
+  const { h, cookie, sessionId, extraSessionIds, productId, requests, close } =
+    await startSessionHarness([slow, slow], { extraSessions: 1 });
+  const second = extraSessionIds[0]!;
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    assert.equal((await send(h, cookie, second, "c2", MESSAGE)).status, 202);
+    await requestsAtLeast(requests, 2);
+    assert.equal(agentSessionStatus(sessionId), "running");
+    assert.equal(agentSessionStatus(second), "running");
+
+    // 删会话:库里那一行与子进程一起没了。只删行会留下一个挂着工作树、还在计时的子进程。
+    const removed = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}`, {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    assert.equal(removed.status, 204);
+    assert.equal(agentSessionStatus(sessionId), "idle");
+
+    // 删产品级联:它下面那个还在跑的会话同样被收掉。
+    assert.equal((await h.api("DELETE", `/products/${productId}`)).status, 200);
+    assert.equal(agentSessionStatus(second), "idle");
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("子进程起不来:记录里留一条系统消息说明原因", async () => {
+  // 备会话根要经 Forge 取仓库。注册仓库那一步先放过去,发消息那一下才失败。
+  let failing = false;
+  const { h, cookie, sessionId, close } = await startSessionHarness(
+    [{ text: "用不到", usage: { input: 1, output: 1 } }],
+    {
+      wrapForge: (forge) => ({
+        ...forge,
+        getRepository: async (ref) => {
+          if (failing) throw new Error("仓库取不回来");
+          return forge.getRepository(ref);
+        },
+      }),
+    },
+  );
+  try {
+    failing = true;
+    // 受理即 202:失败原因回不到这一次响应里,只能从记录里看到。
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      const landed = await records(h, cookie, sessionId);
+      const system = landed.filter((record) => record.type === "custom");
+      if (system.length > 0) {
+        assert.match(JSON.stringify(system[0]!.entry), /会话子进程启动失败:仓库取不回来/);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.fail("等了 30 秒,记录里还没有那条系统消息");
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("停止后留着排队消息的会话不算空闲:空闲回收与名额都不碰它", async () => {
+  const slow: StubTurn = { text: "慢慢回", usage: { input: 10, output: 2 }, delayMs: 60_000 };
+  const { h, cookie, sessionId, extraSessionIds, requests, close } = await startSessionHarness(
+    [slow, slow, slow, slow],
+    { extraSessions: 4, idleReclaimMs: 50 },
+  );
+  try {
+    const fifth = extraSessionIds[3]!;
+    // 四个会话各占一个常驻名额。
+    for (const [index, id] of [sessionId, ...extraSessionIds.slice(0, 3)].entries()) {
+      assert.equal((await send(h, cookie, id, `c${index}`, `第 ${index} 个会话的话`)).status, 202);
+    }
+    await requestsAtLeast(requests, 4);
+
+    // 第一个会话排一条再停止:它回到空闲,队列里那一条还等着下次开跑时投出去。
+    assert.equal((await send(h, cookie, sessionId, "q1", "排队的一句", "followUp")).status, 202);
+    await stop(h, cookie, sessionId);
+    await idle(h, cookie, sessionId);
+    assert.deepEqual(await queueOf(h, cookie, sessionId), [
+      { mode: "followUp", text: "排队的一句" },
+    ]);
+
+    // 空闲门槛 50ms,等十倍的时间照样不回收;名额也不腾给第五个会话——排着消息的会话不算
+    // 空闲(spec #329)。回收掉它就是把别人写好的下一步推到重建之后。
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const full = await send(h, cookie, fifth, "c5", "我也要拆");
+    assert.equal(full.status, 409);
+    assert.match(await full.text(), /名额已满,稍后再发/);
+    assert.deepEqual(await queueOf(h, cookie, sessionId), [
+      { mode: "followUp", text: "排队的一句" },
+    ]);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("子进程被收掉之后排队消息还在库里:读得到、清得掉,清掉就不再投递", async () => {
+  const turns: StubTurn[] = [
+    // 这一次挂着不回,等着被中止。
+    { text: "开始读", usage: { input: 10, output: 2 }, delayMs: 2000 },
+    { text: "再说一句的回答", usage: { input: 12, output: 2 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    assert.equal((await send(h, cookie, sessionId, "c2", "排队的一句", "followUp")).status, 202);
+    await requestsAtLeast(requests, 1);
+    await stop(h, cookie, sessionId);
+    await idle(h, cookie, sessionId);
+
+    // 发版排空:镜像落库、登记表清空。重启后的服务就是这个样子。
+    await disposeAgentSessions();
+
+    // 没有子进程不等于没有排队消息:它还会被投出去,人因此要看得见。
+    assert.deepEqual(await queueOf(h, cookie, sessionId), [
+      { mode: "followUp", text: "排队的一句" },
+    ]);
+
+    // 清队列清的就是落库那一份。
+    const cleared = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/queue`, {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    assert.equal(cleared.status, 200);
+    assert.deepEqual(await cleared.json(), { queue: [] });
+    assert.deepEqual(await queueOf(h, cookie, sessionId), []);
+
+    // 再发一条:清掉的那一条不再跟着投出去。
+    assert.equal((await send(h, cookie, sessionId, "c3", "再说一句")).status, 202);
+    await requestsAtLeast(requests, 2);
+    await idle(h, cookie, sessionId);
+    assert.equal(requests.length, 2);
+    assert.ok(!bodyOf(requests[1]!).includes("排队的一句"), "清掉的排队消息又被投出去了");
+    assert.ok(bodyOf(requests[1]!).includes("再说一句"));
   } finally {
     await disposeAgentSessions();
     await close();

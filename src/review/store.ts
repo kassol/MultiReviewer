@@ -3027,6 +3027,16 @@ export type Store = {
   /** 一个会话的记录,按 seq 升序。`afterSeq` 给了即只回它之后的那些(续传)。 */
   listAgentSessionEntries(sessionId: number, afterSeq?: number): AgentSessionEntryRecord[];
   /**
+   * 一页会话记录,按 seq 升序(spec #329 的 US 12)。`before` 给了就取它之前的最后 `limit`
+   * 条,缺省即最后一页;`hasMore` 说这一页之前还有没有更早的条目。长会话打开时只取最后一页,
+   * 往上翻一页一页来——一次全量读是几 MB 的 JSON。
+   */
+  agentSessionEntryPage(
+    sessionId: number,
+    before: number | undefined,
+    limit: number,
+  ): { records: AgentSessionEntryRecord[]; hasMore: boolean };
+  /**
    * 这个客户端消息 id 受理过没有(issue #333):受理过即回那一刻。接口先问它,再判别的——
    * 重发的那一条正是在跑的这一条,落到「正在执行」那一档上会让人以为它没被收下。
    */
@@ -3054,6 +3064,11 @@ export type Store = {
    * 投递,留着就会重复投,因此读与删在同一个事务里。
    */
   takeAgentSessionPendingMessages(sessionId: number): AgentSessionPendingMessage[];
+  /**
+   * 这个会话落库的排队消息,只读(评审复核)。读接口与清队列那一处用它:子进程被回收之后
+   * 排队消息还在这张表上,下次发消息时会投出去——面板看得到它们才清得掉。
+   */
+  listAgentSessionPendingMessages(sessionId: number): AgentSessionPendingMessage[];
   /**
    * 这个会话每条记录在 Pi 条目树上的位置(issue #335),按 seq 升序。只读三格而不解整份
    * 条目:重建前的链自检与读接口上那个「前 N 条不在上下文」都只要这三格,而一个长会话的
@@ -3890,6 +3905,45 @@ function carriedAttribution(row: Record<string, unknown>): CarriedAttribution {
     impact: row["impact"] === null ? null : String(row["impact"]),
     suggestion: row["suggestion"] === null ? null : String(row["suggestion"]),
   };
+}
+
+/**
+ * 挂在一个 Agent 会话上的那几张表(issue #333、#336、#337)。删会话与删产品级联都照这一份
+ * 清单删:两处当初各写一份逐字相同的清单,新增一张挂会话的表会漏掉一处。
+ */
+const AGENT_SESSION_CHILD_TABLES = [
+  "agent_session_entry",
+  "agent_session_message",
+  "agent_session_image",
+  "agent_session_pending_message",
+  "agent_session_output",
+  "agent_session_output_finalization",
+] as const;
+
+/** 这几个会话底下的全部行。调用方自己开事务:两处都要与删会话行本身同进同退。 */
+function deleteAgentSessionRows(db: DatabaseSync, sessionIds: readonly number[]): void {
+  for (const table of AGENT_SESSION_CHILD_TABLES) {
+    const statement = db.prepare(`DELETE FROM ${table} WHERE session_id = ?`);
+    for (const sessionId of sessionIds) statement.run(sessionId);
+  }
+}
+
+/** 这个会话落库的排队消息,按当初写下的顺序。只读与「取出即删」共用这一句查询。 */
+function agentSessionPendingMessages(
+  db: DatabaseSync,
+  sessionId: number,
+): AgentSessionPendingMessage[] {
+  return db
+    .prepare(
+      `SELECT mode, text, images FROM agent_session_pending_message
+        WHERE session_id = ? ORDER BY seq`,
+    )
+    .all(sessionId)
+    .map((row) => ({
+      mode: String(row["mode"]),
+      text: String(row["text"]),
+      ...(typeof row["images"] === "string" ? { images: row["images"] } : {}),
+    }));
 }
 
 /** 这些 Finding 各自承接来的历史说法(issue #267),按 finding id 归组、段内按落库顺序。 */
@@ -5146,19 +5200,13 @@ export function openStore(dbPath: string): Store {
         db.prepare("DELETE FROM product_repo WHERE product_id = ?").run(productId);
         // 会话跟着产品走(issue #332):产品是会话唯一的挂载点,留下来谁都读不到它。记录与
         // 受理过的消息 id 挂在会话上,同一个事务里一并删(issue #333)。
-        for (const table of [
-          "agent_session_entry",
-          "agent_session_message",
-          "agent_session_image",
-          "agent_session_pending_message",
-          "agent_session_output",
-          "agent_session_output_finalization",
-        ]) {
-          db.prepare(
-            `DELETE FROM ${table}
-              WHERE session_id IN (SELECT id FROM agent_session WHERE product_id = ?)`,
-          ).run(productId);
-        }
+        deleteAgentSessionRows(
+          db,
+          db
+            .prepare("SELECT id FROM agent_session WHERE product_id = ?")
+            .all(productId)
+            .map((row) => Number(row["id"])),
+        );
         const sessions = Number(
           db.prepare("DELETE FROM agent_session WHERE product_id = ?").run(productId).changes,
         );
@@ -5213,16 +5261,7 @@ export function openStore(dbPath: string): Store {
       db.exec("BEGIN");
       try {
         // 记录、受理过的消息 id、图片与产出只属于这个会话,跟着它走(issue #333、#336、#337)。
-        for (const table of [
-          "agent_session_entry",
-          "agent_session_message",
-          "agent_session_image",
-          "agent_session_pending_message",
-          "agent_session_output",
-          "agent_session_output_finalization",
-        ]) {
-          db.prepare(`DELETE FROM ${table} WHERE session_id = ?`).run(sessionId);
-        }
+        deleteAgentSessionRows(db, [sessionId]);
         const removed =
           Number(db.prepare("DELETE FROM agent_session WHERE id = ?").run(sessionId).changes) > 0;
         db.exec("COMMIT");
@@ -5316,6 +5355,26 @@ export function openStore(dbPath: string): Store {
         .map(agentSessionEntry);
     },
 
+    agentSessionEntryPage(sessionId, before, limit) {
+      // 多取一条:它的存在就是「这一页之前还有更早的」,不必再查一次 count。
+      const rows = db
+        .prepare(
+          `SELECT * FROM agent_session_entry
+            WHERE session_id = ? AND seq < ?
+            ORDER BY seq DESC
+            LIMIT ?`,
+        )
+        .all(sessionId, before ?? Number.MAX_SAFE_INTEGER, limit + 1);
+      const hasMore = rows.length > limit;
+      return {
+        records: rows
+          .slice(0, limit)
+          .reverse()
+          .map(agentSessionEntry),
+        hasMore,
+      };
+    },
+
     acceptedAgentSessionMessage(sessionId, clientMessageId) {
       const row = db
         .prepare(
@@ -5368,23 +5427,18 @@ export function openStore(dbPath: string): Store {
     takeAgentSessionPendingMessages(sessionId) {
       db.exec("BEGIN");
       try {
-        const rows = db
-          .prepare(
-            `SELECT mode, text, images FROM agent_session_pending_message
-              WHERE session_id = ? ORDER BY seq`,
-          )
-          .all(sessionId);
+        const messages = agentSessionPendingMessages(db, sessionId);
         db.prepare("DELETE FROM agent_session_pending_message WHERE session_id = ?").run(sessionId);
         db.exec("COMMIT");
-        return rows.map((row) => ({
-          mode: String(row["mode"]),
-          text: String(row["text"]),
-          ...(typeof row["images"] === "string" ? { images: row["images"] } : {}),
-        }));
+        return messages;
       } catch (error) {
         db.exec("ROLLBACK");
         throw error;
       }
+    },
+
+    listAgentSessionPendingMessages(sessionId) {
+      return agentSessionPendingMessages(db, sessionId);
     },
 
     agentSessionEntryLinks(sessionId) {

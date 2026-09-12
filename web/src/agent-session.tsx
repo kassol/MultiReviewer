@@ -31,6 +31,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { MasterListItem, MasterListItemText } from "@/components/master-list-item";
 import { PageBody } from "@/components/page-body";
+import { PageHeader } from "@/components/page-header";
 import { RailCard } from "@/components/rail-card";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
@@ -397,8 +398,9 @@ function Conversation({
   onOpenOutput: (version: number) => void;
 }) {
   const [live, setLive] = useState<LiveStream | null>(null);
-  const { events, query, stream } = useTrace<AgentSessionRecord>({
-    queryKey: ["agent-session-records", sessionId],
+  const recordsKey = ["agent-session-records", sessionId];
+  const { events, hasMore, query, stream } = useTrace<AgentSessionRecord>({
+    queryKey: recordsKey,
     path: `/agent-sessions/${sessionId}/records`,
     streamPath: `/agent-sessions/${sessionId}/stream`,
     field: "records",
@@ -421,6 +423,8 @@ function Conversation({
   // 落库条目到了就把临时块清掉:它说的那段话已经在对话流里。
   useEffect(() => setLive(null), [events.length]);
 
+  const { earlier, loadingEarlier, bottom } = useEarlierRecords(sessionId, recordsKey, events);
+
   return (
     <div className="flex min-w-0 flex-col gap-3">
       {query.isError ? (
@@ -431,6 +435,25 @@ function Conversation({
           <Callout.Text>{(query.error as Error).message}</Callout.Text>
         </Callout.Root>
       ) : null}
+
+      {/*
+        打开时取的是最后一页(spec #329 的 US 12):长会话不从头翻,顶上这个按钮一页一页往前
+        取。取回来前插在最前面,插入前后的 `scrollHeight` 差值补回 `scrollTop`——不补的话
+        人正在看的那一段会被新插进来的一页顶下去。
+      */}
+      {!hasMore || query.isPending ? null : (
+        <div className="flex justify-center">
+          <Button
+            variant="soft"
+            color="gray"
+            size="2"
+            disabled={loadingEarlier}
+            onClick={() => void earlier()}
+          >
+            {loadingEarlier ? "加载中…" : "加载更早"}
+          </Button>
+        </div>
+      )}
 
       {query.isPending ? (
         <div className="flex flex-col gap-2" role="status" aria-live="polite">
@@ -547,8 +570,64 @@ function Conversation({
           <StreamStatus stream={stream} />
         </>
       ) : null}
+      {/* 打开时滚到这里:人要看的是最新那几条,而不是几天前的开头。 */}
+      <div ref={bottom} aria-hidden />
     </div>
   );
+}
+
+/**
+ * 往前翻更早的记录(spec #329 的 US 12)。
+ *
+ * 打开时把对话流滚到底部;「加载更早」取 `?before=<最前那条的 seq>` 的上一页前插进同一份查询
+ * 缓存。滚动容器是面板那一个(`#panel-main-scroll`),前插前后的 `scrollHeight` 差值补回
+ * `scrollTop`:人正在读的那一段因此留在原处。
+ */
+function useEarlierRecords(
+  sessionId: number,
+  recordsKey: readonly unknown[],
+  events: readonly AgentSessionRecord[],
+) {
+  const queryClient = useQueryClient();
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const bottom = useRef<HTMLDivElement | null>(null);
+  // 首屏那一次滚到底,只滚一次:之后人自己滚到哪就是哪。
+  const settled = useRef(false);
+  useEffect(() => {
+    if (settled.current || events.length === 0) return;
+    settled.current = true;
+    bottom.current?.scrollIntoView({ block: "end" });
+  }, [events.length]);
+
+  const earlier = async (): Promise<void> => {
+    const first = events[0];
+    if (first === undefined || loadingEarlier) return;
+    const scroller = document.getElementById("panel-main-scroll");
+    const before = scroller?.scrollHeight ?? 0;
+    setLoadingEarlier(true);
+    try {
+      const page = await fetchJson<{ records: AgentSessionRecord[]; hasMore: boolean }>(
+        `/agent-sessions/${sessionId}/records?before=${first.seq}`,
+      );
+      queryClient.setQueryData<{ events: AgentSessionRecord[]; hasMore?: boolean }>(
+        recordsKey,
+        (prev) => ({
+          events: [...page.records, ...(prev?.events ?? [])],
+          hasMore: page.hasMore,
+        }),
+      );
+      if (scroller !== null) {
+        // 渲染完才量得到新的高度:下一帧再补差值。
+        requestAnimationFrame(() => {
+          scroller.scrollTop += scroller.scrollHeight - before;
+        });
+      }
+    } finally {
+      setLoadingEarlier(false);
+    }
+  };
+
+  return { earlier, loadingEarlier, bottom };
 }
 
 /**
@@ -1025,26 +1104,26 @@ export function AgentSessionPage({
 
         <div className="flex min-w-0 flex-1 flex-col gap-3">
           <CardShell className="flex min-w-0 flex-col gap-3 px-5 py-4">
-            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-              <h1 className="min-w-0 break-all text-2xl font-bold tracking-[-0.015em]">
-                {session === undefined ? "Agent 会话" : PURPOSE_LABEL[session.purpose]}
-              </h1>
-              {/* 删会话按钮只有创建者看得到:系统管理员读得到别人的会话,删不了。 */}
-              {session !== undefined && session.createdBy === username ? (
-                <Button
-                  variant="soft"
-                  color="red"
-                  size={{ initial: "3", sm: "2" }}
-                  disabled={remove.isPending}
-                  onClick={() => {
-                    setFeedback(null);
-                    setConfirming(true);
-                  }}
-                >
-                  删会话
-                </Button>
-              ) : null}
-            </div>
+            <PageHeader
+              title={session === undefined ? "Agent 会话" : PURPOSE_LABEL[session.purpose]}
+              actions={
+                // 删会话按钮只有创建者看得到:系统管理员读得到别人的会话,删不了。
+                session !== undefined && session.createdBy === username ? (
+                  <Button
+                    variant="soft"
+                    color="red"
+                    size={{ initial: "3", sm: "2" }}
+                    disabled={remove.isPending}
+                    onClick={() => {
+                      setFeedback(null);
+                      setConfirming(true);
+                    }}
+                  >
+                    删会话
+                  </Button>
+                ) : undefined
+              }
+            />
             {/*
               记录有缺损时顶部一道横幅(spec #329 的 US 14):agent 忘了哪一段要让人知道,
               而不是默默丢掉。缺损只在重建那一刻定形,条数由服务端按记录算出来。

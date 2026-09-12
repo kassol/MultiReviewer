@@ -34,10 +34,13 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
 /**
  * 这个 content type 是不是收得下的图片。带 `; charset=` 之类参数的也认——浏览器上传时
  * 带不带参数由它自己决定。认不出回 undefined。
+ *
+ * 白名单用 `Object.hasOwn` 查,与 `isInDiff` 同口径:`in` 连原型上的键一起认,
+ * `content-type: constructor` 那一条因此会被当成合法图片类型。
  */
 export function agentSessionImageMimeType(contentType: string | undefined): string | undefined {
   const mimeType = (contentType ?? "").split(";")[0]!.trim().toLowerCase();
-  return mimeType in IMAGE_EXTENSIONS ? mimeType : undefined;
+  return Object.hasOwn(IMAGE_EXTENSIONS, mimeType) ? mimeType : undefined;
 }
 
 /**

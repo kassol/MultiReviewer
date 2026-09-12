@@ -180,6 +180,7 @@ import {
   clearAgentSessionQueue,
   deliverAgentSessionMessage,
   queueAgentSessionMessage,
+  reclaimAgentSession,
   recordAgentSessionCustomMessage,
   stopAgentSession,
   type AgentSessionRuntimeDeps,
@@ -2014,6 +2015,8 @@ function handleDeleteProduct(
 ): void {
   // 删之前把会话 id 记下来:级联删完就查不到它们了,而图片文件要按 id 删(issue #336)。
   const sessions = withStore(deps.dbPath, (store) => store.listAgentSessions(productId, null));
+  // 每个会话的常驻子进程先收掉(评审复核),理由与删会话那一处相同。
+  for (const session of sessions) reclaimAgentSession(session.id);
   const cascade = withStore(deps.dbPath, (store) => store.deleteProduct(productId));
   if (cascade !== undefined) {
     for (const session of sessions) removeAgentSessionImages(deps.dbPath, session.id);
@@ -2150,6 +2153,35 @@ function visibleAgentSession(
 }
 
 /**
+ * 会话 + 只有创建者这一道门禁(spec #329)。六个写动作的开头逐字相同,收在这一处。
+ *
+ * 回 undefined 即已经回过了:读不到回 404,读得到但不是自己建的回 403——系统管理员已经知道
+ * 这一条在,再回 404 只会让人以为动作做成了。调用方拿到 undefined 直接 return。
+ *
+ * `refuse` 让上传图片那一条路换一种回法:一张图有几 MB,回绝之后要把剩下的请求体排掉,
+ * 不然这一句话可能随连接一起被丢掉。
+ */
+function agentSessionForCreator(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  sessionId: number,
+  caller: PanelCaller,
+  refuse: (status: number, error: string) => void = (status, error) =>
+    sendJson(res, status, { error }),
+): AgentSessionRecord | undefined {
+  const session = visibleAgentSession(deps, sessionId, caller);
+  if (session === undefined) {
+    refuse(404, NO_SUCH_AGENT_SESSION);
+    return undefined;
+  }
+  if (session.createdBy !== caller.username) {
+    refuse(403, NOT_AGENT_SESSION_CREATOR);
+    return undefined;
+  }
+  return session;
+}
+
+/**
  * 产品下「我的会话」。只有创建者续得了一个会话,所以这一份只回自己建的;系统管理员读这个
  * 产品下的全部(spec #329 的审计与查费用)。产品的可见性已由路由上的 `product` 目标判过,
  * 这里只补「产品不存在」那一档。
@@ -2201,8 +2233,11 @@ async function handleCreateAgentSession(
  * 排队列表回给面板的那一份(issue #334、#336):只有模式与正文。图片引用是服务端的事——
  * 路径不出这台机器。
  */
-function visibleQueue(sessionId: number): { mode: AgentSessionMessageMode; text: string }[] {
-  return agentSessionQueue(sessionId).map(({ mode, text }) => ({ mode, text }));
+function visibleQueue(
+  deps: WebhookServerDeps,
+  sessionId: number,
+): { mode: AgentSessionMessageMode; text: string }[] {
+  return agentSessionQueue(deps.dbPath, sessionId).map(({ mode, text }) => ({ mode, text }));
 }
 
 /**
@@ -2227,17 +2262,25 @@ async function handleAgentSession(
     ? sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION })
     : sendJson(res, 200, {
         session: withRuntimeStatus(session),
-        queue: visibleQueue(sessionId),
+        queue: visibleQueue(deps, sessionId),
         imageInput: await agentSessionImageInput(deps, session),
         droppedFromContext: agentSessionDroppedFromContext(deps.dbPath, sessionId),
       });
 }
 
+/** 一页会话记录有多少条(spec #329 的 US 12)。`?limit=` 不给就是这个数。 */
+const AGENT_SESSION_RECORD_PAGE = 200;
+
 /**
  * 一个会话的落库记录(ADR 0031,issue #333),按 seq 升序。面板打开时读它补历史,再拿最后
  * 那个 seq 接流——与审查轨迹的 `/trace` + `/trace/stream` 同一套路。可见性与读会话同律。
+ *
+ * **分页**(spec #329 的 US 12):缺省回最后一页,`?before=<seq>` 回那个 seq 之前的一页,
+ * `?limit=<n>` 换页大小。`hasMore` 说这一页之前还有没有更早的条目,面板按它显隐「加载更早」。
+ * 跨天的长会话打开时不必把整段历史搬一遍。
  */
 function handleAgentSessionRecords(
+  req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
   sessionId: number,
@@ -2245,8 +2288,19 @@ function handleAgentSessionRecords(
 ): void {
   const session = visibleAgentSession(deps, sessionId, caller);
   if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
-  const records = withStore(deps.dbPath, (store) => store.listAgentSessionEntries(sessionId));
-  return sendJson(res, 200, { records });
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+  const before = Number(query.get("before"));
+  const limit = Number(query.get("limit"));
+  const page = withStore(deps.dbPath, (store) =>
+    store.agentSessionEntryPage(
+      sessionId,
+      Number.isInteger(before) && before > 0 ? before : undefined,
+      Number.isInteger(limit) && limit > 0 && limit <= AGENT_SESSION_RECORD_PAGE
+        ? limit
+        : AGENT_SESSION_RECORD_PAGE,
+    ),
+  );
+  return sendJson(res, 200, { records: page.records, hasMore: page.hasMore });
 }
 
 /**
@@ -2280,11 +2334,9 @@ function handleDeleteAgentSession(
   sessionId: number,
   caller: PanelCaller,
 ): void {
-  const session = visibleAgentSession(deps, sessionId, caller);
-  if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
-  if (session.createdBy !== caller.username) {
-    return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
-  }
+  if (agentSessionForCreator(res, deps, sessionId, caller) === undefined) return;
+  // 常驻子进程先收掉(评审复核):只删库里的行会留下一个挂着工作树、还在计时的子进程。
+  reclaimAgentSession(sessionId);
   withStore(deps.dbPath, (store) => store.deleteAgentSession(sessionId));
   // 记录、产出与图片一并消失(spec #329 的 US 25):库里的行在上一句,文件目录在这一句。
   removeAgentSessionImages(deps.dbPath, sessionId);
@@ -2317,9 +2369,8 @@ async function handleUploadAgentSessionImage(
     sendJson(res, status, { error });
     req.resume();
   };
-  const session = visibleAgentSession(deps, sessionId, caller);
-  if (session === undefined) return refuse(404, NO_SUCH_AGENT_SESSION);
-  if (session.createdBy !== caller.username) return refuse(403, NOT_AGENT_SESSION_CREATOR);
+  const session = agentSessionForCreator(res, deps, sessionId, caller, refuse);
+  if (session === undefined) return;
   const mimeType = agentSessionImageMimeType(req.headers["content-type"]);
   if (mimeType === undefined) return refuse(415, AGENT_SESSION_IMAGE_TYPE);
   if (!(await agentSessionImageInput(deps, session))) {
@@ -2422,11 +2473,8 @@ async function handleAgentSessionMessage(
   sessionId: number,
   caller: PanelCaller,
 ): Promise<void> {
-  const session = visibleAgentSession(deps, sessionId, caller);
-  if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
-  if (session.createdBy !== caller.username) {
-    return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
-  }
+  const session = agentSessionForCreator(res, deps, sessionId, caller);
+  if (session === undefined) return;
   const payload = await readJson<
     { clientMessageId?: unknown; text?: unknown; mode?: unknown; images?: unknown } | null
   >(req, res);
@@ -2520,13 +2568,9 @@ function handleClearAgentSessionQueue(
   sessionId: number,
   caller: PanelCaller,
 ): void {
-  const session = visibleAgentSession(deps, sessionId, caller);
-  if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
-  if (session.createdBy !== caller.username) {
-    return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
-  }
-  clearAgentSessionQueue(sessionId);
-  return sendJson(res, 200, { queue: visibleQueue(sessionId) });
+  if (agentSessionForCreator(res, deps, sessionId, caller) === undefined) return;
+  clearAgentSessionQueue(deps.dbPath, sessionId);
+  return sendJson(res, 200, { queue: visibleQueue(deps, sessionId) });
 }
 
 /**
@@ -2539,13 +2583,9 @@ function handleStopAgentSession(
   sessionId: number,
   caller: PanelCaller,
 ): void {
-  const session = visibleAgentSession(deps, sessionId, caller);
-  if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
-  if (session.createdBy !== caller.username) {
-    return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
-  }
+  if (agentSessionForCreator(res, deps, sessionId, caller) === undefined) return;
   const stopped = stopAgentSession(sessionId);
-  return sendJson(res, 200, { stopped, queue: visibleQueue(sessionId) });
+  return sendJson(res, 200, { stopped, queue: visibleQueue(deps, sessionId) });
 }
 
 /** 没有这一版产出。定稿到一个不存在的版本与读不到这个会话同形,都只回一句。 */
@@ -2594,11 +2634,7 @@ function handleFinalizeAgentSessionOutput(
   version: number,
   caller: PanelCaller,
 ): void {
-  const session = visibleAgentSession(deps, sessionId, caller);
-  if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
-  if (session.createdBy !== caller.username) {
-    return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
-  }
+  if (agentSessionForCreator(res, deps, sessionId, caller) === undefined) return;
   const at = new Date((deps.now ?? Date.now)()).toISOString();
   const outcome = withStore(deps.dbPath, (store) =>
     store.finalizeAgentSessionOutput(sessionId, version, caller.username, at),
@@ -2769,7 +2805,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/images$/, access: "agent:chat", handler: ({ req, res, deps, caller }, match) => handleUploadAgentSessionImage(req, res, deps, Number(match![1]), caller!) },
   { method: "GET", pattern: /^\/agent-sessions\/(\d+)\/images\/([0-9a-f-]{36})$/, access: "authenticated-only", handler: ({ res, deps, caller }, match) => handleAgentSessionImage(res, deps, Number(match![1]), match![2]!, caller!) },
   // 记录与它的实时流(ADR 0031,issue #333)。读登录即可,可见性与读会话同一判。
-  { method: "GET", pattern: /^\/agent-sessions\/(\d+)\/records$/, access: "authenticated-only", handler: ({ res, deps, caller }, match) => handleAgentSessionRecords(res, deps, Number(match![1]), caller!) },
+  { method: "GET", pattern: /^\/agent-sessions\/(\d+)\/records$/, access: "authenticated-only", handler: ({ req, res, deps, caller }, match) => handleAgentSessionRecords(req, res, deps, Number(match![1]), caller!) },
   { method: "GET", pattern: /^\/agent-sessions\/(\d+)\/outputs$/, access: "authenticated-only", handler: ({ res, deps, caller }, match) => handleAgentSessionOutputs(res, deps, Number(match![1]), caller!) },
   { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/outputs\/(\d+)\/finalize$/, access: "agent:chat", handler: ({ res, deps, caller }, match) => handleFinalizeAgentSessionOutput(res, deps, Number(match![1]), Number(match![2]), caller!) },
   { method: "GET", pattern: /^\/agent-sessions\/(\d+)\/stream$/, access: "authenticated-only", handler: ({ req, res, deps, caller }, match) => handleAgentSessionStream(req, res, deps, Number(match![1]), caller!) },

@@ -247,6 +247,10 @@ test("上传只收图片类型,且只有创建者传得了自己的会话", asyn
     error: "图片只收 image/png、image/jpeg、image/webp 与 image/gif",
   });
 
+  // 白名单是自己那四个键,不是原型链上的成员:`constructor` 这一条同样回 415(评审复核)。
+  const prototypeKey = await upload(h, cookie, sessionId, pngBytes(8, 8), "constructor");
+  assert.equal(prototypeKey.status, 415);
+
   // 系统管理员读得到这个会话,传不了图。
   const admin = await upload(h, h.cookie, sessionId, pngBytes(8, 8));
   assert.equal(admin.status, 403);
