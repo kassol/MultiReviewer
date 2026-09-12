@@ -141,8 +141,15 @@ export type RuleTraceEvent = {
 /** 待写入的一条知识轨迹事件。`seq` 与 `at` 由落库那一步给。 */
 export type RuleTraceEventInput = { kind: RuleTraceKind; payload: unknown };
 
+/**
+ * 一条瞬时帧(issue #340):只广播给当前在线的订阅者,不落库,因此没有 `seq`——SSE 帧
+ * 不带 `id`,断线续传只补落库的那些事件。流式生成的 delta 是它的用处:过程在眼前有用,
+ * 过后没人回看,落库只是往表里灌行。
+ */
+export type TransientTraceEvent = { kind: string; payload: unknown };
+
 type Subscriber = {
-  onEvent: (event: TraceEvent | RuleTraceEvent) => void;
+  onEvent: (event: TraceEvent | RuleTraceEvent | TransientTraceEvent) => void;
   onEnd: () => void;
 };
 
@@ -193,6 +200,14 @@ export function subscribeTrace(
 
 /** 把一条已落库的事件推给订阅者。 */
 function publishTrace(channel: string, event: TraceEvent | RuleTraceEvent): void {
+  live.get(channel)?.emit("event", event);
+}
+
+/**
+ * 把一条瞬时帧推给当前在线的订阅者(issue #340)。不落库,这条轨迹没在跑时是空操作——
+ * 没有在线订阅者的瞬时帧本来就没有去处。
+ */
+export function publishTransientTrace(channel: string, event: TransientTraceEvent): void {
   live.get(channel)?.emit("event", event);
 }
 

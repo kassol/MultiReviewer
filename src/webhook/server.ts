@@ -161,6 +161,7 @@ import {
   type RuleTraceEvent,
   type RuleTraceRecorder,
   type TraceEvent,
+  type TransientTraceEvent,
 } from "../review/trace.ts";
 import {
   conflictingBuiltinProviderNames,
@@ -4534,9 +4535,15 @@ function positiveSeq(raw: string | undefined | null): number {
   return Number.isSafeInteger(seq) && seq > 0 ? seq : 0;
 }
 
-/** 一条 SSE 帧:`id` 取 `seq`,断线之后浏览器用它作 `Last-Event-ID` 续传。 */
-function traceFrame(event: TraceEvent | RuleTraceEvent): string {
-  return `id: ${event.seq}\nevent: trace\ndata: ${JSON.stringify(event)}\n\n`;
+/**
+ * 一条 SSE 帧:`id` 取 `seq`,断线之后浏览器用它作 `Last-Event-ID` 续传。
+ *
+ * 瞬时帧没有 `seq`,帧里因此不带 `id`(issue #340):浏览器只把带 id 的帧记成续传位置,
+ * 重连时回放从落库事件里读,瞬时帧不在其中。
+ */
+function traceFrame(event: TraceEvent | RuleTraceEvent | TransientTraceEvent): string {
+  const id = "seq" in event ? `id: ${event.seq}\n` : "";
+  return `${id}event: trace\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
 /**

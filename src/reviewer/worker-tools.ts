@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
 import {
+  type AgentSession,
   type AgentSessionEventListener,
   createAgentSession,
   DefaultResourceLoader,
@@ -345,28 +346,26 @@ export async function prepareAgentRuntime(options: {
   return { agentDir, apiKey, model, modelRuntime, settingsManager, resourceLoader };
 }
 
-/**
- * 三个子进程从建会话到退出的那一段:订阅、跑 prompt、读用量、销毁、回传收尾消息、
- * 显式退出。三条链路的差别只有工具面、事件怎么转发与收尾消息的形状,它们由参数与回调
- * 给出;各自的 IPC 消息序列与退出行为因此一格未动。
- *
- * `process.exit(0)` 是显式的:`dispose()` 之后 Pi 仍可能留着未关闭的 handle,加上 IPC
- * 通道本身会让事件循环存活,进程不会自己结束,主进程就一直等不到 exit。
- */
-export async function runAgentWorker(options: {
+/** 建一个会话要给的那几样。跑一次即退出与常驻会话给的是同一份(issue #340)。 */
+export type AgentSessionOptions = {
   runtime: AgentRuntime;
   worktreePath: string;
   thinkingLevel: ThinkingLevel;
   tools: string[];
   customTools: ToolDefinition[];
-  prompt: string;
   /** 会话事件的去处。心跳排在它之后,IPC 上仍是先转发事件、再发心跳。 */
   onEvent: AgentSessionEventListener;
   /** 心跳的出口,与调用方回传别的消息走同一条。 */
   send: (message: { kind: "heartbeat" }) => void;
-  /** 收尾消息由调用方拼:三条协议的 `done` 形状各不相同,用量也不是三条都记。 */
-  done: (outcome: { usage: ReviewerUsage; failure?: string }) => void;
-}): Promise<void> {
+};
+
+/**
+ * 只建会话那一段(issue #340):按备好的运行时建 Pi 会话、订阅事件、挂上心跳,返回会话
+ * 本身作句柄。跑一次即退出的 `runAgentWorker` 从这里建会话,常驻会话在同一进程里反复
+ * prompt / steer / followUp / abort 的也是它——建会话与跑一次原先写在一起,拆开之后三条
+ * worker 链路与常驻会话共用同一处建法,会话形状不会有第二份。
+ */
+export async function openAgentSession(options: AgentSessionOptions): Promise<AgentSession> {
   const { session } = await createAgentSession({
     cwd: options.worktreePath,
     agentDir: options.runtime.agentDir,
@@ -387,6 +386,26 @@ export async function runAgentWorker(options: {
     options.onEvent(event);
     heartbeat(event);
   });
+
+  return session;
+}
+
+/**
+ * 三个子进程从建会话到退出的那一段:建会话(`openAgentSession`)、跑 prompt、读用量、
+ * 销毁、回传收尾消息、显式退出。三条链路的差别只有工具面、事件怎么转发与收尾消息的形状,
+ * 它们由参数与回调给出;各自的 IPC 消息序列与退出行为因此一格未动。
+ *
+ * `process.exit(0)` 是显式的:`dispose()` 之后 Pi 仍可能留着未关闭的 handle,加上 IPC
+ * 通道本身会让事件循环存活,进程不会自己结束,主进程就一直等不到 exit。
+ */
+export async function runAgentWorker(
+  options: AgentSessionOptions & {
+    prompt: string;
+    /** 收尾消息由调用方拼:三条协议的 `done` 形状各不相同,用量也不是三条都记。 */
+    done: (outcome: { usage: ReviewerUsage; failure?: string }) => void;
+  },
+): Promise<void> {
+  const session = await openAgentSession(options);
 
   let thrown: string | undefined;
   try {

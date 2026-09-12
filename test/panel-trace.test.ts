@@ -8,7 +8,12 @@ import { test } from "node:test";
 import { hashPassword } from "../src/panel/password.ts";
 import type { Reviewer, ReviewerEvent, ReviewerInput } from "../src/review/finding.ts";
 import { openStore } from "../src/review/store.ts";
-import type { TraceEvent, TraceKind } from "../src/review/trace.ts";
+import {
+  publishTransientTrace,
+  runChannel,
+  type TraceEvent,
+  type TraceKind,
+} from "../src/review/trace.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
@@ -335,6 +340,57 @@ test("进行中的轮次:先回放已有事件,再收到新写入的那条,结�
   let frame = await reader.next();
   while (frame.event === "trace") frame = await reader.next();
   assert.equal(frame.event, "end");
+});
+
+test("瞬时帧:到在线订阅者、帧里没有 id,重连续传只回放落库事件(issue #340)", async () => {
+  const paused = pausedReviewer("test:global-model");
+  const h = await startReadyPanelHarness({ buildReviewers: () => [paused] });
+  assert.equal(
+    (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
+    201,
+  );
+  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
+  await paused.started;
+  const runId = openStoreRunId(h.db.path);
+
+  const reader = frameReader(await sse(h, runId));
+  // 回放:开跑到现在的编排事件,最后那条的 seq 就是这个订阅者的续传位置。
+  await reader.next();
+  const lastReplayed = await reader.next();
+  const lastSeq = Number(lastReplayed.id);
+
+  // 瞬时帧:推给在线订阅者,帧文本里没有 `id:` 行。
+  const delta = { kind: "message_delta", payload: { text: "正在读 src/answer.ts" } };
+  publishTransientTrace(runChannel(runId), delta);
+  const transient = await reader.next();
+  assert.equal(transient.event, "trace");
+  assert.equal(transient.id, undefined, "瞬时帧不带 id,浏览器不拿它当续传位置");
+  assert.deepEqual(JSON.parse(transient.data), delta);
+
+  // 落库事件照旧带 seq 作 id。
+  paused.emit({ kind: "assistant_message", text: "读完了" });
+  const stored = await reader.next();
+  const storedEvent = JSON.parse(stored.data) as TraceEvent;
+  assert.equal(storedEvent.kind, "assistant_message");
+  assert.equal(stored.id, String(storedEvent.seq));
+
+  // 不落库:表里只有那条落库事件。
+  const store = openStore(h.db.path);
+  const kinds = store.listTrace(runId, lastSeq).map((event) => event.kind);
+  store.close();
+  assert.deepEqual(kinds, ["assistant_message"]);
+
+  // 续传:另开一条带 `?after=` 的流,回放只补落库的那条,瞬时帧不在其中。
+  const resumed = frameReader(await sse(h, runId, { query: `after=${lastSeq}` }));
+  const replayed = await resumed.next();
+  assert.equal(replayed.id, String(storedEvent.seq));
+  assert.equal((JSON.parse(replayed.data) as TraceEvent).kind, "assistant_message");
+
+  await resumed.cancel();
+  await reader.cancel();
+  paused.release();
+  await h.settledAtLeast(1);
 });
 
 test("进行中的轮次:没有可回放的事件时响应头也立刻发出,静默期间有心跳注释帧", async () => {
