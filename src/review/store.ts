@@ -760,6 +760,8 @@ CREATE TABLE IF NOT EXISTS agent_session_pending_message (
   seq INTEGER NOT NULL,
   mode TEXT NOT NULL,
   text TEXT NOT NULL,
+  -- 这一条带的那几张图的文件引用,原样一段 JSON(issue #336)。没带图即 NULL。
+  images TEXT,
   PRIMARY KEY (session_id, seq)
 );
 
@@ -1054,6 +1056,8 @@ const ADDED_COLUMNS: readonly { table: string; column: string; backfill?: string
   // 检查时刻与模式(issue #315):带默认值,补完即 00:00 只复核,与此前的行为一致。
   { table: "range_review", column: "scheduled_check_time TEXT NOT NULL DEFAULT '00:00'" },
   { table: "range_review", column: "scheduled_check_mode TEXT NOT NULL DEFAULT 'verdict-only'" },
+  // 排队消息带的图片引用(issue #336):可空,补完即「这几条没带图」,与此前的行为一致。
+  { table: "agent_session_pending_message", column: "images TEXT" },
 ];
 
 /**
@@ -2704,7 +2708,15 @@ export type AgentSessionImageRecord = {
  * `AgentSessionMessageMode` 同一对字面量;这一层不认它的类型——领域类型定在 `reviewer/`,
  * 而那个目录依赖这里,反过来不成立。读回时由运行时收口。
  */
-export type AgentSessionPendingMessage = { mode: string; text: string };
+export type AgentSessionPendingMessage = {
+  mode: string;
+  text: string;
+  /**
+   * 这一条带的那几张图的文件引用,原样一段 JSON(issue #336)。没带图即缺席。这一层不解释
+   * 它的形状——图片引用的领域类型同样定在 `reviewer/`,与 `mode` 同律。
+   */
+  images?: string;
+};
 
 /**
  * 一条会话记录在 Pi 条目树上的位置(ADR 0031,issue #335)。重建前自检链完整性要的就这三格,
@@ -5340,11 +5352,11 @@ export function openStore(dbPath: string): Store {
       try {
         db.prepare("DELETE FROM agent_session_pending_message WHERE session_id = ?").run(sessionId);
         const insert = db.prepare(
-          `INSERT INTO agent_session_pending_message (session_id, seq, mode, text)
-           VALUES (?, ?, ?, ?)`,
+          `INSERT INTO agent_session_pending_message (session_id, seq, mode, text, images)
+           VALUES (?, ?, ?, ?, ?)`,
         );
         messages.forEach((message, index) => {
-          insert.run(sessionId, index + 1, message.mode, message.text);
+          insert.run(sessionId, index + 1, message.mode, message.text, message.images ?? null);
         });
         db.exec("COMMIT");
       } catch (error) {
@@ -5358,13 +5370,17 @@ export function openStore(dbPath: string): Store {
       try {
         const rows = db
           .prepare(
-            `SELECT mode, text FROM agent_session_pending_message
+            `SELECT mode, text, images FROM agent_session_pending_message
               WHERE session_id = ? ORDER BY seq`,
           )
           .all(sessionId);
         db.prepare("DELETE FROM agent_session_pending_message WHERE session_id = ?").run(sessionId);
         db.exec("COMMIT");
-        return rows.map((row) => ({ mode: String(row["mode"]), text: String(row["text"]) }));
+        return rows.map((row) => ({
+          mode: String(row["mode"]),
+          text: String(row["text"]),
+          ...(typeof row["images"] === "string" ? { images: row["images"] } : {}),
+        }));
       } catch (error) {
         db.exec("ROLLBACK");
         throw error;

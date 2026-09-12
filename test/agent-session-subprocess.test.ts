@@ -467,6 +467,48 @@ test("回收之后重建:记录里的图片引用读回 base64 再喂给模型",
   }
 });
 
+test("排队中被排空:图片引用跟着那一条落库,重建补投时仍是 base64", async () => {
+  const turns: StubTurn[] = [
+    // 回得慢一点:这一轮还在跑的时候人才来得及排队。
+    { text: "第一轮", usage: { input: 10, output: 2 }, delayMs: 1500 },
+    { text: "图上是报销单的列表页", usage: { input: 40, output: 8 } },
+    { text: "接着说那一版", usage: { input: 41, output: 8 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns, {
+    input: ["text", "image"],
+  });
+  try {
+    const imageId = await uploadImage(h, cookie, sessionId);
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    // 执行中排队的这一条带着图。
+    const queued = await send(h, cookie, sessionId, "c2", "看这张图", "followUp", [imageId]);
+    assert.equal(queued.status, 202, await queued.text());
+    assert.deepEqual(await queueOf(h, cookie, sessionId), [{ mode: "followUp", text: "看这张图" }]);
+
+    // 排空:在跑的那一轮中止,排着的这一条落库。
+    await disposeAgentSessions();
+
+    assert.equal((await send(h, cookie, sessionId, "c3", "接着说")).status, 202);
+    await requestsAtLeast(requests, 2);
+    await idle(h, cookie, sessionId);
+
+    // 重建补投的还是人当初发的那一条:正文与那张图都在。
+    const carried = requests
+      .slice(1)
+      .flatMap((request) => request.messages)
+      .find((message) => message.content.includes("看这张图"));
+    assert.notEqual(carried, undefined, "排着的那一条没被补投");
+    assert.equal(carried?.images?.length, 1);
+    assert.deepEqual(pngSize(Buffer.from(carried!.images![0]!.data, "base64")), {
+      width: 24,
+      height: 16,
+    });
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
 test("图片文件丢了再重建:那一块是占位文本,历史照样续得上", async () => {
   const turns: StubTurn[] = [
     { text: "图上是报销单的列表页", usage: { input: 40, output: 8 } },

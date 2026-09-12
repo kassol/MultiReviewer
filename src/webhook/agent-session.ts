@@ -431,7 +431,15 @@ function persistQueue(sessionId: number, entry: RuntimeEntry): void {
   if (entry.queue.length === 0) return;
   const store = openStore(entry.deps.dbPath);
   try {
-    store.putAgentSessionPendingMessages(sessionId, entry.queue);
+    store.putAgentSessionPendingMessages(
+      sessionId,
+      // 图片引用跟着它那一条落库(issue #336):重建补投的还是人当初发的那一条,少了图就不是了。
+      entry.queue.map((message) => ({
+        mode: message.mode,
+        text: message.text,
+        ...(message.images === undefined ? {} : { images: JSON.stringify(message.images) }),
+      })),
+    );
   } catch (error) {
     console.error(
       `[agent-session] 会话 ${sessionId} 的排队消息落库失败:`,
@@ -450,6 +458,9 @@ function takePendingQueue(deps: AgentSessionRuntimeDeps, sessionId: number): Age
       // 库里那一格是字符串(领域类型定在 `reviewer/`,那个目录依赖 `review/`),在这里收口。
       mode: message.mode === "steer" ? ("steer" as const) : ("followUp" as const),
       text: message.text,
+      ...(message.images === undefined
+        ? {}
+        : { images: JSON.parse(message.images) as AgentSessionImageRef[] }),
     }));
   } finally {
     store.close();
