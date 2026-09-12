@@ -13,8 +13,13 @@
  *
  * 产出工具与定稿(issue #337)同律:看的是产出表落了几版、打回的那几次落没落、定稿那句话
  * 有没有出现在下一次模型请求里。
+ *
+ * 子进程生命周期(issue #335)看的也都是外部事实:回收之后那一次请求里有没有此前的全部消息、
+ * 名额满时接口回几、判死与模型切换在记录表里留了哪条系统消息、压缩条目落没落库、会话上那个
+ * 「前 N 条不在上下文」是几。回收与判死的门槛按毫秒注入,不真等十分钟。
  */
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { ReviewerUsage } from "../src/review/finding.ts";
@@ -28,7 +33,7 @@ import {
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
-import { seedReviewRule } from "./support/store-seed.ts";
+import { putGlobalSettings, seedReviewRule } from "./support/store-seed.ts";
 import { startModelStub, type StubRequest, type StubTurn } from "./support/model-stub.ts";
 import { frameReader } from "./support/sse.ts";
 
@@ -49,21 +54,54 @@ type Record = {
   usage: ReviewerUsage;
 };
 
+/** 起 harness 时可以拨动的那几样(issue #335)。省略即取服务默认值。 */
+type SessionHarnessOptions = {
+  /** 空闲回收门槛(毫秒)。验「回收后再发消息从记录重建」的用例拨到毫秒级。 */
+  idleReclaimMs?: number;
+  /** 执行中静默判死门槛(毫秒)。验判死的用例拨到秒级。 */
+  silenceTimeoutMs?: number;
+  /** 这个模型服务上的模型。省略即只有 harness 那一个;验模型切换的用例给两个。 */
+  models?: readonly string[];
+  /** 模型声明的字段。验 compaction 的用例给一个小上下文窗口。 */
+  fields?: { contextWindow?: number };
+  /** 这个产品下再建几个会话(验常驻名额上限用)。 */
+  extraSessions?: number;
+};
+
 /**
  * 起一套指向假模型服务的 harness:注册 harness 那个仓库、建产品、给创建者 agent:chat,
  * 回会话 id 与创建者的 cookie。模型服务的地址就是假服务的地址,因此解析出的辅助模型
  * (生效组合首个)打到它上面。
  */
-async function startSessionHarness(turns: readonly StubTurn[]): Promise<{
+async function startSessionHarness(
+  turns: readonly StubTurn[],
+  options: SessionHarnessOptions = {},
+): Promise<{
   h: PanelHarness;
   cookie: string;
   sessionId: number;
+  /** 这个产品下另外几个会话的 id(`extraSessions` 给了才有),按建立顺序。 */
+  extraSessionIds: number[];
+  productId: number;
   requests: Awaited<ReturnType<typeof startModelStub>>["requests"];
   close: () => Promise<void>;
 }> {
   const stub = await startModelStub(turns);
-  const h = await startPanelHarness();
-  seedAvailableModelService(h, HARNESS_SPEC.provider, [HARNESS_SPEC.model], {}, stub.baseUrl);
+  const h = await startPanelHarness({
+    ...(options.idleReclaimMs === undefined
+      ? {}
+      : { agentSessionIdleReclaimMs: options.idleReclaimMs }),
+    ...(options.silenceTimeoutMs === undefined
+      ? {}
+      : { agentSessionSilenceTimeoutMs: options.silenceTimeoutMs }),
+  });
+  seedAvailableModelService(
+    h,
+    HARNESS_SPEC.provider,
+    options.models ?? [HARNESS_SPEC.model],
+    options.fields ?? {},
+    stub.baseUrl,
+  );
   assert.equal(
     (await h.api("POST", "/repos", { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo })).status,
     201,
@@ -83,7 +121,25 @@ async function startSessionHarness(turns: readonly StubTurn[]): Promise<{
   });
   assert.equal(response.status, 201);
   const { session } = (await response.json()) as { session: { id: number } };
-  return { h, cookie, sessionId: session.id, requests: stub.requests, close: stub.close };
+  const extraSessionIds: number[] = [];
+  for (let more = 0; more < (options.extraSessions ?? 0); more += 1) {
+    const another = await fetch(`${h.serverUrl}/api/products/${product.id}/sessions`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ purpose: "requirement-breakdown" }),
+    });
+    assert.equal(another.status, 201);
+    extraSessionIds.push(((await another.json()) as { session: { id: number } }).session.id);
+  }
+  return {
+    h,
+    cookie,
+    sessionId: session.id,
+    extraSessionIds,
+    productId: product.id,
+    requests: stub.requests,
+    close: stub.close,
+  };
 }
 
 function send(
@@ -629,7 +685,9 @@ test("执行中发「插话」:下一个回合边界投递,工具批次完整跑
         { name: "read", args: { path: `${prefix}/src/other.ts` } },
       ],
       usage: { input: 10, output: 2 },
-      delayMs: 1500,
+      // 插话要在这一次回应到达之前投进去。4 秒而不是 1.5 秒:本机并行跑整套测试时进程排不上
+      // 队,一两秒的窗口会让插话落到工具批次之后,那时它等的是再下一个回合边界(issue #335)。
+      delayMs: 4000,
     },
     { text: "按你说的改方向", usage: { input: 11, output: 2 } },
   ];
@@ -802,6 +860,313 @@ test("流式 delta 走无 id 的瞬时帧:不落库,重连不回放", async () =
       landed.map((record) => String(record.seq)),
     );
     await again.cancel();
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+/* ─────────────── 子进程生命周期(issue #335) ─────────────── */
+
+/** 回收之后才录的那条规则。重建时取的是当下的知识集,不是建会话那一刻的。 */
+const LATER_RULE = "撤回只允许在当月内做";
+
+/** 这个会话读接口报的「前 N 条不在上下文」。 */
+async function droppedFromContext(
+  h: PanelHarness,
+  cookie: string,
+  sessionId: number,
+): Promise<number> {
+  const response = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}`, {
+    headers: { cookie },
+  });
+  assert.equal(response.status, 200);
+  return ((await response.json()) as { droppedFromContext: number }).droppedFromContext;
+}
+
+/** 等到记录表里出现一条正文匹配的系统消息(ADR 0031 的 `custom` 条目)。 */
+async function systemMessageMatching(
+  h: PanelHarness,
+  cookie: string,
+  sessionId: number,
+  pattern: RegExp,
+): Promise<void> {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    const landed = await records(h, cookie, sessionId);
+    const system = landed.filter((record) => record.type === "custom");
+    if (system.some((record) => pattern.test(JSON.stringify(record.entry)))) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.fail(`等了 30 秒,会话 ${sessionId} 的记录里还没有匹配 ${String(pattern)} 的系统消息`);
+}
+
+test("空闲满门槛即回收:再发消息从记录重建,此前全部消息都在模型请求里", async () => {
+  const turns: StubTurn[] = [
+    { text: "第一轮", usage: { input: 10, output: 2 } },
+    { text: "第二轮", usage: { input: 12, output: 3 } },
+  ];
+  const { h, cookie, sessionId, productId, requests, close } = await startSessionHarness(turns, {
+    idleReclaimMs: 50,
+  });
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await messagesAtLeast(h.db.path, sessionId, 2);
+    await idle(h, cookie, sessionId);
+    // 空闲门槛 50ms:过了它子进程已经被回收(登记表摘掉、工作树与会话根释放)。
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // 重建时取的是当下的知识集:这一条是回收之后才录进去的。
+    seedReviewRule(h.db.path, GITEA_REPO.id, { type: "rule", scope: "", statement: LATER_RULE });
+
+    assert.equal((await send(h, cookie, sessionId, "c2", "接着说")).status, 202);
+    await messagesAtLeast(h.db.path, sessionId, 4);
+    await idle(h, cookie, sessionId);
+
+    assert.equal(requests.length, 2);
+    // 重建后这一次请求里有此前的全部消息:人说的那句、agent 回的那句,加这一条新的。
+    const second = bodyOf(requests[1]!);
+    assert.match(second, new RegExp(MESSAGE));
+    assert.match(second, /第一轮/);
+    assert.match(second, /接着说/);
+    // 知识集是重建那一刻取的值。
+    const system = requests[1]!.messages.filter((message) => message.role === "system");
+    assert.match(system[0]!.content, new RegExp(LATER_RULE));
+
+    // 重建那一刻的系统提示是新的一份,这就是「子进程换过一个」的证据:提示在建会话时定下,
+    // 活着的那一个拿不到回收之后才录的规则。
+    //
+    // 喂回去的那一段不再镜像一遍:记录仍是起头两条加四条消息。Pi 不重复落「这次用哪个模型」
+    // ——重建时喂回去的条目里已经写着同一个模型,它只在模型真的换了时才追加那一条。
+    const landed = await records(h, cookie, sessionId);
+    assert.deepEqual(
+      landed.map((record) => record.type),
+      ["model_change", "thinking_level_change", "message", "message", "message", "message"],
+    );
+    assert.deepEqual(messageRoles(landed), ["user", "assistant", "user", "assistant"]);
+    // 记录完整,会话上那个数是 0。
+    assert.equal(await droppedFromContext(h, cookie, sessionId), 0);
+
+    // 仓库集合同样每次重建时取:产品把仓库移出去之后,下一条消息就开不起来。
+    assert.equal(
+      (await h.api("DELETE", `/products/${productId}/repos/${GITEA_REPO.id}`)).status,
+      204,
+    );
+    const refused = await send(h, cookie, sessionId, "c3", "再说一句");
+    assert.equal(refused.status, 409);
+    assert.match(await refused.text(), /没有你有仓库分配的仓库/);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("常驻名额有上限:全都在跑时回 409,有空闲的就回收最久空闲的那个再开", async () => {
+  // 四个会话各占一个名额并挂在模型调用上,第五个因此没有名额可用。
+  const slow: StubTurn = { text: "慢慢回", usage: { input: 10, output: 2 }, delayMs: 60_000 };
+  const turns: StubTurn[] = [slow, slow, slow, slow, { text: "第五个的回答", usage: { input: 11, output: 2 } }];
+  const { h, cookie, sessionId, extraSessionIds, requests, close } = await startSessionHarness(
+    turns,
+    { extraSessions: 4 },
+  );
+  try {
+    const running = [sessionId, ...extraSessionIds.slice(0, 3)];
+    const fifth = extraSessionIds[3]!;
+    for (const [index, id] of running.entries()) {
+      assert.equal((await send(h, cookie, id, `c${index}`, `第 ${index} 个会话的话`)).status, 202);
+    }
+    // 四个子进程都起来了:名额占满。
+    await requestsAtLeast(requests, 4);
+
+    const full = await send(h, cookie, fifth, "c5", "我也要拆");
+    assert.equal(full.status, 409);
+    assert.match(await full.text(), /名额已满,稍后再发/);
+
+    // 停掉第一个:它回到空闲,名额让得出来。
+    const stopped = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/stop`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    assert.equal(stopped.status, 200);
+    await idle(h, cookie, sessionId);
+
+    // 同一个客户端消息 id 再发一次就收下了:满名额那一次判在受理之前,没把这条记成发过。
+    assert.equal((await send(h, cookie, fifth, "c5", "我也要拆")).status, 202);
+    await requestsAtLeast(requests, 5);
+    assert.ok(bodyOf(requests[4]!).includes("我也要拆"), "第五个会话的消息没投出去");
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("执行中连续静默即判死:记一条系统消息,下次发消息重建续上", async () => {
+  const turns: StubTurn[] = [
+    // 这一次挂着不回:静默闸合上。
+    { text: "这一次不回", usage: { input: 10, output: 2 }, delayMs: 60_000 },
+    { text: "重建之后的回答", usage: { input: 11, output: 2 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns, {
+    // 比起子进程那段准备时间要宽:闸计的是开跑之后的连续静默。
+    silenceTimeoutMs: 3000,
+  });
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await requestsAtLeast(requests, 1);
+
+    await systemMessageMatching(h, cookie, sessionId, /执行中静默超时/);
+    // 判死即登记表摘掉:会话回到空闲,人发得出下一条。
+    await idle(h, cookie, sessionId);
+
+    assert.equal((await send(h, cookie, sessionId, "c2", "接着说")).status, 202);
+    await requestsAtLeast(requests, 2);
+    await idle(h, cookie, sessionId);
+
+    const second = bodyOf(requests[1]!);
+    // 续上了:判死之前人说的那句还在上下文里。
+    assert.match(second, new RegExp(MESSAGE));
+    assert.match(second, /接着说/);
+    // 系统消息不进模型上下文(ADR 0031)。
+    assert.ok(!second.includes("静默超时"), "判死那条系统消息进了模型上下文");
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("辅助模型变了:落一条系统消息、用新模型重建,上下文照旧续上", async () => {
+  const turns: StubTurn[] = [
+    { text: "第一轮", usage: { input: 10, output: 2 } },
+    { text: "换了模型之后的回答", usage: { input: 11, output: 2 } },
+  ];
+  const second = "another-model";
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns, {
+    models: [HARNESS_SPEC.model, second],
+  });
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await messagesAtLeast(h.db.path, sessionId, 2);
+    await idle(h, cookie, sessionId);
+    // 子进程还活着:这一刻把生效的辅助模型换成同一个服务上的另一个模型。
+    const store = openStore(h.db.path);
+    assert.equal(
+      putGlobalSettings(store, {
+        auxiliaryModelJson: JSON.stringify({ provider: HARNESS_SPEC.provider, model: second }),
+      }),
+      true,
+    );
+    store.close();
+
+    assert.equal((await send(h, cookie, sessionId, "c2", "接着说")).status, 202);
+    await messagesAtLeast(h.db.path, sessionId, 4);
+    await idle(h, cookie, sessionId);
+
+    // 换模型那条系统消息在记录里,两头的模型都写明。
+    await systemMessageMatching(h, cookie, sessionId, /辅助模型从 .+ 换成 .+/);
+    const landed = await records(h, cookie, sessionId);
+    const switched = landed.filter(
+      (record) => record.type === "custom" && JSON.stringify(record.entry).includes("辅助模型从"),
+    );
+    assert.equal(switched.length, 1);
+    assert.match(JSON.stringify(switched[0]!.entry), new RegExp(second));
+
+    // 第二次请求打的是新模型,上下文仍是同一段。
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0]!.model, HARNESS_SPEC.model);
+    assert.equal(requests[1]!.model, second);
+    assert.match(bodyOf(requests[1]!), new RegExp(MESSAGE));
+    assert.match(bodyOf(requests[1]!), /第一轮/);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("记录缺了中间一条:重建按截断续得下去,会话上报得出前几条不在上下文", async () => {
+  const turns: StubTurn[] = [
+    { text: "第一轮", usage: { input: 10, output: 2 } },
+    { text: "缺损之后的回答", usage: { input: 11, output: 2 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await messagesAtLeast(h.db.path, sessionId, 2);
+    await idle(h, cookie, sessionId);
+    // 回收:登记表摘掉,下一条消息从记录重建。
+    await disposeAgentSessions();
+
+    // 人为删掉中间那一条(人说的那句),模拟记录缺损。
+    const db = new DatabaseSync(h.db.path);
+    const landed = await records(h, cookie, sessionId);
+    const userRow = landed.find((record) => record.entry.message?.role === "user")!;
+    db.prepare("DELETE FROM agent_session_entry WHERE session_id = ? AND seq = ?").run(
+      sessionId,
+      userRow.seq,
+    );
+    db.close();
+
+    // 剩下三条:末条顺 parentId 上行一步就指空,它之前的两条因此不在上下文里。
+    assert.equal(await droppedFromContext(h, cookie, sessionId), 2);
+
+    // 不拒绝续谈:照 Pi 的截断重建,新的一轮照样跑得完。
+    assert.equal((await send(h, cookie, sessionId, "c2", "接着说")).status, 202);
+    await requestsAtLeast(requests, 2);
+    await idle(h, cookie, sessionId);
+    const second = bodyOf(requests[1]!);
+    assert.match(second, /接着说/);
+    assert.ok(!second.includes(MESSAGE), "被截掉的那条还是进了上下文");
+    // 缺损不会自己补回来:重建之后读接口仍报同一个数。
+    assert.equal(await droppedFromContext(h, cookie, sessionId), 2);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("自动 compaction 开着:压缩条目落库,重建后用量连续", async () => {
+  // 估出来的上下文要超过 Pi 默认的 keepRecentTokens(20000),压缩才真的切一刀:按 chars/4
+  // 估,这一段回复就是八万多字符。声明的上下文窗口小,用量一报就过了触发线。
+  const long = `压缩前的长篇回复 ${"报销单撤回的细节。".repeat(9000)}`;
+  const summary = "压缩摘要:先前讨论了报销单撤回的范围与边界";
+  const turns: StubTurn[] = [
+    { text: long, usage: { input: 6000, output: 20 } },
+    { text: summary, usage: { input: 100, output: 30 } },
+    { text: "重建之后的回答", usage: { input: 12, output: 3 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns, {
+    fields: { contextWindow: 20_000 },
+  });
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    // 第二次请求就是压缩那一次:它由 Pi 自己发起,不是人发的消息。
+    await requestsAtLeast(requests, 2);
+    await idle(h, cookie, sessionId);
+
+    const landed = await records(h, cookie, sessionId);
+    const compaction = landed.filter((record) => record.type === "compaction");
+    assert.equal(compaction.length, 1, "压缩条目没落库");
+    assert.match(JSON.stringify(compaction[0]!.entry), new RegExp(summary));
+    // 压缩那次调用的用量挂在条目自己身上,照样累加到会话上(ADR 0031)。
+    assert.equal(compaction[0]!.usage.totalTokens, 130);
+
+    // 回收之后重建:压缩条目也喂回去,摘要因此在新一轮的上下文里。
+    await disposeAgentSessions();
+    assert.equal((await send(h, cookie, sessionId, "c2", "接着说")).status, 202);
+    await requestsAtLeast(requests, 3);
+    await idle(h, cookie, sessionId);
+    assert.match(bodyOf(requests[2]!), new RegExp(summary));
+
+    // 用量连续:三次响应的用量一项不少,重建没让它从压缩点重新起算。
+    const read = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}`, {
+      headers: { cookie },
+    });
+    const { session } = (await read.json()) as { session: { usage: ReviewerUsage } };
+    assert.deepEqual(session.usage, {
+      inputTokens: 6112,
+      outputTokens: 53,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 6165,
+    });
   } finally {
     await disposeAgentSessions();
     await close();

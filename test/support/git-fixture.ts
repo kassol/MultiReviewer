@@ -20,16 +20,18 @@ import {
  * 钩子必须挂在模块顶层:`after` 在某个用例体内调用会挂到那个用例上,清理就提前到
  * 单个用例结束时执行,而后台任务(工作副本准备等)还在写缓存目录与临时库。
  */
-const fileCleanups: (() => void)[] = [];
-after(() => {
-  for (const cleanup of fileCleanups) cleanup();
+const fileCleanups: (() => void | Promise<void>)[] = [];
+after(async () => {
+  // 逐个等:收尾里有异步的那几下(会话子进程退出、工作树释放与会话根删除,issue #335),
+  // 不等的话进程在它们跑完之前就结束,临时目录留在 `tmpdir` 里。
+  for (const cleanup of fileCleanups) await cleanup();
 });
 
 /**
  * 取本测试文件共用的清理队列——调用方只管往返回的数组里 `push` 清理函数,不用各自
  * 重复声明数组与收尾循环。多次调用拿到的是同一份队列。
  */
-export function testCleanups(): (() => void)[] {
+export function testCleanups(): (() => void | Promise<void>)[] {
   return fileCleanups;
 }
 

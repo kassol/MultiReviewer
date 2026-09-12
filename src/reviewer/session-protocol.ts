@@ -18,6 +18,15 @@ import type { RuntimeModel } from "./model-service-runtime.ts";
 export const AGENT_SESSION_OUTPUT_CUSTOM_TYPE = "multireviewer-session-output";
 export const AGENT_SESSION_NOTE_CUSTOM_TYPE = "multireviewer-session-note";
 
+/**
+ * 系统消息的 `custom` 条目类型(ADR 0031,issue #334、#335)。人点停止、执行中静默判死、
+ * 被排空中止与辅助模型切换都落这一种,不进模型上下文。
+ *
+ * 两侧都写它:人点停止由子进程落(会话还活着),判死、排空中止与模型切换由主进程落
+ * (那几下的子进程正要没了)。面板按这个取值把它渲染成对话流里灰底一行。
+ */
+export const SYSTEM_MESSAGE_ENTRY = "multireviewer_system_message";
+
 /** 会话根下的一个仓库:它的工作树目录名就是 `<owner>/<repo>`,知识集按它分段注入。 */
 export type SessionRepoInput = {
   owner: string;
@@ -38,6 +47,11 @@ export type OpenSessionRequest = {
   runtimeModel: RuntimeModel;
   /** 这一处模型引用的思考档位。缺席即 `off`。 */
   thinkingLevel?: ThinkingLevel;
+  /**
+   * 这个会话此前的全部记录条目,原样喂回 Pi 的内存会话管理器(ADR 0031,issue #335)。
+   * 缺席即新会话。重建前的链完整性自检在主进程做:缺条目 Pi 只静默截断,不报错。
+   */
+  entries?: readonly unknown[];
 };
 
 /**
@@ -71,7 +85,12 @@ export type SessionCommand =
   /** 整队清空(Pi 的 `clearQueue()`)。Pi 不支持单条撤回,因此没有单条那一档。 */
   | { kind: "clear-queue" }
   /** 中止当前这一步。排队消息保留在主进程的镜像里,下次开跑时投递。 */
-  | { kind: "stop" };
+  | { kind: "stop" }
+  /**
+   * 服务在排空(issue #335):中止当前这一步,跑完收尾就退出。与 `stop` 的差别是它不等
+   * 下一条消息——发版时进程要按时退出,「被排空中止」那条系统消息由主进程落库。
+   */
+  | { kind: "drain" };
 
 /** 子进程回传的消息。 */
 export type SessionWorkerMessage =

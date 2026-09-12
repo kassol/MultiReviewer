@@ -28,6 +28,7 @@ import { GIT_TOOL, sessionGitTool } from "./git-tool.ts";
 import { sessionOutputTools } from "./session-output-tools.ts";
 import {
   AGENT_SESSION_NOTE_CUSTOM_TYPE,
+  SYSTEM_MESSAGE_ENTRY,
   type AgentSessionMessageMode,
   type OpenSessionRequest,
   type SessionCommand,
@@ -153,9 +154,6 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
   return sections.join("\n");
 }
 
-/** 人点停止那一条系统消息的 custom 条目类型(ADR 0031)。不进模型上下文。 */
-export const SYSTEM_MESSAGE_ENTRY = "multireviewer_system_message";
-
 /** 人点停止留在会话记录里的那一句。 */
 const STOPPED_BY_PERSON = "人点了停止:已中止当前这一步,排队的消息保留,下次开跑时投递。";
 
@@ -202,6 +200,8 @@ async function open(request: OpenSessionRequest): Promise<void> {
     worktreePath: request.sessionRoot,
     runtimeModel: request.runtimeModel,
     systemPrompt: sessionSystemPrompt(request),
+    // 常驻会话开自动 compaction(spec #329):它按天续谈,不压就会撞上上下文上限。
+    compaction: true,
   });
   if ("failure" in prepared) {
     send({ kind: "failed", failure: prepared.failure });
@@ -213,10 +213,14 @@ async function open(request: OpenSessionRequest): Promise<void> {
   // 这个用途的产出工具(issue #337)。清单与定义取同一份:工具名在 `tools` 里没有那一行,
   // Pi 就不把它交给模型,两处各写一遍迟早对不上。
   const outputTools = sessionOutputTools(request.purpose, { repos, send });
+  // 喂回去的那一段已经在记录表里,镜像的起点因此是它的长度——从 0 起会把整段历史再落一遍。
+  // 置在建会话之前:建会话本身会追加「这次用哪个模型、哪个思考档位」两条,它们要镜像出去。
+  mirrored = request.entries?.length ?? 0;
   session = await openAgentSession({
     runtime: prepared,
     worktreePath: request.sessionRoot,
     thinkingLevel,
+    ...(request.entries === undefined ? {} : { entries: request.entries }),
     tools: [...sessionTools(), ...outputTools.map((tool) => tool.name)],
     customTools: [
       ...(sessionReadOnlyTools(request.sessionRoot) as unknown as ToolDefinition[]),
@@ -330,6 +334,31 @@ async function stop(): Promise<void> {
   mirrorEntries();
 }
 
+/**
+ * 服务在排空(issue #335):中止当前这一步,再退出。
+ *
+ * 与人点停止的差别只有两处:不落那条系统消息(「被排空中止」由主进程落库——这个进程正
+ * 要没了,再等一次镜像往返只是赌时序),以及跑完就 `process.exit(0)`。被中止的回复仍由
+ * Pi 照常落下,收尾前补一次镜像把它送出去;排队的消息由主进程落库,重启后惰性重建时投递。
+ *
+ * 显式退出:`dispose()` 之后 Pi 仍可能留着未关的 handle,IPC 通道本身也让事件循环活着,
+ * 进程不会自己结束,排空就要一直等到宽限期满(与 `runAgentWorker` 同一条理由)。
+ */
+async function drain(): Promise<void> {
+  if (session !== undefined && running) {
+    stopped = true;
+    stopping = true;
+    try {
+      session.clearQueue();
+      await session.abort();
+    } finally {
+      stopping = false;
+    }
+    mirrorEntries();
+  }
+  process.exit(0);
+}
+
 /** 整队清空。Pi 只给这一个动作,单条撤回它不支持。 */
 function clearQueue(): void {
   session?.clearQueue();
@@ -345,6 +374,8 @@ function handle(command: SessionCommand): Promise<void> {
       return customMessage(command.text);
     case "stop":
       return stop();
+    case "drain":
+      return drain();
     case "clear-queue":
       clearQueue();
       return Promise.resolve();

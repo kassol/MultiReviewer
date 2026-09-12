@@ -306,6 +306,13 @@ export async function prepareAgentRuntime(options: {
    * 反过来盖掉内存里注册的那一项模型。两条约束只有这一个窗口同时满足。
    */
   installKit?: (agentDir: string) => void;
+  /**
+   * 开 Pi 的自动 compaction(issue #335)。缺席即关着:跑一次即退出的三条链路把上下文
+   * 撑满就是这一批切得太大,压缩只会把证据压掉。常驻的 Agent 会话反过来——它按天续谈,
+   * 不压就会撞上上下文上限,压缩条目随记录落库、历史一条不删(ADR 0031)。
+   * 预留与保留两格取 Pi 的默认(16384 / 20000)。
+   */
+  compaction?: boolean;
 }): Promise<AgentRuntime | { failure: string }> {
   // 空的 agentDir:不让宿主机上的全局扩展、skill、设置与凭据渗进会话。
   const agentDir = mkdtempSync(join(tmpdir(), options.agentDirPrefix));
@@ -326,7 +333,7 @@ export async function prepareAgentRuntime(options: {
   options.installKit?.(agentDir);
 
   const settingsManager = SettingsManager.inMemory({
-    compaction: { enabled: false },
+    compaction: { enabled: options.compaction === true },
     retry: { enabled: true, maxRetries: 1 },
   });
   const resourceLoader = new DefaultResourceLoader({
@@ -357,6 +364,12 @@ export type AgentSessionOptions = {
   onEvent: AgentSessionEventListener;
   /** 心跳的出口,与调用方回传别的消息走同一条。 */
   send: (message: { kind: "heartbeat" }) => void;
+  /**
+   * 从外部条目重建会话(ADR 0031,issue #335):原样喂给 `SessionManager.inMemory` 的
+   * 第三个参数。缺席即新会话。**喂的必须是全量**:`parentId` 链断了或 compaction 的
+   * `firstKeptEntryId` 指不到,Pi 只静默截断历史,不报错。
+   */
+  entries?: readonly unknown[];
 };
 
 /**
@@ -375,7 +388,13 @@ export async function openAgentSession(options: AgentSessionOptions): Promise<Ag
     tools: options.tools,
     customTools: options.customTools,
     resourceLoader: options.runtime.resourceLoader,
-    sessionManager: SessionManager.inMemory(options.worktreePath),
+    sessionManager: SessionManager.inMemory(
+      options.worktreePath,
+      undefined,
+      options.entries === undefined
+        ? undefined
+        : ([...options.entries] as Parameters<typeof SessionManager.inMemory>[2]),
+    ),
     settingsManager: options.runtime.settingsManager,
   });
 

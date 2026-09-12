@@ -154,6 +154,11 @@ function sseBody(turn: StubTurn, serial: number, model: string): string {
 export async function startModelStub(turns: readonly StubTurn[]): Promise<ModelStub> {
   const requests: StubRequest[] = [];
   let next = 0;
+  /**
+   * 还没到点的延迟响应(issue #335)。`close()` 要把它们清掉:一个挂着的 `setTimeout` 会让
+   * 测试进程在用例跑完之后继续活到它到点,验「名额满」那种用例挂的正是几十秒的延迟。
+   */
+  const delayed = new Set<NodeJS.Timeout>();
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -181,8 +186,15 @@ export async function startModelStub(turns: readonly StubTurn[]): Promise<ModelS
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
         res.end(sseBody(turn, next, parsed.model));
       };
-      if (turn.delayMs === undefined) respond();
-      else setTimeout(respond, turn.delayMs);
+      if (turn.delayMs === undefined) {
+        respond();
+        return;
+      }
+      const timer = setTimeout(() => {
+        delayed.delete(timer);
+        respond();
+      }, turn.delayMs);
+      delayed.add(timer);
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -192,6 +204,8 @@ export async function startModelStub(turns: readonly StubTurn[]): Promise<ModelS
     requests,
     close: () =>
       new Promise<void>((resolve, reject) => {
+        for (const timer of delayed) clearTimeout(timer);
+        delayed.clear();
         server.closeAllConnections();
         server.close((error) => (error === undefined ? resolve() : reject(error)));
       }),
