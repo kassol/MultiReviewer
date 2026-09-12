@@ -104,9 +104,9 @@ const ROUTE_EXPECTATIONS = [
   ["DELETE", "/^\\/products\\/(\\d+)$/", "repo:write", "-"],
   ["PUT", "/^\\/products\\/(\\d+)\\/repos\\/(\\d+)$/", "repo:write", "repo:2"],
   ["DELETE", "/^\\/products\\/(\\d+)\\/repos\\/(\\d+)$/", "repo:write", "repo:2"],
-  // Agent 会话(issue #332、#333、#334、#337):建与发消息、删、清队列、停止、定稿按
-  // `agent:chat`,读登录即可;会话本身的可见性按创建者在 handler 里判,不是仓库分配能表达
-  // 的事,`/agent-sessions/` 下九个端点因此不声明目标。
+  // Agent 会话(issue #332、#333、#334、#336、#337):建与发消息、删、清队列、停止、定稿、
+  // 传图按 `agent:chat`,读登录即可;会话本身的可见性按创建者在 handler 里判,不是仓库分配
+  // 能表达的事,`/agent-sessions/` 下十一个端点因此不声明目标。
   ["GET", "/^\\/products\\/(\\d+)\\/sessions$/", "authenticated-only", "product:1"],
   ["POST", "/^\\/products\\/(\\d+)\\/sessions$/", "agent:chat", "product:1"],
   ["GET", "/^\\/agent-sessions\\/(\\d+)$/", "authenticated-only", "-"],
@@ -118,6 +118,8 @@ const ROUTE_EXPECTATIONS = [
   ["GET", "/^\\/agent-sessions\\/(\\d+)\\/outputs$/", "authenticated-only", "-"],
   ["POST", "/^\\/agent-sessions\\/(\\d+)\\/outputs\\/(\\d+)\\/finalize$/", "agent:chat", "-"],
   ["GET", "/^\\/agent-sessions\\/(\\d+)\\/stream$/", "authenticated-only", "-"],
+  ["POST", "/^\\/agent-sessions\\/(\\d+)\\/images$/", "agent:chat", "-"],
+  ["GET", "/^\\/agent-sessions\\/(\\d+)\\/images\\/([0-9a-f-]{36})$/", "authenticated-only", "-"],
   ["GET", "/model-services", "anyOf:model:read|credential:read", "-"],
   [
     "GET",

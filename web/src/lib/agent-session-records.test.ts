@@ -74,6 +74,28 @@ test("只有工具调用、没有正文的助手消息只出工具行", () => {
   assert.equal(items[0]!.kind === "tool" ? items[0]!.summary : "", 'args=["log","--oneline"]');
 });
 
+test("用户消息里的图片引用投影成图片 id,正文照旧", () => {
+  const items = conversation([
+    record(
+      1,
+      "message",
+      message("user", [
+        { type: "text", text: "看这两张原型图" },
+        { type: "image-ref", imageId: "a1", path: "/data/agent-sessions/1/a1.png", mimeType: "image/png" },
+        { type: "image-ref", imageId: "a2", path: "/data/agent-sessions/1/a2.png", mimeType: "image/png" },
+      ]),
+    ),
+  ]);
+  assert.equal(items.length, 1);
+  assert.deepEqual(items[0]!.kind === "user" ? items[0]! : null, {
+    kind: "user",
+    seq: 1,
+    at: "2026-09-12T00:00:00.000Z",
+    text: "看这两张原型图",
+    images: ["a1", "a2"],
+  });
+});
+
 test("认不出来的条目与空消息一律跳过", () => {
   const items = conversation([
     record(1, "custom", { type: "custom", customType: "x", data: { a: 1 } }),

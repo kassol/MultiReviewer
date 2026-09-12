@@ -28,6 +28,7 @@ import {
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { pngBytes, pngSize } from "./support/png.ts";
 import { seedReviewRule } from "./support/store-seed.ts";
 import { startModelStub, type StubRequest, type StubTurn } from "./support/model-stub.ts";
 import { frameReader } from "./support/sse.ts";
@@ -54,7 +55,11 @@ type Record = {
  * 回会话 id 与创建者的 cookie。模型服务的地址就是假服务的地址,因此解析出的辅助模型
  * (生效组合首个)打到它上面。
  */
-async function startSessionHarness(turns: readonly StubTurn[]): Promise<{
+async function startSessionHarness(
+  turns: readonly StubTurn[],
+  /** 模型目录声明的输入能力(issue #336)。省略即只有文本,图片用例传含 image 的那一份。 */
+  input?: readonly ("text" | "image")[],
+): Promise<{
   h: PanelHarness;
   cookie: string;
   sessionId: number;
@@ -63,7 +68,13 @@ async function startSessionHarness(turns: readonly StubTurn[]): Promise<{
 }> {
   const stub = await startModelStub(turns);
   const h = await startPanelHarness();
-  seedAvailableModelService(h, HARNESS_SPEC.provider, [HARNESS_SPEC.model], {}, stub.baseUrl);
+  seedAvailableModelService(
+    h,
+    HARNESS_SPEC.provider,
+    [HARNESS_SPEC.model],
+    input === undefined ? {} : { input: [...input] },
+    stub.baseUrl,
+  );
   assert.equal(
     (await h.api("POST", "/repos", { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo })).status,
     201,
@@ -93,11 +104,18 @@ function send(
   clientMessageId: string,
   text: string,
   mode?: "followUp" | "steer",
+  /** 这条消息带的图片 id(issue #336)。 */
+  images?: readonly string[],
 ): Promise<Response> {
   return fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/messages`, {
     method: "POST",
     headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ clientMessageId, text, ...(mode === undefined ? {} : { mode }) }),
+    body: JSON.stringify({
+      clientMessageId,
+      text,
+      ...(mode === undefined ? {} : { mode }),
+      ...(images === undefined ? {} : { images }),
+    }),
   });
 }
 
@@ -300,6 +318,47 @@ test("子进程跑完一个回合留着:第二条消息在同一个会话里接�
       "user",
       "assistant",
     ]);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("带图的消息:base64 进了模型请求,记录里只剩文件引用", async () => {
+  const turns: StubTurn[] = [{ text: "图上是报销单的列表页", usage: { input: 40, output: 8 } }];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns, [
+    "text",
+    "image",
+  ]);
+  try {
+    const upload = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/images`, {
+      method: "POST",
+      headers: { cookie, "content-type": "image/png" },
+      body: pngBytes(24, 16),
+    });
+    const uploadText = await upload.text();
+    assert.equal(upload.status, 201, uploadText);
+    const { image } = JSON.parse(uploadText) as { image: { imageId: string } };
+
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE, undefined, [image.imageId])).status, 202);
+    await messagesAtLeast(h.db.path, sessionId, 2);
+    await idle(h, cookie, sessionId);
+
+    // 模型请求里那条用户消息带着这张图的 base64,正文仍是人发的那句话。
+    const user = requests[0]!.messages.find((message) => message.role === "user");
+    assert.match(user?.content ?? "", new RegExp(MESSAGE));
+    assert.equal(user?.images?.length, 1);
+    assert.equal(user?.images?.[0]!.mimeType, "image/png");
+    const sent = Buffer.from(user!.images![0]!.data, "base64");
+    assert.deepEqual(pngSize(sent), { width: 24, height: 16 });
+
+    // 记录里只剩文件引用:base64 不进库(ADR 0031 的图片例外)。
+    const landed = await records(h, cookie, sessionId);
+    const entry = JSON.stringify(landed.find((record) => record.entry.message?.role === "user"));
+    assert.match(entry, /"image-ref"/);
+    assert.match(entry, new RegExp(`"imageId":"${image.imageId}"`));
+    assert.doesNotMatch(entry, /"type":"image"/);
+    assert.doesNotMatch(entry, new RegExp(sent.toString("base64").slice(0, 64)));
   } finally {
     await disposeAgentSessions();
     await close();

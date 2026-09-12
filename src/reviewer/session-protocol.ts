@@ -9,6 +9,7 @@ import type { ThinkingLevel } from "../config.ts";
 import type { ProjectFact, ReviewRule } from "../review/finding.ts";
 import type { AgentSessionOutputKind } from "../review/store.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
+import type { AgentSessionImageRef } from "./session-images.ts";
 
 /**
  * 主进程与子进程各自往会话记录里放的那两种 Pi 条目的 `customType`(issue #337)。放在这份
@@ -61,8 +62,18 @@ export type AgentSessionMessageMode = "followUp" | "steer";
 /** 主进程投给子进程的指令。 */
 export type SessionCommand =
   | { kind: "open"; request: OpenSessionRequest }
-  /** 跑一次 prompt。会话空闲时立刻开跑,执行中按 `mode` 进 Pi 的队列。 */
-  | { kind: "prompt"; text: string; mode: AgentSessionMessageMode }
+  /**
+   * 跑一次 prompt。会话空闲时立刻开跑,执行中按 `mode` 进 Pi 的队列。
+   *
+   * `images` 是这条消息带的那几张图(issue #336),**只带路径与 mimeType**:base64 不过 IPC,
+   * 子进程自己读文件填。空数组即没带图。
+   */
+  | {
+      kind: "prompt";
+      text: string;
+      mode: AgentSessionMessageMode;
+      images?: readonly AgentSessionImageRef[];
+    }
   /**
    * 往会话里放一条进模型上下文的自定义消息,不开新回合(issue #337)。定稿与换版走它:
    * 那是人做的动作,agent 下一轮要知道哪一版定了。落库由镜像那条路完成,与别的条目同形。
