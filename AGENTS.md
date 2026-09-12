@@ -155,6 +155,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-12: wayfinder 地图[Agent 会话底座与需求拆分](https://github.com/kassol/MultiReviewer/issues/318)定下[Agent 会话底座与需求拆分以哪些场景验收](https://github.com/kassol/MultiReviewer/issues/327),**九张票全部关闭,地图走完**:21 条验收场景分落 HTTP + 临时库、真子进程 + 假模型服务、smoke 真模型契约、00-test 线上 ego-browser 主链路(只用 zhangxu/review)。下一步 `/to-spec` 收成「Agent 会话底座」与「需求拆分」两份 spec。
 - 2026-09-12: wayfinder 地图[Agent 会话底座与需求拆分](https://github.com/kassol/MultiReviewer/issues/318)定下[写代码类用途要底座预留什么边界](https://github.com/kassol/MultiReviewer/issues/326):会话用途成为会话字段(这版只有需求拆分);锚点不预留;agent 只在专属分支改、以 PR 交人审;写工具只在写用途会话注册;修复后靠复核自动处置。`CONTEXT.md` 新增「会话用途」。
 - 2026-09-12: wayfinder 地图[Agent 会话底座与需求拆分](https://github.com/kassol/MultiReviewer/issues/318)定下[禅道接入要底座预留什么边界](https://github.com/kassol/MultiReviewer/issues/325):底座不预留禅道结构,只在 spec 写明会话外部需求引用、产品禅道 id、用户禅道账号三处可空扩展点;禅道需求以带来源标注的用户消息进会话;禅道为开源版 22.4,接入另开地图。
 - 2026-09-12: wayfinder 地图[Agent 会话底座与需求拆分](https://github.com/kassol/MultiReviewer/issues/318)定下[会话页与产出面板长什么样](https://github.com/kassol/MultiReviewer/issues/324):三栏工作台(产品与我的会话 / 对话 / 产出)。三种布局的原型留在分支 `prototype/agent-session-panel`(路由 `/prototype/agent-session`,一次性代码,不进 main)。
