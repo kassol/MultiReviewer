@@ -25,7 +25,13 @@ import {
 
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import { GIT_TOOL, sessionGitTool } from "./git-tool.ts";
+import {
+  QUERY_FINDINGS_TOOL,
+  resolveFindingQuery,
+  sessionFindingTool,
+} from "./session-finding-tool.ts";
 import { sessionOutputTools } from "./session-output-tools.ts";
+import { purposeSystemPrompt } from "./session-purposes.ts";
 import {
   AGENT_SESSION_NOTE_CUSTOM_TYPE,
   type AgentSessionMessageMode,
@@ -105,14 +111,17 @@ export function sessionReadOnlyTools(sessionRoot: string): ToolDefinition<never,
   ];
 }
 
-/** 这次会话注册的工具清单:只读四件套加受控 git。写工具与 bash 一个都不在。 */
+/**
+ * 这次会话注册的工具清单:只读四件套、受控 git,加历史 Finding 查询(issue #338)。写工具
+ * 与 bash 一个都不在。
+ */
 export function sessionTools(): string[] {
-  return [...READ_ONLY_TOOLS, GIT_TOOL];
+  return [...READ_ONLY_TOOLS, GIT_TOOL, QUERY_FINDINGS_TOOL];
 }
 
 /**
- * 会话的系统提示(issue #333)。这是底座那一份:会话是什么、工作区长什么样、工具面到哪里
- * 为止、各仓库的知识集。用途自己那一份提示随用途的 spec 接入,这里只把用途名写成一行。
+ * 会话的系统提示(issue #333)。先是底座那一份:会话是什么、工作区长什么样、工具面到哪里
+ * 为止、各仓库的知识集;末尾接用途自己那一段(`session-purposes.ts`,issue #338)。
  */
 export function sessionSystemPrompt(request: OpenSessionRequest): string {
   const repos = request.repos.map((repo) => `${repo.owner}/${repo.repo}`);
@@ -129,6 +138,8 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
     "Every path you pass to read, grep, find and ls stays inside the session root — an absolute path outside it, or a path that climbs out with .., is refused. The git tool reads one repository per call: every path argument starts with the <owner>/<repo>/ prefix, and that prefix picks the repository.",
     "",
     "Your tools are read-only. You cannot edit files, write files or run shell commands. Read the code before you claim anything about it: the repositories above are the evidence.",
+    "",
+    `The ${QUERY_FINDINGS_TOOL} tool reads what earlier review rounds reported on one of these repositories: ask it about the part of the code you are about to speak of, and you see what has already gone wrong there.`,
   ];
   for (const repo of request.repos) {
     if (repo.rules.length === 0 && repo.facts.length === 0) continue;
@@ -150,6 +161,8 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
       );
     }
   }
+  const purpose = purposeSystemPrompt(request.purpose);
+  if (purpose !== undefined) sections.push("", purpose);
   return sections.join("\n");
 }
 
@@ -221,6 +234,7 @@ async function open(request: OpenSessionRequest): Promise<void> {
     customTools: [
       ...(sessionReadOnlyTools(request.sessionRoot) as unknown as ToolDefinition[]),
       sessionGitTool(request.sessionRoot, repos),
+      sessionFindingTool({ repos, send }) as unknown as ToolDefinition,
       ...(outputTools as unknown as ToolDefinition[]),
     ],
     send,
@@ -348,6 +362,15 @@ function handle(command: SessionCommand): Promise<void> {
     case "clear-queue":
       clearQueue();
       return Promise.resolve();
+    case "finding-query-result": {
+      // 历史 Finding 查询的回应(issue #338):兑现等着的那次工具调用,没有别的事要做。
+      const { findings, failure } = command;
+      resolveFindingQuery(command.requestId, {
+        findings,
+        ...(failure === undefined ? {} : { failure }),
+      });
+      return Promise.resolve();
+    }
   }
 }
 

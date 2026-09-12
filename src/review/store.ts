@@ -5,6 +5,7 @@
  * 结果,默认 `unknown`。
  */
 import { createHash } from "node:crypto";
+import { matchesGlob } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import {
@@ -3352,6 +3353,18 @@ export type Store = {
    */
   stageHistory(scope: StageScope): HistoryFinding[];
   /**
+   * 一个仓库的历史 Finding,供 Agent 会话的查询工具按需取(issue #338)。
+   *
+   * 折叠键与 `stageHistory` 同一份(`identityKey`),每条 Identity 取最新一行——那一行
+   * 才带着当前的处置状态与正文;「已延续」的那条整条不回,它已经交接到新位置,新位置
+   * 自己在结果里。跨阶段取:会话里问的是「这块代码历史上出过什么问题」,不是某一个
+   * pull request 的现状。
+   *
+   * `pathGlob` 与 `limit` 在 JS 里收:glob 要在截断之前过一遍,否则截到的 50 条里能匹配
+   * 上的只剩几条。一个仓库的 finding 行数有界(轮次 × 每轮的条数),全取回来付得起。
+   */
+  listRepoFindings(query: RepoFindingQuery, limit: number): RepoFinding[];
+  /**
    * 一个审查阶段的当前状态(issue #168):按 Finding Identity 折叠的 Finding 列表、
    * 三个计数与逐轮的时间线。
    *
@@ -3973,6 +3986,29 @@ function groupStageRuns(
     .reverse()
     .map((group) => ({ ...group, runs: [...group.runs].reverse() }));
 }
+
+/** 历史 Finding 查询的三个条件(issue #338)。仓库必填,另两项缺席即不按它过滤。 */
+export type RepoFindingQuery = {
+  owner: string;
+  repo: string;
+  /** 仓库相对的路径 glob,`path.matchesGlob` 语义。 */
+  pathGlob?: string;
+  disposition?: Disposition;
+};
+
+/** 查询回来的一条历史 Finding:标题、严重度、文件行、处置状态与综合说明三段。 */
+export type RepoFinding = {
+  file: string;
+  line: number;
+  title: string;
+  severity: Severity;
+  disposition: Disposition;
+  /** 综合说明的「问题」段(CONTEXT.md 综合说明)。 */
+  description: string;
+  /** 「影响」与「建议」两段。升级前落的行没存过,那时缺席。 */
+  impact?: string;
+  suggestion?: string;
+};
 
 function stageScope(scope: StageScope): [string, (string | number)[]] {
   return "rangeReviewId" in scope
@@ -7272,6 +7308,54 @@ export function openStore(dbPath: string): Store {
                 category: String(row["category"]) as Category,
                 description: String(row["description"]),
               }),
+        };
+      });
+    },
+
+    listRepoFindings(query, limit) {
+      const conditions = ["run.owner = ?", "run.repo = ?"];
+      const params: (string | number)[] = [query.owner, query.repo];
+      if (query.disposition !== undefined) {
+        conditions.push("s.disposition = ?");
+        params.push(query.disposition);
+      }
+      const rows = db
+        .prepare(
+          `WITH scoped AS (
+             SELECT f.id AS id, f.file AS file, f.line AS line, f.title AS title,
+                    f.severity AS severity, f.disposition AS disposition,
+                    f.description AS description, f.impact AS impact,
+                    f.suggestion AS suggestion,
+                    ${identityKey("f.")} AS fp
+               FROM finding f
+               JOIN review_run run ON f.run_id = run.id
+              WHERE run.owner = ? AND run.repo = ?
+           )
+           SELECT s.* FROM scoped s
+            WHERE s.id = (SELECT MAX(latest.id) FROM scoped latest
+                           WHERE latest.file = s.file AND latest.fp = s.fp)
+              AND s.disposition <> 'continued'
+              ${query.disposition === undefined ? "" : "AND s.disposition = ?"}
+            ORDER BY s.id DESC`,
+        )
+        .all(...params);
+      const matched =
+        query.pathGlob === undefined
+          ? rows
+          : rows.filter((row) => matchesGlob(String(row["file"]), query.pathGlob!));
+      return matched.slice(0, limit).map((row) => {
+        const impact = row["impact"] === null ? undefined : String(row["impact"]);
+        const suggestion = row["suggestion"] === null ? undefined : String(row["suggestion"]);
+        return {
+          file: String(row["file"]),
+          line: Number(row["line"]),
+          // 升级前的历史行没有标题,占位为空:与 `stageHistory` 同律。
+          title: row["title"] === null ? "" : String(row["title"]),
+          severity: String(row["severity"]) as Severity,
+          disposition: String(row["disposition"]) as Disposition,
+          description: String(row["description"]),
+          ...(impact === undefined ? {} : { impact }),
+          ...(suggestion === undefined ? {} : { suggestion }),
         };
       });
     },

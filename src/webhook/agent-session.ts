@@ -28,6 +28,7 @@ import {
   type AgentSessionRecord,
   type AgentSessionStatus,
   type ProductRepoRecord,
+  type RepoFindingQuery,
 } from "../review/store.ts";
 import {
   agentSessionChannel,
@@ -36,6 +37,7 @@ import {
 } from "../review/trace.ts";
 import { MODEL_API_KEY_ENV, reviewerEnv } from "../reviewer/env.ts";
 import type { RuntimeModel } from "../reviewer/model-service-runtime.ts";
+import { FINDING_QUERY_LIMIT } from "../reviewer/session-finding-tool.ts";
 import {
   AGENT_SESSION_NOTE_CUSTOM_TYPE,
   AGENT_SESSION_OUTPUT_CUSTOM_TYPE,
@@ -337,6 +339,40 @@ export function recordAgentSessionCustomMessage(
   });
 }
 
+/**
+ * 回一次历史 Finding 查询(issue #338)。查询在这一侧做:子进程没有库连接,判断与落库都在
+ * 这一层(ADR 0017 同律)。
+ *
+ * **恒回一条**——查不动时带上原因。子进程那边的工具调用在等这条消息,少回一次它就永远等
+ * 下去。仓库在不在会话根内由子进程判(它手里就是那份清单),这里只查它问的那一个。
+ */
+function answerFindingQuery(
+  dbPath: string,
+  child: ChildProcess,
+  requestId: string,
+  query: RepoFindingQuery,
+): void {
+  let result: SessionCommand;
+  const store = openStore(dbPath);
+  try {
+    result = {
+      kind: "finding-query-result",
+      requestId,
+      findings: store.listRepoFindings(query, FINDING_QUERY_LIMIT),
+    };
+  } catch (error) {
+    result = {
+      kind: "finding-query-result",
+      requestId,
+      findings: [],
+      failure: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    store.close();
+  }
+  child.send(result);
+}
+
 /** 这个仓库生效知识集里的两型条目,按仓库分段注入系统提示(沿用现有格式)。 */
 function repoKnowledge(
   dbPath: string,
@@ -443,6 +479,9 @@ async function boot(
         return;
       case "tool":
         collectStream(session.id, entry, { tool: message.tool });
+        return;
+      case "finding-query":
+        answerFindingQuery(deps.dbPath, child, message.requestId, message.query);
         return;
       case "turn-end":
         entry.status = "idle";
