@@ -120,6 +120,20 @@ test("受控 git 的路径参数必须带仓库前缀,前缀不在会话根里�
     repos,
   );
   assert.deepEqual(blame, { repo: "acme/widgets", args: ["blame", "-L10,40:src/a.ts", "HEAD"] });
+  // 仓库根本身也是路径:`<owner>/<repo>` 与带斜杠的写法都指整个仓库,摘掉前缀后是 `.`。
+  assert.deepEqual(repoPrefixedGitArgs(["log", "--oneline", "-5", "--", "acme/widgets/"], repos), {
+    repo: "acme/widgets",
+    args: ["log", "--oneline", "-5", "--", "."],
+  });
+  assert.deepEqual(repoPrefixedGitArgs(["ls-tree", "HEAD", "acme/gadgets"], repos), {
+    repo: "acme/gadgets",
+    args: ["ls-tree", "HEAD", "."],
+  });
+  // 会话根下只有一个仓库时,没有路径参数的调用就落在它上面。
+  assert.deepEqual(repoPrefixedGitArgs(["log", "--oneline", "-5"], ["acme/widgets"]), {
+    repo: "acme/widgets",
+    args: ["log", "--oneline", "-5"],
+  });
 });
 
 test("受控 git 在选中的那棵工作树上执行,白名单那几道闸一道不少", async () => {

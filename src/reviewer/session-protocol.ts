@@ -97,6 +97,12 @@ export type SessionCommand =
    * 那是人做的动作,agent 下一轮要知道哪一版定了。落库由镜像那条路完成,与别的条目同形。
    */
   | { kind: "custom-message"; text: string }
+  /**
+   * 往会话里放一条不进模型上下文的 `custom` 条目(issue #337 的产出卡片标记)。要经子进程
+   * 放:Pi 会话在它的内存里,主进程直接落库的那一条接不上链——下一条回复仍挂在它前面那条
+   * 上,这一条就成了旁支,重建时被算成「不在上下文」。落库由镜像那条路完成。
+   */
+  | { kind: "custom-entry"; customType: string; data: unknown }
   /** 整队清空(Pi 的 `clearQueue()`)。Pi 不支持单条撤回,因此没有单条那一档。 */
   | { kind: "clear-queue" }
   /** 中止当前这一步。排队消息保留在主进程的镜像里,下次开跑时投递。 */

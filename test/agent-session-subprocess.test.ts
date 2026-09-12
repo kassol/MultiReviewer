@@ -26,7 +26,11 @@ import { test } from "node:test";
 import type { ReviewerUsage } from "../src/review/finding.ts";
 import { openStore } from "../src/review/store.ts";
 import { MISSING_IMAGE_TEXT } from "../src/reviewer/session-images.ts";
-import { agentSessionStatus, disposeAgentSessions } from "../src/webhook/agent-session.ts";
+import {
+  agentSessionContextGap,
+  agentSessionStatus,
+  disposeAgentSessions,
+} from "../src/webhook/agent-session.ts";
 import {
   GITEA_REPO,
   HARNESS_SPEC,
@@ -695,6 +699,13 @@ test("调一次产出工具即落一版产出,经 SSE 推到面板;再交即新�
     );
     assert.equal((both[0]!.payload as { summary: string }).summary, "第一版拆分");
     assert.equal((both[1]!.payload as { summary: string }).summary, "第二版拆分");
+    // 两条产出标记都接在链上:主进程直接落库会让它们成为旁支,重建时被算成「不在上下文」。
+    const store = openStore(h.db.path);
+    try {
+      assert.equal(agentSessionContextGap(store.agentSessionEntryLinks(sessionId)), 0);
+    } finally {
+      store.close();
+    }
   } finally {
     await disposeAgentSessions();
     await close();

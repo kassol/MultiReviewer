@@ -404,6 +404,11 @@ function handle(command: SessionCommand): Promise<void> {
       return prompt(command.text, command.mode, command.images ?? []);
     case "custom-message":
       return customMessage(command.text);
+    case "custom-entry":
+      // 产出卡片标记之类不进上下文的条目:接在当前叶子后面,镜像回主进程落库。
+      session?.sessionManager.appendCustomEntry(command.customType, command.data);
+      mirrorEntries();
+      return Promise.resolve();
     case "stop":
       return stop();
     case "drain":

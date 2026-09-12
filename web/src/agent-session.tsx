@@ -1073,7 +1073,7 @@ export function AgentSessionPage({
       <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:gap-[18px]">
         <aside
           aria-label="产品与我的会话"
-          className="flex w-full shrink-0 flex-col gap-2.5 lg:w-[272px]"
+          className="flex w-full shrink-0 flex-col gap-2.5 lg:sticky lg:top-[100px] lg:max-h-[calc(100vh-124px)] lg:w-[272px] lg:self-start lg:overflow-y-auto"
         >
           <RailCard title="产品">
             {productQuery.data === undefined ? (
@@ -1261,7 +1261,7 @@ export function AgentSessionPage({
 
         <aside
           aria-label="会话产出"
-          className="flex w-full shrink-0 flex-col gap-2.5 xl:w-[336px]"
+          className="flex w-full shrink-0 flex-col gap-2.5 xl:sticky xl:top-[100px] xl:max-h-[calc(100vh-124px)] xl:w-[336px] xl:self-start xl:overflow-y-auto"
         >
           <CardShell className="px-5 py-4">
             <OutputPanel

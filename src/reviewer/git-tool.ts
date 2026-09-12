@@ -223,9 +223,10 @@ export function repoPrefixedGitArgs(
 
   /** 一个路径参数:认出它的仓库前缀、记下选中的工作树,回仓库内的相对路径。 */
   const strip = (path: string): string | undefined => {
-    const segments = path.split("/");
-    // 至少三段:`<owner>/<repo>/<仓库内的路径>`。仓库根本身不是可查的路径参数。
-    if (segments.length < 3 || segments.some((segment) => segment === "")) {
+    // `<owner>/<repo>` 与 `<owner>/<repo>/` 指仓库根本身(整个仓库的 log / ls-tree 就这么写),
+    // 摘掉前缀后是 `.`;更深的路径至少三段,中间不能有空段。
+    const segments = path.endsWith("/") && path.split("/").length === 3 ? path.slice(0, -1).split("/") : path.split("/");
+    if (segments.length < 2 || segments.some((segment) => segment === "")) {
       rejection = `rejected: ${path} — ${prefixHint}`;
       return undefined;
     }
@@ -239,7 +240,7 @@ export function repoPrefixedGitArgs(
       return undefined;
     }
     repo = prefix;
-    return segments.slice(2).join("/");
+    return segments.length === 2 ? "." : segments.slice(2).join("/");
   };
 
   for (const token of args) {
@@ -272,6 +273,8 @@ export function repoPrefixedGitArgs(
 
   if (rejection !== undefined) return { rejection };
   if (repo === undefined) {
+    // 没有路径参数时选不出工作树——除非会话根下只有一个仓库,那就是它。
+    if (repos.length === 1) return { repo: repos[0]!, args: rewritten };
     return {
       rejection: `rejected: name the repository you are reading — ${prefixHint}. A call without a path cannot pick one.`,
     };

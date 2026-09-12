@@ -638,11 +638,19 @@ export function recordAgentSessionOutput(
   } finally {
     store.close();
   }
+  // 子进程活着就让它在 Pi 会话里接上这一条:主进程直接落库的条目接不上链,下一条回复仍挂在
+  // 它前面那条上,这一条成了旁支,重建时被算成「不在上下文」(线上验收时撞到)。
+  const entry = registry.get(sessionId);
+  const data = { kind: stored.kind, version: stored.version };
+  if (entry !== undefined) {
+    sendCommand(entry, { kind: "custom-entry", customType: AGENT_SESSION_OUTPUT_CUSTOM_TYPE, data });
+    return;
+  }
   recordEntry(deps.dbPath, sessionId, {
     ...ownEntryBase(deps, sessionId),
     type: "custom",
     customType: AGENT_SESSION_OUTPUT_CUSTOM_TYPE,
-    data: { kind: stored.kind, version: stored.version },
+    data,
   });
 }
 
