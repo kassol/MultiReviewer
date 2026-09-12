@@ -6,6 +6,7 @@
  * 认不出来的一律跳过——后端多落一种条目不该让页面崩,也不该在对话流里摊出一段 JSON。
  *
  * 工具结果不进对话流:人要知道的是「它在读哪个文件」,整段输出属于过程,不属于对话。
+ * 系统消息(issue #334 起的 custom 条目)另成一档:它不进模型上下文,但人要看得见。
  */
 
 /** 记录表里的一行。`entry` 的形状由 Pi 定,这里只按需要往里看。 */
@@ -23,10 +24,17 @@ export type AgentSessionRecord = {
   };
 };
 
+/**
+ * 系统消息的 custom 条目类型(ADR 0031,issue #334):人点停止、被排空中止、静默判死与模型
+ * 切换都落这一种,不进模型上下文。字面量与 `src/reviewer/session-worker.ts` 那一份相同。
+ */
+export const SYSTEM_MESSAGE_ENTRY = "multireviewer_system_message";
+
 /** 对话流里的一项。 */
 export type ConversationItem =
   | { kind: "user"; seq: number; at: string; text: string }
   | { kind: "assistant"; seq: number; at: string; text: string }
+  | { kind: "system"; seq: number; at: string; text: string }
   | { kind: "tool"; seq: number; at: string; name: string; summary: string };
 
 /** 一条消息的正文:Pi 的 content 既可以是裸字符串,也可以是分块数组。 */
@@ -54,9 +62,22 @@ export function toolSummary(args: unknown): string {
   return text.length <= 120 ? text : `${text.slice(0, 120)}…`;
 }
 
+/** 系统消息那一条的正文。不是这一种 custom 条目、或者没有正文,都回空串。 */
+function systemText(entry: unknown): string {
+  const row = entry as { customType?: unknown; data?: { text?: unknown } } | null;
+  if (row?.customType !== SYSTEM_MESSAGE_ENTRY) return "";
+  return typeof row.data?.text === "string" ? row.data.text.trim() : "";
+}
+
 export function conversation(records: readonly AgentSessionRecord[]): ConversationItem[] {
   const items: ConversationItem[] = [];
   for (const record of records) {
+    if (record.type === "custom") {
+      // 系统消息灰底一行(spec #329):人点了停止这类事实在对话流里要看得见。
+      const text = systemText(record.entry);
+      if (text !== "") items.push({ kind: "system", seq: record.seq, at: record.at, text });
+      continue;
+    }
     if (record.type !== "message") continue;
     const message = (record.entry as { message?: { role?: unknown; content?: unknown } } | null)
       ?.message;

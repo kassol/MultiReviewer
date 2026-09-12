@@ -8,6 +8,7 @@ import { test } from "node:test";
 
 import {
   conversation,
+  SYSTEM_MESSAGE_ENTRY,
   toolSummary,
   type AgentSessionRecord,
 } from "./agent-session-records.ts";
@@ -79,6 +80,26 @@ test("认不出来的条目与空消息一律跳过", () => {
     record(5, "message", message("assistant", "   ")),
   ]);
   assert.deepEqual(items, []);
+});
+
+test("人点停止那条系统消息成为灰底一行", () => {
+  const items = conversation([
+    record(1, "message", message("assistant", [{ type: "text", text: "开始读" }])),
+    record(2, "custom", {
+      type: "custom",
+      customType: SYSTEM_MESSAGE_ENTRY,
+      data: { text: "人点了停止:已中止当前这一步。" },
+    }),
+    // 同一种条目但没有正文:跳过,不留一行空白。
+    record(3, "custom", { type: "custom", customType: SYSTEM_MESSAGE_ENTRY, data: {} }),
+  ]);
+  assert.deepEqual(
+    items.map((item) => [item.kind, item.kind === "tool" ? item.name : item.text]),
+    [
+      ["assistant", "开始读"],
+      ["system", "人点了停止:已中止当前这一步。"],
+    ],
+  );
 });
 
 test("参数摘要一行放得下:超出就截断", () => {

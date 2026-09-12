@@ -1,7 +1,23 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { CheckCircledIcon, CrossCircledIcon, PlusIcon } from "@radix-ui/react-icons";
-import { Callout, Dialog, Flex, Select, Skeleton, Text, TextArea } from "@radix-ui/themes";
+import {
+  CheckCircledIcon,
+  CrossCircledIcon,
+  PlusIcon,
+  StopIcon,
+  TrashIcon,
+} from "@radix-ui/react-icons";
+import {
+  Badge,
+  Callout,
+  Dialog,
+  Flex,
+  SegmentedControl,
+  Select,
+  Skeleton,
+  Text,
+  TextArea,
+} from "@radix-ui/themes";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { CardShell } from "@/components/card-shell";
@@ -219,12 +235,28 @@ export function CreateSessionDialog({
   );
 }
 
+/** 排队中的一条消息(issue #334)。Pi 不支持单条撤回,所以它没有标识,也没有单条动作。 */
+export type QueuedMessage = { mode: "followUp" | "steer"; text: string };
+
+/** 两种模式的文案。界面上只说中文那一半,括号里的英文是 Pi 的说法,留着好对上文档。 */
+const MODE_LABEL: Record<QueuedMessage["mode"], string> = {
+  followUp: "排队",
+  steer: "插话",
+};
+
+/** 正在生成的那一截:文字是累加的,工具是最近开跑的那一个。两样都不落库。 */
+type LiveStream = { text: string; tool?: string };
+
 /**
- * 中栏的对话流(issue #333)。记录打开时一次取全,之后经 SSE 追加——两条来源写同一份查询
- * 缓存,与审查轨迹同一套路(`useTrace`)。记录行是 Pi 的条目原样 JSON,投影成对话的那一步
- * 在 `lib/agent-session-records.ts`。
+ * 中栏的对话流(issue #333、#334)。记录打开时一次取全,之后经 SSE 追加——两条来源写同一份
+ * 查询缓存,与审查轨迹同一套路(`useTrace`)。记录行是 Pi 的条目原样 JSON,投影成对话的那
+ * 一步在 `lib/agent-session-records.ts`。
+ *
+ * 不带 `seq` 的瞬时帧(流式 delta 与在跑的工具)不进那份数组:它们渲染成对话流末尾一个临时
+ * 区块,落库条目一到就清掉——那一段文字此刻已经是记录里的一条了。
  */
 function Conversation({ sessionId, running }: { sessionId: number; running: boolean }) {
+  const [live, setLive] = useState<LiveStream | null>(null);
   const { events, query, stream } = useTrace<AgentSessionRecord>({
     queryKey: ["agent-session-records", sessionId],
     path: `/agent-sessions/${sessionId}/records`,
@@ -232,8 +264,22 @@ function Conversation({ sessionId, running }: { sessionId: number; running: bool
     field: "records",
     // 会话没有「结束」那一刻:空闲着仍然续得上,流一直挂着等下一条。
     live: true,
+    onTransient: (frame) => {
+      const payload = frame.payload as { text?: unknown; tool?: unknown } | null;
+      const text = typeof payload?.text === "string" ? payload.text : "";
+      const tool = typeof payload?.tool === "string" ? payload.tool : undefined;
+      setLive((prev) => {
+        const tracked = tool ?? prev?.tool;
+        return {
+          text: (prev?.text ?? "") + text,
+          ...(tracked === undefined ? {} : { tool: tracked }),
+        };
+      });
+    },
   });
   const items = conversation(events);
+  // 落库条目到了就把临时块清掉:它说的那段话已经在对话流里。
+  useEffect(() => setLive(null), [events.length]);
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
@@ -269,6 +315,13 @@ function Conversation({ sessionId, running }: { sessionId: number; running: bool
                     {item.summary}
                   </span>
                 </div>
+              ) : item.kind === "system" ? (
+                /* 系统消息灰底一行:它不进模型上下文,但人要看得见(ADR 0031)。 */
+                <div className="min-w-0 rounded-lg bg-fill px-4 py-2">
+                  <span className="text-base text-text-secondary">
+                    系统 · {localSecond(item.at)} · {item.text}
+                  </span>
+                </div>
               ) : (
                 <div
                   className={`flex min-w-0 flex-col gap-1 rounded-lg px-4 py-3 ${
@@ -288,17 +341,84 @@ function Conversation({ sessionId, running }: { sessionId: number; running: bool
         </ol>
       )}
 
-      {running ? <StreamStatus stream={stream} /> : null}
+      {/* 正在跑的工具一行与正在生成的文字:瞬时帧的去处,落库条目一到就换成真条目。 */}
+      {live?.tool === undefined ? null : (
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 px-1">
+          <span className="font-mono text-base text-text">{live.tool}</span>
+          <span className="text-xs text-text-secondary">在跑</span>
+        </div>
+      )}
+      {live === null || live.text === "" ? null : (
+        <div className="flex min-w-0 flex-col gap-1 rounded-lg border border-card-line bg-surface px-4 py-3">
+          <span className="text-base text-text-muted">agent · 正在回</span>
+          <p className="min-w-0 whitespace-pre-wrap break-words text-lg">
+            {live.text}
+            <span className="ml-0.5 inline-block animate-pulse font-bold">▍</span>
+          </p>
+        </div>
+      )}
+
+      {running ? (
+        <>
+          {/* 「在跑」状态行:工具名在上面那一行,这里只说这个会话此刻在跑。 */}
+          <p className="px-1 text-sm text-text-secondary" aria-live="polite">
+            agent 在跑
+          </p>
+          <StreamStatus stream={stream} />
+        </>
+      ) : null}
     </div>
   );
 }
 
 /**
- * 一个 Agent 会话的详情页(原型 A 的三栏工作台,issue #332、#333)。左栏产品与我的会话、
- * 中栏对话流与输入框、右栏产出。
+ * 排队块(原型 A)。**只有「清空队列」一个动作**:Pi 不支持单条撤回,给一个假的单条删除按钮
+ * 只会让人以为撤得回来。一条都没排着时不渲染。
+ */
+function QueueBlock({
+  queue,
+  busy,
+  onClear,
+}: {
+  queue: readonly QueuedMessage[];
+  busy: boolean;
+  onClear: () => void;
+}) {
+  if (queue.length === 0) return null;
+  return (
+    <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-line bg-sunken px-3 py-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <Text as="span" size="2" weight="medium">
+          排队消息 {queue.length} 条
+        </Text>
+        <Button variant="soft" color="gray" size="1" disabled={busy} onClick={onClear}>
+          <TrashIcon aria-hidden />
+          清空队列
+        </Button>
+      </div>
+      <ol className="flex min-w-0 flex-col gap-1.5" aria-label="排队消息">
+        {queue.map((message, index) => (
+          <li key={`${index}-${message.text}`} className="flex min-w-0 items-start gap-2">
+            <Badge color={message.mode === "steer" ? "orange" : "gray"} variant="soft">
+              {MODE_LABEL[message.mode]}
+            </Badge>
+            <span className="min-w-0 flex-1 break-words text-base">{message.text}</span>
+          </li>
+        ))}
+      </ol>
+      <Text as="p" size="2" color="gray">
+        不支持单条撤回,只能整队清空。
+      </Text>
+    </div>
+  );
+}
+
+/**
+ * 一个 Agent 会话的详情页(原型 A 的三栏工作台,issue #332、#333、#334)。左栏产品与我的
+ * 会话、中栏对话流与输入区、右栏产出(issue #336)。
  *
- * 执行中输入框置灰、按钮写「执行中」:排队与插话在 issue #334,在那之前执行中的新消息会被
- * 服务端挡下,按钮先把这件事说清楚。产出在 issue #336。
+ * 执行中输入框照样能写:发出去的那一条按所选模式排队或插话,停止只中止当前这一步。空闲时
+ * 两种模式等同直接开跑,切换因此只在执行中才有分别——文案把这件事说出来,而不是把切换藏起来。
  */
 export function AgentSessionPage({
   productId,
@@ -314,13 +434,15 @@ export function AgentSessionPage({
   const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [draft, setDraft] = useState("");
+  const [mode, setMode] = useState<QueuedMessage["mode"]>("followUp");
 
   const sessionQuery = useQuery({
     queryKey: ["agent-sessions", sessionId],
-    queryFn: async () =>
-      (await fetchJson<{ session: AgentSession }>(`/agent-sessions/${sessionId}`)).session,
-    // 在跑时轮询:回合结束没有单独的事件,状态是会话自己那一格(issue #333)。
-    refetchInterval: (query) => (query.state.data?.status === "running" ? 2000 : false),
+    queryFn: () =>
+      fetchJson<{ session: AgentSession; queue: QueuedMessage[] }>(`/agent-sessions/${sessionId}`),
+    // 在跑时轮询:回合结束与队列变动都没有单独的事件,状态与排队列表是会话自己那两格
+    // (issue #333、#334)。
+    refetchInterval: (query) => (query.state.data?.session.status === "running" ? 2000 : false),
   });
   const productQuery = useQuery({
     queryKey: ["products", productId],
@@ -328,19 +450,39 @@ export function AgentSessionPage({
   });
   const sessionsQuery = useProductSessions(productId);
 
-  const session = sessionQuery.data;
+  const session = sessionQuery.data?.session;
+  const queue = sessionQuery.data?.queue ?? [];
   const running = session?.status === "running";
+  const refresh = (): Promise<void> =>
+    queryClient.invalidateQueries({ queryKey: ["agent-sessions", sessionId] });
   const post = useMutation({
     mutationFn: (text: string) =>
       send(`/agent-sessions/${sessionId}/messages`, "POST", {
         // 一次发送一个 id:同一个 id 重发服务端不会再入队,回的是第一次的受理结果。
         clientMessageId: crypto.randomUUID(),
         text,
+        mode,
       }),
     onSuccess: async () => {
       setDraft("");
       setFeedback(null);
-      await queryClient.invalidateQueries({ queryKey: ["agent-sessions", sessionId] });
+      await refresh();
+    },
+    onError: (error: Error) => setFeedback({ text: error.message, error: true }),
+  });
+  const stop = useMutation({
+    mutationFn: () => send(`/agent-sessions/${sessionId}/stop`, "POST"),
+    onSuccess: async () => {
+      setFeedback(null);
+      await refresh();
+    },
+    onError: (error: Error) => setFeedback({ text: error.message, error: true }),
+  });
+  const clearQueue = useMutation({
+    mutationFn: () => send(`/agent-sessions/${sessionId}/queue`, "DELETE"),
+    onSuccess: async () => {
+      setFeedback(null);
+      await refresh();
     },
     onError: (error: Error) => setFeedback({ text: error.message, error: true }),
   });
@@ -442,7 +584,7 @@ export function AgentSessionPage({
               <>
                 <Text as="p" size="2" color="gray">
                   {localMinute(session.createdAt)} 由 {session.createdBy} 建立
-                  {running ? " · 执行中" : ""}
+                  {running ? " · 在跑" : ""}
                 </Text>
                 <Conversation sessionId={sessionId} running={running} />
                 {/* 发消息只有创建者能做:别人读得到这个会话,发不了。 */}
@@ -455,24 +597,64 @@ export function AgentSessionPage({
                       if (text !== "") post.mutate(text);
                     }}
                   >
+                    <QueueBlock
+                      queue={queue}
+                      busy={clearQueue.isPending}
+                      onClear={() => clearQueue.mutate()}
+                    />
                     <TextArea
                       aria-label="发消息"
                       rows={3}
                       value={draft}
-                      disabled={running || post.isPending}
-                      placeholder={running ? "执行中,等这一轮跑完再发。" : "说一句话,回车换行。"}
+                      disabled={post.isPending}
+                      placeholder={
+                        running ? "在跑:这一条按下面选的模式投。" : "说一句话,回车换行。"
+                      }
                       onChange={(event) => setDraft(event.target.value)}
                     />
-                    <div className="flex justify-end">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <SegmentedControl.Root
+                        size="1"
+                        value={mode}
+                        onValueChange={(next) => setMode(next as QueuedMessage["mode"])}
+                        aria-label="发消息的模式"
+                      >
+                        <SegmentedControl.Item value="followUp">排队</SegmentedControl.Item>
+                        <SegmentedControl.Item value="steer">插话</SegmentedControl.Item>
+                      </SegmentedControl.Root>
+                      <div className="flex-1" />
+                      <Button
+                        type="button"
+                        variant="soft"
+                        color="red"
+                        size={{ initial: "3", sm: "2" }}
+                        disabled={!running || stop.isPending}
+                        onClick={() => stop.mutate()}
+                      >
+                        <StopIcon aria-hidden />
+                        停止
+                      </Button>
                       <Button
                         type="submit"
                         variant="solid"
                         size={{ initial: "3", sm: "2" }}
-                        disabled={running || post.isPending || draft.trim() === ""}
+                        disabled={post.isPending || draft.trim() === ""}
                       >
-                        {running ? "执行中" : post.isPending ? "发送中…" : "发送"}
+                        {post.isPending
+                          ? "发送中…"
+                          : running
+                            ? MODE_LABEL[mode]
+                            : "发送"}
                       </Button>
                     </div>
+                    <Text as="p" size="2" color="gray">
+                      {running
+                        ? mode === "steer"
+                          ? "插话在下一个回合边界生效,不会打断正在跑的工具调用。"
+                          : "排队的消息等这一轮跑完按顺序投递。"
+                        : "空闲时两种模式一样:发出去就直接开跑。"}
+                      {running ? " 停止只中止当前这一步,排队的消息保留。" : ""}
+                    </Text>
                   </form>
                 ) : null}
                 {/* 页脚一行会话用量。 */}

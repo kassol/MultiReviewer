@@ -7,6 +7,9 @@
  *
  * 一会话一子进程。这一票建起来就常驻:回收、全局上限、静默判死、排空与重启后的惰性重建
  * 都在 issue #335。留给它的位置是登记表上的两格——状态与最后活动时刻。
+ *
+ * 排队、插话、停止与流式帧(issue #334)也在这一层:队列的真身在 Pi 那边,登记表上记一份
+ * 镜像供读接口与面板看;流式 delta 按 100ms 合并一次,经瞬时帧走同一个频道,不落库。
  */
 import { fork, type ChildProcess } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -24,10 +27,15 @@ import {
   type AgentSessionStatus,
   type ProductRepoRecord,
 } from "../review/store.ts";
-import { agentSessionChannel, publishAgentSessionRecord } from "../review/trace.ts";
+import {
+  agentSessionChannel,
+  publishAgentSessionRecord,
+  publishTransientTrace,
+} from "../review/trace.ts";
 import { MODEL_API_KEY_ENV, reviewerEnv } from "../reviewer/env.ts";
 import type { RuntimeModel } from "../reviewer/model-service-runtime.ts";
 import type {
+  AgentSessionMessageMode,
   SessionCommand,
   SessionRepoInput,
   SessionWorkerMessage,
@@ -50,6 +58,15 @@ export type AgentSessionModel = {
   thinkingLevel?: ThinkingLevel;
 };
 
+/** 排队中的一条消息(issue #334):模式与正文。Pi 不支持单条撤回,因此没有标识这一格。 */
+export type AgentSessionQueuedMessage = { mode: AgentSessionMessageMode; text: string };
+
+/** 流式帧合并的间隔。一条 delta 一帧会把 SSE 打满,人眼也看不出差别。 */
+const STREAM_FRAME_MS = 100;
+
+/** 瞬时帧的类型名(issue #334)。帧不落库,因此没有 seq,SSE 帧也就不带 `id`。 */
+export const AGENT_SESSION_STREAM_FRAME = "agent_session_stream";
+
 /** 登记表上的一个会话。`child` 在准备会话根与工作树那段时间里还没 fork。 */
 type RuntimeEntry = {
   status: AgentSessionStatus;
@@ -58,6 +75,22 @@ type RuntimeEntry = {
   child: ChildProcess | undefined;
   sessionRoot: string | undefined;
   worktrees: Worktree[];
+  /**
+   * 排队列表的镜像(issue #334)。真队列在 Pi 那边,这一份供读接口与面板看:子进程每次报
+   * `queue_update` 就按它对齐。停止时 Pi 那边被清空而这一份留着——排队消息因此不随停止丢掉,
+   * 下次开跑时从这里投递。
+   */
+  queue: AgentSessionQueuedMessage[];
+  /** 子进程还没 fork 出来时攒下的指令。建好之后按顺序补发,一条都不丢。 */
+  pending: SessionCommand[];
+  /**
+   * 已经收拢过。`disposeAgentSessions` 可能正赶上这个会话在备工作树:那时还没 fork,杀不到
+   * 子进程,而备完之后照样会 fork 出一个——它的 IPC 通道会让进程再也退不出去。这一格让那一下
+   * fork 之后当场收掉。
+   */
+  disposed: boolean;
+  /** 这一次合并窗口里攒下的流式帧内容。`timer` 不为空即窗口开着。 */
+  stream: { text: string; tool: string | undefined; timer: NodeJS.Timeout | undefined };
 };
 
 /**
@@ -69,6 +102,14 @@ const registry = new Map<number, RuntimeEntry>();
 /** 这个会话此刻的状态。没有子进程即空闲:读接口拿它覆盖库里那一列。 */
 export function agentSessionStatus(sessionId: number): AgentSessionStatus {
   return registry.get(sessionId)?.status ?? "idle";
+}
+
+/**
+ * 这个会话此刻排着哪几条消息(issue #334)。队列是进程内的事实,与「在跑」同律不落库:
+ * 没有子进程即空队列。
+ */
+export function agentSessionQueue(sessionId: number): readonly AgentSessionQueuedMessage[] {
+  return registry.get(sessionId)?.queue ?? [];
 }
 
 /**
@@ -145,6 +186,54 @@ function recordEntry(dbPath: string, sessionId: number, entry: unknown): void {
   }
 }
 
+/**
+ * 把攒下的流式帧广播出去(issue #334)。瞬时帧不落库、没有 seq,断线重连因此不回放它;
+ * 没有在线订阅者时 `publishTransientTrace` 是空操作。
+ */
+function flushStream(sessionId: number, entry: RuntimeEntry): void {
+  const { text, tool, timer } = entry.stream;
+  if (timer !== undefined) clearTimeout(timer);
+  entry.stream = { text: "", tool: undefined, timer: undefined };
+  if (text === "" && tool === undefined) return;
+  publishTransientTrace(agentSessionChannel(sessionId), {
+    kind: AGENT_SESSION_STREAM_FRAME,
+    // 正在生成的文字与正在跑的工具分两格:页面要把它们摊成两样东西。
+    payload: { text, ...(tool === undefined ? {} : { tool }) },
+  });
+}
+
+/** 攒一段流式帧内容,窗口没开就开一个。 */
+function collectStream(
+  sessionId: number,
+  entry: RuntimeEntry,
+  part: { text?: string; tool?: string },
+): void {
+  entry.stream.text += part.text ?? "";
+  if (part.tool !== undefined) entry.stream.tool = part.tool;
+  if (entry.stream.timer !== undefined) return;
+  entry.stream.timer = setTimeout(() => flushStream(sessionId, entry), STREAM_FRAME_MS);
+}
+
+/**
+ * 把排队镜像对齐到子进程报来的队列现状。插话排在排队之前:Pi 在回合边界先取插话,排队的
+ * 那些要等 agent 本来要停的那一刻,这就是它们实际的投递顺序。
+ */
+function syncQueue(
+  entry: RuntimeEntry,
+  reported: { steering: readonly string[]; followUp: readonly string[] },
+): void {
+  entry.queue = [
+    ...reported.steering.map((text) => ({ mode: "steer" as const, text })),
+    ...reported.followUp.map((text) => ({ mode: "followUp" as const, text })),
+  ];
+}
+
+/** 投一条指令给子进程。它还没 fork 出来时先攒着,建好之后按顺序补发。 */
+function sendCommand(entry: RuntimeEntry, command: SessionCommand): void {
+  if (entry.child === undefined) entry.pending.push(command);
+  else entry.child.send(command);
+}
+
 /** 这个仓库生效知识集里的两型条目,按仓库分段注入系统提示(沿用现有格式)。 */
 function repoKnowledge(
   dbPath: string,
@@ -218,6 +307,11 @@ async function boot(
     stdio: ["ignore", "inherit", "inherit", "ipc"],
   });
   entry.child = child;
+  // 备工作树那段时间里这个会话被收拢了:这一个子进程没人再用得上。
+  if (entry.disposed) {
+    child.kill("SIGKILL");
+    throw new Error("会话已经收拢");
+  }
 
   let ready: (() => void) | undefined;
   let failed: ((error: Error) => void) | undefined;
@@ -235,8 +329,19 @@ async function boot(
       case "entries":
         for (const one of message.entries) recordEntry(deps.dbPath, session.id, one);
         return;
+      case "queue":
+        syncQueue(entry, message);
+        return;
+      case "delta":
+        collectStream(session.id, entry, { text: message.text });
+        return;
+      case "tool":
+        collectStream(session.id, entry, { tool: message.tool });
+        return;
       case "turn-end":
         entry.status = "idle";
+        // 这一回合的最后一截流式内容该出去了:下一次开跑之前不会再有帧把窗口推开。
+        flushStream(session.id, entry);
         if (message.failure !== undefined) {
           console.error(`[agent-session] 会话 ${session.id} 这一回合失败:${message.failure}`);
         }
@@ -277,24 +382,43 @@ async function boot(
 }
 
 /**
- * 把一条消息投给这个会话。**同步登记「在跑」**:接口已经回了 202,而下一条消息要在这一刻
- * 就看得到它在跑——登记晚一拍,两条消息就会同时开跑。
+ * 把这个会话的子进程起出来并开跑。
  *
- * 会话空闲时立刻开跑;子进程还没起来的那一次连带把它起出来。排队与插话在 issue #334,所以
- * 执行中的那一次由接口挡在外面,这里不会收到。
+ * `queue` 里留存的那些先投递(上一次停止留下的,issue #334),再投这一条:子进程侧第一条
+ * 立刻开跑、后面的进 Pi 的队列,顺序因此就是人当初写下它们的顺序。留存的那几条交出去之后
+ * 从镜像里摘掉——排着的定义是「还没投出去」;进了 Pi 队列的那些由它的 `queue_update` 报回来。
+ */
+function startRun(
+  deps: AgentSessionRuntimeDeps,
+  entry: RuntimeEntry,
+  last: AgentSessionQueuedMessage,
+): void {
+  entry.status = "running";
+  entry.lastActiveAt = deps.now();
+  const retained = entry.queue.splice(0, entry.queue.length);
+  for (const message of [...retained, last]) {
+    sendCommand(entry, { kind: "prompt", text: message.text, mode: message.mode });
+  }
+}
+
+/**
+ * 会话空闲时把一条消息投出去并开跑。**同步登记「在跑」**:接口已经回了 202,而下一条消息要
+ * 在这一刻就看得到它在跑——登记晚一拍,两条消息就会同时开跑。
+ *
+ * 子进程还没起来的那一次连带把它起出来;起的那段时间里到的消息先攒着(`sendCommand`),建好
+ * 之后按顺序补发。空闲时两种模式都等同直接开跑,`mode` 只在执行中才有分别(spec #329)。
  */
 export function deliverAgentSessionMessage(
   deps: AgentSessionRuntimeDeps,
   session: AgentSessionRecord,
   text: string,
+  mode: AgentSessionMessageMode,
   model: AgentSessionModel,
   repos: readonly ProductRepoRecord[],
 ): void {
   const existing = registry.get(session.id);
   if (existing !== undefined) {
-    existing.status = "running";
-    existing.lastActiveAt = deps.now();
-    existing.child?.send({ kind: "prompt", text } satisfies SessionCommand);
+    startRun(deps, existing, { mode, text });
     return;
   }
   const entry: RuntimeEntry = {
@@ -303,15 +427,21 @@ export function deliverAgentSessionMessage(
     child: undefined,
     sessionRoot: undefined,
     worktrees: [],
+    queue: [],
+    pending: [],
+    disposed: false,
+    stream: { text: "", tool: undefined, timer: undefined },
   };
   registry.set(session.id, entry);
+  startRun(deps, entry, { mode, text });
   void boot(deps, session, model, repos, entry)
     .then((child) => {
-      child.send({ kind: "prompt", text } satisfies SessionCommand);
+      const pending = entry.pending.splice(0, entry.pending.length);
+      for (const command of pending) child.send(command);
     })
     .catch((error: unknown) => {
-      // 起不来就把登记摘掉,下一条消息重试。这一票不落系统消息:它的写入口随排队与判死
-      // 那两票接入(issue #334、#335)。
+      // 起不来就把登记摘掉,下一条消息重试。这一票不落系统消息:它的写入口随判死那一票
+      // 接入(issue #335)。
       if (registry.get(session.id) === entry) registry.delete(session.id);
       entry.child?.kill("SIGKILL");
       console.error(
@@ -322,6 +452,54 @@ export function deliverAgentSessionMessage(
 }
 
 /**
+ * 执行中把一条消息按模式排进队列(issue #334)。镜像先记上:接口已经回了 202,面板紧接着读
+ * 排队列表就该看得到它,子进程的 `queue_update` 到了再对齐。
+ *
+ * 这一条不解析仓库与辅助模型:子进程已经开着,那两样是开跑时取的值。会话不在跑时不会走到
+ * 这里——接口按状态分流。
+ */
+export function queueAgentSessionMessage(
+  sessionId: number,
+  text: string,
+  mode: AgentSessionMessageMode,
+  at: number,
+): void {
+  const entry = registry.get(sessionId);
+  if (entry === undefined) return;
+  entry.lastActiveAt = at;
+  // 插话排在排队之前,与子进程报来的队列同一个次序(`syncQueue`):Pi 在回合边界先取插话,
+  // 排队的要等 agent 本来要停的那一刻,这就是它们实际的投递顺序。
+  const firstFollowUp = entry.queue.findIndex((queued) => queued.mode === "followUp");
+  if (mode === "steer" && firstFollowUp !== -1) {
+    entry.queue.splice(firstFollowUp, 0, { mode, text });
+  } else {
+    entry.queue.push({ mode, text });
+  }
+  sendCommand(entry, { kind: "prompt", text, mode });
+}
+
+/** 整队清空(issue #334)。Pi 不支持单条撤回,因此只有这一个动作。 */
+export function clearAgentSessionQueue(sessionId: number): void {
+  const entry = registry.get(sessionId);
+  if (entry === undefined) return;
+  entry.queue = [];
+  sendCommand(entry, { kind: "clear-queue" });
+}
+
+/**
+ * 停止(issue #334):只中止当前这一步。排队消息留在镜像里,下次开跑时投递;被中止的回复与
+ * 「人点了停止」那条系统消息由子进程落进会话记录。
+ *
+ * 回 false 即空操作——会话空闲时没有「当前这一步」可中止,那不是错误,接口照样回 200。
+ */
+export function stopAgentSession(sessionId: number): boolean {
+  const entry = registry.get(sessionId);
+  if (entry === undefined || entry.status !== "running") return false;
+  sendCommand(entry, { kind: "stop" });
+  return true;
+}
+
+/**
  * 停掉全部会话子进程并释放它们的工作树。进程收尾与测试收尾用它:子进程的 IPC 通道会让
  * 父进程的事件循环活着,留着不收会让退出挂住。回收与排空的正式形态在 issue #335。
  */
@@ -329,6 +507,8 @@ export async function disposeAgentSessions(): Promise<void> {
   const entries = [...registry.values()];
   registry.clear();
   for (const entry of entries) {
+    entry.disposed = true;
+    if (entry.stream.timer !== undefined) clearTimeout(entry.stream.timer);
     entry.child?.kill("SIGKILL");
     for (const worktree of entry.worktrees) await worktree.release();
   }

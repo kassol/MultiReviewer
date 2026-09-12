@@ -3,8 +3,10 @@
  *
  * 与另三个 worker 的差别只有一处:它不跑完一次 prompt 就退出。收到 `open` 之后建一个 Pi
  * 会话并留在进程里,之后每收一条 `prompt` 就在同一个会话上跑一个回合,跑完回一条「回合
- * 结束」再等下一条。会话记录挂 `message_end` 与 `compaction_end` 的镜像原样回传主进程
+ * 结束」再等下一条;执行中收到的那些按模式进 Pi 的插话 / 排队队列,停止只中止当前这一步
+ * (issue #334)。会话记录挂 `message_end` 与 `compaction_end` 的镜像原样回传主进程
  * (ADR 0031),落库、用量累加与广播都在那一侧——这一侧只订阅并转发,不做判断(ADR 0017)。
+ * 流式 delta 与工具开始也只转发,合并成瞬时帧在主进程。
  *
  * 工具面全部圈在会话根上:`read` 沿用带号读那一份,`grep` / `find` / `ls` 覆盖 Pi 内建并在
  * 执行前判一次根(Pi 内建三者不查根,issue #328),受控 git 按路径前缀选工作树。不注册
@@ -23,7 +25,12 @@ import {
 
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import { GIT_TOOL, sessionGitTool } from "./git-tool.ts";
-import type { OpenSessionRequest, SessionCommand, SessionWorkerMessage } from "./session-protocol.ts";
+import type {
+  AgentSessionMessageMode,
+  OpenSessionRequest,
+  SessionCommand,
+  SessionWorkerMessage,
+} from "./session-protocol.ts";
 import {
   READ_ONLY_TOOLS,
   factBullet,
@@ -144,11 +151,27 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
   return sections.join("\n");
 }
 
+/** 人点停止那一条系统消息的 custom 条目类型(ADR 0031)。不进模型上下文。 */
+export const SYSTEM_MESSAGE_ENTRY = "multireviewer_system_message";
+
+/** 人点停止留在会话记录里的那一句。 */
+const STOPPED_BY_PERSON = "人点了停止:已中止当前这一步,排队的消息保留,下次开跑时投递。";
+
 /** 这个子进程的会话。`open` 之前是 undefined,之后一直是同一个。 */
 let session: AgentSession | undefined;
 /** 已经回传过的条目数。镜像按它取新增的那一段。 */
 let mirrored = 0;
 let apiKey = "";
+/**
+ * 这个会话此刻在不在跑。Pi 自己的 `isStreaming` 不够用:`prompt()` 在真正开跑之前还有几个
+ * await(扩展事件、凭据校验),那一小段里它仍是 false,紧跟着到的第二条消息会因此另起一个
+ * 并发的回合。这一格在收到指令时同步置上,窗口因此不存在。
+ */
+let running = false;
+/** 人点过停止。被中止的那一回合不算失败:停止是人的动作,不是这一轮跑坏了。 */
+let stopped = false;
+/** 正在处理停止:这期间 Pi 的队列被清空,那一次 `queue_update` 不回传(队列由主进程留存)。 */
+let stopping = false;
 
 /**
  * 把新增的条目回传主进程。
@@ -198,24 +221,56 @@ async function open(request: OpenSessionRequest): Promise<void> {
       if (event.type === "message_end" || event.type === "compaction_end") {
         setImmediate(mirrorEntries);
       }
+      // 流式帧:正在生成的文字与正在跑的工具各一档,合并与广播都在主进程(issue #334)。
+      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+        send({ kind: "delta", text: event.assistantMessageEvent.delta });
+      }
+      if (event.type === "tool_execution_start") {
+        send({ kind: "tool", tool: event.toolName });
+      }
+      // 停止时清队列那一次不回传:那几条由主进程留存,下次开跑时投递。
+      if (event.type === "queue_update" && !stopping) {
+        send({ kind: "queue", steering: event.steering, followUp: event.followUp });
+      }
     },
   });
   send({ kind: "ready" });
 }
 
-async function prompt(text: string): Promise<void> {
+/**
+ * 跑一条消息。
+ *
+ * 空闲时这一条立刻开跑;执行中按模式进 Pi 的队列——`steer` 在下一个回合边界被消费、不打断
+ * 正在跑的工具批次,`followUp` 等 agent 本来要停的那一刻才投。两种队列都由 Pi 的 agent loop
+ * 在同一次运行里排空,`prompt()` 因此要到 Pi 真正空闲(`agent_end` 且两条队列都空)才兑现
+ * ——**它返回就是这一个回合结束**,排队与插话投出去的那几轮都在它里面。
+ *
+ * 用 `steer()` / `followUp()` 而不是带 `streamingBehavior` 的 `prompt()`:后者按 Pi 自己的
+ * `isStreaming` 分流,那一格在开跑前的几个 await 里还是 false,会另起一个并发的回合。
+ */
+async function prompt(text: string, mode: AgentSessionMessageMode): Promise<void> {
   if (session === undefined) {
     send({ kind: "turn-end", failure: "会话还没建好" });
     return;
   }
+  if (running) {
+    if (mode === "steer") await session.steer(text);
+    else await session.followUp(text);
+    return;
+  }
+  running = true;
   let thrown: string | undefined;
   try {
     await session.prompt(text);
   } catch (error) {
     thrown = String(error instanceof Error ? error.message : error);
   }
-  // `prompt()` 在模型调用失败时也正常返回,失败只在会话状态里可见。
-  const failure = thrown ?? session.agent.state.errorMessage;
+  // 紧跟着置回:`prompt()` 兑现与这一行之间没有宏任务,晚到的插话因此不会落进一条没人
+  // 消费的队列——Pi 只在一次运行里排空队列。
+  running = false;
+  // `prompt()` 在模型调用失败时也正常返回,失败只在会话状态里可见。人点停止那一次不算失败。
+  const failure = stopped ? undefined : thrown ?? session.agent.state.errorMessage;
+  stopped = false;
   // 回合的最后一条条目可能还没镜像出去:收尾前补一次,再报回合结束。
   mirrorEntries();
   send({
@@ -226,13 +281,57 @@ async function prompt(text: string): Promise<void> {
   });
 }
 
+/**
+ * 停止:只中止当前这一步。
+ *
+ * 先清 Pi 的队列再 abort,顺序要紧:abort 之后 Pi 会接着把队列排空(`continue()` 在末条是
+ * assistant 时就从队列取),不清的话「停止」会立刻把排队的消息投出去。排队消息因此留在主
+ * 进程的镜像里,下次开跑时一并投递。被中止的回复条目由 Pi 照常落下,人点停止另以 custom
+ * 条目落同一张表(ADR 0031),不进模型上下文。
+ */
+async function stop(): Promise<void> {
+  if (session === undefined || !running) return;
+  stopped = true;
+  stopping = true;
+  try {
+    session.clearQueue();
+    await session.abort();
+  } finally {
+    stopping = false;
+  }
+  session.sessionManager.appendCustomEntry(SYSTEM_MESSAGE_ENTRY, { text: STOPPED_BY_PERSON });
+  mirrorEntries();
+}
+
+/** 整队清空。Pi 只给这一个动作,单条撤回它不支持。 */
+function clearQueue(): void {
+  session?.clearQueue();
+}
+
+function handle(command: SessionCommand): Promise<void> {
+  switch (command.kind) {
+    case "open":
+      return open(command.request);
+    case "prompt":
+      return prompt(command.text, command.mode);
+    case "stop":
+      return stop();
+    case "clear-queue":
+      clearQueue();
+      return Promise.resolve();
+  }
+}
+
 process.on("message", (command: SessionCommand) => {
-  const run = command.kind === "open" ? open(command.request) : prompt(command.text);
-  run.catch((error: unknown) => {
+  handle(command).catch((error: unknown) => {
     const failure = redactModelCredential(
       String(error instanceof Error ? error.message : error),
       process.env[MODEL_API_KEY_ENV],
     );
-    send(command.kind === "open" ? { kind: "failed", failure } : { kind: "turn-end", failure });
+    // 会话建不起来是这个子进程的终局;一个回合跑坏了只报这一回合。停止与清空队列不报回合
+    // 结束:那会把一个还在跑的会话说成空闲。
+    if (command.kind === "open") send({ kind: "failed", failure });
+    else if (command.kind === "prompt") send({ kind: "turn-end", failure });
+    else console.error(`[agent-session] ${command.kind} 没做成:${failure}`);
   });
 });

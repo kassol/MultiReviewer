@@ -895,6 +895,12 @@ export function useTrace<E extends { seq: number }>(options: {
   live: boolean;
   /** 收到结束信号时要刷新的那几份查询。 */
   invalidateOnEnd?: readonly (readonly unknown[])[];
+  /**
+   * 不带 `seq` 的瞬时帧(issue #334):不落库、重连不回放,因此不能进那份按 seq 排的数组。
+   * 给了这个回调就把它交出去,调用方自己决定怎么渲染(Agent 会话的流式 delta 用它);
+   * 不给就丢掉。
+   */
+  onTransient?: (frame: { kind: string; payload: unknown }) => void;
 }): { events: E[]; query: ReturnType<typeof useQuery<TraceList<E>>>; stream: StreamState } {
   const { queryKey, path, live } = options;
   const field = options.field ?? "events";
@@ -914,6 +920,9 @@ export function useTrace<E extends { seq: number }>(options: {
   // 要刷新的那几份查询每次渲染都是新数组,放进依赖会让连接每渲染一次就重来一遍。
   const invalidate = useRef(options.invalidateOnEnd);
   invalidate.current = options.invalidateOnEnd;
+  // 瞬时帧的回调同理:每渲染一个新函数,放进依赖等于每渲染一次重连一次。
+  const transient = useRef(options.onTransient);
+  transient.current = options.onTransient;
 
   useEffect(() => {
     if (!live || !loaded) return;
@@ -933,6 +942,11 @@ export function useTrace<E extends { seq: number }>(options: {
       try {
         parsed = JSON.parse(raw) as E;
       } catch {
+        return;
+      }
+      // 不带 seq 的是瞬时帧:它进不了这份按 seq 排的数组,交给调用方当临时内容渲染。
+      if (typeof (parsed as { seq?: unknown }).seq !== "number") {
+        transient.current?.(parsed as unknown as { kind: string; payload: unknown });
         return;
       }
       queryClient.setQueryData<TraceList<E>>(queryKey, (prev) => appendEvent(prev, parsed));
