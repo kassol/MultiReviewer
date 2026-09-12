@@ -13,6 +13,7 @@ import {
 } from "./forge/gitea.ts";
 import { createGitHubForge, type GitHubAuth } from "./forge/github.ts";
 import { CREDENTIAL_MASTER_KEY_ENV } from "./panel/credential-crypto.ts";
+import { disposeAgentSessions } from "./webhook/agent-session.ts";
 import { createWebhookServer } from "./webhook/server.ts";
 
 const DEFAULT_PORT = 3000;
@@ -167,6 +168,9 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
       `[drain] 等了 ${drainTimeoutMs / 1000} 秒仍没停下,放弃这些轮次:${abandoned.join("、")}`,
     );
   }
+  // 常驻的会话子进程不会随父进程退出,退出前一律停掉(issue #333)。排空时把中止记进会话
+  // 记录、按时退出那一套在 issue #335。
+  await disposeAgentSessions();
   server.close();
   // 长连接不会自己断开(面板的 SSE 就是),不主动关掉的话 close 永远等不到。
   server.closeIdleConnections();

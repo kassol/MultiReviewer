@@ -65,6 +65,12 @@ export type PrepareWorktreeOptions = {
   credentials: CloneCredentials;
   headSha: string;
   baseSha: string;
+  /**
+   * 工作树的落点(issue #333)。不给即缓存根下 `.checkouts/<owner>/<repo>/<随机>`,由那一段
+   * 的清扫兜住残留。Agent 会话给的是自己会话根下的 `<owner>/<repo>`——它要的是「同一个根
+   * 下面一个仓库一棵树」,位置本身是工具面的判据,不能由缓存目录来定。
+   */
+  path?: string;
 };
 
 export type Worktree = {
@@ -179,12 +185,13 @@ export async function prepareWorktree(
   ).trim();
 
   const root = checkoutsPath(options.cacheDir, options.ref);
-  await sweepCheckouts(clonePath, root);
-  const path = join(root, randomUUID());
+  // 落点由调用方给的那一档不清扫:清扫认的是 `.checkouts` 下那一段,而这一份不在那里。
+  if (options.path === undefined) await sweepCheckouts(clonePath, root);
+  const path = options.path ?? join(root, randomUUID());
   // 先记再建:并发的那一次清扫据此认得出这份正在建的工作树。
   liveCheckouts.add(path);
   try {
-    await mkdir(root, { recursive: true });
+    await mkdir(dirname(path), { recursive: true });
     // 分离头指针:一次性工作树没有本地分支要维护,目标始终是一个 commit。
     await git(clonePath, ["worktree", "add", "--quiet", "--detach", path, options.headSha]);
   } catch (error) {
@@ -491,6 +498,27 @@ export async function ensureWorktree(options: RepoReadOptions): Promise<void> {
     options.cloneUrl,
     authArgs(options.cloneUrl, options.credentials),
   );
+}
+
+/**
+ * 默认分支当前 head(issue #294)。与 commit 选择器读的是同一份缓存 clone、同一条读取路径。
+ * 人工提议、处置反哺与 Agent 会话的工作树(issue #333)都从这一处取「最新」。
+ */
+export async function defaultBranchHead(
+  target: RepoReadOptions,
+  repository: { defaultBranch: string },
+): Promise<string> {
+  const listed = await listBranchCommits({
+    ...target,
+    branch: repository.defaultBranch,
+    offset: 0,
+    limit: 1,
+  });
+  const head = listed.ok ? listed.commits[0]?.sha : undefined;
+  if (head === undefined) {
+    throw new Error(`读不到默认分支 ${repository.defaultBranch} 的当前 head`);
+  }
+  return head;
 }
 
 /**

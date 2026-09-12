@@ -60,6 +60,7 @@ import {
   encryptCredential,
 } from "../panel/credential-crypto.ts";
 import {
+  defaultBranchHead,
   ensureWorktree,
   listBranchCommits,
   prepareWorktree,
@@ -126,6 +127,7 @@ import {
   storedReviewersEmpty,
   toKnowledgeEntry,
   toPendingProposal,
+  type AgentSessionEntryRecord,
   type AgentSessionPurpose,
   type AgentSessionRecord,
   type BatchLimitField,
@@ -156,16 +158,24 @@ import {
   type Store,
 } from "../review/store.ts";
 import {
+  agentSessionChannel,
+  beginTrace,
   createTraceRecorder,
   ruleChannel,
   runChannel,
   startRuleTrace,
   subscribeTrace,
+  type BroadcastEvent,
   type RuleTraceEvent,
   type RuleTraceRecorder,
   type TraceEvent,
-  type TransientTraceEvent,
 } from "../review/trace.ts";
+import {
+  agentSessionRepos,
+  agentSessionStatus,
+  deliverAgentSessionMessage,
+  type AgentSessionRuntimeDeps,
+} from "./agent-session.ts";
 import {
   conflictingBuiltinProviderNames,
   listPiBuiltinProviders,
@@ -2021,6 +2031,23 @@ const NOT_AGENT_SESSION_CREATOR = "只有会话的创建者能做";
 /** 会话用途必填且只认一个值,说哪个值比说「形状不对」有用。 */
 const AGENT_SESSION_PURPOSE_SHAPE = "会话用途必填,当前只有需求拆分";
 
+/** 发消息的请求体形状(issue #333)。两样都必填,说清哪两样比说「形状不对」有用。 */
+const AGENT_SESSION_MESSAGE_SHAPE = "发消息要带 clientMessageId 与非空的 text";
+
+/** 这个会话正在执行(issue #333)。排队与插话在 issue #334,这一票先挡在外面。 */
+const AGENT_SESSION_BUSY = "这个会话正在执行";
+
+/** 会话根里一个仓库都没有,agent 读不到任何代码,开不起来。 */
+const AGENT_SESSION_NO_REPOS = "这个产品下没有你有仓库分配的仓库";
+
+/**
+ * 会话加上它此刻的状态(issue #333)。「在跑」是进程内的事实,库里那一列恒为空闲——存一个
+ * 「在跑」下来,崩溃重启之后它就永远卡在在跑上。读接口因此一律经这一处覆盖。
+ */
+function withRuntimeStatus(session: AgentSessionRecord): AgentSessionRecord {
+  return { ...session, status: agentSessionStatus(session.id) };
+}
+
 /** 请求体里的会话用途。认不出即 undefined;建时必填、之后不变,因此只有这一处收它。 */
 function agentSessionPurpose(value: unknown): AgentSessionPurpose | undefined {
   return AGENT_SESSION_PURPOSES.find((purpose) => purpose === value);
@@ -2058,7 +2085,7 @@ function handleListAgentSessions(
   );
   return sessions === undefined
     ? sendJson(res, 404, { error: NO_SUCH_PRODUCT })
-    : sendJson(res, 200, { sessions });
+    : sendJson(res, 200, { sessions: sessions.map(withRuntimeStatus) });
 }
 
 /** 建会话。用途必填且只认需求拆分;创建者就是调用方,建完它只属于这个人。 */
@@ -2097,7 +2124,44 @@ function handleAgentSession(
   const session = visibleAgentSession(deps, sessionId, caller);
   return session === undefined
     ? sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION })
-    : sendJson(res, 200, { session });
+    : sendJson(res, 200, { session: withRuntimeStatus(session) });
+}
+
+/**
+ * 一个会话的落库记录(ADR 0031,issue #333),按 seq 升序。面板打开时读它补历史,再拿最后
+ * 那个 seq 接流——与审查轨迹的 `/trace` + `/trace/stream` 同一套路。可见性与读会话同律。
+ */
+function handleAgentSessionRecords(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  sessionId: number,
+  caller: PanelCaller,
+): void {
+  const session = visibleAgentSession(deps, sessionId, caller);
+  if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
+  const records = withStore(deps.dbPath, (store) => store.listAgentSessionEntries(sessionId));
+  return sendJson(res, 200, { records });
+}
+
+/**
+ * 一个会话记录的实时推送(issue #333)。复用审查轨迹那一套管道:落库的记录行带 seq 作帧
+ * id,`?after=seq` 只补落库条目,心跳与反代头照旧。
+ *
+ * 频道由这里开:会话没有「结束」那一刻,空闲着仍然续得上,页面该一直挂着等下一条。
+ */
+function handleAgentSessionStream(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  sessionId: number,
+  caller: PanelCaller,
+): void {
+  const session = visibleAgentSession(deps, sessionId, caller);
+  if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
+  beginTrace(agentSessionChannel(sessionId));
+  return streamTrace(req, res, deps, agentSessionChannel(sessionId), (afterSeq) =>
+    withStore(deps.dbPath, (store) => store.listAgentSessionEntries(sessionId, afterSeq)),
+  );
 }
 
 /**
@@ -2120,21 +2184,95 @@ function handleDeleteAgentSession(
 }
 
 /**
- * 发消息。这一票只把门禁定下来:非创建者(系统管理员也算)403,创建者过了门禁回 501。
- * 真实投递、排队与流在常驻子进程那一票接入,那时这个 handler 从 501 换成 202。
+ * 发消息(issue #333)。门禁照旧:非创建者(系统管理员也算)一律动不了别人的会话。
+ *
+ * 受理即回 202,结果走记录流。去重按客户端消息 id:同一个 id 重发回第一次的受理结果而不再
+ * 投递一次——人点两次发送、或者网络重试,都只跑一个回合。**去重判在「正在执行」之前**:
+ * 重发的那一条正是在跑的这一条,回 409 会让人以为它没被收下。
+ *
+ * 空闲时立刻开跑,执行中的那一次先回 409;排队与插话(`mode`)在 issue #334,请求体因此留着
+ * 那一格,这一票不解释它。
  */
-function handleAgentSessionMessage(
+async function handleAgentSessionMessage(
+  req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
   sessionId: number,
   caller: PanelCaller,
-): void {
+): Promise<void> {
   const session = visibleAgentSession(deps, sessionId, caller);
   if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
   if (session.createdBy !== caller.username) {
     return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
   }
-  return sendJson(res, 501, { error: "发消息还没接通" });
+  const payload = await readJson<{ clientMessageId?: unknown; text?: unknown } | null>(req, res);
+  if (payload === undefined) return;
+  const clientMessageId =
+    typeof payload?.clientMessageId === "string" ? payload.clientMessageId.trim() : "";
+  const text = typeof payload?.text === "string" ? payload.text.trim() : "";
+  if (clientMessageId === "" || clientMessageId.length > 200 || text === "") {
+    return sendJson(res, 400, { error: AGENT_SESSION_MESSAGE_SHAPE });
+  }
+
+  const accepted = (acceptedAt: string): void =>
+    sendJson(res, 202, { accepted: { clientMessageId, acceptedAt } });
+  const seen = withStore(deps.dbPath, (store) =>
+    store.acceptedAgentSessionMessage(sessionId, clientMessageId),
+  );
+  if (seen !== undefined) return accepted(seen);
+
+  if (agentSessionStatus(sessionId) === "running") {
+    return sendJson(res, 409, { error: AGENT_SESSION_BUSY });
+  }
+  const forge = deps.forges.gitea;
+  if (forge === undefined) {
+    return sendJson(res, 503, { error: "gitea 没有配置 Forge,取不回代码" });
+  }
+  // 会话根里挂哪几棵工作树:产品当前仓库 ∩ 创建者当前仓库分配(spec #329)。
+  const repos = agentSessionRepos(deps.dbPath, session);
+  const first = repos[0];
+  if (first === undefined) return sendJson(res, 409, { error: AGENT_SESSION_NO_REPOS });
+  // 辅助模型按会话根里第一个仓库解析(ADR 0029):解析那一处是按仓库问的,而一个会话跨着
+  // 几个仓库。跑不跑得起来的判据与四条发起链路同一份,面板说得动的那一次就一定收得下。
+  const auxiliary = await resolveAuxiliaryModelPlan(deps, first.repoId);
+  const plan = auxiliary?.plan ?? undefined;
+  if (plan === undefined || plan.runtimeModel === null || plan.credential === null) {
+    return sendJson(res, 409, { error: auxiliary?.reason ?? NO_AUXILIARY_MODEL });
+  }
+
+  const at = new Date((deps.now ?? Date.now)()).toISOString();
+  const acceptance = withStore(deps.dbPath, (store) =>
+    store.acceptAgentSessionMessage(sessionId, clientMessageId, at),
+  );
+  // 并发两次同 id 的提交:主键只让一次插得进去,另一次回那一次的受理结果。
+  if (!acceptance.fresh) return accepted(acceptance.acceptedAt);
+  deliverAgentSessionMessage(
+    agentSessionRuntimeDeps(deps, forge),
+    session,
+    text,
+    {
+      runtimeModel: plan.runtimeModel,
+      credential: plan.credential,
+      ...(plan.spec.thinkingLevel === undefined
+        ? {}
+        : { thinkingLevel: plan.spec.thinkingLevel }),
+    },
+    repos,
+  );
+  return accepted(acceptance.acceptedAt);
+}
+
+/** 会话运行时要的那几样,从服务依赖里取。 */
+function agentSessionRuntimeDeps(
+  deps: WebhookServerDeps,
+  forge: Forge,
+): AgentSessionRuntimeDeps {
+  return {
+    dbPath: deps.dbPath,
+    cacheDir: deps.cacheDir,
+    forge,
+    now: deps.now ?? Date.now,
+  };
 }
 
 export const PANEL_ROUTES: readonly PanelRoute[] = [
@@ -2175,7 +2313,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "GET", pattern: "/setup-status", access: "authenticated-only", handler: async ({ res, deps }) => sendJson(res, 200, await setupStatus(deps)) },
   { method: "GET", pattern: "/settings", access: "model:read", handler: ({ res, deps }) => handleGetSettings(res, deps) },
   { method: "PUT", pattern: "/settings", access: "model:write", handler: ({ req, res, deps }) => handlePutSettings(req, res, deps) },
-  { method: "GET", pattern: "/stats", access: "authenticated-only", handler: ({ req, res, deps, assignment }) => handleStats(req, res, deps, assignment!) },
+  { method: "GET", pattern: "/stats", access: "authenticated-only", handler: ({ req, res, deps, assignment, caller }) => handleStats(req, res, deps, assignment!, caller!) },
   { method: "GET", pattern: "/runs", access: "authenticated-only", handler: ({ req, res, deps, assignment }) => handleRuns(req, res, deps, assignment!) },
   { method: "GET", pattern: "/stages", access: "authenticated-only", handler: ({ req, res, deps, assignment }) => handleStages(req, res, deps, assignment!) },
   // 阶段标识里有斜杠(`pr:<owner>/<repo>/<number>`),在地址里编码成一段,这里整段收。
@@ -2259,7 +2397,10 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "POST", pattern: /^\/products\/(\d+)\/sessions$/, access: "agent:chat", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleCreateAgentSession(req, res, deps, Number(match![1]), caller!) },
   { method: "GET", pattern: /^\/agent-sessions\/(\d+)$/, access: "authenticated-only", handler: ({ res, deps, caller }, match) => handleAgentSession(res, deps, Number(match![1]), caller!) },
   { method: "DELETE", pattern: /^\/agent-sessions\/(\d+)$/, access: "agent:chat", handler: ({ res, deps, caller }, match) => handleDeleteAgentSession(res, deps, Number(match![1]), caller!) },
-  { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/messages$/, access: "agent:chat", handler: ({ res, deps, caller }, match) => handleAgentSessionMessage(res, deps, Number(match![1]), caller!) },
+  { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/messages$/, access: "agent:chat", handler: ({ req, res, deps, caller }, match) => handleAgentSessionMessage(req, res, deps, Number(match![1]), caller!) },
+  // 记录与它的实时流(ADR 0031,issue #333)。读登录即可,可见性与读会话同一判。
+  { method: "GET", pattern: /^\/agent-sessions\/(\d+)\/records$/, access: "authenticated-only", handler: ({ res, deps, caller }, match) => handleAgentSessionRecords(res, deps, Number(match![1]), caller!) },
+  { method: "GET", pattern: /^\/agent-sessions\/(\d+)\/stream$/, access: "authenticated-only", handler: ({ req, res, deps, caller }, match) => handleAgentSessionStream(req, res, deps, Number(match![1]), caller!) },
   { method: "GET", pattern: "/model-services", access: { anyOf: ["model:read", "credential:read"] }, handler: ({ res, deps, caller }) => handleListModelServices(res, deps, caller!) },
   { method: "GET", pattern: "/model-services/providers", access: { anyOf: ["model:read", "model:write", "credential:read", "credential:write"] }, handler: ({ req, res, deps }) => handleBuiltinProviderSearch(req, res, deps) },
   { method: "POST", pattern: /^\/model-services\/builtin\/preview$/, access: "credential:write", handler: ({ req, res, deps }) => handlePreviewBuiltinModelService(req, res, deps) },
@@ -4833,7 +4974,7 @@ function positiveSeq(raw: string | undefined | null): number {
  * 瞬时帧没有 `seq`,帧里因此不带 `id`(issue #340):浏览器只把带 id 的帧记成续传位置,
  * 重连时回放从落库事件里读,瞬时帧不在其中。
  */
-function traceFrame(event: TraceEvent | RuleTraceEvent | TransientTraceEvent): string {
+function traceFrame(event: BroadcastEvent): string {
   const id = "seq" in event ? `id: ${event.seq}\n` : "";
   return `${id}event: trace\ndata: ${JSON.stringify(event)}\n\n`;
 }
@@ -4867,7 +5008,7 @@ function streamTrace(
   res: ServerResponse,
   deps: WebhookServerDeps,
   channel: string,
-  replay: (afterSeq: number) => readonly (TraceEvent | RuleTraceEvent)[],
+  replay: (afterSeq: number) => readonly (TraceEvent | RuleTraceEvent | AgentSessionEntryRecord)[],
 ): void {
   // 只补这个序号之后的那些。两条来源:浏览器重连时自动带的 `Last-Event-ID`,以及
   // 查询串上的 `?after=`——原生 `EventSource` 设不了首个请求的请求头,面板打开时先取
@@ -6844,6 +6985,7 @@ function handleStats(
   res: ServerResponse,
   deps: WebhookServerDeps,
   assignment: RepoAssignment,
+  caller: PanelCaller,
 ): void {
   const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
   const nowMs = (deps.now ?? Date.now)();
@@ -6857,12 +6999,21 @@ function handleStats(
   const to = new Date(toMs).toISOString();
 
   // 参与条数与 token 用量与矩阵同一口径,都只算分配内的仓库;库体量不带仓库维度。
-  const { cells: allCells, models, usage, tables } = withStore(deps.dbPath, (store) => ({
-    cells: store.dispositionStats(from, to),
-    models: store.modelParticipation(from, to, assignment.refs),
-    usage: store.usageStats(from, to, assignment.refs) ?? null,
-    tables: store.tableCounts(),
-  }));
+  //
+  // Agent 会话的用量单列一行,不混进 Review Run(spec #329):两类花费分得清。它挂在产品上
+  // 而不是仓库上,收窄因此按创建者——看得到哪些会话的人就看得到那些会话的花费。
+  const { cells: allCells, models, usage, agentSessions, tables } = withStore(
+    deps.dbPath,
+    (store) => ({
+      cells: store.dispositionStats(from, to),
+      models: store.modelParticipation(from, to, assignment.refs),
+      usage: store.usageStats(from, to, assignment.refs) ?? null,
+      agentSessions:
+        store.agentSessionUsageStats(from, to, caller.isSystemAdmin ? null : caller.username) ??
+        null,
+      tables: store.tableCounts(),
+    }),
+  );
   let fileBytes = 0;
   try {
     fileBytes = statSync(deps.dbPath).size;
@@ -6871,7 +7022,15 @@ function handleStats(
   }
   // 矩阵一行一个仓库,分配外的那些直接不给:页面上的数字要与人看得到的列表对得上。
   const cells = allCells.filter((cell) => assignment.allows(cell.owner, cell.repo));
-  return sendJson(res, 200, { from, to, cells, models, usage, database: { fileBytes, tables } });
+  return sendJson(res, 200, {
+    from,
+    to,
+    cells,
+    models,
+    usage,
+    agentSessions,
+    database: { fileBytes, tables },
+  });
 }
 
 /** hook 投递地址里代次之前的部分:`<基地址>/webhook?k=`。 */
@@ -8222,26 +8381,6 @@ async function runRevisionIntentInBackground(
       `${label}失败:${ref.owner}/${ref.repo} 的意图 ${intent.id}:${failure}`,
     );
   }
-}
-
-/**
- * 默认分支当前 head(issue #294)。与 commit 选择器读的是同一份缓存 clone、同一条读取路径。
- */
-async function defaultBranchHead(
-  target: { cacheDir: string; ref: RepoRef; cloneUrl: string; credentials: CloneCredentials },
-  repository: { defaultBranch: string },
-): Promise<string> {
-  const listed = await listBranchCommits({
-    ...target,
-    branch: repository.defaultBranch,
-    offset: 0,
-    limit: 1,
-  });
-  const head = listed.ok ? listed.commits[0]?.sha : undefined;
-  if (head === undefined) {
-    throw new Error(`读不到默认分支 ${repository.defaultBranch} 的当前 head`);
-  }
-  return head;
 }
 
 /**

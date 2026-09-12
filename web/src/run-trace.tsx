@@ -885,18 +885,26 @@ export type StreamState = keyof typeof STREAM_LABEL;
  */
 export function useTrace<E extends { seq: number }>(options: {
   queryKey: readonly unknown[];
-  /** 全量端点。流的端点固定是它加 `/stream`。 */
+  /** 全量端点。 */
   path: string;
+  /** 流的端点。省略即全量端点加 `/stream`(两条轨迹都是这么排的)。 */
+  streamPath?: string;
+  /** 全量端点把列表放在哪一格。省略即 `events`;Agent 会话的记录在 `records`(issue #333)。 */
+  field?: string;
   /** 这条轨迹还可能有新事件吗。false 即只读历史,不连流。 */
   live: boolean;
   /** 收到结束信号时要刷新的那几份查询。 */
   invalidateOnEnd?: readonly (readonly unknown[])[];
 }): { events: E[]; query: ReturnType<typeof useQuery<TraceList<E>>>; stream: StreamState } {
   const { queryKey, path, live } = options;
+  const field = options.field ?? "events";
+  const streamPath = options.streamPath ?? `${path}/stream`;
   const queryClient = useQueryClient();
   const query = useQuery({
     queryKey,
-    queryFn: () => fetchJson<TraceList<E>>(path),
+    queryFn: async () => ({
+      events: (await fetchJson<Record<string, E[]>>(path))[field] ?? [],
+    }),
     // 事件只增不改,取回来的那一段永远不会变。不设这一条的话,窗口重新聚焦会用一份
     // 旧快照把 SSE 追加进来的增量整片盖掉。
     staleTime: Number.POSITIVE_INFINITY,
@@ -915,7 +923,7 @@ export function useTrace<E extends { seq: number }>(options: {
      * 语义:从这个 seq 之后开始。之后浏览器自动重连时会自己带上 `Last-Event-ID`,
      * 断线那几秒的事件因此不会丢。
      */
-    const source = new EventSource(apiUrl(`${path}/stream?after=${known.at(-1)?.seq ?? 0}`));
+    const source = new EventSource(apiUrl(`${streamPath}?after=${known.at(-1)?.seq ?? 0}`));
     // 握手成功前只说「正在连接」:`open` 才是服务端真的把头发过来了。
     setStream("connecting");
     source.addEventListener("open", () => setStream("open"));
@@ -943,7 +951,7 @@ export function useTrace<E extends { seq: number }>(options: {
     return () => source.close();
     // `queryKey` 按内容比:调用方每次渲染给的是一个新数组,按引用比会让连接每渲染
     // 一次就重来一遍。
-  }, [live, loaded, path, queryClient, JSON.stringify(queryKey)]);
+  }, [live, loaded, streamPath, queryClient, JSON.stringify(queryKey)]);
 
   return { events: query.data?.events ?? [], query, stream };
 }

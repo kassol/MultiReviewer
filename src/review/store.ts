@@ -708,6 +708,34 @@ CREATE TABLE IF NOT EXISTS agent_session (
 );
 -- 列表只有一种查法:一个产品下某个人的会话(系统管理员读同一个产品下的全部)。
 CREATE INDEX IF NOT EXISTS agent_session_by_product ON agent_session(product_id, created_by);
+
+-- 会话记录(ADR 0031,issue #333)。一行一条 Pi 的 SessionEntry 原样 JSON:条目形状跟着
+-- Pi 走,本项目不另造一套消息表——转换层最容易丢 parentId 与 compaction 引用,而丢了 Pi
+-- 不报错,只是悄悄少一段历史。type / at 与四列用量是索引列,从那份 JSON 里抄出来:
+-- 面板按类型渲染、统计按用量累加,都不必每行解一次 JSON。
+-- seq 在一个会话之内自增,SSE 的帧 id 就是它,续传的 after 按它算。
+CREATE TABLE IF NOT EXISTS agent_session_entry (
+  session_id INTEGER NOT NULL REFERENCES agent_session(id),
+  seq INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  at TEXT NOT NULL,
+  entry TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  total_tokens INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (session_id, seq)
+);
+
+-- 发过的客户端消息 id(issue #333)。主键挡住重入队:同一个 id 重发时插入不成立,接口
+-- 回的是第一次的受理结果。一个会话里一条消息一行,人点两次发送因此只跑一次。
+CREATE TABLE IF NOT EXISTS agent_session_message (
+  session_id INTEGER NOT NULL REFERENCES agent_session(id),
+  client_message_id TEXT NOT NULL,
+  accepted_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, client_message_id)
+);
 `;
 
 
@@ -2566,8 +2594,12 @@ export const AGENT_SESSION_PURPOSES = ["requirement-breakdown"] as const;
 
 export type AgentSessionPurpose = (typeof AGENT_SESSION_PURPOSES)[number];
 
-/** Agent 会话的状态。这一版只有空闲;「在跑」随常驻子进程接入。 */
-export type AgentSessionStatus = "idle";
+/**
+ * Agent 会话的状态(issue #333)。「在跑」是**进程内的事实**:子进程在这个进程里,服务
+ * 重启之后没有任何会话在跑。读接口因此按会话运行时的登记表覆盖这一格,库里那一列恒为
+ * 空闲——存一个「在跑」下来,崩溃重启后它就永远卡在在跑上。
+ */
+export type AgentSessionStatus = "idle" | "running";
 
 /** 一个 Agent 会话(CONTEXT.md Agent 会话)。读与写都只经这一种形状。 */
 export type AgentSessionRecord = {
@@ -2577,9 +2609,48 @@ export type AgentSessionRecord = {
   purpose: AgentSessionPurpose;
   status: AgentSessionStatus;
   createdAt: string;
-  /** 累计用量,与 Review Run 同口径。按条目累加还没接入,此刻每一格都是 0。 */
+  /** 累计用量,与 Review Run 同口径:落库的每条记录按它的用量列累加上来(ADR 0031)。 */
   usage: ReviewerUsage;
 };
+
+/**
+ * 会话记录表里的一行(ADR 0031,issue #333)。`entry` 是 Pi 的 `SessionEntry` 原样 JSON,
+ * 其余几格是从它里面抄出来的索引列。
+ */
+export type AgentSessionEntryRecord = {
+  sessionId: number;
+  /** 会话内自增。SSE 的帧 id 就是它。 */
+  seq: number;
+  /** Pi 条目的 `type`:`message` / `custom` / `compaction` 等。 */
+  type: string;
+  /** Pi 条目的 `timestamp`。 */
+  at: string;
+  entry: unknown;
+  usage: ReviewerUsage;
+};
+
+/** 一次发消息的受理结果(issue #333)。`fresh` 为假即这个客户端消息 id 早已受理过。 */
+export type AgentSessionMessageAcceptance = { acceptedAt: string; fresh: boolean };
+
+/** 时间窗内的 Agent 会话用量:会话数与它们的 token 之和。一个都没有时缺失。 */
+export type AgentSessionUsageStats = ReviewerUsage & { sessions: number };
+
+function agentSessionEntry(row: Record<string, unknown>): AgentSessionEntryRecord {
+  return {
+    sessionId: Number(row["session_id"]),
+    seq: Number(row["seq"]),
+    type: String(row["type"]),
+    at: String(row["at"]),
+    entry: JSON.parse(String(row["entry"])) as unknown,
+    usage: {
+      inputTokens: Number(row["input_tokens"]),
+      outputTokens: Number(row["output_tokens"]),
+      cacheReadTokens: Number(row["cache_read_tokens"]),
+      cacheWriteTokens: Number(row["cache_write_tokens"]),
+      totalTokens: Number(row["total_tokens"]),
+    },
+  };
+}
 
 function agentSession(row: Record<string, unknown>): AgentSessionRecord {
   return {
@@ -2778,8 +2849,41 @@ export type Store = {
     purpose: AgentSessionPurpose;
     createdAt: string;
   }): AgentSessionRecord;
-  /** 删一个 Agent 会话。没有这一条即 false。 */
+  /** 删一个 Agent 会话,记录与受理过的客户端消息 id 一并删掉。没有这一条即 false。 */
   deleteAgentSession(sessionId: number): boolean;
+  /**
+   * 落一条会话记录(ADR 0031,issue #333)并把它的用量累加到会话上。seq 由这一步给,
+   * 两件事在同一个事务里:会话上的累计用量就是它的记录行之和,不可能只做一半。
+   */
+  appendAgentSessionEntry(
+    sessionId: number,
+    input: { type: string; at: string; entry: unknown; usage: ReviewerUsage },
+  ): AgentSessionEntryRecord;
+  /** 一个会话的记录,按 seq 升序。`afterSeq` 给了即只回它之后的那些(续传)。 */
+  listAgentSessionEntries(sessionId: number, afterSeq?: number): AgentSessionEntryRecord[];
+  /**
+   * 这个客户端消息 id 受理过没有(issue #333):受理过即回那一刻。接口先问它,再判别的——
+   * 重发的那一条正是在跑的这一条,落到「正在执行」那一档上会让人以为它没被收下。
+   */
+  acceptedAgentSessionMessage(sessionId: number, clientMessageId: string): string | undefined;
+  /**
+   * 受理一条客户端消息(issue #333)。第一次回 `fresh: true`,同一个 id 重发回
+   * `fresh: false` 与第一次的受理时刻——接口据此回原受理结果而不再投递一次。
+   */
+  acceptAgentSessionMessage(
+    sessionId: number,
+    clientMessageId: string,
+    at: string,
+  ): AgentSessionMessageAcceptance;
+  /**
+   * 时间窗内建的 Agent 会话数与它们的 token 之和(spec #329 的统计页单列一行)。
+   * `createdBy` 给了即只算这个人的,给 null 即全部(系统管理员那一档)。一条都没有时缺失。
+   */
+  agentSessionUsageStats(
+    from: string,
+    to: string,
+    createdBy: string | null,
+  ): AgentSessionUsageStats | undefined;
   /** 记下工作副本的准备状态(issue #184)。仓库已被移除时没有行可写,静默通过。 */
   setRepoWorktree(repoId: number, status: WorktreeStatus): void;
   /**
@@ -4793,7 +4897,14 @@ export function openStore(dbPath: string): Store {
       db.exec("BEGIN");
       try {
         db.prepare("DELETE FROM product_repo WHERE product_id = ?").run(productId);
-        // 会话跟着产品走(issue #332):产品是会话唯一的挂载点,留下来谁都读不到它。
+        // 会话跟着产品走(issue #332):产品是会话唯一的挂载点,留下来谁都读不到它。记录与
+        // 受理过的消息 id 挂在会话上,同一个事务里一并删(issue #333)。
+        for (const table of ["agent_session_entry", "agent_session_message"]) {
+          db.prepare(
+            `DELETE FROM ${table}
+              WHERE session_id IN (SELECT id FROM agent_session WHERE product_id = ?)`,
+          ).run(productId);
+        }
         const sessions = Number(
           db.prepare("DELETE FROM agent_session WHERE product_id = ?").run(productId).changes,
         );
@@ -4845,9 +4956,138 @@ export function openStore(dbPath: string): Store {
     },
 
     deleteAgentSession(sessionId) {
-      return (
-        Number(db.prepare("DELETE FROM agent_session WHERE id = ?").run(sessionId).changes) > 0
+      db.exec("BEGIN");
+      try {
+        // 记录与受理过的消息 id 只属于这个会话,跟着它走(issue #333)。
+        db.prepare("DELETE FROM agent_session_entry WHERE session_id = ?").run(sessionId);
+        db.prepare("DELETE FROM agent_session_message WHERE session_id = ?").run(sessionId);
+        const removed =
+          Number(db.prepare("DELETE FROM agent_session WHERE id = ?").run(sessionId).changes) > 0;
+        db.exec("COMMIT");
+        return removed;
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    appendAgentSessionEntry(sessionId, input) {
+      db.exec("BEGIN");
+      try {
+        const seq =
+          Number(
+            db
+              .prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM agent_session_entry WHERE session_id = ?")
+              .get(sessionId)?.["seq"] ?? 0,
+          ) + 1;
+        db.prepare(
+          `INSERT INTO agent_session_entry
+             (session_id, seq, type, at, entry,
+              input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          sessionId,
+          seq,
+          input.type,
+          input.at,
+          JSON.stringify(input.entry),
+          input.usage.inputTokens,
+          input.usage.outputTokens,
+          input.usage.cacheReadTokens,
+          input.usage.cacheWriteTokens,
+          input.usage.totalTokens,
+        );
+        db.prepare(
+          `UPDATE agent_session
+              SET input_tokens = input_tokens + ?,
+                  output_tokens = output_tokens + ?,
+                  cache_read_tokens = cache_read_tokens + ?,
+                  cache_write_tokens = cache_write_tokens + ?,
+                  total_tokens = total_tokens + ?
+            WHERE id = ?`,
+        ).run(
+          input.usage.inputTokens,
+          input.usage.outputTokens,
+          input.usage.cacheReadTokens,
+          input.usage.cacheWriteTokens,
+          input.usage.totalTokens,
+          sessionId,
+        );
+        db.exec("COMMIT");
+        return { sessionId, seq, type: input.type, at: input.at, entry: input.entry, usage: input.usage };
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    listAgentSessionEntries(sessionId, afterSeq = 0) {
+      return db
+        .prepare(
+          `SELECT * FROM agent_session_entry
+            WHERE session_id = ? AND seq > ?
+            ORDER BY seq`,
+        )
+        .all(sessionId, afterSeq)
+        .map(agentSessionEntry);
+    },
+
+    acceptedAgentSessionMessage(sessionId, clientMessageId) {
+      const row = db
+        .prepare(
+          `SELECT accepted_at FROM agent_session_message
+            WHERE session_id = ? AND client_message_id = ?`,
+        )
+        .get(sessionId, clientMessageId);
+      return row === undefined ? undefined : String(row["accepted_at"]);
+    },
+
+    acceptAgentSessionMessage(sessionId, clientMessageId, at) {
+      // 主键挡重入队:插入不成立即这个 id 已经受理过,回第一次那一刻。先查后插在并发两次
+      // 提交时挡不住,主键挡得住。
+      const inserted = Number(
+        db
+          .prepare(
+            `INSERT OR IGNORE INTO agent_session_message (session_id, client_message_id, accepted_at)
+               VALUES (?, ?, ?)`,
+          )
+          .run(sessionId, clientMessageId, at).changes,
       );
+      if (inserted > 0) return { acceptedAt: at, fresh: true };
+      const row = db
+        .prepare(
+          `SELECT accepted_at FROM agent_session_message
+            WHERE session_id = ? AND client_message_id = ?`,
+        )
+        .get(sessionId, clientMessageId)!;
+      return { acceptedAt: String(row["accepted_at"]), fresh: false };
+    },
+
+    agentSessionUsageStats(from, to, createdBy) {
+      const row = db
+        .prepare(
+          `SELECT COUNT(*) AS sessions,
+                  SUM(input_tokens) AS input_tokens,
+                  SUM(output_tokens) AS output_tokens,
+                  SUM(cache_read_tokens) AS cache_read_tokens,
+                  SUM(cache_write_tokens) AS cache_write_tokens,
+                  SUM(total_tokens) AS total_tokens
+             FROM agent_session
+            WHERE created_at >= ? AND created_at <= ?${
+              createdBy === null ? "" : " AND created_by = ?"
+            }`,
+        )
+        .get(...(createdBy === null ? [from, to] : [from, to, createdBy]))!;
+      const sessions = Number(row["sessions"]);
+      if (sessions === 0) return undefined;
+      return {
+        sessions,
+        inputTokens: Number(row["input_tokens"] ?? 0),
+        outputTokens: Number(row["output_tokens"] ?? 0),
+        cacheReadTokens: Number(row["cache_read_tokens"] ?? 0),
+        cacheWriteTokens: Number(row["cache_write_tokens"] ?? 0),
+        totalTokens: Number(row["total_tokens"] ?? 0),
+      };
     },
 
     setRepoWorktree(repoId, status) {

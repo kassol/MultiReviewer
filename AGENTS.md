@@ -15,7 +15,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `CONTEXT.md` — 领域术语表,代码与沟通的统一语言以此为准。
 - `src/` — 编排服务源码,结构约定见 `src/AGENTS.md`。进程入口是 `src/main.ts`。
 - `web/` — 管理面板前端(Vite + TanStack Router/Query),结构约定见 `web/AGENTS.md`。产物在 Docker 多阶段构建里生成,不进版本库。
-- `test/` — 测试,打在三条验收边界上(HTTP 端点 / 假 Gitea / SQLite 临时库)。`test/support/` 是内存 Forge、脚本化 Reviewer、git fixture、假 Gitea、假模型服务(本机 SSE,给真实 SDK 链路用)与面板 harness。
+- `test/` — 测试,打在三条验收边界上(HTTP 端点 / 假 Gitea / SQLite 临时库)。`test/support/` 是内存 Forge、脚本化 Reviewer、git fixture、假 Gitea、假模型服务(本机 SSE,给真实 SDK 链路用)、SSE 响应的逐帧读取与面板 harness。
 - `Dockerfile` / `.dockerignore` — 运行镜像。`node:24-slim` 加 git、ripgrep 与 fd-find,依赖在镜像内重装(宿主机的 `node_modules` 含平台专属产物,不进镜像)。装 ripgrep 与 fd-find 是给 Reviewer 的 `grep` / `find` 工具用:缺二进制时 Pi 会去 GitHub 下载,容器里下不动就各卡满 120 秒超时,一轮 Review Run 白等约 4 分钟。
 - `docker-compose.yml` — 服务器上的编排定义。与 `.env` 两个文件即可运行,不需要源码。
 - `scripts/build-push.sh` — 在开发机构建镜像并推到 registry,默认目标架构 `linux/amd64`。
@@ -155,6 +155,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-12: 落地 issue #333(父 spec #329)。**Agent 会话的常驻子进程一问一答**:`POST /api/agent-sessions/{id}/messages` 从 501 换成真实投递——按客户端消息 id 去重(同一个 id 重发回第一次的受理结果,不再入队)、立即 202,会话空闲时立刻在这个会话自己的常驻 Pi 子进程里开跑;执行中的新消息先回 409(排队与插话在 #334)。一会话一子进程,建起来就常驻(回收、上限、判死与重启后的惰性重建在 #335);子进程的会话根是一个临时目录,下面按 `<owner>/<repo>` 各挂一棵一次性工作树(默认分支最新),仓库集合 = 产品当前仓库 ∩ 创建者当前仓库分配。工具面只有只读四件套加受控 git:`read` / `grep` / `find` / `ls` 按 realpath 圈在会话根上(绝对路径出根与 `..` 出根一律拒),受控 git 的路径参数必须以 `<owner>/<repo>/` 开头、按前缀选那棵工作树,知识集按仓库分段注入系统提示;bash / edit / write 一个都不注册。会话记录按 ADR 0031 落新表 `agent_session_entry`:一行一条 Pi 条目原样 JSON,带会话内自增的 seq、类型、时间与四列用量,用量按条目累加到会话上,统计页因此多一行「Agent 会话用量」(不混进 Review Run)。记录流 `GET /api/agent-sessions/{id}/stream` 复用审查轨迹那一套 SSE 管道(落库行的 seq 作帧 id、`?after=seq` 续传、心跳与反代头照旧),`GET …/records` 给面板打开时补历史。面板会话详情页中栏成为真对话流(用户消息、agent 回复、工具行),输入框能发送,执行中置灰且按钮写「执行中」,页脚一行会话用量。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 - 2026-09-12: 落地 issue #332(父 spec #329)。**新权限格 `agent:chat` 与 Agent 会话实体**:`agent_session` 一张表(产品、创建者、会话用途、状态、创建时间,加与 Review Run 同口径的五列用量,此刻恒为 0),五个端点建 / 读 / 删会话与发消息的门禁骨架。`agent:chat` 独立一格,不蕴含也不被蕴含:建会话、删会话与发消息要它,读不要。会话的可见性按创建者判——创建者读自己的,系统管理员读所有人的但发消息与删除一律 403,其他人 404;会话用途建时必填、之后不变,这一版只收「需求拆分」。删产品的 `cascade.sessions` 从写死的 0 换成真条数,级联删它下面的全部会话。面板:产品页「我的会话」占位换成真列表加建会话弹窗,新增会话详情页 `/products/$productId/sessions/$sessionId`(原型 A 的三栏骨架:左栏产品与我的会话、中栏空对话流与置灰输入框、右栏空产出区),角色页多「会话 / 对话」一格。发消息的真实投递、记录表与常驻子进程在 #333。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 - 2026-09-12: 落地 issue #340(父 spec #329)。**Agent 会话底座的预备重构,行为不变**:agent 子进程里「建 Pi 会话」与「跑一次 prompt 即退出」拆成两段可分别调用的构件(`openAgentSession` 与它之上的 `runAgentWorker`),Reviewer、规则 agent、合并 agent 三条链路仍跑一次即退出;审查轨迹的 SSE 管道多一种不带 `id` 的瞬时帧,只到在线订阅者、不落库、续传不回放,落库事件照旧带 seq 作 id。细节见 `src/AGENTS.md`。
 - 2026-09-12: 落地 issue #331(父 spec #329)。**产品成为面板上的一级实体**:`product` 与 `product_repo` 两张表(唯一名称;一个仓库至多属一个产品由 `product_repo` 的主键表达),五个端点建 / 改名 / 归入 / 移出 / 删,写只按 `repo:write`,读按「对产品内至少一个仓库有仓库分配」(ADR 0018 同律,零分配 404,系统管理员看全部);仓库从注册表移除时自动从产品摘出;删产品的回应带级联条数 `cascade.sessions`(会话实体在 #332,此刻恒为 0)。面板导航新增「产品」项与 `/products` 页(原型 A 的左栏:产品列表、当前产品的仓库、「我的会话」占位)。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。

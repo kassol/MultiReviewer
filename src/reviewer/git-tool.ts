@@ -20,6 +20,7 @@
  * 都到得了任何一个 commit。只读子命令不会写共享的 refs。
  */
 import { execFile } from "node:child_process";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { defineTool } from "@earendil-works/pi-coding-agent";
@@ -184,6 +185,129 @@ export function gitTool(worktreePath: string) {
               ? error.message
               : String(error);
         throw new Error(reason);
+      }
+      return { content: [{ type: "text", text: truncateOutput(stdout) }], details: {} };
+    },
+  });
+}
+
+/**
+ * Agent 会话的会话根下,一次调用落在哪棵工作树上(issue #333)。
+ *
+ * 会话根下按 `<owner>/<repo>` 各挂一棵工作树,路径前缀即仓库。调用因此必须自己说清查的是
+ * 哪个仓库:每个路径参数以 `<owner>/<repo>/` 开头,按前缀选那棵工作树作 cwd,前缀随后从
+ * 参数里摘掉——命令认的是仓库内的相对路径。没有路径参数的调用一律拒:没有前缀就选不出
+ * 工作树,而默认挑一棵等于让模型以为自己查的是另一个仓库。
+ *
+ * 返回选中的仓库与改写后的参数,或者一句交给模型的打回理由。白名单那三道闸仍由
+ * `rejectGitArgs` 在改写之后判,一道都不少。
+ */
+export function repoPrefixedGitArgs(
+  args: readonly string[],
+  repos: readonly string[],
+): { repo: string; args: string[] } | { rejection: string } {
+  const allowed = new Set(repos);
+  const prefixHint = `paths must start with <owner>/<repo>/, one of: ${[...allowed].join(", ")}`;
+  let repo: string | undefined;
+  const rewritten: string[] = [];
+  let rejection: string | undefined;
+
+  /** 一个路径参数:认出它的仓库前缀、记下选中的工作树,回仓库内的相对路径。 */
+  const strip = (path: string): string | undefined => {
+    const segments = path.split("/");
+    // 至少三段:`<owner>/<repo>/<仓库内的路径>`。仓库根本身不是可查的路径参数。
+    if (segments.length < 3 || segments.some((segment) => segment === "")) {
+      rejection = `rejected: ${path} — ${prefixHint}`;
+      return undefined;
+    }
+    const prefix = `${segments[0]}/${segments[1]}`;
+    if (!allowed.has(prefix)) {
+      rejection = `rejected: ${prefix} is not a repository in this session — ${prefixHint}`;
+      return undefined;
+    }
+    if (repo !== undefined && repo !== prefix) {
+      rejection = `rejected: one call reads one repository; ${repo} and ${prefix} are two. Call the tool once per repository.`;
+      return undefined;
+    }
+    repo = prefix;
+    return segments.slice(2).join("/");
+  };
+
+  for (const token of args) {
+    if (rejection !== undefined) break;
+    // 子命令、`--` 分隔符、flag 与 commit 引用原样带过去:它们不指仓库。
+    if (token === "--" || REF_PATTERN.test(token)) {
+      rewritten.push(token);
+      continue;
+    }
+    const lineRange = /^(-L\d+(?:,[+-]?\d+)?):(.+)$/s.exec(token);
+    if (lineRange !== null) {
+      const rest = strip(lineRange[2]!);
+      if (rest !== undefined) rewritten.push(`${lineRange[1]}:${rest}`);
+      continue;
+    }
+    const colon = /^((?:HEAD|[0-9a-f]{7,40})):(.+)$/is.exec(token);
+    if (colon !== null) {
+      const rest = strip(colon[2]!);
+      if (rest !== undefined) rewritten.push(`${colon[1]}:${rest}`);
+      continue;
+    }
+    // 第一个参数是子命令,flag 同样不是路径。
+    if (rewritten.length === 0 || token.startsWith("-")) {
+      rewritten.push(token);
+      continue;
+    }
+    const rest = strip(token);
+    if (rest !== undefined) rewritten.push(rest);
+  }
+
+  if (rejection !== undefined) return { rejection };
+  if (repo === undefined) {
+    return {
+      rejection: `rejected: name the repository you are reading — ${prefixHint}. A call without a path cannot pick one.`,
+    };
+  }
+  return { repo, args: rewritten };
+}
+
+/**
+ * Agent 会话里的受控只读工具(issue #333)。白名单、干净环境与输出上限沿用 Reviewer 那一
+ * 份,唯一的差别是工作树按路径前缀选(`repoPrefixedGitArgs`)——会话根下不止一个仓库。
+ */
+export function sessionGitTool(sessionRoot: string, repos: readonly string[]) {
+  return defineTool({
+    name: GIT_TOOL,
+    label: "Git",
+    description:
+      'Read-only git against one repository of this session. First argument is the subcommand: diff, show, log or blame. Every path argument starts with the repository prefix <owner>/<repo>/, and one call reads one repository. Refs are commit SHAs (ranges like <base>..<head> work) or HEAD. Only output-shaping flags are allowed. Examples: ["log", "--oneline", "-5", "--", "acme/widgets/src"], ["diff", "HEAD", "--", "acme/widgets/src/a.ts"], ["show", "HEAD:acme/widgets/src/a.ts"], ["blame", "-L10,40", "HEAD", "--", "acme/widgets/src/a.ts"].',
+    parameters: Type.Object({
+      args: Type.Array(Type.String(), {
+        description: "Arguments passed to git, subcommand first, one token per element.",
+      }),
+    }),
+    execute: async (_id, { args }) => {
+      const picked = repoPrefixedGitArgs(args, repos);
+      if ("rejection" in picked) {
+        return { content: [{ type: "text", text: picked.rejection }], details: {} };
+      }
+      const rejection = rejectGitArgs(picked.args);
+      if (rejection !== undefined) {
+        return { content: [{ type: "text", text: rejection }], details: {} };
+      }
+      // 工作树在会话根下,前缀已经认过一遍,拼出来的路径圈在会话根内。
+      const cwd = join(sessionRoot, ...picked.repo.split("/"));
+      let stdout: string;
+      try {
+        stdout = await runGit(cwd, picked.args);
+      } catch (error) {
+        const stderr = (error as { stderr?: unknown }).stderr;
+        throw new Error(
+          typeof stderr === "string" && stderr.trim() !== ""
+            ? stderr.trim()
+            : error instanceof Error
+              ? error.message
+              : String(error),
+        );
       }
       return { content: [{ type: "text", text: truncateOutput(stdout) }], details: {} };
     },

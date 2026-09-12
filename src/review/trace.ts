@@ -10,7 +10,7 @@
  */
 import { EventEmitter } from "node:events";
 
-import type { RuleTraceSource, Store } from "./store.ts";
+import type { AgentSessionEntryRecord, RuleTraceSource, Store } from "./store.ts";
 
 /** 事件挂在轮次上还是挂在某个 Reviewer 上。 */
 export type TraceScope = "run" | "reviewer";
@@ -148,8 +148,18 @@ export type RuleTraceEventInput = { kind: RuleTraceKind; payload: unknown };
  */
 export type TransientTraceEvent = { kind: string; payload: unknown };
 
+/**
+ * 这条管道广播得出去的东西:两种轨迹的落库事件、Agent 会话的落库记录(issue #333),以及
+ * 瞬时帧。前三种带 `seq`,SSE 帧因此带 `id`;瞬时帧不带。
+ */
+export type BroadcastEvent =
+  | TraceEvent
+  | RuleTraceEvent
+  | AgentSessionEntryRecord
+  | TransientTraceEvent;
+
 type Subscriber = {
-  onEvent: (event: TraceEvent | RuleTraceEvent | TransientTraceEvent) => void;
+  onEvent: (event: BroadcastEvent) => void;
   onEnd: () => void;
 };
 
@@ -172,6 +182,17 @@ export function runChannel(runId: number): string {
 /** 一次规则 agent 任务的轨迹频道(issue #214)。 */
 export function ruleChannel(taskId: number): string {
   return `rule:${taskId}`;
+}
+
+/**
+ * 一个 Agent 会话的记录频道(issue #333)。会话的记录流复用这一套管道:落库的记录行带
+ * seq 作帧 id,面板打开时读表补历史、之后经 SSE 收新增的行。
+ *
+ * 与两种轨迹不同,它没有「这条轨迹结束了」那一刻:会话空闲着仍然续得上,页面该一直挂着
+ * 等下一条。因此 `endTrace` 不对它调,频道由读流的那一处开。
+ */
+export function agentSessionChannel(sessionId: number): string {
+  return `agent-session:${sessionId}`;
 }
 
 /** 这条轨迹开跑,可以接受订阅。`runReview` 拿到 runId 之后立刻调。 */
@@ -201,6 +222,17 @@ export function subscribeTrace(
 /** 把一条已落库的事件推给订阅者。 */
 function publishTrace(channel: string, event: TraceEvent | RuleTraceEvent): void {
   live.get(channel)?.emit("event", event);
+}
+
+/**
+ * 把一条已落库的 Agent 会话记录推给订阅者(issue #333)。没有在线订阅者时是空操作——
+ * 记录已经在表里,页面下次打开按 seq 补得到。
+ */
+export function publishAgentSessionRecord(
+  channel: string,
+  record: AgentSessionEntryRecord,
+): void {
+  live.get(channel)?.emit("event", record);
 }
 
 /**

@@ -41,12 +41,19 @@ export type ModelParticipation = {
 /** 时间窗里的用量:落了用量的 Review Run 数与它们的 token 之和。一轮都没有时 null。 */
 type UsageStats = UsageSummary & { runs: number };
 
+/**
+ * 时间窗里的 Agent 会话用量(issue #333):会话数与它们的 token 之和。一个都没有时 null。
+ * 它与 Review Run 分两行列,不相加——两类花费要分得清(spec #329)。
+ */
+type AgentSessionUsage = UsageSummary & { sessions: number };
+
 type StatsResponse = {
   from: string;
   to: string;
   cells: Cell[];
   models: ModelParticipation[];
   usage: UsageStats | null;
+  agentSessions: AgentSessionUsage | null;
   database: { fileBytes: number; tables: { name: string; rows: number }[] };
 };
 
@@ -279,6 +286,39 @@ export function StatsPage() {
               <span className="text-base font-semibold text-text-muted">运行次数</span>
               <div className="font-mono text-2xl font-bold tabular-nums">
                 {stats.data.usage === null ? "—" : stats.data.usage.runs.toLocaleString("zh-CN")}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* Agent 会话单列一行,不混进上面那格 Review Run 的读数(issue #333)。 */}
+        {stats.data === undefined ? null : (
+          <section
+            aria-label="Agent 会话用量"
+            className="flex flex-col gap-2 rounded-lg border border-card-line bg-surface px-[19px] py-[17px] shadow-card sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div className="flex flex-col gap-[5px]">
+              <span className="text-base font-semibold text-text-muted">Agent 会话用量</span>
+              <b className="font-mono text-2xl font-bold tabular-nums">
+                {stats.data.agentSessions === null
+                  ? "—"
+                  : stats.data.agentSessions.totalTokens.toLocaleString("zh-CN")}
+              </b>
+              {stats.data.agentSessions === null ? null : (
+                <span className="text-base text-text-muted tabular-nums">
+                  输入 {stats.data.agentSessions.inputTokens.toLocaleString("zh-CN")} · 输出{" "}
+                  {stats.data.agentSessions.outputTokens.toLocaleString("zh-CN")} · 缓存读{" "}
+                  {stats.data.agentSessions.cacheReadTokens.toLocaleString("zh-CN")} · 缓存写{" "}
+                  {stats.data.agentSessions.cacheWriteTokens.toLocaleString("zh-CN")}
+                </span>
+              )}
+            </div>
+            <div className="flex flex-col gap-[5px] sm:items-end sm:text-right">
+              <span className="text-base font-semibold text-text-muted">会话数</span>
+              <div className="font-mono text-2xl font-bold tabular-nums">
+                {stats.data.agentSessions === null
+                  ? "—"
+                  : stats.data.agentSessions.sessions.toLocaleString("zh-CN")}
               </div>
             </div>
           </section>

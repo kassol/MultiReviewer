@@ -211,10 +211,12 @@ test("会话只创建者读得到,系统管理员读得到所有人的但发消�
     assert.deepEqual(await response.json(), { error: "只有会话的创建者能做" });
   }
 
-  // 创建者发消息过了门禁;真实投递还没接通(issue #333)。
+  // 创建者发消息过了门禁,接着才判请求体(issue #333)。
   const message = await as(h, owner, "POST", `/agent-sessions/${session.id}/messages`, {});
-  assert.equal(message.status, 501);
-  assert.deepEqual(await message.json(), { error: "发消息还没接通" });
+  assert.equal(message.status, 400);
+  assert.deepEqual(await message.json(), {
+    error: "发消息要带 clientMessageId 与非空的 text",
+  });
 });
 
 test("删会话只删那一条,删产品级联删掉它下面的全部会话并回条数", async () => {

@@ -11,9 +11,14 @@ import { MasterListItem, MasterListItemText } from "@/components/master-list-ite
 import { PageBody } from "@/components/page-body";
 import { RailCard } from "@/components/rail-card";
 import { Button } from "@/components/theme-button";
-import { localMinute } from "@/lib/time";
+import {
+  conversation,
+  type AgentSessionRecord,
+} from "@/lib/agent-session-records";
+import { localMinute, localSecond } from "@/lib/time";
 
 import { fetchJson, send } from "./api.ts";
+import { StreamStatus, useTrace } from "./run-trace.tsx";
 
 /** 会话用途(CONTEXT.md 会话用途)。这一版只有需求拆分,与服务端同一份取值。 */
 export const AGENT_SESSION_PURPOSES = ["requirement-breakdown"] as const;
@@ -29,7 +34,8 @@ export type AgentSession = {
   productId: number;
   createdBy: string;
   purpose: AgentSessionPurpose;
-  status: "idle";
+  /** 「在跑」是进程内的事实,服务端每次读会话时按会话运行时覆盖这一格(issue #333)。 */
+  status: "idle" | "running";
   createdAt: string;
   usage: {
     inputTokens: number;
@@ -214,9 +220,85 @@ export function CreateSessionDialog({
 }
 
 /**
- * 一个 Agent 会话的详情页(原型 A 的三栏工作台,issue #332)。左栏产品与我的会话、中栏
- * 对话流与输入框、右栏产出。发消息、产出与实时流随后面的票接入,这一票只立骨架:中栏的
- * 输入框置灰,右栏是空产出区。
+ * 中栏的对话流(issue #333)。记录打开时一次取全,之后经 SSE 追加——两条来源写同一份查询
+ * 缓存,与审查轨迹同一套路(`useTrace`)。记录行是 Pi 的条目原样 JSON,投影成对话的那一步
+ * 在 `lib/agent-session-records.ts`。
+ */
+function Conversation({ sessionId, running }: { sessionId: number; running: boolean }) {
+  const { events, query, stream } = useTrace<AgentSessionRecord>({
+    queryKey: ["agent-session-records", sessionId],
+    path: `/agent-sessions/${sessionId}/records`,
+    streamPath: `/agent-sessions/${sessionId}/stream`,
+    field: "records",
+    // 会话没有「结束」那一刻:空闲着仍然续得上,流一直挂着等下一条。
+    live: true,
+  });
+  const items = conversation(events);
+
+  return (
+    <div className="flex min-w-0 flex-col gap-3">
+      {query.isError ? (
+        <Callout.Root role="alert" color="red" size="1">
+          <Callout.Icon>
+            <CrossCircledIcon aria-hidden />
+          </Callout.Icon>
+          <Callout.Text>{(query.error as Error).message}</Callout.Text>
+        </Callout.Root>
+      ) : null}
+
+      {query.isPending ? (
+        <div className="flex flex-col gap-2" role="status" aria-live="polite">
+          <span className="sr-only">正在加载这个会话的对话</span>
+          {[0, 1].map((slot) => (
+            <Skeleton key={slot} aria-hidden className="h-16" />
+          ))}
+        </div>
+      ) : items.length === 0 ? (
+        <EmptyState title="还没有消息" description="发一条消息,agent 就在这里回你。" />
+      ) : (
+        <ol className="flex min-w-0 flex-col gap-3" aria-label="对话">
+          {items.map((item) => (
+            <li
+              key={`${item.seq}-${item.kind}-${item.kind === "tool" ? item.name : "text"}`}
+              className="min-w-0"
+            >
+              {item.kind === "tool" ? (
+                <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 px-1">
+                  <span className="font-mono text-base text-text">{item.name}</span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">
+                    {item.summary}
+                  </span>
+                </div>
+              ) : (
+                <div
+                  className={`flex min-w-0 flex-col gap-1 rounded-lg px-4 py-3 ${
+                    item.kind === "user"
+                      ? "bg-accent-tint"
+                      : "border border-card-line bg-surface"
+                  }`}
+                >
+                  <span className="text-base text-text-muted">
+                    {item.kind === "user" ? "我" : "agent"} · {localSecond(item.at)}
+                  </span>
+                  <p className="min-w-0 whitespace-pre-wrap break-words text-lg">{item.text}</p>
+                </div>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+
+      {running ? <StreamStatus stream={stream} /> : null}
+    </div>
+  );
+}
+
+/**
+ * 一个 Agent 会话的详情页(原型 A 的三栏工作台,issue #332、#333)。左栏产品与我的会话、
+ * 中栏对话流与输入框、右栏产出。
+ *
+ * 执行中输入框置灰、按钮写「执行中」:排队与插话在 issue #334,在那之前执行中的新消息会被
+ * 服务端挡下,按钮先把这件事说清楚。产出在 issue #336。
  */
 export function AgentSessionPage({
   productId,
@@ -231,11 +313,14 @@ export function AgentSessionPage({
   const navigate = useNavigate();
   const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [draft, setDraft] = useState("");
 
   const sessionQuery = useQuery({
     queryKey: ["agent-sessions", sessionId],
     queryFn: async () =>
       (await fetchJson<{ session: AgentSession }>(`/agent-sessions/${sessionId}`)).session,
+    // 在跑时轮询:回合结束没有单独的事件,状态是会话自己那一格(issue #333)。
+    refetchInterval: (query) => (query.state.data?.status === "running" ? 2000 : false),
   });
   const productQuery = useQuery({
     queryKey: ["products", productId],
@@ -244,6 +329,21 @@ export function AgentSessionPage({
   const sessionsQuery = useProductSessions(productId);
 
   const session = sessionQuery.data;
+  const running = session?.status === "running";
+  const post = useMutation({
+    mutationFn: (text: string) =>
+      send(`/agent-sessions/${sessionId}/messages`, "POST", {
+        // 一次发送一个 id:同一个 id 重发服务端不会再入队,回的是第一次的受理结果。
+        clientMessageId: crypto.randomUUID(),
+        text,
+      }),
+    onSuccess: async () => {
+      setDraft("");
+      setFeedback(null);
+      await queryClient.invalidateQueries({ queryKey: ["agent-sessions", sessionId] });
+    },
+    onError: (error: Error) => setFeedback({ text: error.message, error: true }),
+  });
   const remove = useMutation({
     mutationFn: () => send(`/agent-sessions/${sessionId}`, "DELETE"),
     onSuccess: async () => {
@@ -341,26 +441,63 @@ export function AgentSessionPage({
             ) : (
               <>
                 <Text as="p" size="2" color="gray">
-                  {localMinute(session.createdAt)} 由 {session.createdBy} 建立 · 累计用量{" "}
+                  {localMinute(session.createdAt)} 由 {session.createdBy} 建立
+                  {running ? " · 执行中" : ""}
+                </Text>
+                <Conversation sessionId={sessionId} running={running} />
+                {/* 发消息只有创建者能做:别人读得到这个会话,发不了。 */}
+                {session.createdBy === username ? (
+                  <form
+                    className="flex flex-col gap-2"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const text = draft.trim();
+                      if (text !== "") post.mutate(text);
+                    }}
+                  >
+                    <TextArea
+                      aria-label="发消息"
+                      rows={3}
+                      value={draft}
+                      disabled={running || post.isPending}
+                      placeholder={running ? "执行中,等这一轮跑完再发。" : "说一句话,回车换行。"}
+                      onChange={(event) => setDraft(event.target.value)}
+                    />
+                    <div className="flex justify-end">
+                      <Button
+                        type="submit"
+                        variant="solid"
+                        size={{ initial: "3", sm: "2" }}
+                        disabled={running || post.isPending || draft.trim() === ""}
+                      >
+                        {running ? "执行中" : post.isPending ? "发送中…" : "发送"}
+                      </Button>
+                    </div>
+                  </form>
+                ) : null}
+                {/* 页脚一行会话用量。 */}
+                <Text as="p" size="2" color="gray" className="border-t border-line pt-2">
+                  会话用量{" "}
                   <span className="font-mono tabular-nums">
                     {session.usage.totalTokens.toLocaleString("zh-CN")}
                   </span>{" "}
-                  token
+                  token · 输入{" "}
+                  <span className="font-mono tabular-nums">
+                    {session.usage.inputTokens.toLocaleString("zh-CN")}
+                  </span>{" "}
+                  · 输出{" "}
+                  <span className="font-mono tabular-nums">
+                    {session.usage.outputTokens.toLocaleString("zh-CN")}
+                  </span>{" "}
+                  · 缓存读{" "}
+                  <span className="font-mono tabular-nums">
+                    {session.usage.cacheReadTokens.toLocaleString("zh-CN")}
+                  </span>{" "}
+                  · 缓存写{" "}
+                  <span className="font-mono tabular-nums">
+                    {session.usage.cacheWriteTokens.toLocaleString("zh-CN")}
+                  </span>
                 </Text>
-                <EmptyState title="还没有消息" description="这个会话还没有对话记录。" />
-                <div className="flex flex-col gap-2">
-                  <TextArea
-                    aria-label="发消息"
-                    rows={3}
-                    disabled
-                    placeholder="尚未接通:发消息在下一步接入。"
-                  />
-                  <div className="flex justify-end">
-                    <Button variant="solid" size={{ initial: "3", sm: "2" }} disabled>
-                      发送
-                    </Button>
-                  </div>
-                </div>
               </>
             )}
           </CardShell>

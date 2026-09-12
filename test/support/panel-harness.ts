@@ -13,6 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { ReviewerRuntimePlan, ReviewerSpec } from "../../src/config.ts";
 import type { Drain } from "../../src/drain.ts";
 import type { Forge, PullRequestRef } from "../../src/forge/forge.ts";
+import { disposeAgentSessions } from "../../src/webhook/agent-session.ts";
 import {
   createWebhookServer,
   type NormalizedEvent,
@@ -121,9 +122,11 @@ export function seedAvailableModelService(
   provider: string,
   models: readonly string[],
   fields: DiscoveredModel["fields"] = {},
+  /** 调用地址。省略即一个不存在的假地址;跑真实 SDK 链路的用例传本机假模型服务的那一个。 */
+  serviceBaseUrl?: string,
 ): void {
   assert.ok(models.length > 0, "测试模型服务至少要有一个模型");
-  const baseUrl = `https://${provider}.models.example.test/v1`;
+  const baseUrl = serviceBaseUrl ?? `https://${provider}.models.example.test/v1`;
   const api = "openai-completions";
   const at = "2026-08-20T00:00:00.000Z";
   const store = openStore(harness.db.path);
@@ -391,6 +394,8 @@ export async function startPanelHarness(
   const { port } = server.address() as AddressInfo;
   const serverUrl = `http://127.0.0.1:${port}`;
   cleanups.push(() => {
+    // 常驻的会话子进程不随测试进程退出,它的 IPC 通道还会让事件循环活着(issue #333)。
+    void disposeAgentSessions();
     server.closeAllConnections();
     server.close();
   });
