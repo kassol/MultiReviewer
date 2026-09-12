@@ -125,10 +125,10 @@ test("建会话要用途,且只收需求拆分", async () => {
     totalTokens: 0,
   });
 
-  // 读回来与建出来的那一份同形。
+  // 读回来与建出来的那一份同形,跟着回一份空的排队列表(issue #334)。
   const read = await as(h, cookie, "GET", `/agent-sessions/${session.id}`);
   assert.equal(read.status, 200);
-  assert.deepEqual(await read.json(), { session });
+  assert.deepEqual(await read.json(), { session, queue: [] });
   assert.deepEqual(await sessions(h, cookie, productId), [session]);
 });
 
@@ -185,6 +185,8 @@ test("会话只创建者读得到,系统管理员读得到所有人的但发消�
     ["GET", `/agent-sessions/${session.id}`],
     ["DELETE", `/agent-sessions/${session.id}`],
     ["POST", `/agent-sessions/${session.id}/messages`],
+    ["POST", `/agent-sessions/${session.id}/stop`],
+    ["DELETE", `/agent-sessions/${session.id}/queue`],
   ] as const) {
     const response = await as(h, other, method, path, method === "GET" ? undefined : {});
     assert.equal(response.status, 404, `${method} ${path}`);
@@ -205,6 +207,8 @@ test("会话只创建者读得到,系统管理员读得到所有人的但发消�
   for (const [method, path] of [
     ["POST", `/agent-sessions/${session.id}/messages`],
     ["DELETE", `/agent-sessions/${session.id}`],
+    ["POST", `/agent-sessions/${session.id}/stop`],
+    ["DELETE", `/agent-sessions/${session.id}/queue`],
   ] as const) {
     const response = await h.api(method, path, {});
     assert.equal(response.status, 403, `${method} ${path}`);

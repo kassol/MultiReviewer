@@ -172,10 +172,14 @@ import {
   type TraceEvent,
 } from "../review/trace.ts";
 import {
+  agentSessionQueue,
   agentSessionRepos,
   agentSessionStatus,
+  clearAgentSessionQueue,
   deliverAgentSessionMessage,
+  queueAgentSessionMessage,
   recordAgentSessionCustomMessage,
+  stopAgentSession,
   type AgentSessionRuntimeDeps,
 } from "./agent-session.ts";
 import {
@@ -204,6 +208,7 @@ import {
 } from "../reviewer/model-runtime.ts";
 import { createPiMergeAgent } from "../reviewer/merge-agent.ts";
 import { EVIDENCE_SESSION_BUDGET } from "../reviewer/evidence.ts";
+import type { AgentSessionMessageMode } from "../reviewer/session-protocol.ts";
 import {
   AGENT_STATEMENT_LIMIT,
   createPiRuleAgent,
@@ -2036,8 +2041,8 @@ const AGENT_SESSION_PURPOSE_SHAPE = "会话用途必填,当前只有需求拆分
 /** 发消息的请求体形状(issue #333)。两样都必填,说清哪两样比说「形状不对」有用。 */
 const AGENT_SESSION_MESSAGE_SHAPE = "发消息要带 clientMessageId 与非空的 text";
 
-/** 这个会话正在执行(issue #333)。排队与插话在 issue #334,这一票先挡在外面。 */
-const AGENT_SESSION_BUSY = "这个会话正在执行";
+/** 发消息的模式认不出来(issue #334)。缺省是排队,写错了要当场说,不能默默换一个。 */
+const AGENT_SESSION_MODE_SHAPE = "发消息的 mode 只能是 followUp(排队)或 steer(插话)";
 
 /** 会话根里一个仓库都没有,agent 读不到任何代码,开不起来。 */
 const AGENT_SESSION_NO_REPOS = "这个产品下没有你有仓库分配的仓库";
@@ -2117,6 +2122,10 @@ async function handleCreateAgentSession(
     : sendJson(res, 201, { session });
 }
 
+/**
+ * 读一个会话。排队列表(issue #334)跟着它一起回:面板在跑时每两秒续查这一份,排队块因此
+ * 不必另开一个端点。队列与「在跑」同律是进程内的事实,不落库。
+ */
 function handleAgentSession(
   res: ServerResponse,
   deps: WebhookServerDeps,
@@ -2126,7 +2135,10 @@ function handleAgentSession(
   const session = visibleAgentSession(deps, sessionId, caller);
   return session === undefined
     ? sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION })
-    : sendJson(res, 200, { session: withRuntimeStatus(session) });
+    : sendJson(res, 200, {
+        session: withRuntimeStatus(session),
+        queue: agentSessionQueue(sessionId),
+      });
 }
 
 /**
@@ -2185,15 +2197,23 @@ function handleDeleteAgentSession(
   return send(res, 204);
 }
 
+/** 请求体里的发消息模式(issue #334)。缺席即排队;认不出来即 undefined,由调用处回 400。 */
+function agentSessionMessageMode(value: unknown): AgentSessionMessageMode | undefined {
+  if (value === undefined || value === null) return "followUp";
+  return value === "followUp" || value === "steer" ? value : undefined;
+}
+
 /**
- * 发消息(issue #333)。门禁照旧:非创建者(系统管理员也算)一律动不了别人的会话。
+ * 发消息(issue #333,排队与插话在 issue #334)。门禁照旧:非创建者(系统管理员也算)一律
+ * 动不了别人的会话。
  *
  * 受理即回 202,结果走记录流。去重按客户端消息 id:同一个 id 重发回第一次的受理结果而不再
- * 投递一次——人点两次发送、或者网络重试,都只跑一个回合。**去重判在「正在执行」之前**:
- * 重发的那一条正是在跑的这一条,回 409 会让人以为它没被收下。
+ * 投递一次——人点两次发送、或者网络重试,都只跑一个回合。**去重判在「在不在跑」之前**:
+ * 重发的那一条正是在跑的这一条,再投一次就是多跑一个回合。
  *
- * 空闲时立刻开跑,执行中的那一次先回 409;排队与插话(`mode`)在 issue #334,请求体因此留着
- * 那一格,这一票不解释它。
+ * 空闲时两种模式都等同直接开跑,执行中按模式进 Pi 的插话 / 排队队列。**入队那一档不解析
+ * 仓库与辅助模型**:子进程已经开着,那两样是开跑时取的值;产品的仓库在这一轮里被移走,
+ * 不该让人连插一句话都做不到。
  */
 async function handleAgentSessionMessage(
   req: IncomingMessage,
@@ -2207,7 +2227,9 @@ async function handleAgentSessionMessage(
   if (session.createdBy !== caller.username) {
     return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
   }
-  const payload = await readJson<{ clientMessageId?: unknown; text?: unknown } | null>(req, res);
+  const payload = await readJson<
+    { clientMessageId?: unknown; text?: unknown; mode?: unknown } | null
+  >(req, res);
   if (payload === undefined) return;
   const clientMessageId =
     typeof payload?.clientMessageId === "string" ? payload.clientMessageId.trim() : "";
@@ -2215,16 +2237,28 @@ async function handleAgentSessionMessage(
   if (clientMessageId === "" || clientMessageId.length > 200 || text === "") {
     return sendJson(res, 400, { error: AGENT_SESSION_MESSAGE_SHAPE });
   }
+  const mode = agentSessionMessageMode(payload?.mode);
+  if (mode === undefined) return sendJson(res, 400, { error: AGENT_SESSION_MODE_SHAPE });
 
+  const at = () => new Date((deps.now ?? Date.now)()).toISOString();
   const accepted = (acceptedAt: string): void =>
     sendJson(res, 202, { accepted: { clientMessageId, acceptedAt } });
+  const accept = (): { fresh: boolean; acceptedAt: string } =>
+    withStore(deps.dbPath, (store) =>
+      store.acceptAgentSessionMessage(sessionId, clientMessageId, at()),
+    );
   const seen = withStore(deps.dbPath, (store) =>
     store.acceptedAgentSessionMessage(sessionId, clientMessageId),
   );
   if (seen !== undefined) return accepted(seen);
 
   if (agentSessionStatus(sessionId) === "running") {
-    return sendJson(res, 409, { error: AGENT_SESSION_BUSY });
+    const queued = accept();
+    // 并发两次同 id 的提交:主键只让一次插得进去,另一次回那一次的受理结果。
+    if (queued.fresh) {
+      queueAgentSessionMessage(sessionId, text, mode, (deps.now ?? Date.now)());
+    }
+    return accepted(queued.acceptedAt);
   }
   const forge = deps.forges.gitea;
   if (forge === undefined) {
@@ -2242,16 +2276,14 @@ async function handleAgentSessionMessage(
     return sendJson(res, 409, { error: auxiliary?.reason ?? NO_AUXILIARY_MODEL });
   }
 
-  const at = new Date((deps.now ?? Date.now)()).toISOString();
-  const acceptance = withStore(deps.dbPath, (store) =>
-    store.acceptAgentSessionMessage(sessionId, clientMessageId, at),
-  );
+  const acceptance = accept();
   // 并发两次同 id 的提交:主键只让一次插得进去,另一次回那一次的受理结果。
   if (!acceptance.fresh) return accepted(acceptance.acceptedAt);
   deliverAgentSessionMessage(
     agentSessionRuntimeDeps(deps, forge),
     session,
     text,
+    mode,
     {
       runtimeModel: plan.runtimeModel,
       credential: plan.credential,
@@ -2262,6 +2294,44 @@ async function handleAgentSessionMessage(
     repos,
   );
   return accepted(acceptance.acceptedAt);
+}
+
+/**
+ * 整队清空排队的消息(issue #334)。Pi 不支持单条撤回,接口因此只有这一个动作。门禁与发消息
+ * 同律:只有创建者动得了自己的会话。清完回当前的排队列表——空数组,让调用方不必再取一次。
+ */
+function handleClearAgentSessionQueue(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  sessionId: number,
+  caller: PanelCaller,
+): void {
+  const session = visibleAgentSession(deps, sessionId, caller);
+  if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
+  if (session.createdBy !== caller.username) {
+    return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
+  }
+  clearAgentSessionQueue(sessionId);
+  return sendJson(res, 200, { queue: agentSessionQueue(sessionId) });
+}
+
+/**
+ * 停止(issue #334):中止当前这一步,排队消息保留。**空闲时是空操作**,回 200 带
+ * `stopped: false` 而不是报错——人看到的「在跑」可能已经跑完了,为这一拍回个错误只是噪音。
+ */
+function handleStopAgentSession(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  sessionId: number,
+  caller: PanelCaller,
+): void {
+  const session = visibleAgentSession(deps, sessionId, caller);
+  if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
+  if (session.createdBy !== caller.username) {
+    return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
+  }
+  const stopped = stopAgentSession(sessionId);
+  return sendJson(res, 200, { stopped, queue: agentSessionQueue(sessionId) });
 }
 
 /** 没有这一版产出。定稿到一个不存在的版本与读不到这个会话同形,都只回一句。 */
@@ -2472,6 +2542,8 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "GET", pattern: /^\/agent-sessions\/(\d+)$/, access: "authenticated-only", handler: ({ res, deps, caller }, match) => handleAgentSession(res, deps, Number(match![1]), caller!) },
   { method: "DELETE", pattern: /^\/agent-sessions\/(\d+)$/, access: "agent:chat", handler: ({ res, deps, caller }, match) => handleDeleteAgentSession(res, deps, Number(match![1]), caller!) },
   { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/messages$/, access: "agent:chat", handler: ({ req, res, deps, caller }, match) => handleAgentSessionMessage(req, res, deps, Number(match![1]), caller!) },
+  { method: "DELETE", pattern: /^\/agent-sessions\/(\d+)\/queue$/, access: "agent:chat", handler: ({ res, deps, caller }, match) => handleClearAgentSessionQueue(res, deps, Number(match![1]), caller!) },
+  { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/stop$/, access: "agent:chat", handler: ({ res, deps, caller }, match) => handleStopAgentSession(res, deps, Number(match![1]), caller!) },
   // 记录与它的实时流(ADR 0031,issue #333)。读登录即可,可见性与读会话同一判。
   { method: "GET", pattern: /^\/agent-sessions\/(\d+)\/records$/, access: "authenticated-only", handler: ({ res, deps, caller }, match) => handleAgentSessionRecords(res, deps, Number(match![1]), caller!) },
   { method: "GET", pattern: /^\/agent-sessions\/(\d+)\/outputs$/, access: "authenticated-only", handler: ({ res, deps, caller }, match) => handleAgentSessionOutputs(res, deps, Number(match![1]), caller!) },

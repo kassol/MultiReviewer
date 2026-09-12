@@ -2,16 +2,17 @@
  * 发消息、会话记录与记录流的面板接口(issue #333)。
  *
  * 缝与 #332 那一票相同:面板 API 走真实 HTTP,会话与记录落临时 SQLite。压的是票的验收里
- * 打在 HTTP 上的那几条:同一个客户端消息 id 重发回原受理结果不重入队、执行中的新消息回
- * 409、会话根里一个仓库都没有时开不起来、记录与记录流的可见性、用量按记录累加并在统计页
- * 单列一行。真子进程那条链路在 `agent-session-subprocess.test.ts`。
+ * 打在 HTTP 上的那几条:同一个客户端消息 id 重发回原受理结果不重入队、执行中的新消息按模式
+ * 进队列、排队列表与整队清空、空闲时停止是空操作、会话根里一个仓库都没有时开不起来、记录
+ * 与记录流的可见性、用量按记录累加并在统计页单列一行。真子进程那条链路在
+ * `agent-session-subprocess.test.ts`。
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ReviewerUsage } from "../src/review/finding.ts";
 import { openStore } from "../src/review/store.ts";
-import { agentSessionRepos } from "../src/webhook/agent-session.ts";
+import { agentSessionRepos, disposeAgentSessions } from "../src/webhook/agent-session.ts";
 import {
   GITEA_REPO,
   scopedUser,
@@ -82,6 +83,17 @@ async function session(h: PanelHarness, cookie: string, id: number): Promise<Age
   const text = await response.text();
   assert.equal(response.status, 200, text);
   return (JSON.parse(text) as { session: AgentSession }).session;
+}
+
+/** 读会话时跟着回的排队列表(issue #334)。 */
+async function queueOf(
+  h: PanelHarness,
+  cookie: string,
+  id: number,
+): Promise<{ mode: string; text: string }[]> {
+  const response = await as(h, cookie, "GET", `/agent-sessions/${id}`);
+  assert.equal(response.status, 200);
+  return ((await response.json()) as { queue: { mode: string; text: string }[] }).queue;
 }
 
 /** 直接往记录表里落一条(ADR 0031)。这几条用例要的是用量累加,不是子进程。 */
@@ -174,7 +186,7 @@ test("会话根里一个仓库都没有时开不起来", async () => {
   assert.deepEqual(await response.json(), { error: "这个产品下没有你有仓库分配的仓库" });
 });
 
-test("同一个客户端消息 id 重发回原受理结果,另一个 id 在执行中回 409", async () => {
+test("同一个客户端消息 id 重发回原受理结果,另一个 id 在执行中进队列", async () => {
   let nowMs = Date.parse(AT);
   const h = await startReadyPanelHarness({ registerRepo: true, now: () => nowMs });
   const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id]);
@@ -200,10 +212,73 @@ test("同一个客户端消息 id 重发回原受理结果,另一个 id 在执�
     accepted: { clientMessageId: "c1", acceptedAt: AT },
   });
 
-  // 另一个 id:排队与插话还没接入,执行中的新消息先回 409。
-  const busy = await send({ clientMessageId: "c2", text: "再补一句" });
-  assert.equal(busy.status, 409);
-  assert.deepEqual(await busy.json(), { error: "这个会话正在执行" });
+  // 另一个 id:执行中照样受理,按模式进队列(issue #334)。缺省是排队。
+  const queued = await send({ clientMessageId: "c2", text: "再补一句" });
+  assert.equal(queued.status, 202);
+  assert.deepEqual(await queueOf(h, cookie, sessionId), [
+    { mode: "followUp", text: "再补一句" },
+  ]);
+
+  // 插话同样受理,排在排队那一条之前:Pi 在回合边界先取插话。
+  assert.equal((await send({ clientMessageId: "c3", text: "先说结论", mode: "steer" })).status, 202);
+  assert.deepEqual(await queueOf(h, cookie, sessionId), [
+    { mode: "steer", text: "先说结论" },
+    { mode: "followUp", text: "再补一句" },
+  ]);
+
+  // 整队清空之后一条都不剩。
+  const cleared = await as(h, cookie, "DELETE", `/agent-sessions/${sessionId}/queue`);
+  assert.equal(cleared.status, 200);
+  assert.deepEqual(await cleared.json(), { queue: [] });
+
+  // 登记表是进程内的一张表,下一个用例会拿同一个会话 id 开新会话。
+  await disposeAgentSessions();
+});
+
+test("发消息的 mode 只认排队与插话", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id]);
+  const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+  const sessionId = await createSession(h, cookie, productId);
+
+  for (const mode of ["queue", "", 1, true]) {
+    const response = await as(h, cookie, "POST", `/agent-sessions/${sessionId}/messages`, {
+      clientMessageId: "c1",
+      text: "拆一下这个需求",
+      mode,
+    });
+    assert.equal(response.status, 400, JSON.stringify(mode));
+    assert.deepEqual(await response.json(), {
+      error: "发消息的 mode 只能是 followUp(排队)或 steer(插话)",
+    });
+  }
+});
+
+test("空闲时停止是空操作,队列端点只有创建者动得了", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id]);
+  const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+  const other = await scopedUser(h, "other", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+  const sessionId = await createSession(h, owner, productId);
+
+  // 空闲时没有「当前这一步」可中止:200 带标识,不报错。
+  const stopped = await as(h, owner, "POST", `/agent-sessions/${sessionId}/stop`);
+  assert.equal(stopped.status, 200);
+  assert.deepEqual(await stopped.json(), { stopped: false, queue: [] });
+
+  // 系统管理员读得到这个会话,停不了也清不了它的队列。
+  for (const [method, path] of [
+    ["POST", `/agent-sessions/${sessionId}/stop`],
+    ["DELETE", `/agent-sessions/${sessionId}/queue`],
+  ] as const) {
+    const admin = await h.api(method, path);
+    assert.equal(admin.status, 403, path);
+    assert.deepEqual(await admin.json(), { error: "只有会话的创建者能做" });
+    // 同事连这一条在不在都问不到。
+    const stranger = await as(h, other, method, path);
+    assert.equal(stranger.status, 404, path);
+    assert.deepEqual(await stranger.json(), { error: "没有这个 Agent 会话" });
+  }
 });
 
 test("记录与记录流只有创建者与系统管理员读得到", async () => {

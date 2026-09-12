@@ -24,10 +24,15 @@ export type StubUsage = {
   cacheWrite?: number;
 };
 
-/** 脚本里的一次响应:说一句话,或调一个工具(可以同时说一句)。 */
+/** 脚本里的一次响应:说一句话,或调一个 / 一批工具(可以同时说一句)。 */
 export type StubTurn = {
   text?: string;
   toolCall?: { name: string; args: unknown };
+  /**
+   * 一条助手消息里的一批工具调用(issue #334):Pi 把整批跑完才到下一个回合边界,插话因此
+   * 要靠它才验得到「不打断正在跑的工具批次」。与 `toolCall` 同时给时两者都发出去。
+   */
+  toolCalls?: readonly { name: string; args: unknown }[];
   usage: StubUsage;
   /**
    * 收到请求后先等这么久再回(issue #262):用来让一次取证撞上它自己的超时。请求到达
@@ -98,7 +103,8 @@ function sseBody(turn: StubTurn, serial: number, model: string): string {
       }),
     );
   }
-  if (turn.toolCall !== undefined) {
+  const calls = [...(turn.toolCall === undefined ? [] : [turn.toolCall]), ...(turn.toolCalls ?? [])];
+  if (calls.length > 0) {
     parts.push(
       chunk({
         choices: [
@@ -106,17 +112,12 @@ function sseBody(turn: StubTurn, serial: number, model: string): string {
             index: 0,
             delta: {
               role: "assistant",
-              tool_calls: [
-                {
-                  index: 0,
-                  id: `call-stub-${serial}`,
-                  type: "function",
-                  function: {
-                    name: turn.toolCall.name,
-                    arguments: JSON.stringify(turn.toolCall.args),
-                  },
-                },
-              ],
+              tool_calls: calls.map((call, index) => ({
+                index,
+                id: `call-stub-${serial}-${index}`,
+                type: "function",
+                function: { name: call.name, arguments: JSON.stringify(call.args) },
+              })),
             },
             finish_reason: null,
           },
@@ -127,7 +128,7 @@ function sseBody(turn: StubTurn, serial: number, model: string): string {
   parts.push(
     chunk({
       choices: [
-        { index: 0, delta: {}, finish_reason: turn.toolCall === undefined ? "stop" : "tool_calls" },
+        { index: 0, delta: {}, finish_reason: calls.length === 0 ? "stop" : "tool_calls" },
       ],
     }),
   );

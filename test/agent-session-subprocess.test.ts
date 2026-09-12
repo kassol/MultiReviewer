@@ -6,6 +6,13 @@
  * 钉的是桩测不到的几件事:知识集真的分段进了模型请求、消息文本进了同一次请求、回复与工具
  * 调用作为 Pi 条目落进记录表并经 SSE 送达、用量按条目累加到会话上,以及子进程跑完一个回合
  * 之后**留着**——第二条消息不必再建一次会话。
+ *
+ * 排队、插话、清空、停止与流式帧(issue #334)也只从外部看:排队的那一条在哪一次模型请求里
+ * 出现、插话出现在工具结果之后还是之前、清空之后一共发了几次请求、停止之后记录表里落了哪
+ * 两条、流式帧带不带 `id`。子进程内部一概不看。
+ *
+ * 产出工具与定稿(issue #337)同律:看的是产出表落了几版、打回的那几次落没落、定稿那句话
+ * 有没有出现在下一次模型请求里。
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -22,7 +29,7 @@ import {
   type PanelHarness,
 } from "./support/panel-harness.ts";
 import { seedReviewRule } from "./support/store-seed.ts";
-import { startModelStub, type StubTurn } from "./support/model-stub.ts";
+import { startModelStub, type StubRequest, type StubTurn } from "./support/model-stub.ts";
 import { frameReader } from "./support/sse.ts";
 
 const PASSWORD = "agent-session-subprocess-password";
@@ -85,12 +92,40 @@ function send(
   sessionId: number,
   clientMessageId: string,
   text: string,
+  mode?: "followUp" | "steer",
 ): Promise<Response> {
   return fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/messages`, {
     method: "POST",
     headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ clientMessageId, text }),
+    body: JSON.stringify({ clientMessageId, text, ...(mode === undefined ? {} : { mode }) }),
   });
+}
+
+/** 这个会话此刻排着哪几条(issue #334)。排队列表跟着读会话一起回。 */
+async function queueOf(
+  h: PanelHarness,
+  cookie: string,
+  sessionId: number,
+): Promise<{ mode: string; text: string }[]> {
+  const response = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}`, {
+    headers: { cookie },
+  });
+  assert.equal(response.status, 200);
+  return ((await response.json()) as { queue: { mode: string; text: string }[] }).queue;
+}
+
+/** 一次请求里所有消息的正文拼起来。断言「这句话进了 / 没进这一次请求」用它。 */
+function bodyOf(request: StubRequest): string {
+  return request.messages.map((message) => message.content).join("\n");
+}
+
+/** 等到假模型服务至少收到这么多次请求。等的是它那一侧的事实,不猜子进程的时序。 */
+async function requestsAtLeast(requests: readonly StubRequest[], count: number): Promise<void> {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    if (requests.length >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.fail(`等了 30 秒,假模型服务还没收到 ${count} 次请求`);
 }
 
 async function records(
@@ -221,9 +256,13 @@ test("发一条消息:知识集分段与消息文本进了模型请求,回复与
       totalTokens: 254,
     });
 
-    // SSE:这一轮的六条记录都到了,帧 id 就是 seq。
+    // SSE:这一轮的六条记录都到了,帧 id 就是 seq。不带 id 的是流式帧(issue #334),
+    // 它与落库条目共用这个频道,数记录时跳过。
     const ids: string[] = [];
-    for (let i = 0; i < 6; i += 1) ids.push((await reader.next()).id!);
+    while (ids.length < 6) {
+      const frame = await reader.next();
+      if (frame.id !== undefined) ids.push(frame.id);
+    }
     assert.deepEqual(ids, ["1", "2", "3", "4", "5", "6"]);
     await reader.cancel();
   } finally {
@@ -326,18 +365,6 @@ async function outputsAtLeast(
   assert.fail(`等了 30 秒,会话 ${sessionId} 还没落到 ${count} 版产出`);
 }
 
-async function readRecords(
-  h: PanelHarness,
-  cookie: string,
-  sessionId: number,
-): Promise<Record[]> {
-  const response = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/records`, {
-    headers: { cookie },
-  });
-  assert.equal(response.status, 200);
-  return ((await response.json()) as { records: Record[] }).records;
-}
-
 test("调一次产出工具即落一版产出,经 SSE 推到面板;再交即新版本", async () => {
   const turns: StubTurn[] = [
     {
@@ -392,7 +419,7 @@ test("调一次产出工具即落一版产出,经 SSE 推到面板;再交即新�
       ],
     });
 
-    const rows = await readRecords(h, cookie, sessionId);
+    const rows = await records(h, cookie, sessionId);
     // 工具回的是 recorded:打回才换文案。
     assert.match(JSON.stringify(rows), /recorded/);
     // 记录表上多一条 custom 条目:对话流里由它长出产出卡片。
@@ -403,12 +430,12 @@ test("调一次产出工具即落一版产出,经 SSE 推到面板;再交即新�
       version: 1,
     });
 
-    // SSE:那条 custom 条目也从流里送到了。
+    // SSE:那条 custom 条目也从流里送到了。不带 id 的流式帧(issue #334)不是记录,跳过。
     const seen: string[] = [];
-    for (let i = 0; i < rows.length; i += 1) {
+    while (seen.length < rows.length && !seen.includes("custom")) {
       const frame = await reader.next();
+      if (frame.id === undefined) continue;
       seen.push((JSON.parse(frame.data) as Record).type);
-      if (seen.includes("custom")) break;
     }
     assert.ok(seen.includes("custom"), `流里没见到 custom 条目:${seen.join(",")}`);
     await reader.cancel();
@@ -480,7 +507,7 @@ test("三种打回走正常返回:不落产出,打回的调用照样进记录表
     assert.deepEqual(await outputs(h, cookie, sessionId), []);
 
     // 三次打回各自的理由都在记录表里的工具结果上,调用本身也在。
-    const rows = await readRecords(h, cookie, sessionId);
+    const rows = await records(h, cookie, sessionId);
     const results = rows
       .filter((row) => row.entry.message?.role === "toolResult")
       .map((row) => JSON.stringify(row.entry));
@@ -531,7 +558,7 @@ test("定稿进模型上下文:子进程活着时那条消息经它落库,下一
 
     // 那条消息经子进程放进 Pi 会话,再由镜像落回记录表。
     for (let attempt = 0; ; attempt += 1) {
-      const landed = await readRecords(h, cookie, sessionId);
+      const landed = await records(h, cookie, sessionId);
       if (landed.some((row) => row.type === "custom_message")) break;
       assert.ok(attempt < 300, "等了 30 秒,定稿那条 custom_message 还没落库");
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -546,6 +573,235 @@ test("定稿进模型上下文:子进程活着时那条消息经它落库,下一
       requests[1]!.messages.map((message) => message.content).join("\n"),
       /需求拆分 v1 已定稿/,
     );
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+/* ─────────────── 排队、插话、清空、停止与流式帧(issue #334) ─────────────── */
+
+test("执行中发「排队」:这一轮跑完之后才投递", async () => {
+  const path = `${GITEA_REPO.owner}/${GITEA_REPO.repo}/src/answer.ts`;
+  const turns: StubTurn[] = [
+    // 回得慢一点:这一轮还在跑的时候人才来得及排队。
+    {
+      text: "先读一下",
+      toolCall: { name: "read", args: { path } },
+      usage: { input: 10, output: 2 },
+      delayMs: 1500,
+    },
+    { text: "这一轮说完了", usage: { input: 11, output: 2 } },
+    { text: "补充也收到了", usage: { input: 12, output: 2 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    // 执行中的这一条不被挡下,受理即 202,排队列表里立刻看得到它。
+    const queued = await send(h, cookie, sessionId, "c2", "再补一句", "followUp");
+    assert.equal(queued.status, 202, await queued.text());
+    assert.deepEqual(await queueOf(h, cookie, sessionId), [
+      { mode: "followUp", text: "再补一句" },
+    ]);
+
+    await requestsAtLeast(requests, 3);
+    await idle(h, cookie, sessionId);
+    assert.equal(requests.length, 3);
+    // 本轮第二次请求里还没有它,工具批次的结果已经在里面:排队的等这一轮全跑完才投递。
+    assert.ok(bodyOf(requests[1]!).includes("export const answer"), "工具结果没回到本轮请求里");
+    assert.ok(!bodyOf(requests[1]!).includes("再补一句"), "排队的消息在本轮里就投出去了");
+    assert.ok(bodyOf(requests[2]!).includes("再补一句"), "排队的消息没投递");
+    // 投出去之后队列就空了。
+    assert.deepEqual(await queueOf(h, cookie, sessionId), []);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("执行中发「插话」:下一个回合边界投递,工具批次完整跑完", async () => {
+  const prefix = `${GITEA_REPO.owner}/${GITEA_REPO.repo}`;
+  const turns: StubTurn[] = [
+    {
+      text: "两个文件都读一下",
+      toolCalls: [
+        { name: "read", args: { path: `${prefix}/src/answer.ts` } },
+        { name: "read", args: { path: `${prefix}/src/other.ts` } },
+      ],
+      usage: { input: 10, output: 2 },
+      delayMs: 1500,
+    },
+    { text: "按你说的改方向", usage: { input: 11, output: 2 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    // 等第一次模型请求发出去再插话:Pi 开跑之前也取一次插话队列,那一档验不到「不打断工具
+    // 批次」——这一条要落在工具批次已经排定的那一刻。
+    await requestsAtLeast(requests, 1);
+    const interjected = await send(h, cookie, sessionId, "c2", "先别读了,说结论", "steer");
+    assert.equal(interjected.status, 202, await interjected.text());
+    assert.deepEqual(await queueOf(h, cookie, sessionId), [
+      { mode: "steer", text: "先别读了,说结论" },
+    ]);
+
+    await requestsAtLeast(requests, 2);
+    await idle(h, cookie, sessionId);
+    assert.equal(requests.length, 2);
+    // 第二次请求里两条工具结果都在,插话排在它们之后:整批跑完才到回合边界。
+    const messages = requests[1]!.messages;
+    assert.equal(messages.filter((message) => message.role === "tool").length, 2);
+    const lastTool = messages.map((message) => message.role).lastIndexOf("tool");
+    const interjection = messages.findIndex(
+      (message) => message.role === "user" && message.content.includes("先别读了"),
+    );
+    assert.ok(interjection > lastTool, "插话插在工具批次中间了");
+    assert.deepEqual(await queueOf(h, cookie, sessionId), []);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("清空队列:排队与插话都不再投递", async () => {
+  const path = `${GITEA_REPO.owner}/${GITEA_REPO.repo}/src/answer.ts`;
+  const turns: StubTurn[] = [
+    {
+      text: "先读一下",
+      toolCall: { name: "read", args: { path } },
+      usage: { input: 10, output: 2 },
+      delayMs: 2000,
+    },
+    { text: "这一轮说完了", usage: { input: 11, output: 2 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    // 两条都排在开跑之后:Pi 开跑前那一次取插话队列不该把它们先取走。
+    await requestsAtLeast(requests, 1);
+    assert.equal((await send(h, cookie, sessionId, "c2", "排队的一句", "followUp")).status, 202);
+    assert.equal((await send(h, cookie, sessionId, "c3", "插话的一句", "steer")).status, 202);
+    assert.equal((await queueOf(h, cookie, sessionId)).length, 2);
+
+    const cleared = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/queue`, {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    assert.equal(cleared.status, 200);
+    assert.deepEqual(await cleared.json(), { queue: [] });
+
+    await requestsAtLeast(requests, 2);
+    await idle(h, cookie, sessionId);
+    // 脚本只有两次响应:多投一条出去就会有第三次请求,而那一次会回 500。
+    assert.equal(requests.length, 2);
+    const sent = requests.map(bodyOf).join("\n");
+    assert.ok(!sent.includes("排队的一句"), "清空之后排队的那一条还是投出去了");
+    assert.ok(!sent.includes("插话的一句"), "清空之后插话的那一条还是投出去了");
+    assert.deepEqual(await queueOf(h, cookie, sessionId), []);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("停止:中止当前这一步、两条记录落库,排队消息留到下次发消息时投递", async () => {
+  const path = `${GITEA_REPO.owner}/${GITEA_REPO.repo}/src/answer.ts`;
+  const turns: StubTurn[] = [
+    // 这一次回应挂着不回,等着被中止。
+    {
+      text: "开始读",
+      toolCall: { name: "read", args: { path } },
+      usage: { input: 10, output: 2 },
+      delayMs: 2000,
+    },
+    { text: "排队那一条的回答", usage: { input: 11, output: 2 } },
+    { text: "新的那一条的回答", usage: { input: 12, output: 2 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    assert.equal((await send(h, cookie, sessionId, "c2", "排队的一句", "followUp")).status, 202);
+    // 模型请求已经发出去:当前这一步确实在跑。
+    await requestsAtLeast(requests, 1);
+
+    const stopped = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/stop`, {
+      method: "POST",
+      headers: { cookie },
+    });
+    assert.equal(stopped.status, 200);
+    assert.deepEqual(await stopped.json(), {
+      stopped: true,
+      queue: [{ mode: "followUp", text: "排队的一句" }],
+    });
+    await idle(h, cookie, sessionId);
+
+    // 被中止的回复照常落库,人点停止另以 custom 条目落同一张表(ADR 0031)。
+    const landed = await records(h, cookie, sessionId);
+    const aborted = landed.filter(
+      (record) =>
+        record.type === "message" &&
+        (record.entry.message as { stopReason?: string } | undefined)?.stopReason === "aborted",
+    );
+    assert.equal(aborted.length, 1, "被中止的回复没落库");
+    const system = landed.filter((record) => record.type === "custom");
+    assert.equal(system.length, 1);
+    assert.match(JSON.stringify(system[0]!.entry), /人点了停止/);
+    // 排队的那一条没被停止带走。
+    assert.deepEqual(await queueOf(h, cookie, sessionId), [
+      { mode: "followUp", text: "排队的一句" },
+    ]);
+
+    // 下次发消息时,留存的那一条先投递,新的这一条排在它后面。
+    assert.equal((await send(h, cookie, sessionId, "c3", "再说一句")).status, 202);
+    await requestsAtLeast(requests, 3);
+    await idle(h, cookie, sessionId);
+    assert.equal(requests.length, 3);
+    assert.ok(bodyOf(requests[1]!).includes("排队的一句"), "留存的排队消息没被投递");
+    assert.ok(bodyOf(requests[2]!).includes("再说一句"));
+    assert.deepEqual(await queueOf(h, cookie, sessionId), []);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("流式 delta 走无 id 的瞬时帧:不落库,重连不回放", async () => {
+  const turns: StubTurn[] = [{ text: "流着回一句", usage: { input: 10, output: 2 } }];
+  const { h, cookie, sessionId, close } = await startSessionHarness(turns);
+  try {
+    const stream = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/stream`, {
+      headers: { cookie },
+    });
+    assert.equal(stream.status, 200);
+    const reader = frameReader(stream);
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+
+    // 帧里总会有一条不带 id 的:那是流式帧,正在生成的文字在它的 payload 里。
+    let delta: { kind: string; payload: { text: string; tool?: string } } | undefined;
+    for (let read = 0; read < 12 && delta === undefined; read += 1) {
+      const frame = await reader.next();
+      if (frame.id !== undefined) continue;
+      delta = JSON.parse(frame.data) as { kind: string; payload: { text: string; tool?: string } };
+    }
+    assert.ok(delta !== undefined, "没收到流式帧");
+    assert.equal(delta.kind, "agent_session_stream");
+    assert.match(delta.payload.text, /流着回一句/);
+    await reader.cancel();
+    await idle(h, cookie, sessionId);
+
+    // 重连只补落库的条目:回放出来的每一帧都带 id,流式帧一条都不在里面。
+    const landed = await records(h, cookie, sessionId);
+    const replay = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/stream?after=0`, {
+      headers: { cookie },
+    });
+    const again = frameReader(replay);
+    const ids: (string | undefined)[] = [];
+    for (let read = 0; read < landed.length; read += 1) ids.push((await again.next()).id);
+    assert.deepEqual(
+      ids,
+      landed.map((record) => String(record.seq)),
+    );
+    await again.cancel();
   } finally {
     await disposeAgentSessions();
     await close();

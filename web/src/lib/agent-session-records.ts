@@ -6,6 +6,8 @@
  * 认不出来的一律跳过——后端多落一种条目不该让页面崩,也不该在对话流里摊出一段 JSON。
  *
  * 工具结果不进对话流:人要知道的是「它在读哪个文件」,整段输出属于过程,不属于对话。
+ * 系统消息(issue #334 起的 custom 条目)另成一档:它不进模型上下文,但人要看得见。
+ * 产出卡片与定稿那一句(issue #337)同理各成一档。
  */
 
 /** 记录表里的一行。`entry` 的形状由 Pi 定,这里只按需要往里看。 */
@@ -24,6 +26,12 @@ export type AgentSessionRecord = {
 };
 
 /**
+ * 系统消息的 custom 条目类型(ADR 0031,issue #334):人点停止、被排空中止、静默判死与模型
+ * 切换都落这一种,不进模型上下文。字面量与 `src/reviewer/session-worker.ts` 那一份相同。
+ */
+export const SYSTEM_MESSAGE_ENTRY = "multireviewer_system_message";
+
+/**
  * 主进程落的那两种条目的 `customType`(issue #337),与服务端那一份同值:`custom` 是交出一版
  * 产出,`custom_message` 是人做的定稿或换版(它进模型上下文)。
  */
@@ -33,6 +41,7 @@ export const AGENT_SESSION_OUTPUT_CUSTOM_TYPE = "multireviewer-session-output";
 export type ConversationItem =
   | { kind: "user"; seq: number; at: string; text: string }
   | { kind: "assistant"; seq: number; at: string; text: string }
+  | { kind: "system"; seq: number; at: string; text: string }
   | { kind: "tool"; seq: number; at: string; name: string; summary: string }
   /** agent 交出了一版产出。点开把右栏切到这一版。 */
   | { kind: "output"; seq: number; at: string; version: number }
@@ -64,19 +73,30 @@ export function toolSummary(args: unknown): string {
   return text.length <= 120 ? text : `${text.slice(0, 120)}…`;
 }
 
+/** 系统消息那一条的正文。不是这一种 custom 条目、或者没有正文,都回空串。 */
+function systemText(entry: unknown): string {
+  const row = entry as { customType?: unknown; data?: { text?: unknown } } | null;
+  if (row?.customType !== SYSTEM_MESSAGE_ENTRY) return "";
+  return typeof row.data?.text === "string" ? row.data.text.trim() : "";
+}
+
 export function conversation(records: readonly AgentSessionRecord[]): ConversationItem[] {
   const items: ConversationItem[] = [];
   for (const record of records) {
-    // 产出与定稿那两种条目(issue #337)。认不出 customType 或缺版本号的一律跳过:后端多落
-    // 一种 custom 条目不该在对话流里摊出一段 JSON。
     if (record.type === "custom") {
+      // 产出卡片(issue #337)与系统消息灰底一行(spec #329)共用 custom 这一档,按 customType
+      // 分。认不出 customType 或缺版本号的一律跳过:后端多落一种 custom 条目不该在对话流里
+      // 摊出一段 JSON。
       const entry = record.entry as { customType?: unknown; data?: { version?: unknown } } | null;
       if (
         entry?.customType === AGENT_SESSION_OUTPUT_CUSTOM_TYPE &&
         typeof entry.data?.version === "number"
       ) {
         items.push({ kind: "output", seq: record.seq, at: record.at, version: entry.data.version });
+        continue;
       }
+      const text = systemText(record.entry);
+      if (text !== "") items.push({ kind: "system", seq: record.seq, at: record.at, text });
       continue;
     }
     if (record.type === "custom_message") {
