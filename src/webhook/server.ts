@@ -210,6 +210,14 @@ import { createPiMergeAgent } from "../reviewer/merge-agent.ts";
 import { EVIDENCE_SESSION_BUDGET } from "../reviewer/evidence.ts";
 import type { AgentSessionMessageMode } from "../reviewer/session-protocol.ts";
 import {
+  agentSessionImageMimeType,
+  agentSessionImageRef,
+  MAX_AGENT_SESSION_IMAGES,
+  removeAgentSessionImages,
+  storeAgentSessionImage,
+  type AgentSessionImageRef,
+} from "../reviewer/session-images.ts";
+import {
   AGENT_STATEMENT_LIMIT,
   createPiRuleAgent,
   type ConsolidationProposal,
@@ -535,12 +543,14 @@ function send(res: ServerResponse, status: number): void {
 async function readBody(
   req: IncomingMessage,
   res: ServerResponse,
+  /** 这一次的上限。省略取 `MAX_BODY_BYTES`;上传图片那一条给得更宽(issue #336)。 */
+  maxBytes = MAX_BODY_BYTES,
 ): Promise<Buffer | undefined> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > MAX_BODY_BYTES) {
+    if (size > maxBytes) {
       send(res, 413);
       req.destroy();
       return undefined;
@@ -1990,7 +2000,12 @@ function handleDeleteProduct(
   deps: WebhookServerDeps,
   productId: number,
 ): void {
+  // 删之前把会话 id 记下来:级联删完就查不到它们了,而图片文件要按 id 删(issue #336)。
+  const sessions = withStore(deps.dbPath, (store) => store.listAgentSessions(productId, null));
   const cascade = withStore(deps.dbPath, (store) => store.deleteProduct(productId));
+  if (cascade !== undefined) {
+    for (const session of sessions) removeAgentSessionImages(deps.dbPath, session.id);
+  }
   return cascade === undefined
     ? sendJson(res, 404, { error: NO_SUCH_PRODUCT })
     : sendJson(res, 200, { cascade });
@@ -2046,6 +2061,45 @@ const AGENT_SESSION_MODE_SHAPE = "发消息的 mode 只能是 followUp(排队)�
 
 /** 会话根里一个仓库都没有,agent 读不到任何代码,开不起来。 */
 const AGENT_SESSION_NO_REPOS = "这个产品下没有你有仓库分配的仓库";
+
+/**
+ * 当前辅助模型看不了图(spec #329 的 US 23,issue #336)。上传接口据它回绝,面板据读会话回的
+ * `imageInput` 置灰按钮——说得出下一步去改什么,比只说「不支持」有用。
+ */
+const AGENT_SESSION_NO_IMAGE_INPUT = "当前辅助模型不支持图片,换一个支持图片的辅助模型";
+
+/** 上传的不是收得下的图片类型。 */
+const AGENT_SESSION_IMAGE_TYPE = "图片只收 image/png、image/jpeg、image/webp 与 image/gif";
+
+/** 这张图缩不到模型收得下的尺寸内。 */
+const AGENT_SESSION_IMAGE_UNREADABLE = "这张图处理不了:解不开,或者怎么缩都超过 4.5MB";
+
+/** 发消息带的图片不对:张数超限,或者某个 id 不是这个会话上传过的。 */
+const AGENT_SESSION_IMAGES_SHAPE =
+  `images 是这个会话上传过的图片 id,最多 ${MAX_AGENT_SESSION_IMAGES} 张`;
+
+/**
+ * 一次图片上传的体积上限(issue #336)。比缩放阈值宽得多:人贴的是截图与原型图,缩放要先
+ * 收得下才缩得动。仍要有个上限——未经压缩的一张大图能把内存占满。
+ */
+const MAX_IMAGE_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+/**
+ * 这个会话此刻的辅助模型看不看得了图(issue #336)。
+ *
+ * 判据取**目录里的输入能力**,解析走辅助模型那一处(ADR 0029):上传门禁与面板的置灰因此
+ * 是同一个结论,面板让点的那一次上传就一定收得下。会话根里没有仓库、或者辅助模型此刻跑不
+ * 起来时回 false——那两种情形下这条消息本来也发不出去。
+ */
+async function agentSessionImageInput(
+  deps: WebhookServerDeps,
+  session: AgentSessionRecord,
+): Promise<boolean> {
+  const first = agentSessionRepos(deps.dbPath, session)[0];
+  if (first === undefined) return false;
+  const auxiliary = await resolveAuxiliaryModelPlan(deps, first.repoId);
+  return auxiliary?.plan?.runtimeModel?.input.includes("image") ?? false;
+}
 
 /**
  * 会话加上它此刻的状态(issue #333)。「在跑」是进程内的事实,库里那一列恒为空闲——存一个
@@ -2123,21 +2177,33 @@ async function handleCreateAgentSession(
 }
 
 /**
+ * 排队列表回给面板的那一份(issue #334、#336):只有模式与正文。图片引用是服务端的事——
+ * 路径不出这台机器。
+ */
+function visibleQueue(sessionId: number): { mode: AgentSessionMessageMode; text: string }[] {
+  return agentSessionQueue(sessionId).map(({ mode, text }) => ({ mode, text }));
+}
+
+/**
  * 读一个会话。排队列表(issue #334)跟着它一起回:面板在跑时每两秒续查这一份,排队块因此
  * 不必另开一个端点。队列与「在跑」同律是进程内的事实,不落库。
+ *
+ * `imageInput` 是「当前辅助模型看不看得了图」(issue #336):面板据它置灰上传按钮。跟着读会话
+ * 回而不另开端点——面板本来就在续查这一份,模型换了下一次续查就跟上。
  */
-function handleAgentSession(
+async function handleAgentSession(
   res: ServerResponse,
   deps: WebhookServerDeps,
   sessionId: number,
   caller: PanelCaller,
-): void {
+): Promise<void> {
   const session = visibleAgentSession(deps, sessionId, caller);
   return session === undefined
     ? sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION })
     : sendJson(res, 200, {
         session: withRuntimeStatus(session),
-        queue: agentSessionQueue(sessionId),
+        queue: visibleQueue(sessionId),
+        imageInput: await agentSessionImageInput(deps, session),
       });
 }
 
@@ -2194,7 +2260,115 @@ function handleDeleteAgentSession(
     return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
   }
   withStore(deps.dbPath, (store) => store.deleteAgentSession(sessionId));
+  // 记录、产出与图片一并消失(spec #329 的 US 25):库里的行在上一句,文件目录在这一句。
+  removeAgentSessionImages(deps.dbPath, sessionId);
   return send(res, 204);
+}
+
+/** 认不出这个图片 id,或者它的文件不在了。 */
+const NO_SUCH_AGENT_SESSION_IMAGE = "没有这张图片";
+
+/**
+ * 上传一张图(spec #329,issue #336)。body 就是图片本身,类型看 `content-type`:一次一张,
+ * 不做 multipart——本项目不加依赖,而 multipart 的边界解析自己写一份不如让前端多发几次请求。
+ *
+ * 门禁与发消息同律:只有创建者传得了自己的会话。当前辅助模型看不了图时在这里回绝,
+ * 面板那一侧按读会话回的 `imageInput` 已经把按钮置灰,这一道是接口自己的底。
+ *
+ * 超过 4.5MB 或 2000px 的按 Pi 的缩放默认缩到阈值内再落盘:存原图只会把「模型收不下」推到
+ * 发消息那一刻才显形。
+ */
+async function handleUploadAgentSessionImage(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  sessionId: number,
+  caller: PanelCaller,
+): Promise<void> {
+  // 回绝在读 body 之前:一张图有几 MB,没必要为了回一句话先收完它。收下之前回的响应要把
+  // 剩下的请求体排掉(`req.resume()`),否则这一句话可能随连接一起被丢掉。
+  const refuse = (status: number, error: string): void => {
+    sendJson(res, status, { error });
+    req.resume();
+  };
+  const session = visibleAgentSession(deps, sessionId, caller);
+  if (session === undefined) return refuse(404, NO_SUCH_AGENT_SESSION);
+  if (session.createdBy !== caller.username) return refuse(403, NOT_AGENT_SESSION_CREATOR);
+  const mimeType = agentSessionImageMimeType(req.headers["content-type"]);
+  if (mimeType === undefined) return refuse(415, AGENT_SESSION_IMAGE_TYPE);
+  if (!(await agentSessionImageInput(deps, session))) {
+    return refuse(409, AGENT_SESSION_NO_IMAGE_INPUT);
+  }
+  const body = await readBody(req, res, MAX_IMAGE_UPLOAD_BYTES);
+  if (body === undefined) return;
+  const stored = await storeAgentSessionImage(deps.dbPath, sessionId, body, mimeType);
+  if (stored === undefined) return sendJson(res, 400, { error: AGENT_SESSION_IMAGE_UNREADABLE });
+  withStore(deps.dbPath, (store) =>
+    store.addAgentSessionImage({
+      sessionId,
+      imageId: stored.imageId,
+      path: stored.path,
+      mimeType: stored.mimeType,
+      createdAt: new Date((deps.now ?? Date.now)()).toISOString(),
+    }),
+  );
+  // 宽高回给上传方:缩过的那一张人要看得出缩成了多少。库里不存它们——没有第二个读者。
+  return sendJson(res, 201, {
+    image: {
+      imageId: stored.imageId,
+      mimeType: stored.mimeType,
+      width: stored.width,
+      height: stored.height,
+    },
+  });
+}
+
+/**
+ * 取一张图的文件(issue #336)。对话流里的缩略图与输入区的预览都走它;可见性与读会话同律
+ * ——看得到这个会话的人就看得到它里面的图。文件被手动删掉时 404。
+ */
+async function handleAgentSessionImage(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  sessionId: number,
+  imageId: string,
+  caller: PanelCaller,
+): Promise<void> {
+  const session = visibleAgentSession(deps, sessionId, caller);
+  if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
+  const image = withStore(deps.dbPath, (store) => store.getAgentSessionImage(sessionId, imageId));
+  if (image === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION_IMAGE });
+  let content: Buffer;
+  try {
+    content = await readFile(image.path);
+  } catch {
+    return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION_IMAGE });
+  }
+  res.writeHead(200, { "content-type": image.mimeType });
+  res.end(content);
+}
+
+/**
+ * 发消息带的那几张图(issue #336):body 里是这个会话上传过的图片 id。超过四张、不是字符串
+ * 数组、认不出某个 id 都回 undefined,由调用处回 400——「带了图却没带上」比默默少一张好。
+ */
+function agentSessionMessageImages(
+  deps: WebhookServerDeps,
+  sessionId: number,
+  value: unknown,
+): readonly AgentSessionImageRef[] | undefined {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > MAX_AGENT_SESSION_IMAGES) return undefined;
+  const refs: AgentSessionImageRef[] = [];
+  for (const imageId of value) {
+    if (typeof imageId !== "string") return undefined;
+    const image = withStore(deps.dbPath, (store) =>
+      store.getAgentSessionImage(sessionId, imageId),
+    );
+    if (image === undefined) return undefined;
+    refs.push(agentSessionImageRef(image));
+  }
+  return refs;
 }
 
 /** 请求体里的发消息模式(issue #334)。缺席即排队;认不出来即 undefined,由调用处回 400。 */
@@ -2228,7 +2402,7 @@ async function handleAgentSessionMessage(
     return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
   }
   const payload = await readJson<
-    { clientMessageId?: unknown; text?: unknown; mode?: unknown } | null
+    { clientMessageId?: unknown; text?: unknown; mode?: unknown; images?: unknown } | null
   >(req, res);
   if (payload === undefined) return;
   const clientMessageId =
@@ -2239,6 +2413,10 @@ async function handleAgentSessionMessage(
   }
   const mode = agentSessionMessageMode(payload?.mode);
   if (mode === undefined) return sendJson(res, 400, { error: AGENT_SESSION_MODE_SHAPE });
+  // 图片的张数与归属在这里判(issue #336)。上传那一步已经判过辅助模型看不看得了图,这里不再
+  // 判一遍:图已经在库里,而这一条消息用的是此刻的辅助模型。
+  const images = agentSessionMessageImages(deps, sessionId, payload?.images);
+  if (images === undefined) return sendJson(res, 400, { error: AGENT_SESSION_IMAGES_SHAPE });
 
   const at = () => new Date((deps.now ?? Date.now)()).toISOString();
   const accepted = (acceptedAt: string): void =>
@@ -2256,7 +2434,7 @@ async function handleAgentSessionMessage(
     const queued = accept();
     // 并发两次同 id 的提交:主键只让一次插得进去,另一次回那一次的受理结果。
     if (queued.fresh) {
-      queueAgentSessionMessage(sessionId, text, mode, (deps.now ?? Date.now)());
+      queueAgentSessionMessage(sessionId, text, mode, (deps.now ?? Date.now)(), images);
     }
     return accepted(queued.acceptedAt);
   }
@@ -2292,6 +2470,7 @@ async function handleAgentSessionMessage(
         : { thinkingLevel: plan.spec.thinkingLevel }),
     },
     repos,
+    images,
   );
   return accepted(acceptance.acceptedAt);
 }
@@ -2312,7 +2491,7 @@ function handleClearAgentSessionQueue(
     return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
   }
   clearAgentSessionQueue(sessionId);
-  return sendJson(res, 200, { queue: agentSessionQueue(sessionId) });
+  return sendJson(res, 200, { queue: visibleQueue(sessionId) });
 }
 
 /**
@@ -2331,7 +2510,7 @@ function handleStopAgentSession(
     return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
   }
   const stopped = stopAgentSession(sessionId);
-  return sendJson(res, 200, { stopped, queue: agentSessionQueue(sessionId) });
+  return sendJson(res, 200, { stopped, queue: visibleQueue(sessionId) });
 }
 
 /** 没有这一版产出。定稿到一个不存在的版本与读不到这个会话同形,都只回一句。 */
@@ -2544,6 +2723,10 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/messages$/, access: "agent:chat", handler: ({ req, res, deps, caller }, match) => handleAgentSessionMessage(req, res, deps, Number(match![1]), caller!) },
   { method: "DELETE", pattern: /^\/agent-sessions\/(\d+)\/queue$/, access: "agent:chat", handler: ({ res, deps, caller }, match) => handleClearAgentSessionQueue(res, deps, Number(match![1]), caller!) },
   { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/stop$/, access: "agent:chat", handler: ({ res, deps, caller }, match) => handleStopAgentSession(res, deps, Number(match![1]), caller!) },
+  // 图片附件(issue #336)。传图按 `agent:chat` 且只有创建者传得了:它花的是模型费。取图与
+  // 读会话同一判,登录即可——看得到这个会话的人就看得到它里面的图。
+  { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/images$/, access: "agent:chat", handler: ({ req, res, deps, caller }, match) => handleUploadAgentSessionImage(req, res, deps, Number(match![1]), caller!) },
+  { method: "GET", pattern: /^\/agent-sessions\/(\d+)\/images\/([0-9a-f-]{36})$/, access: "authenticated-only", handler: ({ res, deps, caller }, match) => handleAgentSessionImage(res, deps, Number(match![1]), match![2]!, caller!) },
   // 记录与它的实时流(ADR 0031,issue #333)。读登录即可,可见性与读会话同一判。
   { method: "GET", pattern: /^\/agent-sessions\/(\d+)\/records$/, access: "authenticated-only", handler: ({ res, deps, caller }, match) => handleAgentSessionRecords(res, deps, Number(match![1]), caller!) },
   { method: "GET", pattern: /^\/agent-sessions\/(\d+)\/outputs$/, access: "authenticated-only", handler: ({ res, deps, caller }, match) => handleAgentSessionOutputs(res, deps, Number(match![1]), caller!) },

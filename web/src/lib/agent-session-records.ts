@@ -39,7 +39,8 @@ export const AGENT_SESSION_OUTPUT_CUSTOM_TYPE = "multireviewer-session-output";
 
 /** 对话流里的一项。 */
 export type ConversationItem =
-  | { kind: "user"; seq: number; at: string; text: string }
+  /** `images` 是这条消息带的图片 id(issue #336),按它取缩略图。没带图即空数组。 */
+  | { kind: "user"; seq: number; at: string; text: string; images: string[] }
   | { kind: "assistant"; seq: number; at: string; text: string }
   | { kind: "system"; seq: number; at: string; text: string }
   | { kind: "tool"; seq: number; at: string; name: string; summary: string }
@@ -57,6 +58,18 @@ function textOf(content: unknown): string {
     .map((part: unknown) => String((part as { text?: unknown }).text ?? ""))
     .join("")
     .trim();
+}
+
+/**
+ * 这条消息带的图片 id(issue #336)。记录里的图片块只存文件引用(`image-ref`),base64 不落库
+ * ——面板按 id 去 `GET /agent-sessions/<id>/images/<图片 id>` 取文件。
+ */
+function imageIdsOf(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((part: unknown) => (part as { type?: unknown } | null)?.type === "image-ref")
+    .map((part: unknown) => String((part as { imageId?: unknown }).imageId ?? ""))
+    .filter((imageId) => imageId !== "");
 }
 
 /**
@@ -111,7 +124,10 @@ export function conversation(records: readonly AgentSessionRecord[]): Conversati
     const at = record.at;
     if (message.role === "user") {
       const text = textOf(message.content);
-      if (text !== "") items.push({ kind: "user", seq: record.seq, at, text });
+      const images = imageIdsOf(message.content);
+      if (text !== "" || images.length > 0) {
+        items.push({ kind: "user", seq: record.seq, at, text, images });
+      }
       continue;
     }
     if (message.role !== "assistant") continue;

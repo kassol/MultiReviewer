@@ -10,6 +10,10 @@
  *
  * 排队、插话、停止与流式帧(issue #334)也在这一层:队列的真身在 Pi 那边,登记表上记一份
  * 镜像供读接口与面板看;流式 delta 按 100ms 合并一次,经瞬时帧走同一个频道,不落库。
+ *
+ * 图片附件(issue #336)在这一层只做两件事:把文件引用随 `prompt` 指令发下去(base64 由
+ * 子进程自己读文件填),以及落库前把镜像回来的 base64 图片块换回文件引用。落盘、缩放与
+ * 互换都在 `reviewer/session-images.ts`。
  */
 import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -38,6 +42,7 @@ import {
 import { MODEL_API_KEY_ENV, reviewerEnv } from "../reviewer/env.ts";
 import type { RuntimeModel } from "../reviewer/model-service-runtime.ts";
 import { FINDING_QUERY_LIMIT } from "../reviewer/session-finding-tool.ts";
+import { deflateImageBlocks, type AgentSessionImageRef } from "../reviewer/session-images.ts";
 import {
   AGENT_SESSION_NOTE_CUSTOM_TYPE,
   AGENT_SESSION_OUTPUT_CUSTOM_TYPE,
@@ -71,8 +76,16 @@ export type AgentSessionModel = {
   thinkingLevel?: ThinkingLevel;
 };
 
-/** 排队中的一条消息(issue #334):模式与正文。Pi 不支持单条撤回,因此没有标识这一格。 */
-export type AgentSessionQueuedMessage = { mode: AgentSessionMessageMode; text: string };
+/**
+ * 排队中的一条消息(issue #334):模式与正文。Pi 不支持单条撤回,因此没有标识这一格。
+ * `images` 是它带的那几张图的文件引用(issue #336);接口回给面板的那一份不带它——路径是
+ * 服务端的事。
+ */
+export type AgentSessionQueuedMessage = {
+  mode: AgentSessionMessageMode;
+  text: string;
+  images?: readonly AgentSessionImageRef[];
+};
 
 /** 流式帧合并的间隔。一条 delta 一帧会把 SSE 打满,人眼也看不出差别。 */
 const STREAM_FRAME_MS = 100;
@@ -96,6 +109,12 @@ type RuntimeEntry = {
   queue: AgentSessionQueuedMessage[];
   /** 子进程还没 fork 出来时攒下的指令。建好之后按顺序补发,一条都不丢。 */
   pending: SessionCommand[];
+  /**
+   * 已经投出去、还没在镜像回来的条目里认领的那几张图(issue #336)。顺序即投递顺序:镜像
+   * 回来的用户消息里第 k 个 base64 图片块配第 k 个引用,落库前换过去。回合结束即清空——
+   * 模型那一侧把图丢了的话,这几张不该串到下一回合的消息上。
+   */
+  imageRefs: AgentSessionImageRef[];
   /**
    * 已经收拢过。`disposeAgentSessions` 可能正赶上这个会话在备工作树:那时还没 fork,杀不到
    * 子进程,而备完之后照样会 fork 出一个——它的 IPC 通道会让进程再也退不出去。这一格让那一下
@@ -235,9 +254,16 @@ function syncQueue(
   entry: RuntimeEntry,
   reported: { steering: readonly string[]; followUp: readonly string[] },
 ): void {
+  // Pi 报的是文本;图片引用在这一侧,按模式与文本认回去(issue #336)。Pi 自己摘队列也是按
+  // 文本全等摘的,两条同文的消息因此可能换了张图——停止之后重投时图不会凭空消失,这就够了。
+  const previous = entry.queue;
+  const carried = (mode: AgentSessionMessageMode, text: string): AgentSessionQueuedMessage => {
+    const at = previous.findIndex((old) => old.mode === mode && old.text === text);
+    return at === -1 ? { mode, text } : previous.splice(at, 1)[0]!;
+  };
   entry.queue = [
-    ...reported.steering.map((text) => ({ mode: "steer" as const, text })),
-    ...reported.followUp.map((text) => ({ mode: "followUp" as const, text })),
+    ...reported.steering.map((text) => carried("steer", text)),
+    ...reported.followUp.map((text) => carried("followUp", text)),
   ];
 }
 
@@ -466,7 +492,10 @@ async function boot(
         ready?.();
         return;
       case "entries":
-        for (const one of message.entries) recordEntry(deps.dbPath, session.id, one);
+        // 图片块在这一步换成文件引用(issue #336):库里不存 base64,记录表因此不随图片长大。
+        for (const one of message.entries) {
+          recordEntry(deps.dbPath, session.id, deflateImageBlocks(one, entry.imageRefs));
+        }
         return;
       case "output":
         recordAgentSessionOutput(deps, session.id, message.output);
@@ -485,6 +514,8 @@ async function boot(
         return;
       case "turn-end":
         entry.status = "idle";
+        // 这一回合投出去的图都该被认领过了。没认领的不留到下一回合:那只会把图串到别的消息上。
+        entry.imageRefs.length = 0;
         // 这一回合的最后一截流式内容该出去了:下一次开跑之前不会再有帧把窗口推开。
         flushStream(session.id, entry);
         if (message.failure !== undefined) {
@@ -542,7 +573,13 @@ function startRun(
   entry.lastActiveAt = deps.now();
   const retained = entry.queue.splice(0, entry.queue.length);
   for (const message of [...retained, last]) {
-    sendCommand(entry, { kind: "prompt", text: message.text, mode: message.mode });
+    sendCommand(entry, {
+      kind: "prompt",
+      text: message.text,
+      mode: message.mode,
+      ...(message.images === undefined ? {} : { images: message.images }),
+    });
+    entry.imageRefs.push(...(message.images ?? []));
   }
 }
 
@@ -560,10 +597,17 @@ export function deliverAgentSessionMessage(
   mode: AgentSessionMessageMode,
   model: AgentSessionModel,
   repos: readonly ProductRepoRecord[],
+  /** 这条消息带的那几张图(issue #336)。省略即没带图。 */
+  images: readonly AgentSessionImageRef[] = [],
 ): void {
+  const message: AgentSessionQueuedMessage = {
+    mode,
+    text,
+    ...(images.length === 0 ? {} : { images }),
+  };
   const existing = registry.get(session.id);
   if (existing !== undefined) {
-    startRun(deps, existing, { mode, text });
+    startRun(deps, existing, message);
     return;
   }
   const entry: RuntimeEntry = {
@@ -574,11 +618,12 @@ export function deliverAgentSessionMessage(
     worktrees: [],
     queue: [],
     pending: [],
+    imageRefs: [],
     disposed: false,
     stream: { text: "", tool: undefined, timer: undefined },
   };
   registry.set(session.id, entry);
-  startRun(deps, entry, { mode, text });
+  startRun(deps, entry, message);
   void boot(deps, session, model, repos, entry)
     .then((child) => {
       const pending = entry.pending.splice(0, entry.pending.length);
@@ -608,25 +653,33 @@ export function queueAgentSessionMessage(
   text: string,
   mode: AgentSessionMessageMode,
   at: number,
+  /** 这条消息带的那几张图(issue #336)。省略即没带图。 */
+  images: readonly AgentSessionImageRef[] = [],
 ): void {
   const entry = registry.get(sessionId);
   if (entry === undefined) return;
   entry.lastActiveAt = at;
+  const attached = images.length === 0 ? {} : { images };
   // 插话排在排队之前,与子进程报来的队列同一个次序(`syncQueue`):Pi 在回合边界先取插话,
   // 排队的要等 agent 本来要停的那一刻,这就是它们实际的投递顺序。
   const firstFollowUp = entry.queue.findIndex((queued) => queued.mode === "followUp");
   if (mode === "steer" && firstFollowUp !== -1) {
-    entry.queue.splice(firstFollowUp, 0, { mode, text });
+    entry.queue.splice(firstFollowUp, 0, { mode, text, ...attached });
   } else {
-    entry.queue.push({ mode, text });
+    entry.queue.push({ mode, text, ...attached });
   }
-  sendCommand(entry, { kind: "prompt", text, mode });
+  sendCommand(entry, { kind: "prompt", text, mode, ...attached });
+  entry.imageRefs.push(...images);
 }
 
 /** 整队清空(issue #334)。Pi 不支持单条撤回,因此只有这一个动作。 */
 export function clearAgentSessionQueue(sessionId: number): void {
   const entry = registry.get(sessionId);
   if (entry === undefined) return;
+  // 清掉的那几条带的图也不再等着被认领(issue #336):留着会被这一回合后面那条消息的图片块
+  // 认走,对话里就配错了图。
+  const dropped = new Set(entry.queue.flatMap((queued) => queued.images ?? []));
+  entry.imageRefs = entry.imageRefs.filter((ref) => !dropped.has(ref));
   entry.queue = [];
   sendCommand(entry, { kind: "clear-queue" });
 }

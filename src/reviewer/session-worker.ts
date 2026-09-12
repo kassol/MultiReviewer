@@ -30,6 +30,7 @@ import {
   resolveFindingQuery,
   sessionFindingTool,
 } from "./session-finding-tool.ts";
+import { readAgentSessionImages, type AgentSessionImageRef } from "./session-images.ts";
 import { sessionOutputTools } from "./session-output-tools.ts";
 import { purposeSystemPrompt } from "./session-purposes.ts";
 import {
@@ -270,21 +271,31 @@ async function open(request: OpenSessionRequest): Promise<void> {
  *
  * 用 `steer()` / `followUp()` 而不是带 `streamingBehavior` 的 `prompt()`:后者按 Pi 自己的
  * `isStreaming` 分流,那一格在开跑前的几个 await 里还是 false,会另起一个并发的回合。
+ *
+ * 图片在这里才读成 base64(issue #336):主进程只经 IPC 给了路径。Pi 把它们放进这条用户消息
+ * 的内容块里,镜像回去的条目因此带 base64——主进程落库前换回文件引用。
  */
-async function prompt(text: string, mode: AgentSessionMessageMode): Promise<void> {
+async function prompt(
+  text: string,
+  mode: AgentSessionMessageMode,
+  imageRefs: readonly AgentSessionImageRef[],
+): Promise<void> {
   if (session === undefined) {
     send({ kind: "turn-end", failure: "会话还没建好" });
     return;
   }
+  // 一张图都没带时不给这一格:空数组与「没有图片」在 Pi 那边不必同义。
+  const read = readAgentSessionImages(imageRefs);
+  const images = read.length === 0 ? undefined : read;
   if (running) {
-    if (mode === "steer") await session.steer(text);
-    else await session.followUp(text);
+    if (mode === "steer") await session.steer(text, images);
+    else await session.followUp(text, images);
     return;
   }
   running = true;
   let thrown: string | undefined;
   try {
-    await session.prompt(text);
+    await session.prompt(text, images === undefined ? undefined : { images });
   } catch (error) {
     thrown = String(error instanceof Error ? error.message : error);
   }
@@ -354,7 +365,7 @@ function handle(command: SessionCommand): Promise<void> {
     case "open":
       return open(command.request);
     case "prompt":
-      return prompt(command.text, command.mode);
+      return prompt(command.text, command.mode, command.images ?? []);
     case "custom-message":
       return customMessage(command.text);
     case "stop":

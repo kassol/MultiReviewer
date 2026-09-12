@@ -3,7 +3,9 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import {
   CheckCircledIcon,
   CopyIcon,
+  Cross2Icon,
   CrossCircledIcon,
+  ImageIcon,
   PlusIcon,
   ReaderIcon,
   StopIcon,
@@ -14,13 +16,15 @@ import {
   Callout,
   Dialog,
   Flex,
+  IconButton,
   SegmentedControl,
   Select,
   Skeleton,
   Text,
   TextArea,
+  Tooltip,
 } from "@radix-ui/themes";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -42,7 +46,7 @@ import {
 } from "@/lib/agent-session-records";
 import { localMinute, localSecond } from "@/lib/time";
 
-import { fetchJson, send } from "./api.ts";
+import { api, apiUrl, errorText, fetchJson, send } from "./api.ts";
 import { StreamStatus, useTrace } from "./run-trace.tsx";
 
 /** 会话用途(CONTEXT.md 会话用途)。这一版只有需求拆分,与服务端同一份取值。 */
@@ -247,6 +251,124 @@ export function CreateSessionDialog({
 /** 排队中的一条消息(issue #334)。Pi 不支持单条撤回,所以它没有标识,也没有单条动作。 */
 export type QueuedMessage = { mode: "followUp" | "steer"; text: string };
 
+/** 一条消息最多带几张图(spec #329,issue #336)。与服务端同一个数。 */
+const MAX_SESSION_IMAGES = 4;
+
+/** 上传接口收得下的图片类型。`accept` 与服务端的白名单同一份。 */
+const IMAGE_ACCEPT = "image/png,image/jpeg,image/webp,image/gif";
+
+/** 当前辅助模型看不了图时按钮上的那句提示(spec #329 的 US 23)。 */
+const NO_IMAGE_INPUT_HINT = "当前辅助模型不支持图片,换一个支持图片的辅助模型";
+
+/** 一张图的地址。对话流的缩略图与输入区的预览都取它。 */
+function imageSrc(sessionId: number, imageId: string): string {
+  return apiUrl(`/agent-sessions/${sessionId}/images/${imageId}`);
+}
+
+/**
+ * 传一张图(issue #336)。body 就是文件本身,类型看 `content-type`——接口不收 multipart,
+ * 一次一张。
+ */
+async function uploadImage(sessionId: number, file: File): Promise<string> {
+  const response = await api(`/agent-sessions/${sessionId}/images`, {
+    method: "POST",
+    headers: { "content-type": file.type },
+    body: file,
+  });
+  if (!response.ok) throw new Error(await errorText(response));
+  return ((await response.json()) as { image: { imageId: string } }).image.imageId;
+}
+
+/**
+ * 输入区的图片按钮与缩略图预览(原型 A 的输入区,issue #336)。
+ *
+ * `imageInput` 为假即当前辅助模型看不了图:按钮置灰,鼠标悬停说清去换模型——人不会以为
+ * 它看了图。满四张时同样置灰。
+ */
+function ImageComposer({
+  sessionId,
+  images,
+  imageInput,
+  busy,
+  onPick,
+  onRemove,
+}: {
+  sessionId: number;
+  images: readonly string[];
+  imageInput: boolean;
+  busy: boolean;
+  onPick: (files: readonly File[]) => void;
+  onRemove: (imageId: string) => void;
+}) {
+  const picker = useRef<HTMLInputElement>(null);
+  const full = images.length >= MAX_SESSION_IMAGES;
+  const hint = !imageInput
+    ? NO_IMAGE_INPUT_HINT
+    : full
+      ? `一条消息最多带 ${MAX_SESSION_IMAGES} 张图`
+      : `加图片(最多 ${MAX_SESSION_IMAGES} 张)`;
+  return (
+    <>
+      {images.length === 0 ? null : (
+        <ul className="flex basis-full flex-wrap gap-2" aria-label="待发送的图片">
+          {images.map((imageId) => (
+            <li key={imageId} className="relative">
+              <img
+                src={imageSrc(sessionId, imageId)}
+                alt="待发送的图片"
+                className="size-16 rounded-lg border border-line object-cover"
+              />
+              <IconButton
+                type="button"
+                size="1"
+                variant="solid"
+                color="gray"
+                aria-label="移除这张图片"
+                className="absolute -right-1.5 -top-1.5"
+                onClick={() => onRemove(imageId)}
+              >
+                <Cross2Icon aria-hidden />
+              </IconButton>
+            </li>
+          ))}
+        </ul>
+      )}
+      <input
+        ref={picker}
+        type="file"
+        accept={IMAGE_ACCEPT}
+        multiple
+        hidden
+        onChange={(event) => {
+          const files = [...(event.target.files ?? [])].slice(
+            0,
+            MAX_SESSION_IMAGES - images.length,
+          );
+          // 同一个文件再选一次也要触发 change:值不清的话第二次选它什么都不会发生。
+          event.target.value = "";
+          if (files.length > 0) onPick(files);
+        }}
+      />
+      <Tooltip content={hint}>
+        <span>
+          <Button
+            type="button"
+            variant="soft"
+            color="gray"
+            size={{ initial: "3", sm: "2" }}
+            disabled={!imageInput || full || busy}
+            aria-label={hint}
+            onClick={() => picker.current?.click()}
+          >
+            <ImageIcon aria-hidden />
+            图片
+          </Button>
+        </span>
+      </Tooltip>
+    </>
+  );
+}
+
 /** 两种模式的文案。界面上只说中文那一半,括号里的英文是 Pi 的说法,留着好对上文档。 */
 const MODE_LABEL: Record<QueuedMessage["mode"], string> = {
   followUp: "排队",
@@ -376,6 +498,22 @@ function Conversation({
                     {item.kind === "user" ? "我" : "agent"} · {localSecond(item.at)}
                   </span>
                   <p className="min-w-0 whitespace-pre-wrap break-words text-lg">{item.text}</p>
+                  {/* 带的图片以缩略图出现在这条消息里(issue #336),点开看原图。 */}
+                  {item.kind !== "user" || item.images.length === 0 ? null : (
+                    <ul className="flex flex-wrap gap-2" aria-label="这条消息带的图片">
+                      {item.images.map((imageId) => (
+                        <li key={imageId}>
+                          <a href={imageSrc(sessionId, imageId)} target="_blank" rel="noreferrer">
+                            <img
+                              src={imageSrc(sessionId, imageId)}
+                              alt="这条消息带的图片"
+                              className="size-20 rounded-lg border border-line object-cover"
+                            />
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               )}
             </li>
@@ -736,13 +874,17 @@ export function AgentSessionPage({
   const [confirming, setConfirming] = useState(false);
   const [draft, setDraft] = useState("");
   const [mode, setMode] = useState<QueuedMessage["mode"]>("followUp");
+  /** 这一条消息带的图片 id(issue #336)。发出去就清空;移除只是不带它,文件留在会话里。 */
+  const [images, setImages] = useState<string[]>([]);
   /** 右栏看的是哪一版产出。null 即最新那一版;点对话流里的产出卡片切到那一版(issue #337)。 */
   const [outputVersion, setOutputVersion] = useState<number | null>(null);
 
   const sessionQuery = useQuery({
     queryKey: ["agent-sessions", sessionId],
     queryFn: () =>
-      fetchJson<{ session: AgentSession; queue: QueuedMessage[] }>(`/agent-sessions/${sessionId}`),
+      fetchJson<{ session: AgentSession; queue: QueuedMessage[]; imageInput: boolean }>(
+        `/agent-sessions/${sessionId}`,
+      ),
     // 在跑时轮询:回合结束与队列变动都没有单独的事件,状态与排队列表是会话自己那两格
     // (issue #333、#334)。
     refetchInterval: (query) => (query.state.data?.session.status === "running" ? 2000 : false),
@@ -755,6 +897,8 @@ export function AgentSessionPage({
 
   const session = sessionQuery.data?.session;
   const queue = sessionQuery.data?.queue ?? [];
+  /** 当前辅助模型看不看得了图(issue #336)。读不到时按看不了处理:置灰比白发一次好。 */
+  const imageInput = sessionQuery.data?.imageInput ?? false;
   const running = session?.status === "running";
   const refresh = (): Promise<void> =>
     queryClient.invalidateQueries({ queryKey: ["agent-sessions", sessionId] });
@@ -765,11 +909,26 @@ export function AgentSessionPage({
         clientMessageId: crypto.randomUUID(),
         text,
         mode,
+        images,
       }),
     onSuccess: async () => {
       setDraft("");
+      setImages([]);
       setFeedback(null);
       await refresh();
+    },
+    onError: (error: Error) => setFeedback({ text: error.message, error: true }),
+  });
+  /** 选中的图片逐张上传(issue #336)。一张失败就停:剩下的由人再选一次。 */
+  const attach = useMutation({
+    mutationFn: async (files: readonly File[]) => {
+      const ids: string[] = [];
+      for (const file of files) ids.push(await uploadImage(sessionId, file));
+      return ids;
+    },
+    onSuccess: (ids) => {
+      setFeedback(null);
+      setImages((current) => [...current, ...ids].slice(0, MAX_SESSION_IMAGES));
     },
     onError: (error: Error) => setFeedback({ text: error.message, error: true }),
   });
@@ -929,6 +1088,16 @@ export function AgentSessionPage({
                         <SegmentedControl.Item value="followUp">排队</SegmentedControl.Item>
                         <SegmentedControl.Item value="steer">插话</SegmentedControl.Item>
                       </SegmentedControl.Root>
+                      <ImageComposer
+                        sessionId={sessionId}
+                        images={images}
+                        imageInput={imageInput}
+                        busy={post.isPending || attach.isPending}
+                        onPick={(files) => attach.mutate(files)}
+                        onRemove={(imageId) =>
+                          setImages((current) => current.filter((id) => id !== imageId))
+                        }
+                      />
                       <div className="flex-1" />
                       <Button
                         type="button"

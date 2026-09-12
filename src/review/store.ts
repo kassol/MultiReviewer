@@ -738,6 +738,19 @@ CREATE TABLE IF NOT EXISTS agent_session_message (
   PRIMARY KEY (session_id, client_message_id)
 );
 
+-- 会话图片(spec #329,issue #336)。一行一张已经落盘的图:文件在 data 目录下的
+-- agent-sessions/<会话 id>/<图片 id>.<扩展名>,库里只存路径与 mimeType(base64 一律不进
+-- 库,会话记录里的图片块也只存文件引用)。发消息时按 id 认领这几张图,因此主键是两列。
+-- 删会话与删产品一并删掉这些行,文件目录由 handler 那一侧删。
+CREATE TABLE IF NOT EXISTS agent_session_image (
+  session_id INTEGER NOT NULL REFERENCES agent_session(id),
+  image_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, image_id)
+);
+
 -- 会话产出(CONTEXT.md 会话产出,issue #337)。一行一版:产出是独立实体,payload 是那一种
 -- 产出类型自己的 JSON,这一层不解释它(与会话记录的 entry 同律)。版本号在一个会话的一种
 -- 产出类型之内自增,主键因此是三列。tool_call_id 是产生它的那次工具调用,面板据它回到
@@ -2663,6 +2676,18 @@ export type AgentSessionEntryRecord = {
 export type AgentSessionMessageAcceptance = { acceptedAt: string; fresh: boolean };
 
 /**
+ * 一张落好盘的会话图片(spec #329,issue #336)。库里只有路径与 mimeType:图片本身在 data
+ * 目录下的文件里,base64 不进库也不进会话记录。
+ */
+export type AgentSessionImageRecord = {
+  sessionId: number;
+  imageId: string;
+  path: string;
+  mimeType: string;
+  createdAt: string;
+};
+
+/**
  * 会话产出的类型(CONTEXT.md 会话产出,issue #337)。这一版只有需求拆分。与会话用途同名
  * 但不是同一格:用途决定注册哪些产出工具,一个用途日后可能交出两种产出。
  */
@@ -2944,8 +2969,12 @@ export type Store = {
     purpose: AgentSessionPurpose;
     createdAt: string;
   }): AgentSessionRecord;
-  /** 删一个 Agent 会话,记录与受理过的客户端消息 id 一并删掉。没有这一条即 false。 */
+  /** 删一个 Agent 会话,记录、受理过的客户端消息 id 与图片行一并删掉。没有这一条即 false。 */
   deleteAgentSession(sessionId: number): boolean;
+  /** 记下一张落好盘的会话图片(issue #336)。发消息时按 `imageId` 认领它。 */
+  addAgentSessionImage(record: AgentSessionImageRecord): void;
+  /** 这个会话的这一张图。认不出这个 id 即 undefined——发消息时据它回绝。 */
+  getAgentSessionImage(sessionId: number, imageId: string): AgentSessionImageRecord | undefined;
   /**
    * 落一条会话记录(ADR 0031,issue #333)并把它的用量累加到会话上。seq 由这一步给,
    * 两件事在同一个事务里:会话上的累计用量就是它的记录行之和,不可能只做一半。
@@ -5059,6 +5088,7 @@ export function openStore(dbPath: string): Store {
         for (const table of [
           "agent_session_entry",
           "agent_session_message",
+          "agent_session_image",
           "agent_session_output",
           "agent_session_output_finalization",
         ]) {
@@ -5120,10 +5150,11 @@ export function openStore(dbPath: string): Store {
     deleteAgentSession(sessionId) {
       db.exec("BEGIN");
       try {
-        // 记录、受理过的消息 id 与产出只属于这个会话,跟着它走(issue #333、#337)。
+        // 记录、受理过的消息 id、图片与产出只属于这个会话,跟着它走(issue #333、#336、#337)。
         for (const table of [
           "agent_session_entry",
           "agent_session_message",
+          "agent_session_image",
           "agent_session_output",
           "agent_session_output_finalization",
         ]) {
@@ -5137,6 +5168,28 @@ export function openStore(dbPath: string): Store {
         db.exec("ROLLBACK");
         throw error;
       }
+    },
+
+    addAgentSessionImage(record) {
+      db.prepare(
+        `INSERT INTO agent_session_image (session_id, image_id, path, mime_type, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+      ).run(record.sessionId, record.imageId, record.path, record.mimeType, record.createdAt);
+    },
+
+    getAgentSessionImage(sessionId, imageId) {
+      const row = db
+        .prepare("SELECT * FROM agent_session_image WHERE session_id = ? AND image_id = ?")
+        .get(sessionId, imageId);
+      return row === undefined
+        ? undefined
+        : {
+            sessionId: Number(row["session_id"]),
+            imageId: String(row["image_id"]),
+            path: String(row["path"]),
+            mimeType: String(row["mime_type"]),
+            createdAt: String(row["created_at"]),
+          };
     },
 
     appendAgentSessionEntry(sessionId, input) {

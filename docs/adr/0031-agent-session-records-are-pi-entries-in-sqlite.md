@@ -13,3 +13,4 @@ Agent 会话要跨页面关闭、空闲回收与服务重启续谈(地图 #318,�
 - `entry_appended` 事件只为 custom 条目发出,镜像必须挂 `message_end` 与 `compaction_end`;条目 id 在 `turn_end` / `agent_end` 后回读。
 - 重建前自检链完整性;不完整时仍按 Pi 的截断重建,会话上标出「前 N 条不在上下文」让面板提示,不拒绝续谈。
 - 用量按条目累加,与 `getSessionStats()` 同口径,与 Review Run 的用量分开。
+- **「原样」有一个例外:图片块**(spec #329 的图片一段,issue #336)。人带的图片落在 data 目录的文件里,条目里的 base64 图片块落库前换成 `{ type: "image-ref", imageId, path, mimeType }`,重建时读文件填回 base64、文件丢了换占位文本块。不这样做的话一张图的 base64 要在记录表里存一遍、在每次读记录时搬一遍,而它本来就已经是磁盘上的一个文件。

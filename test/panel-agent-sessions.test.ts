@@ -125,10 +125,11 @@ test("建会话要用途,且只收需求拆分", async () => {
     totalTokens: 0,
   });
 
-  // 读回来与建出来的那一份同形,跟着回一份空的排队列表(issue #334)。
+  // 读回来与建出来的那一份同形,跟着回一份空的排队列表(issue #334)与图片能力那一格
+  // (issue #336:这套夹具的模型目录没声明看得了图)。
   const read = await as(h, cookie, "GET", `/agent-sessions/${session.id}`);
   assert.equal(read.status, 200);
-  assert.deepEqual(await read.json(), { session, queue: [] });
+  assert.deepEqual(await read.json(), { session, queue: [], imageInput: false });
   assert.deepEqual(await sessions(h, cookie, productId), [session]);
 });
 

@@ -51,7 +51,16 @@ export type StubTurn = {
 export type StubRequest = {
   model: string;
   tools: string[];
-  messages: { role: string; content: string; toolCallId?: string }[];
+  messages: {
+    role: string;
+    content: string;
+    toolCallId?: string;
+    /**
+     * 这条消息带的图片(issue #336):openai-completions 协议里一个 `image_url` 块的
+     * `data:<mimeType>;base64,<data>`,拆成两格。一张图都没带时这一格缺席。
+     */
+    images?: { mimeType: string; data: string }[];
+  }[];
 };
 
 export type ModelStub = {
@@ -71,6 +80,19 @@ function flattenContent(content: unknown): string {
     .join("");
 }
 
+/** 这条消息里的图片块(issue #336)。data URL 拆成 mimeType 与 base64 两格。 */
+function imagesOf(content: unknown): { mimeType: string; data: string }[] {
+  if (!Array.isArray(content)) return [];
+  const images: { mimeType: string; data: string }[] = [];
+  for (const part of content) {
+    const url = (part as { image_url?: { url?: unknown } } | null)?.image_url?.url;
+    if (typeof url !== "string") continue;
+    const match = /^data:([^;]+);base64,(.*)$/s.exec(url);
+    if (match !== null) images.push({ mimeType: match[1]!, data: match[2]! });
+  }
+  return images;
+}
+
 function parseRequest(body: Record<string, unknown>): StubRequest {
   const tools = Array.isArray(body["tools"]) ? body["tools"] : [];
   const messages = Array.isArray(body["messages"]) ? body["messages"] : [];
@@ -81,10 +103,12 @@ function parseRequest(body: Record<string, unknown>): StubRequest {
     ),
     messages: messages.map((message: unknown) => {
       const m = message as { role?: unknown; content?: unknown; tool_call_id?: unknown };
+      const images = imagesOf(m.content);
       return {
         role: String(m.role ?? ""),
         content: flattenContent(m.content),
         ...(typeof m.tool_call_id === "string" ? { toolCallId: m.tool_call_id } : {}),
+        ...(images.length === 0 ? {} : { images }),
       };
     }),
   };
