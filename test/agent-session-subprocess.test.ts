@@ -19,11 +19,13 @@
  * 「前 N 条不在上下文」是几。回收与判死的门槛按毫秒注入,不真等十分钟。
  */
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { ReviewerUsage } from "../src/review/finding.ts";
 import { openStore } from "../src/review/store.ts";
+import { MISSING_IMAGE_TEXT } from "../src/reviewer/session-images.ts";
 import { disposeAgentSessions } from "../src/webhook/agent-session.ts";
 import {
   GITEA_REPO,
@@ -410,6 +412,93 @@ test("带图的消息:base64 进了模型请求,记录里只剩文件引用", as
     assert.match(entry, new RegExp(`"imageId":"${image.imageId}"`));
     assert.doesNotMatch(entry, /"type":"image"/);
     assert.doesNotMatch(entry, new RegExp(sent.toString("base64").slice(0, 64)));
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+/** 上传一张 24×16 的 PNG,回它的图片 id。带图的几条用例共用这一件。 */
+async function uploadImage(h: PanelHarness, cookie: string, sessionId: number): Promise<string> {
+  const upload = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/images`, {
+    method: "POST",
+    headers: { cookie, "content-type": "image/png" },
+    body: pngBytes(24, 16),
+  });
+  const text = await upload.text();
+  assert.equal(upload.status, 201, text);
+  return (JSON.parse(text) as { image: { imageId: string } }).image.imageId;
+}
+
+test("回收之后重建:记录里的图片引用读回 base64 再喂给模型", async () => {
+  const turns: StubTurn[] = [
+    { text: "图上是报销单的列表页", usage: { input: 40, output: 8 } },
+    { text: "接着说那一版", usage: { input: 41, output: 8 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns, {
+    input: ["text", "image"],
+  });
+  try {
+    const imageId = await uploadImage(h, cookie, sessionId);
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE, undefined, [imageId])).status, 202);
+    await messagesAtLeast(h.db.path, sessionId, 2);
+    await idle(h, cookie, sessionId);
+    // 回收:登记表摘掉,下一条消息从记录重建(issue #335)。
+    await disposeAgentSessions();
+
+    assert.equal((await send(h, cookie, sessionId, "c2", "接着说")).status, 202);
+    await requestsAtLeast(requests, 2);
+    await idle(h, cookie, sessionId);
+
+    // 重建那一次请求里,此前那条用户消息带的是 base64 而不是文件引用。
+    const rebuilt = requests[1]!;
+    const user = rebuilt.messages.find((message) => message.role === "user");
+    assert.match(user?.content ?? "", new RegExp(MESSAGE));
+    assert.equal(user?.images?.length, 1);
+    assert.equal(user?.images?.[0]!.mimeType, "image/png");
+    assert.deepEqual(pngSize(Buffer.from(user!.images![0]!.data, "base64")), {
+      width: 24,
+      height: 16,
+    });
+    assert.ok(!bodyOf(rebuilt).includes("image-ref"), "文件引用原样进了模型上下文");
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("图片文件丢了再重建:那一块是占位文本,历史照样续得上", async () => {
+  const turns: StubTurn[] = [
+    { text: "图上是报销单的列表页", usage: { input: 40, output: 8 } },
+    { text: "接着说那一版", usage: { input: 41, output: 8 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns, {
+    input: ["text", "image"],
+  });
+  try {
+    const imageId = await uploadImage(h, cookie, sessionId);
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE, undefined, [imageId])).status, 202);
+    await messagesAtLeast(h.db.path, sessionId, 2);
+    await idle(h, cookie, sessionId);
+    await disposeAgentSessions();
+
+    // 人手动删掉那个文件:库里的引用还在,文件没了。
+    const store = openStore(h.db.path);
+    const image = store.getAgentSessionImage(sessionId, imageId)!;
+    store.close();
+    rmSync(image.path);
+
+    assert.equal((await send(h, cookie, sessionId, "c2", "接着说")).status, 202);
+    await requestsAtLeast(requests, 2);
+    await idle(h, cookie, sessionId);
+
+    // 那一块换成占位文本,正文与后一句都还在:丢一张图不该让整段历史重建不起来。
+    const rebuilt = requests[1]!;
+    const user = rebuilt.messages.find((message) => message.role === "user");
+    assert.equal(user?.images, undefined);
+    assert.match(user?.content ?? "", new RegExp(MISSING_IMAGE_TEXT.replace(/[[\]]/g, "\\$&")));
+    assert.match(bodyOf(rebuilt), new RegExp(MESSAGE));
+    assert.match(bodyOf(rebuilt), /接着说/);
   } finally {
     await disposeAgentSessions();
     await close();

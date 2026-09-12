@@ -30,7 +30,11 @@ import {
   resolveFindingQuery,
   sessionFindingTool,
 } from "./session-finding-tool.ts";
-import { readAgentSessionImages, type AgentSessionImageRef } from "./session-images.ts";
+import {
+  inflateImageRefs,
+  readAgentSessionImages,
+  type AgentSessionImageRef,
+} from "./session-images.ts";
 import { sessionOutputTools } from "./session-output-tools.ts";
 import { purposeSystemPrompt } from "./session-purposes.ts";
 import {
@@ -234,7 +238,9 @@ async function open(request: OpenSessionRequest): Promise<void> {
     runtime: prepared,
     worktreePath: request.sessionRoot,
     thinkingLevel,
-    ...(request.entries === undefined ? {} : { entries: request.entries }),
+    // 记录里的图片是文件引用(issue #336),喂回 Pi 之前读文件填回 base64:文件丢了那一块
+    // 换成占位文本,丢一张图不该让整段历史重建不起来。读文件在这一侧,base64 因此不过 IPC。
+    ...(request.entries === undefined ? {} : { entries: inflateImageRefs(request.entries) }),
     tools: [...sessionTools(), ...outputTools.map((tool) => tool.name)],
     customTools: [
       ...(sessionReadOnlyTools(request.sessionRoot) as unknown as ToolDefinition[]),
