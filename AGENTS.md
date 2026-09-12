@@ -155,6 +155,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-12: spec #329 / #330 拆成十张票 #331–#340(均 ready-for-agent,GitHub 原生阻塞边):#340 预备重构、#331 产品 → #332 agent:chat 与会话实体 → #333 常驻子进程一问一答 → #334 排队/插话/停止 → #335 生命周期;#336 图片、#337 产出通道与需求拆分产出 → #338 需求拆分用途 各从 #333 分叉;#339 发布与线上验收收尾。前沿:#340 与 #331 可并行。
 - 2026-09-12: 地图 #318 收成两份 spec:[Agent 会话底座](https://github.com/kassol/MultiReviewer/issues/329)与[需求拆分](https://github.com/kassol/MultiReviewer/issues/330)(后者阻塞于前者),均标 ready-for-agent。测试缝四段:HTTP + 临时库、真子进程 + 本机假模型服务、smoke 真模型契约、00-test 线上 ego-browser 主链路(只用 zhangxu/review)。
 - 2026-09-12: wayfinder 地图[Agent 会话底座与需求拆分](https://github.com/kassol/MultiReviewer/issues/318)定下[Agent 会话底座与需求拆分以哪些场景验收](https://github.com/kassol/MultiReviewer/issues/327),**九张票全部关闭,地图走完**:21 条验收场景分落 HTTP + 临时库、真子进程 + 假模型服务、smoke 真模型契约、00-test 线上 ego-browser 主链路(只用 zhangxu/review)。下一步 `/to-spec` 收成「Agent 会话底座」与「需求拆分」两份 spec。
 - 2026-09-12: wayfinder 地图[Agent 会话底座与需求拆分](https://github.com/kassol/MultiReviewer/issues/318)定下[写代码类用途要底座预留什么边界](https://github.com/kassol/MultiReviewer/issues/326):会话用途成为会话字段(这版只有需求拆分);锚点不预留;agent 只在专属分支改、以 PR 交人审;写工具只在写用途会话注册;修复后靠复核自动处置。`CONTEXT.md` 新增「会话用途」。
