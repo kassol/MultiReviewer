@@ -155,6 +155,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-12: wayfinder 地图[Agent 会话底座与需求拆分](https://github.com/kassol/MultiReviewer/issues/318)定下[会话页与产出面板长什么样](https://github.com/kassol/MultiReviewer/issues/324):三栏工作台(产品与我的会话 / 对话 / 产出)。三种布局的原型留在分支 `prototype/agent-session-panel`(路由 `/prototype/agent-session`,一次性代码,不进 main)。
 - 2026-09-12: wayfinder 地图[Agent 会话底座与需求拆分](https://github.com/kassol/MultiReviewer/issues/318)定下[需求拆分 spec:输入、产出形状与定稿](https://github.com/kassol/MultiReviewer/issues/323):需求以文本加最多 4 张图进会话(图存 `data` 目录、记录存引用、按模型目录 `input_json` 拒收);产出 = 总述 + 拆分条目(单仓库可独立提 PR 的变更);定稿后产出区可看并复制为 Markdown。`CONTEXT.md` 新增「需求拆分」「拆分条目」。
 - 2026-09-12: wayfinder 地图[Agent 会话底座与需求拆分](https://github.com/kassol/MultiReviewer/issues/318)定下[产品实体与 agent:chat 权限怎样落进面板](https://github.com/kassol/MultiReviewer/issues/322):产品只有名称与仓库集合、按 `repo:write` 管,对任一仓库有分配即看得到产品(建图时「须对全部仓库有分配」的前提作废);`agent:chat` 独立一格;Agent 会话只创建者可见可续、系统管理员只看,agent 读创建者有分配的仓库;独立「产品」导航项是会话入口。`CONTEXT.md`「产品」「Agent 会话」改口。
 - 2026-09-12: wayfinder 地图[Agent 会话底座与需求拆分](https://github.com/kassol/MultiReviewer/issues/318)定下[对话 agent 的工具面与产出通道是什么形状](https://github.com/kassol/MultiReviewer/issues/321):会话根下按 `<owner>/<repo>` 挂工作树、路径前缀即仓库,read/grep/find/ls 都圈在会话根;知识集按仓库分段注入,历史 Finding 走查询工具;每用途一个产出工具、底座统一产出表与定稿流程。`CONTEXT.md` 新增「会话产出」「定稿」。顺带发现 Reviewer 会话里 Pi 内建 grep/find/ls 不查仓库根,另开 issue 记录。
