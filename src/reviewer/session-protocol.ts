@@ -7,7 +7,11 @@
  */
 import type { ThinkingLevel } from "../config.ts";
 import type { ProjectFact, ReviewRule } from "../review/finding.ts";
-import type { AgentSessionOutputKind } from "../review/store.ts";
+import type {
+  AgentSessionOutputKind,
+  RepoFinding,
+  RepoFindingQuery,
+} from "../review/store.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 
 /**
@@ -60,7 +64,17 @@ export type SessionCommand =
    * 往会话里放一条进模型上下文的自定义消息,不开新回合(issue #337)。定稿与换版走它:
    * 那是人做的动作,agent 下一轮要知道哪一版定了。落库由镜像那条路完成,与别的条目同形。
    */
-  | { kind: "custom-message"; text: string };
+  | { kind: "custom-message"; text: string }
+  /**
+   * 一次历史 Finding 查询的回应(issue #338),`requestId` 与请求那一条配对。主进程恒回
+   * 一条:查不动时带 `failure`,`findings` 那时是空的,工具因此不会永远等下去。
+   */
+  | {
+      kind: "finding-query-result";
+      requestId: string;
+      findings: readonly RepoFinding[];
+      failure?: string;
+    };
 
 /** 子进程回传的消息。 */
 export type SessionWorkerMessage =
@@ -80,5 +94,11 @@ export type SessionWorkerMessage =
   | { kind: "turn-end"; failure?: string }
   /** 会话建不起来:这个子进程之后什么都做不了。 */
   | { kind: "failed"; failure: string }
+  /**
+   * 一次历史 Finding 查询(issue #338)。子进程没有库连接,查询因此走这一对消息:主进程
+   * 查库,带同一个 `requestId` 回一条 `finding-query-result`,执行中的那次工具调用凭它
+   * 兑现。这是这条协议上唯一的请求-回应。
+   */
+  | { kind: "finding-query"; requestId: string; query: RepoFindingQuery }
   /** 会话还活着,别的什么都不说明(`streamHeartbeat`)。 */
   | { kind: "heartbeat" };

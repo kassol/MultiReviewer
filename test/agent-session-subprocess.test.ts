@@ -177,10 +177,11 @@ test("发一条消息:知识集分段与消息文本进了模型请求,回复与
       ),
       "发出去的那句话没进模型请求",
     );
-    // 工具面是只读四件套、受控 git,加这个用途的产出工具(issue #337);写工具一个都没注册。
+    // 工具面是只读四件套、受控 git、历史 Finding 查询(issue #338),加这个用途的产出工具
+    // (issue #337);写工具一个都没注册。
     assert.deepEqual(
       [...requests[0]!.tools].sort(),
-      ["find", "git", "grep", "ls", "read", "submit_requirement_breakdown"],
+      ["find", "git", "grep", "ls", "query_findings", "read", "submit_requirement_breakdown"],
     );
 
     // 记录:会话起头的两条(这一次用哪个模型、哪个思考档位)原样落下来,随后是用户消息、
