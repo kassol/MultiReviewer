@@ -155,6 +155,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-12: wayfinder 地图[Agent 会话底座与需求拆分](https://github.com/kassol/MultiReviewer/issues/318)定下[写代码类用途要底座预留什么边界](https://github.com/kassol/MultiReviewer/issues/326):会话用途成为会话字段(这版只有需求拆分);锚点不预留;agent 只在专属分支改、以 PR 交人审;写工具只在写用途会话注册;修复后靠复核自动处置。`CONTEXT.md` 新增「会话用途」。
 - 2026-09-12: wayfinder 地图[Agent 会话底座与需求拆分](https://github.com/kassol/MultiReviewer/issues/318)定下[禅道接入要底座预留什么边界](https://github.com/kassol/MultiReviewer/issues/325):底座不预留禅道结构,只在 spec 写明会话外部需求引用、产品禅道 id、用户禅道账号三处可空扩展点;禅道需求以带来源标注的用户消息进会话;禅道为开源版 22.4,接入另开地图。
 - 2026-09-12: wayfinder 地图[Agent 会话底座与需求拆分](https://github.com/kassol/MultiReviewer/issues/318)定下[会话页与产出面板长什么样](https://github.com/kassol/MultiReviewer/issues/324):三栏工作台(产品与我的会话 / 对话 / 产出)。三种布局的原型留在分支 `prototype/agent-session-panel`(路由 `/prototype/agent-session`,一次性代码,不进 main)。
 - 2026-09-12: wayfinder 地图[Agent 会话底座与需求拆分](https://github.com/kassol/MultiReviewer/issues/318)定下[需求拆分 spec:输入、产出形状与定稿](https://github.com/kassol/MultiReviewer/issues/323):需求以文本加最多 4 张图进会话(图存 `data` 目录、记录存引用、按模型目录 `input_json` 拒收);产出 = 总述 + 拆分条目(单仓库可独立提 PR 的变更);定稿后产出区可看并复制为 Markdown。`CONTEXT.md` 新增「需求拆分」「拆分条目」。
