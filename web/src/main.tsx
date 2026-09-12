@@ -42,6 +42,7 @@ import { SETUP_STATUS_QUERY_KEY, SetupChecklist, useSetupStatus } from "./setup-
 import "./styles.css";
 
 const AccessControlPage = lazy(async () => ({ default: (await import("./access-control.tsx")).AccessControlPage }));
+const AgentSessionPage = lazy(async () => ({ default: (await import("./agent-session.tsx")).AgentSessionPage }));
 const LoginPage = lazy(async () => ({ default: (await import("./login.tsx")).LoginPage }));
 const PasswordPage = lazy(async () => ({ default: (await import("./password.tsx")).PasswordPage }));
 const ProductsPage = lazy(async () => ({ default: (await import("./products.tsx")).ProductsPage }));
@@ -518,8 +519,37 @@ function StageDetailRoutePage() {
 }
 const productsRoute = protectedPage("/products", undefined, () => {
   const { session } = shellRoute.useRouteContext();
-  return <ProductsPage canWrite={hasPermission(session, "repo:write")} />;
+  return (
+    <ProductsPage
+      canWrite={hasPermission(session, "repo:write")}
+      canChat={hasPermission(session, "agent:chat")}
+    />
+  );
 });
+/**
+ * 一个 Agent 会话的详情页(issue #332)。地址带产品与会话两段 id:左栏要列这个产品下的
+ * 会话,而会话本身只凭自己的 id 读。读不需要权限格,会话的可见性由服务端按创建者判。
+ */
+const agentSessionRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/products/$productId/sessions/$sessionId",
+  beforeLoad: ({ context }) => {
+    if (context.session.mustChangePassword) throw redirect({ to: "/password" });
+  },
+  component: () => <BusinessPage Page={AgentSessionRoutePage} />,
+});
+/** 模块级组件,不在路由 `component` 里内联,与 `StageDetailRoutePage` 同一理由。 */
+function AgentSessionRoutePage() {
+  const { session } = shellRoute.useRouteContext();
+  const params = agentSessionRoute.useParams();
+  return (
+    <AgentSessionPage
+      productId={Number(params.productId)}
+      sessionId={Number(params.sessionId)}
+      username={session.username}
+    />
+  );
+}
 const statsRoute = protectedPage("/stats", undefined, () => <StatsPage />);
 function ModelServicesRoutePage({
   provider,
@@ -683,6 +713,7 @@ const routeTree = rootRoute.addChildren([
     indexRoute,
     stageDetailRoute,
     productsRoute,
+    agentSessionRoute,
     statsRoute,
     credentialsRoute,
     modelServiceRoute,

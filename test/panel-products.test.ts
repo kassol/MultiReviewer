@@ -157,7 +157,7 @@ test("产品按仓库分配可见:零分配 404,有任一仓库分配即可读,�
   );
 });
 
-test("删产品回应带级联条数,会话实体还没有因此是 0", async () => {
+test("删产品回应带级联条数,没有会话时是 0", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const expense = await createProduct(h, "报销系统");
   assert.equal((await h.api("PUT", `/products/${expense.id}/repos/${GITEA_REPO.id}`)).status, 204);

@@ -11,6 +11,10 @@ export const PANEL_PERMISSIONS = [
   "finding:dispose",
   "finding:dispose-batch",
   "knowledge:write",
+  // 开 Agent 会话与在里面发消息(CONTEXT.md Agent 会话,issue #332)。独立一格,不在
+  // `IMPLIED_PANEL_PERMISSIONS` 里出现任何一侧:谁能花模型费由勾这一格明确决定,读会话
+  // 不要它(读按创建者判)。
+  "agent:chat",
   "model:read",
   "model:write",
   "credential:read",

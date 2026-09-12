@@ -15,7 +15,8 @@ import {
   Text,
   TextField,
 } from "@radix-ui/themes";
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useNavigate } from "@tanstack/react-router";
+import { useEffect, useState, type FormEvent } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -23,9 +24,18 @@ import { EmptyState } from "@/components/empty-state";
 import { MasterListItem, MasterListItemText } from "@/components/master-list-item";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
+import { RailCard } from "@/components/rail-card";
 import { Button } from "@/components/theme-button";
 import { unassignedRepos } from "@/lib/products";
 
+import {
+  CreateSessionDialog,
+  SessionRail,
+  sessionsQueryKey,
+  useProductSessions,
+  type AgentSession,
+  type AgentSessionPurpose,
+} from "./agent-session.tsx";
 import { fetchJson, send } from "./api.ts";
 
 type ProductRepo = { repoId: number; owner: string; repo: string };
@@ -46,11 +56,18 @@ function repoPath(row: ProductRepo | RegisteredRepo): string {
  * 可见的产品由服务端按仓库分配给出(ADR 0018),前端不自己判:一个仓库都没分到的人
  * 拿到的是空列表,落在「还没有产品」那一档空态上。
  */
-export function ProductsPage({ canWrite }: { canWrite: boolean }) {
+export function ProductsPage({
+  canWrite,
+  canChat,
+}: {
+  canWrite: boolean;
+  canChat: boolean;
+}) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
-  const [dialog, setDialog] = useState<"create" | "rename" | "attach" | null>(null);
+  const [dialog, setDialog] = useState<"create" | "rename" | "attach" | "session" | null>(null);
   const [confirming, setConfirming] = useState(false);
 
   const productsQuery = useQuery({
@@ -67,6 +84,9 @@ export function ProductsPage({ canWrite }: { canWrite: boolean }) {
   const products = productsQuery.data ?? [];
   const selected = products.find((row) => row.id === selectedId) ?? products[0];
   const loadError = productsQuery.error;
+  // 当前产品下「我的会话」。会话只属于创建者,可见多少由服务端按创建者给出。
+  const sessionsQuery = useProductSessions(selected?.id);
+  const sessions = sessionsQuery.data ?? [];
 
   const refresh = (): Promise<void> =>
     queryClient.invalidateQueries({ queryKey: PRODUCTS_QUERY_KEY });
@@ -131,6 +151,23 @@ export function ProductsPage({ canWrite }: { canWrite: boolean }) {
     onError: failed,
   });
 
+  /** 建会话。建完直接进那个会话:下一步就是在里面说话,不让人再点一次。 */
+  const createSession = useMutation({
+    mutationFn: (input: { product: Product; purpose: AgentSessionPurpose }) =>
+      send<{ session: AgentSession }>(`/products/${input.product.id}/sessions`, "POST", {
+        purpose: input.purpose,
+      }),
+    onSuccess: async ({ session }) => {
+      setDialog(null);
+      await queryClient.invalidateQueries({ queryKey: sessionsQueryKey(session.productId) });
+      void navigate({
+        to: "/products/$productId/sessions/$sessionId",
+        params: { productId: String(session.productId), sessionId: String(session.id) },
+      });
+    },
+    onError: failed,
+  });
+
   const busy =
     create.isPending ||
     rename.isPending ||
@@ -141,11 +178,12 @@ export function ProductsPage({ canWrite }: { canWrite: boolean }) {
   /** 还没归入任何产品、且在这个账号分配内的仓库。归入第二个产品服务端会回 409。 */
   const attachable = unassignedRepos(reposQuery.data ?? [], products);
 
-  function openDialog(next: "create" | "rename" | "attach"): void {
+  function openDialog(next: "create" | "rename" | "attach" | "session"): void {
     setFeedback(null);
     create.reset();
     rename.reset();
     attach.reset();
+    createSession.reset();
     setDialog(next);
   }
 
@@ -293,12 +331,15 @@ export function ProductsPage({ canWrite }: { canWrite: boolean }) {
               </RailCard>
             )}
 
-            {/* 我的会话:实体与列表在 issue #332 接入,这一票只留位置。 */}
-            <RailCard title="我的会话">
-              <Text as="p" size="2" color="gray" className="px-4 pb-3">
-                下一步接入。
-              </Text>
-            </RailCard>
+            {selected === undefined ? null : (
+              <SessionRail
+                productId={selected.id}
+                sessions={sessions}
+                pending={sessionsQuery.isPending}
+                canChat={canChat}
+                onCreate={() => openDialog("session")}
+              />
+            )}
           </aside>
 
           <div className="flex min-w-0 flex-1 flex-col gap-3">
@@ -334,10 +375,31 @@ export function ProductsPage({ canWrite }: { canWrite: boolean }) {
                     </div>
                   ) : null}
                 </div>
-                <EmptyState
-                  title="这个产品还没有 Agent 会话"
-                  description="会话在下一步接入。"
-                />
+                {sessions.length > 0 ? null : (
+                  <EmptyState
+                    title="这个产品还没有 Agent 会话"
+                    description={
+                      canChat
+                        ? "在左栏「我的会话」里建一个会话,选定用途后就能和 agent 对话。"
+                        : "建会话要「会话对话」权限。请联系系统管理员为该账号的角色勾上它。"
+                    }
+                    {...(canChat
+                      ? {
+                          action: (
+                            <Button
+                              variant="solid"
+                              size="2"
+                              disabled={busy}
+                              onClick={() => openDialog("session")}
+                            >
+                              <PlusIcon aria-hidden />
+                              建会话
+                            </Button>
+                          ),
+                        }
+                      : {})}
+                  />
+                )}
               </CardShell>
             )}
           </div>
@@ -384,6 +446,16 @@ export function ProductsPage({ canWrite }: { canWrite: boolean }) {
               attach.mutate({ product: selected, repo });
             }}
           />
+          <CreateSessionDialog
+            open={dialog === "session"}
+            productName={selected.name}
+            busy={createSession.isPending}
+            onClose={() => setDialog(null)}
+            onSubmit={(purpose) => {
+              setFeedback(null);
+              createSession.mutate({ product: selected, purpose });
+            }}
+          />
           <ConfirmDialog
             open={confirming}
             onOpenChange={(open) => {
@@ -391,8 +463,9 @@ export function ProductsPage({ canWrite }: { canWrite: boolean }) {
             }}
             title={`删除产品 ${selected.name}?`}
             titleSize="4"
-            // 级联条数由接口给(此刻只有会话一项),确认框照它写,不在前端另算一遍。
-            description="产品下的 Agent 会话连记录、产出与图片一并删除,不可撤销。仓库只是从产品里摘出,注册表不动。"
+            // 条数取当前产品下这一份会话列表(系统管理员读到的是所有人的),真正删掉
+            // 多少由接口回的 `cascade.sessions` 说,成功那句照它写。
+            description={`产品下的 ${sessions.length} 个 Agent 会话连记录、产出与图片一并删除,不可撤销。仓库只是从产品里摘出,注册表不动。`}
             cancelLabel="取消"
             cancelVariant="outline"
             cancelDisabled={remove.isPending}
@@ -409,34 +482,6 @@ export function ProductsPage({ canWrite }: { canWrite: boolean }) {
         </>
       )}
     </PageBody>
-  );
-}
-
-/** 左栏的一张卡:一行小标题(可带计数与一个动作)加下面的内容。 */
-function RailCard({
-  title,
-  count,
-  action,
-  children,
-}: {
-  title: string;
-  count?: number;
-  action?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <CardShell className="overflow-hidden">
-      <div className="flex min-h-9 items-center justify-between gap-2 px-4 pt-2.5 pb-2">
-        <h2 className="flex min-w-0 items-baseline gap-2 text-base font-bold text-text-muted">
-          <span className="truncate">{title}</span>
-          {count === undefined ? null : (
-            <span className="font-mono text-xs font-normal tabular-nums">{count}</span>
-          )}
-        </h2>
-        {action}
-      </div>
-      {children}
-    </CardShell>
   );
 }
 

@@ -114,6 +114,7 @@ import {
   type ReviewRunPlan,
 } from "../review/run.ts";
 import {
+  AGENT_SESSION_PURPOSES,
   CUSTOM_PROVIDER_NAME_PATTERN,
   DEFAULT_MIN_REPORT_SEVERITY,
   MIN_REPORT_SEVERITIES,
@@ -125,6 +126,8 @@ import {
   storedReviewersEmpty,
   toKnowledgeEntry,
   toPendingProposal,
+  type AgentSessionPurpose,
+  type AgentSessionRecord,
   type BatchLimitField,
   type ComparisonSource,
   type FindingDispositionTarget,
@@ -1963,18 +1966,17 @@ async function handleRenameProduct(
 
 /**
  * 删产品。回应带级联条数:产品下的 Agent 会话连记录、产出与图片一并硬删(spec #329),
- * 面板的确认框照这个字段写。会话实体还不存在(issue #332),因此这一版恒为 0——形状先
- * 定下来,会话表建起来之后这里填真删掉的条数。
+ * 面板的确认框照这个字段写。记录、产出与图片那几张表随后面的票建起来,各自跟着会话行走。
  */
 function handleDeleteProduct(
   res: ServerResponse,
   deps: WebhookServerDeps,
   productId: number,
 ): void {
-  const removed = withStore(deps.dbPath, (store) => store.deleteProduct(productId));
-  return removed
-    ? sendJson(res, 200, { cascade: { sessions: 0 } })
-    : sendJson(res, 404, { error: NO_SUCH_PRODUCT });
+  const cascade = withStore(deps.dbPath, (store) => store.deleteProduct(productId));
+  return cascade === undefined
+    ? sendJson(res, 404, { error: NO_SUCH_PRODUCT })
+    : sendJson(res, 200, { cascade });
 }
 
 /** 归入仓库。一个仓库归入第二个产品时回 409,判据是 `product_repo` 的主键。 */
@@ -2008,6 +2010,131 @@ function handleDetachProductRepo(
 ): void {
   const detached = withStore(deps.dbPath, (store) => store.detachProductRepo(productId, repoId));
   return detached ? send(res, 204) : sendJson(res, 404, { error: "这个产品下没有这个仓库" });
+}
+
+/** 会话不存在,与别人的会话:两档同形回这一句 404(CONTEXT.md Agent 会话)。 */
+const NO_SUCH_AGENT_SESSION = "没有这个 Agent 会话";
+
+/** 只有创建者续得了、删得了自己的会话。系统管理员读得到它,动不了它(spec #329)。 */
+const NOT_AGENT_SESSION_CREATOR = "只有会话的创建者能做";
+
+/** 会话用途必填且只认一个值,说哪个值比说「形状不对」有用。 */
+const AGENT_SESSION_PURPOSE_SHAPE = "会话用途必填,当前只有需求拆分";
+
+/** 请求体里的会话用途。认不出即 undefined;建时必填、之后不变,因此只有这一处收它。 */
+function agentSessionPurpose(value: unknown): AgentSessionPurpose | undefined {
+  return AGENT_SESSION_PURPOSES.find((purpose) => purpose === value);
+}
+
+/**
+ * 一个会话加上「这个调用方看不看得到它」这一判。创建者看得到自己的,系统管理员看得到
+ * 所有人的,其他人与会话不存在同形——从响应上分不出「没有」与「不是我的」。
+ */
+function visibleAgentSession(
+  deps: WebhookServerDeps,
+  sessionId: number,
+  caller: PanelCaller,
+): AgentSessionRecord | undefined {
+  const session = withStore(deps.dbPath, (store) => store.getAgentSession(sessionId));
+  if (session === undefined) return undefined;
+  return caller.isSystemAdmin || session.createdBy === caller.username ? session : undefined;
+}
+
+/**
+ * 产品下「我的会话」。只有创建者续得了一个会话,所以这一份只回自己建的;系统管理员读这个
+ * 产品下的全部(spec #329 的审计与查费用)。产品的可见性已由路由上的 `product` 目标判过,
+ * 这里只补「产品不存在」那一档。
+ */
+function handleListAgentSessions(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+  caller: PanelCaller,
+): void {
+  const sessions = withStore(deps.dbPath, (store) =>
+    store.getProduct(productId) === undefined
+      ? undefined
+      : store.listAgentSessions(productId, caller.isSystemAdmin ? null : caller.username),
+  );
+  return sessions === undefined
+    ? sendJson(res, 404, { error: NO_SUCH_PRODUCT })
+    : sendJson(res, 200, { sessions });
+}
+
+/** 建会话。用途必填且只认需求拆分;创建者就是调用方,建完它只属于这个人。 */
+async function handleCreateAgentSession(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+  caller: PanelCaller,
+): Promise<void> {
+  const payload = await readJson<{ purpose?: unknown } | null>(req, res);
+  if (payload === undefined) return;
+  const purpose = agentSessionPurpose(payload?.purpose);
+  if (purpose === undefined) return sendJson(res, 400, { error: AGENT_SESSION_PURPOSE_SHAPE });
+  const session = withStore(deps.dbPath, (store) =>
+    store.getProduct(productId) === undefined
+      ? undefined
+      : store.createAgentSession({
+          productId,
+          createdBy: caller.username,
+          purpose,
+          createdAt: new Date((deps.now ?? Date.now)()).toISOString(),
+        }),
+  );
+  return session === undefined
+    ? sendJson(res, 404, { error: NO_SUCH_PRODUCT })
+    : sendJson(res, 201, { session });
+}
+
+function handleAgentSession(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  sessionId: number,
+  caller: PanelCaller,
+): void {
+  const session = visibleAgentSession(deps, sessionId, caller);
+  return session === undefined
+    ? sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION })
+    : sendJson(res, 200, { session });
+}
+
+/**
+ * 删会话。只有创建者删得了:系统管理员读得到别人的会话,删它会回 403 而不是 404——他已经
+ * 知道这一条在,再回 404 只会让人以为删成功了。
+ */
+function handleDeleteAgentSession(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  sessionId: number,
+  caller: PanelCaller,
+): void {
+  const session = visibleAgentSession(deps, sessionId, caller);
+  if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
+  if (session.createdBy !== caller.username) {
+    return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
+  }
+  withStore(deps.dbPath, (store) => store.deleteAgentSession(sessionId));
+  return send(res, 204);
+}
+
+/**
+ * 发消息。这一票只把门禁定下来:非创建者(系统管理员也算)403,创建者过了门禁回 501。
+ * 真实投递、排队与流在常驻子进程那一票接入,那时这个 handler 从 501 换成 202。
+ */
+function handleAgentSessionMessage(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  sessionId: number,
+  caller: PanelCaller,
+): void {
+  const session = visibleAgentSession(deps, sessionId, caller);
+  if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
+  if (session.createdBy !== caller.username) {
+    return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
+  }
+  return sendJson(res, 501, { error: "发消息还没接通" });
 }
 
 export const PANEL_ROUTES: readonly PanelRoute[] = [
@@ -2124,6 +2251,15 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "DELETE", pattern: /^\/products\/(\d+)$/, access: "repo:write", handler: ({ res, deps }, match) => handleDeleteProduct(res, deps, Number(match![1])) },
   { method: "PUT", pattern: /^\/products\/(\d+)\/repos\/(\d+)$/, access: "repo:write", assignment: { by: "repo", group: 2 }, handler: ({ res, deps }, match) => handleAttachProductRepo(res, deps, Number(match![1]), Number(match![2])) },
   { method: "DELETE", pattern: /^\/products\/(\d+)\/repos\/(\d+)$/, access: "repo:write", assignment: { by: "repo", group: 2 }, handler: ({ res, deps }, match) => handleDetachProductRepo(res, deps, Number(match![1]), Number(match![2])) },
+  // Agent 会话(CONTEXT.md Agent 会话,issue #332)。建与发消息按 `agent:chat`,列表与
+  // 读登录即可:一个会话只有创建者与系统管理员读得到,这一判按创建者在 handler 里做,
+  // 不是仓库分配能表达的事。产品下的两个端点仍声明 `product` 目标,看不到产品的人连
+  // 「这个产品有没有会话」都问不到。删会话也在 `agent:chat` 里,且只有创建者删得了。
+  { method: "GET", pattern: /^\/products\/(\d+)\/sessions$/, access: "authenticated-only", assignment: { by: "product", group: 1 }, handler: ({ res, deps, caller }, match) => handleListAgentSessions(res, deps, Number(match![1]), caller!) },
+  { method: "POST", pattern: /^\/products\/(\d+)\/sessions$/, access: "agent:chat", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleCreateAgentSession(req, res, deps, Number(match![1]), caller!) },
+  { method: "GET", pattern: /^\/agent-sessions\/(\d+)$/, access: "authenticated-only", handler: ({ res, deps, caller }, match) => handleAgentSession(res, deps, Number(match![1]), caller!) },
+  { method: "DELETE", pattern: /^\/agent-sessions\/(\d+)$/, access: "agent:chat", handler: ({ res, deps, caller }, match) => handleDeleteAgentSession(res, deps, Number(match![1]), caller!) },
+  { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/messages$/, access: "agent:chat", handler: ({ res, deps, caller }, match) => handleAgentSessionMessage(res, deps, Number(match![1]), caller!) },
   { method: "GET", pattern: "/model-services", access: { anyOf: ["model:read", "credential:read"] }, handler: ({ res, deps, caller }) => handleListModelServices(res, deps, caller!) },
   { method: "GET", pattern: "/model-services/providers", access: { anyOf: ["model:read", "model:write", "credential:read", "credential:write"] }, handler: ({ req, res, deps }) => handleBuiltinProviderSearch(req, res, deps) },
   { method: "POST", pattern: /^\/model-services\/builtin\/preview$/, access: "credential:write", handler: ({ req, res, deps }) => handlePreviewBuiltinModelService(req, res, deps) },

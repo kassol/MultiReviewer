@@ -688,6 +688,26 @@ CREATE TABLE IF NOT EXISTS product_repo (
   added_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS product_repo_by_product ON product_repo(product_id);
+
+-- Agent 会话(CONTEXT.md Agent 会话,issue #332)。挂在产品上,创建者是唯一能续谈与
+-- 删除它的人;用途建时定、之后不变(没有改用途的写入口)。用量五列与 review_run 同口径,
+-- 按条目累加在常驻子进程那一票接入,在那之前每一行都是 0,所以不可空。删产品级联硬删
+-- 它下面的会话行。
+CREATE TABLE IF NOT EXISTS agent_session (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL REFERENCES product(id),
+  created_by TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  total_tokens INTEGER NOT NULL DEFAULT 0
+);
+-- 列表只有一种查法:一个产品下某个人的会话(系统管理员读同一个产品下的全部)。
+CREATE INDEX IF NOT EXISTS agent_session_by_product ON agent_session(product_id, created_by);
 `;
 
 
@@ -2539,6 +2559,47 @@ function foldProducts(rows: readonly Record<string, unknown>[]): ProductRecord[]
 }
 
 /**
+ * 会话用途(CONTEXT.md 会话用途)。这一版只有需求拆分;写代码类用途接入时各成一个值。
+ * 建时必填、之后不变,因此没有改用途的写入口。
+ */
+export const AGENT_SESSION_PURPOSES = ["requirement-breakdown"] as const;
+
+export type AgentSessionPurpose = (typeof AGENT_SESSION_PURPOSES)[number];
+
+/** Agent 会话的状态。这一版只有空闲;「在跑」随常驻子进程接入。 */
+export type AgentSessionStatus = "idle";
+
+/** 一个 Agent 会话(CONTEXT.md Agent 会话)。读与写都只经这一种形状。 */
+export type AgentSessionRecord = {
+  id: number;
+  productId: number;
+  createdBy: string;
+  purpose: AgentSessionPurpose;
+  status: AgentSessionStatus;
+  createdAt: string;
+  /** 累计用量,与 Review Run 同口径。按条目累加还没接入,此刻每一格都是 0。 */
+  usage: ReviewerUsage;
+};
+
+function agentSession(row: Record<string, unknown>): AgentSessionRecord {
+  return {
+    id: Number(row["id"]),
+    productId: Number(row["product_id"]),
+    createdBy: String(row["created_by"]),
+    purpose: String(row["purpose"]) as AgentSessionPurpose,
+    status: String(row["status"]) as AgentSessionStatus,
+    createdAt: String(row["created_at"]),
+    usage: {
+      inputTokens: Number(row["input_tokens"]),
+      outputTokens: Number(row["output_tokens"]),
+      cacheReadTokens: Number(row["cache_read_tokens"]),
+      cacheWriteTokens: Number(row["cache_write_tokens"]),
+      totalTokens: Number(row["total_tokens"]),
+    },
+  };
+}
+
+/**
  * 失败原因在面板上只显示一句话的量。厂商拒绝的原文可能是一整段 JSON(区域封禁那条
  * 403 就是),整段带到前端会把卡片撑开,而人要的是「哪个模型、为什么」——换行压成
  * 空格、截到这个长度,原文仍在库里可查。
@@ -2698,8 +2759,27 @@ export type Store = {
   attachProductRepo(productId: number, repoId: number, at: string): ProductRepoAttach;
   /** 把一个仓库从产品里移出。这个产品下没有这个仓库即 false。 */
   detachProductRepo(productId: number, repoId: number): boolean;
-  /** 删产品并摘掉它的仓库归属。没有这个产品即 false。 */
-  deleteProduct(productId: number): boolean;
+  /**
+   * 删产品,摘掉它的仓库归属并级联硬删它下面的 Agent 会话。回的是级联删掉的条数,
+   * 接口照它给确认框的数字;没有这个产品即 undefined。
+   */
+  deleteProduct(productId: number): { sessions: number } | undefined;
+  /**
+   * 一个产品下的 Agent 会话,新的在前。`createdBy` 给了即只回这个人的(「我的会话」),
+   * 给 null 即这个产品下的全部(系统管理员那一档)。
+   */
+  listAgentSessions(productId: number, createdBy: string | null): AgentSessionRecord[];
+  /** 一个 Agent 会话。没有这一条即 undefined;可见性由调用方按创建者判。 */
+  getAgentSession(sessionId: number): AgentSessionRecord | undefined;
+  /** 建一个 Agent 会话。状态落空闲、用量五格落 0。 */
+  createAgentSession(record: {
+    productId: number;
+    createdBy: string;
+    purpose: AgentSessionPurpose;
+    createdAt: string;
+  }): AgentSessionRecord;
+  /** 删一个 Agent 会话。没有这一条即 false。 */
+  deleteAgentSession(sessionId: number): boolean;
   /** 记下工作副本的准备状态(issue #184)。仓库已被移除时没有行可写,静默通过。 */
   setRepoWorktree(repoId: number, status: WorktreeStatus): void;
   /**
@@ -4713,14 +4793,61 @@ export function openStore(dbPath: string): Store {
       db.exec("BEGIN");
       try {
         db.prepare("DELETE FROM product_repo WHERE product_id = ?").run(productId);
+        // 会话跟着产品走(issue #332):产品是会话唯一的挂载点,留下来谁都读不到它。
+        const sessions = Number(
+          db.prepare("DELETE FROM agent_session WHERE product_id = ?").run(productId).changes,
+        );
         const removed =
           Number(db.prepare("DELETE FROM product WHERE id = ?").run(productId).changes) > 0;
         db.exec("COMMIT");
-        return removed;
+        return removed ? { sessions } : undefined;
       } catch (error) {
         db.exec("ROLLBACK");
         throw error;
       }
+    },
+
+    listAgentSessions(productId, createdBy) {
+      return db
+        .prepare(
+          `SELECT * FROM agent_session
+            WHERE product_id = ?${createdBy === null ? "" : " AND created_by = ?"}
+            ORDER BY id DESC`,
+        )
+        .all(...(createdBy === null ? [productId] : [productId, createdBy]))
+        .map(agentSession);
+    },
+
+    getAgentSession(sessionId) {
+      const row = db.prepare("SELECT * FROM agent_session WHERE id = ?").get(sessionId);
+      return row === undefined ? undefined : agentSession(row);
+    },
+
+    createAgentSession(record) {
+      const result = db
+        .prepare(
+          `INSERT INTO agent_session (product_id, created_by, purpose, status, created_at)
+             VALUES (?, ?, ?, 'idle', ?)`,
+        )
+        .run(record.productId, record.createdBy, record.purpose, record.createdAt);
+      return {
+        id: Number(result.lastInsertRowid),
+        ...record,
+        status: "idle",
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          totalTokens: 0,
+        },
+      };
+    },
+
+    deleteAgentSession(sessionId) {
+      return (
+        Number(db.prepare("DELETE FROM agent_session WHERE id = ?").run(sessionId).changes) > 0
+      );
     },
 
     setRepoWorktree(repoId, status) {

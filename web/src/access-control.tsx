@@ -49,7 +49,7 @@ type AssignableRepo = {
 
 type PermissionInfo = {
   id: PanelPermission;
-  resource: "仓库" | "评审" | "模型" | "凭据";
+  resource: "仓库" | "评审" | "会话" | "模型" | "凭据";
   action: string;
   hint: string;
 };
@@ -63,13 +63,14 @@ const PERMISSION_INFO: readonly PermissionInfo[] = [
   { id: "finding:dispose", resource: "评审", action: "处置", hint: "在面板处置 Finding 并填写可选处置备注；Forge 评论的 Disposition 将同步更新。" },
   { id: "finding:dispose-batch", resource: "评审", action: "批量处置", hint: "在阶段详情一次处置低于该仓库最低报告等级的全部未处置项；逐条处置权限不包含它。" },
   { id: "knowledge:write", resource: "评审", action: "知识治理", hint: "新增、修改和废止这个仓库的评审规则，每次变更推进一个知识集版本。" },
+  { id: "agent:chat", resource: "会话", action: "对话", hint: "在产品下建 Agent 会话并在会话里发消息，会产生模型调用费用；读会话不需要这一格，会话只有创建者看得到。" },
   { id: "model:read", resource: "模型", action: "查看", hint: "查看审查策略和模型服务。" },
   { id: "model:write", resource: "模型", action: "管理", hint: "修改模型组合、手动添加模型和管理自定义模型服务。" },
   { id: "credential:read", resource: "凭据", action: "查看", hint: "查看已配置凭据和 Key 末 4 位。" },
   { id: "credential:write", resource: "凭据", action: "管理", hint: "新增、更新和删除模型凭据。" },
 ];
 
-const RESOURCES = ["仓库", "评审", "模型", "凭据"] as const;
+const RESOURCES = ["仓库", "评审", "会话", "模型", "凭据"] as const;
 
 function toggleRepoId(repoIds: readonly number[], repoId: number): number[] {
   return repoIds.includes(repoId)

@@ -9,6 +9,7 @@ export const PANEL_PERMISSIONS = [
   "finding:dispose",
   "finding:dispose-batch",
   "knowledge:write",
+  "agent:chat",
   "model:read",
   "model:write",
   "credential:read",
