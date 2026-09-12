@@ -10,6 +10,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { createDrain } from "../src/drain.ts";
 import type { ReviewerUsage } from "../src/review/finding.ts";
 import { openStore } from "../src/review/store.ts";
 import { agentSessionRepos, disposeAgentSessions } from "../src/webhook/agent-session.ts";
@@ -184,6 +185,27 @@ test("会话根里一个仓库都没有时开不起来", async () => {
   });
   assert.equal(response.status, 409);
   assert.deepEqual(await response.json(), { error: "这个产品下没有你有仓库分配的仓库" });
+});
+
+test("服务正在排空:发消息回 503,不起新的子进程", async () => {
+  // 排空时在跑的会话正被中止(issue #335),这一刻起一个新子进程只会被当场收掉。
+  const drain = createDrain();
+  const h = await startReadyPanelHarness({ registerRepo: true, drain });
+  const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id]);
+  const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+  const sessionId = await createSession(h, cookie, productId);
+
+  drain.begin();
+  const response = await as(h, cookie, "POST", `/agent-sessions/${sessionId}/messages`, {
+    clientMessageId: "c1",
+    text: "拆一下这个需求",
+  });
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "服务正在排空,等它起回来再发" });
+  // 受理判在这道闸之后:排空结束、服务起回来之后,人重发的还是同一条消息。
+  const store = openStore(h.db.path);
+  assert.equal(store.acceptedAgentSessionMessage(sessionId, "c1"), undefined);
+  store.close();
 });
 
 test("同一个客户端消息 id 重发回原受理结果,另一个 id 在执行中进队列", async () => {

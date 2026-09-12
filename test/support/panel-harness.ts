@@ -194,6 +194,16 @@ export type PanelHarnessOptions = {
   /** 排空状态(issue #249)。用例自己 `begin()` 之后再调端点,验排空期间的回绝。 */
   drain?: Drain;
   /**
+   * Agent 会话子进程的空闲回收门槛(毫秒,issue #335)。省略取服务默认的十分钟;验「回收后
+   * 再发消息从记录重建」的用例拨到毫秒级。
+   */
+  agentSessionIdleReclaimMs?: number;
+  /**
+   * Agent 会话子进程执行中的静默判死门槛(毫秒,issue #335)。省略取服务默认的五分钟;验判死
+   * 的用例拨到秒级,与 Reviewer 那套子进程注入静默闸同一做法。
+   */
+  agentSessionSilenceTimeoutMs?: number;
+  /**
    * 仅 `startReadyPanelHarness` 认:起完就用 `GITEA_REPO` 的坐标注册这个仓库
    * (`POST /repos`),断言 201。省略即不注册。
    */
@@ -359,6 +369,12 @@ export async function startPanelHarness(
     ...(options.scheduledCheckTickMs === undefined
       ? {}
       : { scheduledCheckTickMs: options.scheduledCheckTickMs }),
+    ...(options.agentSessionIdleReclaimMs === undefined
+      ? {}
+      : { agentSessionIdleReclaimMs: options.agentSessionIdleReclaimMs }),
+    ...(options.agentSessionSilenceTimeoutMs === undefined
+      ? {}
+      : { agentSessionSilenceTimeoutMs: options.agentSessionSilenceTimeoutMs }),
     ...(options.now === undefined ? {} : { now: options.now }),
     onScheduledCheck: (rangeReviewId, result) => {
       scheduledChecks.push({ rangeReviewId, result });
@@ -393,9 +409,12 @@ export async function startPanelHarness(
   });
   const { port } = server.address() as AddressInfo;
   const serverUrl = `http://127.0.0.1:${port}`;
-  cleanups.push(() => {
+  cleanups.push(async () => {
     // 常驻的会话子进程不随测试进程退出,它的 IPC 通道还会让事件循环活着(issue #333)。
-    void disposeAgentSessions();
+    // 等它收完:释放工作树与删会话根是异步的(issue #335),不等就会在 `tmpdir` 里留目录。
+    // 临时库可能已经被前面的收尾删掉,落「被排空中止」那一条因此可能抛,吞掉它——此刻要的
+    // 只是把子进程收干净。
+    await disposeAgentSessions().catch(() => {});
     server.closeAllConnections();
     server.close();
   });

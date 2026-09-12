@@ -53,6 +53,14 @@ export async function startFakeGitea(repo: {
   id: number;
   owner: string;
   repo: string;
+  /**
+   * 取代码用的地址(issue #335)。给了即 `GET /repos/{owner}/{repo}` 回它:真进程起的服务
+   * 按这个字段 clone,夹具仓库的本地路径直接当它用。省略即空串——只走注册 / 移除的用例
+   * 取不到代码也用不着。
+   */
+  cloneUrl?: string;
+  /** 默认分支名。省略即 `main`(夹具仓库就是它)。 */
+  defaultBranch?: string;
 }): Promise<FakeGitea> {
   const hooks: FakeHook[] = [];
   const requests: string[] = [];
@@ -80,6 +88,10 @@ export async function startFakeGitea(repo: {
     }
     if (control.deleted) return json(404, { message: "not found" });
 
+    // 实例版本。真进程起来时检查一次(`assertSupportedVersion`),匿名调用同样被拒。
+    if (req.method === "GET" && path === "/api/v1/version") {
+      return json(200, { version: "1.26.4" });
+    }
     // 按数值 id 解析仓库,改名后拿到现名(routers/api/v1/api.go:1202 的 GetByID)。
     if (req.method === "GET" && path === `/api/v1/repositories/${repo.id}`) {
       return json(200, {
@@ -118,6 +130,9 @@ export async function startFakeGitea(repo: {
       return json(200, {
         id: repo.id,
         permissions: { admin: control.admin, push: true, pull: true },
+        // 取代码那两格(`getRepository`)。没给 cloneUrl 的用例读不到代码,也用不着。
+        clone_url: repo.cloneUrl ?? "",
+        default_branch: repo.defaultBranch ?? "main",
       });
     }
     if (req.method === "GET" && path === `${repoBase}/hooks`) {

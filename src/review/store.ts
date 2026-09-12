@@ -751,6 +751,18 @@ CREATE TABLE IF NOT EXISTS agent_session_image (
   PRIMARY KEY (session_id, image_id)
 );
 
+-- 还没投递出去的排队消息(issue #335)。排队的真身在 Pi 那边、镜像在运行时的登记表上,
+-- 两处都随进程走;而排空与空闲回收要把子进程收掉,那几条没投出去的消息只能落库,等下次
+-- 惰性重建时一并投递。一行一条,seq 即人当初写下它们的顺序;投递出去就整段删掉——「排着」
+-- 的定义就是「还没投出去」,留着就会重复投。
+CREATE TABLE IF NOT EXISTS agent_session_pending_message (
+  session_id INTEGER NOT NULL REFERENCES agent_session(id),
+  seq INTEGER NOT NULL,
+  mode TEXT NOT NULL,
+  text TEXT NOT NULL,
+  PRIMARY KEY (session_id, seq)
+);
+
 -- 会话产出(CONTEXT.md 会话产出,issue #337)。一行一版:产出是独立实体,payload 是那一种
 -- 产出类型自己的 JSON,这一层不解释它(与会话记录的 entry 同律)。版本号在一个会话的一种
 -- 产出类型之内自增,主键因此是三列。tool_call_id 是产生它的那次工具调用,面板据它回到
@@ -2688,6 +2700,23 @@ export type AgentSessionImageRecord = {
 };
 
 /**
+ * 一条还没投递出去的排队消息(issue #335)。`mode` 的取值与 IPC 那一侧的
+ * `AgentSessionMessageMode` 同一对字面量;这一层不认它的类型——领域类型定在 `reviewer/`,
+ * 而那个目录依赖这里,反过来不成立。读回时由运行时收口。
+ */
+export type AgentSessionPendingMessage = { mode: string; text: string };
+
+/**
+ * 一条会话记录在 Pi 条目树上的位置(ADR 0031,issue #335)。重建前自检链完整性要的就这三格,
+ * 整份条目不必解出来:`id` 与 `parentId` 是那条链,`firstKeptEntryId` 是 compaction 的引用。
+ */
+export type AgentSessionEntryLink = {
+  id: string | null;
+  parentId: string | null;
+  firstKeptEntryId: string | null;
+};
+
+/**
  * 会话产出的类型(CONTEXT.md 会话产出,issue #337)。这一版只有需求拆分。与会话用途同名
  * 但不是同一格:用途决定注册哪些产出工具,一个用途日后可能交出两种产出。
  */
@@ -2999,6 +3028,26 @@ export type Store = {
     clientMessageId: string,
     at: string,
   ): AgentSessionMessageAcceptance;
+
+  /**
+   * 把这个会话还没投出去的排队消息整段换成给的这几条(issue #335)。空数组即清空。
+   * 排空与空闲回收在收掉子进程之前调它:镜像随进程走,落库的这一份等重建时投递。
+   */
+  putAgentSessionPendingMessages(
+    sessionId: number,
+    messages: readonly AgentSessionPendingMessage[],
+  ): void;
+  /**
+   * 取出并删掉这个会话落库的排队消息(issue #335),按当初写下的顺序。重建时调它:取出即
+   * 投递,留着就会重复投,因此读与删在同一个事务里。
+   */
+  takeAgentSessionPendingMessages(sessionId: number): AgentSessionPendingMessage[];
+  /**
+   * 这个会话每条记录在 Pi 条目树上的位置(issue #335),按 seq 升序。只读三格而不解整份
+   * 条目:重建前的链自检与读接口上那个「前 N 条不在上下文」都只要这三格,而一个长会话的
+   * 条目整段解一遍是几 MB 的 JSON。
+   */
+  agentSessionEntryLinks(sessionId: number): AgentSessionEntryLink[];
   /**
    * 时间窗内建的 Agent 会话数与它们的 token 之和(spec #329 的统计页单列一行)。
    * `createdBy` 给了即只算这个人的,给 null 即全部(系统管理员那一档)。一条都没有时缺失。
@@ -5089,6 +5138,7 @@ export function openStore(dbPath: string): Store {
           "agent_session_entry",
           "agent_session_message",
           "agent_session_image",
+          "agent_session_pending_message",
           "agent_session_output",
           "agent_session_output_finalization",
         ]) {
@@ -5155,6 +5205,7 @@ export function openStore(dbPath: string): Store {
           "agent_session_entry",
           "agent_session_message",
           "agent_session_image",
+          "agent_session_pending_message",
           "agent_session_output",
           "agent_session_output_finalization",
         ]) {
@@ -5282,6 +5333,62 @@ export function openStore(dbPath: string): Store {
         )
         .get(sessionId, clientMessageId)!;
       return { acceptedAt: String(row["accepted_at"]), fresh: false };
+    },
+
+    putAgentSessionPendingMessages(sessionId, messages) {
+      db.exec("BEGIN");
+      try {
+        db.prepare("DELETE FROM agent_session_pending_message WHERE session_id = ?").run(sessionId);
+        const insert = db.prepare(
+          `INSERT INTO agent_session_pending_message (session_id, seq, mode, text)
+           VALUES (?, ?, ?, ?)`,
+        );
+        messages.forEach((message, index) => {
+          insert.run(sessionId, index + 1, message.mode, message.text);
+        });
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    takeAgentSessionPendingMessages(sessionId) {
+      db.exec("BEGIN");
+      try {
+        const rows = db
+          .prepare(
+            `SELECT mode, text FROM agent_session_pending_message
+              WHERE session_id = ? ORDER BY seq`,
+          )
+          .all(sessionId);
+        db.prepare("DELETE FROM agent_session_pending_message WHERE session_id = ?").run(sessionId);
+        db.exec("COMMIT");
+        return rows.map((row) => ({ mode: String(row["mode"]), text: String(row["text"]) }));
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    agentSessionEntryLinks(sessionId) {
+      const text = (value: unknown): string | null =>
+        typeof value === "string" ? value : null;
+      return db
+        .prepare(
+          `SELECT json_extract(entry, '$.id') AS id,
+                  json_extract(entry, '$.parentId') AS parent_id,
+                  json_extract(entry, '$.firstKeptEntryId') AS first_kept_entry_id
+             FROM agent_session_entry
+            WHERE session_id = ?
+            ORDER BY seq`,
+        )
+        .all(sessionId)
+        .map((row) => ({
+          id: text(row["id"]),
+          parentId: text(row["parent_id"]),
+          firstKeptEntryId: text(row["first_kept_entry_id"]),
+        }));
     },
 
     agentSessionUsageStats(from, to, createdBy) {

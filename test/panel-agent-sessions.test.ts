@@ -125,11 +125,17 @@ test("建会话要用途,且只收需求拆分", async () => {
     totalTokens: 0,
   });
 
-  // 读回来与建出来的那一份同形,跟着回一份空的排队列表(issue #334)与图片能力那一格
-  // (issue #336:这套夹具的模型目录没声明看得了图)。
+  // 读回来与建出来的那一份同形,跟着回一份空的排队列表(issue #334)、图片能力那一格
+  // (issue #336:这套夹具的模型目录没声明看得了图)与「前 N 条不在上下文」那个数
+  // (issue #335):一条记录都还没有,因此是 0。
   const read = await as(h, cookie, "GET", `/agent-sessions/${session.id}`);
   assert.equal(read.status, 200);
-  assert.deepEqual(await read.json(), { session, queue: [], imageInput: false });
+  assert.deepEqual(await read.json(), {
+    session,
+    queue: [],
+    imageInput: false,
+    droppedFromContext: 0,
+  });
   assert.deepEqual(await sessions(h, cookie, productId), [session]);
 });
 

@@ -882,9 +882,13 @@ export function AgentSessionPage({
   const sessionQuery = useQuery({
     queryKey: ["agent-sessions", sessionId],
     queryFn: () =>
-      fetchJson<{ session: AgentSession; queue: QueuedMessage[]; imageInput: boolean }>(
-        `/agent-sessions/${sessionId}`,
-      ),
+      fetchJson<{
+        session: AgentSession;
+        queue: QueuedMessage[];
+        imageInput: boolean;
+        /** 重建之后前几条进不了模型上下文(ADR 0031,issue #335)。0 即记录完整。 */
+        droppedFromContext: number;
+      }>(`/agent-sessions/${sessionId}`),
     // 在跑时轮询:回合结束与队列变动都没有单独的事件,状态与排队列表是会话自己那两格
     // (issue #333、#334)。
     refetchInterval: (query) => (query.state.data?.session.status === "running" ? 2000 : false),
@@ -899,6 +903,7 @@ export function AgentSessionPage({
   const queue = sessionQuery.data?.queue ?? [];
   /** 当前辅助模型看不看得了图(issue #336)。读不到时按看不了处理:置灰比白发一次好。 */
   const imageInput = sessionQuery.data?.imageInput ?? false;
+  const dropped = sessionQuery.data?.droppedFromContext ?? 0;
   const running = session?.status === "running";
   const refresh = (): Promise<void> =>
     queryClient.invalidateQueries({ queryKey: ["agent-sessions", sessionId] });
@@ -1040,6 +1045,20 @@ export function AgentSessionPage({
                 </Button>
               ) : null}
             </div>
+            {/*
+              记录有缺损时顶部一道横幅(spec #329 的 US 14):agent 忘了哪一段要让人知道,
+              而不是默默丢掉。缺损只在重建那一刻定形,条数由服务端按记录算出来。
+            */}
+            {dropped > 0 ? (
+              <Callout.Root role="status" color="amber" size="1">
+                <Callout.Icon>
+                  <CrossCircledIcon aria-hidden />
+                </Callout.Icon>
+                <Callout.Text>
+                  这个会话的记录有缺损:最早的 {dropped} 条不在 agent 的上下文里,它看不到那一段。
+                </Callout.Text>
+              </Callout.Root>
+            ) : null}
             {session === undefined ? (
               <Skeleton aria-hidden className="h-40" />
             ) : (

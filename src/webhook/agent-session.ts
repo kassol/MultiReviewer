@@ -5,8 +5,10 @@
  * 记录怎么落、谁收到广播」全在这里。子进程那一侧只订阅并转发(`reviewer/session-worker.ts`),
  * 判断都在这一层(ADR 0017 同律)。
  *
- * 一会话一子进程。这一票建起来就常驻:回收、全局上限、静默判死、排空与重启后的惰性重建
- * 都在 issue #335。留给它的位置是登记表上的两格——状态与最后活动时刻。
+ * 一会话一子进程,建起来就常驻。生命周期也在这一层(issue #335):空闲十分钟回收、常驻数
+ * 有全局上限(满了先回收最久空闲的,全在跑时发消息回 409)、执行中连续静默五分钟判死、
+ * 排空时立即中止并按时退出、重启后人下次发消息才从记录表惰性重建。登记表是进程内的一张
+ * 表,进程重启后它空着——「在跑」因此不落库,而排队中的消息要落库,不然重建时就丢了。
  *
  * 排队、插话、停止与流式帧(issue #334)也在这一层:队列的真身在 Pi 那边,登记表上记一份
  * 镜像供读接口与面板看;流式 delta 按 100ms 合并一次,经瞬时帧走同一个频道,不落库。
@@ -17,7 +19,7 @@
  */
 import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +30,7 @@ import { defaultBranchHead, prepareWorktree, type Worktree } from "../git/worktr
 import type { ProjectFact, ReviewRule, ReviewerUsage } from "../review/finding.ts";
 import {
   openStore,
+  type AgentSessionEntryLink,
   type AgentSessionOutputRecord,
   type AgentSessionRecord,
   type AgentSessionStatus,
@@ -46,6 +49,7 @@ import { deflateImageBlocks, type AgentSessionImageRef } from "../reviewer/sessi
 import {
   AGENT_SESSION_NOTE_CUSTOM_TYPE,
   AGENT_SESSION_OUTPUT_CUSTOM_TYPE,
+  SYSTEM_MESSAGE_ENTRY,
   type AgentSessionMessageMode,
   type SessionCommand,
   type SessionOutput,
@@ -61,6 +65,10 @@ export type AgentSessionRuntimeDeps = {
   cacheDir: string;
   forge: Forge;
   now: () => number;
+  /** 空闲回收的门槛(毫秒),默认 `IDLE_RECLAIM_MS`。只该测试注入。 */
+  idleReclaimMs?: number;
+  /** 执行中静默判死的门槛(毫秒),默认 `SILENCE_TIMEOUT_MS`。只该测试注入。 */
+  silenceTimeoutMs?: number;
 };
 
 /**
@@ -93,11 +101,60 @@ const STREAM_FRAME_MS = 100;
 /** 瞬时帧的类型名(issue #334)。帧不落库,因此没有 seq,SSE 帧也就不带 `id`。 */
 export const AGENT_SESSION_STREAM_FRAME = "agent_session_stream";
 
+/**
+ * 空闲多久回收子进程(issue #335)。空闲 = 没在跑、也没有排着的消息。常量不做配置
+ * (spec #329):这个数要改是因为内存画像变了,那时改代码重新发版,不是运维现场调的旋钮。
+ */
+const IDLE_RECLAIM_MS = 10 * 60 * 1000;
+
+/**
+ * 执行中连续静默多久判死(issue #335)。与 Reviewer 那套子进程同一个数与同一条理由
+ * (`reviewer/subprocess.ts`):健康的会话 IPC 常鸣——条目、流式 delta 与节流心跳隔几秒
+ * 就一条,真正的卡死表现为彻底沉默。**空闲时不计时**:空闲着一条 IPC 都没有是正常的,
+ * 那一档由上面的回收闸管。
+ */
+const SILENCE_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * 同时常驻的会话子进程上限(issue #335)。
+ *
+ * 取 4:一个子进程是一套 Pi 运行时加产品里每个仓库一棵工作树,内存与磁盘都按会话数线性涨,
+ * 而审查本身还要在同一台机器上跑满 `maxParallelBatches` 个 Reviewer 子进程。4 是「一个小组
+ * 同时有几个人在拆需求」的量,再多的那一个人等几秒拿到「名额已满」比整机换页好。满了先回收
+ * 最久空闲的那个(它的上下文在库里,下一条消息照样续得上),全都在跑时新的发消息回 409。
+ */
+const MAX_RESIDENT_SESSIONS = 4;
+
+/** 排空时留给子进程中止并退出的时间。超过就强杀:发版不等一个退不掉的子进程。 */
+const DRAIN_EXIT_GRACE_MS = 5000;
+
+/** 执行中静默超时那一条系统消息(ADR 0031)。不进模型上下文。 */
+const SILENCE_ABORTED =
+  "执行中静默超时,会话已中止。下次发消息时会从记录重建,接着这里续谈。";
+
+/** 被排空中止那一条系统消息(spec #329 的部署人员那几条)。 */
+const DRAIN_ABORTED = "服务在发版排空,这一轮被中止。下次发消息时会从记录重建,接着这里续谈。";
+
 /** 登记表上的一个会话。`child` 在准备会话根与工作树那段时间里还没 fork。 */
 type RuntimeEntry = {
+  /**
+   * 这个子进程当初是用哪份依赖起的。回收、判死与排空都要落库与记日志,而它们由计时器与
+   * 进程信号触发,手上没有请求——依赖因此记在登记表上,不从调用方再传一遍。
+   */
+  deps: AgentSessionRuntimeDeps;
   status: AgentSessionStatus;
-  /** 最后一次活动的时刻。空闲回收(issue #335)按它判。 */
+  /** 最后一次活动的时刻。空闲回收与「满了回收最久空闲的那个」都按它判(issue #335)。 */
   lastActiveAt: number;
+  /**
+   * 这个子进程此刻用的辅助模型(`modelKey`,ADR 0029)。每次开跑按现有解析取当前值,与这一格
+   * 不同即落一条系统消息、回收这个子进程、用新模型重建(issue #335)。
+   */
+  modelKey: string;
+  /**
+   * 执行中是静默闸、空闲是回收闸,两档共用这一格:同一时刻只有一种在计时,而「换档」正是
+   * 状态变化那一刻要做的事(`rearm`)。
+   */
+  timer: NodeJS.Timeout | undefined;
   child: ChildProcess | undefined;
   sessionRoot: string | undefined;
   worktrees: Worktree[];
@@ -271,6 +328,201 @@ function syncQueue(
 function sendCommand(entry: RuntimeEntry, command: SessionCommand): void {
   if (entry.child === undefined) entry.pending.push(command);
   else entry.child.send(command);
+}
+
+/**
+ * 这次开跑用的辅助模型的指纹(ADR 0029,issue #335)。模型与思考档位都算在内:同一个模型换了
+ * 档位就是另一种跑法,上下文里的思考痕迹对不上。它同时是系统消息里的那个名字,存两份就会漂。
+ */
+function modelKey(model: AgentSessionModel): string {
+  return `${model.runtimeModel.provider}:${model.runtimeModel.id}(思考 ${model.thinkingLevel ?? "off"})`;
+}
+
+/**
+ * 落一条系统消息(ADR 0031,issue #335):判死、被排空中止与辅助模型切换走它。
+ *
+ * 由主进程自己落而不是交给子进程:这三下的子进程正要没了,再等一次镜像往返就是赌时序。
+ * `custom` 条目不进模型上下文,这正是要的——它是给人看的。
+ */
+function recordSystemMessage(
+  deps: AgentSessionRecordDeps,
+  sessionId: number,
+  text: string,
+): void {
+  recordEntry(deps.dbPath, sessionId, {
+    ...ownEntryBase(deps, sessionId),
+    type: "custom",
+    customType: SYSTEM_MESSAGE_ENTRY,
+    data: { text },
+  });
+}
+
+/**
+ * 这段记录重建之后,前面有几条进不了模型上下文(ADR 0031,issue #335)。
+ *
+ * Pi 从数组末条当叶子、顺 `parentId` 上行拼上下文,指空了就静默停下;`compaction` 的
+ * `firstKeptEntryId` 指不到条目时,压缩点之前一条不留。两种都不报错,因此自检只能自己做:
+ * 从末条往上走,走不通就停,停在哪之前的那些就是不在上下文里的条目数。
+ *
+ * 完整的记录走到根,回 0——**正常压缩过的会话也回 0**:被压缩掉的那段有摘要顶着,不是缺损。
+ */
+export function agentSessionContextGap(links: readonly AgentSessionEntryLink[]): number {
+  const byId = new Map<string, AgentSessionEntryLink>();
+  for (const link of links) if (link.id !== null) byId.set(link.id, link);
+  let walked = 0;
+  let cursor = links.at(-1);
+  while (cursor !== undefined) {
+    walked += 1;
+    // 压缩点的引用丢了:Pi 从这一条起往前一条都不留。
+    if (cursor.firstKeptEntryId !== null && !byId.has(cursor.firstKeptEntryId)) break;
+    if (cursor.parentId === null) break;
+    cursor = byId.get(cursor.parentId);
+  }
+  return links.length - walked;
+}
+
+/** 这个会话的记录重建后有几条进不了上下文。读接口按它给面板那道横幅。 */
+export function agentSessionDroppedFromContext(dbPath: string, sessionId: number): number {
+  const store = openStore(dbPath);
+  try {
+    return agentSessionContextGap(store.agentSessionEntryLinks(sessionId));
+  } finally {
+    store.close();
+  }
+}
+
+/** 这个会话的两个计时器都停掉:生命周期那一档与流式合并窗口。 */
+function clearTimers(entry: RuntimeEntry): void {
+  if (entry.timer !== undefined) clearTimeout(entry.timer);
+  entry.timer = undefined;
+  if (entry.stream.timer !== undefined) clearTimeout(entry.stream.timer);
+  entry.stream.timer = undefined;
+}
+
+/**
+ * 按当前状态重排这个会话的闸:执行中是静默判死,空闲是回收。**空闲且排着消息时两个都不排**
+ * ——那几条还等着人回来让它接着跑,回收会把这个会话的「下一步」悄悄推到重建之后。
+ */
+function rearm(sessionId: number, entry: RuntimeEntry): void {
+  if (entry.timer !== undefined) clearTimeout(entry.timer);
+  entry.timer = undefined;
+  if (entry.disposed) return;
+  if (entry.status === "running") {
+    const silence = entry.deps.silenceTimeoutMs ?? SILENCE_TIMEOUT_MS;
+    entry.timer = setTimeout(() => silenceDeath(sessionId, entry), silence);
+    return;
+  }
+  if (entry.queue.length > 0) return;
+  const idle = entry.deps.idleReclaimMs ?? IDLE_RECLAIM_MS;
+  entry.timer = setTimeout(() => reclaimIdle(sessionId, entry), idle);
+}
+
+/** 记一次活动:最后活动时刻往前推,闸重排。每条子进程回传都是活着的证据。 */
+function touch(sessionId: number, entry: RuntimeEntry): void {
+  entry.lastActiveAt = entry.deps.now();
+  rearm(sessionId, entry);
+}
+
+/**
+ * 把还没投出去的排队消息落库(issue #335)。回收与排空都在收掉子进程之前调它:镜像随进程走,
+ * 落库的这一份等下次发消息重建时一并投递。空队列不写:那一次 DELETE 什么也换不掉。
+ */
+function persistQueue(sessionId: number, entry: RuntimeEntry): void {
+  if (entry.queue.length === 0) return;
+  const store = openStore(entry.deps.dbPath);
+  try {
+    store.putAgentSessionPendingMessages(sessionId, entry.queue);
+  } catch (error) {
+    console.error(
+      `[agent-session] 会话 ${sessionId} 的排队消息落库失败:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  } finally {
+    store.close();
+  }
+}
+
+/** 上一次回收或排空时落库的排队消息,取出即删(issue #335)。 */
+function takePendingQueue(deps: AgentSessionRuntimeDeps, sessionId: number): AgentSessionQueuedMessage[] {
+  const store = openStore(deps.dbPath);
+  try {
+    return store.takeAgentSessionPendingMessages(sessionId).map((message) => ({
+      // 库里那一格是字符串(领域类型定在 `reviewer/`,那个目录依赖 `review/`),在这里收口。
+      mode: message.mode === "steer" ? ("steer" as const) : ("followUp" as const),
+      text: message.text,
+    }));
+  } finally {
+    store.close();
+  }
+}
+
+/** 放掉这个会话占的磁盘:每棵一次性工作树各自释放,再删会话根(它下面只剩空目录)。 */
+async function letGo(entry: RuntimeEntry): Promise<void> {
+  const worktrees = entry.worktrees.splice(0, entry.worktrees.length);
+  for (const worktree of worktrees) await worktree.release();
+  const sessionRoot = entry.sessionRoot;
+  entry.sessionRoot = undefined;
+  if (sessionRoot !== undefined) rmSync(sessionRoot, { recursive: true, force: true });
+}
+
+/**
+ * 回收一个会话的子进程(issue #335):登记表摘掉、计时器停掉、排队消息落库、杀进程、释放
+ * 工作树与会话根。**回收不是终结**——会话的全部记录在库里,人下次发消息时从那里惰性重建。
+ *
+ * 释放磁盘那一段是异步的,不等它:调用方都在同步路径上(计时器、发消息、取名额)。
+ */
+function reclaim(sessionId: number, entry: RuntimeEntry): void {
+  if (registry.get(sessionId) === entry) registry.delete(sessionId);
+  entry.disposed = true;
+  clearTimers(entry);
+  persistQueue(sessionId, entry);
+  entry.child?.kill("SIGKILL");
+  void letGo(entry).catch((error: unknown) => {
+    console.error(
+      `[agent-session] 会话 ${sessionId} 的会话根没清干净:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  });
+}
+
+/** 空闲满门槛:回收。上下文在库里,下一条消息自然重建(issue #335)。 */
+function reclaimIdle(sessionId: number, entry: RuntimeEntry): void {
+  const minutes = (entry.deps.idleReclaimMs ?? IDLE_RECLAIM_MS) / 60_000;
+  console.log(`[agent-session] 会话 ${sessionId} 空闲满 ${minutes} 分钟,回收子进程`);
+  reclaim(sessionId, entry);
+}
+
+/**
+ * 执行中连续静默满门槛:判死(issue #335)。杀进程、登记表摘掉,再以系统消息记下这一条
+ * ——会话记录里得留着这一轮为什么断了,不然人只看到对话突然停住。
+ */
+function silenceDeath(sessionId: number, entry: RuntimeEntry): void {
+  const minutes = (entry.deps.silenceTimeoutMs ?? SILENCE_TIMEOUT_MS) / 60_000;
+  console.error(`[agent-session] 会话 ${sessionId} 执行中连续 ${minutes} 分钟静默,判死`);
+  reclaim(sessionId, entry);
+  recordSystemMessage(entry.deps, sessionId, SILENCE_ABORTED);
+}
+
+/**
+ * 这个会话此刻有没有常驻名额(issue #335)。已经常驻着的、以及还没满上限的都有;满了就回收
+ * 最久空闲的那一个腾出来(它的上下文在库里),全都在跑时回 false——接口据此回 409。
+ */
+export function agentSessionSlot(sessionId: number): boolean {
+  if (registry.has(sessionId)) return true;
+  if (registry.size < MAX_RESIDENT_SESSIONS) return true;
+  let idlest: { sessionId: number; entry: RuntimeEntry } | undefined;
+  for (const [id, entry] of registry) {
+    if (entry.status !== "idle") continue;
+    if (idlest === undefined || entry.lastActiveAt < idlest.entry.lastActiveAt) {
+      idlest = { sessionId: id, entry };
+    }
+  }
+  if (idlest === undefined) return false;
+  console.log(
+    `[agent-session] 常驻名额已满,回收最久空闲的会话 ${idlest.sessionId} 给会话 ${sessionId} 腾位置`,
+  );
+  reclaim(idlest.sessionId, idlest.entry);
+  return true;
 }
 
 /**
@@ -454,6 +706,25 @@ async function prepareSessionRoot(
   return { sessionRoot, repos: prepared };
 }
 
+/**
+ * 这个会话此前的全部记录,喂回子进程重建 Pi 会话用(ADR 0031,issue #335);另带上自检结论。
+ *
+ * 喂的是**全量**,不是「进上下文的那些」:`getSessionStats()` 按全部条目累加,只喂上下文视图
+ * 会让用量在每次重建后从压缩点重新起算。链不完整时照样喂——Pi 按它自己的规则截断,会话上那个
+ * 「前 N 条不在上下文」由读接口算给面板,不拒绝续谈。
+ */
+function storedSession(dbPath: string, sessionId: number): { entries: unknown[]; gap: number } {
+  const store = openStore(dbPath);
+  try {
+    return {
+      entries: store.listAgentSessionEntries(sessionId).map((record) => record.entry),
+      gap: agentSessionContextGap(store.agentSessionEntryLinks(sessionId)),
+    };
+  } finally {
+    store.close();
+  }
+}
+
 /** 起这个会话的常驻子进程,建好 Pi 会话之后兑现。 */
 async function boot(
   deps: AgentSessionRuntimeDeps,
@@ -475,6 +746,9 @@ async function boot(
   // 备工作树那段时间里这个会话被收拢了:这一个子进程没人再用得上。
   if (entry.disposed) {
     child.kill("SIGKILL");
+    // 那一次收拢放掉的是它当时看到的会话根;这一份是在那之后才备出来的,登记表上重新指上
+    // 它,失败那条路上的 `letGo` 才收得到(不然这个目录没人再来收)。
+    entry.sessionRoot = prepared.sessionRoot;
     throw new Error("会话已经收拢");
   }
 
@@ -486,7 +760,8 @@ async function boot(
   });
 
   child.on("message", (message: SessionWorkerMessage) => {
-    entry.lastActiveAt = deps.now();
+    // 每条回传都是活着的证据:静默闸从头再来(issue #335)。
+    touch(session.id, entry);
     switch (message.kind) {
       case "ready":
         ready?.();
@@ -516,6 +791,8 @@ async function boot(
         entry.status = "idle";
         // 这一回合投出去的图都该被认领过了。没认领的不留到下一回合:那只会把图串到别的消息上。
         entry.imageRefs.length = 0;
+        // 闸换档:执行中计静默,空闲计回收(issue #335)。
+        rearm(session.id, entry);
         // 这一回合的最后一截流式内容该出去了:下一次开跑之前不会再有帧把窗口推开。
         flushStream(session.id, entry);
         if (message.failure !== undefined) {
@@ -531,8 +808,9 @@ async function boot(
   });
   child.on("error", (error) => failed?.(error));
   child.on("exit", (code, signal) => {
-    // 子进程没了就从登记表上摘掉:下一条消息重新起一个。判死与惰性重建在 issue #335。
+    // 子进程没了就从登记表上摘掉:下一条消息从记录表惰性重建一个(issue #335)。
     if (registry.get(session.id) === entry) registry.delete(session.id);
+    clearTimers(entry);
     failed?.(
       new Error(
         signal === null ? `子进程退出,退出码 ${code}` : `子进程被信号 ${signal} 终止`,
@@ -540,6 +818,13 @@ async function boot(
     );
   });
 
+  // 重建:整段记录原样喂回去(issue #335)。新会话那一次是空数组,与不给等价。
+  const stored = storedSession(deps.dbPath, session.id);
+  if (stored.gap > 0) {
+    console.warn(
+      `[agent-session] 会话 ${session.id} 的记录有缺损,重建后前 ${stored.gap} 条不在上下文里`,
+    );
+  }
   const command: SessionCommand = {
     kind: "open",
     request: {
@@ -548,6 +833,7 @@ async function boot(
       repos: prepared.repos,
       runtimeModel: model.runtimeModel,
       ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
+      ...(stored.entries.length === 0 ? {} : { entries: stored.entries }),
     },
   };
   child.send(command, (error) => {
@@ -565,12 +851,13 @@ async function boot(
  * 从镜像里摘掉——排着的定义是「还没投出去」;进了 Pi 队列的那些由它的 `queue_update` 报回来。
  */
 function startRun(
-  deps: AgentSessionRuntimeDeps,
+  sessionId: number,
   entry: RuntimeEntry,
   last: AgentSessionQueuedMessage,
 ): void {
   entry.status = "running";
-  entry.lastActiveAt = deps.now();
+  // 闸换档:这一刻起计的是执行中的连续静默(issue #335)。
+  touch(sessionId, entry);
   const retained = entry.queue.splice(0, entry.queue.length);
   for (const message of [...retained, last]) {
     sendCommand(entry, {
@@ -587,8 +874,13 @@ function startRun(
  * 会话空闲时把一条消息投出去并开跑。**同步登记「在跑」**:接口已经回了 202,而下一条消息要
  * 在这一刻就看得到它在跑——登记晚一拍,两条消息就会同时开跑。
  *
- * 子进程还没起来的那一次连带把它起出来;起的那段时间里到的消息先攒着(`sendCommand`),建好
- * 之后按顺序补发。空闲时两种模式都等同直接开跑,`mode` 只在执行中才有分别(spec #329)。
+ * 子进程还没起来的那一次连带把它起出来(回收过、判死过与服务刚重启都走这一条,issue #335):
+ * 起的那段时间里到的消息先攒着(`sendCommand`),建好之后按顺序补发;上一次回收或排空时落库
+ * 的排队消息先回到镜像里,跟着这一条一起投出去。空闲时两种模式都等同直接开跑,`mode` 只在
+ * 执行中才有分别(spec #329)。
+ *
+ * 辅助模型每次开跑都取当前值(ADR 0029):与子进程此刻用的那一个不同时,落一条系统消息、
+ * 回收它、用新模型重建——一个会话的上下文可以续,模型不能半路换着跑。
  */
 export function deliverAgentSessionMessage(
   deps: AgentSessionRuntimeDeps,
@@ -605,35 +897,53 @@ export function deliverAgentSessionMessage(
     text,
     ...(images.length === 0 ? {} : { images }),
   };
+  const key = modelKey(model);
   const existing = registry.get(session.id);
-  if (existing !== undefined) {
-    startRun(deps, existing, message);
+  if (existing !== undefined && existing.modelKey === key) {
+    startRun(session.id, existing, message);
     return;
   }
+  if (existing !== undefined) {
+    reclaim(session.id, existing);
+    recordSystemMessage(
+      deps,
+      session.id,
+      `辅助模型从 ${existing.modelKey} 换成 ${key},会话已用新模型重建。`,
+    );
+  }
   const entry: RuntimeEntry = {
+    deps,
     status: "running",
     lastActiveAt: deps.now(),
+    modelKey: key,
+    timer: undefined,
     child: undefined,
     sessionRoot: undefined,
     worktrees: [],
-    queue: [],
+    // 上一次回收或排空时落库的那几条:它们排在这一条之前,顺序就是人当初写下的顺序。
+    queue: takePendingQueue(deps, session.id),
     pending: [],
     imageRefs: [],
     disposed: false,
     stream: { text: "", tool: undefined, timer: undefined },
   };
   registry.set(session.id, entry);
-  startRun(deps, entry, message);
+  startRun(session.id, entry, message);
   void boot(deps, session, model, repos, entry)
     .then((child) => {
       const pending = entry.pending.splice(0, entry.pending.length);
       for (const command of pending) child.send(command);
     })
     .catch((error: unknown) => {
-      // 起不来就把登记摘掉,下一条消息重试。这一票不落系统消息:它的写入口随判死那一票
-      // 接入(issue #335)。
+      // 起不来就把登记摘掉,下一条消息重试。不落系统消息:接口那一侧已经把失败原因回给人了,
+      // 而这一下连 Pi 会话都没建起来,记录里也就没有「这一轮」。已经备出来的工作树与会话根
+      // 照样要放掉——备到一半失败的那一次留下的目录没人再来收。
       if (registry.get(session.id) === entry) registry.delete(session.id);
+      clearTimers(entry);
       entry.child?.kill("SIGKILL");
+      void letGo(entry).catch(() => {
+        // 放不掉就留着:这一条路上已经有一个失败原因要报,再盖一层只会把它埋掉。
+      });
       console.error(
         `[agent-session] 会话 ${session.id} 的子进程起不来:`,
         error instanceof Error ? error.message : String(error),
@@ -681,6 +991,8 @@ export function clearAgentSessionQueue(sessionId: number): void {
   const dropped = new Set(entry.queue.flatMap((queued) => queued.images ?? []));
   entry.imageRefs = entry.imageRefs.filter((ref) => !dropped.has(ref));
   entry.queue = [];
+  // 队列空了:空闲着的这个会话从此刻起计回收(issue #335)。
+  rearm(sessionId, entry);
   sendCommand(entry, { kind: "clear-queue" });
 }
 
@@ -697,17 +1009,46 @@ export function stopAgentSession(sessionId: number): boolean {
   return true;
 }
 
+/** 等这个子进程退出,或等到上限。回 true 即它自己退了。 */
+function exited(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
 /**
- * 停掉全部会话子进程并释放它们的工作树。进程收尾与测试收尾用它:子进程的 IPC 通道会让
- * 父进程的事件循环活着,留着不收会让退出挂住。回收与排空的正式形态在 issue #335。
+ * 排空:停掉全部会话子进程并释放它们占的磁盘(issue #335)。SIGTERM 那一处与测试收尾都调它。
+ *
+ * 在跑的那些**立即中止**:经 IPC 下一条排空指令,子进程中止当前这一步、把被中止的回复镜像
+ * 出来就退出;等它退出(有宽限期,退不掉就强杀),再落一条「被排空中止」的系统消息——发版不
+ * 该被一段长对话拖住,而人第二天回来要看得见这一轮为什么断了。排着的消息先落库,重启后人
+ * 下次发消息时一并投递。
+ *
+ * 子进程不随父进程退出:它的 IPC 通道会让父进程的事件循环活着,留着不收会让退出挂住。
  */
 export async function disposeAgentSessions(): Promise<void> {
-  const entries = [...registry.values()];
+  const entries = [...registry.entries()];
   registry.clear();
-  for (const entry of entries) {
+  for (const [sessionId, entry] of entries) {
     entry.disposed = true;
-    if (entry.stream.timer !== undefined) clearTimeout(entry.stream.timer);
-    entry.child?.kill("SIGKILL");
-    for (const worktree of entry.worktrees) await worktree.release();
+    clearTimers(entry);
+    persistQueue(sessionId, entry);
+    const child = entry.child;
+    if (entry.status === "running" && child !== undefined) {
+      child.send({ kind: "drain" } satisfies SessionCommand, () => {
+        // 通道已经断了:下面的强杀兜住它。
+      });
+      if (!(await exited(child, DRAIN_EXIT_GRACE_MS))) {
+        console.warn(`[agent-session] 会话 ${sessionId} 的子进程没按时退出,强杀`);
+      }
+      recordSystemMessage(entry.deps, sessionId, DRAIN_ABORTED);
+    }
+    child?.kill("SIGKILL");
+    await letGo(entry);
   }
 }

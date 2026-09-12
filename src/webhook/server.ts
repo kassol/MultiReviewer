@@ -172,8 +172,10 @@ import {
   type TraceEvent,
 } from "../review/trace.ts";
 import {
+  agentSessionDroppedFromContext,
   agentSessionQueue,
   agentSessionRepos,
+  agentSessionSlot,
   agentSessionStatus,
   clearAgentSessionQueue,
   deliverAgentSessionMessage,
@@ -283,6 +285,16 @@ export type WebhookServerDeps = {
    * 审查轨迹心跳同一档,只该测试注入——测试把它拨到毫秒级,再拨 `now` 驱动「今天」。
    */
   scheduledCheckTickMs?: number;
+  /**
+   * Agent 会话子进程的空闲回收门槛(毫秒,issue #335),默认 `IDLE_RECLAIM_MS`(十分钟)。
+   * 只该测试注入:回收后要发一条消息看它从记录重建,等十分钟没法测。
+   */
+  agentSessionIdleReclaimMs?: number;
+  /**
+   * Agent 会话子进程执行中的静默判死门槛(毫秒,issue #335),默认 `SILENCE_TIMEOUT_MS`
+   * (五分钟)。与 Reviewer 那套子进程的 `inactivityTimeoutMs` 同一档,只该测试注入。
+   */
+  agentSessionSilenceTimeoutMs?: number;
   /**
    * 一个范围审查跑完一次定时检查(issue #314)。不传则写 stdout——凌晨发生了什么,
    * 第二天只有这行日志说得出。与工作副本准备同一条口径。
@@ -2102,6 +2114,15 @@ async function agentSessionImageInput(
 }
 
 /**
+ * 常驻子进程的名额占满了(issue #335)。满 = 上限那几个全都在跑;有空闲的那一个会被回收
+ * 腾位置,人感觉不到。文案说清「是系统忙,不是你的会话坏了」(spec #329 的 US 24)。
+ */
+const AGENT_SESSION_NO_SLOT = "名额已满,稍后再发";
+
+/** 服务正在排空(issue #335):这一刻起不了新的子进程,已经在跑的那些正被中止。 */
+const AGENT_SESSION_DRAINING = "服务正在排空,等它起回来再发";
+
+/**
  * 会话加上它此刻的状态(issue #333)。「在跑」是进程内的事实,库里那一列恒为空闲——存一个
  * 「在跑」下来,崩溃重启之后它就永远卡在在跑上。读接口因此一律经这一处覆盖。
  */
@@ -2190,6 +2211,10 @@ function visibleQueue(sessionId: number): { mode: AgentSessionMessageMode; text:
  *
  * `imageInput` 是「当前辅助模型看不看得了图」(issue #336):面板据它置灰上传按钮。跟着读会话
  * 回而不另开端点——面板本来就在续查这一份,模型换了下一次续查就跟上。
+ *
+ * `droppedFromContext` 是「重建之后前几条进不了模型上下文」(ADR 0031,issue #335):**算出来
+ * 的,不存一列**——它是记录本身的性质(`parentId` 链断没断、compaction 的引用指不指得到),
+ * 存一格就有「库里写着 3、记录早就补回来了」这种不一致。面板按它在会话顶部给一道横幅。
  */
 async function handleAgentSession(
   res: ServerResponse,
@@ -2204,6 +2229,7 @@ async function handleAgentSession(
         session: withRuntimeStatus(session),
         queue: visibleQueue(sessionId),
         imageInput: await agentSessionImageInput(deps, session),
+        droppedFromContext: agentSessionDroppedFromContext(deps.dbPath, sessionId),
       });
 }
 
@@ -2438,6 +2464,11 @@ async function handleAgentSessionMessage(
     }
     return accepted(queued.acceptedAt);
   }
+  // 正在排空(issue #335):在跑的会话此刻正被中止,再起一个子进程只会被当场收掉。入队那一档
+  // 不挡——它走不到这里,而一个还在跑的会话收下一条插话不占新名额。
+  if (deps.drain?.draining() === true) {
+    return sendJson(res, 503, { error: AGENT_SESSION_DRAINING });
+  }
   const forge = deps.forges.gitea;
   if (forge === undefined) {
     return sendJson(res, 503, { error: "gitea 没有配置 Forge,取不回代码" });
@@ -2453,6 +2484,10 @@ async function handleAgentSessionMessage(
   if (plan === undefined || plan.runtimeModel === null || plan.credential === null) {
     return sendJson(res, 409, { error: auxiliary?.reason ?? NO_AUXILIARY_MODEL });
   }
+
+  // 常驻名额(issue #335):满了先回收最久空闲的那一个,全都在跑时这一条发不出去。判在受理
+  // 之前——这一条没被投递,人过几分钟重发的该是同一条消息。
+  if (!agentSessionSlot(sessionId)) return sendJson(res, 409, { error: AGENT_SESSION_NO_SLOT });
 
   const acceptance = accept();
   // 并发两次同 id 的提交:主键只让一次插得进去,另一次回那一次的受理结果。
@@ -2595,6 +2630,12 @@ function agentSessionRuntimeDeps(
     cacheDir: deps.cacheDir,
     forge,
     now: deps.now ?? Date.now,
+    ...(deps.agentSessionIdleReclaimMs === undefined
+      ? {}
+      : { idleReclaimMs: deps.agentSessionIdleReclaimMs }),
+    ...(deps.agentSessionSilenceTimeoutMs === undefined
+      ? {}
+      : { silenceTimeoutMs: deps.agentSessionSilenceTimeoutMs }),
   };
 }
 

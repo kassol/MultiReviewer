@@ -155,6 +155,9 @@ server.listen(port, () => {
  *
  * 超过上限仍没停下的轮次不再等:它们停在哪一批已经落了库,下一次启动照样续得回来。
  * 退出码一律 0——这是一次预期之内的停机,不是失败。
+ *
+ * 常驻的会话子进程另一套:它们不随父进程退出(IPC 通道会让事件循环活着),而且没有「跑完
+ * 当前批次」那个可退出点——排空一开始就中止(issue #335)。
  */
 let exiting = false;
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
@@ -162,15 +165,16 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   exiting = true;
   console.log(`[drain] 收到 ${signal},停止接受新投递,等在跑的轮次跑完当前批次`);
   drain.begin();
+  // 在跑的 Agent 会话**立即**中止(issue #335):它们是人在对话,没有「跑完当前批次」那个
+  // 可退出点,等下去就是等人下一句话。中止记进会话记录、排队的消息落库,重启后人下次发消息
+  // 时从记录重建并一并投递。排在等轮次之前:两件事互不相干,而这一件几秒就完。
+  await disposeAgentSessions();
   const abandoned = await drain.settle(drainTimeoutMs);
   if (abandoned.length > 0) {
     console.warn(
       `[drain] 等了 ${drainTimeoutMs / 1000} 秒仍没停下,放弃这些轮次:${abandoned.join("、")}`,
     );
   }
-  // 常驻的会话子进程不会随父进程退出,退出前一律停掉(issue #333)。排空时把中止记进会话
-  // 记录、按时退出那一套在 issue #335。
-  await disposeAgentSessions();
   server.close();
   // 长连接不会自己断开(面板的 SSE 就是),不主动关掉的话 close 永远等不到。
   server.closeIdleConnections();
