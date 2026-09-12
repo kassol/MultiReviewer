@@ -177,8 +177,11 @@ test("发一条消息:知识集分段与消息文本进了模型请求,回复与
       ),
       "发出去的那句话没进模型请求",
     );
-    // 工具面就是只读四件套加受控 git,写工具一个都没注册。
-    assert.deepEqual([...requests[0]!.tools].sort(), ["find", "git", "grep", "ls", "read"]);
+    // 工具面是只读四件套、受控 git,加这个用途的产出工具(issue #337);写工具一个都没注册。
+    assert.deepEqual(
+      [...requests[0]!.tools].sort(),
+      ["find", "git", "grep", "ls", "read", "submit_requirement_breakdown"],
+    );
 
     // 记录:会话起头的两条(这一次用哪个模型、哪个思考档位)原样落下来,随后是用户消息、
     // 带工具调用的助手消息、工具结果与收尾的助手消息,各自是原样的 Pi 条目。
@@ -258,6 +261,291 @@ test("子进程跑完一个回合留着:第二条消息在同一个会话里接�
       "user",
       "assistant",
     ]);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+/* ─────────────── 产出工具与会话产出(issue #337) ─────────────── */
+
+const REPO = `${GITEA_REPO.owner}/${GITEA_REPO.repo}`;
+
+type Output = { kind: string; version: number; payload: unknown; toolCallId: string };
+
+/** 任意 JSON 对象。改坏一份好拆分时按键改,不为此造一套类型。 */
+type Json = globalThis.Record<string, unknown>;
+
+/** 一份拆分的工具参数。`summary` 两头带空白、列表里掺一个空项,用来压服务端归一化。 */
+function breakdownArgs(summary: string): Json {
+  return {
+    summary: `  ${summary}  `,
+    assumptions: ["汇率由财务手工维护", "   "],
+    openQuestions: [],
+    items: [
+      {
+        title: "月结汇率表",
+        description: "新增月结汇率表,按年月与币种唯一",
+        repo: REPO,
+        locations: ["src/finance/", ""],
+        dependsOn: [],
+        acceptance: ["同一年月同一币种只存一条"],
+      },
+      {
+        title: "报销单按原币录入",
+        description: "提交时锁定当月汇率",
+        repo: REPO,
+        locations: ["src/answer.ts"],
+        dependsOn: [1],
+        acceptance: ["提交后改汇率表,折算金额不变"],
+      },
+    ],
+  };
+}
+
+async function outputs(h: PanelHarness, cookie: string, sessionId: number): Promise<Output[]> {
+  const response = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/outputs`, {
+    headers: { cookie },
+  });
+  assert.equal(response.status, 200);
+  return ((await response.json()) as { outputs: Output[] }).outputs;
+}
+
+/** 等到这个会话落了这么多版产出。等的是库里的行,不猜子进程的时序。 */
+async function outputsAtLeast(
+  h: PanelHarness,
+  cookie: string,
+  sessionId: number,
+  count: number,
+): Promise<Output[]> {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    const landed = await outputs(h, cookie, sessionId);
+    if (landed.length >= count) return landed;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.fail(`等了 30 秒,会话 ${sessionId} 还没落到 ${count} 版产出`);
+}
+
+async function readRecords(
+  h: PanelHarness,
+  cookie: string,
+  sessionId: number,
+): Promise<Record[]> {
+  const response = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/records`, {
+    headers: { cookie },
+  });
+  assert.equal(response.status, 200);
+  return ((await response.json()) as { records: Record[] }).records;
+}
+
+test("调一次产出工具即落一版产出,经 SSE 推到面板;再交即新版本", async () => {
+  const turns: StubTurn[] = [
+    {
+      toolCall: { name: "submit_requirement_breakdown", args: breakdownArgs("第一版拆分") },
+      usage: { input: 100, output: 20 },
+    },
+    { text: "第一版交了", usage: { input: 40, output: 5 } },
+    {
+      toolCall: { name: "submit_requirement_breakdown", args: breakdownArgs("第二版拆分") },
+      usage: { input: 110, output: 22 },
+    },
+    { text: "第二版交了", usage: { input: 45, output: 6 } },
+  ];
+  const { h, cookie, sessionId, close } = await startSessionHarness(turns);
+  try {
+    const stream = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/stream`, {
+      headers: { cookie },
+    });
+    assert.equal(stream.status, 200);
+    const reader = frameReader(stream);
+
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    const landed = await outputsAtLeast(h, cookie, sessionId, 1);
+    await idle(h, cookie, sessionId);
+
+    // 产出表:第一版,payload 归一化过(两头空白去掉、列表里的空项丢掉),记着那次工具调用。
+    assert.equal(landed.length, 1);
+    assert.equal(landed[0]!.kind, "requirement-breakdown");
+    assert.equal(landed[0]!.version, 1);
+    assert.notEqual(landed[0]!.toolCallId, "");
+    assert.deepEqual(landed[0]!.payload, {
+      summary: "第一版拆分",
+      assumptions: ["汇率由财务手工维护"],
+      openQuestions: [],
+      items: [
+        {
+          title: "月结汇率表",
+          description: "新增月结汇率表,按年月与币种唯一",
+          repo: REPO,
+          locations: ["src/finance/"],
+          dependsOn: [],
+          acceptance: ["同一年月同一币种只存一条"],
+        },
+        {
+          title: "报销单按原币录入",
+          description: "提交时锁定当月汇率",
+          repo: REPO,
+          locations: ["src/answer.ts"],
+          dependsOn: [1],
+          acceptance: ["提交后改汇率表,折算金额不变"],
+        },
+      ],
+    });
+
+    const rows = await readRecords(h, cookie, sessionId);
+    // 工具回的是 recorded:打回才换文案。
+    assert.match(JSON.stringify(rows), /recorded/);
+    // 记录表上多一条 custom 条目:对话流里由它长出产出卡片。
+    const custom = rows.filter((row) => row.type === "custom");
+    assert.equal(custom.length, 1);
+    assert.deepEqual((custom[0]!.entry as { data?: unknown }).data, {
+      kind: "requirement-breakdown",
+      version: 1,
+    });
+
+    // SSE:那条 custom 条目也从流里送到了。
+    const seen: string[] = [];
+    for (let i = 0; i < rows.length; i += 1) {
+      const frame = await reader.next();
+      seen.push((JSON.parse(frame.data) as Record).type);
+      if (seen.includes("custom")) break;
+    }
+    assert.ok(seen.includes("custom"), `流里没见到 custom 条目:${seen.join(",")}`);
+    await reader.cancel();
+
+    // 再交一版:旧版保留,版本号加一。
+    assert.equal((await send(h, cookie, sessionId, "c2", "再拆细一点")).status, 202);
+    const both = await outputsAtLeast(h, cookie, sessionId, 2);
+    await idle(h, cookie, sessionId);
+    assert.deepEqual(
+      both.map((output) => output.version),
+      [1, 2],
+    );
+    assert.equal((both[0]!.payload as { summary: string }).summary, "第一版拆分");
+    assert.equal((both[1]!.payload as { summary: string }).summary, "第二版拆分");
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("三种打回走正常返回:不落产出,打回的调用照样进记录表", async () => {
+  /** 把一份好拆分改坏:改哪一处由 `patch` 决定。 */
+  const broken = (patch: (items: Json[]) => void): Json => {
+    const args = breakdownArgs("被打回的那一版");
+    patch(args["items"] as Json[]);
+    return args;
+  };
+  const turns: StubTurn[] = [
+    {
+      // 所属仓库不在会话根内。
+      toolCall: {
+        name: "submit_requirement_breakdown",
+        args: broken((items) => {
+          items[0]!["repo"] = "acme/nowhere";
+        }),
+      },
+      usage: { input: 10, output: 2 },
+    },
+    {
+      // 依赖序号自指。
+      toolCall: {
+        name: "submit_requirement_breakdown",
+        args: broken((items) => {
+          items[0]!["dependsOn"] = [1];
+        }),
+      },
+      usage: { input: 10, output: 2 },
+    },
+    {
+      // 落点不是仓库相对路径。
+      toolCall: {
+        name: "submit_requirement_breakdown",
+        args: broken((items) => {
+          items[1]!["locations"] = ["../../etc/passwd"];
+        }),
+      },
+      usage: { input: 10, output: 2 },
+    },
+    { text: "三次都被打回了,我改完再交", usage: { input: 10, output: 2 } },
+  ];
+  const { h, cookie, sessionId, close } = await startSessionHarness(turns);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    // 一个回合 = 用户消息 + 3 ×(助手消息 + 工具结果)+ 收尾的助手消息。
+    await messagesAtLeast(h.db.path, sessionId, 8);
+    await idle(h, cookie, sessionId);
+
+    // 一版都没落:打回的调用不是产出。
+    assert.deepEqual(await outputs(h, cookie, sessionId), []);
+
+    // 三次打回各自的理由都在记录表里的工具结果上,调用本身也在。
+    const rows = await readRecords(h, cookie, sessionId);
+    const results = rows
+      .filter((row) => row.entry.message?.role === "toolResult")
+      .map((row) => JSON.stringify(row.entry));
+    assert.equal(results.length, 3);
+    assert.match(results[0]!, /acme\/nowhere, which is not a repository of this session/);
+    assert.match(results[1]!, /item 1 depends on itself/);
+    assert.match(results[2]!, /\.\.\/\.\.\/etc\/passwd/);
+    // 打回走正常返回,不是工具错误:产出一版没落,而调用本身留在记录里。
+    assert.equal(rows.filter((row) => row.type === "custom").length, 0);
+    assert.equal(
+      rows.filter((row) => JSON.stringify(row.entry).includes("submit_requirement_breakdown"))
+        .length,
+      6,
+    );
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("定稿进模型上下文:子进程活着时那条消息经它落库,下一轮的模型请求里看得到", async () => {
+  const turns: StubTurn[] = [
+    { text: "先这样", usage: { input: 10, output: 2 } },
+    { text: "知道 v1 定稿了", usage: { input: 12, output: 3 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
+  try {
+    // 第一条消息把子进程起起来,之后它一直活着。
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await messagesAtLeast(h.db.path, sessionId, 2);
+    await idle(h, cookie, sessionId);
+
+    // 产出直接落一版:这一条用例要的是定稿那条消息的去处,不是产出工具。
+    const store = openStore(h.db.path);
+    store.appendAgentSessionOutput(sessionId, {
+      kind: "requirement-breakdown",
+      payload: { summary: "一版", assumptions: [], openQuestions: [], items: [] },
+      toolCallId: "call-1",
+      createdAt: AT,
+    });
+    store.close();
+
+    const finalized = await fetch(
+      `${h.serverUrl}/api/agent-sessions/${sessionId}/outputs/1/finalize`,
+      { method: "POST", headers: { cookie } },
+    );
+    assert.equal(finalized.status, 200, await finalized.text());
+
+    // 那条消息经子进程放进 Pi 会话,再由镜像落回记录表。
+    for (let attempt = 0; ; attempt += 1) {
+      const landed = await readRecords(h, cookie, sessionId);
+      if (landed.some((row) => row.type === "custom_message")) break;
+      assert.ok(attempt < 300, "等了 30 秒,定稿那条 custom_message 还没落库");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    // 下一轮:它在模型请求里。
+    assert.equal((await send(h, cookie, sessionId, "c2", "接着说")).status, 202);
+    await messagesAtLeast(h.db.path, sessionId, 4);
+    await idle(h, cookie, sessionId);
+    assert.equal(requests.length, 2);
+    assert.match(
+      requests[1]!.messages.map((message) => message.content).join("\n"),
+      /需求拆分 v1 已定稿/,
+    );
   } finally {
     await disposeAgentSessions();
     await close();

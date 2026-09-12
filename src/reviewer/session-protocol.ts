@@ -7,7 +7,16 @@
  */
 import type { ThinkingLevel } from "../config.ts";
 import type { ProjectFact, ReviewRule } from "../review/finding.ts";
+import type { AgentSessionOutputKind } from "../review/store.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
+
+/**
+ * 主进程与子进程各自往会话记录里放的那两种 Pi 条目的 `customType`(issue #337)。放在这份
+ * 共享协议里:两侧写的是同一张记录表,面板按这两个取值认出它们(`custom` 的产出卡片与
+ * `custom_message` 的定稿 / 换版那一行)。
+ */
+export const AGENT_SESSION_OUTPUT_CUSTOM_TYPE = "multireviewer-session-output";
+export const AGENT_SESSION_NOTE_CUSTOM_TYPE = "multireviewer-session-note";
 
 /** 会话根下的一个仓库:它的工作树目录名就是 `<owner>/<repo>`,知识集按它分段注入。 */
 export type SessionRepoInput = {
@@ -31,11 +40,27 @@ export type OpenSessionRequest = {
   thinkingLevel?: ThinkingLevel;
 };
 
+/**
+ * 一份交上来的会话产出(CONTEXT.md 会话产出,issue #337)。`payload` 的形状由产出类型自己
+ * 定(需求拆分那一份在 `session-output-tools.ts`),这条协议只把它原样带过去。
+ */
+export type SessionOutput = {
+  kind: AgentSessionOutputKind;
+  /** 产生它的那次工具调用。 */
+  toolCallId: string;
+  payload: unknown;
+};
+
 /** 主进程投给子进程的指令。 */
 export type SessionCommand =
   | { kind: "open"; request: OpenSessionRequest }
   /** 跑一次 prompt。会话空闲时立刻开跑。 */
-  | { kind: "prompt"; text: string };
+  | { kind: "prompt"; text: string }
+  /**
+   * 往会话里放一条进模型上下文的自定义消息,不开新回合(issue #337)。定稿与换版走它:
+   * 那是人做的动作,agent 下一轮要知道哪一版定了。落库由镜像那条路完成,与别的条目同形。
+   */
+  | { kind: "custom-message"; text: string };
 
 /** 子进程回传的消息。 */
 export type SessionWorkerMessage =
@@ -46,6 +71,11 @@ export type SessionWorkerMessage =
    * 子进程不判断它们是什么,落库与用量累加都在主进程。
    */
   | { kind: "entries"; entries: readonly unknown[] }
+  /**
+   * agent 经产出工具交出的一份会话产出(issue #337)。一次调用一条消息,与 Finding 回传
+   * 同形:子进程只把归一化与打回判完的那一份交上来,落产出表与广播都在主进程。
+   */
+  | { kind: "output"; output: SessionOutput }
   /** 这一个回合结束,会话回到空闲。`failure` 是这一回合里可见的失败原因。 */
   | { kind: "turn-end"; failure?: string }
   /** 会话建不起来:这个子进程之后什么都做不了。 */

@@ -23,11 +23,21 @@ export type AgentSessionRecord = {
   };
 };
 
+/**
+ * 主进程落的那两种条目的 `customType`(issue #337),与服务端那一份同值:`custom` 是交出一版
+ * 产出,`custom_message` 是人做的定稿或换版(它进模型上下文)。
+ */
+export const AGENT_SESSION_OUTPUT_CUSTOM_TYPE = "multireviewer-session-output";
+
 /** 对话流里的一项。 */
 export type ConversationItem =
   | { kind: "user"; seq: number; at: string; text: string }
   | { kind: "assistant"; seq: number; at: string; text: string }
-  | { kind: "tool"; seq: number; at: string; name: string; summary: string };
+  | { kind: "tool"; seq: number; at: string; name: string; summary: string }
+  /** agent 交出了一版产出。点开把右栏切到这一版。 */
+  | { kind: "output"; seq: number; at: string; version: number }
+  /** 定稿与换版那一句。进了模型上下文,所以它也该在对话里看得见。 */
+  | { kind: "note"; seq: number; at: string; text: string };
 
 /** 一条消息的正文:Pi 的 content 既可以是裸字符串,也可以是分块数组。 */
 function textOf(content: unknown): string {
@@ -57,6 +67,23 @@ export function toolSummary(args: unknown): string {
 export function conversation(records: readonly AgentSessionRecord[]): ConversationItem[] {
   const items: ConversationItem[] = [];
   for (const record of records) {
+    // 产出与定稿那两种条目(issue #337)。认不出 customType 或缺版本号的一律跳过:后端多落
+    // 一种 custom 条目不该在对话流里摊出一段 JSON。
+    if (record.type === "custom") {
+      const entry = record.entry as { customType?: unknown; data?: { version?: unknown } } | null;
+      if (
+        entry?.customType === AGENT_SESSION_OUTPUT_CUSTOM_TYPE &&
+        typeof entry.data?.version === "number"
+      ) {
+        items.push({ kind: "output", seq: record.seq, at: record.at, version: entry.data.version });
+      }
+      continue;
+    }
+    if (record.type === "custom_message") {
+      const text = textOf((record.entry as { content?: unknown } | null)?.content);
+      if (text !== "") items.push({ kind: "note", seq: record.seq, at: record.at, text });
+      continue;
+    }
     if (record.type !== "message") continue;
     const message = (record.entry as { message?: { role?: unknown; content?: unknown } } | null)
       ?.message;

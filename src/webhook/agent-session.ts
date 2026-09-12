@@ -9,6 +9,7 @@
  * 都在 issue #335。留给它的位置是登记表上的两格——状态与最后活动时刻。
  */
 import { fork, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +21,7 @@ import { defaultBranchHead, prepareWorktree, type Worktree } from "../git/worktr
 import type { ProjectFact, ReviewRule, ReviewerUsage } from "../review/finding.ts";
 import {
   openStore,
+  type AgentSessionOutputRecord,
   type AgentSessionRecord,
   type AgentSessionStatus,
   type ProductRepoRecord,
@@ -27,10 +29,13 @@ import {
 import { agentSessionChannel, publishAgentSessionRecord } from "../review/trace.ts";
 import { MODEL_API_KEY_ENV, reviewerEnv } from "../reviewer/env.ts";
 import type { RuntimeModel } from "../reviewer/model-service-runtime.ts";
-import type {
-  SessionCommand,
-  SessionRepoInput,
-  SessionWorkerMessage,
+import {
+  AGENT_SESSION_NOTE_CUSTOM_TYPE,
+  AGENT_SESSION_OUTPUT_CUSTOM_TYPE,
+  type SessionCommand,
+  type SessionOutput,
+  type SessionRepoInput,
+  type SessionWorkerMessage,
 } from "../reviewer/session-protocol.ts";
 
 const WORKER_PATH = fileURLToPath(new URL("../reviewer/session-worker.ts", import.meta.url));
@@ -42,6 +47,12 @@ export type AgentSessionRuntimeDeps = {
   forge: Forge;
   now: () => number;
 };
+
+/**
+ * 往记录表里落一条要的那两样(issue #337)。产出与定稿不起子进程、不取代码,因此不要整份
+ * 运行时依赖——没配 Forge 的部署里定稿照样定得下去。
+ */
+export type AgentSessionRecordDeps = Pick<AgentSessionRuntimeDeps, "dbPath" | "now">;
 
 /** 这次开跑用的辅助模型(ADR 0029)。解析在 server.ts 那一处,运行时只认结论。 */
 export type AgentSessionModel = {
@@ -145,6 +156,98 @@ function recordEntry(dbPath: string, sessionId: number, entry: unknown): void {
   }
 }
 
+/**
+ * 主进程自己往记录表里落一条 Pi 条目时,它的那三格底子(issue #337)。
+ *
+ * `parentId` 接在此刻最后一条记录上:重建时 Pi 顺着 `parentId` 上行,指空了就静默丢掉断点
+ * 之前的全部历史(ADR 0031)。一次全量读记录在这里付得起——一个会话里交产出与定稿只有
+ * 几次,而面板每打开一次读的就是同一份。
+ */
+function ownEntryBase(
+  deps: AgentSessionRecordDeps,
+  sessionId: number,
+): { id: string; parentId: string | null; timestamp: string } {
+  const store = openStore(deps.dbPath);
+  try {
+    const last = store.listAgentSessionEntries(sessionId).at(-1)?.entry as
+      | { id?: unknown }
+      | undefined;
+    return {
+      id: randomUUID(),
+      parentId: typeof last?.id === "string" ? last.id : null,
+      timestamp: new Date(deps.now()).toISOString(),
+    };
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * 收下一份会话产出(issue #337):落产出表一个新版本,再在记录表上留一条 `custom` 条目
+ * ——对话流里由它长出产出卡片,点开把右栏切到那一版。
+ *
+ * `custom` 条目不进模型上下文(ADR 0031),这正是要的:产出的内容模型刚刚自己交出来,
+ * 再塞回上下文只是同一份东西占两遍窗口。进上下文的只有人做的定稿与换版。
+ */
+export function recordAgentSessionOutput(
+  deps: AgentSessionRecordDeps,
+  sessionId: number,
+  output: SessionOutput,
+): void {
+  const store = openStore(deps.dbPath);
+  let stored: AgentSessionOutputRecord;
+  try {
+    stored = store.appendAgentSessionOutput(sessionId, {
+      kind: output.kind,
+      payload: output.payload,
+      toolCallId: output.toolCallId,
+      createdAt: new Date(deps.now()).toISOString(),
+    });
+  } catch (error) {
+    console.error(
+      `[agent-session] 会话 ${sessionId} 的产出落库失败:`,
+      error instanceof Error ? error.message : String(error),
+    );
+    return;
+  } finally {
+    store.close();
+  }
+  recordEntry(deps.dbPath, sessionId, {
+    ...ownEntryBase(deps, sessionId),
+    type: "custom",
+    customType: AGENT_SESSION_OUTPUT_CUSTOM_TYPE,
+    data: { kind: stored.kind, version: stored.version },
+  });
+}
+
+/**
+ * 把一条进模型上下文的消息放进会话(issue #337)。定稿与换版走它:agent 下一轮得知道哪一版
+ * 定了,不再改已定的方向。
+ *
+ * 子进程活着就交给它:Pi 会话在那个进程的内存里,只写库的话活着的这一轮看不到这条消息。
+ * 落库仍由镜像那一条路完成,与别的条目同形。子进程不在就直接落库,下次重建时它随整段记录
+ * 回到上下文里。(子进程正在起的那一瞬按「不在」处理:定稿与开跑撞在同一秒才会发生,那一条
+ * 也只是晚到下一次重建。)
+ */
+export function recordAgentSessionCustomMessage(
+  deps: AgentSessionRecordDeps,
+  sessionId: number,
+  text: string,
+): void {
+  const child = registry.get(sessionId)?.child;
+  if (child !== undefined) {
+    child.send({ kind: "custom-message", text } satisfies SessionCommand);
+    return;
+  }
+  recordEntry(deps.dbPath, sessionId, {
+    ...ownEntryBase(deps, sessionId),
+    type: "custom_message",
+    customType: AGENT_SESSION_NOTE_CUSTOM_TYPE,
+    content: text,
+    display: true,
+  });
+}
+
 /** 这个仓库生效知识集里的两型条目,按仓库分段注入系统提示(沿用现有格式)。 */
 function repoKnowledge(
   dbPath: string,
@@ -234,6 +337,9 @@ async function boot(
         return;
       case "entries":
         for (const one of message.entries) recordEntry(deps.dbPath, session.id, one);
+        return;
+      case "output":
+        recordAgentSessionOutput(deps, session.id, message.output);
         return;
       case "turn-end":
         entry.status = "idle";

@@ -1,7 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { CheckCircledIcon, CrossCircledIcon, PlusIcon } from "@radix-ui/react-icons";
-import { Callout, Dialog, Flex, Select, Skeleton, Text, TextArea } from "@radix-ui/themes";
+import {
+  CheckCircledIcon,
+  CopyIcon,
+  CrossCircledIcon,
+  PlusIcon,
+  ReaderIcon,
+} from "@radix-ui/react-icons";
+import { Badge, Callout, Dialog, Flex, Select, Skeleton, Text, TextArea } from "@radix-ui/themes";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { CardShell } from "@/components/card-shell";
@@ -10,7 +16,14 @@ import { EmptyState } from "@/components/empty-state";
 import { MasterListItem, MasterListItemText } from "@/components/master-list-item";
 import { PageBody } from "@/components/page-body";
 import { RailCard } from "@/components/rail-card";
+import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
+import {
+  currentFinalization,
+  requirementBreakdownMarkdown,
+  type AgentSessionOutput,
+  type AgentSessionOutputFinalization,
+} from "@/lib/agent-session-outputs";
 import {
   conversation,
   type AgentSessionRecord,
@@ -224,7 +237,16 @@ export function CreateSessionDialog({
  * 缓存,与审查轨迹同一套路(`useTrace`)。记录行是 Pi 的条目原样 JSON,投影成对话的那一步
  * 在 `lib/agent-session-records.ts`。
  */
-function Conversation({ sessionId, running }: { sessionId: number; running: boolean }) {
+function Conversation({
+  sessionId,
+  running,
+  onOpenOutput,
+}: {
+  sessionId: number;
+  running: boolean;
+  /** 点一张产出卡片:把右栏切到那一版(issue #337)。 */
+  onOpenOutput: (version: number) => void;
+}) {
   const { events, query, stream } = useTrace<AgentSessionRecord>({
     queryKey: ["agent-session-records", sessionId],
     path: `/agent-sessions/${sessionId}/records`,
@@ -269,6 +291,30 @@ function Conversation({ sessionId, running }: { sessionId: number; running: bool
                     {item.summary}
                   </span>
                 </div>
+              ) : item.kind === "output" ? (
+                /* 产出以卡片出现在对话流里,点开把右栏切到那一版(issue #337)。 */
+                <button
+                  type="button"
+                  onClick={() => onOpenOutput(item.version)}
+                  className="w-full rounded-lg border border-card-line bg-surface px-4 py-3 text-left transition-colors hover:bg-sunken"
+                >
+                  <span className="flex flex-wrap items-center gap-2">
+                    <ReaderIcon aria-hidden className="size-4 text-text-muted" />
+                    <span className="text-base font-medium">
+                      会话产出 · 需求拆分 v{item.version}
+                    </span>
+                  </span>
+                  <span className="mt-px block text-sm text-text-muted">
+                    点开看总述与全部条目
+                  </span>
+                </button>
+              ) : item.kind === "note" ? (
+                /* 定稿与换版那一句:它进了模型上下文,对话里也该看得见。 */
+                <div className="rounded-lg bg-sunken px-4 py-2">
+                  <span className="text-base text-text-muted">
+                    {localSecond(item.at)} · {item.text}
+                  </span>
+                </div>
               ) : (
                 <div
                   className={`flex min-w-0 flex-col gap-1 rounded-lg px-4 py-3 ${
@@ -293,6 +339,264 @@ function Conversation({ sessionId, running }: { sessionId: number; running: bool
   );
 }
 
+/** 一个会话的产出查询键。右栏与产出卡片读同一份。 */
+export function outputsQueryKey(sessionId: number): readonly unknown[] {
+  return ["agent-session-outputs", sessionId];
+}
+
+type OutputsRead = {
+  outputs: AgentSessionOutput[];
+  finalizations: AgentSessionOutputFinalization[];
+};
+
+/** 总述卡片:需求概要、假设、未决问题三段,空的那一段写「无」。 */
+function BreakdownSummary({ output }: { output: AgentSessionOutput }) {
+  const sections: [string, string[]][] = [
+    ["假设", output.payload.assumptions],
+    ["未决问题", output.payload.openQuestions],
+  ];
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-card-line bg-surface px-4 py-3">
+      <Text as="p" size="2" weight="bold">
+        总述
+      </Text>
+      <Text as="p" size="2">
+        需求概要:{output.payload.summary}
+      </Text>
+      {sections.map(([title, values]) => (
+        <div key={title}>
+          <Text as="p" size="1" weight="bold" color="gray">
+            {title}
+          </Text>
+          {values.length === 0 ? (
+            <Text as="p" size="1" color="gray">
+              无
+            </Text>
+          ) : (
+            <ul className="ml-4 list-disc">
+              {values.map((value) => (
+                <li key={value}>
+                  <Text size="1" color="gray">
+                    {value}
+                  </Text>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 条目卡片:标题、所属仓库、描述、落点、依赖条目、验收要点,顺序与复制出来的 Markdown 一致。 */
+function BreakdownItems({ output }: { output: AgentSessionOutput }) {
+  const items = output.payload.items;
+  return (
+    <div className="flex flex-col gap-2">
+      <Text as="p" size="2" weight="bold">
+        拆分条目 {items.length} 条
+      </Text>
+      {items.map((item, index) => (
+        <div
+          key={`${index + 1}-${item.title}`}
+          className="flex flex-col gap-1 rounded-lg border border-card-line bg-surface px-4 py-3"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <Text size="2" weight="bold">
+              {index + 1}. {item.title}
+            </Text>
+            <Badge color="gray" variant="soft">
+              {item.repo}
+            </Badge>
+          </div>
+          <Text as="p" size="1" color="gray">
+            {item.description}
+          </Text>
+          <Text as="p" size="1" color="gray">
+            落点:
+            <span className="font-mono break-all">
+              {item.locations.length === 0 ? "无" : item.locations.join(", ")}
+            </span>
+          </Text>
+          <Text as="p" size="1" color="gray">
+            依赖条目:{item.dependsOn.length === 0 ? "无" : item.dependsOn.join(", ")}
+          </Text>
+          <Text as="p" size="1" color="gray">
+            验收要点:
+          </Text>
+          {item.acceptance.length === 0 ? (
+            <Text as="p" size="1" color="gray">
+              无
+            </Text>
+          ) : (
+            <ul className="ml-4 list-disc">
+              {item.acceptance.map((line) => (
+                <li key={line}>
+                  <Text size="1" color="gray">
+                    {line}
+                  </Text>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 右栏的产出区(原型 A,issue #337):版本下拉、「定稿 / 换版到 vN」、「复制为 Markdown」、
+ * 一行定稿信息,下面是总述卡片与条目卡片。
+ *
+ * 人不编辑产出,所以这里只有两个动作:定稿(换到另一版即换版)与复制。在跑时隔两秒续查
+ * 一次:agent 交出新一版没有单独的事件,版本下拉要跟上。
+ */
+function OutputPanel({
+  sessionId,
+  canAct,
+  running,
+  picked,
+  onPick,
+}: {
+  sessionId: number;
+  /** 只有创建者定得了稿:别人读得到这个会话,动不了它。 */
+  canAct: boolean;
+  running: boolean;
+  /** 右栏此刻看的是哪一版。null 即看最新那一版。 */
+  picked: number | null;
+  onPick: (version: number) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const query = useQuery({
+    queryKey: outputsQueryKey(sessionId),
+    queryFn: () => fetchJson<OutputsRead>(`/agent-sessions/${sessionId}/outputs`),
+    refetchInterval: running ? 2000 : false,
+  });
+  const finalize = useMutation({
+    mutationFn: (version: number) =>
+      send(`/agent-sessions/${sessionId}/outputs/${version}/finalize`, "POST"),
+    onSuccess: async () => {
+      setError(null);
+      // 定稿那一条 custom_message 自己从记录流过来,这里只要把产出那一份读新。
+      await queryClient.invalidateQueries({ queryKey: outputsQueryKey(sessionId) });
+    },
+    onError: (failed: Error) => setError(failed.message),
+  });
+
+  const outputs = query.data?.outputs ?? [];
+  const current = outputs.find((output) => output.version === picked) ?? outputs.at(-1);
+  const finalized = currentFinalization(query.data?.finalizations ?? []);
+  const isFinalized = current !== undefined && finalized?.toVersion === current.version;
+
+  if (query.isPending) return <Skeleton aria-hidden className="h-40" />;
+  if (query.isError) {
+    // 读不到产出与「还没有产出」是两件事:报出原因,别让人以为 agent 还没交。
+    return (
+      <Callout.Root role="alert" color="red" size="1">
+        <Callout.Icon>
+          <CrossCircledIcon aria-hidden />
+        </Callout.Icon>
+        <Callout.Text>{(query.error as Error).message}</Callout.Text>
+      </Callout.Root>
+    );
+  }
+  if (current === undefined) {
+    return (
+      <EmptyState
+        title="还没有会话产出"
+        titleAs="h2"
+        description="agent 交出的结构化产出会出现在这里。"
+      />
+    );
+  }
+
+  const copy = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(
+        requirementBreakdownMarkdown({
+          version: current.version,
+          finalized: isFinalized,
+          breakdown: current.payload,
+        }),
+      );
+      setError(null);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (failed) {
+      setError((failed as Error).message);
+    }
+  };
+
+  return (
+    <div className="flex min-w-0 flex-col gap-3">
+      {error === null ? null : (
+        <Callout.Root role="alert" color="red" size="1">
+          <Callout.Icon>
+            <CrossCircledIcon aria-hidden />
+          </Callout.Icon>
+          <Callout.Text>{error}</Callout.Text>
+        </Callout.Root>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-lg font-bold">会话产出 · 需求拆分</h2>
+        <Select.Root
+          size="1"
+          value={String(current.version)}
+          onValueChange={(value) => onPick(Number(value))}
+        >
+          <Select.Trigger aria-label="产出版本" />
+          <Select.Content position="popper">
+            {outputs.map((output) => (
+              <Select.Item key={output.version} value={String(output.version)}>
+                v{output.version} · {output.payload.items.length} 条 ·{" "}
+                {localMinute(output.createdAt)}
+              </Select.Item>
+            ))}
+          </Select.Content>
+        </Select.Root>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          {isFinalized ? (
+            <StatusBadge tone="success">v{current.version} 已定稿</StatusBadge>
+          ) : canAct ? (
+            <Button
+              size="1"
+              disabled={finalize.isPending}
+              onClick={() => finalize.mutate(current.version)}
+            >
+              {finalized === undefined ? `定稿 v${current.version}` : `换版到 v${current.version}`}
+            </Button>
+          ) : null}
+          <Button size="1" variant="soft" color="gray" onClick={() => void copy()}>
+            {copied ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
+            {copied ? "已复制" : "复制为 Markdown"}
+          </Button>
+        </div>
+        {finalized === undefined ? (
+          <Text as="p" size="1" color="gray">
+            还没有定稿版。
+          </Text>
+        ) : (
+          <Text as="p" size="1" color="gray">
+            定稿 v{finalized.toVersion} · {finalized.finalizedBy} ·{" "}
+            {localMinute(finalized.finalizedAt)} · 定稿版不可改,进模型上下文
+          </Text>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-3 border-t border-line pt-3">
+        <BreakdownSummary output={current} />
+        <BreakdownItems output={current} />
+      </div>
+    </div>
+  );
+}
 /**
  * 一个 Agent 会话的详情页(原型 A 的三栏工作台,issue #332、#333)。左栏产品与我的会话、
  * 中栏对话流与输入框、右栏产出。
@@ -314,6 +618,8 @@ export function AgentSessionPage({
   const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [draft, setDraft] = useState("");
+  /** 右栏看的是哪一版产出。null 即最新那一版;点对话流里的产出卡片切到那一版(issue #337)。 */
+  const [outputVersion, setOutputVersion] = useState<number | null>(null);
 
   const sessionQuery = useQuery({
     queryKey: ["agent-sessions", sessionId],
@@ -444,7 +750,11 @@ export function AgentSessionPage({
                   {localMinute(session.createdAt)} 由 {session.createdBy} 建立
                   {running ? " · 执行中" : ""}
                 </Text>
-                <Conversation sessionId={sessionId} running={running} />
+                <Conversation
+                  sessionId={sessionId}
+                  running={running}
+                  onOpenOutput={setOutputVersion}
+                />
                 {/* 发消息只有创建者能做:别人读得到这个会话,发不了。 */}
                 {session.createdBy === username ? (
                   <form
@@ -508,10 +818,12 @@ export function AgentSessionPage({
           className="flex w-full shrink-0 flex-col gap-2.5 xl:w-[336px]"
         >
           <CardShell className="px-5 py-4">
-            <EmptyState
-              title="还没有会话产出"
-              titleAs="h2"
-              description="agent 交出的结构化产出会出现在这里。"
+            <OutputPanel
+              sessionId={sessionId}
+              canAct={session !== undefined && session.createdBy === username}
+              running={running}
+              picked={outputVersion}
+              onPick={setOutputVersion}
             />
           </CardShell>
         </aside>

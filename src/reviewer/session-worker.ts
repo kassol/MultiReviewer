@@ -23,7 +23,13 @@ import {
 
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import { GIT_TOOL, sessionGitTool } from "./git-tool.ts";
-import type { OpenSessionRequest, SessionCommand, SessionWorkerMessage } from "./session-protocol.ts";
+import { sessionOutputTools } from "./session-output-tools.ts";
+import {
+  AGENT_SESSION_NOTE_CUSTOM_TYPE,
+  type OpenSessionRequest,
+  type SessionCommand,
+  type SessionWorkerMessage,
+} from "./session-protocol.ts";
 import {
   READ_ONLY_TOOLS,
   factBullet,
@@ -148,6 +154,8 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
 let session: AgentSession | undefined;
 /** 已经回传过的条目数。镜像按它取新增的那一段。 */
 let mirrored = 0;
+/** 会话建好之前到的那几条自定义消息(issue #337),建好之后按顺序放进去。 */
+const pendingNotes: string[] = [];
 let apiKey = "";
 
 /**
@@ -183,14 +191,18 @@ async function open(request: OpenSessionRequest): Promise<void> {
   apiKey = prepared.apiKey;
 
   const repos = request.repos.map((repo) => `${repo.owner}/${repo.repo}`);
+  // 这个用途的产出工具(issue #337)。清单与定义取同一份:工具名在 `tools` 里没有那一行,
+  // Pi 就不把它交给模型,两处各写一遍迟早对不上。
+  const outputTools = sessionOutputTools(request.purpose, { repos, send });
   session = await openAgentSession({
     runtime: prepared,
     worktreePath: request.sessionRoot,
     thinkingLevel,
-    tools: sessionTools(),
+    tools: [...sessionTools(), ...outputTools.map((tool) => tool.name)],
     customTools: [
       ...(sessionReadOnlyTools(request.sessionRoot) as unknown as ToolDefinition[]),
       sessionGitTool(request.sessionRoot, repos),
+      ...(outputTools as unknown as ToolDefinition[]),
     ],
     send,
     onEvent: (event) => {
@@ -201,6 +213,7 @@ async function open(request: OpenSessionRequest): Promise<void> {
     },
   });
   send({ kind: "ready" });
+  for (const note of pendingNotes.splice(0)) await customMessage(note);
 }
 
 async function prompt(text: string): Promise<void> {
@@ -226,13 +239,43 @@ async function prompt(text: string): Promise<void> {
   });
 }
 
+/**
+ * 放一条进模型上下文的自定义消息(issue #337)。定稿与换版走它:`triggerTurn: false` 即不开
+ * 新回合——执行中它排到回合边界再落进会话,空闲时当场落进去。两条路都发 `message_end`,
+ * 落库因此仍由镜像那一条路完成,与别的条目同形。
+ */
+async function customMessage(text: string): Promise<void> {
+  // 会话还没建好就先攒着:备会话根要把每个仓库检出一遍,那段时间里人点得动定稿。丢掉这一条
+  // 它既不进上下文也不进记录表,而主进程已经按「子进程在」把它交给了这一侧。
+  if (session === undefined) {
+    pendingNotes.push(text);
+    return;
+  }
+  await session.sendCustomMessage(
+    { customType: AGENT_SESSION_NOTE_CUSTOM_TYPE, content: text, display: true },
+    { triggerTurn: false },
+  );
+}
+
 process.on("message", (command: SessionCommand) => {
-  const run = command.kind === "open" ? open(command.request) : prompt(command.text);
+  const run =
+    command.kind === "open"
+      ? open(command.request)
+      : command.kind === "custom-message"
+        ? customMessage(command.text)
+        : prompt(command.text);
   run.catch((error: unknown) => {
     const failure = redactModelCredential(
       String(error instanceof Error ? error.message : error),
       process.env[MODEL_API_KEY_ENV],
     );
-    send(command.kind === "open" ? { kind: "failed", failure } : { kind: "turn-end", failure });
+    if (command.kind === "open") return send({ kind: "failed", failure });
+    // 放一条自定义消息失败不动会话状态:回合可能还在跑,报「回合结束」会让主进程以为它空了,
+    // 下一条消息就会与在跑的这一轮撞上。
+    if (command.kind === "custom-message") {
+      console.error(`[session-worker] 自定义消息没放进会话:${failure}`);
+      return;
+    }
+    send({ kind: "turn-end", failure });
   });
 });

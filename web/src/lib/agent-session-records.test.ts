@@ -44,7 +44,10 @@ test("一个回合投影成用户消息、agent 回复与工具行,工具结果�
     record(5, "message", message("assistant", [{ type: "text", text: "拆成两条" }])),
   ]);
   assert.deepEqual(
-    items.map((item) => [item.kind, item.kind === "tool" ? item.name : item.text]),
+    items.map((item) => [
+      item.kind,
+      item.kind === "tool" ? item.name : item.kind === "output" ? item.version : item.text,
+    ]),
     [
       ["user", "把这个需求拆一下"],
       ["assistant", "先看看仓库"],
@@ -87,4 +90,33 @@ test("参数摘要一行放得下:超出就截断", () => {
   const long = toolSummary({ pattern: "x".repeat(300) });
   assert.equal(long.length, 121);
   assert.ok(long.endsWith("…"));
+});
+
+test("产出条目投成产出卡片,定稿那一句投成一行提示(issue #337)", () => {
+  const items = conversation([
+    record(1, "custom", {
+      type: "custom",
+      customType: "multireviewer-session-output",
+      data: { kind: "requirement-breakdown", version: 2 },
+    }),
+    // 版本号缺失或 customType 认不出的 custom 条目跳过,不在对话流里摊出来。
+    record(2, "custom", { type: "custom", customType: "multireviewer-session-output", data: {} }),
+    record(3, "custom_message", {
+      type: "custom_message",
+      customType: "multireviewer-session-note",
+      content: "需求拆分 v2 已定稿。",
+      display: true,
+    }),
+    record(4, "custom_message", { type: "custom_message", content: "  " }),
+  ]);
+  assert.deepEqual(
+    items.map((item) => [
+      item.kind,
+      item.kind === "output" ? item.version : item.kind === "note" ? item.text : "",
+    ]),
+    [
+      ["output", 2],
+      ["note", "需求拆分 v2 已定稿。"],
+    ],
+  );
 });

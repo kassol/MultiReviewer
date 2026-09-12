@@ -736,6 +736,35 @@ CREATE TABLE IF NOT EXISTS agent_session_message (
   accepted_at TEXT NOT NULL,
   PRIMARY KEY (session_id, client_message_id)
 );
+
+-- 会话产出(CONTEXT.md 会话产出,issue #337)。一行一版:产出是独立实体,payload 是那一种
+-- 产出类型自己的 JSON,这一层不解释它(与会话记录的 entry 同律)。版本号在一个会话的一种
+-- 产出类型之内自增,主键因此是三列。tool_call_id 是产生它的那次工具调用,面板据它回到
+-- 记录里那一行。人不编辑产出,所以没有 UPDATE 入口;删会话与删产品一并删掉。
+CREATE TABLE IF NOT EXISTS agent_session_output (
+  session_id INTEGER NOT NULL REFERENCES agent_session(id),
+  kind TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  payload TEXT NOT NULL,
+  tool_call_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, kind, version)
+);
+
+-- 定稿与换版的记录(CONTEXT.md 定稿,issue #337)。一行一次动作:首次定稿的 from_version
+-- 为空,换版记下从哪一版换到哪一版。**「当前定稿版本」就是最后一行的 to_version**,不另存
+-- 一格标记:存两处就能不一致,而换版本来就要留记录,这张表已经是那份记录。「一个会话一种
+-- 产出类型至多一版定稿」由此成立——最后一行只有一个 to_version。
+CREATE TABLE IF NOT EXISTS agent_session_output_finalization (
+  session_id INTEGER NOT NULL REFERENCES agent_session(id),
+  kind TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  from_version INTEGER,
+  to_version INTEGER NOT NULL,
+  finalized_by TEXT NOT NULL,
+  finalized_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, kind, seq)
+);
 `;
 
 
@@ -2632,6 +2661,47 @@ export type AgentSessionEntryRecord = {
 /** 一次发消息的受理结果(issue #333)。`fresh` 为假即这个客户端消息 id 早已受理过。 */
 export type AgentSessionMessageAcceptance = { acceptedAt: string; fresh: boolean };
 
+/**
+ * 会话产出的类型(CONTEXT.md 会话产出,issue #337)。这一版只有需求拆分。与会话用途同名
+ * 但不是同一格:用途决定注册哪些产出工具,一个用途日后可能交出两种产出。
+ */
+export type AgentSessionOutputKind = "requirement-breakdown";
+
+/**
+ * 一版会话产出(CONTEXT.md 会话产出)。`payload` 是那一种产出类型自己的形状,这一层只把它
+ * 当 JSON 存取——与会话记录的 `entry` 同律,库不跟着产出 schema 改。
+ */
+export type AgentSessionOutputRecord = {
+  sessionId: number;
+  kind: AgentSessionOutputKind;
+  /** 同会话同类型自增。交一版就加一,旧版保留。 */
+  version: number;
+  payload: unknown;
+  /** 产生它的那次工具调用。 */
+  toolCallId: string;
+  createdAt: string;
+};
+
+/** 一次定稿或换版(CONTEXT.md 定稿)。首次定稿的 `fromVersion` 为空。 */
+export type AgentSessionOutputFinalization = {
+  kind: AgentSessionOutputKind;
+  /** 一个会话一种产出类型之内自增,顺序即换版过程。 */
+  seq: number;
+  fromVersion: number | null;
+  toVersion: number;
+  finalizedBy: string;
+  finalizedAt: string;
+};
+
+/**
+ * 定稿一版产出的结果(issue #337)。`unchanged` 是「这一版已经是定稿版」那一档:不写新行,
+ * 也不该再发一条进模型上下文的消息——人点两次定稿不是换了两次版。
+ */
+export type AgentSessionFinalizeOutcome = {
+  outcome: "finalized" | "unchanged";
+  finalization: AgentSessionOutputFinalization;
+};
+
 /** 时间窗内的 Agent 会话用量:会话数与它们的 token 之和。一个都没有时缺失。 */
 export type AgentSessionUsageStats = ReviewerUsage & { sessions: number };
 
@@ -2649,6 +2719,30 @@ function agentSessionEntry(row: Record<string, unknown>): AgentSessionEntryRecor
       cacheWriteTokens: Number(row["cache_write_tokens"]),
       totalTokens: Number(row["total_tokens"]),
     },
+  };
+}
+
+function agentSessionOutput(row: Record<string, unknown>): AgentSessionOutputRecord {
+  return {
+    sessionId: Number(row["session_id"]),
+    kind: String(row["kind"]) as AgentSessionOutputKind,
+    version: Number(row["version"]),
+    payload: JSON.parse(String(row["payload"])) as unknown,
+    toolCallId: String(row["tool_call_id"]),
+    createdAt: String(row["created_at"]),
+  };
+}
+
+function agentSessionOutputFinalization(
+  row: Record<string, unknown>,
+): AgentSessionOutputFinalization {
+  return {
+    kind: String(row["kind"]) as AgentSessionOutputKind,
+    seq: Number(row["seq"]),
+    fromVersion: row["from_version"] === null ? null : Number(row["from_version"]),
+    toVersion: Number(row["to_version"]),
+    finalizedBy: String(row["finalized_by"]),
+    finalizedAt: String(row["finalized_at"]),
   };
 }
 
@@ -2884,6 +2978,33 @@ export type Store = {
     to: string,
     createdBy: string | null,
   ): AgentSessionUsageStats | undefined;
+  /**
+   * 落一版会话产出(issue #337)。版本号由这一步给:同会话同类型的最大版本加一,旧版一行
+   * 不动。产出不可编辑,所以只有这一个写入口。
+   */
+  appendAgentSessionOutput(
+    sessionId: number,
+    input: {
+      kind: AgentSessionOutputKind;
+      payload: unknown;
+      toolCallId: string;
+      createdAt: string;
+    },
+  ): AgentSessionOutputRecord;
+  /** 一个会话的全部产出,按类型与版本升序。各版都带 payload:面板要在版本间对照。 */
+  listAgentSessionOutputs(sessionId: number): AgentSessionOutputRecord[];
+  /** 一个会话的定稿与换版记录,按发生顺序。最后一条的 `toVersion` 就是当前定稿版本。 */
+  listAgentSessionOutputFinalizations(sessionId: number): AgentSessionOutputFinalization[];
+  /**
+   * 把某一版标为定稿(CONTEXT.md 定稿)。已经是定稿版即 `unchanged`,不写新行;换到另一版
+   * 就写一条带 `fromVersion` 的换版记录。没有这一版产出即 undefined。
+   */
+  finalizeAgentSessionOutput(
+    sessionId: number,
+    version: number,
+    finalizedBy: string,
+    finalizedAt: string,
+  ): AgentSessionFinalizeOutcome | undefined;
   /** 记下工作副本的准备状态(issue #184)。仓库已被移除时没有行可写,静默通过。 */
   setRepoWorktree(repoId: number, status: WorktreeStatus): void;
   /**
@@ -4899,7 +5020,12 @@ export function openStore(dbPath: string): Store {
         db.prepare("DELETE FROM product_repo WHERE product_id = ?").run(productId);
         // 会话跟着产品走(issue #332):产品是会话唯一的挂载点,留下来谁都读不到它。记录与
         // 受理过的消息 id 挂在会话上,同一个事务里一并删(issue #333)。
-        for (const table of ["agent_session_entry", "agent_session_message"]) {
+        for (const table of [
+          "agent_session_entry",
+          "agent_session_message",
+          "agent_session_output",
+          "agent_session_output_finalization",
+        ]) {
           db.prepare(
             `DELETE FROM ${table}
               WHERE session_id IN (SELECT id FROM agent_session WHERE product_id = ?)`,
@@ -4958,9 +5084,15 @@ export function openStore(dbPath: string): Store {
     deleteAgentSession(sessionId) {
       db.exec("BEGIN");
       try {
-        // 记录与受理过的消息 id 只属于这个会话,跟着它走(issue #333)。
-        db.prepare("DELETE FROM agent_session_entry WHERE session_id = ?").run(sessionId);
-        db.prepare("DELETE FROM agent_session_message WHERE session_id = ?").run(sessionId);
+        // 记录、受理过的消息 id 与产出只属于这个会话,跟着它走(issue #333、#337)。
+        for (const table of [
+          "agent_session_entry",
+          "agent_session_message",
+          "agent_session_output",
+          "agent_session_output_finalization",
+        ]) {
+          db.prepare(`DELETE FROM ${table} WHERE session_id = ?`).run(sessionId);
+        }
         const removed =
           Number(db.prepare("DELETE FROM agent_session WHERE id = ?").run(sessionId).changes) > 0;
         db.exec("COMMIT");
@@ -5088,6 +5220,114 @@ export function openStore(dbPath: string): Store {
         cacheWriteTokens: Number(row["cache_write_tokens"] ?? 0),
         totalTokens: Number(row["total_tokens"] ?? 0),
       };
+    },
+
+    appendAgentSessionOutput(sessionId, input) {
+      db.exec("BEGIN");
+      try {
+        const version =
+          Number(
+            db
+              .prepare(
+                `SELECT COALESCE(MAX(version), 0) AS version FROM agent_session_output
+                  WHERE session_id = ? AND kind = ?`,
+              )
+              .get(sessionId, input.kind)?.["version"] ?? 0,
+          ) + 1;
+        db.prepare(
+          `INSERT INTO agent_session_output
+             (session_id, kind, version, payload, tool_call_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        ).run(
+          sessionId,
+          input.kind,
+          version,
+          JSON.stringify(input.payload),
+          input.toolCallId,
+          input.createdAt,
+        );
+        db.exec("COMMIT");
+        return { sessionId, version, ...input };
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    listAgentSessionOutputs(sessionId) {
+      return db
+        .prepare(
+          `SELECT * FROM agent_session_output
+            WHERE session_id = ?
+            ORDER BY kind, version`,
+        )
+        .all(sessionId)
+        .map(agentSessionOutput);
+    },
+
+    listAgentSessionOutputFinalizations(sessionId) {
+      return db
+        .prepare(
+          `SELECT * FROM agent_session_output_finalization
+            WHERE session_id = ?
+            ORDER BY kind, seq`,
+        )
+        .all(sessionId)
+        .map(agentSessionOutputFinalization);
+    },
+
+    finalizeAgentSessionOutput(sessionId, version, finalizedBy, finalizedAt) {
+      db.exec("BEGIN");
+      try {
+        // 版本号认得出产出类型:一个会话的用途只交一种产出,接口因此按版本定稿。日后一个
+        // 用途交两种产出时,这一处与端点一起多一个类型参数。
+        const output = db
+          .prepare("SELECT * FROM agent_session_output WHERE session_id = ? AND version = ?")
+          .get(sessionId, version);
+        if (output === undefined) {
+          db.exec("ROLLBACK");
+          return undefined;
+        }
+        const kind = String(output["kind"]);
+        // 当前定稿版本就是最后一条记录的 to_version:同一版再定稿是空操作,回那一条记录。
+        const last = db
+          .prepare(
+            `SELECT * FROM agent_session_output_finalization
+              WHERE session_id = ? AND kind = ?
+              ORDER BY seq DESC LIMIT 1`,
+          )
+          .get(sessionId, kind);
+        if (last !== undefined && Number(last["to_version"]) === version) {
+          db.exec("ROLLBACK");
+          return { outcome: "unchanged", finalization: agentSessionOutputFinalization(last) };
+        }
+        const finalization: AgentSessionOutputFinalization = {
+          kind: kind as AgentSessionOutputKind,
+          seq: last === undefined ? 1 : Number(last["seq"]) + 1,
+          fromVersion: last === undefined ? null : Number(last["to_version"]),
+          toVersion: version,
+          finalizedBy,
+          finalizedAt,
+        };
+        db.prepare(
+          `INSERT INTO agent_session_output_finalization
+             (session_id, kind, seq, from_version, to_version, finalized_by, finalized_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          sessionId,
+          finalization.kind,
+          finalization.seq,
+          finalization.fromVersion,
+          finalization.toVersion,
+          finalization.finalizedBy,
+          finalization.finalizedAt,
+        );
+        db.exec("COMMIT");
+        return { outcome: "finalized", finalization };
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     },
 
     setRepoWorktree(repoId, status) {

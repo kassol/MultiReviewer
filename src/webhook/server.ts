@@ -128,6 +128,7 @@ import {
   toKnowledgeEntry,
   toPendingProposal,
   type AgentSessionEntryRecord,
+  type AgentSessionOutputKind,
   type AgentSessionPurpose,
   type AgentSessionRecord,
   type BatchLimitField,
@@ -174,6 +175,7 @@ import {
   agentSessionRepos,
   agentSessionStatus,
   deliverAgentSessionMessage,
+  recordAgentSessionCustomMessage,
   type AgentSessionRuntimeDeps,
 } from "./agent-session.ts";
 import {
@@ -2262,6 +2264,78 @@ async function handleAgentSessionMessage(
   return accepted(acceptance.acceptedAt);
 }
 
+/** 没有这一版产出。定稿到一个不存在的版本与读不到这个会话同形,都只回一句。 */
+const NO_SUCH_AGENT_SESSION_OUTPUT = "没有这一版会话产出";
+
+/** 产出类型在文案里的名字(CONTEXT.md 会话产出)。进模型上下文的那一句用它。 */
+const AGENT_SESSION_OUTPUT_LABEL: Record<AgentSessionOutputKind, string> = {
+  "requirement-breakdown": "需求拆分",
+};
+
+/**
+ * 一个会话的产出与定稿记录(issue #337)。各版都带 payload:面板要在版本间对照,而一份拆分
+ * 不过几 KB。当前定稿版本不另给一格——它就是 `finalizations` 最后一条的 `toVersion`,两处
+ * 各存一份就能不一致。可见性与读会话同律。
+ */
+function handleAgentSessionOutputs(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  sessionId: number,
+  caller: PanelCaller,
+): void {
+  const session = visibleAgentSession(deps, sessionId, caller);
+  if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
+  return sendJson(
+    res,
+    200,
+    withStore(deps.dbPath, (store) => ({
+      outputs: store.listAgentSessionOutputs(sessionId),
+      finalizations: store.listAgentSessionOutputFinalizations(sessionId),
+    })),
+  );
+}
+
+/**
+ * 定稿一版产出(CONTEXT.md 定稿,issue #337)。同一个端点既是定稿也是换版:换到另一版就是
+ * 换版,多写一条带来源版本的记录。产出本来就不可编辑,「定稿版不可改」因此落在这一处——
+ * 改定稿标记只有换版这一条路。
+ *
+ * 只有创建者动得了:系统管理员读得到别人的会话,定稿回 403 而不是 404(与删会话、发消息
+ * 同一口径)。定稿与换版以进模型上下文的那条消息告知 agent,同一版再定稿是空操作、不发。
+ */
+function handleFinalizeAgentSessionOutput(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  sessionId: number,
+  version: number,
+  caller: PanelCaller,
+): void {
+  const session = visibleAgentSession(deps, sessionId, caller);
+  if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
+  if (session.createdBy !== caller.username) {
+    return sendJson(res, 403, { error: NOT_AGENT_SESSION_CREATOR });
+  }
+  const at = new Date((deps.now ?? Date.now)()).toISOString();
+  const outcome = withStore(deps.dbPath, (store) =>
+    store.finalizeAgentSessionOutput(sessionId, version, caller.username, at),
+  );
+  if (outcome === undefined) {
+    return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION_OUTPUT });
+  }
+  const { finalization } = outcome;
+  if (outcome.outcome === "finalized") {
+    const label = AGENT_SESSION_OUTPUT_LABEL[finalization.kind];
+    recordAgentSessionCustomMessage(
+      { dbPath: deps.dbPath, now: deps.now ?? Date.now },
+      sessionId,
+      finalization.fromVersion === null
+        ? `${label} v${finalization.toVersion} 已定稿。这一版是团队拿到的那一版,不要再改它已经定下的方向。`
+        : `${label}的定稿从 v${finalization.fromVersion} 换到 v${finalization.toVersion}。现在定稿版是 v${finalization.toVersion}。`,
+    );
+  }
+  return sendJson(res, 200, { finalization });
+}
+
 /** 会话运行时要的那几样,从服务依赖里取。 */
 function agentSessionRuntimeDeps(
   deps: WebhookServerDeps,
@@ -2400,6 +2474,8 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/messages$/, access: "agent:chat", handler: ({ req, res, deps, caller }, match) => handleAgentSessionMessage(req, res, deps, Number(match![1]), caller!) },
   // 记录与它的实时流(ADR 0031,issue #333)。读登录即可,可见性与读会话同一判。
   { method: "GET", pattern: /^\/agent-sessions\/(\d+)\/records$/, access: "authenticated-only", handler: ({ res, deps, caller }, match) => handleAgentSessionRecords(res, deps, Number(match![1]), caller!) },
+  { method: "GET", pattern: /^\/agent-sessions\/(\d+)\/outputs$/, access: "authenticated-only", handler: ({ res, deps, caller }, match) => handleAgentSessionOutputs(res, deps, Number(match![1]), caller!) },
+  { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/outputs\/(\d+)\/finalize$/, access: "agent:chat", handler: ({ res, deps, caller }, match) => handleFinalizeAgentSessionOutput(res, deps, Number(match![1]), Number(match![2]), caller!) },
   { method: "GET", pattern: /^\/agent-sessions\/(\d+)\/stream$/, access: "authenticated-only", handler: ({ req, res, deps, caller }, match) => handleAgentSessionStream(req, res, deps, Number(match![1]), caller!) },
   { method: "GET", pattern: "/model-services", access: { anyOf: ["model:read", "credential:read"] }, handler: ({ res, deps, caller }) => handleListModelServices(res, deps, caller!) },
   { method: "GET", pattern: "/model-services/providers", access: { anyOf: ["model:read", "model:write", "credential:read", "credential:write"] }, handler: ({ req, res, deps }) => handleBuiltinProviderSearch(req, res, deps) },
