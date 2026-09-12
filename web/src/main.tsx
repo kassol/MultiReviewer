@@ -42,6 +42,10 @@ import "./styles.css";
 
 const AccessControlPage = lazy(async () => ({ default: (await import("./access-control.tsx")).AccessControlPage }));
 const LoginPage = lazy(async () => ({ default: (await import("./login.tsx")).LoginPage }));
+// 原型页(issue #324)。挂在 rootRoute 上而不是 shellRoute:不登录也看得到,一次性代码。
+const PrototypeAgentSessionPage = lazy(async () => ({
+  default: (await import("./prototype-agent-session.tsx")).PrototypeAgentSessionPage,
+}));
 const PasswordPage = lazy(async () => ({ default: (await import("./password.tsx")).PasswordPage }));
 const RunsPage = lazy(async () => ({ default: (await import("./runs.tsx")).RunsPage }));
 const StageDetailPage = lazy(async () => ({ default: (await import("./stage-detail.tsx")).StageDetailPage }));
@@ -78,6 +82,13 @@ const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
   component: () => <Suspense fallback={<PageLoading />}><LoginPage /></Suspense>,
+});
+
+/** 原型路由(issue #324):`?variant=A|B|C` 切三档布局,不走 shell、不要登录。 */
+const prototypeAgentSessionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/prototype/agent-session",
+  component: () => <Suspense fallback={<PageLoading />}><PrototypeAgentSessionPage /></Suspense>,
 });
 
 type ShellContext = { session: PanelSession };
@@ -670,6 +681,7 @@ const passwordRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
+  prototypeAgentSessionRoute,
   shellRoute.addChildren([
     indexRoute,
     stageDetailRoute,
