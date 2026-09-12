@@ -155,6 +155,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-12: 落地 issue #331(父 spec #329)。**产品成为面板上的一级实体**:`product` 与 `product_repo` 两张表(唯一名称;一个仓库至多属一个产品由 `product_repo` 的主键表达),五个端点建 / 改名 / 归入 / 移出 / 删,写只按 `repo:write`,读按「对产品内至少一个仓库有仓库分配」(ADR 0018 同律,零分配 404,系统管理员看全部);仓库从注册表移除时自动从产品摘出;删产品的回应带级联条数 `cascade.sessions`(会话实体在 #332,此刻恒为 0)。面板导航新增「产品」项与 `/products` 页(原型 A 的左栏:产品列表、当前产品的仓库、「我的会话」占位)。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 - 2026-09-12: spec #329 / #330 拆成十张票 #331–#340(均 ready-for-agent,GitHub 原生阻塞边):#340 预备重构、#331 产品 → #332 agent:chat 与会话实体 → #333 常驻子进程一问一答 → #334 排队/插话/停止 → #335 生命周期;#336 图片、#337 产出通道与需求拆分产出 → #338 需求拆分用途 各从 #333 分叉;#339 发布与线上验收收尾。前沿:#340 与 #331 可并行。
 - 2026-09-12: 地图 #318 收成两份 spec:[Agent 会话底座](https://github.com/kassol/MultiReviewer/issues/329)与[需求拆分](https://github.com/kassol/MultiReviewer/issues/330)(后者阻塞于前者),均标 ready-for-agent。测试缝四段:HTTP + 临时库、真子进程 + 本机假模型服务、smoke 真模型契约、00-test 线上 ego-browser 主链路(只用 zhangxu/review)。
 - 2026-09-12: wayfinder 地图[Agent 会话底座与需求拆分](https://github.com/kassol/MultiReviewer/issues/318)定下[Agent 会话底座与需求拆分以哪些场景验收](https://github.com/kassol/MultiReviewer/issues/327),**九张票全部关闭,地图走完**:21 条验收场景分落 HTTP + 临时库、真子进程 + 假模型服务、smoke 真模型契约、00-test 线上 ego-browser 主链路(只用 zhangxu/review)。下一步 `/to-spec` 收成「Agent 会话底座」与「需求拆分」两份 spec。

@@ -670,6 +670,24 @@ CREATE TABLE IF NOT EXISTS panel_user_repo (
   repo_id INTEGER NOT NULL REFERENCES repo(id),
   PRIMARY KEY (username, repo_id)
 );
+
+-- 产品(CONTEXT.md 产品,issue #331)。字段只有唯一名称与仓库集合,名称的唯一性由
+-- UNIQUE 表达,重名由写入口接住约束报错回 409。
+CREATE TABLE IF NOT EXISTS product (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+
+-- 产品的仓库集合。主键是 repo_id:「一个仓库至多属一个产品」这条由它表达,不靠写入口
+-- 先查一遍再插——并发两次归属时应用层那一查挡不住,主键挡得住。仓库从注册表移除时由
+-- removeRepo 一并摘掉(与仓库分配同律)。
+CREATE TABLE IF NOT EXISTS product_repo (
+  repo_id INTEGER PRIMARY KEY REFERENCES repo(id),
+  product_id INTEGER NOT NULL REFERENCES product(id),
+  added_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS product_repo_by_product ON product_repo(product_id);
 `;
 
 
@@ -2467,6 +2485,59 @@ export type PanelSessionRecord = {
   expiresAt: string;
 };
 
+/** 产品里的一个仓库。带 owner/repo 是因为可见性判定按 owner/repo 走(ADR 0018)。 */
+export type ProductRepoRecord = {
+  repoId: number;
+  owner: string;
+  repo: string;
+};
+
+/** 一个产品(CONTEXT.md 产品)与它当前的仓库集合。读与写都只经这一种形状。 */
+export type ProductRecord = {
+  id: number;
+  name: string;
+  createdAt: string;
+  repos: ProductRepoRecord[];
+};
+
+/** 把一个仓库归入产品的结果。`other-product` 即这个仓库已经归在别的产品下。 */
+export type ProductRepoAttach =
+  | "attached"
+  | "missing-product"
+  | "missing-repo"
+  | "other-product";
+
+/**
+ * 产品连同它的仓库集合。一个产品没有仓库也要读得出来(刚建的产品就是这样),所以
+ * 两次 LEFT JOIN;`repo` 那一张也 LEFT JOIN 是为了不让一行归属把整个产品藏起来。
+ */
+const PRODUCT_QUERY = `
+  SELECT p.id, p.name, p.created_at, pr.repo_id, r.owner, r.repo
+    FROM product p
+    LEFT JOIN product_repo pr ON pr.product_id = p.id
+    LEFT JOIN repo r ON r.id = pr.repo_id`;
+
+/** 把 `PRODUCT_QUERY` 的一产品多行折成每个产品一条记录,顺序按查询给的顺序。 */
+function foldProducts(rows: readonly Record<string, unknown>[]): ProductRecord[] {
+  const products = new Map<number, ProductRecord>();
+  for (const row of rows) {
+    const id = Number(row["id"]);
+    let product = products.get(id);
+    if (product === undefined) {
+      product = { id, name: String(row["name"]), createdAt: String(row["created_at"]), repos: [] };
+      products.set(id, product);
+    }
+    if (row["repo_id"] !== null && row["owner"] !== null) {
+      product.repos.push({
+        repoId: Number(row["repo_id"]),
+        owner: String(row["owner"]),
+        repo: String(row["repo"]),
+      });
+    }
+  }
+  return [...products.values()];
+}
+
 /**
  * 失败原因在面板上只显示一句话的量。厂商拒绝的原文可能是一整段 JSON(区域封禁那条
  * 403 就是),整段带到前端会把卡片撑开,而人要的是「哪个模型、为什么」——换行压成
@@ -2610,8 +2681,25 @@ export type Store = {
    * 工作都调这一处**,不各自取。仓库不在注册表里、或三处都给不出模型时回 null。
    */
   resolveAuxiliaryModel(repoId: number): ResolvedAuxiliaryModel | null;
-  /** 摘掉注册表行、它的 Key 与它的仓库分配。评审记录一行不动:模型选型的历史不因下线而断。 */
+  /**
+   * 摘掉注册表行、它的 Key、它的仓库分配与它的产品归属。评审记录一行不动:模型选型的
+   * 历史不因下线而断。
+   */
   removeRepo(repoId: number): void;
+  /** 全部产品与各自的仓库集合,按名称排序。可见性由调用方按仓库分配收窄。 */
+  listProducts(): ProductRecord[];
+  /** 一个产品与它的仓库集合。没有这个产品即 undefined。 */
+  getProduct(productId: number): ProductRecord | undefined;
+  /** 建一个空产品。重名时抛 UNIQUE 约束错,由调用方接住回 409。 */
+  createProduct(record: { name: string; createdAt: string }): ProductRecord;
+  /** 改名。没有这个产品即 false;重名同样抛 UNIQUE 约束错。 */
+  renameProduct(productId: number, name: string): boolean;
+  /** 把一个已注册仓库归入产品。已经在这个产品下即 `attached`,幂等。 */
+  attachProductRepo(productId: number, repoId: number, at: string): ProductRepoAttach;
+  /** 把一个仓库从产品里移出。这个产品下没有这个仓库即 false。 */
+  detachProductRepo(productId: number, repoId: number): boolean;
+  /** 删产品并摘掉它的仓库归属。没有这个产品即 false。 */
+  deleteProduct(productId: number): boolean;
   /** 记下工作副本的准备状态(issue #184)。仓库已被移除时没有行可写,静默通过。 */
   setRepoWorktree(repoId: number, status: WorktreeStatus): void;
   /**
@@ -4541,6 +4629,8 @@ export function openStore(dbPath: string): Store {
       try {
         db.prepare("DELETE FROM repo_key WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM panel_user_repo WHERE repo_id = ?").run(repoId);
+        // 产品归属跟着仓库走(issue #331):留下来产品就挂着一个已经不存在的仓库。
+        db.prepare("DELETE FROM product_repo WHERE repo_id = ?").run(repoId);
         // 知识集跟着仓库走:留下来只会在同一个 repo id 重新注册时复活一份没人认过的规则。
         db.prepare("DELETE FROM review_rule WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM rule_set_version WHERE repo_id = ?").run(repoId);
@@ -4555,6 +4645,78 @@ export function openStore(dbPath: string): Store {
         db.prepare("DELETE FROM rule_trace WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM repo WHERE id = ?").run(repoId);
         db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
+    listProducts() {
+      return foldProducts(
+        db.prepare(`${PRODUCT_QUERY} ORDER BY p.name, r.owner, r.repo`).all(),
+      );
+    },
+
+    getProduct(productId) {
+      return foldProducts(
+        db.prepare(`${PRODUCT_QUERY} WHERE p.id = ? ORDER BY r.owner, r.repo`).all(productId),
+      )[0];
+    },
+
+    createProduct(record) {
+      const result = db
+        .prepare("INSERT INTO product (name, created_at) VALUES (?, ?)")
+        .run(record.name, record.createdAt);
+      return { id: Number(result.lastInsertRowid), ...record, repos: [] };
+    },
+
+    renameProduct(productId, name) {
+      return (
+        Number(db.prepare("UPDATE product SET name = ? WHERE id = ?").run(name, productId).changes) >
+        0
+      );
+    },
+
+    attachProductRepo(productId, repoId, at) {
+      if (db.prepare("SELECT 1 FROM product WHERE id = ?").get(productId) === undefined) {
+        return "missing-product";
+      }
+      if (db.prepare("SELECT 1 FROM repo WHERE id = ?").get(repoId) === undefined) {
+        return "missing-repo";
+      }
+      // 一仓多属由主键挡:插不进去才回头看它归在谁下面,不先查再插——先查的那一档
+      // 在并发两次归属时两边都以为自己能插。
+      const inserted = db
+        .prepare(
+          `INSERT INTO product_repo (repo_id, product_id, added_at) VALUES (?, ?, ?)
+             ON CONFLICT(repo_id) DO NOTHING`,
+        )
+        .run(repoId, productId, at).changes;
+      if (Number(inserted) > 0) return "attached";
+      const owner = db
+        .prepare("SELECT product_id FROM product_repo WHERE repo_id = ?")
+        .get(repoId);
+      return Number(owner?.["product_id"]) === productId ? "attached" : "other-product";
+    },
+
+    detachProductRepo(productId, repoId) {
+      return (
+        Number(
+          db
+            .prepare("DELETE FROM product_repo WHERE product_id = ? AND repo_id = ?")
+            .run(productId, repoId).changes,
+        ) > 0
+      );
+    },
+
+    deleteProduct(productId) {
+      db.exec("BEGIN");
+      try {
+        db.prepare("DELETE FROM product_repo WHERE product_id = ?").run(productId);
+        const removed =
+          Number(db.prepare("DELETE FROM product WHERE id = ?").run(productId).changes) > 0;
+        db.exec("COMMIT");
+        return removed;
       } catch (error) {
         db.exec("ROLLBACK");
         throw error;
