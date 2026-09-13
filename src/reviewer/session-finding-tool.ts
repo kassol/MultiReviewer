@@ -18,6 +18,7 @@ import { Type } from "typebox";
 import type { Disposition } from "../review/finding.ts";
 import type { RepoFinding } from "../review/store.ts";
 import type { SessionWorkerMessage } from "./session-protocol.ts";
+import { toolText } from "./worker-tools.ts";
 
 export const QUERY_FINDINGS_TOOL = "query_findings";
 
@@ -68,10 +69,6 @@ export function resolveFindingQuery(requestId: string, result: FindingQueryResul
   const settle = pending.get(requestId);
   pending.delete(requestId);
   settle?.(result);
-}
-
-function text(body: string): { content: [{ type: "text"; text: string }]; details: object } {
-  return { content: [{ type: "text", text: body }], details: {} };
 }
 
 /**
@@ -128,7 +125,7 @@ export function sessionFindingTool(options: {
       };
       const name = repo.trim();
       if (!options.repos.includes(name)) {
-        return text(
+        return toolText(
           `${name} is not a repository of this session; look in one of: ${options.repos.join(", ")}`,
         );
       }
@@ -138,7 +135,7 @@ export function sessionFindingTool(options: {
         state !== "" &&
         !QUERYABLE_DISPOSITIONS.includes(state as Disposition)
       ) {
-        return text(
+        return toolText(
           `${state} is not a disposition state; use one of exactly: ${QUERYABLE_DISPOSITIONS.join(", ")}`,
         );
       }
@@ -159,9 +156,9 @@ export function sessionFindingTool(options: {
         });
       });
       if (result.failure !== undefined) {
-        return text(`could not read the past findings of ${name}: ${result.failure}`);
+        return toolText(`could not read the past findings of ${name}: ${result.failure}`);
       }
-      return text(renderFindings(name, result.findings));
+      return toolText(renderFindings(name, result.findings));
     },
   }) as unknown as ToolDefinition<never, never>;
 }

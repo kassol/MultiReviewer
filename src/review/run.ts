@@ -1702,17 +1702,51 @@ function scopePattern(scope: string): RegExp {
  * 一条知识条目的作用范围与一个查询 glob 有没有重叠(issue #344 的 `query_knowledge`)。
  *
  * 评审链路按**文件路径**匹配作用范围(`knowledgeForBatch`),会话里的查询给的是一个 glob,
- * 两边都可能带通配符,因此没有「一个路径命中一个模式」那么直接。判据定得最简:
+ * 两边都可能带通配符,因此没有「一个路径命中一个模式」那么直接。判据:
  *
  * - 查询 glob 省略或为空即全匹配——问的是整个仓库;
  * - 条目的作用范围为空串即全仓库条目,任何查询都该看到它;
- * - 两个都给时按字面量互判一次:条目范围当模式、查询 glob 当路径命中,或者反过来,
- *   任一成立即算重叠。`src/**` 与 `src/finance/**` 因此互相看得见,`web/**` 看不见它们。
+ * - 两个都给时按路径段逐段互判(`segmentsOverlap`):存在一条路径两边都命中即算重叠。
+ *   `src/**` 与 `src/finance/**` 因此互相看得见,通配符落在不同段的两个 glob(`src/*` 接
+ *   `/handler.ts`,与 `src/api/**`)也看得见——`src/api/handler.ts` 两边都命中;`web/**` 看不见它们。
  */
 export function scopesOverlap(scope: string, pathGlob: string | undefined): boolean {
   if (pathGlob === undefined || pathGlob === "") return true;
   if (scope === "") return true;
-  return scopePattern(scope).test(pathGlob) || scopePattern(pathGlob).test(scope);
+  return segmentsOverlap(scope.split("/"), pathGlob.split("/"));
+}
+
+/**
+ * 两个 glob 逐段有没有共同能命中的路径。`**` 一段吞零到多段;带 `*` 的段当模式判对方那一段
+ * 的字面量;两段都带 `*` 即算重叠——判宽一点,漏一条规则比多给一条贵。
+ */
+function segmentsOverlap(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length === 0 && right.length === 0) return true;
+  if (left[0] === "**") {
+    return (
+      segmentsOverlap(left.slice(1), right) ||
+      (right.length > 0 && segmentsOverlap(left, right.slice(1)))
+    );
+  }
+  if (right[0] === "**") {
+    return (
+      segmentsOverlap(left, right.slice(1)) ||
+      (left.length > 0 && segmentsOverlap(left.slice(1), right))
+    );
+  }
+  if (left.length === 0 || right.length === 0) return false;
+  return (
+    segmentMatches(left[0]!, right[0]!) && segmentsOverlap(left.slice(1), right.slice(1))
+  );
+}
+
+function segmentMatches(left: string, right: string): boolean {
+  const leftWild = left.includes("*");
+  const rightWild = right.includes("*");
+  if (leftWild && rightWild) return true;
+  if (leftWild) return scopePattern(left).test(right);
+  if (rightWild) return scopePattern(right).test(left);
+  return left === right;
 }
 
 /**

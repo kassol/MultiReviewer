@@ -397,7 +397,7 @@ test("两层各自封顶在历史 Finding 查询那一个常量", () => {
   assert.equal(entries.repo.length, FINDING_QUERY_LIMIT);
 });
 
-test("作用范围与查询 glob 的重叠判据:省略即全匹配,两个都给时互判一次", () => {
+test("作用范围与查询 glob 的重叠判据:省略即全匹配,两个都给时逐段互判", () => {
   // 查询 glob 省略或为空:问的是整个仓库,每条都算重叠。
   assert.equal(scopesOverlap("src/finance/**", undefined), true);
   assert.equal(scopesOverlap("src/finance/**", ""), true);
@@ -408,6 +408,11 @@ test("作用范围与查询 glob 的重叠判据:省略即全匹配,两个都给
   // 反过来:查询 glob 当模式命中条目范围这个字面路径。
   assert.equal(scopesOverlap("src/finance/rate.ts", "src/**"), true);
   assert.equal(scopesOverlap("src/finance/**", "src/**"), true);
+  // 通配符落在不同路径段:`src/api/handler.ts` 两边都命中,逐段互判才看得出来。
+  assert.equal(scopesOverlap("src/*/handler.ts", "src/api/**"), true);
+  assert.equal(scopesOverlap("**/handler.ts", "src/api/*.ts"), true);
+  assert.equal(scopesOverlap("src/*/handler.ts", "src/api/*.js"), false);
+  assert.equal(scopesOverlap("src/*/handler.ts", "web/**"), false);
   // 两边都对不上。
   assert.equal(scopesOverlap("src/finance/**", "web/**"), false);
   assert.equal(scopesOverlap("web/page.ts", "src/finance/rate.ts"), false);

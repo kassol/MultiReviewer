@@ -262,6 +262,16 @@ export function agentSessionRepos(
   }
 }
 
+/** 仓库 id → `<owner>/<repo>`:产品知识的仓库集合交给子进程与模型时都要这一步。 */
+function repoNameById(repos: readonly ProductRepoRecord[]): Map<number, string> {
+  return new Map(repos.map((repo) => [repo.repoId, `${repo.owner}/${repo.repo}`]));
+}
+
+/** `<owner>/<repo>` → 仓库 id:模型报回来的仓库名换回库里的键。 */
+function repoIdByName(repos: readonly ProductRepoRecord[]): Map<string, number> {
+  return new Map(repos.map((repo) => [`${repo.owner}/${repo.repo}`, repo.repoId]));
+}
+
 /**
  * 这个会话挂的那个产品进系统提示的那两格:名字(issue #341)与生效产品知识的条数
  * (issue #344)。与仓库集合和知识集同律在 `boot` 里现算:改名与新确认的条目在下次重建时
@@ -295,12 +305,7 @@ function activeProductKnowledge(
 ): SessionProductKnowledge[] {
   const store = openStore(dbPath);
   try {
-    const names = new Map(
-      (store.getProduct(productId)?.repos ?? []).map((row) => [
-        row.repoId,
-        `${row.owner}/${row.repo}`,
-      ]),
-    );
+    const names = repoNameById(store.getProduct(productId)?.repos ?? []);
     return store.listProductKnowledge(productId, "active").map((entry) => ({
       id: entry.id,
       statement: entry.statement,
@@ -349,7 +354,7 @@ export function recordProductSurveyProposals(
   try {
     const product = store.getProduct(session.productId);
     if (product === undefined) return;
-    const ids = new Map(product.repos.map((row) => [`${row.owner}/${row.repo}`, row.repoId]));
+    const ids = repoIdByName(product.repos);
     const active = store.listProductKnowledge(session.productId, "active");
     const rejected = new Set(store.listProductKnowledgeRejections(session.productId));
     const at = new Date(deps.now()).toISOString();
@@ -892,7 +897,7 @@ export function sessionKnowledge(
   repos: readonly ProductRepoRecord[],
   query: SessionKnowledgeQuery,
 ): SessionKnowledgeEntries {
-  const idByName = new Map(repos.map((repo) => [`${repo.owner}/${repo.repo}`, repo.repoId]));
+  const idByName = repoIdByName(repos);
   const askedIds = query.repos
     .map((name) => idByName.get(name))
     .filter((id): id is number => id !== undefined);
@@ -900,7 +905,7 @@ export function sessionKnowledge(
   try {
     // 条目涉及的仓库里可能有这个会话读不到的那几个(没分配、或已从产品里移出),名字仍要给出
     // 来:路由条目说的就是「这件事还牵着那个仓库」。注册表取一次名,取不到的退回 id。
-    const nameById = new Map(repos.map((repo) => [repo.repoId, `${repo.owner}/${repo.repo}`]));
+    const nameById = repoNameById(repos);
     const nameOf = (id: number): string => {
       const known = nameById.get(id);
       if (known !== undefined) return known;

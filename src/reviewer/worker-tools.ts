@@ -163,6 +163,13 @@ export function countOf(count: number, singular: string, plural = `${singular}s`
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
+/** 一次工具调用只回一段文字:打回理由、查询结果都是这一种形状。 */
+export function toolText(
+  body: string,
+): { content: [{ type: "text"; text: string }]; details: object } {
+  return { content: [{ type: "text", text: body }], details: {} };
+}
+
 /** 一条规则:标识在最前,模型自报命中时抄的就是它;作用范围空串即全仓库。 */
 export function ruleBullet(rule: ReviewRule): string {
   const scope = rule.scope === "" ? "whole repository" : rule.scope;

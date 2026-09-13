@@ -19,7 +19,7 @@ import type {
   SessionWorkerMessage,
 } from "./session-protocol.ts";
 import { FINDING_QUERY_LIMIT } from "./session-finding-tool.ts";
-import { countOf, oneLine } from "./worker-tools.ts";
+import { countOf, oneLine, toolText } from "./worker-tools.ts";
 
 export const QUERY_KNOWLEDGE_TOOL = "query_knowledge";
 
@@ -52,10 +52,6 @@ export function resolveKnowledgeQuery(requestId: string, result: KnowledgeQueryR
   const settle = pending.get(requestId);
   pending.delete(requestId);
   settle?.(result);
-}
-
-function text(body: string): { content: [{ type: "text"; text: string }]; details: object } {
-  return { content: [{ type: "text", text: body }], details: {} };
 }
 
 /** 一条产品知识交给模型看的样子:层、涉及的仓库集合与那一句陈述。 */
@@ -128,13 +124,13 @@ export function sessionKnowledgeTool(options: {
         .map((one) => one.trim())
         .filter((one) => one !== "");
       if (asked.length === 0) {
-        return text(
+        return toolText(
           `name at least one repository of this session: ${options.repos.join(", ")}`,
         );
       }
       const outside = asked.filter((one) => !options.repos.includes(one));
       if (outside.length > 0) {
-        return text(
+        return toolText(
           `${outside.join(", ")} is not a repository of this session; look in one of: ${options.repos.join(", ")}`,
         );
       }
@@ -152,9 +148,9 @@ export function sessionKnowledgeTool(options: {
         });
       });
       if (result.failure !== undefined) {
-        return text(`could not read what ${asked.join(", ")} has written down: ${result.failure}`);
+        return toolText(`could not read what ${asked.join(", ")} has written down: ${result.failure}`);
       }
-      return text(renderKnowledge(asked, result));
+      return toolText(renderKnowledge(asked, result));
     },
   }) as unknown as ToolDefinition<never, never>;
 }
