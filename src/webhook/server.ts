@@ -2189,6 +2189,56 @@ function handleRetireProductKnowledge(
   return retired ? send(res, 204) : sendJson(res, 404, { error: NO_SUCH_PRODUCT_KNOWLEDGE });
 }
 
+/** 这一条已经不是提案了:确认过、驳回过与根本不在这个产品下,三档同形回这一句。 */
+const NO_SUCH_PRODUCT_KNOWLEDGE_PROPOSAL = "没有这条待确认的产品知识提案";
+
+/**
+ * 确认一条待确认的提案(CONTEXT.md 产品知识,spec #342 的 US 8、US 9,issue #346)。
+ * 新增陈述那一档翻成生效,退役提案那一档把它指向的那条生效条目退役、提案随之消失。
+ *
+ * 门禁与手写同一道(`knowledge:write` 加这个产品里的一个仓库分配):确认产品知识与维护
+ * 知识集是同一批人的事。
+ */
+function handleAcceptProductKnowledgeProposal(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+  entryId: number,
+): void {
+  const outcome = withStore(deps.dbPath, (store) =>
+    store.acceptProductKnowledgeProposal(
+      productId,
+      entryId,
+      new Date((deps.now ?? Date.now)()).toISOString(),
+    ),
+  );
+  return outcome === undefined
+    ? sendJson(res, 404, { error: NO_SUCH_PRODUCT_KNOWLEDGE_PROPOSAL })
+    : send(res, 204);
+}
+
+/**
+ * 驳回一条待确认的提案(issue #346)。提案行删掉,新增陈述那一档另记下它的陈述:下一轮
+ * 产品梳理交上同一句话就静默丢掉——同一句话不该让人反复驳回。
+ */
+function handleRejectProductKnowledgeProposal(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+  entryId: number,
+): void {
+  const rejected = withStore(deps.dbPath, (store) =>
+    store.rejectProductKnowledgeProposal(
+      productId,
+      entryId,
+      new Date((deps.now ?? Date.now)()).toISOString(),
+    ),
+  );
+  return rejected
+    ? send(res, 204)
+    : sendJson(res, 404, { error: NO_SUCH_PRODUCT_KNOWLEDGE_PROPOSAL });
+}
+
 /**
  * 重梳的两句回绝(CONTEXT.md 产品梳理,issue #345)。仓库不足两个时梳理无从谈起——产品知识
  * 说的是仓库之间的事;同一个产品的第二轮梳理要等第一轮交完,两轮同时跑会提出同一批提案。
@@ -2264,7 +2314,10 @@ const NO_SUCH_AGENT_SESSION = "没有这个 Agent 会话";
 /** 只有创建者续得了、删得了自己的会话。系统管理员读得到它,动不了它(spec #329)。 */
 const NOT_AGENT_SESSION_CREATOR = "只有会话的创建者能做";
 
-/** 产品梳理会话由系统开、交完提案就完(CONTEXT.md 产品梳理,issue #345):人不动它。 */
+/**
+ * 产品梳理会话由系统开、交完提案就完(CONTEXT.md 产品梳理,issue #345):谁都续不了它。
+ * 停止与删除不在这一句里(issue #346)——它们由系统管理员做得了。
+ */
 const AGENT_SESSION_SURVEY_IS_SYSTEM = "产品梳理会话由系统开,谁都续不了它";
 
 /** 会话用途必填且只认这两个值,说哪两个值比说「形状不对」有用。 */
@@ -2390,25 +2443,34 @@ function seesProduct(
  * 回 undefined 即已经回过了:读不到回 404,读得到但不是自己建的回 403——系统管理员已经知道
  * 这一条在,再回 404 只会让人以为动作做成了。调用方拿到 undefined 直接 return。
  *
- * `refuse` 让上传图片那一条路换一种回法:一张图有几 MB,回绝之后要把剩下的请求体排掉,
- * 不然这一句话可能随连接一起被丢掉。
+ * `options.refuse` 让上传图片那一条路换一种回法:一张图有几 MB,回绝之后要把剩下的请求体
+ * 排掉,不然这一句话可能随连接一起被丢掉。`options.systemAdminMayActOnSurvey` 是停止与删除
+ * 那两个动作的例外,见下。
  */
 function agentSessionForCreator(
   res: ServerResponse,
   deps: WebhookServerDeps,
   sessionId: number,
   caller: PanelCaller,
-  refuse: (status: number, error: string) => void = (status, error) =>
-    sendJson(res, status, { error }),
+  options: {
+    refuse?: (status: number, error: string) => void;
+    systemAdminMayActOnSurvey?: boolean;
+  } = {},
 ): AgentSessionRecord | undefined {
+  const refuse =
+    options.refuse ?? ((status: number, error: string) => sendJson(res, status, { error }));
   const session = visibleAgentSession(deps, sessionId, caller);
   if (session === undefined) {
     refuse(404, NO_SUCH_AGENT_SESSION);
     return undefined;
   }
-  // 产品梳理会话的创建者是系统(issue #345):看得到产品的人都读得到它,发消息、停止与删除
+  // 产品梳理会话的创建者是系统(issue #345):看得到产品的人都读得到它,续谈那几个动作
   // 一律回这一句——回「只有创建者能做」会让人去找那个不存在的人。
+  //
+  // 停止与删除是例外(issue #346):系统开的会话也要有人收得掉,全档都回 409 的话一个跑飞
+  // 的梳理谁都停不下来、一条交完的梳理谁都删不掉。这两件事给系统管理员。
   if (session.purpose === "product-survey") {
+    if (options.systemAdminMayActOnSurvey === true && caller.isSystemAdmin) return session;
     refuse(409, AGENT_SESSION_SURVEY_IS_SYSTEM);
     return undefined;
   }
@@ -2573,6 +2635,9 @@ function handleAgentSessionStream(
 /**
  * 删会话。只有创建者删得了:系统管理员读得到别人的会话,删它会回 403 而不是 404——他已经
  * 知道这一条在,再回 404 只会让人以为删成功了。
+ *
+ * 产品梳理会话没有创建者可言,删它那一档给系统管理员(issue #346):系统开的会话也要有人
+ * 收得掉,否则一条交完提案的梳理会永远留在列表里。
  */
 function handleDeleteAgentSession(
   res: ServerResponse,
@@ -2580,7 +2645,10 @@ function handleDeleteAgentSession(
   sessionId: number,
   caller: PanelCaller,
 ): void {
-  if (agentSessionForCreator(res, deps, sessionId, caller) === undefined) return;
+  const allowed = agentSessionForCreator(res, deps, sessionId, caller, {
+    systemAdminMayActOnSurvey: true,
+  });
+  if (allowed === undefined) return;
   // 常驻子进程先收掉(评审复核):只删库里的行会留下一个挂着工作树、还在计时的子进程。
   reclaimAgentSession(sessionId);
   withStore(deps.dbPath, (store) => store.deleteAgentSession(sessionId));
@@ -2615,7 +2683,7 @@ async function handleUploadAgentSessionImage(
     sendJson(res, status, { error });
     req.resume();
   };
-  const session = agentSessionForCreator(res, deps, sessionId, caller, refuse);
+  const session = agentSessionForCreator(res, deps, sessionId, caller, { refuse });
   if (session === undefined) return;
   const mimeType = agentSessionImageMimeType(req.headers["content-type"]);
   if (mimeType === undefined) return refuse(415, AGENT_SESSION_IMAGE_TYPE);
@@ -2845,6 +2913,8 @@ function handleClearAgentSessionQueue(
 /**
  * 停止(issue #334):中止当前这一步,排队消息保留。**空闲时是空操作**,回 200 带
  * `stopped: false` 而不是报错——人看到的「在跑」可能已经跑完了,为这一拍回个错误只是噪音。
+ *
+ * 产品梳理会话那一档与删它同律(issue #346):没有创建者可言,停它给系统管理员。
  */
 function handleStopAgentSession(
   res: ServerResponse,
@@ -2852,7 +2922,10 @@ function handleStopAgentSession(
   sessionId: number,
   caller: PanelCaller,
 ): void {
-  if (agentSessionForCreator(res, deps, sessionId, caller) === undefined) return;
+  const allowed = agentSessionForCreator(res, deps, sessionId, caller, {
+    systemAdminMayActOnSurvey: true,
+  });
+  if (allowed === undefined) return;
   const stopped = stopAgentSession(sessionId);
   return sendJson(res, 200, { stopped, queue: visibleQueue(deps, sessionId) });
 }
@@ -3063,6 +3136,9 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   // `knowledge:write` 加这个产品里的一个仓库分配——后半句正是 `product` 这个目标本身。
   { method: "POST", pattern: /^\/products\/(\d+)\/knowledge$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleWriteProductKnowledge(req, res, deps, Number(match![1]), caller!.username) },
   { method: "DELETE", pattern: /^\/products\/(\d+)\/knowledge\/(\d+)$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleRetireProductKnowledge(res, deps, Number(match![1]), Number(match![2])) },
+  // 提案的确认与驳回(issue #346)与手写同一道门禁:确认产品知识的人就是维护知识集的人。
+  { method: "POST", pattern: /^\/products\/(\d+)\/knowledge\/(\d+)\/accept$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleAcceptProductKnowledgeProposal(res, deps, Number(match![1]), Number(match![2])) },
+  { method: "POST", pattern: /^\/products\/(\d+)\/knowledge\/(\d+)\/reject$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleRejectProductKnowledgeProposal(res, deps, Number(match![1]), Number(match![2])) },
   // 重梳(CONTEXT.md 产品梳理,issue #345)。门禁与手写产品知识同一道:维护这一层知识的人
   // 才开得起梳理会话。会话本身由系统建,创建者不是点下它的那个人。
   { method: "POST", pattern: /^\/products\/(\d+)\/survey$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleProductSurvey(res, deps, Number(match![1])) },

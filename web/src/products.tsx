@@ -48,8 +48,8 @@ type RegisteredRepo = { repoId: number; owner: string; repo: string };
 /** 一条生效的产品知识(CONTEXT.md 产品知识,issue #343)。`repoIds` 是它涉及的仓库集合。 */
 type ProductKnowledge = { id: number; statement: string; repoIds: number[] };
 /**
- * 一条待确认的提案(CONTEXT.md 产品知识,issue #345)。`retiresId` 不为空即退役提案,那一条
- * 的陈述是退役的理由;确认与驳回是 issue #346 的事,这一版只列出来。
+ * 一条待确认的提案(CONTEXT.md 产品知识,issue #345、#346)。`retiresId` 不为空即退役提案,
+ * 那一条的陈述是退役的理由,确认它退役的是它指向的那条生效条目。
  */
 type ProductProposal = ProductKnowledge & { retiresId: number | null };
 
@@ -233,6 +233,30 @@ export function ProductsPage({
   });
 
   /**
+   * 确认与驳回一条待确认的提案(issue #346)。两个动作共用这一个 mutation:端点只差最后
+   * 一段,成功文案按提案的型别与动作分开说——确认一条退役提案是退役,不是记下一条新知识。
+   */
+  const decideProposal = useMutation({
+    mutationFn: (input: { product: Product; entry: ProductProposal; accept: boolean }) =>
+      send(
+        `/products/${input.product.id}/knowledge/${input.entry.id}/${input.accept ? "accept" : "reject"}`,
+        "POST",
+      ),
+    onSuccess: (_data, input) => {
+      setFeedback({
+        text: !input.accept
+          ? "已驳回一条提案,同一句话下次梳理不会再提。"
+          : input.entry.retiresId === null
+            ? "已确认一条产品知识。"
+            : "已确认退役,那条产品知识不再生效。",
+        error: false,
+      });
+      void refreshKnowledge();
+    },
+    onError: failed,
+  });
+
+  /**
    * 重梳(CONTEXT.md 产品梳理,issue #345):开一个产品梳理会话。它由系统建,因此不跳进去
    * ——人要看的是它随后交上来的提案,会话在左栏列着,想看过程再点进去。
    */
@@ -273,6 +297,7 @@ export function ProductsPage({
     remove.isPending ||
     writeKnowledge.isPending ||
     retireKnowledge.isPending ||
+    decideProposal.isPending ||
     survey.isPending;
 
   /** 还没归入任何产品、且在这个账号分配内的仓库。归入第二个产品服务端会回 409。 */
@@ -538,6 +563,10 @@ export function ProductsPage({
                 onRetire={(entry) => {
                   setFeedback(null);
                   retireKnowledge.mutate({ product: selected, entry });
+                }}
+                onDecide={(entry, accept) => {
+                  setFeedback(null);
+                  decideProposal.mutate({ product: selected, entry, accept });
                 }}
               />
             )}
@@ -856,9 +885,9 @@ function AttachDialog({
 }
 
 /**
- * 产品页右栏的产品知识区(CONTEXT.md 产品知识,issue #343、#345)。四样东西:生效列表、待确认
- * 的提案、手写表单、每行的「退役」,加标题旁的「重梳」。没有 `knowledge:write` 的人只看到两份
- * 列表——维护这一层知识的人与维护知识集的是同一批人。
+ * 产品页右栏的产品知识区(CONTEXT.md 产品知识,issue #343、#345、#346)。四样东西:生效列表、
+ * 待确认的提案(每行「确认」「驳回」)、手写表单、每行的「退役」,加标题旁的「重梳」。没有
+ * `knowledge:write` 的人只看到两份列表——维护这一层知识的人与维护知识集的是同一批人。
  *
  * 仓库不足两个的产品写不出条目(一条产品知识至少说到两个仓库),那一档把表单换成一句话说清
  * 下一步、并把「重梳」置灰,而不是给一个必定被服务端回绝的按钮。
@@ -872,6 +901,7 @@ function KnowledgeSection({
   busy,
   onWrite,
   onRetire,
+  onDecide,
   onSurvey,
 }: {
   product: Product;
@@ -882,6 +912,7 @@ function KnowledgeSection({
   busy: boolean;
   onWrite: (statement: string, repoIds: readonly number[]) => void;
   onRetire: (entry: ProductKnowledge) => void;
+  onDecide: (entry: ProductProposal, accept: boolean) => void;
   onSurvey: () => void;
 }) {
   const [statement, setStatement] = useState("");
@@ -983,16 +1014,39 @@ function KnowledgeSection({
                 return (
                   <li
                     key={entry.id}
-                    className="flex min-w-0 flex-col gap-1 border-t border-line py-2.5 first:border-t-0 first:pt-0"
+                    className="flex items-start justify-between gap-3 border-t border-line py-2.5 first:border-t-0 first:pt-0"
                   >
-                    <Text as="span" size="2" className="break-words">
-                      {entry.retiresId === null
-                        ? entry.statement
-                        : `退役提案 → ${target?.statement ?? `条目 ${entry.retiresId}`}:${entry.statement}`}
-                    </Text>
-                    <Text as="span" size="1" color="gray" className="break-all font-mono">
-                      {involved(entry)}
-                    </Text>
+                    <div className="flex min-w-0 flex-1 flex-col gap-1">
+                      <Text as="span" size="2" className="break-words">
+                        {entry.retiresId === null
+                          ? entry.statement
+                          : `退役提案 → ${target?.statement ?? `条目 ${entry.retiresId}`}:${entry.statement}`}
+                      </Text>
+                      <Text as="span" size="1" color="gray" className="break-all font-mono">
+                        {involved(entry)}
+                      </Text>
+                    </div>
+                    {canWrite ? (
+                      <Flex gap="2" className="shrink-0">
+                        <Button
+                          variant="soft"
+                          size="1"
+                          disabled={busy}
+                          onClick={() => onDecide(entry, true)}
+                        >
+                          确认
+                        </Button>
+                        <Button
+                          variant="soft"
+                          color="gray"
+                          size="1"
+                          disabled={busy}
+                          onClick={() => onDecide(entry, false)}
+                        >
+                          驳回
+                        </Button>
+                      </Flex>
+                    ) : null}
                   </li>
                 );
               })}

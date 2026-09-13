@@ -716,6 +716,19 @@ CREATE TABLE IF NOT EXISTS product_knowledge (
 CREATE INDEX IF NOT EXISTS product_knowledge_by_product
   ON product_knowledge(product_id, state);
 
+-- 驳回记忆(CONTEXT.md 产品知识,issue #346)。驳回一条新增陈述即删掉那一行提案,另在这里
+-- 按产品记下它的陈述:下一轮产品梳理交上同一句话时直接丢掉,人不必反复驳回同一句。
+--
+-- 退役提案的驳回不记:那条生效条目下一轮梳理仍看得见,它再提一次本身是合理的。陈述就是
+-- 主键的一半,同一句话驳回两遍只留一行;rejected_at 没有读处,是为了让一次静默丢弃在库里
+-- 说得出时间。
+CREATE TABLE IF NOT EXISTS product_knowledge_rejection (
+  product_id INTEGER NOT NULL REFERENCES product(id),
+  statement TEXT NOT NULL,
+  rejected_at TEXT NOT NULL,
+  PRIMARY KEY (product_id, statement)
+);
+
 -- Agent 会话(CONTEXT.md Agent 会话,issue #332)。挂在产品上,创建者是唯一能续谈与
 -- 删除它的人;用途建时定、之后不变(没有改用途的写入口)。用量五列与 review_run 同口径,
 -- 按条目累加在常驻子进程那一票接入,在那之前每一行都是 0,所以不可空。删产品级联硬删
@@ -3105,6 +3118,28 @@ export type Store = {
    */
   retireProductKnowledge(productId: number, entryId: number, at: string): boolean;
   /**
+   * 确认一条待确认的提案(CONTEXT.md 产品知识,issue #346)。新增陈述那一档翻成生效,回
+   * `"active"`;退役提案那一档把它指向的目标退役并删掉这一行提案,回 `"retired"`——
+   * 提案本身不是要留着的知识,目标那一行的退役时间才是。
+   *
+   * 不在这个产品下、或已经不是提案即 undefined。目标这会儿已经不生效时仍按退役算:
+   * 人点下确认要表达的是「这句话不再成立」,它已经不生效即已经如他所愿。
+   */
+  acceptProductKnowledgeProposal(
+    productId: number,
+    entryId: number,
+    at: string,
+  ): "active" | "retired" | undefined;
+  /**
+   * 驳回一条待确认的提案(issue #346):删掉这一行。新增陈述那一档同时记下它的陈述,
+   * 下一轮产品梳理交上同一句话就静默丢掉;退役提案那一档不记。
+   *
+   * 不在这个产品下、或已经不是提案即 false。
+   */
+  rejectProductKnowledgeProposal(productId: number, entryId: number, at: string): boolean;
+  /** 这个产品被驳回过的陈述(issue #346)。产品梳理落库前按它丢弃重复提上来的那几句。 */
+  listProductKnowledgeRejections(productId: number): string[];
+  /**
    * 一个产品下的 Agent 会话,新的在前。`createdBy` 给了即只回这个人的(「我的会话」),
    * 给 null 即这个产品下的全部(系统管理员那一档)。
    */
@@ -4027,6 +4062,23 @@ const AGENT_SESSION_CHILD_TABLES = [
   "agent_session_output",
   "agent_session_output_finalization",
 ] as const;
+
+/**
+ * 这个产品下那一条待确认的提案(issue #346)。确认与驳回的开头逐字相同:读不到即
+ * undefined,两个动作据它各回一句。
+ */
+function proposedProductKnowledge(
+  db: DatabaseSync,
+  productId: number,
+  entryId: number,
+): ProductKnowledgeRecord | undefined {
+  const row = db
+    .prepare(
+      "SELECT * FROM product_knowledge WHERE id = ? AND product_id = ? AND state = 'proposed'",
+    )
+    .get(entryId, productId);
+  return row === undefined ? undefined : productKnowledge(row);
+}
 
 /** 这几个会话底下的全部行。调用方自己开事务:两处都要与删会话行本身同进同退。 */
 function deleteAgentSessionRows(db: DatabaseSync, sessionIds: readonly number[]): void {
@@ -5309,8 +5361,9 @@ export function openStore(dbPath: string): Store {
       db.exec("BEGIN");
       try {
         db.prepare("DELETE FROM product_repo WHERE product_id = ?").run(productId);
-        // 产品知识同样跟着产品走(issue #343):产品是它唯一的挂载点。
+        // 产品知识同样跟着产品走(issue #343):产品是它唯一的挂载点。驳回记忆也是(issue #346)。
         db.prepare("DELETE FROM product_knowledge WHERE product_id = ?").run(productId);
+        db.prepare("DELETE FROM product_knowledge_rejection WHERE product_id = ?").run(productId);
         // 会话跟着产品走(issue #332):产品是会话唯一的挂载点,留下来谁都读不到它。记录与
         // 受理过的消息 id 挂在会话上,同一个事务里一并删(issue #333)。
         deleteAgentSessionRows(
@@ -5390,6 +5443,59 @@ export function openStore(dbPath: string): Store {
             .run(at, entryId, productId).changes,
         ) > 0
       );
+    },
+
+    acceptProductKnowledgeProposal(productId, entryId, at) {
+      const proposal = proposedProductKnowledge(db, productId, entryId);
+      if (proposal === undefined) return undefined;
+      if (proposal.retiresId === null) {
+        db.prepare(
+          "UPDATE product_knowledge SET state = 'active', state_changed_at = ? WHERE id = ?",
+        ).run(at, entryId);
+        return "active";
+      }
+      // 目标退役与提案消失是一件事的两半,同一个事务里落。
+      db.exec("BEGIN");
+      try {
+        db.prepare(
+          `UPDATE product_knowledge SET state = 'retired', state_changed_at = ?
+            WHERE id = ? AND product_id = ? AND state = 'active'`,
+        ).run(at, proposal.retiresId, productId);
+        db.prepare("DELETE FROM product_knowledge WHERE id = ?").run(entryId);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return "retired";
+    },
+
+    rejectProductKnowledgeProposal(productId, entryId, at) {
+      const proposal = proposedProductKnowledge(db, productId, entryId);
+      if (proposal === undefined) return false;
+      // 记忆与删行同一个事务:行没了而这句话没记下来,下一轮梳理会把它原样提回来。
+      db.exec("BEGIN");
+      try {
+        if (proposal.retiresId === null) {
+          db.prepare(
+            `INSERT OR IGNORE INTO product_knowledge_rejection (product_id, statement, rejected_at)
+             VALUES (?, ?, ?)`,
+          ).run(productId, proposal.statement, at);
+        }
+        db.prepare("DELETE FROM product_knowledge WHERE id = ?").run(entryId);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return true;
+    },
+
+    listProductKnowledgeRejections(productId) {
+      return db
+        .prepare("SELECT statement FROM product_knowledge_rejection WHERE product_id = ?")
+        .all(productId)
+        .map((row) => String(row["statement"]));
     },
 
     listAgentSessions(productId, createdBy) {

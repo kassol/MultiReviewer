@@ -335,6 +335,10 @@ export function productSurveyRunning(dbPath: string, productId: number): boolean
  *
  * 形状与打回在子进程那一侧判完,这里只把仓库名换回 repo id 并落库。认不出的仓库名与已经
  * 不生效的退役目标在这里丢掉:那一批是几分钟前判的,产品这会儿可能已经变了样。
+ *
+ * 被驳回过的陈述同样在这里丢掉(issue #346 的 US 24):静默丢,不打回给模型——它是按这一轮
+ * 读到的代码提的,这句话为什么不要是人的判断,说给它听也改不了下一轮会再读到同样的代码。
+ * 同一批里其余几句照常落成提案。
  */
 export function recordProductSurveyProposals(
   deps: AgentSessionRecordDeps,
@@ -347,8 +351,10 @@ export function recordProductSurveyProposals(
     if (product === undefined) return;
     const ids = new Map(product.repos.map((row) => [`${row.owner}/${row.repo}`, row.repoId]));
     const active = store.listProductKnowledge(session.productId, "active");
+    const rejected = new Set(store.listProductKnowledgeRejections(session.productId));
     const at = new Date(deps.now()).toISOString();
     for (const one of proposals.statements) {
+      if (rejected.has(one.statement.trim())) continue;
       const repoIds = one.repos.flatMap((repo) => {
         const repoId = ids.get(repo);
         return repoId === undefined ? [] : [repoId];

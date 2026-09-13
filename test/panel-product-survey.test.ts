@@ -2,9 +2,10 @@
  * 重梳与产品梳理会话的那一段面板接口(CONTEXT.md 产品梳理,issue #345)。
  *
  * 缝照旧:面板 API 走真实 HTTP,产品与会话行落临时 SQLite。压的是票里不需要真子进程的那几条
- * 验收:仓库不足两个的回绝、门禁两档、系统开的会话谁都读得到、发消息与别的动作一律回绝、
- * 建会话端点不收这个用途。真跑起来那一路(种子消息、提示里的生效条目、产出工具的打回与
- * 合法交出、梳理在跑时的第二次重梳)在 `agent-session-subprocess.test.ts`。
+ * 验收:仓库不足两个的回绝、门禁两档、系统开的会话谁都读得到、发消息对谁都回绝、停止与删除
+ * 只有系统管理员做得了(issue #346)、建会话端点不收这个用途。真跑起来那一路(种子消息、
+ * 提示里的生效条目、产出工具的打回与合法交出、梳理在跑时的第二次重梳)在
+ * `agent-session-subprocess.test.ts`。
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -151,7 +152,8 @@ test("系统开的产品梳理会话:产品可见者都读得到,发消息与别
   });
   assert.equal(read.status, 200);
 
-  // 发消息、停止与删除都回同一句:创建者是系统,回「只有创建者能做」会让人去找那个不存在的人。
+  // 发消息、停止与删除对普通人都回同一句:创建者是系统,回「只有创建者能做」会让人去找
+  // 那个不存在的人。
   const refusal = { error: "产品梳理会话由系统开,谁都续不了它" };
   const sent = await fetch(`${h.serverUrl}/api/agent-sessions/${session.id}/messages`, {
     method: "POST",
@@ -181,6 +183,29 @@ test("系统开的产品梳理会话:产品可见者都读得到,发消息与别
   });
   assert.equal(hidden.status, 404);
   assert.deepEqual(await hidden.json(), { error: "没有这个 Agent 会话" });
+});
+
+test("产品梳理会话:系统管理员停得了、删得了它,发消息仍回绝", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const two = await product(h, [GITEA_REPO.id, ALPHA]);
+  const session = seedSurveySession(h, two.id);
+
+  // 发消息仍是那一句:系统开的会话谁都续不了它,系统管理员也不例外。
+  const sent = await h.api("POST", `/agent-sessions/${session.id}/messages`, {
+    clientMessageId: "c1",
+    text: "再读一遍",
+  });
+  assert.equal(sent.status, 409);
+  assert.deepEqual(await sent.json(), { error: "产品梳理会话由系统开,谁都续不了它" });
+
+  // 停止是空操作(这一行没有在跑的子进程),回 200 而不是 409:动作本身做得了。
+  const stopped = await h.api("POST", `/agent-sessions/${session.id}/stop`);
+  assert.equal(stopped.status, 200);
+  assert.deepEqual(await stopped.json(), { stopped: false, queue: [] });
+
+  // 删得掉:交完提案的梳理会话要有人收得掉,否则它永远留在列表里。
+  assert.equal((await h.api("DELETE", `/agent-sessions/${session.id}`)).status, 204);
+  assert.deepEqual(await sessionsOf(h, two.id, h.cookie), []);
 });
 
 test("建会话端点不收产品梳理:那个用途只有系统开得了", async () => {
