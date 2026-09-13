@@ -6,7 +6,6 @@
  * 一直活着。
  */
 import type { ThinkingLevel } from "../config.ts";
-import type { ProjectFact, ReviewRule } from "../review/finding.ts";
 import type {
   AgentSessionOutputKind,
   RepoFinding,
@@ -32,7 +31,7 @@ export const AGENT_SESSION_NOTE_CUSTOM_TYPE = "multireviewer-session-note";
  */
 export const SYSTEM_MESSAGE_ENTRY = "multireviewer_system_message";
 
-/** 会话根下的一个仓库:它的工作树目录名就是 `<owner>/<repo>`,知识集按它分段注入。 */
+/** 会话根下的一个仓库:它的工作树目录名就是 `<owner>/<repo>`,知识集只报条数。 */
 export type SessionRepoInput = {
   owner: string;
   repo: string;
@@ -41,10 +40,37 @@ export type SessionRepoInput = {
    * agent 凭它决定先读哪个仓库。没写过即 null,那一行就只有仓库名。
    */
   role: string | null;
-  /** 这个仓库生效知识集里的评审规则。空数组即不渲染这一段。 */
-  rules: readonly ReviewRule[];
-  /** 这个仓库生效知识集里的项目事实。空数组即不渲染这一段。 */
-  facts: readonly ProjectFact[];
+  /**
+   * 这个仓库生效知识集里的评审规则条数(issue #344)。**只给条数,不给条目**:知识改走
+   * `query_knowledge` 按需取,提示里只留一份目录,子进程因此也不该拿到这些陈述。
+   */
+  ruleCount: number;
+  /** 这个仓库生效知识集里的项目事实条数。同上,只进提示的目录那一行。 */
+  factCount: number;
+};
+
+/**
+ * `query_knowledge` 的一次查询(issue #344):任务落在会话根里的哪几个仓库,以及可选的
+ * 路径 glob。仓库在不在会话根内由子进程判(它手里就是那份清单),这里只带它问的那几个。
+ */
+export type SessionKnowledgeQuery = {
+  /** `<owner>/<repo>` 形式,都是会话根下的仓库。 */
+  repos: readonly string[];
+  /** 仓库相对的路径 glob。省略即整个仓库。 */
+  pathGlob?: string;
+};
+
+/** 一次查询回的两层条目(issue #344)。层由它在哪个数组里定,渲染时写成文字。 */
+export type SessionKnowledgeEntries = {
+  /** 产品层:涉及的仓库集合(`<owner>/<repo>`)与那一句陈述。 */
+  product: readonly { repos: readonly string[]; statement: string }[];
+  /** 仓库层:哪个仓库的、哪一型、作用范围(空串即全仓库)与那一句陈述。 */
+  repo: readonly {
+    repo: string;
+    type: "rule" | "fact";
+    scope: string;
+    statement: string;
+  }[];
 };
 
 /** 开一个会话要给的那几样。凭据不进 IPC,走环境变量(`env.ts`)。 */
@@ -55,6 +81,11 @@ export type OpenSessionRequest = {
   productName: string;
   /** 会话用途(CONTEXT.md 会话用途)。进系统提示一行。 */
   purpose: string;
+  /**
+   * 这个产品生效的产品知识条数(CONTEXT.md 产品知识,issue #344)。与仓库那两个计数一样
+   * 只进提示的目录那一段:陈述本身走 `query_knowledge` 取。
+   */
+  productKnowledgeCount: number;
   repos: readonly SessionRepoInput[];
   runtimeModel: RuntimeModel;
   /** 这一处模型引用的思考档位。缺席即 `off`。 */
@@ -125,6 +156,16 @@ export type SessionCommand =
       failure?: string;
     }
   /**
+   * 一次知识查询的回应(issue #344),与历史 Finding 那一对同形:`requestId` 配对,主进程
+   * 恒回一条,查不动时带 `failure`(那时两个数组都是空的)。
+   */
+  | {
+      kind: "knowledge-query-result";
+      requestId: string;
+      entries: SessionKnowledgeEntries;
+      failure?: string;
+    }
+  /**
    * 服务在排空(issue #335):中止当前这一步,跑完收尾就退出。与 `stop` 的差别是它不等
    * 下一条消息——发版时进程要按时退出,「被排空中止」那条系统消息由主进程落库。
    */
@@ -160,8 +201,13 @@ export type SessionWorkerMessage =
   /**
    * 一次历史 Finding 查询(issue #338)。子进程没有库连接,查询因此走这一对消息:主进程
    * 查库,带同一个 `requestId` 回一条 `finding-query-result`,执行中的那次工具调用凭它
-   * 兑现。这是这条协议上唯一的请求-回应。
+   * 兑现。知识查询(`knowledge-query`)同形,这两对是这条协议上的请求-回应。
    */
   | { kind: "finding-query"; requestId: string; query: RepoFindingQuery }
+  /**
+   * 一次知识查询(issue #344)。与历史 Finding 查询同一条理由走请求-回应:两层知识都在库里,
+   * 子进程没有库连接。主进程带同一个 `requestId` 回一条 `knowledge-query-result`。
+   */
+  | { kind: "knowledge-query"; requestId: string; query: SessionKnowledgeQuery }
   /** 会话还活着,别的什么都不说明(`streamHeartbeat`)。 */
   | { kind: "heartbeat" };

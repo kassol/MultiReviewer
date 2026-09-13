@@ -172,14 +172,10 @@ async function runSession(
       sessionRoot,
       productName: "冒烟产品",
       purpose: "requirement-breakdown",
-      repos: [
-        {
-          ...REPO,
-          role: "唯一的仓库",
-          rules: [{ id: 1, scope: "src", statement: "每个导出函数都要有 JSDoc 注释" }],
-          facts: [{ id: 2, scope: "src", statement: "这个仓库的数据访问都走 src/db.js" }],
-        },
-      ],
+      // 知识只报条数(issue #344):这个子进程没有库连接,`query_knowledge` 在这一侧没有
+      // 主进程接它,提示的目录那一段因此是这两个数。
+      productKnowledgeCount: 0,
+      repos: [{ ...REPO, role: "唯一的仓库", ruleCount: 1, factCount: 1 }],
       runtimeModel: await smokeRuntimeModel(),
     },
   } satisfies SessionCommand);

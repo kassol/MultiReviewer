@@ -364,8 +364,8 @@ test("需求拆分会话的系统提示里有粒度、落点、不估算与「�
     // 追问与「直接拆」。
     assert.match(prompt, /ask before you break it down/);
     assert.match(prompt, /直接拆/);
-    // 知识集是边界,历史 Finding 给验收要点加提醒。
-    assert.match(prompt, /review rules and project facts above are the boundary/);
+    // 知识集是边界(issue #344 起改由 query_knowledge 取),历史 Finding 给验收要点加提醒。
+    assert.match(prompt, /What query_knowledge returns is the boundary of the breakdown/);
     assert.match(prompt, /query_findings/);
     // 不估算工作量。
     assert.match(prompt, /Do not estimate effort/);

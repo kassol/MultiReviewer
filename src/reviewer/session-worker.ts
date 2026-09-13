@@ -31,6 +31,11 @@ import {
   sessionFindingTool,
 } from "./session-finding-tool.ts";
 import {
+  QUERY_KNOWLEDGE_TOOL,
+  resolveKnowledgeQuery,
+  sessionKnowledgeTool,
+} from "./session-knowledge-tool.ts";
+import {
   inflateImageRefs,
   readAgentSessionImages,
   type AgentSessionImageRef,
@@ -47,11 +52,10 @@ import {
 } from "./session-protocol.ts";
 import {
   READ_ONLY_TOOLS,
-  factBullet,
+  countOf,
   numberedReadTool,
   openAgentSession,
   prepareAgentRuntime,
-  ruleBullet,
   sessionThinkingLevel,
 } from "./worker-tools.ts";
 
@@ -118,16 +122,19 @@ export function sessionReadOnlyTools(sessionRoot: string): ToolDefinition<never,
 }
 
 /**
- * 这次会话注册的工具清单:只读四件套、受控 git,加历史 Finding 查询(issue #338)。写工具
- * 与 bash 一个都不在。
+ * 这次会话注册的工具清单:只读四件套、受控 git,加历史 Finding 查询(issue #338)与知识
+ * 查询(issue #344)。写工具与 bash 一个都不在。
  */
 export function sessionTools(): string[] {
-  return [...READ_ONLY_TOOLS, GIT_TOOL, QUERY_FINDINGS_TOOL];
+  return [...READ_ONLY_TOOLS, GIT_TOOL, QUERY_FINDINGS_TOOL, QUERY_KNOWLEDGE_TOOL];
 }
 
 /**
  * 会话的系统提示(issue #333)。先是底座那一份:会话是什么、工作区长什么样、工具面到哪里
- * 为止、各仓库的知识集;末尾接用途自己那一段(`session-purposes.ts`,issue #338)。
+ * 为止;末尾接用途自己那一段(`session-purposes.ts`,issue #338)。
+ *
+ * 知识的陈述不进这一份(issue #344):两层各有多少条进提示的目录那一段,陈述由
+ * `query_knowledge` 按任务的范围取。整份注入会让一个只动后端的任务也带上别的仓库的约定。
  */
 export function sessionSystemPrompt(request: OpenSessionRequest): string {
   // 仓库职责进破折号后面(issue #341):产品里每个仓库干什么,人写一行在这里,agent 据它
@@ -159,27 +166,26 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
     "Your tools are read-only. You cannot edit files, write files or run shell commands. Read the code before you claim anything about it: the repositories above are the evidence.",
     "",
     `The ${QUERY_FINDINGS_TOOL} tool reads what earlier review rounds reported on one of these repositories: ask it about the part of the code you are about to speak of, and you see what has already gone wrong there.`,
+    "",
+    "## What this product has written down",
+    "",
+    "This product and its repositories have written down two layers of knowledge, and neither layer is listed here.",
+    "",
+    `Product knowledge says how these repositories fit together: who calls whom, over what contract, which change drags which repository along. This product has ${countOf(request.productKnowledgeCount, "active product knowledge entry", "active product knowledge entries")}.`,
+    "",
+    "Each repository also has its own review rules, which say what it holds its code to, and project facts, which are grounds for judgement:",
+    "",
+    // 目录那几行只有条数:陈述由 `query_knowledge` 按任务的范围取,一个只动后端的任务不必
+    // 为另一个仓库的约定付 token。
+    ...request.repos.map(
+      (repo) =>
+        `- ${repo.owner}/${repo.repo} — ${countOf(repo.ruleCount, "review rule")}, ${countOf(repo.factCount, "project fact")}`,
+    ),
+    "",
+    `Read them with the ${QUERY_KNOWLEDGE_TOOL} tool: it takes the repositories a task touches and an optional path glob, and returns the product entries involving any of them plus those repositories' rules and facts whose scope overlaps the glob.`,
+    "",
+    "When the task spans repositories or its scope is unclear, query the product layer first; otherwise query the repository and the paths the task touches.",
   ];
-  for (const repo of request.repos) {
-    if (repo.rules.length === 0 && repo.facts.length === 0) continue;
-    sections.push("", `## What ${repo.owner}/${repo.repo} has agreed on`);
-    if (repo.rules.length > 0) {
-      sections.push(
-        "",
-        "Review rules. They tell you what this repository holds its code to, so you know which details matter. Each rule is listed with its id in brackets and the paths it applies to in parentheses.",
-        "",
-        ...repo.rules.map(ruleBullet),
-      );
-    }
-    if (repo.facts.length > 0) {
-      sections.push(
-        "",
-        "Project facts: statements about how this codebase, its architecture and its environment actually are. Use them as grounds for judgement — they tell you what you would otherwise have to assume or verify yourself. When the code contradicts a fact, the code wins: say what you read and that the fact no longer holds.",
-        "",
-        ...repo.facts.map(factBullet),
-      );
-    }
-  }
   const purpose = purposeSystemPrompt(request.purpose);
   if (purpose !== undefined) sections.push("", purpose);
   return sections.join("\n");
@@ -259,6 +265,7 @@ async function open(request: OpenSessionRequest): Promise<void> {
       ...(sessionReadOnlyTools(request.sessionRoot) as unknown as ToolDefinition[]),
       sessionGitTool(request.sessionRoot, repos),
       sessionFindingTool({ repos, send }) as unknown as ToolDefinition,
+      sessionKnowledgeTool({ repos, send }) as unknown as ToolDefinition,
       ...(outputTools as unknown as ToolDefinition[]),
     ],
     send,
@@ -434,6 +441,15 @@ function handle(command: SessionCommand): Promise<void> {
       const { findings, failure } = command;
       resolveFindingQuery(command.requestId, {
         findings,
+        ...(failure === undefined ? {} : { failure }),
+      });
+      return Promise.resolve();
+    }
+    case "knowledge-query-result": {
+      // 知识查询的回应(issue #344):与上一档同律,兑现等着的那次工具调用。
+      const { entries, failure } = command;
+      resolveKnowledgeQuery(command.requestId, {
+        ...entries,
         ...(failure === undefined ? {} : { failure }),
       });
       return Promise.resolve();

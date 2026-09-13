@@ -3,7 +3,7 @@
  * 会话记录 → SSE`,整条走一遍。模型由本机的假服务(`support/model-stub.ts`)按脚本扮演,
  * 全程不碰收费模型。先例是 `reviewer-evidence-session.test.ts`。
  *
- * 钉的是桩测不到的几件事:知识集真的分段进了模型请求、消息文本进了同一次请求、回复与工具
+ * 钉的是桩测不到的几件事:知识目录真的进了模型请求、消息文本进了同一次请求、回复与工具
  * 调用作为 Pi 条目落进记录表并经 SSE 送达、用量按条目累加到会话上,以及子进程跑完一个回合
  * 之后**留着**——第二条消息不必再建一次会话。
  *
@@ -48,7 +48,7 @@ import { frameReader } from "./support/sse.ts";
 const PASSWORD = "agent-session-subprocess-password";
 const AT = "2026-09-12T00:00:00.000Z";
 
-/** 知识集里的两条,陈述独一无二,好在模型请求里认出来。 */
+/** 知识集里的两条。陈述不进提示(issue #344),断言因此落在那一行条数上。 */
 const RULE = "每个导出函数都要有 JSDoc 注释";
 const FACT = "这个仓库的持久化只用 node:sqlite";
 
@@ -251,7 +251,7 @@ async function idle(h: PanelHarness, cookie: string, sessionId: number): Promise
   assert.fail(`等了 30 秒,会话 ${sessionId} 还在执行`);
 }
 
-test("发一条消息:知识集分段与消息文本进了模型请求,回复与工具调用落库并经 SSE 送达", async () => {
+test("发一条消息:知识目录与消息文本进了模型请求,回复与工具调用落库并经 SSE 送达", async () => {
   const turns: StubTurn[] = [
     {
       text: "先看看仓库里怎么写的",
@@ -277,12 +277,14 @@ test("发一条消息:知识集分段与消息文本进了模型请求,回复与
     await messagesAtLeast(h.db.path, sessionId, 4);
     await idle(h, cookie, sessionId);
 
-    // 模型请求里有系统提示的知识集两段、会话根的仓库目录,以及人发的那句话。
+    // 模型请求里有系统提示的知识目录那一行、会话根的仓库目录,以及人发的那句话。
     assert.equal(requests.length, 2, "脚本两次响应,父会话就该发两次请求");
     const system = requests[0]!.messages.filter((message) => message.role === "system");
     assert.equal(system.length, 1);
-    assert.match(system[0]!.content, new RegExp(RULE));
-    assert.match(system[0]!.content, new RegExp(FACT));
+    // 知识只报条数(issue #344):播下去的一条规则与一条事实在提示里就是这一行。
+    assert.match(system[0]!.content, /^- acme\/widgets — 1 review rule, 1 project fact$/m);
+    assert.doesNotMatch(system[0]!.content, new RegExp(RULE));
+    assert.doesNotMatch(system[0]!.content, new RegExp(FACT));
     assert.match(system[0]!.content, /- acme\/widgets/);
     assert.match(system[0]!.content, /requirement-breakdown/);
     assert.ok(
@@ -291,12 +293,18 @@ test("发一条消息:知识集分段与消息文本进了模型请求,回复与
       ),
       "发出去的那句话没进模型请求",
     );
-    // 工具面是只读四件套、受控 git、历史 Finding 查询(issue #338),加这个用途的产出工具
-    // (issue #337);写工具一个都没注册。
-    assert.deepEqual(
-      [...requests[0]!.tools].sort(),
-      ["find", "git", "grep", "ls", "query_findings", "read", "submit_requirement_breakdown"],
-    );
+    // 工具面是只读四件套、受控 git、历史 Finding 查询(issue #338)、知识查询(issue #344),
+    // 加这个用途的产出工具(issue #337);写工具一个都没注册。
+    assert.deepEqual([...requests[0]!.tools].sort(), [
+      "find",
+      "git",
+      "grep",
+      "ls",
+      "query_findings",
+      "query_knowledge",
+      "read",
+      "submit_requirement_breakdown",
+    ]);
 
     // 记录:会话起头的两条(这一次用哪个模型、哪个思考档位)原样落下来,随后是用户消息、
     // 带工具调用的助手消息、工具结果与收尾的助手消息,各自是原样的 Pi 条目。
@@ -1068,7 +1076,7 @@ test("流式 delta 走无 id 的瞬时帧:不落库,重连不回放", async () =
 
 /* ─────────────── 子进程生命周期(issue #335) ─────────────── */
 
-/** 回收之后才录的那条规则。重建时取的是当下的知识集,不是建会话那一刻的。 */
+/** 回收之后才录的那条规则。重建时取的是当下的知识集条数,不是建会话那一刻的。 */
 const LATER_RULE = "撤回只允许在当月内做";
 
 /** 这个会话读接口报的「前 N 条不在上下文」。 */
@@ -1128,9 +1136,9 @@ test("空闲满门槛即回收:再发消息从记录重建,此前全部消息都
     assert.match(second, new RegExp(MESSAGE));
     assert.match(second, /第一轮/);
     assert.match(second, /接着说/);
-    // 知识集是重建那一刻取的值。
+    // 知识集是重建那一刻取的值:条数从一条规则涨到两条(issue #344 只报条数)。
     const system = requests[1]!.messages.filter((message) => message.role === "system");
-    assert.match(system[0]!.content, new RegExp(LATER_RULE));
+    assert.match(system[0]!.content, /^- acme\/widgets — 2 review rules, 1 project fact$/m);
 
     // 重建那一刻的系统提示是新的一份,这就是「子进程换过一个」的证据:提示在建会话时定下,
     // 活着的那一个拿不到回收之后才录的规则。

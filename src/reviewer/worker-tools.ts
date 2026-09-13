@@ -155,6 +155,14 @@ export function oneLine(statement: string): string {
   return statement.replace(/\s*\n+\s*/g, " ");
 }
 
+/**
+ * `1 review rule` / `3 review rules`:计数进 prompt 时名词随数量变形(issue #344)。会话提示的
+ * 知识目录与知识查询工具的结果各用它一次,两处的措辞因此不会分叉。
+ */
+export function countOf(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
 /** 一条规则:标识在最前,模型自报命中时抄的就是它;作用范围空串即全仓库。 */
 export function ruleBullet(rule: ReviewRule): string {
   const scope = rule.scope === "" ? "whole repository" : rule.scope;

@@ -1699,6 +1699,23 @@ function scopePattern(scope: string): RegExp {
 }
 
 /**
+ * 一条知识条目的作用范围与一个查询 glob 有没有重叠(issue #344 的 `query_knowledge`)。
+ *
+ * 评审链路按**文件路径**匹配作用范围(`knowledgeForBatch`),会话里的查询给的是一个 glob,
+ * 两边都可能带通配符,因此没有「一个路径命中一个模式」那么直接。判据定得最简:
+ *
+ * - 查询 glob 省略或为空即全匹配——问的是整个仓库;
+ * - 条目的作用范围为空串即全仓库条目,任何查询都该看到它;
+ * - 两个都给时按字面量互判一次:条目范围当模式、查询 glob 当路径命中,或者反过来,
+ *   任一成立即算重叠。`src/**` 与 `src/finance/**` 因此互相看得见,`web/**` 看不见它们。
+ */
+export function scopesOverlap(scope: string, pathGlob: string | undefined): boolean {
+  if (pathGlob === undefined || pathGlob === "") return true;
+  if (scope === "") return true;
+  return scopePattern(scope).test(pathGlob) || scopePattern(pathGlob).test(scope);
+}
+
+/**
  * 这一批要注入的知识条目(issue #204、#221):作用范围命中该批任一文件的,加上全仓库
  * 条目。评审规则与项目事实各调一次,两型同一条路由口径。
  *

@@ -27,7 +27,8 @@ import { fileURLToPath } from "node:url";
 import type { ThinkingLevel } from "../config.ts";
 import type { Forge } from "../forge/forge.ts";
 import { defaultBranchHead, prepareWorktree, type Worktree } from "../git/worktree.ts";
-import type { ProjectFact, ReviewRule, ReviewerUsage } from "../review/finding.ts";
+import type { ReviewerUsage } from "../review/finding.ts";
+import { scopesOverlap } from "../review/run.ts";
 import {
   openStore,
   type AgentSessionEntryLink,
@@ -52,6 +53,8 @@ import {
   SYSTEM_MESSAGE_ENTRY,
   type AgentSessionMessageMode,
   type SessionCommand,
+  type SessionKnowledgeEntries,
+  type SessionKnowledgeQuery,
   type SessionOutput,
   type SessionRepoInput,
   type SessionWorkerMessage,
@@ -255,13 +258,20 @@ export function agentSessionRepos(
 }
 
 /**
- * 这个会话挂的那个产品的名字(issue #341)。进系统提示一行,与仓库集合和知识集同律在 `boot`
- * 里现算:改名在下次重建时生效。产品没了即空串——那时会话一个仓库也读不到,消息根本发不出来。
+ * 这个会话挂的那个产品进系统提示的那两格:名字(issue #341)与生效产品知识的条数
+ * (issue #344)。与仓库集合和知识集同律在 `boot` 里现算:改名与新确认的条目在下次重建时
+ * 生效。产品没了即空串与 0——那时会话一个仓库也读不到,消息根本发不出来。
  */
-function productNameById(dbPath: string, productId: number): string {
+function productHeading(
+  dbPath: string,
+  productId: number,
+): { name: string; knowledgeCount: number } {
   const store = openStore(dbPath);
   try {
-    return store.getProduct(productId)?.name ?? "";
+    return {
+      name: store.getProduct(productId)?.name ?? "",
+      knowledgeCount: store.listProductKnowledge(productId, "active").length,
+    };
   } finally {
     store.close();
   }
@@ -729,22 +739,108 @@ function answerFindingQuery(
   child.send(result);
 }
 
-/** 这个仓库生效知识集里的两型条目,按仓库分段注入系统提示(沿用现有格式)。 */
-function repoKnowledge(
+/**
+ * 这个仓库生效知识集里两型各有多少条(issue #344)。进系统提示的目录那一行——陈述本身由
+ * `query_knowledge` 按任务的范围取,子进程因此连这些文字都拿不到。
+ */
+function repoKnowledgeCounts(
   dbPath: string,
   repoId: number,
-): { rules: ReviewRule[]; facts: ProjectFact[] } {
+): { ruleCount: number; factCount: number } {
   const store = openStore(dbPath);
   try {
     const entries = store.getRuleSet(repoId)?.rules ?? [];
-    const pick = (type: string): ReviewRule[] =>
-      entries
-        .filter((entry) => entry.type === type)
-        .map((entry) => ({ id: entry.id, scope: entry.scope, statement: entry.statement }));
-    return { rules: pick("rule"), facts: pick("fact") };
+    return {
+      ruleCount: entries.filter((entry) => entry.type === "rule").length,
+      factCount: entries.filter((entry) => entry.type === "fact").length,
+    };
   } finally {
     store.close();
   }
+}
+
+/**
+ * 一次知识查询要回的两层条目(issue #344)。
+ *
+ * 产品层按**仓库集合交集**取:一条产品知识只要涉及问到的任一个仓库就回,它涉及的全部仓库
+ * 都映射回 `<owner>/<repo>` 一起给——那正是路由条目能把 agent 指去另一个仓库的凭据。仓库层
+ * 取问到的那几个仓库的生效知识集,按作用范围与查询 glob 重叠筛(`scopesOverlap`)。
+ *
+ * 两层各自封顶在 `FINDING_QUERY_LIMIT`:与历史 Finding 查询同一个常量,两个工具的上限没有
+ * 理由分叉。问到的仓库名不在这个会话的仓库里就当没问(子进程那一侧已经打回过)。
+ */
+export function sessionKnowledge(
+  dbPath: string,
+  productId: number,
+  repos: readonly ProductRepoRecord[],
+  query: SessionKnowledgeQuery,
+): SessionKnowledgeEntries {
+  const idByName = new Map(repos.map((repo) => [`${repo.owner}/${repo.repo}`, repo.repoId]));
+  const askedIds = query.repos
+    .map((name) => idByName.get(name))
+    .filter((id): id is number => id !== undefined);
+  const store = openStore(dbPath);
+  try {
+    // 条目涉及的仓库里可能有这个会话读不到的那几个(没分配、或已从产品里移出),名字仍要给出
+    // 来:路由条目说的就是「这件事还牵着那个仓库」。注册表取一次名,取不到的退回 id。
+    const nameById = new Map(repos.map((repo) => [repo.repoId, `${repo.owner}/${repo.repo}`]));
+    const nameOf = (id: number): string => {
+      const known = nameById.get(id);
+      if (known !== undefined) return known;
+      const row = store.getRepo(id);
+      const name = row === undefined ? `#${id}` : `${row.owner}/${row.repo}`;
+      nameById.set(id, name);
+      return name;
+    };
+    const product = store
+      .listProductKnowledge(productId, "active")
+      .filter((entry) => entry.repoIds.some((id) => askedIds.includes(id)))
+      .slice(0, FINDING_QUERY_LIMIT)
+      .map((entry) => ({ repos: entry.repoIds.map(nameOf), statement: entry.statement }));
+    const repoEntries: SessionKnowledgeEntries["repo"] = askedIds.flatMap((repoId) =>
+      (store.getRuleSet(repoId)?.rules ?? [])
+        .filter((entry) => scopesOverlap(entry.scope, query.pathGlob))
+        .map((entry) => ({
+          repo: nameOf(repoId),
+          type: entry.type === "fact" ? ("fact" as const) : ("rule" as const),
+          scope: entry.scope,
+          statement: entry.statement,
+        })),
+    );
+    return { product, repo: repoEntries.slice(0, FINDING_QUERY_LIMIT) };
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * 回一次知识查询(issue #344)。与历史 Finding 那一次同律:查询在这一侧做,**恒回一条**
+ * ——查不动时带上原因,不然子进程那边的工具调用永远等下去。
+ */
+function answerKnowledgeQuery(
+  deps: { dbPath: string },
+  child: ChildProcess,
+  productId: number,
+  repos: readonly ProductRepoRecord[],
+  requestId: string,
+  query: SessionKnowledgeQuery,
+): void {
+  let result: SessionCommand;
+  try {
+    result = {
+      kind: "knowledge-query-result",
+      requestId,
+      entries: sessionKnowledge(deps.dbPath, productId, repos, query),
+    };
+  } catch (error) {
+    result = {
+      kind: "knowledge-query-result",
+      requestId,
+      entries: { product: [], repo: [] },
+      failure: error instanceof Error ? error.message : String(error),
+    };
+  }
+  child.send(result);
 }
 
 /**
@@ -779,7 +875,11 @@ async function prepareSessionRoot(
       path: join(sessionRoot, repo.owner, repo.repo),
     });
     entry.worktrees.push(worktree);
-    prepared.push({ ...ref, role: repo.role, ...repoKnowledge(deps.dbPath, repo.repoId) });
+    prepared.push({
+      ...ref,
+      role: repo.role,
+      ...repoKnowledgeCounts(deps.dbPath, repo.repoId),
+    });
   }
   return { sessionRoot, repos: prepared };
 }
@@ -865,6 +965,16 @@ async function boot(
       case "finding-query":
         answerFindingQuery(deps.dbPath, child, message.requestId, message.query);
         return;
+      case "knowledge-query":
+        answerKnowledgeQuery(
+          deps,
+          child,
+          session.productId,
+          repos,
+          message.requestId,
+          message.query,
+        );
+        return;
       case "turn-end":
         entry.status = "idle";
         // 这一回合投出去的图都该被认领过了。没认领的不留到下一回合:那只会把图串到别的消息上。
@@ -898,6 +1008,7 @@ async function boot(
 
   // 重建:整段记录原样喂回去(issue #335)。新会话那一次是空数组,与不给等价。
   const stored = storedSession(deps.dbPath, session.id);
+  const heading = productHeading(deps.dbPath, session.productId);
   if (stored.gap > 0) {
     console.warn(
       `[agent-session] 会话 ${session.id} 的记录有缺损,重建后前 ${stored.gap} 条不在上下文里`,
@@ -907,7 +1018,8 @@ async function boot(
     kind: "open",
     request: {
       sessionRoot: prepared.sessionRoot,
-      productName: productNameById(deps.dbPath, session.productId),
+      productName: heading.name,
+      productKnowledgeCount: heading.knowledgeCount,
       purpose: session.purpose,
       repos: prepared.repos,
       runtimeModel: model.runtimeModel,

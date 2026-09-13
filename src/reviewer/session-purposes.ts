@@ -26,7 +26,7 @@ const REQUIREMENT_BREAKDOWN_PROMPT = [
   "",
   "Every location of an item is a directory or a file you have seen yourself with read, grep, find or ls. Read the repositories before you break anything down: a location you did not read is a guess, and a guess here sends somebody to a path that does not exist. When you cannot find where a change lands, say so in the open questions instead of writing a plausible path.",
   "",
-  "The review rules and project facts above are the boundary of the breakdown: they say what each repository has already agreed on, so an item that would break one of them is the wrong item. Use query_findings on the part of the code an item touches, and turn what it shows into acceptance points: a spot that has gone wrong before is worth naming in the checks of the item that changes it.",
+  "What query_knowledge returns is the boundary of the breakdown: the review rules and project facts say what each repository has already agreed on, and the product knowledge says how the repositories fit together, so an item that would break one of them is the wrong item. Use query_findings on the part of the code an item touches, and turn what it shows into acceptance points: a spot that has gone wrong before is worth naming in the checks of the item that changes it.",
   "",
   "Do not estimate effort. No hours, no days, no points, no t-shirt sizes — the person does not want a number nobody believes.",
   "",
