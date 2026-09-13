@@ -8,6 +8,7 @@ import { test } from "node:test";
 
 import {
   conversation,
+  groupConversation,
   SYSTEM_MESSAGE_ENTRY,
   toolSummary,
   type AgentSessionRecord,
@@ -165,4 +166,16 @@ test("产出条目投成产出卡片,定稿那一句投成一行提示(issue #33
       ["note", "需求拆分 v2 已定稿。"],
     ],
   );
+});
+
+test("连续的工具调用折成一组,隔一条 agent 回复就分两组", () => {
+  const tool = (seq: number, name: string) =>
+    ({ kind: "tool", seq, at: "t", name, summary: "" }) as const;
+  const said = (seq: number, text: string) => ({ kind: "assistant", seq, at: "t", text }) as const;
+  const groups = groupConversation([tool(1, "ls"), tool(2, "read"), tool(3, "read"), said(4, "看完了"), tool(5, "git")]);
+  assert.deepEqual(
+    groups.map((group) => (group.kind === "tools" ? group.calls.map((call) => call.name) : group.kind)),
+    [["ls", "read", "read"], "assistant", ["git"]],
+  );
+  assert.equal(groups[0]!.seq, 1);
 });

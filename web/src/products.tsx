@@ -407,7 +407,7 @@ export function ProductsPage({
         <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:gap-[18px]">
           <aside
             aria-label="产品"
-            className="flex w-full shrink-0 flex-col gap-2.5 lg:w-[272px]"
+            className="flex w-full shrink-0 flex-col gap-2.5 lg:w-[264px]"
           >
             <RailCard title="产品" count={products.length}>
               <ul>
@@ -800,7 +800,7 @@ function RoleField({
   useEffect(() => setText(repo.role ?? ""), [repo.role]);
   // Escape 之后输入框卸载,浏览器可能还补一次 blur;那一次不能把改了一半的文字存下去。
   const cancelled = useRef(false);
-  // 职责最长 64 字,272px 的栏里一行装不下;编辑框随内容长高,不让开头滚出视野。
+  // 职责最长 64 字,264px 的栏里一行装不下;编辑框随内容长高,不让开头滚出视野。
   const area = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
     const el = area.current;

@@ -93,6 +93,30 @@ function systemText(entry: unknown): string {
   return typeof row.data?.text === "string" ? row.data.text.trim() : "";
 }
 
+/** 对话流渲染用的一项:连续的工具调用折成一组,其余原样(会话页的工具调用组)。 */
+export type ConversationGroup =
+  | Exclude<ConversationItem, { kind: "tool" }>
+  | { kind: "tools"; seq: number; at: string; calls: Extract<ConversationItem, { kind: "tool" }>[] };
+
+/**
+ * 把连续的 `tool` 条目折成一组。一个回合几十次读文件逐行摊开会把对话冲散;一组一行,展开
+ * 才看明细。组的 `seq` 与 `at` 取第一次调用的。
+ */
+export function groupConversation(items: readonly ConversationItem[]): ConversationGroup[] {
+  const groups: ConversationGroup[] = [];
+  for (const item of items) {
+    const last = groups.at(-1);
+    if (item.kind !== "tool") {
+      groups.push(item);
+    } else if (last?.kind === "tools") {
+      last.calls.push(item);
+    } else {
+      groups.push({ kind: "tools", seq: item.seq, at: item.at, calls: [item] });
+    }
+  }
+  return groups;
+}
+
 export function conversation(records: readonly AgentSessionRecord[]): ConversationItem[] {
   const items: ConversationItem[] = [];
   for (const record of records) {

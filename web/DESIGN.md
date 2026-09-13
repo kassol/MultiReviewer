@@ -321,7 +321,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 ### 7.3 长列表与主从布局
 
-- `lg=1024px` 是首页与模型服务主从双栏的切换点，网格是 `264px minmax(0,1fr)`。外壳仍在 `sm=640px` 切换；640–1023px 内容区继续使用列表／详情单层布局。
+- `lg=1024px` 是首页与模型服务主从双栏的切换点，网格是 `264px minmax(0,1fr)`；产品页与会话页的左栏同样 264px。外壳仍在 `sm=640px` 切换；640–1023px 内容区继续使用列表／详情单层布局。
 - 首页双栏下左右各自局部滚动；模型服务页整页跟着外壳的 `panel-main-scroll` 一起滚，列表与详情不各开滚动区。
 - 单层布局先显示列表，进入详情后提供明确返回入口。首页把左栏折叠成顶部的仓库选择器，选中的仓库写在地址上；模型服务以稳定 provider 路由区分，浏览器前进、后退和刷新保持可恢复。
 - 表头可粘性定位；横向滚动限制在表格自身容器内，页面不得产生水平滚动。
@@ -334,6 +334,15 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 外壳下挂五页：`/` 评审记录、`/stats` 处置率、`/credentials` 模型服务、`/settings` 审查策略、`/access` 访问控制，另有 `/password` 与外壳外的 `/login`。仓库注册表没有自己的页面，它是首页左栏；导航顺序即 `NAV` 数组顺序，评审记录打头、账户项收尾。
 
 页面组件使用 `React.lazy + Suspense` 按路由分块；模型服务的七个路由入口共用同一个 `credentials.tsx` 动态模块。导航按权限过滤而不是摆禁用项，零权限时导航全藏、内容区用 `EmptyState` 说明并列出系统管理员。
+
+### 7.5 会话工作台
+
+Agent 会话页的中栏是一块占满视口的聊天工作台,整页不滚:`PageBody` 加 `h-full` 撑满壳的 `#panel-main-scroll`,高度沿 flex 链给下来,不写视口常量。头部一行细标题(产品名链接、用途 `text-3xl` 标题、在跑徽章、一行时刻 / 建立人 / 用量),对话流自己滚,输入框钉在底部。新条目来时人在底部(距底 ≤ 80px)就跟着滚,翻上去看旧消息时不打扰,右下角浮一颗「最新」胶囊送回底部。
+
+- 消息两种形态:人的消息是右对齐的 `bg-accent-tint` 气泡(`rounded-2xl rounded-br-md`,`max-w-[80%]`),agent 的正文不加边框不加底、`max-w-[72ch]`,经 `Markdown` 渲染 GFM。时刻在消息下面,指到那条才显出来(改 opacity,布局不动)。
+- 连续的工具调用折成一组(Collapsible):一行「工具调用 N 次」,展开才看明细;在跑的最后一组默认摊开,正在跑的那一个带 Spinner 挂在末尾。系统消息与定稿句居中一行小字。
+- 输入区是一个框:随内容长高的原生 `<textarea>` 在上,下沿一排图标键(图片、在跑时的排队 / 插话切换、停止、发送)。原生 textarea 而不是 Themes TextArea,因为它要嵌在框里与下沿那一排共用一道边(与 `ui/command` 的输入同理);框的边 `border-input`、底 `bg-surface`、阴影 `shadow-control`、焦点环 `--v8-shadow-focus` 都走令牌。回车发送、Shift+回车换行,输入法选词不发。
+- `lg` 以下左栏不显示(切会话回产品页);`xl` 以下右栏产出不显示,头部「对话 / 产出」切换把产出换进中栏。
 
 ## 8. 选择与导航语义
 
@@ -512,6 +521,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 - `EmptyState`：统一资源为空、筛选无结果和零权限状态，并保留调用点原有标题层级。
 - `useDialogReturnFocus` 与 `visibleNavCurrentItem`：受控浮层的焦点返回。
 - `theme-button.ts`：Radix Button 的类型适配出口，不增加组件、行为或 DOM。
+- `Markdown`：agent 回复的 GFM 渲染(react-markdown + remark-gfm,`skipHtml`),元素映射到产品排版令牌,表格套横向滚动、链接新标签打开。
 - `HelpTooltip`、`ModelComposer`、`SetupChecklist`：集中产品语义与跨页行为。
 
 Calendar 与 Command 留在 `components/ui` 作为第三方行为适配层，只由对应产品组件或明确的搜索场景调用。简单展开继续直接组合 Collapsible Primitive。普通局部滚动使用原生 overflow；当前没有 Toast 与 ScrollArea 产品组件，关键结果留在页面内。

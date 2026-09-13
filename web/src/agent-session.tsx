@@ -1,11 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
+  ArrowDownIcon,
   CheckCircledIcon,
+  ChevronRightIcon,
   CopyIcon,
   Cross2Icon,
   CrossCircledIcon,
   ImageIcon,
+  PaperPlaneIcon,
   PlusIcon,
   ReaderIcon,
   StopIcon,
@@ -20,18 +23,19 @@ import {
   SegmentedControl,
   Select,
   Skeleton,
+  Spinner,
   Text,
-  TextArea,
   Tooltip,
 } from "@radix-ui/themes";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Collapsible } from "radix-ui";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
+import { Markdown } from "@/components/markdown";
 import { MasterListItem, MasterListItemText } from "@/components/master-list-item";
 import { PageBody } from "@/components/page-body";
-import { PageHeader } from "@/components/page-header";
 import { RailCard } from "@/components/rail-card";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
@@ -43,7 +47,9 @@ import {
 } from "@/lib/agent-session-outputs";
 import {
   conversation,
+  groupConversation,
   type AgentSessionRecord,
+  type ConversationGroup,
 } from "@/lib/agent-session-records";
 import { localMinute, localSecond } from "@/lib/time";
 
@@ -341,7 +347,7 @@ function ImageComposer({
   return (
     <>
       {images.length === 0 ? null : (
-        <ul className="flex basis-full flex-wrap gap-2" aria-label="待发送的图片">
+        <ul className="flex basis-full flex-wrap gap-2 pb-1" aria-label="待发送的图片">
           {images.map((imageId) => (
             <li key={imageId} className="relative">
               <img
@@ -381,19 +387,18 @@ function ImageComposer({
         }}
       />
       <Tooltip content={hint}>
-        <span>
-          <Button
+        <span className="inline-flex">
+          <IconButton
             type="button"
-            variant="soft"
+            variant="ghost"
             color="gray"
-            size={{ initial: "3", sm: "2" }}
+            size="2"
             disabled={!imageInput || full || busy}
             aria-label={hint}
             onClick={() => picker.current?.click()}
           >
             <ImageIcon aria-hidden />
-            图片
-          </Button>
+          </IconButton>
         </span>
       </Tooltip>
     </>
@@ -409,13 +414,19 @@ const MODE_LABEL: Record<QueuedMessage["mode"], string> = {
 /** 正在生成的那一截:文字是累加的,工具是最近开跑的那一个。两样都不落库。 */
 type LiveStream = { text: string; tool?: string };
 
+/** 滚动位置距底不超过这个数就算「在看最新」,新条目来了跟着滚。 */
+const FOLLOW_THRESHOLD = 80;
+
 /**
  * 中栏的对话流(issue #333、#334)。记录打开时一次取全,之后经 SSE 追加——两条来源写同一份
  * 查询缓存,与审查轨迹同一套路(`useTrace`)。记录行是 Pi 的条目原样 JSON,投影成对话的那
- * 一步在 `lib/agent-session-records.ts`。
+ * 一步在 `lib/agent-session-records.ts`,连续的工具调用再折成一组。
  *
- * 不带 `seq` 的瞬时帧(流式 delta 与在跑的工具)不进那份数组:它们渲染成对话流末尾一个临时
- * 区块,落库条目一到就清掉——那一段文字此刻已经是记录里的一条了。
+ * 滚动容器是它自己的:对话占满中栏,输入框钉在下面。新条目来时人在底部就跟着滚,翻上去看
+ * 旧消息时不打扰,右下角浮一颗「最新」送回底部。
+ *
+ * 不带 `seq` 的瞬时帧(流式 delta 与在跑的工具)不进那份数组:文字渲染成末尾一条临时的 agent
+ * 消息,工具名挂在最后一组工具调用的末尾,落库条目一到就清掉——那一段此刻已经是记录里的一条。
  */
 function Conversation({
   sessionId,
@@ -424,7 +435,7 @@ function Conversation({
 }: {
   sessionId: number;
   running: boolean;
-  /** 点一张产出卡片:把右栏切到那一版(issue #337)。 */
+  /** 点一条产出:把右栏切到那一版(issue #337)。 */
   onOpenOutput: (version: number) => void;
 }) {
   const [live, setLive] = useState<LiveStream | null>(null);
@@ -449,191 +460,299 @@ function Conversation({
       });
     },
   });
-  const items = conversation(events);
+  const groups = groupConversation(conversation(events));
   // 落库条目到了就把临时块清掉:它说的那段话已经在对话流里。
   useEffect(() => setLive(null), [events.length]);
 
-  const { earlier, loadingEarlier, bottom } = useEarlierRecords(sessionId, recordsKey, events);
+  const scroller = useRef<HTMLDivElement | null>(null);
+  const { earlier, loadingEarlier } = useEarlierRecords(sessionId, recordsKey, events, scroller);
+  const [away, setAway] = useState(false);
+  const toBottom = (): void => {
+    const el = scroller.current;
+    if (el !== null) el.scrollTop = el.scrollHeight;
+  };
+  // 首屏滚到底;之后只在人还在底部时跟着新内容滚。
+  const settled = useRef(false);
+  useLayoutEffect(() => {
+    if (!settled.current) {
+      if (events.length === 0) return;
+      settled.current = true;
+      toBottom();
+      return;
+    }
+    if (!away) toBottom();
+  }, [events.length, live?.text, live?.tool, away]);
+
+  const lastGroup = groups.at(-1);
+  const liveTool = running ? live?.tool : undefined;
 
   return (
-    <div className="flex min-w-0 flex-col gap-3">
-      {query.isError ? (
-        <Callout.Root role="alert" color="red" size="1">
-          <Callout.Icon>
-            <CrossCircledIcon aria-hidden />
-          </Callout.Icon>
-          <Callout.Text>{(query.error as Error).message}</Callout.Text>
-        </Callout.Root>
-      ) : null}
+    <div className="relative min-h-0 flex-1">
+      <div
+        ref={scroller}
+        className="flex h-full flex-col gap-3 overflow-y-auto overscroll-contain py-3"
+        onScroll={(event) => {
+          const el = event.currentTarget;
+          setAway(el.scrollHeight - el.scrollTop - el.clientHeight > FOLLOW_THRESHOLD);
+        }}
+      >
+        {query.isError ? (
+          <Callout.Root role="alert" color="red" size="1">
+            <Callout.Icon>
+              <CrossCircledIcon aria-hidden />
+            </Callout.Icon>
+            <Callout.Text>{(query.error as Error).message}</Callout.Text>
+          </Callout.Root>
+        ) : null}
 
-      {/*
-        打开时取的是最后一页(spec #329 的 US 12):长会话不从头翻,顶上这个按钮一页一页往前
-        取。取回来前插在最前面,插入前后的 `scrollHeight` 差值补回 `scrollTop`——不补的话
-        人正在看的那一段会被新插进来的一页顶下去。
-      */}
-      {!hasMore || query.isPending ? null : (
-        <div className="flex justify-center">
-          <Button
-            variant="soft"
-            color="gray"
-            size="2"
-            disabled={loadingEarlier}
-            onClick={() => void earlier()}
-          >
-            {loadingEarlier ? "加载中…" : "加载更早"}
-          </Button>
-        </div>
-      )}
-
-      {query.isPending ? (
-        <div className="flex flex-col gap-2" role="status" aria-live="polite">
-          <span className="sr-only">正在加载这个会话的对话</span>
-          {[0, 1].map((slot) => (
-            <Skeleton key={slot} aria-hidden className="h-16" />
-          ))}
-        </div>
-      ) : items.length === 0 ? (
-        <EmptyState title="还没有消息" description="发一条消息,agent 就在这里回你。" />
-      ) : (
-        <ol className="flex min-w-0 flex-col gap-3" aria-label="对话">
-          {items.map((item) => (
-            <li
-              key={`${item.seq}-${item.kind}-${item.kind === "tool" ? item.name : "text"}`}
-              className="min-w-0"
+        {/*
+          打开时取的是最后一页(spec #329 的 US 12):长会话不从头翻,顶上这个按钮一页一页往前
+          取。取回来前插在最前面,插入前后的 `scrollHeight` 差值补回 `scrollTop`——不补的话
+          人正在看的那一段会被新插进来的一页顶下去。
+        */}
+        {!hasMore || query.isPending ? null : (
+          <div className="flex justify-center">
+            <Button
+              variant="soft"
+              color="gray"
+              size="1"
+              disabled={loadingEarlier}
+              onClick={() => void earlier()}
             >
-              {item.kind === "tool" ? (
-                <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 px-1">
-                  <span className="font-mono text-base text-text">{item.name}</span>
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">
-                    {item.summary}
-                  </span>
-                </div>
-              ) : item.kind === "system" ? (
-                /* 系统消息灰底一行:它不进模型上下文,但人要看得见(ADR 0031)。 */
-                <div className="min-w-0 rounded-lg bg-fill px-4 py-2">
-                  <span className="text-base text-text-secondary">
-                    系统 · {localSecond(item.at)} · {item.text}
-                  </span>
-                </div>
-              ) : item.kind === "output" ? (
-                /* 产出以卡片出现在对话流里,点开把右栏切到那一版(issue #337)。 */
-                <button
-                  type="button"
-                  onClick={() => onOpenOutput(item.version)}
-                  className="w-full rounded-lg border border-card-line bg-surface px-4 py-3 text-left transition-colors hover:bg-sunken"
-                >
-                  <span className="flex flex-wrap items-center gap-2">
-                    <ReaderIcon aria-hidden className="size-4 text-text-muted" />
-                    <span className="text-base font-medium">
-                      会话产出 · 需求拆分 v{item.version}
-                    </span>
-                  </span>
-                  <span className="mt-px block text-sm text-text-muted">
-                    点开看总述与全部条目
-                  </span>
-                </button>
-              ) : item.kind === "note" ? (
-                /* 定稿与换版那一句:它进了模型上下文,对话里也该看得见。 */
-                <div className="rounded-lg bg-sunken px-4 py-2">
-                  <span className="text-base text-text-muted">
-                    {localSecond(item.at)} · {item.text}
-                  </span>
-                </div>
-              ) : (
-                <div
-                  className={`flex min-w-0 flex-col gap-1 rounded-lg px-4 py-3 ${
-                    item.kind === "user"
-                      ? "bg-accent-tint"
-                      : "border border-card-line bg-surface"
-                  }`}
-                >
-                  <span className="text-base text-text-muted">
-                    {item.kind === "user" ? "我" : "agent"} · {localSecond(item.at)}
-                  </span>
-                  <p className="min-w-0 whitespace-pre-wrap break-words text-lg">{item.text}</p>
-                  {/* 带的图片以缩略图出现在这条消息里(issue #336),点开看原图。 */}
-                  {item.kind !== "user" || item.images.length === 0 ? null : (
-                    <ul className="flex flex-wrap gap-2" aria-label="这条消息带的图片">
-                      {item.images.map((imageId) => (
-                        <li key={imageId}>
-                          <a href={imageSrc(sessionId, imageId)} target="_blank" rel="noreferrer">
-                            <img
-                              src={imageSrc(sessionId, imageId)}
-                              alt="这条消息带的图片"
-                              className="size-20 rounded-lg border border-line object-cover"
-                            />
-                          </a>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
+              {loadingEarlier ? "加载中…" : "加载更早"}
+            </Button>
+          </div>
+        )}
+
+        {query.isPending ? (
+          <div className="flex flex-col gap-2" role="status" aria-live="polite">
+            <span className="sr-only">正在加载这个会话的对话</span>
+            {[0, 1].map((slot) => (
+              <Skeleton key={slot} aria-hidden className="h-16" />
+            ))}
+          </div>
+        ) : groups.length === 0 && live === null ? (
+          <div className="flex flex-1 items-center justify-center">
+            <EmptyState
+              align="center"
+              title="还没有消息"
+              description="发一条消息,agent 就在这里回你。"
+            />
+          </div>
+        ) : (
+          <ol className="flex min-w-0 flex-col gap-3" aria-label="对话">
+            {groups.map((item, index) => (
+              <li key={`${item.seq}-${item.kind}`} className="min-w-0">
+                <ConversationRow
+                  item={item}
+                  sessionId={sessionId}
+                  onOpenOutput={onOpenOutput}
+                  // 最后一组工具调用在跑时摊开着,正在跑的那一个挂在它末尾。
+                  {...(item.kind === "tools" && index === groups.length - 1
+                    ? { liveTool, open: running }
+                    : {})}
+                />
+              </li>
+            ))}
+          </ol>
+        )}
+
+        {/* 正在跑的工具还没有落库的组可挂:自己成一组。 */}
+        {liveTool === undefined || lastGroup?.kind === "tools" ? null : (
+          <ToolGroup calls={[]} liveTool={liveTool} open />
+        )}
+        {live === null || live.text === "" ? null : (
+          <div className="flex min-w-0 items-end gap-1">
+            <span className="sr-only">agent 正在回</span>
+            <Markdown text={live.text} className="max-w-[72ch]" />
+            <span
+              aria-hidden
+              className="mb-1 ml-0.5 inline-block h-[1em] w-0.5 shrink-0 animate-pulse bg-current"
+            />
+          </div>
+        )}
+        {running ? (
+          <div className="flex flex-col gap-1">
+            <p className="flex items-center gap-1.5 px-1 text-sm text-text-muted" aria-live="polite">
+              <Spinner size="1" />
+              agent 在跑
+            </p>
+            <StreamStatus stream={stream} />
+          </div>
+        ) : null}
+      </div>
+      {away ? (
+        <button
+          type="button"
+          onClick={toBottom}
+          className="absolute right-3 bottom-3 flex items-center gap-1 rounded-full border border-card-line bg-surface px-3 py-1.5 text-md font-medium text-text-secondary shadow-card transition-colors hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+        >
+          <ArrowDownIcon aria-hidden />
+          最新
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** 对话流里的一行:人的气泡、agent 的正文、一组工具调用、系统一句、产出一行。 */
+function ConversationRow({
+  item,
+  sessionId,
+  onOpenOutput,
+  liveTool,
+  open = false,
+}: {
+  item: ConversationGroup;
+  sessionId: number;
+  onOpenOutput: (version: number) => void;
+  liveTool?: string | undefined;
+  open?: boolean;
+}) {
+  if (item.kind === "tools") {
+    return <ToolGroup calls={item.calls} liveTool={liveTool} open={open} />;
+  }
+  if (item.kind === "system" || item.kind === "note") {
+    /* 系统消息与定稿那一句居中一行:它们不是对话的一方(ADR 0031、issue #337)。 */
+    return (
+      <p className="text-center text-sm text-text-muted">
+        {localSecond(item.at)} · {item.text}
+      </p>
+    );
+  }
+  if (item.kind === "output") {
+    /* 产出以一行出现在对话流里,点开把右栏切到那一版(issue #337)。 */
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenOutput(item.version)}
+        className="flex w-full items-center gap-2 rounded-lg border border-card-line bg-surface px-3 py-2 text-left transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+      >
+        <ReaderIcon aria-hidden className="shrink-0 text-text-muted" />
+        <span className="min-w-0 flex-1 text-base font-medium">会话产出 · 需求拆分 v{item.version}</span>
+        <ChevronRightIcon aria-hidden className="shrink-0 text-text-faint" />
+      </button>
+    );
+  }
+  if (item.kind === "user") {
+    return (
+      <div className="group flex flex-col items-end gap-1">
+        <div className="max-w-[80%] rounded-2xl rounded-br-md bg-accent-tint px-4 py-2.5">
+          <p className="min-w-0 break-words whitespace-pre-wrap text-lg">{item.text}</p>
+          {/* 带的图片以缩略图出现在这条消息里(issue #336),点开看原图。 */}
+          {item.images.length === 0 ? null : (
+            <ul className="mt-2 flex flex-wrap gap-2" aria-label="这条消息带的图片">
+              {item.images.map((imageId) => (
+                <li key={imageId}>
+                  <a href={imageSrc(sessionId, imageId)} target="_blank" rel="noreferrer">
+                    <img
+                      src={imageSrc(sessionId, imageId)}
+                      alt="这条消息带的图片"
+                      className="size-20 rounded-lg border border-line object-cover"
+                    />
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <MessageTime at={item.at} />
+      </div>
+    );
+  }
+  return (
+    <div className="group flex flex-col gap-1">
+      <span className="sr-only">agent</span>
+      <Markdown text={item.text} className="max-w-[72ch]" />
+      <MessageTime at={item.at} />
+    </div>
+  );
+}
+
+/** 消息下面的时刻。平时不占注意力,指到那条消息才显出来;布局不变,读屏照样读得到。 */
+function MessageTime({ at }: { at: string }) {
+  return (
+    <span className="text-sm text-text-muted opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      {localSecond(at)}
+    </span>
+  );
+}
+
+/**
+ * 一组连续的工具调用。一个回合几十次读文件逐行摊开会把对话冲散:收成一行「工具调用 N 次」,
+ * 展开才看明细。在跑的最后一组默认摊开,正在跑的那一个带 Spinner 挂在末尾。
+ */
+function ToolGroup({
+  calls,
+  liveTool,
+  open,
+}: {
+  calls: Extract<ConversationGroup, { kind: "tools" }>["calls"];
+  liveTool?: string | undefined;
+  open: boolean;
+}) {
+  const [expanded, setExpanded] = useState(open);
+  // 不再是在跑的那一组了就收起来:回合结束后对话里只剩一行。
+  useEffect(() => {
+    if (!open) setExpanded(false);
+  }, [open]);
+  const count = calls.length + (liveTool === undefined ? 0 : 1);
+  return (
+    <Collapsible.Root open={expanded} onOpenChange={setExpanded} className="group/tools text-base">
+      <Collapsible.Trigger asChild>
+        <button
+          type="button"
+          className="flex items-center gap-1 rounded-sm px-1 py-0.5 text-text-secondary transition-colors hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+        >
+          <ChevronRightIcon
+            aria-hidden
+            className="transition-transform group-data-[state=open]/tools:rotate-90"
+          />
+          工具调用 <span className="font-mono tabular-nums">{count}</span> 次
+          {liveTool === undefined ? null : <Spinner size="1" className="ml-1" />}
+        </button>
+      </Collapsible.Trigger>
+      <Collapsible.Content>
+        <ol className="mt-1 flex min-w-0 flex-col gap-1 pl-5 font-mono text-xs" aria-label="工具调用">
+          {calls.map((call, index) => (
+            <li key={`${call.seq}-${index}`} className="flex min-w-0 gap-2">
+              <span className="shrink-0 text-text">{call.name}</span>
+              <span className="min-w-0 truncate text-text-secondary">{call.summary}</span>
             </li>
           ))}
+          {liveTool === undefined ? null : (
+            <li className="flex items-center gap-2">
+              <Spinner size="1" />
+              <span className="text-text">{liveTool}</span>
+              <span className="text-text-secondary">在跑</span>
+            </li>
+          )}
         </ol>
-      )}
-
-      {/* 正在跑的工具一行与正在生成的文字:瞬时帧的去处,落库条目一到就换成真条目。 */}
-      {live?.tool === undefined ? null : (
-        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 px-1">
-          <span className="font-mono text-base text-text">{live.tool}</span>
-          <span className="text-xs text-text-secondary">在跑</span>
-        </div>
-      )}
-      {live === null || live.text === "" ? null : (
-        <div className="flex min-w-0 flex-col gap-1 rounded-lg border border-card-line bg-surface px-4 py-3">
-          <span className="text-base text-text-muted">agent · 正在回</span>
-          <p className="min-w-0 whitespace-pre-wrap break-words text-lg">
-            {live.text}
-            <span className="ml-0.5 inline-block animate-pulse font-bold">▍</span>
-          </p>
-        </div>
-      )}
-
-      {running ? (
-        <>
-          {/* 「在跑」状态行:工具名在上面那一行,这里只说这个会话此刻在跑。 */}
-          <p className="px-1 text-sm text-text-secondary" aria-live="polite">
-            agent 在跑
-          </p>
-          <StreamStatus stream={stream} />
-        </>
-      ) : null}
-      {/* 打开时滚到这里:人要看的是最新那几条,而不是几天前的开头。 */}
-      <div ref={bottom} aria-hidden />
-    </div>
+      </Collapsible.Content>
+    </Collapsible.Root>
   );
 }
 
 /**
  * 往前翻更早的记录(spec #329 的 US 12)。
  *
- * 打开时把对话流滚到底部;「加载更早」取 `?before=<最前那条的 seq>` 的上一页前插进同一份查询
- * 缓存。滚动容器是面板那一个(`#panel-main-scroll`),前插前后的 `scrollHeight` 差值补回
- * `scrollTop`:人正在读的那一段因此留在原处。
+ * 「加载更早」取 `?before=<最前那条的 seq>` 的上一页前插进同一份查询缓存。滚动容器是对话流
+ * 自己那个,前插前后的 `scrollHeight` 差值补回 `scrollTop`:人正在读的那一段因此留在原处。
  */
 function useEarlierRecords(
   sessionId: number,
   recordsKey: readonly unknown[],
   events: readonly AgentSessionRecord[],
+  scroller: React.RefObject<HTMLDivElement | null>,
 ) {
   const queryClient = useQueryClient();
   const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const bottom = useRef<HTMLDivElement | null>(null);
-  // 首屏那一次滚到底,只滚一次:之后人自己滚到哪就是哪。
-  const settled = useRef(false);
-  useEffect(() => {
-    if (settled.current || events.length === 0) return;
-    settled.current = true;
-    bottom.current?.scrollIntoView({ block: "end" });
-  }, [events.length]);
 
   const earlier = async (): Promise<void> => {
     const first = events[0];
     if (first === undefined || loadingEarlier) return;
-    const scroller = document.getElementById("panel-main-scroll");
-    const before = scroller?.scrollHeight ?? 0;
+    const el = scroller.current;
+    const before = el?.scrollHeight ?? 0;
     setLoadingEarlier(true);
     try {
       const page = await fetchJson<{ records: AgentSessionRecord[]; hasMore: boolean }>(
@@ -646,10 +765,10 @@ function useEarlierRecords(
           hasMore: page.hasMore,
         }),
       );
-      if (scroller !== null) {
+      if (el !== null) {
         // 渲染完才量得到新的高度:下一帧再补差值。
         requestAnimationFrame(() => {
-          scroller.scrollTop += scroller.scrollHeight - before;
+          el.scrollTop += el.scrollHeight - before;
         });
       }
     } finally {
@@ -657,7 +776,7 @@ function useEarlierRecords(
     }
   };
 
-  return { earlier, loadingEarlier, bottom };
+  return { earlier, loadingEarlier };
 }
 
 /**
@@ -962,11 +1081,159 @@ function OutputPanel({
 }
 
 /**
+ * 输入区(issue #334、#336)。一个框:随内容长高的原生 textarea 在上,下沿一行是图片、在跑时的
+ * 排队 / 插话切换、停止与发送。原生 textarea 而不是 Themes TextArea:它要嵌在自己的框里与
+ * 下沿那一排共用一道边,与 `ui/command` 的输入同理;框的边、底、焦点环都走 v8 令牌。
+ *
+ * 回车发送,Shift+回车换行;中文输入法选词那一下 `isComposing` 为真,不发。
+ */
+function Composer({
+  sessionId,
+  running,
+  mode,
+  onMode,
+  draft,
+  onDraft,
+  images,
+  imageInput,
+  sending,
+  attaching,
+  stopping,
+  onSend,
+  onStop,
+  onPick,
+  onRemove,
+}: {
+  sessionId: number;
+  running: boolean;
+  mode: QueuedMessage["mode"];
+  onMode: (mode: QueuedMessage["mode"]) => void;
+  draft: string;
+  onDraft: (draft: string) => void;
+  images: readonly string[];
+  imageInput: boolean;
+  sending: boolean;
+  attaching: boolean;
+  stopping: boolean;
+  onSend: () => void;
+  onStop: () => void;
+  onPick: (files: readonly File[]) => void;
+  onRemove: (imageId: string) => void;
+}) {
+  const area = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = area.current;
+    if (el === null) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [draft]);
+  const canSend = !sending && draft.trim() !== "";
+  const sendLabel = sending ? "发送中" : running ? MODE_LABEL[mode] : "发送";
+
+  return (
+    <form
+      className="flex shrink-0 flex-col gap-1.5 pt-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (canSend) onSend();
+      }}
+    >
+      <div className="flex flex-col rounded-lg border border-input bg-surface shadow-control transition-shadow focus-within:[box-shadow:var(--v8-shadow-focus)]">
+        <textarea
+          ref={area}
+          aria-label="发消息"
+          rows={1}
+          value={draft}
+          placeholder={running ? "在跑:这一条按所选模式投" : "给 agent 发消息"}
+          // 发送中不禁用输入框:禁用会丢焦点,发完还得再点一次才能接着打;重复发送由 canSend 挡。
+          className="max-h-48 w-full resize-none overflow-y-auto bg-transparent px-3 pt-3 pb-1 text-lg outline-none placeholder:text-text-disabled"
+          onChange={(event) => onDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+            event.preventDefault();
+            if (canSend) onSend();
+          }}
+        />
+        <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
+          <ImageComposer
+            sessionId={sessionId}
+            images={images}
+            imageInput={imageInput}
+            busy={sending || attaching}
+            onPick={onPick}
+            onRemove={onRemove}
+          />
+          {running ? (
+            <SegmentedControl.Root
+              size="1"
+              value={mode}
+              onValueChange={(next) => onMode(next as QueuedMessage["mode"])}
+              aria-label="发消息的模式"
+            >
+              <SegmentedControl.Item value="followUp">排队</SegmentedControl.Item>
+              <SegmentedControl.Item value="steer">插话</SegmentedControl.Item>
+            </SegmentedControl.Root>
+          ) : null}
+          <div className="flex-1" />
+          {running ? (
+            <Tooltip content="停止:只中止当前这一步,排队的消息保留">
+              <IconButton
+                type="button"
+                variant="soft"
+                color="red"
+                size="2"
+                aria-label="停止"
+                disabled={stopping}
+                onClick={onStop}
+              >
+                <StopIcon aria-hidden />
+              </IconButton>
+            </Tooltip>
+          ) : null}
+          <Tooltip content={`${sendLabel}(回车)`}>
+            <IconButton type="submit" variant="solid" size="2" aria-label={sendLabel} disabled={!canSend}>
+              <PaperPlaneIcon aria-hidden />
+            </IconButton>
+          </Tooltip>
+        </div>
+      </div>
+      {running ? (
+        <Text as="p" size="1" color="gray">
+          {mode === "steer"
+            ? "插话在下一个回合边界生效,不会打断正在跑的工具调用。"
+            : "排队的消息等这一轮跑完按顺序投递。"}
+          {" 停止只中止当前这一步,排队的消息保留。"}
+        </Text>
+      ) : null}
+    </form>
+  );
+}
+
+/** 头部那一行用量:总数常显,四个分项在提示里。 */
+function UsageLine({ usage }: { usage: AgentSession["usage"] }) {
+  const n = (value: number): string => value.toLocaleString("zh-CN");
+  return (
+    <Tooltip
+      content={`输入 ${n(usage.inputTokens)} · 输出 ${n(usage.outputTokens)} · 缓存读 ${n(usage.cacheReadTokens)} · 缓存写 ${n(usage.cacheWriteTokens)}`}
+    >
+      <span className="font-mono tabular-nums underline decoration-dotted underline-offset-2">
+        {n(usage.totalTokens)}
+      </span>
+    </Tooltip>
+  );
+}
+
+/**
  * 一个 Agent 会话的详情页(原型 A 的三栏工作台,issue #332、#333、#334)。左栏产品与我的
  * 会话、中栏对话流与输入区、右栏产出(issue #336)。
  *
+ * 中栏是一块占满视口的工作台:对话流自己滚,输入框钉在底部,整页不滚。高度由壳的 flex 链
+ * 给下来(`PageBody` 撑满 `#panel-main-scroll`),不写视口常量。`lg` 以下左栏不显示——切
+ * 会话走底部 Tab「产品」回产品页;`xl` 以下右栏产出不显示,头部的「对话 / 产出」切换把产出
+ * 换进中栏。
+ *
  * 执行中输入框照样能写:发出去的那一条按所选模式排队或插话,停止只中止当前这一步。空闲时
- * 两种模式等同直接开跑,切换因此只在执行中才有分别——文案把这件事说出来,而不是把切换藏起来。
+ * 两种模式等同直接开跑,切换因此只在执行中才出现。
  */
 export function AgentSessionPage({
   productId,
@@ -987,8 +1254,10 @@ export function AgentSessionPage({
   const [mode, setMode] = useState<QueuedMessage["mode"]>("followUp");
   /** 这一条消息带的图片 id(issue #336)。发出去就清空;移除只是不带它,文件留在会话里。 */
   const [images, setImages] = useState<string[]>([]);
-  /** 右栏看的是哪一版产出。null 即最新那一版;点对话流里的产出卡片切到那一版(issue #337)。 */
+  /** 右栏看的是哪一版产出。null 即最新那一版;点对话流里的产出行切到那一版(issue #337)。 */
   const [outputVersion, setOutputVersion] = useState<number | null>(null);
+  /** `xl` 以下中栏放对话还是产出。 */
+  const [pane, setPane] = useState<"chat" | "output">("chat");
 
   const sessionQuery = useQuery({
     queryKey: ["agent-sessions", sessionId],
@@ -1019,10 +1288,12 @@ export function AgentSessionPage({
   const mine = session !== undefined && session.createdBy === username;
   /**
    * 产品梳理会话由系统开,没有创建者可言:停止与删除这两个动作给系统管理员(issue #346),
-   * 与服务端那一道同一个判据。发消息那几个续谈动作仍谁都做不了,表单因此照旧只给创建者。
+   * 与服务端那一道同一个判据。发消息那几个续谈动作仍谁都做不了,输入区因此照旧只给创建者;
+   * 停止键平时在输入区里,对这个用途就摆在头部。
    */
   const surveyAdmin =
     session !== undefined && session.purpose === "product-survey" && isSystemAdmin;
+  const hasOutput = session !== undefined && PURPOSE_HAS_OUTPUT[session.purpose];
   const refresh = (): Promise<void> =>
     queryClient.invalidateQueries({ queryKey: ["agent-sessions", sessionId] });
   const post = useMutation({
@@ -1086,8 +1357,18 @@ export function AgentSessionPage({
   });
 
   const loadError = sessionQuery.error;
+  const outputPanel =
+    session === undefined ? null : (
+      <OutputPanel
+        sessionId={sessionId}
+        canAct={session.createdBy === username}
+        running={running}
+        picked={outputVersion}
+        onPick={setOutputVersion}
+      />
+    );
   return (
-    <PageBody>
+    <PageBody className="h-full pb-6">
       {feedback === null ? null : (
         <Callout.Root
           role={feedback.error ? "alert" : "status"}
@@ -1109,10 +1390,10 @@ export function AgentSessionPage({
         </Callout.Root>
       )}
 
-      <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:gap-[18px]">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 lg:flex-row lg:gap-[18px]">
         <aside
           aria-label="产品与我的会话"
-          className="flex w-full shrink-0 flex-col gap-2.5 lg:sticky lg:top-[100px] lg:max-h-[calc(100vh-180px)] lg:w-[272px] lg:self-start lg:overflow-y-auto"
+          className="flex w-full shrink-0 flex-col gap-2.5 max-lg:hidden lg:h-full lg:w-[264px] lg:overflow-y-auto"
         >
           <RailCard title="产品">
             {productQuery.data === undefined ? (
@@ -1141,194 +1422,154 @@ export function AgentSessionPage({
           />
         </aside>
 
-        <div className="flex min-w-0 flex-1 flex-col gap-3">
-          <CardShell className="flex min-w-0 flex-col gap-3 px-5 py-4">
-            <PageHeader
-              title={session === undefined ? "Agent 会话" : PURPOSE_LABEL[session.purpose]}
-              actions={
-                // 删会话按钮只有创建者看得到:系统管理员读得到别人的会话,删不了。产品梳理
-                // 会话是例外(issue #346):它没有创建者,停止与删除给系统管理员,而它的
-                // 停止按钮在发消息表单里,那个表单对这个用途谁都不渲染,因此也摆在这里。
-                mine || surveyAdmin ? (
-                  <div className="flex items-center gap-2">
-                    {surveyAdmin ? (
-                      <Button
-                        variant="soft"
-                        color="red"
-                        size={{ initial: "3", sm: "2" }}
-                        disabled={!running || stop.isPending}
-                        onClick={() => stop.mutate()}
-                      >
-                        <StopIcon aria-hidden />
-                        停止
-                      </Button>
-                    ) : null}
-                    <Button
-                      variant="soft"
-                      color="red"
-                      size={{ initial: "3", sm: "2" }}
-                      disabled={remove.isPending}
-                      onClick={() => {
-                        setFeedback(null);
-                        setConfirming(true);
-                      }}
-                    >
-                      删会话
-                    </Button>
-                  </div>
-                ) : undefined
-              }
-            />
-            {/*
-              记录有缺损时顶部一道横幅(spec #329 的 US 14):agent 忘了哪一段要让人知道,
-              而不是默默丢掉。缺损只在重建那一刻定形,条数由服务端按记录算出来。
-            */}
-            {dropped > 0 ? (
-              <Callout.Root role="status" color="amber" size="1">
-                <Callout.Icon>
-                  <CrossCircledIcon aria-hidden />
-                </Callout.Icon>
-                <Callout.Text>
-                  这个会话的记录有缺损:最早的 {dropped} 条不在 agent 的上下文里,它看不到那一段。
-                </Callout.Text>
-              </Callout.Root>
-            ) : null}
-            {session === undefined ? (
-              <Skeleton aria-hidden className="h-40" />
-            ) : (
-              <>
-                <Text as="p" size="2" color="gray">
-                  {localMinute(session.createdAt)} 由 {session.createdBy} 建立
-                  {running ? " · 在跑" : ""}
-                </Text>
+        <CardShell className="h-full min-h-0 min-w-0 flex-1 px-5 py-4">
+          <div className="flex shrink-0 flex-wrap items-start justify-between gap-x-3 gap-y-2 border-b border-line pb-3">
+            <div className="flex min-w-0 flex-col gap-0.5">
+              {productQuery.data === undefined ? (
+                <Skeleton aria-hidden className="h-4 w-24" />
+              ) : (
+                <Link
+                  to="/products"
+                  className="w-fit break-all text-sm text-text-muted transition-colors hover:text-text"
+                >
+                  {productQuery.data.name}
+                </Link>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-3xl font-bold tracking-[-0.015em]">
+                  {session === undefined ? "Agent 会话" : PURPOSE_LABEL[session.purpose]}
+                </h1>
+                {running ? <StatusBadge tone="running">在跑</StatusBadge> : null}
+              </div>
+              {session === undefined ? null : (
+                <p className="text-sm text-text-muted">
+                  {localMinute(session.createdAt)} · {session.createdBy} 建立 ·{" "}
+                  <UsageLine usage={session.usage} /> token
+                </p>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {hasOutput ? (
+                <SegmentedControl.Root
+                  size="1"
+                  value={pane}
+                  onValueChange={(next) => setPane(next as "chat" | "output")}
+                  aria-label="中栏内容"
+                  className="xl:hidden"
+                >
+                  <SegmentedControl.Item value="chat">对话</SegmentedControl.Item>
+                  <SegmentedControl.Item value="output">产出</SegmentedControl.Item>
+                </SegmentedControl.Root>
+              ) : null}
+              {surveyAdmin && running ? (
+                <Button
+                  variant="soft"
+                  color="red"
+                  size={{ initial: "3", sm: "2" }}
+                  disabled={stop.isPending}
+                  onClick={() => stop.mutate()}
+                >
+                  <StopIcon aria-hidden />
+                  停止
+                </Button>
+              ) : null}
+              {mine || surveyAdmin ? (
+                <Button
+                  variant="soft"
+                  color="red"
+                  size={{ initial: "3", sm: "2" }}
+                  disabled={remove.isPending}
+                  onClick={() => {
+                    setFeedback(null);
+                    setConfirming(true);
+                  }}
+                >
+                  删会话
+                </Button>
+              ) : null}
+            </div>
+          </div>
+          {/*
+            记录有缺损时头部下面一道横幅(spec #329 的 US 14):agent 忘了哪一段要让人知道,
+            而不是默默丢掉。缺损只在重建那一刻定形,条数由服务端按记录算出来。
+          */}
+          {dropped > 0 ? (
+            <Callout.Root role="status" color="amber" size="1" className="mt-3 shrink-0">
+              <Callout.Icon>
+                <CrossCircledIcon aria-hidden />
+              </Callout.Icon>
+              <Callout.Text>
+                这个会话的记录有缺损:最早的 {dropped} 条不在 agent 的上下文里,它看不到那一段。
+              </Callout.Text>
+            </Callout.Root>
+          ) : null}
+          {session === undefined ? (
+            <Skeleton aria-hidden className="mt-3 h-40" />
+          ) : pane === "output" && hasOutput ? (
+            <div className="min-h-0 flex-1 overflow-y-auto py-3 xl:hidden">{outputPanel}</div>
+          ) : null}
+          {session === undefined ? null : (
+            <>
+              <div
+                className={
+                  pane === "output" && hasOutput
+                    ? "hidden min-h-0 flex-1 flex-col xl:flex"
+                    : "flex min-h-0 flex-1 flex-col"
+                }
+              >
                 <Conversation
                   sessionId={sessionId}
                   running={running}
-                  onOpenOutput={setOutputVersion}
+                  onOpenOutput={(version) => {
+                    setOutputVersion(version);
+                    setPane("output");
+                  }}
                 />
-                {/* 发消息只有创建者能做:别人读得到这个会话,发不了。 */}
-                {session.createdBy === username ? (
-                  <form
-                    className="flex flex-col gap-2"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      const text = draft.trim();
-                      if (text !== "") post.mutate(text);
-                    }}
-                  >
-                    <QueueBlock
-                      queue={queue}
-                      busy={clearQueue.isPending}
-                      onClear={() => clearQueue.mutate()}
-                    />
-                    <TextArea
-                      aria-label="发消息"
-                      rows={3}
-                      value={draft}
-                      disabled={post.isPending}
-                      placeholder={
-                        running ? "在跑:这一条按下面选的模式投。" : "说一句话,回车换行。"
-                      }
-                      onChange={(event) => setDraft(event.target.value)}
-                    />
-                    <div className="flex flex-wrap items-center gap-2">
-                      <SegmentedControl.Root
-                        size="1"
-                        value={mode}
-                        onValueChange={(next) => setMode(next as QueuedMessage["mode"])}
-                        aria-label="发消息的模式"
-                      >
-                        <SegmentedControl.Item value="followUp">排队</SegmentedControl.Item>
-                        <SegmentedControl.Item value="steer">插话</SegmentedControl.Item>
-                      </SegmentedControl.Root>
-                      <ImageComposer
-                        sessionId={sessionId}
-                        images={images}
-                        imageInput={imageInput}
-                        busy={post.isPending || attach.isPending}
-                        onPick={(files) => attach.mutate(files)}
-                        onRemove={(imageId) =>
-                          setImages((current) => current.filter((id) => id !== imageId))
-                        }
+              </div>
+              {/* 发消息只有创建者能做:别人读得到这个会话,发不了。 */}
+              {session.createdBy === username ? (
+                <>
+                  {queue.length === 0 ? null : (
+                    <div className="shrink-0 pt-3">
+                      <QueueBlock
+                        queue={queue}
+                        busy={clearQueue.isPending}
+                        onClear={() => clearQueue.mutate()}
                       />
-                      <div className="flex-1" />
-                      <Button
-                        type="button"
-                        variant="soft"
-                        color="red"
-                        size={{ initial: "3", sm: "2" }}
-                        disabled={!running || stop.isPending}
-                        onClick={() => stop.mutate()}
-                      >
-                        <StopIcon aria-hidden />
-                        停止
-                      </Button>
-                      <Button
-                        type="submit"
-                        variant="solid"
-                        size={{ initial: "3", sm: "2" }}
-                        disabled={post.isPending || draft.trim() === ""}
-                      >
-                        {post.isPending
-                          ? "发送中…"
-                          : running
-                            ? MODE_LABEL[mode]
-                            : "发送"}
-                      </Button>
                     </div>
-                    <Text as="p" size="2" color="gray">
-                      {running
-                        ? mode === "steer"
-                          ? "插话在下一个回合边界生效,不会打断正在跑的工具调用。"
-                          : "排队的消息等这一轮跑完按顺序投递。"
-                        : "空闲时两种模式一样:发出去就直接开跑。"}
-                      {running ? " 停止只中止当前这一步,排队的消息保留。" : ""}
-                    </Text>
-                  </form>
-                ) : null}
-                {/* 页脚一行会话用量。 */}
-                <Text as="p" size="2" color="gray" className="border-t border-line pt-2">
-                  会话用量{" "}
-                  <span className="font-mono tabular-nums">
-                    {session.usage.totalTokens.toLocaleString("zh-CN")}
-                  </span>{" "}
-                  token · 输入{" "}
-                  <span className="font-mono tabular-nums">
-                    {session.usage.inputTokens.toLocaleString("zh-CN")}
-                  </span>{" "}
-                  · 输出{" "}
-                  <span className="font-mono tabular-nums">
-                    {session.usage.outputTokens.toLocaleString("zh-CN")}
-                  </span>{" "}
-                  · 缓存读{" "}
-                  <span className="font-mono tabular-nums">
-                    {session.usage.cacheReadTokens.toLocaleString("zh-CN")}
-                  </span>{" "}
-                  · 缓存写{" "}
-                  <span className="font-mono tabular-nums">
-                    {session.usage.cacheWriteTokens.toLocaleString("zh-CN")}
-                  </span>
-                </Text>
-              </>
-            )}
-          </CardShell>
-        </div>
+                  )}
+                  <Composer
+                    sessionId={sessionId}
+                    running={running}
+                    mode={mode}
+                    onMode={setMode}
+                    draft={draft}
+                    onDraft={setDraft}
+                    images={images}
+                    imageInput={imageInput}
+                    sending={post.isPending}
+                    attaching={attach.isPending}
+                    stopping={stop.isPending}
+                    onSend={() => post.mutate(draft.trim())}
+                    onStop={() => stop.mutate()}
+                    onPick={(files) => attach.mutate(files)}
+                    onRemove={(imageId) =>
+                      setImages((current) => current.filter((id) => id !== imageId))
+                    }
+                  />
+                </>
+              ) : null}
+            </>
+          )}
+        </CardShell>
 
-        {/* 没有产出类型的用途不渲染右栏,中栏(`flex-1`)因此占满(开放对话)。 */}
-        {session === undefined || PURPOSE_HAS_OUTPUT[session.purpose] ? (
+        {/* 没有产出类型的用途不渲染右栏,中栏因此占满(开放对话、产品梳理)。 */}
+        {hasOutput ? (
           <aside
             aria-label="会话产出"
-            className="flex w-full shrink-0 flex-col gap-2.5 xl:sticky xl:top-[100px] xl:max-h-[calc(100vh-180px)] xl:w-[336px] xl:self-start xl:overflow-y-auto"
+            className="flex w-full shrink-0 flex-col gap-2.5 max-xl:hidden xl:h-full xl:w-[336px] xl:overflow-y-auto"
           >
-            <CardShell className="px-5 py-4">
-              <OutputPanel
-                sessionId={sessionId}
-                canAct={session !== undefined && session.createdBy === username}
-                running={running}
-                picked={outputVersion}
-                onPick={setOutputVersion}
-              />
-            </CardShell>
+            <CardShell className="px-5 py-4">{outputPanel}</CardShell>
           </aside>
         ) : null}
       </div>
