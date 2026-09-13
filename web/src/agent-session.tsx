@@ -490,7 +490,8 @@ function Conversation({
     <div className="relative min-h-0 flex-1">
       <div
         ref={scroller}
-        className="flex h-full flex-col gap-3 overflow-y-auto overscroll-contain py-3"
+        // relative:行里的 sr-only 是绝对定位,容器不定位的话它会落到容器外,把整页撑出一段滚动。
+        className="relative flex h-full flex-col gap-3 overflow-y-auto overscroll-contain py-3"
         onScroll={(event) => {
           const el = event.currentTarget;
           setAway(el.scrollHeight - el.scrollTop - el.clientHeight > FOLLOW_THRESHOLD);
