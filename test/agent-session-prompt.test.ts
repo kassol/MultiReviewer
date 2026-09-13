@@ -52,3 +52,13 @@ test("系统提示写出产品名,有职责的仓库带破折号那一段,没有
     /^The note after the dash says what that repository is for in this product; start from it to decide which repository to read\.$/m,
   );
 });
+
+test("没有一个仓库写过职责时,不写那句说破折号的话", () => {
+  const prompt = sessionSystemPrompt({
+    ...REQUEST,
+    repos: REQUEST.repos.map((repo) => ({ ...repo, role: null })),
+  });
+
+  assert.match(prompt, /^- acme\/api$/m);
+  assert.doesNotMatch(prompt, /The note after the dash/);
+});

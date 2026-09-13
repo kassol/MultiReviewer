@@ -148,8 +148,12 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
     "",
     ...repos,
     "",
-    "The note after the dash says what that repository is for in this product; start from it to decide which repository to read.",
-    "",
+    ...(request.repos.some((repo) => repo.role !== null)
+      ? [
+          "The note after the dash says what that repository is for in this product; start from it to decide which repository to read.",
+          "",
+        ]
+      : []),
     "Every path you pass to read, grep, find and ls stays inside the session root — an absolute path outside it, or a path that climbs out with .., is refused. The git tool reads one repository per call: every path argument starts with the <owner>/<repo>/ prefix, and that prefix picks the repository.",
     "",
     "Your tools are read-only. You cannot edit files, write files or run shell commands. Read the code before you claim anything about it: the repositories above are the evidence.",
