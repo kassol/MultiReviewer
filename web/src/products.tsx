@@ -47,6 +47,11 @@ type Product = { id: number; name: string; createdAt: string; repos: ProductRepo
 type RegisteredRepo = { repoId: number; owner: string; repo: string };
 /** 一条生效的产品知识(CONTEXT.md 产品知识,issue #343)。`repoIds` 是它涉及的仓库集合。 */
 type ProductKnowledge = { id: number; statement: string; repoIds: number[] };
+/**
+ * 一条待确认的提案(CONTEXT.md 产品知识,issue #345)。`retiresId` 不为空即退役提案,那一条
+ * 的陈述是退役的理由;确认与驳回是 issue #346 的事,这一版只列出来。
+ */
+type ProductProposal = ProductKnowledge & { retiresId: number | null };
 
 const PRODUCTS_QUERY_KEY = ["products"] as const;
 
@@ -109,11 +114,14 @@ export function ProductsPage({
   // 因此另读一次产品详情;读不需要权限格,谁看得到产品就看得到这一段。
   const knowledgeQuery = useQuery({
     queryKey: knowledgeQueryKey(selected?.id),
-    queryFn: async () =>
-      (await fetchJson<{ knowledge: ProductKnowledge[] }>(`/products/${selected!.id}`)).knowledge,
+    queryFn: () =>
+      fetchJson<{ knowledge: ProductKnowledge[]; proposals: ProductProposal[] }>(
+        `/products/${selected!.id}`,
+      ),
     enabled: selected !== undefined,
   });
-  const knowledge = knowledgeQuery.data ?? [];
+  const knowledge = knowledgeQuery.data?.knowledge ?? [];
+  const proposals = knowledgeQuery.data?.proposals ?? [];
 
   const refresh = (): Promise<void> =>
     queryClient.invalidateQueries({ queryKey: PRODUCTS_QUERY_KEY });
@@ -224,6 +232,21 @@ export function ProductsPage({
     onError: failed,
   });
 
+  /**
+   * 重梳(CONTEXT.md 产品梳理,issue #345):开一个产品梳理会话。它由系统建,因此不跳进去
+   * ——人要看的是它随后交上来的提案,会话在左栏列着,想看过程再点进去。
+   */
+  const survey = useMutation({
+    mutationFn: (input: { product: Product }) =>
+      send<{ session: AgentSession }>(`/products/${input.product.id}/survey`, "POST"),
+    onSuccess: async ({ session }) => {
+      setFeedback({ text: "已开一个产品梳理会话,它交出提案后在这里确认。", error: false });
+      await queryClient.invalidateQueries({ queryKey: sessionsQueryKey(session.productId) });
+      void refreshKnowledge();
+    },
+    onError: failed,
+  });
+
   /** 建会话。建完直接进那个会话:下一步就是在里面说话,不让人再点一次。 */
   const createSession = useMutation({
     mutationFn: (input: { product: Product; purpose: AgentSessionPurpose }) =>
@@ -249,7 +272,8 @@ export function ProductsPage({
     detach.isPending ||
     remove.isPending ||
     writeKnowledge.isPending ||
-    retireKnowledge.isPending;
+    retireKnowledge.isPending ||
+    survey.isPending;
 
   /** 还没归入任何产品、且在这个账号分配内的仓库。归入第二个产品服务端会回 409。 */
   const attachable = unassignedRepos(reposQuery.data ?? [], products);
@@ -499,9 +523,14 @@ export function ProductsPage({
                 key={`${selected.id}-${knowledgeFormKey}`}
                 product={selected}
                 knowledge={knowledge}
+                proposals={proposals}
                 pending={knowledgeQuery.isPending}
                 canWrite={canWriteKnowledge}
                 busy={busy}
+                onSurvey={() => {
+                  setFeedback(null);
+                  survey.mutate({ product: selected });
+                }}
                 onWrite={(statement, repoIds) => {
                   setFeedback(null);
                   writeKnowledge.mutate({ product: selected, statement, repoIds });
@@ -827,29 +856,33 @@ function AttachDialog({
 }
 
 /**
- * 产品页右栏的产品知识区(CONTEXT.md 产品知识,issue #343)。三样东西:生效列表、手写表单、
- * 每行的「退役」。没有 `knowledge:write` 的人只看到列表——维护这一层知识的人与维护知识集的
- * 是同一批人。
+ * 产品页右栏的产品知识区(CONTEXT.md 产品知识,issue #343、#345)。四样东西:生效列表、待确认
+ * 的提案、手写表单、每行的「退役」,加标题旁的「重梳」。没有 `knowledge:write` 的人只看到两份
+ * 列表——维护这一层知识的人与维护知识集的是同一批人。
  *
  * 仓库不足两个的产品写不出条目(一条产品知识至少说到两个仓库),那一档把表单换成一句话说清
- * 下一步,而不是给一个必定被服务端回绝的按钮。
+ * 下一步、并把「重梳」置灰,而不是给一个必定被服务端回绝的按钮。
  */
 function KnowledgeSection({
   product,
   knowledge,
+  proposals,
   pending,
   canWrite,
   busy,
   onWrite,
   onRetire,
+  onSurvey,
 }: {
   product: Product;
   knowledge: readonly ProductKnowledge[];
+  proposals: readonly ProductProposal[];
   pending: boolean;
   canWrite: boolean;
   busy: boolean;
   onWrite: (statement: string, repoIds: readonly number[]) => void;
   onRetire: (entry: ProductKnowledge) => void;
+  onSurvey: () => void;
 }) {
   const [statement, setStatement] = useState("");
   const [repoIds, setRepoIds] = useState<readonly number[]>([]);
@@ -871,12 +904,31 @@ function KnowledgeSection({
   return (
     <CardShell className="min-w-0 px-5 py-4">
       <div className="flex min-w-0 flex-col gap-3">
-        <div>
-          <h2 className="text-lg font-bold tracking-[-0.01em]">产品知识</h2>
-          <Text as="p" size="2" color="gray" className="mt-1">
-            一条产品知识说的是仓库之间的事:谁调谁的什么、跨仓库都成立的约定、某类改动牵动哪些
-            仓库。一个仓库内部的事属于那个仓库的知识集。
-          </Text>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-lg font-bold tracking-[-0.01em]">产品知识</h2>
+            <Text as="p" size="2" color="gray" className="mt-1">
+              一条产品知识说的是仓库之间的事:谁调谁的什么、跨仓库都成立的约定、某类改动牵动
+              哪些仓库。一个仓库内部的事属于那个仓库的知识集。
+            </Text>
+          </div>
+          {canWrite ? (
+            <Button
+              variant="soft"
+              color="gray"
+              size="1"
+              className="shrink-0"
+              disabled={busy || product.repos.length < 2}
+              title={
+                product.repos.length < 2
+                  ? "产品梳理要这个产品有两个以上仓库"
+                  : "开一个产品梳理会话,让 agent 读一遍全部仓库再交提案"
+              }
+              onClick={onSurvey}
+            >
+              重梳
+            </Button>
+          ) : null}
         </div>
 
         {pending ? (
@@ -915,6 +967,37 @@ function KnowledgeSection({
               </li>
             ))}
           </ul>
+        )}
+
+        {proposals.length === 0 ? null : (
+          <div className="flex min-w-0 flex-col gap-1.5 border-t border-line pt-3">
+            <Text as="span" size="2" weight="medium">
+              待确认的提案({proposals.length})
+            </Text>
+            <ul>
+              {proposals.map((entry) => {
+                const target =
+                  entry.retiresId === null
+                    ? undefined
+                    : knowledge.find((row) => row.id === entry.retiresId);
+                return (
+                  <li
+                    key={entry.id}
+                    className="flex min-w-0 flex-col gap-1 border-t border-line py-2.5 first:border-t-0 first:pt-0"
+                  >
+                    <Text as="span" size="2" className="break-words">
+                      {entry.retiresId === null
+                        ? entry.statement
+                        : `退役提案 → ${target?.statement ?? `条目 ${entry.retiresId}`}:${entry.statement}`}
+                    </Text>
+                    <Text as="span" size="1" color="gray" className="break-all font-mono">
+                      {involved(entry)}
+                    </Text>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         )}
 
         {!canWrite ? null : product.repos.length < 2 ? (

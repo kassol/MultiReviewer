@@ -73,6 +73,16 @@ export type SessionKnowledgeEntries = {
   }[];
 };
 
+/**
+ * 一条生效的产品知识,交给子进程那一侧的形态(CONTEXT.md 产品知识,issue #345)。仓库集合
+ * 在这里已经是 `<owner>/<repo>`:子进程手上只有这种形式的仓库名,repo id 它认不出来。
+ */
+export type SessionProductKnowledge = {
+  id: number;
+  statement: string;
+  repos: readonly string[];
+};
+
 /** 开一个会话要给的那几样。凭据不进 IPC,走环境变量(`env.ts`)。 */
 export type OpenSessionRequest = {
   /** 会话根目录。cwd 是它,只读工具圈在它里面,工作树挂在它下面。 */
@@ -87,6 +97,11 @@ export type OpenSessionRequest = {
    */
   productKnowledgeCount: number;
   repos: readonly SessionRepoInput[];
+  /**
+   * 这个产品此刻生效的产品知识(issue #345)。产品梳理那一段提示按它列出「已经成立的是哪些」,
+   * 产出工具的退役目标也按它判。空数组即这个产品还没有产品知识。
+   */
+  productKnowledge: readonly SessionProductKnowledge[];
   runtimeModel: RuntimeModel;
   /** 这一处模型引用的思考档位。缺席即 `off`。 */
   thinkingLevel?: ThinkingLevel;
@@ -106,6 +121,18 @@ export type SessionOutput = {
   /** 产生它的那次工具调用。 */
   toolCallId: string;
   payload: unknown;
+};
+
+/**
+ * 产品梳理交上来的一批提案(CONTEXT.md 产品梳理,issue #345)。与会话产出分成两档:产出是
+ * 人要读的一份文档,这一批是要落进产品知识表的提案行,交出来就等人确认。
+ *
+ * 形状与校验都在子进程那一侧判完(`session-output-tools.ts`):陈述的仓库集合是
+ * `<owner>/<repo>`,退役指向的是提示里列过的那条生效条目的 id。
+ */
+export type ProductSurveyProposals = {
+  statements: readonly { statement: string; repos: readonly string[] }[];
+  retirements: readonly { id: number; reason: string }[];
 };
 
 /**
@@ -185,6 +212,11 @@ export type SessionWorkerMessage =
    * 同形:子进程只把归一化与打回判完的那一份交上来,落产出表与广播都在主进程。
    */
   | { kind: "output"; output: SessionOutput }
+  /**
+   * 产品梳理经它的产出工具交的那一批提案(issue #345)。与产出回传同形:子进程只把校验过的
+   * 那一批交上来,落产品知识表在主进程。
+   */
+  | { kind: "survey"; proposals: ProductSurveyProposals }
   /**
    * Pi 的队列现状(`queue_update`,issue #334)。主进程的排队镜像按它对齐:投递与清空都由
    * Pi 在回合边界做,哪几条还没投出去只有它说得准。

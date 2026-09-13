@@ -186,7 +186,7 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
     "",
     "When the task spans repositories or its scope is unclear, query the product layer first; otherwise query the repository and the paths the task touches.",
   ];
-  const purpose = purposeSystemPrompt(request.purpose);
+  const purpose = purposeSystemPrompt(request.purpose, request.productKnowledge);
   if (purpose !== undefined) sections.push("", purpose);
   return sections.join("\n");
 }
@@ -249,7 +249,11 @@ async function open(request: OpenSessionRequest): Promise<void> {
   const repos = request.repos.map((repo) => `${repo.owner}/${repo.repo}`);
   // 这个用途的产出工具(issue #337)。清单与定义取同一份:工具名在 `tools` 里没有那一行,
   // Pi 就不把它交给模型,两处各写一遍迟早对不上。
-  const outputTools = sessionOutputTools(request.purpose, { repos, send });
+  const outputTools = sessionOutputTools(request.purpose, {
+    repos,
+    knowledge: request.productKnowledge,
+    send,
+  });
   // 喂回去的那一段已经在记录表里,镜像的起点因此是它的长度——从 0 起会把整段历史再落一遍。
   // 置在建会话之前:建会话本身会追加「这次用哪个模型、哪个思考档位」两条,它们要镜像出去。
   mirrored = request.entries?.length ?? 0;

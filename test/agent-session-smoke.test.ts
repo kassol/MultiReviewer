@@ -176,6 +176,7 @@ async function runSession(
       // 主进程接它,提示的目录那一段因此是这两个数。
       productKnowledgeCount: 0,
       repos: [{ ...REPO, role: "唯一的仓库", ruleCount: 1, factCount: 1 }],
+      productKnowledge: [],
       runtimeModel: await smokeRuntimeModel(),
     },
   } satisfies SessionCommand);

@@ -2719,9 +2719,14 @@ export type ProductKnowledgeRecord = {
 
 /**
  * 会话用途(CONTEXT.md 会话用途)。需求拆分交结构化产出,开放对话只聊与只读代码、没有产出
- * 类型;写代码类用途接入时各成一个值。建时必填、之后不变,因此没有改用途的写入口。
+ * 类型,产品梳理由系统开、交产品知识提案(issue #345);写代码类用途接入时各成一个值。
+ * 建时必填、之后不变,因此没有改用途的写入口。
  */
-export const AGENT_SESSION_PURPOSES = ["requirement-breakdown", "open-conversation"] as const;
+export const AGENT_SESSION_PURPOSES = [
+  "requirement-breakdown",
+  "open-conversation",
+  "product-survey",
+] as const;
 
 export type AgentSessionPurpose = (typeof AGENT_SESSION_PURPOSES)[number];
 
@@ -3081,6 +3086,9 @@ export type Store = {
   /**
    * 写一条产品知识。人手写的那一条直接落生效(issue #343),`repoIds` 由调用方校验过
    * (至少两个、都在这个产品内),这里只按升序去重落库。
+   *
+   * 产品梳理交的提案走同两格(issue #345):`proposedSessionId` 是交它的那个会话,
+   * `retiresId` 是退役提案指向的那条生效条目。手写那一条两格都省略。
    */
   addProductKnowledge(record: {
     productId: number;
@@ -3089,6 +3097,8 @@ export type Store = {
     state: ProductKnowledgeState;
     proposedBy: string | null;
     at: string;
+    proposedSessionId?: number;
+    retiresId?: number;
   }): ProductKnowledgeRecord;
   /**
    * 把一条生效的产品知识退役。不在这个产品下、或已经不生效即 false——退役两次不该报成功。
@@ -5334,13 +5344,23 @@ export function openStore(dbPath: string): Store {
         .map(productKnowledge);
     },
 
-    addProductKnowledge({ productId, statement, repoIds, state, proposedBy, at }) {
+    addProductKnowledge({
+      productId,
+      statement,
+      repoIds,
+      state,
+      proposedBy,
+      at,
+      proposedSessionId,
+      retiresId,
+    }) {
       const id = Number(
         db
           .prepare(
             `INSERT INTO product_knowledge
-               (product_id, statement, repo_ids, state, proposed_by, created_at, state_changed_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+               (product_id, statement, repo_ids, state, proposed_by, created_at, state_changed_at,
+                proposed_session_id, retires_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             productId,
@@ -5350,6 +5370,8 @@ export function openStore(dbPath: string): Store {
             proposedBy,
             at,
             at,
+            proposedSessionId ?? null,
+            retiresId ?? null,
           ).lastInsertRowid,
       );
       return productKnowledge(
