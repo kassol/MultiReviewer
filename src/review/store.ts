@@ -693,6 +693,29 @@ CREATE TABLE IF NOT EXISTS product_repo (
 );
 CREATE INDEX IF NOT EXISTS product_repo_by_product ON product_repo(product_id);
 
+-- 产品知识(CONTEXT.md 产品知识,ADR 0032,issue #343)。一行一条陈述,自己一张表而不是
+-- 给知识集那几张表的 repo_id 放空——理由写在 ADR 里。
+--
+-- repo_ids 是涉及的仓库集合,一段升序去重的 repo id JSON 数组:一条条目的仓库集合写下来
+-- 就不再变(产品摘掉一个仓库时那条条目退役,不是改它的集合),因此不另开一张关联表。
+-- 状态三态:提案、生效、退役;手写即直接生效,issue #343 只走生效与退役两条路。
+-- proposed_by 是提案来源:人手写即那个人的用户名,产品梳理会话交的即 NULL,那一档由
+-- proposed_session_id 指向开它的会话。retires_id 是退役提案指向的目标条目(只有提案行有)。
+CREATE TABLE IF NOT EXISTS product_knowledge (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL REFERENCES product(id),
+  statement TEXT NOT NULL,
+  repo_ids TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('proposed', 'active', 'retired')),
+  proposed_by TEXT,
+  proposed_session_id INTEGER,
+  created_at TEXT NOT NULL,
+  state_changed_at TEXT NOT NULL,
+  retires_id INTEGER REFERENCES product_knowledge(id)
+);
+CREATE INDEX IF NOT EXISTS product_knowledge_by_product
+  ON product_knowledge(product_id, state);
+
 -- Agent 会话(CONTEXT.md Agent 会话,issue #332)。挂在产品上,创建者是唯一能续谈与
 -- 删除它的人;用途建时定、之后不变(没有改用途的写入口)。用量五列与 review_run 同口径,
 -- 按条目累加在常驻子进程那一票接入,在那之前每一行都是 0,所以不可空。删产品级联硬删
@@ -2653,6 +2676,47 @@ function foldProducts(rows: readonly Record<string, unknown>[]): ProductRecord[]
   return [...products.values()];
 }
 
+/** 产品知识表里的一行。`repo_ids` 是这张表自己写下的 JSON,形状由写入口保证。 */
+function productKnowledge(row: Record<string, unknown>): ProductKnowledgeRecord {
+  return {
+    id: Number(row["id"]),
+    productId: Number(row["product_id"]),
+    statement: String(row["statement"]),
+    repoIds: JSON.parse(String(row["repo_ids"])) as number[],
+    state: String(row["state"]) as ProductKnowledgeState,
+    proposedBy: row["proposed_by"] === null ? null : String(row["proposed_by"]),
+    proposedSessionId:
+      row["proposed_session_id"] === null ? null : Number(row["proposed_session_id"]),
+    createdAt: String(row["created_at"]),
+    stateChangedAt: String(row["state_changed_at"]),
+    retiresId: row["retires_id"] === null ? null : Number(row["retires_id"]),
+  };
+}
+
+/**
+ * 产品知识的状态(CONTEXT.md 产品知识)。提案由产品梳理或人提出,人确认后生效,可退役;
+ * 手写的那一条直接生效(issue #343)。
+ */
+export type ProductKnowledgeState = "proposed" | "active" | "retired";
+
+/** 一条产品知识(CONTEXT.md 产品知识,ADR 0032,issue #343)。 */
+export type ProductKnowledgeRecord = {
+  id: number;
+  productId: number;
+  statement: string;
+  /** 涉及的仓库集合,升序去重的 repo id。至少两个,都是这个产品写下它时的仓库。 */
+  repoIds: number[];
+  state: ProductKnowledgeState;
+  /** 人手写即那个人的用户名;产品梳理会话交的即 null。 */
+  proposedBy: string | null;
+  /** 提出它的产品梳理会话。人手写的即 null。 */
+  proposedSessionId: number | null;
+  createdAt: string;
+  stateChangedAt: string;
+  /** 退役提案指向的那条生效条目。只有退役提案有,其余都是 null。 */
+  retiresId: number | null;
+};
+
 /**
  * 会话用途(CONTEXT.md 会话用途)。需求拆分交结构化产出,开放对话只聊与只读代码、没有产出
  * 类型;写代码类用途接入时各成一个值。建时必填、之后不变,因此没有改用途的写入口。
@@ -3012,6 +3076,24 @@ export type Store = {
    * 接口照它给确认框的数字;没有这个产品即 undefined。
    */
   deleteProduct(productId: number): { sessions: number } | undefined;
+  /** 一个产品在某一状态上的产品知识条目(CONTEXT.md 产品知识),新的在前。 */
+  listProductKnowledge(productId: number, state: ProductKnowledgeState): ProductKnowledgeRecord[];
+  /**
+   * 写一条产品知识。人手写的那一条直接落生效(issue #343),`repoIds` 由调用方校验过
+   * (至少两个、都在这个产品内),这里只按升序去重落库。
+   */
+  addProductKnowledge(record: {
+    productId: number;
+    statement: string;
+    repoIds: readonly number[];
+    state: ProductKnowledgeState;
+    proposedBy: string | null;
+    at: string;
+  }): ProductKnowledgeRecord;
+  /**
+   * 把一条生效的产品知识退役。不在这个产品下、或已经不生效即 false——退役两次不该报成功。
+   */
+  retireProductKnowledge(productId: number, entryId: number, at: string): boolean;
   /**
    * 一个产品下的 Agent 会话,新的在前。`createdBy` 给了即只回这个人的(「我的会话」),
    * 给 null 即这个产品下的全部(系统管理员那一档)。
@@ -5217,6 +5299,8 @@ export function openStore(dbPath: string): Store {
       db.exec("BEGIN");
       try {
         db.prepare("DELETE FROM product_repo WHERE product_id = ?").run(productId);
+        // 产品知识同样跟着产品走(issue #343):产品是它唯一的挂载点。
+        db.prepare("DELETE FROM product_knowledge WHERE product_id = ?").run(productId);
         // 会话跟着产品走(issue #332):产品是会话唯一的挂载点,留下来谁都读不到它。记录与
         // 受理过的消息 id 挂在会话上,同一个事务里一并删(issue #333)。
         deleteAgentSessionRows(
@@ -5237,6 +5321,53 @@ export function openStore(dbPath: string): Store {
         db.exec("ROLLBACK");
         throw error;
       }
+    },
+
+    listProductKnowledge(productId, state) {
+      return db
+        .prepare(
+          `SELECT * FROM product_knowledge
+            WHERE product_id = ? AND state = ?
+            ORDER BY id DESC`,
+        )
+        .all(productId, state)
+        .map(productKnowledge);
+    },
+
+    addProductKnowledge({ productId, statement, repoIds, state, proposedBy, at }) {
+      const id = Number(
+        db
+          .prepare(
+            `INSERT INTO product_knowledge
+               (product_id, statement, repo_ids, state, proposed_by, created_at, state_changed_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            productId,
+            statement,
+            JSON.stringify([...new Set(repoIds)].sort((left, right) => left - right)),
+            state,
+            proposedBy,
+            at,
+            at,
+          ).lastInsertRowid,
+      );
+      return productKnowledge(
+        db.prepare("SELECT * FROM product_knowledge WHERE id = ?").get(id)!,
+      );
+    },
+
+    retireProductKnowledge(productId, entryId, at) {
+      return (
+        Number(
+          db
+            .prepare(
+              `UPDATE product_knowledge SET state = 'retired', state_changed_at = ?
+                WHERE id = ? AND product_id = ? AND state = 'active'`,
+            )
+            .run(at, entryId, productId).changes,
+        ) > 0
+      );
     },
 
     listAgentSessions(productId, createdBy) {

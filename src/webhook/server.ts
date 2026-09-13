@@ -1962,12 +1962,28 @@ function handleListProducts(
   });
 }
 
-/** 一个产品与它的仓库。分配外的产品已经被路由上的 `product` 目标判成 404。 */
+/**
+ * 一个产品、它的仓库与它生效的产品知识(CONTEXT.md 产品知识,issue #343)。分配外的产品
+ * 已经被路由上的 `product` 目标判成 404。产品知识另成一格而不是塞进 `product`:产品列表
+ * 那一份不带它,两处同构才不会让人以为列表里也有。
+ */
 function handleProduct(res: ServerResponse, deps: WebhookServerDeps, productId: number): void {
-  const product = withStore(deps.dbPath, (store) => store.getProduct(productId));
-  return product === undefined
+  const read = withStore(deps.dbPath, (store) => {
+    const product = store.getProduct(productId);
+    return product === undefined
+      ? undefined
+      : { product, knowledge: store.listProductKnowledge(productId, "active") };
+  });
+  return read === undefined
     ? sendJson(res, 404, { error: NO_SUCH_PRODUCT })
-    : sendJson(res, 200, { product });
+    : sendJson(res, 200, {
+        product: read.product,
+        knowledge: read.knowledge.map((entry) => ({
+          id: entry.id,
+          statement: entry.statement,
+          repoIds: entry.repoIds,
+        })),
+      });
 }
 
 async function handleCreateProduct(
@@ -2075,6 +2091,86 @@ function handleDetachProductRepo(
 ): void {
   const detached = withStore(deps.dbPath, (store) => store.detachProductRepo(productId, repoId));
   return detached ? send(res, 204) : sendJson(res, 404, { error: "这个产品下没有这个仓库" });
+}
+
+/**
+ * 产品知识手写的那两句回绝(CONTEXT.md 产品知识,issue #343)。陈述的上限沿用 agent 产出
+ * 那一道(`AGENT_STATEMENT_LIMIT`):两边写的是同一种东西,一句要被反复注入的陈述。
+ */
+const PRODUCT_KNOWLEDGE_STATEMENT_SHAPE = `产品知识的陈述要是 1 到 ${AGENT_STATEMENT_LIMIT} 个字符`;
+const PRODUCT_KNOWLEDGE_TOO_FEW_REPOS = "产品知识至少要说到这个产品里的两个仓库";
+
+/** 退役时那一条已经不生效,或者根本不在这个产品下:两档同形回这一句。 */
+const NO_SUCH_PRODUCT_KNOWLEDGE = "没有这条生效的产品知识";
+
+/**
+ * 手写一条产品知识(CONTEXT.md 产品知识,issue #343 的 US 10)。人手写即直接生效,不经提案
+ * 那一档——提案是产品梳理交出来的东西,人自己写的不必再由人确认一遍。
+ *
+ * 仓库集合去重之后至少两个、且都在这个产品当前的仓库里:说不到两个仓库的那句话属于那一个
+ * 仓库的知识集,不属于这一层。
+ */
+async function handleWriteProductKnowledge(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+  username: string,
+): Promise<void> {
+  const payload = await readJson<{ statement?: unknown; repoIds?: unknown } | null>(req, res);
+  if (payload === undefined) return;
+  const statement = typeof payload?.statement === "string" ? payload.statement.trim() : "";
+  if (statement.length === 0 || statement.length > AGENT_STATEMENT_LIMIT) {
+    return sendJson(res, 400, { error: PRODUCT_KNOWLEDGE_STATEMENT_SHAPE });
+  }
+  const raw = payload?.repoIds;
+  const repoIds = [
+    ...new Set(
+      (Array.isArray(raw) ? raw : []).filter((value): value is number => Number.isInteger(value)),
+    ),
+  ];
+  if (repoIds.length < 2) return sendJson(res, 400, { error: PRODUCT_KNOWLEDGE_TOO_FEW_REPOS });
+
+  const product = withStore(deps.dbPath, (store) => store.getProduct(productId));
+  if (product === undefined) return sendJson(res, 404, { error: NO_SUCH_PRODUCT });
+  const outside = repoIds.find((repoId) => !product.repos.some((row) => row.repoId === repoId));
+  if (outside !== undefined) {
+    return sendJson(res, 400, { error: `这个产品下没有 repo id 为 ${outside} 的仓库` });
+  }
+
+  const entry = withStore(deps.dbPath, (store) =>
+    store.addProductKnowledge({
+      productId,
+      statement,
+      repoIds,
+      state: "active",
+      proposedBy: username,
+      at: new Date((deps.now ?? Date.now)()).toISOString(),
+    }),
+  );
+  return sendJson(res, 201, {
+    entry: { id: entry.id, statement: entry.statement, repoIds: entry.repoIds },
+  });
+}
+
+/**
+ * 手工退役一条生效的产品知识(issue #343 的 US 11)。与直接废止一条知识条目同一写法:
+ * `DELETE` 是退役而不是删行——退役时间要留着,后续的产品梳理据它看这句话何时不再成立。
+ */
+function handleRetireProductKnowledge(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+  entryId: number,
+): void {
+  const retired = withStore(deps.dbPath, (store) =>
+    store.retireProductKnowledge(
+      productId,
+      entryId,
+      new Date((deps.now ?? Date.now)()).toISOString(),
+    ),
+  );
+  return retired ? send(res, 204) : sendJson(res, 404, { error: NO_SUCH_PRODUCT_KNOWLEDGE });
 }
 
 /** 会话不存在,与别人的会话:两档同形回这一句 404(CONTEXT.md Agent 会话)。 */
@@ -2807,6 +2903,11 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "DELETE", pattern: /^\/products\/(\d+)$/, access: "repo:write", handler: ({ res, deps }, match) => handleDeleteProduct(res, deps, Number(match![1])) },
   { method: "PUT", pattern: /^\/products\/(\d+)\/repos\/(\d+)$/, access: "repo:write", assignment: { by: "repo", group: 2 }, handler: ({ req, res, deps }, match) => handleAttachProductRepo(req, res, deps, Number(match![1]), Number(match![2])) },
   { method: "DELETE", pattern: /^\/products\/(\d+)\/repos\/(\d+)$/, access: "repo:write", assignment: { by: "repo", group: 2 }, handler: ({ res, deps }, match) => handleDetachProductRepo(res, deps, Number(match![1]), Number(match![2])) },
+
+  // 产品知识(CONTEXT.md 产品知识,issue #343)。读随产品详情一起回,写与退役要
+  // `knowledge:write` 加这个产品里的一个仓库分配——后半句正是 `product` 这个目标本身。
+  { method: "POST", pattern: /^\/products\/(\d+)\/knowledge$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleWriteProductKnowledge(req, res, deps, Number(match![1]), caller!.username) },
+  { method: "DELETE", pattern: /^\/products\/(\d+)\/knowledge\/(\d+)$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleRetireProductKnowledge(res, deps, Number(match![1]), Number(match![2])) },
   // Agent 会话(CONTEXT.md Agent 会话,issue #332)。建与发消息按 `agent:chat`,列表与
   // 读登录即可:一个会话只有创建者与系统管理员读得到,这一判按创建者在 handler 里做,
   // 不是仓库分配能表达的事。产品下的两个端点仍声明 `product` 目标,看不到产品的人连

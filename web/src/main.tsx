@@ -523,6 +523,7 @@ const productsRoute = protectedPage("/products", undefined, () => {
     <ProductsPage
       canWrite={hasPermission(session, "repo:write")}
       canChat={hasPermission(session, "agent:chat")}
+      canWriteKnowledge={hasPermission(session, "knowledge:write")}
     />
   );
 });

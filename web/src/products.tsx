@@ -7,12 +7,14 @@ import {
 } from "@radix-ui/react-icons";
 import {
   Callout,
+  Checkbox,
   Dialog,
   Flex,
   IconButton,
   Select,
   Skeleton,
   Text,
+  TextArea,
   TextField,
 } from "@radix-ui/themes";
 import { useNavigate } from "@tanstack/react-router";
@@ -43,8 +45,18 @@ type ProductRepo = { repoId: number; owner: string; repo: string; role: string |
 type Product = { id: number; name: string; createdAt: string; repos: ProductRepo[] };
 /** `GET /repos` 那一份里归属弹窗要的三列。它已经按仓库分配收窄过。 */
 type RegisteredRepo = { repoId: number; owner: string; repo: string };
+/** 一条生效的产品知识(CONTEXT.md 产品知识,issue #343)。`repoIds` 是它涉及的仓库集合。 */
+type ProductKnowledge = { id: number; statement: string; repoIds: number[] };
 
 const PRODUCTS_QUERY_KEY = ["products"] as const;
+
+/** 一个产品的产品知识那一份读缓存的键。产品换了就是另一份。 */
+function knowledgeQueryKey(productId: number | undefined): readonly unknown[] {
+  return ["product-knowledge", productId];
+}
+
+/** 产品知识的陈述上限,与服务端那一道同一个数(`AGENT_STATEMENT_LIMIT`)。 */
+const KNOWLEDGE_STATEMENT_MAX = 100;
 
 function repoPath(row: ProductRepo | RegisteredRepo): string {
   return `${row.owner}/${row.repo}`;
@@ -60,9 +72,11 @@ function repoPath(row: ProductRepo | RegisteredRepo): string {
 export function ProductsPage({
   canWrite,
   canChat,
+  canWriteKnowledge,
 }: {
   canWrite: boolean;
   canChat: boolean;
+  canWriteKnowledge: boolean;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -70,6 +84,8 @@ export function ProductsPage({
   const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
   const [dialog, setDialog] = useState<"create" | "rename" | "attach" | "session" | null>(null);
   const [confirming, setConfirming] = useState(false);
+  /** 产品知识那一段表单的挂载标识:写成功一次就加一,表单因此重挂成空的。 */
+  const [knowledgeFormKey, setKnowledgeFormKey] = useState(0);
 
   const productsQuery = useQuery({
     queryKey: PRODUCTS_QUERY_KEY,
@@ -89,8 +105,20 @@ export function ProductsPage({
   const sessionsQuery = useProductSessions(selected?.id);
   const sessions = sessionsQuery.data ?? [];
 
+  // 当前产品生效的产品知识(CONTEXT.md 产品知识,issue #343)。产品列表那一份不带它,
+  // 因此另读一次产品详情;读不需要权限格,谁看得到产品就看得到这一段。
+  const knowledgeQuery = useQuery({
+    queryKey: knowledgeQueryKey(selected?.id),
+    queryFn: async () =>
+      (await fetchJson<{ knowledge: ProductKnowledge[] }>(`/products/${selected!.id}`)).knowledge,
+    enabled: selected !== undefined,
+  });
+  const knowledge = knowledgeQuery.data ?? [];
+
   const refresh = (): Promise<void> =>
     queryClient.invalidateQueries({ queryKey: PRODUCTS_QUERY_KEY });
+  const refreshKnowledge = (): Promise<void> =>
+    queryClient.invalidateQueries({ queryKey: knowledgeQueryKey(selected?.id) });
 
   /** 改名、归属与移出共用的成功收尾:关弹窗、报一句、重读列表。 */
   const settled = (text: string): void => {
@@ -168,6 +196,34 @@ export function ProductsPage({
     onError: failed,
   });
 
+  /**
+   * 手写一条产品知识(issue #343)。成功之后把表单那一段重挂一次清空它:陈述与勾选的仓库
+   * 只属于刚写完的那一条,留在框里下一条就会带着它。
+   */
+  const writeKnowledge = useMutation({
+    mutationFn: (input: { product: Product; statement: string; repoIds: readonly number[] }) =>
+      send<{ entry: ProductKnowledge }>(`/products/${input.product.id}/knowledge`, "POST", {
+        statement: input.statement,
+        repoIds: input.repoIds,
+      }),
+    onSuccess: () => {
+      setKnowledgeFormKey((key) => key + 1);
+      setFeedback({ text: "已记下一条产品知识。", error: false });
+      void refreshKnowledge();
+    },
+    onError: failed,
+  });
+
+  const retireKnowledge = useMutation({
+    mutationFn: (input: { product: Product; entry: ProductKnowledge }) =>
+      send(`/products/${input.product.id}/knowledge/${input.entry.id}`, "DELETE"),
+    onSuccess: () => {
+      setFeedback({ text: "已退役一条产品知识。", error: false });
+      void refreshKnowledge();
+    },
+    onError: failed,
+  });
+
   /** 建会话。建完直接进那个会话:下一步就是在里面说话,不让人再点一次。 */
   const createSession = useMutation({
     mutationFn: (input: { product: Product; purpose: AgentSessionPurpose }) =>
@@ -191,7 +247,9 @@ export function ProductsPage({
     attach.isPending ||
     setRole.isPending ||
     detach.isPending ||
-    remove.isPending;
+    remove.isPending ||
+    writeKnowledge.isPending ||
+    retireKnowledge.isPending;
 
   /** 还没归入任何产品、且在这个账号分配内的仓库。归入第二个产品服务端会回 409。 */
   const attachable = unassignedRepos(reposQuery.data ?? [], products);
@@ -435,6 +493,24 @@ export function ProductsPage({
                   />
                 )}
               </CardShell>
+            )}
+            {selected === undefined ? null : (
+              <KnowledgeSection
+                key={`${selected.id}-${knowledgeFormKey}`}
+                product={selected}
+                knowledge={knowledge}
+                pending={knowledgeQuery.isPending}
+                canWrite={canWriteKnowledge}
+                busy={busy}
+                onWrite={(statement, repoIds) => {
+                  setFeedback(null);
+                  writeKnowledge.mutate({ product: selected, statement, repoIds });
+                }}
+                onRetire={(entry) => {
+                  setFeedback(null);
+                  retireKnowledge.mutate({ product: selected, entry });
+                }}
+              />
             )}
           </div>
         </div>
@@ -747,5 +823,162 @@ function AttachDialog({
         </form>
       </Dialog.Content>
     </Dialog.Root>
+  );
+}
+
+/**
+ * 产品页右栏的产品知识区(CONTEXT.md 产品知识,issue #343)。三样东西:生效列表、手写表单、
+ * 每行的「退役」。没有 `knowledge:write` 的人只看到列表——维护这一层知识的人与维护知识集的
+ * 是同一批人。
+ *
+ * 仓库不足两个的产品写不出条目(一条产品知识至少说到两个仓库),那一档把表单换成一句话说清
+ * 下一步,而不是给一个必定被服务端回绝的按钮。
+ */
+function KnowledgeSection({
+  product,
+  knowledge,
+  pending,
+  canWrite,
+  busy,
+  onWrite,
+  onRetire,
+}: {
+  product: Product;
+  knowledge: readonly ProductKnowledge[];
+  pending: boolean;
+  canWrite: boolean;
+  busy: boolean;
+  onWrite: (statement: string, repoIds: readonly number[]) => void;
+  onRetire: (entry: ProductKnowledge) => void;
+}) {
+  const [statement, setStatement] = useState("");
+  const [repoIds, setRepoIds] = useState<readonly number[]>([]);
+
+  /** 一条条目涉及的仓库写成一行。产品里已经没有的仓库只剩 id 说得出来。 */
+  const involved = (entry: ProductKnowledge): string =>
+    entry.repoIds
+      .map((repoId) => {
+        const row = product.repos.find((repo) => repo.repoId === repoId);
+        return row === undefined ? `repo ${repoId}` : repoPath(row);
+      })
+      .join("、");
+
+  const submit = (event: FormEvent): void => {
+    event.preventDefault();
+    onWrite(statement.trim(), repoIds);
+  };
+
+  return (
+    <CardShell className="min-w-0 px-5 py-4">
+      <div className="flex min-w-0 flex-col gap-3">
+        <div>
+          <h2 className="text-lg font-bold tracking-[-0.01em]">产品知识</h2>
+          <Text as="p" size="2" color="gray" className="mt-1">
+            一条产品知识说的是仓库之间的事:谁调谁的什么、跨仓库都成立的约定、某类改动牵动哪些
+            仓库。一个仓库内部的事属于那个仓库的知识集。
+          </Text>
+        </div>
+
+        {pending ? (
+          <Skeleton aria-hidden className="h-16" />
+        ) : knowledge.length === 0 ? (
+          <Text as="p" size="2" color="gray">
+            还没有产品知识。
+          </Text>
+        ) : (
+          <ul>
+            {knowledge.map((entry) => (
+              <li
+                key={entry.id}
+                className="flex items-start justify-between gap-3 border-t border-line py-2.5 first:border-t-0 first:pt-0"
+              >
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
+                  <Text as="span" size="2" className="break-words">
+                    {entry.statement}
+                  </Text>
+                  <Text as="span" size="1" color="gray" className="break-all font-mono">
+                    {involved(entry)}
+                  </Text>
+                </div>
+                {canWrite ? (
+                  <Button
+                    variant="soft"
+                    color="gray"
+                    size="1"
+                    className="shrink-0"
+                    disabled={busy}
+                    onClick={() => onRetire(entry)}
+                  >
+                    退役
+                  </Button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {!canWrite ? null : product.repos.length < 2 ? (
+          <Text as="p" size="2" color="gray" className="border-t border-line pt-3">
+            产品知识至少要说到这个产品里的两个仓库。先把第二个仓库归入这个产品。
+          </Text>
+        ) : (
+          <form onSubmit={submit} className="flex flex-col gap-1.5 border-t border-line pt-3">
+            <Text as="label" htmlFor="product-knowledge-statement" size="2" weight="medium">
+              手写一条
+            </Text>
+            <TextArea
+              id="product-knowledge-statement"
+              size="2"
+              rows={2}
+              maxLength={KNOWLEDGE_STATEMENT_MAX}
+              placeholder={`一句话,最多 ${KNOWLEDGE_STATEMENT_MAX} 字`}
+              value={statement}
+              onChange={(event) => setStatement(event.target.value)}
+            />
+            <Text as="span" id="product-knowledge-repos" size="2" weight="medium" mt="2">
+              涉及的仓库(至少两个)
+            </Text>
+            <div
+              role="group"
+              aria-labelledby="product-knowledge-repos"
+              className="flex flex-col gap-0.5 rounded-lg border border-line p-1.5"
+            >
+              {product.repos.map((repo) => (
+                <Text
+                  as="label"
+                  key={repo.repoId}
+                  size="2"
+                  className="flex min-h-9 cursor-pointer items-center gap-2 rounded-sm px-2 max-sm:min-h-11 hover:bg-sunken has-disabled:cursor-not-allowed has-disabled:opacity-70"
+                >
+                  <Checkbox
+                    size="2"
+                    checked={repoIds.includes(repo.repoId)}
+                    disabled={busy}
+                    onCheckedChange={() =>
+                      setRepoIds((current) =>
+                        current.includes(repo.repoId)
+                          ? current.filter((id) => id !== repo.repoId)
+                          : [...current, repo.repoId],
+                      )
+                    }
+                  />
+                  <span className="min-w-0 truncate font-mono">{repoPath(repo)}</span>
+                </Text>
+              ))}
+            </div>
+            <Flex justify="end" mt="2">
+              <Button
+                type="submit"
+                variant="solid"
+                size={{ initial: "3", sm: "2" }}
+                disabled={busy || statement.trim() === "" || repoIds.length < 2}
+              >
+                {busy ? "提交中…" : "记下"}
+              </Button>
+            </Flex>
+          </form>
+        )}
+      </div>
+    </CardShell>
   );
 }
