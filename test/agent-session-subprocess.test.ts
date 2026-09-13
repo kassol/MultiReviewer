@@ -813,6 +813,8 @@ test("三种打回走正常返回:不落产出,打回的调用照样进记录表
 const SURVEY_REPO_ID = 909;
 const SURVEY_REPO = { repoId: SURVEY_REPO_ID, owner: "acme", repo: "alpha" };
 const ACTIVE_STATEMENT = "acme/widgets 的订单接口由 acme/alpha 的网关转发,契约是 OpenAPI";
+/** 人驳回过的那一句。下一轮梳理的提示要把它列出来(issue #346 的 US 24)。 */
+const REJECTED_STATEMENT = "acme/alpha 与 acme/widgets 都用 TypeScript 写";
 
 type Proposal = { id: number; statement: string; repoIds: number[]; retiresId: number | null };
 
@@ -883,6 +885,26 @@ test("产品梳理:提示列出生效条目、单仓库陈述被打回,合法交
     const { entry } = (await written.json()) as { entry: { id: number } };
     assert.equal(entry.id, 1);
 
+    // 再落一条提案并驳回它:驳回记忆按意思避开,那一句要出现在梳理这一段提示里。
+    const store = openStore(h.db.path);
+    let rejectedId: number;
+    try {
+      rejectedId = store.addProductKnowledge({
+        productId,
+        statement: REJECTED_STATEMENT,
+        repoIds: [GITEA_REPO.id, SURVEY_REPO_ID],
+        state: "proposed",
+        proposedBy: null,
+        at: AT,
+      }).id;
+    } finally {
+      store.close();
+    }
+    assert.equal(
+      (await h.api("POST", `/products/${productId}/knowledge/${rejectedId}/reject`)).status,
+      204,
+    );
+
     const opened = await h.api("POST", `/products/${productId}/survey`);
     const openedText = await opened.text();
     assert.equal(opened.status, 201, openedText);
@@ -899,6 +921,12 @@ test("产品梳理:提示列出生效条目、单仓库陈述被打回,合法交
       system[0]!.content,
       new RegExp(`^- \\[1\\] ${ACTIVE_STATEMENT} \\(acme/alpha, acme/widgets\\)$`, "m"),
     );
+    // 驳回过的那一句逐字列在提示里:换个措辞再提也拦不住,拦得住的只有它自己避开。
+    assert.match(
+      system[0]!.content,
+      /^People rejected these statements; do not hand in any of them again, in any wording — they were judged not to be product knowledge:$/m,
+    );
+    assert.match(system[0]!.content, new RegExp(`^- ${REJECTED_STATEMENT}$`, "m"));
     assert.ok(
       requests[0]!.tools.includes("submit_product_survey"),
       `工具面里没有产出工具:${requests[0]!.tools.join(",")}`,

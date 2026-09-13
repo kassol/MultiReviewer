@@ -102,6 +102,11 @@ export type OpenSessionRequest = {
    * 产出工具的退役目标也按它判。空数组即这个产品还没有产品知识。
    */
   productKnowledge: readonly SessionProductKnowledge[];
+  /**
+   * 这个产品被人驳回过的陈述(issue #346 的 US 24)。产品梳理那一段提示逐条列出来让它
+   * 换个措辞也别再提;别的用途用不上。空数组即还没有人驳回过。
+   */
+  rejectedStatements: readonly string[];
   runtimeModel: RuntimeModel;
   /** 这一处模型引用的思考档位。缺席即 `off`。 */
   thinkingLevel?: ThinkingLevel;

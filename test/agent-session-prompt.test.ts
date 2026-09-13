@@ -20,6 +20,7 @@ const REQUEST: OpenSessionRequest = {
     { owner: "acme", repo: "web", role: null, ruleCount: 0, factCount: 0 },
   ],
   productKnowledge: [],
+  rejectedStatements: [],
   // 提示这一份不读模型,这一格只为凑齐形状。
   runtimeModel: {
     provider: "stub",

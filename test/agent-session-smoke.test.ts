@@ -177,6 +177,7 @@ async function runSession(
       productKnowledgeCount: 0,
       repos: [{ ...REPO, role: "唯一的仓库", ruleCount: 1, factCount: 1 }],
       productKnowledge: [],
+      rejectedStatements: [],
       runtimeModel: await smokeRuntimeModel(),
     },
   } satisfies SessionCommand);

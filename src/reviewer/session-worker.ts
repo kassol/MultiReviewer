@@ -186,7 +186,11 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
     "",
     "When the task spans repositories or its scope is unclear, query the product layer first; otherwise query the repository and the paths the task touches.",
   ];
-  const purpose = purposeSystemPrompt(request.purpose, request.productKnowledge);
+  const purpose = purposeSystemPrompt(
+    request.purpose,
+    request.productKnowledge,
+    request.rejectedStatements,
+  );
   if (purpose !== undefined) sections.push("", purpose);
   return sections.join("\n");
 }

@@ -57,8 +57,14 @@ const OPEN_CONVERSATION_PROMPT = [
  * 这个用途没有人在对面:会话由系统开、收一条种子消息、交一次提案就完。提示因此要把「梳理
  * 的是仓库之间的事」与「已经成立的是哪些」说全——生效条目带 id 列在这里,agent 据它提退役
  * 而不是把同一句话再提一遍。
+ *
+ * 被驳回过的陈述同样列出来(issue #346 的 US 24):落库那一道只丢全等的那几句,换个措辞
+ * 的同一个意思它拦不住,而人驳回的是那个意思。
  */
-function productSurveyPrompt(knowledge: readonly SessionProductKnowledge[]): string {
+function productSurveyPrompt(
+  knowledge: readonly SessionProductKnowledge[],
+  rejected: readonly string[],
+): string {
   return [
     "## This session: surveying this product",
     "",
@@ -79,6 +85,14 @@ function productSurveyPrompt(knowledge: readonly SessionProductKnowledge[]): str
           "",
           "Do not hand in a statement that repeats one of these. When the code no longer matches one of them, propose retiring it by its id and say what you read instead.",
         ]),
+    ...(rejected.length === 0
+      ? []
+      : [
+          "",
+          "People rejected these statements; do not hand in any of them again, in any wording — they were judged not to be product knowledge:",
+          "",
+          ...rejected.map((statement) => `- ${statement}`),
+        ]),
     "",
     `Hand the whole survey in by calling ${SUBMIT_PRODUCT_SURVEY_TOOL} exactly once: every new statement and every retirement in that one call. Statements written in prose are not handed in — they reach nobody. After the call, say in one or two sentences what you handed in, and nothing more.`,
   ].join("\n");
@@ -88,13 +102,17 @@ function productSurveyPrompt(knowledge: readonly SessionProductKnowledge[]): str
  * 这个用途接在底座提示后面的那一段。认不出的用途回 undefined,会话照常开得起来,只是
  * 没有用途那一段——与 `sessionOutputTools` 对认不出的用途回空数组同律。
  *
- * `productKnowledge` 只有产品梳理那一段用得上(issue #345):它要列出此刻生效的条目。
+ * `productKnowledge` 与 `rejectedStatements` 只有产品梳理那一段用得上(issue #345、#346):
+ * 它要列出此刻生效的条目与被驳回过的那几句。
  */
 export function purposeSystemPrompt(
   purpose: string,
   productKnowledge: readonly SessionProductKnowledge[],
+  rejectedStatements: readonly string[],
 ): string | undefined {
   if (purpose === "requirement-breakdown") return REQUIREMENT_BREAKDOWN_PROMPT;
-  if (purpose === "product-survey") return productSurveyPrompt(productKnowledge);
+  if (purpose === "product-survey") {
+    return productSurveyPrompt(productKnowledge, rejectedStatements);
+  }
   return purpose === "open-conversation" ? OPEN_CONVERSATION_PROMPT : undefined;
 }

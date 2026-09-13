@@ -160,8 +160,12 @@ export function ProductsPage({
       send(`/products/${input.product.id}/repos/${input.repo.repoId}`, "PUT", {
         role: input.role,
       }),
-    onSuccess: (_value, { product, repo }) =>
-      settled(`已把 ${repoPath(repo)} 归入 ${product.name}。`),
+    onSuccess: (_value, { product, repo }) => {
+      settled(`已把 ${repoPath(repo)} 归入 ${product.name}。`);
+      // 仓库集变了,系统可能自己开了一场梳理(issue #347):不重读会话列表,它要等下一次
+      // 刷新才出现在左栏。
+      void queryClient.invalidateQueries({ queryKey: sessionsQueryKey(product.id) });
+    },
     onError: failed,
   });
 
@@ -182,7 +186,10 @@ export function ProductsPage({
   const detach = useMutation({
     mutationFn: (input: { product: Product; repo: ProductRepo }) =>
       send(`/products/${input.product.id}/repos/${input.repo.repoId}`, "DELETE"),
-    onSuccess: (_value, { repo }) => settled(`已把 ${repoPath(repo)} 移出产品。`),
+    onSuccess: (_value, { product, repo }) => {
+      settled(`已把 ${repoPath(repo)} 移出产品。`);
+      void queryClient.invalidateQueries({ queryKey: sessionsQueryKey(product.id) });
+    },
     onError: failed,
   });
 

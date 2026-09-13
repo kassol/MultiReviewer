@@ -317,6 +317,19 @@ function activeProductKnowledge(
 }
 
 /**
+ * 这个产品被人驳回过的陈述(issue #346 的 US 24),交给产品梳理那一段提示的那一份。与生效
+ * 条目同律在 `boot` 里现算:这一轮驳回的那几句,下一次重建就避得开。
+ */
+function rejectedProductStatements(dbPath: string, productId: number): string[] {
+  const store = openStore(dbPath);
+  try {
+    return store.listProductKnowledgeRejections(productId);
+  } finally {
+    store.close();
+  }
+}
+
+/**
  * 这个产品此刻有没有在跑的产品梳理(issue #345)。「在跑」是进程内的事实(`agentSessionStatus`),
  * 与别处同律;重梳据它回绝第二次请求,两轮梳理不该同时提同一批提案。
  */
@@ -341,9 +354,9 @@ export function productSurveyRunning(dbPath: string, productId: number): boolean
  * 形状与打回在子进程那一侧判完,这里只把仓库名换回 repo id 并落库。认不出的仓库名与已经
  * 不生效的退役目标在这里丢掉:那一批是几分钟前判的,产品这会儿可能已经变了样。
  *
- * 被驳回过的陈述同样在这里丢掉(issue #346 的 US 24):静默丢,不打回给模型——它是按这一轮
- * 读到的代码提的,这句话为什么不要是人的判断,说给它听也改不了下一轮会再读到同样的代码。
- * 同一批里其余几句照常落成提案。
+ * 被驳回过的陈述同样在这里丢掉(issue #346 的 US 24):静默丢,不打回给模型。这一道是兜底
+ * ——那几句已经在梳理那一段提示里列出来让它避开,走到这里说明它还是原样提了一遍。全等才丢,
+ * 换了措辞的同一个意思拦不住,同一批里其余几句照常落成提案。
  */
 export function recordProductSurveyProposals(
   deps: AgentSessionRecordDeps,
@@ -1148,6 +1161,7 @@ async function boot(
       purpose: session.purpose,
       repos: prepared.repos,
       productKnowledge: activeProductKnowledge(deps.dbPath, session.productId),
+      rejectedStatements: rejectedProductStatements(deps.dbPath, session.productId),
       runtimeModel: model.runtimeModel,
       ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
       ...(stored.entries.length === 0 ? {} : { entries: stored.entries }),

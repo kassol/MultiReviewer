@@ -970,10 +970,12 @@ export function AgentSessionPage({
   productId,
   sessionId,
   username,
+  isSystemAdmin,
 }: {
   productId: number;
   sessionId: number;
   username: string;
+  isSystemAdmin: boolean;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -1012,6 +1014,13 @@ export function AgentSessionPage({
   const imageInput = sessionQuery.data?.imageInput ?? false;
   const dropped = sessionQuery.data?.droppedFromContext ?? 0;
   const running = session?.status === "running";
+  const mine = session !== undefined && session.createdBy === username;
+  /**
+   * 产品梳理会话由系统开,没有创建者可言:停止与删除这两个动作给系统管理员(issue #346),
+   * 与服务端那一道同一个判据。发消息那几个续谈动作仍谁都做不了,表单因此照旧只给创建者。
+   */
+  const surveyAdmin =
+    session !== undefined && session.purpose === "product-survey" && isSystemAdmin;
   const refresh = (): Promise<void> =>
     queryClient.invalidateQueries({ queryKey: ["agent-sessions", sessionId] });
   const post = useMutation({
@@ -1135,20 +1144,36 @@ export function AgentSessionPage({
             <PageHeader
               title={session === undefined ? "Agent 会话" : PURPOSE_LABEL[session.purpose]}
               actions={
-                // 删会话按钮只有创建者看得到:系统管理员读得到别人的会话,删不了。
-                session !== undefined && session.createdBy === username ? (
-                  <Button
-                    variant="soft"
-                    color="red"
-                    size={{ initial: "3", sm: "2" }}
-                    disabled={remove.isPending}
-                    onClick={() => {
-                      setFeedback(null);
-                      setConfirming(true);
-                    }}
-                  >
-                    删会话
-                  </Button>
+                // 删会话按钮只有创建者看得到:系统管理员读得到别人的会话,删不了。产品梳理
+                // 会话是例外(issue #346):它没有创建者,停止与删除给系统管理员,而它的
+                // 停止按钮在发消息表单里,那个表单对这个用途谁都不渲染,因此也摆在这里。
+                mine || surveyAdmin ? (
+                  <div className="flex items-center gap-2">
+                    {surveyAdmin ? (
+                      <Button
+                        variant="soft"
+                        color="red"
+                        size={{ initial: "3", sm: "2" }}
+                        disabled={!running || stop.isPending}
+                        onClick={() => stop.mutate()}
+                      >
+                        <StopIcon aria-hidden />
+                        停止
+                      </Button>
+                    ) : null}
+                    <Button
+                      variant="soft"
+                      color="red"
+                      size={{ initial: "3", sm: "2" }}
+                      disabled={remove.isPending}
+                      onClick={() => {
+                        setFeedback(null);
+                        setConfirming(true);
+                      }}
+                    >
+                      删会话
+                    </Button>
+                  </div>
                 ) : undefined
               }
             />

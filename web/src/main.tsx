@@ -548,6 +548,7 @@ function AgentSessionRoutePage() {
       productId={Number(params.productId)}
       sessionId={Number(params.sessionId)}
       username={session.username}
+      isSystemAdmin={session.isSystemAdmin}
     />
   );
 }

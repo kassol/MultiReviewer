@@ -9987,8 +9987,29 @@ async function handleRemove(
     });
   }
 
+  // 下线的仓库归在哪个产品下:摘表那一笔连产品归属一起删,之后就问不出来了。
+  const productId = withStore(
+    deps.dbPath,
+    (store) =>
+      store.listProducts().find((one) => one.repos.some((row) => row.repoId === repoId))?.id,
+  );
+
   // 评审记录一行不动:模型选型的历史不因仓库下线而断(移除后的投递按未注册 401)。
   withStore(deps.dbPath, (store) => store.removeRepo(repoId));
+
+  // 下线与移出对产品是同一件事:产品的仓库集少了一个(CONTEXT.md 产品知识,issue #347)。
+  // 涉及它的生效条目全退役——那些陈述说的是一个已经不在这个产品里的仓库;退役之后仓库集
+  // 还够两个就自己开一场梳理,把剩下的关系重新提一遍。下线的回应一格不变。
+  if (productId !== undefined) {
+    withStore(deps.dbPath, (store) =>
+      store.retireProductKnowledgeOfRepo(
+        productId,
+        repoId,
+        new Date((deps.now ?? Date.now)()).toISOString(),
+      ),
+    );
+    await surveyRepoSetChange(deps, productId);
+  }
 
   // 工作副本随注册一起走(issue #184)。仓库改过名时两个名字下各可能有一份,现名与
   // 注册时的名字各删一次;已经不在的那一份删起来是空操作。目录上还有准备在跑时
