@@ -2637,9 +2637,13 @@ export type ProductRecord = {
   repos: ProductRepoRecord[];
 };
 
-/** 把一个仓库归入产品的结果。`other-product` 即这个仓库已经归在别的产品下。 */
+/**
+ * 把一个仓库归入产品的结果。`other-product` 即这个仓库已经归在别的产品下;`role-updated` 即
+ * 这个仓库本来就在这个产品下,这一次只改了仓库职责——仓库集没变,因此不开产品梳理(issue #347)。
+ */
 export type ProductRepoAttach =
   | "attached"
+  | "role-updated"
   | "missing-product"
   | "missing-repo"
   | "other-product";
@@ -3065,7 +3069,7 @@ export type Store = {
   /** 改名。没有这个产品即 false;重名同样抛 UNIQUE 约束错。 */
   renameProduct(productId: number, name: string): boolean;
   /**
-   * 把一个已注册仓库归入产品。已经在这个产品下即 `attached`,幂等——那一次只把仓库职责
+   * 把一个已注册仓库归入产品。已经在这个产品下即 `role-updated`,幂等——那一次只把仓库职责
    * (CONTEXT.md 仓库职责)改成给的这一份,归入时间不动。`role` 省略或 null 即没有职责。
    */
   attachProductRepo(
@@ -3104,6 +3108,11 @@ export type Store = {
    * 把一条生效的产品知识退役。不在这个产品下、或已经不生效即 false——退役两次不该报成功。
    */
   retireProductKnowledge(productId: number, entryId: number, at: string): boolean;
+  /**
+   * 把涉及某个仓库的生效产品知识全部退役(CONTEXT.md 产品知识,issue #347)。仓库移出产品时
+   * 走它:一条说到已经不在这个产品里的仓库的陈述,agent 读到只会被指去一棵不存在的工作树。
+   */
+  retireProductKnowledgeOfRepo(productId: number, repoId: number, at: string): void;
   /**
    * 一个产品下的 Agent 会话,新的在前。`createdBy` 给了即只回这个人的(「我的会话」),
    * 给 null 即这个产品下的全部(系统管理员那一档)。
@@ -5292,7 +5301,7 @@ export function openStore(dbPath: string): Store {
       if (Number(owner?.["product_id"]) !== productId) return "other-product";
       // 已经在这个产品下:这一次改的只有职责,归入时间不动。
       db.prepare("UPDATE product_repo SET role = ? WHERE repo_id = ?").run(role, repoId);
-      return "attached";
+      return "role-updated";
     },
 
     detachProductRepo(productId, repoId) {
@@ -5390,6 +5399,17 @@ export function openStore(dbPath: string): Store {
             .run(at, entryId, productId).changes,
         ) > 0
       );
+    },
+
+    retireProductKnowledgeOfRepo(productId, repoId, at) {
+      // 仓库集合是这张表自己写下的 JSON 数组,`json_each` 按元素匹配即「涉及这个仓库」。
+      db.prepare(
+        `UPDATE product_knowledge SET state = 'retired', state_changed_at = ?
+          WHERE product_id = ? AND state = 'active'
+            AND EXISTS (
+              SELECT 1 FROM json_each(product_knowledge.repo_ids) WHERE json_each.value = ?
+            )`,
+      ).run(at, productId, repoId);
     },
 
     listAgentSessions(productId, createdBy) {

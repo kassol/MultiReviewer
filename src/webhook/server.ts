@@ -2089,6 +2089,10 @@ async function handleAttachProductRepo(
   );
   switch (result) {
     case "attached":
+      await surveyRepoSetChange(deps, productId);
+      return send(res, 204);
+    case "role-updated":
+      // 仓库集没变,只改了职责:没有新的仓库间关系要梳理(issue #347)。
       return send(res, 204);
     case "missing-product":
       return sendJson(res, 404, { error: NO_SUCH_PRODUCT });
@@ -2099,14 +2103,28 @@ async function handleAttachProductRepo(
   }
 }
 
-function handleDetachProductRepo(
+/**
+ * 移出仓库。移出之后涉及它的生效产品知识全部退役(CONTEXT.md 产品知识,issue #347):那些
+ * 陈述说的是一个已经不在这个产品里的仓库,端给 agent 只会把它指去一棵不存在的工作树。退役
+ * 之后仓库集还够两个就自己开一场梳理,它可以把剩下的关系重新提一遍。
+ */
+async function handleDetachProductRepo(
   res: ServerResponse,
   deps: WebhookServerDeps,
   productId: number,
   repoId: number,
-): void {
+): Promise<void> {
   const detached = withStore(deps.dbPath, (store) => store.detachProductRepo(productId, repoId));
-  return detached ? send(res, 204) : sendJson(res, 404, { error: "这个产品下没有这个仓库" });
+  if (!detached) return sendJson(res, 404, { error: "这个产品下没有这个仓库" });
+  withStore(deps.dbPath, (store) =>
+    store.retireProductKnowledgeOfRepo(
+      productId,
+      repoId,
+      new Date((deps.now ?? Date.now)()).toISOString(),
+    ),
+  );
+  await surveyRepoSetChange(deps, productId);
+  return send(res, 204);
 }
 
 /**
@@ -2215,24 +2233,24 @@ const PRODUCT_SURVEY_SEED = [
 ].join("\n");
 
 /**
- * 重梳(CONTEXT.md 产品梳理,spec #342 的 US 5):开一个产品梳理会话并投一条种子消息。
+ * 开一场产品梳理(CONTEXT.md 产品梳理):建会话、凑开跑要的那几样、投一条种子消息。人按下
+ * 重梳(issue #345)与产品的仓库集变了(issue #347)走的是同一条路,开不开的判据因此只有
+ * 这一份:仓库够两个、这个产品的梳理没在跑。
  *
  * 会话先落行再凑开跑要的那几样:凑不齐就把这一行收掉——一个永远不会开跑的会话留在列表里
- * 只会让人等它。门禁在路由上(`knowledge:write` 加这个产品里的一个仓库分配),与手写产品
- * 知识同一道。
+ * 只会让人等它。
  */
-async function handleProductSurvey(
-  res: ServerResponse,
+async function openProductSurvey(
   deps: WebhookServerDeps,
   productId: number,
-): Promise<void> {
+): Promise<{ opened: AgentSessionRecord } | { refusal: { status: number; error: string } }> {
   const product = withStore(deps.dbPath, (store) => store.getProduct(productId));
-  if (product === undefined) return sendJson(res, 404, { error: NO_SUCH_PRODUCT });
+  if (product === undefined) return { refusal: { status: 404, error: NO_SUCH_PRODUCT } };
   if (product.repos.length < 2) {
-    return sendJson(res, 409, { error: PRODUCT_SURVEY_TOO_FEW_REPOS });
+    return { refusal: { status: 409, error: PRODUCT_SURVEY_TOO_FEW_REPOS } };
   }
   if (productSurveyRunning(deps.dbPath, productId)) {
-    return sendJson(res, 409, { error: PRODUCT_SURVEY_RUNNING });
+    return { refusal: { status: 409, error: PRODUCT_SURVEY_RUNNING } };
   }
   const session = withStore(deps.dbPath, (store) =>
     store.createAgentSession({
@@ -2245,7 +2263,7 @@ async function handleProductSurvey(
   const plan = await agentSessionRunPlan(deps, session);
   if ("refusal" in plan) {
     withStore(deps.dbPath, (store) => store.deleteAgentSession(session.id));
-    return sendJson(res, plan.refusal.status, { error: plan.refusal.error });
+    return { refusal: plan.refusal };
   }
   deliverAgentSessionMessage(
     agentSessionRuntimeDeps(deps, plan.forge),
@@ -2255,7 +2273,43 @@ async function handleProductSurvey(
     plan.model,
     plan.repos,
   );
-  return sendJson(res, 201, { session: withRuntimeStatus(session) });
+  return { opened: session };
+}
+
+/**
+ * 产品的仓库集变了就自己开一场梳理(CONTEXT.md 产品梳理,issue #347 的 US 3 / US 4)。
+ *
+ * 开不起来只记一句:归入与移出的回应不因此改形——人要的是那一下归入成了,而梳理是系统替他
+ * 想起来的那一件事,名额满或没配 Forge 时它等下一次仓库集变动或人按下重梳。
+ */
+async function surveyRepoSetChange(deps: WebhookServerDeps, productId: number): Promise<void> {
+  const opening = await openProductSurvey(deps, productId);
+  if (!("refusal" in opening)) return;
+  // 仓库不足两个与这个产品的梳理还在跑,是这条路设计上的两道闸,不是失败,不记。名额满、
+  // 没配 Forge、正在排空才是该开而开不起来:那一句是排查「怎么没梳理」的唯一线索。
+  const byDesign =
+    opening.refusal.error === PRODUCT_SURVEY_TOO_FEW_REPOS ||
+    opening.refusal.error === PRODUCT_SURVEY_RUNNING;
+  if (byDesign) return;
+  console.log(
+    `[product-survey] 产品 ${productId} 的仓库集变了,梳理没开:${opening.refusal.error}`,
+  );
+}
+
+/**
+ * 重梳(CONTEXT.md 产品梳理,spec #342 的 US 5)。门禁在路由上(`knowledge:write` 加这个
+ * 产品里的一个仓库分配),与手写产品知识同一道;开不起来的那几句回绝原样回给人。
+ */
+async function handleProductSurvey(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+): Promise<void> {
+  const opening = await openProductSurvey(deps, productId);
+  if ("refusal" in opening) {
+    return sendJson(res, opening.refusal.status, { error: opening.refusal.error });
+  }
+  return sendJson(res, 201, { session: withRuntimeStatus(opening.opened) });
 }
 
 /** 会话不存在,与别人的会话:两档同形回这一句 404(CONTEXT.md Agent 会话)。 */

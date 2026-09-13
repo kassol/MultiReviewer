@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
+import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   scopedUser,
@@ -35,8 +36,14 @@ async function productWithTwoRepos(h: PanelHarness): Promise<Product> {
   const text = await response.text();
   assert.equal(response.status, 201, text);
   const { product } = JSON.parse(text) as { product: Product };
-  for (const repoId of [GITEA_REPO.id, ALPHA]) {
-    assert.equal((await h.api("PUT", `/products/${product.id}/repos/${repoId}`)).status, 204);
+  // 归属行直接落库:走归入端点会自己开一场梳理(issue #347),而这几例压的是手写维护。
+  const store = openStore(h.db.path);
+  try {
+    for (const repoId of [GITEA_REPO.id, ALPHA]) {
+      assert.equal(store.attachProductRepo(product.id, repoId, AT), "attached");
+    }
+  } finally {
+    store.close();
   }
   return product;
 }
