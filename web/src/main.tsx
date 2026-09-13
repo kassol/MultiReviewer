@@ -159,6 +159,10 @@ function Shell() {
   const nav = session.mustChangePassword ? [] : primaryNav(session);
   const palette = useCommandPalette();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
+  // Agent 会话页是占满视口的工作台(DESIGN.md 7.5):它自己滚,外壳的 main 要把高度限在
+  // 剩余空间里(min-h-0),它的 h-full 才有定值可撑。别的页面照旧由 main 随内容长高、
+  // 整体在 #panel-main-scroll 里滚——对它们加 min-h-0 会让 sticky 的 Tab 栏跟着滚走。
+  const fillsViewport = /^\/products\/\d+\/sessions\/\d+$/.test(pathname);
 
   useEffect(() => {
     const page = pathname.startsWith("/stages")
@@ -188,7 +192,7 @@ function Shell() {
           onSearch={palette.open}
           onLogout={logout}
         />
-        <main className="min-w-0 flex-1">
+        <main className={fillsViewport ? "min-h-0 min-w-0 flex-1" : "min-w-0 flex-1"}>
           <Suspense fallback={<PageLoading />}><Outlet /></Suspense>
         </main>
         <MobileTabBar nav={nav} session={session} onLogout={logout} />
