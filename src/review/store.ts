@@ -683,10 +683,13 @@ CREATE TABLE IF NOT EXISTS product (
 -- 产品的仓库集合。主键是 repo_id:「一个仓库至多属一个产品」这条由它表达,不靠写入口
 -- 先查一遍再插——并发两次归属时应用层那一查挡不住,主键挡得住。仓库从注册表移除时由
 -- removeRepo 一并摘掉(与仓库分配同律)。
+-- role 是仓库职责(CONTEXT.md 仓库职责,issue #341):它说的是这个仓库在这个产品里干什么,
+-- 因此挂在归属关系上而不是仓库上,摘出时跟着归属行一起消失。空着即没有职责。
 CREATE TABLE IF NOT EXISTS product_repo (
   repo_id INTEGER PRIMARY KEY REFERENCES repo(id),
   product_id INTEGER NOT NULL REFERENCES product(id),
-  added_at TEXT NOT NULL
+  added_at TEXT NOT NULL,
+  role TEXT
 );
 CREATE INDEX IF NOT EXISTS product_repo_by_product ON product_repo(product_id);
 
@@ -1058,6 +1061,8 @@ const ADDED_COLUMNS: readonly { table: string; column: string; backfill?: string
   { table: "range_review", column: "scheduled_check_mode TEXT NOT NULL DEFAULT 'verdict-only'" },
   // 排队消息带的图片引用(issue #336):可空,补完即「这几条没带图」,与此前的行为一致。
   { table: "agent_session_pending_message", column: "images TEXT" },
+  // 仓库职责(issue #341):可空,补完即「这些仓库还没写职责」,与此前的行为一致。
+  { table: "product_repo", column: "role TEXT" },
 ];
 
 /**
@@ -2597,6 +2602,8 @@ export type ProductRepoRecord = {
   repoId: number;
   owner: string;
   repo: string;
+  /** 仓库职责(CONTEXT.md 仓库职责,issue #341)。没写过即 null。 */
+  role: string | null;
 };
 
 /** 一个产品(CONTEXT.md 产品)与它当前的仓库集合。读与写都只经这一种形状。 */
@@ -2619,7 +2626,7 @@ export type ProductRepoAttach =
  * 两次 LEFT JOIN;`repo` 那一张也 LEFT JOIN 是为了不让一行归属把整个产品藏起来。
  */
 const PRODUCT_QUERY = `
-  SELECT p.id, p.name, p.created_at, pr.repo_id, r.owner, r.repo
+  SELECT p.id, p.name, p.created_at, pr.repo_id, pr.role, r.owner, r.repo
     FROM product p
     LEFT JOIN product_repo pr ON pr.product_id = p.id
     LEFT JOIN repo r ON r.id = pr.repo_id`;
@@ -2639,6 +2646,7 @@ function foldProducts(rows: readonly Record<string, unknown>[]): ProductRecord[]
         repoId: Number(row["repo_id"]),
         owner: String(row["owner"]),
         repo: String(row["repo"]),
+        role: row["role"] === null ? null : String(row["role"]),
       });
     }
   }
@@ -2987,8 +2995,16 @@ export type Store = {
   createProduct(record: { name: string; createdAt: string }): ProductRecord;
   /** 改名。没有这个产品即 false;重名同样抛 UNIQUE 约束错。 */
   renameProduct(productId: number, name: string): boolean;
-  /** 把一个已注册仓库归入产品。已经在这个产品下即 `attached`,幂等。 */
-  attachProductRepo(productId: number, repoId: number, at: string): ProductRepoAttach;
+  /**
+   * 把一个已注册仓库归入产品。已经在这个产品下即 `attached`,幂等——那一次只把仓库职责
+   * (CONTEXT.md 仓库职责)改成给的这一份,归入时间不动。`role` 省略或 null 即没有职责。
+   */
+  attachProductRepo(
+    productId: number,
+    repoId: number,
+    at: string,
+    role?: string | null,
+  ): ProductRepoAttach;
   /** 把一个仓库从产品里移出。这个产品下没有这个仓库即 false。 */
   detachProductRepo(productId: number, repoId: number): boolean;
   /**
@@ -5162,7 +5178,7 @@ export function openStore(dbPath: string): Store {
       );
     },
 
-    attachProductRepo(productId, repoId, at) {
+    attachProductRepo(productId, repoId, at, role = null) {
       if (db.prepare("SELECT 1 FROM product WHERE id = ?").get(productId) === undefined) {
         return "missing-product";
       }
@@ -5173,15 +5189,18 @@ export function openStore(dbPath: string): Store {
       // 在并发两次归属时两边都以为自己能插。
       const inserted = db
         .prepare(
-          `INSERT INTO product_repo (repo_id, product_id, added_at) VALUES (?, ?, ?)
+          `INSERT INTO product_repo (repo_id, product_id, added_at, role) VALUES (?, ?, ?, ?)
              ON CONFLICT(repo_id) DO NOTHING`,
         )
-        .run(repoId, productId, at).changes;
+        .run(repoId, productId, at, role).changes;
       if (Number(inserted) > 0) return "attached";
       const owner = db
         .prepare("SELECT product_id FROM product_repo WHERE repo_id = ?")
         .get(repoId);
-      return Number(owner?.["product_id"]) === productId ? "attached" : "other-product";
+      if (Number(owner?.["product_id"]) !== productId) return "other-product";
+      // 已经在这个产品下:这一次改的只有职责,归入时间不动。
+      db.prepare("UPDATE product_repo SET role = ? WHERE repo_id = ?").run(role, repoId);
+      return "attached";
     },
 
     detachProductRepo(productId, repoId) {

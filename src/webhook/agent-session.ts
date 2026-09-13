@@ -255,6 +255,19 @@ export function agentSessionRepos(
 }
 
 /**
+ * 这个会话挂的那个产品的名字(issue #341)。进系统提示一行,与仓库集合和知识集同律在 `boot`
+ * 里现算:改名在下次重建时生效。产品没了即空串——那时会话一个仓库也读不到,消息根本发不出来。
+ */
+function productName(dbPath: string, productId: number): string {
+  const store = openStore(dbPath);
+  try {
+    return store.getProduct(productId)?.name ?? "";
+  } finally {
+    store.close();
+  }
+}
+
+/**
  * 一条 Pi 条目的用量,与 `getSessionStats()` 同口径(ADR 0031):assistant 与 toolResult 挂在
  * `message.usage` 上,compaction 与 branch_summary 挂在条目自己的 `usage` 上,其余条目没有
  * 用量。总数是四项之和,与 Review Run 那一列的算法逐字相同。
@@ -766,7 +779,7 @@ async function prepareSessionRoot(
       path: join(sessionRoot, repo.owner, repo.repo),
     });
     entry.worktrees.push(worktree);
-    prepared.push({ ...ref, ...repoKnowledge(deps.dbPath, repo.repoId) });
+    prepared.push({ ...ref, role: repo.role, ...repoKnowledge(deps.dbPath, repo.repoId) });
   }
   return { sessionRoot, repos: prepared };
 }
@@ -894,6 +907,7 @@ async function boot(
     kind: "open",
     request: {
       sessionRoot: prepared.sessionRoot,
+      productName: productName(deps.dbPath, session.productId),
       purpose: session.purpose,
       repos: prepared.repos,
       runtimeModel: model.runtimeModel,

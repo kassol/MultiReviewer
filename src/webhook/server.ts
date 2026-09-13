@@ -1940,6 +1940,9 @@ function productName(value: unknown): string | undefined {
 const PRODUCT_NAME_SHAPE = `产品名要是 1 到 ${PRODUCT_NAME_MAX} 个字符`;
 const PRODUCT_NAME_TAKEN = "已经有同名产品";
 
+/** 仓库职责超长(issue #341)。上限与产品名同一个数:两边都是左栏一行装得下的一句话。 */
+const PRODUCT_ROLE_SHAPE = `仓库职责最多 ${PRODUCT_NAME_MAX} 个字符`;
+
 /**
  * 产品列表(CONTEXT.md 产品)。按仓库分配收窄而不是拒绝:产品内至少有一个仓库在分配里
  * 才出现在这一份里,一个仓库都没分到的人拿到的是空列表。系统管理员不受限。
@@ -2026,16 +2029,27 @@ function handleDeleteProduct(
     : sendJson(res, 200, { cascade });
 }
 
-/** 归入仓库。一个仓库归入第二个产品时回 409,判据是 `product_repo` 的主键。 */
-function handleAttachProductRepo(
+/**
+ * 归入仓库。一个仓库归入第二个产品时回 409,判据是 `product_repo` 的主键。
+ *
+ * 请求体里的仓库职责(CONTEXT.md 仓库职责,issue #341)可有可无:**已经归属的那一次就是改
+ * 职责**,不另开端点——归入与改职责在面板上是同一格的前后两下。整格覆盖:不带这一格即没有
+ * 职责,只有空白同样是没有。
+ */
+async function handleAttachProductRepo(
+  req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
   productId: number,
   repoId: number,
-): void {
+): Promise<void> {
+  const payload = await readJson<{ role?: unknown } | null>(req, res);
+  if (payload === undefined) return;
+  const role = typeof payload?.role === "string" ? payload.role.trim() : "";
+  if (role.length > PRODUCT_NAME_MAX) return sendJson(res, 400, { error: PRODUCT_ROLE_SHAPE });
   const at = new Date((deps.now ?? Date.now)()).toISOString();
   const result = withStore(deps.dbPath, (store) =>
-    store.attachProductRepo(productId, repoId, at),
+    store.attachProductRepo(productId, repoId, at, role === "" ? null : role),
   );
   switch (result) {
     case "attached":
@@ -2787,7 +2801,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "GET", pattern: /^\/products\/(\d+)$/, access: "authenticated-only", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleProduct(res, deps, Number(match![1])) },
   { method: "PUT", pattern: /^\/products\/(\d+)$/, access: "repo:write", handler: ({ req, res, deps }, match) => handleRenameProduct(req, res, deps, Number(match![1])) },
   { method: "DELETE", pattern: /^\/products\/(\d+)$/, access: "repo:write", handler: ({ res, deps }, match) => handleDeleteProduct(res, deps, Number(match![1])) },
-  { method: "PUT", pattern: /^\/products\/(\d+)\/repos\/(\d+)$/, access: "repo:write", assignment: { by: "repo", group: 2 }, handler: ({ res, deps }, match) => handleAttachProductRepo(res, deps, Number(match![1]), Number(match![2])) },
+  { method: "PUT", pattern: /^\/products\/(\d+)\/repos\/(\d+)$/, access: "repo:write", assignment: { by: "repo", group: 2 }, handler: ({ req, res, deps }, match) => handleAttachProductRepo(req, res, deps, Number(match![1]), Number(match![2])) },
   { method: "DELETE", pattern: /^\/products\/(\d+)\/repos\/(\d+)$/, access: "repo:write", assignment: { by: "repo", group: 2 }, handler: ({ res, deps }, match) => handleDetachProductRepo(res, deps, Number(match![1]), Number(match![2])) },
   // Agent 会话(CONTEXT.md Agent 会话,issue #332)。建与发消息按 `agent:chat`,列表与
   // 读登录即可:一个会话只有创建者与系统管理员读得到,这一判按创建者在 handler 里做,

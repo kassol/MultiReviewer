@@ -36,6 +36,11 @@ export const SYSTEM_MESSAGE_ENTRY = "multireviewer_system_message";
 export type SessionRepoInput = {
   owner: string;
   repo: string;
+  /**
+   * 仓库职责(CONTEXT.md 仓库职责,issue #341)。进系统提示里这个仓库那一行的破折号后面:
+   * agent 凭它决定先读哪个仓库。没写过即 null,那一行就只有仓库名。
+   */
+  role: string | null;
   /** 这个仓库生效知识集里的评审规则。空数组即不渲染这一段。 */
   rules: readonly ReviewRule[];
   /** 这个仓库生效知识集里的项目事实。空数组即不渲染这一段。 */
@@ -46,6 +51,8 @@ export type SessionRepoInput = {
 export type OpenSessionRequest = {
   /** 会话根目录。cwd 是它,只读工具圈在它里面,工作树挂在它下面。 */
   sessionRoot: string;
+  /** 这个会话挂在哪个产品上(CONTEXT.md 产品,issue #341)。进系统提示一行。 */
+  productName: string;
   /** 会话用途(CONTEXT.md 会话用途)。进系统提示一行。 */
   purpose: string;
   repos: readonly SessionRepoInput[];

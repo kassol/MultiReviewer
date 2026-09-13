@@ -38,7 +38,8 @@ import {
 } from "./agent-session.tsx";
 import { fetchJson, send } from "./api.ts";
 
-type ProductRepo = { repoId: number; owner: string; repo: string };
+/** `role` 是仓库职责(CONTEXT.md 仓库职责,issue #341)。没写过即 null。 */
+type ProductRepo = { repoId: number; owner: string; repo: string; role: string | null };
 type Product = { id: number; name: string; createdAt: string; repos: ProductRepo[] };
 /** `GET /repos` 那一份里归属弹窗要的三列。它已经按仓库分配收窄过。 */
 type RegisteredRepo = { repoId: number; owner: string; repo: string };
@@ -119,10 +120,26 @@ export function ProductsPage({
   });
 
   const attach = useMutation({
-    mutationFn: (input: { product: Product; repo: RegisteredRepo }) =>
-      send(`/products/${input.product.id}/repos/${input.repo.repoId}`, "PUT"),
+    mutationFn: (input: { product: Product; repo: RegisteredRepo; role: string }) =>
+      send(`/products/${input.product.id}/repos/${input.repo.repoId}`, "PUT", {
+        role: input.role,
+      }),
     onSuccess: (_value, { product, repo }) =>
       settled(`已把 ${repoPath(repo)} 归入 ${product.name}。`),
+    onError: failed,
+  });
+
+  /**
+   * 改一行的仓库职责(CONTEXT.md 仓库职责,issue #341)。走的是归属那个端点:已经归属的
+   * 那一次就是改职责,整格覆盖,空串即清掉。
+   */
+  const setRole = useMutation({
+    mutationFn: (input: { product: Product; repo: ProductRepo; role: string }) =>
+      send(`/products/${input.product.id}/repos/${input.repo.repoId}`, "PUT", {
+        role: input.role,
+      }),
+    onSuccess: (_value, { repo, role }) =>
+      settled(role === "" ? `已清掉 ${repoPath(repo)} 的职责。` : `已记下 ${repoPath(repo)} 的职责。`),
     onError: failed,
   });
 
@@ -172,6 +189,7 @@ export function ProductsPage({
     create.isPending ||
     rename.isPending ||
     attach.isPending ||
+    setRole.isPending ||
     detach.isPending ||
     remove.isPending;
 
@@ -303,11 +321,27 @@ export function ProductsPage({
                     {selected.repos.map((repo) => (
                       <li
                         key={repo.repoId}
-                        className="flex items-center justify-between gap-2 border-t border-line px-4 py-2.5"
+                        className="flex items-start justify-between gap-2 border-t border-line px-4 py-2.5"
                       >
-                        <span className="min-w-0 break-all font-mono text-base">
-                          {repoPath(repo)}
-                        </span>
+                        <div className="flex min-w-0 flex-1 flex-col gap-1">
+                          <span className="min-w-0 break-all font-mono text-base">
+                            {repoPath(repo)}
+                          </span>
+                          {canWrite ? (
+                            <RoleField
+                              repo={repo}
+                              busy={busy}
+                              onSave={(role) => {
+                                setFeedback(null);
+                                setRole.mutate({ product: selected, repo, role });
+                              }}
+                            />
+                          ) : repo.role === null ? null : (
+                            <Text as="span" size="1" color="gray" className="break-all">
+                              {repo.role}
+                            </Text>
+                          )}
+                        </div>
                         {canWrite ? (
                           <IconButton
                             variant="ghost"
@@ -441,9 +475,9 @@ export function ProductsPage({
             repos={attachable}
             busy={attach.isPending}
             onClose={() => setDialog(null)}
-            onSubmit={(repo) => {
+            onSubmit={(repo, role) => {
               setFeedback(null);
-              attach.mutate({ product: selected, repo });
+              attach.mutate({ product: selected, repo, role });
             }}
           />
           <CreateSessionDialog
@@ -569,6 +603,44 @@ function NameDialog({
   );
 }
 
+/**
+ * 一行仓库的职责(CONTEXT.md 仓库职责,issue #341)。Enter 或失焦保存,Escape 放回原值——
+ * 放回之后与库里那一份相同,失焦那一下因此不再发请求;与库里相同时一律不发,失焦不该变成
+ * 一次空写。
+ */
+function RoleField({
+  repo,
+  busy,
+  onSave,
+}: {
+  repo: ProductRepo;
+  busy: boolean;
+  onSave: (role: string) => void;
+}) {
+  const [text, setText] = useState(repo.role ?? "");
+  useEffect(() => setText(repo.role ?? ""), [repo.role]);
+
+  return (
+    <TextField.Root
+      size="1"
+      className="min-w-0 w-full max-sm:min-h-11"
+      aria-label={`${repoPath(repo)} 的职责`}
+      placeholder="职责(选填)"
+      maxLength={64}
+      disabled={busy}
+      value={text}
+      onChange={(event) => setText(event.target.value)}
+      onBlur={() => {
+        if (text.trim() !== (repo.role ?? "")) onSave(text.trim());
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+        else if (event.key === "Escape") setText(repo.role ?? "");
+      }}
+    />
+  );
+}
+
 /** 归属仓库:候选只有还没归入任何产品的那些,一仓库至多属一个产品。 */
 function AttachDialog({
   open,
@@ -583,17 +655,21 @@ function AttachDialog({
   repos: readonly RegisteredRepo[];
   busy: boolean;
   onClose: () => void;
-  onSubmit: (repo: RegisteredRepo) => void;
+  onSubmit: (repo: RegisteredRepo, role: string) => void;
 }) {
   const [repoId, setRepoId] = useState<string>("");
+  const [role, setRole] = useState("");
   useEffect(() => {
-    if (open) setRepoId("");
+    if (open) {
+      setRepoId("");
+      setRole("");
+    }
   }, [open]);
 
   const chosen = repos.find((row) => String(row.repoId) === repoId);
   const submit = (event: FormEvent): void => {
     event.preventDefault();
-    if (chosen !== undefined) onSubmit(chosen);
+    if (chosen !== undefined) onSubmit(chosen, role.trim());
   };
 
   return (
@@ -636,6 +712,21 @@ function AttachDialog({
                   ))}
                 </Select.Content>
               </Select.Root>
+              <Text as="label" htmlFor="attach-repo-role" size="2" weight="medium" mt="2">
+                职责
+              </Text>
+              <TextField.Root
+                id="attach-repo-role"
+                size={{ initial: "3", sm: "2" }}
+                className="min-w-0 w-full max-sm:min-h-11"
+                placeholder="选填,例如:后端 API(Node)"
+                maxLength={64}
+                value={role}
+                onChange={(event) => setRole(event.target.value)}
+              />
+              <Text as="p" size="1" color="gray">
+                这个仓库在这个产品里干什么。Agent 会话的系统提示会把它写给 agent。
+              </Text>
             </div>
           )}
           <Flex gap="3" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>

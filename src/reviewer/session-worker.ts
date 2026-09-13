@@ -130,16 +130,25 @@ export function sessionTools(): string[] {
  * 为止、各仓库的知识集;末尾接用途自己那一段(`session-purposes.ts`,issue #338)。
  */
 export function sessionSystemPrompt(request: OpenSessionRequest): string {
-  const repos = request.repos.map((repo) => `${repo.owner}/${repo.repo}`);
+  // 仓库职责进破折号后面(issue #341):产品里每个仓库干什么,人写一行在这里,agent 据它
+  // 挑仓库,不必先把每个 README 读一遍。没写过的那个仓库只有仓库名。
+  const repos = request.repos.map((repo) =>
+    repo.role === null
+      ? `- ${repo.owner}/${repo.repo}`
+      : `- ${repo.owner}/${repo.repo} — ${repo.role}`,
+  );
   const sections = [
     "You are a senior engineer in a continuing conversation with one person about one product. The conversation spans many turns: answer what is asked, say what you are unsure about, and ask when the answer changes what you would do.",
+    `The product: ${request.productName}.`,
     `This session's purpose: ${request.purpose}.`,
     "",
     "## The workspace",
     "",
     "The working directory is the session root. Each repository of this product is checked out in a directory named <owner>/<repo> directly under it, at the latest commit of its default branch:",
     "",
-    ...repos.map((repo) => `- ${repo}`),
+    ...repos,
+    "",
+    "The note after the dash says what that repository is for in this product; start from it to decide which repository to read.",
     "",
     "Every path you pass to read, grep, find and ls stays inside the session root — an absolute path outside it, or a path that climbs out with .., is refused. The git tool reads one repository per call: every path argument starts with the <owner>/<repo>/ prefix, and that prefix picks the repository.",
     "",

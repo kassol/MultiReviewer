@@ -55,6 +55,8 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
     assert.doesNotMatch(entrySource, /@radix-ui\/themes\/styles\.css/);
     assert.doesNotMatch(masterListSource, /selection-solid-hover/);
     assert.match(javascript, /to:"\/credentials",activeOptions:\{exact:!0\}/);
+    // 仓库职责(issue #341):产品页的归属弹窗与每行那一格都带「职责」这个词。
+    assert.match(javascript, /职责/);
   } finally {
     rmSync(dist, { recursive: true, force: true });
   }
