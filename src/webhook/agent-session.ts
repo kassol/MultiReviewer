@@ -258,7 +258,7 @@ export function agentSessionRepos(
  * 这个会话挂的那个产品的名字(issue #341)。进系统提示一行,与仓库集合和知识集同律在 `boot`
  * 里现算:改名在下次重建时生效。产品没了即空串——那时会话一个仓库也读不到,消息根本发不出来。
  */
-function productName(dbPath: string, productId: number): string {
+function productNameById(dbPath: string, productId: number): string {
   const store = openStore(dbPath);
   try {
     return store.getProduct(productId)?.name ?? "";
@@ -907,7 +907,7 @@ async function boot(
     kind: "open",
     request: {
       sessionRoot: prepared.sessionRoot,
-      productName: productName(deps.dbPath, session.productId),
+      productName: productNameById(deps.dbPath, session.productId),
       purpose: session.purpose,
       repos: prepared.repos,
       runtimeModel: model.runtimeModel,

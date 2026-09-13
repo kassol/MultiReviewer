@@ -1941,7 +1941,7 @@ const PRODUCT_NAME_SHAPE = `产品名要是 1 到 ${PRODUCT_NAME_MAX} 个字符`
 const PRODUCT_NAME_TAKEN = "已经有同名产品";
 
 /** 仓库职责超长(issue #341)。上限与产品名同一个数:两边都是左栏一行装得下的一句话。 */
-const PRODUCT_ROLE_SHAPE = `仓库职责最多 ${PRODUCT_NAME_MAX} 个字符`;
+const PRODUCT_ROLE_SHAPE = `仓库职责要是最多 ${PRODUCT_NAME_MAX} 个字符的文本`;
 
 /**
  * 产品列表(CONTEXT.md 产品)。按仓库分配收窄而不是拒绝:产品内至少有一个仓库在分配里
@@ -2045,7 +2045,11 @@ async function handleAttachProductRepo(
 ): Promise<void> {
   const payload = await readJson<{ role?: unknown } | null>(req, res);
   if (payload === undefined) return;
-  const role = typeof payload?.role === "string" ? payload.role.trim() : "";
+  // 与产品名同一条校验律:给了就得是字符串,不是字符串回 400 而不是悄悄当成没有。
+  if (payload?.role !== undefined && typeof payload.role !== "string") {
+    return sendJson(res, 400, { error: PRODUCT_ROLE_SHAPE });
+  }
+  const role = payload?.role?.trim() ?? "";
   if (role.length > PRODUCT_NAME_MAX) return sendJson(res, 400, { error: PRODUCT_ROLE_SHAPE });
   const at = new Date((deps.now ?? Date.now)()).toISOString();
   const result = withStore(deps.dbPath, (store) =>

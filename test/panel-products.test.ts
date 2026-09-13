@@ -246,7 +246,11 @@ test("仓库职责:归属时带得上,同一个端点改得动,空白存成没�
   assert.equal((await attach({ role: "后端 API" })).status, 204);
   const long = await attach({ role: "x".repeat(65) });
   assert.equal(long.status, 400);
-  assert.deepEqual(await long.json(), { error: "仓库职责最多 64 个字符" });
+  assert.deepEqual(await long.json(), { error: "仓库职责要是最多 64 个字符的文本" });
+  assert.equal(await role(), "后端 API");
+
+  // 不是字符串同样 400,不悄悄当成没有。
+  assert.equal((await attach({ role: 7 })).status, 400);
   assert.equal(await role(), "后端 API");
 });
 
