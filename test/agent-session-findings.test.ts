@@ -1,11 +1,11 @@
 /**
- * 历史 Finding 查询工具与需求拆分用途那一段系统提示(issue #338),走真实链路:
+ * 历史 Finding 查询工具与两个会话用途各自那一段系统提示(issue #338),走真实链路:
  * `POST /messages → 常驻子进程 → Pi 会话 → 假模型服务 → 工具调用 → IPC 查库 → 工具结果`。
  * 模型由本机的假服务(`support/model-stub.ts`)按脚本扮演,全程不碰收费模型。先例是
  * `agent-session-subprocess.test.ts`。
  *
  * 钉的是桩测不到的几件事:工具真的按三个条件过滤、上限真的在 50 条、会话根外的仓库问不到,
- * 以及用途那一段提示确实进了模型请求。
+ * 以及两个用途各自那一段提示与它的工具面确实进了模型请求。
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -108,10 +108,14 @@ function seedFindings(
 }
 
 /**
- * 起一套指向假模型服务的 harness,建好产品与一个需求拆分会话,回会话 id 与创建者的 cookie。
+ * 起一套指向假模型服务的 harness,建好产品与一个这个用途的会话(默认需求拆分),回会话 id 与
+ * 创建者的 cookie。
  * 与 `agent-session-subprocess.test.ts` 那一份同形;两份各自留在自己的用例文件里。
  */
-async function startSessionHarness(turns: readonly StubTurn[]): Promise<{
+async function startSessionHarness(
+  turns: readonly StubTurn[],
+  purpose = "requirement-breakdown",
+): Promise<{
   h: PanelHarness;
   cookie: string;
   sessionId: number;
@@ -133,7 +137,7 @@ async function startSessionHarness(turns: readonly StubTurn[]): Promise<{
   const response = await fetch(`${h.serverUrl}/api/products/${product.id}/sessions`, {
     method: "POST",
     headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ purpose: "requirement-breakdown" }),
+    body: JSON.stringify({ purpose }),
   });
   assert.equal(response.status, 201);
   const { session } = (await response.json()) as { session: { id: number } };
@@ -368,6 +372,35 @@ test("需求拆分会话的系统提示里有粒度、落点、不估算与「�
     // 每次交拆分恰好一次,正文里散列的不算产出。
     assert.match(prompt, /submit_requirement_breakdown exactly once/);
     assert.match(prompt, /Items written out in your reply are not handed in/);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("开放对话会话不注册产出工具,提示里是开放问答那一段", async () => {
+  const turns: StubTurn[] = [{ text: "读了这个仓库再答", usage: { input: 10, output: 2 } }];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(
+    turns,
+    "open-conversation",
+  );
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", "这个仓库怎么存审查结果?")).status, 202);
+    await idle(h, cookie, sessionId);
+
+    assert.equal(requests.length, 1);
+    // 工具面:底座那几件在,产出工具一件都不在——这个用途交不出产出。
+    assert.equal(requests[0]!.tools.includes("submit_requirement_breakdown"), false);
+    assert.ok(requests[0]!.tools.includes("query_findings"));
+    const prompt = requests[0]!.messages.find((message) => message.role === "system")!.content;
+    // 开放问答那一段:读了再答、说清不确定、不拆也不交产出。
+    assert.match(prompt, /open questions about this product/);
+    assert.match(prompt, /Read before you answer/);
+    assert.match(prompt, /Say what you are unsure about/);
+    assert.match(prompt, /This session hands nothing in/);
+    // 需求拆分那一段的「恰好一次」产出要求不在。
+    assert.equal(prompt.includes("exactly once"), false);
+    assert.equal(prompt.includes("submit_requirement_breakdown"), false);
   } finally {
     await disposeAgentSessions();
     await close();

@@ -2,7 +2,7 @@
  * Agent 会话实体与它的面板接口(issue #332)。
  *
  * 缝与产品那一票相同:面板 API 走真实 HTTP,会话行落临时 SQLite。压的是票的验收:
- * `agent:chat` 独立一格、用途必填且只收需求拆分、没有这一格建 / 删被挡、非创建者读 404、
+ * `agent:chat` 独立一格、用途必填且只收需求拆分与开放对话、没有这一格建 / 删被挡、非创建者读 404、
  * 系统管理员读得到全部但发消息被拒,以及删会话与删产品级联的条数。
  */
 import assert from "node:assert/strict";
@@ -99,7 +99,7 @@ test("agent:chat 独立一格:不蕴含别的格,也不被任何格蕴含", () =
   assert.ok(!effectivePanelPermissions(others).includes("agent:chat"));
 });
 
-test("建会话要用途,且只收需求拆分", async () => {
+test("建会话要用途,且只收需求拆分与开放对话", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const productId = await productWithRepo(h, "报销系统");
   const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
@@ -108,7 +108,7 @@ test("建会话要用途,且只收需求拆分", async () => {
     const response = await as(h, cookie, "POST", `/products/${productId}/sessions`, body);
     assert.equal(response.status, 400, JSON.stringify(body));
     assert.deepEqual(await response.json(), {
-      error: "会话用途必填,当前只有需求拆分",
+      error: "会话用途必填,只能是需求拆分或开放对话",
     });
   }
 
@@ -138,6 +138,15 @@ test("建会话要用途,且只收需求拆分", async () => {
     droppedFromContext: 0,
   });
   assert.deepEqual(await sessions(h, cookie, productId), [session]);
+
+  // 开放对话也收:它是第二个用途,与需求拆分同一条建会话的路。
+  const open = await as(h, cookie, "POST", `/products/${productId}/sessions`, {
+    purpose: "open-conversation",
+  });
+  assert.equal(open.status, 201);
+  const { session: chat } = (await open.json()) as { session: AgentSession };
+  assert.equal(chat.purpose, "open-conversation");
+  assert.deepEqual(await sessions(h, cookie, productId), [chat, session]);
 });
 
 test("没有 agent:chat 的人建会话与删会话都被挡,读不受影响", async () => {

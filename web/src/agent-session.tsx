@@ -50,13 +50,26 @@ import { localMinute, localSecond } from "@/lib/time";
 import { api, apiUrl, errorText, fetchJson, send } from "./api.ts";
 import { StreamStatus, useTrace } from "./run-trace.tsx";
 
-/** 会话用途(CONTEXT.md 会话用途)。这一版只有需求拆分,与服务端同一份取值。 */
-export const AGENT_SESSION_PURPOSES = ["requirement-breakdown"] as const;
+/** 会话用途(CONTEXT.md 会话用途)。与服务端同一份取值。 */
+export const AGENT_SESSION_PURPOSES = ["requirement-breakdown", "open-conversation"] as const;
 
 export type AgentSessionPurpose = (typeof AGENT_SESSION_PURPOSES)[number];
 
 export const PURPOSE_LABEL: Record<AgentSessionPurpose, string> = {
   "requirement-breakdown": "需求拆分",
+  "open-conversation": "开放对话",
+};
+
+/** 建会话时默认选中的用途:现有行为的延续。 */
+const DEFAULT_PURPOSE: AgentSessionPurpose = "requirement-breakdown";
+
+/**
+ * 这个用途有没有产出类型(CONTEXT.md 会话用途)。开放对话只聊、交不出产出,右栏产出区因此
+ * 整块不渲染——留一个永远空着的空态,只会让人等一份不会来的东西。
+ */
+const PURPOSE_HAS_OUTPUT: Record<AgentSessionPurpose, boolean> = {
+  "requirement-breakdown": true,
+  "open-conversation": false,
 };
 
 export type AgentSession = {
@@ -181,9 +194,9 @@ export function CreateSessionDialog({
   onClose: () => void;
   onSubmit: (purpose: AgentSessionPurpose) => void;
 }) {
-  const [purpose, setPurpose] = useState<string>("");
+  const [purpose, setPurpose] = useState<string>(DEFAULT_PURPOSE);
   useEffect(() => {
-    if (open) setPurpose("");
+    if (open) setPurpose(DEFAULT_PURPOSE);
   }, [open]);
 
   const chosen = AGENT_SESSION_PURPOSES.find((value) => value === purpose);
@@ -1259,20 +1272,23 @@ export function AgentSessionPage({
           </CardShell>
         </div>
 
-        <aside
-          aria-label="会话产出"
-          className="flex w-full shrink-0 flex-col gap-2.5 xl:sticky xl:top-[100px] xl:max-h-[calc(100vh-180px)] xl:w-[336px] xl:self-start xl:overflow-y-auto"
-        >
-          <CardShell className="px-5 py-4">
-            <OutputPanel
-              sessionId={sessionId}
-              canAct={session !== undefined && session.createdBy === username}
-              running={running}
-              picked={outputVersion}
-              onPick={setOutputVersion}
-            />
-          </CardShell>
-        </aside>
+        {/* 没有产出类型的用途不渲染右栏,中栏(`flex-1`)因此占满(开放对话)。 */}
+        {session === undefined || PURPOSE_HAS_OUTPUT[session.purpose] ? (
+          <aside
+            aria-label="会话产出"
+            className="flex w-full shrink-0 flex-col gap-2.5 xl:sticky xl:top-[100px] xl:max-h-[calc(100vh-180px)] xl:w-[336px] xl:self-start xl:overflow-y-auto"
+          >
+            <CardShell className="px-5 py-4">
+              <OutputPanel
+                sessionId={sessionId}
+                canAct={session !== undefined && session.createdBy === username}
+                running={running}
+                picked={outputVersion}
+                onPick={setOutputVersion}
+              />
+            </CardShell>
+          </aside>
+        ) : null}
       </div>
 
       <ConfirmDialog

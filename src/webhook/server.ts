@@ -2065,8 +2065,8 @@ const NO_SUCH_AGENT_SESSION = "没有这个 Agent 会话";
 /** 只有创建者续得了、删得了自己的会话。系统管理员读得到它,动不了它(spec #329)。 */
 const NOT_AGENT_SESSION_CREATOR = "只有会话的创建者能做";
 
-/** 会话用途必填且只认一个值,说哪个值比说「形状不对」有用。 */
-const AGENT_SESSION_PURPOSE_SHAPE = "会话用途必填,当前只有需求拆分";
+/** 会话用途必填且只认这两个值,说哪两个值比说「形状不对」有用。 */
+const AGENT_SESSION_PURPOSE_SHAPE = "会话用途必填,只能是需求拆分或开放对话";
 
 /** 发消息的请求体形状(issue #333)。两样都必填,说清哪两样比说「形状不对」有用。 */
 const AGENT_SESSION_MESSAGE_SHAPE = "发消息要带 clientMessageId 与非空的 text";
@@ -2202,7 +2202,7 @@ function handleListAgentSessions(
     : sendJson(res, 200, { sessions: sessions.map(withRuntimeStatus) });
 }
 
-/** 建会话。用途必填且只认需求拆分;创建者就是调用方,建完它只属于这个人。 */
+/** 建会话。用途必填且只认那两个值;创建者就是调用方,建完它只属于这个人。 */
 async function handleCreateAgentSession(
   req: IncomingMessage,
   res: ServerResponse,

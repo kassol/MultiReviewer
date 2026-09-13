@@ -2646,10 +2646,10 @@ function foldProducts(rows: readonly Record<string, unknown>[]): ProductRecord[]
 }
 
 /**
- * 会话用途(CONTEXT.md 会话用途)。这一版只有需求拆分;写代码类用途接入时各成一个值。
- * 建时必填、之后不变,因此没有改用途的写入口。
+ * 会话用途(CONTEXT.md 会话用途)。需求拆分交结构化产出,开放对话只聊与只读代码、没有产出
+ * 类型;写代码类用途接入时各成一个值。建时必填、之后不变,因此没有改用途的写入口。
  */
-export const AGENT_SESSION_PURPOSES = ["requirement-breakdown"] as const;
+export const AGENT_SESSION_PURPOSES = ["requirement-breakdown", "open-conversation"] as const;
 
 export type AgentSessionPurpose = (typeof AGENT_SESSION_PURPOSES)[number];
 
