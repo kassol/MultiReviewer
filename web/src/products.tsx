@@ -189,6 +189,8 @@ export function ProductsPage({
     onSuccess: (_value, { product, repo }) => {
       settled(`已把 ${repoPath(repo)} 移出产品。`);
       void queryClient.invalidateQueries({ queryKey: sessionsQueryKey(product.id) });
+      // 移出会退役涉及这个仓库的产品知识(issue #347),生效列表那一份缓存跟着重读。
+      void queryClient.invalidateQueries({ queryKey: knowledgeQueryKey(product.id) });
     },
     onError: failed,
   });
