@@ -180,6 +180,7 @@ async function runSession(
           facts: [{ id: 2, scope: "src", statement: "这个仓库的数据访问都走 src/db.js" }],
         },
       ],
+      productKnowledge: [],
       runtimeModel: await smokeRuntimeModel(),
     },
   } satisfies SessionCommand);

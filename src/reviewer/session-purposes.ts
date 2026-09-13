@@ -8,6 +8,8 @@
  * 段落用英文写,与现有 prompt 同一风格;要求产出用中文,与产出工具字段 description 里
  * 那几句「written in Chinese」同一口径。
  */
+import { SUBMIT_PRODUCT_SURVEY_TOOL } from "./session-output-tools.ts";
+import type { SessionProductKnowledge } from "./session-protocol.ts";
 
 /**
  * 需求拆分用途的那一段(spec #330 的「系统 prompt 要点」)。
@@ -50,10 +52,49 @@ const OPEN_CONVERSATION_PROMPT = [
 ].join("\n");
 
 /**
+ * 产品梳理用途的那一段(CONTEXT.md 产品梳理,issue #345)。
+ *
+ * 这个用途没有人在对面:会话由系统开、收一条种子消息、交一次提案就完。提示因此要把「梳理
+ * 的是仓库之间的事」与「已经成立的是哪些」说全——生效条目带 id 列在这里,agent 据它提退役
+ * 而不是把同一句话再提一遍。
+ */
+function productSurveyPrompt(knowledge: readonly SessionProductKnowledge[]): string {
+  return [
+    "## This session: surveying this product",
+    "",
+    "Nobody is on the other side of this conversation. The system opened this session to survey the product, and you hand the survey in once. Write every statement you hand in in Chinese.",
+    "",
+    "What you are looking for lies between the repositories, never inside one of them: which repository calls which and over what contract, which conventions hold across all of them, and which repositories a given kind of change drags along. A fact about one repository alone belongs to that repository's own knowledge set, not here — every statement you hand in speaks about at least two repositories of this product.",
+    "",
+    "Read the repositories before you write anything down. Every statement comes from code you opened in this session — an entry point, a client, a configuration file, a schema, a build or deploy file. A relationship you infer from a name is a guess, and a guess here sends every later session the wrong way. One statement is one sentence, about 100 characters, concrete enough that a person can check it against the code.",
+    "",
+    ...(knowledge.length === 0
+      ? ["This product has no product knowledge yet: everything you find is new."]
+      : [
+          "The product knowledge that holds today, each with its id and the repositories it involves:",
+          "",
+          ...knowledge.map(
+            (entry) => `- [${entry.id}] ${entry.statement} (${entry.repos.join(", ")})`,
+          ),
+          "",
+          "Do not hand in a statement that repeats one of these. When the code no longer matches one of them, propose retiring it by its id and say what you read instead.",
+        ]),
+    "",
+    `Hand the whole survey in by calling ${SUBMIT_PRODUCT_SURVEY_TOOL} exactly once: every new statement and every retirement in that one call. Statements written in prose are not handed in — they reach nobody. After the call, say in one or two sentences what you handed in, and nothing more.`,
+  ].join("\n");
+}
+
+/**
  * 这个用途接在底座提示后面的那一段。认不出的用途回 undefined,会话照常开得起来,只是
  * 没有用途那一段——与 `sessionOutputTools` 对认不出的用途回空数组同律。
+ *
+ * `productKnowledge` 只有产品梳理那一段用得上(issue #345):它要列出此刻生效的条目。
  */
-export function purposeSystemPrompt(purpose: string): string | undefined {
+export function purposeSystemPrompt(
+  purpose: string,
+  productKnowledge: readonly SessionProductKnowledge[],
+): string | undefined {
   if (purpose === "requirement-breakdown") return REQUIREMENT_BREAKDOWN_PROMPT;
+  if (purpose === "product-survey") return productSurveyPrompt(productKnowledge);
   return purpose === "open-conversation" ? OPEN_CONVERSATION_PROMPT : undefined;
 }

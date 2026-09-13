@@ -36,6 +36,7 @@ import {
   HARNESS_SPEC,
   scopedUser,
   seedAvailableModelService,
+  seedRepo,
   startPanelHarness,
   type PanelHarness,
   type PanelHarnessOptions,
@@ -78,6 +79,11 @@ type SessionHarnessOptions = {
   input?: readonly ("text" | "image")[];
   /** 换一份 Forge(评审复核):备会话根要经它取仓库,造「子进程起不来」用它。 */
   wrapForge?: PanelHarnessOptions["wrapForge"];
+  /**
+   * 产品下再归入一个仓库(issue #345)。产品梳理要产品有两个以上仓库;内存 Forge 对每个
+   * 仓库都回同一份夹具仓库,两棵工作树因此都备得出来。
+   */
+  extraRepo?: { repoId: number; owner: string; repo: string };
 };
 
 /**
@@ -129,6 +135,14 @@ async function startSessionHarness(
   assert.equal(created.status, 201);
   const { product } = (await created.json()) as { product: { id: number } };
   assert.equal((await h.api("PUT", `/products/${product.id}/repos/${GITEA_REPO.id}`)).status, 204);
+  if (options.extraRepo !== undefined) {
+    const extra = options.extraRepo;
+    seedRepo(h, extra.repoId, extra.owner, extra.repo);
+    assert.equal(
+      (await h.api("PUT", `/products/${product.id}/repos/${extra.repoId}`)).status,
+      204,
+    );
+  }
   const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const response = await fetch(`${h.serverUrl}/api/products/${product.id}/sessions`, {
     method: "POST",
@@ -777,6 +791,143 @@ test("三种打回走正常返回:不落产出,打回的调用照样进记录表
       rows.filter((row) => JSON.stringify(row.entry).includes("submit_requirement_breakdown"))
         .length,
       6,
+    );
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+const SURVEY_REPO_ID = 909;
+const SURVEY_REPO = { repoId: SURVEY_REPO_ID, owner: "acme", repo: "alpha" };
+const ACTIVE_STATEMENT = "acme/widgets 的订单接口由 acme/alpha 的网关转发,契约是 OpenAPI";
+
+type Proposal = { id: number; statement: string; repoIds: number[]; retiresId: number | null };
+
+/** 这个产品此刻的生效条目与待确认提案(CONTEXT.md 产品知识)。 */
+async function productKnowledge(
+  h: PanelHarness,
+  productId: number,
+): Promise<{ knowledge: Proposal[]; proposals: Proposal[] }> {
+  const response = await h.api("GET", `/products/${productId}`);
+  assert.equal(response.status, 200);
+  return (await response.json()) as { knowledge: Proposal[]; proposals: Proposal[] };
+}
+
+/** 等到这个产品落了这么多条提案。等的是库里的行,不猜子进程的时序。 */
+async function proposalsAtLeast(
+  h: PanelHarness,
+  productId: number,
+  count: number,
+): Promise<Proposal[]> {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    const { proposals } = await productKnowledge(h, productId);
+    if (proposals.length >= count) return proposals;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.fail(`等了 30 秒,产品 ${productId} 还没落到 ${count} 条提案`);
+}
+
+test("产品梳理:提示列出生效条目、单仓库陈述被打回,合法交出落成提案", async () => {
+  const turns: StubTurn[] = [
+    {
+      // 一条只说到一个仓库的陈述:那属于那个仓库的知识集,不属于这一层。
+      toolCall: {
+        name: "submit_product_survey",
+        args: {
+          statements: [{ statement: "acme/widgets 的订单接口走 OpenAPI", repos: [REPO] }],
+          retirements: [],
+        },
+      },
+      usage: { input: 10, output: 2 },
+    },
+    {
+      toolCall: {
+        name: "submit_product_survey",
+        args: {
+          statements: [
+            {
+              statement: "  acme/alpha 的网关把 acme/widgets 的错误码原样透出  ",
+              repos: [REPO, "acme/alpha", ""],
+            },
+          ],
+          retirements: [{ id: 1, reason: "网关改成直连,这一句不再成立" }],
+        },
+      },
+      usage: { input: 20, output: 4 },
+    },
+    { text: "交了一条新增与一条退役提案", usage: { input: 8, output: 2 } },
+  ];
+  const { h, productId, requests, close } = await startSessionHarness(turns, {
+    extraRepo: SURVEY_REPO,
+  });
+  try {
+    // 先手写一条生效条目:提示要带着它的 id 列出来,退役提案也指着它。
+    const written = await h.api("POST", `/products/${productId}/knowledge`, {
+      statement: ACTIVE_STATEMENT,
+      repoIds: [GITEA_REPO.id, SURVEY_REPO_ID],
+    });
+    assert.equal(written.status, 201);
+    const { entry } = (await written.json()) as { entry: { id: number } };
+    assert.equal(entry.id, 1);
+
+    const opened = await h.api("POST", `/products/${productId}/survey`);
+    const openedText = await opened.text();
+    assert.equal(opened.status, 201, openedText);
+    const { session } = JSON.parse(openedText) as { session: { id: number } };
+
+    const proposals = await proposalsAtLeast(h, productId, 2);
+    await idle(h, h.cookie, session.id);
+
+    // 系统提示:产品梳理那一段带着生效条目的 id 与它涉及的仓库;工具面只有这个用途的产出工具。
+    const system = requests[0]!.messages.filter((message) => message.role === "system");
+    assert.equal(system.length, 1);
+    assert.match(system[0]!.content, /^## This session: surveying this product$/m);
+    assert.match(
+      system[0]!.content,
+      new RegExp(`^- \\[1\\] ${ACTIVE_STATEMENT} \\(acme/alpha, acme/widgets\\)$`, "m"),
+    );
+    assert.ok(
+      requests[0]!.tools.includes("submit_product_survey"),
+      `工具面里没有产出工具:${requests[0]!.tools.join(",")}`,
+    );
+    assert.ok(!requests[0]!.tools.includes("submit_requirement_breakdown"));
+    // 种子消息:系统投的那一条在第一次请求的用户消息里。
+    assert.ok(
+      requests[0]!.messages.some(
+        (message) =>
+          message.role === "user" && message.content.includes("Survey this product and hand"),
+      ),
+      "种子消息没进模型请求",
+    );
+
+    // 第一次交的那一版被打回:理由在工具结果里,一条提案都没落。
+    const rows = await records(h, h.cookie, session.id);
+    const results = rows
+      .filter((row) => row.entry.message?.role === "toolResult")
+      .map((row) => JSON.stringify(row.entry));
+    assert.equal(results.length, 2);
+    assert.match(results[0]!, /names fewer than two repositories of this product/);
+    assert.match(results[1]!, /recorded/);
+
+    // 第二次交的那一版落成两行提案:新增那一条归一化过(两头空白去掉、空仓库项丢掉),
+    // 退役那一条指着生效条目,理由就是它的陈述。
+    assert.deepEqual(
+      proposals.map((row) => [row.statement, row.repoIds, row.retiresId]),
+      [
+        ["网关改成直连,这一句不再成立", [GITEA_REPO.id, SURVEY_REPO_ID].sort((a, b) => a - b), 1],
+        [
+          "acme/alpha 的网关把 acme/widgets 的错误码原样透出",
+          [GITEA_REPO.id, SURVEY_REPO_ID].sort((a, b) => a - b),
+          null,
+        ],
+      ],
+    );
+    // 生效列表一格没动:提案要等人确认(issue #346),这一票只把它们落下来。
+    const { knowledge } = await productKnowledge(h, productId);
+    assert.deepEqual(
+      knowledge.map((row) => row.id),
+      [1],
     );
   } finally {
     await disposeAgentSessions();

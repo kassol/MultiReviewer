@@ -18,6 +18,7 @@ const REQUEST: OpenSessionRequest = {
     { owner: "acme", repo: "api", role: "后端 API(Node)", rules: [], facts: [] },
     { owner: "acme", repo: "web", role: null, rules: [], facts: [] },
   ],
+  productKnowledge: [],
   // 提示这一份不读模型,这一格只为凑齐形状。
   runtimeModel: {
     provider: "stub",

@@ -142,6 +142,7 @@ import {
   type ModelServiceRecord,
   type ModelServiceVersionCommit,
   type ModelSupplementSource,
+  type ProductRepoRecord,
   type RangeReviewRecord,
   type RepoKey,
   type RepoSummary,
@@ -179,10 +180,12 @@ import {
   agentSessionStatus,
   clearAgentSessionQueue,
   deliverAgentSessionMessage,
+  productSurveyRunning,
   queueAgentSessionMessage,
   reclaimAgentSession,
   recordAgentSessionCustomMessage,
   stopAgentSession,
+  type AgentSessionModel,
   type AgentSessionRuntimeDeps,
 } from "./agent-session.ts";
 import {
@@ -211,6 +214,7 @@ import {
 } from "../reviewer/model-runtime.ts";
 import { createPiMergeAgent } from "../reviewer/merge-agent.ts";
 import { EVIDENCE_SESSION_BUDGET } from "../reviewer/evidence.ts";
+import { SUBMIT_PRODUCT_SURVEY_TOOL } from "../reviewer/session-output-tools.ts";
 import type { AgentSessionMessageMode } from "../reviewer/session-protocol.ts";
 import {
   agentSessionImageMimeType,
@@ -1963,16 +1967,22 @@ function handleListProducts(
 }
 
 /**
- * 一个产品、它的仓库与它生效的产品知识(CONTEXT.md 产品知识,issue #343)。分配外的产品
- * 已经被路由上的 `product` 目标判成 404。产品知识另成一格而不是塞进 `product`:产品列表
- * 那一份不带它,两处同构才不会让人以为列表里也有。
+ * 一个产品、它的仓库、它生效的产品知识与待确认的提案(CONTEXT.md 产品知识,issue #343、
+ * #345)。分配外的产品已经被路由上的 `product` 目标判成 404。产品知识另成两格而不是塞进
+ * `product`:产品列表那一份不带它,两处同构才不会让人以为列表里也有。
+ *
+ * 提案那一格多一个 `retiresId`:不为空即退役提案,指向它要退役的那条生效条目。
  */
 function handleProduct(res: ServerResponse, deps: WebhookServerDeps, productId: number): void {
   const read = withStore(deps.dbPath, (store) => {
     const product = store.getProduct(productId);
     return product === undefined
       ? undefined
-      : { product, knowledge: store.listProductKnowledge(productId, "active") };
+      : {
+          product,
+          knowledge: store.listProductKnowledge(productId, "active"),
+          proposals: store.listProductKnowledge(productId, "proposed"),
+        };
   });
   return read === undefined
     ? sendJson(res, 404, { error: NO_SUCH_PRODUCT })
@@ -1982,6 +1992,12 @@ function handleProduct(res: ServerResponse, deps: WebhookServerDeps, productId: 
           id: entry.id,
           statement: entry.statement,
           repoIds: entry.repoIds,
+        })),
+        proposals: read.proposals.map((entry) => ({
+          id: entry.id,
+          statement: entry.statement,
+          repoIds: entry.repoIds,
+          retiresId: entry.retiresId,
         })),
       });
 }
@@ -2173,11 +2189,83 @@ function handleRetireProductKnowledge(
   return retired ? send(res, 204) : sendJson(res, 404, { error: NO_SUCH_PRODUCT_KNOWLEDGE });
 }
 
+/**
+ * 重梳的两句回绝(CONTEXT.md 产品梳理,issue #345)。仓库不足两个时梳理无从谈起——产品知识
+ * 说的是仓库之间的事;同一个产品的第二轮梳理要等第一轮交完,两轮同时跑会提出同一批提案。
+ */
+const PRODUCT_SURVEY_TOO_FEW_REPOS = "产品梳理要这个产品有两个以上仓库,先把第二个仓库归入它";
+const PRODUCT_SURVEY_RUNNING = "这个产品的产品梳理还在跑,等它交出提案再重梳";
+
+/**
+ * 产品梳理会话的创建者(CONTEXT.md 产品梳理)。会话由系统开,不属于点下重梳的那个人:看得到
+ * 产品的人都读得到它,谁都续不了它。
+ */
+const SYSTEM_SESSION_CREATOR = "system";
+
+/**
+ * 产品梳理会话收到的那一条种子消息(issue #345)。人不与它对话,这一句就是全部的任务交代;
+ * 英文写,与系统提示同一风格。
+ */
+const PRODUCT_SURVEY_SEED = [
+  "Survey this product and hand the survey in.",
+  "",
+  "Read every repository under the session root and work out what holds between them: which repository calls which and over what contract, which conventions hold across all of them, and which kind of change in one repository drags the others along. Start from each repository's role, then read the entry points, clients, configuration, schemas and build files that cross a repository boundary.",
+  "",
+  `Call ${SUBMIT_PRODUCT_SURVEY_TOOL} once, with every new statement and every entry that no longer holds.`,
+].join("\n");
+
+/**
+ * 重梳(CONTEXT.md 产品梳理,spec #342 的 US 5):开一个产品梳理会话并投一条种子消息。
+ *
+ * 会话先落行再凑开跑要的那几样:凑不齐就把这一行收掉——一个永远不会开跑的会话留在列表里
+ * 只会让人等它。门禁在路由上(`knowledge:write` 加这个产品里的一个仓库分配),与手写产品
+ * 知识同一道。
+ */
+async function handleProductSurvey(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+): Promise<void> {
+  const product = withStore(deps.dbPath, (store) => store.getProduct(productId));
+  if (product === undefined) return sendJson(res, 404, { error: NO_SUCH_PRODUCT });
+  if (product.repos.length < 2) {
+    return sendJson(res, 409, { error: PRODUCT_SURVEY_TOO_FEW_REPOS });
+  }
+  if (productSurveyRunning(deps.dbPath, productId)) {
+    return sendJson(res, 409, { error: PRODUCT_SURVEY_RUNNING });
+  }
+  const session = withStore(deps.dbPath, (store) =>
+    store.createAgentSession({
+      productId,
+      createdBy: SYSTEM_SESSION_CREATOR,
+      purpose: "product-survey",
+      createdAt: new Date((deps.now ?? Date.now)()).toISOString(),
+    }),
+  );
+  const plan = await agentSessionRunPlan(deps, session);
+  if ("refusal" in plan) {
+    withStore(deps.dbPath, (store) => store.deleteAgentSession(session.id));
+    return sendJson(res, plan.refusal.status, { error: plan.refusal.error });
+  }
+  deliverAgentSessionMessage(
+    agentSessionRuntimeDeps(deps, plan.forge),
+    session,
+    PRODUCT_SURVEY_SEED,
+    "followUp",
+    plan.model,
+    plan.repos,
+  );
+  return sendJson(res, 201, { session: withRuntimeStatus(session) });
+}
+
 /** 会话不存在,与别人的会话:两档同形回这一句 404(CONTEXT.md Agent 会话)。 */
 const NO_SUCH_AGENT_SESSION = "没有这个 Agent 会话";
 
 /** 只有创建者续得了、删得了自己的会话。系统管理员读得到它,动不了它(spec #329)。 */
 const NOT_AGENT_SESSION_CREATOR = "只有会话的创建者能做";
+
+/** 产品梳理会话由系统开、交完提案就完(CONTEXT.md 产品梳理,issue #345):人不动它。 */
+const AGENT_SESSION_SURVEY_IS_SYSTEM = "产品梳理会话由系统开,谁都续不了它";
 
 /** 会话用途必填且只认这两个值,说哪两个值比说「形状不对」有用。 */
 const AGENT_SESSION_PURPOSE_SHAPE = "会话用途必填,只能是需求拆分或开放对话";
@@ -2247,9 +2335,15 @@ function withRuntimeStatus(session: AgentSessionRecord): AgentSessionRecord {
   return { ...session, status: agentSessionStatus(session.id) };
 }
 
-/** 请求体里的会话用途。认不出即 undefined;建时必填、之后不变,因此只有这一处收它。 */
+/**
+ * 请求体里的会话用途。认不出即 undefined;建时必填、之后不变,因此只有这一处收它。
+ *
+ * 产品梳理不在这一份里(issue #345):那个用途只有系统开得了,人点的是产品页上的「重梳」。
+ */
 function agentSessionPurpose(value: unknown): AgentSessionPurpose | undefined {
-  return AGENT_SESSION_PURPOSES.find((purpose) => purpose === value);
+  return AGENT_SESSION_PURPOSES.filter((purpose) => purpose !== "product-survey").find(
+    (purpose) => purpose === value,
+  );
 }
 
 /**
@@ -2263,7 +2357,31 @@ function visibleAgentSession(
 ): AgentSessionRecord | undefined {
   const session = withStore(deps.dbPath, (store) => store.getAgentSession(sessionId));
   if (session === undefined) return undefined;
-  return caller.isSystemAdmin || session.createdBy === caller.username ? session : undefined;
+  if (caller.isSystemAdmin || session.createdBy === caller.username) return session;
+  // 产品梳理会话由系统开(issue #345):看得到这个产品的人都读得到它的过程与用量。
+  return session.purpose === "product-survey" && seesProduct(deps, session.productId, caller)
+    ? session
+    : undefined;
+}
+
+/**
+ * 这个调用方看不看得到这个产品(CONTEXT.md 产品,ADR 0018):产品里至少有一个仓库在他的
+ * 仓库分配里。路由上的 `product` 目标判的是同一件事,这一处给按会话 id 寻址的那几个端点用
+ * ——它们的路径上没有产品。
+ */
+function seesProduct(
+  deps: WebhookServerDeps,
+  productId: number,
+  caller: PanelCaller,
+): boolean {
+  if (caller.isSystemAdmin) return true;
+  return withStore(deps.dbPath, (store) => {
+    const user = store.listPanelUsers().find((row) => row.username === caller.username);
+    const product = store.getProduct(productId);
+    if (user === undefined || product === undefined) return false;
+    const assigned = new Set(user.repoIds);
+    return product.repos.some((row) => assigned.has(row.repoId));
+  });
 }
 
 /**
@@ -2288,6 +2406,12 @@ function agentSessionForCreator(
     refuse(404, NO_SUCH_AGENT_SESSION);
     return undefined;
   }
+  // 产品梳理会话的创建者是系统(issue #345):看得到产品的人都读得到它,发消息、停止与删除
+  // 一律回这一句——回「只有创建者能做」会让人去找那个不存在的人。
+  if (session.purpose === "product-survey") {
+    refuse(409, AGENT_SESSION_SURVEY_IS_SYSTEM);
+    return undefined;
+  }
   if (session.createdBy !== caller.username) {
     refuse(403, NOT_AGENT_SESSION_CREATOR);
     return undefined;
@@ -2309,7 +2433,15 @@ function handleListAgentSessions(
   const sessions = withStore(deps.dbPath, (store) =>
     store.getProduct(productId) === undefined
       ? undefined
-      : store.listAgentSessions(productId, caller.isSystemAdmin ? null : caller.username),
+      : store
+          .listAgentSessions(productId, null)
+          // 产品梳理会话谁都看得到(issue #345):它是系统开的,不属于某一个人。
+          .filter(
+            (session) =>
+              caller.isSystemAdmin ||
+              session.createdBy === caller.username ||
+              session.purpose === "product-survey",
+          ),
   );
   return sessions === undefined
     ? sendJson(res, 404, { error: NO_SUCH_PRODUCT })
@@ -2626,50 +2758,73 @@ async function handleAgentSessionMessage(
     }
     return accepted(queued.acceptedAt);
   }
-  // 正在排空(issue #335):在跑的会话此刻正被中止,再起一个子进程只会被当场收掉。入队那一档
-  // 不挡——它走不到这里,而一个还在跑的会话收下一条插话不占新名额。
-  if (deps.drain?.draining() === true) {
-    return sendJson(res, 503, { error: AGENT_SESSION_DRAINING });
-  }
-  const forge = deps.forges.gitea;
-  if (forge === undefined) {
-    return sendJson(res, 503, { error: "gitea 没有配置 Forge,取不回代码" });
-  }
-  // 会话根里挂哪几棵工作树:产品当前仓库 ∩ 创建者当前仓库分配(spec #329)。
-  const repos = agentSessionRepos(deps.dbPath, session);
-  const first = repos[0];
-  if (first === undefined) return sendJson(res, 409, { error: AGENT_SESSION_NO_REPOS });
-  // 辅助模型按会话根里第一个仓库解析(ADR 0029):解析那一处是按仓库问的,而一个会话跨着
-  // 几个仓库。跑不跑得起来的判据与四条发起链路同一份,面板说得动的那一次就一定收得下。
-  const auxiliary = await resolveAuxiliaryModelPlan(deps, first.repoId);
-  const plan = auxiliary?.plan ?? undefined;
-  if (plan === undefined || plan.runtimeModel === null || plan.credential === null) {
-    return sendJson(res, 409, { error: auxiliary?.reason ?? NO_AUXILIARY_MODEL });
-  }
-
-  // 常驻名额(issue #335):满了先回收最久空闲的那一个,全都在跑时这一条发不出去。判在受理
-  // 之前——这一条没被投递,人过几分钟重发的该是同一条消息。
-  if (!agentSessionSlot(sessionId)) return sendJson(res, 409, { error: AGENT_SESSION_NO_SLOT });
+  const plan = await agentSessionRunPlan(deps, session);
+  if ("refusal" in plan) return sendJson(res, plan.refusal.status, { error: plan.refusal.error });
 
   const acceptance = accept();
   // 并发两次同 id 的提交:主键只让一次插得进去,另一次回那一次的受理结果。
   if (!acceptance.fresh) return accepted(acceptance.acceptedAt);
   deliverAgentSessionMessage(
-    agentSessionRuntimeDeps(deps, forge),
+    agentSessionRuntimeDeps(deps, plan.forge),
     session,
     text,
     mode,
-    {
+    plan.model,
+    plan.repos,
+    images,
+  );
+  return accepted(acceptance.acceptedAt);
+}
+
+/**
+ * 开跑一个会话之前要凑齐的那几样(issue #333;重梳在 issue #345 复用它):服务没在排空、
+ * Forge 配着、会话根里有仓库、辅助模型跑得起来、常驻名额腾得出来。凑不齐即回一句回绝,
+ * 发消息与重梳因此说同一句话。
+ *
+ * 名额判在受理之前(issue #335):这一条没被投递,人过几分钟重发的该是同一条消息。
+ */
+async function agentSessionRunPlan(
+  deps: WebhookServerDeps,
+  session: AgentSessionRecord,
+): Promise<
+  | { forge: Forge; repos: readonly ProductRepoRecord[]; model: AgentSessionModel }
+  | { refusal: { status: number; error: string } }
+> {
+  // 正在排空(issue #335):在跑的会话此刻正被中止,再起一个子进程只会被当场收掉。入队那一档
+  // 不挡——它走不到这里,而一个还在跑的会话收下一条插话不占新名额。
+  if (deps.drain?.draining() === true) {
+    return { refusal: { status: 503, error: AGENT_SESSION_DRAINING } };
+  }
+  const forge = deps.forges.gitea;
+  if (forge === undefined) {
+    return { refusal: { status: 503, error: "gitea 没有配置 Forge,取不回代码" } };
+  }
+  // 会话根里挂哪几棵工作树:产品当前仓库 ∩ 创建者当前仓库分配(spec #329);产品梳理是产品的
+  // 全部仓库(issue #345)。
+  const repos = agentSessionRepos(deps.dbPath, session);
+  const first = repos[0];
+  if (first === undefined) return { refusal: { status: 409, error: AGENT_SESSION_NO_REPOS } };
+  // 辅助模型按会话根里第一个仓库解析(ADR 0029):解析那一处是按仓库问的,而一个会话跨着
+  // 几个仓库。跑不跑得起来的判据与四条发起链路同一份,面板说得动的那一次就一定收得下。
+  const auxiliary = await resolveAuxiliaryModelPlan(deps, first.repoId);
+  const plan = auxiliary?.plan ?? undefined;
+  if (plan === undefined || plan.runtimeModel === null || plan.credential === null) {
+    return { refusal: { status: 409, error: auxiliary?.reason ?? NO_AUXILIARY_MODEL } };
+  }
+  if (!agentSessionSlot(session.id)) {
+    return { refusal: { status: 409, error: AGENT_SESSION_NO_SLOT } };
+  }
+  return {
+    forge,
+    repos,
+    model: {
       runtimeModel: plan.runtimeModel,
       credential: plan.credential,
       ...(plan.spec.thinkingLevel === undefined
         ? {}
         : { thinkingLevel: plan.spec.thinkingLevel }),
     },
-    repos,
-    images,
-  );
-  return accepted(acceptance.acceptedAt);
+  };
 }
 
 /**
@@ -2908,6 +3063,9 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   // `knowledge:write` 加这个产品里的一个仓库分配——后半句正是 `product` 这个目标本身。
   { method: "POST", pattern: /^\/products\/(\d+)\/knowledge$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleWriteProductKnowledge(req, res, deps, Number(match![1]), caller!.username) },
   { method: "DELETE", pattern: /^\/products\/(\d+)\/knowledge\/(\d+)$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleRetireProductKnowledge(res, deps, Number(match![1]), Number(match![2])) },
+  // 重梳(CONTEXT.md 产品梳理,issue #345)。门禁与手写产品知识同一道:维护这一层知识的人
+  // 才开得起梳理会话。会话本身由系统建,创建者不是点下它的那个人。
+  { method: "POST", pattern: /^\/products\/(\d+)\/survey$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleProductSurvey(res, deps, Number(match![1])) },
   // Agent 会话(CONTEXT.md Agent 会话,issue #332)。建与发消息按 `agent:chat`,列表与
   // 读登录即可:一个会话只有创建者与系统管理员读得到,这一判按创建者在 handler 里做,
   // 不是仓库分配能表达的事。产品下的两个端点仍声明 `product` 目标,看不到产品的人连

@@ -51,8 +51,10 @@ import {
   AGENT_SESSION_OUTPUT_CUSTOM_TYPE,
   SYSTEM_MESSAGE_ENTRY,
   type AgentSessionMessageMode,
+  type ProductSurveyProposals,
   type SessionCommand,
   type SessionOutput,
+  type SessionProductKnowledge,
   type SessionRepoInput,
   type SessionWorkerMessage,
 } from "../reviewer/session-protocol.ts";
@@ -244,6 +246,9 @@ export function agentSessionRepos(
   try {
     const product = store.getProduct(session.productId);
     if (product === undefined) return [];
+    // 产品梳理读产品的全部仓库(issue #345):它的创建者是系统,没有仓库分配可言,而梳理
+    // 的正是仓库之间的事——少一个仓库这一轮就看不全。
+    if (session.purpose === "product-survey") return product.repos;
     const user = store.listPanelUsers().find((row) => row.username === session.createdBy);
     if (user === undefined) return [];
     if (user.isSystemAdmin) return product.repos;
@@ -262,6 +267,112 @@ function productNameById(dbPath: string, productId: number): string {
   const store = openStore(dbPath);
   try {
     return store.getProduct(productId)?.name ?? "";
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * 这个产品此刻生效的产品知识,交给子进程的那一份(CONTEXT.md 产品知识,issue #345)。与产品名
+ * 同律在 `boot` 里现算:一轮里人手写了一条,下次重建就看得到。
+ *
+ * 仓库集合换成 `<owner>/<repo>`:子进程手上只有这种形式。条目里那个仓库已经不在产品下时
+ * (归入与移出不改已写下的集合)只剩 id 说得出来。
+ */
+function activeProductKnowledge(
+  dbPath: string,
+  productId: number,
+): SessionProductKnowledge[] {
+  const store = openStore(dbPath);
+  try {
+    const names = new Map(
+      (store.getProduct(productId)?.repos ?? []).map((row) => [
+        row.repoId,
+        `${row.owner}/${row.repo}`,
+      ]),
+    );
+    return store.listProductKnowledge(productId, "active").map((entry) => ({
+      id: entry.id,
+      statement: entry.statement,
+      repos: entry.repoIds.map((repoId) => names.get(repoId) ?? `repo ${repoId}`),
+    }));
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * 这个产品此刻有没有在跑的产品梳理(issue #345)。「在跑」是进程内的事实(`agentSessionStatus`),
+ * 与别处同律;重梳据它回绝第二次请求,两轮梳理不该同时提同一批提案。
+ */
+export function productSurveyRunning(dbPath: string, productId: number): boolean {
+  const store = openStore(dbPath);
+  try {
+    return store
+      .listAgentSessions(productId, null)
+      .some(
+        (session) =>
+          session.purpose === "product-survey" && agentSessionStatus(session.id) === "running",
+      );
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * 收下产品梳理交的那一批提案(CONTEXT.md 产品梳理,issue #345):新增陈述与退役提案各落一行
+ * `proposed`,等人在产品页上确认。
+ *
+ * 形状与打回在子进程那一侧判完,这里只把仓库名换回 repo id 并落库。认不出的仓库名与已经
+ * 不生效的退役目标在这里丢掉:那一批是几分钟前判的,产品这会儿可能已经变了样。
+ */
+export function recordProductSurveyProposals(
+  deps: AgentSessionRecordDeps,
+  session: AgentSessionRecord,
+  proposals: ProductSurveyProposals,
+): void {
+  const store = openStore(deps.dbPath);
+  try {
+    const product = store.getProduct(session.productId);
+    if (product === undefined) return;
+    const ids = new Map(product.repos.map((row) => [`${row.owner}/${row.repo}`, row.repoId]));
+    const active = store.listProductKnowledge(session.productId, "active");
+    const at = new Date(deps.now()).toISOString();
+    for (const one of proposals.statements) {
+      const repoIds = one.repos.flatMap((repo) => {
+        const repoId = ids.get(repo);
+        return repoId === undefined ? [] : [repoId];
+      });
+      if (new Set(repoIds).size < 2) continue;
+      store.addProductKnowledge({
+        productId: session.productId,
+        statement: one.statement,
+        repoIds,
+        state: "proposed",
+        proposedBy: null,
+        at,
+        proposedSessionId: session.id,
+      });
+    }
+    for (const one of proposals.retirements) {
+      const target = active.find((entry) => entry.id === one.id);
+      if (target === undefined) continue;
+      store.addProductKnowledge({
+        productId: session.productId,
+        statement: one.reason,
+        repoIds: target.repoIds,
+        state: "proposed",
+        proposedBy: null,
+        at,
+        proposedSessionId: session.id,
+        retiresId: target.id,
+      });
+    }
+  } catch (error) {
+    console.error(
+      `[agent-session] 会话 ${session.id} 的产品梳理提案落库失败:`,
+      error instanceof Error ? error.message : String(error),
+    );
   } finally {
     store.close();
   }
@@ -853,6 +964,9 @@ async function boot(
       case "output":
         recordAgentSessionOutput(deps, session.id, message.output);
         return;
+      case "survey":
+        recordProductSurveyProposals(deps, session, message.proposals);
+        return;
       case "queue":
         syncQueue(entry, message);
         return;
@@ -910,6 +1024,7 @@ async function boot(
       productName: productNameById(deps.dbPath, session.productId),
       purpose: session.purpose,
       repos: prepared.repos,
+      productKnowledge: activeProductKnowledge(deps.dbPath, session.productId),
       runtimeModel: model.runtimeModel,
       ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
       ...(stored.entries.length === 0 ? {} : { entries: stored.entries }),

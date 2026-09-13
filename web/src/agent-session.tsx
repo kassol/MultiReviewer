@@ -51,14 +51,27 @@ import { api, apiUrl, errorText, fetchJson, send } from "./api.ts";
 import { StreamStatus, useTrace } from "./run-trace.tsx";
 
 /** 会话用途(CONTEXT.md 会话用途)。与服务端同一份取值。 */
-export const AGENT_SESSION_PURPOSES = ["requirement-breakdown", "open-conversation"] as const;
+export const AGENT_SESSION_PURPOSES = [
+  "requirement-breakdown",
+  "open-conversation",
+  "product-survey",
+] as const;
 
 export type AgentSessionPurpose = (typeof AGENT_SESSION_PURPOSES)[number];
 
 export const PURPOSE_LABEL: Record<AgentSessionPurpose, string> = {
   "requirement-breakdown": "需求拆分",
   "open-conversation": "开放对话",
+  "product-survey": "产品梳理",
 };
+
+/**
+ * 建会话弹窗提供的用途(issue #345)。产品梳理不在这一份里:那一种只有系统开得了,人点的是
+ * 产品页产品知识区里的「重梳」。
+ */
+const CREATABLE_PURPOSES = AGENT_SESSION_PURPOSES.filter(
+  (purpose) => purpose !== "product-survey",
+);
 
 /** 建会话时默认选中的用途:现有行为的延续。 */
 const DEFAULT_PURPOSE: AgentSessionPurpose = "requirement-breakdown";
@@ -70,6 +83,8 @@ const DEFAULT_PURPOSE: AgentSessionPurpose = "requirement-breakdown";
 const PURPOSE_HAS_OUTPUT: Record<AgentSessionPurpose, boolean> = {
   "requirement-breakdown": true,
   "open-conversation": false,
+  // 产品梳理交的是产品知识提案,它们在产品页上确认,不是这一页的会话产出(issue #345)。
+  "product-survey": false,
 };
 
 export type AgentSession = {
@@ -199,7 +214,7 @@ export function CreateSessionDialog({
     if (open) setPurpose(DEFAULT_PURPOSE);
   }, [open]);
 
-  const chosen = AGENT_SESSION_PURPOSES.find((value) => value === purpose);
+  const chosen = CREATABLE_PURPOSES.find((value) => value === purpose);
   const submit = (event: FormEvent): void => {
     event.preventDefault();
     if (chosen !== undefined) onSubmit(chosen);
@@ -233,7 +248,7 @@ export function CreateSessionDialog({
                 className="min-w-0 w-full"
               />
               <Select.Content position="popper">
-                {AGENT_SESSION_PURPOSES.map((value) => (
+                {CREATABLE_PURPOSES.map((value) => (
                   <Select.Item key={value} value={value}>
                     {PURPOSE_LABEL[value]}
                   </Select.Item>
