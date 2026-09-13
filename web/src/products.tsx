@@ -22,7 +22,7 @@ import {
   Tooltip,
 } from "@radix-ui/themes";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -800,6 +800,15 @@ function RoleField({
   useEffect(() => setText(repo.role ?? ""), [repo.role]);
   // Escape 之后输入框卸载,浏览器可能还补一次 blur;那一次不能把改了一半的文字存下去。
   const cancelled = useRef(false);
+  // 职责最长 64 字,272px 的栏里一行装不下;编辑框随内容长高,不让开头滚出视野。
+  const area = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = area.current;
+    if (el === null) return;
+    el.style.overflow = "hidden";
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [text, editing]);
 
   if (!editing) {
     return (
@@ -825,9 +834,12 @@ function RoleField({
   };
 
   return (
-    <TextField.Root
+    <TextArea
+      ref={area}
       size="1"
-      className="min-w-0 w-full max-sm:min-h-11"
+      rows={1}
+      resize="none"
+      className="min-h-0 min-w-0 w-full"
       aria-label={`${repoPath(repo)} 的职责`}
       placeholder="职责(选填)"
       maxLength={64}
@@ -840,8 +852,11 @@ function RoleField({
       }}
       onBlur={finish}
       onKeyDown={(event) => {
-        if (event.key === "Enter") event.currentTarget.blur();
-        else if (event.key === "Escape") {
+        if (event.key === "Enter") {
+          // 职责是一行文本,回车即保存,不进换行。
+          event.preventDefault();
+          event.currentTarget.blur();
+        } else if (event.key === "Escape") {
           cancelled.current = true;
           setText(repo.role ?? "");
           setEditing(false);
@@ -994,14 +1009,26 @@ function KnowledgeSection({
   const [statement, setStatement] = useState("");
   const [repoIds, setRepoIds] = useState<readonly number[]>([]);
 
-  /** 一条条目涉及的仓库写成一行。产品里已经没有的仓库只剩 id 说得出来。 */
-  const involved = (entry: ProductKnowledge): string =>
-    entry.repoIds
-      .map((repoId) => {
-        const row = product.repos.find((repo) => repo.repoId === repoId);
-        return row === undefined ? `repo ${repoId}` : repoPath(row);
-      })
+  /**
+   * 一条条目涉及的仓库写成一行。产品里已经没有的仓库只剩 id 说得出来。产品只有两个仓库时
+   * 这一行说不出任何事(一条产品知识至少说到两个仓库),每条都重复同一对名字,因此不渲染;
+   * 条目里带着已不在产品里的仓库时仍要渲染,那正是它快要退役的信号。
+   */
+  const involved = (entry: ProductKnowledge): string | null => {
+    const rows = entry.repoIds.map((repoId) => product.repos.find((repo) => repo.repoId === repoId));
+    if (product.repos.length <= 2 && rows.every((row) => row !== undefined)) return null;
+    return rows
+      .map((row, index) => (row === undefined ? `repo ${entry.repoIds[index]}` : repoPath(row)))
       .join("、");
+  };
+  const involvedLine = (entry: ProductKnowledge) => {
+    const line = involved(entry);
+    return line === null ? null : (
+      <Text as="span" size="1" color="gray" className="break-all font-mono">
+        {line}
+      </Text>
+    );
+  };
 
   const submit = (event: FormEvent): void => {
     event.preventDefault();
@@ -1070,25 +1097,25 @@ function KnowledgeSection({
                   >
                     <div className="flex min-w-0 flex-1 flex-col gap-1">
                       {entry.retiresId === null ? (
-                        <span className="break-words text-base">{entry.statement}</span>
+                        <Text as="span" size="2" className="break-words">
+                          {entry.statement}
+                        </Text>
                       ) : (
                         <>
-                          <span className="flex min-w-0 items-start gap-2 text-base">
+                          <Text as="span" size="2" className="flex min-w-0 items-start gap-2">
                             <Badge color="amber" variant="soft" size="1" className="mt-0.5 shrink-0">
                               退役
                             </Badge>
                             <span className="min-w-0 break-words">
                               {target?.statement ?? `条目 ${entry.retiresId}`}
                             </span>
-                          </span>
-                          <span className="break-words text-base text-text-secondary">
+                          </Text>
+                          <Text as="span" size="2" color="gray" className="break-words">
                             理由:{entry.statement}
-                          </span>
+                          </Text>
                         </>
                       )}
-                      <Text as="span" size="1" color="gray" className="break-all font-mono">
-                        {involved(entry)}
-                      </Text>
+                      {involvedLine(entry)}
                     </div>
                     {canWrite ? (
                       <Flex gap="2" className="shrink-0">
@@ -1149,9 +1176,7 @@ function KnowledgeSection({
                     <Text as="span" size="2" className="break-words">
                       {entry.statement}
                     </Text>
-                    <Text as="span" size="1" color="gray" className="break-all font-mono">
-                      {involved(entry)}
-                    </Text>
+                    {involvedLine(entry)}
                   </div>
                   {canWrite ? (
                     <Button
@@ -1190,7 +1215,7 @@ function KnowledgeSection({
               size="2"
               rows={2}
               maxLength={KNOWLEDGE_STATEMENT_MAX}
-              placeholder={`一句话,最多 ${KNOWLEDGE_STATEMENT_MAX} 字`}
+              placeholder="一句话"
               value={statement}
               onChange={(event) => setStatement(event.target.value)}
             />
