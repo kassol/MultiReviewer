@@ -12,6 +12,8 @@
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { AGENT_STATEMENT_LIMIT } from "./rule-agent.ts";
+
 import type {
   ProductSurveyProposals,
   SessionProductKnowledge,
@@ -228,6 +230,11 @@ export function productSurveyRejection(
   for (const [index, one] of proposals.statements.entries()) {
     const at = `statement ${index + 1}`;
     if (one.statement === "") return `${at} is empty; write the statement itself, in Chinese`;
+    // 与手写那一道同一个数(issue #343 的 `PRODUCT_KNOWLEDGE_STATEMENT_SHAPE`):提案确认后就是
+    // 一条要被反复注入的陈述,经提案进来的不该比人手写的长。
+    if (one.statement.length > AGENT_STATEMENT_LIMIT) {
+      return `${at} is ${one.statement.length} characters; a statement is at most ${AGENT_STATEMENT_LIMIT} characters — tighten it to one sentence`;
+    }
     const outside = one.repos.find((repo) => !repos.includes(repo));
     if (outside !== undefined) {
       return `${at} names ${outside}, which is not a repository of this product; name only: ${repos.join(", ")}`;
