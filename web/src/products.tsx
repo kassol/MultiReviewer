@@ -3,9 +3,12 @@ import {
   CheckCircledIcon,
   Cross2Icon,
   CrossCircledIcon,
+  ExclamationTriangleIcon,
+  Pencil1Icon,
   PlusIcon,
 } from "@radix-ui/react-icons";
 import {
+  Badge,
   Callout,
   Checkbox,
   Dialog,
@@ -16,19 +19,22 @@ import {
   Text,
   TextArea,
   TextField,
+  Tooltip,
 } from "@radix-ui/themes";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
+import { HelpTooltip } from "@/components/help-tooltip";
 import { MasterListItem, MasterListItemText } from "@/components/master-list-item";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { RailCard } from "@/components/rail-card";
 import { Button } from "@/components/theme-button";
 import { unassignedRepos } from "@/lib/products";
+import { localMinute } from "@/lib/time";
 
 import {
   CreateSessionDialog,
@@ -67,6 +73,14 @@ function repoPath(row: ProductRepo | RegisteredRepo): string {
   return `${row.owner}/${row.repo}`;
 }
 
+/** 移出确认框的说明:涉及这个仓库的产品知识会退役(issue #347),条数按生效列表算。 */
+function detachConsequence(repo: ProductRepo | null, knowledge: readonly ProductKnowledge[]): string {
+  const retiring =
+    repo === null ? 0 : knowledge.filter((entry) => entry.repoIds.includes(repo.repoId)).length;
+  const tail = "仓库集变了,系统可能自动开一场产品梳理。仓库本身留在注册表里。";
+  return retiring === 0 ? tail : `涉及它的 ${retiring} 条产品知识会退役,不可恢复。${tail}`;
+}
+
 /**
  * 产品页(CONTEXT.md 产品,issue #331)。左栏按原型 A 的三段:产品列表、当前产品的仓库、
  * 我的会话;「建产品」「归属仓库」与每行的「移出」、改名、删除都按 `repo:write` 显隐。
@@ -89,6 +103,8 @@ export function ProductsPage({
   const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
   const [dialog, setDialog] = useState<"create" | "rename" | "attach" | "session" | null>(null);
   const [confirming, setConfirming] = useState(false);
+  /** 正要移出的仓库:移出会退役涉及它的产品知识,先过一道确认。 */
+  const [detaching, setDetaching] = useState<ProductRepo | null>(null);
   /** 产品知识那一段表单的挂载标识:写成功一次就加一,表单因此重挂成空的。 */
   const [knowledgeFormKey, setKnowledgeFormKey] = useState(0);
 
@@ -187,6 +203,7 @@ export function ProductsPage({
     mutationFn: (input: { product: Product; repo: ProductRepo }) =>
       send(`/products/${input.product.id}/repos/${input.repo.repoId}`, "DELETE"),
     onSuccess: (_value, { product, repo }) => {
+      setDetaching(null);
       settled(`已把 ${repoPath(repo)} 移出产品。`);
       void queryClient.invalidateQueries({ queryKey: sessionsQueryKey(product.id) });
       // 移出会退役涉及这个仓库的产品知识(issue #347),生效列表那一份缓存跟着重读。
@@ -468,7 +485,7 @@ export function ProductsPage({
                             disabled={busy}
                             onClick={() => {
                               setFeedback(null);
-                              detach.mutate({ product: selected, repo });
+                              setDetaching(repo);
                             }}
                           >
                             <Cross2Icon aria-hidden />
@@ -494,7 +511,7 @@ export function ProductsPage({
 
           <div className="flex min-w-0 flex-1 flex-col gap-3">
             {selected === undefined ? null : (
-              <CardShell className="min-w-0 px-5 py-4">
+              <CardShell className="min-w-0 gap-1 px-5 py-4">
                 <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
                   <h2 className="min-w-0 break-all text-2xl font-bold tracking-[-0.015em]">
                     {selected.name}
@@ -525,31 +542,27 @@ export function ProductsPage({
                     </div>
                   ) : null}
                 </div>
-                {sessions.length > 0 ? null : (
-                  <EmptyState
-                    title="这个产品还没有 Agent 会话"
-                    description={
-                      canChat
-                        ? "在左栏「我的会话」里建一个会话,选定用途后就能和 agent 对话。"
-                        : "建会话要「会话对话」权限。请联系系统管理员为该账号的角色勾上它。"
-                    }
-                    {...(canChat
-                      ? {
-                          action: (
-                            <Button
-                              variant="solid"
-                              size="2"
-                              disabled={busy}
-                              onClick={() => openDialog("session")}
-                            >
-                              <PlusIcon aria-hidden />
-                              建会话
-                            </Button>
-                          ),
-                        }
-                      : {})}
-                  />
-                )}
+                {/* 一行元信息。产品知识那一份还没读到时省掉它的两个数,不用占位符冒充。 */}
+                <p className="text-base text-text-muted">
+                  <span className="tabular-nums">{selected.repos.length}</span> 个仓库
+                  {knowledgeQuery.isPending ? null : (
+                    <>
+                      {" · "}
+                      <span className="tabular-nums">{knowledge.length}</span> 条产品知识
+                      {" · "}
+                      <span className={proposals.length > 0 ? "font-semibold text-warning" : undefined}>
+                        <span className="tabular-nums">{proposals.length}</span> 条待确认提案
+                      </span>
+                    </>
+                  )}
+                  {sessionsQuery.isPending ? null : (
+                    <>
+                      {" · "}
+                      <span className="tabular-nums">{sessions.length}</span> 个会话
+                    </>
+                  )}
+                  {" · "}建于 {localMinute(selected.createdAt)}
+                </p>
               </CardShell>
             )}
             {selected === undefined ? null : (
@@ -656,6 +669,28 @@ export function ProductsPage({
               },
             }}
           />
+          <ConfirmDialog
+            open={detaching !== null}
+            onOpenChange={(open) => {
+              if (!open) setDetaching(null);
+            }}
+            title={detaching === null ? "" : `把 ${repoPath(detaching)} 移出 ${selected.name}?`}
+            titleSize="4"
+            description={detachConsequence(detaching, knowledge)}
+            cancelLabel="取消"
+            cancelVariant="outline"
+            cancelDisabled={detach.isPending}
+            confirm={{
+              label: detach.isPending ? "移出中…" : "移出",
+              color: "red",
+              disabled: detach.isPending || detaching === null,
+              onClick: () => {
+                if (detaching === null) return;
+                setFeedback(null);
+                detach.mutate({ product: selected, repo: detaching });
+              },
+            }}
+          />
         </>
       )}
     </PageBody>
@@ -747,9 +782,9 @@ function NameDialog({
 }
 
 /**
- * 一行仓库的职责(CONTEXT.md 仓库职责,issue #341)。Enter 或失焦保存,Escape 放回原值——
- * 放回之后与库里那一份相同,失焦那一下因此不再发请求;与库里相同时一律不发,失焦不该变成
- * 一次空写。
+ * 一行仓库的职责(CONTEXT.md 仓库职责,issue #341)。平时是一段可换行的文本,点它进编辑:
+ * Enter 或失焦保存并退出,Escape 放回原值并退出;与库里那一份相同时一律不发请求,失焦不该
+ * 变成一次空写。
  */
 function RoleField({
   repo,
@@ -760,8 +795,34 @@ function RoleField({
   busy: boolean;
   onSave: (role: string) => void;
 }) {
+  const [editing, setEditing] = useState(false);
   const [text, setText] = useState(repo.role ?? "");
   useEffect(() => setText(repo.role ?? ""), [repo.role]);
+  // Escape 之后输入框卸载,浏览器可能还补一次 blur;那一次不能把改了一半的文字存下去。
+  const cancelled = useRef(false);
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        aria-label={`改 ${repoPath(repo)} 的职责`}
+        disabled={busy}
+        onClick={() => setEditing(true)}
+        className="-mx-1 flex min-w-0 items-start gap-1 rounded-sm px-1 py-0.5 text-left text-base transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 max-sm:min-h-11"
+      >
+        <span className={repo.role === null ? "min-w-0 break-words text-text-disabled" : "min-w-0 break-words"}>
+          {repo.role ?? "填写职责"}
+        </span>
+        <Pencil1Icon aria-hidden className="mt-0.5 shrink-0 text-text-faint" />
+      </button>
+    );
+  }
+
+  const finish = (): void => {
+    setEditing(false);
+    if (cancelled.current) return;
+    if (text.trim() !== (repo.role ?? "")) onSave(text.trim());
+  };
 
   return (
     <TextField.Root
@@ -770,15 +831,21 @@ function RoleField({
       aria-label={`${repoPath(repo)} 的职责`}
       placeholder="职责(选填)"
       maxLength={64}
+      autoFocus
       disabled={busy}
       value={text}
       onChange={(event) => setText(event.target.value)}
-      onBlur={() => {
-        if (text.trim() !== (repo.role ?? "")) onSave(text.trim());
+      onFocus={() => {
+        cancelled.current = false;
       }}
+      onBlur={finish}
       onKeyDown={(event) => {
         if (event.key === "Enter") event.currentTarget.blur();
-        else if (event.key === "Escape") setText(repo.role ?? "");
+        else if (event.key === "Escape") {
+          cancelled.current = true;
+          setText(repo.role ?? "");
+          setEditing(false);
+        }
       }}
     />
   );
@@ -941,79 +1008,55 @@ function KnowledgeSection({
     onWrite(statement.trim(), repoIds);
   };
 
+  const surveyButton = (
+    <Button
+      variant="soft"
+      color="gray"
+      size="1"
+      className="shrink-0"
+      disabled={busy || product.repos.length < 2}
+      onClick={onSurvey}
+    >
+      重梳
+    </Button>
+  );
+
   return (
     <CardShell className="min-w-0 px-5 py-4">
       <div className="flex min-w-0 flex-col gap-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-lg font-bold tracking-[-0.01em]">产品知识</h2>
-            <Text as="p" size="2" color="gray" className="mt-1">
-              一条产品知识说的是仓库之间的事:谁调谁的什么、跨仓库都成立的约定、某类改动牵动
-              哪些仓库。一个仓库内部的事属于那个仓库的知识集。
-            </Text>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-1">
+            <h2 className="text-2xl font-bold tracking-[-0.015em]">产品知识</h2>
+            <HelpTooltip
+              label="产品知识说明"
+              content="一条产品知识说的是仓库之间的事:谁调谁的什么、跨仓库都成立的约定、某类改动牵动哪些仓库。一个仓库内部的事属于那个仓库的知识集。"
+            />
           </div>
           {canWrite ? (
-            <Button
-              variant="soft"
-              color="gray"
-              size="1"
-              className="shrink-0"
-              disabled={busy || product.repos.length < 2}
-              title={
+            <Tooltip
+              content={
                 product.repos.length < 2
-                  ? "产品梳理要这个产品有两个以上仓库"
+                  ? "产品梳理要这个产品至少有两个仓库"
                   : "开一个产品梳理会话,让 agent 读一遍全部仓库再交提案"
               }
-              onClick={onSurvey}
             >
-              重梳
-            </Button>
+              {/* disabled 按钮不冒泡指针事件,套一层 span 让提示仍能弹出。 */}
+              <span className="inline-flex shrink-0" tabIndex={product.repos.length < 2 ? 0 : -1}>
+                {surveyButton}
+              </span>
+            </Tooltip>
           ) : null}
         </div>
 
-        {pending ? (
-          <Skeleton aria-hidden className="h-16" />
-        ) : knowledge.length === 0 ? (
-          <Text as="p" size="2" color="gray">
-            还没有产品知识。
-          </Text>
-        ) : (
-          <ul>
-            {knowledge.map((entry) => (
-              <li
-                key={entry.id}
-                className="flex items-start justify-between gap-3 border-t border-line py-2.5 first:border-t-0 first:pt-0"
-              >
-                <div className="flex min-w-0 flex-1 flex-col gap-1">
-                  <Text as="span" size="2" className="break-words">
-                    {entry.statement}
-                  </Text>
-                  <Text as="span" size="1" color="gray" className="break-all font-mono">
-                    {involved(entry)}
-                  </Text>
-                </div>
-                {canWrite ? (
-                  <Button
-                    variant="soft"
-                    color="gray"
-                    size="1"
-                    className="shrink-0"
-                    disabled={busy}
-                    onClick={() => onRetire(entry)}
-                  >
-                    退役
-                  </Button>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        )}
-
         {proposals.length === 0 ? null : (
-          <div className="flex min-w-0 flex-col gap-1.5 border-t border-line pt-3">
-            <Text as="span" size="2" weight="medium">
-              待确认的提案({proposals.length})
-            </Text>
+          <section aria-labelledby="product-proposals-title" className="flex min-w-0 flex-col gap-1.5">
+            <h3 id="product-proposals-title" className="flex items-center gap-1.5 text-lg font-semibold">
+              <ExclamationTriangleIcon aria-hidden className="text-warning-icon" />
+              待确认的提案
+              <span className="font-mono text-xs font-normal text-text-muted tabular-nums">
+                {proposals.length}
+              </span>
+            </h3>
             <ul>
               {proposals.map((entry) => {
                 const target =
@@ -1026,11 +1069,23 @@ function KnowledgeSection({
                     className="flex items-start justify-between gap-3 border-t border-line py-2.5 first:border-t-0 first:pt-0"
                   >
                     <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <Text as="span" size="2" className="break-words">
-                        {entry.retiresId === null
-                          ? entry.statement
-                          : `退役提案 → ${target?.statement ?? `条目 ${entry.retiresId}`}:${entry.statement}`}
-                      </Text>
+                      {entry.retiresId === null ? (
+                        <span className="break-words text-base">{entry.statement}</span>
+                      ) : (
+                        <>
+                          <span className="flex min-w-0 items-start gap-2 text-base">
+                            <Badge color="amber" variant="soft" size="1" className="mt-0.5 shrink-0">
+                              退役
+                            </Badge>
+                            <span className="min-w-0 break-words">
+                              {target?.statement ?? `条目 ${entry.retiresId}`}
+                            </span>
+                          </span>
+                          <span className="break-words text-base text-text-secondary">
+                            理由:{entry.statement}
+                          </span>
+                        </>
+                      )}
                       <Text as="span" size="1" color="gray" className="break-all font-mono">
                         {involved(entry)}
                       </Text>
@@ -1060,8 +1115,61 @@ function KnowledgeSection({
                 );
               })}
             </ul>
-          </div>
+          </section>
         )}
+
+        <section
+          aria-labelledby="product-knowledge-title"
+          className={proposals.length === 0 ? "flex min-w-0 flex-col gap-1.5" : "flex min-w-0 flex-col gap-1.5 border-t border-line pt-3"}
+        >
+          <h3 id="product-knowledge-title" className="flex items-center gap-1.5 text-lg font-semibold">
+            生效的产品知识
+            {pending ? null : (
+              <span className="font-mono text-xs font-normal text-text-muted tabular-nums">
+                {knowledge.length}
+              </span>
+            )}
+          </h3>
+          {pending ? (
+            <Skeleton aria-hidden className="h-16" />
+          ) : knowledge.length === 0 ? (
+            <Text as="p" size="2" color="gray">
+              {canWrite && product.repos.length >= 2
+                ? "还没有产品知识。点「重梳」让 agent 读一遍仓库交提案,或在下面手写一条。"
+                : "还没有产品知识。"}
+            </Text>
+          ) : (
+            <ul>
+              {knowledge.map((entry) => (
+                <li
+                  key={entry.id}
+                  className="flex items-start justify-between gap-3 border-t border-line py-2.5 first:border-t-0 first:pt-0"
+                >
+                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    <Text as="span" size="2" className="break-words">
+                      {entry.statement}
+                    </Text>
+                    <Text as="span" size="1" color="gray" className="break-all font-mono">
+                      {involved(entry)}
+                    </Text>
+                  </div>
+                  {canWrite ? (
+                    <Button
+                      variant="ghost"
+                      color="gray"
+                      size="1"
+                      className="shrink-0"
+                      disabled={busy}
+                      onClick={() => onRetire(entry)}
+                    >
+                      退役
+                    </Button>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
 
         {!canWrite ? null : product.repos.length < 2 ? (
           <Text as="p" size="2" color="gray" className="border-t border-line pt-3">
@@ -1069,9 +1177,14 @@ function KnowledgeSection({
           </Text>
         ) : (
           <form onSubmit={submit} className="flex flex-col gap-1.5 border-t border-line pt-3">
-            <Text as="label" htmlFor="product-knowledge-statement" size="2" weight="medium">
-              手写一条
-            </Text>
+            <div className="flex items-baseline justify-between gap-2">
+              <Text as="label" htmlFor="product-knowledge-statement" size="2" weight="medium">
+                手写一条
+              </Text>
+              <span className="text-sm text-text-muted tabular-nums">
+                {statement.length}/{KNOWLEDGE_STATEMENT_MAX}
+              </span>
+            </div>
             <TextArea
               id="product-knowledge-statement"
               size="2"

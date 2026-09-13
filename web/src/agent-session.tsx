@@ -161,7 +161,9 @@ export function SessionRail({
         <Skeleton aria-hidden className="mx-4 mb-3 h-10" />
       ) : sessions.length === 0 ? (
         <Text as="p" size="2" color="gray" className="px-4 pb-3">
-          还没有会话。
+          {!canChat && onCreate !== undefined
+            ? "还没有会话。建会话要「会话对话」权限。"
+            : "还没有会话。"}
         </Text>
       ) : (
         <ul>
