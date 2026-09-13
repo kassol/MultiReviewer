@@ -60,8 +60,15 @@ async function productWithRepos(
   const created = await h.api("POST", "/products", { name });
   assert.equal(created.status, 201);
   const { product } = (await created.json()) as { product: { id: number } };
-  for (const repoId of repoIds) {
-    assert.equal((await h.api("PUT", `/products/${product.id}/repos/${repoId}`)).status, 204);
+  // 归属行直接落库:走归入端点在第二个仓库上会自己开一场梳理(issue #347),这几例压的是
+  // 发消息。
+  const store = openStore(h.db.path);
+  try {
+    for (const repoId of repoIds) {
+      assert.equal(store.attachProductRepo(product.id, repoId, AT), "attached");
+    }
+  } finally {
+    store.close();
   }
   return product.id;
 }

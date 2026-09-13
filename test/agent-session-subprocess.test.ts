@@ -138,10 +138,14 @@ async function startSessionHarness(
   if (options.extraRepo !== undefined) {
     const extra = options.extraRepo;
     seedRepo(h, extra.repoId, extra.owner, extra.repo);
-    assert.equal(
-      (await h.api("PUT", `/products/${product.id}/repos/${extra.repoId}`)).status,
-      204,
-    );
+    // 第二个仓库直接落归属行:走归入端点会自己开一场梳理(issue #347),而这几例要的是它们
+    // 自己投的那一条消息,不是那一场。
+    const store = openStore(h.db.path);
+    try {
+      assert.equal(store.attachProductRepo(product.id, extra.repoId, AT), "attached");
+    } finally {
+      store.close();
+    }
   }
   const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const response = await fetch(`${h.serverUrl}/api/products/${product.id}/sessions`, {
