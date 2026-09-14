@@ -19,7 +19,10 @@
  * 「前 N 条不在上下文」是几。回收与判死的门槛按毫秒注入,不真等十分钟。
  */
 import assert from "node:assert/strict";
+import { fork } from "node:child_process";
 import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
@@ -30,6 +33,7 @@ import {
   agentSessionContextGap,
   agentSessionStatus,
   disposeAgentSessions,
+  killChild,
 } from "../src/webhook/agent-session.ts";
 import {
   GITEA_REPO,
@@ -1763,4 +1767,14 @@ test("更新基点回收活着的子进程:下一条消息重建,系统提示带
     await disposeAgentSessions();
     await close();
   }
+});
+
+test("spawn 同步失败的子进程再强杀不会连整个进程组一起杀", async () => {
+  // cwd 不存在:fork 同步失败,`pid` 为空、句柄里 pid 是 0。直接 `kill("SIGKILL")` 会成 `kill(0)`,
+  // 把这个测试进程与 `node --test` 的整组一起杀掉——这条用例失败的样子就是测试进程凭空消失。
+  const child = fork(process.execPath, ["-e", "0"], { cwd: join(tmpdir(), "multireviewer-no-such-dir"), stdio: "ignore" });
+  const failed = new Promise<Error>((resolve) => child.once("error", resolve));
+  assert.equal(child.pid, undefined);
+  killChild(child);
+  assert.match((await failed).message, /ENOENT/);
 });

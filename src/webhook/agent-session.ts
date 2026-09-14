@@ -675,12 +675,21 @@ async function letGo(entry: RuntimeEntry): Promise<void> {
  * `persist: false` 是删会话那一条路(`reclaimAgentSession`):那个会话的全部行正要被删掉,
  * 把镜像落进一张马上清空的表没有意义。
  */
+/**
+ * 强杀一个子进程。`pid` 为空即 spawn 已经同步失败(cwd 在它起来之前被收拢删掉那一种):Node 的
+ * 句柄里 pid 是 0,这时再 `kill` 就成了 `kill(0)`——信号发给整个进程组,编排进程自己一起倒。
+ * 失败那一次 Node 会异步抛 `error`,不必再杀。
+ */
+export function killChild(child: ChildProcess | undefined): void {
+  if (child?.pid !== undefined) child.kill("SIGKILL");
+}
+
 function reclaim(sessionId: number, entry: RuntimeEntry, persist = true): void {
   if (registry.get(sessionId) === entry) registry.delete(sessionId);
   entry.disposed = true;
   clearTimers(entry);
   if (persist) persistQueue(sessionId, entry);
-  entry.child?.kill("SIGKILL");
+  killChild(entry.child);
   void letGo(entry).catch((error: unknown) => {
     console.error(
       `[agent-session] 会话 ${sessionId} 的会话根没清干净:`,
@@ -1127,7 +1136,7 @@ async function boot(
   entry.child = child;
   // 备工作树那段时间里这个会话被收拢了:这一个子进程没人再用得上。
   if (entry.disposed) {
-    child.kill("SIGKILL");
+    killChild(child);
     // 那一次收拢放掉的是它当时看到的会话根;这一份是在那之后才备出来的,登记表上重新指上
     // 它,失败那条路上的 `letGo` 才收得到(不然这个目录没人再来收)。
     entry.sessionRoot = prepared.sessionRoot;
@@ -1339,7 +1348,7 @@ export function deliverAgentSessionMessage(
       // 失败的那一次留下的目录没人再来收。
       if (registry.get(session.id) === entry) registry.delete(session.id);
       clearTimers(entry);
-      entry.child?.kill("SIGKILL");
+      killChild(entry.child);
       void letGo(entry).catch(() => {
         // 放不掉就留着:这一条路上已经有一个失败原因要报,再盖一层只会把它埋掉。
       });
@@ -1462,7 +1471,7 @@ export async function disposeAgentSessions(): Promise<void> {
       }
       recordSystemMessage(entry.deps, sessionId, DRAIN_ABORTED);
     }
-    child?.kill("SIGKILL");
+    killChild(child);
     await letGo(entry);
   }
 }
