@@ -2292,10 +2292,15 @@ const PRODUCT_SURVEY_SEED = [
  *
  * 会话先落行再凑开跑要的那几样:凑不齐就把这一行收掉——一个永远不会开跑的会话留在列表里
  * 只会让人等它。
+ *
+ * `chosen` 是人在重梳弹窗里按仓库选过的那几行(issue #353),仓库范围是产品的全部仓库——梳理
+ * 读的正是这一份。给了就整份定下来记到会话上,没给(系统在仓库集变动后自己开的那一场)一行
+ * 也不记,备树时照旧读生效的默认分支最新。
  */
 async function openProductSurvey(
   deps: WebhookServerDeps,
   productId: number,
+  chosen?: readonly SessionBaselineInput[],
 ): Promise<{ opened: AgentSessionRecord } | { refusal: { status: number; error: string } }> {
   const product = withStore(deps.dbPath, (store) => store.getProduct(productId));
   if (product === undefined) return { refusal: { status: 404, error: NO_SUCH_PRODUCT } };
@@ -2305,12 +2310,20 @@ async function openProductSurvey(
   if (productSurveyRunning(deps.dbPath, productId)) {
     return { refusal: { status: 409, error: PRODUCT_SURVEY_RUNNING } };
   }
+  // 定基点在落行之前:选错了一条会话也不该落下,面板上人看到的就是「没梳起来 + 哪个仓库」。
+  let baselines: AgentSessionBaseline[] | undefined;
+  if (chosen !== undefined) {
+    const resolved = await resolveSessionBaselines(deps, product.repos, chosen);
+    if (!resolved.ok) return { refusal: { status: resolved.status, error: resolved.error } };
+    baselines = resolved.baselines;
+  }
   const session = withStore(deps.dbPath, (store) =>
     store.createAgentSession({
       productId,
       createdBy: SYSTEM_SESSION_CREATOR,
       purpose: "product-survey",
       createdAt: new Date((deps.now ?? Date.now)()).toISOString(),
+      ...(baselines === undefined ? {} : { baselines }),
     }),
   );
   const plan = await agentSessionRunPlan(deps, session);
@@ -2352,13 +2365,21 @@ async function surveyRepoSetChange(deps: WebhookServerDeps, productId: number): 
 /**
  * 重梳(CONTEXT.md 产品梳理,spec #342 的 US 5)。门禁在路由上(`knowledge:write` 加这个
  * 产品里的一个仓库分配),与手写产品知识同一道;开不起来的那几句回绝原样回给人。
+ *
+ * 请求体里那一份按仓库基点与建会话同形、同校验(issue #353):人在弹窗里动过的行才进来,
+ * 一行都没动(或整个体都不带)即与这一票之前按下重梳一字不差。
  */
 async function handleProductSurvey(
+  req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
   productId: number,
 ): Promise<void> {
-  const opening = await openProductSurvey(deps, productId);
+  const payload = await readJson<{ baselines?: unknown } | null>(req, res);
+  if (payload === undefined) return;
+  const chosen = agentSessionBaselineInput(payload?.baselines);
+  if (chosen === null) return sendJson(res, 400, { error: AGENT_SESSION_BASELINE_SHAPE });
+  const opening = await openProductSurvey(deps, productId, chosen);
   if ("refusal" in opening) {
     return sendJson(res, opening.refusal.status, { error: opening.refusal.error });
   }
@@ -3320,7 +3341,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "POST", pattern: /^\/products\/(\d+)\/knowledge\/(\d+)\/reject$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleRejectProductKnowledgeProposal(res, deps, Number(match![1]), Number(match![2])) },
   // 重梳(CONTEXT.md 产品梳理,issue #345)。门禁与手写产品知识同一道:维护这一层知识的人
   // 才开得起梳理会话。会话本身由系统建,创建者不是点下它的那个人。
-  { method: "POST", pattern: /^\/products\/(\d+)\/survey$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleProductSurvey(res, deps, Number(match![1])) },
+  { method: "POST", pattern: /^\/products\/(\d+)\/survey$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps }, match) => handleProductSurvey(req, res, deps, Number(match![1])) },
   // Agent 会话(CONTEXT.md Agent 会话,issue #332)。建与发消息按 `agent:chat`,列表与
   // 读登录即可:一个会话只有创建者与系统管理员读得到,这一判按创建者在 handler 里做,
   // 不是仓库分配能表达的事。产品下的两个端点仍声明 `product` 目标,看不到产品的人连

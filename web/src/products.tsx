@@ -32,8 +32,14 @@ import { MasterListItem, MasterListItemText } from "@/components/master-list-ite
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { RailCard } from "@/components/rail-card";
-import type { SessionBaseline } from "@/components/repo-baseline-rows";
+import {
+  baselineRepoKey,
+  pickedBaselines,
+  RepoBaselineRows,
+  type SessionBaseline,
+} from "@/components/repo-baseline-rows";
 import { Button } from "@/components/theme-button";
+import type { CommitSelection } from "@/commit-picker";
 import { unassignedRepos } from "@/lib/products";
 import { localMinute } from "@/lib/time";
 
@@ -102,7 +108,9 @@ export function ProductsPage({
   const navigate = useNavigate();
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
-  const [dialog, setDialog] = useState<"create" | "rename" | "attach" | "session" | null>(null);
+  const [dialog, setDialog] = useState<
+    "create" | "rename" | "attach" | "session" | "survey" | null
+  >(null);
   const [confirming, setConfirming] = useState(false);
   /** 正要移出的仓库:移出会退役涉及它的产品知识,先过一道确认。 */
   const [detaching, setDetaching] = useState<ProductRepo | null>(null);
@@ -286,16 +294,29 @@ export function ProductsPage({
   /**
    * 重梳(CONTEXT.md 产品梳理,issue #345):开一个产品梳理会话。它由系统建,因此不跳进去
    * ——人要看的是它随后交上来的提案,会话在左栏列着,想看过程再点进去。
+   *
+   * `baselines` 是人在重梳弹窗里动过的那几行(issue #353);一行都没动就不带它,与这一票
+   * 之前直接按下重梳一字不差。
    */
   const survey = useMutation({
-    mutationFn: (input: { product: Product }) =>
-      send<{ session: AgentSession }>(`/products/${input.product.id}/survey`, "POST"),
+    mutationFn: (input: { product: Product; baselines: SessionBaseline[] }) =>
+      send<{ session: AgentSession }>(
+        `/products/${input.product.id}/survey`,
+        "POST",
+        input.baselines.length === 0 ? undefined : { baselines: input.baselines },
+      ),
     onSuccess: async ({ session }) => {
+      setDialog(null);
       setFeedback({ text: "已开一个产品梳理会话,它交出提案后在这里确认。", error: false });
       await queryClient.invalidateQueries({ queryKey: sessionsQueryKey(session.productId) });
       void refreshKnowledge();
     },
-    onError: failed,
+    // 回绝那一句在页顶的 Callout 里,弹窗开着就挡住它:先关弹窗再报(issue #353 的选错 sha
+    // 是这一条唯一能触发的新回绝)。
+    onError: (error: Error) => {
+      setDialog(null);
+      failed(error);
+    },
   });
 
   /** 建会话。建完直接进那个会话:下一步就是在里面说话,不让人再点一次。 */
@@ -345,7 +366,7 @@ export function ProductsPage({
   const sessionRepos = (selected?.repos ?? []).filter((repo) =>
     assignedRepoIds.has(repo.repoId));
 
-  function openDialog(next: "create" | "rename" | "attach" | "session"): void {
+  function openDialog(next: "create" | "rename" | "attach" | "session" | "survey"): void {
     setFeedback(null);
     create.reset();
     rename.reset();
@@ -421,10 +442,7 @@ export function ProductsPage({
                 pending={knowledgeQuery.isPending}
                 canWrite={canWriteKnowledge}
                 busy={busy}
-                onSurvey={() => {
-                  setFeedback(null);
-                  survey.mutate({ product: selected });
-                }}
+                onSurvey={() => openDialog("survey")}
                 onWrite={(statement, repoIds) => {
                   setFeedback(null);
                   writeKnowledge.mutate({ product: selected, statement, repoIds });
@@ -669,6 +687,17 @@ export function ProductsPage({
             onSubmit={(purpose, baselines) => {
               setFeedback(null);
               createSession.mutate({ product: selected, purpose, baselines });
+            }}
+          />
+          <SurveyDialog
+            open={dialog === "survey"}
+            productName={selected.name}
+            repos={selected.repos}
+            busy={survey.isPending}
+            onClose={() => setDialog(null)}
+            onSubmit={(baselines) => {
+              setFeedback(null);
+              survey.mutate({ product: selected, baselines });
             }}
           />
           <ConfirmDialog
@@ -992,6 +1021,85 @@ function AttachDialog({
               disabled={busy || chosen === undefined}
             >
               {busy ? "归属中…" : "归属"}
+            </Button>
+          </Flex>
+        </form>
+      </Dialog.Content>
+    </Dialog.Root>
+  );
+}
+
+/**
+ * 重梳弹窗(CONTEXT.md 产品梳理,issue #353)。一个仓库一行的基点行组与建会话弹窗共用一份,
+ * 预选每个仓库生效默认分支此刻的最新提交:一行都不动就按确认,与这一票之前直接按下重梳一字
+ * 不差;要梳发布线或某条特性分支时只改那几行。
+ *
+ * 列的是产品的全部仓库——梳理读的正是这一份。
+ */
+function SurveyDialog({
+  open,
+  productName,
+  repos,
+  busy,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean;
+  productName: string;
+  repos: readonly ProductRepo[];
+  busy: boolean;
+  onClose: () => void;
+  onSubmit: (baselines: SessionBaseline[]) => void;
+}) {
+  const [picked, setPicked] = useState<Record<string, CommitSelection>>({});
+  useEffect(() => {
+    if (open) setPicked({});
+  }, [open]);
+
+  const submit = (event: FormEvent): void => {
+    event.preventDefault();
+    onSubmit(pickedBaselines(picked));
+  };
+
+  return (
+    <Dialog.Root
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+    >
+      <Dialog.Content maxWidth="520px" size={{ initial: "2", sm: "3" }}>
+        <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
+          <div>
+            <Dialog.Title size="4" mb="2">
+              重梳
+            </Dialog.Title>
+            <Dialog.Description size="2" color="gray">
+              让 agent 读一遍 {productName} 的全部仓库再交提案。
+            </Dialog.Description>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Text as="span" size="2" weight="medium">
+              每个仓库读哪个提交
+            </Text>
+            <Text as="span" size="1" color="gray">
+              不动即读这个仓库生效默认分支此刻的 head。
+            </Text>
+            <RepoBaselineRows
+              repos={repos}
+              picked={picked}
+              onPick={(repo, selection) =>
+                setPicked((current) => ({ ...current, [baselineRepoKey(repo)]: selection }))}
+            />
+          </div>
+          <Flex gap="3" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
+            <Dialog.Close>
+              <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
+                取消
+              </Button>
+            </Dialog.Close>
+            <Button type="submit" variant="solid" size={{ initial: "4", sm: "2" }} disabled={busy}>
+              {busy ? "重梳中…" : "重梳"}
             </Button>
           </Flex>
         </form>

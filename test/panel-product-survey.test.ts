@@ -9,6 +9,10 @@
  *
  * 仓库集变了自己开梳理(issue #347)压在同一道缝上:归入第二个仓库开、归入第一个不开、只改
  * 职责那一次不开、移出先退役涉及那个仓库的条目再按剩下的仓库数开、梳理在跑时两边都不再开。
+ *
+ * 重梳按仓库选基点(issue #353)也在这一道缝上:带基点的那一次梳理会话记下选定的 sha 与分支、
+ * 工作树停在它上面,外仓库与解析不出的 sha 一场梳理也不开;系统自己开的那一场照旧读生效默认
+ * 分支的最新提交。
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -372,6 +376,88 @@ test("系统开的梳理:工作树停在生效默认分支的 head 上,会话记
   } finally {
     await disposeAgentSessions();
   }
+});
+
+/**
+ * 按仓库选基点那两例要的产品:两个仓库直接落库归入,不经归属端点。归入第二个仓库会由系统先开
+ * 一场梳理(issue #347),它备出来的工作树与随后人按下重梳那一场的混在同一份
+ * `git worktree list` 里,读不出这一场停在哪个 commit。
+ */
+async function productWithoutSurvey(h: PanelHarness, repoIds: readonly number[]): Promise<Product> {
+  seedRepo(h, ALPHA, "acme", "alpha");
+  const created = await h.api("POST", "/products", { name: "报销系统" });
+  assert.equal(created.status, 201);
+  const { product: row } = (await created.json()) as { product: Product };
+  const store = openStore(h.db.path);
+  try {
+    for (const repoId of repoIds) store.attachProductRepo(row.id, repoId, AT);
+  } finally {
+    store.close();
+  }
+  return row;
+}
+
+/**
+ * 重梳按仓库选基点(issue #353)。人在弹窗里按仓库选过的那几行进请求体,校验与建会话同一份
+ * (`resolveSessionBaselines`),仓库范围是产品的全部仓库——梳理读的正是这一份。
+ *
+ * 夹具那个仓库的 Gitea 默认分支是 `main`(指向 `baseSha`),`feature` 指向 `headSha`;
+ * `acme/alpha` 没设过默认分支,因此跟随 `main`。
+ */
+test("重梳带按仓库基点:梳理会话记下选定的 sha 与分支,工作树停在它上面", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const two = await productWithoutSurvey(h, [GITEA_REPO.id, ALPHA]);
+  try {
+    const opened = await h.api("POST", `/products/${two.id}/survey`, {
+      baselines: [{ ...GITEA_REPO, sha: h.repo.headSha, branch: "feature" }],
+    });
+    const text = await opened.text();
+    assert.equal(opened.status, 201, text);
+    const { session } = JSON.parse(text) as { session: AgentSessionRecord };
+
+    // 选过的那一行按他选的 commit 与他浏览的那条分支记;没动过的那个仓库回落生效的默认分支。
+    assert.deepEqual(await baselinesOf(h, session.id), [
+      { owner: "acme", repo: "alpha", sha: h.repo.baseSha, branch: "main" },
+      { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature" },
+    ]);
+
+    // agent 的工具看到的就是这一份:工作树的 HEAD 停在会话记下的那个 commit 上。
+    assert.deepEqual(
+      await sessionWorktreeHeads(h, [{ owner: "acme", repo: "alpha" }, GITEA_REPO]),
+      [h.repo.baseSha, h.repo.headSha],
+    );
+  } finally {
+    await disposeAgentSessions();
+  }
+});
+
+test("重梳选基点:外仓库、解析不出的 sha 与形状不对都回绝,一场梳理也没开", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const two = await productWithoutSurvey(h, [GITEA_REPO.id, ALPHA]);
+  // 注册了但没归进这个产品的仓库:它的 commit 不该被这一场梳理读到。
+  seedRepo(h, 303, "acme", "gamma");
+
+  const rejected = async (baselines: unknown, error: string): Promise<void> => {
+    const response = await h.api("POST", `/products/${two.id}/survey`, { baselines });
+    const text = await response.text();
+    assert.equal(response.status, 400, text);
+    assert.deepEqual(JSON.parse(text), { error });
+  };
+
+  await rejected(
+    [{ owner: "acme", repo: "gamma", sha: h.repo.headSha }],
+    "选不了 acme/gamma 的基点:它不在这个产品里",
+  );
+  await rejected(
+    [{ ...GITEA_REPO, sha: "0".repeat(40) }],
+    `${GITEA_REPO.owner}/${GITEA_REPO.repo} 里没有 ${"0".repeat(40)} 这个提交`,
+  );
+  for (const shape of ["main", [{ owner: "acme", repo: "widgets" }], [42]]) {
+    await rejected(shape, "baselines 要是一串 { owner, repo, sha },branch 可选");
+  }
+
+  // 回绝那几次一场梳理也没开:人看到的是「没梳起来 + 哪个仓库」,不是一个读错代码的会话。
+  assert.deepEqual(await sessionsOf(h, two.id, h.cookie), []);
 });
 
 test("移出仓库:涉及它的生效条目全退役,剩下两个仓库时自己开一场梳理", async () => {
