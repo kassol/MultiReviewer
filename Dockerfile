@@ -18,7 +18,7 @@ RUN pnpm --filter @multireviewer/web build \
  && rm -rf "$(pnpm store path)" /root/.cache /root/.npm
 
 # ── fd ───────────────────────────────────────────────────────────────────
-# Pi 的 find 工具 spawn fd 时固定带 `--no-require-git`,那是 fd 9.0 加的参数;Debian
+# Pi 的 find 工具 spawn fd 时固定带 `--no-require-git`,那是 fd 8.7.0 加的参数;Debian
 # bookworm 的 fd-find 是 8.6,每次调用都以 unexpected argument 失败。这里从 fd 的
 # release 取一份静态 musl 二进制,版本钉死,按目标架构选包(交叉构建 amd64 时 dpkg
 # 报的是目标架构)。
