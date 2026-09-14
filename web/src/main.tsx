@@ -562,7 +562,7 @@ function StageDetailRoutePage() {
 }
 const productsRoute = protectedPage("/products", undefined, () => <ProductsRoutePage />);
 /**
- * 当前产品写在地址上(spec #349)。`/products` 不带产品,当前项落在列表第一个上;点左栏
+ * 当前产品写在地址上(产品页与会话页共用左栏的那一轮)。`/products` 不带产品,当前项落在列表第一个上;点左栏
  * 一行就进这一条路由,从会话页回来选的因此还是同一个产品。
  */
 const productRoute = createRoute({
