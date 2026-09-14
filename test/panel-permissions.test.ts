@@ -63,9 +63,9 @@ const ROUTE_EXPECTATIONS = [
   // 每日增量的开关与人工推进同一格(issue #313)。
   ["PUT", "/^\\/range-reviews\\/(\\d+)\\/daily-increment$/", "review:advance", "range-review:1"],
   // 分支列表另给 `repo:write`(issue #350):仓库配置弹窗里的默认分支下拉读它。
-  ["GET", "/repo-branches", "anyOf:review:create|knowledge:write|repo:write", "query"],
-  ["GET", "/repo-commits", "anyOf:review:create|knowledge:write", "query"],
-  ["GET", "/repo-tags", "anyOf:review:create|knowledge:write", "query"],
+  ["GET", "/repo-branches", "anyOf:review:create|knowledge:write|repo:write|agent:chat", "query"],
+  ["GET", "/repo-commits", "anyOf:review:create|knowledge:write|agent:chat", "query"],
+  ["GET", "/repo-tags", "anyOf:review:create|knowledge:write|agent:chat", "query"],
   ["GET", "/repos/search", "repo:write", "-"],
   ["GET", "/repos", "authenticated-only", "-"],
   ["POST", "/repos", "repo:write", "-"],

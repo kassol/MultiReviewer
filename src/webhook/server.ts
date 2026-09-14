@@ -61,6 +61,7 @@ import {
 } from "../panel/credential-crypto.ts";
 import {
   defaultBranchHead,
+  effectiveDefaultBranch,
   ensureWorktree,
   listBranchCommits,
   prepareWorktree,
@@ -73,6 +74,7 @@ import {
   removeWorktree,
   repoCachePath,
   resolveRange,
+  resolveRepoCommit,
   type BranchCommits,
   type PreparedRange,
   type RangeDiffFile,
@@ -128,6 +130,7 @@ import {
   toKnowledgeEntry,
   toPendingProposal,
   type AgentSessionEntryRecord,
+  type AgentSessionBaseline,
   type AgentSessionOutputKind,
   type AgentSessionPurpose,
   type AgentSessionRecord,
@@ -2564,7 +2567,111 @@ function handleListAgentSessions(
     : sendJson(res, 200, { sessions: sessions.map(withRuntimeStatus) });
 }
 
-/** 建会话。用途必填且只认那两个值;创建者就是调用方,建完它只属于这个人。 */
+/** 建会话请求里那一份按仓库基点(issue #352)。`branch` 是人在选择器里浏览的那条分支。 */
+type SessionBaselineInput = { owner: string; repo: string; sha: string; branch?: string };
+
+/** 基点列表的形状不对。说清要什么比说「形状不对」有用。 */
+const AGENT_SESSION_BASELINE_SHAPE =
+  "baselines 要是一串 { owner, repo, sha },branch 可选";
+
+/**
+ * 请求体里那一份按仓库基点(issue #352)。不给即每个仓库都跟随生效的默认分支;形状不对
+ * 回 null,让调用方当场回绝——默默忽略会让人以为选的那个 commit 生效了。
+ */
+function agentSessionBaselineInput(value: unknown): SessionBaselineInput[] | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) return null;
+  const parsed: SessionBaselineInput[] = [];
+  for (const one of value) {
+    if (typeof one !== "object" || one === null) return null;
+    const row = one as Record<string, unknown>;
+    const { owner, repo, sha, branch } = row;
+    if (typeof owner !== "string" || owner === "") return null;
+    if (typeof repo !== "string" || repo === "") return null;
+    if (typeof sha !== "string" || sha === "") return null;
+    if (branch !== undefined && (typeof branch !== "string" || branch === "")) return null;
+    parsed.push({ owner, repo, sha, ...(branch === undefined ? {} : { branch }) });
+  }
+  return parsed;
+}
+
+/**
+ * 定下这个会话每个仓库开在哪个 commit(issue #352)。
+ *
+ * 人选过的那一行按它选的 sha,在这个仓库的缓存 clone 里解析得出才算——解析不出来就是选错
+ * 了,当场回绝而不是建一个悄悄读别处代码的会话(spec #349 的 US 19)。没选过的仓库回落到
+ * 生效的默认分支当前 head(issue #350 那唯一一处读法,ADR 0033)。
+ *
+ * 整份定完才建会话:任一行不成立即一条也不落,面板上人看到的就是「没建出来 + 哪个仓库」。
+ */
+async function resolveSessionBaselines(
+  deps: WebhookServerDeps,
+  repos: readonly ProductRepoRecord[],
+  chosen: readonly SessionBaselineInput[],
+): Promise<{ ok: true; baselines: AgentSessionBaseline[] } | { ok: false; status: number; error: string }> {
+  const inProduct = new Set(repos.map((repo) => `${repo.owner}/${repo.repo}`));
+  // 产品之外(或调用方没有仓库分配)的仓库先挡掉:它一个 commit 也不该被这个会话读到。
+  const foreign = chosen.find((one) => !inProduct.has(`${one.owner}/${one.repo}`));
+  if (foreign !== undefined) {
+    return {
+      ok: false,
+      status: 400,
+      error: `选不了 ${foreign.owner}/${foreign.repo} 的基点:它不在这个产品里`,
+    };
+  }
+  if (repos.length === 0) return { ok: true, baselines: [] };
+  const forge = deps.forges.gitea;
+  if (forge === undefined) {
+    return { ok: false, status: 503, error: "gitea 没有配置 Forge,定不下会话的基点" };
+  }
+  const baselines: AgentSessionBaseline[] = [];
+  for (const repo of repos) {
+    const ref = { owner: repo.owner, repo: repo.repo };
+    const configured = withStore(deps.dbPath, (store) => store.getRepo(repo.repoId)?.defaultBranch ?? null);
+    let target: Awaited<ReturnType<typeof repoGitTarget>>;
+    try {
+      target = await repoGitTarget(forge, ref);
+    } catch (error) {
+      return {
+        ok: false,
+        status: 502,
+        error: `读不到 ${repo.owner}/${repo.repo} 或取不回代码:${failureText(error)}`,
+      };
+    }
+    const clone = { cacheDir: deps.cacheDir, ...target };
+    const picked = chosen.find((one) => one.owner === repo.owner && one.repo === repo.repo);
+    if (picked !== undefined) {
+      const sha = await resolveRepoCommit(clone, picked.sha);
+      if (sha === undefined) {
+        return {
+          ok: false,
+          status: 400,
+          error: `${repo.owner}/${repo.repo} 里没有 ${picked.sha} 这个提交`,
+        };
+      }
+      // 分支名是人在选择器里浏览的那一条;没带就记生效的默认分支(他没换过分支)。
+      baselines.push({ ...ref, sha, branch: picked.branch ?? effectiveDefaultBranch(target, configured) });
+      continue;
+    }
+    try {
+      const { branch, sha } = await defaultBranchHead(clone, target, configured);
+      baselines.push({ ...ref, sha, branch });
+    } catch (error) {
+      // 设过的那条分支在远端没了(spec #349 的 US 6):当场说是哪个仓库,别开一个读不到
+      // 代码的会话。
+      return { ok: false, status: 400, error: failureText(error) };
+    }
+  }
+  return { ok: true, baselines };
+}
+
+/**
+ * 建会话。用途必填且只认那两个值;创建者就是调用方,建完它只属于这个人。
+ *
+ * 每个仓库开在哪个 commit 在这一步就定下来并记到会话上(issue #352):人在弹窗里按仓库选过
+ * 基点的行按他选的,没动过的行跟随生效的默认分支当前 head。定在建时而不是首次备树时,空闲
+ * 回收后重备才停得在同一个 commit 上,会话头部显示的与 agent 实际读的因此是同一份。
+ */
 async function handleCreateAgentSession(
   req: IncomingMessage,
   res: ServerResponse,
@@ -2572,10 +2679,24 @@ async function handleCreateAgentSession(
   productId: number,
   caller: PanelCaller,
 ): Promise<void> {
-  const payload = await readJson<{ purpose?: unknown } | null>(req, res);
+  const payload = await readJson<{ purpose?: unknown; baselines?: unknown } | null>(req, res);
   if (payload === undefined) return;
   const purpose = agentSessionPurpose(payload?.purpose);
   if (purpose === undefined) return sendJson(res, 400, { error: AGENT_SESSION_PURPOSE_SHAPE });
+  const chosen = agentSessionBaselineInput(payload?.baselines);
+  if (chosen === null) return sendJson(res, 400, { error: AGENT_SESSION_BASELINE_SHAPE });
+  if (withStore(deps.dbPath, (store) => store.getProduct(productId)) === undefined) {
+    return sendJson(res, 404, { error: NO_SUCH_PRODUCT });
+  }
+  // agent 读得到的那一份仓库集(产品 ∩ 创建者的仓库分配):基点只在它里面选得出,备树时
+  // 挂的也正是这几棵。
+  const repos = agentSessionRepos(deps.dbPath, {
+    productId,
+    createdBy: caller.username,
+    purpose,
+  });
+  const resolved = await resolveSessionBaselines(deps, repos, chosen ?? []);
+  if (!resolved.ok) return sendJson(res, resolved.status, { error: resolved.error });
   const session = withStore(deps.dbPath, (store) =>
     store.getProduct(productId) === undefined
       ? undefined
@@ -2584,6 +2705,7 @@ async function handleCreateAgentSession(
           createdBy: caller.username,
           purpose,
           createdAt: new Date((deps.now ?? Date.now)()).toISOString(),
+          baselines: resolved.baselines,
         }),
   );
   return session === undefined
@@ -3133,10 +3255,12 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   // 每日增量的开关与人工推进同一格(issue #313):定时推进与人工推进的权限一致。
   { method: "PUT", pattern: /^\/range-reviews\/(\d+)\/daily-increment$/, access: "review:advance", assignment: { by: "range-review", group: 1 }, handler: ({ req, res, deps }, match) => handleSetDailyIncrement(req, res, deps, Number(match![1])) },
   // 发起范围审查与发起基点探索都从这里选 commit(issue #205),两格任一即可读。分支列表另给
-  // `repo:write`(issue #350):设这个仓库默认分支的人要在配置弹窗里选得出一条真分支。
-  { method: "GET", pattern: "/repo-branches", access: { anyOf: ["review:create", "knowledge:write", "repo:write"] }, assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRepoBranches(req, res, deps) },
-  { method: "GET", pattern: "/repo-commits", access: { anyOf: ["review:create", "knowledge:write"] }, assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRepoCommits(req, res, deps) },
-  { method: "GET", pattern: "/repo-tags", access: { anyOf: ["review:create", "knowledge:write"] }, assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRepoTags(req, res, deps) },
+  // `repo:write`(issue #350):设这个仓库默认分支的人要在配置弹窗里选得出一条真分支。三个
+  // 接口都另给 `agent:chat`(issue #352):建会话的人要在弹窗里按仓库选基点,而建会话就是
+  // 这一格——多认一格不是多一道权限,读的仍只有他有分配的仓库。
+  { method: "GET", pattern: "/repo-branches", access: { anyOf: ["review:create", "knowledge:write", "repo:write", "agent:chat"] }, assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRepoBranches(req, res, deps) },
+  { method: "GET", pattern: "/repo-commits", access: { anyOf: ["review:create", "knowledge:write", "agent:chat"] }, assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRepoCommits(req, res, deps) },
+  { method: "GET", pattern: "/repo-tags", access: { anyOf: ["review:create", "knowledge:write", "agent:chat"] }, assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRepoTags(req, res, deps) },
   { method: "GET", pattern: "/repos/search", access: "repo:write", handler: ({ req, res, deps, hookManager }) => handleRepoSearch(req, res, deps, hookManager) },
   { method: "GET", pattern: "/repos", access: "authenticated-only", handler: ({ res, deps, assignment }) => listRepos(res, deps, assignment!) },
   { method: "POST", pattern: "/repos", access: "repo:write", handler: ({ req, res, deps, hookManager, caller }) => handleRegister(req, res, deps, hookManager, caller!) },

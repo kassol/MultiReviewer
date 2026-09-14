@@ -40,6 +40,14 @@ import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "re
 import { CardShell } from "@/components/card-shell";
 import { CommitChip } from "@/components/commit-chip";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import {
+  baselineRepoKey,
+  pickedBaselines,
+  RepoBaselineRows,
+  type BaselineRepo,
+  type SessionBaseline,
+} from "@/components/repo-baseline-rows";
+import type { CommitSelection } from "@/commit-picker";
 import { EmptyState } from "@/components/empty-state";
 import { Markdown } from "@/components/markdown";
 import { MasterListItem, MasterListItemText } from "@/components/master-list-item";
@@ -229,29 +237,39 @@ export function SessionRail({
 /**
  * 建会话弹窗。用途建时必填、之后不变,所以它只在这里出现一次;下拉当前只有需求拆分一项,
  * 仍是下拉而不是一句说明——写代码类用途接入时这里多一项就够。
+ *
+ * 用途之下是按仓库选基点的行组(issue #352):每个仓库一行,预选它生效的默认分支当前 head。
+ * 只提交人动过的那几行——没动过的行由服务端回落到同一个 head,两侧说的是同一件事。
  */
 export function CreateSessionDialog({
   open,
   productName,
+  repos,
   busy,
   onClose,
   onSubmit,
 }: {
   open: boolean;
   productName: string;
+  /** 这个会话读得到的仓库:产品的仓库 ∩ 这个账号的仓库分配。 */
+  repos: readonly BaselineRepo[];
   busy: boolean;
   onClose: () => void;
-  onSubmit: (purpose: AgentSessionPurpose) => void;
+  onSubmit: (purpose: AgentSessionPurpose, baselines: SessionBaseline[]) => void;
 }) {
   const [purpose, setPurpose] = useState<string>(DEFAULT_PURPOSE);
+  const [picked, setPicked] = useState<Record<string, CommitSelection>>({});
   useEffect(() => {
-    if (open) setPurpose(DEFAULT_PURPOSE);
+    if (open) {
+      setPurpose(DEFAULT_PURPOSE);
+      setPicked({});
+    }
   }, [open]);
 
   const chosen = CREATABLE_PURPOSES.find((value) => value === purpose);
   const submit = (event: FormEvent): void => {
     event.preventDefault();
-    if (chosen !== undefined) onSubmit(chosen);
+    if (chosen !== undefined) onSubmit(chosen, pickedBaselines(picked));
   };
 
   return (
@@ -261,7 +279,7 @@ export function CreateSessionDialog({
         if (!next) onClose();
       }}
     >
-      <Dialog.Content maxWidth="440px" size={{ initial: "2", sm: "3" }}>
+      <Dialog.Content maxWidth="520px" size={{ initial: "2", sm: "3" }}>
         <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
           <div>
             <Dialog.Title size="4" mb="2">
@@ -290,6 +308,22 @@ export function CreateSessionDialog({
               </Select.Content>
             </Select.Root>
           </div>
+          {repos.length === 0 ? null : (
+            <div className="flex flex-col gap-1.5">
+              <Text as="span" size="2" weight="medium">
+                每个仓库读哪个提交
+              </Text>
+              <Text as="span" size="1" color="gray">
+                不动即读这个仓库生效默认分支此刻的 head。
+              </Text>
+              <RepoBaselineRows
+                repos={repos}
+                picked={picked}
+                onPick={(repo, selection) =>
+                  setPicked((current) => ({ ...current, [baselineRepoKey(repo)]: selection }))}
+              />
+            </div>
+          )}
           <Flex gap="3" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
             <Dialog.Close>
               <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>

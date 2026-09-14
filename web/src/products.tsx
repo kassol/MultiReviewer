@@ -32,6 +32,7 @@ import { MasterListItem, MasterListItemText } from "@/components/master-list-ite
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { RailCard } from "@/components/rail-card";
+import type { SessionBaseline } from "@/components/repo-baseline-rows";
 import { Button } from "@/components/theme-button";
 import { unassignedRepos } from "@/lib/products";
 import { localMinute } from "@/lib/time";
@@ -299,9 +300,15 @@ export function ProductsPage({
 
   /** 建会话。建完直接进那个会话:下一步就是在里面说话,不让人再点一次。 */
   const createSession = useMutation({
-    mutationFn: (input: { product: Product; purpose: AgentSessionPurpose }) =>
+    mutationFn: (input: {
+      product: Product;
+      purpose: AgentSessionPurpose;
+      /** 人在弹窗里动过的那几行(issue #352);没动过的仓库由服务端回落。 */
+      baselines: SessionBaseline[];
+    }) =>
       send<{ session: AgentSession }>(`/products/${input.product.id}/sessions`, "POST", {
         purpose: input.purpose,
+        ...(input.baselines.length === 0 ? {} : { baselines: input.baselines }),
       }),
     onSuccess: async ({ session }) => {
       setDialog(null);
@@ -328,6 +335,15 @@ export function ProductsPage({
 
   /** 还没归入任何产品、且在这个账号分配内的仓库。归入第二个产品服务端会回 409。 */
   const attachable = unassignedRepos(reposQuery.data ?? [], products);
+
+  /**
+   * 建会话弹窗里要列出基点的仓库(issue #352):这个产品的仓库 ∩ 这个账号的仓库分配——与服务端
+   * 给 agent 的那一份同律,`GET /repos` 已经按分配收窄过。分配外的仓库连行都不出现:它的提交
+   * 这个会话读不到。
+   */
+  const assignedRepoIds = new Set((reposQuery.data ?? []).map((row) => row.repoId));
+  const sessionRepos = (selected?.repos ?? []).filter((repo) =>
+    assignedRepoIds.has(repo.repoId));
 
   function openDialog(next: "create" | "rename" | "attach" | "session"): void {
     setFeedback(null);
@@ -647,11 +663,12 @@ export function ProductsPage({
           <CreateSessionDialog
             open={dialog === "session"}
             productName={selected.name}
+            repos={sessionRepos}
             busy={createSession.isPending}
             onClose={() => setDialog(null)}
-            onSubmit={(purpose) => {
+            onSubmit={(purpose, baselines) => {
               setFeedback(null);
-              createSession.mutate({ product: selected, purpose });
+              createSession.mutate({ product: selected, purpose, baselines });
             }}
           />
           <ConfirmDialog

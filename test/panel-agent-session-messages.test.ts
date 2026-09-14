@@ -8,6 +8,9 @@
  * `agent-session-subprocess.test.ts`。
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import { createDrain } from "../src/drain.ts";
@@ -79,9 +82,11 @@ async function createSession(
   h: PanelHarness,
   cookie: string,
   productId: number,
+  baselines?: readonly { owner: string; repo: string; sha: string; branch?: string }[],
 ): Promise<number> {
   const response = await as(h, cookie, "POST", `/products/${productId}/sessions`, {
     purpose: PURPOSE,
+    ...(baselines === undefined ? {} : { baselines }),
   });
   const text = await response.text();
   assert.equal(response.status, 201, text);
@@ -156,20 +161,33 @@ test("会话根只挂创建者有分配的仓库:产品里别的仓库不出现"
 });
 
 /**
- * 会话读端点回的「开在哪个 commit」那一份(issue #351)。备工作树在会话开起来之后的后台里
- * 跑,因此等到它写下来为止;整列一次写完,读到非空就是每个仓库都备完了。
+ * 会话根下那棵工作树停在哪个 commit(issue #352)。备树在会话开起来之后的后台里跑,因此等到
+ * 每个仓库都挂出一棵为止;读法与 `panel-product-survey.test.ts` 同一条:一棵工作树连着它的
+ * HEAD,agent 的工具看到的就是这一份。
  */
-async function baselinesOf(
+async function sessionWorktreeHeads(
   h: PanelHarness,
-  cookie: string,
-  sessionId: number,
-): Promise<AgentSession["baselines"]> {
+  refs: readonly { owner: string; repo: string }[],
+): Promise<string[]> {
+  const head = (ref: { owner: string; repo: string }): string | undefined => {
+    const clone = join(h.cacheDir, ref.owner, ref.repo);
+    if (!existsSync(clone)) return undefined;
+    const listed = execFileSync("git", ["-C", clone, "worktree", "list", "--porcelain"], {
+      encoding: "utf8",
+    });
+    const lines = listed.split("\n");
+    const index = lines.findIndex((line) => line.includes("multireviewer-session-root-"));
+    if (index < 0) return undefined;
+    const line = lines[index + 1] ?? "";
+    assert.match(line, /^HEAD [0-9a-f]{40}$/, listed);
+    return line.slice("HEAD ".length);
+  };
   for (let attempt = 0; attempt < 1200; attempt += 1) {
-    const recorded = (await session(h, cookie, sessionId)).baselines;
-    if (recorded.length > 0) return recorded;
+    const heads = refs.map(head);
+    if (heads.every((one) => one !== undefined)) return heads as string[];
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  return assert.fail("等了 30 秒,会话还没记下它开在哪个 commit");
+  return assert.fail("等了 30 秒,会话根下的工作树还没挂齐");
 }
 
 test("会话记下每个仓库开在哪条分支的哪个 commit,读端点回这一份", async () => {
@@ -190,8 +208,13 @@ test("会话记下每个仓库开在哪条分支的哪个 commit,读端点回这
     "agent:chat",
   ]);
   const sessionId = await createSession(h, cookie, productId);
-  // 建出来的这一刻一棵树都还没备:列表是空的,面板因此什么都不显示。
-  assert.deepEqual((await session(h, cookie, sessionId)).baselines, []);
+  // 建会话那一刻就记下了(issue #352):每仓库一条,sha 是生效默认分支此刻的 head,分支名就是
+  // 生效的那一条。
+  const expected = [
+    { owner: "acme", repo: "alpha", sha: h.repo.baseSha, branch: "main" },
+    { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature" },
+  ];
+  assert.deepEqual((await session(h, cookie, sessionId)).baselines, expected);
 
   try {
     const sent = await as(h, cookie, "POST", `/agent-sessions/${sessionId}/messages`, {
@@ -199,11 +222,47 @@ test("会话记下每个仓库开在哪条分支的哪个 commit,读端点回这
       text: "拆一下这个需求",
     });
     assert.equal(sent.status, 202, await sent.text());
-    // 每仓库一条:sha 是生效默认分支此刻的 head,分支名就是生效的那一条。
-    assert.deepEqual(await baselinesOf(h, cookie, sessionId), [
-      { owner: "acme", repo: "alpha", sha: h.repo.baseSha, branch: "main" },
-      { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature" },
-    ]);
+    // 备树按会话记的 sha 检出,不再重解一次(issue #352):读回来还是同一份。
+    assert.deepEqual(
+      await sessionWorktreeHeads(h, [{ owner: "acme", repo: "alpha" }, GITEA_REPO]),
+      [h.repo.baseSha, h.repo.headSha],
+    );
+    assert.deepEqual((await session(h, cookie, sessionId)).baselines, expected);
+  } finally {
+    await disposeAgentSessions();
+  }
+});
+
+test("建会话时选的基点就是工作树停的地方,没选的那个仓库回落生效默认分支", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const alpha = seedRepo(h, 101, "acme", "alpha");
+  const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id, alpha]);
+  const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id, alpha], [
+    "agent:chat",
+  ]);
+  // 只动 widgets 那一行:选 `feature` 上的 head(夹具的 Gitea 默认分支是 `main`,指向
+  // `baseSha`)。alpha 那一行没动,跟随生效的默认分支。
+  const sessionId = await createSession(h, cookie, productId, [
+    { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature" },
+  ]);
+  const expected = [
+    { owner: "acme", repo: "alpha", sha: h.repo.baseSha, branch: "main" },
+    { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature" },
+  ];
+  assert.deepEqual((await session(h, cookie, sessionId)).baselines, expected);
+
+  try {
+    const sent = await as(h, cookie, "POST", `/agent-sessions/${sessionId}/messages`, {
+      clientMessageId: "c1",
+      text: "拆一下这个需求",
+    });
+    assert.equal(sent.status, 202, await sent.text());
+    // agent 的工具看到的 HEAD 就是人选的那个 commit。
+    assert.deepEqual(
+      await sessionWorktreeHeads(h, [{ owner: "acme", repo: "alpha" }, GITEA_REPO]),
+      [h.repo.baseSha, h.repo.headSha],
+    );
+    assert.deepEqual((await session(h, cookie, sessionId)).baselines, expected);
   } finally {
     await disposeAgentSessions();
   }

@@ -241,10 +241,13 @@ function queuedMessage(message: {
 /**
  * agent 读得到的仓库:产品当前仓库 ∩ 创建者当前仓库分配(spec #329)。系统管理员不受限,
  * 拿到的是产品的全部仓库。产品没了或创建者的账号没了即空集。
+ *
+ * 只认会话的三格,不要整条记录:建会话端点在会话还不存在时就要按这一份判人选的基点在不在
+ * 里面(issue #352)。
  */
 export function agentSessionRepos(
   dbPath: string,
-  session: AgentSessionRecord,
+  session: Pick<AgentSessionRecord, "productId" | "createdBy" | "purpose">,
 ): ProductRepoRecord[] {
   const store = openStore(dbPath);
   try {
@@ -990,15 +993,17 @@ function configuredDefaultBranch(dbPath: string, repoId: number): string | null 
 }
 
 /**
- * 备好会话根:一个临时目录,下面按 `<owner>/<repo>` 各挂一棵一次性工作树,检出生效的默认
- * 分支最新(issue #350)。位置即工具面的判据——路径前缀就是仓库,圈根就是圈这个目录。
+ * 备好会话根:一个临时目录,下面按 `<owner>/<repo>` 各挂一棵一次性工作树。位置即工具面的
+ * 判据——路径前缀就是仓库,圈根就是圈这个目录。
  *
- * 每棵树停在哪个 commit、那个 commit 来自哪条分支,按仓库记到会话上(issue #351):面板的
- * 会话头部与系统提示的仓库清单说的就是这一份,人与 agent 因此指得出读的是哪一份代码。
+ * 停在哪个 commit 由会话自己记的那一份说(issue #352):建会话时人按仓库选过基点,那一份
+ * 就是这里检出的目标,空闲回收后重备因此停在同一个 commit 上,面板头部显示的与 agent 读的
+ * 是同一份。会话上没记过的仓库(系统开的梳理、这一票之前建的会话)读生效的默认分支最新
+ * (issue #350),读完一并记下来(issue #351):人与 agent 因此指得出读的是哪一份代码。
  */
 async function prepareSessionRoot(
   deps: AgentSessionRuntimeDeps,
-  sessionId: number,
+  session: AgentSessionRecord,
   repos: readonly ProductRepoRecord[],
   entry: RuntimeEntry,
 ): Promise<{ sessionRoot: string; repos: SessionRepoInput[] }> {
@@ -1006,6 +1011,9 @@ async function prepareSessionRoot(
   entry.sessionRoot = sessionRoot;
   const prepared: SessionRepoInput[] = [];
   const baselines: AgentSessionBaseline[] = [];
+  const recorded = new Map(
+    session.baselines.map((one) => [`${one.owner}/${one.repo}`, one] as const),
+  );
   for (const repo of repos) {
     const ref = { owner: repo.owner, repo: repo.repo };
     const [repository, credentials] = await Promise.all([
@@ -1018,11 +1026,12 @@ async function prepareSessionRoot(
       cloneUrl: repository.cloneUrl,
       credentials,
     };
-    const { branch, sha: headSha } = await defaultBranchHead(
-      clone,
-      repository,
-      configuredDefaultBranch(deps.dbPath, repo.repoId),
-    );
+    const { branch, sha: headSha } = recorded.get(`${repo.owner}/${repo.repo}`)
+      ?? await defaultBranchHead(
+        clone,
+        repository,
+        configuredDefaultBranch(deps.dbPath, repo.repoId),
+      );
     const worktree = await prepareWorktree({
       ...clone,
       headSha,
@@ -1041,7 +1050,7 @@ async function prepareSessionRoot(
   // 整列一次写完:备到一半失败的那一次不落半份清单,下一条消息重试时从头再备一遍。
   const store = openStore(deps.dbPath);
   try {
-    store.setAgentSessionBaselines(sessionId, baselines);
+    store.setAgentSessionBaselines(session.id, baselines);
   } finally {
     store.close();
   }
@@ -1075,7 +1084,7 @@ async function boot(
   repos: readonly ProductRepoRecord[],
   entry: RuntimeEntry,
 ): Promise<ChildProcess> {
-  const prepared = await prepareSessionRoot(deps, session.id, repos, entry);
+  const prepared = await prepareSessionRoot(deps, session, repos, entry);
   const child = fork(WORKER_PATH, {
     // cwd 是会话根。只设 Pi 的 cwd 不够:模型会拼出相对于编排进程目录的路径。
     cwd: prepared.sessionRoot,

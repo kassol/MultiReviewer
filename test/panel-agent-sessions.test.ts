@@ -272,6 +272,82 @@ test("删会话只删那一条,删产品级联删掉它下面的全部会话并�
   }
 });
 
+/**
+ * 建会话时按仓库选基点(issue #352)。压的是这一格在 HTTP 上的三条:选过的行记他选的那个
+ * commit 与分支、没选的行回落生效的默认分支,以及两类回绝一条会话都不落。
+ *
+ * 夹具那个仓库的 Gitea 默认分支是 `main`(指向 `baseSha`),`feature` 指向 `headSha`。
+ */
+test("建会话按仓库选基点:选过的记他选的,没带分支名的记生效默认分支", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const productId = await productWithRepo(h, "报销系统");
+  const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+
+  const create = (baselines: unknown): Promise<Response> =>
+    as(h, cookie, "POST", `/products/${productId}/sessions`, { purpose: PURPOSE, baselines });
+
+  // 没动选择器:与这一票之前同律,跟随生效的默认分支。
+  const untouched = await createSession(h, cookie, productId);
+  assert.deepEqual(untouched.baselines, [
+    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.baseSha, branch: "main" },
+  ]);
+
+  // 动过的那一行:记他选的 commit 与他浏览的那条分支。
+  const picked = await create([
+    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "feature" },
+  ]);
+  assert.equal(picked.status, 201, await picked.clone().text());
+  assert.deepEqual(((await picked.json()) as { session: AgentSession }).session.baselines, [
+    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "feature" },
+  ]);
+
+  // 只给 sha 不给分支名:记生效的默认分支——他没换过分支。
+  const noBranch = await create([
+    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha },
+  ]);
+  assert.equal(noBranch.status, 201, await noBranch.clone().text());
+  assert.deepEqual(((await noBranch.json()) as { session: AgentSession }).session.baselines, [
+    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "main" },
+  ]);
+
+  assert.equal((await sessions(h, cookie, productId)).length, 3);
+});
+
+test("建会话选基点:外仓库、解析不出的 sha 与形状不对都回绝,一条会话都不落", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const productId = await productWithRepo(h, "报销系统");
+  // 注册了但没归进这个产品的仓库:它的 commit 不该被这个会话读到。
+  seedRepo(h, 101, "acme", "alpha");
+  const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id, 101], [
+    "agent:chat",
+  ]);
+
+  const rejected = async (baselines: unknown, error: string): Promise<void> => {
+    const response = await as(h, cookie, "POST", `/products/${productId}/sessions`, {
+      purpose: PURPOSE,
+      baselines,
+    });
+    const text = await response.text();
+    assert.equal(response.status, 400, text);
+    assert.deepEqual(JSON.parse(text), { error });
+  };
+
+  await rejected(
+    [{ owner: "acme", repo: "alpha", sha: h.repo.headSha }],
+    "选不了 acme/alpha 的基点:它不在这个产品里",
+  );
+  await rejected(
+    [{ owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: "0".repeat(40) }],
+    `${GITEA_REPO.owner}/${GITEA_REPO.repo} 里没有 ${"0".repeat(40)} 这个提交`,
+  );
+  for (const shape of ["main", [{ owner: "acme", repo: "widgets" }], [42]]) {
+    await rejected(shape, "baselines 要是一串 { owner, repo, sha },branch 可选");
+  }
+
+  // 回绝那几次一条会话都没落下。
+  assert.deepEqual(await sessions(h, cookie, productId), []);
+});
+
 test("升级前的旧库:开库补上会话那一列,既有会话读作没记过开在哪个 commit", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const productId = await productWithRepo(h, "报销系统");

@@ -747,8 +747,9 @@ CREATE TABLE IF NOT EXISTS agent_session (
   cache_read_tokens INTEGER NOT NULL DEFAULT 0,
   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
   total_tokens INTEGER NOT NULL DEFAULT 0,
-  -- 这个会话每个仓库开在哪个 commit(issue #351):AgentSessionBaseline 那一串的 JSON,备工作树
-  -- 那一刻写下来。可空,NULL 即这一票之前建的会话——读作空列表,面板什么都不显示。
+  -- 这个会话每个仓库开在哪个 commit(issue #351):AgentSessionBaseline 那一串的 JSON,建会话
+  -- 那一刻写下来(issue #352),系统开的梳理在首次备树时写。可空,NULL 即这一票之前建的
+  -- 会话——读作空列表,面板什么都不显示。
   baselines TEXT
 );
 -- 列表只有一种查法:一个产品下某个人的会话(系统管理员读同一个产品下的全部)。
@@ -2790,8 +2791,9 @@ export type AgentSessionRecord = {
   /** 累计用量,与 Review Run 同口径:落库的每条记录按它的用量列累加上来(ADR 0031)。 */
   usage: ReviewerUsage;
   /**
-   * 这个会话每个仓库开在哪个 commit(issue #351)。备工作树那一刻记下来;这一票之前建的
-   * 会话是空列表,面板因此什么都不显示。
+   * 这个会话每个仓库开在哪个 commit(issue #351)。建会话那一刻记下来(issue #352);系统
+   * 开的梳理没有人来选,首次备工作树时才记。这一票之前建的会话是空列表,面板因此什么都
+   * 不显示。
    */
   baselines: AgentSessionBaseline[];
 };
@@ -3192,16 +3194,23 @@ export type Store = {
   listAgentSessions(productId: number, createdBy: string | null): AgentSessionRecord[];
   /** 一个 Agent 会话。没有这一条即 undefined;可见性由调用方按创建者判。 */
   getAgentSession(sessionId: number): AgentSessionRecord | undefined;
-  /** 建一个 Agent 会话。状态落空闲、用量五格落 0。 */
+  /**
+   * 建一个 Agent 会话。状态落空闲、用量五格落 0。
+   *
+   * `baselines` 是这个会话每个仓库开在哪个 commit(issue #352):建会话那一刻就定下来,
+   * 工作树按它检出。系统开的梳理不给,首次备树时才知道停在哪(issue #351)。
+   */
   createAgentSession(record: {
     productId: number;
     createdBy: string;
     purpose: AgentSessionPurpose;
     createdAt: string;
+    baselines?: readonly AgentSessionBaseline[];
   }): AgentSessionRecord;
   /**
-   * 记下这个会话每个仓库开在哪个 commit(issue #351)。备工作树那一刻调它;整列替换,
-   * 会话重建后备的是同一批仓库的当前 head,面板显示的因此始终是 agent 此刻读的那一份。
+   * 记下这个会话每个仓库开在哪个 commit(issue #351)。备工作树那一刻调它;整列替换。
+   * 建会话时已经记过的那一份原样留住(issue #352):空闲回收后重备停在同一个 commit 上,
+   * 面板显示的与 agent 读的因此始终是同一份。
    */
   setAgentSessionBaselines(sessionId: number, baselines: readonly AgentSessionBaseline[]): void;
   /** 删一个 Agent 会话,记录、受理过的客户端消息 id 与图片行一并删掉。没有这一条即 false。 */
@@ -5579,15 +5588,27 @@ export function openStore(dbPath: string): Store {
     },
 
     createAgentSession(record) {
+      // 建会话时人已经按仓库选好了基点(issue #352):那一份跟着 INSERT 一起落下,工作树
+      // 按它检出。不给即这一刻还不知道停在哪(系统开的梳理),首次备树时再写。
+      const baselines = record.baselines ?? [];
       const result = db
         .prepare(
-          `INSERT INTO agent_session (product_id, created_by, purpose, status, created_at)
-             VALUES (?, ?, ?, 'idle', ?)`,
+          `INSERT INTO agent_session (product_id, created_by, purpose, status, created_at, baselines)
+             VALUES (?, ?, ?, 'idle', ?, ?)`,
         )
-        .run(record.productId, record.createdBy, record.purpose, record.createdAt);
+        .run(
+          record.productId,
+          record.createdBy,
+          record.purpose,
+          record.createdAt,
+          JSON.stringify(baselines),
+        );
       return {
         id: Number(result.lastInsertRowid),
-        ...record,
+        productId: record.productId,
+        createdBy: record.createdBy,
+        purpose: record.purpose,
+        createdAt: record.createdAt,
         status: "idle",
         usage: {
           inputTokens: 0,
@@ -5596,8 +5617,7 @@ export function openStore(dbPath: string): Store {
           cacheWriteTokens: 0,
           totalTokens: 0,
         },
-        // 备工作树时才知道开在哪个 commit(issue #351):建出来的这一刻还是空的。
-        baselines: [],
+        baselines: [...baselines],
       };
     },
 

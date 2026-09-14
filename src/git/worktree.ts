@@ -501,6 +501,33 @@ export async function ensureWorktree(options: RepoReadOptions): Promise<void> {
 }
 
 /**
+ * 哪条分支是这个仓库生效的默认分支(CONTEXT.md 默认分支,ADR 0033):设过就是它,没设
+ * 即 Gitea 的默认分支。这个 `??` 只写在这一处——调用方要说出「读的是哪条分支」而又不必
+ * 读它的 head 时(建会话里人已经选了 commit 的那一行,issue #352)取的也是这一份。
+ */
+export function effectiveDefaultBranch(
+  repository: { defaultBranch: string },
+  configuredDefaultBranch: string | null,
+): string {
+  return configuredDefaultBranch ?? repository.defaultBranch;
+}
+
+/**
+ * 在缓存 clone 里解析一个 revision(issue #352)。解析不出来回 undefined——人选的那个
+ * commit 不在这个仓库里不是异常,是要当场告诉他的一句话。
+ *
+ * 先同步一次远端:人刚推上去的 commit 在上一次准备时的副本里还不存在。
+ */
+export async function resolveRepoCommit(
+  target: RepoReadOptions,
+  revision: string,
+): Promise<string | undefined> {
+  const path = repoCachePath(target.cacheDir, target.ref);
+  await ensureClone(path, target.cloneUrl, authArgs(target.cloneUrl, target.credentials));
+  return resolveCommit(path, revision);
+}
+
+/**
  * 生效的默认分支当前 head(issue #294、#350)。与 commit 选择器读的是同一份缓存 clone、
  * 同一条读取路径。人工提议、处置反哺与 Agent 会话的工作树(issue #333)都从这一处取
  * 「最新代码」——**只有这一处**(ADR 0033)。
@@ -517,7 +544,7 @@ export async function defaultBranchHead(
   /** 这个仓库设置的默认分支,null 即跟随 Gitea 的默认分支。 */
   configuredDefaultBranch: string | null,
 ): Promise<{ branch: string; sha: string }> {
-  const branch = configuredDefaultBranch ?? repository.defaultBranch;
+  const branch = effectiveDefaultBranch(repository, configuredDefaultBranch);
   // 先同步一次远端:要的是这条分支此刻的 head,而本地副本里的 `origin/<分支>` 可能是上一次
   // 准备时的快照——那样既读不到刚推上去的提交,也看不出这条分支已经被删掉了。
   await ensureClone(
