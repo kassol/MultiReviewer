@@ -342,6 +342,8 @@ export function ProductsPage({
       {/*
         左栏与会话页是同一个组件、同一个位置(spec #349)。产品页整页在 `#panel-main-scroll`
         里滚,左栏因此 sticky 在顶栏之下自己滚:跳到会话页时它停在同一处,不跟着主区走。
+        `lg` 以下左栏让出自己的盒子,它那三张卡与这一列主区同为这个 flex 容器的直接子项,靠
+        `max-lg:order-*` 排成 产品列表 → 概览 + 产品知识 → 仓库 → 我的会话。
       */}
       <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:gap-[18px]">
         <ProductRail
@@ -352,7 +354,7 @@ export function ProductsPage({
           onFeedback={setFeedback}
           className="lg:sticky lg:top-[88px] lg:max-h-[calc(100vh-112px)] lg:self-start lg:overflow-y-auto lg:overscroll-y-contain"
         />
-        <div className="flex min-w-0 flex-1 flex-col gap-3">
+        <div className="flex min-w-0 flex-1 flex-col gap-3 max-lg:order-2">
           {productsQuery.isPending ? (
             <div className="flex flex-col gap-3" role="status" aria-label="正在读取产品" aria-busy="true">
               <Skeleton aria-hidden className="h-28" />

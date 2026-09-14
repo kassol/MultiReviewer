@@ -255,10 +255,16 @@ export function ProductRail({
 
   return (
     <>
+      {/*
+        `lg` 以下这个 `aside` 让出自己的盒子(`contents`),三张卡因此与调用页的主列成为同一个
+        flex 容器的直接子项,由各自的 `max-lg:order-*` 排成 产品列表 → 主列 → 仓库 → 我的会话
+        ——手机上先选产品、再看它是什么,仓库与会话排在后面。`lg` 起它恢复成 264px 的一列。
+      */}
       <aside
         aria-label="产品、仓库与我的会话"
-        className={cn("flex w-full shrink-0 flex-col gap-2.5 lg:w-[264px]", className)}
+        className={cn("flex w-full shrink-0 flex-col gap-2.5 max-lg:contents lg:w-[264px]", className)}
       >
+        <div className="min-w-0 max-lg:order-1">
         <RailCard
           title="产品"
           {...(productsQuery.isPending ? {} : { count: products.length })}
@@ -304,9 +310,11 @@ export function ProductRail({
             </ul>
           )}
         </RailCard>
+        </div>
 
         {current === undefined ? null : (
           <>
+            <div className="min-w-0 max-lg:order-3">
             <RailCard
               title={`${current.name} 的仓库`}
               action={
@@ -374,7 +382,9 @@ export function ProductRail({
                 </ul>
               )}
             </RailCard>
+            </div>
 
+            <div className="min-w-0 max-lg:order-4">
             <SessionRail
               productId={current.id}
               sessions={sessions}
@@ -384,6 +394,7 @@ export function ProductRail({
               busy={working}
               onCreate={() => openDialog("session")}
             />
+            </div>
           </>
         )}
       </aside>
