@@ -17,20 +17,40 @@ COPY web ./web
 RUN pnpm --filter @multireviewer/web build \
  && rm -rf "$(pnpm store path)" /root/.cache /root/.npm
 
+# ── fd ───────────────────────────────────────────────────────────────────
+# Pi 的 find 工具 spawn fd 时固定带 `--no-require-git`,那是 fd 9.0 加的参数;Debian
+# bookworm 的 fd-find 是 8.6,每次调用都以 unexpected argument 失败。这里从 fd 的
+# release 取一份静态 musl 二进制,版本钉死,按目标架构选包(交叉构建 amd64 时 dpkg
+# 报的是目标架构)。
+FROM node:24-slim AS fd
+ARG FD_VERSION=10.5.0
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && case "$(dpkg --print-architecture)" in \
+      amd64) triple=x86_64-unknown-linux-musl ;; \
+      arm64) triple=aarch64-unknown-linux-musl ;; \
+      *) echo "unsupported architecture" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL "https://github.com/sharkdp/fd/releases/download/v${FD_VERSION}/fd-v${FD_VERSION}-${triple}.tar.gz" \
+    | tar -xz -C /tmp \
+ && install -m 0755 "/tmp/fd-v${FD_VERSION}-${triple}/fd" /usr/local/bin/fd \
+ && /usr/local/bin/fd --version
+
 # ── 运行镜像 ─────────────────────────────────────────────────────────────
 FROM node:24-slim
 
 # 工作副本靠 git 命令准备(`src/git/worktree.ts` 直接 execFile "git"),基础镜像里没有
 # 它。ca-certificates 是访问 Gitea 与各家模型 HTTPS 接口所需。
 #
-# ripgrep 与 fd-find 供 Reviewer 的 grep / find 工具用。缺了这两个二进制,Pi 会先去
+# ripgrep 与 fd 供 Reviewer 的 grep / find 工具用。缺了这两个二进制,Pi 会先去
 # GitHub 下载,容器里下不动就各卡满 120 秒的超时再报 could not be downloaded,一轮
-# Review Run 白等约 4 分钟。Debian 的 fd 装出来叫 `fdfind`,Pi 的工具查找按
-# ["fd", "fdfind"] 两个名字依次探测(pi-coding-agent 的 utils/tools-manager.js),
-# 命中 `fdfind` 就直接拿它 spawn,不用另做 `fd` 软链。
+# Review Run 白等约 4 分钟。Pi 的工具查找按 ["fd", "fdfind"] 两个名字依次探测
+# (pi-coding-agent 的 utils/tools-manager.js),`/usr/local/bin/fd` 从上面那一层拷来。
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates ripgrep fd-find \
+ && apt-get install -y --no-install-recommends git ca-certificates ripgrep \
  && rm -rf /var/lib/apt/lists/*
+COPY --from=fd /usr/local/bin/fd /usr/local/bin/fd
 
 # 版本钉死到产出 pnpm-lock.yaml 的那一个,免得 lockfile 版本对不上。
 RUN npm install -g pnpm@11.21.0 \
