@@ -1,8 +1,22 @@
 import type { ComponentProps } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { MermaidDiagram } from "@/components/mermaid-diagram";
 import { cn } from "@/lib/utils";
+
+/** 代码围栏的外壳样式。mermaid 渲染失败时退回的原代码块与「源码」折叠都复用同一份。 */
+const FENCE = "my-2 overflow-x-auto rounded-lg border border-line bg-sunken p-3 font-mono text-xs first:mt-0 last:mb-0";
+
+/** ```mermaid 围栏的源码;其余围栏返回 null,照旧当代码块渲染。 */
+function mermaidSource(node: ExtraProps["node"]): string | null {
+  const fence = node?.children[0];
+  if (fence === undefined || fence.type !== "element" || fence.tagName !== "code") return null;
+  const names = fence.properties["className"];
+  if (!Array.isArray(names) || !names.includes("language-mermaid")) return null;
+  const text = fence.children[0];
+  return text === undefined || text.type !== "text" ? null : text.value;
+}
 
 /**
  * agent 回复的 Markdown 渲染(spec #329 的会话页)。模型交出来的正文带标题、列表、代码块与
@@ -53,15 +67,11 @@ const COMPONENTS: Components = {
   hr: ({ node: _node, className, ...props }) => (
     <hr {...props} className={cn("my-3 border-line", className)} />
   ),
-  pre: ({ node: _node, className, ...props }) => (
-    <pre
-      {...props}
-      className={cn(
-        "my-2 overflow-x-auto rounded-lg border border-line bg-sunken p-3 font-mono text-xs first:mt-0 last:mb-0",
-        className,
-      )}
-    />
-  ),
+  pre: ({ node, className, ...props }) => {
+    const fence = <pre {...props} className={cn(FENCE, className)} />;
+    const source = mermaidSource(node);
+    return source === null ? fence : <MermaidDiagram code={source} source={fence} />;
+  },
   // 行内 code 套灰底;围栏里的 code 已经由 pre 画底,不再套一层。
   code: ({ node: _node, className, ...props }: ComponentProps<"code"> & { node?: unknown }) => {
     const fenced = typeof className === "string" && className.startsWith("language-");
