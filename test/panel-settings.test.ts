@@ -631,6 +631,7 @@ test("全局组合与每仓库覆盖都拒绝新的空组合", async () => {
     reviewers: [],
     auxiliaryModel: null,
     minReportSeverity: null,
+    defaultBranch: null,
     expectedVersion: 0,
   });
   assert.equal(override.status, 400);
@@ -790,6 +791,7 @@ test("思考档位随模型组合与仓库覆盖一起读写,取值不认得或�
       reviewers: [{ provider: "test", model: "second-model", thinkingLevel: "low" }],
       auxiliaryModel: null,
       minReportSeverity: null,
+      defaultBranch: null,
       expectedVersion: 0,
     })).status,
     200,

@@ -501,22 +501,34 @@ export async function ensureWorktree(options: RepoReadOptions): Promise<void> {
 }
 
 /**
- * 默认分支当前 head(issue #294)。与 commit 选择器读的是同一份缓存 clone、同一条读取路径。
- * 人工提议、处置反哺与 Agent 会话的工作树(issue #333)都从这一处取「最新」。
+ * 生效的默认分支当前 head(issue #294、#350)。与 commit 选择器读的是同一份缓存 clone、
+ * 同一条读取路径。人工提议、处置反哺与 Agent 会话的工作树(issue #333)都从这一处取
+ * 「最新代码」——**只有这一处**(ADR 0033)。
+ *
+ * 生效的默认分支:仓库设置了默认分支就是它,没设即 Gitea 的默认分支(CONTEXT.md 默认
+ * 分支)。设的那条分支在远端已经没有了就抛,不静默回落到 Gitea 那一条——人设过它,读
+ * 另一条分支的代码等于把别处的代码说成他要的那一份。
  */
 export async function defaultBranchHead(
   target: RepoReadOptions,
   repository: { defaultBranch: string },
+  /** 这个仓库设置的默认分支,null 即跟随 Gitea 的默认分支。 */
+  configuredDefaultBranch: string | null,
 ): Promise<string> {
-  const listed = await listBranchCommits({
-    ...target,
-    branch: repository.defaultBranch,
-    offset: 0,
-    limit: 1,
-  });
+  const branch = configuredDefaultBranch ?? repository.defaultBranch;
+  // 先同步一次远端:要的是这条分支此刻的 head,而本地副本里的 `origin/<分支>` 可能是上一次
+  // 准备时的快照——那样既读不到刚推上去的提交,也看不出这条分支已经被删掉了。
+  await ensureClone(
+    repoCachePath(target.cacheDir, target.ref),
+    target.cloneUrl,
+    authArgs(target.cloneUrl, target.credentials),
+  );
+  const listed = await listBranchCommits({ ...target, branch, offset: 0, limit: 1 });
   const head = listed.ok ? listed.commits[0]?.sha : undefined;
   if (head === undefined) {
-    throw new Error(`读不到默认分支 ${repository.defaultBranch} 的当前 head`);
+    throw new Error(
+      `读不到 ${target.ref.owner}/${target.ref.repo} 默认分支 ${branch} 的当前 head`,
+    );
   }
   return head;
 }

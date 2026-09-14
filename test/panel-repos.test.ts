@@ -181,6 +181,7 @@ type RepoSettingsRow = {
   reviewers: unknown;
   auxiliaryModel: unknown;
   minReportSeverity: unknown;
+  defaultBranch: unknown;
   globalMinReportSeverity: unknown;
   settingsVersion: number;
 };
@@ -192,6 +193,7 @@ const repoSettingsRow = async (h: PanelHarness): Promise<Omit<RepoSettingsRow, "
     reviewers: row.reviewers,
     auxiliaryModel: row.auxiliaryModel,
     minReportSeverity: row.minReportSeverity,
+    defaultBranch: row.defaultBranch,
     globalMinReportSeverity: row.globalMinReportSeverity,
     settingsVersion: row.settingsVersion,
   };
@@ -223,6 +225,7 @@ test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取�
     reviewers: null,
     auxiliaryModel: null,
     minReportSeverity: null,
+    defaultBranch: null,
     globalMinReportSeverity: "P2",
     settingsVersion: 0,
   });
@@ -235,6 +238,7 @@ test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取�
     reviewers: override,
     auxiliaryModel: null,
     minReportSeverity: "P1",
+    defaultBranch: null,
     expectedVersion: 0,
   });
   const savedBody = await saved.json();
@@ -244,6 +248,7 @@ test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取�
     reviewers: override,
     auxiliaryModel: null,
     minReportSeverity: "P1",
+    defaultBranch: null,
     globalMinReportSeverity: "P2",
     settingsVersion: 1,
   });
@@ -261,18 +266,30 @@ test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取�
     sqlite.close();
   }
 
-  // 坏取值整次拒绝:版本与两项原样不动。
+  // 坏取值整次拒绝:版本与两项原样不动。跟随全局那一份写在这里,逐例只换要试的那一格。
+  const follow = {
+    reviewers: null,
+    auxiliaryModel: null,
+    minReportSeverity: null,
+    defaultBranch: null,
+    expectedVersion: 1,
+  };
   for (
     const body of [
-      { reviewers: [{ provider: "x" }], auxiliaryModel: null, minReportSeverity: null, expectedVersion: 1 },
-      { reviewers: null, auxiliaryModel: null, minReportSeverity: "P3", expectedVersion: 1 },
-      { reviewers: null, auxiliaryModel: null, minReportSeverity: null, expectedVersion: "1" },
-      { reviewers: null, auxiliaryModel: null, expectedVersion: 1 },
-      { auxiliaryModel: null, minReportSeverity: null, expectedVersion: 1 },
-      // 三项必给:少了辅助模型那一项同样整次拒收。
-      { reviewers: null, minReportSeverity: null, expectedVersion: 1 },
+      { ...follow, reviewers: [{ provider: "x" }] },
+      { ...follow, minReportSeverity: "P3" },
+      { ...follow, expectedVersion: "1" },
+      { reviewers: null, auxiliaryModel: null, defaultBranch: null, expectedVersion: 1 },
+      { auxiliaryModel: null, minReportSeverity: null, defaultBranch: null, expectedVersion: 1 },
+      // 四项必给:少了辅助模型那一项同样整次拒收。
+      { reviewers: null, minReportSeverity: null, defaultBranch: null, expectedVersion: 1 },
+      // 默认分支那一项同律(issue #350)。
+      { reviewers: null, auxiliaryModel: null, minReportSeverity: null, expectedVersion: 1 },
       // 辅助模型是一处模型引用,不是列表。
-      { reviewers: null, auxiliaryModel: [], minReportSeverity: null, expectedVersion: 1 },
+      { ...follow, auxiliaryModel: [] },
+      // 默认分支要是一条分支名或 null,空白不算。
+      { ...follow, defaultBranch: "   " },
+      { ...follow, defaultBranch: 7 },
     ]
   ) {
     const rejected = await put(body);
@@ -282,6 +299,7 @@ test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取�
     reviewers: override,
     auxiliaryModel: null,
     minReportSeverity: "P1",
+    defaultBranch: null,
     globalMinReportSeverity: "P2",
     settingsVersion: 1,
   });
@@ -291,6 +309,7 @@ test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取�
     reviewers: null,
     auxiliaryModel: null,
     minReportSeverity: null,
+    defaultBranch: null,
     expectedVersion: 1,
   });
   assert.equal(cleared.status, 200);
@@ -298,6 +317,7 @@ test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取�
     reviewers: null,
     auxiliaryModel: null,
     minReportSeverity: null,
+    defaultBranch: null,
     globalMinReportSeverity: "P2",
     settingsVersion: 2,
   });
@@ -309,11 +329,92 @@ test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取�
         reviewers: null,
         auxiliaryModel: null,
         minReportSeverity: null,
+        defaultBranch: null,
         expectedVersion: 0,
       })
     ).status,
     404,
   );
+});
+
+test("默认分支:设成仓库真有的一条即读得回来,远端没有的那条整次不写", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const put = (body: unknown): Promise<Response> =>
+    h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, body);
+  const follow = { reviewers: null, auxiliaryModel: null, minReportSeverity: null };
+
+  // 刚注册即跟随 Gitea 的默认分支。
+  assert.equal((await repoSettingsRow(h)).defaultBranch, null);
+
+  // 夹具仓库真有 `feature` 这一条:收下,版本加一。
+  const saved = await put({ ...follow, defaultBranch: "feature", expectedVersion: 0 });
+  assert.equal(saved.status, 200, await saved.text());
+  assert.deepEqual(await repoSettingsRow(h), {
+    reviewers: null,
+    auxiliaryModel: null,
+    minReportSeverity: null,
+    defaultBranch: "feature",
+    globalMinReportSeverity: "P2",
+    settingsVersion: 1,
+  });
+
+  // 远端没有的那一条:400 说清是哪个仓库没有哪条分支,版本与四项一格不动。
+  const unknown = await put({ ...follow, defaultBranch: "release/9", expectedVersion: 1 });
+  assert.equal(unknown.status, 400);
+  assert.deepEqual(await unknown.json(), {
+    error: `${GITEA_REPO.owner}/${GITEA_REPO.repo} 没有分支 release/9,核对后再保存`,
+  });
+  assert.equal((await repoSettingsRow(h)).defaultBranch, "feature");
+  assert.equal((await repoSettingsRow(h)).settingsVersion, 1);
+
+  // 版本过期时回的那一份带上此刻的默认分支:面板据它换基线。
+  const stale = await put({ ...follow, defaultBranch: "main", expectedVersion: 0 });
+  assert.equal(stale.status, 409);
+  assert.deepEqual((await stale.json()) as unknown, {
+    error: "这个仓库的配置已经被其他人修改，请核对后再保存",
+    current: {
+      reviewers: null,
+      auxiliaryModel: null,
+      minReportSeverity: null,
+      defaultBranch: "feature",
+      settingsVersion: 1,
+    },
+  });
+
+  // 清成 null 即回到跟随 Gitea 的默认分支。
+  assert.equal((await put({ ...follow, defaultBranch: null, expectedVersion: 1 })).status, 200);
+  assert.equal((await repoSettingsRow(h)).defaultBranch, null);
+});
+
+test("升级前的旧库:开库补上默认分支那一列,每个仓库都读作跟随 Gitea 默认", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const follow = { reviewers: null, auxiliaryModel: null, minReportSeverity: null };
+  assert.equal(
+    (await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
+      ...follow,
+      defaultBranch: "feature",
+      expectedVersion: 0,
+    })).status,
+    200,
+  );
+
+  // 把库退回升级之前的样子:那时这一列还不存在。改名而不是 DROP——理由与 `product_repo`
+  // 那一处相同(建表语句里有中文注释,丢最后一列要重写它)。
+  const sqlite = new DatabaseSync(h.db.path);
+  sqlite.exec("ALTER TABLE repo RENAME COLUMN default_branch TO before_upgrade_default_branch");
+  sqlite.close();
+
+  // 下一次开库补列:注册行一条不少,默认分支是「跟随 Gitea 默认」。
+  assert.equal((await repoSettingsRow(h)).defaultBranch, null);
+  assert.equal(
+    (await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
+      ...follow,
+      defaultBranch: "feature",
+      expectedVersion: 1,
+    })).status,
+    200,
+  );
+  assert.equal((await repoSettingsRow(h)).defaultBranch, "feature");
 });
 
 test("仓库配置的期望版本过期即 409,响应带当前值", async () => {
@@ -329,6 +430,7 @@ test("仓库配置的期望版本过期即 409,响应带当前值", async () => 
       reviewers: override,
       auxiliaryModel: null,
       minReportSeverity: "P0",
+      defaultBranch: null,
       expectedVersion: 0,
     })).status,
     200,
@@ -339,6 +441,7 @@ test("仓库配置的期望版本过期即 409,响应带当前值", async () => 
     reviewers: null,
     auxiliaryModel: null,
     minReportSeverity: "P2",
+    defaultBranch: null,
     expectedVersion: 0,
   });
   assert.equal(stale.status, 409);
@@ -348,6 +451,7 @@ test("仓库配置的期望版本过期即 409,响应带当前值", async () => 
       reviewers: override,
       auxiliaryModel: null,
       minReportSeverity: "P0",
+      defaultBranch: null,
       settingsVersion: 1,
     },
   });
@@ -355,6 +459,7 @@ test("仓库配置的期望版本过期即 409,响应带当前值", async () => 
     reviewers: override,
     auxiliaryModel: null,
     minReportSeverity: "P0",
+    defaultBranch: null,
     globalMinReportSeverity: "P2",
     settingsVersion: 1,
   });
@@ -365,6 +470,7 @@ test("仓库配置的期望版本过期即 409,响应带当前值", async () => 
     reviewers: [{ provider: "test", model: "ghost" }],
     auxiliaryModel: null,
     minReportSeverity: "P2",
+    defaultBranch: null,
     expectedVersion: 0,
   });
   assert.equal(staleWithMissingModel.status, 409);
@@ -374,6 +480,7 @@ test("仓库配置的期望版本过期即 409,响应带当前值", async () => 
       reviewers: override,
       auxiliaryModel: null,
       minReportSeverity: "P0",
+      defaultBranch: null,
       settingsVersion: 1,
     },
   });
@@ -400,6 +507,7 @@ test("仓库覆盖里已有失效模型:只改等级与辅助模型照常保存,
     reviewers: stale,
     auxiliaryModel: auxiliary,
     minReportSeverity: "P1",
+    defaultBranch: null,
     expectedVersion: 0,
   });
   assert.equal(kept.status, 200, await kept.text());
@@ -407,6 +515,7 @@ test("仓库覆盖里已有失效模型:只改等级与辅助模型照常保存,
     reviewers: stale,
     auxiliaryModel: auxiliary,
     minReportSeverity: "P1",
+    defaultBranch: null,
     globalMinReportSeverity: "P2",
     settingsVersion: 1,
   });
@@ -416,6 +525,7 @@ test("仓库覆盖里已有失效模型:只改等级与辅助模型照常保存,
     reviewers: [...stale, { provider: "test", model: "global-model" }],
     auxiliaryModel: auxiliary,
     minReportSeverity: "P0",
+    defaultBranch: null,
     expectedVersion: 1,
   });
   assert.equal(changed.status, 400);
@@ -426,6 +536,7 @@ test("仓库覆盖里已有失效模型:只改等级与辅助模型照常保存,
     reviewers: stale,
     auxiliaryModel: { provider: "vanished-service", model: "missing" },
     minReportSeverity: "P1",
+    defaultBranch: null,
     expectedVersion: 1,
   });
   assert.equal(badAuxiliary.status, 400);
@@ -434,6 +545,7 @@ test("仓库覆盖里已有失效模型:只改等级与辅助模型照常保存,
     reviewers: stale,
     auxiliaryModel: auxiliary,
     minReportSeverity: "P1",
+    defaultBranch: null,
     globalMinReportSeverity: "P2",
     settingsVersion: 1,
   });
@@ -449,6 +561,7 @@ test("仓库辅助模型的档位判据与全局同一套:模型不支持的那�
     reviewers: null,
     auxiliaryModel: { provider: "test", model: "global-model", thinkingLevel: "high" },
     minReportSeverity: "P1",
+    defaultBranch: null,
     expectedVersion: 0,
   });
   assert.equal(level.status, 400);
@@ -457,6 +570,7 @@ test("仓库辅助模型的档位判据与全局同一套:模型不支持的那�
     reviewers: null,
     auxiliaryModel: null,
     minReportSeverity: null,
+    defaultBranch: null,
     globalMinReportSeverity: "P2",
     settingsVersion: 0,
   }, "被拒的那一次一项都不写");
@@ -466,6 +580,7 @@ test("仓库辅助模型的档位判据与全局同一套:模型不支持的那�
     reviewers: null,
     auxiliaryModel: { provider: "test", model: "global-model" },
     minReportSeverity: null,
+    defaultBranch: null,
     expectedVersion: 0,
   });
   assert.equal(off.status, 200, await off.text());
@@ -510,6 +625,7 @@ test("辅助模型三级解析:仓库覆盖 ?? 全局 ?? 生效组合第一个,�
       reviewers: override,
       auxiliaryModel: null,
       minReportSeverity: null,
+      defaultBranch: null,
       expectedVersion: 0,
     })).status,
     200,
@@ -554,6 +670,7 @@ test("辅助模型三级解析:仓库覆盖 ?? 全局 ?? 生效组合第一个,�
       reviewers: override,
       auxiliaryModel: { provider: "test", model: "swapped-model" },
       minReportSeverity: null,
+      defaultBranch: null,
       expectedVersion: 1,
     })).status,
     200,
@@ -620,6 +737,7 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
     reviewers: selected,
     auxiliaryModel: null,
     minReportSeverity: null,
+    defaultBranch: null,
     expectedVersion: 0,
   });
   assert.equal(blocked.status, 400);
@@ -629,6 +747,7 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
     reviewers: [selected[0]],
     auxiliaryModel: null,
     minReportSeverity: null,
+    defaultBranch: null,
     expectedVersion: 0,
   });
   assert.equal(saved.status, 200);
@@ -647,6 +766,7 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
         reviewers: null,
         auxiliaryModel: null,
         minReportSeverity: null,
+        defaultBranch: null,
         expectedVersion: 1,
       })
     ).status,

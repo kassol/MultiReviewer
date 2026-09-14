@@ -34,6 +34,7 @@ function putRepoReviewers(store: Store, repoId: number, reviewersJson: string | 
     reviewersJson,
     auxiliaryModelJson: repo.auxiliaryModelJson,
     minReportSeverity: repo.minReportSeverity,
+    defaultBranch: repo.defaultBranch,
   }).ok;
 }
 

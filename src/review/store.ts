@@ -404,6 +404,8 @@ CREATE TABLE IF NOT EXISTS repo (
   auxiliary_model TEXT,
   -- 这个仓库自己的最低报告等级覆盖(CONTEXT.md 最低报告等级,issue #273)。NULL 即跟随全局。
   min_report_severity TEXT,
+  -- 这个仓库的默认分支(CONTEXT.md 默认分支,issue #350)。NULL 即跟随 Gitea 的默认分支。
+  default_branch TEXT,
   -- 仓库配置的整块版本号(issue #302):模型覆盖与最低报告等级一次写完,版本随之加一。
   -- 从 0 起,配置一次都没经这个端点写过的仓库因此是 0。
   settings_version INTEGER NOT NULL DEFAULT 0
@@ -1099,6 +1101,8 @@ const ADDED_COLUMNS: readonly { table: string; column: string; backfill?: string
   { table: "agent_session_pending_message", column: "images TEXT" },
   // 仓库职责(issue #341):可空,补完即「这些仓库还没写职责」,与此前的行为一致。
   { table: "product_repo", column: "role TEXT" },
+  // 默认分支(issue #350):可空,补完即「每个仓库都跟随 Gitea 的默认分支」,与此前的行为一致。
+  { table: "repo", column: "default_branch TEXT" },
 ];
 
 /**
@@ -1910,7 +1914,8 @@ export type GlobalSettings = GlobalSettingsValues & {
 /**
  * 注册表里的一个仓库。`reviewersJson` 是模型覆盖的 JSON,`auxiliaryModelJson` 是辅助模型
  * 覆盖的 JSON(issue #303),`minReportSeverity` 是最低报告等级的覆盖(issue #273),三者
- * 都是 null 即跟随全局。`settingsVersion` 是这三项的整块版本号(issue #302),每经
+ * 都是 null 即跟随全局;`defaultBranch` 是这个仓库的默认分支(issue #350),null 即跟随
+ * Gitea 的默认分支。`settingsVersion` 是这四项的整块版本号(issue #302),每经
  * `putRepoSettings` 写一次加一。
  */
 export type RepoRecord = {
@@ -1920,6 +1925,7 @@ export type RepoRecord = {
   reviewersJson: string | null;
   auxiliaryModelJson: string | null;
   minReportSeverity: Severity | null;
+  defaultBranch: string | null;
   settingsVersion: number;
 };
 
@@ -1970,7 +1976,9 @@ export type RepoSummary = {
   auxiliaryModelJson: string | null;
   /** 最低报告等级的覆盖(issue #273),null 即跟随全局。 */
   minReportSeverity: Severity | null;
-  /** 这三项配置的整块版本号(issue #302、#303)。面板保存时原样回传作期望版本。 */
+  /** 这个仓库的默认分支(CONTEXT.md 默认分支,issue #350),null 即跟随 Gitea 的默认分支。 */
+  defaultBranch: string | null;
+  /** 这四项配置的整块版本号(issue #302、#303、#350)。面板保存时原样回传作期望版本。 */
   settingsVersion: number;
   /** 累计 Review Run 数。按注册时的 owner/repo 匹配评审记录。 */
   runCount: number;
@@ -3050,8 +3058,9 @@ export type Store = {
   listRepoKeys(repoId: number): RepoKey[];
   getRepo(repoId: number): RepoRecord | undefined;
   /**
-   * 整块改写这个仓库的配置(issue #302、#303):模型覆盖、辅助模型覆盖与最低报告等级在
-   * 一笔事务里全量替换,期望版本对得上才写,写成即版本加一。三项都是 null 即跟随全局。
+   * 整块改写这个仓库的配置(issue #302、#303、#350):模型覆盖、辅助模型覆盖、最低报告等级
+   * 与默认分支在一笔事务里全量替换,期望版本对得上才写,写成即版本加一。前三项是 null 即
+   * 跟随全局,默认分支是 null 即跟随 Gitea 的默认分支。
    */
   putRepoSettings(
     repoId: number,
@@ -3060,6 +3069,7 @@ export type Store = {
       reviewersJson: string | null;
       auxiliaryModelJson: string | null;
       minReportSeverity: Severity | null;
+      defaultBranch: string | null;
     },
   ): RepoSettingsWrite;
   /**
@@ -5186,7 +5196,7 @@ export function openStore(dbPath: string): Store {
       const row = db
         .prepare(
           `SELECT id, owner, repo, reviewers, auxiliary_model, min_report_severity,
-                  settings_version
+                  default_branch, settings_version
              FROM repo WHERE id = ?`,
         )
         .get(repoId);
@@ -5201,6 +5211,7 @@ export function openStore(dbPath: string): Store {
         minReportSeverity: readMinReportSeverity(
           row["min_report_severity"] === null ? undefined : String(row["min_report_severity"]),
         ),
+        defaultBranch: row["default_branch"] === null ? null : String(row["default_branch"]),
         settingsVersion: Number(row["settings_version"]),
       };
     },
@@ -5261,12 +5272,13 @@ export function openStore(dbPath: string): Store {
         db.prepare(
           `UPDATE repo
               SET reviewers = ?, auxiliary_model = ?, min_report_severity = ?,
-                  settings_version = ?
+                  default_branch = ?, settings_version = ?
             WHERE id = ?`,
         ).run(
           settings.reviewersJson,
           settings.auxiliaryModelJson,
           settings.minReportSeverity,
+          settings.defaultBranch,
           version,
           repoId,
         );
@@ -5917,7 +5929,7 @@ export function openStore(dbPath: string): Store {
       const rows = db
         .prepare(
           `SELECT r.id, r.owner, r.repo, r.reviewers, r.auxiliary_model,
-                  r.min_report_severity, r.settings_version,
+                  r.min_report_severity, r.default_branch, r.settings_version,
                   r.worktree_state, r.worktree_failure, r.worktree_checked_at,
                   (SELECT COUNT(*) FROM review_run run
                     WHERE run.owner = r.owner AND run.repo = r.repo) AS run_count,
@@ -5939,6 +5951,7 @@ export function openStore(dbPath: string): Store {
         minReportSeverity: readMinReportSeverity(
           row["min_report_severity"] === null ? undefined : String(row["min_report_severity"]),
         ),
+        defaultBranch: row["default_branch"] === null ? null : String(row["default_branch"]),
         settingsVersion: Number(row["settings_version"]),
         runCount: Number(row["run_count"]),
         findingCount: Number(row["finding_count"]),

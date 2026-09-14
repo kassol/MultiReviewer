@@ -2148,6 +2148,7 @@ function setRepoMinReportSeverity(
         reviewersJson: repo.reviewersJson,
         auxiliaryModelJson: repo.auxiliaryModelJson,
         minReportSeverity: severity,
+        defaultBranch: repo.defaultBranch,
       }).ok,
       true,
     );

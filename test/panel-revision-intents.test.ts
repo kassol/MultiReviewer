@@ -212,6 +212,52 @@ test("无目标意图:agent 拿到意图与现集,产出入队并带人工提议
   );
 });
 
+test("设了默认分支的仓库:无目标意图读那条分支的 head", async () => {
+  const agent = scriptedRuleAgent(() => ({ items: [] }));
+  const h = await harnessWithRepo(agent);
+  // 夹具仓库的 Gitea 默认分支是 `main`(指向 `baseSha`),`feature` 指向 `headSha`。
+  const saved = await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
+    reviewers: null,
+    auxiliaryModel: null,
+    minReportSeverity: null,
+    defaultBranch: "feature",
+    expectedVersion: 0,
+  });
+  assert.equal(saved.status, 200, await saved.text());
+
+  await submitAndSettle(h);
+  assert.equal(h.revisionIntents[0]!.failure, undefined);
+  // 工作副本停在设置的那条分支的 head 上,不是 Gitea 默认分支那一端。
+  assert.equal(agent.calls[0]!.baselineSha, h.repo.headSha);
+});
+
+test("设的默认分支在远端已经没有了:这一次失败,原因说清是哪个仓库的哪条分支", async () => {
+  const agent = scriptedRuleAgent(() => ({ items: [] }));
+  const h = await harnessWithRepo(agent);
+  assert.equal(
+    (await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
+      reviewers: null,
+      auxiliaryModel: null,
+      minReportSeverity: null,
+      defaultBranch: "feature",
+      expectedVersion: 0,
+    })).status,
+    200,
+  );
+  // 设过之后有人在远端删掉了它。不静默回落到 Gitea 那一条:人设过这条分支。
+  h.repo.deleteBranch("feature");
+
+  const intentId = await submitAndSettle(h);
+  assert.notEqual(h.revisionIntents[0]!.failure, undefined);
+  const intent = (await ruleSet(h)).intents.find((row) => row.id === intentId)!;
+  assert.equal(intent.state, "failed");
+  assert.equal(
+    intent.failure,
+    `读不到 ${GITEA_REPO.owner}/${GITEA_REPO.repo} 默认分支 feature 的当前 head`,
+  );
+  assert.equal(agent.calls.length, 0, "读不到代码就不该起 agent");
+});
+
 test("agent 指名并入队列里已有的那一条:队列条数不变,附注多一条", async () => {
   let items: RuleAgentItem[] = [];
   const agent = scriptedRuleAgent(() => ({ items }));

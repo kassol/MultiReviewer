@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  GITEA_REPO,
   HARNESS_PR,
   startReadyPanelHarness,
   type PanelHarness,
@@ -91,6 +92,25 @@ test("列分支:标出默认分支,容器 PR 的机器人分支不出现", async
   assert.deepEqual(
     rows.filter((row) => row.isDefault).map((row) => row.name),
     ["main"],
+  );
+});
+
+test("列分支:仓库设了默认分支就标它,选择器因此开在这一条上", async () => {
+  const h = await registeredHarness();
+  const saved = await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
+    reviewers: null,
+    auxiliaryModel: null,
+    minReportSeverity: null,
+    defaultBranch: "feature",
+    expectedVersion: 0,
+  });
+  assert.equal(saved.status, 200, await saved.text());
+
+  // 生效的默认分支排在最前并带着标记,Gitea 那一条(`main`)不再是默认。
+  const rows = await branches(h);
+  assert.deepEqual(
+    rows.map((row) => [row.name, row.isDefault]),
+    [["feature", true], ["main", false]],
   );
 });
 

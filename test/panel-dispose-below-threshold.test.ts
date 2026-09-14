@@ -164,6 +164,7 @@ async function setThreshold(h: PanelHarness, severity: "P0" | "P1" | "P2" | null
     reviewers: row.reviewers,
     auxiliaryModel: row.auxiliaryModel,
     minReportSeverity: severity,
+    defaultBranch: null,
     expectedVersion: row.settingsVersion,
   });
   assert.equal(response.status, 200, await response.text());

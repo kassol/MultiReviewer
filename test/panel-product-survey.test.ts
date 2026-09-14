@@ -11,6 +11,9 @@
  * 职责那一次不开、移出先退役涉及那个仓库的条目再按剩下的仓库数开、梳理在跑时两边都不再开。
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import { openStore, type AgentSessionRecord } from "../src/review/store.ts";
@@ -278,6 +281,71 @@ test("归入第二个仓库自己开一场梳理:归入第一个不开,只改职
     const role = await h.api("PUT", `/products/${row.id}/repos/${ALPHA}`, { role: "网关" });
     assert.equal(role.status, 204);
     assert.deepEqual(await sessionsOf(h, row.id, h.cookie), []);
+  } finally {
+    await disposeAgentSessions();
+  }
+});
+
+/**
+ * 会话根下那棵工作树停在哪个 commit,按仓库给出(issue #350)。
+ *
+ * 看的是 git 自己给出的答案:一棵工作树连着它的 HEAD,agent 的工具看到的就是这一份。
+ * 备树在会话开起来之后的后台里跑,因此等到每个仓库都挂出一棵为止;**一遍读完全部仓库**
+ * ——备树按仓库名顺序进行,而这个会话开不起来(模型服务地址是假的)时几棵树一起释放,
+ * 分几遍读会让先备好的那一棵在读到它之前就被收掉。
+ */
+async function sessionWorktreeHeads(
+  h: PanelHarness,
+  refs: readonly { owner: string; repo: string }[],
+): Promise<string[]> {
+  const head = (ref: { owner: string; repo: string }): string | undefined => {
+    const clone = join(h.cacheDir, ref.owner, ref.repo);
+    // 缓存副本本身也是这一次备出来的:还没 clone 出来时当作还没挂树。
+    if (!existsSync(clone)) return undefined;
+    const listed = execFileSync("git", ["-C", clone, "worktree", "list", "--porcelain"], {
+      encoding: "utf8",
+    });
+    const lines = listed.split("\n");
+    const index = lines.findIndex((line) => line.includes("multireviewer-session-root-"));
+    if (index < 0) return undefined;
+    const line = lines[index + 1] ?? "";
+    assert.match(line, /^HEAD [0-9a-f]{40}$/, listed);
+    return line.slice("HEAD ".length);
+  };
+  for (let attempt = 0; attempt < 1200; attempt += 1) {
+    const heads = refs.map(head);
+    if (heads.every((one) => one !== undefined)) return heads as string[];
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return assert.fail("等了 30 秒,会话根下的工作树还没挂齐");
+}
+
+test("系统开的梳理:工作树停在这个仓库生效默认分支的 head 上", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  seedRepo(h, ALPHA, "acme", "alpha");
+  const created = await h.api("POST", "/products", { name: "报销系统" });
+  assert.equal(created.status, 201);
+  const { product: row } = (await created.json()) as { product: Product };
+  try {
+    // 第一个仓库不开梳理;趁这时把它的默认分支设成 `feature`(夹具的 Gitea 默认是 `main`,
+    // 指向 `baseSha`,`feature` 指向 `headSha`)。
+    assert.equal((await h.api("PUT", `/products/${row.id}/repos/${GITEA_REPO.id}`)).status, 204);
+    const saved = await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
+      reviewers: null,
+      auxiliaryModel: null,
+      minReportSeverity: null,
+      defaultBranch: "feature",
+      expectedVersion: 0,
+    });
+    assert.equal(saved.status, 200, await saved.text());
+
+    // 第二个仓库归入即由系统开一场梳理:设过默认分支的那个仓库读设置的那条分支的 head,
+    // 没设过的那个照旧跟随 Gitea 的默认分支。
+    assert.equal((await h.api("PUT", `/products/${row.id}/repos/${ALPHA}`)).status, 204);
+    assert.deepEqual(
+      await sessionWorktreeHeads(h, [{ owner: "acme", repo: "alpha" }, GITEA_REPO]),
+      [h.repo.baseSha, h.repo.headSha],
+    );
   } finally {
     await disposeAgentSessions();
   }

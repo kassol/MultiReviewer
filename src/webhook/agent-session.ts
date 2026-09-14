@@ -978,9 +978,19 @@ function answerKnowledgeQuery(
   child.send(result);
 }
 
+/** 这个仓库设置的默认分支(CONTEXT.md 默认分支,issue #350)。没设即 null。 */
+function configuredDefaultBranch(dbPath: string, repoId: number): string | null {
+  const store = openStore(dbPath);
+  try {
+    return store.getRepo(repoId)?.defaultBranch ?? null;
+  } finally {
+    store.close();
+  }
+}
+
 /**
- * 备好会话根:一个临时目录,下面按 `<owner>/<repo>` 各挂一棵一次性工作树,检出默认分支
- * 最新。位置即工具面的判据——路径前缀就是仓库,圈根就是圈这个目录。
+ * 备好会话根:一个临时目录,下面按 `<owner>/<repo>` 各挂一棵一次性工作树,检出生效的默认
+ * 分支最新(issue #350)。位置即工具面的判据——路径前缀就是仓库,圈根就是圈这个目录。
  */
 async function prepareSessionRoot(
   deps: AgentSessionRuntimeDeps,
@@ -1002,7 +1012,11 @@ async function prepareSessionRoot(
       cloneUrl: repository.cloneUrl,
       credentials,
     };
-    const headSha = await defaultBranchHead(clone, repository);
+    const headSha = await defaultBranchHead(
+      clone,
+      repository,
+      configuredDefaultBranch(deps.dbPath, repo.repoId),
+    );
     const worktree = await prepareWorktree({
       ...clone,
       headSha,

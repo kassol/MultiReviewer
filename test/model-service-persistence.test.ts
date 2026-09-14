@@ -525,6 +525,7 @@ test("只被辅助模型引用的模型照样拦下删服务与摘唯一来源�
       reviewersJson: null,
       auxiliaryModelJson: auxiliary,
       minReportSeverity: null,
+      defaultBranch: null,
     }).ok,
     true,
   );
@@ -537,6 +538,7 @@ test("只被辅助模型引用的模型照样拦下删服务与摘唯一来源�
       reviewersJson: null,
       auxiliaryModelJson: null,
       minReportSeverity: null,
+      defaultBranch: null,
     }).ok,
     true,
   );
@@ -814,6 +816,7 @@ test("两个 Store handle 交错时组合写与服务来源删除互相原子阻
         reviewersJson: removedCombination,
         auxiliaryModelJson: null,
         minReportSeverity: null,
+        defaultBranch: null,
       }),
       { ok: false, reason: "unavailable" },
     );

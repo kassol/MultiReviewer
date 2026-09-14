@@ -3132,8 +3132,9 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "POST", pattern: /^\/range-reviews\/(\d+)\/complete$/, access: "review:complete", assignment: { by: "range-review", group: 1 }, handler: ({ res, deps, caller }, match) => handleCompleteRangeReview(res, deps, Number(match![1]), caller!.username) },
   // 每日增量的开关与人工推进同一格(issue #313):定时推进与人工推进的权限一致。
   { method: "PUT", pattern: /^\/range-reviews\/(\d+)\/daily-increment$/, access: "review:advance", assignment: { by: "range-review", group: 1 }, handler: ({ req, res, deps }, match) => handleSetDailyIncrement(req, res, deps, Number(match![1])) },
-  // 发起范围审查与发起基点探索都从这里选 commit(issue #205),两格任一即可读。
-  { method: "GET", pattern: "/repo-branches", access: { anyOf: ["review:create", "knowledge:write"] }, assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRepoBranches(req, res, deps) },
+  // 发起范围审查与发起基点探索都从这里选 commit(issue #205),两格任一即可读。分支列表另给
+  // `repo:write`(issue #350):设这个仓库默认分支的人要在配置弹窗里选得出一条真分支。
+  { method: "GET", pattern: "/repo-branches", access: { anyOf: ["review:create", "knowledge:write", "repo:write"] }, assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRepoBranches(req, res, deps) },
   { method: "GET", pattern: "/repo-commits", access: { anyOf: ["review:create", "knowledge:write"] }, assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRepoCommits(req, res, deps) },
   { method: "GET", pattern: "/repo-tags", access: { anyOf: ["review:create", "knowledge:write"] }, assignment: { by: "query" }, handler: ({ req, res, deps }) => handleRepoTags(req, res, deps) },
   { method: "GET", pattern: "/repos/search", access: "repo:write", handler: ({ req, res, deps, hookManager }) => handleRepoSearch(req, res, deps, hookManager) },
@@ -3350,6 +3351,9 @@ const BATCH_LIMIT_FIELDS = Object.keys(BATCH_LIMIT_DEFAULTS) as BatchLimitField[
 
 /** 最低报告等级那一格(issue #271)。与四项上限并列独立读写,取值是严重度。 */
 const MIN_REPORT_SEVERITY_FIELD = "minReportSeverity";
+
+/** 仓库配置里默认分支那一格(CONTEXT.md 默认分支,issue #350)。取值是分支名或 null。 */
+const DEFAULT_BRANCH_FIELD = "defaultBranch";
 
 /**
  * 审查策略读回来的整份对象(issue #301):模型组合、辅助模型、四项上限、最低报告等级与
@@ -6800,6 +6804,12 @@ type RepoGitTarget = {
   credentials: CloneCredentials;
 };
 
+/**
+ * commit 选择器读到的仓库:git 目标加这个仓库设置的默认分支(CONTEXT.md 默认分支,
+ * issue #350)。生效的默认分支是它 ?? Gitea 那一条,分支列表据此标默认。
+ */
+type PickerRepoTarget = RepoGitTarget & { configuredDefaultBranch: string | null };
+
 /** 读仓库的 clone 地址、默认分支与凭据。读不到就抛,由调用方决定回什么。 */
 async function repoGitTarget(forge: Forge, ref: RepoRef): Promise<RepoGitTarget> {
   const [repository, credentials] = await Promise.all([
@@ -6819,7 +6829,7 @@ async function resolveRepoGitTarget(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
-): Promise<RepoGitTarget | undefined> {
+): Promise<PickerRepoTarget | undefined> {
   const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
   const owner = query.get("owner");
   const repo = query.get("repo");
@@ -6827,10 +6837,10 @@ async function resolveRepoGitTarget(
     sendJson(res, 400, { error: "owner 与 repo 都要给" });
     return undefined;
   }
-  const registered = withStore(deps.dbPath, (store) => store.listRepos()).some(
+  const registered = withStore(deps.dbPath, (store) => store.listRepos()).find(
     (row) => row.owner === owner && row.repo === repo,
   );
-  if (!registered) {
+  if (registered === undefined) {
     sendJson(res, 409, { error: "仓库不在注册表里,先注册再读它的分支与提交" });
     return undefined;
   }
@@ -6840,7 +6850,8 @@ async function resolveRepoGitTarget(
     return undefined;
   }
   try {
-    return await repoGitTarget(forge, { owner, repo });
+    const target = await repoGitTarget(forge, { owner, repo });
+    return { ...target, configuredDefaultBranch: registered.defaultBranch };
   } catch (error) {
     sendJson(res, 502, { error: `读不到仓库或取不回代码:${failureText(error)}` });
     return undefined;
@@ -6882,11 +6893,14 @@ async function handleRepoBranches(
     const container: boolean = isContainerBranch(name);
     return !container;
   });
+  // 标的是**生效的默认分支**(issue #350):仓库设过就是它,没设即 Gitea 那一条。选择器
+  // 因此不必认识这个设置,开在哪条分支上由这一格决定。
+  const effectiveDefault = target.configuredDefaultBranch ?? target.defaultBranch;
   const matched = humanBranches
     .filter((name) => search === "" || (exact
       ? name.toLocaleLowerCase() === search
       : name.toLocaleLowerCase().includes(search)))
-    .map((name) => ({ name, isDefault: name === target.defaultBranch }))
+    .map((name) => ({ name, isDefault: name === effectiveDefault }))
     .sort((left, right) => {
       if (left.isDefault !== right.isDefault) return left.isDefault ? -1 : 1;
       return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
@@ -9053,10 +9067,15 @@ async function runRevisionIntentInBackground(
       cloneUrl: repository.cloneUrl,
       credentials,
     };
-    // 默认分支当前 head:与 commit 选择器读的是同一份缓存 clone、同一条读取路径。反哺
-    // 停在那条 Finding 报出时的 head——备注说的是那时的代码。
-    const head =
-      finding !== undefined ? finding.headSha : await defaultBranchHead(clone, repository);
+    // 生效的默认分支当前 head:与 commit 选择器读的是同一份缓存 clone、同一条读取路径
+    // (issue #350)。反哺停在那条 Finding 报出时的 head——备注说的是那时的代码。
+    const head = finding !== undefined
+      ? finding.headSha
+      : await defaultBranchHead(
+        clone,
+        repository,
+        withStore(deps.dbPath, (store) => store.getRepo(repoId)?.defaultBranch ?? null),
+      );
     worktree = await prepareWorktree({ ...clone, headSha: head, baseSha: head });
     const input = withStore(deps.dbPath, (store) => {
       const ruleSet = store.getRuleSet(repoId);
@@ -10021,10 +10040,11 @@ async function handleRemove(
 }
 
 /**
- * 整块改写这个仓库的配置(issue #302、#303):模型覆盖、辅助模型覆盖与最低报告等级一次
- * 写完,带整块版本号。三项都必须给、都是全量替换,null 即清除并跟随全局;清除永远可做,
- * 非空组合与辅助模型在落库前按当前模型服务投影重新校验,组合还在落库那一笔事务里再判
- * 一次——不能只信浏览器里的候选状态。
+ * 整块改写这个仓库的配置(issue #302、#303、#350):模型覆盖、辅助模型覆盖、最低报告等级
+ * 与默认分支一次写完,带整块版本号。四项都必须给、都是全量替换,前三项 null 即清除并跟随
+ * 全局、默认分支 null 即跟随 Gitea 那一条;清除永远可做,非空组合与辅助模型在落库前按当前
+ * 模型服务投影重新校验,组合还在落库那一笔事务里再判一次——不能只信浏览器里的候选状态。
+ * 默认分支换了才对照这个仓库此刻的分支列表核一次,不在就整次不写。
  *
  * 期望版本对不上即 409 并带上库里此刻的整份配置:面板据它换基线,人的草稿留在表单里。
  */
@@ -10047,12 +10067,13 @@ async function handleSetRepoSettings(
   if (
     !Object.hasOwn(payload, "reviewers") ||
     !Object.hasOwn(payload, "auxiliaryModel") ||
-    !Object.hasOwn(payload, MIN_REPORT_SEVERITY_FIELD)
+    !Object.hasOwn(payload, MIN_REPORT_SEVERITY_FIELD) ||
+    !Object.hasOwn(payload, DEFAULT_BRANCH_FIELD)
   ) {
     return sendJson(res, 400, {
       error:
-        `body 要带 reviewers、auxiliaryModel 与 ${MIN_REPORT_SEVERITY_FIELD} 三项,` +
-        "各是全量替换,null 即跟随全局",
+        `body 要带 reviewers、auxiliaryModel、${MIN_REPORT_SEVERITY_FIELD} 与 ` +
+        `${DEFAULT_BRANCH_FIELD} 四项,各是全量替换,null 即跟随全局`,
     });
   }
   if (
@@ -10100,11 +10121,45 @@ async function handleSetRepoSettings(
     });
   }
 
+  // 默认分支(CONTEXT.md 默认分支,issue #350):null 即跟随 Gitea 那一条,给了就必须是
+  // 这个仓库此刻真有的一条分支——远端没有的分支存进去,下一场产品梳理与下一次人工提议就
+  // 读不到代码。**换了才核**:分支被删之后只改模型的那一次不被它连坐,那条分支在被用到
+  // 时自己报错(`defaultBranchHead`)。
+  const branchField = payload[DEFAULT_BRANCH_FIELD];
+  if (branchField !== null && (typeof branchField !== "string" || branchField.trim() === "")) {
+    return sendJson(res, 400, {
+      error: `${DEFAULT_BRANCH_FIELD} 要是一条分支名,或 null(跟随 Gitea 的默认分支)`,
+    });
+  }
+  const defaultBranch = branchField === null ? null : (branchField as string).trim();
+  if (defaultBranch !== null && defaultBranch !== record.defaultBranch) {
+    const forge = deps.forges.gitea;
+    if (forge === undefined) {
+      return sendJson(res, 503, {
+        error: "gitea 没有配置 Forge,核不了这个仓库的分支列表",
+      });
+    }
+    const ref = { owner: record.owner, repo: record.repo };
+    let names: string[];
+    try {
+      const target = await repoGitTarget(forge, ref);
+      names = await listBranches({ cacheDir: deps.cacheDir, ...target });
+    } catch (error) {
+      return sendJson(res, 502, { error: `取不回仓库的分支:${failureText(error)}` });
+    }
+    if (!names.includes(defaultBranch)) {
+      return sendJson(res, 400, {
+        error: `${record.owner}/${record.repo} 没有分支 ${defaultBranch},核对后再保存`,
+      });
+    }
+  }
+
   const saved = withStore(deps.dbPath, (store) =>
     store.putRepoSettings(repoId, payload.expectedVersion as number, {
       reviewersJson,
       auxiliaryModelJson: auxiliary.json,
       minReportSeverity: severity as Severity | null,
+      defaultBranch,
     }),
   );
   if (saved.ok) return sendJson(res, 200, { settingsVersion: saved.version });
@@ -10119,13 +10174,14 @@ async function handleSetRepoSettings(
   return repoSettingsConflict(res, withStore(deps.dbPath, (store) => store.getRepo(repoId))!);
 }
 
-/** 版本对不上时回的那一份:库里此刻的三项配置与整块版本号,面板据它换基线而不丢草稿。 */
+/** 版本对不上时回的那一份:库里此刻的四项配置与整块版本号,面板据它换基线而不丢草稿。 */
 function repoSettingsConflict(
   res: ServerResponse,
   current: {
     reviewersJson: string | null;
     auxiliaryModelJson: string | null;
     minReportSeverity: Severity | null;
+    defaultBranch: string | null;
     settingsVersion: number;
   },
 ): void {
@@ -10136,6 +10192,7 @@ function repoSettingsConflict(
       auxiliaryModel:
         current.auxiliaryModelJson === null ? null : safeParse(current.auxiliaryModelJson),
       minReportSeverity: current.minReportSeverity,
+      defaultBranch: current.defaultBranch,
       settingsVersion: current.settingsVersion,
     },
   });

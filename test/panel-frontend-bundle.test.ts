@@ -61,6 +61,8 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
     assert.match(javascript, /产品知识/);
     // 提案的确认与驳回(issue #346):待确认的提案每行那两颗按钮的文案。
     assert.match(javascript, /已驳回一条提案/);
+    // 默认分支(issue #350):仓库配置弹窗里那个下拉的首项。
+    assert.match(javascript, /跟随 Gitea 默认/);
   } finally {
     rmSync(dist, { recursive: true, force: true });
   }

@@ -99,7 +99,9 @@ export type RepoRow = {
   minReportSeverity: MinReportSeverity | null;
   /** 眼下的全局最低报告等级。「跟随全局」跟的就是它,列表每行都带一份。 */
   globalMinReportSeverity: MinReportSeverity;
-  /** 模型覆盖与最低报告等级的整块版本号(issue #302)。保存时原样回传作期望版本。 */
+  /** 这个仓库的默认分支(issue #350),null 即跟随 Gitea 的默认分支。 */
+  defaultBranch: string | null;
+  /** 仓库配置的整块版本号(issue #302、#350)。保存时原样回传作期望版本。 */
   settingsVersion: number;
   runCount: number;
   findingCount: number;
@@ -393,18 +395,21 @@ export function RepoRowMenu({
   );
 }
 
-/** 弹窗里三项配置的草稿(issue #302、#303)。三项都是 null 即跟随全局。 */
+/** 弹窗里四项配置的草稿(issue #302、#303、#350)。前三项 null 即跟随全局。 */
 type RepoSettingsDraft = {
   models: ModelRef[] | null;
   auxiliary: ModelRef | null;
   minReportSeverity: MinReportSeverity | null;
+  /** 默认分支(issue #350),null 即跟随 Gitea 的默认分支。 */
+  defaultBranch: string | null;
 };
 
-/** 服务端此刻的这三项与它们的整块版本号:载入与 409 换基线都读它。 */
+/** 服务端此刻的这四项与它们的整块版本号:载入与 409 换基线都读它。 */
 type RepoSettingsSnapshot = {
   reviewers: ReviewerSpec[] | null;
   auxiliaryModel: ReviewerSpec | null;
   minReportSeverity: MinReportSeverity | null;
+  defaultBranch: string | null;
   settingsVersion: number;
 };
 
@@ -412,17 +417,28 @@ const draftOf = (snapshot: {
   reviewers: ReviewerSpec[] | null;
   auxiliaryModel: ReviewerSpec | null;
   minReportSeverity: MinReportSeverity | null;
+  defaultBranch: string | null;
 }): RepoSettingsDraft => ({
   models: snapshot.reviewers === null ? null : snapshot.reviewers.map(toModelRef),
   auxiliary: snapshot.auxiliaryModel === null ? null : toModelRef(snapshot.auxiliaryModel),
   minReportSeverity: snapshot.minReportSeverity,
+  defaultBranch: snapshot.defaultBranch,
 });
 
-/** 三项各按各的比:模型组合与辅助模型走与审查策略页同一份规则(`lib/model-ref.ts`)。 */
+/** 四项各按各的比:模型组合与辅助模型走与审查策略页同一份规则(`lib/model-ref.ts`)。 */
 const sameDraft = (a: RepoSettingsDraft, b: RepoSettingsDraft): boolean =>
   sameModelRefs(a.models, b.models) &&
   sameModelRef(a.auxiliary, b.auxiliary) &&
-  a.minReportSeverity === b.minReportSeverity;
+  a.minReportSeverity === b.minReportSeverity &&
+  a.defaultBranch === b.defaultBranch;
+
+/**
+ * 默认分支下拉里「跟随 Gitea 默认」那一项的值(issue #350)。
+ *
+ * Radix 的 `Select.Item` 不收空串,而这一项要表达的正是「没设」;带空格的值不可能是分支名
+ * (git 的 ref 名不许有空格),因此它与任何一条真分支都撞不上。
+ */
+const FOLLOW_GITEA_BRANCH = "follow gitea default";
 
 /** 一次保存的两种收场:写成了,或者被版本号拦下并带回服务端当前值。 */
 type SaveOutcome =
@@ -465,6 +481,17 @@ function ConfigureDialogContent({
   });
   // 生效辅助模型的只读投影(issue #303):解析在服务端那一处,弹窗不自己算一遍。
   const effectiveAuxiliary = useAuxiliaryModel(repo.repoId);
+  // 默认分支的候选(issue #350):与 commit 选择器读的是同一个端点,打开时同步一次远端,
+  // 人因此选得到刚推上去的分支。设过的那一条由服务端标成默认、排在最前。
+  const branches = useQuery({
+    queryKey: ["repo-branches", repo.owner, repo.repo],
+    queryFn: () =>
+      fetchJson<{ branches: { name: string }[] }>(
+        `/repo-branches?owner=${encodeURIComponent(repo.owner)}`
+        + `&repo=${encodeURIComponent(repo.repo)}&refresh=1`,
+      ),
+    refetchOnWindowFocus: false,
+  });
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   // 基线是服务端此刻那一份,草稿是人在表单里改出来的那一份;两者不等即有未保存改动。
   const [baseline, setBaseline] = useState<RepoSettingsDraft>(() => draftOf(repo));
@@ -517,6 +544,7 @@ function ConfigureDialogContent({
           reviewers: draft.models === null ? null : draft.models.map(fromModelRef),
           auxiliaryModel: draft.auxiliary === null ? null : fromModelRef(draft.auxiliary),
           minReportSeverity: draft.minReportSeverity,
+          defaultBranch: draft.defaultBranch,
           expectedVersion: version,
         }),
       });
@@ -568,6 +596,12 @@ function ConfigureDialogContent({
   // 只读那一档展示的是生效值:跟随态即全局那一份。
   const shownModels = draft.models ?? globalModels;
   const effectiveSeverity = draft.minReportSeverity ?? repo.globalMinReportSeverity;
+  // 候选里没有已选的那一条时(设过之后它在远端被删了)把它补在前面:下拉不该把一个存着的
+  // 设置显示成空白,而人要么换一条、要么改回跟随 Gitea。
+  const branchNames = branches.data?.branches.map((row) => row.name) ?? [];
+  const branchOptions = draft.defaultBranch !== null && !branchNames.includes(draft.defaultBranch)
+    ? [draft.defaultBranch, ...branchNames]
+    : branchNames;
   // 自定义态选空、或选中的组合含不可用模型时保存不了;跟随态与这两条无关。
   const modelsBlocked =
     draft.models !== null &&
@@ -849,6 +883,55 @@ function ConfigureDialogContent({
               ? "审查策略更新后，本仓库将同步使用新的最低报告等级。"
               : "该等级仅对本仓库生效，不随审查策略变化。"}
           </p>
+        </Section>
+
+        {/* 默认分支(CONTEXT.md 默认分支,issue #350):首项是「跟随 Gitea 默认」,其后是这个
+            仓库的真分支——人因此选不出一条不存在的分支。 */}
+        <Section
+          title={
+            <>
+              默认分支
+              <HelpTooltip
+                label="默认分支说明"
+                content="拿不到基准的 agent 流程读它的最新代码：系统开的产品梳理、无锚点的人工提议与修订意图；面板上的 commit 选择器也默认开在它上面。跟随 Gitea 默认即用仓库在 Gitea 上的默认分支。"
+              />
+            </>
+          }
+        >
+          <Select.Root
+            value={draft.defaultBranch ?? FOLLOW_GITEA_BRANCH}
+            disabled={save.isPending}
+            onValueChange={(next) => {
+              // 受控值刚换成一条真分支时 Radix 会回调一次空串,那不是人的选择。
+              if (next === "") return;
+              setDraft((current) => ({
+                ...current,
+                defaultBranch: next === FOLLOW_GITEA_BRANCH ? null : next,
+              }));
+            }}
+          >
+            <Select.Trigger
+              aria-label="本仓库的默认分支"
+              className="w-full max-sm:min-h-11 sm:w-auto"
+            />
+            <Select.Content>
+              <Select.Item value={FOLLOW_GITEA_BRANCH}>跟随 Gitea 默认</Select.Item>
+              {branchOptions.map((name) => (
+                <Select.Item key={name} value={name}>{name}</Select.Item>
+              ))}
+            </Select.Content>
+          </Select.Root>
+          {branches.isError ? (
+            <span className="text-base text-danger">
+              {(branches.error as Error).message}
+            </span>
+          ) : (
+            <p className="text-base text-text-muted">
+              {draft.defaultBranch === null
+                ? "跟随仓库在 Gitea 上的默认分支。"
+                : "保存后这个仓库的 agent 流程读这条分支的最新提交。"}
+            </p>
+          )}
         </Section>
 
         <Section
