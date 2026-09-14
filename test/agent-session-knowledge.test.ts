@@ -413,6 +413,13 @@ test("作用范围与查询 glob 的重叠判据:省略即全匹配,两个都给
   assert.equal(scopesOverlap("**/handler.ts", "src/api/*.ts"), true);
   assert.equal(scopesOverlap("src/*/handler.ts", "src/api/*.js"), false);
   assert.equal(scopesOverlap("src/*/handler.ts", "web/**"), false);
+  // `**` 粘在字面上:评审链路里它跨 `/`,`src/api/x.ts` 与 `src/x.ts` 都命中 `src/**.ts`。
+  assert.equal(scopesOverlap("src/**.ts", "src/api/x.ts"), true);
+  assert.equal(scopesOverlap("src/**.ts", "src/x.ts"), true);
+  assert.equal(scopesOverlap("**handler.ts", "src/api/handler.ts"), true);
+  assert.equal(scopesOverlap("src/api/**", "src/**.ts"), true);
+  assert.equal(scopesOverlap("src/**.ts", "src/api/x.js"), false);
+  assert.equal(scopesOverlap("src/**.ts", "web/**"), false);
   // 两边都对不上。
   assert.equal(scopesOverlap("src/finance/**", "web/**"), false);
   assert.equal(scopesOverlap("web/page.ts", "src/finance/rate.ts"), false);

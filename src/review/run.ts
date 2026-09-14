@@ -1709,11 +1709,35 @@ function scopePattern(scope: string): RegExp {
  * - 两个都给时按路径段逐段互判(`segmentsOverlap`):存在一条路径两边都命中即算重叠。
  *   `src/**` 与 `src/finance/**` 因此互相看得见,通配符落在不同段的两个 glob(`src/*` 接
  *   `/handler.ts`,与 `src/api/**`)也看得见——`src/api/handler.ts` 两边都命中;`web/**` 看不见它们。
+ *   `**` 粘在字面上的段(`src/**.ts`、`**handler.ts`)按 `globForms` 拆成两种读法再判。
  */
 export function scopesOverlap(scope: string, pathGlob: string | undefined): boolean {
   if (pathGlob === undefined || pathGlob === "") return true;
   if (scope === "") return true;
-  return segmentsOverlap(scope.split("/"), pathGlob.split("/"));
+  const right = globForms(pathGlob);
+  return globForms(scope).some((left) => right.some((form) => segmentsOverlap(left, form)));
+}
+
+/**
+ * 一个 glob 的路径段。`**` 粘在字面上的段(`scopePattern` 里它是 `.*`,能跨 `/`)有两种读法:
+ * 只占这一段(`src/**.ts` 命中 `src/x.ts`),或者展开成「前缀段 + `**` + 后缀段」
+ * (命中 `src/api/x.ts`);两种都列出来,存在一种重叠即算重叠。整段就是 `**` 的照旧一段。
+ */
+function globForms(glob: string): string[][] {
+  return glob.split("/").reduce<string[][]>(
+    (forms, segment) => {
+      const glued = segment !== "**" ? segment.indexOf("**") : -1;
+      // ponytail: 一段里多个 `**` 只拆第一个,余下的留给两段都带 `*` 即算重叠那条判宽规则。
+      const readings = glued === -1
+        ? [[segment]]
+        : [
+          [segment.replaceAll("**", "*")],
+          [`${segment.slice(0, glued)}*`, "**", `*${segment.slice(glued + 2)}`],
+        ];
+      return forms.flatMap((form) => readings.map((reading) => [...form, ...reading]));
+    },
+    [[]],
+  );
 }
 
 /**
