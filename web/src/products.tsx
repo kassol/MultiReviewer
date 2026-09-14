@@ -338,179 +338,10 @@ export function ProductsPage({
     setDialog(next);
   }
 
-  return (
-    <PageBody>
-      <PageHeader
-        title="产品"
-        actions={
-          canWrite ? (
-            <Button
-              variant="solid"
-              size={{ initial: "4", sm: "2" }}
-              onClick={() => openDialog("create")}
-            >
-              <PlusIcon aria-hidden />
-              建产品
-            </Button>
-          ) : undefined
-        }
-      />
-      {feedback === null ? null : (
-        <Callout.Root
-          role={feedback.error ? "alert" : "status"}
-          color={feedback.error ? "red" : "green"}
-          size="1"
-        >
-          <Callout.Icon>
-            {feedback.error ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
-          </Callout.Icon>
-          <Callout.Text>{feedback.text}</Callout.Text>
-        </Callout.Root>
-      )}
-      {loadError === null ? null : (
-        <Callout.Root role="alert" color="red" size="1">
-          <Callout.Icon>
-            <CrossCircledIcon aria-hidden />
-          </Callout.Icon>
-          <Callout.Text>{(loadError as Error).message}</Callout.Text>
-        </Callout.Root>
-      )}
-
-      {productsQuery.isPending ? (
-        <div className="flex flex-col gap-3" role="status" aria-label="正在读取产品" aria-busy="true">
-          <Skeleton aria-hidden className="h-28" />
-          <Skeleton aria-hidden className="h-56" />
-        </div>
-      ) : products.length === 0 ? (
-        <CardShell className="px-5 py-4">
-          <EmptyState
-            title="还没有产品"
-            titleAs="h2"
-            description={
-              canWrite
-                ? "把已注册的仓库归到一个产品下,Agent 会话就挂在它上面。"
-                : "产品的可见范围由仓库分配决定。请联系系统管理员为该账号分配负责的仓库。"
-            }
-            {...(canWrite
-              ? {
-                  action: (
-                    <Button variant="solid" size="2" onClick={() => openDialog("create")}>
-                      <PlusIcon aria-hidden />
-                      建产品
-                    </Button>
-                  ),
-                }
-              : {})}
-          />
-        </CardShell>
-      ) : (
-        <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:gap-[18px]">
-          <aside
-            aria-label="产品"
-            className="flex w-full shrink-0 flex-col gap-2.5 lg:w-[264px]"
-          >
-            <RailCard title="产品" count={products.length}>
-              <ul>
-                {products.map((product) => (
-                  <li key={product.id} className="border-t border-line first:border-t-0">
-                    <MasterListItem
-                      selected={selected?.id === product.id}
-                      className="block px-4 py-3 data-[selected=false]:font-medium"
-                      onClick={() => setSelectedId(product.id)}
-                    >
-                      <span className="block break-all text-lg">{product.name}</span>
-                      <MasterListItemText className="mt-px block text-sm font-normal">
-                        <span className="font-mono tabular-nums">{product.repos.length}</span> 个仓库
-                      </MasterListItemText>
-                    </MasterListItem>
-                  </li>
-                ))}
-              </ul>
-            </RailCard>
-
-            {selected === undefined ? null : (
-              <RailCard
-                title={`${selected.name} 的仓库`}
-                action={
-                  canWrite ? (
-                    <Button
-                      variant="soft"
-                      color="gray"
-                      size="1"
-                      disabled={busy}
-                      onClick={() => openDialog("attach")}
-                    >
-                      归属仓库
-                    </Button>
-                  ) : undefined
-                }
-              >
-                {selected.repos.length === 0 ? (
-                  <Text as="p" size="2" color="gray" className="px-4 pb-3">
-                    还没有归入仓库。
-                  </Text>
-                ) : (
-                  <ul>
-                    {selected.repos.map((repo) => (
-                      <li
-                        key={repo.repoId}
-                        className="flex items-start justify-between gap-2 border-t border-line px-4 py-2.5"
-                      >
-                        <div className="flex min-w-0 flex-1 flex-col gap-1">
-                          <span className="min-w-0 break-all font-mono text-base">
-                            {repoPath(repo)}
-                          </span>
-                          {canWrite ? (
-                            <RoleField
-                              repo={repo}
-                              busy={busy}
-                              onSave={(role) => {
-                                setFeedback(null);
-                                setRole.mutate({ product: selected, repo, role });
-                              }}
-                            />
-                          ) : repo.role === null ? null : (
-                            <Text as="span" size="1" color="gray" className="break-all">
-                              {repo.role}
-                            </Text>
-                          )}
-                        </div>
-                        {canWrite ? (
-                          <IconButton
-                            variant="ghost"
-                            color="gray"
-                            size={{ initial: "3", sm: "1" }}
-                            className="shrink-0 max-sm:min-h-11 max-sm:min-w-11"
-                            aria-label={`把 ${repoPath(repo)} 移出 ${selected.name}`}
-                            disabled={busy}
-                            onClick={() => {
-                              setFeedback(null);
-                              setDetaching(repo);
-                            }}
-                          >
-                            <Cross2Icon aria-hidden />
-                          </IconButton>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </RailCard>
-            )}
-
-            {selected === undefined ? null : (
-              <SessionRail
-                productId={selected.id}
-                sessions={sessions}
-                pending={sessionsQuery.isPending}
-                canChat={canChat}
-                onCreate={() => openDialog("session")}
-              />
-            )}
-          </aside>
-
-          <div className="flex min-w-0 flex-1 flex-col gap-3">
-            {selected === undefined ? null : (
+  /* 右列:概览卡与产品知识。抽出来是因为 grid 里它在 DOM 上排在两张侧栏卡之间。 */
+  const rightColumn = (
+    <>
+      {selected === undefined ? null : (
               <CardShell className="min-w-0 gap-1 px-5 py-4">
                 <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
                   <h2 className="min-w-0 break-all text-2xl font-bold tracking-[-0.015em]">
@@ -592,7 +423,184 @@ export function ProductsPage({
                 }}
               />
             )}
+    </>
+  );
+
+  return (
+    <PageBody>
+      <PageHeader
+        title="产品"
+        actions={
+          canWrite ? (
+            <Button
+              variant="solid"
+              size={{ initial: "4", sm: "2" }}
+              onClick={() => openDialog("create")}
+            >
+              <PlusIcon aria-hidden />
+              建产品
+            </Button>
+          ) : undefined
+        }
+      />
+      {feedback === null ? null : (
+        <Callout.Root
+          role={feedback.error ? "alert" : "status"}
+          color={feedback.error ? "red" : "green"}
+          size="1"
+        >
+          <Callout.Icon>
+            {feedback.error ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
+          </Callout.Icon>
+          <Callout.Text>{feedback.text}</Callout.Text>
+        </Callout.Root>
+      )}
+      {loadError === null ? null : (
+        <Callout.Root role="alert" color="red" size="1">
+          <Callout.Icon>
+            <CrossCircledIcon aria-hidden />
+          </Callout.Icon>
+          <Callout.Text>{(loadError as Error).message}</Callout.Text>
+        </Callout.Root>
+      )}
+
+      {productsQuery.isPending ? (
+        <div className="flex flex-col gap-3" role="status" aria-label="正在读取产品" aria-busy="true">
+          <Skeleton aria-hidden className="h-28" />
+          <Skeleton aria-hidden className="h-56" />
+        </div>
+      ) : products.length === 0 ? (
+        <CardShell className="px-5 py-4">
+          <EmptyState
+            title="还没有产品"
+            titleAs="h2"
+            description={
+              canWrite
+                ? "把已注册的仓库归到一个产品下,Agent 会话就挂在它上面。"
+                : "产品的可见范围由仓库分配决定。请联系系统管理员为该账号分配负责的仓库。"
+            }
+            {...(canWrite
+              ? {
+                  action: (
+                    <Button variant="solid" size="2" onClick={() => openDialog("create")}>
+                      <PlusIcon aria-hidden />
+                      建产品
+                    </Button>
+                  ),
+                }
+              : {})}
+          />
+        </CardShell>
+      ) : (
+        // 手机上概览与产品知识紧跟产品列表——先选产品,再看它是什么;仓库与会话排到后面。
+        // 桌面上三张侧栏卡仍在左列、右列跨两行,靠 grid 定位而不是 DOM 顺序。
+        <div className="grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-[264px_minmax(0,1fr)] lg:grid-rows-[auto_1fr] lg:gap-x-[18px] lg:gap-y-2.5">
+          <aside aria-label="产品" className="min-w-0 lg:col-start-1 lg:row-start-1">
+            <RailCard title="产品" count={products.length}>
+              <ul>
+                {products.map((product) => (
+                  <li key={product.id} className="border-t border-line first:border-t-0">
+                    <MasterListItem
+                      selected={selected?.id === product.id}
+                      className="block px-4 py-3 data-[selected=false]:font-medium"
+                      onClick={() => setSelectedId(product.id)}
+                    >
+                      <span className="block break-all text-lg">{product.name}</span>
+                      <MasterListItemText className="mt-px block text-sm font-normal">
+                        <span className="font-mono tabular-nums">{product.repos.length}</span> 个仓库
+                      </MasterListItemText>
+                    </MasterListItem>
+                  </li>
+                ))}
+              </ul>
+            </RailCard>
+          </aside>
+
+          <div className="flex min-w-0 flex-col gap-3 lg:col-start-2 lg:row-span-2 lg:row-start-1">
+            {rightColumn}
           </div>
+
+          {selected === undefined ? null : (
+            <aside
+              aria-label={`${selected.name} 的仓库与会话`}
+              className="flex min-w-0 flex-col gap-2.5 lg:col-start-1 lg:row-start-2"
+            >
+              <RailCard
+                title={`${selected.name} 的仓库`}
+                action={
+                  canWrite ? (
+                    <Button
+                      variant="soft"
+                      color="gray"
+                      size="1"
+                      disabled={busy}
+                      onClick={() => openDialog("attach")}
+                    >
+                      归属仓库
+                    </Button>
+                  ) : undefined
+                }
+              >
+                {selected.repos.length === 0 ? (
+                  <Text as="p" size="2" color="gray" className="px-4 pb-3">
+                    还没有归入仓库。
+                  </Text>
+                ) : (
+                  <ul>
+                    {selected.repos.map((repo) => (
+                      <li
+                        key={repo.repoId}
+                        className="flex items-start justify-between gap-2 border-t border-line px-4 py-2.5"
+                      >
+                        <div className="flex min-w-0 flex-1 flex-col gap-1">
+                          <span className="min-w-0 break-all font-mono text-base">
+                            {repoPath(repo)}
+                          </span>
+                          {canWrite ? (
+                            <RoleField
+                              repo={repo}
+                              busy={busy}
+                              onSave={(role) => {
+                                setFeedback(null);
+                                setRole.mutate({ product: selected, repo, role });
+                              }}
+                            />
+                          ) : repo.role === null ? null : (
+                            <Text as="span" size="1" color="gray" className="break-all">
+                              {repo.role}
+                            </Text>
+                          )}
+                        </div>
+                        {canWrite ? (
+                          <IconButton
+                            variant="ghost"
+                            color="gray"
+                            size={{ initial: "3", sm: "1" }}
+                            className="shrink-0 max-sm:min-h-11 max-sm:min-w-11"
+                            aria-label={`把 ${repoPath(repo)} 移出 ${selected.name}`}
+                            disabled={busy}
+                            onClick={() => {
+                              setFeedback(null);
+                              setDetaching(repo);
+                            }}
+                          >
+                            <Cross2Icon aria-hidden />
+                          </IconButton>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </RailCard>
+              <SessionRail
+                productId={selected.id}
+                sessions={sessions}
+                pending={sessionsQuery.isPending}
+                canChat={canChat}
+                onCreate={() => openDialog("session")}
+              />
+            </aside>
+          )}
         </div>
       )}
 
@@ -1247,17 +1255,18 @@ function KnowledgeSection({
             <Text as="span" id="product-knowledge-repos" size="2" weight="medium" mt="2">
               涉及的仓库(至少两个)
             </Text>
+            {/* 勾选项横排成一行、放不下就换行:两三个仓库名不值一个带框的列表。 */}
             <div
               role="group"
               aria-labelledby="product-knowledge-repos"
-              className="flex flex-col gap-0.5 rounded-lg border border-line p-1.5"
+              className="flex flex-wrap gap-x-4 gap-y-1"
             >
               {product.repos.map((repo) => (
                 <Text
                   as="label"
                   key={repo.repoId}
                   size="2"
-                  className="flex min-h-9 cursor-pointer items-center gap-2 rounded-sm px-2 max-sm:min-h-11 hover:bg-sunken has-disabled:cursor-not-allowed has-disabled:opacity-70"
+                  className="flex min-h-9 cursor-pointer items-center gap-2 max-sm:min-h-11 has-disabled:cursor-not-allowed has-disabled:opacity-70"
                 >
                   <Checkbox
                     size="2"

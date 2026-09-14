@@ -339,6 +339,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 Agent 会话页的中栏是一块占满视口的聊天工作台,整页不滚:`PageBody` 加 `h-full`,壳只在这条路由上给 `main` 加 `min-h-0`(其余页面 main 随内容长高、整体在 `#panel-main-scroll` 里滚,加了会让 sticky 的移动端 Tab 栏跟着滚走),高度沿 flex 链给下来,不写视口常量。头部一行细标题(产品名链接、用途 `text-3xl` 标题、在跑徽章、一行时刻 / 建立人 / 用量),对话流自己滚,输入框钉在底部。新条目来时人在底部(距底 ≤ 80px)就跟着滚,翻上去看旧消息时不打扰,右下角浮一颗「最新」胶囊送回底部。
 
+- 对话流与输入区套在一个居中、最宽 760px 的列里:有右栏产出时中栏本来不到这个宽度,没有右栏时正文不靠左摊满整张卡。没有输入框的会话在底部留一行说明(谁能续写、提案去哪确认)。
 - 消息两种形态:人的消息是右对齐的 `bg-accent-tint` 气泡(`rounded-2xl rounded-br-md`,`max-w-[80%]`),agent 的正文不加边框不加底、`max-w-[72ch]`,经 `Markdown` 渲染 GFM。时刻在消息下面,指到那条才显出来(改 opacity,布局不动)。
 - 连续的工具调用折成一组(Collapsible):组头一行是按动词的计数(「读取 5 个文件、git 3 次」),有失败的挂红色「N 次失败」;展开是左侧一道 `--v8-border-line` 竖线下的逐步明细——类别图标(读取 FileText、搜索 MagnifyingGlass、列目录 ListBullet、git Commit、历史 Finding CounterClockwiseClock、产品知识 Reader、提交产出 PaperPlane)+ 动词(`text-text-secondary`)+ 等宽对象(`text-sm`,截断给 `title`),失败的那一步下面一行 `text-danger` 原因。在跑的最后一组默认摊开,正在跑的那一个带 Spinner 挂在末尾。系统消息与定稿句居中一行小字。
 - 输入区是一个框:随内容长高的原生 `<textarea>` 在上,下沿一排图标键(图片、在跑时的排队 / 插话切换、停止、发送)。原生 textarea 而不是 Themes TextArea,因为它要嵌在框里与下沿那一排共用一道边(与 `ui/command` 的输入同理);框的边 `border-input`、底 `bg-surface`、阴影 `shadow-control`、焦点环 `--v8-shadow-focus` 都走令牌。回车发送、Shift+回车换行,输入法选词不发。

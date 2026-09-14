@@ -577,7 +577,7 @@ function Conversation({
         {live === null || live.text === "" ? null : (
           <div className="flex min-w-0 items-end gap-1">
             <span className="sr-only">agent 正在回</span>
-            <Markdown text={live.text} className="max-w-[72ch]" />
+            <Markdown text={live.text} />
             <span
               aria-hidden
               className="mb-1 ml-0.5 inline-block h-[1em] w-0.5 shrink-0 animate-pulse bg-current"
@@ -676,7 +676,7 @@ function ConversationRow({
   return (
     <div className="group flex flex-col gap-1">
       <span className="sr-only">agent</span>
-      <Markdown text={item.text} className="max-w-[72ch]" />
+      <Markdown text={item.text} />
       <MessageTime at={item.at} />
     </div>
   );
@@ -1564,7 +1564,9 @@ export function AgentSessionPage({
             <div className="min-h-0 flex-1 overflow-y-auto py-3 xl:hidden">{outputPanel}</div>
           ) : null}
           {session === undefined ? null : (
-            <>
+            // 对话流与输入区共一个居中限宽的列:1440 下中栏那张卡约 860px,列取 760px 让正文、
+            // 表格、代码块与输入框同宽——原先正文卡在 72ch、输入框却铺满,右侧一片空。
+            <div className="mx-auto flex min-h-0 w-full max-w-[760px] flex-1 flex-col">
               <div
                 className={
                   pane === "output" && hasOutput
@@ -1613,8 +1615,23 @@ export function AgentSessionPage({
                     }
                   />
                 </>
-              ) : null}
-            </>
+              ) : (
+                /* 没有输入框的两种情况各说一句,不让人对着空白猜自己能不能写。 */
+                <p className="shrink-0 border-t border-line pt-3 text-center text-sm text-text-muted">
+                  {session.purpose === "product-survey" ? (
+                    <>
+                      产品梳理由系统发起,不接续写;它交的提案在
+                      <Link to="/products" className="text-primary underline underline-offset-4">
+                        产品页
+                      </Link>
+                      确认或驳回。
+                    </>
+                  ) : (
+                    "只有建立这个会话的账号能续写。"
+                  )}
+                </p>
+              )}
+            </div>
           )}
         </CardShell>
 
