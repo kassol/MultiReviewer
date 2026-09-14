@@ -49,6 +49,7 @@ import type { RuntimeModel } from "../reviewer/model-service-runtime.ts";
 import { FINDING_QUERY_LIMIT } from "../reviewer/session-finding-tool.ts";
 import { deflateImageBlocks, type AgentSessionImageRef } from "../reviewer/session-images.ts";
 import {
+  AGENT_SESSION_BASELINE_UPDATE_CUSTOM_TYPE,
   AGENT_SESSION_NOTE_CUSTOM_TYPE,
   AGENT_SESSION_OUTPUT_CUSTOM_TYPE,
   SYSTEM_MESSAGE_ENTRY,
@@ -840,6 +841,32 @@ export function recordAgentSessionCustomMessage(
     type: "custom_message",
     customType: AGENT_SESSION_NOTE_CUSTOM_TYPE,
     content: text,
+    display: true,
+  });
+}
+
+/**
+ * 基点更新之后的那两步(ADR 0034,issue #356):回收子进程,再落一条基点更新。调用方已经把会话
+ * 基点换成新 sha、并判过会话空闲。
+ *
+ * **先回收再落**:活着的子进程要经 IPC 才接得上 Pi 内存里的链,而它马上要被杀掉,交给它的这一条
+ * 可能来不及镜像回库。回收之后登记表上没有它,由主进程直接落库、`parentId` 接最后一条记录;
+ * 下一条消息从记录惰性重建,工作树按新基点检出,这一条随整段记录进模型上下文。
+ */
+export function recordAgentSessionBaselineUpdate(
+  deps: AgentSessionRecordDeps,
+  sessionId: number,
+  update: { owner: string; repo: string; branch: string; from: string; to: string },
+): void {
+  const entry = registry.get(sessionId);
+  if (entry !== undefined) reclaim(sessionId, entry);
+  const repo = `${update.owner}/${update.repo}`;
+  recordEntry(deps.dbPath, sessionId, {
+    ...ownEntryBase(deps, sessionId),
+    type: "custom_message",
+    customType: AGENT_SESSION_BASELINE_UPDATE_CUSTOM_TYPE,
+    content: `${repo} 的会话基点从 ${update.from.slice(0, 7)} 更新到 ${update.to.slice(0, 7)}(分支 ${update.branch})。此前读过的这个仓库的代码已经换了,以新 commit 为准。`,
+    details: { repo, branch: update.branch, from: update.from, to: update.to },
     display: true,
   });
 }

@@ -21,6 +21,11 @@ import type { AgentSessionImageRef } from "./session-images.ts";
  */
 export const AGENT_SESSION_OUTPUT_CUSTOM_TYPE = "multireviewer-session-output";
 export const AGENT_SESSION_NOTE_CUSTOM_TYPE = "multireviewer-session-note";
+/**
+ * 基点更新(CONTEXT.md 基点更新,issue #356)的 `custom_message` 类型。与定稿那一句分开取值:
+ * 面板要把它渲染成「仓库 旧 sha → 新 sha」那一行,而不是一句提示。只有主进程写它。
+ */
+export const AGENT_SESSION_BASELINE_UPDATE_CUSTOM_TYPE = "multireviewer-session-baseline-update";
 
 /**
  * 系统消息的 `custom` 条目类型(ADR 0031,issue #334、#335)。人点停止、执行中静默判死、

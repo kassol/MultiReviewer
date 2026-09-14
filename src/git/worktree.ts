@@ -545,6 +545,22 @@ export async function defaultBranchHead(
   configuredDefaultBranch: string | null,
 ): Promise<{ branch: string; sha: string }> {
   const branch = effectiveDefaultBranch(repository, configuredDefaultBranch);
+  const sha = await branchHead(target, branch, "默认分支");
+  // 分支名跟着 sha 一起回:哪条分支是生效的默认分支只在这一处判定(ADR 0033),调用方要说出
+  // 「读的是哪条分支的哪个 commit」时不该把那个 `??` 再写一遍(issue #351)。
+  return { branch, sha };
+}
+
+/**
+ * 一条分支此刻的 head。生效默认分支与更新基点(issue #356,读的是会话基点记下的那条分支)
+ * 共用这一段,解析语义因此只有一份(ADR 0033、0034):先同步远端,分支没了就抛出带仓库名与
+ * 分支名的错误,不回落到别的分支。`what` 只换报错里那条分支的叫法。
+ */
+export async function branchHead(
+  target: RepoReadOptions,
+  branch: string,
+  what: "默认分支" | "分支" = "分支",
+): Promise<string> {
   // 先同步一次远端:要的是这条分支此刻的 head,而本地副本里的 `origin/<分支>` 可能是上一次
   // 准备时的快照——那样既读不到刚推上去的提交,也看不出这条分支已经被删掉了。
   await ensureClone(
@@ -555,13 +571,9 @@ export async function defaultBranchHead(
   const listed = await listBranchCommits({ ...target, branch, offset: 0, limit: 1 });
   const head = listed.ok ? listed.commits[0]?.sha : undefined;
   if (head === undefined) {
-    throw new Error(
-      `读不到 ${target.ref.owner}/${target.ref.repo} 默认分支 ${branch} 的当前 head`,
-    );
+    throw new Error(`读不到 ${target.ref.owner}/${target.ref.repo} ${what} ${branch} 的当前 head`);
   }
-  // 分支名跟着 sha 一起回:哪条分支是生效的默认分支只在这一处判定(ADR 0033),调用方要说出
-  // 「读的是哪条分支的哪个 commit」时不该把那个 `??` 再写一遍(issue #351)。
-  return { branch, sha: head };
+  return head;
 }
 
 /**

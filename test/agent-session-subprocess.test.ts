@@ -1723,3 +1723,44 @@ test("子进程被收掉之后排队消息还在库里:读得到、清得掉,清
     await close();
   }
 });
+
+test("更新基点回收活着的子进程:下一条消息重建,系统提示带新短 sha,那条基点更新进了上下文", async () => {
+  const turns: StubTurn[] = [
+    { text: "第一轮", usage: { input: 10, output: 2 } },
+    { text: "按新代码说", usage: { input: 12, output: 3 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await messagesAtLeast(h.db.path, sessionId, 2);
+    await idle(h, cookie, sessionId);
+    const before = await records(h, cookie, sessionId);
+    const moved = h.repo.commitToBranch("main", { "src/answer.ts": "export const answer = 3;\n" });
+
+    // 子进程此刻空闲地活着;更新基点把它收掉。
+    const updated = await fetch(
+      `${h.serverUrl}/api/agent-sessions/${sessionId}/baselines/acme/widgets/update`,
+      { method: "POST", headers: { cookie } },
+    );
+    const text = await updated.text();
+    assert.equal(updated.status, 200, text);
+    assert.equal((JSON.parse(text) as { to: string }).to, moved);
+    const after = await records(h, cookie, sessionId);
+    assert.equal(after.length, before.length + 1);
+    assert.equal(after.at(-1)!.type, "custom_message");
+
+    assert.equal((await send(h, cookie, sessionId, "c2", "再补一句")).status, 202);
+    await requestsAtLeast(requests, 2);
+    await idle(h, cookie, sessionId);
+
+    // 活着的子进程会沿用旧系统提示;新短 sha 出现在提示里,说明这一次是重建。
+    const system = requests[1]!.messages.filter((message) => message.role === "system");
+    assert.match(system[0]!.content, new RegExp(`^- acme/widgets ${moved.slice(0, 7)}$`, "m"));
+    assert.match(bodyOf(requests[1]!), new RegExp(`${h.repo.baseSha.slice(0, 7)}.*${moved.slice(0, 7)}`));
+    // 历史照样续上。
+    assert.match(bodyOf(requests[1]!), /第一轮/);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});

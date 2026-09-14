@@ -37,6 +37,9 @@ export const SYSTEM_MESSAGE_ENTRY = "multireviewer_system_message";
  */
 export const AGENT_SESSION_OUTPUT_CUSTOM_TYPE = "multireviewer-session-output";
 
+/** 基点更新那一条 `custom_message` 的类型(issue #356),与服务端同值。 */
+export const AGENT_SESSION_BASELINE_UPDATE_CUSTOM_TYPE = "multireviewer-session-baseline-update";
+
 /** 对话流里的一项。 */
 export type ConversationItem =
   /** `images` 是这条消息带的图片 id(issue #336),按它取缩略图。没带图即空数组。 */
@@ -229,6 +232,28 @@ export function conversation(records: readonly AgentSessionRecord[]): Conversati
       continue;
     }
     if (record.type === "custom_message") {
+      // 基点更新按系统消息那一档渲染(issue #356):它说的是会话读的代码换了,不是谁说的一句话。
+      // 摆「仓库 旧 sha → 新 sha」,取 details 而不是那句给模型读的正文。
+      const baseline = record.entry as {
+        customType?: unknown;
+        details?: { repo?: unknown; branch?: unknown; from?: unknown; to?: unknown };
+      } | null;
+      const details = baseline?.details;
+      if (
+        baseline?.customType === AGENT_SESSION_BASELINE_UPDATE_CUSTOM_TYPE &&
+        typeof details?.repo === "string" &&
+        typeof details.from === "string" &&
+        typeof details.to === "string"
+      ) {
+        const branch = typeof details.branch === "string" ? `(${details.branch})` : "";
+        items.push({
+          kind: "system",
+          seq: record.seq,
+          at: record.at,
+          text: `基点更新 ${details.repo}${branch} ${details.from.slice(0, 7)} → ${details.to.slice(0, 7)}`,
+        });
+        continue;
+      }
       const text = textOf((record.entry as { content?: unknown } | null)?.content);
       if (text !== "") items.push({ kind: "note", seq: record.seq, at: record.at, text });
       continue;

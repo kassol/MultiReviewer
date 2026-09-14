@@ -60,6 +60,7 @@ import {
   encryptCredential,
 } from "../panel/credential-crypto.ts";
 import {
+  branchHead,
   defaultBranchHead,
   effectiveDefaultBranch,
   ensureWorktree,
@@ -186,6 +187,7 @@ import {
   productSurveyRunning,
   queueAgentSessionMessage,
   reclaimAgentSession,
+  recordAgentSessionBaselineUpdate,
   recordAgentSessionCustomMessage,
   stopAgentSession,
   type AgentSessionModel,
@@ -3149,6 +3151,92 @@ function handleStopAgentSession(
   return sendJson(res, 200, { stopped, queue: visibleQueue(deps, sessionId) });
 }
 
+/** 在跑或排着消息的会话不更新基点(ADR 0034):子进程正在读的工作区不能换。 */
+const AGENT_SESSION_BASELINE_BUSY = "会话在跑或还有排队的消息,等它空闲再更新基点";
+
+/** 会话在跑,或者有排队的消息。更新基点的闸在拿分支 head 前后各判一次。 */
+function agentSessionBusy(deps: WebhookServerDeps, sessionId: number): boolean {
+  return (
+    agentSessionStatus(sessionId) === "running" ||
+    agentSessionQueue(deps.dbPath, sessionId).length > 0
+  );
+}
+
+/**
+ * 更新基点(CONTEXT.md 更新基点,ADR 0034,issue #356):把一个仓库的会话基点换成它记下的那条
+ * 分支此刻的 head。门禁与发消息同律:能对这个会话说话的人才能让它读新代码。
+ *
+ * 闸按序判:会话可见且是创建者、这个仓库在会话基点里、来源是分支、会话空闲且无排队、服务没在
+ * 排空。分支 head 经 `branchHead` 解析(先同步远端,分支没了抛 ADR 0033 那句),任何一步不成立
+ * 基点、记录与子进程都不动。
+ *
+ * 取 head 要走一次远端同步,这段时间里人可能已经发出一条消息;写之前因此再判一次空闲——否则
+ * 刚起来的那个子进程会被当场收掉,它按旧基点备的工作树也和会话上记的对不上。
+ *
+ * 更新时不碰工作树:基点换掉、落一条基点更新、回收子进程,下一条消息走空闲回收之后那条惰性
+ * 重建,按记录的基点检出新 commit。
+ */
+async function handleUpdateAgentSessionBaseline(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  sessionId: number,
+  owner: string,
+  repo: string,
+  caller: PanelCaller,
+): Promise<void> {
+  const session = agentSessionForCreator(res, deps, sessionId, caller);
+  if (session === undefined) return;
+  const baseline = session.baselines.find((one) => one.owner === owner && one.repo === repo);
+  if (baseline === undefined) {
+    return sendJson(res, 404, { error: `这个会话没有 ${owner}/${repo} 的会话基点` });
+  }
+  if (baseline.kind === "tag") {
+    return sendJson(res, 409, {
+      error: `${owner}/${repo} 的会话基点来自 Tag ${baseline.branch},没有最新可更新`,
+    });
+  }
+  if (agentSessionBusy(deps, sessionId)) {
+    return sendJson(res, 409, { error: AGENT_SESSION_BASELINE_BUSY });
+  }
+  if (deps.drain?.draining() === true) {
+    return sendJson(res, 503, { error: AGENT_SESSION_DRAINING });
+  }
+  const forge = deps.forges.gitea;
+  if (forge === undefined) {
+    return sendJson(res, 503, { error: "gitea 没有配置 Forge,更新不了会话基点" });
+  }
+  const ref = { owner, repo };
+  let target: Awaited<ReturnType<typeof repoGitTarget>>;
+  try {
+    target = await repoGitTarget(forge, ref);
+  } catch (error) {
+    return sendJson(res, 502, { error: `读不到 ${owner}/${repo} 或取不回代码:${failureText(error)}` });
+  }
+  let head: string;
+  try {
+    head = await branchHead({ cacheDir: deps.cacheDir, ...target }, baseline.branch);
+  } catch (error) {
+    return sendJson(res, 400, { error: failureText(error) });
+  }
+  const answer = { owner, repo, branch: baseline.branch, from: baseline.sha, to: head };
+  if (head === baseline.sha) return sendJson(res, 200, { changed: false, ...answer });
+  if (agentSessionBusy(deps, sessionId)) {
+    return sendJson(res, 409, { error: AGENT_SESSION_BASELINE_BUSY });
+  }
+  // 基点整列从库里重读再换这一行:取 head 那段时间里别的仓库的基点不该被这份旧快照盖回去。
+  withStore(deps.dbPath, (store) => {
+    const current = store.getAgentSession(sessionId)?.baselines ?? [];
+    store.setAgentSessionBaselines(
+      sessionId,
+      current.map((one) =>
+        one.owner === owner && one.repo === repo ? { ...one, sha: head } : one,
+      ),
+    );
+  });
+  recordAgentSessionBaselineUpdate({ dbPath: deps.dbPath, now: deps.now ?? Date.now }, sessionId, answer);
+  return sendJson(res, 200, { changed: true, ...answer });
+}
+
 /** 没有这一版产出。定稿到一个不存在的版本与读不到这个会话同形,都只回一句。 */
 const NO_SUCH_AGENT_SESSION_OUTPUT = "没有这一版会话产出";
 
@@ -3375,6 +3463,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/messages$/, access: "agent:chat", handler: ({ req, res, deps, caller }, match) => handleAgentSessionMessage(req, res, deps, Number(match![1]), caller!) },
   { method: "DELETE", pattern: /^\/agent-sessions\/(\d+)\/queue$/, access: "agent:chat", handler: ({ res, deps, caller }, match) => handleClearAgentSessionQueue(res, deps, Number(match![1]), caller!) },
   { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/stop$/, access: "agent:chat", handler: ({ res, deps, caller }, match) => handleStopAgentSession(res, deps, Number(match![1]), caller!) },
+  { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/baselines\/([^/]+)\/([^/]+)\/update$/, access: "agent:chat", handler: ({ res, deps, caller }, match) => handleUpdateAgentSessionBaseline(res, deps, Number(match![1]), match![2]!, match![3]!, caller!) },
   // 图片附件(issue #336)。传图按 `agent:chat` 且只有创建者传得了:它花的是模型费。取图与
   // 读会话同一判,登录即可——看得到这个会话的人就看得到它里面的图。
   { method: "POST", pattern: /^\/agent-sessions\/(\d+)\/images$/, access: "agent:chat", handler: ({ req, res, deps, caller }, match) => handleUploadAgentSessionImage(req, res, deps, Number(match![1]), caller!) },

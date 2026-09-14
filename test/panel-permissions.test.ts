@@ -110,9 +110,9 @@ const ROUTE_EXPECTATIONS = [
   ["POST", "/^\\/products\\/(\\d+)\\/knowledge\\/(\\d+)\\/accept$/", "knowledge:write", "product:1"],
   ["POST", "/^\\/products\\/(\\d+)\\/knowledge\\/(\\d+)\\/reject$/", "knowledge:write", "product:1"],
   ["POST", "/^\\/products\\/(\\d+)\\/survey$/", "knowledge:write", "product:1"],
-  // Agent 会话(issue #332、#333、#334、#336、#337):建与发消息、删、清队列、停止、定稿、
+  // Agent 会话(issue #332、#333、#334、#336、#337、#356):建与发消息、删、清队列、停止、更新基点、定稿、
   // 传图按 `agent:chat`,读登录即可;会话本身的可见性按创建者在 handler 里判,不是仓库分配
-  // 能表达的事,`/agent-sessions/` 下十一个端点因此不声明目标。
+  // 能表达的事,`/agent-sessions/` 下十二个端点因此不声明目标。
   ["GET", "/^\\/products\\/(\\d+)\\/sessions$/", "authenticated-only", "product:1"],
   ["POST", "/^\\/products\\/(\\d+)\\/sessions$/", "agent:chat", "product:1"],
   ["GET", "/^\\/agent-sessions\\/(\\d+)$/", "authenticated-only", "-"],
@@ -120,6 +120,7 @@ const ROUTE_EXPECTATIONS = [
   ["POST", "/^\\/agent-sessions\\/(\\d+)\\/messages$/", "agent:chat", "-"],
   ["DELETE", "/^\\/agent-sessions\\/(\\d+)\\/queue$/", "agent:chat", "-"],
   ["POST", "/^\\/agent-sessions\\/(\\d+)\\/stop$/", "agent:chat", "-"],
+  ["POST", "/^\\/agent-sessions\\/(\\d+)\\/baselines\\/([^/]+)\\/([^/]+)\\/update$/", "agent:chat", "-"],
   ["GET", "/^\\/agent-sessions\\/(\\d+)\\/records$/", "authenticated-only", "-"],
   ["GET", "/^\\/agent-sessions\\/(\\d+)\\/outputs$/", "authenticated-only", "-"],
   ["POST", "/^\\/agent-sessions\\/(\\d+)\\/outputs\\/(\\d+)\\/finalize$/", "agent:chat", "-"],

@@ -241,6 +241,21 @@ test("产出条目投成产出卡片,定稿那一句投成一行提示(issue #33
   );
 });
 
+test("基点更新投成系统消息那一行:仓库、旧短 sha → 新短 sha(issue #356)", () => {
+  const items = conversation([
+    record(1, "custom_message", {
+      type: "custom_message",
+      customType: "multireviewer-session-baseline-update",
+      content: "acme/widgets 的会话基点从 aaaaaaa 更新到 bbbbbbb(分支 main)。",
+      details: { repo: "acme/widgets", branch: "main", from: "a".repeat(40), to: "b".repeat(40) },
+      display: true,
+    }),
+  ]);
+  assert.deepEqual(items.map((item) => [item.kind, "text" in item ? item.text : ""]), [
+    ["system", "基点更新 acme/widgets(main) aaaaaaa → bbbbbbb"],
+  ]);
+});
+
 test("连续的工具调用折成一组,隔一条 agent 回复就分两组", () => {
   const tool = (seq: number, name: string) =>
     ({ kind: "tool", seq, at: "t", id: `c${seq}`, name, step: describeTool(name, {}) }) as const;

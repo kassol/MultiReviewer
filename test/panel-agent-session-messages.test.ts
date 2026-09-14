@@ -82,7 +82,7 @@ async function createSession(
   h: PanelHarness,
   cookie: string,
   productId: number,
-  baselines?: readonly { owner: string; repo: string; sha: string; branch?: string }[],
+  baselines?: readonly { owner: string; repo: string; sha: string; branch?: string; kind?: string }[],
 ): Promise<number> {
   const response = await as(h, cookie, "POST", `/products/${productId}/sessions`, {
     purpose: PURPOSE,
@@ -529,4 +529,183 @@ test("用量按记录累加到会话上,统计页单列一行", async () => {
     agentSessions: unknown;
   };
   assert.equal(otherStats.agentSessions, null);
+});
+
+/** 更新基点(issue #356)。回的是端点的原样响应,状态码与正文由各用例自己断言。 */
+function updateBaseline(
+  h: PanelHarness,
+  cookie: string,
+  sessionId: number,
+  repo: { owner: string; repo: string } = GITEA_REPO,
+): Promise<Response> {
+  return as(h, cookie, "POST", `/agent-sessions/${sessionId}/baselines/${repo.owner}/${repo.repo}/update`);
+}
+
+async function recordsOf(h: PanelHarness, cookie: string, sessionId: number): Promise<Record[]> {
+  const response = await as(h, cookie, "GET", `/agent-sessions/${sessionId}/records`);
+  assert.equal(response.status, 200);
+  return ((await response.json()) as { records: Record[] }).records;
+}
+
+test("更新基点:换到记下的那条分支此刻的 head,落一条基点更新,下一条消息的工作树停在新 commit", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id]);
+  const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+  const sessionId = await createSession(h, cookie, productId);
+  seedEntry(h.db.path, sessionId, { inputTokens: 1 });
+  const previous = (await recordsOf(h, cookie, sessionId)).at(-1)!;
+  // 建会话之后 `main` 往前走了一步。
+  const moved = h.repo.commitToBranch("main", { "src/answer.ts": "export const answer = 3;\n" });
+
+  try {
+    const updated = await updateBaseline(h, cookie, sessionId);
+    const text = await updated.text();
+    assert.equal(updated.status, 200, text);
+    assert.deepEqual(JSON.parse(text), {
+      changed: true,
+      owner: "acme",
+      repo: "widgets",
+      branch: "main",
+      from: h.repo.baseSha,
+      to: moved,
+    });
+    // 同一条分支、同一种来源,只换 sha。
+    assert.deepEqual((await session(h, cookie, sessionId)).baselines, [
+      { owner: "acme", repo: "widgets", sha: moved, branch: "main", kind: "branch" },
+    ]);
+    // 记录末尾多一条基点更新,接在此前最后一条上。
+    const landed = await recordsOf(h, cookie, sessionId);
+    assert.equal(landed.length, 2);
+    const entry = landed[1]!.entry as {
+      type: string;
+      parentId: string | null;
+      customType: string;
+      display: boolean;
+      content: string;
+      details: unknown;
+    };
+    assert.equal(landed[1]!.type, "custom_message");
+    assert.equal(entry.parentId, (previous.entry as { id: string }).id);
+    assert.equal(entry.customType, "multireviewer-session-baseline-update");
+    assert.equal(entry.display, true);
+    assert.deepEqual(entry.details, {
+      repo: "acme/widgets",
+      branch: "main",
+      from: h.repo.baseSha,
+      to: moved,
+    });
+    assert.match(entry.content, new RegExp(`${h.repo.baseSha.slice(0, 7)}.*${moved.slice(0, 7)}`));
+
+    // 分支没再动:回 changed false,不再落记录。
+    const again = await updateBaseline(h, cookie, sessionId);
+    assert.equal(again.status, 200);
+    assert.deepEqual(await again.json(), {
+      changed: false,
+      owner: "acme",
+      repo: "widgets",
+      branch: "main",
+      from: moved,
+      to: moved,
+    });
+    assert.equal((await recordsOf(h, cookie, sessionId)).length, 2);
+
+    // 下一条消息按新基点重建:工作树 HEAD 是新 commit。
+    const sent = await as(h, cookie, "POST", `/agent-sessions/${sessionId}/messages`, {
+      clientMessageId: "c1",
+      text: "拆一下这个需求",
+    });
+    assert.equal(sent.status, 202, await sent.text());
+    assert.deepEqual(await sessionWorktreeHeads(h, [GITEA_REPO]), [moved]);
+  } finally {
+    await disposeAgentSessions();
+  }
+});
+
+test("更新基点的回绝:不可见、不在会话、Tag、在跑、有排队、排空中,基点与记录都不动", async () => {
+  const drain = createDrain();
+  const h = await startReadyPanelHarness({ registerRepo: true, drain });
+  const alpha = seedRepo(h, 101, "acme", "alpha");
+  const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id, alpha]);
+  const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+  const other = await scopedUser(h, "other", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+  h.repo.setLightweightTag("v1", h.repo.baseSha);
+  const tagged = await createSession(h, owner, productId, [
+    { owner: "acme", repo: "widgets", sha: h.repo.baseSha, branch: "v1", kind: "tag" },
+  ]);
+  const sessionId = await createSession(h, owner, productId);
+  seedEntry(h.db.path, sessionId, { inputTokens: 1 });
+  // 分支往前走了:每一道闸若没挡住,基点就会变。
+  h.repo.commitToBranch("main", { "src/answer.ts": "export const answer = 3;\n" });
+  const baselines = (await session(h, owner, sessionId)).baselines;
+  const unchanged = async (): Promise<void> => {
+    assert.deepEqual((await session(h, owner, sessionId)).baselines, baselines);
+    assert.equal((await recordsOf(h, owner, sessionId)).length, 1);
+  };
+  const refused = async (response: Response, status: number, error: string): Promise<void> => {
+    assert.equal(response.status, status);
+    assert.deepEqual(await response.json(), { error });
+  };
+
+  // 同事连这个会话在不在都问不到;系统管理员看得到但不是创建者。
+  await refused(await updateBaseline(h, other, sessionId), 404, "没有这个 Agent 会话");
+  await refused(await updateBaseline(h, h.cookie, sessionId), 403, "只有会话的创建者能做");
+  // 会话里没有这个仓库的会话基点(创建者没有 alpha 的仓库分配)。
+  await refused(
+    await updateBaseline(h, owner, sessionId, { owner: "acme", repo: "alpha" }),
+    404,
+    "这个会话没有 acme/alpha 的会话基点",
+  );
+  // 来自 Tag 的会话基点没有「最新」。
+  await refused(
+    await updateBaseline(h, owner, tagged),
+    409,
+    "acme/widgets 的会话基点来自 Tag v1,没有最新可更新",
+  );
+  await unchanged();
+
+  // 有排队的消息(回收时落库的那一种):等它投出去再更新。
+  const store = openStore(h.db.path);
+  store.putAgentSessionPendingMessages(sessionId, [{ mode: "followUp", text: "再补一句" }]);
+  store.close();
+  const busy = "会话在跑或还有排队的消息,等它空闲再更新基点";
+  await refused(await updateBaseline(h, owner, sessionId), 409, busy);
+  await unchanged();
+  assert.equal((await as(h, owner, "DELETE", `/agent-sessions/${sessionId}/queue`)).status, 200);
+
+  try {
+    // 在跑:受理即在跑。
+    const sent = await as(h, owner, "POST", `/agent-sessions/${sessionId}/messages`, {
+      clientMessageId: "c1",
+      text: "拆一下这个需求",
+    });
+    assert.equal(sent.status, 202, await sent.text());
+    await refused(await updateBaseline(h, owner, sessionId), 409, busy);
+    assert.deepEqual((await session(h, owner, sessionId)).baselines, baselines);
+  } finally {
+    await disposeAgentSessions();
+  }
+
+  // 排空中。
+  drain.begin();
+  await refused(await updateBaseline(h, owner, sessionId), 503, "服务正在排空,等它起回来再发");
+  assert.deepEqual((await session(h, owner, sessionId)).baselines, baselines);
+});
+
+test("更新基点时记下的分支在远端没了:照 ADR 0033 报错,基点与记录不动", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id]);
+  const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+  const sessionId = await createSession(h, cookie, productId, [
+    { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature" },
+  ]);
+  const baselines = (await session(h, cookie, sessionId)).baselines;
+  h.repo.deleteBranch("feature");
+
+  const response = await updateBaseline(h, cookie, sessionId);
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), {
+    error: "读不到 acme/widgets 分支 feature 的当前 head",
+  });
+  assert.deepEqual((await session(h, cookie, sessionId)).baselines, baselines);
+  assert.equal((await recordsOf(h, cookie, sessionId)).length, 0);
 });

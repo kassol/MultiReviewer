@@ -19,6 +19,7 @@ import {
   ReaderIcon,
   StopIcon,
   TrashIcon,
+  UpdateIcon,
 } from "@radix-ui/react-icons";
 import {
   Badge,
@@ -64,6 +65,7 @@ import {
   PURPOSE_LABEL,
   sessionsQueryKey,
   type AgentSession,
+  type AgentSessionBaseline,
   type AgentSessionPurpose,
 } from "@/lib/agent-sessions";
 import { localMinute, localSecond } from "@/lib/time";
@@ -1074,6 +1076,91 @@ function UsageLine({ usage }: { usage: AgentSession["usage"] }) {
  * 执行中输入框照样能写:发出去的那一条按所选模式排队或插话,停止只中止当前这一步。空闲时
  * 两种模式等同直接开跑,切换因此只在执行中才出现。
  */
+/**
+ * 更新基点的确认弹窗(ADR 0034,issue #356)。新 sha 与建会话时的基点行同一读法:先让
+ * `/repo-branches?refresh=1` 同步一次远端,再从 `/repo-commits` 取这条分支的第一条提交——只读
+ * 缓存的话,刚推上去的提交还不在,弹窗会误说「已经是最新」。已经是最新时确认置灰;接口自己
+ * 还会再判一次,这里只是省人一次白点。
+ */
+function BaselineUpdateDialog({
+  baseline,
+  pending,
+  onClose,
+  onConfirm,
+}: {
+  baseline: AgentSessionBaseline | null;
+  pending: boolean;
+  onClose: () => void;
+  onConfirm: (baseline: AgentSessionBaseline) => void;
+}) {
+  const owner = baseline?.owner ?? "";
+  const repo = baseline?.repo ?? "";
+  const branch = baseline?.branch ?? "";
+  const repoQuery = `owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`;
+  const head = useQuery({
+    queryKey: ["agent-session-baseline-head", owner, repo, branch],
+    queryFn: async () => {
+      await fetchJson(`/repo-branches?${repoQuery}&refresh=1`);
+      const page = await fetchJson<{ commits: { sha: string }[] }>(
+        `/repo-commits?${repoQuery}&branch=${encodeURIComponent(branch)}&offset=0&limit=1`,
+      );
+      return page.commits[0]?.sha ?? null;
+    },
+    enabled: baseline !== null,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+  const latest = baseline !== null && head.data === baseline.sha;
+  return (
+    <ConfirmDialog
+      open={baseline !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      title="更新会话基点?"
+      titleSize="4"
+      description={
+        latest
+          ? "这个仓库的会话基点已经是这条分支的最新提交。"
+          : "会话基点换成这条分支此刻的最新提交,回不到旧提交。下一条消息会重建会话。"
+      }
+      cancelLabel="取消"
+      cancelVariant="outline"
+      cancelDisabled={pending}
+      confirm={{
+        label: pending ? "更新中…" : "更新",
+        disabled: pending || latest || head.data === undefined || head.data === null,
+        onClick: () => {
+          if (baseline !== null) onConfirm(baseline);
+        },
+      }}
+    >
+      {baseline === null ? null : (
+        <dl className="mt-3 grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-1.5 text-sm">
+          <dt className="text-text-muted">仓库</dt>
+          <dd className="break-all font-mono">{owner}/{repo}</dd>
+          <dt className="text-text-muted">分支</dt>
+          <dd className="break-all">{branch}</dd>
+          <dt className="text-text-muted">提交</dt>
+          <dd className="flex flex-wrap items-center gap-1.5">
+            <CommitChip sha={baseline.sha} />
+            <span aria-hidden>→</span>
+            {head.isPending ? (
+              <Skeleton className="h-4 w-16" />
+            ) : head.isError ? (
+              <span className="text-danger">{(head.error as Error).message}</span>
+            ) : head.data === null ? (
+              <span className="text-text-muted">这条分支上没有提交</span>
+            ) : (
+              <CommitChip sha={head.data} />
+            )}
+          </dd>
+        </dl>
+      )}
+    </ConfirmDialog>
+  );
+}
+
 export function AgentSessionPage({
   productId,
   sessionId,
@@ -1094,6 +1181,8 @@ export function AgentSessionPage({
   const navigate = useNavigate();
   const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
   const [confirming, setConfirming] = useState(false);
+  /** 正在确认更新基点的那一行(issue #356)。null 即弹窗关着。 */
+  const [updating, setUpdating] = useState<AgentSessionBaseline | null>(null);
   const [draft, setDraft] = useState("");
   const [mode, setMode] = useState<QueuedMessage["mode"]>("followUp");
   /** 这一条消息带的图片 id(issue #336)。发出去就清空;移除只是不带它,文件留在会话里。 */
@@ -1182,6 +1271,25 @@ export function AgentSessionPage({
     },
     onError: (error: Error) => setFeedback({ text: error.message, error: true }),
   });
+  const updateBaseline = useMutation({
+    mutationFn: (baseline: AgentSessionBaseline) =>
+      send(
+        `/agent-sessions/${sessionId}/baselines/${encodeURIComponent(baseline.owner)}/${encodeURIComponent(baseline.repo)}/update`,
+        "POST",
+      ),
+    // 头部换成新 sha 靠读新会话;基点更新那一条自己从记录流过来。
+    onSuccess: async () => {
+      setUpdating(null);
+      setFeedback(null);
+      await refresh();
+    },
+    onError: (error: Error) => {
+      setUpdating(null);
+      setFeedback({ text: error.message, error: true });
+    },
+  });
+  /** 在跑或排着消息时不更新基点(ADR 0034):子进程正在读的工作区不能换。 */
+  const baselineBusy = running || queue.length > 0;
   const remove = useMutation({
     mutationFn: () => send(`/agent-sessions/${sessionId}`, "DELETE"),
     onSuccess: async () => {
@@ -1289,6 +1397,33 @@ export function AgentSessionPage({
                         {baseline.kind === "tag" ? "Tag" : "分支"}
                       </Badge>
                       <span className="break-all">{baseline.branch}</span>
+                      {/* 只有能对它说话的人更新得了;Tag 没有「最新」,不出这个动作(issue #356)。 */}
+                      {mine && baseline.kind === "branch" ? (
+                        <Tooltip
+                          content={
+                            baselineBusy
+                              ? "会话在跑或还有排队的消息,空闲后才能更新基点"
+                              : "把会话基点换成这条分支此刻的最新提交"
+                          }
+                        >
+                          <span className="inline-flex">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              color="gray"
+                              size="1"
+                              disabled={baselineBusy || updateBaseline.isPending}
+                              onClick={() => {
+                                setFeedback(null);
+                                setUpdating(baseline);
+                              }}
+                            >
+                              <UpdateIcon aria-hidden />
+                              更新到最新
+                            </Button>
+                          </span>
+                        </Tooltip>
+                      ) : null}
                     </li>
                   ))}
                 </ul>
@@ -1442,6 +1577,12 @@ export function AgentSessionPage({
         ) : null}
       </div>
 
+      <BaselineUpdateDialog
+        baseline={updating}
+        pending={updateBaseline.isPending}
+        onClose={() => setUpdating(null)}
+        onConfirm={(baseline) => updateBaseline.mutate(baseline)}
+      />
       <ConfirmDialog
         open={confirming}
         onOpenChange={(open) => {
