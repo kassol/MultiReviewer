@@ -43,7 +43,11 @@ export type ConversationItem =
   | { kind: "user"; seq: number; at: string; text: string; images: string[] }
   | { kind: "assistant"; seq: number; at: string; text: string }
   | { kind: "system"; seq: number; at: string; text: string }
-  | { kind: "tool"; seq: number; at: string; name: string; summary: string }
+  /**
+   * 一次工具调用。`step` 是人读的「动词 + 对象」(读取 a.ts、git log …),`error` 是这次调用
+   * 失败时结果的第一行——结果全文仍不进对话流,人只需要知道它没成。
+   */
+  | { kind: "tool"; seq: number; at: string; id: string; name: string; step: ToolStep; error?: string }
   /** agent 交出了一版产出。点开把右栏切到这一版。 */
   | { kind: "output"; seq: number; at: string; version: number }
   /** 定稿与换版那一句。进了模型上下文,所以它也该在对话里看得见。 */
@@ -72,6 +76,91 @@ function imageIdsOf(content: unknown): string[] {
     .filter((imageId) => imageId !== "");
 }
 
+/** 工具调用的类别:图标与组头计数按它分。会话注册的工具见 `src/reviewer/session-worker.ts`。 */
+export type ToolKind =
+  | "read"
+  | "grep"
+  | "find"
+  | "ls"
+  | "git"
+  | "findings"
+  | "knowledge"
+  | "submit"
+  | "other";
+
+/** 一次工具调用的人读形式:`label` 是动词,`target` 是它作用的对象(路径、模式、git 参数)。 */
+export type ToolStep = { kind: ToolKind; label: string; target: string };
+
+const str = (value: unknown): string => (typeof value === "string" ? value : "");
+
+/**
+ * 把工具名与参数翻成「动词 + 对象」。参数形状由各工具的 schema 定:只读四件套是 Pi 内建
+ * (`path` / `pattern` / `glob` / `offset` / `limit`),git 是 `args` 数组,两种查询按仓库,
+ * 产出工具的参数是整份产出,一行摊不下也没必要摊——产出卡片自己会出现在对话流里。
+ * 认不出的工具退回 `name` 加参数摘要。
+ */
+export function describeTool(name: string, args: unknown): ToolStep {
+  const a = (args ?? {}) as Record<string, unknown>;
+  switch (name) {
+    case "read": {
+      const offset = typeof a.offset === "number" ? a.offset : undefined;
+      const limit = typeof a.limit === "number" ? a.limit : undefined;
+      const range =
+        offset === undefined && limit === undefined
+          ? ""
+          : ` L${offset ?? 1}${limit === undefined ? "-" : `-${(offset ?? 1) + limit - 1}`}`;
+      return { kind: "read", label: "读取", target: `${str(a.path)}${range}` };
+    }
+    case "grep": {
+      const where = [str(a.path), str(a.glob)].filter((part) => part !== "").join(" ");
+      return { kind: "grep", label: "搜索", target: where === "" ? str(a.pattern) : `${str(a.pattern)} 于 ${where}` };
+    }
+    case "find": {
+      const path = str(a.path);
+      return { kind: "find", label: "查找文件", target: path === "" ? str(a.pattern) : `${str(a.pattern)} 于 ${path}` };
+    }
+    case "ls":
+      return { kind: "ls", label: "列目录", target: str(a.path) || "." };
+    case "git":
+      return { kind: "git", label: "git", target: Array.isArray(a.args) ? a.args.map(String).join(" ") : "" };
+    case "query_findings":
+      return { kind: "findings", label: "查历史 Finding", target: str(a.repo) };
+    case "query_knowledge":
+      return {
+        kind: "knowledge",
+        label: "查产品知识",
+        target: Array.isArray(a.repos) ? a.repos.map(String).join("、") : "",
+      };
+    default:
+      if (name.startsWith("submit_")) return { kind: "submit", label: "提交产出", target: "" };
+      return { kind: "other", label: name, target: toolSummary(args) };
+  }
+}
+
+/**
+ * 一组工具调用的组头:按动词计数,次数多的在前——「读取 5 个文件、git 3 次、列目录 2 个目录」。
+ * 读取与列目录按对象去重,是因为同一个文件读两遍在人眼里仍是一个文件。超过三类只列前
+ * 三类,余下折成「等 N 步」,组头一行放得下。
+ */
+export function summarizeTools(steps: readonly ToolStep[]): string {
+  const rows = new Map<ToolKind, { label: string; targets: Set<string>; calls: number }>();
+  for (const step of steps) {
+    const row = rows.get(step.kind) ?? { label: step.label, targets: new Set<string>(), calls: 0 };
+    row.targets.add(step.target);
+    row.calls += 1;
+    rows.set(step.kind, row);
+  }
+  // 次数多的排前面:一组几十步里人先要知道的是它主要在干什么,不是它第一步干了什么。
+  const entries = [...rows.entries()].sort(([, a], [, b]) => b.calls - a.calls);
+  const shown = entries.slice(0, 3).map(([kind, row]) => {
+    if (kind === "read") return `${row.label} ${row.targets.size} 个文件`;
+    if (kind === "ls") return `${row.label} ${row.targets.size} 个目录`;
+    return `${row.label} ${row.calls} 次`;
+  });
+  const rest = entries.slice(3).reduce((sum, [, row]) => sum + row.calls, 0);
+  return rest === 0 ? shown.join("、") : `${shown.join("、")}等 ${rest} 步`;
+}
+
 /**
  * 工具调用的参数摘要。一行放得下才有用:超出就截断,完整参数在会话记录里可查。
  */
@@ -97,6 +186,9 @@ function systemText(entry: unknown): string {
 export type ConversationGroup =
   | Exclude<ConversationItem, { kind: "tool" }>
   | { kind: "tools"; seq: number; at: string; calls: Extract<ConversationItem, { kind: "tool" }>[] };
+
+/** 对话流里的一次工具调用。 */
+export type ToolCallItem = Extract<ConversationItem, { kind: "tool" }>;
 
 /**
  * 把连续的 `tool` 条目折成一组。一个回合几十次读文件逐行摊开会把对话冲散;一组一行,展开
@@ -146,6 +238,18 @@ export function conversation(records: readonly AgentSessionRecord[]): Conversati
       ?.message;
     if (message === undefined || message === null) continue;
     const at = record.at;
+    if (message.role === "toolResult") {
+      // 结果不进对话流,只把失败记到它对应的那次调用上(按 toolCallId 配对)。
+      const result = message as { toolCallId?: unknown; isError?: unknown; content?: unknown };
+      if (result.isError !== true) continue;
+      for (let index = items.length - 1; index >= 0; index -= 1) {
+        const call = items[index]!;
+        if (call.kind !== "tool" || call.id !== result.toolCallId) continue;
+        call.error = textOf(result.content).split("\n")[0] ?? "";
+        break;
+      }
+      continue;
+    }
     if (message.role === "user") {
       const text = textOf(message.content);
       const images = imageIdsOf(message.content);
@@ -159,14 +263,16 @@ export function conversation(records: readonly AgentSessionRecord[]): Conversati
     if (text !== "") items.push({ kind: "assistant", seq: record.seq, at, text });
     const content = Array.isArray(message.content) ? message.content : [];
     for (const part of content) {
-      const call = part as { type?: unknown; name?: unknown; arguments?: unknown };
+      const call = part as { type?: unknown; id?: unknown; name?: unknown; arguments?: unknown };
       if (call.type !== "toolCall") continue;
+      const name = String(call.name ?? "");
       items.push({
         kind: "tool",
         seq: record.seq,
         at,
-        name: String(call.name ?? ""),
-        summary: toolSummary(call.arguments),
+        id: String(call.id ?? ""),
+        name,
+        step: describeTool(name, call.arguments),
       });
     }
   }

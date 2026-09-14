@@ -4,10 +4,17 @@ import {
   ArrowDownIcon,
   CheckCircledIcon,
   ChevronRightIcon,
+  CommitIcon,
   CopyIcon,
+  CounterClockwiseClockIcon,
   Cross2Icon,
   CrossCircledIcon,
+  ExclamationTriangleIcon,
+  FileTextIcon,
+  GearIcon,
   ImageIcon,
+  ListBulletIcon,
+  MagnifyingGlassIcon,
   PaperPlaneIcon,
   PlusIcon,
   ReaderIcon,
@@ -47,8 +54,13 @@ import {
 } from "@/lib/agent-session-outputs";
 import {
   conversation,
+  describeTool,
   groupConversation,
+  summarizeTools,
   type AgentSessionRecord,
+  type ToolCallItem,
+  type ToolKind,
+  type ToolStep,
   type ConversationGroup,
 } from "@/lib/agent-session-records";
 import { localMinute, localSecond } from "@/lib/time";
@@ -679,16 +691,30 @@ function MessageTime({ at }: { at: string }) {
   );
 }
 
+/** 每类工具调用的图标:读文件、搜内容、列目录、git、两种查询、交产出。 */
+const TOOL_ICONS: Record<ToolKind, typeof FileTextIcon> = {
+  read: FileTextIcon,
+  grep: MagnifyingGlassIcon,
+  find: MagnifyingGlassIcon,
+  ls: ListBulletIcon,
+  git: CommitIcon,
+  findings: CounterClockwiseClockIcon,
+  knowledge: ReaderIcon,
+  submit: PaperPlaneIcon,
+  other: GearIcon,
+};
+
 /**
- * 一组连续的工具调用。一个回合几十次读文件逐行摊开会把对话冲散:收成一行「工具调用 N 次」,
- * 展开才看明细。在跑的最后一组默认摊开,正在跑的那一个带 Spinner 挂在末尾。
+ * 一组连续的工具调用。一个回合几十次读文件逐行摊开会把对话冲散:收成一行「读取 5 个文件、
+ * git 3 次」,展开才看逐步明细(动词 + 对象,失败的带原因)。在跑的最后一组默认摊开,
+ * 正在跑的那一个带 Spinner 挂在末尾。
  */
 function ToolGroup({
   calls,
   liveTool,
   open,
 }: {
-  calls: Extract<ConversationGroup, { kind: "tools" }>["calls"];
+  calls: ToolCallItem[];
   liveTool?: string | undefined;
   open: boolean;
 }) {
@@ -697,40 +723,66 @@ function ToolGroup({
   useEffect(() => {
     if (!open) setExpanded(false);
   }, [open]);
-  const count = calls.length + (liveTool === undefined ? 0 : 1);
+  const summary = summarizeTools(calls.map((call) => call.step));
+  const failed = calls.filter((call) => call.error !== undefined).length;
   return (
     <Collapsible.Root open={expanded} onOpenChange={setExpanded} className="group/tools text-base">
       <Collapsible.Trigger asChild>
         <button
           type="button"
-          className="flex items-center gap-1 rounded-sm px-1 py-0.5 text-text-secondary transition-colors hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+          className="flex max-w-full items-center gap-1.5 rounded-md py-1 pr-2 pl-1 text-text-secondary transition-colors hover:bg-sunken hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
         >
-          <ChevronRightIcon
-            aria-hidden
-            className="transition-transform group-data-[state=open]/tools:rotate-90"
-          />
-          工具调用 <span className="font-mono tabular-nums">{count}</span> 次
-          {liveTool === undefined ? null : <Spinner size="1" className="ml-1" />}
+          {liveTool === undefined ? (
+            <ChevronRightIcon
+              aria-hidden
+              className="shrink-0 transition-transform group-data-[state=open]/tools:rotate-90"
+            />
+          ) : (
+            <Spinner size="1" className="shrink-0" />
+          )}
+          <span className="truncate">{summary === "" ? "正在调用工具" : summary}</span>
+          {failed === 0 ? null : (
+            <span className="flex shrink-0 items-center gap-1 text-danger">
+              <ExclamationTriangleIcon aria-hidden />
+              {failed} 次失败
+            </span>
+          )}
         </button>
       </Collapsible.Trigger>
       <Collapsible.Content>
-        <ol className="mt-1 flex min-w-0 flex-col gap-1 pl-5 font-mono text-xs" aria-label="工具调用">
+        <ol className="mt-1 ml-2 flex min-w-0 flex-col border-l border-line pl-3" aria-label="工具调用">
           {calls.map((call, index) => (
-            <li key={`${call.seq}-${index}`} className="flex min-w-0 gap-2">
-              <span className="shrink-0 text-text">{call.name}</span>
-              <span className="min-w-0 truncate text-text-secondary">{call.summary}</span>
-            </li>
+            <ToolRow key={`${call.seq}-${index}`} step={call.step} error={call.error} />
           ))}
-          {liveTool === undefined ? null : (
-            <li className="flex items-center gap-2">
-              <Spinner size="1" />
-              <span className="text-text">{liveTool}</span>
-              <span className="text-text-secondary">在跑</span>
-            </li>
-          )}
+          {liveTool === undefined ? null : <ToolRow step={describeTool(liveTool, undefined)} live />}
         </ol>
       </Collapsible.Content>
     </Collapsible.Root>
+  );
+}
+
+/** 一次工具调用一行:图标、动词、对象;失败了在下面补一行原因。对象是路径或命令,用等宽。 */
+function ToolRow({ step, error, live = false }: { step: ToolStep; error?: string | undefined; live?: boolean }) {
+  const Icon = TOOL_ICONS[step.kind];
+  return (
+    <li className="flex min-w-0 flex-col py-0.5">
+      <span className="flex min-w-0 items-center gap-2">
+        {live ? <Spinner size="1" className="shrink-0" /> : <Icon aria-hidden className="shrink-0 text-text-muted" />}
+        <span className="shrink-0 text-text-secondary">{step.label}</span>
+        {step.target === "" ? null : (
+          <span className="min-w-0 truncate font-mono text-sm text-text" title={step.target}>
+            {step.target}
+          </span>
+        )}
+        {live ? <span className="shrink-0 text-text-muted">在跑</span> : null}
+      </span>
+      {error === undefined ? null : (
+        <span className="flex min-w-0 items-center gap-2 pl-6 text-sm text-danger">
+          <ExclamationTriangleIcon aria-hidden className="shrink-0" />
+          <span className="min-w-0 truncate" title={error}>{error}</span>
+        </span>
+      )}
+    </li>
   );
 }
 
@@ -1425,7 +1477,8 @@ export function AgentSessionPage({
 
         <CardShell className="h-full min-h-0 min-w-0 flex-1 px-5 py-4">
           <div className="flex shrink-0 flex-wrap items-start justify-between gap-x-3 gap-y-2 border-b border-line pb-3">
-            <div className="flex min-w-0 flex-col gap-0.5">
+            {/* 标题块占满剩余宽度,动作组才留在同一行;窄屏上动作只剩图标,文字给读屏。 */}
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               {productQuery.data === undefined ? (
                 <Skeleton aria-hidden className="h-4 w-24" />
               ) : (
@@ -1471,7 +1524,7 @@ export function AgentSessionPage({
                   onClick={() => stop.mutate()}
                 >
                   <StopIcon aria-hidden />
-                  停止
+                  <span className="max-sm:sr-only">停止</span>
                 </Button>
               ) : null}
               {mine || surveyAdmin ? (
@@ -1485,7 +1538,8 @@ export function AgentSessionPage({
                     setConfirming(true);
                   }}
                 >
-                  删会话
+                  <TrashIcon aria-hidden />
+                  <span className="max-sm:sr-only">删会话</span>
                 </Button>
               ) : null}
             </div>

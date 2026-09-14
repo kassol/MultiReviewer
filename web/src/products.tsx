@@ -22,7 +22,7 @@ import {
   Tooltip,
 } from "@radix-ui/themes";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -976,6 +976,30 @@ function AttachDialog({
 }
 
 /**
+ * 一条陈述的正文。agent 与人写的陈述里常拿反引号圈住标识符(`account.balance -= amount`),
+ * 原样摊出反引号读起来是源码;按 Markdown 的行内代码渲染,与会话页同一种样子。只认反引号,
+ * 不跑整套 Markdown:陈述是一句话,不该有标题与列表。
+ */
+function Statement({ text }: { text: string }) {
+  const parts = text.split("`");
+  // 反引号没配对(偶数段)就原样给出,不猜哪半是代码。
+  if (parts.length % 2 === 0) return <>{text}</>;
+  return (
+    <>
+      {parts.map((part, index) =>
+        index % 2 === 1 ? (
+          <code key={index} className="rounded-chip bg-fill px-1 py-0.5 font-mono text-xs">
+            {part}
+          </code>
+        ) : (
+          <Fragment key={index}>{part}</Fragment>
+        ),
+      )}
+    </>
+  );
+}
+
+/**
  * 产品页右栏的产品知识区(CONTEXT.md 产品知识,issue #343、#345、#346)。四样东西:生效列表、
  * 待确认的提案(每行「确认」「驳回」)、手写表单、每行的「退役」,加标题旁的「重梳」。没有
  * `knowledge:write` 的人只看到两份列表——维护这一层知识的人与维护知识集的是同一批人。
@@ -1098,7 +1122,7 @@ function KnowledgeSection({
                     <div className="flex min-w-0 flex-1 flex-col gap-1">
                       {entry.retiresId === null ? (
                         <Text as="span" size="2" className="break-words">
-                          {entry.statement}
+                          <Statement text={entry.statement} />
                         </Text>
                       ) : (
                         <>
@@ -1107,11 +1131,11 @@ function KnowledgeSection({
                               退役
                             </Badge>
                             <span className="min-w-0 break-words">
-                              {target?.statement ?? `条目 ${entry.retiresId}`}
+                              {target === undefined ? `条目 ${entry.retiresId}` : <Statement text={target.statement} />}
                             </span>
                           </Text>
                           <Text as="span" size="2" color="gray" className="break-words">
-                            理由:{entry.statement}
+                            理由:<Statement text={entry.statement} />
                           </Text>
                         </>
                       )}
@@ -1170,20 +1194,21 @@ function KnowledgeSection({
               {knowledge.map((entry) => (
                 <li
                   key={entry.id}
-                  className="flex items-start justify-between gap-3 border-t border-line py-2.5 first:border-t-0 first:pt-0"
+                  className="group/entry flex items-start justify-between gap-3 border-t border-line py-2.5 first:border-t-0 first:pt-0"
                 >
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
                     <Text as="span" size="2" className="break-words">
-                      {entry.statement}
+                      <Statement text={entry.statement} />
                     </Text>
                     {involvedLine(entry)}
                   </div>
+                  {/* 十几行各带一个「退役」是噪音:桌面上指到那一行才显出来,触屏没有 hover 就一直在。 */}
                   {canWrite ? (
                     <Button
                       variant="ghost"
                       color="gray"
                       size="1"
-                      className="shrink-0"
+                      className="shrink-0 transition-opacity md:opacity-0 md:group-hover/entry:opacity-100 md:group-focus-within/entry:opacity-100 md:focus-visible:opacity-100"
                       disabled={busy}
                       onClick={() => onRetire(entry)}
                     >

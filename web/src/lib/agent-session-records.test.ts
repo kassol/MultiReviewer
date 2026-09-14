@@ -8,7 +8,9 @@ import { test } from "node:test";
 
 import {
   conversation,
+  describeTool,
   groupConversation,
+  summarizeTools,
   SYSTEM_MESSAGE_ENTRY,
   toolSummary,
   type AgentSessionRecord,
@@ -57,7 +59,12 @@ test("一个回合投影成用户消息、agent 回复与工具行,工具结果�
       ["assistant", "拆成两条"],
     ],
   );
-  assert.equal(items[2]!.kind === "tool" ? items[2]!.summary : "", "path=acme/widgets/a.ts");
+  assert.deepEqual(items[2]!.kind === "tool" ? items[2]!.step : null, {
+    kind: "read",
+    label: "读取",
+    target: "acme/widgets/a.ts",
+  });
+  assert.equal(items[2]!.kind === "tool" ? items[2]!.error : "x", undefined);
 });
 
 test("只有工具调用、没有正文的助手消息只出工具行", () => {
@@ -72,7 +79,7 @@ test("只有工具调用、没有正文的助手消息只出工具行", () => {
     ),
   ]);
   assert.deepEqual(items.map((item) => item.kind), ["tool"]);
-  assert.equal(items[0]!.kind === "tool" ? items[0]!.summary : "", 'args=["log","--oneline"]');
+  assert.equal(items[0]!.kind === "tool" ? items[0]!.step.target : "", "log --oneline");
 });
 
 test("用户消息里的图片引用投影成图片 id,正文照旧", () => {
@@ -131,6 +138,72 @@ test("人点停止那条系统消息成为灰底一行", () => {
   );
 });
 
+test("工具调用翻成动词加对象,失败的结果按 toolCallId 记到那次调用上", () => {
+  assert.deepEqual(describeTool("read", { path: "a.ts", offset: 10, limit: 20 }), {
+    kind: "read",
+    label: "读取",
+    target: "a.ts L10-29",
+  });
+  assert.equal(describeTool("grep", { pattern: "foo", path: "src", glob: "*.ts" }).target, "foo 于 src *.ts");
+  assert.equal(describeTool("find", { pattern: "**/*" }).target, "**/*");
+  assert.equal(describeTool("ls", {}).target, ".");
+  assert.equal(describeTool("query_knowledge", { repos: ["a/b", "c/d"] }).target, "a/b、c/d");
+  assert.deepEqual(describeTool("submit_product_survey", { statements: [] }), {
+    kind: "submit",
+    label: "提交产出",
+    target: "",
+  });
+  assert.deepEqual(describeTool("mystery", { x: 1 }), { kind: "other", label: "mystery", target: "x=1" });
+
+  const items = conversation([
+    record(
+      1,
+      "message",
+      message("assistant", [
+        { type: "toolCall", id: "c1", name: "find", arguments: { pattern: "**/*" } },
+        { type: "toolCall", id: "c2", name: "ls", arguments: { path: "src" } },
+      ]),
+    ),
+    record(2, "message", {
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolCallId: "c1",
+        isError: true,
+        content: [{ type: "text", text: "error: Found argument '--no-require-git'\n\nUsage: fd" }],
+      },
+    }),
+    record(3, "message", {
+      type: "message",
+      message: { role: "toolResult", toolCallId: "c2", isError: false, content: [{ type: "text", text: "a.ts" }] },
+    }),
+  ]);
+  assert.deepEqual(
+    items.map((item) => (item.kind === "tool" ? [item.name, item.error] : item.kind)),
+    [
+      ["find", "error: Found argument '--no-require-git'"],
+      ["ls", undefined],
+    ],
+  );
+});
+
+test("组头按动词计数、次数多的在前,读取与列目录按对象去重,超过三类折成「等 N 步」", () => {
+  const read = (path: string) => describeTool("read", { path });
+  assert.equal(summarizeTools([read("a.ts"), read("a.ts"), read("b.ts")]), "读取 2 个文件");
+  assert.equal(
+    summarizeTools([
+      read("a.ts"),
+      describeTool("ls", { path: "src" }),
+      describeTool("git", { args: ["log"] }),
+      describeTool("git", { args: ["show", "x"] }),
+      describeTool("query_findings", { repo: "a/b" }),
+      describeTool("query_knowledge", { repos: ["a/b"] }),
+    ]),
+    "git 2 次、读取 1 个文件、列目录 1 个目录等 2 步",
+  );
+  assert.equal(summarizeTools([]), "");
+});
+
 test("参数摘要一行放得下:超出就截断", () => {
   assert.equal(toolSummary({ path: "a.ts", limit: 20 }), "path=a.ts limit=20");
   assert.equal(toolSummary(undefined), "");
@@ -170,7 +243,7 @@ test("产出条目投成产出卡片,定稿那一句投成一行提示(issue #33
 
 test("连续的工具调用折成一组,隔一条 agent 回复就分两组", () => {
   const tool = (seq: number, name: string) =>
-    ({ kind: "tool", seq, at: "t", name, summary: "" }) as const;
+    ({ kind: "tool", seq, at: "t", id: `c${seq}`, name, step: describeTool(name, {}) }) as const;
   const said = (seq: number, text: string) => ({ kind: "assistant", seq, at: "t", text }) as const;
   const groups = groupConversation([tool(1, "ls"), tool(2, "read"), tool(3, "read"), said(4, "看完了"), tool(5, "git")]);
   assert.deepEqual(
