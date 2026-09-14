@@ -2771,13 +2771,15 @@ export type AgentSessionStatus = "idle" | "running";
 /**
  * 一个 Agent 会话开在哪个 commit 上,按仓库一条(issue #351)。`sha` 是那棵工作树检出的
  * commit,`branch` 是它来自哪条分支或哪个 Tag(没有显式选择即这个仓库生效的默认分支,CONTEXT.md
- * 默认分支)。
+ * 默认分支),`kind` 说 `branch` 这个名字是分支还是 Tag(issue #355)——Tag 没有「最新」,
+ * 更新基点要靠它分开两者。
  */
 export type AgentSessionBaseline = {
   owner: string;
   repo: string;
   sha: string;
   branch: string;
+  kind: "branch" | "tag";
 };
 
 /** 一个 Agent 会话(CONTEXT.md Agent 会话)。读与写都只经这一种形状。 */
@@ -2954,11 +2956,15 @@ function agentSession(row: Record<string, unknown>): AgentSessionRecord {
       cacheWriteTokens: Number(row["cache_write_tokens"]),
       totalTokens: Number(row["total_tokens"]),
     },
-    // 这一票之前的会话行没有这一列(升级前的库连列都没有):两种都读作空列表。
+    // 这一票之前的会话行没有这一列(升级前的库连列都没有):两种都读作空列表。记来源种类
+    // (issue #355)之前落下的行没有 `kind`:那时只有分支一种来源,读作分支,不回填。
     baselines:
       row["baselines"] === null || row["baselines"] === undefined
         ? []
-        : (JSON.parse(String(row["baselines"])) as AgentSessionBaseline[]),
+        : (JSON.parse(String(row["baselines"])) as AgentSessionBaseline[]).map((one) => ({
+            ...one,
+            kind: one.kind ?? "branch",
+          })),
   };
 }
 

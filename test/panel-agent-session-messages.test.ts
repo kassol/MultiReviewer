@@ -35,7 +35,7 @@ type AgentSession = {
   status: string;
   usage: ReviewerUsage;
   /** 这个会话每个仓库开在哪个 commit(issue #351)。 */
-  baselines: { owner: string; repo: string; sha: string; branch: string }[];
+  baselines: { owner: string; repo: string; sha: string; branch: string; kind: string }[];
 };
 
 type Record = { sessionId: number; seq: number; type: string; at: string; entry: unknown; usage: ReviewerUsage };
@@ -211,8 +211,8 @@ test("会话记下每个仓库开在哪条分支的哪个 commit,读端点回这
   // 建会话那一刻就记下了(issue #352):每仓库一条,sha 是生效默认分支此刻的 head,分支名就是
   // 生效的那一条。
   const expected = [
-    { owner: "acme", repo: "alpha", sha: h.repo.baseSha, branch: "main" },
-    { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature" },
+    { owner: "acme", repo: "alpha", sha: h.repo.baseSha, branch: "main", kind: "branch" },
+    { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature", kind: "branch" },
   ];
   assert.deepEqual((await session(h, cookie, sessionId)).baselines, expected);
 
@@ -246,8 +246,8 @@ test("建会话时选的基点就是工作树停的地方,没选的那个仓库�
     { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature" },
   ]);
   const expected = [
-    { owner: "acme", repo: "alpha", sha: h.repo.baseSha, branch: "main" },
-    { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature" },
+    { owner: "acme", repo: "alpha", sha: h.repo.baseSha, branch: "main", kind: "branch" },
+    { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature", kind: "branch" },
   ];
   assert.deepEqual((await session(h, cookie, sessionId)).baselines, expected);
 

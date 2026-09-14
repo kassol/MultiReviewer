@@ -1026,12 +1026,16 @@ async function prepareSessionRoot(
       cloneUrl: repository.cloneUrl,
       credentials,
     };
-    const { branch, sha: headSha } = recorded.get(`${repo.owner}/${repo.repo}`)
-      ?? await defaultBranchHead(
-        clone,
-        repository,
-        configuredDefaultBranch(deps.dbPath, repo.repoId),
-      );
+    // 没记过的仓库读生效默认分支的 head,来源种类因此是分支(issue #355)。
+    const { branch, sha: headSha, kind } = recorded.get(`${repo.owner}/${repo.repo}`)
+      ?? {
+        ...await defaultBranchHead(
+          clone,
+          repository,
+          configuredDefaultBranch(deps.dbPath, repo.repoId),
+        ),
+        kind: "branch" as const,
+      };
     const worktree = await prepareWorktree({
       ...clone,
       headSha,
@@ -1045,7 +1049,7 @@ async function prepareSessionRoot(
       headSha,
       ...repoKnowledgeCounts(deps.dbPath, repo.repoId),
     });
-    baselines.push({ ...ref, sha: headSha, branch });
+    baselines.push({ ...ref, sha: headSha, branch, kind });
   }
   // 整列一次写完:备到一半失败的那一次不落半份清单,下一条消息重试时从头再备一遍。
   const store = openStore(deps.dbPath);

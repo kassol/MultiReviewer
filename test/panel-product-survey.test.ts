@@ -328,13 +328,13 @@ async function sessionWorktreeHeads(
 async function baselinesOf(
   h: PanelHarness,
   sessionId: number,
-): Promise<{ owner: string; repo: string; sha: string; branch: string }[]> {
+): Promise<{ owner: string; repo: string; sha: string; branch: string; kind: string }[]> {
   const response = await h.api("GET", `/agent-sessions/${sessionId}`);
   const text = await response.text();
   assert.equal(response.status, 200, text);
   return (
     JSON.parse(text) as {
-      session: { baselines: { owner: string; repo: string; sha: string; branch: string }[] };
+      session: { baselines: { owner: string; repo: string; sha: string; branch: string; kind: string }[] };
     }
   ).session.baselines;
 }
@@ -370,8 +370,8 @@ test("系统开的梳理:工作树停在生效默认分支的 head 上,会话记
     // 会话时要能判断提案是按哪份代码提的。
     const [survey] = await sessionsOf(h, row.id, h.cookie);
     assert.deepEqual(await baselinesOf(h, survey!.id), [
-      { owner: "acme", repo: "alpha", sha: h.repo.baseSha, branch: "main" },
-      { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature" },
+      { owner: "acme", repo: "alpha", sha: h.repo.baseSha, branch: "main", kind: "branch" },
+      { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature", kind: "branch" },
     ]);
   } finally {
     await disposeAgentSessions();
@@ -409,16 +409,16 @@ test("重梳带按仓库基点:梳理会话记下选定的 sha 与分支,工作�
   const two = await productWithoutSurvey(h, [GITEA_REPO.id, ALPHA]);
   try {
     const opened = await h.api("POST", `/products/${two.id}/survey`, {
-      baselines: [{ ...GITEA_REPO, sha: h.repo.headSha, branch: "feature" }],
+      baselines: [{ ...GITEA_REPO, sha: h.repo.headSha, branch: "v1.0", kind: "tag" }],
     });
     const text = await opened.text();
     assert.equal(opened.status, 201, text);
     const { session } = JSON.parse(text) as { session: AgentSessionRecord };
 
-    // 选过的那一行按他选的 commit 与他浏览的那条分支记;没动过的那个仓库回落生效的默认分支。
+    // 选过的那一行按他选的 commit 与他浏览的那个来源记(这里是 Tag,issue #355);没动过的那个仓库回落生效的默认分支。
     assert.deepEqual(await baselinesOf(h, session.id), [
-      { owner: "acme", repo: "alpha", sha: h.repo.baseSha, branch: "main" },
-      { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature" },
+      { owner: "acme", repo: "alpha", sha: h.repo.baseSha, branch: "main", kind: "branch" },
+      { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "v1.0", kind: "tag" },
     ]);
 
     // agent 的工具看到的就是这一份:工作树的 HEAD 停在会话记下的那个 commit 上。
@@ -452,7 +452,8 @@ test("重梳选基点:外仓库、解析不出的 sha 与形状不对都回绝,�
     [{ ...GITEA_REPO, sha: "0".repeat(40) }],
     `${GITEA_REPO.owner}/${GITEA_REPO.repo} 里没有 ${"0".repeat(40)} 这个提交`,
   );
-  for (const shape of ["main", [{ owner: "acme", repo: "widgets" }], [42]]) {
+  const badKind = { ...GITEA_REPO, sha: h.repo.headSha, kind: "commit" };
+  for (const shape of ["main", [{ owner: "acme", repo: "widgets" }], [42], [badKind]]) {
     await rejected(shape, "baselines 要是一串 { owner, repo, sha },branch 可选");
   }
 

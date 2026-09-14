@@ -2588,8 +2588,17 @@ function handleListAgentSessions(
     : sendJson(res, 200, { sessions: sessions.map(withRuntimeStatus) });
 }
 
-/** 建会话请求里那一份按仓库基点(issue #352)。`branch` 是人在选择器里浏览的那条分支。 */
-type SessionBaselineInput = { owner: string; repo: string; sha: string; branch?: string };
+/**
+ * 建会话请求里那一份按仓库基点(issue #352)。`branch` 是人在选择器里浏览的那条分支或那个 Tag
+ * 的名字,`kind` 说它是哪一种(issue #355)。
+ */
+type SessionBaselineInput = {
+  owner: string;
+  repo: string;
+  sha: string;
+  branch?: string;
+  kind?: AgentSessionBaseline["kind"];
+};
 
 /** 基点列表的形状不对。说清要什么比说「形状不对」有用。 */
 const AGENT_SESSION_BASELINE_SHAPE =
@@ -2606,12 +2615,19 @@ function agentSessionBaselineInput(value: unknown): SessionBaselineInput[] | nul
   for (const one of value) {
     if (typeof one !== "object" || one === null) return null;
     const row = one as Record<string, unknown>;
-    const { owner, repo, sha, branch } = row;
+    const { owner, repo, sha, branch, kind } = row;
     if (typeof owner !== "string" || owner === "") return null;
     if (typeof repo !== "string" || repo === "") return null;
     if (typeof sha !== "string" || sha === "") return null;
     if (branch !== undefined && (typeof branch !== "string" || branch === "")) return null;
-    parsed.push({ owner, repo, sha, ...(branch === undefined ? {} : { branch }) });
+    if (kind !== undefined && kind !== "branch" && kind !== "tag") return null;
+    parsed.push({
+      owner,
+      repo,
+      sha,
+      ...(branch === undefined ? {} : { branch }),
+      ...(kind === undefined ? {} : { kind }),
+    });
   }
   return parsed;
 }
@@ -2670,13 +2686,19 @@ async function resolveSessionBaselines(
           error: `${repo.owner}/${repo.repo} 里没有 ${picked.sha} 这个提交`,
         };
       }
-      // 分支名是人在选择器里浏览的那一条;没带就记生效的默认分支(他没换过分支)。
-      baselines.push({ ...ref, sha, branch: picked.branch ?? effectiveDefaultBranch(target, configured) });
+      // 分支名是人在选择器里浏览的那一条;没带就记生效的默认分支(他没换过分支)。来源种类
+      // 同理:没带即分支——只给 sha 的那一行读的就是生效的默认分支。
+      baselines.push({
+        ...ref,
+        sha,
+        branch: picked.branch ?? effectiveDefaultBranch(target, configured),
+        kind: picked.kind ?? "branch",
+      });
       continue;
     }
     try {
       const { branch, sha } = await defaultBranchHead(clone, target, configured);
-      baselines.push({ ...ref, sha, branch });
+      baselines.push({ ...ref, sha, branch, kind: "branch" });
     } catch (error) {
       // 设过的那条分支在远端没了(spec #349 的 US 6):当场说是哪个仓库,别开一个读不到
       // 代码的会话。

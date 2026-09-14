@@ -41,7 +41,13 @@ type AgentSession = {
   baselines: AgentSessionBaseline[];
 };
 
-type AgentSessionBaseline = { owner: string; repo: string; sha: string; branch: string };
+type AgentSessionBaseline = {
+  owner: string;
+  repo: string;
+  sha: string;
+  branch: string;
+  kind: "branch" | "tag";
+};
 
 /** 以指定 cookie 发一次请求。`h.api()` 只带系统管理员那一份。 */
 function as(
@@ -289,16 +295,28 @@ test("建会话按仓库选基点:选过的记他选的,没带分支名的记生
   // 没动选择器:与这一票之前同律,跟随生效的默认分支。
   const untouched = await createSession(h, cookie, productId);
   assert.deepEqual(untouched.baselines, [
-    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.baseSha, branch: "main" },
+    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.baseSha, branch: "main", kind: "branch" },
   ]);
 
   // 动过的那一行:记他选的 commit 与他浏览的那条分支。
   const picked = await create([
-    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "feature" },
+    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "feature", kind: "branch" },
   ]);
   assert.equal(picked.status, 201, await picked.clone().text());
   assert.deepEqual(((await picked.json()) as { session: AgentSession }).session.baselines, [
-    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "feature" },
+    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "feature", kind: "branch" },
+  ]);
+
+  // 从 Tag 里选的那一行(issue #355):来源记作 Tag,名字就是那个 Tag。建完的回应与读会话
+  // 接口说的是同一份。
+  const tagged = await create([
+    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "v1.0", kind: "tag" },
+  ]);
+  assert.equal(tagged.status, 201, await tagged.clone().text());
+  const taggedSession = ((await tagged.json()) as { session: AgentSession }).session;
+  const taggedRead = await as(h, cookie, "GET", `/agent-sessions/${taggedSession.id}`);
+  assert.deepEqual(((await taggedRead.json()) as { session: AgentSession }).session.baselines, [
+    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "v1.0", kind: "tag" },
   ]);
 
   // 只给 sha 不给分支名:记生效的默认分支——他没换过分支。
@@ -307,10 +325,10 @@ test("建会话按仓库选基点:选过的记他选的,没带分支名的记生
   ]);
   assert.equal(noBranch.status, 201, await noBranch.clone().text());
   assert.deepEqual(((await noBranch.json()) as { session: AgentSession }).session.baselines, [
-    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "main" },
+    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "main", kind: "branch" },
   ]);
 
-  assert.equal((await sessions(h, cookie, productId)).length, 3);
+  assert.equal((await sessions(h, cookie, productId)).length, 4);
 });
 
 test("建会话选基点:外仓库、解析不出的 sha 与形状不对都回绝,一条会话都不落", async () => {
@@ -340,7 +358,8 @@ test("建会话选基点:外仓库、解析不出的 sha 与形状不对都回�
     [{ owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: "0".repeat(40) }],
     `${GITEA_REPO.owner}/${GITEA_REPO.repo} 里没有 ${"0".repeat(40)} 这个提交`,
   );
-  for (const shape of ["main", [{ owner: "acme", repo: "widgets" }], [42]]) {
+  const badKind = { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, kind: "commit" };
+  for (const shape of ["main", [{ owner: "acme", repo: "widgets" }], [42], [badKind]]) {
     await rejected(shape, "baselines 要是一串 { owner, repo, sha },branch 可选");
   }
 
@@ -372,6 +391,7 @@ test("升级前的旧库:开库补上会话那一列,既有会话读作没记过
     repo: GITEA_REPO.repo,
     sha: h.repo.headSha,
     branch: "feature",
+    kind: "branch",
   };
   record([opened]);
   assert.deepEqual(await read(), [opened]);
@@ -388,6 +408,29 @@ test("升级前的旧库:开库补上会话那一列,既有会话读作没记过
   // 补回来的这一列照样写得进去:下一条消息备好工作树就记上。
   record([opened]);
   assert.deepEqual(await read(), [opened]);
+});
+
+test("来源种类之前记下的基点:行里没有 kind,读回来一律是分支", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const productId = await productWithRepo(h, "报销系统");
+  const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+  const created = await createSession(h, owner, productId);
+  // 直接播种这一票之前那种形状的行:只有 owner / repo / sha / branch。不回填,读时补上。
+  const db = new DatabaseSync(h.db.path);
+  db.prepare("UPDATE agent_session SET baselines = ? WHERE id = ?").run(
+    JSON.stringify([
+      { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "feature" },
+    ]),
+    created.id,
+  );
+  db.close();
+
+  const response = await as(h, owner, "GET", `/agent-sessions/${created.id}`);
+  const text = await response.text();
+  assert.equal(response.status, 200, text);
+  assert.deepEqual((JSON.parse(text) as { session: AgentSession }).session.baselines, [
+    { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "feature", kind: "branch" },
+  ]);
 });
 
 test("会话记录分页:缺省回最后一页,before 往前翻,hasMore 说还有没有更早的", async () => {

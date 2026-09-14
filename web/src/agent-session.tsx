@@ -1270,8 +1270,9 @@ export function AgentSessionPage({
                 </p>
               )}
               {/*
-                这个会话读的是哪份代码(issue #351):每仓库一行「仓库 短 sha 分支」。空列表
-                什么都不渲染——这一票之前建的会话没有记过,摆一行「未知」只会让人以为丢了。
+                这个会话读的是哪份代码(issue #351):每仓库一行「仓库 短 sha 来源 名字」。空列表
+                什么都不渲染——这一票之前建的会话没有记过,摆一行「未知」只会让人以为丢了。来源
+                徽标分开分支与 Tag(issue #355):Tag 没有「最新」,读的人要看得出哪一行不会往前走。
               */}
               {session === undefined || session.baselines.length === 0 ? null : (
                 <ul className="flex flex-col gap-0.5">
@@ -1284,6 +1285,9 @@ export function AgentSessionPage({
                         {baseline.owner}/{baseline.repo}
                       </span>
                       <CommitChip sha={baseline.sha} />
+                      <Badge color="gray" variant="soft">
+                        {baseline.kind === "tag" ? "Tag" : "分支"}
+                      </Badge>
                       <span className="break-all">{baseline.branch}</span>
                     </li>
                   ))}
