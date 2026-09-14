@@ -1,4 +1,4 @@
-import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MutationCache, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
   createRootRoute,
   createRoute,
@@ -20,7 +20,7 @@ import {
   MixerHorizontalIcon,
   PersonIcon,
 } from "@radix-ui/react-icons";
-import { lazy, StrictMode, Suspense, useEffect } from "react";
+import { Fragment, lazy, StrictMode, Suspense, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 
 import { CommandPalette, useCommandPalette } from "@/components/command-palette";
@@ -29,7 +29,14 @@ import { PageBody } from "@/components/page-body";
 import { PanelTheme } from "@/components/panel-theme";
 import { DropdownMenu, Skeleton } from "@radix-ui/themes";
 
-import { api } from "./api.ts";
+import {
+  agentSessionQueryKey,
+  PURPOSE_LABEL,
+  type AgentSession,
+} from "@/lib/agent-sessions";
+import { productQueryKey, type ProductDetail } from "@/lib/products";
+
+import { api, fetchJson } from "./api.ts";
 import type { ModelServiceTab } from "./credentials.tsx";
 import {
   clearPanelSession,
@@ -225,6 +232,7 @@ function TopBar({
   // 返回一致,都指着评审记录——也就是首页(issue #189、#194)。
   const located = pathname.startsWith("/stages") ? "/" : pathname;
   const current = nav.find((item) => item.to === "/" ? located === "/" : located.startsWith(item.to));
+  const deeper = useProductCrumbs(pathname);
   return (
     <header className="sticky top-0 z-30 shrink-0 border-b border-chrome-line bg-chrome backdrop-blur-[30px]">
       <div className="flex items-center justify-between gap-3 px-4 pt-[11px] pb-2 sm:px-7">
@@ -239,6 +247,12 @@ function TopBar({
               <span className="truncate text-xl font-semibold max-sm:hidden">{current.label}</span>
             </>
           )}
+          {deeper.map((crumb) => (
+            <Fragment key={crumb}>
+              <span className="text-text-faint max-lg:hidden" aria-hidden>/</span>
+              <span className="truncate text-xl font-semibold max-lg:hidden">{crumb}</span>
+            </Fragment>
+          ))}
         </div>
         <div className="flex shrink-0 items-center gap-3">
           <button
@@ -270,6 +284,31 @@ function TopBar({
       )}
     </header>
   );
+}
+
+/**
+ * 产品之下那两段面包屑:产品名与会话用途(DESIGN.md 2.4「面包屑层级按真实路由层级」)。
+ * 读的是产品页与会话页那两份缓存键,不另开端点;还没读到的那一段先不画,不用占位符冒充。
+ */
+function useProductCrumbs(pathname: string): string[] {
+  const matched = /^\/products\/(\d+)(?:\/sessions\/(\d+))?$/.exec(pathname);
+  const productId = matched === null ? undefined : Number(matched[1]);
+  const sessionId = matched?.[2] === undefined ? undefined : Number(matched[2]);
+  const product = useQuery({
+    queryKey: productQueryKey(productId),
+    queryFn: () => fetchJson<ProductDetail>(`/products/${productId!}`),
+    enabled: productId !== undefined,
+  });
+  const session = useQuery({
+    queryKey: agentSessionQueryKey(sessionId ?? 0),
+    queryFn: () => fetchJson<{ session: AgentSession }>(`/agent-sessions/${sessionId!}`),
+    enabled: sessionId !== undefined,
+  });
+  const purpose = session.data?.session.purpose;
+  return [
+    product.data?.product.name,
+    purpose === undefined ? undefined : PURPOSE_LABEL[purpose],
+  ].filter((crumb) => crumb !== undefined);
 }
 
 /**
@@ -521,16 +560,34 @@ function StageDetailRoutePage() {
     />
   );
 }
-const productsRoute = protectedPage("/products", undefined, () => {
+const productsRoute = protectedPage("/products", undefined, () => <ProductsRoutePage />);
+/**
+ * 当前产品写在地址上(spec #349)。`/products` 不带产品,当前项落在列表第一个上;点左栏
+ * 一行就进这一条路由,从会话页回来选的因此还是同一个产品。
+ */
+const productRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/products/$productId",
+  beforeLoad: ({ context }) => {
+    if (context.session.mustChangePassword) throw redirect({ to: "/password" });
+  },
+  component: () => <BusinessPage Page={ProductRoutePage} />,
+});
+/** 模块级组件,不在路由 `component` 里内联,与 `StageDetailRoutePage` 同一理由。 */
+function ProductRoutePage() {
+  return <ProductsRoutePage productId={Number(productRoute.useParams().productId)} />;
+}
+function ProductsRoutePage({ productId }: { productId?: number }) {
   const { session } = shellRoute.useRouteContext();
   return (
     <ProductsPage
+      {...(productId === undefined ? {} : { productId })}
       canWrite={hasPermission(session, "repo:write")}
       canChat={hasPermission(session, "agent:chat")}
       canWriteKnowledge={hasPermission(session, "knowledge:write")}
     />
   );
-});
+}
 /**
  * 一个 Agent 会话的详情页(issue #332)。地址带产品与会话两段 id:左栏要列这个产品下的
  * 会话,而会话本身只凭自己的 id 读。读不需要权限格,会话的可见性由服务端按创建者判。
@@ -553,6 +610,8 @@ function AgentSessionRoutePage() {
       sessionId={Number(params.sessionId)}
       username={session.username}
       isSystemAdmin={session.isSystemAdmin}
+      canWrite={hasPermission(session, "repo:write")}
+      canChat={hasPermission(session, "agent:chat")}
     />
   );
 }
@@ -719,6 +778,7 @@ const routeTree = rootRoute.addChildren([
     indexRoute,
     stageDetailRoute,
     productsRoute,
+    productRoute,
     agentSessionRoute,
     statsRoute,
     credentialsRoute,

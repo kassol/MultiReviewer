@@ -1,11 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import {
   CheckCircledIcon,
-  Cross2Icon,
   CrossCircledIcon,
   ExclamationTriangleIcon,
-  Pencil1Icon,
-  PlusIcon,
 } from "@radix-ui/react-icons";
 import {
   Badge,
@@ -13,25 +11,19 @@ import {
   Checkbox,
   Dialog,
   Flex,
-  IconButton,
-  Select,
   Skeleton,
   Text,
   TextArea,
-  TextField,
   Tooltip,
 } from "@radix-ui/themes";
-import { useNavigate } from "@tanstack/react-router";
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { Fragment, useEffect, useState, type FormEvent } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { HelpTooltip } from "@/components/help-tooltip";
-import { MasterListItem, MasterListItemText } from "@/components/master-list-item";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
-import { RailCard } from "@/components/rail-card";
 import {
   baselineRepoKey,
   pickedBaselines,
@@ -40,80 +32,50 @@ import {
 } from "@/components/repo-baseline-rows";
 import { Button } from "@/components/theme-button";
 import type { CommitSelection } from "@/commit-picker";
-import { unassignedRepos } from "@/lib/products";
+import { sessionsQueryKey, type AgentSession } from "@/lib/agent-sessions";
+import {
+  currentProduct,
+  PRODUCTS_QUERY_KEY,
+  productQueryKey,
+  repoPath,
+  type Product,
+  type ProductKnowledge,
+  type ProductRepo,
+  type ProductProposal,
+} from "@/lib/products";
 import { localMinute } from "@/lib/time";
 
-import {
-  CreateSessionDialog,
-  SessionRail,
-  sessionsQueryKey,
-  useProductSessions,
-  type AgentSession,
-  type AgentSessionPurpose,
-} from "./agent-session.tsx";
 import { fetchJson, send } from "./api.ts";
-
-/** `role` 是仓库职责(CONTEXT.md 仓库职责,issue #341)。没写过即 null。 */
-type ProductRepo = { repoId: number; owner: string; repo: string; role: string | null };
-type Product = { id: number; name: string; createdAt: string; repos: ProductRepo[] };
-/** `GET /repos` 那一份里归属弹窗要的三列。它已经按仓库分配收窄过。 */
-type RegisteredRepo = { repoId: number; owner: string; repo: string };
-/** 一条生效的产品知识(CONTEXT.md 产品知识,issue #343)。`repoIds` 是它涉及的仓库集合。 */
-type ProductKnowledge = { id: number; statement: string; repoIds: number[] };
-/**
- * 一条待确认的提案(CONTEXT.md 产品知识,issue #345、#346)。`retiresId` 不为空即退役提案,
- * 那一条的陈述是退役的理由,确认它退役的是它指向的那条生效条目。
- */
-type ProductProposal = ProductKnowledge & { retiresId: number | null };
-
-const PRODUCTS_QUERY_KEY = ["products"] as const;
-
-/** 一个产品的产品知识那一份读缓存的键。产品换了就是另一份。 */
-function knowledgeQueryKey(productId: number | undefined): readonly unknown[] {
-  return ["product-knowledge", productId];
-}
+import { NameDialog, ProductRail, useProductDetail, useProductSessions } from "./product-rail.tsx";
 
 /** 产品知识的陈述上限,与服务端那一道同一个数(`AGENT_STATEMENT_LIMIT`)。 */
 const KNOWLEDGE_STATEMENT_MAX = 100;
 
-function repoPath(row: ProductRepo | RegisteredRepo): string {
-  return `${row.owner}/${row.repo}`;
-}
-
-/** 移出确认框的说明:涉及这个仓库的产品知识会退役(issue #347),条数按生效列表算。 */
-function detachConsequence(repo: ProductRepo | null, knowledge: readonly ProductKnowledge[]): string {
-  const retiring =
-    repo === null ? 0 : knowledge.filter((entry) => entry.repoIds.includes(repo.repoId)).length;
-  const tail = "仓库集变了,系统可能自动开一场产品梳理。仓库本身留在注册表里。";
-  return retiring === 0 ? tail : `涉及它的 ${retiring} 条产品知识会退役,不可恢复。${tail}`;
-}
-
 /**
- * 产品页(CONTEXT.md 产品,issue #331)。左栏按原型 A 的三段:产品列表、当前产品的仓库、
- * 我的会话;「建产品」「归属仓库」与每行的「移出」、改名、删除都按 `repo:write` 显隐。
+ * 产品页(CONTEXT.md 产品,issue #331)。左栏是产品页与会话页共用的那一份(`ProductRail`:
+ * 产品列表、当前产品的仓库、我的会话),右栏是当前产品的概览与产品知识。当前产品写在地址上
+ * (`/products/$productId`),从会话页回来选的还是同一个产品。
  *
  * 可见的产品由服务端按仓库分配给出(ADR 0018),前端不自己判:一个仓库都没分到的人
  * 拿到的是空列表,落在「还没有产品」那一档空态上。
  */
 export function ProductsPage({
+  productId,
   canWrite,
   canChat,
   canWriteKnowledge,
 }: {
+  /** 地址上的产品。`/products` 不带它,当前项落在列表第一个上。 */
+  productId?: number | undefined;
   canWrite: boolean;
   canChat: boolean;
   canWriteKnowledge: boolean;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
-  const [dialog, setDialog] = useState<
-    "create" | "rename" | "attach" | "session" | "survey" | null
-  >(null);
+  const [dialog, setDialog] = useState<"rename" | "survey" | null>(null);
   const [confirming, setConfirming] = useState(false);
-  /** 正要移出的仓库:移出会退役涉及它的产品知识,先过一道确认。 */
-  const [detaching, setDetaching] = useState<ProductRepo | null>(null);
   /** 产品知识那一段表单的挂载标识:写成功一次就加一,表单因此重挂成空的。 */
   const [knowledgeFormKey, setKnowledgeFormKey] = useState(0);
 
@@ -121,15 +83,9 @@ export function ProductsPage({
     queryKey: PRODUCTS_QUERY_KEY,
     queryFn: async () => (await fetchJson<{ products: Product[] }>("/products")).products,
   });
-  // 归属弹窗的候选只在有写权限时才读:没有这一格的人看不到那个按钮。
-  const reposQuery = useQuery({
-    queryKey: ["repos"],
-    queryFn: () => fetchJson<RegisteredRepo[]>("/repos"),
-    enabled: canWrite,
-  });
 
   const products = productsQuery.data ?? [];
-  const selected = products.find((row) => row.id === selectedId) ?? products[0];
+  const selected = currentProduct(products, productId);
   const loadError = productsQuery.error;
   // 当前产品下「我的会话」。会话只属于创建者,可见多少由服务端按创建者给出。
   const sessionsQuery = useProductSessions(selected?.id);
@@ -137,41 +93,22 @@ export function ProductsPage({
 
   // 当前产品生效的产品知识(CONTEXT.md 产品知识,issue #343)。产品列表那一份不带它,
   // 因此另读一次产品详情;读不需要权限格,谁看得到产品就看得到这一段。
-  const knowledgeQuery = useQuery({
-    queryKey: knowledgeQueryKey(selected?.id),
-    queryFn: () =>
-      fetchJson<{ knowledge: ProductKnowledge[]; proposals: ProductProposal[] }>(
-        `/products/${selected!.id}`,
-      ),
-    enabled: selected !== undefined,
-  });
+  const knowledgeQuery = useProductDetail(selected?.id);
   const knowledge = knowledgeQuery.data?.knowledge ?? [];
   const proposals = knowledgeQuery.data?.proposals ?? [];
 
   const refresh = (): Promise<void> =>
     queryClient.invalidateQueries({ queryKey: PRODUCTS_QUERY_KEY });
   const refreshKnowledge = (): Promise<void> =>
-    queryClient.invalidateQueries({ queryKey: knowledgeQueryKey(selected?.id) });
+    queryClient.invalidateQueries({ queryKey: productQueryKey(selected?.id) });
 
-  /** 改名、归属与移出共用的成功收尾:关弹窗、报一句、重读列表。 */
+  /** 改名的成功收尾:关弹窗、报一句、重读列表。 */
   const settled = (text: string): void => {
     setDialog(null);
     setFeedback({ text, error: false });
     void refresh();
   };
   const failed = (error: Error): void => setFeedback({ text: error.message, error: true });
-
-  const create = useMutation({
-    mutationFn: (name: string) => send<{ product: Product }>("/products", "POST", { name }),
-    onSuccess: ({ product }) => {
-      setDialog(null);
-      // 新建的产品立刻成为当前项:下一步就是给它归属仓库,不让人再找一遍。
-      setSelectedId(product.id);
-      setFeedback({ text: `已建产品 ${product.name}。`, error: false });
-      void refresh();
-    },
-    onError: failed,
-  });
 
   const rename = useMutation({
     mutationFn: (input: { product: Product; name: string }) =>
@@ -180,53 +117,11 @@ export function ProductsPage({
     onError: failed,
   });
 
-  const attach = useMutation({
-    mutationFn: (input: { product: Product; repo: RegisteredRepo; role: string }) =>
-      send(`/products/${input.product.id}/repos/${input.repo.repoId}`, "PUT", {
-        role: input.role,
-      }),
-    onSuccess: (_value, { product, repo }) => {
-      settled(`已把 ${repoPath(repo)} 归入 ${product.name}。`);
-      // 仓库集变了,系统可能自己开了一场梳理(issue #347):不重读会话列表,它要等下一次
-      // 刷新才出现在左栏。
-      void queryClient.invalidateQueries({ queryKey: sessionsQueryKey(product.id) });
-    },
-    onError: failed,
-  });
-
-  /**
-   * 改一行的仓库职责(CONTEXT.md 仓库职责,issue #341)。走的是归属那个端点:已经归属的
-   * 那一次就是改职责,整格覆盖,空串即清掉。
-   */
-  const setRole = useMutation({
-    mutationFn: (input: { product: Product; repo: ProductRepo; role: string }) =>
-      send(`/products/${input.product.id}/repos/${input.repo.repoId}`, "PUT", {
-        role: input.role,
-      }),
-    onSuccess: (_value, { repo, role }) =>
-      settled(role === "" ? `已清掉 ${repoPath(repo)} 的职责。` : `已记下 ${repoPath(repo)} 的职责。`),
-    onError: failed,
-  });
-
-  const detach = useMutation({
-    mutationFn: (input: { product: Product; repo: ProductRepo }) =>
-      send(`/products/${input.product.id}/repos/${input.repo.repoId}`, "DELETE"),
-    onSuccess: (_value, { product, repo }) => {
-      setDetaching(null);
-      settled(`已把 ${repoPath(repo)} 移出产品。`);
-      void queryClient.invalidateQueries({ queryKey: sessionsQueryKey(product.id) });
-      // 移出会退役涉及这个仓库的产品知识(issue #347),生效列表那一份缓存跟着重读。
-      void queryClient.invalidateQueries({ queryKey: knowledgeQueryKey(product.id) });
-    },
-    onError: failed,
-  });
-
   const remove = useMutation({
     mutationFn: (product: Product) =>
       send<{ cascade: { sessions: number } }>(`/products/${product.id}`, "DELETE"),
     onSuccess: (result, product) => {
       setConfirming(false);
-      setSelectedId(null);
       setFeedback({
         text:
           result.cascade.sessions === 0
@@ -235,6 +130,8 @@ export function ProductsPage({
         error: false,
       });
       void refresh();
+      // 地址上那个产品已经没了,回不带产品的产品页:当前项落到列表第一个上。
+      void navigate({ to: "/products" });
     },
     onError: failed,
   });
@@ -319,164 +216,108 @@ export function ProductsPage({
     },
   });
 
-  /** 建会话。建完直接进那个会话:下一步就是在里面说话,不让人再点一次。 */
-  const createSession = useMutation({
-    mutationFn: (input: {
-      product: Product;
-      purpose: AgentSessionPurpose;
-      /** 人在弹窗里动过的那几行(issue #352);没动过的仓库由服务端回落。 */
-      baselines: SessionBaseline[];
-    }) =>
-      send<{ session: AgentSession }>(`/products/${input.product.id}/sessions`, "POST", {
-        purpose: input.purpose,
-        ...(input.baselines.length === 0 ? {} : { baselines: input.baselines }),
-      }),
-    onSuccess: async ({ session }) => {
-      setDialog(null);
-      await queryClient.invalidateQueries({ queryKey: sessionsQueryKey(session.productId) });
-      void navigate({
-        to: "/products/$productId/sessions/$sessionId",
-        params: { productId: String(session.productId), sessionId: String(session.id) },
-      });
-    },
-    onError: failed,
-  });
-
   const busy =
-    create.isPending ||
     rename.isPending ||
-    attach.isPending ||
-    setRole.isPending ||
-    detach.isPending ||
     remove.isPending ||
     writeKnowledge.isPending ||
     retireKnowledge.isPending ||
     decideProposal.isPending ||
     survey.isPending;
 
-  /** 还没归入任何产品、且在这个账号分配内的仓库。归入第二个产品服务端会回 409。 */
-  const attachable = unassignedRepos(reposQuery.data ?? [], products);
-
-  /**
-   * 建会话弹窗里要列出基点的仓库(issue #352):这个产品的仓库 ∩ 这个账号的仓库分配——与服务端
-   * 给 agent 的那一份同律,`GET /repos` 已经按分配收窄过。分配外的仓库连行都不出现:它的提交
-   * 这个会话读不到。
-   */
-  const assignedRepoIds = new Set((reposQuery.data ?? []).map((row) => row.repoId));
-  const sessionRepos = (selected?.repos ?? []).filter((repo) =>
-    assignedRepoIds.has(repo.repoId));
-
-  function openDialog(next: "create" | "rename" | "attach" | "session" | "survey"): void {
+  function openDialog(next: "rename" | "survey"): void {
     setFeedback(null);
-    create.reset();
     rename.reset();
-    attach.reset();
-    createSession.reset();
     setDialog(next);
   }
 
-  /* 右列:概览卡与产品知识。抽出来是因为 grid 里它在 DOM 上排在两张侧栏卡之间。 */
+  /* 右栏:概览卡与产品知识。 */
   const rightColumn = (
     <>
       {selected === undefined ? null : (
-              <CardShell className="min-w-0 gap-1 px-5 py-4">
-                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-                  <h2 className="min-w-0 break-all text-2xl font-bold tracking-[-0.015em]">
-                    {selected.name}
-                  </h2>
-                  {canWrite ? (
-                    <div className="flex shrink-0 items-center gap-2">
-                      <Button
-                        variant="soft"
-                        color="gray"
-                        size={{ initial: "3", sm: "2" }}
-                        disabled={busy}
-                        onClick={() => openDialog("rename")}
-                      >
-                        改名
-                      </Button>
-                      <Button
-                        variant="soft"
-                        color="red"
-                        size={{ initial: "3", sm: "2" }}
-                        disabled={busy}
-                        onClick={() => {
-                          setFeedback(null);
-                          setConfirming(true);
-                        }}
-                      >
-                        删除
-                      </Button>
-                    </div>
-                  ) : null}
-                </div>
-                {/* 一行元信息。产品知识那一份还没读到时省掉它的两个数,不用占位符冒充。 */}
-                <p className="text-base text-text-muted">
-                  <span className="tabular-nums">{selected.repos.length}</span> 个仓库
-                  {knowledgeQuery.isPending ? null : (
-                    <>
-                      {" · "}
-                      <span className="tabular-nums">{knowledge.length}</span> 条产品知识
-                      {" · "}
-                      <span className={proposals.length > 0 ? "font-semibold text-warning" : undefined}>
-                        <span className="tabular-nums">{proposals.length}</span> 条待确认提案
-                      </span>
-                    </>
-                  )}
-                  {sessionsQuery.isPending ? null : (
-                    <>
-                      {" · "}
-                      <span className="tabular-nums">{sessions.length}</span> 个会话
-                    </>
-                  )}
-                  {" · "}建于 {localMinute(selected.createdAt)}
-                </p>
-              </CardShell>
+        <CardShell className="min-w-0 gap-1 px-5 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+            <h2 className="min-w-0 break-all text-2xl font-bold tracking-[-0.015em]">
+              {selected.name}
+            </h2>
+            {canWrite ? (
+              <div className="flex shrink-0 items-center gap-2">
+                <Button
+                  variant="soft"
+                  color="gray"
+                  size={{ initial: "3", sm: "2" }}
+                  disabled={busy}
+                  onClick={() => openDialog("rename")}
+                >
+                  改名
+                </Button>
+                <Button
+                  variant="soft"
+                  color="red"
+                  size={{ initial: "3", sm: "2" }}
+                  disabled={busy}
+                  onClick={() => {
+                    setFeedback(null);
+                    setConfirming(true);
+                  }}
+                >
+                  删除
+                </Button>
+              </div>
+            ) : null}
+          </div>
+          {/* 一行元信息。产品知识那一份还没读到时省掉它的两个数,不用占位符冒充。 */}
+          <p className="text-base text-text-muted">
+            <span className="tabular-nums">{selected.repos.length}</span> 个仓库
+            {knowledgeQuery.isPending ? null : (
+              <>
+                {" · "}
+                <span className="tabular-nums">{knowledge.length}</span> 条产品知识
+                {" · "}
+                <span className={proposals.length > 0 ? "font-semibold text-warning" : undefined}>
+                  <span className="tabular-nums">{proposals.length}</span> 条待确认提案
+                </span>
+              </>
             )}
-            {selected === undefined ? null : (
-              <KnowledgeSection
-                key={`${selected.id}-${knowledgeFormKey}`}
-                product={selected}
-                knowledge={knowledge}
-                proposals={proposals}
-                pending={knowledgeQuery.isPending}
-                canWrite={canWriteKnowledge}
-                busy={busy}
-                onSurvey={() => openDialog("survey")}
-                onWrite={(statement, repoIds) => {
-                  setFeedback(null);
-                  writeKnowledge.mutate({ product: selected, statement, repoIds });
-                }}
-                onRetire={(entry) => {
-                  setFeedback(null);
-                  retireKnowledge.mutate({ product: selected, entry });
-                }}
-                onDecide={(entry, accept) => {
-                  setFeedback(null);
-                  decideProposal.mutate({ product: selected, entry, accept });
-                }}
-              />
+            {sessionsQuery.isPending ? null : (
+              <>
+                {" · "}
+                <span className="tabular-nums">{sessions.length}</span> 个会话
+              </>
             )}
+            {" · "}建于 {localMinute(selected.createdAt)}
+          </p>
+        </CardShell>
+      )}
+      {selected === undefined ? null : (
+        <KnowledgeSection
+          key={`${selected.id}-${knowledgeFormKey}`}
+          product={selected}
+          knowledge={knowledge}
+          proposals={proposals}
+          pending={knowledgeQuery.isPending}
+          canWrite={canWriteKnowledge}
+          busy={busy}
+          onSurvey={() => openDialog("survey")}
+          onWrite={(statement, repoIds) => {
+            setFeedback(null);
+            writeKnowledge.mutate({ product: selected, statement, repoIds });
+          }}
+          onRetire={(entry) => {
+            setFeedback(null);
+            retireKnowledge.mutate({ product: selected, entry });
+          }}
+          onDecide={(entry, accept) => {
+            setFeedback(null);
+            decideProposal.mutate({ product: selected, entry, accept });
+          }}
+        />
+      )}
     </>
   );
 
   return (
     <PageBody>
-      <PageHeader
-        title="产品"
-        actions={
-          canWrite ? (
-            <Button
-              variant="solid"
-              size={{ initial: "4", sm: "2" }}
-              onClick={() => openDialog("create")}
-            >
-              <PlusIcon aria-hidden />
-              建产品
-            </Button>
-          ) : undefined
-        }
-      />
+      <PageHeader title="产品" />
       {feedback === null ? null : (
         <Callout.Root
           role={feedback.error ? "alert" : "status"}
@@ -498,159 +339,43 @@ export function ProductsPage({
         </Callout.Root>
       )}
 
-      {productsQuery.isPending ? (
-        <div className="flex flex-col gap-3" role="status" aria-label="正在读取产品" aria-busy="true">
-          <Skeleton aria-hidden className="h-28" />
-          <Skeleton aria-hidden className="h-56" />
-        </div>
-      ) : products.length === 0 ? (
-        <CardShell className="px-5 py-4">
-          <EmptyState
-            title="还没有产品"
-            titleAs="h2"
-            description={
-              canWrite
-                ? "把已注册的仓库归到一个产品下,Agent 会话就挂在它上面。"
-                : "产品的可见范围由仓库分配决定。请联系系统管理员为该账号分配负责的仓库。"
-            }
-            {...(canWrite
-              ? {
-                  action: (
-                    <Button variant="solid" size="2" onClick={() => openDialog("create")}>
-                      <PlusIcon aria-hidden />
-                      建产品
-                    </Button>
-                  ),
+      {/*
+        左栏与会话页是同一个组件、同一个位置(spec #349)。产品页整页在 `#panel-main-scroll`
+        里滚,左栏因此 sticky 在顶栏之下自己滚:跳到会话页时它停在同一处,不跟着主区走。
+      */}
+      <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:gap-[18px]">
+        <ProductRail
+          {...(productId === undefined ? {} : { productId })}
+          canWrite={canWrite}
+          canChat={canChat}
+          busy={busy}
+          onFeedback={setFeedback}
+          className="lg:sticky lg:top-[88px] lg:max-h-[calc(100vh-112px)] lg:self-start lg:overflow-y-auto lg:overscroll-y-contain"
+        />
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
+          {productsQuery.isPending ? (
+            <div className="flex flex-col gap-3" role="status" aria-label="正在读取产品" aria-busy="true">
+              <Skeleton aria-hidden className="h-28" />
+              <Skeleton aria-hidden className="h-56" />
+            </div>
+          ) : products.length === 0 ? (
+            <CardShell className="px-5 py-4">
+              <EmptyState
+                title="还没有产品"
+                titleAs="h2"
+                description={
+                  canWrite
+                    ? "把已注册的仓库归到一个产品下,Agent 会话就挂在它上面。左栏的「建产品」开第一个。"
+                    : "产品的可见范围由仓库分配决定。请联系系统管理员为该账号分配负责的仓库。"
                 }
-              : {})}
-          />
-        </CardShell>
-      ) : (
-        // 手机上概览与产品知识紧跟产品列表——先选产品,再看它是什么;仓库与会话排到后面。
-        // 桌面上三张侧栏卡仍在左列、右列跨两行,靠 grid 定位而不是 DOM 顺序。
-        <div className="grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-[264px_minmax(0,1fr)] lg:grid-rows-[auto_1fr] lg:gap-x-[18px] lg:gap-y-2.5">
-          <aside aria-label="产品" className="min-w-0 lg:col-start-1 lg:row-start-1">
-            <RailCard title="产品" count={products.length}>
-              <ul>
-                {products.map((product) => (
-                  <li key={product.id} className="border-t border-line first:border-t-0">
-                    <MasterListItem
-                      selected={selected?.id === product.id}
-                      className="block px-4 py-3 data-[selected=false]:font-medium"
-                      onClick={() => setSelectedId(product.id)}
-                    >
-                      <span className="block break-all text-lg">{product.name}</span>
-                      <MasterListItemText className="mt-px block text-sm font-normal">
-                        <span className="font-mono tabular-nums">{product.repos.length}</span> 个仓库
-                      </MasterListItemText>
-                    </MasterListItem>
-                  </li>
-                ))}
-              </ul>
-            </RailCard>
-          </aside>
-
-          <div className="flex min-w-0 flex-col gap-3 lg:col-start-2 lg:row-span-2 lg:row-start-1">
-            {rightColumn}
-          </div>
-
-          {selected === undefined ? null : (
-            <aside
-              aria-label={`${selected.name} 的仓库与会话`}
-              className="flex min-w-0 flex-col gap-2.5 lg:col-start-1 lg:row-start-2"
-            >
-              <RailCard
-                title={`${selected.name} 的仓库`}
-                action={
-                  canWrite ? (
-                    <Button
-                      variant="soft"
-                      color="gray"
-                      size="1"
-                      disabled={busy}
-                      onClick={() => openDialog("attach")}
-                    >
-                      归属仓库
-                    </Button>
-                  ) : undefined
-                }
-              >
-                {selected.repos.length === 0 ? (
-                  <Text as="p" size="2" color="gray" className="px-4 pb-3">
-                    还没有归入仓库。
-                  </Text>
-                ) : (
-                  <ul>
-                    {selected.repos.map((repo) => (
-                      <li
-                        key={repo.repoId}
-                        className="flex items-start justify-between gap-2 border-t border-line px-4 py-2.5"
-                      >
-                        <div className="flex min-w-0 flex-1 flex-col gap-1">
-                          <span className="min-w-0 break-all font-mono text-base">
-                            {repoPath(repo)}
-                          </span>
-                          {canWrite ? (
-                            <RoleField
-                              repo={repo}
-                              busy={busy}
-                              onSave={(role) => {
-                                setFeedback(null);
-                                setRole.mutate({ product: selected, repo, role });
-                              }}
-                            />
-                          ) : repo.role === null ? null : (
-                            <Text as="span" size="1" color="gray" className="break-all">
-                              {repo.role}
-                            </Text>
-                          )}
-                        </div>
-                        {canWrite ? (
-                          <IconButton
-                            variant="ghost"
-                            color="gray"
-                            size={{ initial: "3", sm: "1" }}
-                            className="shrink-0 max-sm:min-h-11 max-sm:min-w-11"
-                            aria-label={`把 ${repoPath(repo)} 移出 ${selected.name}`}
-                            disabled={busy}
-                            onClick={() => {
-                              setFeedback(null);
-                              setDetaching(repo);
-                            }}
-                          >
-                            <Cross2Icon aria-hidden />
-                          </IconButton>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </RailCard>
-              <SessionRail
-                productId={selected.id}
-                sessions={sessions}
-                pending={sessionsQuery.isPending}
-                canChat={canChat}
-                onCreate={() => openDialog("session")}
               />
-            </aside>
+            </CardShell>
+          ) : (
+            rightColumn
           )}
         </div>
-      )}
+      </div>
 
-      <NameDialog
-        open={dialog === "create"}
-        title="建产品"
-        description="产品是若干已注册仓库的命名集合,名称不可重复。"
-        label="产品名"
-        submitLabel="创建"
-        busy={create.isPending}
-        onClose={() => setDialog(null)}
-        onSubmit={(name) => {
-          setFeedback(null);
-          create.mutate(name);
-        }}
-      />
       {selected === undefined ? null : (
         <>
           <NameDialog
@@ -665,28 +390,6 @@ export function ProductsPage({
             onSubmit={(name) => {
               setFeedback(null);
               rename.mutate({ product: selected, name });
-            }}
-          />
-          <AttachDialog
-            open={dialog === "attach"}
-            product={selected}
-            repos={attachable}
-            busy={attach.isPending}
-            onClose={() => setDialog(null)}
-            onSubmit={(repo, role) => {
-              setFeedback(null);
-              attach.mutate({ product: selected, repo, role });
-            }}
-          />
-          <CreateSessionDialog
-            open={dialog === "session"}
-            productName={selected.name}
-            repos={sessionRepos}
-            busy={createSession.isPending}
-            onClose={() => setDialog(null)}
-            onSubmit={(purpose, baselines) => {
-              setFeedback(null);
-              createSession.mutate({ product: selected, purpose, baselines });
             }}
           />
           <SurveyDialog
@@ -723,309 +426,9 @@ export function ProductsPage({
               },
             }}
           />
-          <ConfirmDialog
-            open={detaching !== null}
-            onOpenChange={(open) => {
-              if (!open) setDetaching(null);
-            }}
-            title={detaching === null ? "" : `把 ${repoPath(detaching)} 移出 ${selected.name}?`}
-            titleSize="4"
-            description={detachConsequence(detaching, knowledge)}
-            cancelLabel="取消"
-            cancelVariant="outline"
-            cancelDisabled={detach.isPending}
-            confirm={{
-              label: detach.isPending ? "移出中…" : "移出",
-              color: "red",
-              disabled: detach.isPending || detaching === null,
-              onClick: () => {
-                if (detaching === null) return;
-                setFeedback(null);
-                detach.mutate({ product: selected, repo: detaching });
-              },
-            }}
-          />
         </>
       )}
     </PageBody>
-  );
-}
-
-/** 建产品与改名共用的一格文本弹窗。关闭即清空,下次打开不带上一次的残值。 */
-function NameDialog({
-  open,
-  title,
-  description,
-  label,
-  submitLabel,
-  initial = "",
-  busy,
-  onClose,
-  onSubmit,
-}: {
-  open: boolean;
-  title: string;
-  description: string;
-  label: string;
-  submitLabel: string;
-  initial?: string;
-  busy: boolean;
-  onClose: () => void;
-  onSubmit: (name: string) => void;
-}) {
-  const [name, setName] = useState(initial);
-  useEffect(() => {
-    if (open) setName(initial);
-  }, [open, initial]);
-
-  const submit = (event: FormEvent): void => {
-    event.preventDefault();
-    onSubmit(name.trim());
-  };
-
-  return (
-    <Dialog.Root
-      open={open}
-      onOpenChange={(next) => {
-        if (!next) onClose();
-      }}
-    >
-      <Dialog.Content maxWidth="440px" size={{ initial: "2", sm: "3" }}>
-        <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
-          <div>
-            <Dialog.Title size="4" mb="2">
-              {title}
-            </Dialog.Title>
-            <Dialog.Description size="2" color="gray">
-              {description}
-            </Dialog.Description>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Text as="label" htmlFor="product-name" size="2" weight="medium">
-              {label}
-            </Text>
-            <TextField.Root
-              id="product-name"
-              size={{ initial: "3", sm: "2" }}
-              className="min-w-0 w-full max-sm:min-h-11"
-              autoFocus
-              maxLength={64}
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-            />
-          </div>
-          <Flex gap="3" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
-            <Dialog.Close>
-              <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
-                取消
-              </Button>
-            </Dialog.Close>
-            <Button
-              type="submit"
-              variant="solid"
-              size={{ initial: "4", sm: "2" }}
-              disabled={busy || name.trim() === ""}
-            >
-              {busy ? "提交中…" : submitLabel}
-            </Button>
-          </Flex>
-        </form>
-      </Dialog.Content>
-    </Dialog.Root>
-  );
-}
-
-/**
- * 一行仓库的职责(CONTEXT.md 仓库职责,issue #341)。平时是一段可换行的文本,点它进编辑:
- * Enter 或失焦保存并退出,Escape 放回原值并退出;与库里那一份相同时一律不发请求,失焦不该
- * 变成一次空写。
- */
-function RoleField({
-  repo,
-  busy,
-  onSave,
-}: {
-  repo: ProductRepo;
-  busy: boolean;
-  onSave: (role: string) => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [text, setText] = useState(repo.role ?? "");
-  useEffect(() => setText(repo.role ?? ""), [repo.role]);
-  // Escape 之后输入框卸载,浏览器可能还补一次 blur;那一次不能把改了一半的文字存下去。
-  const cancelled = useRef(false);
-  // 职责最长 64 字,264px 的栏里一行装不下;编辑框随内容长高,不让开头滚出视野。
-  const area = useRef<HTMLTextAreaElement>(null);
-  useLayoutEffect(() => {
-    const el = area.current;
-    if (el === null) return;
-    el.style.overflow = "hidden";
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [text, editing]);
-
-  if (!editing) {
-    return (
-      <button
-        type="button"
-        aria-label={`改 ${repoPath(repo)} 的职责`}
-        disabled={busy}
-        onClick={() => setEditing(true)}
-        className="-mx-1 flex min-w-0 items-start gap-1 rounded-sm px-1 py-0.5 text-left text-base transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 max-sm:min-h-11"
-      >
-        <span className={repo.role === null ? "min-w-0 break-words text-text-disabled" : "min-w-0 break-words"}>
-          {repo.role ?? "填写职责"}
-        </span>
-        <Pencil1Icon aria-hidden className="mt-0.5 shrink-0 text-text-faint" />
-      </button>
-    );
-  }
-
-  const finish = (): void => {
-    setEditing(false);
-    if (cancelled.current) return;
-    if (text.trim() !== (repo.role ?? "")) onSave(text.trim());
-  };
-
-  return (
-    <TextArea
-      ref={area}
-      size="1"
-      rows={1}
-      resize="none"
-      className="min-h-0 min-w-0 w-full"
-      aria-label={`${repoPath(repo)} 的职责`}
-      placeholder="职责(选填)"
-      maxLength={64}
-      autoFocus
-      disabled={busy}
-      value={text}
-      onChange={(event) => setText(event.target.value)}
-      onFocus={() => {
-        cancelled.current = false;
-      }}
-      onBlur={finish}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          // 职责是一行文本,回车即保存,不进换行。
-          event.preventDefault();
-          event.currentTarget.blur();
-        } else if (event.key === "Escape") {
-          cancelled.current = true;
-          setText(repo.role ?? "");
-          setEditing(false);
-        }
-      }}
-    />
-  );
-}
-
-/** 归属仓库:候选只有还没归入任何产品的那些,一仓库至多属一个产品。 */
-function AttachDialog({
-  open,
-  product,
-  repos,
-  busy,
-  onClose,
-  onSubmit,
-}: {
-  open: boolean;
-  product: Product;
-  repos: readonly RegisteredRepo[];
-  busy: boolean;
-  onClose: () => void;
-  onSubmit: (repo: RegisteredRepo, role: string) => void;
-}) {
-  const [repoId, setRepoId] = useState<string>("");
-  const [role, setRole] = useState("");
-  useEffect(() => {
-    if (open) {
-      setRepoId("");
-      setRole("");
-    }
-  }, [open]);
-
-  const chosen = repos.find((row) => String(row.repoId) === repoId);
-  const submit = (event: FormEvent): void => {
-    event.preventDefault();
-    if (chosen !== undefined) onSubmit(chosen, role.trim());
-  };
-
-  return (
-    <Dialog.Root
-      open={open}
-      onOpenChange={(next) => {
-        if (!next) onClose();
-      }}
-    >
-      <Dialog.Content maxWidth="440px" size={{ initial: "2", sm: "3" }}>
-        <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
-          <div>
-            <Dialog.Title size="4" mb="2">
-              归属仓库
-            </Dialog.Title>
-            <Dialog.Description size="2" color="gray">
-              把一个已注册仓库归入 {product.name}。一个仓库至多属于一个产品。
-            </Dialog.Description>
-          </div>
-          {repos.length === 0 ? (
-            <Text as="p" size="2" color="gray">
-              没有可归入的仓库:分配内的仓库都已经归在某个产品下了。
-            </Text>
-          ) : (
-            <div className="flex flex-col gap-1.5">
-              <Text as="span" id="attach-repo-label" size="2" weight="medium">
-                仓库
-              </Text>
-              <Select.Root size="3" value={repoId} onValueChange={setRepoId}>
-                <Select.Trigger
-                  aria-labelledby="attach-repo-label"
-                  placeholder="选一个仓库"
-                  className="min-w-0 w-full"
-                />
-                <Select.Content position="popper">
-                  {repos.map((row) => (
-                    <Select.Item key={row.repoId} value={String(row.repoId)}>
-                      {repoPath(row)}
-                    </Select.Item>
-                  ))}
-                </Select.Content>
-              </Select.Root>
-              <Text as="label" htmlFor="attach-repo-role" size="2" weight="medium" mt="2">
-                职责
-              </Text>
-              <TextField.Root
-                id="attach-repo-role"
-                size={{ initial: "3", sm: "2" }}
-                className="min-w-0 w-full max-sm:min-h-11"
-                placeholder="选填,例如:后端 API(Node)"
-                maxLength={64}
-                value={role}
-                onChange={(event) => setRole(event.target.value)}
-              />
-              <Text as="p" size="1" color="gray">
-                这个仓库在这个产品里干什么。Agent 会话的系统提示会把它写给 agent。
-              </Text>
-            </div>
-          )}
-          <Flex gap="3" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
-            <Dialog.Close>
-              <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
-                取消
-              </Button>
-            </Dialog.Close>
-            <Button
-              type="submit"
-              variant="solid"
-              size={{ initial: "4", sm: "2" }}
-              disabled={busy || chosen === undefined}
-            >
-              {busy ? "归属中…" : "归属"}
-            </Button>
-          </Flex>
-        </form>
-      </Dialog.Content>
-    </Dialog.Root>
   );
 }
 

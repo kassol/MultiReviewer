@@ -16,7 +16,6 @@ import {
   ListBulletIcon,
   MagnifyingGlassIcon,
   PaperPlaneIcon,
-  PlusIcon,
   ReaderIcon,
   StopIcon,
   TrashIcon,
@@ -24,8 +23,6 @@ import {
 import {
   Badge,
   Callout,
-  Dialog,
-  Flex,
   IconButton,
   SegmentedControl,
   Select,
@@ -35,24 +32,14 @@ import {
   Tooltip,
 } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { CommitChip } from "@/components/commit-chip";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import {
-  baselineRepoKey,
-  pickedBaselines,
-  RepoBaselineRows,
-  type BaselineRepo,
-  type SessionBaseline,
-} from "@/components/repo-baseline-rows";
-import type { CommitSelection } from "@/commit-picker";
 import { EmptyState } from "@/components/empty-state";
 import { Markdown } from "@/components/markdown";
-import { MasterListItem, MasterListItemText } from "@/components/master-list-item";
 import { PageBody } from "@/components/page-body";
-import { RailCard } from "@/components/rail-card";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import {
@@ -72,36 +59,18 @@ import {
   type ToolStep,
   type ConversationGroup,
 } from "@/lib/agent-session-records";
+import {
+  agentSessionQueryKey,
+  PURPOSE_LABEL,
+  sessionsQueryKey,
+  type AgentSession,
+  type AgentSessionPurpose,
+} from "@/lib/agent-sessions";
 import { localMinute, localSecond } from "@/lib/time";
 
 import { api, apiUrl, errorText, fetchJson, send } from "./api.ts";
+import { ProductRail, useProductDetail } from "./product-rail.tsx";
 import { StreamStatus, useTrace } from "./run-trace.tsx";
-
-/** 会话用途(CONTEXT.md 会话用途)。与服务端同一份取值。 */
-export const AGENT_SESSION_PURPOSES = [
-  "requirement-breakdown",
-  "open-conversation",
-  "product-survey",
-] as const;
-
-export type AgentSessionPurpose = (typeof AGENT_SESSION_PURPOSES)[number];
-
-export const PURPOSE_LABEL: Record<AgentSessionPurpose, string> = {
-  "requirement-breakdown": "需求拆分",
-  "open-conversation": "开放对话",
-  "product-survey": "产品梳理",
-};
-
-/**
- * 建会话弹窗提供的用途(issue #345)。产品梳理不在这一份里:那一种只有系统开得了,人点的是
- * 产品页产品知识区里的「重梳」。
- */
-const CREATABLE_PURPOSES = AGENT_SESSION_PURPOSES.filter(
-  (purpose) => purpose !== "product-survey",
-);
-
-/** 建会话时默认选中的用途:现有行为的延续。 */
-const DEFAULT_PURPOSE: AgentSessionPurpose = "requirement-breakdown";
 
 /**
  * 这个用途有没有产出类型(CONTEXT.md 会话用途)。开放对话只聊、交不出产出,右栏产出区因此
@@ -113,237 +82,6 @@ const PURPOSE_HAS_OUTPUT: Record<AgentSessionPurpose, boolean> = {
   // 产品梳理交的是产品知识提案,它们在产品页上确认,不是这一页的会话产出(issue #345)。
   "product-survey": false,
 };
-
-/**
- * 一个会话按仓库开在哪个 commit 上(issue #351)。`branch` 是那个 commit 来自哪条分支或哪个 Tag——
- * 没有显式选择即这个仓库生效的默认分支(CONTEXT.md 默认分支)。
- */
-export type AgentSessionBaseline = {
-  owner: string;
-  repo: string;
-  sha: string;
-  branch: string;
-};
-
-export type AgentSession = {
-  id: number;
-  productId: number;
-  createdBy: string;
-  purpose: AgentSessionPurpose;
-  /** 「在跑」是进程内的事实,服务端每次读会话时按会话运行时覆盖这一格(issue #333)。 */
-  status: "idle" | "running";
-  createdAt: string;
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadTokens: number;
-    cacheWriteTokens: number;
-    totalTokens: number;
-  };
-  /** 这个会话每个仓库开在哪个 commit(issue #351)。这一票之前建的会话是空的。 */
-  baselines: AgentSessionBaseline[];
-};
-
-type Product = {
-  id: number;
-  name: string;
-  createdAt: string;
-  repos: { repoId: number; owner: string; repo: string }[];
-};
-
-/** 一个产品下「我的会话」那一份。产品页左栏与会话详情页左栏读的是同一个查询键。 */
-export function sessionsQueryKey(productId: number): readonly unknown[] {
-  return ["products", productId, "sessions"];
-}
-
-export function useProductSessions(productId: number | undefined) {
-  return useQuery({
-    queryKey: sessionsQueryKey(productId ?? 0),
-    queryFn: async () =>
-      (await fetchJson<{ sessions: AgentSession[] }>(`/products/${productId!}/sessions`)).sessions,
-    enabled: productId !== undefined,
-  });
-}
-
-/**
- * 左栏的「我的会话」卡(原型 A 的第三段)。产品页与会话详情页共用:列的都是当前产品下
- * 这个账号自己的会话(系统管理员读到的是所有人的,由服务端决定,前端不自己判)。
- */
-export function SessionRail({
-  productId,
-  sessions,
-  pending,
-  activeSessionId,
-  canChat,
-  onCreate,
-}: {
-  productId: number;
-  sessions: readonly AgentSession[];
-  pending: boolean;
-  activeSessionId?: number;
-  canChat: boolean;
-  onCreate?: () => void;
-}) {
-  return (
-    <RailCard
-      title="我的会话"
-      {...(pending ? {} : { count: sessions.length })}
-      action={
-        canChat && onCreate !== undefined ? (
-          <Button variant="soft" color="gray" size="1" onClick={onCreate}>
-            <PlusIcon aria-hidden />
-            建会话
-          </Button>
-        ) : undefined
-      }
-    >
-      {pending ? (
-        <Skeleton aria-hidden className="mx-4 mb-3 h-10" />
-      ) : sessions.length === 0 ? (
-        <Text as="p" size="2" color="gray" className="px-4 pb-3">
-          {!canChat && onCreate !== undefined
-            ? "还没有会话。建会话要「会话对话」权限。"
-            : "还没有会话。"}
-        </Text>
-      ) : (
-        <ul>
-          {sessions.map((session) => (
-            <li key={session.id} className="border-t border-line first:border-t-0">
-              <MasterListItem
-                asChild
-                selected={session.id === activeSessionId}
-                className="block px-4 py-2.5"
-              >
-                <Link
-                  to="/products/$productId/sessions/$sessionId"
-                  params={{ productId: String(productId), sessionId: String(session.id) }}
-                >
-                  <span className="block truncate text-base">
-                    {PURPOSE_LABEL[session.purpose]}
-                  </span>
-                  <MasterListItemText className="mt-px block text-sm font-normal">
-                    {localMinute(session.createdAt)} · {session.createdBy}
-                  </MasterListItemText>
-                </Link>
-              </MasterListItem>
-            </li>
-          ))}
-        </ul>
-      )}
-    </RailCard>
-  );
-}
-
-/**
- * 建会话弹窗。用途建时必填、之后不变,所以它只在这里出现一次;下拉当前只有需求拆分一项,
- * 仍是下拉而不是一句说明——写代码类用途接入时这里多一项就够。
- *
- * 用途之下是按仓库选基点的行组(issue #352):每个仓库一行,预选它生效的默认分支当前 head。
- * 只提交人动过的那几行——没动过的行由服务端回落到同一个 head,两侧说的是同一件事。
- */
-export function CreateSessionDialog({
-  open,
-  productName,
-  repos,
-  busy,
-  onClose,
-  onSubmit,
-}: {
-  open: boolean;
-  productName: string;
-  /** 这个会话读得到的仓库:产品的仓库 ∩ 这个账号的仓库分配。 */
-  repos: readonly BaselineRepo[];
-  busy: boolean;
-  onClose: () => void;
-  onSubmit: (purpose: AgentSessionPurpose, baselines: SessionBaseline[]) => void;
-}) {
-  const [purpose, setPurpose] = useState<string>(DEFAULT_PURPOSE);
-  const [picked, setPicked] = useState<Record<string, CommitSelection>>({});
-  useEffect(() => {
-    if (open) {
-      setPurpose(DEFAULT_PURPOSE);
-      setPicked({});
-    }
-  }, [open]);
-
-  const chosen = CREATABLE_PURPOSES.find((value) => value === purpose);
-  const submit = (event: FormEvent): void => {
-    event.preventDefault();
-    if (chosen !== undefined) onSubmit(chosen, pickedBaselines(picked));
-  };
-
-  return (
-    <Dialog.Root
-      open={open}
-      onOpenChange={(next) => {
-        if (!next) onClose();
-      }}
-    >
-      <Dialog.Content maxWidth="520px" size={{ initial: "2", sm: "3" }}>
-        <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
-          <div>
-            <Dialog.Title size="4" mb="2">
-              建会话
-            </Dialog.Title>
-            <Dialog.Description size="2" color="gray">
-              在 {productName} 下开一个 Agent 会话。用途决定它的工具面与产出类型,建后不可更改。
-            </Dialog.Description>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Text as="span" id="session-purpose-label" size="2" weight="medium">
-              会话用途
-            </Text>
-            <Select.Root size="3" value={purpose} onValueChange={setPurpose}>
-              <Select.Trigger
-                aria-labelledby="session-purpose-label"
-                placeholder="选一个用途"
-                className="min-w-0 w-full"
-              />
-              <Select.Content position="popper">
-                {CREATABLE_PURPOSES.map((value) => (
-                  <Select.Item key={value} value={value}>
-                    {PURPOSE_LABEL[value]}
-                  </Select.Item>
-                ))}
-              </Select.Content>
-            </Select.Root>
-          </div>
-          {repos.length === 0 ? null : (
-            <div className="flex flex-col gap-1.5">
-              <Text as="span" size="2" weight="medium">
-                每个仓库读哪个提交
-              </Text>
-              <Text as="span" size="1" color="gray">
-                不动即读这个仓库生效默认分支此刻的 head。
-              </Text>
-              <RepoBaselineRows
-                repos={repos}
-                picked={picked}
-                onPick={(repo, selection) =>
-                  setPicked((current) => ({ ...current, [baselineRepoKey(repo)]: selection }))}
-              />
-            </div>
-          )}
-          <Flex gap="3" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
-            <Dialog.Close>
-              <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>
-                取消
-              </Button>
-            </Dialog.Close>
-            <Button
-              type="submit"
-              variant="solid"
-              size={{ initial: "4", sm: "2" }}
-              disabled={busy || chosen === undefined}
-            >
-              {busy ? "创建中…" : "创建"}
-            </Button>
-          </Flex>
-        </form>
-      </Dialog.Content>
-    </Dialog.Root>
-  );
-}
 
 /** 排队中的一条消息(issue #334)。Pi 不支持单条撤回,所以它没有标识,也没有单条动作。 */
 export type QueuedMessage = { mode: "followUp" | "steer"; text: string };
@@ -1341,11 +1079,16 @@ export function AgentSessionPage({
   sessionId,
   username,
   isSystemAdmin,
+  canWrite,
+  canChat,
 }: {
   productId: number;
   sessionId: number;
   username: string;
   isSystemAdmin: boolean;
+  /** 左栏那几个写动作的权限格,与产品页同一份判据。 */
+  canWrite: boolean;
+  canChat: boolean;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -1361,7 +1104,7 @@ export function AgentSessionPage({
   const [pane, setPane] = useState<"chat" | "output">("chat");
 
   const sessionQuery = useQuery({
-    queryKey: ["agent-sessions", sessionId],
+    queryKey: agentSessionQueryKey(sessionId),
     queryFn: () =>
       fetchJson<{
         session: AgentSession;
@@ -1374,11 +1117,7 @@ export function AgentSessionPage({
     // (issue #333、#334)。
     refetchInterval: (query) => (query.state.data?.session.status === "running" ? 2000 : false),
   });
-  const productQuery = useQuery({
-    queryKey: ["products", productId],
-    queryFn: async () => (await fetchJson<{ product: Product }>(`/products/${productId}`)).product,
-  });
-  const sessionsQuery = useProductSessions(productId);
+  const product = useProductDetail(productId).data?.product;
 
   const session = sessionQuery.data?.session;
   const queue = sessionQuery.data?.queue ?? [];
@@ -1396,7 +1135,7 @@ export function AgentSessionPage({
     session !== undefined && session.purpose === "product-survey" && isSystemAdmin;
   const hasOutput = session !== undefined && PURPOSE_HAS_OUTPUT[session.purpose];
   const refresh = (): Promise<void> =>
-    queryClient.invalidateQueries({ queryKey: ["agent-sessions", sessionId] });
+    queryClient.invalidateQueries({ queryKey: agentSessionQueryKey(sessionId) });
   const post = useMutation({
     mutationFn: (text: string) =>
       send(`/agent-sessions/${sessionId}/messages`, "POST", {
@@ -1449,7 +1188,7 @@ export function AgentSessionPage({
       setConfirming(false);
       await queryClient.invalidateQueries({ queryKey: sessionsQueryKey(productId) });
       // 这一条已经不在了,回产品页;留在这里只会看到一句 404。
-      void navigate({ to: "/products" });
+      void navigate({ to: "/products/$productId", params: { productId: String(productId) } });
     },
     onError: (error: Error) => {
       setConfirming(false);
@@ -1492,49 +1231,30 @@ export function AgentSessionPage({
       )}
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 lg:flex-row lg:gap-[18px]">
-        <aside
-          aria-label="产品与我的会话"
-          className="flex w-full shrink-0 flex-col gap-2.5 max-lg:hidden lg:h-full lg:w-[264px] lg:overflow-y-auto"
-        >
-          <RailCard title="产品">
-            {productQuery.data === undefined ? (
-              <Skeleton aria-hidden className="mx-4 mb-3 h-10" />
-            ) : (
-              <div className="px-4 pb-3">
-                <Link to="/products" className="block break-all text-lg font-medium">
-                  {productQuery.data.name}
-                </Link>
-                <ul className="mt-1">
-                  {productQuery.data.repos.map((repo) => (
-                    <li key={repo.repoId} className="break-all font-mono text-sm text-text-muted">
-                      {repo.owner}/{repo.repo}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </RailCard>
-          <SessionRail
-            productId={productId}
-            sessions={sessionsQuery.data ?? []}
-            pending={sessionsQuery.isPending}
-            activeSessionId={sessionId}
-            canChat={false}
-          />
-        </aside>
+        {/* 左栏与产品页是同一个组件、同一个位置(spec #349):整屏不滚,左栏自己滚。 */}
+        <ProductRail
+          productId={productId}
+          activeSessionId={sessionId}
+          canWrite={canWrite}
+          canChat={canChat}
+          onFeedback={setFeedback}
+          className="max-lg:hidden lg:h-full lg:overflow-y-auto lg:overscroll-y-contain"
+        />
 
         <CardShell className="h-full min-h-0 min-w-0 flex-1 px-5 py-4">
           <div className="flex shrink-0 flex-wrap items-start justify-between gap-x-3 gap-y-2 border-b border-line pb-3">
             {/* 标题块占满剩余宽度,动作组才留在同一行;窄屏上动作只剩图标,文字给读屏。 */}
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-              {productQuery.data === undefined ? (
+              {product === undefined ? (
                 <Skeleton aria-hidden className="h-4 w-24" />
               ) : (
+                // 窄屏上左栏不显示,这一行就是回产品的唯一入口(DESIGN.md 7.5)。
                 <Link
-                  to="/products"
+                  to="/products/$productId"
+                  params={{ productId: String(productId) }}
                   className="w-fit break-all text-sm text-text-muted transition-colors hover:text-text"
                 >
-                  {productQuery.data.name}
+                  {product.name}
                 </Link>
               )}
               <div className="flex flex-wrap items-center gap-2">
@@ -1689,7 +1409,11 @@ export function AgentSessionPage({
                   {session.purpose === "product-survey" ? (
                     <>
                       产品梳理由系统发起,不接续写;它交的提案在
-                      <Link to="/products" className="text-primary underline underline-offset-4">
+                      <Link
+                        to="/products/$productId"
+                        params={{ productId: String(productId) }}
+                        className="text-primary underline underline-offset-4"
+                      >
                         产品页
                       </Link>
                       确认或驳回。
