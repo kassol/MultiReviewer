@@ -2770,7 +2770,7 @@ export type AgentSessionStatus = "idle" | "running";
 
 /**
  * 一个 Agent 会话开在哪个 commit 上,按仓库一条(issue #351)。`sha` 是那棵工作树检出的
- * commit,`branch` 是它来自哪条分支(没有显式选择即这个仓库生效的默认分支,CONTEXT.md
+ * commit,`branch` 是它来自哪条分支或哪个 Tag(没有显式选择即这个仓库生效的默认分支,CONTEXT.md
  * 默认分支)。
  */
 export type AgentSessionBaseline = {

@@ -16,7 +16,7 @@ import { CommitPicker, type CommitSelection } from "../commit-picker.tsx";
 /** 一个仓库的坐标。行组只认这一格,产品的仓库清单与仓库页各自的多余字段不进来。 */
 export type BaselineRepo = { owner: string; repo: string };
 
-/** 建会话与重梳接口收的那一行基点(issue #352)。`branch` 是他选它时浏览的那条分支。 */
+/** 建会话与重梳接口收的那一行基点(issue #352)。`branch` 是他选它时浏览的那条分支或那个 Tag 的名字。 */
 export type SessionBaseline = { owner: string; repo: string; sha: string; branch?: string };
 
 /** 一个仓库在行组里的键。调用方按它存人选过的那几行。 */
@@ -189,8 +189,9 @@ export function RepoBaselineRows({
 }
 
 /**
- * 行组里人动过的那几行,换成建会话与重梳接口收的那一份(issue #352)。分支名只在他是从分支
- * 里选的时候带上——从 Tag 里选的那一个不属于任何分支,服务端按生效的默认分支记。
+ * 行组里人动过的那几行,换成建会话与重梳接口收的那一份(issue #352)。`branch` 记他选它时
+ * 浏览的来源名——分支名或 Tag 名——会话头部说的就是这个来源;直接给 sha 没有来源的那一行
+ * 不带,服务端按生效的默认分支记。
  */
 export function pickedBaselines(
   picked: Readonly<Record<string, CommitSelection>>,
@@ -201,7 +202,7 @@ export function pickedBaselines(
       owner,
       repo,
       sha: selection.sha,
-      ...(selection.source?.kind === "branch" ? { branch: selection.source.name } : {}),
+      ...(selection.source === undefined ? {} : { branch: selection.source.name }),
     };
   });
 }

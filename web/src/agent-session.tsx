@@ -115,7 +115,7 @@ const PURPOSE_HAS_OUTPUT: Record<AgentSessionPurpose, boolean> = {
 };
 
 /**
- * 一个会话按仓库开在哪个 commit 上(issue #351)。`branch` 是那个 commit 来自哪条分支——
+ * 一个会话按仓库开在哪个 commit 上(issue #351)。`branch` 是那个 commit 来自哪条分支或哪个 Tag——
  * 没有显式选择即这个仓库生效的默认分支(CONTEXT.md 默认分支)。
  */
 export type AgentSessionBaseline = {
