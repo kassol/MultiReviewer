@@ -2782,6 +2782,9 @@ export type AgentSessionBaseline = {
   kind: "branch" | "tag";
 };
 
+/** 库里那一列的形状:记来源种类之前落下的行没有 `kind`,读的时候补成分支。 */
+type StoredAgentSessionBaseline = Omit<AgentSessionBaseline, "kind"> & { kind?: AgentSessionBaseline["kind"] };
+
 /** 一个 Agent 会话(CONTEXT.md Agent 会话)。读与写都只经这一种形状。 */
 export type AgentSessionRecord = {
   id: number;
@@ -2961,7 +2964,7 @@ function agentSession(row: Record<string, unknown>): AgentSessionRecord {
     baselines:
       row["baselines"] === null || row["baselines"] === undefined
         ? []
-        : (JSON.parse(String(row["baselines"])) as AgentSessionBaseline[]).map((one) => ({
+        : (JSON.parse(String(row["baselines"])) as StoredAgentSessionBaseline[]).map((one) => ({
             ...one,
             kind: one.kind ?? "branch",
           })),

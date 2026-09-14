@@ -3180,12 +3180,21 @@ async function handleUpdateAgentSessionBaseline(
   res: ServerResponse,
   deps: WebhookServerDeps,
   sessionId: number,
-  owner: string,
-  repo: string,
+  rawOwner: string,
+  rawRepo: string,
   caller: PanelCaller,
 ): Promise<void> {
   const session = agentSessionForCreator(res, deps, sessionId, caller);
   if (session === undefined) return;
+  // 路径段是前端 encode 过的(与审查阶段 id 同一读法);解不开的当作没有这个仓库。
+  let owner: string;
+  let repo: string;
+  try {
+    owner = decodeURIComponent(rawOwner);
+    repo = decodeURIComponent(rawRepo);
+  } catch {
+    return sendJson(res, 404, { error: `这个会话没有 ${rawOwner}/${rawRepo} 的会话基点` });
+  }
   const baseline = session.baselines.find((one) => one.owner === owner && one.repo === repo);
   if (baseline === undefined) {
     return sendJson(res, 404, { error: `这个会话没有 ${owner}/${repo} 的会话基点` });
