@@ -23,7 +23,6 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { PageBody } from "@/components/page-body";
-import { PageHeader } from "@/components/page-header";
 import {
   baselineRepoKey,
   pickedBaselines,
@@ -317,7 +316,6 @@ export function ProductsPage({
 
   return (
     <PageBody>
-      <PageHeader title="产品" />
       {feedback === null ? null : (
         <Callout.Root
           role={feedback.error ? "alert" : "status"}
