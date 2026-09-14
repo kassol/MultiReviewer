@@ -4,7 +4,7 @@
  * 每个 Reviewer 一个进程,进程的环境里只有它自己那一家厂商的凭据(见 `env.ts`)。
  * 这里跑一个 Pi 会话,把模型经 `report_finding` 报出的每条原始条目立即回传主进程。
  */
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import type {
@@ -36,7 +36,7 @@ import {
   factBullet,
   factRuleIdRejection,
   fileLines,
-  numberedReadTool,
+  sessionReadOnlyTools,
   prepareAgentRuntime,
   priorFindingRejection,
   ruleBullet,
@@ -86,6 +86,8 @@ Report each problem by calling the report_finding tool exactly once per problem.
 
 The read tool prefixes every line with its line number, like \`12: code\`. These numbers are the only valid source for the line field of report_finding — copy the number, never count lines yourself. The prefix is not part of the file content. In the snippet field, copy the exact text of the line the problem starts on, without the line number prefix. Pick the most distinctive line of the problem, not a bare brace. A finding whose snippet does not match the file at the reported line is rejected back to you.
 
+Every path you pass to read, grep, find and ls stays inside the repository — an absolute path outside it, or a path that climbs out with .., is refused.
+
 ${EVIDENCE_PARAGRAPH}
 
 Every finding must be anchored on a line this change actually touches. Read as widely as you need — callers, other branches, unchanged files — but report the problem at the end of its causal chain on the changed side: the changed line that is wrong, or the changed line that depends on the unchanged code you object to. A finding anchored outside the diff is rejected back to you, and a finding you never re-anchor is lost.
@@ -110,6 +112,8 @@ export const VERDICT_ONLY_SYSTEM_PROMPT = `You are a code reviewer. This round i
 You may open any file in the repository, not only the changed ones — check callers, other branches of a changed function, and the conventions already established in the same module. Do not go looking for new problems: this round has no tool to report one, and a problem written in prose does not exist. When you have given a verdict on every listed finding, stop.
 
 The read tool prefixes every line with its line number, like \`12: code\`. These numbers are the only valid source for the line field of a verdict position — copy the number, never count lines yourself. The prefix is not part of the file content. In the snippet field, copy the exact text of that line, without the line number prefix.
+
+Every path you pass to read, grep, find and ls stays inside the repository — an absolute path outside it, or a path that climbs out with .., is refused.
 
 ${EVIDENCE_PARAGRAPH}
 
@@ -625,7 +629,7 @@ async function run(request: ReviewerRequest): Promise<void> {
       // 只复核那一轮连实现都不铺:留着它,Pi 的 customTools 同名覆盖会把一个没在清单里
       // 的工具重新暴露出来(issue #242)。
       ...(request.mode === "verdict-only" ? [] : [reportFinding]),
-      numberedReadTool(request.worktreePath),
+      ...(sessionReadOnlyTools(request.worktreePath) as unknown as ToolDefinition[]),
       gitTool(request.worktreePath),
       ...(request.history.length === 0 ? [] : [reviewPriorFinding]),
     ],

@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { repoPrefixedGitArgs, sessionGitTool } from "../src/reviewer/git-tool.ts";
 import { AGENT_STATEMENT_LIMIT } from "../src/reviewer/rule-agent.ts";
 import { productSurveyRejection } from "../src/reviewer/session-output-tools.ts";
-import { outsideSessionRoot, sessionReadOnlyTools } from "../src/reviewer/session-worker.ts";
+import { outsideSessionRoot, sessionReadOnlyTools } from "../src/reviewer/worker-tools.ts";
 import { makeRepo, testCleanups } from "./support/git-fixture.ts";
 
 const cleanups = testCleanups();

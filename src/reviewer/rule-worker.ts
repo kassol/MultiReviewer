@@ -5,7 +5,7 @@
  * 读不写,产出经一个自定义工具逐条回传主进程。区别只在任务本身——这里读的是基点 commit
  * 上的仓库全貌,产出的是规范性陈述,不是 Finding。
  */
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import type { KnowledgeEntry, PendingProposal } from "../review/finding.ts";
@@ -22,7 +22,7 @@ import type {
 import { reviewerEventStream } from "./trace-events.ts";
 import {
   READ_ONLY_TOOLS,
-  numberedReadTool,
+  sessionReadOnlyTools,
   oneLine,
   prepareAgentRuntime,
   runAgentWorker,
@@ -59,7 +59,7 @@ Write the statement field in Chinese. The reviewers of this repository read Chin
 
 Narrate in Chinese too: everything you say between tool calls goes into a trace read by this repository's maintainers, so write those sentences in Chinese — one short line on what you are about to look at and what you are trying to establish, before each group of tool calls.
 
-The read tool prefixes every line with its line number, like \`12: code\`. The prefix is not part of the file content.`;
+The read tool prefixes every line with its line number, like \`12: code\`. The prefix is not part of the file content. Every path you pass to read, grep, find and ls stays inside the repository — an absolute path outside it, or a path that climbs out with .., is refused.`;
 
 /**
  * 知识整理的系统提示(CONTEXT.md 知识整理,issue #284、#285)。整理的对象是文本,不是
@@ -670,7 +670,7 @@ async function run(request: RuleWorkerRequest): Promise<void> {
       : [...READ_ONLY_TOOLS, PROPOSE_RULE_TOOL],
     customTools: consolidating
       ? [mergeProposals, retargetProposal, proposeRule]
-      : [proposeRule, numberedReadTool(request.worktreePath)],
+      : [proposeRule, ...(sessionReadOnlyTools(request.worktreePath) as unknown as ToolDefinition[])],
     prompt: promptFor(request),
     send,
     onEvent: forwardEvent,

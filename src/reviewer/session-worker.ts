@@ -8,20 +8,10 @@
  * (ADR 0031),落库、用量累加与广播都在那一侧——这一侧只订阅并转发,不做判断(ADR 0017)。
  * 流式 delta 与工具开始也只转发,合并成瞬时帧在主进程。
  *
- * 工具面全部圈在会话根上:`read` 沿用带号读那一份,`grep` / `find` / `ls` 覆盖 Pi 内建并在
- * 执行前判一次根(Pi 内建三者不查根,issue #328),受控 git 按路径前缀选工作树。不注册
- * bash / edit / write。
+ * 工具面全部圈在会话根上:只读四件套是 `worker-tools.ts` 的 `sessionReadOnlyTools`(与另
+ * 三个 worker 同一份,issue #328),受控 git 按路径前缀选工作树。不注册 bash / edit / write。
  */
-import { realpathSync } from "node:fs";
-import { resolve, sep } from "node:path";
-
-import {
-  type AgentSession,
-  createFindToolDefinition,
-  createGrepToolDefinition,
-  createLsToolDefinition,
-  type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import { type AgentSession, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import { GIT_TOOL, sessionGitTool } from "./git-tool.ts";
@@ -53,72 +43,14 @@ import {
 import {
   READ_ONLY_TOOLS,
   countOf,
-  numberedReadTool,
   openAgentSession,
   prepareAgentRuntime,
+  sessionReadOnlyTools,
   sessionThinkingLevel,
 } from "./worker-tools.ts";
 
 function send(message: SessionWorkerMessage): void {
   process.send?.(message);
-}
-
-/**
- * 这个路径出不出会话根。
- *
- * 先按词法判:绝对路径与含 `..` 的路径在这一步就拒。再按 realpath 判一次——仓库里可以提交
- * 一个指向圈外的符号链接,词法上它就在根里面。解析不出来的路径(不存在)按词法那一判的
- * 结论放行,让工具自己说「路径不存在」:把写错的路径说成出根只会让模型改错地方。
- */
-export function outsideSessionRoot(sessionRoot: string, path: string): boolean {
-  const root = realpathSync(resolve(sessionRoot));
-  const contains = (candidate: string): boolean =>
-    candidate === root || candidate.startsWith(root + sep);
-  const lexical = resolve(root, path);
-  if (!contains(lexical)) return true;
-  try {
-    return !contains(realpathSync(lexical));
-  } catch {
-    return false;
-  }
-}
-
-/**
- * 把 Pi 的一个内建工具定义圈在会话根上:执行之前判一次 `path` 参数,出根当场打回。
- *
- * 同名覆盖内建(与 `numberedReadTool` 同做法),schema 与措辞因此一个字不改,模型的使用
- * 习惯不变。打回走抛错而不是正常返回:出根不是「换个参数再试」的摩擦,而是这个会话读不到
- * 的东西,该让它在工具结果里看到错误。
- */
-export function rootedTool(
-  sessionRoot: string,
-  definition: ToolDefinition<never, never>,
-): ToolDefinition<never, never> {
-  return {
-    ...definition,
-    execute: async (id, params, signal, onUpdate, ctx) => {
-      const path = (params as { path?: unknown } | null)?.path;
-      if (typeof path === "string" && outsideSessionRoot(sessionRoot, path)) {
-        throw new Error(
-          `cannot use ${path}: every path stays inside the session root, one directory per repository`,
-        );
-      }
-      return definition.execute(id, params, signal, onUpdate, ctx);
-    },
-  };
-}
-
-/** 会话根上的四个只读工具。`read` 是带号读那一份,其余三个是圈过根的内建。 */
-export function sessionReadOnlyTools(sessionRoot: string): ToolDefinition<never, never>[] {
-  const builtins = [
-    createGrepToolDefinition(sessionRoot),
-    createFindToolDefinition(sessionRoot),
-    createLsToolDefinition(sessionRoot),
-  ] as unknown as ToolDefinition<never, never>[];
-  return [
-    numberedReadTool(sessionRoot) as unknown as ToolDefinition<never, never>,
-    ...builtins.map((definition) => rootedTool(sessionRoot, definition)),
-  ];
 }
 
 /**

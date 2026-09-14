@@ -466,3 +466,29 @@ test("子会话的模型调用瞬时失败只作废这一次取证:排除表关�
   assert.equal(evidenceCalls(next.events)[0]!.isError, false, evidenceCalls(next.events)[0]!.error ?? "");
   assert.deepEqual(next.outcome.usage, sum(PLAIN_USAGE));
 });
+
+test("Reviewer 会话里的 grep / find / ls 圈在工作副本上:出根的路径当场拒,会话照常收尾(issue #328)", async () => {
+  const { outcome, events, requests } = await reviewWithStub([
+    {
+      text: "看看工作副本外面",
+      toolCalls: [
+        { name: "grep", args: { pattern: "root", path: "/etc" } },
+        { name: "find", args: { pattern: "*.txt", path: "../" } },
+        { name: "ls", args: { path: "/" } },
+      ],
+      usage: { input: 20, output: 5 },
+    },
+    { text: "读不到,收尾", usage: { input: 10, output: 3 } },
+  ]);
+
+  assert.equal(outcome.failure, undefined, `Reviewer 失败: ${outcome.failure}`);
+  assert.equal(requests.length, 2);
+  for (const name of ["grep", "find", "ls"]) {
+    const call = events.find((event) => event.kind === "tool_call" && event.tool === name);
+    assert.ok(call?.kind === "tool_call", `轨迹里没有 ${name}`);
+    assert.equal(call.isError, true, `${name} 放过了出根的路径`);
+    assert.match(call.error ?? "", /inside the session root/);
+  }
+  // 出根被拒是探索仓库的正常摩擦,不算契约失配。
+  assert.equal(outcome.rejectedToolCalls, 0);
+});

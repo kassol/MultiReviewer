@@ -8,7 +8,7 @@
  * 顺带提出同根因组(ADR 0030,issue #308):各自成立、却出自同一个根因的那几个合并组。
  * 行号、严重度、分类与归属的派生规则不在这里,折叠还是延续也不在,它们都留在编排层。
  */
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import type { GroupSynthesis } from "../review/dedupe.ts";
@@ -19,7 +19,7 @@ import { reviewerEventStream } from "./trace-events.ts";
 import {
   READ_ONLY_TOOLS,
   fileLines,
-  numberedReadTool,
+  sessionReadOnlyTools,
   oneLine,
   prepareAgentRuntime,
   runAgentWorker,
@@ -56,7 +56,7 @@ A root-cause group is not a merge group. A merge group is the same problem at th
 
 Narrate in Chinese too: everything you say between tool calls goes into a trace read by this repository's maintainers.
 
-The read tool prefixes every line with its line number, like \`12: code\`. The prefix is not part of the file content.`;
+The read tool prefixes every line with its line number, like \`12: code\`. The prefix is not part of the file content. Every path you pass to read, grep, find and ls stays inside the repository — an absolute path outside it, or a path that climbs out with .., is refused.`;
 
 const groupSchema = Type.Object({
   members: Type.Array(Type.Number(), {
@@ -239,7 +239,11 @@ async function run(request: MergeWorkerRequest): Promise<void> {
     worktreePath: request.worktreePath,
     thinkingLevel: sessionThinkingLevel(request.runtimeModel.reasoning, request.thinkingLevel),
     tools: [...READ_ONLY_TOOLS, PROPOSE_GROUP_TOOL, PROPOSE_ROOT_CAUSE_TOOL],
-    customTools: [proposeGroup, proposeRootCause, numberedReadTool(request.worktreePath)],
+    customTools: [
+      proposeGroup,
+      proposeRootCause,
+      ...(sessionReadOnlyTools(request.worktreePath) as unknown as ToolDefinition[]),
+    ],
     prompt: mergePrompt(request),
     send,
     onEvent: forwardEvent,

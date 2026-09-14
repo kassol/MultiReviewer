@@ -14,6 +14,9 @@ import {
   type AgentSession,
   type AgentSessionEventListener,
   createAgentSession,
+  createFindToolDefinition,
+  createGrepToolDefinition,
+  createLsToolDefinition,
   DefaultResourceLoader,
   defineTool,
   type InlineExtension,
@@ -145,6 +148,67 @@ export function numberedReadTool(worktreePath: string) {
       return { content: [{ type: "text", text }], details: {} };
     },
   });
+}
+
+/**
+ * 这个路径出不出会话根。
+ *
+ * 先按词法判:绝对路径与含 `..` 的路径在这一步就拒。再按 realpath 判一次——仓库里可以提交
+ * 一个指向圈外的符号链接,词法上它就在根里面。解析不出来的路径(不存在)按词法那一判的
+ * 结论放行,让工具自己说「路径不存在」:把写错的路径说成出根只会让模型改错地方。
+ */
+export function outsideSessionRoot(sessionRoot: string, path: string): boolean {
+  const root = realpathSync(resolve(sessionRoot));
+  const contains = (candidate: string): boolean =>
+    candidate === root || candidate.startsWith(root + sep);
+  const lexical = resolve(root, path);
+  if (!contains(lexical)) return true;
+  try {
+    return !contains(realpathSync(lexical));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 把 Pi 的一个内建工具定义圈在会话根上:执行之前判一次 `path` 参数,出根当场打回。
+ *
+ * 同名覆盖内建(与 `numberedReadTool` 同做法),schema 与措辞因此一个字不改,模型的使用
+ * 习惯不变。打回走抛错而不是正常返回:出根不是「换个参数再试」的摩擦,而是这个会话读不到
+ * 的东西,该让它在工具结果里看到错误。
+ */
+export function rootedTool(
+  sessionRoot: string,
+  definition: ToolDefinition<never, never>,
+): ToolDefinition<never, never> {
+  return {
+    ...definition,
+    execute: async (id, params, signal, onUpdate, ctx) => {
+      const path = (params as { path?: unknown } | null)?.path;
+      if (typeof path === "string" && outsideSessionRoot(sessionRoot, path)) {
+        throw new Error(
+          `cannot use ${path}: every path stays inside the session root, one directory per repository`,
+        );
+      }
+      return definition.execute(id, params, signal, onUpdate, ctx);
+    },
+  };
+}
+
+/**
+ * 会话根上的四个只读工具:`read` 是带号读那一份,其余三个是圈过根的内建。四个 worker 都
+ * 注册这一份(issue #328):Pi 内建的 grep / find / ls 接受任意绝对路径与 `~`,不查根。
+ */
+export function sessionReadOnlyTools(sessionRoot: string): ToolDefinition<never, never>[] {
+  const builtins = [
+    createGrepToolDefinition(sessionRoot),
+    createFindToolDefinition(sessionRoot),
+    createLsToolDefinition(sessionRoot),
+  ] as unknown as ToolDefinition<never, never>[];
+  return [
+    numberedReadTool(sessionRoot) as unknown as ToolDefinition<never, never>,
+    ...builtins.map((definition) => rootedTool(sessionRoot, definition)),
+  ];
 }
 
 /**
