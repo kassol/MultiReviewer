@@ -41,6 +41,11 @@ export type SessionRepoInput = {
    */
   role: string | null;
   /**
+   * 这棵工作树检出的 commit(issue #351)。进系统提示里这个仓库那一行:人问起「你看的是哪份
+   * 代码」时 agent 指得出来。
+   */
+  headSha: string;
+  /**
    * 这个仓库生效知识集里的评审规则条数(issue #344)。**只给条数,不给条目**:知识改走
    * `query_knowledge` 按需取,提示里只留一份目录,子进程因此也不该拿到这些陈述。
    */

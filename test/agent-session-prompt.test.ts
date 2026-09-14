@@ -1,5 +1,6 @@
 /**
- * 会话系统提示里的产品名、仓库职责(CONTEXT.md 仓库职责,issue #341)与知识目录(issue #344)。
+ * 会话系统提示里的产品名、仓库职责(CONTEXT.md 仓库职责,issue #341)、每个仓库停在哪个
+ * commit 的短 sha(issue #351)与知识目录(issue #344)。
  *
  * 桩测这一份字符串:agent 选哪个仓库读、什么时候去查知识全凭这几行,职责没渲染上去它只能一个个
  * README 读过去,而整条真实链路(提示进模型请求)已经由 `agent-session-subprocess.test.ts` 钉住。
@@ -10,14 +11,25 @@ import { test } from "node:test";
 import type { OpenSessionRequest } from "../src/reviewer/session-protocol.ts";
 import { sessionSystemPrompt } from "../src/reviewer/session-worker.ts";
 
+/** 两棵工作树各停在哪个 commit(issue #351)。短 sha 是前 7 位。 */
+const API_HEAD_SHA = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d";
+const WEB_HEAD_SHA = "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c";
+
 const REQUEST: OpenSessionRequest = {
   sessionRoot: "/tmp/session-root",
   productName: "报销系统",
   purpose: "requirement-breakdown",
   productKnowledgeCount: 3,
   repos: [
-    { owner: "acme", repo: "api", role: "后端 API(Node)", ruleCount: 4, factCount: 1 },
-    { owner: "acme", repo: "web", role: null, ruleCount: 0, factCount: 0 },
+    {
+      owner: "acme",
+      repo: "api",
+      role: "后端 API(Node)",
+      headSha: API_HEAD_SHA,
+      ruleCount: 4,
+      factCount: 1,
+    },
+    { owner: "acme", repo: "web", role: null, headSha: WEB_HEAD_SHA, ruleCount: 0, factCount: 0 },
   ],
   productKnowledge: [],
   rejectedStatements: [],
@@ -48,8 +60,8 @@ test("系统提示写出产品名,有职责的仓库带破折号那一段,没有
   const prompt = sessionSystemPrompt(REQUEST);
 
   assert.match(prompt, /^The product: 报销系统\.$/m);
-  assert.match(prompt, /^- acme\/api — 后端 API\(Node\)$/m);
-  assert.match(prompt, /^- acme\/web$/m);
+  assert.match(prompt, /^- acme\/api 1a2b3c4 — 后端 API\(Node\)$/m);
+  assert.match(prompt, /^- acme\/web 9f8e7d6$/m);
   assert.match(
     prompt,
     /^The note after the dash says what that repository is for in this product; start from it to decide which repository to read\.$/m,
@@ -62,7 +74,7 @@ test("没有一个仓库写过职责时,不写那句说破折号的话", () => {
     repos: REQUEST.repos.map((repo) => ({ ...repo, role: null })),
   });
 
-  assert.match(prompt, /^- acme\/api$/m);
+  assert.match(prompt, /^- acme\/api 1a2b3c4$/m);
   assert.doesNotMatch(prompt, /The note after the dash/);
 });
 
@@ -88,7 +100,9 @@ test("只有一条规则、一条事实时,计数那一行用单数", () => {
   const prompt = sessionSystemPrompt({
     ...REQUEST,
     productKnowledgeCount: 1,
-    repos: [{ owner: "acme", repo: "api", role: null, ruleCount: 1, factCount: 1 }],
+    repos: [
+      { owner: "acme", repo: "api", role: null, headSha: API_HEAD_SHA, ruleCount: 1, factCount: 1 },
+    ],
   });
 
   assert.match(prompt, /This product has 1 active product knowledge entry\./);

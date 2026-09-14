@@ -9071,11 +9071,11 @@ async function runRevisionIntentInBackground(
     // (issue #350)。反哺停在那条 Finding 报出时的 head——备注说的是那时的代码。
     const head = finding !== undefined
       ? finding.headSha
-      : await defaultBranchHead(
+      : (await defaultBranchHead(
         clone,
         repository,
         withStore(deps.dbPath, (store) => store.getRepo(repoId)?.defaultBranch ?? null),
-      );
+      )).sha;
     worktree = await prepareWorktree({ ...clone, headSha: head, baseSha: head });
     const input = withStore(deps.dbPath, (store) => {
       const ruleSet = store.getRuleSet(repoId);

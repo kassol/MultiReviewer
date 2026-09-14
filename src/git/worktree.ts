@@ -508,13 +508,15 @@ export async function ensureWorktree(options: RepoReadOptions): Promise<void> {
  * 生效的默认分支:仓库设置了默认分支就是它,没设即 Gitea 的默认分支(CONTEXT.md 默认
  * 分支)。设的那条分支在远端已经没有了就抛,不静默回落到 Gitea 那一条——人设过它,读
  * 另一条分支的代码等于把别处的代码说成他要的那一份。
+ *
+ * 回的是分支名与 head 两样:Agent 会话要把「开在哪条分支的哪个 commit」记下来(issue #351)。
  */
 export async function defaultBranchHead(
   target: RepoReadOptions,
   repository: { defaultBranch: string },
   /** 这个仓库设置的默认分支,null 即跟随 Gitea 的默认分支。 */
   configuredDefaultBranch: string | null,
-): Promise<string> {
+): Promise<{ branch: string; sha: string }> {
   const branch = configuredDefaultBranch ?? repository.defaultBranch;
   // 先同步一次远端:要的是这条分支此刻的 head,而本地副本里的 `origin/<分支>` 可能是上一次
   // 准备时的快照——那样既读不到刚推上去的提交,也看不出这条分支已经被删掉了。
@@ -530,7 +532,9 @@ export async function defaultBranchHead(
       `读不到 ${target.ref.owner}/${target.ref.repo} 默认分支 ${branch} 的当前 head`,
     );
   }
-  return head;
+  // 分支名跟着 sha 一起回:哪条分支是生效的默认分支只在这一处判定(ADR 0033),调用方要说出
+  // 「读的是哪条分支的哪个 commit」时不该把那个 `??` 再写一遍(issue #351)。
+  return { branch, sha: head };
 }
 
 /**

@@ -139,11 +139,11 @@ export function sessionTools(): string[] {
 export function sessionSystemPrompt(request: OpenSessionRequest): string {
   // 仓库职责进破折号后面(issue #341):产品里每个仓库干什么,人写一行在这里,agent 据它
   // 挑仓库,不必先把每个 README 读一遍。没写过的那个仓库只有仓库名。
-  const repos = request.repos.map((repo) =>
-    repo.role === null
-      ? `- ${repo.owner}/${repo.repo}`
-      : `- ${repo.owner}/${repo.repo} — ${repo.role}`,
-  );
+  // 短 sha 紧跟仓库名(issue #351):这棵树停在哪个 commit,agent 被问起时照着这一行说。
+  const repos = request.repos.map((repo) => {
+    const at = `- ${repo.owner}/${repo.repo} ${repo.headSha.slice(0, 7)}`;
+    return repo.role === null ? at : `${at} — ${repo.role}`;
+  });
   const sections = [
     "You are a senior engineer in a continuing conversation with one person about one product. The conversation spans many turns: answer what is asked, say what you are unsure about, and ask when the answer changes what you would do.",
     `The product: ${request.productName}.`,
@@ -151,7 +151,7 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
     "",
     "## The workspace",
     "",
-    "The working directory is the session root. Each repository of this product is checked out in a directory named <owner>/<repo> directly under it, at the latest commit of its default branch:",
+    "The working directory is the session root. Each repository of this product is checked out in a directory named <owner>/<repo> directly under it, at the commit written after its name:",
     "",
     ...repos,
     "",

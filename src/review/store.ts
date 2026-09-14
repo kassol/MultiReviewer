@@ -746,7 +746,10 @@ CREATE TABLE IF NOT EXISTS agent_session (
   output_tokens INTEGER NOT NULL DEFAULT 0,
   cache_read_tokens INTEGER NOT NULL DEFAULT 0,
   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-  total_tokens INTEGER NOT NULL DEFAULT 0
+  total_tokens INTEGER NOT NULL DEFAULT 0,
+  -- 这个会话每个仓库开在哪个 commit(issue #351):AgentSessionBaseline 那一串的 JSON,备工作树
+  -- 那一刻写下来。可空,NULL 即这一票之前建的会话——读作空列表,面板什么都不显示。
+  baselines TEXT
 );
 -- 列表只有一种查法:一个产品下某个人的会话(系统管理员读同一个产品下的全部)。
 CREATE INDEX IF NOT EXISTS agent_session_by_product ON agent_session(product_id, created_by);
@@ -1103,6 +1106,8 @@ const ADDED_COLUMNS: readonly { table: string; column: string; backfill?: string
   { table: "product_repo", column: "role TEXT" },
   // 默认分支(issue #350):可空,补完即「每个仓库都跟随 Gitea 的默认分支」,与此前的行为一致。
   { table: "repo", column: "default_branch TEXT" },
+  // 会话开在哪个 commit(issue #351):可空,补完即「这些会话没记过」,面板对它们什么都不显示。
+  { table: "agent_session", column: "baselines TEXT" },
 ];
 
 /**
@@ -2762,6 +2767,18 @@ export type AgentSessionPurpose = (typeof AGENT_SESSION_PURPOSES)[number];
  */
 export type AgentSessionStatus = "idle" | "running";
 
+/**
+ * 一个 Agent 会话开在哪个 commit 上,按仓库一条(issue #351)。`sha` 是那棵工作树检出的
+ * commit,`branch` 是它来自哪条分支(没有显式选择即这个仓库生效的默认分支,CONTEXT.md
+ * 默认分支)。
+ */
+export type AgentSessionBaseline = {
+  owner: string;
+  repo: string;
+  sha: string;
+  branch: string;
+};
+
 /** 一个 Agent 会话(CONTEXT.md Agent 会话)。读与写都只经这一种形状。 */
 export type AgentSessionRecord = {
   id: number;
@@ -2772,6 +2789,11 @@ export type AgentSessionRecord = {
   createdAt: string;
   /** 累计用量,与 Review Run 同口径:落库的每条记录按它的用量列累加上来(ADR 0031)。 */
   usage: ReviewerUsage;
+  /**
+   * 这个会话每个仓库开在哪个 commit(issue #351)。备工作树那一刻记下来;这一票之前建的
+   * 会话是空列表,面板因此什么都不显示。
+   */
+  baselines: AgentSessionBaseline[];
 };
 
 /**
@@ -2930,6 +2952,11 @@ function agentSession(row: Record<string, unknown>): AgentSessionRecord {
       cacheWriteTokens: Number(row["cache_write_tokens"]),
       totalTokens: Number(row["total_tokens"]),
     },
+    // 这一票之前的会话行没有这一列(升级前的库连列都没有):两种都读作空列表。
+    baselines:
+      row["baselines"] === null || row["baselines"] === undefined
+        ? []
+        : (JSON.parse(String(row["baselines"])) as AgentSessionBaseline[]),
   };
 }
 
@@ -3172,6 +3199,11 @@ export type Store = {
     purpose: AgentSessionPurpose;
     createdAt: string;
   }): AgentSessionRecord;
+  /**
+   * 记下这个会话每个仓库开在哪个 commit(issue #351)。备工作树那一刻调它;整列替换,
+   * 会话重建后备的是同一批仓库的当前 head,面板显示的因此始终是 agent 此刻读的那一份。
+   */
+  setAgentSessionBaselines(sessionId: number, baselines: readonly AgentSessionBaseline[]): void;
   /** 删一个 Agent 会话,记录、受理过的客户端消息 id 与图片行一并删掉。没有这一条即 false。 */
   deleteAgentSession(sessionId: number): boolean;
   /** 记下一张落好盘的会话图片(issue #336)。发消息时按 `imageId` 认领它。 */
@@ -5564,7 +5596,16 @@ export function openStore(dbPath: string): Store {
           cacheWriteTokens: 0,
           totalTokens: 0,
         },
+        // 备工作树时才知道开在哪个 commit(issue #351):建出来的这一刻还是空的。
+        baselines: [],
       };
+    },
+
+    setAgentSessionBaselines(sessionId, baselines) {
+      db.prepare("UPDATE agent_session SET baselines = ? WHERE id = ?").run(
+        JSON.stringify(baselines),
+        sessionId,
+      );
     },
 
     deleteAgentSession(sessionId) {

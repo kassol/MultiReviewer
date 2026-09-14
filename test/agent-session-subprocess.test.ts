@@ -303,7 +303,12 @@ test("发一条消息:知识目录与消息文本进了模型请求,回复与工
     assert.match(system[0]!.content, /^- acme\/widgets — 1 review rule, 1 project fact$/m);
     assert.doesNotMatch(system[0]!.content, new RegExp(RULE));
     assert.doesNotMatch(system[0]!.content, new RegExp(FACT));
-    assert.match(system[0]!.content, /- acme\/widgets/);
+    // 仓库清单那一行带短 sha(issue #351):这棵工作树停在生效默认分支(夹具那边是 `main`)
+    // 的 head 上,agent 被问起看的是哪份代码时照着它说。
+    assert.match(
+      system[0]!.content,
+      new RegExp(`^- acme/widgets ${h.repo.baseSha.slice(0, 7)}$`, "m"),
+    );
     assert.match(system[0]!.content, /requirement-breakdown/);
     assert.ok(
       requests[0]!.messages.some(

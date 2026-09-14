@@ -38,6 +38,7 @@ import { Collapsible } from "radix-ui";
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 
 import { CardShell } from "@/components/card-shell";
+import { CommitChip } from "@/components/commit-chip";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { Markdown } from "@/components/markdown";
@@ -105,6 +106,17 @@ const PURPOSE_HAS_OUTPUT: Record<AgentSessionPurpose, boolean> = {
   "product-survey": false,
 };
 
+/**
+ * 一个会话按仓库开在哪个 commit 上(issue #351)。`branch` 是那个 commit 来自哪条分支——
+ * 没有显式选择即这个仓库生效的默认分支(CONTEXT.md 默认分支)。
+ */
+export type AgentSessionBaseline = {
+  owner: string;
+  repo: string;
+  sha: string;
+  branch: string;
+};
+
 export type AgentSession = {
   id: number;
   productId: number;
@@ -120,6 +132,8 @@ export type AgentSession = {
     cacheWriteTokens: number;
     totalTokens: number;
   };
+  /** 这个会话每个仓库开在哪个 commit(issue #351)。这一票之前建的会话是空的。 */
+  baselines: AgentSessionBaseline[];
 };
 
 type Product = {
@@ -1500,6 +1514,26 @@ export function AgentSessionPage({
                   {localMinute(session.createdAt)} · {session.createdBy} 建立 ·{" "}
                   <UsageLine usage={session.usage} /> token
                 </p>
+              )}
+              {/*
+                这个会话读的是哪份代码(issue #351):每仓库一行「仓库 短 sha 分支」。空列表
+                什么都不渲染——这一票之前建的会话没有记过,摆一行「未知」只会让人以为丢了。
+              */}
+              {session === undefined || session.baselines.length === 0 ? null : (
+                <ul className="flex flex-col gap-0.5">
+                  {session.baselines.map((baseline) => (
+                    <li
+                      key={`${baseline.owner}/${baseline.repo}`}
+                      className="flex flex-wrap items-center gap-1.5 text-sm text-text-muted"
+                    >
+                      <span className="break-all font-mono">
+                        {baseline.owner}/{baseline.repo}
+                      </span>
+                      <CommitChip sha={baseline.sha} />
+                      <span className="break-all">{baseline.branch}</span>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
             <div className="flex shrink-0 items-center gap-2">

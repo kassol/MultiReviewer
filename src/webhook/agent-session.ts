@@ -31,6 +31,7 @@ import type { ReviewerUsage } from "../review/finding.ts";
 import { scopesOverlap } from "../review/run.ts";
 import {
   openStore,
+  type AgentSessionBaseline,
   type AgentSessionEntryLink,
   type AgentSessionOutputRecord,
   type AgentSessionRecord,
@@ -991,15 +992,20 @@ function configuredDefaultBranch(dbPath: string, repoId: number): string | null 
 /**
  * 备好会话根:一个临时目录,下面按 `<owner>/<repo>` 各挂一棵一次性工作树,检出生效的默认
  * 分支最新(issue #350)。位置即工具面的判据——路径前缀就是仓库,圈根就是圈这个目录。
+ *
+ * 每棵树停在哪个 commit、那个 commit 来自哪条分支,按仓库记到会话上(issue #351):面板的
+ * 会话头部与系统提示的仓库清单说的就是这一份,人与 agent 因此指得出读的是哪一份代码。
  */
 async function prepareSessionRoot(
   deps: AgentSessionRuntimeDeps,
+  sessionId: number,
   repos: readonly ProductRepoRecord[],
   entry: RuntimeEntry,
 ): Promise<{ sessionRoot: string; repos: SessionRepoInput[] }> {
   const sessionRoot = mkdtempSync(join(tmpdir(), "multireviewer-session-root-"));
   entry.sessionRoot = sessionRoot;
   const prepared: SessionRepoInput[] = [];
+  const baselines: AgentSessionBaseline[] = [];
   for (const repo of repos) {
     const ref = { owner: repo.owner, repo: repo.repo };
     const [repository, credentials] = await Promise.all([
@@ -1012,7 +1018,7 @@ async function prepareSessionRoot(
       cloneUrl: repository.cloneUrl,
       credentials,
     };
-    const headSha = await defaultBranchHead(
+    const { branch, sha: headSha } = await defaultBranchHead(
       clone,
       repository,
       configuredDefaultBranch(deps.dbPath, repo.repoId),
@@ -1027,8 +1033,17 @@ async function prepareSessionRoot(
     prepared.push({
       ...ref,
       role: repo.role,
+      headSha,
       ...repoKnowledgeCounts(deps.dbPath, repo.repoId),
     });
+    baselines.push({ ...ref, sha: headSha, branch });
+  }
+  // 整列一次写完:备到一半失败的那一次不落半份清单,下一条消息重试时从头再备一遍。
+  const store = openStore(deps.dbPath);
+  try {
+    store.setAgentSessionBaselines(sessionId, baselines);
+  } finally {
+    store.close();
   }
   return { sessionRoot, repos: prepared };
 }
@@ -1060,7 +1075,7 @@ async function boot(
   repos: readonly ProductRepoRecord[],
   entry: RuntimeEntry,
 ): Promise<ChildProcess> {
-  const prepared = await prepareSessionRoot(deps, repos, entry);
+  const prepared = await prepareSessionRoot(deps, session.id, repos, entry);
   const child = fork(WORKER_PATH, {
     // cwd 是会话根。只设 Pi 的 cwd 不够:模型会拼出相对于编排进程目录的路径。
     cwd: prepared.sessionRoot,

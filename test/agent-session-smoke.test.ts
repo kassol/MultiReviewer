@@ -52,6 +52,8 @@ const FIXTURE = fileURLToPath(new URL("./fixture/reviewer-smoke", import.meta.ur
 
 const REPO = { owner: "acme", repo: "widgets" };
 const REPO_NAME = `${REPO.owner}/${REPO.repo}`;
+/** 这棵树停在哪个 commit(issue #351)。冒烟夹具不建真仓库,提示里那一行认这一串。 */
+const SMOKE_HEAD_SHA = "0123456789abcdef0123456789abcdef01234567";
 
 /** 一段中文需求,落点只可能在夹具那三个文件里:订单接口、分页与那一份数据访问。 */
 const REQUIREMENT = [
@@ -175,7 +177,7 @@ async function runSession(
       // 知识只报条数(issue #344):这个子进程没有库连接,`query_knowledge` 在这一侧没有
       // 主进程接它,提示的目录那一段因此是这两个数。
       productKnowledgeCount: 0,
-      repos: [{ ...REPO, role: "唯一的仓库", ruleCount: 1, factCount: 1 }],
+      repos: [{ ...REPO, role: "唯一的仓库", headSha: SMOKE_HEAD_SHA, ruleCount: 1, factCount: 1 }],
       productKnowledge: [],
       rejectedStatements: [],
       runtimeModel: await smokeRuntimeModel(),

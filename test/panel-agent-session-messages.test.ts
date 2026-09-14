@@ -31,6 +31,8 @@ type AgentSession = {
   id: number;
   status: string;
   usage: ReviewerUsage;
+  /** 这个会话每个仓库开在哪个 commit(issue #351)。 */
+  baselines: { owner: string; repo: string; sha: string; branch: string }[];
 };
 
 type Record = { sessionId: number; seq: number; type: string; at: string; entry: unknown; usage: ReviewerUsage };
@@ -150,6 +152,60 @@ test("会话根只挂创建者有分配的仓库:产品里别的仓库不出现"
     assert.deepEqual(names(admin), ["acme/alpha", "acme/widgets"]);
   } finally {
     store.close();
+  }
+});
+
+/**
+ * 会话读端点回的「开在哪个 commit」那一份(issue #351)。备工作树在会话开起来之后的后台里
+ * 跑,因此等到它写下来为止;整列一次写完,读到非空就是每个仓库都备完了。
+ */
+async function baselinesOf(
+  h: PanelHarness,
+  cookie: string,
+  sessionId: number,
+): Promise<AgentSession["baselines"]> {
+  for (let attempt = 0; attempt < 1200; attempt += 1) {
+    const recorded = (await session(h, cookie, sessionId)).baselines;
+    if (recorded.length > 0) return recorded;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return assert.fail("等了 30 秒,会话还没记下它开在哪个 commit");
+}
+
+test("会话记下每个仓库开在哪条分支的哪个 commit,读端点回这一份", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const alpha = seedRepo(h, 101, "acme", "alpha");
+  const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id, alpha]);
+  // harness 那个仓库的默认分支设成 `feature`(夹具那边的默认是 `main`,指向 `baseSha`,
+  // `feature` 指向 `headSha`);另一个仓库没设,跟随平台那一条。
+  const saved = await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
+    reviewers: null,
+    auxiliaryModel: null,
+    minReportSeverity: null,
+    defaultBranch: "feature",
+    expectedVersion: 0,
+  });
+  assert.equal(saved.status, 200, await saved.text());
+  const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id, alpha], [
+    "agent:chat",
+  ]);
+  const sessionId = await createSession(h, cookie, productId);
+  // 建出来的这一刻一棵树都还没备:列表是空的,面板因此什么都不显示。
+  assert.deepEqual((await session(h, cookie, sessionId)).baselines, []);
+
+  try {
+    const sent = await as(h, cookie, "POST", `/agent-sessions/${sessionId}/messages`, {
+      clientMessageId: "c1",
+      text: "拆一下这个需求",
+    });
+    assert.equal(sent.status, 202, await sent.text());
+    // 每仓库一条:sha 是生效默认分支此刻的 head,分支名就是生效的那一条。
+    assert.deepEqual(await baselinesOf(h, cookie, sessionId), [
+      { owner: "acme", repo: "alpha", sha: h.repo.baseSha, branch: "main" },
+      { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature" },
+    ]);
+  } finally {
+    await disposeAgentSessions();
   }
 });
 

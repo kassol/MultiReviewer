@@ -6,6 +6,7 @@
  * 系统管理员读得到全部但发消息被拒,以及删会话与删产品级联的条数。
  */
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { effectivePanelPermissions, PANEL_PERMISSIONS } from "../src/panel/permissions.ts";
@@ -36,7 +37,11 @@ type AgentSession = {
     cacheWriteTokens: number;
     totalTokens: number;
   };
+  /** 这个会话每个仓库开在哪个 commit(issue #351)。 */
+  baselines: AgentSessionBaseline[];
 };
+
+type AgentSessionBaseline = { owner: string; repo: string; sha: string; branch: string };
 
 /** 以指定 cookie 发一次请求。`h.api()` 只带系统管理员那一份。 */
 function as(
@@ -265,6 +270,48 @@ test("删会话只删那一条,删产品级联删掉它下面的全部会话并�
   for (const id of [second.id, third.id]) {
     assert.equal((await as(h, owner, "GET", `/agent-sessions/${id}`)).status, 404);
   }
+});
+
+test("升级前的旧库:开库补上会话那一列,既有会话读作没记过开在哪个 commit", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const productId = await productWithRepo(h, "报销系统");
+  const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+  const created = await createSession(h, owner, productId);
+  const read = async (): Promise<AgentSessionBaseline[]> => {
+    const response = await as(h, owner, "GET", `/agent-sessions/${created.id}`);
+    const text = await response.text();
+    assert.equal(response.status, 200, text);
+    return (JSON.parse(text) as { session: AgentSession }).session.baselines;
+  };
+  const record = (baselines: AgentSessionBaseline[]): void => {
+    const store = openStore(h.db.path);
+    try {
+      store.setAgentSessionBaselines(created.id, baselines);
+    } finally {
+      store.close();
+    }
+  };
+  const opened: AgentSessionBaseline = {
+    owner: GITEA_REPO.owner,
+    repo: GITEA_REPO.repo,
+    sha: h.repo.headSha,
+    branch: "feature",
+  };
+  record([opened]);
+  assert.deepEqual(await read(), [opened]);
+
+  // 把库退回升级之前的样子:那时这一列还不存在。改名而不是 DROP——理由与 `product_repo`
+  // 那一处相同(建表语句里有中文注释,丢最后一列要重写它)。
+  const db = new DatabaseSync(h.db.path);
+  db.exec("ALTER TABLE agent_session RENAME COLUMN baselines TO before_upgrade_baselines");
+  db.close();
+
+  // 下一次开库补列:会话行一条不少,开在哪个 commit 读作没记过,面板因此什么都不显示。
+  assert.deepEqual(await read(), []);
+  assert.deepEqual((await sessions(h, owner, productId)).map((row) => row.id), [created.id]);
+  // 补回来的这一列照样写得进去:下一条消息备好工作树就记上。
+  record([opened]);
+  assert.deepEqual(await read(), [opened]);
 });
 
 test("会话记录分页:缺省回最后一页,before 往前翻,hasMore 说还有没有更早的", async () => {

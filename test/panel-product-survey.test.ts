@@ -320,7 +320,22 @@ async function sessionWorktreeHeads(
   return assert.fail("等了 30 秒,会话根下的工作树还没挂齐");
 }
 
-test("系统开的梳理:工作树停在这个仓库生效默认分支的 head 上", async () => {
+/** 一个会话记下的「开在哪个 commit」那一份(issue #351)。 */
+async function baselinesOf(
+  h: PanelHarness,
+  sessionId: number,
+): Promise<{ owner: string; repo: string; sha: string; branch: string }[]> {
+  const response = await h.api("GET", `/agent-sessions/${sessionId}`);
+  const text = await response.text();
+  assert.equal(response.status, 200, text);
+  return (
+    JSON.parse(text) as {
+      session: { baselines: { owner: string; repo: string; sha: string; branch: string }[] };
+    }
+  ).session.baselines;
+}
+
+test("系统开的梳理:工作树停在生效默认分支的 head 上,会话记下它开在哪个 commit", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   seedRepo(h, ALPHA, "acme", "alpha");
   const created = await h.api("POST", "/products", { name: "报销系统" });
@@ -346,6 +361,14 @@ test("系统开的梳理:工作树停在这个仓库生效默认分支的 head �
       await sessionWorktreeHeads(h, [{ owner: "acme", repo: "alpha" }, GITEA_REPO]),
       [h.repo.baseSha, h.repo.headSha],
     );
+
+    // 系统开的这一场同样把「开在哪条分支的哪个 commit」记在会话上(issue #351):人读梳理
+    // 会话时要能判断提案是按哪份代码提的。
+    const [survey] = await sessionsOf(h, row.id, h.cookie);
+    assert.deepEqual(await baselinesOf(h, survey!.id), [
+      { owner: "acme", repo: "alpha", sha: h.repo.baseSha, branch: "main" },
+      { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature" },
+    ]);
   } finally {
     await disposeAgentSessions();
   }
