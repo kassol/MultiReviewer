@@ -352,7 +352,7 @@ Agent 会话页的中栏是一块占满视口的聊天工作台,整页不滚:`Pa
 - 连续的工具调用折成一组(Collapsible):组头一行是按动词的计数(「读取 5 个文件、git 3 次」),有失败的挂红色「N 次失败」;展开是左侧一道 `--v8-border-line` 竖线下的逐步明细——类别图标(读取 FileText、搜索 MagnifyingGlass、列目录 ListBullet、git Commit、历史 Finding CounterClockwiseClock、产品知识 Reader、提交产出 PaperPlane)+ 动词(`text-text-secondary`)+ 等宽对象(`text-sm`,截断给 `title`),失败的那一步下面一行 `text-danger` 原因。在跑的最后一组默认摊开,正在跑的那一个带 Spinner 挂在末尾。系统消息与定稿句居中一行小字。
 - 输入区是一个框:随内容长高的原生 `<textarea>` 在上,下沿一排图标键(图片、在跑时的排队 / 插话切换、停止、发送)。原生 textarea 而不是 Themes TextArea,因为它要嵌在框里与下沿那一排共用一道边(与 `ui/command` 的输入同理);框的边 `border-input`、底 `bg-surface`、阴影 `shadow-control`、焦点环 `--v8-shadow-focus` 都走令牌。回车发送、Shift+回车换行,输入法选词不发。
 - `lg` 以下左栏不显示(切会话走头部那行产品名回产品页);`xl` 以下右栏产出不显示,头部「对话 / 产出」切换把产出换进中栏。
-- agent 正文里的 ```mermaid 围栏渲染成图卡,不摊成代码块:圆角卡(`border-card-line` + `bg-surface`),SVG 自适应卡宽,右上角一颗放大预览图标键指到那张图才现(键盘焦点也现,同产品页那行「退役」的做法),卡底一条「源码」折叠回原代码块。图画不出来时退回原代码块,并在其上方一行 `text-danger` 写报错第一行——读不到图时原文比一句「失败」有用。图的颜色不另起一套:mermaid 走 `base` 主题,面、线与文字从 `--v8-*` 令牌填进去。
+- agent 正文里的 ```mermaid 围栏渲染成图卡,不摊成代码块:圆角卡(`border-card-line` + `bg-surface`),SVG 自适应卡宽,右上角一颗放大预览图标键指到那张图才现(键盘焦点也现,同产品页那行「退役」的做法),卡底一条「源码」折叠回原代码块。图画不出来时退回原代码块,并在其上方一行 `text-danger` 写报错第一行——读不到图时原文比一句「失败」有用。图的颜色不另起一套:mermaid 走 `base` 主题,面、线与文字从 `--v8-*` 令牌填进去,边标签底色与卡同为 surface;look 取 classic,节点是平面的,不带投影与渐变描边;节点标签中文只在空格处折行,不逐字断。
 - 全屏预览是浮层,内容区 `calc(100vw-2rem)` × `calc(100dvh-2rem)`,材质与圆角照第 2.3 节的浮层令牌。顶部一行是图的标题(没有就「图表预览」)、`+` / `−` / 适应 / 1:1 四个键、当前缩放百分比与关闭。画布滚轮以光标为锚缩放(0.25×–8×,页面不跟着滚)、按住拖动平移(拖动时 `cursor-grabbing`),打开时默认「适应」,Esc 关闭。缩放只用 CSS `transform`,不引缩放库。
 
 ## 8. 选择与导航语义

@@ -38,6 +38,13 @@ function loadMermaid() {
       // 那个 div 会留在文档里。
       suppressErrorRendering: true,
       fontFamily: token("--v8-font-text"),
+      // mermaid 12 默认 look 是 neo:节点带投影与渐变描边,与面板的平面卡片不是一套。
+      look: "classic",
+      // 12 把 flowchart 的换行宽度从 200 收到 120,中英混排的节点标签三四个字就折一行。
+      flowchart: { wrappingWidth: 200 },
+      // 节点标签是 HTML,浏览器对中文默认逐字可断,会把「挑最佳」拆成「挑 / 最佳」。
+      // keep-all 只在空格处断,整段无空格的中文超宽时由 overflow-wrap 兜底。
+      themeCSS: ".nodeLabel, .edgeLabel { word-break: keep-all; overflow-wrap: anywhere; }",
       theme: "base",
       themeVariables: {
         background: token("--v8-surface"),
@@ -48,6 +55,9 @@ function loadMermaid() {
         tertiaryColor: token("--v8-bg"),
         lineColor: token("--v8-text-secondary"),
         textColor: token("--v8-text"),
+        // 不显式给时它由 secondaryColor 提亮 30 推出来,半透明令牌经这一步丢掉 alpha,
+        // 「是 / 否」这类边标签就顶着一块实心灰。图卡底色是 surface,标签跟它同色。
+        edgeLabelBackground: token("--v8-surface"),
       },
     });
     return mermaid;
