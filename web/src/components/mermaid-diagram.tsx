@@ -72,8 +72,11 @@ let serial = 0;
 function draw(code: string) {
   let job = drawn.get(code);
   if (job === undefined) {
+    // id 必须在这里定下来:mermaid 渲染前会把文档里同 id 的元素删掉,同页几张图并发时若等
+    // 到包加载完再读 serial,拿到的是同一个号,先画好的那张会被后画的顺手清空。
     serial += 1;
-    job = loadMermaid().then(async (mermaid) => (await mermaid.render(`mermaid-${serial}`, code)).svg);
+    const id = `mermaid-${serial}`;
+    job = loadMermaid().then(async (mermaid) => (await mermaid.render(id, code)).svg);
     drawn.set(code, job);
   }
   return job;
