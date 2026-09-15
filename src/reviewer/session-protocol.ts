@@ -171,6 +171,11 @@ export type SessionCommand =
       text: string;
       mode: AgentSessionMessageMode;
       images?: readonly AgentSessionImageRef[];
+      /**
+       * 这条 prompt 的序号(评审复核):同一个登记项上从 1 起递增。子进程回 `queue` 时带上它
+       * 收到过的最后一个,主进程据此认出晚到的队列现状。
+       */
+      seq: number;
     }
   /**
    * 往会话里放一条进模型上下文的自定义消息,不开新回合(issue #337)。定稿与换版走它:
@@ -236,7 +241,16 @@ export type SessionWorkerMessage =
    * Pi 的队列现状(`queue_update`,issue #334)。主进程的排队镜像按它对齐:投递与清空都由
    * Pi 在回合边界做,哪几条还没投出去只有它说得准。
    */
-  | { kind: "queue"; steering: readonly string[]; followUp: readonly string[] }
+  | {
+      kind: "queue";
+      steering: readonly string[];
+      followUp: readonly string[];
+      /**
+       * 发出这份现状时子进程收到过的最后一条 prompt 的序号(评审复核):这份现状已含序号不大于
+       * 它的全部指令。小于主进程已发出的最后一个即过期——它发出之后还有 prompt 在路上。
+       */
+      seq: number;
+    }
   /** 这 100ms 里新生成的文字(`message_update` 的 `text_delta`)。不落库,只走瞬时帧。 */
   | { kind: "delta"; text: string }
   /** 一个工具开始跑(`tool_execution_start`)。同样只走瞬时帧。 */

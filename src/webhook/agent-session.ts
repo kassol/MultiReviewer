@@ -166,6 +166,11 @@ type RuntimeEntry = {
    */
   timer: NodeJS.Timeout | undefined;
   child: ChildProcess | undefined;
+  /**
+   * 正在跑的那一次 `boot`(评审复核)。收拢与 `letGo` 先等它落定:备工作树那段里删会话根,
+   * `git worktree add` 还在往里写,`rmSync` 报 ENOTEMPTY;fork 撞上已删的 cwd 则起不来。
+   */
+  booting: Promise<unknown> | undefined;
   sessionRoot: string | undefined;
   worktrees: Worktree[];
   /**
@@ -174,6 +179,12 @@ type RuntimeEntry = {
    * 下次开跑时从这里投递。
    */
   queue: AgentSessionQueuedMessage[];
+  /**
+   * 已发出的最后一条 prompt 的序号(评审复核),从 0 起。子进程报的 `queue` 带的序号小于它即
+   * 过期:镜像在那之后已记上新入队的一条,按过期现状对齐会把它抹掉——紧接着停止的话,
+   * 那一条就从镜像与 Pi 两边一起丢了。
+   */
+  queueSeq: number;
   /** 子进程还没 fork 出来时攒下的指令。建好之后按顺序补发,一条都不丢。 */
   pending: SessionCommand[];
   /**
@@ -659,6 +670,8 @@ function takePendingQueue(
 
 /** 放掉这个会话占的磁盘:每棵一次性工作树各自释放,再删会话根(它下面只剩空目录)。 */
 async function letGo(entry: RuntimeEntry): Promise<void> {
+  // 备到一半的那一次先让它备完:boot 自己会看到 `disposed` 把子进程收掉,这里只等目录不再有人写。
+  await entry.booting?.catch(() => {});
   const worktrees = entry.worktrees.splice(0, entry.worktrees.length);
   for (const worktree of worktrees) await worktree.release();
   const sessionRoot = entry.sessionRoot;
@@ -1136,6 +1149,9 @@ async function boot(
   entry.child = child;
   // 备工作树那段时间里这个会话被收拢了:这一个子进程没人再用得上。
   if (entry.disposed) {
+    // spawn 可能已经失败(cwd 在 fork 之前被收拢删掉):Node 异步抛 `error`,没人听就是
+    // 整个编排进程的 uncaughtException。这个子进程不要了,失败原因也不要。
+    child.on("error", () => {});
     killChild(child);
     // 那一次收拢放掉的是它当时看到的会话根;这一份是在那之后才备出来的,登记表上重新指上
     // 它,失败那条路上的 `letGo` 才收得到(不然这个目录没人再来收)。
@@ -1170,6 +1186,12 @@ async function boot(
         recordProductSurveyProposals(deps, session, message.proposals);
         return;
       case "queue":
+        if (message.seq < entry.queueSeq) {
+          console.debug(
+            `[agent-session] 会话 ${session.id} 丢弃过期的队列现状(序号 ${message.seq} < ${entry.queueSeq})`,
+          );
+          return;
+        }
         syncQueue(entry, message);
         return;
       case "delta":
@@ -1274,6 +1296,7 @@ function startRun(
       text: message.text,
       mode: message.mode,
       ...(message.images === undefined ? {} : { images: message.images }),
+      seq: ++entry.queueSeq,
     });
     entry.imageRefs.push(...(message.images ?? []));
   }
@@ -1327,10 +1350,12 @@ export function deliverAgentSessionMessage(
     modelKey: key,
     timer: undefined,
     child: undefined,
+    booting: undefined,
     sessionRoot: undefined,
     worktrees: [],
     // 上一次回收或排空时落库的那几条:它们排在这一条之前,顺序就是人当初写下的顺序。
     queue: takePendingQueue(deps, session.id),
+    queueSeq: 0,
     pending: [],
     imageRefs: [],
     disposed: false,
@@ -1338,7 +1363,9 @@ export function deliverAgentSessionMessage(
   };
   registry.set(session.id, entry);
   startRun(session.id, entry, message);
-  void boot(deps, session, model, repos, entry)
+  const booting = boot(deps, session, model, repos, entry);
+  entry.booting = booting;
+  void booting
     .then((child) => {
       const pending = entry.pending.splice(0, entry.pending.length);
       for (const command of pending) child.send(command);
@@ -1388,7 +1415,7 @@ export function queueAgentSessionMessage(
   } else {
     entry.queue.push({ mode, text, ...attached });
   }
-  sendCommand(entry, { kind: "prompt", text, mode, ...attached });
+  sendCommand(entry, { kind: "prompt", text, mode, ...attached, seq: ++entry.queueSeq });
   entry.imageRefs.push(...images);
 }
 

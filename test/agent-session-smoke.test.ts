@@ -127,6 +127,7 @@ async function runSession(
             text,
             mode: "followUp",
             ...(images.length === 0 ? {} : { images }),
+            seq: 1,
           } satisfies SessionCommand);
           return;
         case "output":

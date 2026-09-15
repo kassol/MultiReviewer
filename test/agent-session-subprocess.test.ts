@@ -1123,12 +1123,14 @@ test("执行中发「插话」:下一个回合边界投递,工具批次完整跑
 
 test("清空队列:排队与插话都不再投递", async () => {
   const path = `${GITEA_REPO.owner}/${GITEA_REPO.repo}/src/answer.ts`;
+  // 第一次回应等清空之后才放行:那之前 Pi 到不了回合边界,插话不会被先投出去。
+  const { promise: firstReply, resolve: releaseFirst } = Promise.withResolvers<void>();
   const turns: StubTurn[] = [
     {
       text: "先读一下",
       toolCall: { name: "read", args: { path } },
       usage: { input: 10, output: 2 },
-      delayMs: 2000,
+      release: firstReply,
     },
     { text: "这一轮说完了", usage: { input: 11, output: 2 } },
   ];
@@ -1147,6 +1149,7 @@ test("清空队列:排队与插话都不再投递", async () => {
     });
     assert.equal(cleared.status, 200);
     assert.deepEqual(await cleared.json(), { queue: [] });
+    releaseFirst();
 
     await requestsAtLeast(requests, 2);
     await idle(h, cookie, sessionId);
@@ -1155,6 +1158,36 @@ test("清空队列:排队与插话都不再投递", async () => {
     const sent = requests.map(bodyOf).join("\n");
     assert.ok(!sent.includes("排队的一句"), "清空之后排队的那一条还是投出去了");
     assert.ok(!sent.includes("插话的一句"), "清空之后插话的那一条还是投出去了");
+    assert.deepEqual(await queueOf(h, cookie, sessionId), []);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("执行中连发排队与插话,紧接着读队列两条都在:晚到的队列现状不覆盖刚入队的那一条", async () => {
+  // 第一次回应挂到读完队列才放行:两条都在执行中入队,Pi 也到不了回合边界去取它们。
+  const { promise: firstReply, resolve: releaseFirst } = Promise.withResolvers<void>();
+  const turns: StubTurn[] = [
+    { text: "第一轮", usage: { input: 10, output: 2 }, release: firstReply },
+    { text: "回插话", usage: { input: 11, output: 2 } },
+    { text: "回排队", usage: { input: 12, output: 2 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await requestsAtLeast(requests, 1);
+    assert.equal((await send(h, cookie, sessionId, "c2", "排队的一句", "followUp")).status, 202);
+    assert.equal((await send(h, cookie, sessionId, "c3", "插话的一句", "steer")).status, 202);
+    assert.deepEqual(await queueOf(h, cookie, sessionId), [
+      { mode: "steer", text: "插话的一句" },
+      { mode: "followUp", text: "排队的一句" },
+    ]);
+    releaseFirst();
+
+    await requestsAtLeast(requests, 3);
+    await idle(h, cookie, sessionId);
+    assert.equal(requests.length, 3);
     assert.deepEqual(await queueOf(h, cookie, sessionId), []);
   } finally {
     await disposeAgentSessions();

@@ -40,6 +40,11 @@ export type StubTurn = {
    */
   delayMs?: number;
   /**
+   * 等测试兑现它再回:回应何时放行由测试侧决定,不靠 `delayMs` 跑赢机器负载。与 `delayMs`
+   * 同给时先等它、再计延迟。
+   */
+  release?: Promise<unknown>;
+  /**
    * 不回正文,回这个 HTTP 状态与一段 JSON 错误(issue #262),错误文案取 `text`:扮演一次
    * 服务端失败。状态与文案决定 Pi 会不会重试——408/409/429/5xx 走 SDK 的重试,文案里带
    * `insufficient_quota` 之类的额度字样则两层都不重试。
@@ -210,15 +215,19 @@ export async function startModelStub(turns: readonly StubTurn[]): Promise<ModelS
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
         res.end(sseBody(turn, next, parsed.model));
       };
-      if (turn.delayMs === undefined) {
-        respond();
-        return;
-      }
-      const timer = setTimeout(() => {
-        delayed.delete(timer);
-        respond();
-      }, turn.delayMs);
-      delayed.add(timer);
+      const afterDelay = (): void => {
+        if (turn.delayMs === undefined) {
+          respond();
+          return;
+        }
+        const timer = setTimeout(() => {
+          delayed.delete(timer);
+          respond();
+        }, turn.delayMs);
+        delayed.add(timer);
+      };
+      if (turn.release === undefined) afterDelay();
+      else void turn.release.then(afterDelay);
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

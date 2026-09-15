@@ -145,6 +145,11 @@ let apiKey = "";
 let running = false;
 /** 人点过停止。被中止的那一回合不算失败:停止是人的动作,不是这一轮跑坏了。 */
 let stopped = false;
+/**
+ * 收到过的最后一条 prompt 的序号(评审复核)。收到指令时同步记上、再调 Pi:Pi 入队时同步发
+ * `queue_update`,那一份因此带得上它。
+ */
+let lastPromptSeq = 0;
 /** 正在处理停止:这期间 Pi 的队列被清空,那一次 `queue_update` 不回传(队列由主进程留存)。 */
 let stopping = false;
 
@@ -223,7 +228,12 @@ async function open(request: OpenSessionRequest): Promise<void> {
       }
       // 停止时清队列那一次不回传:那几条由主进程留存,下次开跑时投递。
       if (event.type === "queue_update" && !stopping) {
-        send({ kind: "queue", steering: event.steering, followUp: event.followUp });
+        send({
+          kind: "queue",
+          steering: event.steering,
+          followUp: event.followUp,
+          seq: lastPromptSeq,
+        });
       }
     },
   });
@@ -361,6 +371,7 @@ function handle(command: SessionCommand): Promise<void> {
     case "open":
       return open(command.request);
     case "prompt":
+      lastPromptSeq = command.seq;
       return prompt(command.text, command.mode, command.images ?? []);
     case "custom-message":
       return customMessage(command.text);
