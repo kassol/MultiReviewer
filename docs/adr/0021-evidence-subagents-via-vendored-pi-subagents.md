@@ -49,3 +49,13 @@ Pi 升到 0.85.0、pi-subagents 升到 0.65.1。pi-subagents 0.65 起前台子�
 - **起因。**Reviewer、规则 agent 与合并 agent 的 grep / find / ls 已圈在工作副本上,取证子会话没有:pi-subagents 建子会话时不带 `customTools`,四件套是 Pi 内建原版,绝对路径与 `~` 随便读。Pi 扩展的 `registerTool` 同名注册能盖过内建,但 pi-subagents 给前台子会话装扩展只认 agent 定义里的 `extensions`,而天花板的 `denyExtensions` 会把它清空;另一个入口 `setChildSessionFactory` 是 jiti 模块内的变量,本进程拿不到。
 - **做法。**`<agentDir>/evidence-tools.ts` 由本项目生成,import `worker-tools.ts` 的 `sessionReadOnlyTools`,工作副本根写死;`evidence.md` 的 `extensions` 指向它;天花板 `denyExtensions: false`,`allowedTools` 与 `allowedAgents` 不动。
 - **补回的那一道。**`denyExtensions` 原本挡的是被审仓库自带定义里的扩展——关掉之后,默认发现范围 `both` 下仓库 `.pi/agents` 里同名的 `evidence.md` 优先,带上 `extensions` 就在 Reviewer 进程里执行仓库的代码(真实 SDK 回归实测复现)。工具边界的钩子因此把 `agentScope` 钉成 `user`、`cwd` 在顶层与 `tasks[]` / `chain[]`(含 `parallel`)钉成工作副本,调用参数只放行派单与超时要用的几项,其余整次打回:`action` 能改写 agent 定义,`workflow` 脚本的子任务各自带发现范围与 cwd,钉不到。
+
+## 修订(2026-09-15,pi-subagents 0.68.0)
+
+**pi-subagents 升到 0.68.0,源码只删不加。**
+
+- **为什么是这一版。**0.67.0 的 `getHostBuiltinToolNames` 只认宿主注册表里来源为 `builtin` 的工具,Reviewer 自定义的同名 `read` 把那一条的来源改成 `sdk`,取证子会话的 `read` 会被静默剪掉(`docs/research/pi-subagents-0.67-2026-09-12.md`),因此跳过 0.67.0。0.68.0 把判定改成「来源是 builtin,或名字在 Pi 内建八件套里」(`src/runs/shared/child-tool-plan.ts:360`),四件套原样进子会话。issue #328 的扩展注入路径(agent 定义的 `extensions`、`pi.registerTool` 同名覆盖)在 0.68 下不变,真实 SDK 回归全部通过。
+- **排除表一条作废。**0.68 删掉了 `fallbackModels`、同次启动内的模型切换与持久化模型排除表,`PI_MODEL_EXCLUSIONS_PATH` 在包内已无引用;上文 2026-09-05 修订里「模型排除表关进会话的 agentDir」那一条随之失效,`installEvidenceKit` 不再设它。一次瞬时失败只作废那一次取证,这是上游现在的默认行为。
+- **不再捆绑 `pi-server`。**Pi 0.85.1 的根入口不引用它,0.68 也不再带,它与 `pi-protocol` 退出依赖树;只有后台子会话用得到,本项目一律前台。
+- **未变。**spawn 预算两个环境变量、能力天花板登记表键、`intercomBridge` 校验、`disableBuiltins`、`asyncByDefault` 在 0.68 源码里全部仍在;包发布的仍是未编译的 `.ts`(changelog 声称改发编译产物,tarball 里没有),本进程不能直接 import 的约束不变。
+

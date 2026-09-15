@@ -441,13 +441,12 @@ test("取证超时:子会话被停下,之后不再发请求,父会话拿到超�
   assert.deepEqual(outcome.usage, sum([usage[0], usage[2]]));
 });
 
-test("子会话的模型调用瞬时失败只作废这一次取证:排除表关在会话的 agentDir 里,下一个 Reviewer 照常派(issue #262)", async () => {
+test("子会话的模型调用瞬时失败只作废这一次取证,下一个 Reviewer 照常派(issue #262;pi-subagents 0.68 起不再有持久化排除表)", async () => {
   const [first] = evidenceTurns(PLAIN_USAGE);
   const failed = await reviewWithStub([
     { ...first!, usage: { input: 20, output: 5 } },
     // 子会话的第一次请求撞上额度错误:Pi 两层都不重试(SDK 不重试 402,文案里的
-    // insufficient_quota 又是 Pi 的不可重试额度错误),pi-subagents 却按 quota / billing
-    // 把它记成可重试的模型失败,写进排除表。
+    // insufficient_quota 又是 Pi 的不可重试额度错误),这次取证以错误收场。
     { status: 402, text: "insufficient_quota: billing hard limit reached", usage: { input: 0, output: 0 } },
     { text: "取证没有结果,按已读到的代码收尾", usage: { input: 11, output: 4 } },
   ]);
@@ -459,8 +458,9 @@ test("子会话的模型调用瞬时失败只作废这一次取证:排除表关�
   assert.match(call.error ?? "", /insufficient_quota/);
   assert.deepEqual(failed.outcome.usage, sum([{ input: 20, output: 5 }, { input: 11, output: 4 }]));
 
-  // 下一个 Reviewer 子进程是另一份 agentDir:上一次的排除表对它不存在,取证照常派出。
-  // 排除表要是落在宿主 tmp 里,这里会以「No usable subagent models remain」被拒 24 小时。
+  // 下一个 Reviewer 子进程照常派出取证。0.68 之前 pi-subagents 会把这次失败记进一份
+  // 全机共用 24 小时的模型排除表(项目曾把它关进 agentDir),0.68 整个删掉了排除表与
+  // 同次启动内的模型切换;这条回归钉住「一次失败不漏到下一个 Reviewer」不随上游变化。
   const next = await reviewWithStub(evidenceTurns(PLAIN_USAGE));
   assert.equal(next.outcome.failure, undefined, `Reviewer 失败: ${next.outcome.failure}`);
   assert.equal(next.requests.length, 4, "子会话没起来:上一次的失败漏到了这一次");

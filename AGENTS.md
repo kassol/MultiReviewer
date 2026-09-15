@@ -8,7 +8,7 @@ MultiReviewer:基于真实 Coding Agent 的多模型并行 PR 智能审查工具
 
 ## 技术栈
 
-TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内置的 `node:test`。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004。取证子代理用 Pi 官方注册表包 `pi-subagents`(MIT,ADR 0021):它以普通运行时依赖的形态 vendor 进镜像(`pnpm install --prod` 那一层就装好了,运行时不联网装包),由 Reviewer 子进程铺进会话的临时 agentDir;前台取证子会话跑在 Reviewer 子进程内(pi-subagents 0.65 起,ADR 0021 附记),不另起进程。当前钉在 Pi 0.85.1 与 pi-subagents 0.65.1(issue #265):`@earendil-works/pi-server` 不是本项目的直接依赖,0.85.1 的根入口不引用它,它只随 pi-subagents 装进来。运行时第三方依赖只有这两个加上 Pi 工具 schema 用的 `typebox`,共三个。持久化用 SQLite。管理面板用 React 19、Radix Themes 与 Tailwind v4 构建。包管理用 pnpm。
+TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内置的 `node:test`。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004。取证子代理用 Pi 官方注册表包 `pi-subagents`(MIT,ADR 0021):它以普通运行时依赖的形态 vendor 进镜像(`pnpm install --prod` 那一层就装好了,运行时不联网装包),由 Reviewer 子进程铺进会话的临时 agentDir;前台取证子会话跑在 Reviewer 子进程内(pi-subagents 0.65 起,ADR 0021 附记),不另起进程。当前钉在 Pi 0.85.1 与 pi-subagents 0.68.0:`@earendil-works/pi-server` 已不在依赖树里——Pi 0.85.1 的根入口不引用它,pi-subagents 0.68 起也不再捆绑它(只有后台子会话用得到,本项目一律前台)。运行时第三方依赖只有这两个加上 Pi 工具 schema 用的 `typebox`,共三个。持久化用 SQLite。管理面板用 React 19、Radix Themes 与 Tailwind v4 构建。包管理用 pnpm。
 
 ## 目录索引
 
@@ -157,6 +157,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-15: **pi-subagents 升到 0.68.0**(跟进 `docs/research/pi-subagents-0.67-2026-09-12.md`)。0.67.0 会把取证子会话的 `read` 静默剪掉,跳过;0.68.0 包含上游修复,取证的只读四件套与 issue #328 的扩展注入原样成立,真实 SDK 回归全部通过。0.68 同时删掉了持久化模型排除表,项目里把它关进 agentDir 的那行钉法随之删除;`pi-server` 不再随 pi-subagents 装进来,依赖树里没有它了。Pi 仍是 0.85.1。细节见 `src/AGENTS.md` 与 ADR 0021 的 2026-09-15 修订。
 - 2026-09-14: **面板自己渲染 Markdown 里的 ```mermaid 围栏**(纯前端)。此前它只是一个代码块,线上截图里看到的图是浏览器扩展替读者画的。`web/src/components/markdown.tsx` 多一处围栏分派,新增 `web/src/components/mermaid-diagram.tsx`:图卡是圆角卡,SVG 自适应宽度,右上角一颗放大预览键指到那张图才现,卡底一条「源码」折叠回原代码块;渲染失败退回原代码块并在上方一行红字写报错第一行。全屏预览是 Radix `Dialog`,几乎占满视口,滚轮以光标为锚缩放(0.25×–8×)、按住拖动平移,`+` / `−` / 适应 / 1:1 四个键与当前百分比,打开时默认「适应」。新依赖 mermaid 12.0.0(MIT),只由那个组件动态 `import()`,构建出独立 chunk(gzip 约 164 kB)与按图型再拆的一批小 chunk,入口包与没有图的页面不下载它。图的颜色走 `base` 主题加 `--v8-*` 令牌,不另起一套。规格见 `web/DESIGN.md` 7.5。
 - 2026-09-14: **产品页与会话页共用同一个左栏**(spec #349 的收口,纯前端)。两页的左栏从此是同一个组件、同一个宽度、同一套卡片与选中态:产品列表、当前产品的仓库、我的会话;会话页里当前产品在产品列表高亮、当前会话在「我的会话」高亮,跳过去只换主区——概览与产品知识换成聊天工作台与产出,不再像换了个应用。当前产品写进地址(`/products/$productId`),从会话页回产品页选的还是同一个产品;顶栏面包屑按真实层级显示 产品 / 产品名 / 用途。产品页的左栏跟着顶栏 sticky 自己滚,与会话页的位置对齐。会话页头部那行产品名链到它自己的产品页,窄屏下它就是回去的入口。接口一个没动。细节见 `web/AGENTS.md` 与 `web/DESIGN.md`。
 - 2026-09-14: **运行镜像的 fd 换成 release 二进制**。Pi 的 `find` 工具 spawn fd 时固定带 `--no-require-git`(fd 8.7.0 起才有),Debian bookworm 的 fd-find 是 8.6.0,Reviewer 与 Agent 会话里每次「查找文件」都以 unexpected argument 失败,agent 只能退化用 `ls` 逐层翻。`Dockerfile` 加一层 `fd` 构建阶段:从 sharkdp/fd 的 release 取 `FD_VERSION`(10.5.0)的静态 musl 包,按 `dpkg --print-architecture` 选 x86_64 / aarch64,`install` 到 `/usr/local/bin/fd` 并 `--version` 自检,运行镜像 `COPY --from=fd`,apt 不再装 fd-find。本机 amd64 构建验过:容器里 `fd --version` 10.5.0、`fd --no-require-git` 正常。

@@ -344,11 +344,6 @@ test("取证受两道上限约束:一次会话默认 3 次,单次调用内 fan-o
   assert.equal(process.env["PI_SUBAGENT_MAX_SPAWNS_PER_RUN"], "8");
 });
 
-test("模型排除表指进这次会话的 agentDir,不落宿主 tmp(issue #262)", () => {
-  const agentDir = install();
-  assert.equal(process.env["PI_MODEL_EXCLUSIONS_PATH"], join(agentDir, "model-exclusions.json"));
-});
-
 test("会话上限按运行计划冻结的那一格设,只动这一个环境变量(issue #258)", () => {
   const byDefault = install();
   const defaults = ["settings.json", "extensions/subagent/config.json", "models.json", `agents/${EVIDENCE_AGENT}.md`, "evidence-tools.ts"]

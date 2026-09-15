@@ -18,12 +18,6 @@
  *   随运行计划在开跑时冻结、经 `ReviewerRequest.maxEvidenceCallsPerBatch` 进到这里;
  *   `PI_SUBAGENT_MAX_SPAWNS_PER_RUN` 限的是单次 `subagent` 调用内部展开的子任务数,
  *   每次调用重新计数,挡的是一次调用扇出过宽,写死不进策略。
- * - **模型排除表关进 agentDir**:`PI_MODEL_EXCLUSIONS_PATH`(issue #262)。子会话的模型调用
- *   一旦以可重试的原因失败(连接错误、429、5xx),pi-subagents 会把这个模型记进一份排除表,
- *   默认 24 小时内不再派给它;这份表默认落在 `os.tmpdir()/pi-subagents-uid-<uid>/` 下,
- *   全机同 uid 的 Reviewer 子进程共用——一批里的一次瞬时失败会让之后每一轮的每一次取证
- *   都以「No usable subagent models remain」被拒,直到过期。指到这次会话的 agentDir 里,
- *   排除表就与会话同生同灭,失败只影响这一批。
  *
  * 子会话与 Reviewer 同模型同凭据同思考档位。pi-subagents 0.65 起前台子代理是 Reviewer
  * 子进程内的原生 `AgentSession`(issue #262,ADR 0021 附记),不再另起 pi 进程;但它的模型
@@ -73,7 +67,6 @@ export const EVIDENCE_FANOUT_BUDGET = 8;
 
 const SESSION_BUDGET_ENV = "PI_SUBAGENT_MAX_SPAWNS_PER_SESSION";
 const FANOUT_BUDGET_ENV = "PI_SUBAGENT_MAX_SPAWNS_PER_RUN";
-const MODEL_EXCLUSIONS_PATH_ENV = "PI_MODEL_EXCLUSIONS_PATH";
 
 /**
  * 取证子会话的只读四件套扩展(issue #328),铺在 agentDir 根上。不放进 `extensions/`:那是
@@ -276,7 +269,7 @@ export default function (pi) {
 
 /**
  * 把取证子代理铺进这个会话的临时 agentDir,并设好它的几个环境变量。会话上限取本轮运行
- * 计划冻结的那个数,不给即系统默认(issue #258);扇出上限写死;模型排除表指进 agentDir。
+ * 计划冻结的那个数,不给即系统默认(issue #258);扇出上限写死。
  *
  * 调用点是 `prepareAgentRuntime` 的 `installKit`:在主进程的模型运行时建好之后、扩展首次
  * 加载(`resourceLoader.reload()`)之前。前者是 `models.json` 的约束——先写它会反过来盖掉
@@ -330,7 +323,6 @@ export function installEvidenceKit(options: {
   );
   process.env[SESSION_BUDGET_ENV] = String(options.sessionBudget ?? EVIDENCE_SESSION_BUDGET);
   process.env[FANOUT_BUDGET_ENV] = String(EVIDENCE_FANOUT_BUDGET);
-  process.env[MODEL_EXCLUSIONS_PATH_ENV] = join(agentDir, "model-exclusions.json");
 }
 
 /**

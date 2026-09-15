@@ -57,3 +57,8 @@ Pi 侧：`dist-tags` 只有 `latest: 0.85.1`（2026-09-05 12:17:19）与 `legacy
 这个缺陷 0.67.0 发布当天就被集中报上去（[#2132](https://github.com/nicobailon/pi-subagents/issues/2132)、[#2133](https://github.com/nicobailon/pi-subagents/issues/2133)、[#2134](https://github.com/nicobailon/pi-subagents/issues/2134)、[#2135](https://github.com/nicobailon/pi-subagents/issues/2135)、[#2140](https://github.com/nicobailon/pi-subagents/issues/2140)、[#2160](https://github.com/nicobailon/pi-subagents/issues/2160)、[#2183](https://github.com/nicobailon/pi-subagents/issues/2183)），已由 [#2143](https://github.com/nicobailon/pi-subagents/commit/d9864f82) 修进 main：判定改为 `source === "builtin" || PI_BUILTIN_TOOL_NAMES.has(tool.name)`（[main 的 child-tool-plan.ts:355-368](https://github.com/nicobailon/pi-subagents/blob/main/src/runs/shared/child-tool-plan.ts)），本项目那条 `sdk` 来源的 `read` 因名字在内建八件套里而算作可用。截至本日 npm `latest` 仍是 0.67.0，修复未发版；main 的 Unreleased 段同时还有「瞬时空响应不再写进 24 小时排除表」（#2154），对本项目有利。
 
 建议改为：跳过 0.67.0，等下一个包含 #2143 的正式版；届时 `package.json:21` 换版本、`pnpm-workspace.yaml` 视发布时间加豁免，跑 `test/reviewer-evidence-session.test.ts` 四件套断言即可验证，源码无需改动。
+
+## 2026-09-15 附记:0.68.0 已升
+
+0.68.0 于 2026-09-15 02:00:06 UTC 发布,含 #2143(changelog 末条 Fixed 点名 #2132–#2140)。已按上文建议升级:`package.json` 钉 `0.68.0`,`pnpm-workspace.yaml` 加当天豁免。比预估多删一处:0.68 整体移除 `fallbackModels` 与持久化模型排除表,`PI_MODEL_EXCLUSIONS_PATH` 在包内无引用,`installEvidenceKit` 那行钉法与对应单测删除,会话级回归改为钉住「一次失败不漏到下一个 Reviewer」这一行为。`pi-server` / `pi-protocol` 随 0.68 不再捆绑而退出依赖树,豁免清单同步删掉。全量 `pnpm check` 通过。记录见 ADR 0021 的 2026-09-15 修订。
+
