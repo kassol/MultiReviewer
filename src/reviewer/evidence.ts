@@ -361,11 +361,34 @@ const EVIDENCE_CALL_KEYS = new Set([
   "async",
 ]);
 
-/** 给带 `cwd` 的一项钉上工作副本。不是对象的原样留着,形状错由 pi-subagents 自己报。 */
-function pinCwd(item: unknown, worktreePath: string): unknown {
-  return item !== null && typeof item === "object" && !Array.isArray(item)
-    ? { ...item, cwd: worktreePath }
-    : item;
+/**
+ * `tasks[]` / `chain[]` / `parallel` 每一项放行的键(issue #328):派单要用的几项加标签类。
+ * 项里的 `output` 是文件路径,绝对路径原样写盘(pi-subagents `single-output.ts`),只读的取证
+ * 会话由此往任意位置写;`reads` 把任意路径读进上下文;`model` 换模型;`skill` / `progress`
+ * 也读写文件。与顶层同一个做法:清单外整次打回。
+ */
+const EVIDENCE_TASK_KEYS = new Set(["agent", "task", "cwd", "agentScope", "label", "phase", "as", "count"]);
+/** chain 一步在任务项之上多的三项:并行子任务、按上一步产出展开、收集展开结果。 */
+const EVIDENCE_STEP_KEYS = new Set([...EVIDENCE_TASK_KEYS, "parallel", "expand", "collect"]);
+
+function extraKeys(item: object, allowed: ReadonlySet<string>): string[] {
+  return Object.keys(item).filter((key) => !allowed.has(key));
+}
+
+/**
+ * 给一项钉上工作副本,清单外的键打回。不是对象的原样留着,形状错由 pi-subagents 自己报。
+ */
+function pinItem(
+  item: unknown,
+  allowed: ReadonlySet<string>,
+  worktreePath: string,
+): { item: unknown } | { rejected: string } {
+  if (item === null || typeof item !== "object" || Array.isArray(item)) return { item };
+  const extra = extraKeys(item, allowed);
+  if (extra.length > 0) {
+    return { rejected: `evidence tasks do not accept ${extra.join(", ")}; use agent, task and cwd only` };
+  }
+  return { item: { ...item, cwd: worktreePath } };
 }
 
 /**
@@ -375,12 +398,13 @@ function pinCwd(item: unknown, worktreePath: string): unknown {
  * 默认 `both` 时仓库 `.pi/agents` 里同名的 `evidence.md` 优先,带上 `extensions` 就是在
  * Reviewer 进程里跑仓库的代码;`cwd` 钉工作副本,顶层、`tasks[]` 每项、`chain[]` 每项及其
  * `parallel`(任务数组或单个模板)都钉——cwd 决定项目发现从哪读,也是子会话的工作目录。
+ * 顶层与每一项各有放行清单,清单外的键整次打回。
  */
 export function pinEvidenceCall(
   params: Readonly<Record<string, unknown>>,
   worktreePath: string,
 ): { params: Record<string, unknown> } | { rejected: string } {
-  const extra = Object.keys(params).filter((key) => !EVIDENCE_CALL_KEYS.has(key));
+  const extra = extraKeys(params, EVIDENCE_CALL_KEYS);
   if (extra.length > 0) {
     return {
       rejected: `evidence calls do not accept ${extra.join(", ")}; use agent and task (or tasks / chain) only`,
@@ -393,20 +417,36 @@ export function pinEvidenceCall(
     cwd: worktreePath,
   };
   if (Array.isArray(params["tasks"])) {
-    pinned["tasks"] = params["tasks"].map((task) => pinCwd(task, worktreePath));
+    const tasks: unknown[] = [];
+    for (const task of params["tasks"]) {
+      const result = pinItem(task, EVIDENCE_TASK_KEYS, worktreePath);
+      if ("rejected" in result) return result;
+      tasks.push(result.item);
+    }
+    pinned["tasks"] = tasks;
   }
   if (Array.isArray(params["chain"])) {
-    pinned["chain"] = params["chain"].map((step) => {
-      const pinnedStep = pinCwd(step, worktreePath);
+    const chain: unknown[] = [];
+    for (const step of params["chain"]) {
+      const result = pinItem(step, EVIDENCE_STEP_KEYS, worktreePath);
+      if ("rejected" in result) return result;
       const parallel = (step as { parallel?: unknown } | null)?.parallel;
-      if (parallel === undefined || pinnedStep === step) return pinnedStep;
-      return {
-        ...(pinnedStep as object),
-        parallel: Array.isArray(parallel)
-          ? parallel.map((task) => pinCwd(task, worktreePath))
-          : pinCwd(parallel, worktreePath),
-      };
-    });
+      if (parallel === undefined || result.item === step) {
+        chain.push(result.item);
+        continue;
+      }
+      const items: unknown[] = [];
+      for (const task of Array.isArray(parallel) ? parallel : [parallel]) {
+        const pinnedTask = pinItem(task, EVIDENCE_TASK_KEYS, worktreePath);
+        if ("rejected" in pinnedTask) return pinnedTask;
+        items.push(pinnedTask.item);
+      }
+      chain.push({
+        ...(result.item as object),
+        parallel: Array.isArray(parallel) ? items : items[0],
+      });
+    }
+    pinned["chain"] = chain;
   }
   return { params: pinned };
 }

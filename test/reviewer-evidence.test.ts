@@ -297,6 +297,32 @@ test("取证调用的发现范围与 cwd 在三种派单形状上都钉死(issue
   }
 });
 
+test("取证任务项里的 output / reads / model 一类键整次打回:项也有放行清单(issue #328)", () => {
+  // output 是文件路径,绝对路径原样写盘;reads 把任意路径读进上下文;model 换模型。
+  for (const key of ["output", "reads", "model", "skill", "progress", "outputMode"]) {
+    const item = { agent: EVIDENCE_AGENT, task: "a", [key]: "/etc/x" };
+    for (const params of [
+      { tasks: [{ agent: EVIDENCE_AGENT, task: "ok" }, item] },
+      { chain: [item] },
+      { chain: [{ parallel: [item] }] },
+      { chain: [{ parallel: item }] },
+    ]) {
+      const result = pinEvidenceCall(params, WORKTREE);
+      assert.ok("rejected" in result, `${key} 在 ${JSON.stringify(params)} 里被放行`);
+      assert.match(result.rejected, new RegExp(`tasks do not accept ${key};`));
+    }
+  }
+  // 标签类与 chain 自己的三项照常放行。
+  const ok = pinEvidenceCall(
+    {
+      tasks: [{ agent: EVIDENCE_AGENT, task: "a", label: "一", phase: "p", as: "one", count: 2 }],
+      chain: [{ agent: EVIDENCE_AGENT, expand: { from: { output: "one", path: "/items" } }, collect: { as: "all" } }],
+    },
+    WORKTREE,
+  );
+  assert.ok("params" in ok);
+});
+
 test("取证 agent 经扩展装上 Reviewer 那一份四件套,工作副本根写死(issue #328)", () => {
   const agentDir = install();
   const definition = read(agentDir, "agents", `${EVIDENCE_AGENT}.md`);
