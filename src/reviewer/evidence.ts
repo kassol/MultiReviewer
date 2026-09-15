@@ -45,6 +45,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 
@@ -73,6 +74,12 @@ export const EVIDENCE_FANOUT_BUDGET = 8;
 const SESSION_BUDGET_ENV = "PI_SUBAGENT_MAX_SPAWNS_PER_SESSION";
 const FANOUT_BUDGET_ENV = "PI_SUBAGENT_MAX_SPAWNS_PER_RUN";
 const MODEL_EXCLUSIONS_PATH_ENV = "PI_MODEL_EXCLUSIONS_PATH";
+
+/**
+ * 取证子会话的只读四件套扩展(issue #328),铺在 agentDir 根上。不放进 `extensions/`:那是
+ * 环境扩展的发现目录,放进去会连 Reviewer 会话一起加载。
+ */
+const EVIDENCE_TOOLS_EXTENSION = "evidence-tools.ts";
 
 /** 天花板的来源标签,打回文案里会带上它,让人看得出是谁挡的。 */
 const CEILING_SOURCE = "multireviewer";
@@ -105,6 +112,12 @@ type CeilingRegistration = {
  * 「Reviewer 现在有哪些工具」变成子代理有哪些工具的判据,而 `report_finding` 与取证工具
  * 本身都在 Reviewer 那一面上——报不报由 Reviewer 裁决,取证只交证据;取证工具不进子代理
  * 的工具面,单层因此是构造出来的,不靠深度计数。
+ *
+ * `denyExtensions` 关着(issue #328):开着时 pi-subagents 把 agent 定义里的 `extensions`
+ * 一并清空,取证 agent 就装不上圈根的四件套,子会话只剩 Pi 内建的 grep / find / ls,绝对
+ * 路径与 `~` 随便读。它原本挡的是被审仓库自带 agent 定义里的扩展,现在由工具边界补回:
+ * `pinEvidenceCall` 把发现范围钉成 `user`(只读 agentDir,仓库的 `.pi/agents` 与
+ * `.pi/settings.json` 都不进发现),调用参数只放行派单要用的几项。
  */
 export function evidenceCeiling(): {
   allowedTools: string[];
@@ -114,7 +127,7 @@ export function evidenceCeiling(): {
   return {
     allowedTools: [...READ_ONLY_TOOLS].sort(),
     allowedAgents: [EVIDENCE_AGENT],
-    denyExtensions: true,
+    denyExtensions: false,
   };
 }
 
@@ -206,7 +219,8 @@ function knowledgeSection(
  * 取证 agent 的定义文件。frontmatter 是它的行为约束,正文是它的系统提示。
  *
  * `tools` 只有只读四件套:pi-subagents 把它当严格允许清单,取证工具本身与 `report_finding`
- * 都不在其中。`model: inherit` 取父会话那一项模型,`thinking` 与 Reviewer 同档。三个
+ * 都不在其中。`extensions` 指向同批铺装的 `evidence-tools.ts`(相对 agent 文件解析),它用
+ * 同名注册把这四个名字换成 Reviewer 那一份实现(issue #328)。`model: inherit` 取父会话那一项模型,`thinking` 与 Reviewer 同档。三个
  * `inherit*: false` 让子会话只拿到这里写下的东西,不吃工作副本里的 `AGENTS.md` 与技能目录
  * ——那是被审仓库的内容,半可信。`acceptance` 关掉验收契约:取证交的是证据,不是交付物。
  */
@@ -220,6 +234,7 @@ export function evidenceAgentDefinition(options: {
 name: ${EVIDENCE_AGENT}
 description: Read-only investigation of one causal claim about this repository. Give it a single claim to check; it reads the code along the call chain and comes back with file:line evidence.
 tools: ${READ_ONLY_TOOLS.join(", ")}
+extensions: ../${EVIDENCE_TOOLS_EXTENSION}
 async: false
 model: inherit
 thinking: ${options.thinkingLevel}
@@ -244,6 +259,22 @@ ${knowledge}`;
 }
 
 /**
+ * 取证子会话的工具扩展源码(issue #328)。pi-subagents 建子会话时不带 `customTools`,Pi 的
+ * 扩展 `registerTool` 同名注册则盖过内建——四件套因此经扩展进子会话,实现直接 import
+ * `worker-tools.ts` 的 `sessionReadOnlyTools`,判根逻辑只有那一份。扩展由 Pi 经 jiti 加载,
+ * 本仓库的 `.ts` 它加载得了;工作副本根写死进源码,子会话的 cwd 是什么都不影响它。
+ */
+export function evidenceToolsExtension(worktreePath: string): string {
+  const workerTools = fileURLToPath(new URL("./worker-tools.ts", import.meta.url));
+  return `import { sessionReadOnlyTools } from ${JSON.stringify(workerTools)};
+
+export default function (pi) {
+  for (const tool of sessionReadOnlyTools(${JSON.stringify(worktreePath)})) pi.registerTool(tool);
+}
+`;
+}
+
+/**
  * 把取证子代理铺进这个会话的临时 agentDir,并设好它的几个环境变量。会话上限取本轮运行
  * 计划冻结的那个数,不给即系统默认(issue #258);扇出上限写死;模型排除表指进 agentDir。
  *
@@ -255,6 +286,8 @@ ${knowledge}`;
  */
 export function installEvidenceKit(options: {
   agentDir: string;
+  /** 子会话的四件套圈在这里。 */
+  worktreePath: string;
   runtimeModel: RuntimeModel;
   thinkingLevel: ThinkingLevel;
   rules: readonly ReviewRule[];
@@ -282,6 +315,10 @@ export function installEvidenceKit(options: {
     join(agentDir, "models.json"),
     JSON.stringify(childModelCatalog(options.runtimeModel), null, 2),
   );
+  writeFileSync(
+    join(agentDir, EVIDENCE_TOOLS_EXTENSION),
+    evidenceToolsExtension(options.worktreePath),
+  );
   mkdirSync(join(agentDir, "agents"), { recursive: true });
   writeFileSync(
     join(agentDir, "agents", `${EVIDENCE_AGENT}.md`),
@@ -304,10 +341,81 @@ export function installEvidenceKit(options: {
 const EVIDENCE_PINNED_PARAMS = { intercomBridge: { mode: "off" }, async: false } as const;
 
 /**
- * 取证契约在工具边界的那一道(issue #262):与 pi-subagents 一起装进 Reviewer 会话的进程内
- * 扩展,在 `subagent` 工具执行之前做两件事——把能力天花板登记到这个会话名下,把调用参数
- * 里的 `intercomBridge` 与 `async` 钉成契约值。改参数而不拒调用:模型要的是证据,给它
- * 证据,只是不按它写的方式派。Pi 的 `tool_call` 钩子对扩展注册的工具同样生效,
+ * 取证调用放行的参数(issue #328):派单与超时要用的几项,加上钉死的四项。其余一律打回——
+ * `action`(能新建或改写 agent 定义)、`workflow` / `workflowScript*`(子任务各自带发现范围与
+ * cwd,钉不到)这类入口在关掉 `denyExtensions` 之后都能把仓库里的扩展带进 Reviewer 进程。
+ * 放行清单比拦截清单短,pi-subagents 加了新参数也默认不放。
+ */
+const EVIDENCE_CALL_KEYS = new Set([
+  "agent",
+  "task",
+  "tasks",
+  "chain",
+  "concurrency",
+  "timeoutMs",
+  "maxRuntimeMs",
+  "toolTimeoutMs",
+  "agentScope",
+  "cwd",
+  "intercomBridge",
+  "async",
+]);
+
+/** 给带 `cwd` 的一项钉上工作副本。不是对象的原样留着,形状错由 pi-subagents 自己报。 */
+function pinCwd(item: unknown, worktreePath: string): unknown {
+  return item !== null && typeof item === "object" && !Array.isArray(item)
+    ? { ...item, cwd: worktreePath }
+    : item;
+}
+
+/**
+ * 一次取证调用钉成契约形状(issue #262、#328)。纯函数:给出钉好的参数,或给出打回原因。
+ *
+ * 钉四项:`intercomBridge` 与 `async` 见上;`agentScope` 钉 `user`,发现只读 agentDir——
+ * 默认 `both` 时仓库 `.pi/agents` 里同名的 `evidence.md` 优先,带上 `extensions` 就是在
+ * Reviewer 进程里跑仓库的代码;`cwd` 钉工作副本,顶层、`tasks[]` 每项、`chain[]` 每项及其
+ * `parallel`(任务数组或单个模板)都钉——cwd 决定项目发现从哪读,也是子会话的工作目录。
+ */
+export function pinEvidenceCall(
+  params: Readonly<Record<string, unknown>>,
+  worktreePath: string,
+): { params: Record<string, unknown> } | { rejected: string } {
+  const extra = Object.keys(params).filter((key) => !EVIDENCE_CALL_KEYS.has(key));
+  if (extra.length > 0) {
+    return {
+      rejected: `evidence calls do not accept ${extra.join(", ")}; use agent and task (or tasks / chain) only`,
+    };
+  }
+  const pinned: Record<string, unknown> = {
+    ...params,
+    ...EVIDENCE_PINNED_PARAMS,
+    agentScope: "user",
+    cwd: worktreePath,
+  };
+  if (Array.isArray(params["tasks"])) {
+    pinned["tasks"] = params["tasks"].map((task) => pinCwd(task, worktreePath));
+  }
+  if (Array.isArray(params["chain"])) {
+    pinned["chain"] = params["chain"].map((step) => {
+      const pinnedStep = pinCwd(step, worktreePath);
+      const parallel = (step as { parallel?: unknown } | null)?.parallel;
+      if (parallel === undefined || pinnedStep === step) return pinnedStep;
+      return {
+        ...(pinnedStep as object),
+        parallel: Array.isArray(parallel)
+          ? parallel.map((task) => pinCwd(task, worktreePath))
+          : pinCwd(parallel, worktreePath),
+      };
+    });
+  }
+  return { params: pinned };
+}
+
+/**
+ * 取证契约在工具边界的那一道(issue #262、#328):与 pi-subagents 一起装进 Reviewer 会话的
+ * 进程内扩展,在 `subagent` 工具执行之前做两件事——把能力天花板登记到这个会话名下,把调用
+ * 参数按 `pinEvidenceCall` 钉成契约形状。钉得住的改参数而不拒调用:模型要的是证据,给它
+ * 证据,只是不按它写的方式派;放行清单外的参数才打回。Pi 的 `tool_call` 钩子对扩展注册的工具同样生效,
  * `event.input` 就地改写后进入执行,这一层不再校验。
  *
  * 天花板挂在这里而不是会话启动时:pi-subagents 派出前按「当前会话 id」查表,而这个 id
@@ -315,16 +423,20 @@ const EVIDENCE_PINNED_PARAMS = { intercomBridge: { mode: "off" }, async: false }
  * 在派出之前登记就一定查得到。能力天花板管不到另外两项:天花板筛的是 `tools` 允许清单
  * 与 agent 名,而 `contact_supervisor` 由子会话的运行时钩子按桥的开关注册,不经允许清单。
  */
-export function evidenceContractExtension(): InlineExtension {
+export function evidenceContractExtension(worktreePath: string): InlineExtension {
   return {
     name: "multireviewer:evidence-contract",
     factory: (pi) => {
       pi.on("tool_call", (event, ctx) => {
         if (event.toolName !== EVIDENCE_TOOL) return undefined;
+        const input = event.input as Record<string, unknown>;
+        const pinned = pinEvidenceCall(input, worktreePath);
+        if ("rejected" in pinned) return { block: true, reason: pinned.rejected };
         registerEvidenceCeiling(
           ctx.sessionManager.getSessionFile() ?? ctx.sessionManager.getSessionId(),
         );
-        Object.assign(event.input, EVIDENCE_PINNED_PARAMS);
+        for (const key of Object.keys(input)) delete input[key];
+        Object.assign(input, pinned.params);
         return undefined;
       });
     },

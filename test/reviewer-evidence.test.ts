@@ -21,8 +21,10 @@ import {
   evidenceAgentDefinition,
   evidenceCeiling,
   evidenceContractExtension,
+  evidenceToolsExtension,
   evidenceTranscriptEvents,
   installEvidenceKit,
+  pinEvidenceCall,
   registerEvidenceCeiling,
   vendoredSubagentsPath,
 } from "../src/reviewer/evidence.ts";
@@ -54,10 +56,14 @@ const MODEL: RuntimeModel = {
   },
 };
 
+/** 取证子会话圈在的工作副本根。铺装与钩子只把它写进文件与参数,不读它。 */
+const WORKTREE = "/work/tree";
+
 function install(overrides: Partial<Parameters<typeof installEvidenceKit>[0]> = {}): string {
   const agentDir = mkdtempSync(join(tmpdir(), "multireviewer-evidence-test-"));
   installEvidenceKit({
     agentDir,
+    worktreePath: WORKTREE,
     runtimeModel: MODEL,
     thinkingLevel: "high",
     rules: [],
@@ -133,7 +139,7 @@ test("能力天花板写死在代码里,不从会话工具面透传", () => {
   assert.deepEqual(evidenceCeiling(), {
     allowedTools: ["find", "grep", "ls", "read"],
     allowedAgents: [EVIDENCE_AGENT],
-    denyExtensions: true,
+    denyExtensions: false,
   });
   // 工作副本是半可信输入:被审仓库自带的 agent 定义即使被读到,也不在放行名单里。
   assert.ok(!evidenceCeiling().allowedTools.includes("subagent"));
@@ -159,7 +165,7 @@ test("天花板登记到父会话名下,形状与 pi-subagents 自己写下的�
         version: 1,
         allowedTools: ["find", "grep", "ls", "read"],
         allowedAgents: [EVIDENCE_AGENT],
-        denyExtensions: true,
+        denyExtensions: false,
         sources: ["multireviewer"],
       },
     },
@@ -175,7 +181,7 @@ function toolCallHook(): (event: { toolName: string; input: Record<string, unkno
       if (name === "tool_call") handler = fn;
     },
   };
-  const extension = evidenceContractExtension();
+  const extension = evidenceContractExtension(WORKTREE);
   assert.ok(typeof extension === "object" && "factory" in extension, "契约扩展要带名字");
   extension.factory(pi as never);
   assert.ok(handler, "契约扩展没有挂 tool_call 钩子");
@@ -197,6 +203,8 @@ test("工具边界钉死取证契约:intercomBridge 与 async 按契约改写,�
     task: "查调用方",
     intercomBridge: { mode: "off" },
     async: false,
+    agentScope: "user",
+    cwd: WORKTREE,
   });
   assert.equal(ceilingRegistrations("session-hook").length, 1);
 
@@ -208,6 +216,8 @@ test("工具边界钉死取证契约:intercomBridge 与 async 按契约改写,�
     task: "查调用方",
     intercomBridge: { mode: "off" },
     async: false,
+    agentScope: "user",
+    cwd: WORKTREE,
   });
 
   // 有会话文件时登记在文件路径名下:pi-subagents 查表用的就是它。
@@ -218,6 +228,84 @@ test("工具边界钉死取证契约:intercomBridge 与 async 按契约改写,�
   const read = { toolName: "read", input: { path: "a.ts", async: true } };
   hook(read, ctx);
   assert.deepEqual(read.input, { path: "a.ts", async: true });
+
+  // 放行清单外的参数整次打回,参数与登记表都不动(issue #328)。
+  const management = { toolName: EVIDENCE_TOOL, input: { action: "create", config: { name: EVIDENCE_AGENT } } };
+  const blocked = hook(management, { sessionManager: { getSessionFile: () => undefined, getSessionId: () => "session-blocked" } });
+  assert.deepEqual(blocked, { block: true, reason: "evidence calls do not accept action, config; use agent and task (or tasks / chain) only" });
+  assert.deepEqual(management.input, { action: "create", config: { name: EVIDENCE_AGENT } });
+  assert.deepEqual(ceilingRegistrations("session-blocked"), []);
+});
+
+test("取证调用的发现范围与 cwd 在三种派单形状上都钉死(issue #328)", () => {
+  const pinnedTop = { intercomBridge: { mode: "off" }, async: false, agentScope: "user", cwd: WORKTREE };
+
+  // 单任务:模型要 project 范围、换目录,一律改回。
+  assert.deepEqual(
+    pinEvidenceCall({ agent: EVIDENCE_AGENT, task: "查", agentScope: "project", cwd: "/etc" }, WORKTREE),
+    { params: { agent: EVIDENCE_AGENT, task: "查", ...pinnedTop } },
+  );
+
+  // tasks[]:每一项的 cwd 都钉,没写的也补上。
+  assert.deepEqual(
+    pinEvidenceCall(
+      { tasks: [{ agent: EVIDENCE_AGENT, task: "a", cwd: "../" }, { agent: EVIDENCE_AGENT, task: "b" }], agentScope: "both" },
+      WORKTREE,
+    ),
+    {
+      params: {
+        tasks: [
+          { agent: EVIDENCE_AGENT, task: "a", cwd: WORKTREE },
+          { agent: EVIDENCE_AGENT, task: "b", cwd: WORKTREE },
+        ],
+        ...pinnedTop,
+      },
+    },
+  );
+
+  // chain[]:每一步与它的 parallel(任务数组或单个模板)都钉。
+  assert.deepEqual(
+    pinEvidenceCall(
+      {
+        chain: [
+          { agent: EVIDENCE_AGENT, task: "a", cwd: "/" },
+          { parallel: [{ agent: EVIDENCE_AGENT, cwd: "/tmp" }] },
+          { parallel: { agent: EVIDENCE_AGENT, cwd: "~" } },
+        ],
+      },
+      WORKTREE,
+    ),
+    {
+      params: {
+        chain: [
+          { agent: EVIDENCE_AGENT, task: "a", cwd: WORKTREE },
+          { cwd: WORKTREE, parallel: [{ agent: EVIDENCE_AGENT, cwd: WORKTREE }] },
+          { cwd: WORKTREE, parallel: { agent: EVIDENCE_AGENT, cwd: WORKTREE } },
+        ],
+        ...pinnedTop,
+      },
+    },
+  );
+
+  // 管理动作与 workflow 脚本钉不住发现范围,整次打回;入参不被改写。
+  for (const key of ["action", "workflow", "workflowScript", "workflowScriptPath", "config"]) {
+    const params = { agent: EVIDENCE_AGENT, task: "查", [key]: "x" };
+    const result = pinEvidenceCall(params, WORKTREE);
+    assert.ok("rejected" in result, `${key} 被放行`);
+    assert.match(result.rejected, new RegExp(`accept ${key};`));
+    assert.deepEqual(params, { agent: EVIDENCE_AGENT, task: "查", [key]: "x" });
+  }
+});
+
+test("取证 agent 经扩展装上 Reviewer 那一份四件套,工作副本根写死(issue #328)", () => {
+  const agentDir = install();
+  const definition = read(agentDir, "agents", `${EVIDENCE_AGENT}.md`);
+  // 相对 agent 文件解析,指向 agentDir 根上那一份;不在 extensions/ 下,Reviewer 会话不加载它。
+  assert.match(definition, /^extensions: \.\.\/evidence-tools\.ts$/m);
+  const source = read(agentDir, "evidence-tools.ts");
+  assert.equal(source, evidenceToolsExtension(WORKTREE));
+  assert.match(source, /import \{ sessionReadOnlyTools \} from ".*\/src\/reviewer\/worker-tools\.ts";/);
+  assert.ok(source.includes(`sessionReadOnlyTools(${JSON.stringify(WORKTREE)})`));
 });
 
 test("取证受两道上限约束:一次会话默认 3 次,单次调用内 fan-out 8", () => {
@@ -237,7 +325,7 @@ test("模型排除表指进这次会话的 agentDir,不落宿主 tmp(issue #262)
 
 test("会话上限按运行计划冻结的那一格设,只动这一个环境变量(issue #258)", () => {
   const byDefault = install();
-  const defaults = ["settings.json", "extensions/subagent/config.json", "models.json", `agents/${EVIDENCE_AGENT}.md`]
+  const defaults = ["settings.json", "extensions/subagent/config.json", "models.json", `agents/${EVIDENCE_AGENT}.md`, "evidence-tools.ts"]
     .map((file) => read(byDefault, ...file.split("/")));
 
   const tuned = install({ sessionBudget: 1 });
@@ -245,7 +333,7 @@ test("会话上限按运行计划冻结的那一格设,只动这一个环境变�
   // 扇出上限与铺进 agentDir 的每个文件都与默认铺装逐字相同:策略只改会话总量。
   assert.equal(process.env["PI_SUBAGENT_MAX_SPAWNS_PER_RUN"], "8");
   assert.deepEqual(
-    ["settings.json", "extensions/subagent/config.json", "models.json", `agents/${EVIDENCE_AGENT}.md`]
+    ["settings.json", "extensions/subagent/config.json", "models.json", `agents/${EVIDENCE_AGENT}.md`, "evidence-tools.ts"]
       .map((file) => read(tuned, ...file.split("/"))),
     defaults,
   );

@@ -583,13 +583,14 @@ async function run(request: ReviewerRequest): Promise<void> {
       request.mode === "verdict-only" ? VERDICT_ONLY_SYSTEM_PROMPT : SYSTEM_PROMPT,
     extensionPaths: [vendoredSubagentsPath()],
     // 取证契约在工具边界的那一道(issue #262):与 pi-subagents 同一批装进会话。
-    extensionFactories: [evidenceContractExtension()],
+    extensionFactories: [evidenceContractExtension(request.worktreePath)],
     // 取证子代理的铺装(issue #226)。知识注入与 Reviewer 拿到的是同一批条目;会话上限是
     // 本轮运行计划冻结的那一格(issue #258),不带即系统默认。铺在扩展首次加载之前:
     // pi-subagents 注册时读一次 config,写晚了 intercom 桥就照默认开着(issue #262)。
     installKit: (agentDir) =>
       installEvidenceKit({
         agentDir,
+        worktreePath: request.worktreePath,
         runtimeModel: request.runtimeModel,
         thinkingLevel,
         rules: request.rules ?? [],

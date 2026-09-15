@@ -42,3 +42,10 @@ Pi 升到 0.85.0、pi-subagents 升到 0.65.1。pi-subagents 0.65 起前台子�
 
 三道锁的每一道都有反向验证:去掉任一道,对应的真实 SDK 用例失败。
 
+## 修订(2026-09-15,issue #328)
+
+**取证子会话的只读四件套换成 Reviewer 那一份,能力天花板放开 `denyExtensions`,由工具边界补回。**
+
+- **起因。**Reviewer、规则 agent 与合并 agent 的 grep / find / ls 已圈在工作副本上,取证子会话没有:pi-subagents 建子会话时不带 `customTools`,四件套是 Pi 内建原版,绝对路径与 `~` 随便读。Pi 扩展的 `registerTool` 同名注册能盖过内建,但 pi-subagents 给前台子会话装扩展只认 agent 定义里的 `extensions`,而天花板的 `denyExtensions` 会把它清空;另一个入口 `setChildSessionFactory` 是 jiti 模块内的变量,本进程拿不到。
+- **做法。**`<agentDir>/evidence-tools.ts` 由本项目生成,import `worker-tools.ts` 的 `sessionReadOnlyTools`,工作副本根写死;`evidence.md` 的 `extensions` 指向它;天花板 `denyExtensions: false`,`allowedTools` 与 `allowedAgents` 不动。
+- **补回的那一道。**`denyExtensions` 原本挡的是被审仓库自带定义里的扩展——关掉之后,默认发现范围 `both` 下仓库 `.pi/agents` 里同名的 `evidence.md` 优先,带上 `extensions` 就在 Reviewer 进程里执行仓库的代码(真实 SDK 回归实测复现)。工具边界的钩子因此把 `agentScope` 钉成 `user`、`cwd` 在顶层与 `tasks[]` / `chain[]`(含 `parallel`)钉成工作副本,调用参数只放行派单与超时要用的几项,其余整次打回:`action` 能改写 agent 定义,`workflow` 脚本的子任务各自带发现范围与 cwd,钉不到。
