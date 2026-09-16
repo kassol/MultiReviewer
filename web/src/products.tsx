@@ -3,14 +3,19 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   CheckCircledIcon,
   CrossCircledIcon,
+  DotsHorizontalIcon,
   ExclamationTriangleIcon,
+  Pencil1Icon,
+  TrashIcon,
 } from "@radix-ui/react-icons";
 import {
   Badge,
   Callout,
   Checkbox,
   Dialog,
+  DropdownMenu,
   Flex,
+  IconButton,
   Skeleton,
   Text,
   TextArea,
@@ -52,7 +57,7 @@ const KNOWLEDGE_STATEMENT_MAX = 100;
 
 /**
  * 产品页(CONTEXT.md 产品,issue #331)。左栏是产品页与会话页共用的那一份(`ProductRail`:
- * 产品列表、当前产品的仓库、我的会话),右栏是当前产品的概览与产品知识。当前产品写在地址上
+ * 产品列表、当前产品的仓库、会话),右栏是当前产品的概览与产品知识。当前产品写在地址上
  * (`/products/$productId`),从会话页回来选的还是同一个产品。
  *
  * 可见的产品由服务端按仓库分配给出(ADR 0018),前端不自己判:一个仓库都没分到的人
@@ -75,6 +80,8 @@ export function ProductsPage({
   const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
   const [dialog, setDialog] = useState<"rename" | "survey" | null>(null);
   const [confirming, setConfirming] = useState(false);
+  /** 正要退役的产品知识条目:退役不可恢复,先过一道确认(与删除产品同一套 ConfirmDialog)。 */
+  const [retiring, setRetiring] = useState<ProductKnowledge | null>(null);
   /** 产品知识那一段表单的挂载标识:写成功一次就加一,表单因此重挂成空的。 */
   const [knowledgeFormKey, setKnowledgeFormKey] = useState(0);
 
@@ -86,7 +93,7 @@ export function ProductsPage({
   const products = productsQuery.data ?? [];
   const selected = currentProduct(products, productId);
   const loadError = productsQuery.error;
-  // 当前产品下「我的会话」。会话只属于创建者,可见多少由服务端按创建者给出。
+  // 当前产品下「会话」。会话只属于创建者,可见多少由服务端按创建者给出。
   const sessionsQuery = useProductSessions(selected?.id);
   const sessions = sessionsQuery.data ?? [];
 
@@ -157,6 +164,7 @@ export function ProductsPage({
     mutationFn: (input: { product: Product; entry: ProductKnowledge }) =>
       send(`/products/${input.product.id}/knowledge/${input.entry.id}`, "DELETE"),
     onSuccess: () => {
+      setRetiring(null);
       setFeedback({ text: "已退役一条产品知识。", error: false });
       void refreshKnowledge();
     },
@@ -239,29 +247,36 @@ export function ProductsPage({
               {selected.name}
             </h2>
             {canWrite ? (
-              <div className="flex shrink-0 items-center gap-2">
-                <Button
-                  variant="soft"
-                  color="gray"
-                  size={{ initial: "3", sm: "2" }}
-                  disabled={busy}
-                  onClick={() => openDialog("rename")}
-                >
-                  改名
-                </Button>
-                <Button
-                  variant="soft"
-                  color="red"
-                  size={{ initial: "3", sm: "2" }}
-                  disabled={busy}
-                  onClick={() => {
-                    setFeedback(null);
-                    setConfirming(true);
-                  }}
-                >
-                  删除
-                </Button>
-              </div>
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger>
+                  <IconButton
+                    type="button"
+                    variant="ghost"
+                    color="gray"
+                    size={{ initial: "3", sm: "2" }}
+                    disabled={busy}
+                    aria-label="产品操作"
+                  >
+                    <DotsHorizontalIcon aria-hidden />
+                  </IconButton>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Content align="end">
+                  <DropdownMenu.Item onSelect={() => openDialog("rename")}>
+                    <Pencil1Icon aria-hidden />
+                    改名
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    color="red"
+                    onSelect={() => {
+                      setFeedback(null);
+                      setConfirming(true);
+                    }}
+                  >
+                    <TrashIcon aria-hidden />
+                    删除
+                  </DropdownMenu.Item>
+                </DropdownMenu.Content>
+              </DropdownMenu.Root>
             ) : null}
           </div>
           {/* 一行元信息。产品知识那一份还没读到时省掉它的两个数,不用占位符冒充。 */}
@@ -303,7 +318,7 @@ export function ProductsPage({
           }}
           onRetire={(entry) => {
             setFeedback(null);
-            retireKnowledge.mutate({ product: selected, entry });
+            setRetiring(entry);
           }}
           onDecide={(entry, accept) => {
             setFeedback(null);
@@ -341,7 +356,7 @@ export function ProductsPage({
         左栏与会话页是同一个组件、同一个位置(spec #349)。产品页整页在 `#panel-main-scroll`
         里滚,左栏因此 sticky 在顶栏之下自己滚:跳到会话页时它停在同一处,不跟着主区走。
         `lg` 以下左栏让出自己的盒子,它那三张卡与这一列主区同为这个 flex 容器的直接子项,靠
-        `max-lg:order-*` 排成 产品列表 → 概览 + 产品知识 → 仓库 → 我的会话。
+        `max-lg:order-*` 排成 产品列表 → 概览 + 产品知识 → 仓库 → 会话。
       */}
       <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:gap-[18px]">
         <ProductRail
@@ -423,6 +438,32 @@ export function ProductsPage({
               onClick: () => {
                 setFeedback(null);
                 remove.mutate(selected);
+              },
+            }}
+          />
+          <ConfirmDialog
+            open={retiring !== null}
+            onOpenChange={(open) => {
+              if (!open) setRetiring(null);
+            }}
+            title="退役这条产品知识?"
+            titleSize="4"
+            description={
+              retiring === null
+                ? ""
+                : `「${retiring.statement.length > 80 ? `${retiring.statement.slice(0, 80)}…` : retiring.statement}」退役后不再生效,不可恢复。`
+            }
+            cancelLabel="取消"
+            cancelVariant="outline"
+            cancelDisabled={retireKnowledge.isPending}
+            confirm={{
+              label: retireKnowledge.isPending ? "退役中…" : "退役",
+              color: "red",
+              disabled: retireKnowledge.isPending || retiring === null,
+              onClick: () => {
+                if (retiring === null) return;
+                setFeedback(null);
+                retireKnowledge.mutate({ product: selected, entry: retiring });
               },
             }}
           />

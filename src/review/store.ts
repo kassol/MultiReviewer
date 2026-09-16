@@ -2801,6 +2801,14 @@ export type AgentSessionRecord = {
    * 不显示。
    */
   baselines: AgentSessionBaseline[];
+  /**
+   * 这个会话第一条用户消息的正文(读时派生,不落库)。取第一段文本块、去首尾空白、把
+   * 连续空白折成一个空格、截到 80 字——不加省略号,视觉上的截断由面板做。还没有人发过
+   * 消息(系统开的梳理、刚建的会话)时是 null。
+   */
+  title: string | null;
+  /** 这个会话最后一次有动静的时刻(读时派生):记录表的 `MAX(at)`,没有记录时落建会话时刻。 */
+  lastActiveAt: string;
 };
 
 /**
@@ -2944,6 +2952,54 @@ function agentSessionOutputFinalization(
   };
 }
 
+/**
+ * 会话列表按用途分不清是哪一个(面板只显示「开放对话」),标题与最后动静都是读时从记录表
+ * 派生、不落库的两列(不必迁移):
+ *
+ * - `title_raw` 是这个会话第一条用户消息的正文——`agent_session_entry.type = 'message'`
+ *   且 `entry.message.role = 'user'`,按 `seq` 取最早那一条。正文是纯字符串时直接读;是分块
+ *   数组时(带图的消息,ADR 0031 的图片例外)取第一个 `type: "text"` 的块,不能假定它在
+ *   下标 0——图片块可能排在文字前面。折成面板要的那一档在 JS 侧的 `agentSessionTitle` 做。
+ * - `last_active_at` 是这个会话记录表的 `MAX(at)`;还没有记录(刚建、或系统开的梳理还没
+ *   落第一条)时落 `created_at`。
+ */
+const AGENT_SESSION_QUERY = `
+  SELECT agent_session.*,
+    (
+      SELECT CASE
+        WHEN json_type(e.entry, '$.message.content') = 'array' THEN (
+          SELECT json_extract(part.value, '$.text')
+            FROM json_each(json_extract(e.entry, '$.message.content')) AS part
+           WHERE json_extract(part.value, '$.type') = 'text'
+           ORDER BY part.key
+           LIMIT 1
+        )
+        ELSE json_extract(e.entry, '$.message.content')
+      END
+        FROM agent_session_entry e
+       WHERE e.session_id = agent_session.id
+         AND e.type = 'message'
+         AND json_extract(e.entry, '$.message.role') = 'user'
+       ORDER BY e.seq
+       LIMIT 1
+    ) AS title_raw,
+    COALESCE(
+      (SELECT MAX(at) FROM agent_session_entry WHERE session_id = agent_session.id),
+      agent_session.created_at
+    ) AS last_active_at
+    FROM agent_session`;
+
+/**
+ * `title_raw`(上面那条查询抠出来的第一条用户消息文本)收成面板要的那一档:去首尾空白、
+ * 连续空白折成一个、截到 80 字——不加省略号,视觉上的截断由面板做。没有这条消息、或文本
+ * 折下来是空串时都算 null——空标题不该占位。
+ */
+function agentSessionTitle(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const collapsed = raw.trim().replace(/\s+/g, " ");
+  return collapsed === "" ? null : collapsed.slice(0, 80);
+}
+
 function agentSession(row: Record<string, unknown>): AgentSessionRecord {
   return {
     id: Number(row["id"]),
@@ -2968,6 +3024,9 @@ function agentSession(row: Record<string, unknown>): AgentSessionRecord {
             ...one,
             kind: one.kind ?? "branch",
           })),
+    // 产品梳理由系统开:它的第一条「用户」消息是系统投的梳理指令,不是人说的话,不当标题。
+    title: row["purpose"] === "product-survey" ? null : agentSessionTitle(row["title_raw"]),
+    lastActiveAt: String(row["last_active_at"] ?? row["created_at"]),
   };
 }
 
@@ -5583,16 +5642,20 @@ export function openStore(dbPath: string): Store {
     listAgentSessions(productId, createdBy) {
       return db
         .prepare(
-          `SELECT * FROM agent_session
-            WHERE product_id = ?${createdBy === null ? "" : " AND created_by = ?"}
-            ORDER BY id DESC`,
+          `${AGENT_SESSION_QUERY}
+            WHERE agent_session.product_id = ?${
+              createdBy === null ? "" : " AND agent_session.created_by = ?"
+            }
+            ORDER BY agent_session.id DESC`,
         )
         .all(...(createdBy === null ? [productId] : [productId, createdBy]))
         .map(agentSession);
     },
 
     getAgentSession(sessionId) {
-      const row = db.prepare("SELECT * FROM agent_session WHERE id = ?").get(sessionId);
+      const row = db
+        .prepare(`${AGENT_SESSION_QUERY} WHERE agent_session.id = ?`)
+        .get(sessionId);
       return row === undefined ? undefined : agentSession(row);
     },
 
@@ -5627,6 +5690,9 @@ export function openStore(dbPath: string): Store {
           totalTokens: 0,
         },
         baselines: [...baselines],
+        // 刚建的会话还没有记录:标题没有第一条用户消息可取,最后动静就是建会话那一刻。
+        title: null,
+        lastActiveAt: record.createdAt,
       };
     },
 

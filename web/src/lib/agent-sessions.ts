@@ -38,6 +38,10 @@ export type AgentSession = {
   /** 「在跑」是进程内的事实,服务端每次读会话时按会话运行时覆盖这一格(issue #333)。 */
   status: "idle" | "running";
   createdAt: string;
+  /** 第一条人说的话,截到 80 字;还没人说过话即 null(系统发起的梳理会话常见)。列表与左栏用它当会话名。 */
+  title: string | null;
+  /** 最近一条记录的时刻;没有记录时等于 createdAt。 */
+  lastActiveAt: string;
   usage: {
     inputTokens: number;
     outputTokens: number;

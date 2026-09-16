@@ -87,7 +87,7 @@ function detachConsequence(repo: ProductRepo | null, knowledge: readonly Product
 }
 
 /**
- * 产品页与会话页共用的左栏(spec #349 的收口):产品列表、当前产品的仓库、我的会话。两页
+ * 产品页与会话页共用的左栏(spec #349 的收口):产品列表、当前产品的仓库、会话。两页
  * 同一个组件、同一个 264px 宽、同一套卡片与选中态——跳过去只换主区,不像换了个应用。
  *
  * 当前产品写在地址上(`/products/$productId` 与会话页路径的第一段),因此从会话页回产品页
@@ -108,7 +108,7 @@ export function ProductRail({
 }: {
   /** 地址上的产品。`undefined` 即地址没带(`/products`),落在列表第一个上。 */
   productId?: number | undefined;
-  /** 会话页当前这个会话,「我的会话」里高亮它。 */
+  /** 会话页当前这个会话,「会话」里高亮它。 */
   activeSessionId?: number | undefined;
   canWrite: boolean;
   canChat: boolean;
@@ -257,11 +257,11 @@ export function ProductRail({
     <>
       {/*
         `lg` 以下这个 `aside` 让出自己的盒子(`contents`),三张卡因此与调用页的主列成为同一个
-        flex 容器的直接子项,由各自的 `max-lg:order-*` 排成 产品列表 → 主列 → 仓库 → 我的会话
+        flex 容器的直接子项,由各自的 `max-lg:order-*` 排成 产品列表 → 主列 → 仓库 → 会话
         ——手机上先选产品、再看它是什么,仓库与会话排在后面。`lg` 起它恢复成 264px 的一列。
       */}
       <aside
-        aria-label="产品、仓库与我的会话"
+        aria-label="产品、仓库与会话"
         className={cn("flex w-full shrink-0 flex-col gap-2.5 max-lg:contents lg:w-[264px]", className)}
       >
         <div className="min-w-0 max-lg:order-1">
@@ -457,8 +457,8 @@ export function ProductRail({
 }
 
 /**
- * 左栏的「我的会话」卡。列的是当前产品下这个账号自己的会话(系统管理员读到的是所有人的,
- * 由服务端决定,前端不自己判)。
+ * 左栏的「会话」卡。列的是当前产品下的会话——多数账号看到的是自己的,系统管理员看到的是
+ * 所有人的,由服务端按权限决定,前端不自己判;标题不写「我的」,因为对后者不成立。
  */
 function SessionRail({
   productId,
@@ -477,9 +477,12 @@ function SessionRail({
   busy: boolean;
   onCreate: () => void;
 }) {
+  // 会话按最近活动降序排,刚说过话的会话浮上来,而不是固定按创建时间。sort 是稳定排序,
+  // lastActiveAt 并列时落回服务端原有的 id desc 顺序。
+  const sorted = [...sessions].sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt));
   return (
     <RailCard
-      title="我的会话"
+      title="会话"
       {...(pending ? {} : { count: sessions.length })}
       action={
         canChat ? (
@@ -498,7 +501,7 @@ function SessionRail({
         </Text>
       ) : (
         <ul>
-          {sessions.map((session) => (
+          {sorted.map((session) => (
             <li key={session.id} className="border-t border-line first:border-t-0">
               <MasterListItem
                 asChild
@@ -509,11 +512,22 @@ function SessionRail({
                   to="/products/$productId/sessions/$sessionId"
                   params={{ productId: String(productId), sessionId: String(session.id) }}
                 >
-                  <span className="block truncate text-base">
-                    {PURPOSE_LABEL[session.purpose]}
+                  <span className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-base">
+                      {session.title ?? PURPOSE_LABEL[session.purpose]}
+                    </span>
+                    {session.status === "running" ? (
+                      <span
+                        aria-label="在跑"
+                        role="img"
+                        className="size-1.5 shrink-0 rounded-full bg-primary animate-pulse"
+                      />
+                    ) : null}
                   </span>
-                  <MasterListItemText className="mt-px block text-sm font-normal">
-                    {localMinute(session.createdAt)} · {session.createdBy}
+                  <MasterListItemText className="mt-px block truncate text-sm font-normal">
+                    {session.title === null
+                      ? `${localMinute(session.lastActiveAt)} · ${session.createdBy}`
+                      : `${PURPOSE_LABEL[session.purpose]} · ${localMinute(session.lastActiveAt)} · ${session.createdBy}`}
                   </MasterListItemText>
                 </Link>
               </MasterListItem>

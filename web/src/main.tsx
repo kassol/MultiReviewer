@@ -250,7 +250,7 @@ function TopBar({
           {deeper.map((crumb) => (
             <Fragment key={crumb}>
               <span className="text-text-faint max-lg:hidden" aria-hidden>/</span>
-              <span className="truncate text-xl font-semibold max-lg:hidden">{crumb}</span>
+              <span className="max-w-[40ch] truncate text-xl font-semibold max-lg:hidden">{crumb}</span>
             </Fragment>
           ))}
         </div>
@@ -304,11 +304,10 @@ function useProductCrumbs(pathname: string): string[] {
     queryFn: () => fetchJson<{ session: AgentSession }>(`/agent-sessions/${sessionId!}`),
     enabled: sessionId !== undefined,
   });
-  const purpose = session.data?.session.purpose;
-  return [
-    product.data?.product.name,
-    purpose === undefined ? undefined : PURPOSE_LABEL[purpose],
-  ].filter((crumb) => crumb !== undefined);
+  const data = session.data?.session;
+  // 会话标题(`title`,服务端从首条用户消息派生)优先于用途名,与头部标题同一读法。
+  const sessionCrumb = data === undefined ? undefined : (data.title ?? PURPOSE_LABEL[data.purpose]);
+  return [product.data?.product.name, sessionCrumb].filter((crumb) => crumb !== undefined);
 }
 
 /**

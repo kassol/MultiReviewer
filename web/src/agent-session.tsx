@@ -9,10 +9,12 @@ import {
   CounterClockwiseClockIcon,
   Cross2Icon,
   CrossCircledIcon,
+  DotsHorizontalIcon,
   ExclamationTriangleIcon,
   FileTextIcon,
   GearIcon,
   ImageIcon,
+  InfoCircledIcon,
   ListBulletIcon,
   MagnifyingGlassIcon,
   PaperPlaneIcon,
@@ -24,6 +26,7 @@ import {
 import {
   Badge,
   Callout,
+  DropdownMenu,
   IconButton,
   SegmentedControl,
   Select,
@@ -232,11 +235,16 @@ function Conversation({
   sessionId,
   running,
   onOpenOutput,
+  canSend,
+  hasBaselines,
 }: {
   sessionId: number;
   running: boolean;
   /** 点一条产出:把右栏切到那一版(issue #337)。 */
   onOpenOutput: (version: number) => void;
+  /** 空态教学文案只对发得出消息的人说;发不了的人看到的是一句陈述。 */
+  canSend: boolean;
+  hasBaselines: boolean;
 }) {
   const [live, setLive] = useState<LiveStream | null>(null);
   const recordsKey = ["agent-session-records", sessionId];
@@ -337,7 +345,13 @@ function Conversation({
             <EmptyState
               align="center"
               title="还没有消息"
-              description="发一条消息,agent 就在这里回你。"
+              description={
+                canSend
+                  ? hasBaselines
+                    ? "发第一条消息开始。agent 按上面列出的提交读代码。"
+                    : "发第一条消息开始。"
+                  : "这个会话还没人说过话。"
+              }
             />
           </div>
         ) : (
@@ -413,8 +427,20 @@ function ConversationRow({
   if (item.kind === "tools") {
     return <ToolGroup calls={item.calls} liveTool={liveTool} open={open} />;
   }
-  if (item.kind === "system" || item.kind === "note") {
-    /* 系统消息与定稿那一句居中一行:它们不是对话的一方(ADR 0031、issue #337)。 */
+  if (item.kind === "system") {
+    /* 系统消息(停止、中止、静默死亡、切模型)不是对话的一方,胶囊居中一行,与定稿句区分开
+       (ADR 0031、issue #337):定稿是一句平静的旁白,系统消息是需要留意的事件。 */
+    return (
+      <div className="flex justify-center">
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-sunken px-3 py-1 text-sm text-text-secondary">
+          <InfoCircledIcon aria-hidden />
+          {localSecond(item.at)} · {item.text}
+        </span>
+      </div>
+    );
+  }
+  if (item.kind === "note") {
+    /* 定稿那一句居中一行小字:它不是对话的一方(ADR 0031、issue #337)。 */
     return (
       <p className="text-center text-sm text-text-muted">
         {localSecond(item.at)} · {item.text}
@@ -473,7 +499,7 @@ function ConversationRow({
 /** 消息下面的时刻。平时不占注意力,指到那条消息才显出来;布局不变,读屏照样读得到。 */
 function MessageTime({ at }: { at: string }) {
   return (
-    <span className="text-sm text-text-muted opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+    <span className="text-sm text-text-muted transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
       {localSecond(at)}
     </span>
   );
@@ -567,7 +593,13 @@ function ToolRow({ step, error, live = false }: { step: ToolStep; error?: string
       {error === undefined ? null : (
         <span className="flex min-w-0 items-center gap-2 pl-6 text-sm text-danger">
           <ExclamationTriangleIcon aria-hidden className="shrink-0" />
-          <span className="min-w-0 truncate" title={error}>{error}</span>
+          {/* 短原因直接读得完,展开成多行;长原因还是截断,靠 title 查全文。 */}
+          <span
+            className={`min-w-0 ${error.length <= 160 ? "break-words" : "truncate"}`}
+            title={error}
+          >
+            {error}
+          </span>
         </span>
       )}
     </li>
@@ -1038,14 +1070,14 @@ function Composer({
           </Tooltip>
         </div>
       </div>
-      {running ? (
-        <Text as="p" size="1" color="gray">
-          {mode === "steer"
+      {/* 停止的说明已经在上面的 Tooltip 里,这一行只在空闲时教一次快捷键,在跑时不重复它。 */}
+      <p className="text-right text-sm text-text-disabled max-sm:hidden">
+        {running
+          ? mode === "steer"
             ? "插话在下一个回合边界生效,不会打断正在跑的工具调用。"
-            : "排队的消息等这一轮跑完按顺序投递。"}
-          {" 停止只中止当前这一步,排队的消息保留。"}
-        </Text>
-      ) : null}
+            : "排队的消息等这一轮跑完按顺序投递。"
+          : "Enter 发送 · Shift+Enter 换行"}
+      </p>
     </form>
   );
 }
@@ -1366,26 +1398,40 @@ export function AgentSessionPage({
                 </Link>
               )}
               <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-3xl font-bold tracking-[-0.015em]">
-                  {session === undefined ? "Agent 会话" : PURPOSE_LABEL[session.purpose]}
+                {/* 标题优先说这个会话在聊什么(`title`,服务端从首条用户消息派生);没有
+                    标题的旧会话与开放对话退回用途名。两行封顶,`title=` 补全文,压掉了原本
+                    三行标题区吃掉的高度,给对话流多留屏幕。 */}
+                <h1
+                  className="min-w-0 line-clamp-2 break-words text-2xl font-bold tracking-[-0.015em]"
+                  title={session === undefined ? undefined : (session.title ?? PURPOSE_LABEL[session.purpose])}
+                >
+                  {session === undefined ? "Agent 会话" : (session.title ?? PURPOSE_LABEL[session.purpose])}
                 </h1>
                 {running ? <StatusBadge tone="running">在跑</StatusBadge> : null}
               </div>
               {session === undefined ? null : (
-                <p className="text-sm text-text-muted">
+                <p className="flex flex-wrap items-center gap-1.5 text-sm text-text-muted">
+                  {/* 标题已经把用途说没了,元信息行不重复它;标题缺席时 h1 本身就是用途名。 */}
+                  {session.title === null ? null : (
+                    <Badge color="gray" variant="soft">
+                      {PURPOSE_LABEL[session.purpose]}
+                    </Badge>
+                  )}
                   {localMinute(session.createdAt)} · {session.createdBy} 建立 ·{" "}
                   <UsageLine usage={session.usage} /> token
                 </p>
               )}
               {/*
-                这个会话读的是哪份代码(issue #351):每仓库一行「仓库 短 sha 来源 名字」。空列表
-                什么都不渲染——这一票之前建的会话没有记过,摆一行「未知」只会让人以为丢了。来源
-                徽标分开分支与 Tag(issue #355):Tag 没有「最新」,读的人要看得出哪一行不会往前走。
+                这个会话读的是哪份代码(issue #351,记的是基点):一行里摊开每个仓库的短 sha 与分支/Tag,
+                多仓库时自动折行,不再一仓库一整行——原先的逐行列表在头部吃掉太多高度。空列表
+                什么都不渲染——这一票之前建的会话没有记过,摆一行「未知」只会让人以为丢了。
+                「分支」不再单独出徽标:它是默认情况,只有 Tag 才需要提醒「这一行不会往前走」
+                (issue #355)。
               */}
               {session === undefined || session.baselines.length === 0 ? null : (
-                <ul className="flex flex-col gap-0.5">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
                   {session.baselines.map((baseline) => (
-                    <li
+                    <div
                       key={`${baseline.owner}/${baseline.repo}`}
                       className="flex flex-wrap items-center gap-1.5 text-sm text-text-muted"
                     >
@@ -1393,11 +1439,14 @@ export function AgentSessionPage({
                         {baseline.owner}/{baseline.repo}
                       </span>
                       <CommitChip sha={baseline.sha} />
-                      <Badge color="gray" variant="soft">
-                        {baseline.kind === "tag" ? "Tag" : "分支"}
-                      </Badge>
+                      {baseline.kind === "tag" ? (
+                        <Badge color="gray" variant="soft">
+                          Tag
+                        </Badge>
+                      ) : null}
                       <span className="break-all">{baseline.branch}</span>
-                      {/* 只有能对它说话的人更新得了;Tag 没有「最新」,不出这个动作(issue #356)。 */}
+                      {/* 只有能对它说话的人更新得了;Tag 没有「最新」,不出这个动作(issue #356)。
+                          图标按钮省下的文字给对话流让位,悬停/聚焦时 Tooltip 补回完整说明。 */}
                       {mine && baseline.kind === "branch" ? (
                         <Tooltip
                           content={
@@ -1407,11 +1456,12 @@ export function AgentSessionPage({
                           }
                         >
                           <span className="inline-flex">
-                            <Button
+                            <IconButton
                               type="button"
                               variant="ghost"
                               color="gray"
                               size="1"
+                              aria-label="更新到最新提交"
                               disabled={baselineBusy || updateBaseline.isPending}
                               onClick={() => {
                                 setFeedback(null);
@@ -1419,14 +1469,13 @@ export function AgentSessionPage({
                               }}
                             >
                               <UpdateIcon aria-hidden />
-                              更新到最新
-                            </Button>
+                            </IconButton>
                           </span>
                         </Tooltip>
                       ) : null}
-                    </li>
+                    </div>
                   ))}
-                </ul>
+                </div>
               )}
             </div>
             <div className="flex shrink-0 items-center gap-2">
@@ -1454,20 +1503,34 @@ export function AgentSessionPage({
                   <span className="max-sm:sr-only">停止</span>
                 </Button>
               ) : null}
+              {/* 「删会话」是这一页唯一的破坏性动作,收进溢出菜单让头部只剩常用的两个控件。 */}
               {mine || surveyAdmin ? (
-                <Button
-                  variant="soft"
-                  color="red"
-                  size={{ initial: "3", sm: "2" }}
-                  disabled={remove.isPending}
-                  onClick={() => {
-                    setFeedback(null);
-                    setConfirming(true);
-                  }}
-                >
-                  <TrashIcon aria-hidden />
-                  <span className="max-sm:sr-only">删会话</span>
-                </Button>
+                <DropdownMenu.Root>
+                  <DropdownMenu.Trigger>
+                    <IconButton
+                      type="button"
+                      variant="ghost"
+                      color="gray"
+                      size={{ initial: "3", sm: "2" }}
+                      aria-label="更多操作"
+                    >
+                      <DotsHorizontalIcon aria-hidden />
+                    </IconButton>
+                  </DropdownMenu.Trigger>
+                  <DropdownMenu.Content align="end">
+                    <DropdownMenu.Item
+                      color="red"
+                      disabled={remove.isPending}
+                      onSelect={() => {
+                        setFeedback(null);
+                        setConfirming(true);
+                      }}
+                    >
+                      <TrashIcon aria-hidden />
+                      删会话
+                    </DropdownMenu.Item>
+                  </DropdownMenu.Content>
+                </DropdownMenu.Root>
               ) : null}
             </div>
           </div>
@@ -1504,6 +1567,8 @@ export function AgentSessionPage({
                 <Conversation
                   sessionId={sessionId}
                   running={running}
+                  canSend={session.createdBy === username}
+                  hasBaselines={session.baselines.length > 0}
                   onOpenOutput={(version) => {
                     setOutputVersion(version);
                     setPane("output");

@@ -39,6 +39,10 @@ type AgentSession = {
   };
   /** 这个会话每个仓库开在哪个 commit(issue #351)。 */
   baselines: AgentSessionBaseline[];
+  /** 第一条用户消息的正文,读时派生(没发过消息时是 null)。 */
+  title: string | null;
+  /** 最后一次有动静的时刻,读时派生。 */
+  lastActiveAt: string;
 };
 
 type AgentSessionBaseline = {
@@ -471,4 +475,57 @@ test("会话记录分页:缺省回最后一页,before 往前翻,hasMore 说还�
   assert.deepEqual(await page("?limit=2&before=2"), { seqs: [1], hasMore: false });
   // 认不出的参数回落到缺省:一页全回,不报错。
   assert.deepEqual(await page("?limit=abc&before=-3"), { seqs: [1, 2, 3, 4, 5], hasMore: false });
+});
+
+test("面板标题与最后动静:读时从记录派生,不落库", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const productId = await productWithRepo(h, "报销系统");
+  const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+
+  // 还没发过消息(刚建的会话):标题是 null,最后动静落建会话那一刻。
+  const fresh = await createSession(h, owner, productId);
+  assert.equal(fresh.title, null);
+  assert.equal(fresh.lastActiveAt, fresh.createdAt);
+
+  const withMessage = await createSession(h, owner, productId);
+  const firstAt = "2026-09-12T00:10:00.000Z";
+  const secondAt = "2026-09-12T00:20:00.000Z";
+  const store = openStore(h.db.path);
+  try {
+    // 第一条用户消息带一张图,文字块排在图片块后面:标题不能假定文字在下标 0。正文里的
+    // 连续空白与首尾空白折成一个空格。
+    store.appendAgentSessionEntry(withMessage.id, {
+      type: "message",
+      at: firstAt,
+      entry: {
+        id: "e1",
+        type: "message",
+        message: {
+          role: "user",
+          content: [
+            { type: "image-ref", imageId: "img-1", path: "/tmp/img-1.png", mimeType: "image/png" },
+            { type: "text", text: "  这是   第一条\n用户消息  " },
+          ],
+        },
+      },
+      usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
+    });
+    // 之后一条 assistant 消息更晚:最后动静跟着它走,标题仍然是第一条用户消息。
+    store.appendAgentSessionEntry(withMessage.id, {
+      type: "message",
+      at: secondAt,
+      entry: { id: "e2", type: "message", message: { role: "assistant", content: "收到" } },
+      usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
+    });
+  } finally {
+    store.close();
+  }
+
+  const read = await sessions(h, owner, productId);
+  const row = read.find((one) => one.id === withMessage.id)!;
+  assert.equal(row.title, "这是 第一条 用户消息");
+  assert.equal(row.lastActiveAt, secondAt);
+
+  const other = read.find((one) => one.id === fresh.id)!;
+  assert.equal(other.title, null);
 });
