@@ -56,7 +56,7 @@ export function ReplyReader({
           宽减两侧 16px 边距,表格才在自己的滚动壳里横滚,壳不再撑开。 */}
       <Dialog.Content
         width="100%"
-        maxWidth="min(880px, calc(100vw - 32px))"
+        maxWidth="min(1200px, calc(100vw - 32px))"
         className="max-h-[calc(100dvh-64px)] overflow-y-auto rounded-3xl bg-surface p-0 shadow-modal"
         {...(onCloseAutoFocus === undefined ? {} : { onCloseAutoFocus })}
       >

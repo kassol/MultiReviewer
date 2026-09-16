@@ -173,7 +173,7 @@ export function Markdown({
   size?: "chat" | "article";
 }) {
   return (
-    <div className={cn("min-w-0", size === "article" ? "mx-auto max-w-[72ch]" : "", className)}>
+    <div className={cn("min-w-0", size === "article" ? "mx-auto max-w-[120ch]" : "", className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         skipHtml
