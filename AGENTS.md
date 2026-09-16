@@ -157,6 +157,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-16: **产品页与会话页克制一轮**(纯前端,见 `web/AGENTS.md` 同日条目)。发布 00-test 并截图验收。
 - 2026-09-16: **会话页的 agent 回复改成卡片,长回复可展开或进阅读视图**(纯前端,见 `web/AGENTS.md` 同日条目)。发布 00-test 并截图验收。
 - 2026-09-16: **产品页与会话页 UI 收拾**(参照 Craft Agents,见 `web/AGENTS.md` 同日条目)。服务端配套两格读时派生字段:`GET /products/:id/sessions` 与 `GET /agent-sessions/:id` 的会话多带 `title`(首条用户消息,折空白截 80 字,没有即 null,产品梳理一律 null)与 `lastActiveAt`(记录表 `MAX(at)`,没有记录落建会话时刻),`store.ts` 的 `AGENT_SESSION_QUERY` 一条查询带出,不迁移;`test/panel-agent-sessions.test.ts` 加一例(带图消息文字块在图片块后面也取得到)。发布 00-test 并截图验收。
 - 2026-09-15: **pi-subagents 升到 0.68.0**(跟进 `docs/research/pi-subagents-0.67-2026-09-12.md`)。0.67.0 会把取证子会话的 `read` 静默剪掉,跳过;0.68.0 包含上游修复,取证的只读四件套与 issue #328 的扩展注入原样成立,真实 SDK 回归全部通过。0.68 同时删掉了持久化模型排除表,项目里把它关进 agentDir 的那行钉法随之删除;`pi-server` 不再随 pi-subagents 装进来,依赖树里没有它了。Pi 仍是 0.85.1。细节见 `src/AGENTS.md` 与 ADR 0021 的 2026-09-15 修订。

@@ -29,6 +29,7 @@ import {
   Callout,
   DropdownMenu,
   IconButton,
+  Popover,
   SegmentedControl,
   Select,
   Skeleton,
@@ -571,7 +572,7 @@ function AssistantReply({
   return (
     <div
       ref={cardRef}
-      className="group flex flex-col rounded-lg border border-overlay-line bg-surface px-4 py-3 shadow-control"
+      className="group flex flex-col rounded-lg border border-overlay-line bg-surface px-4 py-3"
     >
       <span className="sr-only">agent</span>
       {copyError === null ? null : (
@@ -593,35 +594,46 @@ function AssistantReply({
       ) : (
         <Markdown text={item.text} />
       )}
-      <div className="mt-2 flex items-center justify-between gap-2 border-t border-line pt-2 text-sm text-text-muted">
+      {/* footer 不画分隔线:动作平时藏着,一条线下面空着一行只会像漏了什么。 */}
+      <div className="mt-1 flex min-h-6 items-center justify-between gap-2 text-sm text-text-muted">
         <MessageTime at={item.at} />
-        {/* ghost 键的 hover 底靠负外边距向四周撑出 8px,相邻两颗要留 gap-5 才不会叠在一起。 */}
+        {/* ghost 键的 hover 底靠负外边距向四周撑出 8px,相邻两颗要留 gap-5 才不会叠在一起。
+            「阅读」「复制 Markdown」与已展开状态下的「收起」只在指到卡片时现,同 `MessageTime`
+            的规则;折叠态的「展开」是找回全文的唯一入口,常显不进 hover 组。 */}
         <div className="flex items-center gap-5">
-          {long ? (
+          {long && !expanded ? (
             <Button type="button" variant="ghost" color="gray" size="1" onClick={onToggleExpand}>
               <ChevronDownIcon aria-hidden />
-              {expanded ? "收起" : "展开"}
+              展开
             </Button>
           ) : null}
-          {long ? (
-            <Button
-              type="button"
-              variant="ghost"
-              color="gray"
-              size="1"
-              onClick={(event) => {
-                returnFocus.captureTrigger(event);
-                setReading(true);
-              }}
-            >
-              <ReaderIcon aria-hidden />
-              阅读
+          <div className="flex items-center gap-5 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
+            {long && expanded ? (
+              <Button type="button" variant="ghost" color="gray" size="1" onClick={onToggleExpand}>
+                <ChevronDownIcon aria-hidden />
+                收起
+              </Button>
+            ) : null}
+            {long ? (
+              <Button
+                type="button"
+                variant="ghost"
+                color="gray"
+                size="1"
+                onClick={(event) => {
+                  returnFocus.captureTrigger(event);
+                  setReading(true);
+                }}
+              >
+                <ReaderIcon aria-hidden />
+                阅读
+              </Button>
+            ) : null}
+            <Button type="button" variant="ghost" color="gray" size="1" onClick={() => void copy()}>
+              {copied ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
+              {copied ? "已复制" : "复制 Markdown"}
             </Button>
-          ) : null}
-          <Button type="button" variant="ghost" color="gray" size="1" onClick={() => void copy()}>
-            {copied ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
-            {copied ? "已复制" : "复制 Markdown"}
-          </Button>
+          </div>
         </div>
       </div>
       {long ? (
@@ -1242,6 +1254,102 @@ function UsageLine({ usage }: { usage: AgentSession["usage"] }) {
   );
 }
 
+/** 头部那句基点摘要(issue #351,记的是基点)。一个仓库直说分支名;多个仓库都是分支且
+    分支名一样就报这一条共同分支;否则只说「基点」,细节留给点开的 popover。 */
+function baselineLabel(baselines: readonly AgentSessionBaseline[]): string {
+  const first = baselines[0]!;
+  if (baselines.length === 1) return `基于 ${first.owner}/${first.repo} 的 ${first.branch}`;
+  const sameBranch = baselines.every(
+    (baseline) => baseline.kind === "branch" && baseline.branch === first.branch,
+  );
+  return sameBranch
+    ? `基于 ${baselines.length} 个仓库的 ${first.branch}`
+    : `基于 ${baselines.length} 个仓库的基点`;
+}
+
+/**
+ * 基点摘要 + 详情 popover(issue #351、#355、#356)。原先逐仓库一行摊在头部,吃掉太多
+ * 垂直空间;折成一句摘要,点开才看每个仓库的短 sha、分支/Tag 与更新动作。「分支」不再
+ * 单独出徽标:它是默认情况,只有 Tag 才需要提醒「这一行不会往前走」。没有基点的会话
+ * (这一票之前建的)整块不渲染,摆一行「未知」只会让人以为丢了。
+ */
+function BaselinesSummary({
+  baselines,
+  mine,
+  baselineBusy,
+  updating,
+  onUpdate,
+}: {
+  baselines: readonly AgentSessionBaseline[];
+  /** 只有能对它说话的人更新得了基点。 */
+  mine: boolean;
+  baselineBusy: boolean;
+  updating: boolean;
+  onUpdate: (baseline: AgentSessionBaseline) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (baselines.length === 0) return null;
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger>
+        {/* ghost 键的负外边距会让它在 flex 列里居中,钉回左边与元信息行对齐。 */}
+        <Button type="button" variant="ghost" color="gray" size="1" className="self-start">
+          <CommitIcon aria-hidden />
+          {baselineLabel(baselines)}
+        </Button>
+      </Popover.Trigger>
+      <Popover.Content size="1" align="start" width="360px">
+        <ul className="flex flex-col gap-2" aria-label="这个会话的基点">
+          {baselines.map((baseline) => (
+            <li
+              key={`${baseline.owner}/${baseline.repo}`}
+              className="flex flex-wrap items-center gap-1.5"
+            >
+              <span className="break-all font-mono text-sm">
+                {baseline.owner}/{baseline.repo}
+              </span>
+              <CommitChip sha={baseline.sha} />
+              {baseline.kind === "tag" ? (
+                <Badge color="gray" variant="soft">
+                  Tag
+                </Badge>
+              ) : null}
+              <span className="break-all text-sm text-text-muted">{baseline.branch}</span>
+              {/* Tag 没有「最新」,不出这个动作(issue #356)。 */}
+              {mine && baseline.kind === "branch" ? (
+                <Tooltip
+                  content={
+                    baselineBusy
+                      ? "会话在跑或还有排队的消息,空闲后才能更新基点"
+                      : "把会话基点换成这条分支此刻的最新提交"
+                  }
+                >
+                  <span className="inline-flex">
+                    <IconButton
+                      type="button"
+                      variant="ghost"
+                      color="gray"
+                      size="1"
+                      aria-label="更新到最新提交"
+                      disabled={baselineBusy || updating}
+                      onClick={() => {
+                        setOpen(false);
+                        onUpdate(baseline);
+                      }}
+                    >
+                      <UpdateIcon aria-hidden />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </Popover.Content>
+    </Popover.Root>
+  );
+}
+
 /**
  * 更新基点的确认弹窗(ADR 0034,issue #356)。新 sha 与建会话时的基点行同一读法:先让
  * `/repo-branches?refresh=1` 同步一次远端,再从 `/repo-commits` 取这条分支的第一条提交——只读
@@ -1527,18 +1635,19 @@ export function AgentSessionPage({
           className="max-lg:hidden lg:h-full lg:overflow-y-auto lg:overscroll-y-contain"
         />
 
-        <CardShell className="h-full min-h-0 min-w-0 flex-1 px-5 py-4">
+        <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex shrink-0 flex-wrap items-start justify-between gap-x-3 gap-y-2 border-b border-line pb-3">
             {/* 标题块占满剩余宽度,动作组才留在同一行;窄屏上动作只剩图标,文字给读屏。 */}
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               {product === undefined ? (
                 <Skeleton aria-hidden className="h-4 w-24" />
               ) : (
-                // 窄屏上左栏不显示,这一行就是回产品的唯一入口(DESIGN.md 7.5)。
+                // 顶栏面包屑在 lg 起已经带出产品名(DESIGN.md 7.4),这一行只在窄屏
+                // 补一个回产品的入口——那一档左栏不显示,切会话就靠它(DESIGN.md 7.5)。
                 <Link
                   to="/products/$productId"
                   params={{ productId: String(productId) }}
-                  className="w-fit break-all text-sm text-text-muted transition-colors hover:text-text"
+                  className="w-fit break-all text-sm text-text-muted transition-colors hover:text-text lg:hidden"
                 >
                   {product.name}
                 </Link>
@@ -1557,72 +1666,23 @@ export function AgentSessionPage({
               </div>
               {session === undefined ? null : (
                 <p className="flex flex-wrap items-center gap-1.5 text-sm text-text-muted">
-                  {/* 标题已经把用途说没了,元信息行不重复它;标题缺席时 h1 本身就是用途名。 */}
-                  {session.title === null ? null : (
-                    <Badge color="gray" variant="soft">
-                      {PURPOSE_LABEL[session.purpose]}
-                    </Badge>
-                  )}
-                  {localMinute(session.createdAt)} · {session.createdBy} 建立 ·{" "}
+                  {/* 标题已经把用途说没了,元信息行不重复它;标题缺席时 h1 本身就是用途名。
+                      克制成一行素文字,不再用 Badge 强调用途——三行封顶,用途只是其中一项元信息。 */}
+                  {session.title === null ? `${PURPOSE_LABEL[session.purpose]} · ` : null}
+                  {session.createdBy} · {localMinute(session.createdAt)} ·{" "}
                   <UsageLine usage={session.usage} /> token
                 </p>
               )}
-              {/*
-                这个会话读的是哪份代码(issue #351,记的是基点):一行里摊开每个仓库的短 sha 与分支/Tag,
-                多仓库时自动折行,不再一仓库一整行——原先的逐行列表在头部吃掉太多高度。空列表
-                什么都不渲染——这一票之前建的会话没有记过,摆一行「未知」只会让人以为丢了。
-                「分支」不再单独出徽标:它是默认情况,只有 Tag 才需要提醒「这一行不会往前走」
-                (issue #355)。
-              */}
-              {session === undefined || session.baselines.length === 0 ? null : (
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                  {session.baselines.map((baseline) => (
-                    <div
-                      key={`${baseline.owner}/${baseline.repo}`}
-                      className="flex flex-wrap items-center gap-1.5 text-sm text-text-muted"
-                    >
-                      <span className="break-all font-mono">
-                        {baseline.owner}/{baseline.repo}
-                      </span>
-                      <CommitChip sha={baseline.sha} />
-                      {baseline.kind === "tag" ? (
-                        <Badge color="gray" variant="soft">
-                          Tag
-                        </Badge>
-                      ) : null}
-                      <span className="break-all">{baseline.branch}</span>
-                      {/* 只有能对它说话的人更新得了;Tag 没有「最新」,不出这个动作(issue #356)。
-                          图标按钮省下的文字给对话流让位,悬停/聚焦时 Tooltip 补回完整说明。 */}
-                      {mine && baseline.kind === "branch" ? (
-                        <Tooltip
-                          content={
-                            baselineBusy
-                              ? "会话在跑或还有排队的消息,空闲后才能更新基点"
-                              : "把会话基点换成这条分支此刻的最新提交"
-                          }
-                        >
-                          <span className="inline-flex">
-                            <IconButton
-                              type="button"
-                              variant="ghost"
-                              color="gray"
-                              size="1"
-                              aria-label="更新到最新提交"
-                              disabled={baselineBusy || updateBaseline.isPending}
-                              onClick={() => {
-                                setFeedback(null);
-                                setUpdating(baseline);
-                              }}
-                            >
-                              <UpdateIcon aria-hidden />
-                            </IconButton>
-                          </span>
-                        </Tooltip>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              )}
+              <BaselinesSummary
+                baselines={session?.baselines ?? []}
+                mine={mine}
+                baselineBusy={baselineBusy}
+                updating={updateBaseline.isPending}
+                onUpdate={(baseline) => {
+                  setFeedback(null);
+                  setUpdating(baseline);
+                }}
+              />
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {hasOutput ? (
@@ -1775,7 +1835,7 @@ export function AgentSessionPage({
               )}
             </div>
           )}
-        </CardShell>
+        </div>
 
         {/* 没有产出类型的用途不渲染右栏,中栏因此占满(开放对话、产品梳理)。 */}
         {hasOutput ? (

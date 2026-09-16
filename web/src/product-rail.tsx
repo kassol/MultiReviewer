@@ -340,7 +340,7 @@ export function ProductRail({
                   {current.repos.map((repo) => (
                     <li
                       key={repo.repoId}
-                      className="flex items-start justify-between gap-2 border-t border-line px-4 py-2.5"
+                      className="group/repo flex items-start justify-between gap-2 border-t border-line px-4 py-2.5"
                     >
                       <div className="flex min-w-0 flex-1 flex-col gap-1">
                         <span className="min-w-0 break-all font-mono text-base">
@@ -366,7 +366,7 @@ export function ProductRail({
                           variant="ghost"
                           color="gray"
                           size={{ initial: "3", sm: "1" }}
-                          className="shrink-0 max-sm:min-h-11 max-sm:min-w-11"
+                          className="shrink-0 max-sm:min-h-11 max-sm:min-w-11 transition-opacity md:opacity-0 md:group-hover/repo:opacity-100 md:group-focus-within/repo:opacity-100 md:focus-visible:opacity-100"
                           aria-label={`把 ${repoPath(repo)} 移出 ${current.name}`}
                           disabled={working}
                           onClick={() => {
@@ -664,7 +664,10 @@ function RoleField({
         <span className={repo.role === null ? "min-w-0 break-words text-text-disabled" : "min-w-0 break-words"}>
           {repo.role ?? "填写职责"}
         </span>
-        <Pencil1Icon aria-hidden className="mt-0.5 shrink-0 text-text-faint" />
+        <Pencil1Icon
+          aria-hidden
+          className="mt-0.5 shrink-0 text-text-faint transition-opacity md:opacity-0 md:group-hover/repo:opacity-100 md:group-focus-within/repo:opacity-100"
+        />
       </button>
     );
   }

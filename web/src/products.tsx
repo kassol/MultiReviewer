@@ -2,9 +2,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   CheckCircledIcon,
+  ChevronDownIcon,
   CrossCircledIcon,
   DotsHorizontalIcon,
-  ExclamationTriangleIcon,
   Pencil1Icon,
   TrashIcon,
 } from "@radix-ui/react-icons";
@@ -241,7 +241,7 @@ export function ProductsPage({
   const rightColumn = (
     <>
       {selected === undefined ? null : (
-        <CardShell className="min-w-0 gap-1 px-5 py-4">
+        <div className="flex min-w-0 flex-col gap-1">
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
             <h2 className="min-w-0 break-all text-2xl font-bold tracking-[-0.015em]">
               {selected.name}
@@ -279,28 +279,19 @@ export function ProductsPage({
               </DropdownMenu.Root>
             ) : null}
           </div>
-          {/* 一行元信息。产品知识那一份还没读到时省掉它的两个数,不用占位符冒充。 */}
+          {/* 仓库数、知识数、会话数左栏都有,这里不重复;产品知识那一份还没读到时先不提待确认提案。 */}
           <p className="text-base text-text-muted">
-            <span className="tabular-nums">{selected.repos.length}</span> 个仓库
-            {knowledgeQuery.isPending ? null : (
+            {knowledgeQuery.isPending || proposals.length === 0 ? null : (
               <>
-                {" · "}
-                <span className="tabular-nums">{knowledge.length}</span> 条产品知识
-                {" · "}
-                <span className={proposals.length > 0 ? "font-semibold text-warning" : undefined}>
+                <span className="text-warning">
                   <span className="tabular-nums">{proposals.length}</span> 条待确认提案
                 </span>
-              </>
-            )}
-            {sessionsQuery.isPending ? null : (
-              <>
                 {" · "}
-                <span className="tabular-nums">{sessions.length}</span> 个会话
               </>
             )}
-            {" · "}建于 {localMinute(selected.createdAt)}
+            建于 {localMinute(selected.createdAt)}
           </p>
-        </CardShell>
+        </div>
       )}
       {selected === undefined ? null : (
         <KnowledgeSection
@@ -624,12 +615,12 @@ function KnowledgeSection({
   };
   const involvedLine = (entry: ProductKnowledge) => {
     const line = involved(entry);
-    return line === null ? null : (
-      <Text as="span" size="1" color="gray" className="break-all font-mono">
-        {line}
-      </Text>
-    );
+    return line === null ? null : <span className="break-all text-sm text-text-muted">{line}</span>;
   };
+  // 待确认的提案默认只露前 8 条,其余折起来;换产品这个 section 整体重挂,回到折起。
+  const [proposalsExpanded, setProposalsExpanded] = useState(false);
+  const visibleProposals = proposalsExpanded ? proposals : proposals.slice(0, 8);
+  const hiddenProposalCount = proposals.length - visibleProposals.length;
 
   const submit = (event: FormEvent): void => {
     event.preventDefault();
@@ -679,14 +670,13 @@ function KnowledgeSection({
         {proposals.length === 0 ? null : (
           <section aria-labelledby="product-proposals-title" className="flex min-w-0 flex-col gap-1.5">
             <h3 id="product-proposals-title" className="flex items-center gap-1.5 text-lg font-semibold">
-              <ExclamationTriangleIcon aria-hidden className="text-warning-icon" />
               待确认的提案
-              <span className="font-mono text-xs font-normal text-text-muted tabular-nums">
+              <span className="font-mono text-xs font-normal text-warning tabular-nums">
                 {proposals.length}
               </span>
             </h3>
             <ul>
-              {proposals.map((entry) => {
+              {visibleProposals.map((entry) => {
                 const target =
                   entry.retiresId === null
                     ? undefined
@@ -729,7 +719,7 @@ function KnowledgeSection({
                           确认
                         </Button>
                         <Button
-                          variant="soft"
+                          variant="ghost"
                           color="gray"
                           size="1"
                           disabled={busy}
@@ -743,6 +733,19 @@ function KnowledgeSection({
                 );
               })}
             </ul>
+            {hiddenProposalCount <= 0 ? null : (
+              <Button
+                type="button"
+                variant="ghost"
+                color="gray"
+                size="1"
+                className="self-start"
+                onClick={() => setProposalsExpanded(true)}
+              >
+                还有 {hiddenProposalCount} 条,展开
+                <ChevronDownIcon aria-hidden />
+              </Button>
+            )}
           </section>
         )}
 
