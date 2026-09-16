@@ -1,6 +1,6 @@
 import { CheckCircledIcon, CopyIcon, Cross2Icon } from "@radix-ui/react-icons";
 import { Dialog, IconButton, Text } from "@radix-ui/themes";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/theme-button";
@@ -39,6 +39,16 @@ export function ReplyReader({
   onCloseAutoFocus?: (event: Event) => void;
 }) {
   const [copied, setCopied] = useState(false);
+  /**
+   * 挂到 `#panel-portal`,与 mermaid 预览、阶段详情面板同一个宿主。Radix Themes 的 Dialog 默认
+   * 挂到 body 末尾,而 `#root` 是一个 z-index 为 0 的层叠上下文:正文里 mermaid 图的全屏预览
+   * 挂在 `#root` 里的宿主上,再高的 z-index 也压不过 body 末尾的阅读视图。同一个宿主里后开的
+   * 预览排在后面,自然盖在阅读视图之上。
+   */
+  const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setPortalHost(document.getElementById("panel-portal"));
+  }, []);
   const copy = async (): Promise<void> => {
     try {
       await navigator.clipboard.writeText(text);
@@ -55,6 +65,7 @@ export function ReplyReader({
           只能拿到「正文 72ch 加内边距」那么宽,比视口宽、关闭键被挤出屏外;把上限钉在视口
           宽减两侧 16px 边距,表格才在自己的滚动壳里横滚,壳不再撑开。 */}
       <Dialog.Content
+        {...(portalHost === null ? {} : { container: portalHost })}
         width="100%"
         maxWidth="min(1200px, calc(100vw - 32px))"
         className="max-h-[calc(100dvh-64px)] overflow-y-auto rounded-3xl bg-surface p-0 shadow-modal"
