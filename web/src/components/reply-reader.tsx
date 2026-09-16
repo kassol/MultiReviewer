@@ -69,7 +69,8 @@ export function ReplyReader({
               {localSecond(at)}
             </Text>
           </div>
-          <div className="flex shrink-0 items-center gap-1">
+          {/* ghost 键的 hover 底向四周撑出 8px,相邻两颗留 gap-5 才不叠。 */}
+          <div className="flex shrink-0 items-center gap-5">
             <Button type="button" variant="ghost" color="gray" size="1" onClick={() => void copy()}>
               {copied ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
               {copied ? "已复制" : "复制 Markdown"}

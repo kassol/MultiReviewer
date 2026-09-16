@@ -595,7 +595,8 @@ function AssistantReply({
       )}
       <div className="mt-2 flex items-center justify-between gap-2 border-t border-line pt-2 text-sm text-text-muted">
         <MessageTime at={item.at} />
-        <div className="flex items-center gap-1">
+        {/* ghost 键的 hover 底靠负外边距向四周撑出 8px,相邻两颗要留 gap-5 才不会叠在一起。 */}
+        <div className="flex items-center gap-5">
           {long ? (
             <Button type="button" variant="ghost" color="gray" size="1" onClick={onToggleExpand}>
               <ChevronDownIcon aria-hidden />
