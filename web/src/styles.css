@@ -516,4 +516,11 @@
   td {
     font-variant-numeric: tabular-nums;
   }
+
+  /* 挂在 #panel-portal 上的 Radix Themes Dialog(阅读视图):Themes 的遮罩不带 z-index,
+   * 与 z-30 的顶栏同在 #root 这个层叠上下文里就会被顶栏盖住。抬到与 mermaid 预览、阶段
+   * 详情面板同一档(遮罩 40),后开的浮层在 DOM 里排后面,照样盖得住它。 */
+  #panel-portal .rt-BaseDialogOverlay {
+    z-index: 40;
+  }
 }
