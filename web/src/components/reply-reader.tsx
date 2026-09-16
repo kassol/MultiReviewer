@@ -1,0 +1,90 @@
+import { CheckCircledIcon, CopyIcon, Cross2Icon } from "@radix-ui/react-icons";
+import { Dialog, IconButton, Text } from "@radix-ui/themes";
+import { useState } from "react";
+
+import { Markdown } from "@/components/markdown";
+import { Button } from "@/components/theme-button";
+import { localSecond } from "@/lib/time";
+
+/** 正文第一行 Markdown 标题,去掉 `#`,当阅读视图的标题(Craft Agents 的
+    `DocumentFormattedMarkdownOverlay`)。模型的长回复通常开头就是一个标题;没有标题的
+    回复退回一句通用的说法,不留空标题。 */
+function firstHeading(text: string): string {
+  for (const rawLine of text.split("\n")) {
+    const match = /^#{1,6}\s+(.+)/.exec(rawLine.trim());
+    if (match !== undefined && match !== null) return match[1]!.trim();
+  }
+  return "agent 回复";
+}
+
+/**
+ * 长回复的阅读视图(模仿 Craft Agents 的 `DocumentFormattedMarkdownOverlay`)。
+ * 对话卡片里 320px 收着的长回复点「阅读」在这里摊开成一篇文章:字号上提一档(`Markdown`
+ * 的 `size="article"`),880px 居中限宽,头部钉住标题与「复制 Markdown」,滚的只是正文。
+ *
+ * `open`/`onOpenChange` 受控:「阅读」按钮在对话卡片里,这个组件不渲染触发它的那个按钮;
+ * 焦点归位交给调用方的 `useDialogReturnFocus`(`onCloseAutoFocus` 由调用方传入)。
+ */
+export function ReplyReader({
+  open,
+  onOpenChange,
+  text,
+  at,
+  onCloseAutoFocus,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  text: string;
+  at: string;
+  onCloseAutoFocus?: (event: Event) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const copy = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // 阅读视图没有留反馈位:复制失败人再点一次,或者自己在正文里选中复制。
+    }
+  };
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      {/* 上限里减掉视口宽:Radix 的滚动容器是按内容收缩的 flex 项,`width="100%"` 在手机上
+          只能拿到「正文 72ch 加内边距」那么宽,比视口宽、关闭键被挤出屏外;把上限钉在视口
+          宽减两侧 16px 边距,表格才在自己的滚动壳里横滚,壳不再撑开。 */}
+      <Dialog.Content
+        width="100%"
+        maxWidth="min(880px, calc(100vw - 32px))"
+        className="max-h-[calc(100dvh-64px)] overflow-y-auto rounded-3xl bg-surface p-0 shadow-modal"
+        {...(onCloseAutoFocus === undefined ? {} : { onCloseAutoFocus })}
+      >
+        <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-overlay-line bg-surface px-6 py-3">
+          <div className="min-w-0 flex-1">
+            <Dialog.Title size="4" mb="0" className="truncate">
+              {firstHeading(text)}
+            </Dialog.Title>
+            <Text as="p" size="1" color="gray">
+              {localSecond(at)}
+            </Text>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button type="button" variant="ghost" color="gray" size="1" onClick={() => void copy()}>
+              {copied ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
+              {copied ? "已复制" : "复制 Markdown"}
+            </Button>
+            <Dialog.Close>
+              <IconButton type="button" variant="ghost" color="gray" size="2" aria-label="关闭">
+                <Cross2Icon aria-hidden />
+              </IconButton>
+            </Dialog.Close>
+          </div>
+        </div>
+        <div className="px-6 py-5">
+          <Markdown text={text} size="article" />
+        </div>
+      </Dialog.Content>
+    </Dialog.Root>
+  );
+}

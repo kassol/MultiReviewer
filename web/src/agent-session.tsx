@@ -3,6 +3,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   CheckCircledIcon,
+  ChevronDownIcon,
   ChevronRightIcon,
   CommitIcon,
   CopyIcon,
@@ -44,8 +45,10 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { Markdown } from "@/components/markdown";
 import { PageBody } from "@/components/page-body";
+import { ReplyReader } from "@/components/reply-reader";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
+import { useDialogReturnFocus } from "@/components/use-dialog-return-focus";
 import {
   currentFinalization,
   requirementBreakdownMarkdown,
@@ -247,6 +250,17 @@ function Conversation({
   hasBaselines: boolean;
 }) {
   const [live, setLive] = useState<LiveStream | null>(null);
+  /** 摊开了的长回复,按 `seq` 记。长回复默认收起,展开只是内容高度变化,不是
+      新消息,不进「最新」跟随判定。 */
+  const [expandedReplies, setExpandedReplies] = useState<Set<number>>(new Set());
+  const toggleReplyExpanded = (seq: number): void => {
+    setExpandedReplies((prev) => {
+      const next = new Set(prev);
+      if (next.has(seq)) next.delete(seq);
+      else next.add(seq);
+      return next;
+    });
+  };
   const recordsKey = ["agent-session-records", sessionId];
   const { events, hasMore, query, stream } = useTrace<AgentSessionRecord>({
     queryKey: recordsKey,
@@ -366,6 +380,13 @@ function Conversation({
                   {...(item.kind === "tools" && index === groups.length - 1
                     ? { liveTool, open: running }
                     : {})}
+                  // 长回复的展开状态按 `seq` 记在 `Conversation` 里,折叠/展开不重挂这一行。
+                  {...(item.kind === "assistant"
+                    ? {
+                        expanded: expandedReplies.has(item.seq),
+                        onToggleExpand: () => toggleReplyExpanded(item.seq),
+                      }
+                    : {})}
                 />
               </li>
             ))}
@@ -417,12 +438,17 @@ function ConversationRow({
   onOpenOutput,
   liveTool,
   open = false,
+  expanded = false,
+  onToggleExpand,
 }: {
   item: ConversationGroup;
   sessionId: number;
   onOpenOutput: (version: number) => void;
   liveTool?: string | undefined;
   open?: boolean;
+  /** 长回复此刻是摊开还是收着,只对 `kind === "assistant"` 有意义(`Conversation` 按 `seq` 记)。 */
+  expanded?: boolean;
+  onToggleExpand?: () => void;
 }) {
   if (item.kind === "tools") {
     return <ToolGroup calls={item.calls} liveTool={liveTool} open={open} />;
@@ -487,11 +513,125 @@ function ConversationRow({
       </div>
     );
   }
+  return <AssistantReply item={item} expanded={expanded} onToggleExpand={onToggleExpand!} />;
+}
+
+/** 超过这个字数或换行数的回复算「长回复」(仿 Craft Agents TurnCard 的折叠阈值):文档长度的
+    正文塞进 760px 的聊天列读不动,先收起到一屏内,「展开」或「阅读」再摊开。 */
+const LONG_REPLY_CHARS = 800;
+const LONG_REPLY_NEWLINES = 12;
+
+function isLongReply(text: string): boolean {
+  if (text.length > LONG_REPLY_CHARS) return true;
+  return (text.match(/\n/g)?.length ?? 0) > LONG_REPLY_NEWLINES;
+}
+
+/**
+ * agent 一条完整回复的卡片(仿 Craft Agents 的 TurnCard)。长回复默认收进 320px 高、底部
+ * 渐隐;「展开」摊开到全高,「阅读」开单独的阅读视图(`ReplyReader`,字号更大、限宽 72ch),
+ * 「复制 Markdown」拿走原文——写法与 `OutputPanel` 的复制按钮同一份(2 秒后 label 复位,
+ * 失败照样在这张卡上方弹一条 Callout)。收起时把卡片顶部滚回可见处:展开是内容变高,不是
+ * 新消息,不该让人对着一段突然消失在视口上方的文字发懵。
+ */
+function AssistantReply({
+  item,
+  expanded,
+  onToggleExpand,
+}: {
+  item: Extract<ConversationGroup, { kind: "assistant" }>;
+  expanded: boolean;
+  onToggleExpand: () => void;
+}) {
+  const long = isLongReply(item.text);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const wasExpanded = useRef(expanded);
+  useEffect(() => {
+    if (wasExpanded.current && !expanded) {
+      cardRef.current?.scrollIntoView({ block: "nearest" });
+    }
+    wasExpanded.current = expanded;
+  }, [expanded]);
+
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const copy = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(item.text);
+      setCopyError(null);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (failed) {
+      setCopyError((failed as Error).message);
+    }
+  };
+
+  const [reading, setReading] = useState(false);
+  const returnFocus = useDialogReturnFocus();
+
   return (
-    <div className="group flex flex-col gap-1">
+    <div
+      ref={cardRef}
+      className="group flex flex-col rounded-lg border border-overlay-line bg-surface px-4 py-3 shadow-control"
+    >
       <span className="sr-only">agent</span>
-      <Markdown text={item.text} />
-      <MessageTime at={item.at} />
+      {copyError === null ? null : (
+        <Callout.Root role="alert" color="red" size="1" className="mb-2">
+          <Callout.Icon>
+            <CrossCircledIcon aria-hidden />
+          </Callout.Icon>
+          <Callout.Text>{copyError}</Callout.Text>
+        </Callout.Root>
+      )}
+      {long && !expanded ? (
+        <div className="relative max-h-[320px] overflow-hidden">
+          <Markdown text={item.text} />
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-surface to-transparent"
+          />
+        </div>
+      ) : (
+        <Markdown text={item.text} />
+      )}
+      <div className="mt-2 flex items-center justify-between gap-2 border-t border-line pt-2 text-sm text-text-muted">
+        <MessageTime at={item.at} />
+        <div className="flex items-center gap-1">
+          {long ? (
+            <Button type="button" variant="ghost" color="gray" size="1" onClick={onToggleExpand}>
+              <ChevronDownIcon aria-hidden />
+              {expanded ? "收起" : "展开"}
+            </Button>
+          ) : null}
+          {long ? (
+            <Button
+              type="button"
+              variant="ghost"
+              color="gray"
+              size="1"
+              onClick={(event) => {
+                returnFocus.captureTrigger(event);
+                setReading(true);
+              }}
+            >
+              <ReaderIcon aria-hidden />
+              阅读
+            </Button>
+          ) : null}
+          <Button type="button" variant="ghost" color="gray" size="1" onClick={() => void copy()}>
+            {copied ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
+            {copied ? "已复制" : "复制 Markdown"}
+          </Button>
+        </div>
+      </div>
+      {long ? (
+        <ReplyReader
+          open={reading}
+          onOpenChange={setReading}
+          text={item.text}
+          at={item.at}
+          onCloseAutoFocus={returnFocus.onCloseAutoFocus}
+        />
+      ) : null}
     </div>
   );
 }
@@ -553,6 +693,11 @@ function ToolGroup({
             />
           ) : (
             <Spinner size="1" className="shrink-0" />
+          )}
+          {calls.length === 0 ? null : (
+            <span className="rounded-full bg-fill px-1.5 text-xs tabular-nums text-text-secondary">
+              {calls.length}
+            </span>
           )}
           <span className="truncate">{summary === "" ? "正在调用工具" : summary}</span>
           {failed === 0 ? null : (
