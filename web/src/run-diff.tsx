@@ -579,11 +579,13 @@ export function FilePatch({
                 }
               >
                 {/* 每个 hunk 一张表:一张大表的布局要把全部行算一遍,分表之后跳过的那些
-                    不参与。各表共用同一份 colgroup 加 table-fixed,列宽因此对齐。 */}
+                    不参与。各表共用同一份 colgroup 加 table-fixed,列宽因此对齐。行号列
+                    48px:等宽字号抬到 12px 后(issue #371),40px 那一档连四位行号都装不下,
+                    数字会溢出格子压到隔壁列上。 */}
                 <table className="w-full table-fixed border-collapse font-mono text-xs">
                   <colgroup>
-                    <col className="w-10" />
-                    <col className="w-10" />
+                    <col className="w-12" />
+                    <col className="w-12" />
                     <col />
                   </colgroup>
                   <tbody>
@@ -606,10 +608,10 @@ export function FilePatch({
                                 : ""
                           }
                         >
-                          <td className="w-10 px-1.5 text-right align-top tabular-nums text-text-secondary select-none">
+                          <td className="w-12 px-1.5 text-right align-top tabular-nums text-text-secondary select-none">
                             {line.oldLine ?? ""}
                           </td>
-                          <td className="w-10 px-1.5 text-right align-top tabular-nums text-text-secondary select-none">
+                          <td className="w-12 px-1.5 text-right align-top tabular-nums text-text-secondary select-none">
                             {line.newLine ?? ""}
                           </td>
                           <td className="px-2 align-top whitespace-pre-wrap break-words text-text">

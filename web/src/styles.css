@@ -262,17 +262,18 @@
 
   /*
    * 字号。正文基准落在 --font-size-3(Radix 的默认 Text 档),控件落 2,徽章落 1。
-   * 13.5px 是这套设计的正文,不是 14——密度差一档,整页扫读的行数就差一屏。
+   * 整条阶梯比设计稿高一档(issue #371):13.5px 的正文在手机和桌面上都读着吃力。
+   * 档位之间的比例原样保留,事实来源是 DESIGN.md 5.2 的字号表。
    */
-  --font-size-1: 11.5px;
-  --font-size-2: 13px;
-  --font-size-3: 13.5px;
-  --font-size-4: 14px;
-  --font-size-5: 16px;
-  --font-size-6: 18px;
-  --font-size-7: 21px;
-  --font-size-8: 25px;
-  --font-size-9: 29px;
+  --font-size-1: 12.5px;
+  --font-size-2: 14px;
+  --font-size-3: 15px;
+  --font-size-4: 16px;
+  --font-size-5: 17px;
+  --font-size-6: 19px;
+  --font-size-7: 22px;
+  --font-size-8: 26px;
+  --font-size-9: 30px;
   --line-height-1: 1.45;
   --line-height-2: 1.5;
   --line-height-3: 1.5;
@@ -288,7 +289,7 @@
 
   /*
    * 字重。SF 的可变刻度里 590 与 650 是这套设计的两个主力,标准的 500/700 都偏了:
-   * 500 压不住一行,700 在 13px 上糊成一团。
+   * 500 压不住一行,700 在 14px 上糊成一团。
    */
   --font-weight-light: 400;
   --font-weight-regular: 400;
@@ -346,43 +347,43 @@
   --color-neutral-dot: var(--v8-neutral-dot);
 
   /*
-   * 字号阶梯。控制台密度靠小字撑,整套压在 11–29px。设计稿里 11/11.5/12/12.5/13/13.5
-   * 八档 0.5px 步进,那是逐像素目视调优的结果,落到代码里收敛成七档——0.5px 的差别
-   * 屏幕上看不出来,却会让每个页面各写各的。
+   * 字号阶梯。控制台密度靠小字撑,整套压在 12–30px。这一版整体比设计稿高一档
+   * (issue #371):设计稿的 13.5px 正文在手机和桌面上都读着吃力,抬的是整条阶梯,
+   * 各档之间的比例原样保留。事实来源是 DESIGN.md 5.2 的字号表。
    *
-   * xs   11    commit hash、快捷键、模型 chip、优先级徽章
-   * sm   11.5  计数徽章、表头、日期分组标题、副标题
-   * base 12    元数据行、状态徽章、KPI 标签、表格单元格
-   * md   13    按钮、搜索框、链接、Select
-   * lg   13.5  正文基准:根容器与列表行主标题
-   * xl   14    面包屑当前页、命令面板结果项、登录表单
-   * 2xl  16    卡片区块标题
-   * 3xl  18    抽屉与模态标题
-   * 4xl  21    登录页品牌标题
-   * 5xl  25    桌面页标题,一页一个
-   * 6xl  29    KPI 主数字
+   * xs   12    commit hash、快捷键、模型 chip、优先级徽章
+   * sm   12.5  计数徽章、表头、日期分组标题、副标题
+   * base 13    元数据行、状态徽章、KPI 标签、表格单元格
+   * md   14    按钮、搜索框、链接、Select
+   * lg   15    正文基准:根容器与列表行主标题
+   * xl   16    面包屑当前页、命令面板结果项、登录表单
+   * 2xl  17    卡片区块标题
+   * 3xl  19    抽屉与模态标题
+   * 4xl  22    登录页品牌标题
+   * 5xl  26    桌面页标题,一页一个
+   * 6xl  30    KPI 主数字
    */
-  --text-xs: 11px;
+  --text-xs: 12px;
   --text-xs--line-height: 1.45;
-  --text-sm: 11.5px;
+  --text-sm: 12.5px;
   --text-sm--line-height: 1.45;
-  --text-base: 12px;
+  --text-base: 13px;
   --text-base--line-height: 1.5;
-  --text-md: 13px;
+  --text-md: 14px;
   --text-md--line-height: 1.5;
-  --text-lg: 13.5px;
+  --text-lg: 15px;
   --text-lg--line-height: 1.5;
-  --text-xl: 14px;
+  --text-xl: 16px;
   --text-xl--line-height: 1.45;
-  --text-2xl: 16px;
+  --text-2xl: 17px;
   --text-2xl--line-height: 1.4;
-  --text-3xl: 18px;
+  --text-3xl: 19px;
   --text-3xl--line-height: 1.35;
-  --text-4xl: 21px;
+  --text-4xl: 22px;
   --text-4xl--line-height: 1.25;
-  --text-5xl: 25px;
+  --text-5xl: 26px;
   --text-5xl--line-height: 1.2;
-  --text-6xl: 29px;
+  --text-6xl: 30px;
   --text-6xl--line-height: 1.15;
 
   /* 字重:590 与 650 没有 Tailwind 标准名,挂在 medium / semibold 上。 */
@@ -511,6 +512,17 @@
     min-height: 44px;
     align-items: center;
   }
+
+  /*
+   * 触屏上字号低于 16px 的输入框,iOS Safari 一聚焦就把整页放大,而且不会自己缩回去。
+   * 一条规则盖住全部 input 与 textarea——Radix 的 TextField / TextArea、会话输入区的
+   * 原生 textarea 与命令面板的 cmdk 输入都落在这两个标签上,逐个组件写漏一个就是一次
+   * 页面缩放。这一段不在任何 layer 里,天然盖过 layer(radix) 与 utilities。
+   */
+  input,
+  textarea {
+    font-size: 16px;
+  }
 }
 
 /*
@@ -571,7 +583,7 @@
     background: var(--v8-bg);
     color: var(--v8-text);
     font-family: var(--v8-font-text);
-    font-size: 13.5px;
+    font-size: 15px;
     line-height: 1.5;
     /* 这套设计的字重靠 590/650 这类可变刻度分层,不开抗锯齿的话它们在
      * 非 Retina 屏上会糊成同一档。 */

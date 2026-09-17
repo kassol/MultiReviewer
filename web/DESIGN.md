@@ -59,7 +59,7 @@ MultiReviewer 管理面板服务两类用户：
 | --- | --- | --- |
 | `accentColor` | `blue` | 让 Radix 走 accent 那一族变量，具体色值再由 `styles.css` 覆写成 `--v8-accent` #0071e3。选 blue 是因为它的中性搭配灰最接近这套设计。 |
 | `radius` | `medium` | 只为拿到 `--radius-thumb: 9999px`（开关与滑块是圆的）。六档圆角终值直接覆写，不靠 radius-factor 缩放——v8 的档位不是等比的（9 → 12 → 14 → 16 → 18）。 |
-| `scaling` | `100%` | 避免二次缩放。字号已经按 13.5px 正文逐档定死，再乘一次会让所有档位落到非整数上。 |
+| `scaling` | `100%` | 避免二次缩放。字号已经按 15px 正文逐档定死，再乘一次会让所有档位落到非整数上。 |
 | `panelBackground` | `solid` | 卡片是纯白实底。毛玻璃只属于顶栏、Tab 栏、抽屉与命令面板，那四处各自在组件里写材质。 |
 
 当前只提供浅色模式（issue #46）。不加主题上下文、本地存储、防闪脚本或暗色变体；要加暗色那天，在 `styles.css` 里补一段媒体块重定义 `--v8-*` 即可，现在不预留任何东西。
@@ -211,7 +211,7 @@ StatusBadge 是运行状态的唯一产品级出口，暴露 `neutral`、`runnin
 三套字体栈，全部在 `styles.css` 里定义一次：
 
 - `--v8-font-text`（Tailwind `font-sans`）：`-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif`。根容器与绝大多数文字用它。
-- `--v8-font-display`（`font-display`）：同上但把 `SF Pro Text` 换成 `SF Pro Display`。只用在页标题与 KPI 数字上——SF Pro Display 的字腔在 25px 以上才比 Text 好看，这是唯一区分两套栈的尺寸线。设计稿的 Display 栈漏了 `Microsoft YaHei` 与 `system-ui`，这里补齐。
+- `--v8-font-display`（`font-display`）：同上但把 `SF Pro Text` 换成 `SF Pro Display`。只用在页标题与 KPI 数字上——SF Pro Display 的字腔在 26px 以上才比 Text 好看，这是唯一区分两套栈的尺寸线。设计稿的 Display 栈漏了 `Microsoft YaHei` 与 `system-ui`，这里补齐。
 - `--v8-font-mono`（`font-mono`）：`ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace`。model id、commit SHA、Key 尾号、快捷键、endpoint 用它。
 
 **等宽字体只包数字，不包中文。** `font-mono` 会把汉字撑成等宽格，「3 轮」因此读成断开的两块；写法是 `<span className="font-mono tabular-nums">{n}</span> 轮`。
@@ -222,29 +222,31 @@ StatusBadge 是运行状态的唯一产品级出口，暴露 `neutral`、`runnin
 
 ### 5.2 字号
 
-字号从上一版的六档扩到十一档。控制台密度靠小字撑，整套压在 11–29px，元信息、徽章、表头、正文、按钮各要一档才不互相顶。设计稿里 11 / 11.5 / 12 / 12.5 / 13 / 13.5 / 14 / 14.5 是八档 0.5px 步进，那是逐像素目视调优的结果；落到代码里收敛掉 12.5 与 14.5——屏幕上看不出差别，却会让每个页面各写各的。
+字号十一档。控制台密度靠小字撑，整套压在 12–30px，元信息、徽章、表头、正文、按钮各要一档才不互相顶。
+
+这套阶梯比 2026-08-24 的设计稿整体高一档（issue #371）：设计稿的 13.5px 正文在手机和桌面上都读着吃力。抬的是整条阶梯，各档之间的比例原样保留——逐页加大字号会让每个页面各写各的。
 
 | Tailwind | 值 | line-height | 唯一职责 |
 | --- | --- | --- | --- |
-| `text-xs` | 11px | 1.45 | commit hash chip、快捷键、模型 chip、优先级徽章 |
-| `text-sm` | 11.5px | 1.45 | 计数徽章、表头、日期分组标题、卡片副标题 |
-| `text-base` | 12px | 1.5 | 元数据行、状态徽章、KPI 标签、表格单元格 |
-| `text-md` | 13px | 1.5 | 按钮、搜索入口、链接、Select |
-| `text-lg` | 13.5px | 1.5 | **正文基准**：根容器与列表行主标题 |
-| `text-xl` | 14px | 1.45 | 面包屑当前页、命令面板结果项、登录表单 |
-| `text-2xl` | 16px | 1.4 | 卡片区块标题 |
-| `text-3xl` | 18px | 1.35 | 抽屉与模态标题 |
-| `text-4xl` | 21px | 1.25 | 登录页品牌标题、命令面板输入行 |
-| `text-5xl` | 25px | 1.2 | 桌面页标题，一页一个 |
-| `text-6xl` | 29px | 1.15 | KPI 主数字 |
+| `text-xs` | 12px | 1.45 | commit hash chip、快捷键、模型 chip、优先级徽章 |
+| `text-sm` | 12.5px | 1.45 | 计数徽章、表头、日期分组标题、卡片副标题 |
+| `text-base` | 13px | 1.5 | 元数据行、状态徽章、KPI 标签、表格单元格 |
+| `text-md` | 14px | 1.5 | 按钮、搜索入口、链接、Select |
+| `text-lg` | 15px | 1.5 | **正文基准**：根容器与列表行主标题 |
+| `text-xl` | 16px | 1.45 | 面包屑当前页、命令面板结果项、登录表单 |
+| `text-2xl` | 17px | 1.4 | 卡片区块标题 |
+| `text-3xl` | 19px | 1.35 | 抽屉与模态标题 |
+| `text-4xl` | 22px | 1.25 | 登录页品牌标题、命令面板输入行 |
+| `text-5xl` | 26px | 1.2 | 桌面页标题，一页一个 |
+| `text-6xl` | 30px | 1.15 | KPI 主数字 |
 
-`body` 的基准是 13.5px / 1.5。Radix 侧对应覆写 `--font-size-1` 到 `--font-size-9`（11.5 / 13 / 13.5 / 14 / 16 / 18 / 21 / 25 / 29），正文落在 `--font-size-3`、控件落 2、徽章落 1。13.5px 是这套设计的正文，不是 14——密度差一档，整页扫读的行数就差一屏。
+`body` 的基准是 15px / 1.5。Radix 侧对应覆写 `--font-size-1` 到 `--font-size-9`（12.5 / 14 / 15 / 16 / 17 / 19 / 22 / 26 / 30），正文落在 `--font-size-3`、控件落 2、徽章落 1。
 
-**不写 `text-[13px]` 这类一次性值。** 唯一的例外是移动端底部 Tab 栏的 10px 标签，它低于阶梯下界。
+**不写 `text-[13px]` 这类一次性值。** 唯一的例外是移动端底部 Tab 栏的 11px 标签，它低于阶梯下界：Tab 栏一行要放五格，标签跟着阶梯走会把两字以上的页名挤断行。
 
 ### 5.3 字重
 
-SF 的可变刻度里 590 与 650 是这套设计的两个主力，标准的 500 / 700 都偏了：500 压不住一行，700 在 13px 上糊成一团。
+SF 的可变刻度里 590 与 650 是这套设计的两个主力，标准的 500 / 700 都偏了：500 压不住一行，700 在 14px 上糊成一团。
 
 | Tailwind | 值 | 用途 |
 | --- | --- | --- |
@@ -256,7 +258,7 @@ SF 的可变刻度里 590 与 650 是这套设计的两个主力，标准的 500
 
 Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写成 650，`Text weight="medium"` 与 `weight="bold"` 因此自动落在同一刻度上。
 
-字距只在大字号上收：`--letter-spacing-7/8/9` 为 -0.02em / -0.022em / -0.03em，对应 21 / 25 / 29px。
+字距只在大字号上收：`--letter-spacing-7/8/9` 为 -0.02em / -0.022em / -0.03em，对应 22 / 26 / 30px。
 
 ## 6. 密度、间距与圆角
 
@@ -264,6 +266,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 - Theme 固定 `scaling="100%"`，密度由字号阶梯本身承担。
 - 常规输入和按钮使用 `size="2"`；窄屏用响应式 size（`{ initial: "3", sm: "2" }`）。
+- 触屏设备（`pointer: coarse`）上 `input` 与 `textarea` 的字号至少 16px。低于 16px 时 iOS Safari 一聚焦就把整页放大，而且不会自己缩回去。这条写在 `styles.css` 的 coarse 块里，一次盖住全部输入框——逐个组件写，漏一个就是一次页面缩放。
 - 核心提交动作在窄屏用 `size="4"`。
 - 表格和长列表优先紧凑行高，重要状态保持完整文字。
 
@@ -594,7 +597,7 @@ Calendar 与 Command 留在 `components/ui` 作为第三方行为适配层，只
 6. 命令面板：任意页面、输入框内外按 ⌘K / Ctrl+K 都能唤起；毛玻璃与内高光边可见；键盘上下选择时选中项是蓝色实底反白；Esc 关闭后焦点回到触发入口。390px 下面板顶靠视口、整宽、搜索行在最上，列表在自己内部滚动，搜索行右端的关闭键点一下就关；触屏上键位提示页脚不出现。
 7. 三个断点：外壳在 `sm=640px` 切换（顶栏导航 ↔ 底部 Tab 栏）；运行详情面板在 `md=768px` 切换（底部抽屉 ↔ 右侧浮动面板）；主从双栏在 `lg=1024px` 切换。确认 640–1023px 仍为单层列表／详情且无拥挤，三个宽度均无页面横向溢出。
 8. 状态语义色：成功、警告、错误徽章都是 soft tint 加图标加文字；警告图标是 `--v8-warning-icon`、文字是 `--v8-warning`，两者不混。
-9. 字号阶梯：页标题 25px 一页一个、KPI 数字 29px、卡片区块标题 16px、正文 13.5px；页面里没有阶梯外的一次性字号（移动端 Tab 栏 10px 除外）。
+9. 字号阶梯：页标题 26px 一页一个、KPI 数字 30px、卡片区块标题 17px、正文 15px；页面里没有阶梯外的一次性字号（移动端 Tab 栏 11px 除外）。触屏上 `input` 与 `textarea` 至少 16px，聚焦时 iOS Safari 不改页面缩放。
 10. 长列表的可视高度、局部滚动、粘性表头和批量操作栏；多步凭据 Dialog 的宽度、内容滚动和窄屏布局。
 11. DateRangePicker、EditableModelCombobox 与 Theme 组件的视觉一致性和键盘操作。
 12. TabNav 与 Router Link 的当前态、前进后退和刷新恢复；受控 Dialog / AlertDialog 关闭后的焦点返回，以及触发元素卸载后的稳定后备入口。
