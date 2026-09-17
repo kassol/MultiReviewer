@@ -11,15 +11,15 @@ import { IconButton, Skeleton } from "@radix-ui/themes";
 import { Collapsible, Dialog } from "radix-ui";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import {
+  fitView,
+  pinchView,
+  zoomAround,
+  type DiagramView,
+  type Point,
+  type PointerPair,
+} from "@/lib/diagram-view";
 import { cn } from "@/lib/utils";
-
-/** 画布缩放的上下界。低于 0.25 图上的字已经认不出,高于 8 一屏只剩一个节点。 */
-const MIN_SCALE = 0.25;
-const MAX_SCALE = 8;
-
-function clampScale(scale: number) {
-  return Math.min(Math.max(scale, MIN_SCALE), MAX_SCALE);
-}
 
 /**
  * mermaid 整包按需下载并只初始化一次。主题取 `base` 再把 `--v8-*` 令牌填进
@@ -221,49 +221,42 @@ function DiagramPreview({ svg, title }: { svg: string; title: string }) {
   );
 }
 
-type View = { scale: number; x: number; y: number };
+/** 画布上按住的那几根手指里取头两根,坐标换算到画布左上角。不足两根时返回 null。 */
+function pairFrom(points: Point[], origin: Point): PointerPair | null {
+  const [a, b] = points;
+  if (a === undefined || b === undefined) return null;
+  return [
+    { x: a.x - origin.x, y: a.y - origin.y },
+    { x: b.x - origin.x, y: b.y - origin.y },
+  ];
+}
 
 function DiagramStage({ svg, title }: { svg: string; title: string }) {
   const size = useMemo(() => naturalSize(svg), [svg]);
   const canvasRef = useRef<HTMLDivElement>(null);
-  const [view, setView] = useState<View>({ scale: 1, x: 0, y: 0 });
+  const [view, setView] = useState<DiagramView>({ scale: 1, x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
-  const drag = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+  // 按在画布上的手指,键是 pointerId、值是它上一帧的位置(客户端坐标),按落下的先后排。
+  // 一根即拖动,两根即捏合;两者都只看「上一帧到这一帧」的差,不必记按下那一刻的状态。
+  const pointers = useRef(new Map<number, Point>());
+  // 捏合期间画布左上角在客户端坐标里的位置。浮层是 fixed 的,一次手势里不会动,按下第二根
+  // 手指时量一次就够——每帧都 getBoundingClientRect 是一次白搭的布局读取。
+  const origin = useRef<Point | null>(null);
 
-  /** 以画布上的某个点为锚缩放:那个点在图上对应的位置保持不动。 */
-  const zoomAt = useCallback((scale: number, x: number, y: number) => {
-    setView((current) => {
-      const next = clampScale(scale);
-      return {
-        scale: next,
-        x: x - ((x - current.x) * next) / current.scale,
-        y: y - ((y - current.y) * next) / current.scale,
-      };
-    });
-  }, []);
-
-  /** 整张图装进画布并居中。 */
+  /** 整张图按「适应」摆好:宽屏两轴都装下,窄屏按宽装、高度留给纵向拖动。 */
   const fit = useCallback(() => {
     const canvas = canvasRef.current;
     if (canvas === null || size === null) return;
-    const scale = clampScale(
-      Math.min(canvas.clientWidth / size.width, canvas.clientHeight / size.height),
-    );
-    setView({
-      scale,
-      x: (canvas.clientWidth - size.width * scale) / 2,
-      y: (canvas.clientHeight - size.height * scale) / 2,
-    });
+    setView(fitView({ width: canvas.clientWidth, height: canvas.clientHeight }, size));
   }, [size]);
 
-  const zoomAtCenter = useCallback(
-    (scale: number) => {
-      const canvas = canvasRef.current;
-      if (canvas === null) return;
-      zoomAt(scale, canvas.clientWidth / 2, canvas.clientHeight / 2);
-    },
-    [zoomAt],
-  );
+  const zoomAtCenter = useCallback((scale: number) => {
+    const canvas = canvasRef.current;
+    if (canvas === null) return;
+    setView((current) =>
+      zoomAround(current, scale, canvas.clientWidth / 2, canvas.clientHeight / 2),
+    );
+  }, []);
 
   useEffect(() => {
     fit();
@@ -279,16 +272,14 @@ function DiagramStage({ svg, title }: { svg: string; title: string }) {
       event.preventDefault();
       const rect = canvas.getBoundingClientRect();
       const factor = Math.exp(-event.deltaY / (event.ctrlKey ? 100 : 400));
-      setView((current) => {
-        const next = clampScale(current.scale * factor);
-        const x = event.clientX - rect.left;
-        const y = event.clientY - rect.top;
-        return {
-          scale: next,
-          x: x - ((x - current.x) * next) / current.scale,
-          y: y - ((y - current.y) * next) / current.scale,
-        };
-      });
+      setView((current) =>
+        zoomAround(
+          current,
+          current.scale * factor,
+          event.clientX - rect.left,
+          event.clientY - rect.top,
+        ),
+      );
     };
     canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", onWheel);
@@ -296,8 +287,9 @@ function DiagramStage({ svg, title }: { svg: string; title: string }) {
 
   return (
     <>
-      <div className="flex items-center gap-1 border-b border-overlay-line px-2 py-2 sm:px-3">
-        <Dialog.Title className="min-w-0 flex-1 truncate px-1 text-3xl font-semibold">
+      {/* 窄屏上按键整排折到第二行,标题因此占满第一行:与它们挤在一行时标题只剩两个字宽。 */}
+      <div className="flex flex-wrap items-center gap-1 border-b border-overlay-line px-2 py-2 sm:px-3">
+        <Dialog.Title className="w-full min-w-0 truncate px-1 text-3xl font-semibold sm:w-auto sm:flex-1">
           {title}
         </Dialog.Title>
         <IconButton
@@ -353,26 +345,42 @@ function DiagramStage({ svg, title }: { svg: string; title: string }) {
         )}
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture(event.pointerId);
-          drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
-          setDragging(true);
+          pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+          if (pointers.current.size >= 2) {
+            const rect = event.currentTarget.getBoundingClientRect();
+            origin.current = { x: rect.left, y: rect.top };
+            setDragging(false);
+          } else {
+            setDragging(true);
+          }
         }}
         onPointerMove={(event) => {
-          const held = drag.current;
-          if (held === null || held.pointerId !== event.pointerId) return;
-          const dx = event.clientX - held.x;
-          const dy = event.clientY - held.y;
-          held.x = event.clientX;
-          held.y = event.clientY;
+          const previous = pointers.current.get(event.pointerId);
+          if (previous === undefined) return;
+          const before = [...pointers.current.values()];
+          pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+          const anchor = origin.current;
+          if (before.length >= 2 && anchor !== null) {
+            const from = pairFrom(before, anchor);
+            const to = pairFrom([...pointers.current.values()], anchor);
+            if (from !== null && to !== null) setView((current) => pinchView(current, from, to));
+            return;
+          }
+          const dx = event.clientX - previous.x;
+          const dy = event.clientY - previous.y;
           setView((current) => ({ ...current, x: current.x + dx, y: current.y + dy }));
         }}
         onPointerUp={(event) => {
           event.currentTarget.releasePointerCapture(event.pointerId);
-          drag.current = null;
-          setDragging(false);
+          pointers.current.delete(event.pointerId);
+          // 松开一根手指后剩下的那根接着拖动:它记的位置就是它自己的上一帧,不会跳。
+          if (pointers.current.size < 2) origin.current = null;
+          setDragging(pointers.current.size === 1);
         }}
-        onPointerCancel={() => {
-          drag.current = null;
-          setDragging(false);
+        onPointerCancel={(event) => {
+          pointers.current.delete(event.pointerId);
+          if (pointers.current.size < 2) origin.current = null;
+          setDragging(pointers.current.size === 1);
         }}
       >
         <div
