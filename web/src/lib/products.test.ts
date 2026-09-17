@@ -1,7 +1,8 @@
 /*
  * 产品页那几个纯函数的单测(issue #331、#360、#363)。归属候选判反了的后果是一列只会回 409
  * 的候选,或者一个归不进任何产品的新仓库;术语分组漏一组的后果是那几条术语在产品页上不见
- * 了;可开工判错的后果是有人去做一张还被挡着、或者已经有人认领的票。
+ * 了;可开工判错的后果是有人去做一张还被挡着、或者已经有人认领的票;陈述拆段判错的后果是
+ * 半句话被当成代码渲染。
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -10,6 +11,7 @@ import {
   currentProduct,
   groupedTerms,
   pickableTickets,
+  statementParts,
   unassignedRepos,
   type ProductKnowledge,
   type TrackerSpec,
@@ -110,4 +112,28 @@ test("可开工的票:开着、无未关阻塞、无人认领", () => {
   // 认不出的票号不挡着:一份还没读全的数据不该让整张票从可开工里消失。
   assert.deepEqual([...pickableTickets([spec(1, [ticket(1, { blockedBy: [99] })])])], [1]);
   assert.deepEqual([...pickableTickets([])], []);
+});
+
+test("陈述按成对的反引号拆段,没配对的整句当正文", () => {
+  assert.deepEqual(statementParts("金额用 `amount` 这一格存"), [
+    { code: false, text: "金额用 " },
+    { code: true, text: "amount" },
+    { code: false, text: " 这一格存" },
+  ]);
+  // 一句话里两对:两段代码各自成段。
+  assert.deepEqual(
+    statementParts("`a` 与 `b`").map((part) => [part.code, part.text]),
+    [
+      [false, ""],
+      [true, "a"],
+      [false, " 与 "],
+      [true, "b"],
+      [false, ""],
+    ],
+  );
+  // 奇数个反引号:哪半是代码猜不出来,整句当正文——猜错会把后半句整段渲染成代码。
+  assert.deepEqual(statementParts("成本降到 `50%"), [{ code: false, text: "成本降到 `50%" }]);
+  // 一个反引号都没有,以及空串。
+  assert.deepEqual(statementParts("一句普通的话"), [{ code: false, text: "一句普通的话" }]);
+  assert.deepEqual(statementParts(""), [{ code: false, text: "" }]);
 });

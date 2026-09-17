@@ -45,6 +45,7 @@ import {
   PRODUCTS_QUERY_KEY,
   productQueryKey,
   specQueryKey,
+  statementParts,
   type Product,
   type ProductKnowledge,
   type ProductRepo,
@@ -447,23 +448,19 @@ function SurveyDialog({
 }
 
 /**
- * 一条陈述的正文。agent 与人写的陈述里常拿反引号圈住标识符(`account.balance -= amount`),
- * 原样摊出反引号读起来是源码;按 Markdown 的行内代码渲染,与会话页同一种样子。只认反引号,
- * 不跑整套 Markdown:陈述是一句话,不该有标题与列表。
+ * 一条陈述的正文。拆段在 `lib/products.ts` 的 `statementParts`(反引号圈住的那几段按行内
+ * 代码渲染,与会话页同一种样子),这里只画。
  */
 function Statement({ text }: { text: string }) {
-  const parts = text.split("`");
-  // 反引号没配对(偶数段)就原样给出,不猜哪半是代码。
-  if (parts.length % 2 === 0) return <>{text}</>;
   return (
     <>
-      {parts.map((part, index) =>
-        index % 2 === 1 ? (
+      {statementParts(text).map((part, index) =>
+        part.code ? (
           <code key={index} className="rounded-chip bg-fill px-1 py-0.5 font-mono text-xs">
-            {part}
+            {part.text}
           </code>
         ) : (
-          <Fragment key={index}>{part}</Fragment>
+          <Fragment key={index}>{part.text}</Fragment>
         ),
       )}
     </>

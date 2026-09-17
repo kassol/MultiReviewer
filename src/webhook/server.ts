@@ -2182,7 +2182,9 @@ function trackerTicketView(ticket: ProductTicketRecord): {
  * 人对一张票做的动作(CONTEXT.md 认领、票,issue #363):认领与取消认领、改标签、开与关。
  * 三格在一个请求里,给了哪几格就动哪几格——面板上它们是三个控件,一次点一个。
  *
- * 认领落的是调用方自己的名字:替别人认领这件事不该有入口。别人认领着的票认不动,回 409。
+ * 认领落的是调用方自己的名字:替别人认领这件事不该有入口。别人认领着的票认不动,回 409;
+ * **取消认领同律**(评审复核):只有认领人自己与系统管理员放得下那一格,不然一块共用的板子
+ * 上谁都能把别人手里的活随手收走。系统管理员那一档留着,是为了收回走了的人占住的票。
  */
 async function handleUpdateProductTicket(
   req: IncomingMessage,
@@ -2190,7 +2192,7 @@ async function handleUpdateProductTicket(
   deps: WebhookServerDeps,
   productId: number,
   ticketId: number,
-  caller: string,
+  caller: PanelCaller,
 ): Promise<void> {
   const payload = await readJson<{ claimed?: unknown; label?: unknown; state?: unknown } | null>(
     req,
@@ -2219,8 +2221,14 @@ async function handleUpdateProductTicket(
   const done = withStore(deps.dbPath, (store) => {
     const row = store.getProductTicket(ticketId);
     if (row === undefined || row.productId !== productId) return "no-ticket" as const;
-    const claimant = payload?.claimed === true ? caller : null;
-    if (wantsClaim && !store.setProductTicketClaim(ticketId, claimant)) {
+    const claimant = payload?.claimed === true ? caller.username : null;
+    // 动手的是谁:这一格空着或正是他自己才改得动。系统管理员**取消认领**时把「他自己」换成
+    // 此刻的认领人;抢认领那一档他与别人同律——替别人认领这件事谁都没有入口。
+    const by =
+      caller.isSystemAdmin && claimant === null
+        ? (row.claimedBy ?? caller.username)
+        : caller.username;
+    if (wantsClaim && !store.setProductTicketClaim(ticketId, claimant, by)) {
       return "claimed-by-another" as const;
     }
     if (wantsLabel) store.setProductTicketLabel(ticketId, label);
@@ -2229,7 +2237,12 @@ async function handleUpdateProductTicket(
   });
   if (done === "no-ticket") return sendJson(res, 404, { error: NO_SUCH_PRODUCT_TICKET });
   if (done === "claimed-by-another") {
-    return sendJson(res, 409, { error: "这张票已经有人认领了" });
+    return sendJson(res, 409, {
+      error:
+        payload?.claimed === true
+          ? "这张票已经有人认领了"
+          : "这张票是别人认领的,只有认领人自己或系统管理员取消得了",
+    });
   }
   return sendJson(res, 200, { ticket: trackerTicketView(done) });
 }
@@ -2630,13 +2643,21 @@ function seesProduct(
  *
  * `options.refuse` 让上传图片那一条路换一种回法:一张图有几 MB,回绝之后要把剩下的请求体
  * 排掉,不然这一句话可能随连接一起被丢掉。
+ *
+ * `options.systemAdminMayActOnSurvey` 是停止与删除那两个动作的例外(评审复核):产品梳理
+ * 看得到产品的人都读得到,升级前由系统开的那几场没有一个人类创建者,全档只认创建者的话
+ * 它们谁都停不掉、删不掉。发消息、传图、清队列仍一律只认创建者——访谈的另一头是开这一场
+ * 的那个具体的人。
  */
 function agentSessionForCreator(
   res: ServerResponse,
   deps: WebhookServerDeps,
   sessionId: number,
   caller: PanelCaller,
-  options: { refuse?: (status: number, error: string) => void } = {},
+  options: {
+    refuse?: (status: number, error: string) => void;
+    systemAdminMayActOnSurvey?: boolean;
+  } = {},
 ): AgentSessionRecord | undefined {
   const refuse =
     options.refuse ?? ((status: number, error: string) => sendJson(res, status, { error }));
@@ -2647,7 +2668,11 @@ function agentSessionForCreator(
   }
   // 产品梳理也在这一道里(issue #365):看得到产品的人都读得到它,只有开这一场的那个人
   // 答得了题、续得了谈——访谈的另一头是一个具体的人。
-  if (session.createdBy !== caller.username) {
+  const systemAdminOnSurvey =
+    options.systemAdminMayActOnSurvey === true &&
+    caller.isSystemAdmin &&
+    session.purpose === "product-survey";
+  if (session.createdBy !== caller.username && !systemAdminOnSurvey) {
     refuse(403, NOT_AGENT_SESSION_CREATOR);
     return undefined;
   }
@@ -2977,7 +3002,7 @@ function handleAgentSessionStream(
 /**
  * 删会话。只有创建者删得了:系统管理员读得到别人的会话,删它会回 403 而不是 404——他已经
  * 知道这一条在,再回 404 只会让人以为删成功了。产品梳理与别的用途同律(issue #365):它
- * 也有一个具体的创建者。
+ * 也有一个具体的创建者;升级前由系统开的那几场没有,系统管理员因此删得掉它们(评审复核)。
  */
 function handleDeleteAgentSession(
   res: ServerResponse,
@@ -2985,7 +3010,9 @@ function handleDeleteAgentSession(
   sessionId: number,
   caller: PanelCaller,
 ): void {
-  const allowed = agentSessionForCreator(res, deps, sessionId, caller);
+  const allowed = agentSessionForCreator(res, deps, sessionId, caller, {
+    systemAdminMayActOnSurvey: true,
+  });
   if (allowed === undefined) return;
   // 常驻子进程先收掉(评审复核):只删库里的行会留下一个挂着工作树、还在计时的子进程。
   reclaimAgentSession(sessionId);
@@ -3258,7 +3285,10 @@ function handleStopAgentSession(
   sessionId: number,
   caller: PanelCaller,
 ): void {
-  const allowed = agentSessionForCreator(res, deps, sessionId, caller);
+  // 删会话同律(评审复核):系统管理员停得下升级前由系统开的那几场梳理。
+  const allowed = agentSessionForCreator(res, deps, sessionId, caller, {
+    systemAdminMayActOnSurvey: true,
+  });
   if (allowed === undefined) return;
   const stopped = stopAgentSession(sessionId);
   return sendJson(res, 200, { stopped, queue: visibleQueue(deps, sessionId) });
@@ -3508,7 +3538,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   // 格:在这个产品上说得上话的人就动得了它的活。**正文与标题没有写端点**——它们只由会话
   // 经工具写(ADR 0035),带着这两格来的请求回 400。
   { method: "PUT", pattern: /^\/products\/(\d+)\/specs\/(\d+)$/, access: "agent:chat", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps }, match) => handleSetProductSpecState(req, res, deps, Number(match![1]), Number(match![2])) },
-  { method: "PUT", pattern: /^\/products\/(\d+)\/tickets\/(\d+)$/, access: "agent:chat", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleUpdateProductTicket(req, res, deps, Number(match![1]), Number(match![2]), caller!.username) },
+  { method: "PUT", pattern: /^\/products\/(\d+)\/tickets\/(\d+)$/, access: "agent:chat", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleUpdateProductTicket(req, res, deps, Number(match![1]), Number(match![2]), caller!) },
   { method: "POST", pattern: /^\/products\/(\d+)\/tickets\/(\d+)\/comments$/, access: "agent:chat", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleCommentProductTicket(req, res, deps, Number(match![1]), Number(match![2]), caller!.username) },
   // 开梳理(CONTEXT.md 产品梳理,issue #365)。门禁是 `knowledge:write` 加这个产品里的一个仓库
   // 分配——后半句正是 `product` 这个目标本身。创建者就是点下它的那个人:访谈的另一头是他。

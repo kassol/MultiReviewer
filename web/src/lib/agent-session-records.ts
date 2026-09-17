@@ -119,6 +119,7 @@ export type ToolKind =
   | "findings"
   | "knowledge"
   | "subagent"
+  | "tracker"
   | "submit"
   | "round"
   | "other";
@@ -128,11 +129,24 @@ export type ToolStep = { kind: ToolKind; label: string; target: string };
 
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
 
+/** 一张票说成 `#7`。号读不出来时只留 `#`——参数是模型写的,认不出的那一格不猜。 */
+const trackerTicket = (id: unknown): string => `#${typeof id === "number" ? id : ""}`;
+
+/** `tracker_read` / `tracker_update_body` / `tracker_close` 共用的那一对 `kind` + `id`。 */
+function trackerTarget(a: Record<string, unknown>): string {
+  const id = typeof a.id === "number" ? String(a.id) : "";
+  return str(a.kind) === "spec" ? `spec ${id}` : trackerTicket(a.id);
+}
+
+/** 新开的票挂在哪条 spec 下。spec 号读不出来时不加这一段。 */
+const trackerSpecPrefix = (spec: unknown): string =>
+  typeof spec === "number" ? `spec ${spec} · ` : "";
+
 /**
  * 把工具名与参数翻成「动词 + 对象」。参数形状由各工具的 schema 定:只读四件套是 Pi 内建
- * (`path` / `pattern` / `glob` / `offset` / `limit`),git 是 `args` 数组,两种查询按仓库,
- * 产出工具的参数是整份产出,一行摊不下也没必要摊——产出卡片自己会出现在对话流里。
- * 认不出的工具退回 `name` 加参数摘要。
+ * (`path` / `pattern` / `glob` / `offset` / `limit`),git 是 `args` 数组,知识与 tracker
+ * 那两组按条目名或 spec / 票号。正文一行摊不下也没必要摊:写下什么在产品页与右栏那一份
+ * 「本会话写的 spec 与票」里读得到。认不出的工具退回 `name` 加参数摘要。
  */
 export function describeTool(name: string, args: unknown): ToolStep {
   const a = (args ?? {}) as Record<string, unknown>;
@@ -166,6 +180,23 @@ export function describeTool(name: string, args: unknown): ToolStep {
         label: "查产品知识",
         target: Array.isArray(a.repos) ? a.repos.map(String).join("、") : "",
       };
+    // 产品知识的两件写工具(issue #360)。写下的那一条在产品页上读得到,这一行只说写了哪一条
+    // ——术语与决策有名字,仓库关系没有,那一档只报改写的是哪一条。
+    case "write_knowledge": {
+      const name = str(a.name);
+      const entryId = typeof a.entryId === "number" ? `条目 ${a.entryId}` : "";
+      return {
+        kind: "knowledge",
+        label: "写产品知识",
+        target: name !== "" ? name : entryId,
+      };
+    }
+    case "withdraw_knowledge":
+      return {
+        kind: "knowledge",
+        label: "撤回产品知识",
+        target: typeof a.entryId === "number" ? `条目 ${a.entryId}` : "",
+      };
     case "subagent": {
       // 派单可以是一句 `task`,也可以是 `tasks[]` 几句一起派(issue #358)。过程与结论在
       // 紧跟着的那张嵌套卡片上,这一行只说派了什么。
@@ -188,8 +219,39 @@ export function describeTool(name: string, args: unknown): ToolStep {
     case "complete_survey":
       // 产品梳理宣告共识那一下(issue #365)。产出是一路写下的条目,这一行只说这一场谈完了。
       return { kind: "submit", label: "记下谈完了", target: "" };
+    // 产品 tracker 的九件(issue #361)。对象是这一次动的那一条:新写的还没有号,列的是标题;
+    // 读、改正文与开关按 `kind` + `id` 指一条;评论与两条边按票号。
+    case "tracker_create_spec":
+      return { kind: "tracker", label: "写 spec", target: str(a.title) };
+    case "tracker_create_ticket":
+      return {
+        kind: "tracker",
+        label: "开票",
+        target: trackerSpecPrefix(a.spec) + str(a.title),
+      };
+    case "tracker_list":
+      return { kind: "tracker", label: "看 tracker", target: "" };
+    case "tracker_read":
+      return { kind: "tracker", label: "读", target: trackerTarget(a) };
+    case "tracker_update_body":
+      return { kind: "tracker", label: "改写正文", target: trackerTarget(a) };
+    case "tracker_close":
+      return { kind: "tracker", label: "关", target: trackerTarget(a) };
+    case "tracker_comment":
+      return { kind: "tracker", label: "评论", target: trackerTicket(a.ticket) };
+    case "tracker_block":
+      return {
+        kind: "tracker",
+        label: "记下阻塞",
+        target: `${trackerTicket(a.ticket)} 等 ${trackerTicket(a.blockedBy)}`,
+      };
+    case "tracker_unblock":
+      return {
+        kind: "tracker",
+        label: "解除阻塞",
+        target: `${trackerTicket(a.ticket)} 不再等 ${trackerTicket(a.blockedBy)}`,
+      };
     default:
-      if (name.startsWith("submit_")) return { kind: "submit", label: "提交产出", target: "" };
       return { kind: "other", label: name, target: toolSummary(args) };
   }
 }

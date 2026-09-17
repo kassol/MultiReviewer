@@ -513,9 +513,9 @@ const OTHER_OPTION = " 其他";
  * 一轮提问的选择卡片(CONTEXT.md 提问轮次,issue #359)。材质与 agent 的回复卡同一份
  * (`border-overlay-line` 的内嵌卡):它是 agent 说的一段话,只是这一段要人回答。
  *
- * 推荐项预先选上:一轮的成本该是「几下点击加一次提交」,同意推荐的那几题一下都不必点。
- * 每题末尾多一项「其他」,选中即现一格自填。整轮一次提交,合成一条普通用户消息走既有的发
- * 消息路径(`roundAnswerText`)。
+ * 推荐项只挂一枚 Badge,不先替人选上(评审复核):这一轮是人的裁决,预选会让一整轮点「提交」
+ * 就过去,而那几格算不算他答的分不清。每题末尾多一项「其他」,选中即现一格自填。整轮一次
+ * 提交,合成一条普通用户消息走既有的发消息路径(`roundAnswerText`)。
  *
  * 三态由记录投影给出:已答的摊开所选答案,被更新的用户消息顶掉的渲染成过期且交不上去,
  * 其余可答。
@@ -532,12 +532,7 @@ function QuestionRoundCard({
   const questions = item.round.questions;
   const settled = item.answers;
   const expired = item.expired === true;
-  const [picked, setPicked] = useState<string[][]>(() =>
-    questions.map((question) => {
-      const recommended = question.options.find((option) => option.recommended);
-      return recommended === undefined ? [] : [recommended.text];
-    }),
-  );
+  const [picked, setPicked] = useState<string[][]>(() => questions.map(() => []));
   const [other, setOther] = useState<string[]>(() => questions.map(() => ""));
   const [sending, setSending] = useState(false);
 
@@ -900,7 +895,10 @@ function SubagentCard({ run }: { run: SubagentRun }) {
   );
 }
 
-/** 每类工具调用的图标:读文件、搜内容、列目录、git、两种查询、派子代理、交产出。 */
+/**
+ * 每类工具调用的图标:读文件、搜内容、列目录、git、两种查询、产品知识的读写、派子代理、
+ * 产品 tracker 的读写、交产出与提问轮次(DESIGN.md 7.5)。
+ */
 const TOOL_ICONS: Record<ToolKind, typeof FileTextIcon> = {
   read: FileTextIcon,
   grep: MagnifyingGlassIcon,
@@ -910,6 +908,7 @@ const TOOL_ICONS: Record<ToolKind, typeof FileTextIcon> = {
   findings: CounterClockwiseClockIcon,
   knowledge: ReaderIcon,
   subagent: PersonIcon,
+  tracker: PaperPlaneIcon,
   submit: PaperPlaneIcon,
   round: QuestionMarkCircledIcon,
   other: GearIcon,

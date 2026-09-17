@@ -147,6 +147,58 @@ test("人点停止那条系统消息成为灰底一行", () => {
   );
 });
 
+test("产品知识与产品 tracker 的写工具各有自己那一行", () => {
+  // 产品知识的两件(issue #360):有名字的按名字,仓库关系没有名字,改写时按条目号。
+  assert.deepEqual(describeTool("write_knowledge", { kind: "term", name: "报销单", body: "一句话" }), {
+    kind: "knowledge",
+    label: "写产品知识",
+    target: "报销单",
+  });
+  assert.equal(
+    describeTool("write_knowledge", { kind: "relationship", entryId: 7, body: "一句话" }).target,
+    "条目 7",
+  );
+  assert.equal(describeTool("write_knowledge", { kind: "relationship", body: "一句话" }).target, "");
+  assert.deepEqual(describeTool("withdraw_knowledge", { entryId: 3 }), {
+    kind: "knowledge",
+    label: "撤回产品知识",
+    target: "条目 3",
+  });
+
+  // 产品 tracker 的九件(issue #361)。新写的那两件还没有号,列的是标题。
+  assert.deepEqual(describeTool("tracker_create_spec", { title: "报销单可以撤回", body: "x" }), {
+    kind: "tracker",
+    label: "写 spec",
+    target: "报销单可以撤回",
+  });
+  assert.equal(
+    describeTool("tracker_create_ticket", { spec: 4, title: "撤回接口", body: "x" }).target,
+    "spec 4 · 撤回接口",
+  );
+  assert.deepEqual(describeTool("tracker_list", {}), { kind: "tracker", label: "看 tracker", target: "" });
+  assert.equal(describeTool("tracker_read", { kind: "spec", id: 4 }).target, "spec 4");
+  assert.equal(describeTool("tracker_read", { kind: "ticket", id: 9 }).target, "#9");
+  assert.equal(describeTool("tracker_update_body", { kind: "ticket", id: 9, body: "x" }).target, "#9");
+  assert.equal(describeTool("tracker_close", { kind: "spec", id: 4 }).target, "spec 4");
+  assert.equal(describeTool("tracker_comment", { ticket: 9, body: "x" }).target, "#9");
+  assert.equal(describeTool("tracker_block", { ticket: 9, blockedBy: 8 }).target, "#9 等 #8");
+  assert.equal(describeTool("tracker_unblock", { ticket: 9, blockedBy: 8 }).target, "#9 不再等 #8");
+  // 九件都归 tracker 这一类:组头因此把它们数成一组。
+  for (const name of [
+    "tracker_create_spec",
+    "tracker_create_ticket",
+    "tracker_list",
+    "tracker_read",
+    "tracker_update_body",
+    "tracker_close",
+    "tracker_comment",
+    "tracker_block",
+    "tracker_unblock",
+  ]) {
+    assert.equal(describeTool(name, {}).kind, "tracker", name);
+  }
+});
+
 test("工具调用翻成动词加对象,失败的结果按 toolCallId 记到那次调用上", () => {
   assert.deepEqual(describeTool("read", { path: "a.ts", offset: 10, limit: 20 }), {
     kind: "read",
@@ -157,15 +209,17 @@ test("工具调用翻成动词加对象,失败的结果按 toolCallId 记到那�
   assert.equal(describeTool("find", { pattern: "**/*" }).target, "**/*");
   assert.equal(describeTool("ls", {}).target, ".");
   assert.equal(describeTool("query_knowledge", { repos: ["a/b", "c/d"] }).target, "a/b、c/d");
-  assert.deepEqual(describeTool("submit_requirement_breakdown", { items: [] }), {
-    kind: "submit",
-    label: "提交产出",
-    target: "",
-  });
   assert.deepEqual(describeTool("complete_survey", {}), {
     kind: "submit",
     label: "记下谈完了",
     target: "",
+  });
+  // 退役的产出工具没有专门那一档了(issue #366):旧会话里的那次调用退回工具名加参数摘要,
+  // 对话流照样读得下去。
+  assert.deepEqual(describeTool("submit_requirement_breakdown", { items: [] }), {
+    kind: "other",
+    label: "submit_requirement_breakdown",
+    target: "items=[]",
   });
   assert.deepEqual(describeTool("mystery", { x: 1 }), { kind: "other", label: "mystery", target: "x=1" });
 

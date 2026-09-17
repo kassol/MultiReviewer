@@ -109,8 +109,8 @@ export type OpenSessionRequest = {
   repos: readonly SessionRepoInput[];
   /**
    * 这个产品此刻的产品知识(issue #345、#360、#362)。系统提示按它渲染一份目录——定位、
-   * 术语名、生效决策标题,正文由 `query_knowledge` 按名字取;产品梳理那一段另按它列出
-   * 「已经写下的是哪些」,产出工具的退役目标也按它判。空数组即这个产品还没有产品知识。
+   * 术语名、生效决策标题,正文由 `query_knowledge` 按名字取;产品梳理那一段另按它把每条
+   * 正文整份列出来——它改写的正是这些条目。空数组即这个产品还没有产品知识。
    */
   productKnowledge: readonly SessionProductKnowledge[];
   runtimeModel: RuntimeModel;

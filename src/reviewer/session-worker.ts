@@ -85,12 +85,22 @@ function send(message: SessionWorkerMessage): void {
 }
 
 /**
- * 这次会话注册的工具清单:只读四件套、受控 git,加历史 Finding 查询(issue #338)、知识
- * 查询与知识写入 / 撤回(issue #344、#360)、会话子代理(issue #358)、提问轮次(issue #359,
- * 任何用途都可用)与产品 tracker 那一组(issue #361)。代码与文件的写工具、bash 一个都不在
- * ——知识与 tracker 那几件写的是产品实体,不是仓库。
+ * 这个用途写不写产品 tracker(CONTEXT.md 会话用途,spec #357,评审复核)。需求拆分谈定之后
+ * 写的就是一条 spec 与它的票,开放对话随时可以走进同一条流程;产品梳理谈的是这个产品是
+ * 什么,产出是产品知识条目,给它这九件只会让访谈中途拐去开票。认不出的用途不给——写代码类
+ * 用途接入时在这里多一个名字。
  */
-export function sessionTools(): string[] {
+function writesTracker(purpose: string): boolean {
+  return purpose === "requirement-breakdown" || purpose === "open-conversation";
+}
+
+/**
+ * 这次会话注册的工具清单:只读四件套、受控 git,加历史 Finding 查询(issue #338)、知识
+ * 查询与知识写入 / 撤回(issue #344、#360)、会话子代理(issue #358)与提问轮次(issue #359),
+ * 这几件任何用途都有;产品 tracker 那一组(issue #361)只给写得出 spec 与票的用途。代码与
+ * 文件的写工具、bash 一个都不在——知识与 tracker 那几件写的是产品实体,不是仓库。
+ */
+export function sessionTools(purpose: string): string[] {
   return [
     ...READ_ONLY_TOOLS,
     GIT_TOOL,
@@ -100,7 +110,7 @@ export function sessionTools(): string[] {
     WITHDRAW_KNOWLEDGE_TOOL,
     SUBAGENT_TOOL,
     ASK_QUESTION_ROUND_TOOL,
-    ...TRACKER_TOOLS,
+    ...(writesTracker(purpose) ? TRACKER_TOOLS : []),
   ];
 }
 
@@ -149,8 +159,14 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
     "",
     "You cannot edit files, write files or run shell commands: nothing you do changes the code. Read the code before you claim anything about it: the repositories above are the evidence.",
     "",
-    `This product also has a tracker: the specs it has agreed to build and the tickets they are split into. It is yours to read and write — the ${TRACKER_LIST_TOOL} tool lists it, and the other tracker tools write into it. Nobody else writes the bodies. Read it before you write anything into it.`,
-    "",
+    // tracker 那一段只给注册了这九件的用途(评审复核):产品梳理的工具面里没有它们,写着
+    // 「yours to read and write」只会让 agent 去调一件它手上没有的工具。
+    ...(writesTracker(request.purpose)
+      ? [
+          `This product also has a tracker: the specs it has agreed to build and the tickets they are split into. It is yours to read and write — the ${TRACKER_LIST_TOOL} tool lists it, and the other tracker tools write into it. Nobody else writes the bodies. Read it before you write anything into it.`,
+          "",
+        ]
+      : []),
     `The ${QUERY_FINDINGS_TOOL} tool reads what earlier review rounds reported on one of these repositories: ask it about the part of the code you are about to speak of, and you see what has already gone wrong there.`,
     "",
     // 会话子代理(issue #358):深读一段代码不必占着对话。派单参数由工具边界钉死,这里只说
@@ -302,7 +318,7 @@ async function open(request: OpenSessionRequest): Promise<void> {
 
   // 这个用途的产出工具(issue #337)。清单与定义取同一份:工具名在 `tools` 里没有那一行,
   // Pi 就不把它交给模型,两处各写一遍迟早对不上。
-  const outputTools = sessionOutputTools(request.purpose, { repos, send });
+  const outputTools = sessionOutputTools(request.purpose, { send });
   // 喂回去的那一段已经在记录表里,镜像的起点因此是它的长度——从 0 起会把整段历史再落一遍。
   // 置在建会话之前:建会话本身会追加「这次用哪个模型、哪个思考档位」两条,它们要镜像出去。
   mirrored = request.entries?.length ?? 0;
@@ -313,7 +329,7 @@ async function open(request: OpenSessionRequest): Promise<void> {
     // 记录里的图片是文件引用(issue #336),喂回 Pi 之前读文件填回 base64:文件丢了那一块
     // 换成占位文本,丢一张图不该让整段历史重建不起来。读文件在这一侧,base64 因此不过 IPC。
     ...(request.entries === undefined ? {} : { entries: inflateImageRefs(request.entries) }),
-    tools: [...sessionTools(), ...outputTools.map((tool) => tool.name)],
+    tools: [...sessionTools(request.purpose), ...outputTools.map((tool) => tool.name)],
     customTools: [
       // `read` 另放行铺进 agentDir 的那一段(issue #364):Pi 在系统提示里按绝对路径给出
       // skill 正文的位置,读不到它等于只给了个名字。搜与列目录仍只认会话根。
@@ -325,7 +341,9 @@ async function open(request: OpenSessionRequest): Promise<void> {
       sessionKnowledgeTool({ repos, send }) as unknown as ToolDefinition,
       ...(sessionKnowledgeWriteTools({ send }) as unknown as ToolDefinition[]),
       sessionQuestionRoundTool({ post: postQuestionRound }) as unknown as ToolDefinition,
-      ...(sessionTrackerTools({ send }) as unknown as ToolDefinition[]),
+      ...(writesTracker(request.purpose)
+        ? (sessionTrackerTools({ send }) as unknown as ToolDefinition[])
+        : []),
       ...(outputTools as unknown as ToolDefinition[]),
     ],
     send,

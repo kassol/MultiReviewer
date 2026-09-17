@@ -14,6 +14,7 @@ import {
   type ProductSpecRecord,
   type ProductTicketLabel,
   type ProductTicketRecord,
+  type ProductTrackerState,
   type Store,
 } from "../review/store.ts";
 import type { TrackerRequest, TrackerTarget } from "../reviewer/session-protocol.ts";
@@ -82,8 +83,8 @@ export function trackerTicketOrder(
   return ordered;
 }
 
-/** 导出的 Markdown 里这几格的中文名。 */
-const STATE_TEXT: Record<string, string> = { open: "开", closed: "关" };
+/** 导出的 Markdown 里这几格的中文名。两个取值都在,读回来不必再兜底。 */
+const STATE_TEXT: Record<ProductTrackerState, string> = { open: "开", closed: "关" };
 
 /**
  * 一条 spec 连同它的票渲染成一份 Markdown(US 27)。票按依赖顺序,每张票先列标签、状态、
@@ -93,7 +94,7 @@ export function specMarkdown(
   spec: ProductSpecRecord,
   tickets: readonly ProductTicketRecord[],
 ): string {
-  const lines = [`# ${spec.title}`, "", `状态:${STATE_TEXT[spec.state] ?? spec.state}`, ""];
+  const lines = [`# ${spec.title}`, "", `状态:${STATE_TEXT[spec.state]}`, ""];
   if (spec.body !== "") lines.push(spec.body, "");
   lines.push("## 票", "");
   if (tickets.length === 0) {
@@ -104,7 +105,7 @@ export function specMarkdown(
       `### #${ticket.id} ${ticket.title}`,
       "",
       `- 标签:${ticket.label}`,
-      `- 状态:${STATE_TEXT[ticket.state] ?? ticket.state}`,
+      `- 状态:${STATE_TEXT[ticket.state]}`,
       `- 认领人:${ticket.claimedBy ?? "无人认领"}`,
       `- 阻塞它的票:${ticket.blockedBy.length === 0 ? "无" : ticket.blockedBy.map((id) => `#${id}`).join("、")}`,
       "",

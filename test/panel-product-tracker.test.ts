@@ -6,7 +6,7 @@
  * 两票的验收:产品页读到 spec 连它的票(标签、状态、认领人、阻塞者)、一条 spec 打得开全文、
  * 导出是一份票按依赖顺序排的 Markdown、看不到这个产品的人什么都读不到、升级前的旧库开起来
  * 新表在且 tracker 为空;人做得了认领与取消认领、改标签(只有五个)、开关 spec 与票、评论,
- * 正文与标题改不动。
+ * 正文与标题改不动。取消认领与抢认领同一道闸:只有认领人自己与系统管理员放得下那一格。
  *
  * 会话经工具写 tracker 那条路在 `agent-session-subprocess.test.ts`:这里只把行落进库,压的是
  * 读侧与人的动作。
@@ -338,6 +338,51 @@ test("人认领与取消认领一张票:认领落自己的名字,别人认领着
     body: JSON.stringify({ claimed: true }),
   });
   assert.equal(retried.status, 200, await retried.text());
+  assert.equal((await ticketOf(h, created.id, ticketId)).claimedBy, "zhangsan");
+});
+
+test("取消认领不是谁都做得了:只有认领人自己与系统管理员放得下那一格", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const created = await product(h);
+  const { ticketIds } = seedSpec(h, created.id, { title: "报销单可以撤回", body: "改不了。" }, [
+    { title: "撤回接口", body: "PATCH /expenses/{id}" },
+  ]);
+  const ticketId = ticketIds[0]!;
+  const path = `/products/${created.id}/tickets/${ticketId}`;
+  const zhangsan = await scopedUser(h, "zhangsan", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+  const lisi = await scopedUser(h, "lisi", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+  const put = (cookie: string, body: unknown): Promise<Response> =>
+    fetch(`${h.serverUrl}/api${path}`, {
+      method: "PUT",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  assert.equal((await put(zhangsan, { claimed: true })).status, 200);
+
+  // 别人取消不动:一块共用的板子上,手里的活不该被随手收走。
+  const stolen = await put(lisi, { claimed: false });
+  assert.equal(stolen.status, 409);
+  assert.deepEqual(await stolen.json(), {
+    error: "这张票是别人认领的,只有认领人自己或系统管理员取消得了",
+  });
+  assert.equal((await ticketOf(h, created.id, ticketId)).claimedBy, "zhangsan");
+
+  // 认领人自己放得下。
+  assert.equal((await put(zhangsan, { claimed: false })).status, 200);
+  assert.equal((await ticketOf(h, created.id, ticketId)).claimedBy, null);
+
+  // 系统管理员收得回走了的人占住的那一格。
+  assert.equal((await put(zhangsan, { claimed: true })).status, 200);
+  const byAdmin = await h.api("PUT", path, { claimed: false });
+  assert.equal(byAdmin.status, 200, await byAdmin.text());
+  assert.equal((await ticketOf(h, created.id, ticketId)).claimedBy, null);
+
+  // 认领仍只落调用方自己的名字:系统管理员那一档只放开取消。
+  assert.equal((await put(zhangsan, { claimed: true })).status, 200);
+  const adminClaim = await h.api("PUT", path, { claimed: true });
+  assert.equal(adminClaim.status, 409);
+  assert.deepEqual(await adminClaim.json(), { error: "这张票已经有人认领了" });
   assert.equal((await ticketOf(h, created.id, ticketId)).claimedBy, "zhangsan");
 });
 

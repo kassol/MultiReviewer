@@ -58,7 +58,6 @@ function completeSurveyTool(options: {
 export function sessionOutputTools(
   purpose: string,
   options: {
-    repos: readonly string[];
     send: (message: SessionWorkerMessage) => void;
   },
 ): ToolDefinition<never, never>[] {

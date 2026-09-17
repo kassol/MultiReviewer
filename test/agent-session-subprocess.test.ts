@@ -337,10 +337,11 @@ test("发一条消息:知识目录与消息文本进了模型请求,回复与工
       ),
       "发出去的那句话没进模型请求",
     );
-    // 工具面是只读四件套、受控 git、历史 Finding 查询(issue #338)、知识的读写三件
-    // (issue #344、#360)、会话子代理(issue #358)、提问轮次(issue #359)与产品 tracker
-    // 那九件(issue #361);碰文件与 shell 的写工具一个都没注册——知识与 tracker 那几件写的
-    // 是产品实体。需求拆分那件产出工具随 issue #366 退役,清单里因此没有它。
+    // 需求拆分的工具面:只读四件套、受控 git、历史 Finding 查询(issue #338)、知识的读写
+    // 三件(issue #344、#360)、会话子代理(issue #358)、提问轮次(issue #359),再加产品
+    // tracker 那九件(issue #361)——这个用途谈定之后写的就是一条 spec 与它的票。碰文件与
+    // shell 的写工具一个都没注册;需求拆分那件产出工具随 issue #366 退役,清单里没有它。
+    // 产品梳理的工具面另一例(它没有 tracker 那九件)在下面那条产品梳理用例里。
     assert.deepEqual([...requests[0]!.tools].sort(), [
       "ask_question_round",
       "find",
@@ -922,12 +923,25 @@ test("产品梳理:提示带整份产品知识与替代说明,子代理、一轮
     assert.doesNotMatch(system[0]!.content, /^- Glossary terms:/m);
     // skill 替代说明那一段(issue #364)同在。
     assert.match(system[0]!.content, /^## The skills in this session$/m);
-    // 这个用途的工具面:完成工具在,需求拆分那件不在。
-    assert.ok(
-      requests[0]!.tools.includes(COMPLETE_SURVEY_TOOL),
-      `工具面里没有完成工具:${requests[0]!.tools.join(",")}`,
-    );
-    assert.ok(!requests[0]!.tools.includes("submit_requirement_breakdown"));
+    // 这个用途的工具面:只读四件套、git、历史 Finding 查询、知识三件、提问轮次、会话子代理
+    // 与无参的完成工具。**产品 tracker 那九件不在**(评审复核):梳理谈的是这个产品是什么,
+    // 产出是产品知识条目,给它那九件只会让访谈中途拐去开票。
+    assert.deepEqual([...requests[0]!.tools].sort(), [
+      "ask_question_round",
+      COMPLETE_SURVEY_TOOL,
+      "find",
+      "git",
+      "grep",
+      "ls",
+      "query_findings",
+      "query_knowledge",
+      "read",
+      "subagent",
+      "withdraw_knowledge",
+      "write_knowledge",
+    ]);
+    // 底座那一段 tracker 说明跟着工具面走:手上没有的工具不该在提示里写成「yours to write」。
+    assert.doesNotMatch(system[0]!.content, /This product also has a tracker/);
     // 种子消息:开场投的那一条在第一次请求的用户消息里,它要的是先派子代理再抛第一轮题。
     const seed = requests[0]!.messages.find(
       (message) => message.role === "user" && message.content.includes("Survey this product with me"),

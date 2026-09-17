@@ -1143,7 +1143,16 @@ const ADDED_COLUMNS: readonly { table: string; column: string; backfill?: string
   // 会话开在哪个 commit(issue #351):可空,补完即「这些会话没记过」,面板对它们什么都不显示。
   { table: "agent_session", column: "baselines TEXT" },
   // 产品梳理谈完的时刻(issue #365):可空,补完即「这些会话都还没谈完」。
-  { table: "agent_session", column: "completed_at TEXT" },
+  {
+    table: "agent_session",
+    column: "completed_at TEXT",
+    // 升级前就在的那几场产品梳理一律回填成「谈完了」(评审复核):它们是旧形态——由系统
+    // 开的一次交卷,创建者是系统,人发不了消息、也就调不到 `complete_survey`。不回填的话
+    // 它们永远算「没谈完」,这个产品的下一场梳理就再也开不起来。
+    backfill: `UPDATE agent_session
+                  SET completed_at = created_at
+                WHERE purpose = 'product-survey' AND completed_at IS NULL`,
+  },
 ];
 
 /**
@@ -3371,10 +3380,12 @@ export type Store = {
   setProductTicketLabel(ticketId: number, label: ProductTicketLabel): boolean;
   /**
    * 认领或取消认领一张票(CONTEXT.md 认领,issue #363)。`claimedBy` 给名字即认领,给 null
-   * 即取消。**别人认领着的票认不动**:那一档回 false,由调用方说出理由——两个人同时点认领
-   * 时后一个不该把前一个顶掉。自己认领两次与取消一张没人认领的票都算成功。
+   * 即取消;`by` 是动手的那个人。**别人认领着的票认不动、也取消不了**(评审复核):那一档
+   * 回 false,由调用方说出理由——两个人同时点认领时后一个不该把前一个顶掉,别人手里的活也
+   * 不该被随手收走。自己认领两次与取消一张没人认领的票都算成功。系统管理员那一档由调用方
+   * 判:他给 `by` 传这张票此刻的认领人。
    */
-  setProductTicketClaim(ticketId: number, claimedBy: string | null): boolean;
+  setProductTicketClaim(ticketId: number, claimedBy: string | null, by: string): boolean;
   /** 一张票上的评论,老的在前。 */
   listProductTicketComments(ticketId: number): ProductTicketCommentRecord[];
   /** 在一张票上写一条评论。人写的给 `author`,会话写的给 `sessionId`。 */
@@ -3386,10 +3397,11 @@ export type Store = {
     at: string;
   }): ProductTicketCommentRecord;
   /**
-   * 加一条阻塞边:`ticketId` 被 `blockedById` 挡着。已经有这条边即照样 true——同一条边
-   * 加两遍是同一个意思。**两张票在不在同一个产品由调用方判**:那一判要说出打回的理由。
+   * 加一条阻塞边:`ticketId` 被 `blockedById` 挡着。已经有这条边即什么都不做——同一条边
+   * 加两遍是同一个意思,因此不回结果。**两张票在不在同一个产品由调用方判**:那一判要说出
+   * 打回的理由。
    */
-  addProductTicketBlock(ticketId: number, blockedById: number): boolean;
+  addProductTicketBlock(ticketId: number, blockedById: number): void;
   /** 去掉一条阻塞边。本来就没有这条边即 false。 */
   removeProductTicketBlock(ticketId: number, blockedById: number): boolean;
   /**
@@ -5810,11 +5822,13 @@ export function openStore(dbPath: string): Store {
           )
           .run(specId, title, body, label, sessionId, at, at).lastInsertRowid,
       );
-      const productId = Number(
-        (db.prepare("SELECT product_id FROM product_spec WHERE id = ?").get(specId) ?? {
-          product_id: 0,
-        })["product_id"],
-      );
+      // spec 一定在:票是外键挂上去的,上面那句 INSERT 认不出 spec 就已经抛了。读不回来
+      // 只可能是库坏了,那时抛出来比给这张票落一个 0 号产品强——0 号产品谁都看不到。
+      const specRow = db.prepare("SELECT product_id FROM product_spec WHERE id = ?").get(specId);
+      if (specRow === undefined) {
+        throw new Error(`product_spec ${specId} 不存在,票 ${id} 归不到产品上`);
+      }
+      const productId = Number(specRow["product_id"]);
       return {
         id,
         specId,
@@ -5879,17 +5893,14 @@ export function openStore(dbPath: string): Store {
       );
     },
 
-    setProductTicketClaim(ticketId, claimedBy) {
-      // 认领那一句多一个 WHERE:别人的名字在那一格时一行都不匹配,调用方据此说出理由。
-      const run =
-        claimedBy === null
-          ? db.prepare("UPDATE product_ticket SET claimed_by = NULL WHERE id = ?").run(ticketId)
-          : db
-              .prepare(
-                `UPDATE product_ticket SET claimed_by = ?
-                  WHERE id = ? AND (claimed_by IS NULL OR claimed_by = ?)`,
-              )
-              .run(claimedBy, ticketId, claimedBy);
+    setProductTicketClaim(ticketId, claimedBy, by) {
+      // 认领与取消认领同一句 WHERE:别人的名字在那一格时一行都不匹配,调用方据此说出理由。
+      const run = db
+        .prepare(
+          `UPDATE product_ticket SET claimed_by = ?
+            WHERE id = ? AND (claimed_by IS NULL OR claimed_by = ?)`,
+        )
+        .run(claimedBy, ticketId, by);
       return Number(run.changes) > 0;
     },
 
@@ -5923,7 +5934,6 @@ export function openStore(dbPath: string): Store {
       db.prepare(
         "INSERT OR IGNORE INTO product_ticket_block (ticket_id, blocked_by_id) VALUES (?, ?)",
       ).run(ticketId, blockedById);
-      return true;
     },
 
     removeProductTicketBlock(ticketId, blockedById) {

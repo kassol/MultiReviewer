@@ -167,3 +167,20 @@ export function unassignedRepos<T extends ProductRepoRef>(
   );
   return repos.filter((repo) => !taken.has(repo.repoId));
 }
+
+/** 一条陈述拆出来的一段:`code` 为真即它写在一对反引号之间。 */
+export type StatementPart = { code: boolean; text: string };
+
+/**
+ * 一条陈述按反引号拆段(CONTEXT.md 产品知识)。agent 与人写的陈述里常拿反引号圈住标识符
+ * (`account.balance -= amount`),原样摊出反引号读起来是源码;拆出来的 `code` 段由页面按
+ * 行内代码渲染。只认反引号,不跑整套 Markdown:陈述是一句话,不该有标题与列表。
+ *
+ * **反引号没配对就整句当正文**:只有奇数个反引号时哪半是代码猜不出来,猜错会把一句话的
+ * 后半段整段渲染成代码。
+ */
+export function statementParts(text: string): StatementPart[] {
+  const parts = text.split("`");
+  if (parts.length % 2 === 0) return [{ code: false, text }];
+  return parts.map((part, index) => ({ code: index % 2 === 1, text: part }));
+}

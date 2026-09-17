@@ -190,3 +190,19 @@ test("产品梳理拿到的是整份条目,不是目录:它改写的正是这些
   // 用途那一段接在后面。
   assert.match(prompt, /^## This session: interviewing the person about this product$/m);
 });
+
+test("产品梳理的底座里没有 tracker 那一段:它的工具面上没有那九件(评审复核)", () => {
+  // 需求拆分与开放对话写 spec 与票,那一段告诉它 tracker 是它的;产品梳理写的是产品知识,
+  // 手上一件 tracker 工具都没有,提示里写着「yours to read and write」只会让它去调空气。
+  for (const purpose of ["requirement-breakdown", "open-conversation"]) {
+    assert.match(
+      sessionSystemPrompt({ ...REQUEST, purpose }),
+      /This product also has a tracker/,
+      `${purpose} 的提示里少了 tracker 那一段`,
+    );
+  }
+  assert.doesNotMatch(
+    sessionSystemPrompt({ ...REQUEST, purpose: "product-survey" }),
+    /This product also has a tracker/,
+  );
+});

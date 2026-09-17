@@ -79,8 +79,9 @@ export type AgentSessionRuntimeDeps = {
 };
 
 /**
- * 往记录表里落一条要的那两样(issue #337)。产出与定稿不起子进程、不取代码,因此不要整份
- * 运行时依赖——没配 Forge 的部署里定稿照样定得下去。
+ * 往记录表里落一条要的那两样(issue #337)。主进程自己落的那几条(基点更新、tracker 的
+ * 请求-回应)不起子进程、不取代码,因此不要整份运行时依赖——没配 Forge 的部署里它们照样
+ * 落得下去。
  */
 export type AgentSessionRecordDeps = Pick<AgentSessionRuntimeDeps, "dbPath" | "now">;
 
@@ -723,7 +724,7 @@ export function agentSessionSlot(sessionId: number): boolean {
  * 主进程自己往记录表里落一条 Pi 条目时,它的那三格底子(issue #337)。
  *
  * `parentId` 接在此刻最后一条记录上:重建时 Pi 顺着 `parentId` 上行,指空了就静默丢掉断点
- * 之前的全部历史(ADR 0031)。一次全量读记录在这里付得起——一个会话里交产出与定稿只有
+ * 之前的全部历史(ADR 0031)。一次全量读记录在这里付得起——一个会话里主进程自己落记录只有
  * 几次,而面板每打开一次读的就是同一份。
  */
 function ownEntryBase(
@@ -976,7 +977,7 @@ function answerKnowledgeQuery(
  * **恒回一条**——做不成时把原因说给模型,不然子进程那边的工具调用永远等下去。
  */
 function answerTrackerRequest(
-  deps: { dbPath: string; now?: () => number },
+  deps: AgentSessionRecordDeps,
   child: ChildProcess,
   session: AgentSessionRecord,
   requestId: string,
