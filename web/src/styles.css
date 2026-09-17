@@ -132,6 +132,16 @@
   --v8-radius-panel: 16px;
   --v8-radius-overlay: 18px;
 
+  /*
+   * 窄屏底边被占掉的那一条:移动端 Tab 栏 50px 加 iOS Home 指示条。50px 是 Tab 栏
+   * 自己的高度(21px 图标 + 3px 间距 + 15px 标签行 + 上下各 5px + 1px 顶边),它靠
+   * `sticky bottom-0` 压在内容上,谁钉在底边谁就得让开这一条。
+   *
+   * 这是底边让位的唯一事实来源:页面里的 sticky 动作条、模态浮层都引用它,不各写
+   * 各的。Tab 栏在 `sm` 以上是 `sm:hidden`,那时这一条归零。
+   */
+  --v8-bottom-chrome: calc(50px + env(safe-area-inset-bottom));
+
   /* 旧语义名。页面仍在用 bg-background / text-muted-foreground 这类 Tailwind 类,
    * 迁移期保留映射;新组件直接用 --v8-* 或 Radix 令牌,不再新增这些名字。 */
   --radius: var(--v8-radius-control);
@@ -145,6 +155,13 @@
   --ring: var(--v8-accent);
   --success: var(--v8-success);
   --warning: var(--v8-warning);
+}
+
+/* 外壳的 `sm` 断点(Tailwind 40rem):以上没有 Tab 栏,底边不用让位。 */
+@media (width >= 40rem) {
+  :root {
+    --v8-bottom-chrome: 0px;
+  }
 }
 
 /*
@@ -447,6 +464,28 @@
   }
 }
 
+/*
+ * 模态浮层的底边让位。Themes 的遮罩是 `inset: 0`,浮层在遮罩里居中,窄屏下下缘因此
+ * 落进 Tab 栏那一条——浮层自己钉底的动作条(仓库配置的保存/取消)跟着一起被压住。
+ * 把遮罩的下缘收到 Tab 栏之上,所有 Dialog 与 AlertDialog 一次让开,页面不用逐个改。
+ * 遮罩的那层底色是 `::before` 的 `position: fixed`,仍盖住整屏,不受影响。
+ *
+ * 高度上界跟着收一次:页面写的 `maxHeight="calc(100dvh - 2rem)"` 没算 Themes 自己在
+ * 浮层外面加的那圈内边距(上 `--space-6`、下 `max(--space-6, 6vh)`),算出来的浮层比
+ * 装得下的还高,底部动作条要再滚一次才够得着。`min()` 留着页面给的上界,只在它超出
+ * 可用高度时接管。
+ */
+.rt-BaseDialogOverlay {
+  bottom: var(--v8-bottom-chrome);
+}
+
+.rt-BaseDialogContent {
+  max-height: min(
+    var(--max-height, 100dvh),
+    calc(100dvh - var(--v8-bottom-chrome) - var(--space-6) - max(var(--space-6), 6vh))
+  );
+}
+
 @layer base {
   html,
   body {
@@ -468,6 +507,11 @@
     height: 100dvh;
     overflow-x: hidden;
     overflow-y: auto;
+    /* viewport-fit=cover 让页面铺到屏幕物理边缘,横屏时刘海那一侧会压住正文。
+     * 竖屏与桌面上这两个值都是 0。底边不在这里让位:那一条归 --v8-bottom-chrome,
+     * 因为 Tab 栏本身要铺到屏幕底,只有它的内容需要抬起来。 */
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
   }
 
   #root:has(#panel-main-scroll) {

@@ -2,7 +2,12 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      viewport-fit=cover:不写它,iOS 上 env(safe-area-inset-*) 恒为 0,底部 Tab 栏的
+      安全区留白等于没写,栏目被 Home 指示条压住。写了之后页面铺满整块屏,让位改由
+      styles.css 的 --v8-bottom-chrome 统一管。
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <!-- 面板只做亮色一套。不声明的话系统切暗色时浏览器会把滚动条与表单控件画成暗色。 -->
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#f5f6f8" />

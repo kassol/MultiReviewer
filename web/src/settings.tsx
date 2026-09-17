@@ -482,8 +482,12 @@ function SettingsForm({ settings }: { settings: Settings }) {
         </div>
       </section>
 
-      {/* 动作条固定在页面底部:整页只有这一处保存,脏状态与失败原因都落在这里。 */}
-      <div className="sticky bottom-0 z-10 -mx-1 px-1 pb-1">
+      {/*
+        动作条固定在页面底部:整页只有这一处保存,脏状态与失败原因都落在这里。
+        它与移动端 Tab 栏同在 `#panel-main-scroll` 里 sticky,`bottom-0` 会让它正好停在
+        Tab 栏底下;`--v8-bottom-chrome` 把它顶到 Tab 栏之上,不用再跟 z 轴较劲。
+      */}
+      <div className="sticky bottom-[var(--v8-bottom-chrome)] z-10 -mx-1 px-1 pb-1">
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-card-line bg-surface px-5 py-3 shadow-card">
           <Button
             type="submit"
