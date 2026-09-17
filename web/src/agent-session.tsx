@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
+  ArrowLeftIcon,
   CheckCircledIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -314,7 +315,9 @@ function Conversation({
       <div
         ref={scroller}
         // relative:行里的 sr-only 是绝对定位,容器不定位的话它会落到容器外,把整页撑出一段滚动。
-        className="relative flex h-full flex-col gap-3 overflow-y-auto overscroll-contain py-3"
+        // 「最新」浮标现身时末尾多留一段:浮标是绝对定位的,不留这一段它就盖在最后一条消息上
+        // (issue #384)。留白加在内容末尾、人此刻看的那一段之下,`scrollTop` 不动,视野不跳。
+        className={`relative flex h-full flex-col gap-3 overflow-y-auto overscroll-contain pt-3 ${away ? "pb-16" : "pb-3"}`}
         onScroll={(event) => {
           const el = event.currentTarget;
           setAway(el.scrollHeight - el.scrollTop - el.clientHeight > FOLLOW_THRESHOLD);
@@ -425,7 +428,7 @@ function Conversation({
         <button
           type="button"
           onClick={toBottom}
-          className="absolute right-3 bottom-3 flex items-center gap-1 rounded-full border border-card-line bg-surface px-3 py-1.5 text-md font-medium text-text-secondary shadow-card transition-colors hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+          className="absolute right-3 bottom-3 flex min-h-11 items-center gap-1 rounded-full border border-card-line bg-surface px-4 text-md font-medium text-text-secondary shadow-card transition-colors hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
         >
           <ArrowDownIcon aria-hidden />
           最新
@@ -759,19 +762,21 @@ function AssistantReply({
         <MessageTime at={item.at} />
         {/* ghost 键的 hover 底靠负外边距向四周撑出 8px,相邻两颗要留 gap-5 才不会叠在一起。
             「阅读」「复制 Markdown」与已展开状态下的「收起」只在指到卡片时现,同 `MessageTime`
-            的规则;折叠态的「展开」是找回全文的唯一入口,常显不进 hover 组。 */}
-        <div className="flex items-center gap-5">
+            的规则;折叠态的「展开」是找回全文的唯一入口,常显不进 hover 组。
+            sm 以下三颗带文字要 234px、卡里只有 226px,「复制 Markdown」被切掉一半:那一档
+            只留图标,文字用 `sr-only` 留给读屏,键距同步收一档(issue #384)。 */}
+        <div className="flex items-center gap-5 max-sm:gap-3">
           {long && !expanded ? (
             <Button type="button" variant="ghost" color="gray" size="1" onClick={onToggleExpand}>
               <ChevronDownIcon aria-hidden />
-              展开
+              <span className="max-sm:sr-only">展开</span>
             </Button>
           ) : null}
-          <div className="flex items-center gap-5 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
+          <div className="flex items-center gap-5 transition-opacity max-sm:gap-3 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
             {long && expanded ? (
               <Button type="button" variant="ghost" color="gray" size="1" onClick={onToggleExpand}>
                 <ChevronDownIcon aria-hidden />
-                收起
+                <span className="max-sm:sr-only">收起</span>
               </Button>
             ) : null}
             {long ? (
@@ -786,12 +791,12 @@ function AssistantReply({
                 }}
               >
                 <ReaderIcon aria-hidden />
-                阅读
+                <span className="max-sm:sr-only">阅读</span>
               </Button>
             ) : null}
             <Button type="button" variant="ghost" color="gray" size="1" onClick={() => void copy()}>
               {copied ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
-              {copied ? "已复制" : "复制 Markdown"}
+              <span className="max-sm:sr-only">{copied ? "已复制" : "复制 Markdown"}</span>
             </Button>
           </div>
         </div>
@@ -938,9 +943,12 @@ function ToolGroup({
   return (
     <Collapsible.Root open={expanded} onOpenChange={setExpanded} className="group/tools text-base">
       <Collapsible.Trigger asChild>
+        {/* 这一行是原生 button,styles.css 的 coarse 块只盖 Radix 控件,命中区在这里自己给:
+            26px 高的折叠行在触屏上按不准(issue #384)。判据同 DESIGN.md「触控」,看输入方式
+            不看屏宽——细指针上这一行仍是紧凑的一行。 */}
         <button
           type="button"
-          className="flex max-w-full items-center gap-1.5 rounded-md py-1 pr-2 pl-1 text-text-secondary transition-colors hover:bg-sunken hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+          className="flex max-w-full items-center gap-1.5 rounded-md py-1 pr-2 pl-1 text-text-secondary transition-colors pointer-coarse:min-h-11 hover:bg-sunken hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
         >
           {liveTool === undefined ? (
             <ChevronRightIcon
@@ -1331,7 +1339,8 @@ function BaselinesSummary({
           {baselineLabel(baselines)}
         </Button>
       </Popover.Trigger>
-      <Popover.Content size="1" align="start" width="360px">
+      {/* 宽度不写死:360px 的浮层在 360px 的屏上要出界 10px(issue #384)。给上界,窄屏跟着屏走。 */}
+      <Popover.Content size="1" align="start" maxWidth="calc(100vw - 16px)">
         <ul className="flex flex-col gap-2" aria-label="这个会话的基点">
           {baselines.map((baseline) => (
             <li
@@ -1506,6 +1515,8 @@ export function AgentSessionPage({
   const [images, setImages] = useState<string[]>([]);
   /** `xl` 以下中栏放对话还是这个会话写下的 spec 与票。 */
   const [pane, setPane] = useState<"chat" | "wrote">("chat");
+  /** `sm` 以下头部那几行元信息是否摊开(issue #384)。`sm` 起这一位不起作用,元信息常显。 */
+  const [metaOpen, setMetaOpen] = useState(false);
 
   const sessionQuery = useQuery({
     queryKey: agentSessionQueryKey(sessionId),
@@ -1687,52 +1698,93 @@ export function AgentSessionPage({
         <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex shrink-0 flex-wrap items-start justify-between gap-x-3 gap-y-2 border-b border-line pb-3">
             {/* 标题块占满剩余宽度,动作组才留在同一行;窄屏上动作只剩图标,文字给读屏。 */}
-            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <div className="flex min-w-0 flex-1 items-start gap-1.5">
               {product === undefined ? (
-                <Skeleton aria-hidden className="h-4 w-24" />
+                <Skeleton aria-hidden className="h-4 w-24 shrink-0 lg:hidden" />
               ) : (
-                // 顶栏面包屑在 lg 起已经带出产品名(DESIGN.md 7.4),这一行只在窄屏
+                // 顶栏面包屑在 lg 起已经带出产品名(DESIGN.md 7.4),这一颗只在窄屏
                 // 补一个回产品的入口——那一档左栏不显示,切会话就靠它(DESIGN.md 7.5)。
-                <Link
-                  to="/products/$productId"
-                  params={{ productId: String(productId) }}
-                  className="w-fit break-all text-sm text-text-muted transition-colors hover:text-text lg:hidden"
+                // 原先是一行 17px 高的面包屑文字,按不准也占一行;换成头部起始的键,触屏上
+                // 由 coarse 块撑到 44px,sm 以下只剩箭头,标题与徽章因此收在同一行(issue #384)。
+                <Button
+                  asChild
+                  variant="ghost"
+                  color="gray"
+                  size="2"
+                  className="shrink-0 lg:hidden"
+                  aria-label={`返回产品 ${product.name}`}
                 >
-                  {product.name}
-                </Link>
+                  <Link to="/products/$productId" params={{ productId: String(productId) }}>
+                    <ArrowLeftIcon aria-hidden />
+                    <span className="break-all max-sm:hidden">{product.name}</span>
+                  </Link>
+                </Button>
               )}
-              <div className="flex flex-wrap items-center gap-2">
-                {/* 标题优先说这个会话在聊什么(`title`,服务端从首条用户消息派生);没有
-                    标题的旧会话与开放对话退回用途名。两行封顶,`title=` 补全文,压掉了原本
-                    三行标题区吃掉的高度,给对话流多留屏幕。 */}
-                <h1
-                  className="min-w-0 line-clamp-2 break-words text-2xl font-bold tracking-[-0.015em]"
-                  title={session === undefined ? undefined : (session.title ?? PURPOSE_LABEL[session.purpose])}
+              {/* sm 以下元信息收进 disclosure:时刻、建立人、用量与基点摊开吃掉三行,390px 上
+                  对话流只剩 57% 的屏(issue #384)。sm 起照常摊开,开关不出现。 */}
+              <Collapsible.Root
+                open={metaOpen}
+                onOpenChange={setMetaOpen}
+                className="group/meta flex min-w-0 flex-1 flex-col gap-0.5"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* 标题优先说这个会话在聊什么(`title`,服务端从首条用户消息派生);没有
+                      标题的旧会话与开放对话退回用途名。两行封顶,`title=` 补全文,压掉了原本
+                      三行标题区吃掉的高度,给对话流多留屏幕。 */}
+                  <h1
+                    className="min-w-0 line-clamp-2 break-words text-2xl font-bold tracking-[-0.015em]"
+                    title={session === undefined ? undefined : (session.title ?? PURPOSE_LABEL[session.purpose])}
+                  >
+                    {session === undefined ? "Agent 会话" : (session.title ?? PURPOSE_LABEL[session.purpose])}
+                  </h1>
+                  {running ? <StatusBadge tone="running">在跑</StatusBadge> : null}
+                  {surveyDone ? <StatusBadge tone="success">已谈完</StatusBadge> : null}
+                  {/* 还没读到会话时元信息整块是空的,不摆一颗开不出东西的开关。 */}
+                  {session === undefined ? null : (
+                    <Collapsible.Trigger asChild>
+                      <IconButton
+                        type="button"
+                        variant="ghost"
+                        color="gray"
+                        size="3"
+                        className="shrink-0 sm:hidden"
+                        aria-label="会话信息"
+                      >
+                        <ChevronDownIcon
+                          aria-hidden
+                          className="transition-transform group-data-[state=open]/meta:rotate-180"
+                        />
+                      </IconButton>
+                    </Collapsible.Trigger>
+                  )}
+                </div>
+                {/* `forceMount` 让这一段一直挂着,显隐交给断点:sm 起不管开合都摊开,sm 以下
+                    才听上面那颗开关。用 JS 按屏宽算开合的话,转屏那一下还要再算一次。 */}
+                <Collapsible.Content
+                  forceMount
+                  className="flex min-w-0 flex-col gap-0.5 max-sm:data-[state=closed]:hidden"
                 >
-                  {session === undefined ? "Agent 会话" : (session.title ?? PURPOSE_LABEL[session.purpose])}
-                </h1>
-                {running ? <StatusBadge tone="running">在跑</StatusBadge> : null}
-                {surveyDone ? <StatusBadge tone="success">已谈完</StatusBadge> : null}
-              </div>
-              {session === undefined ? null : (
-                <p className="flex flex-wrap items-center gap-1.5 text-sm text-text-muted">
-                  {/* 标题已经把用途说没了,元信息行不重复它;标题缺席时 h1 本身就是用途名。
-                      克制成一行素文字,不再用 Badge 强调用途——三行封顶,用途只是其中一项元信息。 */}
-                  {session.title === null ? `${PURPOSE_LABEL[session.purpose]} · ` : null}
-                  {session.createdBy} · {localMinute(session.createdAt)} ·{" "}
-                  <UsageLine usage={session.usage} /> token
-                </p>
-              )}
-              <BaselinesSummary
-                baselines={session?.baselines ?? []}
-                mine={mine}
-                baselineBusy={baselineBusy}
-                updating={updateBaseline.isPending}
-                onUpdate={(baseline) => {
-                  setFeedback(null);
-                  setUpdating(baseline);
-                }}
-              />
+                  {session === undefined ? null : (
+                    <p className="flex flex-wrap items-center gap-1.5 text-sm text-text-muted">
+                      {/* 标题已经把用途说没了,元信息行不重复它;标题缺席时 h1 本身就是用途名。
+                          克制成一行素文字,不再用 Badge 强调用途——三行封顶,用途只是其中一项元信息。 */}
+                      {session.title === null ? `${PURPOSE_LABEL[session.purpose]} · ` : null}
+                      {session.createdBy} · {localMinute(session.createdAt)} ·{" "}
+                      <UsageLine usage={session.usage} /> token
+                    </p>
+                  )}
+                  <BaselinesSummary
+                    baselines={session?.baselines ?? []}
+                    mine={mine}
+                    baselineBusy={baselineBusy}
+                    updating={updateBaseline.isPending}
+                    onUpdate={(baseline) => {
+                      setFeedback(null);
+                      setUpdating(baseline);
+                    }}
+                  />
+                </Collapsible.Content>
+              </Collapsible.Root>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {hasWrote ? (
