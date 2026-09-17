@@ -19,6 +19,7 @@ import {
   ListBulletIcon,
   MagnifyingGlassIcon,
   PaperPlaneIcon,
+  QuestionMarkCircledIcon,
   ReaderIcon,
   StopIcon,
   TrashIcon,
@@ -27,18 +28,21 @@ import {
 import {
   Badge,
   Callout,
+  CheckboxGroup,
   DropdownMenu,
   IconButton,
   Popover,
+  RadioGroup,
   SegmentedControl,
   Select,
   Skeleton,
   Spinner,
   Text,
+  TextField,
   Tooltip,
 } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { CommitChip } from "@/components/commit-chip";
@@ -67,6 +71,7 @@ import {
   type ToolStep,
   type ConversationGroup,
 } from "@/lib/agent-session-records";
+import { roundAnswerText } from "@/lib/session-question-round";
 import {
   agentSessionQueryKey,
   PURPOSE_LABEL,
@@ -239,6 +244,7 @@ function Conversation({
   sessionId,
   running,
   onOpenOutput,
+  onAnswerRound,
   canSend,
   hasBaselines,
 }: {
@@ -246,7 +252,9 @@ function Conversation({
   running: boolean;
   /** 点一条产出:把右栏切到那一版(issue #337)。 */
   onOpenOutput: (version: number) => void;
-  /** 空态教学文案只对发得出消息的人说;发不了的人看到的是一句陈述。 */
+  /** 交一轮提问的答案(issue #359):合成的那条用户消息走与输入区同一条发消息路径。 */
+  onAnswerRound: (text: string) => Promise<void>;
+  /** 空态教学文案只对发得出消息的人说;发不了的人看到的是一句陈述。答不答得了提问也按它。 */
   canSend: boolean;
   hasBaselines: boolean;
 }) {
@@ -377,6 +385,8 @@ function Conversation({
                   item={item}
                   sessionId={sessionId}
                   onOpenOutput={onOpenOutput}
+                  canAnswerRound={canSend}
+                  onAnswerRound={onAnswerRound}
                   // 最后一组工具调用在跑时摊开着,正在跑的那一个挂在它末尾。
                   {...(item.kind === "tools" && index === groups.length - 1
                     ? { liveTool, open: running }
@@ -432,11 +442,13 @@ function Conversation({
   );
 }
 
-/** 对话流里的一行:人的气泡、agent 的正文、一组工具调用、系统一句、产出一行。 */
+/** 对话流里的一行:人的气泡、agent 的正文、一组工具调用、系统一句、产出一行、提问卡片。 */
 function ConversationRow({
   item,
   sessionId,
   onOpenOutput,
+  canAnswerRound,
+  onAnswerRound,
   liveTool,
   open = false,
   expanded = false,
@@ -445,6 +457,9 @@ function ConversationRow({
   item: ConversationGroup;
   sessionId: number;
   onOpenOutput: (version: number) => void;
+  /** 这一轮提问由谁答:发得出消息的人才答得了(与输入区同一判据)。 */
+  canAnswerRound: boolean;
+  onAnswerRound: (text: string) => Promise<void>;
   liveTool?: string | undefined;
   open?: boolean;
   /** 长回复此刻是摊开还是收着,只对 `kind === "assistant"` 有意义(`Conversation` 按 `seq` 记)。 */
@@ -488,6 +503,9 @@ function ConversationRow({
       </button>
     );
   }
+  if (item.kind === "round") {
+    return <QuestionRoundCard item={item} canAnswer={canAnswerRound} onAnswer={onAnswerRound} />;
+  }
   if (item.kind === "user") {
     return (
       <div className="group flex flex-col items-end gap-1">
@@ -515,6 +533,182 @@ function ConversationRow({
     );
   }
   return <AssistantReply item={item} expanded={expanded} onToggleExpand={onToggleExpand!} />;
+}
+
+/** 「其他」那一项的取值。用不可能与选项文字撞上的哨位,选项文字因此不必再做转义。 */
+const OTHER_OPTION = " 其他";
+
+/**
+ * 一轮提问的选择卡片(CONTEXT.md 提问轮次,issue #359)。材质与 agent 的回复卡同一份
+ * (`border-overlay-line` 的内嵌卡):它是 agent 说的一段话,只是这一段要人回答。
+ *
+ * 推荐项预先选上:一轮的成本该是「几下点击加一次提交」,同意推荐的那几题一下都不必点。
+ * 每题末尾多一项「其他」,选中即现一格自填。整轮一次提交,合成一条普通用户消息走既有的发
+ * 消息路径(`roundAnswerText`)。
+ *
+ * 三态由记录投影给出:已答的摊开所选答案,被更新的用户消息顶掉的渲染成过期且交不上去,
+ * 其余可答。
+ */
+function QuestionRoundCard({
+  item,
+  canAnswer,
+  onAnswer,
+}: {
+  item: Extract<ConversationGroup, { kind: "round" }>;
+  canAnswer: boolean;
+  onAnswer: (text: string) => Promise<void>;
+}) {
+  const questions = item.round.questions;
+  const settled = item.answers;
+  const expired = item.expired === true;
+  const [picked, setPicked] = useState<string[][]>(() =>
+    questions.map((question) => {
+      const recommended = question.options.find((option) => option.recommended);
+      return recommended === undefined ? [] : [recommended.text];
+    }),
+  );
+  const [other, setOther] = useState<string[]>(() => questions.map(() => ""));
+  const [sending, setSending] = useState(false);
+
+  /** 此刻每题答的是什么:「其他」换成自填的那一行,空的丢掉。 */
+  const answers = picked.map((chosen, index) =>
+    chosen
+      .map((value) => (value === OTHER_OPTION ? other[index]!.trim() : value))
+      .filter((text) => text !== ""),
+  );
+  const ready = answers.every((one) => one.length > 0);
+  const submit = async (): Promise<void> => {
+    setSending(true);
+    try {
+      await onAnswer(roundAnswerText(item.round, answers));
+    } finally {
+      setSending(false);
+    }
+  };
+  const answerable = settled === undefined && !expired && canAnswer;
+
+  return (
+    <div className="flex flex-col gap-4 rounded-lg border border-overlay-line bg-surface px-4 py-3">
+      <div className="flex items-center gap-2 text-sm text-text-muted">
+        <QuestionMarkCircledIcon aria-hidden />
+        <span>提问轮次 · {questions.length} 题</span>
+        {settled === undefined ? null : (
+          <Badge color="gray" size="1">
+            已回答
+          </Badge>
+        )}
+        {expired ? (
+          <Badge color="gray" size="1">
+            已过期
+          </Badge>
+        ) : null}
+      </div>
+      <ol className="flex flex-col gap-4">
+        {questions.map((question, index) => {
+          /** 选项加末尾的「其他」。单选与多选给的是同一串,只是控件不同。 */
+          const choices = [
+            ...question.options.map((option) => ({
+              value: option.text,
+              text: option.text,
+              recommended: option.recommended,
+            })),
+            { value: OTHER_OPTION, text: "其他", recommended: false },
+          ];
+          const label = (choice: (typeof choices)[number]): ReactNode => (
+            <span className="flex flex-wrap items-center gap-1.5">
+              {choice.text}
+              {choice.recommended ? (
+                <Badge color="blue" size="1">
+                  推荐
+                </Badge>
+              ) : null}
+            </span>
+          );
+          return (
+            <li key={index} className="flex min-w-0 flex-col gap-1.5">
+              <p className="text-base font-medium">
+                {index + 1}. {question.title}
+                {question.multiple ? (
+                  <span className="ml-1.5 text-sm font-normal text-text-muted">多选</span>
+                ) : null}
+              </p>
+              {question.body === "" ? null : (
+                <p className="text-md whitespace-pre-wrap text-text-secondary">{question.body}</p>
+              )}
+              {settled !== undefined ? (
+                <ul className="flex flex-col gap-1">
+                  {(settled[index] ?? []).map((answer) => (
+                    <li key={answer} className="flex items-start gap-1.5 text-md">
+                      <CheckCircledIcon aria-hidden className="mt-1 shrink-0 text-primary" />
+                      <span className="min-w-0 break-words">{answer}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : !answerable ? (
+                <ul className="flex flex-col gap-1 text-md text-text-secondary">
+                  {choices.slice(0, -1).map((choice) => (
+                    <li key={choice.value}>{label(choice)}</li>
+                  ))}
+                </ul>
+              ) : question.multiple ? (
+                <CheckboxGroup.Root
+                  value={picked[index]}
+                  onValueChange={(value) =>
+                    setPicked((prev) => prev.map((one, at) => (at === index ? value : one)))
+                  }
+                >
+                  {choices.map((choice) => (
+                    <CheckboxGroup.Item key={choice.value} value={choice.value}>
+                      {label(choice)}
+                    </CheckboxGroup.Item>
+                  ))}
+                </CheckboxGroup.Root>
+              ) : (
+                <RadioGroup.Root
+                  value={picked[index]![0] ?? ""}
+                  onValueChange={(value) =>
+                    setPicked((prev) => prev.map((one, at) => (at === index ? [value] : one)))
+                  }
+                >
+                  {choices.map((choice) => (
+                    <RadioGroup.Item key={choice.value} value={choice.value}>
+                      {label(choice)}
+                    </RadioGroup.Item>
+                  ))}
+                </RadioGroup.Root>
+              )}
+              {answerable && picked[index]!.includes(OTHER_OPTION) ? (
+                <TextField.Root
+                  size="2"
+                  className="ml-6"
+                  aria-label={`第 ${index + 1} 题的其他答案`}
+                  placeholder="写下你的答案"
+                  value={other[index] ?? ""}
+                  onChange={(event) =>
+                    setOther((prev) =>
+                      prev.map((one, at) => (at === index ? event.target.value : one)),
+                    )
+                  }
+                />
+              ) : null}
+            </li>
+          );
+        })}
+      </ol>
+      {settled !== undefined ? null : expired ? (
+        <p className="text-sm text-text-muted">这一轮被后来的消息顶掉了,答案交不上去了。</p>
+      ) : answerable ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm text-text-muted">整轮一次提交,提交后 agent 接着这一轮往下走。</p>
+          <Button type="button" disabled={!ready || sending} onClick={() => void submit()}>
+            {sending ? "提交中" : "提交这一轮"}
+          </Button>
+        </div>
+      ) : (
+        <p className="text-sm text-text-muted">这一轮由开会话的人回答。</p>
+      )}
+    </div>
+  );
 }
 
 /** 超过这个字数或换行数的回复算「长回复」(仿 Craft Agents TurnCard 的折叠阈值):文档长度的
@@ -668,6 +862,7 @@ const TOOL_ICONS: Record<ToolKind, typeof FileTextIcon> = {
   findings: CounterClockwiseClockIcon,
   knowledge: ReaderIcon,
   submit: PaperPlaneIcon,
+  round: QuestionMarkCircledIcon,
   other: GearIcon,
 };
 
@@ -1528,6 +1723,24 @@ export function AgentSessionPage({
     },
     onError: (error: Error) => setFeedback({ text: error.message, error: true }),
   });
+  /**
+   * 交一轮提问的答案(issue #359)。走与输入区同一个端点,但不经 `post`:那一份会把草稿与
+   * 已选的图片清掉——人没发那条草稿,它不该因为答了一轮题就消失。会话此刻空闲,模式取排队。
+   */
+  const answerRound = async (text: string): Promise<void> => {
+    try {
+      await send(`/agent-sessions/${sessionId}/messages`, "POST", {
+        clientMessageId: crypto.randomUUID(),
+        text,
+        mode: "followUp",
+        images: [],
+      });
+      setFeedback(null);
+      await refresh();
+    } catch (error) {
+      setFeedback({ text: (error as Error).message, error: true });
+    }
+  };
   /** 选中的图片逐张上传(issue #336)。一张失败就停:剩下的由人再选一次。 */
   const attach = useMutation({
     mutationFn: async (files: readonly File[]) => {
@@ -1779,6 +1992,7 @@ export function AgentSessionPage({
                     setOutputVersion(version);
                     setPane("output");
                   }}
+                  onAnswerRound={answerRound}
                 />
               </div>
               {/* 发消息只有创建者能做:别人读得到这个会话,发不了。 */}

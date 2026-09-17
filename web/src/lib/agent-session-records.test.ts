@@ -50,7 +50,7 @@ test("一个回合投影成用户消息、agent 回复与工具行,工具结果�
   assert.deepEqual(
     items.map((item) => [
       item.kind,
-      item.kind === "tool" ? item.name : item.kind === "output" ? item.version : item.text,
+      item.kind === "tool" ? item.name : item.kind === "output" ? item.version : "text" in item ? item.text : "",
     ]),
     [
       ["user", "把这个需求拆一下"],
@@ -129,7 +129,7 @@ test("人点停止那条系统消息成为灰底一行", () => {
   assert.deepEqual(
     items.map((item) => [
       item.kind,
-      item.kind === "tool" ? item.name : item.kind === "output" ? item.version : item.text,
+      item.kind === "tool" ? item.name : item.kind === "output" ? item.version : "text" in item ? item.text : "",
     ]),
     [
       ["assistant", "开始读"],
@@ -266,4 +266,58 @@ test("连续的工具调用折成一组,隔一条 agent 回复就分两组", () 
     [["ls", "read", "read"], "assistant", ["git"]],
   );
   assert.equal(groups[0]!.seq, 1);
+});
+
+test("提问轮次条目投成选择卡片,三态由它后面第一条用户消息定(issue #359)", () => {
+  const round = {
+    type: "custom",
+    customType: "multireviewer-session-question-round",
+    data: {
+      questions: [
+        {
+          title: "汇率取哪一天的",
+          body: "两处代码都取提交当天",
+          options: [
+            { text: "提交当天", recommended: true },
+            { text: "月末统一", recommended: false },
+          ],
+          multiple: false,
+        },
+      ],
+    },
+  };
+  const answer = ["提问轮次的回答:", "", "1. 汇率取哪一天的", "- 月末统一"].join("\n");
+
+  // 还没有下一条用户消息:可答。
+  const open = conversation([record(1, "custom", round)]);
+  assert.deepEqual(
+    open.map((item) => [item.kind, item.kind === "round" ? [item.answers, item.expired] : []]),
+    [["round", [undefined, undefined]]],
+  );
+
+  // 下一条用户消息是这一轮的答案:已答,卡片显示所选。
+  const answered = conversation([record(1, "custom", round), record(2, "message", message("user", answer))]);
+  assert.deepEqual(answered[0]!.kind === "round" ? answered[0]!.answers : undefined, [["月末统一"]]);
+  assert.equal(answered[0]!.kind === "round" ? answered[0]!.expired : true, undefined);
+
+  // 下一条用户消息是别的话:过期,答不了了。
+  const expired = conversation([
+    record(1, "custom", round),
+    record(2, "message", message("user", "先别管汇率")),
+    record(3, "message", message("user", answer)),
+  ]);
+  assert.equal(expired[0]!.kind === "round" ? expired[0]!.expired : undefined, true);
+  assert.equal(expired[0]!.kind === "round" ? expired[0]!.answers : "x", undefined);
+
+  // 形状不对的那一条认不出来:跳过,不在对话流里摊出一段 JSON。
+  assert.deepEqual(
+    conversation([
+      record(1, "custom", {
+        type: "custom",
+        customType: "multireviewer-session-question-round",
+        data: { questions: [] },
+      }),
+    ]),
+    [],
+  );
 });

@@ -33,7 +33,13 @@ import {
 import { sessionOutputTools } from "./session-output-tools.ts";
 import { purposeSystemPrompt } from "./session-purposes.ts";
 import {
+  ASK_QUESTION_ROUND_TOOL,
+  sessionQuestionRoundTool,
+  type QuestionRound,
+} from "./session-question-tool.ts";
+import {
   AGENT_SESSION_NOTE_CUSTOM_TYPE,
+  AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE,
   SYSTEM_MESSAGE_ENTRY,
   type AgentSessionMessageMode,
   type OpenSessionRequest,
@@ -54,11 +60,17 @@ function send(message: SessionWorkerMessage): void {
 }
 
 /**
- * 这次会话注册的工具清单:只读四件套、受控 git,加历史 Finding 查询(issue #338)与知识
- * 查询(issue #344)。写工具与 bash 一个都不在。
+ * 这次会话注册的工具清单:只读四件套、受控 git,加历史 Finding 查询(issue #338)、知识
+ * 查询(issue #344)与提问轮次(issue #359,任何用途都可用)。写工具与 bash 一个都不在。
  */
 export function sessionTools(): string[] {
-  return [...READ_ONLY_TOOLS, GIT_TOOL, QUERY_FINDINGS_TOOL, QUERY_KNOWLEDGE_TOOL];
+  return [
+    ...READ_ONLY_TOOLS,
+    GIT_TOOL,
+    QUERY_FINDINGS_TOOL,
+    QUERY_KNOWLEDGE_TOOL,
+    ASK_QUESTION_ROUND_TOOL,
+  ];
 }
 
 /**
@@ -152,6 +164,12 @@ let stopped = false;
 let lastPromptSeq = 0;
 /** 正在处理停止:这期间 Pi 的队列被清空,那一次 `queue_update` 不回传(队列由主进程留存)。 */
 let stopping = false;
+/**
+ * 刚抛出一轮提问(issue #359),这个回合该收尾了。工具自己中止不了这一步——它一返回 Pi 就
+ * 接着发下一次模型请求,题已经抛出去了,那一次只是对着空气自问自答。因此工具在这里留一格,
+ * `tool_execution_end` 上收掉:那时这次调用的结果已经进了会话记录,中止不会把它截在半路。
+ */
+let roundAsked = false;
 
 /**
  * 把新增的条目回传主进程。
@@ -211,6 +229,7 @@ async function open(request: OpenSessionRequest): Promise<void> {
       sessionGitTool(request.sessionRoot, repos),
       sessionFindingTool({ repos, send }) as unknown as ToolDefinition,
       sessionKnowledgeTool({ repos, send }) as unknown as ToolDefinition,
+      sessionQuestionRoundTool({ post: postQuestionRound }) as unknown as ToolDefinition,
       ...(outputTools as unknown as ToolDefinition[]),
     ],
     send,
@@ -225,6 +244,16 @@ async function open(request: OpenSessionRequest): Promise<void> {
       }
       if (event.type === "tool_execution_start") {
         send({ kind: "tool", tool: event.toolName });
+      }
+      // 刚抛出的那一轮提问到此收尾(issue #359):这次调用的结果已经进了会话记录,中止只掐掉
+      // 还没发出的下一次模型请求,`prompt()` 因此当场兑现、会话转空闲等人答题。
+      if (
+        event.type === "tool_execution_end" &&
+        event.toolName === ASK_QUESTION_ROUND_TOOL &&
+        roundAsked
+      ) {
+        roundAsked = false;
+        setImmediate(() => void endTurnAfterRound());
       }
       // 停止时清队列那一次不回传:那几条由主进程留存,下次开跑时投递。
       if (event.type === "queue_update" && !stopping) {
@@ -311,6 +340,33 @@ async function customMessage(text: string): Promise<void> {
     { customType: AGENT_SESSION_NOTE_CUSTOM_TYPE, content: text, display: true },
     { triggerTurn: false },
   );
+}
+
+/**
+ * 收下 agent 抛出的一轮提问(CONTEXT.md 提问轮次,issue #359):`custom` 条目接在这次工具
+ * 调用后面,镜像回主进程落库,面板据它渲染选择卡片。
+ *
+ * 由子进程写而不是经 IPC 交主进程:主进程直接落的条目接不上 Pi 内存里的链,下一条回复仍挂
+ * 在它前一条上,这一条成了旁支(产出卡片在线上验收时撞到过)。**不进模型上下文**(ADR 0031)
+ * ——题是模型刚自己抛的,答案由人合成的那条用户消息带回来。
+ */
+function postQuestionRound(round: QuestionRound): void {
+  if (session === undefined) return;
+  session.sessionManager.appendCustomEntry(AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE, round);
+  mirrorEntries();
+  roundAsked = true;
+}
+
+/**
+ * 抛完一轮提问就收尾这个回合(issue #359)。与人点停止的差别:不清 Pi 的队列——人在这一轮
+ * 之前排过的消息照样该投出去,那条更新的用户消息本来就让这张卡片过期。不落系统消息:对话流
+ * 里已经有那张卡片,再加一行「已中止」只是噪音。
+ */
+async function endTurnAfterRound(): Promise<void> {
+  if (session === undefined || !running) return;
+  // 与人点停止同一格:这次中止是这条链路自己要的,不是这一轮跑坏了,不该报成回合失败。
+  stopped = true;
+  await session.abort();
 }
 
 /**

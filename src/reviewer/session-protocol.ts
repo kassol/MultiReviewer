@@ -26,6 +26,12 @@ export const AGENT_SESSION_NOTE_CUSTOM_TYPE = "multireviewer-session-note";
  * 面板要把它渲染成「仓库 旧 sha → 新 sha」那一行,而不是一句提示。只有主进程写它。
  */
 export const AGENT_SESSION_BASELINE_UPDATE_CUSTOM_TYPE = "multireviewer-session-baseline-update";
+/**
+ * 提问轮次(CONTEXT.md 提问轮次,issue #359)的 `custom` 条目类型。只有子进程写它:这一轮
+ * 要接在抛出它的那次工具调用后面。`data` 就是那一轮题(`session-question-tool.ts` 的
+ * `QuestionRound`),面板按它渲染选择卡片。
+ */
+export const AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE = "multireviewer-session-question-round";
 
 /**
  * 系统消息的 `custom` 条目类型(ADR 0031,issue #334、#335)。人点停止、执行中静默判死、
