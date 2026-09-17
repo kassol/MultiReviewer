@@ -627,7 +627,7 @@ function ConfigureDialogContent({
             variant="ghost"
             color="gray"
             size={{ initial: "3", sm: "1" }}
-            className="shrink-0 max-sm:min-h-11 max-sm:min-w-11"
+            className="shrink-0"
             aria-label="关闭配置"
             onClick={onRequestClose}
           >

@@ -274,7 +274,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 组件的响应式 size 负责视觉密度，输入方式负责命中面积。两件事分开：size 看屏宽，命中面积看 `@media (pointer: coarse)`——触屏笔记本和横屏平板宽于 640px，也照样要 44px。
 
-规则只写在 `styles.css` 的 coarse 块里一处，页面不再各补各的 `max-sm:min-h-11`。覆盖范围：
+规则只写在 `styles.css` 的 coarse 块里一处，页面不再新写 `max-sm:min-h-11`：按屏宽补高是旧写法，鼠标桌面把窗口拖窄也会变 44px。存量约 100 处 `max-sm:min-h-11` 还没清完，另有清理票跟进。覆盖范围：
 
 | 控件 | 类名 | 做法 |
 | --- | --- | --- |
@@ -283,10 +283,17 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 | 菜单项 | `.rt-BaseMenuItem` | 同上。基类同时挂在 DropdownMenu 与 ContextMenu 的普通项、勾选项和子菜单入口上 |
 | Select 选项 | `.rt-SelectItem` | 同上 |
 | Tab | `.rt-BaseTabListTrigger` | 同上。激活指示条绝对定位在底边，不随高度移动 |
-| cmdk 搜索框 | `[data-slot="command-input-wrapper"]`、`[data-slot="command-input"]` | 写死 36px 高，直接给 44px 终值 |
+| cmdk 搜索框 | `[data-slot="command-input-wrapper"]`、`[data-slot="command-input"]` | `min-height: 44px`。给地板不给终值：同一行里放着 22px 的输入与 44px 的关闭键，写死高度会把这一行锁死 |
 | Checkbox、Switch | `.rt-BaseCheckboxRoot`、`.rt-SwitchRoot` | 视觉尺寸不动（16px 方框、35px 拨杆），透明 `::after` 把命中区补到 44×44。`::before` 是视觉本身，所以用 `::after` |
 | CheckboxGroup、RadioGroup 选项 | `.rt-CheckboxGroupItem`、`.rt-RadioGroupItem` | Radix 自带的一层 `<label>` 撑到 44px，整行连文字一起是命中区 |
 | 正文流里的文本链接 | `.touch-link` | 不是 Radix 控件，上面几条盖不到；撑高整行会把下面的内容推下去。同 Checkbox 的做法：透明 `::after` 把命中区补到 44px 高，链接的行高与位置都不变。给阶段详情页头的返回链接与 Finding 卡的「延续自上一处评论」用 |
+
+按元素类型选做法，同一需求只有一种写法：
+
+- Radix 控件（Themes 的 Button、IconButton、TextField、Select、菜单项、Tab）什么都不写，上表的 coarse 地板已经盖到。正文里想点的文字要凑命中区时，换成 `variant="ghost"` 的 Button 就落进这一档。
+- 正文流里的裸 `<a>` 与 Router `Link` 用 `.touch-link`：撑高整行会把下面的内容推下去，透明 `::after` 不占布局流。
+- 原生 `<button>`（不经 Themes 渲染的那几个）自己写 `pointer-coarse:min-h-11`：没有 Radix 类名，coarse 地板认不出它。
+- 不用 `max-sm:min-h-11`：它看屏宽，鼠标桌面拖窄窗口也会跟着变高。
 
 开关放在行尾时，整行包一层 `<label>`（权限行就是这样）：浏览器把 label 的点击转投给它标注的控件，Switch 渲染成 `<button>`，属于可标注元素，开关自身的键盘与焦点行为不变。
 
@@ -326,7 +333,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 `sm=640px` 是外壳切换点：以上显示顶栏第二层的 underline 导航，以下隐藏它并显示底部 Tab 栏。
 
-**底边让位**：`index.html` 的 viewport 必须带 `viewport-fit=cover`，否则 iOS 上 `env(safe-area-inset-*)` 恒为 0，所有安全区留白等于没写。窄屏底边被占掉的那一条 = Tab 栏 50px + Home 指示条，`--v8-bottom-chrome` 是它的唯一事实来源（`sm` 以上归零），钉在底边的面一律引用它，不各写各的：
+**底边让位**：`index.html` 的 viewport 必须带 `viewport-fit=cover`，否则 iOS 上 `env(safe-area-inset-*)` 恒为 0，所有安全区留白等于没写。窄屏底边被占掉的那一条 = Tab 栏 51.5px（21px 图标 + 3px 间距 + 16.5px 标签行 + 上下各 5px + 1px 顶边）+ Home 指示条，`--v8-bottom-chrome` 是它的唯一事实来源（`sm` 以上归零），钉在底边的面一律引用它，不各写各的：
 
 - 页面流里 `sticky` 的动作条把 `bottom` 设成它（审查策略保存条 `settings.tsx`），停在 Tab 栏之上，不跟 z 轴较劲。
 - 模态浮层由 `.rt-BaseDialogOverlay` 收下缘、`.rt-BaseDialogContent` 收 `max-height` 统一让开，浮层末尾那条动作条（仓库配置的保存 / 取消）因此落在 Tab 栏之上，页面不再各自处理；`maxHeight` 写 `calc(100dvh - …)` 的页面也不用逐个改。
@@ -339,7 +346,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 **头像菜单**：27px 圆形，`--v8-avatar-gradient` 加用户名首字母。桌面端的「修改密码」与「退出登录」都收在这里，不占 underline 导航的位置。
 
-**移动端 Tab 栏**：`--v8-tabbar-bg` + blur(30px) + `border-chrome-line` 顶边 + `pb-[env(safe-area-inset-bottom)]`。取前 4 个有权限的页面加一个「我的」；「我的」用 DropdownMenu 收纳装不下的页面与账户动作。每项 21px 图标 + 10px 标签，激活 `text-primary` 并输出 `aria-current="page"`，未激活 `text-text-muted`。
+**移动端 Tab 栏**：`--v8-tabbar-bg` + blur(30px) + `border-chrome-line` 顶边 + `pb-[env(safe-area-inset-bottom)]`。取前 4 个有权限的页面加一个「我的」；「我的」用 DropdownMenu 收纳装不下的页面与账户动作。每项 21px 图标 + 11px 标签，激活 `text-primary` 并输出 `aria-current="page"`，未激活 `text-text-muted`。
 
 ### 7.2 页面层级
 
@@ -489,7 +496,7 @@ Agent 会话页的中栏是一块占满视口的聊天工作台,整页不滚:`Pa
 - 取消关闭时丢弃弹窗草稿，保留底层 provider、列表项、Tab、筛选和滚动位置。
 - 提交成功后更新底层数据；是否切换当前项由操作结果明确决定。
 - 长内容只滚动 Dialog 内容区，标题和操作区保持可见。
-- 多步配置 Dialog 在 `sm` 以下顶靠视口上沿，不居中：Themes 默认把浮层摆在可滚动容器的中间，只有三四个字段的一步整块吊在屏幕中段，底部动作区正好落进软键盘升起后被盖住的那一段。顶靠后动作区紧跟正文，停在键盘上沿之上；宽屏没有软键盘，仍然居中。命令面板按同一个道理顶靠。这就是 Themes 的 `align="start"`，但那个 prop 不是响应式的，断点那一半写在 `styles.css` 里（与 `.rt-BaseDialogOverlay` 收下缘同一处，页面不自己覆盖浮层内部 DOM），靠浮层根节点的 `id` 认出是哪一个。
+- 多步配置 Dialog 在 `sm` 以下顶靠视口上沿，不居中：Themes 默认把浮层摆在可滚动容器的中间，只有三四个字段的一步整块吊在屏幕中段，底部动作区正好落进软键盘升起后被盖住的那一段。顶靠后动作区紧跟正文，停在键盘上沿之上；宽屏没有软键盘，仍然居中。命令面板按同一个道理顶靠。这就是 Themes 的 `align="start"`，但那个 prop 不是响应式的，断点那一半写在 `styles.css` 里（与 `.rt-BaseDialogOverlay` 收下缘同一处，页面不自己覆盖浮层内部 DOM），靠浮层根节点的 `data-dock-top` 属性认出是哪一个——要顶靠的浮层挂上这个属性即可，`styles.css` 不为某个组件的 DOM id 各写一条。
 - 打开后聚焦首个有效操作，关闭后焦点返回触发按钮。受控浮层通过 `useDialogReturnFocus` 在触发事件发生时记录真实元素；触发元素被卸载时返回调用方提供的稳定入口。后备入口用 `visibleNavCurrentItem()`：桌面导航与移动 Tab 栏同时在 DOM 里、只靠断点显隐，`[aria-current='page']` 会命中两个，而 `focus()` 对 `display: none` 的那个静默无效。
 
 ### 10.2 运行详情面板
@@ -624,5 +631,5 @@ Calendar 与 Command 留在 `components/ui` 作为第三方行为适配层，只
 - URL 可表达的页面状态写入路由；临时编辑状态留在组件内。
 - 页面组件使用 `React.lazy + Suspense` 按路由分块；同一页面模块的子路由共用一个动态模块入口。
 - 新组件必须提供可访问名称、键盘行为、完整状态和响应式验证。
-- 前端不做程序化测试（issue #26 的测试决策）：逻辑压在服务端可测的注入变量与 API 契约上；视觉与交互由部署实例的端到端验收覆盖。
+- `src/lib/` 的纯函数带单测（`pnpm --filter @multireviewer/web test`）；组件与视觉靠手测，由部署实例的端到端验收覆盖。
 - 视觉改动在部署实例使用 ego-browser 完成端到端验收。

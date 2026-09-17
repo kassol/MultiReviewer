@@ -510,8 +510,8 @@ function SessionRail({
                   params={{ productId: String(productId), sessionId: String(session.id) }}
                 >
                   {/*
-                    标题走正文基准 13.5px、两行才截断(issue #383):`title` 是首条用户消息,
-                    一行 12px 的 `truncate` 只读得到开头半句,分不出两场会话谈的是不是同一件
+                    标题走正文基准 15px、两行才截断(issue #383):`title` 是首条用户消息,
+                    一行 13px 的 `truncate` 只读得到开头半句,分不出两场会话谈的是不是同一件
                     事。`break-all` 保证没有空格的长串也在栏宽内折行,不把卡撑出横向滚动。
                   */}
                   <span className="flex items-center gap-2">

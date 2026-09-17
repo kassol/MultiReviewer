@@ -2,6 +2,7 @@ import * as React from "react";
 import { QuestionMarkCircledIcon } from "@radix-ui/react-icons";
 import { IconButton, Popover, Text, Tooltip } from "@radix-ui/themes";
 
+import { useMediaQuery } from "@/lib/use-media-query";
 import { cn } from "@/lib/utils";
 
 type HelpTooltipProps = {
@@ -11,27 +12,13 @@ type HelpTooltipProps = {
   className?: string;
 };
 
-const coarsePointerQuery = window.matchMedia("(pointer: coarse)");
-
-function subscribeCoarsePointer(onChange: () => void) {
-  coarsePointerQuery.addEventListener("change", onChange);
-  return () => coarsePointerQuery.removeEventListener("change", onChange);
-}
-
-/**
- * 输入方式会变(平板接上鼠标、笔记本合盖翻成平板),所以订阅这条查询而不是只读一次。
- */
-function useCoarsePointer() {
-  return React.useSyncExternalStore(subscribeCoarsePointer, () => coarsePointerQuery.matches);
-}
-
 export function HelpTooltip({
   content,
   label = "查看说明",
   side = "top",
   className,
 }: HelpTooltipProps) {
-  const coarsePointer = useCoarsePointer();
+  const coarsePointer = useMediaQuery("(pointer: coarse)");
   const trigger = (
     <IconButton
       type="button"
@@ -40,7 +27,7 @@ export function HelpTooltip({
       variant="ghost"
       color="gray"
       radius="full"
-      className={cn("shrink-0 max-sm:min-h-11 max-sm:min-w-11", className)}
+      className={cn("shrink-0", className)}
     >
       <QuestionMarkCircledIcon aria-hidden="true" />
     </IconButton>

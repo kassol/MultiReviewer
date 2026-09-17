@@ -1,10 +1,11 @@
 import { CalendarIcon, ChevronDownIcon } from "@radix-ui/react-icons";
 import { Popover } from "@radix-ui/themes";
-import { useState, useSyncExternalStore } from "react";
+import { useState } from "react";
 
 import { Button } from "@/components/theme-button";
 import { Calendar } from "@/components/ui/calendar";
 import { localDay } from "@/lib/time";
+import { useMediaQuery } from "@/lib/use-media-query";
 
 export type DateRangeValue = Readonly<{
   from: string;
@@ -23,14 +24,6 @@ type DateRangePickerProps = {
  */
 const NARROW_SCREEN = "(max-width: 639.98px)";
 
-function subscribeNarrowScreen(onChange: () => void): () => void {
-  const query = window.matchMedia(NARROW_SCREEN);
-  query.addEventListener("change", onChange);
-  return () => {
-    query.removeEventListener("change", onChange);
-  };
-}
-
 /** 日历日期与 `YYYY-MM-DD` 互转时只读本地字段，避免 UTC 偏移所选日期。 */
 function dayDate(day: string): Date | undefined {
   const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
@@ -40,11 +33,7 @@ function dayDate(day: string): Date | undefined {
 
 export function DateRangePicker({ value, onChange }: DateRangePickerProps) {
   const [open, setOpen] = useState(false);
-  const narrow = useSyncExternalStore(
-    subscribeNarrowScreen,
-    () => window.matchMedia(NARROW_SCREEN).matches,
-    () => false,
-  );
+  const narrow = useMediaQuery(NARROW_SCREEN);
   const fromDate = dayDate(value.from);
   const fromLabel = value.from === "" ? "起始不限" : value.from;
   const toLabel = value.to === "" ? "至今" : value.to;

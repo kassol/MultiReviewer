@@ -303,7 +303,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
             </div>
             <Link
               to="/credentials"
-              className="flex items-center border-t border-line px-3 py-2 text-xs font-medium hover:bg-sunken max-sm:min-h-11"
+              className="touch-link flex items-center border-t border-line px-3 py-2 text-xs font-medium hover:bg-sunken"
             >
               配置或修复服务
             </Link>

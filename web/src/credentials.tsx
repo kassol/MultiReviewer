@@ -626,8 +626,8 @@ export function ModelServiceSetupLayout() {
       <Dialog.Root open onOpenChange={(open) => { if (!open) closeSetup(); }}>
         <Dialog.Content
           // 窄屏顶靠视口的挂点。Themes 的 `align` prop 不是响应式的,断点那一半写在
-          // styles.css 里,靠这个 id 找到向导外面那层居中容器(issue #380)。
-          id="model-service-setup-dialog"
+          // styles.css 里,靠这个属性找到向导外面那层居中容器(issue #380)。
+          data-dock-top
           maxWidth={{ initial: "100%", sm: "720px" }}
           maxHeight="calc(100dvh - 2rem)"
           size={{ initial: "2", sm: "3" }}

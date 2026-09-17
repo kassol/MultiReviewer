@@ -69,13 +69,14 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
     assert.match(javascript, /跟随 Gitea 默认/);
     // 触控命中区(issue #370):44px 地板只写在设计系统层这一处,页面不再各补各的。
     // 这里断言的是产物,不是源码——规则要真的落进未分层的那段 CSS 才盖得过 Radix。
-    const coarse = stylesheet.slice(stylesheet.indexOf("@media(pointer:coarse){.radix-themes"));
-    assert.ok(coarse.length > 0, "未分层的粗指针规则块");
+    const coarseStart = stylesheet.indexOf("@media(pointer:coarse){.radix-themes");
+    assert.notEqual(coarseStart, -1, "未分层的粗指针规则块");
+    const coarse = stylesheet.slice(coarseStart);
     for (const covered of [".rt-BaseMenuItem", ".rt-SelectItem", ".rt-BaseTabListTrigger"]) {
       assert.match(coarse, new RegExp(`${covered.replace(".", "\\.")},?[^{]*\\{min-height:44px\\}`), covered);
     }
     assert.match(coarse, /\.rt-Button,\.rt-IconButton\)\{min-width:44px\}/);
-    assert.match(coarse, /\[data-slot=command-input\]\)\{height:44px\}/);
+    assert.match(coarse, /\[data-slot=command-input\]\)\{min-height:44px\}/);
     // Checkbox 与 Switch 只长命中区不长视觉:补的是伪元素,不是控件自己的尺寸。
     assert.match(coarse, /:where\(\.rt-BaseCheckboxRoot,\.rt-SwitchRoot\):after\{content:""/);
     assert.doesNotMatch(coarse, /:where\(\.rt-BaseCheckboxRoot,\.rt-SwitchRoot\)\{/);
@@ -97,13 +98,14 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
       assert.match(source, /wrap-anywhere font-mono/);
     }
     assert.match(stylesheet, /\.wrap-anywhere\{overflow-wrap:anywhere\}/);
-    // 配置模型服务向导窄屏顶靠(issue #380):居中会把页脚推进软键盘盖住的那一段。
+    // 窄屏顶靠(issue #380):居中会把页脚推进软键盘盖住的那一段。规则按 `data-dock-top`
+    // 这个 opt-in 属性认,不按某个组件的 DOM id 认;配置模型服务向导是目前唯一挂它的浮层。
     // 与 44px 地板同在未分层的那一段,Themes 的居中写在 radix 层里,盖得过。
     assert.match(
       coarse,
-      /\(min-width:40rem\)\{\.rt-BaseDialogScrollPadding:has\(>#model-service-setup-dialog\)\{margin-top:0\}/,
+      /\(min-width:40rem\)\{\.rt-BaseDialogScrollPadding:has\(>\[data-dock-top\]\)\{margin-top:0\}/,
     );
-    assert.match(javascript, /id:"model-service-setup-dialog"/);
+    assert.match(javascript, /"data-dock-top":!0/);
   } finally {
     rmSync(dist, { recursive: true, force: true });
   }

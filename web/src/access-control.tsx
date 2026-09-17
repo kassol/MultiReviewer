@@ -377,7 +377,7 @@ export function AccessControlPage() {
                               variant="ghost"
                               aria-label={`${user.username} 的角色`}
                               color={user.roleId === null ? "amber" : "gray"}
-                              className="max-w-44 max-sm:min-h-11"
+                              className="max-w-44"
                             />
                             <Select.Content position="popper" color="gray">
                               <Select.Item value="unassigned">未分配角色</Select.Item>
@@ -416,7 +416,6 @@ export function AccessControlPage() {
                                 variant="ghost"
                                 color="gray"
                                 size={{ initial: "3", sm: "1" }}
-                                className="max-sm:min-h-11 max-sm:min-w-11"
                                 aria-label={`${user.username} 的操作`}
                                 onClick={(event) => { confirmFallbackId.current = "create-user-trigger"; confirmFocus.captureTrigger(event); }}
                               >

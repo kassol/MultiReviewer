@@ -133,14 +133,20 @@
   --v8-radius-overlay: 18px;
 
   /*
-   * 窄屏底边被占掉的那一条:移动端 Tab 栏 50px 加 iOS Home 指示条。50px 是 Tab 栏
-   * 自己的高度(21px 图标 + 3px 间距 + 15px 标签行 + 上下各 5px + 1px 顶边),它靠
-   * `sticky bottom-0` 压在内容上,谁钉在底边谁就得让开这一条。
+   * 窄屏底边被占掉的那一条:移动端 Tab 栏 51.5px 加 iOS Home 指示条。51.5px 是 Tab 栏
+   * 自己的高度(21px 图标 + 3px 间距 + 16.5px 标签行 + 上下各 5px + 1px 顶边),它靠
+   * `sticky bottom-0` 压在内容上,谁钉在底边谁就得让开这一条。标签行是 11px 字号继承
+   * body 的 1.5 行高(issue #371 把标签从 10px 提到 11px,这一条跟着从 50px 改过来);
+   * Tab 项自己的 `min-h-11` 没有参与,44px 低于这 50.5px 的内容行。
+   *
+   * 量法:390×844、`pointer: coarse` 下取 `nav[aria-label="面板导航"]` 里 rect 高度非 0
+   * 的那一个(桌面那条同名 nav 在窄屏是 `max-sm:hidden`,高 0),它的 `getBoundingClientRect()
+   * .height` 应等于 51.5 + `env(safe-area-inset-bottom)`。
    *
    * 这是底边让位的唯一事实来源:页面里的 sticky 动作条、模态浮层都引用它,不各写
    * 各的。Tab 栏在 `sm` 以上是 `sm:hidden`,那时这一条归零。
    */
-  --v8-bottom-chrome: calc(50px + env(safe-area-inset-bottom));
+  --v8-bottom-chrome: calc(51.5px + env(safe-area-inset-bottom));
 
   /* 旧语义名。页面仍在用 bg-background / text-muted-foreground 这类 Tailwind 类,
    * 迁移期保留映射;新组件直接用 --v8-* 或 Radix 令牌,不再新增这些名字。 */
@@ -482,10 +488,11 @@
 
   /*
    * 命令面板与阶段文件筛选的搜索框来自 cmdk,没有 Radix 类名,按它自己的 data-slot 认。
-   * 外框和输入都写死 36px 高,`min-height` 压不过,直接给终值。
+   * 给地板而不是终值:外框在 issue #375 已从 `h-9` 改成 `min-h-9`,同一行里放着 22px 的
+   * 输入与 44px 的关闭键,写死 44px 会把这一行重新锁死,把那次改动抵消掉。
    */
   :where([data-slot="command-input-wrapper"], [data-slot="command-input"]) {
-    height: 44px;
+    min-height: 44px;
   }
 
   /*
@@ -573,9 +580,12 @@
  * 那一段;顶靠之后页脚紧跟正文,停在键盘上沿之上。命令面板在 issue #375 上按同一个道理
  * 改过。这是 Themes 的 `align="start"`,但那个 prop 不是响应式的,断点只能自己写一次;
  * 宽屏没有软键盘,仍然居中。
+ *
+ * 按 `data-dock-top` 认而不按某个组件的 DOM id 认:下一个被软键盘挡住页脚的浮层给
+ * `Dialog.Content` 挂上这个属性就行,不用再往这里加一条选择器。
  */
 @media (width < 40rem) {
-  .rt-BaseDialogScrollPadding:has(> #model-service-setup-dialog) {
+  .rt-BaseDialogScrollPadding:has(> [data-dock-top]) {
     margin-top: 0;
   }
 }
