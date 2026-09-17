@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  AGENT_SESSION_SUBAGENT_ENTRY,
   conversation,
   describeTool,
   groupConversation,
@@ -14,6 +15,7 @@ import {
   SYSTEM_MESSAGE_ENTRY,
   toolSummary,
   type AgentSessionRecord,
+  type ConversationItem,
 } from "./agent-session-records.ts";
 
 const ZERO = {
@@ -30,6 +32,14 @@ function record(seq: number, type: string, entry: unknown): AgentSessionRecord {
 
 function message(role: string, content: unknown): unknown {
   return { type: "message", message: { role, content } };
+}
+
+/** 一项的人读摘要:工具看名字,产出看版本,子代理看派了几趟,其余看正文。 */
+function summary(item: ConversationItem): string | number {
+  if (item.kind === "tool") return item.name;
+  if (item.kind === "output") return item.version;
+  if (item.kind === "subagent") return item.runs.length;
+  return "text" in item ? item.text : "";
 }
 
 test("一个回合投影成用户消息、agent 回复与工具行,工具结果不进对话流", () => {
@@ -50,7 +60,7 @@ test("一个回合投影成用户消息、agent 回复与工具行,工具结果�
   assert.deepEqual(
     items.map((item) => [
       item.kind,
-      item.kind === "tool" ? item.name : item.kind === "output" ? item.version : "text" in item ? item.text : "",
+      summary(item),
     ]),
     [
       ["user", "把这个需求拆一下"],
@@ -129,7 +139,7 @@ test("人点停止那条系统消息成为灰底一行", () => {
   assert.deepEqual(
     items.map((item) => [
       item.kind,
-      item.kind === "tool" ? item.name : item.kind === "output" ? item.version : "text" in item ? item.text : "",
+      summary(item),
     ]),
     [
       ["assistant", "开始读"],
@@ -254,6 +264,97 @@ test("基点更新投成系统消息那一行:仓库、旧短 sha → 新短 sha
   assert.deepEqual(items.map((item) => [item.kind, "text" in item ? item.text : ""]), [
     ["system", "基点更新 acme/widgets(main) aaaaaaa → bbbbbbb"],
   ]);
+});
+
+test("会话子代理派单投成一项,派单那次工具调用读成「派子代理 + 任务」(issue #358)", () => {
+  const items = conversation([
+    record(
+      1,
+      "message",
+      message("assistant", [
+        {
+          type: "toolCall",
+          id: "c1",
+          name: "subagent",
+          arguments: {
+            agent: "explore",
+            tasks: [{ task: "报销单的状态机在哪" }, { task: "撤回走哪个接口" }],
+          },
+        },
+      ]),
+    ),
+    record(2, "custom", {
+      customType: AGENT_SESSION_SUBAGENT_ENTRY,
+      data: {
+        runs: [
+          {
+            task: "报销单的状态机在哪",
+            status: "done",
+            steps: 1,
+            calls: [{ name: "read", args: { path: "acme/widgets/state.ts" } }],
+            conclusion: "state.ts:12 起是状态机",
+          },
+          {
+            task: "撤回走哪个接口",
+            status: "failed",
+            steps: 0,
+            calls: [],
+            conclusion: "没找到",
+          },
+        ],
+      },
+    }),
+  ]);
+
+  // 派单那一次仍是一行工具调用:动词加它派出去的那几句任务。
+  assert.deepEqual(items.map((item) => item.kind), ["tool", "subagent"]);
+  const call = items[0]!;
+  assert.ok(call.kind === "tool");
+  assert.deepEqual(call.step, {
+    kind: "subagent",
+    label: "派子代理",
+    target: "报销单的状态机在哪、撤回走哪个接口",
+  });
+
+  // 条目那一项带着两趟的任务、状态、步数、工具调用与结论。
+  const dispatched = items[1]!;
+  assert.ok(dispatched.kind === "subagent");
+  assert.deepEqual(
+    dispatched.runs.map((run) => [run.task, run.status, run.steps, run.conclusion]),
+    [
+      ["报销单的状态机在哪", "done", 1, "state.ts:12 起是状态机"],
+      ["撤回走哪个接口", "failed", 0, "没找到"],
+    ],
+  );
+  assert.deepEqual(dispatched.runs[0]!.calls.map((one) => one.name), ["read"]);
+});
+
+test("子代理条目没有 runs 或形状认不出时跳过,不在对话流里摊成 JSON", () => {
+  const items = conversation([
+    record(1, "custom", { customType: AGENT_SESSION_SUBAGENT_ENTRY, data: { runs: [] } }),
+    record(2, "custom", { customType: AGENT_SESSION_SUBAGENT_ENTRY, data: {} }),
+    record(3, "custom", { customType: AGENT_SESSION_SUBAGENT_ENTRY }),
+  ]);
+  assert.deepEqual(items, []);
+});
+
+test("子代理那一项不与相邻的工具调用折进同一组(issue #358)", () => {
+  const tool = (seq: number, name: string) =>
+    ({ kind: "tool", seq, at: "t", id: `c${seq}`, name, step: describeTool(name, {}) }) as const;
+  const groups = groupConversation([
+    tool(1, "read"),
+    {
+      kind: "subagent",
+      seq: 2,
+      at: "t",
+      runs: [{ task: "查一下", status: "done", steps: 0, calls: [], conclusion: "查完了" }],
+    },
+    tool(3, "read"),
+  ]);
+  assert.deepEqual(
+    groups.map((group) => (group.kind === "tools" ? group.calls.length : group.kind)),
+    [1, "subagent", 1],
+  );
 });
 
 test("连续的工具调用折成一组,隔一条 agent 回复就分两组", () => {

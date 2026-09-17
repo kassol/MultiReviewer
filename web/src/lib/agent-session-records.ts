@@ -45,6 +45,21 @@ export const AGENT_SESSION_OUTPUT_CUSTOM_TYPE = "multireviewer-session-output";
 /** 基点更新那一条 `custom_message` 的类型(issue #356),与服务端同值。 */
 export const AGENT_SESSION_BASELINE_UPDATE_CUSTOM_TYPE = "multireviewer-session-baseline-update";
 
+/**
+ * 一次会话子代理派单那条 `custom` 条目的类型(issue #358),与服务端同值。子会话的过程只在
+ * 子进程那一侧读得到,跑完当场落成这一条;面板的嵌套卡片从它重画。
+ */
+export const AGENT_SESSION_SUBAGENT_ENTRY = "multireviewer-session-subagent";
+
+/** 一次派单里一个子代理跑的那一趟。字段与 `src/reviewer/session-subagent.ts` 那一份同形。 */
+export type SubagentRun = {
+  task: string;
+  status: "running" | "done" | "failed";
+  steps: number;
+  calls: { name: string; args: unknown; error?: string }[];
+  conclusion: string;
+};
+
 /** 提问轮次那一条 `custom` 的类型(CONTEXT.md 提问轮次,issue #359),与服务端同值。 */
 export const AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE = "multireviewer-session-question-round";
 
@@ -61,6 +76,11 @@ export type ConversationItem =
   | { kind: "tool"; seq: number; at: string; id: string; name: string; step: ToolStep; error?: string }
   /** agent 交出了一版产出。点开把右栏切到这一版。 */
   | { kind: "output"; seq: number; at: string; version: number }
+  /**
+   * 一次会话子代理派单(issue #358)。一次调用可以并行派几趟,因此是数组:面板把它们并排
+   * 成几张嵌套卡片。
+   */
+  | { kind: "subagent"; seq: number; at: string; runs: SubagentRun[] }
   /** 定稿与换版那一句。进了模型上下文,所以它也该在对话里看得见。 */
   | { kind: "note"; seq: number; at: string; text: string }
   /**
@@ -108,6 +128,7 @@ export type ToolKind =
   | "git"
   | "findings"
   | "knowledge"
+  | "subagent"
   | "submit"
   | "round"
   | "other";
@@ -155,6 +176,18 @@ export function describeTool(name: string, args: unknown): ToolStep {
         label: "查产品知识",
         target: Array.isArray(a.repos) ? a.repos.map(String).join("、") : "",
       };
+    case "subagent": {
+      // 派单可以是一句 `task`,也可以是 `tasks[]` 几句一起派(issue #358)。过程与结论在
+      // 紧跟着的那张嵌套卡片上,这一行只说派了什么。
+      const tasks = Array.isArray(a.tasks)
+        ? a.tasks.map((task: unknown) => str((task as { task?: unknown } | null)?.task))
+        : [str(a.task)];
+      return {
+        kind: "subagent",
+        label: "派子代理",
+        target: tasks.filter((task) => task !== "").join("、"),
+      };
+    }
     case "ask_question_round":
       // 题目本身紧跟着以卡片出现在对话流里,这一行只报「问了几题」(issue #359)。
       return {
@@ -253,6 +286,20 @@ export function conversation(records: readonly AgentSessionRecord[]): Conversati
         typeof entry.data?.version === "number"
       ) {
         items.push({ kind: "output", seq: record.seq, at: record.at, version: entry.data.version });
+        continue;
+      }
+      // 会话子代理派单那一条(issue #358):跑过的那几趟原样带出来,面板并排成嵌套卡片。
+      // 认不出形状的一律跳过,与别的 custom 条目同律。
+      if (entry?.customType === AGENT_SESSION_SUBAGENT_ENTRY) {
+        const runs = (entry.data as { runs?: unknown } | undefined)?.runs;
+        if (Array.isArray(runs) && runs.length > 0) {
+          items.push({
+            kind: "subagent",
+            seq: record.seq,
+            at: record.at,
+            runs: runs as SubagentRun[],
+          });
+        }
         continue;
       }
       if (entry?.customType === AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE) {

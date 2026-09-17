@@ -72,6 +72,15 @@ type Record = {
   usage: ReviewerUsage;
 };
 
+/** 会话子代理条目里的一趟(issue #358)。与 `src/reviewer/session-subagent.ts` 那一份同形。 */
+type SubagentRunRecord = {
+  task: string;
+  status: string;
+  steps: number;
+  calls: { name: string; error?: string }[];
+  conclusion: string;
+};
+
 /** 起 harness 时可以拨动的那几样(issue #335)。省略即取服务默认值。 */
 type SessionHarnessOptions = {
   /** 空闲回收门槛(毫秒)。验「回收后再发消息从记录重建」的用例拨到毫秒级。 */
@@ -326,7 +335,8 @@ test("发一条消息:知识目录与消息文本进了模型请求,回复与工
       "发出去的那句话没进模型请求",
     );
     // 工具面是只读四件套、受控 git、历史 Finding 查询(issue #338)、知识查询(issue #344)、
-    // 提问轮次(issue #359),加这个用途的产出工具(issue #337);写工具一个都没注册。
+    // 会话子代理(issue #358)与提问轮次(issue #359),加这个用途的产出工具(issue #337);
+    // 写工具一个都没注册。
     assert.deepEqual([...requests[0]!.tools].sort(), [
       "ask_question_round",
       "find",
@@ -336,6 +346,7 @@ test("发一条消息:知识目录与消息文本进了模型请求,回复与工
       "query_findings",
       "query_knowledge",
       "read",
+      "subagent",
       "submit_requirement_breakdown",
     ]);
 
@@ -1450,8 +1461,10 @@ test("执行中连续静默即判死:记一条系统消息,下次发消息重建
     { text: "重建之后的回答", usage: { input: 11, output: 2 } },
   ];
   const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns, {
-    // 比起子进程那段准备时间要宽:闸计的是开跑之后的连续静默。
-    silenceTimeoutMs: 3000,
+    // 比起子进程那段准备时间要宽:闸计的是开跑之后的连续静默,而准备那一段里子进程一条
+    // IPC 都不发——备工作树、建 Pi 会话,还要由 jiti 加载 vendor 的 pi-subagents(会话
+    // 子代理,issue #358)。取一个明显宽于它的数;线上那一格是 5 分钟。
+    silenceTimeoutMs: 15_000,
   });
   try {
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
@@ -1807,6 +1820,88 @@ test("更新基点回收活着的子进程:下一条消息重建,系统提示带
     assert.match(bodyOf(requests[1]!), new RegExp(`${h.repo.baseSha.slice(0, 7)}.*${moved.slice(0, 7)}`));
     // 历史照样续上。
     assert.match(bodyOf(requests[1]!), /第一轮/);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+/**
+ * 会话子代理的真实 SDK 回归(issue #358),先例是 `reviewer-evidence-session.test.ts`:
+ * `POST /messages → 常驻子进程 → pi-subagents → 子会话 → transcript → 会话记录`,整条走
+ * 一遍。钉的是桩测不到的几件事——子代理的工具面恰是只读四件套(派单工具本身不在其中)、
+ * 出会话根的路径被拒、它读到的文件内容回到了它自己的模型请求里,以及这一趟的任务、状态、
+ * 步数、工具调用与结论作一条记录落进了库,回收重建之后仍在。
+ */
+const SUBAGENT_TURNS: StubTurn[] = [
+  {
+    text: "这一段得深读,派个子代理",
+    toolCall: {
+      name: "subagent",
+      args: { agent: "explore", task: "answer.ts 的第 1 行写的是什么" },
+    },
+    usage: { input: 40, output: 10 },
+  },
+  // 子会话第一步:一次出根的 grep 与一次正常的读。出根那一次由铺进 agentDir 的只读四件套
+  // 扩展拒掉,子会话照常往下走。
+  {
+    text: "先看看系统目录",
+    toolCall: { name: "grep", args: { pattern: "root", path: "/etc" } },
+    usage: { input: 12, output: 4 },
+  },
+  {
+    text: "读目标文件",
+    toolCall: {
+      name: "read",
+      args: { path: `${GITEA_REPO.owner}/${GITEA_REPO.repo}/src/answer.ts` },
+    },
+    usage: { input: 12, output: 4 },
+  },
+  { text: "answer.ts:1 写着 export const answer = 2;", usage: { input: 18, output: 8 } },
+  { text: "子代理带回来了:answer 是 2", usage: { input: 20, output: 6 } },
+];
+
+test("会话里派一个子代理:工具面是只读四件套、出根被拒,过程与结论落成会话记录(issue #358)", async () => {
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(SUBAGENT_TURNS);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await requestsAtLeast(requests, 5);
+    await idle(h, cookie, sessionId);
+
+    // 父会话的工具面有派单工具;子会话的恰是只读四件套——派单工具、git、两种查询与
+    // pi-subagents 自己的 contact_supervisor 一个都不在。单层靠工具面构造出来。
+    assert.ok(requests[0]!.tools.includes("subagent"));
+    assert.deepEqual([...requests[1]!.tools].sort(), ["find", "grep", "ls", "read"]);
+
+    // 子会话第三次请求里那条工具返回就是文件内容:证明 read 真读到了会话根里的工作树。
+    const readResult = requests[3]!.messages.findLast((message) => message.role === "tool");
+    assert.ok(readResult, "子会话第三次请求没带 read 的返回");
+    assert.match(readResult.content, /^1: export const answer = 1;/m);
+
+    // 这一趟落成一条记录:任务、状态、步数、逐次工具调用与结论。出根的那次 grep 带着原因。
+    const landed = await records(h, cookie, sessionId);
+    const dispatched = landed.filter(
+      (one) => (one.entry as { customType?: string }).customType === "multireviewer-session-subagent",
+    );
+    assert.equal(dispatched.length, 1, "子代理派单没落成条目");
+    const { runs } = (dispatched[0]!.entry as unknown as { data: { runs: SubagentRunRecord[] } }).data;
+    assert.equal(runs.length, 1);
+    const [run] = runs;
+    assert.ok(run);
+    assert.equal(run.task, "answer.ts 的第 1 行写的是什么");
+    assert.equal(run.status, "done");
+    assert.equal(run.steps, 2);
+    assert.deepEqual(run.calls.map((call) => call.name), ["grep", "read"]);
+    assert.match(run.calls[0]!.error ?? "", /outside|超出|not in|会话根|repository/i);
+    assert.match(run.conclusion, /answer\.ts:1/);
+
+    // 回收之后从记录重建,这一条照样在:transcript 文件随子进程的临时目录没了,卡片靠它。
+    await disposeAgentSessions();
+    const rebuilt = await records(h, cookie, sessionId);
+    assert.deepEqual(
+      rebuilt.map((one) => (one.entry as { customType?: string }).customType ?? one.type),
+      landed.map((one) => (one.entry as { customType?: string }).customType ?? one.type),
+    );
   } finally {
     await disposeAgentSessions();
     await close();

@@ -19,6 +19,7 @@ import {
   ListBulletIcon,
   MagnifyingGlassIcon,
   PaperPlaneIcon,
+  PersonIcon,
   QuestionMarkCircledIcon,
   ReaderIcon,
   StopIcon,
@@ -68,6 +69,7 @@ import {
   type AgentSessionRecord,
   type ToolCallItem,
   type ToolKind,
+  type SubagentRun,
   type ToolStep,
   type ConversationGroup,
 } from "@/lib/agent-session-records";
@@ -224,7 +226,7 @@ const MODE_LABEL: Record<QueuedMessage["mode"], string> = {
 };
 
 /** 正在生成的那一截:文字是累加的,工具是最近开跑的那一个。两样都不落库。 */
-type LiveStream = { text: string; tool?: string };
+type LiveStream = { text: string; tool?: string; subagent?: SubagentRun[] };
 
 /** 滚动位置距底不超过这个数就算「在看最新」,新条目来了跟着滚。 */
 const FOLLOW_THRESHOLD = 80;
@@ -279,14 +281,24 @@ function Conversation({
     // 会话没有「结束」那一刻:空闲着仍然续得上,流一直挂着等下一条。
     live: true,
     onTransient: (frame) => {
-      const payload = frame.payload as { text?: unknown; tool?: unknown } | null;
+      const payload = frame.payload as {
+        text?: unknown;
+        tool?: unknown;
+        subagent?: unknown;
+      } | null;
       const text = typeof payload?.text === "string" ? payload.text : "";
       const tool = typeof payload?.tool === "string" ? payload.tool : undefined;
+      // 在跑的子代理是现状而不是增量(issue #358):后一帧整份盖掉前一帧。
+      const subagent = Array.isArray(payload?.subagent)
+        ? (payload.subagent as SubagentRun[])
+        : undefined;
       setLive((prev) => {
         const tracked = tool ?? prev?.tool;
+        const running = subagent ?? prev?.subagent;
         return {
           text: (prev?.text ?? "") + text,
           ...(tracked === undefined ? {} : { tool: tracked }),
+          ...(running === undefined ? {} : { subagent: running }),
         };
       });
     },
@@ -316,6 +328,7 @@ function Conversation({
 
   const lastGroup = groups.at(-1);
   const liveTool = running ? live?.tool : undefined;
+  const liveSubagents = running ? live?.subagent : undefined;
 
   return (
     <div className="relative min-h-0 flex-1">
@@ -408,6 +421,8 @@ function Conversation({
         {liveTool === undefined || lastGroup?.kind === "tools" ? null : (
           <ToolGroup calls={[]} liveTool={liveTool} open />
         )}
+        {/* 在跑的子代理(issue #358):跑完那一版由条目接手,这里只画还没落库的这一刻。 */}
+        {liveSubagents === undefined ? null : <SubagentCards runs={liveSubagents} />}
         {live === null || live.text === "" ? null : (
           <div className="flex min-w-0 items-end gap-1">
             <span className="sr-only">agent 正在回</span>
@@ -488,6 +503,9 @@ function ConversationRow({
         {localSecond(item.at)} · {item.text}
       </p>
     );
+  }
+  if (item.kind === "subagent") {
+    return <SubagentCards runs={item.runs} />;
   }
   if (item.kind === "output") {
     /* 产出以一行出现在对话流里,点开把右栏切到那一版(issue #337)。 */
@@ -852,7 +870,84 @@ function MessageTime({ at }: { at: string }) {
   );
 }
 
-/** 每类工具调用的图标:读文件、搜内容、列目录、git、两种查询、交产出。 */
+/**
+ * 一次派单里的那几个会话子代理(issue #358)。一趟一张嵌套卡片:卡头是任务、状态与步数,
+ * 展开是它逐步调过的工具(与父会话的工具行同一份 `ToolRow`),卡底是它交回来的结论。
+ * 跑完的卡片收成结论一句,展开才看过程;并行派出的几趟并排。
+ */
+function SubagentCards({ runs }: { runs: readonly SubagentRun[] }) {
+  return (
+    <ul
+      className={`grid min-w-0 gap-2 ${runs.length > 1 ? "sm:grid-cols-2" : ""}`}
+      aria-label="会话子代理"
+    >
+      {runs.map((run, index) => (
+        <li key={`${index}-${run.task}`} className="min-w-0">
+          <SubagentCard run={run} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function SubagentCard({ run }: { run: SubagentRun }) {
+  const [expanded, setExpanded] = useState(false);
+  const failed = run.status === "failed";
+  return (
+    <Collapsible.Root
+      open={expanded}
+      onOpenChange={setExpanded}
+      className="group/subagent flex min-w-0 flex-col rounded-lg border border-card-line bg-surface"
+    >
+      <Collapsible.Trigger asChild>
+        <button
+          type="button"
+          className="flex min-w-0 items-center gap-1.5 rounded-lg px-2.5 py-2 text-left text-base transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+        >
+          {run.status === "running" ? (
+            <Spinner size="1" className="shrink-0" />
+          ) : (
+            <ChevronRightIcon
+              aria-hidden
+              className="shrink-0 text-text-muted transition-transform group-data-[state=open]/subagent:rotate-90"
+            />
+          )}
+          <PersonIcon aria-hidden className="shrink-0 text-text-muted" />
+          <span className="min-w-0 flex-1 truncate text-text" title={run.task}>
+            {run.task === "" ? "子代理" : run.task}
+          </span>
+          <span className="shrink-0 text-sm tabular-nums text-text-muted">
+            {run.status === "running" ? "在跑 · " : failed ? "失败 · " : ""}
+            {run.steps} 步
+          </span>
+        </button>
+      </Collapsible.Trigger>
+      <Collapsible.Content>
+        <ol
+          className="mx-2.5 mb-1 flex min-w-0 flex-col border-l border-line pl-3"
+          aria-label="子代理的工具调用"
+        >
+          {run.calls.map((call, index) => (
+            <ToolRow
+              key={`${index}-${call.name}`}
+              step={describeTool(call.name, call.args)}
+              error={call.error}
+            />
+          ))}
+        </ol>
+      </Collapsible.Content>
+      {run.conclusion === "" ? null : (
+        <div
+          className={`min-w-0 border-t border-card-line px-2.5 py-2 ${failed ? "text-danger" : ""}`}
+        >
+          <Markdown text={run.conclusion} />
+        </div>
+      )}
+    </Collapsible.Root>
+  );
+}
+
+/** 每类工具调用的图标:读文件、搜内容、列目录、git、两种查询、派子代理、交产出。 */
 const TOOL_ICONS: Record<ToolKind, typeof FileTextIcon> = {
   read: FileTextIcon,
   grep: MagnifyingGlassIcon,
@@ -861,6 +956,7 @@ const TOOL_ICONS: Record<ToolKind, typeof FileTextIcon> = {
   git: CommitIcon,
   findings: CounterClockwiseClockIcon,
   knowledge: ReaderIcon,
+  subagent: PersonIcon,
   submit: PaperPlaneIcon,
   round: QuestionMarkCircledIcon,
   other: GearIcon,

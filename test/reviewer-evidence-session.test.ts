@@ -19,7 +19,7 @@ import { test } from "node:test";
 import type { ReviewerEvent, ReviewerUsage } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
-import { EVIDENCE_AGENT, EVIDENCE_TOOL } from "../src/reviewer/evidence.ts";
+import { EVIDENCE_AGENT, SUBAGENT_TOOL } from "../src/reviewer/evidence.ts";
 import type { RuntimeModel } from "../src/reviewer/model-service-runtime.ts";
 import { createPiReviewer } from "../src/reviewer/pi-reviewer.ts";
 import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
@@ -64,7 +64,7 @@ function evidenceTurns(usage: readonly [StubUsage, StubUsage, StubUsage, StubUsa
     {
       text: "先派取证核对调用方",
       toolCall: {
-        name: EVIDENCE_TOOL,
+        name: SUBAGENT_TOOL,
         args: { agent: EVIDENCE_AGENT, task: `读 ${TARGET_FILE},把第 1 行原样带回来` },
       },
       usage: usage[0],
@@ -138,7 +138,7 @@ test("取证真跑一遍:文件内容回到子会话的模型请求,过程嵌进
   // 取证工具、report_finding 与 pi-subagents 自己的 contact_supervisor / bg_wait 一个都
   // 不在。单层靠工具面构造出来,不靠深度计数(issue #262)。
   const [parentFirst, childFirst, childSecond, parentSecond] = requests;
-  assert.ok(parentFirst!.tools.includes(EVIDENCE_TOOL));
+  assert.ok(parentFirst!.tools.includes(SUBAGENT_TOOL));
   assert.ok(parentFirst!.tools.includes("report_finding"));
   assert.deepEqual([...childFirst!.tools].sort(), ["find", "grep", "ls", "read"]);
 
@@ -154,7 +154,7 @@ test("取证真跑一遍:文件内容回到子会话的模型请求,过程嵌进
   // 子会话的过程嵌在派出它的那次调用下面(issue #227)。
   const evidence = events.filter(
     (event): event is Extract<ReviewerEvent, { kind: "tool_call" }> =>
-      event.kind === "tool_call" && event.tool === EVIDENCE_TOOL,
+      event.kind === "tool_call" && event.tool === SUBAGENT_TOOL,
   );
   assert.equal(evidence.length, 1);
   assert.equal(evidence[0]!.isError, false, `取证被拒: ${evidence[0]!.error}`);
@@ -213,13 +213,13 @@ test("取证被拒时用量仍是 Pi 的会话统计,不丢也不重", async () 
   ] as const;
   // `worker` 是 pi-subagents 的内置 agent,铺装时已禁用,能力天花板也只放行 evidence。
   const { outcome, events, requests } = await reviewWithStub([
-    { toolCall: { name: EVIDENCE_TOOL, args: { agent: "worker", task: "改一下代码" } }, usage: usage[0] },
+    { toolCall: { name: SUBAGENT_TOOL, args: { agent: "worker", task: "改一下代码" } }, usage: usage[0] },
     { text: "取证没派出去,按已读到的代码收尾", usage: usage[1] },
   ]);
 
   assert.equal(outcome.failure, undefined, `Reviewer 失败: ${outcome.failure}`);
   assert.equal(requests.length, 2, "被拒的取证不该起子会话");
-  const evidence = events.find((event) => event.kind === "tool_call" && event.tool === EVIDENCE_TOOL);
+  const evidence = events.find((event) => event.kind === "tool_call" && event.tool === SUBAGENT_TOOL);
   assert.ok(evidence?.kind === "tool_call");
   assert.equal(evidence.isError, true);
   assert.deepEqual(outcome.usage, sum(usage));
@@ -284,7 +284,7 @@ function twoEvidenceTurns(): StubTurn[] {
     {
       text: "再派一次核对另一个调用方",
       toolCall: {
-        name: EVIDENCE_TOOL,
+        name: SUBAGENT_TOOL,
         args: { agent: EVIDENCE_AGENT, task: `再读一遍 ${TARGET_FILE}` },
       },
       usage: { input: 5, output: 2 },
@@ -298,7 +298,7 @@ function twoEvidenceTurns(): StubTurn[] {
 function evidenceCalls(events: readonly ReviewerEvent[]) {
   return events.filter(
     (event): event is Extract<ReviewerEvent, { kind: "tool_call" }> =>
-      event.kind === "tool_call" && event.tool === EVIDENCE_TOOL,
+      event.kind === "tool_call" && event.tool === SUBAGENT_TOOL,
   );
 }
 
@@ -336,7 +336,7 @@ test("模型显式开桥、要求后台:子会话仍是前台的只读四件套,
     {
       ...first!,
       toolCall: {
-        name: EVIDENCE_TOOL,
+        name: SUBAGENT_TOOL,
         args: {
           agent: EVIDENCE_AGENT,
           task: `读 ${TARGET_FILE},把第 1 行原样带回来`,
@@ -372,7 +372,7 @@ test("仓库自带的 agent 定义派不出去:发现范围只读 agentDir(issue
     { input: 13, output: 4 },
   ] as const;
   const stub = await startModelStub([
-    { toolCall: { name: EVIDENCE_TOOL, args: { agent: "rogue", task: "改一下代码" } }, usage: usage[0] },
+    { toolCall: { name: SUBAGENT_TOOL, args: { agent: "rogue", task: "改一下代码" } }, usage: usage[0] },
     { text: "派不出去,按已读到的代码收尾", usage: usage[1] },
   ]);
   const events: ReviewerEvent[] = [];
@@ -418,7 +418,7 @@ test("取证超时:子会话被停下,之后不再发请求,父会话拿到超�
     {
       ...first!,
       toolCall: {
-        name: EVIDENCE_TOOL,
+        name: SUBAGENT_TOOL,
         args: { agent: EVIDENCE_AGENT, task: `读 ${TARGET_FILE}`, timeoutMs: 300 },
       },
       usage: usage[0],
@@ -554,7 +554,7 @@ test("仓库自带同名 evidence 定义、模型要 project 范围并换 cwd:�
     {
       ...first!,
       toolCall: {
-        name: EVIDENCE_TOOL,
+        name: SUBAGENT_TOOL,
         args: { agent: EVIDENCE_AGENT, task: `读 ${TARGET_FILE}`, agentScope: "project", cwd: elsewhere },
       },
     },

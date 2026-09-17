@@ -63,6 +63,7 @@ import {
   type SessionRepoInput,
   type SessionWorkerMessage,
 } from "../reviewer/session-protocol.ts";
+import type { SessionSubagentRun } from "../reviewer/session-subagent.ts";
 
 const WORKER_PATH = fileURLToPath(new URL("../reviewer/session-worker.ts", import.meta.url));
 
@@ -200,7 +201,13 @@ type RuntimeEntry = {
    */
   disposed: boolean;
   /** 这一次合并窗口里攒下的流式帧内容。`timer` 不为空即窗口开着。 */
-  stream: { text: string; tool: string | undefined; timer: NodeJS.Timeout | undefined };
+  stream: {
+    text: string;
+    tool: string | undefined;
+    /** 正在跑的那几个会话子代理(issue #358)。后一份整份盖掉前一份:它是现状,不是增量。 */
+    subagent: readonly SessionSubagentRun[] | undefined;
+    timer: NodeJS.Timeout | undefined;
+  };
 };
 
 /**
@@ -485,14 +492,18 @@ function recordEntry(dbPath: string, sessionId: number, entry: unknown): void {
  * 没有在线订阅者时 `publishTransientTrace` 是空操作。
  */
 function flushStream(sessionId: number, entry: RuntimeEntry): void {
-  const { text, tool, timer } = entry.stream;
+  const { text, tool, subagent, timer } = entry.stream;
   if (timer !== undefined) clearTimeout(timer);
-  entry.stream = { text: "", tool: undefined, timer: undefined };
-  if (text === "" && tool === undefined) return;
+  entry.stream = { text: "", tool: undefined, subagent: undefined, timer: undefined };
+  if (text === "" && tool === undefined && subagent === undefined) return;
   publishTransientTrace(agentSessionChannel(sessionId), {
     kind: AGENT_SESSION_STREAM_FRAME,
-    // 正在生成的文字与正在跑的工具分两格:页面要把它们摊成两样东西。
-    payload: { text, ...(tool === undefined ? {} : { tool }) },
+    // 正在生成的文字、正在跑的工具与正在跑的子代理分三格:页面要把它们摊成三样东西。
+    payload: {
+      text,
+      ...(tool === undefined ? {} : { tool }),
+      ...(subagent === undefined ? {} : { subagent }),
+    },
   });
 }
 
@@ -500,10 +511,11 @@ function flushStream(sessionId: number, entry: RuntimeEntry): void {
 function collectStream(
   sessionId: number,
   entry: RuntimeEntry,
-  part: { text?: string; tool?: string },
+  part: { text?: string; tool?: string; subagent?: readonly SessionSubagentRun[] },
 ): void {
   entry.stream.text += part.text ?? "";
   if (part.tool !== undefined) entry.stream.tool = part.tool;
+  if (part.subagent !== undefined) entry.stream.subagent = part.subagent;
   if (entry.stream.timer !== undefined) return;
   entry.stream.timer = setTimeout(() => flushStream(sessionId, entry), STREAM_FRAME_MS);
 }
@@ -1200,6 +1212,9 @@ async function boot(
       case "tool":
         collectStream(session.id, entry, { tool: message.tool });
         return;
+      case "subagent":
+        collectStream(session.id, entry, { subagent: message.runs });
+        return;
       case "finding-query":
         answerFindingQuery(deps.dbPath, child, message.requestId, message.query);
         return;
@@ -1359,7 +1374,7 @@ export function deliverAgentSessionMessage(
     pending: [],
     imageRefs: [],
     disposed: false,
-    stream: { text: "", tool: undefined, timer: undefined },
+    stream: { text: "", tool: undefined, subagent: undefined, timer: undefined },
   };
   registry.set(session.id, entry);
   startRun(session.id, entry, message);

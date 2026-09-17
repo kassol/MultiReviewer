@@ -13,6 +13,7 @@ import type {
 } from "../review/store.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 import type { AgentSessionImageRef } from "./session-images.ts";
+import type { SessionSubagentRun } from "./session-subagent.ts";
 
 /**
  * 主进程与子进程各自往会话记录里放的那两种 Pi 条目的 `customType`(issue #337)。放在这份
@@ -41,6 +42,14 @@ export const AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE = "multireviewer-session-q
  * (那几下的子进程正要没了)。面板按这个取值把它渲染成对话流里灰底一行。
  */
 export const SYSTEM_MESSAGE_ENTRY = "multireviewer_system_message";
+
+/**
+ * 一次会话子代理派单的 `custom` 条目类型(CONTEXT.md 会话子代理,issue #358)。只有子进程
+ * 写它:子会话的过程只在它那一侧读得到,而 transcript 文件随临时目录消失,派单跑完当场
+ * 落成条目,重建时面板从这一条重画那张嵌套卡片。不进模型上下文——过程模型自己刚经历过,
+ * 它拿到的是工具返回里的报告。
+ */
+export const AGENT_SESSION_SUBAGENT_ENTRY = "multireviewer-session-subagent";
 
 /** 会话根下的一个仓库:它的工作树目录名就是 `<owner>/<repo>`,知识集只报条数。 */
 export type SessionRepoInput = {
@@ -261,6 +270,11 @@ export type SessionWorkerMessage =
   | { kind: "delta"; text: string }
   /** 一个工具开始跑(`tool_execution_start`)。同样只走瞬时帧。 */
   | { kind: "tool"; tool: string }
+  /**
+   * 正在跑的那几个会话子代理(issue #358)。同样只走瞬时帧:跑完那一版由子进程落成
+   * `AGENT_SESSION_SUBAGENT_ENTRY` 条目,经镜像落库。
+   */
+  | { kind: "subagent"; runs: readonly SessionSubagentRun[] }
   /** 这一个回合结束,会话回到空闲。`failure` 是这一回合里可见的失败原因。 */
   | { kind: "turn-end"; failure?: string }
   /** 会话建不起来:这个子进程之后什么都做不了。 */

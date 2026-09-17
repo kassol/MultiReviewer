@@ -22,8 +22,8 @@ import { anchorReport, anchorVerdict } from "./anchor.ts";
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import {
   EVIDENCE_AGENT,
-  EVIDENCE_TOOL,
-  evidenceContractExtension,
+  SUBAGENT_TOOL,
+  subagentContractExtension,
   evidenceTranscriptEvents,
   installEvidenceKit,
   vendoredSubagentsPath,
@@ -64,7 +64,7 @@ export function sessionTools(options: {
     ...READ_ONLY_TOOLS,
     GIT_TOOL,
     ...(options.mode === "verdict-only" ? [] : [REPORT_FINDING_TOOL]),
-    EVIDENCE_TOOL,
+    SUBAGENT_TOOL,
     ...(options.hasHistory ? [REVIEW_PRIOR_FINDING_TOOL] : []),
   ];
 }
@@ -73,7 +73,7 @@ export function sessionTools(options: {
  * 取证的口径与机制(issue #226)。两种模式共用一份:只复核同样只能对读过的代码下
  * 结论,取证的调用方式与名额也是同一套。
  */
-const EVIDENCE_PARAGRAPH = `Never assert anything about code you have not read. A finding that depends on how another file behaves — that a caller passes an unchecked value, that no middleware already handles this, that an annotation is missing, that this value never reaches the database — is only reportable once you have read the code it depends on. Before you report a claim like that, call the ${EVIDENCE_TOOL} tool with agent set to "${EVIDENCE_AGENT}" — that is the only agent available: state the single claim you want checked, and the call waits and returns file:line evidence directly. Never pass async and never poll for status — one call, one answer. Read the evidence and decide yourself whether the problem holds; the investigator does not decide, and it never reports findings. Investigate the claims that carry a finding, not every passing thought. Evidence calls are limited: spend them on your highest-severity claims, the ones that cannot stand without reading the other side's code.`;
+const EVIDENCE_PARAGRAPH = `Never assert anything about code you have not read. A finding that depends on how another file behaves — that a caller passes an unchecked value, that no middleware already handles this, that an annotation is missing, that this value never reaches the database — is only reportable once you have read the code it depends on. Before you report a claim like that, call the ${SUBAGENT_TOOL} tool with agent set to "${EVIDENCE_AGENT}" — that is the only agent available: state the single claim you want checked, and the call waits and returns file:line evidence directly. Never pass async and never poll for status — one call, one answer. Read the evidence and decide yourself whether the problem holds; the investigator does not decide, and it never reports findings. Investigate the claims that carry a finding, not every passing thought. Evidence calls are limited: spend them on your highest-severity claims, the ones that cannot stand without reading the other side's code.`;
 
 /** 叙述用中文(issue #171)。两种模式共用:审查轨迹的读者是同一批人。 */
 const NARRATION_PARAGRAPH = `Narrate in Chinese too: everything you say between tool calls goes into a review trace read by the same people, so write those sentences in Chinese — one short line on what you are about to check and why, before each group of tool calls.`;
@@ -583,7 +583,7 @@ async function run(request: ReviewerRequest): Promise<void> {
       request.mode === "verdict-only" ? VERDICT_ONLY_SYSTEM_PROMPT : SYSTEM_PROMPT,
     extensionPaths: [vendoredSubagentsPath()],
     // 取证契约在工具边界的那一道(issue #262):与 pi-subagents 同一批装进会话。
-    extensionFactories: [evidenceContractExtension(request.worktreePath)],
+    extensionFactories: [subagentContractExtension(request.worktreePath, EVIDENCE_AGENT)],
     // 取证子代理的铺装(issue #226)。知识注入与 Reviewer 拿到的是同一批条目;会话上限是
     // 本轮运行计划冻结的那一格(issue #258),不带即系统默认。铺在扩展首次加载之前:
     // pi-subagents 注册时读一次 config,写晚了 intercom 桥就照默认开着(issue #262)。
@@ -615,7 +615,7 @@ async function run(request: ReviewerRequest): Promise<void> {
     // 取证子会话的过程嵌进这一次调用(issue #227):子代理是 pi-subagents 另建的会话,它说过
     // 的话与调过的工具只有从它的 transcript 读回来才进得了审查轨迹。
     (toolName, result) =>
-      toolName === EVIDENCE_TOOL ? evidenceTranscriptEvents(result) : [],
+      toolName === SUBAGENT_TOOL ? evidenceTranscriptEvents(result) : [],
   );
 
   await runAgentWorker({

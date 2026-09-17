@@ -15,7 +15,7 @@ import { test } from "node:test";
 
 import { mergeByProposal } from "../src/review/dedupe.ts";
 import type { Finding, HistoryFinding, ReviewerEvent } from "../src/review/finding.ts";
-import { EVIDENCE_SESSION_BUDGET, EVIDENCE_TOOL } from "../src/reviewer/evidence.ts";
+import { EVIDENCE_SESSION_BUDGET, SUBAGENT_TOOL } from "../src/reviewer/evidence.ts";
 import { piBuiltinProviderTargets, type PiBuiltinProviderTarget } from "../src/reviewer/catalog.ts";
 import { createPiMergeAgent } from "../src/reviewer/merge-agent.ts";
 import { createPiReviewer } from "../src/reviewer/pi-reviewer.ts";
@@ -244,7 +244,7 @@ test("真实模型对跨文件存疑场景派出取证", { skip }, async () => {
   assert.equal(outcome.failure, undefined, `Reviewer 失败: ${outcome.failure}`);
 
   const evidence = events.filter(
-    (event) => event.kind === "tool_call" && event.tool === EVIDENCE_TOOL,
+    (event) => event.kind === "tool_call" && event.tool === SUBAGENT_TOOL,
   );
   assert.ok(evidence.length > 0, "跨文件主张前一次取证都没派");
   // 预算是硬闸:超过它的那几次会被拒,派得动说明铺装与凭据都对上了。
