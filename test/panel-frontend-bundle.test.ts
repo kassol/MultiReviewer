@@ -25,6 +25,7 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
     const entrySource = readFileSync(join(process.cwd(), "web/src/main.tsx"), "utf8");
     const styleSource = readFileSync(join(process.cwd(), "web/src/styles.css"), "utf8");
     const masterListSource = readFileSync(join(process.cwd(), "web/src/components/master-list-item.tsx"), "utf8");
+    const accessSource = readFileSync(join(process.cwd(), "web/src/access-control.tsx"), "utf8");
 
     assert.match(javascript, /评审记录列表/);
     // 导航收敛成三层之后(issue #189),阶段页只有一种视图:轮次视图与它的两个入口
@@ -79,6 +80,14 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
     assert.match(coarse, /:where\(\.rt-CheckboxGroupItem,\.rt-RadioGroupItem\)\{[^}]*min-height:44px/);
     // 「我的」菜单贴着 Tab 栏开,末项的命中区要离 Tab 栏 8px。
     assert.match(javascript, /sideOffset:8/);
+    // 粘性首列(issue #382):横向滚动得发生在 Radix ScrollArea 的视口上,首列的 sticky
+    // 才跟着钉住。视口里那层包装默认 `width: fit-content`,横向放不下时把列压成
+    // min-content,所以改 max-content——断言产物,这条 utility 要排在 radix layer 之后才盖得过。
+    assert.match(stylesheet.slice(utilityLayer), /\.rt-ScrollAreaViewport>\*\{width:max-content\}/);
+    // 用户表因此不再自己套一层横向滚动容器。
+    assert.doesNotMatch(accessSource, /contain-inline-size/);
+    // 确认弹窗关闭有一帧退场动画:`confirm` 清空后再读它,标题就是「删除用户 undefined？」。
+    assert.doesNotMatch(accessSource, /删除用户 \$\{confirm\?\./);
   } finally {
     rmSync(dist, { recursive: true, force: true });
   }
