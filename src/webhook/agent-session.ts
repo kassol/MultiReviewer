@@ -33,7 +33,6 @@ import {
   openStore,
   type AgentSessionBaseline,
   type AgentSessionEntryLink,
-  type AgentSessionOutputRecord,
   type AgentSessionRecord,
   type AgentSessionStatus,
   type ProductKnowledgeEntry,
@@ -51,8 +50,6 @@ import { FINDING_QUERY_LIMIT } from "../reviewer/session-finding-tool.ts";
 import { deflateImageBlocks, type AgentSessionImageRef } from "../reviewer/session-images.ts";
 import {
   AGENT_SESSION_BASELINE_UPDATE_CUSTOM_TYPE,
-  AGENT_SESSION_NOTE_CUSTOM_TYPE,
-  AGENT_SESSION_OUTPUT_CUSTOM_TYPE,
   SYSTEM_MESSAGE_ENTRY,
   type AgentSessionMessageMode,
   type ProductSurveyProposals,
@@ -60,7 +57,6 @@ import {
   type SessionKnowledgeEntries,
   type SessionKnowledgeQuery,
   type SessionKnowledgeWrite,
-  type SessionOutput,
   type SessionProductKnowledge,
   type SessionRepoInput,
   type SessionWorkerMessage,
@@ -779,80 +775,6 @@ function ownEntryBase(
 }
 
 /**
- * 收下一份会话产出(issue #337):落产出表一个新版本,再在记录表上留一条 `custom` 条目
- * ——对话流里由它长出产出卡片,点开把右栏切到那一版。
- *
- * `custom` 条目不进模型上下文(ADR 0031),这正是要的:产出的内容模型刚刚自己交出来,
- * 再塞回上下文只是同一份东西占两遍窗口。进上下文的只有人做的定稿与换版。
- */
-export function recordAgentSessionOutput(
-  deps: AgentSessionRecordDeps,
-  sessionId: number,
-  output: SessionOutput,
-): void {
-  const store = openStore(deps.dbPath);
-  let stored: AgentSessionOutputRecord;
-  try {
-    stored = store.appendAgentSessionOutput(sessionId, {
-      kind: output.kind,
-      payload: output.payload,
-      toolCallId: output.toolCallId,
-      createdAt: new Date(deps.now()).toISOString(),
-    });
-  } catch (error) {
-    console.error(
-      `[agent-session] 会话 ${sessionId} 的产出落库失败:`,
-      error instanceof Error ? error.message : String(error),
-    );
-    return;
-  } finally {
-    store.close();
-  }
-  // 子进程活着就让它在 Pi 会话里接上这一条:主进程直接落库的条目接不上链,下一条回复仍挂在
-  // 它前面那条上,这一条成了旁支,重建时被算成「不在上下文」(线上验收时撞到)。
-  const entry = registry.get(sessionId);
-  const data = { kind: stored.kind, version: stored.version };
-  if (entry !== undefined) {
-    sendCommand(entry, { kind: "custom-entry", customType: AGENT_SESSION_OUTPUT_CUSTOM_TYPE, data });
-    return;
-  }
-  recordEntry(deps.dbPath, sessionId, {
-    ...ownEntryBase(deps, sessionId),
-    type: "custom",
-    customType: AGENT_SESSION_OUTPUT_CUSTOM_TYPE,
-    data,
-  });
-}
-
-/**
- * 把一条进模型上下文的消息放进会话(issue #337)。定稿与换版走它:agent 下一轮得知道哪一版
- * 定了,不再改已定的方向。
- *
- * 会话在登记表上就交给子进程那一侧:Pi 会话在那个进程的内存里,只写库的话活着的这一轮看不到
- * 这条消息。子进程还在 fork 的路上时这一条先进 `pending`(issue #334),建好之后随别的指令
- * 按顺序补发。落库仍由镜像那一条路完成,与别的条目同形。登记表上没有这个会话就直接落库,
- * 下次重建时它随整段记录回到上下文里。
- */
-export function recordAgentSessionCustomMessage(
-  deps: AgentSessionRecordDeps,
-  sessionId: number,
-  text: string,
-): void {
-  const entry = registry.get(sessionId);
-  if (entry !== undefined) {
-    sendCommand(entry, { kind: "custom-message", text });
-    return;
-  }
-  recordEntry(deps.dbPath, sessionId, {
-    ...ownEntryBase(deps, sessionId),
-    type: "custom_message",
-    customType: AGENT_SESSION_NOTE_CUSTOM_TYPE,
-    content: text,
-    display: true,
-  });
-}
-
-/**
  * 基点更新之后的那两步(ADR 0034,issue #356):回收子进程,再落一条基点更新。调用方已经把会话
  * 基点换成新 sha、并判过会话空闲。
  *
@@ -1254,9 +1176,6 @@ async function boot(
         for (const one of message.entries) {
           recordEntry(deps.dbPath, session.id, deflateImageBlocks(one, entry.imageRefs));
         }
-        return;
-      case "output":
-        recordAgentSessionOutput(deps, session.id, message.output);
         return;
       case "survey":
         recordProductSurveyProposals(deps, session, message.proposals);

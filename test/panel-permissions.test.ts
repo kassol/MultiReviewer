@@ -130,8 +130,6 @@ const ROUTE_EXPECTATIONS = [
   ["POST", "/^\\/agent-sessions\\/(\\d+)\\/stop$/", "agent:chat", "-"],
   ["POST", "/^\\/agent-sessions\\/(\\d+)\\/baselines\\/([^/]+)\\/([^/]+)\\/update$/", "agent:chat", "-"],
   ["GET", "/^\\/agent-sessions\\/(\\d+)\\/records$/", "authenticated-only", "-"],
-  ["GET", "/^\\/agent-sessions\\/(\\d+)\\/outputs$/", "authenticated-only", "-"],
-  ["POST", "/^\\/agent-sessions\\/(\\d+)\\/outputs\\/(\\d+)\\/finalize$/", "agent:chat", "-"],
   ["GET", "/^\\/agent-sessions\\/(\\d+)\\/stream$/", "authenticated-only", "-"],
   ["POST", "/^\\/agent-sessions\\/(\\d+)\\/images$/", "agent:chat", "-"],
   ["GET", "/^\\/agent-sessions\\/(\\d+)\\/images\\/([0-9a-f-]{36})$/", "authenticated-only", "-"],

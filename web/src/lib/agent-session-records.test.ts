@@ -34,10 +34,9 @@ function message(role: string, content: unknown): unknown {
   return { type: "message", message: { role, content } };
 }
 
-/** 一项的人读摘要:工具看名字,产出看版本,子代理看派了几趟,其余看正文。 */
+/** 一项的人读摘要:工具看名字,子代理看派了几趟,其余看正文。 */
 function summary(item: ConversationItem): string | number {
   if (item.kind === "tool") return item.name;
-  if (item.kind === "output") return item.version;
   if (item.kind === "subagent") return item.runs.length;
   return "text" in item ? item.text : "";
 }
@@ -222,32 +221,24 @@ test("参数摘要一行放得下:超出就截断", () => {
   assert.ok(long.endsWith("…"));
 });
 
-test("产出条目投成产出卡片,定稿那一句投成一行提示(issue #337)", () => {
+test("退役了的产出条目与定稿那一句不进对话流,旧会话照样读得下去(issue #366)", () => {
   const items = conversation([
     record(1, "custom", {
       type: "custom",
       customType: "multireviewer-session-output",
       data: { kind: "requirement-breakdown", version: 2 },
     }),
-    // 版本号缺失或 customType 认不出的 custom 条目跳过,不在对话流里摊出来。
-    record(2, "custom", { type: "custom", customType: "multireviewer-session-output", data: {} }),
-    record(3, "custom_message", {
+    record(2, "custom_message", {
       type: "custom_message",
       customType: "multireviewer-session-note",
       content: "需求拆分 v2 已定稿。",
       display: true,
     }),
-    record(4, "custom_message", { type: "custom_message", content: "  " }),
+    record(3, "message", message("assistant", "拆完了")),
   ]);
   assert.deepEqual(
-    items.map((item) => [
-      item.kind,
-      item.kind === "output" ? item.version : item.kind === "note" ? item.text : "",
-    ]),
-    [
-      ["output", 2],
-      ["note", "需求拆分 v2 已定稿。"],
-    ],
+    items.map((item) => [item.kind, summary(item)]),
+    [["assistant", "拆完了"]],
   );
 });
 

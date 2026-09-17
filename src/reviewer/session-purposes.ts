@@ -18,30 +18,35 @@ import { SUBMIT_PRODUCT_SURVEY_TOOL } from "./session-output-tools.ts";
 import type { SessionProductKnowledge } from "./session-protocol.ts";
 import { ASK_QUESTION_ROUND_TOOL } from "./session-question-tool.ts";
 import { sessionSkillNames } from "./session-skills.ts";
-import { TRACKER_TOOLS } from "./session-tracker-tools.ts";
+import {
+  TRACKER_BLOCK_TOOL,
+  TRACKER_CREATE_SPEC_TOOL,
+  TRACKER_CREATE_TICKET_TOOL,
+  TRACKER_TOOLS,
+} from "./session-tracker-tools.ts";
 
 /**
- * 需求拆分用途的那一段(spec #330 的「系统 prompt 要点」)。
+ * 需求拆分用途的那一段(CONTEXT.md 需求拆分,ADR 0035,issue #366)。
  *
- * 最后那一条与 Reviewer 的「不经工具报出的问题不存在」同一口径:正文里散列的条目不算产出,
- * 它既不落产出表也不进右栏,人拿不走。
+ * 流程本身由铺进来的三个 skill 讲(grilling → to-spec → to-tickets),这一段只说它们讲不到的
+ * 两件事:这一场是访谈而不是一次交卷,以及产出落在哪里。纪律要点与产品梳理同一套——按轮
+ * 问、给推荐、事实自己查、答即裁决——重述一遍纪律而不是重述流程,是因为纪律决定这一场会不会
+ * 又变成 agent 单方面想完再交人核对。
  */
 const REQUIREMENT_BREAKDOWN_PROMPT = [
-  "## This session: breaking a requirement down",
+  "## This session: a requirement, grilled into a spec and tickets",
   "",
-  "A person brings you a requirement and you break it into items a team can build. Write everything you hand in, and everything you say in this conversation, in Chinese.",
+  "A person brings you a requirement. You grill it with them, write the language you settle into product knowledge, then write one spec into this product's tracker and split it into tickets. Write everything you write down, and everything you say in this conversation, in Chinese.",
   "",
-  "The requirement arrives over several turns: take what is in front of you as part of it, not all of it. When something you need is missing or can be read two ways, ask before you break it down — one round of questions beats a breakdown built on a guess. When the person says 直接拆, or otherwise tells you to break it down as it stands, stop asking and hand in a breakdown with what you have; write what you had to assume into the assumptions, and what is still undecided into the open questions.",
+  `Grill first, and grill in rounds. One round is one call of ${ASK_QUESTION_ROUND_TOOL}: numbered questions, two to four options each, the one you would pick marked as the recommendation. Then stop and wait. A round the person can answer in a few clicks moves further than a wall of open questions, and a recommendation they can wave through is worth more than a blank field.`,
   "",
-  "One item is one change inside a single repository that can go out as its own pull request. A feature that spans repositories is therefore several items, one per repository, tied together by dependsOn: the item that has to land first comes first, and the ones waiting on it name its position. Never write an item that changes two repositories.",
+  "Ask only what the person alone can settle. Anything the code can answer you answer yourself — read the repositories, send subagents in for the parts that need depth, and come to the first round with the candidates already drafted. A question whose answer sits in a file you have not opened is a question you have not earned.",
   "",
-  "Every location of an item is a directory or a file you have seen yourself with read, grep, find or ls. Read the repositories before you break anything down: a location you did not read is a guess, and a guess here sends somebody to a path that does not exist. When you cannot find where a change lands, say so in the open questions instead of writing a plausible path.",
+  `Their answer is the decision. Act on it in this turn: when a term settles, write it into product knowledge with ${WRITE_KNOWLEDGE_TOOL} right then, and say in one line what you wrote. Nothing waits in a second queue for them to confirm again. When an answer contradicts the code or an entry already in force, say so in the same breath instead of writing both down.`,
   "",
-  "What query_knowledge returns is the boundary of the breakdown: the review rules and project facts say what each repository has already agreed on, and the product knowledge says how the repositories fit together, so an item that would break one of them is the wrong item. Use query_findings on the part of the code an item touches, and turn what it shows into acceptance points: a spot that has gone wrong before is worth naming in the checks of the item that changes it.",
+  `When there is nothing left worth asking, say so, then call ${TRACKER_CREATE_SPEC_TOOL} once: one spec holding the requirement as the two of you settled it. Split it into tickets under that spec with ${TRACKER_CREATE_TICKET_TOOL} — one ticket is one piece of work somebody can pick up on its own — and record what waits on what with ${TRACKER_BLOCK_TOOL}, never as a sentence in a body. A ticket that says 等 A 做完 in prose blocks nothing.`,
   "",
   "Do not estimate effort. No hours, no days, no points, no t-shirt sizes — the person does not want a number nobody believes.",
-  "",
-  "Hand in a breakdown by calling submit_requirement_breakdown exactly once: the whole overview and every item in that one call. Items written out in your reply are not handed in — they reach nobody. After the call, say in one or two sentences what you handed in and what you are unsure about, and nothing more.",
 ].join("\n");
 
 /**
