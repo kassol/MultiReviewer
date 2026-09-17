@@ -157,6 +157,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-17: grilling 收成 spec [Agent 会话跑工程 skill:产品梳理改访谈,spec 与票成产品实体](https://github.com/kassol/MultiReviewer/issues/357)(`ready-for-agent`,尚未实现):线上唯一真实产品的梳理交出 21 条接口契约、零条业务层,根因在 #342 的定义与形状;改为把作者的 grilling / domain-modeling / to-spec / to-tickets / ask-matt 原样 vendor 进镜像、按用途铺进会话 agentDir,产品知识改成术语表 + 仓库关系 + 产品 ADR(答即裁决、写下即生效、出处附注不进提示),需求拆分改走 grill → to-spec → to-tickets 写进库内产品 tracker(spec 与票、五个固定 triage 标签、阻塞边、认领;只展示与导出 Markdown,不写 Gitea),提问轮次(选择卡片)与会话子代理成通用会话能力,Reviewer 与全部用途的提示带三行目录并经 `query_knowledge` 按需读。CONTEXT.md 词条与 ADR 0035 随本 spec 落地;旧一句话产品知识、拆分条目与定稿退役。
 - 2026-09-16: **产品页与会话页克制一轮**(纯前端,见 `web/AGENTS.md` 同日条目)。发布 00-test 并截图验收。
 - 2026-09-16: **会话页的 agent 回复改成卡片,长回复可展开或进阅读视图**(纯前端,见 `web/AGENTS.md` 同日条目)。发布 00-test 并截图验收。
 - 2026-09-16: **产品页与会话页 UI 收拾**(参照 Craft Agents,见 `web/AGENTS.md` 同日条目)。服务端配套两格读时派生字段:`GET /products/:id/sessions` 与 `GET /agent-sessions/:id` 的会话多带 `title`(首条用户消息,折空白截 80 字,没有即 null,产品梳理一律 null)与 `lastActiveAt`(记录表 `MAX(at)`,没有记录落建会话时刻),`store.ts` 的 `AGENT_SESSION_QUERY` 一条查询带出,不迁移;`test/panel-agent-sessions.test.ts` 加一例(带图消息文字块在图片块后面也取得到)。发布 00-test 并截图验收。
