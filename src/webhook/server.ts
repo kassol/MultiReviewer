@@ -122,6 +122,7 @@ import {
   CUSTOM_PROVIDER_NAME_PATTERN,
   DEFAULT_MIN_REPORT_SEVERITY,
   MIN_REPORT_SEVERITIES,
+  PRODUCT_TICKET_LABELS,
   boundTargetForModel,
   modelServiceTargetFingerprint,
   modelServiceTargetSetFingerprint,
@@ -148,7 +149,9 @@ import {
   type ModelSupplementSource,
   type ProductRepoRecord,
   type ProductSpecRecord,
+  type ProductTicketLabel,
   type ProductTicketRecord,
+  type ProductTrackerState,
   type RangeReviewRecord,
   type RepoKey,
   type RepoSummary,
@@ -2104,6 +2107,174 @@ function handleExportProductSpec(
   res.end(specMarkdown(read.spec, read.tickets));
 }
 
+/** 这张票不在这个产品下,与根本没有这一张:两档同形回这一句 404。 */
+const NO_SUCH_PRODUCT_TICKET = "没有这张票";
+
+/**
+ * 正文与标题只由会话经工具写(ADR 0035),人的那几个动作碰不到它们。带着这两格来的请求
+ * 当场回这一句,不静默丢掉——静默丢掉会让人以为改进去了。
+ */
+const TRACKER_BODY_IS_SESSION_WRITTEN = "spec 与票的正文与标题只由会话写";
+
+/** 一条评论的长度上限。一条评论是几句话,几屏的东西属于正文。 */
+const TICKET_COMMENT_MAX = 4000;
+
+/** 开或关。别的值一律打回——状态只有这两个。 */
+function trackerState(value: unknown): ProductTrackerState | undefined {
+  return value === "open" || value === "closed" ? value : undefined;
+}
+
+/**
+ * 人的动作里带了正文或标题时的那一判。两个写端点共用:措辞不会漂。
+ */
+function rejectsBodyWrite(res: ServerResponse, payload: object | null): boolean {
+  if (payload === null || !("body" in payload || "title" in payload)) return false;
+  sendJson(res, 400, { error: TRACKER_BODY_IS_SESSION_WRITTEN });
+  return true;
+}
+
+/**
+ * 人开或关一条 spec(CONTEXT.md spec,issue #363)。正文不在这里:改正文没有端点。
+ */
+async function handleSetProductSpecState(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+  specId: number,
+): Promise<void> {
+  const payload = await readJson<{ state?: unknown } | null>(req, res);
+  if (payload === undefined) return;
+  if (rejectsBodyWrite(res, payload)) return;
+  const state = trackerState(payload?.state);
+  if (state === undefined) {
+    return sendJson(res, 400, { error: 'body 要是 {"state": "open" | "closed"} 形状的 JSON' });
+  }
+  const at = new Date((deps.now ?? Date.now)()).toISOString();
+  const spec = withStore(deps.dbPath, (store) => {
+    const row = store.getProductSpec(specId);
+    if (row === undefined || row.productId !== productId) return undefined;
+    store.setProductSpecState(specId, state, at);
+    return store.getProductSpec(specId)!;
+  });
+  return spec === undefined
+    ? sendJson(res, 404, { error: NO_SUCH_PRODUCT_SPEC })
+    : sendJson(res, 200, { spec: { id: spec.id, title: spec.title, state: spec.state } });
+}
+
+/** 写端点回给面板的那一张票:与产品详情里的那几格同形。 */
+function trackerTicketView(ticket: ProductTicketRecord): {
+  id: number;
+  title: string;
+  label: ProductTicketLabel;
+  state: ProductTrackerState;
+  claimedBy: string | null;
+  blockedBy: number[];
+} {
+  return {
+    id: ticket.id,
+    title: ticket.title,
+    label: ticket.label,
+    state: ticket.state,
+    claimedBy: ticket.claimedBy,
+    blockedBy: ticket.blockedBy,
+  };
+}
+
+/**
+ * 人对一张票做的动作(CONTEXT.md 认领、票,issue #363):认领与取消认领、改标签、开与关。
+ * 三格在一个请求里,给了哪几格就动哪几格——面板上它们是三个控件,一次点一个。
+ *
+ * 认领落的是调用方自己的名字:替别人认领这件事不该有入口。别人认领着的票认不动,回 409。
+ */
+async function handleUpdateProductTicket(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+  ticketId: number,
+  caller: string,
+): Promise<void> {
+  const payload = await readJson<{ claimed?: unknown; label?: unknown; state?: unknown } | null>(
+    req,
+    res,
+  );
+  if (payload === undefined) return;
+  if (rejectsBodyWrite(res, payload)) return;
+  const wantsClaim = payload !== null && "claimed" in payload;
+  if (wantsClaim && typeof payload.claimed !== "boolean") {
+    return sendJson(res, 400, { error: "claimed 要是 true(认领)或 false(取消认领)" });
+  }
+  const wantsLabel = payload !== null && "label" in payload;
+  const label = payload?.label as ProductTicketLabel;
+  if (wantsLabel && !PRODUCT_TICKET_LABELS.includes(label)) {
+    return sendJson(res, 400, {
+      error: `标签只有这五个:${PRODUCT_TICKET_LABELS.join("、")}`,
+    });
+  }
+  const wantsState = payload !== null && "state" in payload;
+  const state = trackerState(payload?.state);
+  if (wantsState && state === undefined) {
+    return sendJson(res, 400, { error: 'state 要是 "open" 或 "closed"' });
+  }
+
+  const at = new Date((deps.now ?? Date.now)()).toISOString();
+  const done = withStore(deps.dbPath, (store) => {
+    const row = store.getProductTicket(ticketId);
+    if (row === undefined || row.productId !== productId) return "no-ticket" as const;
+    const claimant = payload?.claimed === true ? caller : null;
+    if (wantsClaim && !store.setProductTicketClaim(ticketId, claimant)) {
+      return "claimed-by-another" as const;
+    }
+    if (wantsLabel) store.setProductTicketLabel(ticketId, label);
+    if (wantsState) store.setProductTicketState(ticketId, state!, at);
+    return store.getProductTicket(ticketId)!;
+  });
+  if (done === "no-ticket") return sendJson(res, 404, { error: NO_SUCH_PRODUCT_TICKET });
+  if (done === "claimed-by-another") {
+    return sendJson(res, 409, { error: "这张票已经有人认领了" });
+  }
+  return sendJson(res, 200, { ticket: trackerTicketView(done) });
+}
+
+/**
+ * 人在一张票上写一条评论(CONTEXT.md 票,issue #363)。作者是调用方;会话写下的那几条
+ * 作者为空,读的时候两者分得开。
+ */
+async function handleCommentProductTicket(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+  ticketId: number,
+  caller: string,
+): Promise<void> {
+  const payload = await readJson<{ text?: unknown } | null>(req, res);
+  if (payload === undefined) return;
+  const text = typeof payload?.text === "string" ? payload.text.trim() : "";
+  if (text === "") {
+    return sendJson(res, 400, { error: 'body 要是 {"text": "…"} 形状的 JSON,评论不能为空' });
+  }
+  if (text.length > TICKET_COMMENT_MAX) {
+    return sendJson(res, 400, { error: `一条评论不能超过 ${TICKET_COMMENT_MAX} 字` });
+  }
+  const at = new Date((deps.now ?? Date.now)()).toISOString();
+  const comment = withStore(deps.dbPath, (store) => {
+    const row = store.getProductTicket(ticketId);
+    if (row === undefined || row.productId !== productId) return undefined;
+    return store.addProductTicketComment({
+      ticketId,
+      author: caller,
+      sessionId: null,
+      body: text,
+      at,
+    });
+  });
+  return comment === undefined
+    ? sendJson(res, 404, { error: NO_SUCH_PRODUCT_TICKET })
+    : sendJson(res, 201, { comment });
+}
+
 async function handleCreateProduct(
   req: IncomingMessage,
   res: ServerResponse,
@@ -3417,10 +3588,16 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   // 会话经知识工具写下,人不手写、不确认也不驳回(ADR 0035)。
 
   // 产品 tracker(CONTEXT.md 产品 tracker,issue #361)。**读随产品可见性**:与产品详情同一道
-  // 门禁,登录加这个产品里的一个仓库分配即可。正文只由会话经工具写,这一层因此没有写端点;
-  // 人的动作(认领、改标签、开关、评论)是 #363。
+  // 门禁,登录加这个产品里的一个仓库分配即可。
   { method: "GET", pattern: /^\/products\/(\d+)\/specs\/(\d+)$/, access: "authenticated-only", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleProductSpec(res, deps, Number(match![1]), Number(match![2])) },
   { method: "GET", pattern: /^\/products\/(\d+)\/specs\/(\d+)\/export$/, access: "authenticated-only", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleExportProductSpec(res, deps, Number(match![1]), Number(match![2])) },
+  // 人对 tracker 的动作(CONTEXT.md 认领,issue #363):开关一条 spec,认领、改标签、开关
+  // 一张票,在一张票上评论。门禁是 `agent:chat` 加这个产品里的一个仓库分配,与建会话同一
+  // 格:在这个产品上说得上话的人就动得了它的活。**正文与标题没有写端点**——它们只由会话
+  // 经工具写(ADR 0035),带着这两格来的请求回 400。
+  { method: "PUT", pattern: /^\/products\/(\d+)\/specs\/(\d+)$/, access: "agent:chat", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps }, match) => handleSetProductSpecState(req, res, deps, Number(match![1]), Number(match![2])) },
+  { method: "PUT", pattern: /^\/products\/(\d+)\/tickets\/(\d+)$/, access: "agent:chat", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleUpdateProductTicket(req, res, deps, Number(match![1]), Number(match![2]), caller!.username) },
+  { method: "POST", pattern: /^\/products\/(\d+)\/tickets\/(\d+)\/comments$/, access: "agent:chat", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleCommentProductTicket(req, res, deps, Number(match![1]), Number(match![2]), caller!.username) },
   // 重梳(CONTEXT.md 产品梳理,issue #345)。门禁是 `knowledge:write` 加这个产品里的一个仓库
   // 分配——后半句正是 `product` 这个目标本身。会话本身由系统建,创建者不是点下它的那个人。
   { method: "POST", pattern: /^\/products\/(\d+)\/survey$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps }, match) => handleProductSurvey(req, res, deps, Number(match![1])) },

@@ -6,7 +6,11 @@ import type { PanelPermission } from "../src/panel/permissions.ts";
 import { openStore } from "../src/review/store.ts";
 import { PANEL_ROUTES } from "../src/webhook/server.ts";
 import {
+  GITEA_REPO,
+  scopedUser,
+  seedRepo,
   startPanelHarness,
+  startReadyPanelHarness,
   userCookie as userCookieRow,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -108,6 +112,11 @@ const ROUTE_EXPECTATIONS = [
   // 产品 tracker 的两条读端点(issue #361):读随产品可见性,不挂权限格。
   ["GET", "/^\\/products\\/(\\d+)\\/specs\\/(\\d+)$/", "authenticated-only", "product:1"],
   ["GET", "/^\\/products\\/(\\d+)\\/specs\\/(\\d+)\\/export$/", "authenticated-only", "product:1"],
+  // 人对 tracker 的动作(issue #363):`agent:chat` 加这个产品里的一个仓库分配,与建会话
+  // 同一格。正文与标题没有写端点。
+  ["PUT", "/^\\/products\\/(\\d+)\\/specs\\/(\\d+)$/", "agent:chat", "product:1"],
+  ["PUT", "/^\\/products\\/(\\d+)\\/tickets\\/(\\d+)$/", "agent:chat", "product:1"],
+  ["POST", "/^\\/products\\/(\\d+)\\/tickets\\/(\\d+)\\/comments$/", "agent:chat", "product:1"],
   ["POST", "/^\\/products\\/(\\d+)\\/survey$/", "knowledge:write", "product:1"],
   // Agent 会话(issue #332、#333、#334、#336、#337、#356):建与发消息、删、清队列、停止、更新基点、定稿、
   // 传图按 `agent:chat`,读登录即可;会话本身的可见性按创建者在 handler 里判,不是仓库分配
@@ -494,6 +503,66 @@ test("目录刷新与补录变更只要求模型写权限", async () => {
       `${method} ${path} 模型写权限应进入业务参数校验`,
     );
     assert.equal((await h.api(method, path, {})).status, 400, `${method} ${path} 管理员应放行`);
+  }
+});
+
+test("人动产品 tracker 要 agent:chat 加这个产品里的仓库分配,缺哪一样都动不了", async () => {
+  const at = "2026-09-17T00:00:00.000Z";
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const created = await h.api("POST", "/products", { name: "报销系统" });
+  assert.equal(created.status, 201);
+  const productId = ((await created.json()) as { product: { id: number } }).product.id;
+  const store = openStore(h.db.path);
+  const specId = store.createProductSpec({
+    productId,
+    title: "报销单可以撤回",
+    body: "提交之后改不了。",
+    sessionId: null,
+    at,
+  }).id;
+  const ticketId = store.createProductTicket({
+    specId,
+    title: "撤回接口",
+    body: "PATCH /expenses/{id}",
+    label: "needs-triage",
+    sessionId: null,
+    at,
+  }).id;
+  assert.equal(store.attachProductRepo(productId, GITEA_REPO.id, at), "attached");
+  store.close();
+
+  // 两样齐了的那个人;有仓库分配、缺权限格的那个人;有权限格、这个产品里一个仓库都没
+  // 分到的那个人。
+  const both = await scopedUser(h, "tracker-hand", PASSWORD, at, [GITEA_REPO.id], ["agent:chat"]);
+  const noPermission = await scopedUser(h, "tracker-reader", PASSWORD, at, [GITEA_REPO.id]);
+  const elsewhere = seedRepo(h, 505, "acme", "delta");
+  const noAssignment = await scopedUser(h, "tracker-outsider", PASSWORD, at, [elsewhere], [
+    "agent:chat",
+  ]);
+
+  const actions = [
+    ["PUT", `/products/${productId}/specs/${specId}`, { state: "closed" }, 200],
+    ["PUT", `/products/${productId}/tickets/${ticketId}`, { claimed: true }, 200],
+    ["POST", `/products/${productId}/tickets/${ticketId}/comments`, { text: "看过了" }, 201],
+  ] as const;
+  const call = (cookie: string, method: string, path: string, payload: unknown): Promise<Response> =>
+    fetch(`${h.serverUrl}/api${path}`, {
+      method,
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+  for (const [method, path, payload, ok] of actions) {
+    const done = await call(both, method, path, payload);
+    assert.equal(done.status, ok, `${method} ${path}:${await done.text()}`);
+
+    // 缺权限格:403。
+    assert.equal((await call(noPermission, method, path, payload)).status, 403, `${method} ${path}`);
+
+    // 这个产品里一个仓库都没分到:与产品不存在同形回 404,连「有没有这个产品」都问不出来。
+    const outside = await call(noAssignment, method, path, payload);
+    assert.equal(outside.status, 404, `${method} ${path}`);
+    assert.deepEqual(await outside.json(), { error: "没有这个产品" });
   }
 });
 

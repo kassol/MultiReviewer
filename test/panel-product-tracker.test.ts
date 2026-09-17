@@ -1,21 +1,28 @@
 /**
- * 产品 tracker 的那一段面板接口(CONTEXT.md 产品 tracker、spec、票,ADR 0035,issue #361)。
+ * 产品 tracker 的那一段面板接口(CONTEXT.md 产品 tracker、spec、票、认领,ADR 0035,
+ * issue #361、#363)。
  *
  * 三条缝照旧:面板 API 走真实 HTTP,仓库注册打到假 Gitea,spec 与票落临时 SQLite。压的是
- * 本票的验收:产品页读到 spec 连它的票(标签、状态、认领人、阻塞者)、一条 spec 打得开全文、
+ * 两票的验收:产品页读到 spec 连它的票(标签、状态、认领人、阻塞者)、一条 spec 打得开全文、
  * 导出是一份票按依赖顺序排的 Markdown、看不到这个产品的人什么都读不到、升级前的旧库开起来
- * 新表在且 tracker 为空。
+ * 新表在且 tracker 为空;人做得了认领与取消认领、改标签(只有五个)、开关 spec 与票、评论,
+ * 正文与标题改不动。
  *
  * 会话经工具写 tracker 那条路在 `agent-session-subprocess.test.ts`:这里只把行落进库,压的是
- * 读侧。
+ * 读侧与人的动作。
  */
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-import { openStore, type ProductTicketLabel } from "../src/review/store.ts";
+import {
+  openStore,
+  PRODUCT_TICKET_LABELS,
+  type ProductTicketLabel,
+} from "../src/review/store.ts";
 import {
   GITEA_REPO,
+  PANEL_ADMIN_USERNAME,
   scopedUser,
   seedRepo,
   startReadyPanelHarness,
@@ -119,7 +126,6 @@ test("产品页读到 spec 连它的票:标签、状态、认领人与阻塞者�
     // 第二张票等第一张。
     [[1, 0]],
   );
-  // 认领与关票的入口是 #363,这一票只读得出这两格,因此直接落库造出一个已认领的状态。
   const store = openStore(h.db.path);
   try {
     assert.equal(store.setProductTicketState(ticketIds[0]!, "closed", AT), true);
@@ -286,4 +292,177 @@ test("升级前的旧库:开库建起 tracker 那几张表,产品开起来 track
   assert.deepEqual((await detail(h, created.id)).tracker.specs.map((one) => one.id), [
     again.specId,
   ]);
+});
+
+/** 当前 tracker 里那一张票(按票号找)。人的动作落没落下去看它。 */
+async function ticketOf(h: PanelHarness, productId: number, ticketId: number): Promise<TrackerTicket> {
+  const { tracker } = await detail(h, productId);
+  const found = tracker.specs.flatMap((spec) => spec.tickets).find((one) => one.id === ticketId);
+  assert.ok(found !== undefined, `tracker 里没有票 ${ticketId}`);
+  return found;
+}
+
+test("人认领与取消认领一张票:认领落自己的名字,别人认领着的认不动", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const created = await product(h);
+  const { ticketIds } = seedSpec(h, created.id, { title: "报销单可以撤回", body: "改不了。" }, [
+    { title: "撤回接口", body: "PATCH /expenses/{id}" },
+  ]);
+  const ticketId = ticketIds[0]!;
+  const path = `/products/${created.id}/tickets/${ticketId}`;
+
+  const claimed = await h.api("PUT", path, { claimed: true });
+  assert.equal(claimed.status, 200, await claimed.text());
+  assert.equal((await ticketOf(h, created.id, ticketId)).claimedBy, PANEL_ADMIN_USERNAME);
+
+  // 同一个人认领两次是同一个意思。
+  assert.equal((await h.api("PUT", path, { claimed: true })).status, 200);
+
+  // 别人认领着的票认不动:后一个不该把前一个顶掉。
+  const other = await scopedUser(h, "zhangsan", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
+  const stolen = await fetch(`${h.serverUrl}/api${path}`, {
+    method: "PUT",
+    headers: { cookie: other, "content-type": "application/json" },
+    body: JSON.stringify({ claimed: true }),
+  });
+  assert.equal(stolen.status, 409);
+  assert.deepEqual(await stolen.json(), { error: "这张票已经有人认领了" });
+  assert.equal((await ticketOf(h, created.id, ticketId)).claimedBy, PANEL_ADMIN_USERNAME);
+
+  // 取消认领之后那一格空着,别人就认得上了。
+  assert.equal((await h.api("PUT", path, { claimed: false })).status, 200);
+  assert.equal((await ticketOf(h, created.id, ticketId)).claimedBy, null);
+  const retried = await fetch(`${h.serverUrl}/api${path}`, {
+    method: "PUT",
+    headers: { cookie: other, "content-type": "application/json" },
+    body: JSON.stringify({ claimed: true }),
+  });
+  assert.equal(retried.status, 200, await retried.text());
+  assert.equal((await ticketOf(h, created.id, ticketId)).claimedBy, "zhangsan");
+});
+
+test("人改标签:五个之内换得动,别的值回 400", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const created = await product(h);
+  const { ticketIds } = seedSpec(h, created.id, { title: "报销单可以撤回", body: "改不了。" }, [
+    { title: "撤回接口", body: "PATCH /expenses/{id}" },
+  ]);
+  const path = `/products/${created.id}/tickets/${ticketIds[0]!}`;
+
+  for (const label of PRODUCT_TICKET_LABELS) {
+    const response = await h.api("PUT", path, { label });
+    assert.equal(response.status, 200, await response.text());
+    assert.equal((await ticketOf(h, created.id, ticketIds[0]!)).label, label);
+  }
+
+  // 不在这五个里的一律打回,那一格原样不动。
+  for (const label of ["p0", "needs triage", "", 7]) {
+    const refused = await h.api("PUT", path, { label });
+    assert.equal(refused.status, 400, `${String(label)} 应该被打回`);
+  }
+  assert.equal((await ticketOf(h, created.id, ticketIds[0]!)).label, "wontfix");
+});
+
+test("人开关 spec 与票,并在票上评论", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const created = await product(h);
+  const { specId, ticketIds } = seedSpec(
+    h,
+    created.id,
+    { title: "报销单可以撤回", body: "改不了。" },
+    [{ title: "撤回接口", body: "PATCH /expenses/{id}" }],
+  );
+  const ticketId = ticketIds[0]!;
+
+  const closedTicket = await h.api("PUT", `/products/${created.id}/tickets/${ticketId}`, {
+    state: "closed",
+  });
+  assert.equal(closedTicket.status, 200, await closedTicket.text());
+  assert.equal((await ticketOf(h, created.id, ticketId)).state, "closed");
+  // 再开回来。
+  assert.equal(
+    (await h.api("PUT", `/products/${created.id}/tickets/${ticketId}`, { state: "open" })).status,
+    200,
+  );
+  assert.equal((await ticketOf(h, created.id, ticketId)).state, "open");
+
+  const closedSpec = await h.api("PUT", `/products/${created.id}/specs/${specId}`, {
+    state: "closed",
+  });
+  assert.equal(closedSpec.status, 200, await closedSpec.text());
+  assert.equal((await detail(h, created.id)).tracker.specs[0]!.state, "closed");
+  // 开或关之外的状态一律打回。
+  assert.equal(
+    (await h.api("PUT", `/products/${created.id}/specs/${specId}`, { state: "done" })).status,
+    400,
+  );
+
+  const commented = await h.api("POST", `/products/${created.id}/tickets/${ticketId}/comments`, {
+    text: "  财务说只有草稿态能撤回。  ",
+  });
+  assert.equal(commented.status, 201, await commented.text());
+  // 空评论不收。
+  assert.equal(
+    (await h.api("POST", `/products/${created.id}/tickets/${ticketId}/comments`, { text: "   " }))
+      .status,
+    400,
+  );
+
+  // 评论整段随 spec 全文读回来,作者是写下它的那个人。
+  const read = await h.api("GET", `/products/${created.id}/specs/${specId}`);
+  const spec = (await read.json()) as {
+    tickets: { comments: { author: string | null; body: string }[] }[];
+  };
+  assert.deepEqual(spec.tickets[0]!.comments, [
+    { ...spec.tickets[0]!.comments[0], author: PANEL_ADMIN_USERNAME, body: "财务说只有草稿态能撤回。" },
+  ]);
+});
+
+test("正文与标题改不动:带着它们来的请求回 400,别的产品的票同形回 404", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const created = await product(h);
+  const { specId, ticketIds } = seedSpec(
+    h,
+    created.id,
+    { title: "报销单可以撤回", body: "改不了。" },
+    [{ title: "撤回接口", body: "PATCH /expenses/{id}" }],
+  );
+  const ticketId = ticketIds[0]!;
+
+  for (const [path, payload] of [
+    [`/products/${created.id}/tickets/${ticketId}`, { body: "我自己写的正文" }],
+    [`/products/${created.id}/tickets/${ticketId}`, { title: "我自己改的标题" }],
+    [`/products/${created.id}/specs/${specId}`, { state: "closed", body: "换一份 spec" }],
+  ] as const) {
+    const refused = await h.api("PUT", path, payload);
+    const said = await refused.text();
+    assert.equal(refused.status, 400, said);
+    assert.deepEqual(JSON.parse(said), { error: "spec 与票的正文与标题只由会话写" });
+  }
+  const read = await h.api("GET", `/products/${created.id}/specs/${specId}`);
+  const spec = (await read.json()) as {
+    spec: { body: string; state: string };
+    tickets: { title: string; body: string }[];
+  };
+  assert.equal(spec.spec.body, "改不了。");
+  assert.equal(spec.spec.state, "open");
+  assert.equal(spec.tickets[0]!.title, "撤回接口");
+  assert.equal(spec.tickets[0]!.body, "PATCH /expenses/{id}");
+
+  // 别的产品下的同一个票号与根本没有这一张说同一句话。
+  const other = await h.api("POST", "/products", { name: "结算系统" });
+  const otherId = ((await other.json()) as { product: Product }).product.id;
+  for (const [method, path, payload] of [
+    ["PUT", `/products/${otherId}/tickets/${ticketId}`, { claimed: true }],
+    ["POST", `/products/${otherId}/tickets/${ticketId}/comments`, { text: "越界" }],
+  ] as const) {
+    const hidden = await h.api(method, path, payload);
+    assert.equal(hidden.status, 404, path);
+    assert.deepEqual(await hidden.json(), { error: "没有这张票" });
+  }
+  const hiddenSpec = await h.api("PUT", `/products/${otherId}/specs/${specId}`, {
+    state: "closed",
+  });
+  assert.equal(hiddenSpec.status, 404);
+  assert.deepEqual(await hiddenSpec.json(), { error: "没有这条 spec" });
 });
