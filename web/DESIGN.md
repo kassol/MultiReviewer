@@ -358,6 +358,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 - 单层布局先显示列表，进入详情后提供明确返回入口。首页把左栏折叠成顶部的仓库选择器，选中的仓库写在地址上；模型服务以稳定 provider 路由区分，浏览器前进、后退和刷新保持可恢复。
 - 表头可粘性定位；横向滚动限制在表格自身容器内，页面不得产生水平滚动。
 - 长名称和模型标识单行截断，hover/focus 时通过 Tooltip 查看全文。
+- 模型标识整段显示时（模型服务页的模型列表、模型组合框候选）用 `wrap-anywhere`（`overflow-wrap: anywhere`），断在 `-` `/` `:` `.` 上；不用 `break-all`，它在任意字符间断行，`claude-opus-latest` 会被切成 `claude-opus-lat` / `est`，读的人认不出这是哪个模型。
 - 地址、模型标识等可复制内容提供 Copy 按钮。
 - 阶段详情的时间线是一条竖向时间轴。左侧一根 1px `border-chrome-line` 竖线,每次代码推进(pull request 的 head commit、范围审查的比较项)是轴上一个 16px 圆点节点:最新那组实心 `--v8-accent`,其余 `--v8-neutral-dot` 2px 描边空心;节点右侧一行 `text-base` 元信息(commit chip、推进的人、发起 / 增量评审、时刻),节点下一张详情内嵌卡(`border-overlay-line` + `shadow-control`),组内每一轮是卡里的连续行。行是 `MasterListItem selected={false}` 套 Link,沿四条列轨排:16px 状态图标(运行中 `StopwatchIcon` 主色、失败 `CrossCircledIcon` 红、结束 `CheckCircledIcon` 中性灰)、「第 N 轮」(`text-lg font-semibold`)叠开跑时刻与耗时(`text-base text-text-muted`)、这一轮的五个数、行尾 `ReaderIcon` 加「审查轨迹」。`sm` 以下五个数落到第二行,行尾只留图标。竖线画在每组自己身上、最早那组不画,时间轴在最早的节点收住。
 
@@ -488,6 +489,7 @@ Agent 会话页的中栏是一块占满视口的聊天工作台,整页不滚:`Pa
 - 取消关闭时丢弃弹窗草稿，保留底层 provider、列表项、Tab、筛选和滚动位置。
 - 提交成功后更新底层数据；是否切换当前项由操作结果明确决定。
 - 长内容只滚动 Dialog 内容区，标题和操作区保持可见。
+- 多步配置 Dialog 在 `sm` 以下顶靠视口上沿，不居中：Themes 默认把浮层摆在可滚动容器的中间，只有三四个字段的一步整块吊在屏幕中段，底部动作区正好落进软键盘升起后被盖住的那一段。顶靠后动作区紧跟正文，停在键盘上沿之上；宽屏没有软键盘，仍然居中。命令面板按同一个道理顶靠。这就是 Themes 的 `align="start"`，但那个 prop 不是响应式的，断点那一半写在 `styles.css` 里（与 `.rt-BaseDialogOverlay` 收下缘同一处，页面不自己覆盖浮层内部 DOM），靠浮层根节点的 `id` 认出是哪一个。
 - 打开后聚焦首个有效操作，关闭后焦点返回触发按钮。受控浮层通过 `useDialogReturnFocus` 在触发事件发生时记录真实元素；触发元素被卸载时返回调用方提供的稳定入口。后备入口用 `visibleNavCurrentItem()`：桌面导航与移动 Tab 栏同时在 DOM 里、只靠断点显隐，`[aria-current='page']` 会命中两个，而 `focus()` 对 `display: none` 的那个静默无效。
 
 ### 10.2 运行详情面板
