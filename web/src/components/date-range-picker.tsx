@@ -1,6 +1,6 @@
 import { CalendarIcon, ChevronDownIcon } from "@radix-ui/react-icons";
 import { Popover } from "@radix-ui/themes";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 
 import { Button } from "@/components/theme-button";
 import { Calendar } from "@/components/ui/calendar";
@@ -16,6 +16,21 @@ type DateRangePickerProps = {
   onChange: (value: DateRangeValue) => void;
 };
 
+/**
+ * `sm` 以下的取反写法(Tailwind 的 `sm:` 是 `min-width: 640px`),与 Calendar 里
+ * `sm:[--cell-size:…]` 同一个断点:窄屏日期格是 44px 触控尺寸,两个月竖着叠起来
+ * 有 732px 高,比 390×844 的可用高度还大。
+ */
+const NARROW_SCREEN = "(max-width: 639.98px)";
+
+function subscribeNarrowScreen(onChange: () => void): () => void {
+  const query = window.matchMedia(NARROW_SCREEN);
+  query.addEventListener("change", onChange);
+  return () => {
+    query.removeEventListener("change", onChange);
+  };
+}
+
 /** 日历日期与 `YYYY-MM-DD` 互转时只读本地字段，避免 UTC 偏移所选日期。 */
 function dayDate(day: string): Date | undefined {
   const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
@@ -25,6 +40,11 @@ function dayDate(day: string): Date | undefined {
 
 export function DateRangePicker({ value, onChange }: DateRangePickerProps) {
   const [open, setOpen] = useState(false);
+  const narrow = useSyncExternalStore(
+    subscribeNarrowScreen,
+    () => window.matchMedia(NARROW_SCREEN).matches,
+    () => false,
+  );
   const fromDate = dayDate(value.from);
   const fromLabel = value.from === "" ? "起始不限" : value.from;
   const toLabel = value.to === "" ? "至今" : value.to;
@@ -47,16 +67,25 @@ export function DateRangePicker({ value, onChange }: DateRangePickerProps) {
           <ChevronDownIcon aria-hidden className="text-text-muted" />
         </Button>
       </Popover.Trigger>
+      {/*
+        高度上限必须来自 Radix 自己算出的可用高度。原来写的 `100vh - space-4` 在 844px
+        高的屏上是 828px,比 732px 的双月日历还大,所以 max-height 从不生效,浮层也就
+        没有可滚动的溢出(`scrollHeight === clientHeight`),Popper 只能把装不下的部分
+        推出视口。`--radix-popper-available-height` 由 Popper 的 size 中间件按翻转后
+        的那一侧写在包裹层上,已经扣掉 collisionPadding;`.rt-PopoverContent` 自带
+        `overflow: auto`,超出部分自然可滚。
+        窄屏底部留出 Tab 栏的高度(44px 触控行 + 安全区),否则日历最后一行压在导航下面。
+      */}
       <Popover.Content
         align="end"
         size="1"
         maxWidth="calc(100vw - var(--space-4))"
-        maxHeight="calc(100vh - var(--space-4))"
-        className="overflow-auto"
+        maxHeight="var(--radix-popper-available-height)"
+        collisionPadding={{ top: 10, right: 10, bottom: narrow ? 80 : 10, left: 10 }}
       >
         <Calendar
           mode="range"
-          numberOfMonths={2}
+          numberOfMonths={narrow ? 1 : 2}
           {...(fromDate === undefined ? {} : { defaultMonth: fromDate })}
           selected={{ from: fromDate, to: dayDate(value.to) }}
           onSelect={(range) => {
