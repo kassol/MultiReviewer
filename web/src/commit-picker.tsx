@@ -669,8 +669,10 @@ export function CommitPicker({
       ) : null}
 
       <div className="shrink-0 space-y-2 border-b border-line px-3 py-2.5 sm:px-4 sm:py-3">
-        <Flex gap="2" align="center">
-          <Box className="w-28 shrink-0 sm:w-32">
+        {/* 窄屏这一行放不下三个控件:来源自己占一行,分支组合框与刷新并排在下一行(issue #376)。
+            sm 起三者仍在同一行,`wrap` 此时没有换行点。 */}
+        <Flex gap="2" align="center" wrap="wrap">
+          <Box className="w-full shrink-0 sm:w-32">
             <Text id={sourceLabelId} as="div" className="sr-only">
               来源
             </Text>
