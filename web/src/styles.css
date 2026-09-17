@@ -438,12 +438,61 @@
  * （平板横屏、触屏笔记本），小号控件也保持 44px；鼠标桌面仍沿用紧凑尺寸。
  */
 @media (pointer: coarse) {
-  .radix-themes :where(.rt-Button, .rt-IconButton, .rt-TextFieldRoot, .rt-SelectTrigger, .rt-SegmentedControlItem) {
+  /*
+   * 菜单项、Select 选项与 Tab 用的是 Radix 的共享基类(`rt-BaseMenuItem` 同时挂在
+   * DropdownMenu 与 ContextMenu 的普通项、勾选项和子菜单入口上,`rt-BaseTabListTrigger`
+   * 挂在 Tabs.Trigger 上),写基类就一次盖住全部调用点,不用逐个组件补。
+   */
+  .radix-themes
+    :where(
+      .rt-Button,
+      .rt-IconButton,
+      .rt-TextFieldRoot,
+      .rt-SelectTrigger,
+      .rt-SegmentedControlItem,
+      .rt-BaseMenuItem,
+      .rt-SelectItem,
+      .rt-BaseTabListTrigger
+    ) {
     min-height: 44px;
   }
 
-  .radix-themes :where(.rt-IconButton) {
+  /* 两个字的按钮只有 39px 宽,竖轴够了横轴还不够。 */
+  .radix-themes :where(.rt-Button, .rt-IconButton) {
     min-width: 44px;
+  }
+
+  /*
+   * 命令面板与阶段文件筛选的搜索框来自 cmdk,没有 Radix 类名,按它自己的 data-slot 认。
+   * 外框和输入都写死 36px 高,`min-height` 压不过,直接给终值。
+   */
+  :where([data-slot="command-input-wrapper"], [data-slot="command-input"]) {
+    height: 44px;
+  }
+
+  /*
+   * Checkbox 与 Switch 反过来:16px 的方框、35px 的拨杆放大到 44px 就不是这套设计了。
+   * 视觉尺寸不动,用一层透明的 `::after` 把命中区补齐——伪元素属于控件本身,点它就是
+   * 点控件,又不占布局流,行高和左右间距都不变。视觉本身占着 `::before`,所以用 `::after`。
+   */
+  .radix-themes :where(.rt-BaseCheckboxRoot, .rt-SwitchRoot)::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    translate: -50% -50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+  }
+
+  /*
+   * CheckboxGroup / RadioGroup 的选项自带一层 `<label>`,整行连文字一起就是命中区,
+   * 把这层撑到 44px 即可。RadioGroup 的圆点占着 `::after`,补不了伪元素,项目里也
+   * 只以带文字的选项形式出现,这条正好覆盖。
+   */
+  .radix-themes :where(.rt-CheckboxGroupItem, .rt-RadioGroupItem) {
+    min-height: 44px;
+    align-items: center;
   }
 }
 

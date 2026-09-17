@@ -450,7 +450,9 @@ function MobileTabBar({
             <span className="text-[10px] font-medium">我的</span>
           </button>
         </DropdownMenu.Trigger>
-        <DropdownMenu.Content align="end" size="2">
+        {/* Radix 默认离触发器 4px。这个菜单贴着 Tab 栏往上开,菜单项在触屏上有 44px 的
+            命中区,末项「退出登录」的下沿离 Tab 栏太近,拉到 8px 才不会误点到 Tab。 */}
+        <DropdownMenu.Content align="end" size="2" sideOffset={8}>
           <DropdownMenu.Label>{name}</DropdownMenu.Label>
           {overflow.map((item) => (
             <DropdownMenu.Item key={item.to} asChild>

@@ -263,9 +263,30 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 ### 6.1 密度
 
 - Theme 固定 `scaling="100%"`，密度由字号阶梯本身承担。
-- 常规输入和按钮使用 `size="2"`；窄屏用响应式 size（`{ initial: "3", sm: "2" }`）并配 `max-sm:min-h-11`，保证触控目标至少 44px。
+- 常规输入和按钮使用 `size="2"`；窄屏用响应式 size（`{ initial: "3", sm: "2" }`）。
 - 核心提交动作在窄屏用 `size="4"`。
 - 表格和长列表优先紧凑行高，重要状态保持完整文字。
+
+#### 触控
+
+组件的响应式 size 负责视觉密度，输入方式负责命中面积。两件事分开：size 看屏宽，命中面积看 `@media (pointer: coarse)`——触屏笔记本和横屏平板宽于 640px，也照样要 44px。
+
+规则只写在 `styles.css` 的 coarse 块里一处，页面不再各补各的 `max-sm:min-h-11`。覆盖范围：
+
+| 控件 | 类名 | 做法 |
+| --- | --- | --- |
+| Button、IconButton | `.rt-Button`、`.rt-IconButton` | 两轴都到 44px；两个字的按钮原本只有 39px 宽 |
+| 输入、Select 触发器、分段控件 | `.rt-TextFieldRoot`、`.rt-SelectTrigger`、`.rt-SegmentedControlItem` | `min-height: 44px` |
+| 菜单项 | `.rt-BaseMenuItem` | 同上。基类同时挂在 DropdownMenu 与 ContextMenu 的普通项、勾选项和子菜单入口上 |
+| Select 选项 | `.rt-SelectItem` | 同上 |
+| Tab | `.rt-BaseTabListTrigger` | 同上。激活指示条绝对定位在底边，不随高度移动 |
+| cmdk 搜索框 | `[data-slot="command-input-wrapper"]`、`[data-slot="command-input"]` | 写死 36px 高，直接给 44px 终值 |
+| Checkbox、Switch | `.rt-BaseCheckboxRoot`、`.rt-SwitchRoot` | 视觉尺寸不动（16px 方框、35px 拨杆），透明 `::after` 把命中区补到 44×44。`::before` 是视觉本身，所以用 `::after` |
+| CheckboxGroup、RadioGroup 选项 | `.rt-CheckboxGroupItem`、`.rt-RadioGroupItem` | Radix 自带的一层 `<label>` 撑到 44px，整行连文字一起是命中区 |
+
+开关放在行尾时，整行包一层 `<label>`（权限行就是这样）：浏览器把 label 的点击转投给它标注的控件，Switch 渲染成 `<button>`，属于可标注元素，开关自身的键盘与焦点行为不变。
+
+贴着屏幕边缘开的菜单要留出余量：底部 Tab 栏的「我的」菜单用 `sideOffset={8}`，末项的 44px 命中区才不会压到 Tab 栏上。
 
 ### 6.2 间距
 
