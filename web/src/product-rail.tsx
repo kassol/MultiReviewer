@@ -253,8 +253,9 @@ export function ProductRail({
     <>
       {/*
         `lg` 以下这个 `aside` 让出自己的盒子(`contents`),三张卡因此与调用页的主列成为同一个
-        flex 容器的直接子项,由各自的 `max-lg:order-*` 排成 产品列表 → 主列 → 仓库 → 会话
-        ——手机上先选产品、再看它是什么,仓库与会话排在后面。`lg` 起它恢复成 264px 的一列。
+        flex 容器的直接子项,由各自的 `max-lg:order-*` 排成 产品列表 → 会话 → 仓库 → 主列
+        ——手机上先选产品、再进会话(issue #383:会话是人在手机上要打开的那一样,概览与产品
+        知识是读物,排在最后)。`lg` 起它恢复成 264px 的一列。
       */}
       <aside
         aria-label="产品、仓库与会话"
@@ -380,7 +381,7 @@ export function ProductRail({
             </RailCard>
             </div>
 
-            <div className="min-w-0 max-lg:order-4">
+            <div className="min-w-0 max-lg:order-2">
             <SessionRail
               productId={current.id}
               sessions={sessions}
@@ -508,8 +509,13 @@ function SessionRail({
                   to="/products/$productId/sessions/$sessionId"
                   params={{ productId: String(productId), sessionId: String(session.id) }}
                 >
+                  {/*
+                    标题走正文基准 13.5px、两行才截断(issue #383):`title` 是首条用户消息,
+                    一行 12px 的 `truncate` 只读得到开头半句,分不出两场会话谈的是不是同一件
+                    事。`break-all` 保证没有空格的长串也在栏宽内折行,不把卡撑出横向滚动。
+                  */}
                   <span className="flex items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate text-base">
+                    <span className="min-w-0 flex-1 line-clamp-2 break-all text-lg">
                       {session.title ?? PURPOSE_LABEL[session.purpose]}
                     </span>
                     {session.status === "running" ? (
