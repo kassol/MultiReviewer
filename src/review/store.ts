@@ -858,7 +858,7 @@ CREATE INDEX IF NOT EXISTS product_spec_by_product ON product_spec(product_id);
 -- 一张票(CONTEXT.md 票,issue #361)。挂在 spec 上,产品经 spec 推出来——票不另存一格
 -- product_id:两处存同一件事就能不一致,而「阻塞边只在同一产品的票之间」正是照 spec 那一格判的。
 -- 五个 triage 标签是固定字段值(ADR 0035),由 CHECK 表达而不是另开一张配置表。
--- 认领人是 #363 的入口,本票只把这一格建出来,写它的地方还没有。
+-- 认领人由人在产品页写(CONTEXT.md 认领,issue #363),会话不碰它。
 CREATE TABLE IF NOT EXISTS product_ticket (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   spec_id INTEGER NOT NULL REFERENCES product_spec(id),
@@ -886,7 +886,7 @@ CREATE TABLE IF NOT EXISTS product_ticket_block (
 );
 
 -- 票上的一条评论(CONTEXT.md 票,issue #361)。作者两格与产品知识的提案来源同律:人写的
--- 那一条是用户名(#363 的入口),会话写的那一条是 session_id,两格恰有一格不空。
+-- 那一条是用户名,会话写的那一条是 session_id,两格恰有一格不空。
 CREATE TABLE IF NOT EXISTS product_ticket_comment (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ticket_id INTEGER NOT NULL REFERENCES product_ticket(id),
@@ -2877,7 +2877,7 @@ export type ProductTicketRecord = {
   body: string;
   label: ProductTicketLabel;
   state: ProductTrackerState;
-  /** 认领人(CONTEXT.md 认领)。没人认领即 null;写它的入口是 #363。 */
+  /** 认领人(CONTEXT.md 认领)。没人认领即 null;人在产品页写它(issue #363)。 */
   claimedBy: string | null;
   sessionId: number | null;
   createdAt: string;
@@ -3448,6 +3448,14 @@ export type Store = {
   setProductTicketBody(ticketId: number, body: string): boolean;
   /** 开关一张票。已经是这个状态即 false。 */
   setProductTicketState(ticketId: number, state: ProductTrackerState, at: string): boolean;
+  /** 改一张票的标签(CONTEXT.md 票,issue #363)。五个取值由调用方判。没有这一张即 false。 */
+  setProductTicketLabel(ticketId: number, label: ProductTicketLabel): boolean;
+  /**
+   * 认领或取消认领一张票(CONTEXT.md 认领,issue #363)。`claimedBy` 给名字即认领,给 null
+   * 即取消。**别人认领着的票认不动**:那一档回 false,由调用方说出理由——两个人同时点认领
+   * 时后一个不该把前一个顶掉。自己认领两次与取消一张没人认领的票都算成功。
+   */
+  setProductTicketClaim(ticketId: number, claimedBy: string | null): boolean;
   /** 一张票上的评论,老的在前。 */
   listProductTicketComments(ticketId: number): ProductTicketCommentRecord[];
   /** 在一张票上写一条评论。人写的给 `author`,会话写的给 `sessionId`。 */
@@ -5959,6 +5967,29 @@ export function openStore(dbPath: string): Store {
             .run(state, at, ticketId, state).changes,
         ) > 0
       );
+    },
+
+    setProductTicketLabel(ticketId, label) {
+      return (
+        Number(
+          db.prepare("UPDATE product_ticket SET label = ? WHERE id = ?").run(label, ticketId)
+            .changes,
+        ) > 0
+      );
+    },
+
+    setProductTicketClaim(ticketId, claimedBy) {
+      // 认领那一句多一个 WHERE:别人的名字在那一格时一行都不匹配,调用方据此说出理由。
+      const run =
+        claimedBy === null
+          ? db.prepare("UPDATE product_ticket SET claimed_by = NULL WHERE id = ?").run(ticketId)
+          : db
+              .prepare(
+                `UPDATE product_ticket SET claimed_by = ?
+                  WHERE id = ? AND (claimed_by IS NULL OR claimed_by = ?)`,
+              )
+              .run(claimedBy, ticketId, claimedBy);
+      return Number(run.changes) > 0;
     },
 
     listProductTicketComments(ticketId) {

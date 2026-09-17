@@ -46,7 +46,7 @@ export type TrackerTicket = {
   title: string;
   label: TicketLabel;
   state: TrackerState;
-  /** 认领人(CONTEXT.md 认领)。没人认领即 null;认领的入口是下一票。 */
+  /** 认领人(CONTEXT.md 认领)。没人认领即 null。 */
   claimedBy: string | null;
   /** 阻塞它的那几张票的票号。 */
   blockedBy: number[];
@@ -74,9 +74,30 @@ export type SpecDetail = {
 export type ProductDetail = {
   product: Product;
   knowledge: ProductKnowledge[];
-  /** 产品 tracker(CONTEXT.md 产品 tracker,issue #361)。只读,正文只由会话写。 */
+  /** 产品 tracker(CONTEXT.md 产品 tracker,issue #361)。正文只由会话写。 */
   tracker: { specs: TrackerSpec[] };
 };
+
+/**
+ * 可开工的那几张票的票号(CONTEXT.md 票,issue #363):开着、没有未关的阻塞、无人认领。
+ *
+ * 阻塞边只在同一产品的票之间,但挡着它的那张票可能挂在另一条 spec 下,因此判定跨整份
+ * tracker 做,不在单条 spec 里算。认不出的票号当作不挡着——票不会被删,那一档只可能来自
+ * 一份还没读全的数据,让它照常显示比整张票消失好。
+ */
+export function pickableTickets(specs: readonly TrackerSpec[]): Set<number> {
+  const byId = new Map(specs.flatMap((spec) => spec.tickets).map((ticket) => [ticket.id, ticket]));
+  return new Set(
+    [...byId.values()]
+      .filter(
+        (ticket) =>
+          ticket.state === "open" &&
+          ticket.claimedBy === null &&
+          ticket.blockedBy.every((id) => byId.get(id)?.state !== "open"),
+      )
+      .map((ticket) => ticket.id),
+  );
+}
 
 /**
  * 术语表按主题分组(CONTEXT.md 术语条目,issue #360)。分组按条目里第一次出现的主题排,

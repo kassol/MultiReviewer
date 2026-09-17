@@ -17,6 +17,7 @@ import {
   IconButton,
   Skeleton,
   Text,
+  TextArea,
   Tooltip,
 } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
@@ -40,6 +41,7 @@ import { sessionsQueryKey, type AgentSession } from "@/lib/agent-sessions";
 import {
   currentProduct,
   groupedTerms,
+  pickableTickets,
   PRODUCTS_QUERY_KEY,
   productQueryKey,
   specQueryKey,
@@ -49,6 +51,7 @@ import {
   type SpecDetail,
   type TicketLabel,
   type TrackerSpec,
+  type TrackerState,
   type TrackerTicket,
 } from "@/lib/products";
 import { localMinute } from "@/lib/time";
@@ -237,6 +240,7 @@ export function ProductsPage({
           product={selected}
           specs={knowledgeQuery.data?.tracker.specs ?? []}
           pending={knowledgeQuery.isPending}
+          canChat={canChat}
         />
       )}
     </>
@@ -698,7 +702,7 @@ function KnowledgeSection({
   );
 }
 
-/** 五个 triage 标签各自的颜色。同一个标签在哪都是同一色,人扫一眼就认得出哪张票能开工。 */
+/** 五个 triage 标签各自的颜色。同一个标签在哪都是同一色,人扫一眼就认得出这是哪一类活。 */
 const LABEL_COLOR: Record<TicketLabel, "gray" | "amber" | "green" | "blue" | "red"> = {
   "needs-triage": "gray",
   "needs-info": "amber",
@@ -706,6 +710,9 @@ const LABEL_COLOR: Record<TicketLabel, "gray" | "amber" | "green" | "blue" | "re
   "ready-for-human": "blue",
   wontfix: "red",
 };
+
+/** 改标签菜单里的五项。取值就是上面那张表的键,两处不会各写一份。 */
+const TICKET_LABELS = Object.keys(LABEL_COLOR) as TicketLabel[];
 
 /** 一张票那一行右侧的几句:状态、认领人、挡着它的票。没有的那几样不占位置。 */
 function ticketNotes(ticket: TrackerTicket): string {
@@ -719,23 +726,35 @@ function ticketNotes(ticket: TrackerTicket): string {
 }
 
 /**
- * 产品页右栏的产品 tracker 区(CONTEXT.md 产品 tracker,issue #361)。排在产品知识区下面:
- * 知识说这个产品是什么,tracker 说它接下来要做什么。
+ * 可开工的那一枚标记(CONTEXT.md 票,issue #363)。不另起一枚 Badge:标签那一格已经占着
+ * 颜色,再来一枚绿的会与 `ready-for-agent` 撞脸。一行主色小字说完即可。
+ */
+function PickableMark() {
+  return <span className="shrink-0 text-sm font-medium text-primary">可开工</span>;
+}
+
+/**
+ * 产品页右栏的产品 tracker 区(CONTEXT.md 产品 tracker,issue #361、#363)。排在产品知识区
+ * 下面:知识说这个产品是什么,tracker 说它接下来要做什么。
  *
- * **整段只读**:spec 与票的正文只由会话经工具写,人在这里读与导出。认领、改标签、开关与
- * 评论是下一票的事,因此这一段一个写动作都没有,也不挂权限格——读随产品可见性。
+ * **正文只读**:spec 与票的正文只由会话经工具写。人在这里读、导出,并做认领、改标签、开关
+ * 与评论——那几个动作在 spec 全文弹窗里,一张票的上下文全在那儿。列表这一层只多一件事:
+ * 把可开工的票标出来。读随产品可见性,动作按 `agent:chat` 显隐。
  */
 function TrackerSection({
   product,
   specs,
   pending,
+  canChat,
 }: {
   product: Product;
   specs: readonly TrackerSpec[];
   pending: boolean;
+  canChat: boolean;
 }) {
   const [openSpec, setOpenSpec] = useState<TrackerSpec | null>(null);
   const ticketCount = specs.reduce((total, spec) => total + spec.tickets.length, 0);
+  const pickable = pickableTickets(specs);
 
   return (
     <CardShell className="min-w-0 px-5 py-4">
@@ -744,7 +763,7 @@ function TrackerSection({
           <h2 className="text-2xl font-bold tracking-[-0.015em]">产品 tracker</h2>
           <HelpTooltip
             label="产品 tracker 说明"
-            content="需求拆分会话谈定之后把 spec 写进来,再拆成带阻塞边的票。正文只由会话写,这里只读与导出。"
+            content="需求拆分会话谈定之后把 spec 写进来,再拆成带阻塞边的票。正文只由会话写;认领、改标签、开关与评论打开一条 spec 就能做。"
           />
           {pending ? null : (
             <span className="ml-1 font-mono text-xs font-normal text-text-muted tabular-nums">
@@ -828,6 +847,7 @@ function TrackerSection({
                           {notes === "" ? null : (
                             <span className="shrink-0 text-sm text-text-muted">{notes}</span>
                           )}
+                          {pickable.has(ticket.id) ? <PickableMark /> : null}
                         </li>
                       );
                     })}
@@ -838,35 +858,122 @@ function TrackerSection({
           </ul>
         )}
       </div>
-      <SpecDialog productId={product.id} spec={openSpec} onClose={() => setOpenSpec(null)} />
+      <SpecDialog
+        productId={product.id}
+        spec={openSpec}
+        canChat={canChat}
+        pickable={pickable}
+        onClose={() => setOpenSpec(null)}
+      />
     </CardShell>
+  );
+}
+
+/**
+ * 一张票底下的评论输入(CONTEXT.md 票,issue #363)。一个 TextArea 加一颗发送,草稿留在
+ * 这一张票自己的组件里——弹窗里几张票同时开着,草稿不该互相串。
+ */
+function CommentBox({
+  busy,
+  onSend,
+}: {
+  busy: boolean;
+  onSend: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState("");
+
+  return (
+    <form
+      className="flex min-w-0 flex-col gap-2"
+      onSubmit={(event: FormEvent) => {
+        event.preventDefault();
+        const text = draft.trim();
+        if (text === "") return;
+        setDraft("");
+        onSend(text);
+      }}
+    >
+      <TextArea
+        size="2"
+        rows={2}
+        maxLength={4000}
+        placeholder="写一条评论"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+      />
+      <div className="flex justify-end">
+        <Button type="submit" size="1" variant="soft" disabled={busy || draft.trim() === ""}>
+          发送
+        </Button>
+      </div>
+    </form>
   );
 }
 
 /**
  * 一条 spec 的全文(issue #361):它自己的正文,加它那几张票的正文与评论。读的是
  * `GET /products/{id}/specs/{specId}`——产品详情那一份只带列表要显示的那几格。
+ *
+ * 人的那几个动作也在这里(issue #363):开关这条 spec,认领、改标签、开关一张票,在票上
+ * 评论。正文与标题没有入口——它们只由会话经工具写(ADR 0035)。做完重读这一份与产品详情:
+ * 认领人与状态在产品页那一列上也要跟着变。
  */
 function SpecDialog({
   productId,
   spec,
+  canChat,
+  pickable,
   onClose,
 }: {
   productId: number;
   spec: TrackerSpec | null;
+  /** 有 `agent:chat` 且分到了这个产品里的仓库时才显示那几个控件。 */
+  canChat: boolean;
+  /** 可开工的票号,与产品页那一列同一份。 */
+  pickable: ReadonlySet<number>;
   onClose: () => void;
 }) {
+  const queryClient = useQueryClient();
+  const [failure, setFailure] = useState<string | null>(null);
   const detail = useQuery({
     queryKey: specQueryKey(productId, spec?.id),
     queryFn: () => fetchJson<SpecDetail>(`/products/${productId}/specs/${spec!.id}`),
     enabled: spec !== null,
   });
 
+  /** 动作做完重读两份:这一条 spec 的全文,与产品详情里的那一列。 */
+  const reread = async (): Promise<void> => {
+    setFailure(null);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: specQueryKey(productId, spec?.id) }),
+      queryClient.invalidateQueries({ queryKey: productQueryKey(productId) }),
+    ]);
+  };
+  const failed = (error: Error): void => setFailure(error.message);
+
+  const act = useMutation({
+    mutationFn: (input: { path: string; method: string; payload: unknown }) =>
+      send(input.path, input.method, input.payload),
+    onSuccess: reread,
+    onError: failed,
+  });
+  const busy = act.isPending;
+  /** 一张票上的一个动作:认领、改标签或开关,给哪一格就动哪一格。 */
+  const ticketAction = (
+    ticketId: number,
+    payload: { claimed?: boolean; label?: TicketLabel; state?: TrackerState },
+  ): void => {
+    act.mutate({ path: `/products/${productId}/tickets/${ticketId}`, method: "PUT", payload });
+  };
+
   return (
     <Dialog.Root
       open={spec !== null}
       onOpenChange={(next) => {
-        if (!next) onClose();
+        if (!next) {
+          setFailure(null);
+          onClose();
+        }
       }}
     >
       <Dialog.Content maxWidth="820px" size={{ initial: "2", sm: "3" }}>
@@ -874,8 +981,16 @@ function SpecDialog({
           {spec?.title ?? ""}
         </Dialog.Title>
         <Dialog.Description size="2" color="gray" mb="3">
-          spec 与票的正文由会话写,这里只读。
+          spec 与票的正文由会话写,这里读它,并认领、改标签、开关与评论。
         </Dialog.Description>
+        {failure === null ? null : (
+          <Callout.Root role="alert" color="red" size="1" mb="3">
+            <Callout.Icon>
+              <CrossCircledIcon aria-hidden />
+            </Callout.Icon>
+            <Callout.Text>{failure}</Callout.Text>
+          </Callout.Root>
+        )}
         {detail.isPending ? (
           <Skeleton aria-hidden className="h-64" />
         ) : detail.error !== null ? (
@@ -884,6 +999,32 @@ function SpecDialog({
           </Text>
         ) : (
           <div className="flex max-h-[min(70vh,720px)] min-w-0 flex-col gap-4 overflow-y-auto">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              {detail.data.spec.state === "closed" ? (
+                <Badge color="gray" variant="soft" size="1">
+                  已关
+                </Badge>
+              ) : null}
+              {canChat ? (
+                <Button
+                  size="1"
+                  variant="soft"
+                  color="gray"
+                  disabled={busy}
+                  onClick={() =>
+                    act.mutate({
+                      path: `/products/${productId}/specs/${detail.data.spec.id}`,
+                      method: "PUT",
+                      payload: {
+                        state: detail.data.spec.state === "open" ? "closed" : "open",
+                      },
+                    })
+                  }
+                >
+                  {detail.data.spec.state === "open" ? "关掉这条 spec" : "重新打开这条 spec"}
+                </Button>
+              ) : null}
+            </div>
             <Markdown text={detail.data.spec.body} />
             {detail.data.tickets.map((ticket) => (
               <section
@@ -903,13 +1044,74 @@ function SpecDialog({
                   {ticketNotes(ticket) === "" ? null : (
                     <span className="text-sm text-text-muted">{ticketNotes(ticket)}</span>
                   )}
+                  {pickable.has(ticket.id) ? <PickableMark /> : null}
                 </div>
                 <Markdown text={ticket.body} />
+                {canChat ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      size="1"
+                      variant="soft"
+                      color="gray"
+                      disabled={busy}
+                      onClick={() =>
+                        ticketAction(ticket.id, { claimed: ticket.claimedBy === null })
+                      }
+                    >
+                      {ticket.claimedBy === null ? "认领" : "取消认领"}
+                    </Button>
+                    <DropdownMenu.Root>
+                      <DropdownMenu.Trigger>
+                        <Button size="1" variant="soft" color="gray" disabled={busy}>
+                          改标签
+                          <ChevronDownIcon aria-hidden />
+                        </Button>
+                      </DropdownMenu.Trigger>
+                      <DropdownMenu.Content align="start">
+                        {TICKET_LABELS.map((label) => (
+                          <DropdownMenu.Item
+                            key={label}
+                            disabled={label === ticket.label}
+                            onSelect={() => ticketAction(ticket.id, { label })}
+                          >
+                            {label}
+                          </DropdownMenu.Item>
+                        ))}
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Root>
+                    <Button
+                      size="1"
+                      variant="soft"
+                      color="gray"
+                      disabled={busy}
+                      onClick={() =>
+                        ticketAction(ticket.id, {
+                          state: ticket.state === "open" ? "closed" : "open",
+                        })
+                      }
+                    >
+                      {ticket.state === "open" ? "关掉" : "重新打开"}
+                    </Button>
+                  </div>
+                ) : null}
+                {/* 评论整段显示,不折叠:一张票上的来龙去脉就这几条。 */}
                 {ticket.comments.map((comment) => (
                   <Text as="p" key={comment.id} size="2" color="gray" className="break-words">
                     {comment.author ?? "会话"}:{comment.body}
                   </Text>
                 ))}
+                {canChat ? (
+                  <CommentBox
+                    busy={busy}
+                    onSend={(text) =>
+                      act.mutate({
+                        path: `/products/${productId}/tickets/${ticket.id}/comments`,
+                        method: "POST",
+                        payload: { text },
+                      })
+                    }
+                  />
+                ) : null}
               </section>
             ))}
           </div>
