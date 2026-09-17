@@ -317,7 +317,9 @@ function Conversation({
         // relative:行里的 sr-only 是绝对定位,容器不定位的话它会落到容器外,把整页撑出一段滚动。
         // 「最新」浮标现身时末尾多留一段:浮标是绝对定位的,不留这一段它就盖在最后一条消息上
         // (issue #384)。留白加在内容末尾、人此刻看的那一段之下,`scrollTop` 不动,视野不跳。
-        className={`relative flex h-full flex-col gap-3 overflow-y-auto overscroll-contain pt-3 ${away ? "pb-16" : "pb-3"}`}
+        // 留多少:浮标在离底 `FOLLOW_THRESHOLD`(80px)时就现身,自己占底部 56px(12px 边距 +
+        // 44px 高),最后一条消息要躲开它,末尾至少要留 80 + 56 = 136px,取 `pb-36`(144px)。
+        className={`relative flex h-full flex-col gap-3 overflow-y-auto overscroll-contain pt-3 ${away ? "pb-36" : "pb-3"}`}
         onScroll={(event) => {
           const el = event.currentTarget;
           setAway(el.scrollHeight - el.scrollTop - el.clientHeight > FOLLOW_THRESHOLD);
