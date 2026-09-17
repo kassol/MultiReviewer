@@ -320,8 +320,9 @@ test("发一条消息:知识目录与消息文本进了模型请求,回复与工
       ),
       "发出去的那句话没进模型请求",
     );
-    // 工具面是只读四件套、受控 git、历史 Finding 查询(issue #338)、知识查询(issue #344),
-    // 加这个用途的产出工具(issue #337);写工具一个都没注册。
+    // 工具面是只读四件套、受控 git、历史 Finding 查询(issue #338)、知识查询(issue #344)、
+    // 产品 tracker 那九件(issue #361),加这个用途的产出工具(issue #337);碰文件与 shell 的
+    // 写工具一个都没注册——tracker 那几件写的是产品实体。
     assert.deepEqual([...requests[0]!.tools].sort(), [
       "find",
       "git",
@@ -331,6 +332,15 @@ test("发一条消息:知识目录与消息文本进了模型请求,回复与工
       "query_knowledge",
       "read",
       "submit_requirement_breakdown",
+      "tracker_block",
+      "tracker_close",
+      "tracker_comment",
+      "tracker_create_spec",
+      "tracker_create_ticket",
+      "tracker_list",
+      "tracker_read",
+      "tracker_unblock",
+      "tracker_update_body",
     ]);
 
     // 记录:会话起头的两条(这一次用哪个模型、哪个思考档位)原样落下来,随后是用户消息、
@@ -978,6 +988,153 @@ test("产品梳理:提示列出生效条目、单仓库陈述被打回,合法交
       knowledge.map((row) => row.id),
       [1],
     );
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+/**
+ * 产品 tracker 的工具面(CONTEXT.md 产品 tracker,issue #361)。
+ *
+ * 票号在脚本里是写死的:临时库里两张表都从 1 起自增,别的产品那一条 spec 与那一张票在会话
+ * 开跑之前先落库,因此占掉 1 号,这一场写下的 spec 是 2 号、两张票是 2 与 3 号。
+ */
+test("tracker 工具:写 spec 与票、加阻塞边、改正文、关票与评论,自指与跨产品的边被打回", async () => {
+  const FOREIGN_TICKET = 1;
+  const SPEC = 2;
+  const [FIRST, SECOND] = [2, 3];
+  const turns: StubTurn[] = [
+    {
+      toolCall: {
+        name: "tracker_create_spec",
+        args: { title: "  报销单可以撤回  ", body: "## Problem Statement\n\n提交之后改不了。" },
+      },
+      usage: { input: 100, output: 20 },
+    },
+    {
+      toolCall: {
+        name: "tracker_create_ticket",
+        args: { spec: SPEC, title: "撤回接口", body: "PATCH /expenses/{id}", label: "ready-for-agent" },
+      },
+      usage: { input: 30, output: 5 },
+    },
+    {
+      toolCall: {
+        name: "tracker_create_ticket",
+        args: { spec: SPEC, title: "撤回按钮", body: "列表页每行一颗", label: "needs-info" },
+      },
+      usage: { input: 30, output: 5 },
+    },
+    {
+      toolCall: { name: "tracker_block", args: { ticket: SECOND, blockedBy: FIRST } },
+      usage: { input: 20, output: 4 },
+    },
+    {
+      toolCall: {
+        name: "tracker_update_body",
+        args: { kind: "ticket", id: FIRST, body: "PATCH /expenses/{id};重复撤回回 409。" },
+      },
+      usage: { input: 20, output: 4 },
+    },
+    {
+      toolCall: { name: "tracker_close", args: { kind: "ticket", id: FIRST } },
+      usage: { input: 20, output: 4 },
+    },
+    {
+      toolCall: {
+        name: "tracker_comment",
+        args: { ticket: SECOND, body: "财务确认了只有草稿态能撤回。" },
+      },
+      usage: { input: 20, output: 4 },
+    },
+    // 自指的边。
+    {
+      toolCall: { name: "tracker_block", args: { ticket: SECOND, blockedBy: SECOND } },
+      usage: { input: 20, output: 4 },
+    },
+    // 别的产品那张票。
+    {
+      toolCall: { name: "tracker_block", args: { ticket: SECOND, blockedBy: FOREIGN_TICKET } },
+      usage: { input: 20, output: 4 },
+    },
+    { toolCall: { name: "tracker_list", args: {} }, usage: { input: 20, output: 4 } },
+    { text: "写完了", usage: { input: 20, output: 4 } },
+  ];
+  const { h, cookie, sessionId, productId, close } = await startSessionHarness(turns);
+  try {
+    // 别的产品的 spec 与票:跨产品的边要打回的正是指向它的那一条。
+    const store = openStore(h.db.path);
+    let foreignProductId: number;
+    try {
+      foreignProductId = store.createProduct({ name: "结算系统", createdAt: AT }).id;
+      const foreignSpec = store.createProductSpec({
+        productId: foreignProductId,
+        title: "对账",
+        body: "别的产品的 spec",
+        sessionId: null,
+        at: AT,
+      });
+      assert.equal(
+        store.createProductTicket({
+          specId: foreignSpec.id,
+          title: "对账明细",
+          body: "别的产品的票",
+          label: "needs-triage",
+          sessionId: null,
+          at: AT,
+        }).id,
+        FOREIGN_TICKET,
+      );
+    } finally {
+      store.close();
+    }
+
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await idle(h, cookie, sessionId);
+
+    const after = openStore(h.db.path);
+    try {
+      // spec 与票都落在这个产品下,标题两头的空白去掉了。
+      const specs = after.listProductSpecs(productId);
+      assert.deepEqual(
+        specs.map((spec) => [spec.id, spec.title, spec.state, spec.sessionId]),
+        [[SPEC, "报销单可以撤回", "open", sessionId]],
+      );
+      assert.match(specs[0]!.body, /提交之后改不了。/);
+
+      const tickets = after.listProductTickets(productId);
+      assert.deepEqual(
+        tickets.map((one) => [one.id, one.title, one.label, one.state, one.blockedBy]),
+        [
+          [FIRST, "撤回接口", "ready-for-agent", "closed", []],
+          [SECOND, "撤回按钮", "needs-info", "open", [FIRST]],
+        ],
+      );
+      // 改正文改的就是那一张票。
+      assert.match(tickets[0]!.body, /重复撤回回 409/);
+      // 评论记在写它的那个会话名下。
+      assert.deepEqual(
+        after.listProductTicketComments(SECOND).map((one) => [one.body, one.sessionId]),
+        [["财务确认了只有草稿态能撤回。", sessionId]],
+      );
+      // 打回的那两条一条边都没加上,别的产品那张票也没被牵进来。
+      assert.deepEqual(after.getProductTicket(FOREIGN_TICKET)?.blockedBy, []);
+      assert.equal(after.listProductSpecs(foreignProductId).length, 1);
+    } finally {
+      after.close();
+    }
+
+    // 两次打回各自的理由在记录表里的工具结果上,打回走的是正常返回。
+    const results = (await records(h, cookie, sessionId))
+      .filter((row) => row.entry.message?.role === "toolResult")
+      .map((row) => JSON.stringify(row.entry));
+    assert.equal(results.length, turns.length - 1);
+    assert.match(results[7]!, /cannot block itself/);
+    assert.match(results[8]!, new RegExp(`there is no ticket ${FOREIGN_TICKET} in this product`));
+    // 列表看得到这条 spec 与它的两张票,阻塞关系也在。
+    assert.match(results[9]!, new RegExp(`spec ${SPEC}`));
+    assert.match(results[9]!, new RegExp(`blocked by ticket ${FIRST}`));
   } finally {
     await disposeAgentSessions();
     await close();

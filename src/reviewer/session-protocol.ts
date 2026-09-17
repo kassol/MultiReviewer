@@ -150,6 +150,32 @@ export type ProductSurveyProposals = {
   retirements: readonly { id: number; reason: string }[];
 };
 
+/** 一次 tracker 读写指向的是一条 spec 还是一张票(CONTEXT.md 产品 tracker,issue #361)。 */
+export type TrackerTarget = { kind: "spec" | "ticket"; id: number };
+
+/**
+ * agent 对产品 tracker 的一次读写(CONTEXT.md 产品 tracker,issue #361)。库在主进程,因此
+ * 与知识查询同律走请求-回应:子进程只把形状归一化过的这一份交上去,判定、落库与措辞都在
+ * 主进程(`product-tracker.ts`),回来的是工具原样返回的那一段文字。
+ */
+export type TrackerRequest =
+  | { kind: "create-spec"; title: string; body: string }
+  | {
+      kind: "create-ticket";
+      specId: number;
+      title: string;
+      body: string;
+      /** 五个 triage 标签之一,原样带过去:认不认得由主进程判,它要说出打回的理由。 */
+      label: string;
+    }
+  | { kind: "list" }
+  | { kind: "read"; target: TrackerTarget }
+  | { kind: "update-body"; target: TrackerTarget; body: string }
+  | { kind: "close"; target: TrackerTarget }
+  | { kind: "comment"; ticketId: number; body: string }
+  | { kind: "block"; ticketId: number; blockedById: number }
+  | { kind: "unblock"; ticketId: number; blockedById: number };
+
 /**
  * 发一条消息的模式(spec #329,issue #334):`followUp` 是排队——等这一轮跑完再按顺序投递;
  * `steer` 是插话——在下一个回合边界投递,不打断正在跑的工具批次。字面量就是 Pi 的
@@ -213,6 +239,11 @@ export type SessionCommand =
       failure?: string;
     }
   /**
+   * 一次产品 tracker 读写的回应(issue #361)。与上两对同形:`requestId` 配对,主进程恒回
+   * 一条,`text` 就是工具原样返回给模型的那一段——落库、判定与打回的理由都在主进程。
+   */
+  | { kind: "tracker-result"; requestId: string; text: string }
+  /**
    * 服务在排空(issue #335):中止当前这一步,跑完收尾就退出。与 `stop` 的差别是它不等
    * 下一条消息——发版时进程要按时退出,「被排空中止」那条系统消息由主进程落库。
    */
@@ -270,5 +301,11 @@ export type SessionWorkerMessage =
    * 子进程没有库连接。主进程带同一个 `requestId` 回一条 `knowledge-query-result`。
    */
   | { kind: "knowledge-query"; requestId: string; query: SessionKnowledgeQuery }
+  /**
+   * 一次产品 tracker 读写(issue #361)。同一条理由走请求-回应:spec 与票都在库里,而
+   * 「这张票在不在同一个产品」只有主进程查得出来。主进程带同一个 `requestId` 回一条
+   * `tracker-result`。
+   */
+  | { kind: "tracker-request"; requestId: string; request: TrackerRequest }
   /** 会话还活着,别的什么都不说明(`streamHeartbeat`)。 */
   | { kind: "heartbeat" };

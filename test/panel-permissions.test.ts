@@ -109,6 +109,9 @@ const ROUTE_EXPECTATIONS = [
   ["DELETE", "/^\\/products\\/(\\d+)\\/knowledge\\/(\\d+)$/", "knowledge:write", "product:1"],
   ["POST", "/^\\/products\\/(\\d+)\\/knowledge\\/(\\d+)\\/accept$/", "knowledge:write", "product:1"],
   ["POST", "/^\\/products\\/(\\d+)\\/knowledge\\/(\\d+)\\/reject$/", "knowledge:write", "product:1"],
+  // 产品 tracker 的两条读端点(issue #361):读随产品可见性,不挂权限格。
+  ["GET", "/^\\/products\\/(\\d+)\\/specs\\/(\\d+)$/", "authenticated-only", "product:1"],
+  ["GET", "/^\\/products\\/(\\d+)\\/specs\\/(\\d+)\\/export$/", "authenticated-only", "product:1"],
   ["POST", "/^\\/products\\/(\\d+)\\/survey$/", "knowledge:write", "product:1"],
   // Agent 会话(issue #332、#333、#334、#336、#337、#356):建与发消息、删、清队列、停止、更新基点、定稿、
   // 传图按 `agent:chat`,读登录即可;会话本身的可见性按创建者在 handler 里判,不是仓库分配
