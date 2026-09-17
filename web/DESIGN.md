@@ -325,7 +325,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 **底边让位**：`index.html` 的 viewport 必须带 `viewport-fit=cover`，否则 iOS 上 `env(safe-area-inset-*)` 恒为 0，所有安全区留白等于没写。窄屏底边被占掉的那一条 = Tab 栏 50px + Home 指示条，`--v8-bottom-chrome` 是它的唯一事实来源（`sm` 以上归零），钉在底边的面一律引用它，不各写各的：
 
 - 页面流里 `sticky` 的动作条把 `bottom` 设成它（审查策略保存条 `settings.tsx`），停在 Tab 栏之上，不跟 z 轴较劲。
-- 模态浮层由 `.rt-BaseDialogOverlay` 收下缘、`.rt-BaseDialogContent` 收 `max-height` 统一让开，所以浮层内部的 `sticky bottom-0` 动作条（仓库配置的保存 / 取消）不再各自处理；`maxHeight` 写 `calc(100dvh - …)` 的页面也不用逐个改。
+- 模态浮层由 `.rt-BaseDialogOverlay` 收下缘、`.rt-BaseDialogContent` 收 `max-height` 统一让开，浮层末尾那条动作条（仓库配置的保存 / 取消）因此落在 Tab 栏之上，页面不再各自处理；`maxHeight` 写 `calc(100dvh - …)` 的页面也不用逐个改。
 - 整条铺满底边的抽屉（Finding 侧滑）自己盖住 Tab 栏，只给内部滚动区补 `pb-[calc(…+env(safe-area-inset-bottom))]`。
 - 横屏刘海那一侧由 `#root` 的 `padding-left/right: env(safe-area-inset-left/right)` 让位，竖屏与桌面上这两个值是 0。
 
@@ -506,6 +506,7 @@ Agent 会话页的中栏是一块占满视口的聊天工作台,整页不滚:`Pa
 ### 10.5 Popover 与 Tooltip
 
 - Popover 承载锚定的交互内容，例如筛选器和日期选择。
+- 装着表单的 Popover 在页脚给一颗「取消」（`Popover.Close`），挨着提交键。触屏上点浮层外收起是唯一出口，而那个出口人看不见。
 - Tooltip 只承载简短帮助、缩略内容全文和图标名称。
 - 帮助提示按输入方式换浮层：粗指针（`(pointer: coarse)`）用点按打开的 Popover，细指针用 Tooltip。触屏上 Tooltip 只响应 hover 与键盘焦点，点按打不开，帮助文字读不到。
 - 错误、后续步骤和关键状态直接显示在页面或 Dialog 内。
