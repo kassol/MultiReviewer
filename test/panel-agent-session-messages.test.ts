@@ -180,7 +180,10 @@ async function sessionWorktreeHeads(
     if (index < 0) return undefined;
     const line = lines[index + 1] ?? "";
     assert.match(line, /^HEAD [0-9a-f]{40}$/, listed);
-    return line.slice("HEAD ".length);
+    const head = line.slice("HEAD ".length);
+    // `git worktree add` 先登记一个全零的哨兵 HEAD,checkout 完才换成真 commit。这一刻
+    // 读到的全零是「正在挂」,不是这棵工作树停在哪:接着等下一轮。
+    return head === "0".repeat(40) ? undefined : head;
   };
   for (let attempt = 0; attempt < 1200; attempt += 1) {
     const heads = refs.map(head);

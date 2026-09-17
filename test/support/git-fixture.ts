@@ -21,11 +21,37 @@ import {
  * 单个用例结束时执行,而后台任务(工作副本准备等)还在写缓存目录与临时库。
  */
 const fileCleanups: (() => void | Promise<void>)[] = [];
-after(async () => {
+
+/**
+ * 跑完整份收尾队列。**一条抛了也要把剩下的跑完**:队列后半截放的是关服务、关假 Gitea
+ * 这些放句柄的收尾,跳过它们,监听中的 server 就留在事件循环里,用例全过而测试进程再也
+ * 退不出去(0% CPU 挂住)。失败攒起来一起抛,收尾钩子照样红。
+ */
+export async function runCleanups(
+  queue: readonly (() => void | Promise<void>)[],
+): Promise<void> {
+  const failures: unknown[] = [];
   // 逐个等:收尾里有异步的那几下(会话子进程退出、工作树释放与会话根删除,issue #335),
   // 不等的话进程在它们跑完之前就结束,临时目录留在 `tmpdir` 里。
-  for (const cleanup of fileCleanups) await cleanup();
-});
+  for (const cleanup of queue) {
+    try {
+      await cleanup();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "测试收尾有失败");
+}
+
+after(() => runCleanups(fileCleanups));
+
+/**
+ * 删一个临时目录。**要重试**:后台任务(工作副本准备的 `git clone`、SQLite 的 `-wal`)
+ * 可能正往里写,`rmSync` 走到一半目录又多出文件就抛 ENOTEMPTY。
+ */
+function removeTempDir(dir: string): void {
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+}
 
 /**
  * 取本测试文件共用的清理队列——调用方只管往返回的数组里 `push` 清理函数,不用各自
@@ -249,7 +275,7 @@ export function makeRepo(options: RepoFixtureOptions): RepoFixture {
         // 已经不在了。
       }
     },
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => removeTempDir(dir),
   };
 }
 
@@ -276,14 +302,14 @@ export function makeBareRemote(source: string): {
         return undefined;
       }
     },
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => removeTempDir(dir),
   };
 }
 
 /** 建一个空的缓存根目录,供工作副本使用。 */
 export function makeCacheDir(): { dir: string; cleanup(): void } {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-cache-"));
-  return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, cleanup: () => removeTempDir(dir) };
 }
 
 /** 在临时目录里指一个数据库文件的位置。文件由第一次打开时创建。 */
@@ -291,7 +317,7 @@ export function makeDbPath(): { path: string; cleanup(): void } {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-db-"));
   return {
     path: join(dir, "multireviewer.db"),
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => removeTempDir(dir),
   };
 }
 
