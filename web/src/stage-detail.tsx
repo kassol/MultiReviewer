@@ -275,7 +275,7 @@ export function StageDetailPage({
         <Link
           to="/"
           search={location.filters}
-          className="inline-flex items-center gap-1 text-base text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/40"
+          className="touch-link inline-flex items-center gap-1 text-base text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/40"
         >
           <ArrowLeftIcon aria-hidden />
           评审记录
