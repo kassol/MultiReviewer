@@ -614,11 +614,28 @@ function ConfigureDialogContent({
       maxHeight="calc(100dvh - 2rem)"
       size={{ initial: "2", sm: "3" }}
       onCloseAutoFocus={onCloseAutoFocus}
+      className="flex flex-col overflow-hidden"
     >
-      <Dialog.Title size="4" mb="1" className="pr-9 break-all">
-        配置 {repo.owner}/{repo.repo}
-      </Dialog.Title>
-      <div className="flex flex-col gap-3.5">
+      {/* 标题与关闭键钉在浮层顶上,只让中间那段滚:正文比窄屏高得多,整块一起滚时标题与
+          关闭键会一并滚出视口,出口只剩 Esc 与动作条的「取消」(issue #378)。 */}
+      <div className="flex shrink-0 items-start justify-between gap-3">
+        <Dialog.Title size="4" mb="1" className="min-w-0 break-all">
+          配置 {repo.owner}/{repo.repo}
+        </Dialog.Title>
+        <Tooltip content="关闭配置">
+          <IconButton
+            variant="ghost"
+            color="gray"
+            size={{ initial: "3", sm: "1" }}
+            className="shrink-0 max-sm:min-h-11 max-sm:min-w-11"
+            aria-label="关闭配置"
+            onClick={onRequestClose}
+          >
+            <Cross2Icon aria-hidden />
+          </IconButton>
+        </Tooltip>
+      </div>
+      <div className="flex min-h-0 flex-col gap-3.5 overflow-y-auto">
         {feedback === null ? null : (
           <Callout.Root
             role={feedback.isError ? "alert" : "status"}
@@ -1012,8 +1029,9 @@ function ConfigureDialogContent({
         </Section>
       </div>
 
-      {/* 配置的动作条固定在底部:上面两块是表单,准入 Key 与工作副本是各自的动作。 */}
-      <div className="sticky bottom-0 mt-3.5 flex flex-wrap items-center gap-3 border-t border-line bg-surface pt-3">
+      {/* 配置的动作条固定在底部:上面两块是表单,准入 Key 与工作副本是各自的动作。
+          它是浮层这一列的末项,滚动只发生在中间那段,所以不再需要 `sticky`。 */}
+      <div className="mt-3.5 flex shrink-0 flex-wrap items-center gap-3 border-t border-line pt-3">
         <Button
           variant="solid"
           size={{ initial: "4", sm: "2" }}
@@ -1033,21 +1051,6 @@ function ConfigureDialogContent({
           取消
         </Button>
         {dirty ? <span className="text-base text-text-muted">有未保存改动</span> : null}
-      </div>
-
-      <div className="absolute top-3 right-3">
-        <Tooltip content="关闭配置">
-          <IconButton
-            variant="ghost"
-            color="gray"
-            size={{ initial: "3", sm: "1" }}
-            className="max-sm:min-h-11 max-sm:min-w-11"
-            aria-label="关闭配置"
-            onClick={onRequestClose}
-          >
-            <Cross2Icon aria-hidden />
-          </IconButton>
-        </Tooltip>
       </div>
     </Dialog.Content>
   );
@@ -1154,7 +1157,13 @@ export function RerunPullRequest({
           <Text size="1" color="gray">
             {FULL_REVIEW_HINT}。指令只作用于这一轮;要长期生效的要求请录进知识集。
           </Text>
-          <Flex justify="end" mt="1">
+          {/* 触屏上点浮层外收起是唯一出口,人看不见它;给一个明说的「取消」(issue #378)。 */}
+          <Flex justify="end" gap="2" mt="1">
+            <Popover.Close>
+              <Button type="button" variant="soft" color="gray" size={{ initial: "3", sm: "2" }}>
+                取消
+              </Button>
+            </Popover.Close>
             <Button size={{ initial: "3", sm: "2" }} type="submit" disabled={rerun.isPending}>
               {rerun.isPending ? "触发中…" : "重新运行"}
             </Button>
