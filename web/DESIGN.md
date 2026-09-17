@@ -318,9 +318,16 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 ### 7.1 应用外壳
 
-外壳是一列 flex：顶栏（`shrink-0`）→ `main#panel-main-scroll`（`flex-1 overflow-auto`）→ 移动端 Tab 栏 → 命令面板。Tab 栏是同一列的兄弟节点，自己占高度，内容区不需要再留底部空白。
+外壳是一列 flex：`#panel-main-scroll`（`flex-1 overflow-auto`）加它外面的命令面板。顶栏（`sticky top-0 z-30`）、`main`、移动端 Tab 栏（`sticky bottom-0 z-30`）三者并列在这一个滚动容器**里面**：两条毛玻璃要有东西可模糊，内容必须从它们底下滚过去；挂到滚动容器外面当它的兄弟节点时，那层 blur 背后只剩页面底色。代价是两条 chrome 都压在内容上，底边的让位因此要显式给（见下）。
 
 `sm=640px` 是外壳切换点：以上显示顶栏第二层的 underline 导航，以下隐藏它并显示底部 Tab 栏。
+
+**底边让位**：`index.html` 的 viewport 必须带 `viewport-fit=cover`，否则 iOS 上 `env(safe-area-inset-*)` 恒为 0，所有安全区留白等于没写。窄屏底边被占掉的那一条 = Tab 栏 50px + Home 指示条，`--v8-bottom-chrome` 是它的唯一事实来源（`sm` 以上归零），钉在底边的面一律引用它，不各写各的：
+
+- 页面流里 `sticky` 的动作条把 `bottom` 设成它（审查策略保存条 `settings.tsx`），停在 Tab 栏之上，不跟 z 轴较劲。
+- 模态浮层由 `.rt-BaseDialogOverlay` 收下缘、`.rt-BaseDialogContent` 收 `max-height` 统一让开，所以浮层内部的 `sticky bottom-0` 动作条（仓库配置的保存 / 取消）不再各自处理；`maxHeight` 写 `calc(100dvh - …)` 的页面也不用逐个改。
+- 整条铺满底边的抽屉（Finding 侧滑）自己盖住 Tab 栏，只给内部滚动区补 `pb-[calc(…+env(safe-area-inset-bottom))]`。
+- 横屏刘海那一侧由 `#root` 的 `padding-left/right: env(safe-area-inset-left/right)` 让位，竖屏与桌面上这两个值是 0。
 
 **顶栏第一行**：品牌方块 26px（`--v8-radius-mark`、`--v8-mark-gradient`、`--v8-shadow-mark`，内嵌 `Mark framed={false}` 的白色线条）+ 品牌名 `text-xl` `font-bold` + 面包屑分隔符 `/`（`text-text-faint`，窄屏隐藏）+ 当前页名 `text-xl` `font-semibold`（窄屏隐藏）；右侧是搜索入口与头像菜单。
 
