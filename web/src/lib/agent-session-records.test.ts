@@ -157,9 +157,14 @@ test("工具调用翻成动词加对象,失败的结果按 toolCallId 记到那�
   assert.equal(describeTool("find", { pattern: "**/*" }).target, "**/*");
   assert.equal(describeTool("ls", {}).target, ".");
   assert.equal(describeTool("query_knowledge", { repos: ["a/b", "c/d"] }).target, "a/b、c/d");
-  assert.deepEqual(describeTool("submit_product_survey", { statements: [] }), {
+  assert.deepEqual(describeTool("submit_requirement_breakdown", { items: [] }), {
     kind: "submit",
     label: "提交产出",
+    target: "",
+  });
+  assert.deepEqual(describeTool("complete_survey", {}), {
+    kind: "submit",
+    label: "记下谈完了",
     target: "",
   });
   assert.deepEqual(describeTool("mystery", { x: 1 }), { kind: "other", label: "mystery", target: "x=1" });

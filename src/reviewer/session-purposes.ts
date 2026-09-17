@@ -14,8 +14,7 @@ import {
   WITHDRAW_KNOWLEDGE_TOOL,
   WRITE_KNOWLEDGE_TOOL,
 } from "./session-knowledge-tool.ts";
-import { SUBMIT_PRODUCT_SURVEY_TOOL } from "./session-output-tools.ts";
-import type { SessionProductKnowledge } from "./session-protocol.ts";
+import { COMPLETE_SURVEY_TOOL } from "./session-output-tools.ts";
 import { ASK_QUESTION_ROUND_TOOL } from "./session-question-tool.ts";
 import { sessionSkillNames } from "./session-skills.ts";
 import {
@@ -71,36 +70,34 @@ const OPEN_CONVERSATION_PROMPT = [
 ].join("\n");
 
 /**
- * 产品梳理用途的那一段(CONTEXT.md 产品梳理,issue #345)。
+ * 产品梳理用途的那一段(CONTEXT.md 产品梳理,issue #365)。
  *
- * 这一版的梳理仍是「读一遍、交一次」:会话由系统开、收一条种子消息、交一次仓库关系就完
- * (访谈那一版是 issue #365)。提示因此要把「梳理的是仓库之间的事」与「已经写下的是哪些」
- * 说全——已有的仓库关系带 id 列在这里,agent 据它提退役而不是把同一句话再提一遍。
+ * 访谈,不是交卷:人在对话的另一头,agent 先派子代理读出候选,再按轮把决策题问给他,答即
+ * 裁决、当场写成条目。提示因此不讲产出格式(那由 `write_knowledge` 的字段说),只讲纪律
+ * ——问哪一层、给不给推荐、事实谁去查、答案与代码打架时怎么办、ADR 什么时候才提、什么时候
+ * 算谈完。grilling 与 domain-modeling 的正文另铺在 agentDir 里(`session-skills.ts`),这一段
+ * 不重述它们,只说这个用途独有的那几条。
+ *
+ * 此刻写着的条目由底座那一份整段渲染在前面(`session-worker.ts`):这个用途是唯一一个看得到
+ * 自己可能改写的全部内容的用途,目录不够——要判断一条定义还成不成立,得读它的正文。
  */
-function productSurveyPrompt(knowledge: readonly SessionProductKnowledge[]): string {
-  const relationships = knowledge.filter((entry) => entry.kind === "relationship");
-  return [
-    "## This session: surveying this product",
-    "",
-    "Nobody is on the other side of this conversation. The system opened this session to survey the product, and you hand the survey in once. Write every statement you hand in in Chinese.",
-    "",
-    "What you are looking for lies between the repositories, never inside one of them: which repository calls which and over what contract, which conventions hold across all of them, and which repositories a given kind of change drags along. A fact about one repository alone belongs to that repository's own knowledge set, not here — every statement you hand in speaks about at least two repositories of this product.",
-    "",
-    "Read the repositories before you write anything down. Every statement comes from code you opened in this session — an entry point, a client, a configuration file, a schema, a build or deploy file. A relationship you infer from a name is a guess, and a guess here sends every later session the wrong way. One statement is one sentence, about 100 characters, concrete enough that a person can check it against the code.",
-    "",
-    ...(relationships.length === 0
-      ? ["This product has written down no relationship between its repositories yet: everything you find is new."]
-      : [
-          "How these repositories work together, as written down today, each with its id:",
-          "",
-          ...relationships.map((entry) => `- [${entry.id}] ${entry.body}`),
-          "",
-          "Do not hand in a statement that repeats one of these. When the code no longer matches one of them, propose retiring it by its id and say what you read instead.",
-        ]),
-    "",
-    `Hand the whole survey in by calling ${SUBMIT_PRODUCT_SURVEY_TOOL} exactly once: every new statement and every retirement in that one call. Statements written in prose are not handed in — they reach nobody. After the call, say in one or two sentences what you handed in, and nothing more.`,
-  ].join("\n");
-}
+const PRODUCT_SURVEY_PROMPT = [
+  "## This session: interviewing the person about this product",
+  "",
+  "One person opened this session to settle what this product is, in words this product can keep using. You interview them. Write everything you say, and every entry you write down, in Chinese.",
+  "",
+  "Start by drafting, not by asking. Send subagents into the repositories of this product and have them bring back candidates: the words the code already uses, how the repositories ask things of each other, the decisions that were clearly made at some point, and every place where what is written down above no longer matches the code. A first round of questions built on a read is worth ten built on a guess.",
+  "",
+  "Then work in rounds. Each round goes to the frontier: the questions whose answers would change what gets written down, not the ones whose answers you can read. Facts are yours — dispatch a subagent, or read it yourself. Decisions are theirs. Every question carries a recommendation, because a person who has to invent the options answers slower and worse.",
+  "",
+  "An answer settles it. Write it down the moment it lands — a term with its definition and the words this product does not use for it, a relationship between repositories, a decision — rather than gathering answers and writing at the end. The person sees the entry appear on the product page while you are still talking, and can tell you it is wrong while the round is still fresh.",
+  "",
+  "Say so when an answer contradicts what you read. A definition that the code does not match, a relationship the person remembers one way and the imports show another, a term already written down here under a different meaning: name the file and the line, and ask which one holds. Agreeing with an answer you know to be wrong is how a glossary stops being worth reading.",
+  "",
+  "Propose a decision record only when all three hold: the decision is hard to reverse, somebody without context would be surprised by it, and a real trade-off was made. Everything else is a term or a relationship. Propose it, and write it only after the person confirms — a decision record nobody agreed to is noise in the one place that should be signal.",
+  "",
+  `When the frontier is empty — every question left is one whose answer would change nothing — say that the shared understanding is reached, summarize what this product now has written down, and call ${COMPLETE_SURVEY_TOOL}. Until you call it, this product cannot start another survey.`,
+].join("\n");
 
 /**
  * 会话 skill 的替代说明(CONTEXT.md 会话 skill,issue #364)。
@@ -133,19 +130,14 @@ function skillSubstitutionPrompt(purpose: string): string | undefined {
  * 这个用途接在底座提示后面的那一段。认不出的用途回 undefined,会话照常开得起来,只是
  * 没有用途那一段——与 `sessionOutputTools` 对认不出的用途回空数组同律。
  *
- * `productKnowledge` 只有产品梳理那一段用得上(issue #345):它要列出此刻写着的仓库关系。
- *
  * 铺了会话 skill 的用途在自己那一段后面再接一段替代说明(issue #364)。
  */
-export function purposeSystemPrompt(
-  purpose: string,
-  productKnowledge: readonly SessionProductKnowledge[],
-): string | undefined {
+export function purposeSystemPrompt(purpose: string): string | undefined {
   const own =
     purpose === "requirement-breakdown"
       ? REQUIREMENT_BREAKDOWN_PROMPT
       : purpose === "product-survey"
-        ? productSurveyPrompt(productKnowledge)
+        ? PRODUCT_SURVEY_PROMPT
         : purpose === "open-conversation"
           ? OPEN_CONVERSATION_PROMPT
           : undefined;

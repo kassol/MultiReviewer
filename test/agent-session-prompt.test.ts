@@ -165,14 +165,28 @@ test("产品没写过定位时,定位那一行不渲染,术语名照旧列全", 
   assert.match(prompt, /^- Glossary terms: 报销单$/m);
 });
 
-test("每个用途拿到同一份目录:目录在底座那一段,不随用途变", () => {
-  // 目录三行加它们之间的空行:底座那一段里这一截,三个用途逐字一样(issue #362)。
+test("需求拆分与开放对话拿到同一份目录:目录在底座那一段,不随用途变", () => {
+  // 目录三行加它们之间的空行:底座那一段里这一截,两个用途逐字一样(issue #362)。
   const block = (purpose: string): string =>
     sessionSystemPrompt({ ...REQUEST, purpose }).split("\n\n").find((one) => one.startsWith("- Positioning:"))!;
 
   const breakdown = block("requirement-breakdown");
   assert.match(breakdown, /^- Positioning: /);
-  for (const purpose of ["open-conversation", "product-survey"]) {
-    assert.equal(block(purpose), breakdown, `${purpose} 的目录与需求拆分那一份不一致`);
-  }
+  assert.equal(block("open-conversation"), breakdown, "开放对话的目录与需求拆分那一份不一致");
+});
+
+test("产品梳理拿到的是整份条目,不是目录:它改写的正是这些条目(issue #365)", () => {
+  const prompt = sessionSystemPrompt({ ...REQUEST, purpose: "product-survey" });
+
+  // 目录那三行一行都不在:每条都带着 id 与正文列出来。
+  assert.doesNotMatch(prompt, /^- Positioning:/m);
+  assert.doesNotMatch(prompt, /^- Glossary terms:/m);
+  assert.doesNotMatch(prompt, /^- Decision records:/m);
+  assert.match(prompt, /^- \[2\] glossary term 报销单 \(topic 单据\): 一次报销申请的载体。$/m);
+  // 目录里没有的两种也在:仓库关系整句,被取代的决策带着取代它的那一条的 id。
+  assert.match(prompt, /^- \[3\] repository relationship: web 的提交走 api 的报销单接口。$/m);
+  assert.match(prompt, /^- \[4\] decision 金额用整数分表示 \(in force\): 浮点会攒出误差。$/m);
+  assert.match(prompt, /^- \[5\] decision 金额用浮点表示 \(superseded by entry 4\): /m);
+  // 用途那一段接在后面。
+  assert.match(prompt, /^## This session: interviewing the person about this product$/m);
 });

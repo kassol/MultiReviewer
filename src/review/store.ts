@@ -749,9 +749,12 @@ CREATE TABLE IF NOT EXISTS agent_session (
   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
   total_tokens INTEGER NOT NULL DEFAULT 0,
   -- 这个会话每个仓库开在哪个 commit(issue #351):AgentSessionBaseline 那一串的 JSON,建会话
-  -- 那一刻写下来(issue #352),系统开的梳理在首次备树时写。可空,NULL 即这一票之前建的
-  -- 会话——读作空列表,面板什么都不显示。
-  baselines TEXT
+  -- 那一刻写下来(issue #352)。可空,NULL 即这一票之前建的会话——读作空列表,面板什么都
+  -- 不显示。
+  baselines TEXT,
+  -- 产品梳理谈完的时刻(CONTEXT.md 产品梳理,issue #365)。agent 宣告共识时调完成工具写下,
+  -- 之后这一场仍读得到、续得了。可空,NULL 即还没谈完;别的用途恒为 NULL。
+  completed_at TEXT
 );
 -- 列表只有一种查法:一个产品下某个人的会话(系统管理员读同一个产品下的全部)。
 CREATE INDEX IF NOT EXISTS agent_session_by_product ON agent_session(product_id, created_by);
@@ -1139,6 +1142,8 @@ const ADDED_COLUMNS: readonly { table: string; column: string; backfill?: string
   { table: "repo", column: "default_branch TEXT" },
   // 会话开在哪个 commit(issue #351):可空,补完即「这些会话没记过」,面板对它们什么都不显示。
   { table: "agent_session", column: "baselines TEXT" },
+  // 产品梳理谈完的时刻(issue #365):可空,补完即「这些会话都还没谈完」。
+  { table: "agent_session", column: "completed_at TEXT" },
 ];
 
 /**
@@ -2912,7 +2917,7 @@ const PRODUCT_TICKET_QUERY = `
 
 /**
  * 会话用途(CONTEXT.md 会话用途)。需求拆分交结构化产出,开放对话只聊与只读代码、没有产出
- * 类型,产品梳理由系统开、交产品知识提案(issue #345);写代码类用途接入时各成一个值。
+ * 类型,产品梳理由人从产品页开、访谈后写产品知识(issue #365);写代码类用途接入时各成一个值。
  * 建时必填、之后不变,因此没有改用途的写入口。
  */
 export const AGENT_SESSION_PURPOSES = [
@@ -2964,9 +2969,14 @@ export type AgentSessionRecord = {
    */
   baselines: AgentSessionBaseline[];
   /**
+   * 产品梳理谈完的时刻(CONTEXT.md 产品梳理,issue #365)。agent 宣告共识时写下;在那之前
+   * 与别的用途上都是 null。同一个产品同时只有一场 null 的梳理。
+   */
+  completedAt: string | null;
+  /**
    * 这个会话第一条用户消息的正文(读时派生,不落库)。取第一段文本块、去首尾空白、把
    * 连续空白折成一个空格、截到 80 字——不加省略号,视觉上的截断由面板做。还没有人发过
-   * 消息(系统开的梳理、刚建的会话)时是 null。
+   * 消息(刚建的会话)时是 null。
    */
   title: string | null;
   /** 这个会话最后一次有动静的时刻(读时派生):记录表的 `MAX(at)`,没有记录时落建会话时刻。 */
@@ -3057,8 +3067,8 @@ function agentSessionEntry(row: Record<string, unknown>): AgentSessionEntryRecor
  *   且 `entry.message.role = 'user'`,按 `seq` 取最早那一条。正文是纯字符串时直接读;是分块
  *   数组时(带图的消息,ADR 0031 的图片例外)取第一个 `type: "text"` 的块,不能假定它在
  *   下标 0——图片块可能排在文字前面。折成面板要的那一档在 JS 侧的 `agentSessionTitle` 做。
- * - `last_active_at` 是这个会话记录表的 `MAX(at)`;还没有记录(刚建、或系统开的梳理还没
- *   落第一条)时落 `created_at`。
+ * - `last_active_at` 是这个会话记录表的 `MAX(at)`;还没有记录(刚建、或种子消息还没落下)
+ *   时落 `created_at`。
  */
 const AGENT_SESSION_QUERY = `
   SELECT agent_session.*,
@@ -3121,7 +3131,10 @@ function agentSession(row: Record<string, unknown>): AgentSessionRecord {
             ...one,
             kind: one.kind ?? "branch",
           })),
-    // 产品梳理由系统开:它的第一条「用户」消息是系统投的梳理指令,不是人说的话,不当标题。
+    completedAt: row["completed_at"] === null || row["completed_at"] === undefined
+      ? null
+      : String(row["completed_at"]),
+    // 产品梳理的第一条「用户」消息是开场时投的那条访谈指令,不是人说的话,不当标题。
     title: row["purpose"] === "product-survey" ? null : agentSessionTitle(row["title_raw"]),
     lastActiveAt: String(row["last_active_at"] ?? row["created_at"]),
   };
@@ -3390,7 +3403,7 @@ export type Store = {
    * 建一个 Agent 会话。状态落空闲、用量五格落 0。
    *
    * `baselines` 是这个会话每个仓库开在哪个 commit(issue #352):建会话那一刻就定下来,
-   * 工作树按它检出。系统开的梳理不给,首次备树时才知道停在哪(issue #351)。
+   * 工作树按它检出。不给即这一刻还不知道停在哪,首次备树时再写(issue #351)。
    */
   createAgentSession(record: {
     productId: number;
@@ -3405,6 +3418,11 @@ export type Store = {
    * 面板显示的与 agent 读的因此始终是同一份。
    */
   setAgentSessionBaselines(sessionId: number, baselines: readonly AgentSessionBaseline[]): void;
+  /**
+   * 记下这一场产品梳理谈完了(CONTEXT.md 产品梳理,issue #365)。agent 宣告共识时调完成
+   * 工具落这一格;会话本身照旧读得到、续得了,拦的只是同一个产品的下一场梳理。
+   */
+  completeAgentSession(sessionId: number, at: string): void;
   /** 删一个 Agent 会话,记录、受理过的客户端消息 id 与图片行一并删掉。没有这一条即 false。 */
   deleteAgentSession(sessionId: number): boolean;
   /** 记下一张落好盘的会话图片(issue #336)。发消息时按 `imageId` 认领它。 */
@@ -5940,7 +5958,7 @@ export function openStore(dbPath: string): Store {
 
     createAgentSession(record) {
       // 建会话时人已经按仓库选好了基点(issue #352):那一份跟着 INSERT 一起落下,工作树
-      // 按它检出。不给即这一刻还不知道停在哪(系统开的梳理),首次备树时再写。
+      // 按它检出。不给即这一刻还不知道停在哪,首次备树时再写。
       const baselines = record.baselines ?? [];
       const result = db
         .prepare(
@@ -5969,10 +5987,15 @@ export function openStore(dbPath: string): Store {
           totalTokens: 0,
         },
         baselines: [...baselines],
+        completedAt: null,
         // 刚建的会话还没有记录:标题没有第一条用户消息可取,最后动静就是建会话那一刻。
         title: null,
         lastActiveAt: record.createdAt,
       };
+    },
+
+    completeAgentSession(sessionId, at) {
+      db.prepare("UPDATE agent_session SET completed_at = ? WHERE id = ?").run(at, sessionId);
     },
 
     setAgentSessionBaselines(sessionId, baselines) {

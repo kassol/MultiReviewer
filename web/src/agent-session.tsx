@@ -66,6 +66,7 @@ import {
   type ToolStep,
   type ConversationGroup,
 } from "@/lib/agent-session-records";
+import { productQueryKey } from "@/lib/products";
 import { roundAnswerText } from "@/lib/session-question-round";
 import {
   agentSessionQueryKey,
@@ -1484,14 +1485,12 @@ export function AgentSessionPage({
   productId,
   sessionId,
   username,
-  isSystemAdmin,
   canWrite,
   canChat,
 }: {
   productId: number;
   sessionId: number;
   username: string;
-  isSystemAdmin: boolean;
   /** 左栏那几个写动作的权限格,与产品页同一份判据。 */
   canWrite: boolean;
   canChat: boolean;
@@ -1534,13 +1533,17 @@ export function AgentSessionPage({
   const dropped = sessionQuery.data?.droppedFromContext ?? 0;
   const running = session?.status === "running";
   const mine = session !== undefined && session.createdBy === username;
+  /** 这一场产品梳理已经谈完(CONTEXT.md 产品梳理,issue #365)。会话照旧读得到、续得了。 */
+  const surveyDone = session !== undefined && session.completedAt !== null;
   /**
-   * 产品梳理会话由系统开,没有创建者可言:停止与删除这两个动作给系统管理员(issue #346),
-   * 与服务端那一道同一个判据。发消息那几个续谈动作仍谁都做不了,输入区因此照旧只给创建者;
-   * 停止键平时在输入区里,对这个用途就摆在头部。
+   * 一个回合跑完就让产品详情那一份过期(issue #365)。会话里 agent 把答案当场写成产品知识
+   * 条目,而产品详情是左栏与产品页共用的那一份缓存:不失效,人回到产品页看到的还是进来
+   * 之前的那几条。用途不分:知识工具在哪个用途都注册着。
    */
-  const surveyAdmin =
-    session !== undefined && session.purpose === "product-survey" && isSystemAdmin;
+  useEffect(() => {
+    if (running) return;
+    void queryClient.invalidateQueries({ queryKey: productQueryKey(productId) });
+  }, [running, productId, queryClient]);
   /**
    * 这个会话写下的 spec 与票(issue #366)。右栏按它列,一条都没写下时整块不渲染——哪些
    * 用途写得出来不另存一张表:写下了就有,没写下就没有,开放对话走同一条流程时一样成立。
@@ -1710,6 +1713,7 @@ export function AgentSessionPage({
                   {session === undefined ? "Agent 会话" : (session.title ?? PURPOSE_LABEL[session.purpose])}
                 </h1>
                 {running ? <StatusBadge tone="running">在跑</StatusBadge> : null}
+                {surveyDone ? <StatusBadge tone="success">已谈完</StatusBadge> : null}
               </div>
               {session === undefined ? null : (
                 <p className="flex flex-wrap items-center gap-1.5 text-sm text-text-muted">
@@ -1744,20 +1748,8 @@ export function AgentSessionPage({
                   <SegmentedControl.Item value="wrote">spec 与票</SegmentedControl.Item>
                 </SegmentedControl.Root>
               ) : null}
-              {surveyAdmin && running ? (
-                <Button
-                  variant="soft"
-                  color="red"
-                  size={{ initial: "3", sm: "2" }}
-                  disabled={stop.isPending}
-                  onClick={() => stop.mutate()}
-                >
-                  <StopIcon aria-hidden />
-                  <span className="max-sm:sr-only">停止</span>
-                </Button>
-              ) : null}
               {/* 「删会话」是这一页唯一的破坏性动作,收进溢出菜单让头部只剩常用的两个控件。 */}
-              {mine || surveyAdmin ? (
+              {mine ? (
                 <DropdownMenu.Root>
                   <DropdownMenu.Trigger>
                     <IconButton
@@ -1858,23 +1850,9 @@ export function AgentSessionPage({
                   />
                 </>
               ) : (
-                /* 没有输入框的两种情况各说一句,不让人对着空白猜自己能不能写。 */
+                /* 没有输入框时说一句,不让人对着空白猜自己能不能写。 */
                 <p className="shrink-0 border-t border-line pt-3 text-center text-sm text-text-muted">
-                  {session.purpose === "product-survey" ? (
-                    <>
-                      产品梳理由系统发起,不接续写;它写下的产品知识在
-                      <Link
-                        to="/products/$productId"
-                        params={{ productId: String(productId) }}
-                        className="text-primary underline underline-offset-4"
-                      >
-                        产品页
-                      </Link>
-                      上读。
-                    </>
-                  ) : (
-                    "只有建立这个会话的账号能续写。"
-                  )}
+                  只有建立这个会话的账号能续写。
                 </p>
               )}
             </div>
