@@ -430,7 +430,7 @@ function MobileTabBar({
               return (
                 <>
                   <item.icon className={`size-[21px] ${tone}`} aria-hidden />
-                  <span className={`text-[10px] font-medium ${tone}`}>{item.label}</span>
+                  <span className={`text-[11px] font-medium ${tone}`}>{item.label}</span>
                 </>
               );
             }}
@@ -447,7 +447,7 @@ function MobileTabBar({
             }`}
           >
             <PersonIcon className="size-[21px]" aria-hidden />
-            <span className="text-[10px] font-medium">我的</span>
+            <span className="text-[11px] font-medium">我的</span>
           </button>
         </DropdownMenu.Trigger>
         <DropdownMenu.Content align="end" size="2">
