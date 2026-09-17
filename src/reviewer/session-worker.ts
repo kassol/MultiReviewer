@@ -23,7 +23,11 @@ import {
 import {
   QUERY_KNOWLEDGE_TOOL,
   resolveKnowledgeQuery,
+  resolveKnowledgeWrite,
   sessionKnowledgeTool,
+  sessionKnowledgeWriteTools,
+  WITHDRAW_KNOWLEDGE_TOOL,
+  WRITE_KNOWLEDGE_TOOL,
 } from "./session-knowledge-tool.ts";
 import {
   inflateImageRefs,
@@ -58,7 +62,14 @@ function send(message: SessionWorkerMessage): void {
  * 查询(issue #344)。写工具与 bash 一个都不在。
  */
 export function sessionTools(): string[] {
-  return [...READ_ONLY_TOOLS, GIT_TOOL, QUERY_FINDINGS_TOOL, QUERY_KNOWLEDGE_TOOL];
+  return [
+    ...READ_ONLY_TOOLS,
+    GIT_TOOL,
+    QUERY_FINDINGS_TOOL,
+    QUERY_KNOWLEDGE_TOOL,
+    WRITE_KNOWLEDGE_TOOL,
+    WITHDRAW_KNOWLEDGE_TOOL,
+  ];
 }
 
 /**
@@ -103,7 +114,7 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
     "",
     "This product and its repositories have written down two layers of knowledge, and neither layer is listed here.",
     "",
-    `Product knowledge says how these repositories fit together: who calls whom, over what contract, which change drags which repository along. This product has ${countOf(request.productKnowledgeCount, "active product knowledge entry", "active product knowledge entries")}.`,
+    `Product knowledge is this product's glossary, the section on how its repositories work together, and its decision records. This product has ${countOf(request.productKnowledgeCount, "product knowledge entry", "product knowledge entries")}.`,
     "",
     "Each repository also has its own review rules, which say what it holds its code to, and project facts, which are grounds for judgement:",
     "",
@@ -114,15 +125,13 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
         `- ${repo.owner}/${repo.repo} — ${countOf(repo.ruleCount, "review rule")}, ${countOf(repo.factCount, "project fact")}`,
     ),
     "",
-    `Read them with the ${QUERY_KNOWLEDGE_TOOL} tool: it takes the repositories a task touches and an optional path glob, and returns the product entries involving any of them plus those repositories' rules and facts whose scope overlaps the glob.`,
+    `Read them with the ${QUERY_KNOWLEDGE_TOOL} tool: it takes glossary term names and decision titles to read in full, relationships: true for the whole relationship section, and the repositories a task touches with an optional path glob for their rules and facts.`,
     "",
-    "When the task spans repositories or its scope is unclear, query the product layer first; otherwise query the repository and the paths the task touches.",
+    "When the task spans repositories or its scope is unclear, read the product layer first; otherwise query the repository and the paths the task touches.",
+    "",
+    `The product's knowledge is written through tools, not files: ${WRITE_KNOWLEDGE_TOOL} writes or rewrites one entry and ${WITHDRAW_KNOWLEDGE_TOOL} takes one back. An entry is in force the moment it is written, so write one only from what the person confirmed or from code you read yourself.`,
   ];
-  const purpose = purposeSystemPrompt(
-    request.purpose,
-    request.productKnowledge,
-    request.rejectedStatements,
-  );
+  const purpose = purposeSystemPrompt(request.purpose, request.productKnowledge);
   if (purpose !== undefined) sections.push("", purpose);
   return sections.join("\n");
 }
@@ -211,6 +220,7 @@ async function open(request: OpenSessionRequest): Promise<void> {
       sessionGitTool(request.sessionRoot, repos),
       sessionFindingTool({ repos, send }) as unknown as ToolDefinition,
       sessionKnowledgeTool({ repos, send }) as unknown as ToolDefinition,
+      ...(sessionKnowledgeWriteTools({ send }) as unknown as ToolDefinition[]),
       ...(outputTools as unknown as ToolDefinition[]),
     ],
     send,
@@ -401,6 +411,15 @@ function handle(command: SessionCommand): Promise<void> {
       const { entries, failure } = command;
       resolveKnowledgeQuery(command.requestId, {
         ...entries,
+        ...(failure === undefined ? {} : { failure }),
+      });
+      return Promise.resolve();
+    }
+    case "knowledge-write-result": {
+      // 写下、改写或撤回一条产品知识的回应(issue #360)。同律,兑现那次工具调用。
+      const { entry, failure } = command;
+      resolveKnowledgeWrite(command.requestId, {
+        ...(entry === undefined ? {} : { entry }),
         ...(failure === undefined ? {} : { failure }),
       });
       return Promise.resolve();

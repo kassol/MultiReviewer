@@ -60,20 +60,25 @@ export type SessionRepoInput = {
 };
 
 /**
- * `query_knowledge` 的一次查询(issue #344):任务落在会话根里的哪几个仓库,以及可选的
- * 路径 glob。仓库在不在会话根内由子进程判(它手里就是那份清单),这里只带它问的那几个。
+ * `query_knowledge` 的一次查询(issue #344、#360)。两层各有自己的入口:仓库层按会话根里的
+ * 仓库加可选的路径 glob 取,产品层按名字取整条(术语条目与产品决策)或整段取仓库关系。
+ * 仓库在不在会话根内由子进程判(它手里就是那份清单),这里只带它问的那几个。
  */
 export type SessionKnowledgeQuery = {
-  /** `<owner>/<repo>` 形式,都是会话根下的仓库。 */
-  repos: readonly string[];
+  /** `<owner>/<repo>` 形式,都是会话根下的仓库。省略即这一次不问仓库层。 */
+  repos?: readonly string[];
   /** 仓库相对的路径 glob。省略即整个仓库。 */
   pathGlob?: string;
+  /** 要读整条的术语名与决策标题(issue #360)。 */
+  names?: readonly string[];
+  /** 要不要整段读仓库关系。 */
+  relationships?: boolean;
 };
 
 /** 一次查询回的两层条目(issue #344)。层由它在哪个数组里定,渲染时写成文字。 */
 export type SessionKnowledgeEntries = {
-  /** 产品层:涉及的仓库集合(`<owner>/<repo>`)与那一句陈述。 */
-  product: readonly { repos: readonly string[]; statement: string }[];
+  /** 产品层:整条的术语条目、仓库关系与产品决策(issue #360)。 */
+  product: readonly SessionProductKnowledge[];
   /** 仓库层:哪个仓库的、哪一型、作用范围(空串即全仓库)与那一句陈述。 */
   repo: readonly {
     repo: string;
@@ -84,13 +89,41 @@ export type SessionKnowledgeEntries = {
 };
 
 /**
- * 一条生效的产品知识,交给子进程那一侧的形态(CONTEXT.md 产品知识,issue #345)。仓库集合
- * 在这里已经是 `<owner>/<repo>`:子进程手上只有这种形式的仓库名,repo id 它认不出来。
+ * 一条产品知识,交给子进程那一侧的形态(CONTEXT.md 产品知识,issue #360)。
+ *
+ * **不带出处附注**:附注只在产品页展示,一条提示里的条目不带它(ADR 0035)。
  */
 export type SessionProductKnowledge = {
   id: number;
-  statement: string;
-  repos: readonly string[];
+  kind: "term" | "relationship" | "decision";
+  /** 术语的名称、决策的标题;仓库关系是空串。 */
+  name: string;
+  body: string;
+  topic: string | null;
+  avoided: readonly string[];
+  options: string | null;
+  consequences: string | null;
+  /** 取代这条决策的那一条的 id。null 即它生效。 */
+  supersededBy: number | null;
+};
+
+/**
+ * 写一条产品知识要给的那几格(issue #360)。校验在子进程那一侧判完(`session-knowledge-tool.ts`),
+ * 这条协议只把判过的那一份带过去。
+ */
+export type SessionKnowledgeWrite = {
+  kind: "term" | "relationship" | "decision";
+  name: string;
+  body: string;
+  topic: string | null;
+  avoided: readonly string[];
+  options: string | null;
+  consequences: string | null;
+  annotations: readonly { location: string; reason: string }[];
+  /** 改写这一条而不是新写一条。 */
+  id?: number;
+  /** 这条决策取代的那一条。 */
+  supersedes?: number;
 };
 
 /** 开一个会话要给的那几样。凭据不进 IPC,走环境变量(`env.ts`)。 */
@@ -108,15 +141,10 @@ export type OpenSessionRequest = {
   productKnowledgeCount: number;
   repos: readonly SessionRepoInput[];
   /**
-   * 这个产品此刻生效的产品知识(issue #345)。产品梳理那一段提示按它列出「已经成立的是哪些」,
-   * 产出工具的退役目标也按它判。空数组即这个产品还没有产品知识。
+   * 这个产品此刻的产品知识(issue #345、#360)。产品梳理那一段提示按它列出「已经写下的是
+   * 哪些」,产出工具的退役目标也按它判。空数组即这个产品还没有产品知识。
    */
   productKnowledge: readonly SessionProductKnowledge[];
-  /**
-   * 这个产品被人驳回过的陈述(issue #346 的 US 24)。产品梳理那一段提示逐条列出来让它
-   * 换个措辞也别再提;别的用途用不上。空数组即还没有人驳回过。
-   */
-  rejectedStatements: readonly string[];
   runtimeModel: RuntimeModel;
   /** 这一处模型引用的思考档位。缺席即 `off`。 */
   thinkingLevel?: ThinkingLevel;
@@ -139,8 +167,8 @@ export type SessionOutput = {
 };
 
 /**
- * 产品梳理交上来的一批提案(CONTEXT.md 产品梳理,issue #345)。与会话产出分成两档:产出是
- * 人要读的一份文档,这一批是要落进产品知识表的提案行,交出来就等人确认。
+ * 产品梳理交上来的一批(CONTEXT.md 产品梳理,issue #345、#360)。与会话产出分成两档:产出是
+ * 人要读的一份文档,这一批是要落进产品知识的仓库关系条目,写下即生效。
  *
  * 形状与校验都在子进程那一侧判完(`session-output-tools.ts`):陈述的仓库集合是
  * `<owner>/<repo>`,退役指向的是提示里列过的那条生效条目的 id。
@@ -213,6 +241,16 @@ export type SessionCommand =
       failure?: string;
     }
   /**
+   * 一次产品知识写入或撤回的回应(issue #360),与上面两对同形:`requestId` 配对,主进程恒回
+   * 一条。`entry` 是落库之后的那一条(撤回时不带),`failure` 是一句打回的理由。
+   */
+  | {
+      kind: "knowledge-write-result";
+      requestId: string;
+      entry?: SessionProductKnowledge;
+      failure?: string;
+    }
+  /**
    * 服务在排空(issue #335):中止当前这一步,跑完收尾就退出。与 `stop` 的差别是它不等
    * 下一条消息——发版时进程要按时退出,「被排空中止」那条系统消息由主进程落库。
    */
@@ -233,7 +271,7 @@ export type SessionWorkerMessage =
    */
   | { kind: "output"; output: SessionOutput }
   /**
-   * 产品梳理经它的产出工具交的那一批提案(issue #345)。与产出回传同形:子进程只把校验过的
+   * 产品梳理经它的产出工具交的那一批(issue #345)。与产出回传同形:子进程只把校验过的
    * 那一批交上来,落产品知识表在主进程。
    */
   | { kind: "survey"; proposals: ProductSurveyProposals }
@@ -270,5 +308,12 @@ export type SessionWorkerMessage =
    * 子进程没有库连接。主进程带同一个 `requestId` 回一条 `knowledge-query-result`。
    */
   | { kind: "knowledge-query"; requestId: string; query: SessionKnowledgeQuery }
+  /**
+   * 写下或改写一条产品知识(issue #360)。与查询同一条理由走请求-回应:条目在库里,子进程
+   * 没有库连接。主进程带同一个 `requestId` 回一条 `knowledge-write-result`。
+   */
+  | { kind: "knowledge-write"; requestId: string; write: SessionKnowledgeWrite }
+  /** 撤回一条产品知识(issue #360)。回应与写入同一条消息。 */
+  | { kind: "knowledge-withdraw"; requestId: string; entryId: number }
   /** 会话还活着,别的什么都不说明(`streamHeartbeat`)。 */
   | { kind: "heartbeat" };

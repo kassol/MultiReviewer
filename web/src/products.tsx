@@ -11,16 +11,15 @@ import {
 import {
   Badge,
   Callout,
-  Checkbox,
   Dialog,
   DropdownMenu,
   Flex,
   IconButton,
   Skeleton,
   Text,
-  TextArea,
   Tooltip,
 } from "@radix-ui/themes";
+import { Collapsible } from "radix-ui";
 import { Fragment, useEffect, useState, type FormEvent } from "react";
 
 import { CardShell } from "@/components/card-shell";
@@ -39,21 +38,17 @@ import type { CommitSelection } from "@/commit-picker";
 import { sessionsQueryKey, type AgentSession } from "@/lib/agent-sessions";
 import {
   currentProduct,
+  groupedTerms,
   PRODUCTS_QUERY_KEY,
   productQueryKey,
-  repoPath,
   type Product,
   type ProductKnowledge,
   type ProductRepo,
-  type ProductProposal,
 } from "@/lib/products";
 import { localMinute } from "@/lib/time";
 
 import { fetchJson, send } from "./api.ts";
 import { NameDialog, ProductRail, useProductDetail, useProductSessions } from "./product-rail.tsx";
-
-/** 产品知识的陈述上限,与服务端那一道同一个数(`AGENT_STATEMENT_LIMIT`)。 */
-const KNOWLEDGE_STATEMENT_MAX = 100;
 
 /**
  * 产品页(CONTEXT.md 产品,issue #331)。左栏是产品页与会话页共用的那一份(`ProductRail`:
@@ -80,10 +75,6 @@ export function ProductsPage({
   const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
   const [dialog, setDialog] = useState<"rename" | "survey" | null>(null);
   const [confirming, setConfirming] = useState(false);
-  /** 正要退役的产品知识条目:退役不可恢复,先过一道确认(与删除产品同一套 ConfirmDialog)。 */
-  const [retiring, setRetiring] = useState<ProductKnowledge | null>(null);
-  /** 产品知识那一段表单的挂载标识:写成功一次就加一,表单因此重挂成空的。 */
-  const [knowledgeFormKey, setKnowledgeFormKey] = useState(0);
 
   const productsQuery = useQuery({
     queryKey: PRODUCTS_QUERY_KEY,
@@ -97,11 +88,10 @@ export function ProductsPage({
   const sessionsQuery = useProductSessions(selected?.id);
   const sessions = sessionsQuery.data ?? [];
 
-  // 当前产品生效的产品知识(CONTEXT.md 产品知识,issue #343)。产品列表那一份不带它,
+  // 当前产品的产品知识(CONTEXT.md 产品知识,issue #343、#360)。产品列表那一份不带它,
   // 因此另读一次产品详情;读不需要权限格,谁看得到产品就看得到这一段。
   const knowledgeQuery = useProductDetail(selected?.id);
   const knowledge = knowledgeQuery.data?.knowledge ?? [];
-  const proposals = knowledgeQuery.data?.proposals ?? [];
 
   const refresh = (): Promise<void> =>
     queryClient.invalidateQueries({ queryKey: PRODUCTS_QUERY_KEY });
@@ -143,61 +133,8 @@ export function ProductsPage({
   });
 
   /**
-   * 手写一条产品知识(issue #343)。成功之后把表单那一段重挂一次清空它:陈述与勾选的仓库
-   * 只属于刚写完的那一条,留在框里下一条就会带着它。
-   */
-  const writeKnowledge = useMutation({
-    mutationFn: (input: { product: Product; statement: string; repoIds: readonly number[] }) =>
-      send<{ entry: ProductKnowledge }>(`/products/${input.product.id}/knowledge`, "POST", {
-        statement: input.statement,
-        repoIds: input.repoIds,
-      }),
-    onSuccess: () => {
-      setKnowledgeFormKey((key) => key + 1);
-      setFeedback({ text: "已记下一条产品知识。", error: false });
-      void refreshKnowledge();
-    },
-    onError: failed,
-  });
-
-  const retireKnowledge = useMutation({
-    mutationFn: (input: { product: Product; entry: ProductKnowledge }) =>
-      send(`/products/${input.product.id}/knowledge/${input.entry.id}`, "DELETE"),
-    onSuccess: () => {
-      setRetiring(null);
-      setFeedback({ text: "已退役一条产品知识。", error: false });
-      void refreshKnowledge();
-    },
-    onError: failed,
-  });
-
-  /**
-   * 确认与驳回一条待确认的提案(issue #346)。两个动作共用这一个 mutation:端点只差最后
-   * 一段,成功文案按提案的型别与动作分开说——确认一条退役提案是退役,不是记下一条新知识。
-   */
-  const decideProposal = useMutation({
-    mutationFn: (input: { product: Product; entry: ProductProposal; accept: boolean }) =>
-      send(
-        `/products/${input.product.id}/knowledge/${input.entry.id}/${input.accept ? "accept" : "reject"}`,
-        "POST",
-      ),
-    onSuccess: (_data, input) => {
-      setFeedback({
-        text: !input.accept
-          ? "已驳回一条提案,同一句话下次梳理不会再提。"
-          : input.entry.retiresId === null
-            ? "已确认一条产品知识。"
-            : "已确认退役,那条产品知识不再生效。",
-        error: false,
-      });
-      void refreshKnowledge();
-    },
-    onError: failed,
-  });
-
-  /**
    * 重梳(CONTEXT.md 产品梳理,issue #345):开一个产品梳理会话。它由系统建,因此不跳进去
-   * ——人要看的是它随后交上来的提案,会话在左栏列着,想看过程再点进去。
+   * ——人要看的是它随后写下的那几条,会话在左栏列着,想看过程再点进去。
    *
    * `baselines` 是人在重梳弹窗里动过的那几行(issue #353);一行都没动就不带它,与这一票
    * 之前直接按下重梳一字不差。
@@ -211,7 +148,7 @@ export function ProductsPage({
       ),
     onSuccess: async ({ session }) => {
       setDialog(null);
-      setFeedback({ text: "已开一个产品梳理会话,它交出提案后在这里确认。", error: false });
+      setFeedback({ text: "已开一个产品梳理会话,它写下的条目会出现在这里。", error: false });
       await queryClient.invalidateQueries({ queryKey: sessionsQueryKey(session.productId) });
       void refreshKnowledge();
     },
@@ -223,13 +160,7 @@ export function ProductsPage({
     },
   });
 
-  const busy =
-    rename.isPending ||
-    remove.isPending ||
-    writeKnowledge.isPending ||
-    retireKnowledge.isPending ||
-    decideProposal.isPending ||
-    survey.isPending;
+  const busy = rename.isPending || remove.isPending || survey.isPending;
 
   function openDialog(next: "rename" | "survey"): void {
     setFeedback(null);
@@ -279,42 +210,19 @@ export function ProductsPage({
               </DropdownMenu.Root>
             ) : null}
           </div>
-          {/* 仓库数、知识数、会话数左栏都有,这里不重复;产品知识那一份还没读到时先不提待确认提案。 */}
-          <p className="text-base text-text-muted">
-            {knowledgeQuery.isPending || proposals.length === 0 ? null : (
-              <>
-                <span className="text-warning">
-                  <span className="tabular-nums">{proposals.length}</span> 条待确认提案
-                </span>
-                {" · "}
-              </>
-            )}
-            建于 {localMinute(selected.createdAt)}
-          </p>
+          {/* 仓库数、知识数、会话数左栏都有,这里不重复。 */}
+          <p className="text-base text-text-muted">建于 {localMinute(selected.createdAt)}</p>
         </div>
       )}
       {selected === undefined ? null : (
         <KnowledgeSection
-          key={`${selected.id}-${knowledgeFormKey}`}
+          key={selected.id}
           product={selected}
           knowledge={knowledge}
-          proposals={proposals}
           pending={knowledgeQuery.isPending}
           canWrite={canWriteKnowledge}
           busy={busy}
           onSurvey={() => openDialog("survey")}
-          onWrite={(statement, repoIds) => {
-            setFeedback(null);
-            writeKnowledge.mutate({ product: selected, statement, repoIds });
-          }}
-          onRetire={(entry) => {
-            setFeedback(null);
-            setRetiring(entry);
-          }}
-          onDecide={(entry, accept) => {
-            setFeedback(null);
-            decideProposal.mutate({ product: selected, entry, accept });
-          }}
         />
       )}
     </>
@@ -432,32 +340,6 @@ export function ProductsPage({
               },
             }}
           />
-          <ConfirmDialog
-            open={retiring !== null}
-            onOpenChange={(open) => {
-              if (!open) setRetiring(null);
-            }}
-            title="退役这条产品知识?"
-            titleSize="4"
-            description={
-              retiring === null
-                ? ""
-                : `「${retiring.statement.length > 80 ? `${retiring.statement.slice(0, 80)}…` : retiring.statement}」退役后不再生效,不可恢复。`
-            }
-            cancelLabel="取消"
-            cancelVariant="outline"
-            cancelDisabled={retireKnowledge.isPending}
-            confirm={{
-              label: retireKnowledge.isPending ? "退役中…" : "退役",
-              color: "red",
-              disabled: retireKnowledge.isPending || retiring === null,
-              onClick: () => {
-                if (retiring === null) return;
-                setFeedback(null);
-                retireKnowledge.mutate({ product: selected, entry: retiring });
-              },
-            }}
-          />
         </>
       )}
     </PageBody>
@@ -510,7 +392,7 @@ function SurveyDialog({
               重梳
             </Dialog.Title>
             <Dialog.Description size="2" color="gray">
-              让 agent 读一遍 {productName} 的全部仓库再交提案。
+              让 agent 读一遍 {productName} 的全部仓库,把它们之间的关系写下来。
             </Dialog.Description>
           </div>
           <div className="flex flex-col gap-1.5">
@@ -568,64 +450,77 @@ function Statement({ text }: { text: string }) {
 }
 
 /**
- * 产品页右栏的产品知识区(CONTEXT.md 产品知识,issue #343、#345、#346)。四样东西:生效列表、
- * 待确认的提案(每行「确认」「驳回」)、手写表单、每行的「退役」,加标题旁的「重梳」。没有
- * `knowledge:write` 的人只看到两份列表——维护这一层知识的人与维护知识集的是同一批人。
+ * 一条条目的出处附注(CONTEXT.md 产品知识,issue #360)。默认折起:附注是核对用的,一条条目
+ * 平时读的是它那一句话。没有附注的那一条不渲染这一行——人写的回答本来就没有代码位置。
+ */
+function Annotations({ entry }: { entry: ProductKnowledge }) {
+  if (entry.annotations.length === 0) return null;
+  return (
+    <Collapsible.Root className="group/notes">
+      <Collapsible.Trigger asChild>
+        <button
+          type="button"
+          className="flex min-h-9 items-center gap-1 text-sm text-text-muted max-sm:min-h-11 hover:text-text-secondary"
+        >
+          出处 <span className="tabular-nums">{entry.annotations.length}</span> 处
+          <ChevronDownIcon
+            aria-hidden
+            className="transition-transform group-data-[state=open]/notes:rotate-180"
+          />
+        </button>
+      </Collapsible.Trigger>
+      <Collapsible.Content>
+        <ul className="flex flex-col gap-1 border-l border-line pl-3">
+          {entry.annotations.map((note, index) => (
+            <li key={index} className="flex min-w-0 flex-col">
+              <span className="break-all font-mono text-xs text-text-secondary">
+                {note.location}
+              </span>
+              <span className="break-words text-sm text-text-muted">{note.reason}</span>
+            </li>
+          ))}
+        </ul>
+      </Collapsible.Content>
+    </Collapsible.Root>
+  );
+}
+
+/** 区块小标题:标题加条数,三段共用一份。 */
+function SectionHeading({ id, title, count }: { id: string; title: string; count: number }) {
+  return (
+    <h3 id={id} className="flex items-center gap-1.5 text-lg font-semibold">
+      {title}
+      <span className="font-mono text-xs font-normal text-text-muted tabular-nums">{count}</span>
+    </h3>
+  );
+}
+
+/**
+ * 产品页右栏的产品知识区(CONTEXT.md 产品知识,issue #360)。三段:按主题分组的术语表、仓库
+ * 关系段、带状态的产品决策列表,每条展开看出处附注。加标题旁的「重梳」。
  *
- * 仓库不足两个的产品写不出条目(一条产品知识至少说到两个仓库),那一档把表单换成一句话说清
- * 下一步、并把「重梳」置灰,而不是给一个必定被服务端回绝的按钮。
+ * 这一页只读:条目由会话在人的回答下写下即生效,人不手写、不确认也不驳回(ADR 0035)。
+ * `knowledge:write` 因此只决定看不看得到「重梳」。
  */
 function KnowledgeSection({
   product,
   knowledge,
-  proposals,
   pending,
   canWrite,
   busy,
-  onWrite,
-  onRetire,
-  onDecide,
   onSurvey,
 }: {
   product: Product;
   knowledge: readonly ProductKnowledge[];
-  proposals: readonly ProductProposal[];
   pending: boolean;
   canWrite: boolean;
   busy: boolean;
-  onWrite: (statement: string, repoIds: readonly number[]) => void;
-  onRetire: (entry: ProductKnowledge) => void;
-  onDecide: (entry: ProductProposal, accept: boolean) => void;
   onSurvey: () => void;
 }) {
-  const [statement, setStatement] = useState("");
-  const [repoIds, setRepoIds] = useState<readonly number[]>([]);
-
-  /**
-   * 一条条目涉及的仓库写成一行。产品里已经没有的仓库只剩 id 说得出来。产品只有两个仓库时
-   * 这一行说不出任何事(一条产品知识至少说到两个仓库),每条都重复同一对名字,因此不渲染;
-   * 条目里带着已不在产品里的仓库时仍要渲染,那正是它快要退役的信号。
-   */
-  const involved = (entry: ProductKnowledge): string | null => {
-    const rows = entry.repoIds.map((repoId) => product.repos.find((repo) => repo.repoId === repoId));
-    if (product.repos.length <= 2 && rows.every((row) => row !== undefined)) return null;
-    return rows
-      .map((row, index) => (row === undefined ? `repo ${entry.repoIds[index]}` : repoPath(row)))
-      .join("、");
-  };
-  const involvedLine = (entry: ProductKnowledge) => {
-    const line = involved(entry);
-    return line === null ? null : <span className="break-all text-sm text-text-muted">{line}</span>;
-  };
-  // 待确认的提案默认只露前 8 条,其余折起来;换产品这个 section 整体重挂,回到折起。
-  const [proposalsExpanded, setProposalsExpanded] = useState(false);
-  const visibleProposals = proposalsExpanded ? proposals : proposals.slice(0, 8);
-  const hiddenProposalCount = proposals.length - visibleProposals.length;
-
-  const submit = (event: FormEvent): void => {
-    event.preventDefault();
-    onWrite(statement.trim(), repoIds);
-  };
+  const groups = groupedTerms(knowledge);
+  const terms = groups.reduce((count, group) => count + group.terms.length, 0);
+  const relationships = knowledge.filter((entry) => entry.kind === "relationship");
+  const decisions = knowledge.filter((entry) => entry.kind === "decision");
 
   const surveyButton = (
     <Button
@@ -640,6 +535,13 @@ function KnowledgeSection({
     </Button>
   );
 
+  /** 一段之间的分隔:第一段不带上边框,后面每段带。 */
+  const sectionClass = (first: boolean): string =>
+    first
+      ? "flex min-w-0 flex-col gap-1.5"
+      : "flex min-w-0 flex-col gap-1.5 border-t border-line pt-3";
+  const rowClass = "flex min-w-0 flex-col gap-1 border-t border-line py-2.5 first:border-t-0 first:pt-0";
+
   return (
     <CardShell className="min-w-0 px-5 py-4">
       <div className="flex min-w-0 flex-col gap-3">
@@ -648,7 +550,7 @@ function KnowledgeSection({
             <h2 className="text-2xl font-bold tracking-[-0.015em]">产品知识</h2>
             <HelpTooltip
               label="产品知识说明"
-              content="一条产品知识说的是仓库之间的事:谁调谁的什么、跨仓库都成立的约定、某类改动牵动哪些仓库。一个仓库内部的事属于那个仓库的知识集。"
+              content="产品知识是这个产品的术语表、仓库关系段与产品决策记录:这个产品是什么、它的仓库之间怎么协作、为什么这样定。条目由 Agent 会话在你的回答下写成,写下即生效。"
             />
           </div>
           {canWrite ? (
@@ -656,7 +558,7 @@ function KnowledgeSection({
               content={
                 product.repos.length < 2
                   ? "产品梳理要这个产品至少有两个仓库"
-                  : "开一个产品梳理会话,让 agent 读一遍全部仓库再交提案"
+                  : "开一个产品梳理会话,让 agent 读一遍全部仓库再写下来"
               }
             >
               {/* disabled 按钮不冒泡指针事件,套一层 span 让提示仍能弹出。 */}
@@ -667,208 +569,118 @@ function KnowledgeSection({
           ) : null}
         </div>
 
-        {proposals.length === 0 ? null : (
-          <section aria-labelledby="product-proposals-title" className="flex min-w-0 flex-col gap-1.5">
-            <h3 id="product-proposals-title" className="flex items-center gap-1.5 text-lg font-semibold">
-              待确认的提案
-              <span className="font-mono text-xs font-normal text-warning tabular-nums">
-                {proposals.length}
-              </span>
-            </h3>
-            <ul>
-              {visibleProposals.map((entry) => {
-                const target =
-                  entry.retiresId === null
-                    ? undefined
-                    : knowledge.find((row) => row.id === entry.retiresId);
-                return (
-                  <li
-                    key={entry.id}
-                    className="flex items-start justify-between gap-3 border-t border-line py-2.5 first:border-t-0 first:pt-0"
-                  >
-                    <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      {entry.retiresId === null ? (
-                        <Text as="span" size="2" className="break-words">
-                          <Statement text={entry.statement} />
-                        </Text>
-                      ) : (
-                        <>
-                          <Text as="span" size="2" className="flex min-w-0 items-start gap-2">
-                            <Badge color="amber" variant="soft" size="1" className="mt-0.5 shrink-0">
-                              退役
-                            </Badge>
-                            <span className="min-w-0 break-words">
-                              {target === undefined ? `条目 ${entry.retiresId}` : <Statement text={target.statement} />}
-                            </span>
-                          </Text>
-                          <Text as="span" size="2" color="gray" className="break-words">
-                            理由:<Statement text={entry.statement} />
-                          </Text>
-                        </>
-                      )}
-                      {involvedLine(entry)}
-                    </div>
-                    {canWrite ? (
-                      <Flex gap="2" className="shrink-0">
-                        <Button
-                          variant="soft"
-                          size="1"
-                          disabled={busy}
-                          onClick={() => onDecide(entry, true)}
-                        >
-                          确认
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          color="gray"
-                          size="1"
-                          disabled={busy}
-                          onClick={() => onDecide(entry, false)}
-                        >
-                          驳回
-                        </Button>
-                      </Flex>
-                    ) : null}
-                  </li>
-                );
-              })}
-            </ul>
-            {hiddenProposalCount <= 0 ? null : (
-              <Button
-                type="button"
-                variant="ghost"
-                color="gray"
-                size="1"
-                className="self-start"
-                onClick={() => setProposalsExpanded(true)}
-              >
-                还有 {hiddenProposalCount} 条,展开
-                <ChevronDownIcon aria-hidden />
-              </Button>
-            )}
-          </section>
-        )}
-
-        <section
-          aria-labelledby="product-knowledge-title"
-          className={proposals.length === 0 ? "flex min-w-0 flex-col gap-1.5" : "flex min-w-0 flex-col gap-1.5 border-t border-line pt-3"}
-        >
-          <h3 id="product-knowledge-title" className="flex items-center gap-1.5 text-lg font-semibold">
-            生效的产品知识
-            {pending ? null : (
-              <span className="font-mono text-xs font-normal text-text-muted tabular-nums">
-                {knowledge.length}
-              </span>
-            )}
-          </h3>
-          {pending ? (
-            <Skeleton aria-hidden className="h-16" />
-          ) : knowledge.length === 0 ? (
-            <Text as="p" size="2" color="gray">
-              {canWrite && product.repos.length >= 2
-                ? "还没有产品知识。点「重梳」让 agent 读一遍仓库交提案,或在下面手写一条。"
-                : "还没有产品知识。"}
-            </Text>
-          ) : (
-            <ul>
-              {knowledge.map((entry) => (
-                <li
-                  key={entry.id}
-                  className="group/entry flex items-start justify-between gap-3 border-t border-line py-2.5 first:border-t-0 first:pt-0"
-                >
-                  <div className="flex min-w-0 flex-1 flex-col gap-1">
-                    <Text as="span" size="2" className="break-words">
-                      <Statement text={entry.statement} />
-                    </Text>
-                    {involvedLine(entry)}
-                  </div>
-                  {/* 十几行各带一个「退役」是噪音:桌面上指到那一行才显出来,触屏没有 hover 就一直在。 */}
-                  {canWrite ? (
-                    <Button
-                      variant="ghost"
-                      color="gray"
-                      size="1"
-                      className="shrink-0 transition-opacity md:opacity-0 md:group-hover/entry:opacity-100 md:group-focus-within/entry:opacity-100 md:focus-visible:opacity-100"
-                      disabled={busy}
-                      onClick={() => onRetire(entry)}
-                    >
-                      退役
-                    </Button>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        {!canWrite ? null : product.repos.length < 2 ? (
-          <Text as="p" size="2" color="gray" className="border-t border-line pt-3">
-            产品知识至少要说到这个产品里的两个仓库。先把第二个仓库归入这个产品。
+        {pending ? (
+          <Skeleton aria-hidden className="h-16" />
+        ) : knowledge.length === 0 ? (
+          <Text as="p" size="2" color="gray">
+            {canWrite && product.repos.length >= 2
+              ? "还没有产品知识。点「重梳」让 agent 读一遍仓库,或在一个 Agent 会话里跟它聊出来。"
+              : "还没有产品知识。"}
           </Text>
         ) : (
-          <form onSubmit={submit} className="flex flex-col gap-1.5 border-t border-line pt-3">
-            <div className="flex items-baseline justify-between gap-2">
-              <Text as="label" htmlFor="product-knowledge-statement" size="2" weight="medium">
-                手写一条
-              </Text>
-              <span className="text-sm text-text-muted tabular-nums">
-                {statement.length}/{KNOWLEDGE_STATEMENT_MAX}
-              </span>
-            </div>
-            <TextArea
-              id="product-knowledge-statement"
-              size="2"
-              rows={2}
-              maxLength={KNOWLEDGE_STATEMENT_MAX}
-              placeholder="一句话"
-              value={statement}
-              onChange={(event) => setStatement(event.target.value)}
-            />
-            <Text as="span" id="product-knowledge-repos" size="2" weight="medium" mt="2">
-              涉及的仓库(至少两个)
-            </Text>
-            {/* 勾选项横排成一行、放不下就换行:两三个仓库名不值一个带框的列表。 */}
-            <div
-              role="group"
-              aria-labelledby="product-knowledge-repos"
-              className="flex flex-wrap gap-x-4 gap-y-1"
-            >
-              {product.repos.map((repo) => (
-                <Text
-                  as="label"
-                  key={repo.repoId}
-                  size="2"
-                  className="flex min-h-9 cursor-pointer items-center gap-2 max-sm:min-h-11 has-disabled:cursor-not-allowed has-disabled:opacity-70"
-                >
-                  <Checkbox
-                    size="2"
-                    checked={repoIds.includes(repo.repoId)}
-                    disabled={busy}
-                    onCheckedChange={() =>
-                      setRepoIds((current) =>
-                        current.includes(repo.repoId)
-                          ? current.filter((id) => id !== repo.repoId)
-                          : [...current, repo.repoId],
-                      )
-                    }
-                  />
-                  <span className="min-w-0 truncate font-mono">{repoPath(repo)}</span>
-                </Text>
-              ))}
-            </div>
-            <Flex justify="end" mt="2">
-              <Button
-                type="submit"
-                variant="solid"
-                size={{ initial: "3", sm: "2" }}
-                disabled={busy || statement.trim() === "" || repoIds.length < 2}
+          <>
+            {terms === 0 ? null : (
+              <section aria-labelledby="product-terms-title" className={sectionClass(true)}>
+                <SectionHeading id="product-terms-title" title="术语表" count={terms} />
+                {groups.map((group) => (
+                  <div key={group.topic ?? ""} className="flex min-w-0 flex-col">
+                    {/* 一个分组一行小标题;没分组的那一组不加标题,它就是「其余」。 */}
+                    {group.topic === null ? null : (
+                      <h4 className="pt-1.5 text-sm font-medium text-text-muted">{group.topic}</h4>
+                    )}
+                    <ul>
+                      {group.terms.map((entry) => (
+                        <li key={entry.id} className={rowClass}>
+                          <Text as="span" size="2" className="break-words">
+                            <span className="font-semibold">{entry.name}</span>
+                            {" — "}
+                            <Statement text={entry.body} />
+                          </Text>
+                          {entry.avoided.length === 0 ? null : (
+                            <span className="break-words text-sm text-text-muted">
+                              不说:{entry.avoided.join("、")}
+                            </span>
+                          )}
+                          <Annotations entry={entry} />
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </section>
+            )}
+
+            {relationships.length === 0 ? null : (
+              <section
+                aria-labelledby="product-relationships-title"
+                className={sectionClass(terms === 0)}
               >
-                {busy ? "提交中…" : "记下"}
-              </Button>
-            </Flex>
-          </form>
+                <SectionHeading
+                  id="product-relationships-title"
+                  title="仓库关系"
+                  count={relationships.length}
+                />
+                <ul>
+                  {relationships.map((entry) => (
+                    <li key={entry.id} className={rowClass}>
+                      <Text as="span" size="2" className="break-words">
+                        <Statement text={entry.body} />
+                      </Text>
+                      <Annotations entry={entry} />
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {decisions.length === 0 ? null : (
+              <section
+                aria-labelledby="product-decisions-title"
+                className={sectionClass(terms === 0 && relationships.length === 0)}
+              >
+                <SectionHeading
+                  id="product-decisions-title"
+                  title="产品决策"
+                  count={decisions.length}
+                />
+                <ul>
+                  {decisions.map((entry) => (
+                    <li key={entry.id} className={rowClass}>
+                      <Text as="span" size="2" className="flex min-w-0 items-start gap-2">
+                        <span className="min-w-0 break-words font-semibold">{entry.name}</span>
+                        {entry.supersededBy === null ? (
+                          <Badge color="green" variant="soft" size="1" className="mt-0.5 shrink-0">
+                            生效
+                          </Badge>
+                        ) : (
+                          <Badge color="amber" variant="soft" size="1" className="mt-0.5 shrink-0">
+                            被条目 {entry.supersededBy} 取代
+                          </Badge>
+                        )}
+                      </Text>
+                      <Text as="span" size="2" className="break-words">
+                        <Statement text={entry.body} />
+                      </Text>
+                      {entry.options === null ? null : (
+                        <span className="break-words text-sm text-text-muted">
+                          备选:<Statement text={entry.options} />
+                        </span>
+                      )}
+                      {entry.consequences === null ? null : (
+                        <span className="break-words text-sm text-text-muted">
+                          后果:<Statement text={entry.consequences} />
+                        </span>
+                      )}
+                      <Annotations entry={entry} />
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+          </>
         )}
       </div>
     </CardShell>
   );
 }
+

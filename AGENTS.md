@@ -157,6 +157,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-17: **产品知识换成术语表、仓库关系与产品决策三种条目**(CONTEXT.md 产品知识 / 术语条目 / 仓库关系 / 产品决策,ADR 0035,issue #360,父 spec #357)。旧的一句话条目、它的提案队列与驳回记忆一并删除重建,存量丢弃、旧库开库即迁;条目由 Agent 会话经 `write_knowledge` / `withdraw_knowledge` 写下即生效,人不手写、不确认也不驳回,产品页因此只读:按主题分组的术语表、仓库关系段、带状态的产品决策列表,每条展开看出处附注(附注不进任何提示)。`query_knowledge` 多一路按名字读整条(术语、决策)与整段读仓库关系。产品梳理的会话流程不动,它交上来的每一句现在写成一条仓库关系(访谈那一版是 #365)。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 - 2026-09-17: spec #357 拆成十张票 #358–#367(均 ready-for-agent,GitHub 原生阻塞边):#358 会话子代理、#359 提问轮次、#360 产品知识换形、#361 产品 tracker 实体 四张无阻塞可开工;#362 Reviewer 与会话读产品知识(← #360)、#363 tracker 人工动作(← #361)、#364 会话 skill 铺入与开放对话(← #359 #360 #361);#365 产品梳理改访谈、#366 需求拆分改走 spec 与票(各 ← #358 #359 #364);#367 发布与线上验收(← #362 #363 #365 #366)。
 - 2026-09-17: grilling 收成 spec [Agent 会话跑工程 skill:产品梳理改访谈,spec 与票成产品实体](https://github.com/kassol/MultiReviewer/issues/357)(`ready-for-agent`,尚未实现):线上唯一真实产品的梳理交出 21 条接口契约、零条业务层,根因在 #342 的定义与形状;改为把作者的 grilling / domain-modeling / to-spec / to-tickets / ask-matt 原样 vendor 进镜像、按用途铺进会话 agentDir,产品知识改成术语表 + 仓库关系 + 产品 ADR(答即裁决、写下即生效、出处附注不进提示),需求拆分改走 grill → to-spec → to-tickets 写进库内产品 tracker(spec 与票、五个固定 triage 标签、阻塞边、认领;只展示与导出 Markdown,不写 Gitea),提问轮次(选择卡片)与会话子代理成通用会话能力,Reviewer 与全部用途的提示带三行目录并经 `query_knowledge` 按需读。CONTEXT.md 词条与 ADR 0035 随本 spec 落地;旧一句话产品知识、拆分条目与定稿退役。
 - 2026-09-16: **产品页与会话页克制一轮**(纯前端,见 `web/AGENTS.md` 同日条目)。发布 00-test 并截图验收。

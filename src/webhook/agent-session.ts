@@ -36,6 +36,7 @@ import {
   type AgentSessionOutputRecord,
   type AgentSessionRecord,
   type AgentSessionStatus,
+  type ProductKnowledgeEntry,
   type ProductRepoRecord,
   type RepoFindingQuery,
 } from "../review/store.ts";
@@ -58,6 +59,7 @@ import {
   type SessionCommand,
   type SessionKnowledgeEntries,
   type SessionKnowledgeQuery,
+  type SessionKnowledgeWrite,
   type SessionOutput,
   type SessionProductKnowledge,
   type SessionRepoInput,
@@ -301,7 +303,7 @@ function productHeading(
   try {
     return {
       name: store.getProduct(productId)?.name ?? "",
-      knowledgeCount: store.listProductKnowledge(productId, "active").length,
+      knowledgeCount: store.listProductKnowledge(productId).length,
     };
   } finally {
     store.close();
@@ -309,37 +311,31 @@ function productHeading(
 }
 
 /**
- * 这个产品此刻生效的产品知识,交给子进程的那一份(CONTEXT.md 产品知识,issue #345)。与产品名
- * 同律在 `boot` 里现算:一轮里人手写了一条,下次重建就看得到。
- *
- * 仓库集合换成 `<owner>/<repo>`:子进程手上只有这种形式。条目里那个仓库已经不在产品下时
- * (归入与移出不改已写下的集合)只剩 id 说得出来。
+ * 一条产品知识交给子进程的那一份(CONTEXT.md 产品知识,issue #360)。**出处附注留在库里**:
+ * 附注只在产品页展示,不进任何提示(ADR 0035)。
  */
-function activeProductKnowledge(
-  dbPath: string,
-  productId: number,
-): SessionProductKnowledge[] {
-  const store = openStore(dbPath);
-  try {
-    const names = repoNameById(store.getProduct(productId)?.repos ?? []);
-    return store.listProductKnowledge(productId, "active").map((entry) => ({
-      id: entry.id,
-      statement: entry.statement,
-      repos: entry.repoIds.map((repoId) => names.get(repoId) ?? `repo ${repoId}`),
-    }));
-  } finally {
-    store.close();
-  }
+function toSessionKnowledge(entry: ProductKnowledgeEntry): SessionProductKnowledge {
+  return {
+    id: entry.id,
+    kind: entry.kind,
+    name: entry.name,
+    body: entry.body,
+    topic: entry.topic,
+    avoided: entry.avoided,
+    options: entry.options,
+    consequences: entry.consequences,
+    supersededBy: entry.supersededBy,
+  };
 }
 
 /**
- * 这个产品被人驳回过的陈述(issue #346 的 US 24),交给产品梳理那一段提示的那一份。与生效
- * 条目同律在 `boot` 里现算:这一轮驳回的那几句,下一次重建就避得开。
+ * 这个产品此刻的产品知识,交给子进程的那一份(CONTEXT.md 产品知识,issue #345、#360)。与
+ * 产品名同律在 `boot` 里现算:一轮里刚写下的一条,下次重建就看得到。
  */
-function rejectedProductStatements(dbPath: string, productId: number): string[] {
+function activeProductKnowledge(dbPath: string, productId: number): SessionProductKnowledge[] {
   const store = openStore(dbPath);
   try {
-    return store.listProductKnowledgeRejections(productId);
+    return store.listProductKnowledge(productId).map(toSessionKnowledge);
   } finally {
     store.close();
   }
@@ -364,15 +360,12 @@ export function productSurveyRunning(dbPath: string, productId: number): boolean
 }
 
 /**
- * 收下产品梳理交的那一批提案(CONTEXT.md 产品梳理,issue #345):新增陈述与退役提案各落一行
- * `proposed`,等人在产品页上确认。
+ * 收下产品梳理交的那一批(CONTEXT.md 产品梳理,issue #345、#360):每一句新陈述落成一条
+ * **仓库关系**,退役那几条按 id 撤回。写下即生效,没有提案队列(ADR 0035)——梳理交上来的
+ * 就是它读代码读出来的仓库之间的事,人在产品页上读得到、在会话里改得动。
  *
- * 形状与打回在子进程那一侧判完,这里只把仓库名换回 repo id 并落库。认不出的仓库名与已经
- * 不生效的退役目标在这里丢掉:那一批是几分钟前判的,产品这会儿可能已经变了样。
- *
- * 被驳回过的陈述同样在这里丢掉(issue #346 的 US 24):静默丢,不打回给模型。这一道是兜底
- * ——那几句已经在梳理那一段提示里列出来让它避开,走到这里说明它还是原样提了一遍。全等才丢,
- * 换了措辞的同一个意思拦不住,同一批里其余几句照常落成提案。
+ * 形状与打回在子进程那一侧判完,这里只落库。认不出的退役目标在这里丢掉:那一批是几分钟前
+ * 判的,产品这会儿可能已经变了样。
  */
 export function recordProductSurveyProposals(
   deps: AgentSessionRecordDeps,
@@ -383,44 +376,28 @@ export function recordProductSurveyProposals(
   try {
     const product = store.getProduct(session.productId);
     if (product === undefined) return;
-    const ids = repoIdByName(product.repos);
-    const active = store.listProductKnowledge(session.productId, "active");
-    const rejected = new Set(store.listProductKnowledgeRejections(session.productId));
     const at = new Date(deps.now()).toISOString();
     for (const one of proposals.statements) {
-      if (rejected.has(one.statement.trim())) continue;
-      const repoIds = one.repos.flatMap((repo) => {
-        const repoId = ids.get(repo);
-        return repoId === undefined ? [] : [repoId];
-      });
-      if (new Set(repoIds).size < 2) continue;
-      store.addProductKnowledge({
+      store.writeProductKnowledge({
         productId: session.productId,
-        statement: one.statement,
-        repoIds,
-        state: "proposed",
-        proposedBy: null,
+        kind: "relationship",
+        name: "",
+        body: one.statement,
+        topic: null,
+        avoided: [],
+        options: null,
+        consequences: null,
+        annotations: [],
         at,
-        proposedSessionId: session.id,
+        sessionId: session.id,
       });
     }
     for (const one of proposals.retirements) {
-      const target = active.find((entry) => entry.id === one.id);
-      if (target === undefined) continue;
-      store.addProductKnowledge({
-        productId: session.productId,
-        statement: one.reason,
-        repoIds: target.repoIds,
-        state: "proposed",
-        proposedBy: null,
-        at,
-        proposedSessionId: session.id,
-        retiresId: target.id,
-      });
+      store.withdrawProductKnowledge(session.productId, one.id);
     }
   } catch (error) {
     console.error(
-      `[agent-session] 会话 ${session.id} 的产品梳理提案落库失败:`,
+      `[agent-session] 会话 ${session.id} 的产品梳理产出落库失败:`,
       error instanceof Error ? error.message : String(error),
     );
   } finally {
@@ -948,14 +925,15 @@ function repoKnowledgeCounts(
 }
 
 /**
- * 一次知识查询要回的两层条目(issue #344)。
+ * 一次知识查询要回的两层条目(issue #344、#360)。
  *
- * 产品层按**仓库集合交集**取:一条产品知识只要涉及问到的任一个仓库就回,它涉及的全部仓库
- * 都映射回 `<owner>/<repo>` 一起给——那正是路由条目能把 agent 指去另一个仓库的凭据。仓库层
- * 取问到的那几个仓库的生效知识集,按作用范围与查询 glob 重叠筛(`scopesOverlap`)。
+ * 产品层按**名字**取:问到的术语名与决策标题各回整条,`relationships` 为真时仓库关系整段
+ * 回——产品知识说的是这个产品是什么,没有仓库范围可收窄。仓库层取问到的那几个仓库的生效
+ * 知识集,按作用范围与查询 glob 重叠筛(`scopesOverlap`)。
  *
- * 两层各自封顶在 `FINDING_QUERY_LIMIT`:与历史 Finding 查询同一个常量,两个工具的上限没有
- * 理由分叉。问到的仓库名不在这个会话的仓库里就当没问(子进程那一侧已经打回过)。
+ * 仓库层封顶在 `FINDING_QUERY_LIMIT`:与历史 Finding 查询同一个常量。产品层不封顶:它按
+ * 名字取,问几个回几条(ADR 0035)。问到的仓库名不在这个会话的仓库里就当没问(子进程那一
+ * 侧已经打回过)。
  */
 export function sessionKnowledge(
   dbPath: string,
@@ -964,13 +942,12 @@ export function sessionKnowledge(
   query: SessionKnowledgeQuery,
 ): SessionKnowledgeEntries {
   const idByName = repoIdByName(repos);
-  const askedIds = query.repos
+  const askedIds = (query.repos ?? [])
     .map((name) => idByName.get(name))
     .filter((id): id is number => id !== undefined);
+  const names = new Set(query.names ?? []);
   const store = openStore(dbPath);
   try {
-    // 条目涉及的仓库里可能有这个会话读不到的那几个(没分配、或已从产品里移出),名字仍要给出
-    // 来:路由条目说的就是「这件事还牵着那个仓库」。注册表取一次名,取不到的退回 id。
     const nameById = repoNameById(repos);
     const nameOf = (id: number): string => {
       const known = nameById.get(id);
@@ -981,10 +958,11 @@ export function sessionKnowledge(
       return name;
     };
     const product = store
-      .listProductKnowledge(productId, "active")
-      .filter((entry) => entry.repoIds.some((id) => askedIds.includes(id)))
-      .slice(0, FINDING_QUERY_LIMIT)
-      .map((entry) => ({ repos: entry.repoIds.map(nameOf), statement: entry.statement }));
+      .listProductKnowledge(productId)
+      .filter((entry) =>
+        entry.kind === "relationship" ? query.relationships === true : names.has(entry.name),
+      )
+      .map(toSessionKnowledge);
     const repoEntries: SessionKnowledgeEntries["repo"] = askedIds.flatMap((repoId) =>
       (store.getRuleSet(repoId)?.rules ?? [])
         .filter((entry) => scopesOverlap(entry.scope, query.pathGlob))
@@ -996,6 +974,67 @@ export function sessionKnowledge(
         })),
     );
     return { product, repo: repoEntries.slice(0, FINDING_QUERY_LIMIT) };
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * 写下、改写或撤回一条产品知识(issue #360)。形状在子进程那一侧判完,这里落库并把落库之后
+ * 的那一条回给它——id 要回去,agent 之后按它改写或撤回。
+ *
+ * 改写与取代的目标不在这个产品下时回一句理由:那是 agent 抄错了 id,不是这一次写不进去。
+ */
+export function writeSessionKnowledge(
+  deps: AgentSessionRecordDeps,
+  session: AgentSessionRecord,
+  write: SessionKnowledgeWrite,
+): { entry?: SessionProductKnowledge; failure?: string } {
+  const store = openStore(deps.dbPath);
+  try {
+    const entry = store.writeProductKnowledge({
+      productId: session.productId,
+      kind: write.kind,
+      name: write.kind === "relationship" ? "" : write.name,
+      body: write.body,
+      topic: write.kind === "term" ? write.topic : null,
+      avoided: write.kind === "term" ? write.avoided : [],
+      options: write.kind === "decision" ? write.options : null,
+      consequences: write.kind === "decision" ? write.consequences : null,
+      annotations: write.annotations,
+      at: new Date(deps.now()).toISOString(),
+      sessionId: session.id,
+      ...(write.id === undefined ? {} : { id: write.id }),
+      ...(write.supersedes === undefined ? {} : { supersedes: write.supersedes }),
+    });
+    return entry === undefined
+      ? { failure: "no entry of this product has that id; read the ids back with query_knowledge" }
+      : { entry: toSessionKnowledge(entry) };
+  } catch (error) {
+    // 同名那一条已经在(唯一索引)是 agent 唯一撞得到的那一档,换成它改得动的一句话;
+    // 别的落库失败原样说出来。
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      failure: message.includes("UNIQUE")
+        ? `this product already has a ${write.kind} named ${write.name}; pass its entryId to rewrite it, or pick another name`
+        : message,
+    };
+  } finally {
+    store.close();
+  }
+}
+
+/** 撤回一条产品知识(issue #360)。这个产品下没有这一条即一句理由。 */
+export function withdrawSessionKnowledge(
+  deps: AgentSessionRecordDeps,
+  session: AgentSessionRecord,
+  entryId: number,
+): { failure?: string } {
+  const store = openStore(deps.dbPath);
+  try {
+    return store.withdrawProductKnowledge(session.productId, entryId)
+      ? {}
+      : { failure: `no entry of this product has id ${entryId}; nothing was withdrawn` };
   } finally {
     store.close();
   }
@@ -1213,6 +1252,21 @@ async function boot(
           message.query,
         );
         return;
+      case "knowledge-write":
+        // 落库在这一侧(issue #360),与查询同律恒回一条:回不去的话那次工具调用永远等下去。
+        child.send({
+          kind: "knowledge-write-result",
+          requestId: message.requestId,
+          ...writeSessionKnowledge(deps, session, message.write),
+        });
+        return;
+      case "knowledge-withdraw":
+        child.send({
+          kind: "knowledge-write-result",
+          requestId: message.requestId,
+          ...withdrawSessionKnowledge(deps, session, message.entryId),
+        });
+        return;
       case "turn-end":
         entry.status = "idle";
         // 这一回合投出去的图都该被认领过了。没认领的不留到下一回合:那只会把图串到别的消息上。
@@ -1261,7 +1315,6 @@ async function boot(
       purpose: session.purpose,
       repos: prepared.repos,
       productKnowledge: activeProductKnowledge(deps.dbPath, session.productId),
-      rejectedStatements: rejectedProductStatements(deps.dbPath, session.productId),
       runtimeModel: model.runtimeModel,
       ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
       ...(stored.entries.length === 0 ? {} : { entries: stored.entries }),

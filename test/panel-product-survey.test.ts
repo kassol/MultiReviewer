@@ -8,7 +8,8 @@
  * `agent-session-subprocess.test.ts`。
  *
  * 仓库集变了自己开梳理(issue #347)压在同一道缝上:归入第二个仓库开、归入第一个不开、只改
- * 职责那一次不开、移出先退役涉及那个仓库的条目再按剩下的仓库数开、梳理在跑时两边都不再开。
+ * 职责那一次不开、移出与下线按剩下的仓库数开、梳理在跑时两边都不再开。产品知识不再跟着仓库
+ * 退役(issue #360):条目说的是这个产品是什么,不按仓库集合成立。
  *
  * 重梳按仓库选基点(issue #353)也在这一道缝上:带基点的那一次梳理会话记下选定的 sha 与分支、
  * 工作树停在它上面,外仓库与解析不出的 sha 一场梳理也不开;系统自己开的那一场照旧读生效默认
@@ -137,7 +138,7 @@ test("重梳开一个系统开的产品梳理会话;它还在跑时第二次重�
     const again = await survey(h, two.id);
     assert.equal(again.status, 409);
     assert.deepEqual(await again.json(), {
-      error: "这个产品的产品梳理还在跑,等它交出提案再重梳",
+      error: "这个产品的产品梳理还在跑,等它交完再重梳",
     });
     assert.equal((await sessionsOf(h, two.id, h.cookie)).length, 1);
   } finally {
@@ -253,14 +254,6 @@ test("建会话端点不收产品梳理:那个用途只有系统开得了", asyn
   });
   assert.deepEqual(await sessionsOf(h, two.id, member), []);
 });
-
-/** 产品详情里的生效产品知识。退役之后它就不在这一格里(issue #343)。 */
-async function activeKnowledge(h: PanelHarness, productId: number): Promise<number[]> {
-  const response = await h.api("GET", `/products/${productId}`);
-  const text = await response.text();
-  assert.equal(response.status, 200, text);
-  return (JSON.parse(text) as { knowledge: { id: number }[] }).knowledge.map((row) => row.id);
-}
 
 test("归入第二个仓库自己开一场梳理:归入第一个不开,只改职责的那一次也不开", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
@@ -461,31 +454,13 @@ test("重梳选基点:外仓库、解析不出的 sha 与形状不对都回绝,�
   assert.deepEqual(await sessionsOf(h, two.id, h.cookie), []);
 });
 
-test("移出仓库:涉及它的生效条目全退役,剩下两个仓库时自己开一场梳理", async () => {
+test("移出仓库:剩下两个仓库时自己开一场梳理", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const beta = seedRepo(h, 202, "acme", "beta");
   const three = await product(h, [GITEA_REPO.id, ALPHA, beta]);
   try {
-    const write = async (repoIds: readonly number[], statement: string): Promise<number> => {
-      const response = await h.api("POST", `/products/${three.id}/knowledge`, {
-        statement,
-        repoIds,
-      });
-      const text = await response.text();
-      assert.equal(response.status, 201, text);
-      return (JSON.parse(text) as { entry: { id: number } }).entry.id;
-    };
-    const involved = await write(
-      [GITEA_REPO.id, ALPHA],
-      "acme/alpha 的网关转发 acme/widgets 的订单",
-    );
-    const untouched = await write([ALPHA, beta], "acme/alpha 与 acme/beta 共用同一份错误码表");
-    assert.deepEqual(await activeKnowledge(h, three.id), [untouched, involved]);
-
     const detached = await h.api("DELETE", `/products/${three.id}/repos/${GITEA_REPO.id}`);
     assert.equal(detached.status, 204);
-    // 说到被移出仓库的那一条退役了,另一条一格没动。
-    assert.deepEqual(await activeKnowledge(h, three.id), [untouched]);
     // 剩下两个仓库:它们之间的关系还要梳理一遍。
     assert.deepEqual(
       (await sessionsOf(h, three.id, h.cookie)).map((one) => [one.purpose, one.createdBy]),
@@ -496,30 +471,13 @@ test("移出仓库:涉及它的生效条目全退役,剩下两个仓库时自己
   }
 });
 
-test("仓库下线:与移出同律,涉及它的条目退役并开一场梳理", async () => {
+test("仓库下线:与移出同律,剩下两个仓库时开一场梳理", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const beta = seedRepo(h, 202, "acme", "beta");
   const three = await product(h, [GITEA_REPO.id, ALPHA, beta]);
   try {
-    const write = async (repoIds: readonly number[], statement: string): Promise<number> => {
-      const response = await h.api("POST", `/products/${three.id}/knowledge`, {
-        statement,
-        repoIds,
-      });
-      const text = await response.text();
-      assert.equal(response.status, 201, text);
-      return (JSON.parse(text) as { entry: { id: number } }).entry.id;
-    };
-    const involved = await write(
-      [GITEA_REPO.id, ALPHA],
-      "acme/alpha 的网关转发 acme/widgets 的订单",
-    );
-    const untouched = await write([ALPHA, beta], "acme/alpha 与 acme/beta 共用同一份错误码表");
-    assert.deepEqual(await activeKnowledge(h, three.id), [untouched, involved]);
-
     // 下线走注册表那个端点,回应一格没变。
     assert.equal((await h.api("DELETE", `/repos/${GITEA_REPO.id}`)).status, 204);
-    assert.deepEqual(await activeKnowledge(h, three.id), [untouched]);
     assert.deepEqual(
       (await sessionsOf(h, three.id, h.cookie)).map((one) => [one.purpose, one.createdBy]),
       [["product-survey", "system"]],
@@ -529,18 +487,11 @@ test("仓库下线:与移出同律,涉及它的条目退役并开一场梳理", 
   }
 });
 
-test("移出之后只剩一个仓库:条目退役,梳理不开", async () => {
+test("移出之后只剩一个仓库:梳理不开", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const two = await product(h, [GITEA_REPO.id, ALPHA]);
   try {
-    const written = await h.api("POST", `/products/${two.id}/knowledge`, {
-      statement: "acme/alpha 的网关转发 acme/widgets 的订单",
-      repoIds: [GITEA_REPO.id, ALPHA],
-    });
-    assert.equal(written.status, 201);
-
     assert.equal((await h.api("DELETE", `/products/${two.id}/repos/${ALPHA}`)).status, 204);
-    assert.deepEqual(await activeKnowledge(h, two.id), []);
     assert.deepEqual(await sessionsOf(h, two.id, h.cookie), []);
   } finally {
     await disposeAgentSessions();

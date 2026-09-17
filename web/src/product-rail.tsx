@@ -40,7 +40,6 @@ import {
   unassignedRepos,
   type Product,
   type ProductDetail,
-  type ProductKnowledge,
   type ProductRepo,
   type RegisteredRepo,
 } from "@/lib/products";
@@ -69,7 +68,7 @@ export function useProductSessions(productId: number | undefined) {
   });
 }
 
-/** 产品页右栏与会话页头部共用的产品详情。知识与提案也在这一份里。 */
+/** 产品页右栏与会话页头部共用的产品详情。产品知识也在这一份里。 */
 export function useProductDetail(productId: number | undefined) {
   return useQuery({
     queryKey: productQueryKey(productId),
@@ -78,13 +77,13 @@ export function useProductDetail(productId: number | undefined) {
   });
 }
 
-/** 移出确认框的说明:涉及这个仓库的产品知识会退役(issue #347),条数按生效列表算。 */
-function detachConsequence(repo: ProductRepo | null, knowledge: readonly ProductKnowledge[]): string {
-  const retiring =
-    repo === null ? 0 : knowledge.filter((entry) => entry.repoIds.includes(repo.repoId)).length;
-  const tail = "仓库集变了,系统可能自动开一场产品梳理。仓库本身留在注册表里。";
-  return retiring === 0 ? tail : `涉及它的 ${retiring} 条产品知识会退役,不可恢复。${tail}`;
-}
+/**
+ * 移出确认框的说明。产品知识不跟着仓库退役(issue #360):条目说的是这个产品是什么、它的
+ * 仓库之间怎么协作,少一个仓库并不让某一条当场不成立,说的正是那个仓库的那几条由下一场梳理
+ * 改写或撤回。
+ */
+const DETACH_CONSEQUENCE =
+  "仓库集变了,系统可能自动开一场产品梳理。说到它的产品知识由那一场改写。仓库本身留在注册表里。";
 
 /**
  * 产品页与会话页共用的左栏(spec #349 的收口):产品列表、当前产品的仓库、会话。两页
@@ -138,9 +137,6 @@ export function ProductRail({
   });
   const sessionsQuery = useProductSessions(current?.id);
   const sessions = sessionsQuery.data ?? [];
-  // 移出那句话要数涉及这个仓库的产品知识,读的是产品详情那一份(与产品页右栏同一个缓存键)。
-  const knowledge = useProductDetail(current?.id).data?.knowledge ?? [];
-
   /**
    * 重读产品列表。详情与会话列表的缓存键排在它之下,一次失效三份都跟着重读——仓库集一变,
    * 知识与会话都可能不是原来那一份了。
@@ -435,7 +431,7 @@ export function ProductRail({
             }}
             title={detaching === null ? "" : `把 ${repoPath(detaching)} 移出 ${current.name}?`}
             titleSize="4"
-            description={detachConsequence(detaching, knowledge)}
+            description={DETACH_CONSEQUENCE}
             cancelLabel="取消"
             cancelVariant="outline"
             cancelDisabled={detach.isPending}

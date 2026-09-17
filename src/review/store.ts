@@ -695,41 +695,42 @@ CREATE TABLE IF NOT EXISTS product_repo (
 );
 CREATE INDEX IF NOT EXISTS product_repo_by_product ON product_repo(product_id);
 
--- 产品知识(CONTEXT.md 产品知识,ADR 0032,issue #343)。一行一条陈述,自己一张表而不是
--- 给知识集那几张表的 repo_id 放空——理由写在 ADR 里。
+-- 产品知识(CONTEXT.md 产品知识、术语条目、仓库关系、产品决策,ADR 0032 与 0035,issue #360)。
+-- 三种条目一张表:一行一条,kind 说它是术语条目、仓库关系还是产品决策。分三张表要在读的
+-- 每一处 UNION 三遍,而三者的读法只有一种——整份读出来按 kind 分组。
 --
--- repo_ids 是涉及的仓库集合,一段升序去重的 repo id JSON 数组:一条条目的仓库集合写下来
--- 就不再变(产品摘掉一个仓库时那条条目退役,不是改它的集合),因此不另开一张关联表。
--- 状态三态:提案、生效、退役;手写即直接生效,issue #343 只走生效与退役两条路。
--- proposed_by 是提案来源:人手写即那个人的用户名,产品梳理会话交的即 NULL,那一档由
--- proposed_session_id 指向开它的会话。retires_id 是退役提案指向的目标条目(只有提案行有)。
-CREATE TABLE IF NOT EXISTS product_knowledge (
+-- 逐格的含义按 kind 分:
+-- - name:术语的名称、决策的标题;仓库关系没有名字,落空串。
+-- - body:术语的定义、关系的那一句陈述、决策的「背景、决定、为什么」。
+-- - topic:术语的主题分组,可空;另两种不用。
+-- - avoided:术语要避免的同义词,JSON 数组;另两种是空数组。
+-- - options / consequences:决策的备选项与后果,可空;另两种不用。
+-- - superseded_by:被哪条决策取代(CONTEXT.md 产品决策的状态),空即生效。
+-- - annotations:出处附注,一段 { location, reason } 的 JSON 数组。只在产品页展示,不进提示。
+--
+-- 条目由会话写下即生效,没有提案态,撤回即删行:人的回答就是裁决,不再有第二个队列
+-- (ADR 0035)。写下它的那个会话记在 written_by_session_id 上,产品页据它说得出出处。
+CREATE TABLE IF NOT EXISTS product_knowledge_entry (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   product_id INTEGER NOT NULL REFERENCES product(id),
-  statement TEXT NOT NULL,
-  repo_ids TEXT NOT NULL,
-  state TEXT NOT NULL CHECK (state IN ('proposed', 'active', 'retired')),
-  proposed_by TEXT,
-  proposed_session_id INTEGER,
-  created_at TEXT NOT NULL,
-  state_changed_at TEXT NOT NULL,
-  retires_id INTEGER REFERENCES product_knowledge(id)
+  kind TEXT NOT NULL CHECK (kind IN ('term', 'relationship', 'decision')),
+  name TEXT NOT NULL,
+  body TEXT NOT NULL,
+  topic TEXT,
+  avoided TEXT NOT NULL,
+  options TEXT,
+  consequences TEXT,
+  superseded_by INTEGER REFERENCES product_knowledge_entry(id),
+  annotations TEXT NOT NULL,
+  written_at TEXT NOT NULL,
+  written_by_session_id INTEGER
 );
-CREATE INDEX IF NOT EXISTS product_knowledge_by_product
-  ON product_knowledge(product_id, state);
-
--- 驳回记忆(CONTEXT.md 产品知识,issue #346)。驳回一条新增陈述即删掉那一行提案,另在这里
--- 按产品记下它的陈述:下一轮产品梳理交上同一句话时直接丢掉,人不必反复驳回同一句。
---
--- 退役提案的驳回不记:那条生效条目下一轮梳理仍看得见,它再提一次本身是合理的。陈述就是
--- 主键的一半,同一句话驳回两遍只留一行;rejected_at 没有读处,是为了让一次静默丢弃在库里
--- 说得出时间。
-CREATE TABLE IF NOT EXISTS product_knowledge_rejection (
-  product_id INTEGER NOT NULL REFERENCES product(id),
-  statement TEXT NOT NULL,
-  rejected_at TEXT NOT NULL,
-  PRIMARY KEY (product_id, statement)
-);
+CREATE INDEX IF NOT EXISTS product_knowledge_entry_by_product
+  ON product_knowledge_entry(product_id, kind);
+-- 一个产品内一个名字只有一条:术语与决策都按名字读整条(query_knowledge),两条同名的
+-- 读出来就不知道是哪一条。仓库关系没有名字(空串),因此排除在这道唯一性之外。
+CREATE UNIQUE INDEX IF NOT EXISTS product_knowledge_entry_by_name
+  ON product_knowledge_entry(product_id, kind, name) WHERE name <> '';
 
 -- Agent 会话(CONTEXT.md Agent 会话,issue #332)。挂在产品上,创建者是唯一能续谈与
 -- 删除它的人;用途建时定、之后不变(没有改用途的写入口)。用量五列与 review_run 同口径,
@@ -2707,45 +2708,75 @@ function foldProducts(rows: readonly Record<string, unknown>[]): ProductRecord[]
   return [...products.values()];
 }
 
-/** 产品知识表里的一行。`repo_ids` 是这张表自己写下的 JSON,形状由写入口保证。 */
-function productKnowledge(row: Record<string, unknown>): ProductKnowledgeRecord {
+/** 产品知识表里的一行。两处 JSON 都是这张表自己写下的,形状由写入口保证。 */
+function productKnowledge(row: Record<string, unknown>): ProductKnowledgeEntry {
+  const text = (key: string): string | null => (row[key] === null ? null : String(row[key]));
   return {
     id: Number(row["id"]),
     productId: Number(row["product_id"]),
-    statement: String(row["statement"]),
-    repoIds: JSON.parse(String(row["repo_ids"])) as number[],
-    state: String(row["state"]) as ProductKnowledgeState,
-    proposedBy: row["proposed_by"] === null ? null : String(row["proposed_by"]),
-    proposedSessionId:
-      row["proposed_session_id"] === null ? null : Number(row["proposed_session_id"]),
-    createdAt: String(row["created_at"]),
-    stateChangedAt: String(row["state_changed_at"]),
-    retiresId: row["retires_id"] === null ? null : Number(row["retires_id"]),
+    kind: String(row["kind"]) as ProductKnowledgeKind,
+    name: String(row["name"]),
+    body: String(row["body"]),
+    topic: text("topic"),
+    avoided: JSON.parse(String(row["avoided"])) as string[],
+    options: text("options"),
+    consequences: text("consequences"),
+    supersededBy: row["superseded_by"] === null ? null : Number(row["superseded_by"]),
+    annotations: JSON.parse(String(row["annotations"])) as ProductKnowledgeAnnotation[],
+    writtenAt: String(row["written_at"]),
+    writtenBySessionId:
+      row["written_by_session_id"] === null ? null : Number(row["written_by_session_id"]),
   };
 }
 
-/**
- * 产品知识的状态(CONTEXT.md 产品知识)。提案由产品梳理或人提出,人确认后生效,可退役;
- * 手写的那一条直接生效(issue #343)。
- */
-export type ProductKnowledgeState = "proposed" | "active" | "retired";
+/** 一条产品知识是三种条目里的哪一种(CONTEXT.md 术语条目、仓库关系、产品决策)。 */
+export type ProductKnowledgeKind = "term" | "relationship" | "decision";
 
-/** 一条产品知识(CONTEXT.md 产品知识,ADR 0032,issue #343)。 */
-export type ProductKnowledgeRecord = {
+/** 一条出处附注:代码里的位置与一句为什么。只在产品页展示,不进任何提示(ADR 0035)。 */
+export type ProductKnowledgeAnnotation = { location: string; reason: string };
+
+/** 一条产品知识(CONTEXT.md 产品知识,ADR 0032 与 0035,issue #360)。 */
+export type ProductKnowledgeEntry = {
   id: number;
   productId: number;
-  statement: string;
-  /** 涉及的仓库集合,升序去重的 repo id。至少两个,都是这个产品写下它时的仓库。 */
-  repoIds: number[];
-  state: ProductKnowledgeState;
-  /** 人手写即那个人的用户名;产品梳理会话交的即 null。 */
-  proposedBy: string | null;
-  /** 提出它的产品梳理会话。人手写的即 null。 */
-  proposedSessionId: number | null;
-  createdAt: string;
-  stateChangedAt: string;
-  /** 退役提案指向的那条生效条目。只有退役提案有,其余都是 null。 */
-  retiresId: number | null;
+  kind: ProductKnowledgeKind;
+  /** 术语的名称、决策的标题;仓库关系没有名字,是空串。 */
+  name: string;
+  /** 术语的定义、关系的那一句陈述、决策的「背景、决定、为什么」。 */
+  body: string;
+  /** 术语的主题分组。没分组即 null,另两种恒为 null。 */
+  topic: string | null;
+  /** 术语要避免的同义词。另两种恒为空数组。 */
+  avoided: string[];
+  /** 决策考虑过的备选项。另两种恒为 null。 */
+  options: string | null;
+  /** 决策的后果。另两种恒为 null。 */
+  consequences: string | null;
+  /** 取代这条决策的那一条。null 即这条生效(CONTEXT.md 产品决策的状态)。 */
+  supersededBy: number | null;
+  annotations: ProductKnowledgeAnnotation[];
+  writtenAt: string;
+  /** 写下它的那个 Agent 会话。 */
+  writtenBySessionId: number | null;
+};
+
+/** 写一条产品知识要给的那几格。`id` 给了即改写那一条(CONTEXT.md 产品知识:写下即生效)。 */
+export type ProductKnowledgeWrite = {
+  productId: number;
+  kind: ProductKnowledgeKind;
+  name: string;
+  body: string;
+  topic: string | null;
+  avoided: readonly string[];
+  options: string | null;
+  consequences: string | null;
+  annotations: readonly ProductKnowledgeAnnotation[];
+  at: string;
+  sessionId: number | null;
+  /** 改写这一条而不是新写一条。这个产品下没有这一条即回 undefined。 */
+  id?: number;
+  /** 这条决策取代的那一条。它随这一次写入落成「被取代」。 */
+  supersedes?: number;
 };
 
 /**
@@ -3205,56 +3236,25 @@ export type Store = {
    * 接口照它给确认框的数字;没有这个产品即 undefined。
    */
   deleteProduct(productId: number): { sessions: number } | undefined;
-  /** 一个产品在某一状态上的产品知识条目(CONTEXT.md 产品知识),新的在前。 */
-  listProductKnowledge(productId: number, state: ProductKnowledgeState): ProductKnowledgeRecord[];
   /**
-   * 写一条产品知识。人手写的那一条直接落生效(issue #343),`repoIds` 由调用方校验过
-   * (至少两个、都在这个产品内),这里只按升序去重落库。
+   * 一个产品的全部产品知识条目(CONTEXT.md 产品知识),三种条目在同一份里,按产品页上的
+   * 顺序排:术语表、仓库关系、产品决策,每一段里先写下的在前。读的每一处要的都是整份:产品页按种类与主题分组,`query_knowledge`
+   * 按名字挑出一条——条目以十计,不值三个查询各走一趟库。
+   */
+  listProductKnowledge(productId: number): ProductKnowledgeEntry[];
+  /**
+   * 写一条产品知识:写下即生效,没有提案态(ADR 0035)。形状校验(定义为空、定义里的路径与
+   * 类名、决策没有标题)在会话工具那一侧判完,这里只落库。
    *
-   * 产品梳理交的提案走同两格(issue #345):`proposedSessionId` 是交它的那个会话,
-   * `retiresId` 是退役提案指向的那条生效条目。手写那一条两格都省略。
+   * `id` 给了即改写那一条;`supersedes` 给了即把那条决策落成被这一条取代。改写的目标或
+   * 取代的目标不在这个产品下时回 undefined,一格不动。
    */
-  addProductKnowledge(record: {
-    productId: number;
-    statement: string;
-    repoIds: readonly number[];
-    state: ProductKnowledgeState;
-    proposedBy: string | null;
-    at: string;
-    proposedSessionId?: number;
-    retiresId?: number;
-  }): ProductKnowledgeRecord;
+  writeProductKnowledge(record: ProductKnowledgeWrite): ProductKnowledgeEntry | undefined;
   /**
-   * 把一条生效的产品知识退役。不在这个产品下、或已经不生效即 false——退役两次不该报成功。
+   * 撤回一条产品知识:删行。这个产品下没有这一条即 false——撤回两次不该报成功。条目由会话
+   * 在人的回答下写成,撤回的那一条不必留着:留着的是产品页此刻说得出的那一份。
    */
-  retireProductKnowledge(productId: number, entryId: number, at: string): boolean;
-  /**
-   * 确认一条待确认的提案(CONTEXT.md 产品知识,issue #346)。新增陈述那一档翻成生效,回
-   * `"active"`;退役提案那一档把它指向的目标退役并删掉这一行提案,回 `"retired"`——
-   * 提案本身不是要留着的知识,目标那一行的退役时间才是。
-   *
-   * 不在这个产品下、或已经不是提案即 undefined。目标这会儿已经不生效时仍按退役算:
-   * 人点下确认要表达的是「这句话不再成立」,它已经不生效即已经如他所愿。
-   */
-  acceptProductKnowledgeProposal(
-    productId: number,
-    entryId: number,
-    at: string,
-  ): "active" | "retired" | undefined;
-  /**
-   * 驳回一条待确认的提案(issue #346):删掉这一行。新增陈述那一档同时记下它的陈述,
-   * 下一轮产品梳理交上同一句话就静默丢掉;退役提案那一档不记。
-   *
-   * 不在这个产品下、或已经不是提案即 false。
-   */
-  rejectProductKnowledgeProposal(productId: number, entryId: number, at: string): boolean;
-  /** 这个产品被驳回过的陈述(issue #346)。产品梳理落库前按它丢弃重复提上来的那几句。 */
-  listProductKnowledgeRejections(productId: number): string[];
-  /**
-   * 把涉及某个仓库的生效产品知识全部退役(CONTEXT.md 产品知识,issue #347)。仓库移出产品时
-   * 走它:一条说到已经不在这个产品里的仓库的陈述,agent 读到只会被指去一棵不存在的工作树。
-   */
-  retireProductKnowledgeOfRepo(productId: number, repoId: number, at: string): void;
+  withdrawProductKnowledge(productId: number, entryId: number): boolean;
   /**
    * 一个产品下的 Agent 会话,新的在前。`createdBy` 给了即只回这个人的(「我的会话」),
    * 给 null 即这个产品下的全部(系统管理员那一档)。
@@ -4191,23 +4191,6 @@ const AGENT_SESSION_CHILD_TABLES = [
   "agent_session_output_finalization",
 ] as const;
 
-/**
- * 这个产品下那一条待确认的提案(issue #346)。确认与驳回的开头逐字相同:读不到即
- * undefined,两个动作据它各回一句。
- */
-function proposedProductKnowledge(
-  db: DatabaseSync,
-  productId: number,
-  entryId: number,
-): ProductKnowledgeRecord | undefined {
-  const row = db
-    .prepare(
-      "SELECT * FROM product_knowledge WHERE id = ? AND product_id = ? AND state = 'proposed'",
-    )
-    .get(entryId, productId);
-  return row === undefined ? undefined : productKnowledge(row);
-}
-
 /** 这几个会话底下的全部行。调用方自己开事务:两处都要与删会话行本身同进同退。 */
 function deleteAgentSessionRows(db: DatabaseSync, sessionIds: readonly number[]): void {
   for (const table of AGENT_SESSION_CHILD_TABLES) {
@@ -4541,6 +4524,12 @@ export function openStore(dbPath: string): Store {
   }
   db.exec(STORE_SCHEMA);
   db.exec(MODEL_SERVICE_SCHEMA);
+
+  // 产品知识换形(ADR 0035,issue #360):旧的一句话条目、它的提案与驳回记忆一并丢弃,新表
+  // 由 `STORE_SCHEMA` 建起。`DROP TABLE IF EXISTS` 自带幂等,跑几遍都一样;旧表的名字不再
+  // 被任何代码用到,建不回来。存量丢弃是作者的决定:线上没有一条已裁决的条目。
+  db.exec("DROP TABLE IF EXISTS product_knowledge_rejection");
+  db.exec("DROP TABLE IF EXISTS product_knowledge");
 
   // 升级前的库缺的列(`ADDED_COLUMNS`):按 `pragma_table_info` 逐列判,缺了才补,补过即
   // 不再命中。回填只跟着补列那一次跑——`openStore` 每次请求都跑一遍,回填不该跟着每次
@@ -5491,9 +5480,8 @@ export function openStore(dbPath: string): Store {
       db.exec("BEGIN");
       try {
         db.prepare("DELETE FROM product_repo WHERE product_id = ?").run(productId);
-        // 产品知识同样跟着产品走(issue #343):产品是它唯一的挂载点。驳回记忆也是(issue #346)。
-        db.prepare("DELETE FROM product_knowledge WHERE product_id = ?").run(productId);
-        db.prepare("DELETE FROM product_knowledge_rejection WHERE product_id = ?").run(productId);
+        // 产品知识同样跟着产品走(issue #343):产品是它唯一的挂载点。
+        db.prepare("DELETE FROM product_knowledge_entry WHERE product_id = ?").run(productId);
         // 会话跟着产品走(issue #332):产品是会话唯一的挂载点,留下来谁都读不到它。记录与
         // 受理过的消息 id 挂在会话上,同一个事务里一并删(issue #333)。
         deleteAgentSessionRows(
@@ -5516,127 +5504,101 @@ export function openStore(dbPath: string): Store {
       }
     },
 
-    listProductKnowledge(productId, state) {
+    listProductKnowledge(productId) {
       return db
         .prepare(
-          `SELECT * FROM product_knowledge
-            WHERE product_id = ? AND state = ?
-            ORDER BY id DESC`,
+          // 顺序就是产品页上的顺序:术语表、仓库关系、产品决策,每一段里先写下的在前。
+          `SELECT * FROM product_knowledge_entry
+            WHERE product_id = ?
+            ORDER BY CASE kind WHEN 'term' THEN 0 WHEN 'relationship' THEN 1 ELSE 2 END, id`,
         )
-        .all(productId, state)
+        .all(productId)
         .map(productKnowledge);
     },
 
-    addProductKnowledge({
-      productId,
-      statement,
-      repoIds,
-      state,
-      proposedBy,
-      at,
-      proposedSessionId,
-      retiresId,
-    }) {
-      const id = Number(
+    writeProductKnowledge(record) {
+      const row = (id: number): Record<string, unknown> | undefined =>
         db
-          .prepare(
-            `INSERT INTO product_knowledge
-               (product_id, statement, repo_ids, state, proposed_by, created_at, state_changed_at,
-                proposed_session_id, retires_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            productId,
-            statement,
-            JSON.stringify([...new Set(repoIds)].sort((left, right) => left - right)),
-            state,
-            proposedBy,
-            at,
-            at,
-            proposedSessionId ?? null,
-            retiresId ?? null,
-          ).lastInsertRowid,
-      );
-      return productKnowledge(
-        db.prepare("SELECT * FROM product_knowledge WHERE id = ?").get(id)!,
-      );
+          .prepare("SELECT * FROM product_knowledge_entry WHERE id = ? AND product_id = ?")
+          .get(id, record.productId) as Record<string, unknown> | undefined;
+      if (record.id !== undefined && row(record.id) === undefined) return undefined;
+      if (record.supersedes !== undefined && row(record.supersedes) === undefined) return undefined;
+      const avoided = JSON.stringify([...record.avoided]);
+      const annotations = JSON.stringify([...record.annotations]);
+      // 写这一条与「那一条被它取代」是一件事的两半,同一个事务里落。
+      db.exec("BEGIN");
+      let id: number;
+      try {
+        if (record.id === undefined) {
+          id = Number(
+            db
+              .prepare(
+                `INSERT INTO product_knowledge_entry
+                   (product_id, kind, name, body, topic, avoided, options, consequences,
+                    annotations, written_at, written_by_session_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              )
+              .run(
+                record.productId,
+                record.kind,
+                record.name,
+                record.body,
+                record.topic,
+                avoided,
+                record.options,
+                record.consequences,
+                annotations,
+                record.at,
+                record.sessionId,
+              ).lastInsertRowid,
+          );
+        } else {
+          id = record.id;
+          db.prepare(
+            `UPDATE product_knowledge_entry
+               SET kind = ?, name = ?, body = ?, topic = ?, avoided = ?, options = ?,
+                   consequences = ?, annotations = ?, written_at = ?, written_by_session_id = ?
+             WHERE id = ?`,
+          ).run(
+            record.kind,
+            record.name,
+            record.body,
+            record.topic,
+            avoided,
+            record.options,
+            record.consequences,
+            annotations,
+            record.at,
+            record.sessionId,
+            id,
+          );
+        }
+        if (record.supersedes !== undefined) {
+          db.prepare("UPDATE product_knowledge_entry SET superseded_by = ? WHERE id = ?").run(
+            id,
+            record.supersedes,
+          );
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      return productKnowledge(row(id)!);
     },
 
-    retireProductKnowledge(productId, entryId, at) {
+    withdrawProductKnowledge(productId, entryId) {
+      // 指向它的「被取代」先松开:留着的话那条决策的状态指向一条不存在的条目。
+      db.prepare(
+        "UPDATE product_knowledge_entry SET superseded_by = NULL WHERE product_id = ? AND superseded_by = ?",
+      ).run(productId, entryId);
       return (
         Number(
           db
-            .prepare(
-              `UPDATE product_knowledge SET state = 'retired', state_changed_at = ?
-                WHERE id = ? AND product_id = ? AND state = 'active'`,
-            )
-            .run(at, entryId, productId).changes,
+            .prepare("DELETE FROM product_knowledge_entry WHERE id = ? AND product_id = ?")
+            .run(entryId, productId).changes,
         ) > 0
       );
-    },
-
-    acceptProductKnowledgeProposal(productId, entryId, at) {
-      const proposal = proposedProductKnowledge(db, productId, entryId);
-      if (proposal === undefined) return undefined;
-      if (proposal.retiresId === null) {
-        db.prepare(
-          "UPDATE product_knowledge SET state = 'active', state_changed_at = ? WHERE id = ?",
-        ).run(at, entryId);
-        return "active";
-      }
-      // 目标退役与提案消失是一件事的两半,同一个事务里落。
-      db.exec("BEGIN");
-      try {
-        db.prepare(
-          `UPDATE product_knowledge SET state = 'retired', state_changed_at = ?
-            WHERE id = ? AND product_id = ? AND state = 'active'`,
-        ).run(at, proposal.retiresId, productId);
-        db.prepare("DELETE FROM product_knowledge WHERE id = ?").run(entryId);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-      return "retired";
-    },
-
-    rejectProductKnowledgeProposal(productId, entryId, at) {
-      const proposal = proposedProductKnowledge(db, productId, entryId);
-      if (proposal === undefined) return false;
-      // 记忆与删行同一个事务:行没了而这句话没记下来,下一轮梳理会把它原样提回来。
-      db.exec("BEGIN");
-      try {
-        if (proposal.retiresId === null) {
-          db.prepare(
-            `INSERT OR IGNORE INTO product_knowledge_rejection (product_id, statement, rejected_at)
-             VALUES (?, ?, ?)`,
-          ).run(productId, proposal.statement, at);
-        }
-        db.prepare("DELETE FROM product_knowledge WHERE id = ?").run(entryId);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-      return true;
-    },
-
-    listProductKnowledgeRejections(productId) {
-      return db
-        .prepare("SELECT statement FROM product_knowledge_rejection WHERE product_id = ?")
-        .all(productId)
-        .map((row) => String(row["statement"]));
-    },
-
-    retireProductKnowledgeOfRepo(productId, repoId, at) {
-      // 仓库集合是这张表自己写下的 JSON 数组,`json_each` 按元素匹配即「涉及这个仓库」。
-      db.prepare(
-        `UPDATE product_knowledge SET state = 'retired', state_changed_at = ?
-          WHERE product_id = ? AND state = 'active'
-            AND EXISTS (
-              SELECT 1 FROM json_each(product_knowledge.repo_ids) WHERE json_each.value = ?
-            )`,
-      ).run(at, productId, repoId);
     },
 
     listAgentSessions(productId, createdBy) {

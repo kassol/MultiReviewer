@@ -220,7 +220,7 @@ export function normalizeProductSurvey(raw: ProductSurveyProposals): ProductSurv
  * 这一批提案要不要打回,要就回一句理由(spec #342 的 US 19、US 20)。
  *
  * 与需求拆分那一处同律:只回第一处,一次说一件事。`repos` 是这个产品的仓库清单,
- * `knowledge` 是提示里列过的生效条目——退役只能指向其中一条。
+ * `knowledge` 是提示里列过的产品知识——退役只能指向其中的一条仓库关系。
  */
 export function productSurveyRejection(
   proposals: ProductSurveyProposals,
@@ -230,8 +230,8 @@ export function productSurveyRejection(
   for (const [index, one] of proposals.statements.entries()) {
     const at = `statement ${index + 1}`;
     if (one.statement === "") return `${at} is empty; write the statement itself, in Chinese`;
-    // 与手写那一道同一个数(issue #343 的 `PRODUCT_KNOWLEDGE_STATEMENT_SHAPE`):提案确认后就是
-    // 一条要被反复注入的陈述,经提案进来的不该比人手写的长。
+    // 与知识条目的陈述同一个数(`AGENT_STATEMENT_LIMIT`):落下来就是一条仓库关系,
+    // 一句说得完的事不该写成一段。
     if (one.statement.length > AGENT_STATEMENT_LIMIT) {
       return `${at} is ${one.statement.length} characters; a statement is at most ${AGENT_STATEMENT_LIMIT} characters — tighten it to one sentence`;
     }
@@ -243,7 +243,8 @@ export function productSurveyRejection(
       return `${at} names fewer than two repositories of this product; a product knowledge statement speaks about at least two of: ${repos.join(", ")}. A fact about one repository alone belongs to that repository's own knowledge set, not here.`;
     }
   }
-  const active = knowledge.map((entry) => entry.id);
+  // 退役只指得动已经写下的仓库关系:梳理交的那一句就是一条仓库关系(issue #360)。
+  const active = knowledge.filter((entry) => entry.kind === "relationship").map((entry) => entry.id);
   for (const [index, one] of proposals.retirements.entries()) {
     const at = `retirement ${index + 1}`;
     if (!active.includes(one.id)) {
@@ -257,7 +258,8 @@ export function productSurveyRejection(
 }
 
 /**
- * 产品梳理的产出工具。一次调用交全:新增陈述与退役提案各一批(spec #342 的 US 19)。
+ * 产品梳理的产出工具。一次调用交全:新陈述与退役各一批(spec #342 的 US 19);新陈述落成
+ * 仓库关系条目,写下即生效(issue #360)。
  * `repos` 是这个产品的仓库清单(产品梳理的会话根就是产品的全部仓库),`knowledge` 是此刻
  * 生效的那些条目。
  */
@@ -292,7 +294,7 @@ export function sessionOutputTools(
   purpose: string,
   options: {
     repos: readonly string[];
-    /** 此刻生效的产品知识(issue #345)。产品梳理的退役目标按它判,别的用途用不上。 */
+    /** 此刻的产品知识(issue #345)。产品梳理的退役目标按其中的仓库关系判,别的用途用不上。 */
     knowledge: readonly SessionProductKnowledge[];
     send: (message: SessionWorkerMessage) => void;
   },
