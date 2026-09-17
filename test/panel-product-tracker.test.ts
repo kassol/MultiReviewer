@@ -1,0 +1,289 @@
+/**
+ * 产品 tracker 的那一段面板接口(CONTEXT.md 产品 tracker、spec、票,ADR 0035,issue #361)。
+ *
+ * 三条缝照旧:面板 API 走真实 HTTP,仓库注册打到假 Gitea,spec 与票落临时 SQLite。压的是
+ * 本票的验收:产品页读到 spec 连它的票(标签、状态、认领人、阻塞者)、一条 spec 打得开全文、
+ * 导出是一份票按依赖顺序排的 Markdown、看不到这个产品的人什么都读不到、升级前的旧库开起来
+ * 新表在且 tracker 为空。
+ *
+ * 会话经工具写 tracker 那条路在 `agent-session-subprocess.test.ts`:这里只把行落进库,压的是
+ * 读侧。
+ */
+import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
+import { test } from "node:test";
+
+import { openStore, type ProductTicketLabel } from "../src/review/store.ts";
+import {
+  GITEA_REPO,
+  scopedUser,
+  seedRepo,
+  startReadyPanelHarness,
+  type PanelHarness,
+} from "./support/panel-harness.ts";
+
+const PASSWORD = "product-tracker-test-password";
+const AT = "2026-09-17T00:00:00.000Z";
+
+type TrackerTicket = {
+  id: number;
+  title: string;
+  label: ProductTicketLabel;
+  state: string;
+  claimedBy: string | null;
+  blockedBy: number[];
+};
+type TrackerSpec = { id: number; title: string; state: string; tickets: TrackerTicket[] };
+type Product = { id: number; name: string };
+
+/** 建一个带一个仓库的产品。tracker 不要求仓库数,一个够判可见性。 */
+async function product(h: PanelHarness): Promise<Product> {
+  const response = await h.api("POST", "/products", { name: "报销系统" });
+  const text = await response.text();
+  assert.equal(response.status, 201, text);
+  const created = (JSON.parse(text) as { product: Product }).product;
+  const store = openStore(h.db.path);
+  try {
+    assert.equal(store.attachProductRepo(created.id, GITEA_REPO.id, AT), "attached");
+  } finally {
+    store.close();
+  }
+  return created;
+}
+
+/**
+ * 播种一条 spec 与几张票(会话写下的那一份的形状)。回的是 spec 号与票号,按给的顺序。
+ * `blocks` 是阻塞边,按票在 `tickets` 里的位置(从 0 起)写。
+ */
+function seedSpec(
+  h: PanelHarness,
+  productId: number,
+  spec: { title: string; body: string },
+  tickets: readonly { title: string; body: string; label?: ProductTicketLabel }[] = [],
+  blocks: readonly [number, number][] = [],
+): { specId: number; ticketIds: number[] } {
+  const store = openStore(h.db.path);
+  try {
+    const written = store.createProductSpec({
+      productId,
+      title: spec.title,
+      body: spec.body,
+      sessionId: null,
+      at: AT,
+    });
+    const ticketIds = tickets.map(
+      (ticket) =>
+        store.createProductTicket({
+          specId: written.id,
+          title: ticket.title,
+          body: ticket.body,
+          label: ticket.label ?? "needs-triage",
+          sessionId: null,
+          at: AT,
+        }).id,
+    );
+    for (const [blocked, blocker] of blocks) {
+      store.addProductTicketBlock(ticketIds[blocked]!, ticketIds[blocker]!);
+    }
+    return { specId: written.id, ticketIds };
+  } finally {
+    store.close();
+  }
+}
+
+async function detail(
+  h: PanelHarness,
+  productId: number,
+  cookie?: string,
+): Promise<{ tracker: { specs: TrackerSpec[] } }> {
+  const response =
+    cookie === undefined
+      ? await h.api("GET", `/products/${productId}`)
+      : await fetch(`${h.serverUrl}/api/products/${productId}`, { headers: { cookie } });
+  const text = await response.text();
+  assert.equal(response.status, 200, text);
+  return JSON.parse(text) as { tracker: { specs: TrackerSpec[] } };
+}
+
+test("产品页读到 spec 连它的票:标签、状态、认领人与阻塞者都在", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const created = await product(h);
+  const { specId, ticketIds } = seedSpec(
+    h,
+    created.id,
+    { title: "报销单可以撤回", body: "## Problem Statement\n\n提交之后改不了。" },
+    [
+      { title: "撤回接口", body: "PATCH /expenses/{id}", label: "ready-for-agent" },
+      { title: "撤回按钮", body: "列表页每行一颗", label: "needs-info" },
+    ],
+    // 第二张票等第一张。
+    [[1, 0]],
+  );
+  // 认领与关票的入口是 #363,这一票只读得出这两格,因此直接落库造出一个已认领的状态。
+  const store = openStore(h.db.path);
+  try {
+    assert.equal(store.setProductTicketState(ticketIds[0]!, "closed", AT), true);
+  } finally {
+    store.close();
+  }
+
+  const { tracker } = await detail(h, created.id);
+  assert.equal(tracker.specs.length, 1);
+  assert.equal(tracker.specs[0]!.id, specId);
+  assert.equal(tracker.specs[0]!.title, "报销单可以撤回");
+  assert.equal(tracker.specs[0]!.state, "open");
+  assert.deepEqual(tracker.specs[0]!.tickets, [
+    {
+      id: ticketIds[0],
+      title: "撤回接口",
+      label: "ready-for-agent",
+      state: "closed",
+      claimedBy: null,
+      blockedBy: [],
+    },
+    {
+      id: ticketIds[1],
+      title: "撤回按钮",
+      label: "needs-info",
+      state: "open",
+      claimedBy: null,
+      blockedBy: [ticketIds[0]],
+    },
+  ]);
+});
+
+test("一条 spec 打得开全文:正文、票的正文与评论都在", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const created = await product(h);
+  const { specId, ticketIds } = seedSpec(
+    h,
+    created.id,
+    { title: "报销单可以撤回", body: "## Problem Statement\n\n提交之后改不了。" },
+    [{ title: "撤回接口", body: "PATCH /expenses/{id}\n\n验收:重复撤回回 409。" }],
+  );
+  const store = openStore(h.db.path);
+  try {
+    store.addProductTicketComment({
+      ticketId: ticketIds[0]!,
+      author: null,
+      sessionId: 7,
+      body: "财务确认了只有草稿态能撤回。",
+      at: AT,
+    });
+  } finally {
+    store.close();
+  }
+
+  const response = await h.api("GET", `/products/${created.id}/specs/${specId}`);
+  const text = await response.text();
+  assert.equal(response.status, 200, text);
+  const read = JSON.parse(text) as {
+    spec: { id: number; title: string; body: string; state: string };
+    tickets: {
+      id: number;
+      body: string;
+      blockedBy: number[];
+      comments: { body: string; sessionId: number | null }[];
+    }[];
+  };
+  assert.equal(read.spec.id, specId);
+  assert.equal(read.spec.body, "## Problem Statement\n\n提交之后改不了。");
+  assert.equal(read.tickets.length, 1);
+  assert.match(read.tickets[0]!.body, /重复撤回回 409/);
+  assert.deepEqual(read.tickets[0]!.comments.map((one) => one.body), [
+    "财务确认了只有草稿态能撤回。",
+  ]);
+
+  // 别的产品的 spec 与不存在的说同一句话。
+  const other = await h.api("POST", "/products", { name: "结算系统" });
+  const otherId = ((await other.json()) as { product: Product }).product.id;
+  const hidden = await h.api("GET", `/products/${otherId}/specs/${specId}`);
+  assert.equal(hidden.status, 404);
+  assert.deepEqual(await hidden.json(), { error: "没有这条 spec" });
+});
+
+test("导出一条 spec:一份 text/markdown,票按依赖顺序", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const created = await product(h);
+  const { specId, ticketIds } = seedSpec(
+    h,
+    created.id,
+    { title: "报销单可以撤回", body: "提交之后改不了。" },
+    [
+      { title: "撤回按钮", body: "列表页每行一颗", label: "needs-info" },
+      { title: "撤回接口", body: "PATCH /expenses/{id}", label: "ready-for-agent" },
+    ],
+    // 先建的那张票等后建的那张:导出因此不能按票号排。
+    [[0, 1]],
+  );
+
+  const response = await h.api("GET", `/products/${created.id}/specs/${specId}/export`);
+  const body = await response.text();
+  assert.equal(response.status, 200, body);
+  assert.equal(response.headers.get("content-type"), "text/markdown; charset=utf-8");
+  assert.match(body, /^# 报销单可以撤回\n/);
+  assert.match(body, /提交之后改不了。/);
+  // 挡着别人的那一张排在前面。
+  assert.ok(
+    body.indexOf(`### #${ticketIds[1]} 撤回接口`) < body.indexOf(`### #${ticketIds[0]} 撤回按钮`),
+    `票没按依赖顺序排:\n${body}`,
+  );
+  assert.match(body, /- 标签:ready-for-agent/);
+  assert.match(body, new RegExp(`- 阻塞它的票:#${ticketIds[1]}`));
+  assert.match(body, /- 认领人:无人认领/);
+});
+
+test("读随产品可见性:看不到这个产品的人一格都读不到", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const created = await product(h);
+  const { specId } = seedSpec(h, created.id, { title: "报销单可以撤回", body: "提交之后改不了。" });
+
+  // 有仓库分配、没有任何权限格:读得到 tracker——读随产品可见性,不挂权限格。
+  const reader = await scopedUser(h, "reader", PASSWORD, AT, [GITEA_REPO.id]);
+  assert.equal((await detail(h, created.id, reader)).tracker.specs.length, 1);
+
+  // 对这个产品里一个仓库都没分配:产品详情、spec 全文与导出都与产品不存在同形回 404。
+  const stranger = seedRepo(h, 303, "acme", "gamma");
+  const outsider = await scopedUser(h, "outsider", PASSWORD, AT, [stranger]);
+  for (const path of [
+    `/api/products/${created.id}`,
+    `/api/products/${created.id}/specs/${specId}`,
+    `/api/products/${created.id}/specs/${specId}/export`,
+  ]) {
+    const response = await fetch(`${h.serverUrl}${path}`, { headers: { cookie: outsider } });
+    assert.equal(response.status, 404, path);
+    assert.deepEqual(await response.json(), { error: "没有这个产品" });
+  }
+});
+
+test("升级前的旧库:开库建起 tracker 那几张表,产品开起来 tracker 为空", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const created = await product(h);
+  seedSpec(h, created.id, { title: "报销单可以撤回", body: "提交之后改不了。" }, [
+    { title: "撤回接口", body: "PATCH /expenses/{id}" },
+  ]);
+
+  // 把库退回升级之前的样子:那时这四张表都不存在。
+  const db = new DatabaseSync(h.db.path);
+  for (const table of [
+    "product_ticket_block",
+    "product_ticket_comment",
+    "product_ticket",
+    "product_spec",
+  ]) {
+    db.exec(`DROP TABLE ${table}`);
+  }
+  db.close();
+
+  // 下一次开库把它们建回来:tracker 空着,产品其它功能一格不动。
+  const after = await detail(h, created.id);
+  assert.deepEqual(after.tracker.specs, []);
+  const listed = await h.api("GET", "/products");
+  assert.equal(((await listed.json()) as { products: unknown[] }).products.length, 1);
+
+  // 空表照样写得进去:新建的那张表与建库时的那一张同构。
+  const again = seedSpec(h, created.id, { title: "报销单可以撤回", body: "再写一次" });
+  assert.deepEqual((await detail(h, created.id)).tracker.specs.map((one) => one.id), [
+    again.specId,
+  ]);
+});

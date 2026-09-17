@@ -147,6 +147,8 @@ import {
   type ModelServiceVersionCommit,
   type ModelSupplementSource,
   type ProductRepoRecord,
+  type ProductSpecRecord,
+  type ProductTicketRecord,
   type RangeReviewRecord,
   type RepoKey,
   type RepoSummary,
@@ -193,6 +195,7 @@ import {
   type AgentSessionModel,
   type AgentSessionRuntimeDeps,
 } from "./agent-session.ts";
+import { specMarkdown } from "./product-tracker.ts";
 import {
   conflictingBuiltinProviderNames,
   listPiBuiltinProviders,
@@ -1987,6 +1990,8 @@ function handleProduct(res: ServerResponse, deps: WebhookServerDeps, productId: 
           product,
           knowledge: store.listProductKnowledge(productId, "active"),
           proposals: store.listProductKnowledge(productId, "proposed"),
+          specs: store.listProductSpecs(productId),
+          tickets: store.listProductTickets(productId),
         };
   });
   return read === undefined
@@ -2004,7 +2009,96 @@ function handleProduct(res: ServerResponse, deps: WebhookServerDeps, productId: 
           repoIds: entry.repoIds,
           retiresId: entry.retiresId,
         })),
+        // 产品 tracker(CONTEXT.md 产品 tracker,issue #361):spec 连它的票,只给列表要显示的
+        // 那几格。正文另有一个端点——一页产品详情不该驮着几屏 Markdown。
+        tracker: {
+          specs: read.specs.map((spec) => ({
+            id: spec.id,
+            title: spec.title,
+            state: spec.state,
+            tickets: read.tickets
+              .filter((ticket) => ticket.specId === spec.id)
+              .map((ticket) => ({
+                id: ticket.id,
+                title: ticket.title,
+                label: ticket.label,
+                state: ticket.state,
+                claimedBy: ticket.claimedBy,
+                blockedBy: ticket.blockedBy,
+              })),
+          })),
+        },
       });
+}
+
+/** 这条 spec 不在这个产品下,与根本没有这一条:两档同形回这一句 404。 */
+const NO_SUCH_PRODUCT_SPEC = "没有这条 spec";
+
+/** 一条 spec 连同它的票,都带正文。产品下没有这一条即 undefined。 */
+function readProductSpec(
+  deps: WebhookServerDeps,
+  productId: number,
+  specId: number,
+): { spec: ProductSpecRecord; tickets: ProductTicketRecord[] } | undefined {
+  return withStore(deps.dbPath, (store) => {
+    const spec = store.getProductSpec(specId);
+    if (spec === undefined || spec.productId !== productId) return undefined;
+    const tickets = store.listProductTickets(productId).filter((one) => one.specId === specId);
+    return { spec, tickets };
+  });
+}
+
+/**
+ * 一条 spec 的全文与它那几张票的全文(CONTEXT.md spec,issue #361)。票带评论:一张票要看的
+ * 就是这些。可见性随产品,分配外的产品已经被路由上的 `product` 目标判成 404。
+ */
+function handleProductSpec(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+  specId: number,
+): void {
+  const read = readProductSpec(deps, productId, specId);
+  if (read === undefined) return sendJson(res, 404, { error: NO_SUCH_PRODUCT_SPEC });
+  const comments = withStore(deps.dbPath, (store) =>
+    read.tickets.map((ticket) => store.listProductTicketComments(ticket.id)),
+  );
+  return sendJson(res, 200, {
+    spec: {
+      id: read.spec.id,
+      title: read.spec.title,
+      body: read.spec.body,
+      state: read.spec.state,
+      createdAt: read.spec.createdAt,
+    },
+    tickets: read.tickets.map((ticket, index) => ({
+      id: ticket.id,
+      title: ticket.title,
+      body: ticket.body,
+      label: ticket.label,
+      state: ticket.state,
+      claimedBy: ticket.claimedBy,
+      blockedBy: ticket.blockedBy,
+      createdAt: ticket.createdAt,
+      comments: comments[index] ?? [],
+    })),
+  });
+}
+
+/**
+ * 一条 spec 连它的票导出成一份 Markdown(US 27)。票按依赖顺序:拿到手上从第一张往下做。
+ * 回的是 `text/markdown`,人在浏览器里另存即可。
+ */
+function handleExportProductSpec(
+  res: ServerResponse,
+  deps: WebhookServerDeps,
+  productId: number,
+  specId: number,
+): void {
+  const read = readProductSpec(deps, productId, specId);
+  if (read === undefined) return sendJson(res, 404, { error: NO_SUCH_PRODUCT_SPEC });
+  res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" });
+  res.end(specMarkdown(read.spec, read.tickets));
 }
 
 async function handleCreateProduct(
@@ -3458,6 +3552,11 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   // 提案的确认与驳回(issue #346)与手写同一道门禁:确认产品知识的人就是维护知识集的人。
   { method: "POST", pattern: /^\/products\/(\d+)\/knowledge\/(\d+)\/accept$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleAcceptProductKnowledgeProposal(res, deps, Number(match![1]), Number(match![2])) },
   { method: "POST", pattern: /^\/products\/(\d+)\/knowledge\/(\d+)\/reject$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleRejectProductKnowledgeProposal(res, deps, Number(match![1]), Number(match![2])) },
+  // 产品 tracker(CONTEXT.md 产品 tracker,issue #361)。**读随产品可见性**:与产品详情同一道
+  // 门禁,登录加这个产品里的一个仓库分配即可。正文只由会话经工具写,这一层因此没有写端点;
+  // 人的动作(认领、改标签、开关、评论)是 #363。
+  { method: "GET", pattern: /^\/products\/(\d+)\/specs\/(\d+)$/, access: "authenticated-only", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleProductSpec(res, deps, Number(match![1]), Number(match![2])) },
+  { method: "GET", pattern: /^\/products\/(\d+)\/specs\/(\d+)\/export$/, access: "authenticated-only", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleExportProductSpec(res, deps, Number(match![1]), Number(match![2])) },
   // 重梳(CONTEXT.md 产品梳理,issue #345)。门禁与手写产品知识同一道:维护这一层知识的人
   // 才开得起梳理会话。会话本身由系统建,创建者不是点下它的那个人。
   { method: "POST", pattern: /^\/products\/(\d+)\/survey$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps }, match) => handleProductSurvey(req, res, deps, Number(match![1])) },

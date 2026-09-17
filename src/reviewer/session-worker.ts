@@ -9,7 +9,8 @@
  * 流式 delta 与工具开始也只转发,合并成瞬时帧在主进程。
  *
  * 工具面全部圈在会话根上:只读四件套是 `worker-tools.ts` 的 `sessionReadOnlyTools`(与另
- * 三个 worker 同一份,issue #328),受控 git 按路径前缀选工作树。不注册 bash / edit / write。
+ * 三个 worker 同一份,issue #328),受控 git 按路径前缀选工作树。不注册 bash / edit / write;
+ * 产品 tracker 那一组(issue #361)写的是产品实体,经主进程落库,不碰文件。
  * 会话子代理(`session-subagent.ts`,issue #358)也在这一面上:铺装与取证共用一套,子会话
  * 的工具面同样是圈在会话根上的那四件,一次派单跑完当场落成一条会话记录。
  */
@@ -48,6 +49,12 @@ import {
   SUBAGENT_TOOL,
 } from "./session-subagent.ts";
 import {
+  TRACKER_LIST_TOOL,
+  TRACKER_TOOLS,
+  resolveTrackerRequest,
+  sessionTrackerTools,
+} from "./session-tracker-tools.ts";
+import {
   AGENT_SESSION_NOTE_CUSTOM_TYPE,
   AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE,
   AGENT_SESSION_SUBAGENT_ENTRY,
@@ -72,8 +79,9 @@ function send(message: SessionWorkerMessage): void {
 
 /**
  * 这次会话注册的工具清单:只读四件套、受控 git,加历史 Finding 查询(issue #338)、知识
- * 查询(issue #344)、会话子代理(issue #358)与提问轮次(issue #359,任何用途都可用)。
- * 写工具与 bash 一个都不在。
+ * 查询(issue #344)、会话子代理(issue #358)、提问轮次(issue #359,任何用途都可用)与
+ * 产品 tracker 那一组(issue #361)。代码与文件的写工具、bash 一个都不在——tracker 那几件
+ * 写的是产品实体,不是仓库。
  */
 export function sessionTools(): string[] {
   return [
@@ -83,6 +91,7 @@ export function sessionTools(): string[] {
     QUERY_KNOWLEDGE_TOOL,
     SUBAGENT_TOOL,
     ASK_QUESTION_ROUND_TOOL,
+    ...TRACKER_TOOLS,
   ];
 }
 
@@ -120,7 +129,9 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
       : []),
     "Every path you pass to read, grep, find and ls stays inside the session root — an absolute path outside it, or a path that climbs out with .., is refused. The git tool reads one repository per call: every path argument starts with the <owner>/<repo>/ prefix, and that prefix picks the repository.",
     "",
-    "Your tools are read-only. You cannot edit files, write files or run shell commands. Read the code before you claim anything about it: the repositories above are the evidence.",
+    "You cannot edit files, write files or run shell commands: nothing you do changes the code. Read the code before you claim anything about it: the repositories above are the evidence.",
+    "",
+    `This product also has a tracker: the specs it has agreed to build and the tickets they are split into. It is yours to read and write — the ${TRACKER_LIST_TOOL} tool lists it, and the other tracker tools write into it. Nobody else writes the bodies. Read it before you write anything into it.`,
     "",
     `The ${QUERY_FINDINGS_TOOL} tool reads what earlier review rounds reported on one of these repositories: ask it about the part of the code you are about to speak of, and you see what has already gone wrong there.`,
     "",
@@ -288,6 +299,7 @@ async function open(request: OpenSessionRequest): Promise<void> {
       sessionFindingTool({ repos, send }) as unknown as ToolDefinition,
       sessionKnowledgeTool({ repos, send }) as unknown as ToolDefinition,
       sessionQuestionRoundTool({ post: postQuestionRound }) as unknown as ToolDefinition,
+      ...(sessionTrackerTools({ send }) as unknown as ToolDefinition[]),
       ...(outputTools as unknown as ToolDefinition[]),
     ],
     send,
@@ -534,6 +546,11 @@ function handle(command: SessionCommand): Promise<void> {
         ...entries,
         ...(failure === undefined ? {} : { failure }),
       });
+      return Promise.resolve();
+    }
+    case "tracker-result": {
+      // 产品 tracker 读写的回应(issue #361):主进程回的那段文字原样兑现给等着的工具调用。
+      resolveTrackerRequest(command.requestId, command.text);
       return Promise.resolve();
     }
   }

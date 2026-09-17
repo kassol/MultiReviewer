@@ -838,6 +838,64 @@ CREATE TABLE IF NOT EXISTS agent_session_output_finalization (
   finalized_at TEXT NOT NULL,
   PRIMARY KEY (session_id, kind, seq)
 );
+
+-- 产品 tracker 的一条 spec(CONTEXT.md spec,issue #361)。挂在产品上,正文只由会话经工具写,
+-- session_id 记下是哪一场写的(与产品知识的 proposed_session_id 同律,不设外键:删会话
+-- 不该把它写下的 spec 一并带走)。
+CREATE TABLE IF NOT EXISTS product_spec (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL REFERENCES product(id),
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+  session_id INTEGER,
+  created_at TEXT NOT NULL,
+  state_changed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS product_spec_by_product ON product_spec(product_id);
+
+-- 一张票(CONTEXT.md 票,issue #361)。挂在 spec 上,产品经 spec 推出来——票不另存一格
+-- product_id:两处存同一件事就能不一致,而「阻塞边只在同一产品的票之间」正是照 spec 那一格判的。
+-- 五个 triage 标签是固定字段值(ADR 0035),由 CHECK 表达而不是另开一张配置表。
+-- 认领人是 #363 的入口,本票只把这一格建出来,写它的地方还没有。
+CREATE TABLE IF NOT EXISTS product_ticket (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  spec_id INTEGER NOT NULL REFERENCES product_spec(id),
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  label TEXT NOT NULL CHECK (
+    label IN ('needs-triage', 'needs-info', 'ready-for-agent', 'ready-for-human', 'wontfix')
+  ),
+  state TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+  claimed_by TEXT,
+  session_id INTEGER,
+  created_at TEXT NOT NULL,
+  state_changed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS product_ticket_by_spec ON product_ticket(spec_id);
+
+-- 阻塞边:ticket_id 这张票被 blocked_by_id 那张票挡着。自指由 CHECK 挡下——一条边只
+-- 可能来自写入口,而写入口要说出打回的理由,两处因此各判一次:这里是兜底,理由在那边。
+-- 跨产品的边由写入口判(两张票的产品都要经 spec 查出来,库里表达不了)。
+CREATE TABLE IF NOT EXISTS product_ticket_block (
+  ticket_id INTEGER NOT NULL REFERENCES product_ticket(id),
+  blocked_by_id INTEGER NOT NULL REFERENCES product_ticket(id),
+  PRIMARY KEY (ticket_id, blocked_by_id),
+  CHECK (ticket_id <> blocked_by_id)
+);
+
+-- 票上的一条评论(CONTEXT.md 票,issue #361)。作者两格与产品知识的提案来源同律:人写的
+-- 那一条是用户名(#363 的入口),会话写的那一条是 session_id,两格恰有一格不空。
+CREATE TABLE IF NOT EXISTS product_ticket_comment (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket_id INTEGER NOT NULL REFERENCES product_ticket(id),
+  author TEXT,
+  session_id INTEGER,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS product_ticket_comment_by_ticket
+  ON product_ticket_comment(ticket_id);
 `;
 
 
@@ -2749,6 +2807,108 @@ export type ProductKnowledgeRecord = {
 };
 
 /**
+ * 票的五个 triage 标签(CONTEXT.md 票,ADR 0035)。固定字段值,不按产品改名也没有配置实体;
+ * 库里由 `product_ticket.label` 的 CHECK 表达同一份。
+ */
+export const PRODUCT_TICKET_LABELS = [
+  "needs-triage",
+  "needs-info",
+  "ready-for-agent",
+  "ready-for-human",
+  "wontfix",
+] as const;
+
+export type ProductTicketLabel = (typeof PRODUCT_TICKET_LABELS)[number];
+
+/** spec 与票共用的状态(CONTEXT.md spec、票):开或关。 */
+export type ProductTrackerState = "open" | "closed";
+
+/** 产品 tracker 里的一条 spec(CONTEXT.md spec,issue #361)。 */
+export type ProductSpecRecord = {
+  id: number;
+  productId: number;
+  title: string;
+  body: string;
+  state: ProductTrackerState;
+  /** 写下它的那个 Agent 会话。人没有写入口,因此常态不为空。 */
+  sessionId: number | null;
+  createdAt: string;
+  stateChangedAt: string;
+};
+
+/** 产品 tracker 里的一张票(CONTEXT.md 票,issue #361)。 */
+export type ProductTicketRecord = {
+  id: number;
+  specId: number;
+  /** 它所属 spec 挂的产品。阻塞边只在同一产品的票之间,按它判。 */
+  productId: number;
+  title: string;
+  body: string;
+  label: ProductTicketLabel;
+  state: ProductTrackerState;
+  /** 认领人(CONTEXT.md 认领)。没人认领即 null;写它的入口是 #363。 */
+  claimedBy: string | null;
+  sessionId: number | null;
+  createdAt: string;
+  stateChangedAt: string;
+  /** 阻塞它的那几张票,按票号升序。 */
+  blockedBy: number[];
+};
+
+/** 票上的一条评论(CONTEXT.md 票,issue #361)。作者两格恰有一格不空。 */
+export type ProductTicketCommentRecord = {
+  id: number;
+  ticketId: number;
+  /** 人写的那一条是用户名;会话写的即 null。 */
+  author: string | null;
+  /** 会话写的那一条是它的 id;人写的即 null。 */
+  sessionId: number | null;
+  body: string;
+  createdAt: string;
+};
+
+/** spec 表里的一行。 */
+function productSpec(row: Record<string, unknown>): ProductSpecRecord {
+  return {
+    id: Number(row["id"]),
+    productId: Number(row["product_id"]),
+    title: String(row["title"]),
+    body: String(row["body"]),
+    state: String(row["state"]) as ProductTrackerState,
+    sessionId: row["session_id"] === null ? null : Number(row["session_id"]),
+    createdAt: String(row["created_at"]),
+    stateChangedAt: String(row["state_changed_at"]),
+  };
+}
+
+/** 票表里的一行。`blockedBy` 另查一次,查询那一侧填。 */
+function productTicket(
+  row: Record<string, unknown>,
+  blockedBy: readonly number[],
+): ProductTicketRecord {
+  return {
+    id: Number(row["id"]),
+    specId: Number(row["spec_id"]),
+    productId: Number(row["product_id"]),
+    title: String(row["title"]),
+    body: String(row["body"]),
+    label: String(row["label"]) as ProductTicketLabel,
+    state: String(row["state"]) as ProductTrackerState,
+    claimedBy: row["claimed_by"] === null ? null : String(row["claimed_by"]),
+    sessionId: row["session_id"] === null ? null : Number(row["session_id"]),
+    createdAt: String(row["created_at"]),
+    stateChangedAt: String(row["state_changed_at"]),
+    blockedBy: [...blockedBy],
+  };
+}
+
+/** 票连同它所属 spec 的产品:票不存 product_id,产品经 spec 推出来。 */
+const PRODUCT_TICKET_QUERY = `
+  SELECT t.*, s.product_id
+    FROM product_ticket t
+    JOIN product_spec s ON s.id = t.spec_id`;
+
+/**
  * 会话用途(CONTEXT.md 会话用途)。需求拆分交结构化产出,开放对话只聊与只读代码、没有产出
  * 类型,产品梳理由系统开、交产品知识提案(issue #345);写代码类用途接入时各成一个值。
  * 建时必填、之后不变,因此没有改用途的写入口。
@@ -3255,6 +3415,56 @@ export type Store = {
    * 走它:一条说到已经不在这个产品里的仓库的陈述,agent 读到只会被指去一棵不存在的工作树。
    */
   retireProductKnowledgeOfRepo(productId: number, repoId: number, at: string): void;
+  /** 一个产品 tracker 里的全部 spec(CONTEXT.md spec,issue #361),按建立顺序。 */
+  listProductSpecs(productId: number): ProductSpecRecord[];
+  /** 一条 spec。没有这一条即 undefined;产品由调用方按 `productId` 判。 */
+  getProductSpec(specId: number): ProductSpecRecord | undefined;
+  /** 写一条 spec。状态落开,`sessionId` 是写下它的那个会话。 */
+  createProductSpec(record: {
+    productId: number;
+    title: string;
+    body: string;
+    sessionId: number | null;
+    at: string;
+  }): ProductSpecRecord;
+  /** 一个产品下的全部票(CONTEXT.md 票),按票号升序,各带阻塞它的那几张。 */
+  listProductTickets(productId: number): ProductTicketRecord[];
+  /** 一张票,带阻塞它的那几张。没有这一张即 undefined。 */
+  getProductTicket(ticketId: number): ProductTicketRecord | undefined;
+  /** 在一条 spec 下开一张票。状态落开,标签由调用方给(默认那一个也在调用方)。 */
+  createProductTicket(record: {
+    specId: number;
+    title: string;
+    body: string;
+    label: ProductTicketLabel;
+    sessionId: number | null;
+    at: string;
+  }): ProductTicketRecord;
+  /** 改写一条 spec 的正文。没有这一条即 false。 */
+  setProductSpecBody(specId: number, body: string): boolean;
+  /** 开关一条 spec。已经是这个状态即 false——关两次不该报成功。 */
+  setProductSpecState(specId: number, state: ProductTrackerState, at: string): boolean;
+  /** 改写一张票的正文。没有这一张即 false。 */
+  setProductTicketBody(ticketId: number, body: string): boolean;
+  /** 开关一张票。已经是这个状态即 false。 */
+  setProductTicketState(ticketId: number, state: ProductTrackerState, at: string): boolean;
+  /** 一张票上的评论,老的在前。 */
+  listProductTicketComments(ticketId: number): ProductTicketCommentRecord[];
+  /** 在一张票上写一条评论。人写的给 `author`,会话写的给 `sessionId`。 */
+  addProductTicketComment(record: {
+    ticketId: number;
+    author: string | null;
+    sessionId: number | null;
+    body: string;
+    at: string;
+  }): ProductTicketCommentRecord;
+  /**
+   * 加一条阻塞边:`ticketId` 被 `blockedById` 挡着。已经有这条边即照样 true——同一条边
+   * 加两遍是同一个意思。**两张票在不在同一个产品由调用方判**:那一判要说出打回的理由。
+   */
+  addProductTicketBlock(ticketId: number, blockedById: number): boolean;
+  /** 去掉一条阻塞边。本来就没有这条边即 false。 */
+  removeProductTicketBlock(ticketId: number, blockedById: number): boolean;
   /**
    * 一个产品下的 Agent 会话,新的在前。`createdBy` 给了即只回这个人的(「我的会话」),
    * 给 null 即这个产品下的全部(系统管理员那一档)。
@@ -5494,6 +5704,18 @@ export function openStore(dbPath: string): Store {
         // 产品知识同样跟着产品走(issue #343):产品是它唯一的挂载点。驳回记忆也是(issue #346)。
         db.prepare("DELETE FROM product_knowledge WHERE product_id = ?").run(productId);
         db.prepare("DELETE FROM product_knowledge_rejection WHERE product_id = ?").run(productId);
+        // 产品 tracker 同律(issue #361):spec 挂在产品上,票、边与评论挂在 spec 上,
+        // 从下往上删——边与评论的外键指着票,票的外键指着 spec。
+        const tickets = `SELECT id FROM product_ticket
+            WHERE spec_id IN (SELECT id FROM product_spec WHERE product_id = ?)`;
+        db.prepare(`DELETE FROM product_ticket_block WHERE ticket_id IN (${tickets})`).run(productId);
+        db.prepare(`DELETE FROM product_ticket_comment WHERE ticket_id IN (${tickets})`).run(
+          productId,
+        );
+        db.prepare(
+          "DELETE FROM product_ticket WHERE spec_id IN (SELECT id FROM product_spec WHERE product_id = ?)",
+        ).run(productId);
+        db.prepare("DELETE FROM product_spec WHERE product_id = ?").run(productId);
         // 会话跟着产品走(issue #332):产品是会话唯一的挂载点,留下来谁都读不到它。记录与
         // 受理过的消息 id 挂在会话上,同一个事务里一并删(issue #333)。
         deleteAgentSessionRows(
@@ -5637,6 +5859,187 @@ export function openStore(dbPath: string): Store {
               SELECT 1 FROM json_each(product_knowledge.repo_ids) WHERE json_each.value = ?
             )`,
       ).run(at, productId, repoId);
+    },
+
+    listProductSpecs(productId) {
+      return db
+        .prepare("SELECT * FROM product_spec WHERE product_id = ? ORDER BY id")
+        .all(productId)
+        .map(productSpec);
+    },
+
+    getProductSpec(specId) {
+      const row = db.prepare("SELECT * FROM product_spec WHERE id = ?").get(specId);
+      return row === undefined ? undefined : productSpec(row);
+    },
+
+    createProductSpec({ productId, title, body, sessionId, at }) {
+      const id = Number(
+        db
+          .prepare(
+            `INSERT INTO product_spec
+               (product_id, title, body, state, session_id, created_at, state_changed_at)
+             VALUES (?, ?, ?, 'open', ?, ?, ?)`,
+          )
+          .run(productId, title, body, sessionId, at, at).lastInsertRowid,
+      );
+      return {
+        id,
+        productId,
+        title,
+        body,
+        state: "open",
+        sessionId,
+        createdAt: at,
+        stateChangedAt: at,
+      };
+    },
+
+    listProductTickets(productId) {
+      // 阻塞边一次查完再按票分组:一张票一次查会让产品页的读随票数线性开销。
+      const blocks = new Map<number, number[]>();
+      for (const row of db
+        .prepare(
+          `SELECT b.ticket_id, b.blocked_by_id
+             FROM product_ticket_block b
+             JOIN product_ticket t ON t.id = b.ticket_id
+             JOIN product_spec s ON s.id = t.spec_id
+            WHERE s.product_id = ?
+            ORDER BY b.blocked_by_id`,
+        )
+        .all(productId)) {
+        const ticketId = Number(row["ticket_id"]);
+        blocks.set(ticketId, [...(blocks.get(ticketId) ?? []), Number(row["blocked_by_id"])]);
+      }
+      return db
+        .prepare(`${PRODUCT_TICKET_QUERY} WHERE s.product_id = ? ORDER BY t.id`)
+        .all(productId)
+        .map((row) => productTicket(row, blocks.get(Number(row["id"])) ?? []));
+    },
+
+    getProductTicket(ticketId) {
+      const row = db.prepare(`${PRODUCT_TICKET_QUERY} WHERE t.id = ?`).get(ticketId);
+      if (row === undefined) return undefined;
+      const blockedBy = db
+        .prepare(
+          "SELECT blocked_by_id FROM product_ticket_block WHERE ticket_id = ? ORDER BY blocked_by_id",
+        )
+        .all(ticketId)
+        .map((one) => Number(one["blocked_by_id"]));
+      return productTicket(row, blockedBy);
+    },
+
+    createProductTicket({ specId, title, body, label, sessionId, at }) {
+      const id = Number(
+        db
+          .prepare(
+            `INSERT INTO product_ticket
+               (spec_id, title, body, label, state, session_id, created_at, state_changed_at)
+             VALUES (?, ?, ?, ?, 'open', ?, ?, ?)`,
+          )
+          .run(specId, title, body, label, sessionId, at, at).lastInsertRowid,
+      );
+      const productId = Number(
+        (db.prepare("SELECT product_id FROM product_spec WHERE id = ?").get(specId) ?? {
+          product_id: 0,
+        })["product_id"],
+      );
+      return {
+        id,
+        specId,
+        productId,
+        title,
+        body,
+        label,
+        state: "open",
+        claimedBy: null,
+        sessionId,
+        createdAt: at,
+        stateChangedAt: at,
+        blockedBy: [],
+      };
+    },
+
+    setProductSpecBody(specId, body) {
+      return (
+        Number(db.prepare("UPDATE product_spec SET body = ? WHERE id = ?").run(body, specId).changes) >
+        0
+      );
+    },
+
+    setProductSpecState(specId, state, at) {
+      return (
+        Number(
+          db
+            .prepare(
+              "UPDATE product_spec SET state = ?, state_changed_at = ? WHERE id = ? AND state <> ?",
+            )
+            .run(state, at, specId, state).changes,
+        ) > 0
+      );
+    },
+
+    setProductTicketBody(ticketId, body) {
+      return (
+        Number(
+          db.prepare("UPDATE product_ticket SET body = ? WHERE id = ?").run(body, ticketId).changes,
+        ) > 0
+      );
+    },
+
+    setProductTicketState(ticketId, state, at) {
+      return (
+        Number(
+          db
+            .prepare(
+              "UPDATE product_ticket SET state = ?, state_changed_at = ? WHERE id = ? AND state <> ?",
+            )
+            .run(state, at, ticketId, state).changes,
+        ) > 0
+      );
+    },
+
+    listProductTicketComments(ticketId) {
+      return db
+        .prepare("SELECT * FROM product_ticket_comment WHERE ticket_id = ? ORDER BY id")
+        .all(ticketId)
+        .map((row) => ({
+          id: Number(row["id"]),
+          ticketId: Number(row["ticket_id"]),
+          author: row["author"] === null ? null : String(row["author"]),
+          sessionId: row["session_id"] === null ? null : Number(row["session_id"]),
+          body: String(row["body"]),
+          createdAt: String(row["created_at"]),
+        }));
+    },
+
+    addProductTicketComment({ ticketId, author, sessionId, body, at }) {
+      const id = Number(
+        db
+          .prepare(
+            `INSERT INTO product_ticket_comment (ticket_id, author, session_id, body, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
+          )
+          .run(ticketId, author, sessionId, body, at).lastInsertRowid,
+      );
+      return { id, ticketId, author, sessionId, body, createdAt: at };
+    },
+
+    addProductTicketBlock(ticketId, blockedById) {
+      db.prepare(
+        "INSERT OR IGNORE INTO product_ticket_block (ticket_id, blocked_by_id) VALUES (?, ?)",
+      ).run(ticketId, blockedById);
+      return true;
+    },
+
+    removeProductTicketBlock(ticketId, blockedById) {
+      return (
+        Number(
+          db
+            .prepare("DELETE FROM product_ticket_block WHERE ticket_id = ? AND blocked_by_id = ?")
+            .run(ticketId, blockedById).changes,
+        ) > 0
+      );
     },
 
     listAgentSessions(productId, createdBy) {

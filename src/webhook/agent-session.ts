@@ -62,8 +62,10 @@ import {
   type SessionProductKnowledge,
   type SessionRepoInput,
   type SessionWorkerMessage,
+  type TrackerRequest,
 } from "../reviewer/session-protocol.ts";
 import type { SessionSubagentRun } from "../reviewer/session-subagent.ts";
+import { runTrackerRequest } from "./product-tracker.ts";
 
 const WORKER_PATH = fileURLToPath(new URL("../reviewer/session-worker.ts", import.meta.url));
 
@@ -1043,6 +1045,35 @@ function answerKnowledgeQuery(
   child.send(result);
 }
 
+/**
+ * 回一次产品 tracker 的读写(issue #361)。与上两对同律:判定、落库与措辞都在这一侧,
+ * **恒回一条**——做不成时把原因说给模型,不然子进程那边的工具调用永远等下去。
+ */
+function answerTrackerRequest(
+  deps: { dbPath: string; now?: () => number },
+  child: ChildProcess,
+  session: AgentSessionRecord,
+  requestId: string,
+  request: TrackerRequest,
+): void {
+  let text: string;
+  const store = openStore(deps.dbPath);
+  try {
+    text = runTrackerRequest(
+      store,
+      session.productId,
+      session.id,
+      request,
+      new Date((deps.now ?? Date.now)()).toISOString(),
+    );
+  } catch (error) {
+    text = `could not reach this product's tracker: ${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    store.close();
+  }
+  child.send({ kind: "tracker-result", requestId, text } satisfies SessionCommand);
+}
+
 /** 这个仓库设置的默认分支(CONTEXT.md 默认分支,issue #350)。没设即 null。 */
 function configuredDefaultBranch(dbPath: string, repoId: number): string | null {
   const store = openStore(dbPath);
@@ -1227,6 +1258,9 @@ async function boot(
           message.requestId,
           message.query,
         );
+        return;
+      case "tracker-request":
+        answerTrackerRequest(deps, child, session, message.requestId, message.request);
         return;
       case "turn-end":
         entry.status = "idle";

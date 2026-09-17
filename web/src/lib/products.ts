@@ -15,11 +15,54 @@ export type ProductKnowledge = { id: number; statement: string; repoIds: number[
  */
 export type ProductProposal = ProductKnowledge & { retiresId: number | null };
 
+/** 票的五个 triage 标签(CONTEXT.md 票)。固定字段值,与服务端那一份同一套取值。 */
+export type TicketLabel =
+  | "needs-triage"
+  | "needs-info"
+  | "ready-for-agent"
+  | "ready-for-human"
+  | "wontfix";
+
+/** spec 与票共用的状态。 */
+export type TrackerState = "open" | "closed";
+
+/** 产品页列表里的一张票(CONTEXT.md 票,issue #361)。正文另经 spec 全文那一份读。 */
+export type TrackerTicket = {
+  id: number;
+  title: string;
+  label: TicketLabel;
+  state: TrackerState;
+  /** 认领人(CONTEXT.md 认领)。没人认领即 null;认领的入口是下一票。 */
+  claimedBy: string | null;
+  /** 阻塞它的那几张票的票号。 */
+  blockedBy: number[];
+};
+
+/** 产品页列表里的一条 spec(CONTEXT.md spec)连它的票。 */
+export type TrackerSpec = {
+  id: number;
+  title: string;
+  state: TrackerState;
+  tickets: TrackerTicket[];
+};
+
+/** `GET /products/{id}/specs/{specId}` 那一份:一条 spec 与它的票,都带正文。 */
+export type SpecDetail = {
+  spec: { id: number; title: string; body: string; state: TrackerState; createdAt: string };
+  tickets: (TrackerTicket & {
+    body: string;
+    createdAt: string;
+    comments: { id: number; author: string | null; body: string; createdAt: string }[];
+  })[];
+};
+
 /** `GET /products/{id}` 那一份。产品页右栏、会话页头部与左栏共用这一个缓存条目。 */
 export type ProductDetail = {
   product: Product;
   knowledge: ProductKnowledge[];
   proposals: ProductProposal[];
+  /** 产品 tracker(CONTEXT.md 产品 tracker,issue #361)。只读,正文只由会话写。 */
+  tracker: { specs: TrackerSpec[] };
 };
 
 /** `GET /products` 那一份读缓存的键。 */
@@ -31,6 +74,14 @@ export const PRODUCTS_QUERY_KEY = ["products"] as const;
  */
 export function productQueryKey(productId: number | undefined): readonly unknown[] {
   return ["products", productId];
+}
+
+/** 一条 spec 全文那一份读缓存的键。同样排在产品详情之下,重读产品时跟着失效。 */
+export function specQueryKey(
+  productId: number | undefined,
+  specId: number | undefined,
+): readonly unknown[] {
+  return ["products", productId, "specs", specId];
 }
 
 export function repoPath(row: ProductRepo | RegisteredRepo): string {

@@ -27,6 +27,7 @@ import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { HelpTooltip } from "@/components/help-tooltip";
+import { Markdown } from "@/components/markdown";
 import { PageBody } from "@/components/page-body";
 import {
   baselineRepoKey,
@@ -42,14 +43,19 @@ import {
   PRODUCTS_QUERY_KEY,
   productQueryKey,
   repoPath,
+  specQueryKey,
   type Product,
   type ProductKnowledge,
   type ProductRepo,
   type ProductProposal,
+  type SpecDetail,
+  type TicketLabel,
+  type TrackerSpec,
+  type TrackerTicket,
 } from "@/lib/products";
 import { localMinute } from "@/lib/time";
 
-import { fetchJson, send } from "./api.ts";
+import { apiUrl, fetchJson, send } from "./api.ts";
 import { NameDialog, ProductRail, useProductDetail, useProductSessions } from "./product-rail.tsx";
 
 /** 产品知识的陈述上限,与服务端那一道同一个数(`AGENT_STATEMENT_LIMIT`)。 */
@@ -57,8 +63,8 @@ const KNOWLEDGE_STATEMENT_MAX = 100;
 
 /**
  * 产品页(CONTEXT.md 产品,issue #331)。左栏是产品页与会话页共用的那一份(`ProductRail`:
- * 产品列表、当前产品的仓库、会话),右栏是当前产品的概览与产品知识。当前产品写在地址上
- * (`/products/$productId`),从会话页回来选的还是同一个产品。
+ * 产品列表、当前产品的仓库、会话),右栏是当前产品的概览、产品知识与产品 tracker(issue
+ * #361)。当前产品写在地址上(`/products/$productId`),从会话页回来选的还是同一个产品。
  *
  * 可见的产品由服务端按仓库分配给出(ADR 0018),前端不自己判:一个仓库都没分到的人
  * 拿到的是空列表,落在「还没有产品」那一档空态上。
@@ -315,6 +321,14 @@ export function ProductsPage({
             setFeedback(null);
             decideProposal.mutate({ product: selected, entry, accept });
           }}
+        />
+      )}
+      {selected === undefined ? null : (
+        <TrackerSection
+          key={selected.id}
+          product={selected}
+          specs={knowledgeQuery.data?.tracker.specs ?? []}
+          pending={knowledgeQuery.isPending}
         />
       )}
     </>
@@ -870,5 +884,226 @@ function KnowledgeSection({
         )}
       </div>
     </CardShell>
+  );
+}
+
+/** 五个 triage 标签各自的颜色。同一个标签在哪都是同一色,人扫一眼就认得出哪张票能开工。 */
+const LABEL_COLOR: Record<TicketLabel, "gray" | "amber" | "green" | "blue" | "red"> = {
+  "needs-triage": "gray",
+  "needs-info": "amber",
+  "ready-for-agent": "green",
+  "ready-for-human": "blue",
+  wontfix: "red",
+};
+
+/** 一张票那一行右侧的几句:状态、认领人、挡着它的票。没有的那几样不占位置。 */
+function ticketNotes(ticket: TrackerTicket): string {
+  return [
+    ticket.state === "closed" ? "已关" : null,
+    ticket.claimedBy === null ? null : `${ticket.claimedBy} 认领`,
+    ticket.blockedBy.length === 0 ? null : `等 ${ticket.blockedBy.map((id) => `#${id}`).join("、")}`,
+  ]
+    .filter((one) => one !== null)
+    .join(" · ");
+}
+
+/**
+ * 产品页右栏的产品 tracker 区(CONTEXT.md 产品 tracker,issue #361)。排在产品知识区下面:
+ * 知识说这个产品是什么,tracker 说它接下来要做什么。
+ *
+ * **整段只读**:spec 与票的正文只由会话经工具写,人在这里读与导出。认领、改标签、开关与
+ * 评论是下一票的事,因此这一段一个写动作都没有,也不挂权限格——读随产品可见性。
+ */
+function TrackerSection({
+  product,
+  specs,
+  pending,
+}: {
+  product: Product;
+  specs: readonly TrackerSpec[];
+  pending: boolean;
+}) {
+  const [openSpec, setOpenSpec] = useState<TrackerSpec | null>(null);
+  const ticketCount = specs.reduce((total, spec) => total + spec.tickets.length, 0);
+
+  return (
+    <CardShell className="min-w-0 px-5 py-4">
+      <div className="flex min-w-0 flex-col gap-3">
+        <div className="flex min-w-0 items-center gap-1">
+          <h2 className="text-2xl font-bold tracking-[-0.015em]">产品 tracker</h2>
+          <HelpTooltip
+            label="产品 tracker 说明"
+            content="需求拆分会话谈定之后把 spec 写进来,再拆成带阻塞边的票。正文只由会话写,这里只读与导出。"
+          />
+          {pending ? null : (
+            <span className="ml-1 font-mono text-xs font-normal text-text-muted tabular-nums">
+              {specs.length} / {ticketCount}
+            </span>
+          )}
+        </div>
+
+        {pending ? (
+          <Skeleton aria-hidden className="h-16" />
+        ) : specs.length === 0 ? (
+          <Text as="p" size="2" color="gray">
+            还没有 spec。在需求拆分会话里谈定一个需求,agent 就把它连同拆出的票写进来。
+          </Text>
+        ) : (
+          <ul>
+            {specs.map((spec) => (
+              <li
+                key={spec.id}
+                className="flex min-w-0 flex-col gap-1.5 border-t border-line py-2.5 first:border-t-0 first:pt-0"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <Button
+                    variant="ghost"
+                    color="gray"
+                    size="2"
+                    className="min-w-0 justify-start text-left"
+                    onClick={() => setOpenSpec(spec)}
+                  >
+                    <span className="min-w-0 break-words font-medium">{spec.title}</span>
+                  </Button>
+                  <Flex gap="2" align="center" className="shrink-0">
+                    {spec.state === "closed" ? (
+                      <Badge color="gray" variant="soft" size="1">
+                        已关
+                      </Badge>
+                    ) : null}
+                    {/* 导出就是那一个 GET:交给浏览器下载,不必先在前端拼一遍 Markdown。 */}
+                    <Button asChild variant="ghost" color="gray" size="1">
+                      <a
+                        href={apiUrl(`/products/${product.id}/specs/${spec.id}/export`)}
+                        download={`${spec.title}.md`}
+                      >
+                        导出
+                      </a>
+                    </Button>
+                  </Flex>
+                </div>
+                {spec.tickets.length === 0 ? (
+                  <Text as="span" size="2" color="gray">
+                    还没有拆出票。
+                  </Text>
+                ) : (
+                  <ul className="flex min-w-0 flex-col gap-1">
+                    {spec.tickets.map((ticket) => {
+                      const notes = ticketNotes(ticket);
+                      return (
+                        <li key={ticket.id} className="flex min-w-0 items-start gap-2">
+                          <span className="mt-0.5 shrink-0 font-mono text-xs text-text-muted tabular-nums">
+                            #{ticket.id}
+                          </span>
+                          <Badge
+                            color={LABEL_COLOR[ticket.label]}
+                            variant="soft"
+                            size="1"
+                            className="mt-0.5 shrink-0"
+                          >
+                            {ticket.label}
+                          </Badge>
+                          <Text
+                            as="span"
+                            size="2"
+                            className={
+                              ticket.state === "closed"
+                                ? "min-w-0 break-words text-text-muted line-through"
+                                : "min-w-0 break-words"
+                            }
+                          >
+                            {ticket.title}
+                          </Text>
+                          {notes === "" ? null : (
+                            <span className="shrink-0 text-sm text-text-muted">{notes}</span>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <SpecDialog productId={product.id} spec={openSpec} onClose={() => setOpenSpec(null)} />
+    </CardShell>
+  );
+}
+
+/**
+ * 一条 spec 的全文(issue #361):它自己的正文,加它那几张票的正文与评论。读的是
+ * `GET /products/{id}/specs/{specId}`——产品详情那一份只带列表要显示的那几格。
+ */
+function SpecDialog({
+  productId,
+  spec,
+  onClose,
+}: {
+  productId: number;
+  spec: TrackerSpec | null;
+  onClose: () => void;
+}) {
+  const detail = useQuery({
+    queryKey: specQueryKey(productId, spec?.id),
+    queryFn: () => fetchJson<SpecDetail>(`/products/${productId}/specs/${spec!.id}`),
+    enabled: spec !== null,
+  });
+
+  return (
+    <Dialog.Root
+      open={spec !== null}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+    >
+      <Dialog.Content maxWidth="820px" size={{ initial: "2", sm: "3" }}>
+        <Dialog.Title size="4" mb="2">
+          {spec?.title ?? ""}
+        </Dialog.Title>
+        <Dialog.Description size="2" color="gray" mb="3">
+          spec 与票的正文由会话写,这里只读。
+        </Dialog.Description>
+        {detail.isPending ? (
+          <Skeleton aria-hidden className="h-64" />
+        ) : detail.error !== null ? (
+          <Text as="p" size="2" color="red">
+            {(detail.error as Error).message}
+          </Text>
+        ) : (
+          <div className="flex max-h-[min(70vh,720px)] min-w-0 flex-col gap-4 overflow-y-auto">
+            <Markdown text={detail.data.spec.body} />
+            {detail.data.tickets.map((ticket) => (
+              <section
+                key={ticket.id}
+                className="flex min-w-0 flex-col gap-1.5 border-t border-line pt-3"
+              >
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs text-text-muted tabular-nums">
+                    #{ticket.id}
+                  </span>
+                  <Badge color={LABEL_COLOR[ticket.label]} variant="soft" size="1">
+                    {ticket.label}
+                  </Badge>
+                  <Text as="span" size="3" weight="medium" className="min-w-0 break-words">
+                    {ticket.title}
+                  </Text>
+                  {ticketNotes(ticket) === "" ? null : (
+                    <span className="text-sm text-text-muted">{ticketNotes(ticket)}</span>
+                  )}
+                </div>
+                <Markdown text={ticket.body} />
+                {ticket.comments.map((comment) => (
+                  <Text as="p" key={comment.id} size="2" color="gray" className="break-words">
+                    {comment.author ?? "会话"}:{comment.body}
+                  </Text>
+                ))}
+              </section>
+            ))}
+          </div>
+        )}
+      </Dialog.Content>
+    </Dialog.Root>
   );
 }
