@@ -1,4 +1,5 @@
-import { Dialog, VisuallyHidden } from "@radix-ui/themes";
+import { Cross2Icon } from "@radix-ui/react-icons";
+import { Dialog, IconButton, VisuallyHidden } from "@radix-ui/themes";
 import { Link, useRouter } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
@@ -60,7 +61,10 @@ export function CommandPalette({
     <Dialog.Root open={state.isOpen} onOpenChange={state.setOpen}>
       <Dialog.Content
         aria-label="命令面板"
-        className="!top-[158px] !w-[584px] !max-w-[calc(100vw-32px)] !translate-y-0 !rounded-2xl !border-0 !bg-[color:var(--v8-palette-bg)] !p-0 !shadow-palette backdrop-blur-[50px]"
+        // 窄屏顶靠视口:Themes 把 Dialog.Content 摆在一个可滚动的居中容器里(`position: relative`
+        // 加外圈 24px/16px 的留白),面板因此吊在屏幕中段,软键盘一升起来候选就被盖掉。这里改成
+        // `fixed` 直接脱出那个容器,贴着视口顶边铺满一行,刘海区靠 safe-area 顶部内边距让开。
+        className="!top-[158px] !w-[584px] !max-w-[calc(100vw-32px)] !translate-y-0 !rounded-2xl !border-0 !bg-[color:var(--v8-palette-bg)] !p-0 !shadow-palette backdrop-blur-[50px] max-sm:!fixed max-sm:!inset-x-0 max-sm:!top-0 max-sm:!w-full max-sm:!max-w-none max-sm:!rounded-t-none max-sm:!pt-[env(safe-area-inset-top)]"
         onCloseAutoFocus={(event) => {
           event.preventDefault();
           requestAnimationFrame(() => state.triggerRef.current?.focus());
@@ -75,8 +79,23 @@ export function CommandPalette({
             placeholder="跳转到…"
             aria-label="搜索页面"
             className="!h-auto !text-4xl placeholder:text-text-disabled"
+            trailing={
+              <Dialog.Close>
+                <IconButton
+                  variant="ghost"
+                  color="gray"
+                  size="2"
+                  // 关闭键与页脚的键位提示此消彼长:触屏或窄屏上出现,鼠标宽屏上让位给 esc 提示。
+                  className="hidden min-h-11 min-w-11 shrink-0 max-sm:inline-flex pointer-coarse:inline-flex"
+                  aria-label="关闭命令面板"
+                >
+                  <Cross2Icon aria-hidden />
+                </IconButton>
+              </Dialog.Close>
+            }
           />
-          <CommandList className="max-h-[min(60vh,420px)] p-[9px]">
+          {/* 窄屏的高度上限跟着视口走:面板顶靠视口,列表最多占满搜索行之下剩下的那一段。 */}
+          <CommandList className="max-h-[min(60vh,420px)] p-[9px] max-sm:max-h-[calc(100dvh-44px-env(safe-area-inset-top))]">
             <CommandEmpty className="px-3 py-6 text-center text-md text-text-muted">没有匹配的页面</CommandEmpty>
             <CommandGroup heading="页面">
               {nav.map((item) => (
@@ -100,7 +119,8 @@ export function CommandPalette({
               ))}
             </CommandGroup>
           </CommandList>
-          <footer className="flex gap-4 border-t border-chrome-line px-5 py-2.5 text-sm text-text-muted">
+          {/* 键位提示对触屏是纯噪音,那里没有 ↑↓ 也没有 esc;关闭改由搜索行的关闭键承担。 */}
+          <footer className="flex gap-4 border-t border-chrome-line px-5 py-2.5 text-sm text-text-muted pointer-coarse:hidden">
             <span><kbd className="font-mono">↑↓</kbd> 选择</span>
             <span><kbd className="font-mono">↵</kbd> 打开</span>
             <span><kbd className="font-mono">esc</kbd> 关闭</span>
