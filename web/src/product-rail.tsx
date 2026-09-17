@@ -868,7 +868,7 @@ function CreateSessionDialog({
               建会话
             </Dialog.Title>
             <Dialog.Description size="2" color="gray">
-              在 {productName} 下开一个 Agent 会话。用途决定它的工具面与产出类型,建后不可更改。
+              在 {productName} 下开一个 Agent 会话。用途决定它的工具面与启用的 skill,建后不可更改。
             </Dialog.Description>
           </div>
           <div className="flex flex-col gap-1.5">

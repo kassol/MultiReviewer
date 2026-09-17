@@ -35,7 +35,6 @@ import {
   Popover,
   RadioGroup,
   SegmentedControl,
-  Select,
   Skeleton,
   Spinner,
   Text,
@@ -56,12 +55,6 @@ import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { useDialogReturnFocus } from "@/components/use-dialog-return-focus";
 import {
-  currentFinalization,
-  requirementBreakdownMarkdown,
-  type AgentSessionOutput,
-  type AgentSessionOutputFinalization,
-} from "@/lib/agent-session-outputs";
-import {
   conversation,
   describeTool,
   groupConversation,
@@ -80,24 +73,12 @@ import {
   sessionsQueryKey,
   type AgentSession,
   type AgentSessionBaseline,
-  type AgentSessionPurpose,
 } from "@/lib/agent-sessions";
 import { localMinute, localSecond } from "@/lib/time";
 
 import { api, apiUrl, errorText, fetchJson, send } from "./api.ts";
 import { ProductRail, useProductDetail } from "./product-rail.tsx";
 import { StreamStatus, useTrace } from "./run-trace.tsx";
-
-/**
- * 这个用途有没有产出类型(CONTEXT.md 会话用途)。开放对话只聊、交不出产出,右栏产出区因此
- * 整块不渲染——留一个永远空着的空态,只会让人等一份不会来的东西。
- */
-const PURPOSE_HAS_OUTPUT: Record<AgentSessionPurpose, boolean> = {
-  "requirement-breakdown": true,
-  "open-conversation": false,
-  // 产品梳理写下的是产品知识,它们在产品页上读,不是这一页的会话产出(issue #345、#360)。
-  "product-survey": false,
-};
 
 /** 排队中的一条消息(issue #334)。Pi 不支持单条撤回,所以它没有标识,也没有单条动作。 */
 export type QueuedMessage = { mode: "followUp" | "steer"; text: string };
@@ -245,15 +226,12 @@ const FOLLOW_THRESHOLD = 80;
 function Conversation({
   sessionId,
   running,
-  onOpenOutput,
   onAnswerRound,
   canSend,
   hasBaselines,
 }: {
   sessionId: number;
   running: boolean;
-  /** 点一条产出:把右栏切到那一版(issue #337)。 */
-  onOpenOutput: (version: number) => void;
   /** 交一轮提问的答案(issue #359):合成的那条用户消息走与输入区同一条发消息路径。 */
   onAnswerRound: (text: string) => Promise<void>;
   /** 空态教学文案只对发得出消息的人说;发不了的人看到的是一句陈述。答不答得了提问也按它。 */
@@ -397,7 +375,6 @@ function Conversation({
                 <ConversationRow
                   item={item}
                   sessionId={sessionId}
-                  onOpenOutput={onOpenOutput}
                   canAnswerRound={canSend}
                   onAnswerRound={onAnswerRound}
                   // 最后一组工具调用在跑时摊开着,正在跑的那一个挂在它末尾。
@@ -457,11 +434,10 @@ function Conversation({
   );
 }
 
-/** 对话流里的一行:人的气泡、agent 的正文、一组工具调用、系统一句、产出一行、提问卡片。 */
+/** 对话流里的一行:人的气泡、agent 的正文、一组工具调用、系统一句、子代理卡片、提问卡片。 */
 function ConversationRow({
   item,
   sessionId,
-  onOpenOutput,
   canAnswerRound,
   onAnswerRound,
   liveTool,
@@ -471,7 +447,6 @@ function ConversationRow({
 }: {
   item: ConversationGroup;
   sessionId: number;
-  onOpenOutput: (version: number) => void;
   /** 这一轮提问由谁答:发得出消息的人才答得了(与输入区同一判据)。 */
   canAnswerRound: boolean;
   onAnswerRound: (text: string) => Promise<void>;
@@ -485,8 +460,7 @@ function ConversationRow({
     return <ToolGroup calls={item.calls} liveTool={liveTool} open={open} />;
   }
   if (item.kind === "system") {
-    /* 系统消息(停止、中止、静默死亡、切模型)不是对话的一方,胶囊居中一行,与定稿句区分开
-       (ADR 0031、issue #337):定稿是一句平静的旁白,系统消息是需要留意的事件。 */
+    /* 系统消息(停止、中止、静默死亡、切模型)不是对话的一方,胶囊居中一行(ADR 0031)。 */
     return (
       <div className="flex justify-center">
         <span className="inline-flex items-center gap-1.5 rounded-full bg-sunken px-3 py-1 text-sm text-text-secondary">
@@ -496,30 +470,8 @@ function ConversationRow({
       </div>
     );
   }
-  if (item.kind === "note") {
-    /* 定稿那一句居中一行小字:它不是对话的一方(ADR 0031、issue #337)。 */
-    return (
-      <p className="text-center text-sm text-text-muted">
-        {localSecond(item.at)} · {item.text}
-      </p>
-    );
-  }
   if (item.kind === "subagent") {
     return <SubagentCards runs={item.runs} />;
-  }
-  if (item.kind === "output") {
-    /* 产出以一行出现在对话流里,点开把右栏切到那一版(issue #337)。 */
-    return (
-      <button
-        type="button"
-        onClick={() => onOpenOutput(item.version)}
-        className="flex w-full items-center gap-2 rounded-lg border border-card-line bg-surface px-3 py-2 text-left transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
-      >
-        <ReaderIcon aria-hidden className="shrink-0 text-text-muted" />
-        <span className="min-w-0 flex-1 text-base font-medium">会话产出 · 需求拆分 v{item.version}</span>
-        <ChevronRightIcon aria-hidden className="shrink-0 text-text-faint" />
-      </button>
-    );
   }
   if (item.kind === "round") {
     return <QuestionRoundCard item={item} canAnswer={canAnswerRound} onAnswer={onAnswerRound} />;
@@ -742,9 +694,9 @@ function isLongReply(text: string): boolean {
 /**
  * agent 一条完整回复的卡片(仿 Craft Agents 的 TurnCard)。长回复默认收进 320px 高、底部
  * 渐隐;「展开」摊开到全高,「阅读」开单独的阅读视图(`ReplyReader`,字号更大、限宽 72ch),
- * 「复制 Markdown」拿走原文——写法与 `OutputPanel` 的复制按钮同一份(2 秒后 label 复位,
- * 失败照样在这张卡上方弹一条 Callout)。收起时把卡片顶部滚回可见处:展开是内容变高,不是
- * 新消息,不该让人对着一段突然消失在视口上方的文字发懵。
+ * 「复制 Markdown」拿走原文(2 秒后 label 复位,失败照样在这张卡上方弹一条 Callout)。收起时
+ * 把卡片顶部滚回可见处:展开是内容变高,不是新消息,不该让人对着一段突然消失在视口上方的
+ * 文字发懵。
  */
 function AssistantReply({
   item,
@@ -1143,261 +1095,51 @@ function QueueBlock({
   );
 }
 
-/** 一个会话的产出查询键。右栏与产出卡片读同一份。 */
-export function outputsQueryKey(sessionId: number): readonly unknown[] {
-  return ["agent-session-outputs", sessionId];
-}
-
-type OutputsRead = {
-  outputs: AgentSessionOutput[];
-  finalizations: AgentSessionOutputFinalization[];
+/** 这个会话写进产品 tracker 的 spec 与票(issue #366)。读会话那一份带着它一起回。 */
+type SessionWrote = {
+  specs: readonly { id: number; title: string }[];
+  tickets: readonly { id: number; title: string }[];
 };
 
-/** 总述卡片:需求概要、假设、未决问题三段,空的那一段写「无」。 */
-function BreakdownSummary({ output }: { output: AgentSessionOutput }) {
-  const sections: [string, string[]][] = [
-    ["假设", output.payload.assumptions],
-    ["未决问题", output.payload.openQuestions],
-  ];
-  return (
-    <div className="flex flex-col gap-2 rounded-lg border border-card-line bg-surface px-4 py-3">
-      <Text as="p" size="2" weight="bold">
-        总述
-      </Text>
-      <Text as="p" size="2">
-        需求概要:{output.payload.summary}
-      </Text>
-      {sections.map(([title, values]) => (
-        <div key={title}>
-          <Text as="p" size="1" weight="bold" color="gray">
-            {title}
-          </Text>
-          {values.length === 0 ? (
-            <Text as="p" size="1" color="gray">
-              无
-            </Text>
-          ) : (
-            <ul className="ml-4 list-disc">
-              {values.map((value) => (
-                <li key={value}>
-                  <Text size="1" color="gray">
-                    {value}
-                  </Text>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/** 条目卡片:标题、所属仓库、描述、落点、依赖条目、验收要点,顺序与复制出来的 Markdown 一致。 */
-function BreakdownItems({ output }: { output: AgentSessionOutput }) {
-  const items = output.payload.items;
-  return (
-    <div className="flex flex-col gap-2">
-      <Text as="p" size="2" weight="bold">
-        拆分条目 {items.length} 条
-      </Text>
-      {items.map((item, index) => (
-        <div
-          key={`${index + 1}-${item.title}`}
-          className="flex flex-col gap-1 rounded-lg border border-card-line bg-surface px-4 py-3"
-        >
-          <div className="flex flex-wrap items-center gap-2">
-            <Text size="2" weight="bold">
-              {index + 1}. {item.title}
-            </Text>
-            <Badge color="gray" variant="soft">
-              {item.repo}
-            </Badge>
-          </div>
-          <Text as="p" size="1" color="gray">
-            {item.description}
-          </Text>
-          <Text as="p" size="1" color="gray">
-            落点:
-            <span className="font-mono break-all">
-              {item.locations.length === 0 ? "无" : item.locations.join(", ")}
-            </span>
-          </Text>
-          <Text as="p" size="1" color="gray">
-            依赖条目:{item.dependsOn.length === 0 ? "无" : item.dependsOn.join(", ")}
-          </Text>
-          <Text as="p" size="1" color="gray">
-            验收要点:
-          </Text>
-          {item.acceptance.length === 0 ? (
-            <Text as="p" size="1" color="gray">
-              无
-            </Text>
-          ) : (
-            <ul className="ml-4 list-disc">
-              {item.acceptance.map((line) => (
-                <li key={line}>
-                  <Text size="1" color="gray">
-                    {line}
-                  </Text>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
+const EMPTY_WROTE: SessionWrote = { specs: [], tickets: [] };
 
 /**
- * 右栏的产出区(原型 A,issue #337):版本下拉、「定稿 / 换版到 vN」、「复制为 Markdown」、
- * 一行定稿信息,下面是总述卡片与条目卡片。
+ * 右栏:本会话写进产品 tracker 的 spec 与票(CONTEXT.md 产品 tracker,issue #366)。
  *
- * 人不编辑产出,所以这里只有两个动作:定稿(换到另一版即换版)与复制。在跑时隔两秒续查
- * 一次:agent 交出新一版没有单独的事件,版本下拉要跟上。
+ * 只列标题,点一条去产品页——正文、认领、改标签、开关与评论都在那里,这里再放一份只会分叉。
+ * 不另开查询:读会话那一份带着它回,在跑时的续查因此就是这一栏的刷新。
  */
-function OutputPanel({
-  sessionId,
-  canAct,
-  running,
-  picked,
-  onPick,
-}: {
-  sessionId: number;
-  /** 只有创建者定得了稿:别人读得到这个会话,动不了它。 */
-  canAct: boolean;
-  running: boolean;
-  /** 右栏此刻看的是哪一版。null 即看最新那一版。 */
-  picked: number | null;
-  onPick: (version: number) => void;
-}) {
-  const queryClient = useQueryClient();
-  const [copied, setCopied] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const query = useQuery({
-    queryKey: outputsQueryKey(sessionId),
-    queryFn: () => fetchJson<OutputsRead>(`/agent-sessions/${sessionId}/outputs`),
-    refetchInterval: running ? 2000 : false,
-  });
-  const finalize = useMutation({
-    mutationFn: (version: number) =>
-      send(`/agent-sessions/${sessionId}/outputs/${version}/finalize`, "POST"),
-    onSuccess: async () => {
-      setError(null);
-      // 定稿那一条 custom_message 自己从记录流过来,这里只要把产出那一份读新。
-      await queryClient.invalidateQueries({ queryKey: outputsQueryKey(sessionId) });
-    },
-    onError: (failed: Error) => setError(failed.message),
-  });
-
-  const outputs = query.data?.outputs ?? [];
-  const current = outputs.find((output) => output.version === picked) ?? outputs.at(-1);
-  const finalized = currentFinalization(query.data?.finalizations ?? []);
-  const isFinalized = current !== undefined && finalized?.toVersion === current.version;
-
-  if (query.isPending) return <Skeleton aria-hidden className="h-40" />;
-  if (query.isError) {
-    // 读不到产出与「还没有产出」是两件事:报出原因,别让人以为 agent 还没交。
-    return (
-      <Callout.Root role="alert" color="red" size="1">
-        <Callout.Icon>
-          <CrossCircledIcon aria-hidden />
-        </Callout.Icon>
-        <Callout.Text>{(query.error as Error).message}</Callout.Text>
-      </Callout.Root>
-    );
-  }
-  if (current === undefined) {
-    return (
-      <EmptyState
-        title="还没有会话产出"
-        titleAs="h2"
-        description="agent 交出的结构化产出会出现在这里。"
-      />
-    );
-  }
-
-  const copy = async (): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(
-        requirementBreakdownMarkdown({
-          version: current.version,
-          finalized: isFinalized,
-          breakdown: current.payload,
-        }),
-      );
-      setError(null);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (failed) {
-      setError((failed as Error).message);
-    }
-  };
-
+function WrotePanel({ productId, wrote }: { productId: number; wrote: SessionWrote }) {
+  const rows: { key: string; label: string; title: string }[] = [
+    ...wrote.specs.map((spec) => ({ key: `spec-${spec.id}`, label: "spec", title: spec.title })),
+    ...wrote.tickets.map((ticket) => ({
+      key: `ticket-${ticket.id}`,
+      label: `#${ticket.id}`,
+      title: ticket.title,
+    })),
+  ];
   return (
     <div className="flex min-w-0 flex-col gap-3">
-      {error === null ? null : (
-        <Callout.Root role="alert" color="red" size="1">
-          <Callout.Icon>
-            <CrossCircledIcon aria-hidden />
-          </Callout.Icon>
-          <Callout.Text>{error}</Callout.Text>
-        </Callout.Root>
-      )}
-      <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-lg font-bold">会话产出 · 需求拆分</h2>
-        <Select.Root
-          size="1"
-          value={String(current.version)}
-          onValueChange={(value) => onPick(Number(value))}
-        >
-          <Select.Trigger aria-label="产出版本" />
-          <Select.Content position="popper">
-            {outputs.map((output) => (
-              <Select.Item key={output.version} value={String(output.version)}>
-                v{output.version} · {output.payload.items.length} 条 ·{" "}
-                {localMinute(output.createdAt)}
-              </Select.Item>
-            ))}
-          </Select.Content>
-        </Select.Root>
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <div className="flex flex-wrap items-center gap-2">
-          {isFinalized ? (
-            <StatusBadge tone="success">v{current.version} 已定稿</StatusBadge>
-          ) : canAct ? (
-            <Button
-              size="1"
-              disabled={finalize.isPending}
-              onClick={() => finalize.mutate(current.version)}
+      <h2 className="text-lg font-bold">本会话写的 spec 与票</h2>
+      <ul className="flex flex-col gap-1.5">
+        {rows.map((row) => (
+          <li key={row.key}>
+            <Link
+              to="/products/$productId"
+              params={{ productId: String(productId) }}
+              className="flex min-w-0 items-start gap-2 rounded-lg border border-card-line bg-surface px-3 py-2 transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
             >
-              {finalized === undefined ? `定稿 v${current.version}` : `换版到 v${current.version}`}
-            </Button>
-          ) : null}
-          <Button size="1" variant="soft" color="gray" onClick={() => void copy()}>
-            {copied ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
-            {copied ? "已复制" : "复制为 Markdown"}
-          </Button>
-        </div>
-        {finalized === undefined ? (
-          <Text as="p" size="1" color="gray">
-            还没有定稿版。
-          </Text>
-        ) : (
-          <Text as="p" size="1" color="gray">
-            定稿 v{finalized.toVersion} · {finalized.finalizedBy} ·{" "}
-            {localMinute(finalized.finalizedAt)} · 定稿版不可改,进模型上下文
-          </Text>
-        )}
-      </div>
-
-      <div className="flex flex-col gap-3 border-t border-line pt-3">
-        <BreakdownSummary output={current} />
-        <BreakdownItems output={current} />
-      </div>
+              <Badge color="gray" variant="soft" className="shrink-0">
+                {row.label}
+              </Badge>
+              <span className="min-w-0 break-words text-sm">{row.title}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+      <Text as="p" size="1" color="gray">
+        正文、认领、改标签与评论在产品页的产品 tracker 区。
+      </Text>
     </div>
   );
 }
@@ -1764,10 +1506,8 @@ export function AgentSessionPage({
   const [mode, setMode] = useState<QueuedMessage["mode"]>("followUp");
   /** 这一条消息带的图片 id(issue #336)。发出去就清空;移除只是不带它,文件留在会话里。 */
   const [images, setImages] = useState<string[]>([]);
-  /** 右栏看的是哪一版产出。null 即最新那一版;点对话流里的产出行切到那一版(issue #337)。 */
-  const [outputVersion, setOutputVersion] = useState<number | null>(null);
-  /** `xl` 以下中栏放对话还是产出。 */
-  const [pane, setPane] = useState<"chat" | "output">("chat");
+  /** `xl` 以下中栏放对话还是这个会话写下的 spec 与票。 */
+  const [pane, setPane] = useState<"chat" | "wrote">("chat");
 
   const sessionQuery = useQuery({
     queryKey: agentSessionQueryKey(sessionId),
@@ -1778,6 +1518,8 @@ export function AgentSessionPage({
         imageInput: boolean;
         /** 重建之后前几条进不了模型上下文(ADR 0031,issue #335)。0 即记录完整。 */
         droppedFromContext: number;
+        /** 这个会话写进产品 tracker 的 spec 与票(issue #366)。 */
+        wrote: SessionWrote;
       }>(`/agent-sessions/${sessionId}`),
     // 在跑时轮询:回合结束与队列变动都没有单独的事件,状态与排队列表是会话自己那两格
     // (issue #333、#334)。
@@ -1799,7 +1541,12 @@ export function AgentSessionPage({
    */
   const surveyAdmin =
     session !== undefined && session.purpose === "product-survey" && isSystemAdmin;
-  const hasOutput = session !== undefined && PURPOSE_HAS_OUTPUT[session.purpose];
+  /**
+   * 这个会话写下的 spec 与票(issue #366)。右栏按它列,一条都没写下时整块不渲染——哪些
+   * 用途写得出来不另存一张表:写下了就有,没写下就没有,开放对话走同一条流程时一样成立。
+   */
+  const wrote = sessionQuery.data?.wrote ?? EMPTY_WROTE;
+  const hasWrote = wrote.specs.length + wrote.tickets.length > 0;
   const refresh = (): Promise<void> =>
     queryClient.invalidateQueries({ queryKey: agentSessionQueryKey(sessionId) });
   const post = useMutation({
@@ -1900,16 +1647,7 @@ export function AgentSessionPage({
   });
 
   const loadError = sessionQuery.error;
-  const outputPanel =
-    session === undefined ? null : (
-      <OutputPanel
-        sessionId={sessionId}
-        canAct={session.createdBy === username}
-        running={running}
-        picked={outputVersion}
-        onPick={setOutputVersion}
-      />
-    );
+  const wrotePanel = <WrotePanel productId={productId} wrote={wrote} />;
   return (
     <PageBody className="h-full pb-6">
       {feedback === null ? null : (
@@ -1994,16 +1732,16 @@ export function AgentSessionPage({
               />
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {hasOutput ? (
+              {hasWrote ? (
                 <SegmentedControl.Root
                   size="1"
                   value={pane}
-                  onValueChange={(next) => setPane(next as "chat" | "output")}
+                  onValueChange={(next) => setPane(next as "chat" | "wrote")}
                   aria-label="中栏内容"
                   className="xl:hidden"
                 >
                   <SegmentedControl.Item value="chat">对话</SegmentedControl.Item>
-                  <SegmentedControl.Item value="output">产出</SegmentedControl.Item>
+                  <SegmentedControl.Item value="wrote">spec 与票</SegmentedControl.Item>
                 </SegmentedControl.Root>
               ) : null}
               {surveyAdmin && running ? (
@@ -2065,8 +1803,8 @@ export function AgentSessionPage({
           ) : null}
           {session === undefined ? (
             <Skeleton aria-hidden className="mt-3 h-40" />
-          ) : pane === "output" && hasOutput ? (
-            <div className="min-h-0 flex-1 overflow-y-auto py-3 xl:hidden">{outputPanel}</div>
+          ) : pane === "wrote" && hasWrote ? (
+            <div className="min-h-0 flex-1 overflow-y-auto py-3 xl:hidden">{wrotePanel}</div>
           ) : null}
           {session === undefined ? null : (
             // 对话流与输入区共一个居中限宽的列:1440 下中栏那张卡约 860px,列取 760px 让正文、
@@ -2074,7 +1812,7 @@ export function AgentSessionPage({
             <div className="mx-auto flex min-h-0 w-full max-w-[760px] flex-1 flex-col">
               <div
                 className={
-                  pane === "output" && hasOutput
+                  pane === "wrote" && hasWrote
                     ? "hidden min-h-0 flex-1 flex-col xl:flex"
                     : "flex min-h-0 flex-1 flex-col"
                 }
@@ -2084,10 +1822,6 @@ export function AgentSessionPage({
                   running={running}
                   canSend={session.createdBy === username}
                   hasBaselines={session.baselines.length > 0}
-                  onOpenOutput={(version) => {
-                    setOutputVersion(version);
-                    setPane("output");
-                  }}
                   onAnswerRound={answerRound}
                 />
               </div>
@@ -2147,13 +1881,13 @@ export function AgentSessionPage({
           )}
         </div>
 
-        {/* 没有产出类型的用途不渲染右栏,中栏因此占满(开放对话、产品梳理)。 */}
-        {hasOutput ? (
+        {/* 一条 spec 与票都没写下的会话不渲染右栏,中栏因此占满。 */}
+        {hasWrote ? (
           <aside
-            aria-label="会话产出"
+            aria-label="本会话写的 spec 与票"
             className="flex w-full shrink-0 flex-col gap-2.5 max-xl:hidden xl:h-full xl:w-[336px] xl:overflow-y-auto"
           >
-            <CardShell className="px-5 py-4">{outputPanel}</CardShell>
+            <CardShell className="px-5 py-4">{wrotePanel}</CardShell>
           </aside>
         ) : null}
       </div>
@@ -2171,7 +1905,7 @@ export function AgentSessionPage({
         }}
         title="删除这个 Agent 会话?"
         titleSize="4"
-        description="会话的记录、产出与图片一并删除,不可撤销。"
+        description="会话的记录与图片一并删除,不可撤销。它写下的 spec 与票留在产品 tracker 里。"
         cancelLabel="取消"
         cancelVariant="outline"
         cancelDisabled={remove.isPending}

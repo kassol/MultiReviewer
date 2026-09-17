@@ -338,8 +338,8 @@ test("历史 Finding 工具一次最多回 50 条,并说还有更多", async () 
   }
 });
 
-test("需求拆分会话的系统提示里有粒度、落点、不估算与「恰好一次」", async () => {
-  const turns: StubTurn[] = [{ text: "先问两句再拆", usage: { input: 10, output: 2 } }];
+test("需求拆分会话的系统提示里有按轮问、答即裁决、收成 spec 拆票与不估算", async () => {
+  const turns: StubTurn[] = [{ text: "先问一轮再说", usage: { input: 10, output: 2 } }];
   const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
   try {
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
@@ -349,29 +349,23 @@ test("需求拆分会话的系统提示里有粒度、落点、不估算与「�
     const system = requests[0]!.messages.filter((message) => message.role === "system");
     assert.equal(system.length, 1);
     const prompt = system[0]!.content;
-    // 粒度:单一仓库内一个可独立提 PR 的变更,跨仓库拆多条并用依赖串。
-    assert.match(
-      prompt,
-      /one change inside a single repository that can go out as its own pull request/,
-    );
-    assert.match(prompt, /spans repositories is therefore several items/);
-    assert.match(prompt, /tied together by dependsOn/);
-    // 落点只能来自读过的代码。
-    assert.match(
-      prompt,
-      /a directory or a file you have seen yourself with read, grep, find or ls/,
-    );
-    // 追问与「直接拆」。
-    assert.match(prompt, /ask before you break it down/);
-    assert.match(prompt, /直接拆/);
-    // 知识集是边界(issue #344 起改由 query_knowledge 取),历史 Finding 给验收要点加提醒。
-    assert.match(prompt, /What query_knowledge returns is the boundary of the breakdown/);
-    assert.match(prompt, /query_findings/);
+    // 按轮问,每题二到四个选项加一个推荐项。
+    assert.match(prompt, /Grill first, and grill in rounds/);
+    assert.match(prompt, /one call of ask_question_round/);
+    // 事实自己查:只问人才裁决得了的事。
+    assert.match(prompt, /Ask only what the person alone can settle/);
+    // 答即裁决:术语当轮写进产品知识,不设第二道队列。
+    assert.match(prompt, /Their answer is the decision/);
+    assert.match(prompt, /write it into product knowledge with write_knowledge right then/);
+    // 共识之后写 spec、拆票、连阻塞边。
+    assert.match(prompt, /call tracker_create_spec once/);
+    assert.match(prompt, /Split it into tickets under that spec with tracker_create_ticket/);
+    assert.match(prompt, /record what waits on what with tracker_block/);
     // 不估算工作量。
     assert.match(prompt, /Do not estimate effort/);
-    // 每次交拆分恰好一次,正文里散列的不算产出。
-    assert.match(prompt, /submit_requirement_breakdown exactly once/);
-    assert.match(prompt, /Items written out in your reply are not handed in/);
+    // 退役的产出工具既不在提示里,也不在工具清单里。
+    assert.equal(prompt.includes("submit_requirement_breakdown"), false);
+    assert.equal(requests[0]!.tools.includes("submit_requirement_breakdown"), false);
   } finally {
     await disposeAgentSessions();
     await close();
@@ -390,7 +384,7 @@ test("开放对话会话不注册产出工具,提示里是开放问答那一段"
 
     assert.equal(requests.length, 1);
     // 工具面:底座那几件在,产出工具一件都不在——这个用途交不出产出。
-    assert.equal(requests[0]!.tools.includes("submit_requirement_breakdown"), false);
+    assert.equal(requests[0]!.tools.includes("submit_product_survey"), false);
     assert.ok(requests[0]!.tools.includes("query_findings"));
     const prompt = requests[0]!.messages.find((message) => message.role === "system")!.content;
     // 开放对话那一段:读了再答、说清不确定、没被要求之前不交任何东西(issue #364)。
@@ -398,9 +392,8 @@ test("开放对话会话不注册产出工具,提示里是开放问答那一段"
     assert.match(prompt, /Read before you answer/);
     assert.match(prompt, /Say what you are unsure about/);
     assert.match(prompt, /this conversation hands nothing in/);
-    // 需求拆分那一段的「恰好一次」产出要求不在。
-    assert.equal(prompt.includes("exactly once"), false);
-    assert.equal(prompt.includes("submit_requirement_breakdown"), false);
+    // 需求拆分那一段的收尾要求不在。
+    assert.equal(prompt.includes("call tracker_create_spec once"), false);
   } finally {
     await disposeAgentSessions();
     await close();

@@ -142,8 +142,9 @@ test("建会话要用途,且只收需求拆分与开放对话", async () => {
   });
 
   // 读回来与建出来的那一份同形,跟着回一份空的排队列表(issue #334)、图片能力那一格
-  // (issue #336:这套夹具的模型目录没声明看得了图)与「前 N 条不在上下文」那个数
-  // (issue #335):一条记录都还没有,因此是 0。
+  // (issue #336:这套夹具的模型目录没声明看得了图)、「前 N 条不在上下文」那个数
+  // (issue #335:一条记录都还没有,因此是 0),以及这一场写进产品 tracker 的 spec 与票
+  // (issue #366:还一条都没写)。
   const read = await as(h, cookie, "GET", `/agent-sessions/${session.id}`);
   assert.equal(read.status, 200);
   assert.deepEqual(await read.json(), {
@@ -151,6 +152,7 @@ test("建会话要用途,且只收需求拆分与开放对话", async () => {
     queue: [],
     imageInput: false,
     droppedFromContext: 0,
+    wrote: { specs: [], tickets: [] },
   });
   assert.deepEqual(await sessions(h, cookie, productId), [session]);
 

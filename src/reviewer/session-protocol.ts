@@ -11,25 +11,15 @@ import type {
   SessionKnowledgeQuery,
   SessionProductKnowledge,
 } from "../review/finding.ts";
-import type {
-  AgentSessionOutputKind,
-  RepoFinding,
-  RepoFindingQuery,
-} from "../review/store.ts";
+import type { RepoFinding, RepoFindingQuery } from "../review/store.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 import type { AgentSessionImageRef } from "./session-images.ts";
 import type { SessionSubagentRun } from "./session-subagent.ts";
 
 /**
- * 主进程与子进程各自往会话记录里放的那两种 Pi 条目的 `customType`(issue #337)。放在这份
- * 共享协议里:两侧写的是同一张记录表,面板按这两个取值认出它们(`custom` 的产出卡片与
- * `custom_message` 的定稿 / 换版那一行)。
- */
-export const AGENT_SESSION_OUTPUT_CUSTOM_TYPE = "multireviewer-session-output";
-export const AGENT_SESSION_NOTE_CUSTOM_TYPE = "multireviewer-session-note";
-/**
- * 基点更新(CONTEXT.md 基点更新,issue #356)的 `custom_message` 类型。与定稿那一句分开取值:
- * 面板要把它渲染成「仓库 旧 sha → 新 sha」那一行,而不是一句提示。只有主进程写它。
+ * 基点更新(CONTEXT.md 基点更新,issue #356)的 `custom_message` 类型。放在这份共享协议里:
+ * 两侧写的是同一张记录表,面板按这个取值把它渲染成「仓库 旧 sha → 新 sha」那一行,而不是
+ * 一句提示。只有主进程写它。
  */
 export const AGENT_SESSION_BASELINE_UPDATE_CUSTOM_TYPE = "multireviewer-session-baseline-update";
 /**
@@ -134,17 +124,6 @@ export type OpenSessionRequest = {
 };
 
 /**
- * 一份交上来的会话产出(CONTEXT.md 会话产出,issue #337)。`payload` 的形状由产出类型自己
- * 定(需求拆分那一份在 `session-output-tools.ts`),这条协议只把它原样带过去。
- */
-export type SessionOutput = {
-  kind: AgentSessionOutputKind;
-  /** 产生它的那次工具调用。 */
-  toolCallId: string;
-  payload: unknown;
-};
-
-/**
  * 产品梳理交上来的一批(CONTEXT.md 产品梳理,issue #345、#360)。与会话产出分成两档:产出是
  * 人要读的一份文档,这一批是要落进产品知识的仓库关系条目,写下即生效。
  *
@@ -209,17 +188,6 @@ export type SessionCommand =
        */
       seq: number;
     }
-  /**
-   * 往会话里放一条进模型上下文的自定义消息,不开新回合(issue #337)。定稿与换版走它:
-   * 那是人做的动作,agent 下一轮要知道哪一版定了。落库由镜像那条路完成,与别的条目同形。
-   */
-  | { kind: "custom-message"; text: string }
-  /**
-   * 往会话里放一条不进模型上下文的 `custom` 条目(issue #337 的产出卡片标记)。要经子进程
-   * 放:Pi 会话在它的内存里,主进程直接落库的那一条接不上链——下一条回复仍挂在它前面那条
-   * 上,这一条就成了旁支,重建时被算成「不在上下文」。落库由镜像那条路完成。
-   */
-  | { kind: "custom-entry"; customType: string; data: unknown }
   /** 整队清空(Pi 的 `clearQueue()`)。Pi 不支持单条撤回,因此没有单条那一档。 */
   | { kind: "clear-queue" }
   /** 中止当前这一步。排队消息保留在主进程的镜像里,下次开跑时投递。 */
@@ -274,11 +242,6 @@ export type SessionWorkerMessage =
    * 子进程不判断它们是什么,落库与用量累加都在主进程。
    */
   | { kind: "entries"; entries: readonly unknown[] }
-  /**
-   * agent 经产出工具交出的一份会话产出(issue #337)。一次调用一条消息,与 Finding 回传
-   * 同形:子进程只把归一化与打回判完的那一份交上来,落产出表与广播都在主进程。
-   */
-  | { kind: "output"; output: SessionOutput }
   /**
    * 产品梳理经它的产出工具交的那一批(issue #345)。与产出回传同形:子进程只把校验过的
    * 那一批交上来,落产品知识表在主进程。

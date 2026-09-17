@@ -7,7 +7,7 @@
  *
  * 工具结果不进对话流:人要知道的是「它在读哪个文件」,整段输出属于过程,不属于对话。
  * 系统消息(issue #334 起的 custom 条目)另成一档:它不进模型上下文,但人要看得见。
- * 产出卡片与定稿那一句(issue #337)同理各成一档,提问轮次的选择卡片(issue #359)也是。
+ * 提问轮次的选择卡片(issue #359)同理自成一档。
  */
 import {
   parseQuestionRound,
@@ -35,12 +35,6 @@ export type AgentSessionRecord = {
  * 切换都落这一种,不进模型上下文。字面量与 `src/reviewer/session-worker.ts` 那一份相同。
  */
 export const SYSTEM_MESSAGE_ENTRY = "multireviewer_system_message";
-
-/**
- * 主进程落的那两种条目的 `customType`(issue #337),与服务端那一份同值:`custom` 是交出一版
- * 产出,`custom_message` 是人做的定稿或换版(它进模型上下文)。
- */
-export const AGENT_SESSION_OUTPUT_CUSTOM_TYPE = "multireviewer-session-output";
 
 /** 基点更新那一条 `custom_message` 的类型(issue #356),与服务端同值。 */
 export const AGENT_SESSION_BASELINE_UPDATE_CUSTOM_TYPE = "multireviewer-session-baseline-update";
@@ -74,15 +68,11 @@ export type ConversationItem =
    * 失败时结果的第一行——结果全文仍不进对话流,人只需要知道它没成。
    */
   | { kind: "tool"; seq: number; at: string; id: string; name: string; step: ToolStep; error?: string }
-  /** agent 交出了一版产出。点开把右栏切到这一版。 */
-  | { kind: "output"; seq: number; at: string; version: number }
   /**
    * 一次会话子代理派单(issue #358)。一次调用可以并行派几趟,因此是数组:面板把它们并排
    * 成几张嵌套卡片。
    */
   | { kind: "subagent"; seq: number; at: string; runs: SubagentRun[] }
-  /** 定稿与换版那一句。进了模型上下文,所以它也该在对话里看得见。 */
-  | { kind: "note"; seq: number; at: string; text: string }
   /**
    * agent 抛出的一轮提问(CONTEXT.md 提问轮次,issue #359)。三态由它后面那条用户消息定:
    * 还没有即可答(两格都缺席),是这一轮的答案即已答(`answers`),是别的话即过期(`expired`)。
@@ -277,17 +267,10 @@ export function conversation(records: readonly AgentSessionRecord[]): Conversati
   const items: ConversationItem[] = [];
   for (const record of records) {
     if (record.type === "custom") {
-      // 产出卡片(issue #337)与系统消息灰底一行(spec #329)共用 custom 这一档,按 customType
-      // 分。认不出 customType 或缺版本号的一律跳过:后端多落一种 custom 条目不该在对话流里
-      // 摊出一段 JSON。
-      const entry = record.entry as { customType?: unknown; data?: { version?: unknown } } | null;
-      if (
-        entry?.customType === AGENT_SESSION_OUTPUT_CUSTOM_TYPE &&
-        typeof entry.data?.version === "number"
-      ) {
-        items.push({ kind: "output", seq: record.seq, at: record.at, version: entry.data.version });
-        continue;
-      }
+      // 子代理卡片、提问卡片与系统消息灰底一行(spec #329)共用 custom 这一档,按 customType
+      // 分。认不出 customType 的一律跳过:后端多落一种 custom 条目不该在对话流里摊出一段
+      // JSON,退役了的那些(#337 的产出卡片)因此在旧会话里自然消失,旧会话照样读得下去。
+      const entry = record.entry as { customType?: unknown; data?: unknown } | null;
       // 会话子代理派单那一条(issue #358):跑过的那几趟原样带出来,面板并排成嵌套卡片。
       // 认不出形状的一律跳过,与别的 custom 条目同律。
       if (entry?.customType === AGENT_SESSION_SUBAGENT_ENTRY) {
@@ -336,8 +319,7 @@ export function conversation(records: readonly AgentSessionRecord[]): Conversati
         });
         continue;
       }
-      const text = textOf((record.entry as { content?: unknown } | null)?.content);
-      if (text !== "") items.push({ kind: "note", seq: record.seq, at: record.at, text });
+      // 别的 `custom_message`(退役了的定稿那一句)不进对话流:旧会话照样打得开,少一行而已。
       continue;
     }
     if (record.type !== "message") continue;

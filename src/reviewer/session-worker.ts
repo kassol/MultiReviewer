@@ -61,7 +61,6 @@ import {
   sessionTrackerTools,
 } from "./session-tracker-tools.ts";
 import {
-  AGENT_SESSION_NOTE_CUSTOM_TYPE,
   AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE,
   AGENT_SESSION_SUBAGENT_ENTRY,
   SYSTEM_MESSAGE_ENTRY,
@@ -188,8 +187,6 @@ const STOPPED_BY_PERSON = "人点了停止:已中止当前这一步,排队的消
 let session: AgentSession | undefined;
 /** 已经回传过的条目数。镜像按它取新增的那一段。 */
 let mirrored = 0;
-/** 会话建好之前到的那几条自定义消息(issue #337),建好之后按顺序放进去。 */
-const pendingNotes: string[] = [];
 let apiKey = "";
 /**
  * 这个会话此刻在不在跑。Pi 自己的 `isStreaming` 不够用:`prompt()` 在真正开跑之前还有几个
@@ -378,7 +375,6 @@ async function open(request: OpenSessionRequest): Promise<void> {
     },
   });
   send({ kind: "ready" });
-  for (const note of pendingNotes.splice(0)) await customMessage(note);
 }
 
 /**
@@ -433,24 +429,6 @@ async function prompt(
       ? {}
       : { failure: redactModelCredential(failure, apiKey) }),
   });
-}
-
-/**
- * 放一条进模型上下文的自定义消息(issue #337)。定稿与换版走它:`triggerTurn: false` 即不开
- * 新回合——执行中它排到回合边界再落进会话,空闲时当场落进去。两条路都发 `message_end`,
- * 落库因此仍由镜像那一条路完成,与别的条目同形。
- */
-async function customMessage(text: string): Promise<void> {
-  // 会话还没建好就先攒着:备会话根要把每个仓库检出一遍,那段时间里人点得动定稿。丢掉这一条
-  // 它既不进上下文也不进记录表,而主进程已经按「子进程在」把它交给了这一侧。
-  if (session === undefined) {
-    pendingNotes.push(text);
-    return;
-  }
-  await session.sendCustomMessage(
-    { customType: AGENT_SESSION_NOTE_CUSTOM_TYPE, content: text, display: true },
-    { triggerTurn: false },
-  );
 }
 
 /**
@@ -540,13 +518,6 @@ function handle(command: SessionCommand): Promise<void> {
     case "prompt":
       lastPromptSeq = command.seq;
       return prompt(command.text, command.mode, command.images ?? []);
-    case "custom-message":
-      return customMessage(command.text);
-    case "custom-entry":
-      // 产出卡片标记之类不进上下文的条目:接在当前叶子后面,镜像回主进程落库。
-      session?.sessionManager.appendCustomEntry(command.customType, command.data);
-      mirrorEntries();
-      return Promise.resolve();
     case "stop":
       return stop();
     case "drain":

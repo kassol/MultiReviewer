@@ -344,7 +344,7 @@ export function ProductsPage({
             titleSize="4"
             // 条数取当前产品下这一份会话列表(系统管理员读到的是所有人的),真正删掉
             // 多少由接口回的 `cascade.sessions` 说,成功那句照它写。
-            description={`产品下的 ${sessions.length} 个 Agent 会话连记录、产出与图片一并删除,不可撤销。仓库只是从产品里摘出,注册表不动。`}
+            description={`产品下的 ${sessions.length} 个 Agent 会话连记录与图片一并删除,不可撤销。仓库只是从产品里摘出,注册表不动。`}
             cancelLabel="取消"
             cancelVariant="outline"
             cancelDisabled={remove.isPending}
