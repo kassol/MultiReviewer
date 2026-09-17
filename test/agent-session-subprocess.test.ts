@@ -30,6 +30,11 @@ import type { ReviewerUsage } from "../src/review/finding.ts";
 import { openStore } from "../src/review/store.ts";
 import { MISSING_IMAGE_TEXT } from "../src/reviewer/session-images.ts";
 import {
+  AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE,
+  SYSTEM_MESSAGE_ENTRY,
+} from "../src/reviewer/session-protocol.ts";
+import { ASK_QUESTION_ROUND_TOOL } from "../src/reviewer/session-question-tool.ts";
+import {
   agentSessionContextGap,
   agentSessionStatus,
   disposeAgentSessions,
@@ -320,9 +325,10 @@ test("发一条消息:知识目录与消息文本进了模型请求,回复与工
       ),
       "发出去的那句话没进模型请求",
     );
-    // 工具面是只读四件套、受控 git、历史 Finding 查询(issue #338)、知识查询(issue #344),
-    // 加这个用途的产出工具(issue #337);写工具一个都没注册。
+    // 工具面是只读四件套、受控 git、历史 Finding 查询(issue #338)、知识查询(issue #344)、
+    // 提问轮次(issue #359),加这个用途的产出工具(issue #337);写工具一个都没注册。
     assert.deepEqual([...requests[0]!.tools].sort(), [
+      "ask_question_round",
       "find",
       "git",
       "grep",
@@ -941,6 +947,11 @@ test("产品梳理:提示列出生效条目、单仓库陈述被打回,合法交
       `工具面里没有产出工具:${requests[0]!.tools.join(",")}`,
     );
     assert.ok(!requests[0]!.tools.includes("submit_requirement_breakdown"));
+    // 提问轮次与用途无关(issue #359):这个用途的工具面里也有它。
+    assert.ok(
+      requests[0]!.tools.includes(ASK_QUESTION_ROUND_TOOL),
+      `工具面里没有提问轮次:${requests[0]!.tools.join(",")}`,
+    );
     // 种子消息:系统投的那一条在第一次请求的用户消息里。
     assert.ok(
       requests[0]!.messages.some(
@@ -1810,4 +1821,208 @@ test("spawn 同步失败的子进程再强杀不会连整个进程组一起杀",
   assert.equal(child.pid, undefined);
   killChild(child);
   assert.match((await failed).message, /ENOENT/);
+});
+
+/* ─────────────── 提问轮次(CONTEXT.md 提问轮次,issue #359) ─────────────── */
+
+/** 一轮题的工具参数。标题两头带空白、第一题掺一个空选项,用来压服务端归一化。 */
+const ROUND_ARGS: Json = {
+  questions: [
+    {
+      title: "  汇率取哪一天的  ",
+      body: "两处代码都取提交当天,财务那边的口径我读不出来",
+      options: [
+        { text: " 提交当天 ", recommended: true },
+        { text: "月末统一", recommended: false },
+        { text: "   ", recommended: false },
+      ],
+      multiple: false,
+    },
+    {
+      title: "撤回之后谁收到通知",
+      body: "现在只有审批人一条路",
+      options: [
+        { text: "审批人", recommended: true },
+        { text: "抄送人", recommended: false },
+      ],
+      multiple: true,
+    },
+  ],
+};
+
+/** 面板把整轮答案合成的那一条用户消息(`web/src/lib/session-question-round.ts` 的格式)。 */
+const ROUND_ANSWER = [
+  "提问轮次的回答:",
+  "",
+  "1. 汇率取哪一天的",
+  "- 月末统一",
+  "",
+  "2. 撤回之后谁收到通知",
+  "- 审批人",
+  "- 抄送人",
+].join("\n");
+
+/** 等到这个会话落了这么多条提问轮次条目。等的是库里的行,不猜子进程的时序。 */
+async function roundsAtLeast(
+  h: PanelHarness,
+  cookie: string,
+  sessionId: number,
+  count: number,
+): Promise<Record[]> {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    const rows = (await records(h, cookie, sessionId)).filter(
+      (row) =>
+        row.type === "custom" &&
+        (row.entry as { customType?: unknown }).customType ===
+          AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE,
+    );
+    if (rows.length >= count) return rows;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.fail(`等了 30 秒,会话 ${sessionId} 还没落到 ${count} 条提问轮次`);
+}
+
+test("提问轮次:一轮题落成新种类条目、回合就地收尾转空闲,整轮答案回来是一条用户消息", async () => {
+  const turns: StubTurn[] = [
+    {
+      toolCall: { name: ASK_QUESTION_ROUND_TOOL, args: ROUND_ARGS },
+      usage: { input: 90, output: 18 },
+    },
+    { text: "按月末统一算,通知审批人与抄送人", usage: { input: 60, output: 12 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    const rounds = await roundsAtLeast(h, cookie, sessionId, 1);
+    await idle(h, cookie, sessionId);
+
+    // 工具面里有它(需求拆分这个用途);产品梳理那一条用例验的是另一个用途。
+    assert.ok(
+      requests[0]!.tools.includes(ASK_QUESTION_ROUND_TOOL),
+      `工具面里没有提问轮次:${requests[0]!.tools.join(",")}`,
+    );
+    // 落的是新种类条目,内容归一化过:标题两头空白去掉,空文字的选项丢掉。
+    assert.equal(rounds.length, 1);
+    assert.deepEqual((rounds[0]!.entry as { data?: unknown }).data, {
+      questions: [
+        {
+          title: "汇率取哪一天的",
+          body: "两处代码都取提交当天,财务那边的口径我读不出来",
+          options: [
+            { text: "提交当天", recommended: true },
+            { text: "月末统一", recommended: false },
+          ],
+          multiple: false,
+        },
+        {
+          title: "撤回之后谁收到通知",
+          body: "现在只有审批人一条路",
+          options: [
+            { text: "审批人", recommended: true },
+            { text: "抄送人", recommended: false },
+          ],
+          multiple: true,
+        },
+      ],
+    });
+    // 回合就地收尾:题抛出去之后没有第二次模型请求,会话已经空闲等人答题。
+    assert.equal(requests.length, 1);
+    // 这一下中止不是人点的停止,记录里因此没有那条系统消息。
+    const rows = await records(h, cookie, sessionId);
+    assert.equal(
+      rows.filter(
+        (row) => (row.entry as { customType?: unknown }).customType === SYSTEM_MESSAGE_ENTRY,
+      ).length,
+      0,
+    );
+    // 条目接在这次工具调用后面:主进程直接落库会让它成旁支,重建时被算成「不在上下文」。
+    const store = openStore(h.db.path);
+    try {
+      assert.equal(agentSessionContextGap(store.agentSessionEntryLinks(sessionId)), 0);
+    } finally {
+      store.close();
+    }
+
+    // 整轮答案作一条用户消息回来,会话接着跑。
+    assert.equal((await send(h, cookie, sessionId, "c2", ROUND_ANSWER)).status, 202);
+    await requestsAtLeast(requests, 2);
+    await idle(h, cookie, sessionId);
+    const answers = requests[1]!.messages.filter(
+      (message) => message.role === "user" && message.content.includes("提问轮次的回答"),
+    );
+    assert.equal(answers.length, 1);
+    assert.match(answers[0]!.content, /1\. 汇率取哪一天的\n- 月末统一/);
+    assert.match(answers[0]!.content, /2\. 撤回之后谁收到通知\n- 审批人\n- 抄送人/);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("不合规的一轮走正常返回打回:不落条目,回合照旧跑下去", async () => {
+  /** 把一轮好题改坏:改哪一处由 `patch` 决定。 */
+  const broken = (patch: (questions: Json[]) => void): Json => {
+    const args = JSON.parse(JSON.stringify(ROUND_ARGS)) as Json;
+    patch(args["questions"] as Json[]);
+    return args;
+  };
+  const turns: StubTurn[] = [
+    {
+      // 一题都没有。
+      toolCall: { name: ASK_QUESTION_ROUND_TOOL, args: { questions: [] } },
+      usage: { input: 10, output: 2 },
+    },
+    {
+      // 只剩一个选项。
+      toolCall: {
+        name: ASK_QUESTION_ROUND_TOOL,
+        args: broken((questions) => {
+          questions[0]!["options"] = [{ text: "提交当天", recommended: true }];
+        }),
+      },
+      usage: { input: 10, output: 2 },
+    },
+    {
+      // 没有推荐项。
+      toolCall: {
+        name: ASK_QUESTION_ROUND_TOOL,
+        args: broken((questions) => {
+          questions[1]!["options"] = [
+            { text: "审批人", recommended: false },
+            { text: "抄送人", recommended: false },
+          ];
+        }),
+      },
+      usage: { input: 10, output: 2 },
+    },
+    { text: "三次都被打回了,我重排一轮再问", usage: { input: 10, output: 2 } },
+  ];
+  const { h, cookie, sessionId, close } = await startSessionHarness(turns);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    // 一个回合 = 用户消息 + 3 ×(助手消息 + 工具结果)+ 收尾的助手消息。
+    await messagesAtLeast(h.db.path, sessionId, 8);
+    await idle(h, cookie, sessionId);
+
+    const rows = await records(h, cookie, sessionId);
+    // 一条提问轮次都没落:打回的那几次不是一轮题,回合也没有被就地收尾。
+    assert.equal(
+      rows.filter(
+        (row) =>
+          (row.entry as { customType?: unknown }).customType ===
+          AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE,
+      ).length,
+      0,
+    );
+    const results = rows
+      .filter((row) => row.entry.message?.role === "toolResult")
+      .map((row) => JSON.stringify(row.entry));
+    assert.equal(results.length, 3);
+    assert.match(results[0]!, /this round has no questions/);
+    assert.match(results[1]!, /question 1 has 1 options/);
+    assert.match(results[2]!, /question 2 has 0 recommended options/);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
 });

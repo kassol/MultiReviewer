@@ -7,8 +7,13 @@
  *
  * 工具结果不进对话流:人要知道的是「它在读哪个文件」,整段输出属于过程,不属于对话。
  * 系统消息(issue #334 起的 custom 条目)另成一档:它不进模型上下文,但人要看得见。
- * 产出卡片与定稿那一句(issue #337)同理各成一档。
+ * 产出卡片与定稿那一句(issue #337)同理各成一档,提问轮次的选择卡片(issue #359)也是。
  */
+import {
+  parseQuestionRound,
+  roundAnswersFrom,
+  type QuestionRound,
+} from "./session-question-round.ts";
 
 /** 记录表里的一行。`entry` 的形状由 Pi 定,这里只按需要往里看。 */
 export type AgentSessionRecord = {
@@ -40,6 +45,9 @@ export const AGENT_SESSION_OUTPUT_CUSTOM_TYPE = "multireviewer-session-output";
 /** 基点更新那一条 `custom_message` 的类型(issue #356),与服务端同值。 */
 export const AGENT_SESSION_BASELINE_UPDATE_CUSTOM_TYPE = "multireviewer-session-baseline-update";
 
+/** 提问轮次那一条 `custom` 的类型(CONTEXT.md 提问轮次,issue #359),与服务端同值。 */
+export const AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE = "multireviewer-session-question-round";
+
 /** 对话流里的一项。 */
 export type ConversationItem =
   /** `images` 是这条消息带的图片 id(issue #336),按它取缩略图。没带图即空数组。 */
@@ -54,7 +62,19 @@ export type ConversationItem =
   /** agent 交出了一版产出。点开把右栏切到这一版。 */
   | { kind: "output"; seq: number; at: string; version: number }
   /** 定稿与换版那一句。进了模型上下文,所以它也该在对话里看得见。 */
-  | { kind: "note"; seq: number; at: string; text: string };
+  | { kind: "note"; seq: number; at: string; text: string }
+  /**
+   * agent 抛出的一轮提问(CONTEXT.md 提问轮次,issue #359)。三态由它后面那条用户消息定:
+   * 还没有即可答(两格都缺席),是这一轮的答案即已答(`answers`),是别的话即过期(`expired`)。
+   */
+  | {
+      kind: "round";
+      seq: number;
+      at: string;
+      round: QuestionRound;
+      answers?: string[][];
+      expired?: true;
+    };
 
 /** 一条消息的正文:Pi 的 content 既可以是裸字符串,也可以是分块数组。 */
 function textOf(content: unknown): string {
@@ -89,6 +109,7 @@ export type ToolKind =
   | "findings"
   | "knowledge"
   | "submit"
+  | "round"
   | "other";
 
 /** 一次工具调用的人读形式:`label` 是动词,`target` 是它作用的对象(路径、模式、git 参数)。 */
@@ -133,6 +154,13 @@ export function describeTool(name: string, args: unknown): ToolStep {
         kind: "knowledge",
         label: "查产品知识",
         target: Array.isArray(a.repos) ? a.repos.map(String).join("、") : "",
+      };
+    case "ask_question_round":
+      // 题目本身紧跟着以卡片出现在对话流里,这一行只报「问了几题」(issue #359)。
+      return {
+        kind: "round",
+        label: "提问",
+        target: Array.isArray(a.questions) ? `${a.questions.length} 题` : "",
       };
     default:
       if (name.startsWith("submit_")) return { kind: "submit", label: "提交产出", target: "" };
@@ -227,6 +255,13 @@ export function conversation(records: readonly AgentSessionRecord[]): Conversati
         items.push({ kind: "output", seq: record.seq, at: record.at, version: entry.data.version });
         continue;
       }
+      if (entry?.customType === AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE) {
+        const round = parseQuestionRound(entry.data);
+        if (round !== undefined) {
+          items.push({ kind: "round", seq: record.seq, at: record.at, round });
+        }
+        continue;
+      }
       const text = systemText(record.entry);
       if (text !== "") items.push({ kind: "system", seq: record.seq, at: record.at, text });
       continue;
@@ -301,5 +336,24 @@ export function conversation(records: readonly AgentSessionRecord[]): Conversati
       });
     }
   }
+  settleRounds(items);
   return items;
+}
+
+/**
+ * 给每张提问卡片定三态(issue #359):它后面第一条用户消息是这一轮的答案即已答,是别的话即
+ * 过期,没有下一条用户消息即还可答。
+ *
+ * 判据只有「下一条用户消息」这一件事,与卡片自身无关:人接着说了别的,这一轮就已经被那句话
+ * 顶掉了——答案再提交上去,agent 读到的是一段过时的裁决。
+ */
+function settleRounds(items: ConversationItem[]): void {
+  for (const [index, item] of items.entries()) {
+    if (item.kind !== "round") continue;
+    const next = items.slice(index + 1).find((one) => one.kind === "user");
+    if (next === undefined) continue;
+    const answers = roundAnswersFrom(next.text, item.round);
+    if (answers === undefined) item.expired = true;
+    else item.answers = answers;
+  }
 }
