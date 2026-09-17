@@ -125,8 +125,13 @@ export function numberedRead(content: string, offset?: number, limit?: number): 
 /**
  * 覆盖 Pi 内建的 read:内建实现返回裸内容,模型只能自己数行,行号漂移就从这来。
  * schema 与内建一致,模型的使用习惯不变,唯一区别是每行带 `N: ` 前缀。
+ *
+ * `extraRoots` 是除工作副本之外也放行的几个根(issue #364):会话 skill 铺在 agentDir 里,
+ * 而 Pi 在系统提示里给的是它们的绝对路径并叮嘱「用 read 打开」——不放行这一段,模型看得见
+ * skill 的名字却读不到正文。一个根一个根试,命中哪个就读哪个。
  */
-export function numberedReadTool(worktreePath: string) {
+export function numberedReadTool(worktreePath: string, extraRoots: readonly string[] = []) {
+  const roots = [worktreePath, ...extraRoots];
   return defineTool({
     name: "read",
     label: "Read",
@@ -140,7 +145,10 @@ export function numberedReadTool(worktreePath: string) {
       limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
     }),
     execute: async (_id, { path, offset, limit }) => {
-      const lines = fileLines(worktreePath, path);
+      const lines = roots.reduce<string[] | undefined>(
+        (found, root) => found ?? fileLines(root, path),
+        undefined,
+      );
       if (lines === undefined) {
         throw new Error(`cannot read ${path}: not a readable file inside the repository`);
       }
@@ -198,15 +206,21 @@ export function rootedTool(
 /**
  * 会话根上的四个只读工具:`read` 是带号读那一份,其余三个是圈过根的内建。四个 worker 都
  * 注册这一份(issue #328):Pi 内建的 grep / find / ls 接受任意绝对路径与 `~`,不查根。
+ *
+ * `extraReadRoots` 只放宽 `read`(issue #364):会话 skill 的正文要读得到,而搜与列目录没有
+ * 一个用得着它——圈子开得越小越好。
  */
-export function sessionReadOnlyTools(sessionRoot: string): ToolDefinition<never, never>[] {
+export function sessionReadOnlyTools(
+  sessionRoot: string,
+  extraReadRoots: readonly string[] = [],
+): ToolDefinition<never, never>[] {
   const builtins = [
     createGrepToolDefinition(sessionRoot),
     createFindToolDefinition(sessionRoot),
     createLsToolDefinition(sessionRoot),
   ] as unknown as ToolDefinition<never, never>[];
   return [
-    numberedReadTool(sessionRoot) as unknown as ToolDefinition<never, never>,
+    numberedReadTool(sessionRoot, extraReadRoots) as unknown as ToolDefinition<never, never>,
     ...builtins.map((definition) => rootedTool(sessionRoot, definition)),
   ];
 }
@@ -386,6 +400,13 @@ export async function prepareAgentRuntime(options: {
    */
   installKit?: (agentDir: string) => void;
   /**
+   * 这次会话认不认 agentDir 下的 `skills/`(issue #364)。Pi 自己扫的全局 skill 位置不只有
+   * agentDir——`~/.agents/skills` 也在里面,开发机上那一堆宿主机 skill 会因此渗进会话,而空
+   * agentDir 的隔离本来就是为了挡住它们。这里一律关掉 Pi 的默认扫描,只认 `installKit` 铺
+   * 进 agentDir 的那一份:缺席即一个 skill 都没有,三条跑一次即退出的链路走的就是这一档。
+   */
+  skills?: boolean;
+  /**
    * 开 Pi 的自动 compaction(issue #335)。缺席即关着:跑一次即退出的三条链路把上下文
    * 撑满就是这一批切得太大,压缩只会把证据压掉。常驻的 Agent 会话反过来——它按天续谈,
    * 不压就会撞上上下文上限,压缩条目随记录落库、历史一条不删(ADR 0031)。
@@ -419,6 +440,8 @@ export async function prepareAgentRuntime(options: {
     cwd: options.worktreePath,
     agentDir,
     settingsManager,
+    noSkills: true,
+    ...(options.skills === true ? { additionalSkillPaths: [join(agentDir, "skills")] } : {}),
     ...(options.extensionPaths === undefined || options.extensionPaths.length === 0
       ? {}
       : { additionalExtensionPaths: [...options.extensionPaths] }),

@@ -15,6 +15,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `CONTEXT.md` — 领域术语表,代码与沟通的统一语言以此为准。
 - `src/` — 编排服务源码,结构约定见 `src/AGENTS.md`。进程入口是 `src/main.ts`。
 - `web/` — 管理面板前端(Vite + TanStack Router/Query),结构约定见 `web/AGENTS.md`。产物在 Docker 多阶段构建里生成,不进版本库。
+- `vendor/skills/` — 随镜像发的会话 skill(CONTEXT.md 会话 skill)。作者机器上 `~/.claude/skills/{ask-matt,grilling,domain-modeling,to-spec,to-tickets}` 的副本,上游是 mattpocock-skills 插件 1.2.3(MIT;`grilling` 在它的 `skills/productivity/`,其余四个在 `skills/engineering/`),作者在上游基础上改过标点,vendor 的是作者那一份。只拷 `SKILL.md` 与它引用的格式文件(`ask-matt/PHASE-BOUNDARIES.md`、`domain-modeling/{CONTEXT,ADR}-FORMAT.md`);各 skill 目录下的 `agents/` 是别的 harness 的元数据,不拷。升级 skill = 重拷一遍这个目录再出一版镜像,运行时不联网取。
 - `test/` — 测试,打在三条验收边界上(HTTP 端点 / 假 Gitea / SQLite 临时库)。`test/support/` 是内存 Forge、脚本化 Reviewer、git fixture、假 Gitea、假模型服务(本机 SSE,给真实 SDK 链路用)、SSE 响应的逐帧读取与面板 harness。
 - `Dockerfile` / `.dockerignore` — 运行镜像。`node:24-slim` 加 git、ripgrep 与 fd(fd 是 release 的静态 musl 二进制,版本钉在 `FD_VERSION`,单独一层按目标架构取包再拷进运行镜像——Debian 的 fd-find 是 8.6,不认 Pi 传的 `--no-require-git`),依赖在镜像内重装(宿主机的 `node_modules` 含平台专属产物,不进镜像)。装 ripgrep 与 fd 是给 Reviewer 的 `grep` / `find` 工具用:缺二进制时 Pi 会去 GitHub 下载,容器里下不动就各卡满 120 秒超时,一轮 Review Run 白等约 4 分钟。
 - `docker-compose.yml` — 服务器上的编排定义。与 `.env` 两个文件即可运行,不需要源码。
@@ -157,6 +158,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-17: **会话 skill 铺进会话,开放对话由 ask-matt 路由**(CONTEXT.md 会话 skill / 开放对话,ADR 0035,issue #364,父 spec #357)。作者的五个工程 skill 随镜像发在 `vendor/skills/`,开会话时按用途拷进那次会话的临时 agentDir:产品梳理拿 grilling 与 domain-modeling,需求拆分再加 to-spec 与 to-tickets,开放对话在这四个之上加路由用的 ask-matt。Pi 自己扫 agentDir 下的 `skills/`,名字与描述因此进系统提示,正文模型按需 `read`。skill 伸手要的三样东西各由一件工具替代,提示里多一段替代说明说明白:术语表与 ADR 是产品知识(`write_knowledge` / `withdraw_knowledge` / `query_knowledge`),issue tracker 是产品 tracker(tracker 九件),triage 标签就是固定的五个值,提问走 `ask_question_round`;`/clear`、`/compact`、`.scratch/`、`gh` 与写文件在这里不存在。开放对话那一段因此改写:它不再是「只问只答」,人说「grill 这个」或「收成 spec」就走同一条流程。会话的 `read` 另放行 agentDir 里那一段路径(不放行就只看得见 skill 的名字、读不到正文),搜与列目录仍只认会话根;四条链路一律关掉 Pi 的默认 skill 扫描,宿主机的 `~/.agents/skills` 不再渗进会话。细节见 `src/AGENTS.md`。
 - 2026-09-17: **产品知识换成术语表、仓库关系与产品决策三种条目**(CONTEXT.md 产品知识 / 术语条目 / 仓库关系 / 产品决策,ADR 0035,issue #360,父 spec #357)。旧的一句话条目、它的提案队列与驳回记忆一并删除重建,存量丢弃、旧库开库即迁;条目由 Agent 会话经 `write_knowledge` / `withdraw_knowledge` 写下即生效,人不手写、不确认也不驳回,产品页因此只读:按主题分组的术语表、仓库关系段、带状态的产品决策列表,每条展开看出处附注(附注不进任何提示)。`query_knowledge` 多一路按名字读整条(术语、决策)与整段读仓库关系。产品梳理的会话流程不动,它交上来的每一句现在写成一条仓库关系(访谈那一版是 #365)。细节见 `src/AGENTS.md` 与 `web/AGENTS.md`。
 - 2026-09-17: **产品 tracker**(CONTEXT.md 产品 tracker、spec、票、认领,issue #361,父 spec #357)。产品下多了一处存 spec 与票的地方:需求拆分会话谈定之后经工具把 spec 写进来、拆成带阻塞边的票,正文只由会话写。人在产品页的产品知识区之下读它——spec 连它的票(标签、状态、认领人、挡着它的票),点开看全文,一条 spec 连它的票可导出成一份票按依赖顺序排的 Markdown。读随产品可见性,不挂权限格;认领、改标签、开关与评论的人工入口是下一票。不写到 Gitea。细节见 src/AGENTS.md 与 web/AGENTS.md。
 - 2026-09-17: **提问轮次**(CONTEXT.md 词条,issue #359,父 spec #357)。agent 在任何用途的会话里都可以一次抛出一组决策题(每题二到四个选项加一个推荐项、单选或多选),题落成会话记录里一种新条目,回合就地收尾、会话转空闲等人答;面板把它渲染成选择卡片,每题可选项或「其他」自填,整轮一次提交,答案合成一条普通用户消息走既有的发消息路径,会话接着跑;被更新的用户消息顶掉的卡片渲染成过期、交不上去。细节见 `src/AGENTS.md` 与 `web/AGENTS.md` 同日条目。

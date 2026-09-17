@@ -40,6 +40,7 @@ import {
 } from "./session-images.ts";
 import { sessionOutputTools } from "./session-output-tools.ts";
 import { purposeSystemPrompt } from "./session-purposes.ts";
+import { installSessionSkills, sessionSkillsDir } from "./session-skills.ts";
 import {
   ASK_QUESTION_ROUND_TOOL,
   sessionQuestionRoundTool,
@@ -262,14 +263,19 @@ async function open(request: OpenSessionRequest): Promise<void> {
     extensionFactories: [
       subagentContractExtension(request.sessionRoot, SESSION_SUBAGENT_AGENT),
     ],
-    installKit: (agentDir) =>
+    installKit: (agentDir) => {
       installSessionSubagentKit({
         agentDir,
         sessionRoot: request.sessionRoot,
         runtimeModel: request.runtimeModel,
         thinkingLevel,
         repos,
-      }),
+      });
+      // 会话 skill(issue #364):这个用途的那几个拷进 agentDir 的 `skills/`,Pi 扫到它们、
+      // 名字与描述进系统提示的 `<available_skills>`。
+      installSessionSkills(agentDir, request.purpose);
+    },
+    skills: true,
     // 常驻会话开自动 compaction(spec #329):它按天续谈,不压就会撞上上下文上限。
     compaction: true,
   });
@@ -298,7 +304,11 @@ async function open(request: OpenSessionRequest): Promise<void> {
     ...(request.entries === undefined ? {} : { entries: inflateImageRefs(request.entries) }),
     tools: [...sessionTools(), ...outputTools.map((tool) => tool.name)],
     customTools: [
-      ...(sessionReadOnlyTools(request.sessionRoot) as unknown as ToolDefinition[]),
+      // `read` 另放行铺进 agentDir 的那一段(issue #364):Pi 在系统提示里按绝对路径给出
+      // skill 正文的位置,读不到它等于只给了个名字。搜与列目录仍只认会话根。
+      ...(sessionReadOnlyTools(request.sessionRoot, [
+        sessionSkillsDir(prepared.agentDir),
+      ]) as unknown as ToolDefinition[]),
       sessionGitTool(request.sessionRoot, repos),
       sessionFindingTool({ repos, send }) as unknown as ToolDefinition,
       sessionKnowledgeTool({ repos, send }) as unknown as ToolDefinition,
