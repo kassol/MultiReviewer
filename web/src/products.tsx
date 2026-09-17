@@ -786,11 +786,13 @@ function TrackerSection({
                 className="flex min-w-0 flex-col gap-1.5 border-t border-line py-2.5 first:border-t-0 first:pt-0"
               >
                 <div className="flex items-start justify-between gap-3">
+                  {/* `shrink`:Themes 的 Button 自带 `flex-shrink: 0`,只给 `min-w-0` 挡不住
+                      它按标题全长撑开,窄屏上标题会顶出卡片右沿。 */}
                   <Button
                     variant="ghost"
                     color="gray"
                     size="2"
-                    className="min-w-0 justify-start text-left"
+                    className="min-w-0 shrink justify-start text-left"
                     onClick={() => setOpenSpec(spec)}
                   >
                     <span className="min-w-0 break-words font-medium">{spec.title}</span>
@@ -821,7 +823,12 @@ function TrackerSection({
                     {spec.tickets.map((ticket) => {
                       const notes = ticketNotes(ticket);
                       return (
-                        <li key={ticket.id} className="flex min-w-0 items-start gap-2">
+                        // 标签、状态那几格宽度固定,390px 下把标题挤成一行一个字。让这一行
+                        // 可折行,标题留一道 12rem 的下限:窄屏里它自己占一行,宽屏照旧一行排完。
+                        <li
+                          key={ticket.id}
+                          className="flex min-w-0 flex-wrap items-start gap-x-2 gap-y-1"
+                        >
                           <span className="mt-0.5 shrink-0 font-mono text-xs text-text-muted tabular-nums">
                             #{ticket.id}
                           </span>
@@ -838,8 +845,8 @@ function TrackerSection({
                             size="2"
                             className={
                               ticket.state === "closed"
-                                ? "min-w-0 break-words text-text-muted line-through"
-                                : "min-w-0 break-words"
+                                ? "min-w-[12rem] flex-1 break-words text-text-muted line-through"
+                                : "min-w-[12rem] flex-1 break-words"
                             }
                           >
                             {ticket.title}
