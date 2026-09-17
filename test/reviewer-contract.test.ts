@@ -633,6 +633,66 @@ test("完整审查那一轮的工具清单与这一票之前逐字一致", () =>
   ]);
 });
 
+test("仓库归在产品下时多一件知识查询工具,不在产品下时清单逐字不变", () => {
+  // 目录里有名字可抄才注册(issue #362)。取证子代理那一件一格不动,两者各管各的。
+  assert.deepEqual(sessionTools({ hasHistory: false, hasProductKnowledge: true }), [
+    "read",
+    "grep",
+    "find",
+    "ls",
+    "git",
+    "report_finding",
+    "subagent",
+    "query_knowledge",
+  ]);
+  assert.deepEqual(
+    sessionTools({ hasHistory: false, hasProductKnowledge: false }),
+    sessionTools({ hasHistory: false }),
+  );
+});
+
+test("产品知识目录进每批提示,仓库不在产品下时 prompt 逐字不变", () => {
+  const without = reviewPrompt({ range: PROMPT_RANGE, history: [] });
+  const empty = reviewPrompt({
+    range: PROMPT_RANGE,
+    history: [],
+    productKnowledge: { terms: [], decisions: [] },
+  });
+  const prompt = reviewPrompt({
+    range: PROMPT_RANGE,
+    history: [],
+    productKnowledge: {
+      positioning: "员工提交票据、财务审批并打款的内部系统。",
+      terms: ["报销单", "审批人"],
+      decisions: ["金额用整数分表示"],
+    },
+  });
+
+  // 不在产品下、以及在产品下但一条都没写过,两档都不渲染这一段。
+  assert.equal(empty, without);
+  assert.equal(/product/i.test(without), false);
+  // 三行目录:定位给正文,术语与决策只给名字。
+  assert.match(prompt, /^- Positioning: 员工提交票据、财务审批并打款的内部系统。$/m);
+  assert.match(prompt, /^- Glossary terms: 报销单、审批人$/m);
+  assert.match(prompt, /^- Decision records: 金额用整数分表示$/m);
+  // 怎么读整条、以及它不占取证名额。
+  assert.match(prompt, /query_knowledge/);
+  assert.match(prompt, /count against no budget/);
+  // 这一层本身不产 Finding,标识也无处可带——与事实段同一口径。
+  assert.match(prompt, /never pass one as ruleId/);
+  // 目录段排在规则段之前:产品的语言是最宽的那一层。
+  const withRules = reviewPrompt({
+    range: PROMPT_RANGE,
+    history: [],
+    productKnowledge: { terms: ["报销单"], decisions: [] },
+    rules: [{ id: 1, scope: "", statement: "边界要校验" }],
+  });
+  assert.ok(
+    withRules.indexOf("Glossary terms") < withRules.indexOf("agreed set of review rules"),
+    "目录段排到了规则段后面",
+  );
+});
+
 test("全报那一档不渲染阈值段,prompt 与这一票之前逐字一致", () => {
   const without = reviewPrompt({ range: PROMPT_RANGE, history: [] });
   const full = reviewPrompt({ range: PROMPT_RANGE, history: [], minReportSeverity: "P2" });

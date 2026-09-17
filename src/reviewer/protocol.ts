@@ -1,15 +1,22 @@
 import type { ThinkingLevel } from "../config.ts";
-import type { RawVerdict, ReviewerEvent, ReviewerInput, ReviewerUsage } from "../review/finding.ts";
+import type {
+  RawVerdict,
+  ReviewerEvent,
+  ReviewerInput,
+  ReviewerUsage,
+  SessionKnowledgeEntries,
+  SessionKnowledgeQuery,
+} from "../review/finding.ts";
 import type { RawFinding } from "./normalize.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 
 /**
- * 主进程交给 Reviewer 子进程的任务:注入边界那份输入,去掉跨不了进程的 `onEvent`
- * (事件走 `WorkerMessage` 回传),加上本轮固定的完整运行模型。
+ * 主进程交给 Reviewer 子进程的任务:注入边界那份输入,去掉两处跨不了进程的回调
+ * (`onEvent` 的事件与 `queryKnowledge` 的查询都走消息来回),加上本轮固定的完整运行模型。
  *
  * 空知识集不带 `rules` 这一项,prompt 因此与没有知识集时逐字一致。
  */
-export type ReviewerRequest = Omit<ReviewerInput, "onEvent"> & {
+export type ReviewerRequest = Omit<ReviewerInput, "onEvent" | "queryKnowledge"> & {
   /** 本轮固定的完整运行模型；不含凭据。 */
   runtimeModel: RuntimeModel;
   /** 本轮这一处模型引用的思考档位(CONTEXT.md)。缺席即 `off`。 */
@@ -28,6 +35,11 @@ export type WorkerMessage =
   /** 一条过程事件,与 Finding 回传并列(issue #171)。子进程只转发,不做判断。 */
   | { kind: "event"; event: ReviewerEvent }
   /**
+   * 一次产品知识查询(issue #362)。库在主进程,子进程没有库连接(ADR 0017 同律),因此
+   * 与会话那条同形:主进程带同一个 `requestId` 回一条 `knowledge-query-result`,恒回一条。
+   */
+  | { kind: "knowledge-query"; requestId: string; query: SessionKnowledgeQuery }
+  /**
    * 会话还活着,别的什么都不说明(`streamHeartbeat`)。父进程只用它重置静默闸,不读内容。
    */
   | { kind: "heartbeat" }
@@ -42,3 +54,15 @@ export type WorkerMessage =
       /** Pi 会话统计出的用量。会话没建起来时取不到。 */
       usage?: ReviewerUsage;
     };
+
+/**
+ * 主进程在任务之后还会投给 Reviewer 子进程的消息(issue #362)。只有一档:一次知识查询的
+ * 回应。子进程按 `kind` 认出它——任务本身没有这一格,两者因此分得开。
+ */
+export type ReviewerCommand = {
+  kind: "knowledge-query-result";
+  requestId: string;
+  entries: SessionKnowledgeEntries;
+  /** 查不动时的原因。带它时两个数组都是空的。 */
+  failure?: string;
+};

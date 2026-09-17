@@ -28,7 +28,12 @@ import {
 import { Type } from "typebox";
 
 import type { ThinkingLevel } from "../config.ts";
-import type { ProjectFact, ReviewerUsage, ReviewRule } from "../review/finding.ts";
+import type {
+  ProductKnowledgeContents,
+  ProjectFact,
+  ReviewerUsage,
+  ReviewRule,
+} from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, redactModelCredential } from "./env.ts";
 import { isolatedPinnedModelRuntime } from "./model-runtime.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
@@ -232,6 +237,25 @@ export function toolText(
   body: string,
 ): { content: [{ type: "text"; text: string }]; details: object } {
   return { content: [{ type: "text", text: body }], details: {} };
+}
+
+/**
+ * 产品知识目录那三行(CONTEXT.md 产品知识,issue #362)。Reviewer 的每批提示与每个会话
+ * 提示渲染的是同一份:一句定位、术语名清单、生效决策标题清单,写下过的那几行才出现。
+ *
+ * **只有名字**:正文按名字走 `query_knowledge` 取整条。一批审查不该为用不上的条目付
+ * token,而没有这份目录,模型连「该不该花一次调用」都判不出来。
+ */
+export function knowledgeContentsLines(contents: ProductKnowledgeContents): string[] {
+  const lines: string[] = [];
+  if (contents.positioning !== undefined) {
+    lines.push(`- Positioning: ${oneLine(contents.positioning)}`);
+  }
+  if (contents.terms.length > 0) lines.push(`- Glossary terms: ${contents.terms.join("、")}`);
+  if (contents.decisions.length > 0) {
+    lines.push(`- Decision records: ${contents.decisions.join("、")}`);
+  }
+  return lines;
 }
 
 /** 一条规则:标识在最前,模型自报命中时抄的就是它;作用范围空串即全仓库。 */

@@ -175,9 +175,8 @@ async function runSession(
       sessionRoot,
       productName: "冒烟产品",
       purpose: "requirement-breakdown",
-      // 知识只报条数(issue #344):这个子进程没有库连接,`query_knowledge` 在这一侧没有
-      // 主进程接它,提示的目录那一段因此是这两个数。
-      productKnowledgeCount: 0,
+      // 知识不进提示,只进一份目录(issue #344、#362):这个子进程没有库连接,
+      // `query_knowledge` 在这一侧没有主进程接它,提示里因此只有仓库那两个计数。
       repos: [{ ...REPO, role: "唯一的仓库", headSha: SMOKE_HEAD_SHA, ruleCount: 1, factCount: 1 }],
       productKnowledge: [],
       runtimeModel: await smokeRuntimeModel(),

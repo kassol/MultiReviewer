@@ -242,9 +242,10 @@ test("知识查询按名字读整条产品知识,路径 glob 只收窄仓库条�
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
     await idle(h, cookie, sessionId);
 
-    // 提示里只有条数与那一句触发语,一条陈述都没有。
+    // 提示里只有一份目录(名字)、仓库那一行计数与那一句触发语,一条陈述都没有。
     const system = requests[0]!.messages.find((message) => message.role === "system")!.content;
-    assert.match(system, /This product has 3 product knowledge entries\./);
+    assert.match(system, /^- Glossary terms: 订单$/m);
+    assert.match(system, /^- Decision records: 签名统一在一处$/m);
     assert.match(system, /^- acme\/widgets — 2 review rules, 1 project fact$/m);
     assert.match(
       system,

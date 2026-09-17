@@ -9,6 +9,7 @@ import { Type } from "typebox";
 
 import type {
   HistoryFinding,
+  ProductKnowledgeContents,
   ProjectFact,
   RawFinding,
   ReviewIntent,
@@ -16,7 +17,7 @@ import type {
   ReviewRunMode,
   Severity,
 } from "../review/finding.ts";
-import { DEFAULT_MIN_REPORT_SEVERITY } from "../review/finding.ts";
+import { DEFAULT_MIN_REPORT_SEVERITY, knowledgeContentsEmpty } from "../review/finding.ts";
 import type { DiffRanges } from "../review/position.ts";
 import { anchorReport, anchorVerdict } from "./anchor.ts";
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
@@ -29,13 +30,19 @@ import {
   vendoredSubagentsPath,
 } from "./evidence.ts";
 import { GIT_TOOL, gitTool } from "./git-tool.ts";
-import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
+import type { ReviewerCommand, ReviewerRequest, WorkerMessage } from "./protocol.ts";
+import {
+  QUERY_KNOWLEDGE_TOOL,
+  resolveKnowledgeQuery,
+  sessionKnowledgeTool,
+} from "./session-knowledge-tool.ts";
 import { reviewerEventStream } from "./trace-events.ts";
 import {
   READ_ONLY_TOOLS,
   factBullet,
   factRuleIdRejection,
   fileLines,
+  knowledgeContentsLines,
   sessionReadOnlyTools,
   prepareAgentRuntime,
   priorFindingRejection,
@@ -59,12 +66,18 @@ export function sessionTools(options: {
   mode?: ReviewRunMode;
   /** 本阶段有没有历史。没有时不注册复核工具:无事可复核的工具只会让模型多绕一圈。 */
   hasHistory: boolean;
+  /**
+   * 这个仓库所属产品写下过东西没有(issue #362)。写过才注册知识查询:目录里一个名字都
+   * 没有时那件工具无事可做。它不占取证名额——名额是 pi-subagents 的会话上限,只管子代理。
+   */
+  hasProductKnowledge?: boolean;
 }): string[] {
   return [
     ...READ_ONLY_TOOLS,
     GIT_TOOL,
     ...(options.mode === "verdict-only" ? [] : [REPORT_FINDING_TOOL]),
     SUBAGENT_TOOL,
+    ...(options.hasProductKnowledge === true ? [QUERY_KNOWLEDGE_TOOL] : []),
     ...(options.hasHistory ? [REVIEW_PRIOR_FINDING_TOOL] : []),
   ];
 }
@@ -310,6 +323,28 @@ function intentSection(intent: ReviewIntent, verdictOnly: boolean): string {
 }
 
 /**
+ * 这个仓库所属产品的产品知识目录(CONTEXT.md 产品知识,issue #362)。
+ *
+ * 三行都只有名字:一句定位、术语名、生效决策标题。正文按名字走 `query_knowledge` 取整条
+ * ——整份注入会让每一批都为用不上的条目付 token,而没有目录,模型连「这一批要不要花一次
+ * 调用」都判不出来。
+ *
+ * 与规则段、事实段并列而不合并:那两段是这个仓库的标准与判据,这一段是产品的语言。术语
+ * 与决策本身不产 Finding,那句话因此要写明——不写的话模型会把一条决策当成可违反的规则。
+ */
+function productKnowledgeSection(contents: ProductKnowledgeContents): string {
+  return [
+    "",
+    "The repository under review belongs to a product, and that product has written down its own language: a glossary, the section on how its repositories work together, and its decision records. None of it is written out here — this is only the table of contents:",
+    "",
+    ...knowledgeContentsLines(contents),
+    "",
+    `Read any of them in full with the ${QUERY_KNOWLEDGE_TOOL} tool: pass names for the glossary terms and decision records you want, or relationships: true for the whole relationship section. Ask when a name above bears on the code in front of you — a term whose meaning decides whether this code is right, or a decision this change may be walking back. These reads are not evidence calls and count against no budget.`,
+    "This layer is never a finding on its own. A glossary term and a decision record carry no ids: never pass one as ruleId. When the code contradicts what is written down, judge the code as you read it, and say the entry no longer holds only inside a finding whose problem is that contradiction.",
+  ].join("\n");
+}
+
+/**
  * 这个仓库既定的评审规则(issue #204、#288)。它是团队定下的标准,不是模型的临场判断:
  * 违反规则的地方优先按规则判,规则没覆盖到的照常自行判断。
  *
@@ -405,6 +440,7 @@ export function reviewPrompt(
     | "mode"
     | "minReportSeverity"
     | "batched"
+    | "productKnowledge"
   >,
 ): string {
   // 只复核那一轮的历史段、意图段与规则段换措辞(issue #270):这一轮没有报出工具,三段
@@ -415,6 +451,13 @@ export function reviewPrompt(
     request.history.length === 0 ? "" : `\n${historySection(request.history, verdictOnly)}\n`;
   const intent =
     request.intent === undefined ? "" : `${intentSection(request.intent, verdictOnly)}\n`;
+  // 仓库不属于任何产品、或那个产品一条都没写下时不渲染(issue #362):prompt 与这一票
+  // 之前逐字一致。排在规则段之前——产品的语言是最宽的那一层,读到仓库标准之前就该知道。
+  const product =
+    request.productKnowledge === undefined ||
+    knowledgeContentsEmpty(request.productKnowledge)
+      ? ""
+      : `${productKnowledgeSection(request.productKnowledge)}\n`;
   // 空知识集与没有知识集同一条路径:两者都不渲染规则段。事实段同律,两型各判各的——
   // 只有事实没有规则的知识集同样成立。
   const rules =
@@ -444,7 +487,7 @@ export function reviewPrompt(
       ? "Report findings only on the files listed above. Read anything else in the repository as context, but a finding on a file outside this list is discarded — another batch reviews that file with its own diff.\n\n"
       : "";
   return `Review the changes between commit ${request.range.baseSha} and commit ${request.range.headSha}.
-${intent}${rules}${facts}${minReportSeverity}${directive}
+${intent}${product}${rules}${facts}${minReportSeverity}${directive}
 The following files changed. Review the changes in them, using the rest of the repository as context:
 
 ${files}
@@ -518,6 +561,17 @@ export function reviewPriorFindingTool(options: {
 
 async function run(request: ReviewerRequest): Promise<void> {
   const hasRules = request.rules !== undefined && request.rules.length > 0;
+  /**
+   * 这个仓库所属产品写下过东西没有(issue #362)。目录段与知识查询工具同进同出:目录里
+   * 一个名字都没有时,那件工具无事可做。
+   */
+  const hasProductKnowledge =
+    request.productKnowledge !== undefined && !knowledgeContentsEmpty(request.productKnowledge);
+  // 会话那一面的同一份定义。`repos` 空数组:这一侧只读产品层。
+  const knowledgeTool = sessionKnowledgeTool({
+    repos: [],
+    send,
+  }) as unknown as ToolDefinition;
   /** 本批注入的事实标识(issue #221)。模型拿它们当 `ruleId` 报出时这次调用被打回。 */
   const factIds = new Set((request.facts ?? []).map((fact) => fact.id));
   let rejectedToolCalls = 0;
@@ -625,8 +679,12 @@ async function run(request: ReviewerRequest): Promise<void> {
     tools: sessionTools({
       ...(request.mode === undefined ? {} : { mode: request.mode }),
       hasHistory: request.history.length > 0,
+      hasProductKnowledge,
     }),
     customTools: [
+      // 与会话那一面同一份工具定义(issue #362)。`repos` 给空数组:这个仓库的评审规则与
+      // 项目事实已经整段注入本批提示,这一侧只读产品层。
+      ...(hasProductKnowledge ? [knowledgeTool] : []),
       // 只复核那一轮连实现都不铺:留着它,Pi 的 customTools 同名覆盖会把一个没在清单里
       // 的工具重新暴露出来(issue #242)。
       ...(request.mode === "verdict-only" ? [] : [reportFinding]),
@@ -659,7 +717,19 @@ async function run(request: ReviewerRequest): Promise<void> {
   });
 }
 
-process.on("message", (request: ReviewerRequest) => {
+process.on("message", (message: ReviewerRequest | ReviewerCommand) => {
+  // 任务之后还会来消息的只有知识查询的回应(issue #362);任务本身没有 `kind` 这一格,
+  // 两者因此分得开(`ReviewerCommand` 只有 `knowledge-query-result` 这一档)。回应兑现那
+  // 一次等着的工具调用,不重新开跑。
+  if ("kind" in message) {
+    const { entries, failure } = message;
+    resolveKnowledgeQuery(message.requestId, {
+      ...entries,
+      ...(failure === undefined ? {} : { failure }),
+    });
+    return;
+  }
+  const request = message;
   run(request).catch((error: unknown) => {
     send({
       kind: "done",

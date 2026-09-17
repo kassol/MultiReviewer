@@ -353,6 +353,115 @@ export type ReviewerEvent =
     };
 
 /**
+ * `query_knowledge` 的一次查询(issue #344、#360、#362)。两层各有自己的入口:仓库层按
+ * 会话根里的仓库加可选的路径 glob 取,产品层按名字取整条(术语条目与产品决策)或整段取
+ * 仓库关系。
+ *
+ * 定在 `review/` 而不是 `reviewer/`:它说的是库里那两层知识长什么样,Agent 会话与
+ * Reviewer 两条链路读的是同一份(ADR 0035,issue #362)。`reviewer/session-protocol.ts`
+ * 原样转出,那一侧的 import 一行不动。
+ */
+export type SessionKnowledgeQuery = {
+  /** `<owner>/<repo>` 形式。省略即这一次不问仓库层。 */
+  repos?: readonly string[];
+  /** 仓库相对的路径 glob。省略即整个仓库。 */
+  pathGlob?: string;
+  /** 要读整条的术语名与决策标题(issue #360)。 */
+  names?: readonly string[];
+  /** 要不要整段读仓库关系。 */
+  relationships?: boolean;
+};
+
+/** 一次查询回的两层条目(issue #344)。层由它在哪个数组里定,渲染时写成文字。 */
+export type SessionKnowledgeEntries = {
+  /** 产品层:整条的术语条目、仓库关系与产品决策(issue #360)。 */
+  product: readonly SessionProductKnowledge[];
+  /** 仓库层:哪个仓库的、哪一型、作用范围(空串即全仓库)与那一句陈述。 */
+  repo: readonly {
+    repo: string;
+    type: "rule" | "fact";
+    scope: string;
+    statement: string;
+  }[];
+};
+
+/**
+ * 一条产品知识,交给子进程那一侧的形态(CONTEXT.md 产品知识,issue #360)。
+ *
+ * **不带出处附注**:附注只在产品页展示,一条提示里的条目不带它(ADR 0035)。
+ */
+export type SessionProductKnowledge = {
+  id: number;
+  kind: "term" | "relationship" | "decision";
+  /** 术语的名称、决策的标题;仓库关系是空串。 */
+  name: string;
+  body: string;
+  topic: string | null;
+  avoided: readonly string[];
+  options: string | null;
+  consequences: string | null;
+  /** 取代这条决策的那一条的 id。null 即它生效。 */
+  supersededBy: number | null;
+};
+
+/**
+ * 一个产品知识的目录(CONTEXT.md 产品知识,issue #362)。进 Reviewer 的每批提示与每个
+ * 会话提示的就是这三行:一句定位、术语名清单、产品决策标题清单。
+ *
+ * **只有名字,没有正文**:正文按名字走 `query_knowledge` 取整条。目录是给模型判断
+ * 「这一批要不要花一次调用」用的,整份注入会让每一批都为用不上的条目付 token。
+ */
+export type ProductKnowledgeContents = {
+  /** 定位那一条术语的定义原文。产品没写过定位即缺席,那一行不渲染。 */
+  positioning?: string;
+  /** 术语名,定位那一条除外——它的正文已经在上一行里。 */
+  terms: readonly string[];
+  /** 生效的产品决策标题。被取代的那些不进目录:目录说的是此刻作数的那几条。 */
+  decisions: readonly string[];
+};
+
+/** 目录里「定位」那一条:主题分组或名字是这两个字的术语条目。 */
+const POSITIONING = "定位";
+
+/**
+ * 从一个产品此刻的全部条目算出它的目录(issue #362)。
+ *
+ * 参数按结构取形,库里那一份(`ProductKnowledgeEntry`)与交给子进程的那一份
+ * (`SessionProductKnowledge`)都喂得进来——两边算出的目录必须逐字一样。
+ */
+export function productKnowledgeContents(
+  entries: readonly {
+    kind: string;
+    name: string;
+    body: string;
+    topic: string | null;
+    supersededBy: number | null;
+  }[],
+): ProductKnowledgeContents {
+  const terms = entries.filter((entry) => entry.kind === "term");
+  // 定位既可能写成一条名叫「定位」的术语,也可能是分组名为「定位」的那一条;两种都认。
+  const positioning = terms.find(
+    (entry) => entry.topic === POSITIONING || entry.name === POSITIONING,
+  );
+  return {
+    ...(positioning === undefined ? {} : { positioning: positioning.body }),
+    terms: terms.filter((entry) => entry !== positioning).map((entry) => entry.name),
+    decisions: entries
+      .filter((entry) => entry.kind === "decision" && entry.supersededBy === null)
+      .map((entry) => entry.name),
+  };
+}
+
+/** 一条目录都没有:没写下过任何术语、定位与生效决策。那时提示不渲染这一段。 */
+export function knowledgeContentsEmpty(contents: ProductKnowledgeContents): boolean {
+  return (
+    contents.positioning === undefined &&
+    contents.terms.length === 0 &&
+    contents.decisions.length === 0
+  );
+}
+
+/**
  * 一个 Reviewer 跑一批所需的全部输入(issue #211)。用选项对象而不是位置参数:注入项
  * 已有五项且可选的夹在中间,再添一项就要在调用处数逗号。
  *
@@ -421,6 +530,20 @@ export type ReviewerInput = {
    * 单批(PR 触发)不传,prompt 与这一票之前逐字一致。
    */
   batched?: true;
+  /**
+   * 这个仓库所属产品的产品知识目录(CONTEXT.md 产品知识,issue #362)。每一批给同一份
+   * ——它说的是这个产品的语言,与本批审哪些文件无关。**仓库不属于任何产品、或产品一条
+   * 都没写下时不传**,prompt 因此不渲染这一段,与这一票之前逐字一致。
+   */
+  productKnowledge?: ProductKnowledgeContents;
+  /**
+   * 按名字读整条产品知识(issue #362)。库在编排进程,Reviewer 在子进程里,这一格因此
+   * 与 `onEvent` 同律跨不了进程:`ReviewerRequest` 里没有它,子进程经 IPC 问回来。
+   *
+   * 与 `productKnowledge` 同进同出:目录不传时这一格也不传,子进程据此不注册
+   * `query_knowledge`——目录里没有名字可抄时那件工具无事可做。
+   */
+  queryKnowledge?: (query: SessionKnowledgeQuery) => SessionKnowledgeEntries;
   /**
    * 收这个 Reviewer 的过程事件(issue #171),编排层一定传,一条即写一条轨迹。
    * 声明成可选是给直接调 `review` 的调用方留的余地:不看过程的地方不必造一个空回调。
