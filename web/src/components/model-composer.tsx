@@ -179,9 +179,9 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
               <HelpTooltip label="模型组合说明" content="每轮审查会分别调用组合中的模型。模型服务、凭据和模型目录请在模型服务页管理。" />
             </div>
           </div>
-          <Link to="/credentials" className="shrink-0 text-xs underline underline-offset-4">
-            管理模型服务
-          </Link>
+          <Button asChild variant="ghost" color="gray" size={{ initial: "3", sm: "1" }} className="shrink-0">
+            <Link to="/credentials">管理模型服务</Link>
+          </Button>
         </div>
         {value.length === 0 ? (
           <EmptyState
@@ -258,10 +258,14 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
         )}
       </Card>
 
-      {/* 两栏选择器:240px 固定列宽 + 自适应右栏,整体固定 380px 高——v8 § 8.3。 */}
+      {/*
+       * 两栏选择器:`sm` 起 240px 固定列宽 + 自适应右栏,整体固定 380px 高——v8 § 8.3。
+       * `sm` 以下不设高度(issue #381):服务列与模型列按自身内容堆叠,页面自己滚,
+       * 列底那条「配置或修复服务」因此落在最后一项之后,不再压住半行服务。
+       */}
       <Card size="1" className="overflow-hidden">
-        <div className="-m-3 flex h-[380px] min-w-0 flex-col sm:grid sm:grid-cols-[240px_minmax(0,1fr)]">
-          <div className="flex h-40 min-h-0 shrink-0 flex-col border-b border-line bg-sunken sm:h-auto sm:border-r sm:border-b-0">
+        <div className="-m-3 flex min-w-0 flex-col sm:grid sm:h-[380px] sm:grid-cols-[240px_minmax(0,1fr)]">
+          <div className="flex min-h-0 flex-col border-b border-line bg-sunken sm:border-r sm:border-b-0">
             <p className="border-b border-line px-3 py-2 text-xs font-medium text-text-muted">
               模型服务 <span className="font-mono tabular-nums">{groups.length}</span> 项
             </p>
@@ -299,7 +303,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
             </div>
             <Link
               to="/credentials"
-              className="border-t border-line px-3 py-2 text-xs font-medium hover:bg-sunken"
+              className="flex items-center border-t border-line px-3 py-2 text-xs font-medium hover:bg-sunken max-sm:min-h-11"
             >
               配置或修复服务
             </Link>
@@ -382,12 +386,9 @@ function ProviderPane({
           <span className="min-w-0 break-words text-xs text-text-muted">{group.name}</span>
         )}
         <ProviderAvailabilityStatus group={group} />
-        <Link
-          to="/credentials"
-          className="ml-auto shrink-0 text-xs font-medium underline underline-offset-4"
-        >
-          管理服务
-        </Link>
+        <Button asChild variant="ghost" color="gray" size={{ initial: "3", sm: "1" }} className="ml-auto shrink-0">
+          <Link to="/credentials">管理服务</Link>
+        </Button>
       </div>
 
       <div className="border-b border-line bg-sunken px-3 py-2">
