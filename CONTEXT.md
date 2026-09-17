@@ -281,7 +281,7 @@ Agent 会话里由主 agent 派出的只读子会话,与 Reviewer 的取证子�
 _Avoid_: 取证(那是 Reviewer 的)、worker、后台任务
 
 **会话 skill**:
-随镜像 vendor、按用途铺进会话 agentDir `skills/` 的工程 skill 文件(ask-matt、grilling、domain-modeling、to-spec、to-tickets 及其引用的格式文件),原样加载;提示里一段替代说明把它们期望的仓库文件与 issue tracker 指到产品知识与产品 tracker。需要写文件、跑 git 或 shell 的 skill 不铺。
+随镜像 vendor、按用途铺进会话 agentDir `skills/` 的工程 skill 文件(ask-matt、grilling、domain-modeling、to-spec、to-tickets 及其引用的格式文件),正文原样加载,只在拷进去那一步摘掉 frontmatter 的 `disable-model-invocation`——那一格会让 Pi 把整个 skill 从系统提示里摘掉,而会话里没有人替 agent 打斜杠命令;提示里一段替代说明把它们期望的仓库文件与 issue tracker 指到产品知识与产品 tracker。需要写文件、跑 git 或 shell 的 skill 不铺。
 _Avoid_: 插件、扩展、提示模板
 
 **bootstrap 口令**:

@@ -66,7 +66,11 @@ RUN pnpm install --prod --frozen-lockfile --filter multireviewer \
  && rm -rf "$(pnpm store path)" /root/.cache /root/.npm
 
 # 源码由 Node 直接运行,无构建步骤,拷进去就能跑。前端只要构建产物。
+#
+# vendor/ 是随镜像发的会话 skill(issue #364):Agent 会话开起来时按用途拷进那次会话的临时
+# agentDir。升级 skill 就是重拷一遍 vendor/ 再出一版镜像,运行时不联网取。
 COPY src ./src
+COPY vendor ./vendor
 COPY --from=webbuild /app/web/dist ./web/dist
 
 # 数据落这两处,compose 把宿主机目录绑上来。

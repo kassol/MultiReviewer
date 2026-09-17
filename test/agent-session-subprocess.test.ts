@@ -83,6 +83,8 @@ type SubagentRunRecord = {
 
 /** 起 harness 时可以拨动的那几样(issue #335)。省略即取服务默认值。 */
 type SessionHarnessOptions = {
+  /** 这个会话的用途。省略即需求拆分;开放对话那几例(issue #364)另给。 */
+  purpose?: string;
   /** 空闲回收门槛(毫秒)。验「回收后再发消息从记录重建」的用例拨到毫秒级。 */
   idleReclaimMs?: number;
   /** 执行中静默判死门槛(毫秒)。验判死的用例拨到秒级。 */
@@ -169,7 +171,7 @@ async function startSessionHarness(
   const response = await fetch(`${h.serverUrl}/api/products/${product.id}/sessions`, {
     method: "POST",
     headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ purpose: "requirement-breakdown" }),
+    body: JSON.stringify({ purpose: options.purpose ?? "requirement-breakdown" }),
   });
   assert.equal(response.status, 201);
   const { session } = (await response.json()) as { session: { id: number } };
@@ -1241,6 +1243,138 @@ test("tracker 工具:写 spec 与票、加阻塞边、改正文、关票与评�
     // 列表看得到这条 spec 与它的两张票,阻塞关系也在。
     assert.match(results[9]!, new RegExp(`spec ${SPEC}`));
     assert.match(results[9]!, new RegExp(`blocked by ticket ${FIRST}`));
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+/**
+ * 会话 skill(CONTEXT.md 会话 skill,issue #364)。
+ *
+ * 这一条是真实 SDK 的回归:铺进 agentDir 的那几个 skill 由 Pi 自己扫出来、写进系统提示的
+ * `<available_skills>`,桩测验不到这一步。同时钉住「恰好是这几个」——Pi 默认还扫
+ * `~/.agents/skills`,开发机上那一堆宿主机 skill 不能渗进会话。
+ */
+test("会话 skill:铺进 agentDir 的那几个被 Pi 列进系统提示,替代说明跟在用途那一段后面", async () => {
+  const turns: StubTurn[] = [{ text: "在", usage: { input: 10, output: 2 } }];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns, {
+    purpose: "open-conversation",
+  });
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", "这个产品是做什么的")).status, 202);
+    await idle(h, cookie, sessionId);
+
+    const system = requests[0]!.messages.find((message) => message.role === "system")!.content;
+    const listed = [...system.matchAll(/<name>([^<]+)<\/name>/g)].map((match) => match[1]);
+    // 开放对话那五个,加 pi-subagents 这个包自带的两份派单说明——它作为 pi 包铺进会话
+    // (issue #358),Pi 连它 `skills/` 下的两个一起收。宿主机的全局 skill 目录一个都不在。
+    assert.deepEqual(
+      [...listed].sort(),
+      [
+        "ask-matt",
+        "council-mode",
+        "domain-modeling",
+        "grilling",
+        "pi-subagents",
+        "to-spec",
+        "to-tickets",
+      ],
+      "开放对话这一档列出的 skill 不对",
+    );
+    // 正文的位置也在提示里:模型据它用 read 打开,而 read 放行了这一段路径。
+    for (const name of ["ask-matt", "domain-modeling", "grilling", "to-spec", "to-tickets"]) {
+      assert.match(system, new RegExp(`<location>.*/skills/${name}/SKILL\\.md</location>`), name);
+    }
+    assert.match(system, /^## The skills in this session$/m);
+    assert.match(system, /^## This session: an open conversation about this product$/m);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+/**
+ * 开放对话走同一条流程(CONTEXT.md 开放对话,issue #364):说「grill 这个」得到一轮提问,
+ * 说「收成 spec」把 spec 与票写进产品 tracker,想写文件被工具面挡回去。
+ */
+test("开放对话:grill 得到提问轮次,收成 spec 写进 tracker,写文件被工具面打回", async () => {
+  const [SPEC, TICKET] = [1, 1];
+  const turns: StubTurn[] = [
+    {
+      toolCall: {
+        name: ASK_QUESTION_ROUND_TOOL,
+        args: {
+          questions: [
+            {
+              title: "撤回到哪一步为止",
+              body: "已经进了财务复核的单子还能不能撤回",
+              options: [
+                { text: "只有草稿态能撤回", recommended: true },
+                { text: "复核前都能撤回", recommended: false },
+              ],
+              multiple: false,
+            },
+          ],
+        },
+      },
+      usage: { input: 100, output: 20 },
+    },
+    {
+      toolCall: {
+        name: "tracker_create_spec",
+        args: { title: "报销单可以撤回", body: "## Problem Statement\n\n提交之后改不了。" },
+      },
+      usage: { input: 40, output: 8 },
+    },
+    {
+      toolCall: {
+        name: "tracker_create_ticket",
+        args: { spec: SPEC, title: "撤回接口", body: "PATCH /expenses/{id}", label: "ready-for-agent" },
+      },
+      usage: { input: 30, output: 6 },
+    },
+    { text: "写好了一条 spec 与一张票", usage: { input: 20, output: 4 } },
+    {
+      toolCall: { name: "write", args: { path: "notes.md", content: "撤回规则" } },
+      usage: { input: 20, output: 4 },
+    },
+    { text: "这里写不了文件", usage: { input: 20, output: 4 } },
+  ];
+  const { h, cookie, sessionId, productId, close } = await startSessionHarness(turns, {
+    purpose: "open-conversation",
+  });
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", "grill 这个:报销单可以撤回")).status, 202);
+    // 一轮提问落成一条自己那一种的条目,会话就此转空闲等人答题。
+    const asked = await roundsAtLeast(h, cookie, sessionId, 1);
+    await idle(h, cookie, sessionId);
+    assert.equal(asked.length, 1);
+    assert.match(JSON.stringify(asked[0]!.entry), /只有草稿态能撤回/);
+
+    assert.equal((await send(h, cookie, sessionId, "c2", "收成 spec")).status, 202);
+    await idle(h, cookie, sessionId);
+    const store = openStore(h.db.path);
+    try {
+      assert.deepEqual(
+        store.listProductSpecs(productId).map((spec) => [spec.id, spec.title, spec.sessionId]),
+        [[SPEC, "报销单可以撤回", sessionId]],
+      );
+      assert.deepEqual(
+        store.listProductTickets(productId).map((one) => [one.id, one.title, one.label]),
+        [[TICKET, "撤回接口", "ready-for-agent"]],
+      );
+    } finally {
+      store.close();
+    }
+
+    // 写文件那一次:`write` 一开始就没注册,调用它拿回的是一条错误的工具结果。
+    assert.equal((await send(h, cookie, sessionId, "c3", "顺手写份笔记进仓库")).status, 202);
+    await idle(h, cookie, sessionId);
+    const results = (await records(h, cookie, sessionId))
+      .filter((row) => row.entry.message?.role === "toolResult")
+      .map((row) => JSON.stringify(row.entry));
+    assert.match(results[results.length - 1]!, /"isError":true/);
   } finally {
     await disposeAgentSessions();
     await close();

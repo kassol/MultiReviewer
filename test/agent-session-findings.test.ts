@@ -393,11 +393,11 @@ test("开放对话会话不注册产出工具,提示里是开放问答那一段"
     assert.equal(requests[0]!.tools.includes("submit_requirement_breakdown"), false);
     assert.ok(requests[0]!.tools.includes("query_findings"));
     const prompt = requests[0]!.messages.find((message) => message.role === "system")!.content;
-    // 开放问答那一段:读了再答、说清不确定、不拆也不交产出。
-    assert.match(prompt, /open questions about this product/);
+    // 开放对话那一段:读了再答、说清不确定、没被要求之前不交任何东西(issue #364)。
+    assert.match(prompt, /an open conversation about this product/);
     assert.match(prompt, /Read before you answer/);
     assert.match(prompt, /Say what you are unsure about/);
-    assert.match(prompt, /This session hands nothing in/);
+    assert.match(prompt, /this conversation hands nothing in/);
     // 需求拆分那一段的「恰好一次」产出要求不在。
     assert.equal(prompt.includes("exactly once"), false);
     assert.equal(prompt.includes("submit_requirement_breakdown"), false);
