@@ -27,7 +27,11 @@ import {
 import {
   QUERY_KNOWLEDGE_TOOL,
   resolveKnowledgeQuery,
+  resolveKnowledgeWrite,
   sessionKnowledgeTool,
+  sessionKnowledgeWriteTools,
+  WITHDRAW_KNOWLEDGE_TOOL,
+  WRITE_KNOWLEDGE_TOOL,
 } from "./session-knowledge-tool.ts";
 import {
   inflateImageRefs,
@@ -79,9 +83,9 @@ function send(message: SessionWorkerMessage): void {
 
 /**
  * 这次会话注册的工具清单:只读四件套、受控 git,加历史 Finding 查询(issue #338)、知识
- * 查询(issue #344)、会话子代理(issue #358)、提问轮次(issue #359,任何用途都可用)与
- * 产品 tracker 那一组(issue #361)。代码与文件的写工具、bash 一个都不在——tracker 那几件
- * 写的是产品实体,不是仓库。
+ * 查询与知识写入 / 撤回(issue #344、#360)、会话子代理(issue #358)、提问轮次(issue #359,
+ * 任何用途都可用)与产品 tracker 那一组(issue #361)。代码与文件的写工具、bash 一个都不在
+ * ——知识与 tracker 那几件写的是产品实体,不是仓库。
  */
 export function sessionTools(): string[] {
   return [
@@ -89,6 +93,8 @@ export function sessionTools(): string[] {
     GIT_TOOL,
     QUERY_FINDINGS_TOOL,
     QUERY_KNOWLEDGE_TOOL,
+    WRITE_KNOWLEDGE_TOOL,
+    WITHDRAW_KNOWLEDGE_TOOL,
     SUBAGENT_TOOL,
     ASK_QUESTION_ROUND_TOOL,
     ...TRACKER_TOOLS,
@@ -143,7 +149,7 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
     "",
     "This product and its repositories have written down two layers of knowledge, and neither layer is listed here.",
     "",
-    `Product knowledge says how these repositories fit together: who calls whom, over what contract, which change drags which repository along. This product has ${countOf(request.productKnowledgeCount, "active product knowledge entry", "active product knowledge entries")}.`,
+    `Product knowledge is this product's glossary, the section on how its repositories work together, and its decision records. This product has ${countOf(request.productKnowledgeCount, "product knowledge entry", "product knowledge entries")}.`,
     "",
     "Each repository also has its own review rules, which say what it holds its code to, and project facts, which are grounds for judgement:",
     "",
@@ -154,15 +160,13 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
         `- ${repo.owner}/${repo.repo} — ${countOf(repo.ruleCount, "review rule")}, ${countOf(repo.factCount, "project fact")}`,
     ),
     "",
-    `Read them with the ${QUERY_KNOWLEDGE_TOOL} tool: it takes the repositories a task touches and an optional path glob, and returns the product entries involving any of them plus those repositories' rules and facts whose scope overlaps the glob.`,
+    `Read them with the ${QUERY_KNOWLEDGE_TOOL} tool: it takes glossary term names and decision titles to read in full, relationships: true for the whole relationship section, and the repositories a task touches with an optional path glob for their rules and facts.`,
     "",
-    "When the task spans repositories or its scope is unclear, query the product layer first; otherwise query the repository and the paths the task touches.",
+    "When the task spans repositories or its scope is unclear, read the product layer first; otherwise query the repository and the paths the task touches.",
+    "",
+    `The product's knowledge is written through tools, not files: ${WRITE_KNOWLEDGE_TOOL} writes or rewrites one entry and ${WITHDRAW_KNOWLEDGE_TOOL} takes one back. An entry is in force the moment it is written, so write one only from what the person confirmed or from code you read yourself.`,
   ];
-  const purpose = purposeSystemPrompt(
-    request.purpose,
-    request.productKnowledge,
-    request.rejectedStatements,
-  );
+  const purpose = purposeSystemPrompt(request.purpose, request.productKnowledge);
   if (purpose !== undefined) sections.push("", purpose);
   return sections.join("\n");
 }
@@ -298,6 +302,7 @@ async function open(request: OpenSessionRequest): Promise<void> {
       sessionGitTool(request.sessionRoot, repos),
       sessionFindingTool({ repos, send }) as unknown as ToolDefinition,
       sessionKnowledgeTool({ repos, send }) as unknown as ToolDefinition,
+      ...(sessionKnowledgeWriteTools({ send }) as unknown as ToolDefinition[]),
       sessionQuestionRoundTool({ post: postQuestionRound }) as unknown as ToolDefinition,
       ...(sessionTrackerTools({ send }) as unknown as ToolDefinition[]),
       ...(outputTools as unknown as ToolDefinition[]),
@@ -544,6 +549,15 @@ function handle(command: SessionCommand): Promise<void> {
       const { entries, failure } = command;
       resolveKnowledgeQuery(command.requestId, {
         ...entries,
+        ...(failure === undefined ? {} : { failure }),
+      });
+      return Promise.resolve();
+    }
+    case "knowledge-write-result": {
+      // 写下、改写或撤回一条产品知识的回应(issue #360)。同律,兑现那次工具调用。
+      const { entry, failure } = command;
+      resolveKnowledgeWrite(command.requestId, {
+        ...(entry === undefined ? {} : { entry }),
         ...(failure === undefined ? {} : { failure }),
       });
       return Promise.resolve();

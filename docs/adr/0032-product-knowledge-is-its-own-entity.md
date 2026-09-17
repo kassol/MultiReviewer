@@ -1,5 +1,7 @@
 # 产品知识自己一张表,不是知识集那几张表的扩展
 
+> 2026-09-17: 「自己一张表、挂在产品上」继续有效;表本身由 ADR 0035 换形(issue #360):`product_knowledge` 与 `product_knowledge_rejection` 删除重建为 `product_knowledge_entry`,一行是一条术语条目、仓库关系或产品决策,写下即生效。因此下面 Consequences 里的提案三态、驳回记忆、仓库集合校验与「产品知识不进 Review Run」都已不成立。
+
 产品知识(CONTEXT.md 产品知识,spec #342)是第二层知识:一条陈述说的是产品内两个以上仓库之间的事,范围键是涉及的仓库集合。知识集那一层的范围键是「一个仓库 + 一个 glob」,`review_rule`、`rule_set_version`、`rule_proposal`、`rule_proposal_source`、`rule_trace` 五张表与整条评审链路都按这个键写成。选定的做法:**产品知识是自己的实体,`product_knowledge` 一张表挂在产品上,知识集那几张表与评审链路一行不动。** 仓库集合存成这一行里一段升序去重的 repo id JSON,不另开关联表。
 
 ## Considered Options

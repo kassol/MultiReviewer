@@ -7,13 +7,27 @@ export type ProductRepo = { repoId: number; owner: string; repo: string; role: s
 export type Product = { id: number; name: string; createdAt: string; repos: ProductRepo[] };
 /** `GET /repos` 那一份里归属弹窗要的三列。它已经按仓库分配收窄过。 */
 export type RegisteredRepo = { repoId: number; owner: string; repo: string };
-/** 一条生效的产品知识(CONTEXT.md 产品知识,issue #343)。`repoIds` 是它涉及的仓库集合。 */
-export type ProductKnowledge = { id: number; statement: string; repoIds: number[] };
+/** 一条出处附注(CONTEXT.md 产品知识,issue #360):代码里的位置与一句为什么。 */
+export type KnowledgeAnnotation = { location: string; reason: string };
+
 /**
- * 一条待确认的提案(CONTEXT.md 产品知识,issue #345、#346)。`retiresId` 不为空即退役提案,
- * 那一条的陈述是退役的理由,确认它退役的是它指向的那条生效条目。
+ * 一条产品知识(CONTEXT.md 术语条目、仓库关系、产品决策,issue #360)。三种条目同一个形状,
+ * `kind` 说是哪一种:术语用 `name` / `topic` / `avoided`,关系只用 `body`,决策另用
+ * `options` / `consequences` 与 `supersededBy`(不为空即被那一条取代)。
  */
-export type ProductProposal = ProductKnowledge & { retiresId: number | null };
+export type ProductKnowledge = {
+  id: number;
+  kind: "term" | "relationship" | "decision";
+  name: string;
+  body: string;
+  topic: string | null;
+  avoided: string[];
+  options: string | null;
+  consequences: string | null;
+  supersededBy: number | null;
+  annotations: KnowledgeAnnotation[];
+  writtenAt: string;
+};
 
 /** 票的五个 triage 标签(CONTEXT.md 票)。固定字段值,与服务端那一份同一套取值。 */
 export type TicketLabel =
@@ -60,10 +74,29 @@ export type SpecDetail = {
 export type ProductDetail = {
   product: Product;
   knowledge: ProductKnowledge[];
-  proposals: ProductProposal[];
   /** 产品 tracker(CONTEXT.md 产品 tracker,issue #361)。只读,正文只由会话写。 */
   tracker: { specs: TrackerSpec[] };
 };
+
+/**
+ * 术语表按主题分组(CONTEXT.md 术语条目,issue #360)。分组按条目里第一次出现的主题排,
+ * 没分组的那几条排在最后一组(`topic` 为 null)——它们同样要看得见,不该被分组吃掉。
+ */
+export function groupedTerms(
+  knowledge: readonly ProductKnowledge[],
+): { topic: string | null; terms: ProductKnowledge[] }[] {
+  const groups = new Map<string | null, ProductKnowledge[]>();
+  for (const entry of knowledge) {
+    if (entry.kind !== "term") continue;
+    const group = groups.get(entry.topic);
+    if (group === undefined) groups.set(entry.topic, [entry]);
+    else group.push(entry);
+  }
+  const ungrouped = groups.get(null);
+  groups.delete(null);
+  const ordered = [...groups].map(([topic, terms]) => ({ topic, terms }));
+  return ungrouped === undefined ? ordered : [...ordered, { topic: null, terms: ungrouped }];
+}
 
 /** `GET /products` 那一份读缓存的键。 */
 export const PRODUCTS_QUERY_KEY = ["products"] as const;

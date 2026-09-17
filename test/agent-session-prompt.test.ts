@@ -32,7 +32,6 @@ const REQUEST: OpenSessionRequest = {
     { owner: "acme", repo: "web", role: null, headSha: WEB_HEAD_SHA, ruleCount: 0, factCount: 0 },
   ],
   productKnowledge: [],
-  rejectedStatements: [],
   // 提示这一份不读模型,这一格只为凑齐形状。
   runtimeModel: {
     provider: "stub",
@@ -82,15 +81,17 @@ test("知识目录只有条数与那一句触发语,一条规则或事实的正�
   const prompt = sessionSystemPrompt(REQUEST);
 
   // 两层各有多少条:产品层一句,仓库层每个仓库一行。
-  assert.match(prompt, /This product has 3 active product knowledge entries\./);
+  assert.match(prompt, /This product has 3 product knowledge entries\./);
   assert.match(prompt, /^- acme\/api — 4 review rules, 1 project fact$/m);
   assert.match(prompt, /^- acme\/web — 0 review rules, 0 project facts$/m);
   // 什么时候去查,一句话。
   assert.match(
     prompt,
-    /^When the task spans repositories or its scope is unclear, query the product layer first; otherwise query the repository and the paths the task touches\.$/m,
+    /^When the task spans repositories or its scope is unclear, read the product layer first; otherwise query the repository and the paths the task touches\.$/m,
   );
   assert.match(prompt, /query_knowledge/);
+  // 写这一层的两件工具同样只在提示里点名(issue #360)。
+  assert.match(prompt, /write_knowledge writes or rewrites one entry and withdraw_knowledge/);
   // 升级前按仓库分段注入的那几段不在了:提示里没有一条陈述,也没有那两段的标题。
   assert.doesNotMatch(prompt, /has agreed on/);
   assert.doesNotMatch(prompt, /^- \[\d+\] \(/m);
@@ -105,6 +106,6 @@ test("只有一条规则、一条事实时,计数那一行用单数", () => {
     ],
   });
 
-  assert.match(prompt, /This product has 1 active product knowledge entry\./);
+  assert.match(prompt, /This product has 1 product knowledge entry\./);
   assert.match(prompt, /^- acme\/api — 1 review rule, 1 project fact$/m);
 });

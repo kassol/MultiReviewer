@@ -334,10 +334,10 @@ test("发一条消息:知识目录与消息文本进了模型请求,回复与工
       ),
       "发出去的那句话没进模型请求",
     );
-    // 工具面是只读四件套、受控 git、历史 Finding 查询(issue #338)、知识查询(issue #344)、
-    // 会话子代理(issue #358)、提问轮次(issue #359)与产品 tracker 那九件(issue #361),
-    // 加这个用途的产出工具(issue #337);碰文件与 shell 的写工具一个都没注册——tracker
-    // 那几件写的是产品实体。
+    // 工具面是只读四件套、受控 git、历史 Finding 查询(issue #338)、知识的读写三件
+    // (issue #344、#360)、会话子代理(issue #358)、提问轮次(issue #359)与产品 tracker
+    // 那九件(issue #361),加这个用途的产出工具(issue #337);碰文件与 shell 的写工具一个
+    // 都没注册——知识与 tracker 那几件写的是产品实体。
     assert.deepEqual([...requests[0]!.tools].sort(), [
       "ask_question_round",
       "find",
@@ -358,6 +358,8 @@ test("发一条消息:知识目录与消息文本进了模型请求,回复与工
       "tracker_read",
       "tracker_unblock",
       "tracker_update_body",
+      "withdraw_knowledge",
+      "write_knowledge",
     ]);
 
     // 记录:会话起头的两条(这一次用哪个模型、哪个思考档位)原样落下来,随后是用户消息、
@@ -849,36 +851,55 @@ test("三种打回走正常返回:不落产出,打回的调用照样进记录表
 const SURVEY_REPO_ID = 909;
 const SURVEY_REPO = { repoId: SURVEY_REPO_ID, owner: "acme", repo: "alpha" };
 const ACTIVE_STATEMENT = "acme/widgets 的订单接口由 acme/alpha 的网关转发,契约是 OpenAPI";
-/** 人驳回过的那一句。下一轮梳理的提示要把它列出来(issue #346 的 US 24)。 */
-const REJECTED_STATEMENT = "acme/alpha 与 acme/widgets 都用 TypeScript 写";
 
-type Proposal = { id: number; statement: string; repoIds: number[]; retiresId: number | null };
+/** 产品页读到的一条产品知识(CONTEXT.md 产品知识,issue #360)。 */
+type KnowledgeEntry = {
+  id: number;
+  kind: "term" | "relationship" | "decision";
+  name: string;
+  body: string;
+  topic: string | null;
+  avoided: string[];
+  options: string | null;
+  consequences: string | null;
+  supersededBy: number | null;
+  annotations: { location: string; reason: string }[];
+};
 
-/** 这个产品此刻的生效条目与待确认提案(CONTEXT.md 产品知识)。 */
-async function productKnowledge(
-  h: PanelHarness,
-  productId: number,
-): Promise<{ knowledge: Proposal[]; proposals: Proposal[] }> {
+/** 这个产品此刻的产品知识(CONTEXT.md 产品知识)。 */
+async function productKnowledge(h: PanelHarness, productId: number): Promise<KnowledgeEntry[]> {
   const response = await h.api("GET", `/products/${productId}`);
   assert.equal(response.status, 200);
-  return (await response.json()) as { knowledge: Proposal[]; proposals: Proposal[] };
+  return ((await response.json()) as { knowledge: KnowledgeEntry[] }).knowledge;
 }
 
-/** 等到这个产品落了这么多条提案。等的是库里的行,不猜子进程的时序。 */
-async function proposalsAtLeast(
-  h: PanelHarness,
+/** 落一条产品知识,不经子进程。压提示与改写的那几例用它播种。 */
+function seedKnowledge(
+  dbPath: string,
   productId: number,
-  count: number,
-): Promise<Proposal[]> {
-  for (let attempt = 0; attempt < 300; attempt += 1) {
-    const { proposals } = await productKnowledge(h, productId);
-    if (proposals.length >= count) return proposals;
-    await new Promise((resolve) => setTimeout(resolve, 100));
+  record: { kind: "term" | "relationship" | "decision"; name?: string; body: string },
+): number {
+  const store = openStore(dbPath);
+  try {
+    return store.writeProductKnowledge({
+      productId,
+      kind: record.kind,
+      name: record.name ?? "",
+      body: record.body,
+      topic: null,
+      avoided: [],
+      options: null,
+      consequences: null,
+      annotations: [],
+      at: AT,
+      sessionId: null,
+    })!.id;
+  } finally {
+    store.close();
   }
-  assert.fail(`等了 30 秒,产品 ${productId} 还没落到 ${count} 条提案`);
 }
 
-test("产品梳理:提示列出生效条目、单仓库陈述被打回,合法交出落成提案", async () => {
+test("产品梳理:提示列出已写下的仓库关系、单仓库陈述被打回,合法交出写成仓库关系", async () => {
   const turns: StubTurn[] = [
     {
       // 一条只说到一个仓库的陈述:那属于那个仓库的知识集,不属于这一层。
@@ -906,39 +927,16 @@ test("产品梳理:提示列出生效条目、单仓库陈述被打回,合法交
       },
       usage: { input: 20, output: 4 },
     },
-    { text: "交了一条新增与一条退役提案", usage: { input: 8, output: 2 } },
+    { text: "写下了一条仓库关系,撤回了一条", usage: { input: 8, output: 2 } },
   ];
   const { h, productId, requests, close } = await startSessionHarness(turns, {
     extraRepo: SURVEY_REPO,
   });
   try {
-    // 先手写一条生效条目:提示要带着它的 id 列出来,退役提案也指着它。
-    const written = await h.api("POST", `/products/${productId}/knowledge`, {
-      statement: ACTIVE_STATEMENT,
-      repoIds: [GITEA_REPO.id, SURVEY_REPO_ID],
-    });
-    assert.equal(written.status, 201);
-    const { entry } = (await written.json()) as { entry: { id: number } };
-    assert.equal(entry.id, 1);
-
-    // 再落一条提案并驳回它:驳回记忆按意思避开,那一句要出现在梳理这一段提示里。
-    const store = openStore(h.db.path);
-    let rejectedId: number;
-    try {
-      rejectedId = store.addProductKnowledge({
-        productId,
-        statement: REJECTED_STATEMENT,
-        repoIds: [GITEA_REPO.id, SURVEY_REPO_ID],
-        state: "proposed",
-        proposedBy: null,
-        at: AT,
-      }).id;
-    } finally {
-      store.close();
-    }
+    // 先落一条仓库关系:提示要带着它的 id 列出来,退役也指着它。
     assert.equal(
-      (await h.api("POST", `/products/${productId}/knowledge/${rejectedId}/reject`)).status,
-      204,
+      seedKnowledge(h.db.path, productId, { kind: "relationship", body: ACTIVE_STATEMENT }),
+      1,
     );
 
     const opened = await h.api("POST", `/products/${productId}/survey`);
@@ -946,23 +944,13 @@ test("产品梳理:提示列出生效条目、单仓库陈述被打回,合法交
     assert.equal(opened.status, 201, openedText);
     const { session } = JSON.parse(openedText) as { session: { id: number } };
 
-    const proposals = await proposalsAtLeast(h, productId, 2);
     await idle(h, h.cookie, session.id);
 
-    // 系统提示:产品梳理那一段带着生效条目的 id 与它涉及的仓库;工具面只有这个用途的产出工具。
+    // 系统提示:产品梳理那一段带着已写下的仓库关系与它的 id;工具面只有这个用途的产出工具。
     const system = requests[0]!.messages.filter((message) => message.role === "system");
     assert.equal(system.length, 1);
     assert.match(system[0]!.content, /^## This session: surveying this product$/m);
-    assert.match(
-      system[0]!.content,
-      new RegExp(`^- \\[1\\] ${ACTIVE_STATEMENT} \\(acme/alpha, acme/widgets\\)$`, "m"),
-    );
-    // 驳回过的那一句逐字列在提示里:换个措辞再提也拦不住,拦得住的只有它自己避开。
-    assert.match(
-      system[0]!.content,
-      /^People rejected these statements; do not hand in any of them again, in any wording — they were judged not to be product knowledge:$/m,
-    );
-    assert.match(system[0]!.content, new RegExp(`^- ${REJECTED_STATEMENT}$`, "m"));
+    assert.match(system[0]!.content, new RegExp(`^- \\[1\\] ${ACTIVE_STATEMENT}$`, "m"));
     assert.ok(
       requests[0]!.tools.includes("submit_product_survey"),
       `工具面里没有产出工具:${requests[0]!.tools.join(",")}`,
@@ -982,7 +970,7 @@ test("产品梳理:提示列出生效条目、单仓库陈述被打回,合法交
       "种子消息没进模型请求",
     );
 
-    // 第一次交的那一版被打回:理由在工具结果里,一条提案都没落。
+    // 第一次交的那一版被打回:理由在工具结果里,一条都没落。
     const rows = await records(h, h.cookie, session.id);
     const results = rows
       .filter((row) => row.entry.message?.role === "toolResult")
@@ -991,25 +979,121 @@ test("产品梳理:提示列出生效条目、单仓库陈述被打回,合法交
     assert.match(results[0]!, /names fewer than two repositories of this product/);
     assert.match(results[1]!, /recorded/);
 
-    // 第二次交的那一版落成两行提案:新增那一条归一化过(两头空白去掉、空仓库项丢掉),
-    // 退役那一条指着生效条目,理由就是它的陈述。
+    // 第二次交的那一版:新陈述归一化后写成一条仓库关系(写下即生效),退役那一条撤走。
     assert.deepEqual(
-      proposals.map((row) => [row.statement, row.repoIds, row.retiresId]),
+      (await productKnowledge(h, productId)).map((row) => [row.kind, row.body]),
+      [["relationship", "acme/alpha 的网关把 acme/widgets 的错误码原样透出"]],
+    );
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+/** 一次知识写入的脚本响应。 */
+function writeKnowledge(args: globalThis.Record<string, unknown>): StubTurn {
+  return { toolCall: { name: "write_knowledge", args }, usage: { input: 10, output: 2 } };
+}
+
+test("知识工具:三种条目写下即生效,改写与撤回算数,形状不对的带理由打回", async () => {
+  const annotation = { location: "acme/widgets/src/order.ts:42", reason: "状态机在这里" };
+  const turns: StubTurn[] = [
+    // 定义里带路径:打回,说得出判据。
+    writeKnowledge({ kind: "term", name: "订单", body: "src/order.ts 里的那个聚合根" }),
+    // 决策没有标题:打回。
+    writeKnowledge({ kind: "decision", body: "签名换成 HMAC,因为对称密钥好轮换" }),
+    // 定义为空:打回。
+    writeKnowledge({ kind: "term", name: "订单", body: "   " }),
+    writeKnowledge({
+      kind: "term",
+      name: "订单",
+      body: "一次可以付钱的购买请求,付款成功之后才进履约。",
+      topic: "交易",
+      avoided: ["单子", ""],
+      annotations: [annotation],
+    }),
+    writeKnowledge({ kind: "relationship", body: "网关向订单服务要状态,订单服务不回调网关。" }),
+    writeKnowledge({
+      kind: "decision",
+      name: "签名统一用 HMAC",
+      body: "两个仓库各签各的,轮换一次要改两处;统一成 HMAC,密钥一处轮换。",
+      options: "考虑过非对称签名,私钥分发更麻烦。",
+      consequences: "两侧都要读同一份密钥。",
+    }),
+    // 改写第一条:定义换一版,id 不变。
+    writeKnowledge({
+      kind: "term",
+      entryId: 1,
+      name: "订单",
+      body: "一次可以付钱的购买请求,取消之前都改得动。",
+      topic: "交易",
+    }),
+    {
+      toolCall: {
+        name: "query_knowledge",
+        args: { names: ["订单", "签名统一用 HMAC"], relationships: true },
+      },
+      usage: { input: 10, output: 2 },
+    },
+    {
+      toolCall: { name: "withdraw_knowledge", args: { entryId: 2 } },
+      usage: { input: 10, output: 2 },
+    },
+    { text: "写完了", usage: { input: 8, output: 2 } },
+  ];
+  const { h, cookie, sessionId, productId, requests, close } = await startSessionHarness(turns);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await idle(h, cookie, sessionId);
+
+    // 三件知识工具都在工具面上,所有用途都注册。
+    for (const tool of ["query_knowledge", "write_knowledge", "withdraw_knowledge"]) {
+      assert.ok(requests[0]!.tools.includes(tool), `工具面里没有 ${tool}`);
+    }
+
+    const rows = await records(h, cookie, sessionId);
+    const results = rows
+      .filter((row) => row.entry.message?.role === "toolResult")
+      .map((row) => JSON.stringify(row.entry.message?.content));
+    assert.equal(results.length, 9, `工具结果条数不对:${results.join("\n")}`);
+    // 三道打回各说一句能改得动的理由。
+    assert.match(results[0]!, /reads as implementation/);
+    assert.match(results[0]!, /it contains the path src\/order.ts/);
+    assert.match(results[1]!, /a decision needs a title/);
+    assert.match(results[2]!, /the definition is empty/);
+    // 落下来的那三条各回自己的 id:改写与撤回按它指。
+    assert.match(results[3]!, /written as entry 1/);
+    assert.match(results[4]!, /written as entry 2/);
+    assert.match(results[5]!, /written as entry 3/);
+
+    // 按名字读整条:术语带分组、决策带状态与备选项,仓库关系整段回。
+    assert.match(results[7]!, /\[1\] glossary term 订单 \(topic 交易\)/);
+    assert.match(results[7]!, /一次可以付钱的购买请求,取消之前都改得动。/);
+    assert.match(results[7]!, /\[2\] repository relationship: 网关向订单服务要状态/);
+    assert.match(results[7]!, /\[3\] decision 签名统一用 HMAC \(in force\)/);
+    assert.match(results[7]!, /Options considered: 考虑过非对称签名/);
+    // 出处附注只在产品页上看得到,一次查询里不回(ADR 0035)。
+    assert.equal(results[7]!.includes(annotation.location), false);
+    assert.equal(results[7]!.includes(annotation.reason), false);
+
+    // 产品页读到的最终形状:改写落在同一条上,撤回那一条不在了,附注在。
+    const knowledge = await productKnowledge(h, productId);
+    assert.deepEqual(
+      knowledge.map((row) => [row.id, row.kind, row.name]),
       [
-        ["网关改成直连,这一句不再成立", [GITEA_REPO.id, SURVEY_REPO_ID].sort((a, b) => a - b), 1],
-        [
-          "acme/alpha 的网关把 acme/widgets 的错误码原样透出",
-          [GITEA_REPO.id, SURVEY_REPO_ID].sort((a, b) => a - b),
-          null,
-        ],
+        [1, "term", "订单"],
+        [3, "decision", "签名统一用 HMAC"],
       ],
     );
-    // 生效列表一格没动:提案要等人确认(issue #346),这一票只把它们落下来。
-    const { knowledge } = await productKnowledge(h, productId);
-    assert.deepEqual(
-      knowledge.map((row) => row.id),
-      [1],
-    );
+    const term = knowledge[0]!;
+    assert.equal(term.body, "一次可以付钱的购买请求,取消之前都改得动。");
+    assert.equal(term.topic, "交易");
+    // 改写是整条替换:上一版列出的避免词没留在这一版上。
+    assert.deepEqual(term.avoided, []);
+    assert.deepEqual(term.annotations, []);
+    const decision = knowledge[1]!;
+    assert.equal(decision.supersededBy, null);
+    assert.equal(decision.consequences, "两侧都要读同一份密钥。");
   } finally {
     await disposeAgentSessions();
     await close();

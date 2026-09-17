@@ -105,10 +105,6 @@ const ROUTE_EXPECTATIONS = [
   ["DELETE", "/^\\/products\\/(\\d+)$/", "repo:write", "-"],
   ["PUT", "/^\\/products\\/(\\d+)\\/repos\\/(\\d+)$/", "repo:write", "repo:2"],
   ["DELETE", "/^\\/products\\/(\\d+)\\/repos\\/(\\d+)$/", "repo:write", "repo:2"],
-  ["POST", "/^\\/products\\/(\\d+)\\/knowledge$/", "knowledge:write", "product:1"],
-  ["DELETE", "/^\\/products\\/(\\d+)\\/knowledge\\/(\\d+)$/", "knowledge:write", "product:1"],
-  ["POST", "/^\\/products\\/(\\d+)\\/knowledge\\/(\\d+)\\/accept$/", "knowledge:write", "product:1"],
-  ["POST", "/^\\/products\\/(\\d+)\\/knowledge\\/(\\d+)\\/reject$/", "knowledge:write", "product:1"],
   // 产品 tracker 的两条读端点(issue #361):读随产品可见性,不挂权限格。
   ["GET", "/^\\/products\\/(\\d+)\\/specs\\/(\\d+)$/", "authenticated-only", "product:1"],
   ["GET", "/^\\/products\\/(\\d+)\\/specs\\/(\\d+)\\/export$/", "authenticated-only", "product:1"],

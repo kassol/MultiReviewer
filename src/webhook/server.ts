@@ -1975,11 +1975,13 @@ function handleListProducts(
 }
 
 /**
- * 一个产品、它的仓库、它生效的产品知识与待确认的提案(CONTEXT.md 产品知识,issue #343、
- * #345)。分配外的产品已经被路由上的 `product` 目标判成 404。产品知识另成两格而不是塞进
- * `product`:产品列表那一份不带它,两处同构才不会让人以为列表里也有。
+ * 一个产品、它的仓库与它的产品知识(CONTEXT.md 产品知识,issue #343、#360)。分配外的产品
+ * 已经被路由上的 `product` 目标判成 404。产品知识另成一格而不是塞进 `product`:产品列表那
+ * 一份不带它,两处同构才不会让人以为列表里也有。
  *
- * 提案那一格多一个 `retiresId`:不为空即退役提案,指向它要退役的那条生效条目。
+ * 三种条目在同一个数组里,`kind` 说是哪一种,分组交给面板:术语按主题分组、关系一段、决策
+ * 一张带状态的列表,都是同一份条目的不同排法。出处附注一起给——它在产品页上展开可见,只是
+ * 不进任何提示(ADR 0035)。
  */
 function handleProduct(res: ServerResponse, deps: WebhookServerDeps, productId: number): void {
   const read = withStore(deps.dbPath, (store) => {
@@ -1988,8 +1990,7 @@ function handleProduct(res: ServerResponse, deps: WebhookServerDeps, productId: 
       ? undefined
       : {
           product,
-          knowledge: store.listProductKnowledge(productId, "active"),
-          proposals: store.listProductKnowledge(productId, "proposed"),
+          knowledge: store.listProductKnowledge(productId),
           specs: store.listProductSpecs(productId),
           tickets: store.listProductTickets(productId),
         };
@@ -2000,14 +2001,16 @@ function handleProduct(res: ServerResponse, deps: WebhookServerDeps, productId: 
         product: read.product,
         knowledge: read.knowledge.map((entry) => ({
           id: entry.id,
-          statement: entry.statement,
-          repoIds: entry.repoIds,
-        })),
-        proposals: read.proposals.map((entry) => ({
-          id: entry.id,
-          statement: entry.statement,
-          repoIds: entry.repoIds,
-          retiresId: entry.retiresId,
+          kind: entry.kind,
+          name: entry.name,
+          body: entry.body,
+          topic: entry.topic,
+          avoided: entry.avoided,
+          options: entry.options,
+          consequences: entry.consequences,
+          supersededBy: entry.supersededBy,
+          annotations: entry.annotations,
+          writtenAt: entry.writtenAt,
         })),
         // 产品 tracker(CONTEXT.md 产品 tracker,issue #361):spec 连它的票,只给列表要显示的
         // 那几格。正文另有一个端点——一页产品详情不该驮着几屏 Markdown。
@@ -2203,9 +2206,11 @@ async function handleAttachProductRepo(
 }
 
 /**
- * 移出仓库。移出之后涉及它的生效产品知识全部退役(CONTEXT.md 产品知识,issue #347):那些
- * 陈述说的是一个已经不在这个产品里的仓库,端给 agent 只会把它指去一棵不存在的工作树。退役
- * 之后仓库集还够两个就自己开一场梳理,它可以把剩下的关系重新提一遍。
+ * 移出仓库。仓库集还够两个就自己开一场梳理,它可以把剩下的关系重新写一遍(issue #347)。
+ *
+ * 产品知识不再跟着仓库退役(issue #360):条目说的是这个产品是什么、它的仓库之间怎么协作,
+ * 不再按仓库集合成立,少一个仓库并不让某一条当场不成立。说的正是那个仓库的那几条由下一场
+ * 梳理改写或撤回。
  */
 async function handleDetachProductRepo(
   res: ServerResponse,
@@ -2215,153 +2220,16 @@ async function handleDetachProductRepo(
 ): Promise<void> {
   const detached = withStore(deps.dbPath, (store) => store.detachProductRepo(productId, repoId));
   if (!detached) return sendJson(res, 404, { error: "这个产品下没有这个仓库" });
-  withStore(deps.dbPath, (store) =>
-    store.retireProductKnowledgeOfRepo(
-      productId,
-      repoId,
-      new Date((deps.now ?? Date.now)()).toISOString(),
-    ),
-  );
   await surveyRepoSetChange(deps, productId);
   return send(res, 204);
 }
 
 /**
- * 产品知识手写的那两句回绝(CONTEXT.md 产品知识,issue #343)。陈述的上限沿用 agent 产出
- * 那一道(`AGENT_STATEMENT_LIMIT`):两边写的是同一种东西,一句要被反复注入的陈述。
- */
-const PRODUCT_KNOWLEDGE_STATEMENT_SHAPE = `产品知识的陈述要是 1 到 ${AGENT_STATEMENT_LIMIT} 个字符`;
-const PRODUCT_KNOWLEDGE_TOO_FEW_REPOS = "产品知识至少要说到这个产品里的两个仓库";
-
-/** 退役时那一条已经不生效,或者根本不在这个产品下:两档同形回这一句。 */
-const NO_SUCH_PRODUCT_KNOWLEDGE = "没有这条生效的产品知识";
-
-/**
- * 手写一条产品知识(CONTEXT.md 产品知识,issue #343 的 US 10)。人手写即直接生效,不经提案
- * 那一档——提案是产品梳理交出来的东西,人自己写的不必再由人确认一遍。
- *
- * 仓库集合去重之后至少两个、且都在这个产品当前的仓库里:说不到两个仓库的那句话属于那一个
- * 仓库的知识集,不属于这一层。
- */
-async function handleWriteProductKnowledge(
-  req: IncomingMessage,
-  res: ServerResponse,
-  deps: WebhookServerDeps,
-  productId: number,
-  username: string,
-): Promise<void> {
-  const payload = await readJson<{ statement?: unknown; repoIds?: unknown } | null>(req, res);
-  if (payload === undefined) return;
-  const statement = typeof payload?.statement === "string" ? payload.statement.trim() : "";
-  if (statement.length === 0 || statement.length > AGENT_STATEMENT_LIMIT) {
-    return sendJson(res, 400, { error: PRODUCT_KNOWLEDGE_STATEMENT_SHAPE });
-  }
-  const raw = payload?.repoIds;
-  const repoIds = [
-    ...new Set(
-      (Array.isArray(raw) ? raw : []).filter((value): value is number => Number.isInteger(value)),
-    ),
-  ];
-  if (repoIds.length < 2) return sendJson(res, 400, { error: PRODUCT_KNOWLEDGE_TOO_FEW_REPOS });
-
-  const product = withStore(deps.dbPath, (store) => store.getProduct(productId));
-  if (product === undefined) return sendJson(res, 404, { error: NO_SUCH_PRODUCT });
-  const outside = repoIds.find((repoId) => !product.repos.some((row) => row.repoId === repoId));
-  if (outside !== undefined) {
-    return sendJson(res, 400, { error: `这个产品下没有 repo id 为 ${outside} 的仓库` });
-  }
-
-  const entry = withStore(deps.dbPath, (store) =>
-    store.addProductKnowledge({
-      productId,
-      statement,
-      repoIds,
-      state: "active",
-      proposedBy: username,
-      at: new Date((deps.now ?? Date.now)()).toISOString(),
-    }),
-  );
-  return sendJson(res, 201, {
-    entry: { id: entry.id, statement: entry.statement, repoIds: entry.repoIds },
-  });
-}
-
-/**
- * 手工退役一条生效的产品知识(issue #343 的 US 11)。与直接废止一条知识条目同一写法:
- * `DELETE` 是退役而不是删行——退役时间要留着,后续的产品梳理据它看这句话何时不再成立。
- */
-function handleRetireProductKnowledge(
-  res: ServerResponse,
-  deps: WebhookServerDeps,
-  productId: number,
-  entryId: number,
-): void {
-  const retired = withStore(deps.dbPath, (store) =>
-    store.retireProductKnowledge(
-      productId,
-      entryId,
-      new Date((deps.now ?? Date.now)()).toISOString(),
-    ),
-  );
-  return retired ? send(res, 204) : sendJson(res, 404, { error: NO_SUCH_PRODUCT_KNOWLEDGE });
-}
-
-/** 这一条已经不是提案了:确认过、驳回过与根本不在这个产品下,三档同形回这一句。 */
-const NO_SUCH_PRODUCT_KNOWLEDGE_PROPOSAL = "没有这条待确认的产品知识提案";
-
-/**
- * 确认一条待确认的提案(CONTEXT.md 产品知识,spec #342 的 US 8、US 9,issue #346)。
- * 新增陈述那一档翻成生效,退役提案那一档把它指向的那条生效条目退役、提案随之消失。
- *
- * 门禁与手写同一道(`knowledge:write` 加这个产品里的一个仓库分配):确认产品知识与维护
- * 知识集是同一批人的事。
- */
-function handleAcceptProductKnowledgeProposal(
-  res: ServerResponse,
-  deps: WebhookServerDeps,
-  productId: number,
-  entryId: number,
-): void {
-  const outcome = withStore(deps.dbPath, (store) =>
-    store.acceptProductKnowledgeProposal(
-      productId,
-      entryId,
-      new Date((deps.now ?? Date.now)()).toISOString(),
-    ),
-  );
-  return outcome === undefined
-    ? sendJson(res, 404, { error: NO_SUCH_PRODUCT_KNOWLEDGE_PROPOSAL })
-    : send(res, 204);
-}
-
-/**
- * 驳回一条待确认的提案(issue #346)。提案行删掉,新增陈述那一档另记下它的陈述:下一轮
- * 产品梳理交上同一句话就静默丢掉——同一句话不该让人反复驳回。
- */
-function handleRejectProductKnowledgeProposal(
-  res: ServerResponse,
-  deps: WebhookServerDeps,
-  productId: number,
-  entryId: number,
-): void {
-  const rejected = withStore(deps.dbPath, (store) =>
-    store.rejectProductKnowledgeProposal(
-      productId,
-      entryId,
-      new Date((deps.now ?? Date.now)()).toISOString(),
-    ),
-  );
-  return rejected
-    ? send(res, 204)
-    : sendJson(res, 404, { error: NO_SUCH_PRODUCT_KNOWLEDGE_PROPOSAL });
-}
-
-/**
  * 重梳的两句回绝(CONTEXT.md 产品梳理,issue #345)。仓库不足两个时梳理无从谈起——产品知识
- * 说的是仓库之间的事;同一个产品的第二轮梳理要等第一轮交完,两轮同时跑会提出同一批提案。
+ * 说的是仓库之间的事;同一个产品的第二轮梳理要等第一轮交完,两轮同时跑会写下同一批条目。
  */
 const PRODUCT_SURVEY_TOO_FEW_REPOS = "产品梳理要这个产品有两个以上仓库,先把第二个仓库归入它";
-const PRODUCT_SURVEY_RUNNING = "这个产品的产品梳理还在跑,等它交出提案再重梳";
+const PRODUCT_SURVEY_RUNNING = "这个产品的产品梳理还在跑,等它交完再重梳";
 
 /**
  * 产品梳理会话的创建者(CONTEXT.md 产品梳理)。会话由系统开,不属于点下重梳的那个人:看得到
@@ -2489,7 +2357,7 @@ const NO_SUCH_AGENT_SESSION = "没有这个 Agent 会话";
 const NOT_AGENT_SESSION_CREATOR = "只有会话的创建者能做";
 
 /**
- * 产品梳理会话由系统开、交完提案就完(CONTEXT.md 产品梳理,issue #345):谁都续不了它。
+ * 产品梳理会话由系统开、交完就完(CONTEXT.md 产品梳理,issue #345):谁都续不了它。
  * 停止与删除不在这一句里(issue #346)——它们由系统管理员做得了。
  */
 const AGENT_SESSION_SURVEY_IS_SYSTEM = "产品梳理会话由系统开,谁都续不了它";
@@ -3545,20 +3413,16 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "PUT", pattern: /^\/products\/(\d+)\/repos\/(\d+)$/, access: "repo:write", assignment: { by: "repo", group: 2 }, handler: ({ req, res, deps }, match) => handleAttachProductRepo(req, res, deps, Number(match![1]), Number(match![2])) },
   { method: "DELETE", pattern: /^\/products\/(\d+)\/repos\/(\d+)$/, access: "repo:write", assignment: { by: "repo", group: 2 }, handler: ({ res, deps }, match) => handleDetachProductRepo(res, deps, Number(match![1]), Number(match![2])) },
 
-  // 产品知识(CONTEXT.md 产品知识,issue #343)。读随产品详情一起回,写与退役要
-  // `knowledge:write` 加这个产品里的一个仓库分配——后半句正是 `product` 这个目标本身。
-  { method: "POST", pattern: /^\/products\/(\d+)\/knowledge$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleWriteProductKnowledge(req, res, deps, Number(match![1]), caller!.username) },
-  { method: "DELETE", pattern: /^\/products\/(\d+)\/knowledge\/(\d+)$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleRetireProductKnowledge(res, deps, Number(match![1]), Number(match![2])) },
-  // 提案的确认与驳回(issue #346)与手写同一道门禁:确认产品知识的人就是维护知识集的人。
-  { method: "POST", pattern: /^\/products\/(\d+)\/knowledge\/(\d+)\/accept$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleAcceptProductKnowledgeProposal(res, deps, Number(match![1]), Number(match![2])) },
-  { method: "POST", pattern: /^\/products\/(\d+)\/knowledge\/(\d+)\/reject$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleRejectProductKnowledgeProposal(res, deps, Number(match![1]), Number(match![2])) },
+  // 产品知识(CONTEXT.md 产品知识,issue #360)。读随产品详情一起回,**没有写端点**:条目由
+  // 会话经知识工具写下,人不手写、不确认也不驳回(ADR 0035)。
+
   // 产品 tracker(CONTEXT.md 产品 tracker,issue #361)。**读随产品可见性**:与产品详情同一道
   // 门禁,登录加这个产品里的一个仓库分配即可。正文只由会话经工具写,这一层因此没有写端点;
   // 人的动作(认领、改标签、开关、评论)是 #363。
   { method: "GET", pattern: /^\/products\/(\d+)\/specs\/(\d+)$/, access: "authenticated-only", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleProductSpec(res, deps, Number(match![1]), Number(match![2])) },
   { method: "GET", pattern: /^\/products\/(\d+)\/specs\/(\d+)\/export$/, access: "authenticated-only", assignment: { by: "product", group: 1 }, handler: ({ res, deps }, match) => handleExportProductSpec(res, deps, Number(match![1]), Number(match![2])) },
-  // 重梳(CONTEXT.md 产品梳理,issue #345)。门禁与手写产品知识同一道:维护这一层知识的人
-  // 才开得起梳理会话。会话本身由系统建,创建者不是点下它的那个人。
+  // 重梳(CONTEXT.md 产品梳理,issue #345)。门禁是 `knowledge:write` 加这个产品里的一个仓库
+  // 分配——后半句正是 `product` 这个目标本身。会话本身由系统建,创建者不是点下它的那个人。
   { method: "POST", pattern: /^\/products\/(\d+)\/survey$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps }, match) => handleProductSurvey(req, res, deps, Number(match![1])) },
   // Agent 会话(CONTEXT.md Agent 会话,issue #332)。建与发消息按 `agent:chat`,列表与
   // 读登录即可:一个会话只有创建者与系统管理员读得到,这一判按创建者在 handler 里做,
@@ -10380,19 +10244,9 @@ async function handleRemove(
   // 评审记录一行不动:模型选型的历史不因仓库下线而断(移除后的投递按未注册 401)。
   withStore(deps.dbPath, (store) => store.removeRepo(repoId));
 
-  // 下线与移出对产品是同一件事:产品的仓库集少了一个(CONTEXT.md 产品知识,issue #347)。
-  // 涉及它的生效条目全退役——那些陈述说的是一个已经不在这个产品里的仓库;退役之后仓库集
-  // 还够两个就自己开一场梳理,把剩下的关系重新提一遍。下线的回应一格不变。
-  if (productId !== undefined) {
-    withStore(deps.dbPath, (store) =>
-      store.retireProductKnowledgeOfRepo(
-        productId,
-        repoId,
-        new Date((deps.now ?? Date.now)()).toISOString(),
-      ),
-    );
-    await surveyRepoSetChange(deps, productId);
-  }
+  // 下线与移出对产品是同一件事:产品的仓库集少了一个(issue #347)。仓库集还够两个就自己开
+  // 一场梳理,把剩下的关系重新写一遍。下线的回应一格不变。
+  if (productId !== undefined) await surveyRepoSetChange(deps, productId);
 
   // 工作副本随注册一起走(issue #184)。仓库改过名时两个名字下各可能有一份,现名与
   // 注册时的名字各删一次;已经不在的那一份删起来是空操作。目录上还有准备在跑时

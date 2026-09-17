@@ -95,7 +95,7 @@ import { StreamStatus, useTrace } from "./run-trace.tsx";
 const PURPOSE_HAS_OUTPUT: Record<AgentSessionPurpose, boolean> = {
   "requirement-breakdown": true,
   "open-conversation": false,
-  // 产品梳理交的是产品知识提案,它们在产品页上确认,不是这一页的会话产出(issue #345)。
+  // 产品梳理写下的是产品知识,它们在产品页上读,不是这一页的会话产出(issue #345、#360)。
   "product-survey": false,
 };
 
@@ -2128,7 +2128,7 @@ export function AgentSessionPage({
                 <p className="shrink-0 border-t border-line pt-3 text-center text-sm text-text-muted">
                   {session.purpose === "product-survey" ? (
                     <>
-                      产品梳理由系统发起,不接续写;它交的提案在
+                      产品梳理由系统发起,不接续写;它写下的产品知识在
                       <Link
                         to="/products/$productId"
                         params={{ productId: String(productId) }}
@@ -2136,7 +2136,7 @@ export function AgentSessionPage({
                       >
                         产品页
                       </Link>
-                      确认或驳回。
+                      上读。
                     </>
                   ) : (
                     "只有建立这个会话的账号能续写。"

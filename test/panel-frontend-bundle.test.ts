@@ -57,10 +57,11 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
     assert.match(javascript, /to:"\/credentials",activeOptions:\{exact:!0\}/);
     // 仓库职责(issue #341):产品页的归属弹窗与每行那一格都带「职责」这个词。
     assert.match(javascript, /职责/);
-    // 产品知识(issue #343):产品页右栏那一区的小标题。
+    // 产品知识(issue #343、#360):产品页右栏那一区的小标题与三段各自的小标题。
     assert.match(javascript, /产品知识/);
-    // 提案的确认与驳回(issue #346):待确认的提案每行那两颗按钮的文案。
-    assert.match(javascript, /已驳回一条提案/);
+    assert.match(javascript, /术语表/);
+    assert.match(javascript, /仓库关系/);
+    assert.match(javascript, /产品决策/);
     // 默认分支(issue #350):仓库配置弹窗里那个下拉的首项。
     assert.match(javascript, /跟随 Gitea 默认/);
   } finally {
