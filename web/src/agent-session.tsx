@@ -1661,8 +1661,10 @@ export function AgentSessionPage({
 
   const loadError = sessionQuery.error;
   const wrotePanel = <WrotePanel productId={productId} wrote={wrote} />;
+  // sm 以下页头留白收到 16px:390px 上顶栏、输入区与 Tab 栏已固定吃掉 245px,余下的
+  // 每一段留白都从对话流里扣(issue #384)。sm 起照常 24px。
   return (
-    <PageBody className="h-full pb-6">
+    <PageBody className="h-full pt-4 pb-6 sm:pt-6">
       {feedback === null ? null : (
         <Callout.Root
           role={feedback.error ? "alert" : "status"}
@@ -1696,7 +1698,7 @@ export function AgentSessionPage({
         />
 
         <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
-          <div className="flex shrink-0 flex-wrap items-start justify-between gap-x-3 gap-y-2 border-b border-line pb-3">
+          <div className="flex shrink-0 flex-wrap items-start justify-between gap-x-3 gap-y-2 border-b border-line pb-2 sm:pb-3">
             {/* 标题块占满剩余宽度,动作组才留在同一行;窄屏上动作只剩图标,文字给读屏。 */}
             <div className="flex min-w-0 flex-1 items-start gap-1.5">
               {product === undefined ? (
@@ -1727,12 +1729,14 @@ export function AgentSessionPage({
                 onOpenChange={setMetaOpen}
                 className="group/meta flex min-w-0 flex-1 flex-col gap-0.5"
               >
-                <div className="flex flex-wrap items-center gap-2">
+                {/* sm 以下这一行不许折:标题、徽章与开关一旦换行,折叠态头部就从 44px
+                    涨到 100px 上下。标题让位截断,徽章与开关保持整颗(issue #384)。 */}
+                <div className="flex flex-wrap items-center gap-2 max-sm:flex-nowrap">
                   {/* 标题优先说这个会话在聊什么(`title`,服务端从首条用户消息派生);没有
-                      标题的旧会话与开放对话退回用途名。两行封顶,`title=` 补全文,压掉了原本
-                      三行标题区吃掉的高度,给对话流多留屏幕。 */}
+                      标题的旧会话与开放对话退回用途名。sm 以下单行截断,sm 起两行封顶,
+                      `title=` 补全文——标题区不再吃掉三行高度,屏幕留给对话流。 */}
                   <h1
-                    className="min-w-0 line-clamp-2 break-words text-2xl font-bold tracking-[-0.015em]"
+                    className="min-w-0 line-clamp-1 break-words text-2xl font-bold tracking-[-0.015em] sm:line-clamp-2"
                     title={session === undefined ? undefined : (session.title ?? PURPOSE_LABEL[session.purpose])}
                   >
                     {session === undefined ? "Agent 会话" : (session.title ?? PURPOSE_LABEL[session.purpose])}
@@ -1835,7 +1839,7 @@ export function AgentSessionPage({
             而不是默默丢掉。缺损只在重建那一刻定形,条数由服务端按记录算出来。
           */}
           {dropped > 0 ? (
-            <Callout.Root role="status" color="amber" size="1" className="mt-3 shrink-0">
+            <Callout.Root role="status" color="amber" size="1" className="mt-2 shrink-0 sm:mt-3">
               <Callout.Icon>
                 <CrossCircledIcon aria-hidden />
               </Callout.Icon>
