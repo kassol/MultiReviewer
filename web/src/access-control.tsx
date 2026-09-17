@@ -87,6 +87,14 @@ export function AccessControlPage() {
   const [assign, setAssign] = useState<{ user: User; repoIds: number[] } | null>(null);
   /** 权限编辑当前停在哪个角色 tab。null 或已删角色时落回第一个角色。 */
   const [roleTab, setRoleTab] = useState<string | null>(null);
+  /**
+   * 确认弹窗关闭带退场动画,`confirm` 一清空,还在淡出的那一帧就会渲染出「删除用户 undefined？」
+   * ——弹窗的文案全挂在它上面(issue #382)。记住最后一个非空值,退场期间照它渲染;能不能点、
+   * 点了做什么仍读 `confirm`,关掉的弹窗不该还动得了东西。
+   */
+  const lastConfirm = useRef(confirm);
+  if (confirm !== null) lastConfirm.current = confirm;
+  const shownConfirm = confirm ?? lastConfirm.current;
   const assignFocus = useDialogReturnFocus(() => document.getElementById("create-user-trigger"));
   const confirmFallbackId = useRef<"create-user-trigger" | "create-role-trigger">("create-user-trigger");
   const confirmFocus = useDialogReturnFocus(() =>
@@ -291,137 +299,141 @@ export function AccessControlPage() {
                   onRole={(name) => { setFeedback(null); createRole.mutate(name); }}
                 />
               </div>
-              <div className="contain-inline-size min-w-0 max-w-full overflow-x-auto overscroll-x-contain border-t border-line">
-                <Table.Root size="2" className="w-full min-w-max">
-                  <caption className="sr-only">用户、角色和账号状态</caption>
-                  <Table.Header className="bg-sunken text-sm font-bold text-text-muted">
-                    <Table.Row>
-                      <Table.ColumnHeaderCell className="sticky left-0 z-20 bg-sunken">用户名</Table.ColumnHeaderCell>
-                      <Table.ColumnHeaderCell>显示名</Table.ColumnHeaderCell>
-                      <Table.ColumnHeaderCell>角色</Table.ColumnHeaderCell>
-                      <Table.ColumnHeaderCell>已分配仓库</Table.ColumnHeaderCell>
-                      <Table.ColumnHeaderCell>创建</Table.ColumnHeaderCell>
-                      <Table.ColumnHeaderCell>最后登录</Table.ColumnHeaderCell>
-                      <Table.ColumnHeaderCell><span className="sr-only">操作</span></Table.ColumnHeaderCell>
-                    </Table.Row>
-                  </Table.Header>
-                  <Table.Body>
-                    {users.map((user) => (
-                      // align="center":每格内容高度不一(头像行、下拉、纯文本),顶对齐会让
-                      // 整行看着错位——这正是走查里点名的问题。
-                      <Table.Row key={user.username} align="center" className="group hover:bg-sunken">
-                        <Table.RowHeaderCell className="sticky left-0 z-10 bg-surface font-semibold group-hover:bg-sunken">
-                          <div className="flex items-center gap-2 whitespace-nowrap">
+              {/* 横向滚动发生在 Radix ScrollArea 的视口上:首列的 sticky 是相对它定位的,
+                  外面再套一层 overflow 容器,滚的就是外层,首列永远钉不住(issue #382)。
+                  视口里那层包装默认 `width: fit-content`,横向放不下时会把每列压到
+                  min-content(中文一字一行),改成 max-content 让列按内容排、放不下就滚。 */}
+              <Table.Root size="2" className="border-t border-line [&_.rt-ScrollAreaViewport>*]:w-max">
+                <caption className="sr-only">用户、角色和账号状态</caption>
+                <Table.Header className="bg-sunken text-sm font-bold text-text-muted">
+                  <Table.Row>
+                    {/* 粘性首列的底必须不透明:其余列从它下面滚过去。sunken 是 5% 的半透明灰,
+                        只给它内容会透出来;白底打底、灰层叠在上面,颜色与表头其余格一致。 */}
+                    <Table.ColumnHeaderCell className="sticky left-0 z-20 bg-surface bg-[image:linear-gradient(var(--v8-surface-sunken),var(--v8-surface-sunken))]">用户名</Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell>显示名</Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell>角色</Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell>已分配仓库</Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell>创建</Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell>最后登录</Table.ColumnHeaderCell>
+                    <Table.ColumnHeaderCell><span className="sr-only">操作</span></Table.ColumnHeaderCell>
+                  </Table.Row>
+                </Table.Header>
+                <Table.Body>
+                  {users.map((user) => (
+                    // align="center":每格内容高度不一(头像行、下拉、纯文本),顶对齐会让
+                    // 整行看着错位——这正是走查里点名的问题。
+                    <Table.Row key={user.username} align="center" className="group hover:bg-sunken">
+                      <Table.RowHeaderCell className="sticky left-0 z-10 bg-surface font-semibold group-hover:bg-[image:linear-gradient(var(--v8-surface-sunken),var(--v8-surface-sunken))]">
+                        <div className="flex items-center gap-2 whitespace-nowrap">
+                          <span
+                            aria-hidden
+                            className={`flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                              user.isSystemAdmin ? "bg-[image:var(--v8-avatar-gradient)] text-white" : "bg-fill text-text-secondary"
+                            }`}
+                          >
+                            {user.username.slice(0, 1).toUpperCase()}
+                          </span>
+                          <Tooltip content={user.username}>
                             <span
-                              aria-hidden
-                              className={`flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
-                                user.isSystemAdmin ? "bg-[image:var(--v8-avatar-gradient)] text-white" : "bg-fill text-text-secondary"
-                              }`}
+                              tabIndex={0}
+                              className="max-w-56 truncate rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-background"
                             >
-                              {user.username.slice(0, 1).toUpperCase()}
+                              {user.username}
                             </span>
-                            <Tooltip content={user.username}>
-                              <span
-                                tabIndex={0}
-                                className="max-w-56 truncate rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-                              >
-                                {user.username}
-                              </span>
-                            </Tooltip>
-                            {user.isSystemAdmin ? <Badge color="gray" variant="soft">系统管理员</Badge> : null}
-                            {user.mustChangePassword ? <StatusBadge tone="warning">待改密</StatusBadge> : null}
-                          </div>
-                        </Table.RowHeaderCell>
-                        <Table.Cell className="max-w-48 text-text-muted">
-                          {/* 空串与 null 同义:创建时显示名可留空,留空存的就是空串。 */}
-                          {user.displayName === null || user.displayName === "" ? "—" : (
-                            <Tooltip content={user.displayName}>
-                              <span
-                                tabIndex={0}
-                                className="block max-w-48 truncate rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-                              >
-                                {user.displayName}
-                              </span>
-                            </Tooltip>
-                          )}
-                        </Table.Cell>
-                        <Table.Cell>
-                          {user.isSystemAdmin ? (
-                            <span className="text-text-muted">全部权限</span>
-                          ) : (
-                            <Select.Root
-                              size={{ initial: "3", sm: "2" }}
-                              value={user.roleId === null ? "unassigned" : String(user.roleId)}
-                              disabled={updateUser.isPending}
-                              onValueChange={(value) => updateUser.mutate({
-                                user,
-                                roleId: value === "unassigned" ? null : Number(value),
-                              })}
+                          </Tooltip>
+                          {user.isSystemAdmin ? <Badge color="gray" variant="soft">系统管理员</Badge> : null}
+                          {user.mustChangePassword ? <StatusBadge tone="warning">待改密</StatusBadge> : null}
+                        </div>
+                      </Table.RowHeaderCell>
+                      <Table.Cell className="max-w-48 text-text-muted">
+                        {/* 空串与 null 同义:创建时显示名可留空,留空存的就是空串。 */}
+                        {user.displayName === null || user.displayName === "" ? "—" : (
+                          <Tooltip content={user.displayName}>
+                            <span
+                              tabIndex={0}
+                              className="block max-w-48 truncate rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-1 focus-visible:ring-offset-background"
                             >
-                              {/* ghost 形态:表格里一格一个描边框太重,行内属性编辑只要
-                                  文字加箭头;未分配用琥珀字色保留警示。 */}
-                              <Select.Trigger
-                                variant="ghost"
-                                aria-label={`${user.username} 的角色`}
-                                color={user.roleId === null ? "amber" : "gray"}
-                                className="max-w-44 max-sm:min-h-11"
-                              />
-                              <Select.Content position="popper" color="gray">
-                                <Select.Item value="unassigned">未分配角色</Select.Item>
-                                {roles.map((role) => (
-                                  <Select.Item key={role.id} value={String(role.id)}>{role.name}</Select.Item>
-                                ))}
-                              </Select.Content>
-                            </Select.Root>
-                          )}
-                        </Table.Cell>
-                        <Table.Cell>
-                          {user.isSystemAdmin ? (
-                            <span className="text-text-muted">全部仓库</span>
-                          ) : (
-                            <Button
+                              {user.displayName}
+                            </span>
+                          </Tooltip>
+                        )}
+                      </Table.Cell>
+                      <Table.Cell>
+                        {user.isSystemAdmin ? (
+                          <span className="text-text-muted">全部权限</span>
+                        ) : (
+                          <Select.Root
+                            size={{ initial: "3", sm: "2" }}
+                            value={user.roleId === null ? "unassigned" : String(user.roleId)}
+                            disabled={updateUser.isPending}
+                            onValueChange={(value) => updateUser.mutate({
+                              user,
+                              roleId: value === "unassigned" ? null : Number(value),
+                            })}
+                          >
+                            {/* ghost 形态:表格里一格一个描边框太重,行内属性编辑只要
+                                文字加箭头;未分配用琥珀字色保留警示。 */}
+                            <Select.Trigger
                               variant="ghost"
-                              color="gray"
-                              size={{ initial: "4", sm: "1" }}
-                              aria-label={`分配 ${user.username} 的仓库`}
-                              onClick={(event) => { setFeedback(null); assignFocus.captureTrigger(event); setAssign({ user, repoIds: user.repoIds }); }}
-                            >
-                              <span className="font-mono">{user.repoIds.length}</span> 个
-                            </Button>
-                          )}
-                        </Table.Cell>
-                        <Table.Cell className="font-mono text-xs whitespace-nowrap text-text-muted">{localMinute(user.createdAt)}</Table.Cell>
-                        <Table.Cell className="text-xs whitespace-nowrap text-text-muted">{user.lastLoginAt === null ? "从未" : <span className="font-mono">{localMinute(user.lastLoginAt)}</span>}</Table.Cell>
-                        <Table.Cell>
-                          {/* 行操作收进「…」菜单,与首页仓库行同一语法:两颗带字按钮逐行
-                              重复只会把表格拖宽。菜单项一选中菜单就关,焦点来源因此记在
-                              这颗「…」上,确认弹窗关闭后还回来。 */}
-                          <div className="flex justify-end">
-                            <DropdownMenu.Root>
-                              <DropdownMenu.Trigger>
-                                <IconButton
-                                  variant="ghost"
-                                  color="gray"
-                                  size={{ initial: "3", sm: "1" }}
-                                  className="max-sm:min-h-11 max-sm:min-w-11"
-                                  aria-label={`${user.username} 的操作`}
-                                  onClick={(event) => { confirmFallbackId.current = "create-user-trigger"; confirmFocus.captureTrigger(event); }}
-                                >
-                                  <DotsHorizontalIcon aria-hidden />
-                                </IconButton>
-                              </DropdownMenu.Trigger>
-                              <DropdownMenu.Content align="end" size="2">
-                                <DropdownMenu.Item onSelect={() => setConfirm({ kind: "reset", id: user.username, label: user.username })}>重置密码</DropdownMenu.Item>
-                                <DropdownMenu.Item color="red" onSelect={() => setConfirm({ kind: "delete-user", id: user.username, label: user.username })}>删除用户</DropdownMenu.Item>
-                              </DropdownMenu.Content>
-                            </DropdownMenu.Root>
-                          </div>
-                        </Table.Cell>
-                      </Table.Row>
-                    ))}
-                  </Table.Body>
-                </Table.Root>
-              </div>
+                              aria-label={`${user.username} 的角色`}
+                              color={user.roleId === null ? "amber" : "gray"}
+                              className="max-w-44 max-sm:min-h-11"
+                            />
+                            <Select.Content position="popper" color="gray">
+                              <Select.Item value="unassigned">未分配角色</Select.Item>
+                              {roles.map((role) => (
+                                <Select.Item key={role.id} value={String(role.id)}>{role.name}</Select.Item>
+                              ))}
+                            </Select.Content>
+                          </Select.Root>
+                        )}
+                      </Table.Cell>
+                      <Table.Cell>
+                        {user.isSystemAdmin ? (
+                          <span className="text-text-muted">全部仓库</span>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            color="gray"
+                            size={{ initial: "4", sm: "1" }}
+                            aria-label={`分配 ${user.username} 的仓库`}
+                            onClick={(event) => { setFeedback(null); assignFocus.captureTrigger(event); setAssign({ user, repoIds: user.repoIds }); }}
+                          >
+                            <span className="font-mono">{user.repoIds.length}</span> 个
+                          </Button>
+                        )}
+                      </Table.Cell>
+                      <Table.Cell className="font-mono text-xs whitespace-nowrap text-text-muted">{localMinute(user.createdAt)}</Table.Cell>
+                      <Table.Cell className="text-xs whitespace-nowrap text-text-muted">{user.lastLoginAt === null ? "从未" : <span className="font-mono">{localMinute(user.lastLoginAt)}</span>}</Table.Cell>
+                      <Table.Cell>
+                        {/* 行操作收进「…」菜单,与首页仓库行同一语法:两颗带字按钮逐行
+                            重复只会把表格拖宽。菜单项一选中菜单就关,焦点来源因此记在
+                            这颗「…」上,确认弹窗关闭后还回来。 */}
+                        <div className="flex justify-end">
+                          <DropdownMenu.Root>
+                            <DropdownMenu.Trigger>
+                              <IconButton
+                                variant="ghost"
+                                color="gray"
+                                size={{ initial: "3", sm: "1" }}
+                                className="max-sm:min-h-11 max-sm:min-w-11"
+                                aria-label={`${user.username} 的操作`}
+                                onClick={(event) => { confirmFallbackId.current = "create-user-trigger"; confirmFocus.captureTrigger(event); }}
+                              >
+                                <DotsHorizontalIcon aria-hidden />
+                              </IconButton>
+                            </DropdownMenu.Trigger>
+                            <DropdownMenu.Content align="end" size="2">
+                              <DropdownMenu.Item onSelect={() => setConfirm({ kind: "reset", id: user.username, label: user.username })}>重置密码</DropdownMenu.Item>
+                              <DropdownMenu.Item color="red" onSelect={() => setConfirm({ kind: "delete-user", id: user.username, label: user.username })}>删除用户</DropdownMenu.Item>
+                            </DropdownMenu.Content>
+                          </DropdownMenu.Root>
+                        </div>
+                      </Table.Cell>
+                    </Table.Row>
+                  ))}
+                </Table.Body>
+              </Table.Root>
             </CardShell>
 
             <CardShell className="overflow-hidden" aria-labelledby="permissions-heading">
@@ -567,18 +579,18 @@ export function AccessControlPage() {
         maxWidth="440px"
         maxHeight="calc(100dvh - 2rem)"
         title={
-          confirm?.kind === "reset"
+          shownConfirm?.kind === "reset"
             ? "重置密码"
-            : confirm?.kind === "delete-role"
-              ? `删除角色 ${confirm.label}？`
-              : `删除用户 ${confirm?.label}？`
+            : shownConfirm?.kind === "delete-role"
+              ? `删除角色 ${shownConfirm.label}？`
+              : `删除用户 ${shownConfirm?.label}？`
         }
         titleSize="4"
         titleMb="2"
         description={
-          confirm?.kind === "reset"
-            ? `为 ${confirm.label} 设置一枚临时密码。现有会话会全部作废，下次登录必须改密码。`
-            : confirm?.kind === "delete-role"
+          shownConfirm?.kind === "reset"
+            ? `为 ${shownConfirm.label} 设置一枚临时密码。现有会话会全部作废，下次登录必须改密码。`
+            : shownConfirm?.kind === "delete-role"
               ? "仍有人使用时，服务会拒绝删除该角色。"
               : "现有会话会一并作废；删除后无法恢复。"
         }
@@ -589,18 +601,18 @@ export function AccessControlPage() {
         confirm={{
           label: destructive.isPending
             ? "处理中…"
-            : confirm?.kind === "reset"
+            : shownConfirm?.kind === "reset"
               ? "重置密码"
-              : confirm?.kind === "delete-role"
+              : shownConfirm?.kind === "delete-role"
                 ? "删除角色"
                 : "删除用户",
-          color: confirm?.kind === "reset" ? "gray" : "red",
-          highContrast: confirm?.kind === "reset",
+          color: shownConfirm?.kind === "reset" ? "gray" : "red",
+          highContrast: shownConfirm?.kind === "reset",
           disabled: destructive.isPending || (confirm?.kind === "reset" && resetPassword === ""),
           onClick: () => { if (confirm !== null) destructive.mutate({ target: confirm, password: resetPassword }); },
         }}
       >
-        {confirm?.kind === "reset" ? (
+        {shownConfirm?.kind === "reset" ? (
           <div className="mt-4 flex flex-col gap-1.5">
             <Text as="label" htmlFor="reset-password" size="2" weight="medium">临时密码</Text>
             <TextField.Root id="reset-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} />
