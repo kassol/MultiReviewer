@@ -7,6 +7,11 @@
  */
 import type { ThinkingLevel } from "../config.ts";
 import type {
+  SessionKnowledgeEntries,
+  SessionKnowledgeQuery,
+  SessionProductKnowledge,
+} from "../review/finding.ts";
+import type {
   AgentSessionOutputKind,
   RepoFinding,
   RepoFindingQuery,
@@ -75,52 +80,14 @@ export type SessionRepoInput = {
 };
 
 /**
- * `query_knowledge` 的一次查询(issue #344、#360)。两层各有自己的入口:仓库层按会话根里的
- * 仓库加可选的路径 glob 取,产品层按名字取整条(术语条目与产品决策)或整段取仓库关系。
- * 仓库在不在会话根内由子进程判(它手里就是那份清单),这里只带它问的那几个。
+ * 两层知识的查询与回应形状定在 `review/finding.ts`(issue #362):Agent 会话与 Reviewer
+ * 两条链路读的是同一份库,形状因此只有一处。这里原样转出,本目录的 import 一行不动。
  */
-export type SessionKnowledgeQuery = {
-  /** `<owner>/<repo>` 形式,都是会话根下的仓库。省略即这一次不问仓库层。 */
-  repos?: readonly string[];
-  /** 仓库相对的路径 glob。省略即整个仓库。 */
-  pathGlob?: string;
-  /** 要读整条的术语名与决策标题(issue #360)。 */
-  names?: readonly string[];
-  /** 要不要整段读仓库关系。 */
-  relationships?: boolean;
-};
-
-/** 一次查询回的两层条目(issue #344)。层由它在哪个数组里定,渲染时写成文字。 */
-export type SessionKnowledgeEntries = {
-  /** 产品层:整条的术语条目、仓库关系与产品决策(issue #360)。 */
-  product: readonly SessionProductKnowledge[];
-  /** 仓库层:哪个仓库的、哪一型、作用范围(空串即全仓库)与那一句陈述。 */
-  repo: readonly {
-    repo: string;
-    type: "rule" | "fact";
-    scope: string;
-    statement: string;
-  }[];
-};
-
-/**
- * 一条产品知识,交给子进程那一侧的形态(CONTEXT.md 产品知识,issue #360)。
- *
- * **不带出处附注**:附注只在产品页展示,一条提示里的条目不带它(ADR 0035)。
- */
-export type SessionProductKnowledge = {
-  id: number;
-  kind: "term" | "relationship" | "decision";
-  /** 术语的名称、决策的标题;仓库关系是空串。 */
-  name: string;
-  body: string;
-  topic: string | null;
-  avoided: readonly string[];
-  options: string | null;
-  consequences: string | null;
-  /** 取代这条决策的那一条的 id。null 即它生效。 */
-  supersededBy: number | null;
-};
+export type {
+  SessionKnowledgeEntries,
+  SessionKnowledgeQuery,
+  SessionProductKnowledge,
+} from "../review/finding.ts";
 
 /**
  * 写一条产品知识要给的那几格(issue #360)。校验在子进程那一侧判完(`session-knowledge-tool.ts`),
@@ -149,15 +116,11 @@ export type OpenSessionRequest = {
   productName: string;
   /** 会话用途(CONTEXT.md 会话用途)。进系统提示一行。 */
   purpose: string;
-  /**
-   * 这个产品生效的产品知识条数(CONTEXT.md 产品知识,issue #344)。与仓库那两个计数一样
-   * 只进提示的目录那一段:陈述本身走 `query_knowledge` 取。
-   */
-  productKnowledgeCount: number;
   repos: readonly SessionRepoInput[];
   /**
-   * 这个产品此刻的产品知识(issue #345、#360)。产品梳理那一段提示按它列出「已经写下的是
-   * 哪些」,产出工具的退役目标也按它判。空数组即这个产品还没有产品知识。
+   * 这个产品此刻的产品知识(issue #345、#360、#362)。系统提示按它渲染一份目录——定位、
+   * 术语名、生效决策标题,正文由 `query_knowledge` 按名字取;产品梳理那一段另按它列出
+   * 「已经写下的是哪些」,产出工具的退役目标也按它判。空数组即这个产品还没有产品知识。
    */
   productKnowledge: readonly SessionProductKnowledge[];
   runtimeModel: RuntimeModel;

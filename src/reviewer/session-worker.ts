@@ -16,6 +16,7 @@
  */
 import { type AgentSession, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 
+import { productKnowledgeContents } from "../review/finding.ts";
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
 import { subagentContractExtension, vendoredSubagentsPath } from "./evidence.ts";
 import { GIT_TOOL, sessionGitTool } from "./git-tool.ts";
@@ -71,6 +72,7 @@ import {
 import {
   READ_ONLY_TOOLS,
   countOf,
+  knowledgeContentsLines,
   openAgentSession,
   prepareAgentRuntime,
   sessionReadOnlyTools,
@@ -116,6 +118,9 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
     const at = `- ${repo.owner}/${repo.repo} ${repo.headSha.slice(0, 7)}`;
     return repo.role === null ? at : `${at} — ${repo.role}`;
   });
+  // 产品知识的目录(issue #362):定位一句、术语名、生效决策标题。Reviewer 的每批提示
+  // 渲染的是同一份,两条链路因此说的是同一套名字。
+  const contents = knowledgeContentsLines(productKnowledgeContents(request.productKnowledge));
   const sections = [
     "You are a senior engineer in a continuing conversation with one person about one product. The conversation spans many turns: answer what is asked, say what you are unsure about, and ask when the answer changes what you would do.",
     `The product: ${request.productName}.`,
@@ -147,14 +152,18 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
     "",
     "## What this product has written down",
     "",
-    "This product and its repositories have written down two layers of knowledge, and neither layer is listed here.",
+    "This product and its repositories have written down two layers of knowledge, and no entry is written out here.",
     "",
-    `Product knowledge is this product's glossary, the section on how its repositories work together, and its decision records. This product has ${countOf(request.productKnowledgeCount, "product knowledge entry", "product knowledge entries")}.`,
+    "Product knowledge is this product's glossary, the section on how its repositories work together, and its decision records. Its table of contents:",
+    "",
+    // 目录只有名字(issue #362):正文按名字走 `query_knowledge` 取整条,一个只动后端的
+    // 任务不必为整份术语表付 token。
+    ...(contents.length === 0 ? ["- nothing written down yet"] : contents),
     "",
     "Each repository also has its own review rules, which say what it holds its code to, and project facts, which are grounds for judgement:",
     "",
-    // 目录那几行只有条数:陈述由 `query_knowledge` 按任务的范围取,一个只动后端的任务不必
-    // 为另一个仓库的约定付 token。
+    // 仓库那两层只给条数:陈述由 `query_knowledge` 按任务的范围取,一个只动后端的任务
+    // 不必为另一个仓库的约定付 token。
     ...request.repos.map(
       (repo) =>
         `- ${repo.owner}/${repo.repo} — ${countOf(repo.ruleCount, "review rule")}, ${countOf(repo.factCount, "project fact")}`,

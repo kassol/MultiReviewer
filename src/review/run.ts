@@ -50,9 +50,13 @@ import type {
   ReviewRunMode,
   ReviewTriggerSource,
   ProjectFact,
+  ProductKnowledgeContents,
   ReviewRule,
+  SessionKnowledgeEntries,
+  SessionKnowledgeQuery,
   Severity,
 } from "./finding.ts";
+import { knowledgeContentsEmpty, productKnowledgeContents } from "./finding.ts";
 import {
   contentFingerprint,
   fileFingerprints,
@@ -2063,6 +2067,51 @@ export async function runReview(
     // 这一轮,与分批上限那几项同律。它随轮次落库,续跑据它核对阈值有没有改过。
     const minReportSeverity = opened(() => effectiveMinReportSeverity(store, deps.repoId));
 
+    // 这个仓库归在哪个产品下(CONTEXT.md 产品,issue #362)。目录在开跑这一刻算一次,
+    // 每一批注入同一份;条目的正文不预读——`query_knowledge` 按名字现取,产品页上刚写下
+    // 的那一条因此当轮就读得到(写下即生效,ADR 0035)。仓库不属于任何产品即 undefined,
+    // 那时 Reviewer 的请求形状与这一票之前逐字一致。
+    const productId = opened(
+      () =>
+        deps.repoId === undefined
+          ? undefined
+          : store.listProducts().find((one) => one.repos.some((row) => row.repoId === deps.repoId))
+              ?.id,
+    );
+    const productKnowledge: ProductKnowledgeContents | undefined = opened(() => {
+      if (productId === undefined) return undefined;
+      const contents = productKnowledgeContents(store.listProductKnowledge(productId));
+      return knowledgeContentsEmpty(contents) ? undefined : contents;
+    });
+    /**
+     * Reviewer 子进程的一次 `query_knowledge`(issue #362)。库的句柄在这一侧,整段审查都
+     * 开着;产品层按名字取整条、`relationships` 为真时整段取仓库关系,不封顶——按名字问,
+     * 问几个回几条。仓库层在这一侧恒为空:评审规则与项目事实已经整段注入了本批提示。
+     */
+    const queryKnowledge = (query: SessionKnowledgeQuery): SessionKnowledgeEntries => {
+      if (productId === undefined) return { product: [], repo: [] };
+      const names = new Set(query.names ?? []);
+      return {
+        product: store
+          .listProductKnowledge(productId)
+          .filter((entry) =>
+            entry.kind === "relationship" ? query.relationships === true : names.has(entry.name),
+          )
+          .map((entry) => ({
+            id: entry.id,
+            kind: entry.kind,
+            name: entry.name,
+            body: entry.body,
+            topic: entry.topic,
+            avoided: entry.avoided,
+            options: entry.options,
+            consequences: entry.consequences,
+            supersededBy: entry.supersededBy,
+          })),
+        repo: [],
+      };
+    };
+
     const verdictOnly = deps.mode === "verdict-only";
     if (verdictOnly) {
       // 只复核那一轮只读有未处置历史的文件:花费按历史所在文件数计,不按整段范围计。
@@ -2237,6 +2286,9 @@ export async function runReview(
               // 分批那一档才带(issue #306):Reviewer 据此在任务提示词里加上「只对列出的
               // 这些文件报出」那一句。单批时不带,prompt 与这一票之前逐字一致。
               ...(batched ? { batched: true as const } : {}),
+              // 仓库归在产品下、且那个产品写下过东西时才带(issue #362):目录进每一批的
+              // 提示,正文由 `query_knowledge` 经这个回调现取。两格同进同出。
+              ...(productKnowledge === undefined ? {} : { productKnowledge, queryKnowledge }),
               onEvent: (event) => {
                 const { kind, ...payload } = event;
                 // 事件带上批次序号(issue #232):批次并行之后同一个模型几批的事件在

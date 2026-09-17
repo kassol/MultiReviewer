@@ -1,6 +1,6 @@
 /**
  * 会话系统提示里的产品名、仓库职责(CONTEXT.md 仓库职责,issue #341)、每个仓库停在哪个
- * commit 的短 sha(issue #351)与知识目录(issue #344)。
+ * commit 的短 sha(issue #351)与知识目录(issue #344、#362)。
  *
  * 桩测这一份字符串:agent 选哪个仓库读、什么时候去查知识全凭这几行,职责没渲染上去它只能一个个
  * README 读过去,而整条真实链路(提示进模型请求)已经由 `agent-session-subprocess.test.ts` 钉住。
@@ -8,8 +8,38 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { OpenSessionRequest } from "../src/reviewer/session-protocol.ts";
+import type {
+  OpenSessionRequest,
+  SessionProductKnowledge,
+} from "../src/reviewer/session-protocol.ts";
 import { sessionSystemPrompt } from "../src/reviewer/session-worker.ts";
+
+/** 一条产品知识的桩。三种条目共用一份默认,各自只覆盖用得上的那几格。 */
+function entry(one: Partial<SessionProductKnowledge> & { id: number }): SessionProductKnowledge {
+  return {
+    kind: "term",
+    name: "",
+    body: "",
+    topic: null,
+    avoided: [],
+    options: null,
+    consequences: null,
+    supersededBy: null,
+    ...one,
+  };
+}
+
+/**
+ * 目录那三行要盖到的四种条目:分组是「定位」的术语、普通术语、生效决策、被取代的决策。
+ * 仓库关系没有名字,目录里因此没有它那一行。
+ */
+const KNOWLEDGE: readonly SessionProductKnowledge[] = [
+  entry({ id: 1, name: "报销系统", topic: "定位", body: "员工提交票据、财务审批并打款的内部系统。" }),
+  entry({ id: 2, name: "报销单", topic: "单据", body: "一次报销申请的载体。" }),
+  entry({ id: 3, kind: "relationship", body: "web 的提交走 api 的报销单接口。" }),
+  entry({ id: 4, kind: "decision", name: "金额用整数分表示", body: "浮点会攒出误差。" }),
+  entry({ id: 5, kind: "decision", name: "金额用浮点表示", body: "旧的那一条。", supersededBy: 4 }),
+];
 
 /** 两棵工作树各停在哪个 commit(issue #351)。短 sha 是前 7 位。 */
 const API_HEAD_SHA = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d";
@@ -19,7 +49,6 @@ const REQUEST: OpenSessionRequest = {
   sessionRoot: "/tmp/session-root",
   productName: "报销系统",
   purpose: "requirement-breakdown",
-  productKnowledgeCount: 3,
   repos: [
     {
       owner: "acme",
@@ -31,7 +60,7 @@ const REQUEST: OpenSessionRequest = {
     },
     { owner: "acme", repo: "web", role: null, headSha: WEB_HEAD_SHA, ruleCount: 0, factCount: 0 },
   ],
-  productKnowledge: [],
+  productKnowledge: KNOWLEDGE,
   // 提示这一份不读模型,这一格只为凑齐形状。
   runtimeModel: {
     provider: "stub",
@@ -77,11 +106,21 @@ test("没有一个仓库写过职责时,不写那句说破折号的话", () => {
   assert.doesNotMatch(prompt, /The note after the dash/);
 });
 
-test("知识目录只有条数与那一句触发语,一条规则或事实的正文都不在提示里", () => {
+test("知识目录是定位一句加两串名字,一条规则或事实的正文都不在提示里", () => {
   const prompt = sessionSystemPrompt(REQUEST);
 
-  // 两层各有多少条:产品层一句,仓库层每个仓库一行。
-  assert.match(prompt, /This product has 3 product knowledge entries\./);
+  // 产品层三行目录(issue #362):定位那一条给正文,术语与生效决策只给名字。
+  assert.match(prompt, /^- Positioning: 员工提交票据、财务审批并打款的内部系统。$/m);
+  assert.match(prompt, /^- Glossary terms: 报销单$/m);
+  assert.match(prompt, /^- Decision records: 金额用整数分表示$/m);
+  // 定位那一条不在术语名里重复一遍,被取代的决策不进目录,仓库关系没有名字也不进。
+  assert.doesNotMatch(prompt, /报销系统、|、报销系统/);
+  assert.doesNotMatch(prompt, /金额用浮点表示/);
+  assert.doesNotMatch(prompt, /web 的提交走 api 的报销单接口/);
+  // 目录之外一条正文都没有:术语与决策的定义都要花一次 query_knowledge 取。
+  assert.doesNotMatch(prompt, /一次报销申请的载体/);
+  assert.doesNotMatch(prompt, /浮点会攒出误差/);
+  // 仓库层仍只给条数,每个仓库一行。
   assert.match(prompt, /^- acme\/api — 4 review rules, 1 project fact$/m);
   assert.match(prompt, /^- acme\/web — 0 review rules, 0 project facts$/m);
   // 什么时候去查,一句话。
@@ -100,12 +139,40 @@ test("知识目录只有条数与那一句触发语,一条规则或事实的正�
 test("只有一条规则、一条事实时,计数那一行用单数", () => {
   const prompt = sessionSystemPrompt({
     ...REQUEST,
-    productKnowledgeCount: 1,
     repos: [
       { owner: "acme", repo: "api", role: null, headSha: API_HEAD_SHA, ruleCount: 1, factCount: 1 },
     ],
   });
 
-  assert.match(prompt, /This product has 1 product knowledge entry\./);
   assert.match(prompt, /^- acme\/api — 1 review rule, 1 project fact$/m);
+});
+
+test("产品一条都没写下时,目录那一段说清楚是空的", () => {
+  const prompt = sessionSystemPrompt({ ...REQUEST, productKnowledge: [] });
+
+  assert.match(prompt, /^- nothing written down yet$/m);
+  assert.doesNotMatch(prompt, /^- Positioning:/m);
+  assert.doesNotMatch(prompt, /^- Glossary terms:/m);
+});
+
+test("产品没写过定位时,定位那一行不渲染,术语名照旧列全", () => {
+  const prompt = sessionSystemPrompt({
+    ...REQUEST,
+    productKnowledge: KNOWLEDGE.filter((one) => one.id !== 1),
+  });
+
+  assert.doesNotMatch(prompt, /^- Positioning:/m);
+  assert.match(prompt, /^- Glossary terms: 报销单$/m);
+});
+
+test("每个用途拿到同一份目录:目录在底座那一段,不随用途变", () => {
+  // 目录三行加它们之间的空行:底座那一段里这一截,三个用途逐字一样(issue #362)。
+  const block = (purpose: string): string =>
+    sessionSystemPrompt({ ...REQUEST, purpose }).split("\n\n").find((one) => one.startsWith("- Positioning:"))!;
+
+  const breakdown = block("requirement-breakdown");
+  assert.match(breakdown, /^- Positioning: /);
+  for (const purpose of ["open-conversation", "product-survey"]) {
+    assert.equal(block(purpose), breakdown, `${purpose} 的目录与需求拆分那一份不一致`);
+  }
 });

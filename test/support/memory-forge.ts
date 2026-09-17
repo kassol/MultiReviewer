@@ -24,8 +24,11 @@ import type {
 import type {
   Finding,
   HistoryFinding,
+  ProductKnowledgeContents,
   ProjectFact,
   ReviewIntent,
+  SessionKnowledgeEntries,
+  SessionKnowledgeQuery,
   ReviewRange,
   ReviewRule,
   ReviewRunMode,
@@ -186,6 +189,11 @@ type ScriptedCall = {
   mode: ReviewRunMode | undefined;
   /** 本轮的最低报告等级(issue #271);全报那一档不带,与注入边界一致。 */
   minReportSeverity: Severity | undefined;
+  /**
+   * 这个仓库所属产品的产品知识目录(issue #362);仓库不在产品下、或产品一条都没写下时
+   * 不带,与注入边界一致。
+   */
+  productKnowledge: ProductKnowledgeContents | undefined;
 };
 
 /**
@@ -196,6 +204,8 @@ type ScriptedCall = {
  * #224、#225)。
  * `verdicts` 给定这一轮的复核结论;不给即一条都没给,编排层按「无法判断」落库。
  * `events` 是这一轮按顺序发出的过程事件(issue #171),在返回结果之前逐条发出。
+ * `reads` 是这一轮要做的几次产品知识查询(issue #362):库的句柄只在 Review Run 跑着的
+ * 时候开着,查询因此只能在这里发出,结果落进 `knowledgeReads` 给用例断言。
  */
 export function scriptedReviewer(
   model: string,
@@ -205,12 +215,14 @@ export function scriptedReviewer(
       ReviewerOutcome,
       "failure" | "anomalies" | "rejectedToolCalls" | "anchorRejections" | "usage" | "verdicts"
     >
-  > & { events?: readonly ReviewerEvent[] },
-): Reviewer & { calls: ScriptedCall[] } {
+  > & { events?: readonly ReviewerEvent[]; reads?: readonly SessionKnowledgeQuery[] },
+): Reviewer & { calls: ScriptedCall[]; knowledgeReads: SessionKnowledgeEntries[] } {
   const calls: ScriptedCall[] = [];
+  const knowledgeReads: SessionKnowledgeEntries[] = [];
   return {
     model,
     calls,
+    knowledgeReads,
     review: async ({
       range,
       worktreePath,
@@ -222,6 +234,8 @@ export function scriptedReviewer(
       directive,
       mode,
       minReportSeverity,
+      productKnowledge,
+      queryKnowledge,
       onEvent,
     }) => {
       calls.push({
@@ -235,7 +249,11 @@ export function scriptedReviewer(
         directive,
         mode,
         minReportSeverity,
+        productKnowledge,
       });
+      for (const query of extra?.reads ?? []) {
+        if (queryKnowledge !== undefined) knowledgeReads.push(queryKnowledge(query));
+      }
       for (const event of extra?.events ?? []) onEvent?.(event);
       return {
         model,
@@ -295,6 +313,7 @@ export function verdictReviewer(
   return {
     model,
     calls: scripted.calls,
+    knowledgeReads: scripted.knowledgeReads,
     review: async (input) => ({
       ...(await scripted.review(input)),
       verdicts: input.history.map((entry) => ({

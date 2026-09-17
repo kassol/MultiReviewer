@@ -8,11 +8,13 @@ import type {
   ReviewerInput,
   ReviewerOutcome,
   ReviewerUsage,
+  SessionKnowledgeEntries,
+  SessionKnowledgeQuery,
 } from "../review/finding.ts";
 import { DEFAULT_MIN_REPORT_SEVERITY } from "../review/finding.ts";
 import { modelIdentity, type ThinkingLevel } from "../config.ts";
 import { normalizeFinding, normalizeVerdict } from "./normalize.ts";
-import type { ReviewerRequest, WorkerMessage } from "./protocol.ts";
+import type { ReviewerCommand, ReviewerRequest, WorkerMessage } from "./protocol.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 import { runWorkerChild } from "./subprocess.ts";
 
@@ -38,6 +40,38 @@ export function createPiReviewer(config: PiReviewerConfig): Reviewer {
 }
 
 /**
+ * 回一次产品知识查询(issue #362)。库在这一侧,子进程只拿得到回音,因此**恒回一条**
+ * ——查不动时带上原因,不然子进程那边的工具调用永远等下去。
+ *
+ * 查询回调缺席时也回一条:那时子进程本不该注册这件工具,回一句比让它挂着强。
+ */
+function knowledgeAnswer(
+  requestId: string,
+  query: SessionKnowledgeQuery,
+  read: ((query: SessionKnowledgeQuery) => SessionKnowledgeEntries) | undefined,
+): ReviewerCommand {
+  const empty = { product: [], repo: [] };
+  if (read === undefined) {
+    return {
+      kind: "knowledge-query-result",
+      requestId,
+      entries: empty,
+      failure: "this repository is not in a product, so nothing is written down to read",
+    };
+  }
+  try {
+    return { kind: "knowledge-query-result", requestId, entries: read(query) };
+  } catch (error) {
+    return {
+      kind: "knowledge-query-result",
+      requestId,
+      entries: empty,
+      failure: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
  * 子进程回传消息的收集与归一化。进程本身的生命周期在 `subprocess.ts`,与规则 agent
  * 共用一份;`workerPath` 是参数而非常量,使失败路径能用受控的 worker 脚本驱动测试。
  */
@@ -57,6 +91,10 @@ export async function runInChild(
     maxEvidenceCallsPerBatch,
     minReportSeverity,
     batched,
+    // 仓库属于某个产品、且那个产品写下过东西时才有(issue #362)。目录进 prompt,
+    // 查询回调留在这一侧:库在编排进程里。
+    productKnowledge,
+    queryKnowledge,
     // 空知识集与不传等价。两型各判各的:只有事实没有规则的知识集同样成立。
     rules = [],
     facts = [],
@@ -101,6 +139,9 @@ export async function runInChild(
     ...(rules.length === 0 ? {} : { rules }),
     // 事实段同律(issue #221):一条事实都没有时不带,prompt 与升级前逐字一致。
     ...(facts.length === 0 ? {} : { facts }),
+    // 仓库不属于任何产品时不带(issue #362):子进程据此不渲染产品段、也不注册
+    // `query_knowledge`,prompt 与这一票之前逐字一致。
+    ...(productKnowledge === undefined ? {} : { productKnowledge }),
   };
 
   const { failure, exitCode } = await runWorkerChild<WorkerMessage>({
@@ -109,7 +150,11 @@ export async function runInChild(
     apiKey: config.apiKey,
     timeoutSubject: "Reviewer",
     payload: request,
-    onMessage: (message) => {
+    onMessage: (message, reply) => {
+      if (message.kind === "knowledge-query") {
+        reply(knowledgeAnswer(message.requestId, message.query, queryKnowledge));
+        return;
+      }
       if (message.kind === "finding") {
         // 模型自报的规则标识在这里校验:注入的这一批规则是它唯一的合法取值(issue #204)。
         const result = normalizeFinding(message.raw, identity, ruleIds);

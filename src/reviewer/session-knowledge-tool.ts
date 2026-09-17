@@ -329,10 +329,15 @@ export function knowledgeWriteRejection(write: SessionKnowledgeWrite): string | 
 /**
  * 知识查询工具。`repos` 是会话根里的 `<owner>/<repo>` 清单:会话读得到的仓库就是这几个,
  * 问别的仓库即打回——知识跟着仓库走,读不到那个仓库的代码也不该读到它的约定(ADR 0018)。
+ *
+ * Reviewer 注册的是同一份定义(issue #362),只是 `repos` 给空数组:它的评审规则与项目事实
+ * 已经整段注入了本批提示,这一件工具在那一侧只读产品层。问仓库层时的两句措辞因此分档。
  */
 export function sessionKnowledgeTool(options: {
+  /** 会话根里的仓库。空数组即这一侧只读产品层(Reviewer 那一档)。 */
   repos: readonly string[];
-  send: (message: SessionWorkerMessage) => void;
+  /** 只发 `knowledge-query` 一档:两条链路的回传消息类型不同,这里只取交集。 */
+  send: (message: Extract<SessionWorkerMessage, { kind: "knowledge-query" }>) => void;
 }): ToolDefinition<never, never> {
   return defineTool({
     name: QUERY_KNOWLEDGE_TOOL,
@@ -354,15 +359,21 @@ export function sessionKnowledgeTool(options: {
         (Array.isArray(names) ? names : []).filter((one): one is string => typeof one === "string"),
       );
       const wantsRelationships = relationships === true;
+      // 仓库层问不到的那一档(Reviewer):两句措辞都不提仓库,提了也没有一个能填进去。
+      const repoLayer = options.repos.length > 0;
       if (asked.length === 0 && wantedNames.length === 0 && !wantsRelationships) {
         return toolText(
-          `say what to read: names of glossary terms or decisions, relationships: true, or one of this session's repositories (${options.repos.join(", ")})`,
+          repoLayer
+            ? `say what to read: names of glossary terms or decisions, relationships: true, or one of this session's repositories (${options.repos.join(", ")})`
+            : "say what to read: names of glossary terms or decisions, or relationships: true",
         );
       }
       const outside = asked.filter((one) => !options.repos.includes(one));
       if (outside.length > 0) {
         return toolText(
-          `${outside.join(", ")} is not a repository of this session; look in one of: ${options.repos.join(", ")}`,
+          repoLayer
+            ? `${outside.join(", ")} is not a repository of this session; look in one of: ${options.repos.join(", ")}`
+            : "this tool reads only this product's knowledge here; the review rules and project facts of this repository are already in your prompt. Ask by names, or with relationships: true.",
         );
       }
       const glob = pathGlob?.trim();

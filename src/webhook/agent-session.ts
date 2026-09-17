@@ -300,20 +300,14 @@ function repoIdByName(repos: readonly ProductRepoRecord[]): Map<string, number> 
 }
 
 /**
- * 这个会话挂的那个产品进系统提示的那两格:名字(issue #341)与生效产品知识的条数
- * (issue #344)。与仓库集合和知识集同律在 `boot` 里现算:改名与新确认的条目在下次重建时
- * 生效。产品没了即空串与 0——那时会话一个仓库也读不到,消息根本发不出来。
+ * 这个会话挂的那个产品进系统提示的那一格:名字(issue #341)。与仓库集合和知识集同律在
+ * `boot` 里现算:改名在下次重建时生效。产品没了即空串——那时会话一个仓库也读不到,消息
+ * 根本发不出来。
  */
-function productHeading(
-  dbPath: string,
-  productId: number,
-): { name: string; knowledgeCount: number } {
+function productHeading(dbPath: string, productId: number): string {
   const store = openStore(dbPath);
   try {
-    return {
-      name: store.getProduct(productId)?.name ?? "",
-      knowledgeCount: store.listProductKnowledge(productId).length,
-    };
+    return store.getProduct(productId)?.name ?? "";
   } finally {
     store.close();
   }
@@ -1349,7 +1343,7 @@ async function boot(
 
   // 重建:整段记录原样喂回去(issue #335)。新会话那一次是空数组,与不给等价。
   const stored = storedSession(deps.dbPath, session.id);
-  const heading = productHeading(deps.dbPath, session.productId);
+  const productName = productHeading(deps.dbPath, session.productId);
   if (stored.gap > 0) {
     console.warn(
       `[agent-session] 会话 ${session.id} 的记录有缺损,重建后前 ${stored.gap} 条不在上下文里`,
@@ -1359,8 +1353,7 @@ async function boot(
     kind: "open",
     request: {
       sessionRoot: prepared.sessionRoot,
-      productName: heading.name,
-      productKnowledgeCount: heading.knowledgeCount,
+      productName,
       purpose: session.purpose,
       repos: prepared.repos,
       productKnowledge: activeProductKnowledge(deps.dbPath, session.productId),

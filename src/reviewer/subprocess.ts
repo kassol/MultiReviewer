@@ -42,8 +42,13 @@ export type ChildRun<M extends ChildMessage> = {
   timeoutSubject: string;
   /** 起来之后投递给子进程的任务。凭据不进 IPC 消息。 */
   payload: Serializable;
-  /** 子进程回传的每一条消息,收尾那条也在内。 */
-  onMessage: (message: M) => void;
+  /**
+   * 子进程回传的每一条消息,收尾那条也在内。
+   *
+   * `reply` 把一条消息投回去(issue #362):知识查询那一档是请求-回应,库在这一侧,子进程
+   * 等着回音。进程已经断开时投递是空操作——那时那次查询本来就没人在等了。
+   */
+  onMessage: (message: M, reply: (payload: Serializable) => void) => void;
   /** 静默上限的测试注入口。生产不传,取默认的五分钟。 */
   inactivityTimeoutMs?: number;
 };
@@ -96,8 +101,14 @@ export function runWorkerChild<M extends ChildMessage>(run: ChildRun<M>): Promis
     const silenceFailure = `${run.timeoutSubject} 卡死:连续 ${silence / 60_000} 分钟没有任何回传`;
     let timer = setTimeout(() => finish(silenceFailure), silence);
 
+    const reply = (payload: Serializable): void => {
+      // 带 callback 的投递:断开之后 Node 会异步抛 EPIPE,没有它一次晚到的回应会掀掉
+      // 整个编排进程。这一条投不出去时那次工具调用已经没人在等了,丢掉即可。
+      if (child.connected) child.send(payload, () => {});
+    };
+
     child.on("message", (message: M) => {
-      run.onMessage(message);
+      run.onMessage(message, reply);
       // 每一条消息都是活着的证据,静默计时从头再来。
       clearTimeout(timer);
       if (message.kind !== "done") {

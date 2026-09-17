@@ -427,6 +427,88 @@ process.on("message", (request) => {
   assert.deepEqual(JSON.parse(outcome.findings[0]!.description), history);
 });
 
+/** 子进程问一次知识、把回音原样当 Finding 正文回传的受控脚本(issue #362)。 */
+const KNOWLEDGE_WORKER = `
+const answers = [];
+process.on("message", (message) => {
+  if (message.kind !== "knowledge-query-result") {
+    process.send({ kind: "knowledge-query", requestId: "r1", query: { names: ["订单"] } });
+    return;
+  }
+  answers.push(message);
+  if (answers.length === 1) {
+    process.send({ kind: "knowledge-query", requestId: "r2", query: { relationships: true } });
+    return;
+  }
+  process.send({
+    kind: "finding",
+    raw: { ...${JSON.stringify(RAW)}, description: JSON.stringify(answers) },
+  });
+  process.send({ kind: "done", rejectedToolCalls: 0, anchorRejections: 0 });
+  process.exit(0);
+});
+`;
+
+test("子进程的知识查询经 IPC 由编排层回一条,查不动时带上原因", async () => {
+  const path = worker(KNOWLEDGE_WORKER);
+  const asked: unknown[] = [];
+  const outcome = await runInChild(
+    path,
+    CONFIG,
+    input({
+      queryKnowledge: (query) => {
+        asked.push(query);
+        // 第二次抛:库读不动时也必须有回音,不然那次工具调用永远等下去。
+        if (asked.length === 2) throw new Error("库读不动");
+        return {
+          product: [
+            {
+              id: 3,
+              kind: "term",
+              name: "订单",
+              body: "一次买卖的载体。",
+              topic: null,
+              avoided: [],
+              options: null,
+              consequences: null,
+              supersededBy: null,
+            },
+          ],
+          repo: [],
+        };
+      },
+    }),
+  );
+
+  assert.equal(outcome.failure, undefined);
+  assert.deepEqual(asked, [{ names: ["订单"] }, { relationships: true }]);
+  const [first, second] = JSON.parse(outcome.findings[0]!.description) as {
+    requestId: string;
+    entries: { product: { name: string }[] };
+    failure?: string;
+  }[];
+  // 回音按 requestId 配对,问什么回什么。
+  assert.equal(first!.requestId, "r1");
+  assert.deepEqual(
+    first!.entries.product.map((one) => one.name),
+    ["订单"],
+  );
+  assert.equal(first!.failure, undefined);
+  assert.equal(second!.requestId, "r2");
+  assert.equal(second!.failure, "库读不动");
+  assert.deepEqual(second!.entries.product, []);
+});
+
+test("这一轮没有查询回调时,子进程的知识查询仍收到一条回音", async () => {
+  const path = worker(KNOWLEDGE_WORKER);
+  const outcome = await runInChild(path, CONFIG, input());
+
+  assert.equal(outcome.failure, undefined);
+  const answers = JSON.parse(outcome.findings[0]!.description) as { failure?: string }[];
+  assert.equal(answers.length, 2);
+  for (const answer of answers) assert.match(answer.failure ?? "", /not in a product/);
+});
+
 test("本轮注入的评审规则原样进任务;空知识集不带这一项", async () => {
   const path = worker(`
 process.on("message", (request) => {
