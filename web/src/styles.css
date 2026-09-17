@@ -514,6 +514,25 @@
   }
 
   /*
+   * 正文流里的文本链接(阶段详情页头的「评审记录」返回、Finding 卡的「延续自上一处
+   * 评论」)不是 Radix 控件,上面那几条类名盖不到它们;直接把行撑到 44px 又会把它
+   * 下面的内容整体推下去。沿用 Checkbox 那一招:视觉不动,一层透明的 `::after` 把
+   * 命中区补到 44px 高,链接自身的行高与位置都不变(issue #379)。
+   */
+  .touch-link {
+    position: relative;
+  }
+
+  .touch-link::after {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    top: 50%;
+    translate: 0 -50%;
+    height: 44px;
+  }
+
+  /*
    * 触屏上字号低于 16px 的输入框,iOS Safari 一聚焦就把整页放大,而且不会自己缩回去。
    * 一条规则盖住全部 input 与 textarea——Radix 的 TextField / TextArea、会话输入区的
    * 原生 textarea 与命令面板的 cmdk 输入都落在这两个标签上,逐个组件写漏一个就是一次

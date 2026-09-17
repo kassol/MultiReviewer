@@ -321,7 +321,7 @@ export function FindingRow({
             href={finding.continuedFrom}
             target="_blank"
             rel="noreferrer"
-            className="text-primary underline underline-offset-4"
+            className="touch-link text-primary underline underline-offset-4"
           >
             延续自上一处评论
           </a>

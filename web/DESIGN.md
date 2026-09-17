@@ -286,6 +286,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 | cmdk 搜索框 | `[data-slot="command-input-wrapper"]`、`[data-slot="command-input"]` | 写死 36px 高，直接给 44px 终值 |
 | Checkbox、Switch | `.rt-BaseCheckboxRoot`、`.rt-SwitchRoot` | 视觉尺寸不动（16px 方框、35px 拨杆），透明 `::after` 把命中区补到 44×44。`::before` 是视觉本身，所以用 `::after` |
 | CheckboxGroup、RadioGroup 选项 | `.rt-CheckboxGroupItem`、`.rt-RadioGroupItem` | Radix 自带的一层 `<label>` 撑到 44px，整行连文字一起是命中区 |
+| 正文流里的文本链接 | `.touch-link` | 不是 Radix 控件，上面几条盖不到；撑高整行会把下面的内容推下去。同 Checkbox 的做法：透明 `::after` 把命中区补到 44px 高，链接的行高与位置都不变。给阶段详情页头的返回链接与 Finding 卡的「延续自上一处评论」用 |
 
 开关放在行尾时，整行包一层 `<label>`（权限行就是这样）：浏览器把 label 的点击转投给它标注的控件，Switch 渲染成 `<button>`，属于可标注元素，开关自身的键盘与焦点行为不变。
 

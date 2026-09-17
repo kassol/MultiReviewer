@@ -244,8 +244,13 @@ function RunMilestone({ event }: { event: TraceEvent }) {
                   {line === null ? "" : `:${line}`}
                 </span>
               )}
+              {/* 判据的 agent 那一档带的是一整句理由(criteriaText),Radix 的 Badge 默认
+                  `white-space: nowrap` 加 `flex-shrink: 0`,窄屏上它按整句撑开,被里程碑
+                  那张卡的 `overflow-hidden` 直接裁掉。放开折行并允许收缩(issue #379)。 */}
               {criteria === null ? null : (
-                <Badge color="gray" variant="soft" radius="full">{criteria}</Badge>
+                <Badge color="gray" variant="soft" radius="full" className="shrink whitespace-normal break-words">
+                  {criteria}
+                </Badge>
               )}
             </span>
             {list.length === 0 ? null : (
@@ -392,7 +397,9 @@ function RunMilestone({ event }: { event: TraceEvent }) {
                 </span>
               )}
               {criteria === null ? null : (
-                <Badge color="gray" variant="soft" radius="full">{criteria}</Badge>
+                <Badge color="gray" variant="soft" radius="full" className="shrink whitespace-normal break-words">
+                  {criteria}
+                </Badge>
               )}
             </span>
             {title === null || title === "" ? null : (
