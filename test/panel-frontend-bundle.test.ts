@@ -25,6 +25,8 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
     const entrySource = readFileSync(join(process.cwd(), "web/src/main.tsx"), "utf8");
     const styleSource = readFileSync(join(process.cwd(), "web/src/styles.css"), "utf8");
     const masterListSource = readFileSync(join(process.cwd(), "web/src/components/master-list-item.tsx"), "utf8");
+    const credentialsSource = readFileSync(join(process.cwd(), "web/src/credentials.tsx"), "utf8");
+    const comboboxSource = readFileSync(join(process.cwd(), "web/src/components/editable-model-combobox.tsx"), "utf8");
 
     assert.match(javascript, /评审记录列表/);
     // 导航收敛成三层之后(issue #189),阶段页只有一种视图:轮次视图与它的两个入口
@@ -79,6 +81,20 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
     assert.match(coarse, /:where\(\.rt-CheckboxGroupItem,\.rt-RadioGroupItem\)\{[^}]*min-height:44px/);
     // 「我的」菜单贴着 Tab 栏开,末项的命中区要离 Tab 栏 8px。
     assert.match(javascript, /sideOffset:8/);
+    // 模型标识换行(issue #380):模型服务页与它的模型组合框不再用 `break-all`,
+    // 否则 `claude-opus-latest` 在窄屏上被切成 `claude-opus-lat` / `est`。
+    for (const source of [credentialsSource, comboboxSource]) {
+      assert.doesNotMatch(source, /className="[^"]*break-all/);
+      assert.match(source, /wrap-anywhere font-mono/);
+    }
+    assert.match(stylesheet, /\.wrap-anywhere\{overflow-wrap:anywhere\}/);
+    // 配置模型服务向导窄屏顶靠(issue #380):居中会把页脚推进软键盘盖住的那一段。
+    // 与 44px 地板同在未分层的那一段,Themes 的居中写在 radix 层里,盖得过。
+    assert.match(
+      coarse,
+      /\(min-width:40rem\)\{\.rt-BaseDialogScrollPadding:has\(>#model-service-setup-dialog\)\{margin-top:0\}/,
+    );
+    assert.match(javascript, /id:"model-service-setup-dialog"/);
   } finally {
     rmSync(dist, { recursive: true, force: true });
   }

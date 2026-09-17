@@ -535,6 +535,20 @@
   );
 }
 
+/*
+ * 配置模型服务向导在窄屏顶靠视口上沿(issue #380)。Themes 把 Dialog.Content 放进一个
+ * 可滚动的居中容器里(`.rt-BaseDialogScrollPadding` 靠 `margin: auto` 居中),向导只有
+ * 三四个字段时整块吊在屏幕中段,底部的「返回 / 发现模型」正好落进软键盘升起后被盖住的
+ * 那一段;顶靠之后页脚紧跟正文,停在键盘上沿之上。命令面板在 issue #375 上按同一个道理
+ * 改过。这是 Themes 的 `align="start"`,但那个 prop 不是响应式的,断点只能自己写一次;
+ * 宽屏没有软键盘,仍然居中。
+ */
+@media (width < 40rem) {
+  .rt-BaseDialogScrollPadding:has(> #model-service-setup-dialog) {
+    margin-top: 0;
+  }
+}
+
 @layer base {
   html,
   body {

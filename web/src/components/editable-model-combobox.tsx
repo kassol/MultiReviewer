@@ -112,7 +112,8 @@ export function EditableModelCombobox({
                       aria-hidden
                     />
                     <span className="min-w-0">
-                      <span className="block break-all font-mono">{candidate.id}</span>
+                      {/* 候选 id 按 `-` `/` `:` `.` 断行,不在词中间切(issue #380,同模型服务页)。 */}
+                      <span className="block wrap-anywhere font-mono">{candidate.id}</span>
                       {candidate.name === null || candidate.name === candidate.id ? null : (
                         <span className="mt-0.5 block break-words text-xs text-text-muted">
                           {candidate.name}

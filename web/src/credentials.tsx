@@ -247,12 +247,20 @@ function InfoField({ label, children }: { label: ReactNode; children: ReactNode 
   );
 }
 
+/*
+ * 这一页的模型标识、provider 标识与调用地址都用 `wrap-anywhere`(`overflow-wrap: anywhere`)
+ * 换行,不用 `break-all`(issue #380)。`break-all` 在任意字符间断行,窄屏上 `claude-opus-latest`
+ * 被切成 `claude-opus-lat` / `est`,读的人认不出这是哪个模型;`anywhere` 先用 `-` `/` `:` `.`
+ * 这些天然断点,只有整段确实放不下时才任意断,并且把断点算进最小内容宽度,所以 flex 行不会
+ * 被一段长 id 撑破。
+ */
+
 /** 等宽值。缺字段时退回正文字体——「未提供」不是一段 id,不该按 id 排版。 */
 function MonoValue({ value }: { value: string | null | undefined }) {
   return value === null || value === undefined ? (
     <span className="text-text-muted">未提供</span>
   ) : (
-    <span className="break-all font-mono text-base">{value}</span>
+    <span className="wrap-anywhere font-mono text-base">{value}</span>
   );
 }
 
@@ -617,6 +625,9 @@ export function ModelServiceSetupLayout() {
     <ModelServiceSetupContext.Provider value={{ candidate, setCandidate, phase, setPhase, transition, requestClose: closeSetup, finish }}>
       <Dialog.Root open onOpenChange={(open) => { if (!open) closeSetup(); }}>
         <Dialog.Content
+          // 窄屏顶靠视口的挂点。Themes 的 `align` prop 不是响应式的,断点那一半写在
+          // styles.css 里,靠这个 id 找到向导外面那层居中容器(issue #380)。
+          id="model-service-setup-dialog"
           maxWidth={{ initial: "100%", sm: "720px" }}
           maxHeight="calc(100dvh - 2rem)"
           size={{ initial: "2", sm: "3" }}
@@ -784,7 +795,7 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
                 }}
               >
                 <span className="min-w-0 flex-1">
-                  <span className="block break-all font-mono text-base font-medium">{provider.id}</span>
+                  <span className="block wrap-anywhere font-mono text-base font-medium">{provider.id}</span>
                   <span className="block break-words text-sm text-text-muted">{provider.name}</span>
                 </span>
                 {provider.conflict ? <StatusBadge tone="error">名字冲突</StatusBadge> : null}
@@ -949,7 +960,7 @@ function DiscoveredModels({
             ) : (
               <span aria-hidden className="size-3.5 shrink-0" />
             )}
-            <span className="min-w-0 flex-1 break-all font-mono text-base">{model.id}</span>
+            <span className="min-w-0 flex-1 wrap-anywhere font-mono text-base">{model.id}</span>
             {model.fields.name === undefined ? null : (
               <span className="shrink-0 text-sm text-text-muted">{model.fields.name}</span>
             )}
@@ -1290,7 +1301,7 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
                           : active.reconfirmedSupplements.filter((identity) => identity !== model.identity),
                       })}
                     />
-                    <span className="min-w-0 flex-1 break-all font-mono text-base">{model.identity}</span>
+                    <span className="min-w-0 flex-1 wrap-anywhere font-mono text-base">{model.identity}</span>
                   </Text>
                 );
               })}
@@ -1782,7 +1793,7 @@ function ReferenceBlockers({ references }: { references: ModelReference[] }) {
       <ul className="mt-3 flex flex-col overflow-hidden rounded-md border border-card-line bg-surface">
         {references.map((reference) => (
           <li key={reference.identity} className="border-t border-line px-3 py-2 first:border-t-0">
-            <p className="break-all font-mono text-base font-medium">{reference.identity}</p>
+            <p className="wrap-anywhere font-mono text-base font-medium">{reference.identity}</p>
             <ul className="mt-1 list-disc space-y-0.5 pl-5 text-base text-text-muted">
               {reference.locations.map((location, index) => (
                 <li key={`${reference.identity}:${index}`}>
@@ -2200,7 +2211,7 @@ function CatalogControls({
                   key={entry.identity}
                   className="flex flex-wrap items-center gap-2.5 border-t border-line px-3 py-2.5 first:border-t-0"
                 >
-                  <span className="min-w-0 flex-1 break-all font-mono text-base">{entry.identity}</span>
+                  <span className="min-w-0 flex-1 wrap-anywhere font-mono text-base">{entry.identity}</span>
                   <SourceBadge>{SOURCE_LABEL[source]}</SourceBadge>
                   <Button
                     type="button"
@@ -2530,7 +2541,7 @@ function ModelsTable({
                   <p className="break-words font-medium">
                     {model.discovery.name ?? "未提供显示名"}
                   </p>
-                  <p className="max-w-full break-all font-mono text-base text-text-muted">
+                  <p className="max-w-full wrap-anywhere font-mono text-base text-text-muted">
                     {model.identity}
                   </p>
                   <p className="mt-1 flex flex-wrap items-center gap-1.5">
@@ -2717,7 +2728,7 @@ function ReferenceOverview({ references }: { references: readonly ModelReference
           <ul className="flex flex-col overflow-hidden rounded-md border border-card-line">
             {references.map((reference) => (
               <li key={reference.identity} className="border-t border-line px-3 py-2 first:border-t-0">
-                <p className="break-all font-mono text-base font-medium">{reference.identity}</p>
+                <p className="wrap-anywhere font-mono text-base font-medium">{reference.identity}</p>
                 <ul className="mt-1 list-disc space-y-0.5 pl-5 text-base text-text-muted">
                   {reference.locations.map((location, index) => (
                     <li key={`${reference.identity}:${index}`}>
